@@ -12,11 +12,11 @@ const config: Config = {
   },
 
   // GitHub Pages configuration
-  url: 'https://devtool-mcp.github.io',
+  url: 'https://standardbeagle.github.io',
   baseUrl: '/devtool-mcp/',
 
   // GitHub repository info
-  organizationName: 'devtool-mcp',
+  organizationName: 'standardbeagle',
   projectName: 'devtool-mcp',
   trailingSlash: false,
   deploymentBranch: 'gh-pages',
@@ -36,7 +36,7 @@ const config: Config = {
         docs: {
           sidebarPath: './sidebars.ts',
           routeBasePath: '/',
-          editUrl: 'https://github.com/devtool-mcp/devtool-mcp/tree/main/docs-site/',
+          editUrl: 'https://github.com/standardbeagle/devtool-mcp/tree/main/docs-site/',
         },
         blog: false,
         theme: {
@@ -73,7 +73,7 @@ const config: Config = {
           label: 'Use Cases',
         },
         {
-          href: 'https://github.com/devtool-mcp/devtool-mcp',
+          href: 'https://github.com/standardbeagle/devtool-mcp',
           label: 'GitHub',
           position: 'right',
         },
@@ -121,7 +121,7 @@ const config: Config = {
           items: [
             {
               label: 'GitHub',
-              href: 'https://github.com/devtool-mcp/devtool-mcp',
+              href: 'https://github.com/standardbeagle/devtool-mcp',
             },
             {
               label: 'MCP Protocol',

@@ -17,7 +17,7 @@ devtool-mcp bridges the gap between AI assistants and development workflows by p
 
 ## Documentation
 
-**[Full Documentation →](https://devtool-mcp.github.io/devtool-mcp/)**
+**[Full Documentation →](https://standardbeagle.github.io/devtool-mcp/)**
 
 ### Run Documentation Locally
 
@@ -44,12 +44,12 @@ To set up GitHub Pages for your fork:
 
 ```bash
 # From source
-git clone https://github.com/devtool-mcp/devtool-mcp.git
+git clone https://github.com/standardbeagle/devtool-mcp.git
 cd devtool-mcp
 make build
 
 # Or install directly
-go install github.com/devtool-mcp/devtool-mcp@latest
+go install github.com/standardbeagle/devtool-mcp@latest
 ```
 
 ### Configuration
