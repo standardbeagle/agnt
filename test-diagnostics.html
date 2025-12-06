@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DevTool Diagnostics Test Page</title>
+    <style>
+        * { box-sizing: border-box; }
+
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+
+        h1 { color: #333; }
+        h2 { color: #666; margin-top: 30px; }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        /* Flex layout test */
+        .flex-container {
+            display: flex;
+            gap: 20px;
+            padding: 20px;
+            background: #e3f2fd;
+            border-radius: 4px;
+            margin: 20px 0;
+        }
+
+        .flex-item {
+            flex: 1;
+            padding: 15px;
+            background: #2196f3;
+            color: white;
+            border-radius: 4px;
+        }
+
+        /* Grid layout test */
+        .grid-container {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 15px;
+            padding: 20px;
+            background: #f3e5f5;
+            border-radius: 4px;
+            margin: 20px 0;
+        }
+
+        .grid-item {
+            padding: 15px;
+            background: #9c27b0;
+            color: white;
+            border-radius: 4px;
+        }
+
+        /* Stacking context test */
+        .stacking-parent {
+            position: relative;
+            z-index: 1;
+            padding: 20px;
+            background: #fff3e0;
+            border-radius: 4px;
+            margin: 20px 0;
+        }
+
+        .stacking-child {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            padding: 10px;
+            background: #ff9800;
+            color: white;
+            border-radius: 4px;
+            z-index: 10;
+        }
+
+        /* Overflow test */
+        .overflow-container {
+            width: 200px;
+            height: 100px;
+            overflow: auto;
+            border: 2px solid #4caf50;
+            padding: 10px;
+            margin: 20px 0;
+        }
+
+        .overflow-content {
+            width: 300px;
+            height: 200px;
+            background: linear-gradient(45deg, #4caf50, #8bc34a);
+            padding: 10px;
+            color: white;
+        }
+
+        /* Hidden elements test */
+        .hidden-display { display: none; }
+        .hidden-visibility { visibility: hidden; }
+        .hidden-opacity { opacity: 0; }
+
+        /* Transform test */
+        .transformed {
+            transform: rotate(5deg) scale(1.1);
+            transform-origin: center;
+            padding: 20px;
+            background: #ffeb3b;
+            margin: 20px 0;
+            border-radius: 4px;
+        }
+
+        /* Button for testing */
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            background: #2196f3;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+
+        button:hover {
+            background: #1976d2;
+        }
+
+        .test-buttons {
+            margin: 20px 0;
+            padding: 20px;
+            background: #f5f5f5;
+            border-radius: 4px;
+        }
+
+        /* Container query test (if supported) */
+        .container-query-test {
+            container-type: inline-size;
+            border: 2px dashed #9c27b0;
+            padding: 20px;
+            margin: 20px 0;
+        }
+
+        @container (min-width: 400px) {
+            .container-child {
+                background: #e1bee7;
+                padding: 15px;
+                border-radius: 4px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>DevTool Diagnostic Primitives Test Page</h1>
+        <p>Open the browser console and test the <code>window.__devtool</code> API!</p>
+
+        <div class="test-buttons">
+            <h2>Basic Diagnostic Tests</h2>
+            <button onclick="testInspect()">Test inspect()</button>
+            <button onclick="testHighlight()">Test highlight()</button>
+            <button onclick="testDiagnose()">Test diagnoseLayout()</button>
+            <button onclick="testTreeWalk()">Test walkChildren()</button>
+            <button onclick="testVisibility()">Test isVisible()</button>
+        </div>
+
+        <div class="test-buttons">
+            <h2>Interactive Tests</h2>
+            <button onclick="testSelectElement()">Test selectElement()</button>
+            <button onclick="testAsk()">Test ask()</button>
+            <button onclick="testWaitFor()">Test waitForElement()</button>
+            <button onclick="testMeasureBetween()">Test measureBetween()</button>
+        </div>
+
+        <div class="test-buttons">
+            <h2>State Capture Tests</h2>
+            <button onclick="testCaptureDOM()">Test captureDOM()</button>
+            <button onclick="testCaptureStyles()">Test captureStyles()</button>
+            <button onclick="testCaptureState()">Test captureState()</button>
+            <button onclick="testCaptureNetwork()">Test captureNetwork()</button>
+        </div>
+
+        <div class="test-buttons">
+            <h2>Accessibility Tests</h2>
+            <button onclick="testA11yInfo()">Test getA11yInfo()</button>
+            <button onclick="testContrast()">Test getContrast()</button>
+            <button onclick="testTabOrder()">Test getTabOrder()</button>
+            <button onclick="testAudit()">Test auditAccessibility()</button>
+        </div>
+
+        <h2>Flex Layout Test</h2>
+        <div class="flex-container">
+            <div class="flex-item" id="flex-1">Flex Item 1</div>
+            <div class="flex-item" id="flex-2">Flex Item 2</div>
+            <div class="flex-item" id="flex-3">Flex Item 3</div>
+        </div>
+
+        <h2>Grid Layout Test</h2>
+        <div class="grid-container">
+            <div class="grid-item" id="grid-1">Grid 1</div>
+            <div class="grid-item" id="grid-2">Grid 2</div>
+            <div class="grid-item" id="grid-3">Grid 3</div>
+            <div class="grid-item" id="grid-4">Grid 4</div>
+            <div class="grid-item" id="grid-5">Grid 5</div>
+            <div class="grid-item" id="grid-6">Grid 6</div>
+        </div>
+
+        <h2>Stacking Context Test</h2>
+        <div class="stacking-parent" id="stacking-parent">
+            Parent with z-index
+            <div class="stacking-child" id="stacking-child">Child with higher z-index</div>
+        </div>
+
+        <h2>Overflow Test</h2>
+        <div class="overflow-container" id="overflow-test">
+            <div class="overflow-content">
+                This content overflows the container! Scroll to see more.
+                Lorem ipsum dolor sit amet, consectetur adipiscing elit.
+            </div>
+        </div>
+
+        <h2>Transform Test</h2>
+        <div class="transformed" id="transformed">
+            This element is rotated and scaled
+        </div>
+
+        <h2>Hidden Elements Test</h2>
+        <div class="hidden-display" id="hidden-display">Hidden with display: none</div>
+        <div class="hidden-visibility" id="hidden-visibility">Hidden with visibility: hidden</div>
+        <div class="hidden-opacity" id="hidden-opacity">Hidden with opacity: 0</div>
+
+        <h2>Container Query Test</h2>
+        <div class="container-query-test">
+            <div class="container-child" id="container-child">
+                This changes style based on container width
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Test functions
+        function testInspect() {
+            const result = window.__devtool.inspect('#flex-1');
+            console.log('Inspect result:', result);
+            alert('Check console for inspect() result!');
+        }
+
+        function testHighlight() {
+            window.__devtool.highlight('#grid-1', {
+                color: 'rgba(255, 0, 0, 0.3)',
+                borderColor: '#f00',
+                duration: 3000
+            });
+            alert('Highlighted grid item 1 for 3 seconds!');
+        }
+
+        function testDiagnose() {
+            const result = window.__devtool.diagnoseLayout();
+            console.log('Diagnosis:', result);
+            alert('Check console for layout diagnosis!');
+        }
+
+        function testTreeWalk() {
+            const result = window.__devtool.walkChildren('.flex-container', 2);
+            console.log('Tree walk result:', result);
+            alert('Check console for tree walk result!');
+        }
+
+        function testVisibility() {
+            console.log('Visible element:', window.__devtool.isVisible('#flex-1'));
+            console.log('display:none:', window.__devtool.isVisible('#hidden-display'));
+            console.log('visibility:hidden:', window.__devtool.isVisible('#hidden-visibility'));
+            console.log('opacity:0:', window.__devtool.isVisible('#hidden-opacity'));
+            alert('Check console for visibility tests!');
+        }
+
+        // Interactive tests
+        function testSelectElement() {
+            alert('Click on any element on the page to select it!');
+            window.__devtool.selectElement().then(function(result) {
+                console.log('Selected element:', result);
+                alert('Selected: ' + result.selector);
+            }).catch(function(err) {
+                console.error('Selection error:', err);
+            });
+        }
+
+        function testAsk() {
+            window.__devtool.ask('What is your favorite color?', ['Red', 'Blue', 'Green', 'Yellow']).then(function(answer) {
+                console.log('User answered:', answer);
+                alert('You chose: ' + answer);
+            });
+        }
+
+        function testWaitFor() {
+            console.log('Waiting for element #delayed-element (will timeout)...');
+            window.__devtool.waitForElement('#delayed-element', 3000).then(function(result) {
+                console.log('Element appeared:', result);
+            }).catch(function(err) {
+                console.log('Timeout as expected:', err);
+            });
+        }
+
+        function testMeasureBetween() {
+            var result = window.__devtool.measureBetween('#flex-1', '#grid-1');
+            console.log('Distance between flex-1 and grid-1:', result);
+            alert('Distance: ' + result.distance.diagonal.toFixed(2) + 'px (check console for details)');
+        }
+
+        // State capture tests
+        function testCaptureDOM() {
+            var result = window.__devtool.captureDOM();
+            console.log('DOM Snapshot:', result);
+            alert('Captured ' + result.size + ' bytes of HTML (check console)');
+        }
+
+        function testCaptureStyles() {
+            var result = window.__devtool.captureStyles('.flex-item');
+            console.log('Captured styles:', result);
+            alert('Captured ' + Object.keys(result.computed).length + ' computed styles (check console)');
+        }
+
+        function testCaptureState() {
+            // Set some test data first
+            localStorage.setItem('test-key', 'test-value');
+            var result = window.__devtool.captureState(['test-key']);
+            console.log('Captured state:', result);
+            alert('Check console for localStorage/sessionStorage/cookies');
+        }
+
+        function testCaptureNetwork() {
+            var result = window.__devtool.captureNetwork();
+            console.log('Network resources:', result);
+            alert('Captured ' + result.count + ' network resources (check console)');
+        }
+
+        // Accessibility tests
+        function testA11yInfo() {
+            var result = window.__devtool.getA11yInfo('.flex-item');
+            console.log('Accessibility info:', result);
+            alert('Check console for a11y attributes');
+        }
+
+        function testContrast() {
+            var result = window.__devtool.getContrast('.flex-item');
+            console.log('Contrast ratio:', result);
+            alert('Contrast: ' + result.ratio.toFixed(2) + ':1, WCAG AA: ' + (result.passes.AA ? 'PASS' : 'FAIL'));
+        }
+
+        function testTabOrder() {
+            var result = window.__devtool.getTabOrder('body');
+            console.log('Tab order:', result);
+            alert('Found ' + result.count + ' focusable elements (check console)');
+        }
+
+        function testAudit() {
+            var result = window.__devtool.auditAccessibility();
+            console.log('Accessibility audit:', result);
+            alert('Score: ' + result.score + '/100, Errors: ' + result.errors.length + ', Warnings: ' + result.warnings.length);
+        }
+
+        // Log available API when page loads
+        console.log('%c[DevTool Diagnostics Test Page]', 'color: #2196f3; font-weight: bold; font-size: 14px');
+        console.log('Available diagnostic primitives:');
+        console.log('- Element Inspection:', 'getElementInfo, getPosition, getComputed, getBox, getLayout, getContainer, getStacking, getTransform, getOverflow');
+        console.log('- Tree Walking:', 'walkChildren, walkParents, findAncestor');
+        console.log('- Visual State:', 'isVisible, isInViewport, checkOverlap');
+        console.log('- Layout Diagnostics:', 'findOverflows, findStackingContexts, findOffscreen');
+        console.log('- Visual Overlays:', 'highlight, removeHighlight, clearAllOverlays');
+        console.log('- Interactive:', 'selectElement, measureBetween, waitForElement, ask');
+        console.log('- State Capture:', 'captureDOM, captureStyles, captureState, captureNetwork');
+        console.log('- Accessibility:', 'getA11yInfo, getContrast, getTabOrder, getScreenReaderText, auditAccessibility');
+        console.log('- Composite:', 'inspect, diagnoseLayout, showLayout');
+        console.log('');
+        console.log('Try running: window.__devtool.inspect(".flex-container")');
+        console.log('Or: window.__devtool.auditAccessibility()');
+        console.log('Or: window.__devtool.selectElement().then(r => console.log(r))');
+    </script>
+</body>
+</html>

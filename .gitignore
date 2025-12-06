@@ -1,0 +1,35 @@
+# Binaries
+devtool-mcp
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+coverage.html
+
+# Go workspace file
+go.work
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Documentation build
+docs-site/node_modules/
+docs-site/build/
+docs-site/.docusaurus/
+
+# Environment
+.env
+.env.local
