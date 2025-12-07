@@ -315,7 +315,38 @@ func (w *Writer) WriteEnd() error {
 }
 
 // WriteCommand writes a command.
-func (w *Writer) WriteCommand(cmd *Command) error {
+func (w *Writer) WriteCommand(verb string, args []string, data []byte) error {
+	cmd := &Command{
+		Verb: verb,
+		Args: args,
+		Data: data,
+	}
+	_, err := w.w.Write(FormatCommand(cmd))
+	return err
+}
+
+// WriteCommandWithSubVerb writes a command with a sub-verb.
+func (w *Writer) WriteCommandWithSubVerb(verb, subVerb string, args []string, data []byte) error {
+	cmd := &Command{
+		Verb:    verb,
+		SubVerb: subVerb,
+		Args:    args,
+		Data:    data,
+	}
+	_, err := w.w.Write(FormatCommand(cmd))
+	return err
+}
+
+// WriteCommandWithData writes a command with optional data payload.
+func (w *Writer) WriteCommandWithData(verb string, args []string, subVerb *string, data []byte) error {
+	cmd := &Command{
+		Verb: verb,
+		Args: args,
+		Data: data,
+	}
+	if subVerb != nil {
+		cmd.SubVerb = *subVerb
+	}
 	_, err := w.w.Write(FormatCommand(cmd))
 	return err
 }

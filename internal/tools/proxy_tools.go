@@ -18,6 +18,7 @@ type ProxyInput struct {
 	Port       int    `json:"port,omitempty" jsonschema:"Listen port (default: 8080)"`
 	MaxLogSize int    `json:"max_log_size,omitempty" jsonschema:"Maximum log entries (default: 1000)"`
 	Code       string `json:"code,omitempty" jsonschema:"JavaScript code to execute (required for exec)"`
+	Global     bool   `json:"global,omitempty" jsonschema:"For list: include proxies from all directories (default: false)"`
 }
 
 // CurrentPageInput defines input for the currentpage tool.
@@ -43,18 +44,18 @@ type CurrentPageOutput struct {
 
 // PageSessionOutput represents a page session in the output.
 type PageSessionOutput struct {
-	ID              string                 `json:"id"`
-	URL             string                 `json:"url"`
-	PageTitle       string                 `json:"page_title,omitempty"`
-	StartTime       time.Time              `json:"start_time"`
-	LastActivity    time.Time              `json:"last_activity"`
-	Active          bool                   `json:"active"`
-	ResourceCount   int                    `json:"resource_count"`
-	ErrorCount      int                    `json:"error_count"`
-	HasPerformance  bool                   `json:"has_performance"`
-	LoadTime        int64                  `json:"load_time_ms,omitempty"`
-	Resources       []string               `json:"resources,omitempty"` // URLs of resources
-	Errors          []map[string]interface{} `json:"errors,omitempty"`
+	ID             string                   `json:"id"`
+	URL            string                   `json:"url"`
+	PageTitle      string                   `json:"page_title,omitempty"`
+	StartTime      time.Time                `json:"start_time"`
+	LastActivity   time.Time                `json:"last_activity"`
+	Active         bool                     `json:"active"`
+	ResourceCount  int                      `json:"resource_count"`
+	ErrorCount     int                      `json:"error_count"`
+	HasPerformance bool                     `json:"has_performance"`
+	LoadTime       int64                    `json:"load_time_ms,omitempty"`
+	Resources      []string                 `json:"resources,omitempty"` // URLs of resources
+	Errors         []map[string]interface{} `json:"errors,omitempty"`
 }
 
 // ProxyOutput defines output for proxy tool.
@@ -65,14 +66,16 @@ type ProxyOutput struct {
 	ListenAddr string `json:"listen_addr,omitempty"`
 
 	// For status
-	Running       bool    `json:"running,omitempty"`
-	Uptime        string  `json:"uptime,omitempty"`
-	TotalRequests int64   `json:"total_requests,omitempty"`
+	Running       bool            `json:"running,omitempty"`
+	Uptime        string          `json:"uptime,omitempty"`
+	TotalRequests int64           `json:"total_requests,omitempty"`
 	LogStats      *LogStatsOutput `json:"log_stats,omitempty"`
 
 	// For list
-	Count   int           `json:"count,omitempty"`
-	Proxies []ProxyEntry  `json:"proxies,omitempty"`
+	Count     int          `json:"count,omitempty"`
+	Proxies   []ProxyEntry `json:"proxies,omitempty"`
+	Directory string       `json:"directory,omitempty"`
+	Global    bool         `json:"global,omitempty"`
 
 	// For stop/exec
 	Success     bool   `json:"success,omitempty"`
@@ -85,6 +88,7 @@ type ProxyEntry struct {
 	ID            string `json:"id"`
 	TargetURL     string `json:"target_url"`
 	ListenAddr    string `json:"listen_addr"`
+	Path          string `json:"path,omitempty"`
 	Running       bool   `json:"running"`
 	Uptime        string `json:"uptime"`
 	TotalRequests int64  `json:"total_requests"`
@@ -127,9 +131,9 @@ type ProxyLogOutput struct {
 
 // LogEntryOutput represents a log entry in the output.
 type LogEntryOutput struct {
-	Type        string                 `json:"type"`
-	Timestamp   time.Time              `json:"timestamp"`
-	Data        map[string]interface{} `json:"data"`
+	Type      string                 `json:"type"`
+	Timestamp time.Time              `json:"timestamp"`
+	Data      map[string]interface{} `json:"data"`
 }
 
 // RegisterProxyTools adds proxy-related MCP tools to the server.
@@ -741,14 +745,14 @@ func handleCurrentPageClear(proxyServer *proxy.ProxyServer, input CurrentPageInp
 // convertPageSession converts a PageSession to output format.
 func convertPageSession(session *proxy.PageSession, includeDetails bool) PageSessionOutput {
 	output := PageSessionOutput{
-		ID:            session.ID,
-		URL:           session.URL,
-		PageTitle:     session.PageTitle,
-		StartTime:     session.StartTime,
-		LastActivity:  session.LastActivity,
-		Active:        session.Active,
-		ResourceCount: len(session.Resources),
-		ErrorCount:    len(session.Errors),
+		ID:             session.ID,
+		URL:            session.URL,
+		PageTitle:      session.PageTitle,
+		StartTime:      session.StartTime,
+		LastActivity:   session.LastActivity,
+		Active:         session.Active,
+		ResourceCount:  len(session.Resources),
+		ErrorCount:     len(session.Errors),
 		HasPerformance: session.Performance != nil,
 	}
 

@@ -98,13 +98,13 @@ type ManagedProcess struct {
 
 // ProcessConfig holds configuration for creating a new process.
 type ProcessConfig struct {
-	ID           string
-	ProjectPath  string
-	Command      string
-	Args         []string
-	Labels       map[string]string
-	BufferSize   int           // Per-stream buffer size (0 = default)
-	Timeout      time.Duration // 0 = no timeout
+	ID          string
+	ProjectPath string
+	Command     string
+	Args        []string
+	Labels      map[string]string
+	BufferSize  int           // Per-stream buffer size (0 = default)
+	Timeout     time.Duration // 0 = no timeout
 }
 
 // NewManagedProcess creates a new ManagedProcess from config.

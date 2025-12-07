@@ -1,3 +1,5 @@
+//go:build unix
+
 // Package daemon provides the stateful daemon process that manages
 // processes, proxies, and traffic logs across client connections.
 package daemon
@@ -119,7 +121,11 @@ func (sm *SocketManager) Close() error {
 
 	if sm.listener != nil {
 		if err := sm.listener.Close(); err != nil {
-			errs = append(errs, fmt.Errorf("close listener: %w", err))
+			// Ignore "use of closed network connection" - listener may have been
+			// closed elsewhere (e.g., by daemon.Stop() to unblock accept loop)
+			if !isClosedError(err) {
+				errs = append(errs, fmt.Errorf("close listener: %w", err))
+			}
 		}
 		sm.listener = nil
 	}

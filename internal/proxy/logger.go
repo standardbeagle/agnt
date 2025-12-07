@@ -56,16 +56,16 @@ type FrontendError struct {
 
 // PerformanceMetric represents frontend performance data.
 type PerformanceMetric struct {
-	ID              string                 `json:"id"`
-	Timestamp       time.Time              `json:"timestamp"`
-	URL             string                 `json:"url"` // Page URL
-	NavigationStart int64                  `json:"navigation_start,omitempty"`
-	LoadEventEnd    int64                  `json:"load_event_end,omitempty"`
-	DOMContentLoaded int64                 `json:"dom_content_loaded,omitempty"`
-	FirstPaint      int64                  `json:"first_paint,omitempty"`
-	FirstContentfulPaint int64             `json:"first_contentful_paint,omitempty"`
-	Resources       []ResourceTiming       `json:"resources,omitempty"`
-	Custom          map[string]interface{} `json:"custom,omitempty"`
+	ID                   string                 `json:"id"`
+	Timestamp            time.Time              `json:"timestamp"`
+	URL                  string                 `json:"url"` // Page URL
+	NavigationStart      int64                  `json:"navigation_start,omitempty"`
+	LoadEventEnd         int64                  `json:"load_event_end,omitempty"`
+	DOMContentLoaded     int64                  `json:"dom_content_loaded,omitempty"`
+	FirstPaint           int64                  `json:"first_paint,omitempty"`
+	FirstContentfulPaint int64                  `json:"first_contentful_paint,omitempty"`
+	Resources            []ResourceTiming       `json:"resources,omitempty"`
+	Custom               map[string]interface{} `json:"custom,omitempty"`
 }
 
 // ResourceTiming represents timing for a single resource.
@@ -102,8 +102,8 @@ type Screenshot struct {
 type ExecutionResult struct {
 	ID        string                 `json:"id"`
 	Timestamp time.Time              `json:"timestamp"`
-	Code      string                 `json:"code"`      // The code that was executed
-	Result    string                 `json:"result"`    // String representation of result
+	Code      string                 `json:"code"`   // The code that was executed
+	Result    string                 `json:"result"` // String representation of result
 	Error     string                 `json:"error,omitempty"`
 	Duration  time.Duration          `json:"duration"`
 	URL       string                 `json:"url"`
@@ -114,7 +114,7 @@ type ExecutionResult struct {
 type ExecutionResponse struct {
 	ID        string        `json:"id"`
 	Timestamp time.Time     `json:"timestamp"`
-	ExecID    string        `json:"exec_id"`    // Original execution ID
+	ExecID    string        `json:"exec_id"` // Original execution ID
 	Success   bool          `json:"success"`
 	Result    string        `json:"result,omitempty"`
 	Error     string        `json:"error,omitempty"`

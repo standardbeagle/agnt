@@ -55,15 +55,17 @@ type ProcInput struct {
 	Action    string `json:"action" jsonschema:"Action: status, output, stop, list, cleanup_port"`
 	ProcessID string `json:"process_id,omitempty" jsonschema:"Process ID (required for status/output/stop)"`
 	// Output filters
-	Stream  string `json:"stream,omitempty" jsonschema:"stdout, stderr, or combined (default)"`
-	Tail    int    `json:"tail,omitempty" jsonschema:"Last N lines only"`
-	Head    int    `json:"head,omitempty" jsonschema:"First N lines only"`
-	Grep    string `json:"grep,omitempty" jsonschema:"Filter lines matching regex pattern"`
-	GrepV   bool   `json:"grep_v,omitempty" jsonschema:"Invert grep (exclude matching lines)"`
+	Stream string `json:"stream,omitempty" jsonschema:"stdout, stderr, or combined (default)"`
+	Tail   int    `json:"tail,omitempty" jsonschema:"Last N lines only"`
+	Head   int    `json:"head,omitempty" jsonschema:"First N lines only"`
+	Grep   string `json:"grep,omitempty" jsonschema:"Filter lines matching regex pattern"`
+	GrepV  bool   `json:"grep_v,omitempty" jsonschema:"Invert grep (exclude matching lines)"`
 	// Stop options
 	Force bool `json:"force,omitempty" jsonschema:"For stop: force kill immediately"`
 	// Cleanup options
 	Port int `json:"port,omitempty" jsonschema:"Port number (required for cleanup_port)"`
+	// Directory filtering
+	Global bool `json:"global,omitempty" jsonschema:"For list: include processes from all directories (default: false)"`
 }
 
 // ProcOutput defines output for proc.
@@ -81,6 +83,8 @@ type ProcOutput struct {
 	// For list
 	Count     int         `json:"count,omitempty"`
 	Processes []ProcEntry `json:"processes,omitempty"`
+	Directory string      `json:"directory,omitempty"`
+	Global    bool        `json:"global,omitempty"`
 	// For stop
 	Success bool `json:"success,omitempty"`
 	// For cleanup_port
@@ -90,11 +94,12 @@ type ProcOutput struct {
 
 // ProcEntry is a process in the list.
 type ProcEntry struct {
-	ID      string `json:"id"`
-	Command string `json:"command"`
-	State   string `json:"state"`
-	Summary string `json:"summary"`
-	Runtime string `json:"runtime"`
+	ID          string `json:"id"`
+	Command     string `json:"command"`
+	State       string `json:"state"`
+	Summary     string `json:"summary"`
+	Runtime     string `json:"runtime"`
+	ProjectPath string `json:"project_path,omitempty"`
 }
 
 // RegisterProcessTools adds process-related MCP tools to the server.

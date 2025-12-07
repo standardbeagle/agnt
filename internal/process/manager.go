@@ -38,8 +38,8 @@ type ManagerConfig struct {
 // DefaultManagerConfig returns a ManagerConfig with sensible defaults.
 func DefaultManagerConfig() ManagerConfig {
 	return ManagerConfig{
-		DefaultTimeout:    0,                  // No timeout
-		MaxOutputBuffer:   DefaultBufferSize,  // 256KB
+		DefaultTimeout:    0,                 // No timeout
+		MaxOutputBuffer:   DefaultBufferSize, // 256KB
 		GracefulTimeout:   5 * time.Second,
 		HealthCheckPeriod: 10 * time.Second,
 	}

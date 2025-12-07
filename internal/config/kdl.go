@@ -18,8 +18,8 @@ const (
 // KDLConfig represents the KDL configuration structure.
 // Uses kdl struct tags for unmarshaling.
 type KDLConfig struct {
-	Version  string       `kdl:"version"`
-	Settings KDLSettings  `kdl:"settings"`
+	Version   string       `kdl:"version"`
+	Settings  KDLSettings  `kdl:"settings"`
 	Languages KDLLanguages `kdl:"languages"`
 }
 

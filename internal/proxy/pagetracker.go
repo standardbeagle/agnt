@@ -10,26 +10,26 @@ import (
 
 // PageSession represents a page view and its associated resources.
 type PageSession struct {
-	ID              string        `json:"id"`
-	URL             string        `json:"url"`
-	PageTitle       string        `json:"page_title,omitempty"`
-	StartTime       time.Time     `json:"start_time"`
-	LastActivity    time.Time     `json:"last_activity"`
-	DocumentRequest *HTTPLogEntry `json:"document_request,omitempty"`
-	Resources       []HTTPLogEntry `json:"resources"`
-	Errors          []FrontendError `json:"errors,omitempty"`
+	ID              string             `json:"id"`
+	URL             string             `json:"url"`
+	PageTitle       string             `json:"page_title,omitempty"`
+	StartTime       time.Time          `json:"start_time"`
+	LastActivity    time.Time          `json:"last_activity"`
+	DocumentRequest *HTTPLogEntry      `json:"document_request,omitempty"`
+	Resources       []HTTPLogEntry     `json:"resources"`
+	Errors          []FrontendError    `json:"errors,omitempty"`
 	Performance     *PerformanceMetric `json:"performance,omitempty"`
-	Active          bool          `json:"active"`
+	Active          bool               `json:"active"`
 }
 
 // PageTracker tracks page sessions and groups requests by page.
 type PageTracker struct {
-	sessions      sync.Map // map[string]*PageSession (keyed by session ID)
-	urlToSession  sync.Map // map[string]string (URL to session ID)
-	sessionSeq    atomic.Int64
-	maxSessions   int
+	sessions       sync.Map // map[string]*PageSession (keyed by session ID)
+	urlToSession   sync.Map // map[string]string (URL to session ID)
+	sessionSeq     atomic.Int64
+	maxSessions    int
 	sessionTimeout time.Duration
-	mu            sync.RWMutex
+	mu             sync.RWMutex
 }
 
 // NewPageTracker creates a new page tracker.
@@ -42,7 +42,7 @@ func NewPageTracker(maxSessions int, sessionTimeout time.Duration) *PageTracker 
 	}
 
 	return &PageTracker{
-		maxSessions:   maxSessions,
+		maxSessions:    maxSessions,
 		sessionTimeout: sessionTimeout,
 	}
 }

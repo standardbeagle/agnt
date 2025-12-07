@@ -17,6 +17,62 @@ This is **devtool-mcp**, an MCP (Model Context Protocol) server that provides de
 - Reverse proxy with HTTP traffic logging
 - Frontend error tracking and performance monitoring
 - WebSocket-based metrics collection
+- **Daemon architecture for persistent state** (new)
+
+## Daemon Architecture
+
+The MCP server uses a daemon-based architecture that separates the MCP protocol handler from state management:
+
+```
+┌─────────────────────┐       ┌─────────────────────────────────────┐
+│  Claude Code        │       │           devtool-mcp               │
+│  (MCP Client)       │◄─────►│                                     │
+│                     │ stdio │  ┌────────────────┐                 │
+│                     │  MCP  │  │  MCP Server    │                 │
+└─────────────────────┘       │  │  (thin client) │                 │
+                              │  └───────┬────────┘                 │
+                              │          │                          │
+                              │          │ socket/pipe              │
+                              │          │ (text protocol)          │
+                              │          ▼                          │
+                              │  ┌────────────────────────────────┐ │
+                              │  │           Daemon               │ │
+                              │  │  ┌──────────────────────────┐  │ │
+                              │  │  │    ProcessManager        │  │ │
+                              │  │  │    (processes, output)   │  │ │
+                              │  │  └──────────────────────────┘  │ │
+                              │  │  ┌──────────────────────────┐  │ │
+                              │  │  │    ProxyManager          │  │ │
+                              │  │  │    (proxies, logs)       │  │ │
+                              │  │  └──────────────────────────┘  │ │
+                              │  └────────────────────────────────┘ │
+                              └─────────────────────────────────────┘
+```
+
+**Key Benefits**:
+- **Persistent state**: Processes and proxies survive MCP client disconnections
+- **Session handoff**: Multiple MCP clients can interact with the same daemon
+- **Fast reconnect**: New sessions reconnect to existing daemon instantly
+- **Auto-start**: Daemon starts automatically on first MCP tool call
+
+**Running Modes**:
+```bash
+# Normal mode (default): MCP server with daemon backend
+./devtool-mcp
+
+# Daemon mode: Run only the background daemon
+./devtool-mcp daemon
+
+# Legacy mode: Original behavior without daemon
+./devtool-mcp --legacy
+
+# Custom socket path
+./devtool-mcp --socket /tmp/my-devtool.sock
+```
+
+**Protocol**: The client-daemon communication uses a simple text-based protocol similar to memcache:
+- Commands: `VERB [SUBVERB] [ARGS...] [LENGTH]\r\n[DATA]\r\n`
+- Responses: `OK|ERR|JSON|DATA|CHUNK|END [message|length]\r\n[data]\r\n`
 
 ## Build & Development Commands
 
@@ -48,19 +104,33 @@ go test -race ./...
 
 ## Architecture Overview
 
-### Three-Layer MCP Server Design
+### Five-Layer Architecture
 
 **1. MCP Tools Layer** (`internal/tools/`)
-- Exposes MCP tools: `detect`, `run`, `proc`, `proxy`, `proxylog`
+- Exposes MCP tools: `detect`, `run`, `proc`, `proxy`, `proxylog`, `currentpage`, `daemon`
+- `daemon_tools.go`: Daemon-aware handlers that communicate via socket protocol
+- `daemon_management.go`: Daemon management tool (status, start, stop, restart)
 - Handles JSON schema validation and error responses
-- Thin wrapper that delegates to business logic
 
-**2. Business Logic Layer** (`internal/project/`, `internal/process/`, `internal/proxy/`)
+**2. Daemon Layer** (`internal/daemon/`)
+- **Daemon** (`daemon.go`): Background service managing persistent state
+- **Connection** (`connection.go`): Client connection handler with command dispatch
+- **Handler** (`handler.go`): Command handlers for all tools
+- **Client** (`client.go`): Client for communicating with daemon from MCP tools
+- **Socket** (`socket.go`, `socket_windows.go`): Platform-specific socket/pipe management
+- **AutoStart** (`autostart.go`): Auto-start daemon logic for seamless operation
+
+**3. Protocol Layer** (`internal/protocol/`)
+- **Commands** (`commands.go`): Command types and constants for IPC protocol
+- **Responses** (`responses.go`): Response types and formatting functions
+- **Parser** (`parser.go`): Parser and writer for protocol messages
+
+**4. Business Logic Layer** (`internal/project/`, `internal/process/`, `internal/proxy/`)
 - **Project Detection** (`internal/project/`): Multi-language project type detection (Go/Node/Python)
 - **Process Management** (`internal/process/`): Lock-free process lifecycle management
 - **Reverse Proxy** (`internal/proxy/`): HTTP proxy with traffic logging and frontend instrumentation
 
-**3. Infrastructure Layer** (`internal/process/ringbuf.go`, `internal/config/`)
+**5. Infrastructure Layer** (`internal/process/ringbuf.go`, `internal/config/`)
 - **RingBuffer**: Thread-safe circular buffer for bounded output capture (256KB default)
 - **Config**: KDL configuration support (future expansion)
 

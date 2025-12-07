@@ -54,13 +54,13 @@ const (
 
 // RunConfig represents configuration for a RUN command.
 type RunConfig struct {
-	ID          string   `json:"id"`
-	Path        string   `json:"path"`
-	Mode        string   `json:"mode"` // background, foreground, foreground-raw
-	ScriptName  string   `json:"script_name,omitempty"`
-	Raw         bool     `json:"raw,omitempty"`
-	Command     string   `json:"command,omitempty"`
-	Args        []string `json:"args,omitempty"`
+	ID         string   `json:"id"`
+	Path       string   `json:"path"`
+	Mode       string   `json:"mode"` // background, foreground, foreground-raw
+	ScriptName string   `json:"script_name,omitempty"`
+	Raw        bool     `json:"raw,omitempty"`
+	Command    string   `json:"command,omitempty"`
+	Args       []string `json:"args,omitempty"`
 }
 
 // ProxyStartConfig represents configuration for a PROXY START command.
@@ -89,4 +89,10 @@ type LogQueryFilter struct {
 	Since       string   `json:"since,omitempty"`
 	Until       string   `json:"until,omitempty"`
 	Limit       int      `json:"limit,omitempty"`
+}
+
+// DirectoryFilter represents directory scoping for list operations.
+type DirectoryFilter struct {
+	Directory string `json:"directory,omitempty"` // Current working directory (defaults to "." if empty)
+	Global    bool   `json:"global,omitempty"`    // If true, ignore directory filtering
 }

@@ -30,6 +30,7 @@ type ProxyServer struct {
 	ID          string
 	TargetURL   *url.URL
 	ListenAddr  string
+	Path        string
 	logger      *TrafficLogger
 	pageTracker *PageTracker
 	httpServer  *http.Server
@@ -40,7 +41,7 @@ type ProxyServer struct {
 	requestSeq  atomic.Int64
 	mu          sync.Mutex
 	cancelFunc  context.CancelFunc
-	wsConns     sync.Map // Active WebSocket connections
+	wsConns     sync.Map     // Active WebSocket connections
 	lastError   atomic.Value // stores last error (string) if server crashed
 
 	// Auto-restart configuration
@@ -60,7 +61,8 @@ type ProxyConfig struct {
 	TargetURL   string
 	ListenPort  int
 	MaxLogSize  int
-	AutoRestart bool // Enable automatic restart on crash (default: true)
+	AutoRestart bool   // Enable automatic restart on crash (default: true)
+	Path        string // Working directory where proxy was created
 }
 
 // NewProxyServer creates a new reverse proxy server.
@@ -83,11 +85,12 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 		ID:            config.ID,
 		TargetURL:     targetURL,
 		ListenAddr:    fmt.Sprintf(":%d", config.ListenPort),
+		Path:          config.Path,
 		logger:        NewTrafficLogger(config.MaxLogSize),
 		pageTracker:   NewPageTracker(100, 5*time.Minute),
 		autoRestart:   config.AutoRestart,
-		maxRestarts:   5,                // Max 5 restarts
-		restartWindow: 1 * time.Minute,  // Within 1 minute window
+		maxRestarts:   5,               // Max 5 restarts
+		restartWindow: 1 * time.Minute, // Within 1 minute window
 		restarts:      make([]time.Time, 0, 5),
 		wsUpgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
@@ -290,6 +293,7 @@ func (ps *ProxyServer) Stats() ProxyStats {
 		ID:            ps.ID,
 		TargetURL:     ps.TargetURL.String(),
 		ListenAddr:    ps.ListenAddr,
+		Path:          ps.Path,
 		Running:       ps.running.Load(),
 		Uptime:        time.Since(ps.startTime),
 		TotalRequests: ps.requestSeq.Load(),
@@ -323,6 +327,7 @@ type ProxyStats struct {
 	ID            string        `json:"id"`
 	TargetURL     string        `json:"target_url"`
 	ListenAddr    string        `json:"listen_addr"`
+	Path          string        `json:"path,omitempty"` // Working directory where proxy was created
 	Running       bool          `json:"running"`
 	Uptime        time.Duration `json:"uptime"`
 	TotalRequests int64         `json:"total_requests"`
@@ -551,15 +556,15 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 		case "performance":
 			metric := PerformanceMetric{
-				ID:               id,
-				Timestamp:        timestamp,
-				URL:              msg.URL,
-				NavigationStart:  getInt64Field(msg.Data, "navigation_start"),
-				LoadEventEnd:     getInt64Field(msg.Data, "load_event_end"),
-				DOMContentLoaded: getInt64Field(msg.Data, "dom_content_loaded"),
-				FirstPaint:       getInt64Field(msg.Data, "first_paint"),
+				ID:                   id,
+				Timestamp:            timestamp,
+				URL:                  msg.URL,
+				NavigationStart:      getInt64Field(msg.Data, "navigation_start"),
+				LoadEventEnd:         getInt64Field(msg.Data, "load_event_end"),
+				DOMContentLoaded:     getInt64Field(msg.Data, "dom_content_loaded"),
+				FirstPaint:           getInt64Field(msg.Data, "first_paint"),
 				FirstContentfulPaint: getInt64Field(msg.Data, "first_contentful_paint"),
-				Custom:           msg.Data,
+				Custom:               msg.Data,
 			}
 
 			// Extract resources if present
@@ -654,8 +659,8 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 // responseRecorder captures response data for logging.
 type responseRecorder struct {
 	http.ResponseWriter
-	statusCode int
-	body       *bytes.Buffer
+	statusCode  int
+	body        *bytes.Buffer
 	wroteHeader bool
 }
 

@@ -1,7 +1,8 @@
-.PHONY: build test clean install run lint
+.PHONY: build test clean install install-local run lint
 
 # Binary name
 BINARY := devtool-mcp
+DAEMON_BINARY := devtool-mcp-daemon
 VERSION := 0.1.0
 
 # Build flags
@@ -32,9 +33,19 @@ clean:
 	rm -f $(BINARY)
 	rm -f coverage.out coverage.html
 
-# Install to GOPATH/bin
-install:
+# Install to GOPATH/bin (both main binary and daemon copy)
+install: build
 	go install $(LDFLAGS) ./cmd/devtool-mcp/
+	@cp "$$(go env GOPATH)/bin/$(BINARY)" "$$(go env GOPATH)/bin/$(DAEMON_BINARY)"
+	@echo "Installed $(BINARY) and $(DAEMON_BINARY) to $$(go env GOPATH)/bin"
+
+# Build and install to ~/.local/bin (both main binary and daemon copy)
+install-local: build
+	@mkdir -p ~/.local/bin
+	@cp $(BINARY) ~/.local/bin/$(BINARY)
+	@cp $(BINARY) ~/.local/bin/$(DAEMON_BINARY)
+	@echo "Installed $(BINARY) and $(DAEMON_BINARY) to ~/.local/bin"
+	@echo "Make sure ~/.local/bin is in your PATH"
 
 # Run the server (for development)
 run: build
@@ -67,6 +78,7 @@ help:
 	@echo "  bench         - Run benchmarks"
 	@echo "  clean         - Remove build artifacts"
 	@echo "  install       - Install to GOPATH/bin"
+	@echo "  install-local - Build and install to ~/.local/bin"
 	@echo "  run           - Build and run the server"
 	@echo "  fmt           - Format code"
 	@echo "  vet           - Vet code"
