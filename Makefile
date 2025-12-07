@@ -38,7 +38,7 @@ install: build
 	@# Stop running daemon before installing new binaries
 	@"$$(go env GOPATH)/bin/$(BINARY)" daemon stop 2>/dev/null || true
 	go install $(LDFLAGS) ./cmd/devtool-mcp/
-	@cp "$$(go env GOPATH)/bin/$(BINARY)" "$$(go env GOPATH)/bin/$(DAEMON_BINARY)"
+	@install -m 755 "$$(go env GOPATH)/bin/$(BINARY)" "$$(go env GOPATH)/bin/$(DAEMON_BINARY)"
 	@echo "Installed $(BINARY) and $(DAEMON_BINARY) to $$(go env GOPATH)/bin"
 
 # Build and install to ~/.local/bin (both main binary and daemon copy)
@@ -46,8 +46,8 @@ install-local: build
 	@# Stop running daemon before installing new binaries
 	@~/.local/bin/$(BINARY) daemon stop 2>/dev/null || true
 	@mkdir -p ~/.local/bin
-	@cp $(BINARY) ~/.local/bin/$(BINARY)
-	@cp $(BINARY) ~/.local/bin/$(DAEMON_BINARY)
+	@install -m 755 $(BINARY) ~/.local/bin/$(BINARY)
+	@install -m 755 $(BINARY) ~/.local/bin/$(DAEMON_BINARY)
 	@echo "Installed $(BINARY) and $(DAEMON_BINARY) to ~/.local/bin"
 	@echo "Make sure ~/.local/bin is in your PATH"
 

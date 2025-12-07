@@ -17,7 +17,36 @@ This is **devtool-mcp**, an MCP (Model Context Protocol) server that provides de
 - Reverse proxy with HTTP traffic logging
 - Frontend error tracking and performance monitoring
 - WebSocket-based metrics collection
-- **Daemon architecture for persistent state** (new)
+- Daemon architecture for persistent state
+
+## Build & Development Commands
+
+```bash
+# Build the server
+make build          # Produces ./devtool-mcp binary
+
+# Run tests
+make test           # All tests with verbose output
+make test-coverage  # Generate coverage.html report
+make bench          # Run benchmarks
+
+# Code quality
+make fmt            # Format code
+make vet            # Run go vet
+make lint           # Run golangci-lint (must be installed)
+
+# Development
+make run            # Build and run server on stdio
+make install        # Install to $GOPATH/bin
+make install-local  # Install to ~/.local/bin
+
+# Testing a single package
+go test -v ./internal/process
+go test -v -run TestSpecificFunction ./internal/project
+
+# Testing with race detector
+go test -race ./...
+```
 
 ## Daemon Architecture
 
@@ -57,50 +86,15 @@ The MCP server uses a daemon-based architecture that separates the MCP protocol 
 
 **Running Modes**:
 ```bash
-# Normal mode (default): MCP server with daemon backend
-./devtool-mcp
-
-# Daemon mode: Run only the background daemon
-./devtool-mcp daemon
-
-# Legacy mode: Original behavior without daemon
-./devtool-mcp --legacy
-
-# Custom socket path
-./devtool-mcp --socket /tmp/my-devtool.sock
+./devtool-mcp              # Normal mode: MCP server with daemon backend
+./devtool-mcp daemon       # Daemon mode: Run only the background daemon
+./devtool-mcp --legacy     # Legacy mode: Original behavior without daemon
+./devtool-mcp --socket /tmp/my-devtool.sock  # Custom socket path
 ```
 
-**Protocol**: The client-daemon communication uses a simple text-based protocol similar to memcache:
+**Protocol**: Client-daemon communication uses a simple text-based protocol:
 - Commands: `VERB [SUBVERB] [ARGS...] [LENGTH]\r\n[DATA]\r\n`
 - Responses: `OK|ERR|JSON|DATA|CHUNK|END [message|length]\r\n[data]\r\n`
-
-## Build & Development Commands
-
-```bash
-# Build the server
-make build          # Produces ./devtool-mcp binary
-
-# Run tests
-make test           # All tests with verbose output
-make test-coverage  # Generate coverage.html report
-make bench          # Run benchmarks
-
-# Code quality
-make fmt            # Format code
-make vet            # Run go vet
-make lint           # Run golangci-lint (must be installed)
-
-# Development
-make run            # Build and run server on stdio
-make install        # Install to $GOPATH/bin
-
-# Testing a single package
-go test -v ./internal/process
-go test -v -run TestSpecificFunction ./internal/project
-
-# Testing with race detector
-go test -race ./...
-```
 
 ## Architecture Overview
 
@@ -169,133 +163,48 @@ StatePending → StateStarting → StateRunning → StateStopping → StateStopp
 - `signalProcessGroup()` sends signals to entire process group (parent + children)
 - Returns errors for failed signal operations (previously silently ignored)
 - SIGTERM sent first for graceful shutdown, SIGKILL after timeout
-- Ensures child processes are properly cleaned up when parent is stopped
 
-### Reverse Proxy with Frontend Instrumentation
-
-**Architecture**: Transparent reverse proxy that logs all HTTP traffic and injects JavaScript for frontend monitoring.
+### Reverse Proxy Architecture
 
 **ProxyServer** (`internal/proxy/server.go:25-48`):
 - Based on `httputil.ReverseProxy` for efficient proxying
 - Injects instrumentation JavaScript into HTML responses
 - WebSocket server for receiving frontend metrics
 - Lock-free design using `sync.Map` for proxy registry
-- **Auto-port discovery**: If requested port is in use, automatically finds an available port
-- **Auto-restart on crash**: Automatically restarts if HTTP server fails (max 5 restarts per minute)
-- **Ready signal**: `Ready()` returns a channel that closes when server is ready to accept connections
-- Returns actual listening address in response (important when port auto-assigned)
+- Auto-port discovery if requested port is in use
+- Auto-restart on crash (max 5 restarts per minute)
+- `Ready()` returns a channel that closes when server is ready
 
-**Three-part system**:
+**Four-part system**:
 1. **HTTP Proxy**: Forwards requests, logs traffic, modifies responses
-2. **JavaScript Injection**: Adds error tracking and performance monitoring to HTML pages
-3. **WebSocket Server**: Receives metrics from instrumented frontend
+2. **JavaScript Injection**: Adds error tracking, performance monitoring, and `__devtool` API to HTML pages
+3. **WebSocket Server**: Receives metrics from instrumented frontend at `/__devtool_metrics`
+4. **JavaScript Execution**: Execute arbitrary JavaScript in connected browsers via `proxy exec`
 
-#### Traffic Logging System
+**Frontend API** (`window.__devtool`):
+- `log(message, level, data)`: Send custom log to server
+- `debug/info/warn/error(message, data)`: Convenience log methods
+- `screenshot(name)`: Capture screenshot and save to temp file
+- `isConnected()`: Check WebSocket connection status
+- `getStatus()`: Get detailed connection status
+- Plus ~50 diagnostic primitives (see `internal/proxy/diagnostics.js`)
 
 **TrafficLogger** (`internal/proxy/logger.go:78-98`):
 - Circular buffer storage (default 1000 entries)
-- Three log entry types: HTTP, Error, Performance
+- Seven log entry types: HTTP, Error, Performance, Custom, Screenshot, Execution, Response
 - Thread-safe with `sync.RWMutex` for read-heavy workloads
 - Atomic counters for statistics
 
-**Log entry types**:
-- **HTTPLogEntry**: Request/response pairs with headers, body (truncated to 10KB), duration
-- **FrontendError**: JavaScript errors with stack traces, source location
-- **PerformanceMetric**: Page load times, paint metrics, resource timing
-
-**Query capabilities** (`internal/proxy/logger.go:159-242`):
-- Filter by type (http/error/performance)
-- Filter by HTTP method, URL pattern, status code
-- Time range queries (since/until)
-- Limit results
-
-#### JavaScript Injection
-
-**Injection strategy** (`internal/proxy/injector.go:82-141`):
+**JavaScript Injection** (`internal/proxy/injector.go:82-141`):
 1. Detect HTML responses via Content-Type header
-2. **Decompress response** if gzip or deflate encoded (`internal/proxy/server.go:390-407`)
-3. Inject `<script>` tag before `</head>` (preferred)
-4. Fallback: after `<head>`, after `<body>`, or prepend
-
-**Compression handling** (`internal/proxy/server.go:383-433`):
-- Automatically detects and decompresses gzip and deflate responses
-- Injects JavaScript into decompressed content
-- Returns uncompressed modified response (removes Content-Encoding header)
-- Gracefully handles corrupt compressed data by skipping injection
-
-**Injected capabilities**:
-- **Error tracking**: `window.addEventListener('error')` and `unhandledrejection`
-- **Performance metrics**: Navigation Timing API, Paint Timing API, Resource Timing
-- **WebSocket connection**: Auto-reconnect with exponential backoff
-- **Zero dependencies**: Pure JavaScript, no external libraries
-
-**WebSocket endpoint**: `/__devtool_metrics` (automatically uses current page's protocol/host/port)
-
-#### Frontend Metrics Collection
-
-**WebSocket message format**:
-```json
-{
-  "type": "error" | "performance",
-  "data": { ... },
-  "url": "https://example.com/page"
-}
-```
-
-**Error messages** include:
-- Message, source file, line/column numbers
-- Error object and stack trace
-- Page URL where error occurred
-
-**Performance messages** include:
-- Navigation timing (DOM content loaded, load event)
-- Paint timing (first paint, first contentful paint)
-- Resource timing (up to 50 resources with duration/size)
-
-#### Page Session Tracking
+2. Decompress response if gzip or deflate encoded
+3. Inject `<script>` tag before `</head>` (preferred), with fallbacks
+4. Return uncompressed modified response
 
 **PageTracker** (`internal/proxy/pagetracker.go`):
 - Groups HTTP requests by page view for easier debugging
-- Automatically identifies document (HTML) vs resource requests
 - Associates errors and performance metrics with page sessions
 - Lock-free design using `sync.Map`
-- Session timeout: 5 minutes (configurable)
-- Max sessions: 100 (configurable)
-
-**Page session includes**:
-- Initial HTML document request
-- All associated resources (JS, CSS, images, fonts, etc.)
-- Frontend errors that occurred on that page
-- Performance metrics (page load time, paint timing)
-- Automatic matching via Referer header or same-origin heuristics
-
-**Use the `currentpage` tool** to view active page sessions:
-```
-currentpage {proxy_id: "dev"}  // List all active pages
-currentpage {proxy_id: "dev", action: "get", session_id: "page-1"}  // Get details
-currentpage {proxy_id: "dev", action: "clear"}  // Clear all sessions
-```
-
-#### Proxy Manager
-
-**ProxyManager** (`internal/proxy/manager.go:18-36`):
-- Lock-free proxy registry using `sync.Map`
-- Atomic counters for active/total proxies
-- Graceful shutdown support
-- Similar design to ProcessManager
-
-**Proxy lifecycle**:
-1. Create proxy with target URL and listen port
-2. Start HTTP server and WebSocket handler
-3. Proxy forwards traffic (including WebSocket upgrades) and logs entries
-4. Stop proxy gracefully on shutdown
-
-**WebSocket Support**:
-- Transparently proxies WebSocket upgrade requests to the target server
-- Implements `http.Hijacker` interface for protocol switching
-- Detects WebSocket upgrades via `Upgrade: websocket` header
-- Skips response body capture for WebSocket connections (long-lived)
-- Works with frameworks like Next.js HMR (Hot Module Replacement)
 
 ### Output Capture with RingBuffer
 
@@ -308,13 +217,6 @@ currentpage {proxy_id: "dev", action: "clear"}  // Clear all sessions
 - `Read()` returns consistent snapshot + truncation flag
 - Default 256KB per stream (stdout/stderr separate)
 
-**Usage pattern**:
-```go
-proc.Stdout()  // Returns ([]byte, truncated bool)
-proc.Stderr()  // Returns ([]byte, truncated bool)
-proc.CombinedOutput()  // Merges both streams
-```
-
 ### Project Detection System
 
 **Auto-detection hierarchy** (`internal/project/detector.go:59-76`):
@@ -325,525 +227,102 @@ proc.CombinedOutput()  // Merges both streams
 **Command definitions** (`internal/project/commands.go`):
 - Each project type has default commands (test, build, lint, etc.)
 - Node.js commands vary by package manager detected from lockfiles
-- Commands include both name and actual executable + args
 
-### MCP Tool Implementation Pattern
+### MCP Tools
 
-**Tool registration** (`cmd/devtool-mcp/main.go:54-56`):
+**Available Tools** (7 total):
+
+| Tool | Description |
+|------|-------------|
+| `detect` | Detect project type (Go/Node/Python) and available scripts |
+| `run` | Run project scripts or raw commands (background/foreground/foreground-raw modes) |
+| `proc` | Manage processes: status, output, stop, list, cleanup_port |
+| `proxy` | Reverse proxy: start, stop, status, list, exec (JavaScript execution) |
+| `proxylog` | Query proxy logs: query, clear, stats |
+| `currentpage` | Page session tracking: list, get, clear |
+| `daemon` | Daemon management: status, info, start, stop, restart |
+
+**Tool Registration** (`cmd/devtool-mcp/main.go`):
+
 ```go
-tools.RegisterProcessTools(server, pm)    // Adds run, proc tools
-tools.RegisterProjectTools(server)        // Adds detect tool
-tools.RegisterProxyTools(server, proxym)  // Adds proxy, proxylog, currentpage tools
+// Daemon mode (default) - tools communicate via socket to daemon
+tools.RegisterDaemonTools(server, dt)      // detect, run, proc, proxy, proxylog, currentpage
+tools.RegisterDaemonManagementTool(server, dt)  // daemon
+
+// Legacy mode (--legacy flag) - direct process/proxy management
+tools.RegisterProcessTools(server, pm)     // run, proc
+tools.RegisterProjectTools(server)         // detect
+tools.RegisterProxyTools(server, proxym)   // proxy, proxylog, currentpage
 ```
 
 **Handler pattern** (`internal/tools/*.go`):
 - Input/Output structs with JSON schema tags
 - Handlers return `(*mcp.CallToolResult, OutputStruct, error)`
 - Errors returned as `CallToolResult{IsError: true}`, not Go errors
-- Three run modes: `background` (default), `foreground`, `foreground-raw`
+- Structured error formatting for LLM-friendly messages (`formatDaemonError()`)
 
-### Process Tool Usage
+### Log Entry Types
 
-**Run a command**:
-```
-run {script_name: "test"}  // Background mode, returns process_id
-run {script_name: "build", mode: "foreground"}  // Wait for completion
-run {raw: true, command: "go", args: ["version"], mode: "foreground-raw"}  // Raw command with output
-```
+The proxy logger supports seven log entry types:
 
-**List running processes**:
-```
-proc {action: "list"}
-→ Shows all managed processes with state, runtime
-```
+| Type | Description | Source |
+|------|-------------|--------|
+| `http` | HTTP request/response pairs | Automatic from proxy |
+| `error` | Frontend JavaScript errors with stack traces | `window.addEventListener('error')` |
+| `performance` | Page load and resource timing metrics | Navigation/Paint/Resource Timing APIs |
+| `custom` | Custom log messages | `window.__devtool.log()` |
+| `screenshot` | Screenshot captures | `window.__devtool.screenshot()` |
+| `execution` | JavaScript execution requests | `proxy exec` action |
+| `response` | JavaScript execution responses | Browser response to exec |
 
-**Check process status**:
-```
-proc {action: "status", process_id: "test"}
-→ Returns state, exit code, runtime
-```
+### Directory Filtering
 
-**Get process output**:
-```
-proc {action: "output", process_id: "test"}  // All output (combined stdout/stderr)
-proc {action: "output", process_id: "test", stream: "stdout"}  // Only stdout
-proc {action: "output", process_id: "test", tail: 20}  // Last 20 lines
-proc {action: "output", process_id: "test", grep: "ERROR"}  // Filter by pattern
-```
+The `proc list` and `proxy list` actions support directory filtering:
 
-**Stop a process**:
-```
-proc {action: "stop", process_id: "test"}
-proc {action: "stop", process_id: "test", force: true}  // Force kill immediately
-```
-
-**Clean up orphaned processes by port** (useful when dev server crashes):
-```
-proc {action: "cleanup_port", port: 3000}
-→ Finds and kills all processes listening on port 3000
-→ Returns list of killed PIDs
-→ Uses graceful SIGTERM first, then SIGKILL if needed
-→ Perfect for clearing ports blocked by crashed OAuth/dev servers
-```
-
-### Proxy Tool Usage
-
-**Start a reverse proxy**:
-```
-proxy {action: "start", id: "dev", target_url: "http://localhost:3000", port: 8080}
-→ Tries to listen on :8080, forwards to localhost:3000
-→ If port 8080 is busy, auto-assigns available port (e.g., :45123)
-→ Returns actual listening address in response
-→ Injects instrumentation into HTML responses
-→ WebSocket server at actual_port/__devtool_metrics
-
-proxy {action: "start", id: "dev", target_url: "http://localhost:3000", port: 0}
-→ Explicitly requests auto-assigned port
-→ Always assigns available port, never conflicts
-```
-
-**Query proxy logs**:
-```
-proxylog {proxy_id: "dev", types: ["http"], methods: ["GET"], limit: 50}
-proxylog {proxy_id: "dev", types: ["error"]}  // Frontend JavaScript errors
-proxylog {proxy_id: "dev", types: ["performance"]}  // Page load metrics
-proxylog {proxy_id: "dev", url_pattern: "/api", status_codes: [500, 502]}
-proxylog {proxy_id: "dev", since: "5m"}  // Last 5 minutes
-```
-
-**View current page sessions**:
-```
-currentpage {proxy_id: "dev"}  // List all active page sessions
-→ Shows which pages are currently loaded, with resource counts and errors
-currentpage {proxy_id: "dev", action: "get", session_id: "page-1"}
-→ Detailed view: all resources, errors, performance metrics for that page
-currentpage {proxy_id: "dev", action: "clear"}
-→ Clear all page session tracking
-```
-
-**Get proxy status**:
-```
-proxy {action: "status", id: "dev"}
-→ Running status, uptime, total requests, log stats
-```
-
-**Stop proxy**:
-```
-proxy {action: "stop", id: "dev"}
-```
-
-**Execute JavaScript in browser**:
-```
-proxy {action: "exec", id: "dev", code: "document.title"}
-→ Executes JavaScript in all connected browser clients
-→ Returns result with 30-second timeout
-→ Logs execution and response for audit trail
-```
-
-### Frontend Diagnostic Primitives API
-
-The proxy automatically injects `window.__devtool` into all HTML pages, providing ~50 primitive functions for comprehensive DOM inspection, layout analysis, visual debugging, and interactive diagnostics.
-
-#### Design Principles
-
-1. **Primitives over monoliths**: Small, focused functions (~20-30 lines each)
-2. **Composability**: Functions return rich data structures that other functions consume
-3. **Error resilient**: Return `{error: ...}` instead of throwing exceptions
-4. **ES5 compatible**: Works in all modern browsers without transpilation
-
-#### Quick Reference by Category
-
-**Element Inspection** (9 functions):
-- `getElementInfo(selector)` - Tag, ID, classes, attributes
-- `getPosition(selector)` - Rect, viewport position, scroll offsets
-- `getComputed(selector, properties)` - Computed styles
-- `getBox(selector)` - Margin, border, padding, content box
-- `getLayout(selector)` - Display, position, flexbox, grid properties
-- `getContainer(selector)` - CSS containment info
-- `getStacking(selector)` - Z-index, stacking context
-- `getTransform(selector)` - Transform matrix decomposition
-- `getOverflow(selector)` - Overflow state and scroll dimensions
-
-**Tree Walking** (3 functions):
-- `walkChildren(selector, depth, filter)` - Traverse child elements
-- `walkParents(selector)` - Walk up to document root
-- `findAncestor(selector, condition)` - Find first matching ancestor
-
-**Visual State** (3 functions):
-- `isVisible(selector)` - Visibility with reason (display, opacity, etc.)
-- `isInViewport(selector)` - Viewport intersection
-- `checkOverlap(selector1, selector2)` - Element overlap detection
-
-**Layout Diagnostics** (3 functions):
-- `findOverflows()` - Find all elements with overflow
-- `findStackingContexts()` - Locate all stacking contexts
-- `findOffscreen()` - Find elements outside viewport
-
-**Visual Overlays** (3 functions):
-- `highlight(selector, config)` - Visual highlight with custom colors
-- `removeHighlight(highlightId)` - Remove specific highlight
-- `clearAllOverlays()` - Clear all visual overlays
-
-**Interactive** (4 functions):
-- `selectElement()` - Interactive element picker (returns Promise)
-- `measureBetween(sel1, sel2)` - Distance between elements
-- `waitForElement(selector, timeout)` - Wait for dynamic elements (returns Promise)
-- `ask(question, options)` - Show modal for user input (returns Promise)
-
-**State Capture** (4 functions):
-- `captureDOM()` - Full HTML snapshot with hash
-- `captureStyles(selector)` - All computed and inline styles
-- `captureState(keys)` - localStorage, sessionStorage, cookies
-- `captureNetwork()` - Performance API resource entries
-
-**Accessibility** (5 functions):
-- `getA11yInfo(selector)` - ARIA attributes, role, tabindex
-- `getContrast(selector)` - WCAG contrast ratio with AA/AAA pass/fail
-- `getTabOrder(container)` - Document tab order
-- `getScreenReaderText(selector)` - Screen reader announcement
-- `auditAccessibility()` - Full page a11y scan with score
-
-**Composite Functions** (3 high-level functions):
-- `inspect(selector)` - Comprehensive element report (combines 8+ primitives)
-- `diagnoseLayout()` - Find all layout issues
-- `showLayout(config)` - Visual debugging overlay
-
-**Layout Robustness & Fragility** (7 functions):
-- `checkTextFragility(selector?)` - Detect text truncation, ellipsis, viewport fonts, overflow clipping
-- `checkResponsiveRisk(selector?)` - Find fixed widths, unbounded images, flex/grid issues
-- `capturePerformanceMetrics()` - CLS score, long tasks, resource sizes, paint timing
-- `runAxeAudit(options?)` - Full axe-core accessibility audit (loads ~300KB on demand)
-- `auditLayoutRobustness(options?)` - Comprehensive audit with scoring and recommendations
-- `observeLayoutShifts(callback?)` - Real-time CLS observation
-- `observeLongTasks(callback?)` - Real-time long task observation
-
-**Quality & Performance Auditing** (10 functions):
-- `observeFrameRate(options?)` - Detect jank/stuttering, measure FPS and smoothness
-- `observeLongAnimationFrames(callback?)` - LoAF API with script attribution (Chrome 123+)
-- `observeINP(callback?)` - Interaction to Next Paint - Core Web Vital since March 2024
-- `observeLCP(callback?)` - Largest Contentful Paint - Core Web Vital
-- `auditDOMComplexity()` - DOM node count, depth, children analysis with Lighthouse thresholds
-- `captureMemoryMetrics()` - JS heap size, pressure assessment (Chrome only)
-- `measureMemoryDetailed()` - Detailed memory with attribution (requires COOP/COEP)
-- `auditEventListeners()` - Inline handler count, potential leak detection
-- `estimateTBT()` - Total Blocking Time estimation from long tasks
-- `auditPageQuality()` - Comprehensive audit combining all checks with A-F grading
-
-**CSS Evaluation & Architecture** (7 functions):
-- `detectContentAreas()` - Identify CMS content vs app components vs layout frames
-- `auditCSSArchitecture()` - Specificity distribution, ID selectors, nesting depth, !important usage
-- `auditCSSContainment()` - CSS containment usage, content-visibility, container queries
-- `auditResponsiveStrategy()` - Media queries vs container queries analysis
-- `auditCSSConsistency()` - Colors, fonts, spacing, border-radius consistency
-- `auditTailwind()` - Tailwind-specific analysis: utilities, arbitrary values, breakpoints, deprecations
-- `auditCSS(options?)` - Comprehensive CSS audit with architecture, containment, consistency, Tailwind
-
-**Security & Validation** (12 functions):
-- `auditSecurityHeaders()` - CSP meta tags, HTTPS, mixed content, referrer policy
-- `observeCSPViolations(callback?)` - Real-time Content Security Policy violation monitoring
-- `auditDOMSecurity()` - Inline scripts, event handlers, javascript: URLs, dangerous attributes
-- `detectFramework()` - Detect React, Vue, Angular, Svelte, Next.js, Nuxt, jQuery, Alpine, htmx
-- `auditFrameworkQuality()` - Framework-specific security issues (dev builds, v-html, vulnerable versions)
-- `auditFormSecurity()` - CSRF tokens, autocomplete, sensitive fields, insecure actions
-- `auditExternalResources()` - External scripts, iframes, SRI integrity, sandbox attributes
-- `auditPrototypePollution()` - Prototype pollution checks and recommendations
-- `auditSecurity()` - Comprehensive security audit with A-F grading
-- `loadDOMPurify()` - Load DOMPurify from CDN for sanitization
-- `sanitizeHTML(dirty, options?)` - Sanitize HTML using DOMPurify (async)
-- `checkXSSRisk(input)` - Check string for XSS patterns (script tags, event handlers, etc.)
-
-#### Common Usage Patterns
-
-**Comprehensive Element Inspection**:
-```javascript
-proxy {action: "exec", id: "dev", code: "window.__devtool.inspect('#my-button')"}
-// Returns complete analysis: position, box model, layout, stacking, visibility, etc.
-```
-
-**Interactive Element Selection**:
-```javascript
-proxy {action: "exec", id: "dev", code: "window.__devtool.selectElement()"}
-// User clicks element in browser, returns selector and element info
-// Note: Returns a Promise - result comes when user selects or cancels
-```
-
-**Layout Debugging**:
-```javascript
-proxy {action: "exec", id: "dev", code: "window.__devtool.diagnoseLayout()"}
-// Finds all overflows, stacking contexts, offscreen elements
-```
-
-**Visual Highlight Before Screenshot**:
-```javascript
-proxy {action: "exec", id: "dev", code: "window.__devtool.highlight('#problem-element', {color: 'rgba(255,0,0,0.3)', duration: 0})"}
-// Highlight element persistently (duration: 0 means no auto-remove)
-proxy {action: "exec", id: "dev", code: "window.__devtool.screenshot('highlighted-issue')"}
-// Take screenshot with highlight visible
-```
-
-**Accessibility Audit**:
-```javascript
-proxy {action: "exec", id: "dev", code: "window.__devtool.auditAccessibility()"}
-// Returns: {errors: [...], warnings: [...], score: 85}
-// Checks: missing alt text, unlabeled buttons, missing form labels, contrast issues
-```
-
-**Contrast Checking**:
-```javascript
-proxy {action: "exec", id: "dev", code: "window.__devtool.getContrast('.my-button')"}
-// Returns: {fg: '#fff', bg: '#2196f3', ratio: 4.52, passes: {AA: true, AAA: false}}
-```
-
-**Ask User Questions**:
-```javascript
-proxy {action: "exec", id: "dev", code: "window.__devtool.ask('Which layout looks better?', ['Option A', 'Option B', 'Option C'])"}
-// Shows modal, returns Promise with selected option
-```
-
-**Tree Analysis**:
-```javascript
-proxy {action: "exec", id: "dev", code: "window.__devtool.walkChildren('.container', 2)"}
-// Returns hierarchical structure of children up to depth 2
-```
-
-**Measure Distance**:
-```javascript
-proxy {action: "exec", id: "dev", code: "window.__devtool.measureBetween('#header', '#footer')"}
-// Returns: {distance: {x, y, diagonal}, direction: 'below'}
-```
-
-**Text Fragility Check**:
-```javascript
-proxy {action: "exec", id: "dev", code: "window.__devtool.checkTextFragility()"}
-// Returns: {issues: [...], summary: {truncations: 2, overflows: 1, errors: 2, warnings: 3}}
-// Detects: ellipsis truncation (WCAG 1.4.10), overflow clipping, viewport fonts, tight line-height
-```
-
-**Responsive Risk Analysis**:
-```javascript
-proxy {action: "exec", id: "dev", code: "window.__devtool.checkResponsiveRisk()"}
-// Returns: {issues: [...], breakpoints: {'320px': {willOverflow: true}, ...}, summary: {...}}
-// Detects: fixed widths in fluid containers, unbounded images, flex/grid overflow risks
-```
-
-**Performance Metrics (CLS, Long Tasks, Resources)**:
-```javascript
-proxy {action: "exec", id: "dev", code: "window.__devtool.capturePerformanceMetrics()"}
-// Returns: {cls: {score: 0.15, rating: 'needs-improvement'}, longTasks: [...],
-//           resources: {byType: {...}, largest: [...], slowest: [...]}, totals: {...}}
-```
-
-**Full Axe-Core Accessibility Audit**:
-```javascript
-proxy {action: "exec", id: "dev", code: "window.__devtool.runAxeAudit()"}
-// Loads axe-core (~300KB) from CDN on first call
-// Returns: {violations: [...], summary: {critical: 0, serious: 2}, score: 78, testEngine: {...}}
-```
-
-**Comprehensive Layout Robustness Audit**:
-```javascript
-proxy {action: "exec", id: "dev", code: "window.__devtool.auditLayoutRobustness()"}
-// Returns: {textFragility: {...}, responsiveRisk: {...}, performance: {...},
-//           scores: {text: 85, responsive: 70, overall: 78}, grade: 'C', recommendations: [...]}
-
-// With full axe-core audit:
-proxy {action: "exec", id: "dev", code: "window.__devtool.auditLayoutRobustness({includeAxe: true})"}
-```
-
-**Real-Time CLS Observation**:
-```javascript
-proxy {action: "exec", id: "dev", code: "var obs = window.__devtool.observeLayoutShifts(); setTimeout(() => console.log(obs.stop()), 5000)"}
-// Monitors layout shifts in real-time, returns {finalCLS: 0.12, entries: [...]}
-```
-
-**Frame Rate & Jank Detection**:
-```javascript
-proxy {action: "exec", id: "dev", code: "var obs = window.__devtool.observeFrameRate({duration: 5000}); setTimeout(() => console.log(obs.stop()), 5500)"}
-// Returns: {avgFPS: 58.5, smoothness: 92.3, jankFrames: 3, rating: 'smooth'}
-```
-
-**Core Web Vitals - INP (Interaction to Next Paint)**:
-```javascript
-proxy {action: "exec", id: "dev", code: "window.__devtool.observeINP(e => console.log('INP:', e.inp, e.rating))"}
-// Monitors all interactions, reports worst INP with breakdown (inputDelay, processingTime, presentationDelay)
-// Thresholds: good <200ms, needs-improvement 200-500ms, poor >500ms
-```
-
-**Core Web Vitals - LCP (Largest Contentful Paint)**:
-```javascript
-proxy {action: "exec", id: "dev", code: "window.__devtool.observeLCP(e => console.log('LCP:', e.value, e.element))"}
-// Reports LCP candidates as they're painted
-// Thresholds: good <2500ms, needs-improvement 2500-4000ms, poor >4000ms
-```
-
-**DOM Complexity Audit**:
-```javascript
-proxy {action: "exec", id: "dev", code: "window.__devtool.auditDOMComplexity()"}
-// Returns: {totalNodes: 2500, maxDepth: 45, maxChildren: 120, rating: 'poor', recommendations: [...]}
-// Lighthouse thresholds: nodes <1500, depth <32, children <60
-```
-
-**Memory Monitoring (Chrome)**:
-```javascript
-proxy {action: "exec", id: "dev", code: "window.__devtool.captureMemoryMetrics()"}
-// Returns: {jsHeap: {usedMB: 50, percentUsed: 2.4}, pressure: 'low'}
-```
-
-**Total Blocking Time**:
-```javascript
-proxy {action: "exec", id: "dev", code: "window.__devtool.estimateTBT()"}
-// Returns: {totalBlockingTime: 350, longTaskCount: 8, rating: 'needs-improvement'}
-// Thresholds: good <200ms, needs-improvement 200-600ms, poor >600ms
-```
-
-**Comprehensive Page Quality Audit**:
-```javascript
-proxy {action: "exec", id: "dev", code: "window.__devtool.auditPageQuality()"}
-// Returns: {grade: 'B', overallScore: 82, criticalIssues: [...], recommendations: [...],
-//           scores: {dom: 70, tbt: 60, memory: 100, text: 85, responsive: 90, cls: 100}}
-```
-
-**CSS Architecture Audit**:
-```javascript
-proxy {action: "exec", id: "dev", code: "window.__devtool.auditCSSArchitecture()"}
-// Returns: {stats: {totalSelectors: 450, idSelectorCount: 8, importantCount: 15},
-//           namingConvention: {dominant: 'kebabCase', consistency: 0.67},
-//           issues: [...], healthScore: 72, rating: 'needs-improvement'}
-```
-
-**Tailwind CSS Audit**:
-```javascript
-proxy {action: "exec", id: "dev", code: "window.__devtool.auditTailwind()"}
-// Returns: {detected: true, usage: {utilityClasses: 189, arbitraryValues: 12},
-//           patterns: {breakpoints: {md: 45, lg: 34}}, issues: [...],
-//           recommendations: [...], healthScore: 85, rating: 'good'}
-```
-
-**Comprehensive CSS Audit**:
-```javascript
-proxy {action: "exec", id: "dev", code: "window.__devtool.auditCSS()"}
-// Returns: {architecture: {...}, containment: {...}, responsive: {...},
-//           consistency: {...}, tailwind: {...}, summary: {...},
-//           issues: [...], overallScore: 78, grade: 'C'}
-```
-
-**Content Area Detection (CMS vs App)**:
-```javascript
-proxy {action: "exec", id: "dev", code: "window.__devtool.detectContentAreas()"}
-// Returns: {byCategory: {cms: [...], app: [...], layout: [...]},
-//           recommendations: [{area: '.sidebar', type: 'app-containment', ...}]}
-```
-
-**Comprehensive Security Audit**:
-```javascript
-proxy {action: "exec", id: "dev", code: "window.__devtool.auditSecurity()"}
-// Returns: {headers: {...}, domSecurity: {...}, framework: {...}, forms: {...},
-//           summary: {frameworkDetected: 'React', criticalIssues: 2},
-//           overallScore: 75, grade: 'C'}
-```
-
-**Detect JavaScript Frameworks**:
-```javascript
-proxy {action: "exec", id: "dev", code: "window.__devtool.detectFramework()"}
-// Returns: {frameworks: [{name: 'React', version: '18.2.0'}, {name: 'Next.js'}],
-//           primary: 'React', count: 2}
-```
-
-**Check User Input for XSS**:
-```javascript
-proxy {action: "exec", id: "dev", code: "window.__devtool.checkXSSRisk('<script>alert(1)</script>')"}
-// Returns: {hasRisk: true, highRisk: true, risks: [{type: 'script-tag', severity: 'high'}]}
-```
-
-**Sanitize HTML Content**:
-```javascript
-proxy {action: "exec", id: "dev", code: "window.__devtool.sanitizeHTML('<img onerror=alert(1) src=x>')"}
-// Returns: {clean: '<img src=\"x\">', removed: [...]}
-```
-
-**Form Security Analysis**:
-```javascript
-proxy {action: "exec", id: "dev", code: "window.__devtool.auditFormSecurity()"}
-// Returns: {forms: [...], issues: [{type: 'missing-csrf', ...}],
-//           summary: {total: 3, withCSRF: 2, passwordFields: 1}}
-```
-
-#### Testing
-
-Use `test-diagnostics.html` for comprehensive testing:
-- Serves as interactive playground for all primitives
-- Includes test buttons for each category
-- Examples of various layout patterns (flex, grid, stacking, overflow)
-- Console usage examples
-
-#### Performance Characteristics
-
-- All primitives complete in <10ms on typical pages
-- Synchronous operations are instant (getPosition, getBox, etc.)
-- Async operations wait for user input (selectElement, ask)
-- MutationObserver-based waiting (waitForElement)
-- No external dependencies - pure browser APIs
+- **Default behavior**: Only show processes/proxies started from the current working directory
+- **Global flag**: Set `global: true` to show all processes/proxies across all directories
+- Each process/proxy stores its `project_path` when created for filtering
 
 ### Graceful Shutdown
 
 **Aggressive shutdown for Ctrl+C** (`cmd/devtool-mcp/main.go:58-80`):
 1. Signal handler (SIGINT/SIGTERM) triggers shutdown
-2. **2-second timeout** for total shutdown (changed from 30s for fast response)
+2. **2-second timeout** for total shutdown
 3. ProcessManager detects tight deadline and uses **aggressive mode**
 4. In aggressive mode: skips SIGTERM, sends **immediate SIGKILL** to all processes
-5. Aggressive shutdown completes in <500ms typically (<1ms in tests)
-6. ProxyManager stops all proxies in parallel
+5. Aggressive shutdown completes in <500ms typically
 
 **Shutdown modes**:
-- **Aggressive mode** (deadline <3s): Immediate SIGKILL to all processes, no graceful period
-- **Normal mode** (deadline ≥3s): SIGTERM first, then SIGKILL after 5s graceful timeout
+- **Aggressive mode** (deadline <3s): Immediate SIGKILL to all processes
+- **Normal mode** (deadline ≥3s): SIGTERM first, then SIGKILL after 5s
 
 **Shutdown safety**:
 - `sync.Once` prevents duplicate shutdown in both managers
 - `atomic.Bool` shuttingDown prevents new process/proxy registration
-- Health check goroutine stops on shutdown channel
-- All managers support graceful context-aware shutdown
 - Context cancellation during shutdown triggers immediate force kill
 
-## Key Implementation Details
+### Frontend Diagnostic Primitives
 
-### Process Start Flow
+The `window.__devtool` API includes ~50 diagnostic primitives for DOM inspection, layout analysis, visual debugging, and interactive diagnostics. Implementation in `internal/proxy/diagnostics.js`.
 
-1. **State transition**: Pending → Starting (atomic CAS)
-2. **Register** process in sync.Map (fails if ID exists)
-3. **Build exec.Cmd** with process group (`Setpgid: true`)
-4. **Connect streams** to RingBuffers
-5. **Start** OS process
-6. **Launch monitor** goroutine (waits for completion, updates state)
-7. **Transition** to Running state
+**Design Principles**:
+1. **Primitives over monoliths**: Small, focused functions (~20-30 lines each)
+2. **Composability**: Functions return rich data structures
+3. **Error resilient**: Return `{error: ...}` instead of throwing exceptions
+4. **ES5 compatible**: Works in all modern browsers
 
-### Run Tool Execution Modes
+**Categories**:
+- Element Inspection (9): getElementInfo, getPosition, getComputed, getBox, getLayout, etc.
+- Tree Walking (3): walkChildren, walkParents, findAncestor
+- Visual State (3): isVisible, isInViewport, checkOverlap
+- Layout Diagnostics (3): findOverflows, findStackingContexts, findOffscreen
+- Visual Overlays (3): highlight, removeHighlight, clearAllOverlays
+- Interactive (4): selectElement, measureBetween, waitForElement, ask
+- State Capture (4): captureDOM, captureStyles, captureState, captureNetwork
+- Accessibility (5): getA11yInfo, getContrast, getTabOrder, getScreenReaderText, auditAccessibility
+- Quality Auditing (10+): auditDOMComplexity, auditPageQuality, auditCSS, auditSecurity, etc.
 
-**Background mode** (default):
-- Returns process_id immediately
-- Process runs asynchronously
-- Use `proc` tool to monitor status/output
-
-**Foreground mode**:
-- Waits for completion
-- Returns exit_code, state, runtime
-- Output accessible via `proc` tool
-
-**Foreground-raw mode**:
-- Waits for completion
-- Returns exit_code, state, runtime + full stdout/stderr
-- Use for short-lived commands where output is needed immediately
-
-### Output Filtering in Proc Tool
-
-**Supported filters** (`internal/tools/process.go:275-353`):
-- `stream`: "stdout", "stderr", "combined" (default)
-- `grep`: Regex filter (only matching lines)
-- `grep_v`: Invert grep (exclude matching lines)
-- `head`: First N lines
-- `tail`: Last N lines
-
-**Filter order**: grep → head → tail
+**Testing**: Use `test-diagnostics.html` as an interactive playground.
 
 ## Testing Strategy
 
@@ -856,19 +335,12 @@ Use `test-diagnostics.html` for comprehensive testing:
 
 **Integration testing pattern**:
 ```go
-// Use real ProcessManager with test config
 pm := process.NewProcessManager(process.ManagerConfig{
     MaxOutputBuffer:   1024,
     GracefulTimeout:   100 * time.Millisecond,
     HealthCheckPeriod: 0, // Disable for tests
 })
 ```
-
-**Proxy testing considerations**:
-- Logger tests verify circular buffer behavior (1000 entries default)
-- Injector tests cover various HTML structures (with/without head/body tags)
-- Concurrent write tests validate thread-safety
-- No integration tests for full HTTP proxy (would require test server)
 
 ## Important Constraints
 
@@ -884,22 +356,18 @@ pm := process.NewProcessManager(process.ManagerConfig{
 - **No timeout by default**: `DefaultTimeout: 0` (processes run until completion)
 - **Output buffering**: 256KB per stream (stdout/stderr separate)
 - **Graceful shutdown**: 5s SIGTERM → SIGKILL (normal mode)
-- **Aggressive shutdown**: Immediate SIGKILL when deadline <3s (Ctrl+C mode)
-- **Shutdown timeout**: 2s total for Ctrl+C (completes in <500ms typically)
+- **Aggressive shutdown**: Immediate SIGKILL when deadline <3s
 - **Health checks**: 10s period (detects zombie processes)
 
 ### Reverse Proxy
 
-- **Traffic log size**: 1000 entries default (circular buffer, oldest discarded)
+- **Traffic log size**: 1000 entries default (circular buffer)
 - **Request/response truncation**: Bodies limited to 10KB in logs
-- **WebSocket support**: Transparently proxies WebSocket upgrades (e.g., Next.js HMR)
-- **WebSocket endpoint**: Reserved path `/__devtool_metrics` for metrics collection
-- **CORS**: WebSocket accepts all origins (development use only)
+- **WebSocket support**: Transparently proxies WebSocket upgrades
+- **WebSocket endpoint**: Reserved path `/__devtool_metrics`
 - **JavaScript injection**: Only on `text/html` content type
-- **Port auto-discovery**: If requested port is in use, automatically finds an available port
-- **Port 0**: Explicitly request auto-assignment; actual port returned in `listen_addr`
-- **Auto-restart**: Enabled by default; max 5 restarts per minute to prevent crash loops
-- **Crash detection**: Errors stored in `last_error` field, visible in status
+- **Port auto-discovery**: Auto-assigns port if requested port is in use
+- **Auto-restart**: Max 5 restarts per minute to prevent crash loops
 
 ### Platform Support
 
@@ -921,15 +389,13 @@ ManagerConfig{
 }
 ```
 
-## Common Gotchas
+## Common Development Gotchas
 
-### Process Management
-
-1. **Process ID conflicts**: `Register()` returns `ErrProcessExists` if ID already used. Generate unique IDs or use auto-generated IDs.
+1. **Process ID conflicts**: `Register()` returns `ErrProcessExists` if ID already used.
 
 2. **State validation**: Always check state before operations. Use `CompareAndSwapState()` for atomic transitions.
 
-3. **Output truncation**: RingBuffer has fixed size. Check `truncated` flag when reading output. Consider filtering with `head`/`tail`/`grep` to reduce output.
+3. **Output truncation**: RingBuffer has fixed size. Check `truncated` flag when reading output.
 
 4. **Shutdown race**: Don't start new processes during shutdown. Check `pm.IsShuttingDown()` before registration.
 
@@ -937,25 +403,15 @@ ManagerConfig{
 
 6. **Project detection order**: Go → Node → Python. If multiple project markers exist, earlier detection wins.
 
-7. **Port conflicts from orphaned processes**: If a dev server crashes or isn't stopped cleanly, it may leave processes holding onto ports. Use `proc {action: "cleanup_port", port: 3000}` to find and kill orphaned processes before starting new ones. This is especially common with OAuth callback servers. The cleanup tool automatically tries `lsof` first, then falls back to `ss` if `lsof` fails or returns no results (common in WSL2/containerized environments where `lsof` may not have visibility into all processes).
+7. **Proxy ID conflicts**: `Create()` returns `ErrProxyExists` if ID already used.
 
-### Reverse Proxy
+8. **Log buffer overflow**: Circular buffer stores only last N entries. Check `dropped` count in stats.
 
-8. **Proxy ID conflicts**: `Create()` returns `ErrProxyExists` if ID already used. Use unique proxy IDs.
+9. **JavaScript injection failures**: If HTML is malformed, injection may fail silently. Page still loads.
 
-9. **Log buffer overflow**: Circular buffer stores only last N entries (default 1000). High-traffic sites will drop old logs. Check `dropped` count in stats.
+10. **Port auto-discovery**: Always check `listen_addr` in response to get actual port.
 
-10. **Large response bodies**: Response bodies >10KB are truncated in logs. Full response still proxied to client, only log is truncated.
-
-11. **WebSocket reconnection**: Frontend reconnects with exponential backoff (max 5 attempts). If WebSocket fails, errors/metrics won't be reported but proxy still works. WebSocket URL automatically adapts to current page's host/port, so proxy restarts on different ports don't cause stale connections.
-
-12. **JavaScript injection failures**: If HTML is malformed or has unusual structure, injection may fail silently. Instrumentation won't be added but page still loads normally.
-
-13. **Port auto-discovery**: When requested port is in use, proxy automatically finds an available port. Always check `listen_addr` in response to get actual port. Use port 0 to explicitly request auto-assignment.
-
-14. **CORS in production**: WebSocket allows all origins for development. NOT suitable for production use without CORS restrictions.
-
-15. **Reserved endpoint**: `/__devtool_metrics` is reserved for WebSocket. Backend routes with this path will be shadowed by proxy.
+11. **Reserved endpoint**: `/__devtool_metrics` is reserved for WebSocket. Backend routes with this path will be shadowed.
 
 ## Future Expansion Points
 
@@ -963,13 +419,10 @@ ManagerConfig{
 - **Config file support**: KDL-based configuration (`internal/config/kdl.go`)
 - **Process labels**: Already supported in `ManagedProcess.Labels`, not exposed to MCP yet
 - **Metrics**: Manager tracks totalStarted/totalFailed, could expose via MCP tool
-- **Process groups**: Could support stopping all processes with same label
 
 ### Reverse Proxy
-- **Persistent logs**: Currently in-memory only, could add disk persistence
+- **Persistent logs**: Currently in-memory only
 - **Request/response filtering**: Block or modify requests based on rules
-- **SSL/TLS support**: Currently HTTP only, could add HTTPS termination
-- **Custom JavaScript**: Allow injecting custom instrumentation beyond errors/performance
-- **Request replay**: Save and replay HTTP requests for testing
-- **HAR export**: Export traffic logs in HAR (HTTP Archive) format
-- **WebSocket logging**: Could log WebSocket frame data (currently only logs upgrade request)
+- **SSL/TLS support**: Currently HTTP only
+- **HAR export**: Export traffic logs in HAR format
+- **WebSocket logging**: Could log WebSocket frame data

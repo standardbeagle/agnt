@@ -412,10 +412,10 @@ window.__devtool.auditCSSConsistency()
 **Consistency Thresholds:**
 | Metric | Consistent | Moderate | Inconsistent |
 |--------|------------|----------|--------------|
-| Colors | <15 | 15-30 | >30 |
-| Font Sizes | <10 | 10-15 | >15 |
-| Font Families | <3 | 3-5 | >5 |
-| Spacing | <12 | 12-20 | >20 |
+| Colors | &lt;15 | 15-30 | &gt;30 |
+| Font Sizes | &lt;10 | 10-15 | &gt;15 |
+| Font Families | &lt;3 | 3-5 | &gt;5 |
+| Spacing | &lt;12 | 12-20 | &gt;20 |
 
 ---
 
