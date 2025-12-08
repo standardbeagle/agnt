@@ -48,3 +48,4 @@ python/*.egg-info/
 __pycache__/
 *.pyc
 .venv/
+.mcpregistry_*

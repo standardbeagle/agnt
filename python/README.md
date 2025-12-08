@@ -1,5 +1,7 @@
 # devtool-mcp
 
+mcp-name: io.github.standardbeagle/devtool-mcp
+
 An MCP (Model Context Protocol) server that provides comprehensive development tooling capabilities to AI assistants.
 
 ## Features

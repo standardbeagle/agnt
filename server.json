@@ -1,20 +1,20 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-10-17/server.schema.json",
   "name": "io.github.standardbeagle/devtool-mcp",
-  "description": "MCP server providing development tooling capabilities - project detection, process management, reverse proxy with frontend diagnostics including 50+ browser diagnostic primitives",
+  "description": "Development tooling MCP server with process management, proxy, and frontend diagnostics",
   "title": "DevTool MCP",
   "websiteUrl": "https://standardbeagle.github.io/devtool-mcp/",
   "repository": {
     "url": "https://github.com/standardbeagle/devtool-mcp",
     "source": "github"
   },
-  "version": "0.3.0",
+  "version": "0.3.1",
   "packages": [
     {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@standardbeagle/devtool-mcp",
-      "version": "0.3.0",
+      "version": "0.3.1",
       "transport": {
         "type": "stdio"
       }
@@ -23,7 +23,7 @@
       "registryType": "pypi",
       "registryBaseUrl": "https://pypi.org",
       "identifier": "devtool-mcp",
-      "version": "0.3.0",
+      "version": "0.3.1",
       "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"
