@@ -1,5 +1,5 @@
-# Binaries
-devtool-mcp
+# Binaries (root level only, not cmd/devtool-mcp/)
+/devtool-mcp
 *.exe
 *.dll
 *.so
