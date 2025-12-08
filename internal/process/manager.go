@@ -8,7 +8,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 )
 
@@ -426,10 +425,10 @@ func (pm *ProcessManager) killProcesses(pids []int) []int {
 
 	// Kill each process
 	for _, pid := range pids {
-		// Try SIGTERM first
-		if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
+		// Try graceful termination first
+		if err := signalTerm(pid); err != nil {
 			// Process might have already exited, that's OK
-			if !errors.Is(err, syscall.ESRCH) {
+			if !isNoSuchProcess(err) {
 				// Real error, but continue with other processes
 				continue
 			}
@@ -443,9 +442,9 @@ func (pm *ProcessManager) killProcesses(pids []int) []int {
 	// Force kill any remaining processes
 	for _, pid := range pids {
 		// Check if process still exists
-		if err := syscall.Kill(pid, syscall.Signal(0)); err == nil {
+		if isProcessAlive(pid) {
 			// Process still running, force kill
-			syscall.Kill(pid, syscall.SIGKILL)
+			_ = signalKill(pid)
 		}
 	}
 

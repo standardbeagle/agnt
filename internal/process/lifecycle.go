@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"syscall"
 	"time"
 )
 
@@ -33,10 +32,8 @@ func (pm *ProcessManager) Start(ctx context.Context, proc *ManagedProcess) error
 	proc.cmd.Dir = proc.ProjectPath
 	proc.cmd.Env = os.Environ()
 
-	// Set process group for clean shutdown (Linux/macOS)
-	proc.cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setpgid: true,
-	}
+	// Set platform-specific process attributes for clean shutdown
+	setProcAttr(proc.cmd)
 
 	// Connect output streams to ring buffers
 	proc.cmd.Stdout = proc.stdout
@@ -136,12 +133,11 @@ func (pm *ProcessManager) StopProcess(ctx context.Context, proc *ManagedProcess)
 		// Continue with normal shutdown
 	}
 
-	// Send SIGTERM to process group
+	// Send termination signal to process group
 	if proc.cmd != nil && proc.cmd.Process != nil {
-		if err := pm.signalProcessGroup(proc.cmd.Process.Pid, syscall.SIGTERM); err != nil {
-			// Log error but continue with graceful shutdown
-			// The process might have already exited
-		}
+		_ = signalTerm(proc.cmd.Process.Pid)
+		// Ignore error - continue with graceful shutdown
+		// The process might have already exited
 	}
 
 	// Wait for graceful shutdown with timeout
@@ -163,44 +159,23 @@ func (pm *ProcessManager) StopProcess(ctx context.Context, proc *ManagedProcess)
 	}
 }
 
-// forceKill sends SIGKILL to the process group.
+// forceKill forcefully terminates the process.
 func (pm *ProcessManager) forceKill(proc *ManagedProcess) error {
 	if proc.cmd == nil || proc.cmd.Process == nil {
 		return nil
 	}
 
-	// Kill entire process group
-	if err := pm.signalProcessGroup(proc.cmd.Process.Pid, syscall.SIGKILL); err != nil {
+	// Kill the process forcefully
+	if err := signalKill(proc.cmd.Process.Pid); err != nil {
 		return fmt.Errorf("failed to force kill process %s: %w", proc.ID, err)
 	}
 
-	// Wait for death with very short timeout (100ms should be enough for SIGKILL)
-	// SIGKILL is immediate and cannot be caught, so this should be fast
+	// Wait for death with very short timeout (100ms should be enough for forced kill)
 	select {
 	case <-proc.done:
 		return nil
 	case <-time.After(100 * time.Millisecond):
 		// Process likely already dead but state not updated yet
-		// This is OK - we sent SIGKILL and that's the strongest signal
-		return nil
-	}
-}
-
-// signalProcessGroup sends a signal to the process group.
-func (pm *ProcessManager) signalProcessGroup(pid int, sig syscall.Signal) error {
-	// Try to get process group ID
-	pgid, err := syscall.Getpgid(pid)
-	if err == nil && pgid > 0 {
-		// Use negative PID to signal entire process group
-		if err := syscall.Kill(-pgid, sig); err != nil {
-			return fmt.Errorf("failed to signal process group %d: %w", pgid, err)
-		}
-		return nil
-	} else {
-		// Fall back to signaling just the process
-		if err := syscall.Kill(pid, sig); err != nil {
-			return fmt.Errorf("failed to signal process %d (pgid error: %v): %w", pid, err, err)
-		}
 		return nil
 	}
 }
