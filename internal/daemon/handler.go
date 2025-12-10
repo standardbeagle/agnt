@@ -985,6 +985,112 @@ func convertLogEntry(entry *proxy.LogEntry) map[string]interface{} {
 				"url":     entry.Custom.URL,
 			}
 		}
+	case proxy.LogTypeScreenshot:
+		if entry.Screenshot != nil {
+			result["timestamp"] = entry.Screenshot.Timestamp
+			result["data"] = map[string]interface{}{
+				"id":        entry.Screenshot.ID,
+				"name":      entry.Screenshot.Name,
+				"file_path": entry.Screenshot.FilePath,
+				"url":       entry.Screenshot.URL,
+				"width":     entry.Screenshot.Width,
+				"height":    entry.Screenshot.Height,
+				"format":    entry.Screenshot.Format,
+				"selector":  entry.Screenshot.Selector,
+			}
+		}
+	case proxy.LogTypeExecution:
+		if entry.Execution != nil {
+			result["timestamp"] = entry.Execution.Timestamp
+			result["data"] = map[string]interface{}{
+				"id":          entry.Execution.ID,
+				"code":        entry.Execution.Code,
+				"result":      entry.Execution.Result,
+				"error":       entry.Execution.Error,
+				"duration_ms": entry.Execution.Duration.Milliseconds(),
+				"url":         entry.Execution.URL,
+			}
+		}
+	case proxy.LogTypeResponse:
+		if entry.Response != nil {
+			result["timestamp"] = entry.Response.Timestamp
+			result["data"] = map[string]interface{}{
+				"id":          entry.Response.ID,
+				"exec_id":     entry.Response.ExecID,
+				"success":     entry.Response.Success,
+				"result":      entry.Response.Result,
+				"error":       entry.Response.Error,
+				"duration_ms": entry.Response.Duration.Milliseconds(),
+			}
+		}
+	case proxy.LogTypeInteraction:
+		if entry.Interaction != nil {
+			result["timestamp"] = entry.Interaction.Timestamp
+			data := map[string]interface{}{
+				"id":         entry.Interaction.ID,
+				"event_type": entry.Interaction.EventType,
+				"url":        entry.Interaction.URL,
+				"target":     entry.Interaction.Target,
+			}
+			if entry.Interaction.Position != nil {
+				data["position"] = entry.Interaction.Position
+			}
+			if entry.Interaction.Key != nil {
+				data["key"] = entry.Interaction.Key
+			}
+			if entry.Interaction.Value != "" {
+				data["value"] = entry.Interaction.Value
+			}
+			result["data"] = data
+		}
+	case proxy.LogTypeMutation:
+		if entry.Mutation != nil {
+			result["timestamp"] = entry.Mutation.Timestamp
+			data := map[string]interface{}{
+				"id":            entry.Mutation.ID,
+				"mutation_type": entry.Mutation.MutationType,
+				"url":           entry.Mutation.URL,
+				"target":        entry.Mutation.Target,
+			}
+			if len(entry.Mutation.Added) > 0 {
+				data["added"] = entry.Mutation.Added
+			}
+			if len(entry.Mutation.Removed) > 0 {
+				data["removed"] = entry.Mutation.Removed
+			}
+			if entry.Mutation.Attribute != nil {
+				data["attribute"] = entry.Mutation.Attribute
+			}
+			result["data"] = data
+		}
+	case proxy.LogTypePanelMessage:
+		if entry.PanelMessage != nil {
+			result["timestamp"] = entry.PanelMessage.Timestamp
+			data := map[string]interface{}{
+				"id":      entry.PanelMessage.ID,
+				"message": entry.PanelMessage.Message,
+				"url":     entry.PanelMessage.URL,
+			}
+			if len(entry.PanelMessage.Attachments) > 0 {
+				data["attachments"] = entry.PanelMessage.Attachments
+			}
+			result["data"] = data
+		}
+	case proxy.LogTypeSketch:
+		if entry.Sketch != nil {
+			result["timestamp"] = entry.Sketch.Timestamp
+			result["data"] = map[string]interface{}{
+				"id":            entry.Sketch.ID,
+				"url":           entry.Sketch.URL,
+				"file_path":     entry.Sketch.FilePath,
+				"element_count": entry.Sketch.ElementCount,
+			}
+		}
+	}
+
+	// Ensure data field is never null - MCP schema validation requires an object
+	if _, ok := result["data"]; !ok {
+		result["data"] = map[string]interface{}{}
 	}
 
 	return result

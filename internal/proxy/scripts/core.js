@@ -58,42 +58,62 @@
   // Execute JavaScript sent from server
   function executeJavaScript(execId, code) {
     var startTime = performance.now();
-    var result, error;
 
-    try {
-      result = eval(code);
-      // Convert result to string representation
-      if (result === undefined) {
-        result = 'undefined';
-      } else if (result === null) {
-        result = 'null';
-      } else if (typeof result === 'function') {
-        result = result.toString();
-      } else if (typeof result === 'object') {
+    function sendResult(result, error) {
+      var duration = performance.now() - startTime;
+      send('execution', {
+        exec_id: execId,
+        result: result || '',
+        error: error || '',
+        duration: duration,
+        timestamp: Date.now()
+      });
+    }
+
+    function formatResult(val) {
+      if (val === undefined) {
+        return 'undefined';
+      } else if (val === null) {
+        return 'null';
+      } else if (typeof val === 'function') {
+        return val.toString();
+      } else if (typeof val === 'object') {
         try {
-          result = JSON.stringify(result, null, 2);
+          return JSON.stringify(val, null, 2);
         } catch (e) {
-          result = String(result);
+          return String(val);
         }
       } else {
-        result = String(result);
-      }
-    } catch (err) {
-      error = err.toString();
-      if (err.stack) {
-        error += '\n' + err.stack;
+        return String(val);
       }
     }
 
-    var duration = performance.now() - startTime;
+    try {
+      var result = eval(code);
 
-    send('execution', {
-      exec_id: execId,
-      result: result || '',
-      error: error || '',
-      duration: duration,
-      timestamp: Date.now()
-    });
+      // Check if result is a Promise
+      if (result && typeof result.then === 'function') {
+        // Handle Promise - wait for it to resolve
+        result.then(function(resolved) {
+          sendResult(formatResult(resolved), '');
+        }).catch(function(err) {
+          var error = err.toString();
+          if (err.stack) {
+            error += '\n' + err.stack;
+          }
+          sendResult('', error);
+        });
+      } else {
+        // Synchronous result
+        sendResult(formatResult(result), '');
+      }
+    } catch (err) {
+      var error = err.toString();
+      if (err.stack) {
+        error += '\n' + err.stack;
+      }
+      sendResult('', error);
+    }
   }
 
   // Send metric to server
