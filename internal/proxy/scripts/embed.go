@@ -77,8 +77,11 @@ func GetCombinedScript() string {
 func buildCombinedScript() string {
 	var sb strings.Builder
 
-	// External dependencies (html2canvas for screenshots)
-	sb.WriteString(`<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>`)
+	// External dependencies (html2canvas-pro for screenshots)
+	// Using html2canvas-pro instead of html2canvas because it supports modern CSS
+	// color functions (lab, oklch, oklab, lch) that Firefox and modern browsers use.
+	// See: https://github.com/nickt26/html2canvas-pro
+	sb.WriteString(`<script src="https://cdn.jsdelivr.net/npm/html2canvas-pro@1.5.8/dist/html2canvas-pro.min.js"></script>`)
 	sb.WriteString("\n")
 
 	// Main script block

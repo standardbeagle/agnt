@@ -19,6 +19,8 @@ type ProxyInput struct {
 	MaxLogSize int    `json:"max_log_size,omitempty" jsonschema:"Maximum log entries (default: 1000)"`
 	Code       string `json:"code,omitempty" jsonschema:"JavaScript code to execute (required for exec)"`
 	Global     bool   `json:"global,omitempty" jsonschema:"For list: include proxies from all directories (default: false)"`
+	Help       bool   `json:"help,omitempty" jsonschema:"For exec: show __devtool API overview instead of executing code"`
+	Describe   string `json:"describe,omitempty" jsonschema:"For exec: show detailed docs for a specific function (e.g. 'screenshot', 'interactions.getLastClick')"`
 }
 
 // CurrentPageInput defines input for the currentpage tool.
@@ -187,7 +189,6 @@ Examples:
   proxy {action: "status", id: "dev"}
   proxy {action: "list"}
   proxy {action: "exec", id: "dev", code: "document.title"}
-  proxy {action: "exec", id: "dev", code: "window.__devtool.screenshot('homepage')"}
   proxy {action: "stop", id: "dev"}
 
 The proxy automatically:
@@ -195,14 +196,20 @@ The proxy automatically:
   - Injects JavaScript to capture frontend errors
   - Captures performance metrics (page load, resources)
   - Provides WebSocket endpoint for metrics
-  - Adds global __devtool API to frontend
+  - Injects __devtool API with 50+ diagnostic functions
 
-Global Frontend API (window.__devtool):
-  - log(message, level, data): Send custom log to server
-  - debug/info/warn/error(message, data): Convenience log methods
-  - screenshot(name): Capture screenshot and save to temp file
-  - isConnected(): Check WebSocket connection status
-  - getStatus(): Get detailed connection status
+__devtool API (injected into browser):
+  proxy {action: "exec", help: true}                    # Full API overview
+  proxy {action: "exec", describe: "screenshot"}        # Detailed function docs
+  proxy {action: "exec", describe: "interactions.getLastClick"}
+
+Common __devtool examples:
+  proxy {action: "exec", id: "dev", code: "__devtool.screenshot('homepage')"}
+  proxy {action: "exec", id: "dev", code: "__devtool.log('test', 'info', {data: 1})"}
+  proxy {action: "exec", id: "dev", code: "__devtool.interactions.getLastClickContext()"}
+  proxy {action: "exec", id: "dev", code: "__devtool.mutations.highlightRecent(5000)"}
+  proxy {action: "exec", id: "dev", code: "__devtool.inspect('#submit-btn')"}
+  proxy {action: "exec", id: "dev", code: "__devtool.auditAccessibility()"}
 
 Each proxy has separate log storage and WebSocket connections.`,
 	}, makeProxyHandler(pm))
@@ -365,6 +372,31 @@ func handleProxyList(pm *proxy.ProxyManager) (*mcp.CallToolResult, ProxyOutput, 
 }
 
 func handleProxyExec(pm *proxy.ProxyManager, input ProxyInput) (*mcp.CallToolResult, ProxyOutput, error) {
+	// Handle help request - no proxy ID required
+	if input.Help {
+		return nil, ProxyOutput{
+			Success: true,
+			Message: GetAPIOverview(),
+		}, nil
+	}
+
+	// Handle describe request - no proxy ID required
+	if input.Describe != "" {
+		doc, found := GetFunctionDescription(input.Describe)
+		if !found {
+			// List available functions
+			names := ListFunctionNames()
+			return nil, ProxyOutput{
+				Success: false,
+				Message: fmt.Sprintf("Function %q not found.\n\nAvailable functions:\n%v", input.Describe, names),
+			}, nil
+		}
+		return nil, ProxyOutput{
+			Success: true,
+			Message: doc,
+		}, nil
+	}
+
 	if input.ID == "" {
 		return errorResult("id required for exec"), ProxyOutput{}, nil
 	}

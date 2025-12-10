@@ -1,5 +1,18 @@
 # Changelog - DevTool MCP
 
+## [Unreleased]
+
+### Fixed
+- **Screenshot Firefox compatibility**: Switch from `html2canvas@1.4.1` to `html2canvas-pro@1.5.8` to support modern CSS color functions (`lab()`, `oklch()`, `oklab()`, `lch()`) that Firefox and modern browsers use in computed styles
+
+### Added
+- **Progressive disclosure for __devtool API documentation**:
+  - `proxy {action: "exec", help: true}` - Full API overview with all 60+ functions grouped by category
+  - `proxy {action: "exec", describe: "functionName"}` - Detailed documentation for individual functions
+  - New `internal/tools/apidocs.go` with comprehensive API documentation
+- **New proxy input parameters**: `help` and `describe` for accessing API documentation without executing code
+- **Updated proxy tool description** with common __devtool examples for screenshot, logging, interactions, mutations, inspection, and accessibility auditing
+
 ## [0.3.0] - 2025-12-07
 
 ### Added
