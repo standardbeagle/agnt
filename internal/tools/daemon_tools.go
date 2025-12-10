@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -147,10 +148,16 @@ Log Types:
   screenshot: Screenshots captured via __devtool.screenshot()
   execution: Results of executed JavaScript code
   response: JavaScript execution responses
+  interaction: User interactions (clicks, keyboard, scroll)
+  mutation: DOM mutations (added, removed, modified elements)
+  panel_message: Messages sent from the floating indicator panel
+  sketch: Sketches/wireframes from sketch mode (includes JSON data and PNG image path)
 
 Examples:
   proxylog {proxy_id: "dev", types: ["http"], methods: ["GET"]}
   proxylog {proxy_id: "dev", types: ["error"]}
+  proxylog {proxy_id: "dev", types: ["sketch"]}
+  proxylog {proxy_id: "dev", types: ["panel_message"]}
   proxylog {proxy_id: "dev", since: "5m", limit: 50}
   proxylog {proxy_id: "dev", action: "stats"}
   proxylog {proxy_id: "dev", action: "clear"}
@@ -197,12 +204,17 @@ func (dt *DaemonTools) makeDetectHandler() func(context.Context, *mcp.CallToolRe
 			return errorResult(err.Error()), emptyOutput, nil
 		}
 
+		// Resolve path to absolute to ensure daemon uses correct directory
 		path := input.Path
 		if path == "" {
 			path = "."
 		}
+		absPath, err := filepath.Abs(path)
+		if err != nil {
+			return errorResult(fmt.Sprintf("failed to resolve path: %v", err)), emptyOutput, nil
+		}
 
-		result, err := dt.client.Detect(path)
+		result, err := dt.client.Detect(absPath)
 		if err != nil {
 			return formatDaemonError(err, "detect"), emptyOutput, nil
 		}
@@ -236,10 +248,20 @@ func (dt *DaemonTools) makeRunHandler() func(context.Context, *mcp.CallToolReque
 			return errorResult(err.Error()), RunOutput{}, nil
 		}
 
+		// Resolve path to absolute to ensure daemon uses correct directory
+		path := input.Path
+		if path == "" {
+			path = "."
+		}
+		absPath, err := filepath.Abs(path)
+		if err != nil {
+			return errorResult(fmt.Sprintf("failed to resolve path: %v", err)), RunOutput{}, nil
+		}
+
 		// Build daemon protocol config
 		config := protocol.RunConfig{
 			ID:         input.ID,
-			Path:       input.Path,
+			Path:       absPath,
 			ScriptName: input.ScriptName,
 			Raw:        input.Raw,
 			Command:    input.Command,
@@ -247,9 +269,6 @@ func (dt *DaemonTools) makeRunHandler() func(context.Context, *mcp.CallToolReque
 			Mode:       string(input.Mode),
 		}
 
-		if config.Path == "" {
-			config.Path = "."
-		}
 		if config.Mode == "" {
 			config.Mode = "background"
 		}

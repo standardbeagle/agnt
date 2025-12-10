@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 This is **devtool-mcp**, an MCP (Model Context Protocol) server that provides development tooling capabilities to AI assistants. It enables project type detection, script execution, long-running process management with output capture, and reverse proxy with traffic logging and frontend instrumentation.
 
 **MCP Server Name**: `devtool-mcp`
-**Version**: 0.4.0
+**Version**: 0.5.0
 **Protocol**: MCP over stdio
 **Language**: Go 1.24.2
 

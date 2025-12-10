@@ -1,5 +1,23 @@
 # Changelog - DevTool MCP
 
+## [0.5.0] - 2025-12-10
+
+### Added
+- **Sketch-driven development**: Fully integrated Excalidraw-like sketch mode for wireframing
+  - Automatic page screenshot capture when entering sketch mode
+  - Background image with 40% overlay for drawing context
+  - Wireframe elements: buttons, input fields, sticky notes, image placeholders
+  - Shape tools: rectangle, ellipse, line, arrow, freehand drawing, text
+  - JSON export/import for sketch persistence
+  - Save & Send integration to send sketches to MCP for AI processing
+  - Sketches include full page context so AI can understand component placement
+- **New proxylog types documented**: interaction, mutation, panel_message, sketch
+  - AI agents can now query `proxylog {types: ["sketch"]}` to retrieve wireframes
+
+### Fixed
+- **MCP client CWD resolution**: `detect` and `run` tools now resolve relative paths (like `.`) to absolute paths before sending to daemon, ensuring the daemon uses the MCP client's working directory instead of its own
+- **Sketch overlay visibility**: Reduced background opacity and improved grid dot visibility
+
 ## [Unreleased]
 
 ### Fixed

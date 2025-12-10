@@ -13,6 +13,7 @@
     canvas: null,
     ctx: null,
     toolbar: null,
+    backgroundImage: null, // Captured page screenshot
 
     // Drawing state
     tool: 'select',
@@ -191,7 +192,7 @@
       'right: 0',
       'bottom: 0',
       'z-index: 2147483645',
-      'background: rgba(255, 255, 255, 0.95)',
+      'background: transparent',
       'font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
     ].join(';'),
 
@@ -333,6 +334,33 @@
   function init() {
     if (sketchState.container) return;
 
+    // Capture page background first (before adding overlay)
+    if (typeof html2canvas !== 'undefined') {
+      console.log('[DevTool] Capturing page background...');
+      html2canvas(document.body, {
+        scale: 1,
+        useCORS: true,
+        allowTaint: true,
+        logging: false,
+        width: window.innerWidth,
+        height: window.innerHeight,
+        x: window.scrollX,
+        y: window.scrollY
+      }).then(function(bgCanvas) {
+        sketchState.backgroundImage = bgCanvas;
+        console.log('[DevTool] Background captured');
+        initSketchUI();
+      }).catch(function(err) {
+        console.warn('[DevTool] Background capture failed:', err);
+        initSketchUI();
+      });
+    } else {
+      console.warn('[DevTool] html2canvas not available, no background capture');
+      initSketchUI();
+    }
+  }
+
+  function initSketchUI() {
     // Create container
     var container = document.createElement('div');
     container.id = '__devtool-sketch';
@@ -1065,12 +1093,24 @@
     // Clear canvas
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // Draw grid (subtle dots)
-    ctx.fillStyle = '#e0e0e0';
+    // Draw background image if available, otherwise white fallback
+    if (sketchState.backgroundImage) {
+      ctx.drawImage(sketchState.backgroundImage, 0, 0, canvas.width, canvas.height);
+      // Semi-transparent overlay so sketch elements are visible
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    } else {
+      // Fallback to semi-transparent white
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+
+    // Draw grid (dots)
+    ctx.fillStyle = '#999999';
     for (var x = 0; x < canvas.width; x += 20) {
       for (var y = 0; y < canvas.height; y += 20) {
         ctx.beginPath();
-        ctx.arc(x, y, 1, 0, Math.PI * 2);
+        ctx.arc(x, y, 1.5, 0, Math.PI * 2);
         ctx.fill();
       }
     }
@@ -1312,6 +1352,7 @@
     sketchState.container = null;
     sketchState.canvas = null;
     sketchState.ctx = null;
+    sketchState.backgroundImage = null;
     sketchState.toolbar = null;
     sketchState.isActive = false;
 
