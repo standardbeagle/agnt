@@ -18,6 +18,7 @@ const (
 type PageSession struct {
 	ID              string             `json:"id"`
 	URL             string             `json:"url"`
+	BrowserSession  string             `json:"browser_session,omitempty"` // Browser tab session ID
 	PageTitle       string             `json:"page_title,omitempty"`
 	StartTime       time.Time          `json:"start_time"`
 	LastActivity    time.Time          `json:"last_activity"`
@@ -38,12 +39,13 @@ type PageSession struct {
 
 // PageTracker tracks page sessions and groups requests by page.
 type PageTracker struct {
-	sessions       sync.Map // map[string]*PageSession (keyed by session ID)
-	urlToSession   sync.Map // map[string]string (URL to session ID)
-	sessionSeq     atomic.Int64
-	maxSessions    int
-	sessionTimeout time.Duration
-	mu             sync.RWMutex
+	sessions              sync.Map // map[string]*PageSession (keyed by session ID)
+	urlToSession          sync.Map // map[string]string (URL to session ID)
+	browserSessionToPage  sync.Map // map[string]string (browser session ID to page session ID)
+	sessionSeq            atomic.Int64
+	maxSessions           int
+	sessionTimeout        time.Duration
+	mu                    sync.RWMutex
 }
 
 // NewPageTracker creates a new page tracker.
@@ -76,8 +78,13 @@ func (pt *PageTracker) TrackHTTPRequest(entry HTTPLogEntry) {
 }
 
 // TrackError associates a frontend error with a page session.
-func (pt *PageTracker) TrackError(err FrontendError) {
-	sessionID := pt.findSessionByURL(err.URL)
+// browserSessionID is the unique ID from the browser tab's sessionStorage.
+func (pt *PageTracker) TrackError(err FrontendError, browserSessionID string) {
+	sessionID := pt.findSessionByBrowserSession(browserSessionID)
+	if sessionID == "" {
+		// Fall back to URL matching if browser session not found
+		sessionID = pt.findSessionByURL(err.URL)
+	}
 	if sessionID == "" {
 		return
 	}
@@ -88,14 +95,26 @@ func (pt *PageTracker) TrackError(err FrontendError) {
 	}
 
 	session := val.(*PageSession)
+
+	// Update browser session mapping if not set
+	if session.BrowserSession == "" && browserSessionID != "" {
+		session.BrowserSession = browserSessionID
+		pt.browserSessionToPage.Store(browserSessionID, sessionID)
+	}
+
 	session.Errors = append(session.Errors, err)
 	session.LastActivity = time.Now()
 	pt.sessions.Store(sessionID, session)
 }
 
 // TrackPerformance associates performance metrics with a page session.
-func (pt *PageTracker) TrackPerformance(perf PerformanceMetric) {
-	sessionID := pt.findSessionByURL(perf.URL)
+// browserSessionID is the unique ID from the browser tab's sessionStorage.
+func (pt *PageTracker) TrackPerformance(perf PerformanceMetric, browserSessionID string) {
+	sessionID := pt.findSessionByBrowserSession(browserSessionID)
+	if sessionID == "" {
+		// Fall back to URL matching if browser session not found
+		sessionID = pt.findSessionByURL(perf.URL)
+	}
 	if sessionID == "" {
 		return
 	}
@@ -106,14 +125,26 @@ func (pt *PageTracker) TrackPerformance(perf PerformanceMetric) {
 	}
 
 	session := val.(*PageSession)
+
+	// Update browser session mapping if not set
+	if session.BrowserSession == "" && browserSessionID != "" {
+		session.BrowserSession = browserSessionID
+		pt.browserSessionToPage.Store(browserSessionID, sessionID)
+	}
+
 	session.Performance = &perf
 	session.LastActivity = time.Now()
 	pt.sessions.Store(sessionID, session)
 }
 
 // TrackInteraction associates a user interaction event with a page session.
-func (pt *PageTracker) TrackInteraction(interaction InteractionEvent) {
-	sessionID := pt.findSessionByURL(interaction.URL)
+// browserSessionID is the unique ID from the browser tab's sessionStorage.
+func (pt *PageTracker) TrackInteraction(interaction InteractionEvent, browserSessionID string) {
+	sessionID := pt.findSessionByBrowserSession(browserSessionID)
+	if sessionID == "" {
+		// Fall back to URL matching if browser session not found
+		sessionID = pt.findSessionByURL(interaction.URL)
+	}
 	if sessionID == "" {
 		return
 	}
@@ -125,6 +156,12 @@ func (pt *PageTracker) TrackInteraction(interaction InteractionEvent) {
 
 	session := val.(*PageSession)
 	session.InteractionCount++
+
+	// Update browser session mapping if not set
+	if session.BrowserSession == "" && browserSessionID != "" {
+		session.BrowserSession = browserSessionID
+		pt.browserSessionToPage.Store(browserSessionID, sessionID)
+	}
 
 	// Maintain bounded history using circular buffer behavior
 	if len(session.Interactions) < MaxInteractionsPerSession {
@@ -140,8 +177,13 @@ func (pt *PageTracker) TrackInteraction(interaction InteractionEvent) {
 }
 
 // TrackMutation associates a DOM mutation event with a page session.
-func (pt *PageTracker) TrackMutation(mutation MutationEvent) {
-	sessionID := pt.findSessionByURL(mutation.URL)
+// browserSessionID is the unique ID from the browser tab's sessionStorage.
+func (pt *PageTracker) TrackMutation(mutation MutationEvent, browserSessionID string) {
+	sessionID := pt.findSessionByBrowserSession(browserSessionID)
+	if sessionID == "" {
+		// Fall back to URL matching if browser session not found
+		sessionID = pt.findSessionByURL(mutation.URL)
+	}
 	if sessionID == "" {
 		return
 	}
@@ -153,6 +195,12 @@ func (pt *PageTracker) TrackMutation(mutation MutationEvent) {
 
 	session := val.(*PageSession)
 	session.MutationCount++
+
+	// Update browser session mapping if not set
+	if session.BrowserSession == "" && browserSessionID != "" {
+		session.BrowserSession = browserSessionID
+		pt.browserSessionToPage.Store(browserSessionID, sessionID)
+	}
 
 	// Maintain bounded history using circular buffer behavior
 	if len(session.Mutations) < MaxMutationsPerSession {
@@ -202,6 +250,7 @@ func (pt *PageTracker) GetSession(sessionID string) (*PageSession, bool) {
 func (pt *PageTracker) Clear() {
 	pt.sessions = sync.Map{}
 	pt.urlToSession = sync.Map{}
+	pt.browserSessionToPage = sync.Map{}
 	pt.sessionSeq.Store(0)
 }
 
@@ -266,6 +315,18 @@ func (pt *PageTracker) findSessionForResource(entry HTTPLogEntry) string {
 
 	// Fall back to finding most recent active session with same origin
 	return pt.findMostRecentSession(entry.URL)
+}
+
+// findSessionByBrowserSession finds a session ID by browser session ID.
+func (pt *PageTracker) findSessionByBrowserSession(browserSessionID string) string {
+	if browserSessionID == "" {
+		return ""
+	}
+	val, ok := pt.browserSessionToPage.Load(browserSessionID)
+	if ok {
+		return val.(string)
+	}
+	return ""
 }
 
 // findSessionByURL finds a session ID for a given URL.

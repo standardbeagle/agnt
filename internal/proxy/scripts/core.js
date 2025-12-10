@@ -12,6 +12,32 @@
   var reconnectAttempts = 0;
   var MAX_RECONNECT_ATTEMPTS = 5;
 
+  // Session ID - unique per browser tab/window, persists across page navigations
+  // Uses sessionStorage so each tab gets its own ID
+  var SESSION_STORAGE_KEY = '__devtool_session_id';
+  var sessionId = null;
+
+  function getOrCreateSessionId() {
+    if (sessionId) return sessionId;
+
+    try {
+      sessionId = sessionStorage.getItem(SESSION_STORAGE_KEY);
+      if (!sessionId) {
+        // Generate a unique session ID: timestamp + random
+        sessionId = 'sess-' + Date.now().toString(36) + '-' + Math.random().toString(36).substr(2, 9);
+        sessionStorage.setItem(SESSION_STORAGE_KEY, sessionId);
+      }
+    } catch (e) {
+      // sessionStorage not available (private mode, etc)
+      // Fall back to in-memory ID (won't persist across navigations)
+      sessionId = 'sess-' + Date.now().toString(36) + '-' + Math.random().toString(36).substr(2, 9);
+    }
+    return sessionId;
+  }
+
+  // Initialize session ID immediately
+  getOrCreateSessionId();
+
   // WebSocket connection
   function connect() {
     try {
@@ -120,7 +146,12 @@
   function send(type, data) {
     if (ws && ws.readyState === WebSocket.OPEN) {
       try {
-        ws.send(JSON.stringify({ type: type, data: data, url: window.location.href }));
+        ws.send(JSON.stringify({
+          type: type,
+          data: data,
+          url: window.location.href,
+          session_id: getOrCreateSessionId()
+        }));
       } catch (err) {
         console.error('[DevTool] Failed to send metric:', err);
       }
@@ -221,6 +252,7 @@
     ws: function() { return ws; },
     isConnected: function() {
       return ws && ws.readyState === WebSocket.OPEN;
-    }
+    },
+    getSessionId: getOrCreateSessionId
   };
 })();

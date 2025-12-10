@@ -11,7 +11,9 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
+	"time"
 )
 
 var (
@@ -152,6 +154,10 @@ func (sm *SocketManager) Path() string {
 }
 
 // checkExisting checks if another daemon is already running.
+// It performs a multi-layered check:
+// 1. Read PID file and check if process exists
+// 2. If process exists, verify it's actually a daemon by checking cmdline
+// 3. Try to connect to socket to verify daemon is responsive
 func (sm *SocketManager) checkExisting() error {
 	// Read PID file
 	data, err := os.ReadFile(sm.pidFile)
@@ -170,13 +176,35 @@ func (sm *SocketManager) checkExisting() error {
 	}
 
 	// Check if process is running
-	if isProcessRunning(pid) {
-		return ErrDaemonRunning
+	if !isProcessRunning(pid) {
+		// Process not running, clean up stale PID file
+		os.Remove(sm.pidFile)
+		return nil
 	}
 
-	// Process not running, clean up stale PID file
-	os.Remove(sm.pidFile)
-	return nil
+	// Process exists - verify it's actually our daemon by checking cmdline
+	if !isDaemonProcess(pid) {
+		// PID was recycled by a different process, clean up
+		os.Remove(sm.pidFile)
+		return nil
+	}
+
+	// Process appears to be daemon - try to connect to verify it's responsive
+	conn, err := net.DialTimeout("unix", sm.config.Path, 500*time.Millisecond)
+	if err != nil {
+		// Daemon process exists but isn't responding - it's stuck/zombie
+		// Kill it aggressively
+		if killErr := syscall.Kill(pid, syscall.SIGKILL); killErr == nil {
+			// Wait briefly for process to die
+			time.Sleep(100 * time.Millisecond)
+		}
+		os.Remove(sm.pidFile)
+		return nil
+	}
+	conn.Close()
+
+	// Daemon is running and responsive
+	return ErrDaemonRunning
 }
 
 // cleanupStale removes a stale socket file if it exists.
@@ -252,6 +280,91 @@ func isProcessRunning(pid int) bool {
 	// Sending signal 0 checks if process exists without actually signaling
 	err := syscall.Kill(pid, 0)
 	return err == nil
+}
+
+// isDaemonProcess checks if the process with the given PID is actually a daemon process.
+// This prevents issues when PIDs are recycled by the kernel.
+func isDaemonProcess(pid int) bool {
+	// Read the process cmdline from /proc
+	cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+	if err != nil {
+		return false
+	}
+
+	// cmdline is null-separated, convert to string
+	cmd := string(cmdline)
+
+	// Check if it's one of our daemon processes
+	// Look for "daemon" and "start" or "agnt" or "devtool-mcp" in cmdline
+	return (strings.Contains(cmd, "daemon") && strings.Contains(cmd, "start")) ||
+		strings.Contains(cmd, "agnt-daemon") ||
+		strings.Contains(cmd, "devtool-mcp-daemon")
+}
+
+// CleanupZombieDaemons finds and kills any zombie daemon processes that aren't
+// responding on their socket. This is called during startup to clean up any
+// leftover processes from previous runs.
+func CleanupZombieDaemons(socketPath string) int {
+	cleaned := 0
+
+	// Read all /proc entries to find daemon processes
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return 0
+	}
+
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil {
+			continue // Not a PID directory
+		}
+
+		// Skip our own process
+		if pid == os.Getpid() {
+			continue
+		}
+
+		// Check if this is a daemon process
+		if !isDaemonProcess(pid) {
+			continue
+		}
+
+		// Check if this daemon is for our socket path
+		cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+		if err != nil {
+			continue
+		}
+
+		// Check if this daemon is using our socket
+		if !strings.Contains(string(cmdline), socketPath) {
+			continue
+		}
+
+		// Found a daemon for our socket - check if it's responsive
+		conn, err := net.DialTimeout("unix", socketPath, 200*time.Millisecond)
+		if err == nil {
+			conn.Close()
+			continue // Daemon is responsive, leave it alone
+		}
+
+		// Daemon is not responsive - kill it
+		if err := syscall.Kill(pid, syscall.SIGKILL); err == nil {
+			cleaned++
+		}
+	}
+
+	// Clean up stale socket and PID files if we killed anything
+	if cleaned > 0 {
+		time.Sleep(100 * time.Millisecond) // Give processes time to die
+		os.Remove(socketPath)
+		os.Remove(socketPath + ".pid")
+	}
+
+	return cleaned
 }
 
 // isConnectionRefused checks if the error is a connection refused error.

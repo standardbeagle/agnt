@@ -1100,6 +1100,7 @@ func convertPageSession(session *proxy.PageSession, includeDetails bool) map[str
 	result := map[string]interface{}{
 		"id":                session.ID,
 		"url":               session.URL,
+		"browser_session":   session.BrowserSession,
 		"page_title":        session.PageTitle,
 		"start_time":        session.StartTime,
 		"last_activity":     session.LastActivity,

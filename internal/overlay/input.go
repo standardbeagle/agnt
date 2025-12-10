@@ -8,14 +8,44 @@ import (
 	"time"
 )
 
+// BashRunner is an interface for running bash commands via the daemon.
+type BashRunner interface {
+	RunBashCommand(command string) (processID string, err error)
+}
+
+// ProcessOutputFetcher is an interface for fetching process output from the daemon.
+type ProcessOutputFetcher interface {
+	// GetProcessOutput fetches the last N lines of output for a process.
+	GetProcessOutput(processID string, tailLines int) (string, error)
+}
+
+// DaemonConnector is an interface for connecting to and managing the daemon.
+type DaemonConnector interface {
+	// Connect attempts to connect to the daemon, auto-starting it if needed.
+	// Returns nil on success, or an error describing why the connection failed.
+	Connect() error
+	// IsConnected returns true if currently connected to the daemon.
+	IsConnected() bool
+}
+
 // InputRouter routes input between the PTY and the overlay.
 type InputRouter struct {
-	ptmx      *os.File
-	overlay   *Overlay
-	hotkey    byte
-	running   atomic.Bool
-	done      chan struct{}
-	escReader *EscapeSequenceReader
+	ptmx            *os.File
+	overlay         *Overlay
+	hotkey          byte
+	running         atomic.Bool
+	done            chan struct{}
+	escReader       *EscapeSequenceReader
+	bashRunner      BashRunner
+	outputFetcher   ProcessOutputFetcher
+	daemonConnector DaemonConnector
+	statusFetcher   *StatusFetcher
+
+	// Process viewer state
+	viewerActive bool
+
+	// Last error from daemon connection attempt
+	lastDaemonError string
 }
 
 // NewInputRouter creates a new InputRouter.
@@ -27,6 +57,31 @@ func NewInputRouter(ptmx *os.File, overlay *Overlay, hotkey byte) *InputRouter {
 		done:      make(chan struct{}),
 		escReader: NewEscapeSequenceReader(),
 	}
+}
+
+// SetBashRunner sets the bash runner for executing bash commands via the daemon.
+func (r *InputRouter) SetBashRunner(runner BashRunner) {
+	r.bashRunner = runner
+}
+
+// SetOutputFetcher sets the output fetcher for viewing process output.
+func (r *InputRouter) SetOutputFetcher(fetcher ProcessOutputFetcher) {
+	r.outputFetcher = fetcher
+}
+
+// SetDaemonConnector sets the daemon connector for connecting to the daemon.
+func (r *InputRouter) SetDaemonConnector(connector DaemonConnector) {
+	r.daemonConnector = connector
+}
+
+// SetStatusFetcher sets the status fetcher for refreshing after connection.
+func (r *InputRouter) SetStatusFetcher(fetcher *StatusFetcher) {
+	r.statusFetcher = fetcher
+}
+
+// GetLastDaemonError returns the last error from daemon connection attempt.
+func (r *InputRouter) GetLastDaemonError() string {
+	return r.lastDaemonError
 }
 
 // Run starts routing input from stdin to either the overlay or PTY.
@@ -85,6 +140,12 @@ func (r *InputRouter) Run() error {
 			if escTimer != nil {
 				escTimer.Stop()
 				escTimer = nil
+			}
+
+			// If process viewer is active, any key closes it
+			if r.viewerActive {
+				r.closeProcessViewer()
+				continue
 			}
 
 			if r.overlay.IsActive() {
@@ -175,6 +236,16 @@ func (r *InputRouter) handleMenuKey(key string) {
 
 	case "q": // Quick close
 		r.overlay.hideMenu()
+		return
+	}
+
+	// Check for 1-9 to view process output (only in main menu)
+	if len(key) == 1 && key[0] >= '1' && key[0] <= '9' {
+		processNum := int(key[0] - '0')
+		r.overlay.hideMenu()
+		r.overlay.mu.Unlock()
+		r.showProcessViewer(processNum)
+		r.overlay.mu.Lock()
 		return
 	}
 
@@ -277,8 +348,16 @@ func (r *InputRouter) executeMenuItem(item MenuItem) {
 		r.overlay.inputPrompt = "Bash Command"
 		r.overlay.inputBuffer = ""
 		r.overlay.inputAction = func(cmd string) error {
-			// Type the command into the PTY
-			r.ptmx.WriteString(cmd + "\n")
+			if r.bashRunner != nil {
+				// Run the command via the daemon (tracked and logged)
+				_, err := r.bashRunner.RunBashCommand(cmd)
+				if err != nil {
+					return err
+				}
+			} else {
+				// Fallback: Type the command into the PTY
+				r.ptmx.WriteString(cmd + "\n")
+			}
 			return nil
 		}
 		r.overlay.draw()
@@ -312,6 +391,34 @@ func (r *InputRouter) executeMenuItem(item MenuItem) {
 		r.overlay.menuStack = append(r.overlay.menuStack, menu)
 		r.overlay.selectedIndex = 0
 		r.overlay.draw()
+
+	case ActionConnectDaemon:
+		r.lastDaemonError = ""
+		if r.daemonConnector != nil {
+			// Release lock during potentially slow operation
+			r.overlay.mu.Unlock()
+			err := r.daemonConnector.Connect()
+			r.overlay.mu.Lock()
+
+			if err != nil {
+				r.lastDaemonError = err.Error()
+				// Show error menu
+				errorMenu := ErrorMenu("Connection Failed", err.Error())
+				r.overlay.menuStack = append(r.overlay.menuStack, errorMenu)
+				r.overlay.selectedIndex = 0
+				r.overlay.draw()
+			} else {
+				// Connection successful - refresh status and switch to main menu
+				r.overlay.mu.Unlock()
+				if r.statusFetcher != nil {
+					r.statusFetcher.Refresh()
+				}
+				r.overlay.mu.Lock()
+				r.overlay.menuStack = []Menu{MainMenu()}
+				r.overlay.selectedIndex = 0
+				r.overlay.draw()
+			}
+		}
 
 	default:
 		// Trigger action callback
@@ -420,4 +527,39 @@ func (r *EscapeSequenceReader) Reset() {
 // IsPending returns true if we're in the middle of parsing an escape sequence.
 func (r *EscapeSequenceReader) IsPending() bool {
 	return r.state != 0
+}
+
+// showProcessViewer shows the output of the Nth process on the alt screen.
+func (r *InputRouter) showProcessViewer(n int) {
+	if r.outputFetcher == nil {
+		return
+	}
+
+	// Get the process list from overlay status
+	status := r.overlay.GetStatus()
+	if n < 1 || n > len(status.Processes) {
+		return
+	}
+
+	proc := status.Processes[n-1]
+
+	// Fetch the process output
+	output, err := r.outputFetcher.GetProcessOutput(proc.ID, 100)
+	if err != nil {
+		output = "Error fetching output: " + err.Error()
+	}
+
+	// Enter alt screen and display output
+	r.viewerActive = true
+	r.overlay.renderer.EnterAltScreen()
+	r.overlay.renderer.DrawProcessOutput(proc.ID, proc.Command, proc.State, output)
+}
+
+// closeProcessViewer closes the process viewer and returns to main screen.
+func (r *InputRouter) closeProcessViewer() {
+	if !r.viewerActive {
+		return
+	}
+	r.viewerActive = false
+	r.overlay.renderer.ExitAltScreen()
 }

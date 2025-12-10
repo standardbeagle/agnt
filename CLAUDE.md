@@ -193,6 +193,31 @@ Browser Indicator → WebSocket → devtool-mcp Proxy → HTTP → Agent Overlay
 
 This allows the floating indicator in the browser to send messages that get typed into Claude Code (or any AI tool) as user input.
 
+### PTY Output Protection
+
+The overlay uses a multi-layer protection system to prevent the child process from corrupting the indicator bar or menu:
+
+**Output Chain**: `PTY → ProtectedWriter (filter) → OutputGate → os.Stdout`
+
+**ProtectedWriter** (`internal/overlay/filter.go`):
+- Parses ANSI escape sequences in PTY output stream
+- Blocks alternate screen sequences (`\x1b[?1049h`, `\x1b[?47h`, `\x1b[?1047h`) to keep child on main screen
+- Enforces scroll region by rewriting `\x1b[r` to `\x1b[1;Nr` (protects bottom row)
+- Clamps cursor position moves that target protected bottom row
+- Triggers redraw on clear screen (`\x1b[2J`) and terminal reset (`\x1bc`)
+- Periodic diff-gated redraw as safety net (200ms interval)
+
+**OutputGate** (`internal/overlay/gate.go`):
+- Freeze/unfreeze mechanism for PTY output during menu display
+- When frozen (menu open), all PTY output is discarded (not buffered)
+- Prevents PTY output from corrupting the alternate screen where menu is drawn
+- Overlay calls `gate.Freeze()` on menu open, `gate.Unfreeze()` on menu close
+
+**Key Design Decisions**:
+- Filter blocks alt screen instead of tracking it - simpler and keeps scroll region protection active
+- Gate discards rather than buffers - avoids memory growth during long menu sessions
+- Scroll region is re-enforced after resize and terminal reset events
+
 ## Architecture Overview
 
 ### Five-Layer Architecture
@@ -524,6 +549,8 @@ __devtool.sketch.clear()          // Clear all elements
 - `internal/project/detector_test.go`: Project type detection for all supported types
 - `internal/proxy/logger_test.go`: Traffic logger circular buffer, filtering, concurrent writes
 - `internal/proxy/injector_test.go`: JavaScript injection strategies, HTML detection
+- `internal/overlay/filter_test.go`: ANSI sequence parsing, scroll region enforcement, cursor clamping
+- `internal/overlay/gate_test.go`: Freeze/unfreeze behavior, callback invocation, concurrent access
 
 **Integration testing pattern**:
 ```go

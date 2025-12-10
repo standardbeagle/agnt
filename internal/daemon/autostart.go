@@ -74,6 +74,9 @@ func (c *AutoStartClient) Connect() error {
 
 // startDaemon starts the daemon process in the background.
 func (c *AutoStartClient) startDaemon() error {
+	// First, aggressively clean up any zombie daemon processes
+	CleanupZombieDaemons(c.config.SocketPath)
+
 	execPath := c.config.DaemonPath
 	if execPath == "" {
 		// Look for daemon binary next to current executable

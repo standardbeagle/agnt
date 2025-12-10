@@ -14,6 +14,7 @@ const (
 	ActionShowLogs
 	ActionRefreshStatus
 	ActionToggleIndicator
+	ActionConnectDaemon
 	ActionClose
 )
 
@@ -44,6 +45,34 @@ func MainMenu() Menu {
 			{Label: "Refresh status", Shortcut: 's', Action: ActionRefreshStatus},
 			{Label: "Toggle indicator", Shortcut: 'i', Action: ActionToggleIndicator},
 			{Label: "Close", Shortcut: 'q', Action: ActionClose},
+		},
+	}
+}
+
+// DisconnectedMenu returns a menu for when the daemon is not connected.
+func DisconnectedMenu() Menu {
+	return Menu{
+		Title: "agnt (disconnected)",
+		Items: []MenuItem{
+			{Label: "Connect to daemon", Shortcut: 'c', Action: ActionConnectDaemon},
+			{Label: "Toggle indicator", Shortcut: 'i', Action: ActionToggleIndicator},
+			{Label: "Close", Shortcut: 'q', Action: ActionClose},
+		},
+	}
+}
+
+// ErrorMenu creates a menu displaying an error message with a retry option.
+func ErrorMenu(title, message string) Menu {
+	// Truncate message if too long
+	if len(message) > 60 {
+		message = message[:57] + "..."
+	}
+	return Menu{
+		Title: title,
+		Items: []MenuItem{
+			{Label: message, Action: ActionNone}, // Display-only item
+			{Label: "Retry", Shortcut: 'r', Action: ActionConnectDaemon},
+			{Label: "Back", Shortcut: 'b', Action: ActionClose},
 		},
 	}
 }

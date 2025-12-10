@@ -3,6 +3,7 @@
 package daemon
 
 import (
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -118,7 +119,7 @@ func TestSocketManager_Listen(t *testing.T) {
 	// Second listen should fail
 	sm2 := NewSocketManager(config)
 	_, err = sm2.Listen()
-	if err != ErrDaemonRunning {
+	if !errors.Is(err, ErrDaemonRunning) {
 		t.Errorf("Expected ErrDaemonRunning, got %v", err)
 	}
 

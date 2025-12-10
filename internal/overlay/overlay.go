@@ -14,10 +14,11 @@ import (
 type State int
 
 const (
-	StateHidden    State = iota // No overlay visible, full PTY passthrough
-	StateIndicator              // Status bar visible at bottom
-	StateMenu                   // Popup menu active
-	StateInput                  // Text input mode
+	StateHidden        State = iota // No overlay visible, full PTY passthrough
+	StateIndicator                  // Status bar visible at bottom
+	StateMenu                       // Popup menu active
+	StateInput                      // Text input mode
+	StateProcessViewer              // Process output viewer (temporary, while key held)
 )
 
 // ConnectionStatus represents daemon connection state.
@@ -265,7 +266,17 @@ func (o *Overlay) showMenu() {
 	o.renderer.EnterAltScreen()
 
 	o.state.Store(int32(StateMenu))
-	o.menuStack = []Menu{MainMenu()}
+
+	// Check daemon connection status and show appropriate menu
+	o.statusMu.RLock()
+	connected := o.status.DaemonConnected == ConnectionConnected
+	o.statusMu.RUnlock()
+
+	if connected {
+		o.menuStack = []Menu{MainMenu()}
+	} else {
+		o.menuStack = []Menu{DisconnectedMenu()}
+	}
 	o.selectedIndex = 0
 	o.draw()
 }
@@ -305,7 +316,12 @@ func (o *Overlay) draw() {
 	case StateMenu:
 		if len(o.menuStack) > 0 {
 			o.renderer.DrawIndicator(status)
-			o.renderer.DrawMenu(o.menuStack[len(o.menuStack)-1], o.selectedIndex)
+			// Use DrawMenuWithProcesses for the main menu (first in stack)
+			if len(o.menuStack) == 1 {
+				o.renderer.DrawMenuWithProcesses(o.menuStack[0], o.selectedIndex, status.Processes)
+			} else {
+				o.renderer.DrawMenu(o.menuStack[len(o.menuStack)-1], o.selectedIndex)
+			}
 		}
 	case StateInput:
 		o.renderer.DrawIndicator(status)

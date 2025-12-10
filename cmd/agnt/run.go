@@ -129,11 +129,10 @@ func spinner(message string) func() {
 		for {
 			select {
 			case <-done:
-				// Clear the spinner line
-				fmt.Fprintf(os.Stderr, "\r\033[K")
+				// No need to clear - screen clear after PTY start handles it
 				return
 			case <-ticker.C:
-				fmt.Fprintf(os.Stderr, "\r%s %s", frames[i%len(frames)], message)
+				fmt.Printf("\r%s %s", frames[i%len(frames)], message)
 				i++
 			}
 		}
@@ -164,6 +163,10 @@ func runWithPTY(ctx context.Context, args []string, port int) error {
 	if err != nil {
 		return fmt.Errorf("failed to start pty: %w", err)
 	}
+
+	// Clear screen before child starts outputting to prevent visual artifacts
+	// from previous terminal content showing through
+	fmt.Fprint(os.Stdout, "\x1b[2J\x1b[H") // Clear screen + move cursor home
 
 	defer func() {
 		_ = ptmx.Close()
@@ -235,6 +238,15 @@ func runWithPTY(ctx context.Context, args []string, port int) error {
 		termOverlay.SetGate(outputGate) // Give overlay control of the gate
 		inputRouter = overlay.NewInputRouter(ptmx, termOverlay, overlayHotkey)
 
+		// Set up bash runner, output fetcher, and daemon connector for daemon communication
+		socketPath, _ := rootCmd.Flags().GetString("socket")
+		bashRunner := overlay.NewDaemonBashRunner(socketPath)
+		inputRouter.SetBashRunner(bashRunner)
+		outputFetcher := overlay.NewDaemonOutputFetcher(socketPath)
+		inputRouter.SetOutputFetcher(outputFetcher)
+		daemonConnector := overlay.NewDaemonConnector(socketPath)
+		inputRouter.SetDaemonConnector(daemonConnector)
+
 		// Create output filter to protect the indicator bar from being overwritten
 		// Filter writes to gate (not directly to stdout)
 		if showIndicator {
@@ -250,11 +262,13 @@ func runWithPTY(ctx context.Context, args []string, port int) error {
 			outputFilter = overlay.NewProtectedWriter(outputGate, width, height, filterCfg)
 		}
 
-		// Start status fetcher to update the indicator
-		socketPath, _ := rootCmd.Flags().GetString("socket")
+		// Start status fetcher to update the indicator (reusing socketPath from above)
 		statusFetcher = overlay.NewStatusFetcher(socketPath, termOverlay, 2*time.Second)
 		statusFetcher.Start(ctx)
 		defer statusFetcher.Stop()
+
+		// Set status fetcher on input router so it can refresh after daemon connection
+		inputRouter.SetStatusFetcher(statusFetcher)
 	}
 
 	// Create a channel for signaling completion

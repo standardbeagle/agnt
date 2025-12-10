@@ -383,6 +383,140 @@ func (r *Renderer) DrawMenu(menu Menu, selectedIndex int) {
 	r.write(CursorRestore + CursorShow)
 }
 
+// DrawMenuWithProcesses draws a popup menu with a process list below it.
+func (r *Renderer) DrawMenuWithProcesses(menu Menu, selectedIndex int, processes []ProcessInfo) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Calculate menu dimensions
+	menuWidth := len(menu.Title) + 4
+	for _, item := range menu.Items {
+		itemWidth := len(item.Label) + 6 // "[x] " prefix + padding
+		if itemWidth > menuWidth {
+			menuWidth = itemWidth
+		}
+	}
+
+	// Also consider process list width
+	for i, proc := range processes {
+		if i >= 9 {
+			break
+		}
+		procLabel := fmt.Sprintf(" [%d] %s (%s)", i+1, proc.ID, proc.State)
+		if len(procLabel)+2 > menuWidth {
+			menuWidth = len(procLabel) + 2
+		}
+	}
+
+	menuWidth = min(menuWidth+4, r.width-4) // Add padding, cap at screen width
+
+	// Calculate height: menu items + process list + separators
+	processCount := min(len(processes), 9)
+	menuHeight := len(menu.Items) + 4 // Title + separator + items + bottom
+	if processCount > 0 {
+		menuHeight += processCount + 2 // separator + "Processes:" + items
+	}
+
+	// Calculate position (centered, but above indicator bar)
+	startRow := (r.height-menuHeight)/2 - 1
+	if startRow < 1 {
+		startRow = 1
+	}
+	startCol := (r.width - menuWidth) / 2
+	if startCol < 1 {
+		startCol = 1
+	}
+
+	// Track the region for later clearing (only on first draw, not updates)
+	if r.currentMenuRegion == nil {
+		r.currentMenuRegion = &ScreenRegion{
+			Row:    startRow,
+			Col:    startCol,
+			Width:  menuWidth,
+			Height: menuHeight,
+		}
+		r.overlayStack.Push(RegionMenu, *r.currentMenuRegion)
+	}
+
+	r.write(CursorSave + CursorHide)
+
+	// Draw box
+	r.drawBox(startRow, startCol, menuWidth, menuHeight, menu.Title)
+
+	// Draw menu items
+	currentRow := startRow + 2
+	for i, item := range menu.Items {
+		r.moveTo(currentRow, startCol+1)
+
+		if i == selectedIndex {
+			r.write(BgBlue + FgWhite + Bold)
+		}
+
+		// Format: " [x] Label     "
+		shortcut := " "
+		if item.Shortcut != 0 {
+			shortcut = string(item.Shortcut)
+		}
+
+		label := fmt.Sprintf(" [%s] %s", shortcut, item.Label)
+		label = r.padRight(label, menuWidth-2)
+		r.write(label)
+
+		if i == selectedIndex {
+			r.write(Reset)
+		}
+		currentRow++
+	}
+
+	// Draw process list if there are any
+	if processCount > 0 {
+		// Draw separator
+		r.moveTo(currentRow, startCol+1)
+		r.write(FgBrightBlack)
+		r.write(r.padCenter("─ Processes (1-9 to view) ─", menuWidth-2))
+		r.write(Reset)
+		currentRow++
+
+		// Draw processes
+		for i, proc := range processes {
+			if i >= 9 {
+				break
+			}
+			r.moveTo(currentRow, startCol+1)
+
+			stateColor := FgBrightBlack
+			if proc.State == "running" {
+				stateColor = FgGreen
+			} else if proc.State == "failed" {
+				stateColor = FgRed
+			}
+
+			label := fmt.Sprintf(" [%s%d%s] %s %s(%s)%s",
+				FgCyan, i+1, Reset,
+				proc.ID,
+				stateColor, proc.State, Reset)
+			r.write(label)
+			// Pad the rest
+			visLen := r.estimateVisibleLength(label)
+			if visLen < menuWidth-2 {
+				r.write(strings.Repeat(" ", menuWidth-2-visLen))
+			}
+			currentRow++
+		}
+	}
+
+	// Draw footer hint
+	footerRow := startRow + menuHeight - 1
+	r.moveTo(footerRow, startCol+1)
+	r.write(FgBrightBlack)
+	hint := " ↑↓ Navigate  Enter Select  Esc Close "
+	hint = r.padCenter(hint, menuWidth-2)
+	r.write(hint)
+	r.write(Reset)
+
+	r.write(CursorRestore + CursorShow)
+}
+
 // DrawInput draws a text input dialog.
 func (r *Renderer) DrawInput(prompt, value string) {
 	r.mu.Lock()
@@ -526,4 +660,50 @@ func (r *Renderer) padCenter(s string, width int) string {
 	leftPad := (width - visLen) / 2
 	rightPad := width - visLen - leftPad
 	return strings.Repeat(" ", leftPad) + s + strings.Repeat(" ", rightPad)
+}
+
+// DrawProcessOutput draws the process output viewer on the alt screen.
+func (r *Renderer) DrawProcessOutput(processID, command, state, output string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Clear screen and draw header
+	r.write(ClearScreen + CursorHome + CursorHide)
+
+	// Draw header bar
+	r.write(BgBrightBlack + FgWhite + Bold)
+	header := fmt.Sprintf(" Process: %s | Command: %s | State: %s ", processID, command, state)
+	header = r.padRight(header, r.width)
+	r.write(header)
+	r.write(Reset + "\n")
+
+	// Draw separator
+	r.write(FgBrightBlack + strings.Repeat("─", r.width) + Reset + "\n")
+
+	// Draw output lines (leave room for header, separator, and footer)
+	lines := strings.Split(output, "\n")
+	maxLines := r.height - 4 // header + separator + footer + blank
+
+	// Show last N lines if output is longer
+	startLine := 0
+	if len(lines) > maxLines {
+		startLine = len(lines) - maxLines
+	}
+
+	for i := startLine; i < len(lines); i++ {
+		line := lines[i]
+		// Truncate long lines
+		if len(line) > r.width {
+			line = line[:r.width-1] + "…"
+		}
+		r.write(line + "\n")
+	}
+
+	// Move to bottom and draw footer
+	r.moveTo(r.height, 1)
+	r.write(BgBrightBlack + FgWhite)
+	footer := " Press any key to close "
+	footer = r.padCenter(footer, r.width)
+	r.write(footer)
+	r.write(Reset)
 }

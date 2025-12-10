@@ -738,9 +738,10 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Read messages from frontend
 	for {
 		var msg struct {
-			Type string                 `json:"type"`
-			Data map[string]interface{} `json:"data"`
-			URL  string                 `json:"url"`
+			Type      string                 `json:"type"`
+			Data      map[string]interface{} `json:"data"`
+			URL       string                 `json:"url"`
+			SessionID string                 `json:"session_id"`
 		}
 
 		err := conn.ReadJSON(&msg)
@@ -766,7 +767,7 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				URL:       msg.URL,
 			}
 			ps.logger.LogError(errEntry)
-			ps.pageTracker.TrackError(errEntry)
+			ps.pageTracker.TrackError(errEntry, msg.SessionID)
 
 		case "performance":
 			metric := PerformanceMetric{
@@ -795,7 +796,7 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			}
 
 			ps.logger.LogPerformance(metric)
-			ps.pageTracker.TrackPerformance(metric)
+			ps.pageTracker.TrackPerformance(metric, msg.SessionID)
 
 		case "custom_log":
 			ps.logger.LogCustom(CustomLog{
@@ -874,7 +875,7 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				if em, ok := eventData.(map[string]interface{}); ok {
 					interaction := parseInteractionEvent(em, id, timestamp, msg.URL)
 					ps.logger.LogInteraction(interaction)
-					ps.pageTracker.TrackInteraction(interaction)
+					ps.pageTracker.TrackInteraction(interaction, msg.SessionID)
 				}
 			}
 
@@ -885,7 +886,7 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				if em, ok := eventData.(map[string]interface{}); ok {
 					mutation := parseMutationEvent(em, id, timestamp, msg.URL)
 					ps.logger.LogMutation(mutation)
-					ps.pageTracker.TrackMutation(mutation)
+					ps.pageTracker.TrackMutation(mutation, msg.SessionID)
 				}
 			}
 

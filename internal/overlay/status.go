@@ -2,7 +2,10 @@ package overlay
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"devtool-mcp/internal/daemon"
@@ -259,4 +262,151 @@ func (f *StatusFetcher) fetchRecentErrors() ([]ErrorInfo, error) {
 	}
 
 	return errors, nil
+}
+
+// DaemonBashRunner implements BashRunner using the daemon client.
+type DaemonBashRunner struct {
+	socketPath string
+	counter    atomic.Int64
+}
+
+// DaemonOutputFetcher implements ProcessOutputFetcher using the daemon client.
+type DaemonOutputFetcher struct {
+	socketPath string
+}
+
+// NewDaemonOutputFetcher creates a new DaemonOutputFetcher.
+func NewDaemonOutputFetcher(socketPath string) *DaemonOutputFetcher {
+	return &DaemonOutputFetcher{
+		socketPath: socketPath,
+	}
+}
+
+// GetProcessOutput fetches the last N lines of output for a process.
+func (f *DaemonOutputFetcher) GetProcessOutput(processID string, tailLines int) (string, error) {
+	// Create daemon client
+	opts := []daemon.ClientOption{}
+	if f.socketPath != "" {
+		opts = append(opts, daemon.WithSocketPath(f.socketPath))
+	}
+	client := daemon.NewClient(opts...)
+
+	if err := client.Connect(); err != nil {
+		return "", fmt.Errorf("failed to connect to daemon: %w", err)
+	}
+	defer client.Close()
+
+	// Fetch output with tail filter
+	filter := protocol.OutputFilter{
+		Stream: "combined",
+		Tail:   tailLines,
+	}
+
+	output, err := client.ProcOutput(processID, filter)
+	if err != nil {
+		return "", err
+	}
+
+	return output, nil
+}
+
+// NewDaemonBashRunner creates a new DaemonBashRunner.
+func NewDaemonBashRunner(socketPath string) *DaemonBashRunner {
+	return &DaemonBashRunner{
+		socketPath: socketPath,
+	}
+}
+
+// DaemonConnectorImpl implements DaemonConnector using auto-start client.
+type DaemonConnectorImpl struct {
+	socketPath string
+}
+
+// NewDaemonConnector creates a new DaemonConnector.
+func NewDaemonConnector(socketPath string) *DaemonConnectorImpl {
+	return &DaemonConnectorImpl{
+		socketPath: socketPath,
+	}
+}
+
+// Connect attempts to connect to the daemon, auto-starting it if needed.
+func (c *DaemonConnectorImpl) Connect() error {
+	socketPath := c.socketPath
+	if socketPath == "" {
+		socketPath = daemon.DefaultSocketPath()
+	}
+
+	// First clean up any zombie daemons
+	daemon.CleanupZombieDaemons(socketPath)
+
+	config := daemon.AutoStartConfig{
+		SocketPath:    socketPath,
+		StartTimeout:  5 * time.Second,
+		RetryInterval: 100 * time.Millisecond,
+		MaxRetries:    50,
+	}
+	client := daemon.NewAutoStartClient(config)
+
+	if err := client.Connect(); err != nil {
+		return err
+	}
+	client.Close()
+	return nil
+}
+
+// IsConnected returns true if currently connected to the daemon.
+func (c *DaemonConnectorImpl) IsConnected() bool {
+	socketPath := c.socketPath
+	if socketPath == "" {
+		socketPath = daemon.DefaultSocketPath()
+	}
+	return daemon.IsDaemonRunning(socketPath)
+}
+
+// RunBashCommand runs a bash command via the daemon and returns the process ID.
+func (r *DaemonBashRunner) RunBashCommand(command string) (string, error) {
+	// Create daemon client with auto-start capability
+	socketPath := r.socketPath
+	if socketPath == "" {
+		socketPath = daemon.DefaultSocketPath()
+	}
+	config := daemon.AutoStartConfig{
+		SocketPath:    socketPath,
+		StartTimeout:  5 * time.Second,
+		RetryInterval: 100 * time.Millisecond,
+		MaxRetries:    50,
+	}
+	client := daemon.NewAutoStartClient(config)
+
+	if err := client.Connect(); err != nil {
+		return "", fmt.Errorf("failed to connect to daemon: %w", err)
+	}
+	defer client.Close()
+
+	// Generate unique process ID
+	count := r.counter.Add(1)
+	processID := fmt.Sprintf("bash-%d-%d", time.Now().Unix(), count)
+
+	// Get current working directory
+	cwd, err := os.Getwd()
+	if err != nil {
+		cwd = "."
+	}
+
+	// Run the command via the daemon
+	runConfig := protocol.RunConfig{
+		ID:      processID,
+		Path:    cwd,
+		Mode:    "background",
+		Raw:     true,
+		Command: "sh",
+		Args:    []string{"-c", command},
+	}
+
+	_, err = client.Run(runConfig)
+	if err != nil {
+		return "", fmt.Errorf("failed to run command: %w", err)
+	}
+
+	return processID, nil
 }
