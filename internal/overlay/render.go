@@ -74,17 +74,17 @@ const (
 
 // Box drawing characters (Unicode).
 const (
-	BoxHorizontal      = "─"
-	BoxVertical        = "│"
-	BoxTopLeft         = "┌"
-	BoxTopRight        = "┐"
-	BoxBottomLeft      = "└"
-	BoxBottomRight     = "┘"
-	BoxVerticalRight   = "├"
-	BoxVerticalLeft    = "┤"
-	BoxHorizontalDown  = "┬"
-	BoxHorizontalUp    = "┴"
-	BoxCross           = "┼"
+	BoxHorizontal       = "─"
+	BoxVertical         = "│"
+	BoxTopLeft          = "┌"
+	BoxTopRight         = "┐"
+	BoxBottomLeft       = "└"
+	BoxBottomRight      = "┘"
+	BoxVerticalRight    = "├"
+	BoxVerticalLeft     = "┤"
+	BoxHorizontalDown   = "┬"
+	BoxHorizontalUp     = "┴"
+	BoxCross            = "┼"
 	BoxDoubleHorizontal = "═"
 	BoxDoubleVertical   = "║"
 )
@@ -229,7 +229,7 @@ func (r *Renderer) DrawIndicator(status Status) {
 	// Calculate padding
 	// Note: This is approximate due to ANSI codes; for accurate width we'd need to strip codes
 	visibleLen := r.estimateVisibleLength(statusText)
-	hotkeyLen := 6 // "Ctrl+O"
+	hotkeyLen := 6                                  // "Ctrl+O"
 	padding := r.width - visibleLen - hotkeyLen - 4 // 4 for " │ " separator and spaces
 
 	if padding < 1 {

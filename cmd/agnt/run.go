@@ -21,8 +21,8 @@ import (
 )
 
 var runCmd = &cobra.Command{
-	Use:                "run <command> [args...]",
-	Short:              "Run an AI coding tool with overlay features",
+	Use:   "run <command> [args...]",
+	Short: "Run an AI coding tool with overlay features",
 	Long: `Run any AI coding tool (Claude, Gemini, Copilot, etc.) with overlay features.
 
 The command is executed in a pseudo-terminal (PTY) that allows:
@@ -210,6 +210,8 @@ func runWithPTY(ctx context.Context, args []string, port int) error {
 	var termOverlay *overlay.Overlay
 	var inputRouter *overlay.InputRouter
 	var statusFetcher *overlay.StatusFetcher
+	var outputFilter *overlay.ProtectedWriter
+	var outputGate *overlay.OutputGate
 
 	if useTermOverlay {
 		cfg := overlay.DefaultConfig()
@@ -225,11 +227,28 @@ func runWithPTY(ctx context.Context, args []string, port int) error {
 			return nil
 		}
 
-		// No freeze/unfreeze needed - menus use alternate screen buffer
-		// which preserves and restores the main screen automatically
+		// Create output gate first - it's the final stage before stdout
+		// When menu is open, gate freezes (discards) PTY output to prevent corruption
+		outputGate = overlay.NewOutputGate(os.Stdout)
 
 		termOverlay = overlay.New(ptmx, width, height, cfg)
+		termOverlay.SetGate(outputGate) // Give overlay control of the gate
 		inputRouter = overlay.NewInputRouter(ptmx, termOverlay, overlayHotkey)
+
+		// Create output filter to protect the indicator bar from being overwritten
+		// Filter writes to gate (not directly to stdout)
+		if showIndicator {
+			filterCfg := overlay.FilterConfig{
+				ProtectBottomRows: 1,
+				RedrawInterval:    200 * time.Millisecond,
+				OnRedraw: func() {
+					if termOverlay != nil {
+						termOverlay.Redraw()
+					}
+				},
+			}
+			outputFilter = overlay.NewProtectedWriter(outputGate, width, height, filterCfg)
+		}
 
 		// Start status fetcher to update the indicator
 		socketPath, _ := rootCmd.Flags().GetString("socket")
@@ -243,7 +262,7 @@ func runWithPTY(ctx context.Context, args []string, port int) error {
 
 	var wg sync.WaitGroup
 
-	// Draw initial indicator bar after a brief delay for child to start
+	// Enforce scroll region and draw initial indicator bar after a brief delay for child to start
 	if termOverlay != nil && showIndicator {
 		wg.Add(1)
 		go func() {
@@ -254,6 +273,10 @@ func runWithPTY(ctx context.Context, args []string, port int) error {
 			case <-done:
 				return
 			case <-time.After(50 * time.Millisecond):
+				// Enforce scroll region before drawing indicator
+				if outputFilter != nil {
+					outputFilter.EnforceScrollRegion()
+				}
 				termOverlay.Redraw()
 			}
 		}()
@@ -286,6 +309,10 @@ func runWithPTY(ctx context.Context, args []string, port int) error {
 				if termOverlay != nil {
 					termOverlay.SetSize(w, h)
 				}
+				// Update output filter with new dimensions
+				if outputFilter != nil {
+					outputFilter.SetSize(w, h)
+				}
 			}
 		}
 	}()
@@ -301,11 +328,20 @@ func runWithPTY(ctx context.Context, args []string, port int) error {
 		}
 	}()
 
-	// Copy pty output to stdout
+	// Copy pty output to stdout (through filter and gate if enabled)
+	// Chain: PTY -> Filter (protects indicator) -> Gate (freezes for menu) -> Stdout
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		_, _ = io.Copy(os.Stdout, ptmx)
+		var outputDest io.Writer = os.Stdout
+		if outputFilter != nil {
+			// Filter -> Gate -> Stdout (filter already wraps gate)
+			outputDest = outputFilter
+		} else if outputGate != nil {
+			// Gate -> Stdout (no indicator, but still need freeze for menu)
+			outputDest = outputGate
+		}
+		_, _ = io.Copy(outputDest, ptmx)
 		close(done)
 	}()
 
@@ -323,6 +359,11 @@ func runWithPTY(ctx context.Context, args []string, port int) error {
 	// Stop input router if running
 	if inputRouter != nil {
 		inputRouter.Stop()
+	}
+
+	// Stop output filter if running
+	if outputFilter != nil {
+		outputFilter.Stop()
 	}
 
 	// Wait for the process

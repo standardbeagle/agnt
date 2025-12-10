@@ -206,11 +206,11 @@ type AttributeChange struct {
 
 // PanelMessage represents a message from the floating indicator panel.
 type PanelMessage struct {
-	ID          string              `json:"id"`
-	Timestamp   time.Time           `json:"timestamp"`
-	Message     string              `json:"message"`
-	Attachments []PanelAttachment   `json:"attachments,omitempty"`
-	URL         string              `json:"url"`
+	ID          string            `json:"id"`
+	Timestamp   time.Time         `json:"timestamp"`
+	Message     string            `json:"message"`
+	Attachments []PanelAttachment `json:"attachments,omitempty"`
+	URL         string            `json:"url"`
 }
 
 // PanelAttachment represents an attachment to a panel message.
@@ -435,9 +435,9 @@ type LoggerStats struct {
 
 // LogFilter specifies criteria for querying logs.
 type LogFilter struct {
-	Types            []LogEntryType `json:"types,omitempty"`             // Filter by entry type
-	Methods          []string       `json:"methods,omitempty"`           // HTTP methods
-	URLPattern       string         `json:"url_pattern,omitempty"`       // URL substring match
+	Types            []LogEntryType `json:"types,omitempty"`       // Filter by entry type
+	Methods          []string       `json:"methods,omitempty"`     // HTTP methods
+	URLPattern       string         `json:"url_pattern,omitempty"` // URL substring match
 	StatusCodes      []int          `json:"status_codes,omitempty"`
 	Since            *time.Time     `json:"since,omitempty"`
 	Until            *time.Time     `json:"until,omitempty"`

@@ -18,7 +18,7 @@ type ScreenRegion struct {
 // ScreenBuffer stores saved screen content for restoration.
 type ScreenBuffer struct {
 	Region  ScreenRegion
-	Content [][]rune // [row][col] - stored content
+	Content [][]rune   // [row][col] - stored content
 	Styles  [][]string // [row][col] - ANSI style codes (if we track them)
 }
 
@@ -150,9 +150,9 @@ func (sm *ScreenManager) DrawOverlay(name string, row, col, width, height int, d
 
 // OverlayStack manages a stack of overlays for proper z-order handling.
 type OverlayStack struct {
-	sm     *ScreenManager
-	stack  []string // overlay names in z-order (bottom to top)
-	mu     sync.Mutex
+	sm    *ScreenManager
+	stack []string // overlay names in z-order (bottom to top)
+	mu    sync.Mutex
 }
 
 // NewOverlayStack creates a new overlay stack.

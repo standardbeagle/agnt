@@ -10,11 +10,11 @@ import (
 
 // InputRouter routes input between the PTY and the overlay.
 type InputRouter struct {
-	ptmx    *os.File
-	overlay *Overlay
-	hotkey  byte
-	running atomic.Bool
-	done    chan struct{}
+	ptmx      *os.File
+	overlay   *Overlay
+	hotkey    byte
+	running   atomic.Bool
+	done      chan struct{}
 	escReader *EscapeSequenceReader
 }
 

@@ -14,10 +14,10 @@ import (
 type State int
 
 const (
-	StateHidden   State = iota // No overlay visible, full PTY passthrough
-	StateIndicator             // Status bar visible at bottom
-	StateMenu                  // Popup menu active
-	StateInput                 // Text input mode
+	StateHidden    State = iota // No overlay visible, full PTY passthrough
+	StateIndicator              // Status bar visible at bottom
+	StateMenu                   // Popup menu active
+	StateInput                  // Text input mode
 )
 
 // ConnectionStatus represents daemon connection state.
@@ -93,8 +93,8 @@ type Overlay struct {
 	gate *OutputGate
 
 	// Callbacks
-	onAction func(Action) error
-	onFreeze func() // Called when screen should freeze (stop PTY output)
+	onAction   func(Action) error
+	onFreeze   func() // Called when screen should freeze (stop PTY output)
 	onUnfreeze func() // Called when screen should unfreeze (send SIGWINCH)
 
 	// Mutex for state changes
@@ -256,6 +256,11 @@ func (o *Overlay) ToggleIndicator() {
 }
 
 func (o *Overlay) showMenu() {
+	// Freeze PTY output so it doesn't corrupt the menu
+	if o.gate != nil {
+		o.gate.Freeze()
+	}
+
 	// Switch to alternate screen buffer - preserves main screen content
 	o.renderer.EnterAltScreen()
 
@@ -277,6 +282,11 @@ func (o *Overlay) hideMenu() {
 
 	// Exit alternate screen - automatically restores main screen content
 	o.renderer.ExitAltScreen()
+
+	// Unfreeze PTY output so it resumes flowing
+	if o.gate != nil {
+		o.gate.Unfreeze()
+	}
 
 	// Redraw indicator bar (it's in the reserved row, not affected by alt screen)
 	if o.showBar.Load() {

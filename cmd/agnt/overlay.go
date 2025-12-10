@@ -71,7 +71,6 @@ func (o *Overlay) Start(ctx context.Context) error {
 	}
 
 	go func() {
-		log.Printf("Overlay listening on port %d", o.port)
 		if err := o.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Printf("Overlay server error: %v", err)
 		}
