@@ -46,6 +46,9 @@
     // Clipboard
     clipboard: null,
 
+    // Description
+    description: '',
+
     // Selection
     selectionBox: null,
     isDragging: false,
@@ -327,6 +330,19 @@
       'margin-bottom: 4px',
       'text-transform: uppercase',
       'letter-spacing: 0.5px'
+    ].join(';'),
+
+    descriptionTextarea: [
+      'width: 300px',
+      'height: 60px',
+      'padding: 8px 12px',
+      'border: 1px solid #e0e0e0',
+      'border-radius: 6px',
+      'font-size: 13px',
+      'font-family: inherit',
+      'resize: none',
+      'outline: none',
+      'transition: border-color 0.2s ease'
     ].join(';')
   };
 
@@ -581,17 +597,47 @@
     var actionBar = document.createElement('div');
     actionBar.id = '__devtool-sketch-actions';
     actionBar.style.cssText = STYLES.actionBar;
+    actionBar.style.flexDirection = 'column';
+    actionBar.style.alignItems = 'center';
+
+    // Description textarea (optional, max 5000 chars)
+    var descriptionArea = document.createElement('textarea');
+    descriptionArea.id = '__devtool-sketch-description';
+    descriptionArea.style.cssText = STYLES.descriptionTextarea;
+    descriptionArea.placeholder = 'Describe this wireframe (optional)...';
+    descriptionArea.maxLength = 5000;
+    descriptionArea.value = sketchState.description;
+    descriptionArea.onchange = function(e) {
+      sketchState.description = e.target.value;
+    };
+    descriptionArea.oninput = function(e) {
+      sketchState.description = e.target.value;
+    };
+    descriptionArea.onfocus = function() {
+      descriptionArea.style.borderColor = '#667eea';
+    };
+    descriptionArea.onblur = function() {
+      descriptionArea.style.borderColor = '#e0e0e0';
+    };
+    actionBar.appendChild(descriptionArea);
+
+    // Button row
+    var buttonRow = document.createElement('div');
+    buttonRow.style.display = 'flex';
+    buttonRow.style.gap = '8px';
+    buttonRow.style.marginTop = '8px';
 
     var undoBtn = createActionButton('Undo', 'secondary', undo);
     var redoBtn = createActionButton('Redo', 'secondary', redo);
     var clearBtn = createActionButton('Clear All', 'secondary', clearAll);
     var saveBtn = createActionButton('Save & Send', 'primary', saveAndSend);
 
-    actionBar.appendChild(undoBtn);
-    actionBar.appendChild(redoBtn);
-    actionBar.appendChild(clearBtn);
-    actionBar.appendChild(saveBtn);
+    buttonRow.appendChild(undoBtn);
+    buttonRow.appendChild(redoBtn);
+    buttonRow.appendChild(clearBtn);
+    buttonRow.appendChild(saveBtn);
 
+    actionBar.appendChild(buttonRow);
     container.appendChild(actionBar);
   }
 
@@ -1296,6 +1342,7 @@
     return {
       version: 1,
       timestamp: Date.now(),
+      description: sketchState.description,
       elements: sketchState.elements,
       settings: {
         strokeColor: sketchState.strokeColor,
@@ -1312,12 +1359,18 @@
       console.warn('[DevTool Sketch] Unknown version:', data.version);
     }
     sketchState.elements = data.elements || [];
+    sketchState.description = data.description || '';
     if (data.settings) {
       sketchState.strokeColor = data.settings.strokeColor || sketchState.strokeColor;
       sketchState.fillColor = data.settings.fillColor || sketchState.fillColor;
       sketchState.strokeWidth = data.settings.strokeWidth || sketchState.strokeWidth;
       sketchState.roughness = data.settings.roughness !== undefined ? data.settings.roughness : sketchState.roughness;
       sketchState.fontSize = data.settings.fontSize || sketchState.fontSize;
+    }
+    // Update textarea if it exists
+    var descriptionArea = document.getElementById('__devtool-sketch-description');
+    if (descriptionArea) {
+      descriptionArea.value = sketchState.description;
     }
     render();
   }
@@ -1334,7 +1387,8 @@
       timestamp: Date.now(),
       sketch: sketchData,
       image: imageData,
-      element_count: sketchState.elements.length
+      element_count: sketchState.elements.length,
+      description: sketchState.description
     });
 
     console.log('[DevTool] Sketch saved and sent to server');

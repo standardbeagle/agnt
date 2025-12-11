@@ -239,6 +239,7 @@ type SketchEntry struct {
 	ID           string                 `json:"id"`
 	Timestamp    time.Time              `json:"timestamp"`
 	URL          string                 `json:"url"`
+	Description  string                 `json:"description"`   // User description of the wireframe
 	Sketch       map[string]interface{} `json:"sketch"`        // JSON-serialized sketch data
 	ImageData    string                 `json:"image_data"`    // Base64 PNG of the sketch
 	FilePath     string                 `json:"file_path"`     // Path to saved image file

@@ -1284,6 +1284,7 @@ func parseSketchEntry(data map[string]interface{}, id string, timestamp time.Tim
 		ID:           id,
 		Timestamp:    timestamp,
 		URL:          url,
+		Description:  getStringField(data, "description"),
 		ElementCount: getIntField(data, "element_count"),
 		ImageData:    getStringField(data, "image"),
 	}
