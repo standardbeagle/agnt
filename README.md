@@ -8,7 +8,7 @@ An MCP (Model Context Protocol) server that provides comprehensive development t
 
 ## Demo
 
-https://github.com/standardbeagle/devtool-mcp/raw/main/assets/sketch-demo-combined.webm
+<video src="https://github.com/standardbeagle/devtool-mcp/raw/main/assets/sketch-demo-combined.webm" autoplay loop muted playsinline></video>
 
 ## Overview
 
