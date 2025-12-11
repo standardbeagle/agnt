@@ -6,6 +6,10 @@ An MCP (Model Context Protocol) server that provides comprehensive development t
 [![MCP](https://img.shields.io/badge/MCP-Compatible-green.svg)](https://modelcontextprotocol.io)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
+## Demo
+
+https://github.com/standardbeagle/devtool-mcp/raw/main/assets/sketch-demo-combined.webm
+
 ## Overview
 
 devtool-mcp bridges the gap between AI assistants and development workflows by providing:
