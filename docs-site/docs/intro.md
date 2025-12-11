@@ -53,8 +53,9 @@ proc {action: "output", process_id: "dev", tail: 20}
 ### Transparent Reverse Proxy
 
 ```json
-proxy {action: "start", id: "app", target_url: "http://localhost:3000", port: 8080}
-→ Proxy running with:
+proxy {action: "start", id: "app", target_url: "http://localhost:3000"}
+→ Proxy running on port 45849 with:
+   - Stable port based on target URL (same URL always gets same port)
    - All HTTP traffic logged
    - Frontend errors captured
    - Performance metrics collected

@@ -15,7 +15,7 @@ type ProxyInput struct {
 	Action     string `json:"action" jsonschema:"Action: start, stop, status, list, exec"`
 	ID         string `json:"id,omitempty" jsonschema:"Proxy ID (required for start/stop/status/exec)"`
 	TargetURL  string `json:"target_url,omitempty" jsonschema:"Target URL to proxy (required for start)"`
-	Port       int    `json:"port,omitempty" jsonschema:"Listen port (default: 8080)"`
+	Port       int    `json:"port,omitempty" jsonschema:"Listen port (default: stable hash of target URL). Only specify if you need a specific port."`
 	MaxLogSize int    `json:"max_log_size,omitempty" jsonschema:"Maximum log entries (default: 1000)"`
 	Code       string `json:"code,omitempty" jsonschema:"JavaScript code to execute (required for exec)"`
 	Global     bool   `json:"global,omitempty" jsonschema:"For list: include proxies from all directories (default: false)"`
@@ -185,18 +185,24 @@ Actions:
   exec: Execute JavaScript in connected browser clients
 
 Examples:
-  proxy {action: "start", id: "dev", target_url: "http://localhost:3000", port: 8080}
+  proxy {action: "start", id: "dev", target_url: "http://localhost:3000"}
   proxy {action: "status", id: "dev"}
   proxy {action: "list"}
   proxy {action: "exec", id: "dev", code: "document.title"}
   proxy {action: "stop", id: "dev"}
 
 The proxy automatically:
+  - Assigns a stable port based on the target URL (same URL always gets same port)
   - Logs all HTTP traffic (requests/responses)
   - Injects JavaScript to capture frontend errors
   - Captures performance metrics (page load, resources)
   - Provides WebSocket endpoint for metrics
   - Injects __devtool API with 50+ diagnostic functions
+
+Port selection:
+  - Default: A stable port derived from target URL hash (range 10000-60000)
+  - Only specify 'port' if you need a specific port number
+  - The assigned port is returned in the response's 'listen_addr' field
 
 __devtool API (injected into browser):
   proxy {action: "exec", help: true}                    # Full API overview
@@ -276,8 +282,10 @@ func handleProxyStart(ctx context.Context, pm *proxy.ProxyManager, input ProxyIn
 		return errorResult("target_url required for start"), ProxyOutput{}, nil
 	}
 
-	if input.Port == 0 {
-		input.Port = 8080
+	// Use -1 to signal "use default" (hash-based port), 0 means auto-assign
+	listenPort := input.Port
+	if listenPort == 0 {
+		listenPort = -1 // Trigger hash-based default in NewProxyServer
 	}
 	if input.MaxLogSize == 0 {
 		input.MaxLogSize = 1000
@@ -286,7 +294,7 @@ func handleProxyStart(ctx context.Context, pm *proxy.ProxyManager, input ProxyIn
 	config := proxy.ProxyConfig{
 		ID:          input.ID,
 		TargetURL:   input.TargetURL,
-		ListenPort:  input.Port,
+		ListenPort:  listenPort,
 		MaxLogSize:  input.MaxLogSize,
 		AutoRestart: true, // Enable auto-restart for development tool
 	}

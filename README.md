@@ -101,9 +101,9 @@ detect {path: "."}
 run {script_name: "dev"}
 → {process_id: "dev", state: "running"}
 
-// Set up debugging proxy
-proxy {action: "start", id: "app", target_url: "http://localhost:3000", port: 8080}
-→ {listen_addr: ":8080"}
+// Set up debugging proxy (port auto-assigned from URL hash)
+proxy {action: "start", id: "app", target_url: "http://localhost:3000"}
+→ {listen_addr: ":45849"}
 
 // Debug frontend issues
 proxy {action: "exec", id: "app", code: "window.__devtool.inspect('#my-button')"}
@@ -142,7 +142,7 @@ proc {action: "output", process_id: "test", grep: "FAIL"}
 Transparent HTTP proxy with traffic logging and frontend instrumentation:
 
 ```json
-proxy {action: "start", id: "debug", target_url: "http://localhost:3000", port: 8080}
+proxy {action: "start", id: "debug", target_url: "http://localhost:3000"}
 
 // All traffic is logged
 proxylog {proxy_id: "debug", types: ["http", "error"]}

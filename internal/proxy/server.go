@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"net"
 	"net/http"
@@ -72,6 +73,21 @@ type ProxyConfig struct {
 	Path        string // Working directory where proxy was created
 }
 
+// DefaultPortForURL computes a stable default port based on the target URL.
+// The port is derived from a hash of the URL, mapped to the range 10000-60000.
+// This ensures the same URL always gets the same default port while avoiding
+// conflicts with common ports and ephemeral port ranges.
+func DefaultPortForURL(targetURL string) int {
+	h := fnv.New32a()
+	h.Write([]byte(targetURL))
+	hash := h.Sum32()
+
+	// Map to range 10000-60000 (50000 ports)
+	// This avoids: well-known ports (0-1023), registered ports (1024-9999),
+	// and ephemeral port range (typically 32768-60999 on Linux, 49152-65535 on Windows)
+	return 10000 + int(hash%50000)
+}
+
 // NewProxyServer creates a new reverse proxy server.
 func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 	targetURL, err := url.Parse(config.TargetURL)
@@ -81,7 +97,7 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 
 	// Only set default port if not specified (negative values use default, 0 means auto-assign)
 	if config.ListenPort < 0 {
-		config.ListenPort = 8080
+		config.ListenPort = DefaultPortForURL(config.TargetURL)
 	}
 
 	if config.MaxLogSize <= 0 {

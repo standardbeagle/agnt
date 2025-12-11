@@ -20,6 +20,14 @@
 
 ## [Unreleased]
 
+### Changed
+- **Hash-based default proxy port**: Proxy now auto-assigns a stable port based on FNV-1a hash of target URL (range 10000-60000)
+  - Same target URL always gets the same port (consistent across restarts)
+  - Different URLs get different ports (avoids conflicts)
+  - Avoids well-known ports, registered ports, and ephemeral port ranges
+  - Port parameter is now optional - only specify if you need a specific port
+  - The `listen_addr` response field always shows the assigned port
+
 ### Fixed
 - **Screenshot Firefox compatibility**: Switch from `html2canvas@1.4.1` to `html2canvas-pro@1.5.8` to support modern CSS color functions (`lab()`, `oklch()`, `oklab()`, `lch()`) that Firefox and modern browsers use in computed styles
 

@@ -30,8 +30,7 @@ Create and start a reverse proxy.
 proxy {
   action: "start",
   id: "app",
-  target_url: "http://localhost:3000",
-  port: 8080
+  target_url: "http://localhost:3000"
 }
 ```
 
@@ -40,7 +39,7 @@ Parameters:
 |-----------|------|----------|---------|-------------|
 | `id` | string | Yes | - | Unique proxy identifier |
 | `target_url` | string | Yes | - | Backend server URL |
-| `port` | integer | No | 8080 | Listen port (0 for auto-assign) |
+| `port` | integer | No | hash-based | Listen port. Only specify if you need a specific port. |
 | `max_log_size` | integer | No | 1000 | Maximum log entries |
 
 Response:
@@ -49,26 +48,33 @@ Response:
   "id": "app",
   "status": "running",
   "target_url": "http://localhost:3000",
-  "listen_addr": ":8080",
+  "listen_addr": ":45849",
   "message": "Proxy started"
 }
 ```
 
-### Port Auto-Assignment
+### Port Selection
 
-If port is busy:
+By default, the proxy assigns a **stable port based on a hash of the target URL**. This ensures:
+- The same target URL always gets the same port (consistent across restarts)
+- Different URLs get different ports (avoids conflicts)
+- Ports are in the range 10000-60000 (avoids well-known and ephemeral ports)
+
+**Recommended**: Let the proxy choose the port automatically. Only specify `port` if you need a specific port number.
+
+Request a specific port:
 ```json
-proxy {action: "start", id: "app", target_url: "http://localhost:3000", port: 8080}
-→ {
-    "listen_addr": ":45123",
-    "message": "Port 8080 was busy, using 45123"
-  }
+proxy {action: "start", id: "app", target_url: "http://localhost:3000", port: 9000}
+→ {listen_addr: ":9000"}
 ```
 
-Request any available port:
+If the requested port is busy, the proxy finds an available one:
 ```json
-proxy {action: "start", id: "app", target_url: "http://localhost:3000", port: 0}
-→ {listen_addr: ":49152"}
+proxy {action: "start", id: "app", target_url: "http://localhost:3000", port: 9000}
+→ {
+    "listen_addr": ":45123",
+    "message": "Port 9000 was busy, using 45123"
+  }
 ```
 
 ## stop
@@ -279,20 +285,20 @@ run {script_name: "dev"}
 // Wait for it to be ready
 proc {action: "output", process_id: "dev", grep: "ready", tail: 5}
 
-// Start proxy
-proxy {action: "start", id: "app", target_url: "http://localhost:3000", port: 8080}
+// Start proxy (port auto-assigned based on target URL)
+proxy {action: "start", id: "app", target_url: "http://localhost:3000"}
 
-// Browse to http://localhost:8080
+// Check the listen_addr in the response, then browse to that address
 ```
 
 ### Multiple Environments
 
 ```json
-// Local dev
-proxy {action: "start", id: "local", target_url: "http://localhost:3000", port: 8080}
+// Local dev (each gets a unique port based on URL hash)
+proxy {action: "start", id: "local", target_url: "http://localhost:3000"}
 
 // Staging
-proxy {action: "start", id: "staging", target_url: "https://staging.example.com", port: 8081}
+proxy {action: "start", id: "staging", target_url: "https://staging.example.com"}
 
 // Compare traffic
 proxylog {proxy_id: "local", types: ["http"], url_pattern: "/api"}

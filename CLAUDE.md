@@ -580,6 +580,7 @@ pm := process.NewProcessManager(process.ManagerConfig{
 
 ### Reverse Proxy
 
+- **Default port**: Hash-based computation from target URL (stable, in range 10000-60000)
 - **Traffic log size**: 1000 entries default (circular buffer)
 - **Request/response truncation**: Bodies limited to 10KB in logs
 - **WebSocket support**: Transparently proxies WebSocket upgrades

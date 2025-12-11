@@ -104,10 +104,10 @@ Starts the dev server in the background. The AI can now:
 ### 3. Set Up Proxy for Debugging
 
 ```json
-proxy {action: "start", id: "app", target_url: "http://localhost:3000", port: 8080}
+proxy {action: "start", id: "app", target_url: "http://localhost:3000"}
 ```
 
-Now browse to `http://localhost:8080` instead of port 3000. The proxy:
+The proxy auto-assigns a stable port based on the target URL (check `listen_addr` in response). The proxy:
 
 - Logs all HTTP requests and responses
 - Captures frontend JavaScript errors
@@ -159,10 +159,10 @@ AI: I'll start the dev server and set up debugging.
 [run {script_name: "dev"}]
 → Dev server started on port 3000
 
-[proxy {action: "start", id: "app", target_url: "http://localhost:3000", port: 8080}]
-→ Proxy running on port 8080
+[proxy {action: "start", id: "app", target_url: "http://localhost:3000"}]
+→ Proxy running on port 45849
 
-AI: Please open http://localhost:8080/dashboard in your browser.
+AI: Please open http://localhost:45849/dashboard in your browser.
     Once loaded, I'll analyze the layout.
 
 [User navigates to the page]

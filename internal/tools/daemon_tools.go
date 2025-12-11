@@ -102,18 +102,24 @@ Actions:
   exec: Execute JavaScript in connected browser clients
 
 Examples:
-  proxy {action: "start", id: "dev", target_url: "http://localhost:3000", port: 8080}
+  proxy {action: "start", id: "dev", target_url: "http://localhost:3000"}
   proxy {action: "status", id: "dev"}
   proxy {action: "list"}
   proxy {action: "exec", id: "dev", code: "document.title"}
   proxy {action: "stop", id: "dev"}
 
 The proxy automatically:
+  - Assigns a stable port based on the target URL (same URL always gets same port)
   - Logs all HTTP traffic (requests/responses)
   - Injects JavaScript to capture frontend errors
   - Captures performance metrics (page load, resources)
   - Provides WebSocket endpoint for metrics
   - Injects __devtool API with 50+ diagnostic functions
+
+Port selection:
+  - Default: A stable port derived from target URL hash (range 10000-60000)
+  - Only specify 'port' if you need a specific port number
+  - The assigned port is returned in the response's 'listen_addr' field
 
 __devtool API (injected into browser):
   proxy {action: "exec", help: true}                    # Full API overview
@@ -489,9 +495,10 @@ func (dt *DaemonTools) handleProxyStart(input ProxyInput) (*mcp.CallToolResult, 
 		return errorResult(fmt.Sprintf("failed to get working directory: %v", err)), ProxyOutput{}, nil
 	}
 
+	// Use -1 to signal "use default" (hash-based port), 0 means auto-assign
 	port := input.Port
 	if port == 0 {
-		port = 8080
+		port = -1 // Trigger hash-based default in daemon
 	}
 
 	result, err := dt.client.ProxyStart(input.ID, input.TargetURL, port, input.MaxLogSize, cwd)

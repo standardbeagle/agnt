@@ -23,10 +23,10 @@ When you start a proxy:
 run {script_name: "dev"}
 
 // Create proxy in front of it
-proxy {action: "start", id: "app", target_url: "http://localhost:3000", port: 8080}
+proxy {action: "start", id: "app", target_url: "http://localhost:3000"}
 ```
 
-Browse to `http://localhost:8080` instead of port 3000. Everything works normally, but now you have:
+The proxy auto-assigns a stable port based on the target URL (check `listen_addr` in response). Everything works normally, but now you have:
 
 - Complete HTTP traffic logs
 - JavaScript error capture
@@ -38,33 +38,37 @@ Browse to `http://localhost:8080` instead of port 3000. Everything works normall
 ### Start a Proxy
 
 ```json
-proxy {action: "start", id: "myapp", target_url: "http://localhost:3000", port: 8080}
+proxy {action: "start", id: "myapp", target_url: "http://localhost:3000"}
 → {
     "id": "myapp",
     "status": "running",
     "target_url": "http://localhost:3000",
-    "listen_addr": ":8080"
+    "listen_addr": ":45849"
   }
 ```
 
-### Auto Port Assignment
+### Port Selection
 
-If port 8080 is busy, the proxy finds an available port:
+By default, the proxy assigns a **stable port based on a hash of the target URL**:
+- Same URL always gets the same port (consistent across restarts)
+- Different URLs get different ports (avoids conflicts)
+- Ports are in range 10000-60000 (avoids well-known and ephemeral ports)
 
+**Recommended**: Let the proxy choose the port automatically. Only specify `port` if you need a specific port.
+
+Request a specific port:
 ```json
-proxy {action: "start", id: "app", target_url: "http://localhost:3000", port: 8080}
+proxy {action: "start", id: "app", target_url: "http://localhost:3000", port: 9000}
+→ {listen_addr: ":9000"}
+```
+
+If the requested port is busy, the proxy finds an available one:
+```json
+proxy {action: "start", id: "app", target_url: "http://localhost:3000", port: 9000}
 → {
-    "id": "app",
-    "listen_addr": ":45123",  // Different port assigned
-    "message": "Port 8080 was busy, using 45123"
+    "listen_addr": ":45123",
+    "message": "Port 9000 was busy, using 45123"
   }
-```
-
-Or explicitly request auto-assignment:
-
-```json
-proxy {action: "start", id: "app", target_url: "http://localhost:3000", port: 0}
-→ {listen_addr: ":49152"}  // System assigns port
 ```
 
 ### Check Status
@@ -358,11 +362,11 @@ currentpage {proxy_id: "app", action: "get", session_id: "page-2"}
 ### Multiple Environments
 
 ```json
-// Proxy staging
-proxy {action: "start", id: "staging", target_url: "https://staging.example.com", port: 8080}
+// Proxy staging (each gets unique port based on URL hash)
+proxy {action: "start", id: "staging", target_url: "https://staging.example.com"}
 
 // Proxy production (read-only debugging)
-proxy {action: "start", id: "prod", target_url: "https://example.com", port: 8081}
+proxy {action: "start", id: "prod", target_url: "https://example.com"}
 
 // Compare behavior
 proxylog {proxy_id: "staging", types: ["http"], url_pattern: "/api/users"}
@@ -376,7 +380,7 @@ proxylog {proxy_id: "prod", types: ["http"], url_pattern: "/api/users"}
 Default: 1000 entries. Configure when starting:
 
 ```json
-proxy {action: "start", id: "app", target_url: "...", port: 8080, max_log_size: 5000}
+proxy {action: "start", id: "app", target_url: "...", max_log_size: 5000}
 ```
 
 ### Auto-Restart
