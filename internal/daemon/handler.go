@@ -44,6 +44,8 @@ func (c *Connection) handleDetect(cmd *protocol.Command) error {
 }
 
 // handleRun handles the RUN and RUN-JSON commands.
+// Implements idempotent start: if process with same ID+Path is running, returns it;
+// if stopped/failed, cleans up and starts new; if port conflict, kills blocker and retries.
 func (c *Connection) handleRun(ctx context.Context, cmd *protocol.Command) error {
 	var config protocol.RunConfig
 
@@ -121,19 +123,18 @@ func (c *Connection) handleRun(ctx context.Context, cmd *protocol.Command) error
 		}
 	}
 
-	// Start process
-	proc, err := c.daemon.pm.StartCommand(ctx, process.ProcessConfig{
+	// Use StartOrReuse for idempotent behavior
+	result, err := c.daemon.pm.StartOrReuse(ctx, process.ProcessConfig{
 		ID:          id,
 		ProjectPath: config.Path,
 		Command:     command,
 		Args:        args,
 	})
 	if err != nil {
-		if err == process.ErrProcessExists {
-			return c.writeErr(protocol.ErrAlreadyExists, id)
-		}
 		return c.writeErr(protocol.ErrInternal, err.Error())
 	}
+
+	proc := result.Process
 
 	// Background mode: return immediately
 	if config.Mode == "background" {
@@ -142,18 +143,46 @@ func (c *Connection) handleRun(ctx context.Context, cmd *protocol.Command) error
 			"pid":        proc.PID(),
 			"command":    command + " " + strings.Join(args, " "),
 		}
+		if result.Reused {
+			resp["reused"] = true
+			resp["state"] = proc.State().String()
+		}
+		if result.Cleaned {
+			resp["cleaned_previous"] = true
+		}
+		if result.PortRetried {
+			resp["port_conflict_resolved"] = true
+			resp["ports_cleared"] = result.PortsCleared
+		}
+		if result.PortError != "" {
+			resp["port_error"] = result.PortError
+		}
 		data, _ := json.Marshal(resp)
 		return c.writeJSON(data)
 	}
 
 	// Foreground modes: wait for completion
-	select {
-	case <-proc.Done():
-		// Process completed
-	case <-ctx.Done():
-		// Context cancelled
-		c.daemon.pm.StopProcess(ctx, proc)
-		return c.writeErr(protocol.ErrTimeout, "process cancelled")
+	// If reusing a running process, just check current state
+	if result.Reused && proc.IsDone() {
+		// Process already finished
+	} else if !result.Reused {
+		// Wait for new process to complete
+		select {
+		case <-proc.Done():
+			// Process completed
+		case <-ctx.Done():
+			// Context cancelled
+			c.daemon.pm.StopProcess(ctx, proc)
+			return c.writeErr(protocol.ErrTimeout, "process cancelled")
+		}
+	} else {
+		// Reused and still running - wait for it
+		select {
+		case <-proc.Done():
+			// Process completed
+		case <-ctx.Done():
+			return c.writeErr(protocol.ErrTimeout, "process cancelled")
+		}
 	}
 
 	resp := map[string]interface{}{
@@ -163,6 +192,19 @@ func (c *Connection) handleRun(ctx context.Context, cmd *protocol.Command) error
 		"exit_code":  proc.ExitCode(),
 		"state":      proc.State().String(),
 		"runtime":    formatDuration(proc.Runtime()),
+	}
+	if result.Reused {
+		resp["reused"] = true
+	}
+	if result.Cleaned {
+		resp["cleaned_previous"] = true
+	}
+	if result.PortRetried {
+		resp["port_conflict_resolved"] = true
+		resp["ports_cleared"] = result.PortsCleared
+	}
+	if result.PortError != "" {
+		resp["port_error"] = result.PortError
 	}
 
 	// Include output for foreground-raw mode

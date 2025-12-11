@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"regexp"
+	"strconv"
 	"time"
 )
 
@@ -231,6 +233,178 @@ func (pm *ProcessManager) StartCommand(ctx context.Context, cfg ProcessConfig) (
 	}
 
 	return proc, nil
+}
+
+// StartOrReuseResult contains the result of StartOrReuse operation.
+type StartOrReuseResult struct {
+	Process      *ManagedProcess
+	Reused       bool   // True if an existing running process was returned
+	Cleaned      bool   // True if a stopped/failed process was cleaned up before starting
+	PortRetried  bool   // True if a port conflict was detected and resolved
+	PortsCleared []int  // Ports that were cleared due to conflicts
+	PortError    string // Non-empty if port conflict couldn't be resolved (e.g., managed process blocking)
+}
+
+// portConflictPatterns matches common EADDRINUSE error patterns
+var portConflictPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`EADDRINUSE.*:(\d+)`),                                         // Node.js style
+	regexp.MustCompile(`listen tcp[^\d]*:(\d+).*address already in use`),             // Go style
+	regexp.MustCompile(`[Aa]ddress already in use.*[':]+(\d+)`),                      // Python/generic with port after
+	regexp.MustCompile(`[Aa]ddress already in use[^\d]*(\d+)`),                       // Generic with port number
+}
+
+// detectPortConflict checks process output for port conflict errors and returns the port.
+// Returns 0 if no port conflict detected.
+func detectPortConflict(output []byte) int {
+	outputStr := string(output)
+	for _, pattern := range portConflictPatterns {
+		matches := pattern.FindStringSubmatch(outputStr)
+		if len(matches) >= 2 {
+			if port, err := strconv.Atoi(matches[1]); err == nil && port > 0 && port <= 65535 {
+				return port
+			}
+		}
+	}
+	return 0
+}
+
+// StartOrReuse implements idempotent process start with auto port conflict resolution:
+// - If a process with the same ID+ProjectPath is running, return it
+// - If a process with the same ID+ProjectPath is stopped/failed, remove it and start new
+// - If no process exists, start a new one
+// - If process fails quickly due to port conflict (EADDRINUSE), kill blocker and retry once
+func (pm *ProcessManager) StartOrReuse(ctx context.Context, cfg ProcessConfig) (*StartOrReuseResult, error) {
+	// Apply default buffer size from config
+	if cfg.BufferSize <= 0 {
+		cfg.BufferSize = pm.config.MaxOutputBuffer
+	}
+
+	// Apply default timeout from config if not specified
+	if cfg.Timeout == 0 && pm.config.DefaultTimeout > 0 {
+		cfg.Timeout = pm.config.DefaultTimeout
+	}
+
+	result := &StartOrReuseResult{}
+
+	// Check if process already exists with same ID+Path
+	existing, err := pm.GetByPath(cfg.ID, cfg.ProjectPath)
+	if err == nil {
+		// Process exists, check its state
+		state := existing.State()
+		switch state {
+		case StateRunning, StateStarting:
+			// Already running, return it
+			result.Process = existing
+			result.Reused = true
+			return result, nil
+		case StateStopped, StateFailed:
+			// Clean up old process and start new one
+			pm.RemoveByPath(cfg.ID, cfg.ProjectPath)
+			result.Cleaned = true
+		case StateStopping:
+			// Wait for it to stop, then start new
+			select {
+			case <-existing.Done():
+				pm.RemoveByPath(cfg.ID, cfg.ProjectPath)
+				result.Cleaned = true
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		default:
+			// Pending state - remove and start fresh
+			pm.RemoveByPath(cfg.ID, cfg.ProjectPath)
+		}
+	}
+
+	// Start new process
+	proc := NewManagedProcess(cfg)
+	if err := pm.Start(ctx, proc); err != nil {
+		return nil, err
+	}
+
+	// Wait briefly to detect early failure (port conflicts happen fast)
+	// Use 1.5s window to catch EADDRINUSE errors
+	portCheckTimeout := 1500 * time.Millisecond
+	select {
+	case <-proc.Done():
+		// Process exited quickly, check for port conflict
+		if proc.State() == StateFailed {
+			output, _ := proc.CombinedOutput()
+			conflictPort := detectPortConflict(output)
+			if conflictPort > 0 {
+				// Port conflict detected - find who's blocking
+				blockingPIDs := pm.findProcessesByPortLsof(ctx, conflictPort)
+				if len(blockingPIDs) == 0 {
+					blockingPIDs = pm.findProcessesByPortSs(ctx, conflictPort)
+				}
+
+				if len(blockingPIDs) == 0 {
+					// Port was in use but process already gone, or we can't find it
+					result.Process = proc
+					result.PortError = fmt.Sprintf("port %d conflict detected but blocking process not found", conflictPort)
+					return result, nil
+				}
+
+				// Check if any blocking PID is a managed process
+				for _, pid := range blockingPIDs {
+					if managedProc := pm.GetByPID(pid); managedProc != nil {
+						// Don't kill managed processes - report the conflict
+						result.Process = proc
+						result.PortError = fmt.Sprintf("port %d is in use by managed process %q (PID %d)",
+							conflictPort, managedProc.ID, pid)
+						return result, nil
+					}
+				}
+
+				// All blocking PIDs are orphaned/external - safe to kill
+				killedPIDs, killErr := pm.KillProcessByPort(ctx, conflictPort)
+				if killErr != nil {
+					result.Process = proc
+					result.PortError = fmt.Sprintf("failed to kill process on port %d: %v", conflictPort, killErr)
+					return result, nil
+				}
+				if len(killedPIDs) == 0 {
+					result.Process = proc
+					result.PortError = fmt.Sprintf("port %d conflict but could not kill blocking process", conflictPort)
+					return result, nil
+				}
+
+				// Give OS time to release the port
+				time.Sleep(200 * time.Millisecond)
+
+				// Clean up failed process and retry
+				pm.RemoveByPath(cfg.ID, cfg.ProjectPath)
+
+				// Retry start
+				retryProc := NewManagedProcess(cfg)
+				if err := pm.Start(ctx, retryProc); err != nil {
+					result.PortError = fmt.Sprintf("retry after port cleanup failed: %v", err)
+					result.PortsCleared = append(result.PortsCleared, conflictPort)
+					// Return the failed original process for output inspection
+					result.Process = proc
+					return result, nil
+				}
+
+				result.Process = retryProc
+				result.PortRetried = true
+				result.PortsCleared = append(result.PortsCleared, conflictPort)
+				return result, nil
+			}
+		}
+		// Not a port conflict or couldn't resolve - return as-is
+		result.Process = proc
+		return result, nil
+
+	case <-time.After(portCheckTimeout):
+		// Process still running after 1.5s - assume it's starting up normally
+		result.Process = proc
+		return result, nil
+
+	case <-ctx.Done():
+		// Context cancelled during startup
+		pm.StopProcess(ctx, proc)
+		return nil, ctx.Err()
+	}
 }
 
 // RunSync starts a process and waits for it to complete.

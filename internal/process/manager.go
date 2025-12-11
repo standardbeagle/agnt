@@ -22,6 +22,12 @@ var (
 	ErrShuttingDown = errors.New("process manager is shutting down")
 )
 
+// processKey creates a composite key from process ID and project path.
+// This allows the same process ID to be used in different directories.
+func processKey(id, projectPath string) string {
+	return projectPath + "\x00" + id
+}
+
 // ManagerConfig holds configuration for the ProcessManager.
 type ManagerConfig struct {
 	// DefaultTimeout is the default process timeout (0 = no timeout).
@@ -81,13 +87,14 @@ func NewProcessManager(config ManagerConfig) *ProcessManager {
 }
 
 // Register adds a new process to the registry.
-// Returns ErrProcessExists if a process with the same ID already exists.
+// Returns ErrProcessExists if a process with the same ID+ProjectPath already exists.
 func (pm *ProcessManager) Register(proc *ManagedProcess) error {
 	if pm.shuttingDown.Load() {
 		return ErrShuttingDown
 	}
 
-	_, loaded := pm.processes.LoadOrStore(proc.ID, proc)
+	key := processKey(proc.ID, proc.ProjectPath)
+	_, loaded := pm.processes.LoadOrStore(key, proc)
 	if loaded {
 		return ErrProcessExists
 	}
@@ -97,19 +104,61 @@ func (pm *ProcessManager) Register(proc *ManagedProcess) error {
 	return nil
 }
 
-// Get retrieves a process by ID (lock-free read).
+// Get retrieves a process by ID and project path (lock-free read).
 func (pm *ProcessManager) Get(id string) (*ManagedProcess, error) {
-	val, ok := pm.processes.Load(id)
+	// For backwards compatibility, search all processes if no path separator found
+	// This handles calls that only pass ID
+	var found *ManagedProcess
+	pm.processes.Range(func(key, value any) bool {
+		proc := value.(*ManagedProcess)
+		if proc.ID == id {
+			found = proc
+			return false // Stop iteration
+		}
+		return true
+	})
+	if found != nil {
+		return found, nil
+	}
+	return nil, ErrProcessNotFound
+}
+
+// GetByPath retrieves a process by ID and project path (lock-free read).
+func (pm *ProcessManager) GetByPath(id, projectPath string) (*ManagedProcess, error) {
+	key := processKey(id, projectPath)
+	val, ok := pm.processes.Load(key)
 	if !ok {
 		return nil, ErrProcessNotFound
 	}
 	return val.(*ManagedProcess), nil
 }
 
-// Remove deletes a process from the registry.
+// Remove deletes a process from the registry by ID (searches all paths).
 // Returns true if the process was found and removed.
 func (pm *ProcessManager) Remove(id string) bool {
-	if _, loaded := pm.processes.LoadAndDelete(id); loaded {
+	var keyToDelete string
+	pm.processes.Range(func(key, value any) bool {
+		proc := value.(*ManagedProcess)
+		if proc.ID == id {
+			keyToDelete = key.(string)
+			return false
+		}
+		return true
+	})
+	if keyToDelete != "" {
+		if _, loaded := pm.processes.LoadAndDelete(keyToDelete); loaded {
+			pm.activeCount.Add(-1)
+			return true
+		}
+	}
+	return false
+}
+
+// RemoveByPath deletes a process from the registry by ID and path.
+// Returns true if the process was found and removed.
+func (pm *ProcessManager) RemoveByPath(id, projectPath string) bool {
+	key := processKey(id, projectPath)
+	if _, loaded := pm.processes.LoadAndDelete(key); loaded {
 		pm.activeCount.Add(-1)
 		return true
 	}
@@ -138,6 +187,25 @@ func (pm *ProcessManager) ListByLabel(key, value string) []*ManagedProcess {
 		return true
 	})
 	return result
+}
+
+// GetByPID returns the managed process with the given OS PID, or nil if not found.
+func (pm *ProcessManager) GetByPID(pid int) *ManagedProcess {
+	var found *ManagedProcess
+	pm.processes.Range(func(key, value any) bool {
+		proc := value.(*ManagedProcess)
+		if proc.PID() == pid && proc.IsRunning() {
+			found = proc
+			return false
+		}
+		return true
+	})
+	return found
+}
+
+// IsManagedPID returns true if the given PID belongs to a running managed process.
+func (pm *ProcessManager) IsManagedPID(pid int) bool {
+	return pm.GetByPID(pid) != nil
 }
 
 // ActiveCount returns the number of registered processes.

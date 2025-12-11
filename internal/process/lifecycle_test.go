@@ -462,3 +462,278 @@ func TestProcessManager_GracefulShutdown(t *testing.T) {
 		t.Errorf("graceful shutdown failed: %v", err)
 	}
 }
+
+func TestProcessManager_StartOrReuse_NewProcess(t *testing.T) {
+	pm := NewProcessManager(DefaultManagerConfig())
+	defer pm.Shutdown(context.Background())
+
+	ctx := context.Background()
+
+	result, err := pm.StartOrReuse(ctx, ProcessConfig{
+		ID:          "test-new",
+		ProjectPath: "/tmp",
+		Command:     "echo",
+		Args:        []string{"hello"},
+	})
+	if err != nil {
+		t.Fatalf("StartOrReuse failed: %v", err)
+	}
+
+	if result.Reused {
+		t.Error("expected Reused=false for new process")
+	}
+	if result.Cleaned {
+		t.Error("expected Cleaned=false for new process")
+	}
+	if result.PortRetried {
+		t.Error("expected PortRetried=false for new process")
+	}
+	if result.Process == nil {
+		t.Fatal("expected Process to be set")
+	}
+
+	<-result.Process.Done()
+}
+
+func TestProcessManager_StartOrReuse_ReusesRunning(t *testing.T) {
+	pm := NewProcessManager(DefaultManagerConfig())
+	defer pm.Shutdown(context.Background())
+
+	ctx := context.Background()
+
+	// Start a long-running process
+	result1, err := pm.StartOrReuse(ctx, ProcessConfig{
+		ID:          "test-reuse",
+		ProjectPath: "/tmp",
+		Command:     "sleep",
+		Args:        []string{"60"},
+	})
+	if err != nil {
+		t.Fatalf("first StartOrReuse failed: %v", err)
+	}
+	pid1 := result1.Process.PID()
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Try to start another with same ID+path - should reuse
+	result2, err := pm.StartOrReuse(ctx, ProcessConfig{
+		ID:          "test-reuse",
+		ProjectPath: "/tmp",
+		Command:     "sleep",
+		Args:        []string{"60"},
+	})
+	if err != nil {
+		t.Fatalf("second StartOrReuse failed: %v", err)
+	}
+
+	if !result2.Reused {
+		t.Error("expected Reused=true for running process")
+	}
+	if result2.Process.PID() != pid1 {
+		t.Error("expected same PID when reusing")
+	}
+
+	pm.Stop(ctx, "test-reuse")
+}
+
+func TestProcessManager_StartOrReuse_CleansUpStopped(t *testing.T) {
+	pm := NewProcessManager(DefaultManagerConfig())
+	defer pm.Shutdown(context.Background())
+
+	ctx := context.Background()
+
+	// Start and wait for a short process
+	result1, err := pm.StartOrReuse(ctx, ProcessConfig{
+		ID:          "test-cleanup",
+		ProjectPath: "/tmp",
+		Command:     "echo",
+		Args:        []string{"first"},
+	})
+	if err != nil {
+		t.Fatalf("first StartOrReuse failed: %v", err)
+	}
+	<-result1.Process.Done()
+	pid1 := result1.Process.PID()
+
+	// Try to start another with same ID+path - should cleanup and start new
+	result2, err := pm.StartOrReuse(ctx, ProcessConfig{
+		ID:          "test-cleanup",
+		ProjectPath: "/tmp",
+		Command:     "echo",
+		Args:        []string{"second"},
+	})
+	if err != nil {
+		t.Fatalf("second StartOrReuse failed: %v", err)
+	}
+
+	if result2.Reused {
+		t.Error("expected Reused=false for cleaned up process")
+	}
+	if !result2.Cleaned {
+		t.Error("expected Cleaned=true for cleaned up process")
+	}
+	if result2.Process.PID() == pid1 {
+		t.Error("expected different PID after cleanup")
+	}
+
+	<-result2.Process.Done()
+}
+
+func TestProcessManager_StartOrReuse_DifferentPaths(t *testing.T) {
+	pm := NewProcessManager(DefaultManagerConfig())
+	defer pm.Shutdown(context.Background())
+
+	ctx := context.Background()
+
+	// Start process with ID "server" in /tmp
+	result1, err := pm.StartOrReuse(ctx, ProcessConfig{
+		ID:          "server",
+		ProjectPath: "/tmp",
+		Command:     "sleep",
+		Args:        []string{"60"},
+	})
+	if err != nil {
+		t.Fatalf("first StartOrReuse failed: %v", err)
+	}
+	pid1 := result1.Process.PID()
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Start process with same ID but different path - should create new
+	result2, err := pm.StartOrReuse(ctx, ProcessConfig{
+		ID:          "server",
+		ProjectPath: "/var/tmp",
+		Command:     "sleep",
+		Args:        []string{"60"},
+	})
+	if err != nil {
+		t.Fatalf("second StartOrReuse failed: %v", err)
+	}
+
+	if result2.Reused {
+		t.Error("expected Reused=false for different path")
+	}
+	if result2.Process.PID() == pid1 {
+		t.Error("expected different PID for different path")
+	}
+
+	// Should have 2 processes with same ID but different paths
+	procs := pm.List()
+	count := 0
+	for _, p := range procs {
+		if p.ID == "server" {
+			count++
+		}
+	}
+	if count != 2 {
+		t.Errorf("expected 2 processes with ID 'server', got %d", count)
+	}
+
+	pm.Stop(ctx, "server") // This will stop one of them
+	pm.StopProcess(ctx, result2.Process)
+}
+
+func TestProcessManager_GetByPID(t *testing.T) {
+	pm := NewProcessManager(DefaultManagerConfig())
+	defer pm.Shutdown(context.Background())
+
+	ctx := context.Background()
+
+	// Start a process
+	proc, err := pm.StartCommand(ctx, ProcessConfig{
+		ID:          "test-pid",
+		ProjectPath: "/tmp",
+		Command:     "sleep",
+		Args:        []string{"60"},
+	})
+	if err != nil {
+		t.Fatalf("StartCommand failed: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	pid := proc.PID()
+	if pid <= 0 {
+		t.Fatal("expected valid PID")
+	}
+
+	// Should find the process by PID
+	found := pm.GetByPID(pid)
+	if found == nil {
+		t.Error("expected to find process by PID")
+	}
+	if found != proc {
+		t.Error("expected to find the same process")
+	}
+
+	// IsManagedPID should return true
+	if !pm.IsManagedPID(pid) {
+		t.Error("expected IsManagedPID to return true")
+	}
+
+	// Non-existent PID should return nil
+	if pm.GetByPID(999999) != nil {
+		t.Error("expected nil for non-existent PID")
+	}
+
+	// Stop the process
+	pm.Stop(ctx, proc.ID)
+
+	// After stopping, should not find by PID (not running)
+	if pm.IsManagedPID(pid) {
+		t.Error("expected IsManagedPID to return false after stop")
+	}
+}
+
+func TestDetectPortConflict(t *testing.T) {
+	tests := []struct {
+		name     string
+		output   string
+		expected int
+	}{
+		{
+			name:     "Node.js EADDRINUSE",
+			output:   "Error: listen EADDRINUSE: address already in use :::3000",
+			expected: 3000,
+		},
+		{
+			name:     "Node.js EADDRINUSE with port",
+			output:   "Error: listen EADDRINUSE: address already in use 0.0.0.0:8080",
+			expected: 8080,
+		},
+		{
+			name:     "Go listen error",
+			output:   "listen tcp :8000: address already in use",
+			expected: 8000,
+		},
+		{
+			name:     "Python bind error",
+			output:   "OSError: [Errno 98] Address already in use: bind ':5000'",
+			expected: 5000,
+		},
+		{
+			name:     "Generic error",
+			output:   "address already in use 9000",
+			expected: 9000,
+		},
+		{
+			name:     "No port conflict",
+			output:   "Some other error message",
+			expected: 0,
+		},
+		{
+			name:     "Empty output",
+			output:   "",
+			expected: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := detectPortConflict([]byte(tt.output))
+			if result != tt.expected {
+				t.Errorf("detectPortConflict(%q) = %d, want %d", tt.output, result, tt.expected)
+			}
+		})
+	}
+}
