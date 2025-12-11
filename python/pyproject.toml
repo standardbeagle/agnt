@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "devtool-mcp"
-version = "0.3.2"
+version = "0.5.1"
 description = "MCP server providing development tooling capabilities - project detection, process management, reverse proxy with frontend diagnostics"
 readme = "README.md"
 license = "MIT"

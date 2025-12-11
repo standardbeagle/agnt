@@ -1,6 +1,6 @@
 {
   "name": "@standardbeagle/devtool-mcp",
-  "version": "0.3.2",
+  "version": "0.5.1",
   "mcpName": "io.github.standardbeagle/devtool-mcp",
   "description": "MCP server providing development tooling capabilities - project detection, process management, reverse proxy with frontend diagnostics",
   "main": "dist/index.js",
