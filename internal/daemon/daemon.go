@@ -38,16 +38,24 @@ type DaemonConfig struct {
 	// Example: "http://127.0.0.1:19191"
 	// When set, proxies will forward panel messages, sketches, etc. to the overlay.
 	OverlayEndpoint string
+
+	// EnableStatePersistence enables persisting proxy configs for recovery.
+	EnableStatePersistence bool
+
+	// StatePath is the path to the state file.
+	// If empty, uses default location.
+	StatePath string
 }
 
 // DefaultDaemonConfig returns sensible defaults.
 func DefaultDaemonConfig() DaemonConfig {
 	return DaemonConfig{
-		SocketPath:    DefaultSocketPath(),
-		ProcessConfig: process.DefaultManagerConfig(),
-		MaxClients:    100,
-		ReadTimeout:   0, // No timeout for long-running commands
-		WriteTimeout:  30 * time.Second,
+		SocketPath:             DefaultSocketPath(),
+		ProcessConfig:          process.DefaultManagerConfig(),
+		MaxClients:             100,
+		ReadTimeout:            0, // No timeout for long-running commands
+		WriteTimeout:           30 * time.Second,
+		EnableStatePersistence: true,
 	}
 }
 
@@ -58,6 +66,9 @@ type Daemon struct {
 	// Core managers
 	pm     *process.ProcessManager
 	proxym *proxy.ProxyManager
+
+	// State persistence
+	stateMgr *StateManager
 
 	// Socket management
 	sockMgr  *SocketManager
@@ -93,9 +104,21 @@ func New(config DaemonConfig) *Daemon {
 		cancel:  cancel,
 	}
 
-	// Set initial overlay endpoint from config
+	// Initialize state manager if persistence is enabled
+	if config.EnableStatePersistence {
+		d.stateMgr = NewStateManager(StateManagerConfig{
+			StatePath: config.StatePath,
+			AutoLoad:  true,
+		})
+	}
+
+	// Set initial overlay endpoint from config or persisted state
 	if config.OverlayEndpoint != "" {
 		d.overlayEndpoint.Store(&config.OverlayEndpoint)
+	} else if d.stateMgr != nil {
+		if endpoint := d.stateMgr.GetOverlayEndpoint(); endpoint != "" {
+			d.overlayEndpoint.Store(&endpoint)
+		}
 	}
 
 	return d
@@ -120,11 +143,57 @@ func (d *Daemon) Start() error {
 
 	log.Printf("Daemon started, listening on %s", d.sockMgr.Path())
 
+	// Restore proxies from persisted state
+	d.restoreProxies()
+
 	// Start accept loop
 	d.wg.Add(1)
 	go d.acceptLoop()
 
 	return nil
+}
+
+// restoreProxies restores proxy servers from persisted state.
+func (d *Daemon) restoreProxies() {
+	if d.stateMgr == nil {
+		return
+	}
+
+	proxies := d.stateMgr.GetProxies()
+	if len(proxies) == 0 {
+		return
+	}
+
+	log.Printf("[Daemon] restoring %d proxies from state", len(proxies))
+
+	overlayEndpoint := d.OverlayEndpoint()
+
+	for _, pc := range proxies {
+		config := proxy.ProxyConfig{
+			ID:          pc.ID,
+			TargetURL:   pc.TargetURL,
+			ListenPort:  pc.Port,
+			MaxLogSize:  pc.MaxLogSize,
+			AutoRestart: true,
+			Path:        pc.Path,
+		}
+
+		proxyServer, err := d.proxym.Create(d.ctx, config)
+		if err != nil {
+			log.Printf("[Daemon] failed to restore proxy %s: %v", pc.ID, err)
+			// Remove from state if it can't be restored
+			d.stateMgr.RemoveProxy(pc.ID)
+			continue
+		}
+
+		// Configure overlay endpoint
+		if overlayEndpoint != "" {
+			proxyServer.SetOverlayEndpoint(overlayEndpoint)
+		}
+
+		log.Printf("[Daemon] restored proxy %s -> %s on port %d",
+			pc.ID, pc.TargetURL, pc.Port)
+	}
 }
 
 // Stop gracefully shuts down the daemon.
@@ -239,10 +308,20 @@ func (d *Daemon) SetOverlayEndpoint(endpoint string) {
 		d.overlayEndpoint.Store(&endpoint)
 	}
 
+	// Persist to state
+	if d.stateMgr != nil {
+		d.stateMgr.SetOverlayEndpoint(endpoint)
+	}
+
 	// Update all existing proxies
 	for _, p := range d.proxym.List() {
 		p.SetOverlayEndpoint(endpoint)
 	}
+}
+
+// StateManager returns the state manager (may be nil if persistence is disabled).
+func (d *Daemon) StateManager() *StateManager {
+	return d.stateMgr
 }
 
 // OverlayEndpoint returns the current overlay endpoint URL, or empty string if not set.

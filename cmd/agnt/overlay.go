@@ -160,8 +160,6 @@ func (o *Overlay) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	o.clients.Store(conn, true)
 	defer o.clients.Delete(conn)
 
-	log.Printf("Overlay client connected")
-
 	for {
 		_, message, err := conn.ReadMessage()
 		if err != nil {
@@ -179,8 +177,6 @@ func (o *Overlay) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 		o.handleMessage(msg)
 	}
-
-	log.Printf("Overlay client disconnected")
 }
 
 func (o *Overlay) handleType(w http.ResponseWriter, r *http.Request) {
@@ -239,7 +235,6 @@ func (o *Overlay) handleEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Process the event
 	o.processProxyEvent(event)
 
 	w.Header().Set("Content-Type", "application/json")
@@ -247,8 +242,6 @@ func (o *Overlay) handleEvent(w http.ResponseWriter, r *http.Request) {
 }
 
 func (o *Overlay) processProxyEvent(event ProxyEvent) {
-	log.Printf("Received proxy event: type=%s proxy_id=%s", event.Type, event.ProxyID)
-
 	switch event.Type {
 	case "panel_message":
 		// Handle panel message - could type it into the AI tool
@@ -287,14 +280,23 @@ func (o *Overlay) processProxyEvent(event ProxyEvent) {
 		var data struct {
 			FilePath     string `json:"file_path"`
 			ElementCount int    `json:"element_count"`
+			Description  string `json:"description"`
 		}
 		if err := json.Unmarshal(event.Data, &data); err != nil {
 			log.Printf("Failed to parse sketch: %v", err)
 			return
 		}
 
-		// Notify user about the sketch
-		text := fmt.Sprintf("[Sketch saved: %s with %d elements]", data.FilePath, data.ElementCount)
+		// Format message with description and file path
+		var text string
+		if data.Description != "" {
+			text = data.Description
+			text += fmt.Sprintf("\n\n[Sketch: %s with %d elements]", data.FilePath, data.ElementCount)
+		} else {
+			text = fmt.Sprintf("[Sketch saved: %s with %d elements]", data.FilePath, data.ElementCount)
+		}
+
+		// Type the formatted message into the PTY
 		o.typeText(TypeMessage{
 			Text:    text,
 			Enter:   true,
@@ -302,11 +304,10 @@ func (o *Overlay) processProxyEvent(event ProxyEvent) {
 		})
 
 	case "interaction":
-		// Log interactions for debugging
-		log.Printf("User interaction: %s", string(event.Data))
+		// Interactions are tracked but not logged
 
 	default:
-		log.Printf("Unknown proxy event type: %s", event.Type)
+		// Unknown event types are silently ignored
 	}
 
 	// Broadcast to connected clients
@@ -345,17 +346,27 @@ func (o *Overlay) handleMessage(msg OverlayMessage) {
 }
 
 func (o *Overlay) typeText(msg TypeMessage) {
-	if msg.Instant {
-		o.writeTopty(msg.Text)
-	} else {
-		// Simulate typing with small delays
-		for _, ch := range msg.Text {
-			o.writeTopty(string(ch))
-			time.Sleep(10 * time.Millisecond)
-		}
+	// Always type character by character with delays to simulate realistic typing.
+	// Ink/Claude Code's input handler may not process instant bulk text correctly.
+	delay := 5 * time.Millisecond
+	if !msg.Instant {
+		delay = 10 * time.Millisecond
+	}
+
+	for _, ch := range msg.Text {
+		o.writeTopty(string(ch))
+		time.Sleep(delay)
 	}
 
 	if msg.Enter {
+		// Wait for Ink to process all characters before sending submit sequence
+		time.Sleep(100 * time.Millisecond)
+
+		// Ink-based apps (like Claude Code) sometimes need two Enters:
+		// - First Enter may be consumed by autocomplete/suggestions UI
+		// - Second Enter actually submits
+		o.writeTopty("\r")
+		time.Sleep(50 * time.Millisecond)
 		o.writeTopty("\r")
 	}
 }
@@ -378,7 +389,7 @@ func (o *Overlay) buildKeySequence(msg KeyMessage) string {
 	// Handle special keys
 	switch msg.Key {
 	case "Enter", "Return":
-		return "\r"
+		return "\r\n"
 	case "Tab":
 		return "\t"
 	case "Escape", "Esc":
@@ -437,7 +448,11 @@ func (o *Overlay) buildKeySequence(msg KeyMessage) string {
 func (o *Overlay) writeTopty(s string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	_, _ = o.ptmx.WriteString(s)
+	if o.ptmx == nil {
+		return
+	}
+	o.ptmx.WriteString(s)
+	o.ptmx.Sync()
 }
 
 // Broadcast sends a message to all connected WebSocket clients.

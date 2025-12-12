@@ -958,6 +958,30 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				_ = ps.overlayNotifier.NotifySketch(ps.ID, &sketchEntry)
 			}
 
+		case "screenshot_capture":
+			// Handle area capture from panel with reference ID
+			capture := parseScreenshotCapture(msg.Data, timestamp, msg.URL)
+			ps.logger.LogScreenshotCapture(capture)
+
+		case "element_capture":
+			// Handle element capture from panel with reference ID
+			capture := parseElementCapture(msg.Data, timestamp, msg.URL)
+			ps.logger.LogElementCapture(capture)
+
+		case "sketch_capture":
+			// Handle sketch capture from panel with reference ID
+			capture := parseSketchCapture(msg.Data, timestamp, msg.URL)
+
+			// Save sketch image to temp file if present
+			if capture.ImageData != "" {
+				filePath, err := ps.saveScreenshot("sketch-"+capture.ID, capture.ImageData)
+				if err == nil {
+					capture.FilePath = filePath
+				}
+			}
+
+			ps.logger.LogSketchCapture(capture)
+
 		case "voice_start":
 			// Start voice transcription session
 			config := DefaultDeepgramConfig()
@@ -1086,6 +1110,24 @@ func getInt64Field(data map[string]interface{}, key string) int64 {
 		case json.Number:
 			if i, err := n.Int64(); err == nil {
 				return i
+			}
+		}
+	}
+	return 0
+}
+
+func getFloatField(data map[string]interface{}, key string) float64 {
+	if v, ok := data[key]; ok {
+		switch n := v.(type) {
+		case float64:
+			return n
+		case int:
+			return float64(n)
+		case int64:
+			return float64(n)
+		case json.Number:
+			if f, err := n.Float64(); err == nil {
+				return f
 			}
 		}
 	}
@@ -1387,4 +1429,88 @@ func parseSketchEntry(data map[string]interface{}, id string, timestamp time.Tim
 	}
 
 	return entry
+}
+
+// parseScreenshotCapture parses a screenshot capture from panel JSON data.
+func parseScreenshotCapture(data map[string]interface{}, timestamp time.Time, url string) ScreenshotCapture {
+	capture := ScreenshotCapture{
+		ID:        getStringField(data, "id"),
+		Timestamp: timestamp,
+		URL:       url,
+	}
+
+	// Parse nested data field
+	if nested, ok := data["data"].(map[string]interface{}); ok {
+		capture.Summary = getStringField(nested, "summary")
+
+		// Parse area
+		if area, ok := nested["area"].(map[string]interface{}); ok {
+			capture.Area.X = getIntField(area, "x")
+			capture.Area.Y = getIntField(area, "y")
+			capture.Area.Width = getIntField(area, "width")
+			capture.Area.Height = getIntField(area, "height")
+		}
+	}
+
+	return capture
+}
+
+// parseElementCapture parses an element capture from panel JSON data.
+func parseElementCapture(data map[string]interface{}, timestamp time.Time, url string) ElementCapture {
+	capture := ElementCapture{
+		ID:        getStringField(data, "id"),
+		Timestamp: timestamp,
+		URL:       url,
+	}
+
+	// Parse nested data field
+	if nested, ok := data["data"].(map[string]interface{}); ok {
+		capture.Summary = getStringField(nested, "summary")
+		capture.Selector = getStringField(nested, "selector")
+		capture.Tag = getStringField(nested, "tag")
+		capture.ElementID = getStringField(nested, "id")
+		capture.Text = getStringField(nested, "text")
+
+		// Parse classes array
+		if classes, ok := nested["classes"].([]interface{}); ok {
+			for _, c := range classes {
+				if s, ok := c.(string); ok {
+					capture.Classes = append(capture.Classes, s)
+				}
+			}
+		}
+
+		// Parse rect
+		if rect, ok := nested["rect"].(map[string]interface{}); ok {
+			capture.Rect.X = getFloatField(rect, "x")
+			capture.Rect.Y = getFloatField(rect, "y")
+			capture.Rect.Width = getFloatField(rect, "width")
+			capture.Rect.Height = getFloatField(rect, "height")
+		}
+	}
+
+	return capture
+}
+
+// parseSketchCapture parses a sketch capture from panel JSON data.
+func parseSketchCapture(data map[string]interface{}, timestamp time.Time, url string) SketchCapture {
+	capture := SketchCapture{
+		ID:        getStringField(data, "id"),
+		Timestamp: timestamp,
+		URL:       url,
+	}
+
+	// Parse nested data field
+	if nested, ok := data["data"].(map[string]interface{}); ok {
+		capture.ElementCount = getIntField(nested, "elementCount")
+		capture.Summary = fmt.Sprintf("Sketch with %d elements", capture.ElementCount)
+		capture.ImageData = getStringField(nested, "image")
+
+		// Parse sketch data (store as-is for JSON flexibility)
+		if sketchData, ok := nested["sketch"].(map[string]interface{}); ok {
+			capture.Sketch = sketchData
+		}
+	}
+
+	return capture
 }

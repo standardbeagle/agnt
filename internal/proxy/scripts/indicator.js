@@ -1,5 +1,6 @@
-// Floating Indicator Bug for DevTool
-// A draggable floating indicator with expanding panel for input, screenshots, and element selection
+// Floating Indicator for DevTool
+// Redesigned with visual hierarchy and Gestalt principles
+// Attachments are logged first, then referenced in messages
 
 (function() {
   'use strict';
@@ -7,8 +8,13 @@
   var core = window.__devtool_core;
   var utils = window.__devtool_utils;
 
-  // Indicator state
-  var indicatorState = {
+  // Generate unique IDs for attachments
+  function generateId() {
+    return 'ctx_' + Date.now().toString(36) + Math.random().toString(36).substr(2, 5);
+  }
+
+  // State
+  var state = {
     container: null,
     bug: null,
     panel: null,
@@ -16,293 +22,365 @@
     isDragging: false,
     dragOffset: { x: 0, y: 0 },
     position: { x: 20, y: 20 },
-    isMinimized: false,
-    isVisible: true, // Show by default
-    screenshotMode: null, // null, 'area', 'element'
-    selectedElements: [],
-    areaSelection: null
+    isVisible: true,
+    // Attachments are now logged items with references
+    attachments: [] // { id, type, label, summary, timestamp }
   };
 
-  // CSS Styles for the indicator
+  // Design tokens - consistent visual language
+  var TOKENS = {
+    colors: {
+      primary: '#6366f1',      // Indigo
+      primaryDark: '#4f46e5',
+      secondary: '#64748b',    // Slate
+      success: '#22c55e',
+      error: '#ef4444',
+      surface: '#ffffff',
+      surfaceAlt: '#f8fafc',
+      border: '#e2e8f0',
+      text: '#1e293b',
+      textMuted: '#64748b',
+      textInverse: '#ffffff'
+    },
+    radius: {
+      sm: '6px',
+      md: '10px',
+      lg: '14px',
+      full: '9999px'
+    },
+    shadow: {
+      sm: '0 1px 2px rgba(0,0,0,0.05)',
+      md: '0 4px 12px rgba(0,0,0,0.1)',
+      lg: '0 10px 40px rgba(0,0,0,0.15)',
+      glow: '0 0 20px rgba(99,102,241,0.3)'
+    },
+    spacing: {
+      xs: '4px',
+      sm: '8px',
+      md: '12px',
+      lg: '16px',
+      xl: '20px'
+    }
+  };
+
+  // Styles
   var STYLES = {
+    // The floating bug - entry point
     bug: [
       'position: fixed',
-      'width: 48px',
-      'height: 48px',
-      'border-radius: 50%',
-      'background: linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-      'box-shadow: 0 4px 15px rgba(102, 126, 234, 0.4)',
+      'width: 52px',
+      'height: 52px',
+      'border-radius: ' + TOKENS.radius.full,
+      'background: ' + TOKENS.colors.primary,
+      'box-shadow: ' + TOKENS.shadow.lg + ', ' + TOKENS.shadow.glow,
       'cursor: pointer',
       'z-index: 2147483646',
       'display: flex',
       'align-items: center',
       'justify-content: center',
       'transition: transform 0.2s ease, box-shadow 0.2s ease',
-      'user-select: none',
-      'font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
-    ].join(';'),
-
-    bugIcon: [
-      'width: 24px',
-      'height: 24px',
-      'fill: white'
+      'user-select: none'
     ].join(';'),
 
     statusDot: [
       'position: absolute',
-      'top: 2px',
-      'right: 2px',
-      'width: 12px',
-      'height: 12px',
-      'border-radius: 50%',
-      'border: 2px solid white',
+      'top: 0',
+      'right: 0',
+      'width: 14px',
+      'height: 14px',
+      'border-radius: ' + TOKENS.radius.full,
+      'border: 2.5px solid ' + TOKENS.colors.surface,
       'transition: background-color 0.3s ease'
     ].join(';'),
 
+    // Panel - the main interface
     panel: [
       'position: fixed',
-      'width: 360px',
-      'max-height: 500px',
-      'background: white',
-      'border-radius: 12px',
-      'box-shadow: 0 10px 40px rgba(0, 0, 0, 0.15)',
+      'width: 380px',
+      'background: ' + TOKENS.colors.surface,
+      'border-radius: ' + TOKENS.radius.lg,
+      'box-shadow: ' + TOKENS.shadow.lg,
       'z-index: 2147483645',
       'overflow: hidden',
       'font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
       'font-size: 14px',
-      'color: #333',
-      'transform-origin: bottom left',
+      'color: ' + TOKENS.colors.text,
       'transition: opacity 0.2s ease, transform 0.2s ease'
     ].join(';'),
 
-    panelHeader: [
+    // Header - minimal, functional
+    header: [
       'display: flex',
       'align-items: center',
       'justify-content: space-between',
-      'padding: 12px 16px',
-      'background: linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-      'color: white',
+      'padding: ' + TOKENS.spacing.md + ' ' + TOKENS.spacing.lg,
+      'background: ' + TOKENS.colors.surfaceAlt,
+      'border-bottom: 1px solid ' + TOKENS.colors.border
+    ].join(';'),
+
+    headerTitle: [
       'font-weight: 600',
-      'font-size: 14px'
-    ].join(';'),
-
-    panelBody: [
-      'padding: 16px',
-      'max-height: 400px',
-      'overflow-y: auto'
-    ].join(';'),
-
-    inputGroup: [
-      'margin-bottom: 16px'
-    ].join(';'),
-
-    inputLabel: [
-      'display: block',
-      'margin-bottom: 6px',
-      'font-weight: 500',
-      'color: #555',
-      'font-size: 12px',
+      'font-size: 13px',
+      'color: ' + TOKENS.colors.textMuted,
       'text-transform: uppercase',
       'letter-spacing: 0.5px'
     ].join(';'),
 
-    textInput: [
-      'width: 100%',
-      'padding: 10px 12px',
-      'border: 1px solid #e0e0e0',
-      'border-radius: 8px',
-      'font-size: 14px',
-      'outline: none',
-      'transition: border-color 0.2s ease, box-shadow 0.2s ease',
-      'box-sizing: border-box'
-    ].join(';'),
-
-    textArea: [
-      'width: 100%',
-      'padding: 10px 12px',
-      'border: 1px solid #e0e0e0',
-      'border-radius: 8px',
-      'font-size: 14px',
-      'outline: none',
-      'resize: vertical',
-      'min-height: 80px',
-      'font-family: inherit',
-      'transition: border-color 0.2s ease, box-shadow 0.2s ease',
-      'box-sizing: border-box'
-    ].join(';'),
-
-    buttonRow: [
-      'display: flex',
-      'gap: 8px',
-      'flex-wrap: wrap'
-    ].join(';'),
-
-    button: [
-      'flex: 1',
-      'min-width: 100px',
-      'padding: 10px 16px',
-      'border: none',
-      'border-radius: 8px',
-      'font-size: 13px',
-      'font-weight: 500',
-      'cursor: pointer',
-      'transition: background 0.2s ease, transform 0.1s ease',
-      'display: flex',
-      'align-items: center',
-      'justify-content: center',
-      'gap: 6px'
-    ].join(';'),
-
-    primaryButton: [
-      'background: linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-      'color: white'
-    ].join(';'),
-
-    secondaryButton: [
-      'background: #f0f0f0',
-      'color: #333'
-    ].join(';'),
-
-    sketchButton: [
-      'background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%)',
-      'color: white'
-    ].join(';'),
-
-    attachmentList: [
-      'margin-top: 12px',
-      'padding: 8px',
-      'background: #f8f9fa',
-      'border-radius: 8px',
-      'font-size: 12px'
-    ].join(';'),
-
-    attachmentItem: [
-      'display: flex',
-      'align-items: center',
-      'justify-content: space-between',
-      'padding: 6px 8px',
-      'background: white',
-      'border-radius: 4px',
-      'margin-bottom: 4px'
-    ].join(';'),
-
-    closeButton: [
+    closeBtn: [
       'background: none',
       'border: none',
-      'color: white',
+      'color: ' + TOKENS.colors.textMuted,
       'cursor: pointer',
       'padding: 4px',
+      'border-radius: ' + TOKENS.radius.sm,
+      'display: flex',
+      'transition: background 0.15s ease'
+    ].join(';'),
+
+    // Compose area - the main content
+    compose: [
+      'padding: ' + TOKENS.spacing.lg
+    ].join(';'),
+
+    // Message card - groups message + attachments (Gestalt: Common Region)
+    messageCard: [
+      'border: 1px solid ' + TOKENS.colors.border,
+      'border-radius: ' + TOKENS.radius.md,
+      'background: ' + TOKENS.colors.surface,
+      'overflow: hidden',
+      'transition: border-color 0.2s ease, box-shadow 0.2s ease'
+    ].join(';'),
+
+    messageCardFocused: [
+      'border-color: ' + TOKENS.colors.primary,
+      'box-shadow: 0 0 0 3px rgba(99,102,241,0.1)'
+    ].join(';'),
+
+    // Text input within card
+    textarea: [
+      'width: 100%',
+      'min-height: 80px',
+      'padding: ' + TOKENS.spacing.md,
+      'border: none',
+      'outline: none',
+      'resize: none',
+      'font-size: 14px',
+      'font-family: inherit',
+      'line-height: 1.5',
+      'color: ' + TOKENS.colors.text,
+      'background: transparent',
+      'box-sizing: border-box'
+    ].join(';'),
+
+    // Attachment chips area (Gestalt: Proximity - grouped with message)
+    attachmentArea: [
+      'padding: 0 ' + TOKENS.spacing.md + ' ' + TOKENS.spacing.md,
+      'display: flex',
+      'flex-wrap: wrap',
+      'gap: ' + TOKENS.spacing.sm
+    ].join(';'),
+
+    // Individual attachment chip
+    chip: [
+      'display: inline-flex',
+      'align-items: center',
+      'gap: 6px',
+      'padding: 5px 10px',
+      'background: ' + TOKENS.colors.surfaceAlt,
+      'border: 1px solid ' + TOKENS.colors.border,
+      'border-radius: ' + TOKENS.radius.full,
+      'font-size: 12px',
+      'color: ' + TOKENS.colors.text,
+      'max-width: 200px',
+      'overflow: hidden'
+    ].join(';'),
+
+    chipIcon: [
+      'flex-shrink: 0',
+      'width: 14px',
+      'height: 14px'
+    ].join(';'),
+
+    chipLabel: [
+      'white-space: nowrap',
+      'overflow: hidden',
+      'text-overflow: ellipsis'
+    ].join(';'),
+
+    chipRemove: [
+      'flex-shrink: 0',
+      'background: none',
+      'border: none',
+      'padding: 0',
+      'cursor: pointer',
+      'color: ' + TOKENS.colors.textMuted,
+      'display: flex',
+      'transition: color 0.15s ease'
+    ].join(';'),
+
+    // Toolbar - secondary actions (Gestalt: Similarity)
+    toolbar: [
+      'display: flex',
+      'align-items: center',
+      'gap: ' + TOKENS.spacing.sm,
+      'padding: ' + TOKENS.spacing.sm + ' ' + TOKENS.spacing.md,
+      'background: ' + TOKENS.colors.surfaceAlt,
+      'border-top: 1px solid ' + TOKENS.colors.border
+    ].join(';'),
+
+    toolBtn: [
       'display: flex',
       'align-items: center',
       'justify-content: center',
-      'opacity: 0.8',
-      'transition: opacity 0.2s ease'
+      'gap: 5px',
+      'padding: 7px 12px',
+      'background: transparent',
+      'border: 1px solid ' + TOKENS.colors.border,
+      'border-radius: ' + TOKENS.radius.sm,
+      'font-size: 12px',
+      'font-weight: 500',
+      'color: ' + TOKENS.colors.textMuted,
+      'cursor: pointer',
+      'transition: all 0.15s ease'
     ].join(';'),
 
-    selectionOverlay: [
+    // Primary send button - visual hierarchy (most prominent)
+    sendBtn: [
+      'margin-left: auto',
+      'display: flex',
+      'align-items: center',
+      'gap: 6px',
+      'padding: 8px 16px',
+      'background: ' + TOKENS.colors.primary,
+      'border: none',
+      'border-radius: ' + TOKENS.radius.sm,
+      'font-size: 13px',
+      'font-weight: 600',
+      'color: ' + TOKENS.colors.textInverse,
+      'cursor: pointer',
+      'transition: background 0.15s ease, transform 0.1s ease'
+    ].join(';'),
+
+    // Selection overlays
+    overlay: [
       'position: fixed',
       'top: 0',
       'left: 0',
       'right: 0',
       'bottom: 0',
-      'background: rgba(0, 0, 0, 0.3)',
       'z-index: 2147483647',
       'cursor: crosshair'
     ].join(';'),
 
+    overlayDimmed: [
+      'background: rgba(0, 0, 0, 0.4)'
+    ].join(';'),
+
     selectionBox: [
       'position: absolute',
-      'border: 2px dashed #667eea',
-      'background: rgba(102, 126, 234, 0.2)',
+      'border: 2px solid ' + TOKENS.colors.primary,
+      'background: rgba(99, 102, 241, 0.15)',
+      'border-radius: 4px',
       'pointer-events: none'
     ].join(';'),
 
     elementHighlight: [
       'position: absolute',
-      'border: 2px solid #667eea',
-      'background: rgba(102, 126, 234, 0.1)',
+      'border: 2px solid ' + TOKENS.colors.primary,
+      'background: rgba(99, 102, 241, 0.1)',
       'pointer-events: none',
+      'border-radius: 4px',
       'z-index: 2147483647'
+    ].join(';'),
+
+    tooltip: [
+      'position: absolute',
+      'background: ' + TOKENS.colors.text,
+      'color: ' + TOKENS.colors.textInverse,
+      'padding: 4px 8px',
+      'border-radius: ' + TOKENS.radius.sm,
+      'font-size: 11px',
+      'font-family: ui-monospace, monospace',
+      'white-space: nowrap',
+      'pointer-events: none'
+    ].join(';'),
+
+    // Instructions bar during selection
+    instructionBar: [
+      'position: fixed',
+      'bottom: 20px',
+      'left: 50%',
+      'transform: translateX(-50%)',
+      'background: ' + TOKENS.colors.text,
+      'color: ' + TOKENS.colors.textInverse,
+      'padding: 10px 20px',
+      'border-radius: ' + TOKENS.radius.full,
+      'font-size: 13px',
+      'font-weight: 500',
+      'z-index: 2147483647',
+      'box-shadow: ' + TOKENS.shadow.lg
     ].join(';')
   };
 
-  // SVG Icons
+  // Icons (compact SVGs)
   var ICONS = {
-    devtool: '<svg viewBox="0 0 24 24" style="' + STYLES.bugIcon + '"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/></svg>',
-    close: '<svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor"><path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/></svg>',
-    send: '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M15.854.146a.5.5 0 0 1 .11.54l-5.819 14.547a.75.75 0 0 1-1.329.124l-3.178-4.995L.643 7.184a.75.75 0 0 1 .124-1.33L15.314.037a.5.5 0 0 1 .54.11ZM6.636 10.07l2.761 4.338L14.13 2.576 6.636 10.07Zm6.787-8.201L1.591 6.602l4.339 2.76 7.494-7.493Z"/></svg>',
-    screenshot: '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M10.5 8.5a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0z"/><path d="M2 4a2 2 0 0 0-2 2v6a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2h-1.172a2 2 0 0 1-1.414-.586l-.828-.828A2 2 0 0 0 9.172 2H6.828a2 2 0 0 0-1.414.586l-.828.828A2 2 0 0 1 3.172 4H2zm.5 2a.5.5 0 1 1 0-1 .5.5 0 0 1 0 1zm9 2.5a3.5 3.5 0 1 1-7 0 3.5 3.5 0 0 1 7 0z"/></svg>',
-    element: '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M14 1a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1h12zM2 0a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V2a2 2 0 0 0-2-2H2z"/><path d="M6.854 4.646a.5.5 0 0 1 0 .708L4.207 8l2.647 2.646a.5.5 0 0 1-.708.708l-3-3a.5.5 0 0 1 0-.708l3-3a.5.5 0 0 1 .708 0zm2.292 0a.5.5 0 0 0 0 .708L11.793 8l-2.647 2.646a.5.5 0 0 0 .708.708l3-3a.5.5 0 0 0 0-.708l-3-3a.5.5 0 0 0-.708 0z"/></svg>',
-    sketch: '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M12.146.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1 0 .708l-10 10a.5.5 0 0 1-.168.11l-5 2a.5.5 0 0 1-.65-.65l2-5a.5.5 0 0 1 .11-.168l10-10zM11.207 2.5 13.5 4.793 14.793 3.5 12.5 1.207 11.207 2.5zm1.586 3L10.5 3.207 4 9.707V10h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.293l6.5-6.5zm-9.761 5.175-.106.106-1.528 3.821 3.821-1.528.106-.106A.5.5 0 0 1 5 12.5V12h-.5a.5.5 0 0 1-.5-.5V11h-.5a.5.5 0 0 1-.468-.325z"/></svg>',
-    remove: '<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0V6z"/><path fill-rule="evenodd" d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1v1zM4.118 4 4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4H4.118zM2.5 3V2h11v1h-11z"/></svg>'
+    logo: '<svg width="24" height="24" viewBox="0 0 24 24" fill="white"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>',
+    close: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>',
+    send: '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>',
+    screenshot: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>',
+    element: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>',
+    sketch: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.586 7.586"/><circle cx="11" cy="11" r="2"/></svg>',
+    x: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 6L6 18M6 6l12 12"/></svg>'
   };
 
-  // Initialize the indicator
+  // Initialize
   function init() {
-    if (indicatorState.container) return;
+    if (state.container) return;
+    loadPrefs();
+    createUI();
+    setupStatusPolling();
+  }
 
-    // Load saved preferences (position and visibility)
-    loadPreferences();
+  function createUI() {
+    state.container = document.createElement('div');
+    state.container.id = '__devtool-indicator';
+    if (!state.isVisible) state.container.style.display = 'none';
 
-    // Create container
-    indicatorState.container = document.createElement('div');
-    indicatorState.container.id = '__devtool-indicator';
-
-    // Apply visibility state
-    if (!indicatorState.isVisible) {
-      indicatorState.container.style.display = 'none';
-    }
-
-    // Create the bug
     createBug();
-
-    // Create the panel (hidden initially)
     createPanel();
 
-    // Add to document
-    document.documentElement.appendChild(indicatorState.container);
-
-    // Setup status updates
-    setupStatusUpdates();
-
-    console.log('[DevTool] Floating indicator initialized (visible: ' + indicatorState.isVisible + ')');
+    document.documentElement.appendChild(state.container);
   }
 
   function createBug() {
     var bug = document.createElement('div');
-    bug.id = '__devtool-bug';
     bug.style.cssText = STYLES.bug;
-    bug.style.left = indicatorState.position.x + 'px';
-    bug.style.bottom = indicatorState.position.y + 'px';
+    bug.style.left = state.position.x + 'px';
+    bug.style.bottom = state.position.y + 'px';
+    bug.innerHTML = ICONS.logo;
 
-    // Bug icon
-    bug.innerHTML = ICONS.devtool;
+    // Status indicator
+    var dot = document.createElement('div');
+    dot.id = '__devtool-status';
+    dot.style.cssText = STYLES.statusDot;
+    dot.style.backgroundColor = core.isConnected() ? TOKENS.colors.success : TOKENS.colors.error;
+    bug.appendChild(dot);
 
-    // Status dot
-    var statusDot = document.createElement('div');
-    statusDot.id = '__devtool-status';
-    statusDot.style.cssText = STYLES.statusDot;
-    statusDot.style.backgroundColor = core.isConnected() ? '#22c55e' : '#ef4444';
-    bug.appendChild(statusDot);
-
-    // Event listeners
-    bug.addEventListener('mousedown', handleBugMouseDown);
-    bug.addEventListener('click', handleBugClick);
+    // Drag and click handling
+    bug.addEventListener('mousedown', handleDragStart);
     bug.addEventListener('mouseenter', function() {
-      if (!indicatorState.isDragging) {
-        bug.style.transform = 'scale(1.1)';
-        bug.style.boxShadow = '0 6px 20px rgba(102, 126, 234, 0.5)';
+      if (!state.isDragging) {
+        bug.style.transform = 'scale(1.08)';
       }
     });
     bug.addEventListener('mouseleave', function() {
-      if (!indicatorState.isDragging) {
+      if (!state.isDragging) {
         bug.style.transform = 'scale(1)';
-        bug.style.boxShadow = '0 4px 15px rgba(102, 126, 234, 0.4)';
       }
     });
 
-    indicatorState.bug = bug;
-    indicatorState.container.appendChild(bug);
+    state.bug = bug;
+    state.container.appendChild(bug);
   }
 
   function createPanel() {
@@ -311,431 +389,359 @@
     panel.style.cssText = STYLES.panel;
     panel.style.display = 'none';
     panel.style.opacity = '0';
-    panel.style.transform = 'scale(0.95)';
+    panel.style.transform = 'translateY(8px)';
 
     // Header
     var header = document.createElement('div');
-    header.style.cssText = STYLES.panelHeader;
-    header.innerHTML = '<span>DevTool Panel</span>';
+    header.style.cssText = STYLES.header;
+
+    var title = document.createElement('span');
+    title.style.cssText = STYLES.headerTitle;
+    title.textContent = 'Send to Claude';
+    header.appendChild(title);
 
     var closeBtn = document.createElement('button');
-    closeBtn.style.cssText = STYLES.closeButton;
+    closeBtn.style.cssText = STYLES.closeBtn;
     closeBtn.innerHTML = ICONS.close;
-    closeBtn.onclick = function(e) {
-      e.stopPropagation();
-      togglePanel(false);
-    };
+    closeBtn.onclick = function(e) { e.stopPropagation(); togglePanel(false); };
+    closeBtn.onmouseenter = function() { closeBtn.style.background = TOKENS.colors.border; };
+    closeBtn.onmouseleave = function() { closeBtn.style.background = 'none'; };
     header.appendChild(closeBtn);
 
     panel.appendChild(header);
 
-    // Body
-    var body = document.createElement('div');
-    body.style.cssText = STYLES.panelBody;
-    body.id = '__devtool-panel-body';
+    // Compose area
+    var compose = document.createElement('div');
+    compose.style.cssText = STYLES.compose;
 
-    // Message input group
-    var msgGroup = createInputGroup('Message', 'textarea', '__devtool-message', 'Type your message or note...');
-    body.appendChild(msgGroup);
+    // Message card (groups message + attachments - Gestalt: Common Region)
+    var card = document.createElement('div');
+    card.id = '__devtool-card';
+    card.style.cssText = STYLES.messageCard;
 
-    // Button row
-    var buttonRow = document.createElement('div');
-    buttonRow.style.cssText = STYLES.buttonRow;
+    var textarea = document.createElement('textarea');
+    textarea.id = '__devtool-message';
+    textarea.style.cssText = STYLES.textarea;
+    textarea.placeholder = 'Describe what you need help with...';
+    textarea.onfocus = function() {
+      card.style.cssText = STYLES.messageCard + ';' + STYLES.messageCardFocused;
+    };
+    textarea.onblur = function() {
+      card.style.cssText = STYLES.messageCard;
+    };
+    card.appendChild(textarea);
 
-    var sendBtn = createButton('Send', ICONS.send, 'primary', handleSendMessage);
-    var screenshotBtn = createButton('Screenshot', ICONS.screenshot, 'secondary', handleScreenshotArea);
-    var elementBtn = createButton('Select Element', ICONS.element, 'secondary', handleSelectElement);
-    var sketchBtn = createButton('Sketch', ICONS.sketch, 'sketch', handleSketchMode);
+    // Attachment chips container
+    var attachArea = document.createElement('div');
+    attachArea.id = '__devtool-attachments';
+    attachArea.style.cssText = STYLES.attachmentArea;
+    attachArea.style.display = 'none';
+    card.appendChild(attachArea);
 
-    buttonRow.appendChild(sendBtn);
-    buttonRow.appendChild(screenshotBtn);
-    body.appendChild(buttonRow);
+    compose.appendChild(card);
+    panel.appendChild(compose);
 
-    var buttonRow2 = document.createElement('div');
-    buttonRow2.style.cssText = STYLES.buttonRow;
-    buttonRow2.style.marginTop = '8px';
-    buttonRow2.appendChild(elementBtn);
-    buttonRow2.appendChild(sketchBtn);
-    body.appendChild(buttonRow2);
+    // Toolbar with actions
+    var toolbar = document.createElement('div');
+    toolbar.style.cssText = STYLES.toolbar;
 
-    // Attachments list
-    var attachments = document.createElement('div');
-    attachments.id = '__devtool-attachments';
-    attachments.style.cssText = STYLES.attachmentList;
-    attachments.style.display = 'none';
-    attachments.innerHTML = '<div style="font-weight: 500; margin-bottom: 8px; color: #666;">Attachments</div><div id="__devtool-attachment-list"></div>';
-    body.appendChild(attachments);
+    // Tool buttons (Gestalt: Similarity - all secondary actions look alike)
+    var screenshotBtn = createToolBtn('Screenshot', ICONS.screenshot, startScreenshotMode);
+    var elementBtn = createToolBtn('Element', ICONS.element, startElementMode);
+    var sketchBtn = createToolBtn('Sketch', ICONS.sketch, openSketch);
 
-    panel.appendChild(body);
-    indicatorState.panel = panel;
-    indicatorState.container.appendChild(panel);
+    toolbar.appendChild(screenshotBtn);
+    toolbar.appendChild(elementBtn);
+    toolbar.appendChild(sketchBtn);
+
+    // Send button (visual hierarchy - primary action)
+    var sendBtn = document.createElement('button');
+    sendBtn.style.cssText = STYLES.sendBtn;
+    sendBtn.innerHTML = ICONS.send + ' Send';
+    sendBtn.onclick = handleSend;
+    sendBtn.onmouseenter = function() { sendBtn.style.background = TOKENS.colors.primaryDark; };
+    sendBtn.onmouseleave = function() { sendBtn.style.background = TOKENS.colors.primary; };
+    toolbar.appendChild(sendBtn);
+
+    panel.appendChild(toolbar);
+
+    state.panel = panel;
+    state.container.appendChild(panel);
   }
 
-  function createInputGroup(label, type, id, placeholder) {
-    var group = document.createElement('div');
-    group.style.cssText = STYLES.inputGroup;
-
-    var labelEl = document.createElement('label');
-    labelEl.style.cssText = STYLES.inputLabel;
-    labelEl.textContent = label;
-    labelEl.setAttribute('for', id);
-    group.appendChild(labelEl);
-
-    var input;
-    if (type === 'textarea') {
-      input = document.createElement('textarea');
-      input.style.cssText = STYLES.textArea;
-    } else {
-      input = document.createElement('input');
-      input.type = type;
-      input.style.cssText = STYLES.textInput;
-    }
-    input.id = id;
-    input.placeholder = placeholder;
-    input.addEventListener('focus', function() {
-      input.style.borderColor = '#667eea';
-      input.style.boxShadow = '0 0 0 3px rgba(102, 126, 234, 0.1)';
-    });
-    input.addEventListener('blur', function() {
-      input.style.borderColor = '#e0e0e0';
-      input.style.boxShadow = 'none';
-    });
-    group.appendChild(input);
-
-    return group;
-  }
-
-  function createButton(text, icon, type, onClick) {
+  function createToolBtn(label, icon, onClick) {
     var btn = document.createElement('button');
-    btn.style.cssText = STYLES.button + ';' + STYLES[type + 'Button'];
-    btn.innerHTML = icon + '<span>' + text + '</span>';
+    btn.style.cssText = STYLES.toolBtn;
+    btn.innerHTML = icon + ' ' + label;
     btn.onclick = onClick;
-    btn.addEventListener('mouseenter', function() {
-      btn.style.transform = 'translateY(-1px)';
-    });
-    btn.addEventListener('mouseleave', function() {
-      btn.style.transform = 'translateY(0)';
-    });
+    btn.onmouseenter = function() {
+      btn.style.background = TOKENS.colors.surface;
+      btn.style.borderColor = TOKENS.colors.primary;
+      btn.style.color = TOKENS.colors.primary;
+    };
+    btn.onmouseleave = function() {
+      btn.style.background = 'transparent';
+      btn.style.borderColor = TOKENS.colors.border;
+      btn.style.color = TOKENS.colors.textMuted;
+    };
     return btn;
   }
 
-  // Event handlers
-  function handleBugMouseDown(e) {
-    if (e.button !== 0) return;
+  // Attachment chip creation
+  function createChip(attachment) {
+    var chip = document.createElement('div');
+    chip.style.cssText = STYLES.chip;
+    chip.dataset.id = attachment.id;
 
-    indicatorState.isDragging = false;
-    indicatorState.dragOffset = {
-      x: e.clientX - indicatorState.bug.getBoundingClientRect().left,
-      y: e.clientY - indicatorState.bug.getBoundingClientRect().top
-    };
+    var icon = document.createElement('span');
+    icon.style.cssText = STYLES.chipIcon;
+    var iconSvg = ICONS.element;
+    if (attachment.type === 'screenshot') iconSvg = ICONS.screenshot;
+    else if (attachment.type === 'sketch') iconSvg = ICONS.sketch;
+    icon.innerHTML = iconSvg;
+    chip.appendChild(icon);
 
-    var startX = e.clientX;
-    var startY = e.clientY;
+    var label = document.createElement('span');
+    label.style.cssText = STYLES.chipLabel;
+    label.textContent = attachment.label;
+    label.title = attachment.summary;
+    chip.appendChild(label);
 
-    function onMouseMove(e) {
-      var dx = Math.abs(e.clientX - startX);
-      var dy = Math.abs(e.clientY - startY);
-
-      if (dx > 5 || dy > 5) {
-        indicatorState.isDragging = true;
-      }
-
-      if (indicatorState.isDragging) {
-        var x = e.clientX - indicatorState.dragOffset.x;
-        var y = window.innerHeight - e.clientY - (indicatorState.bug.offsetHeight - indicatorState.dragOffset.y);
-
-        // Constrain to viewport
-        x = Math.max(0, Math.min(x, window.innerWidth - indicatorState.bug.offsetWidth));
-        y = Math.max(0, Math.min(y, window.innerHeight - indicatorState.bug.offsetHeight));
-
-        indicatorState.position = { x: x, y: y };
-        indicatorState.bug.style.left = x + 'px';
-        indicatorState.bug.style.bottom = y + 'px';
-        updatePanelPosition();
-      }
-    }
-
-    function onMouseUp() {
-      document.removeEventListener('mousemove', onMouseMove);
-      document.removeEventListener('mouseup', onMouseUp);
-
-      if (indicatorState.isDragging) {
-        savePreferences();
-        setTimeout(function() {
-          indicatorState.isDragging = false;
-        }, 0);
-      }
-    }
-
-    document.addEventListener('mousemove', onMouseMove);
-    document.addEventListener('mouseup', onMouseUp);
-  }
-
-  function handleBugClick(e) {
-    if (indicatorState.isDragging) {
-      e.preventDefault();
+    var removeBtn = document.createElement('button');
+    removeBtn.style.cssText = STYLES.chipRemove;
+    removeBtn.innerHTML = ICONS.x;
+    removeBtn.onclick = function(e) {
       e.stopPropagation();
-      return;
-    }
-    togglePanel();
+      removeAttachment(attachment.id);
+    };
+    removeBtn.onmouseenter = function() { removeBtn.style.color = TOKENS.colors.error; };
+    removeBtn.onmouseleave = function() { removeBtn.style.color = TOKENS.colors.textMuted; };
+    chip.appendChild(removeBtn);
+
+    return chip;
   }
 
-  function togglePanel(forceState) {
-    var shouldShow = forceState !== undefined ? forceState : !indicatorState.isExpanded;
-    indicatorState.isExpanded = shouldShow;
-
-    if (shouldShow) {
-      updatePanelPosition();
-      indicatorState.panel.style.display = 'block';
-      setTimeout(function() {
-        indicatorState.panel.style.opacity = '1';
-        indicatorState.panel.style.transform = 'scale(1)';
-      }, 10);
-    } else {
-      indicatorState.panel.style.opacity = '0';
-      indicatorState.panel.style.transform = 'scale(0.95)';
-      setTimeout(function() {
-        indicatorState.panel.style.display = 'none';
-      }, 200);
-    }
-  }
-
-  function updatePanelPosition() {
-    if (!indicatorState.panel) return;
-
-    var bugRect = indicatorState.bug.getBoundingClientRect();
-    var panelWidth = 360;
-    var panelHeight = indicatorState.panel.offsetHeight || 400;
-
-    var x = bugRect.left;
-    var y = bugRect.top - panelHeight - 10;
-
-    // Adjust if panel would go off screen
-    if (x + panelWidth > window.innerWidth) {
-      x = window.innerWidth - panelWidth - 10;
-    }
-    if (y < 10) {
-      y = bugRect.bottom + 10;
-    }
-
-    indicatorState.panel.style.left = x + 'px';
-    indicatorState.panel.style.top = y + 'px';
-  }
-
-  function handleSendMessage() {
-    var messageEl = document.getElementById('__devtool-message');
-    var message = messageEl ? messageEl.value.trim() : '';
-
-    if (!message && indicatorState.selectedElements.length === 0 && !indicatorState.areaSelection) {
-      return;
-    }
-
-    var payload = {
-      message: message,
-      attachments: []
+  function addAttachment(type, data) {
+    var attachment = {
+      id: generateId(),
+      type: type,
+      label: data.label,
+      summary: data.summary,
+      data: data,
+      timestamp: Date.now()
     };
 
-    // Add element attachments
-    indicatorState.selectedElements.forEach(function(el) {
-      payload.attachments.push({
-        type: 'element',
-        selector: el.selector,
-        tag: el.tag,
-        id: el.id,
-        classes: el.classes,
-        text: el.text
-      });
+    // Log to proxy first (this is the source of truth)
+    core.send(type + '_capture', {
+      id: attachment.id,
+      timestamp: attachment.timestamp,
+      data: data
     });
 
-    // Add area screenshot attachment
-    if (indicatorState.areaSelection) {
-      payload.attachments.push({
-        type: 'screenshot_area',
-        area: indicatorState.areaSelection
-      });
+    // Add to local state
+    state.attachments.push(attachment);
+
+    // Update UI
+    var container = document.getElementById('__devtool-attachments');
+    if (container) {
+      container.style.display = 'flex';
+      container.appendChild(createChip(attachment));
     }
 
-    // Send to server
+    return attachment.id;
+  }
+
+  function removeAttachment(id) {
+    state.attachments = state.attachments.filter(function(a) { return a.id !== id; });
+
+    var container = document.getElementById('__devtool-attachments');
+    if (container) {
+      var chip = container.querySelector('[data-id="' + id + '"]');
+      if (chip) container.removeChild(chip);
+      if (state.attachments.length === 0) container.style.display = 'none';
+    }
+  }
+
+  function clearAttachments() {
+    state.attachments = [];
+    var container = document.getElementById('__devtool-attachments');
+    if (container) {
+      container.innerHTML = '';
+      container.style.display = 'none';
+    }
+  }
+
+  // Send message - assembles everything into a structured message
+  function handleSend() {
+    var textarea = document.getElementById('__devtool-message');
+    var userMessage = textarea ? textarea.value.trim() : '';
+
+    if (!userMessage && state.attachments.length === 0) return;
+
+    // Build the structured message
+    var parts = [];
+
+    // User's message first
+    if (userMessage) {
+      parts.push(userMessage);
+    }
+
+    // Add context section if there are attachments
+    if (state.attachments.length > 0) {
+      parts.push('');
+      parts.push('---');
+      parts.push('**Context from page:** ' + window.location.href);
+      parts.push('');
+
+      state.attachments.forEach(function(att) {
+        if (att.type === 'screenshot') {
+          parts.push('- Screenshot `' + att.id + '`: ' + att.summary);
+        } else if (att.type === 'element') {
+          parts.push('- Element `' + att.id + '`: `' + att.data.selector + '` (' + att.data.tag + ')');
+        } else if (att.type === 'sketch') {
+          parts.push('- Sketch `' + att.id + '`: ' + att.summary);
+        }
+      });
+
+      parts.push('');
+      parts.push('*Use `proxylog` to fetch capture details. Use `proxy exec` to inspect or interact with the page.*');
+    }
+
+    var fullMessage = parts.join('\n');
+
+    // Send via panel_message
     core.send('panel_message', {
       timestamp: Date.now(),
-      payload: payload
+      payload: {
+        message: fullMessage,
+        references: state.attachments.map(function(a) {
+          return { id: a.id, type: a.type };
+        }),
+        url: window.location.href
+      }
     });
 
-    // Clear inputs
-    if (messageEl) messageEl.value = '';
+    // Clear
+    if (textarea) textarea.value = '';
     clearAttachments();
-
-    console.log('[DevTool] Message sent:', payload);
-  }
-
-  function handleScreenshotArea() {
     togglePanel(false);
-    startAreaSelection();
   }
 
-  function handleSelectElement() {
+  // Screenshot mode
+  function startScreenshotMode() {
     togglePanel(false);
-    startElementSelection();
-  }
-
-  function handleSketchMode() {
-    togglePanel(false);
-
-    // Check if sketch module is available
-    if (window.__devtool_sketch && window.__devtool_sketch.toggle) {
-      window.__devtool_sketch.toggle();
-    } else {
-      console.warn('[DevTool] Sketch module not loaded');
-    }
-  }
-
-  // Area selection for screenshots
-  function startAreaSelection() {
-    indicatorState.screenshotMode = 'area';
 
     var overlay = document.createElement('div');
-    overlay.id = '__devtool-selection-overlay';
-    overlay.style.cssText = STYLES.selectionOverlay;
+    overlay.style.cssText = STYLES.overlay + ';' + STYLES.overlayDimmed;
 
-    var selectionBox = document.createElement('div');
-    selectionBox.id = '__devtool-selection-box';
-    selectionBox.style.cssText = STYLES.selectionBox;
-    selectionBox.style.display = 'none';
-    overlay.appendChild(selectionBox);
+    var box = document.createElement('div');
+    box.style.cssText = STYLES.selectionBox;
+    box.style.display = 'none';
+    overlay.appendChild(box);
 
-    var startPos = null;
+    var instructions = document.createElement('div');
+    instructions.style.cssText = STYLES.instructionBar;
+    instructions.textContent = 'Click and drag to select area \u2022 ESC to cancel';
+    overlay.appendChild(instructions);
 
-    overlay.addEventListener('mousedown', function(e) {
-      startPos = { x: e.clientX, y: e.clientY };
-      selectionBox.style.display = 'block';
-      selectionBox.style.left = startPos.x + 'px';
-      selectionBox.style.top = startPos.y + 'px';
-      selectionBox.style.width = '0px';
-      selectionBox.style.height = '0px';
-    });
+    var start = null;
 
-    overlay.addEventListener('mousemove', function(e) {
-      if (!startPos) return;
+    overlay.onmousedown = function(e) {
+      start = { x: e.clientX, y: e.clientY };
+      box.style.display = 'block';
+      box.style.left = start.x + 'px';
+      box.style.top = start.y + 'px';
+      box.style.width = '0';
+      box.style.height = '0';
+    };
 
-      var x = Math.min(startPos.x, e.clientX);
-      var y = Math.min(startPos.y, e.clientY);
-      var width = Math.abs(e.clientX - startPos.x);
-      var height = Math.abs(e.clientY - startPos.y);
+    overlay.onmousemove = function(e) {
+      if (!start) return;
+      var x = Math.min(start.x, e.clientX);
+      var y = Math.min(start.y, e.clientY);
+      var w = Math.abs(e.clientX - start.x);
+      var h = Math.abs(e.clientY - start.y);
+      box.style.left = x + 'px';
+      box.style.top = y + 'px';
+      box.style.width = w + 'px';
+      box.style.height = h + 'px';
+    };
 
-      selectionBox.style.left = x + 'px';
-      selectionBox.style.top = y + 'px';
-      selectionBox.style.width = width + 'px';
-      selectionBox.style.height = height + 'px';
-    });
+    overlay.onmouseup = function(e) {
+      if (!start) return;
+      var x = Math.min(start.x, e.clientX);
+      var y = Math.min(start.y, e.clientY);
+      var w = Math.abs(e.clientX - start.x);
+      var h = Math.abs(e.clientY - start.y);
 
-    overlay.addEventListener('mouseup', function(e) {
-      if (!startPos) return;
+      cleanup();
 
-      var x = Math.min(startPos.x, e.clientX);
-      var y = Math.min(startPos.y, e.clientY);
-      var width = Math.abs(e.clientX - startPos.x);
-      var height = Math.abs(e.clientY - startPos.y);
-
-      if (width > 10 && height > 10) {
-        captureArea(x, y, width, height);
-      }
-
-      document.body.removeChild(overlay);
-      indicatorState.screenshotMode = null;
-      togglePanel(true);
-    });
-
-    // Allow escape to cancel
-    function handleKeyDown(e) {
-      if (e.key === 'Escape') {
-        document.body.removeChild(overlay);
-        indicatorState.screenshotMode = null;
+      if (w > 20 && h > 20) {
+        // Add attachment with area info
+        addAttachment('screenshot', {
+          label: w + '\u00d7' + h + ' area',
+          summary: 'Screenshot area at (' + x + ',' + y + ') size ' + w + 'x' + h,
+          area: { x: x + window.scrollX, y: y + window.scrollY, width: w, height: h }
+        });
         togglePanel(true);
-        document.removeEventListener('keydown', handleKeyDown);
+      } else {
+        togglePanel(true);
+      }
+    };
+
+    function cleanup() {
+      document.removeEventListener('keydown', onKey);
+      if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+    }
+
+    function onKey(e) {
+      if (e.key === 'Escape') {
+        cleanup();
+        togglePanel(true);
       }
     }
-    document.addEventListener('keydown', handleKeyDown);
+    document.addEventListener('keydown', onKey);
 
     document.body.appendChild(overlay);
   }
 
-  function captureArea(x, y, width, height) {
-    indicatorState.areaSelection = {
-      x: x + window.scrollX,
-      y: y + window.scrollY,
-      width: width,
-      height: height
-    };
-
-    // Capture screenshot of area
-    if (typeof html2canvas !== 'undefined') {
-      html2canvas(document.body, {
-        x: x + window.scrollX,
-        y: y + window.scrollY,
-        width: width,
-        height: height,
-        allowTaint: true,
-        useCORS: true,
-        logging: false
-      }).then(function(canvas) {
-        var dataUrl = canvas.toDataURL('image/png');
-        indicatorState.areaSelection.data = dataUrl;
-        addAttachment('screenshot', 'Area: ' + width + 'x' + height + 'px');
-      }).catch(function(err) {
-        console.error('[DevTool] Screenshot failed:', err);
-        addAttachment('screenshot', 'Area: ' + width + 'x' + height + 'px (capture pending)');
-      });
-    } else {
-      addAttachment('screenshot', 'Area: ' + width + 'x' + height + 'px (capture pending)');
-    }
-  }
-
-  // Element selection
-  function startElementSelection() {
-    indicatorState.screenshotMode = 'element';
+  // Element selection mode
+  function startElementMode() {
+    togglePanel(false);
 
     var overlay = document.createElement('div');
-    overlay.id = '__devtool-element-overlay';
-    overlay.style.cssText = 'position: fixed; top: 0; left: 0; right: 0; bottom: 0; z-index: 2147483647; cursor: crosshair;';
+    overlay.style.cssText = STYLES.overlay;
 
     var highlight = document.createElement('div');
-    highlight.id = '__devtool-element-highlight';
     highlight.style.cssText = STYLES.elementHighlight;
     highlight.style.display = 'none';
     overlay.appendChild(highlight);
 
     var tooltip = document.createElement('div');
-    tooltip.id = '__devtool-element-tooltip';
-    tooltip.style.cssText = [
-      'position: absolute',
-      'background: #333',
-      'color: white',
-      'padding: 4px 8px',
-      'border-radius: 4px',
-      'font-size: 12px',
-      'font-family: monospace',
-      'white-space: nowrap',
-      'pointer-events: none',
-      'z-index: 2147483647'
-    ].join(';');
+    tooltip.style.cssText = STYLES.tooltip;
     tooltip.style.display = 'none';
     overlay.appendChild(tooltip);
 
-    var hoveredElement = null;
+    var instructions = document.createElement('div');
+    instructions.style.cssText = STYLES.instructionBar;
+    instructions.textContent = 'Click an element to select \u2022 ESC to cancel';
+    overlay.appendChild(instructions);
 
-    overlay.addEventListener('mousemove', function(e) {
+    var hovered = null;
+
+    overlay.onmousemove = function(e) {
       overlay.style.pointerEvents = 'none';
       var el = document.elementFromPoint(e.clientX, e.clientY);
       overlay.style.pointerEvents = 'auto';
 
-      if (!el || el === indicatorState.container || indicatorState.container.contains(el)) {
+      if (!el || el === state.container || state.container.contains(el)) {
         highlight.style.display = 'none';
         tooltip.style.display = 'none';
-        hoveredElement = null;
+        hovered = null;
         return;
       }
 
-      hoveredElement = el;
+      hovered = el;
       var rect = el.getBoundingClientRect();
 
       highlight.style.display = 'block';
@@ -747,185 +753,241 @@
       var selector = utils.generateSelector(el);
       tooltip.textContent = selector;
       tooltip.style.display = 'block';
-      tooltip.style.left = Math.min(rect.left, window.innerWidth - tooltip.offsetWidth - 10) + 'px';
-      tooltip.style.top = Math.max(rect.top - 30, 10) + 'px';
-    });
+      tooltip.style.left = Math.min(rect.left, window.innerWidth - 200) + 'px';
+      tooltip.style.top = Math.max(rect.top - 28, 5) + 'px';
+    };
 
-    overlay.addEventListener('click', function(e) {
+    overlay.onclick = function(e) {
       e.preventDefault();
       e.stopPropagation();
+      cleanup();
 
-      if (hoveredElement) {
-        var selector = utils.generateSelector(hoveredElement);
-        var info = {
+      if (hovered) {
+        var selector = utils.generateSelector(hovered);
+        var tag = hovered.tagName.toLowerCase();
+        var text = (hovered.textContent || '').trim().substring(0, 50);
+
+        addAttachment('element', {
+          label: selector.length > 30 ? tag + (hovered.id ? '#' + hovered.id : '') : selector,
+          summary: selector + ' - "' + text + '"',
           selector: selector,
-          tag: hoveredElement.tagName.toLowerCase(),
-          id: hoveredElement.id || null,
-          classes: Array.from(hoveredElement.classList),
-          text: (hoveredElement.textContent || '').trim().substring(0, 100)
-        };
-
-        indicatorState.selectedElements.push(info);
-        addAttachment('element', info.selector);
+          tag: tag,
+          id: hovered.id || null,
+          classes: Array.from(hovered.classList),
+          text: text,
+          rect: hovered.getBoundingClientRect()
+        });
       }
 
-      document.body.removeChild(overlay);
-      indicatorState.screenshotMode = null;
       togglePanel(true);
-    });
+    };
 
-    // Allow escape to cancel
-    function handleKeyDown(e) {
+    function cleanup() {
+      document.removeEventListener('keydown', onKey);
+      if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
+    }
+
+    function onKey(e) {
       if (e.key === 'Escape') {
-        document.body.removeChild(overlay);
-        indicatorState.screenshotMode = null;
+        cleanup();
         togglePanel(true);
-        document.removeEventListener('keydown', handleKeyDown);
       }
     }
-    document.addEventListener('keydown', handleKeyDown);
+    document.addEventListener('keydown', onKey);
 
     document.body.appendChild(overlay);
   }
 
-  // Attachment management
-  function addAttachment(type, label) {
-    var attachmentsContainer = document.getElementById('__devtool-attachments');
-    var list = document.getElementById('__devtool-attachment-list');
+  // Sketch mode - opens sketch, on save adds as attachment
+  function openSketch() {
+    togglePanel(false);
+    if (window.__devtool_sketch) {
+      // Set callback for when sketch is saved
+      window.__devtool_sketch.onSave = function(sketchData) {
+        var id = generateId();
 
-    if (!attachmentsContainer || !list) return;
-
-    attachmentsContainer.style.display = 'block';
-
-    var item = document.createElement('div');
-    item.style.cssText = STYLES.attachmentItem;
-
-    var icon = type === 'screenshot' ? ICONS.screenshot : ICONS.element;
-    var labelSpan = document.createElement('span');
-    labelSpan.innerHTML = icon + ' <span style="margin-left: 6px;">' + label + '</span>';
-    labelSpan.style.display = 'flex';
-    labelSpan.style.alignItems = 'center';
-    item.appendChild(labelSpan);
-
-    var removeBtn = document.createElement('button');
-    removeBtn.style.cssText = 'background: none; border: none; cursor: pointer; color: #999; padding: 2px;';
-    removeBtn.innerHTML = ICONS.remove;
-    removeBtn.onclick = function() {
-      list.removeChild(item);
-
-      // Remove from state
-      if (type === 'screenshot') {
-        indicatorState.areaSelection = null;
-      } else {
-        indicatorState.selectedElements = indicatorState.selectedElements.filter(function(el) {
-          return el.selector !== label;
+        // Log sketch to proxy first
+        core.send('sketch_capture', {
+          id: id,
+          timestamp: Date.now(),
+          data: sketchData
         });
-      }
 
-      if (list.children.length === 0) {
-        attachmentsContainer.style.display = 'none';
-      }
-    };
-    item.appendChild(removeBtn);
+        // Add as attachment chip
+        var attachment = {
+          id: id,
+          type: 'sketch',
+          label: sketchData.elementCount + ' elements',
+          summary: 'Sketch with ' + sketchData.elementCount + ' elements',
+          data: sketchData,
+          timestamp: Date.now()
+        };
 
-    list.appendChild(item);
+        state.attachments.push(attachment);
+
+        var container = document.getElementById('__devtool-attachments');
+        if (container) {
+          container.style.display = 'flex';
+          container.appendChild(createChip(attachment));
+        }
+
+        togglePanel(true);
+      };
+
+      window.__devtool_sketch.toggle();
+    }
   }
 
-  function clearAttachments() {
-    indicatorState.selectedElements = [];
-    indicatorState.areaSelection = null;
+  // Panel toggle
+  function togglePanel(show) {
+    var shouldShow = show !== undefined ? show : !state.isExpanded;
+    state.isExpanded = shouldShow;
 
-    var attachmentsContainer = document.getElementById('__devtool-attachments');
-    var list = document.getElementById('__devtool-attachment-list');
-
-    if (attachmentsContainer) attachmentsContainer.style.display = 'none';
-    if (list) list.innerHTML = '';
+    if (shouldShow) {
+      updatePanelPosition();
+      state.panel.style.display = 'block';
+      requestAnimationFrame(function() {
+        state.panel.style.opacity = '1';
+        state.panel.style.transform = 'translateY(0)';
+      });
+    } else {
+      state.panel.style.opacity = '0';
+      state.panel.style.transform = 'translateY(8px)';
+      setTimeout(function() { state.panel.style.display = 'none'; }, 200);
+    }
   }
 
-  // Status updates
-  function setupStatusUpdates() {
+  function updatePanelPosition() {
+    if (!state.panel || !state.bug) return;
+    var rect = state.bug.getBoundingClientRect();
+    var panelH = state.panel.offsetHeight || 300;
+
+    var x = rect.left;
+    var y = rect.top - panelH - 12;
+
+    if (x + 380 > window.innerWidth) x = window.innerWidth - 390;
+    if (x < 10) x = 10;
+    if (y < 10) y = rect.bottom + 12;
+
+    state.panel.style.left = x + 'px';
+    state.panel.style.top = y + 'px';
+  }
+
+  // Drag handling
+  function handleDragStart(e) {
+    if (e.button !== 0) return;
+
+    var startX = e.clientX;
+    var startY = e.clientY;
+    var startPos = { x: state.position.x, y: state.position.y };
+    var dragged = false;
+
+    function onMove(e) {
+      var dx = e.clientX - startX;
+      var dy = e.clientY - startY;
+
+      if (Math.abs(dx) > 5 || Math.abs(dy) > 5) dragged = true;
+
+      if (dragged) {
+        state.isDragging = true;
+        var x = startPos.x + dx;
+        var y = startPos.y - dy;
+
+        x = Math.max(0, Math.min(x, window.innerWidth - 52));
+        y = Math.max(0, Math.min(y, window.innerHeight - 52));
+
+        state.position = { x: x, y: y };
+        state.bug.style.left = x + 'px';
+        state.bug.style.bottom = y + 'px';
+        updatePanelPosition();
+      }
+    }
+
+    function onUp() {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+
+      if (dragged) {
+        savePrefs();
+        setTimeout(function() { state.isDragging = false; }, 0);
+      } else {
+        togglePanel();
+      }
+    }
+
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }
+
+  // Status polling
+  function setupStatusPolling() {
     setInterval(function() {
-      var statusDot = document.getElementById('__devtool-status');
-      if (statusDot) {
-        statusDot.style.backgroundColor = core.isConnected() ? '#22c55e' : '#ef4444';
+      var dot = document.getElementById('__devtool-status');
+      if (dot) {
+        dot.style.backgroundColor = core.isConnected() ? TOKENS.colors.success : TOKENS.colors.error;
       }
     }, 1000);
   }
 
-  // Preferences persistence (position and visibility)
-  function savePreferences() {
+  // Preferences
+  function savePrefs() {
     try {
-      var prefs = {
-        position: indicatorState.position,
-        isVisible: indicatorState.isVisible
-      };
-      localStorage.setItem('__devtool_indicator_prefs', JSON.stringify(prefs));
-    } catch (e) {
-      // localStorage not available
-    }
+      localStorage.setItem('__devtool_prefs', JSON.stringify({
+        position: state.position,
+        isVisible: state.isVisible
+      }));
+    } catch (e) {}
   }
 
-  function loadPreferences() {
+  function loadPrefs() {
     try {
-      var saved = localStorage.getItem('__devtool_indicator_prefs');
+      var saved = localStorage.getItem('__devtool_prefs');
       if (saved) {
         var prefs = JSON.parse(saved);
-        if (prefs.position) {
-          indicatorState.position = prefs.position;
-        }
-        if (typeof prefs.isVisible === 'boolean') {
-          indicatorState.isVisible = prefs.isVisible;
-        }
+        if (prefs.position) state.position = prefs.position;
+        if (typeof prefs.isVisible === 'boolean') state.isVisible = prefs.isVisible;
       }
-    } catch (e) {
-      // localStorage not available or invalid data
-    }
+    } catch (e) {}
   }
 
-  // Public methods
+  // Public API
   function show() {
-    if (indicatorState.container) {
-      indicatorState.container.style.display = 'block';
-      indicatorState.isVisible = true;
-      savePreferences();
+    if (state.container) {
+      state.container.style.display = 'block';
+      state.isVisible = true;
+      savePrefs();
     }
   }
 
   function hide() {
-    if (indicatorState.container) {
-      indicatorState.container.style.display = 'none';
-      indicatorState.isVisible = false;
-      savePreferences();
+    if (state.container) {
+      state.container.style.display = 'none';
+      state.isVisible = false;
+      savePrefs();
     }
   }
 
   function toggle() {
-    if (indicatorState.container) {
-      var isHidden = indicatorState.container.style.display === 'none';
-      indicatorState.container.style.display = isHidden ? 'block' : 'none';
-      indicatorState.isVisible = isHidden;
-      savePreferences();
-    }
+    state.isVisible ? hide() : show();
   }
 
   function destroy() {
-    if (indicatorState.container && indicatorState.container.parentNode) {
-      indicatorState.container.parentNode.removeChild(indicatorState.container);
+    if (state.container && state.container.parentNode) {
+      state.container.parentNode.removeChild(state.container);
     }
-    indicatorState.container = null;
-    indicatorState.bug = null;
-    indicatorState.panel = null;
-    indicatorState.isExpanded = false;
+    state.container = null;
+    state.bug = null;
+    state.panel = null;
   }
 
-  // Initialize on DOM ready
+  // Init on ready
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', init);
   } else {
     init();
   }
 
-  // Export indicator functions
+  // Export
   window.__devtool_indicator = {
     init: init,
     show: show,
@@ -933,6 +995,6 @@
     toggle: toggle,
     destroy: destroy,
     togglePanel: togglePanel,
-    state: indicatorState
+    state: state
   };
 })();

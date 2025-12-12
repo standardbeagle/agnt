@@ -549,6 +549,17 @@ func (c *Connection) handleProxyStart(ctx context.Context, cmd *protocol.Command
 		proxyServer.SetOverlayEndpoint(overlayEndpoint)
 	}
 
+	// Persist proxy config for recovery
+	if sm := c.daemon.StateManager(); sm != nil {
+		sm.AddProxy(PersistentProxyConfig{
+			ID:         id,
+			TargetURL:  targetURL,
+			Port:       port,
+			MaxLogSize: maxLogSize,
+			Path:       path,
+		})
+	}
+
 	resp := map[string]interface{}{
 		"id":          proxyServer.ID,
 		"target_url":  proxyServer.TargetURL.String(),
@@ -564,12 +575,19 @@ func (c *Connection) handleProxyStop(ctx context.Context, cmd *protocol.Command)
 		return c.writeErr(protocol.ErrInvalidArgs, "PROXY STOP requires id")
 	}
 
-	err := c.daemon.proxym.Stop(ctx, cmd.Args[0])
+	proxyID := cmd.Args[0]
+
+	err := c.daemon.proxym.Stop(ctx, proxyID)
 	if err != nil {
 		if err == proxy.ErrProxyNotFound {
-			return c.writeErr(protocol.ErrNotFound, cmd.Args[0])
+			return c.writeErr(protocol.ErrNotFound, proxyID)
 		}
 		return c.writeErr(protocol.ErrInternal, err.Error())
+	}
+
+	// Remove from persisted state
+	if sm := c.daemon.StateManager(); sm != nil {
+		sm.RemoveProxy(proxyID)
 	}
 
 	return c.writeOK("stopped")

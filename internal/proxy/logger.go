@@ -32,6 +32,12 @@ const (
 	LogTypePanelMessage LogEntryType = "panel_message"
 	// LogTypeSketch represents a sketch/wireframe from the sketch mode.
 	LogTypeSketch LogEntryType = "sketch"
+	// LogTypeScreenshotCapture represents an area capture with a reference ID.
+	LogTypeScreenshotCapture LogEntryType = "screenshot_capture"
+	// LogTypeElementCapture represents an element capture with a reference ID.
+	LogTypeElementCapture LogEntryType = "element_capture"
+	// LogTypeSketchCapture represents a sketch capture with a reference ID.
+	LogTypeSketchCapture LogEntryType = "sketch_capture"
 )
 
 // HTTPLogEntry represents a logged HTTP request/response pair.
@@ -246,20 +252,68 @@ type SketchEntry struct {
 	ElementCount int                    `json:"element_count"` // Number of elements in sketch
 }
 
+// ScreenshotCapture represents an area capture from the panel with a reference ID.
+type ScreenshotCapture struct {
+	ID        string    `json:"id"`        // Reference ID for use in messages
+	Timestamp time.Time `json:"timestamp"`
+	URL       string    `json:"url"`
+	Summary   string    `json:"summary"` // Human-readable summary
+	Area      struct {
+		X      int `json:"x"`
+		Y      int `json:"y"`
+		Width  int `json:"width"`
+		Height int `json:"height"`
+	} `json:"area"`
+}
+
+// ElementCapture represents an element capture from the panel with a reference ID.
+type ElementCapture struct {
+	ID        string    `json:"id"`        // Reference ID for use in messages
+	Timestamp time.Time `json:"timestamp"`
+	URL       string    `json:"url"`
+	Summary   string    `json:"summary"`  // Human-readable summary
+	Selector  string    `json:"selector"` // CSS selector
+	Tag       string    `json:"tag"`
+	ElementID string    `json:"element_id,omitempty"` // DOM element id attribute
+	Classes   []string  `json:"classes,omitempty"`
+	Text      string    `json:"text,omitempty"` // Truncated text content
+	Rect      struct {
+		X      float64 `json:"x"`
+		Y      float64 `json:"y"`
+		Width  float64 `json:"width"`
+		Height float64 `json:"height"`
+	} `json:"rect,omitempty"`
+}
+
+// SketchCapture represents a sketch capture from the panel with a reference ID.
+type SketchCapture struct {
+	ID           string                 `json:"id"` // Reference ID for use in messages
+	Timestamp    time.Time              `json:"timestamp"`
+	URL          string                 `json:"url"`
+	Summary      string                 `json:"summary"` // Human-readable summary
+	ElementCount int                    `json:"element_count"`
+	Sketch       map[string]interface{} `json:"sketch,omitempty"` // Sketch data
+	ImageData    string                 `json:"image_data,omitempty"`
+	FilePath     string                 `json:"file_path,omitempty"`
+}
+
 // LogEntry is a union type for all log entry types.
 type LogEntry struct {
-	Type         LogEntryType       `json:"type"`
-	HTTP         *HTTPLogEntry      `json:"http,omitempty"`
-	Error        *FrontendError     `json:"error,omitempty"`
-	Performance  *PerformanceMetric `json:"performance,omitempty"`
-	Custom       *CustomLog         `json:"custom,omitempty"`
-	Screenshot   *Screenshot        `json:"screenshot,omitempty"`
-	Execution    *ExecutionResult   `json:"execution,omitempty"`
-	Response     *ExecutionResponse `json:"response,omitempty"`
-	Interaction  *InteractionEvent  `json:"interaction,omitempty"`
-	Mutation     *MutationEvent     `json:"mutation,omitempty"`
-	PanelMessage *PanelMessage      `json:"panel_message,omitempty"`
-	Sketch       *SketchEntry       `json:"sketch,omitempty"`
+	Type              LogEntryType       `json:"type"`
+	HTTP              *HTTPLogEntry      `json:"http,omitempty"`
+	Error             *FrontendError     `json:"error,omitempty"`
+	Performance       *PerformanceMetric `json:"performance,omitempty"`
+	Custom            *CustomLog         `json:"custom,omitempty"`
+	Screenshot        *Screenshot        `json:"screenshot,omitempty"`
+	Execution         *ExecutionResult   `json:"execution,omitempty"`
+	Response          *ExecutionResponse `json:"response,omitempty"`
+	Interaction       *InteractionEvent  `json:"interaction,omitempty"`
+	Mutation          *MutationEvent     `json:"mutation,omitempty"`
+	PanelMessage      *PanelMessage      `json:"panel_message,omitempty"`
+	Sketch            *SketchEntry       `json:"sketch,omitempty"`
+	ScreenshotCapture *ScreenshotCapture `json:"screenshot_capture,omitempty"`
+	ElementCapture    *ElementCapture    `json:"element_capture,omitempty"`
+	SketchCapture     *SketchCapture     `json:"sketch_capture,omitempty"`
 }
 
 // TrafficLogger stores proxy traffic logs with bounded memory.
@@ -367,6 +421,30 @@ func (tl *TrafficLogger) LogSketch(entry SketchEntry) {
 	tl.log(LogEntry{
 		Type:   LogTypeSketch,
 		Sketch: &entry,
+	})
+}
+
+// LogScreenshotCapture adds a screenshot capture entry.
+func (tl *TrafficLogger) LogScreenshotCapture(entry ScreenshotCapture) {
+	tl.log(LogEntry{
+		Type:              LogTypeScreenshotCapture,
+		ScreenshotCapture: &entry,
+	})
+}
+
+// LogElementCapture adds an element capture entry.
+func (tl *TrafficLogger) LogElementCapture(entry ElementCapture) {
+	tl.log(LogEntry{
+		Type:           LogTypeElementCapture,
+		ElementCapture: &entry,
+	})
+}
+
+// LogSketchCapture adds a sketch capture entry.
+func (tl *TrafficLogger) LogSketchCapture(entry SketchCapture) {
+	tl.log(LogEntry{
+		Type:          LogTypeSketchCapture,
+		SketchCapture: &entry,
 	})
 }
 
@@ -509,6 +587,18 @@ func (f LogFilter) Matches(entry LogEntry) bool {
 	case LogTypeSketch:
 		if entry.Sketch != nil {
 			timestamp = entry.Sketch.Timestamp
+		}
+	case LogTypeScreenshotCapture:
+		if entry.ScreenshotCapture != nil {
+			timestamp = entry.ScreenshotCapture.Timestamp
+		}
+	case LogTypeElementCapture:
+		if entry.ElementCapture != nil {
+			timestamp = entry.ElementCapture.Timestamp
+		}
+	case LogTypeSketchCapture:
+		if entry.SketchCapture != nil {
+			timestamp = entry.SketchCapture.Timestamp
 		}
 	}
 

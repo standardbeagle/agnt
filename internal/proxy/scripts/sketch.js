@@ -46,9 +46,6 @@
     // Clipboard
     clipboard: null,
 
-    // Description
-    description: '',
-
     // Selection
     selectionBox: null,
     isDragging: false,
@@ -59,22 +56,21 @@
     // Voice annotation
     voiceBtn: null,
     isVoiceListening: false,
-    voiceAnnotationPos: null
+    voiceAnnotationPos: null,
+
+    // Annotation counter for numbered markers
+    annotationCounter: 1
   };
 
   // Tool definitions
   var TOOLS = {
     select: { name: 'Select', icon: 'M3,3H9V9H3V3M15,3H21V9H15V3M3,15H9V21H3V15M15,15H21V21H15V15' },
+    marker: { name: 'Marker', icon: 'M12,2C8.13,2 5,5.13 5,9C5,14.25 12,22 12,22C12,22 19,14.25 19,9C19,5.13 15.87,2 12,2M12,11.5C10.62,11.5 9.5,10.38 9.5,9C9.5,7.62 10.62,6.5 12,6.5C13.38,6.5 14.5,7.62 14.5,9C14.5,10.38 13.38,11.5 12,11.5Z' },
     rectangle: { name: 'Rectangle', icon: 'M3,3H21V21H3V3M5,5V19H19V5H5Z' },
     ellipse: { name: 'Ellipse', icon: 'M12,2A10,10 0 0,1 22,12A10,10 0 0,1 12,22A10,10 0 0,1 2,12A10,10 0 0,1 12,2M12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20A8,8 0 0,0 20,12A8,8 0 0,0 12,4Z' },
-    line: { name: 'Line', icon: 'M19,13H5V11H19V13Z' },
     arrow: { name: 'Arrow', icon: 'M4,11V13H16L10.5,18.5L11.92,19.92L19.84,12L11.92,4.08L10.5,5.5L16,11H4Z' },
     freedraw: { name: 'Pen', icon: 'M20.71,7.04C21.1,6.65 21.1,6 20.71,5.63L18.37,3.29C18,2.9 17.35,2.9 16.96,3.29L15.12,5.12L18.87,8.87M3,17.25V21H6.75L17.81,9.93L14.06,6.18L3,17.25Z' },
     text: { name: 'Text', icon: 'M5,4V7H10.5V19H13.5V7H19V4H5Z' },
-    note: { name: 'Sticky Note', icon: 'M19,3H14.82C14.4,1.84 13.3,1 12,1C10.7,1 9.6,1.84 9.18,3H5A2,2 0 0,0 3,5V19A2,2 0 0,0 5,21H19A2,2 0 0,0 21,19V5A2,2 0 0,0 19,3M12,3A1,1 0 0,1 13,4A1,1 0 0,1 12,5A1,1 0 0,1 11,4A1,1 0 0,1 12,3M7,7H17V5H19V19H5V5H7V7Z' },
-    button: { name: 'Button', icon: 'M12,2A10,10 0 0,1 22,12A10,10 0 0,1 12,22A10,10 0 0,1 2,12A10,10 0 0,1 12,2Z' },
-    input: { name: 'Input Field', icon: 'M17,7H22V17H17V19A1,1 0 0,0 18,20H20V22H17.5C16.95,22 16.5,21.55 16.5,21C16.5,21.55 16.05,22 15.5,22H13V20H15A1,1 0 0,0 16,19V5A1,1 0 0,0 15,4H13V2H15.5C16.05,2 16.5,2.45 16.5,3C16.5,2.45 16.95,2 17.5,2H20V4H18A1,1 0 0,0 17,5V7M2,7H13V9H4V15H13V17H2V7M20,15V9H17V15H20Z' },
-    image: { name: 'Image Placeholder', icon: 'M19,19H5V5H19M19,3H5A2,2 0 0,0 3,5V19A2,2 0 0,0 5,21H19A2,2 0 0,0 21,19V5A2,2 0 0,0 19,3M13.96,12.29L11.21,15.83L9.25,13.47L6.5,17H17.5L13.96,12.29Z' },
     eraser: { name: 'Eraser', icon: 'M16.24,3.56L21.19,8.5C21.97,9.29 21.97,10.55 21.19,11.34L12,20.53C10.44,22.09 7.91,22.09 6.34,20.53L2.81,17C2.03,16.21 2.03,14.95 2.81,14.16L13.41,3.56C14.2,2.78 15.46,2.78 16.24,3.56M4.22,15.58L7.76,19.11C8.54,19.9 9.8,19.9 10.59,19.11L14.12,15.58L9.17,10.63L4.22,15.58Z' }
   };
 
@@ -335,19 +331,6 @@
       'margin-bottom: 4px',
       'text-transform: uppercase',
       'letter-spacing: 0.5px'
-    ].join(';'),
-
-    descriptionTextarea: [
-      'width: 300px',
-      'height: 60px',
-      'padding: 8px 12px',
-      'border: 1px solid #e0e0e0',
-      'border-radius: 6px',
-      'font-size: 13px',
-      'font-family: inherit',
-      'resize: none',
-      'outline: none',
-      'transition: border-color 0.2s ease'
     ].join(';')
   };
 
@@ -433,10 +416,9 @@
     toolbar.style.cssText = STYLES.toolbar;
 
     var toolGroups = [
-      ['select'],
-      ['rectangle', 'ellipse', 'line', 'arrow'],
+      ['select', 'marker'],
+      ['rectangle', 'ellipse', 'arrow'],
       ['freedraw', 'text'],
-      ['note', 'button', 'input', 'image'],
       ['eraser']
     ];
 
@@ -625,47 +607,17 @@
     var actionBar = document.createElement('div');
     actionBar.id = '__devtool-sketch-actions';
     actionBar.style.cssText = STYLES.actionBar;
-    actionBar.style.flexDirection = 'column';
-    actionBar.style.alignItems = 'center';
-
-    // Description textarea (optional, max 5000 chars)
-    var descriptionArea = document.createElement('textarea');
-    descriptionArea.id = '__devtool-sketch-description';
-    descriptionArea.style.cssText = STYLES.descriptionTextarea;
-    descriptionArea.placeholder = 'Describe this wireframe (optional)...';
-    descriptionArea.maxLength = 5000;
-    descriptionArea.value = sketchState.description;
-    descriptionArea.onchange = function(e) {
-      sketchState.description = e.target.value;
-    };
-    descriptionArea.oninput = function(e) {
-      sketchState.description = e.target.value;
-    };
-    descriptionArea.onfocus = function() {
-      descriptionArea.style.borderColor = '#667eea';
-    };
-    descriptionArea.onblur = function() {
-      descriptionArea.style.borderColor = '#e0e0e0';
-    };
-    actionBar.appendChild(descriptionArea);
-
-    // Button row
-    var buttonRow = document.createElement('div');
-    buttonRow.style.display = 'flex';
-    buttonRow.style.gap = '8px';
-    buttonRow.style.marginTop = '8px';
 
     var undoBtn = createActionButton('Undo', 'secondary', undo);
     var redoBtn = createActionButton('Redo', 'secondary', redo);
-    var clearBtn = createActionButton('Clear All', 'secondary', clearAll);
-    var saveBtn = createActionButton('Save & Send', 'primary', saveAndSend);
+    var clearBtn = createActionButton('Clear', 'secondary', clearAll);
+    var saveBtn = createActionButton('Done', 'primary', saveAndClose);
 
-    buttonRow.appendChild(undoBtn);
-    buttonRow.appendChild(redoBtn);
-    buttonRow.appendChild(clearBtn);
-    buttonRow.appendChild(saveBtn);
+    actionBar.appendChild(undoBtn);
+    actionBar.appendChild(redoBtn);
+    actionBar.appendChild(clearBtn);
+    actionBar.appendChild(saveBtn);
 
-    actionBar.appendChild(buttonRow);
     container.appendChild(actionBar);
   }
 
@@ -725,6 +677,17 @@
       if (hit) {
         deleteElement(hit.id);
       }
+    } else if (sketchState.tool === 'marker') {
+      // Drop a numbered annotation marker immediately
+      var marker = createElement('marker', {
+        x: pos.x,
+        y: pos.y,
+        width: 32,
+        height: 40,
+        text: String(sketchState.annotationCounter++)
+      });
+      addElement(marker);
+      sketchState.isDrawing = false;
     } else if (sketchState.tool === 'freedraw') {
       sketchState.currentElement = createElement('freedraw', {
         x: pos.x,
@@ -1492,6 +1455,41 @@
         roughness.arrow(ctx, el.x, el.y, el.x + el.width, el.y + el.height);
         break;
 
+      case 'marker':
+        // Numbered annotation marker (pin shape)
+        var pinX = el.x;
+        var pinY = el.y;
+        var pinR = 14;
+        var pinH = 8;
+
+        // Pin body (circle + point)
+        ctx.beginPath();
+        ctx.arc(pinX, pinY - pinR, pinR, 0, Math.PI * 2);
+        ctx.fillStyle = '#ef4444';
+        ctx.fill();
+        ctx.strokeStyle = '#b91c1c';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        // Pin point (triangle)
+        ctx.beginPath();
+        ctx.moveTo(pinX - 6, pinY - 4);
+        ctx.lineTo(pinX, pinY + pinH);
+        ctx.lineTo(pinX + 6, pinY - 4);
+        ctx.closePath();
+        ctx.fillStyle = '#ef4444';
+        ctx.fill();
+
+        // Number in center
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 12px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(el.text, pinX, pinY - pinR);
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'alphabetic';
+        break;
+
       case 'freedraw':
         if (el.points.length < 2) break;
         // Check if this stroke has pressure data (stylus input)
@@ -1642,7 +1640,6 @@
     return {
       version: 1,
       timestamp: Date.now(),
-      description: sketchState.description,
       elements: sketchState.elements,
       settings: {
         strokeColor: sketchState.strokeColor,
@@ -1659,18 +1656,12 @@
       console.warn('[DevTool Sketch] Unknown version:', data.version);
     }
     sketchState.elements = data.elements || [];
-    sketchState.description = data.description || '';
     if (data.settings) {
       sketchState.strokeColor = data.settings.strokeColor || sketchState.strokeColor;
       sketchState.fillColor = data.settings.fillColor || sketchState.fillColor;
       sketchState.strokeWidth = data.settings.strokeWidth || sketchState.strokeWidth;
       sketchState.roughness = data.settings.roughness !== undefined ? data.settings.roughness : sketchState.roughness;
       sketchState.fontSize = data.settings.fontSize || sketchState.fontSize;
-    }
-    // Update textarea if it exists
-    var descriptionArea = document.getElementById('__devtool-sketch-description');
-    if (descriptionArea) {
-      descriptionArea.value = sketchState.description;
     }
     render();
   }
@@ -1679,6 +1670,30 @@
     return sketchState.canvas.toDataURL('image/png');
   }
 
+  // Called when "Done" button is pressed - calls onSave callback if set
+  function saveAndClose() {
+    if (sketchState.elements.length === 0) {
+      close();
+      return;
+    }
+
+    var sketchData = toJSON();
+    var imageData = toDataURL();
+
+    // If onSave callback is set (by indicator), call it
+    if (window.__devtool_sketch.onSave) {
+      window.__devtool_sketch.onSave({
+        sketch: sketchData,
+        image: imageData,
+        elementCount: sketchState.elements.length
+      });
+      window.__devtool_sketch.onSave = null; // Clear callback
+    }
+
+    close();
+  }
+
+  // Legacy: send directly to server (kept for backwards compatibility)
   function saveAndSend() {
     var sketchData = toJSON();
     var imageData = toDataURL();
@@ -1687,11 +1702,9 @@
       timestamp: Date.now(),
       sketch: sketchData,
       image: imageData,
-      element_count: sketchState.elements.length,
-      description: sketchState.description
+      element_count: sketchState.elements.length
     });
 
-    console.log('[DevTool] Sketch saved and sent to server');
     close();
   }
 
@@ -1730,10 +1743,12 @@
     fromJSON: fromJSON,
     toDataURL: toDataURL,
     saveAndSend: saveAndSend,
+    saveAndClose: saveAndClose,
     state: sketchState,
     setTool: setTool,
     undo: undo,
     redo: redo,
-    clearAll: clearAll
+    clearAll: clearAll,
+    onSave: null // Callback set by indicator when opening sketch
   };
 })();

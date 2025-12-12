@@ -670,37 +670,67 @@ func (r *Renderer) DrawProcessOutput(processID, command, state, output string) {
 	// Clear screen and draw header
 	r.write(ClearScreen + CursorHome + CursorHide)
 
-	// Draw header bar
+	// Draw header bar (row 1)
+	r.moveTo(1, 1)
+	r.write(ClearLine)
 	r.write(BgBrightBlack + FgWhite + Bold)
 	header := fmt.Sprintf(" Process: %s | Command: %s | State: %s ", processID, command, state)
 	header = r.padRight(header, r.width)
 	r.write(header)
-	r.write(Reset + "\n")
+	r.write(Reset)
 
-	// Draw separator
-	r.write(FgBrightBlack + strings.Repeat("─", r.width) + Reset + "\n")
+	// Draw separator (row 2)
+	r.moveTo(2, 1)
+	r.write(ClearLine)
+	r.write(FgBrightBlack + strings.Repeat("─", r.width) + Reset)
 
 	// Draw output lines (leave room for header, separator, and footer)
 	lines := strings.Split(output, "\n")
 	maxLines := r.height - 4 // header + separator + footer + blank
 
-	// Show last N lines if output is longer
-	startLine := 0
-	if len(lines) > maxLines {
-		startLine = len(lines) - maxLines
+	// Wrap long lines and collect all display lines
+	var displayLines []string
+	for _, line := range lines {
+		if len(line) == 0 {
+			displayLines = append(displayLines, "")
+			continue
+		}
+		// Wrap long lines instead of truncating
+		for len(line) > 0 {
+			if len(line) <= r.width {
+				displayLines = append(displayLines, line)
+				break
+			}
+			displayLines = append(displayLines, line[:r.width])
+			line = line[r.width:]
+		}
 	}
 
-	for i := startLine; i < len(lines); i++ {
-		line := lines[i]
-		// Truncate long lines
-		if len(line) > r.width {
-			line = line[:r.width-1] + "…"
-		}
-		r.write(line + "\n")
+	// Show last N lines if output is longer
+	startLine := 0
+	if len(displayLines) > maxLines {
+		startLine = len(displayLines) - maxLines
+	}
+
+	// Draw each line at explicit row positions
+	currentRow := 3
+	for i := startLine; i < len(displayLines) && currentRow < r.height-1; i++ {
+		r.moveTo(currentRow, 1)
+		r.write(ClearLine)
+		r.write(displayLines[i])
+		currentRow++
+	}
+
+	// Clear any remaining lines
+	for currentRow < r.height-1 {
+		r.moveTo(currentRow, 1)
+		r.write(ClearLine)
+		currentRow++
 	}
 
 	// Move to bottom and draw footer
 	r.moveTo(r.height, 1)
+	r.write(ClearLine)
 	r.write(BgBrightBlack + FgWhite)
 	footer := " Press any key to close "
 	footer = r.padCenter(footer, r.width)

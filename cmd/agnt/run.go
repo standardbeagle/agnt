@@ -208,28 +208,44 @@ func runWithPTY(ctx context.Context, args []string, socketPath string) error {
 
 	// Create network overlay for receiving external events (from browser)
 	netOverlay := newOverlay(socketPath, ptmx)
-	if err := netOverlay.Start(ctx); err != nil {
-		log.Printf("Warning: network overlay failed to start: %v", err)
-	}
+	_ = netOverlay.Start(ctx) // Best-effort, non-critical for PTY operation
 	defer netOverlay.Stop()
 
 	// Register overlay endpoint with daemon so proxies forward events to us
+	// Use ResilientClient for automatic reconnection with overlay re-registration
+	var resilientClient *daemon.ResilientClient
 	go func() {
 		socketPath, _ := rootCmd.Flags().GetString("socket")
-		config := daemon.DefaultAutoStartConfig()
+
+		overlayEndpoint := netOverlay.SocketPath()
+
+		config := daemon.DefaultResilientClientConfig()
 		if socketPath != "" {
-			config.SocketPath = socketPath
+			config.AutoStartConfig.SocketPath = socketPath
 		}
 
-		client, err := daemon.EnsureDaemonRunning(config)
-		if err != nil {
-			log.Printf("Warning: could not connect to daemon: %v", err)
-			return
+		// Re-register overlay when connection is restored after daemon restart
+		config.OnReconnect = func(client *daemon.Client) error {
+			_, err := client.OverlaySet(overlayEndpoint)
+			return err
 		}
-		defer client.Close()
 
-		if _, err := client.OverlaySet(netOverlay.SocketPath()); err != nil {
-			log.Printf("Warning: failed to register overlay with daemon: %v", err)
+		// OnDisconnect and OnReconnectFailed are left nil since we don't want
+		// to pollute the terminal output with daemon connection status messages
+
+		resilientClient = daemon.NewResilientClient(config)
+		if err := resilientClient.Connect(); err != nil {
+			return // Daemon connection is best-effort, non-critical
+		}
+
+		// Register overlay endpoint on initial connect (best-effort)
+		_, _ = resilientClient.OverlaySet(overlayEndpoint)
+	}()
+
+	// Clean up resilient client when PTY session ends
+	defer func() {
+		if resilientClient != nil {
+			resilientClient.Close()
 		}
 	}()
 
