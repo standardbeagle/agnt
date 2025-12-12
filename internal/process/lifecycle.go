@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strconv"
+	"syscall"
 	"time"
 )
 
@@ -137,7 +138,7 @@ func (pm *ProcessManager) StopProcess(ctx context.Context, proc *ManagedProcess)
 
 	// Send termination signal to process group
 	if proc.cmd != nil && proc.cmd.Process != nil {
-		_ = signalTerm(proc.cmd.Process.Pid)
+		_ = pm.signalProcessGroup(proc.cmd.Process.Pid, syscall.SIGTERM)
 		// Ignore error - continue with graceful shutdown
 		// The process might have already exited
 	}
@@ -161,14 +162,14 @@ func (pm *ProcessManager) StopProcess(ctx context.Context, proc *ManagedProcess)
 	}
 }
 
-// forceKill forcefully terminates the process.
+// forceKill forcefully terminates the process and its children.
 func (pm *ProcessManager) forceKill(proc *ManagedProcess) error {
 	if proc.cmd == nil || proc.cmd.Process == nil {
 		return nil
 	}
 
-	// Kill the process forcefully
-	if err := signalKill(proc.cmd.Process.Pid); err != nil {
+	// Kill the entire process group forcefully
+	if err := pm.signalProcessGroup(proc.cmd.Process.Pid, syscall.SIGKILL); err != nil {
 		return fmt.Errorf("failed to force kill process %s: %w", proc.ID, err)
 	}
 

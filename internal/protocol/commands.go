@@ -18,6 +18,7 @@ const (
 	VerbProxyLog    = "PROXYLOG"
 	VerbCurrentPage = "CURRENTPAGE"
 	VerbDetect      = "DETECT"
+	VerbOverlay     = "OVERLAY"
 	VerbPing        = "PING"
 	VerbInfo        = "INFO"
 	VerbShutdown    = "SHUTDOWN"
@@ -50,6 +51,12 @@ const (
 const (
 	SubVerbGet = "GET"
 	// SubVerbList, SubVerbClear reused
+)
+
+// Overlay sub-verbs
+const (
+	SubVerbSet = "SET"
+	// SubVerbGet, SubVerbClear reused
 )
 
 // RunConfig represents configuration for a RUN command.

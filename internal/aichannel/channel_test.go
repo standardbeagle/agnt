@@ -2,6 +2,7 @@ package aichannel
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 )
@@ -199,6 +200,67 @@ func TestSend_WithEcho(t *testing.T) {
 	}
 }
 
+func TestSendAndParse_TextFormat(t *testing.T) {
+	ch := NewWithConfig(Config{
+		Agent:              AgentCustom,
+		Command:            "echo",
+		NonInteractiveFlag: "",
+		OutputFormat:       "text",
+	})
+
+	resp, err := ch.SendAndParse(context.Background(), "hello world", "")
+	if err != nil {
+		t.Fatalf("SendAndParse() error = %v", err)
+	}
+
+	if resp.Result != "hello world" {
+		t.Errorf("Result = %q, want %q", resp.Result, "hello world")
+	}
+}
+
+func TestSendAndParse_JSONFormat(t *testing.T) {
+	// Use printf to output JSON
+	ch := NewWithConfig(Config{
+		Agent:              AgentCustom,
+		Command:            "printf",
+		NonInteractiveFlag: "",
+		OutputFormat:       "json",
+		OutputFormatFlag:   "--output-format", // Enable JSON support for custom agent
+	})
+
+	// printf outputs JSON literally
+	resp, err := ch.SendAndParse(context.Background(), `{"type":"result","result":"JSON response","session_id":"test123"}`, "")
+	if err != nil {
+		t.Fatalf("SendAndParse() error = %v", err)
+	}
+
+	if resp.Result != "JSON response" {
+		t.Errorf("Result = %q, want %q", resp.Result, "JSON response")
+	}
+	if resp.SessionID != "test123" {
+		t.Errorf("SessionID = %q, want %q", resp.SessionID, "test123")
+	}
+}
+
+func TestSendAndParse_DefaultsToText(t *testing.T) {
+	// No OutputFormat specified - should default to text
+	ch := NewWithConfig(Config{
+		Agent:              AgentCustom,
+		Command:            "echo",
+		NonInteractiveFlag: "",
+		// OutputFormat not set
+	})
+
+	resp, err := ch.SendAndParse(context.Background(), "plain text", "")
+	if err != nil {
+		t.Fatalf("SendAndParse() error = %v", err)
+	}
+
+	if resp.Result != "plain text" {
+		t.Errorf("Result = %q, want %q", resp.Result, "plain text")
+	}
+}
+
 func TestSend_WithStdin(t *testing.T) {
 	// Use cat as a mock that reads stdin
 	ch := NewWithConfig(Config{
@@ -302,6 +364,46 @@ func TestBuildArgs_OutputFormat(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("Expected --output-format json, got %v", args)
+	}
+}
+
+func TestBuildArgs_OutputFormat_UnsupportedAgent(t *testing.T) {
+	// Copilot doesn't support --output-format
+	ch := NewWithConfig(Config{
+		Agent:        AgentCopilot,
+		OutputFormat: "json",
+	})
+	args := ch.buildArgs("test")
+
+	// Should NOT have --output-format flag
+	for _, arg := range args {
+		if arg == "--output-format" {
+			t.Errorf("Copilot should not have --output-format flag, got %v", args)
+		}
+	}
+}
+
+func TestSupportsJSONOutput(t *testing.T) {
+	tests := []struct {
+		agent    AgentType
+		expected bool
+	}{
+		{AgentClaude, true},
+		{AgentGemini, true},
+		{AgentCopilot, false},
+		{AgentKimi, false},
+		{AgentAider, false},
+		{AgentOpenCode, false},
+		{AgentCursor, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.agent), func(t *testing.T) {
+			ch := NewWithConfig(Config{Agent: tt.agent})
+			if ch.SupportsJSONOutput() != tt.expected {
+				t.Errorf("SupportsJSONOutput() = %v, want %v", ch.SupportsJSONOutput(), tt.expected)
+			}
+		})
 	}
 }
 
@@ -423,5 +525,175 @@ func TestSend_WithPTY(t *testing.T) {
 
 	if result != "hello from PTY" {
 		t.Errorf("Expected 'hello from PTY', got %q", result)
+	}
+}
+
+// API Mode Tests
+
+func TestIsAPIMode(t *testing.T) {
+	t.Run("CLI mode", func(t *testing.T) {
+		ch := NewWithConfig(Config{
+			Agent: AgentClaude,
+		})
+		if ch.IsAPIMode() {
+			t.Error("Expected CLI mode, got API mode")
+		}
+	})
+
+	t.Run("API mode", func(t *testing.T) {
+		ch := NewWithConfig(Config{
+			UseAPI: true,
+			APIKey: "test-key",
+		})
+		if !ch.IsAPIMode() {
+			t.Error("Expected API mode, got CLI mode")
+		}
+	})
+}
+
+func TestConfigure_APIMode(t *testing.T) {
+	ch := NewWithConfig(Config{
+		UseAPI:       true,
+		APIKey:       "test-key",
+		Model:        "claude-haiku-3-5-20241022",
+		MaxTokens:    512,
+		SystemPrompt: "You are a test assistant.",
+	})
+
+	cfg := ch.Config()
+	if !cfg.UseAPI {
+		t.Error("UseAPI should be true")
+	}
+	if cfg.APIKey != "test-key" {
+		t.Errorf("APIKey = %q, want %q", cfg.APIKey, "test-key")
+	}
+	if cfg.Model != "claude-haiku-3-5-20241022" {
+		t.Errorf("Model = %q, want %q", cfg.Model, "claude-haiku-3-5-20241022")
+	}
+	if cfg.MaxTokens != 512 {
+		t.Errorf("MaxTokens = %d, want %d", cfg.MaxTokens, 512)
+	}
+	if cfg.SystemPrompt != "You are a test assistant." {
+		t.Errorf("SystemPrompt = %q, want %q", cfg.SystemPrompt, "You are a test assistant.")
+	}
+}
+
+func TestIsAvailable_APIMode_Configured(t *testing.T) {
+	ch := NewWithConfig(Config{
+		UseAPI: true,
+		APIKey: "test-key",
+	})
+
+	if !ch.IsAvailable() {
+		t.Error("API mode channel with key should be available")
+	}
+}
+
+func TestIsAvailable_APIMode_NoKey(t *testing.T) {
+	// Save and unset ALL provider env vars
+	envVars := []string{
+		"ANTHROPIC_API_KEY", "CLAUDE_KEY",
+		"OPENAI_KEY", "OPENAI_API_KEY",
+		"GOOGLE_KEY", "GOOGLE_API_KEY",
+		"MISTRAL_KEY", "MISTRAL_API_KEY",
+		"DEEP_SEEK_KEY", "DEEPSEEK_API_KEY",
+		"OPEN_ROUTER_KEY", "OPENROUTER_API_KEY",
+		"TOGETHER_KEY", "TOGETHER_API_KEY",
+		"HYPERBOLIC_KEY", "HYPERBOLIC_API_KEY",
+		"SAMBA_NOVA_KEY", "SAMBANOVA_API_KEY",
+		"GLM_KEY", "GLM_API_KEY",
+	}
+	originals := make(map[string]string)
+	for _, key := range envVars {
+		originals[key] = os.Getenv(key)
+		os.Unsetenv(key)
+	}
+	defer func() {
+		for key, val := range originals {
+			if val != "" {
+				os.Setenv(key, val)
+			}
+		}
+	}()
+
+	ch := NewWithConfig(Config{
+		UseAPI: true,
+		// No APIKey provided and no env vars
+	})
+
+	if ch.IsAvailable() {
+		t.Error("API mode channel without key should not be available")
+	}
+}
+
+func TestSend_APIMode_NoProvider(t *testing.T) {
+	// Create a channel without proper API setup
+	ch := &Channel{
+		config: Config{
+			UseAPI: true,
+		},
+		configured: true,
+		provider:   nil, // No provider
+	}
+
+	_, err := ch.Send(context.Background(), "test", "")
+	if err == nil {
+		t.Error("Expected error when provider is nil")
+	}
+}
+
+func TestSendAndParse_APIMode_NoProvider(t *testing.T) {
+	// Create a channel without proper API setup
+	ch := &Channel{
+		config: Config{
+			UseAPI: true,
+		},
+		configured: true,
+		provider:   nil, // No provider
+	}
+
+	_, err := ch.SendAndParse(context.Background(), "test", "")
+	if err == nil {
+		t.Error("Expected error when provider is nil")
+	}
+}
+
+func TestCreateProvider(t *testing.T) {
+	// Test with explicit provider
+	ch := NewWithConfig(Config{
+		UseAPI:      true,
+		LLMProvider: ProviderOpenAI,
+		APIKey:      "test-key",
+		Model:       "gpt-4o-mini",
+		MaxTokens:   512,
+	})
+
+	if ch.provider == nil {
+		t.Fatal("Expected provider to be created")
+	}
+
+	if ch.provider.Name() != "openai" {
+		t.Errorf("Provider name = %q, want %q", ch.provider.Name(), "openai")
+	}
+}
+
+func TestCreateProvider_AutoDetect(t *testing.T) {
+	// Test that provider is auto-detected when API keys are available
+	ch := NewWithConfig(Config{
+		UseAPI: true,
+		APIKey: "test-key", // This won't be used if env vars are set
+	})
+
+	// Provider should be created if any env vars are set
+	available := GetAvailableProviders()
+	if len(available) > 0 {
+		if ch.provider == nil {
+			t.Fatal("Expected provider to be created when env vars are available")
+		}
+		// Should match default provider
+		defaultProvider := GetDefaultProvider()
+		if ch.provider.Name() != string(defaultProvider) {
+			t.Logf("Provider auto-detected: %s (default: %s)", ch.provider.Name(), defaultProvider)
+		}
 	}
 }

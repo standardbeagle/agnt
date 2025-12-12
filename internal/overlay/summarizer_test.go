@@ -1,6 +1,7 @@
 package overlay
 
 import (
+	"os"
 	"testing"
 
 	"devtool-mcp/internal/aichannel"
@@ -20,9 +21,132 @@ func TestNewSummarizer(t *testing.T) {
 	if s.AgentType() != aichannel.AgentClaude {
 		t.Errorf("AgentType = %v, want %v", s.AgentType(), aichannel.AgentClaude)
 	}
+
+	// Verify JSON output format is configured for extracting final response
+	cfg := s.channel.Config()
+	if cfg.OutputFormat != "json" {
+		t.Errorf("OutputFormat = %q, want %q", cfg.OutputFormat, "json")
+	}
+
+	// Claude should support JSON output
+	if !cfg.SupportsJSON {
+		t.Error("Claude should support JSON output")
+	}
+}
+
+func TestNewSummarizer_NonJSONAgent(t *testing.T) {
+	// Test with an agent that doesn't support JSON (e.g., Copilot)
+	// Non-Claude agents should auto-enable API mode
+	config := SummarizerConfig{
+		SocketPath: "/tmp/test.sock",
+		Agent:      aichannel.AgentCopilot,
+	}
+
+	s := NewSummarizer(config)
+	if s == nil {
+		t.Fatal("NewSummarizer returned nil")
+	}
+
+	cfg := s.channel.Config()
+	// Non-Claude agents should automatically use API mode
+	if !cfg.UseAPI {
+		t.Error("Non-Claude agent should automatically use API mode")
+	}
+}
+
+func TestNewSummarizer_ClaudeUsesCliMode(t *testing.T) {
+	// Claude agent should use CLI mode (Claude Code Max plan only supports CLI)
+	config := SummarizerConfig{
+		SocketPath: "/tmp/test.sock",
+		Agent:      aichannel.AgentClaude,
+	}
+
+	s := NewSummarizer(config)
+	if s == nil {
+		t.Fatal("NewSummarizer returned nil")
+	}
+
+	cfg := s.channel.Config()
+	// Claude should NOT use API mode by default
+	if cfg.UseAPI {
+		t.Error("Claude agent should use CLI mode by default")
+	}
+}
+
+func TestNewSummarizer_ClaudeCanForceAPIMode(t *testing.T) {
+	// Even Claude can be forced to API mode if explicitly requested
+	config := SummarizerConfig{
+		SocketPath: "/tmp/test.sock",
+		Agent:      aichannel.AgentClaude,
+		UseAPI:     true,
+		APIKey:     "test-key",
+	}
+
+	s := NewSummarizer(config)
+	if s == nil {
+		t.Fatal("NewSummarizer returned nil")
+	}
+
+	cfg := s.channel.Config()
+	if !cfg.UseAPI {
+		t.Error("Claude should use API mode when explicitly requested")
+	}
+}
+
+func TestNewSummarizer_NonClaudeAgentsUseAPIMode(t *testing.T) {
+	// Test that various non-Claude agents automatically use API mode
+	agents := []aichannel.AgentType{
+		aichannel.AgentCopilot,
+		aichannel.AgentGemini,
+		aichannel.AgentOpenCode,
+		aichannel.AgentKimi,
+		aichannel.AgentAider,
+	}
+
+	for _, agent := range agents {
+		t.Run(string(agent), func(t *testing.T) {
+			config := SummarizerConfig{
+				SocketPath: "/tmp/test.sock",
+				Agent:      agent,
+			}
+
+			s := NewSummarizer(config)
+			cfg := s.channel.Config()
+
+			if !cfg.UseAPI {
+				t.Errorf("Agent %s should automatically use API mode", agent)
+			}
+		})
+	}
 }
 
 func TestSummarizer_IsAvailable_NotInstalled(t *testing.T) {
+	// Save and unset ALL provider env vars to ensure no API fallback
+	envVars := []string{
+		"ANTHROPIC_API_KEY", "CLAUDE_KEY",
+		"OPENAI_KEY", "OPENAI_API_KEY",
+		"GOOGLE_KEY", "GOOGLE_API_KEY",
+		"MISTRAL_KEY", "MISTRAL_API_KEY",
+		"DEEP_SEEK_KEY", "DEEPSEEK_API_KEY",
+		"OPEN_ROUTER_KEY", "OPENROUTER_API_KEY",
+		"TOGETHER_KEY", "TOGETHER_API_KEY",
+		"HYPERBOLIC_KEY", "HYPERBOLIC_API_KEY",
+		"SAMBA_NOVA_KEY", "SAMBANOVA_API_KEY",
+		"GLM_KEY", "GLM_API_KEY",
+	}
+	originals := make(map[string]string)
+	for _, key := range envVars {
+		originals[key] = os.Getenv(key)
+		os.Unsetenv(key)
+	}
+	defer func() {
+		for key, val := range originals {
+			if val != "" {
+				os.Setenv(key, val)
+			}
+		}
+	}()
+
 	config := SummarizerConfig{
 		SocketPath: "/tmp/test.sock",
 		Agent:      aichannel.AgentCustom,
@@ -31,7 +155,7 @@ func TestSummarizer_IsAvailable_NotInstalled(t *testing.T) {
 
 	s := NewSummarizer(config)
 	if s.IsAvailable() {
-		t.Error("IsAvailable should return false for non-existent command")
+		t.Error("IsAvailable should return false for non-existent command without API keys")
 	}
 }
 
@@ -177,15 +301,18 @@ func TestSummarizer_BuildPrompt(t *testing.T) {
 		t.Error("buildPrompt returned empty string")
 	}
 
-	// Check for key instructions
+	// Check for key instructions (updated for succinct prompt)
 	if !contains(prompt, "Analyze") {
 		t.Error("Prompt should mention analysis")
 	}
 	if !contains(prompt, "error") {
 		t.Error("Prompt should mention errors")
 	}
-	if !contains(prompt, "troubleshoot") {
-		t.Error("Prompt should mention troubleshooting")
+	if !contains(prompt, "concise") {
+		t.Error("Prompt should mention being concise")
+	}
+	if !contains(prompt, "BRIEF") {
+		t.Error("Prompt should emphasize brevity")
 	}
 }
 

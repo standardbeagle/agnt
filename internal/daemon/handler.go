@@ -543,6 +543,12 @@ func (c *Connection) handleProxyStart(ctx context.Context, cmd *protocol.Command
 		return c.writeErr(protocol.ErrInternal, err.Error())
 	}
 
+	// Configure overlay endpoint for event forwarding
+	overlayEndpoint := c.daemon.OverlayEndpoint()
+	if overlayEndpoint != "" {
+		proxyServer.SetOverlayEndpoint(overlayEndpoint)
+	}
+
 	resp := map[string]interface{}{
 		"id":          proxyServer.ID,
 		"target_url":  proxyServer.TargetURL.String(),
@@ -1273,4 +1279,82 @@ func convertPageSession(session *proxy.PageSession, includeDetails bool) map[str
 	}
 
 	return result
+}
+
+// Valid actions for OVERLAY command
+var validOverlayActions = []string{"SET", "GET", "CLEAR"}
+
+// handleOverlay handles the OVERLAY command for configuring the agent overlay endpoint.
+func (c *Connection) handleOverlay(cmd *protocol.Command) error {
+	if cmd.SubVerb == "" && len(cmd.Args) > 0 {
+		cmd.SubVerb = strings.ToUpper(cmd.Args[0])
+		cmd.Args = cmd.Args[1:]
+	}
+
+	switch cmd.SubVerb {
+	case protocol.SubVerbSet:
+		return c.handleOverlaySet(cmd)
+	case protocol.SubVerbGet:
+		return c.handleOverlayGet()
+	case protocol.SubVerbClear:
+		return c.handleOverlayClear()
+	case "":
+		return c.writeStructuredErr(&protocol.StructuredError{
+			Code:         protocol.ErrMissingParam,
+			Message:      "action required",
+			Command:      "OVERLAY",
+			Param:        "action",
+			ValidActions: validOverlayActions,
+		})
+	default:
+		return c.writeStructuredErr(&protocol.StructuredError{
+			Code:         protocol.ErrInvalidAction,
+			Message:      "unknown action",
+			Command:      "OVERLAY",
+			Action:       cmd.SubVerb,
+			ValidActions: validOverlayActions,
+		})
+	}
+}
+
+func (c *Connection) handleOverlaySet(cmd *protocol.Command) error {
+	if len(cmd.Args) < 1 {
+		return c.writeErr(protocol.ErrInvalidArgs, "OVERLAY SET requires socket path")
+	}
+
+	endpoint := cmd.Args[0]
+
+	// Validate endpoint format: Unix socket path or Windows named pipe
+	isUnixSocket := strings.HasPrefix(endpoint, "/")
+	isWindowsPipe := strings.HasPrefix(endpoint, `\\.\pipe\`)
+	if !isUnixSocket && !isWindowsPipe {
+		return c.writeErr(protocol.ErrInvalidArgs, "endpoint must be a Unix socket path (starting with /) or Windows named pipe (starting with \\\\.\\pipe\\)")
+	}
+
+	c.daemon.SetOverlayEndpoint(endpoint)
+
+	resp := map[string]interface{}{
+		"socket_path":     endpoint,
+		"proxies_updated": len(c.daemon.proxym.List()),
+	}
+
+	data, _ := json.Marshal(resp)
+	return c.writeJSON(data)
+}
+
+func (c *Connection) handleOverlayGet() error {
+	socketPath := c.daemon.OverlayEndpoint()
+
+	resp := map[string]interface{}{
+		"socket_path": socketPath,
+		"enabled":     socketPath != "",
+	}
+
+	data, _ := json.Marshal(resp)
+	return c.writeJSON(data)
+}
+
+func (c *Connection) handleOverlayClear() error {
+	c.daemon.SetOverlayEndpoint("")
+	return c.writeOK("overlay endpoint cleared")
 }

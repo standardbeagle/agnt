@@ -550,6 +550,64 @@ func (c *Client) CurrentPageClear(proxyID string) error {
 	return nil
 }
 
+// OverlaySet sets the overlay endpoint URL.
+// The endpoint should be the full URL, e.g., "http://127.0.0.1:19191".
+func (c *Client) OverlaySet(endpoint string) (map[string]interface{}, error) {
+	data, err := c.sendCommand(protocol.VerbOverlay, []string{protocol.SubVerbSet, endpoint}, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
+	}
+
+	return result, nil
+}
+
+// OverlayGet gets the current overlay endpoint configuration.
+func (c *Client) OverlayGet() (map[string]interface{}, error) {
+	data, err := c.sendCommand(protocol.VerbOverlay, []string{protocol.SubVerbGet}, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
+	}
+
+	return result, nil
+}
+
+// OverlayClear clears the overlay endpoint configuration.
+func (c *Client) OverlayClear() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.closed || c.conn == nil {
+		return ErrNotConnected
+	}
+
+	// Send command
+	if err := c.writer.WriteCommand(protocol.VerbOverlay, []string{protocol.SubVerbClear}, nil); err != nil {
+		return fmt.Errorf("failed to send command: %w", err)
+	}
+
+	// Read response
+	resp, err := c.parser.ParseResponse()
+	if err != nil {
+		return fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.Type == protocol.ResponseErr {
+		return fmt.Errorf("%w: [%s] %s", ErrServerError, resp.Code, resp.Message)
+	}
+
+	return nil
+}
+
 // sendCommand sends a command and expects a JSON response.
 func (c *Client) sendCommand(verb string, args []string, subVerb *string, data []byte) ([]byte, error) {
 	c.mu.Lock()

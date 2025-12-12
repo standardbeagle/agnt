@@ -33,6 +33,11 @@ type DaemonConfig struct {
 
 	// Connection write timeout (0 = no timeout)
 	WriteTimeout time.Duration
+
+	// OverlayEndpoint is the URL of the agnt overlay server for forwarding events.
+	// Example: "http://127.0.0.1:19191"
+	// When set, proxies will forward panel messages, sketches, etc. to the overlay.
+	OverlayEndpoint string
 }
 
 // DefaultDaemonConfig returns sensible defaults.
@@ -63,6 +68,9 @@ type Daemon struct {
 	clientCount atomic.Int64
 	nextID      atomic.Int64
 
+	// Overlay endpoint (can be set dynamically)
+	overlayEndpoint atomic.Pointer[string]
+
 	// Lifecycle
 	ctx        context.Context
 	cancel     context.CancelFunc
@@ -76,7 +84,7 @@ type Daemon struct {
 func New(config DaemonConfig) *Daemon {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	return &Daemon{
+	d := &Daemon{
 		config:  config,
 		pm:      process.NewProcessManager(config.ProcessConfig),
 		proxym:  proxy.NewProxyManager(),
@@ -84,6 +92,13 @@ func New(config DaemonConfig) *Daemon {
 		ctx:     ctx,
 		cancel:  cancel,
 	}
+
+	// Set initial overlay endpoint from config
+	if config.OverlayEndpoint != "" {
+		d.overlayEndpoint.Store(&config.OverlayEndpoint)
+	}
+
+	return d
 }
 
 // Start starts the daemon and begins accepting connections.
@@ -212,6 +227,31 @@ func (d *Daemon) ProcessManager() *process.ProcessManager {
 // ProxyManager returns the proxy manager.
 func (d *Daemon) ProxyManager() *proxy.ProxyManager {
 	return d.proxym
+}
+
+// SetOverlayEndpoint sets the overlay endpoint URL and updates all existing proxies.
+// The endpoint should be the full URL, e.g., "http://127.0.0.1:19191".
+// Pass an empty string to disable overlay forwarding.
+func (d *Daemon) SetOverlayEndpoint(endpoint string) {
+	if endpoint == "" {
+		d.overlayEndpoint.Store(nil)
+	} else {
+		d.overlayEndpoint.Store(&endpoint)
+	}
+
+	// Update all existing proxies
+	for _, p := range d.proxym.List() {
+		p.SetOverlayEndpoint(endpoint)
+	}
+}
+
+// OverlayEndpoint returns the current overlay endpoint URL, or empty string if not set.
+func (d *Daemon) OverlayEndpoint() string {
+	ptr := d.overlayEndpoint.Load()
+	if ptr == nil {
+		return ""
+	}
+	return *ptr
 }
 
 // acceptLoop accepts new client connections.

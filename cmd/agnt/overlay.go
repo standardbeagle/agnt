@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -15,12 +17,13 @@ import (
 
 // Overlay receives events from devtool-mcp and injects them into the PTY.
 type Overlay struct {
-	port     int
-	ptmx     *os.File
-	server   *http.Server
-	upgrader websocket.Upgrader
-	clients  sync.Map // map[*websocket.Conn]bool
-	mu       sync.RWMutex
+	socketPath string
+	ptmx       *os.File
+	server     *http.Server
+	listener   net.Listener
+	upgrader   websocket.Upgrader
+	clients    sync.Map // map[*websocket.Conn]bool
+	mu         sync.RWMutex
 }
 
 // OverlayMessage represents a message from devtool-mcp.
@@ -45,10 +48,31 @@ type KeyMessage struct {
 	Sequence string `json:"sequence"` // Raw escape sequence to send
 }
 
-func newOverlay(port int, ptmx *os.File) *Overlay {
+// DefaultOverlaySocketPath returns the default socket path for the overlay.
+func DefaultOverlaySocketPath() string {
+	// Windows: use named pipe
+	if os.PathSeparator == '\\' {
+		username := os.Getenv("USERNAME")
+		if username == "" {
+			username = "default"
+		}
+		return fmt.Sprintf(`\\.\pipe\devtool-overlay-%s`, username)
+	}
+
+	// Unix: use XDG_RUNTIME_DIR if available, otherwise /tmp
+	if runtimeDir := os.Getenv("XDG_RUNTIME_DIR"); runtimeDir != "" {
+		return filepath.Join(runtimeDir, "devtool-overlay.sock")
+	}
+	return filepath.Join(os.TempDir(), fmt.Sprintf("devtool-overlay-%d.sock", os.Getuid()))
+}
+
+func newOverlay(socketPath string, ptmx *os.File) *Overlay {
+	if socketPath == "" {
+		socketPath = DefaultOverlaySocketPath()
+	}
 	return &Overlay{
-		port: port,
-		ptmx: ptmx,
+		socketPath: socketPath,
+		ptmx:       ptmx,
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
 				return true // Allow all origins for local development
@@ -57,7 +81,24 @@ func newOverlay(port int, ptmx *os.File) *Overlay {
 	}
 }
 
+// SocketPath returns the socket path the overlay is listening on.
+func (o *Overlay) SocketPath() string {
+	return o.socketPath
+}
+
 func (o *Overlay) Start(ctx context.Context) error {
+	// Remove stale socket if it exists
+	if _, err := os.Stat(o.socketPath); err == nil {
+		os.Remove(o.socketPath)
+	}
+
+	// Create Unix socket listener
+	listener, err := net.Listen("unix", o.socketPath)
+	if err != nil {
+		return fmt.Errorf("failed to create overlay socket: %w", err)
+	}
+	o.listener = listener
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", o.handleWebSocket)
 	mux.HandleFunc("/health", o.handleHealth)
@@ -66,12 +107,11 @@ func (o *Overlay) Start(ctx context.Context) error {
 	mux.HandleFunc("/event", o.handleEvent)
 
 	o.server = &http.Server{
-		Addr:    fmt.Sprintf("127.0.0.1:%d", o.port),
 		Handler: mux,
 	}
 
 	go func() {
-		if err := o.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := o.server.Serve(listener); err != nil && err != http.ErrServerClosed {
 			log.Printf("Overlay server error: %v", err)
 		}
 	}()
@@ -86,6 +126,12 @@ func (o *Overlay) Stop() {
 		_ = o.server.Shutdown(ctx)
 	}
 
+	// Close listener and remove socket file
+	if o.listener != nil {
+		o.listener.Close()
+	}
+	os.Remove(o.socketPath)
+
 	// Close all WebSocket connections
 	o.clients.Range(func(key, value interface{}) bool {
 		if conn, ok := key.(*websocket.Conn); ok {
@@ -98,8 +144,8 @@ func (o *Overlay) Stop() {
 func (o *Overlay) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status": "ok",
-		"port":   o.port,
+		"status":      "ok",
+		"socket_path": o.socketPath,
 	})
 }
 

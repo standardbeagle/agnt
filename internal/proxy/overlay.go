@@ -2,18 +2,20 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"net"
 	"net/http"
 	"sync"
 	"time"
 )
 
-// OverlayNotifier sends events to the agent overlay server.
+// OverlayNotifier sends events to the agent overlay server via Unix socket.
 type OverlayNotifier struct {
-	endpoint string
-	client   *http.Client
-	enabled  bool
-	mu       sync.RWMutex
+	socketPath string
+	client     *http.Client
+	enabled    bool
+	mu         sync.RWMutex
 }
 
 // OverlayEvent represents an event to send to the overlay.
@@ -27,27 +29,38 @@ type OverlayEvent struct {
 // NewOverlayNotifier creates a new overlay notifier.
 func NewOverlayNotifier() *OverlayNotifier {
 	return &OverlayNotifier{
-		client: &http.Client{
-			Timeout: 5 * time.Second,
-		},
 		enabled: false,
 	}
 }
 
-// SetEndpoint sets the overlay endpoint URL.
-// Example: "http://127.0.0.1:19191"
-func (n *OverlayNotifier) SetEndpoint(endpoint string) {
+// SetEndpoint sets the overlay socket path.
+// Example: "/run/user/1000/devtool-overlay.sock" or "\\.\pipe\devtool-overlay-user"
+func (n *OverlayNotifier) SetEndpoint(socketPath string) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	n.endpoint = endpoint
-	n.enabled = endpoint != ""
+	n.socketPath = socketPath
+	n.enabled = socketPath != ""
+
+	if n.enabled {
+		// Create HTTP client with Unix socket transport
+		n.client = &http.Client{
+			Timeout: 5 * time.Second,
+			Transport: &http.Transport{
+				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+					return net.Dial("unix", socketPath)
+				},
+			},
+		}
+	} else {
+		n.client = nil
+	}
 }
 
-// GetEndpoint returns the current endpoint.
+// GetEndpoint returns the current socket path.
 func (n *OverlayNotifier) GetEndpoint() string {
 	n.mu.RLock()
 	defer n.mu.RUnlock()
-	return n.endpoint
+	return n.socketPath
 }
 
 // IsEnabled returns whether the notifier is enabled.
@@ -99,11 +112,11 @@ func (n *OverlayNotifier) NotifyCustom(proxyID, eventType string, data interface
 
 func (n *OverlayNotifier) send(event OverlayEvent) error {
 	n.mu.RLock()
-	if !n.enabled {
+	if !n.enabled || n.client == nil {
 		n.mu.RUnlock()
 		return nil
 	}
-	endpoint := n.endpoint
+	client := n.client
 	n.mu.RUnlock()
 
 	data, err := json.Marshal(event)
@@ -111,7 +124,8 @@ func (n *OverlayNotifier) send(event OverlayEvent) error {
 		return err
 	}
 
-	resp, err := n.client.Post(endpoint+"/event", "application/json", bytes.NewReader(data))
+	// Use dummy host - actual connection is via Unix socket
+	resp, err := client.Post("http://localhost/event", "application/json", bytes.NewReader(data))
 	if err != nil {
 		return err
 	}
@@ -124,11 +138,11 @@ func (n *OverlayNotifier) send(event OverlayEvent) error {
 // The overlay will inject this text into the PTY.
 func (n *OverlayNotifier) TypeToOverlay(text string, enter bool) error {
 	n.mu.RLock()
-	if !n.enabled {
+	if !n.enabled || n.client == nil {
 		n.mu.RUnlock()
 		return nil
 	}
-	endpoint := n.endpoint
+	client := n.client
 	n.mu.RUnlock()
 
 	data, err := json.Marshal(map[string]interface{}{
@@ -140,7 +154,8 @@ func (n *OverlayNotifier) TypeToOverlay(text string, enter bool) error {
 		return err
 	}
 
-	resp, err := n.client.Post(endpoint+"/type", "application/json", bytes.NewReader(data))
+	// Use dummy host - actual connection is via Unix socket
+	resp, err := client.Post("http://localhost/type", "application/json", bytes.NewReader(data))
 	if err != nil {
 		return err
 	}
@@ -152,11 +167,11 @@ func (n *OverlayNotifier) TypeToOverlay(text string, enter bool) error {
 // SendKeyToOverlay sends a key to the overlay.
 func (n *OverlayNotifier) SendKeyToOverlay(key string, ctrl, alt, shift bool) error {
 	n.mu.RLock()
-	if !n.enabled {
+	if !n.enabled || n.client == nil {
 		n.mu.RUnlock()
 		return nil
 	}
-	endpoint := n.endpoint
+	client := n.client
 	n.mu.RUnlock()
 
 	data, err := json.Marshal(map[string]interface{}{
@@ -169,7 +184,8 @@ func (n *OverlayNotifier) SendKeyToOverlay(key string, ctrl, alt, shift bool) er
 		return err
 	}
 
-	resp, err := n.client.Post(endpoint+"/key", "application/json", bytes.NewReader(data))
+	// Use dummy host - actual connection is via Unix socket
+	resp, err := client.Post("http://localhost/key", "application/json", bytes.NewReader(data))
 	if err != nil {
 		return err
 	}

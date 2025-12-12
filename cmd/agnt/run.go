@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"devtool-mcp/internal/aichannel"
+	"devtool-mcp/internal/daemon"
 	"devtool-mcp/internal/overlay"
 
 	"github.com/creack/pty"
@@ -48,10 +49,10 @@ to receive events that can be injected as user input.`,
 }
 
 var (
-	overlayPort    int
-	overlayHotkey  byte = 0x0f // Ctrl+O
-	showIndicator  bool = true
-	useTermOverlay bool = true
+	overlaySocketPath string
+	overlayHotkey     byte = 0x0f // Ctrl+O
+	showIndicator     bool = true
+	useTermOverlay    bool = true
 )
 
 func init() {
@@ -75,16 +76,16 @@ func runCommand(cmd *cobra.Command, args []string) {
 	}
 
 	// Parse our own flags from args
-	overlayPort = 19191 // default
+	overlaySocketPath = "" // will use default
 	commandArgs := args
 
 	// Look for our flags
 	i := 0
 	for i < len(args) {
 		switch args[i] {
-		case "--overlay-port":
+		case "--overlay-socket":
 			if i+1 < len(args) {
-				fmt.Sscanf(args[i+1], "%d", &overlayPort)
+				overlaySocketPath = args[i+1]
 				commandArgs = append(args[:i], args[i+2:]...)
 				continue
 			}
@@ -111,7 +112,7 @@ func runCommand(cmd *cobra.Command, args []string) {
 	)
 	defer cancel()
 
-	if err := runWithPTY(ctx, commandArgs, overlayPort); err != nil {
+	if err := runWithPTY(ctx, commandArgs, overlaySocketPath); err != nil {
 		log.Fatalf("Error: %v", err)
 	}
 }
@@ -148,7 +149,7 @@ func spinner(message string) func() {
 }
 
 // runWithPTY runs a command in a PTY with overlay support.
-func runWithPTY(ctx context.Context, args []string, port int) error {
+func runWithPTY(ctx context.Context, args []string, socketPath string) error {
 	// Find the command
 	command := args[0]
 	cmdArgs := args[1:]
@@ -206,11 +207,31 @@ func runWithPTY(ctx context.Context, args []string, port int) error {
 	}()
 
 	// Create network overlay for receiving external events (from browser)
-	netOverlay := newOverlay(port, ptmx)
+	netOverlay := newOverlay(socketPath, ptmx)
 	if err := netOverlay.Start(ctx); err != nil {
 		log.Printf("Warning: network overlay failed to start: %v", err)
 	}
 	defer netOverlay.Stop()
+
+	// Register overlay endpoint with daemon so proxies forward events to us
+	go func() {
+		socketPath, _ := rootCmd.Flags().GetString("socket")
+		config := daemon.DefaultAutoStartConfig()
+		if socketPath != "" {
+			config.SocketPath = socketPath
+		}
+
+		client, err := daemon.EnsureDaemonRunning(config)
+		if err != nil {
+			log.Printf("Warning: could not connect to daemon: %v", err)
+			return
+		}
+		defer client.Close()
+
+		if _, err := client.OverlaySet(netOverlay.SocketPath()); err != nil {
+			log.Printf("Warning: failed to register overlay with daemon: %v", err)
+		}
+	}()
 
 	// Create terminal overlay (indicator bar and menus)
 	var termOverlay *overlay.Overlay

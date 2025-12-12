@@ -193,6 +193,19 @@ Browser Indicator → WebSocket → devtool-mcp Proxy → HTTP → Agent Overlay
 
 This allows the floating indicator in the browser to send messages that get typed into Claude Code (or any AI tool) as user input.
 
+**Overlay Registration**:
+When `agnt run` starts, it automatically registers its overlay endpoint with the daemon using the `OVERLAY SET` protocol command. This tells the daemon where to forward proxy events (panel messages, sketches, etc.).
+
+Protocol commands for overlay management:
+- `OVERLAY SET <endpoint>`: Set overlay endpoint (e.g., "http://127.0.0.1:19191")
+- `OVERLAY GET`: Get current overlay endpoint configuration
+- `OVERLAY CLEAR`: Clear/disable overlay endpoint
+
+The daemon forwards events from all proxies to the registered overlay endpoint. When an overlay is registered:
+1. All new proxies are automatically configured with the overlay endpoint
+2. All existing proxies are updated to use the new endpoint
+3. Events (panel_message, sketch) are sent via HTTP POST to `/event`
+
 ### PTY Output Protection
 
 The overlay uses a multi-layer protection system to prevent the child process from corrupting the indicator bar or menu:

@@ -32,15 +32,51 @@ type SummarizerConfig struct {
 	Timeout time.Duration
 	// DebugOutput is where debug messages are written (defaults to os.Stderr)
 	DebugOutput io.Writer
+
+	// --- API Mode Configuration ---
+	// UseAPI forces API mode. For non-Claude agents, API mode is enabled automatically
+	// since Claude Code Max plan only supports CLI, while other providers need API keys.
+	// Set to true to force API mode even for Claude agent.
+	UseAPI bool
+	// LLMProvider specifies which provider to use (auto-detected if empty)
+	LLMProvider aichannel.LLMProvider
+	// APIKey overrides environment variable lookup
+	APIKey string
+	// Model overrides the provider's default model
+	Model string
 }
 
 // NewSummarizer creates a new Summarizer.
+// For Claude agent, uses CLI mode (required for Claude Code Max plan).
+// For all other agents, automatically uses Anthropic API mode as a fallback
+// since those CLIs may not be available or may require their own subscriptions.
 func NewSummarizer(config SummarizerConfig) *Summarizer {
 	channelConfig := aichannel.Config{
 		Agent:   config.Agent,
 		Command: config.Command,
 		Args:    config.Args,
 		Timeout: config.Timeout,
+		// OutputFormat will be set to "json" if agent supports it (in applyDefaults)
+		// For agents that support JSON, we'll use it to extract just the final result
+		OutputFormat: "json",
+	}
+
+	// Determine whether to use API mode:
+	// - Claude agent: Use CLI mode (Claude Code Max plan only supports CLI)
+	// - All other agents: Use Anthropic API mode as fallback
+	useAPI := config.UseAPI
+	if !useAPI && config.Agent != aichannel.AgentClaude {
+		// Auto-enable API mode for non-Claude agents
+		useAPI = true
+	}
+
+	if useAPI {
+		channelConfig.UseAPI = true
+		channelConfig.LLMProvider = config.LLMProvider
+		channelConfig.APIKey = config.APIKey
+		channelConfig.Model = config.Model
+		// Set system prompt for API mode - this is the instruction prompt
+		channelConfig.SystemPrompt = buildSummarySystemPrompt()
 	}
 
 	return &Summarizer{
@@ -124,13 +160,30 @@ func (s *Summarizer) Summarize(ctx context.Context) (*SummaryResult, error) {
 	prompt := s.buildPrompt()
 
 	// Log what we're about to do for debugging
-	fmt.Fprintf(s.debugWriter(), "[agnt] Calling %s with %d bytes of context...\r\n",
-		s.channel.Config().Command, len(contextData))
+	if s.channel.IsAPIMode() {
+		config := s.channel.Config()
+		provider := config.LLMProvider
+		if provider == "" {
+			provider = aichannel.GetDefaultProvider()
+		}
+		model := config.Model
+		if model == "" {
+			model = "default"
+		}
+		fmt.Fprintf(s.debugWriter(), "[agnt] Calling %s API (%s) with %d bytes of context...\r\n",
+			provider, model, len(contextData))
+	} else {
+		fmt.Fprintf(s.debugWriter(), "[agnt] Calling %s with %d bytes of context...\r\n",
+			s.channel.Config().Command, len(contextData))
+	}
 
-	summary, err := s.channel.Send(ctx, prompt, contextData)
+	// Use SendAndParse to get structured response with just the final result
+	response, err := s.channel.SendAndParse(ctx, prompt, contextData)
 	if err != nil {
 		return nil, fmt.Errorf("AI summarization failed: %w", err)
 	}
+
+	summary := response.Result
 
 	// Count errors
 	errorCount := 0
@@ -305,17 +358,68 @@ func (s *Summarizer) buildContext(processes []ProcessSummary, proxies []ProxySum
 	return sb.String()
 }
 
+// buildSummarySystemPrompt returns the system prompt for API mode.
+func buildSummarySystemPrompt() string {
+	return `You are a concise system status summarizer. Analyze system status and provide VERY BRIEF summaries (2-5 lines max).
+
+CRITICAL: Be extremely concise. Your output will be displayed in a small terminal indicator.
+
+Format:
+- If healthy: "✓ All systems OK" (single line)
+- If issues: Brief bullet points, max 3-4 items
+
+Focus ONLY on:
+• Active errors or failures (ignore warnings/info)
+• Critical state changes
+• Actionable issues
+
+DO NOT include:
+• Explanations or context
+• Full stack traces
+• Suggestions or fixes (unless trivially obvious)
+• Process/proxy IDs unless relevant to error
+
+Example good response:
+"✓ 2 processes running, 1 proxy active"
+
+Example good error response:
+"• test-server: EADDRINUSE port 3000
+• proxy dev: 3 frontend errors"`
+}
+
 func (s *Summarizer) buildPrompt() string {
-	return `Analyze the system status below and provide a concise summary. Focus on:
+	// For API mode, the system prompt contains the instructions,
+	// so we just need to ask for the analysis
+	if s.channel.IsAPIMode() {
+		return "Analyze the provided system status and summarize."
+	}
 
-1. If everything is healthy, say so briefly (1-2 sentences)
-2. If there are errors:
-   - Identify the root cause from stack traces or error messages
-   - Filter out noise (routine logs, SQL queries, etc.)
-   - Highlight the key information needed to troubleshoot
-   - Suggest potential fixes if obvious
+	// For CLI mode, include full instructions in the prompt
+	return `Analyze the system status and provide a VERY BRIEF summary (2-5 lines max).
 
-Keep the summary short and actionable. Use bullet points for multiple issues.`
+CRITICAL: Be extremely concise. This will be displayed in a small terminal indicator.
+
+Format:
+- If healthy: "✓ All systems OK" (single line)
+- If issues: Brief bullet points, max 3-4 items
+
+Focus ONLY on:
+• Active errors or failures (ignore warnings/info)
+• Critical state changes
+• Actionable issues
+
+DO NOT include:
+• Explanations or context
+• Full stack traces
+• Suggestions or fixes (unless trivially obvious)
+• Process/proxy IDs unless relevant to error
+
+Example good response:
+"✓ 2 processes running, 1 proxy active"
+
+Example good error response:
+"• test-server: EADDRINUSE port 3000
+• proxy dev: 3 frontend errors"`
 }
 
 // containsErrorPatterns checks if output contains common error patterns.

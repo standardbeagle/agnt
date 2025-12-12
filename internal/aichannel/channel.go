@@ -54,8 +54,16 @@ type Config struct {
 	// QuietFlag suppresses progress output (e.g., "-s" for copilot, "-q" for gemini)
 	QuietFlag string `json:"quiet_flag,omitempty"`
 
-	// OutputFormat specifies output format flag (e.g., "--output-format json")
+	// OutputFormat specifies desired output format ("text", "json", "stream-json")
+	// Note: Not all agents support all formats. Use SupportsJSONOutput() to check.
 	OutputFormat string `json:"output_format,omitempty"`
+
+	// OutputFormatFlag is the CLI flag for output format (e.g., "--output-format")
+	// Set automatically based on agent type.
+	OutputFormatFlag string `json:"output_format_flag,omitempty"`
+
+	// SupportsJSON indicates if this agent supports structured JSON output
+	SupportsJSON bool `json:"supports_json,omitempty"`
 
 	// UseStdin determines if context should be piped via stdin
 	UseStdin bool `json:"use_stdin"`
@@ -68,12 +76,37 @@ type Config struct {
 
 	// Environment variables to set
 	Env map[string]string `json:"env,omitempty"`
+
+	// --- API Mode Configuration ---
+
+	// UseAPI enables API mode instead of CLI mode.
+	// When true, uses the Provider interface instead of executing CLI commands.
+	UseAPI bool `json:"use_api,omitempty"`
+
+	// LLMProvider specifies which LLM provider to use in API mode.
+	// If empty, auto-detects based on available API keys.
+	LLMProvider LLMProvider `json:"llm_provider,omitempty"`
+
+	// APIKey is the authentication key for API-based providers.
+	// If empty, uses environment variables based on provider.
+	APIKey string `json:"api_key,omitempty"`
+
+	// Model specifies the model for API-based providers.
+	// If empty, uses the provider's default model.
+	Model string `json:"model,omitempty"`
+
+	// MaxTokens limits API response length (default 1024).
+	MaxTokens int `json:"max_tokens,omitempty"`
+
+	// SystemPrompt provides context/instructions for API-based completions.
+	SystemPrompt string `json:"system_prompt,omitempty"`
 }
 
 // Channel represents a communication channel to an AI coding agent.
 type Channel struct {
 	config     Config
 	configured bool
+	provider   Provider // For API mode
 }
 
 // New creates a new AI channel.
@@ -94,6 +127,39 @@ func (c *Channel) Configure(config Config) {
 	config = applyDefaults(config)
 	c.config = config
 	c.configured = true
+
+	// Set up provider for API mode
+	if config.UseAPI {
+		c.provider = c.createProvider()
+	}
+}
+
+// createProvider creates the appropriate Provider based on configuration.
+func (c *Channel) createProvider() Provider {
+	// Determine which provider to use
+	provider := c.config.LLMProvider
+	if provider == "" {
+		// Auto-detect based on available API keys
+		provider = GetDefaultProvider()
+	}
+
+	if provider == "" {
+		// No provider available
+		return nil
+	}
+
+	langchainProvider, err := NewLangChainProvider(LangChainConfig{
+		Provider:  provider,
+		APIKey:    c.config.APIKey,
+		Model:     c.config.Model,
+		MaxTokens: c.config.MaxTokens,
+	})
+	if err != nil {
+		// Log error but return nil - IsAvailable will handle this
+		return nil
+	}
+
+	return langchainProvider
 }
 
 // applyDefaults fills in default values based on agent type.
@@ -112,8 +178,10 @@ func applyDefaults(config Config) Config {
 			config.NonInteractiveFlag = "-p"
 		}
 		if config.OutputFormat == "" {
-			config.OutputFormat = "text" // or "json", "stream-json"
+			config.OutputFormat = "text"
 		}
+		config.OutputFormatFlag = "--output-format"
+		config.SupportsJSON = true // Claude supports json and stream-json
 		config.UseStdin = true
 		config.UsePTY = true // Claude Code requires a PTY for -p mode
 
@@ -127,6 +195,7 @@ func applyDefaults(config Config) Config {
 		if config.QuietFlag == "" {
 			config.QuietFlag = "-s"
 		}
+		config.SupportsJSON = false // Copilot uses -s for clean output, no structured JSON
 		config.UseStdin = true
 
 	case AgentGemini:
@@ -139,23 +208,28 @@ func applyDefaults(config Config) Config {
 		if config.QuietFlag == "" {
 			config.QuietFlag = "-q"
 		}
+		config.OutputFormatFlag = "--output-format"
+		config.SupportsJSON = true // Gemini CLI supports --output-format json
 		config.UseStdin = true
 
 	case AgentOpenCode:
 		if config.Command == "" {
 			config.Command = "opencode"
 		}
+		config.SupportsJSON = false // TBD - uses TUI
 
 	case AgentKimi:
 		if config.Command == "" {
 			config.Command = "kimi-cli"
 		}
+		config.SupportsJSON = false // No documented JSON output
 		config.UseStdin = true
 
 	case AgentAuggie:
 		if config.Command == "" {
 			config.Command = "auggie"
 		}
+		config.SupportsJSON = false // TBD
 
 	case AgentAider:
 		if config.Command == "" {
@@ -165,6 +239,7 @@ func applyDefaults(config Config) Config {
 		if config.NonInteractiveFlag == "" {
 			config.NonInteractiveFlag = "--message"
 		}
+		config.SupportsJSON = false // No documented JSON output
 
 	case AgentCursor:
 		if config.Command == "" {
@@ -173,9 +248,23 @@ func applyDefaults(config Config) Config {
 		if config.NonInteractiveFlag == "" {
 			config.NonInteractiveFlag = "-p"
 		}
+		config.SupportsJSON = false // Documented but format unclear
+
+	case AgentCustom:
+		// For custom agents, allow user to specify SupportsJSON and OutputFormatFlag
+		// If OutputFormat is json/stream-json and OutputFormatFlag is set, enable JSON support
+		if config.OutputFormatFlag != "" &&
+			(config.OutputFormat == "json" || config.OutputFormat == "stream-json") {
+			config.SupportsJSON = true
+		}
 	}
 
 	return config
+}
+
+// SupportsJSONOutput returns true if the configured agent supports JSON output format.
+func (c *Channel) SupportsJSONOutput() bool {
+	return c.config.SupportsJSON
 }
 
 // IsAvailable checks if the configured AI agent is available.
@@ -184,8 +273,19 @@ func (c *Channel) IsAvailable() bool {
 		return false
 	}
 
+	// For API mode, check if provider is configured
+	if c.config.UseAPI {
+		return c.provider != nil && c.provider.IsConfigured()
+	}
+
+	// For CLI mode, check if command exists
 	_, err := exec.LookPath(c.config.Command)
 	return err == nil
+}
+
+// IsAPIMode returns true if the channel is configured to use API mode.
+func (c *Channel) IsAPIMode() bool {
+	return c.config.UseAPI
 }
 
 // Send sends a prompt to the AI agent and returns the response.
@@ -193,6 +293,11 @@ func (c *Channel) IsAvailable() bool {
 func (c *Channel) Send(ctx context.Context, prompt string, inputContext string) (string, error) {
 	if !c.configured {
 		return "", ErrNotConfigured
+	}
+
+	// Use API mode if configured
+	if c.config.UseAPI {
+		return c.sendWithAPI(ctx, prompt, inputContext)
 	}
 
 	if !c.IsAvailable() {
@@ -205,6 +310,60 @@ func (c *Channel) Send(ctx context.Context, prompt string, inputContext string) 
 	}
 
 	return c.sendWithPipe(ctx, prompt, inputContext)
+}
+
+// sendWithAPI sends a prompt using the API provider.
+func (c *Channel) sendWithAPI(ctx context.Context, prompt string, inputContext string) (string, error) {
+	if c.provider == nil {
+		return "", fmt.Errorf("%w: provider not configured", ErrNotAvailable)
+	}
+
+	if !c.provider.IsConfigured() {
+		return "", ErrNoAPIKey
+	}
+
+	resp, err := c.provider.CompleteWithContext(ctx, c.config.SystemPrompt, prompt, inputContext)
+	if err != nil {
+		return "", err
+	}
+
+	return resp.Result, nil
+}
+
+// SendAndParse sends a prompt and parses the response based on the configured OutputFormat.
+// This provides a structured response with metadata for JSON/stream-json formats.
+// For agents that don't support JSON output, it falls back to text parsing.
+// For API mode, always returns a structured Response directly from the provider.
+func (c *Channel) SendAndParse(ctx context.Context, prompt string, inputContext string) (*Response, error) {
+	// For API mode, get response directly from provider
+	if c.config.UseAPI {
+		if c.provider == nil {
+			return nil, fmt.Errorf("%w: provider not configured", ErrNotAvailable)
+		}
+		if !c.provider.IsConfigured() {
+			return nil, ErrNoAPIKey
+		}
+		return c.provider.CompleteWithContext(ctx, c.config.SystemPrompt, prompt, inputContext)
+	}
+
+	// For CLI mode, send and parse the output
+	rawOutput, err := c.Send(ctx, prompt, inputContext)
+	if err != nil {
+		return nil, err
+	}
+
+	// Determine actual output format based on agent support
+	format := OutputFormat(c.config.OutputFormat)
+	if format == "" {
+		format = OutputFormatText
+	}
+
+	// If JSON was requested but agent doesn't support it, fall back to text
+	if (format == OutputFormatJSON || format == OutputFormatStreamJSON) && !c.config.SupportsJSON {
+		format = OutputFormatText
+	}
+
+	return ParseResponse(rawOutput, format)
 }
 
 // sendWithPipe runs the command with standard pipes (no PTY).
@@ -400,9 +559,10 @@ func (c *Channel) buildArgs(prompt string) []string {
 		args = append(args, c.config.QuietFlag)
 	}
 
-	// Add output format if specified and not "text"
-	if c.config.OutputFormat != "" && c.config.OutputFormat != "text" {
-		args = append(args, "--output-format", c.config.OutputFormat)
+	// Add output format if agent supports it and format is not "text"
+	if c.config.SupportsJSON && c.config.OutputFormatFlag != "" &&
+		c.config.OutputFormat != "" && c.config.OutputFormat != "text" {
+		args = append(args, c.config.OutputFormatFlag, c.config.OutputFormat)
 	}
 
 	return args

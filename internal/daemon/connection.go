@@ -114,6 +114,8 @@ func (c *Connection) handleCommand(ctx context.Context, cmd *protocol.Command) e
 		return c.handleProxyLog(cmd)
 	case protocol.VerbCurrentPage:
 		return c.handleCurrentPage(cmd)
+	case protocol.VerbOverlay:
+		return c.handleOverlay(cmd)
 	default:
 		return c.writeStructuredErr(&protocol.StructuredError{
 			Code:         protocol.ErrInvalidCommand,
