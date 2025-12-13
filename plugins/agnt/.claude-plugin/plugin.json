@@ -21,5 +21,8 @@
     "sketch",
     "wireframe"
   ],
-  "mcpServers": "./.mcp.json"
+  "category": "development",
+  "mcpServers": ".mcp.json",
+  "commands": "commands",
+  "agents": "agents"
 }
