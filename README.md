@@ -170,9 +170,10 @@ Structured data consumes fewer tokens than natural language descriptions:
 - **Error summaries** - `proxylog {types: ["error"]}` vs. "I'm seeing a TypeError on line 42 that says..."
 - **Click context** - `interactions.getLastClickContext()` vs. "I clicked the blue button in the header..."
 - **DOM state** - `inspect('#element')` vs. "there's a div with some nested spans and..."
+- **Consolidated stack traces** - Pre-processed React error walls into actionable summaries
 - **Status at a glance** - Structured JSON your agent can parse efficiently
 
-Your agent gets precise, actionable data instead of parsing your descriptions.
+Instead of dumping 100 lines of nested React errors into the context, agnt consolidates verbose output into concise, actionable data.
 
 ## MCP Tools
 
