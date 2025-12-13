@@ -23,6 +23,7 @@
   ],
   "mcpServers": "./.mcp.json",
   "commands": [
+    "./commands/setup-project.md",
     "./commands/dev-proxy.md",
     "./commands/check-errors.md",
     "./commands/screenshot.md",
