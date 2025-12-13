@@ -236,21 +236,33 @@
     ].join(';'),
 
     // Toolbar - secondary actions (Gestalt: Similarity)
+    // Flexbox with wrap for responsive fit
     toolbar: [
       'display: flex',
+      'flex-wrap: wrap',
       'align-items: center',
-      'gap: ' + TOKENS.spacing.sm,
-      'padding: ' + TOKENS.spacing.sm + ' ' + TOKENS.spacing.md,
+      'gap: 6px',
+      'padding: 10px ' + TOKENS.spacing.md,
       'background: ' + TOKENS.colors.surfaceAlt,
       'border-top: 1px solid ' + TOKENS.colors.border
     ].join(';'),
 
-    toolBtn: [
+    // Container for action buttons (left side)
+    toolbarActions: [
       'display: flex',
+      'flex-wrap: wrap',
+      'align-items: center',
+      'gap: 6px',
+      'flex: 1 1 auto',
+      'min-width: 0'
+    ].join(';'),
+
+    toolBtn: [
+      'display: inline-flex',
       'align-items: center',
       'justify-content: center',
-      'gap: 5px',
-      'padding: 7px 12px',
+      'gap: 4px',
+      'padding: 6px 10px',
       'background: transparent',
       'border: 1px solid ' + TOKENS.colors.border,
       'border-radius: ' + TOKENS.radius.sm,
@@ -258,15 +270,17 @@
       'font-weight: 500',
       'color: ' + TOKENS.colors.textMuted,
       'cursor: pointer',
-      'transition: all 0.15s ease'
+      'transition: all 0.15s ease',
+      'white-space: nowrap'
     ].join(';'),
 
     // Primary send button - visual hierarchy (most prominent)
     sendBtn: [
-      'display: flex',
+      'display: inline-flex',
       'align-items: center',
-      'gap: 6px',
-      'padding: 8px 16px',
+      'justify-content: center',
+      'gap: 5px',
+      'padding: 8px 14px',
       'background: ' + TOKENS.colors.primary,
       'border: none',
       'border-radius: ' + TOKENS.radius.sm,
@@ -274,7 +288,9 @@
       'font-weight: 600',
       'color: ' + TOKENS.colors.textInverse,
       'cursor: pointer',
-      'transition: background 0.15s ease, transform 0.1s ease'
+      'transition: background 0.15s ease, transform 0.1s ease',
+      'white-space: nowrap',
+      'margin-left: auto'
     ].join(';'),
 
     // Selection overlays
@@ -345,11 +361,11 @@
 
     // Dropdown button with chevron
     dropdownBtn: [
-      'display: flex',
+      'display: inline-flex',
       'align-items: center',
       'justify-content: center',
       'gap: 4px',
-      'padding: 7px 10px',
+      'padding: 6px 10px',
       'background: transparent',
       'border: 1px solid ' + TOKENS.colors.border,
       'border-radius: ' + TOKENS.radius.sm,
@@ -357,7 +373,8 @@
       'font-weight: 500',
       'color: ' + TOKENS.colors.textMuted,
       'cursor: pointer',
-      'transition: all 0.15s ease'
+      'transition: all 0.15s ease',
+      'white-space: nowrap'
     ].join(';'),
 
     // Dropdown menu
@@ -599,23 +616,23 @@
     var toolbar = document.createElement('div');
     toolbar.style.cssText = STYLES.toolbar;
 
+    // Action buttons container (wraps for responsive layout)
+    var actionsContainer = document.createElement('div');
+    actionsContainer.style.cssText = STYLES.toolbarActions;
+
     // Tool buttons (Gestalt: Similarity - all secondary actions look alike)
     var screenshotBtn = createToolBtn('Screenshot', ICONS.screenshot, startScreenshotMode);
     var elementBtn = createToolBtn('Element', ICONS.element, startElementMode);
     var sketchBtn = createToolBtn('Sketch', ICONS.sketch, openSketch);
     var auditDropdown = createActionsDropdown();
 
-    toolbar.appendChild(screenshotBtn);
-    toolbar.appendChild(elementBtn);
-    toolbar.appendChild(sketchBtn);
-    toolbar.appendChild(auditDropdown);
+    actionsContainer.appendChild(screenshotBtn);
+    actionsContainer.appendChild(elementBtn);
+    actionsContainer.appendChild(sketchBtn);
+    actionsContainer.appendChild(auditDropdown);
+    toolbar.appendChild(actionsContainer);
 
-    // Spacer to push send button to the right
-    var spacer = document.createElement('div');
-    spacer.style.cssText = 'flex: 1;';
-    toolbar.appendChild(spacer);
-
-    // Send button (visual hierarchy - primary action)
+    // Send button (visual hierarchy - primary action, auto-pushed right via margin-left: auto)
     var sendBtn = document.createElement('button');
     sendBtn.style.cssText = STYLES.sendBtn;
     sendBtn.innerHTML = ICONS.send + ' Send';
