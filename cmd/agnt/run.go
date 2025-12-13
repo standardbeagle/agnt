@@ -50,7 +50,7 @@ to receive events that can be injected as user input.`,
 
 var (
 	overlaySocketPath string
-	overlayHotkey     byte = 0x0f // Ctrl+O
+	overlayHotkey     byte = 0x10 // Ctrl+P
 	showIndicator     bool = true
 	useTermOverlay    bool = true
 )
@@ -392,8 +392,9 @@ func runWithPTY(ctx context.Context, args []string, socketPath string) error {
 		}
 	}()
 
-	// Copy pty output to stdout (through filter and gate if enabled)
-	// Chain: PTY -> Filter (protects indicator) -> Gate (freezes for menu) -> Stdout
+	// Copy pty output to stdout (through activity monitor, filter and gate if enabled)
+	// Chain: PTY -> ActivityMonitor -> Filter (protects indicator) -> Gate (freezes for menu) -> Stdout
+	var activityMonitor *overlay.ActivityMonitor
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -405,7 +406,18 @@ func runWithPTY(ctx context.Context, args []string, socketPath string) error {
 			// Gate -> Stdout (no indicator, but still need freeze for menu)
 			outputDest = outputGate
 		}
-		_, _ = io.Copy(outputDest, ptmx)
+
+		// Wrap with activity monitor to detect when AI is working
+		activityCfg := overlay.DefaultActivityMonitorConfig()
+		activityCfg.OnStateChange = func(state overlay.ActivityState) {
+			// Broadcast activity state to daemon (which forwards to proxies)
+			if resilientClient != nil {
+				resilientClient.BroadcastActivity(state == overlay.ActivityActive)
+			}
+		}
+		activityMonitor = overlay.NewActivityMonitor(outputDest, activityCfg)
+
+		_, _ = io.Copy(activityMonitor, ptmx)
 		close(done)
 	}()
 
@@ -428,6 +440,11 @@ func runWithPTY(ctx context.Context, args []string, socketPath string) error {
 	// Stop output filter if running
 	if outputFilter != nil {
 		outputFilter.Stop()
+	}
+
+	// Stop activity monitor if running
+	if activityMonitor != nil {
+		activityMonitor.Stop()
 	}
 
 	// Wait for the process

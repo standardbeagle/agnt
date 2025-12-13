@@ -1,0 +1,65 @@
+// Example .agnt.kdl configuration
+// Place this file in your project root to auto-start scripts and proxies
+
+// Scripts to run via the daemon process manager
+scripts {
+    // Example: Next.js dev server
+    dev {
+        command "npm"
+        args "run" "dev"
+        autostart true
+        env {
+            NODE_ENV "development"
+            PORT "3000"
+        }
+    }
+
+    // Example: API server
+    api {
+        command "go"
+        args "run" "./cmd/server"
+        autostart true
+        cwd "./backend"
+    }
+
+    // Example: Tailwind CSS watcher
+    css {
+        command "npx"
+        args "tailwindcss" "-i" "./src/input.css" "-o" "./dist/output.css" "--watch"
+        autostart true
+    }
+}
+
+// Reverse proxies with traffic logging and browser instrumentation
+proxies {
+    // Main frontend proxy
+    frontend {
+        target "http://localhost:3000"
+        autostart true
+    }
+
+    // API proxy on custom port
+    api {
+        target "http://localhost:8080"
+        port 18080
+        autostart true
+        max-log-size 2000
+    }
+}
+
+// Hook configuration for browser notifications
+hooks {
+    // What to do when Claude responds
+    on-response {
+        toast true      // Show toast notification in browser
+        indicator true  // Flash the bug indicator
+        sound false     // Play notification sound (requires browser permission)
+    }
+}
+
+// Toast notification appearance
+toast {
+    duration 4000           // How long to show (ms)
+    position "bottom-right" // Corner: top-right, top-left, bottom-right, bottom-left
+    max-visible 3           // Max simultaneous toasts
+}

@@ -224,12 +224,12 @@ func (r *Renderer) DrawIndicator(status Status) {
 	statusText := strings.Join(parts, fmt.Sprintf(" %s│%s ", FgBrightBlack, Reset))
 
 	// Add hotkey hint on the right
-	hotkeyHint := fmt.Sprintf("%sCtrl+O%s", FgBrightBlack, Reset)
+	hotkeyHint := fmt.Sprintf("%sCtrl+P%s", FgBrightBlack, Reset)
 
 	// Calculate padding
 	// Note: This is approximate due to ANSI codes; for accurate width we'd need to strip codes
 	visibleLen := r.estimateVisibleLength(statusText)
-	hotkeyLen := 6                                  // "Ctrl+O"
+	hotkeyLen := 6                                  // "Ctrl+P"
 	padding := r.width - visibleLen - hotkeyLen - 4 // 4 for " │ " separator and spaces
 
 	if padding < 1 {

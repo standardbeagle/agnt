@@ -1,0 +1,10 @@
+{
+  "$schema": "https://raw.githubusercontent.com/anthropics/claude-code/main/schemas/claude_desktop_config.schema.json",
+  "mcpServers": {
+    "agnt": {
+      "command": "agnt",
+      "args": ["serve"],
+      "env": {}
+    }
+  }
+}

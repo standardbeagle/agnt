@@ -15,6 +15,8 @@ MCP server plugin for Claude Code that bridges your AI agent and the browser, ex
 
 ## Installation
 
+### From Marketplace
+
 ```bash
 # Add the marketplace
 /plugin marketplace add standardbeagle/agnt
@@ -23,24 +25,39 @@ MCP server plugin for Claude Code that bridges your AI agent and the browser, ex
 /plugin install agnt@agnt
 ```
 
-## Requirements
+### Manual Installation
 
-- Node.js 18+ (for npm installation)
-- Or Go 1.24+ (for building from source)
+```bash
+# Clone and install from source
+git clone https://github.com/standardbeagle/agnt.git
+cd agnt
+make install
+```
 
-### Via npm
+Or install via npm:
 
 ```bash
 npm install -g @standardbeagle/agnt
 ```
 
-### Building from Source
+## Slash Commands
 
-```bash
-git clone https://github.com/standardbeagle/agnt.git
-cd agnt
-make install
-```
+| Command | Description |
+|---------|-------------|
+| `/dev-proxy` | Start a dev server with reverse proxy for browser debugging |
+| `/check-errors` | Check for JavaScript errors in the browser |
+| `/screenshot` | Take a screenshot of the current browser page |
+| `/sketch-mode` | Open sketch mode for wireframing on the browser page |
+| `/browser-debug` | Debug browser issues using agnt diagnostic tools |
+| `/stop-all` | Stop all running processes and proxies |
+
+## Subagents
+
+| Agent | Description |
+|-------|-------------|
+| `browser-debugger` | Specialized agent for debugging browser issues |
+| `process-manager` | Specialized agent for managing development processes |
+| `ui-designer` | Specialized agent for UI design feedback and wireframing |
 
 ## MCP Tools
 
@@ -53,6 +70,30 @@ make install
 | `proxylog` | Query proxy traffic logs |
 | `currentpage` | View active page sessions |
 | `daemon` | Manage background daemon |
+
+## Quick Start
+
+1. Start a dev server with proxy:
+   ```
+   /dev-proxy
+   ```
+
+2. Open the proxy URL in your browser (shown in output)
+
+3. Check for errors:
+   ```
+   /check-errors
+   ```
+
+4. Take a screenshot:
+   ```
+   /screenshot
+   ```
+
+5. Open sketch mode for wireframing:
+   ```
+   /sketch-mode
+   ```
 
 ## Usage Examples
 
@@ -89,6 +130,20 @@ The proxy injects `window.__devtool` into all proxied pages:
 
 When running with `agnt run`:
 - `Ctrl+P`: Toggle overlay menu
+
+## Configuration
+
+Example MCP configuration (`.mcp.json`):
+
+```json
+{
+  "agnt": {
+    "command": "agnt",
+    "args": ["serve"],
+    "env": {}
+  }
+}
+```
 
 ## License
 

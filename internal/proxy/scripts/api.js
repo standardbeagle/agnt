@@ -321,6 +321,21 @@
           reject(err);
         });
       });
+    },
+
+    // ========================================================================
+    // TOAST NOTIFICATIONS
+    // ========================================================================
+
+    toast: window.__devtool_toast || {
+      show: function() { console.warn('Toast not initialized'); },
+      success: function() { console.warn('Toast not initialized'); },
+      error: function() { console.warn('Toast not initialized'); },
+      warning: function() { console.warn('Toast not initialized'); },
+      info: function() { console.warn('Toast not initialized'); },
+      dismiss: function() {},
+      dismissAll: function() {},
+      configure: function() {}
     }
   };
 
@@ -332,4 +347,5 @@
   console.log('  __devtool.mutations.highlightRecent(5000)');
   console.log('  __devtool.indicator.toggle() - Toggle floating indicator');
   console.log('  __devtool.sketch.open() - Open sketch mode');
+  console.log('  __devtool.toast.success("Done!", "Title") - Show toast');
 })();

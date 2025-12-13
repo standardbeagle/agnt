@@ -10,13 +10,17 @@
   },
   "plugins": [
     {
+      "id": "agnt",
       "name": "agnt",
       "source": "./plugins/agnt",
       "description": "MCP server for AI coding agents: process management, reverse proxy with traffic logging, frontend instrumentation with 50+ diagnostic functions, and sketch mode for wireframing",
       "version": "0.5.1",
       "author": {
-        "name": "Standard Beagle"
+        "name": "Standard Beagle",
+        "url": "https://github.com/standardbeagle"
       },
+      "repository": "https://github.com/standardbeagle/agnt",
+      "homepage": "https://github.com/standardbeagle/agnt",
       "keywords": [
         "mcp",
         "agnt",

@@ -36,14 +36,12 @@ the fork prevention restriction.
 
 **MCP Registration** (claude_desktop_config.json):
 ```json
-"agnt": {
-  "command": "agnt",
-  "args": ["serve"]
+"devtool": {
+  "command": "devtool-mcp"
 }
 ```
 
-Note: `agnt` without args also works (auto-detects non-terminal and runs serve),
-but explicit `serve` is recommended for clarity.
+Note: `devtool-mcp` auto-detects non-terminal and runs as MCP server - no args needed.
 
 **Why `agnt run` exists (MCP notification workaround)**:
 MCP servers cannot push notifications to clients like Claude Code - they can only

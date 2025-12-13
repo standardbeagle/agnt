@@ -48,6 +48,9 @@ var (
 	//go:embed mutation.js
 	mutationJS string
 
+	//go:embed toast.js
+	toastJS string
+
 	//go:embed indicator.js
 	indicatorJS string
 
@@ -158,22 +161,27 @@ func buildCombinedScript() string {
 	sb.WriteString(wrapModule(mutationJS))
 	sb.WriteString("\n\n")
 
-	// 14. Voice transcription (depends on core)
+	// 14. Toast notifications (no dependencies)
+	sb.WriteString("  // Toast notification module\n")
+	sb.WriteString(wrapModule(toastJS))
+	sb.WriteString("\n\n")
+
+	// 15. Voice transcription (depends on core)
 	sb.WriteString("  // Voice transcription module\n")
 	sb.WriteString(wrapModule(voiceJS))
 	sb.WriteString("\n\n")
 
-	// 15. Sketch mode (depends on core, voice)
+	// 16. Sketch mode (depends on core, voice)
 	sb.WriteString("  // Sketch mode module\n")
 	sb.WriteString(wrapModule(sketchJS))
 	sb.WriteString("\n\n")
 
-	// 16. Floating indicator (depends on core, utils, sketch)
+	// 17. Floating indicator (depends on core, utils, sketch, toast)
 	sb.WriteString("  // Floating indicator module\n")
 	sb.WriteString(wrapModule(indicatorJS))
 	sb.WriteString("\n\n")
 
-	// 17. API (assembles all modules, must be last)
+	// 18. API (assembles all modules, must be last)
 	sb.WriteString("  // API assembly module\n")
 	sb.WriteString(wrapModule(apiJS))
 	sb.WriteString("\n")
@@ -241,6 +249,7 @@ func GetScriptNames() []string {
 		"audit.js",
 		"interaction.js",
 		"mutation.js",
+		"toast.js",
 		"voice.js",
 		"sketch.js",
 		"indicator.js",

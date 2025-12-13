@@ -493,3 +493,11 @@ func (rc *ResilientClient) ProxyList(dirFilter protocol.DirectoryFilter) (map[st
 	})
 	return result, err
 }
+
+// BroadcastActivity sends an activity state update to connected browsers via specified proxies.
+// If proxyIDs is empty, broadcasts to all proxies (backward compatibility).
+func (rc *ResilientClient) BroadcastActivity(active bool, proxyIDs ...string) error {
+	return rc.WithClient(func(c *Client) error {
+		return c.BroadcastActivity(active, proxyIDs...)
+	})
+}

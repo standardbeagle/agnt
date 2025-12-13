@@ -431,6 +431,26 @@ func (c *Client) ProxyExec(id, code string) (map[string]interface{}, error) {
 	return result, nil
 }
 
+// ProxyToast sends a toast notification to connected browsers.
+func (c *Client) ProxyToast(id string, toast protocol.ToastConfig) (map[string]interface{}, error) {
+	toastData, err := json.Marshal(toast)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal toast config: %w", err)
+	}
+
+	data, err := c.sendCommand(protocol.VerbProxy, []string{protocol.SubVerbToast, id}, nil, toastData)
+	if err != nil {
+		return nil, err
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
+	}
+
+	return result, nil
+}
+
 // ProxyLogQuery queries proxy logs.
 func (c *Client) ProxyLogQuery(proxyID string, filter protocol.LogQueryFilter) (map[string]interface{}, error) {
 	filterData, err := json.Marshal(filter)
@@ -606,6 +626,18 @@ func (c *Client) OverlayClear() error {
 	}
 
 	return nil
+}
+
+// BroadcastActivity broadcasts an activity state update to connected browsers via specified proxies.
+// If proxyIDs is empty, broadcasts to all proxies (backward compatibility).
+func (c *Client) BroadcastActivity(active bool, proxyIDs ...string) error {
+	activeStr := "false"
+	if active {
+		activeStr = "true"
+	}
+	args := append([]string{protocol.SubVerbActivity, activeStr}, proxyIDs...)
+	_, err := c.sendCommand(protocol.VerbOverlay, args, nil, nil)
+	return err
 }
 
 // sendCommand sends a command and expects a JSON response.
