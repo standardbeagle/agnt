@@ -1,6 +1,18 @@
 # agnt
 
-MCP server for AI coding agents - process management, reverse proxy with traffic logging, browser instrumentation, and sketch mode.
+**Give your AI coding agent browser superpowers.**
+
+agnt is a new kind of tool designed for the age of AI-assisted development. It acts as a bridge between your AI coding agent and the browser, extending what's possible during vibe coding sessions.
+
+## What Does It Do?
+
+When you're in the flow with Claude Code, Cursor, or other AI tools, agnt lets your agent:
+
+- **See what you see** - Screenshots, DOM inspection, visual debugging
+- **Hear from you directly** - Send messages from browser to agent
+- **Sketch ideas together** - Draw wireframes directly on your UI
+- **Debug in real-time** - Capture errors, network traffic, performance
+- **Extend its thinking window** - Browser as persistent scratchpad
 
 ## Installation
 
@@ -8,13 +20,15 @@ MCP server for AI coding agents - process management, reverse proxy with traffic
 pip install agnt
 # or
 uv pip install agnt
+# or
+pipx install agnt
 ```
 
 ## Quick Start
 
-### As MCP Server (Claude Code, etc.)
+### As MCP Server (Claude Code, Cursor, etc.)
 
-Add to your Claude Code MCP configuration:
+Add to your MCP configuration:
 
 ```json
 {
@@ -27,11 +41,17 @@ Add to your Claude Code MCP configuration:
 }
 ```
 
-Or install as a Claude Code plugin:
+Or with uvx:
 
-```bash
-/plugin marketplace add standardbeagle/agnt
-/plugin install agnt@agnt
+```json
+{
+  "mcpServers": {
+    "agnt": {
+      "command": "uvx",
+      "args": ["agnt", "serve"]
+    }
+  }
+}
 ```
 
 ### As PTY Wrapper
@@ -40,57 +60,74 @@ Wrap your AI coding tool with overlay features:
 
 ```bash
 agnt run claude --dangerously-skip-permissions
-agnt run gemini
-agnt run copilot
+agnt run cursor
+agnt run aider
 ```
 
-## Features
+This adds a terminal overlay menu (Ctrl+P) and enables browser-to-terminal messaging.
 
-- **Project Detection**: Auto-detect Go, Node.js, Python projects
-- **Process Management**: Run and manage long-running processes
-- **Reverse Proxy**: HTTP proxy with traffic logging
-- **Browser Instrumentation**: 50+ diagnostic primitives
-- **Sketch Mode**: Excalidraw-like wireframing on your UI
-- **Floating Indicator**: Quick access panel in browser
+## Core Features
+
+### Browser Superpowers
+
+Start a proxy and your agent gains eyes into the browser:
+
+```
+proxy {action: "start", id: "app", target_url: "http://localhost:3000"}
+```
+
+Now your agent can:
+- Take screenshots
+- Inspect any element
+- Audit accessibility
+- See what you clicked
+
+### Floating Indicator
+
+Every proxied page gets a floating bug icon. Click to:
+- Send messages to your agent
+- Take area screenshots
+- Select elements to log
+- Open sketch mode
+
+### Sketch Mode
+
+Draw directly on your UI:
+- Shapes: rectangles, circles, arrows, freehand
+- Wireframes: buttons, inputs, sticky notes
+- Save and send to agent instantly
+
+### Real-Time Error Capture
+
+JavaScript errors automatically captured and available to your agent - no more forgetting to mention them.
 
 ## MCP Tools
 
 | Tool | Description |
 |------|-------------|
-| `detect` | Detect project type and available scripts |
+| `detect` | Auto-detect project type and scripts |
 | `run` | Run scripts or commands |
-| `proc` | Manage processes: status, output, stop, list |
-| `proxy` | Reverse proxy: start, stop, exec, toast |
-| `proxylog` | Query proxy traffic logs |
-| `currentpage` | View active page sessions |
-| `daemon` | Manage background daemon |
-
-## Usage Examples
-
-```
-# Start a proxy for your dev server
-proxy {action: "start", id: "dev", target_url: "http://localhost:3000"}
-
-# Execute JavaScript in connected browsers
-proxy {action: "exec", id: "dev", code: "__devtool.screenshot('homepage')"}
-
-# Show toast notification
-proxy {action: "toast", id: "dev", toast_message: "Build complete!", toast_type: "success"}
-```
+| `proc` | Manage processes |
+| `proxy` | Reverse proxy with instrumentation |
+| `proxylog` | Query traffic logs |
+| `currentpage` | View page sessions |
+| `daemon` | Manage background service |
 
 ## Browser API
 
-The proxy injects `window.__devtool` with 50+ functions:
+The proxy injects `window.__devtool` with 50+ diagnostic functions:
 
-- `screenshot(name)` - Capture screenshot
-- `inspect(selector)` - Get element info
-- `sketch.open()` / `sketch.save()` - Wireframe mode
-- `indicator.toggle()` - Toggle floating indicator
-- And many more...
+```javascript
+__devtool.screenshot('name')              // Capture screenshot
+__devtool.inspect('#element')             // Full element analysis
+__devtool.auditAccessibility()            // A11y audit
+__devtool.sketch.open()                   // Enter sketch mode
+__devtool.interactions.getLastClick()     // Last click details
+```
 
 ## Configuration
 
-Create `.agnt.kdl` in your project root:
+Create `.agnt.kdl` in your project:
 
 ```kdl
 scripts {
@@ -112,7 +149,7 @@ proxies {
 ## Documentation
 
 - [GitHub](https://github.com/standardbeagle/agnt)
-- [Documentation](https://standardbeagle.github.io/agnt/)
+- [Full Docs](https://standardbeagle.github.io/agnt/)
 
 ## License
 

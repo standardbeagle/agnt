@@ -1,262 +1,318 @@
-# devtool-mcp
+# agnt
 
-An MCP (Model Context Protocol) server that provides comprehensive development tooling capabilities to AI assistants.
+**Give your AI coding agent browser superpowers.**
 
 [![Go Version](https://img.shields.io/badge/Go-1.24.2-blue.svg)](https://go.dev/)
 [![MCP](https://img.shields.io/badge/MCP-Compatible-green.svg)](https://modelcontextprotocol.io)
+[![npm](https://img.shields.io/npm/v/@standardbeagle/agnt)](https://www.npmjs.com/package/@standardbeagle/agnt)
+[![PyPI](https://img.shields.io/pypi/v/agnt)](https://pypi.org/project/agnt/)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+## What is agnt?
+
+**agnt** is a new kind of tool designed for the age of AI-assisted development. It acts as a bridge between your AI coding agent and the browser, extending what's possible during vibe coding sessions.
+
+When you're in the flow with Claude Code, Cursor, or other AI coding tools, agnt lets your agent:
+
+- **See what you see** - Screenshots, DOM inspection, and visual debugging
+- **Hear from you directly** - Send messages from the browser to your agent
+- **Sketch ideas together** - Draw wireframes directly on your UI
+- **Debug in real-time** - Capture errors, network traffic, and performance metrics
+- **Extend its thinking window** - Use the browser as a persistent scratchpad
 
 ## Demo
 
 ![Sketch Demo](assets/sketch-demo.webp)
 
-## Overview
+*Draw wireframes directly on your running app, then send them to your AI agent*
 
-devtool-mcp bridges the gap between AI assistants and development workflows by providing:
+## The Vision: Extending Your Agent's Capabilities
 
-- **Project Detection** - Automatically detect project types (Go, Node.js, Python) and available scripts
-- **Process Management** - Start, monitor, and control long-running processes with output capture
-- **Reverse Proxy** - Intercept HTTP traffic with automatic frontend instrumentation
-- **Frontend Diagnostics** - 50+ primitives for DOM inspection, layout debugging, and accessibility auditing
+Traditional AI coding assistants are blind to what's happening in the browser. They can write code, but they can't:
 
-## Documentation
+- See the visual result of their changes
+- Know when JavaScript errors occur
+- Understand layout issues you're experiencing
+- Receive feedback without you typing it out
 
-**[Full Documentation →](https://standardbeagle.github.io/devtool-mcp/)**
+**agnt changes this.** It creates a bidirectional channel between your browser and your AI agent:
 
-### Run Documentation Locally
-
-```bash
-cd docs-site
-npm install
-npm start
 ```
-
-Then open [http://localhost:3000/devtool-mcp/](http://localhost:3000/devtool-mcp/).
-
-### Deploy to GitHub Pages
-
-Documentation is automatically deployed to GitHub Pages when changes are pushed to the `main` branch. You can also manually trigger deployment from the Actions tab.
-
-To set up GitHub Pages for your fork:
-1. Go to repository Settings → Pages
-2. Set Source to "GitHub Actions"
-3. Push changes to trigger deployment
+┌─────────────────┐      ┌─────────────────┐      ┌─────────────────┐
+│   Your Browser  │ ←──► │      agnt       │ ←──► │   AI Agent      │
+│                 │      │                 │      │                 │
+│  - See changes  │      │  - Proxy traffic│      │  - Receives     │
+│  - Send notes   │      │  - Capture errors│     │    context      │
+│  - Draw sketches│      │  - Inject tools │      │  - Acts on      │
+│  - Click to log │      │  - Route messages│     │    feedback     │
+└─────────────────┘      └─────────────────┘      └─────────────────┘
+```
 
 ## Quick Start
 
 ### Installation
 
-**npm** (recommended for Node.js users):
+**npm** (recommended):
 ```bash
-npm install -g @standardbeagle/devtool-mcp
+npm install -g @standardbeagle/agnt
 ```
 
-**pip/uv** (recommended for Python users):
+**pip/uv**:
 ```bash
-pip install devtool-mcp
+pip install agnt
 # or
-uv pip install devtool-mcp
-```
-
-**One-liner bash install**:
-```bash
-curl -fsSL https://raw.githubusercontent.com/standardbeagle/devtool-mcp/main/install.sh | bash
+uv pip install agnt
 ```
 
 **From source**:
 ```bash
-git clone https://github.com/standardbeagle/devtool-mcp.git
-cd devtool-mcp
-make build
-make install-local
+git clone https://github.com/standardbeagle/agnt.git
+cd agnt
+make build && make install-local
 ```
 
-**Go install**:
-```bash
-go install github.com/standardbeagle/devtool-mcp@latest
-```
+### As MCP Server (Claude Code, Cursor, etc.)
 
-### Configuration
-
-Add to your MCP client configuration:
+Add to your MCP configuration:
 
 ```json
 {
   "mcpServers": {
-    "devtool": {
-      "command": "/path/to/devtool-mcp"
+    "agnt": {
+      "command": "agnt",
+      "args": ["serve"]
     }
   }
 }
 ```
 
-### Usage Example
+Or install as a Claude Code plugin:
+```bash
+/plugin marketplace add standardbeagle/agnt
+/plugin install agnt@agnt
+```
 
-```json
-// Detect project type
-detect {path: "."}
-→ {type: "node", scripts: ["dev", "build", "test"]}
+### As PTY Wrapper (Enhanced Terminal)
 
-// Start dev server
-run {script_name: "dev"}
-→ {process_id: "dev", state: "running"}
+Wrap your AI tool for overlay features:
 
-// Set up debugging proxy (port auto-assigned from URL hash)
+```bash
+agnt run claude --dangerously-skip-permissions
+agnt run cursor
+agnt run aider
+```
+
+This adds a terminal overlay menu (Ctrl+P) and enables the browser-to-terminal message bridge.
+
+## Core Features
+
+### 1. Browser Superpowers
+
+Start a proxy and your agent gains eyes into the browser:
+
+```
 proxy {action: "start", id: "app", target_url: "http://localhost:3000"}
-→ {listen_addr: ":45849"}
-
-// Debug frontend issues
-proxy {action: "exec", id: "app", code: "window.__devtool.inspect('#my-button')"}
-→ Full element analysis including position, styles, accessibility
 ```
 
-## Features
-
-### Project Detection
-
-Automatically detect Go, Node.js, and Python projects with available commands:
-
-```json
-detect {path: "."}
-→ {
-    type: "node",
-    package_manager: "pnpm",
-    scripts: ["dev", "build", "test", "lint"]
-  }
-```
-
-### Process Management
-
-Run scripts with output capture, filtering, and graceful shutdown:
-
-```json
-run {script_name: "test", mode: "foreground"}
-→ {exit_code: 0, runtime: "12.3s"}
-
-proc {action: "output", process_id: "test", grep: "FAIL"}
-→ Filter output for failures
-```
-
-### Reverse Proxy
-
-Transparent HTTP proxy with traffic logging and frontend instrumentation:
-
-```json
-proxy {action: "start", id: "debug", target_url: "http://localhost:3000"}
-
-// All traffic is logged
-proxylog {proxy_id: "debug", types: ["http", "error"]}
-
-// JavaScript errors are captured automatically
-proxylog {proxy_id: "debug", types: ["error"]}
-→ {message: "TypeError...", stack: "...", source: "main.js:142"}
-```
-
-### Frontend Diagnostics
-
-50+ primitives injected into all HTML pages:
-
+Now your agent can:
 ```javascript
-window.__devtool.inspect('#element')      // Comprehensive analysis
-window.__devtool.diagnoseLayout()         // Find layout issues
-window.__devtool.auditAccessibility()     // A11y audit with score
-window.__devtool.screenshot('bug')        // Capture screenshot
-window.__devtool.highlight('.item')       // Visual debugging
-window.__devtool.selectElement()          // Interactive picker
+// Take screenshots
+proxy {action: "exec", id: "app", code: "__devtool.screenshot('current-state')"}
+
+// Inspect any element
+proxy {action: "exec", id: "app", code: "__devtool.inspect('#submit-button')"}
+
+// Audit accessibility
+proxy {action: "exec", id: "app", code: "__devtool.auditAccessibility()"}
+
+// Check what the user clicked
+proxy {action: "exec", id: "app", code: "__devtool.interactions.getLastClickContext()"}
 ```
+
+### 2. The Floating Indicator
+
+Every proxied page gets a small floating bug icon. Click it to:
+
+- **Send messages** directly to your AI agent
+- **Take screenshots** of specific areas
+- **Select elements** to log their details
+- **Open sketch mode** for wireframing
+
+No more alt-tabbing to describe what you see - just click and send.
+
+### 3. Sketch Mode
+
+Press the sketch button and draw directly on your UI:
+
+- Rectangles, circles, arrows, and freehand drawing
+- Wireframe elements: buttons, inputs, sticky notes
+- Save and send to your agent with one click
+
+Perfect for saying "I want a button here" or "this layout is wrong" without typing a word.
+
+### 4. Real-Time Error Capture
+
+JavaScript errors are automatically captured and available to your agent:
+
+```
+proxylog {proxy_id: "app", types: ["error"]}
+→ {message: "TypeError: Cannot read property 'map' of undefined",
+   stack: "at ProductList (products.js:42)",
+   timestamp: "..."}
+```
+
+Your agent sees errors as they happen, not when you remember to mention them.
+
+### 5. Extending the Thinking Window
+
+The browser becomes a persistent context window:
+
+- **Panel messages** - Notes that survive conversation resets
+- **Sketches** - Visual context your agent can reference
+- **Interaction history** - What you clicked, scrolled, typed
+- **DOM mutations** - What changed since last check
+
+When context windows fill up, this external state persists.
 
 ## MCP Tools
 
 | Tool | Description |
 |------|-------------|
-| `detect` | Detect project type and available scripts |
-| `run` | Execute scripts or raw commands |
-| `proc` | Monitor, query output, stop processes |
-| `proxy` | Manage reverse proxies |
-| `proxylog` | Query traffic logs and errors |
-| `currentpage` | View grouped page sessions |
-| `daemon` | Manage the background daemon service |
+| `detect` | Auto-detect project type and available scripts |
+| `run` | Execute scripts or commands (background/foreground) |
+| `proc` | Manage processes: status, output, stop, list |
+| `proxy` | Reverse proxy: start, stop, exec, status |
+| `proxylog` | Query logs: http, error, screenshot, sketch, panel_message |
+| `currentpage` | View active page sessions with grouped resources |
+| `daemon` | Manage background daemon service |
+
+## Browser API (50+ Functions)
+
+The proxy injects `window.__devtool` with powerful diagnostics:
+
+**Element Inspection**
+```javascript
+__devtool.inspect('#element')     // Full element analysis
+__devtool.getPosition('#element') // Bounding box and position
+__devtool.isVisible('#element')   // Visibility check
+```
+
+**Visual Debugging**
+```javascript
+__devtool.highlight('.items')           // Highlight elements
+__devtool.mutations.highlightRecent()   // Show recent DOM changes
+__devtool.screenshot('name')            // Capture screenshot
+```
+
+**Accessibility**
+```javascript
+__devtool.auditAccessibility()    // Full a11y audit with score
+__devtool.getContrast('#text')    // Color contrast check
+__devtool.getTabOrder()           // Tab navigation order
+```
+
+**Interactions**
+```javascript
+__devtool.interactions.getLastClick()        // Last click details
+__devtool.interactions.getLastClickContext() // Full click context
+__devtool.selectElement()                    // Interactive picker
+```
+
+**Sketch Mode**
+```javascript
+__devtool.sketch.open()    // Enter sketch mode
+__devtool.sketch.save()    // Save and send to agent
+__devtool.sketch.toJSON()  // Export sketch data
+```
+
+## Configuration
+
+Create `.agnt.kdl` in your project root:
+
+```kdl
+scripts {
+    dev {
+        command "npm"
+        args "run" "dev"
+        autostart true
+    }
+}
+
+proxies {
+    frontend {
+        target "http://localhost:3000"
+        autostart true
+    }
+}
+```
 
 ## Architecture
 
+agnt uses a daemon architecture for persistent state:
+
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    MCP Tools Layer                           │
-│  detect │ run │ proc │ proxy │ proxylog │ currentpage       │
-├─────────────────────────────────────────────────────────────┤
-│                  Business Logic Layer                        │
-│   ProjectDetector │ ProcessManager │ ProxyManager            │
-├─────────────────────────────────────────────────────────────┤
-│                   Infrastructure Layer                       │
-│          RingBuffer │ TrafficLogger │ PageTracker            │
-└─────────────────────────────────────────────────────────────┘
+┌─────────────────────┐       ┌─────────────────────────────────────┐
+│  AI Agent           │       │              agnt                   │
+│  (Claude Code, etc.)│◄─────►│                                     │
+│                     │ MCP   │  ┌────────────────┐                 │
+└─────────────────────┘       │  │  MCP Server    │                 │
+                              │  └───────┬────────┘                 │
+                              │          │ socket                   │
+                              │          ▼                          │
+┌─────────────────────┐       │  ┌────────────────────────────────┐ │
+│  Browser            │◄──────┼──│        Daemon                  │ │
+│                     │ proxy │  │  ProcessManager │ ProxyManager │ │
+│  __devtool API      │       │  └────────────────────────────────┘ │
+│  Floating Indicator │       └─────────────────────────────────────┘
+│  Sketch Mode        │
+└─────────────────────┘
 ```
 
-Key design decisions:
-- **Lock-free concurrency** using `sync.Map` and atomics
-- **Bounded memory** with ring buffers for output capture
-- **Graceful shutdown** with signal handling and process groups
-- **Zero dependencies** for injected frontend JavaScript
+**Key design decisions:**
+- Lock-free concurrency with `sync.Map` and atomics
+- Bounded memory with ring buffers
+- Processes and proxies survive client disconnections
+- Zero-dependency frontend JavaScript
 
-## Development
+## Documentation
+
+**[Full Documentation →](https://standardbeagle.github.io/agnt/)**
 
 ```bash
-# Build
-make build
-
-# Run tests
-make test
-
-# Format and lint
-make fmt
-make vet
-make lint
-
-# Run with coverage
-make test-coverage
+# Run docs locally
+cd docs-site
+npm install && npm start
 ```
 
-## Documentation Structure
+## Use Cases
 
-```
-docs-site/
-├── docs/
-│   ├── intro.md                    # Overview
-│   ├── getting-started.md          # Installation & setup
-│   ├── features/                   # Feature guides
-│   │   ├── project-detection.md
-│   │   ├── process-management.md
-│   │   ├── reverse-proxy.md
-│   │   └── frontend-diagnostics.md
-│   ├── concepts/                   # Architecture
-│   │   ├── architecture.md
-│   │   ├── lock-free-design.md
-│   │   └── graceful-shutdown.md
-│   ├── api/                        # API reference
-│   │   ├── detect.md
-│   │   ├── run.md
-│   │   ├── proc.md
-│   │   ├── proxy.md
-│   │   ├── proxylog.md
-│   │   ├── currentpage.md
-│   │   └── frontend/              # Frontend API (50+ functions)
-│   │       ├── overview.md
-│   │       ├── element-inspection.md
-│   │       ├── accessibility.md
-│   │       └── ...
-│   └── use-cases/                  # Real-world guides
-│       ├── debugging-web-apps.md
-│       ├── automated-testing.md
-│       ├── performance-monitoring.md
-│       ├── ci-cd-integration.md
-│       ├── accessibility-auditing.md
-│       └── frontend-error-tracking.md
-```
+- **Vibe coding** - Stay in flow while your agent sees everything
+- **Visual debugging** - Show don't tell - sketch what's wrong
+- **Accessibility testing** - Automated a11y audits during development
+- **Error tracking** - Catch frontend errors before users do
+- **UI reviews** - Annotate designs directly on the live app
+- **Remote collaboration** - Share visual context with your agent
 
 ## Requirements
 
-- Go 1.24.2 or later
-- MCP-compatible AI assistant (Claude Code, Cursor, etc.)
+- Node.js 18+ or Go 1.24+
+- MCP-compatible AI assistant
+
+## Migrating from devtool-mcp
+
+agnt is the new name for devtool-mcp. Existing users:
+
+```bash
+# npm
+npm uninstall -g @standardbeagle/devtool-mcp
+npm install -g @standardbeagle/agnt
+
+# pip
+pip uninstall devtool-mcp
+pip install agnt
+```
+
+Update your MCP config to use `agnt` command with `["serve"]` args.
 
 ## License
 
@@ -264,4 +320,4 @@ MIT
 
 ## Contributing
 
-Contributions welcome! Please read the documentation first to understand the architecture and design decisions.
+Contributions welcome! See the [documentation](https://standardbeagle.github.io/agnt/) for architecture details.

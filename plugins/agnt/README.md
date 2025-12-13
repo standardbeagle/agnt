@@ -1,15 +1,17 @@
 # agnt Plugin
 
-MCP server providing AI coding agent capabilities for Claude Code.
+**Give your AI coding agent browser superpowers.**
+
+MCP server plugin for Claude Code that bridges your AI agent and the browser, extending what's possible during vibe coding sessions.
 
 ## Features
 
-- **Project Detection**: Auto-detect Go, Node.js, Python projects
-- **Process Management**: Run and manage long-running processes
-- **Reverse Proxy**: HTTP proxy with traffic logging
-- **Browser Instrumentation**: 50+ diagnostic primitives
-- **Sketch Mode**: Excalidraw-like wireframing on your UI
-- **Floating Indicator**: Quick access panel in browser
+- **Browser Superpowers** - Screenshots, DOM inspection, visual debugging
+- **Floating Indicator** - Send messages from browser to agent
+- **Sketch Mode** - Draw wireframes directly on your UI
+- **Real-Time Errors** - Capture JS errors automatically
+- **Process Management** - Run and manage dev servers
+- **Extended Context** - Browser as persistent scratchpad
 
 ## Installation
 

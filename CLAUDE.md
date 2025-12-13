@@ -4,12 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is **devtool-mcp**, an MCP (Model Context Protocol) server that provides development tooling capabilities to AI assistants. It enables project type detection, script execution, long-running process management with output capture, and reverse proxy with traffic logging and frontend instrumentation.
+**agnt** - Give your AI coding agent browser superpowers.
 
-**MCP Server Name**: `devtool-mcp`
+agnt is a new kind of tool designed for the age of AI-assisted development. It acts as a bridge between AI coding agents and the browser, extending what's possible during vibe coding sessions. The tool enables agents to see what users see, receive messages directly from the browser, sketch ideas together, and debug in real-time.
+
+**Primary Binary**: `agnt`
 **Version**: 0.5.1
 **Protocol**: MCP over stdio
 **Language**: Go 1.24.2
+**Repository**: https://github.com/standardbeagle/agnt
 
 **Binaries** (all are copies of the same `agnt` binary):
 - `agnt`: Primary CLI tool - the only binary that is actually built
@@ -33,13 +36,13 @@ the fork prevention restriction.
 
 **MCP Registration** (claude_desktop_config.json):
 ```json
-"devtool": {
-  "command": "devtool-mcp",
+"agnt": {
+  "command": "agnt",
   "args": ["serve"]
 }
 ```
 
-Note: `devtool-mcp` without args also works (auto-detects non-terminal and runs serve),
+Note: `agnt` without args also works (auto-detects non-terminal and runs serve),
 but explicit `serve` is recommended for clarity.
 
 **Why `agnt run` exists (MCP notification workaround)**:
@@ -60,15 +63,15 @@ This allows the floating indicator in the browser to send messages that get type
 into Claude Code as if the user typed them - working around MCP's lack of server push.
 
 **Core Features**:
-- Project type detection (Go, Node.js, Python)
-- Process management with output capture
-- Reverse proxy with HTTP traffic logging
-- Frontend error tracking and performance monitoring
-- WebSocket-based metrics collection
-- Daemon architecture for persistent state
-- Floating indicator with panel for sending messages to MCP
-- Sketch mode for wireframing (Excalidraw-like)
-- Agent overlay for PTY wrapper around AI tools
+- **Browser Superpowers** - Screenshots, DOM inspection, visual debugging for AI agents
+- **Floating Indicator** - Send messages from browser directly to your AI agent
+- **Sketch Mode** - Draw wireframes directly on your UI (Excalidraw-like)
+- **Real-Time Error Capture** - JavaScript errors automatically available to agent
+- **Extended Thinking Window** - Browser as persistent scratchpad across context resets
+- **Process Management** - Run and manage dev servers with output capture
+- **Reverse Proxy** - HTTP traffic logging and frontend instrumentation
+- **Daemon Architecture** - Persistent state survives client disconnections
+- **Agent Overlay** - PTY wrapper for AI tools with browser-to-terminal messaging
 
 ## Build & Development Commands
 
@@ -185,6 +188,9 @@ The overlay listens on port 19191 by default for WebSocket connections and HTTP 
 - `/type`: POST endpoint to type text into the PTY
 - `/key`: POST endpoint to send key events
 - `/event`: POST endpoint to receive events from devtool-mcp proxy
+
+**Keyboard Shortcuts**:
+- `Ctrl+P`: Toggle the overlay menu (shows actions like quit, toggle indicator)
 
 **Event Flow**:
 ```
