@@ -180,7 +180,7 @@ func (r *Renderer) DrawIndicator(status Status) {
 		parts = append(parts, fmt.Sprintf("%s%s%s daemon", FgBrightBlack, IconDisconnected, Reset))
 	}
 
-	// Running processes
+	// Running processes count
 	runningCount := 0
 	for _, p := range status.Processes {
 		if p.State == "running" {
@@ -191,16 +191,43 @@ func (r *Renderer) DrawIndicator(status Status) {
 		parts = append(parts, fmt.Sprintf("%s%s %d proc%s", FgCyan, IconProcess, runningCount, Reset))
 	}
 
-	// Running proxies
+	// Running proxies with clickable URL
 	proxyCount := len(status.Proxies)
 	errorProxyCount := 0
+	var proxyURL string
+	var tunnelURL string
 	for _, p := range status.Proxies {
 		if p.HasErrors {
 			errorProxyCount++
 		}
+		if proxyURL == "" && p.ListenAddr != "" {
+			proxyURL = "http://" + normalizeListenAddr(p.ListenAddr)
+		}
+		if tunnelURL == "" && p.TunnelURL != "" {
+			tunnelURL = p.TunnelURL
+		}
 	}
 	if proxyCount > 0 {
-		if errorProxyCount > 0 {
+		// Prefer tunnel URL over local URL in status bar (more useful for sharing)
+		displayURL := tunnelURL
+		if displayURL == "" {
+			displayURL = proxyURL
+		}
+		urlColor := FgBrightCyan
+		if tunnelURL != "" {
+			urlColor = FgBrightMagenta // Different color for tunnel URLs
+		}
+
+		if displayURL != "" {
+			// Show clickable URL (terminals support OSC 8 hyperlinks or just show URL for ctrl+click)
+			if errorProxyCount > 0 {
+				parts = append(parts, fmt.Sprintf("%s%s%s %s%s %s(%d err)%s",
+					FgMagenta, IconProxy, Reset, urlColor+Underline, displayURL, FgRed, errorProxyCount, Reset))
+			} else {
+				parts = append(parts, fmt.Sprintf("%s%s%s %s%s%s",
+					FgMagenta, IconProxy, Reset, urlColor+Underline, displayURL, Reset))
+			}
+		} else if errorProxyCount > 0 {
 			parts = append(parts, fmt.Sprintf("%s%s %d proxy%s %s(%d err)%s",
 				FgMagenta, IconProxy, proxyCount, Reset, FgRed, errorProxyCount, Reset))
 		} else {
@@ -246,6 +273,28 @@ func (r *Renderer) DrawIndicator(status Status) {
 	// Restore cursor
 	r.write(CursorRestore + CursorShow)
 }
+
+// normalizeListenAddr converts wildcard addresses to localhost for clickable URLs.
+// This is the most reliable option since LAN IPs can be unreliable in virtual environments
+// (WSL2, Docker, etc.). Users who need LAN access can check the detailed proxy output.
+func normalizeListenAddr(addr string) string {
+	var port string
+
+	// Extract port from wildcard addresses
+	if strings.HasPrefix(addr, "[::]:") {
+		port = addr[4:] // Get :port part
+	} else if strings.HasPrefix(addr, "0.0.0.0:") {
+		port = addr[7:] // Get :port part
+	} else if addr == "[::]" || addr == "0.0.0.0" {
+		port = ""
+	} else {
+		// Not a wildcard address, return as-is
+		return addr
+	}
+
+	return "localhost" + port
+}
+
 
 // estimateVisibleLength estimates the visible length of a string with ANSI codes.
 func (r *Renderer) estimateVisibleLength(s string) int {
@@ -383,7 +432,354 @@ func (r *Renderer) DrawMenu(menu Menu, selectedIndex int) {
 	r.write(CursorRestore + CursorShow)
 }
 
+// DrawDashboard draws a comprehensive dashboard with status, proxies, processes, and menu.
+func (r *Renderer) DrawDashboard(menu Menu, selectedIndex int, status Status) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Calculate dashboard dimensions - use more screen real estate
+	dashWidth := min(r.width-4, 80)
+
+	// Calculate content rows needed
+	browserCount := min(len(status.BrowserSessions), 4)
+	processCount := min(len(status.Processes), 6)
+	menuItemCount := len(menu.Items)
+
+	// Count standalone proxies (not linked to a process), tunnels, and tailscale URLs
+	standaloneProxyCount := 0
+	tunnelCount := 0
+	tailscaleCount := 0
+	for _, p := range status.Proxies {
+		if p.LinkedProcessID == "" {
+			standaloneProxyCount++
+			if p.TailscaleURL != "" {
+				tailscaleCount++
+			}
+			if p.TunnelURL != "" {
+				tunnelCount++
+			}
+		}
+	}
+
+	// Count processes with output (for extra lines)
+	outputLineCount := 0
+	for i, p := range status.Processes {
+		if i >= 6 {
+			break
+		}
+		if p.LastOutput != "" {
+			outputLineCount++
+		}
+	}
+
+	// Dashboard sections:
+	// 1. Header (title + connection status)
+	// 2. Dev servers section (processes with linked proxies + output)
+	// 3. Standalone proxies section (if any)
+	// 4. Browser sessions section (if any)
+	// 5. Menu section
+	// 6. Footer
+	dashHeight := 4 + menuItemCount // header + menu + footer
+	if processCount > 0 {
+		// Each process takes 1 line, plus 1 line for output if present
+		dashHeight += processCount + outputLineCount + 2
+	}
+	if standaloneProxyCount > 0 {
+		dashHeight += standaloneProxyCount + tunnelCount + tailscaleCount + 2
+	}
+	if browserCount > 0 {
+		dashHeight += browserCount + 2
+	}
+	dashHeight = min(dashHeight, r.height-2)
+
+	// Center the dashboard
+	startRow := max((r.height-dashHeight)/2, 1)
+	startCol := max((r.width-dashWidth)/2, 1)
+
+	// Track the region for later clearing
+	if r.currentMenuRegion == nil {
+		r.currentMenuRegion = &ScreenRegion{
+			Row:    startRow,
+			Col:    startCol,
+			Width:  dashWidth,
+			Height: dashHeight,
+		}
+		r.overlayStack.Push(RegionMenu, *r.currentMenuRegion)
+	}
+
+	r.write(CursorSave + CursorHide)
+
+	// Draw outer box
+	r.drawBox(startRow, startCol, dashWidth, dashHeight, "agnt Dashboard")
+
+	currentRow := startRow + 2
+
+	// === CONNECTION STATUS ===
+	r.moveTo(currentRow, startCol+2)
+	connStatus := fmt.Sprintf("%s%s%s Connected", FgGreen, IconConnected, Reset)
+	if status.DaemonConnected != ConnectionConnected {
+		connStatus = fmt.Sprintf("%s%s%s Disconnected", FgYellow, IconDisconnected, Reset)
+	}
+	r.write(connStatus)
+
+	// Show error count on same line if any
+	recentErrors := 0
+	cutoff := time.Now().Add(-5 * time.Minute)
+	for _, e := range status.RecentErrors {
+		if e.Timestamp.After(cutoff) {
+			recentErrors++
+		}
+	}
+	if recentErrors > 0 {
+		r.write(fmt.Sprintf("  %s%s %d errors%s", FgRed, IconWarning, recentErrors, Reset))
+	}
+	currentRow++
+
+	// Build proxy lookup map for quick access
+	proxyByID := make(map[string]ProxyInfo)
+	for _, p := range status.Proxies {
+		proxyByID[p.ID] = p
+	}
+
+	// === DEV SERVERS SECTION (Processes with linked proxies) ===
+	if processCount > 0 {
+		currentRow++ // spacing
+		r.moveTo(currentRow, startCol+2)
+		r.write(FgCyan + Bold + "DEV SERVERS" + Reset + FgBrightBlack + " (1-9 to view output)" + Reset)
+		currentRow++
+
+		for i, proc := range status.Processes {
+			if i >= 6 {
+				r.moveTo(currentRow, startCol+3)
+				r.write(FgBrightBlack + fmt.Sprintf("  ... and %d more", len(status.Processes)-6) + Reset)
+				currentRow++
+				break
+			}
+			r.moveTo(currentRow, startCol+3)
+
+			// State-based styling
+			stateIcon := FgBrightBlack + "○" + Reset
+			stateColor := FgBrightBlack
+			switch proc.State {
+			case "running":
+				stateIcon = FgGreen + IconConnected + Reset
+				stateColor = FgGreen
+			case "failed":
+				stateIcon = FgRed + IconError + Reset
+				stateColor = FgRed
+			case "stopped":
+				stateIcon = FgYellow + "■" + Reset
+				stateColor = FgYellow
+			}
+
+			// Runtime formatting
+			runtime := ""
+			if proc.Runtime > 0 {
+				if proc.Runtime < time.Minute {
+					runtime = fmt.Sprintf("%ds", int(proc.Runtime.Seconds()))
+				} else {
+					runtime = fmt.Sprintf("%dm", int(proc.Runtime.Minutes()))
+				}
+			}
+
+			// Build process line
+			line := fmt.Sprintf("[%s%d%s] %s %s%s%s %s%s%s",
+				FgCyan, i+1, Reset,
+				stateIcon,
+				FgWhite+Bold, proc.ID, Reset,
+				stateColor, proc.State, Reset)
+
+			// Add linked proxy URL if present
+			if proc.LinkedProxyID != "" {
+				if proxy, ok := proxyByID[proc.LinkedProxyID]; ok {
+					proxyURL := "http://" + normalizeListenAddr(proxy.ListenAddr)
+					line += fmt.Sprintf(" %s→%s %s%s%s",
+						FgBrightBlack, Reset,
+						FgBrightCyan+Underline, proxyURL, Reset)
+					// Add Tailscale URL if available
+					if proxy.TailscaleURL != "" {
+						line += fmt.Sprintf(" %s|%s %s%s%s",
+							FgBrightBlack, Reset,
+							FgMagenta+Underline, proxy.TailscaleURL, Reset)
+					}
+					if proxy.HasErrors {
+						line += fmt.Sprintf(" %s(%d err)%s", FgRed, proxy.ErrorCount, Reset)
+					}
+				}
+			}
+
+			// Add runtime at the end
+			if runtime != "" {
+				line += fmt.Sprintf(" %s%s%s", FgBrightBlack, runtime, Reset)
+			}
+
+			r.write(line)
+			currentRow++
+
+			// Show last output line on next row
+			if proc.LastOutput != "" {
+				r.moveTo(currentRow, startCol+5)
+				// Truncate output to fit dashboard width
+				maxOutputLen := dashWidth - 8
+				output := proc.LastOutput
+				if len(output) > maxOutputLen {
+					output = output[:maxOutputLen-3] + "..."
+				}
+				r.write(FgBrightBlack + "└ " + output + Reset)
+				currentRow++
+			}
+		}
+	}
+
+	// === STANDALONE PROXIES SECTION (proxies not linked to processes) ===
+	if standaloneProxyCount > 0 {
+		currentRow++ // spacing
+		r.moveTo(currentRow, startCol+2)
+		r.write(FgCyan + Bold + "PROXIES" + Reset + FgBrightBlack + " (ctrl+click URL to open)" + Reset)
+		currentRow++
+
+		for _, proxy := range status.Proxies {
+			// Skip proxies linked to processes (already shown above)
+			if proxy.LinkedProcessID != "" {
+				continue
+			}
+
+			r.moveTo(currentRow, startCol+3)
+
+			// Status icon
+			statusIcon := FgGreen + IconOK + Reset
+			if proxy.HasErrors {
+				statusIcon = FgRed + IconWarning + Reset
+			}
+
+			// Build proxy line with clickable URL
+			proxyURL := "http://" + normalizeListenAddr(proxy.ListenAddr)
+			line := fmt.Sprintf("%s %s%s%s → %s%s%s",
+				statusIcon,
+				FgWhite+Bold, proxy.ID, Reset,
+				FgBrightCyan+Underline, proxyURL, Reset)
+
+			if proxy.HasErrors {
+				line += fmt.Sprintf(" %s(%d errors)%s", FgRed, proxy.ErrorCount, Reset)
+			}
+
+			r.write(line)
+			currentRow++
+
+			// Show Tailscale URL on a separate line if available
+			if proxy.TailscaleURL != "" {
+				r.moveTo(currentRow, startCol+5)
+				tailscaleIcon := FgMagenta + "⟷" + Reset // Mesh network icon
+				tailscaleLine := fmt.Sprintf("%s %s%s%s %s(tailnet)%s",
+					tailscaleIcon,
+					FgMagenta+Underline, proxy.TailscaleURL, Reset,
+					FgBrightBlack, Reset)
+				r.write(tailscaleLine)
+				currentRow++
+			}
+
+			// Show tunnel URL on a separate line if available
+			if proxy.TunnelURL != "" {
+				r.moveTo(currentRow, startCol+5)
+				tunnelIcon := FgGreen + "⇡" + Reset
+				if !proxy.TunnelRunning {
+					tunnelIcon = FgYellow + "⇡" + Reset
+				}
+				tunnelLine := fmt.Sprintf("%s %s%s%s",
+					tunnelIcon,
+					FgBrightMagenta+Underline, proxy.TunnelURL, Reset)
+				r.write(tunnelLine)
+				currentRow++
+			}
+		}
+	}
+
+	// === BROWSER SESSIONS SECTION ===
+	if browserCount > 0 {
+		currentRow++ // spacing
+		r.moveTo(currentRow, startCol+2)
+		r.write(FgCyan + Bold + "BROWSERS" + Reset + FgBrightBlack + " (connected sessions)" + Reset)
+		currentRow++
+
+		for i, session := range status.BrowserSessions {
+			if i >= 4 {
+				r.moveTo(currentRow, startCol+3)
+				r.write(FgBrightBlack + fmt.Sprintf("  ... and %d more", len(status.BrowserSessions)-4) + Reset)
+				currentRow++
+				break
+			}
+			r.moveTo(currentRow, startCol+3)
+
+			// Truncate URL for display
+			displayURL := session.URL
+			maxURLLen := dashWidth - 30
+			if len(displayURL) > maxURLLen {
+				displayURL = displayURL[:maxURLLen-3] + "..."
+			}
+
+			// Activity indicator
+			activityIcon := FgGreen + IconConnected + Reset
+			if time.Since(session.LastActivity) > 30*time.Second {
+				activityIcon = FgBrightBlack + IconDisconnected + Reset
+			}
+
+			line := fmt.Sprintf("%s %s%s%s",
+				activityIcon,
+				FgWhite, displayURL, Reset)
+
+			// Show interactions/mutations if any
+			if session.Interactions > 0 || session.Mutations > 0 {
+				line += fmt.Sprintf(" %s(%d clicks, %d mutations)%s",
+					FgBrightBlack, session.Interactions, session.Mutations, Reset)
+			}
+
+			r.write(line)
+			currentRow++
+		}
+	}
+
+	// === MENU SECTION ===
+	currentRow++ // spacing
+	r.moveTo(currentRow, startCol+2)
+	r.write(FgCyan + Bold + "ACTIONS" + Reset)
+	currentRow++
+
+	for i, item := range menu.Items {
+		r.moveTo(currentRow, startCol+3)
+
+		if i == selectedIndex {
+			r.write(BgBlue + FgWhite + Bold)
+		}
+
+		shortcut := " "
+		if item.Shortcut != 0 {
+			shortcut = string(item.Shortcut)
+		}
+
+		label := fmt.Sprintf("[%s] %s", shortcut, item.Label)
+		label = r.padRight(label, dashWidth-6)
+		r.write(label)
+
+		if i == selectedIndex {
+			r.write(Reset)
+		}
+		currentRow++
+	}
+
+	// === FOOTER ===
+	footerRow := startRow + dashHeight - 1
+	r.moveTo(footerRow, startCol+1)
+	r.write(FgBrightBlack)
+	hint := " ↑↓ Navigate │ Enter Select │ 1-9 View Process │ Esc Close "
+	hint = r.padCenter(hint, dashWidth-2)
+	r.write(hint)
+	r.write(Reset)
+
+	r.write(CursorRestore + CursorShow)
+}
+
 // DrawMenuWithProcesses draws a popup menu with a process list below it.
+// Deprecated: Use DrawDashboard for a more comprehensive view.
 func (r *Renderer) DrawMenuWithProcesses(menu Menu, selectedIndex int, processes []ProcessInfo) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

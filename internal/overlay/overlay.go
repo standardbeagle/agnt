@@ -33,19 +33,25 @@ const (
 
 // ProcessInfo holds information about a running process.
 type ProcessInfo struct {
-	ID      string
-	Command string
-	State   string
-	Runtime time.Duration
+	ID            string
+	Command       string
+	State         string
+	Runtime       time.Duration
+	LastOutput    string // Last line of output (trimmed)
+	LinkedProxyID string // ID of proxy targeting this process (if any)
 }
 
 // ProxyInfo holds information about a running proxy.
 type ProxyInfo struct {
-	ID         string
-	TargetURL  string
-	ListenAddr string
-	HasErrors  bool
-	ErrorCount int
+	ID              string
+	TargetURL       string
+	ListenAddr      string
+	HasErrors       bool
+	ErrorCount      int
+	TunnelURL       string
+	TunnelRunning   bool
+	LinkedProcessID string // ID of process this proxy targets (if any)
+	TailscaleURL    string // Tailscale DNS URL if available (e.g., http://machine.tailnet.ts.net:port)
 }
 
 // ErrorInfo holds recent error information.
@@ -55,12 +61,23 @@ type ErrorInfo struct {
 	Timestamp time.Time
 }
 
+// BrowserSession holds information about a connected browser.
+type BrowserSession struct {
+	ProxyID      string
+	SessionID    string
+	URL          string
+	Interactions int
+	Mutations    int
+	LastActivity time.Time
+}
+
 // Status holds the current system status for display.
 type Status struct {
 	DaemonConnected ConnectionStatus
 	DaemonPingMs    int64
 	Processes       []ProcessInfo
 	Proxies         []ProxyInfo
+	BrowserSessions []BrowserSession
 	RecentErrors    []ErrorInfo
 	LastUpdate      time.Time
 }
@@ -316,9 +333,9 @@ func (o *Overlay) draw() {
 	case StateMenu:
 		if len(o.menuStack) > 0 {
 			o.renderer.DrawIndicator(status)
-			// Use DrawMenuWithProcesses for the main menu (first in stack)
+			// Use DrawDashboard for the main menu (comprehensive view)
 			if len(o.menuStack) == 1 {
-				o.renderer.DrawMenuWithProcesses(o.menuStack[0], o.selectedIndex, status.Processes)
+				o.renderer.DrawDashboard(o.menuStack[0], o.selectedIndex, status)
 			} else {
 				o.renderer.DrawMenu(o.menuStack[len(o.menuStack)-1], o.selectedIndex)
 			}

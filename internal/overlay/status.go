@@ -2,8 +2,12 @@ package overlay
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
+	"os/exec"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -11,6 +15,70 @@ import (
 	"devtool-mcp/internal/daemon"
 	"devtool-mcp/internal/protocol"
 )
+
+// tailscaleDNSCache caches the Tailscale DNS name to avoid repeated exec calls.
+var (
+	tailscaleDNSCache   string
+	tailscaleDNSCached  bool
+	tailscaleDNSMu      sync.RWMutex
+	tailscaleCacheTime  time.Time
+	tailscaleCacheTTL   = 5 * time.Minute // Re-check every 5 minutes
+)
+
+// getTailscaleDNS returns the Tailscale DNS name if available, or empty string if not.
+// Results are cached for efficiency.
+func getTailscaleDNS() string {
+	tailscaleDNSMu.RLock()
+	if tailscaleDNSCached && time.Since(tailscaleCacheTime) < tailscaleCacheTTL {
+		result := tailscaleDNSCache
+		tailscaleDNSMu.RUnlock()
+		return result
+	}
+	tailscaleDNSMu.RUnlock()
+
+	// Need to fetch - acquire write lock
+	tailscaleDNSMu.Lock()
+	defer tailscaleDNSMu.Unlock()
+
+	// Double-check after acquiring write lock
+	if tailscaleDNSCached && time.Since(tailscaleCacheTime) < tailscaleCacheTTL {
+		return tailscaleDNSCache
+	}
+
+	// Try to get Tailscale DNS name
+	dnsName := detectTailscaleDNS()
+	tailscaleDNSCache = dnsName
+	tailscaleDNSCached = true
+	tailscaleCacheTime = time.Now()
+
+	return dnsName
+}
+
+// detectTailscaleDNS runs tailscale status to get the DNS name.
+func detectTailscaleDNS() string {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "tailscale", "status", "--json")
+	output, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+
+	// Parse JSON to get DNSName
+	var status struct {
+		Self struct {
+			DNSName string `json:"DNSName"`
+		} `json:"Self"`
+	}
+	if err := json.Unmarshal(output, &status); err != nil {
+		return ""
+	}
+
+	// Remove trailing dot if present
+	dnsName := strings.TrimSuffix(status.Self.DNSName, ".")
+	return dnsName
+}
 
 // StatusFetcher fetches status from the daemon periodically.
 type StatusFetcher struct {
@@ -110,6 +178,18 @@ func (f *StatusFetcher) fetchStatus() {
 		status.Proxies = proxies
 	}
 
+	// Link processes and proxies together
+	f.linkProcessesAndProxies(status.Processes, status.Proxies)
+
+	// Fetch last output for running processes (limited to first few to avoid slowdown)
+	f.fetchLastOutputForProcesses(status.Processes)
+
+	// Fetch browser sessions from each proxy
+	sessions, err := f.fetchBrowserSessions(proxies)
+	if err == nil {
+		status.BrowserSessions = sessions
+	}
+
 	// Fetch recent errors from proxy logs
 	errors, err := f.fetchRecentErrors()
 	if err == nil {
@@ -197,6 +277,26 @@ func (f *StatusFetcher) fetchProxies() ([]ProxyInfo, error) {
 			}
 		}
 
+		// Check for tunnel info
+		if tunnelURL, ok := pm["tunnel_url"].(string); ok {
+			info.TunnelURL = tunnelURL
+		}
+		if tunnelRunning, ok := pm["tunnel_running"].(bool); ok {
+			info.TunnelRunning = tunnelRunning
+		}
+
+		// Add Tailscale URL if Tailscale is available
+		if tailscaleDNS := getTailscaleDNS(); tailscaleDNS != "" && info.ListenAddr != "" {
+			// Extract port from listen address
+			port := ""
+			if idx := strings.LastIndex(info.ListenAddr, ":"); idx != -1 {
+				port = info.ListenAddr[idx:] // includes the colon
+			}
+			if port != "" {
+				info.TailscaleURL = "http://" + tailscaleDNS + port
+			}
+		}
+
 		proxies = append(proxies, info)
 	}
 
@@ -262,6 +362,161 @@ func (f *StatusFetcher) fetchRecentErrors() ([]ErrorInfo, error) {
 	}
 
 	return errors, nil
+}
+
+func (f *StatusFetcher) fetchBrowserSessions(proxies []ProxyInfo) ([]BrowserSession, error) {
+	var sessions []BrowserSession
+
+	for _, proxy := range proxies {
+		// Use CurrentPageList to get page sessions for this proxy
+		result, err := f.client.CurrentPageList(proxy.ID)
+		if err != nil {
+			continue
+		}
+
+		pagesRaw, ok := result["sessions"].([]interface{})
+		if !ok {
+			continue
+		}
+
+		for _, p := range pagesRaw {
+			pm, ok := p.(map[string]interface{})
+			if !ok {
+				continue
+			}
+
+			session := BrowserSession{
+				ProxyID: proxy.ID,
+			}
+
+			if id, ok := pm["session_id"].(string); ok {
+				session.SessionID = id
+			}
+			if url, ok := pm["url"].(string); ok {
+				session.URL = url
+			}
+			if count, ok := pm["interaction_count"].(float64); ok {
+				session.Interactions = int(count)
+			}
+			if count, ok := pm["mutation_count"].(float64); ok {
+				session.Mutations = int(count)
+			}
+			if ts, ok := pm["last_activity"].(string); ok {
+				if t, err := time.Parse(time.RFC3339, ts); err == nil {
+					session.LastActivity = t
+				}
+			}
+
+			sessions = append(sessions, session)
+		}
+	}
+
+	return sessions, nil
+}
+
+// linkProcessesAndProxies links processes and proxies that are related.
+// A proxy targets a process if the proxy's target URL port matches a port in the process's command.
+func (f *StatusFetcher) linkProcessesAndProxies(processes []ProcessInfo, proxies []ProxyInfo) {
+	// Build a map of target ports to proxy indices
+	portToProxy := make(map[string]int)
+	for i := range proxies {
+		targetURL := proxies[i].TargetURL
+		if targetURL == "" {
+			continue
+		}
+		parsed, err := url.Parse(targetURL)
+		if err != nil {
+			continue
+		}
+		port := parsed.Port()
+		if port == "" {
+			// Default ports
+			if parsed.Scheme == "https" {
+				port = "443"
+			} else {
+				port = "80"
+			}
+		}
+		portToProxy[port] = i
+	}
+
+	// Match processes to proxies by looking for port numbers in process ID or command
+	for i := range processes {
+		proc := &processes[i]
+		// Check both ID and command for port patterns
+		checkStr := proc.ID + " " + proc.Command
+		for port, proxyIdx := range portToProxy {
+			// Look for common patterns: :PORT, PORT, -p PORT, --port PORT
+			patterns := []string{
+				":" + port,
+				" " + port + " ",
+				" " + port + "\n",
+				"-p " + port,
+				"--port " + port,
+				"--port=" + port,
+			}
+			for _, pattern := range patterns {
+				if strings.Contains(checkStr, pattern) || strings.HasSuffix(checkStr, " "+port) {
+					proc.LinkedProxyID = proxies[proxyIdx].ID
+					proxies[proxyIdx].LinkedProcessID = proc.ID
+					break
+				}
+			}
+			if proc.LinkedProxyID != "" {
+				break
+			}
+		}
+	}
+}
+
+// fetchLastOutputForProcesses fetches the last output line for each running process.
+// Limited to first 6 processes to avoid slowing down the status update.
+func (f *StatusFetcher) fetchLastOutputForProcesses(processes []ProcessInfo) {
+	const maxProcesses = 6
+	const maxOutputLen = 120 // Truncate long lines
+
+	for i := range processes {
+		if i >= maxProcesses {
+			break
+		}
+		proc := &processes[i]
+		if proc.State != "running" {
+			continue
+		}
+
+		// Fetch last line of output
+		filter := protocol.OutputFilter{
+			Stream: "combined",
+			Tail:   1,
+		}
+		output, err := f.client.ProcOutput(proc.ID, filter)
+		if err != nil {
+			continue
+		}
+
+		// Clean up the output
+		output = strings.TrimSpace(output)
+		if output == "" {
+			continue
+		}
+
+		// Take only the last non-empty line
+		lines := strings.Split(output, "\n")
+		for j := len(lines) - 1; j >= 0; j-- {
+			line := strings.TrimSpace(lines[j])
+			if line != "" {
+				output = line
+				break
+			}
+		}
+
+		// Truncate if too long
+		if len(output) > maxOutputLen {
+			output = output[:maxOutputLen-3] + "..."
+		}
+
+		proc.LastOutput = output
+	}
 }
 
 // DaemonBashRunner implements BashRunner using the daemon client.
