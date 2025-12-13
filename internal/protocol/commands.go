@@ -74,10 +74,25 @@ type RunConfig struct {
 
 // ProxyStartConfig represents configuration for a PROXY START command.
 type ProxyStartConfig struct {
-	ID         string `json:"id"`
-	TargetURL  string `json:"target_url"`
-	Port       int    `json:"port"`
-	MaxLogSize int    `json:"max_log_size,omitempty"`
+	ID         string        `json:"id"`
+	TargetURL  string        `json:"target_url"`
+	Port       int           `json:"port"`
+	MaxLogSize int           `json:"max_log_size,omitempty"`
+	Tunnel     *TunnelConfig `json:"tunnel,omitempty"`
+}
+
+// TunnelConfig represents configuration for starting a tunnel alongside a proxy.
+type TunnelConfig struct {
+	// Provider is the tunnel provider: "ngrok", "cloudflared", "tailscale", or "custom"
+	Provider string `json:"provider"`
+	// Command is used when Provider is "custom" - the full command to run
+	Command string `json:"command,omitempty"`
+	// Args are additional arguments for the tunnel command
+	Args []string `json:"args,omitempty"`
+	// AuthToken is the authentication token (for ngrok)
+	AuthToken string `json:"auth_token,omitempty"`
+	// Region is the tunnel region (optional)
+	Region string `json:"region,omitempty"`
 }
 
 // OutputFilter represents filters for PROC OUTPUT command.

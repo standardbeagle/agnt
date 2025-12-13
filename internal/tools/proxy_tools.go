@@ -25,6 +25,12 @@ type ProxyInput struct {
 	ToastTitle    string `json:"toast_title,omitempty" jsonschema:"For toast: notification title (optional)"`
 	ToastMessage  string `json:"toast_message,omitempty" jsonschema:"For toast: notification message (required for toast)"`
 	ToastDuration int    `json:"toast_duration,omitempty" jsonschema:"For toast: duration in milliseconds (0 for default)"`
+	// Tunnel configuration (for start action)
+	Tunnel        string   `json:"tunnel,omitempty" jsonschema:"Tunnel provider: ngrok, cloudflared, tailscale, or custom. Creates public URL for the proxy."`
+	TunnelArgs    []string `json:"tunnel_args,omitempty" jsonschema:"Additional arguments for tunnel command"`
+	TunnelToken   string   `json:"tunnel_token,omitempty" jsonschema:"Authentication token for tunnel (e.g., ngrok authtoken)"`
+	TunnelRegion  string   `json:"tunnel_region,omitempty" jsonschema:"Tunnel region (optional)"`
+	TunnelCommand string   `json:"tunnel_command,omitempty" jsonschema:"Custom tunnel command (when tunnel is 'custom'). Use {{PORT}} as placeholder."`
 }
 
 // CurrentPageInput defines input for the currentpage tool.
@@ -78,12 +84,14 @@ type ProxyOutput struct {
 	ID         string `json:"id,omitempty"`
 	TargetURL  string `json:"target_url,omitempty"`
 	ListenAddr string `json:"listen_addr,omitempty"`
+	TunnelURL  string `json:"tunnel_url,omitempty"` // Public tunnel URL if tunnel is configured
 
 	// For status
 	Running       bool            `json:"running,omitempty"`
 	Uptime        string          `json:"uptime,omitempty"`
 	TotalRequests int64           `json:"total_requests,omitempty"`
 	LogStats      *LogStatsOutput `json:"log_stats,omitempty"`
+	Tunnel        *TunnelStatus   `json:"tunnel,omitempty"` // Tunnel status if configured
 
 	// For list
 	Count     int          `json:"count,omitempty"`
@@ -97,6 +105,12 @@ type ProxyOutput struct {
 	ExecutionID string `json:"execution_id,omitempty"` // For exec action
 }
 
+// TunnelStatus represents tunnel status information.
+type TunnelStatus struct {
+	Running bool   `json:"running"`
+	URL     string `json:"url,omitempty"`
+}
+
 // ProxyEntry represents a proxy in the list.
 type ProxyEntry struct {
 	ID            string `json:"id"`
@@ -106,6 +120,8 @@ type ProxyEntry struct {
 	Running       bool   `json:"running"`
 	Uptime        string `json:"uptime"`
 	TotalRequests int64  `json:"total_requests"`
+	TunnelURL     string `json:"tunnel_url,omitempty"`
+	TunnelRunning bool   `json:"tunnel_running,omitempty"`
 }
 
 // LogStatsOutput holds logger statistics.

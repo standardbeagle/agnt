@@ -23,6 +23,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"devtool-mcp/internal/protocol"
+
 	"github.com/gorilla/websocket"
 )
 
@@ -64,6 +66,9 @@ type ProxyServer struct {
 
 	// Voice sessions for speech-to-text (map[connID]*VoiceSession)
 	voiceSessions sync.Map
+
+	// Tunnel manager for ngrok/cloudflared integration
+	tunnel *TunnelManager
 }
 
 // ProxyConfig holds configuration for creating a proxy server.
@@ -74,6 +79,7 @@ type ProxyConfig struct {
 	MaxLogSize  int
 	AutoRestart bool   // Enable automatic restart on crash (default: true)
 	Path        string // Working directory where proxy was created
+	Tunnel      *protocol.TunnelConfig
 }
 
 // DefaultPortForURL computes a stable default port based on the target URL.
@@ -164,6 +170,11 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 	ps.proxy.ErrorHandler = ps.errorHandler
 	ps.proxy.ModifyResponse = ps.modifyResponse
 
+	// Initialize tunnel manager if configured
+	if config.Tunnel != nil && config.Tunnel.Provider != "" {
+		ps.tunnel = NewTunnelManager(config.Tunnel, config.ListenPort)
+	}
+
 	return ps, nil
 }
 
@@ -222,6 +233,17 @@ func (ps *ProxyServer) Start(ctx context.Context) error {
 
 	// Start server in goroutine using existing listener
 	go ps.runServer(ctx, listener)
+
+	// Start tunnel if configured
+	if ps.tunnel != nil {
+		if err := ps.tunnel.Start(ctx); err != nil {
+			// Log but don't fail - proxy can work without tunnel
+			ps.logger.LogError(FrontendError{
+				Message: fmt.Sprintf("failed to start tunnel: %v", err),
+				Source:  "tunnel",
+			})
+		}
+	}
 
 	return nil
 }
@@ -329,6 +351,11 @@ func (ps *ProxyServer) Stop(ctx context.Context) error {
 		return fmt.Errorf("proxy server not running")
 	}
 
+	// Stop tunnel first
+	if ps.tunnel != nil {
+		ps.tunnel.Stop()
+	}
+
 	if ps.cancelFunc != nil {
 		ps.cancelFunc()
 	}
@@ -341,6 +368,27 @@ func (ps *ProxyServer) Stop(ctx context.Context) error {
 // IsRunning returns true if the proxy is running.
 func (ps *ProxyServer) IsRunning() bool {
 	return ps.running.Load()
+}
+
+// TunnelURL returns the public tunnel URL if a tunnel is running.
+func (ps *ProxyServer) TunnelURL() string {
+	if ps.tunnel == nil {
+		return ""
+	}
+	return ps.tunnel.PublicURL()
+}
+
+// HasTunnel returns true if a tunnel is configured.
+func (ps *ProxyServer) HasTunnel() bool {
+	return ps.tunnel != nil
+}
+
+// IsTunnelRunning returns true if the tunnel is currently running.
+func (ps *ProxyServer) IsTunnelRunning() bool {
+	if ps.tunnel == nil {
+		return false
+	}
+	return ps.tunnel.IsRunning()
 }
 
 // Logger returns the traffic logger.

@@ -517,14 +517,19 @@ func (c *Connection) handleProxyStart(ctx context.Context, cmd *protocol.Command
 		maxLogSize, _ = strconv.Atoi(cmd.Args[3])
 	}
 
-	// Parse path from JSON data (optional)
+	// Parse path and tunnel config from JSON data (optional)
 	path := "."
+	var tunnelConfig *protocol.TunnelConfig
 	if len(cmd.Data) > 0 {
 		var data struct {
-			Path string `json:"path"`
+			Path   string                 `json:"path"`
+			Tunnel *protocol.TunnelConfig `json:"tunnel"`
 		}
-		if err := json.Unmarshal(cmd.Data, &data); err == nil && data.Path != "" {
-			path = data.Path
+		if err := json.Unmarshal(cmd.Data, &data); err == nil {
+			if data.Path != "" {
+				path = data.Path
+			}
+			tunnelConfig = data.Tunnel
 		}
 	}
 
@@ -535,6 +540,7 @@ func (c *Connection) handleProxyStart(ctx context.Context, cmd *protocol.Command
 		MaxLogSize:  maxLogSize,
 		AutoRestart: true,
 		Path:        path,
+		Tunnel:      tunnelConfig,
 	}
 
 	proxyServer, err := c.daemon.proxym.Create(context.Background(), config)
@@ -566,6 +572,11 @@ func (c *Connection) handleProxyStart(ctx context.Context, cmd *protocol.Command
 		"id":          proxyServer.ID,
 		"target_url":  proxyServer.TargetURL.String(),
 		"listen_addr": proxyServer.ListenAddr,
+	}
+
+	// Include tunnel URL if available
+	if tunnelURL := proxyServer.TunnelURL(); tunnelURL != "" {
+		resp["tunnel_url"] = tunnelURL
 	}
 
 	data, _ := json.Marshal(resp)
@@ -622,6 +633,14 @@ func (c *Connection) handleProxyStatus(cmd *protocol.Command) error {
 		},
 	}
 
+	// Include tunnel information if available
+	if proxyServer.HasTunnel() {
+		resp["tunnel"] = map[string]interface{}{
+			"running": proxyServer.IsTunnelRunning(),
+			"url":     proxyServer.TunnelURL(),
+		}
+	}
+
 	data, _ := json.Marshal(resp)
 	return c.writeJSON(data)
 }
@@ -658,7 +677,7 @@ func (c *Connection) handleProxyList(cmd *protocol.Command) error {
 	entries := make([]map[string]interface{}, len(filteredProxies))
 	for i, p := range filteredProxies {
 		stats := p.Stats()
-		entries[i] = map[string]interface{}{
+		entry := map[string]interface{}{
 			"id":             stats.ID,
 			"target_url":     stats.TargetURL,
 			"listen_addr":    stats.ListenAddr,
@@ -667,6 +686,12 @@ func (c *Connection) handleProxyList(cmd *protocol.Command) error {
 			"uptime":         formatDuration(stats.Uptime),
 			"total_requests": stats.TotalRequests,
 		}
+		// Include tunnel info if available
+		if p.HasTunnel() {
+			entry["tunnel_url"] = p.TunnelURL()
+			entry["tunnel_running"] = p.IsTunnelRunning()
+		}
+		entries[i] = entry
 	}
 
 	resp := map[string]interface{}{

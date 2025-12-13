@@ -322,17 +322,35 @@ func (c *Client) ProcCleanupPort(port int) (map[string]interface{}, error) {
 	return result, nil
 }
 
+// ProxyStartOptions holds optional parameters for ProxyStart.
+type ProxyStartOptions struct {
+	Path   string
+	Tunnel *protocol.TunnelConfig
+}
+
 // ProxyStart starts a reverse proxy.
 func (c *Client) ProxyStart(id, targetURL string, port, maxLogSize int, path string) (map[string]interface{}, error) {
+	return c.ProxyStartWithOptions(id, targetURL, port, maxLogSize, ProxyStartOptions{Path: path})
+}
+
+// ProxyStartWithOptions starts a reverse proxy with additional options including tunnel.
+func (c *Client) ProxyStartWithOptions(id, targetURL string, port, maxLogSize int, opts ProxyStartOptions) (map[string]interface{}, error) {
 	args := []string{protocol.SubVerbStart, id, targetURL, fmt.Sprintf("%d", port)}
 	if maxLogSize > 0 {
 		args = append(args, fmt.Sprintf("%d", maxLogSize))
 	}
 
-	// Encode path in JSON data
-	data, err := json.Marshal(map[string]string{"path": path})
+	// Encode path and tunnel in JSON data
+	payload := struct {
+		Path   string                 `json:"path"`
+		Tunnel *protocol.TunnelConfig `json:"tunnel,omitempty"`
+	}{
+		Path:   opts.Path,
+		Tunnel: opts.Tunnel,
+	}
+	data, err := json.Marshal(payload)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal path: %w", err)
+		return nil, fmt.Errorf("failed to marshal options: %w", err)
 	}
 
 	resultData, err := c.sendCommand(protocol.VerbProxy, args, nil, data)

@@ -511,17 +511,41 @@ func (dt *DaemonTools) handleProxyStart(input ProxyInput) (*mcp.CallToolResult, 
 		port = -1 // Trigger hash-based default in daemon
 	}
 
-	result, err := dt.client.ProxyStart(input.ID, input.TargetURL, port, input.MaxLogSize, cwd)
+	// Build options including tunnel config
+	opts := daemon.ProxyStartOptions{
+		Path: cwd,
+	}
+
+	// Configure tunnel if specified
+	if input.Tunnel != "" {
+		opts.Tunnel = &protocol.TunnelConfig{
+			Provider:  input.Tunnel,
+			Command:   input.TunnelCommand,
+			Args:      input.TunnelArgs,
+			AuthToken: input.TunnelToken,
+			Region:    input.TunnelRegion,
+		}
+	}
+
+	result, err := dt.client.ProxyStartWithOptions(input.ID, input.TargetURL, port, input.MaxLogSize, opts)
 	if err != nil {
 		return formatDaemonError(err, "proxy"), ProxyOutput{}, nil
 	}
 
 	listenAddr := getString(result, "listen_addr")
+	tunnelURL := getString(result, "tunnel_url")
+
+	message := fmt.Sprintf("Proxy started. Access at http://localhost%s", listenAddr)
+	if tunnelURL != "" {
+		message = fmt.Sprintf("Proxy started. Local: http://localhost%s, Tunnel: %s", listenAddr, tunnelURL)
+	}
+
 	return nil, ProxyOutput{
 		ID:         getString(result, "id"),
 		TargetURL:  getString(result, "target_url"),
 		ListenAddr: listenAddr,
-		Message:    fmt.Sprintf("Proxy started. Access at http://localhost%s", listenAddr),
+		TunnelURL:  tunnelURL,
+		Message:    message,
 	}, nil
 }
 
