@@ -12,6 +12,7 @@ MCP server plugin for Claude Code that bridges your AI agent and the browser, ex
 - **Real-Time Errors** - Capture JS errors automatically
 - **Process Management** - Run and manage dev servers
 - **Token Efficiency** - Structured data uses fewer tokens than descriptions
+- **50+ Diagnostic Functions** - Comprehensive frontend analysis tools
 
 ## Installation
 
@@ -42,6 +43,8 @@ npm install -g @standardbeagle/agnt
 
 ## Slash Commands
 
+### Development Workflow
+
 | Command | Description |
 |---------|-------------|
 | `/dev-proxy` | Start a dev server with reverse proxy for browser debugging |
@@ -50,6 +53,24 @@ npm install -g @standardbeagle/agnt
 | `/sketch-mode` | Open sketch mode for wireframing on the browser page |
 | `/browser-debug` | Debug browser issues using agnt diagnostic tools |
 | `/stop-all` | Stop all running processes and proxies |
+
+### Quality Audits
+
+| Command | Description |
+|---------|-------------|
+| `/audit-a11y` | Run comprehensive accessibility audit |
+| `/audit-performance` | Analyze page performance and load times |
+| `/audit-seo` | Audit page for SEO best practices |
+| `/audit-security` | Audit page for security vulnerabilities |
+
+### Analysis Tools
+
+| Command | Description |
+|---------|-------------|
+| `/analyze-frontend` | Comprehensive frontend analysis (DOM, CSS, layout) |
+| `/analyze-ux` | Analyze user experience and usability |
+| `/qa-test` | Run comprehensive QA test suite |
+| `/review-api` | Review API calls and network traffic |
 
 ## Subagents
 
@@ -80,51 +101,80 @@ npm install -g @standardbeagle/agnt
 
 2. Open the proxy URL in your browser (shown in output)
 
-3. Check for errors:
+3. Run a full QA test:
    ```
-   /check-errors
-   ```
-
-4. Take a screenshot:
-   ```
-   /screenshot
+   /qa-test
    ```
 
-5. Open sketch mode for wireframing:
+4. Or run specific audits:
    ```
-   /sketch-mode
+   /audit-a11y
+   /audit-performance
+   /audit-security
    ```
-
-## Usage Examples
-
-### Start a Dev Server with Proxy
-
-```
-run {script_name: "dev", mode: "background"}
-proxy {action: "start", id: "dev", target_url: "http://localhost:3000"}
-proxylog {proxy_id: "dev", types: ["http", "error"]}
-```
-
-### Execute JavaScript in Browser
-
-```
-proxy {action: "exec", id: "dev", code: "__devtool.screenshot('homepage')"}
-proxy {action: "toast", id: "dev", toast_message: "Done!", toast_type: "success"}
-proxy {action: "exec", id: "dev", code: "__devtool.sketch.open()"}
-```
 
 ## Browser API
 
-The proxy injects `window.__devtool` into all proxied pages:
+The proxy injects `window.__devtool` into all proxied pages with 50+ diagnostic functions:
 
-- `screenshot(name)` - Capture screenshot
+### Logging & Screenshots
 - `log(message, level, data)` - Send custom log
-- `inspect(selector)` - Get element info
-- `interactions.getLastClickContext()` - Get last click details
-- `mutations.highlightRecent(ms)` - Highlight recent DOM changes
-- `sketch.open()` / `sketch.save()` - Wireframe mode
-- `indicator.toggle()` - Toggle floating indicator
-- And 40+ more diagnostic functions
+- `screenshot(name, selector?)` - Capture screenshot
+- `toast.success/error/info/warning(msg)` - Show toast notification
+
+### Element Inspection
+- `inspect(selector)` - Comprehensive element inspection
+- `getElementInfo(selector)` - Basic element info
+- `getComputed(selector)` - Computed styles
+- `getBox(selector)` - Box model (margin, border, padding)
+- `getLayout(selector)` - Flexbox/Grid layout info
+- `getStacking(selector)` - Z-index and stacking context
+
+### Layout Diagnostics
+- `findOverflows()` - Find scroll/hidden overflow elements
+- `findStackingContexts()` - Find z-index layers
+- `findOffscreen()` - Find elements outside viewport
+- `diagnoseLayout(selector?)` - Comprehensive layout report
+
+### Accessibility
+- `auditAccessibility()` - Full accessibility audit
+- `getA11yInfo(selector)` - ARIA and role information
+- `getContrast(fg, bg)` - Color contrast ratio check
+- `getTabOrder()` - Keyboard navigation order
+- `getScreenReaderText(selector)` - Screen reader output
+
+### Quality Audits
+- `auditDOMComplexity()` - DOM size and depth analysis
+- `auditCSS()` - CSS quality issues
+- `auditSecurity()` - Security vulnerability check
+- `auditPageQuality()` - SEO and page quality
+
+### Interaction Tracking
+- `interactions.getHistory()` - All user interactions
+- `interactions.getLastClick()` - Last click details
+- `interactions.getLastClickContext()` - Full click context
+
+### Mutation Tracking
+- `mutations.getHistory()` - DOM change history
+- `mutations.highlightRecent(ms)` - Highlight recent changes
+- `mutations.getAdded/Removed/Modified()` - Filtered mutations
+
+### Visual Tools
+- `highlight(selector)` - Highlight element
+- `isVisible(selector)` - Check visibility
+- `isInViewport(selector)` - Check if in viewport
+- `checkOverlap(sel1, sel2)` - Check element overlap
+
+### Sketch Mode
+- `sketch.open()` / `sketch.close()` - Toggle sketch mode
+- `sketch.save()` - Save and send sketch to agent
+- `sketch.setTool(name)` - Select drawing tool
+
+### State Capture
+- `captureDOM()` - Full DOM snapshot
+- `captureStyles(selector)` - Element styles
+- `captureState()` - Storage and cookies
+- `captureNetwork()` - Network resources
 
 ## Keyboard Shortcuts
 
