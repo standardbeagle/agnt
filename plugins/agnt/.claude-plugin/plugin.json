@@ -1,5 +1,4 @@
 {
-  "id": "agnt",
   "name": "agnt",
   "version": "0.5.1",
   "description": "MCP server for AI coding agents: process management, reverse proxy with traffic logging, frontend instrumentation with 50+ diagnostic functions, and sketch mode for wireframing",
