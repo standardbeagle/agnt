@@ -1,0 +1,7 @@
+{
+  "agnt": {
+    "command": "agnt",
+    "args": ["serve"],
+    "env": {}
+  }
+}

@@ -1,0 +1,56 @@
+{
+  "name": "@standardbeagle/agnt",
+  "version": "0.5.1",
+  "description": "MCP server for AI coding agents - process management, reverse proxy with traffic logging, browser instrumentation, and sketch mode",
+  "main": "dist/index.js",
+  "bin": {
+    "agnt": "bin/agnt"
+  },
+  "scripts": {
+    "postinstall": "node scripts/install.js"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "ai",
+    "agent",
+    "development",
+    "devtools",
+    "proxy",
+    "debugging",
+    "frontend",
+    "diagnostics",
+    "sketch",
+    "wireframe",
+    "process-management",
+    "claude-code"
+  ],
+  "author": "Standard Beagle",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/standardbeagle/agnt.git"
+  },
+  "bugs": {
+    "url": "https://github.com/standardbeagle/agnt/issues"
+  },
+  "homepage": "https://standardbeagle.github.io/agnt/",
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
+  "files": [
+    "bin/",
+    "scripts/",
+    "README.md",
+    "LICENSE"
+  ]
+}

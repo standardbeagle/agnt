@@ -1,0 +1,29 @@
+#!/usr/bin/env node
+
+const { spawn } = require('child_process');
+const path = require('path');
+
+// Find the agnt binary from the dependency
+const agntBin = path.join(__dirname, '..', 'node_modules', '@standardbeagle', 'agnt', 'bin', 'agnt');
+
+// Pass all arguments to agnt
+const args = process.argv.slice(2);
+
+// If no args or first arg is 'serve', run as MCP server
+if (args.length === 0 || args[0] === 'serve') {
+  args.unshift('serve');
+}
+
+const child = spawn(agntBin, args, {
+  stdio: 'inherit',
+  env: process.env
+});
+
+child.on('error', (err) => {
+  console.error(`Failed to start agnt: ${err.message}`);
+  process.exit(1);
+});
+
+child.on('exit', (code) => {
+  process.exit(code || 0);
+});

@@ -1,33 +1,17 @@
-# devtool-mcp
+# devtool-mcp (DEPRECATED)
 
-mcp-name: io.github.standardbeagle/devtool-mcp
+> **This package has been renamed to [`agnt`](https://pypi.org/project/agnt/).** Please install `agnt` instead.
 
-An MCP (Model Context Protocol) server that provides comprehensive development tooling capabilities to AI assistants.
-
-## Features
-
-- **Project Detection** - Automatically detect project types (Go, Node.js, Python) and available scripts
-- **Process Management** - Start, monitor, and control long-running processes with output capture
-- **Reverse Proxy** - Intercept HTTP traffic with automatic frontend instrumentation
-- **Frontend Diagnostics** - 50+ primitives for DOM inspection, layout debugging, and accessibility auditing
-
-## Installation
+## Migration
 
 ```bash
-# Using pip
-pip install devtool-mcp
-
-# Using uv
-uv pip install devtool-mcp
-
-# Using pipx (recommended for CLI tools)
-pipx install devtool-mcp
+pip uninstall devtool-mcp
+pip install agnt
 ```
 
-## Usage
+Then update your MCP configuration:
 
-Add to your MCP client configuration:
-
+**Before:**
 ```json
 {
   "mcpServers": {
@@ -38,34 +22,41 @@ Add to your MCP client configuration:
 }
 ```
 
-Or if using uvx:
-
+**After:**
 ```json
 {
   "mcpServers": {
-    "devtool": {
-      "command": "uvx",
-      "args": ["devtool-mcp"]
+    "agnt": {
+      "command": "agnt",
+      "args": ["serve"]
     }
   }
 }
 ```
 
-## Documentation
+## Why the rename?
 
-For full documentation, visit: https://standardbeagle.github.io/devtool-mcp/
+The project has evolved beyond just development tooling into a full AI coding agent toolkit. The new name `agnt` better reflects its capabilities:
 
-## MCP Tools
+- Process management for development workflows
+- Reverse proxy with traffic logging and browser instrumentation
+- 50+ diagnostic primitives for frontend debugging
+- Sketch mode for wireframing directly on your UI
+- PTY wrapper for AI coding tools (Claude Code, Gemini, etc.)
 
-| Tool | Description |
-|------|-------------|
-| `detect` | Detect project type and available scripts |
-| `run` | Execute scripts or raw commands |
-| `proc` | Monitor, query output, stop processes |
-| `proxy` | Manage reverse proxies |
-| `proxylog` | Query traffic logs and errors |
-| `currentpage` | View grouped page sessions |
-| `daemon` | Manage the background daemon |
+## New Features in agnt
+
+- `agnt run claude` - Wrap AI tools with overlay features
+- `agnt serve` - Run as MCP server
+- Sketch mode for wireframing
+- Floating indicator panel
+- Toast notifications
+
+See the [agnt documentation](https://standardbeagle.github.io/agnt/) for details.
+
+## Backward Compatibility
+
+This wrapper package will continue to work but will not receive updates. The `devtool-mcp` command will forward to `agnt` with a deprecation notice.
 
 ## License
 
