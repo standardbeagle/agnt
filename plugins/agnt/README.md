@@ -11,7 +11,7 @@ MCP server plugin for Claude Code that bridges your AI agent and the browser, ex
 - **Sketch Mode** - Draw wireframes directly on your UI
 - **Real-Time Errors** - Capture JS errors automatically
 - **Process Management** - Run and manage dev servers
-- **Extended Context** - Browser as persistent scratchpad
+- **Token Efficiency** - Structured data uses fewer tokens than descriptions
 
 ## Installation
 

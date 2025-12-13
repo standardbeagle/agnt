@@ -18,7 +18,7 @@ When you're in the flow with Claude Code, Cursor, or other AI coding tools, agnt
 - **Hear from you directly** - Send messages from the browser to your agent
 - **Sketch ideas together** - Draw wireframes directly on your UI
 - **Debug in real-time** - Capture errors, network traffic, and performance metrics
-- **Extend its thinking window** - Use the browser as a persistent scratchpad
+- **Extend its thinking window** - Structured data uses fewer tokens than your descriptions
 
 ## Demo
 
@@ -165,14 +165,14 @@ Your agent sees errors as they happen, not when you remember to mention them.
 
 ### 5. Extending the Thinking Window
 
-The browser becomes a persistent context window:
+Structured data consumes fewer tokens than natural language descriptions:
 
-- **Panel messages** - Notes that survive conversation resets
-- **Sketches** - Visual context your agent can reference
-- **Interaction history** - What you clicked, scrolled, typed
-- **DOM mutations** - What changed since last check
+- **Error summaries** - `proxylog {types: ["error"]}` vs. "I'm seeing a TypeError on line 42 that says..."
+- **Click context** - `interactions.getLastClickContext()` vs. "I clicked the blue button in the header..."
+- **DOM state** - `inspect('#element')` vs. "there's a div with some nested spans and..."
+- **Status at a glance** - Structured JSON your agent can parse efficiently
 
-When context windows fill up, this external state persists.
+Your agent gets precise, actionable data instead of parsing your descriptions.
 
 ## MCP Tools
 
