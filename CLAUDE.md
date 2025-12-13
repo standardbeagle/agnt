@@ -67,7 +67,7 @@ into Claude Code as if the user typed them - working around MCP's lack of server
 - **Floating Indicator** - Send messages from browser directly to your AI agent
 - **Sketch Mode** - Draw wireframes directly on your UI (Excalidraw-like)
 - **Real-Time Error Capture** - JavaScript errors automatically available to agent
-- **Extended Thinking Window** - Browser as persistent scratchpad across context resets
+- **Extended Thinking Window** - Structured browser data consumes fewer tokens than user descriptions
 - **Process Management** - Run and manage dev servers with output capture
 - **Reverse Proxy** - HTTP traffic logging and frontend instrumentation
 - **Daemon Architecture** - Persistent state survives client disconnections
