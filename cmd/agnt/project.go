@@ -142,7 +142,8 @@ func runProjectStart(cmd *cobra.Command, args []string) {
 		targetURL := fmt.Sprintf("http://%s:%d", host, targetPort)
 		fmt.Printf("Starting proxy %s -> %s\n", proxy.ID, targetURL)
 
-		_, err := client.ProxyStart(proxy.ID, targetURL, 0, 0, cwd)
+		// Use -1 to get hash-based stable port (0 means OS auto-assign)
+		_, err := client.ProxyStart(proxy.ID, targetURL, -1, 0, cwd)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Failed to start proxy %s: %v\n", proxy.ID, err)
 		}
