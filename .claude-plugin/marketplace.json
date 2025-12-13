@@ -1,25 +1,40 @@
 {
-  "name": "agnt",
-  "version": "0.5.1",
-  "description": "AI coding agent toolkit - process management, reverse proxy with traffic logging, browser instrumentation, and sketch mode",
-  "author": {
+  "name": "agnt-marketplace",
+  "owner": {
     "name": "Standard Beagle",
-    "url": "https://github.com/standardbeagle/agnt"
+    "url": "https://github.com/standardbeagle"
   },
-  "homepage": "https://github.com/standardbeagle/agnt",
-  "repository": "https://github.com/standardbeagle/agnt",
-  "license": "MIT",
-  "keywords": [
-    "mcp",
-    "agnt",
-    "agent",
-    "proxy",
-    "traffic-logging",
-    "process-management",
-    "frontend-debugging",
-    "browser-instrumentation",
-    "sketch",
-    "wireframe"
-  ],
-  "mcpServers": "./plugins/agnt/.mcp.json"
+  "metadata": {
+    "description": "AI coding agent toolkit - process management, reverse proxy with traffic logging, browser instrumentation, and sketch mode",
+    "version": "0.5.1",
+    "pluginRoot": "./plugins"
+  },
+  "plugins": [
+    {
+      "name": "agnt",
+      "source": "./agnt",
+      "description": "MCP server for AI coding agents: process management, reverse proxy with traffic logging, frontend instrumentation with 50+ diagnostic functions, and sketch mode for wireframing",
+      "version": "0.5.1",
+      "author": {
+        "name": "Standard Beagle",
+        "url": "https://github.com/standardbeagle/agnt"
+      },
+      "homepage": "https://github.com/standardbeagle/agnt",
+      "repository": "https://github.com/standardbeagle/agnt",
+      "license": "MIT",
+      "keywords": [
+        "mcp",
+        "agnt",
+        "agent",
+        "proxy",
+        "traffic-logging",
+        "process-management",
+        "frontend-debugging",
+        "browser-instrumentation",
+        "sketch",
+        "wireframe"
+      ],
+      "category": "development"
+    }
+  ]
 }
