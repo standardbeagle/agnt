@@ -59,7 +59,12 @@ func (a *AutoStarter) startProxy(ctx context.Context, name string, proxy *ProxyC
 		return fmt.Errorf("no daemon connection")
 	}
 
+	// Use -1 to signal "use default" (hash-based port), matching daemon_tools.go behavior
 	port := proxy.Port
+	if port == 0 {
+		port = -1 // Trigger hash-based default in daemon
+	}
+
 	maxLogSize := proxy.MaxLogSize
 	if maxLogSize == 0 {
 		maxLogSize = 1000
