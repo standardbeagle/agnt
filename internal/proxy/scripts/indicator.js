@@ -25,7 +25,7 @@
     isVisible: true,
     isActive: false, // AI tool activity state
     activityTimeout: null,
-    requestNotification: false, // Request notification when task completes
+    requestNotification: true, // Always request notification when task completes
     // Attachments are now logged items with references
     attachments: [] // { id, type, label, summary, timestamp }
   };
@@ -261,20 +261,6 @@
       'transition: all 0.15s ease'
     ].join(';'),
 
-    // Notification toggle
-    notifyToggle: [
-      'display: flex',
-      'align-items: center',
-      'gap: 6px',
-      'margin-left: auto',
-      'margin-right: 8px',
-      'padding: 4px 8px',
-      'font-size: 12px',
-      'color: ' + TOKENS.colors.textMuted,
-      'cursor: pointer',
-      'user-select: none'
-    ].join(';'),
-
     // Primary send button - visual hierarchy (most prominent)
     sendBtn: [
       'display: flex',
@@ -470,7 +456,7 @@
 
     var title = document.createElement('span');
     title.style.cssText = STYLES.headerTitle;
-    title.textContent = 'Send to Claude';
+    title.textContent = 'AI';
     header.appendChild(title);
 
     var closeBtn = document.createElement('button');
@@ -495,12 +481,24 @@
     var textarea = document.createElement('textarea');
     textarea.id = '__devtool-message';
     textarea.style.cssText = STYLES.textarea;
-    textarea.placeholder = 'Describe what you need help with...';
+    textarea.placeholder = 'Describe what you need help with... (Ctrl+Enter to send)';
     textarea.onfocus = function() {
       card.style.cssText = STYLES.messageCard + ';' + STYLES.messageCardFocused;
     };
     textarea.onblur = function() {
       card.style.cssText = STYLES.messageCard;
+    };
+    // Auto-expand textarea based on content
+    textarea.oninput = function() {
+      textarea.style.height = 'auto';
+      textarea.style.height = Math.min(Math.max(textarea.scrollHeight, 80), 200) + 'px';
+    };
+    // Ctrl+Enter to send
+    textarea.onkeydown = function(e) {
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        handleSend();
+      }
     };
     card.appendChild(textarea);
 
@@ -527,26 +525,16 @@
     toolbar.appendChild(elementBtn);
     toolbar.appendChild(sketchBtn);
 
-    // Notification toggle
-    var notifyToggle = document.createElement('label');
-    notifyToggle.style.cssText = STYLES.notifyToggle;
-    notifyToggle.title = 'Request notification when task completes';
-
-    var notifyCheckbox = document.createElement('input');
-    notifyCheckbox.type = 'checkbox';
-    notifyCheckbox.id = '__devtool-notify';
-    notifyCheckbox.checked = state.requestNotification;
-    notifyCheckbox.onchange = function() {
-      state.requestNotification = notifyCheckbox.checked;
-    };
-    notifyToggle.appendChild(notifyCheckbox);
-    notifyToggle.appendChild(document.createTextNode(' Notify'));
-    toolbar.appendChild(notifyToggle);
+    // Spacer to push send button to the right
+    var spacer = document.createElement('div');
+    spacer.style.cssText = 'flex: 1;';
+    toolbar.appendChild(spacer);
 
     // Send button (visual hierarchy - primary action)
     var sendBtn = document.createElement('button');
     sendBtn.style.cssText = STYLES.sendBtn;
     sendBtn.innerHTML = ICONS.send + ' Send';
+    sendBtn.title = 'Send message (Ctrl+Enter)';
     sendBtn.onclick = handleSend;
     sendBtn.onmouseenter = function() { sendBtn.style.background = TOKENS.colors.primaryDark; };
     sendBtn.onmouseleave = function() { sendBtn.style.background = TOKENS.colors.primary; };
