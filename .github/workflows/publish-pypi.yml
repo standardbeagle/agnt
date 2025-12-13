@@ -1,0 +1,94 @@
+name: Publish Python Packages to PyPI
+
+on:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: 'Package to publish'
+        required: true
+        type: choice
+        options:
+          - agnt
+          - devtool-mcp
+          - both
+
+jobs:
+  build-agnt:
+    if: inputs.package == 'agnt' || inputs.package == 'both'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build dependencies
+        run: pip install build
+
+      - name: Build agnt package
+        run: cd python/agnt && python -m build
+
+      - name: Upload agnt artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: agnt-dist
+          path: python/agnt/dist/
+
+  build-devtool-mcp:
+    if: inputs.package == 'devtool-mcp' || inputs.package == 'both'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install build dependencies
+        run: pip install build
+
+      - name: Build devtool-mcp package
+        run: cd python && python -m build
+
+      - name: Upload devtool-mcp artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: devtool-mcp-dist
+          path: python/dist/
+
+  publish-agnt:
+    if: inputs.package == 'agnt' || inputs.package == 'both'
+    needs: build-agnt
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - name: Download agnt artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: agnt-dist
+          path: dist/
+
+      - name: Publish agnt to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+  publish-devtool-mcp:
+    if: inputs.package == 'devtool-mcp' || inputs.package == 'both'
+    needs: build-devtool-mcp
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - name: Download devtool-mcp artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: devtool-mcp-dist
+          path: dist/
+
+      - name: Publish devtool-mcp to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
