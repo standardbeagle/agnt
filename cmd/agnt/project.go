@@ -262,13 +262,21 @@ func parseAgntConfig(path string) (*ProjectConfig, error) {
 // detectScriptPort monitors the script output for port patterns
 func detectScriptPort(client *daemon.Client, processID string, timeout time.Duration) int {
 	portPatterns := []*regexp.Regexp{
+		// Next.js format: "- Local:         http://localhost:3737"
+		regexp.MustCompile(`Local:\s+https?://[^:]+:(\d+)`),
+		// Vite/general format: "Local: http://localhost:5173"
+		regexp.MustCompile(`https?://localhost:(\d+)`),
+		regexp.MustCompile(`https?://127\.0\.0\.1:(\d+)`),
+		// Network address format: "http://10.255.255.254:3737"
+		regexp.MustCompile(`https?://\d+\.\d+\.\d+\.\d+:(\d+)`),
+		// Generic patterns
 		regexp.MustCompile(`localhost:(\d+)`),
 		regexp.MustCompile(`127\.0\.0\.1:(\d+)`),
 		regexp.MustCompile(`listening on port (\d+)`),
 		regexp.MustCompile(`started on :(\d+)`),
-		regexp.MustCompile(`running at http://[^:]+:(\d+)`),
-		regexp.MustCompile(`Local:\s+http://[^:]+:(\d+)`),
-		regexp.MustCompile(`port (\d+)`),
+		regexp.MustCompile(`running at https?://[^:]+:(\d+)`),
+		regexp.MustCompile(`on port (\d+)`),
+		regexp.MustCompile(`:(\d{4,5})\b`), // Match 4-5 digit port numbers
 	}
 
 	deadline := time.Now().Add(timeout)
