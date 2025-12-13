@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "devtool-mcp"
-version = "0.6.0"
-description = "DEPRECATED: This package has been renamed to 'agnt'. Please install 'agnt' instead."
+name = "agnt"
+version = "0.5.1"
+description = "MCP server for AI coding agents - process management, reverse proxy with traffic logging, browser instrumentation, and sketch mode"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
@@ -16,18 +16,20 @@ keywords = [
     "mcp",
     "model-context-protocol",
     "ai",
+    "agent",
     "development",
     "devtools",
     "proxy",
     "debugging",
     "frontend",
     "diagnostics",
-    "accessibility",
+    "sketch",
+    "wireframe",
     "process-management",
-    "deprecated"
+    "claude-code"
 ]
 classifiers = [
-    "Development Status :: 7 - Inactive",
+    "Development Status :: 4 - Beta",
     "Environment :: Console",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
@@ -43,7 +45,7 @@ classifiers = [
     "Topic :: Internet :: Proxy Servers",
 ]
 dependencies = [
-    "agnt>=0.5.1",
+    "httpx>=0.25.0",
 ]
 
 [project.urls]
@@ -54,10 +56,10 @@ Issues = "https://github.com/standardbeagle/agnt/issues"
 Changelog = "https://github.com/standardbeagle/agnt/blob/main/CHANGELOG.md"
 
 [project.scripts]
-devtool-mcp = "devtool_mcp:main"
+agnt = "agnt:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/devtool_mcp"]
+packages = ["src/agnt"]
 
 [tool.hatch.build.targets.sdist]
 include = [
