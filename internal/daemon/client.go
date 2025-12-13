@@ -322,35 +322,30 @@ func (c *Client) ProcCleanupPort(port int) (map[string]interface{}, error) {
 	return result, nil
 }
 
-// ProxyStartOptions holds optional parameters for ProxyStart.
-type ProxyStartOptions struct {
-	Path   string
-	Tunnel *protocol.TunnelConfig
+// ProxyStartConfig holds configuration for starting a proxy.
+type ProxyStartConfig struct {
+	Path        string                 `json:"path,omitempty"`
+	BindAddress string                 `json:"bind_address,omitempty"`
+	PublicURL   string                 `json:"public_url,omitempty"`
+	Tunnel      *protocol.TunnelConfig `json:"tunnel,omitempty"`
 }
 
 // ProxyStart starts a reverse proxy.
 func (c *Client) ProxyStart(id, targetURL string, port, maxLogSize int, path string) (map[string]interface{}, error) {
-	return c.ProxyStartWithOptions(id, targetURL, port, maxLogSize, ProxyStartOptions{Path: path})
+	return c.ProxyStartWithConfig(id, targetURL, port, maxLogSize, ProxyStartConfig{Path: path})
 }
 
-// ProxyStartWithOptions starts a reverse proxy with additional options including tunnel.
-func (c *Client) ProxyStartWithOptions(id, targetURL string, port, maxLogSize int, opts ProxyStartOptions) (map[string]interface{}, error) {
+// ProxyStartWithConfig starts a reverse proxy with extended configuration.
+func (c *Client) ProxyStartWithConfig(id, targetURL string, port, maxLogSize int, config ProxyStartConfig) (map[string]interface{}, error) {
 	args := []string{protocol.SubVerbStart, id, targetURL, fmt.Sprintf("%d", port)}
 	if maxLogSize > 0 {
 		args = append(args, fmt.Sprintf("%d", maxLogSize))
 	}
 
-	// Encode path and tunnel in JSON data
-	payload := struct {
-		Path   string                 `json:"path"`
-		Tunnel *protocol.TunnelConfig `json:"tunnel,omitempty"`
-	}{
-		Path:   opts.Path,
-		Tunnel: opts.Tunnel,
-	}
-	data, err := json.Marshal(payload)
+	// Encode config in JSON data
+	data, err := json.Marshal(config)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal options: %w", err)
+		return nil, fmt.Errorf("failed to marshal config: %w", err)
 	}
 
 	resultData, err := c.sendCommand(protocol.VerbProxy, args, nil, data)
@@ -656,6 +651,258 @@ func (c *Client) BroadcastActivity(active bool, proxyIDs ...string) error {
 	args := append([]string{protocol.SubVerbActivity, activeStr}, proxyIDs...)
 	_, err := c.sendCommand(protocol.VerbOverlay, args, nil, nil)
 	return err
+}
+
+// TunnelStart starts a tunnel for a local port.
+func (c *Client) TunnelStart(config protocol.TunnelStartConfig) (map[string]interface{}, error) {
+	data, err := json.Marshal(config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal config: %w", err)
+	}
+
+	resultData, err := c.sendCommand(protocol.VerbTunnel, []string{protocol.SubVerbStart}, nil, data)
+	if err != nil {
+		return nil, err
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(resultData, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
+	}
+
+	return result, nil
+}
+
+// TunnelStop stops a running tunnel.
+func (c *Client) TunnelStop(id string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.closed || c.conn == nil {
+		return ErrNotConnected
+	}
+
+	// Send command
+	if err := c.writer.WriteCommand(protocol.VerbTunnel, []string{protocol.SubVerbStop, id}, nil); err != nil {
+		return fmt.Errorf("failed to send command: %w", err)
+	}
+
+	// Read response
+	resp, err := c.parser.ParseResponse()
+	if err != nil {
+		return fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.Type == protocol.ResponseErr {
+		return fmt.Errorf("%w: [%s] %s", ErrServerError, resp.Code, resp.Message)
+	}
+
+	return nil
+}
+
+// TunnelStatus gets the status of a tunnel.
+func (c *Client) TunnelStatus(id string) (map[string]interface{}, error) {
+	data, err := c.sendCommand(protocol.VerbTunnel, []string{protocol.SubVerbStatus, id}, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
+	}
+
+	return result, nil
+}
+
+// TunnelList lists all active tunnels.
+func (c *Client) TunnelList() (map[string]interface{}, error) {
+	data, err := c.sendCommand(protocol.VerbTunnel, []string{protocol.SubVerbList}, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
+	}
+
+	return result, nil
+}
+
+// ChaosEnable enables chaos injection on a proxy.
+func (c *Client) ChaosEnable(proxyID string) (map[string]interface{}, error) {
+	data, err := c.sendCommand(protocol.VerbChaos, []string{protocol.SubVerbEnable, proxyID}, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
+	}
+
+	return result, nil
+}
+
+// ChaosDisable disables chaos injection on a proxy.
+func (c *Client) ChaosDisable(proxyID string) (map[string]interface{}, error) {
+	data, err := c.sendCommand(protocol.VerbChaos, []string{protocol.SubVerbDisable, proxyID}, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
+	}
+
+	return result, nil
+}
+
+// ChaosStatus gets the chaos status of a proxy.
+func (c *Client) ChaosStatus(proxyID string) (map[string]interface{}, error) {
+	data, err := c.sendCommand(protocol.VerbChaos, []string{protocol.SubVerbStatus, proxyID}, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
+	}
+
+	return result, nil
+}
+
+// ChaosPreset applies a preset chaos configuration to a proxy.
+func (c *Client) ChaosPreset(proxyID, preset string) (map[string]interface{}, error) {
+	data, err := c.sendCommand(protocol.VerbChaos, []string{protocol.SubVerbPreset, proxyID, preset}, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
+	}
+
+	return result, nil
+}
+
+// ChaosSet sets the full chaos configuration on a proxy.
+func (c *Client) ChaosSet(proxyID string, config protocol.ChaosConfigPayload) (map[string]interface{}, error) {
+	configData, err := json.Marshal(config)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal config: %w", err)
+	}
+
+	data, err := c.sendCommand(protocol.VerbChaos, []string{protocol.SubVerbSet, proxyID}, nil, configData)
+	if err != nil {
+		return nil, err
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
+	}
+
+	return result, nil
+}
+
+// ChaosAddRule adds a single rule to a proxy's chaos engine.
+func (c *Client) ChaosAddRule(proxyID string, rule protocol.ChaosRuleConfig) (map[string]interface{}, error) {
+	ruleData, err := json.Marshal(rule)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal rule: %w", err)
+	}
+
+	data, err := c.sendCommand(protocol.VerbChaos, []string{protocol.SubVerbAddRule, proxyID}, nil, ruleData)
+	if err != nil {
+		return nil, err
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
+	}
+
+	return result, nil
+}
+
+// ChaosRemoveRule removes a rule from a proxy's chaos engine.
+func (c *Client) ChaosRemoveRule(proxyID, ruleID string) (map[string]interface{}, error) {
+	data, err := c.sendCommand(protocol.VerbChaos, []string{protocol.SubVerbRemoveRule, proxyID, ruleID}, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
+	}
+
+	return result, nil
+}
+
+// ChaosListRules lists all chaos rules for a proxy.
+func (c *Client) ChaosListRules(proxyID string) (map[string]interface{}, error) {
+	data, err := c.sendCommand(protocol.VerbChaos, []string{protocol.SubVerbListRules, proxyID}, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
+	}
+
+	return result, nil
+}
+
+// ChaosStats gets chaos statistics for a proxy.
+func (c *Client) ChaosStats(proxyID string) (map[string]interface{}, error) {
+	data, err := c.sendCommand(protocol.VerbChaos, []string{protocol.SubVerbStats, proxyID}, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
+	}
+
+	return result, nil
+}
+
+// ChaosClear clears all chaos rules and resets stats for a proxy.
+func (c *Client) ChaosClear(proxyID string) (map[string]interface{}, error) {
+	data, err := c.sendCommand(protocol.VerbChaos, []string{protocol.SubVerbClear, proxyID}, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
+	}
+
+	return result, nil
+}
+
+// ChaosListPresets returns the list of available chaos presets.
+func (c *Client) ChaosListPresets() (map[string]interface{}, error) {
+	data, err := c.sendCommand(protocol.VerbChaos, []string{"LIST-PRESETS"}, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
+	}
+
+	return result, nil
 }
 
 // sendCommand sends a command and expects a JSON response.

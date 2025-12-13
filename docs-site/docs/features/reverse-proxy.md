@@ -286,6 +286,89 @@ proxy {action: "exec", id: "app", code: "window.location.href"}
 
 This is how you access the [Frontend Diagnostics API](/features/frontend-diagnostics).
 
+## Floating Indicator
+
+Every proxied page includes a floating indicator bug in the corner that provides quick access to devtool features:
+
+### Features
+
+- **Message Panel** - Type messages to send to your AI agent
+- **Screenshot** - Click and drag to select an area for screenshot
+- **Element Selection** - Click to select any element and capture its details
+- **Sketch Mode** - Draw wireframes directly on the page
+- **Audit Dropdown** - Quick access to quality audits
+
+### Audit Actions
+
+The Audit dropdown provides one-click access to diagnostic functions, organized by category:
+
+**Quality Audits**
+| Action | Description |
+|--------|-------------|
+| Full Page Audit | Comprehensive audit with A-F grade and recommendations |
+| Accessibility | WCAG issues (missing alt, labels, contrast) |
+| Security | Mixed content, XSS risks, missing noopener |
+| SEO / Meta | Meta tags, headings, document structure |
+
+**Layout & Visual**
+| Action | Description |
+|--------|-------------|
+| Layout Issues | Overflows, z-index contexts, offscreen elements |
+| Text Fragility | Truncation, overflow, font issues (WCAG 1.4.10) |
+| Responsive Risk | Elements that may break at different viewport sizes |
+
+**Debug Context**
+| Action | Description |
+|--------|-------------|
+| Last Click Context | What the user just clicked + mouse trail |
+| Recent DOM Changes | Elements added/removed/modified in last 30 seconds |
+
+**State & Network**
+| Action | Description |
+|--------|-------------|
+| Browser State | localStorage, sessionStorage, cookies |
+| Network/Resources | Resource timing and loading data |
+
+**Technical**
+| Action | Description |
+|--------|-------------|
+| DOM Complexity | Node count, depth, performance impact |
+| CSS Quality | Inline styles, !important usage |
+
+When you run an audit, the results are:
+1. **Executed immediately** in the browser
+2. **Summarized** as a chip in the message area
+3. **Logged** to the proxy for the AI agent to query via `proxylog`
+
+This lets the LLM receive structured diagnostic data instead of you describing problems in natural language.
+
+### Programmatic Control
+
+```javascript
+// Toggle indicator visibility
+window.__devtool.indicator.show()
+window.__devtool.indicator.hide()
+window.__devtool.indicator.toggle()
+
+// Toggle the message panel
+window.__devtool.indicator.togglePanel()
+```
+
+### Log Types
+
+Messages and attachments from the indicator are logged and queryable:
+
+```json
+// User messages from the panel
+proxylog {proxy_id: "app", types: ["panel_message"]}
+
+// Screenshot captures
+proxylog {proxy_id: "app", types: ["screenshot"]}
+
+// Sketch captures
+proxylog {proxy_id: "app", types: ["sketch"]}
+```
+
 ## WebSocket Support
 
 The proxy transparently handles WebSocket connections:

@@ -41,6 +41,8 @@ Parameters:
 | `target_url` | string | Yes | - | Backend server URL |
 | `port` | integer | No | hash-based | Listen port. Only specify if you need a specific port. |
 | `max_log_size` | integer | No | 1000 | Maximum log entries |
+| `bind_address` | string | No | `127.0.0.1` | Bind address: `127.0.0.1` (localhost only) or `0.0.0.0` (all interfaces for tunnel/mobile testing) |
+| `public_url` | string | No | - | Public URL for tunnel services (e.g., `https://abc123.trycloudflare.com`). Used for URL rewriting. |
 
 Response:
 ```json
@@ -48,7 +50,7 @@ Response:
   "id": "app",
   "status": "running",
   "target_url": "http://localhost:3000",
-  "listen_addr": ":45849",
+  "listen_addr": "127.0.0.1:45849",
   "message": "Proxy started"
 }
 ```
@@ -323,9 +325,56 @@ proxy {action: "exec", id: "debug", code: "window.__devtool.inspect('.broken-com
 proxy {action: "exec", id: "debug", code: "window.__devtool.screenshot('bug')"}
 ```
 
+## Mobile Testing with Tunnels
+
+For testing on real mobile devices, you need to expose your proxy publicly. agnt supports this via the `bind_address` and `public_url` options, combined with the [tunnel](/api/tunnel) tool.
+
+### Quick Setup
+
+```json
+// 1. Start proxy on all interfaces
+proxy {
+  action: "start",
+  id: "app",
+  target_url: "http://localhost:3000",
+  bind_address: "0.0.0.0"
+}
+
+// 2. Start a Cloudflare tunnel pointing to the proxy
+tunnel {
+  action: "start",
+  id: "app",
+  provider: "cloudflare",
+  local_port: 45849,
+  proxy_id: "app"
+}
+```
+
+The tunnel automatically configures the proxy's `public_url`, enabling proper URL rewriting for HTTPS.
+
+### Manual Configuration
+
+If you're using an external tunnel service:
+
+```json
+proxy {
+  action: "start",
+  id: "app",
+  target_url: "http://localhost:3000",
+  bind_address: "0.0.0.0",
+  public_url: "https://your-tunnel-url.trycloudflare.com"
+}
+```
+
+### Security Note
+
+By default, proxies bind to `127.0.0.1` (localhost only) for security. Only use `0.0.0.0` when you need external access (tunnels, mobile testing).
+
 ## See Also
 
+- [tunnel](/api/tunnel) - Manage Cloudflare/ngrok tunnels
 - [proxylog](/api/proxylog) - Query proxy traffic logs
 - [currentpage](/api/currentpage) - View page sessions
+- [Mobile Testing Guide](/use-cases/mobile-testing) - Complete mobile testing workflow
 - [Reverse Proxy Feature](/features/reverse-proxy)
 - [Frontend Diagnostics](/features/frontend-diagnostics)

@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -60,14 +59,8 @@ func TestClient_CurrentPage_EndToEnd(t *testing.T) {
 	listenAddr := result["listen_addr"].(string)
 	t.Logf("Proxy listening on: %s", listenAddr)
 
-	// Extract port from ListenAddr
-	port := listenAddr
-	if strings.HasPrefix(port, "[::]:") {
-		port = ":" + strings.TrimPrefix(port, "[::]:")
-	} else if strings.HasPrefix(port, "[::]") {
-		port = strings.TrimPrefix(port, "[::]")
-	}
-	proxyURL := fmt.Sprintf("http://127.0.0.1%s", port)
+	// Use ListenAddr directly since it now includes the bind address
+	proxyURL := fmt.Sprintf("http://%s", listenAddr)
 
 	// Make a request through the proxy
 	resp, err := http.Get(proxyURL + "/")

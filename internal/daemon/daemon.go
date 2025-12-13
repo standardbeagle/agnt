@@ -12,6 +12,7 @@ import (
 
 	"devtool-mcp/internal/process"
 	"devtool-mcp/internal/proxy"
+	"devtool-mcp/internal/tunnel"
 )
 
 // Version is the daemon version.
@@ -64,8 +65,9 @@ type Daemon struct {
 	config DaemonConfig
 
 	// Core managers
-	pm     *process.ProcessManager
-	proxym *proxy.ProxyManager
+	pm      *process.ProcessManager
+	proxym  *proxy.ProxyManager
+	tunnelm *tunnel.Manager
 
 	// State persistence
 	stateMgr *StateManager
@@ -99,6 +101,7 @@ func New(config DaemonConfig) *Daemon {
 		config:  config,
 		pm:      process.NewProcessManager(config.ProcessConfig),
 		proxym:  proxy.NewProxyManager(),
+		tunnelm: tunnel.NewManager(),
 		sockMgr: NewSocketManager(SocketConfig{Path: config.SocketPath}),
 		ctx:     ctx,
 		cancel:  cancel,
@@ -228,6 +231,10 @@ func (d *Daemon) Stop(ctx context.Context) error {
 	// Shutdown managers
 	var errs []error
 
+	if err := d.tunnelm.Shutdown(ctx); err != nil {
+		errs = append(errs, fmt.Errorf("tunnel manager: %w", err))
+	}
+
 	if err := d.proxym.Shutdown(ctx); err != nil {
 		errs = append(errs, fmt.Errorf("proxy manager: %w", err))
 	}
@@ -285,6 +292,9 @@ func (d *Daemon) Info() DaemonInfo {
 			Active:       d.proxym.ActiveCount(),
 			TotalStarted: d.proxym.TotalStarted(),
 		},
+		TunnelInfo: TunnelInfo{
+			Active: int64(d.tunnelm.ActiveCount()),
+		},
 	}
 }
 
@@ -296,6 +306,11 @@ func (d *Daemon) ProcessManager() *process.ProcessManager {
 // ProxyManager returns the proxy manager.
 func (d *Daemon) ProxyManager() *proxy.ProxyManager {
 	return d.proxym
+}
+
+// TunnelManager returns the tunnel manager.
+func (d *Daemon) TunnelManager() *tunnel.Manager {
+	return d.tunnelm
 }
 
 // SetOverlayEndpoint sets the overlay endpoint URL and updates all existing proxies.
@@ -386,6 +401,7 @@ type DaemonInfo struct {
 	ClientCount int64         `json:"client_count"`
 	ProcessInfo ProcessInfo   `json:"process_info"`
 	ProxyInfo   ProxyInfo     `json:"proxy_info"`
+	TunnelInfo  TunnelInfo    `json:"tunnel_info"`
 }
 
 // ProcessInfo holds process manager statistics.
@@ -399,4 +415,9 @@ type ProcessInfo struct {
 type ProxyInfo struct {
 	Active       int64 `json:"active"`
 	TotalStarted int64 `json:"total_started"`
+}
+
+// TunnelInfo holds tunnel manager statistics.
+type TunnelInfo struct {
+	Active int64 `json:"active"`
 }

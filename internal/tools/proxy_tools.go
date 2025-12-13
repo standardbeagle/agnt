@@ -12,11 +12,13 @@ import (
 
 // ProxyInput defines input for the proxy tool.
 type ProxyInput struct {
-	Action        string `json:"action" jsonschema:"Action: start, stop, status, list, exec, toast"`
-	ID            string `json:"id,omitempty" jsonschema:"Proxy ID (required for start/stop/status/exec/toast)"`
+	Action        string `json:"action" jsonschema:"Action: start, stop, status, list, exec, toast, chaos"`
+	ID            string `json:"id,omitempty" jsonschema:"Proxy ID (required for start/stop/status/exec/toast/chaos)"`
 	TargetURL     string `json:"target_url,omitempty" jsonschema:"Target URL to proxy (required for start)"`
 	Port          int    `json:"port,omitempty" jsonschema:"Listen port (default: stable hash of target URL). Only specify if you need a specific port."`
 	MaxLogSize    int    `json:"max_log_size,omitempty" jsonschema:"Maximum log entries (default: 1000)"`
+	BindAddress   string `json:"bind_address,omitempty" jsonschema:"Bind address: '127.0.0.1' (default, localhost only) or '0.0.0.0' (all interfaces for tunnel/mobile testing)"`
+	PublicURL     string `json:"public_url,omitempty" jsonschema:"Public URL for tunnel services (e.g. 'https://abc123.trycloudflare.com'). Used for URL rewriting when behind a tunnel."`
 	Code          string `json:"code,omitempty" jsonschema:"JavaScript code to execute (required for exec)"`
 	Global        bool   `json:"global,omitempty" jsonschema:"For list: include proxies from all directories (default: false)"`
 	Help          bool   `json:"help,omitempty" jsonschema:"For exec: show __devtool API overview instead of executing code"`
@@ -31,6 +33,61 @@ type ProxyInput struct {
 	TunnelToken   string   `json:"tunnel_token,omitempty" jsonschema:"Authentication token for tunnel (e.g., ngrok authtoken)"`
 	TunnelRegion  string   `json:"tunnel_region,omitempty" jsonschema:"Tunnel region (optional)"`
 	TunnelCommand string   `json:"tunnel_command,omitempty" jsonschema:"Custom tunnel command (when tunnel is 'custom'). Use {{PORT}} as placeholder."`
+
+	// Chaos-related fields
+	ChaosOperation string           `json:"chaos_operation,omitempty" jsonschema:"For chaos: enable, disable, status, set, preset, add_rule, remove_rule, list_rules, stats, clear"`
+	ChaosPreset    string           `json:"chaos_preset,omitempty" jsonschema:"For chaos preset: mobile-3g, mobile-4g, flaky-api, race-condition, stale-tab, slow-connection, connection-drops, etc."`
+	ChaosRules     []ChaosRuleInput `json:"chaos_rules,omitempty" jsonschema:"For chaos set: array of chaos rules to configure"`
+	ChaosRule      *ChaosRuleInput  `json:"chaos_rule,omitempty" jsonschema:"For chaos add_rule: single rule to add"`
+	ChaosRuleID    string           `json:"chaos_rule_id,omitempty" jsonschema:"For chaos remove_rule: ID of rule to remove"`
+	ChaosConfig    *ChaosConfigInput `json:"chaos_config,omitempty" jsonschema:"For chaos set: full chaos configuration"`
+}
+
+// ChaosRuleInput defines input for a single chaos rule.
+type ChaosRuleInput struct {
+	ID          string   `json:"id"`
+	Name        string   `json:"name,omitempty"`
+	Type        string   `json:"type"` // latency, out_of_order, slow_drip, disconnect, http_error, truncate, etc.
+	Enabled     bool     `json:"enabled"`
+	URLPattern  string   `json:"url_pattern,omitempty"`
+	Methods     []string `json:"methods,omitempty"`
+	Probability float64  `json:"probability,omitempty"` // 0.0-1.0, default 1.0
+
+	// Latency config
+	MinLatencyMs int `json:"min_latency_ms,omitempty"`
+	MaxLatencyMs int `json:"max_latency_ms,omitempty"`
+	JitterMs     int `json:"jitter_ms,omitempty"`
+
+	// Slow-drip config
+	BytesPerMs int `json:"bytes_per_ms,omitempty"`
+	ChunkSize  int `json:"chunk_size,omitempty"`
+
+	// Connection drop config
+	DropAfterPercent float64 `json:"drop_after_percent,omitempty"`
+	DropAfterBytes   int64   `json:"drop_after_bytes,omitempty"`
+
+	// Error injection config
+	ErrorCodes   []int  `json:"error_codes,omitempty"`
+	ErrorMessage string `json:"error_message,omitempty"`
+
+	// Truncation config
+	TruncatePercent float64 `json:"truncate_percent,omitempty"`
+
+	// Out-of-order config
+	ReorderMinRequests int `json:"reorder_min_requests,omitempty"`
+	ReorderMaxWaitMs   int `json:"reorder_max_wait_ms,omitempty"`
+
+	// Stale config
+	StaleDelayMs int64 `json:"stale_delay_ms,omitempty"`
+}
+
+// ChaosConfigInput defines input for full chaos configuration.
+type ChaosConfigInput struct {
+	Enabled     bool             `json:"enabled"`
+	Rules       []ChaosRuleInput `json:"rules,omitempty"`
+	GlobalOdds  float64          `json:"global_odds,omitempty"`  // 0.0-1.0
+	Seed        int64            `json:"seed,omitempty"`         // For reproducible chaos
+	LoggingMode int              `json:"logging_mode,omitempty"` // 0=silent, 1=testing, 2=coordinated
 }
 
 // CurrentPageInput defines input for the currentpage tool.
@@ -81,10 +138,12 @@ type PageSessionOutput struct {
 // ProxyOutput defines output for proxy tool.
 type ProxyOutput struct {
 	// For start
-	ID         string `json:"id,omitempty"`
-	TargetURL  string `json:"target_url,omitempty"`
-	ListenAddr string `json:"listen_addr,omitempty"`
-	TunnelURL  string `json:"tunnel_url,omitempty"` // Public tunnel URL if tunnel is configured
+	ID          string `json:"id,omitempty"`
+	TargetURL   string `json:"target_url,omitempty"`
+	ListenAddr  string `json:"listen_addr,omitempty"`
+	BindAddress string `json:"bind_address,omitempty"`
+	PublicURL   string `json:"public_url,omitempty"`
+	TunnelURL   string `json:"tunnel_url,omitempty"` // Public tunnel URL if tunnel is configured
 
 	// For status
 	Running       bool            `json:"running,omitempty"`
@@ -103,6 +162,36 @@ type ProxyOutput struct {
 	Success     bool   `json:"success,omitempty"`
 	Message     string `json:"message,omitempty"`
 	ExecutionID string `json:"execution_id,omitempty"` // For exec action
+
+	// For chaos
+	ChaosEnabled bool              `json:"chaos_enabled,omitempty"`
+	ChaosStats   *ChaosStatsOutput `json:"chaos_stats,omitempty"`
+	ChaosRules   []ChaosRuleOutput `json:"chaos_rules,omitempty"`
+	ChaosPresets []string          `json:"chaos_presets,omitempty"`
+}
+
+// ChaosStatsOutput holds chaos engine statistics.
+type ChaosStatsOutput struct {
+	TotalRequests   int64            `json:"total_requests"`
+	AffectedCount   int64            `json:"affected_count"`
+	LatencyInjected int64            `json:"latency_injected_ms"`
+	ErrorsInjected  int64            `json:"errors_injected"`
+	DropsInjected   int64            `json:"drops_injected"`
+	TruncatedCount  int64            `json:"truncated_count"`
+	ReorderedCount  int64            `json:"reordered_count"`
+	RuleStats       map[string]int64 `json:"rule_stats,omitempty"`
+}
+
+// ChaosRuleOutput represents a chaos rule in the output.
+type ChaosRuleOutput struct {
+	ID          string   `json:"id"`
+	Name        string   `json:"name,omitempty"`
+	Type        string   `json:"type"`
+	Enabled     bool     `json:"enabled"`
+	URLPattern  string   `json:"url_pattern,omitempty"`
+	Methods     []string `json:"methods,omitempty"`
+	Probability float64  `json:"probability"`
+	TimesApplied int64   `json:"times_applied"`
 }
 
 // TunnelStatus represents tunnel status information.
@@ -116,6 +205,8 @@ type ProxyEntry struct {
 	ID            string `json:"id"`
 	TargetURL     string `json:"target_url"`
 	ListenAddr    string `json:"listen_addr"`
+	BindAddress   string `json:"bind_address,omitempty"`
+	PublicURL     string `json:"public_url,omitempty"`
 	Path          string `json:"path,omitempty"`
 	Running       bool   `json:"running"`
 	Uptime        string `json:"uptime"`

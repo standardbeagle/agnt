@@ -34,6 +34,8 @@ type ProxyServer struct {
 	TargetURL   *url.URL
 	ListenAddr  string
 	Path        string
+	BindAddress string // Bind address used (127.0.0.1 or 0.0.0.0)
+	PublicURL   string // Optional public URL for tunnel services
 	logger      *TrafficLogger
 	pageTracker *PageTracker
 	httpServer  *http.Server
@@ -69,6 +71,9 @@ type ProxyServer struct {
 
 	// Tunnel manager for ngrok/cloudflared integration
 	tunnel *TunnelManager
+
+	// Chaos engine for failure injection
+	chaosEngine *ChaosEngine
 }
 
 // ProxyConfig holds configuration for creating a proxy server.
@@ -79,6 +84,8 @@ type ProxyConfig struct {
 	MaxLogSize  int
 	AutoRestart bool   // Enable automatic restart on crash (default: true)
 	Path        string // Working directory where proxy was created
+	BindAddress string // Bind address: "127.0.0.1" (default, localhost only) or "0.0.0.0" (all interfaces)
+	PublicURL   string // Optional public URL for tunnel services (e.g., "https://abc123.trycloudflare.com")
 	Tunnel      *protocol.TunnelConfig
 }
 
@@ -113,12 +120,28 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 		config.MaxLogSize = 1000
 	}
 
+	// Default bind address to localhost for security
+	bindAddress := config.BindAddress
+	if bindAddress == "" {
+		bindAddress = "127.0.0.1"
+	}
+
+	// Validate public URL if provided
+	if config.PublicURL != "" {
+		if _, err := url.Parse(config.PublicURL); err != nil {
+			return nil, fmt.Errorf("invalid public URL: %w", err)
+		}
+	}
+
+	logger := NewTrafficLogger(config.MaxLogSize)
 	ps := &ProxyServer{
 		ID:              config.ID,
 		TargetURL:       targetURL,
-		ListenAddr:      fmt.Sprintf(":%d", config.ListenPort),
+		ListenAddr:      fmt.Sprintf("%s:%d", bindAddress, config.ListenPort),
 		Path:            config.Path,
-		logger:          NewTrafficLogger(config.MaxLogSize),
+		BindAddress:     bindAddress,
+		PublicURL:       config.PublicURL,
+		logger:          logger,
 		pageTracker:     NewPageTracker(100, 5*time.Minute),
 		ready:           make(chan struct{}),
 		autoRestart:     config.AutoRestart,
@@ -126,6 +149,7 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 		restartWindow:   1 * time.Minute, // Within 1 minute window
 		restarts:        make([]time.Time, 0, 5),
 		overlayNotifier: NewOverlayNotifier(),
+		chaosEngine:     NewChaosEngine(logger),
 		wsUpgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
 				return true // Allow all origins for development
@@ -135,6 +159,13 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 
 	// Create reverse proxy with custom Director for proper Host handling
 	ps.proxy = httputil.NewSingleHostReverseProxy(targetURL)
+
+	// Wrap the transport with chaos transport for failure injection
+	baseTransport := ps.proxy.Transport
+	if baseTransport == nil {
+		baseTransport = http.DefaultTransport
+	}
+	ps.proxy.Transport = NewChaosTransport(baseTransport, ps.chaosEngine)
 
 	// Customize Director to handle Host header and X-Forwarded-* headers
 	originalDirector := ps.proxy.Director
@@ -401,6 +432,11 @@ func (ps *ProxyServer) PageTracker() *PageTracker {
 	return ps.pageTracker
 }
 
+// ChaosEngine returns the chaos engine for this proxy server.
+func (ps *ProxyServer) ChaosEngine() *ChaosEngine {
+	return ps.chaosEngine
+}
+
 // Ready returns a channel that is closed when the server is ready to accept connections.
 // Use this to wait for server readiness instead of polling or sleeping.
 func (ps *ProxyServer) Ready() <-chan struct{} {
@@ -411,6 +447,13 @@ func (ps *ProxyServer) Ready() <-chan struct{} {
 // Example: "http://127.0.0.1:19191"
 func (ps *ProxyServer) SetOverlayEndpoint(endpoint string) {
 	ps.overlayNotifier.SetEndpoint(endpoint)
+}
+
+// SetPublicURL sets the public URL for tunnel services.
+// This URL is used for URL rewriting when behind a tunnel.
+// Example: "https://abc123.trycloudflare.com"
+func (ps *ProxyServer) SetPublicURL(publicURL string) {
+	ps.PublicURL = publicURL
 }
 
 // OverlayNotifier returns the overlay notifier for direct access.
@@ -425,6 +468,8 @@ func (ps *ProxyServer) Stats() ProxyStats {
 		TargetURL:     ps.TargetURL.String(),
 		ListenAddr:    ps.ListenAddr,
 		Path:          ps.Path,
+		BindAddress:   ps.BindAddress,
+		PublicURL:     ps.PublicURL,
 		Running:       ps.running.Load(),
 		Uptime:        time.Since(ps.startTime),
 		TotalRequests: ps.requestSeq.Load(),
@@ -458,7 +503,9 @@ type ProxyStats struct {
 	ID            string        `json:"id"`
 	TargetURL     string        `json:"target_url"`
 	ListenAddr    string        `json:"listen_addr"`
-	Path          string        `json:"path,omitempty"` // Working directory where proxy was created
+	Path          string        `json:"path,omitempty"`         // Working directory where proxy was created
+	BindAddress   string        `json:"bind_address,omitempty"` // Bind address (127.0.0.1 or 0.0.0.0)
+	PublicURL     string        `json:"public_url,omitempty"`   // Public URL for tunnels
 	Running       bool          `json:"running"`
 	Uptime        time.Duration `json:"uptime"`
 	TotalRequests int64         `json:"total_requests"`
@@ -512,11 +559,66 @@ func (ps *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check for chaos rules that apply to this request
+	chaosRules := ps.chaosEngine.MatchingRules(r)
+
+	// HTTP error injection - return error without calling backend
+	if errorCode, errorMsg := ps.chaosEngine.GetHTTPError(chaosRules); errorCode != 0 {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("X-Chaos-Injected", "true")
+		w.WriteHeader(errorCode)
+		if errorMsg == "" {
+			errorMsg = http.StatusText(errorCode)
+		}
+		w.Write([]byte(errorMsg))
+
+		// Log the chaos-injected error
+		ps.logger.LogHTTP(HTTPLogEntry{
+			ID:             reqID,
+			Timestamp:      startTime,
+			Method:         r.Method,
+			URL:            r.URL.String(),
+			RequestHeaders: reqHeaders,
+			RequestBody:    reqBody,
+			StatusCode:     errorCode,
+			ResponseBody:   errorMsg,
+			Duration:       time.Since(startTime),
+		})
+		return
+	}
+
 	// Create response recorder to capture response for non-WebSocket requests
 	recorder := &responseRecorder{
 		ResponseWriter: w,
 		statusCode:     http.StatusOK,
 		body:           &bytes.Buffer{},
+	}
+
+	// Wrap with chaos writers if needed
+	var chaosWriter http.ResponseWriter = recorder
+
+	// Slow-drip chaos - stream bytes slowly
+	if bytesPerMs, chunkSize := ps.chaosEngine.GetSlowDripConfig(chaosRules); bytesPerMs > 0 {
+		chaosWriter = NewSlowDripWriter(chaosWriter, bytesPerMs, chunkSize, r.Context())
+	}
+
+	// Connection drop chaos - drop connection mid-response
+	if afterPercent, afterBytes := ps.chaosEngine.GetDropConfig(chaosRules); afterPercent > 0 || afterBytes > 0 {
+		// We need to estimate content length for percentage-based drops
+		// This is a best-effort estimate; actual size may vary
+		expectedSize := int64(10 * 1024) // Default 10KB estimate
+		chaosWriter = NewConnectionDropWriter(chaosWriter, afterPercent, afterBytes, expectedSize)
+	}
+
+	// Truncation chaos - truncate response body
+	if truncatePercent := ps.chaosEngine.GetTruncateConfig(chaosRules); truncatePercent > 0 {
+		expectedSize := int64(10 * 1024) // Default 10KB estimate
+		chaosWriter = NewTruncationWriter(chaosWriter, truncatePercent, expectedSize)
+	}
+
+	// Update recorder to use chaos writer for actual writes
+	if chaosWriter != recorder {
+		recorder.ResponseWriter = chaosWriter
 	}
 
 	// Proxy the request
@@ -702,22 +804,43 @@ func (ps *ProxyServer) rewriteURL(rawURL string) string {
 	// Rewrite to proxy URL
 	// Extract proxy host from ListenAddr
 	proxyHost := ps.getProxyHost()
+	proxyScheme := ps.getProxyScheme()
 
-	parsed.Scheme = "http" // Proxy is HTTP
+	parsed.Scheme = proxyScheme
 	parsed.Host = proxyHost
 
 	return parsed.String()
 }
 
 // getProxyHost returns the host:port for the proxy server.
+// If a public URL is configured (for tunnels), returns that host.
+// Otherwise returns localhost:port for local development.
 func (ps *ProxyServer) getProxyHost() string {
-	// ListenAddr is in format ":port" or "[::]:port"
+	// If a public URL is configured (for tunnels), use its host
+	if ps.PublicURL != "" {
+		if parsed, err := url.Parse(ps.PublicURL); err == nil && parsed.Host != "" {
+			return parsed.Host
+		}
+	}
+
+	// ListenAddr is in format "addr:port" or "[::]:port"
 	// We need to return "localhost:port" for redirect purposes
 	port := "8080"
 	if lastColon := strings.LastIndex(ps.ListenAddr, ":"); lastColon != -1 {
 		port = ps.ListenAddr[lastColon+1:]
 	}
 	return "localhost:" + port
+}
+
+// getProxyScheme returns the scheme (http/https) for the proxy server.
+// If a public URL is configured with HTTPS (common for tunnels), returns https.
+func (ps *ProxyServer) getProxyScheme() string {
+	if ps.PublicURL != "" {
+		if parsed, err := url.Parse(ps.PublicURL); err == nil && parsed.Scheme != "" {
+			return parsed.Scheme
+		}
+	}
+	return "http"
 }
 
 // rewriteURLsInBody rewrites absolute URLs in HTML/JS content from target to proxy.
@@ -733,15 +856,16 @@ func (ps *ProxyServer) rewriteURLsInBody(body []byte) []byte {
 	}
 
 	proxyHost := ps.getProxyHost()
+	proxyScheme := ps.getProxyScheme()
 
 	// Rewrite common URL patterns pointing to target
-	// http://target:port -> http://localhost:proxyport
-	// https://target:port -> http://localhost:proxyport
+	// http://target:port -> scheme://proxyhost
+	// https://target:port -> scheme://proxyhost
 
 	// Build replacement patterns
 	targetHTTP := "http://" + targetHost
 	targetHTTPS := "https://" + targetHost
-	proxyURL := "http://" + proxyHost
+	proxyURL := proxyScheme + "://" + proxyHost
 
 	// Replace URLs (simple byte replacement for performance)
 	result := bytes.ReplaceAll(body, []byte(targetHTTPS), []byte(proxyURL))

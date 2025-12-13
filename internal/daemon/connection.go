@@ -116,6 +116,10 @@ func (c *Connection) handleCommand(ctx context.Context, cmd *protocol.Command) e
 		return c.handleCurrentPage(cmd)
 	case protocol.VerbOverlay:
 		return c.handleOverlay(cmd)
+	case protocol.VerbTunnel:
+		return c.handleTunnel(ctx, cmd)
+	case protocol.VerbChaos:
+		return c.handleChaos(cmd)
 	default:
 		return c.writeStructuredErr(&protocol.StructuredError{
 			Code:         protocol.ErrInvalidCommand,

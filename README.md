@@ -185,6 +185,7 @@ Instead of dumping 100 lines of nested React errors into the context, agnt conso
 | `proxy` | Reverse proxy: start, stop, exec, status |
 | `proxylog` | Query logs: http, error, screenshot, sketch, panel_message |
 | `currentpage` | View active page sessions with grouped resources |
+| `tunnel` | Tunnel management: cloudflare/ngrok for mobile testing |
 | `daemon` | Manage background daemon service |
 
 ## Browser API (50+ Functions)
@@ -289,6 +290,7 @@ npm install && npm start
 
 - **Vibe coding** - Stay in flow while your agent sees everything
 - **Visual debugging** - Show don't tell - sketch what's wrong
+- **Mobile testing** - Tunnel your dev server for real device testing with Cloudflare/ngrok + BrowserStack integration
 - **Accessibility testing** - Automated a11y audits during development
 - **Error tracking** - Catch frontend errors before users do
 - **UI reviews** - Annotate designs directly on the live app

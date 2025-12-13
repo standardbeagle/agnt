@@ -378,7 +378,7 @@ StatePending → StateStarting → StateRunning → StateStopping → StateStopp
 
 ### MCP Tools
 
-**Available Tools** (7 total):
+**Available Tools** (8 total):
 
 | Tool | Description |
 |------|-------------|
@@ -387,6 +387,7 @@ StatePending → StateStarting → StateRunning → StateStopping → StateStopp
 | `proc` | Manage processes: status, output, stop, list, cleanup_port |
 | `proxy` | Reverse proxy: start, stop, status, list, exec (JavaScript execution) |
 | `proxylog` | Query proxy logs: query, clear, stats |
+| `tunnel` | Tunnel management: start, stop, status, list (cloudflare/ngrok) |
 | `currentpage` | Page session tracking: list, get, clear |
 | `daemon` | Daemon management: status, info, start, stop, restart |
 
@@ -557,6 +558,74 @@ __devtool.sketch.clear()          // Clear all elements
 - `Ctrl+V`: Paste
 
 **Sketch Logging**: Sketches are logged as `sketch` type with both JSON data and PNG image.
+
+### Tunnel Integration (Mobile Testing)
+
+The proxy supports tunnel services for exposing local development servers publicly, enabling testing on real mobile devices.
+
+**Supported Providers**:
+- **Cloudflare** (`cloudflared`): Free quick tunnels via trycloudflare.com
+- **ngrok** (`ngrok`): Popular tunneling service
+
+**Proxy Configuration for Tunnels**:
+```bash
+# Start proxy on all interfaces (required for tunnels)
+proxy {action: "start", id: "dev", target_url: "http://localhost:3000", bind_address: "0.0.0.0"}
+
+# With explicit public URL (if tunnel URL is known)
+proxy {action: "start", id: "dev", target_url: "http://localhost:3000", bind_address: "0.0.0.0", public_url: "https://abc123.trycloudflare.com"}
+```
+
+**Automatic Tunnel Management**:
+```bash
+# Start tunnel with auto-configuration of proxy
+tunnel {action: "start", id: "dev", provider: "cloudflare", local_port: 12345, proxy_id: "dev"}
+
+# Check tunnel status
+tunnel {action: "status", id: "dev"}
+
+# List all tunnels
+tunnel {action: "list"}
+
+# Stop tunnel
+tunnel {action: "stop", id: "dev"}
+```
+
+**How it works**:
+1. Start proxy with `bind_address: "0.0.0.0"` to listen on all interfaces
+2. Start tunnel pointing to the proxy's listen port
+3. If `proxy_id` is specified, tunnel auto-updates the proxy's `public_url`
+4. URL rewriting automatically uses the tunnel's HTTPS scheme
+
+**BrowserStack Integration**:
+
+BrowserStack provides their own official MCP server for automated testing on real devices. Use it alongside agnt for comprehensive mobile testing:
+
+1. Install BrowserStack MCP Server: https://github.com/browserstack/mcp-server
+2. Configure with your BrowserStack credentials
+3. Use the tunnel tool with agnt to expose your dev server
+4. Use BrowserStack MCP to run automated tests on the tunneled URL
+
+```json
+// claude_desktop_config.json - both MCP servers
+{
+  "mcpServers": {
+    "agnt": {
+      "command": "agnt",
+      "args": ["serve"]
+    },
+    "browserstack": {
+      "command": "npx",
+      "args": ["@anthropic-ai/browserstack-mcp"],
+      "env": {
+        "BROWSERSTACK_USERNAME": "your_username",
+        "BROWSERSTACK_ACCESS_KEY": "your_key",
+        "BROWSERSTACK_LOCAL": "true"
+      }
+    }
+  }
+}
+```
 
 ## Testing Strategy
 

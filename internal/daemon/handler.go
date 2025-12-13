@@ -13,6 +13,7 @@ import (
 	"devtool-mcp/internal/project"
 	"devtool-mcp/internal/protocol"
 	"devtool-mcp/internal/proxy"
+	"devtool-mcp/internal/tunnel"
 )
 
 // handleDetect handles the DETECT command.
@@ -517,18 +518,24 @@ func (c *Connection) handleProxyStart(ctx context.Context, cmd *protocol.Command
 		maxLogSize, _ = strconv.Atoi(cmd.Args[3])
 	}
 
-	// Parse path and tunnel config from JSON data (optional)
+	// Parse extended config from JSON data (optional)
 	path := "."
+	bindAddress := ""
+	publicURL := ""
 	var tunnelConfig *protocol.TunnelConfig
 	if len(cmd.Data) > 0 {
 		var data struct {
-			Path   string                 `json:"path"`
-			Tunnel *protocol.TunnelConfig `json:"tunnel"`
+			Path        string                 `json:"path"`
+			BindAddress string                 `json:"bind_address"`
+			PublicURL   string                 `json:"public_url"`
+			Tunnel      *protocol.TunnelConfig `json:"tunnel"`
 		}
 		if err := json.Unmarshal(cmd.Data, &data); err == nil {
 			if data.Path != "" {
 				path = data.Path
 			}
+			bindAddress = data.BindAddress
+			publicURL = data.PublicURL
 			tunnelConfig = data.Tunnel
 		}
 	}
@@ -540,6 +547,8 @@ func (c *Connection) handleProxyStart(ctx context.Context, cmd *protocol.Command
 		MaxLogSize:  maxLogSize,
 		AutoRestart: true,
 		Path:        path,
+		BindAddress: bindAddress,
+		PublicURL:   publicURL,
 		Tunnel:      tunnelConfig,
 	}
 
@@ -569,9 +578,13 @@ func (c *Connection) handleProxyStart(ctx context.Context, cmd *protocol.Command
 	}
 
 	resp := map[string]interface{}{
-		"id":          proxyServer.ID,
-		"target_url":  proxyServer.TargetURL.String(),
-		"listen_addr": proxyServer.ListenAddr,
+		"id":           proxyServer.ID,
+		"target_url":   proxyServer.TargetURL.String(),
+		"listen_addr":  proxyServer.ListenAddr,
+		"bind_address": proxyServer.BindAddress,
+	}
+	if proxyServer.PublicURL != "" {
+		resp["public_url"] = proxyServer.PublicURL
 	}
 
 	// Include tunnel URL if available
@@ -622,6 +635,7 @@ func (c *Connection) handleProxyStatus(cmd *protocol.Command) error {
 		"id":             stats.ID,
 		"target_url":     stats.TargetURL,
 		"listen_addr":    stats.ListenAddr,
+		"bind_address":   stats.BindAddress,
 		"running":        stats.Running,
 		"uptime":         formatDuration(stats.Uptime),
 		"total_requests": stats.TotalRequests,
@@ -631,6 +645,9 @@ func (c *Connection) handleProxyStatus(cmd *protocol.Command) error {
 			"max_size":          stats.LoggerStats.MaxSize,
 			"dropped":           stats.LoggerStats.Dropped,
 		},
+	}
+	if stats.PublicURL != "" {
+		resp["public_url"] = stats.PublicURL
 	}
 
 	// Include tunnel information if available
@@ -681,10 +698,14 @@ func (c *Connection) handleProxyList(cmd *protocol.Command) error {
 			"id":             stats.ID,
 			"target_url":     stats.TargetURL,
 			"listen_addr":    stats.ListenAddr,
+			"bind_address":   stats.BindAddress,
 			"path":           stats.Path,
 			"running":        stats.Running,
 			"uptime":         formatDuration(stats.Uptime),
 			"total_requests": stats.TotalRequests,
+		}
+		if stats.PublicURL != "" {
+			entry["public_url"] = stats.PublicURL
 		}
 		// Include tunnel info if available
 		if p.HasTunnel() {
@@ -1490,4 +1511,604 @@ func (c *Connection) handleOverlayActivity(cmd *protocol.Command) error {
 
 	data, _ := json.Marshal(resp)
 	return c.writeJSON(data)
+}
+
+// Valid actions for TUNNEL command
+var validTunnelActions = []string{"START", "STOP", "STATUS", "LIST"}
+
+// handleTunnel handles the TUNNEL command.
+func (c *Connection) handleTunnel(ctx context.Context, cmd *protocol.Command) error {
+	if cmd.SubVerb == "" && len(cmd.Args) > 0 {
+		cmd.SubVerb = strings.ToUpper(cmd.Args[0])
+		cmd.Args = cmd.Args[1:]
+	}
+
+	switch cmd.SubVerb {
+	case protocol.SubVerbStart:
+		return c.handleTunnelStart(ctx, cmd)
+	case protocol.SubVerbStop:
+		return c.handleTunnelStop(ctx, cmd)
+	case protocol.SubVerbStatus:
+		return c.handleTunnelStatus(cmd)
+	case protocol.SubVerbList:
+		return c.handleTunnelList(cmd)
+	case "":
+		return c.writeStructuredErr(&protocol.StructuredError{
+			Code:         protocol.ErrMissingParam,
+			Message:      "action required",
+			Command:      "TUNNEL",
+			Param:        "action",
+			ValidActions: validTunnelActions,
+		})
+	default:
+		return c.writeStructuredErr(&protocol.StructuredError{
+			Code:         protocol.ErrInvalidAction,
+			Message:      "unknown action",
+			Command:      "TUNNEL",
+			Action:       cmd.SubVerb,
+			ValidActions: validTunnelActions,
+		})
+	}
+}
+
+func (c *Connection) handleTunnelStart(ctx context.Context, cmd *protocol.Command) error {
+	// Parse config from JSON data
+	if len(cmd.Data) == 0 {
+		return c.writeErr(protocol.ErrInvalidArgs, "TUNNEL START requires JSON config")
+	}
+
+	var config protocol.TunnelStartConfig
+	if err := json.Unmarshal(cmd.Data, &config); err != nil {
+		return c.writeErr(protocol.ErrInvalidArgs, fmt.Sprintf("invalid JSON: %v", err))
+	}
+
+	// Validate required fields
+	if config.ID == "" {
+		return c.writeErr(protocol.ErrInvalidArgs, "tunnel id required")
+	}
+	if config.Provider == "" {
+		return c.writeErr(protocol.ErrInvalidArgs, "provider required (cloudflare or ngrok)")
+	}
+	if config.LocalPort <= 0 {
+		return c.writeErr(protocol.ErrInvalidArgs, "local_port required")
+	}
+
+	// Map provider string to tunnel.Provider
+	var provider tunnel.Provider
+	switch strings.ToLower(config.Provider) {
+	case "cloudflare":
+		provider = tunnel.ProviderCloudflare
+	case "ngrok":
+		provider = tunnel.ProviderNgrok
+	default:
+		return c.writeErr(protocol.ErrInvalidArgs, fmt.Sprintf("unsupported provider: %s (use cloudflare or ngrok)", config.Provider))
+	}
+
+	tunnelConfig := tunnel.Config{
+		Provider:   provider,
+		LocalPort:  config.LocalPort,
+		LocalHost:  config.LocalHost,
+		BinaryPath: config.BinaryPath,
+	}
+
+	t, err := c.daemon.tunnelm.Start(ctx, config.ID, tunnelConfig)
+	if err != nil {
+		return c.writeErr(protocol.ErrInternal, err.Error())
+	}
+
+	// If proxy_id is specified, set up auto-configuration of public_url
+	if config.ProxyID != "" {
+		t.OnURL(func(url string) {
+			proxyServer, err := c.daemon.proxym.Get(config.ProxyID)
+			if err == nil {
+				proxyServer.SetPublicURL(url)
+			}
+		})
+	}
+
+	// Wait for URL with timeout
+	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	publicURL, err := t.WaitForURL(waitCtx)
+	if err != nil {
+		// Tunnel started but URL not yet available
+		info := t.Info()
+		resp := map[string]interface{}{
+			"id":         config.ID,
+			"provider":   string(info.Provider),
+			"state":      info.State,
+			"local_addr": info.LocalAddr,
+			"error":      err.Error(),
+		}
+		data, _ := json.Marshal(resp)
+		return c.writeJSON(data)
+	}
+
+	// If proxy_id was specified and URL is available, update the proxy
+	if config.ProxyID != "" && publicURL != "" {
+		proxyServer, err := c.daemon.proxym.Get(config.ProxyID)
+		if err == nil {
+			proxyServer.SetPublicURL(publicURL)
+		}
+	}
+
+	info := t.Info()
+	resp := map[string]interface{}{
+		"id":         config.ID,
+		"provider":   string(info.Provider),
+		"state":      info.State,
+		"public_url": publicURL,
+		"local_addr": info.LocalAddr,
+	}
+
+	data, _ := json.Marshal(resp)
+	return c.writeJSON(data)
+}
+
+func (c *Connection) handleTunnelStop(ctx context.Context, cmd *protocol.Command) error {
+	if len(cmd.Args) < 1 {
+		return c.writeErr(protocol.ErrInvalidArgs, "TUNNEL STOP requires id")
+	}
+
+	tunnelID := cmd.Args[0]
+
+	if err := c.daemon.tunnelm.Stop(ctx, tunnelID); err != nil {
+		return c.writeErr(protocol.ErrNotFound, tunnelID)
+	}
+
+	return c.writeOK("stopped")
+}
+
+func (c *Connection) handleTunnelStatus(cmd *protocol.Command) error {
+	if len(cmd.Args) < 1 {
+		return c.writeErr(protocol.ErrInvalidArgs, "TUNNEL STATUS requires id")
+	}
+
+	t, ok := c.daemon.tunnelm.Get(cmd.Args[0])
+	if !ok {
+		return c.writeErr(protocol.ErrNotFound, cmd.Args[0])
+	}
+
+	info := t.Info()
+	resp := map[string]interface{}{
+		"id":         cmd.Args[0],
+		"provider":   string(info.Provider),
+		"state":      info.State,
+		"public_url": info.PublicURL,
+		"local_addr": info.LocalAddr,
+	}
+	if info.Error != "" {
+		resp["error"] = info.Error
+	}
+
+	data, _ := json.Marshal(resp)
+	return c.writeJSON(data)
+}
+
+func (c *Connection) handleTunnelList(cmd *protocol.Command) error {
+	infos := c.daemon.tunnelm.List()
+
+	entries := make([]map[string]interface{}, len(infos))
+	for i, info := range infos {
+		entry := map[string]interface{}{
+			"provider":   string(info.Provider),
+			"state":      info.State,
+			"public_url": info.PublicURL,
+			"local_addr": info.LocalAddr,
+		}
+		if info.Error != "" {
+			entry["error"] = info.Error
+		}
+		entries[i] = entry
+	}
+
+	resp := map[string]interface{}{
+		"count":   len(entries),
+		"tunnels": entries,
+	}
+
+	data, _ := json.Marshal(resp)
+	return c.writeJSON(data)
+}
+
+// Valid actions for CHAOS command
+var validChaosActions = []string{"ENABLE", "DISABLE", "STATUS", "PRESET", "SET", "ADD-RULE", "REMOVE-RULE", "LIST-RULES", "STATS", "CLEAR", "LIST-PRESETS"}
+
+// handleChaos handles the CHAOS command.
+func (c *Connection) handleChaos(cmd *protocol.Command) error {
+	if cmd.SubVerb == "" && len(cmd.Args) > 0 {
+		cmd.SubVerb = strings.ToUpper(cmd.Args[0])
+		cmd.Args = cmd.Args[1:]
+	}
+
+	switch cmd.SubVerb {
+	case protocol.SubVerbEnable:
+		return c.handleChaosEnable(cmd)
+	case protocol.SubVerbDisable:
+		return c.handleChaosDisable(cmd)
+	case protocol.SubVerbStatus:
+		return c.handleChaosStatus(cmd)
+	case protocol.SubVerbPreset:
+		return c.handleChaosPreset(cmd)
+	case protocol.SubVerbSet:
+		return c.handleChaosSet(cmd)
+	case protocol.SubVerbAddRule:
+		return c.handleChaosAddRule(cmd)
+	case protocol.SubVerbRemoveRule:
+		return c.handleChaosRemoveRule(cmd)
+	case protocol.SubVerbListRules:
+		return c.handleChaosListRules(cmd)
+	case protocol.SubVerbStats:
+		return c.handleChaosStats(cmd)
+	case protocol.SubVerbClear:
+		return c.handleChaosClear(cmd)
+	case "LIST-PRESETS":
+		return c.handleChaosListPresets()
+	case "":
+		return c.writeStructuredErr(&protocol.StructuredError{
+			Code:         protocol.ErrMissingParam,
+			Message:      "action required",
+			Command:      "CHAOS",
+			Param:        "action",
+			ValidActions: validChaosActions,
+		})
+	default:
+		return c.writeStructuredErr(&protocol.StructuredError{
+			Code:         protocol.ErrInvalidAction,
+			Message:      "unknown action",
+			Command:      "CHAOS",
+			Action:       cmd.SubVerb,
+			ValidActions: validChaosActions,
+		})
+	}
+}
+
+func (c *Connection) handleChaosEnable(cmd *protocol.Command) error {
+	if len(cmd.Args) < 1 {
+		return c.writeErr(protocol.ErrInvalidArgs, "CHAOS ENABLE requires proxy_id")
+	}
+
+	proxyServer, err := c.daemon.proxym.Get(cmd.Args[0])
+	if err != nil {
+		return c.writeErr(protocol.ErrNotFound, cmd.Args[0])
+	}
+
+	engine := proxyServer.ChaosEngine()
+	engine.Enable()
+
+	resp := map[string]interface{}{
+		"success": true,
+		"enabled": engine.IsEnabled(),
+	}
+
+	data, _ := json.Marshal(resp)
+	return c.writeJSON(data)
+}
+
+func (c *Connection) handleChaosDisable(cmd *protocol.Command) error {
+	if len(cmd.Args) < 1 {
+		return c.writeErr(protocol.ErrInvalidArgs, "CHAOS DISABLE requires proxy_id")
+	}
+
+	proxyServer, err := c.daemon.proxym.Get(cmd.Args[0])
+	if err != nil {
+		return c.writeErr(protocol.ErrNotFound, cmd.Args[0])
+	}
+
+	engine := proxyServer.ChaosEngine()
+	engine.Disable()
+
+	resp := map[string]interface{}{
+		"success": true,
+		"enabled": engine.IsEnabled(),
+	}
+
+	data, _ := json.Marshal(resp)
+	return c.writeJSON(data)
+}
+
+func (c *Connection) handleChaosStatus(cmd *protocol.Command) error {
+	if len(cmd.Args) < 1 {
+		return c.writeErr(protocol.ErrInvalidArgs, "CHAOS STATUS requires proxy_id")
+	}
+
+	proxyServer, err := c.daemon.proxym.Get(cmd.Args[0])
+	if err != nil {
+		return c.writeErr(protocol.ErrNotFound, cmd.Args[0])
+	}
+
+	engine := proxyServer.ChaosEngine()
+	config := engine.GetConfig()
+	stats := engine.GetStats()
+
+	ruleCount := 0
+	if config != nil {
+		ruleCount = len(config.Rules)
+	}
+
+	resp := map[string]interface{}{
+		"enabled":      engine.IsEnabled(),
+		"logging_mode": int(engine.GetLoggingMode()),
+		"rule_count":   ruleCount,
+		"stats": map[string]interface{}{
+			"total_requests":      stats.TotalRequests,
+			"affected_count":      stats.AffectedCount,
+			"latency_injected_ms": stats.LatencyInjected,
+			"errors_injected":     stats.ErrorsInjected,
+			"drops_injected":      stats.DropsInjected,
+			"truncated_count":     stats.TruncatedCount,
+			"reordered_count":     stats.ReorderedCount,
+		},
+	}
+
+	data, _ := json.Marshal(resp)
+	return c.writeJSON(data)
+}
+
+func (c *Connection) handleChaosPreset(cmd *protocol.Command) error {
+	if len(cmd.Args) < 2 {
+		return c.writeErr(protocol.ErrInvalidArgs, "CHAOS PRESET requires proxy_id and preset name")
+	}
+
+	proxyServer, err := c.daemon.proxym.Get(cmd.Args[0])
+	if err != nil {
+		return c.writeErr(protocol.ErrNotFound, cmd.Args[0])
+	}
+
+	presetName := cmd.Args[1]
+	presetConfig := proxy.GetPreset(presetName)
+	if presetConfig == nil {
+		availablePresets := proxy.ListPresets()
+		return c.writeErr(protocol.ErrInvalidArgs, fmt.Sprintf("unknown preset %q. Available: %s", presetName, strings.Join(availablePresets, ", ")))
+	}
+
+	engine := proxyServer.ChaosEngine()
+	if err := engine.SetConfig(presetConfig); err != nil {
+		return c.writeErr(protocol.ErrInternal, err.Error())
+	}
+
+	resp := map[string]interface{}{
+		"success":    true,
+		"preset":     presetName,
+		"enabled":    engine.IsEnabled(),
+		"rule_count": len(presetConfig.Rules),
+	}
+
+	data, _ := json.Marshal(resp)
+	return c.writeJSON(data)
+}
+
+func (c *Connection) handleChaosSet(cmd *protocol.Command) error {
+	if len(cmd.Args) < 1 {
+		return c.writeErr(protocol.ErrInvalidArgs, "CHAOS SET requires proxy_id")
+	}
+
+	proxyServer, err := c.daemon.proxym.Get(cmd.Args[0])
+	if err != nil {
+		return c.writeErr(protocol.ErrNotFound, cmd.Args[0])
+	}
+
+	if len(cmd.Data) == 0 {
+		return c.writeErr(protocol.ErrInvalidArgs, "CHAOS SET requires config JSON")
+	}
+
+	var configPayload protocol.ChaosConfigPayload
+	if err := json.Unmarshal(cmd.Data, &configPayload); err != nil {
+		return c.writeErr(protocol.ErrInvalidArgs, fmt.Sprintf("invalid config JSON: %v", err))
+	}
+
+	// Convert protocol config to proxy config
+	config := &proxy.ChaosConfig{
+		Enabled:     configPayload.Enabled,
+		GlobalOdds:  configPayload.GlobalOdds,
+		Seed:        configPayload.Seed,
+		LoggingMode: proxy.LoggingMode(configPayload.LoggingMode),
+	}
+
+	for _, ruleConfig := range configPayload.Rules {
+		rule := convertProtocolRuleToProxy(ruleConfig)
+		config.Rules = append(config.Rules, rule)
+	}
+
+	engine := proxyServer.ChaosEngine()
+	if err := engine.SetConfig(config); err != nil {
+		return c.writeErr(protocol.ErrInternal, err.Error())
+	}
+
+	resp := map[string]interface{}{
+		"success":    true,
+		"enabled":    engine.IsEnabled(),
+		"rule_count": len(config.Rules),
+	}
+
+	data, _ := json.Marshal(resp)
+	return c.writeJSON(data)
+}
+
+func (c *Connection) handleChaosAddRule(cmd *protocol.Command) error {
+	if len(cmd.Args) < 1 {
+		return c.writeErr(protocol.ErrInvalidArgs, "CHAOS ADD-RULE requires proxy_id")
+	}
+
+	proxyServer, err := c.daemon.proxym.Get(cmd.Args[0])
+	if err != nil {
+		return c.writeErr(protocol.ErrNotFound, cmd.Args[0])
+	}
+
+	if len(cmd.Data) == 0 {
+		return c.writeErr(protocol.ErrInvalidArgs, "CHAOS ADD-RULE requires rule JSON")
+	}
+
+	var ruleConfig protocol.ChaosRuleConfig
+	if err := json.Unmarshal(cmd.Data, &ruleConfig); err != nil {
+		return c.writeErr(protocol.ErrInvalidArgs, fmt.Sprintf("invalid rule JSON: %v", err))
+	}
+
+	rule := convertProtocolRuleToProxy(&ruleConfig)
+
+	engine := proxyServer.ChaosEngine()
+	if err := engine.AddRule(rule); err != nil {
+		return c.writeErr(protocol.ErrInternal, err.Error())
+	}
+
+	resp := map[string]interface{}{
+		"success": true,
+		"rule_id": rule.ID,
+	}
+
+	data, _ := json.Marshal(resp)
+	return c.writeJSON(data)
+}
+
+func (c *Connection) handleChaosRemoveRule(cmd *protocol.Command) error {
+	if len(cmd.Args) < 2 {
+		return c.writeErr(protocol.ErrInvalidArgs, "CHAOS REMOVE-RULE requires proxy_id and rule_id")
+	}
+
+	proxyServer, err := c.daemon.proxym.Get(cmd.Args[0])
+	if err != nil {
+		return c.writeErr(protocol.ErrNotFound, cmd.Args[0])
+	}
+
+	ruleID := cmd.Args[1]
+	engine := proxyServer.ChaosEngine()
+	removed := engine.RemoveRule(ruleID)
+
+	resp := map[string]interface{}{
+		"success": removed,
+		"rule_id": ruleID,
+	}
+
+	data, _ := json.Marshal(resp)
+	return c.writeJSON(data)
+}
+
+func (c *Connection) handleChaosListRules(cmd *protocol.Command) error {
+	if len(cmd.Args) < 1 {
+		return c.writeErr(protocol.ErrInvalidArgs, "CHAOS LIST-RULES requires proxy_id")
+	}
+
+	proxyServer, err := c.daemon.proxym.Get(cmd.Args[0])
+	if err != nil {
+		return c.writeErr(protocol.ErrNotFound, cmd.Args[0])
+	}
+
+	engine := proxyServer.ChaosEngine()
+	config := engine.GetConfig()
+
+	rules := make([]map[string]interface{}, 0)
+	if config != nil {
+		for _, rule := range config.Rules {
+			ruleMap := map[string]interface{}{
+				"id":          rule.ID,
+				"name":        rule.Name,
+				"type":        string(rule.Type),
+				"enabled":     rule.Enabled,
+				"probability": rule.Probability,
+			}
+			if rule.URLPattern != "" {
+				ruleMap["url_pattern"] = rule.URLPattern
+			}
+			if len(rule.Methods) > 0 {
+				ruleMap["methods"] = rule.Methods
+			}
+			rules = append(rules, ruleMap)
+		}
+	}
+
+	resp := map[string]interface{}{
+		"rules": rules,
+		"count": len(rules),
+	}
+
+	data, _ := json.Marshal(resp)
+	return c.writeJSON(data)
+}
+
+func (c *Connection) handleChaosStats(cmd *protocol.Command) error {
+	if len(cmd.Args) < 1 {
+		return c.writeErr(protocol.ErrInvalidArgs, "CHAOS STATS requires proxy_id")
+	}
+
+	proxyServer, err := c.daemon.proxym.Get(cmd.Args[0])
+	if err != nil {
+		return c.writeErr(protocol.ErrNotFound, cmd.Args[0])
+	}
+
+	engine := proxyServer.ChaosEngine()
+	stats := engine.GetStats()
+
+	resp := map[string]interface{}{
+		"total_requests":      stats.TotalRequests,
+		"affected_count":      stats.AffectedCount,
+		"latency_injected_ms": stats.LatencyInjected,
+		"errors_injected":     stats.ErrorsInjected,
+		"drops_injected":      stats.DropsInjected,
+		"truncated_count":     stats.TruncatedCount,
+		"reordered_count":     stats.ReorderedCount,
+		"rule_stats":          stats.RuleStats,
+	}
+
+	data, _ := json.Marshal(resp)
+	return c.writeJSON(data)
+}
+
+func (c *Connection) handleChaosClear(cmd *protocol.Command) error {
+	if len(cmd.Args) < 1 {
+		return c.writeErr(protocol.ErrInvalidArgs, "CHAOS CLEAR requires proxy_id")
+	}
+
+	proxyServer, err := c.daemon.proxym.Get(cmd.Args[0])
+	if err != nil {
+		return c.writeErr(protocol.ErrNotFound, cmd.Args[0])
+	}
+
+	engine := proxyServer.ChaosEngine()
+	engine.Clear()
+
+	resp := map[string]interface{}{
+		"success": true,
+	}
+
+	data, _ := json.Marshal(resp)
+	return c.writeJSON(data)
+}
+
+func (c *Connection) handleChaosListPresets() error {
+	presets := proxy.ListPresets()
+
+	resp := map[string]interface{}{
+		"presets": presets,
+		"count":   len(presets),
+	}
+
+	data, _ := json.Marshal(resp)
+	return c.writeJSON(data)
+}
+
+// convertProtocolRuleToProxy converts a protocol.ChaosRuleConfig to proxy.ChaosRule
+func convertProtocolRuleToProxy(cfg *protocol.ChaosRuleConfig) *proxy.ChaosRule {
+	return &proxy.ChaosRule{
+		ID:                 cfg.ID,
+		Name:               cfg.Name,
+		Type:               proxy.ChaosType(cfg.Type),
+		Enabled:            cfg.Enabled,
+		URLPattern:         cfg.URLPattern,
+		Methods:            cfg.Methods,
+		Probability:        cfg.Probability,
+		MinLatencyMs:       cfg.MinLatencyMs,
+		MaxLatencyMs:       cfg.MaxLatencyMs,
+		JitterMs:           cfg.JitterMs,
+		BytesPerMs:         cfg.BytesPerMs,
+		ChunkSize:          cfg.ChunkSize,
+		DropAfterPercent:   cfg.DropAfterPercent,
+		DropAfterBytes:     cfg.DropAfterBytes,
+		ErrorCodes:         cfg.ErrorCodes,
+		ErrorMessage:       cfg.ErrorMessage,
+		TruncatePercent:    cfg.TruncatePercent,
+		ReorderMinRequests: cfg.ReorderMinRequests,
+		ReorderMaxWaitMs:   cfg.ReorderMaxWaitMs,
+		StaleDelayMs:       cfg.StaleDelayMs,
+	}
 }

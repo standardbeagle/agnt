@@ -37,6 +37,7 @@ const sidebars: SidebarsConfig = {
         'api/proxy',
         'api/proxylog',
         'api/currentpage',
+        'api/tunnel',
         'api/daemon',
       ],
     },
@@ -91,6 +92,7 @@ const sidebars: SidebarsConfig = {
       items: [
         'use-cases/debugging-web-apps',
         'use-cases/automated-testing',
+        'use-cases/mobile-testing',
         'use-cases/performance-monitoring',
         'use-cases/ci-cd-integration',
         'use-cases/accessibility-auditing',

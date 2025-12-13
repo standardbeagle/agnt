@@ -49,14 +49,14 @@ func NewParser(r io.Reader) *Parser {
 // ValidVerbs lists all valid command verbs.
 var ValidVerbs = []string{
 	VerbRun, VerbRunJSON, VerbProc, VerbProxy, VerbProxyLog,
-	VerbCurrentPage, VerbDetect, VerbOverlay, VerbPing, VerbInfo, VerbShutdown,
+	VerbCurrentPage, VerbTunnel, VerbDetect, VerbOverlay, VerbPing, VerbInfo, VerbShutdown,
 }
 
 // isValidVerb checks if a verb is a known command.
 func isValidVerb(verb string) bool {
 	switch verb {
 	case VerbRun, VerbRunJSON, VerbProc, VerbProxy, VerbProxyLog,
-		VerbCurrentPage, VerbDetect, VerbOverlay, VerbPing, VerbInfo, VerbShutdown:
+		VerbCurrentPage, VerbTunnel, VerbDetect, VerbOverlay, VerbPing, VerbInfo, VerbShutdown:
 		return true
 	}
 	return false

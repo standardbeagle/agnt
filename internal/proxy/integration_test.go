@@ -62,14 +62,8 @@ func TestProxy_PageTracking_Integration(t *testing.T) {
 		t.Fatal("Context cancelled while waiting for proxy to be ready")
 	}
 
-	// Extract port from ListenAddr (handles both :port and [::]:port formats)
-	port := ps.ListenAddr
-	if strings.HasPrefix(port, "[::]:") {
-		port = ":" + strings.TrimPrefix(port, "[::]:")
-	} else if strings.HasPrefix(port, "[::]") {
-		port = strings.TrimPrefix(port, "[::]")
-	}
-	proxyURL := fmt.Sprintf("http://127.0.0.1%s", port)
+	// Use ListenAddr directly since it now includes the bind address
+	proxyURL := fmt.Sprintf("http://%s", ps.ListenAddr)
 
 	// Make a request for the HTML page
 	resp, err := http.Get(proxyURL + "/")
@@ -174,13 +168,8 @@ func TestProxy_PageTracking_URLFormat(t *testing.T) {
 		t.Fatal("Context cancelled while waiting for proxy to be ready")
 	}
 
-	port := ps.ListenAddr
-	if strings.HasPrefix(port, "[::]:") {
-		port = ":" + strings.TrimPrefix(port, "[::]:")
-	} else if strings.HasPrefix(port, "[::]") {
-		port = strings.TrimPrefix(port, "[::]")
-	}
-	proxyURL := fmt.Sprintf("http://127.0.0.1%s", port)
+	// Use ListenAddr directly since it now includes the bind address
+	proxyURL := fmt.Sprintf("http://%s", ps.ListenAddr)
 
 	// Make the test request
 	resp, err := http.Get(proxyURL + "/some/path?query=1")
@@ -259,13 +248,8 @@ func TestProxy_PageTracking_ResponseHeaders(t *testing.T) {
 		t.Fatal("Context cancelled while waiting for proxy to be ready")
 	}
 
-	port := ps.ListenAddr
-	if strings.HasPrefix(port, "[::]:") {
-		port = ":" + strings.TrimPrefix(port, "[::]:")
-	} else if strings.HasPrefix(port, "[::]") {
-		port = strings.TrimPrefix(port, "[::]")
-	}
-	proxyURL := fmt.Sprintf("http://127.0.0.1%s", port)
+	// Use ListenAddr directly since it now includes the bind address
+	proxyURL := fmt.Sprintf("http://%s", ps.ListenAddr)
 
 	// Make the test request
 	resp, err := http.Get(proxyURL + "/")

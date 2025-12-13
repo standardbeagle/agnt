@@ -96,6 +96,7 @@ Available tools:
 	// Register daemon-aware tools
 	tools.RegisterDaemonTools(server, dt)
 	tools.RegisterDaemonManagementTool(server, dt)
+	tools.RegisterTunnelTool(server, dt)
 
 	// Handle context cancellation
 	go func() {

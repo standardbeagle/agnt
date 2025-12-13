@@ -98,7 +98,8 @@ func TestDefaultPortForURL_PortSensitivity(t *testing.T) {
 func TestNewProxyServer_DefaultPort(t *testing.T) {
 	targetURL := "http://localhost:3000"
 	expectedPort := DefaultPortForURL(targetURL)
-	expectedAddr := ":" + strconv.Itoa(expectedPort)
+	// Default bind address is 127.0.0.1 for security
+	expectedAddr := "127.0.0.1:" + strconv.Itoa(expectedPort)
 
 	config := ProxyConfig{
 		ID:         "test",
@@ -111,14 +112,14 @@ func TestNewProxyServer_DefaultPort(t *testing.T) {
 		t.Fatalf("NewProxyServer() error = %v", err)
 	}
 
-	// Check ListenAddr matches expected hash-based port
+	// Check ListenAddr matches expected hash-based port with default bind address
 	if ps.ListenAddr != expectedAddr {
 		t.Errorf("NewProxyServer() ListenAddr = %q, want %q", ps.ListenAddr, expectedAddr)
 	}
 
 	// Should definitely not be the old hardcoded default
-	if ps.ListenAddr == ":8080" {
-		t.Errorf("NewProxyServer() ListenAddr = :8080, should use hash-based default")
+	if ps.ListenAddr == ":8080" || ps.ListenAddr == "127.0.0.1:8080" {
+		t.Errorf("NewProxyServer() ListenAddr = %s, should use hash-based default", ps.ListenAddr)
 	}
 
 	t.Logf("Target %s -> ListenAddr %s (expected port %d)", targetURL, ps.ListenAddr, expectedPort)

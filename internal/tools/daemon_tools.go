@@ -485,6 +485,8 @@ func (dt *DaemonTools) makeProxyHandler() func(context.Context, *mcp.CallToolReq
 			return dt.handleProxyExec(input)
 		case "toast":
 			return dt.handleProxyToast(input)
+		case "chaos":
+			return dt.handleProxyChaos(input)
 		default:
 			return errorResult(fmt.Sprintf("unknown action %q", input.Action)), ProxyOutput{}, nil
 		}
@@ -511,14 +513,16 @@ func (dt *DaemonTools) handleProxyStart(input ProxyInput) (*mcp.CallToolResult, 
 		port = -1 // Trigger hash-based default in daemon
 	}
 
-	// Build options including tunnel config
-	opts := daemon.ProxyStartOptions{
-		Path: cwd,
+	// Build config with all options
+	config := daemon.ProxyStartConfig{
+		Path:        cwd,
+		BindAddress: input.BindAddress,
+		PublicURL:   input.PublicURL,
 	}
 
 	// Configure tunnel if specified
 	if input.Tunnel != "" {
-		opts.Tunnel = &protocol.TunnelConfig{
+		config.Tunnel = &protocol.TunnelConfig{
 			Provider:  input.Tunnel,
 			Command:   input.TunnelCommand,
 			Args:      input.TunnelArgs,
@@ -527,25 +531,34 @@ func (dt *DaemonTools) handleProxyStart(input ProxyInput) (*mcp.CallToolResult, 
 		}
 	}
 
-	result, err := dt.client.ProxyStartWithOptions(input.ID, input.TargetURL, port, input.MaxLogSize, opts)
+	result, err := dt.client.ProxyStartWithConfig(input.ID, input.TargetURL, port, input.MaxLogSize, config)
 	if err != nil {
 		return formatDaemonError(err, "proxy"), ProxyOutput{}, nil
 	}
 
 	listenAddr := getString(result, "listen_addr")
+	bindAddress := getString(result, "bind_address")
+	publicURL := getString(result, "public_url")
 	tunnelURL := getString(result, "tunnel_url")
 
-	message := fmt.Sprintf("Proxy started. Access at http://localhost%s", listenAddr)
+	// Build access message based on configuration
+	accessURL := "http://localhost" + listenAddr
 	if tunnelURL != "" {
-		message = fmt.Sprintf("Proxy started. Local: http://localhost%s, Tunnel: %s", listenAddr, tunnelURL)
+		accessURL = tunnelURL
+	} else if publicURL != "" {
+		accessURL = publicURL
+	} else if bindAddress == "0.0.0.0" {
+		accessURL = fmt.Sprintf("http://<your-ip>%s", listenAddr)
 	}
 
 	return nil, ProxyOutput{
-		ID:         getString(result, "id"),
-		TargetURL:  getString(result, "target_url"),
-		ListenAddr: listenAddr,
-		TunnelURL:  tunnelURL,
-		Message:    message,
+		ID:          getString(result, "id"),
+		TargetURL:   getString(result, "target_url"),
+		ListenAddr:  listenAddr,
+		BindAddress: bindAddress,
+		PublicURL:   publicURL,
+		TunnelURL:   tunnelURL,
+		Message:     fmt.Sprintf("Proxy started. Access at %s", accessURL),
 	}, nil
 }
 
@@ -579,6 +592,8 @@ func (dt *DaemonTools) handleProxyStatus(input ProxyInput) (*mcp.CallToolResult,
 		ID:            getString(result, "id"),
 		TargetURL:     getString(result, "target_url"),
 		ListenAddr:    getString(result, "listen_addr"),
+		BindAddress:   getString(result, "bind_address"),
+		PublicURL:     getString(result, "public_url"),
 		Running:       getBool(result, "running"),
 		Uptime:        getString(result, "uptime"),
 		TotalRequests: getInt64(result, "total_requests"),
@@ -627,6 +642,8 @@ func (dt *DaemonTools) handleProxyList(input ProxyInput) (*mcp.CallToolResult, P
 					ID:            getString(pm, "id"),
 					TargetURL:     getString(pm, "target_url"),
 					ListenAddr:    getString(pm, "listen_addr"),
+					BindAddress:   getString(pm, "bind_address"),
+					PublicURL:     getString(pm, "public_url"),
 					Path:          getString(pm, "path"),
 					Running:       getBool(pm, "running"),
 					Uptime:        getString(pm, "uptime"),
@@ -731,6 +748,270 @@ func (dt *DaemonTools) handleProxyToast(input ProxyInput) (*mcp.CallToolResult, 
 		Success: getBool(result, "success"),
 		Message: fmt.Sprintf("Toast sent to %d connected client(s)", sentCount),
 	}, nil
+}
+
+func (dt *DaemonTools) handleProxyChaos(input ProxyInput) (*mcp.CallToolResult, ProxyOutput, error) {
+	if input.ID == "" {
+		return errorResult("id required for chaos"), ProxyOutput{}, nil
+	}
+
+	operation := input.ChaosOperation
+	if operation == "" {
+		operation = "status"
+	}
+
+	switch operation {
+	case "enable":
+		result, err := dt.client.ChaosEnable(input.ID)
+		if err != nil {
+			return formatDaemonError(err, "chaos"), ProxyOutput{}, nil
+		}
+		return nil, ProxyOutput{
+			Success:      true,
+			ChaosEnabled: getBool(result, "enabled"),
+			Message:      "Chaos injection enabled",
+		}, nil
+
+	case "disable":
+		result, err := dt.client.ChaosDisable(input.ID)
+		if err != nil {
+			return formatDaemonError(err, "chaos"), ProxyOutput{}, nil
+		}
+		return nil, ProxyOutput{
+			Success:      true,
+			ChaosEnabled: getBool(result, "enabled"),
+			Message:      "Chaos injection disabled",
+		}, nil
+
+	case "status":
+		result, err := dt.client.ChaosStatus(input.ID)
+		if err != nil {
+			return formatDaemonError(err, "chaos"), ProxyOutput{}, nil
+		}
+		output := ProxyOutput{
+			ChaosEnabled: getBool(result, "enabled"),
+		}
+		if stats, ok := result["stats"].(map[string]interface{}); ok {
+			output.ChaosStats = &ChaosStatsOutput{
+				TotalRequests:   getInt64(stats, "total_requests"),
+				AffectedCount:   getInt64(stats, "affected_count"),
+				LatencyInjected: getInt64(stats, "latency_injected_ms"),
+				ErrorsInjected:  getInt64(stats, "errors_injected"),
+				DropsInjected:   getInt64(stats, "drops_injected"),
+				TruncatedCount:  getInt64(stats, "truncated_count"),
+				ReorderedCount:  getInt64(stats, "reordered_count"),
+			}
+			if ruleStats, ok := stats["rule_stats"].(map[string]interface{}); ok {
+				output.ChaosStats.RuleStats = make(map[string]int64)
+				for k, v := range ruleStats {
+					if n, ok := v.(float64); ok {
+						output.ChaosStats.RuleStats[k] = int64(n)
+					}
+				}
+			}
+		}
+		if rules, ok := result["rules"].([]interface{}); ok {
+			for _, r := range rules {
+				if rm, ok := r.(map[string]interface{}); ok {
+					output.ChaosRules = append(output.ChaosRules, ChaosRuleOutput{
+						ID:          getString(rm, "id"),
+						Name:        getString(rm, "name"),
+						Type:        getString(rm, "type"),
+						Enabled:     getBool(rm, "enabled"),
+						URLPattern:  getString(rm, "url_pattern"),
+						Probability: getFloat64(rm, "probability"),
+						TimesApplied: getInt64(rm, "times_applied"),
+					})
+				}
+			}
+		}
+		return nil, output, nil
+
+	case "preset":
+		if input.ChaosPreset == "" {
+			// List available presets
+			result, err := dt.client.ChaosListPresets()
+			if err != nil {
+				return formatDaemonError(err, "chaos"), ProxyOutput{}, nil
+			}
+			if presets, ok := result["presets"].([]interface{}); ok {
+				output := ProxyOutput{ChaosPresets: make([]string, 0, len(presets))}
+				for _, p := range presets {
+					if s, ok := p.(string); ok {
+						output.ChaosPresets = append(output.ChaosPresets, s)
+					}
+				}
+				return nil, output, nil
+			}
+			return nil, ProxyOutput{}, nil
+		}
+		// Apply preset
+		result, err := dt.client.ChaosPreset(input.ID, input.ChaosPreset)
+		if err != nil {
+			return formatDaemonError(err, "chaos"), ProxyOutput{}, nil
+		}
+		return nil, ProxyOutput{
+			Success:      true,
+			ChaosEnabled: getBool(result, "enabled"),
+			Message:      fmt.Sprintf("Chaos preset %q applied", input.ChaosPreset),
+		}, nil
+
+	case "set":
+		if input.ChaosConfig == nil {
+			return errorResult("chaos_config required for set operation"), ProxyOutput{}, nil
+		}
+		config := protocol.ChaosConfigPayload{
+			Enabled:     input.ChaosConfig.Enabled,
+			GlobalOdds:  input.ChaosConfig.GlobalOdds,
+			Seed:        input.ChaosConfig.Seed,
+			LoggingMode: input.ChaosConfig.LoggingMode,
+		}
+		for _, r := range input.ChaosConfig.Rules {
+			config.Rules = append(config.Rules, &protocol.ChaosRuleConfig{
+				ID:                 r.ID,
+				Name:               r.Name,
+				Type:               r.Type,
+				Enabled:            r.Enabled,
+				URLPattern:         r.URLPattern,
+				Methods:            r.Methods,
+				Probability:        r.Probability,
+				MinLatencyMs:       r.MinLatencyMs,
+				MaxLatencyMs:       r.MaxLatencyMs,
+				JitterMs:           r.JitterMs,
+				BytesPerMs:         r.BytesPerMs,
+				ChunkSize:          r.ChunkSize,
+				DropAfterPercent:   r.DropAfterPercent,
+				DropAfterBytes:     r.DropAfterBytes,
+				ErrorCodes:         r.ErrorCodes,
+				ErrorMessage:       r.ErrorMessage,
+				TruncatePercent:    r.TruncatePercent,
+				ReorderMinRequests: r.ReorderMinRequests,
+				ReorderMaxWaitMs:   r.ReorderMaxWaitMs,
+				StaleDelayMs:       r.StaleDelayMs,
+			})
+		}
+		result, err := dt.client.ChaosSet(input.ID, config)
+		if err != nil {
+			return formatDaemonError(err, "chaos"), ProxyOutput{}, nil
+		}
+		return nil, ProxyOutput{
+			Success:      true,
+			ChaosEnabled: getBool(result, "enabled"),
+			Message:      "Chaos configuration applied",
+		}, nil
+
+	case "add_rule":
+		if input.ChaosRule == nil {
+			return errorResult("chaos_rule required for add_rule operation"), ProxyOutput{}, nil
+		}
+		rule := protocol.ChaosRuleConfig{
+			ID:                 input.ChaosRule.ID,
+			Name:               input.ChaosRule.Name,
+			Type:               input.ChaosRule.Type,
+			Enabled:            input.ChaosRule.Enabled,
+			URLPattern:         input.ChaosRule.URLPattern,
+			Methods:            input.ChaosRule.Methods,
+			Probability:        input.ChaosRule.Probability,
+			MinLatencyMs:       input.ChaosRule.MinLatencyMs,
+			MaxLatencyMs:       input.ChaosRule.MaxLatencyMs,
+			JitterMs:           input.ChaosRule.JitterMs,
+			BytesPerMs:         input.ChaosRule.BytesPerMs,
+			ChunkSize:          input.ChaosRule.ChunkSize,
+			DropAfterPercent:   input.ChaosRule.DropAfterPercent,
+			DropAfterBytes:     input.ChaosRule.DropAfterBytes,
+			ErrorCodes:         input.ChaosRule.ErrorCodes,
+			ErrorMessage:       input.ChaosRule.ErrorMessage,
+			TruncatePercent:    input.ChaosRule.TruncatePercent,
+			ReorderMinRequests: input.ChaosRule.ReorderMinRequests,
+			ReorderMaxWaitMs:   input.ChaosRule.ReorderMaxWaitMs,
+			StaleDelayMs:       input.ChaosRule.StaleDelayMs,
+		}
+		result, err := dt.client.ChaosAddRule(input.ID, rule)
+		if err != nil {
+			return formatDaemonError(err, "chaos"), ProxyOutput{}, nil
+		}
+		return nil, ProxyOutput{
+			Success: true,
+			Message: fmt.Sprintf("Rule %q added", getString(result, "rule_id")),
+		}, nil
+
+	case "remove_rule":
+		if input.ChaosRuleID == "" {
+			return errorResult("chaos_rule_id required for remove_rule operation"), ProxyOutput{}, nil
+		}
+		_, err := dt.client.ChaosRemoveRule(input.ID, input.ChaosRuleID)
+		if err != nil {
+			return formatDaemonError(err, "chaos"), ProxyOutput{}, nil
+		}
+		return nil, ProxyOutput{
+			Success: true,
+			Message: fmt.Sprintf("Rule %q removed", input.ChaosRuleID),
+		}, nil
+
+	case "list_rules":
+		result, err := dt.client.ChaosListRules(input.ID)
+		if err != nil {
+			return formatDaemonError(err, "chaos"), ProxyOutput{}, nil
+		}
+		output := ProxyOutput{}
+		if rules, ok := result["rules"].([]interface{}); ok {
+			for _, r := range rules {
+				if rm, ok := r.(map[string]interface{}); ok {
+					output.ChaosRules = append(output.ChaosRules, ChaosRuleOutput{
+						ID:          getString(rm, "id"),
+						Name:        getString(rm, "name"),
+						Type:        getString(rm, "type"),
+						Enabled:     getBool(rm, "enabled"),
+						URLPattern:  getString(rm, "url_pattern"),
+						Probability: getFloat64(rm, "probability"),
+						TimesApplied: getInt64(rm, "times_applied"),
+					})
+				}
+			}
+		}
+		return nil, output, nil
+
+	case "stats":
+		result, err := dt.client.ChaosStats(input.ID)
+		if err != nil {
+			return formatDaemonError(err, "chaos"), ProxyOutput{}, nil
+		}
+		output := ProxyOutput{}
+		if stats, ok := result["stats"].(map[string]interface{}); ok {
+			output.ChaosStats = &ChaosStatsOutput{
+				TotalRequests:   getInt64(stats, "total_requests"),
+				AffectedCount:   getInt64(stats, "affected_count"),
+				LatencyInjected: getInt64(stats, "latency_injected_ms"),
+				ErrorsInjected:  getInt64(stats, "errors_injected"),
+				DropsInjected:   getInt64(stats, "drops_injected"),
+				TruncatedCount:  getInt64(stats, "truncated_count"),
+				ReorderedCount:  getInt64(stats, "reordered_count"),
+			}
+			if ruleStats, ok := stats["rule_stats"].(map[string]interface{}); ok {
+				output.ChaosStats.RuleStats = make(map[string]int64)
+				for k, v := range ruleStats {
+					if n, ok := v.(float64); ok {
+						output.ChaosStats.RuleStats[k] = int64(n)
+					}
+				}
+			}
+		}
+		return nil, output, nil
+
+	case "clear":
+		_, err := dt.client.ChaosClear(input.ID)
+		if err != nil {
+			return formatDaemonError(err, "chaos"), ProxyOutput{}, nil
+		}
+		return nil, ProxyOutput{
+			Success:      true,
+			ChaosEnabled: false,
+			Message:      "Chaos configuration cleared",
+		}, nil
+
+	default:
+		return errorResult(fmt.Sprintf("unknown chaos operation %q. Use: enable, disable, status, preset, set, add_rule, remove_rule, list_rules, stats, clear", operation)), ProxyOutput{}, nil
+	}
 }
 
 // makeProxyLogHandler creates a handler for the proxylog tool.
@@ -929,6 +1210,13 @@ func getInt(m map[string]interface{}, key string) int {
 func getInt64(m map[string]interface{}, key string) int64 {
 	if v, ok := m[key].(float64); ok {
 		return int64(v)
+	}
+	return 0
+}
+
+func getFloat64(m map[string]interface{}, key string) float64 {
+	if v, ok := m[key].(float64); ok {
+		return v
 	}
 	return 0
 }
