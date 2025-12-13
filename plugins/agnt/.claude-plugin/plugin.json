@@ -21,8 +21,26 @@
     "sketch",
     "wireframe"
   ],
-  "category": "development",
-  "mcpServers": ".mcp.json",
-  "commands": "commands",
-  "agents": "agents"
+  "mcpServers": "./.mcp.json",
+  "commands": [
+    "./commands/dev-proxy.md",
+    "./commands/check-errors.md",
+    "./commands/screenshot.md",
+    "./commands/sketch-mode.md",
+    "./commands/browser-debug.md",
+    "./commands/stop-all.md",
+    "./commands/audit-a11y.md",
+    "./commands/audit-performance.md",
+    "./commands/audit-seo.md",
+    "./commands/audit-security.md",
+    "./commands/analyze-ux.md",
+    "./commands/analyze-frontend.md",
+    "./commands/qa-test.md",
+    "./commands/review-api.md"
+  ],
+  "agents": [
+    "./agents/browser-debugger.md",
+    "./agents/process-manager.md",
+    "./agents/ui-designer.md"
+  ]
 }
