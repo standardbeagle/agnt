@@ -23,6 +23,9 @@
     dragOffset: { x: 0, y: 0 },
     position: { x: 20, y: 20 },
     isVisible: true,
+    isActive: false, // AI tool activity state
+    activityTimeout: null,
+    requestNotification: false, // Request notification when task completes
     // Attachments are now logged items with references
     attachments: [] // { id, type, label, summary, timestamp }
   };
@@ -35,6 +38,7 @@
       secondary: '#64748b',    // Slate
       success: '#22c55e',
       error: '#ef4444',
+      active: '#f59e0b',       // Amber - for activity state
       surface: '#ffffff',
       surfaceAlt: '#f8fafc',
       border: '#e2e8f0',
@@ -91,6 +95,19 @@
       'border-radius: ' + TOKENS.radius.full,
       'border: 2.5px solid ' + TOKENS.colors.surface,
       'transition: background-color 0.3s ease'
+    ].join(';'),
+
+    // Activity ring - pulses when AI is working
+    activityRing: [
+      'position: absolute',
+      'top: -4px',
+      'left: -4px',
+      'right: -4px',
+      'bottom: -4px',
+      'border-radius: ' + TOKENS.radius.full,
+      'border: 2px solid ' + TOKENS.colors.active,
+      'opacity: 0',
+      'pointer-events: none'
     ].join(';'),
 
     // Panel - the main interface
@@ -244,9 +261,22 @@
       'transition: all 0.15s ease'
     ].join(';'),
 
+    // Notification toggle
+    notifyToggle: [
+      'display: flex',
+      'align-items: center',
+      'gap: 6px',
+      'margin-left: auto',
+      'margin-right: 8px',
+      'padding: 4px 8px',
+      'font-size: 12px',
+      'color: ' + TOKENS.colors.textMuted,
+      'cursor: pointer',
+      'user-select: none'
+    ].join(';'),
+
     // Primary send button - visual hierarchy (most prominent)
     sendBtn: [
-      'margin-left: auto',
       'display: flex',
       'align-items: center',
       'gap: 6px',
@@ -359,6 +389,15 @@
     bug.style.bottom = state.position.y + 'px';
     bug.innerHTML = ICONS.logo;
 
+    // Activity ring (pulses when AI is working)
+    var ring = document.createElement('div');
+    ring.id = '__devtool-activity-ring';
+    ring.style.cssText = STYLES.activityRing;
+    bug.appendChild(ring);
+
+    // Inject CSS animation for pulse effect
+    injectActivityAnimation();
+
     // Status indicator
     var dot = document.createElement('div');
     dot.id = '__devtool-status';
@@ -381,6 +420,40 @@
 
     state.bug = bug;
     state.container.appendChild(bug);
+  }
+
+  // Inject CSS keyframes for activity animation
+  function injectActivityAnimation() {
+    if (document.getElementById('__devtool-activity-style')) return;
+
+    var style = document.createElement('style');
+    style.id = '__devtool-activity-style';
+    style.textContent = [
+      '@keyframes __devtool-pulse {',
+      '  0% { transform: scale(1); opacity: 0.8; }',
+      '  50% { transform: scale(1.15); opacity: 0.4; }',
+      '  100% { transform: scale(1.3); opacity: 0; }',
+      '}',
+      '.__devtool-active {',
+      '  animation: __devtool-pulse 1.5s ease-out infinite;',
+      '}'
+    ].join('\\n');
+    document.head.appendChild(style);
+  }
+
+  // Set activity state (called when AI tool becomes active/idle)
+  function setActivityState(isActive) {
+    state.isActive = isActive;
+    var ring = document.getElementById('__devtool-activity-ring');
+    if (!ring) return;
+
+    if (isActive) {
+      ring.classList.add('__devtool-active');
+      ring.style.opacity = '1';
+    } else {
+      ring.classList.remove('__devtool-active');
+      ring.style.opacity = '0';
+    }
   }
 
   function createPanel() {
@@ -453,6 +526,22 @@
     toolbar.appendChild(screenshotBtn);
     toolbar.appendChild(elementBtn);
     toolbar.appendChild(sketchBtn);
+
+    // Notification toggle
+    var notifyToggle = document.createElement('label');
+    notifyToggle.style.cssText = STYLES.notifyToggle;
+    notifyToggle.title = 'Request notification when task completes';
+
+    var notifyCheckbox = document.createElement('input');
+    notifyCheckbox.type = 'checkbox';
+    notifyCheckbox.id = '__devtool-notify';
+    notifyCheckbox.checked = state.requestNotification;
+    notifyCheckbox.onchange = function() {
+      state.requestNotification = notifyCheckbox.checked;
+    };
+    notifyToggle.appendChild(notifyCheckbox);
+    notifyToggle.appendChild(document.createTextNode(' Notify'));
+    toolbar.appendChild(notifyToggle);
 
     // Send button (visual hierarchy - primary action)
     var sendBtn = document.createElement('button');
@@ -617,7 +706,8 @@
         references: state.attachments.map(function(a) {
           return { id: a.id, type: a.type };
         }),
-        url: window.location.href
+        url: window.location.href,
+        request_notification: state.requestNotification
       }
     });
 
@@ -919,7 +1009,7 @@
     document.addEventListener('mouseup', onUp);
   }
 
-  // Status polling
+  // Status polling and message handling
   function setupStatusPolling() {
     setInterval(function() {
       var dot = document.getElementById('__devtool-status');
@@ -927,6 +1017,19 @@
         dot.style.backgroundColor = core.isConnected() ? TOKENS.colors.success : TOKENS.colors.error;
       }
     }, 1000);
+
+    // Register message handler for activity state
+    if (core && core.onMessage) {
+      core.onMessage(handleMessage);
+    }
+  }
+
+  // Handle incoming WebSocket messages
+  function handleMessage(message) {
+    if (message.type === 'activity') {
+      var payload = message.payload || message;
+      setActivityState(payload.active === true);
+    }
   }
 
   // Preferences
@@ -995,6 +1098,7 @@
     toggle: toggle,
     destroy: destroy,
     togglePanel: togglePanel,
+    setActivityState: setActivityState,
     state: state
   };
 })();

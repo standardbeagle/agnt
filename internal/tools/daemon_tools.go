@@ -100,12 +100,14 @@ Actions:
   status: Get proxy status and statistics
   list: List all running proxies
   exec: Execute JavaScript in connected browser clients
+  toast: Send toast notification to connected browsers
 
 Examples:
   proxy {action: "start", id: "dev", target_url: "http://localhost:3000"}
   proxy {action: "status", id: "dev"}
   proxy {action: "list"}
   proxy {action: "exec", id: "dev", code: "document.title"}
+  proxy {action: "toast", id: "dev", toast_message: "Build complete!", toast_type: "success"}
   proxy {action: "stop", id: "dev"}
 
 The proxy automatically:
@@ -120,6 +122,12 @@ Port selection:
   - Default: A stable port derived from target URL hash (range 10000-60000)
   - Only specify 'port' if you need a specific port number
   - The assigned port is returned in the response's 'listen_addr' field
+
+Toast notifications:
+  proxy {action: "toast", id: "dev", toast_message: "Task complete"}
+  proxy {action: "toast", id: "dev", toast_type: "error", toast_title: "Build Failed", toast_message: "See console for details"}
+  proxy {action: "toast", id: "dev", toast_type: "warning", toast_message: "Slow network detected", toast_duration: 8000}
+  Toast types: success, error, warning, info (default)
 
 __devtool API (injected into browser):
   proxy {action: "exec", help: true}                    # Full API overview
@@ -475,6 +483,8 @@ func (dt *DaemonTools) makeProxyHandler() func(context.Context, *mcp.CallToolReq
 			return dt.handleProxyList(input)
 		case "exec":
 			return dt.handleProxyExec(input)
+		case "toast":
+			return dt.handleProxyToast(input)
 		default:
 			return errorResult(fmt.Sprintf("unknown action %q", input.Action)), ProxyOutput{}, nil
 		}
@@ -662,6 +672,40 @@ func (dt *DaemonTools) handleProxyExec(input ProxyInput) (*mcp.CallToolResult, P
 		Success:     true,
 		ExecutionID: execID,
 		Message:     fmt.Sprintf("JavaScript executed successfully.\nResult: %s\nDuration: %s", resultVal, duration),
+	}, nil
+}
+
+func (dt *DaemonTools) handleProxyToast(input ProxyInput) (*mcp.CallToolResult, ProxyOutput, error) {
+	if input.ID == "" {
+		return errorResult("id required for toast"), ProxyOutput{}, nil
+	}
+	if input.ToastMessage == "" {
+		return errorResult("toast_message required for toast"), ProxyOutput{}, nil
+	}
+
+	// Build toast config
+	toastConfig := protocol.ToastConfig{
+		Type:     input.ToastType,
+		Title:    input.ToastTitle,
+		Message:  input.ToastMessage,
+		Duration: input.ToastDuration,
+	}
+
+	// Default type to "info" if not specified
+	if toastConfig.Type == "" {
+		toastConfig.Type = "info"
+	}
+
+	result, err := dt.client.ProxyToast(input.ID, toastConfig)
+	if err != nil {
+		return formatDaemonError(err, "proxy"), ProxyOutput{}, nil
+	}
+
+	sentCount := getInt(result, "sent_count")
+
+	return nil, ProxyOutput{
+		Success: getBool(result, "success"),
+		Message: fmt.Sprintf("Toast sent to %d connected client(s)", sentCount),
 	}, nil
 }
 

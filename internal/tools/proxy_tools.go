@@ -12,15 +12,19 @@ import (
 
 // ProxyInput defines input for the proxy tool.
 type ProxyInput struct {
-	Action     string `json:"action" jsonschema:"Action: start, stop, status, list, exec"`
-	ID         string `json:"id,omitempty" jsonschema:"Proxy ID (required for start/stop/status/exec)"`
-	TargetURL  string `json:"target_url,omitempty" jsonschema:"Target URL to proxy (required for start)"`
-	Port       int    `json:"port,omitempty" jsonschema:"Listen port (default: stable hash of target URL). Only specify if you need a specific port."`
-	MaxLogSize int    `json:"max_log_size,omitempty" jsonschema:"Maximum log entries (default: 1000)"`
-	Code       string `json:"code,omitempty" jsonschema:"JavaScript code to execute (required for exec)"`
-	Global     bool   `json:"global,omitempty" jsonschema:"For list: include proxies from all directories (default: false)"`
-	Help       bool   `json:"help,omitempty" jsonschema:"For exec: show __devtool API overview instead of executing code"`
-	Describe   string `json:"describe,omitempty" jsonschema:"For exec: show detailed docs for a specific function (e.g. 'screenshot', 'interactions.getLastClick')"`
+	Action        string `json:"action" jsonschema:"Action: start, stop, status, list, exec, toast"`
+	ID            string `json:"id,omitempty" jsonschema:"Proxy ID (required for start/stop/status/exec/toast)"`
+	TargetURL     string `json:"target_url,omitempty" jsonschema:"Target URL to proxy (required for start)"`
+	Port          int    `json:"port,omitempty" jsonschema:"Listen port (default: stable hash of target URL). Only specify if you need a specific port."`
+	MaxLogSize    int    `json:"max_log_size,omitempty" jsonschema:"Maximum log entries (default: 1000)"`
+	Code          string `json:"code,omitempty" jsonschema:"JavaScript code to execute (required for exec)"`
+	Global        bool   `json:"global,omitempty" jsonschema:"For list: include proxies from all directories (default: false)"`
+	Help          bool   `json:"help,omitempty" jsonschema:"For exec: show __devtool API overview instead of executing code"`
+	Describe      string `json:"describe,omitempty" jsonschema:"For exec: show detailed docs for a specific function (e.g. 'screenshot', 'interactions.getLastClick')"`
+	ToastType     string `json:"toast_type,omitempty" jsonschema:"For toast: notification type (success, error, warning, info). Default: info"`
+	ToastTitle    string `json:"toast_title,omitempty" jsonschema:"For toast: notification title (optional)"`
+	ToastMessage  string `json:"toast_message,omitempty" jsonschema:"For toast: notification message (required for toast)"`
+	ToastDuration int    `json:"toast_duration,omitempty" jsonschema:"For toast: duration in milliseconds (0 for default)"`
 }
 
 // CurrentPageInput defines input for the currentpage tool.

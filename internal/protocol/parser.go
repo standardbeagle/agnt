@@ -277,8 +277,9 @@ func (p *Parser) ParseResponse() (*Response, error) {
 func isSubVerb(s string) bool {
 	switch s {
 	case SubVerbStatus, SubVerbOutput, SubVerbStop, SubVerbList,
-		SubVerbCleanupPort, SubVerbStart, SubVerbExec, SubVerbQuery,
-		SubVerbClear, SubVerbStats, SubVerbGet:
+		SubVerbCleanupPort, SubVerbStart, SubVerbExec, SubVerbToast,
+		SubVerbQuery, SubVerbClear, SubVerbStats, SubVerbGet, SubVerbSet,
+		SubVerbActivity:
 		return true
 	}
 	return false

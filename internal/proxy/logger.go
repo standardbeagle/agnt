@@ -212,11 +212,12 @@ type AttributeChange struct {
 
 // PanelMessage represents a message from the floating indicator panel.
 type PanelMessage struct {
-	ID          string            `json:"id"`
-	Timestamp   time.Time         `json:"timestamp"`
-	Message     string            `json:"message"`
-	Attachments []PanelAttachment `json:"attachments,omitempty"`
-	URL         string            `json:"url"`
+	ID                  string            `json:"id"`
+	Timestamp           time.Time         `json:"timestamp"`
+	Message             string            `json:"message"`
+	Attachments         []PanelAttachment `json:"attachments,omitempty"`
+	URL                 string            `json:"url"`
+	RequestNotification bool              `json:"request_notification,omitempty"`
 }
 
 // PanelAttachment represents an attachment to a panel message.

@@ -37,6 +37,7 @@ const (
 const (
 	SubVerbStart = "START"
 	SubVerbExec  = "EXEC"
+	SubVerbToast = "TOAST"
 	// SubVerbStop, SubVerbStatus, SubVerbList reused from process
 )
 
@@ -55,7 +56,8 @@ const (
 
 // Overlay sub-verbs
 const (
-	SubVerbSet = "SET"
+	SubVerbSet      = "SET"
+	SubVerbActivity = "ACTIVITY"
 	// SubVerbGet, SubVerbClear reused
 )
 
@@ -102,4 +104,12 @@ type LogQueryFilter struct {
 type DirectoryFilter struct {
 	Directory string `json:"directory,omitempty"` // Current working directory (defaults to "." if empty)
 	Global    bool   `json:"global,omitempty"`    // If true, ignore directory filtering
+}
+
+// ToastConfig represents configuration for a PROXY TOAST command.
+type ToastConfig struct {
+	Type     string `json:"type"`               // success, error, warning, info
+	Title    string `json:"title,omitempty"`    // Toast title (optional)
+	Message  string `json:"message"`            // Toast message
+	Duration int    `json:"duration,omitempty"` // Duration in ms (0 for default)
 }

@@ -48,6 +48,14 @@ type KeyMessage struct {
 	Sequence string `json:"sequence"` // Raw escape sequence to send
 }
 
+// ToastMessage is a toast notification to show in the browser.
+type ToastMessage struct {
+	Type     string `json:"type"`     // success, error, warning, info
+	Title    string `json:"title"`    // Toast title (optional)
+	Message  string `json:"message"`  // Toast message
+	Duration int    `json:"duration"` // Duration in ms (0 for default)
+}
+
 // DefaultOverlaySocketPath returns the default socket path for the overlay.
 func DefaultOverlaySocketPath() string {
 	// Windows: use named pipe
@@ -105,6 +113,7 @@ func (o *Overlay) Start(ctx context.Context) error {
 	mux.HandleFunc("/type", o.handleType)
 	mux.HandleFunc("/key", o.handleKey)
 	mux.HandleFunc("/event", o.handleEvent)
+	mux.HandleFunc("/toast", o.handleToast)
 
 	o.server = &http.Server{
 		Handler: mux,
@@ -215,6 +224,30 @@ func (o *Overlay) handleKey(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
+func (o *Overlay) handleToast(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	var msg ToastMessage
+	if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Set default type
+	if msg.Type == "" {
+		msg.Type = "info"
+	}
+
+	// Broadcast to all connected browsers to show toast
+	o.Broadcast("toast", msg)
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
 // ProxyEvent represents an event received from devtool-mcp proxy.
 type ProxyEvent struct {
 	Type      string          `json:"type"`
@@ -253,6 +286,7 @@ func (o *Overlay) processProxyEvent(event ProxyEvent) {
 				Tag      string `json:"tag"`
 				Text     string `json:"text"`
 			} `json:"attachments"`
+			RequestNotification bool `json:"request_notification"`
 		}
 		if err := json.Unmarshal(event.Data, &data); err != nil {
 			log.Printf("Failed to parse panel_message: %v", err)
@@ -266,6 +300,11 @@ func (o *Overlay) processProxyEvent(event ProxyEvent) {
 			for i, att := range data.Attachments {
 				text += fmt.Sprintf("%d. %s: %s (%s)\n", i+1, att.Type, att.Selector, att.Text)
 			}
+		}
+
+		// Add notification request if enabled
+		if data.RequestNotification {
+			text += "\n\n[Note: When complete, please send a toast notification using: proxy {action: \"toast\", id: \"dev\", toast_message: \"Done!\", toast_type: \"success\"}]"
 		}
 
 		// Type the formatted message into the PTY

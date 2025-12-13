@@ -104,7 +104,7 @@ type Overlay struct {
 
 // Config holds overlay configuration.
 type Config struct {
-	// Hotkey to toggle overlay (default: Ctrl+O = 0x0f)
+	// Hotkey to toggle overlay (default: Ctrl+P = 0x10)
 	Hotkey byte
 
 	// Whether to show indicator bar by default
@@ -124,7 +124,7 @@ type Config struct {
 // DefaultConfig returns the default overlay configuration.
 func DefaultConfig() Config {
 	return Config{
-		Hotkey:                0x0f, // Ctrl+O
+		Hotkey:                0x10, // Ctrl+P
 		ShowIndicator:         true,
 		StatusRefreshInterval: 2 * time.Second,
 	}

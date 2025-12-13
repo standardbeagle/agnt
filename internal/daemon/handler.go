@@ -222,7 +222,7 @@ func (c *Connection) handleRun(ctx context.Context, cmd *protocol.Command) error
 // Valid actions for each command (for structured error responses)
 var (
 	validProcActions        = []string{"STATUS", "OUTPUT", "STOP", "LIST", "CLEANUP-PORT"}
-	validProxyActions       = []string{"START", "STOP", "STATUS", "LIST", "EXEC"}
+	validProxyActions       = []string{"START", "STOP", "STATUS", "LIST", "EXEC", "TOAST"}
 	validProxyLogActions    = []string{"QUERY", "CLEAR", "STATS"}
 	validCurrentPageActions = []string{"LIST", "GET", "CLEAR"}
 )
@@ -478,6 +478,8 @@ func (c *Connection) handleProxy(ctx context.Context, cmd *protocol.Command) err
 		return c.handleProxyList(cmd)
 	case protocol.SubVerbExec:
 		return c.handleProxyExec(cmd)
+	case protocol.SubVerbToast:
+		return c.handleProxyToast(cmd)
 	case "":
 		return c.writeStructuredErr(&protocol.StructuredError{
 			Code:         protocol.ErrMissingParam,
@@ -723,6 +725,55 @@ func (c *Connection) handleProxyExec(cmd *protocol.Command) error {
 	case <-time.After(timeout):
 		return c.writeErr(protocol.ErrTimeout, "execution timed out")
 	}
+}
+
+func (c *Connection) handleProxyToast(cmd *protocol.Command) error {
+	if len(cmd.Args) < 1 {
+		return c.writeErr(protocol.ErrInvalidArgs, "PROXY TOAST requires id")
+	}
+
+	proxyServer, err := c.daemon.proxym.Get(cmd.Args[0])
+	if err != nil {
+		return c.writeErr(protocol.ErrNotFound, cmd.Args[0])
+	}
+
+	// Toast config is in the data payload
+	if len(cmd.Data) == 0 {
+		return c.writeErr(protocol.ErrInvalidArgs, "PROXY TOAST requires toast config")
+	}
+
+	var toast protocol.ToastConfig
+	if err := json.Unmarshal(cmd.Data, &toast); err != nil {
+		return c.writeErr(protocol.ErrInvalidArgs, "invalid toast config: "+err.Error())
+	}
+
+	// Validate toast type
+	if toast.Type == "" {
+		toast.Type = "info"
+	}
+	validTypes := map[string]bool{"success": true, "error": true, "warning": true, "info": true}
+	if !validTypes[toast.Type] {
+		return c.writeErr(protocol.ErrInvalidArgs, "invalid toast type: "+toast.Type)
+	}
+
+	// Validate message
+	if toast.Message == "" {
+		return c.writeErr(protocol.ErrInvalidArgs, "toast message required")
+	}
+
+	// Broadcast toast to connected browsers
+	sentCount, err := proxyServer.BroadcastToast(toast.Type, toast.Title, toast.Message, toast.Duration)
+	if err != nil {
+		return c.writeErr(protocol.ErrInternal, err.Error())
+	}
+
+	resp := map[string]interface{}{
+		"success":    true,
+		"sent_count": sentCount,
+	}
+
+	data, _ := json.Marshal(resp)
+	return c.writeJSON(data)
 }
 
 // handleProxyLog handles the PROXYLOG command.
@@ -1300,7 +1351,7 @@ func convertPageSession(session *proxy.PageSession, includeDetails bool) map[str
 }
 
 // Valid actions for OVERLAY command
-var validOverlayActions = []string{"SET", "GET", "CLEAR"}
+var validOverlayActions = []string{"SET", "GET", "CLEAR", "ACTIVITY"}
 
 // handleOverlay handles the OVERLAY command for configuring the agent overlay endpoint.
 func (c *Connection) handleOverlay(cmd *protocol.Command) error {
@@ -1316,6 +1367,8 @@ func (c *Connection) handleOverlay(cmd *protocol.Command) error {
 		return c.handleOverlayGet()
 	case protocol.SubVerbClear:
 		return c.handleOverlayClear()
+	case protocol.SubVerbActivity:
+		return c.handleOverlayActivity(cmd)
 	case "":
 		return c.writeStructuredErr(&protocol.StructuredError{
 			Code:         protocol.ErrMissingParam,
@@ -1375,4 +1428,41 @@ func (c *Connection) handleOverlayGet() error {
 func (c *Connection) handleOverlayClear() error {
 	c.daemon.SetOverlayEndpoint("")
 	return c.writeOK("overlay endpoint cleared")
+}
+
+func (c *Connection) handleOverlayActivity(cmd *protocol.Command) error {
+	if len(cmd.Args) < 1 {
+		return c.writeErr(protocol.ErrInvalidArgs, "OVERLAY ACTIVITY requires: true|false [proxy_ids...]")
+	}
+
+	active := cmd.Args[0] == "true"
+	proxyIDs := cmd.Args[1:] // Optional proxy IDs to target
+
+	sentCount := 0
+
+	if len(proxyIDs) > 0 {
+		// Broadcast only to specified proxies
+		for _, proxyID := range proxyIDs {
+			server, err := c.daemon.proxym.Get(proxyID)
+			if err != nil {
+				continue // Skip non-existent proxies
+			}
+			sentCount += server.BroadcastActivityState(active)
+		}
+	} else {
+		// No proxy IDs specified - broadcast to all (backward compatibility)
+		for _, server := range c.daemon.proxym.List() {
+			sentCount += server.BroadcastActivityState(active)
+		}
+	}
+
+	resp := map[string]interface{}{
+		"success":    true,
+		"active":     active,
+		"sent_count": sentCount,
+		"proxy_ids":  proxyIDs,
+	}
+
+	data, _ := json.Marshal(resp)
+	return c.writeJSON(data)
 }

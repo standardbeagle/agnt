@@ -1210,6 +1210,75 @@ func (ps *ProxyServer) ExecuteJavaScript(code string) (string, <-chan *Execution
 	return execID, resultChan, nil
 }
 
+// BroadcastActivityState sends an activity state update to all connected browser clients.
+// Returns the number of clients that received the update.
+func (ps *ProxyServer) BroadcastActivityState(active bool) int {
+	message := map[string]interface{}{
+		"type": "activity",
+		"payload": map[string]interface{}{
+			"active": active,
+		},
+	}
+
+	messageBytes, err := json.Marshal(message)
+	if err != nil {
+		return 0
+	}
+
+	sentCount := 0
+	ps.wsConns.Range(func(key, value interface{}) bool {
+		conn := value.(*websocket.Conn)
+		err := conn.WriteMessage(websocket.TextMessage, messageBytes)
+		if err == nil {
+			sentCount++
+		}
+		return true
+	})
+
+	return sentCount
+}
+
+// BroadcastToast sends a toast notification to all connected browser clients.
+// Returns the number of clients that received the toast.
+func (ps *ProxyServer) BroadcastToast(toastType, title, message string, duration int) (int, error) {
+	// Build toast message
+	toast := map[string]interface{}{
+		"type": "toast",
+		"payload": map[string]interface{}{
+			"type":    toastType,
+			"title":   title,
+			"message": message,
+		},
+	}
+
+	// Only include duration if non-zero
+	if duration > 0 {
+		toast["payload"].(map[string]interface{})["duration"] = duration
+	}
+
+	messageBytes, err := json.Marshal(toast)
+	if err != nil {
+		return 0, fmt.Errorf("failed to marshal toast: %w", err)
+	}
+
+	// Send to all connected clients
+	sentCount := 0
+	ps.wsConns.Range(func(key, value interface{}) bool {
+		conn := value.(*websocket.Conn)
+		err := conn.WriteMessage(websocket.TextMessage, messageBytes)
+		if err == nil {
+			sentCount++
+		}
+		return true
+	})
+
+	if sentCount == 0 {
+		return 0, fmt.Errorf("no connected clients")
+	}
+
+	return sentCount, nil
+}
+
 // getArrayField extracts an array from a map field.
 func getArrayField(data map[string]interface{}, key string) []interface{} {
 	if v, ok := data[key]; ok {

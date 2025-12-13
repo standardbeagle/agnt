@@ -1,0 +1,33 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "notify-toast.sh"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "notify-toast.sh"
+          }
+        ]
+      }
+    ]
+  },
+  "permissions": {
+    "allow": [
+      "mcp__devtool__*"
+    ]
+  },
+  "env": {
+    "DEVTOOL_OVERLAY_SOCKET": "${XDG_RUNTIME_DIR}/devtool-overlay.sock"
+  }
+}
