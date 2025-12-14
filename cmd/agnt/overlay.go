@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -342,11 +343,204 @@ func (o *Overlay) processProxyEvent(event ProxyEvent) {
 			Instant: true,
 		})
 
-	case "interaction":
-		// Interactions are tracked but not logged
+	case "design_state":
+		// Handle design state - element selected for iteration
+		var data struct {
+			Selector     string `json:"selector"`
+			XPath        string `json:"xpath"`
+			OriginalHTML string `json:"original_html"`
+			ContextHTML  string `json:"context_html"`
+			URL          string `json:"url"`
+			Metadata     struct {
+				Tag     string   `json:"tag"`
+				ID      string   `json:"id"`
+				Classes []string `json:"classes"`
+				Text    string   `json:"text"`
+			} `json:"metadata"`
+		}
+		if err := json.Unmarshal(event.Data, &data); err != nil {
+			log.Printf("Failed to parse design_state: %v", err)
+			return
+		}
+
+		// Format comprehensive UX designer instructions
+		text := fmt.Sprintf(`[🎨 Design Mode: Premium UX Design Session]
+
+**Element Selected for Redesign:**
+- Selector: %s`, data.Selector)
+		if data.Metadata.Tag != "" {
+			text += fmt.Sprintf("\n- Element: <%s>", data.Metadata.Tag)
+			if data.Metadata.ID != "" {
+				text += fmt.Sprintf(` id="%s"`, data.Metadata.ID)
+			}
+			if len(data.Metadata.Classes) > 0 {
+				text += fmt.Sprintf(` class="%s"`, strings.Join(data.Metadata.Classes, " "))
+			}
+		}
+		if data.Metadata.Text != "" {
+			textPreview := data.Metadata.Text
+			if len(textPreview) > 50 {
+				textPreview = textPreview[:50] + "..."
+			}
+			text += fmt.Sprintf("\n- Content: %q", textPreview)
+		}
+
+		text += fmt.Sprintf(`
+
+**Your Mission:** Act as a world-class UX designer creating premium, million-dollar designs.
+
+**Before designing, gather context using these diagnostic tools:**
+1. Take a screenshot: proxy {action: "exec", id: "%s", code: "__devtool.screenshot('design-context')"}
+2. Check user interactions: proxylog {proxy_id: "%s", types: ["interaction"], limit: 20}
+3. Review any errors: proxylog {proxy_id: "%s", types: ["error"]}
+4. See page performance: proxylog {proxy_id: "%s", types: ["performance"]}
+5. Inspect element details: proxy {action: "exec", id: "%s", code: "__devtool.inspect('%s')"}
+6. Check accessibility: proxy {action: "exec", id: "%s", code: "__devtool.auditAccessibility()"}
+
+**Design Requirements:**
+Create 3-5 distinct, premium alternatives that:
+- Follow modern design principles (visual hierarchy, whitespace, contrast)
+- Are accessible (WCAG AA compliant)
+- Feel polished and professional
+- Each have a unique design direction (e.g., minimal, bold, playful, premium, corporate)
+
+**To add each alternative:**
+proxy {action: "exec", id: "%s", code: "__devtool_design.addAlternative('<your complete HTML>')"}
+
+Start by taking a screenshot to understand the visual context, then create your designs.`,
+			event.ProxyID, event.ProxyID, event.ProxyID, event.ProxyID,
+			event.ProxyID, data.Selector, event.ProxyID, event.ProxyID)
+
+		o.typeText(TypeMessage{
+			Text:    text,
+			Enter:   true,
+			Instant: true,
+		})
+
+	case "design_request":
+		// Handle design request - user wants more alternatives
+		var data struct {
+			Selector          string `json:"selector"`
+			XPath             string `json:"xpath"`
+			CurrentHTML       string `json:"current_html"`
+			OriginalHTML      string `json:"original_html"`
+			ContextHTML       string `json:"context_html"`
+			AlternativesCount int    `json:"alternatives_count"`
+			URL               string `json:"url"`
+			Metadata          struct {
+				Tag     string   `json:"tag"`
+				ID      string   `json:"id"`
+				Classes []string `json:"classes"`
+				Text    string   `json:"text"`
+			} `json:"metadata"`
+			ChatHistory []struct {
+				Message string `json:"message"`
+				Role    string `json:"role"`
+			} `json:"chat_history"`
+		}
+		if err := json.Unmarshal(event.Data, &data); err != nil {
+			log.Printf("Failed to parse design_request: %v", err)
+			return
+		}
+
+		// Format premium designer continuation request
+		text := fmt.Sprintf(`[🎨 Design Mode: More Premium Alternatives Requested]
+
+**Element:** %s
+**Existing alternatives:** %d
+
+`, data.Selector, data.AlternativesCount)
+
+		// Include chat history context if present
+		if len(data.ChatHistory) > 0 {
+			text += "**User feedback/requests:**\n"
+			for _, msg := range data.ChatHistory {
+				if msg.Role == "user" {
+					text += fmt.Sprintf("- %s\n", msg.Message)
+				}
+			}
+			text += "\n"
+		}
+
+		// Include current HTML (truncated if long)
+		currentHTML := data.CurrentHTML
+		if len(currentHTML) > 500 {
+			currentHTML = currentHTML[:500] + "..."
+		}
+		text += fmt.Sprintf("**Current design:**\n%s\n", currentHTML)
+
+		text += fmt.Sprintf(`
+**Continue as a world-class UX designer.** Create 2-3 MORE fresh alternatives that:
+- Are distinctly different from the %d existing options
+- Push creative boundaries while staying functional
+- Consider the user's feedback above (if any)
+
+**Quick diagnostics if needed:**
+- Screenshot: proxy {action: "exec", id: "%s", code: "__devtool.screenshot('design-iteration')"}
+- Recent clicks: proxylog {proxy_id: "%s", types: ["interaction"], limit: 10}
+- Custom logs: proxylog {proxy_id: "%s", types: ["custom"]}
+
+**Add each new alternative:**
+proxy {action: "exec", id: "%s", code: "__devtool_design.addAlternative('<your fresh HTML>')"}`,
+			data.AlternativesCount, event.ProxyID, event.ProxyID, event.ProxyID, event.ProxyID)
+
+		o.typeText(TypeMessage{
+			Text:    text,
+			Enter:   true,
+			Instant: true,
+		})
+
+	case "design_chat":
+		// Handle design chat - user message about the element
+		var data struct {
+			Message      string `json:"message"`
+			Selector     string `json:"selector"`
+			CurrentHTML  string `json:"current_html"`
+			OriginalHTML string `json:"original_html"`
+			URL          string `json:"url"`
+		}
+		if err := json.Unmarshal(event.Data, &data); err != nil {
+			log.Printf("Failed to parse design_chat: %v", err)
+			return
+		}
+
+		// Include current HTML (truncated if long)
+		currentHTML := data.CurrentHTML
+		if len(currentHTML) > 400 {
+			currentHTML = currentHTML[:400] + "..."
+		}
+
+		// Format design refinement request
+		text := fmt.Sprintf(`[🎨 Design Refinement Request]
+
+**User says:** "%s"
+
+**Element:** %s
+**Current design:**
+%s
+
+**As a premium UX designer, refine the design based on this feedback.**
+
+If you need more context:
+- Screenshot current state: proxy {action: "exec", id: "%s", code: "__devtool.screenshot('refinement')"}
+- Check DOM mutations: proxylog {proxy_id: "%s", types: ["mutation"], limit: 10}
+- View panel messages: proxylog {proxy_id: "%s", types: ["panel_message"]}
+- Audit accessibility: proxy {action: "exec", id: "%s", code: "__devtool.auditAccessibility()"}
+
+**Apply the refined design:**
+proxy {action: "exec", id: "%s", code: "__devtool_design.addAlternative('<refined HTML>')"}`,
+			data.Message, data.Selector, currentHTML,
+			event.ProxyID, event.ProxyID, event.ProxyID, event.ProxyID, event.ProxyID)
+
+		o.typeText(TypeMessage{
+			Text:    text,
+			Enter:   true,
+			Instant: true,
+		})
 
 	default:
-		// Unknown event types are silently ignored
+		// Log unknown event types as errors - they may indicate missing handlers
+		log.Printf("[Overlay] ERROR: Unhandled proxy event type: %s (proxy_id=%s)", event.Type, event.ProxyID)
 	}
 
 	// Broadcast to connected clients

@@ -57,6 +57,9 @@ var (
 	//go:embed sketch.js
 	sketchJS string
 
+	//go:embed design.js
+	designJS string
+
 	//go:embed voice.js
 	voiceJS string
 
@@ -182,22 +185,27 @@ func buildCombinedScript() string {
 	sb.WriteString(wrapModule(sketchJS))
 	sb.WriteString("\n\n")
 
-	// 17. Floating indicator (depends on core, utils, sketch, toast)
+	// 17. Design mode (depends on core, utils)
+	sb.WriteString("  // Design mode module\n")
+	sb.WriteString(wrapModule(designJS))
+	sb.WriteString("\n\n")
+
+	// 18. Floating indicator (depends on core, utils, sketch, design, toast)
 	sb.WriteString("  // Floating indicator module\n")
 	sb.WriteString(wrapModule(indicatorJS))
 	sb.WriteString("\n\n")
 
-	// 18. Snapshot helper (depends on core)
+	// 19. Snapshot helper (depends on core)
 	sb.WriteString("  // Snapshot helper module\n")
 	sb.WriteString(wrapModule(snapshotHelperJS))
 	sb.WriteString("\n\n")
 
-	// 19. Diagnostics (depends on utils, core)
+	// 20. Diagnostics (depends on utils, core)
 	sb.WriteString("  // Diagnostics module\n")
 	sb.WriteString(wrapModule(diagnosticsJS))
 	sb.WriteString("\n\n")
 
-	// 20. API (assembles all modules, must be last)
+	// 21. API (assembles all modules, must be last)
 	sb.WriteString("  // API assembly module\n")
 	sb.WriteString(wrapModule(apiJS))
 	sb.WriteString("\n")
@@ -268,6 +276,7 @@ func GetScriptNames() []string {
 		"toast.js",
 		"voice.js",
 		"sketch.js",
+		"design.js",
 		"indicator.js",
 		"snapshot-helper.js",
 		"diagnostics.js",

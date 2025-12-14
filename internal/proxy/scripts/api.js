@@ -20,6 +20,7 @@
   var voice = window.__devtool_voice;
   var indicator = window.__devtool_indicator;
   var sketch = window.__devtool_sketch;
+  var design = window.__devtool_design;
   var diagnostics = window.__devtool_diagnostics;
 
   // Main DevTool API
@@ -177,6 +178,22 @@
       undo: sketch.undo,
       redo: sketch.redo,
       clear: sketch.clearAll
+    },
+
+    // ========================================================================
+    // DESIGN ITERATION
+    // ========================================================================
+
+    design: {
+      start: design.start,
+      stop: design.stop,
+      selectElement: design.selectElement,
+      next: design.next,
+      previous: design.previous,
+      addAlternative: design.addAlternative,
+      applyAlternative: design.applyAlternative,
+      chat: design.chat,
+      getState: design.getState
     },
 
     // ========================================================================
@@ -399,6 +416,7 @@
   console.log('  __devtool.mutations.highlightRecent(5000)');
   console.log('  __devtool.indicator.toggle() - Toggle floating indicator');
   console.log('  __devtool.sketch.open() - Open sketch mode');
+  console.log('  __devtool.design.start() - Start design iteration mode');
   console.log('  __devtool.toast.success("Done!", "Title") - Show toast');
   console.log('  __devtool.diagnostics.outlineAll() - Visual CSS debugging');
 })();

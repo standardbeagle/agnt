@@ -1154,6 +1154,36 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 			ps.logger.LogSketchCapture(capture)
 
+		case "design_state":
+			// Handle design state when element is selected for iteration
+			designState := parseDesignState(msg.Data, id, timestamp, msg.URL)
+			ps.logger.LogDesignState(designState)
+
+			// Forward to overlay if configured
+			if ps.overlayNotifier.IsEnabled() {
+				_ = ps.overlayNotifier.NotifyDesignState(ps.ID, &designState)
+			}
+
+		case "design_request":
+			// Handle request for new design alternatives
+			designRequest := parseDesignRequest(msg.Data, id, timestamp, msg.URL)
+			ps.logger.LogDesignRequest(designRequest)
+
+			// Forward to overlay if configured
+			if ps.overlayNotifier.IsEnabled() {
+				_ = ps.overlayNotifier.NotifyDesignRequest(ps.ID, &designRequest)
+			}
+
+		case "design_chat":
+			// Handle chat message about selected element
+			designChat := parseDesignChat(msg.Data, id, timestamp, msg.URL)
+			ps.logger.LogDesignChat(designChat)
+
+			// Forward to overlay if configured
+			if ps.overlayNotifier.IsEnabled() {
+				_ = ps.overlayNotifier.NotifyDesignChat(ps.ID, &designChat)
+			}
+
 		case "voice_start":
 			// Start voice transcription session
 			config := DefaultDeepgramConfig()
@@ -1754,4 +1784,126 @@ func parseSketchCapture(data map[string]interface{}, timestamp time.Time, url st
 	}
 
 	return capture
+}
+
+func parseDesignState(data map[string]interface{}, id string, timestamp time.Time, url string) DesignState {
+	state := DesignState{
+		ID:          id,
+		Timestamp:   timestamp,
+		URL:         url,
+		Selector:    getStringField(data, "selector"),
+		XPath:       getStringField(data, "xpath"),
+		OriginalHTML: getStringField(data, "originalHTML"),
+		ContextHTML:  getStringField(data, "contextHTML"),
+	}
+
+	// Parse metadata
+	if metaData, ok := data["metadata"].(map[string]interface{}); ok {
+		state.Metadata = parseDesignElementMetadata(metaData)
+	}
+
+	return state
+}
+
+func parseDesignRequest(data map[string]interface{}, id string, timestamp time.Time, url string) DesignRequest {
+	request := DesignRequest{
+		ID:               id,
+		Timestamp:        timestamp,
+		URL:              url,
+		Selector:         getStringField(data, "selector"),
+		XPath:            getStringField(data, "xpath"),
+		CurrentHTML:      getStringField(data, "currentHTML"),
+		OriginalHTML:     getStringField(data, "originalHTML"),
+		ContextHTML:      getStringField(data, "contextHTML"),
+		AlternativesCount: getIntField(data, "alternativesCount"),
+	}
+
+	// Parse metadata
+	if metaData, ok := data["metadata"].(map[string]interface{}); ok {
+		request.Metadata = parseDesignElementMetadata(metaData)
+	}
+
+	// Parse chat history
+	if history, ok := data["chatHistory"].([]interface{}); ok {
+		for _, item := range history {
+			if msgData, ok := item.(map[string]interface{}); ok {
+				request.ChatHistory = append(request.ChatHistory, DesignChatMessage{
+					Timestamp: getInt64Field(msgData, "timestamp"),
+					Message:   getStringField(msgData, "message"),
+					Role:      getStringField(msgData, "role"),
+				})
+			}
+		}
+	}
+
+	return request
+}
+
+func parseDesignChat(data map[string]interface{}, id string, timestamp time.Time, url string) DesignChat {
+	chat := DesignChat{
+		ID:          id,
+		Timestamp:   timestamp,
+		URL:         url,
+		Message:     getStringField(data, "message"),
+		Selector:    getStringField(data, "selector"),
+		XPath:       getStringField(data, "xpath"),
+		CurrentHTML: getStringField(data, "currentHTML"),
+		OriginalHTML: getStringField(data, "originalHTML"),
+		ContextHTML:  getStringField(data, "contextHTML"),
+	}
+
+	// Parse metadata
+	if metaData, ok := data["metadata"].(map[string]interface{}); ok {
+		chat.Metadata = parseDesignElementMetadata(metaData)
+	}
+
+	// Parse chat history
+	if history, ok := data["chatHistory"].([]interface{}); ok {
+		for _, item := range history {
+			if msgData, ok := item.(map[string]interface{}); ok {
+				chat.ChatHistory = append(chat.ChatHistory, DesignChatMessage{
+					Timestamp: getInt64Field(msgData, "timestamp"),
+					Message:   getStringField(msgData, "message"),
+					Role:      getStringField(msgData, "role"),
+				})
+			}
+		}
+	}
+
+	return chat
+}
+
+func parseDesignElementMetadata(data map[string]interface{}) DesignElementMetadata {
+	metadata := DesignElementMetadata{
+		Tag: getStringField(data, "tag"),
+		ID:  getStringField(data, "id"),
+		Text: getStringField(data, "text"),
+	}
+
+	// Parse classes array
+	if classes, ok := data["classes"].([]interface{}); ok {
+		for _, class := range classes {
+			if classStr, ok := class.(string); ok {
+				metadata.Classes = append(metadata.Classes, classStr)
+			}
+		}
+	}
+
+	// Parse attributes
+	if attrs, ok := data["attributes"].(map[string]interface{}); ok {
+		metadata.Attributes = make(map[string]string)
+		for key, val := range attrs {
+			if valStr, ok := val.(string); ok {
+				metadata.Attributes[key] = valStr
+			}
+		}
+	}
+
+	// Parse rect
+	if rect, ok := data["rect"].(map[string]interface{}); ok {
+		metadata.Rect.Width = getIntField(rect, "width")
+		metadata.Rect.Height = getIntField(rect, "height")
+	}
+
+	return metadata
 }

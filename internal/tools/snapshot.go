@@ -12,11 +12,11 @@ import (
 
 // SnapshotInput defines input for the snapshot tool
 type SnapshotInput struct {
-	Action        string                     `json:"action" jsonschema:"required,enum=baseline,enum=compare,enum=list,enum=delete,enum=get,description=Action to perform"`
-	Name          string                     `json:"name,omitempty" jsonschema:"description=Baseline name (required for baseline/compare/delete/get)"`
-	Baseline      string                     `json:"baseline,omitempty" jsonschema:"description=Baseline name to compare against (for compare action)"`
-	Pages         []snapshot.PageCapture     `json:"pages,omitempty" jsonschema:"description=Pages to capture (array of {url viewport screenshot_data})"`
-	DiffThreshold float64                    `json:"diff_threshold,omitempty" jsonschema:"description=Diff sensitivity threshold 0.0-1.0 (default: 0.01)"`
+	Action        string                 `json:"action" jsonschema:"Action: baseline, compare, list, delete, get"`
+	Name          string                 `json:"name,omitempty" jsonschema:"Baseline name (required for baseline/compare/delete/get)"`
+	Baseline      string                 `json:"baseline,omitempty" jsonschema:"Baseline name to compare against (for compare action)"`
+	Pages         []snapshot.PageCapture `json:"pages,omitempty" jsonschema:"Pages to capture (array of {url viewport screenshot_data})"`
+	DiffThreshold float64                `json:"diff_threshold,omitempty" jsonschema:"Diff sensitivity threshold 0.0-1.0 (default: 0.01)"`
 }
 
 // SnapshotOutput defines output for the snapshot tool

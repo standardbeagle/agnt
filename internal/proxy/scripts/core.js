@@ -186,7 +186,74 @@
     }
   }
 
-  // Send metric to server (JSON)
+  /**
+   * Send a message to the DevTool server via WebSocket.
+   *
+   * The message is JSON-encoded with the following envelope:
+   * {type: string, data: object, url: string, session_id: string}
+   *
+   * Supported message types (server.go must handle these):
+   *
+   * @param {string} type - Message type. One of:
+   *
+   *   **Automatic/System Messages:**
+   *   - "error" - JavaScript errors captured by window.onerror
+   *     data: {message, source, lineno, colno, error, stack, timestamp}
+   *   - "performance" - Page load performance metrics
+   *     data: {navigation_start, dom_content_loaded, load_event_end, dom_interactive,
+   *            dom_complete, first_paint?, first_contentful_paint?, resources?, timestamp}
+   *   - "execution" - Response to server-initiated JavaScript execution
+   *     data: {exec_id, result, error, duration, timestamp}
+   *
+   *   **User-Initiated Messages (via __devtool API):**
+   *   - "custom_log" - Custom log messages from __devtool.log()
+   *     data: {message, level, extra?, timestamp}
+   *   - "screenshot" - Screenshot capture from __devtool.screenshot()
+   *     data: {name, image, timestamp}
+   *
+   *   **Interaction/Mutation Tracking:**
+   *   - "interactions" - User interaction events (clicks, keyboard, scroll)
+   *     data: {events: [...], timestamp}
+   *   - "mutations" - DOM mutation records
+   *     data: {mutations: [...], timestamp}
+   *
+   *   **Indicator Panel Messages:**
+   *   - "panel_message" - Text message from floating indicator panel
+   *     data: {message, timestamp}
+   *     -> Forwarded to overlay, typed into PTY
+   *
+   *   **Sketch Mode Messages:**
+   *   - "sketch" - Sketch/wireframe saved from sketch mode
+   *     data: {json, image, timestamp}
+   *     -> Forwarded to overlay, typed into PTY
+   *
+   *   **Capture Messages (from indicator panel):**
+   *   - "screenshot_capture" - Screenshot with optional selection area
+   *     data: {name, selection?, image, timestamp}
+   *   - "element_capture" - Selected element info
+   *     data: {selector, info, timestamp}
+   *   - "sketch_capture" - Sketch saved via indicator panel
+   *     data: {json, image, timestamp}
+   *
+   *   **Design Iteration Messages:**
+   *   - "design_state" - Element selected for design iteration
+   *     data: {selector, xpath, original_html, context_html, url, metadata}
+   *     -> Forwarded to overlay, typed into PTY
+   *   - "design_request" - Request for design alternatives
+   *     data: {prompt, selector, timestamp}
+   *     -> Forwarded to overlay, typed into PTY
+   *   - "design_chat" - Chat message during design iteration
+   *     data: {message, selector, timestamp}
+   *     -> Forwarded to overlay, typed into PTY
+   *
+   *   **Voice Messages:**
+   *   - "voice_start" - Voice recording started
+   *     data: {timestamp}
+   *   - "voice_stop" - Voice recording stopped
+   *     data: {timestamp}
+   *
+   * @param {object} data - Message payload (structure depends on type)
+   */
   function send(type, data) {
     if (ws && ws.readyState === WebSocket.OPEN) {
       try {

@@ -91,6 +91,36 @@ func (n *OverlayNotifier) NotifySketch(proxyID string, sketch *SketchEntry) erro
 	})
 }
 
+// NotifyDesignState sends design state to the overlay.
+func (n *OverlayNotifier) NotifyDesignState(proxyID string, state *DesignState) error {
+	return n.send(OverlayEvent{
+		Type:      "design_state",
+		ProxyID:   proxyID,
+		Timestamp: time.Now(),
+		Data:      state,
+	})
+}
+
+// NotifyDesignRequest sends a design request to the overlay.
+func (n *OverlayNotifier) NotifyDesignRequest(proxyID string, request *DesignRequest) error {
+	return n.send(OverlayEvent{
+		Type:      "design_request",
+		ProxyID:   proxyID,
+		Timestamp: time.Now(),
+		Data:      request,
+	})
+}
+
+// NotifyDesignChat sends a design chat message to the overlay.
+func (n *OverlayNotifier) NotifyDesignChat(proxyID string, chat *DesignChat) error {
+	return n.send(OverlayEvent{
+		Type:      "design_chat",
+		ProxyID:   proxyID,
+		Timestamp: time.Now(),
+		Data:      chat,
+	})
+}
+
 // NotifyInteraction sends an interaction event to the overlay.
 func (n *OverlayNotifier) NotifyInteraction(proxyID string, interaction *InteractionEvent) error {
 	return n.send(OverlayEvent{

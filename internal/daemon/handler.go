@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -15,6 +16,19 @@ import (
 	"devtool-mcp/internal/proxy"
 	"devtool-mcp/internal/tunnel"
 )
+
+// normalizePath returns a cleaned absolute path for consistent comparison.
+// This ensures paths from different sources (CLI, MCP) match correctly.
+func normalizePath(path string) string {
+	if path == "" || path == "." {
+		return "."
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return filepath.Clean(path)
+	}
+	return abs
+}
 
 // handleDetect handles the DETECT command.
 func (c *Connection) handleDetect(cmd *protocol.Command) error {
@@ -400,12 +414,16 @@ func (c *Connection) handleProcList(cmd *protocol.Command) error {
 		directory = "."
 	}
 
+	// Normalize the filter directory for consistent comparison
+	normalizedDir := normalizePath(directory)
+
 	// Filter processes by directory unless global flag is set
 	filteredProcs := procs
 	if !dirFilter.Global {
 		var filtered []*process.ManagedProcess
 		for _, p := range procs {
-			if p.ProjectPath == directory {
+			// Normalize process path for comparison
+			if normalizePath(p.ProjectPath) == normalizedDir {
 				filtered = append(filtered, p)
 			}
 		}
@@ -427,7 +445,7 @@ func (c *Connection) handleProcList(cmd *protocol.Command) error {
 	resp := map[string]interface{}{
 		"count":                 len(filteredProcs),
 		"processes":             entries,
-		"directory":             directory,
+		"directory":             normalizedDir,
 		"global":                dirFilter.Global,
 		"total_in_daemon":       len(procs),
 		"filtered_by_directory": !dirFilter.Global,
@@ -679,12 +697,16 @@ func (c *Connection) handleProxyList(cmd *protocol.Command) error {
 		directory = "."
 	}
 
+	// Normalize the filter directory for consistent comparison
+	normalizedDir := normalizePath(directory)
+
 	// Filter proxies by directory unless global flag is set
 	filteredProxies := proxies
 	if !dirFilter.Global {
 		var filtered []*proxy.ProxyServer
 		for _, p := range proxies {
-			if p.Path == directory {
+			// Normalize proxy path for comparison
+			if normalizePath(p.Path) == normalizedDir {
 				filtered = append(filtered, p)
 			}
 		}
@@ -718,7 +740,7 @@ func (c *Connection) handleProxyList(cmd *protocol.Command) error {
 	resp := map[string]interface{}{
 		"count":                 len(filteredProxies),
 		"proxies":               entries,
-		"directory":             directory,
+		"directory":             normalizedDir,
 		"global":                dirFilter.Global,
 		"total_in_daemon":       len(proxies),
 		"filtered_by_directory": !dirFilter.Global,

@@ -38,6 +38,12 @@ const (
 	LogTypeElementCapture LogEntryType = "element_capture"
 	// LogTypeSketchCapture represents a sketch capture with a reference ID.
 	LogTypeSketchCapture LogEntryType = "sketch_capture"
+	// LogTypeDesignState represents the initial state when an element is selected for design iteration.
+	LogTypeDesignState LogEntryType = "design_state"
+	// LogTypeDesignRequest represents a request for new design alternatives.
+	LogTypeDesignRequest LogEntryType = "design_request"
+	// LogTypeDesignChat represents a chat message about the selected element.
+	LogTypeDesignChat LogEntryType = "design_chat"
 )
 
 // HTTPLogEntry represents a logged HTTP request/response pair.
@@ -298,6 +304,68 @@ type SketchCapture struct {
 	FilePath     string                 `json:"file_path,omitempty"`
 }
 
+// DesignElementMetadata describes metadata about a selected element for design iteration.
+type DesignElementMetadata struct {
+	Tag        string            `json:"tag"`
+	ID         string            `json:"id,omitempty"`
+	Classes    []string          `json:"classes,omitempty"`
+	Attributes map[string]string `json:"attributes,omitempty"`
+	Text       string            `json:"text,omitempty"` // Truncated text content
+	Rect       struct {
+		Width  int `json:"width"`
+		Height int `json:"height"`
+	} `json:"rect,omitempty"`
+}
+
+// DesignChatMessage represents a chat message in the design iteration history.
+type DesignChatMessage struct {
+	Timestamp int64  `json:"timestamp"`
+	Message   string `json:"message"`
+	Role      string `json:"role"` // user or assistant
+}
+
+// DesignState represents the initial state when an element is selected for design iteration.
+type DesignState struct {
+	ID          string                `json:"id"`
+	Timestamp   time.Time             `json:"timestamp"`
+	Selector    string                `json:"selector"` // CSS selector
+	XPath       string                `json:"xpath"`    // XPath for robustness
+	OriginalHTML string                `json:"original_html"`
+	ContextHTML  string                `json:"context_html"` // Parent element with siblings for context
+	Metadata    DesignElementMetadata `json:"metadata"`
+	URL         string                `json:"url"`
+}
+
+// DesignRequest represents a request for new design alternatives.
+type DesignRequest struct {
+	ID               string                `json:"id"`
+	Timestamp        time.Time             `json:"timestamp"`
+	Selector         string                `json:"selector"`
+	XPath            string                `json:"xpath"`
+	CurrentHTML      string                `json:"current_html"`      // Current HTML being displayed
+	OriginalHTML     string                `json:"original_html"`     // Original HTML before any changes
+	ContextHTML      string                `json:"context_html"`      // Parent context
+	Metadata         DesignElementMetadata `json:"metadata"`
+	AlternativesCount int                   `json:"alternatives_count"` // How many alternatives already exist
+	ChatHistory      []DesignChatMessage   `json:"chat_history,omitempty"`
+	URL              string                `json:"url"`
+}
+
+// DesignChat represents a chat message about the selected element.
+type DesignChat struct {
+	ID               string                `json:"id"`
+	Timestamp        time.Time             `json:"timestamp"`
+	Message          string                `json:"message"` // User's chat message
+	Selector         string                `json:"selector"`
+	XPath            string                `json:"xpath"`
+	CurrentHTML      string                `json:"current_html"`
+	OriginalHTML     string                `json:"original_html"`
+	ContextHTML      string                `json:"context_html"`
+	Metadata         DesignElementMetadata `json:"metadata"`
+	ChatHistory      []DesignChatMessage   `json:"chat_history,omitempty"`
+	URL              string                `json:"url"`
+}
+
 // LogEntry is a union type for all log entry types.
 type LogEntry struct {
 	Type              LogEntryType       `json:"type"`
@@ -315,6 +383,9 @@ type LogEntry struct {
 	ScreenshotCapture *ScreenshotCapture `json:"screenshot_capture,omitempty"`
 	ElementCapture    *ElementCapture    `json:"element_capture,omitempty"`
 	SketchCapture     *SketchCapture     `json:"sketch_capture,omitempty"`
+	DesignState       *DesignState       `json:"design_state,omitempty"`
+	DesignRequest     *DesignRequest     `json:"design_request,omitempty"`
+	DesignChat        *DesignChat        `json:"design_chat,omitempty"`
 }
 
 // TrafficLogger stores proxy traffic logs with bounded memory.
@@ -446,6 +517,30 @@ func (tl *TrafficLogger) LogSketchCapture(entry SketchCapture) {
 	tl.log(LogEntry{
 		Type:          LogTypeSketchCapture,
 		SketchCapture: &entry,
+	})
+}
+
+// LogDesignState adds a design state entry.
+func (tl *TrafficLogger) LogDesignState(entry DesignState) {
+	tl.log(LogEntry{
+		Type:        LogTypeDesignState,
+		DesignState: &entry,
+	})
+}
+
+// LogDesignRequest adds a design request entry.
+func (tl *TrafficLogger) LogDesignRequest(entry DesignRequest) {
+	tl.log(LogEntry{
+		Type:          LogTypeDesignRequest,
+		DesignRequest: &entry,
+	})
+}
+
+// LogDesignChat adds a design chat entry.
+func (tl *TrafficLogger) LogDesignChat(entry DesignChat) {
+	tl.log(LogEntry{
+		Type:       LogTypeDesignChat,
+		DesignChat: &entry,
 	})
 }
 
@@ -600,6 +695,18 @@ func (f LogFilter) Matches(entry LogEntry) bool {
 	case LogTypeSketchCapture:
 		if entry.SketchCapture != nil {
 			timestamp = entry.SketchCapture.Timestamp
+		}
+	case LogTypeDesignState:
+		if entry.DesignState != nil {
+			timestamp = entry.DesignState.Timestamp
+		}
+	case LogTypeDesignRequest:
+		if entry.DesignRequest != nil {
+			timestamp = entry.DesignRequest.Timestamp
+		}
+	case LogTypeDesignChat:
+		if entry.DesignChat != nil {
+			timestamp = entry.DesignChat.Timestamp
 		}
 	}
 

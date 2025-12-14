@@ -18,6 +18,7 @@ import (
 	"devtool-mcp/internal/aichannel"
 	"devtool-mcp/internal/daemon"
 	"devtool-mcp/internal/overlay"
+	"devtool-mcp/internal/protocol"
 
 	"github.com/creack/pty"
 	"github.com/spf13/cobra"
@@ -153,6 +154,14 @@ func runWithPTY(ctx context.Context, args []string, socketPath string) error {
 	// Find the command
 	command := args[0]
 	cmdArgs := args[1:]
+
+	// For Claude, inject system prompt with agnt context
+	// Check if command is Claude (handles aliases, paths like /usr/bin/claude, etc.)
+	if isClaudeCommand(command) {
+		if prompt := buildAgntSystemPrompt(socketPath); prompt != "" {
+			cmdArgs = append(cmdArgs, "--append-system-prompt", prompt)
+		}
+	}
 
 	// Show startup animation
 	stopSpinner := spinner(fmt.Sprintf("Starting %s...", command))
@@ -498,6 +507,87 @@ func shellQuote(s string) string {
 	// Use single quotes, escaping any embedded single quotes
 	// 'foo'\''bar' -> foo'bar
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+// isClaudeCommand checks if the command appears to be Claude Code.
+// Handles: "claude", "/usr/bin/claude", aliases that resolve to claude, etc.
+func isClaudeCommand(command string) bool {
+	// Direct match
+	if command == "claude" {
+		return true
+	}
+
+	// Check if it's a path ending with "claude"
+	if strings.HasSuffix(command, "/claude") || strings.HasSuffix(command, "\\claude") {
+		return true
+	}
+
+	// Try to resolve the command to see if it's claude
+	if resolved, err := exec.LookPath(command); err == nil {
+		if strings.HasSuffix(resolved, "/claude") || strings.HasSuffix(resolved, "\\claude") {
+			return true
+		}
+	}
+
+	return false
+}
+
+// buildAgntSystemPrompt queries the daemon for running services and builds
+// a system prompt to inject into Claude with context about agnt and auto-started services.
+func buildAgntSystemPrompt(socketPath string) string {
+	if socketPath == "" {
+		socketPath = daemon.DefaultSocketPath()
+	}
+
+	client := daemon.NewClient(daemon.WithSocketPath(socketPath))
+	if err := client.Connect(); err != nil {
+		// Daemon not running, return minimal prompt
+		return "You are running inside agnt, a tool that gives AI coding agents browser superpowers. The agnt MCP tools (proxy, proc, proxylog, etc.) are available for browser debugging, screenshots, and dev server management."
+	}
+	defer client.Close()
+
+	var sb strings.Builder
+	sb.WriteString("You are running inside agnt, a tool that gives AI coding agents browser superpowers.\n\n")
+
+	// Get running processes (global to see all)
+	procFilter := protocol.DirectoryFilter{Global: true}
+	procs, err := client.ProcList(procFilter)
+	if err == nil {
+		if processes, ok := procs["processes"].([]interface{}); ok && len(processes) > 0 {
+			sb.WriteString("**Running processes (auto-started by agnt):**\n")
+			for _, p := range processes {
+				if pm, ok := p.(map[string]interface{}); ok {
+					id := pm["id"]
+					state := pm["state"]
+					cmd := pm["command"]
+					sb.WriteString(fmt.Sprintf("- %s: %s (state: %s)\n", id, cmd, state))
+				}
+			}
+			sb.WriteString("\n")
+		}
+	}
+
+	// Get running proxies (global to see all)
+	proxyFilter := protocol.DirectoryFilter{Global: true}
+	proxies, err := client.ProxyList(proxyFilter)
+	if err == nil {
+		if proxyList, ok := proxies["proxies"].([]interface{}); ok && len(proxyList) > 0 {
+			sb.WriteString("**Running proxies (auto-started by agnt):**\n")
+			for _, p := range proxyList {
+				if pm, ok := p.(map[string]interface{}); ok {
+					id := pm["id"]
+					target := pm["target_url"]
+					listen := pm["listen_addr"]
+					sb.WriteString(fmt.Sprintf("- %s: %s -> %s\n", id, listen, target))
+				}
+			}
+			sb.WriteString("\n")
+		}
+	}
+
+	sb.WriteString("Use agnt MCP tools (proxy, proc, proxylog, currentpage) for browser debugging, screenshots, JavaScript execution, and dev server management. Do NOT try to start processes or proxies that are already running.")
+
+	return sb.String()
 }
 
 // detectAIAgent detects the first available AI agent in PATH.
