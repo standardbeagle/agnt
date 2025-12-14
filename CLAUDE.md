@@ -64,12 +64,127 @@ into Claude Code as if the user typed them - working around MCP's lack of server
 - **Browser Superpowers** - Screenshots, DOM inspection, visual debugging for AI agents
 - **Floating Indicator** - Send messages from browser directly to your AI agent
 - **Sketch Mode** - Draw wireframes directly on your UI (Excalidraw-like)
+- **Design Mode** - AI-assisted UI iteration with live preview of design alternatives
 - **Real-Time Error Capture** - JavaScript errors automatically available to agent
 - **Extended Thinking Window** - Structured data and consolidated error summaries consume fewer tokens
 - **Process Management** - Run and manage dev servers with output capture
 - **Reverse Proxy** - HTTP traffic logging and frontend instrumentation
 - **Daemon Architecture** - Persistent state survives client disconnections
 - **Agent Overlay** - PTY wrapper for AI tools with browser-to-terminal messaging
+- **Auto System Prompt** - When running `agnt run claude`, auto-injects context about running services
+
+## Installation
+
+### Claude Code Marketplace (Recommended)
+
+The easiest way to install agnt is through the Claude Code marketplace:
+
+```bash
+# Install from marketplace (automatically configures MCP)
+claude mcp add agnt --plugin agnt@agnt-marketplace
+```
+
+This single command:
+1. Downloads the latest agnt binary
+2. Registers it as an MCP server
+3. Configures slash commands and resources
+
+### Manual MCP Registration
+
+If you prefer to install manually or build from source:
+
+**1. Install the binary:**
+```bash
+# Option A: Install from Go
+go install github.com/standardbeagle/agnt/cmd/agnt@latest
+
+# Option B: Download release binary
+curl -fsSL https://github.com/standardbeagle/agnt/releases/latest/download/agnt-linux-amd64 -o ~/.local/bin/agnt
+chmod +x ~/.local/bin/agnt
+
+# Option C: Build from source (creates all binary copies)
+make install-local
+```
+
+**2. Register as MCP server:**
+```bash
+# Using Claude Code CLI
+claude mcp add agnt -s user -- agnt serve
+
+# Or manually edit ~/.config/claude/claude_desktop_config.json
+```
+
+**Manual MCP Configuration** (`claude_desktop_config.json`):
+```json
+{
+  "mcpServers": {
+    "agnt": {
+      "command": "agnt",
+      "args": ["serve"]
+    }
+  }
+}
+```
+
+### Project Setup (/setup Command)
+
+After installing agnt, use the `/agnt:setup-project` slash command to configure your project for optimal development:
+
+```
+/agnt:setup-project
+```
+
+This command:
+1. **Detects your project type** (Go, Node.js, Python)
+2. **Identifies available scripts** (test, build, lint, dev, etc.)
+3. **Configures auto-start** for dev servers and proxies
+4. **Sets up proxy routing** based on detected ports
+5. **Saves configuration** to `.agnt/config.kdl`
+
+**Example setup flow:**
+```
+> /agnt:setup-project
+
+Detected: Node.js project (pnpm)
+Available scripts: dev, build, test, lint
+
+Recommended auto-start configuration:
+- Run 'pnpm dev' on project open
+- Start proxy for localhost:3000
+
+Save this configuration? [Y/n]
+```
+
+**Manual setup alternative:**
+```bash
+# Create .agnt directory
+mkdir -p .agnt
+
+# Configure auto-start (example .agnt/config.kdl)
+autostart {
+  process "dev" {
+    script "dev"
+  }
+  proxy "dev" {
+    target "http://localhost:3000"
+  }
+}
+```
+
+### Verifying Installation
+
+After installation, verify agnt is working:
+
+```bash
+# Check binary
+agnt --version
+
+# Check daemon
+agnt daemon status
+
+# In Claude Code, verify MCP tools are available
+# The agent should have access to: detect, run, proc, proxy, proxylog, currentpage, daemon
+```
 
 ## Build & Development Commands
 
@@ -412,7 +527,7 @@ tools.RegisterProxyTools(server, proxym)   // proxy, proxylog, currentpage
 
 ### Log Entry Types
 
-The proxy logger supports eleven log entry types:
+The proxy logger supports fourteen log entry types:
 
 | Type | Description | Source |
 |------|-------------|--------|
@@ -427,6 +542,9 @@ The proxy logger supports eleven log entry types:
 | `mutation` | DOM mutations (added, removed, modified elements) | `window.__devtool_mutations` |
 | `panel_message` | Messages from floating indicator panel | Floating indicator "Send" button |
 | `sketch` | Sketches/wireframes from sketch mode | Sketch mode "Save & Send" button |
+| `design_state` | Element selected for design iteration | Design mode selection |
+| `design_request` | Request for new design alternatives | Design mode "Next" or chat |
+| `design_chat` | Chat message about current design | Design mode chat input |
 
 ### Directory Filtering
 
@@ -558,6 +676,49 @@ __devtool.sketch.clear()          // Clear all elements
 - `Ctrl+V`: Paste
 
 **Sketch Logging**: Sketches are logged as `sketch` type with both JSON data and PNG image.
+
+### Design Mode (AI-Assisted UI Iteration)
+
+An interactive design exploration tool that lets you select any element on the page and generate premium design alternatives with AI assistance.
+
+**How it works**:
+1. Click the "Design" button in the floating indicator toolbar (or call `__devtool.design.start()`)
+2. Hover over elements to see their selectors - click to select
+3. The selected element's context is sent to the AI agent
+4. AI generates design alternatives that you can preview and navigate
+5. Use chat input to refine designs with natural language
+
+**Features**:
+- **Element Selection Overlay** - Visual hover highlighting with selector preview
+- **Navigation Controls** - Browse through generated alternatives (Prev/Next)
+- **Chat Input** - Describe changes you want in natural language
+- **Rich Context Capture** - Sends original HTML, parent context, metadata to AI
+- **XPath + CSS Selectors** - Robust element targeting across page changes
+- **Live Preview** - See alternatives applied instantly to the page
+
+**Usage**:
+```javascript
+__devtool.design.start()              // Start design mode (show selection overlay)
+__devtool.design.stop()               // Exit design mode
+__devtool.design.selectElement(el)    // Programmatically select an element
+__devtool.design.next()               // Show next alternative
+__devtool.design.previous()           // Show previous alternative
+__devtool.design.addAlternative(html) // Add a new design alternative (for AI use)
+__devtool.design.chat(message)        // Send refinement request
+__devtool.design.getState()           // Get current design state
+```
+
+**Keyboard Shortcuts** (in design mode):
+- `Escape`: Exit design mode
+
+**Event Types** (forwarded to AI agent via overlay):
+| Event | Description |
+|-------|-------------|
+| `design_state` | Initial state when element is selected (selector, HTML, metadata) |
+| `design_request` | Request for new alternatives (includes chat history) |
+| `design_chat` | Chat message about current design |
+
+**AI Agent Instructions**: When design events are received, the agent is prompted to act as a "world-class UX designer" and generate 3-5 distinct, premium design alternatives using the `__devtool_design.addAlternative()` API.
 
 ### Tunnel Integration (Mobile Testing)
 
