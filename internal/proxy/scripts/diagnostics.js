@@ -827,6 +827,341 @@
   }
 
   // ============================================================================
+  // DOM SNAPSHOT & DIFF
+  // ============================================================================
+
+  function serializeElement(el, includeStyles, captureAllStyles) {
+    var obj = {
+      tag: el.tagName.toLowerCase(),
+      attrs: {},
+      text: '',
+      children: []
+    };
+
+    // Capture attributes
+    for (var i = 0; i < el.attributes.length; i++) {
+      var attr = el.attributes[i];
+      obj.attrs[attr.name] = attr.value;
+    }
+
+    // Capture computed styles (if requested)
+    if (includeStyles) {
+      var computed = window.getComputedStyle(el);
+
+      if (captureAllStyles) {
+        // Capture all computed style properties
+        obj.styles = {};
+        for (var j = 0; j < computed.length; j++) {
+          var prop = computed[j];
+          obj.styles[prop] = computed.getPropertyValue(prop);
+        }
+      } else {
+        // Capture only key layout/visual styles
+        obj.styles = {
+          display: computed.display,
+          position: computed.position,
+          width: computed.width,
+          height: computed.height,
+          margin: computed.margin,
+          padding: computed.padding,
+          background: computed.backgroundColor,
+          color: computed.color,
+          fontSize: computed.fontSize,
+          fontWeight: computed.fontWeight,
+          fontFamily: computed.fontFamily,
+          lineHeight: computed.lineHeight,
+          border: computed.border,
+          borderRadius: computed.borderRadius,
+          boxShadow: computed.boxShadow,
+          opacity: computed.opacity,
+          zIndex: computed.zIndex,
+          transform: computed.transform
+        };
+      }
+    }
+
+    // Capture text nodes
+    for (var j = 0; j < el.childNodes.length; j++) {
+      var node = el.childNodes[j];
+      if (node.nodeType === Node.TEXT_NODE) {
+        var text = node.textContent.trim();
+        if (text) {
+          obj.text += text + ' ';
+        }
+      }
+    }
+    obj.text = obj.text.trim();
+
+    // Recursively capture children
+    for (var k = 0; k < el.children.length; k++) {
+      obj.children.push(serializeElement(el.children[k], includeStyles, captureAllStyles));
+    }
+
+    return obj;
+  }
+
+  function captureDOMSnapshot(options) {
+    options = options || {};
+    var root = options.root || document.body;
+    var includeStyles = options.includeStyles !== false; // Default true
+    var captureAllStyles = options.captureAllStyles || false; // Default false (captures key styles only)
+
+    var snapshot = {
+      timestamp: Date.now(),
+      url: window.location.href,
+      viewport: {
+        width: window.innerWidth,
+        height: window.innerHeight
+      },
+      root: serializeElement(root, includeStyles, captureAllStyles),
+      stats: {
+        totalElements: 0,
+        totalTextNodes: 0,
+        maxDepth: 0
+      },
+      options: {
+        includeStyles: includeStyles,
+        captureAllStyles: captureAllStyles
+      }
+    };
+
+    // Calculate stats
+    function countElements(node, depth) {
+      snapshot.stats.totalElements++;
+      if (depth > snapshot.stats.maxDepth) {
+        snapshot.stats.maxDepth = depth;
+      }
+      if (node.text) {
+        snapshot.stats.totalTextNodes++;
+      }
+      for (var i = 0; i < node.children.length; i++) {
+        countElements(node.children[i], depth + 1);
+      }
+    }
+    countElements(snapshot.root, 0);
+
+    return snapshot;
+  }
+
+  function generateNodePath(node, path) {
+    path = path || [];
+    if (!node.tag) return path;
+
+    var selector = node.tag;
+    if (node.attrs.id) {
+      selector += '#' + node.attrs.id;
+    } else if (node.attrs.class) {
+      var classes = node.attrs.class.split(' ')[0];
+      if (classes) selector += '.' + classes;
+    }
+
+    path.unshift(selector);
+    return path;
+  }
+
+  function compareDOMSnapshots(baseline, current) {
+    var added = [];
+    var removed = [];
+    var modified = [];
+
+    function compareNodes(baseNode, currNode, path) {
+      path = path || [];
+
+      if (!baseNode && currNode) {
+        // Node was added
+        added.push({
+          path: generateNodePath(currNode, path.slice()),
+          node: currNode
+        });
+        return;
+      }
+
+      if (baseNode && !currNode) {
+        // Node was removed
+        removed.push({
+          path: generateNodePath(baseNode, path.slice()),
+          node: baseNode
+        });
+        return;
+      }
+
+      // Check for modifications
+      var changes = [];
+
+      // Compare tag
+      if (baseNode.tag !== currNode.tag) {
+        changes.push('tag changed from ' + baseNode.tag + ' to ' + currNode.tag);
+      }
+
+      // Compare text
+      if (baseNode.text !== currNode.text) {
+        changes.push('text changed');
+      }
+
+      // Compare attributes
+      var baseAttrs = Object.keys(baseNode.attrs || {});
+      var currAttrs = Object.keys(currNode.attrs || {});
+
+      for (var i = 0; i < baseAttrs.length; i++) {
+        var attr = baseAttrs[i];
+        if (currNode.attrs[attr] !== baseNode.attrs[attr]) {
+          changes.push('attribute "' + attr + '" changed');
+        }
+      }
+
+      for (var j = 0; j < currAttrs.length; j++) {
+        var cAttr = currAttrs[j];
+        if (!baseNode.attrs[cAttr]) {
+          changes.push('attribute "' + cAttr + '" added');
+        }
+      }
+
+      if (changes.length > 0) {
+        modified.push({
+          path: generateNodePath(currNode, path.slice()),
+          changes: changes,
+          before: baseNode,
+          after: currNode
+        });
+      }
+
+      // Compare children
+      var maxChildren = Math.max(
+        baseNode.children ? baseNode.children.length : 0,
+        currNode.children ? currNode.children.length : 0
+      );
+
+      for (var k = 0; k < maxChildren; k++) {
+        var baseChild = baseNode.children ? baseNode.children[k] : null;
+        var currChild = currNode.children ? currNode.children[k] : null;
+
+        var childPath = path.slice();
+        childPath.push(currNode.tag + '[' + k + ']');
+
+        compareNodes(baseChild, currChild, childPath);
+      }
+    }
+
+    compareNodes(baseline.root, current.root);
+
+    return {
+      added: added,
+      removed: removed,
+      modified: modified,
+      summary: {
+        totalChanges: added.length + removed.length + modified.length,
+        added: added.length,
+        removed: removed.length,
+        modified: modified.length
+      },
+      baseline: {
+        timestamp: baseline.timestamp,
+        totalElements: baseline.stats.totalElements
+      },
+      current: {
+        timestamp: current.timestamp,
+        totalElements: current.stats.totalElements
+      }
+    };
+  }
+
+  function showDOMDiff(baseline, current) {
+    var diff = compareDOMSnapshots(baseline, current);
+
+    var html = '<div style="font-family: monospace; font-size: 12px;">';
+
+    // Summary
+    html += '<div style="margin-bottom: 16px; padding: 12px; background: #f0f0f0; border-radius: 4px;">';
+    html += '<div style="font-weight: bold; margin-bottom: 8px;">DOM Diff Summary</div>';
+    html += '<div>Total Changes: <strong>' + diff.summary.totalChanges + '</strong></div>';
+    html += '<div style="color: #22c55e;">Added: ' + diff.summary.added + '</div>';
+    html += '<div style="color: #ef4444;">Removed: ' + diff.summary.removed + '</div>';
+    html += '<div style="color: #f59e0b;">Modified: ' + diff.summary.modified + '</div>';
+    html += '</div>';
+
+    // Added elements
+    if (diff.added.length > 0) {
+      html += '<div style="margin-bottom: 16px;">';
+      html += '<div style="font-weight: bold; color: #22c55e; margin-bottom: 8px;">✓ Added Elements (' + diff.added.length + ')</div>';
+      for (var i = 0; i < Math.min(diff.added.length, 20); i++) {
+        var item = diff.added[i];
+        html += '<div style="padding: 4px 8px; background: rgba(34, 197, 94, 0.1); margin-bottom: 4px; border-left: 3px solid #22c55e;">';
+        html += '<code>' + item.path.join(' &gt; ') + '</code>';
+        html += '</div>';
+      }
+      if (diff.added.length > 20) {
+        html += '<div style="color: #666; font-size: 11px;">... and ' + (diff.added.length - 20) + ' more</div>';
+      }
+      html += '</div>';
+    }
+
+    // Removed elements
+    if (diff.removed.length > 0) {
+      html += '<div style="margin-bottom: 16px;">';
+      html += '<div style="font-weight: bold; color: #ef4444; margin-bottom: 8px;">✗ Removed Elements (' + diff.removed.length + ')</div>';
+      for (var j = 0; j < Math.min(diff.removed.length, 20); j++) {
+        var rItem = diff.removed[j];
+        html += '<div style="padding: 4px 8px; background: rgba(239, 68, 68, 0.1); margin-bottom: 4px; border-left: 3px solid #ef4444;">';
+        html += '<code>' + rItem.path.join(' &gt; ') + '</code>';
+        html += '</div>';
+      }
+      if (diff.removed.length > 20) {
+        html += '<div style="color: #666; font-size: 11px;">... and ' + (diff.removed.length - 20) + ' more</div>';
+      }
+      html += '</div>';
+    }
+
+    // Modified elements
+    if (diff.modified.length > 0) {
+      html += '<div style="margin-bottom: 16px;">';
+      html += '<div style="font-weight: bold; color: #f59e0b; margin-bottom: 8px;">⚠ Modified Elements (' + diff.modified.length + ')</div>';
+      for (var k = 0; k < Math.min(diff.modified.length, 20); k++) {
+        var mItem = diff.modified[k];
+        html += '<div style="padding: 4px 8px; background: rgba(245, 158, 11, 0.1); margin-bottom: 4px; border-left: 3px solid #f59e0b;">';
+        html += '<code>' + mItem.path.join(' &gt; ') + '</code><br>';
+        html += '<div style="font-size: 10px; color: #666; margin-top: 4px;">' + mItem.changes.join(', ') + '</div>';
+        html += '</div>';
+      }
+      if (diff.modified.length > 20) {
+        html += '<div style="color: #666; font-size: 11px;">... and ' + (diff.modified.length - 20) + ' more</div>';
+      }
+      html += '</div>';
+    }
+
+    html += '</div>';
+
+    var panelId = createPanel('DOM Diff', html, {
+      maxHeight: '700px',
+      maxWidth: '600px',
+      top: '20px',
+      right: '440px'
+    });
+
+    state.activeModes['dom-diff'] = panelId;
+
+    return {
+      success: true,
+      mode: 'dom-diff',
+      panelId: panelId,
+      diff: diff
+    };
+  }
+
+  function highlightDOMChanges(diff) {
+    var css = [];
+
+    // We can't directly highlight removed elements since they're gone
+    // But we can highlight added and modified elements by their path
+
+    // For now, just provide feedback that this would require element tracking
+    return {
+      success: false,
+      message: 'Live DOM highlighting requires element tracking - use showDOMDiff() for diff panel instead',
+      diff: diff
+    };
+  }
+
+  // ============================================================================
   // EXPORT
   // ============================================================================
 
@@ -860,6 +1195,12 @@
     // Color & Spacing
     showColorPalette: showColorPalette,
     showSpacingScale: showSpacingScale,
+
+    // DOM Snapshot & Diff
+    captureDOMSnapshot: captureDOMSnapshot,
+    compareDOMSnapshots: compareDOMSnapshots,
+    showDOMDiff: showDOMDiff,
+    highlightDOMChanges: highlightDOMChanges,
 
     // Control
     clear: clear,

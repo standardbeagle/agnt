@@ -234,6 +234,11 @@
       // Color & Spacing
       showColorPalette: function() { return { error: 'Diagnostics not loaded' }; },
       showSpacingScale: function() { return { error: 'Diagnostics not loaded' }; },
+      // DOM Snapshot & Diff
+      captureDOMSnapshot: function() { return { error: 'Diagnostics not loaded' }; },
+      compareDOMSnapshots: function() { return { error: 'Diagnostics not loaded' }; },
+      showDOMDiff: function() { return { error: 'Diagnostics not loaded' }; },
+      highlightDOMChanges: function() { return { error: 'Diagnostics not loaded' }; },
       // Control
       clear: function() { return { error: 'Diagnostics not loaded' }; },
       clearAll: function() { return { error: 'Diagnostics not loaded' }; },

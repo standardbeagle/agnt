@@ -318,6 +318,16 @@
             </div>
 
             <div class="control-group">
+                <h3>📸 DOM Snapshot & Diff</h3>
+                <div class="button-grid">
+                    <button onclick="testCaptureBaseline()">Capture Baseline DOM</button>
+                    <button onclick="testModifyDOM()">Modify DOM (Add Card)</button>
+                    <button onclick="testCompareDOM()">Compare to Baseline</button>
+                    <button onclick="testCaptureAll()">Capture with All Styles</button>
+                </div>
+            </div>
+
+            <div class="control-group">
                 <h3>🔧 Control</h3>
                 <div class="button-grid">
                     <button onclick="testList()">List Active Modes</button>
@@ -606,6 +616,53 @@
             const result = __devtool.diagnostics.clearAll();
             log('✓ All diagnostic modes cleared');
             console.log('Result:', result);
+        }
+
+        // DOM Snapshot variables
+        let domBaseline = null;
+
+        function testCaptureBaseline() {
+            if (!checkDevTool()) return;
+            log('Capturing baseline DOM snapshot...');
+            domBaseline = __devtool.diagnostics.captureDOMSnapshot();
+            log(`✓ Baseline captured - ${domBaseline.stats.totalElements} elements, max depth ${domBaseline.stats.maxDepth}`);
+            console.log('Baseline snapshot:', domBaseline);
+        }
+
+        function testModifyDOM() {
+            log('Modifying DOM (adding a card to grid)...');
+            const gridDemo = document.querySelector('.grid-demo');
+            if (gridDemo) {
+                const newCard = document.createElement('div');
+                newCard.className = 'card';
+                newCard.innerHTML = '<h4>New Card</h4><p>This card was added dynamically for testing DOM diff</p>';
+                gridDemo.appendChild(newCard);
+                log('✓ Card added to grid');
+            } else {
+                log('ERROR: Grid demo not found');
+            }
+        }
+
+        function testCompareDOM() {
+            if (!checkDevTool()) return;
+            if (!domBaseline) {
+                log('ERROR: No baseline captured. Click "Capture Baseline DOM" first.');
+                return;
+            }
+            log('Comparing current DOM to baseline...');
+            const currentSnapshot = __devtool.diagnostics.captureDOMSnapshot();
+            const result = __devtool.diagnostics.showDOMDiff(domBaseline, currentSnapshot);
+            log(`✓ DOM Diff displayed - ${result.diff.summary.totalChanges} changes (${result.diff.summary.added} added, ${result.diff.summary.removed} removed, ${result.diff.summary.modified} modified)`);
+            console.log('DOM Diff:', result.diff);
+        }
+
+        function testCaptureAll() {
+            if (!checkDevTool()) return;
+            log('Capturing DOM with ALL computed styles...');
+            const snapshot = __devtool.diagnostics.captureDOMSnapshot({ captureAllStyles: true });
+            log(`✓ Full snapshot captured - ${snapshot.stats.totalElements} elements with complete style data`);
+            console.log('Full snapshot:', snapshot);
+            console.log('Sample element with all styles:', snapshot.root.children[0]);
         }
 
         // Initial message
