@@ -11,6 +11,7 @@ import (
 	"devtool-mcp/internal/daemon"
 	"devtool-mcp/internal/process"
 	"devtool-mcp/internal/proxy"
+	"devtool-mcp/internal/snapshot"
 	"devtool-mcp/internal/tools"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -89,6 +90,7 @@ Available tools:
 - proxy: Reverse proxy with traffic logging and JS instrumentation
 - proxylog: Query proxy traffic logs
 - currentpage: View active page sessions
+- snapshot: Visual regression testing (baseline/compare screenshots)
 - daemon: Manage the background daemon service`,
 		},
 	)
@@ -97,6 +99,14 @@ Available tools:
 	tools.RegisterDaemonTools(server, dt)
 	tools.RegisterDaemonManagementTool(server, dt)
 	tools.RegisterTunnelTool(server, dt)
+
+	// Register snapshot tools (visual regression testing)
+	snapshotManager, err := snapshot.NewManager("", 0.01) // Default path and 1% threshold
+	if err != nil {
+		log.Printf("Warning: Failed to initialize snapshot manager: %v", err)
+	} else {
+		tools.RegisterSnapshotTools(server, snapshotManager)
+	}
 
 	// Handle context cancellation
 	go func() {
@@ -152,6 +162,14 @@ func runLegacyServer() {
 	tools.RegisterProcessTools(server, pm)
 	tools.RegisterProjectTools(server)
 	tools.RegisterProxyTools(server, proxym)
+
+	// Register snapshot tools (visual regression testing)
+	snapshotManager, err := snapshot.NewManager("", 0.01)
+	if err != nil {
+		log.Printf("Warning: Failed to initialize snapshot manager: %v", err)
+	} else {
+		tools.RegisterSnapshotTools(server, snapshotManager)
+	}
 
 	// Handle shutdown in background
 	go func() {
