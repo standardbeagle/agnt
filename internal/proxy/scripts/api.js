@@ -20,6 +20,7 @@
   var voice = window.__devtool_voice;
   var indicator = window.__devtool_indicator;
   var sketch = window.__devtool_sketch;
+  var diagnostics = window.__devtool_diagnostics;
 
   // Main DevTool API
   window.__devtool = {
@@ -205,6 +206,41 @@
     },
 
     // ========================================================================
+    // DIAGNOSTICS (CSS VISUAL DEBUGGING)
+    // ========================================================================
+
+    diagnostics: diagnostics || {
+      // Structure & Layout
+      outlineAll: function() { return { error: 'Diagnostics not loaded' }; },
+      showSemanticElements: function() { return { error: 'Diagnostics not loaded' }; },
+      showContainers: function() { return { error: 'Diagnostics not loaded' }; },
+      showGrid: function() { return { error: 'Diagnostics not loaded' }; },
+      showFlexbox: function() { return { error: 'Diagnostics not loaded' }; },
+      showGaps: function() { return { error: 'Diagnostics not loaded' }; },
+      // Typography
+      showTypographyPanel: function() { return { error: 'Diagnostics not loaded' }; },
+      highlightInconsistentText: function() { return { error: 'Diagnostics not loaded' }; },
+      showTextBounds: function() { return { error: 'Diagnostics not loaded' }; },
+      // Stacking & Layering
+      showStacking: function() { return { error: 'Diagnostics not loaded' }; },
+      opacity: function() { return { error: 'Diagnostics not loaded' }; },
+      showPositioned: function() { return { error: 'Diagnostics not loaded' }; },
+      // Interactive
+      showInteractive: function() { return { error: 'Diagnostics not loaded' }; },
+      showFocusOrder: function() { return { error: 'Diagnostics not loaded' }; },
+      showClickTargets: function() { return { error: 'Diagnostics not loaded' }; },
+      // Responsive
+      showViewportInfo: function() { return { error: 'Diagnostics not loaded' }; },
+      // Color & Spacing
+      showColorPalette: function() { return { error: 'Diagnostics not loaded' }; },
+      showSpacingScale: function() { return { error: 'Diagnostics not loaded' }; },
+      // Control
+      clear: function() { return { error: 'Diagnostics not loaded' }; },
+      clearAll: function() { return { error: 'Diagnostics not loaded' }; },
+      list: function() { return { error: 'Diagnostics not loaded' }; }
+    },
+
+    // ========================================================================
     // COMPOSITE CONVENIENCE FUNCTIONS
     // ========================================================================
 
@@ -359,4 +395,5 @@
   console.log('  __devtool.indicator.toggle() - Toggle floating indicator');
   console.log('  __devtool.sketch.open() - Open sketch mode');
   console.log('  __devtool.toast.success("Done!", "Title") - Show toast');
+  console.log('  __devtool.diagnostics.outlineAll() - Visual CSS debugging');
 })();

@@ -1,0 +1,615 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Diagnostic CSS System Demo</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            padding: 20px;
+            background: #f5f5f5;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            padding: 40px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+
+        header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            border-radius: 8px;
+            margin-bottom: 30px;
+        }
+
+        h1 {
+            font-size: 32px;
+            margin-bottom: 10px;
+        }
+
+        h2 {
+            color: #667eea;
+            margin: 30px 0 15px;
+            font-size: 24px;
+        }
+
+        h3 {
+            color: #764ba2;
+            margin: 20px 0 10px;
+            font-size: 18px;
+        }
+
+        .subtitle {
+            font-size: 16px;
+            opacity: 0.9;
+        }
+
+        .controls {
+            background: #f0f0f0;
+            padding: 20px;
+            border-radius: 6px;
+            margin-bottom: 30px;
+        }
+
+        .control-group {
+            margin-bottom: 20px;
+        }
+
+        .control-group:last-child {
+            margin-bottom: 0;
+        }
+
+        .control-group h3 {
+            margin-top: 0;
+        }
+
+        .button-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 10px;
+            margin-top: 10px;
+        }
+
+        button {
+            padding: 12px 20px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.2s;
+            background: #667eea;
+            color: white;
+        }
+
+        button:hover {
+            background: #5568d3;
+            transform: translateY(-1px);
+        }
+
+        button.clear {
+            background: #ef4444;
+        }
+
+        button.clear:hover {
+            background: #dc2626;
+        }
+
+        .demo-section {
+            margin-bottom: 40px;
+            padding: 20px;
+            border: 2px dashed #ddd;
+            border-radius: 4px;
+        }
+
+        .grid-demo {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 20px;
+            margin-top: 15px;
+        }
+
+        .flex-demo {
+            display: flex;
+            gap: 15px;
+            margin-top: 15px;
+        }
+
+        .card {
+            background: #f8fafc;
+            padding: 20px;
+            border-radius: 6px;
+            border: 1px solid #e2e8f0;
+        }
+
+        .card h4 {
+            color: #334155;
+            margin-bottom: 10px;
+        }
+
+        .card p {
+            color: #64748b;
+            font-size: 14px;
+        }
+
+        .interactive-demo {
+            margin-top: 15px;
+        }
+
+        .interactive-demo a {
+            color: #667eea;
+            text-decoration: none;
+            margin-right: 15px;
+        }
+
+        .interactive-demo button {
+            margin-right: 10px;
+            margin-bottom: 10px;
+        }
+
+        .positioned-demo {
+            position: relative;
+            height: 200px;
+            background: #e0e7ff;
+            margin-top: 15px;
+        }
+
+        .absolute-box {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: #667eea;
+            color: white;
+            padding: 15px;
+            border-radius: 4px;
+        }
+
+        .fixed-notice {
+            position: fixed;
+            bottom: 20px;
+            left: 20px;
+            background: #764ba2;
+            color: white;
+            padding: 10px 15px;
+            border-radius: 4px;
+            font-size: 12px;
+            z-index: 1000;
+        }
+
+        .typography-samples {
+            margin-top: 15px;
+        }
+
+        .typography-samples p {
+            margin-bottom: 10px;
+        }
+
+        .large-text {
+            font-size: 20px;
+            font-weight: 700;
+        }
+
+        .medium-text {
+            font-size: 16px;
+            font-weight: 400;
+        }
+
+        .small-text {
+            font-size: 14px;
+            font-weight: 400;
+            color: #666;
+        }
+
+        .tiny-text {
+            font-size: 12px;
+            color: #999;
+        }
+
+        .status {
+            background: #dbeafe;
+            padding: 15px;
+            border-radius: 4px;
+            margin-top: 20px;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+        }
+
+        aside {
+            background: #fef3c7;
+            padding: 20px;
+            border-radius: 6px;
+            margin-top: 20px;
+        }
+
+        nav {
+            background: #333;
+            color: white;
+            padding: 15px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+        }
+
+        nav a {
+            color: white;
+            margin-right: 15px;
+            text-decoration: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="fixed-notice">
+        Fixed Position Element (bottom-left)
+    </div>
+
+    <nav>
+        <a href="#home">Home</a>
+        <a href="#about">About</a>
+        <a href="#contact">Contact</a>
+    </nav>
+
+    <div class="container">
+        <header>
+            <h1>Diagnostic CSS System Demo</h1>
+            <p class="subtitle">Test all diagnostic modes by clicking the buttons below</p>
+        </header>
+
+        <div class="controls">
+            <h2 style="margin-top: 0;">Diagnostic Controls</h2>
+
+            <div class="control-group">
+                <h3>📐 Structure & Layout</h3>
+                <div class="button-grid">
+                    <button onclick="testOutlineAll()">Outline All (Pesticide)</button>
+                    <button onclick="testSemanticElements()">Show Semantic Elements</button>
+                    <button onclick="testContainers()">Show Containers</button>
+                    <button onclick="testGrid()">Show Grid</button>
+                    <button onclick="testFlexbox()">Show Flexbox</button>
+                    <button onclick="testGaps()">Show Gaps</button>
+                </div>
+            </div>
+
+            <div class="control-group">
+                <h3>📝 Typography</h3>
+                <div class="button-grid">
+                    <button onclick="testTypographyPanel()">Show Typography Panel</button>
+                    <button onclick="testInconsistentText()">Highlight Inconsistent Text</button>
+                    <button onclick="testTextBounds()">Show Text Bounds</button>
+                </div>
+            </div>
+
+            <div class="control-group">
+                <h3>🎨 Stacking & Layering</h3>
+                <div class="button-grid">
+                    <button onclick="testStacking()">Show Stacking (Z-Index)</button>
+                    <button onclick="testOpacity()">Global Opacity (50%)</button>
+                    <button onclick="testPositioned()">Show Positioned Elements</button>
+                </div>
+            </div>
+
+            <div class="control-group">
+                <h3>🖱️ Interactive Elements</h3>
+                <div class="button-grid">
+                    <button onclick="testInteractive()">Show Interactive Elements</button>
+                    <button onclick="testFocusOrder()">Show Focus Order</button>
+                    <button onclick="testClickTargets()">Show Click Targets</button>
+                </div>
+            </div>
+
+            <div class="control-group">
+                <h3>📱 Responsive & Color</h3>
+                <div class="button-grid">
+                    <button onclick="testViewportInfo()">Show Viewport Info</button>
+                    <button onclick="testColorPalette()">Show Color Palette</button>
+                    <button onclick="testSpacingScale()">Show Spacing Scale</button>
+                </div>
+            </div>
+
+            <div class="control-group">
+                <h3>🔧 Control</h3>
+                <div class="button-grid">
+                    <button onclick="testList()">List Active Modes</button>
+                    <button class="clear" onclick="testClearAll()">Clear All Diagnostics</button>
+                </div>
+            </div>
+
+            <div id="status" class="status">
+                Ready to test diagnostics. Make sure you're viewing through the agnt proxy!
+            </div>
+        </div>
+
+        <section class="demo-section">
+            <h2>Grid Layout Demo</h2>
+            <p>This section uses CSS Grid - try "Show Grid" to visualize it</p>
+            <div class="grid-demo">
+                <div class="card">
+                    <h4>Card 1</h4>
+                    <p>Grid item with some content inside</p>
+                </div>
+                <div class="card">
+                    <h4>Card 2</h4>
+                    <p>Another grid item with content</p>
+                </div>
+                <div class="card">
+                    <h4>Card 3</h4>
+                    <p>Third grid item with content</p>
+                </div>
+                <div class="card">
+                    <h4>Card 4</h4>
+                    <p>Fourth grid item</p>
+                </div>
+                <div class="card">
+                    <h4>Card 5</h4>
+                    <p>Fifth grid item</p>
+                </div>
+                <div class="card">
+                    <h4>Card 6</h4>
+                    <p>Sixth grid item</p>
+                </div>
+            </div>
+        </section>
+
+        <section class="demo-section">
+            <h2>Flexbox Layout Demo</h2>
+            <p>This section uses Flexbox - try "Show Flexbox" to visualize it</p>
+            <div class="flex-demo">
+                <div class="card">
+                    <h4>Flex Item 1</h4>
+                    <p>Flexbox content</p>
+                </div>
+                <div class="card">
+                    <h4>Flex Item 2</h4>
+                    <p>More flexbox content</p>
+                </div>
+                <div class="card">
+                    <h4>Flex Item 3</h4>
+                    <p>Even more content</p>
+                </div>
+            </div>
+        </section>
+
+        <section class="demo-section">
+            <h2>Typography Samples</h2>
+            <p>Multiple text styles for typography panel analysis</p>
+            <div class="typography-samples">
+                <p class="large-text">Large Bold Text (20px / 700)</p>
+                <p class="medium-text">Medium Regular Text (16px / 400)</p>
+                <p class="small-text">Small Text with Color (14px / 400 / #666)</p>
+                <p class="tiny-text">Tiny Text (12px / #999)</p>
+                <p style="font-size: 18px; font-weight: 600;">Custom Styled Text (18px / 600)</p>
+                <p style="font-size: 15px;">One-off Style (15px) - Should be highlighted as inconsistent</p>
+            </div>
+        </section>
+
+        <section class="demo-section">
+            <h2>Interactive Elements</h2>
+            <p>Buttons, links, and form elements - try "Show Interactive Elements"</p>
+            <div class="interactive-demo">
+                <a href="#link1">Link 1</a>
+                <a href="#link2">Link 2</a>
+                <a href="#link3">Link 3</a>
+                <br><br>
+                <button>Button 1</button>
+                <button>Button 2</button>
+                <button>Button 3</button>
+                <br><br>
+                <input type="text" placeholder="Text input">
+                <input type="email" placeholder="Email input">
+            </div>
+        </section>
+
+        <section class="demo-section">
+            <h2>Positioned Elements</h2>
+            <p>Absolute and fixed positioning - try "Show Positioned Elements"</p>
+            <div class="positioned-demo">
+                <div class="absolute-box">
+                    Absolutely positioned (top-right)
+                </div>
+                <p style="padding: 20px;">This box has an absolutely positioned child. There's also a fixed element at the bottom-left of the viewport.</p>
+            </div>
+        </section>
+
+        <aside>
+            <h3>Semantic Aside Element</h3>
+            <p>This is an &lt;aside&gt; element. Try "Show Semantic Elements" to see different colors for different HTML tags.</p>
+        </aside>
+
+        <article>
+            <h2>Article Element</h2>
+            <p>This content is inside an &lt;article&gt; element. Semantic element visualization will highlight it.</p>
+        </article>
+    </div>
+
+    <script>
+        function log(message) {
+            const status = document.getElementById('status');
+            const timestamp = new Date().toLocaleTimeString();
+            status.textContent = `[${timestamp}] ${message}`;
+            console.log(`[Diagnostics Demo] ${message}`);
+        }
+
+        function checkDevTool() {
+            if (typeof __devtool === 'undefined' || typeof __devtool.diagnostics === 'undefined') {
+                log('ERROR: __devtool.diagnostics not found. Are you using the agnt proxy?');
+                alert('Please view this page through the agnt proxy:\n\n1. Start proxy: agnt proxy start --id dev --target http://localhost:8000\n2. Open through proxy port');
+                return false;
+            }
+            return true;
+        }
+
+        function testOutlineAll() {
+            if (!checkDevTool()) return;
+            log('Applying outline-all (pesticide mode)...');
+            const result = __devtool.diagnostics.outlineAll();
+            log('✓ Outline-all active - nested outlines show DOM depth');
+            console.log('Result:', result);
+        }
+
+        function testSemanticElements() {
+            if (!checkDevTool()) return;
+            log('Showing semantic elements...');
+            const result = __devtool.diagnostics.showSemanticElements();
+            log('✓ Semantic elements highlighted - different colors per tag');
+            console.log('Result:', result);
+        }
+
+        function testContainers() {
+            if (!checkDevTool()) return;
+            log('Highlighting containers...');
+            const result = __devtool.diagnostics.showContainers();
+            log('✓ Container elements highlighted');
+            console.log('Result:', result);
+        }
+
+        function testGrid() {
+            if (!checkDevTool()) return;
+            log('Visualizing CSS Grid...');
+            const result = __devtool.diagnostics.showGrid();
+            log('✓ Grid layouts visualized');
+            console.log('Result:', result);
+        }
+
+        function testFlexbox() {
+            if (!checkDevTool()) return;
+            log('Visualizing Flexbox...');
+            const result = __devtool.diagnostics.showFlexbox();
+            log('✓ Flexbox layouts visualized');
+            console.log('Result:', result);
+        }
+
+        function testGaps() {
+            if (!checkDevTool()) return;
+            log('Showing gaps/gutters...');
+            const result = __devtool.diagnostics.showGaps();
+            log('✓ Gaps and gutters highlighted');
+            console.log('Result:', result);
+        }
+
+        function testTypographyPanel() {
+            if (!checkDevTool()) return;
+            log('Opening typography panel...');
+            const result = __devtool.diagnostics.showTypographyPanel();
+            log(`✓ Typography panel opened - found ${result.uniqueStyles} unique text styles`);
+            console.log('Result:', result);
+        }
+
+        function testInconsistentText() {
+            if (!checkDevTool()) return;
+            log('Highlighting inconsistent text styles...');
+            const result = __devtool.diagnostics.highlightInconsistentText();
+            log(`✓ Inconsistent text highlighted - ${result.oneOffStyles} one-off styles found`);
+            console.log('Result:', result);
+        }
+
+        function testTextBounds() {
+            if (!checkDevTool()) return;
+            log('Showing text bounds...');
+            const result = __devtool.diagnostics.showTextBounds();
+            log('✓ Text element boundaries visible');
+            console.log('Result:', result);
+        }
+
+        function testStacking() {
+            if (!checkDevTool()) return;
+            log('Showing stacking contexts (z-index)...');
+            const result = __devtool.diagnostics.showStacking();
+            log(`✓ Stacking contexts highlighted - ${result.zIndexElements.length} elements with z-index`);
+            console.log('Result:', result);
+        }
+
+        function testOpacity() {
+            if (!checkDevTool()) return;
+            log('Applying global opacity...');
+            const result = __devtool.diagnostics.opacity(0.5);
+            log('✓ Global 50% opacity applied - useful for layer visualization');
+            console.log('Result:', result);
+        }
+
+        function testPositioned() {
+            if (!checkDevTool()) return;
+            log('Highlighting positioned elements...');
+            const result = __devtool.diagnostics.showPositioned();
+            log('✓ Positioned elements highlighted (absolute, fixed, sticky)');
+            console.log('Result:', result);
+        }
+
+        function testInteractive() {
+            if (!checkDevTool()) return;
+            log('Highlighting interactive elements...');
+            const result = __devtool.diagnostics.showInteractive();
+            log('✓ Interactive elements highlighted (links, buttons, inputs)');
+            console.log('Result:', result);
+        }
+
+        function testFocusOrder() {
+            if (!checkDevTool()) return;
+            log('Showing focus order...');
+            const result = __devtool.diagnostics.showFocusOrder();
+            log(`✓ Focus order numbered - ${result.count} focusable elements`);
+            console.log('Result:', result);
+        }
+
+        function testClickTargets() {
+            if (!checkDevTool()) return;
+            log('Showing click target sizes...');
+            const result = __devtool.diagnostics.showClickTargets();
+            log('✓ Click target sizes enforced (44×44px minimum)');
+            console.log('Result:', result);
+        }
+
+        function testViewportInfo() {
+            if (!checkDevTool()) return;
+            log('Showing viewport information...');
+            const result = __devtool.diagnostics.showViewportInfo();
+            log(`✓ Viewport info panel opened - ${result.width}×${result.height}`);
+            console.log('Result:', result);
+        }
+
+        function testColorPalette() {
+            if (!checkDevTool()) return;
+            log('Extracting color palette...');
+            const result = __devtool.diagnostics.showColorPalette();
+            log(`✓ Color palette panel opened - ${result.uniqueColors} unique colors`);
+            console.log('Result:', result);
+        }
+
+        function testSpacingScale() {
+            if (!checkDevTool()) return;
+            log('Extracting spacing scale...');
+            const result = __devtool.diagnostics.showSpacingScale();
+            log(`✓ Spacing scale panel opened - ${result.uniqueValues} unique values`);
+            console.log('Result:', result);
+        }
+
+        function testList() {
+            if (!checkDevTool()) return;
+            const result = __devtool.diagnostics.list();
+            log(`Active diagnostic modes: ${result.count}`);
+            console.log('Active modes:', result.activeModes);
+        }
+
+        function testClearAll() {
+            if (!checkDevTool()) return;
+            log('Clearing all diagnostic modes...');
+            const result = __devtool.diagnostics.clearAll();
+            log('✓ All diagnostic modes cleared');
+            console.log('Result:', result);
+        }
+
+        // Initial message
+        log('Demo ready. Click buttons above to test diagnostic modes.');
+    </script>
+</body>
+</html>

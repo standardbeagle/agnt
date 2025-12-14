@@ -63,6 +63,9 @@ var (
 	//go:embed snapshot-helper.js
 	snapshotHelperJS string
 
+	//go:embed diagnostics.js
+	diagnosticsJS string
+
 	//go:embed api.js
 	apiJS string
 )
@@ -189,7 +192,12 @@ func buildCombinedScript() string {
 	sb.WriteString(wrapModule(snapshotHelperJS))
 	sb.WriteString("\n\n")
 
-	// 19. API (assembles all modules, must be last)
+	// 19. Diagnostics (depends on utils, core)
+	sb.WriteString("  // Diagnostics module\n")
+	sb.WriteString(wrapModule(diagnosticsJS))
+	sb.WriteString("\n\n")
+
+	// 20. API (assembles all modules, must be last)
 	sb.WriteString("  // API assembly module\n")
 	sb.WriteString(wrapModule(apiJS))
 	sb.WriteString("\n")
@@ -262,6 +270,7 @@ func GetScriptNames() []string {
 		"sketch.js",
 		"indicator.js",
 		"snapshot-helper.js",
+		"diagnostics.js",
 		"api.js",
 	}
 }
