@@ -1219,6 +1219,25 @@
   function startScreenshotMode() {
     togglePanel(false);
 
+    // Detect responsive mode or touch device
+    var isResponsive = window.innerWidth < 768; // Common tablet breakpoint
+    var isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+    var isDragSelectUnavailable = isResponsive || isTouchDevice;
+
+    // If drag select is not available, capture full screen immediately
+    if (isDragSelectUnavailable) {
+      var w = window.innerWidth;
+      var h = window.innerHeight;
+      addAttachment('screenshot', {
+        label: 'Full screen (' + w + '\u00d7' + h + ')',
+        summary: 'Full screen screenshot ' + w + 'x' + h,
+        area: { x: 0, y: 0, width: w, height: h }
+      });
+      togglePanel(true);
+      return;
+    }
+
+    // Desktop mode: show drag selection overlay
     var overlay = document.createElement('div');
     overlay.style.cssText = STYLES.overlay + ';' + STYLES.overlayDimmed;
 
