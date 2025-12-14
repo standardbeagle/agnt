@@ -14,47 +14,46 @@ agnt is a new kind of tool designed for the age of AI-assisted development. It a
 **Language**: Go 1.24.2
 **Repository**: https://github.com/standardbeagle/agnt
 
-**Binaries** (all are copies of the same `agnt` binary):
-- `agnt`: Primary CLI tool - the only binary that is actually built
-- `devtool-mcp`: Copy of `agnt` for MCP backwards compatibility
-- `agnt-daemon`: Copy of `agnt` for daemon auto-start
-- `devtool-mcp-daemon`: Copy of `agnt` for daemon auto-start
+**Binaries**:
+- `agnt`: **Primary CLI tool** - the only binary that is actually built
+- `agnt-daemon`: Copy of `agnt` for daemon auto-start (fork prevention workaround)
+- `devtool-mcp`: Legacy alias (copy of `agnt` for backwards compatibility)
 
 **Install Strategy**:
-Only `agnt` is compiled from `cmd/agnt/`. All other binaries are copies:
+Only `agnt` is compiled from `cmd/agnt/`. Other binaries are copies for specific purposes:
 ```
-agnt (built) ──┬── devtool-mcp (copy, for MCP registration)
-               ├── agnt-daemon (copy, for daemon auto-start)
-               └── devtool-mcp-daemon (copy, for daemon auto-start)
+agnt (built) ──┬── agnt-daemon (copy, for daemon auto-start)
+               └── devtool-mcp (copy, legacy backwards compatibility)
 ```
 
 **Why binary copies instead of self-exec?**
 The daemon auto-start needs to spawn a background process. Some sandboxed environments
 (like Claude Code) prevent a binary from fork/exec'ing itself. By having separate
-`{binary}-daemon` copies, the auto-start can exec a different file path, bypassing
+`agnt-daemon` copy, the auto-start can exec a different file path, bypassing
 the fork prevention restriction.
 
 **MCP Registration** (claude_desktop_config.json):
 ```json
-"devtool": {
-  "command": "devtool-mcp"
+"agnt": {
+  "command": "agnt",
+  "args": ["serve"]
 }
 ```
 
-Note: `devtool-mcp` auto-detects non-terminal and runs as MCP server - no args needed.
+Note: `agnt serve` runs as MCP server. The binary auto-detects non-terminal mode.
 
 **Why `agnt run` exists (MCP notification workaround)**:
 MCP servers cannot push notifications to clients like Claude Code - they can only
 respond to tool calls. The `agnt run` command is a workaround:
 
 1. `agnt run claude` wraps Claude Code (or any AI tool) in a PTY
-2. The overlay server (port 19191) receives events from the devtool-mcp proxy
-3. Events (like panel messages, sketches) are injected as synthetic stdin to the PTY
+2. The overlay server (port 19191) receives events from the agnt proxy
+3. Events (like panel messages, sketches, design requests) are injected as synthetic stdin to the PTY
 4. This makes it appear as if the user typed the message
 
 ```
-Browser Indicator ──► devtool-mcp Proxy ──► HTTP POST ──► agnt overlay ──► PTY stdin ──► Claude Code
-     (click Send)        (WebSocket)         (/event)      (port 19191)     (inject)      (sees input)
+Browser Indicator ──► agnt Proxy ──► HTTP POST ──► agnt overlay ──► PTY stdin ──► Claude Code
+     (click Send)      (WebSocket)     (/event)     (port 19191)     (inject)      (sees input)
 ```
 
 This allows the floating indicator in the browser to send messages that get typed
@@ -190,9 +189,8 @@ agnt daemon status
 
 ```bash
 # Build binaries
-make build          # Produces ./devtool-mcp binary
-make build-agent    # Produces ./agnt binary
-make all            # Build both binaries
+make build          # Produces ./agnt binary (primary)
+make all            # Build agnt and create binary copies
 
 # Run tests
 make test           # All tests with verbose output
@@ -223,7 +221,7 @@ The MCP server uses a daemon-based architecture that separates the MCP protocol 
 
 ```
 ┌─────────────────────┐       ┌─────────────────────────────────────┐
-│  Claude Code        │       │           devtool-mcp               │
+│  Claude Code        │       │              agnt serve             │
 │  (MCP Client)       │◄─────►│                                     │
 │                     │ stdio │  ┌────────────────┐                 │
 │                     │  MCP  │  │  MCP Server    │                 │
@@ -234,7 +232,7 @@ The MCP server uses a daemon-based architecture that separates the MCP protocol 
                               │          │ (text protocol)          │
                               │          ▼                          │
                               │  ┌────────────────────────────────┐ │
-                              │  │           Daemon               │ │
+                              │  │        agnt daemon             │ │
                               │  │  ┌──────────────────────────┐  │ │
                               │  │  │    ProcessManager        │  │ │
                               │  │  │    (processes, output)   │  │ │
@@ -255,43 +253,44 @@ The MCP server uses a daemon-based architecture that separates the MCP protocol 
 
 **Running Modes**:
 ```bash
-./devtool-mcp              # Normal mode: MCP server with daemon backend
-./devtool-mcp daemon       # Daemon mode: Run only the background daemon
-./devtool-mcp --legacy     # Legacy mode: Original behavior without daemon
-./devtool-mcp --socket /tmp/my-devtool.sock  # Custom socket path
+agnt serve                 # Normal mode: MCP server with daemon backend
+agnt daemon start          # Start only the background daemon
+agnt serve --legacy        # Legacy mode: Original behavior without daemon
+agnt serve --socket /tmp/my-agnt.sock  # Custom socket path
 ```
 
 **Protocol**: Client-daemon communication uses a simple text-based protocol:
 - Commands: `VERB [SUBVERB] [ARGS...] [LENGTH]\r\n[DATA]\r\n`
 - Responses: `OK|ERR|JSON|DATA|CHUNK|END [message|length]\r\n[data]\r\n`
 
-## Agent CLI
+## agnt CLI
 
-The `agnt` binary provides a PTY wrapper for running AI coding tools with overlay features. It allows injecting synthetic input from external sources (like devtool proxy events).
+The `agnt` binary is the primary CLI tool for all agnt functionality.
 
 **Usage**:
 ```bash
-# Run Claude Code with overlay
-agnt run claude --dangerously-skip-permissions
+# Run Claude Code with browser superpowers
+agnt run claude
 
-# Run any AI tool
+# Run any AI tool with overlay
 agnt run gemini
 agnt run copilot
 agnt run opencode
 
-# Run as MCP server (same as devtool-mcp)
+# Run as MCP server (for Claude Desktop / Claude Code integration)
 agnt serve
 agnt serve --legacy  # Legacy mode without daemon
 
-# Manage daemon
+# Manage the background daemon
 agnt daemon status
 agnt daemon start
 agnt daemon stop
+agnt daemon info
 ```
 
 **Subcommands**:
 - `run <command> [args...]`: Run an AI coding tool with PTY wrapper and overlay
-- `serve`: Run as MCP server (equivalent to `devtool-mcp`)
+- `serve`: Run as MCP server for Claude Code / Claude Desktop integration
 - `daemon`: Manage the background daemon (status, start, stop, restart, info)
 
 **Overlay Features**:
@@ -300,14 +299,14 @@ The overlay listens on port 19191 by default for WebSocket connections and HTTP 
 - `/health`: Health check endpoint
 - `/type`: POST endpoint to type text into the PTY
 - `/key`: POST endpoint to send key events
-- `/event`: POST endpoint to receive events from devtool-mcp proxy
+- `/event`: POST endpoint to receive events from agnt proxy
 
 **Keyboard Shortcuts**:
 - `Ctrl+P`: Toggle the overlay menu (shows actions like quit, toggle indicator)
 
 **Event Flow**:
 ```
-Browser Indicator → WebSocket → devtool-mcp Proxy → HTTP → Agent Overlay → PTY → AI Tool
+Browser Indicator → WebSocket → agnt Proxy → HTTP → agnt Overlay → PTY → AI Tool
 ```
 
 This allows the floating indicator in the browser to send messages that get typed into Claude Code (or any AI tool) as user input.
@@ -506,7 +505,7 @@ StatePending → StateStarting → StateRunning → StateStopping → StateStopp
 | `currentpage` | Page session tracking: list, get, clear |
 | `daemon` | Daemon management: status, info, start, stop, restart |
 
-**Tool Registration** (`cmd/devtool-mcp/main.go`):
+**Tool Registration** (`cmd/agnt/main.go`):
 
 ```go
 // Daemon mode (default) - tools communicate via socket to daemon
@@ -556,7 +555,7 @@ The `proc list` and `proxy list` actions support directory filtering:
 
 ### Graceful Shutdown
 
-**Aggressive shutdown for Ctrl+C** (`cmd/devtool-mcp/main.go:58-80`):
+**Aggressive shutdown for Ctrl+C** (`cmd/agnt/main.go`):
 1. Signal handler (SIGINT/SIGTERM) triggers shutdown
 2. **2-second timeout** for total shutdown
 3. ProcessManager detects tight deadline and uses **aggressive mode**
