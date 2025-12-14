@@ -118,7 +118,7 @@
       'border-radius: ' + TOKENS.radius.lg,
       'box-shadow: ' + TOKENS.shadow.lg,
       'z-index: 2147483645',
-      'overflow: hidden',
+      'overflow: visible',
       'font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
       'font-size: 14px',
       'color: ' + TOKENS.colors.text,
@@ -590,8 +590,20 @@
     };
     // Auto-expand textarea based on content
     textarea.oninput = function() {
+      var previousHeight = state.panel ? state.panel.offsetHeight : 0;
       textarea.style.height = 'auto';
       textarea.style.height = Math.min(Math.max(textarea.scrollHeight, 80), 200) + 'px';
+      // Reposition panel to expand upward
+      if (state.panel && state.isExpanded) {
+        requestAnimationFrame(function() {
+          var newHeight = state.panel.offsetHeight;
+          var heightDiff = newHeight - previousHeight;
+          if (heightDiff !== 0) {
+            var currentTop = parseInt(state.panel.style.top) || 0;
+            state.panel.style.top = (currentTop - heightDiff) + 'px';
+          }
+        });
+      }
     };
     // Ctrl+Enter to send
     textarea.onkeydown = function(e) {
