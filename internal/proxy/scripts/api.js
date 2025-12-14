@@ -194,6 +194,17 @@
     },
 
     // ========================================================================
+    // SNAPSHOT (VISUAL REGRESSION TESTING)
+    // ========================================================================
+
+    snapshot: window.__devtool_snapshot || {
+      captureCurrentPage: function() { return Promise.reject(new Error('Snapshot helpers not loaded')); },
+      createBaseline: function() { return Promise.reject(new Error('Snapshot helpers not loaded')); },
+      compareToBaseline: function() { return Promise.reject(new Error('Snapshot helpers not loaded')); },
+      quickBaseline: function() { return Promise.reject(new Error('Snapshot helpers not loaded')); }
+    },
+
+    // ========================================================================
     // COMPOSITE CONVENIENCE FUNCTIONS
     // ========================================================================
 

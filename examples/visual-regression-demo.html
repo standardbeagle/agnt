@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Visual Regression Testing Demo</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            padding: 40px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+        }
+
+        .demo-section {
+            margin-bottom: 40px;
+            padding: 20px;
+            border: 2px dashed #ddd;
+            border-radius: 4px;
+        }
+
+        .demo-section h2 {
+            color: #6366f1;
+            margin-bottom: 15px;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-top: 15px;
+        }
+
+        button {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+
+        .btn-primary {
+            background: #6366f1;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #4f46e5;
+            transform: translateY(-1px);
+        }
+
+        .btn-success {
+            background: #22c55e;
+            color: white;
+        }
+
+        .btn-success:hover {
+            background: #16a34a;
+        }
+
+        .btn-danger {
+            background: #ef4444;
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: #dc2626;
+        }
+
+        .card {
+            background: #f8fafc;
+            padding: 20px;
+            border-radius: 6px;
+            margin-top: 15px;
+        }
+
+        .card h3 {
+            color: #333;
+            margin-bottom: 10px;
+        }
+
+        .card p {
+            color: #666;
+            line-height: 1.6;
+        }
+
+        .controls {
+            background: #fef3c7;
+            padding: 20px;
+            border-radius: 6px;
+            margin-bottom: 20px;
+        }
+
+        .controls h3 {
+            color: #92400e;
+            margin-bottom: 15px;
+        }
+
+        .status {
+            background: #e0e7ff;
+            padding: 15px;
+            border-radius: 4px;
+            margin-top: 20px;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+        }
+
+        .instructions {
+            background: #dbeafe;
+            padding: 20px;
+            border-radius: 6px;
+            margin-bottom: 30px;
+        }
+
+        .instructions h2 {
+            color: #1e40af;
+            margin-bottom: 15px;
+        }
+
+        .instructions ol {
+            margin-left: 20px;
+            color: #1e3a8a;
+        }
+
+        .instructions li {
+            margin-bottom: 10px;
+            line-height: 1.6;
+        }
+
+        .instructions code {
+            background: #1e3a8a;
+            color: #93c5fd;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 12px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Visual Regression Testing Demo</h1>
+        <p class="subtitle">Test the snapshot feature by making visual changes and comparing</p>
+
+        <div class="instructions">
+            <h2>How to Test</h2>
+            <ol>
+                <li>Start a proxy: <code>agnt proxy start --id dev --target http://localhost:8000</code></li>
+                <li>Open this page through the proxy</li>
+                <li>Click "Create Baseline" to capture current state</li>
+                <li>Make visual changes using the modification buttons below</li>
+                <li>Click "Compare to Baseline" to see differences</li>
+                <li>Open browser console to see results</li>
+            </ol>
+        </div>
+
+        <div class="controls">
+            <h3>📸 Snapshot Controls</h3>
+            <div class="button-group">
+                <button class="btn-primary" onclick="createBaseline()">Create Baseline</button>
+                <button class="btn-success" onclick="compareToBaseline()">Compare to Baseline</button>
+                <button class="btn-danger" onclick="resetChanges()">Reset All Changes</button>
+            </div>
+            <div id="status" class="status">
+                Ready to test. Click "Create Baseline" to start.
+            </div>
+        </div>
+
+        <div class="demo-section">
+            <h2>Visual Elements to Modify</h2>
+
+            <div class="header" id="demo-header">
+                <h2>This is a Demo Header</h2>
+                <p>Try changing its background color or size</p>
+            </div>
+
+            <div class="button-group">
+                <button class="btn-primary" onclick="changeHeaderColor()">Change Header Color</button>
+                <button class="btn-primary" onclick="changeHeaderSize()">Change Header Size</button>
+                <button class="btn-primary" onclick="addExtraCard()">Add Card</button>
+                <button class="btn-primary" onclick="changeButtonStyle()">Change Button Style</button>
+            </div>
+
+            <div id="cards-container">
+                <div class="card">
+                    <h3>Card 1</h3>
+                    <p>This is the first card. Visual regression testing will detect if this moves or changes.</p>
+                </div>
+
+                <div class="card">
+                    <h3>Card 2</h3>
+                    <p>This is the second card. Try adding more cards and see if the regression test catches it.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let baselineName = 'demo-baseline';
+        let cardCount = 2;
+
+        function log(message) {
+            const status = document.getElementById('status');
+            const timestamp = new Date().toLocaleTimeString();
+            status.textContent = `[${timestamp}] ${message}`;
+            console.log(`[Snapshot Demo] ${message}`);
+        }
+
+        async function createBaseline() {
+            log('Creating baseline...');
+            try {
+                if (typeof __devtool === 'undefined') {
+                    log('ERROR: __devtool not found. Are you using the proxy?');
+                    return;
+                }
+
+                const result = await __devtool.snapshot.createBaseline(baselineName);
+                log(`✓ Baseline created: ${baselineName}`);
+                console.log('Baseline result:', result);
+            } catch (error) {
+                log(`ERROR: ${error.message}`);
+                console.error(error);
+            }
+        }
+
+        async function compareToBaseline() {
+            log('Comparing to baseline...');
+            try {
+                if (typeof __devtool === 'undefined') {
+                    log('ERROR: __devtool not found. Are you using the proxy?');
+                    return;
+                }
+
+                const result = await __devtool.snapshot.compareToBaseline(baselineName);
+                log(`✓ Comparison complete. Check console for details.`);
+                console.log('Comparison result:', result);
+            } catch (error) {
+                log(`ERROR: ${error.message}`);
+                console.error(error);
+            }
+        }
+
+        function changeHeaderColor() {
+            const header = document.getElementById('demo-header');
+            const colors = [
+                'linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%)',
+                'linear-gradient(135deg, #ef4444 0%, #f97316 100%)',
+                'linear-gradient(135deg, #22c55e 0%, #10b981 100%)',
+                'linear-gradient(135deg, #3b82f6 0%, #2563eb 100%)'
+            ];
+            const randomColor = colors[Math.floor(Math.random() * colors.length)];
+            header.style.background = randomColor;
+            log('Changed header color');
+        }
+
+        function changeHeaderSize() {
+            const header = document.getElementById('demo-header');
+            const currentPadding = parseInt(getComputedStyle(header).padding);
+            header.style.padding = (currentPadding + 10) + 'px';
+            log('Changed header size');
+        }
+
+        function addExtraCard() {
+            cardCount++;
+            const container = document.getElementById('cards-container');
+            const card = document.createElement('div');
+            card.className = 'card';
+            card.innerHTML = `
+                <h3>Card ${cardCount}</h3>
+                <p>This is a new card added dynamically. Regression tests should detect this addition.</p>
+            `;
+            container.appendChild(card);
+            log(`Added Card ${cardCount}`);
+        }
+
+        function changeButtonStyle() {
+            const buttons = document.querySelectorAll('.btn-primary');
+            buttons.forEach(btn => {
+                btn.style.borderRadius = '20px';
+                btn.style.padding = '12px 24px';
+            });
+            log('Changed button styles');
+        }
+
+        function resetChanges() {
+            location.reload();
+        }
+
+        // Initial message
+        log('Demo ready. Create a baseline to begin testing.');
+    </script>
+</body>
+</html>
