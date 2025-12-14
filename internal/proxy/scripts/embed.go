@@ -60,6 +60,9 @@ var (
 	//go:embed voice.js
 	voiceJS string
 
+	//go:embed snapshot-helper.js
+	snapshotHelperJS string
+
 	//go:embed api.js
 	apiJS string
 )
@@ -181,7 +184,12 @@ func buildCombinedScript() string {
 	sb.WriteString(wrapModule(indicatorJS))
 	sb.WriteString("\n\n")
 
-	// 18. API (assembles all modules, must be last)
+	// 18. Snapshot helper (depends on core)
+	sb.WriteString("  // Snapshot helper module\n")
+	sb.WriteString(wrapModule(snapshotHelperJS))
+	sb.WriteString("\n\n")
+
+	// 19. API (assembles all modules, must be last)
 	sb.WriteString("  // API assembly module\n")
 	sb.WriteString(wrapModule(apiJS))
 	sb.WriteString("\n")
@@ -253,6 +261,7 @@ func GetScriptNames() []string {
 		"voice.js",
 		"sketch.js",
 		"indicator.js",
+		"snapshot-helper.js",
 		"api.js",
 	}
 }
