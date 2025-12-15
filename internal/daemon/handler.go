@@ -540,12 +540,14 @@ func (c *Connection) handleProxyStart(ctx context.Context, cmd *protocol.Command
 	path := "."
 	bindAddress := ""
 	publicURL := ""
+	verifyTLS := false
 	var tunnelConfig *protocol.TunnelConfig
 	if len(cmd.Data) > 0 {
 		var data struct {
 			Path        string                 `json:"path"`
 			BindAddress string                 `json:"bind_address"`
 			PublicURL   string                 `json:"public_url"`
+			VerifyTLS   bool                   `json:"verify_tls"`
 			Tunnel      *protocol.TunnelConfig `json:"tunnel"`
 		}
 		if err := json.Unmarshal(cmd.Data, &data); err == nil {
@@ -554,6 +556,7 @@ func (c *Connection) handleProxyStart(ctx context.Context, cmd *protocol.Command
 			}
 			bindAddress = data.BindAddress
 			publicURL = data.PublicURL
+			verifyTLS = data.VerifyTLS
 			tunnelConfig = data.Tunnel
 		}
 	}
@@ -567,6 +570,7 @@ func (c *Connection) handleProxyStart(ctx context.Context, cmd *protocol.Command
 		Path:        path,
 		BindAddress: bindAddress,
 		PublicURL:   publicURL,
+		VerifyTLS:   verifyTLS,
 		Tunnel:      tunnelConfig,
 	}
 

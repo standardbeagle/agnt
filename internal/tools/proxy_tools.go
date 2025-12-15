@@ -19,6 +19,7 @@ type ProxyInput struct {
 	MaxLogSize    int    `json:"max_log_size,omitempty" jsonschema:"Maximum log entries (default: 1000)"`
 	BindAddress   string `json:"bind_address,omitempty" jsonschema:"Bind address: '127.0.0.1' (default, localhost only) or '0.0.0.0' (all interfaces for tunnel/mobile testing)"`
 	PublicURL     string `json:"public_url,omitempty" jsonschema:"Public URL for tunnel services (e.g. 'https://abc123.trycloudflare.com'). Used for URL rewriting when behind a tunnel."`
+	VerifyTLS     bool   `json:"verify_tls,omitempty" jsonschema:"Verify TLS certificates (default: false, accepts self-signed/expired certs for dev). Set to true for strict validation."`
 	Code          string `json:"code,omitempty" jsonschema:"JavaScript code to execute (required for exec)"`
 	Global        bool   `json:"global,omitempty" jsonschema:"For list: include proxies from all directories (default: false)"`
 	Help          bool   `json:"help,omitempty" jsonschema:"For exec: show __devtool API overview instead of executing code"`
@@ -408,6 +409,7 @@ func handleProxyStart(ctx context.Context, pm *proxy.ProxyManager, input ProxyIn
 		ListenPort:  listenPort,
 		MaxLogSize:  input.MaxLogSize,
 		AutoRestart: true, // Enable auto-restart for development tool
+		VerifyTLS:   input.VerifyTLS,
 	}
 
 	// Use background context - proxy should outlive the MCP tool call
