@@ -1,183 +1,84 @@
 #!/bin/bash
-#
-# devtool-mcp installer
-#
-# Usage:
-#   curl -fsSL https://raw.githubusercontent.com/standardbeagle/devtool-mcp/main/install.sh | bash
-#
-# Or with a specific version:
-#   curl -fsSL https://raw.githubusercontent.com/standardbeagle/devtool-mcp/main/install.sh | bash -s -- --version 0.3.0
-#
+# agnt installer for Unix-like systems (Linux, macOS)
+# Usage: curl -fsSL https://raw.githubusercontent.com/standardbeagle/agnt/main/install.sh | bash
 
 set -e
 
-VERSION="${VERSION:-0.3.0}"
-REPO="standardbeagle/devtool-mcp"
-BINARY_NAME="devtool-mcp"
-INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
+REPO="standardbeagle/agnt"
+BINARY_NAME="agnt"
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
-
-info() {
-    echo -e "${BLUE}[INFO]${NC} $1"
-}
-
-success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1"
-}
-
-warn() {
-    echo -e "${YELLOW}[WARN]${NC} $1"
-}
-
-error() {
-    echo -e "${RED}[ERROR]${NC} $1" >&2
-    exit 1
-}
-
-# Parse arguments
-while [[ $# -gt 0 ]]; do
-    case $1 in
-        --version)
-            VERSION="$2"
-            shift 2
-            ;;
-        --install-dir)
-            INSTALL_DIR="$2"
-            shift 2
-            ;;
-        -h|--help)
-            echo "devtool-mcp installer"
-            echo ""
-            echo "Usage:"
-            echo "  curl -fsSL https://raw.githubusercontent.com/standardbeagle/devtool-mcp/main/install.sh | bash"
-            echo ""
-            echo "Options:"
-            echo "  --version VERSION    Install specific version (default: $VERSION)"
-            echo "  --install-dir DIR    Install to specific directory (default: ~/.local/bin)"
-            echo "  -h, --help           Show this help message"
-            exit 0
-            ;;
-        *)
-            error "Unknown option: $1"
-            ;;
-    esac
-done
-
-# Detect OS
-detect_os() {
-    case "$(uname -s)" in
-        Linux*)     echo "linux";;
-        Darwin*)    echo "darwin";;
-        CYGWIN*|MINGW*|MSYS*) echo "windows";;
-        *)          error "Unsupported operating system: $(uname -s)";;
+# Detect platform
+detect_platform() {
+    local os=$(uname -s | tr '[:upper:]' '[:lower:]')
+    case "$os" in
+        linux*) echo "linux" ;;
+        darwin*) echo "darwin" ;;
+        *) echo "Unsupported OS: $os" >&2; exit 1 ;;
     esac
 }
 
 # Detect architecture
 detect_arch() {
-    case "$(uname -m)" in
-        x86_64|amd64)   echo "amd64";;
-        arm64|aarch64)  echo "arm64";;
-        *)              error "Unsupported architecture: $(uname -m)";;
+    local arch=$(uname -m)
+    case "$arch" in
+        x86_64|amd64) echo "amd64" ;;
+        arm64|aarch64) echo "arm64" ;;
+        *) echo "Unsupported architecture: $arch" >&2; exit 1 ;;
     esac
 }
 
-# Get download URL
-get_download_url() {
-    local os="$1"
-    local arch="$2"
-    local ext=""
-
-    if [ "$os" = "windows" ]; then
-        ext=".exe"
-    fi
-
-    echo "https://github.com/${REPO}/releases/download/v${VERSION}/${BINARY_NAME}-${os}-${arch}${ext}"
+# Get latest version from GitHub
+get_latest_version() {
+    curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" | grep '"tag_name"' | sed -E 's/.*"v([^"]+)".*/\1/'
 }
 
-# Download file
-download() {
-    local url="$1"
-    local dest="$2"
-
-    if command -v curl &> /dev/null; then
-        curl -fsSL -o "$dest" "$url"
-    elif command -v wget &> /dev/null; then
-        wget -q -O "$dest" "$url"
-    else
-        error "Neither curl nor wget found. Please install one of them."
-    fi
-}
-
-# Main installation
 main() {
-    local os=$(detect_os)
+    local platform=$(detect_platform)
     local arch=$(detect_arch)
-    local ext=""
+    local version=${AGNT_VERSION:-$(get_latest_version)}
+    local install_dir="${AGNT_INSTALL_DIR:-$HOME/.local/bin}"
 
-    if [ "$os" = "windows" ]; then
-        ext=".exe"
-    fi
-
-    info "Installing devtool-mcp v${VERSION}"
-    info "  OS: $os"
-    info "  Architecture: $arch"
-    info "  Install directory: $INSTALL_DIR"
+    echo "Installing agnt v$version..."
+    echo "  Platform: $platform"
+    echo "  Architecture: $arch"
+    echo "  Install directory: $install_dir"
 
     # Create install directory
-    mkdir -p "$INSTALL_DIR"
+    mkdir -p "$install_dir"
 
-    # Get download URL
-    local url=$(get_download_url "$os" "$arch")
-    local binary_path="${INSTALL_DIR}/${BINARY_NAME}${ext}"
+    # Download URL
+    local url="https://github.com/$REPO/releases/download/v$version/$BINARY_NAME-$platform-$arch"
+    local binary_path="$install_dir/$BINARY_NAME"
 
-    info "Downloading from: $url"
+    echo "  Downloading from: $url"
 
     # Download binary
-    if ! download "$url" "$binary_path"; then
-        error "Failed to download binary from $url"
+    if command -v curl &> /dev/null; then
+        curl -fsSL "$url" -o "$binary_path"
+    elif command -v wget &> /dev/null; then
+        wget -q "$url" -O "$binary_path"
+    else
+        echo "Error: curl or wget is required" >&2
+        exit 1
     fi
 
     # Make executable
     chmod +x "$binary_path"
 
-    success "Installed devtool-mcp to $binary_path"
+    echo ""
+    echo "Successfully installed agnt to $binary_path"
+    echo ""
 
-    # Check if install directory is in PATH
-    if ! echo "$PATH" | grep -q "$INSTALL_DIR"; then
-        warn "Installation directory is not in your PATH"
+    # Check if install_dir is in PATH
+    if [[ ":$PATH:" != *":$install_dir:"* ]]; then
+        echo "Add the following to your shell profile (.bashrc, .zshrc, etc.):"
         echo ""
-        echo "Add the following to your shell profile (~/.bashrc, ~/.zshrc, etc.):"
-        echo ""
-        echo "  export PATH=\"\$PATH:$INSTALL_DIR\""
+        echo "  export PATH=\"$install_dir:\$PATH\""
         echo ""
     fi
 
     # Verify installation
-    if "$binary_path" --version &> /dev/null; then
-        success "Installation verified: $($binary_path --version)"
-    else
-        warn "Could not verify installation. Binary may require additional setup."
-    fi
-
-    echo ""
-    info "To use with Claude Code or other MCP clients, add to your config:"
-    echo ""
-    echo '  {'
-    echo '    "mcpServers": {'
-    echo '      "devtool": {'
-    echo "        \"command\": \"$binary_path\""
-    echo '      }'
-    echo '    }'
-    echo '  }'
-    echo ""
-    success "Installation complete!"
+    "$binary_path" --version
 }
 
-main
+main "$@"
