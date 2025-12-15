@@ -6,8 +6,8 @@ import (
 	"strings"
 	"sync"
 
-	"devtool-mcp/internal/daemon"
-	"devtool-mcp/internal/protocol"
+	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/protocol"
 )
 
 // AutoStarter manages auto-starting scripts and proxies from config.

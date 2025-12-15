@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"devtool-mcp/internal/snapshot"
+	"github.com/standardbeagle/agnt/internal/snapshot"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )

@@ -3,7 +3,7 @@ package config
 import (
 	"time"
 
-	"devtool-mcp/internal/project"
+	"github.com/standardbeagle/agnt/internal/project"
 )
 
 // Config holds the complete server configuration.

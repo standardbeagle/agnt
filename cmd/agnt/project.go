@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"devtool-mcp/internal/daemon"
-	"devtool-mcp/internal/protocol"
+	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/protocol"
 
 	"github.com/spf13/cobra"
 )

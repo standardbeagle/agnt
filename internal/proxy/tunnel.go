@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"devtool-mcp/internal/protocol"
+	"github.com/standardbeagle/agnt/internal/protocol"
 )
 
 // TunnelManager manages a tunnel process alongside a proxy.

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"devtool-mcp/internal/protocol"
+	"github.com/standardbeagle/agnt/internal/protocol"
 )
 
 func TestNewTunnelManager(t *testing.T) {

@@ -5,7 +5,7 @@ import (
 	"os"
 	"os/exec"
 
-	"devtool-mcp/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/daemon"
 
 	"github.com/spf13/cobra"
 )

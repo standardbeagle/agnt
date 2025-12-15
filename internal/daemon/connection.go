@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"devtool-mcp/internal/protocol"
+	"github.com/standardbeagle/agnt/internal/protocol"
 )
 
 // Connection represents a client connection to the daemon.

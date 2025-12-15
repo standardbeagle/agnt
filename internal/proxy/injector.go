@@ -5,7 +5,7 @@ import (
 	"strings"
 	"sync"
 
-	"devtool-mcp/internal/proxy/scripts"
+	"github.com/standardbeagle/agnt/internal/proxy/scripts"
 )
 
 var (

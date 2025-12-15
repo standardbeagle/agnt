@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"devtool-mcp/internal/aichannel"
+	"github.com/standardbeagle/agnt/internal/aichannel"
 )
 
 func TestNewSummarizer(t *testing.T) {

@@ -10,9 +10,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"devtool-mcp/internal/process"
-	"devtool-mcp/internal/proxy"
-	"devtool-mcp/internal/tunnel"
+	"github.com/standardbeagle/agnt/internal/process"
+	"github.com/standardbeagle/agnt/internal/proxy"
+	"github.com/standardbeagle/agnt/internal/tunnel"
 )
 
 // Version is the daemon version.

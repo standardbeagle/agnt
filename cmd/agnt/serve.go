@@ -8,11 +8,11 @@ import (
 	"syscall"
 	"time"
 
-	"devtool-mcp/internal/daemon"
-	"devtool-mcp/internal/process"
-	"devtool-mcp/internal/proxy"
-	"devtool-mcp/internal/snapshot"
-	"devtool-mcp/internal/tools"
+	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/process"
+	"github.com/standardbeagle/agnt/internal/proxy"
+	"github.com/standardbeagle/agnt/internal/snapshot"
+	"github.com/standardbeagle/agnt/internal/tools"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/spf13/cobra"

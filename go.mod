@@ -1,4 +1,4 @@
-module devtool-mcp
+module github.com/standardbeagle/agnt
 
 go 1.24.4
 
