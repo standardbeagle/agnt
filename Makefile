@@ -5,7 +5,7 @@ BINARY := devtool-mcp
 DAEMON_BINARY := devtool-mcp-daemon
 AGENT_BINARY := agnt
 AGENT_DAEMON_BINARY := agnt-daemon
-VERSION := 0.6.1
+VERSION := 0.6.2
 
 # Build flags
 LDFLAGS := -ldflags "-X main.appVersion=$(VERSION)"

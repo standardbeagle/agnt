@@ -1,0 +1,46 @@
+#!/usr/bin/env node
+
+/**
+ * agnt wrapper script
+ *
+ * This script is the entry point that npm symlinks to.
+ * It finds and executes the downloaded Go binary.
+ */
+
+const { spawn } = require('child_process');
+const path = require('path');
+const fs = require('fs');
+
+// Binary is downloaded to bin/agnt-binary (or agnt-binary.exe on Windows)
+const BINARY_NAME = process.platform === 'win32' ? 'agnt-binary.exe' : 'agnt-binary';
+const binDir = __dirname;
+const binaryPath = path.join(binDir, BINARY_NAME);
+
+// Check if binary exists
+if (!fs.existsSync(binaryPath)) {
+  console.error(`Error: agnt binary not found at ${binaryPath}`);
+  console.error('');
+  console.error('The binary may not have been downloaded during installation.');
+  console.error('Try reinstalling the package:');
+  console.error('  npm uninstall -g @standardbeagle/agnt');
+  console.error('  npm install -g @standardbeagle/agnt');
+  console.error('');
+  console.error('Or manually run the postinstall script:');
+  console.error('  node ' + path.join(binDir, '..', 'scripts', 'install.js'));
+  process.exit(1);
+}
+
+// Execute the binary with all arguments
+const child = spawn(binaryPath, process.argv.slice(2), {
+  stdio: 'inherit',
+  windowsHide: true,
+});
+
+child.on('error', (err) => {
+  console.error(`Error executing agnt: ${err.message}`);
+  process.exit(1);
+});
+
+child.on('close', (code) => {
+  process.exit(code || 0);
+});

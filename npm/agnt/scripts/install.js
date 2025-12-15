@@ -40,7 +40,8 @@ function getArch() {
 }
 
 function getBinaryName() {
-  return process.platform === 'win32' ? `${BINARY_NAME}.exe` : BINARY_NAME;
+  // Use a different name for the actual binary to avoid conflict with the wrapper script
+  return process.platform === 'win32' ? `${BINARY_NAME}-binary.exe` : `${BINARY_NAME}-binary`;
 }
 
 function getDownloadUrl() {
