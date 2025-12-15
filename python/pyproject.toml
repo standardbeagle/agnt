@@ -43,7 +43,7 @@ classifiers = [
     "Topic :: Internet :: Proxy Servers",
 ]
 dependencies = [
-    "agnt>=0.5.1",
+    "agnt>=0.6.0",
 ]
 
 [project.urls]

@@ -5,7 +5,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 
-const VERSION = '0.5.1';
+const VERSION = '0.6.0';
 const REPO = 'standardbeagle/agnt';
 const BINARY_NAME = 'agnt';
 

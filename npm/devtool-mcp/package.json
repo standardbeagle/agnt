@@ -10,7 +10,7 @@
     "postinstall": "node scripts/deprecation-notice.js"
   },
   "dependencies": {
-    "@standardbeagle/agnt": "^0.5.1"
+    "@standardbeagle/agnt": "^0.6.0"
   },
   "keywords": [
     "mcp",
