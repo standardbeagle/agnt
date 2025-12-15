@@ -52,21 +52,31 @@ jobs:
       - name: Debug npm paths
         shell: bash
         run: |
-          echo "npm bin: $(npm bin -g)"
+          echo "npm prefix: $(npm prefix -g)"
           echo "PATH: $PATH"
-          ls -la "$(npm bin -g)" || true
+          ls -la "$(npm prefix -g)/bin" || true
+          ls -la "$(npm prefix -g)/lib/node_modules/@standardbeagle/agnt/bin" || true
 
       - name: Verify version
         shell: bash
         run: |
-          export PATH="$(npm bin -g):$PATH"
-          agnt --version
+          # Try direct path first, then fall back to PATH
+          NPM_BIN="$(npm prefix -g)/bin"
+          if [ -x "$NPM_BIN/agnt" ]; then
+            "$NPM_BIN/agnt" --version
+          else
+            agnt --version
+          fi
 
       - name: Test serve --help
         shell: bash
         run: |
-          export PATH="$(npm bin -g):$PATH"
-          agnt serve --help
+          NPM_BIN="$(npm prefix -g)/bin"
+          if [ -x "$NPM_BIN/agnt" ]; then
+            "$NPM_BIN/agnt" serve --help
+          else
+            agnt serve --help
+          fi
 
   test-pip:
     name: pip (${{ matrix.os }})
