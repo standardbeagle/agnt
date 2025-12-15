@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"devtool-mcp/internal/protocol"
+	"github.com/standardbeagle/agnt/internal/protocol"
 )
 
 func TestClient_CurrentPage_EndToEnd(t *testing.T) {

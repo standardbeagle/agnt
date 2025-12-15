@@ -93,10 +93,11 @@ jobs:
 
       - name: Test daemon status (Windows)
         if: runner.os == 'Windows'
+        shell: pwsh
         run: |
           agnt daemon status
-          if ($LASTEXITCODE -ne 0) { Write-Host "Daemon not running (expected)" }
-        shell: pwsh
+          Write-Host "Daemon not running (expected)"
+          exit 0
 
       - name: Test serve --help
         run: agnt serve --help
@@ -124,10 +125,11 @@ jobs:
 
       - name: Test daemon status (Windows)
         if: runner.os == 'Windows'
+        shell: pwsh
         run: |
           agnt daemon status
-          if ($LASTEXITCODE -ne 0) { Write-Host "Daemon not running (expected)" }
-        shell: pwsh
+          Write-Host "Daemon not running (expected)"
+          exit 0
 
       - name: Test serve --help
         run: agnt serve --help

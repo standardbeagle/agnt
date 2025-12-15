@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"devtool-mcp/internal/proxy"
+	"github.com/standardbeagle/agnt/internal/proxy"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )

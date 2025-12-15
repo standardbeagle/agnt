@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"devtool-mcp/internal/project"
+	"github.com/standardbeagle/agnt/internal/project"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )

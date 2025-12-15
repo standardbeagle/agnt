@@ -15,10 +15,10 @@ import (
 	"syscall"
 	"time"
 
-	"devtool-mcp/internal/aichannel"
-	"devtool-mcp/internal/daemon"
-	"devtool-mcp/internal/overlay"
-	"devtool-mcp/internal/protocol"
+	"github.com/standardbeagle/agnt/internal/aichannel"
+	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/overlay"
+	"github.com/standardbeagle/agnt/internal/protocol"
 
 	"github.com/creack/pty"
 	"github.com/spf13/cobra"

@@ -10,11 +10,11 @@ import (
 	"strings"
 	"time"
 
-	"devtool-mcp/internal/process"
-	"devtool-mcp/internal/project"
-	"devtool-mcp/internal/protocol"
-	"devtool-mcp/internal/proxy"
-	"devtool-mcp/internal/tunnel"
+	"github.com/standardbeagle/agnt/internal/process"
+	"github.com/standardbeagle/agnt/internal/project"
+	"github.com/standardbeagle/agnt/internal/protocol"
+	"github.com/standardbeagle/agnt/internal/proxy"
+	"github.com/standardbeagle/agnt/internal/tunnel"
 )
 
 // normalizePath returns a cleaned absolute path for consistent comparison.

@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"devtool-mcp/internal/protocol"
+	"github.com/standardbeagle/agnt/internal/protocol"
 )
 
 var (

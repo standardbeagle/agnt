@@ -9,8 +9,8 @@ import (
 	"syscall"
 	"time"
 
-	"devtool-mcp/internal/daemon"
-	"devtool-mcp/internal/process"
+	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/process"
 
 	"github.com/spf13/cobra"
 )

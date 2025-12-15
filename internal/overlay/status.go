@@ -12,8 +12,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"devtool-mcp/internal/daemon"
-	"devtool-mcp/internal/protocol"
+	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/protocol"
 )
 
 // tailscaleDNSCache caches the Tailscale DNS name to avoid repeated exec calls.
