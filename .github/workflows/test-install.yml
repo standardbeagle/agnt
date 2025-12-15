@@ -1,0 +1,139 @@
+name: Test Install
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to test (leave empty for latest)'
+        required: false
+        type: string
+
+jobs:
+  test-npm:
+    name: npm (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install via npm
+        run: npm install -g @standardbeagle/agnt${{ inputs.version && format('@{0}', inputs.version) || '' }}
+
+      - name: Verify version
+        run: agnt --version
+
+      - name: Test daemon status
+        run: agnt daemon status || echo "Daemon not running (expected)"
+
+      - name: Test serve --help
+        run: agnt serve --help
+
+  test-pip:
+    name: pip (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install via pip
+        run: pip install agnt${{ inputs.version && format('=={0}', inputs.version) || '' }}
+
+      - name: Verify version
+        run: agnt --version
+
+      - name: Test daemon status
+        run: agnt daemon status || echo "Daemon not running (expected)"
+
+      - name: Test serve --help
+        run: agnt serve --help
+
+  test-uv:
+    name: uv (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install via uv tool
+        run: uv tool install agnt${{ inputs.version && format('=={0}', inputs.version) || '' }}
+
+      - name: Verify version
+        run: agnt --version
+
+      - name: Test daemon status
+        run: agnt daemon status || echo "Daemon not running (expected)"
+
+      - name: Test serve --help
+        run: agnt serve --help
+
+  test-npx:
+    name: npx (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Test via npx
+        run: npx @standardbeagle/agnt${{ inputs.version && format('@{0}', inputs.version) || '' }} --version
+
+  test-uvx:
+    name: uvx (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Test via uvx
+        run: uvx agnt${{ inputs.version && format('=={0}', inputs.version) || '' }} --version
+
+  test-docker:
+    name: Docker (${{ matrix.image }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: ubuntu:22.04
+            install: apt-get update && apt-get install -y npm && npm install -g @standardbeagle/agnt
+          - image: debian:12
+            install: apt-get update && apt-get install -y npm && npm install -g @standardbeagle/agnt
+          - image: python:3.12-slim
+            install: pip install agnt
+    runs-on: ubuntu-latest
+    container: ${{ matrix.image }}
+    steps:
+      - name: Install agnt
+        run: ${{ matrix.install }}
+
+      - name: Verify version
+        run: agnt --version
+
+      - name: Test serve --help
+        run: agnt serve --help
