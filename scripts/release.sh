@@ -56,16 +56,21 @@ sed -i "s/appVersion = \".*\"/appVersion = \"$NEW_VERSION\"/" cmd/agnt/main.go
 echo "Updating npm/agnt/package.json..."
 sed -i "s/\"version\": \".*\"/\"version\": \"$NEW_VERSION\"/" npm/agnt/package.json
 
+# Update Python package version
+echo "Updating python/agnt/pyproject.toml..."
+sed -i "s/^version = \".*\"/version = \"$NEW_VERSION\"/" python/agnt/pyproject.toml
+
 # Verify updates
 echo ""
 echo "Version files updated:"
 grep 'appVersion = ' cmd/agnt/main.go
 grep '"version"' npm/agnt/package.json
+grep '^version = ' python/agnt/pyproject.toml
 
 # Commit and tag
 echo ""
 echo "Creating commit and tag..."
-git add cmd/agnt/main.go npm/agnt/package.json
+git add cmd/agnt/main.go npm/agnt/package.json python/agnt/pyproject.toml
 git commit -m "chore: bump version to $NEW_VERSION
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
