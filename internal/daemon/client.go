@@ -327,6 +327,7 @@ type ProxyStartConfig struct {
 	Path        string                 `json:"path,omitempty"`
 	BindAddress string                 `json:"bind_address,omitempty"`
 	PublicURL   string                 `json:"public_url,omitempty"`
+	VerifyTLS   bool                   `json:"verify_tls,omitempty"`
 	Tunnel      *protocol.TunnelConfig `json:"tunnel,omitempty"`
 }
 

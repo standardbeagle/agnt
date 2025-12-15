@@ -6,6 +6,7 @@ import (
 	"compress/flate"
 	"compress/gzip"
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -86,6 +87,7 @@ type ProxyConfig struct {
 	Path        string // Working directory where proxy was created
 	BindAddress string // Bind address: "127.0.0.1" (default, localhost only) or "0.0.0.0" (all interfaces)
 	PublicURL   string // Optional public URL for tunnel services (e.g., "https://abc123.trycloudflare.com")
+	VerifyTLS   bool   // Verify TLS certificates (default: false, accepts self-signed/expired certs for dev)
 	Tunnel      *protocol.TunnelConfig
 }
 
@@ -160,11 +162,32 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 	// Create reverse proxy with custom Director for proper Host handling
 	ps.proxy = httputil.NewSingleHostReverseProxy(targetURL)
 
-	// Wrap the transport with chaos transport for failure injection
+	// Configure base transport
+	// By default, skip TLS verification to support self-signed and expired certs in dev
 	baseTransport := ps.proxy.Transport
 	if baseTransport == nil {
 		baseTransport = http.DefaultTransport
 	}
+
+	// If TLS verification is disabled (default), create transport that accepts any cert
+	if !config.VerifyTLS {
+		// Clone the default transport and disable TLS verification
+		if defaultTransport, ok := baseTransport.(*http.Transport); ok {
+			clonedTransport := defaultTransport.Clone()
+			if clonedTransport.TLSClientConfig == nil {
+				clonedTransport.TLSClientConfig = &tls.Config{}
+			}
+			clonedTransport.TLSClientConfig.InsecureSkipVerify = true
+			baseTransport = clonedTransport
+		} else {
+			// Fallback: create a new transport with TLS skip
+			baseTransport = &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			}
+		}
+	}
+
+	// Wrap the transport with chaos transport for failure injection
 	ps.proxy.Transport = NewChaosTransport(baseTransport, ps.chaosEngine)
 
 	// Customize Director to handle Host header and X-Forwarded-* headers
