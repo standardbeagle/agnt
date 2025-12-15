@@ -60,12 +60,83 @@ If any job fails:
 3. Propose a fix
 4. If it's a version conflict (npm 403), bump the version again and retry
 
-### 6. Report Success
+### 6. Verify Cross-Platform Installers
 
-When complete, provide:
-- Release URL: `https://github.com/standardbeagle/agnt/releases/tag/v<version>`
-- npm package: `https://www.npmjs.com/package/@standardbeagle/agnt`
-- Installation command: `npm install -g @standardbeagle/agnt@<version>`
+After the release workflow completes, the "Test Install" workflow should auto-trigger (on release publish). If it doesn't, trigger it manually:
+
+```bash
+gh workflow run test-install.yml -f version=<version>
+```
+
+Monitor the test-install workflow which tests **21 installation methods**:
+
+| Method | Platforms |
+|--------|-----------|
+| `go install` | Linux, macOS, Windows |
+| `npm install -g` | Linux, macOS, Windows |
+| `pip install` | Linux, macOS, Windows |
+| `uv tool install` | Linux, macOS, Windows |
+| `npx` | Linux, macOS, Windows |
+| `uvx` | Linux, macOS, Windows |
+| `curl \| bash` | Linux, macOS |
+| `irm \| iex` (PowerShell) | Windows |
+| Docker | Ubuntu, Debian, Python |
+
+Check progress:
+```bash
+# Find the test-install run
+gh run list --workflow=test-install.yml --limit 1
+
+# Monitor it
+gh run view <run_id> --json status,conclusion,jobs
+```
+
+### 7. Handle Test Failures
+
+If any installer test fails:
+1. Get logs: `gh run view <run_id> --log-failed`
+2. Identify which platform/method failed
+3. Check if it's a propagation delay (npm/PyPI can take a few minutes)
+4. If propagation delay, wait 2-3 minutes and re-run: `gh run rerun <run_id> --failed`
+5. If actual bug, investigate and fix
+
+### 8. Report Success
+
+When ALL tests pass, provide:
+
+**Release URLs:**
+- GitHub: `https://github.com/standardbeagle/agnt/releases/tag/v<version>`
+- npm: `https://www.npmjs.com/package/@standardbeagle/agnt`
+- PyPI: `https://pypi.org/project/agnt/`
+
+**Installation Commands:**
+```bash
+# npm (recommended)
+npm install -g @standardbeagle/agnt@<version>
+
+# pip
+pip install agnt==<version>
+
+# Go
+go install github.com/standardbeagle/agnt/cmd/agnt@v<version>
+
+# curl (Linux/macOS)
+curl -fsSL https://raw.githubusercontent.com/standardbeagle/agnt/main/install.sh | bash
+
+# PowerShell (Windows)
+irm https://raw.githubusercontent.com/standardbeagle/agnt/main/install.ps1 | iex
+```
+
+**Test Results Summary:**
+- ✅ go install: Linux, macOS, Windows
+- ✅ npm: Linux, macOS, Windows
+- ✅ pip: Linux, macOS, Windows
+- ✅ uv: Linux, macOS, Windows
+- ✅ npx: Linux, macOS, Windows
+- ✅ uvx: Linux, macOS, Windows
+- ✅ curl: Linux, macOS
+- ✅ PowerShell: Windows
+- ✅ Docker: Ubuntu, Debian, Python
 
 ## User Provided Arguments
 
