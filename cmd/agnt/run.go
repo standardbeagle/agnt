@@ -51,7 +51,7 @@ to receive events that can be injected as user input.`,
 
 var (
 	overlaySocketPath string
-	overlayHotkey     byte = 0x10 // Ctrl+P
+	overlayHotkey     byte = 0x19 // Ctrl+Y
 	showIndicator     bool = true
 	useTermOverlay    bool = true
 )
@@ -87,6 +87,14 @@ func runCommand(cmd *cobra.Command, args []string) {
 		case "--overlay-socket":
 			if i+1 < len(args) {
 				overlaySocketPath = args[i+1]
+				commandArgs = append(args[:i], args[i+2:]...)
+				continue
+			}
+		case "--hotkey":
+			if i+1 < len(args) {
+				if hk := parseHotkey(args[i+1]); hk != 0 {
+					overlayHotkey = hk
+				}
 				commandArgs = append(args[:i], args[i+2:]...)
 				continue
 			}
@@ -598,4 +606,44 @@ func detectAIAgent() string {
 		return string(agents[0])
 	}
 	return ""
+}
+
+// parseHotkey parses a hotkey string like "ctrl+l", "ctrl+g", "l", "p" into a byte.
+// Returns 0 if invalid.
+func parseHotkey(s string) byte {
+	s = strings.ToLower(strings.TrimSpace(s))
+
+	// Handle "ctrl+X" format
+	if strings.HasPrefix(s, "ctrl+") {
+		letter := strings.TrimPrefix(s, "ctrl+")
+		if len(letter) == 1 && letter[0] >= 'a' && letter[0] <= 'z' {
+			// Ctrl+A = 0x01, Ctrl+B = 0x02, etc.
+			return letter[0] - 'a' + 1
+		}
+		return 0
+	}
+
+	// Handle "^X" format (e.g., "^L")
+	if strings.HasPrefix(s, "^") {
+		letter := strings.TrimPrefix(s, "^")
+		if len(letter) == 1 && letter[0] >= 'a' && letter[0] <= 'z' {
+			return letter[0] - 'a' + 1
+		}
+		return 0
+	}
+
+	// Handle single letter (assume ctrl+letter)
+	if len(s) == 1 && s[0] >= 'a' && s[0] <= 'z' {
+		return s[0] - 'a' + 1
+	}
+
+	// Handle hex format like "0x0c"
+	if strings.HasPrefix(s, "0x") {
+		var b byte
+		if _, err := fmt.Sscanf(s, "0x%x", &b); err == nil {
+			return b
+		}
+	}
+
+	return 0
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -16,10 +17,16 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// PtyWriter is an interface for writing to a PTY.
+// This allows both Unix PTY (*os.File) and Windows ConPTY to be used.
+type PtyWriter interface {
+	io.Writer
+}
+
 // Overlay receives events from devtool-mcp and injects them into the PTY.
 type Overlay struct {
 	socketPath string
-	ptmx       *os.File
+	ptmx       PtyWriter
 	server     *http.Server
 	listener   net.Listener
 	upgrader   websocket.Upgrader
@@ -75,7 +82,7 @@ func DefaultOverlaySocketPath() string {
 	return filepath.Join(os.TempDir(), fmt.Sprintf("devtool-overlay-%d.sock", os.Getuid()))
 }
 
-func newOverlay(socketPath string, ptmx *os.File) *Overlay {
+func newOverlay(socketPath string, ptmx PtyWriter) *Overlay {
 	if socketPath == "" {
 		socketPath = DefaultOverlaySocketPath()
 	}
@@ -684,8 +691,11 @@ func (o *Overlay) writeTopty(s string) {
 	if o.ptmx == nil {
 		return
 	}
-	o.ptmx.WriteString(s)
-	o.ptmx.Sync()
+	o.ptmx.Write([]byte(s))
+	// Sync if available (for *os.File)
+	if syncer, ok := o.ptmx.(interface{ Sync() error }); ok {
+		syncer.Sync()
+	}
 }
 
 // Broadcast sends a message to all connected WebSocket clients.

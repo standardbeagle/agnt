@@ -35,11 +35,11 @@ type ProxyInput struct {
 	TunnelCommand string   `json:"tunnel_command,omitempty" jsonschema:"Custom tunnel command (when tunnel is 'custom'). Use {{PORT}} as placeholder."`
 
 	// Chaos-related fields
-	ChaosOperation string           `json:"chaos_operation,omitempty" jsonschema:"For chaos: enable, disable, status, set, preset, add_rule, remove_rule, list_rules, stats, clear"`
-	ChaosPreset    string           `json:"chaos_preset,omitempty" jsonschema:"For chaos preset: mobile-3g, mobile-4g, flaky-api, race-condition, stale-tab, slow-connection, connection-drops, etc."`
-	ChaosRules     []ChaosRuleInput `json:"chaos_rules,omitempty" jsonschema:"For chaos set: array of chaos rules to configure"`
-	ChaosRule      *ChaosRuleInput  `json:"chaos_rule,omitempty" jsonschema:"For chaos add_rule: single rule to add"`
-	ChaosRuleID    string           `json:"chaos_rule_id,omitempty" jsonschema:"For chaos remove_rule: ID of rule to remove"`
+	ChaosOperation string            `json:"chaos_operation,omitempty" jsonschema:"For chaos: enable, disable, status, set, preset, add_rule, remove_rule, list_rules, stats, clear"`
+	ChaosPreset    string            `json:"chaos_preset,omitempty" jsonschema:"For chaos preset: mobile-3g, mobile-4g, flaky-api, race-condition, stale-tab, slow-connection, connection-drops, etc."`
+	ChaosRules     []ChaosRuleInput  `json:"chaos_rules,omitempty" jsonschema:"For chaos set: array of chaos rules to configure"`
+	ChaosRule      *ChaosRuleInput   `json:"chaos_rule,omitempty" jsonschema:"For chaos add_rule: single rule to add"`
+	ChaosRuleID    string            `json:"chaos_rule_id,omitempty" jsonschema:"For chaos remove_rule: ID of rule to remove"`
 	ChaosConfig    *ChaosConfigInput `json:"chaos_config,omitempty" jsonschema:"For chaos set: full chaos configuration"`
 }
 
@@ -184,14 +184,14 @@ type ChaosStatsOutput struct {
 
 // ChaosRuleOutput represents a chaos rule in the output.
 type ChaosRuleOutput struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name,omitempty"`
-	Type        string   `json:"type"`
-	Enabled     bool     `json:"enabled"`
-	URLPattern  string   `json:"url_pattern,omitempty"`
-	Methods     []string `json:"methods,omitempty"`
-	Probability float64  `json:"probability"`
-	TimesApplied int64   `json:"times_applied"`
+	ID           string   `json:"id"`
+	Name         string   `json:"name,omitempty"`
+	Type         string   `json:"type"`
+	Enabled      bool     `json:"enabled"`
+	URLPattern   string   `json:"url_pattern,omitempty"`
+	Methods      []string `json:"methods,omitempty"`
+	Probability  float64  `json:"probability"`
+	TimesApplied int64    `json:"times_applied"`
 }
 
 // TunnelStatus represents tunnel status information.

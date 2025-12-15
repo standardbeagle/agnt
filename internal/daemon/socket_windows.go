@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -40,16 +42,17 @@ func DefaultSocketConfig() SocketConfig {
 }
 
 // DefaultSocketPath returns the default socket path for Windows.
-// On Windows, we use named pipes instead of Unix sockets.
+// On Windows 10 1803+, Unix domain sockets are supported.
+// We use a short path in the temp directory to avoid path length limits.
 func DefaultSocketPath() string {
-	username := os.Getenv("USERNAME")
-	if username == "" {
-		username = "default"
-	}
-	return fmt.Sprintf(`\\.\pipe\devtool-mcp-%s`, username)
+	// Windows Unix domain sockets have a ~108 char path limit
+	// Use a short path format
+	tempDir := os.TempDir()
+	// Use filepath.Join for proper path separator handling
+	return filepath.Join(tempDir, "agnt.sock")
 }
 
-// SocketManager handles named pipe lifecycle on Windows.
+// SocketManager handles Unix domain socket lifecycle on Windows.
 type SocketManager struct {
 	config   SocketConfig
 	listener net.Listener
@@ -66,7 +69,7 @@ func NewSocketManager(config SocketConfig) *SocketManager {
 	}
 
 	// On Windows, use a temp file for PID tracking
-	pidFile := os.TempDir() + "\\devtool-mcp.pid"
+	pidFile := filepath.Join(os.TempDir(), "agnt.pid")
 
 	return &SocketManager{
 		config:  config,
@@ -74,19 +77,23 @@ func NewSocketManager(config SocketConfig) *SocketManager {
 	}
 }
 
-// Listen creates and binds the named pipe.
-// It handles stale pipe cleanup and creates a PID file.
+// Listen creates and binds the Unix domain socket.
+// It handles stale socket cleanup and creates a PID file.
 func (sm *SocketManager) Listen() (net.Listener, error) {
 	// Check for existing daemon
 	if err := sm.checkExisting(); err != nil {
 		return nil, err
 	}
 
-	// Create named pipe listener
-	// Go's net package supports named pipes on Windows via "unix" network
+	// Remove stale socket file if it exists
+	if _, err := os.Stat(sm.config.Path); err == nil {
+		os.Remove(sm.config.Path)
+	}
+
+	// Create Unix domain socket listener
 	listener, err := net.Listen("unix", sm.config.Path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create pipe: %w", err)
+		return nil, fmt.Errorf("failed to create socket: %w", err)
 	}
 
 	// Write PID file
@@ -99,7 +106,7 @@ func (sm *SocketManager) Listen() (net.Listener, error) {
 	return listener, nil
 }
 
-// Close closes the pipe and removes the PID file.
+// Close closes the socket and removes the socket and PID files.
 func (sm *SocketManager) Close() error {
 	var errs []error
 
@@ -108,6 +115,11 @@ func (sm *SocketManager) Close() error {
 			errs = append(errs, fmt.Errorf("close listener: %w", err))
 		}
 		sm.listener = nil
+	}
+
+	// Remove socket file
+	if err := os.Remove(sm.config.Path); err != nil && !os.IsNotExist(err) {
+		errs = append(errs, fmt.Errorf("remove socket file: %w", err))
 	}
 
 	// Remove PID file
@@ -210,16 +222,24 @@ func isProcessRunning(pid int) bool {
 	return true
 }
 
-// isPipeNotFound checks if the error indicates the pipe doesn't exist.
+// isPipeNotFound checks if the error indicates the socket doesn't exist.
 func isPipeNotFound(err error) bool {
 	if err == nil {
 		return false
 	}
-	// Check for typical Windows pipe not found errors
+	// Check for typical Windows socket/file not found errors
+	if os.IsNotExist(err) {
+		return true
+	}
 	errStr := err.Error()
-	return errStr == "The system cannot find the file specified." ||
-		errStr == "The system cannot find the path specified." ||
-		os.IsNotExist(err)
+	// Check for various Windows error messages (case-insensitive substring match)
+	errLower := strings.ToLower(errStr)
+	return strings.Contains(errLower, "cannot find the file") ||
+		strings.Contains(errLower, "cannot find the path") ||
+		strings.Contains(errLower, "file not found") ||
+		strings.Contains(errLower, "no such file") ||
+		strings.Contains(errLower, "connection refused") ||
+		strings.Contains(errLower, "target machine actively refused")
 }
 
 // CleanupZombieDaemons is a no-op on Windows.

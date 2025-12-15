@@ -18,11 +18,11 @@ import (
 
 // tailscaleDNSCache caches the Tailscale DNS name to avoid repeated exec calls.
 var (
-	tailscaleDNSCache   string
-	tailscaleDNSCached  bool
-	tailscaleDNSMu      sync.RWMutex
-	tailscaleCacheTime  time.Time
-	tailscaleCacheTTL   = 5 * time.Minute // Re-check every 5 minutes
+	tailscaleDNSCache  string
+	tailscaleDNSCached bool
+	tailscaleDNSMu     sync.RWMutex
+	tailscaleCacheTime time.Time
+	tailscaleCacheTTL  = 5 * time.Minute // Re-check every 5 minutes
 )
 
 // getTailscaleDNS returns the Tailscale DNS name if available, or empty string if not.

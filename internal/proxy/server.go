@@ -1788,11 +1788,11 @@ func parseSketchCapture(data map[string]interface{}, timestamp time.Time, url st
 
 func parseDesignState(data map[string]interface{}, id string, timestamp time.Time, url string) DesignState {
 	state := DesignState{
-		ID:          id,
-		Timestamp:   timestamp,
-		URL:         url,
-		Selector:    getStringField(data, "selector"),
-		XPath:       getStringField(data, "xpath"),
+		ID:           id,
+		Timestamp:    timestamp,
+		URL:          url,
+		Selector:     getStringField(data, "selector"),
+		XPath:        getStringField(data, "xpath"),
 		OriginalHTML: getStringField(data, "originalHTML"),
 		ContextHTML:  getStringField(data, "contextHTML"),
 	}
@@ -1807,14 +1807,14 @@ func parseDesignState(data map[string]interface{}, id string, timestamp time.Tim
 
 func parseDesignRequest(data map[string]interface{}, id string, timestamp time.Time, url string) DesignRequest {
 	request := DesignRequest{
-		ID:               id,
-		Timestamp:        timestamp,
-		URL:              url,
-		Selector:         getStringField(data, "selector"),
-		XPath:            getStringField(data, "xpath"),
-		CurrentHTML:      getStringField(data, "currentHTML"),
-		OriginalHTML:     getStringField(data, "originalHTML"),
-		ContextHTML:      getStringField(data, "contextHTML"),
+		ID:                id,
+		Timestamp:         timestamp,
+		URL:               url,
+		Selector:          getStringField(data, "selector"),
+		XPath:             getStringField(data, "xpath"),
+		CurrentHTML:       getStringField(data, "currentHTML"),
+		OriginalHTML:      getStringField(data, "originalHTML"),
+		ContextHTML:       getStringField(data, "contextHTML"),
 		AlternativesCount: getIntField(data, "alternativesCount"),
 	}
 
@@ -1841,13 +1841,13 @@ func parseDesignRequest(data map[string]interface{}, id string, timestamp time.T
 
 func parseDesignChat(data map[string]interface{}, id string, timestamp time.Time, url string) DesignChat {
 	chat := DesignChat{
-		ID:          id,
-		Timestamp:   timestamp,
-		URL:         url,
-		Message:     getStringField(data, "message"),
-		Selector:    getStringField(data, "selector"),
-		XPath:       getStringField(data, "xpath"),
-		CurrentHTML: getStringField(data, "currentHTML"),
+		ID:           id,
+		Timestamp:    timestamp,
+		URL:          url,
+		Message:      getStringField(data, "message"),
+		Selector:     getStringField(data, "selector"),
+		XPath:        getStringField(data, "xpath"),
+		CurrentHTML:  getStringField(data, "currentHTML"),
 		OriginalHTML: getStringField(data, "originalHTML"),
 		ContextHTML:  getStringField(data, "contextHTML"),
 	}
@@ -1875,8 +1875,8 @@ func parseDesignChat(data map[string]interface{}, id string, timestamp time.Time
 
 func parseDesignElementMetadata(data map[string]interface{}) DesignElementMetadata {
 	metadata := DesignElementMetadata{
-		Tag: getStringField(data, "tag"),
-		ID:  getStringField(data, "id"),
+		Tag:  getStringField(data, "tag"),
+		ID:   getStringField(data, "id"),
 		Text: getStringField(data, "text"),
 	}
 

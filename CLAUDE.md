@@ -837,9 +837,23 @@ pm := process.NewProcessManager(process.ManagerConfig{
 
 ### Platform Support
 
-- **Process groups**: Uses `Setpgid: true` (Linux/macOS, not Windows)
-- **Signals**: SIGTERM/SIGKILL for graceful shutdown
+**Linux/macOS**:
+- **Process groups**: Uses `Setpgid: true` for child process management
+- **Signals**: SIGTERM for graceful shutdown, SIGKILL for force kill
+- **PTY**: Uses `github.com/creack/pty` for pseudo-terminal
+- **Terminal resize**: SIGWINCH signal handling
+
+**Windows** (Windows 10 1809+):
+- **ConPTY**: Uses Windows Pseudo Console for `agnt run` command
+- **Job Objects**: Process groups via Job Object API for child process management
+- **Graceful termination**: `GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT)` for graceful shutdown
+- **Force kill**: `TerminateJobObject` kills all processes in the job
+- **Terminal resize**: Polling-based resize detection (500ms interval)
+- **Named Pipes**: Daemon IPC uses `\\.\pipe\devtool-mcp-<username>`
+
+**Common**:
 - **Context**: All operations respect context cancellation
+- **Overlay**: Terminal overlay system works on both platforms via ANSI escape sequences
 
 ## Configuration
 

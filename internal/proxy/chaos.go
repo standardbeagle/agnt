@@ -31,9 +31,9 @@ const (
 	ChaosRateLimit ChaosType = "rate_limit" // Simulate rate limiting (429)
 
 	// Data corruption
-	ChaosBitFlip     ChaosType = "bit_flip"      // Random byte changes
-	ChaosTruncate    ChaosType = "truncate"      // Cut off response body
-	ChaosCorruptJSON ChaosType = "corrupt_json"  // Malform JSON responses
+	ChaosBitFlip     ChaosType = "bit_flip"     // Random byte changes
+	ChaosTruncate    ChaosType = "truncate"     // Cut off response body
+	ChaosCorruptJSON ChaosType = "corrupt_json" // Malform JSON responses
 
 	// Protocol edge cases
 	ChaosChunkedAbort ChaosType = "chunked_abort" // No terminal chunk
@@ -58,9 +58,9 @@ type ChaosRule struct {
 	Enabled bool      `json:"enabled"`
 
 	// Matching criteria
-	URLPattern  string   `json:"url_pattern,omitempty"`  // Regex pattern for URL
-	Methods     []string `json:"methods,omitempty"`      // HTTP methods (empty = all)
-	Probability float64  `json:"probability,omitempty"`  // 0.0-1.0, default 1.0
+	URLPattern  string   `json:"url_pattern,omitempty"` // Regex pattern for URL
+	Methods     []string `json:"methods,omitempty"`     // HTTP methods (empty = all)
+	Probability float64  `json:"probability,omitempty"` // 0.0-1.0, default 1.0
 
 	// Latency config
 	MinLatencyMs int `json:"min_latency_ms,omitempty"`

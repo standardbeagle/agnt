@@ -47,23 +47,23 @@ type Response struct {
 
 // JSONResponse is the structure returned by --output-format json.
 type JSONResponse struct {
-	Type         string  `json:"type"`
-	Subtype      string  `json:"subtype"`
-	TotalCostUSD float64 `json:"total_cost_usd"`
-	IsError      bool    `json:"is_error"`
-	DurationMS   int64   `json:"duration_ms"`
-	DurationAPIMS int64  `json:"duration_api_ms"`
-	NumTurns     int     `json:"num_turns"`
-	Result       string  `json:"result"`
-	SessionID    string  `json:"session_id"`
+	Type          string  `json:"type"`
+	Subtype       string  `json:"subtype"`
+	TotalCostUSD  float64 `json:"total_cost_usd"`
+	IsError       bool    `json:"is_error"`
+	DurationMS    int64   `json:"duration_ms"`
+	DurationAPIMS int64   `json:"duration_api_ms"`
+	NumTurns      int     `json:"num_turns"`
+	Result        string  `json:"result"`
+	SessionID     string  `json:"session_id"`
 }
 
 // StreamJSONMessage is a single message in stream-json format.
 type StreamJSONMessage struct {
-	Type      string           `json:"type"`
-	Subtype   string           `json:"subtype,omitempty"`
-	SessionID string           `json:"session_id,omitempty"`
-	Message   *StreamMessage   `json:"message,omitempty"`
+	Type      string         `json:"type"`
+	Subtype   string         `json:"subtype,omitempty"`
+	SessionID string         `json:"session_id,omitempty"`
+	Message   *StreamMessage `json:"message,omitempty"`
 	// Result fields for type=="result"
 	TotalCostUSD  float64 `json:"total_cost_usd,omitempty"`
 	DurationMS    int64   `json:"duration_ms,omitempty"`
@@ -75,8 +75,8 @@ type StreamJSONMessage struct {
 
 // StreamMessage represents a message in stream-json output.
 type StreamMessage struct {
-	Role    string          `json:"role"`
-	Content []ContentBlock  `json:"content"`
+	Role    string         `json:"role"`
+	Content []ContentBlock `json:"content"`
 }
 
 // ContentBlock represents a content block in a message.

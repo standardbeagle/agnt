@@ -95,12 +95,12 @@ func TestChaosEngine_AddRemoveRule(t *testing.T) {
 	engine.Enable()
 
 	rule := &ChaosRule{
-		ID:           "test-rule",
-		Name:         "Test Rule",
-		Type:         ChaosHTTPError,
-		Enabled:      true,
-		ErrorCodes:   []int{500},
-		Probability:  1.0,
+		ID:          "test-rule",
+		Name:        "Test Rule",
+		Type:        ChaosHTTPError,
+		Enabled:     true,
+		ErrorCodes:  []int{500},
+		Probability: 1.0,
 	}
 
 	err := engine.AddRule(rule)
@@ -142,11 +142,11 @@ func TestChaosEngine_MatchingRules(t *testing.T) {
 	})
 
 	engine.AddRule(&ChaosRule{
-		ID:           "api-pattern",
-		Type:         ChaosHTTPError,
-		Enabled:      true,
-		URLPattern:   "/api/.*",
-		ErrorCodes:   []int{500},
+		ID:         "api-pattern",
+		Type:       ChaosHTTPError,
+		Enabled:    true,
+		URLPattern: "/api/.*",
+		ErrorCodes: []int{500},
 	})
 
 	// Test GET request
@@ -720,11 +720,11 @@ func TestChaosIntegration_SlowDripWithTruncation(t *testing.T) {
 	engine.Enable()
 
 	engine.AddRule(&ChaosRule{
-		ID:              "slow-drip",
-		Type:            ChaosSlowDrip,
-		Enabled:         true,
-		BytesPerMs:      100,
-		ChunkSize:       10,
+		ID:         "slow-drip",
+		Type:       ChaosSlowDrip,
+		Enabled:    true,
+		BytesPerMs: 100,
+		ChunkSize:  10,
 	})
 
 	engine.AddRule(&ChaosRule{

@@ -111,6 +111,7 @@ type Renderer struct {
 	out          io.Writer
 	width        int
 	height       int
+	hotkey       byte // Hotkey for overlay toggle (for display)
 	mu           sync.Mutex
 	screenMgr    *ScreenManager
 	overlayStack *OverlayStack
@@ -127,9 +128,25 @@ func NewRenderer(out io.Writer, width, height int) *Renderer {
 		out:          out,
 		width:        width,
 		height:       height,
+		hotkey:       0x19, // Ctrl+Y default
 		screenMgr:    sm,
 		overlayStack: NewOverlayStack(sm),
 	}
+}
+
+// SetHotkey sets the hotkey displayed in the indicator bar.
+func (r *Renderer) SetHotkey(hotkey byte) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.hotkey = hotkey
+}
+
+// formatHotkey returns a human-readable hotkey string like "Ctrl+Y".
+func formatHotkey(b byte) string {
+	if b >= 1 && b <= 26 {
+		return fmt.Sprintf("Ctrl+%c", 'A'+b-1)
+	}
+	return fmt.Sprintf("0x%02X", b)
 }
 
 // SetSize updates the terminal dimensions.
@@ -251,12 +268,13 @@ func (r *Renderer) DrawIndicator(status Status) {
 	statusText := strings.Join(parts, fmt.Sprintf(" %s│%s ", FgBrightBlack, Reset))
 
 	// Add hotkey hint on the right
-	hotkeyHint := fmt.Sprintf("%sCtrl+P%s", FgBrightBlack, Reset)
+	hotkeyStr := formatHotkey(r.hotkey)
+	hotkeyHint := fmt.Sprintf("%s%s%s", FgBrightBlack, hotkeyStr, Reset)
 
 	// Calculate padding
 	// Note: This is approximate due to ANSI codes; for accurate width we'd need to strip codes
 	visibleLen := r.estimateVisibleLength(statusText)
-	hotkeyLen := 6                                  // "Ctrl+P"
+	hotkeyLen := len(hotkeyStr)
 	padding := r.width - visibleLen - hotkeyLen - 4 // 4 for " │ " separator and spaces
 
 	if padding < 1 {
@@ -294,7 +312,6 @@ func normalizeListenAddr(addr string) string {
 
 	return "localhost" + port
 }
-
 
 // estimateVisibleLength estimates the visible length of a string with ANSI codes.
 func (r *Renderer) estimateVisibleLength(s string) int {

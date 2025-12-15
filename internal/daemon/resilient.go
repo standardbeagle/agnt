@@ -54,11 +54,11 @@ type ResilientClientConfig struct {
 // DefaultResilientClientConfig returns sensible defaults.
 func DefaultResilientClientConfig() ResilientClientConfig {
 	return ResilientClientConfig{
-		AutoStartConfig:     DefaultAutoStartConfig(),
-		HeartbeatInterval:   10 * time.Second,
-		HeartbeatTimeout:    5 * time.Second,
-		ReconnectBackoffMin: 100 * time.Millisecond,
-		ReconnectBackoffMax: 30 * time.Second,
+		AutoStartConfig:      DefaultAutoStartConfig(),
+		HeartbeatInterval:    10 * time.Second,
+		HeartbeatTimeout:     5 * time.Second,
+		ReconnectBackoffMin:  100 * time.Millisecond,
+		ReconnectBackoffMax:  30 * time.Second,
 		MaxReconnectAttempts: 0, // Unlimited
 	}
 }
@@ -67,8 +67,8 @@ func DefaultResilientClientConfig() ResilientClientConfig {
 type ResilientClient struct {
 	config ResilientClientConfig
 
-	client     *Client
-	clientMu   sync.RWMutex
+	client   *Client
+	clientMu sync.RWMutex
 
 	connected    atomic.Bool
 	reconnecting atomic.Bool

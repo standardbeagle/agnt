@@ -814,12 +814,12 @@ func (dt *DaemonTools) handleProxyChaos(input ProxyInput) (*mcp.CallToolResult, 
 			for _, r := range rules {
 				if rm, ok := r.(map[string]interface{}); ok {
 					output.ChaosRules = append(output.ChaosRules, ChaosRuleOutput{
-						ID:          getString(rm, "id"),
-						Name:        getString(rm, "name"),
-						Type:        getString(rm, "type"),
-						Enabled:     getBool(rm, "enabled"),
-						URLPattern:  getString(rm, "url_pattern"),
-						Probability: getFloat64(rm, "probability"),
+						ID:           getString(rm, "id"),
+						Name:         getString(rm, "name"),
+						Type:         getString(rm, "type"),
+						Enabled:      getBool(rm, "enabled"),
+						URLPattern:   getString(rm, "url_pattern"),
+						Probability:  getFloat64(rm, "probability"),
 						TimesApplied: getInt64(rm, "times_applied"),
 					})
 				}
@@ -958,12 +958,12 @@ func (dt *DaemonTools) handleProxyChaos(input ProxyInput) (*mcp.CallToolResult, 
 			for _, r := range rules {
 				if rm, ok := r.(map[string]interface{}); ok {
 					output.ChaosRules = append(output.ChaosRules, ChaosRuleOutput{
-						ID:          getString(rm, "id"),
-						Name:        getString(rm, "name"),
-						Type:        getString(rm, "type"),
-						Enabled:     getBool(rm, "enabled"),
-						URLPattern:  getString(rm, "url_pattern"),
-						Probability: getFloat64(rm, "probability"),
+						ID:           getString(rm, "id"),
+						Name:         getString(rm, "name"),
+						Type:         getString(rm, "type"),
+						Enabled:      getBool(rm, "enabled"),
+						URLPattern:   getString(rm, "url_pattern"),
+						Probability:  getFloat64(rm, "probability"),
 						TimesApplied: getInt64(rm, "times_applied"),
 					})
 				}

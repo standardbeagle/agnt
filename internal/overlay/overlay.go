@@ -4,11 +4,19 @@
 package overlay
 
 import (
+	"io"
 	"os"
 	"sync"
 	"sync/atomic"
 	"time"
 )
+
+// PtyReadWriter is an interface for interacting with a PTY.
+// This allows both Unix PTY (*os.File) and Windows ConPTY to be used.
+type PtyReadWriter interface {
+	io.Reader
+	io.Writer
+}
 
 // State represents the overlay display state.
 type State int
@@ -85,7 +93,7 @@ type Status struct {
 // Overlay manages the terminal overlay display.
 type Overlay struct {
 	// Terminal state
-	ptmx   *os.File
+	ptmx   PtyReadWriter
 	width  int
 	height int
 
@@ -121,7 +129,7 @@ type Overlay struct {
 
 // Config holds overlay configuration.
 type Config struct {
-	// Hotkey to toggle overlay (default: Ctrl+P = 0x10)
+	// Hotkey to toggle overlay (default: Ctrl+L = 0x0C)
 	Hotkey byte
 
 	// Whether to show indicator bar by default
@@ -141,19 +149,24 @@ type Config struct {
 // DefaultConfig returns the default overlay configuration.
 func DefaultConfig() Config {
 	return Config{
-		Hotkey:                0x10, // Ctrl+P
+		Hotkey:                0x19, // Ctrl+Y
 		ShowIndicator:         true,
 		StatusRefreshInterval: 2 * time.Second,
 	}
 }
 
 // New creates a new Overlay.
-func New(ptmx *os.File, width, height int, cfg Config) *Overlay {
+func New(ptmx PtyReadWriter, width, height int, cfg Config) *Overlay {
+	renderer := NewRenderer(os.Stdout, width, height)
+	if cfg.Hotkey != 0 {
+		renderer.SetHotkey(cfg.Hotkey)
+	}
+
 	o := &Overlay{
 		ptmx:       ptmx,
 		width:      width,
 		height:     height,
-		renderer:   NewRenderer(os.Stdout, width, height),
+		renderer:   renderer,
 		onAction:   cfg.OnAction,
 		onFreeze:   cfg.OnFreeze,
 		onUnfreeze: cfg.OnUnfreeze,

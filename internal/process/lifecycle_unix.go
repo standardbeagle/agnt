@@ -46,3 +46,15 @@ func isProcessAlive(pid int) bool {
 func isNoSuchProcess(err error) bool {
 	return err == syscall.ESRCH
 }
+
+// SetupJobObject is a no-op on Unix.
+// On Windows, this creates a Job Object to manage child processes.
+func SetupJobObject(cmd *exec.Cmd) error {
+	return nil
+}
+
+// CleanupJobObject is a no-op on Unix.
+// On Windows, this closes the Job Object handle.
+func CleanupJobObject(pid int) {
+	// No-op on Unix - process groups are handled by the kernel
+}

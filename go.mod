@@ -6,6 +6,7 @@ toolchain go1.24.11
 
 require (
 	github.com/anthropics/anthropic-sdk-go v1.19.0
+	github.com/aymanbagabas/go-pty v0.2.2
 	github.com/creack/pty v1.1.24
 	github.com/gorilla/websocket v1.5.3
 	github.com/joho/godotenv v1.5.1
@@ -13,6 +14,7 @@ require (
 	github.com/sblinch/kdl-go v0.0.0-20250930225324-bf4099d4614a
 	github.com/spf13/cobra v1.10.2
 	github.com/tmc/langchaingo v0.1.14
+	golang.org/x/sys v0.39.0
 	golang.org/x/term v0.38.0
 )
 
@@ -44,6 +46,7 @@ require (
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect
+	github.com/u-root/u-root v0.11.0 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	go.opentelemetry.io/auto/sdk v1.1.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.54.0 // indirect
@@ -55,7 +58,6 @@ require (
 	golang.org/x/net v0.43.0 // indirect
 	golang.org/x/oauth2 v0.30.0 // indirect
 	golang.org/x/sync v0.16.0 // indirect
-	golang.org/x/sys v0.39.0 // indirect
 	golang.org/x/text v0.28.0 // indirect
 	golang.org/x/time v0.9.0 // indirect
 	google.golang.org/api v0.218.0 // indirect

@@ -379,8 +379,8 @@ func TestEscapeSequenceReaderIsPending(t *testing.T) {
 func TestDefaultConfig(t *testing.T) {
 	cfg := DefaultConfig()
 
-	if cfg.Hotkey != 0x10 { // Ctrl+P
-		t.Errorf("expected hotkey 0x10, got 0x%02x", cfg.Hotkey)
+	if cfg.Hotkey != 0x19 { // Ctrl+Y
+		t.Errorf("expected hotkey 0x19, got 0x%02x", cfg.Hotkey)
 	}
 
 	if !cfg.ShowIndicator {

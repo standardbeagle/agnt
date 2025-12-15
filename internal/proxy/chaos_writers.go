@@ -14,8 +14,8 @@ import (
 // This simulates slow network connections or bandwidth throttling.
 type SlowDripWriter struct {
 	w           http.ResponseWriter
-	bytesPerMs  int           // Bytes to write per millisecond
-	chunkSize   int           // Size of each write chunk
+	bytesPerMs  int // Bytes to write per millisecond
+	chunkSize   int // Size of each write chunk
 	ctx         context.Context
 	written     int64
 	headersSent atomic.Bool
@@ -126,9 +126,9 @@ func (sdw *SlowDripWriter) BytesWritten() int64 {
 // This simulates network failures, connection resets, or abrupt disconnections.
 type ConnectionDropWriter struct {
 	w                http.ResponseWriter
-	dropAfterPercent float64       // Drop after this percentage of expected body
-	dropAfterBytes   int64         // Drop after this many bytes (takes precedence)
-	expectedSize     int64         // Expected total response size
+	dropAfterPercent float64 // Drop after this percentage of expected body
+	dropAfterBytes   int64   // Drop after this many bytes (takes precedence)
+	expectedSize     int64   // Expected total response size
 	bytesWritten     int64
 	dropped          atomic.Bool
 	headersSent      atomic.Bool
@@ -254,8 +254,8 @@ func (cdw *ConnectionDropWriter) BytesWritten() int64 {
 // This simulates partial responses, incomplete downloads, or data loss.
 type TruncationWriter struct {
 	w               http.ResponseWriter
-	truncatePercent float64       // Keep this percentage of body
-	maxBytes        int64         // Maximum bytes to write (calculated from percent)
+	truncatePercent float64 // Keep this percentage of body
+	maxBytes        int64   // Maximum bytes to write (calculated from percent)
 	bytesWritten    int64
 	truncated       atomic.Bool
 	headersSent     atomic.Bool

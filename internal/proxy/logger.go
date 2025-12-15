@@ -261,7 +261,7 @@ type SketchEntry struct {
 
 // ScreenshotCapture represents an area capture from the panel with a reference ID.
 type ScreenshotCapture struct {
-	ID        string    `json:"id"`        // Reference ID for use in messages
+	ID        string    `json:"id"` // Reference ID for use in messages
 	Timestamp time.Time `json:"timestamp"`
 	URL       string    `json:"url"`
 	Summary   string    `json:"summary"` // Human-readable summary
@@ -275,7 +275,7 @@ type ScreenshotCapture struct {
 
 // ElementCapture represents an element capture from the panel with a reference ID.
 type ElementCapture struct {
-	ID        string    `json:"id"`        // Reference ID for use in messages
+	ID        string    `json:"id"` // Reference ID for use in messages
 	Timestamp time.Time `json:"timestamp"`
 	URL       string    `json:"url"`
 	Summary   string    `json:"summary"`  // Human-readable summary
@@ -326,44 +326,44 @@ type DesignChatMessage struct {
 
 // DesignState represents the initial state when an element is selected for design iteration.
 type DesignState struct {
-	ID          string                `json:"id"`
-	Timestamp   time.Time             `json:"timestamp"`
-	Selector    string                `json:"selector"` // CSS selector
-	XPath       string                `json:"xpath"`    // XPath for robustness
+	ID           string                `json:"id"`
+	Timestamp    time.Time             `json:"timestamp"`
+	Selector     string                `json:"selector"` // CSS selector
+	XPath        string                `json:"xpath"`    // XPath for robustness
 	OriginalHTML string                `json:"original_html"`
 	ContextHTML  string                `json:"context_html"` // Parent element with siblings for context
-	Metadata    DesignElementMetadata `json:"metadata"`
-	URL         string                `json:"url"`
+	Metadata     DesignElementMetadata `json:"metadata"`
+	URL          string                `json:"url"`
 }
 
 // DesignRequest represents a request for new design alternatives.
 type DesignRequest struct {
-	ID               string                `json:"id"`
-	Timestamp        time.Time             `json:"timestamp"`
-	Selector         string                `json:"selector"`
-	XPath            string                `json:"xpath"`
-	CurrentHTML      string                `json:"current_html"`      // Current HTML being displayed
-	OriginalHTML     string                `json:"original_html"`     // Original HTML before any changes
-	ContextHTML      string                `json:"context_html"`      // Parent context
-	Metadata         DesignElementMetadata `json:"metadata"`
+	ID                string                `json:"id"`
+	Timestamp         time.Time             `json:"timestamp"`
+	Selector          string                `json:"selector"`
+	XPath             string                `json:"xpath"`
+	CurrentHTML       string                `json:"current_html"`  // Current HTML being displayed
+	OriginalHTML      string                `json:"original_html"` // Original HTML before any changes
+	ContextHTML       string                `json:"context_html"`  // Parent context
+	Metadata          DesignElementMetadata `json:"metadata"`
 	AlternativesCount int                   `json:"alternatives_count"` // How many alternatives already exist
-	ChatHistory      []DesignChatMessage   `json:"chat_history,omitempty"`
-	URL              string                `json:"url"`
+	ChatHistory       []DesignChatMessage   `json:"chat_history,omitempty"`
+	URL               string                `json:"url"`
 }
 
 // DesignChat represents a chat message about the selected element.
 type DesignChat struct {
-	ID               string                `json:"id"`
-	Timestamp        time.Time             `json:"timestamp"`
-	Message          string                `json:"message"` // User's chat message
-	Selector         string                `json:"selector"`
-	XPath            string                `json:"xpath"`
-	CurrentHTML      string                `json:"current_html"`
-	OriginalHTML     string                `json:"original_html"`
-	ContextHTML      string                `json:"context_html"`
-	Metadata         DesignElementMetadata `json:"metadata"`
-	ChatHistory      []DesignChatMessage   `json:"chat_history,omitempty"`
-	URL              string                `json:"url"`
+	ID           string                `json:"id"`
+	Timestamp    time.Time             `json:"timestamp"`
+	Message      string                `json:"message"` // User's chat message
+	Selector     string                `json:"selector"`
+	XPath        string                `json:"xpath"`
+	CurrentHTML  string                `json:"current_html"`
+	OriginalHTML string                `json:"original_html"`
+	ContextHTML  string                `json:"context_html"`
+	Metadata     DesignElementMetadata `json:"metadata"`
+	ChatHistory  []DesignChatMessage   `json:"chat_history,omitempty"`
+	URL          string                `json:"url"`
 }
 
 // LogEntry is a union type for all log entry types.

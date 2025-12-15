@@ -2,7 +2,9 @@ package overlay
 
 import (
 	"context"
+	"fmt"
 	"io"
+	"iter"
 	"os"
 	"strings"
 	"sync/atomic"
@@ -39,7 +41,7 @@ type StatusSummarizer interface {
 
 // InputRouter routes input between the PTY and the overlay.
 type InputRouter struct {
-	ptmx            *os.File
+	ptmx            PtyReadWriter
 	overlay         *Overlay
 	hotkey          byte
 	running         atomic.Bool
@@ -59,7 +61,7 @@ type InputRouter struct {
 }
 
 // NewInputRouter creates a new InputRouter.
-func NewInputRouter(ptmx *os.File, overlay *Overlay, hotkey byte) *InputRouter {
+func NewInputRouter(ptmx PtyReadWriter, overlay *Overlay, hotkey byte) *InputRouter {
 	return &InputRouter{
 		ptmx:      ptmx,
 		overlay:   overlay,
@@ -105,22 +107,16 @@ func (r *InputRouter) Run() error {
 	r.running.Store(true)
 	defer r.running.Store(false)
 
-	buf := make([]byte, 1)
 	inputCh := make(chan byte, 16)
 	errCh := make(chan error, 1)
 
-	// Start a goroutine to read from stdin
+	// Start a goroutine to read from stdin using the win32-input-mode iterator.
+	// The iterator handles buffer boundaries and escape sequence parsing internally.
 	go func() {
-		for {
-			n, err := os.Stdin.Read(buf)
-			if err != nil {
-				errCh <- err
-				return
-			}
-			if n > 0 {
-				inputCh <- buf[0]
-			}
+		for b := range ScanWin32Input(os.Stdin) {
+			inputCh <- b
 		}
+		errCh <- io.EOF
 	}()
 
 	// Escape sequence timeout
@@ -371,7 +367,7 @@ func (r *InputRouter) executeMenuItem(item MenuItem) {
 				}
 			} else {
 				// Fallback: Type the command into the PTY
-				r.ptmx.WriteString(cmd + "\n")
+				io.WriteString(r.ptmx, cmd+"\n")
 			}
 			return nil
 		}
@@ -440,21 +436,21 @@ func (r *InputRouter) executeMenuItem(item MenuItem) {
 		if r.summarizer == nil {
 			// No summarizer configured - show error
 			r.overlay.mu.Unlock()
-			r.ptmx.WriteString("\r\n[agnt] No AI summarizer configured\r\n")
+			io.WriteString(r.ptmx, "\r\n[agnt] No AI summarizer configured\r\n")
 			r.overlay.mu.Lock()
 			return
 		}
 		if !r.summarizer.IsAvailable() {
 			// AI agent not available
 			r.overlay.mu.Unlock()
-			r.ptmx.WriteString("\r\n[agnt] AI agent not available in PATH\r\n")
+			io.WriteString(r.ptmx, "\r\n[agnt] AI agent not available in PATH\r\n")
 			r.overlay.mu.Lock()
 			return
 		}
 
 		// Release lock during AI call (can take time)
 		r.overlay.mu.Unlock()
-		r.ptmx.WriteString("\r\n[agnt] Summarizing system status...\r\n")
+		io.WriteString(r.ptmx, "\r\n[agnt] Summarizing system status...\r\n")
 
 		// Call summarizer with 2 minute timeout
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
@@ -462,12 +458,12 @@ func (r *InputRouter) executeMenuItem(item MenuItem) {
 		cancel()
 
 		if err != nil {
-			r.ptmx.WriteString("[agnt] Summary failed: " + err.Error() + "\r\n")
+			io.WriteString(r.ptmx, "[agnt] Summary failed: "+err.Error()+"\r\n")
 		} else {
 			// Inject summary into PTY
-			r.ptmx.WriteString("\r\n--- Status Summary ---\r\n")
-			r.ptmx.WriteString(result.Summary)
-			r.ptmx.WriteString("\r\n--- End Summary ---\r\n")
+			io.WriteString(r.ptmx, "\r\n--- Status Summary ---\r\n")
+			io.WriteString(r.ptmx, result.Summary)
+			io.WriteString(r.ptmx, "\r\n--- End Summary ---\r\n")
 		}
 		r.overlay.mu.Lock()
 
@@ -479,6 +475,235 @@ func (r *InputRouter) executeMenuItem(item MenuItem) {
 			r.overlay.mu.Unlock()
 			r.overlay.onAction(action)
 			r.overlay.mu.Lock()
+		}
+	}
+}
+
+// DebugWin32Input enables logging of win32-input-mode parsing
+var DebugWin32Input = false
+
+// parseWin32InputModeWithRemainder parses Windows Terminal win32-input-mode sequences.
+// Format: CSI Vk ; Sc ; Uc ; Kd ; Cs ; Rc _
+// Where Uc is the unicode character value we want.
+// Also filters out Focus In/Out sequences (CSI I and CSI O) that Windows Terminal sends.
+// Returns parsed bytes and any incomplete sequence at the end of the buffer.
+func parseWin32InputModeWithRemainder(data []byte) ([]byte, []byte) {
+	result, remainder := parseWin32InputModeInternal(data)
+	return result, remainder
+}
+
+// parseWin32InputMode is the legacy function for backward compatibility.
+func parseWin32InputMode(data []byte) []byte {
+	result, _ := parseWin32InputModeInternal(data)
+	return result
+}
+
+// parseWin32InputModeInternal is the core parser implementation.
+// Returns parsed bytes and any incomplete sequence at the end that should be
+// prepended to the next buffer read.
+func parseWin32InputModeInternal(data []byte) ([]byte, []byte) {
+	var result []byte
+	i := 0
+	foundWin32 := false
+
+	if DebugWin32Input && len(data) > 0 {
+		// Dump first 80 bytes of raw input
+		dump := data
+		if len(dump) > 80 {
+			dump = dump[:80]
+		}
+		fmt.Fprintf(os.Stderr, "[win32] RAW INPUT (%d bytes): %q\r\n", len(data), dump)
+	}
+
+	for i < len(data) {
+		// Check for ESC byte
+		if data[i] == 0x1b {
+			// We have an ESC - check what follows
+			if DebugWin32Input {
+				if i+1 < len(data) {
+					fmt.Fprintf(os.Stderr, "[win32] ESC at i=%d, next byte=%d (0x%02x '%c')\r\n", i, data[i+1], data[i+1], printableChar(data[i+1]))
+				} else {
+					fmt.Fprintf(os.Stderr, "[win32] ESC at i=%d, no next byte (end of buffer) - saving as remainder\r\n", i)
+				}
+			}
+
+			// If ESC is at the end of buffer, save it as remainder for next read
+			if i+1 >= len(data) {
+				if DebugWin32Input && foundWin32 {
+					fmt.Fprintf(os.Stderr, "[win32] input %d bytes -> output %d bytes, remainder %d bytes\r\n", len(data), len(result), len(data)-i)
+				}
+				return result, data[i:]
+			}
+
+			// Check for CSI sequence (ESC [)
+			if data[i+1] == '[' {
+				if DebugWin32Input {
+					fmt.Fprintf(os.Stderr, "[win32] CSI detected at i=%d\r\n", i)
+				}
+
+				// Check for Focus In (ESC [ I) or Focus Out (ESC [ O) - skip these
+				if i+2 < len(data) && (data[i+2] == 'I' || data[i+2] == 'O') {
+					if DebugWin32Input {
+						fmt.Fprintf(os.Stderr, "[win32] skipping focus %c sequence\r\n", data[i+2])
+					}
+					i += 3
+					continue
+				}
+
+				// Need at least one more byte after ESC[ to determine sequence type
+				if i+2 >= len(data) {
+					if DebugWin32Input {
+						fmt.Fprintf(os.Stderr, "[win32] ESC[ at end of buffer - saving as remainder\r\n")
+					}
+					return result, data[i:]
+				}
+
+				// Look for win32-input-mode sequence ending with '_'
+				end := -1
+				hitInvalidChar := false
+				for j := i + 2; j < len(data); j++ {
+					if data[j] == '_' {
+						end = j
+						break
+					}
+					// If we hit another ESC or non-sequence char, stop looking
+					if data[j] == 0x1b || (data[j] < '0' || data[j] > '9') && data[j] != ';' {
+						if DebugWin32Input {
+							fmt.Fprintf(os.Stderr, "[win32] search broke at j=%d byte=%d (0x%02x) - not a win32-input-mode sequence\r\n", j, data[j], data[j])
+						}
+						hitInvalidChar = true
+						break
+					}
+				}
+
+				if end > 0 {
+					foundWin32 = true
+					// Parse the sequence: Vk;Sc;Uc;Kd;Cs;Rc
+					seq := string(data[i+2 : end])
+					parts := splitSemicolon(seq)
+					if len(parts) >= 4 {
+						// Uc (unicode char) is the 3rd field (index 2)
+						// Kd (key down) is the 4th field (index 3)
+						uc := parseInt(parts[2])
+						kd := parseInt(parts[3])
+						// Only emit on key down (kd=1)
+						if uc > 0 && kd == 1 {
+							result = append(result, byte(uc))
+							if DebugWin32Input {
+								fmt.Fprintf(os.Stderr, "[win32] seq=%s -> byte %d (0x%02x)\r\n", seq, uc, uc)
+							}
+						} else if DebugWin32Input {
+							// Log key-up events too
+							fmt.Fprintf(os.Stderr, "[win32] seq=%s -> skipped (uc=%d, kd=%d)\r\n", seq, uc, kd)
+						}
+					}
+					i = end + 1
+					continue
+				}
+
+				// If we didn't find '_' and didn't hit an invalid char, the sequence
+				// might be incomplete (split across buffer boundary)
+				if !hitInvalidChar {
+					if DebugWin32Input {
+						fmt.Fprintf(os.Stderr, "[win32] incomplete CSI sequence at end of buffer - saving as remainder\r\n")
+					}
+					return result, data[i:]
+				}
+				// Otherwise it's not a win32-input-mode sequence, fall through to pass through
+			}
+		}
+
+		// Regular byte - pass through
+		if DebugWin32Input {
+			fmt.Fprintf(os.Stderr, "[win32] passthrough byte %d (0x%02x) '%c'\r\n", data[i], data[i], printableChar(data[i]))
+		}
+		result = append(result, data[i])
+		i++
+	}
+	if DebugWin32Input && foundWin32 {
+		fmt.Fprintf(os.Stderr, "[win32] input %d bytes -> output %d bytes\r\n", len(data), len(result))
+	}
+	return result, nil
+}
+
+// printableChar returns the character if printable, otherwise '.'
+func printableChar(b byte) byte {
+	if b >= 32 && b < 127 {
+		return b
+	}
+	return '.'
+}
+
+// splitSemicolon splits a string by semicolons without allocating a slice.
+func splitSemicolon(s string) []string {
+	var parts []string
+	start := 0
+	for i := 0; i <= len(s); i++ {
+		if i == len(s) || s[i] == ';' {
+			parts = append(parts, s[start:i])
+			start = i + 1
+		}
+	}
+	return parts
+}
+
+// parseInt parses a string to int, returning 0 on error.
+func parseInt(s string) int {
+	var n int
+	for _, c := range s {
+		if c >= '0' && c <= '9' {
+			n = n*10 + int(c-'0')
+		}
+	}
+	return n
+}
+
+// ScanWin32Input returns an iterator that reads from r and yields parsed bytes.
+// It handles Windows Terminal win32-input-mode escape sequences, extracting the
+// unicode character values and yielding them as individual bytes.
+// Buffer boundaries are handled internally - incomplete sequences at the end of
+// a read are held and combined with the next read.
+func ScanWin32Input(r io.Reader) iter.Seq[byte] {
+	return func(yield func(byte) bool) {
+		var pending []byte
+		buf := make([]byte, 256)
+
+		for {
+			n, err := r.Read(buf)
+			if n > 0 {
+				// Combine pending bytes with new data
+				var data []byte
+				if len(pending) > 0 {
+					data = make([]byte, len(pending)+n)
+					copy(data, pending)
+					copy(data[len(pending):], buf[:n])
+					pending = nil
+				} else {
+					data = buf[:n]
+				}
+
+				// Parse and yield bytes
+				parsed, remainder := parseWin32InputModeInternal(data)
+				pending = remainder
+
+				for _, b := range parsed {
+					if !yield(b) {
+						return
+					}
+				}
+			}
+
+			if err != nil {
+				// Yield any remaining pending bytes on EOF
+				if err == io.EOF && len(pending) > 0 {
+					for _, b := range pending {
+						if !yield(b) {
+							return
+						}
+					}
+				}
+				return
+			}
 		}
 	}
 }

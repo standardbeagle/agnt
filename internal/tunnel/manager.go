@@ -9,8 +9,8 @@ import (
 
 // Manager manages tunnel instances.
 type Manager struct {
-	tunnels   sync.Map // map[string]*Tunnel
-	active    atomic.Int32
+	tunnels      sync.Map // map[string]*Tunnel
+	active       atomic.Int32
 	shuttingDown atomic.Bool
 }
 

@@ -49,6 +49,13 @@ func (pm *ProcessManager) Start(ctx context.Context, proc *ManagedProcess) error
 		return fmt.Errorf("failed to start process %s: %w", proc.ID, err)
 	}
 
+	// Setup platform-specific process group management (Job Object on Windows)
+	// This must be called immediately after Start() to catch child processes
+	if err := SetupJobObject(proc.cmd); err != nil {
+		// Non-fatal - process will still work, just without child process tracking
+		// Log would go here if we had logging infrastructure
+	}
+
 	// Record start time and PID
 	now := time.Now()
 	proc.startTime.Store(&now)
@@ -68,6 +75,11 @@ func (pm *ProcessManager) waitForProcess(proc *ManagedProcess) {
 
 	// Wait for process to exit
 	err := proc.cmd.Wait()
+
+	// Cleanup platform-specific resources (Job Object on Windows)
+	if proc.cmd != nil && proc.cmd.Process != nil {
+		CleanupJobObject(proc.cmd.Process.Pid)
+	}
 
 	// Record end time
 	now := time.Now()

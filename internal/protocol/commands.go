@@ -157,13 +157,13 @@ type TunnelStartConfig struct {
 
 // ChaosRuleConfig represents configuration for a CHAOS ADD-RULE command.
 type ChaosRuleConfig struct {
-	ID         string   `json:"id"`
-	Name       string   `json:"name,omitempty"`
-	Type       string   `json:"type"` // latency, out_of_order, slow_drip, disconnect, http_error, truncate, etc.
-	Enabled    bool     `json:"enabled"`
-	URLPattern string   `json:"url_pattern,omitempty"`
-	Methods    []string `json:"methods,omitempty"`
-	Probability float64 `json:"probability,omitempty"` // 0.0-1.0, default 1.0
+	ID          string   `json:"id"`
+	Name        string   `json:"name,omitempty"`
+	Type        string   `json:"type"` // latency, out_of_order, slow_drip, disconnect, http_error, truncate, etc.
+	Enabled     bool     `json:"enabled"`
+	URLPattern  string   `json:"url_pattern,omitempty"`
+	Methods     []string `json:"methods,omitempty"`
+	Probability float64  `json:"probability,omitempty"` // 0.0-1.0, default 1.0
 
 	// Latency config
 	MinLatencyMs int `json:"min_latency_ms,omitempty"`
@@ -197,7 +197,7 @@ type ChaosRuleConfig struct {
 type ChaosConfigPayload struct {
 	Enabled     bool               `json:"enabled"`
 	Rules       []*ChaosRuleConfig `json:"rules,omitempty"`
-	GlobalOdds  float64            `json:"global_odds,omitempty"` // 0.0-1.0
-	Seed        int64              `json:"seed,omitempty"`        // For reproducible chaos
+	GlobalOdds  float64            `json:"global_odds,omitempty"`  // 0.0-1.0
+	Seed        int64              `json:"seed,omitempty"`         // For reproducible chaos
 	LoggingMode int                `json:"logging_mode,omitempty"` // 0=silent, 1=testing, 2=coordinated
 }
