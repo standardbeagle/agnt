@@ -29,7 +29,22 @@ detect_arch() {
 
 # Get latest version from GitHub
 get_latest_version() {
-    curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" | grep '"tag_name"' | sed -E 's/.*"v([^"]+)".*/\1/'
+    local version
+    # Try GitHub API first
+    version=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null | grep '"tag_name"' | sed -E 's/.*"v([^"]+)".*/\1/')
+
+    # If API fails (rate limit), try scraping releases page
+    if [ -z "$version" ]; then
+        version=$(curl -fsSL "https://github.com/$REPO/releases/latest" 2>/dev/null | grep -oE '/releases/tag/v[0-9]+\.[0-9]+\.[0-9]+' | head -1 | sed 's|.*/v||')
+    fi
+
+    # Validate version format
+    if [ -z "$version" ] || ! echo "$version" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+        echo "Error: Could not determine latest version. Set AGNT_VERSION manually." >&2
+        exit 1
+    fi
+
+    echo "$version"
 }
 
 main() {
@@ -37,6 +52,12 @@ main() {
     local arch=$(detect_arch)
     local version=${AGNT_VERSION:-$(get_latest_version)}
     local install_dir="${AGNT_INSTALL_DIR:-$HOME/.local/bin}"
+
+    # Validate version
+    if [ -z "$version" ]; then
+        echo "Error: Version not set" >&2
+        exit 1
+    fi
 
     echo "Installing agnt v$version..."
     echo "  Platform: $platform"
