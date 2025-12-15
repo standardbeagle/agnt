@@ -28,7 +28,20 @@ jobs:
         run: go install github.com/standardbeagle/agnt/cmd/agnt@${{ inputs.version && format('v{0}', inputs.version) || 'latest' }}
 
       - name: Verify version
-        run: agnt --version
+        shell: bash
+        env:
+          EXPECTED_VERSION: ${{ inputs.version }}
+        run: |
+          VERSION_OUTPUT=$(agnt --version)
+          echo "Version output: $VERSION_OUTPUT"
+          if [ -n "$EXPECTED_VERSION" ]; then
+            if echo "$VERSION_OUTPUT" | grep -q "$EXPECTED_VERSION"; then
+              echo "✓ Version matches expected: $EXPECTED_VERSION"
+            else
+              echo "✗ Version mismatch! Expected: $EXPECTED_VERSION, Got: $VERSION_OUTPUT"
+              exit 1
+            fi
+          fi
 
       - name: Test serve --help
         run: agnt serve --help
@@ -59,13 +72,24 @@ jobs:
 
       - name: Verify version
         shell: bash
+        env:
+          EXPECTED_VERSION: ${{ inputs.version }}
         run: |
           # Try direct path first, then fall back to PATH
           NPM_BIN="$(npm prefix -g)/bin"
           if [ -x "$NPM_BIN/agnt" ]; then
-            "$NPM_BIN/agnt" --version
+            VERSION_OUTPUT=$("$NPM_BIN/agnt" --version)
           else
-            agnt --version
+            VERSION_OUTPUT=$(agnt --version)
+          fi
+          echo "Version output: $VERSION_OUTPUT"
+          if [ -n "$EXPECTED_VERSION" ]; then
+            if echo "$VERSION_OUTPUT" | grep -q "$EXPECTED_VERSION"; then
+              echo "✓ Version matches expected: $EXPECTED_VERSION"
+            else
+              echo "✗ Version mismatch! Expected: $EXPECTED_VERSION, Got: $VERSION_OUTPUT"
+              exit 1
+            fi
           fi
 
       - name: Test serve --help
@@ -95,7 +119,20 @@ jobs:
         run: pip install agnt${{ inputs.version && format('=={0}', inputs.version) || '' }}
 
       - name: Verify version
-        run: agnt --version
+        shell: bash
+        env:
+          EXPECTED_VERSION: ${{ inputs.version }}
+        run: |
+          VERSION_OUTPUT=$(agnt --version)
+          echo "Version output: $VERSION_OUTPUT"
+          if [ -n "$EXPECTED_VERSION" ]; then
+            if echo "$VERSION_OUTPUT" | grep -q "$EXPECTED_VERSION"; then
+              echo "✓ Version matches expected: $EXPECTED_VERSION"
+            else
+              echo "✗ Version mismatch! Expected: $EXPECTED_VERSION, Got: $VERSION_OUTPUT"
+              exit 1
+            fi
+          fi
 
       - name: Test daemon status (Unix)
         if: runner.os != 'Windows'
@@ -127,7 +164,20 @@ jobs:
         run: uv tool install agnt${{ inputs.version && format('=={0}', inputs.version) || '' }}
 
       - name: Verify version
-        run: agnt --version
+        shell: bash
+        env:
+          EXPECTED_VERSION: ${{ inputs.version }}
+        run: |
+          VERSION_OUTPUT=$(agnt --version)
+          echo "Version output: $VERSION_OUTPUT"
+          if [ -n "$EXPECTED_VERSION" ]; then
+            if echo "$VERSION_OUTPUT" | grep -q "$EXPECTED_VERSION"; then
+              echo "✓ Version matches expected: $EXPECTED_VERSION"
+            else
+              echo "✗ Version mismatch! Expected: $EXPECTED_VERSION, Got: $VERSION_OUTPUT"
+              exit 1
+            fi
+          fi
 
       - name: Test daemon status (Unix)
         if: runner.os != 'Windows'
@@ -160,16 +210,36 @@ jobs:
       - name: Test via npx (Unix)
         if: runner.os != 'Windows'
         shell: bash
+        env:
+          EXPECTED_VERSION: ${{ inputs.version }}
         run: |
-          # npx runs postinstall which downloads binary, then we need to find it
-          npx --yes @standardbeagle/agnt${{ inputs.version && format('@{0}', inputs.version) || '' }} --version || echo "npx test - may need PATH fix"
+          VERSION_OUTPUT=$(npx --yes @standardbeagle/agnt${{ inputs.version && format('@{0}', inputs.version) || '' }} --version)
+          echo "Version output: $VERSION_OUTPUT"
+          if [ -n "$EXPECTED_VERSION" ]; then
+            if echo "$VERSION_OUTPUT" | grep -q "$EXPECTED_VERSION"; then
+              echo "✓ Version matches expected: $EXPECTED_VERSION"
+            else
+              echo "✗ Version mismatch! Expected: $EXPECTED_VERSION, Got: $VERSION_OUTPUT"
+              exit 1
+            fi
+          fi
 
       - name: Test via npx (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
+        env:
+          EXPECTED_VERSION: ${{ inputs.version }}
         run: |
-          npx --yes @standardbeagle/agnt${{ inputs.version && format('@{0}', inputs.version) || '' }} --version
-          if ($LASTEXITCODE -ne 0) { Write-Host "npx test - may need PATH fix" }
+          $VERSION_OUTPUT = npx --yes @standardbeagle/agnt${{ inputs.version && format('@{0}', inputs.version) || '' }} --version
+          Write-Host "Version output: $VERSION_OUTPUT"
+          if ($env:EXPECTED_VERSION) {
+            if ($VERSION_OUTPUT -match $env:EXPECTED_VERSION) {
+              Write-Host "✓ Version matches expected: $env:EXPECTED_VERSION"
+            } else {
+              Write-Host "✗ Version mismatch! Expected: $env:EXPECTED_VERSION, Got: $VERSION_OUTPUT"
+              exit 1
+            }
+          }
 
   test-uvx:
     name: uvx (${{ matrix.os }})
@@ -183,7 +253,20 @@ jobs:
         uses: astral-sh/setup-uv@v4
 
       - name: Test via uvx
-        run: uvx agnt${{ inputs.version && format('=={0}', inputs.version) || '' }} --version
+        shell: bash
+        env:
+          EXPECTED_VERSION: ${{ inputs.version }}
+        run: |
+          VERSION_OUTPUT=$(uvx agnt${{ inputs.version && format('=={0}', inputs.version) || '' }} --version)
+          echo "Version output: $VERSION_OUTPUT"
+          if [ -n "$EXPECTED_VERSION" ]; then
+            if echo "$VERSION_OUTPUT" | grep -q "$EXPECTED_VERSION"; then
+              echo "✓ Version matches expected: $EXPECTED_VERSION"
+            else
+              echo "✗ Version mismatch! Expected: $EXPECTED_VERSION, Got: $VERSION_OUTPUT"
+              exit 1
+            fi
+          fi
 
   test-curl-install:
     name: curl install (${{ matrix.os }})
@@ -198,7 +281,20 @@ jobs:
           curl -fsSL https://raw.githubusercontent.com/standardbeagle/agnt/main/install.sh | bash
 
       - name: Verify version
-        run: ~/.local/bin/agnt --version
+        shell: bash
+        env:
+          EXPECTED_VERSION: ${{ inputs.version }}
+        run: |
+          VERSION_OUTPUT=$(~/.local/bin/agnt --version)
+          echo "Version output: $VERSION_OUTPUT"
+          if [ -n "$EXPECTED_VERSION" ]; then
+            if echo "$VERSION_OUTPUT" | grep -q "$EXPECTED_VERSION"; then
+              echo "✓ Version matches expected: $EXPECTED_VERSION"
+            else
+              echo "✗ Version mismatch! Expected: $EXPECTED_VERSION, Got: $VERSION_OUTPUT"
+              exit 1
+            fi
+          fi
 
   test-powershell-install:
     name: PowerShell install
@@ -211,9 +307,20 @@ jobs:
 
       - name: Verify version
         shell: pwsh
+        env:
+          EXPECTED_VERSION: ${{ inputs.version }}
         run: |
           $env:PATH = "$env:LOCALAPPDATA\agnt;$env:PATH"
-          agnt --version
+          $VERSION_OUTPUT = agnt --version
+          Write-Host "Version output: $VERSION_OUTPUT"
+          if ($env:EXPECTED_VERSION) {
+            if ($VERSION_OUTPUT -match $env:EXPECTED_VERSION) {
+              Write-Host "✓ Version matches expected: $env:EXPECTED_VERSION"
+            } else {
+              Write-Host "✗ Version mismatch! Expected: $env:EXPECTED_VERSION, Got: $VERSION_OUTPUT"
+              exit 1
+            }
+          }
 
   test-docker:
     name: Docker (${{ matrix.image }})
@@ -234,7 +341,20 @@ jobs:
         run: ${{ matrix.install }}
 
       - name: Verify version
-        run: agnt --version
+        shell: bash
+        env:
+          EXPECTED_VERSION: ${{ inputs.version }}
+        run: |
+          VERSION_OUTPUT=$(agnt --version)
+          echo "Version output: $VERSION_OUTPUT"
+          if [ -n "$EXPECTED_VERSION" ]; then
+            if echo "$VERSION_OUTPUT" | grep -q "$EXPECTED_VERSION"; then
+              echo "✓ Version matches expected: $EXPECTED_VERSION"
+            else
+              echo "✗ Version mismatch! Expected: $EXPECTED_VERSION, Got: $VERSION_OUTPUT"
+              exit 1
+            fi
+          fi
 
       - name: Test serve --help
         run: agnt serve --help
