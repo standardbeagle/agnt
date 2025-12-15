@@ -115,11 +115,8 @@ jobs:
           node-version: '20'
           registry-url: 'https://registry.npmjs.org'
 
-      - name: Prepare package
-        run: |
-          node scripts/prepack.js
-
-      - name: Publish to npm with provenance
+      - name: Publish @standardbeagle/agnt to npm
+        working-directory: npm/agnt
         run: npm publish --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -133,7 +130,7 @@ jobs:
       id-token: write  # Required for PyPI trusted publishing
     environment:
       name: pypi
-      url: https://pypi.org/project/devtool-mcp/
+      url: https://pypi.org/project/agnt/
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -148,11 +145,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install build
 
-      - name: Build package
-        working-directory: python
+      - name: Build agnt package
+        working-directory: python/agnt
         run: python -m build
 
-      - name: Publish to PyPI (Trusted Publishing)
+      - name: Publish agnt to PyPI (Trusted Publishing)
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          packages-dir: python/dist/
+          packages-dir: python/agnt/dist/

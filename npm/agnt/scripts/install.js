@@ -5,7 +5,9 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 
-const VERSION = '0.6.0';
+// Read version from package.json to stay in sync
+const packageJson = require('../package.json');
+const VERSION = packageJson.version;
 const REPO = 'standardbeagle/agnt';
 const BINARY_NAME = 'agnt';
 
