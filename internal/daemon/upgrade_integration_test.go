@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -360,7 +361,5 @@ func TestUpgradeVersionCheck(t *testing.T) {
 
 // Helper function to check if a string contains a substring
 func stringContains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > len(substr) &&
-		(s[:len(substr)] == substr || s[len(s)-len(substr):] == substr ||
-			len(s) > len(substr)+1 && s[1:len(substr)+1] == substr))
+	return strings.Contains(s, substr)
 }
