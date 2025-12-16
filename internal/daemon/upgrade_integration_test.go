@@ -10,11 +10,34 @@ import (
 	"github.com/standardbeagle/agnt/internal/process"
 )
 
+// findAgntBinary finds the agnt binary for testing.
+// Returns the path to the binary or skips the test if not found.
+func findAgntBinary(t *testing.T) string {
+	wd, _ := os.Getwd()
+	// Navigate from internal/daemon to project root
+	projectRoot := filepath.Join(wd, "..", "..")
+	daemonPath := filepath.Join(projectRoot, "agnt")
+
+	// On Windows, add .exe extension
+	if _, err := os.Stat(daemonPath); os.IsNotExist(err) {
+		daemonPath += ".exe"
+	}
+
+	if _, err := os.Stat(daemonPath); os.IsNotExist(err) {
+		t.Skipf("agnt binary not found at %s - run 'make build' first", daemonPath)
+	}
+
+	return daemonPath
+}
+
 // TestDaemonUpgrade_FullCycle tests the complete upgrade cycle
 func TestDaemonUpgrade_FullCycle(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
+
+	// Find the agnt binary for testing
+	daemonPath := findAgntBinary(t)
 
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "test.sock")
@@ -63,6 +86,7 @@ func TestDaemonUpgrade_FullCycle(t *testing.T) {
 	// Create upgrader
 	upgrader := NewDaemonUpgrader(UpgradeConfig{
 		SocketPath:      sockPath,
+		NewBinaryPath:   daemonPath, // Use actual agnt binary
 		Timeout:         10 * time.Second,
 		GracefulTimeout: 2 * time.Second,
 		Force:           true, // Force upgrade even though version matches
@@ -129,6 +153,9 @@ func TestUpgradeLock_ConcurrentAttempts(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
+	// Find the agnt binary for testing
+	daemonPath := findAgntBinary(t)
+
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
@@ -161,6 +188,7 @@ func TestUpgradeLock_ConcurrentAttempts(t *testing.T) {
 	// Create two upgraders
 	upgrader1 := NewDaemonUpgrader(UpgradeConfig{
 		SocketPath:      sockPath,
+		NewBinaryPath:   daemonPath, // Use actual agnt binary
 		Timeout:         10 * time.Second,
 		GracefulTimeout: 2 * time.Second,
 		Force:           true,
@@ -169,6 +197,7 @@ func TestUpgradeLock_ConcurrentAttempts(t *testing.T) {
 
 	upgrader2 := NewDaemonUpgrader(UpgradeConfig{
 		SocketPath:      sockPath,
+		NewBinaryPath:   daemonPath, // Use actual agnt binary
 		Timeout:         10 * time.Second,
 		GracefulTimeout: 2 * time.Second,
 		Force:           true,
@@ -214,6 +243,9 @@ func TestUpgradeStaleSocket(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
+	// Find the agnt binary for testing
+	daemonPath := findAgntBinary(t)
+
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
@@ -232,6 +264,7 @@ func TestUpgradeStaleSocket(t *testing.T) {
 	// Create upgrader
 	upgrader := NewDaemonUpgrader(UpgradeConfig{
 		SocketPath:      sockPath,
+		NewBinaryPath:   daemonPath, // Use actual agnt binary
 		Timeout:         10 * time.Second,
 		GracefulTimeout: 2 * time.Second,
 		Force:           false,
@@ -266,6 +299,9 @@ func TestUpgradeVersionCheck(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
+	// Find the agnt binary for testing
+	daemonPath := findAgntBinary(t)
+
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
@@ -298,6 +334,7 @@ func TestUpgradeVersionCheck(t *testing.T) {
 	// Create upgrader WITHOUT force flag
 	upgrader := NewDaemonUpgrader(UpgradeConfig{
 		SocketPath:      sockPath,
+		NewBinaryPath:   daemonPath, // Use actual agnt binary
 		Timeout:         10 * time.Second,
 		GracefulTimeout: 2 * time.Second,
 		Force:           false, // Don't force upgrade

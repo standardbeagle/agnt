@@ -8,8 +8,9 @@ import (
 )
 
 func TestAutoStartDaemon(t *testing.T) {
-	// Use a unique socket for this test
-	socketPath := "/tmp/devtool-test-autostart.sock"
+	// Use a unique socket for this test (platform-appropriate path)
+	tmpDir := t.TempDir()
+	socketPath := filepath.Join(tmpDir, "test-autostart.sock")
 
 	// Ensure any existing daemon is stopped
 	StopDaemon(socketPath)
