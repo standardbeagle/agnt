@@ -13,10 +13,20 @@ import (
 	"github.com/standardbeagle/agnt/internal/process"
 	"github.com/standardbeagle/agnt/internal/proxy"
 	"github.com/standardbeagle/agnt/internal/tunnel"
+	"github.com/standardbeagle/agnt/internal/updater"
 )
 
 // Version is the daemon version.
-const Version = "0.1.0"
+// Can be overridden at build time with: -ldflags "-X github.com/standardbeagle/agnt/internal/daemon.Version=x.y.z"
+var Version = "0.6.6"
+
+// BuildTime is the build timestamp (RFC3339 format).
+// Set at build time with: -ldflags "-X github.com/standardbeagle/agnt/internal/daemon.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+var BuildTime = ""
+
+// GitCommit is the git commit hash.
+// Set at build time with: -ldflags "-X github.com/standardbeagle/agnt/internal/daemon.GitCommit=$(git rev-parse HEAD)"
+var GitCommit = ""
 
 // DaemonConfig holds configuration for the daemon.
 type DaemonConfig struct {
@@ -46,6 +56,14 @@ type DaemonConfig struct {
 	// StatePath is the path to the state file.
 	// If empty, uses default location.
 	StatePath string
+
+	// EnableUpdateCheck enables periodic update checking.
+	// Default: true
+	EnableUpdateCheck bool
+
+	// UpdateCheckInterval is the interval between update checks.
+	// Default: 24 hours
+	UpdateCheckInterval time.Duration
 }
 
 // DefaultDaemonConfig returns sensible defaults.
@@ -57,6 +75,8 @@ func DefaultDaemonConfig() DaemonConfig {
 		ReadTimeout:            0, // No timeout for long-running commands
 		WriteTimeout:           30 * time.Second,
 		EnableStatePersistence: true,
+		EnableUpdateCheck:      true,
+		UpdateCheckInterval:    24 * time.Hour,
 	}
 }
 
@@ -71,6 +91,9 @@ type Daemon struct {
 
 	// State persistence
 	stateMgr *StateManager
+
+	// Update checker
+	updateChecker *updater.UpdateChecker
 
 	// Socket management
 	sockMgr  *SocketManager
@@ -124,6 +147,17 @@ func New(config DaemonConfig) *Daemon {
 		}
 	}
 
+	// Initialize update checker if enabled
+	if config.EnableUpdateCheck {
+		updateConfig := updater.Config{
+			CurrentVersion: Version,
+			CheckInterval:  config.UpdateCheckInterval,
+			GitHubRepo:     updater.DefaultGitHubRepo,
+			Enabled:        true,
+		}
+		d.updateChecker = updater.NewUpdateChecker(updateConfig)
+	}
+
 	return d
 }
 
@@ -148,6 +182,11 @@ func (d *Daemon) Start() error {
 
 	// Restore proxies from persisted state
 	d.restoreProxies()
+
+	// Start update checker if enabled
+	if d.updateChecker != nil {
+		d.updateChecker.Start()
+	}
 
 	// Start accept loop
 	d.wg.Add(1)
@@ -231,6 +270,11 @@ func (d *Daemon) Stop(ctx context.Context) error {
 	// Shutdown managers
 	var errs []error
 
+	// Stop update checker
+	if d.updateChecker != nil {
+		d.updateChecker.Stop()
+	}
+
 	if err := d.tunnelm.Shutdown(ctx); err != nil {
 		errs = append(errs, fmt.Errorf("tunnel manager: %w", err))
 	}
@@ -278,8 +322,10 @@ func (d *Daemon) Wait() {
 
 // Info returns daemon information.
 func (d *Daemon) Info() DaemonInfo {
-	return DaemonInfo{
+	info := DaemonInfo{
 		Version:     Version,
+		BuildTime:   BuildTime,
+		GitCommit:   GitCommit,
 		SocketPath:  d.sockMgr.Path(),
 		Uptime:      time.Since(d.started),
 		ClientCount: d.clientCount.Load(),
@@ -296,6 +342,14 @@ func (d *Daemon) Info() DaemonInfo {
 			Active: int64(d.tunnelm.ActiveCount()),
 		},
 	}
+
+	// Include update info if update checker is enabled
+	if d.updateChecker != nil {
+		updateInfo := d.updateChecker.GetUpdateInfo()
+		info.UpdateInfo = &updateInfo
+	}
+
+	return info
 }
 
 // ProcessManager returns the process manager.
@@ -395,13 +449,16 @@ func (d *Daemon) acceptLoop() {
 
 // DaemonInfo holds daemon status information.
 type DaemonInfo struct {
-	Version     string        `json:"version"`
-	SocketPath  string        `json:"socket_path"`
-	Uptime      time.Duration `json:"uptime"`
-	ClientCount int64         `json:"client_count"`
-	ProcessInfo ProcessInfo   `json:"process_info"`
-	ProxyInfo   ProxyInfo     `json:"proxy_info"`
-	TunnelInfo  TunnelInfo    `json:"tunnel_info"`
+	Version     string              `json:"version"`
+	BuildTime   string              `json:"build_time,omitempty"`   // Build timestamp (RFC3339)
+	GitCommit   string              `json:"git_commit,omitempty"`   // Git commit hash
+	SocketPath  string              `json:"socket_path"`
+	Uptime      time.Duration       `json:"uptime"`
+	ClientCount int64               `json:"client_count"`
+	ProcessInfo ProcessInfo         `json:"process_info"`
+	ProxyInfo   ProxyInfo           `json:"proxy_info"`
+	TunnelInfo  TunnelInfo          `json:"tunnel_info"`
+	UpdateInfo  *updater.UpdateInfo `json:"update_info,omitempty"` // Update availability info
 }
 
 // ProcessInfo holds process manager statistics.

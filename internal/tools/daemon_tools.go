@@ -17,25 +17,59 @@ import (
 
 // DaemonTools wraps a daemon client for MCP tool handlers.
 type DaemonTools struct {
-	client *daemon.Client
-	config daemon.AutoStartConfig
+	client  *daemon.ResilientClient
+	config  daemon.AutoStartConfig
+	version string // Client version for validation
 }
 
-// NewDaemonTools creates a new daemon tools wrapper with auto-start.
-func NewDaemonTools(config daemon.AutoStartConfig) *DaemonTools {
+// NewDaemonTools creates a new daemon tools wrapper with auto-start and version checking.
+// The version parameter should be the current binary version (e.g., "0.6.5").
+func NewDaemonTools(config daemon.AutoStartConfig, version string) *DaemonTools {
 	return &DaemonTools{
-		config: config,
+		config:  config,
+		version: version,
 	}
 }
 
-// ensureConnected ensures we have a connection to the daemon.
+// ensureConnected ensures we have a connection to the daemon with automatic version checking and upgrade.
 func (dt *DaemonTools) ensureConnected() error {
 	if dt.client != nil && dt.client.IsConnected() {
 		return nil
 	}
 
-	client, err := daemon.EnsureDaemonRunning(dt.config)
-	if err != nil {
+	// Create ResilientClient with version checking and auto-upgrade
+	resilientConfig := daemon.DefaultResilientClientConfig()
+	resilientConfig.AutoStartConfig = dt.config
+	resilientConfig.ClientVersion = dt.version
+
+	// Configure auto-upgrade callback for version mismatches
+	resilientConfig.OnVersionMismatch = func(clientVer, daemonVer string) error {
+		fmt.Fprintf(os.Stderr, "[agnt] Version mismatch detected: client=%s daemon=%s\n", clientVer, daemonVer)
+		fmt.Fprintf(os.Stderr, "[agnt] Triggering automatic daemon upgrade...\n")
+
+		// Create upgrader
+		upgrader := daemon.NewDaemonUpgrader(daemon.UpgradeConfig{
+			SocketPath:      dt.config.SocketPath,
+			Timeout:         30 * time.Second,
+			GracefulTimeout: 5 * time.Second,
+			Verbose:         false, // Don't spam logs during auto-upgrade
+		})
+
+		// Run upgrade with timeout
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		if err := upgrader.Upgrade(ctx); err != nil {
+			return fmt.Errorf("auto-upgrade failed: %w", err)
+		}
+
+		fmt.Fprintf(os.Stderr, "[agnt] ✓ Daemon upgraded to %s\n", clientVer)
+		return nil
+	}
+
+	// Create and connect ResilientClient
+	client := daemon.NewResilientClient(resilientConfig)
+	if err := client.Connect(); err != nil {
 		return fmt.Errorf("failed to connect to daemon: %w", err)
 	}
 

@@ -49,6 +49,16 @@ type ResilientClientConfig struct {
 
 	// OnReconnectFailed is called when reconnection fails permanently
 	OnReconnectFailed func(err error)
+
+	// ClientVersion is the expected daemon version (strict matching).
+	// If empty, version checking is skipped.
+	ClientVersion string
+
+	// OnVersionMismatch is called when client and daemon versions don't match.
+	// If nil and versions mismatch, Connect() returns an error.
+	// If non-nil, the callback can handle the mismatch (e.g., trigger upgrade).
+	// Return nil to proceed with mismatched versions, or error to fail connection.
+	OnVersionMismatch func(clientVer, daemonVer string) error
 }
 
 // DefaultResilientClientConfig returns sensible defaults.
@@ -111,6 +121,14 @@ func (rc *ResilientClient) Connect() error {
 		return err
 	}
 
+	// Check version compatibility if configured
+	if rc.config.ClientVersion != "" {
+		if err := rc.checkVersionCompatibility(client); err != nil {
+			client.Close()
+			return err
+		}
+	}
+
 	rc.client = client
 	rc.connected.Store(true)
 	now := time.Now()
@@ -118,6 +136,29 @@ func (rc *ResilientClient) Connect() error {
 
 	// Start heartbeat monitor
 	rc.startHeartbeat()
+
+	return nil
+}
+
+// checkVersionCompatibility verifies that the daemon version matches the client version.
+func (rc *ResilientClient) checkVersionCompatibility(client *Client) error {
+	// Get daemon info
+	info, err := client.Info()
+	if err != nil {
+		return errors.New("failed to get daemon version: " + err.Error())
+	}
+
+	// Check if versions match
+	if !VersionsMatch(rc.config.ClientVersion, info.Version) {
+		// Versions don't match - call callback if configured
+		if rc.config.OnVersionMismatch != nil {
+			return rc.config.OnVersionMismatch(rc.config.ClientVersion, info.Version)
+		}
+
+		// No callback - return error
+		return errors.New("version mismatch: client=" + rc.config.ClientVersion +
+			" daemon=" + info.Version + " (run 'agnt daemon upgrade' to upgrade)")
+	}
 
 	return nil
 }
@@ -489,6 +530,350 @@ func (rc *ResilientClient) ProxyList(dirFilter protocol.DirectoryFilter) (map[st
 	err := rc.WithClient(func(c *Client) error {
 		var e error
 		result, e = c.ProxyList(dirFilter)
+		return e
+	})
+	return result, err
+}
+
+// Detect detects the project type at the given path.
+func (rc *ResilientClient) Detect(path string) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.Detect(path)
+		return e
+	})
+	return result, err
+}
+
+// Run starts a process on the daemon.
+func (rc *ResilientClient) Run(config protocol.RunConfig) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.Run(config)
+		return e
+	})
+	return result, err
+}
+
+// ProcStatus gets the status of a process.
+func (rc *ResilientClient) ProcStatus(processID string) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.ProcStatus(processID)
+		return e
+	})
+	return result, err
+}
+
+// ProcOutput gets the output of a process.
+func (rc *ResilientClient) ProcOutput(processID string, filter protocol.OutputFilter) (string, error) {
+	var output string
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		output, e = c.ProcOutput(processID, filter)
+		return e
+	})
+	return output, err
+}
+
+// ProcStop stops a process.
+func (rc *ResilientClient) ProcStop(processID string, force bool) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.ProcStop(processID, force)
+		return e
+	})
+	return result, err
+}
+
+// ProcList lists all processes.
+func (rc *ResilientClient) ProcList(dirFilter protocol.DirectoryFilter) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.ProcList(dirFilter)
+		return e
+	})
+	return result, err
+}
+
+// ProcCleanupPort kills processes on a specific port.
+func (rc *ResilientClient) ProcCleanupPort(port int) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.ProcCleanupPort(port)
+		return e
+	})
+	return result, err
+}
+
+// ProxyStartWithConfig starts a reverse proxy with extended configuration.
+func (rc *ResilientClient) ProxyStartWithConfig(id, targetURL string, port, maxLogSize int, config ProxyStartConfig) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.ProxyStartWithConfig(id, targetURL, port, maxLogSize, config)
+		return e
+	})
+	return result, err
+}
+
+// ProxyStatus gets the status of a proxy.
+func (rc *ResilientClient) ProxyStatus(id string) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.ProxyStatus(id)
+		return e
+	})
+	return result, err
+}
+
+// ProxyExec executes JavaScript in connected browsers.
+func (rc *ResilientClient) ProxyExec(id, code string) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.ProxyExec(id, code)
+		return e
+	})
+	return result, err
+}
+
+// ProxyToast sends a toast notification to connected browsers.
+func (rc *ResilientClient) ProxyToast(id string, toast protocol.ToastConfig) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.ProxyToast(id, toast)
+		return e
+	})
+	return result, err
+}
+
+// ProxyLogQuery queries proxy logs.
+func (rc *ResilientClient) ProxyLogQuery(proxyID string, filter protocol.LogQueryFilter) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.ProxyLogQuery(proxyID, filter)
+		return e
+	})
+	return result, err
+}
+
+// ProxyLogClear clears proxy logs.
+func (rc *ResilientClient) ProxyLogClear(proxyID string) error {
+	return rc.WithClient(func(c *Client) error {
+		return c.ProxyLogClear(proxyID)
+	})
+}
+
+// ProxyLogStats gets proxy log statistics.
+func (rc *ResilientClient) ProxyLogStats(proxyID string) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.ProxyLogStats(proxyID)
+		return e
+	})
+	return result, err
+}
+
+// CurrentPageList lists active page sessions.
+func (rc *ResilientClient) CurrentPageList(proxyID string) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.CurrentPageList(proxyID)
+		return e
+	})
+	return result, err
+}
+
+// CurrentPageGet gets details for a specific page session.
+func (rc *ResilientClient) CurrentPageGet(proxyID, sessionID string) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.CurrentPageGet(proxyID, sessionID)
+		return e
+	})
+	return result, err
+}
+
+// CurrentPageClear clears page sessions.
+func (rc *ResilientClient) CurrentPageClear(proxyID string) error {
+	return rc.WithClient(func(c *Client) error {
+		return c.CurrentPageClear(proxyID)
+	})
+}
+
+// Chaos methods
+
+// ChaosEnable enables chaos injection on a proxy.
+func (rc *ResilientClient) ChaosEnable(proxyID string) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.ChaosEnable(proxyID)
+		return e
+	})
+	return result, err
+}
+
+// ChaosDisable disables chaos injection on a proxy.
+func (rc *ResilientClient) ChaosDisable(proxyID string) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.ChaosDisable(proxyID)
+		return e
+	})
+	return result, err
+}
+
+// ChaosStatus gets the chaos status of a proxy.
+func (rc *ResilientClient) ChaosStatus(proxyID string) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.ChaosStatus(proxyID)
+		return e
+	})
+	return result, err
+}
+
+// ChaosPreset applies a preset chaos configuration to a proxy.
+func (rc *ResilientClient) ChaosPreset(proxyID, preset string) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.ChaosPreset(proxyID, preset)
+		return e
+	})
+	return result, err
+}
+
+// ChaosSet sets the full chaos configuration on a proxy.
+func (rc *ResilientClient) ChaosSet(proxyID string, config protocol.ChaosConfigPayload) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.ChaosSet(proxyID, config)
+		return e
+	})
+	return result, err
+}
+
+// ChaosAddRule adds a single rule to a proxy's chaos engine.
+func (rc *ResilientClient) ChaosAddRule(proxyID string, rule protocol.ChaosRuleConfig) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.ChaosAddRule(proxyID, rule)
+		return e
+	})
+	return result, err
+}
+
+// ChaosRemoveRule removes a rule from a proxy's chaos engine.
+func (rc *ResilientClient) ChaosRemoveRule(proxyID, ruleID string) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.ChaosRemoveRule(proxyID, ruleID)
+		return e
+	})
+	return result, err
+}
+
+// ChaosListRules lists all chaos rules for a proxy.
+func (rc *ResilientClient) ChaosListRules(proxyID string) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.ChaosListRules(proxyID)
+		return e
+	})
+	return result, err
+}
+
+// ChaosStats gets chaos statistics for a proxy.
+func (rc *ResilientClient) ChaosStats(proxyID string) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.ChaosStats(proxyID)
+		return e
+	})
+	return result, err
+}
+
+// ChaosClear clears all chaos rules and resets stats for a proxy.
+func (rc *ResilientClient) ChaosClear(proxyID string) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.ChaosClear(proxyID)
+		return e
+	})
+	return result, err
+}
+
+// ChaosListPresets returns the list of available chaos presets.
+func (rc *ResilientClient) ChaosListPresets() (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.ChaosListPresets()
+		return e
+	})
+	return result, err
+}
+
+// Tunnel methods
+
+// TunnelStart starts a tunnel for a local port.
+func (rc *ResilientClient) TunnelStart(config protocol.TunnelStartConfig) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.TunnelStart(config)
+		return e
+	})
+	return result, err
+}
+
+// TunnelStop stops a running tunnel.
+func (rc *ResilientClient) TunnelStop(id string) error {
+	return rc.WithClient(func(c *Client) error {
+		return c.TunnelStop(id)
+	})
+}
+
+// TunnelStatus gets the status of a tunnel.
+func (rc *ResilientClient) TunnelStatus(id string) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.TunnelStatus(id)
+		return e
+	})
+	return result, err
+}
+
+// TunnelList lists all active tunnels.
+func (rc *ResilientClient) TunnelList() (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.TunnelList()
 		return e
 	})
 	return result, err

@@ -66,7 +66,7 @@ func runDaemonClient(socketPath string) {
 		MaxRetries:    50,
 	}
 
-	dt := tools.NewDaemonTools(config)
+	dt := tools.NewDaemonTools(config, appVersion)
 	defer dt.Close()
 
 	// Create MCP server

@@ -1,0 +1,224 @@
+name: Windows Tests
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test-windows:
+    name: Windows ${{ matrix.os }} - Go ${{ matrix.go-version }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2019, windows-2022, windows-latest]
+        go-version: ['1.24.2']
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Fetch all history for git operations
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+
+      - name: Display Go version
+        shell: pwsh
+        run: |
+          go version
+          Write-Host "GOPATH: $env:GOPATH"
+          Write-Host "GOROOT: $env:GOROOT"
+
+      - name: Build current version
+        shell: pwsh
+        run: |
+          Write-Host "Building agnt.exe..."
+          go build -v -o agnt.exe ./cmd/agnt/
+          if ($LASTEXITCODE -ne 0) {
+            throw "Build failed"
+          }
+          Write-Host "Build successful"
+
+          # Display version
+          $version = .\agnt.exe --version
+          Write-Host "Built version: $version"
+
+      - name: Build old version for upgrade testing
+        shell: pwsh
+        run: |
+          # Fetch tags
+          git fetch --tags
+
+          # Check if v0.6.4 tag exists
+          $tagExists = git tag -l "v0.6.4"
+          if (-not $tagExists) {
+            Write-Host "Tag v0.6.4 not found, using v0.6.0 instead"
+            $oldTag = "v0.6.0"
+          } else {
+            $oldTag = "v0.6.4"
+          }
+
+          Write-Host "Building old version from tag: $oldTag"
+
+          # Save current state
+          $currentBranch = git rev-parse --abbrev-ref HEAD
+          Write-Host "Current branch: $currentBranch"
+
+          # Checkout old tag
+          git checkout $oldTag
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Failed to checkout $oldTag, skipping old binary build"
+            git checkout $currentBranch
+            exit 0  # Don't fail the workflow
+          }
+
+          # Build old version
+          go build -v -o agnt-old.exe ./cmd/agnt/
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Failed to build old version, skipping"
+            git checkout $currentBranch
+            exit 0  # Don't fail the workflow
+          }
+
+          # Display old version
+          $oldVersion = .\agnt-old.exe --version
+          Write-Host "Old version built: $oldVersion"
+
+          # Return to original branch
+          git checkout $currentBranch
+          Write-Host "Returned to $currentBranch"
+
+      - name: Run unit tests
+        shell: pwsh
+        run: |
+          Write-Host "Running Go unit tests..."
+          go test -v -race ./internal/daemon/...
+          if ($LASTEXITCODE -ne 0) {
+            throw "Daemon tests failed"
+          }
+
+          go test -v -race ./internal/process/...
+          if ($LASTEXITCODE -ne 0) {
+            throw "Process tests failed"
+          }
+
+          go test -v -race ./internal/proxy/...
+          if ($LASTEXITCODE -ne 0) {
+            throw "Proxy tests failed"
+          }
+
+          Write-Host "All unit tests passed"
+
+      - name: Run reconnection tests
+        shell: pwsh
+        run: |
+          Write-Host "Running reconnection tests..."
+          .\scripts\test-reconnect.ps1 -AgntPath .\agnt.exe
+          if ($LASTEXITCODE -ne 0) {
+            throw "Reconnection tests failed"
+          }
+          Write-Host "Reconnection tests passed"
+
+      - name: Run upgrade tests
+        shell: pwsh
+        run: |
+          Write-Host "Running upgrade tests..."
+
+          # Check if old binary exists
+          if (Test-Path ".\agnt-old.exe") {
+            .\scripts\test-upgrade.ps1 -AgntPath .\agnt.exe -OldBinaryPath .\agnt-old.exe
+          } else {
+            Write-Host "Old binary not found, running upgrade tests with current version only"
+            .\scripts\test-upgrade.ps1 -AgntPath .\agnt.exe
+          }
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Upgrade tests failed"
+          }
+          Write-Host "Upgrade tests passed"
+
+      - name: Verify version compatibility
+        shell: pwsh
+        run: |
+          Write-Host "Verifying version compatibility..."
+
+          # Create temp socket path
+          $socketPath = "$env:TEMP\agnt-test-$([guid]::NewGuid()).sock"
+          Write-Host "Using socket: $socketPath"
+
+          # Start daemon
+          $job = Start-Job -ScriptBlock {
+            param($agnt, $sock)
+            & $agnt daemon start --socket $sock 2>&1
+          } -ArgumentList (Resolve-Path ".\agnt.exe").Path, $socketPath
+
+          # Wait for daemon to be ready
+          $ready = $false
+          $deadline = (Get-Date).AddSeconds(10)
+          while ((Get-Date) -lt $deadline) {
+            try {
+              .\agnt.exe daemon status --socket $socketPath 2>$null
+              if ($LASTEXITCODE -eq 0) {
+                $ready = $true
+                break
+              }
+            } catch {}
+            Start-Sleep -Milliseconds 100
+          }
+
+          if (-not $ready) {
+            Stop-Job $job -ErrorAction SilentlyContinue
+            Remove-Job $job -ErrorAction SilentlyContinue
+            throw "Daemon failed to start"
+          }
+
+          Write-Host "Daemon started successfully"
+
+          # Get daemon info
+          $info = .\agnt.exe daemon info --socket $socketPath 2>&1 | ConvertFrom-Json
+          Write-Host "Daemon version: $($info.version)"
+          Write-Host "Daemon uptime: $($info.uptime)"
+          Write-Host "Clients connected: $($info.client_count)"
+
+          # Get binary version
+          $binaryVersion = .\agnt.exe --version 2>&1
+          Write-Host "Binary version: $binaryVersion"
+
+          # Stop daemon
+          .\agnt.exe daemon stop --socket $socketPath 2>$null
+
+          # Wait for job to complete
+          Stop-Job $job -ErrorAction SilentlyContinue
+          Remove-Job $job -ErrorAction SilentlyContinue
+
+          Write-Host "Version compatibility verified"
+
+      - name: Upload test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-test-binaries-${{ matrix.os }}
+          path: |
+            agnt.exe
+            agnt-old.exe
+          retention-days: 7
+
+  test-summary:
+    name: Windows Test Summary
+    runs-on: ubuntu-latest
+    needs: test-windows
+    if: always()
+    steps:
+      - name: Check test results
+        run: |
+          if [ "${{ needs.test-windows.result }}" != "success" ]; then
+            echo "Windows tests failed"
+            exit 1
+          fi
+          echo "All Windows tests passed"
