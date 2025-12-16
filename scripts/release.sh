@@ -48,9 +48,13 @@ if ! git diff --quiet || ! git diff --staged --quiet; then
     exit 1
 fi
 
-# Update Go version
+# Update Go version (main.go)
 echo "Updating cmd/agnt/main.go..."
 sed -i "s/appVersion = \".*\"/appVersion = \"$NEW_VERSION\"/" cmd/agnt/main.go
+
+# Update Go version (daemon.go)
+echo "Updating internal/daemon/daemon.go..."
+sed -i "s/var Version = \".*\"/var Version = \"$NEW_VERSION\"/" internal/daemon/daemon.go
 
 # Update npm package version
 echo "Updating npm/agnt/package.json..."
@@ -66,6 +70,7 @@ sed -i "s/__version__ = \".*\"/__version__ = \"$NEW_VERSION\"/" python/agnt/src/
 echo ""
 echo "Version files updated:"
 grep 'appVersion = ' cmd/agnt/main.go
+grep 'var Version = ' internal/daemon/daemon.go
 grep '"version"' npm/agnt/package.json
 grep '^version = ' python/agnt/pyproject.toml
 grep '__version__ = ' python/agnt/src/agnt/__init__.py
@@ -73,7 +78,7 @@ grep '__version__ = ' python/agnt/src/agnt/__init__.py
 # Commit and tag
 echo ""
 echo "Creating commit and tag..."
-git add cmd/agnt/main.go npm/agnt/package.json python/agnt/pyproject.toml python/agnt/src/agnt/__init__.py
+git add cmd/agnt/main.go internal/daemon/daemon.go npm/agnt/package.json python/agnt/pyproject.toml python/agnt/src/agnt/__init__.py
 git commit -m "chore: bump version to $NEW_VERSION
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
