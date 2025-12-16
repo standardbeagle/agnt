@@ -908,3 +908,4 @@ ManagerConfig{
 - **WebSocket logging**: Could log WebSocket frame data
 - remember this complicated install story
 - remember the complicated way that agnt run is setup to workaround the notification issue and the binary rename is there for the fork prevention issue
+- there is a scripts/release.sh to manage all the version numbers
