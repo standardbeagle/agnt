@@ -500,7 +500,31 @@ func runWithConPTY(ctx context.Context, args []string, socketPath string) error 
 		}
 	}
 
+	// Clean up terminal state before returning
+	// This prevents garbage output when Ctrl+C is pressed
+	cleanupTerminal(height)
+
 	return nil
+}
+
+// cleanupTerminal resets the terminal state to prevent display corruption on exit.
+// This is especially important on Windows where ConPTY can leave the terminal in
+// a bad state when the child process is killed.
+func cleanupTerminal(height int) {
+	// Reset scroll region to full screen (removes protected area)
+	fmt.Fprint(os.Stdout, "\x1b[r")
+
+	// Show cursor (might have been hidden)
+	fmt.Fprint(os.Stdout, "\x1b[?25h")
+
+	// Reset all text attributes
+	fmt.Fprint(os.Stdout, "\x1b[0m")
+
+	// Move to the bottom row and clear it (remove status bar remnants)
+	fmt.Fprintf(os.Stdout, "\x1b[%d;1H\x1b[2K", height)
+
+	// Move cursor to a reasonable position (bottom-left)
+	fmt.Fprintf(os.Stdout, "\x1b[%d;1H", height)
 }
 
 // isClaudeCommand checks if the command appears to be Claude Code.
