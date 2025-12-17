@@ -74,6 +74,21 @@ func (c *AutoStartClient) Connect() error {
 
 // startDaemon starts the daemon process in the background.
 func (c *AutoStartClient) startDaemon() error {
+	// Acquire startup lock to prevent race conditions when multiple clients
+	// try to start the daemon simultaneously
+	lockPath := c.config.SocketPath + ".startup.lock"
+	lockFile, err := acquireStartupLock(lockPath)
+	if err != nil {
+		// Another process is starting the daemon, just wait for it
+		return nil
+	}
+	defer releaseStartupLock(lockFile, lockPath)
+
+	// Double-check: daemon might have started while we were acquiring the lock
+	if IsRunning(c.config.SocketPath) {
+		return nil
+	}
+
 	// First, aggressively clean up any zombie daemon processes
 	CleanupZombieDaemons(c.config.SocketPath)
 
@@ -115,6 +130,38 @@ func (c *AutoStartClient) startDaemon() error {
 	go cmd.Wait() //nolint:errcheck
 
 	return nil
+}
+
+// acquireStartupLock attempts to acquire an exclusive lock for daemon startup.
+// Returns the lock file handle on success, or error if lock is held by another process.
+func acquireStartupLock(lockPath string) (*os.File, error) {
+	// Try to create lock file exclusively
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		if os.IsExist(err) {
+			// Lock file exists - check if it's stale (> 30 seconds old)
+			info, statErr := os.Stat(lockPath)
+			if statErr == nil && time.Since(info.ModTime()) > 30*time.Second {
+				// Stale lock, remove and retry
+				os.Remove(lockPath)
+				return acquireStartupLock(lockPath)
+			}
+			return nil, fmt.Errorf("startup lock held by another process")
+		}
+		return nil, err
+	}
+
+	// Write PID and timestamp
+	fmt.Fprintf(f, "%d\n", os.Getpid())
+	return f, nil
+}
+
+// releaseStartupLock releases the startup lock.
+func releaseStartupLock(f *os.File, lockPath string) {
+	if f != nil {
+		f.Close()
+		os.Remove(lockPath)
+	}
 }
 
 // waitForDaemon waits for the daemon to be ready to accept connections.
