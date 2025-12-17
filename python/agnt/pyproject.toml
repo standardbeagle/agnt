@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "agnt"
-version = "0.6.6"
+version = "0.7.0"
 description = "MCP server for AI coding agents - process management, reverse proxy with traffic logging, browser instrumentation, and sketch mode"
 readme = "README.md"
 license = "MIT"
