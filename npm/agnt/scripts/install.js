@@ -101,6 +101,8 @@ async function install() {
   // Handle existing binary (might be locked on Windows if daemon is running)
   if (fs.existsSync(binaryPath)) {
     const oldPath = binaryPath + '.old';
+    let binaryLocked = false;
+
     try {
       // Try to delete any previous .old file first
       if (fs.existsSync(oldPath)) {
@@ -120,12 +122,18 @@ async function install() {
         fs.unlinkSync(oldPath);
       } catch (e) {
         // File is locked (daemon running) - will be cleaned up next time
-        console.log(`Note: Old binary still in use, will be cleaned up on next upgrade`);
+        binaryLocked = true;
+        console.log(`Note: Old binary still in use (daemon running)`);
       }
     } catch (e) {
       // Rename failed - binary might be the same version or something else is wrong
       console.log(`${BINARY_NAME} binary already exists, skipping download`);
       return;
+    }
+
+    // If binary was locked, suggest running agnt upgrade after install
+    if (binaryLocked) {
+      console.log(`Tip: Run 'agnt upgrade' after install to restart daemon with new version`);
     }
   }
 
