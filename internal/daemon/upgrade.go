@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -330,9 +332,19 @@ func (u *DaemonUpgrader) getNewVersion() string {
 		return Version
 	}
 
-	// TODO: Could exec the binary with --version to get its version
-	// For now, assume it's the current version
-	return Version
+	// Exec the binary with --version to get its actual version
+	cmd := exec.Command(binaryPath, "--version")
+	output, err := cmd.Output()
+	if err != nil {
+		u.log("Warning: could not get version from %s: %v", binaryPath, err)
+		return Version
+	}
+
+	// Parse "agnt vX.Y.Z" format
+	version := strings.TrimSpace(string(output))
+	version = strings.TrimPrefix(version, "agnt ")
+	version = strings.TrimPrefix(version, "v")
+	return version
 }
 
 // log prints a message if verbose logging is enabled.
