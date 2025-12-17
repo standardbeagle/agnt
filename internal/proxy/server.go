@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -111,10 +112,16 @@ func DefaultPortForURL(targetURL string) int {
 
 // NewProxyServer creates a new reverse proxy server.
 func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
+	// Log the incoming URL for debugging HTTPS issues
+	log.Printf("[Proxy] Creating proxy with target URL: %s (scheme will be: %s)", config.TargetURL, extractScheme(config.TargetURL))
+
 	targetURL, err := url.Parse(config.TargetURL)
 	if err != nil {
 		return nil, fmt.Errorf("invalid target URL: %w", err)
 	}
+
+	// Verify scheme was preserved
+	log.Printf("[Proxy] Parsed URL scheme: %s, host: %s", targetURL.Scheme, targetURL.Host)
 
 	// Only set default port if not specified (negative values use default, 0 means auto-assign)
 	if config.ListenPort < 0 {
@@ -943,18 +950,23 @@ func (ps *ProxyServer) errorHandler(w http.ResponseWriter, r *http.Request, err 
 	seq := ps.requestSeq.Add(1)
 	reqID := fmt.Sprintf("req-%d", seq)
 
+	errStr := err.Error()
+
+	// Check if this is a transient connection error (common during development)
+	// These happen when dev servers restart, connections timeout, etc.
+	isTransient := isTransientConnectionError(errStr)
+
 	ps.logger.LogHTTP(HTTPLogEntry{
 		ID:         reqID,
 		Timestamp:  time.Now(),
 		Method:     r.Method,
 		URL:        r.URL.String(),
 		StatusCode: http.StatusBadGateway,
-		Error:      err.Error(),
+		Error:      errStr,
 	})
 
 	// Provide helpful error message based on error type
 	var userMsg string
-	errStr := err.Error()
 
 	if strings.Contains(errStr, "context canceled") {
 		userMsg = fmt.Sprintf("Proxy Error: Request canceled. The proxy may be shutting down, or the target server (%s) is unavailable.", ps.TargetURL.String())
@@ -962,11 +974,43 @@ func (ps *ProxyServer) errorHandler(w http.ResponseWriter, r *http.Request, err 
 		userMsg = fmt.Sprintf("Proxy Error: Cannot connect to target server %s. Make sure the server is running.", ps.TargetURL.String())
 	} else if strings.Contains(errStr, "no such host") {
 		userMsg = fmt.Sprintf("Proxy Error: Cannot resolve target host %s. Check the target URL.", ps.TargetURL.String())
+	} else if isTransient {
+		// Friendly message for transient errors - these are normal during development
+		userMsg = fmt.Sprintf("Connection to %s was interrupted. This often happens when the dev server restarts. Refresh to retry.", ps.TargetURL.Host)
 	} else {
 		userMsg = fmt.Sprintf("Proxy Error: %s (target: %s)", errStr, ps.TargetURL.String())
 	}
 
 	http.Error(w, userMsg, http.StatusBadGateway)
+}
+
+// isTransientConnectionError checks if an error is a transient connection error
+// that commonly occurs during development (server restarts, connection resets, etc.)
+func isTransientConnectionError(errStr string) bool {
+	transientPatterns := []string{
+		// Windows-specific connection reset
+		"wsarecv: An existing connection was forcibly closed",
+		"wsasend: An existing connection was forcibly closed",
+		// Unix connection reset
+		"connection reset by peer",
+		"read: connection reset",
+		"write: connection reset",
+		// Connection closed
+		"EOF",
+		"broken pipe",
+		"use of closed network connection",
+		// Timeout errors
+		"i/o timeout",
+		"connection timed out",
+	}
+
+	errLower := strings.ToLower(errStr)
+	for _, pattern := range transientPatterns {
+		if strings.Contains(errLower, strings.ToLower(pattern)) {
+			return true
+		}
+	}
+	return false
 }
 
 // handleWebSocket handles WebSocket connections for frontend metrics.
@@ -1839,6 +1883,16 @@ func getMapField(data map[string]interface{}, key string) map[string]interface{}
 // This includes "localhost", "127.0.0.1", and "::1" (IPv6 loopback).
 func isLocalhost(host string) bool {
 	return host == "localhost" || host == "127.0.0.1" || host == "::1"
+}
+
+// extractScheme extracts the scheme from a URL string without full parsing.
+func extractScheme(rawURL string) string {
+	if strings.HasPrefix(rawURL, "https://") {
+		return "https"
+	} else if strings.HasPrefix(rawURL, "http://") {
+		return "http"
+	}
+	return "unknown"
 }
 
 // parsePanelMessage parses a panel message from JSON data.

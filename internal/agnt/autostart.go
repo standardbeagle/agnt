@@ -3,6 +3,7 @@ package agnt
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 
@@ -58,6 +59,9 @@ func (a *AutoStarter) startProxy(ctx context.Context, name string, proxy *ProxyC
 	if a.client == nil {
 		return fmt.Errorf("no daemon connection")
 	}
+
+	// Log the target URL for debugging
+	fmt.Fprintf(os.Stderr, "[AutoStart] Starting proxy %q with target: %s\n", name, proxy.Target)
 
 	// Use -1 to signal "use default" (hash-based port), matching daemon_tools.go behavior
 	port := proxy.Port
