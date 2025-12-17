@@ -98,10 +98,35 @@ async function install() {
     fs.mkdirSync(binDir, { recursive: true });
   }
 
-  // Check if binary already exists
+  // Handle existing binary (might be locked on Windows if daemon is running)
   if (fs.existsSync(binaryPath)) {
-    console.log(`${BINARY_NAME} binary already exists, skipping download`);
-    return;
+    const oldPath = binaryPath + '.old';
+    try {
+      // Try to delete any previous .old file first
+      if (fs.existsSync(oldPath)) {
+        try {
+          fs.unlinkSync(oldPath);
+        } catch (e) {
+          // Ignore - might still be locked from previous upgrade
+        }
+      }
+
+      // Rename current binary to .old (works even if file is locked on Windows)
+      fs.renameSync(binaryPath, oldPath);
+      console.log(`Renamed existing binary to ${path.basename(oldPath)}`);
+
+      // Try to delete the old file (will fail if locked, but that's ok)
+      try {
+        fs.unlinkSync(oldPath);
+      } catch (e) {
+        // File is locked (daemon running) - will be cleaned up next time
+        console.log(`Note: Old binary still in use, will be cleaned up on next upgrade`);
+      }
+    } catch (e) {
+      // Rename failed - binary might be the same version or something else is wrong
+      console.log(`${BINARY_NAME} binary already exists, skipping download`);
+      return;
+    }
   }
 
   const url = getDownloadUrl();
