@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/standardbeagle/agnt/internal/daemon"
 	"github.com/spf13/cobra"
+	"github.com/standardbeagle/agnt/internal/daemon"
 )
 
 var upgradeCmd = &cobra.Command{
