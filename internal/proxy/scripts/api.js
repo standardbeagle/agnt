@@ -22,6 +22,7 @@
   var sketch = window.__devtool_sketch;
   var design = window.__devtool_design;
   var diagnostics = window.__devtool_diagnostics;
+  var session = window.__devtool_session;
 
   // Main DevTool API
   window.__devtool = {
@@ -263,6 +264,19 @@
     },
 
     // ========================================================================
+    // SESSION MANAGEMENT
+    // ========================================================================
+
+    session: session || {
+      list: function() { return Promise.reject(new Error('Session module not loaded')); },
+      get: function() { return Promise.reject(new Error('Session module not loaded')); },
+      send: function() { return Promise.reject(new Error('Session module not loaded')); },
+      schedule: function() { return Promise.reject(new Error('Session module not loaded')); },
+      tasks: function() { return Promise.reject(new Error('Session module not loaded')); },
+      cancel: function() { return Promise.reject(new Error('Session module not loaded')); }
+    },
+
+    // ========================================================================
     // COMPOSITE CONVENIENCE FUNCTIONS
     // ========================================================================
 
@@ -419,4 +433,6 @@
   console.log('  __devtool.design.start() - Start design iteration mode');
   console.log('  __devtool.toast.success("Done!", "Title") - Show toast');
   console.log('  __devtool.diagnostics.outlineAll() - Visual CSS debugging');
+  console.log('  __devtool.session.list() - List active sessions');
+  console.log('  __devtool.session.schedule("code", "5m", "message") - Schedule a message');
 })();

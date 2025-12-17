@@ -75,6 +75,9 @@ type ProxyServer struct {
 
 	// Chaos engine for failure injection
 	chaosEngine *ChaosEngine
+
+	// Session client factory for handling session API requests from browser
+	sessionClientFactory SessionClientFactory
 }
 
 // ProxyConfig holds configuration for creating a proxy server.
@@ -477,6 +480,12 @@ func (ps *ProxyServer) SetOverlayEndpoint(endpoint string) {
 // Example: "https://abc123.trycloudflare.com"
 func (ps *ProxyServer) SetPublicURL(publicURL string) {
 	ps.PublicURL = publicURL
+}
+
+// SetSessionClientFactory sets the factory for creating session clients.
+// This is used by the browser session API to communicate with the daemon.
+func (ps *ProxyServer) SetSessionClientFactory(factory SessionClientFactory) {
+	ps.sessionClientFactory = factory
 }
 
 // OverlayNotifier returns the overlay notifier for direct access.
@@ -1207,6 +1216,10 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				_ = ps.overlayNotifier.NotifyDesignChat(ps.ID, &designChat)
 			}
 
+		case "session_request":
+			// Handle session API requests from browser
+			go ps.handleSessionRequest(conn, msg.Data)
+
 		case "voice_start":
 			// Start voice transcription session
 			config := DefaultDeepgramConfig()
@@ -1260,6 +1273,141 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				})
 			}
 		}
+	}
+}
+
+// handleSessionRequest processes session API requests from the browser.
+// It creates a daemon client, executes the session operation, and sends the response back.
+func (ps *ProxyServer) handleSessionRequest(conn *websocket.Conn, data map[string]interface{}) {
+	requestID := getStringField(data, "request_id")
+	action := getStringField(data, "action")
+	params := getMapField(data, "params")
+
+	// Helper to send response
+	sendResponse := func(result interface{}, errMsg string) {
+		resp := map[string]interface{}{
+			"type":       "session_response",
+			"request_id": requestID,
+		}
+		if errMsg != "" {
+			resp["error"] = errMsg
+		} else {
+			resp["result"] = result
+		}
+		conn.WriteJSON(resp)
+	}
+
+	// Check if session client factory is configured
+	if ps.sessionClientFactory == nil {
+		sendResponse(nil, "session API not available: no session client factory configured")
+		return
+	}
+
+	// Create session client for this request
+	client, err := ps.sessionClientFactory()
+	if err != nil {
+		sendResponse(nil, fmt.Sprintf("failed to connect to daemon: %v", err))
+		return
+	}
+	defer client.Close()
+
+	// Execute the appropriate session action
+	switch action {
+	case "list":
+		global := getBoolField(params, "global")
+		dirFilter := protocol.DirectoryFilter{
+			Directory: ps.Path,
+			Global:    global,
+		}
+		result, err := client.SessionList(dirFilter)
+		if err != nil {
+			sendResponse(nil, err.Error())
+		} else {
+			sendResponse(result, "")
+		}
+
+	case "get":
+		code := getStringField(params, "code")
+		if code == "" {
+			sendResponse(nil, "code is required")
+			return
+		}
+		result, err := client.SessionGet(code)
+		if err != nil {
+			sendResponse(nil, err.Error())
+		} else {
+			sendResponse(result, "")
+		}
+
+	case "send":
+		code := getStringField(params, "code")
+		message := getStringField(params, "message")
+		if code == "" {
+			sendResponse(nil, "code is required")
+			return
+		}
+		if message == "" {
+			sendResponse(nil, "message is required")
+			return
+		}
+		result, err := client.SessionSend(code, message)
+		if err != nil {
+			sendResponse(nil, err.Error())
+		} else {
+			sendResponse(result, "")
+		}
+
+	case "schedule":
+		code := getStringField(params, "code")
+		duration := getStringField(params, "duration")
+		message := getStringField(params, "message")
+		if code == "" {
+			sendResponse(nil, "code is required")
+			return
+		}
+		if duration == "" {
+			sendResponse(nil, "duration is required")
+			return
+		}
+		if message == "" {
+			sendResponse(nil, "message is required")
+			return
+		}
+		result, err := client.SessionSchedule(code, duration, message)
+		if err != nil {
+			sendResponse(nil, err.Error())
+		} else {
+			sendResponse(result, "")
+		}
+
+	case "tasks":
+		global := getBoolField(params, "global")
+		dirFilter := protocol.DirectoryFilter{
+			Directory: ps.Path,
+			Global:    global,
+		}
+		result, err := client.SessionTasks(dirFilter)
+		if err != nil {
+			sendResponse(nil, err.Error())
+		} else {
+			sendResponse(result, "")
+		}
+
+	case "cancel":
+		taskID := getStringField(params, "task_id")
+		if taskID == "" {
+			sendResponse(nil, "task_id is required")
+			return
+		}
+		err := client.SessionCancel(taskID)
+		if err != nil {
+			sendResponse(nil, err.Error())
+		} else {
+			sendResponse(map[string]interface{}{"success": true}, "")
+		}
+
+	default:
+		sendResponse(nil, fmt.Sprintf("unknown session action: %s", action))
 	}
 }
 
@@ -1651,6 +1799,16 @@ func getBoolField(data map[string]interface{}, key string) bool {
 		}
 	}
 	return false
+}
+
+// getMapField extracts a map from a map field.
+func getMapField(data map[string]interface{}, key string) map[string]interface{} {
+	if v, ok := data[key]; ok {
+		if m, ok := v.(map[string]interface{}); ok {
+			return m
+		}
+	}
+	return nil
 }
 
 // parsePanelMessage parses a panel message from JSON data.

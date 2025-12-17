@@ -34,16 +34,26 @@ The command is executed in a pseudo-terminal (PTY) that allows:
 - Capturing and forwarding all input/output
 - Injecting synthetic input from external sources (like devtool proxy events)
 - Terminal resize handling
+- Session management for programmatic message injection and scheduling
+
+Flags:
+  --session <code>      Session code for identifying this run (auto-generated if not set)
+  --overlay-socket      Custom socket path for overlay server
+  --hotkey <key>        Hotkey for overlay menu (default: ctrl+y)
+  --no-indicator        Disable the indicator bar
+  --no-overlay          Disable terminal overlay entirely
 
 Examples:
   agnt run claude --dangerously-skip-permissions
+  agnt run claude --session dev
   agnt run claude
   agnt run gemini
   agnt run copilot
   agnt run opencode
 
 The overlay listens on port 19191 for WebSocket connections from devtool-mcp
-to receive events that can be injected as user input.`,
+to receive events that can be injected as user input. Sessions can receive
+scheduled messages via MCP tools, CLI commands, or the devtools API.`,
 	DisableFlagParsing: true,
 	Args:               cobra.MinimumNArgs(1),
 	Run:                runCommand,
@@ -54,6 +64,7 @@ var (
 	overlayHotkey     byte = 0x19 // Ctrl+Y
 	showIndicator     bool = true
 	useTermOverlay    bool = true
+	sessionCode       string
 )
 
 func init() {
@@ -98,6 +109,12 @@ func runCommand(cmd *cobra.Command, args []string) {
 				commandArgs = append(args[:i], args[i+2:]...)
 				continue
 			}
+		case "--session":
+			if i+1 < len(args) {
+				sessionCode = args[i+1]
+				commandArgs = append(args[:i], args[i+2:]...)
+				continue
+			}
 		case "--no-indicator":
 			showIndicator = false
 			commandArgs = append(args[:i], args[i+1:]...)
@@ -121,7 +138,7 @@ func runCommand(cmd *cobra.Command, args []string) {
 	)
 	defer cancel()
 
-	if err := runWithPTY(ctx, commandArgs, overlaySocketPath); err != nil {
+	if err := runWithPTY(ctx, commandArgs, overlaySocketPath, sessionCode); err != nil {
 		log.Fatalf("Error: %v", err)
 	}
 }
@@ -158,10 +175,18 @@ func spinner(message string) func() {
 }
 
 // runWithPTY runs a command in a PTY with overlay support.
-func runWithPTY(ctx context.Context, args []string, socketPath string) error {
+func runWithPTY(ctx context.Context, args []string, socketPath string, sessionCode string) error {
 	// Find the command
 	command := args[0]
 	cmdArgs := args[1:]
+
+	// Auto-generate session code if not provided
+	if sessionCode == "" {
+		sessionCode = generateSessionCode(command)
+	}
+
+	// Get project path for session registration
+	projectPath, _ := os.Getwd()
 
 	// For Claude, inject system prompt with agnt context
 	// Check if command is Claude (handles aliases, paths like /usr/bin/claude, etc.)
@@ -231,20 +256,27 @@ func runWithPTY(ctx context.Context, args []string, socketPath string) error {
 	// Register overlay endpoint with daemon so proxies forward events to us
 	// Use ResilientClient for automatic reconnection with overlay re-registration
 	var resilientClient *daemon.ResilientClient
+	var sessionRegistered bool
+	var heartbeatStop chan struct{}
 	go func() {
-		socketPath, _ := rootCmd.Flags().GetString("socket")
+		daemonSocketPath, _ := rootCmd.Flags().GetString("socket")
 
 		overlayEndpoint := netOverlay.SocketPath()
 
 		config := daemon.DefaultResilientClientConfig()
-		if socketPath != "" {
-			config.AutoStartConfig.SocketPath = socketPath
+		if daemonSocketPath != "" {
+			config.AutoStartConfig.SocketPath = daemonSocketPath
 		}
 
-		// Re-register overlay when connection is restored after daemon restart
+		// Re-register overlay and session when connection is restored after daemon restart
 		config.OnReconnect = func(client *daemon.Client) error {
 			_, err := client.OverlaySet(overlayEndpoint)
-			return err
+			if err != nil {
+				return err
+			}
+			// Re-register session
+			_, _ = client.SessionRegister(sessionCode, overlayEndpoint, projectPath, command, cmdArgs)
+			return nil
 		}
 
 		// OnDisconnect and OnReconnectFailed are left nil since we don't want
@@ -257,10 +289,43 @@ func runWithPTY(ctx context.Context, args []string, socketPath string) error {
 
 		// Register overlay endpoint on initial connect (best-effort)
 		_, _ = resilientClient.OverlaySet(overlayEndpoint)
+
+		// Register session with daemon
+		_, err := resilientClient.SessionRegister(sessionCode, overlayEndpoint, projectPath, command, cmdArgs)
+		if err == nil {
+			sessionRegistered = true
+
+			// Start heartbeat goroutine (30-second interval)
+			heartbeatStop = make(chan struct{})
+			go func() {
+				ticker := time.NewTicker(30 * time.Second)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-heartbeatStop:
+						return
+					case <-ctx.Done():
+						return
+					case <-ticker.C:
+						if resilientClient != nil && resilientClient.IsConnected() {
+							_ = resilientClient.SessionHeartbeat(sessionCode)
+						}
+					}
+				}
+			}()
+		}
 	}()
 
-	// Clean up resilient client when PTY session ends
+	// Clean up resilient client and session when PTY session ends
 	defer func() {
+		// Stop heartbeat
+		if heartbeatStop != nil {
+			close(heartbeatStop)
+		}
+		// Unregister session
+		if resilientClient != nil && sessionRegistered {
+			_ = resilientClient.SessionUnregister(sessionCode)
+		}
 		if resilientClient != nil {
 			resilientClient.Close()
 		}
@@ -646,4 +711,36 @@ func parseHotkey(s string) byte {
 	}
 
 	return 0
+}
+
+// generateSessionCode generates a unique session code based on the command name.
+// Format: <command>-<sequence> (e.g., "claude-1", "gemini-2")
+func generateSessionCode(command string) string {
+	// Extract base command name (handle paths like /usr/bin/claude)
+	base := command
+	if idx := strings.LastIndex(command, "/"); idx >= 0 {
+		base = command[idx+1:]
+	}
+	if idx := strings.LastIndex(base, "\\"); idx >= 0 {
+		base = base[idx+1:]
+	}
+
+	// Connect to daemon to get a unique sequence number
+	socketPath, _ := rootCmd.Flags().GetString("socket")
+	if socketPath == "" {
+		socketPath = daemon.DefaultSocketPath()
+	}
+
+	client := daemon.NewClient(daemon.WithSocketPath(socketPath))
+	if err := client.Connect(); err == nil {
+		defer client.Close()
+		// Use the daemon's session registry to generate a unique code
+		code, err := client.SessionGenerateCode(base)
+		if err == nil {
+			return code
+		}
+	}
+
+	// Fallback: use timestamp-based code if daemon unavailable
+	return fmt.Sprintf("%s-%d", base, time.Now().UnixNano()%10000)
 }

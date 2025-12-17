@@ -69,6 +69,9 @@ var (
 	//go:embed diagnostics.js
 	diagnosticsJS string
 
+	//go:embed session.js
+	sessionJS string
+
 	//go:embed api.js
 	apiJS string
 )
@@ -205,7 +208,12 @@ func buildCombinedScript() string {
 	sb.WriteString(wrapModule(diagnosticsJS))
 	sb.WriteString("\n\n")
 
-	// 21. API (assembles all modules, must be last)
+	// 21. Session management (depends on core)
+	sb.WriteString("  // Session management module\n")
+	sb.WriteString(wrapModule(sessionJS))
+	sb.WriteString("\n\n")
+
+	// 22. API (assembles all modules, must be last)
 	sb.WriteString("  // API assembly module\n")
 	sb.WriteString(wrapModule(apiJS))
 	sb.WriteString("\n")
@@ -280,6 +288,7 @@ func GetScriptNames() []string {
 		"indicator.js",
 		"snapshot-helper.js",
 		"diagnostics.js",
+		"session.js",
 		"api.js",
 	}
 }

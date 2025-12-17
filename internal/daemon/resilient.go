@@ -886,3 +886,103 @@ func (rc *ResilientClient) BroadcastActivity(active bool, proxyIDs ...string) er
 		return c.BroadcastActivity(active, proxyIDs...)
 	})
 }
+
+// Session methods
+
+// SessionRegister registers a new session with the daemon.
+func (rc *ResilientClient) SessionRegister(code, overlayPath, projectPath, command string, args []string) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.SessionRegister(code, overlayPath, projectPath, command, args)
+		return e
+	})
+	return result, err
+}
+
+// SessionUnregister unregisters a session.
+func (rc *ResilientClient) SessionUnregister(code string) error {
+	return rc.WithClient(func(c *Client) error {
+		return c.SessionUnregister(code)
+	})
+}
+
+// SessionHeartbeat sends a heartbeat for a session.
+func (rc *ResilientClient) SessionHeartbeat(code string) error {
+	return rc.WithClient(func(c *Client) error {
+		return c.SessionHeartbeat(code)
+	})
+}
+
+// SessionList lists sessions, optionally filtered by directory.
+func (rc *ResilientClient) SessionList(dirFilter protocol.DirectoryFilter) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.SessionList(dirFilter)
+		return e
+	})
+	return result, err
+}
+
+// SessionGet retrieves details for a specific session.
+func (rc *ResilientClient) SessionGet(code string) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.SessionGet(code)
+		return e
+	})
+	return result, err
+}
+
+// SessionSend sends a message to a session immediately.
+func (rc *ResilientClient) SessionSend(code, message string) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.SessionSend(code, message)
+		return e
+	})
+	return result, err
+}
+
+// SessionSchedule schedules a message for future delivery.
+func (rc *ResilientClient) SessionSchedule(code, duration, message string) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.SessionSchedule(code, duration, message)
+		return e
+	})
+	return result, err
+}
+
+// SessionCancel cancels a scheduled task.
+func (rc *ResilientClient) SessionCancel(taskID string) error {
+	return rc.WithClient(func(c *Client) error {
+		return c.SessionCancel(taskID)
+	})
+}
+
+// SessionTasks lists scheduled tasks, optionally filtered by directory.
+func (rc *ResilientClient) SessionTasks(dirFilter protocol.DirectoryFilter) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.SessionTasks(dirFilter)
+		return e
+	})
+	return result, err
+}
+
+// SessionGenerateCode generates a unique session code for a command.
+func (rc *ResilientClient) SessionGenerateCode(command string) (string, error) {
+	var code string
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		code, e = c.SessionGenerateCode(command)
+		return e
+	})
+	return code, err
+}

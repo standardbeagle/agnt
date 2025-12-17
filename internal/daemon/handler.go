@@ -1,9 +1,12 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/http"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -587,6 +590,15 @@ func (c *Connection) handleProxyStart(ctx context.Context, cmd *protocol.Command
 	if overlayEndpoint != "" {
 		proxyServer.SetOverlayEndpoint(overlayEndpoint)
 	}
+
+	// Configure session client factory for browser session API
+	proxyServer.SetSessionClientFactory(func() (proxy.SessionClient, error) {
+		client := NewClient()
+		if err := client.Connect(); err != nil {
+			return nil, err
+		}
+		return client, nil
+	})
 
 	// Persist proxy config for recovery
 	if sm := c.daemon.StateManager(); sm != nil {
@@ -2137,4 +2149,350 @@ func convertProtocolRuleToProxy(cfg *protocol.ChaosRuleConfig) *proxy.ChaosRule 
 		ReorderMaxWaitMs:   cfg.ReorderMaxWaitMs,
 		StaleDelayMs:       cfg.StaleDelayMs,
 	}
+}
+
+// Valid actions for SESSION command
+var validSessionActions = []string{"REGISTER", "UNREGISTER", "HEARTBEAT", "LIST", "GET", "SEND", "SCHEDULE", "CANCEL", "TASKS"}
+
+// handleSession handles the SESSION command.
+func (c *Connection) handleSession(cmd *protocol.Command) error {
+	if cmd.SubVerb == "" && len(cmd.Args) > 0 {
+		cmd.SubVerb = strings.ToUpper(cmd.Args[0])
+		cmd.Args = cmd.Args[1:]
+	}
+
+	switch cmd.SubVerb {
+	case protocol.SubVerbRegister:
+		return c.handleSessionRegister(cmd)
+	case protocol.SubVerbUnregister:
+		return c.handleSessionUnregister(cmd)
+	case protocol.SubVerbHeartbeat:
+		return c.handleSessionHeartbeat(cmd)
+	case protocol.SubVerbList:
+		return c.handleSessionList(cmd)
+	case protocol.SubVerbGet:
+		return c.handleSessionGet(cmd)
+	case protocol.SubVerbSend:
+		return c.handleSessionSend(cmd)
+	case protocol.SubVerbSchedule:
+		return c.handleSessionSchedule(cmd)
+	case protocol.SubVerbCancel:
+		return c.handleSessionCancel(cmd)
+	case protocol.SubVerbTasks:
+		return c.handleSessionTasks(cmd)
+	case "":
+		return c.writeStructuredErr(&protocol.StructuredError{
+			Code:         protocol.ErrMissingParam,
+			Message:      "action required",
+			Command:      "SESSION",
+			Param:        "action",
+			ValidActions: validSessionActions,
+		})
+	default:
+		return c.writeStructuredErr(&protocol.StructuredError{
+			Code:         protocol.ErrInvalidAction,
+			Message:      "unknown action",
+			Command:      "SESSION",
+			Action:       cmd.SubVerb,
+			ValidActions: validSessionActions,
+		})
+	}
+}
+
+// handleSessionRegister registers a new session.
+// SESSION REGISTER <code> <overlay_path> -- <json_metadata>
+func (c *Connection) handleSessionRegister(cmd *protocol.Command) error {
+	if len(cmd.Args) < 2 {
+		return c.writeErr(protocol.ErrInvalidArgs, "SESSION REGISTER requires: <code> <overlay_path>")
+	}
+
+	code := cmd.Args[0]
+	overlayPath := cmd.Args[1]
+
+	// Parse optional metadata from data payload
+	var metadata protocol.SessionRegisterConfig
+	if len(cmd.Data) > 0 {
+		if err := json.Unmarshal(cmd.Data, &metadata); err != nil {
+			return c.writeErr(protocol.ErrInvalidArgs, fmt.Sprintf("invalid metadata JSON: %v", err))
+		}
+	}
+
+	// Create session
+	session := &Session{
+		Code:        code,
+		OverlayPath: overlayPath,
+		ProjectPath: normalizePath(metadata.ProjectPath),
+		Command:     metadata.Command,
+		Args:        metadata.Args,
+		StartedAt:   time.Now(),
+		Status:      SessionStatusActive,
+		LastSeen:    time.Now(),
+	}
+
+	// Register with registry
+	if err := c.daemon.sessionRegistry.Register(session); err != nil {
+		return c.writeErr(protocol.ErrAlreadyExists, err.Error())
+	}
+
+	// Register project with scheduler state manager
+	if session.ProjectPath != "" {
+		c.daemon.schedulerStateMgr.RegisterProject(session.ProjectPath)
+	}
+
+	resp := map[string]interface{}{
+		"code":         session.Code,
+		"overlay_path": session.OverlayPath,
+		"project_path": session.ProjectPath,
+		"command":      session.Command,
+		"started_at":   session.StartedAt.Format(time.RFC3339),
+	}
+
+	data, _ := json.Marshal(resp)
+	return c.writeJSON(data)
+}
+
+// handleSessionUnregister unregisters a session.
+// SESSION UNREGISTER <code>
+func (c *Connection) handleSessionUnregister(cmd *protocol.Command) error {
+	if len(cmd.Args) < 1 {
+		return c.writeErr(protocol.ErrInvalidArgs, "SESSION UNREGISTER requires: <code>")
+	}
+
+	code := cmd.Args[0]
+
+	if err := c.daemon.sessionRegistry.Unregister(code); err != nil {
+		return c.writeErr(protocol.ErrNotFound, err.Error())
+	}
+
+	return c.writeOK(fmt.Sprintf("session %s unregistered", code))
+}
+
+// handleSessionHeartbeat updates the last seen time for a session.
+// SESSION HEARTBEAT <code>
+func (c *Connection) handleSessionHeartbeat(cmd *protocol.Command) error {
+	if len(cmd.Args) < 1 {
+		return c.writeErr(protocol.ErrInvalidArgs, "SESSION HEARTBEAT requires: <code>")
+	}
+
+	code := cmd.Args[0]
+
+	if err := c.daemon.sessionRegistry.Heartbeat(code); err != nil {
+		return c.writeErr(protocol.ErrNotFound, err.Error())
+	}
+
+	return c.writeOK("heartbeat received")
+}
+
+// handleSessionList lists active sessions.
+// SESSION LIST [-- <directory_filter_json>]
+func (c *Connection) handleSessionList(cmd *protocol.Command) error {
+	var filter protocol.DirectoryFilter
+	if len(cmd.Data) > 0 {
+		if err := json.Unmarshal(cmd.Data, &filter); err != nil {
+			return c.writeErr(protocol.ErrInvalidArgs, fmt.Sprintf("invalid filter JSON: %v", err))
+		}
+	}
+
+	sessions := c.daemon.sessionRegistry.List(normalizePath(filter.Directory), filter.Global)
+
+	// Convert to response format
+	sessionList := make([]map[string]interface{}, 0, len(sessions))
+	for _, s := range sessions {
+		sessionList = append(sessionList, s.ToJSON())
+	}
+
+	resp := map[string]interface{}{
+		"sessions":  sessionList,
+		"count":     len(sessionList),
+		"directory": filter.Directory,
+		"global":    filter.Global,
+	}
+
+	data, _ := json.Marshal(resp)
+	return c.writeJSON(data)
+}
+
+// handleSessionGet retrieves a specific session.
+// SESSION GET <code>
+func (c *Connection) handleSessionGet(cmd *protocol.Command) error {
+	if len(cmd.Args) < 1 {
+		return c.writeErr(protocol.ErrInvalidArgs, "SESSION GET requires: <code>")
+	}
+
+	code := cmd.Args[0]
+
+	session, ok := c.daemon.sessionRegistry.Get(code)
+	if !ok {
+		return c.writeErr(protocol.ErrNotFound, fmt.Sprintf("session %q not found", code))
+	}
+
+	data, _ := json.Marshal(session.ToJSON())
+	return c.writeJSON(data)
+}
+
+// handleSessionSend sends an immediate message to a session.
+// SESSION SEND <code> -- <message>
+func (c *Connection) handleSessionSend(cmd *protocol.Command) error {
+	if len(cmd.Args) < 1 {
+		return c.writeErr(protocol.ErrInvalidArgs, "SESSION SEND requires: <code>")
+	}
+	if len(cmd.Data) == 0 {
+		return c.writeErr(protocol.ErrInvalidArgs, "SESSION SEND requires message data")
+	}
+
+	code := cmd.Args[0]
+	message := string(cmd.Data)
+
+	// Get session
+	session, ok := c.daemon.sessionRegistry.Get(code)
+	if !ok {
+		return c.writeErr(protocol.ErrNotFound, fmt.Sprintf("session %q not found", code))
+	}
+
+	if session.GetStatus() != SessionStatusActive {
+		return c.writeErr(protocol.ErrInvalidState, fmt.Sprintf("session %q is not active", code))
+	}
+
+	// Send message to overlay
+	err := c.sendMessageToOverlay(session.OverlayPath, message)
+	if err != nil {
+		return c.writeErr(protocol.ErrInternal, fmt.Sprintf("failed to send message: %v", err))
+	}
+
+	resp := map[string]interface{}{
+		"success":      true,
+		"session_code": code,
+		"message_len":  len(message),
+	}
+
+	data, _ := json.Marshal(resp)
+	return c.writeJSON(data)
+}
+
+// handleSessionSchedule schedules a message for future delivery.
+// SESSION SCHEDULE <code> <duration> -- <message>
+func (c *Connection) handleSessionSchedule(cmd *protocol.Command) error {
+	if len(cmd.Args) < 2 {
+		return c.writeErr(protocol.ErrInvalidArgs, "SESSION SCHEDULE requires: <code> <duration>")
+	}
+	if len(cmd.Data) == 0 {
+		return c.writeErr(protocol.ErrInvalidArgs, "SESSION SCHEDULE requires message data")
+	}
+
+	code := cmd.Args[0]
+	durationStr := cmd.Args[1]
+	message := string(cmd.Data)
+
+	// Parse duration
+	duration, err := time.ParseDuration(durationStr)
+	if err != nil {
+		return c.writeErr(protocol.ErrInvalidArgs, fmt.Sprintf("invalid duration %q: %v", durationStr, err))
+	}
+
+	// Get session to determine project path
+	session, ok := c.daemon.sessionRegistry.Get(code)
+	if !ok {
+		return c.writeErr(protocol.ErrNotFound, fmt.Sprintf("session %q not found", code))
+	}
+
+	// Schedule the task
+	task, err := c.daemon.scheduler.Schedule(code, duration, message, session.ProjectPath)
+	if err != nil {
+		return c.writeErr(protocol.ErrInternal, fmt.Sprintf("failed to schedule: %v", err))
+	}
+
+	resp := map[string]interface{}{
+		"task_id":      task.ID,
+		"session_code": task.SessionCode,
+		"deliver_at":   task.DeliverAt.Format(time.RFC3339),
+		"duration":     durationStr,
+		"project_path": task.ProjectPath,
+	}
+
+	data, _ := json.Marshal(resp)
+	return c.writeJSON(data)
+}
+
+// handleSessionCancel cancels a scheduled task.
+// SESSION CANCEL <task_id>
+func (c *Connection) handleSessionCancel(cmd *protocol.Command) error {
+	if len(cmd.Args) < 1 {
+		return c.writeErr(protocol.ErrInvalidArgs, "SESSION CANCEL requires: <task_id>")
+	}
+
+	taskID := cmd.Args[0]
+
+	if err := c.daemon.scheduler.Cancel(taskID); err != nil {
+		return c.writeErr(protocol.ErrNotFound, err.Error())
+	}
+
+	return c.writeOK(fmt.Sprintf("task %s cancelled", taskID))
+}
+
+// handleSessionTasks lists scheduled tasks.
+// SESSION TASKS [-- <directory_filter_json>]
+func (c *Connection) handleSessionTasks(cmd *protocol.Command) error {
+	var filter protocol.DirectoryFilter
+	if len(cmd.Data) > 0 {
+		if err := json.Unmarshal(cmd.Data, &filter); err != nil {
+			return c.writeErr(protocol.ErrInvalidArgs, fmt.Sprintf("invalid filter JSON: %v", err))
+		}
+	}
+
+	tasks := c.daemon.scheduler.ListTasks(normalizePath(filter.Directory), filter.Global)
+
+	// Convert to response format
+	taskList := make([]map[string]interface{}, 0, len(tasks))
+	for _, t := range tasks {
+		taskList = append(taskList, t.ToJSON())
+	}
+
+	resp := map[string]interface{}{
+		"tasks":     taskList,
+		"count":     len(taskList),
+		"directory": filter.Directory,
+		"global":    filter.Global,
+	}
+
+	data, _ := json.Marshal(resp)
+	return c.writeJSON(data)
+}
+
+// sendMessageToOverlay sends a message to an overlay socket.
+func (c *Connection) sendMessageToOverlay(socketPath string, message string) error {
+	// Create HTTP client that connects via Unix socket
+	client := &http.Client{
+		Timeout: 5 * time.Second,
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+				var d net.Dialer
+				return d.DialContext(ctx, "unix", socketPath)
+			},
+		},
+	}
+
+	// Prepare payload
+	payload := map[string]interface{}{
+		"text":    message,
+		"enter":   true,
+		"instant": true,
+	}
+
+	payloadData, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal payload: %w", err)
+	}
+
+	// Send POST to /type endpoint
+	resp, err := client.Post("http://localhost/type", "application/json", bytes.NewReader(payloadData))
+	if err != nil {
+		return fmt.Errorf("failed to send to overlay: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("overlay returned status %d", resp.StatusCode)
+	}
+
+	return nil
 }

@@ -976,3 +976,205 @@ func (c *Client) sendCommandChunked(verb string, args []string, subVerb *string,
 
 	return result, nil
 }
+
+// SessionRegister registers a new session with the daemon.
+func (c *Client) SessionRegister(code string, overlayPath string, projectPath string, command string, args []string) (map[string]interface{}, error) {
+	metadata := protocol.SessionRegisterConfig{
+		OverlayPath: overlayPath,
+		ProjectPath: projectPath,
+		Command:     command,
+		Args:        args,
+	}
+	metadataData, err := json.Marshal(metadata)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal metadata: %w", err)
+	}
+
+	data, err := c.sendCommand(protocol.VerbSession, []string{protocol.SubVerbRegister, code, overlayPath}, nil, metadataData)
+	if err != nil {
+		return nil, err
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
+	}
+
+	return result, nil
+}
+
+// SessionUnregister unregisters a session from the daemon.
+func (c *Client) SessionUnregister(code string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.closed || c.conn == nil {
+		return ErrNotConnected
+	}
+
+	if err := c.writer.WriteCommand(protocol.VerbSession, []string{protocol.SubVerbUnregister, code}, nil); err != nil {
+		return fmt.Errorf("failed to send command: %w", err)
+	}
+
+	resp, err := c.parser.ParseResponse()
+	if err != nil {
+		return fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.Type == protocol.ResponseErr {
+		return fmt.Errorf("%w: [%s] %s", ErrServerError, resp.Code, resp.Message)
+	}
+
+	return nil
+}
+
+// SessionHeartbeat sends a heartbeat for a session.
+func (c *Client) SessionHeartbeat(code string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.closed || c.conn == nil {
+		return ErrNotConnected
+	}
+
+	if err := c.writer.WriteCommand(protocol.VerbSession, []string{protocol.SubVerbHeartbeat, code}, nil); err != nil {
+		return fmt.Errorf("failed to send command: %w", err)
+	}
+
+	resp, err := c.parser.ParseResponse()
+	if err != nil {
+		return fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.Type == protocol.ResponseErr {
+		return fmt.Errorf("%w: [%s] %s", ErrServerError, resp.Code, resp.Message)
+	}
+
+	return nil
+}
+
+// SessionList lists active sessions.
+func (c *Client) SessionList(dirFilter protocol.DirectoryFilter) (map[string]interface{}, error) {
+	var filterData []byte
+	if dirFilter.Directory != "" || dirFilter.Global {
+		var err error
+		filterData, err = json.Marshal(dirFilter)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal filter: %w", err)
+		}
+	}
+
+	data, err := c.sendCommand(protocol.VerbSession, []string{protocol.SubVerbList}, nil, filterData)
+	if err != nil {
+		return nil, err
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
+	}
+
+	return result, nil
+}
+
+// SessionGet retrieves a specific session.
+func (c *Client) SessionGet(code string) (map[string]interface{}, error) {
+	data, err := c.sendCommand(protocol.VerbSession, []string{protocol.SubVerbGet, code}, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
+	}
+
+	return result, nil
+}
+
+// SessionSend sends an immediate message to a session.
+func (c *Client) SessionSend(code string, message string) (map[string]interface{}, error) {
+	data, err := c.sendCommand(protocol.VerbSession, []string{protocol.SubVerbSend, code}, nil, []byte(message))
+	if err != nil {
+		return nil, err
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
+	}
+
+	return result, nil
+}
+
+// SessionSchedule schedules a message for future delivery.
+func (c *Client) SessionSchedule(code string, duration string, message string) (map[string]interface{}, error) {
+	data, err := c.sendCommand(protocol.VerbSession, []string{protocol.SubVerbSchedule, code, duration}, nil, []byte(message))
+	if err != nil {
+		return nil, err
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
+	}
+
+	return result, nil
+}
+
+// SessionCancel cancels a scheduled task.
+func (c *Client) SessionCancel(taskID string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.closed || c.conn == nil {
+		return ErrNotConnected
+	}
+
+	if err := c.writer.WriteCommand(protocol.VerbSession, []string{protocol.SubVerbCancel, taskID}, nil); err != nil {
+		return fmt.Errorf("failed to send command: %w", err)
+	}
+
+	resp, err := c.parser.ParseResponse()
+	if err != nil {
+		return fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if resp.Type == protocol.ResponseErr {
+		return fmt.Errorf("%w: [%s] %s", ErrServerError, resp.Code, resp.Message)
+	}
+
+	return nil
+}
+
+// SessionTasks lists scheduled tasks.
+func (c *Client) SessionTasks(dirFilter protocol.DirectoryFilter) (map[string]interface{}, error) {
+	var filterData []byte
+	if dirFilter.Directory != "" || dirFilter.Global {
+		var err error
+		filterData, err = json.Marshal(dirFilter)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal filter: %w", err)
+		}
+	}
+
+	data, err := c.sendCommand(protocol.VerbSession, []string{protocol.SubVerbTasks}, nil, filterData)
+	if err != nil {
+		return nil, err
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
+	}
+
+	return result, nil
+}
+
+// SessionGenerateCode requests a new session code from the daemon.
+// This is used when auto-generating session codes based on command name.
+func (c *Client) SessionGenerateCode(command string) (string, error) {
+	// For now, generate locally using a simple pattern
+	// In future, could query daemon for unique code
+	return fmt.Sprintf("%s-%d", command, time.Now().UnixNano()%10000), nil
+}

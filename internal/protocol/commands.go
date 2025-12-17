@@ -21,6 +21,7 @@ const (
 	VerbChaos       = "CHAOS"
 	VerbDetect      = "DETECT"
 	VerbOverlay     = "OVERLAY"
+	VerbSession     = "SESSION"
 	VerbPing        = "PING"
 	VerbInfo        = "INFO"
 	VerbShutdown    = "SHUTDOWN"
@@ -73,6 +74,18 @@ const (
 	SubVerbPreset     = "PRESET"
 	SubVerbReset      = "RESET"
 	// SubVerbStatus, SubVerbStats, SubVerbClear, SubVerbSet reused
+)
+
+// Session sub-verbs
+const (
+	SubVerbRegister   = "REGISTER"
+	SubVerbUnregister = "UNREGISTER"
+	SubVerbHeartbeat  = "HEARTBEAT"
+	SubVerbSend       = "SEND"
+	SubVerbSchedule   = "SCHEDULE"
+	SubVerbCancel     = "CANCEL"
+	SubVerbTasks      = "TASKS"
+	// SubVerbList, SubVerbGet, SubVerbStatus reused
 )
 
 // RunConfig represents configuration for a RUN command.
@@ -200,4 +213,20 @@ type ChaosConfigPayload struct {
 	GlobalOdds  float64            `json:"global_odds,omitempty"`  // 0.0-1.0
 	Seed        int64              `json:"seed,omitempty"`         // For reproducible chaos
 	LoggingMode int                `json:"logging_mode,omitempty"` // 0=silent, 1=testing, 2=coordinated
+}
+
+// SessionRegisterConfig represents configuration for a SESSION REGISTER command.
+type SessionRegisterConfig struct {
+	OverlayPath string   `json:"overlay_path"`   // Unix socket path for overlay
+	ProjectPath string   `json:"project_path"`   // Directory where session was started
+	Command     string   `json:"command"`        // Command being run (e.g., "claude")
+	Args        []string `json:"args,omitempty"` // Command arguments
+}
+
+// SessionScheduleConfig represents configuration for a SESSION SCHEDULE command.
+type SessionScheduleConfig struct {
+	SessionCode string `json:"session_code"` // Target session
+	Duration    string `json:"duration"`     // Go duration string (e.g., "5m", "1h30m")
+	Message     string `json:"message"`      // Message to deliver
+	ProjectPath string `json:"project_path"` // For project-scoped storage
 }
