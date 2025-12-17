@@ -10,7 +10,7 @@ import (
 
 const (
 	appName    = "agnt"
-	appVersion = "0.7.4"
+	appVersion = "0.7.5"
 )
 
 var rootCmd = &cobra.Command{
