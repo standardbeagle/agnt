@@ -90,8 +90,8 @@ func TestResilientClient_VersionValidation(t *testing.T) {
 			RetryInterval: 100 * time.Millisecond,
 			MaxRetries:    10,
 		}
-		config.ClientVersion = "99.99.99"   // Different version
-		config.OnVersionMismatch = nil      // No callback
+		config.ClientVersion = "99.99.99" // Different version
+		config.OnVersionMismatch = nil    // No callback
 
 		rc := NewResilientClient(config)
 		defer rc.Close()

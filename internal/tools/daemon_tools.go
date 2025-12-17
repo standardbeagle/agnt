@@ -240,6 +240,9 @@ The get action returns full interaction and mutation history for debugging.
 
 This provides a high-level view of active pages and their resources.`,
 	}, dt.makeCurrentPageHandler())
+
+	// Session tool - register via separate function for organization
+	RegisterSessionTool(server, dt)
 }
 
 // makeDetectHandler creates a handler for the detect tool.

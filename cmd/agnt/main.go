@@ -42,6 +42,7 @@ func init() {
 	rootCmd.AddCommand(serveCmd)
 	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(daemonCmd)
+	rootCmd.AddCommand(sessionCmd)
 
 	// Version template
 	rootCmd.SetVersionTemplate(fmt.Sprintf("%s v%s\n", appName, appVersion))

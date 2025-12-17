@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -250,12 +251,14 @@ func TestUpgradeStaleSocket(t *testing.T) {
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
-	// Create a stale socket file
-	f, err := os.Create(sockPath)
+	// Create a real stale Unix socket (not a regular file)
+	// The daemon checks if the path is a socket, so we must create an actual socket
+	listener, err := net.Listen("unix", sockPath)
 	if err != nil {
 		t.Fatalf("Failed to create stale socket: %v", err)
 	}
-	f.Close()
+	// Close the listener immediately to make it stale
+	listener.Close()
 
 	// Verify daemon is not running
 	if IsRunning(sockPath) {

@@ -120,6 +120,8 @@ func (c *Connection) handleCommand(ctx context.Context, cmd *protocol.Command) e
 		return c.handleTunnel(ctx, cmd)
 	case protocol.VerbChaos:
 		return c.handleChaos(cmd)
+	case protocol.VerbSession:
+		return c.handleSession(cmd)
 	default:
 		return c.writeStructuredErr(&protocol.StructuredError{
 			Code:         protocol.ErrInvalidCommand,

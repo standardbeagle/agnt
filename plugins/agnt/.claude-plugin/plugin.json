@@ -1,7 +1,7 @@
 {
   "name": "agnt",
-  "version": "0.5.2",
-  "description": "MCP server for AI coding agents: process management, reverse proxy with traffic logging, frontend instrumentation with 50+ diagnostic functions, and sketch mode for wireframing",
+  "version": "0.5.3",
+  "description": "MCP server for AI coding agents: process management, reverse proxy with traffic logging, frontend instrumentation with 50+ diagnostic functions, sketch mode for wireframing, and session scheduling",
   "author": {
     "name": "Standard Beagle",
     "url": "https://github.com/standardbeagle/agnt"
@@ -19,7 +19,9 @@
     "frontend-debugging",
     "browser-instrumentation",
     "sketch",
-    "wireframe"
+    "wireframe",
+    "scheduler",
+    "session"
   ],
   "hooks": "./hooks/hooks.json",
   "mcpServers": "./.mcp.json",
@@ -38,7 +40,11 @@
     "./commands/analyze-ux.md",
     "./commands/analyze-frontend.md",
     "./commands/qa-test.md",
-    "./commands/review-api.md"
+    "./commands/review-api.md",
+    "./commands/schedule.md"
+  ],
+  "skills": [
+    "./skills/schedule.md"
   ],
   "agents": [
     "./agents/browser-debugger.md",

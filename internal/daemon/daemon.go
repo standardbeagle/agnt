@@ -89,6 +89,11 @@ type Daemon struct {
 	proxym  *proxy.ProxyManager
 	tunnelm *tunnel.Manager
 
+	// Session and scheduling
+	sessionRegistry   *SessionRegistry
+	scheduler         *Scheduler
+	schedulerStateMgr *SchedulerStateManager
+
 	// State persistence
 	stateMgr *StateManager
 
@@ -120,14 +125,26 @@ type Daemon struct {
 func New(config DaemonConfig) *Daemon {
 	ctx, cancel := context.WithCancel(context.Background())
 
+	// Create session registry with 60-second heartbeat timeout
+	sessionRegistry := NewSessionRegistry(60 * time.Second)
+
+	// Create scheduler state manager for per-project task persistence
+	schedulerStateMgr := NewSchedulerStateManager()
+
+	// Create scheduler
+	scheduler := NewScheduler(DefaultSchedulerConfig(), sessionRegistry, schedulerStateMgr)
+
 	d := &Daemon{
-		config:  config,
-		pm:      process.NewProcessManager(config.ProcessConfig),
-		proxym:  proxy.NewProxyManager(),
-		tunnelm: tunnel.NewManager(),
-		sockMgr: NewSocketManager(SocketConfig{Path: config.SocketPath}),
-		ctx:     ctx,
-		cancel:  cancel,
+		config:            config,
+		pm:                process.NewProcessManager(config.ProcessConfig),
+		proxym:            proxy.NewProxyManager(),
+		tunnelm:           tunnel.NewManager(),
+		sessionRegistry:   sessionRegistry,
+		scheduler:         scheduler,
+		schedulerStateMgr: schedulerStateMgr,
+		sockMgr:           NewSocketManager(SocketConfig{Path: config.SocketPath}),
+		ctx:               ctx,
+		cancel:            cancel,
 	}
 
 	// Initialize state manager if persistence is enabled
@@ -182,6 +199,11 @@ func (d *Daemon) Start() error {
 
 	// Restore proxies from persisted state
 	d.restoreProxies()
+
+	// Start the scheduler for scheduled message delivery
+	if err := d.scheduler.Start(d.ctx); err != nil {
+		log.Printf("[Daemon] failed to start scheduler: %v", err)
+	}
 
 	// Start update checker if enabled
 	if d.updateChecker != nil {
@@ -270,6 +292,9 @@ func (d *Daemon) Stop(ctx context.Context) error {
 	// Shutdown managers
 	var errs []error
 
+	// Stop scheduler
+	d.scheduler.Stop()
+
 	// Stop update checker
 	if d.updateChecker != nil {
 		d.updateChecker.Stop()
@@ -341,6 +366,8 @@ func (d *Daemon) Info() DaemonInfo {
 		TunnelInfo: TunnelInfo{
 			Active: int64(d.tunnelm.ActiveCount()),
 		},
+		SessionInfo:   d.sessionRegistry.Info(),
+		SchedulerInfo: d.scheduler.Info(),
 	}
 
 	// Include update info if update checker is enabled
@@ -365,6 +392,21 @@ func (d *Daemon) ProxyManager() *proxy.ProxyManager {
 // TunnelManager returns the tunnel manager.
 func (d *Daemon) TunnelManager() *tunnel.Manager {
 	return d.tunnelm
+}
+
+// SessionRegistry returns the session registry.
+func (d *Daemon) SessionRegistry() *SessionRegistry {
+	return d.sessionRegistry
+}
+
+// Scheduler returns the message scheduler.
+func (d *Daemon) Scheduler() *Scheduler {
+	return d.scheduler
+}
+
+// GetSession retrieves a session by code.
+func (d *Daemon) GetSession(code string) (*Session, bool) {
+	return d.sessionRegistry.Get(code)
 }
 
 // SetOverlayEndpoint sets the overlay endpoint URL and updates all existing proxies.
@@ -449,16 +491,18 @@ func (d *Daemon) acceptLoop() {
 
 // DaemonInfo holds daemon status information.
 type DaemonInfo struct {
-	Version     string              `json:"version"`
-	BuildTime   string              `json:"build_time,omitempty"`   // Build timestamp (RFC3339)
-	GitCommit   string              `json:"git_commit,omitempty"`   // Git commit hash
-	SocketPath  string              `json:"socket_path"`
-	Uptime      time.Duration       `json:"uptime"`
-	ClientCount int64               `json:"client_count"`
-	ProcessInfo ProcessInfo         `json:"process_info"`
-	ProxyInfo   ProxyInfo           `json:"proxy_info"`
-	TunnelInfo  TunnelInfo          `json:"tunnel_info"`
-	UpdateInfo  *updater.UpdateInfo `json:"update_info,omitempty"` // Update availability info
+	Version       string              `json:"version"`
+	BuildTime     string              `json:"build_time,omitempty"` // Build timestamp (RFC3339)
+	GitCommit     string              `json:"git_commit,omitempty"` // Git commit hash
+	SocketPath    string              `json:"socket_path"`
+	Uptime        time.Duration       `json:"uptime"`
+	ClientCount   int64               `json:"client_count"`
+	ProcessInfo   ProcessInfo         `json:"process_info"`
+	ProxyInfo     ProxyInfo           `json:"proxy_info"`
+	TunnelInfo    TunnelInfo          `json:"tunnel_info"`
+	SessionInfo   SessionInfo         `json:"session_info"`
+	SchedulerInfo SchedulerInfo       `json:"scheduler_info"`
+	UpdateInfo    *updater.UpdateInfo `json:"update_info,omitempty"` // Update availability info
 }
 
 // ProcessInfo holds process manager statistics.
@@ -478,3 +522,6 @@ type ProxyInfo struct {
 type TunnelInfo struct {
 	Active int64 `json:"active"`
 }
+
+// Note: SessionInfo is defined in session.go
+// Note: SchedulerInfo is defined in scheduler.go
