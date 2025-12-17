@@ -93,9 +93,11 @@ type ChaosConfigInput struct {
 
 // CurrentPageInput defines input for the currentpage tool.
 type CurrentPageInput struct {
-	ProxyID   string `json:"proxy_id" jsonschema:"Proxy ID to query pages from"`
-	Action    string `json:"action,omitempty" jsonschema:"Action: list, get, clear (default: list)"`
-	SessionID string `json:"session_id,omitempty" jsonschema:"Specific session ID (required for get action)"`
+	ProxyID   string   `json:"proxy_id" jsonschema:"Proxy ID to query pages from"`
+	Action    string   `json:"action,omitempty" jsonschema:"Action: list, get, summary, clear (default: list)"`
+	SessionID string   `json:"session_id,omitempty" jsonschema:"Specific session ID (required for get/summary action)"`
+	Detail    []string `json:"detail,omitempty" jsonschema:"For summary: sections to include full detail for (interactions, mutations, errors, resources)"`
+	Limit     int      `json:"limit,omitempty" jsonschema:"For summary: max items per detailed section (default: 5, max: 100)"`
 }
 
 // CurrentPageOutput defines output for currentpage tool.
@@ -107,9 +109,68 @@ type CurrentPageOutput struct {
 	// For get
 	Session *PageSessionOutput `json:"session,omitempty"`
 
+	// For summary
+	Summary *PageSummaryOutput `json:"summary,omitempty"`
+
 	// For clear
 	Success bool   `json:"success,omitempty"`
 	Message string `json:"message,omitempty"`
+}
+
+// PageSummaryOutput provides a compact summary of a large page without blowing context.
+type PageSummaryOutput struct {
+	ID           string    `json:"id"`
+	URL          string    `json:"url"`
+	PageTitle    string    `json:"page_title,omitempty"`
+	StartTime    time.Time `json:"start_time"`
+	LastActivity time.Time `json:"last_activity"`
+	Active       bool      `json:"active"`
+
+	// Resource summary
+	ResourceCount    int            `json:"resource_count"`
+	ResourcesByType  map[string]int `json:"resources_by_type,omitempty"` // e.g., {"js": 5, "css": 3, "img": 10}
+	TotalPayloadSize int64          `json:"total_payload_size,omitempty"`
+	Resources        []string       `json:"resources,omitempty"` // Full list when detail=["resources"]
+
+	// Error summary
+	ErrorCount   int                      `json:"error_count"`
+	UniqueErrors []ErrorSummary           `json:"unique_errors,omitempty"`  // Deduplicated errors with counts
+	ErrorsByType map[string]int           `json:"errors_by_type,omitempty"` // e.g., {"ReferenceError": 3}
+	Errors       []map[string]interface{} `json:"errors,omitempty"`         // Full list when detail=["errors"]
+
+	// Performance
+	LoadTimeMs       int64 `json:"load_time_ms,omitempty"`
+	FirstPaintMs     int64 `json:"first_paint_ms,omitempty"`
+	DOMContentLoaded int64 `json:"dom_content_loaded_ms,omitempty"`
+
+	// Interaction summary
+	InteractionCount   int                      `json:"interaction_count"`
+	InteractionsByType map[string]int           `json:"interactions_by_type,omitempty"` // e.g., {"click": 5, "scroll": 10}
+	RecentInteractions []map[string]interface{} `json:"recent_interactions,omitempty"`  // Last N (default 5)
+	Interactions       []map[string]interface{} `json:"interactions,omitempty"`         // Full list when detail=["interactions"]
+
+	// Mutation summary
+	MutationCount   int                      `json:"mutation_count"`
+	MutationsByType map[string]int           `json:"mutations_by_type,omitempty"` // e.g., {"added": 10, "modified": 5}
+	RecentMutations []map[string]interface{} `json:"recent_mutations,omitempty"`  // Last N (default 5)
+	Mutations       []map[string]interface{} `json:"mutations,omitempty"`         // Full list when detail=["mutations"]
+
+	// Page dimensions (if available from client)
+	PageHeight     int `json:"page_height,omitempty"`
+	PageWidth      int `json:"page_width,omitempty"`
+	ViewportHeight int `json:"viewport_height,omitempty"`
+	ViewportWidth  int `json:"viewport_width,omitempty"`
+
+	// Detail info
+	DetailSections []string `json:"detail_sections,omitempty"` // Which sections have full detail
+	DetailLimit    int      `json:"detail_limit,omitempty"`    // Limit applied to detailed sections
+}
+
+// ErrorSummary represents a deduplicated error with occurrence count.
+type ErrorSummary struct {
+	Message string `json:"message"`
+	Type    string `json:"type,omitempty"`
+	Count   int    `json:"count"`
 }
 
 // PageSessionOutput represents a page session in the output.

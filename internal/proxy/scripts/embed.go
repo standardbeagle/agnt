@@ -72,6 +72,9 @@ var (
 	//go:embed session.js
 	sessionJS string
 
+	//go:embed content.js
+	contentJS string
+
 	//go:embed api.js
 	apiJS string
 )
@@ -213,7 +216,12 @@ func buildCombinedScript() string {
 	sb.WriteString(wrapModule(sessionJS))
 	sb.WriteString("\n\n")
 
-	// 22. API (assembles all modules, must be last)
+	// 22. Content extraction (depends on utils)
+	sb.WriteString("  // Content extraction module\n")
+	sb.WriteString(wrapModule(contentJS))
+	sb.WriteString("\n\n")
+
+	// 23. API (assembles all modules, must be last)
 	sb.WriteString("  // API assembly module\n")
 	sb.WriteString(wrapModule(apiJS))
 	sb.WriteString("\n")

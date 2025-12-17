@@ -66,13 +66,15 @@ type ToastMessage struct {
 
 // DefaultOverlaySocketPath returns the default socket path for the overlay.
 func DefaultOverlaySocketPath() string {
-	// Windows: use named pipe
+	// Windows: use Unix domain socket in temp directory (supported since Windows 10 1803)
+	// Note: Named pipes (\\.\pipe\...) require different APIs, so we use Unix sockets
 	if os.PathSeparator == '\\' {
 		username := os.Getenv("USERNAME")
 		if username == "" {
 			username = "default"
 		}
-		return fmt.Sprintf(`\\.\pipe\devtool-overlay-%s`, username)
+		// Use temp directory for Unix socket on Windows
+		return filepath.Join(os.TempDir(), fmt.Sprintf("devtool-overlay-%s.sock", username))
 	}
 
 	// Unix: use XDG_RUNTIME_DIR if available, otherwise /tmp

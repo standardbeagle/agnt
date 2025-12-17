@@ -219,7 +219,8 @@ Each proxy maintains its own separate log storage.`,
 
 Actions:
   list: List all active page sessions (default)
-  get: Get detailed information for a specific session
+  get: Get detailed information for a specific session (may be large)
+  summary: Get a compact summary optimized for long/complex pages (recommended)
   clear: Clear all page sessions
 
 A page session groups together:
@@ -232,11 +233,22 @@ A page session groups together:
 
 Examples:
   currentpage {proxy_id: "dev"}
+  currentpage {proxy_id: "dev", action: "summary", session_id: "page-1"}
+  currentpage {proxy_id: "dev", action: "summary", session_id: "page-1", detail: ["interactions"], limit: 20}
+  currentpage {proxy_id: "dev", action: "summary", session_id: "page-1", detail: ["interactions", "mutations"]}
   currentpage {proxy_id: "dev", action: "get", session_id: "page-1"}
   currentpage {proxy_id: "dev", action: "clear"}
 
 The list action returns summary counts (interaction_count, mutation_count).
-The get action returns full interaction and mutation history for debugging.
+The summary action returns aggregated data (errors by type, interactions by type,
+  last 5 interactions/mutations) - best for long pages to avoid context overflow.
+  Use detail parameter to get full data for specific sections:
+  - detail: ["interactions"] - include full interaction list
+  - detail: ["mutations"] - include full mutation list
+  - detail: ["errors"] - include full error list
+  - detail: ["resources"] - include full resource URL list
+  - limit: N - max items per detailed section (default: 5, max: 100)
+The get action returns full interaction and mutation history (may be large).
 
 This provides a high-level view of active pages and their resources.`,
 	}, dt.makeCurrentPageHandler())
@@ -1172,6 +1184,8 @@ func (dt *DaemonTools) makeCurrentPageHandler() func(context.Context, *mcp.CallT
 			return dt.handleCurrentPageList(input)
 		case "get":
 			return dt.handleCurrentPageGet(input)
+		case "summary":
+			return dt.handleCurrentPageSummary(input)
 		case "clear":
 			return dt.handleCurrentPageClear(input)
 		default:
@@ -1215,6 +1229,282 @@ func (dt *DaemonTools) handleCurrentPageGet(input CurrentPageInput) (*mcp.CallTo
 	return nil, CurrentPageOutput{
 		Session: &session,
 	}, nil
+}
+
+func (dt *DaemonTools) handleCurrentPageSummary(input CurrentPageInput) (*mcp.CallToolResult, CurrentPageOutput, error) {
+	if input.SessionID == "" {
+		return errorResult("session_id required for summary"), CurrentPageOutput{}, nil
+	}
+
+	result, err := dt.client.CurrentPageGet(input.ProxyID, input.SessionID)
+	if err != nil {
+		return formatDaemonError(err, "currentpage"), CurrentPageOutput{}, nil
+	}
+
+	// Build detail set for quick lookup
+	detailSet := make(map[string]bool)
+	for _, d := range input.Detail {
+		detailSet[d] = true
+	}
+
+	// Default limit is 5, max is 100
+	limit := input.Limit
+	if limit <= 0 {
+		limit = 5
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	summary := convertToPageSummary(result, detailSet, limit)
+	return nil, CurrentPageOutput{
+		Summary: &summary,
+	}, nil
+}
+
+// convertToPageSummary creates a compact summary from page session data.
+// detailSet specifies which sections to include full details for (interactions, mutations, errors, resources).
+// limit specifies the max items for detailed sections (default 5).
+func convertToPageSummary(m map[string]interface{}, detailSet map[string]bool, limit int) PageSummaryOutput {
+	summary := PageSummaryOutput{
+		ID:               getString(m, "id"),
+		URL:              getString(m, "url"),
+		PageTitle:        getString(m, "page_title"),
+		StartTime:        getTime(m, "start_time"),
+		LastActivity:     getTime(m, "last_activity"),
+		Active:           getBool(m, "active"),
+		ResourceCount:    getInt(m, "resource_count"),
+		ErrorCount:       getInt(m, "error_count"),
+		LoadTimeMs:       getInt64(m, "load_time_ms"),
+		InteractionCount: getInt(m, "interaction_count"),
+		MutationCount:    getInt(m, "mutation_count"),
+		DetailLimit:      limit,
+	}
+
+	// Track which sections have full detail
+	var detailSections []string
+
+	// Aggregate resources by type
+	if resources, ok := m["resources"].([]interface{}); ok {
+		summary.ResourcesByType = make(map[string]int)
+		for _, r := range resources {
+			if url, ok := r.(string); ok {
+				resType := categorizeResource(url)
+				summary.ResourcesByType[resType]++
+			}
+		}
+
+		// Include full resource list if requested
+		if detailSet["resources"] {
+			detailSections = append(detailSections, "resources")
+			maxResources := limit
+			if len(resources) < maxResources {
+				maxResources = len(resources)
+			}
+			for i := 0; i < maxResources; i++ {
+				if url, ok := resources[i].(string); ok {
+					summary.Resources = append(summary.Resources, url)
+				}
+			}
+		}
+	}
+
+	// Aggregate errors and deduplicate
+	if errors, ok := m["errors"].([]interface{}); ok {
+		summary.ErrorsByType = make(map[string]int)
+		errorCounts := make(map[string]*ErrorSummary) // key: message
+
+		for _, e := range errors {
+			if em, ok := e.(map[string]interface{}); ok {
+				msg := getString(em, "message")
+				errType := getString(em, "type")
+				if errType == "" {
+					errType = "Error"
+				}
+				summary.ErrorsByType[errType]++
+
+				// Truncate long messages for deduplication
+				key := msg
+				if len(key) > 100 {
+					key = key[:100]
+				}
+				if existing, ok := errorCounts[key]; ok {
+					existing.Count++
+				} else {
+					errorCounts[key] = &ErrorSummary{
+						Message: msg,
+						Type:    errType,
+						Count:   1,
+					}
+				}
+			}
+		}
+
+		// Convert to slice, limited to top 5 unique errors
+		for _, es := range errorCounts {
+			summary.UniqueErrors = append(summary.UniqueErrors, *es)
+			if len(summary.UniqueErrors) >= 5 {
+				break
+			}
+		}
+
+		// Include full error list if requested
+		if detailSet["errors"] {
+			detailSections = append(detailSections, "errors")
+			maxErrors := limit
+			if len(errors) < maxErrors {
+				maxErrors = len(errors)
+			}
+			for i := 0; i < maxErrors; i++ {
+				if em, ok := errors[i].(map[string]interface{}); ok {
+					summary.Errors = append(summary.Errors, em)
+				}
+			}
+		}
+	}
+
+	// Aggregate interactions by type and get recent
+	if interactions, ok := m["interactions"].([]interface{}); ok {
+		summary.InteractionsByType = make(map[string]int)
+		for _, i := range interactions {
+			if im, ok := i.(map[string]interface{}); ok {
+				iType := getString(im, "type")
+				if iType == "" {
+					iType = "unknown"
+				}
+				summary.InteractionsByType[iType]++
+			}
+		}
+
+		// Include full interaction list if requested
+		if detailSet["interactions"] {
+			detailSections = append(detailSections, "interactions")
+			maxInteractions := limit
+			if len(interactions) < maxInteractions {
+				maxInteractions = len(interactions)
+			}
+			// Get the last N interactions (most recent)
+			start := len(interactions) - maxInteractions
+			if start < 0 {
+				start = 0
+			}
+			for i := start; i < len(interactions); i++ {
+				if im, ok := interactions[i].(map[string]interface{}); ok {
+					summary.Interactions = append(summary.Interactions, im)
+				}
+			}
+		} else {
+			// Get last 5 interactions for recent preview
+			recentLimit := 5
+			if limit < recentLimit {
+				recentLimit = limit
+			}
+			start := len(interactions) - recentLimit
+			if start < 0 {
+				start = 0
+			}
+			for i := start; i < len(interactions); i++ {
+				if im, ok := interactions[i].(map[string]interface{}); ok {
+					summary.RecentInteractions = append(summary.RecentInteractions, im)
+				}
+			}
+		}
+	}
+
+	// Aggregate mutations by type and get recent
+	if mutations, ok := m["mutations"].([]interface{}); ok {
+		summary.MutationsByType = make(map[string]int)
+		for _, mut := range mutations {
+			if mm, ok := mut.(map[string]interface{}); ok {
+				mType := getString(mm, "type")
+				if mType == "" {
+					mType = "unknown"
+				}
+				summary.MutationsByType[mType]++
+			}
+		}
+
+		// Include full mutation list if requested
+		if detailSet["mutations"] {
+			detailSections = append(detailSections, "mutations")
+			maxMutations := limit
+			if len(mutations) < maxMutations {
+				maxMutations = len(mutations)
+			}
+			// Get the last N mutations (most recent)
+			start := len(mutations) - maxMutations
+			if start < 0 {
+				start = 0
+			}
+			for i := start; i < len(mutations); i++ {
+				if mm, ok := mutations[i].(map[string]interface{}); ok {
+					summary.Mutations = append(summary.Mutations, mm)
+				}
+			}
+		} else {
+			// Get last 5 mutations for recent preview
+			recentLimit := 5
+			if limit < recentLimit {
+				recentLimit = limit
+			}
+			start := len(mutations) - recentLimit
+			if start < 0 {
+				start = 0
+			}
+			for i := start; i < len(mutations); i++ {
+				if mm, ok := mutations[i].(map[string]interface{}); ok {
+					summary.RecentMutations = append(summary.RecentMutations, mm)
+				}
+			}
+		}
+	}
+
+	// Extract page dimensions if available (from performance data)
+	if perf, ok := m["performance"].(map[string]interface{}); ok {
+		summary.FirstPaintMs = getInt64(perf, "first_paint_ms")
+		summary.DOMContentLoaded = getInt64(perf, "dom_content_loaded_ms")
+		summary.PageHeight = getInt(perf, "page_height")
+		summary.PageWidth = getInt(perf, "page_width")
+		summary.ViewportHeight = getInt(perf, "viewport_height")
+		summary.ViewportWidth = getInt(perf, "viewport_width")
+	}
+
+	if len(detailSections) > 0 {
+		summary.DetailSections = detailSections
+	}
+
+	return summary
+}
+
+// categorizeResource determines the type of resource from its URL.
+func categorizeResource(url string) string {
+	lower := strings.ToLower(url)
+
+	// Check common extensions
+	if strings.HasSuffix(lower, ".js") || strings.Contains(lower, ".js?") {
+		return "js"
+	}
+	if strings.HasSuffix(lower, ".css") || strings.Contains(lower, ".css?") {
+		return "css"
+	}
+	if strings.HasSuffix(lower, ".png") || strings.HasSuffix(lower, ".jpg") ||
+		strings.HasSuffix(lower, ".jpeg") || strings.HasSuffix(lower, ".gif") ||
+		strings.HasSuffix(lower, ".webp") || strings.HasSuffix(lower, ".svg") ||
+		strings.HasSuffix(lower, ".ico") {
+		return "image"
+	}
+	if strings.HasSuffix(lower, ".woff") || strings.HasSuffix(lower, ".woff2") ||
+		strings.HasSuffix(lower, ".ttf") || strings.HasSuffix(lower, ".eot") {
+		return "font"
+	}
+	if strings.HasSuffix(lower, ".json") || strings.Contains(lower, "/api/") {
+		return "api"
+	}
+	if strings.HasSuffix(lower, ".html") || strings.HasSuffix(lower, "/") {
+		return "html"
+	}
+
+	return "other"
 }
 
 func (dt *DaemonTools) handleCurrentPageClear(input CurrentPageInput) (*mcp.CallToolResult, CurrentPageOutput, error) {
@@ -1264,6 +1554,15 @@ func getBool(m map[string]interface{}, key string) bool {
 		return v
 	}
 	return false
+}
+
+func getTime(m map[string]interface{}, key string) time.Time {
+	if v, ok := m[key].(string); ok {
+		if t, err := time.Parse(time.RFC3339, v); err == nil {
+			return t
+		}
+	}
+	return time.Time{}
 }
 
 // formatDaemonError parses structured errors from daemon and creates helpful LLM-friendly messages.
