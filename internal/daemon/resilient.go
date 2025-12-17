@@ -155,9 +155,11 @@ func (rc *ResilientClient) checkVersionCompatibility(client *Client) error {
 			return rc.config.OnVersionMismatch(rc.config.ClientVersion, info.Version)
 		}
 
-		// No callback - return error
+		// No callback - stop the daemon so next connection uses new version
+		_ = client.Shutdown() // Best effort
+
 		return errors.New("version mismatch: client=" + rc.config.ClientVersion +
-			" daemon=" + info.Version + " (run 'agnt daemon upgrade' to upgrade)")
+			" daemon=" + info.Version + " (daemon stopped, will restart with new version)")
 	}
 
 	return nil

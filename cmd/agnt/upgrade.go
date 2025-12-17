@@ -95,14 +95,25 @@ func runUpgrade(cmd *cobra.Command, args []string) {
 		return
 	}
 
-	// Stop the daemon first
+	// Stop the daemon first - critical on Windows to avoid EBUSY errors
 	fmt.Println("\nStopping daemon...")
 	if daemon.IsDaemonRunning(socketPath) {
 		if err := daemon.StopDaemon(socketPath); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to stop daemon: %v\n", err)
 		}
-		// Wait for daemon to fully exit
-		time.Sleep(1 * time.Second)
+		// Wait for daemon to fully exit with retry
+		for i := 0; i < 10; i++ {
+			time.Sleep(500 * time.Millisecond)
+			if !daemon.IsDaemonRunning(socketPath) {
+				break
+			}
+		}
+		// Final check
+		if daemon.IsDaemonRunning(socketPath) {
+			fmt.Fprintf(os.Stderr, "Error: daemon is still running after stop request.\n")
+			fmt.Fprintf(os.Stderr, "Please close any applications using agnt and try again.\n")
+			os.Exit(1)
+		}
 	}
 
 	// Run the appropriate upgrade command
@@ -111,6 +122,23 @@ func runUpgrade(cmd *cobra.Command, args []string) {
 	defer cancel()
 
 	if err := runPackageUpgrade(ctx, method); err != nil {
+		errStr := err.Error()
+		// Check for common locked file errors
+		if strings.Contains(errStr, "EBUSY") ||
+			strings.Contains(errStr, "resource busy") ||
+			strings.Contains(errStr, "being used by another process") {
+			fmt.Fprintf(os.Stderr, "\nUpgrade failed: binary is locked by another process.\n")
+			fmt.Fprintf(os.Stderr, "\nThis usually means agnt is still running. Try:\n")
+			fmt.Fprintf(os.Stderr, "  1. Close all terminals/applications using agnt\n")
+			fmt.Fprintf(os.Stderr, "  2. Run: agnt daemon stop\n")
+			fmt.Fprintf(os.Stderr, "  3. Run: agnt upgrade\n")
+			if runtime.GOOS == "windows" {
+				fmt.Fprintf(os.Stderr, "\nOn Windows, you may also need to:\n")
+				fmt.Fprintf(os.Stderr, "  - Close Claude Code or other MCP clients\n")
+				fmt.Fprintf(os.Stderr, "  - Kill agnt processes: taskkill /f /im agnt.exe\n")
+			}
+			os.Exit(1)
+		}
 		fmt.Fprintf(os.Stderr, "Upgrade failed: %v\n", err)
 		os.Exit(1)
 	}

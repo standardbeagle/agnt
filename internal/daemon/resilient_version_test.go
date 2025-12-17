@@ -18,8 +18,7 @@ func TestResilientClient_VersionValidation(t *testing.T) {
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
-	// Start daemon
-	daemon := New(DaemonConfig{
+	daemonConfig := DaemonConfig{
 		SocketPath: sockPath,
 		ProcessConfig: process.ManagerConfig{
 			DefaultTimeout:    0,
@@ -29,18 +28,28 @@ func TestResilientClient_VersionValidation(t *testing.T) {
 		},
 		MaxClients:   10,
 		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
 	}
-	defer func() {
+
+	// Helper to start a fresh daemon
+	startDaemon := func() *Daemon {
+		d := New(daemonConfig)
+		if err := d.Start(); err != nil {
+			t.Fatalf("Failed to start daemon: %v", err)
+		}
+		time.Sleep(100 * time.Millisecond)
+		return d
+	}
+
+	// Helper to stop daemon
+	stopDaemon := func(d *Daemon) {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		daemon.Stop(ctx)
-	}()
+		d.Stop(ctx)
+		time.Sleep(100 * time.Millisecond)
+	}
 
-	time.Sleep(500 * time.Millisecond)
+	// Start initial daemon to get version
+	daemon := startDaemon()
 
 	// Get daemon version
 	client := NewClient(WithSocketPath(sockPath))
@@ -81,7 +90,7 @@ func TestResilientClient_VersionValidation(t *testing.T) {
 		}
 	})
 
-	// Test 2: Mismatched versions without callback (should fail)
+	// Test 2: Mismatched versions without callback (should fail and stop daemon)
 	t.Run("MismatchedVersionsNoCallback", func(t *testing.T) {
 		config := DefaultResilientClientConfig()
 		config.AutoStartConfig = AutoStartConfig{
@@ -107,6 +116,11 @@ func TestResilientClient_VersionValidation(t *testing.T) {
 
 		t.Logf("Correctly rejected version mismatch: %v", err)
 	})
+
+	// Daemon was stopped by test 2 - restart it
+	stopDaemon(daemon) // Clean up just in case
+	daemon = startDaemon()
+	defer stopDaemon(daemon)
 
 	// Test 3: Mismatched versions with callback (callback should be invoked)
 	t.Run("MismatchedVersionsWithCallback", func(t *testing.T) {

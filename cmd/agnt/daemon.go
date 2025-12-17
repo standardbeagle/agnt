@@ -54,37 +54,12 @@ var daemonInfoCmd = &cobra.Command{
 	Run:   runDaemonInfo,
 }
 
-var daemonUpgradeCmd = &cobra.Command{
-	Use:   "upgrade",
-	Short: "Upgrade the daemon to a new version",
-	Long: `Gracefully upgrades the daemon to a new version.
-
-The upgrade process:
-  1. Connects to running daemon
-  2. Requests graceful shutdown (stops all processes)
-  3. Waits for daemon to exit
-  4. Starts new daemon binary
-  5. Verifies new version
-
-Examples:
-  agnt daemon upgrade                    # Upgrade to current binary version
-  agnt daemon upgrade --timeout 60s      # Custom timeout
-  agnt daemon upgrade --force            # Force upgrade even if version matches`,
-	Run: runDaemonUpgrade,
-}
-
 func init() {
 	daemonCmd.AddCommand(daemonStartCmd)
 	daemonCmd.AddCommand(daemonStopCmd)
 	daemonCmd.AddCommand(daemonRestartCmd)
 	daemonCmd.AddCommand(daemonStatusCmd)
 	daemonCmd.AddCommand(daemonInfoCmd)
-	daemonCmd.AddCommand(daemonUpgradeCmd)
-
-	// Upgrade command flags
-	daemonUpgradeCmd.Flags().Duration("timeout", 30*time.Second, "Maximum time for upgrade")
-	daemonUpgradeCmd.Flags().Bool("force", false, "Force upgrade even if versions match")
-	daemonUpgradeCmd.Flags().Bool("verbose", false, "Enable verbose logging")
 }
 
 func getSocketPath(cmd *cobra.Command) string {
@@ -228,7 +203,7 @@ func runDaemonInfo(cmd *cobra.Command, args []string) {
 		if info.UpdateInfo.Available {
 			fmt.Printf("\n🎉 Update available: v%s → v%s\n",
 				info.UpdateInfo.CurrentVersion, info.UpdateInfo.LatestVersion)
-			fmt.Printf("   Run 'agnt daemon upgrade' to update\n")
+			fmt.Printf("   Run 'agnt upgrade' to update\n")
 			if info.UpdateInfo.ReleaseURL != "" {
 				fmt.Printf("   Release notes: %s\n", info.UpdateInfo.ReleaseURL)
 			}
@@ -239,37 +214,4 @@ func runDaemonInfo(cmd *cobra.Command, args []string) {
 				time.Since(info.UpdateInfo.LastChecked).Round(time.Second))
 		}
 	}
-}
-
-func runDaemonUpgrade(cmd *cobra.Command, args []string) {
-	socketPath := getSocketPath(cmd)
-
-	// Parse flags
-	timeout, _ := cmd.Flags().GetDuration("timeout")
-	force, _ := cmd.Flags().GetBool("force")
-	verbose, _ := cmd.Flags().GetBool("verbose")
-
-	// Create upgrade config
-	config := daemon.UpgradeConfig{
-		SocketPath:      socketPath,
-		Timeout:         timeout,
-		GracefulTimeout: 5 * time.Second,
-		Force:           force,
-		Verbose:         verbose,
-	}
-
-	// Create upgrader
-	upgrader := daemon.NewDaemonUpgrader(config)
-
-	// Run upgrade with timeout context
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	fmt.Println("Starting daemon upgrade...")
-	if err := upgrader.Upgrade(ctx); err != nil {
-		fmt.Fprintf(os.Stderr, "Upgrade failed: %v\n", err)
-		os.Exit(1)
-	}
-
-	fmt.Println("✓ Upgrade complete!")
 }
