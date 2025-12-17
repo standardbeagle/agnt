@@ -4,7 +4,13 @@
  * agnt wrapper script
  *
  * This script is the entry point that npm symlinks to.
- * It finds and executes the downloaded Go binary.
+ * It handles binary updates/cleanup and executes the downloaded Go binary.
+ *
+ * Update mechanism (Windows-compatible):
+ * - .old files: Previous binary, renamed during update (cleanup on next run)
+ * - .new files: Pending update, applied on next run
+ *
+ * This allows updates even when the daemon is running (Windows locks executables).
  */
 
 const { spawn } = require('child_process');
@@ -15,6 +21,38 @@ const fs = require('fs');
 const BINARY_NAME = process.platform === 'win32' ? 'agnt-binary.exe' : 'agnt-binary';
 const binDir = __dirname;
 const binaryPath = path.join(binDir, BINARY_NAME);
+const oldPath = binaryPath + '.old';
+const newPath = binaryPath + '.new';
+
+// Cleanup old binary from previous update (may fail if still locked, that's ok)
+try {
+  if (fs.existsSync(oldPath)) {
+    fs.unlinkSync(oldPath);
+  }
+} catch (e) {
+  // Ignore - file may still be locked by running daemon
+}
+
+// Apply pending update if exists
+if (fs.existsSync(newPath)) {
+  try {
+    // Rename current to .old (works even if running on Windows)
+    if (fs.existsSync(binaryPath)) {
+      fs.renameSync(binaryPath, oldPath);
+    }
+    // Move new binary into place
+    fs.renameSync(newPath, binaryPath);
+    console.error('Updated to new version');
+    // Try to cleanup old
+    try {
+      fs.unlinkSync(oldPath);
+    } catch (e) {
+      // Ignore - will cleanup next time
+    }
+  } catch (e) {
+    console.error(`Warning: Failed to apply pending update: ${e.message}`);
+  }
+}
 
 // Check if binary exists
 if (!fs.existsSync(binaryPath)) {
