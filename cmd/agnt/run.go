@@ -542,11 +542,15 @@ func runWithPTY(ctx context.Context, args []string, socketPath string, sessionCo
 // cleanupTerminal resets the terminal state to prevent display corruption on exit.
 // This ensures the scroll region is reset and the cursor is visible.
 func cleanupTerminal(height int) {
+	// Disable extended keyboard/input modes that the child process may have enabled
+	// These cause garbage output (escape sequences) if left enabled
+	fmt.Fprint(os.Stdout, "\x1b[?1004l") // Disable focus event reporting ([I and [O sequences)
+	fmt.Fprint(os.Stdout, "\x1b[?2004l") // Disable bracketed paste mode
+	fmt.Fprint(os.Stdout, "\x1b[?1l")    // Disable application cursor keys (DECCKM)
+	fmt.Fprint(os.Stdout, "\x1b[?25h")   // Show cursor (might have been hidden)
+
 	// Reset scroll region to full screen (removes protected area)
 	fmt.Fprint(os.Stdout, "\x1b[r")
-
-	// Show cursor (might have been hidden)
-	fmt.Fprint(os.Stdout, "\x1b[?25h")
 
 	// Reset all text attributes
 	fmt.Fprint(os.Stdout, "\x1b[0m")

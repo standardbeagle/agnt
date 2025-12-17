@@ -511,11 +511,16 @@ func runWithConPTY(ctx context.Context, args []string, socketPath string) error 
 // This is especially important on Windows where ConPTY can leave the terminal in
 // a bad state when the child process is killed.
 func cleanupTerminal(height int) {
+	// Disable extended keyboard/input modes that the child process may have enabled
+	// These cause garbage output (semicolons, escape sequences) if left enabled
+	fmt.Fprint(os.Stdout, "\x1b[?9001l") // Disable win32-input-mode (extended key reporting)
+	fmt.Fprint(os.Stdout, "\x1b[?1004l") // Disable focus event reporting ([I and [O sequences)
+	fmt.Fprint(os.Stdout, "\x1b[?2004l") // Disable bracketed paste mode
+	fmt.Fprint(os.Stdout, "\x1b[?1l")    // Disable application cursor keys (DECCKM)
+	fmt.Fprint(os.Stdout, "\x1b[?25h")   // Show cursor (might have been hidden)
+
 	// Reset scroll region to full screen (removes protected area)
 	fmt.Fprint(os.Stdout, "\x1b[r")
-
-	// Show cursor (might have been hidden)
-	fmt.Fprint(os.Stdout, "\x1b[?25h")
 
 	// Reset all text attributes
 	fmt.Fprint(os.Stdout, "\x1b[0m")
