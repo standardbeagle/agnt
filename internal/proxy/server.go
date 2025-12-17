@@ -190,6 +190,30 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 		}
 	}
 
+	// Configure custom dialer to prefer IPv4 for localhost connections.
+	// On Windows, "localhost" often resolves to [::1] (IPv6) first, but many
+	// development servers only listen on 127.0.0.1 (IPv4), causing connection
+	// failures. This ensures we try IPv4 first for localhost/127.0.0.1.
+	if transport, ok := baseTransport.(*http.Transport); ok {
+		originalDialContext := transport.DialContext
+		if originalDialContext == nil {
+			var d net.Dialer
+			originalDialContext = d.DialContext
+		}
+		transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(addr)
+			if err == nil && isLocalhost(host) {
+				// Try IPv4 first for localhost
+				conn, err := originalDialContext(ctx, "tcp4", net.JoinHostPort("127.0.0.1", port))
+				if err == nil {
+					return conn, nil
+				}
+				// Fall back to original behavior if IPv4 fails
+			}
+			return originalDialContext(ctx, network, addr)
+		}
+	}
+
 	// Wrap the transport with chaos transport for failure injection
 	ps.proxy.Transport = NewChaosTransport(baseTransport, ps.chaosEngine)
 
@@ -1809,6 +1833,12 @@ func getMapField(data map[string]interface{}, key string) map[string]interface{}
 		}
 	}
 	return nil
+}
+
+// isLocalhost checks if a host refers to localhost.
+// This includes "localhost", "127.0.0.1", and "::1" (IPv6 loopback).
+func isLocalhost(host string) bool {
+	return host == "localhost" || host == "127.0.0.1" || host == "::1"
 }
 
 // parsePanelMessage parses a panel message from JSON data.
