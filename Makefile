@@ -5,17 +5,14 @@ BINARY := devtool-mcp
 DAEMON_BINARY := devtool-mcp-daemon
 AGENT_BINARY := agnt
 AGENT_DAEMON_BINARY := agnt-daemon
-VERSION := 0.6.2
-
-# Build flags
-LDFLAGS := -ldflags "-X main.appVersion=$(VERSION)"
 
 # Default target
 all: build
 
 # Build both binaries (agnt is the source, devtool-mcp is a copy for MCP compatibility)
+# Version is defined in cmd/agnt/main.go and managed by scripts/release.sh
 build:
-	go build $(LDFLAGS) -o $(AGENT_BINARY) ./cmd/agnt/
+	go build -o $(AGENT_BINARY) ./cmd/agnt/
 	@cp $(AGENT_BINARY) $(BINARY)
 
 # Run tests
@@ -40,7 +37,7 @@ clean:
 install: build
 	@# Stop running daemon before installing new binaries
 	@"$$(go env GOPATH)/bin/$(AGENT_BINARY)" daemon stop 2>/dev/null || true
-	go install $(LDFLAGS) ./cmd/agnt/
+	go install ./cmd/agnt/
 	@cp "$$(go env GOPATH)/bin/$(AGENT_BINARY)" "$$(go env GOPATH)/bin/$(BINARY)"
 	@cp "$$(go env GOPATH)/bin/$(AGENT_BINARY)" "$$(go env GOPATH)/bin/$(DAEMON_BINARY)"
 	@cp "$$(go env GOPATH)/bin/$(AGENT_BINARY)" "$$(go env GOPATH)/bin/$(AGENT_DAEMON_BINARY)"
