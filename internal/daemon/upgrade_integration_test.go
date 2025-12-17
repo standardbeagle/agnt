@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -32,14 +33,30 @@ func findAgntBinary(t *testing.T) string {
 	return daemonPath
 }
 
+// getBinaryVersion returns the version of the agnt binary.
+func getBinaryVersion(t *testing.T, binaryPath string) string {
+	cmd := exec.Command(binaryPath, "--version")
+	output, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("Failed to get binary version: %v", err)
+	}
+	// Parse "agnt vX.Y.Z" format
+	version := strings.TrimSpace(string(output))
+	version = strings.TrimPrefix(version, "agnt ")
+	version = strings.TrimPrefix(version, "v")
+	return version
+}
+
 // TestDaemonUpgrade_FullCycle tests the complete upgrade cycle
 func TestDaemonUpgrade_FullCycle(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	// Find the agnt binary for testing
+	// Find the agnt binary for testing and get its version
 	daemonPath := findAgntBinary(t)
+	binaryVersion := getBinaryVersion(t, daemonPath)
+	t.Logf("Binary version: %s", binaryVersion)
 
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "test.sock")
@@ -124,10 +141,11 @@ func TestDaemonUpgrade_FullCycle(t *testing.T) {
 
 	t.Logf("Post-upgrade daemon version: %s", info2.Version)
 
-	// Version should match
-	if info2.Version != info.Version {
-		t.Errorf("Version mismatch after upgrade: expected %s, got %s",
-			info.Version, info2.Version)
+	// Version should match the binary version (not the initial in-memory daemon version)
+	// During development, the in-memory daemon may have a different version than the binary
+	if info2.Version != binaryVersion {
+		t.Errorf("Version mismatch after upgrade: expected %s (from binary), got %s",
+			binaryVersion, info2.Version)
 	}
 
 	// Uptime should be less (daemon was restarted)
