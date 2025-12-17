@@ -532,7 +532,30 @@ func runWithPTY(ctx context.Context, args []string, socketPath string, sessionCo
 	// Wait for the process
 	_ = c.Wait()
 
+	// Clean up terminal state before returning
+	// This resets scroll region, shows cursor, and resets text attributes
+	cleanupTerminal(height)
+
 	return nil
+}
+
+// cleanupTerminal resets the terminal state to prevent display corruption on exit.
+// This ensures the scroll region is reset and the cursor is visible.
+func cleanupTerminal(height int) {
+	// Reset scroll region to full screen (removes protected area)
+	fmt.Fprint(os.Stdout, "\x1b[r")
+
+	// Show cursor (might have been hidden)
+	fmt.Fprint(os.Stdout, "\x1b[?25h")
+
+	// Reset all text attributes
+	fmt.Fprint(os.Stdout, "\x1b[0m")
+
+	// Move to the bottom row and clear it (remove status bar remnants)
+	fmt.Fprintf(os.Stdout, "\x1b[%d;1H\x1b[2K", height)
+
+	// Move cursor to a reasonable position (bottom-left)
+	fmt.Fprintf(os.Stdout, "\x1b[%d;1H", height)
 }
 
 // commandWithArgs creates an exec.Cmd based on the platform.
