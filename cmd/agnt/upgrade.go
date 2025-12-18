@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/updater"
 )
 
 var upgradeCmd = &cobra.Command{
@@ -217,8 +218,13 @@ func checkLatestVersion() (string, error) {
 	}
 
 	// Fallback: query GitHub API directly
-	// For now, just return current version (will be enhanced)
-	return appVersion, nil
+	githubChecker := updater.NewGitHubChecker("standardbeagle/agnt")
+	release, err := githubChecker.CheckLatestRelease()
+	if err != nil {
+		return appVersion, fmt.Errorf("failed to check for updates: %w", err)
+	}
+
+	return release.GetVersion(), nil
 }
 
 func runPackageUpgrade(ctx context.Context, method installMethod) error {
