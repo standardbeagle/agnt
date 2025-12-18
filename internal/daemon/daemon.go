@@ -445,8 +445,8 @@ func (d *Daemon) OverlayEndpoint() string {
 }
 
 // StopAllResources stops all processes, proxies, and tunnels without shutting down the daemon.
-// This is called when the last client disconnects to clean up resources while keeping
-// the daemon running for future connections.
+// Unlike Shutdown, this does NOT prevent new resources from being created afterward.
+// This is typically called explicitly via the daemon management tool, not automatically.
 func (d *Daemon) StopAllResources(ctx context.Context) {
 	// Use a reasonable timeout for cleanup
 	cleanupCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -533,12 +533,15 @@ func (d *Daemon) acceptLoop() {
 			defer d.wg.Done()
 			defer func() {
 				d.clients.Delete(clientID)
-				newCount := d.clientCount.Add(-1)
+				d.clientCount.Add(-1)
 
-				// When the last client disconnects, clean up all resources
-				if newCount == 0 {
-					d.StopAllResources(d.ctx)
-				}
+				// Note: We intentionally do NOT clean up resources on client disconnect.
+				// Resources (processes, proxies) persist until explicitly stopped or the
+				// daemon shuts down. This allows multiple sessions to share resources
+				// and prevents one session's exit from affecting another.
+				//
+				// Session-scoped cleanup should be done via SESSION UNREGISTER which
+				// can optionally clean up resources for that session's project path.
 			}()
 
 			clientConn.Handle(d.ctx)

@@ -314,6 +314,70 @@ func (pm *ProcessManager) Shutdown(ctx context.Context) error {
 	return shutdownErr
 }
 
+// StopByProjectPath stops all running processes for a specific project path and removes them.
+// Returns the list of process IDs that were stopped.
+func (pm *ProcessManager) StopByProjectPath(ctx context.Context, projectPath string) ([]string, error) {
+	var stopWg sync.WaitGroup
+	var errMu sync.Mutex
+	var errs []error
+	var stoppedIDs []string
+
+	// Collect processes matching the project path
+	var toStop []*ManagedProcess
+	pm.processes.Range(func(key, value any) bool {
+		proc := value.(*ManagedProcess)
+		if proc.ProjectPath == projectPath {
+			toStop = append(toStop, proc)
+		}
+		return true
+	})
+
+	// Stop matching processes in parallel
+	for _, proc := range toStop {
+		if proc.IsRunning() {
+			stopWg.Add(1)
+			go func(p *ManagedProcess) {
+				defer stopWg.Done()
+				if err := pm.StopProcess(ctx, p); err != nil {
+					errMu.Lock()
+					errs = append(errs, err)
+					errMu.Unlock()
+				}
+			}(proc)
+		}
+		stoppedIDs = append(stoppedIDs, proc.ID)
+	}
+
+	// Wait for all stops to complete with timeout
+	done := make(chan struct{})
+	go func() {
+		stopWg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// All processes stopped
+	case <-ctx.Done():
+		// Force kill remaining processes
+		for _, proc := range toStop {
+			if proc.IsRunning() {
+				_ = pm.forceKill(proc)
+			}
+		}
+	}
+
+	// Remove stopped processes from registry
+	for _, proc := range toStop {
+		pm.RemoveByPath(proc.ID, proc.ProjectPath)
+	}
+
+	if len(errs) > 0 {
+		return stoppedIDs, errors.Join(errs...)
+	}
+	return stoppedIDs, nil
+}
+
 // StopAll stops all running processes and removes them from the registry.
 // Unlike Shutdown, this does NOT set shuttingDown flag, allowing new processes
 // to be started afterward. This is used for cleanup when the last client disconnects.
