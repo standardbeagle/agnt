@@ -215,6 +215,80 @@ func TestProxyManager_List(t *testing.T) {
 	}
 }
 
+func TestProxyManager_StopAll(t *testing.T) {
+	pm := NewProxyManager()
+	ctx := context.Background()
+
+	// Create multiple proxies
+	for i := 0; i < 3; i++ {
+		config := ProxyConfig{
+			ID:         string(rune('p' + i)),
+			TargetURL:  "http://localhost:9999",
+			ListenPort: 0,
+			MaxLogSize: 100,
+		}
+
+		_, err := pm.Create(ctx, config)
+		if err != nil {
+			t.Fatalf("Failed to create proxy %d: %v", i, err)
+		}
+	}
+
+	if pm.ActiveCount() != 3 {
+		t.Errorf("Expected 3 active proxies, got %d", pm.ActiveCount())
+	}
+
+	// Call StopAll
+	stoppedIDs, err := pm.StopAll(ctx)
+	if err != nil {
+		t.Errorf("StopAll failed: %v", err)
+	}
+
+	// Verify all proxies were stopped
+	if len(stoppedIDs) != 3 {
+		t.Errorf("Expected 3 stopped IDs, got %d", len(stoppedIDs))
+	}
+
+	if pm.ActiveCount() != 0 {
+		t.Errorf("Expected 0 active proxies after StopAll, got %d", pm.ActiveCount())
+	}
+
+	// Verify we can create NEW proxies after StopAll (unlike Shutdown)
+	newConfig := ProxyConfig{
+		ID:         "after-stopall",
+		TargetURL:  "http://localhost:9999",
+		ListenPort: 0,
+		MaxLogSize: 100,
+	}
+
+	newProxy, err := pm.Create(ctx, newConfig)
+	if err != nil {
+		t.Fatalf("Failed to create proxy after StopAll: %v", err)
+	}
+
+	if !newProxy.IsRunning() {
+		t.Error("New proxy should be running")
+	}
+
+	// Clean up
+	pm.Stop(ctx, "after-stopall")
+}
+
+func TestProxyManager_StopAll_Empty(t *testing.T) {
+	pm := NewProxyManager()
+	ctx := context.Background()
+
+	// StopAll on empty manager should succeed
+	stoppedIDs, err := pm.StopAll(ctx)
+	if err != nil {
+		t.Errorf("StopAll on empty manager failed: %v", err)
+	}
+
+	if len(stoppedIDs) != 0 {
+		t.Errorf("Expected 0 stopped IDs on empty manager, got %d", len(stoppedIDs))
+	}
+}
+
 func TestProxyManager_Shutdown(t *testing.T) {
 	pm := NewProxyManager()
 	ctx := context.Background()

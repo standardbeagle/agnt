@@ -105,6 +105,66 @@ func (pm *ProxyManager) TotalStarted() int64 {
 	return pm.totalStarted.Load()
 }
 
+// StopAll stops all running proxies and removes them from the registry.
+// Unlike Shutdown, this does NOT set shuttingDown flag, allowing new proxies
+// to be started afterward. This is used for cleanup when the last client disconnects.
+// Returns the list of stopped proxy IDs for state persistence cleanup.
+func (pm *ProxyManager) StopAll(ctx context.Context) ([]string, error) {
+	var stopWg sync.WaitGroup
+	var errMu sync.Mutex
+	var errs []error
+	var stoppedIDs []string
+	var stoppedMu sync.Mutex
+
+	// Collect all proxy IDs to stop
+	var toStop []string
+	pm.proxies.Range(func(key, value any) bool {
+		toStop = append(toStop, key.(string))
+		return true
+	})
+
+	// Stop all proxies in parallel
+	for _, id := range toStop {
+		stopWg.Add(1)
+		go func(proxyID string) {
+			defer stopWg.Done()
+			if err := pm.Stop(ctx, proxyID); err != nil {
+				errMu.Lock()
+				errs = append(errs, err)
+				errMu.Unlock()
+			} else {
+				stoppedMu.Lock()
+				stoppedIDs = append(stoppedIDs, proxyID)
+				stoppedMu.Unlock()
+			}
+		}(id)
+	}
+
+	// Wait for all stops to complete with timeout
+	done := make(chan struct{})
+	go func() {
+		stopWg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// All proxies stopped
+	case <-ctx.Done():
+		// Context cancelled, return what we have
+		if len(errs) > 0 {
+			errs = append(errs, ctx.Err())
+		} else {
+			return stoppedIDs, ctx.Err()
+		}
+	}
+
+	if len(errs) > 0 {
+		return stoppedIDs, errors.Join(errs...)
+	}
+	return stoppedIDs, nil
+}
+
 // Shutdown stops all managed proxies.
 func (pm *ProxyManager) Shutdown(ctx context.Context) error {
 	var shutdownErr error

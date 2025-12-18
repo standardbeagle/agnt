@@ -91,6 +91,44 @@ func (m *Manager) ActiveCount() int {
 	return int(m.active.Load())
 }
 
+// StopAll stops all running tunnels.
+// Unlike Shutdown, this does NOT set shuttingDown flag, allowing new tunnels
+// to be started afterward. This is used for cleanup when the last client disconnects.
+func (m *Manager) StopAll(ctx context.Context) error {
+	var wg sync.WaitGroup
+	var firstErr error
+	var errMu sync.Mutex
+
+	m.tunnels.Range(func(key, value interface{}) bool {
+		tunnel := value.(*Tunnel)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := tunnel.Stop(ctx); err != nil {
+				errMu.Lock()
+				if firstErr == nil {
+					firstErr = err
+				}
+				errMu.Unlock()
+			}
+		}()
+		return true
+	})
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		return firstErr
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // Shutdown stops all tunnels.
 func (m *Manager) Shutdown(ctx context.Context) error {
 	m.shuttingDown.Store(true)

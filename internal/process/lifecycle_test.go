@@ -685,6 +685,120 @@ func TestProcessManager_GetByPID(t *testing.T) {
 	}
 }
 
+func TestProcessManager_StopAll(t *testing.T) {
+	pm := NewProcessManager(ManagerConfig{
+		MaxOutputBuffer: DefaultBufferSize,
+		GracefulTimeout: 1 * time.Second,
+	})
+
+	ctx := context.Background()
+
+	// Start multiple long-running processes
+	for i := 0; i < 3; i++ {
+		_, err := pm.StartCommand(ctx, ProcessConfig{
+			ID:          fmt.Sprintf("test-stopall-%d", i),
+			ProjectPath: "/tmp",
+			Command:     "sleep",
+			Args:        []string{"60"},
+		})
+		if err != nil {
+			t.Fatalf("StartCommand failed for process %d: %v", i, err)
+		}
+	}
+
+	// Give processes time to start
+	time.Sleep(100 * time.Millisecond)
+
+	// Verify all 3 are running
+	if pm.ActiveCount() != 3 {
+		t.Errorf("expected 3 active processes, got %d", pm.ActiveCount())
+	}
+
+	// Call StopAll
+	err := pm.StopAll(ctx)
+	if err != nil {
+		t.Errorf("StopAll failed: %v", err)
+	}
+
+	// Verify all processes are stopped and removed
+	if pm.ActiveCount() != 0 {
+		t.Errorf("expected 0 active processes after StopAll, got %d", pm.ActiveCount())
+	}
+
+	if len(pm.List()) != 0 {
+		t.Errorf("expected empty process list after StopAll, got %d", len(pm.List()))
+	}
+
+	// Verify we can start NEW processes after StopAll (unlike Shutdown)
+	if pm.IsShuttingDown() {
+		t.Error("expected IsShuttingDown to be false after StopAll")
+	}
+
+	// Start a new process to verify manager still works
+	newProc, err := pm.StartCommand(ctx, ProcessConfig{
+		ID:          "test-after-stopall",
+		ProjectPath: "/tmp",
+		Command:     "echo",
+		Args:        []string{"still working"},
+	})
+	if err != nil {
+		t.Fatalf("StartCommand failed after StopAll: %v", err)
+	}
+
+	<-newProc.Done()
+
+	// Verify the new process ran
+	if newProc.ExitCode() != 0 {
+		t.Errorf("expected exit_code=0, got %d", newProc.ExitCode())
+	}
+
+	// Clean up
+	pm.Shutdown(ctx)
+}
+
+func TestProcessManager_StopAll_WithTimeout(t *testing.T) {
+	pm := NewProcessManager(ManagerConfig{
+		MaxOutputBuffer: DefaultBufferSize,
+		GracefulTimeout: 5 * time.Second, // Long graceful timeout
+	})
+
+	ctx := context.Background()
+
+	// Start a process that ignores SIGTERM (will require force kill)
+	_, err := pm.StartCommand(ctx, ProcessConfig{
+		ID:          "test-stopall-timeout",
+		ProjectPath: "/tmp",
+		Command:     "sleep",
+		Args:        []string{"300"},
+	})
+	if err != nil {
+		t.Fatalf("StartCommand failed: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Use a short timeout context - should force kill
+	timeoutCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	err = pm.StopAll(timeoutCtx)
+	duration := time.Since(start)
+
+	// Should complete within the timeout (plus some margin)
+	if duration > 1*time.Second {
+		t.Errorf("StopAll took too long: %v", duration)
+	}
+
+	// Process should be gone
+	if pm.ActiveCount() != 0 {
+		t.Errorf("expected 0 active processes, got %d", pm.ActiveCount())
+	}
+
+	// Clean up
+	pm.Shutdown(ctx)
+}
+
 func TestDetectPortConflict(t *testing.T) {
 	tests := []struct {
 		name     string

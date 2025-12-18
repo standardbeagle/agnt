@@ -444,6 +444,58 @@ func (d *Daemon) OverlayEndpoint() string {
 	return *ptr
 }
 
+// StopAllResources stops all processes, proxies, and tunnels without shutting down the daemon.
+// This is called when the last client disconnects to clean up resources while keeping
+// the daemon running for future connections.
+func (d *Daemon) StopAllResources(ctx context.Context) {
+	// Use a reasonable timeout for cleanup
+	cleanupCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	var wg sync.WaitGroup
+
+	// Stop all tunnels
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := d.tunnelm.StopAll(cleanupCtx); err != nil {
+			log.Printf("[Daemon] error stopping tunnels: %v", err)
+		}
+	}()
+
+	// Stop all proxies and update state
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		stoppedIDs, err := d.proxym.StopAll(cleanupCtx)
+		if err != nil {
+			log.Printf("[Daemon] error stopping proxies: %v", err)
+		}
+		// Remove stopped proxies from persisted state
+		if d.stateMgr != nil {
+			for _, id := range stoppedIDs {
+				d.stateMgr.RemoveProxy(id)
+			}
+		}
+	}()
+
+	// Stop all processes
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := d.pm.StopAll(cleanupCtx); err != nil {
+			log.Printf("[Daemon] error stopping processes: %v", err)
+		}
+	}()
+
+	wg.Wait()
+
+	// Clear overlay endpoint since no clients are connected
+	d.SetOverlayEndpoint("")
+
+	log.Println("[Daemon] all resources stopped (last client disconnected)")
+}
+
 // acceptLoop accepts new client connections.
 func (d *Daemon) acceptLoop() {
 	defer d.wg.Done()
@@ -481,7 +533,12 @@ func (d *Daemon) acceptLoop() {
 			defer d.wg.Done()
 			defer func() {
 				d.clients.Delete(clientID)
-				d.clientCount.Add(-1)
+				newCount := d.clientCount.Add(-1)
+
+				// When the last client disconnects, clean up all resources
+				if newCount == 0 {
+					d.StopAllResources(d.ctx)
+				}
 			}()
 
 			clientConn.Handle(d.ctx)

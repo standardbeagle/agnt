@@ -314,6 +314,67 @@ func (pm *ProcessManager) Shutdown(ctx context.Context) error {
 	return shutdownErr
 }
 
+// StopAll stops all running processes and removes them from the registry.
+// Unlike Shutdown, this does NOT set shuttingDown flag, allowing new processes
+// to be started afterward. This is used for cleanup when the last client disconnects.
+func (pm *ProcessManager) StopAll(ctx context.Context) error {
+	var stopWg sync.WaitGroup
+	var errMu sync.Mutex
+	var errs []error
+
+	// Collect all processes to stop
+	var toStop []*ManagedProcess
+	pm.processes.Range(func(key, value any) bool {
+		proc := value.(*ManagedProcess)
+		toStop = append(toStop, proc)
+		return true
+	})
+
+	// Stop all processes in parallel
+	for _, proc := range toStop {
+		if proc.IsRunning() {
+			stopWg.Add(1)
+			go func(p *ManagedProcess) {
+				defer stopWg.Done()
+				if err := pm.StopProcess(ctx, p); err != nil {
+					errMu.Lock()
+					errs = append(errs, err)
+					errMu.Unlock()
+				}
+			}(proc)
+		}
+	}
+
+	// Wait for all stops to complete with timeout
+	done := make(chan struct{})
+	go func() {
+		stopWg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// All processes stopped
+	case <-ctx.Done():
+		// Force kill remaining processes
+		for _, proc := range toStop {
+			if proc.IsRunning() {
+				_ = pm.forceKill(proc)
+			}
+		}
+	}
+
+	// Remove all processes from registry
+	for _, proc := range toStop {
+		pm.RemoveByPath(proc.ID, proc.ProjectPath)
+	}
+
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
+}
+
 // healthCheckLoop periodically checks process health.
 func (pm *ProcessManager) healthCheckLoop() {
 	defer pm.wg.Done()
