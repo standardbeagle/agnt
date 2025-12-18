@@ -340,8 +340,12 @@ func (u *DaemonUpgrader) getNewVersion() string {
 		return Version
 	}
 
-	// Parse "agnt vX.Y.Z" format
-	version := strings.TrimSpace(string(output))
+	// Parse "agnt vX.Y.Z" format (first line only - subsequent lines have daemon status)
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	if len(lines) == 0 {
+		return Version
+	}
+	version := strings.TrimSpace(lines[0])
 	version = strings.TrimPrefix(version, "agnt ")
 	version = strings.TrimPrefix(version, "v")
 	return version

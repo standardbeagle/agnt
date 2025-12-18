@@ -201,7 +201,7 @@ func runWithPTY(ctx context.Context, args []string, socketPath string, sessionCo
 
 	// Create the command
 	c := commandWithArgs(command, cmdArgs...)
-	c.Env = os.Environ()
+	c.Env = append(os.Environ(), "AGNT_PROJECT_PATH="+projectPath)
 
 	// Start the command with a pty
 	ptmx, err := pty.Start(c)

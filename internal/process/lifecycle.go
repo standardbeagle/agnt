@@ -33,7 +33,13 @@ func (pm *ProcessManager) Start(ctx context.Context, proc *ManagedProcess) error
 	// Build the command
 	proc.cmd = exec.CommandContext(proc.ctx, proc.Command, proc.Args...)
 	proc.cmd.Dir = proc.ProjectPath
-	proc.cmd.Env = os.Environ()
+
+	// Use client's environment if provided, otherwise fall back to daemon's environment
+	if len(proc.Env) > 0 {
+		proc.cmd.Env = proc.Env
+	} else {
+		proc.cmd.Env = os.Environ()
+	}
 
 	// Set platform-specific process attributes for clean shutdown
 	setProcAttr(proc.cmd)

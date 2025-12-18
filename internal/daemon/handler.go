@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -22,13 +23,27 @@ import (
 
 // normalizePath returns a cleaned absolute path for consistent comparison.
 // This ensures paths from different sources (CLI, MCP) match correctly.
+// Handles Windows edge cases:
+//   - Case insensitivity (C:\Users vs c:\users)
+//   - UNC paths (\\server\share)
+//   - Paths with spaces and special characters
+//   - Forward/backslash normalization
 func normalizePath(path string) string {
 	if path == "" || path == "." {
 		return "."
 	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
-		return filepath.Clean(path)
+		abs = filepath.Clean(path)
+	}
+	// On Windows, normalize to lowercase for case-insensitive comparison.
+	// filepath.Abs and Clean already handle most edge cases:
+	// - Spaces and special characters are preserved
+	// - UNC paths (\\server\share) are handled correctly
+	// - Trailing slashes are removed
+	// - Forward/backslashes are normalized to the platform separator
+	if runtime.GOOS == "windows" {
+		abs = strings.ToLower(abs)
 	}
 	return abs
 }
@@ -147,6 +162,7 @@ func (c *Connection) handleRun(ctx context.Context, cmd *protocol.Command) error
 		ProjectPath: config.Path,
 		Command:     command,
 		Args:        args,
+		Env:         config.Env,
 	})
 	if err != nil {
 		return c.writeErr(protocol.ErrInternal, err.Error())

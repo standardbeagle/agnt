@@ -164,6 +164,9 @@ func runWithConPTY(ctx context.Context, args []string, socketPath string) error 
 	command := args[0]
 	cmdArgs := args[1:]
 
+	// Get project path for session registration and MCP directory filtering
+	projectPath, _ := os.Getwd()
+
 	// For Claude, inject system prompt with agnt context
 	if isClaudeCommand(command) {
 		if prompt := buildAgntSystemPrompt(socketPath); prompt != "" {
@@ -226,6 +229,8 @@ func runWithConPTY(ctx context.Context, args []string, socketPath string) error 
 
 	// Create and start the command attached to the PTY
 	cmd := ptmx.Command(cmdPath, cmdArgs...)
+	// Pass project path to child process so MCP server can filter by correct directory
+	cmd.Env = append(os.Environ(), "AGNT_PROJECT_PATH="+projectPath)
 	if err := cmd.Start(); err != nil {
 		stopSpinner()
 		return fmt.Errorf("failed to start process: %w", err)

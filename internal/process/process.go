@@ -59,6 +59,10 @@ type ManagedProcess struct {
 	// Args are the command arguments.
 	Args []string
 
+	// Env holds environment variables for the process (KEY=VALUE format).
+	// If nil, the daemon's environment is used.
+	Env []string
+
 	// Labels provide metadata for filtering/grouping.
 	Labels map[string]string
 
@@ -102,6 +106,7 @@ type ProcessConfig struct {
 	ProjectPath string
 	Command     string
 	Args        []string
+	Env         []string // Environment variables (KEY=VALUE format), nil = inherit daemon's env
 	Labels      map[string]string
 	BufferSize  int           // Per-stream buffer size (0 = default)
 	Timeout     time.Duration // 0 = no timeout
@@ -127,6 +132,7 @@ func NewManagedProcess(cfg ProcessConfig) *ManagedProcess {
 		ProjectPath: cfg.ProjectPath,
 		Command:     cfg.Command,
 		Args:        cfg.Args,
+		Env:         cfg.Env,
 		Labels:      cfg.Labels,
 		stdout:      NewRingBuffer(bufSize),
 		stderr:      NewRingBuffer(bufSize),

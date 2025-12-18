@@ -20,6 +20,20 @@
 
 ## [Unreleased]
 
+### Fixed
+- **Process/proxy filtering after `agnt run` restart**: Fixed issue where processes and proxies started from `agnt run claude` would disappear from `proc list` and `proxy list` after restarting the CLI. Root cause was MCP server using its own working directory instead of the original project directory.
+  - Added `AGNT_PROJECT_PATH` environment variable, injected by `agnt run` into child processes
+  - MCP tools now use `AGNT_PROJECT_PATH` to filter by the correct project directory
+  - Fixed both Unix (`run.go`) and Windows (`run_windows.go`) implementations
+- **Windows path case sensitivity**: Fixed path comparison issues on Windows where `C:\Users` and `c:\users` were treated as different directories
+  - Added case normalization (lowercase) for Windows paths in both daemon and MCP tools
+  - UNC paths (`\\server\share`) handled correctly
+- **Version parsing with daemon status**: Fixed `--version` output parsing in upgrade tests where multi-line output (including daemon status) caused test failures
+
+### Added
+- Tests for `getProjectPath()` function covering environment variable handling, path edge cases
+- Tests for `normalizePath()` function covering Windows case-insensitivity, UNC paths, special characters
+
 ### Changed
 - **Hash-based default proxy port**: Proxy now auto-assigns a stable port based on FNV-1a hash of target URL (range 10000-60000)
   - Same target URL always gets the same port (consistent across restarts)

@@ -322,6 +322,7 @@ func (dt *DaemonTools) makeRunHandler() func(context.Context, *mcp.CallToolReque
 		}
 
 		// Build daemon protocol config
+		// Pass client's environment to daemon so spawned processes use correct PATH, etc.
 		config := protocol.RunConfig{
 			ID:         input.ID,
 			Path:       absPath,
@@ -330,6 +331,7 @@ func (dt *DaemonTools) makeRunHandler() func(context.Context, *mcp.CallToolReque
 			Command:    input.Command,
 			Args:       input.Args,
 			Mode:       string(input.Mode),
+			Env:        os.Environ(),
 		}
 
 		if config.Mode == "" {
@@ -442,15 +444,15 @@ func (dt *DaemonTools) handleProcStop(input ProcInput) (*mcp.CallToolResult, Pro
 }
 
 func (dt *DaemonTools) handleProcList(input ProcInput) (*mcp.CallToolResult, ProcOutput, error) {
-	// Get current working directory
-	cwd, err := os.Getwd()
-	if err != nil {
-		return errorResult(fmt.Sprintf("failed to get working directory: %v", err)), ProcOutput{}, nil
+	// Get project path from environment (set by agnt run) or fall back to cwd
+	projectPath := getProjectPath()
+	if projectPath == "" {
+		return errorResult("failed to get working directory"), ProcOutput{}, nil
 	}
 
 	// Create directory filter
 	dirFilter := protocol.DirectoryFilter{
-		Directory: cwd,
+		Directory: projectPath,
 		Global:    input.Global,
 	}
 
@@ -662,15 +664,15 @@ func (dt *DaemonTools) handleProxyStatus(input ProxyInput) (*mcp.CallToolResult,
 }
 
 func (dt *DaemonTools) handleProxyList(input ProxyInput) (*mcp.CallToolResult, ProxyOutput, error) {
-	// Get current working directory
-	cwd, err := os.Getwd()
-	if err != nil {
-		return errorResult(fmt.Sprintf("failed to get working directory: %v", err)), ProxyOutput{}, nil
+	// Get project path from environment (set by agnt run) or fall back to cwd
+	projectPath := getProjectPath()
+	if projectPath == "" {
+		return errorResult("failed to get working directory"), ProxyOutput{}, nil
 	}
 
 	// Create directory filter
 	dirFilter := protocol.DirectoryFilter{
-		Directory: cwd,
+		Directory: projectPath,
 		Global:    input.Global,
 	}
 
@@ -1520,6 +1522,44 @@ func (dt *DaemonTools) handleCurrentPageClear(input CurrentPageInput) (*mcp.Call
 }
 
 // Helper functions
+
+// getProjectPath returns the project path for filtering processes/proxies.
+// It first checks for AGNT_PROJECT_PATH environment variable (set by agnt run),
+// then falls back to the current working directory.
+// On Windows, paths are normalized to lowercase for case-insensitive comparison.
+func getProjectPath() string {
+	var path string
+
+	// Check for project path set by agnt run
+	if envPath := os.Getenv("AGNT_PROJECT_PATH"); envPath != "" {
+		// Convert to absolute path if needed
+		absPath, err := filepath.Abs(envPath)
+		if err == nil {
+			path = absPath
+		} else {
+			path = envPath
+		}
+	} else {
+		// Fall back to current working directory
+		cwd, err := os.Getwd()
+		if err != nil {
+			return ""
+		}
+		path = cwd
+	}
+
+	// On Windows, normalize to lowercase for case-insensitive comparison
+	// This matches the normalization in daemon/handler.go
+	if isWindows() {
+		path = strings.ToLower(path)
+	}
+	return path
+}
+
+// isWindows returns true if running on Windows.
+func isWindows() bool {
+	return os.PathSeparator == '\\'
+}
 
 func getString(m map[string]interface{}, key string) string {
 	if v, ok := m[key].(string); ok {

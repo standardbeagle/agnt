@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -112,16 +111,10 @@ func DefaultPortForURL(targetURL string) int {
 
 // NewProxyServer creates a new reverse proxy server.
 func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
-	// Log the incoming URL for debugging HTTPS issues
-	log.Printf("[Proxy] Creating proxy with target URL: %s (scheme will be: %s)", config.TargetURL, extractScheme(config.TargetURL))
-
 	targetURL, err := url.Parse(config.TargetURL)
 	if err != nil {
 		return nil, fmt.Errorf("invalid target URL: %w", err)
 	}
-
-	// Verify scheme was preserved
-	log.Printf("[Proxy] Parsed URL scheme: %s, host: %s", targetURL.Scheme, targetURL.Host)
 
 	// Only set default port if not specified (negative values use default, 0 means auto-assign)
 	if config.ListenPort < 0 {
@@ -1883,16 +1876,6 @@ func getMapField(data map[string]interface{}, key string) map[string]interface{}
 // This includes "localhost", "127.0.0.1", and "::1" (IPv6 loopback).
 func isLocalhost(host string) bool {
 	return host == "localhost" || host == "127.0.0.1" || host == "::1"
-}
-
-// extractScheme extracts the scheme from a URL string without full parsing.
-func extractScheme(rawURL string) string {
-	if strings.HasPrefix(rawURL, "https://") {
-		return "https"
-	} else if strings.HasPrefix(rawURL, "http://") {
-		return "http"
-	}
-	return "unknown"
 }
 
 // parsePanelMessage parses a panel message from JSON data.

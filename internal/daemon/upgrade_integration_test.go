@@ -40,8 +40,12 @@ func getBinaryVersion(t *testing.T, binaryPath string) string {
 	if err != nil {
 		t.Fatalf("Failed to get binary version: %v", err)
 	}
-	// Parse "agnt vX.Y.Z" format
-	version := strings.TrimSpace(string(output))
+	// Parse "agnt vX.Y.Z" format (first line only - subsequent lines have daemon status)
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	if len(lines) == 0 {
+		t.Fatalf("No version output from binary")
+	}
+	version := strings.TrimSpace(lines[0])
 	version = strings.TrimPrefix(version, "agnt ")
 	version = strings.TrimPrefix(version, "v")
 	return version

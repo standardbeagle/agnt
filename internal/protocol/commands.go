@@ -97,6 +97,7 @@ type RunConfig struct {
 	Raw        bool     `json:"raw,omitempty"`
 	Command    string   `json:"command,omitempty"`
 	Args       []string `json:"args,omitempty"`
+	Env        []string `json:"env,omitempty"` // Environment variables from client (KEY=VALUE format)
 }
 
 // ProxyStartConfig represents configuration for a PROXY START command.

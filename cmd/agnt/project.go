@@ -46,6 +46,7 @@ type ScriptConfig struct {
 type ProxyConfig struct {
 	ID           string
 	Script       string
+	TargetURL    string // Full target URL (e.g., "https://localhost:3000")
 	PortDetect   string // "auto" or specific port
 	FallbackPort int
 	Host         string
@@ -92,11 +93,13 @@ func runProjectStart(cmd *cobra.Command, args []string) {
 		processID := fmt.Sprintf("agnt-%s", name)
 
 		// Start the script via daemon
+		// Pass client's environment so spawned processes use correct PATH, Node version, etc.
 		runConfig := protocol.RunConfig{
 			ID:         processID,
 			Path:       cwd,
 			Mode:       "background",
 			ScriptName: name,
+			Env:        os.Environ(),
 		}
 
 		_, err := client.Run(runConfig)
@@ -115,31 +118,39 @@ func runProjectStart(cmd *cobra.Command, args []string) {
 
 	// Start proxies
 	for _, proxy := range config.Proxies {
-		var targetPort int
+		var targetURL string
 
-		if proxy.PortDetect == "auto" && proxy.Script != "" {
-			// Use detected port from script
-			if port, ok := scriptPorts[proxy.Script]; ok {
+		// Use explicit target-url if set, otherwise construct from host/port
+		if proxy.TargetURL != "" {
+			targetURL = proxy.TargetURL
+		} else {
+			var targetPort int
+
+			if proxy.PortDetect == "auto" && proxy.Script != "" {
+				// Use detected port from script
+				if port, ok := scriptPorts[proxy.Script]; ok {
+					targetPort = port
+				} else {
+					targetPort = proxy.FallbackPort
+				}
+			} else if port, err := strconv.Atoi(proxy.PortDetect); err == nil {
 				targetPort = port
 			} else {
 				targetPort = proxy.FallbackPort
 			}
-		} else if port, err := strconv.Atoi(proxy.PortDetect); err == nil {
-			targetPort = port
-		} else {
-			targetPort = proxy.FallbackPort
+
+			if targetPort == 0 {
+				targetPort = 3000 // Ultimate fallback
+			}
+
+			host := proxy.Host
+			if host == "" {
+				host = "localhost"
+			}
+
+			targetURL = fmt.Sprintf("http://%s:%d", host, targetPort)
 		}
 
-		if targetPort == 0 {
-			targetPort = 3000 // Ultimate fallback
-		}
-
-		host := proxy.Host
-		if host == "" {
-			host = "localhost"
-		}
-
-		targetURL := fmt.Sprintf("http://%s:%d", host, targetPort)
 		fmt.Printf("Starting proxy %s -> %s\n", proxy.ID, targetURL)
 
 		// Use -1 to get hash-based stable port (0 means OS auto-assign)
@@ -252,6 +263,11 @@ func parseAgntConfig(path string) (*ProjectConfig, error) {
 				re := regexp.MustCompile(`host\s+"([^"]+)"`)
 				if matches := re.FindStringSubmatch(line); len(matches) > 1 {
 					currentProxy.Host = matches[1]
+				}
+			} else if strings.HasPrefix(line, "target-url") {
+				re := regexp.MustCompile(`target-url\s+"([^"]+)"`)
+				if matches := re.FindStringSubmatch(line); len(matches) > 1 {
+					currentProxy.TargetURL = matches[1]
 				}
 			}
 		}
