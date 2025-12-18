@@ -1,4 +1,4 @@
-.PHONY: build test clean install install-local run lint
+.PHONY: build release test clean install install-local run lint
 
 # Binary names
 BINARY := devtool-mcp
@@ -14,6 +14,17 @@ all: build
 build:
 	go build -o $(AGENT_BINARY) ./cmd/agnt/
 	@cp $(AGENT_BINARY) $(BINARY)
+
+# Production release build with optimized flags
+# Strips debug info, adds version info, and removes file paths for security
+# Version is automatically read from main.go
+release:
+	@echo "Building production release..."
+	@VERSION=$(shell grep 'appVersion = ' cmd/agnt/main.go | sed 's/.*"\(.*\)"/\1/'); \
+	LDFLAGS="-s -w -X main.appVersion=$$VERSION -buildid="; \
+	go build -ldflags="$$LDFLAGS" -trimpath -o $(AGENT_BINARY) ./cmd/agnt/; \
+	cp $(AGENT_BINARY) $(BINARY); \
+	echo "Production build complete: $(AGENT_BINARY) v$$VERSION"
 
 # Run tests
 test:
@@ -81,6 +92,7 @@ deps:
 help:
 	@echo "Available targets:"
 	@echo "  build         - Build agnt and devtool-mcp (copy of agnt)"
+	@echo "  release       - Build production release with optimizations and version info"
 	@echo "  test          - Run tests"
 	@echo "  test-coverage - Run tests with coverage report"
 	@echo "  bench         - Run benchmarks"

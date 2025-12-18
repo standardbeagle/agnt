@@ -697,3 +697,125 @@ func TestCreateProvider_AutoDetect(t *testing.T) {
 		}
 	}
 }
+
+// Model Configuration Tests
+
+func TestConfigure_ClaudeDefaultModel(t *testing.T) {
+	ch := NewWithConfig(Config{Agent: AgentClaude})
+	cfg := ch.Config()
+
+	// Claude should default to haiku model
+	if cfg.Model != "haiku" {
+		t.Errorf("Claude Model = %q, want %q", cfg.Model, "haiku")
+	}
+}
+
+func TestConfigure_ClaudeCustomModel(t *testing.T) {
+	ch := NewWithConfig(Config{
+		Agent: AgentClaude,
+		Model: "opus",
+	})
+	cfg := ch.Config()
+
+	// Custom model should be preserved
+	if cfg.Model != "opus" {
+		t.Errorf("Claude Model = %q, want %q", cfg.Model, "opus")
+	}
+}
+
+func TestBuildArgs_ClaudeWithModel(t *testing.T) {
+	ch := NewWithConfig(Config{Agent: AgentClaude})
+	args := ch.buildArgs("test prompt")
+
+	// Should have: --model haiku -p "test prompt"
+	foundModel := false
+	for i, arg := range args {
+		if arg == "--model" && i+1 < len(args) && args[i+1] == "haiku" {
+			foundModel = true
+			break
+		}
+	}
+	if !foundModel {
+		t.Errorf("Expected --model haiku, got %v", args)
+	}
+}
+
+func TestBuildArgs_ClaudeCustomModel(t *testing.T) {
+	ch := NewWithConfig(Config{
+		Agent: AgentClaude,
+		Model: "sonnet",
+	})
+	args := ch.buildArgs("test prompt")
+
+	// Should have: --model sonnet
+	foundModel := false
+	for i, arg := range args {
+		if arg == "--model" && i+1 < len(args) && args[i+1] == "sonnet" {
+			foundModel = true
+			break
+		}
+	}
+	if !foundModel {
+		t.Errorf("Expected --model sonnet, got %v", args)
+	}
+}
+
+func TestBuildArgs_NonClaudeNoModelFlag(t *testing.T) {
+	// Non-Claude agents should not get --model flag even if Model is set
+	ch := NewWithConfig(Config{
+		Agent: AgentCopilot,
+		Model: "some-model",
+	})
+	args := ch.buildArgs("test prompt")
+
+	for _, arg := range args {
+		if arg == "--model" {
+			t.Errorf("Non-Claude agent should not have --model flag, got %v", args)
+		}
+	}
+}
+
+// Error Response Handling Tests
+
+func TestSendAndParse_ErrorResponse(t *testing.T) {
+	// Test that error responses are correctly parsed with IsError flag
+	errorJSON := `{"type":"result","subtype":"error","is_error":true,"result":"Something went wrong"}`
+	resp, err := ParseResponse(errorJSON, OutputFormatJSON)
+	if err != nil {
+		t.Fatalf("ParseResponse failed: %v", err)
+	}
+	if !resp.IsError {
+		t.Error("Expected IsError to be true")
+	}
+	if resp.Subtype != "error" {
+		t.Errorf("Subtype = %q, want %q", resp.Subtype, "error")
+	}
+}
+
+func TestSendAndParse_SuccessResponse(t *testing.T) {
+	// Test that success responses don't return error
+	successJSON := `{"type":"result","subtype":"success","is_error":false,"result":"All good"}`
+	resp, err := ParseResponse(successJSON, OutputFormatJSON)
+	if err != nil {
+		t.Fatalf("ParseResponse failed: %v", err)
+	}
+	if resp.IsError {
+		t.Error("Expected IsError to be false")
+	}
+	if resp.Subtype != "success" {
+		t.Errorf("Subtype = %q, want %q", resp.Subtype, "success")
+	}
+	if resp.Result != "All good" {
+		t.Errorf("Result = %q, want %q", resp.Result, "All good")
+	}
+}
+
+func TestErrAgentError(t *testing.T) {
+	// Test that ErrAgentError can be used with errors.Is
+	if ErrAgentError == nil {
+		t.Fatal("ErrAgentError should not be nil")
+	}
+	if ErrAgentError.Error() != "agent error" {
+		t.Errorf("ErrAgentError.Error() = %q, want %q", ErrAgentError.Error(), "agent error")
+	}
+}

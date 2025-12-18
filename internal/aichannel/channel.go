@@ -91,8 +91,9 @@ type Config struct {
 	// If empty, uses environment variables based on provider.
 	APIKey string `json:"api_key,omitempty"`
 
-	// Model specifies the model for API-based providers.
-	// If empty, uses the provider's default model.
+	// Model specifies the model to use.
+	// For CLI mode (e.g., Claude Code): passed via --model flag. Defaults to "haiku".
+	// For API mode: uses the provider's default model if empty.
 	Model string `json:"model,omitempty"`
 
 	// MaxTokens limits API response length (default 1024).
@@ -179,6 +180,10 @@ func applyDefaults(config Config) Config {
 		}
 		if config.OutputFormat == "" {
 			config.OutputFormat = "text"
+		}
+		// Default to haiku for Claude Code CLI (fast and cost-effective for summaries)
+		if config.Model == "" {
+			config.Model = "haiku"
 		}
 		config.OutputFormatFlag = "--output-format"
 		config.SupportsJSON = true // Claude supports json and stream-json
@@ -330,10 +335,17 @@ func (c *Channel) sendWithAPI(ctx context.Context, prompt string, inputContext s
 	return resp.Result, nil
 }
 
+// ErrAgentError is returned when the AI agent reports an error in its response.
+var ErrAgentError = errors.New("agent error")
+
 // SendAndParse sends a prompt and parses the response based on the configured OutputFormat.
 // This provides a structured response with metadata for JSON/stream-json formats.
 // For agents that don't support JSON output, it falls back to text parsing.
 // For API mode, always returns a structured Response directly from the provider.
+//
+// If the agent returns an error (is_error: true), this method returns ErrAgentError
+// with the error message. This ensures errors are reported to users rather than
+// being passed to downstream LLM calls.
 func (c *Channel) SendAndParse(ctx context.Context, prompt string, inputContext string) (*Response, error) {
 	// For API mode, get response directly from provider
 	if c.config.UseAPI {
@@ -363,7 +375,25 @@ func (c *Channel) SendAndParse(ctx context.Context, prompt string, inputContext 
 		format = OutputFormatText
 	}
 
-	return ParseResponse(rawOutput, format)
+	resp, err := ParseResponse(rawOutput, format)
+	if err != nil {
+		return nil, err
+	}
+
+	// Check for agent-reported errors (is_error: true in JSON response)
+	// Report these to the user instead of passing to downstream LLM calls
+	if resp.IsError {
+		errMsg := resp.Result
+		if errMsg == "" {
+			errMsg = "unknown error"
+		}
+		if resp.Subtype != "" {
+			return nil, fmt.Errorf("%w (%s): %s", ErrAgentError, resp.Subtype, errMsg)
+		}
+		return nil, fmt.Errorf("%w: %s", ErrAgentError, errMsg)
+	}
+
+	return resp, nil
 }
 
 // sendWithPipe runs the command with standard pipes (no PTY).
@@ -544,6 +574,11 @@ func (c *Channel) buildArgs(prompt string) []string {
 
 	// Add configured args first
 	args = append(args, c.config.Args...)
+
+	// Add model flag for Claude Code CLI
+	if c.config.Agent == AgentClaude && c.config.Model != "" {
+		args = append(args, "--model", c.config.Model)
+	}
 
 	// Add non-interactive flag with prompt (only if prompt is non-empty)
 	if prompt != "" {

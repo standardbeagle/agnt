@@ -39,17 +39,24 @@ The command is executed in a pseudo-terminal (PTY) that allows:
 Flags:
   --session <code>      Session code for identifying this run (auto-generated if not set)
   --overlay-socket      Custom socket path for overlay server
-  --hotkey <key>        Hotkey for overlay menu (default: ctrl+y)
+  --hotkey <key>        Hotkey for overlay menu (default: CTRL+Y)
   --no-indicator        Disable the indicator bar
   --no-overlay          Disable terminal overlay entirely
+  --no-autostart        Skip auto-starting scripts and proxies from .agnt.kdl
 
 Examples:
   agnt run claude --dangerously-skip-permissions
   agnt run claude --session dev
   agnt run claude
+  agnt run claude --no-autostart    # Skip .agnt.kdl autostart
   agnt run gemini
   agnt run copilot
   agnt run opencode
+
+Overlay Features:
+- CTRL+Y: Toggle overlay menu to view processes, proxies, and actions
+- Status bar: Shows running services and proxy URLs for browser access
+- Auto-start: Loads .agnt.kdl to auto-start configured dev scripts and proxies
 
 The overlay listens on port 19191 for WebSocket connections from devtool-mcp
 to receive events that can be injected as user input. Sessions can receive
@@ -65,6 +72,7 @@ var (
 	showIndicator     bool = true
 	useTermOverlay    bool = true
 	sessionCode       string
+	skipAutostart     bool = false
 )
 
 func init() {
@@ -121,6 +129,10 @@ func runCommand(cmd *cobra.Command, args []string) {
 			continue
 		case "--no-overlay":
 			useTermOverlay = false
+			commandArgs = append(args[:i], args[i+1:]...)
+			continue
+		case "--no-autostart":
+			skipAutostart = true
 			commandArgs = append(args[:i], args[i+1:]...)
 			continue
 		}

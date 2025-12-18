@@ -450,12 +450,39 @@ func (r *InputRouter) executeMenuItem(item MenuItem) {
 
 		// Release lock during AI call (can take time)
 		r.overlay.mu.Unlock()
-		io.WriteString(r.ptmx, "\r\n[agnt] Summarizing system status...\r\n")
+
+		// Start spinner in background
+		spinnerDone := make(chan struct{})
+		go func() {
+			frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+			i := 0
+			// Initial message
+			io.WriteString(r.ptmx, "\r\n[agnt] Summarizing system status "+frames[0]+" ")
+			ticker := time.NewTicker(100 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-spinnerDone:
+					// Clear spinner line and move to next line
+					io.WriteString(r.ptmx, "\r\x1b[K")
+					return
+				case <-ticker.C:
+					i = (i + 1) % len(frames)
+					// Overwrite the spinner character
+					io.WriteString(r.ptmx, fmt.Sprintf("\r[agnt] Summarizing system status %s ", frames[i]))
+				}
+			}
+		}()
 
 		// Call summarizer with 2 minute timeout
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		result, err := r.summarizer.Summarize(ctx)
 		cancel()
+
+		// Stop spinner
+		close(spinnerDone)
+		// Small delay to ensure spinner cleanup completes
+		time.Sleep(50 * time.Millisecond)
 
 		if err != nil {
 			io.WriteString(r.ptmx, "[agnt] Summary failed: "+err.Error()+"\r\n")

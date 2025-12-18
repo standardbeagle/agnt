@@ -1,4 +1,34 @@
 // Package aichannel provides an interface for communicating with AI coding agents via CLI.
+//
+// # JSON Extraction Scenarios
+//
+// There are two distinct scenarios for extracting JSON from AI responses:
+//
+// ## 1. Claude Code CLI Output Format (extractClaudeCodeJSON)
+//
+// When using Claude Code CLI with --output-format json, the response is wrapped in a
+// structured JSON envelope:
+//
+//	{"type":"result","result":"<AI's text response>","session_id":"..."}
+//
+// The AI's actual response is in the "result" field. Use OutputFormatJSON with
+// parseJSONResponse, which internally uses extractClaudeCodeJSON to find the
+// type:"result" object.
+//
+// Prompt pattern: No special JSON instructions needed - the AI returns plain text,
+// Claude Code wraps it in JSON.
+//
+// ## 2. AI-Embedded JSON in Prose (extractEmbeddedJSON)
+//
+// When you want the AI to return structured data AS JSON in its text response.
+// Use OutputFormatText and call extractEmbeddedJSON on the result.
+//
+// Prompt pattern: Explicitly instruct the AI to output JSON:
+//
+//	"Return your response as a JSON object with the following structure:
+//	 {\"status\": \"ok|error\", \"items\": [...], \"summary\": \"...\"}"
+//
+// Or use BuildEmbeddedJSONPrompt helper.
 package aichannel
 
 import (
@@ -108,14 +138,36 @@ func parseTextResponse(output string) (*Response, error) {
 }
 
 // parseJSONResponse parses JSON format output.
+// It attempts to extract JSON from mixed output that may contain
+// non-JSON prefix/suffix (e.g., progress messages from PTY output).
 func parseJSONResponse(output string) (*Response, error) {
 	output = strings.TrimSpace(output)
 	if output == "" {
 		return nil, fmt.Errorf("empty JSON response")
 	}
 
+	// Try parsing as-is first
 	var jsonResp JSONResponse
-	if err := json.Unmarshal([]byte(output), &jsonResp); err != nil {
+	if err := json.Unmarshal([]byte(output), &jsonResp); err == nil {
+		return &Response{
+			Result:        jsonResp.Result,
+			SessionID:     jsonResp.SessionID,
+			TotalCostUSD:  jsonResp.TotalCostUSD,
+			DurationMS:    jsonResp.DurationMS,
+			DurationAPIMS: jsonResp.DurationAPIMS,
+			NumTurns:      jsonResp.NumTurns,
+			IsError:       jsonResp.IsError,
+			Subtype:       jsonResp.Subtype,
+		}, nil
+	}
+
+	// Try to extract Claude Code's JSON format from mixed PTY output
+	jsonStr := extractClaudeCodeJSON(output)
+	if jsonStr == "" {
+		return nil, fmt.Errorf("failed to parse JSON response: no valid Claude Code JSON object found in output")
+	}
+
+	if err := json.Unmarshal([]byte(jsonStr), &jsonResp); err != nil {
 		return nil, fmt.Errorf("failed to parse JSON response: %w", err)
 	}
 
@@ -129,6 +181,133 @@ func parseJSONResponse(output string) (*Response, error) {
 		IsError:       jsonResp.IsError,
 		Subtype:       jsonResp.Subtype,
 	}, nil
+}
+
+// extractClaudeCodeJSON extracts Claude Code's JSON response format from mixed output.
+// Claude Code's --output-format json produces objects with "type" field (e.g., "result").
+// This function specifically looks for that format, preferring objects with type:"result".
+func extractClaudeCodeJSON(output string) string {
+	candidates := extractAllJSONObjects(output)
+
+	// First pass: look for type:"result" (the final response)
+	for _, candidate := range candidates {
+		var obj map[string]interface{}
+		if json.Unmarshal([]byte(candidate), &obj) == nil {
+			if typeVal, ok := obj["type"].(string); ok && typeVal == "result" {
+				return candidate
+			}
+		}
+	}
+
+	// Second pass: any object with a "type" field (Claude Code format)
+	for _, candidate := range candidates {
+		var obj map[string]interface{}
+		if json.Unmarshal([]byte(candidate), &obj) == nil {
+			if _, ok := obj["type"]; ok {
+				return candidate
+			}
+		}
+	}
+
+	// Fallback: return the last valid JSON object
+	if len(candidates) > 0 {
+		return candidates[len(candidates)-1]
+	}
+	return ""
+}
+
+// extractEmbeddedJSON extracts JSON that an AI has embedded in its text response.
+// This is for cases where we prompt the AI to return structured data in its prose.
+// It looks for JSON objects, preferring those that look like intentional data structures.
+func extractEmbeddedJSON(output string) string {
+	candidates := extractAllJSONObjects(output)
+
+	// Return the last JSON object (AI typically puts structured output at the end)
+	if len(candidates) > 0 {
+		return candidates[len(candidates)-1]
+	}
+	return ""
+}
+
+// extractAllJSONObjects finds all complete JSON objects in the output.
+// Returns them in order of appearance.
+func extractAllJSONObjects(output string) []string {
+	var results []string
+
+	for i := 0; i < len(output); i++ {
+		if output[i] != '{' {
+			continue
+		}
+
+		// Try to find matching closing brace
+		depth := 0
+		inString := false
+		escaped := false
+		for j := i; j < len(output); j++ {
+			ch := output[j]
+			if escaped {
+				escaped = false
+				continue
+			}
+			if ch == '\\' && inString {
+				escaped = true
+				continue
+			}
+			if ch == '"' {
+				inString = !inString
+				continue
+			}
+			if inString {
+				continue
+			}
+			if ch == '{' {
+				depth++
+			} else if ch == '}' {
+				depth--
+				if depth == 0 {
+					// Found complete JSON object, validate it
+					candidate := output[i : j+1]
+					var test map[string]interface{}
+					if json.Unmarshal([]byte(candidate), &test) == nil {
+						results = append(results, candidate)
+					}
+					i = j // Skip past this object
+					break
+				}
+			}
+		}
+	}
+	return results
+}
+
+// BuildEmbeddedJSONPrompt creates a prompt that instructs the AI to return
+// structured JSON in its text response. Use with OutputFormatText and
+// extractEmbeddedJSON.
+//
+// Example:
+//
+//	prompt := BuildEmbeddedJSONPrompt(
+//	    "Analyze the system status",
+//	    `{"status": "ok|error", "issues": ["..."], "summary": "..."}`,
+//	)
+func BuildEmbeddedJSONPrompt(instruction string, jsonSchema string) string {
+	return fmt.Sprintf(`%s
+
+IMPORTANT: Return your response as a valid JSON object with this exact structure:
+%s
+
+Output ONLY the JSON object, no additional text or markdown formatting.`, instruction, jsonSchema)
+}
+
+// BuildEmbeddedJSONSystemPrompt creates a system prompt for API mode that
+// instructs the AI to always return JSON responses.
+func BuildEmbeddedJSONSystemPrompt(basePrompt string, jsonSchema string) string {
+	return fmt.Sprintf(`%s
+
+You must always respond with a valid JSON object matching this schema:
+%s
+
+Output only the JSON object with no markdown code fences or additional text.`, basePrompt, jsonSchema)
 }
 
 // parseStreamJSONResponse parses stream-json (JSONL) format output.

@@ -2,6 +2,7 @@ package aichannel
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -313,6 +314,166 @@ func TestIntegration_ErrorHandling(t *testing.T) {
 		_, err := ParseResponse(`{"type":"init"}`, OutputFormatStreamJSON)
 		if err == nil {
 			t.Error("Expected error when stream has no result")
+		}
+	})
+}
+
+// TestIntegration_MixedOutputJSON tests JSON extraction from mixed PTY output.
+func TestIntegration_MixedOutputJSON(t *testing.T) {
+	t.Run("JSONWithPrefixText", func(t *testing.T) {
+		// Simulate PTY output with progress message before JSON
+		mixedOutput := `Loading...
+Processing request...
+{"type":"result","result":"Hello world","session_id":"abc123"}`
+		resp, err := ParseResponse(mixedOutput, OutputFormatJSON)
+		if err != nil {
+			t.Fatalf("Error: %v", err)
+		}
+		if resp.Result != "Hello world" {
+			t.Errorf("Result = %q, want %q", resp.Result, "Hello world")
+		}
+		if resp.SessionID != "abc123" {
+			t.Errorf("SessionID = %q, want %q", resp.SessionID, "abc123")
+		}
+	})
+
+	t.Run("JSONWithSuffixText", func(t *testing.T) {
+		// JSON followed by extra text
+		mixedOutput := `{"type":"result","result":"Test output"}
+Done.`
+		resp, err := ParseResponse(mixedOutput, OutputFormatJSON)
+		if err != nil {
+			t.Fatalf("Error: %v", err)
+		}
+		if resp.Result != "Test output" {
+			t.Errorf("Result = %q, want %q", resp.Result, "Test output")
+		}
+	})
+
+	t.Run("JSONWithANSIRemnants", func(t *testing.T) {
+		// Some ANSI codes that might not be stripped, plus JSON
+		mixedOutput := `[2K[1G{"type":"result","result":"ANSI test"}`
+		resp, err := ParseResponse(mixedOutput, OutputFormatJSON)
+		if err != nil {
+			t.Fatalf("Error: %v", err)
+		}
+		if resp.Result != "ANSI test" {
+			t.Errorf("Result = %q, want %q", resp.Result, "ANSI test")
+		}
+	})
+
+	t.Run("NestedJSONInResult", func(t *testing.T) {
+		// Result containing JSON-like content
+		mixedOutput := `prefix {"type":"result","result":"config: {\"key\": \"value\"}"}`
+		resp, err := ParseResponse(mixedOutput, OutputFormatJSON)
+		if err != nil {
+			t.Fatalf("Error: %v", err)
+		}
+		if resp.Result != `config: {"key": "value"}` {
+			t.Errorf("Result = %q, want %q", resp.Result, `config: {"key": "value"}`)
+		}
+	})
+
+	t.Run("MultipleJSONObjects_PrefersTypeResult", func(t *testing.T) {
+		// Multiple JSON objects - should prefer type:"result"
+		mixedOutput := `{"type":"init","session_id":"sess1"}
+{"type":"assistant","message":"working..."}
+{"type":"result","result":"Final answer","is_error":false}`
+		resp, err := ParseResponse(mixedOutput, OutputFormatJSON)
+		if err != nil {
+			t.Fatalf("Error: %v", err)
+		}
+		// Should specifically get the type:"result" object
+		if resp.Result != "Final answer" {
+			t.Errorf("Expected 'Final answer' from type:result object, got %q", resp.Result)
+		}
+	})
+
+	t.Run("MultipleJSONObjects_FallsBackToTypeField", func(t *testing.T) {
+		// No type:"result", but has objects with type field
+		mixedOutput := `{"unrelated": true}
+{"type":"assistant","result":"Fallback answer"}`
+		resp, err := ParseResponse(mixedOutput, OutputFormatJSON)
+		if err != nil {
+			t.Fatalf("Error: %v", err)
+		}
+		// Should get the object with "type" field
+		if resp.Result != "Fallback answer" {
+			t.Errorf("Expected 'Fallback answer', got %q", resp.Result)
+		}
+	})
+
+	t.Run("MultipleJSONObjects_FallsBackToLast", func(t *testing.T) {
+		// No Claude Code format, falls back to last valid JSON
+		mixedOutput := `{"partial": true}
+{"data": "value", "result": "Generic JSON"}`
+		resp, err := ParseResponse(mixedOutput, OutputFormatJSON)
+		if err != nil {
+			t.Fatalf("Error: %v", err)
+		}
+		// Should get the last valid JSON object
+		if resp.Result != "Generic JSON" {
+			t.Errorf("Expected 'Generic JSON' from last object, got %q", resp.Result)
+		}
+	})
+
+	t.Run("NoValidJSON", func(t *testing.T) {
+		mixedOutput := `This is just text with no JSON at all`
+		_, err := ParseResponse(mixedOutput, OutputFormatJSON)
+		if err == nil {
+			t.Error("Expected error when no JSON found")
+		}
+	})
+}
+
+// TestIntegration_ExtractEmbeddedJSON tests extraction of AI-embedded JSON in prose.
+func TestIntegration_ExtractEmbeddedJSON(t *testing.T) {
+	t.Run("JSONAtEnd", func(t *testing.T) {
+		// AI puts JSON at end of response
+		output := `Here's the configuration you requested:
+{"name": "test", "value": 42}`
+		result := extractEmbeddedJSON(output)
+		if result == "" {
+			t.Fatal("Expected to find JSON")
+		}
+		var obj map[string]interface{}
+		if err := json.Unmarshal([]byte(result), &obj); err != nil {
+			t.Fatalf("Result is not valid JSON: %v", err)
+		}
+		if obj["name"] != "test" {
+			t.Errorf("name = %v, want 'test'", obj["name"])
+		}
+	})
+
+	t.Run("JSONInMiddle", func(t *testing.T) {
+		// AI puts JSON in middle with explanation after
+		output := `The result is:
+{"status": "success", "count": 5}
+Let me know if you need anything else.`
+		result := extractEmbeddedJSON(output)
+		if result == "" {
+			t.Fatal("Expected to find JSON")
+		}
+		var obj map[string]interface{}
+		if err := json.Unmarshal([]byte(result), &obj); err != nil {
+			t.Fatalf("Result is not valid JSON: %v", err)
+		}
+		if obj["status"] != "success" {
+			t.Errorf("status = %v, want 'success'", obj["status"])
+		}
+	})
+
+	t.Run("MultipleJSONReturnsLast", func(t *testing.T) {
+		// Multiple JSON objects - returns last (final answer)
+		output := `First attempt: {"attempt": 1}
+Refined: {"attempt": 2, "final": true}`
+		result := extractEmbeddedJSON(output)
+		var obj map[string]interface{}
+		if err := json.Unmarshal([]byte(result), &obj); err != nil {
+			t.Fatalf("Result is not valid JSON: %v", err)
+		}
+		if obj["attempt"] != float64(2) {
+			t.Errorf("Should return last JSON, got attempt=%v", obj["attempt"])
 		}
 	})
 }

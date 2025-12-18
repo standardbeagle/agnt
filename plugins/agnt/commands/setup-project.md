@@ -69,23 +69,32 @@ proxy "dev" {
 
 After creating the config, inform the user:
 
-1. **On next session start**: The agnt plugin's SessionStart hook will:
-   - Read `.agnt.kdl`
-   - Start configured scripts in background mode
-   - Wait for the dev server to start
-   - Auto-detect the port from script output (looks for patterns like "localhost:3000", "port 3000", etc.)
-   - Start the proxy pointing to the detected port
+1. **Starting your dev environment**: Run `agnt run claude` to start your AI coding session. This will:
+   - Load your `.agnt.kdl` configuration
+   - Auto-start all scripts with `autostart: true` in the background
+   - Auto-start all proxies with `autostart: true`
+   - Display running services in the status bar at the bottom of your terminal
 
-2. **Port auto-detection**: agnt watches for common patterns:
-   - `localhost:XXXX`
-   - `127.0.0.1:XXXX`
-   - `listening on port XXXX`
-   - `started on :XXXX`
-   - Falls back to `fallback-port` if detection fails
+2. **Status bar information**: The bottom status bar shows:
+   - Running processes count (e.g., "⚙ 2 proc")
+   - Proxy URLs for browser access (e.g., "frontend:3000 → proxy:18080")
+   - Use **CTRL+Y** to toggle the overlay menu for more options
 
-3. **To modify**: Edit `.agnt.kdl` directly or re-run `/setup-project`
+3. **Overlay menu (CTRL+Y)**: Press CTRL+Y to access:
+   - List of running processes and proxies
+   - Quick actions (restart, stop, view output)
+   - Browser access links
+   - System status
 
-4. **To disable**: Delete `.agnt.kdl` or set `auto-start=false` on scripts
+4. **Port visibility for OAuth**: The status bar shows both your dev server port AND proxy port (e.g., "dev:3000 → proxy:18080"). Add BOTH to your OAuth redirect URLs:
+   - Dev server: `http://localhost:3000`
+   - Proxy: `http://localhost:18080` (for browser debugging)
+
+5. **To modify**: Edit `.agnt.kdl` directly or re-run `/setup-project`
+
+6. **To skip autostart**: Run `agnt run claude --no-autostart` to start without auto-starting configured services
+
+7. **To restart a service**: Use the MCP tool `proc {action: "restart", process_id: "dev"}` or access via CTRL+Y menu
 
 ## Example Configuration
 

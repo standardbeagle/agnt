@@ -4,8 +4,17 @@
 # Usage: ./scripts/release.sh 0.6.4
 #        ./scripts/release.sh patch   # auto-increment patch version
 #        ./scripts/release.sh minor   # auto-increment minor version
+#        ./scripts/release.sh --build # Build release after creating tag
 
 set -e
+
+BUILD_RELEASE=false
+
+# Check for --build flag
+if [ "$1" = "--build" ]; then
+    BUILD_RELEASE=true
+    shift
+fi
 
 # Get current version from Go source
 CURRENT_VERSION=$(grep 'appVersion = ' cmd/agnt/main.go | sed 's/.*"\(.*\)"/\1/')
@@ -90,3 +99,14 @@ git tag -a "v$NEW_VERSION" -m "v$NEW_VERSION"
 echo ""
 echo "Done! To push the release:"
 echo "  git push origin main && git push origin v$NEW_VERSION"
+
+# Optionally build the release
+if [ "$BUILD_RELEASE" = true ]; then
+    echo ""
+    echo "Building release binaries..."
+    make clean
+    make release
+    echo ""
+    echo "Release binaries built successfully:"
+    ls -lh agnt devtool-mcp
+fi

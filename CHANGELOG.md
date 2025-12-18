@@ -20,6 +20,25 @@
 
 ## [Unreleased]
 
+### Added
+- **AI channel model configuration**: Claude Code CLI now defaults to `haiku` model for fast, cost-effective summaries
+  - Model is configurable via `Config.Model` field
+  - Added `--model` flag to Claude Code CLI invocations
+- **AI channel error handling**: `SendAndParse` now returns `ErrAgentError` when Claude Code reports an error (`is_error: true`)
+  - Errors are reported to users instead of being passed to downstream LLM calls
+  - Error includes subtype context (e.g., "agent error (error): message")
+- **JSON extraction improvements**: Enhanced response parsing with two distinct extraction strategies
+  - `extractClaudeCodeJSON`: For Claude Code CLI wrapped responses (finds `type: "result"` objects)
+  - `extractEmbeddedJSON`: For AI-embedded JSON in prose responses
+  - Helper functions `BuildEmbeddedJSONPrompt` and `BuildEmbeddedJSONSystemPrompt` for structured data extraction
+- **`--no-autostart` flag**: Skip auto-starting scripts and proxies from `.agnt.kdl` when running `agnt run claude`
+- **Spinner animation**: Status summary now shows animated spinner while loading
+- **Production release build**: New `make release` target with optimized flags (-s -w, -trimpath)
+- **Setup project improvements**: Updated `/setup-project` command with better documentation about:
+  - Status bar information and CTRL+Y overlay menu
+  - OAuth redirect URL configuration for both dev and proxy ports
+  - How to skip autostart and restart services
+
 ### Fixed
 - **Process/proxy filtering after `agnt run` restart**: Fixed issue where processes and proxies started from `agnt run claude` would disappear from `proc list` and `proxy list` after restarting the CLI. Root cause was MCP server using its own working directory instead of the original project directory.
   - Added `AGNT_PROJECT_PATH` environment variable, injected by `agnt run` into child processes
