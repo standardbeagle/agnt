@@ -6,14 +6,14 @@
   },
   "metadata": {
     "description": "AI coding agent toolkit - process management, reverse proxy with traffic logging, browser instrumentation, and sketch mode",
-    "version": "0.7.9"
+    "version": "0.7.10"
   },
   "plugins": [
     {
       "name": "agnt",
       "source": "./plugins/agnt",
       "description": "MCP server for AI coding agents: process management, reverse proxy with traffic logging, frontend instrumentation with 50+ diagnostic functions, and sketch mode for wireframing",
-      "version": "0.7.9",
+      "version": "0.7.10",
       "author": {
         "name": "Standard Beagle",
         "url": "https://github.com/standardbeagle/agnt"

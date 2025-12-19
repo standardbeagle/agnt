@@ -21,7 +21,7 @@ import (
 
 // Version is the daemon version.
 // Can be overridden at build time with: -ldflags "-X github.com/standardbeagle/agnt/internal/daemon.Version=x.y.z"
-var Version = "0.7.9"
+var Version = "0.7.10"
 
 // BuildTime is the build timestamp (RFC3339 format).
 // Set at build time with: -ldflags "-X github.com/standardbeagle/agnt/internal/daemon.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)"

@@ -9,7 +9,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 agnt is a new kind of tool designed for the age of AI-assisted development. It acts as a bridge between AI coding agents and the browser, extending what's possible during vibe coding sessions. The tool enables agents to see what users see, receive messages directly from the browser, sketch ideas together, and debug in real-time.
 
 **Primary Binary**: `agnt`
-**Version**: 0.7.9
+**Version**: 0.7.10
 **Protocol**: MCP over stdio
 **Language**: Go 1.24.2
 **Repository**: https://github.com/standardbeagle/agnt
