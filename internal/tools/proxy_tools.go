@@ -134,10 +134,10 @@ type PageSummaryOutput struct {
 	Resources        []string       `json:"resources,omitempty"` // Full list when detail=["resources"]
 
 	// Error summary
-	ErrorCount   int                      `json:"error_count"`
-	UniqueErrors []ErrorSummary           `json:"unique_errors,omitempty"`  // Deduplicated errors with counts
-	ErrorsByType map[string]int           `json:"errors_by_type,omitempty"` // e.g., {"ReferenceError": 3}
-	Errors       []map[string]interface{} `json:"errors,omitempty"`         // Full list when detail=["errors"]
+	ErrorCount   int            `json:"error_count"`
+	UniqueErrors []ErrorSummary `json:"unique_errors,omitempty"`  // Deduplicated errors with counts
+	ErrorsByType map[string]int `json:"errors_by_type,omitempty"` // e.g., {"ReferenceError": 3}
+	Errors       []CompactError `json:"errors,omitempty"`         // Compact error list when detail=["errors"]
 
 	// Performance
 	LoadTimeMs       int64 `json:"load_time_ms,omitempty"`
@@ -172,6 +172,112 @@ type ErrorSummary struct {
 	Message string `json:"message"`
 	Type    string `json:"type,omitempty"`
 	Count   int    `json:"count"`
+}
+
+// CompactError represents a frontend error with truncated verbose fields.
+// Used when detail: ["errors"] is specified to avoid token overflow.
+type CompactError struct {
+	Message      string `json:"message"`
+	Type         string `json:"type,omitempty"`
+	URL          string `json:"url,omitempty"`
+	Location     string `json:"location,omitempty"`      // "file.js:123:45" format
+	StackPreview string `json:"stack_preview,omitempty"` // First 3 lines of stack trace
+	Timestamp    string `json:"timestamp,omitempty"`
+}
+
+// ProxyLogSummary provides a compact summary of proxy logs.
+type ProxyLogSummary struct {
+	TotalEntries  int            `json:"total_entries"`
+	EntriesByType map[string]int `json:"entries_by_type"` // e.g., {"error": 150, "http": 300}
+	TimeRange     TimeRange      `json:"time_range,omitempty"`
+
+	// Error summary
+	ErrorCount   int            `json:"error_count"`
+	UniqueErrors []ErrorSummary `json:"unique_errors,omitempty"`  // Top 10 deduplicated errors
+	ErrorsByType map[string]int `json:"errors_by_type,omitempty"` // e.g., {"ReferenceError": 3}
+	Errors       []CompactError `json:"errors,omitempty"`         // Full list when detail includes "errors"
+	RecentErrors []CompactError `json:"recent_errors,omitempty"`  // Last 5 errors (when detail not specified)
+
+	// HTTP summary
+	HTTPCount    int                  `json:"http_count"`
+	HTTPByStatus map[string]int       `json:"http_by_status,omitempty"` // e.g., {"2xx": 100, "4xx": 5}
+	HTTPByMethod map[string]int       `json:"http_by_method,omitempty"` // e.g., {"GET": 80, "POST": 20}
+	HTTPRequests []CompactHTTPRequest `json:"http_requests,omitempty"`  // Full list when detail includes "http"
+	RecentHTTP   []CompactHTTPRequest `json:"recent_http,omitempty"`    // Last 5 requests (when detail not specified)
+
+	// Performance summary
+	PerformanceCount  int                  `json:"performance_count"`
+	AvgLoadTime       int64                `json:"avg_load_time_ms,omitempty"`
+	Performance       []CompactPerformance `json:"performance,omitempty"`        // Full list when detail includes "performance"
+	RecentPerformance []CompactPerformance `json:"recent_performance,omitempty"` // Last 5 (when detail not specified)
+
+	// Interaction summary
+	InteractionCount   int                  `json:"interaction_count"`
+	InteractionsByType map[string]int       `json:"interactions_by_type,omitempty"` // e.g., {"click": 50, "scroll": 100}
+	Interactions       []CompactInteraction `json:"interactions,omitempty"`         // Full list when detail includes "interactions"
+	RecentInteractions []CompactInteraction `json:"recent_interactions,omitempty"`  // Last 5 (when detail not specified)
+
+	// Mutation summary
+	MutationCount   int               `json:"mutation_count"`
+	MutationsByType map[string]int    `json:"mutations_by_type,omitempty"` // e.g., {"added": 10, "modified": 5}
+	Mutations       []CompactMutation `json:"mutations,omitempty"`         // Full list when detail includes "mutations"
+	RecentMutations []CompactMutation `json:"recent_mutations,omitempty"`  // Last 5 (when detail not specified)
+
+	// Other log types (custom, panel_message, sketch, etc.)
+	OtherCount int               `json:"other_count,omitempty"`
+	OtherTypes map[string]int    `json:"other_types,omitempty"` // Counts for custom, panel_message, sketch, etc.
+	Other      []CompactLogEntry `json:"other,omitempty"`       // Full list when detail includes "other"
+
+	// Detail info
+	DetailSections []string `json:"detail_sections,omitempty"` // Which sections have full detail
+	DetailLimit    int      `json:"detail_limit,omitempty"`    // Limit applied to detailed sections
+}
+
+// TimeRange represents a time range for logs.
+type TimeRange struct {
+	Start time.Time `json:"start"`
+	End   time.Time `json:"end"`
+}
+
+// CompactHTTPRequest represents a compact HTTP request/response.
+type CompactHTTPRequest struct {
+	Method     string    `json:"method"`
+	URL        string    `json:"url"`
+	StatusCode int       `json:"status_code"`
+	Duration   int64     `json:"duration_ms"`
+	Timestamp  time.Time `json:"timestamp,omitempty"`
+	Error      string    `json:"error,omitempty"`
+}
+
+// CompactPerformance represents compact performance metrics.
+type CompactPerformance struct {
+	URL              string    `json:"url"`
+	LoadTimeMs       int64     `json:"load_time_ms"`
+	FirstPaintMs     int64     `json:"first_paint_ms,omitempty"`
+	DOMContentLoaded int64     `json:"dom_content_loaded_ms,omitempty"`
+	Timestamp        time.Time `json:"timestamp,omitempty"`
+}
+
+// CompactInteraction represents a compact user interaction.
+type CompactInteraction struct {
+	Type      string    `json:"type"`
+	Target    string    `json:"target,omitempty"` // CSS selector or element description
+	Timestamp time.Time `json:"timestamp,omitempty"`
+}
+
+// CompactMutation represents a compact DOM mutation.
+type CompactMutation struct {
+	Type      string    `json:"type"` // added, removed, modified
+	Target    string    `json:"target,omitempty"`
+	Count     int       `json:"count,omitempty"` // Number of nodes affected
+	Timestamp time.Time `json:"timestamp,omitempty"`
+}
+
+// CompactLogEntry represents a compact log entry for other types.
+type CompactLogEntry struct {
+	Type      string    `json:"type"`
+	Message   string    `json:"message,omitempty"`
+	Timestamp time.Time `json:"timestamp,omitempty"`
 }
 
 // PageSessionOutput represents a page session in the output.
@@ -289,7 +395,7 @@ type LogStatsOutput struct {
 // ProxyLogInput defines input for the proxylog tool.
 type ProxyLogInput struct {
 	ProxyID     string   `json:"proxy_id" jsonschema:"Proxy ID to query logs from"`
-	Action      string   `json:"action,omitempty" jsonschema:"Action: query, clear, stats (default: query)"`
+	Action      string   `json:"action,omitempty" jsonschema:"Action: query, summary, clear, stats (default: query)"`
 	Types       []string `json:"types,omitempty" jsonschema:"Filter by type: http, error, performance"`
 	Methods     []string `json:"methods,omitempty" jsonschema:"Filter by HTTP method: GET, POST, etc."`
 	URLPattern  string   `json:"url_pattern,omitempty" jsonschema:"URL substring to match"`
@@ -297,6 +403,7 @@ type ProxyLogInput struct {
 	Since       string   `json:"since,omitempty" jsonschema:"Start time (RFC3339 or duration like '5m')"`
 	Until       string   `json:"until,omitempty" jsonschema:"End time (RFC3339)"`
 	Limit       int      `json:"limit,omitempty" jsonschema:"Maximum results (default: 100)"`
+	Detail      []string `json:"detail,omitempty" jsonschema:"For summary: sections to include full detail for (errors, http, performance, interactions, mutations)"`
 }
 
 // ProxyLogOutput defines output for proxylog tool.
@@ -304,6 +411,9 @@ type ProxyLogOutput struct {
 	// For query
 	Entries []LogEntryOutput `json:"entries,omitempty"`
 	Count   int              `json:"count,omitempty"`
+
+	// For summary
+	Summary *ProxyLogSummary `json:"summary,omitempty"`
 
 	// For stats
 	Stats *LogStatsOutput `json:"stats,omitempty"`

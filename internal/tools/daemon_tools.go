@@ -184,7 +184,8 @@ Each proxy has separate log storage and WebSocket connections.`,
 		Description: `Query and analyze proxy traffic logs.
 
 Actions:
-  query: Search logs with filters (default)
+  query: Search logs with filters (default, may be large)
+  summary: Get compact aggregated summary (recommended for large logs)
   clear: Clear all logs for a proxy
   stats: Get log statistics
 
@@ -201,12 +202,41 @@ Log Types:
   panel_message: Messages sent from the floating indicator panel
   sketch: Sketches/wireframes from sketch mode (includes JSON data and PNG image path)
 
-Examples:
+Summary Action (Recommended for Large Logs):
+  The summary action aggregates logs by type and provides:
+  - Counts by type (errors, http, performance, etc.)
+  - Deduplicated error summaries (top 10 unique errors)
+  - HTTP status/method breakdown
+  - Average performance metrics
+  - Recent entries for each type (last 5)
+
+  Progressive reveal with detail parameter:
+  - detail: ["errors"] - include compact error list (truncated stacks)
+  - detail: ["http"] - include HTTP request list
+  - detail: ["performance"] - include performance metrics
+  - detail: ["interactions"] - include user interactions
+  - detail: ["mutations"] - include DOM mutations
+  - detail: ["other"] - include custom/panel/sketch logs
+  - limit: N - max items per detailed section (default: 10, max: 100)
+
+  All data is automatically compacted to prevent token overflow:
+  - Error stack traces limited to first 3 lines
+  - Messages truncated to 500 chars max
+  - URLs truncated to 100 chars
+  - Individual stack lines capped at 120 chars
+
+Query Examples:
   proxylog {proxy_id: "dev", types: ["http"], methods: ["GET"]}
-  proxylog {proxy_id: "dev", types: ["error"]}
-  proxylog {proxy_id: "dev", types: ["sketch"]}
-  proxylog {proxy_id: "dev", types: ["panel_message"]}
+  proxylog {proxy_id: "dev", types: ["error"], limit: 5}
   proxylog {proxy_id: "dev", since: "5m", limit: 50}
+
+Summary Examples (Recommended):
+  proxylog {proxy_id: "dev", action: "summary"}
+  proxylog {proxy_id: "dev", action: "summary", detail: ["errors"]}
+  proxylog {proxy_id: "dev", action: "summary", detail: ["errors", "http"], limit: 20}
+  proxylog {proxy_id: "dev", action: "summary", types: ["error"]}
+
+Other Actions:
   proxylog {proxy_id: "dev", action: "stats"}
   proxylog {proxy_id: "dev", action: "clear"}
 
@@ -245,8 +275,14 @@ The summary action returns aggregated data (errors by type, interactions by type
   Use detail parameter to get full data for specific sections:
   - detail: ["interactions"] - include full interaction list
   - detail: ["mutations"] - include full mutation list
-  - detail: ["errors"] - include full error list
+  - detail: ["errors"] - include compact error list (truncated stacks/messages)
   - detail: ["resources"] - include full resource URL list
+
+Error format is automatically compacted to prevent token overflow:
+  - Stack traces limited to first 3 lines
+  - Messages truncated to 500 chars max
+  - Source paths reduced to filename only
+  - Individual stack lines capped at 120 chars
   - limit: N - max items per detailed section (default: 5, max: 100)
 The get action returns full interaction and mutation history (may be large).
 
@@ -1055,6 +1091,8 @@ func (dt *DaemonTools) makeProxyLogHandler() func(context.Context, *mcp.CallTool
 		switch action {
 		case "query":
 			return dt.handleProxyLogQuery(input)
+		case "summary":
+			return dt.handleProxyLogSummary(input)
 		case "clear":
 			return dt.handleProxyLogClear(input)
 		case "stats":
@@ -1109,6 +1147,50 @@ func (dt *DaemonTools) handleProxyLogQuery(input ProxyLogInput) (*mcp.CallToolRe
 	}
 
 	return nil, output, nil
+}
+
+func (dt *DaemonTools) handleProxyLogSummary(input ProxyLogInput) (*mcp.CallToolResult, ProxyLogOutput, error) {
+	// Query all logs (up to a reasonable limit for aggregation)
+	filter := protocol.LogQueryFilter{
+		Types:       input.Types,
+		Methods:     input.Methods,
+		URLPattern:  input.URLPattern,
+		StatusCodes: input.StatusCodes,
+		Since:       input.Since,
+		Until:       input.Until,
+		Limit:       0, // Get all entries for aggregation (limited by log buffer size)
+	}
+
+	result, err := dt.client.ProxyLogQuery(input.ProxyID, filter)
+	if err != nil {
+		return formatDaemonError(err, "proxylog"), ProxyLogOutput{}, nil
+	}
+
+	entries, ok := result["entries"].([]interface{})
+	if !ok {
+		entries = []interface{}{}
+	}
+
+	// Build detail set for quick lookup
+	detailSet := make(map[string]bool)
+	for _, d := range input.Detail {
+		detailSet[d] = true
+	}
+
+	// Default limit is 10, max is 100
+	limit := input.Limit
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	summary := buildProxyLogSummary(entries, detailSet, limit)
+
+	return nil, ProxyLogOutput{
+		Summary: &summary,
+	}, nil
 }
 
 func (dt *DaemonTools) handleProxyLogClear(input ProxyLogInput) (*mcp.CallToolResult, ProxyLogOutput, error) {
@@ -1324,7 +1406,7 @@ func convertToPageSummary(m map[string]interface{}, detailSet map[string]bool, l
 			}
 		}
 
-		// Include full error list if requested
+		// Include compact error list if requested
 		if detailSet["errors"] {
 			detailSections = append(detailSections, "errors")
 			maxErrors := limit
@@ -1333,7 +1415,8 @@ func convertToPageSummary(m map[string]interface{}, detailSet map[string]bool, l
 			}
 			for i := 0; i < maxErrors; i++ {
 				if em, ok := errors[i].(map[string]interface{}); ok {
-					summary.Errors = append(summary.Errors, em)
+					compactErr := convertToCompactError(em)
+					summary.Errors = append(summary.Errors, compactErr)
 				}
 			}
 		}
@@ -1481,6 +1564,557 @@ func categorizeResource(url string) string {
 	}
 
 	return "other"
+}
+
+// convertToCompactError converts a raw error map to a CompactError with truncated fields.
+// This prevents token overflow when returning error details for pages with many errors.
+func convertToCompactError(em map[string]interface{}) CompactError {
+	compact := CompactError{
+		Message: getString(em, "message"),
+		Type:    getString(em, "type"),
+		URL:     getString(em, "url"),
+	}
+
+	// If type is empty, default to "Error"
+	if compact.Type == "" {
+		compact.Type = "Error"
+	}
+
+	// Build location string from source/lineno/colno
+	source := getString(em, "source")
+	lineno := getInt(em, "lineno")
+	colno := getInt(em, "colno")
+
+	if source != "" {
+		// Extract just the filename from the full source path
+		parts := strings.Split(source, "/")
+		filename := parts[len(parts)-1]
+
+		if lineno > 0 {
+			if colno > 0 {
+				compact.Location = fmt.Sprintf("%s:%d:%d", filename, lineno, colno)
+			} else {
+				compact.Location = fmt.Sprintf("%s:%d", filename, lineno)
+			}
+		} else {
+			compact.Location = filename
+		}
+	}
+
+	// Truncate stack trace to first 3 lines (most relevant)
+	stack := getString(em, "stack")
+	if stack != "" {
+		lines := strings.Split(stack, "\n")
+		maxLines := 3
+		if len(lines) < maxLines {
+			maxLines = len(lines)
+		}
+
+		var preview []string
+		for i := 0; i < maxLines; i++ {
+			line := strings.TrimSpace(lines[i])
+			// Truncate individual lines if they're too long
+			if len(line) > 120 {
+				line = line[:117] + "..."
+			}
+			preview = append(preview, line)
+		}
+		compact.StackPreview = strings.Join(preview, "\n")
+
+		// If there are more lines, indicate truncation
+		if len(lines) > maxLines {
+			compact.StackPreview += fmt.Sprintf("\n... (%d more lines)", len(lines)-maxLines)
+		}
+	}
+
+	// Add timestamp if available
+	if ts, ok := em["timestamp"].(string); ok {
+		compact.Timestamp = ts
+	}
+
+	// Truncate message if it's extremely long (over 500 chars)
+	if len(compact.Message) > 500 {
+		compact.Message = compact.Message[:497] + "..."
+	}
+
+	return compact
+}
+
+// buildProxyLogSummary aggregates log entries into a compact summary.
+func buildProxyLogSummary(entries []interface{}, detailSet map[string]bool, limit int) ProxyLogSummary {
+	summary := ProxyLogSummary{
+		TotalEntries:       len(entries),
+		EntriesByType:      make(map[string]int),
+		ErrorsByType:       make(map[string]int),
+		HTTPByStatus:       make(map[string]int),
+		HTTPByMethod:       make(map[string]int),
+		InteractionsByType: make(map[string]int),
+		MutationsByType:    make(map[string]int),
+		OtherTypes:         make(map[string]int),
+		DetailLimit:        limit,
+	}
+
+	var detailSections []string
+	var errors []map[string]interface{}
+	var httpRequests []map[string]interface{}
+	var performance []map[string]interface{}
+	var interactions []map[string]interface{}
+	var mutations []map[string]interface{}
+	var other []map[string]interface{}
+
+	var firstTime, lastTime time.Time
+	errorCounts := make(map[string]*ErrorSummary) // For deduplication
+	var totalLoadTime int64
+	var perfCount int
+
+	// First pass: categorize and aggregate
+	for _, e := range entries {
+		em, ok := e.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		logType := getString(em, "type")
+		summary.EntriesByType[logType]++
+
+		// Track time range
+		if ts, ok := em["timestamp"].(string); ok {
+			if t, err := time.Parse(time.RFC3339, ts); err == nil {
+				if firstTime.IsZero() || t.Before(firstTime) {
+					firstTime = t
+				}
+				if lastTime.IsZero() || t.After(lastTime) {
+					lastTime = t
+				}
+			}
+		}
+
+		// Get data payload
+		data, _ := em["data"].(map[string]interface{})
+
+		switch logType {
+		case "error":
+			summary.ErrorCount++
+			if data != nil {
+				errors = append(errors, data)
+
+				errType := getString(data, "type")
+				if errType == "" {
+					errType = "Error"
+				}
+				summary.ErrorsByType[errType]++
+
+				// Deduplicate errors
+				msg := getString(data, "message")
+				key := msg
+				if len(key) > 100 {
+					key = key[:100]
+				}
+				if existing, ok := errorCounts[key]; ok {
+					existing.Count++
+				} else {
+					errorCounts[key] = &ErrorSummary{
+						Message: msg,
+						Type:    errType,
+						Count:   1,
+					}
+				}
+			}
+
+		case "http":
+			summary.HTTPCount++
+			if data != nil {
+				httpRequests = append(httpRequests, data)
+
+				// Aggregate by status code
+				statusCode := getInt(data, "status_code")
+				statusGroup := fmt.Sprintf("%dxx", statusCode/100)
+				summary.HTTPByStatus[statusGroup]++
+
+				// Aggregate by method
+				method := getString(data, "method")
+				if method != "" {
+					summary.HTTPByMethod[method]++
+				}
+			}
+
+		case "performance":
+			summary.PerformanceCount++
+			if data != nil {
+				performance = append(performance, data)
+
+				loadTime := getInt64(data, "load_event_end")
+				if loadTime > 0 {
+					totalLoadTime += loadTime
+					perfCount++
+				}
+			}
+
+		case "interaction":
+			summary.InteractionCount++
+			if data != nil {
+				interactions = append(interactions, data)
+
+				iType := getString(data, "event_type")
+				if iType == "" {
+					iType = getString(data, "type")
+				}
+				if iType != "" {
+					summary.InteractionsByType[iType]++
+				}
+			}
+
+		case "mutation":
+			summary.MutationCount++
+			if data != nil {
+				mutations = append(mutations, data)
+
+				mType := getString(data, "type")
+				if mType != "" {
+					summary.MutationsByType[mType]++
+				}
+			}
+
+		default:
+			summary.OtherCount++
+			summary.OtherTypes[logType]++
+			if data != nil {
+				other = append(other, data)
+			}
+		}
+	}
+
+	// Set time range
+	if !firstTime.IsZero() && !lastTime.IsZero() {
+		summary.TimeRange = TimeRange{Start: firstTime, End: lastTime}
+	}
+
+	// Calculate average load time
+	if perfCount > 0 {
+		summary.AvgLoadTime = totalLoadTime / int64(perfCount)
+	}
+
+	// Build unique errors (top 10)
+	for _, es := range errorCounts {
+		summary.UniqueErrors = append(summary.UniqueErrors, *es)
+		if len(summary.UniqueErrors) >= 10 {
+			break
+		}
+	}
+
+	// Process errors
+	if detailSet["errors"] {
+		detailSections = append(detailSections, "errors")
+		maxErrors := limit
+		if len(errors) < maxErrors {
+			maxErrors = len(errors)
+		}
+		// Get most recent errors
+		start := len(errors) - maxErrors
+		if start < 0 {
+			start = 0
+		}
+		for i := start; i < len(errors); i++ {
+			summary.Errors = append(summary.Errors, convertToCompactError(errors[i]))
+		}
+	} else if summary.ErrorCount > 0 {
+		// Include last 5 errors as preview
+		recentLimit := 5
+		if limit < recentLimit {
+			recentLimit = limit
+		}
+		start := len(errors) - recentLimit
+		if start < 0 {
+			start = 0
+		}
+		for i := start; i < len(errors); i++ {
+			summary.RecentErrors = append(summary.RecentErrors, convertToCompactError(errors[i]))
+		}
+	}
+
+	// Process HTTP requests
+	if detailSet["http"] {
+		detailSections = append(detailSections, "http")
+		maxHTTP := limit
+		if len(httpRequests) < maxHTTP {
+			maxHTTP = len(httpRequests)
+		}
+		start := len(httpRequests) - maxHTTP
+		if start < 0 {
+			start = 0
+		}
+		for i := start; i < len(httpRequests); i++ {
+			summary.HTTPRequests = append(summary.HTTPRequests, convertToCompactHTTP(httpRequests[i]))
+		}
+	} else if summary.HTTPCount > 0 {
+		recentLimit := 5
+		if limit < recentLimit {
+			recentLimit = limit
+		}
+		start := len(httpRequests) - recentLimit
+		if start < 0 {
+			start = 0
+		}
+		for i := start; i < len(httpRequests); i++ {
+			summary.RecentHTTP = append(summary.RecentHTTP, convertToCompactHTTP(httpRequests[i]))
+		}
+	}
+
+	// Process performance
+	if detailSet["performance"] {
+		detailSections = append(detailSections, "performance")
+		maxPerf := limit
+		if len(performance) < maxPerf {
+			maxPerf = len(performance)
+		}
+		start := len(performance) - maxPerf
+		if start < 0 {
+			start = 0
+		}
+		for i := start; i < len(performance); i++ {
+			summary.Performance = append(summary.Performance, convertToCompactPerformance(performance[i]))
+		}
+	} else if summary.PerformanceCount > 0 {
+		recentLimit := 5
+		if limit < recentLimit {
+			recentLimit = limit
+		}
+		start := len(performance) - recentLimit
+		if start < 0 {
+			start = 0
+		}
+		for i := start; i < len(performance); i++ {
+			summary.RecentPerformance = append(summary.RecentPerformance, convertToCompactPerformance(performance[i]))
+		}
+	}
+
+	// Process interactions
+	if detailSet["interactions"] {
+		detailSections = append(detailSections, "interactions")
+		maxInt := limit
+		if len(interactions) < maxInt {
+			maxInt = len(interactions)
+		}
+		start := len(interactions) - maxInt
+		if start < 0 {
+			start = 0
+		}
+		for i := start; i < len(interactions); i++ {
+			summary.Interactions = append(summary.Interactions, convertToCompactInteraction(interactions[i]))
+		}
+	} else if summary.InteractionCount > 0 {
+		recentLimit := 5
+		if limit < recentLimit {
+			recentLimit = limit
+		}
+		start := len(interactions) - recentLimit
+		if start < 0 {
+			start = 0
+		}
+		for i := start; i < len(interactions); i++ {
+			summary.RecentInteractions = append(summary.RecentInteractions, convertToCompactInteraction(interactions[i]))
+		}
+	}
+
+	// Process mutations
+	if detailSet["mutations"] {
+		detailSections = append(detailSections, "mutations")
+		maxMut := limit
+		if len(mutations) < maxMut {
+			maxMut = len(mutations)
+		}
+		start := len(mutations) - maxMut
+		if start < 0 {
+			start = 0
+		}
+		for i := start; i < len(mutations); i++ {
+			summary.Mutations = append(summary.Mutations, convertToCompactMutation(mutations[i]))
+		}
+	} else if summary.MutationCount > 0 {
+		recentLimit := 5
+		if limit < recentLimit {
+			recentLimit = limit
+		}
+		start := len(mutations) - recentLimit
+		if start < 0 {
+			start = 0
+		}
+		for i := start; i < len(mutations); i++ {
+			summary.RecentMutations = append(summary.RecentMutations, convertToCompactMutation(mutations[i]))
+		}
+	}
+
+	// Process other log types
+	if detailSet["other"] && summary.OtherCount > 0 {
+		detailSections = append(detailSections, "other")
+		maxOther := limit
+		if len(other) < maxOther {
+			maxOther = len(other)
+		}
+		start := len(other) - maxOther
+		if start < 0 {
+			start = 0
+		}
+		for i := start; i < len(other); i++ {
+			summary.Other = append(summary.Other, convertToCompactLogEntry(other[i]))
+		}
+	}
+
+	if len(detailSections) > 0 {
+		summary.DetailSections = detailSections
+	}
+
+	return summary
+}
+
+// Helper converters for compact log types
+
+func convertToCompactHTTP(data map[string]interface{}) CompactHTTPRequest {
+	compact := CompactHTTPRequest{
+		Method:     getString(data, "method"),
+		URL:        getString(data, "url"),
+		StatusCode: getInt(data, "status_code"),
+		Duration:   getInt64(data, "duration") / 1000000, // Convert ns to ms
+		Error:      getString(data, "error"),
+	}
+
+	if ts, ok := data["timestamp"].(string); ok {
+		if t, err := time.Parse(time.RFC3339, ts); err == nil {
+			compact.Timestamp = t
+		}
+	}
+
+	// Truncate URL if too long
+	if len(compact.URL) > 100 {
+		compact.URL = compact.URL[:97] + "..."
+	}
+
+	return compact
+}
+
+func convertToCompactPerformance(data map[string]interface{}) CompactPerformance {
+	compact := CompactPerformance{
+		URL:              getString(data, "url"),
+		LoadTimeMs:       getInt64(data, "load_event_end"),
+		FirstPaintMs:     getInt64(data, "first_paint"),
+		DOMContentLoaded: getInt64(data, "dom_content_loaded"),
+	}
+
+	if ts, ok := data["timestamp"].(string); ok {
+		if t, err := time.Parse(time.RFC3339, ts); err == nil {
+			compact.Timestamp = t
+		}
+	}
+
+	// Truncate URL if too long
+	if len(compact.URL) > 100 {
+		compact.URL = compact.URL[:97] + "..."
+	}
+
+	return compact
+}
+
+func convertToCompactInteraction(data map[string]interface{}) CompactInteraction {
+	compact := CompactInteraction{
+		Type: getString(data, "event_type"),
+	}
+
+	if compact.Type == "" {
+		compact.Type = getString(data, "type")
+	}
+
+	// Extract target info
+	if target, ok := data["target"].(map[string]interface{}); ok {
+		selector := getString(target, "selector")
+		if selector != "" {
+			compact.Target = selector
+		} else {
+			tag := getString(target, "tag_name")
+			id := getString(target, "id")
+			if id != "" {
+				compact.Target = fmt.Sprintf("%s#%s", tag, id)
+			} else {
+				compact.Target = tag
+			}
+		}
+	}
+
+	if ts, ok := data["timestamp"].(string); ok {
+		if t, err := time.Parse(time.RFC3339, ts); err == nil {
+			compact.Timestamp = t
+		}
+	}
+
+	// Truncate target if too long
+	if len(compact.Target) > 80 {
+		compact.Target = compact.Target[:77] + "..."
+	}
+
+	return compact
+}
+
+func convertToCompactMutation(data map[string]interface{}) CompactMutation {
+	compact := CompactMutation{
+		Type: getString(data, "type"),
+	}
+
+	// Extract target info
+	if target, ok := data["target"].(map[string]interface{}); ok {
+		selector := getString(target, "selector")
+		if selector != "" {
+			compact.Target = selector
+		} else {
+			tag := getString(target, "tag_name")
+			id := getString(target, "id")
+			if id != "" {
+				compact.Target = fmt.Sprintf("%s#%s", tag, id)
+			} else {
+				compact.Target = tag
+			}
+		}
+	}
+
+	// Count nodes if available
+	if nodes, ok := data["nodes"].([]interface{}); ok {
+		compact.Count = len(nodes)
+	}
+
+	if ts, ok := data["timestamp"].(string); ok {
+		if t, err := time.Parse(time.RFC3339, ts); err == nil {
+			compact.Timestamp = t
+		}
+	}
+
+	// Truncate target if too long
+	if len(compact.Target) > 80 {
+		compact.Target = compact.Target[:77] + "..."
+	}
+
+	return compact
+}
+
+func convertToCompactLogEntry(data map[string]interface{}) CompactLogEntry {
+	compact := CompactLogEntry{
+		Type:    getString(data, "type"),
+		Message: getString(data, "message"),
+	}
+
+	if compact.Message == "" {
+		compact.Message = getString(data, "level")
+	}
+
+	if ts, ok := data["timestamp"].(string); ok {
+		if t, err := time.Parse(time.RFC3339, ts); err == nil {
+			compact.Timestamp = t
+		}
+	}
+
+	// Truncate message if too long
+	if len(compact.Message) > 200 {
+		compact.Message = compact.Message[:197] + "..."
+	}
+
+	return compact
 }
 
 func (dt *DaemonTools) handleCurrentPageClear(input CurrentPageInput) (*mcp.CallToolResult, CurrentPageOutput, error) {
