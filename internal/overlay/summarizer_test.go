@@ -5,15 +5,21 @@ import (
 	"testing"
 
 	"github.com/standardbeagle/agnt/internal/aichannel"
+	"github.com/standardbeagle/agnt/internal/daemon"
 )
+
+// testConn returns a nil connection for tests that don't need daemon connectivity.
+// The summarizer only uses the connection during Summarize(), which these tests don't call.
+func testConn() *daemon.Conn {
+	return daemon.NewConn("/tmp/test.sock")
+}
 
 func TestNewSummarizer(t *testing.T) {
 	config := SummarizerConfig{
-		SocketPath: "/tmp/test.sock",
-		Agent:      aichannel.AgentClaude,
+		Agent: aichannel.AgentClaude,
 	}
 
-	s := NewSummarizer(config)
+	s := NewSummarizer(testConn(), config)
 	if s == nil {
 		t.Fatal("NewSummarizer returned nil")
 	}
@@ -38,11 +44,10 @@ func TestNewSummarizer_NonJSONAgent(t *testing.T) {
 	// Test with an agent that doesn't support JSON (e.g., Copilot)
 	// Non-Claude agents should auto-enable API mode
 	config := SummarizerConfig{
-		SocketPath: "/tmp/test.sock",
-		Agent:      aichannel.AgentCopilot,
+		Agent: aichannel.AgentCopilot,
 	}
 
-	s := NewSummarizer(config)
+	s := NewSummarizer(testConn(), config)
 	if s == nil {
 		t.Fatal("NewSummarizer returned nil")
 	}
@@ -57,11 +62,10 @@ func TestNewSummarizer_NonJSONAgent(t *testing.T) {
 func TestNewSummarizer_ClaudeUsesCliMode(t *testing.T) {
 	// Claude agent should use CLI mode (Claude Code Max plan only supports CLI)
 	config := SummarizerConfig{
-		SocketPath: "/tmp/test.sock",
-		Agent:      aichannel.AgentClaude,
+		Agent: aichannel.AgentClaude,
 	}
 
-	s := NewSummarizer(config)
+	s := NewSummarizer(testConn(), config)
 	if s == nil {
 		t.Fatal("NewSummarizer returned nil")
 	}
@@ -76,13 +80,12 @@ func TestNewSummarizer_ClaudeUsesCliMode(t *testing.T) {
 func TestNewSummarizer_ClaudeCanForceAPIMode(t *testing.T) {
 	// Even Claude can be forced to API mode if explicitly requested
 	config := SummarizerConfig{
-		SocketPath: "/tmp/test.sock",
-		Agent:      aichannel.AgentClaude,
-		UseAPI:     true,
-		APIKey:     "test-key",
+		Agent:  aichannel.AgentClaude,
+		UseAPI: true,
+		APIKey: "test-key",
 	}
 
-	s := NewSummarizer(config)
+	s := NewSummarizer(testConn(), config)
 	if s == nil {
 		t.Fatal("NewSummarizer returned nil")
 	}
@@ -106,11 +109,10 @@ func TestNewSummarizer_NonClaudeAgentsUseAPIMode(t *testing.T) {
 	for _, agent := range agents {
 		t.Run(string(agent), func(t *testing.T) {
 			config := SummarizerConfig{
-				SocketPath: "/tmp/test.sock",
-				Agent:      agent,
+				Agent: agent,
 			}
 
-			s := NewSummarizer(config)
+			s := NewSummarizer(testConn(), config)
 			cfg := s.channel.Config()
 
 			if !cfg.UseAPI {
@@ -148,12 +150,11 @@ func TestSummarizer_IsAvailable_NotInstalled(t *testing.T) {
 	}()
 
 	config := SummarizerConfig{
-		SocketPath: "/tmp/test.sock",
-		Agent:      aichannel.AgentCustom,
+		Agent:   aichannel.AgentCustom,
+		Command: "nonexistent-ai-tool-12345",
 	}
-	config.Command = "nonexistent-ai-tool-12345"
 
-	s := NewSummarizer(config)
+	s := NewSummarizer(testConn(), config)
 	if s.IsAvailable() {
 		t.Error("IsAvailable should return false for non-existent command without API keys")
 	}
@@ -228,7 +229,7 @@ func TestContainsErrorPatterns(t *testing.T) {
 }
 
 func TestSummarizer_BuildContext(t *testing.T) {
-	s := NewSummarizer(SummarizerConfig{
+	s := NewSummarizer(testConn(), SummarizerConfig{
 		Agent: aichannel.AgentClaude,
 	})
 
@@ -276,7 +277,7 @@ func TestSummarizer_BuildContext(t *testing.T) {
 }
 
 func TestSummarizer_BuildContext_Empty(t *testing.T) {
-	s := NewSummarizer(SummarizerConfig{
+	s := NewSummarizer(testConn(), SummarizerConfig{
 		Agent: aichannel.AgentClaude,
 	})
 
@@ -291,7 +292,7 @@ func TestSummarizer_BuildContext_Empty(t *testing.T) {
 }
 
 func TestSummarizer_BuildPrompt(t *testing.T) {
-	s := NewSummarizer(SummarizerConfig{
+	s := NewSummarizer(testConn(), SummarizerConfig{
 		Agent: aichannel.AgentClaude,
 	})
 

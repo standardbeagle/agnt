@@ -14,16 +14,17 @@ import (
 )
 
 // Summarizer aggregates system status and uses an AI channel to generate summaries.
+// It uses a shared daemon.Conn for all requests.
 type Summarizer struct {
-	socketPath  string
+	conn        *daemon.Conn
 	channel     *aichannel.Channel
 	debugOutput io.Writer
 }
 
 // SummarizerConfig configures the Summarizer.
 type SummarizerConfig struct {
-	SocketPath string
-	Agent      aichannel.AgentType
+	// Agent type for AI summarization
+	Agent aichannel.AgentType
 	// Optional custom command (overrides agent default)
 	Command string
 	// Optional additional args
@@ -46,11 +47,11 @@ type SummarizerConfig struct {
 	Model string
 }
 
-// NewSummarizer creates a new Summarizer.
+// NewSummarizer creates a new Summarizer using a shared connection.
 // For Claude agent, uses CLI mode (required for Claude Code Max plan).
 // For all other agents, automatically uses Anthropic API mode as a fallback
 // since those CLIs may not be available or may require their own subscriptions.
-func NewSummarizer(config SummarizerConfig) *Summarizer {
+func NewSummarizer(conn *daemon.Conn, config SummarizerConfig) *Summarizer {
 	channelConfig := aichannel.Config{
 		Agent:   config.Agent,
 		Command: config.Command,
@@ -80,7 +81,7 @@ func NewSummarizer(config SummarizerConfig) *Summarizer {
 	}
 
 	return &Summarizer{
-		socketPath:  config.SocketPath,
+		conn:        conn,
 		channel:     aichannel.NewWithConfig(channelConfig),
 		debugOutput: config.DebugOutput,
 	}
@@ -129,26 +130,25 @@ type ProxySummary struct {
 	ListenAddr string
 	ErrorCount int
 	PageCount  int
+	RecentLogs string // Recent log entries (errors, panel messages, etc.)
 }
 
 // Summarize aggregates all system data and generates a summary.
 func (s *Summarizer) Summarize(ctx context.Context) (*SummaryResult, error) {
 	start := time.Now()
 
-	// Connect to daemon
-	client, err := s.createClient()
-	if err != nil {
+	// Ensure connection is established
+	if err := s.conn.EnsureConnected(); err != nil {
 		return nil, fmt.Errorf("failed to connect to daemon: %w", err)
 	}
-	defer client.Close()
 
 	// Gather all data
-	processes, err := s.gatherProcesses(client)
+	processes, err := s.gatherProcesses()
 	if err != nil {
 		return nil, fmt.Errorf("failed to gather process data: %w", err)
 	}
 
-	proxies, err := s.gatherProxies(client)
+	proxies, err := s.gatherProxies()
 	if err != nil {
 		return nil, fmt.Errorf("failed to gather proxy data: %w", err)
 	}
@@ -205,22 +205,11 @@ func (s *Summarizer) Summarize(ctx context.Context) (*SummaryResult, error) {
 	}, nil
 }
 
-func (s *Summarizer) createClient() (*daemon.Client, error) {
-	opts := []daemon.ClientOption{}
-	if s.socketPath != "" {
-		opts = append(opts, daemon.WithSocketPath(s.socketPath))
-	}
-
-	client := daemon.NewClient(opts...)
-	if err := client.Connect(); err != nil {
-		return nil, err
-	}
-	return client, nil
-}
-
-func (s *Summarizer) gatherProcesses(client *daemon.Client) ([]ProcessSummary, error) {
-	// Get process list
-	result, err := client.ProcList(protocol.DirectoryFilter{Global: true})
+func (s *Summarizer) gatherProcesses() ([]ProcessSummary, error) {
+	// Get process list using request builder
+	result, err := s.conn.Request(protocol.VerbProc, protocol.SubVerbList).
+		WithJSON(protocol.DirectoryFilter{Global: true}).
+		JSON()
 	if err != nil {
 		return nil, err
 	}
@@ -250,11 +239,9 @@ func (s *Summarizer) gatherProcesses(client *daemon.Client) ([]ProcessSummary, e
 
 		// Fetch last 50 lines of output
 		if summary.ID != "" {
-			filter := protocol.OutputFilter{
-				Stream: "combined",
-				Tail:   50,
-			}
-			output, err := client.ProcOutput(summary.ID, filter)
+			output, err := s.conn.Request(protocol.VerbProc, protocol.SubVerbOutput, summary.ID).
+				WithArgs("stream=combined", "tail=50").
+				String()
 			if err == nil {
 				summary.Output = output
 				// Check for error patterns in output
@@ -268,9 +255,11 @@ func (s *Summarizer) gatherProcesses(client *daemon.Client) ([]ProcessSummary, e
 	return processes, nil
 }
 
-func (s *Summarizer) gatherProxies(client *daemon.Client) ([]ProxySummary, error) {
-	// Get proxy list
-	result, err := client.ProxyList(protocol.DirectoryFilter{Global: true})
+func (s *Summarizer) gatherProxies() ([]ProxySummary, error) {
+	// Get proxy list using request builder
+	result, err := s.conn.Request(protocol.VerbProxy, protocol.SubVerbList).
+		WithJSON(protocol.DirectoryFilter{Global: true}).
+		JSON()
 	if err != nil {
 		return nil, err
 	}
@@ -305,18 +294,67 @@ func (s *Summarizer) gatherProxies(client *daemon.Client) ([]ProxySummary, error
 			}
 		}
 
-		// Get page count
-		pagesResult, err := client.CurrentPageList(summary.ID)
+		// Get page count using request builder
+		pagesResult, err := s.conn.Request(protocol.VerbCurrentPage, protocol.SubVerbList, summary.ID).JSON()
 		if err == nil {
 			if sessions, ok := pagesResult["sessions"].([]interface{}); ok {
 				summary.PageCount = len(sessions)
 			}
 		}
 
+		// Get recent proxy logs (errors, panel messages, custom logs)
+		// Include multiple log types that are useful for summarization
+		logFilter := protocol.LogQueryFilter{
+			Types: []string{"error", "panel_message", "custom", "sketch"},
+			Limit: 20, // Last 20 relevant entries
+		}
+		logsResult, err := s.conn.Request(protocol.VerbProxyLog, protocol.SubVerbQuery, summary.ID).
+			WithJSON(logFilter).
+			JSON()
+		if err == nil {
+			summary.RecentLogs = formatProxyLogs(logsResult)
+		}
+
 		proxies = append(proxies, summary)
 	}
 
 	return proxies, nil
+}
+
+// formatProxyLogs formats proxy log entries for the AI context.
+func formatProxyLogs(result map[string]interface{}) string {
+	entries, ok := result["entries"].([]interface{})
+	if !ok || len(entries) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	for _, entry := range entries {
+		em, ok := entry.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		logType, _ := em["type"].(string)
+		timestamp, _ := em["timestamp"].(string)
+
+		switch logType {
+		case "error":
+			message, _ := em["message"].(string)
+			sb.WriteString(fmt.Sprintf("  [ERROR %s] %s\n", timestamp, message))
+		case "panel_message":
+			message, _ := em["message"].(string)
+			sb.WriteString(fmt.Sprintf("  [PANEL %s] %s\n", timestamp, message))
+		case "custom":
+			level, _ := em["level"].(string)
+			message, _ := em["message"].(string)
+			sb.WriteString(fmt.Sprintf("  [%s %s] %s\n", strings.ToUpper(level), timestamp, message))
+		case "sketch":
+			sb.WriteString(fmt.Sprintf("  [SKETCH %s] User created a sketch/wireframe\n", timestamp))
+		}
+	}
+
+	return sb.String()
 }
 
 func (s *Summarizer) buildContext(processes []ProcessSummary, proxies []ProxySummary) string {
@@ -352,6 +390,10 @@ func (s *Summarizer) buildContext(processes []ProcessSummary, proxies []ProxySum
 			sb.WriteString(fmt.Sprintf("Listen: %s\n", p.ListenAddr))
 			sb.WriteString(fmt.Sprintf("Error Count: %d\n", p.ErrorCount))
 			sb.WriteString(fmt.Sprintf("Active Pages: %d\n", p.PageCount))
+			if p.RecentLogs != "" {
+				sb.WriteString("Recent Logs (errors, messages):\n")
+				sb.WriteString(p.RecentLogs)
+			}
 		}
 	}
 
@@ -360,24 +402,29 @@ func (s *Summarizer) buildContext(processes []ProcessSummary, proxies []ProxySum
 
 // buildSummarySystemPrompt returns the system prompt for API mode.
 func buildSummarySystemPrompt() string {
-	return `You are a concise system status summarizer. Analyze system status and provide VERY BRIEF summaries (2-5 lines max).
+	return `You are a concise system status summarizer.
 
-CRITICAL: Be extremely concise. Your output will be displayed in a small terminal indicator.
+CRITICAL RULES:
+1. ONLY summarize the data provided to you - DO NOT scan files, explore the codebase, or use any external information
+2. Be extremely concise (2-5 lines max) - this will be displayed in a small terminal indicator
+3. Base your summary ENTIRELY on the process output and proxy logs provided
 
 Format:
 - If healthy: "✓ All systems OK" (single line)
 - If issues: Brief bullet points, max 3-4 items
 
 Focus ONLY on:
-• Active errors or failures (ignore warnings/info)
-• Critical state changes
-• Actionable issues
+• Active errors or failures from the provided output
+• Critical state changes visible in the data
+• Actionable issues mentioned in the logs
 
-DO NOT include:
-• Explanations or context
-• Full stack traces
-• Suggestions or fixes (unless trivially obvious)
-• Process/proxy IDs unless relevant to error
+DO NOT:
+• Read or scan any files
+• Explore the codebase
+• Add explanations or context beyond what's in the data
+• Include full stack traces
+• Suggest fixes unless trivially obvious from the data
+• Include process/proxy IDs unless relevant to an error
 
 Example good response:
 "✓ 2 processes running, 1 proxy active"
@@ -391,28 +438,33 @@ func (s *Summarizer) buildPrompt() string {
 	// For API mode, the system prompt contains the instructions,
 	// so we just need to ask for the analysis
 	if s.channel.IsAPIMode() {
-		return "Analyze the provided system status and summarize."
+		return "Analyze ONLY the provided system status data and summarize. Do not scan files or explore the codebase."
 	}
 
 	// For CLI mode, include full instructions in the prompt
 	return `Analyze the system status and provide a VERY BRIEF summary (2-5 lines max).
 
-CRITICAL: Be extremely concise. This will be displayed in a small terminal indicator.
+CRITICAL RULES:
+1. ONLY summarize the data provided to you - DO NOT scan files, explore the codebase, or use any external information
+2. Be extremely concise (2-5 lines max) - this will be displayed in a small terminal indicator
+3. Base your summary ENTIRELY on the process output and proxy logs provided
 
 Format:
 - If healthy: "✓ All systems OK" (single line)
 - If issues: Brief bullet points, max 3-4 items
 
 Focus ONLY on:
-• Active errors or failures (ignore warnings/info)
-• Critical state changes
-• Actionable issues
+• Active errors or failures from the provided output
+• Critical state changes visible in the data
+• Actionable issues mentioned in the logs
 
-DO NOT include:
-• Explanations or context
-• Full stack traces
-• Suggestions or fixes (unless trivially obvious)
-• Process/proxy IDs unless relevant to error
+DO NOT:
+• Read or scan any files
+• Explore the codebase
+• Add explanations or context beyond what's in the data
+• Include full stack traces
+• Suggest fixes unless trivially obvious from the data
+• Include process/proxy IDs unless relevant to an error
 
 Example good response:
 "✓ 2 processes running, 1 proxy active"

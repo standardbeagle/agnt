@@ -365,3 +365,19 @@ func (o *Overlay) Redraw() {
 	defer o.mu.Unlock()
 	o.draw()
 }
+
+// DrawStatusBarMessage draws a message on the status bar.
+// This is used for transient messages like spinner updates.
+// Note: The caller should call Redraw() or DrawIndicator() when done
+// to restore the normal status bar.
+func (o *Overlay) DrawStatusBarMessage(message string) {
+	o.renderer.DrawStatusBarMessage(message)
+}
+
+// RedrawIndicator redraws just the status bar indicator with current status.
+func (o *Overlay) RedrawIndicator() {
+	o.statusMu.RLock()
+	status := o.status
+	o.statusMu.RUnlock()
+	o.renderer.DrawIndicator(status)
+}

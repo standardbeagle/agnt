@@ -81,28 +81,22 @@ func detectTailscaleDNS() string {
 }
 
 // StatusFetcher fetches status from the daemon periodically.
+// It uses a shared daemon.Conn for all requests.
 type StatusFetcher struct {
-	client     *daemon.Client
-	overlay    *Overlay
-	interval   time.Duration
-	socketPath string
+	conn     *daemon.Conn
+	overlay  *Overlay
+	interval time.Duration
 
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 }
 
-// NewStatusFetcher creates a new StatusFetcher.
-func NewStatusFetcher(socketPath string, overlay *Overlay, interval time.Duration) *StatusFetcher {
-	opts := []daemon.ClientOption{}
-	if socketPath != "" {
-		opts = append(opts, daemon.WithSocketPath(socketPath))
-	}
-
+// NewStatusFetcher creates a new StatusFetcher using a shared connection.
+func NewStatusFetcher(conn *daemon.Conn, overlay *Overlay, interval time.Duration) *StatusFetcher {
 	return &StatusFetcher{
-		client:     daemon.NewClient(opts...),
-		overlay:    overlay,
-		interval:   interval,
-		socketPath: socketPath,
+		conn:     conn,
+		overlay:  overlay,
+		interval: interval,
 	}
 }
 
@@ -153,13 +147,12 @@ func (f *StatusFetcher) fetchStatus() {
 
 	// Check daemon connection with ping
 	start := time.Now()
-	err := f.client.Connect()
+	err := f.conn.EnsureConnected()
 	if err != nil {
 		status.DaemonConnected = ConnectionDisconnected
 		f.overlay.UpdateStatus(status)
 		return
 	}
-	defer f.client.Close()
 
 	// Simple ping by requesting process list (lightweight)
 	pingMs := time.Since(start).Milliseconds()
@@ -200,8 +193,10 @@ func (f *StatusFetcher) fetchStatus() {
 }
 
 func (f *StatusFetcher) fetchProcesses() ([]ProcessInfo, error) {
-	// Use ProcList with global filter to get all processes
-	result, err := f.client.ProcList(protocol.DirectoryFilter{Global: true})
+	// Use request builder with global filter
+	result, err := f.conn.Request(protocol.VerbProc, protocol.SubVerbList).
+		WithJSON(protocol.DirectoryFilter{Global: true}).
+		JSON()
 	if err != nil {
 		return nil, err
 	}
@@ -239,8 +234,10 @@ func (f *StatusFetcher) fetchProcesses() ([]ProcessInfo, error) {
 }
 
 func (f *StatusFetcher) fetchProxies() ([]ProxyInfo, error) {
-	// Use ProxyList with global filter to get all proxies
-	result, err := f.client.ProxyList(protocol.DirectoryFilter{Global: true})
+	// Use request builder with global filter
+	result, err := f.conn.Request(protocol.VerbProxy, protocol.SubVerbList).
+		WithJSON(protocol.DirectoryFilter{Global: true}).
+		JSON()
 	if err != nil {
 		return nil, err
 	}
@@ -315,14 +312,16 @@ func (f *StatusFetcher) fetchRecentErrors() ([]ErrorInfo, error) {
 	cutoff := time.Now().Add(-5 * time.Minute)
 
 	for _, proxy := range proxies {
-		// Use ProxyLogQuery to get error logs
+		// Use request builder for proxy log query
 		filter := protocol.LogQueryFilter{
 			Types: []string{"error"},
 			Since: cutoff.Format(time.RFC3339),
 			Limit: 10,
 		}
 
-		result, err := f.client.ProxyLogQuery(proxy.ID, filter)
+		result, err := f.conn.Request(protocol.VerbProxyLog, protocol.SubVerbQuery, proxy.ID).
+			WithJSON(filter).
+			JSON()
 		if err != nil {
 			continue
 		}
@@ -368,8 +367,8 @@ func (f *StatusFetcher) fetchBrowserSessions(proxies []ProxyInfo) ([]BrowserSess
 	var sessions []BrowserSession
 
 	for _, proxy := range proxies {
-		// Use CurrentPageList to get page sessions for this proxy
-		result, err := f.client.CurrentPageList(proxy.ID)
+		// Use request builder for current page list
+		result, err := f.conn.Request(protocol.VerbCurrentPage, protocol.SubVerbList, proxy.ID).JSON()
 		if err != nil {
 			continue
 		}
@@ -495,12 +494,10 @@ func (f *StatusFetcher) fetchLastOutputForProcesses(processes []ProcessInfo) {
 			continue
 		}
 
-		// Fetch last line of output
-		filter := protocol.OutputFilter{
-			Stream: "combined",
-			Tail:   1,
-		}
-		output, err := f.client.ProcOutput(proc.ID, filter)
+		// Fetch last line of output using request builder
+		output, err := f.conn.Request(protocol.VerbProc, protocol.SubVerbOutput, proc.ID).
+			WithArgs("stream=combined", "tail=1").
+			String()
 		if err != nil {
 			continue
 		}
@@ -530,125 +527,21 @@ func (f *StatusFetcher) fetchLastOutputForProcesses(processes []ProcessInfo) {
 	}
 }
 
-// DaemonBashRunner implements BashRunner using the daemon client.
+// DaemonBashRunner implements BashRunner using a shared daemon connection.
 type DaemonBashRunner struct {
-	socketPath string
-	counter    atomic.Int64
+	conn    *daemon.Conn
+	counter atomic.Int64
 }
 
-// DaemonOutputFetcher implements ProcessOutputFetcher using the daemon client.
-type DaemonOutputFetcher struct {
-	socketPath string
-}
-
-// NewDaemonOutputFetcher creates a new DaemonOutputFetcher.
-func NewDaemonOutputFetcher(socketPath string) *DaemonOutputFetcher {
-	return &DaemonOutputFetcher{
-		socketPath: socketPath,
-	}
-}
-
-// GetProcessOutput fetches the last N lines of output for a process.
-func (f *DaemonOutputFetcher) GetProcessOutput(processID string, tailLines int) (string, error) {
-	// Create daemon client
-	opts := []daemon.ClientOption{}
-	if f.socketPath != "" {
-		opts = append(opts, daemon.WithSocketPath(f.socketPath))
-	}
-	client := daemon.NewClient(opts...)
-
-	if err := client.Connect(); err != nil {
-		return "", fmt.Errorf("failed to connect to daemon: %w", err)
-	}
-	defer client.Close()
-
-	// Fetch output with tail filter
-	filter := protocol.OutputFilter{
-		Stream: "combined",
-		Tail:   tailLines,
-	}
-
-	output, err := client.ProcOutput(processID, filter)
-	if err != nil {
-		return "", err
-	}
-
-	return output, nil
-}
-
-// NewDaemonBashRunner creates a new DaemonBashRunner.
-func NewDaemonBashRunner(socketPath string) *DaemonBashRunner {
+// NewDaemonBashRunner creates a new DaemonBashRunner using a shared connection.
+func NewDaemonBashRunner(conn *daemon.Conn) *DaemonBashRunner {
 	return &DaemonBashRunner{
-		socketPath: socketPath,
+		conn: conn,
 	}
-}
-
-// DaemonConnectorImpl implements DaemonConnector using auto-start client.
-type DaemonConnectorImpl struct {
-	socketPath string
-}
-
-// NewDaemonConnector creates a new DaemonConnector.
-func NewDaemonConnector(socketPath string) *DaemonConnectorImpl {
-	return &DaemonConnectorImpl{
-		socketPath: socketPath,
-	}
-}
-
-// Connect attempts to connect to the daemon, auto-starting it if needed.
-func (c *DaemonConnectorImpl) Connect() error {
-	socketPath := c.socketPath
-	if socketPath == "" {
-		socketPath = daemon.DefaultSocketPath()
-	}
-
-	// First clean up any zombie daemons
-	daemon.CleanupZombieDaemons(socketPath)
-
-	config := daemon.AutoStartConfig{
-		SocketPath:    socketPath,
-		StartTimeout:  5 * time.Second,
-		RetryInterval: 100 * time.Millisecond,
-		MaxRetries:    50,
-	}
-	client := daemon.NewAutoStartClient(config)
-
-	if err := client.Connect(); err != nil {
-		return err
-	}
-	client.Close()
-	return nil
-}
-
-// IsConnected returns true if currently connected to the daemon.
-func (c *DaemonConnectorImpl) IsConnected() bool {
-	socketPath := c.socketPath
-	if socketPath == "" {
-		socketPath = daemon.DefaultSocketPath()
-	}
-	return daemon.IsDaemonRunning(socketPath)
 }
 
 // RunBashCommand runs a bash command via the daemon and returns the process ID.
 func (r *DaemonBashRunner) RunBashCommand(command string) (string, error) {
-	// Create daemon client with auto-start capability
-	socketPath := r.socketPath
-	if socketPath == "" {
-		socketPath = daemon.DefaultSocketPath()
-	}
-	config := daemon.AutoStartConfig{
-		SocketPath:    socketPath,
-		StartTimeout:  5 * time.Second,
-		RetryInterval: 100 * time.Millisecond,
-		MaxRetries:    50,
-	}
-	client := daemon.NewAutoStartClient(config)
-
-	if err := client.Connect(); err != nil {
-		return "", fmt.Errorf("failed to connect to daemon: %w", err)
-	}
-	defer client.Close()
-
 	// Generate unique process ID
 	count := r.counter.Add(1)
 	processID := fmt.Sprintf("bash-%d-%d", time.Now().Unix(), count)
@@ -659,7 +552,7 @@ func (r *DaemonBashRunner) RunBashCommand(command string) (string, error) {
 		cwd = "."
 	}
 
-	// Run the command via the daemon
+	// Run the command via the daemon using request builder
 	runConfig := protocol.RunConfig{
 		ID:      processID,
 		Path:    cwd,
@@ -669,10 +562,79 @@ func (r *DaemonBashRunner) RunBashCommand(command string) (string, error) {
 		Args:    []string{"-c", command},
 	}
 
-	_, err = client.Run(runConfig)
+	_, err = r.conn.Request(protocol.VerbRunJSON).
+		WithJSON(runConfig).
+		JSON()
 	if err != nil {
 		return "", fmt.Errorf("failed to run command: %w", err)
 	}
 
 	return processID, nil
+}
+
+// DaemonOutputFetcher implements ProcessOutputFetcher using a shared daemon connection.
+type DaemonOutputFetcher struct {
+	conn *daemon.Conn
+}
+
+// NewDaemonOutputFetcher creates a new DaemonOutputFetcher using a shared connection.
+func NewDaemonOutputFetcher(conn *daemon.Conn) *DaemonOutputFetcher {
+	return &DaemonOutputFetcher{
+		conn: conn,
+	}
+}
+
+// GetProcessOutput fetches the last N lines of output for a process.
+func (f *DaemonOutputFetcher) GetProcessOutput(processID string, tailLines int) (string, error) {
+	// Fetch output with tail filter using request builder
+	output, err := f.conn.Request(protocol.VerbProc, protocol.SubVerbOutput, processID).
+		WithArgs(fmt.Sprintf("stream=combined"), fmt.Sprintf("tail=%d", tailLines)).
+		String()
+	if err != nil {
+		return "", err
+	}
+
+	return output, nil
+}
+
+// DaemonConnectorImpl implements DaemonConnector using a shared connection.
+type DaemonConnectorImpl struct {
+	conn *daemon.Conn
+}
+
+// NewDaemonConnector creates a new DaemonConnector using a shared connection.
+func NewDaemonConnector(conn *daemon.Conn) *DaemonConnectorImpl {
+	return &DaemonConnectorImpl{
+		conn: conn,
+	}
+}
+
+// Connect attempts to connect to the daemon, auto-starting it if needed.
+func (c *DaemonConnectorImpl) Connect() error {
+	socketPath := c.conn.SocketPath()
+
+	// First clean up any zombie daemons
+	daemon.CleanupZombieDaemons(socketPath)
+
+	// Use auto-start client to ensure daemon is running
+	config := daemon.AutoStartConfig{
+		SocketPath:    socketPath,
+		StartTimeout:  5 * time.Second,
+		RetryInterval: 100 * time.Millisecond,
+		MaxRetries:    50,
+	}
+	autoClient := daemon.NewAutoStartClient(config)
+
+	if err := autoClient.Connect(); err != nil {
+		return err
+	}
+	autoClient.Close()
+
+	// Now connect the shared connection
+	return c.conn.EnsureConnected()
+}
+
+// IsConnected returns true if currently connected to the daemon.
+func (c *DaemonConnectorImpl) IsConnected() bool {
+	return c.conn.IsConnected()
 }

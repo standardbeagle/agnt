@@ -1170,3 +1170,38 @@ func (r *Renderer) DrawProcessOutput(processID, command, state, output string) {
 	r.write(footer)
 	r.write(Reset)
 }
+
+// DrawStatusBarMessage draws a message on the status bar at the bottom of the screen.
+// Use this for transient status updates like spinners.
+func (r *Renderer) DrawStatusBarMessage(message string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.write(CursorSave + CursorHide)
+	r.moveTo(r.height, 1)
+	r.write(ClearLine)
+
+	// Draw the message with status bar styling
+	r.write(BgBrightBlack + FgWhite)
+	displayMsg := " " + message
+	// Pad to fill the status bar width
+	if len(displayMsg) < r.width {
+		displayMsg += strings.Repeat(" ", r.width-len(displayMsg))
+	}
+	r.write(displayMsg)
+	r.write(Reset)
+
+	r.write(CursorRestore + CursorShow)
+}
+
+// ClearStatusBarMessage clears any message on the status bar.
+// After clearing, the regular indicator should be redrawn.
+func (r *Renderer) ClearStatusBarMessage() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.write(CursorSave + CursorHide)
+	r.moveTo(r.height, 1)
+	r.write(ClearLine)
+	r.write(CursorRestore + CursorShow)
+}

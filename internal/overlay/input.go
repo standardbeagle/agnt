@@ -457,25 +457,23 @@ func (r *InputRouter) executeMenuItem(item MenuItem) {
 		// Release lock during AI call (can take time)
 		r.overlay.mu.Unlock()
 
-		// Start spinner in background
+		// Start spinner in status bar
 		spinnerDone := make(chan struct{})
 		go func() {
 			frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 			i := 0
-			// Initial message
-			io.WriteString(r.ptmx, "\r\n[agnt] Summarizing system status "+frames[0]+" ")
+			// Initial message on status bar
+			r.overlay.DrawStatusBarMessage(fmt.Sprintf("%s Summarizing system status...", frames[0]))
 			ticker := time.NewTicker(100 * time.Millisecond)
 			defer ticker.Stop()
 			for {
 				select {
 				case <-spinnerDone:
-					// Clear spinner line and move to next line
-					io.WriteString(r.ptmx, "\r\x1b[K")
 					return
 				case <-ticker.C:
 					i = (i + 1) % len(frames)
-					// Overwrite the spinner character
-					io.WriteString(r.ptmx, fmt.Sprintf("\r[agnt] Summarizing system status %s ", frames[i]))
+					// Update spinner on status bar (in place)
+					r.overlay.DrawStatusBarMessage(fmt.Sprintf("%s Summarizing system status...", frames[i]))
 				}
 			}
 		}()
@@ -485,13 +483,15 @@ func (r *InputRouter) executeMenuItem(item MenuItem) {
 		result, err := r.summarizer.Summarize(ctx)
 		cancel()
 
-		// Stop spinner
+		// Stop spinner and restore status bar
 		close(spinnerDone)
 		// Small delay to ensure spinner cleanup completes
 		time.Sleep(50 * time.Millisecond)
+		// Restore the normal status bar indicator
+		r.overlay.RedrawIndicator()
 
 		if err != nil {
-			io.WriteString(r.ptmx, "[agnt] Summary failed: "+err.Error()+"\r\n")
+			io.WriteString(r.ptmx, "\r\n[agnt] Summary failed: "+err.Error()+"\r\n")
 		} else {
 			// Inject summary into PTY
 			io.WriteString(r.ptmx, "\r\n--- Status Summary ---\r\n")

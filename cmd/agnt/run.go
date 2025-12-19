@@ -383,21 +383,24 @@ func runWithPTY(ctx context.Context, args []string, socketPath string, sessionCo
 		termOverlay.SetGate(outputGate) // Give overlay control of the gate
 		inputRouter = overlay.NewInputRouter(ptmx, termOverlay, overlayHotkey)
 
-		// Set up bash runner, output fetcher, and daemon connector for daemon communication
+		// Create shared daemon connection for all components
 		socketPath, _ := rootCmd.Flags().GetString("socket")
-		bashRunner := overlay.NewDaemonBashRunner(socketPath)
+		daemonConn := daemon.NewConn(socketPath)
+		defer daemonConn.Close()
+
+		// Set up bash runner, output fetcher, and daemon connector using shared connection
+		bashRunner := overlay.NewDaemonBashRunner(daemonConn)
 		inputRouter.SetBashRunner(bashRunner)
-		outputFetcher := overlay.NewDaemonOutputFetcher(socketPath)
+		outputFetcher := overlay.NewDaemonOutputFetcher(daemonConn)
 		inputRouter.SetOutputFetcher(outputFetcher)
-		daemonConnector := overlay.NewDaemonConnector(socketPath)
+		daemonConnector := overlay.NewDaemonConnector(daemonConn)
 		inputRouter.SetDaemonConnector(daemonConnector)
 
 		// Set up summarizer - detect first available AI agent
 		if agent := detectAIAgent(); agent != "" {
-			summarizer := overlay.NewSummarizer(overlay.SummarizerConfig{
-				SocketPath: socketPath,
-				Agent:      aichannel.AgentType(agent),
-				Timeout:    2 * time.Minute,
+			summarizer := overlay.NewSummarizer(daemonConn, overlay.SummarizerConfig{
+				Agent:   aichannel.AgentType(agent),
+				Timeout: 2 * time.Minute,
 			})
 			inputRouter.SetSummarizer(summarizer)
 		}
@@ -417,8 +420,8 @@ func runWithPTY(ctx context.Context, args []string, socketPath string, sessionCo
 			outputFilter = overlay.NewProtectedWriter(outputGate, width, height, filterCfg)
 		}
 
-		// Start status fetcher to update the indicator (reusing socketPath from above)
-		statusFetcher = overlay.NewStatusFetcher(socketPath, termOverlay, 2*time.Second)
+		// Start status fetcher to update the indicator using shared connection
+		statusFetcher = overlay.NewStatusFetcher(daemonConn, termOverlay, 2*time.Second)
 		statusFetcher.Start(ctx)
 		defer statusFetcher.Stop()
 

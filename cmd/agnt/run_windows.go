@@ -396,21 +396,24 @@ func runWithConPTY(ctx context.Context, args []string, socketPath string, sessio
 		termOverlay.SetGate(outputGate)
 		inputRouter = overlay.NewInputRouter(ptmx, termOverlay, overlayHotkey)
 
-		// Set up daemon communication
+		// Create shared daemon connection for all components
 		socketPath, _ := rootCmd.Flags().GetString("socket")
-		bashRunner := overlay.NewDaemonBashRunner(socketPath)
+		daemonConn := daemon.NewConn(socketPath)
+		defer daemonConn.Close()
+
+		// Set up daemon communication using shared connection
+		bashRunner := overlay.NewDaemonBashRunner(daemonConn)
 		inputRouter.SetBashRunner(bashRunner)
-		outputFetcher := overlay.NewDaemonOutputFetcher(socketPath)
+		outputFetcher := overlay.NewDaemonOutputFetcher(daemonConn)
 		inputRouter.SetOutputFetcher(outputFetcher)
-		daemonConnector := overlay.NewDaemonConnector(socketPath)
+		daemonConnector := overlay.NewDaemonConnector(daemonConn)
 		inputRouter.SetDaemonConnector(daemonConnector)
 
-		// Set up summarizer
+		// Set up summarizer using shared connection
 		if agent := detectAIAgent(); agent != "" {
-			summarizer := overlay.NewSummarizer(overlay.SummarizerConfig{
-				SocketPath: socketPath,
-				Agent:      aichannel.AgentType(agent),
-				Timeout:    2 * time.Minute,
+			summarizer := overlay.NewSummarizer(daemonConn, overlay.SummarizerConfig{
+				Agent:   aichannel.AgentType(agent),
+				Timeout: 2 * time.Minute,
 			})
 			inputRouter.SetSummarizer(summarizer)
 		}
@@ -429,8 +432,8 @@ func runWithConPTY(ctx context.Context, args []string, socketPath string, sessio
 			outputFilter = overlay.NewProtectedWriter(outputGate, width, height, filterCfg)
 		}
 
-		// Start status fetcher
-		statusFetcher = overlay.NewStatusFetcher(socketPath, termOverlay, 2*time.Second)
+		// Start status fetcher using shared connection
+		statusFetcher = overlay.NewStatusFetcher(daemonConn, termOverlay, 2*time.Second)
 		statusFetcher.Start(ctx)
 		defer statusFetcher.Stop()
 
