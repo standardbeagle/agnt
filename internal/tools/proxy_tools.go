@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -314,9 +315,9 @@ type ProxyLogOutput struct {
 
 // LogEntryOutput represents a log entry in the output.
 type LogEntryOutput struct {
-	Type      string                 `json:"type"`
-	Timestamp time.Time              `json:"timestamp"`
-	Data      map[string]interface{} `json:"data"`
+	Type      string    `json:"type"`
+	Timestamp time.Time `json:"timestamp"`
+	Data      string    `json:"data"`
 }
 
 // RegisterProxyTools adds proxy-related MCP tools to the server.
@@ -722,6 +723,15 @@ func handleProxyLogQuery(proxyServer *proxy.ProxyServer, input ProxyLogInput) (*
 		entries = entries[:filter.Limit]
 	}
 
+	// Helper to marshal data to JSON string
+	marshalData := func(data map[string]interface{}) string {
+		b, err := json.Marshal(data)
+		if err != nil {
+			return "{}"
+		}
+		return string(b)
+	}
+
 	// Convert to output format
 	output := make([]LogEntryOutput, len(entries))
 	for i, entry := range entries {
@@ -742,7 +752,7 @@ func handleProxyLogQuery(proxyServer *proxy.ProxyServer, input ProxyLogInput) (*
 			output[i] = LogEntryOutput{
 				Type:      string(entry.Type),
 				Timestamp: entry.HTTP.Timestamp,
-				Data:      data,
+				Data:      marshalData(data),
 			}
 
 		case proxy.LogTypeError:
@@ -760,7 +770,7 @@ func handleProxyLogQuery(proxyServer *proxy.ProxyServer, input ProxyLogInput) (*
 			output[i] = LogEntryOutput{
 				Type:      string(entry.Type),
 				Timestamp: entry.Error.Timestamp,
-				Data:      data,
+				Data:      marshalData(data),
 			}
 
 		case proxy.LogTypePerformance:
@@ -782,7 +792,7 @@ func handleProxyLogQuery(proxyServer *proxy.ProxyServer, input ProxyLogInput) (*
 			output[i] = LogEntryOutput{
 				Type:      string(entry.Type),
 				Timestamp: entry.Performance.Timestamp,
-				Data:      data,
+				Data:      marshalData(data),
 			}
 
 		case proxy.LogTypeCustom:
@@ -798,7 +808,7 @@ func handleProxyLogQuery(proxyServer *proxy.ProxyServer, input ProxyLogInput) (*
 			output[i] = LogEntryOutput{
 				Type:      string(entry.Type),
 				Timestamp: entry.Custom.Timestamp,
-				Data:      data,
+				Data:      marshalData(data),
 			}
 
 		case proxy.LogTypeScreenshot:
@@ -815,7 +825,7 @@ func handleProxyLogQuery(proxyServer *proxy.ProxyServer, input ProxyLogInput) (*
 			output[i] = LogEntryOutput{
 				Type:      string(entry.Type),
 				Timestamp: entry.Screenshot.Timestamp,
-				Data:      data,
+				Data:      marshalData(data),
 			}
 
 		case proxy.LogTypeExecution:
@@ -830,7 +840,7 @@ func handleProxyLogQuery(proxyServer *proxy.ProxyServer, input ProxyLogInput) (*
 			output[i] = LogEntryOutput{
 				Type:      string(entry.Type),
 				Timestamp: entry.Execution.Timestamp,
-				Data:      data,
+				Data:      marshalData(data),
 			}
 
 		case proxy.LogTypeResponse:
@@ -845,7 +855,7 @@ func handleProxyLogQuery(proxyServer *proxy.ProxyServer, input ProxyLogInput) (*
 			output[i] = LogEntryOutput{
 				Type:      string(entry.Type),
 				Timestamp: entry.Response.Timestamp,
-				Data:      data,
+				Data:      marshalData(data),
 			}
 		}
 	}
