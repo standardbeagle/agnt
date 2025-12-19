@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -479,11 +480,33 @@ func (f *StatusFetcher) linkProcessesAndProxies(processes []ProcessInfo, proxies
 	}
 }
 
-// fetchLastOutputForProcesses fetches the last output line for each running process.
+// parseURLsFromOutput extracts unique URLs from process output.
+func parseURLsFromOutput(output string) []string {
+	// Regex to match http/https URLs
+	urlRegex := regexp.MustCompile(`https?://[^\s\)\]\}'"]+`)
+	matches := urlRegex.FindAllString(output, -1)
+
+	// Deduplicate and clean URLs
+	seen := make(map[string]bool)
+	var urls []string
+	for _, match := range matches {
+		// Clean trailing punctuation
+		match = strings.TrimRight(match, ".,;:")
+		if !seen[match] {
+			seen[match] = true
+			urls = append(urls, match)
+		}
+	}
+
+	return urls
+}
+
+// fetchLastOutputForProcesses fetches the last output line for each running process
+// and parses URLs from recent output.
 // Limited to first 6 processes to avoid slowing down the status update.
 func (f *StatusFetcher) fetchLastOutputForProcesses(processes []ProcessInfo) {
 	const maxProcesses = 6
-	const maxOutputLen = 120 // Truncate long lines
+	const maxOutputLen = 120 // Truncate long lines for LastOutput
 
 	for i := range processes {
 		if i >= maxProcesses {
@@ -494,21 +517,24 @@ func (f *StatusFetcher) fetchLastOutputForProcesses(processes []ProcessInfo) {
 			continue
 		}
 
-		// Fetch last line of output using request builder
+		// Fetch last 50 lines to search for URLs
 		output, err := f.conn.Request(protocol.VerbProc, protocol.SubVerbOutput, proc.ID).
-			WithArgs("stream=combined", "tail=1").
+			WithArgs("stream=combined", "tail=50").
 			String()
 		if err != nil {
 			continue
 		}
 
-		// Clean up the output
+		// Parse URLs from the output
+		proc.URLs = parseURLsFromOutput(output)
+
+		// Clean up the output for LastOutput field
 		output = strings.TrimSpace(output)
 		if output == "" {
 			continue
 		}
 
-		// Take only the last non-empty line
+		// Take only the last non-empty line for LastOutput
 		lines := strings.Split(output, "\n")
 		for j := len(lines) - 1; j >= 0; j-- {
 			line := strings.TrimSpace(lines[j])
