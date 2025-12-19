@@ -52,11 +52,12 @@
 ### Added
 - Tests for `getProjectPath()` function covering environment variable handling, path edge cases
 - Tests for `normalizePath()` function covering Windows case-insensitivity, UNC paths, special characters
-- **Daemon resource cleanup on client disconnect**: Daemon now automatically stops all processes, proxies, and tunnels when the last MCP client disconnects, while keeping the daemon running for future connections
-  - Added `StopAll()` method to ProcessManager, ProxyManager, and TunnelManager for non-shutdown resource cleanup
-  - Added `StopAllResources()` method to Daemon for coordinated cleanup of all resource types
-  - Daemon tracks client count and triggers cleanup when transitioning from 1 to 0 clients
-  - Includes comprehensive tests for all StopAll implementations with timeout handling
+- **Session-scoped resource cleanup**: When a client that registered a session disconnects, only resources (processes, proxies) for that session's project path are cleaned up
+  - Added `sessionCode` field to Connection to track which session each connection registered
+  - Added `StopByProjectPath()` to ProxyManager (matching existing ProcessManager method)
+  - Added `CleanupSessionResources()` to Daemon for session-targeted cleanup
+  - Comprehensive test `TestSessionBasedCleanup` verifying isolation between sessions
+  - Fixes issue where exiting one session would leave orphaned processes, causing port conflicts for new dev servers
 
 ### Changed
 - **Hash-based default proxy port**: Proxy now auto-assigns a stable port based on FNV-1a hash of target URL (range 10000-60000)

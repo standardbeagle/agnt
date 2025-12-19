@@ -24,8 +24,9 @@ type Connection struct {
 	parser *protocol.Parser
 	writer *protocol.Writer
 
-	mu     sync.Mutex // Protects writes
-	closed bool
+	mu          sync.Mutex // Protects writes
+	closed      bool
+	sessionCode string // Session code if this connection registered a session
 }
 
 // newConnection creates a new connection handler.

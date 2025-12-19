@@ -165,6 +165,67 @@ func (pm *ProxyManager) StopAll(ctx context.Context) ([]string, error) {
 	return stoppedIDs, nil
 }
 
+// StopByProjectPath stops all running proxies for a specific project path and removes them.
+// This is used for session-scoped cleanup when a client disconnects.
+// Returns the list of stopped proxy IDs.
+func (pm *ProxyManager) StopByProjectPath(ctx context.Context, projectPath string) ([]string, error) {
+	var toStop []*ProxyServer
+	pm.proxies.Range(func(key, value any) bool {
+		proxy := value.(*ProxyServer)
+		if proxy.Path == projectPath {
+			toStop = append(toStop, proxy)
+		}
+		return true
+	})
+
+	if len(toStop) == 0 {
+		return nil, nil
+	}
+
+	var stopWg sync.WaitGroup
+	var errMu sync.Mutex
+	var errs []error
+	var stoppedIDs []string
+	var stoppedMu sync.Mutex
+
+	for _, proxy := range toStop {
+		stopWg.Add(1)
+		go func(p *ProxyServer) {
+			defer stopWg.Done()
+			if err := pm.Stop(ctx, p.ID); err != nil {
+				errMu.Lock()
+				errs = append(errs, err)
+				errMu.Unlock()
+			} else {
+				stoppedMu.Lock()
+				stoppedIDs = append(stoppedIDs, p.ID)
+				stoppedMu.Unlock()
+			}
+		}(proxy)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		stopWg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+		if len(errs) > 0 {
+			errs = append(errs, ctx.Err())
+		} else {
+			return stoppedIDs, ctx.Err()
+		}
+	}
+
+	if len(errs) > 0 {
+		return stoppedIDs, errors.Join(errs...)
+	}
+	return stoppedIDs, nil
+}
+
 // Shutdown stops all managed proxies.
 func (pm *ProxyManager) Shutdown(ctx context.Context) error {
 	var shutdownErr error

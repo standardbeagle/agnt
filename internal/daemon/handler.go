@@ -2250,6 +2250,9 @@ func (c *Connection) handleSessionRegister(cmd *protocol.Command) error {
 		return c.writeErr(protocol.ErrAlreadyExists, err.Error())
 	}
 
+	// Associate this connection with the session for cleanup on disconnect
+	c.sessionCode = session.Code
+
 	// Register project with scheduler state manager
 	if session.ProjectPath != "" {
 		c.daemon.schedulerStateMgr.RegisterProject(session.ProjectPath)

@@ -496,6 +496,74 @@ func (d *Daemon) StopAllResources(ctx context.Context) {
 	log.Println("[Daemon] all resources stopped (last client disconnected)")
 }
 
+// CleanupSessionResources stops all processes and proxies for a specific session.
+// This is called when a connection that registered a session disconnects.
+func (d *Daemon) CleanupSessionResources(sessionCode string) {
+	// Get session to find project path
+	session, ok := d.sessionRegistry.Get(sessionCode)
+	if !ok {
+		log.Printf("[Daemon] session %s not found for cleanup", sessionCode)
+		return
+	}
+
+	projectPath := session.ProjectPath
+	if projectPath == "" {
+		log.Printf("[Daemon] session %s has no project path, skipping resource cleanup", sessionCode)
+		// Still unregister the session
+		d.sessionRegistry.Unregister(sessionCode)
+		return
+	}
+
+	log.Printf("[Daemon] cleaning up resources for session %s (project: %s)", sessionCode, projectPath)
+
+	// Use a reasonable timeout for cleanup
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var wg sync.WaitGroup
+
+	// Stop proxies for this project
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		stoppedIDs, err := d.proxym.StopByProjectPath(ctx, projectPath)
+		if err != nil {
+			log.Printf("[Daemon] error stopping proxies for project %s: %v", projectPath, err)
+		}
+		if len(stoppedIDs) > 0 {
+			log.Printf("[Daemon] stopped proxies: %v", stoppedIDs)
+			// Remove from persisted state
+			if d.stateMgr != nil {
+				for _, id := range stoppedIDs {
+					d.stateMgr.RemoveProxy(id)
+				}
+			}
+		}
+	}()
+
+	// Stop processes for this project
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		stoppedIDs, err := d.pm.StopByProjectPath(ctx, projectPath)
+		if err != nil {
+			log.Printf("[Daemon] error stopping processes for project %s: %v", projectPath, err)
+		}
+		if len(stoppedIDs) > 0 {
+			log.Printf("[Daemon] stopped processes: %v", stoppedIDs)
+		}
+	}()
+
+	wg.Wait()
+
+	// Unregister the session
+	if err := d.sessionRegistry.Unregister(sessionCode); err != nil {
+		log.Printf("[Daemon] error unregistering session %s: %v", sessionCode, err)
+	}
+
+	log.Printf("[Daemon] session %s cleanup complete", sessionCode)
+}
+
 // acceptLoop accepts new client connections.
 func (d *Daemon) acceptLoop() {
 	defer d.wg.Done()
@@ -535,13 +603,12 @@ func (d *Daemon) acceptLoop() {
 				d.clients.Delete(clientID)
 				d.clientCount.Add(-1)
 
-				// Note: We intentionally do NOT clean up resources on client disconnect.
-				// Resources (processes, proxies) persist until explicitly stopped or the
-				// daemon shuts down. This allows multiple sessions to share resources
-				// and prevents one session's exit from affecting another.
-				//
-				// Session-scoped cleanup should be done via SESSION UNREGISTER which
-				// can optionally clean up resources for that session's project path.
+				// If this connection registered a session, clean up its resources
+				// This ensures processes/proxies started by this session are stopped
+				// when the session ends, without affecting other sessions.
+				if clientConn.sessionCode != "" {
+					d.CleanupSessionResources(clientConn.sessionCode)
+				}
 			}()
 
 			clientConn.Handle(d.ctx)
