@@ -75,6 +75,10 @@ sed -i "s/^version = \".*\"/version = \"$NEW_VERSION\"/" python/agnt/pyproject.t
 echo "Updating python/agnt/src/agnt/__init__.py..."
 sed -i "s/__version__ = \".*\"/__version__ = \"$NEW_VERSION\"/" python/agnt/src/agnt/__init__.py
 
+# Update Claude Code plugin version
+echo "Updating plugins/agnt/.claude-plugin/plugin.json..."
+sed -i "s/\"version\": \".*\"/\"version\": \"$NEW_VERSION\"/" plugins/agnt/.claude-plugin/plugin.json
+
 # Verify updates
 echo ""
 echo "Version files updated:"
@@ -83,11 +87,12 @@ grep 'var Version = ' internal/daemon/daemon.go
 grep '"version"' npm/agnt/package.json
 grep '^version = ' python/agnt/pyproject.toml
 grep '__version__ = ' python/agnt/src/agnt/__init__.py
+grep '"version"' plugins/agnt/.claude-plugin/plugin.json
 
 # Commit and tag
 echo ""
 echo "Creating commit and tag..."
-git add cmd/agnt/main.go internal/daemon/daemon.go npm/agnt/package.json python/agnt/pyproject.toml python/agnt/src/agnt/__init__.py
+git add cmd/agnt/main.go internal/daemon/daemon.go npm/agnt/package.json python/agnt/pyproject.toml python/agnt/src/agnt/__init__.py plugins/agnt/.claude-plugin/plugin.json
 git commit -m "chore: bump version to $NEW_VERSION
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
