@@ -28,6 +28,16 @@ Use --legacy for direct process management (state lost on exit).`,
 	Run: runServe,
 }
 
+var mcpCmd = &cobra.Command{
+	Use:   "mcp",
+	Short: "Run as MCP server",
+	Long: `Run as an MCP (Model Context Protocol) server for AI coding assistants.
+
+This is the primary mode for integration with Claude Code, Claude Desktop, and other MCP clients.
+Uses a background daemon for persistent state across connections.`,
+	Run: runMCP,
+}
+
 var (
 	serveLegacy bool
 )
@@ -47,6 +57,15 @@ func runServe(cmd *cobra.Command, args []string) {
 	} else {
 		runDaemonClient(socketPath)
 	}
+}
+
+func runMCP(cmd *cobra.Command, args []string) {
+	socketPath, _ := cmd.Flags().GetString("socket")
+	if socketPath == "" {
+		socketPath = daemon.DefaultSocketPath()
+	}
+
+	runDaemonClient(socketPath)
 }
 
 // runDaemonClient runs the MCP server that communicates with the daemon.

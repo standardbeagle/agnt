@@ -40,6 +40,7 @@ func init() {
 	rootCmd.PersistentFlags().String("socket", "", "Socket path for daemon communication")
 
 	// Add subcommands
+	rootCmd.AddCommand(mcpCmd)
 	rootCmd.AddCommand(serveCmd)
 	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(daemonCmd)

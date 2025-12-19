@@ -23,32 +23,32 @@
     "scheduler",
     "session"
   ],
-  "hooks": "./hooks/hooks.json",
-  "mcpServers": "./mcp.json",
+  "hooks": "../hooks/hooks.json",
+  "mcpServers": "../mcp.json",
   "commands": [
-    "./commands/setup-project.md",
-    "./commands/dev-proxy.md",
-    "./commands/check-errors.md",
-    "./commands/screenshot.md",
-    "./commands/sketch-mode.md",
-    "./commands/browser-debug.md",
-    "./commands/stop-all.md",
-    "./commands/audit-a11y.md",
-    "./commands/audit-performance.md",
-    "./commands/audit-seo.md",
-    "./commands/audit-security.md",
-    "./commands/analyze-ux.md",
-    "./commands/analyze-frontend.md",
-    "./commands/qa-test.md",
-    "./commands/review-api.md",
-    "./commands/schedule.md"
+    "../commands/setup-project.md",
+    "../commands/dev-proxy.md",
+    "../commands/check-errors.md",
+    "../commands/screenshot.md",
+    "../commands/sketch-mode.md",
+    "../commands/browser-debug.md",
+    "../commands/stop-all.md",
+    "../commands/audit-a11y.md",
+    "../commands/audit-performance.md",
+    "../commands/audit-seo.md",
+    "../commands/audit-security.md",
+    "../commands/analyze-ux.md",
+    "../commands/analyze-frontend.md",
+    "../commands/qa-test.md",
+    "../commands/review-api.md",
+    "../commands/schedule.md"
   ],
   "skills": [
-    "./skills/schedule.md"
+    "../skills/schedule.md"
   ],
   "agents": [
-    "./agents/browser-debugger.md",
-    "./agents/process-manager.md",
-    "./agents/ui-designer.md"
+    "../agents/browser-debugger.md",
+    "../agents/process-manager.md",
+    "../agents/ui-designer.md"
   ]
 }
