@@ -1,6 +1,6 @@
 ---
 description: "Schedule a message to be sent to your AI agent at a future time"
-allowed-tools: ["mcp__devtool__session"]
+allowed-tools: ["mcp__agnt__session"]
 ---
 
 Schedule a message to be delivered to an AI coding agent session at a specified time.

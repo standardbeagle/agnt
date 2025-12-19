@@ -1,6 +1,6 @@
 ---
 description: "Start a dev server with reverse proxy for browser debugging"
-allowed-tools: ["mcp__devtool__detect", "mcp__devtool__run", "mcp__devtool__proxy", "mcp__devtool__proc"]
+allowed-tools: ["mcp__agnt__detect", "mcp__agnt__run", "mcp__agnt__proxy", "mcp__agnt__proc"]
 ---
 
 Start a development server with the agnt reverse proxy for browser debugging.

@@ -1,6 +1,6 @@
 ---
 description: "Take a screenshot of the current browser page"
-allowed-tools: ["mcp__devtool__proxy", "mcp__devtool__proxylog"]
+allowed-tools: ["mcp__agnt__proxy", "mcp__agnt__proxylog"]
 ---
 
 Capture a screenshot from the proxied browser page.

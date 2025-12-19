@@ -210,7 +210,7 @@ Example MCP configuration (`.mcp.json`):
 {
   "agnt": {
     "command": "agnt",
-    "args": ["serve"],
+    "args": ["mcp"],
     "env": {}
   }
 }

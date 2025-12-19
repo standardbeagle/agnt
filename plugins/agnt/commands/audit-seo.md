@@ -1,6 +1,6 @@
 ---
 description: "Audit page for SEO best practices and issues"
-allowed-tools: ["mcp__devtool__proxy", "mcp__devtool__proxylog"]
+allowed-tools: ["mcp__agnt__proxy", "mcp__agnt__proxylog"]
 ---
 
 Audit the current page for SEO (Search Engine Optimization) best practices using agnt's diagnostic tools.

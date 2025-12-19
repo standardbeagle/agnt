@@ -1,6 +1,6 @@
 ---
 description: "Comprehensive QA testing suite for the current page"
-allowed-tools: ["mcp__devtool__proxy", "mcp__devtool__proxylog", "mcp__devtool__currentpage"]
+allowed-tools: ["mcp__agnt__proxy", "mcp__agnt__proxylog", "mcp__agnt__currentpage"]
 ---
 
 Run a comprehensive QA (Quality Assurance) test suite on the current page using agnt's diagnostic tools.

@@ -1,6 +1,6 @@
 ---
 description: "Analyze user experience including layout, interactions, and usability"
-allowed-tools: ["mcp__devtool__proxy", "mcp__devtool__proxylog"]
+allowed-tools: ["mcp__agnt__proxy", "mcp__agnt__proxylog"]
 ---
 
 Analyze the user experience (UX) of the current page using agnt's diagnostic tools.

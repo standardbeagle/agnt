@@ -1,6 +1,6 @@
 ---
 description: "Run comprehensive accessibility audit on the current page"
-allowed-tools: ["mcp__devtool__proxy", "mcp__devtool__proxylog"]
+allowed-tools: ["mcp__agnt__proxy", "mcp__agnt__proxylog"]
 ---
 
 Run a comprehensive accessibility (a11y) audit on the current browser page using agnt's diagnostic tools.
