@@ -21,6 +21,12 @@
 ## [Unreleased]
 
 ### Added
+- **PID tracking for orphan cleanup**: Implemented persistent PID tracking to prevent orphaned processes after daemon crashes
+  - Tracks process PIDs to `~/.local/state/devtool-mcp/pids.json` with daemon PID for crash detection
+  - Automatic cleanup of orphaned processes on daemon startup
+  - Changed Unix process group behavior: children now inherit daemon's PGID for automatic cleanup on daemon termination
+  - Comprehensive test suite (7 tests) for PID tracking operations
+  - Documentation: `docs/orphan-cleanup.md` with implementation details and scenarios
 - **AI channel model configuration**: Claude Code CLI now defaults to `haiku` model for fast, cost-effective summaries
   - Model is configurable via `Config.Model` field
   - Added `--model` flag to Claude Code CLI invocations

@@ -8,10 +8,13 @@ import (
 )
 
 // setProcAttr sets platform-specific process attributes for Unix systems.
-// This enables process groups for clean child process shutdown.
+// On Linux, children inherit the daemon's process group so that killing
+// the daemon's process group kills all children automatically.
+// On macOS/BSD, we still create separate groups because they lack other
+// mechanisms like PDEATHSIG for lifecycle binding.
 func setProcAttr(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Setpgid: true,
+		Setpgid: false, // Inherit parent's process group (daemon's PGID)
 	}
 }
 
