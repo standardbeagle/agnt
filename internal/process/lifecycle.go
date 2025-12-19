@@ -65,8 +65,20 @@ func (pm *ProcessManager) Start(ctx context.Context, proc *ManagedProcess) error
 	// Record start time and PID
 	now := time.Now()
 	proc.startTime.Store(&now)
-	proc.pid.Store(int32(proc.cmd.Process.Pid))
+	pid := proc.cmd.Process.Pid
+	proc.pid.Store(int32(pid))
 	proc.SetState(StateRunning)
+
+	// Track PID for orphan cleanup
+	if pm.pidTracker != nil {
+		// Get process group ID
+		pgid, err := syscall.Getpgid(pid)
+		if err != nil {
+			pgid = pid // Fallback to PID if we can't get PGID
+		}
+		// Best effort - ignore errors in PID tracking
+		_ = pm.pidTracker.Add(proc.ID, pid, pgid, proc.ProjectPath)
+	}
 
 	// Start goroutine to wait for completion
 	pm.wg.Add(1)
@@ -103,6 +115,11 @@ func (pm *ProcessManager) waitForProcess(proc *ManagedProcess) {
 	} else {
 		proc.exitCode.Store(0)
 		proc.SetState(StateStopped)
+	}
+
+	// Remove from PID tracking (clean exit)
+	if pm.pidTracker != nil {
+		_ = pm.pidTracker.Remove(proc.ID, proc.ProjectPath)
 	}
 
 	// Signal completion

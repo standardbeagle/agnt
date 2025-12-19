@@ -28,6 +28,13 @@ func processKey(id, projectPath string) string {
 	return projectPath + "\x00" + id
 }
 
+// PIDTracker is an interface for tracking process PIDs for orphan cleanup.
+// The daemon's PIDTracker implements this to persist PIDs to disk.
+type PIDTracker interface {
+	Add(id string, pid int, pgid int, projectPath string) error
+	Remove(id string, projectPath string) error
+}
+
 // ManagerConfig holds configuration for the ProcessManager.
 type ManagerConfig struct {
 	// DefaultTimeout is the default process timeout (0 = no timeout).
@@ -38,6 +45,8 @@ type ManagerConfig struct {
 	GracefulTimeout time.Duration
 	// HealthCheckPeriod is how often to check process health (0 = disabled).
 	HealthCheckPeriod time.Duration
+	// PIDTracker is an optional tracker for persisting PIDs for orphan cleanup.
+	PIDTracker PIDTracker
 }
 
 // DefaultManagerConfig returns a ManagerConfig with sensible defaults.
@@ -63,6 +72,9 @@ type ProcessManager struct {
 	// Configuration
 	config ManagerConfig
 
+	// PID tracking for orphan cleanup
+	pidTracker PIDTracker
+
 	// Shutdown coordination
 	shutdownOnce sync.Once
 	shutdownChan chan struct{}
@@ -74,6 +86,7 @@ type ProcessManager struct {
 func NewProcessManager(config ManagerConfig) *ProcessManager {
 	pm := &ProcessManager{
 		config:       config,
+		pidTracker:   config.PIDTracker,
 		shutdownChan: make(chan struct{}),
 	}
 

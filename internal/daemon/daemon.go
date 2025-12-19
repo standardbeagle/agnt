@@ -98,7 +98,8 @@ type Daemon struct {
 	schedulerStateMgr *SchedulerStateManager
 
 	// State persistence
-	stateMgr *StateManager
+	stateMgr   *StateManager
+	pidTracker *PIDTracker
 
 	// Update checker
 	updateChecker *updater.UpdateChecker
@@ -137,14 +138,22 @@ func New(config DaemonConfig) *Daemon {
 	// Create scheduler
 	scheduler := NewScheduler(DefaultSchedulerConfig(), sessionRegistry, schedulerStateMgr)
 
+	// Create PID tracker for orphan cleanup
+	pidTracker := NewPIDTracker("")
+
+	// Configure process manager with PID tracking
+	procConfig := config.ProcessConfig
+	procConfig.PIDTracker = pidTracker
+
 	d := &Daemon{
 		config:            config,
-		pm:                process.NewProcessManager(config.ProcessConfig),
+		pm:                process.NewProcessManager(procConfig),
 		proxym:            proxy.NewProxyManager(),
 		tunnelm:           tunnel.NewManager(),
 		sessionRegistry:   sessionRegistry,
 		scheduler:         scheduler,
 		schedulerStateMgr: schedulerStateMgr,
+		pidTracker:        pidTracker,
 		sockMgr:           NewSocketManager(SocketConfig{Path: config.SocketPath}),
 		ctx:               ctx,
 		cancel:            cancel,
@@ -199,6 +208,9 @@ func (d *Daemon) Start() error {
 	d.started = time.Now()
 
 	log.Printf("Daemon started, listening on %s", d.sockMgr.Path())
+
+	// Clean up orphaned processes from previous crash
+	d.cleanupOrphans()
 
 	// Restore proxies from persisted state
 	d.restoreProxies()
@@ -263,6 +275,28 @@ func (d *Daemon) restoreProxies() {
 	}
 }
 
+// cleanupOrphans cleans up orphaned processes from a previous daemon crash.
+func (d *Daemon) cleanupOrphans() {
+	if d.pidTracker == nil {
+		return
+	}
+
+	killedCount, err := d.pidTracker.CleanupOrphans(os.Getpid())
+	if err != nil {
+		log.Printf("[Daemon] failed to cleanup orphans: %v", err)
+		return
+	}
+
+	if killedCount > 0 {
+		log.Printf("[Daemon] cleaned up %d orphaned process(es) from previous crash", killedCount)
+	}
+
+	// Set current daemon PID for future crash detection
+	if err := d.pidTracker.SetDaemonPID(os.Getpid()); err != nil {
+		log.Printf("[Daemon] failed to set daemon PID: %v", err)
+	}
+}
+
 // Stop gracefully shuts down the daemon.
 func (d *Daemon) Stop(ctx context.Context) error {
 	d.shutdownMu.Lock()
@@ -313,6 +347,13 @@ func (d *Daemon) Stop(ctx context.Context) error {
 
 	if err := d.pm.Shutdown(ctx); err != nil {
 		errs = append(errs, fmt.Errorf("process manager: %w", err))
+	}
+
+	// Clear PID tracking (clean shutdown)
+	if d.pidTracker != nil {
+		if err := d.pidTracker.Clear(); err != nil {
+			log.Printf("[Daemon] failed to clear PID tracking: %v", err)
+		}
 	}
 
 	// Wait for goroutines with timeout
