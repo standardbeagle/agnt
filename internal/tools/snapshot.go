@@ -21,9 +21,9 @@ type SnapshotInput struct {
 
 // SnapshotOutput defines output for the snapshot tool
 type SnapshotOutput struct {
-	Success bool        `json:"success"`
-	Message string      `json:"message"`
-	Data    interface{} `json:"data,omitempty"`
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+	Data    string `json:"data,omitempty"`
 }
 
 // RegisterSnapshotTools registers snapshot-related MCP tools
@@ -91,10 +91,15 @@ func handleSnapshotBaseline(manager *snapshot.Manager, input SnapshotInput) (*mc
 		baseline.GitBranch,
 		baseline.GitCommit)
 
+	dataJSON := ""
+	if b, err := json.Marshal(baseline); err == nil {
+		dataJSON = string(b)
+	}
+
 	return nil, SnapshotOutput{
 		Success: true,
 		Message: message,
-		Data:    baseline,
+		Data:    dataJSON,
 	}, nil
 }
 
@@ -117,10 +122,15 @@ func handleSnapshotCompare(manager *snapshot.Manager, input SnapshotInput) (*mcp
 	// Format response
 	message := formatCompareResult(result)
 
+	dataJSON := ""
+	if b, err := json.Marshal(result); err == nil {
+		dataJSON = string(b)
+	}
+
 	return nil, SnapshotOutput{
 		Success: !result.Summary.HasRegressions,
 		Message: message,
-		Data:    result,
+		Data:    dataJSON,
 	}, nil
 }
 
@@ -134,7 +144,7 @@ func handleSnapshotList(manager *snapshot.Manager, input SnapshotInput) (*mcp.Ca
 		return nil, SnapshotOutput{
 			Success: true,
 			Message: "No baselines found",
-			Data:    baselines,
+			Data:    "[]",
 		}, nil
 	}
 
@@ -153,10 +163,15 @@ func handleSnapshotList(manager *snapshot.Manager, input SnapshotInput) (*mcp.Ca
 			gitInfo)
 	}
 
+	dataJSON := ""
+	if b, err := json.Marshal(baselines); err == nil {
+		dataJSON = string(b)
+	}
+
 	return nil, SnapshotOutput{
 		Success: true,
 		Message: message,
-		Data:    baselines,
+		Data:    dataJSON,
 	}, nil
 }
 
@@ -186,10 +201,15 @@ func handleSnapshotGet(manager *snapshot.Manager, input SnapshotInput) (*mcp.Cal
 	}
 
 	data, _ := json.MarshalIndent(baseline, "", "  ")
+	dataJSON := ""
+	if b, err := json.Marshal(baseline); err == nil {
+		dataJSON = string(b)
+	}
+
 	return nil, SnapshotOutput{
 		Success: true,
 		Message: string(data),
-		Data:    baseline,
+		Data:    dataJSON,
 	}, nil
 }
 

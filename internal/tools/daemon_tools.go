@@ -1092,7 +1092,11 @@ func (dt *DaemonTools) handleProxyLogQuery(input ProxyLogInput) (*mcp.CallToolRe
 					Type: getString(em, "type"),
 				}
 				if data, ok := em["data"].(map[string]interface{}); ok {
-					entry.Data = data
+					if b, err := json.Marshal(data); err == nil {
+						entry.Data = string(b)
+					} else {
+						entry.Data = "{}"
+					}
 				}
 				if ts, ok := em["timestamp"].(string); ok {
 					if t, err := time.Parse(time.RFC3339, ts); err == nil {
