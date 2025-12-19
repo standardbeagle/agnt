@@ -243,7 +243,7 @@ Use agnt tunnels with [BrowserStack's MCP server](https://github.com/browserstac
   "mcpServers": {
     "agnt": {
       "command": "agnt",
-      "args": ["serve"]
+      "args": ["mcp"]
     },
     "browserstack": {
       "command": "npx",

@@ -109,7 +109,7 @@ Add both MCP servers to your configuration:
   "mcpServers": {
     "agnt": {
       "command": "agnt",
-      "args": ["serve"]
+      "args": ["mcp"]
     },
     "browserstack": {
       "command": "npx",

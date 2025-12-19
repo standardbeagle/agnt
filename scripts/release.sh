@@ -79,6 +79,31 @@ sed -i "s/__version__ = \".*\"/__version__ = \"$NEW_VERSION\"/" python/agnt/src/
 echo "Updating plugins/agnt/.claude-plugin/plugin.json..."
 sed -i "s/\"version\": \".*\"/\"version\": \"$NEW_VERSION\"/" plugins/agnt/.claude-plugin/plugin.json
 
+# Update CLAUDE.md
+echo "Updating CLAUDE.md..."
+sed -i "s/\*\*Version\*\*: .*/\*\*Version\*\*: $NEW_VERSION/" CLAUDE.md
+
+# Update root package.json
+echo "Updating package.json..."
+sed -i "0,/\"version\": \".*\"/{s/\"version\": \".*\"/\"version\": \"$NEW_VERSION\"/}" package.json
+
+# Update deprecated npm wrapper (version and dependency)
+echo "Updating npm/devtool-mcp/package.json..."
+sed -i "0,/\"version\": \".*\"/{s/\"version\": \".*\"/\"version\": \"$NEW_VERSION\"/}" npm/devtool-mcp/package.json
+sed -i "s/\"@standardbeagle\/agnt\": \".*\"/\"@standardbeagle\/agnt\": \"^$NEW_VERSION\"/" npm/devtool-mcp/package.json
+
+# Update deprecated Python wrapper (version and dependency)
+echo "Updating python/pyproject.toml..."
+sed -i "s/^version = \".*\"/version = \"$NEW_VERSION\"/" python/pyproject.toml
+sed -i "s/\"agnt>=.*\"/\"agnt>=$NEW_VERSION\"/" python/pyproject.toml
+
+# Update marketplace metadata (both locations)
+echo "Updating .claude-plugin/marketplace.json..."
+# Update metadata.version
+sed -i '/"metadata": {/,/}/{s/"version": ".*"/"version": "'$NEW_VERSION'"/}' .claude-plugin/marketplace.json
+# Update plugins[].version
+sed -i '/plugins.*\[/,/\]/{s/"version": ".*"/"version": "'$NEW_VERSION'"/}' .claude-plugin/marketplace.json
+
 # Verify updates
 echo ""
 echo "Version files updated:"
@@ -88,11 +113,16 @@ grep '"version"' npm/agnt/package.json
 grep '^version = ' python/agnt/pyproject.toml
 grep '__version__ = ' python/agnt/src/agnt/__init__.py
 grep '"version"' plugins/agnt/.claude-plugin/plugin.json
+grep '^\*\*Version\*\*:' CLAUDE.md
+grep '"version"' package.json | head -1
+grep '"version"' npm/devtool-mcp/package.json | head -1
+grep '^version = ' python/pyproject.toml
+grep '"version"' .claude-plugin/marketplace.json
 
 # Commit and tag
 echo ""
 echo "Creating commit and tag..."
-git add cmd/agnt/main.go internal/daemon/daemon.go npm/agnt/package.json python/agnt/pyproject.toml python/agnt/src/agnt/__init__.py plugins/agnt/.claude-plugin/plugin.json
+git add cmd/agnt/main.go internal/daemon/daemon.go npm/agnt/package.json python/agnt/pyproject.toml python/agnt/src/agnt/__init__.py plugins/agnt/.claude-plugin/plugin.json CLAUDE.md package.json npm/devtool-mcp/package.json python/pyproject.toml .claude-plugin/marketplace.json
 git commit -m "chore: bump version to $NEW_VERSION
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

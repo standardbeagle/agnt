@@ -108,10 +108,10 @@ help:
 	@echo "MCP registration (claude_desktop_config.json):"
 	@echo '  "devtool": {'
 	@echo '    "command": "devtool-mcp",'
-	@echo '    "args": ["serve"]'
+	@echo '    "args": ["mcp"]'
 	@echo '  }'
 	@echo ""
 	@echo "Agent usage:"
 	@echo "  agnt run claude --dangerously-skip-permissions"
-	@echo "  agnt serve          # Run as MCP server"
+	@echo "  agnt mcp          # Run as MCP server"
 	@echo "  agnt daemon status  # Check daemon status"

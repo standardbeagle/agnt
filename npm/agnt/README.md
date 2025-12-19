@@ -31,7 +31,7 @@ Add to your MCP configuration:
   "mcpServers": {
     "agnt": {
       "command": "agnt",
-      "args": ["serve"]
+      "args": ["mcp"]
     }
   }
 }

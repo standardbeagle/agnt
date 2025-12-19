@@ -1,6 +1,6 @@
 ---
 description: "Debug browser issues using agnt diagnostic tools"
-allowed-tools: ["mcp__devtool__proxy", "mcp__devtool__proxylog", "mcp__devtool__currentpage"]
+allowed-tools: ["mcp__agnt__proxy", "mcp__agnt__proxylog", "mcp__agnt__currentpage"]
 ---
 
 Comprehensive browser debugging using agnt diagnostic tools.

@@ -20,8 +20,8 @@ import (
 
 var serveCmd = &cobra.Command{
 	Use:   "serve",
-	Short: "Run as MCP server",
-	Long: `Run as an MCP server that communicates with AI assistants.
+	Short: "Run as shared server",
+	Long: `Run as a shared server that syncronizes processes and proxies across clients.
 
 By default, uses a background daemon for persistent state.
 Use --legacy for direct process management (state lost on exit).`,

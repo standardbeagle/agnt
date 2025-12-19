@@ -9,7 +9,7 @@ const agntBin = path.join(__dirname, '..', 'node_modules', '@standardbeagle', 'a
 // Pass all arguments to agnt
 const args = process.argv.slice(2);
 
-// If no args or first arg is 'serve', run as MCP server
+// If no args or first arg is 'serve', run as shared server
 if (args.length === 0 || args[0] === 'serve') {
   args.unshift('serve');
 }

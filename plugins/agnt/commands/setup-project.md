@@ -1,6 +1,6 @@
 ---
 description: "Configure scripts and proxies to auto-start when opening this project"
-allowed-tools: ["mcp__devtool__detect", "Read", "Write", "AskUserQuestion"]
+allowed-tools: ["mcp__agnt__detect", "Read", "Write", "AskUserQuestion"]
 ---
 
 Configure project-level automation by creating a `.agnt.kdl` configuration file. The agnt plugin's SessionStart hook will read this file and auto-start your configured services.

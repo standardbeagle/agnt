@@ -24,7 +24,7 @@
   },
   "permissions": {
     "allow": [
-      "mcp__devtool__*"
+      "mcp__agnt__*"
     ]
   },
   "env": {

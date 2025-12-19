@@ -1,6 +1,6 @@
 ---
 description: "Review API calls, responses, and network traffic"
-allowed-tools: ["mcp__devtool__proxy", "mcp__devtool__proxylog", "mcp__devtool__currentpage"]
+allowed-tools: ["mcp__agnt__proxy", "mcp__agnt__proxylog", "mcp__agnt__currentpage"]
 ---
 
 Review API calls and network traffic captured by the agnt proxy.

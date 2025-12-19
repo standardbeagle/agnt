@@ -9,7 +9,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 agnt is a new kind of tool designed for the age of AI-assisted development. It acts as a bridge between AI coding agents and the browser, extending what's possible during vibe coding sessions. The tool enables agents to see what users see, receive messages directly from the browser, sketch ideas together, and debug in real-time.
 
 **Primary Binary**: `agnt`
-**Version**: 0.6.0
+**Version**: 0.7.7
 **Protocol**: MCP over stdio
 **Language**: Go 1.24.2
 **Repository**: https://github.com/standardbeagle/agnt
@@ -36,11 +36,12 @@ the fork prevention restriction.
 ```json
 "agnt": {
   "command": "agnt",
-  "args": ["serve"]
+  "args": ["mcp"]
 }
 ```
 
-Note: `agnt serve` runs as MCP server. The binary auto-detects non-terminal mode.
+Note: `agnt mcp` runs as MCP server. The binary auto-detects non-terminal mode.
+Note: `agnt serve` runs as a unix socket server..
 
 **Why `agnt run` exists (MCP notification workaround)**:
 MCP servers cannot push notifications to clients like Claude Code - they can only
@@ -108,7 +109,7 @@ make install-local
 **2. Register as MCP server:**
 ```bash
 # Using Claude Code CLI
-claude mcp add agnt -s user -- agnt serve
+claude mcp add agnt -s user -- agnt mcp
 
 # Or manually edit ~/.config/claude/claude_desktop_config.json
 ```
@@ -119,7 +120,7 @@ claude mcp add agnt -s user -- agnt serve
   "mcpServers": {
     "agnt": {
       "command": "agnt",
-      "args": ["serve"]
+      "args": ["mcp"]
     }
   }
 }
@@ -253,7 +254,7 @@ The MCP server uses a daemon-based architecture that separates the MCP protocol 
 
 **Running Modes**:
 ```bash
-agnt serve                 # Normal mode: MCP server with daemon backend
+agnt mcp                 # Normal mode: MCP server with daemon backend
 agnt daemon start          # Start only the background daemon
 agnt serve --legacy        # Legacy mode: Original behavior without daemon
 agnt serve --socket /tmp/my-agnt.sock  # Custom socket path
@@ -278,8 +279,7 @@ agnt run copilot
 agnt run opencode
 
 # Run as MCP server (for Claude Desktop / Claude Code integration)
-agnt serve
-agnt serve --legacy  # Legacy mode without daemon
+agnt mcp
 
 # Manage the background daemon
 agnt daemon status
@@ -290,7 +290,8 @@ agnt daemon info
 
 **Subcommands**:
 - `run <command> [args...]`: Run an AI coding tool with PTY wrapper and overlay
-- `serve`: Run as MCP server for Claude Code / Claude Desktop integration
+- `serve`: Run as shared server to manage processes and proxies
+- `mcp`: Run as MCP server for Claude Code / Claude Desktop integration
 - `daemon`: Manage the background daemon (status, start, stop, restart, info)
 
 **Overlay Features**:
@@ -772,7 +773,7 @@ BrowserStack provides their own official MCP server for automated testing on rea
   "mcpServers": {
     "agnt": {
       "command": "agnt",
-      "args": ["serve"]
+      "args": ["mcp"]
     },
     "browserstack": {
       "command": "npx",

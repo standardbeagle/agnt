@@ -1,6 +1,6 @@
 ---
 description: "Stop all running processes and proxies"
-allowed-tools: ["mcp__devtool__proc", "mcp__devtool__proxy"]
+allowed-tools: ["mcp__agnt__proc", "mcp__agnt__proxy"]
 ---
 
 Stop all running agnt processes and proxies.

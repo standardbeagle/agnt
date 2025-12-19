@@ -1,6 +1,6 @@
 ---
 description: "Open sketch mode for wireframing on the browser page"
-allowed-tools: ["mcp__devtool__proxy", "mcp__devtool__proxylog"]
+allowed-tools: ["mcp__agnt__proxy", "mcp__agnt__proxylog"]
 ---
 
 Open the sketch mode overlay for creating wireframes directly on the browser page.

@@ -1,6 +1,6 @@
 ---
 description: "Check for JavaScript errors in the browser"
-allowed-tools: ["mcp__devtool__proxylog", "mcp__devtool__proxy"]
+allowed-tools: ["mcp__agnt__proxylog", "mcp__agnt__proxy"]
 ---
 
 Check for JavaScript errors captured by the agnt proxy.

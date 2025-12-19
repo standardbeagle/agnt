@@ -1,6 +1,6 @@
 ---
 description: "Comprehensive frontend analysis including DOM, CSS, layout, and structure"
-allowed-tools: ["mcp__devtool__proxy", "mcp__devtool__proxylog"]
+allowed-tools: ["mcp__agnt__proxy", "mcp__agnt__proxylog"]
 ---
 
 Run a comprehensive frontend analysis on the current page using agnt's diagnostic tools.

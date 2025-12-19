@@ -28,7 +28,7 @@ Then update your MCP configuration:
   "mcpServers": {
     "agnt": {
       "command": "agnt",
-      "args": ["serve"]
+      "args": ["mcp"]
     }
   }
 }
@@ -47,7 +47,7 @@ The project has evolved beyond just development tooling into a full AI coding ag
 ## New Features in agnt
 
 - `agnt run claude` - Wrap AI tools with overlay features
-- `agnt serve` - Run as MCP server
+- `agnt mcp` - Run as MCP server
 - Sketch mode for wireframing
 - Floating indicator panel
 - Toast notifications

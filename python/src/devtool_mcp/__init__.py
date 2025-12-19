@@ -23,7 +23,7 @@ Then update your MCP configuration:
         "mcpServers": {
             "agnt": {
                 "command": "agnt",
-                "args": ["serve"]
+                "args": ["mcp"]
             }
         }
     }
@@ -80,7 +80,7 @@ def main() -> None:
         "    pip install agnt\n"
         "\n"
         "Then use 'agnt' command instead:\n"
-        "    agnt serve     (for MCP server)\n"
+        "    agnt mcp     (for MCP server)\n"
         "    agnt run ...   (for PTY wrapper)\n"
         "\n"
         "See: https://standardbeagle.github.io/agnt/\n"

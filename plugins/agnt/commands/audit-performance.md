@@ -1,6 +1,6 @@
 ---
 description: "Analyze page performance including load times and network resources"
-allowed-tools: ["mcp__devtool__proxy", "mcp__devtool__proxylog"]
+allowed-tools: ["mcp__agnt__proxy", "mcp__agnt__proxylog"]
 ---
 
 Analyze the performance of the current browser page using agnt's diagnostic tools.

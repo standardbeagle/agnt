@@ -35,7 +35,7 @@ Add to your MCP configuration:
   "mcpServers": {
     "agnt": {
       "command": "agnt",
-      "args": ["serve"]
+      "args": ["mcp"]
     }
   }
 }
@@ -48,7 +48,7 @@ Or with uvx:
   "mcpServers": {
     "agnt": {
       "command": "uvx",
-      "args": ["agnt", "serve"]
+      "args": ["agnt", "mcp"]
     }
   }
 }

@@ -1,6 +1,6 @@
 ---
 description: "Chain commands to run automatically when events occur"
-allowed-tools: ["mcp__devtool__session", "Read", "Write"]
+allowed-tools: ["mcp__agnt__session", "Read", "Write"]
 ---
 
 Set up command chains that execute automatically when specific events occur.

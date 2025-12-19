@@ -1,6 +1,6 @@
 ---
 description: "Audit page for security vulnerabilities and best practices"
-allowed-tools: ["mcp__devtool__proxy", "mcp__devtool__proxylog"]
+allowed-tools: ["mcp__agnt__proxy", "mcp__agnt__proxylog"]
 ---
 
 Audit the current page for security vulnerabilities using agnt's diagnostic tools.

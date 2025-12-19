@@ -11,7 +11,7 @@ Usage:
         "mcpServers": {
             "agnt": {
                 "command": "agnt",
-                "args": ["serve"]
+                "args": ["mcp"]
             }
         }
     }

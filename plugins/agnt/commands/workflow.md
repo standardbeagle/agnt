@@ -1,6 +1,6 @@
 ---
 description: "Set up a self-enforcing workflow state machine for task completion"
-allowed-tools: ["Read", "Write", "mcp__devtool__session"]
+allowed-tools: ["Read", "Write", "mcp__agnt__session"]
 ---
 
 Create a workflow state machine that prevents premature completion claims and enforces review cycles.

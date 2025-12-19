@@ -80,7 +80,7 @@ Add to your MCP configuration:
   "mcpServers": {
     "agnt": {
       "command": "agnt",
-      "args": ["serve"]
+      "args": ["mcp"]
     }
   }
 }
@@ -315,7 +315,7 @@ pip uninstall devtool-mcp
 pip install agnt
 ```
 
-Update your MCP config to use `agnt` command with `["serve"]` args.
+Update your MCP config to use `agnt` command with `["mcp"]` args.
 
 ## License
 
