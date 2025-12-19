@@ -95,6 +95,7 @@ func runDaemonClient(socketPath string) {
 			Version: appVersion,
 		},
 		&mcp.ServerOptions{
+			HasTools: true,
 			Instructions: `Development tool server for project detection, process management, and reverse proxy with traffic logging.
 
 Uses a background daemon for persistent state across connections:
@@ -173,6 +174,7 @@ func runLegacyServer() {
 			Version: appVersion,
 		},
 		&mcp.ServerOptions{
+			HasTools:     true,
 			Instructions: "Development tool server for project detection, process management, and reverse proxy with traffic logging. Running in legacy mode - state will be lost when server stops.",
 		},
 	)
