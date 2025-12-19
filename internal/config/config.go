@@ -160,7 +160,7 @@ func (c *Config) MergeProjectConfig(projConfig *ProjectConfig) *Config {
 	return &merged
 }
 
-// ProjectConfig holds per-project configuration from .devtool.kdl.
+// ProjectConfig holds per-project configuration from .agnt.kdl.
 type ProjectConfig struct {
 	// Language overrides the detected language.
 	Language string `json:"language,omitempty"`

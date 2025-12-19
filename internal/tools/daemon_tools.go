@@ -802,6 +802,73 @@ func (dt *DaemonTools) handleProxyToast(input ProxyInput) (*mcp.CallToolResult, 
 	}, nil
 }
 
+// parseChaosStats extracts ChaosStatsOutput from a map result.
+func parseChaosStats(stats map[string]interface{}) *ChaosStatsOutput {
+	output := &ChaosStatsOutput{
+		TotalRequests:   getInt64(stats, "total_requests"),
+		AffectedCount:   getInt64(stats, "affected_count"),
+		LatencyInjected: getInt64(stats, "latency_injected_ms"),
+		ErrorsInjected:  getInt64(stats, "errors_injected"),
+		DropsInjected:   getInt64(stats, "drops_injected"),
+		TruncatedCount:  getInt64(stats, "truncated_count"),
+		ReorderedCount:  getInt64(stats, "reordered_count"),
+	}
+	if ruleStats, ok := stats["rule_stats"].(map[string]interface{}); ok {
+		output.RuleStats = make(map[string]int64)
+		for k, v := range ruleStats {
+			if n, ok := v.(float64); ok {
+				output.RuleStats[k] = int64(n)
+			}
+		}
+	}
+	return output
+}
+
+// parseChaosRules extracts a slice of ChaosRuleOutput from a rules interface.
+func parseChaosRules(rules []interface{}) []ChaosRuleOutput {
+	var result []ChaosRuleOutput
+	for _, r := range rules {
+		if rm, ok := r.(map[string]interface{}); ok {
+			result = append(result, ChaosRuleOutput{
+				ID:           getString(rm, "id"),
+				Name:         getString(rm, "name"),
+				Type:         getString(rm, "type"),
+				Enabled:      getBool(rm, "enabled"),
+				URLPattern:   getString(rm, "url_pattern"),
+				Probability:  getFloat64(rm, "probability"),
+				TimesApplied: getInt64(rm, "times_applied"),
+			})
+		}
+	}
+	return result
+}
+
+// inputRuleToProtocol converts a ChaosRuleInput to protocol.ChaosRuleConfig.
+func inputRuleToProtocol(r ChaosRuleInput) protocol.ChaosRuleConfig {
+	return protocol.ChaosRuleConfig{
+		ID:                 r.ID,
+		Name:               r.Name,
+		Type:               r.Type,
+		Enabled:            r.Enabled,
+		URLPattern:         r.URLPattern,
+		Methods:            r.Methods,
+		Probability:        r.Probability,
+		MinLatencyMs:       r.MinLatencyMs,
+		MaxLatencyMs:       r.MaxLatencyMs,
+		JitterMs:           r.JitterMs,
+		BytesPerMs:         r.BytesPerMs,
+		ChunkSize:          r.ChunkSize,
+		DropAfterPercent:   r.DropAfterPercent,
+		DropAfterBytes:     r.DropAfterBytes,
+		ErrorCodes:         r.ErrorCodes,
+		ErrorMessage:       r.ErrorMessage,
+		TruncatePercent:    r.TruncatePercent,
+		ReorderMinRequests: r.ReorderMinRequests,
+		ReorderMaxWaitMs:   r.ReorderMaxWaitMs,
+		StaleDelayMs:       r.StaleDelayMs,
+	}
+}
+
 func (dt *DaemonTools) handleProxyChaos(input ProxyInput) (*mcp.CallToolResult, ProxyOutput, error) {
 	if input.ID == "" {
 		return errorResult("id required for chaos"), ProxyOutput{}, nil
@@ -844,38 +911,10 @@ func (dt *DaemonTools) handleProxyChaos(input ProxyInput) (*mcp.CallToolResult, 
 			ChaosEnabled: getBool(result, "enabled"),
 		}
 		if stats, ok := result["stats"].(map[string]interface{}); ok {
-			output.ChaosStats = &ChaosStatsOutput{
-				TotalRequests:   getInt64(stats, "total_requests"),
-				AffectedCount:   getInt64(stats, "affected_count"),
-				LatencyInjected: getInt64(stats, "latency_injected_ms"),
-				ErrorsInjected:  getInt64(stats, "errors_injected"),
-				DropsInjected:   getInt64(stats, "drops_injected"),
-				TruncatedCount:  getInt64(stats, "truncated_count"),
-				ReorderedCount:  getInt64(stats, "reordered_count"),
-			}
-			if ruleStats, ok := stats["rule_stats"].(map[string]interface{}); ok {
-				output.ChaosStats.RuleStats = make(map[string]int64)
-				for k, v := range ruleStats {
-					if n, ok := v.(float64); ok {
-						output.ChaosStats.RuleStats[k] = int64(n)
-					}
-				}
-			}
+			output.ChaosStats = parseChaosStats(stats)
 		}
 		if rules, ok := result["rules"].([]interface{}); ok {
-			for _, r := range rules {
-				if rm, ok := r.(map[string]interface{}); ok {
-					output.ChaosRules = append(output.ChaosRules, ChaosRuleOutput{
-						ID:           getString(rm, "id"),
-						Name:         getString(rm, "name"),
-						Type:         getString(rm, "type"),
-						Enabled:      getBool(rm, "enabled"),
-						URLPattern:   getString(rm, "url_pattern"),
-						Probability:  getFloat64(rm, "probability"),
-						TimesApplied: getInt64(rm, "times_applied"),
-					})
-				}
-			}
+			output.ChaosRules = parseChaosRules(rules)
 		}
 		return nil, output, nil
 
@@ -919,28 +958,8 @@ func (dt *DaemonTools) handleProxyChaos(input ProxyInput) (*mcp.CallToolResult, 
 			LoggingMode: input.ChaosConfig.LoggingMode,
 		}
 		for _, r := range input.ChaosConfig.Rules {
-			config.Rules = append(config.Rules, &protocol.ChaosRuleConfig{
-				ID:                 r.ID,
-				Name:               r.Name,
-				Type:               r.Type,
-				Enabled:            r.Enabled,
-				URLPattern:         r.URLPattern,
-				Methods:            r.Methods,
-				Probability:        r.Probability,
-				MinLatencyMs:       r.MinLatencyMs,
-				MaxLatencyMs:       r.MaxLatencyMs,
-				JitterMs:           r.JitterMs,
-				BytesPerMs:         r.BytesPerMs,
-				ChunkSize:          r.ChunkSize,
-				DropAfterPercent:   r.DropAfterPercent,
-				DropAfterBytes:     r.DropAfterBytes,
-				ErrorCodes:         r.ErrorCodes,
-				ErrorMessage:       r.ErrorMessage,
-				TruncatePercent:    r.TruncatePercent,
-				ReorderMinRequests: r.ReorderMinRequests,
-				ReorderMaxWaitMs:   r.ReorderMaxWaitMs,
-				StaleDelayMs:       r.StaleDelayMs,
-			})
+			rule := inputRuleToProtocol(r)
+			config.Rules = append(config.Rules, &rule)
 		}
 		result, err := dt.client.ChaosSet(input.ID, config)
 		if err != nil {
@@ -956,28 +975,7 @@ func (dt *DaemonTools) handleProxyChaos(input ProxyInput) (*mcp.CallToolResult, 
 		if input.ChaosRule == nil {
 			return errorResult("chaos_rule required for add_rule operation"), ProxyOutput{}, nil
 		}
-		rule := protocol.ChaosRuleConfig{
-			ID:                 input.ChaosRule.ID,
-			Name:               input.ChaosRule.Name,
-			Type:               input.ChaosRule.Type,
-			Enabled:            input.ChaosRule.Enabled,
-			URLPattern:         input.ChaosRule.URLPattern,
-			Methods:            input.ChaosRule.Methods,
-			Probability:        input.ChaosRule.Probability,
-			MinLatencyMs:       input.ChaosRule.MinLatencyMs,
-			MaxLatencyMs:       input.ChaosRule.MaxLatencyMs,
-			JitterMs:           input.ChaosRule.JitterMs,
-			BytesPerMs:         input.ChaosRule.BytesPerMs,
-			ChunkSize:          input.ChaosRule.ChunkSize,
-			DropAfterPercent:   input.ChaosRule.DropAfterPercent,
-			DropAfterBytes:     input.ChaosRule.DropAfterBytes,
-			ErrorCodes:         input.ChaosRule.ErrorCodes,
-			ErrorMessage:       input.ChaosRule.ErrorMessage,
-			TruncatePercent:    input.ChaosRule.TruncatePercent,
-			ReorderMinRequests: input.ChaosRule.ReorderMinRequests,
-			ReorderMaxWaitMs:   input.ChaosRule.ReorderMaxWaitMs,
-			StaleDelayMs:       input.ChaosRule.StaleDelayMs,
-		}
+		rule := inputRuleToProtocol(*input.ChaosRule)
 		result, err := dt.client.ChaosAddRule(input.ID, rule)
 		if err != nil {
 			return formatDaemonError(err, "chaos"), ProxyOutput{}, nil
@@ -1007,19 +1005,7 @@ func (dt *DaemonTools) handleProxyChaos(input ProxyInput) (*mcp.CallToolResult, 
 		}
 		output := ProxyOutput{}
 		if rules, ok := result["rules"].([]interface{}); ok {
-			for _, r := range rules {
-				if rm, ok := r.(map[string]interface{}); ok {
-					output.ChaosRules = append(output.ChaosRules, ChaosRuleOutput{
-						ID:           getString(rm, "id"),
-						Name:         getString(rm, "name"),
-						Type:         getString(rm, "type"),
-						Enabled:      getBool(rm, "enabled"),
-						URLPattern:   getString(rm, "url_pattern"),
-						Probability:  getFloat64(rm, "probability"),
-						TimesApplied: getInt64(rm, "times_applied"),
-					})
-				}
-			}
+			output.ChaosRules = parseChaosRules(rules)
 		}
 		return nil, output, nil
 
@@ -1030,23 +1016,7 @@ func (dt *DaemonTools) handleProxyChaos(input ProxyInput) (*mcp.CallToolResult, 
 		}
 		output := ProxyOutput{}
 		if stats, ok := result["stats"].(map[string]interface{}); ok {
-			output.ChaosStats = &ChaosStatsOutput{
-				TotalRequests:   getInt64(stats, "total_requests"),
-				AffectedCount:   getInt64(stats, "affected_count"),
-				LatencyInjected: getInt64(stats, "latency_injected_ms"),
-				ErrorsInjected:  getInt64(stats, "errors_injected"),
-				DropsInjected:   getInt64(stats, "drops_injected"),
-				TruncatedCount:  getInt64(stats, "truncated_count"),
-				ReorderedCount:  getInt64(stats, "reordered_count"),
-			}
-			if ruleStats, ok := stats["rule_stats"].(map[string]interface{}); ok {
-				output.ChaosStats.RuleStats = make(map[string]int64)
-				for k, v := range ruleStats {
-					if n, ok := v.(float64); ok {
-						output.ChaosStats.RuleStats[k] = int64(n)
-					}
-				}
-			}
+			output.ChaosStats = parseChaosStats(stats)
 		}
 		return nil, output, nil
 

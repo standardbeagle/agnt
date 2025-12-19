@@ -417,9 +417,12 @@ func (f *StatusFetcher) fetchBrowserSessions(proxies []ProxyInfo) ([]BrowserSess
 // linkProcessesAndProxies links processes and proxies that are related.
 // A proxy targets a process if the proxy's target URL port matches a port in the process's command.
 func (f *StatusFetcher) linkProcessesAndProxies(processes []ProcessInfo, proxies []ProxyInfo) {
-	// Build a map of target ports to proxy indices
-	portToProxy := make(map[string]int)
+	// Build maps for linking
+	proxyByID := make(map[string]int)   // proxy ID -> index
+	portToProxy := make(map[string]int) // target port -> proxy index
 	for i := range proxies {
+		proxyByID[proxies[i].ID] = i
+
 		targetURL := proxies[i].TargetURL
 		if targetURL == "" {
 			continue
@@ -440,10 +443,18 @@ func (f *StatusFetcher) linkProcessesAndProxies(processes []ProcessInfo, proxies
 		portToProxy[port] = i
 	}
 
-	// Match processes to proxies by looking for port numbers in process ID or command
+	// Match processes to proxies
 	for i := range processes {
 		proc := &processes[i]
-		// Check both ID and command for port patterns
+
+		// First, try direct ID match (process "dev" links to proxy "dev")
+		if proxyIdx, ok := proxyByID[proc.ID]; ok {
+			proc.LinkedProxyID = proxies[proxyIdx].ID
+			proxies[proxyIdx].LinkedProcessID = proc.ID
+			continue
+		}
+
+		// Fall back to port matching in process ID or command
 		checkStr := proc.ID + " " + proc.Command
 		for port, proxyIdx := range portToProxy {
 			// Look for common patterns: :PORT, PORT, -p PORT, --port PORT

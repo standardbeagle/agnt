@@ -606,9 +606,16 @@ func (r *Renderer) DrawDashboard(menu Menu, selectedIndex int, status Status) {
 				FgWhite+Bold, proc.ID, Reset,
 				stateColor, proc.State, Reset)
 
-			// Add linked proxy URL if present
+			// Add linked proxy URLs if present
 			if proc.LinkedProxyID != "" {
 				if proxy, ok := proxyByID[proc.LinkedProxyID]; ok {
+					// Show target URL (app's actual URL) first
+					if proxy.TargetURL != "" {
+						line += fmt.Sprintf(" %s@%s %s%s%s",
+							FgBrightBlack, Reset,
+							FgYellow, proxy.TargetURL, Reset)
+					}
+					// Then show proxy URL (browser access)
 					proxyURL := "http://" + normalizeListenAddr(proxy.ListenAddr)
 					line += fmt.Sprintf(" %s→%s %s%s%s",
 						FgBrightBlack, Reset,
@@ -1018,6 +1025,19 @@ func (r *Renderer) ResetMenuRegions() {
 	// Reset tracked regions
 	r.currentMenuRegion = nil
 	r.currentInputRegion = nil
+}
+
+// ClearCurrentMenu clears the current menu from screen and resets the region.
+// Use this before transitioning to a different menu type (e.g., Dashboard to submenu).
+func (r *Renderer) ClearCurrentMenu() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Pop and clear the current menu from the overlay stack
+	r.overlayStack.Pop()
+
+	// Reset the tracked region so the next draw creates a fresh one
+	r.currentMenuRegion = nil
 }
 
 // drawBox draws a box with a title.

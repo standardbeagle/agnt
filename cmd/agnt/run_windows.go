@@ -72,6 +72,7 @@ var (
 	overlayHotkey     byte = 0x19 // Ctrl+Y
 	showIndicator     bool = true
 	useTermOverlay    bool = true
+	sessionCode       string
 	skipAutostart     bool = false
 )
 
@@ -118,6 +119,12 @@ func runCommand(cmd *cobra.Command, args []string) {
 				commandArgs = append(args[:i], args[i+2:]...)
 				continue
 			}
+		case "--session":
+			if i+1 < len(args) {
+				sessionCode = args[i+1]
+				commandArgs = append(args[:i], args[i+2:]...)
+				continue
+			}
 		case "--no-indicator":
 			showIndicator = false
 			commandArgs = append(args[:i], args[i+1:]...)
@@ -145,7 +152,7 @@ func runCommand(cmd *cobra.Command, args []string) {
 	)
 	defer cancel()
 
-	if err := runWithConPTY(ctx, commandArgs, overlaySocketPath); err != nil {
+	if err := runWithConPTY(ctx, commandArgs, overlaySocketPath, sessionCode); err != nil {
 		log.Fatalf("Error: %v", err)
 	}
 }
@@ -181,10 +188,15 @@ func spinner(message string) func() {
 }
 
 // runWithConPTY runs a command in a ConPTY with overlay support.
-func runWithConPTY(ctx context.Context, args []string, socketPath string) error {
+func runWithConPTY(ctx context.Context, args []string, socketPath string, sessionCode string) error {
 	// Find the command
 	command := args[0]
 	cmdArgs := args[1:]
+
+	// Auto-generate session code if not provided
+	if sessionCode == "" {
+		sessionCode = generateSessionCode(command)
+	}
 
 	// Get project path for session registration and MCP directory filtering
 	projectPath, _ := os.Getwd()
@@ -273,32 +285,86 @@ func runWithConPTY(ctx context.Context, args []string, socketPath string) error 
 	_ = netOverlay.Start(ctx)
 	defer netOverlay.Stop()
 
-	// Register overlay endpoint with daemon
+	// Register overlay endpoint with daemon so proxies forward events to us
+	// Use ResilientClient for automatic reconnection with overlay re-registration
 	var resilientClient *daemon.ResilientClient
+	var sessionRegistered bool
+	var heartbeatStop chan struct{}
 	go func() {
-		socketPath, _ := rootCmd.Flags().GetString("socket")
+		daemonSocketPath, _ := rootCmd.Flags().GetString("socket")
 
 		overlayEndpoint := netOverlay.SocketPath()
 
 		config := daemon.DefaultResilientClientConfig()
-		if socketPath != "" {
-			config.AutoStartConfig.SocketPath = socketPath
+		if daemonSocketPath != "" {
+			config.AutoStartConfig.SocketPath = daemonSocketPath
 		}
 
+		// Re-register overlay and session when connection is restored after daemon restart
 		config.OnReconnect = func(client *daemon.Client) error {
 			_, err := client.OverlaySet(overlayEndpoint)
-			return err
+			if err != nil {
+				return err
+			}
+			// Re-register session
+			_, _ = client.SessionRegister(sessionCode, overlayEndpoint, projectPath, command, cmdArgs)
+			return nil
 		}
+
+		// OnDisconnect and OnReconnectFailed are left nil since we don't want
+		// to pollute the terminal output with daemon connection status messages
 
 		resilientClient = daemon.NewResilientClient(config)
 		if err := resilientClient.Connect(); err != nil {
-			return
+			return // Daemon connection is best-effort, non-critical
 		}
 
+		// Register overlay endpoint on initial connect (best-effort)
 		_, _ = resilientClient.OverlaySet(overlayEndpoint)
+
+		// Register session with daemon (autostart happens server-side)
+		result, err := resilientClient.SessionRegister(sessionCode, overlayEndpoint, projectPath, command, cmdArgs)
+		if err == nil {
+			sessionRegistered = true
+
+			// Log any autostart errors
+			if result != nil && !skipAutostart {
+				if errs, ok := result["autostart_errors"].([]interface{}); ok && len(errs) > 0 {
+					for _, e := range errs {
+						if str, ok := e.(string); ok {
+							fmt.Fprintf(os.Stderr, "[agnt] Autostart error: %s\r\n", str)
+						}
+					}
+				}
+			}
+
+			// Start heartbeat goroutine (30-second interval)
+			heartbeatStop = make(chan struct{})
+			go func() {
+				ticker := time.NewTicker(30 * time.Second)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-heartbeatStop:
+						return
+					case <-ticker.C:
+						_ = resilientClient.SessionHeartbeat(sessionCode)
+					}
+				}
+			}()
+		}
 	}()
 
+	// Clean up resilient client and session when PTY session ends
 	defer func() {
+		// Stop heartbeat
+		if heartbeatStop != nil {
+			close(heartbeatStop)
+		}
+		// Unregister session
+		if resilientClient != nil && sessionRegistered {
+			_ = resilientClient.SessionUnregister(sessionCode)
+		}
 		if resilientClient != nil {
 			resilientClient.Close()
 		}
@@ -800,4 +866,40 @@ func parseHotkey(s string) byte {
 	}
 
 	return 0
+}
+
+// generateSessionCode generates a unique session code based on the command name.
+// Format: <command>-<sequence> (e.g., "claude-1", "gemini-2")
+func generateSessionCode(command string) string {
+	// Extract base command name (handle paths like C:\Program Files\claude.exe)
+	base := command
+	if idx := strings.LastIndex(command, "/"); idx >= 0 {
+		base = command[idx+1:]
+	}
+	if idx := strings.LastIndex(base, "\\"); idx >= 0 {
+		base = base[idx+1:]
+	}
+	// Remove .exe extension on Windows
+	if strings.HasSuffix(base, ".exe") {
+		base = strings.TrimSuffix(base, ".exe")
+	}
+
+	// Connect to daemon to get a unique sequence number
+	socketPath, _ := rootCmd.Flags().GetString("socket")
+	if socketPath == "" {
+		socketPath = daemon.DefaultSocketPath()
+	}
+
+	client := daemon.NewClient(daemon.WithSocketPath(socketPath))
+	if err := client.Connect(); err == nil {
+		defer client.Close()
+		// Use the daemon's session registry to generate a unique code
+		code, err := client.SessionGenerateCode(base)
+		if err == nil {
+			return code
+		}
+	}
+
+	// Fallback: use timestamp-based code if daemon unavailable
+	return fmt.Sprintf("%s-%d", base, time.Now().UnixNano()%10000)
 }

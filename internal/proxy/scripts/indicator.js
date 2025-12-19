@@ -516,6 +516,7 @@
     var style = document.createElement('style');
     style.id = '__devtool-activity-style';
     style.textContent = [
+      // Ring pulse animation (expanding outward)
       '@keyframes __devtool-pulse {',
       '  0% { transform: scale(1); opacity: 0.8; }',
       '  50% { transform: scale(1.15); opacity: 0.4; }',
@@ -523,6 +524,18 @@
       '}',
       '.__devtool-active {',
       '  animation: __devtool-pulse 1.5s ease-out infinite;',
+      '}',
+      // Bug outline throb animation
+      '@keyframes __devtool-throb {',
+      '  0%, 100% {',
+      '    box-shadow: 0 10px 40px rgba(0,0,0,0.15), 0 0 20px rgba(99,102,241,0.3), 0 0 0 0 rgba(245,158,11,0);',
+      '  }',
+      '  50% {',
+      '    box-shadow: 0 10px 40px rgba(0,0,0,0.15), 0 0 20px rgba(99,102,241,0.3), 0 0 0 4px rgba(245,158,11,0.6);',
+      '  }',
+      '}',
+      '.__devtool-bug-active {',
+      '  animation: __devtool-throb 1.2s ease-in-out infinite !important;',
       '}'
     ].join('\\n');
     document.head.appendChild(style);
@@ -532,14 +545,27 @@
   function setActivityState(isActive) {
     state.isActive = isActive;
     var ring = document.getElementById('__devtool-activity-ring');
-    if (!ring) return;
+    var bug = state.bug;
 
     if (isActive) {
-      ring.classList.add('__devtool-active');
-      ring.style.opacity = '1';
+      // Throb the bug outline
+      if (bug) {
+        bug.classList.add('__devtool-bug-active');
+      }
+      // Also show expanding ring
+      if (ring) {
+        ring.classList.add('__devtool-active');
+        ring.style.opacity = '1';
+      }
     } else {
-      ring.classList.remove('__devtool-active');
-      ring.style.opacity = '0';
+      // Stop throb
+      if (bug) {
+        bug.classList.remove('__devtool-bug-active');
+      }
+      if (ring) {
+        ring.classList.remove('__devtool-active');
+        ring.style.opacity = '0';
+      }
     }
   }
 

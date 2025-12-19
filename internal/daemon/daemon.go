@@ -6,11 +6,14 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/process"
+	"github.com/standardbeagle/agnt/internal/project"
 	"github.com/standardbeagle/agnt/internal/proxy"
 	"github.com/standardbeagle/agnt/internal/tunnel"
 	"github.com/standardbeagle/agnt/internal/updater"
@@ -652,3 +655,220 @@ type TunnelInfo struct {
 
 // Note: SessionInfo is defined in session.go
 // Note: SchedulerInfo is defined in scheduler.go
+
+// AutostartResult holds the results of an autostart operation.
+type AutostartResult struct {
+	Scripts []string `json:"scripts,omitempty"`
+	Proxies []string `json:"proxies,omitempty"`
+	Errors  []string `json:"errors,omitempty"`
+}
+
+// RunAutostart loads .agnt.kdl config from projectPath and starts configured processes/proxies.
+// This is called during SESSION REGISTER to ensure autostart happens once per project.
+// Returns the list of started scripts/proxies and any errors encountered.
+func (d *Daemon) RunAutostart(ctx context.Context, projectPath string) *AutostartResult {
+	result := &AutostartResult{}
+
+	if projectPath == "" {
+		return result
+	}
+
+	// Load .agnt.kdl config
+	agntConfig, err := config.LoadAgntConfig(projectPath)
+	if err != nil {
+		// No config or error loading - not an error, just nothing to autostart
+		return result
+	}
+
+	if agntConfig == nil {
+		return result
+	}
+
+	// Start scripts
+	for name, script := range agntConfig.GetAutostartScripts() {
+		if err := d.autostartScript(ctx, name, script, projectPath); err != nil {
+			result.Errors = append(result.Errors, fmt.Sprintf("script %s: %v", name, err))
+		} else {
+			result.Scripts = append(result.Scripts, name)
+		}
+	}
+
+	// Start proxies
+	for name, proxyConfig := range agntConfig.GetAutostartProxies() {
+		if err := d.autostartProxy(ctx, name, proxyConfig, projectPath); err != nil {
+			result.Errors = append(result.Errors, fmt.Sprintf("proxy %s: %v", name, err))
+		} else {
+			result.Proxies = append(result.Proxies, name)
+		}
+	}
+
+	return result
+}
+
+// autostartScript starts a single script from config.
+func (d *Daemon) autostartScript(ctx context.Context, name string, script *config.ScriptConfig, projectPath string) error {
+	// Check if already running
+	if _, err := d.pm.Get(name); err == nil {
+		return nil // Already running
+	}
+
+	var command string
+	var args []string
+
+	if script.Command != "" {
+		// Explicit command specified
+		command = script.Command
+		args = script.Args
+	} else {
+		// No command - run as package.json script via detected package manager
+		proj, err := project.Detect(projectPath)
+		if err != nil {
+			return fmt.Errorf("project detection failed: %v", err)
+		}
+
+		switch proj.Type {
+		case project.ProjectNode:
+			pm := proj.PackageManager
+			if pm == "" {
+				pm = "npm"
+			}
+			command = pm
+			// pnpm and yarn don't need "run" prefix for scripts
+			if pm == "npm" || pm == "bun" {
+				args = []string{"run", name}
+			} else {
+				args = []string{name}
+			}
+		case project.ProjectGo:
+			command = "go"
+			args = []string{"run", name}
+		case project.ProjectPython:
+			command = "python"
+			args = []string{"-m", name}
+		default:
+			return fmt.Errorf("cannot run script %q: unknown project type and no command specified", name)
+		}
+	}
+
+	// Create and start process using StartOrReuse for idempotent behavior
+	result, err := d.pm.StartOrReuse(ctx, process.ProcessConfig{
+		ID:          name,
+		ProjectPath: projectPath,
+		Command:     command,
+		Args:        args,
+		Env:         os.Environ(),
+	})
+	if err != nil {
+		return err
+	}
+
+	_ = result.Reused // Reuse info is reported in the summary output
+
+	return nil
+}
+
+// autostartProxy starts a single proxy from config.
+func (d *Daemon) autostartProxy(ctx context.Context, name string, proxyConfig *config.ProxyConfig, projectPath string) error {
+	// Check if already running
+	if _, err := d.proxym.Get(name); err == nil {
+		return nil // Already running
+	}
+
+	// Determine target URL
+	targetURL := proxyConfig.Target
+
+	// If linked to a script, detect the port
+	if proxyConfig.Script != "" && targetURL == "" {
+		detectedPort, err := d.detectPortForScript(ctx, proxyConfig.Script, proxyConfig)
+		if err != nil {
+			// Use fallback port if available
+			if proxyConfig.FallbackPort > 0 {
+				detectedPort = proxyConfig.FallbackPort
+			} else {
+				return fmt.Errorf("port detection failed and no fallback: %w", err)
+			}
+		}
+
+		host := proxyConfig.Host
+		if host == "" {
+			host = "localhost"
+		}
+		targetURL = fmt.Sprintf("http://%s:%d", host, detectedPort)
+	}
+
+	if targetURL == "" {
+		return nil // No target URL and no script for port detection
+	}
+
+	// Create proxy server using the same config format as handler.go
+	proxyServerConfig := proxy.ProxyConfig{
+		ID:          name,
+		TargetURL:   targetURL,
+		ListenPort:  -1,   // Auto-assign port
+		MaxLogSize:  1000, // Default
+		AutoRestart: true,
+		Path:        projectPath,
+	}
+
+	server, err := d.proxym.Create(ctx, proxyServerConfig)
+	if err != nil {
+		if err == proxy.ErrProxyExists {
+			return nil // Already exists, not an error
+		}
+		return err
+	}
+
+	// Set overlay endpoint if configured
+	overlayEndpoint := d.OverlayEndpoint()
+	if overlayEndpoint != "" {
+		server.SetOverlayEndpoint(overlayEndpoint)
+	}
+
+	return nil
+}
+
+// detectPortForScript waits for a script to start and detects its listening port.
+func (d *Daemon) detectPortForScript(ctx context.Context, scriptName string, proxyConfig *config.ProxyConfig) (int, error) {
+	detector := config.NewPortDetector()
+
+	// Create a timeout context for port detection (30 seconds)
+	detectCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	// Poll for port detection
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-detectCtx.Done():
+			return 0, fmt.Errorf("timeout waiting for port detection")
+
+		case <-ticker.C:
+			// Get process to check if running
+			proc, err := d.pm.Get(scriptName)
+			if err != nil {
+				continue // Process may not be registered yet
+			}
+
+			// Check if process is running
+			if !proc.IsRunning() {
+				continue
+			}
+
+			// Try to get output and detect port from it
+			output, _ := proc.CombinedOutput()
+			if port := detector.DetectFromOutput(string(output)); port > 0 {
+				return port, nil
+			}
+
+			// Try PID-based detection
+			pid := proc.PID()
+			if pid > 0 {
+				if ports := detector.DetectFromPID(detectCtx, pid); len(ports) > 0 {
+					return ports[0], nil
+				}
+			}
+		}
+	}
+}

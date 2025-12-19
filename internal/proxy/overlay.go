@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"log"
 	"net"
 	"net/http"
 	"sync"
@@ -145,30 +144,23 @@ func (n *OverlayNotifier) send(event OverlayEvent) error {
 	n.mu.RLock()
 	if !n.enabled || n.client == nil {
 		n.mu.RUnlock()
-		log.Printf("[OverlayNotifier] not enabled or no client, dropping event type=%s", event.Type)
-		return nil
+		return nil // Not enabled, silently drop
 	}
-	socketPath := n.socketPath
 	client := n.client
 	n.mu.RUnlock()
 
 	data, err := json.Marshal(event)
 	if err != nil {
-		log.Printf("[OverlayNotifier] failed to marshal event: %v", err)
 		return err
 	}
-
-	log.Printf("[OverlayNotifier] sending event type=%s to socket=%s", event.Type, socketPath)
 
 	// Use dummy host - actual connection is via Unix socket
 	resp, err := client.Post("http://localhost/event", "application/json", bytes.NewReader(data))
 	if err != nil {
-		log.Printf("[OverlayNotifier] failed to send event to overlay: %v", err)
 		return err
 	}
 	defer resp.Body.Close()
 
-	log.Printf("[OverlayNotifier] event sent successfully, status=%d", resp.StatusCode)
 	return nil
 }
 

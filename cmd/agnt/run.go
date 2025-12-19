@@ -302,10 +302,21 @@ func runWithPTY(ctx context.Context, args []string, socketPath string, sessionCo
 		// Register overlay endpoint on initial connect (best-effort)
 		_, _ = resilientClient.OverlaySet(overlayEndpoint)
 
-		// Register session with daemon
-		_, err := resilientClient.SessionRegister(sessionCode, overlayEndpoint, projectPath, command, cmdArgs)
+		// Register session with daemon (autostart happens server-side)
+		result, err := resilientClient.SessionRegister(sessionCode, overlayEndpoint, projectPath, command, cmdArgs)
 		if err == nil {
 			sessionRegistered = true
+
+			// Log any autostart errors
+			if result != nil && !skipAutostart {
+				if errs, ok := result["autostart_errors"].([]interface{}); ok && len(errs) > 0 {
+					for _, e := range errs {
+						if str, ok := e.(string); ok {
+							fmt.Fprintf(os.Stderr, "[agnt] Autostart error: %s\r\n", str)
+						}
+					}
+				}
+			}
 
 			// Start heartbeat goroutine (30-second interval)
 			heartbeatStop = make(chan struct{})

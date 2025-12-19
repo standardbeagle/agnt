@@ -2258,12 +2258,31 @@ func (c *Connection) handleSessionRegister(cmd *protocol.Command) error {
 		c.daemon.schedulerStateMgr.RegisterProject(session.ProjectPath)
 	}
 
+	// Run autostart for processes and proxies from .agnt.kdl
+	var autostartResult *AutostartResult
+	if session.ProjectPath != "" {
+		autostartResult = c.daemon.RunAutostart(c.daemon.ctx, session.ProjectPath)
+	}
+
 	resp := map[string]interface{}{
 		"code":         session.Code,
 		"overlay_path": session.OverlayPath,
 		"project_path": session.ProjectPath,
 		"command":      session.Command,
 		"started_at":   session.StartedAt.Format(time.RFC3339),
+	}
+
+	// Include autostart results in response
+	if autostartResult != nil {
+		if len(autostartResult.Scripts) > 0 {
+			resp["autostart_scripts"] = autostartResult.Scripts
+		}
+		if len(autostartResult.Proxies) > 0 {
+			resp["autostart_proxies"] = autostartResult.Proxies
+		}
+		if len(autostartResult.Errors) > 0 {
+			resp["autostart_errors"] = autostartResult.Errors
+		}
 	}
 
 	data, _ := json.Marshal(resp)

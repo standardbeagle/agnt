@@ -335,6 +335,8 @@ func (r *InputRouter) handleTextInput(b byte) {
 func (r *InputRouter) executeMenuItem(item MenuItem) {
 	// Handle sub-menu navigation
 	if item.SubMenu != nil {
+		// Clear the parent menu before showing submenu
+		r.overlay.renderer.ClearCurrentMenu()
 		r.overlay.menuStack = append(r.overlay.menuStack, *item.SubMenu)
 		r.overlay.selectedIndex = 0
 		r.overlay.draw()
@@ -390,6 +392,8 @@ func (r *InputRouter) executeMenuItem(item MenuItem) {
 		r.overlay.draw()
 
 	case ActionShowProcesses:
+		// Clear current menu before showing process list
+		r.overlay.renderer.ClearCurrentMenu()
 		status := r.overlay.GetStatus()
 		menu := ProcessListMenu(status.Processes)
 		r.overlay.menuStack = append(r.overlay.menuStack, menu)
@@ -397,6 +401,8 @@ func (r *InputRouter) executeMenuItem(item MenuItem) {
 		r.overlay.draw()
 
 	case ActionShowProxies:
+		// Clear current menu before showing proxy list
+		r.overlay.renderer.ClearCurrentMenu()
 		status := r.overlay.GetStatus()
 		menu := ProxyListMenu(status.Proxies)
 		r.overlay.menuStack = append(r.overlay.menuStack, menu)

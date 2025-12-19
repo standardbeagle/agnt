@@ -12,7 +12,7 @@ import (
 // KDL configuration file names
 const (
 	GlobalConfigFile  = "config.kdl"
-	ProjectConfigFile = ".devtool.kdl"
+	ProjectConfigFile = ".agnt.kdl"
 )
 
 // KDLConfig represents the KDL configuration structure.
@@ -73,7 +73,7 @@ func LoadGlobalConfig() (*Config, error) {
 		configDir = filepath.Join(home, ".config")
 	}
 
-	configPath := filepath.Join(configDir, "devtool-mcp", GlobalConfigFile)
+	configPath := filepath.Join(configDir, "agnt", GlobalConfigFile)
 
 	// If file doesn't exist, return defaults
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
@@ -166,7 +166,7 @@ func mergeLanguageConfig(cfg *Config, name string, kdlLang *KDLLanguage) {
 	cfg.Languages[name] = langCfg
 }
 
-// LoadProjectConfig loads per-project configuration from .devtool.kdl.
+// LoadProjectConfig loads per-project configuration from .agnt.kdl.
 func LoadProjectConfig(projectPath string) (*ProjectConfig, error) {
 	configPath := filepath.Join(projectPath, ProjectConfigFile)
 
@@ -227,12 +227,12 @@ func GlobalConfigPath() string {
 		}
 		configDir = filepath.Join(home, ".config")
 	}
-	return filepath.Join(configDir, "devtool-mcp", GlobalConfigFile)
+	return filepath.Join(configDir, "agnt", GlobalConfigFile)
 }
 
 // WriteDefaultConfig writes a default config file with documentation.
 func WriteDefaultConfig(path string) error {
-	defaultKDL := `// DevTool MCP Configuration
+	defaultKDL := `// agnt Configuration
 // See documentation for full options
 
 version "1.0"
