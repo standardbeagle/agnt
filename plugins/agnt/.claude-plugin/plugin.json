@@ -1,6 +1,6 @@
 {
   "name": "agnt",
-  "version": "0.7.8",
+  "version": "0.7.9",
   "description": "MCP server for AI coding agents: process management, reverse proxy with traffic logging, frontend instrumentation with 50+ diagnostic functions, sketch mode for wireframing, and session scheduling",
   "author": {
     "name": "Standard Beagle",
