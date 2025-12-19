@@ -462,47 +462,42 @@ func (r *Renderer) DrawDashboard(menu Menu, selectedIndex int, status Status) {
 	processCount := min(len(status.Processes), 6)
 	menuItemCount := len(menu.Items)
 
-	// Count standalone proxies (not linked to a process), tunnels, and tailscale URLs
-	standaloneProxyCount := 0
-	tunnelCount := 0
-	tailscaleCount := 0
-	for _, p := range status.Proxies {
-		if p.LinkedProcessID == "" {
-			standaloneProxyCount++
-			if p.TailscaleURL != "" {
-				tailscaleCount++
-			}
-			if p.TunnelURL != "" {
-				tunnelCount++
-			}
-		}
-	}
-
-	// Count processes with output (for extra lines)
-	outputLineCount := 0
+	// Count process lines (each process + its URLs)
+	processLineCount := 0
 	for i, p := range status.Processes {
 		if i >= 6 {
 			break
 		}
-		if p.LastOutput != "" {
-			outputLineCount++
+		processLineCount++              // process line
+		processLineCount += len(p.URLs) // URL lines
+	}
+
+	// Count proxy lines (each proxy can have multiple URL lines)
+	proxyLineCount := 0
+	for _, p := range status.Proxies {
+		proxyLineCount++ // proxy ID + target URL
+		proxyLineCount++ // listen address
+		if p.TailscaleURL != "" {
+			proxyLineCount++
+		}
+		if p.TunnelURL != "" {
+			proxyLineCount++
 		}
 	}
 
 	// Dashboard sections:
 	// 1. Header (title + connection status)
-	// 2. Dev servers section (processes with linked proxies + output)
-	// 3. Standalone proxies section (if any)
+	// 2. Processes section (with URLs from logs)
+	// 3. Proxies section (with URLs)
 	// 4. Browser sessions section (if any)
 	// 5. Menu section
 	// 6. Footer
 	dashHeight := 4 + menuItemCount // header + menu + footer
 	if processCount > 0 {
-		// Each process takes 1 line, plus 1 line for output if present
-		dashHeight += processCount + outputLineCount + 2
+		dashHeight += processLineCount + 1 // processes + URLs + spacing
 	}
-	if standaloneProxyCount > 0 {
-		dashHeight += standaloneProxyCount + tunnelCount + tailscaleCount + 2
+	if len(status.Proxies) > 0 {
+		dashHeight += proxyLineCount + 2 // "proxies" header + spacing + proxy lines
 	}
 	if browserCount > 0 {
 		dashHeight += browserCount + 2
@@ -558,161 +553,79 @@ func (r *Renderer) DrawDashboard(menu Menu, selectedIndex int, status Status) {
 		proxyByID[p.ID] = p
 	}
 
-	// === DEV SERVERS SECTION (Processes with linked proxies) ===
+	// === PROCESSES SECTION ===
 	if processCount > 0 {
 		currentRow++ // spacing
-		r.moveTo(currentRow, startCol+2)
-		r.write(FgCyan + Bold + "DEV SERVERS" + Reset + FgBrightBlack + " (1-9 to view output)" + Reset)
-		currentRow++
-
 		for i, proc := range status.Processes {
 			if i >= 6 {
-				r.moveTo(currentRow, startCol+3)
-				r.write(FgBrightBlack + fmt.Sprintf("  ... and %d more", len(status.Processes)-6) + Reset)
+				r.moveTo(currentRow, startCol+2)
+				r.write(FgBrightBlack + fmt.Sprintf("... and %d more", len(status.Processes)-6) + Reset)
 				currentRow++
 				break
 			}
-			r.moveTo(currentRow, startCol+3)
+			r.moveTo(currentRow, startCol+2)
 
-			// State-based styling
-			stateIcon := FgBrightBlack + "○" + Reset
-			stateColor := FgBrightBlack
-			switch proc.State {
-			case "running":
-				stateIcon = FgGreen + IconConnected + Reset
-				stateColor = FgGreen
-			case "failed":
-				stateIcon = FgRed + IconError + Reset
-				stateColor = FgRed
-			case "stopped":
-				stateIcon = FgYellow + "■" + Reset
-				stateColor = FgYellow
-			}
-
-			// Runtime formatting
-			runtime := ""
-			if proc.Runtime > 0 {
-				if proc.Runtime < time.Minute {
-					runtime = fmt.Sprintf("%ds", int(proc.Runtime.Seconds()))
-				} else {
-					runtime = fmt.Sprintf("%dm", int(proc.Runtime.Minutes()))
-				}
-			}
-
-			// Build process line
-			line := fmt.Sprintf("[%s%d%s] %s %s%s%s %s%s%s",
+			// Build simple process line: [1] test
+			line := fmt.Sprintf("[%s%d%s] %s",
 				FgCyan, i+1, Reset,
-				stateIcon,
-				FgWhite+Bold, proc.ID, Reset,
-				stateColor, proc.State, Reset)
-
-			// Add linked proxy URLs if present
-			if proc.LinkedProxyID != "" {
-				if proxy, ok := proxyByID[proc.LinkedProxyID]; ok {
-					// Show target URL (app's actual URL) first
-					if proxy.TargetURL != "" {
-						line += fmt.Sprintf(" %s@%s %s%s%s",
-							FgBrightBlack, Reset,
-							FgYellow, proxy.TargetURL, Reset)
-					}
-					// Then show proxy URL (browser access)
-					proxyURL := "http://" + normalizeListenAddr(proxy.ListenAddr)
-					line += fmt.Sprintf(" %s→%s %s%s%s",
-						FgBrightBlack, Reset,
-						FgBrightCyan+Underline, proxyURL, Reset)
-					// Add Tailscale URL if available
-					if proxy.TailscaleURL != "" {
-						line += fmt.Sprintf(" %s|%s %s%s%s",
-							FgBrightBlack, Reset,
-							FgMagenta+Underline, proxy.TailscaleURL, Reset)
-					}
-					if proxy.HasErrors {
-						line += fmt.Sprintf(" %s(%d err)%s", FgRed, proxy.ErrorCount, Reset)
-					}
-				}
-			}
-
-			// Add runtime at the end
-			if runtime != "" {
-				line += fmt.Sprintf(" %s%s%s", FgBrightBlack, runtime, Reset)
-			}
+				proc.ID)
 
 			r.write(line)
 			currentRow++
 
-			// Show last output line on next row
-			if proc.LastOutput != "" {
-				r.moveTo(currentRow, startCol+5)
-				// Truncate output to fit dashboard width
-				maxOutputLen := dashWidth - 8
-				output := proc.LastOutput
-				if len(output) > maxOutputLen {
-					output = output[:maxOutputLen-3] + "..."
-				}
-				r.write(FgBrightBlack + "└ " + output + Reset)
+			// Show parsed URLs from process output
+			for _, urlStr := range proc.URLs {
+				r.moveTo(currentRow, startCol+17)
+				r.write(fmt.Sprintf("%s-%s %s",
+					FgBrightBlack, Reset,
+					urlStr))
 				currentRow++
 			}
 		}
 	}
 
-	// === STANDALONE PROXIES SECTION (proxies not linked to processes) ===
-	if standaloneProxyCount > 0 {
+	// === PROXIES SECTION ===
+	if len(status.Proxies) > 0 {
 		currentRow++ // spacing
 		r.moveTo(currentRow, startCol+2)
-		r.write(FgCyan + Bold + "PROXIES" + Reset + FgBrightBlack + " (ctrl+click URL to open)" + Reset)
+		r.write("proxies")
 		currentRow++
 
 		for _, proxy := range status.Proxies {
-			// Skip proxies linked to processes (already shown above)
-			if proxy.LinkedProcessID != "" {
-				continue
-			}
-
 			r.moveTo(currentRow, startCol+3)
 
-			// Status icon
-			statusIcon := FgGreen + IconOK + Reset
-			if proxy.HasErrors {
-				statusIcon = FgRed + IconWarning + Reset
-			}
-
-			// Build proxy line with clickable URL
-			proxyURL := "http://" + normalizeListenAddr(proxy.ListenAddr)
-			line := fmt.Sprintf("%s %s%s%s → %s%s%s",
-				statusIcon,
-				FgWhite+Bold, proxy.ID, Reset,
-				FgBrightCyan+Underline, proxyURL, Reset)
-
-			if proxy.HasErrors {
-				line += fmt.Sprintf(" %s(%d errors)%s", FgRed, proxy.ErrorCount, Reset)
-			}
+			// Show proxy ID and target URL
+			line := fmt.Sprintf("%s %s-%s %s",
+				proxy.ID,
+				FgBrightBlack, Reset,
+				proxy.TargetURL)
 
 			r.write(line)
 			currentRow++
 
-			// Show Tailscale URL on a separate line if available
+			// Show proxy listen address on next line
+			proxyURL := "http://" + normalizeListenAddr(proxy.ListenAddr)
+			r.moveTo(currentRow, startCol+7)
+			r.write(fmt.Sprintf("%s-%s %s%s%s",
+				FgBrightBlack, Reset,
+				FgBrightCyan+Underline, proxyURL, Reset))
+			currentRow++
+
+			// Show Tailscale URL if available
 			if proxy.TailscaleURL != "" {
-				r.moveTo(currentRow, startCol+5)
-				tailscaleIcon := FgMagenta + "⟷" + Reset // Mesh network icon
-				tailscaleLine := fmt.Sprintf("%s %s%s%s %s(tailnet)%s",
-					tailscaleIcon,
-					FgMagenta+Underline, proxy.TailscaleURL, Reset,
-					FgBrightBlack, Reset)
-				r.write(tailscaleLine)
+				r.moveTo(currentRow, startCol+7)
+				r.write(fmt.Sprintf("%s-%s %s%s%s",
+					FgBrightBlack, Reset,
+					FgMagenta+Underline, proxy.TailscaleURL, Reset))
 				currentRow++
 			}
 
-			// Show tunnel URL on a separate line if available
+			// Show tunnel URL if available
 			if proxy.TunnelURL != "" {
-				r.moveTo(currentRow, startCol+5)
-				tunnelIcon := FgGreen + "⇡" + Reset
-				if !proxy.TunnelRunning {
-					tunnelIcon = FgYellow + "⇡" + Reset
-				}
-				tunnelLine := fmt.Sprintf("%s %s%s%s",
-					tunnelIcon,
-					FgBrightMagenta+Underline, proxy.TunnelURL, Reset)
-				r.write(tunnelLine)
+				r.moveTo(currentRow, startCol+7)
+				r.write(fmt.Sprintf("%s-%s %s%s%s",
+					FgBrightBlack, Reset,
+					FgBrightMagenta+Underline, proxy.TunnelURL, Reset))
 				currentRow++
 			}
 		}

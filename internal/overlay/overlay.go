@@ -45,8 +45,9 @@ type ProcessInfo struct {
 	Command       string
 	State         string
 	Runtime       time.Duration
-	LastOutput    string // Last line of output (trimmed)
-	LinkedProxyID string // ID of proxy targeting this process (if any)
+	LastOutput    string   // Last line of output (trimmed)
+	URLs          []string // URLs parsed from recent output
+	LinkedProxyID string   // ID of proxy targeting this process (if any)
 }
 
 // ProxyInfo holds information about a running proxy.
