@@ -412,8 +412,9 @@ func runWithConPTY(ctx context.Context, args []string, socketPath string, sessio
 		// Set up summarizer using shared connection
 		if agent := detectAIAgent(); agent != "" {
 			summarizer := overlay.NewSummarizer(daemonConn, overlay.SummarizerConfig{
-				Agent:   aichannel.AgentType(agent),
-				Timeout: 2 * time.Minute,
+				Agent:       aichannel.AgentType(agent),
+				Timeout:     2 * time.Minute,
+				ProjectPath: projectPath,
 			})
 			inputRouter.SetSummarizer(summarizer)
 		}

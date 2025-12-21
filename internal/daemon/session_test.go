@@ -379,3 +379,144 @@ func TestSession_ToJSON(t *testing.T) {
 		t.Errorf("ToJSON() status = %v, want active", json["status"])
 	}
 }
+
+func TestSessionRegistry_FindByDirectory(t *testing.T) {
+	registry := NewSessionRegistry(60 * time.Second)
+
+	// Register session for /home/user/project
+	session := &Session{
+		Code:        "proj-1",
+		ProjectPath: "/home/user/project",
+		Command:     "claude",
+		StartedAt:   time.Now(),
+		Status:      SessionStatusActive,
+		LastSeen:    time.Now(),
+	}
+	_ = registry.Register(session)
+
+	tests := []struct {
+		name      string
+		directory string
+		wantCode  string
+		wantFound bool
+	}{
+		{
+			name:      "exact match",
+			directory: "/home/user/project",
+			wantCode:  "proj-1",
+			wantFound: true,
+		},
+		{
+			name:      "subdirectory match",
+			directory: "/home/user/project/src",
+			wantCode:  "proj-1",
+			wantFound: true,
+		},
+		{
+			name:      "deep subdirectory match",
+			directory: "/home/user/project/src/internal/foo",
+			wantCode:  "proj-1",
+			wantFound: true,
+		},
+		{
+			name:      "no match - parent directory",
+			directory: "/home/user",
+			wantCode:  "",
+			wantFound: false,
+		},
+		{
+			name:      "no match - sibling directory",
+			directory: "/home/user/other-project",
+			wantCode:  "",
+			wantFound: false,
+		},
+		{
+			name:      "no match - similar prefix but not path boundary",
+			directory: "/home/user/project-backup",
+			wantCode:  "",
+			wantFound: false,
+		},
+		{
+			name:      "empty directory",
+			directory: "",
+			wantCode:  "",
+			wantFound: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			found, ok := registry.FindByDirectory(tt.directory)
+			if ok != tt.wantFound {
+				t.Errorf("FindByDirectory(%q) found = %v, want %v", tt.directory, ok, tt.wantFound)
+				return
+			}
+			if ok && found.Code != tt.wantCode {
+				t.Errorf("FindByDirectory(%q) code = %v, want %v", tt.directory, found.Code, tt.wantCode)
+			}
+		})
+	}
+}
+
+func TestSessionRegistry_FindByDirectory_MostSpecificMatch(t *testing.T) {
+	registry := NewSessionRegistry(60 * time.Second)
+
+	// Register sessions at different depths
+	session1 := &Session{
+		Code:        "root-1",
+		ProjectPath: "/home/user",
+		Command:     "claude",
+		StartedAt:   time.Now(),
+		Status:      SessionStatusActive,
+		LastSeen:    time.Now(),
+	}
+	session2 := &Session{
+		Code:        "proj-1",
+		ProjectPath: "/home/user/project",
+		Command:     "claude",
+		StartedAt:   time.Now(),
+		Status:      SessionStatusActive,
+		LastSeen:    time.Now(),
+	}
+	_ = registry.Register(session1)
+	_ = registry.Register(session2)
+
+	// Should find the most specific (deepest) match
+	found, ok := registry.FindByDirectory("/home/user/project/src")
+	if !ok {
+		t.Fatal("FindByDirectory should find a session")
+	}
+	if found.Code != "proj-1" {
+		t.Errorf("FindByDirectory should find most specific match, got %v want proj-1", found.Code)
+	}
+
+	// But exact match to parent should find parent
+	found, ok = registry.FindByDirectory("/home/user")
+	if !ok {
+		t.Fatal("FindByDirectory should find a session")
+	}
+	if found.Code != "root-1" {
+		t.Errorf("FindByDirectory should find root session, got %v want root-1", found.Code)
+	}
+}
+
+func TestSessionRegistry_FindByDirectory_OnlyActiveSession(t *testing.T) {
+	registry := NewSessionRegistry(60 * time.Second)
+
+	// Register an inactive session
+	session := &Session{
+		Code:        "inactive-1",
+		ProjectPath: "/home/user/project",
+		Command:     "claude",
+		StartedAt:   time.Now(),
+		Status:      SessionStatusDisconnected, // Not active
+		LastSeen:    time.Now(),
+	}
+	_ = registry.Register(session)
+
+	// Should not find disconnected session
+	_, ok := registry.FindByDirectory("/home/user/project")
+	if ok {
+		t.Error("FindByDirectory should not find disconnected sessions")
+	}
+}

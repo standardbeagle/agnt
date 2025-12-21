@@ -3,10 +3,11 @@ package protocol
 
 // Command represents a parsed command from the client.
 type Command struct {
-	Verb    string   // Primary command verb (RUN, PROC, PROXY, etc.)
-	SubVerb string   // Optional sub-verb (STATUS, OUTPUT, START, etc.)
-	Args    []string // Positional arguments
-	Data    []byte   // Optional binary/JSON data payload
+	Verb        string   // Primary command verb (RUN, PROC, PROXY, etc.)
+	SubVerb     string   // Optional sub-verb (STATUS, OUTPUT, START, etc.)
+	Args        []string // Positional arguments
+	Data        []byte   // Optional binary/JSON data payload
+	SessionCode string   // Session code for scoping (required unless Global flag is set)
 }
 
 // Command verbs
@@ -85,6 +86,8 @@ const (
 	SubVerbSchedule   = "SCHEDULE"
 	SubVerbCancel     = "CANCEL"
 	SubVerbTasks      = "TASKS"
+	SubVerbFind       = "FIND" // Find session by directory ancestry
+	SubVerbAttach     = "ATTACH"
 	// SubVerbList, SubVerbGet, SubVerbStatus reused
 )
 
@@ -146,9 +149,11 @@ type LogQueryFilter struct {
 }
 
 // DirectoryFilter represents directory scoping for list operations.
+// Priority: Global > SessionCode > Directory
 type DirectoryFilter struct {
-	Directory string `json:"directory,omitempty"` // Current working directory (defaults to "." if empty)
-	Global    bool   `json:"global,omitempty"`    // If true, ignore directory filtering
+	SessionCode string `json:"session_code,omitempty"` // Session code for scoping (preferred)
+	Directory   string `json:"directory,omitempty"`    // Current working directory (legacy, use session_code instead)
+	Global      bool   `json:"global,omitempty"`       // If true, ignore all filtering
 }
 
 // ToastConfig represents configuration for a PROXY TOAST command.

@@ -6,6 +6,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/standardbeagle/agnt/internal/daemon"
 )
 
 func TestGetProjectPath_FromEnvironment(t *testing.T) {
@@ -266,5 +268,72 @@ func TestGetProjectPath_WindowsCaseNormalization(t *testing.T) {
 	// Should be lowercased
 	if result != "c:\\users\\testuser\\project" {
 		t.Errorf("Expected lowercase path, got %q", result)
+	}
+}
+
+// TestDaemonTools_SessionCode tests the session code getter and setter.
+func TestDaemonTools_SessionCode(t *testing.T) {
+	dt := NewDaemonTools(dummyAutoStartConfig(), "1.0.0")
+
+	// Initially should be empty
+	if code := dt.SessionCode(); code != "" {
+		t.Errorf("Expected empty session code, got %q", code)
+	}
+
+	// Set session code
+	dt.SetSessionCode("claude-1")
+	if code := dt.SessionCode(); code != "claude-1" {
+		t.Errorf("Expected 'claude-1', got %q", code)
+	}
+
+	// Clear session code
+	dt.SetSessionCode("")
+	if code := dt.SessionCode(); code != "" {
+		t.Errorf("Expected empty session code after clear, got %q", code)
+	}
+}
+
+// TestDaemonTools_SetNoAutoAttach tests the auto-attach toggle.
+func TestDaemonTools_SetNoAutoAttach(t *testing.T) {
+	dt := NewDaemonTools(dummyAutoStartConfig(), "1.0.0")
+
+	// By default, auto-attach should be enabled (noAutoAttach = false)
+	// We can only test this indirectly since the field is private
+
+	// Test that we can toggle without panic
+	dt.SetNoAutoAttach(true)
+	dt.SetNoAutoAttach(false)
+	dt.SetNoAutoAttach(true)
+}
+
+// TestDaemonTools_SessionCode_ConcurrentAccess tests concurrent access to session code.
+func TestDaemonTools_SessionCode_ConcurrentAccess(t *testing.T) {
+	dt := NewDaemonTools(dummyAutoStartConfig(), "1.0.0")
+
+	// Run concurrent readers and writers
+	done := make(chan bool)
+	for i := 0; i < 10; i++ {
+		go func(n int) {
+			for j := 0; j < 100; j++ {
+				if j%2 == 0 {
+					dt.SetSessionCode("test-session")
+				} else {
+					dt.SessionCode()
+				}
+			}
+			done <- true
+		}(i)
+	}
+
+	// Wait for all goroutines to complete
+	for i := 0; i < 10; i++ {
+		<-done
+	}
+}
+
+// dummyAutoStartConfig returns a minimal config for testing.
+func dummyAutoStartConfig() daemon.AutoStartConfig {
+	return daemon.AutoStartConfig{
+		SocketPath: "/tmp/test.sock",
 	}
 }

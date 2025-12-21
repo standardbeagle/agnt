@@ -4,6 +4,9 @@ package daemon
 import (
 	"encoding/json"
 	"fmt"
+	"path/filepath"
+	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -242,6 +245,86 @@ func (r *SessionRegistry) Info() SessionInfo {
 		TotalRegistered:   r.totalRegistered.Load(),
 		TotalUnregistered: r.totalUnregistered.Load(),
 	}
+}
+
+// FindByDirectory finds an active session whose project path matches the given directory
+// or any of its parent directories. Returns the most specific (deepest) match.
+// This enables auto-attach behavior where MCP clients in subdirectories can find
+// sessions started in parent directories.
+func (r *SessionRegistry) FindByDirectory(directory string) (*Session, bool) {
+	if directory == "" {
+		return nil, false
+	}
+
+	// Normalize the search directory
+	normalizedDir := normalizeSessionPath(directory)
+
+	var bestMatch *Session
+	var bestMatchDepth int = -1
+
+	r.sessions.Range(func(key, value interface{}) bool {
+		session := value.(*Session)
+
+		// Only consider active sessions
+		if !session.IsActive() {
+			return true
+		}
+
+		sessionPath := normalizeSessionPath(session.ProjectPath)
+		if sessionPath == "" {
+			return true
+		}
+
+		// Check if the session's project path is a prefix of (or equal to) the search directory
+		// This means the session was started at the search directory or a parent
+		if isPathPrefixOf(sessionPath, normalizedDir) {
+			// Calculate depth (number of path components) to find the most specific match
+			depth := strings.Count(sessionPath, string(filepath.Separator))
+			if depth > bestMatchDepth {
+				bestMatch = session
+				bestMatchDepth = depth
+			}
+		}
+
+		return true
+	})
+
+	return bestMatch, bestMatch != nil
+}
+
+// normalizeSessionPath normalizes a path for consistent comparison.
+func normalizeSessionPath(path string) string {
+	if path == "" || path == "." {
+		return ""
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = filepath.Clean(path)
+	}
+	// On Windows, normalize to lowercase for case-insensitive comparison
+	if runtime.GOOS == "windows" {
+		abs = strings.ToLower(abs)
+	}
+	return abs
+}
+
+// isPathPrefixOf checks if prefix is a path prefix of target.
+// For example: "/home/user/project" is a prefix of "/home/user/project/subdir"
+func isPathPrefixOf(prefix, target string) bool {
+	if prefix == target {
+		return true
+	}
+	// Ensure we match on path boundaries, not just string prefixes
+	// "/home/user/proj" should NOT match "/home/user/project"
+	if !strings.HasPrefix(target, prefix) {
+		return false
+	}
+	// Check that the character after prefix is a path separator
+	if len(target) > len(prefix) {
+		nextChar := target[len(prefix)]
+		return nextChar == filepath.Separator || nextChar == '/'
+	}
+	return false
 }
 
 // MarshalJSON implements json.Marshaler for Session.

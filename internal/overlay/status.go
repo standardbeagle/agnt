@@ -83,21 +83,31 @@ func detectTailscaleDNS() string {
 
 // StatusFetcher fetches status from the daemon periodically.
 // It uses a shared daemon.Conn for all requests.
+// By default, it only fetches processes/proxies from the current project directory.
 type StatusFetcher struct {
-	conn     *daemon.Conn
-	overlay  *Overlay
-	interval time.Duration
+	conn        *daemon.Conn
+	overlay     *Overlay
+	interval    time.Duration
+	projectPath string // Current project directory for filtering
 
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 }
 
 // NewStatusFetcher creates a new StatusFetcher using a shared connection.
+// It automatically detects the current working directory for scoping.
 func NewStatusFetcher(conn *daemon.Conn, overlay *Overlay, interval time.Duration) *StatusFetcher {
+	// Get current working directory for session scoping
+	projectPath, err := os.Getwd()
+	if err != nil {
+		projectPath = "" // Fall back to global if can't get cwd
+	}
+
 	return &StatusFetcher{
-		conn:     conn,
-		overlay:  overlay,
-		interval: interval,
+		conn:        conn,
+		overlay:     overlay,
+		interval:    interval,
+		projectPath: projectPath,
 	}
 }
 
@@ -194,9 +204,9 @@ func (f *StatusFetcher) fetchStatus() {
 }
 
 func (f *StatusFetcher) fetchProcesses() ([]ProcessInfo, error) {
-	// Use request builder with global filter
+	// Use request builder - scoped to current project directory
 	result, err := f.conn.Request(protocol.VerbProc, protocol.SubVerbList).
-		WithJSON(protocol.DirectoryFilter{Global: true}).
+		WithJSON(protocol.DirectoryFilter{Directory: f.projectPath}).
 		JSON()
 	if err != nil {
 		return nil, err
@@ -235,9 +245,9 @@ func (f *StatusFetcher) fetchProcesses() ([]ProcessInfo, error) {
 }
 
 func (f *StatusFetcher) fetchProxies() ([]ProxyInfo, error) {
-	// Use request builder with global filter
+	// Use request builder - scoped to current project directory
 	result, err := f.conn.Request(protocol.VerbProxy, protocol.SubVerbList).
-		WithJSON(protocol.DirectoryFilter{Global: true}).
+		WithJSON(protocol.DirectoryFilter{Directory: f.projectPath}).
 		JSON()
 	if err != nil {
 		return nil, err

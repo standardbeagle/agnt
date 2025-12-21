@@ -427,21 +427,39 @@ func (c *Connection) handleProcList(cmd *protocol.Command) error {
 		}
 	}
 
-	// Default to current directory if not specified
-	directory := dirFilter.Directory
-	if directory == "" {
-		directory = "."
+	// Resolve the project path for filtering
+	// Priority: Global > SessionCode > Directory > Connection's session code
+	var projectPath string
+	var sessionCode string
+	filteredProcs := procs
+
+	if dirFilter.Global {
+		// No filtering - return all processes
+	} else if dirFilter.SessionCode != "" {
+		// Use session code from request
+		sessionCode = dirFilter.SessionCode
+		session, ok := c.daemon.sessionRegistry.Get(sessionCode)
+		if !ok {
+			return c.writeErr(protocol.ErrNotFound, fmt.Sprintf("session %q not found", sessionCode))
+		}
+		projectPath = session.ProjectPath
+	} else if dirFilter.Directory != "" {
+		// Legacy: use directory directly
+		projectPath = dirFilter.Directory
+	} else if c.sessionCode != "" {
+		// Use connection's attached session
+		sessionCode = c.sessionCode
+		session, ok := c.daemon.sessionRegistry.Get(sessionCode)
+		if ok {
+			projectPath = session.ProjectPath
+		}
 	}
 
-	// Normalize the filter directory for consistent comparison
-	normalizedDir := normalizePath(directory)
-
-	// Filter processes by directory unless global flag is set
-	filteredProcs := procs
-	if !dirFilter.Global {
+	// Filter processes by project path
+	if !dirFilter.Global && projectPath != "" {
+		normalizedDir := normalizePath(projectPath)
 		var filtered []*process.ManagedProcess
 		for _, p := range procs {
-			// Normalize process path for comparison
 			if normalizePath(p.ProjectPath) == normalizedDir {
 				filtered = append(filtered, p)
 			}
@@ -462,12 +480,16 @@ func (c *Connection) handleProcList(cmd *protocol.Command) error {
 	}
 
 	resp := map[string]interface{}{
-		"count":                 len(filteredProcs),
-		"processes":             entries,
-		"directory":             normalizedDir,
-		"global":                dirFilter.Global,
-		"total_in_daemon":       len(procs),
-		"filtered_by_directory": !dirFilter.Global,
+		"count":           len(filteredProcs),
+		"processes":       entries,
+		"global":          dirFilter.Global,
+		"total_in_daemon": len(procs),
+	}
+	if projectPath != "" {
+		resp["project_path"] = normalizePath(projectPath)
+	}
+	if sessionCode != "" {
+		resp["session_code"] = sessionCode
 	}
 
 	data, _ := json.Marshal(resp)
@@ -723,21 +745,39 @@ func (c *Connection) handleProxyList(cmd *protocol.Command) error {
 		}
 	}
 
-	// Default to current directory if not specified
-	directory := dirFilter.Directory
-	if directory == "" {
-		directory = "."
+	// Resolve the project path for filtering
+	// Priority: Global > SessionCode > Directory > Connection's session code
+	var projectPath string
+	var sessionCode string
+	filteredProxies := proxies
+
+	if dirFilter.Global {
+		// No filtering - return all proxies
+	} else if dirFilter.SessionCode != "" {
+		// Use session code from request
+		sessionCode = dirFilter.SessionCode
+		session, ok := c.daemon.sessionRegistry.Get(sessionCode)
+		if !ok {
+			return c.writeErr(protocol.ErrNotFound, fmt.Sprintf("session %q not found", sessionCode))
+		}
+		projectPath = session.ProjectPath
+	} else if dirFilter.Directory != "" {
+		// Legacy: use directory directly
+		projectPath = dirFilter.Directory
+	} else if c.sessionCode != "" {
+		// Use connection's attached session
+		sessionCode = c.sessionCode
+		session, ok := c.daemon.sessionRegistry.Get(sessionCode)
+		if ok {
+			projectPath = session.ProjectPath
+		}
 	}
 
-	// Normalize the filter directory for consistent comparison
-	normalizedDir := normalizePath(directory)
-
-	// Filter proxies by directory unless global flag is set
-	filteredProxies := proxies
-	if !dirFilter.Global {
+	// Filter proxies by project path
+	if !dirFilter.Global && projectPath != "" {
+		normalizedDir := normalizePath(projectPath)
 		var filtered []*proxy.ProxyServer
 		for _, p := range proxies {
-			// Normalize proxy path for comparison
 			if normalizePath(p.Path) == normalizedDir {
 				filtered = append(filtered, p)
 			}
@@ -770,12 +810,16 @@ func (c *Connection) handleProxyList(cmd *protocol.Command) error {
 	}
 
 	resp := map[string]interface{}{
-		"count":                 len(filteredProxies),
-		"proxies":               entries,
-		"directory":             normalizedDir,
-		"global":                dirFilter.Global,
-		"total_in_daemon":       len(proxies),
-		"filtered_by_directory": !dirFilter.Global,
+		"count":           len(filteredProxies),
+		"proxies":         entries,
+		"global":          dirFilter.Global,
+		"total_in_daemon": len(proxies),
+	}
+	if projectPath != "" {
+		resp["project_path"] = normalizePath(projectPath)
+	}
+	if sessionCode != "" {
+		resp["session_code"] = sessionCode
 	}
 
 	data, _ := json.Marshal(resp)
@@ -2168,7 +2212,7 @@ func convertProtocolRuleToProxy(cfg *protocol.ChaosRuleConfig) *proxy.ChaosRule 
 }
 
 // Valid actions for SESSION command
-var validSessionActions = []string{"REGISTER", "UNREGISTER", "HEARTBEAT", "LIST", "GET", "SEND", "SCHEDULE", "CANCEL", "TASKS"}
+var validSessionActions = []string{"REGISTER", "UNREGISTER", "HEARTBEAT", "LIST", "GET", "SEND", "SCHEDULE", "CANCEL", "TASKS", "FIND", "ATTACH"}
 
 // handleSession handles the SESSION command.
 func (c *Connection) handleSession(cmd *protocol.Command) error {
@@ -2196,6 +2240,10 @@ func (c *Connection) handleSession(cmd *protocol.Command) error {
 		return c.handleSessionCancel(cmd)
 	case protocol.SubVerbTasks:
 		return c.handleSessionTasks(cmd)
+	case protocol.SubVerbFind:
+		return c.handleSessionFind(cmd)
+	case protocol.SubVerbAttach:
+		return c.handleSessionAttach(cmd)
 	case "":
 		return c.writeStructuredErr(&protocol.StructuredError{
 			Code:         protocol.ErrMissingParam,
@@ -2490,6 +2538,56 @@ func (c *Connection) handleSessionTasks(cmd *protocol.Command) error {
 		"count":     len(taskList),
 		"directory": filter.Directory,
 		"global":    filter.Global,
+	}
+
+	data, _ := json.Marshal(resp)
+	return c.writeJSON(data)
+}
+
+// handleSessionFind finds a session by directory ancestry.
+// SESSION FIND <directory>
+// Returns the session whose project_path is the directory or a parent of it.
+func (c *Connection) handleSessionFind(cmd *protocol.Command) error {
+	if len(cmd.Args) < 1 {
+		return c.writeErr(protocol.ErrInvalidArgs, "SESSION FIND requires: <directory>")
+	}
+
+	directory := cmd.Args[0]
+
+	session, found := c.daemon.sessionRegistry.FindByDirectory(directory)
+	if !found {
+		return c.writeErr(protocol.ErrNotFound, fmt.Sprintf("no active session found for directory %q or its parents", directory))
+	}
+
+	data, _ := json.Marshal(session.ToJSON())
+	return c.writeJSON(data)
+}
+
+// handleSessionAttach attaches the current connection to a session.
+// SESSION ATTACH <directory>
+// Finds session by directory ancestry and associates this connection with it.
+// This is the primary entry point for MCP clients to auto-attach to sessions.
+func (c *Connection) handleSessionAttach(cmd *protocol.Command) error {
+	if len(cmd.Args) < 1 {
+		return c.writeErr(protocol.ErrInvalidArgs, "SESSION ATTACH requires: <directory>")
+	}
+
+	directory := cmd.Args[0]
+
+	session, found := c.daemon.sessionRegistry.FindByDirectory(directory)
+	if !found {
+		return c.writeErr(protocol.ErrNotFound, fmt.Sprintf("no active session found for directory %q or its parents", directory))
+	}
+
+	// Associate this connection with the session
+	c.sessionCode = session.Code
+
+	resp := map[string]interface{}{
+		"attached":     true,
+		"session_code": session.Code,
+		"project_path": session.ProjectPath,
+		"command":      session.Command,
+		"started_at":   session.StartedAt.Format(time.RFC3339),
 	}
 
 	data, _ := json.Marshal(resp)

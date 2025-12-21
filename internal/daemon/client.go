@@ -1178,3 +1178,36 @@ func (c *Client) SessionGenerateCode(command string) (string, error) {
 	// In future, could query daemon for unique code
 	return fmt.Sprintf("%s-%d", command, time.Now().UnixNano()%10000), nil
 }
+
+// SessionFind finds a session by directory ancestry.
+// It searches for an active session whose project_path is the directory or a parent of it.
+func (c *Client) SessionFind(directory string) (map[string]interface{}, error) {
+	data, err := c.sendCommand(protocol.VerbSession, []string{protocol.SubVerbFind, directory}, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
+	}
+
+	return result, nil
+}
+
+// SessionAttach attaches to a session found by directory ancestry.
+// This is the primary entry point for MCP clients to auto-attach to sessions.
+// Returns the session code and other session info.
+func (c *Client) SessionAttach(directory string) (map[string]interface{}, error) {
+	data, err := c.sendCommand(protocol.VerbSession, []string{protocol.SubVerbAttach, directory}, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal(data, &result); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
+	}
+
+	return result, nil
+}

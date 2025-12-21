@@ -81,10 +81,11 @@ type ProcOutput struct {
 	Lines     int    `json:"lines,omitempty"`
 	Truncated bool   `json:"truncated,omitempty"`
 	// For list
-	Count     int         `json:"count,omitempty"`
-	Processes []ProcEntry `json:"processes,omitempty"`
-	Directory string      `json:"directory,omitempty"`
-	Global    bool        `json:"global,omitempty"`
+	Count       int         `json:"count,omitempty"`
+	Processes   []ProcEntry `json:"processes,omitempty"`
+	ProjectPath string      `json:"project_path,omitempty"`
+	SessionCode string      `json:"session_code,omitempty"`
+	Global      bool        `json:"global,omitempty"`
 	// For stop
 	Success bool `json:"success,omitempty"`
 	// For cleanup_port

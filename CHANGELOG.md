@@ -21,6 +21,13 @@
 ## [Unreleased]
 
 ### Added
+- **Session-scoped API**: Processes and proxies are now scoped to sessions, preventing interference between multiple AI coding sessions
+  - `SESSION FIND`: Locate session by directory ancestry (walks up the directory tree)
+  - `SESSION ATTACH`: Attach MCP client to an existing session for shared resource access
+  - `DirectoryFilter` extended with `SessionCode` for session-based filtering
+  - Auto-attach behavior: MCP clients automatically find and attach to sessions in parent directories
+  - `--no-attach` CLI flag to disable auto-attach and operate globally
+  - `proc list` and `proxy list` now filter by session code when attached
 - **PID tracking for orphan cleanup**: Implemented persistent PID tracking to prevent orphaned processes after daemon crashes
   - Tracks process PIDs to `~/.local/state/devtool-mcp/pids.json` with daemon PID for crash detection
   - Automatic cleanup of orphaned processes on daemon startup

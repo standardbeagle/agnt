@@ -19,6 +19,7 @@ type Summarizer struct {
 	conn        *daemon.Conn
 	channel     *aichannel.Channel
 	debugOutput io.Writer
+	projectPath string // Current project directory for filtering processes/proxies
 }
 
 // SummarizerConfig configures the Summarizer.
@@ -33,6 +34,8 @@ type SummarizerConfig struct {
 	Timeout time.Duration
 	// DebugOutput is where debug messages are written (defaults to os.Stderr)
 	DebugOutput io.Writer
+	// ProjectPath is the current project directory for filtering processes/proxies
+	ProjectPath string
 
 	// --- API Mode Configuration ---
 	// UseAPI forces API mode. For non-Claude agents, API mode is enabled automatically
@@ -60,6 +63,8 @@ func NewSummarizer(conn *daemon.Conn, config SummarizerConfig) *Summarizer {
 		// OutputFormat will be set to "json" if agent supports it (in applyDefaults)
 		// For agents that support JSON, we'll use it to extract just the final result
 		OutputFormat: "json",
+		// Always set system prompt - used by both CLI mode (--system-prompt) and API mode
+		SystemPrompt: buildSummarySystemPrompt(),
 	}
 
 	// Determine whether to use API mode:
@@ -76,14 +81,13 @@ func NewSummarizer(conn *daemon.Conn, config SummarizerConfig) *Summarizer {
 		channelConfig.LLMProvider = config.LLMProvider
 		channelConfig.APIKey = config.APIKey
 		channelConfig.Model = config.Model
-		// Set system prompt for API mode - this is the instruction prompt
-		channelConfig.SystemPrompt = buildSummarySystemPrompt()
 	}
 
 	return &Summarizer{
 		conn:        conn,
 		channel:     aichannel.NewWithConfig(channelConfig),
 		debugOutput: config.DebugOutput,
+		projectPath: config.ProjectPath,
 	}
 }
 
@@ -206,9 +210,9 @@ func (s *Summarizer) Summarize(ctx context.Context) (*SummaryResult, error) {
 }
 
 func (s *Summarizer) gatherProcesses() ([]ProcessSummary, error) {
-	// Get process list using request builder
+	// Get process list - scoped to current project directory
 	result, err := s.conn.Request(protocol.VerbProc, protocol.SubVerbList).
-		WithJSON(protocol.DirectoryFilter{Global: true}).
+		WithJSON(protocol.DirectoryFilter{Directory: s.projectPath}).
 		JSON()
 	if err != nil {
 		return nil, err
@@ -256,9 +260,9 @@ func (s *Summarizer) gatherProcesses() ([]ProcessSummary, error) {
 }
 
 func (s *Summarizer) gatherProxies() ([]ProxySummary, error) {
-	// Get proxy list using request builder
+	// Get proxy list - scoped to current project directory
 	result, err := s.conn.Request(protocol.VerbProxy, protocol.SubVerbList).
-		WithJSON(protocol.DirectoryFilter{Global: true}).
+		WithJSON(protocol.DirectoryFilter{Directory: s.projectPath}).
 		JSON()
 	if err != nil {
 		return nil, err
@@ -435,43 +439,9 @@ Example good error response:
 }
 
 func (s *Summarizer) buildPrompt() string {
-	// For API mode, the system prompt contains the instructions,
-	// so we just need to ask for the analysis
-	if s.channel.IsAPIMode() {
-		return "Analyze ONLY the provided system status data and summarize. Do not scan files or explore the codebase."
-	}
-
-	// For CLI mode, include full instructions in the prompt
-	return `Analyze the system status and provide a VERY BRIEF summary (2-5 lines max).
-
-CRITICAL RULES:
-1. ONLY summarize the data provided to you - DO NOT scan files, explore the codebase, or use any external information
-2. Be extremely concise (2-5 lines max) - this will be displayed in a small terminal indicator
-3. Base your summary ENTIRELY on the process output and proxy logs provided
-
-Format:
-- If healthy: "✓ All systems OK" (single line)
-- If issues: Brief bullet points, max 3-4 items
-
-Focus ONLY on:
-• Active errors or failures from the provided output
-• Critical state changes visible in the data
-• Actionable issues mentioned in the logs
-
-DO NOT:
-• Read or scan any files
-• Explore the codebase
-• Add explanations or context beyond what's in the data
-• Include full stack traces
-• Suggest fixes unless trivially obvious from the data
-• Include process/proxy IDs unless relevant to an error
-
-Example good response:
-"✓ 2 processes running, 1 proxy active"
-
-Example good error response:
-"• test-server: EADDRINUSE port 3000
-• proxy dev: 3 frontend errors"`
+	// Both API mode and CLI mode (with --system-prompt) use the system prompt for instructions.
+	// The user prompt is just the request.
+	return "Analyze ONLY the provided system status data and summarize. Do not scan files or explore the codebase."
 }
 
 // containsErrorPatterns checks if output contains common error patterns.

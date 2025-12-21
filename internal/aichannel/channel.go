@@ -294,7 +294,7 @@ func (c *Channel) IsAPIMode() bool {
 }
 
 // Send sends a prompt to the AI agent and returns the response.
-// If context is non-empty and UseStdin is true, context is piped via stdin.
+// If context is non-empty, it's passed appropriately based on the agent type.
 func (c *Channel) Send(ctx context.Context, prompt string, inputContext string) (string, error) {
 	if !c.configured {
 		return "", ErrNotConfigured
@@ -309,12 +309,8 @@ func (c *Channel) Send(ctx context.Context, prompt string, inputContext string) 
 		return "", fmt.Errorf("%w: %s not found in PATH", ErrNotAvailable, c.config.Command)
 	}
 
-	// Use PTY mode if configured (required for some CLI tools like Claude Code)
-	if c.config.UsePTY {
-		return c.sendWithPTY(ctx, prompt, inputContext)
-	}
-
-	return c.sendWithPipe(ctx, prompt, inputContext)
+	// Use adapter-based execution for CLI mode
+	return RunWithAdapter(ctx, c.config, prompt, inputContext, c.config.SystemPrompt)
 }
 
 // sendWithAPI sends a prompt using the API provider.

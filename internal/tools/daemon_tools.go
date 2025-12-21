@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/daemon"
@@ -20,6 +21,12 @@ type DaemonTools struct {
 	client  *daemon.ResilientClient
 	config  daemon.AutoStartConfig
 	version string // Client version for validation
+
+	// Session management
+	sessionCode     string     // Attached session code (empty if not attached)
+	sessionMu       sync.Mutex // Protects sessionCode
+	noAutoAttach    bool       // If true, skip auto-attach on connect
+	attachAttempted bool       // Whether we've attempted auto-attach
 }
 
 // NewDaemonTools creates a new daemon tools wrapper with auto-start and version checking.
@@ -31,9 +38,71 @@ func NewDaemonTools(config daemon.AutoStartConfig, version string) *DaemonTools 
 	}
 }
 
+// SetNoAutoAttach disables automatic session attachment on connect.
+// Call this before any tool calls if you want to operate globally.
+func (dt *DaemonTools) SetNoAutoAttach(noAttach bool) {
+	dt.sessionMu.Lock()
+	defer dt.sessionMu.Unlock()
+	dt.noAutoAttach = noAttach
+}
+
+// SetSessionCode sets the session code directly (useful for testing or explicit attachment).
+func (dt *DaemonTools) SetSessionCode(code string) {
+	dt.sessionMu.Lock()
+	defer dt.sessionMu.Unlock()
+	dt.sessionCode = code
+}
+
+// SessionCode returns the current attached session code.
+func (dt *DaemonTools) SessionCode() string {
+	dt.sessionMu.Lock()
+	defer dt.sessionMu.Unlock()
+	return dt.sessionCode
+}
+
+// tryAutoAttach attempts to attach to a session for the current directory.
+// This is called once on first tool use. It's non-fatal if no session is found.
+func (dt *DaemonTools) tryAutoAttach() {
+	dt.sessionMu.Lock()
+	if dt.attachAttempted || dt.noAutoAttach || dt.sessionCode != "" {
+		dt.sessionMu.Unlock()
+		return
+	}
+	dt.attachAttempted = true
+	dt.sessionMu.Unlock()
+
+	// Get current working directory
+	cwd, err := os.Getwd()
+	if err != nil {
+		return // Silently fail - auto-attach is best-effort
+	}
+
+	// Try to attach via the daemon
+	result, err := dt.client.SessionAttach(cwd)
+	if err != nil {
+		// No session found for this directory - that's OK
+		return
+	}
+
+	// Successfully attached
+	if code, ok := result["session_code"].(string); ok && code != "" {
+		dt.sessionMu.Lock()
+		dt.sessionCode = code
+		dt.sessionMu.Unlock()
+
+		// Log the attachment (to stderr so it doesn't interfere with MCP)
+		if projectPath, ok := result["project_path"].(string); ok {
+			fmt.Fprintf(os.Stderr, "[agnt] Attached to session %s (project: %s)\n", code, projectPath)
+		}
+	}
+}
+
 // ensureConnected ensures we have a connection to the daemon with automatic version checking and upgrade.
+// It also attempts to auto-attach to a session on first connection.
 func (dt *DaemonTools) ensureConnected() error {
 	if dt.client != nil && dt.client.IsConnected() {
+		// Already connected, but try auto-attach if not done yet
+		dt.tryAutoAttach()
 		return nil
 	}
 
@@ -74,6 +143,10 @@ func (dt *DaemonTools) ensureConnected() error {
 	}
 
 	dt.client = client
+
+	// Try to auto-attach to a session for the current directory
+	dt.tryAutoAttach()
+
 	return nil
 }
 
@@ -480,16 +553,20 @@ func (dt *DaemonTools) handleProcStop(input ProcInput) (*mcp.CallToolResult, Pro
 }
 
 func (dt *DaemonTools) handleProcList(input ProcInput) (*mcp.CallToolResult, ProcOutput, error) {
-	// Get project path from environment (set by agnt run) or fall back to cwd
-	projectPath := getProjectPath()
-	if projectPath == "" {
-		return errorResult("failed to get working directory"), ProcOutput{}, nil
+	// Create directory filter with session code if attached
+	dirFilter := protocol.DirectoryFilter{
+		Global: input.Global,
 	}
 
-	// Create directory filter
-	dirFilter := protocol.DirectoryFilter{
-		Directory: projectPath,
-		Global:    input.Global,
+	// Use session code if attached, otherwise fall back to project path
+	if sessionCode := dt.SessionCode(); sessionCode != "" {
+		dirFilter.SessionCode = sessionCode
+	} else {
+		// Legacy fallback: use project path from environment or cwd
+		projectPath := getProjectPath()
+		if projectPath != "" {
+			dirFilter.Directory = projectPath
+		}
 	}
 
 	result, err := dt.client.ProcList(dirFilter)
@@ -498,9 +575,10 @@ func (dt *DaemonTools) handleProcList(input ProcInput) (*mcp.CallToolResult, Pro
 	}
 
 	output := ProcOutput{
-		Count:     getInt(result, "count"),
-		Directory: getString(result, "directory"),
-		Global:    getBool(result, "global"),
+		Count:       getInt(result, "count"),
+		ProjectPath: getString(result, "project_path"),
+		SessionCode: getString(result, "session_code"),
+		Global:      getBool(result, "global"),
 	}
 
 	if processes, ok := result["processes"].([]interface{}); ok {
@@ -700,16 +778,20 @@ func (dt *DaemonTools) handleProxyStatus(input ProxyInput) (*mcp.CallToolResult,
 }
 
 func (dt *DaemonTools) handleProxyList(input ProxyInput) (*mcp.CallToolResult, ProxyOutput, error) {
-	// Get project path from environment (set by agnt run) or fall back to cwd
-	projectPath := getProjectPath()
-	if projectPath == "" {
-		return errorResult("failed to get working directory"), ProxyOutput{}, nil
+	// Create directory filter with session code if attached
+	dirFilter := protocol.DirectoryFilter{
+		Global: input.Global,
 	}
 
-	// Create directory filter
-	dirFilter := protocol.DirectoryFilter{
-		Directory: projectPath,
-		Global:    input.Global,
+	// Use session code if attached, otherwise fall back to project path
+	if sessionCode := dt.SessionCode(); sessionCode != "" {
+		dirFilter.SessionCode = sessionCode
+	} else {
+		// Legacy fallback: use project path from environment or cwd
+		projectPath := getProjectPath()
+		if projectPath != "" {
+			dirFilter.Directory = projectPath
+		}
 	}
 
 	result, err := dt.client.ProxyList(dirFilter)
@@ -718,9 +800,10 @@ func (dt *DaemonTools) handleProxyList(input ProxyInput) (*mcp.CallToolResult, P
 	}
 
 	output := ProxyOutput{
-		Count:     getInt(result, "count"),
-		Directory: getString(result, "directory"),
-		Global:    getBool(result, "global"),
+		Count:       getInt(result, "count"),
+		ProjectPath: getString(result, "project_path"),
+		SessionCode: getString(result, "session_code"),
+		Global:      getBool(result, "global"),
 	}
 
 	if proxies, ok := result["proxies"].([]interface{}); ok {

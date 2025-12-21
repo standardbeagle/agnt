@@ -304,7 +304,7 @@ func (o *Overlay) processProxyEvent(event ProxyEvent) {
 		}
 
 		// Format the message for the AI tool
-		text := data.Message
+		text := "from agnt current page: " + data.Message
 		if len(data.Attachments) > 0 {
 			text += "\n\n[Attachments]\n"
 			for i, att := range data.Attachments {

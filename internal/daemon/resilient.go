@@ -988,3 +988,25 @@ func (rc *ResilientClient) SessionGenerateCode(command string) (string, error) {
 	})
 	return code, err
 }
+
+// SessionFind finds a session by directory ancestry.
+func (rc *ResilientClient) SessionFind(directory string) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.SessionFind(directory)
+		return e
+	})
+	return result, err
+}
+
+// SessionAttach attaches to a session found by directory ancestry.
+func (rc *ResilientClient) SessionAttach(directory string) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.SessionAttach(directory)
+		return e
+	})
+	return result, err
+}

@@ -322,10 +322,11 @@ type ProxyOutput struct {
 	Tunnel        *TunnelStatus   `json:"tunnel,omitempty"` // Tunnel status if configured
 
 	// For list
-	Count     int          `json:"count,omitempty"`
-	Proxies   []ProxyEntry `json:"proxies,omitempty"`
-	Directory string       `json:"directory,omitempty"`
-	Global    bool         `json:"global,omitempty"`
+	Count       int          `json:"count,omitempty"`
+	Proxies     []ProxyEntry `json:"proxies,omitempty"`
+	ProjectPath string       `json:"project_path,omitempty"`
+	SessionCode string       `json:"session_code,omitempty"`
+	Global      bool         `json:"global,omitempty"`
 
 	// For stop/exec
 	Success     bool   `json:"success,omitempty"`

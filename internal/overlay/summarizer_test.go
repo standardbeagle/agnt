@@ -302,18 +302,40 @@ func TestSummarizer_BuildPrompt(t *testing.T) {
 		t.Error("buildPrompt returned empty string")
 	}
 
-	// Check for key instructions (updated for succinct prompt)
+	// Prompt is now concise since full instructions are in system prompt
+	// Just check it mentions analysis and warns against scanning files
 	if !contains(prompt, "Analyze") {
 		t.Error("Prompt should mention analysis")
 	}
-	if !contains(prompt, "error") {
-		t.Error("Prompt should mention errors")
+	if !contains(prompt, "summarize") {
+		t.Error("Prompt should mention summarize")
 	}
-	if !contains(prompt, "concise") {
-		t.Error("Prompt should mention being concise")
+	if !contains(prompt, "Do not scan") {
+		t.Error("Prompt should warn against scanning files")
 	}
-	if !contains(prompt, "BRIEF") {
-		t.Error("Prompt should emphasize brevity")
+}
+
+func TestSummarizer_SystemPrompt(t *testing.T) {
+	s := NewSummarizer(testConn(), SummarizerConfig{
+		Agent: aichannel.AgentClaude,
+	})
+
+	// System prompt should contain the full instructions
+	systemPrompt := s.channel.Config().SystemPrompt
+
+	if systemPrompt == "" {
+		t.Error("System prompt should not be empty")
+	}
+
+	// Check for key instructions in system prompt
+	if !contains(systemPrompt, "concise") {
+		t.Error("System prompt should mention being concise")
+	}
+	if !contains(systemPrompt, "2-5 lines") {
+		t.Error("System prompt should mention line limit")
+	}
+	if !contains(systemPrompt, "DO NOT") {
+		t.Error("System prompt should have do-not instructions")
 	}
 }
 

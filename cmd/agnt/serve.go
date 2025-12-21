@@ -40,10 +40,12 @@ Uses a background daemon for persistent state across connections.`,
 
 var (
 	serveLegacy bool
+	mcpNoAttach bool
 )
 
 func init() {
 	serveCmd.Flags().BoolVar(&serveLegacy, "legacy", false, "Run in legacy mode (no daemon)")
+	mcpCmd.Flags().BoolVar(&mcpNoAttach, "no-attach", false, "Don't auto-attach to existing session (operate globally)")
 }
 
 func runServe(cmd *cobra.Command, args []string) {
@@ -65,11 +67,11 @@ func runMCP(cmd *cobra.Command, args []string) {
 		socketPath = daemon.DefaultSocketPath()
 	}
 
-	runDaemonClient(socketPath)
+	runDaemonClient(socketPath, mcpNoAttach)
 }
 
 // runDaemonClient runs the MCP server that communicates with the daemon.
-func runDaemonClient(socketPath string) {
+func runDaemonClient(socketPath string, noAttach ...bool) {
 	// Create root context with signal cancellation
 	ctx, cancel := signal.NotifyContext(context.Background(),
 		syscall.SIGINT,
@@ -87,6 +89,11 @@ func runDaemonClient(socketPath string) {
 
 	dt := tools.NewDaemonTools(config, appVersion)
 	defer dt.Close()
+
+	// Disable auto-attach if requested
+	if len(noAttach) > 0 && noAttach[0] {
+		dt.SetNoAutoAttach(true)
+	}
 
 	// Create MCP server
 	server := mcp.NewServer(
