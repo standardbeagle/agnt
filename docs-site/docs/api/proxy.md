@@ -21,6 +21,8 @@ proxy {action: "<action>", ...params}
 | `status` | Get proxy status and statistics |
 | `list` | List all running proxies |
 | `exec` | Execute JavaScript in connected browsers |
+| `chaos` | Configure chaos engineering (network failures, latency) |
+| `toast` | Display toast notifications in the browser |
 
 ## start
 
@@ -205,6 +207,108 @@ proxy {action: "exec", id: "app", code: "window.__devtool.selectElement()"}
 proxy {action: "exec", id: "app", code: "window.__devtool.ask('OK?', ['Yes', 'No'])"}
 ```
 
+## chaos
+
+Configure chaos engineering to simulate network failures, latency, and API errors.
+
+```json
+proxy {action: "chaos", id: "app", preset: "flaky-api"}
+```
+
+Parameters:
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `id` | string | Yes | Proxy ID |
+| `preset` | string | No | Built-in preset name |
+| `rules` | array | No | Custom chaos rules |
+| `enabled` | boolean | No | Enable/disable chaos |
+| `clear` | boolean | No | Clear all rules |
+| `status` | boolean | No | Get chaos status |
+| `enable_rule` | string | No | Enable specific rule by ID |
+| `disable_rule` | string | No | Disable specific rule by ID |
+
+### Built-in Presets
+
+| Preset | Description |
+|--------|-------------|
+| `mobile-3g` | 200-2000ms latency, 2% packet loss |
+| `mobile-4g` | 50-500ms latency, 0.5% packet loss |
+| `flaky-api` | Random 500s, timeouts, variable latency |
+| `race-condition` | Out-of-order responses, high variance delays |
+| `stale-tab` | 3-hour delays (test token expiry) |
+| `slow-connection` | 5KB/s bandwidth throttling |
+| `connection-drops` | 10% mid-response disconnects |
+| `rate-limited` | 20% 429 errors |
+
+### Examples
+
+```json
+// Apply preset
+proxy {action: "chaos", id: "app", preset: "mobile-3g"}
+
+// Custom rules
+proxy {
+  action: "chaos",
+  id: "app",
+  rules: [
+    {
+      "id": "api-latency",
+      "type": "latency",
+      "enabled": true,
+      "url_pattern": "/api/.*",
+      "min_latency_ms": 500,
+      "max_latency_ms": 2000,
+      "probability": 0.3
+    }
+  ]
+}
+
+// Check status
+proxy {action: "chaos", id: "app", status: true}
+→ {enabled: true, preset: "flaky-api", stats: {affected_count: 38, errors_injected: 7}}
+
+// Disable chaos
+proxy {action: "chaos", id: "app", enabled: false}
+
+// Clear all rules
+proxy {action: "chaos", id: "app", clear: true}
+```
+
+See [Chaos Engineering](/features/chaos-engineering) for complete documentation.
+
+## toast
+
+Display toast notifications in connected browsers.
+
+```json
+proxy {action: "toast", id: "app", message: "Build complete!"}
+```
+
+Parameters:
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `id` | string | Yes | Proxy ID |
+| `message` | string | Yes | Notification message |
+| `toast_type` | string | No | `success`, `error`, `warning`, `info` (default: `info`) |
+| `toast_title` | string | No | Optional title |
+| `toast_duration` | integer | No | Duration in milliseconds (default: 5000) |
+
+### Examples
+
+```json
+// Simple notification
+proxy {action: "toast", id: "app", message: "Saved!"}
+
+// Success with title
+proxy {action: "toast", id: "app", message: "All tests passed", toast_type: "success", toast_title: "Tests"}
+
+// Error that stays longer
+proxy {action: "toast", id: "app", message: "Build failed", toast_type: "error", toast_duration: 10000}
+
+// Warning
+proxy {action: "toast", id: "app", message: "Slow response detected", toast_type: "warning"}
+```
+
 ## Features
 
 ### What the Proxy Does
@@ -372,6 +476,7 @@ By default, proxies bind to `127.0.0.1` (localhost only) for security. Only use 
 
 ## See Also
 
+- [Chaos Engineering](/features/chaos-engineering) - Complete chaos testing documentation
 - [tunnel](/api/tunnel) - Manage Cloudflare/ngrok tunnels
 - [proxylog](/api/proxylog) - Query proxy traffic logs
 - [currentpage](/api/currentpage) - View page sessions

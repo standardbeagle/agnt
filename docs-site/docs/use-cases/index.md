@@ -367,6 +367,83 @@ proxy {action: "exec", id: "app", code: "window.__devtool.sketch.save()"}
 
 ---
 
+## Chaos Testing & Resilience
+
+Most frontend bugs happen under conditions developers never test: slow networks, flaky APIs, race conditions. agnt's built-in chaos engineering makes it easy to simulate these.
+
+### Testing Network Conditions
+
+```json
+// Simulate 3G mobile network
+proxy {action: "chaos", id: "app", preset: "mobile-3g"}
+
+// Now use the app - do loading states appear? Is the UI responsive during loads?
+
+// Check what errors occurred
+proxylog {proxy_id: "app", types: ["error"]}
+```
+
+### Testing API Failures
+
+```json
+// Random 500 errors, timeouts, variable latency
+proxy {action: "chaos", id: "app", preset: "flaky-api"}
+
+// Verify: Do error messages appear? Can users retry? Is state consistent?
+```
+
+### Exposing Race Conditions
+
+```json
+// Responses arrive in random order
+proxy {action: "chaos", id: "app", preset: "race-condition"}
+
+// Type in a search box rapidly - does the UI show stale results?
+// Click a button twice - does the handler guard against double-submit?
+```
+
+### Testing Token Expiry
+
+```json
+// Return 401 for all API calls
+proxy {
+  action: "chaos",
+  id: "app",
+  rules: [{
+    "type": "http_error",
+    "url_pattern": "/api/.*",
+    "error_codes": [401],
+    "probability": 1.0
+  }]
+}
+
+// Does the app redirect to login? Is state preserved for after re-auth?
+```
+
+### Custom Chaos Rules
+
+```json
+// Slow only the checkout API
+proxy {
+  action: "chaos",
+  id: "app",
+  rules: [
+    {
+      "id": "slow-checkout",
+      "type": "latency",
+      "url_pattern": "/api/checkout",
+      "min_latency_ms": 3000,
+      "max_latency_ms": 8000,
+      "probability": 1.0
+    }
+  ]
+}
+```
+
+See the [Chaos Engineering Guide](/features/chaos-engineering) for complete documentation.
+
+---
+
 ## Quick Reference: Use Case → Tools
 
 | Use Case | Primary Tools |
@@ -377,6 +454,7 @@ proxy {action: "exec", id: "app", code: "window.__devtool.sketch.save()"}
 | Writing tests | `captureDOM`, `getA11yInfo`, `selectElement`, `proxylog` |
 | Documentation | `screenshot`, `highlight`, sketch mode |
 | Design iteration | design mode, sketch mode, `addAlternative` |
+| Chaos testing | `proxy chaos`, presets: `flaky-api`, `mobile-3g`, `race-condition` |
 | Error debugging | `proxylog {types: ["error"]}`, `captureState` |
 | Performance | `proxylog {types: ["performance"]}`, resource timing |
 | Accessibility | `auditAccessibility`, `getA11yInfo`, `getContrast` |
@@ -387,6 +465,7 @@ proxy {action: "exec", id: "app", code: "window.__devtool.sketch.save()"}
 
 For in-depth coverage of specific workflows:
 
+- [Chaos Engineering](/features/chaos-engineering) - Network failures, API errors, race conditions
 - [Debugging Web Apps](/use-cases/debugging-web-apps) - Complete debugging workflow
 - [Frontend Error Tracking](/use-cases/frontend-error-tracking) - Capturing and analyzing JS errors
 - [Performance Monitoring](/use-cases/performance-monitoring) - Load times and resource optimization
