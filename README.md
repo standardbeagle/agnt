@@ -18,6 +18,7 @@ When you're in the flow with Claude Code, Cursor, or other AI coding tools, agnt
 - **Hear from you directly** - Send messages from the browser to your agent
 - **Sketch ideas together** - Draw wireframes directly on your UI
 - **Debug in real-time** - Capture errors, network traffic, and performance metrics
+- **Test on any device** - Tunnel to phones and BrowserStack with full instrumentation
 - **Extend its thinking window** - Structured data uses fewer tokens than your descriptions
 
 ## Demo

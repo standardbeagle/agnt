@@ -6,6 +6,12 @@ sidebar_position: 11
 
 Functions for detecting layout fragility, text overflow issues, responsive risks, and performance problems.
 
+These audits detect three categories of layout issues:
+
+- **Overflow** - Content spilling visibly outside container bounds
+- **Clipping** - Content silently cut off by `overflow: hidden` (content loss without visual indicator)
+- **Truncation** - Content shortened with ellipsis (intentional but may hide important text)
+
 ## checkTextFragility
 
 Detect text overflow, truncation, and layout shift risks. Analyzes all text elements on the page for issues that may cause content loss or layout problems at different viewport sizes.
@@ -28,13 +34,14 @@ window.__devtool.checkTextFragility()
       },
       issues: [
         {
-          type: "horizontal-overflow",
+          type: "clipped",  // Most dangerous: content silently lost
           severity: "error",
-          message: "Text overflows container horizontally",
+          message: "Text clipped by overflow:hidden without ellipsis - content is silently lost",
           details: {
             scrollWidth: 250,
             clientWidth: 150,
-            overflow: "100px"
+            hiddenContent: "100px",
+            suggestion: "Add text-overflow: ellipsis, or allow text to wrap, or increase container width"
           }
         }
       ],
@@ -65,18 +72,21 @@ window.__devtool.checkTextFragility()
 ```
 
 **Issue Types:**
-| Type | Severity | Description |
-|------|----------|-------------|
-| `truncated` | warning | Text is truncated with ellipsis |
-| `horizontal-overflow` | error | Text overflows container horizontally |
-| `vertical-overflow` | error | Text overflows container vertically |
-| `multi-line-auto-height` | warning | Multi-line text with auto height - may cause layout shift |
-| `long-word-no-break` | warning | Long word (>15 chars) without word-break may overflow |
+| Type | Severity | Category | Description |
+|------|----------|----------|-------------|
+| `clipped` | error | Clipping | Text cut off by `overflow:hidden` without ellipsis - **silent content loss** |
+| `vertical-clipped` | error | Clipping | Text cut off vertically by `overflow:hidden` - **silent content loss** |
+| `truncated` | warning | Truncation | Text shortened with ellipsis (visible indicator, but content hidden) |
+| `horizontal-overflow` | error | Overflow | Text spills outside container horizontally (visible) |
+| `vertical-overflow` | error | Overflow | Text spills outside container vertically (visible) |
+| `multi-line-auto-height` | warning | Layout Shift | Multi-line text with auto height - content changes may cause shift |
+| `long-word-no-break` | warning | Overflow Risk | Long word (>15 chars) without `word-break` may overflow on narrow screens |
 
 **Key Features:**
+- **Clipping detection** - Finds text silently cut off by `overflow:hidden` (the most dangerous issue)
 - Reports the **longest word** in each element and its minimum pixel width
 - Predicts which **breakpoints** will cause overflow issues
-- Detects both horizontal and vertical overflow
+- Detects both horizontal and vertical overflow/clipping
 - Identifies layout shift risks from dynamic content
 
 **Example:**
@@ -488,14 +498,31 @@ function checkMobileReady() {
 function findContentLoss() {
   const fragility = window.__devtool.checkTextFragility()
 
-  // Find elements losing content due to truncation or overflow
+  // Find elements losing content - prioritize silent clipping (worst)
   const contentLoss = fragility.issues.filter(el =>
     el.issues.some(i =>
-      i.type === 'truncated' ||
+      i.type === 'clipped' ||           // Silent horizontal clipping (worst)
+      i.type === 'vertical-clipped' ||  // Silent vertical clipping (worst)
+      i.type === 'truncated' ||         // Visible truncation with ellipsis
       i.type === 'horizontal-overflow' ||
       i.type === 'vertical-overflow'
     )
   )
+
+  // Report silent clipping first (most dangerous)
+  const silentClipping = contentLoss.filter(el =>
+    el.issues.some(i => i.type === 'clipped' || i.type === 'vertical-clipped')
+  )
+
+  if (silentClipping.length > 0) {
+    console.log('CRITICAL: Silent content clipping detected!')
+    silentClipping.forEach(el => {
+      console.log(`  ${el.selector}: "${el.text}"`)
+      const clip = el.issues.find(i => i.type === 'clipped' || i.type === 'vertical-clipped')
+      console.log(`    Hidden: ${clip.details.hiddenContent}`)
+      console.log(`    Fix: ${clip.details.suggestion}`)
+    })
+  }
 
   contentLoss.forEach(el => {
     console.log(`Content lost at: ${el.selector}`)

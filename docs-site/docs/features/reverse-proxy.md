@@ -486,14 +486,253 @@ proxy {action: "status", id: "app"}
 4. **Monitor Dropped Logs** - Check stats for `dropped` count
 5. **Use Page Sessions** - Easier than searching raw HTTP logs
 
+## Remote Debugging & Live Device Testing
+
+One of the most powerful features of agnt's proxy is the ability to share your local development server with remote devices while maintaining full instrumentation. This enables:
+
+- Testing on real mobile devices (iOS, Android)
+- Cross-browser testing with BrowserStack or similar services
+- Sharing work-in-progress with teammates or stakeholders
+- Debugging issues that only occur on specific devices
+
+### Tunnel Provider Options
+
+agnt provides built-in support for tunnel services, plus you can manually configure any tunnel provider.
+
+#### Cloudflare Quick Tunnels (Recommended)
+
+**Best for**: Most use cases - free, fast, no account required.
+
+```json
+// Start proxy with external access
+proxy {action: "start", id: "app", target_url: "http://localhost:3000", bind_address: "0.0.0.0"}
+
+// Start Cloudflare tunnel with auto-configuration
+tunnel {action: "start", id: "app", provider: "cloudflare", local_port: 45849, proxy_id: "app"}
+```
+
+**Pros**:
+- Free, no account required
+- Fast and reliable
+- HTTPS by default
+- No bandwidth limits
+- Automatic URL discovery
+
+**Install**:
+```bash
+# macOS
+brew install cloudflare/cloudflare/cloudflared
+
+# Linux (Debian/Ubuntu)
+curl -L -o cloudflared.deb https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64.deb
+sudo dpkg -i cloudflared.deb
+
+# Windows
+winget install --id Cloudflare.cloudflared
+```
+
+#### ngrok
+
+**Best for**: Stable URLs, webhook testing, request inspection dashboard.
+
+```json
+tunnel {action: "start", id: "app", provider: "ngrok", local_port: 45849, proxy_id: "app"}
+```
+
+**Pros**:
+- Stable URLs (with paid plan)
+- Built-in request inspection dashboard
+- Webhook replay and integrations
+- Custom domains available
+
+**Install**:
+```bash
+# macOS
+brew install ngrok/ngrok/ngrok
+
+# Linux/Windows - download from https://ngrok.com/download
+
+# Configure (required)
+ngrok config add-authtoken <your-token>
+```
+
+#### Tailscale Funnel (Manual Setup)
+
+**Best for**: Teams already using Tailscale, persistent URLs, secure sharing.
+
+Tailscale Funnel isn't natively integrated, but works well with agnt's proxy using manual configuration:
+
+```bash
+# 1. Start your proxy on all interfaces
+proxy {action: "start", id: "app", target_url: "http://localhost:3000", bind_address: "0.0.0.0"}
+# Note the port from listen_addr (e.g., 45849)
+
+# 2. In a terminal, start Tailscale Funnel
+tailscale funnel 45849
+# This gives you a URL like: https://your-machine.tailnet-name.ts.net/
+
+# 3. Update the proxy with the public URL for proper URL rewriting
+proxy {action: "start", id: "app", target_url: "http://localhost:3000", bind_address: "0.0.0.0", public_url: "https://your-machine.tailnet-name.ts.net"}
+```
+
+**Pros**:
+- Persistent, memorable URLs (based on machine name)
+- Integrates with existing Tailscale setup
+- No third-party account needed if you have Tailscale
+- End-to-end encrypted
+
+**Requirements**:
+- Tailscale installed and authenticated
+- Funnel enabled on your tailnet (requires admin approval)
+
+### Live Device Testing Workflow
+
+#### Testing on Your Phone
+
+```json
+// 1. Start your dev server
+run {script_name: "dev"}
+
+// 2. Start instrumented proxy on all interfaces
+proxy {
+  action: "start",
+  id: "mobile",
+  target_url: "http://localhost:3000",
+  bind_address: "0.0.0.0"
+}
+// Response: {listen_addr: "0.0.0.0:45849"}
+
+// 3. Start tunnel
+tunnel {
+  action: "start",
+  id: "mobile",
+  provider: "cloudflare",
+  local_port: 45849,
+  proxy_id: "mobile"
+}
+// Response: {public_url: "https://random-words.trycloudflare.com"}
+
+// 4. Open the URL on your phone - you now have:
+//    - Full error capture from mobile browser
+//    - Floating indicator to send messages to your AI agent
+//    - Screenshot capabilities
+//    - All __devtool diagnostics
+```
+
+#### Checking Mobile-Specific Errors
+
+```json
+// After testing on device, check for errors
+proxylog {proxy_id: "mobile", types: ["error"]}
+
+// Check for mobile-specific issues (touch events, viewport, etc.)
+proxylog {proxy_id: "mobile", types: ["http"], url_pattern: "/api"}
+
+// View page sessions from mobile
+currentpage {proxy_id: "mobile"}
+```
+
+### BrowserStack Integration
+
+For automated testing across many devices, combine agnt with [BrowserStack's MCP server](https://github.com/browserstack/mcp-server).
+
+#### Setup Both MCP Servers
+
+```json title="claude_desktop_config.json"
+{
+  "mcpServers": {
+    "agnt": {
+      "command": "agnt",
+      "args": ["mcp"]
+    },
+    "browserstack": {
+      "command": "npx",
+      "args": ["@anthropic-ai/browserstack-mcp"],
+      "env": {
+        "BROWSERSTACK_USERNAME": "your_username",
+        "BROWSERSTACK_ACCESS_KEY": "your_key",
+        "BROWSERSTACK_LOCAL": "true"
+      }
+    }
+  }
+}
+```
+
+#### Workflow: Automated Device Testing
+
+```json
+// 1. Start instrumented proxy with tunnel
+proxy {action: "start", id: "test", target_url: "http://localhost:3000", bind_address: "0.0.0.0"}
+tunnel {action: "start", id: "test", provider: "cloudflare", local_port: 45849, proxy_id: "test"}
+// Response: {public_url: "https://abc.trycloudflare.com"}
+
+// 2. Use BrowserStack MCP to run tests on the tunnel URL
+// (BrowserStack MCP commands would go here)
+
+// 3. After tests, check captured data from all devices:
+proxylog {proxy_id: "test", types: ["error"]}         // All JS errors
+proxylog {proxy_id: "test", types: ["performance"]}   // Load times per device
+currentpage {proxy_id: "test"}                        // Page sessions
+```
+
+#### What You Get
+
+| From agnt | From BrowserStack |
+|-----------|-------------------|
+| JS error stack traces | Screenshots |
+| HTTP request/response logs | Video recordings |
+| Performance metrics | Device-specific logs |
+| User interactions | Automated test results |
+| DOM state capture | Cross-browser coverage |
+
+### Debugging Tips for Remote Devices
+
+#### 1. Check Connection Status
+
+The floating indicator shows connection status with a green/red dot. If red:
+- Verify the tunnel is running: `tunnel {action: "status", id: "app"}`
+- Check WebSocket connection in browser console
+
+#### 2. Mobile-Specific Diagnostics
+
+```json
+// Check viewport and responsive issues
+proxy {action: "exec", id: "app", code: "window.__devtool.auditResponsive()"}
+
+// Check touch targets (buttons too small?)
+proxy {action: "exec", id: "app", code: "window.__devtool.findSmallTouchTargets()"}
+
+// Check text readability
+proxy {action: "exec", id: "app", code: "window.__devtool.checkTextFragility()"}
+```
+
+#### 3. Capture Device State
+
+```json
+// When a user reports an issue, capture everything:
+proxy {action: "exec", id: "app", code: "window.__devtool.captureState()"}
+// Returns: localStorage, sessionStorage, cookies, viewport, URL, etc.
+```
+
+#### 4. Clean Up After Testing
+
+```json
+tunnel {action: "stop", id: "mobile"}
+proxy {action: "stop", id: "mobile"}
+proc {action: "stop", process_id: "dev"}
+```
+
 ## Security Notes
 
 - **Development Only** - No authentication, allows all origins
 - **Body Truncation** - Request/response bodies limited to 10KB in logs
 - **Local Traffic** - Only proxy trusted local development servers
+- **Tunnel Security** - Tunnels expose your dev server publicly; stop them when not needed
 
 ## Next Steps
 
 - Explore the [Frontend Diagnostics API](/features/frontend-diagnostics)
+- See [Mobile Testing Guide](/use-cases/mobile-testing) for complete workflow
+- Read the [tunnel API Reference](/api/tunnel) for all options
 - See [Debugging Web Apps](/use-cases/debugging-web-apps) use case
 - Learn about [Performance Monitoring](/use-cases/performance-monitoring)

@@ -121,6 +121,22 @@
       });
     }
 
+    // Text clipped by overflow:hidden without ellipsis - silent content loss
+    var isClipped = isOverflowing && hasHiddenOverflow && !hasEllipsis;
+    if (isClipped) {
+      issues.push({
+        type: 'clipped',
+        severity: 'error',
+        message: 'Text clipped by overflow:hidden without ellipsis - content is silently lost',
+        details: {
+          scrollWidth: element.scrollWidth,
+          clientWidth: element.clientWidth,
+          hiddenContent: Math.round(element.scrollWidth - element.clientWidth) + 'px',
+          suggestion: 'Add text-overflow: ellipsis, or allow text to wrap, or increase container width'
+        }
+      });
+    }
+
     if (isOverflowing && !hasHiddenOverflow) {
       issues.push({
         type: 'horizontal-overflow',
@@ -134,7 +150,23 @@
       });
     }
 
-    if (isVerticallyOverflowing && computed.overflowY !== 'scroll' && computed.overflowY !== 'auto') {
+    // Check for vertical clipping vs overflow
+    var hasVerticalHiddenOverflow = computed.overflow === 'hidden' || computed.overflowY === 'hidden';
+    var isVerticallyClipped = isVerticallyOverflowing && hasVerticalHiddenOverflow;
+
+    if (isVerticallyClipped) {
+      issues.push({
+        type: 'vertical-clipped',
+        severity: 'error',
+        message: 'Text clipped vertically by overflow:hidden - content is silently lost',
+        details: {
+          scrollHeight: element.scrollHeight,
+          clientHeight: element.clientHeight,
+          hiddenContent: Math.round(element.scrollHeight - element.clientHeight) + 'px',
+          suggestion: 'Increase container height, use max-height with overflow:auto, or use line-clamp'
+        }
+      });
+    } else if (isVerticallyOverflowing && computed.overflowY !== 'scroll' && computed.overflowY !== 'auto') {
       issues.push({
         type: 'vertical-overflow',
         severity: 'error',

@@ -16,6 +16,7 @@ agnt enables AI coding agents to:
 - **Receive Browser Messages** - Floating indicator lets users send messages directly from the browser
 - **Sketch Ideas Together** - Excalidraw-like wireframing directly on your UI
 - **Iterate on Designs** - AI-assisted UI design with live preview of alternatives
+- **Test on Real Devices** - Built-in tunnels (Cloudflare, ngrok, Tailscale) for mobile and BrowserStack testing
 
 Plus traditional development tooling:
 - **Project Detection** - Automatically detect project types (Go, Node.js, Python) and available scripts
@@ -33,6 +34,67 @@ Modern AI-assisted development requires agents that can:
 5. **Audit Quality** - Run accessibility, security, SEO, and layout robustness audits
 
 agnt provides all of this through a single, efficient MCP server.
+
+## agnt vs Other Browser Tools
+
+There are several MCP servers for browser interaction. Here's how agnt differs:
+
+| Tool | Approach | Best For |
+|------|----------|----------|
+| **agnt** | Instruments YOUR browser session | Development debugging, live collaboration |
+| [Playwright MCP](https://github.com/microsoft/playwright-mcp) | AI controls a new browser | E2E testing, web scraping, form automation |
+| [Puppeteer MCP](https://www.npmjs.com/package/@modelcontextprotocol/server-puppeteer) | AI controls headless Chrome | Screenshots, automated testing |
+| [Chrome DevTools MCP](https://github.com/AJaySi/chrome-devtools-mcp) | Exposes DevTools to AI | Debugging Chrome sessions |
+
+### Key Differences
+
+**agnt is for development, not automation.**
+
+| Capability | agnt | Playwright/Puppeteer MCP |
+|------------|------|--------------------------|
+| Who controls the browser? | You | The AI |
+| Works with your dev server? | Yes, via proxy | Connects to any URL |
+| Captures errors automatically? | Yes | No |
+| Two-way communication? | Yes (floating indicator) | No |
+| Process management? | Yes (run, proc tools) | No |
+| Sketch/wireframe on UI? | Yes | No |
+| Click buttons, fill forms? | No | Yes |
+| Navigate to new pages? | No | Yes |
+| Run E2E test suites? | No | Yes |
+
+### When to Use What
+
+**Use agnt when:**
+- You're actively developing and want AI assistance debugging
+- You need your AI agent to see what you see in real-time
+- You want to send messages/sketches from browser to AI
+- You need error capture, performance metrics, traffic logs
+- You're testing on real mobile devices via tunnels
+
+**Use Playwright/Puppeteer MCP when:**
+- You need the AI to autonomously navigate websites
+- You're building automated test suites
+- You need web scraping or form automation
+- You want the AI to click, type, and interact
+
+**Use both together:**
+```json title="claude_desktop_config.json"
+{
+  "mcpServers": {
+    "agnt": {
+      "command": "agnt",
+      "args": ["mcp"]
+    },
+    "playwright": {
+      "command": "npx",
+      "args": ["@playwright/mcp@latest"]
+    }
+  }
+}
+```
+
+- Use **agnt** for development workflow (run dev server, capture errors, debug issues)
+- Use **Playwright** when you need the AI to autonomously test or navigate
 
 ## Key Features
 
@@ -103,6 +165,19 @@ agnt is built with performance and reliability in mind:
 ## Getting Started
 
 Ready to get started? Head to the [Getting Started](/getting-started) guide to install and configure agnt.
+
+## Use Cases
+
+agnt excels at workflows that were previously impossible or tedious:
+
+- **[Layout Debugging](/use-cases#hard-to-diagnose-layout-issues)** - Diagnose z-index conflicts, overflow issues, stacking contexts
+- **[Responsive Testing](/use-cases#responsive-design-testing)** - Find elements that break on mobile, test on real devices
+- **[i18n Testing](/use-cases#internationalization-i18n-testing)** - Catch text overflow before it reaches production
+- **[Better Tests](/use-cases#writing-better-frontend-tests)** - Generate selectors, capture state, write targeted assertions
+- **[Documentation](/use-cases#creating-documentation-with-screenshots)** - Annotated screenshots, bug reports, PR visuals
+- **[Design Flow](/use-cases#design-iteration-flow)** - Iterate on UI with AI-generated alternatives
+
+See the [Use Cases Overview](/use-cases) for detailed workflows.
 
 ## MCP Protocol
 
