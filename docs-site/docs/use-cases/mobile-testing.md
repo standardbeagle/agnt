@@ -132,9 +132,49 @@ Add both MCP servers to your configuration:
    - agnt: Error logs, HTTP traffic, page sessions
    - BrowserStack: Screenshots, video recordings, device logs
 
+### What Each Tool Provides
+
+| agnt Captures | BrowserStack Provides |
+|---------------|----------------------|
+| JavaScript errors with stack traces | Screenshots on demand |
+| All HTTP request/response data | Video recordings of sessions |
+| Page load performance metrics | Native device logs (iOS/Android) |
+| User interaction history | Automated test execution |
+| DOM mutations and changes | Cross-browser/device matrix |
+| Custom diagnostic data | Real device hardware |
+
+### Example: Automated Mobile Testing
+
+```json
+// 1. Start dev server and instrumented proxy
+run {script_name: "dev"}
+proxy {action: "start", id: "mobile-qa", target_url: "http://localhost:3000", bind_address: "0.0.0.0"}
+
+// 2. Start tunnel
+tunnel {action: "start", id: "mobile-qa", provider: "cloudflare", local_port: 45849, proxy_id: "mobile-qa"}
+// Response: {public_url: "https://abc-xyz.trycloudflare.com"}
+
+// 3. BrowserStack runs tests on the tunnel URL across devices:
+//    - iPhone 15 Pro (iOS 17)
+//    - Samsung Galaxy S24 (Android 14)
+//    - iPad Pro (iPadOS 17)
+
+// 4. After tests complete, analyze captured data:
+proxylog {proxy_id: "mobile-qa", types: ["error"]}
+// Shows any JS errors that occurred on any device
+
+proxylog {proxy_id: "mobile-qa", types: ["performance"]}
+// Shows load times across all devices
+
+currentpage {proxy_id: "mobile-qa"}
+// Shows page sessions from each device
+```
+
 ## Tunnel Providers
 
 ### Cloudflare (Recommended)
+
+**Best for**: Quick testing, no signup required.
 
 **Pros:**
 - Free, no account required
@@ -155,6 +195,8 @@ tunnel {action: "start", id: "app", provider: "cloudflare", local_port: 8080}
 
 ### ngrok
 
+**Best for**: Stable URLs, webhook testing.
+
 **Pros:**
 - Stable URLs (with paid plan)
 - Request inspection dashboard
@@ -171,6 +213,82 @@ ngrok config add-authtoken <your-token>
 ```json
 tunnel {action: "start", id: "app", provider: "ngrok", local_port: 8080}
 ```
+
+### Tailscale Funnel
+
+**Best for**: Teams using Tailscale, persistent URLs, maximum privacy.
+
+**Pros:**
+- Persistent, memorable URLs (based on machine name)
+- End-to-end encrypted
+- No third-party account if you use Tailscale
+- Works with Tailscale ACLs
+
+**Requirements:**
+- Tailscale installed and authenticated
+- Funnel enabled on your tailnet (admin approval required)
+
+**Usage (manual setup):**
+```bash
+# 1. Start agnt proxy on all interfaces
+proxy {action: "start", id: "app", target_url: "http://localhost:3000", bind_address: "0.0.0.0"}
+# Note the port (e.g., 45849)
+
+# 2. Start Tailscale Funnel in terminal
+tailscale funnel 45849
+# Output: https://your-machine.tailnet-name.ts.net
+
+# 3. Update proxy with public URL
+proxy {action: "start", id: "app", target_url: "http://localhost:3000", bind_address: "0.0.0.0", public_url: "https://your-machine.tailnet-name.ts.net"}
+```
+
+## Debugging Device-Specific Issues
+
+### Mobile-Specific Diagnostics
+
+When testing on mobile, use these diagnostics to catch common issues:
+
+```json
+// Check for touch target issues (buttons too small for fingers)
+proxy {action: "exec", id: "app", code: "window.__devtool.findSmallTouchTargets && window.__devtool.findSmallTouchTargets()"}
+
+// Check responsive layout issues
+proxy {action: "exec", id: "app", code: "window.__devtool.checkResponsiveRisk()"}
+
+// Check text readability (truncation, overflow)
+proxy {action: "exec", id: "app", code: "window.__devtool.checkTextFragility()"}
+
+// Audit accessibility (critical for mobile screen readers)
+proxy {action: "exec", id: "app", code: "window.__devtool.auditAccessibility()"}
+```
+
+### Capturing Device Context
+
+When a user reports an issue on a specific device:
+
+```json
+// Capture complete device state
+proxy {action: "exec", id: "app", code: "window.__devtool.captureState()"}
+// Returns: viewport, URL, localStorage, sessionStorage, cookies, user agent
+
+// Check what the user just interacted with
+proxy {action: "exec", id: "app", code: "window.__devtool.interactions.getLastClickContext()"}
+// Returns: element, position, surrounding context, mouse trail
+
+// Check recent DOM changes
+proxy {action: "exec", id: "app", code: "window.__devtool.mutations.getHistory()"}
+```
+
+### Common Mobile Issues to Check
+
+| Issue | Diagnostic Command |
+|-------|-------------------|
+| Buttons too small | `findSmallTouchTargets()` |
+| Text gets cut off | `checkTextFragility()` |
+| Layout breaks on rotation | `checkResponsiveRisk()` |
+| Forms hard to use | `auditAccessibility()` |
+| Slow page loads | `proxylog {types: ["performance"]}` |
+| JavaScript errors | `proxylog {types: ["error"]}` |
 
 ## Troubleshooting
 

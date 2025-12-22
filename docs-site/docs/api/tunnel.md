@@ -23,10 +23,20 @@ tunnel {action: "<action>", ...params}
 
 ## Supported Providers
 
-| Provider | Binary | Description |
-|----------|--------|-------------|
-| `cloudflare` | `cloudflared` | Free quick tunnels via trycloudflare.com |
-| `ngrok` | `ngrok` | Popular tunneling service |
+| Provider | Binary | Native Support | Description |
+|----------|--------|----------------|-------------|
+| `cloudflare` | `cloudflared` | Yes | Free quick tunnels via trycloudflare.com |
+| `ngrok` | `ngrok` | Yes | Popular tunneling service with stable URLs |
+| Tailscale | `tailscale` | Manual | Persistent URLs for Tailscale users |
+
+### Choosing a Provider
+
+| Use Case | Recommended Provider |
+|----------|---------------------|
+| Quick testing, no signup | Cloudflare |
+| Stable URLs for webhooks | ngrok (paid) |
+| Team already on Tailscale | Tailscale Funnel |
+| Maximum privacy | Tailscale Funnel |
 
 ## start
 
@@ -188,6 +198,48 @@ brew install ngrok/ngrok/ngrok
 # Configure auth token (required)
 ngrok config add-authtoken <your-token>
 ```
+
+### Tailscale Funnel (Manual Setup)
+
+Tailscale Funnel provides persistent, memorable URLs for teams already using Tailscale. While not natively integrated, it works well with agnt's proxy.
+
+```bash
+# Install Tailscale (if not already installed)
+# macOS
+brew install tailscale
+
+# Linux
+curl -fsSL https://tailscale.com/install.sh | sh
+
+# Windows
+winget install --id Tailscale.Tailscale
+```
+
+**Setup workflow**:
+
+```bash
+# 1. Start agnt proxy on all interfaces
+proxy {action: "start", id: "app", target_url: "http://localhost:3000", bind_address: "0.0.0.0"}
+# Note the port from listen_addr (e.g., 45849)
+
+# 2. In a separate terminal, start Tailscale Funnel
+tailscale funnel 45849
+# Output: https://your-machine.tailnet-name.ts.net
+
+# 3. Configure proxy with the public URL (for proper URL rewriting)
+proxy {action: "start", id: "app", target_url: "http://localhost:3000", bind_address: "0.0.0.0", public_url: "https://your-machine.tailnet-name.ts.net"}
+```
+
+**Requirements**:
+- Tailscale installed and authenticated (`tailscale up`)
+- Funnel enabled on your tailnet (requires tailnet admin to enable)
+- HTTPS certificates are automatically managed by Tailscale
+
+**Advantages over other providers**:
+- Persistent URL (based on your machine name)
+- No third-party accounts if you already use Tailscale
+- End-to-end encrypted
+- Works with Tailscale ACLs for access control
 
 ## Real-World Patterns
 
