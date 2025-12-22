@@ -42,7 +42,7 @@ daemon {action: "status"}
 ```json
 {
   "running": true,
-  "socket_path": "/tmp/devtool-mcp.sock",
+  "socket_path": "/tmp/agnt.sock",
   "message": "Daemon is running"
 }
 ```
@@ -59,7 +59,7 @@ daemon {action: "info"}
 ```json
 {
   "running": true,
-  "socket_path": "/tmp/devtool-mcp.sock",
+  "socket_path": "/tmp/agnt.sock",
   "version": "0.1.0",
   "uptime": "2h 15m 30s",
   "client_count": 2,
@@ -87,7 +87,7 @@ daemon {action: "start"}
 ```json
 {
   "running": true,
-  "socket_path": "/tmp/devtool-mcp.sock",
+  "socket_path": "/tmp/agnt.sock",
   "success": true,
   "message": "Daemon started successfully"
 }
@@ -97,7 +97,7 @@ If already running:
 ```json
 {
   "running": true,
-  "socket_path": "/tmp/devtool-mcp.sock",
+  "socket_path": "/tmp/agnt.sock",
   "success": true,
   "message": "Daemon is already running"
 }
@@ -115,7 +115,7 @@ daemon {action: "stop"}
 ```json
 {
   "running": false,
-  "socket_path": "/tmp/devtool-mcp.sock",
+  "socket_path": "/tmp/agnt.sock",
   "success": true,
   "message": "Daemon stopped successfully"
 }
@@ -137,7 +137,7 @@ daemon {action: "restart"}
 ```json
 {
   "running": true,
-  "socket_path": "/tmp/devtool-mcp.sock",
+  "socket_path": "/tmp/agnt.sock",
   "success": true,
   "message": "Daemon restarted successfully"
 }
@@ -147,7 +147,7 @@ daemon {action: "restart"}
 
 ```
 ┌─────────────────────┐       ┌─────────────────────────────────────┐
-│  Claude Code        │       │           devtool-mcp               │
+│  Claude Code        │       │           agnt               │
 │  (MCP Client)       │◄─────►│                                     │
 │                     │ stdio │  ┌────────────────┐                 │
 │                     │  MCP  │  │  MCP Server    │                 │
@@ -173,20 +173,20 @@ daemon {action: "restart"}
 
 ## Running Modes
 
-The devtool-mcp binary supports several modes:
+The agnt binary supports several modes:
 
 ```bash
 # Normal mode (default): MCP server with daemon backend
-./devtool-mcp
+./agnt
 
 # Daemon mode: Run only the background daemon
-./devtool-mcp daemon
+./agnt daemon
 
 # Legacy mode: Original behavior without daemon
-./devtool-mcp --legacy
+./agnt --legacy
 
 # Custom socket path
-./devtool-mcp --socket /tmp/my-devtool.sock
+./agnt --socket /tmp/my-devtool.sock
 ```
 
 ## Auto-Start Behavior
@@ -262,7 +262,7 @@ daemon {action: "restart"}
 
 The daemon uses a Unix socket (or named pipe on Windows) for communication:
 
-- **Default**: `/tmp/devtool-mcp-{uid}.sock` (Unix) or `\\.\pipe\devtool-mcp-{user}` (Windows)
+- **Default**: `/tmp/agnt-{uid}.sock` (Unix) or `\\.\pipe\agnt-{user}` (Windows)
 - **Custom**: Set via `--socket` flag
 
 Multiple daemons can run on different socket paths for isolation.

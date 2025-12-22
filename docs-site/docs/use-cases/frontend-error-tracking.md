@@ -4,7 +4,7 @@ sidebar_position: 6
 
 # Frontend Error Tracking
 
-Capturing, analyzing, and debugging JavaScript errors using devtool-mcp's proxy.
+Capturing, analyzing, and debugging JavaScript errors using agnt's proxy.
 
 ## Overview
 

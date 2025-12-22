@@ -4,21 +4,38 @@ sidebar_position: 2
 
 # Getting Started
 
-This guide will help you install, configure, and start using devtool-mcp with your AI assistant.
+This guide will help you install, configure, and start using agnt with your AI coding assistant.
 
 ## Prerequisites
 
-- **Go 1.24.2** or later
+- **Go 1.24.2** or later (for building from source)
 - An MCP-compatible AI assistant (Claude Code, Cursor, etc.)
 
 ## Installation
+
+### Claude Code Marketplace (Recommended)
+
+The easiest way to install agnt is through the Claude Code marketplace:
+
+```bash
+# Install from marketplace (automatically configures MCP)
+claude mcp add agnt --plugin agnt@agnt-marketplace
+```
+
+This single command downloads the latest agnt binary and registers it as an MCP server.
+
+### From Go
+
+```bash
+go install github.com/standardbeagle/agnt/cmd/agnt@latest
+```
 
 ### From Source
 
 ```bash
 # Clone the repository
-git clone https://github.com/devtool-mcp/devtool-mcp.git
-cd devtool-mcp
+git clone https://github.com/standardbeagle/agnt.git
+cd agnt
 
 # Build the binary
 make build
@@ -30,35 +47,29 @@ make install
 ### Verify Installation
 
 ```bash
-./devtool-mcp --version
-# devtool-mcp version 0.1.0
+agnt --version
+# agnt version 0.7.10
 ```
 
 ## Configuration
 
-### Claude Code
+### Claude Code CLI
 
-Add devtool-mcp to your Claude Code configuration (`.claude/settings.json`):
-
-```json
-{
-  "mcpServers": {
-    "devtool": {
-      "command": "/path/to/devtool-mcp"
-    }
-  }
-}
+```bash
+# Register as MCP server
+claude mcp add agnt -s user -- agnt mcp
 ```
 
-### Cursor
+### Manual Configuration
 
-Add to your Cursor MCP settings:
+Add agnt to your Claude Code configuration (`claude_desktop_config.json`):
 
 ```json
 {
   "mcpServers": {
-    "devtool": {
-      "command": "/path/to/devtool-mcp"
+    "agnt": {
+      "command": "agnt",
+      "args": ["mcp"]
     }
   }
 }
@@ -66,11 +77,11 @@ Add to your Cursor MCP settings:
 
 ### Other MCP Clients
 
-devtool-mcp communicates over stdio. Configure your MCP client to spawn the binary and communicate over stdin/stdout.
+agnt communicates over stdio. Configure your MCP client to spawn `agnt mcp` and communicate over stdin/stdout.
 
 ## Quick Start
 
-Once configured, your AI assistant has access to all devtool-mcp tools. Here's a typical workflow:
+Once configured, your AI assistant has access to all agnt tools. Here's a typical workflow:
 
 ### 1. Detect Your Project
 
@@ -101,7 +112,7 @@ Starts the dev server in the background. The AI can now:
 - View output: `proc {action: "output", process_id: "dev", tail: 50}`
 - Stop it: `proc {action: "stop", process_id: "dev"}`
 
-### 3. Set Up Proxy for Debugging
+### 3. Set Up Proxy for Browser Superpowers
 
 ```json
 proxy {action: "start", id: "app", target_url: "http://localhost:3000"}
@@ -112,7 +123,8 @@ The proxy auto-assigns a stable port based on the target URL (check `listen_addr
 - Logs all HTTP requests and responses
 - Captures frontend JavaScript errors
 - Collects performance metrics
-- Injects the `window.__devtool` API
+- Injects the `window.__devtool` API with 50+ diagnostic primitives
+- Shows a floating indicator for browser-to-agent messaging
 
 ### 4. Debug Frontend Issues
 
@@ -140,6 +152,12 @@ proxy {action: "exec", id: "app", code: "window.__devtool.inspect('#problem-butt
 
 // Run accessibility audit
 proxy {action: "exec", id: "app", code: "window.__devtool.auditAccessibility()"}
+
+// Check text fragility
+proxy {action: "exec", id: "app", code: "window.__devtool.checkTextFragility()"}
+
+// Check responsive risks
+proxy {action: "exec", id: "app", code: "window.__devtool.checkResponsiveRisk()"}
 ```
 
 ## Example Session
@@ -170,19 +188,30 @@ AI: Please open http://localhost:45849/dashboard in your browser.
 [proxy {action: "exec", id: "app", code: "window.__devtool.diagnoseLayout()"}]
 → Found 2 overflow issues, 1 stacking context problem
 
-[proxy {action: "exec", id: "app", code: "window.__devtool.findOverflows()"}]
-→ Element .sidebar has horizontal overflow (1024px content in 250px container)
+[proxy {action: "exec", id: "app", code: "window.__devtool.checkTextFragility()"}]
+→ Found text with long words that may overflow on mobile
 
-AI: I found the issue. The .sidebar element has horizontal overflow.
-    Let me highlight it for you.
+AI: I found layout issues. Let me check responsive risks.
 
-[proxy {action: "exec", id: "app", code: "window.__devtool.highlight('.sidebar', {color: 'rgba(255,0,0,0.3)'})"}]
+[proxy {action: "exec", id: "app", code: "window.__devtool.checkResponsiveRisk()"}]
+→ 3 elements have fixed widths that break on mobile
 
-AI: The red highlighted area shows the overflow. The sidebar content
-    is 1024px wide but the container is only 250px.
+AI: The dashboard has several issues:
+    1. Text with long words needs word-break
+    2. Fixed-width elements need max-width: 100%
+    3. Some touch targets are too small
 
-    Should I fix the CSS?
+    Should I fix these issues?
 ```
+
+## Using the Floating Indicator
+
+When you browse through the proxy, you'll see a floating bug icon. Click it to:
+
+- **Send messages** directly to your AI agent
+- **Take screenshots** of selected areas
+- **Run audits** from a dropdown menu
+- **Open sketch mode** for wireframing
 
 ## Next Steps
 
@@ -190,3 +219,4 @@ AI: The red highlighted area shows the overflow. The sidebar content
 - Master [Process Management](/features/process-management)
 - Explore the [Reverse Proxy](/features/reverse-proxy)
 - Deep dive into [Frontend Diagnostics](/features/frontend-diagnostics)
+- Check [Layout Robustness](/api/frontend/layout-robustness) audits

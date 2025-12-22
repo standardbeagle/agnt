@@ -4,11 +4,11 @@ sidebar_position: 3
 
 # Graceful Shutdown
 
-devtool-mcp implements sophisticated shutdown handling to ensure clean process termination and resource cleanup.
+agnt implements sophisticated shutdown handling to ensure clean process termination and resource cleanup.
 
 ## Shutdown Flow
 
-When devtool-mcp receives a termination signal:
+When agnt receives a termination signal:
 
 ```
 SIGINT/SIGTERM
@@ -65,7 +65,7 @@ pm.Shutdown(ctx)
 
 ## Process Group Handling
 
-devtool-mcp uses process groups to ensure child processes are terminated:
+agnt uses process groups to ensure child processes are terminated:
 
 ```go
 cmd := exec.Command(name, args...)
@@ -141,7 +141,7 @@ pnpm dev
   └── tsc --watch (PID 1236)
 ```
 
-Without process groups, only the parent dies. With devtool-mcp:
+Without process groups, only the parent dies. With agnt:
 
 ```
 Ctrl+C
@@ -289,7 +289,7 @@ Process groups work as expected:
 Process groups work differently:
 - Uses job objects instead
 - `Setpgid` not available
-- devtool-mcp handles this transparently
+- agnt handles this transparently
 
 ## Best Practices
 

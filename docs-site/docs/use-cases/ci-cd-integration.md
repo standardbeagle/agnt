@@ -4,11 +4,11 @@ sidebar_position: 4
 
 # CI/CD Integration
 
-Integrating devtool-mcp into continuous integration and deployment pipelines.
+Integrating agnt into continuous integration and deployment pipelines.
 
 ## Overview
 
-devtool-mcp can enhance CI/CD pipelines by:
+agnt can enhance CI/CD pipelines by:
 
 - Detecting project types automatically
 - Running builds and tests with detailed output
@@ -36,13 +36,13 @@ jobs:
         with:
           go-version: '1.24'
 
-      - name: Install devtool-mcp
-        run: go install github.com/devtool-mcp/devtool-mcp@latest
+      - name: Install agnt
+        run: go install github.com/standardbeagle/agnt@latest
 
       - name: Detect Project
         id: detect
         run: |
-          DETECT_OUTPUT=$(devtool-mcp detect)
+          DETECT_OUTPUT=$(agnt detect)
           echo "type=$(echo $DETECT_OUTPUT | jq -r '.type')" >> $GITHUB_OUTPUT
           echo "scripts=$(echo $DETECT_OUTPUT | jq -r '.scripts | join(",")')" >> $GITHUB_OUTPUT
 
@@ -55,7 +55,7 @@ jobs:
           esac
 
       - name: Run Tests
-        run: devtool-mcp run --script test --mode foreground-raw
+        run: agnt run --script test --mode foreground-raw
 ```
 
 ### Matrix Testing
@@ -73,7 +73,7 @@ jobs:
 
       - name: Test Package
         run: |
-          devtool-mcp run \
+          agnt run \
             --script test \
             --path ./packages/${{ matrix.package }} \
             --id test-${{ matrix.package }} \
@@ -86,16 +86,16 @@ jobs:
       - name: Run Tests
         id: test
         continue-on-error: true
-        run: devtool-mcp run --script test --mode foreground
+        run: agnt run --script test --mode foreground
 
       - name: Debug on Failure
         if: steps.test.outcome == 'failure'
         run: |
           # Get test output
-          devtool-mcp proc --action output --process-id test --grep "FAIL"
+          agnt proc --action output --process-id test --grep "FAIL"
 
           # Get detailed failures
-          devtool-mcp proc --action output --process-id test --tail 100
+          agnt proc --action output --process-id test --tail 100
 
       - name: Fail if Tests Failed
         if: steps.test.outcome == 'failure'
@@ -115,8 +115,8 @@ stages:
 detect:
   stage: detect
   script:
-    - go install github.com/devtool-mcp/devtool-mcp@latest
-    - devtool-mcp detect > detect.json
+    - go install github.com/standardbeagle/agnt@latest
+    - agnt detect > detect.json
   artifacts:
     paths:
       - detect.json
@@ -124,14 +124,14 @@ detect:
 test:
   stage: test
   script:
-    - devtool-mcp run --script test --mode foreground-raw
+    - agnt run --script test --mode foreground-raw
   dependencies:
     - detect
 
 build:
   stage: build
   script:
-    - devtool-mcp run --script build --mode foreground
+    - agnt run --script build --mode foreground
   artifacts:
     paths:
       - dist/
@@ -146,7 +146,7 @@ pipeline {
     stages {
         stage('Install') {
             steps {
-                sh 'go install github.com/devtool-mcp/devtool-mcp@latest'
+                sh 'go install github.com/standardbeagle/agnt@latest'
             }
         }
 
@@ -154,7 +154,7 @@ pipeline {
             steps {
                 script {
                     def detect = sh(
-                        script: 'devtool-mcp detect',
+                        script: 'agnt detect',
                         returnStdout: true
                     ).trim()
                     env.PROJECT_TYPE = readJSON(text: detect).type
@@ -164,20 +164,20 @@ pipeline {
 
         stage('Test') {
             steps {
-                sh 'devtool-mcp run --script test --mode foreground'
+                sh 'agnt run --script test --mode foreground'
             }
         }
 
         stage('Build') {
             steps {
-                sh 'devtool-mcp run --script build --mode foreground'
+                sh 'agnt run --script build --mode foreground'
             }
         }
     }
 
     post {
         failure {
-            sh 'devtool-mcp proc --action output --process-id test --grep FAIL'
+            sh 'agnt proc --action output --process-id test --grep FAIL'
         }
     }
 }
@@ -217,11 +217,11 @@ jobs:
         id: detect
         run: |
           cd ${{ matrix.package }}
-          devtool-mcp detect
+          agnt detect
 
       - name: Test Package
         run: |
-          devtool-mcp run \
+          agnt run \
             --script test \
             --path ${{ matrix.package }} \
             --mode foreground-raw
@@ -233,8 +233,8 @@ jobs:
       - name: Clean Up Ports
         run: |
           # Ensure ports are available before starting services
-          devtool-mcp proc --action cleanup_port --port 3000
-          devtool-mcp proc --action cleanup_port --port 8080
+          agnt proc --action cleanup_port --port 3000
+          agnt proc --action cleanup_port --port 8080
 ```
 
 ## E2E Testing with Proxy
@@ -247,12 +247,12 @@ jobs:
 
       - name: Start App
         run: |
-          devtool-mcp run --script dev --id app &
+          agnt run --script dev --id app &
           sleep 10  # Wait for app to start
 
       - name: Start Proxy
         run: |
-          devtool-mcp proxy \
+          agnt proxy \
             --action start \
             --id e2e \
             --target-url http://localhost:3000 \
@@ -266,10 +266,10 @@ jobs:
         if: failure()
         run: |
           # Get captured traffic
-          devtool-mcp proxylog --proxy-id e2e --types http,error
+          agnt proxylog --proxy-id e2e --types http,error
 
           # Get app output
-          devtool-mcp proc --action output --process-id app --tail 100
+          agnt proc --action output --process-id app --tail 100
 ```
 
 ## Parallel Testing
@@ -281,15 +281,15 @@ jobs:
       - name: Run All Tests in Parallel
         run: |
           # Start all tests
-          devtool-mcp run --script test:unit --id unit &
-          devtool-mcp run --script test:integration --id integration &
-          devtool-mcp run --script test:e2e --id e2e &
+          agnt run --script test:unit --id unit &
+          agnt run --script test:integration --id integration &
+          agnt run --script test:e2e --id e2e &
 
           # Wait and collect results
           wait
 
           # Check results
-          devtool-mcp proc --action list
+          agnt proc --action list
 ```
 
 ## Build Matrix
@@ -309,7 +309,7 @@ jobs:
     steps:
       - name: Build for ${{ matrix.env }}
         run: |
-          devtool-mcp run \
+          agnt run \
             --script ${{ matrix.script }} \
             --id build-${{ matrix.env }} \
             --mode foreground
@@ -324,11 +324,11 @@ jobs:
           path: ~/go/pkg/mod
           key: go-${{ hashFiles('**/go.sum') }}
 
-      - name: Cache devtool-mcp
+      - name: Cache agnt
         uses: actions/cache@v4
         with:
-          path: ~/go/bin/devtool-mcp
-          key: devtool-mcp-${{ runner.os }}
+          path: ~/go/bin/agnt
+          key: agnt-${{ runner.os }}
 ```
 
 ## Notifications
@@ -337,7 +337,7 @@ jobs:
       - name: Notify on Failure
         if: failure()
         run: |
-          FAILURES=$(devtool-mcp proc --action output --process-id test --grep FAIL | head -20)
+          FAILURES=$(agnt proc --action output --process-id test --grep FAIL | head -20)
           curl -X POST $SLACK_WEBHOOK \
             -H 'Content-Type: application/json' \
             -d "{\"text\": \"Test failures:\n$FAILURES\"}"
@@ -348,7 +348,7 @@ jobs:
 1. **Use foreground mode** - Ensures proper exit codes
 2. **Capture output on failure** - Debug faster
 3. **Clean up ports** - Avoid conflicts in shared runners
-4. **Cache devtool-mcp** - Faster CI runs
+4. **Cache agnt** - Faster CI runs
 5. **Use unique IDs** - Parallel job clarity
 6. **Leverage detection** - Consistent cross-project scripts
 

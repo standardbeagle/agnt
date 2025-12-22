@@ -4,7 +4,7 @@ sidebar_position: 2
 
 # Process Management
 
-devtool-mcp provides robust process management with output capture, graceful shutdown, and real-time monitoring.
+agnt provides robust process management with output capture, graceful shutdown, and real-time monitoring.
 
 ## Overview
 

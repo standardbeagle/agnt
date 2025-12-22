@@ -4,7 +4,7 @@ sidebar_position: 1
 
 # Architecture
 
-devtool-mcp follows a clean three-layer architecture designed for performance, reliability, and extensibility.
+agnt follows a clean three-layer architecture designed for performance, reliability, and extensibility.
 
 ## System Overview
 
@@ -19,7 +19,7 @@ devtool-mcp follows a clean three-layer architecture designed for performance, r
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                      devtool-mcp                             │
+│                      agnt                             │
 │  ┌─────────────────────────────────────────────────────────┐│
 │  │                    MCP Tools Layer                       ││
 │  │  detect │ run │ proc │ proxy │ proxylog │ currentpage   ││
@@ -96,7 +96,7 @@ Provides low-level utilities:
 
 ### Lock-Free Concurrency
 
-devtool-mcp uses lock-free data structures wherever possible:
+agnt uses lock-free data structures wherever possible:
 
 ```go
 // ProcessManager uses sync.Map and atomics
@@ -140,7 +140,7 @@ The system handles failures gracefully:
 MCP communication uses stdio (stdin/stdout):
 
 ```
-AI Assistant ←──stdin/stdout──→ devtool-mcp
+AI Assistant ←──stdin/stdout──→ agnt
                                      │
                                      └──→ stderr (logs)
 ```
@@ -242,7 +242,7 @@ WebSocket: Performance ───────────────────
 
 1. Create handler in `internal/tools/`
 2. Define input/output structs with JSON schema tags
-3. Register in `cmd/devtool-mcp/main.go`
+3. Register in `cmd/agnt/main.go`
 
 ### Adding New Diagnostics
 
@@ -252,7 +252,7 @@ WebSocket: Performance ───────────────────
 
 ## Configuration
 
-Currently hardcoded in `cmd/devtool-mcp/main.go`:
+Currently hardcoded in `cmd/agnt/main.go`:
 
 ```go
 ManagerConfig{
