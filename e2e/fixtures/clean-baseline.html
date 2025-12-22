@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="A clean baseline test page with good practices for agnt audit testing.">
+    <meta name="robots" content="noindex, nofollow">
+    <meta property="og:title" content="Clean Baseline Test Page">
+    <meta property="og:description" content="A well-structured test page.">
+    <title>Clean Baseline Test Page</title>
+    <style>
+        :root {
+            --color-primary: #2196f3;
+            --color-text: #333;
+            --color-bg: #f5f5f5;
+            --spacing: 1rem;
+        }
+        * { box-sizing: border-box; }
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            line-height: 1.6;
+            color: var(--color-text);
+            background: var(--color-bg);
+            margin: 0;
+            padding: var(--spacing);
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            padding: calc(var(--spacing) * 2);
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1 { color: var(--color-text); margin-top: 0; }
+        h2 { color: #666; margin-top: calc(var(--spacing) * 2); }
+
+        /* Accessible button */
+        .btn {
+            display: inline-block;
+            padding: 0.75rem 1.5rem;
+            font-size: 1rem;
+            background: var(--color-primary);
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            min-height: 44px; /* Touch target size */
+        }
+        .btn:hover { background: #1976d2; }
+        .btn:focus {
+            outline: 2px solid var(--color-primary);
+            outline-offset: 2px;
+        }
+
+        /* Accessible form */
+        .form-group {
+            margin-bottom: 1rem;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 0.25rem;
+            font-weight: 500;
+        }
+        .form-group input {
+            width: 100%;
+            padding: 0.5rem;
+            font-size: 1rem;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+        .form-group input:focus {
+            outline: 2px solid var(--color-primary);
+            border-color: var(--color-primary);
+        }
+
+        /* Responsive flex layout */
+        .flex-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 1rem;
+            margin: 1rem 0;
+        }
+        .flex-item {
+            flex: 1 1 200px;
+            padding: 1rem;
+            background: #e3f2fd;
+            border-radius: 4px;
+        }
+
+        /* Responsive image */
+        .responsive-img {
+            max-width: 100%;
+            height: auto;
+            display: block;
+        }
+
+        /* Skip link */
+        .skip-link {
+            position: absolute;
+            top: -40px;
+            left: 0;
+            background: var(--color-primary);
+            color: white;
+            padding: 8px;
+            z-index: 100;
+        }
+        .skip-link:focus {
+            top: 0;
+        }
+
+        /* Good contrast text */
+        .good-contrast {
+            color: #333;
+            background: #fff;
+            padding: 1rem;
+        }
+    </style>
+</head>
+<body>
+    <a href="#main" class="skip-link">Skip to main content</a>
+
+    <main id="main" class="container" role="main">
+        <h1>Clean Baseline Test Page</h1>
+        <p>This page follows accessibility and SEO best practices. It should pass most audits with minimal issues.</p>
+
+        <h2>Accessible Form</h2>
+        <form action="/submit" method="POST">
+            <div class="form-group">
+                <label for="name">Full Name</label>
+                <input type="text" id="name" name="name" required aria-required="true">
+            </div>
+            <div class="form-group">
+                <label for="email">Email Address</label>
+                <input type="email" id="email" name="email" required aria-required="true">
+            </div>
+            <button type="submit" class="btn">Submit Form</button>
+        </form>
+
+        <h2>Responsive Layout</h2>
+        <div class="flex-container">
+            <div class="flex-item">
+                <h3>Feature One</h3>
+                <p>Responsive flex item that wraps on small screens.</p>
+            </div>
+            <div class="flex-item">
+                <h3>Feature Two</h3>
+                <p>Uses relative units for sizing.</p>
+            </div>
+            <div class="flex-item">
+                <h3>Feature Three</h3>
+                <p>Good touch targets and contrast.</p>
+            </div>
+        </div>
+
+        <h2>Accessible Image</h2>
+        <img
+            class="responsive-img"
+            src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='400' height='200'%3E%3Crect fill='%23e3f2fd' width='400' height='200'/%3E%3Ctext x='200' y='100' text-anchor='middle' fill='%23333' font-size='18'%3EResponsive Image%3C/text%3E%3C/svg%3E"
+            alt="A placeholder image demonstrating responsive sizing"
+            width="400"
+            height="200"
+        >
+
+        <h2>Links with Descriptive Text</h2>
+        <nav aria-label="Example navigation">
+            <ul>
+                <li><a href="/about" rel="noopener">Learn about our company</a></li>
+                <li><a href="/contact" rel="noopener">Contact our support team</a></li>
+                <li><a href="https://example.com" target="_blank" rel="noopener noreferrer">Visit external partner site (opens new window)</a></li>
+            </ul>
+        </nav>
+
+        <h2>Good Contrast Text</h2>
+        <div class="good-contrast">
+            <p>This text has proper contrast ratio (>4.5:1) for accessibility compliance.</p>
+        </div>
+
+        <h2>Interactive Button</h2>
+        <button class="btn" type="button" id="test-button">Click Me</button>
+    </main>
+
+    <script>
+        console.log('[Test Page] clean-baseline.html loaded');
+        window.testPageType = 'clean-baseline';
+
+        // Proper event listener (not inline)
+        document.getElementById('test-button').addEventListener('click', function() {
+            console.log('Button clicked');
+        });
+    </script>
+</body>
+</html>

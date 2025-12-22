@@ -83,7 +83,12 @@
       var el = elements[i];
       var viewport = visual.isInViewport(el);
 
-      if (viewport && !viewport.intersecting) {
+      // Skip if error or no valid response
+      if (!viewport || viewport.error || !viewport.rect) {
+        continue;
+      }
+
+      if (!viewport.intersecting) {
         var rect = viewport.rect;
         var direction = [];
 

@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Responsive Issues Test Page</title>
+    <style>
+        body { font-family: system-ui, sans-serif; padding: 20px; background: #f5f5f5; margin: 0; }
+        .container { max-width: 800px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; }
+        h1 { color: #333; }
+        h2 { color: #666; margin-top: 30px; }
+
+        /* Fixed width that breaks on mobile */
+        .fixed-width {
+            width: 600px;
+            background: #f44336;
+            color: white;
+            padding: 20px;
+            margin: 20px 0;
+        }
+
+        /* Viewport overflow - horizontal scroll */
+        .viewport-overflow {
+            width: 150vw;
+            background: #e91e63;
+            color: white;
+            padding: 20px;
+            margin: 20px 0;
+        }
+
+        /* Fixed positioning issues */
+        .fixed-element {
+            position: fixed;
+            bottom: 100px;
+            right: 20px;
+            width: 200px;
+            background: #9c27b0;
+            color: white;
+            padding: 15px;
+            border-radius: 8px;
+            z-index: 1000;
+        }
+
+        /* Non-responsive images */
+        .non-responsive-img {
+            width: 500px;
+            height: auto;
+        }
+
+        /* Fixed font sizes */
+        .fixed-font-large { font-size: 32px; }
+        .fixed-font-px { font-size: 14px; }
+
+        /* Horizontal scroll container */
+        .horizontal-scroll {
+            display: flex;
+            gap: 20px;
+            overflow-x: auto;
+            padding: 20px;
+            background: #673ab7;
+            margin: 20px 0;
+        }
+        .scroll-item {
+            flex: 0 0 200px;
+            height: 100px;
+            background: white;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* Touch target too small */
+        .small-touch-target {
+            display: inline-block;
+            width: 24px;
+            height: 24px;
+            background: #2196f3;
+            color: white;
+            font-size: 10px;
+            text-align: center;
+            line-height: 24px;
+            cursor: pointer;
+            margin: 5px;
+        }
+
+        /* Absolute positioned elements that may overflow */
+        .absolute-container {
+            position: relative;
+            height: 150px;
+            background: #00bcd4;
+            margin: 20px 0;
+        }
+        .absolute-right {
+            position: absolute;
+            right: -50px;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 100px;
+            height: 80px;
+            background: #ff9800;
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        /* Tables that don't adapt */
+        table {
+            width: 100%;
+            min-width: 700px;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+        th, td {
+            border: 1px solid #ddd;
+            padding: 12px;
+            text-align: left;
+        }
+        th { background: #4caf50; color: white; }
+
+        /* Media query issue - using max-device-width instead of max-width */
+        @media screen and (max-device-width: 600px) {
+            .deprecated-query {
+                background: red;
+            }
+        }
+
+        /* Landscape-only layout */
+        @media (orientation: landscape) and (max-height: 500px) {
+            .landscape-only {
+                display: block;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Responsive Issues Test Page</h1>
+        <p>This page intentionally contains responsive design issues for testing.</p>
+
+        <h2>Fixed Width Container</h2>
+        <div class="fixed-width">
+            This container has a fixed 600px width that won't adapt to smaller screens.
+        </div>
+
+        <h2>Viewport Overflow</h2>
+        <div class="viewport-overflow">
+            This element is 150vw wide, causing horizontal scroll on any viewport.
+        </div>
+
+        <h2>Fixed Positioned Element</h2>
+        <div class="fixed-element">
+            Fixed position element - may cover content on small screens
+        </div>
+
+        <h2>Non-Responsive Image</h2>
+        <img class="non-responsive-img" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='500' height='200'%3E%3Crect fill='%23ccc' width='500' height='200'/%3E%3Ctext x='250' y='100' text-anchor='middle' fill='%23666' font-size='24'%3E500x200 Fixed%3C/text%3E%3C/svg%3E" alt="Fixed size image">
+
+        <h2>Fixed Font Sizes</h2>
+        <p class="fixed-font-large">This text is 32px - may be too large on mobile</p>
+        <p class="fixed-font-px">This text is 14px - may be too small on mobile</p>
+
+        <h2>Horizontal Scroll Items</h2>
+        <div class="horizontal-scroll">
+            <div class="scroll-item">Item 1</div>
+            <div class="scroll-item">Item 2</div>
+            <div class="scroll-item">Item 3</div>
+            <div class="scroll-item">Item 4</div>
+            <div class="scroll-item">Item 5</div>
+        </div>
+
+        <h2>Small Touch Targets</h2>
+        <div>
+            <span class="small-touch-target">1</span>
+            <span class="small-touch-target">2</span>
+            <span class="small-touch-target">3</span>
+            <span class="small-touch-target">4</span>
+            <span class="small-touch-target">5</span>
+        </div>
+
+        <h2>Absolute Overflow</h2>
+        <div class="absolute-container">
+            <div class="absolute-right">Overflows right</div>
+        </div>
+
+        <h2>Non-Responsive Table</h2>
+        <div style="overflow-x: auto;">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Column 1</th>
+                        <th>Column 2</th>
+                        <th>Column 3</th>
+                        <th>Column 4</th>
+                        <th>Column 5</th>
+                        <th>Column 6</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Data</td>
+                        <td>Data</td>
+                        <td>Data</td>
+                        <td>Data</td>
+                        <td>Data</td>
+                        <td>Data</td>
+                    </tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <script>
+        console.log('[Test Page] responsive-issues.html loaded');
+        window.testPageType = 'responsive-issues';
+    </script>
+</body>
+</html>

@@ -75,6 +75,12 @@ var (
 	//go:embed content.js
 	contentJS string
 
+	//go:embed text-fragility.js
+	textFragilityJS string
+
+	//go:embed responsive-risk.js
+	responsiveRiskJS string
+
 	//go:embed api.js
 	apiJS string
 )
@@ -221,7 +227,17 @@ func buildCombinedScript() string {
 	sb.WriteString(wrapModule(contentJS))
 	sb.WriteString("\n\n")
 
-	// 23. API (assembles all modules, must be last)
+	// 23. Text fragility analysis (depends on utils)
+	sb.WriteString("  // Text fragility module\n")
+	sb.WriteString(wrapModule(textFragilityJS))
+	sb.WriteString("\n\n")
+
+	// 24. Responsive risk analysis (depends on utils)
+	sb.WriteString("  // Responsive risk module\n")
+	sb.WriteString(wrapModule(responsiveRiskJS))
+	sb.WriteString("\n\n")
+
+	// 25. API (assembles all modules, must be last)
 	sb.WriteString("  // API assembly module\n")
 	sb.WriteString(wrapModule(apiJS))
 	sb.WriteString("\n")
@@ -297,6 +313,9 @@ func GetScriptNames() []string {
 		"snapshot-helper.js",
 		"diagnostics.js",
 		"session.js",
+		"content.js",
+		"text-fragility.js",
+		"responsive-risk.js",
 		"api.js",
 	}
 }

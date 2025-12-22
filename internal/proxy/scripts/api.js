@@ -311,14 +311,15 @@
     },
 
     diagnoseLayout: function(selector) {
-      var overflows = layout.findOverflows();
-      var contexts = layout.findStackingContexts();
-      var offscreen = layout.findOffscreen();
+      var overflowsResult = layout.findOverflows();
+      var contextsResult = layout.findStackingContexts();
+      var offscreenResult = layout.findOffscreen();
 
+      // Extract the arrays from the result objects
       var result = {
-        overflows: overflows,
-        stackingContexts: contexts,
-        offscreen: offscreen
+        overflows: overflowsResult.overflows || [],
+        stackingContexts: contextsResult.contexts || [],
+        offscreen: offscreenResult.offscreen || []
       };
 
       if (selector) {
@@ -330,6 +331,38 @@
       }
 
       return result;
+    },
+
+    // ========================================================================
+    // TEXT FRAGILITY
+    // ========================================================================
+
+    /**
+     * Check text elements for fragility issues.
+     * Analyzes max word length, overflow risks, and layout shift potential.
+     */
+    checkTextFragility: function() {
+      var textFragility = window.__devtool_text_fragility;
+      if (textFragility && textFragility.checkTextFragility) {
+        return textFragility.checkTextFragility();
+      }
+      return { error: 'Text fragility module not loaded' };
+    },
+
+    // ========================================================================
+    // RESPONSIVE RISK
+    // ========================================================================
+
+    /**
+     * Check elements for responsive design risks.
+     * Analyzes fixed dimensions, touch targets, positioning, and viewport issues.
+     */
+    checkResponsiveRisk: function() {
+      var responsiveRisk = window.__devtool_responsive_risk;
+      if (responsiveRisk && responsiveRisk.checkResponsiveRisk) {
+        return responsiveRisk.checkResponsiveRisk();
+      }
+      return { error: 'Responsive risk module not loaded' };
     },
 
     // ========================================================================

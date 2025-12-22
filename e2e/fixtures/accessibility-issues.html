@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Accessibility Issues Test Page</title>
+    <style>
+        body { font-family: system-ui, sans-serif; padding: 20px; background: #f5f5f5; }
+        .container { max-width: 800px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; }
+        h1 { color: #333; }
+
+        /* Low contrast text - accessibility issue */
+        .low-contrast { color: #aaa; background: #ccc; padding: 10px; margin: 10px 0; }
+
+        /* Missing focus styles - accessibility issue */
+        .no-focus:focus { outline: none; }
+
+        /* Small touch target - accessibility issue */
+        .small-button {
+            padding: 2px 4px;
+            font-size: 10px;
+            background: #2196f3;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+
+        /* Form without labels */
+        .form-section { margin: 20px 0; padding: 15px; border: 1px solid #ddd; border-radius: 4px; }
+        .form-section input { display: block; margin: 10px 0; padding: 8px; width: 200px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Accessibility Issues Test Page</h1>
+        <p>This page intentionally contains accessibility issues for testing the audit system.</p>
+
+        <!-- Image without alt text -->
+        <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='100' height='100'%3E%3Crect fill='%23ccc' width='100' height='100'/%3E%3C/svg%3E" width="100" height="100">
+
+        <!-- Low contrast text -->
+        <div class="low-contrast">
+            This text has very low contrast and is hard to read.
+        </div>
+
+        <!-- Link with no discernible text -->
+        <a href="#"><span aria-hidden="true"></span></a>
+
+        <!-- Button with no accessible name -->
+        <button class="small-button no-focus"></button>
+
+        <!-- Form inputs without labels -->
+        <div class="form-section">
+            <h2>Form without proper labels</h2>
+            <input type="text" placeholder="Username">
+            <input type="email" placeholder="Email">
+            <input type="password" placeholder="Password">
+            <button type="submit">Submit</button>
+        </div>
+
+        <!-- Heading hierarchy issues -->
+        <h4>Skipped heading levels (h1 to h4)</h4>
+
+        <!-- Interactive element not keyboard accessible -->
+        <div onclick="alert('clicked')" style="cursor: pointer; padding: 10px; background: #e0e0e0; margin: 10px 0;">
+            Click me (but not keyboard accessible)
+        </div>
+
+        <!-- Missing lang attribute on html (already missing above) -->
+
+        <!-- Auto-playing content would go here in a real test -->
+
+        <!-- Table without headers -->
+        <table border="1" style="margin: 20px 0;">
+            <tr><td>Data 1</td><td>Data 2</td><td>Data 3</td></tr>
+            <tr><td>Data 4</td><td>Data 5</td><td>Data 6</td></tr>
+        </table>
+    </div>
+
+    <script>
+        console.log('[Test Page] accessibility-issues.html loaded');
+        window.testPageType = 'accessibility-issues';
+    </script>
+</body>
+</html>
