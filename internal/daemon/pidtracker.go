@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -196,11 +195,8 @@ func (pt *PIDTracker) CleanupOrphans(currentDaemonPID int) (killedCount int, err
 	// Check each tracked process and kill if still alive
 	for _, proc := range tracking.Processes {
 		if isProcessAlive(proc.PID) {
-			// Try to kill the process group first (gets all children)
-			_ = syscall.Kill(-proc.PGID, syscall.SIGKILL)
-
-			// Also try direct kill in case process group fails
-			_ = syscall.Kill(proc.PID, syscall.SIGKILL)
+			// Kill the orphan process (platform-specific)
+			killOrphanProcess(proc.PID, proc.PGID)
 
 			killedCount++
 
@@ -214,12 +210,4 @@ func (pt *PIDTracker) CleanupOrphans(currentDaemonPID int) (killedCount int, err
 	tracking.DaemonPID = currentDaemonPID
 
 	return killedCount, pt.saveLocked(tracking)
-}
-
-// isProcessAlive checks if a process is still running.
-func isProcessAlive(pid int) bool {
-	// Sending signal 0 checks if we can signal the process
-	// without actually sending a signal
-	err := syscall.Kill(pid, syscall.Signal(0))
-	return err == nil
 }
