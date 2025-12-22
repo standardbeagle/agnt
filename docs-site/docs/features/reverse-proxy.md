@@ -4,7 +4,7 @@ sidebar_position: 3
 
 # Reverse Proxy
 
-The reverse proxy is devtool-mcp's most powerful feature, enabling comprehensive frontend debugging through transparent HTTP interception and JavaScript instrumentation.
+The reverse proxy is agnt's most powerful feature, enabling comprehensive frontend debugging through transparent HTTP interception and JavaScript instrumentation.
 
 ## Overview
 

@@ -4,7 +4,7 @@ sidebar_position: 1
 
 # Project Detection
 
-devtool-mcp automatically detects your project type, package manager, and available scripts without any configuration.
+agnt automatically detects your project type, package manager, and available scripts without any configuration.
 
 ## How It Works
 
@@ -163,7 +163,7 @@ Use detection to run the right commands without hardcoding:
 # GitHub Actions example
 - name: Detect Project
   run: |
-    PROJECT_TYPE=$(devtool-mcp detect --path . | jq -r '.type')
+    PROJECT_TYPE=$(agnt detect --path . | jq -r '.type')
     echo "PROJECT_TYPE=$PROJECT_TYPE" >> $GITHUB_ENV
 
 - name: Run Tests

@@ -4,7 +4,7 @@ sidebar_position: 1
 
 # Debugging Web Applications
 
-A comprehensive guide to debugging web applications using devtool-mcp's proxy and frontend diagnostics.
+A comprehensive guide to debugging web applications using agnt's proxy and frontend diagnostics.
 
 ## Overview
 

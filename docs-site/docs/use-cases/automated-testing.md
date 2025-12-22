@@ -4,11 +4,11 @@ sidebar_position: 2
 
 # Automated Testing
 
-Using devtool-mcp for test automation, CI/CD integration, and test result analysis.
+Using agnt for test automation, CI/CD integration, and test result analysis.
 
 ## Overview
 
-devtool-mcp can assist with:
+agnt can assist with:
 
 - Running test suites and analyzing results
 - Monitoring test coverage
@@ -190,14 +190,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install devtool-mcp
+      - name: Install agnt
         run: |
-          go install github.com/devtool-mcp/devtool-mcp@latest
+          go install github.com/standardbeagle/agnt@latest
 
-      - name: Run Tests via devtool-mcp
+      - name: Run Tests via agnt
         run: |
-          # Use devtool-mcp's run command
-          devtool-mcp run --script test --mode foreground-raw
+          # Use agnt's run command
+          agnt run --script test --mode foreground-raw
 ```
 
 ### Using Detection in CI
@@ -205,17 +205,17 @@ jobs:
 ```yaml
       - name: Detect and Run
         run: |
-          PROJECT_TYPE=$(devtool-mcp detect | jq -r '.type')
+          PROJECT_TYPE=$(agnt detect | jq -r '.type')
 
           case $PROJECT_TYPE in
             node)
-              devtool-mcp run --script test
+              agnt run --script test
               ;;
             go)
-              devtool-mcp run --raw --command go --args "test ./..."
+              agnt run --raw --command go --args "test ./..."
               ;;
             python)
-              devtool-mcp run --raw --command pytest
+              agnt run --raw --command pytest
               ;;
           esac
 ```

@@ -3,8 +3,8 @@ import type {Config} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
 
 const config: Config = {
-  title: 'devtool-mcp',
-  tagline: 'MCP Server for Development Tooling - Project Detection, Process Management, and Reverse Proxy with Frontend Instrumentation',
+  title: 'agnt',
+  tagline: 'Give your AI coding agent browser superpowers - Screenshots, DOM inspection, visual debugging, and real-time error capture',
   favicon: 'img/favicon.ico',
 
   future: {
@@ -13,11 +13,11 @@ const config: Config = {
 
   // GitHub Pages configuration
   url: 'https://standardbeagle.github.io',
-  baseUrl: '/devtool-mcp/',
+  baseUrl: '/agnt/',
 
   // GitHub repository info
   organizationName: 'standardbeagle',
-  projectName: 'devtool-mcp',
+  projectName: 'agnt',
   trailingSlash: false,
   deploymentBranch: 'gh-pages',
 
@@ -36,7 +36,7 @@ const config: Config = {
         docs: {
           sidebarPath: './sidebars.ts',
           routeBasePath: '/',
-          editUrl: 'https://github.com/standardbeagle/devtool-mcp/tree/main/docs-site/',
+          editUrl: 'https://github.com/standardbeagle/agnt/tree/main/docs-site/',
         },
         blog: false,
         theme: {
@@ -52,7 +52,7 @@ const config: Config = {
       respectPrefersColorScheme: true,
     },
     navbar: {
-      title: 'devtool-mcp',
+      title: 'agnt',
       items: [
         {
           type: 'docSidebar',
@@ -73,7 +73,7 @@ const config: Config = {
           label: 'Use Cases',
         },
         {
-          href: 'https://github.com/standardbeagle/devtool-mcp',
+          href: 'https://github.com/standardbeagle/agnt',
           label: 'GitHub',
           position: 'right',
         },
@@ -121,7 +121,7 @@ const config: Config = {
           items: [
             {
               label: 'GitHub',
-              href: 'https://github.com/standardbeagle/devtool-mcp',
+              href: 'https://github.com/standardbeagle/agnt',
             },
             {
               label: 'MCP Protocol',
@@ -130,7 +130,7 @@ const config: Config = {
           ],
         },
       ],
-      copyright: `Copyright © ${new Date().getFullYear()} devtool-mcp. Built with Docusaurus.`,
+      copyright: `Copyright © ${new Date().getFullYear()} agnt. Built with Docusaurus.`,
     },
     prism: {
       theme: prismThemes.github,

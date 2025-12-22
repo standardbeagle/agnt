@@ -4,11 +4,11 @@ sidebar_position: 3
 
 # Performance Monitoring
 
-Using devtool-mcp to analyze, diagnose, and improve web application performance.
+Using agnt to analyze, diagnose, and improve web application performance.
 
 ## Overview
 
-devtool-mcp provides multiple tools for performance analysis:
+agnt provides multiple tools for performance analysis:
 
 - **Proxy traffic logs** - Request/response timing
 - **Performance metrics** - Page load, paint timing

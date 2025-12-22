@@ -4,7 +4,7 @@ sidebar_position: 2
 
 # Lock-Free Design
 
-devtool-mcp prioritizes lock-free concurrency patterns to maximize performance and simplify reasoning about correctness.
+agnt prioritizes lock-free concurrency patterns to maximize performance and simplify reasoning about correctness.
 
 ## Why Lock-Free?
 

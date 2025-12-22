@@ -4,11 +4,11 @@ sidebar_position: 5
 
 # Accessibility Auditing
 
-Using devtool-mcp's frontend diagnostics for comprehensive accessibility testing.
+Using agnt's frontend diagnostics for comprehensive accessibility testing.
 
 ## Overview
 
-devtool-mcp provides 5 dedicated accessibility functions:
+agnt provides 5 dedicated accessibility functions:
 
 - `getA11yInfo` - Get ARIA attributes for an element
 - `getContrast` - Check color contrast ratios
@@ -359,15 +359,15 @@ proxy {action: "exec", id: "app", code: `
       - name: Accessibility Check
         run: |
           # Start app and proxy
-          devtool-mcp run --script dev &
+          agnt run --script dev &
           sleep 10
-          devtool-mcp proxy --action start --id a11y --target-url http://localhost:3000
+          agnt proxy --action start --id a11y --target-url http://localhost:3000
 
           # Navigate via browser automation
           # ...
 
           # Check accessibility
-          SCORE=$(devtool-mcp proxy --action exec --id a11y --code "window.__devtool.auditAccessibility().score")
+          SCORE=$(agnt proxy --action exec --id a11y --code "window.__devtool.auditAccessibility().score")
 
           if [ "$SCORE" -lt 70 ]; then
             echo "Accessibility score too low: $SCORE"
