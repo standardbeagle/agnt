@@ -71,11 +71,8 @@ func (pm *ProcessManager) Start(ctx context.Context, proc *ManagedProcess) error
 
 	// Track PID for orphan cleanup
 	if pm.pidTracker != nil {
-		// Get process group ID
-		pgid, err := syscall.Getpgid(pid)
-		if err != nil {
-			pgid = pid // Fallback to PID if we can't get PGID
-		}
+		// Get process group ID (platform-specific)
+		pgid := getProcessGroupID(pid)
 		// Best effort - ignore errors in PID tracking
 		_ = pm.pidTracker.Add(proc.ID, pid, pgid, proc.ProjectPath)
 	}

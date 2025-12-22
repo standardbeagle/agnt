@@ -224,3 +224,10 @@ func isNoSuchProcess(err error) bool {
 	}
 	return os.IsNotExist(err) || err == os.ErrProcessDone
 }
+
+// getProcessGroupID returns the process group ID for a given PID.
+// On Windows, there's no direct equivalent of Unix process groups.
+// We return the PID itself since we use Job Objects for process tree management.
+func getProcessGroupID(pid int) int {
+	return pid
+}

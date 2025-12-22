@@ -50,6 +50,16 @@ func isNoSuchProcess(err error) bool {
 	return err == syscall.ESRCH
 }
 
+// getProcessGroupID returns the process group ID for a given PID.
+// On Unix, this uses syscall.Getpgid. Returns the PID if PGID cannot be determined.
+func getProcessGroupID(pid int) int {
+	pgid, err := syscall.Getpgid(pid)
+	if err != nil {
+		return pid // Fallback to PID
+	}
+	return pgid
+}
+
 // SetupJobObject is a no-op on Unix.
 // On Windows, this creates a Job Object to manage child processes.
 func SetupJobObject(cmd *exec.Cmd) error {
