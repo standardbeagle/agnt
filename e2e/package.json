@@ -1,0 +1,24 @@
+{
+  "name": "agnt-e2e-tests",
+  "version": "1.0.0",
+  "description": "End-to-end tests for agnt indicator audits using Playwright",
+  "private": true,
+  "scripts": {
+    "test": "playwright test",
+    "test:ui": "playwright test --ui",
+    "test:headed": "playwright test --headed",
+    "test:debug": "PWDEBUG=1 playwright test",
+    "test:report": "playwright show-report",
+    "fixtures": "http-server fixtures -p 8765 -c-1",
+    "clean": "rm -rf playwright-report test-results"
+  },
+  "keywords": ["agnt", "e2e", "playwright", "testing"],
+  "author": "Standard Beagle",
+  "license": "MIT",
+  "devDependencies": {
+    "@playwright/test": "^1.57.0",
+    "@types/node": "^25.0.3",
+    "http-server": "^14.1.1",
+    "typescript": "^5.9.3"
+  }
+}

@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Security Issues Test Page</title>
+    <!-- Missing CSP meta tag - security issue -->
+    <style>
+        body { font-family: system-ui, sans-serif; padding: 20px; background: #f5f5f5; }
+        .container { max-width: 800px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; }
+        h1 { color: #333; }
+        h2 { color: #666; margin-top: 30px; }
+        .section { margin: 20px 0; padding: 15px; border: 1px solid #ddd; border-radius: 4px; }
+        .warning { background: #fff3e0; border-color: #ff9800; }
+        .danger { background: #ffebee; border-color: #f44336; }
+        code { background: #f5f5f5; padding: 2px 6px; border-radius: 3px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Security Issues Test Page</h1>
+        <p>This page intentionally contains security issues for testing the audit system.</p>
+
+        <!-- Inline event handlers - security issue -->
+        <div class="section danger">
+            <h2>Inline Event Handlers</h2>
+            <button onclick="alert('inline onclick')">Inline onclick</button>
+            <button onmouseover="this.style.background='red'">Inline onmouseover</button>
+            <a href="javascript:void(0)">javascript: href</a>
+        </div>
+
+        <!-- Form without HTTPS action - security issue -->
+        <div class="section danger">
+            <h2>Insecure Form</h2>
+            <form action="http://example.com/submit" method="POST">
+                <input type="text" name="username" placeholder="Username">
+                <input type="password" name="password" placeholder="Password">
+                <button type="submit">Submit to HTTP</button>
+            </form>
+        </div>
+
+        <!-- Form without CSRF protection -->
+        <div class="section warning">
+            <h2>Form Without CSRF Token</h2>
+            <form action="/api/update" method="POST">
+                <input type="text" name="data" placeholder="Some data">
+                <button type="submit">No CSRF Token</button>
+            </form>
+        </div>
+
+        <!-- Autocomplete on sensitive fields -->
+        <div class="section warning">
+            <h2>Autocomplete on Password</h2>
+            <form>
+                <input type="password" name="pass" autocomplete="on" placeholder="Password with autocomplete=on">
+            </form>
+        </div>
+
+        <!-- External resources without integrity -->
+        <div class="section danger">
+            <h2>External Resources (no SRI)</h2>
+            <p>This page would load external scripts without subresource integrity.</p>
+            <!-- Example: script without integrity attribute -->
+            <!-- <script src="https://cdn.example.com/lib.js"></script> -->
+        </div>
+
+        <!-- Target _blank without rel="noopener" -->
+        <div class="section warning">
+            <h2>Links with target="_blank"</h2>
+            <a href="https://example.com" target="_blank">Opens in new tab (no noopener)</a>
+        </div>
+
+        <!-- Sensitive data in URL -->
+        <div class="section danger">
+            <h2>Sensitive Data in URL</h2>
+            <a href="/login?token=abc123&password=secret">Link with sensitive query params</a>
+        </div>
+
+        <!-- localStorage usage with sensitive data -->
+        <div class="section warning">
+            <h2>localStorage with Sensitive Data</h2>
+            <p>Check localStorage for sensitive data patterns.</p>
+        </div>
+
+        <!-- Iframe without sandbox -->
+        <div class="section danger">
+            <h2>Iframe Without Sandbox</h2>
+            <iframe src="about:blank" width="300" height="100" style="border: 1px solid #ddd;"></iframe>
+        </div>
+
+        <!-- Dangerous innerHTML patterns -->
+        <div class="section danger" id="innerHTML-target">
+            <h2>Potential XSS Vectors</h2>
+            <p>Content that might be vulnerable to innerHTML injection.</p>
+        </div>
+
+        <!-- Hidden fields with sensitive data -->
+        <form>
+            <input type="hidden" name="api_key" value="sk-12345">
+            <input type="hidden" name="secret" value="my-secret-value">
+        </form>
+
+        <!-- Debugging console logs -->
+        <div class="section warning">
+            <h2>Console Logging</h2>
+            <p>Check for exposed debug information in console.</p>
+        </div>
+    </div>
+
+    <!-- Inline script - security issue in CSP context -->
+    <script>
+        console.log('[Test Page] security-issues.html loaded');
+        window.testPageType = 'security-issues';
+
+        // Simulate sensitive data in localStorage - security issue
+        localStorage.setItem('auth_token', 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.fake');
+        localStorage.setItem('user_email', 'user@example.com');
+
+        // Debug logging - security issue in production
+        console.log('Debug: User token loaded', localStorage.getItem('auth_token'));
+
+        // Expose global variables - potential security issue
+        window.DEBUG_MODE = true;
+        window.API_KEY = 'exposed-key-12345';
+    </script>
+</body>
+</html>

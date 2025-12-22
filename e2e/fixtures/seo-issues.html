@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html>
+<!-- Missing lang attribute - SEO issue -->
+<head>
+    <meta charset="UTF-8">
+    <!-- Missing viewport meta - SEO issue on mobile -->
+    <!-- Missing meta description - SEO issue -->
+    <!-- Missing og: tags - SEO issue -->
+    <title></title><!-- Empty title - SEO issue -->
+    <style>
+        body { font-family: system-ui, sans-serif; padding: 20px; background: #f5f5f5; }
+        .container { max-width: 800px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; }
+        h2 { color: #666; margin-top: 30px; }
+        .section { margin: 20px 0; padding: 15px; border: 1px solid #ddd; border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- No h1 tag - SEO issue -->
+        <h3>SEO Issues Test Page</h3>
+        <p>This page intentionally contains SEO issues for testing the audit system.</p>
+
+        <!-- Multiple h1 tags would be an issue -->
+        <div class="section">
+            <h1>First H1</h1>
+            <h1>Second H1 - duplicate!</h1>
+            <h1>Third H1 - too many!</h1>
+        </div>
+
+        <!-- Heading hierarchy skipping -->
+        <div class="section">
+            <h2>Heading Level 2</h2>
+            <h5>Skipped to H5 - bad hierarchy!</h5>
+        </div>
+
+        <!-- Images without alt text -->
+        <div class="section">
+            <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='100'%3E%3Crect fill='%23ddd' width='200' height='100'/%3E%3C/svg%3E" width="200" height="100">
+            <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='100'%3E%3Crect fill='%23ccc' width='200' height='100'/%3E%3C/svg%3E" width="200" height="100">
+        </div>
+
+        <!-- Links with generic text -->
+        <div class="section">
+            <a href="/page1">Click here</a>
+            <a href="/page2">Read more</a>
+            <a href="/page3">Learn more</a>
+            <a href="#">here</a>
+        </div>
+
+        <!-- Empty links -->
+        <div class="section">
+            <a href="/empty"></a>
+            <a href="/spaces">   </a>
+        </div>
+
+        <!-- Broken canonical and meta -->
+        <div class="section">
+            <p>Page is missing:</p>
+            <ul>
+                <li>Canonical URL</li>
+                <li>Meta description</li>
+                <li>Open Graph tags</li>
+                <li>Twitter Card tags</li>
+                <li>Proper structured data</li>
+            </ul>
+        </div>
+
+        <!-- Low text-to-HTML ratio simulation -->
+        <div class="section" style="display: none;">
+            <div><div><div><div><div><div><div><div><div><div>
+                Deeply nested with little content
+            </div></div></div></div></div></div></div></div></div></div>
+        </div>
+
+        <!-- Duplicate content patterns -->
+        <div class="section">
+            <p>This is some duplicate content.</p>
+            <p>This is some duplicate content.</p>
+            <p>This is some duplicate content.</p>
+        </div>
+    </div>
+
+    <script>
+        console.log('[Test Page] seo-issues.html loaded');
+        window.testPageType = 'seo-issues';
+    </script>
+</body>
+</html>
