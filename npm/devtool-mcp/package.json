@@ -1,6 +1,6 @@
 {
   "name": "@standardbeagle/devtool-mcp",
-  "version": "0.7.11",
+  "version": "0.7.12",
   "description": "DEPRECATED: This package has been renamed to @standardbeagle/agnt. Please switch to the new package.",
   "main": "index.js",
   "bin": {
@@ -10,7 +10,7 @@
     "postinstall": "node scripts/deprecation-notice.js"
   },
   "dependencies": {
-    "@standardbeagle/agnt": "^0.7.11"
+    "@standardbeagle/agnt": "^0.7.12"
   },
   "keywords": [
     "mcp",
