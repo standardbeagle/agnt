@@ -49,7 +49,6 @@ type ProtectedWriter struct {
 	cursorCol atomic.Int32
 
 	// Redraw state
-	lastRedraw   atomic.Int64 // Unix nano timestamp
 	redrawNeeded atomic.Bool
 	stopRedraw   chan struct{}
 	redrawWg     sync.WaitGroup

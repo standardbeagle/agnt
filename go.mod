@@ -5,6 +5,7 @@ go 1.24.4
 toolchain go1.24.11
 
 require (
+	github.com/standardbeagle/go-mcp-hub v0.0.0
 	github.com/anthropics/anthropic-sdk-go v1.19.0
 	github.com/aymanbagabas/go-pty v0.2.2
 	github.com/creack/pty v1.1.24
@@ -67,3 +68,5 @@ require (
 	google.golang.org/grpc v1.70.0 // indirect
 	google.golang.org/protobuf v1.36.3 // indirect
 )
+
+replace github.com/standardbeagle/go-mcp-hub => ../go-mcp-hub

@@ -515,23 +515,10 @@ func (r *InputRouter) executeMenuItem(item MenuItem) {
 // DebugWin32Input enables logging of win32-input-mode parsing
 var DebugWin32Input = false
 
-// parseWin32InputModeWithRemainder parses Windows Terminal win32-input-mode sequences.
+// parseWin32InputModeInternal parses Windows Terminal win32-input-mode sequences.
 // Format: CSI Vk ; Sc ; Uc ; Kd ; Cs ; Rc _
 // Where Uc is the unicode character value we want.
 // Also filters out Focus In/Out sequences (CSI I and CSI O) that Windows Terminal sends.
-// Returns parsed bytes and any incomplete sequence at the end of the buffer.
-func parseWin32InputModeWithRemainder(data []byte) ([]byte, []byte) {
-	result, remainder := parseWin32InputModeInternal(data)
-	return result, remainder
-}
-
-// parseWin32InputMode is the legacy function for backward compatibility.
-func parseWin32InputMode(data []byte) []byte {
-	result, _ := parseWin32InputModeInternal(data)
-	return result
-}
-
-// parseWin32InputModeInternal is the core parser implementation.
 // Returns parsed bytes and any incomplete sequence at the end that should be
 // prepended to the next buffer read.
 func parseWin32InputModeInternal(data []byte) ([]byte, []byte) {
@@ -710,7 +697,6 @@ func ScanWin32Input(r io.Reader) iter.Seq[byte] {
 					data = make([]byte, len(pending)+n)
 					copy(data, pending)
 					copy(data[len(pending):], buf[:n])
-					pending = nil
 				} else {
 					data = buf[:n]
 				}

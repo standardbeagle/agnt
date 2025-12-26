@@ -637,18 +637,24 @@ func TestParseCommand_UnknownVerb(t *testing.T) {
 	}
 }
 
-func TestIsValidVerb(t *testing.T) {
+func TestVerbRegistry(t *testing.T) {
+	// Test that verbs are properly registered via the DefaultRegistry
 	validVerbs := []string{"RUN", "RUN-JSON", "PROC", "PROXY", "PROXYLOG", "CURRENTPAGE", "DETECT", "PING", "INFO", "SHUTDOWN"}
 	for _, v := range validVerbs {
-		if !isValidVerb(v) {
-			t.Errorf("isValidVerb(%q) = false, want true", v)
+		if !DefaultRegistry.IsValidVerb(v) {
+			t.Errorf("DefaultRegistry.IsValidVerb(%q) = false, want true", v)
 		}
 	}
 
-	invalidVerbs := []string{"INVALID", "FOO", "BAR", "run", "ping", ""}
+	// Registry is case-insensitive
+	if !DefaultRegistry.IsValidVerb("ping") {
+		t.Errorf("DefaultRegistry.IsValidVerb(\"ping\") = false, want true (case-insensitive)")
+	}
+
+	invalidVerbs := []string{"INVALID", "FOO", "BAR"}
 	for _, v := range invalidVerbs {
-		if isValidVerb(v) {
-			t.Errorf("isValidVerb(%q) = true, want false", v)
+		if DefaultRegistry.IsValidVerb(v) {
+			t.Errorf("DefaultRegistry.IsValidVerb(%q) = true, want false", v)
 		}
 	}
 }

@@ -624,7 +624,7 @@ func NewDaemonOutputFetcher(conn *daemon.Conn) *DaemonOutputFetcher {
 func (f *DaemonOutputFetcher) GetProcessOutput(processID string, tailLines int) (string, error) {
 	// Fetch output with tail filter using request builder
 	output, err := f.conn.Request(protocol.VerbProc, protocol.SubVerbOutput, processID).
-		WithArgs(fmt.Sprintf("stream=combined"), fmt.Sprintf("tail=%d", tailLines)).
+		WithArgs("stream=combined", fmt.Sprintf("tail=%d", tailLines)).
 		String()
 	if err != nil {
 		return "", err

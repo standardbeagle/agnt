@@ -434,8 +434,8 @@ func (pm *ProcessManager) StartOrReuse(ctx context.Context, cfg ProcessConfig) (
 		return result, nil
 
 	case <-ctx.Done():
-		// Context cancelled during startup
-		pm.StopProcess(ctx, proc)
+		// Context cancelled during startup - best effort cleanup
+		_ = pm.StopProcess(ctx, proc)
 		return nil, ctx.Err()
 	}
 }
@@ -453,8 +453,8 @@ func (pm *ProcessManager) RunSync(ctx context.Context, cfg ProcessConfig) (int, 
 	case <-proc.done:
 		return proc.ExitCode(), nil
 	case <-ctx.Done():
-		// Context cancelled, stop the process
-		pm.StopProcess(ctx, proc)
+		// Context cancelled, stop the process - best effort cleanup
+		_ = pm.StopProcess(ctx, proc)
 		return -1, ctx.Err()
 	}
 }
