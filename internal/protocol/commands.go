@@ -1,20 +1,7 @@
-// Package protocol defines the text-based IPC protocol for daemon communication.
 package protocol
 
-// Command represents a parsed command from the client.
-type Command struct {
-	Verb        string   // Primary command verb (RUN, PROC, PROXY, etc.)
-	SubVerb     string   // Optional sub-verb (STATUS, OUTPUT, START, etc.)
-	Args        []string // Positional arguments
-	Data        []byte   // Optional binary/JSON data payload
-	SessionCode string   // Session code for scoping (required unless Global flag is set)
-}
-
-// Command verbs
+// Agnt-specific command verbs (beyond those in go-mcp-hub).
 const (
-	VerbRun         = "RUN"
-	VerbRunJSON     = "RUN-JSON"
-	VerbProc        = "PROC"
 	VerbProxy       = "PROXY"
 	VerbProxyLog    = "PROXYLOG"
 	VerbCurrentPage = "CURRENTPAGE"
@@ -22,51 +9,15 @@ const (
 	VerbChaos       = "CHAOS"
 	VerbDetect      = "DETECT"
 	VerbOverlay     = "OVERLAY"
-	VerbSession     = "SESSION"
-	VerbPing        = "PING"
-	VerbInfo        = "INFO"
-	VerbShutdown    = "SHUTDOWN"
 )
 
-// Process sub-verbs
+// Agnt-specific sub-verbs (beyond those in go-mcp-hub).
 const (
-	SubVerbStatus      = "STATUS"
-	SubVerbOutput      = "OUTPUT"
-	SubVerbStop        = "STOP"
-	SubVerbList        = "LIST"
-	SubVerbCleanupPort = "CLEANUP-PORT"
-)
-
-// Proxy sub-verbs
-const (
-	SubVerbStart = "START"
-	SubVerbExec  = "EXEC"
-	SubVerbToast = "TOAST"
-	// SubVerbStop, SubVerbStatus, SubVerbList reused from process
-)
-
-// ProxyLog sub-verbs
-const (
-	SubVerbQuery = "QUERY"
-	SubVerbClear = "CLEAR"
-	SubVerbStats = "STATS"
-)
-
-// CurrentPage sub-verbs
-const (
-	SubVerbGet = "GET"
-	// SubVerbList, SubVerbClear reused
-)
-
-// Overlay sub-verbs
-const (
-	SubVerbSet      = "SET"
-	SubVerbActivity = "ACTIVITY"
-	// SubVerbGet, SubVerbClear reused
-)
-
-// Chaos sub-verbs
-const (
+	SubVerbExec       = "EXEC"
+	SubVerbToast      = "TOAST"
+	SubVerbQuery      = "QUERY"
+	SubVerbStats      = "STATS"
+	SubVerbActivity   = "ACTIVITY"
 	SubVerbEnable     = "ENABLE"
 	SubVerbDisable    = "DISABLE"
 	SubVerbAddRule    = "ADD-RULE"
@@ -74,34 +25,13 @@ const (
 	SubVerbListRules  = "LIST-RULES"
 	SubVerbPreset     = "PRESET"
 	SubVerbReset      = "RESET"
-	// SubVerbStatus, SubVerbStats, SubVerbClear, SubVerbSet reused
-)
-
-// Session sub-verbs
-const (
-	SubVerbRegister   = "REGISTER"
-	SubVerbUnregister = "UNREGISTER"
-	SubVerbHeartbeat  = "HEARTBEAT"
 	SubVerbSend       = "SEND"
 	SubVerbSchedule   = "SCHEDULE"
 	SubVerbCancel     = "CANCEL"
 	SubVerbTasks      = "TASKS"
-	SubVerbFind       = "FIND" // Find session by directory ancestry
+	SubVerbFind       = "FIND"
 	SubVerbAttach     = "ATTACH"
-	// SubVerbList, SubVerbGet, SubVerbStatus reused
 )
-
-// RunConfig represents configuration for a RUN command.
-type RunConfig struct {
-	ID         string   `json:"id"`
-	Path       string   `json:"path"`
-	Mode       string   `json:"mode"` // background, foreground, foreground-raw
-	ScriptName string   `json:"script_name,omitempty"`
-	Raw        bool     `json:"raw,omitempty"`
-	Command    string   `json:"command,omitempty"`
-	Args       []string `json:"args,omitempty"`
-	Env        []string `json:"env,omitempty"` // Environment variables from client (KEY=VALUE format)
-}
 
 // ProxyStartConfig represents configuration for a PROXY START command.
 type ProxyStartConfig struct {
@@ -128,15 +58,6 @@ type TunnelConfig struct {
 	Region string `json:"region,omitempty"`
 }
 
-// OutputFilter represents filters for PROC OUTPUT command.
-type OutputFilter struct {
-	Stream string `json:"stream,omitempty"` // stdout, stderr, combined
-	Tail   int    `json:"tail,omitempty"`
-	Head   int    `json:"head,omitempty"`
-	Grep   string `json:"grep,omitempty"`
-	GrepV  bool   `json:"grep_v,omitempty"`
-}
-
 // LogQueryFilter represents filters for PROXYLOG QUERY command.
 type LogQueryFilter struct {
 	Types       []string `json:"types,omitempty"`
@@ -146,14 +67,6 @@ type LogQueryFilter struct {
 	Since       string   `json:"since,omitempty"`
 	Until       string   `json:"until,omitempty"`
 	Limit       int      `json:"limit,omitempty"`
-}
-
-// DirectoryFilter represents directory scoping for list operations.
-// Priority: Global > SessionCode > Directory
-type DirectoryFilter struct {
-	SessionCode string `json:"session_code,omitempty"` // Session code for scoping (preferred)
-	Directory   string `json:"directory,omitempty"`    // Current working directory (legacy, use session_code instead)
-	Global      bool   `json:"global,omitempty"`       // If true, ignore all filtering
 }
 
 // ToastConfig represents configuration for a PROXY TOAST command.
@@ -222,6 +135,7 @@ type ChaosConfigPayload struct {
 }
 
 // SessionRegisterConfig represents configuration for a SESSION REGISTER command.
+// This extends the base hub SessionRegisterConfig with agnt-specific fields.
 type SessionRegisterConfig struct {
 	OverlayPath string   `json:"overlay_path"`   // Unix socket path for overlay
 	ProjectPath string   `json:"project_path"`   // Directory where session was started

@@ -128,7 +128,7 @@ func (c *Connection) handleCommand(ctx context.Context, cmd *protocol.Command) e
 			Code:         protocol.ErrInvalidCommand,
 			Message:      "unknown command",
 			Command:      cmd.Verb,
-			ValidActions: protocol.ValidVerbs,
+			ValidActions: protocol.DefaultRegistry.ValidVerbs(),
 		})
 	}
 }
