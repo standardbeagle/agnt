@@ -49,7 +49,6 @@ type PageTracker struct {
 	sessionSeq           atomic.Int64
 	maxSessions          int
 	sessionTimeout       time.Duration
-	mu                   sync.RWMutex
 }
 
 // NewPageTracker creates a new page tracker.

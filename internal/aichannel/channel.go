@@ -2,17 +2,12 @@
 package aichannel
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"os"
 	"os/exec"
 	"strings"
 	"time"
-
-	"github.com/creack/pty"
 )
 
 // Common errors
@@ -390,129 +385,6 @@ func (c *Channel) SendAndParse(ctx context.Context, prompt string, inputContext 
 	}
 
 	return resp, nil
-}
-
-// sendWithPipe runs the command with standard pipes (no PTY).
-func (c *Channel) sendWithPipe(ctx context.Context, prompt string, inputContext string) (string, error) {
-	// Build command arguments
-	args := c.buildArgs(prompt)
-
-	// Create context with timeout
-	execCtx, cancel := context.WithTimeout(ctx, c.config.Timeout)
-	defer cancel()
-
-	// Create command
-	cmd := exec.CommandContext(execCtx, c.config.Command, args...)
-
-	// Set environment - inherit current environment and add custom vars
-	if len(c.config.Env) > 0 {
-		cmd.Env = os.Environ()
-		for k, v := range c.config.Env {
-			cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
-		}
-	}
-
-	// Setup stdin if context is provided
-	var stdin bytes.Buffer
-	if inputContext != "" && c.config.UseStdin {
-		stdin.WriteString(inputContext)
-		cmd.Stdin = &stdin
-	}
-
-	// Capture output
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	// Run command
-	err := cmd.Run()
-
-	// Check for context timeout
-	if execCtx.Err() == context.DeadlineExceeded {
-		return "", ErrTimeout
-	}
-
-	if err != nil {
-		// Include stderr in error message if available
-		errMsg := stderr.String()
-		if errMsg != "" {
-			return "", fmt.Errorf("command failed: %w: %s", err, strings.TrimSpace(errMsg))
-		}
-		return "", fmt.Errorf("command failed: %w", err)
-	}
-
-	return strings.TrimSpace(stdout.String()), nil
-}
-
-// sendWithPTY runs the command in a pseudo-terminal.
-// This is required for CLI tools that need a TTY (like Claude Code).
-func (c *Channel) sendWithPTY(ctx context.Context, prompt string, inputContext string) (string, error) {
-	// Build command arguments
-	args := c.buildArgs(prompt)
-
-	// Create context with timeout
-	execCtx, cancel := context.WithTimeout(ctx, c.config.Timeout)
-	defer cancel()
-
-	// Create command
-	cmd := exec.CommandContext(execCtx, c.config.Command, args...)
-
-	// Set environment - inherit current environment and add custom vars
-	cmd.Env = os.Environ()
-	for k, v := range c.config.Env {
-		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
-	}
-
-	// Start the command with a PTY
-	ptmx, err := pty.Start(cmd)
-	if err != nil {
-		return "", fmt.Errorf("failed to start PTY: %w", err)
-	}
-	defer ptmx.Close()
-
-	// Write input context to PTY if configured
-	if inputContext != "" && c.config.UseStdin {
-		if _, err := ptmx.WriteString(inputContext); err != nil {
-			return "", fmt.Errorf("failed to write to PTY: %w", err)
-		}
-	}
-
-	// Read all output from PTY
-	var output bytes.Buffer
-	done := make(chan error, 1)
-
-	go func() {
-		_, err := io.Copy(&output, ptmx)
-		done <- err
-	}()
-
-	// Wait for command to complete or context to be cancelled
-	waitErr := cmd.Wait()
-
-	// Wait for output reading to complete (with timeout for cleanup)
-	select {
-	case <-done:
-		// Output reading completed
-	case <-time.After(100 * time.Millisecond):
-		// Give up waiting for output
-	}
-
-	// Check for context timeout
-	if execCtx.Err() == context.DeadlineExceeded {
-		return "", ErrTimeout
-	}
-
-	if waitErr != nil {
-		// Check if it's just a signal error from context cancellation
-		if execCtx.Err() != nil {
-			return "", ErrTimeout
-		}
-		return "", fmt.Errorf("command failed: %w", waitErr)
-	}
-
-	// Clean ANSI escape sequences from output
-	result := stripANSI(output.String())
-	return strings.TrimSpace(result), nil
 }
 
 // stripANSI removes ANSI escape sequences from a string.
