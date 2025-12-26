@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log"
 	"net"
@@ -238,22 +237,6 @@ func (c *Connection) writeEnd() error {
 		c.conn.SetWriteDeadline(time.Now().Add(c.daemon.config.WriteTimeout))
 	}
 	return c.writer.WriteEnd()
-}
-
-func (c *Connection) writeRaw(data []byte) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.daemon.config.WriteTimeout > 0 {
-		c.conn.SetWriteDeadline(time.Now().Add(c.daemon.config.WriteTimeout))
-	}
-
-	bw, ok := c.conn.(io.Writer)
-	if !ok {
-		return fmt.Errorf("connection does not support Write")
-	}
-	_, err := bw.Write(data)
-	return err
 }
 
 // Helper functions
