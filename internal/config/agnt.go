@@ -4,6 +4,7 @@ package config
 import (
 	"bufio"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -112,9 +113,11 @@ func DefaultAgntConfig() *AgntConfig {
 func LoadAgntConfig(dir string) (*AgntConfig, error) {
 	configPath := FindAgntConfigFile(dir)
 	if configPath == "" {
+		log.Printf("[DEBUG] LoadAgntConfig: no config file found for dir %s", dir)
 		return DefaultAgntConfig(), nil
 	}
 
+	log.Printf("[DEBUG] LoadAgntConfig: found config file at %s", configPath)
 	return LoadAgntConfigFile(configPath)
 }
 
@@ -162,12 +165,20 @@ func ParseAgntConfig(data string) (*AgntConfig, error) {
 	if err := kdl.Unmarshal([]byte(data), cfg); err == nil {
 		// Check if we got anything useful
 		if len(cfg.Scripts) > 0 || len(cfg.Proxies) > 0 {
+			log.Printf("[DEBUG] ParseAgntConfig: kdl-go parsed %d scripts, %d proxies", len(cfg.Scripts), len(cfg.Proxies))
 			return cfg, nil
 		}
+		log.Printf("[DEBUG] ParseAgntConfig: kdl-go succeeded but got empty config, falling back to simple parser")
+	} else {
+		log.Printf("[DEBUG] ParseAgntConfig: kdl-go failed: %v, falling back to simple parser", err)
 	}
 
 	// Fallback to simpler parser for alternate format
-	return parseAgntConfigSimple(data)
+	result, err := parseAgntConfigSimple(data)
+	if result != nil {
+		log.Printf("[DEBUG] ParseAgntConfig: simple parser got %d scripts, %d proxies", len(result.Scripts), len(result.Proxies))
+	}
+	return result, err
 }
 
 // parseAgntConfigSimple parses a simpler KDL format:

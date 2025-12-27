@@ -201,6 +201,9 @@ func (d *Daemon) Start() error {
 	}
 	d.shutdownMu.Unlock()
 
+	// Setup file-based logging for debugging (captures output even when daemon runs detached)
+	setupDebugLogging()
+
 	// Create socket
 	listener, err := d.sockMgr.Listen()
 	if err != nil {
@@ -716,34 +719,49 @@ func (d *Daemon) RunAutostart(ctx context.Context, projectPath string) *Autostar
 	result := &AutostartResult{}
 
 	if projectPath == "" {
+		log.Printf("[DEBUG] RunAutostart: empty projectPath, skipping")
 		return result
 	}
+
+	log.Printf("[DEBUG] RunAutostart: loading config from %s", projectPath)
 
 	// Load .agnt.kdl config
 	agntConfig, err := config.LoadAgntConfig(projectPath)
 	if err != nil {
+		log.Printf("[DEBUG] RunAutostart: config load error: %v", err)
 		// No config or error loading - not an error, just nothing to autostart
 		return result
 	}
 
 	if agntConfig == nil {
+		log.Printf("[DEBUG] RunAutostart: config is nil")
 		return result
 	}
 
 	// Start scripts
-	for name, script := range agntConfig.GetAutostartScripts() {
+	autostartScripts := agntConfig.GetAutostartScripts()
+	log.Printf("[DEBUG] RunAutostart: found %d autostart scripts: %v", len(autostartScripts), mapKeys(autostartScripts))
+	for name, script := range autostartScripts {
+		log.Printf("[DEBUG] RunAutostart: starting script %q", name)
 		if err := d.autostartScript(ctx, name, script, projectPath); err != nil {
+			log.Printf("[DEBUG] RunAutostart: script %q error: %v", name, err)
 			result.Errors = append(result.Errors, fmt.Sprintf("script %s: %v", name, err))
 		} else {
+			log.Printf("[DEBUG] RunAutostart: script %q started successfully", name)
 			result.Scripts = append(result.Scripts, name)
 		}
 	}
 
 	// Start proxies
-	for name, proxyConfig := range agntConfig.GetAutostartProxies() {
+	autostartProxies := agntConfig.GetAutostartProxies()
+	log.Printf("[DEBUG] RunAutostart: found %d autostart proxies: %v", len(autostartProxies), mapKeysProxy(autostartProxies))
+	for name, proxyConfig := range autostartProxies {
+		log.Printf("[DEBUG] RunAutostart: starting proxy %q (target: %s)", name, proxyConfig.Target)
 		if err := d.autostartProxy(ctx, name, proxyConfig, projectPath); err != nil {
+			log.Printf("[DEBUG] RunAutostart: proxy %q error: %v", name, err)
 			result.Errors = append(result.Errors, fmt.Sprintf("proxy %s: %v", name, err))
 		} else {
+			log.Printf("[DEBUG] RunAutostart: proxy %q started successfully", name)
 			result.Proxies = append(result.Proxies, name)
 		}
 	}
@@ -751,10 +769,31 @@ func (d *Daemon) RunAutostart(ctx context.Context, projectPath string) *Autostar
 	return result
 }
 
+// mapKeys extracts keys from a script config map for logging.
+func mapKeys(m map[string]*config.ScriptConfig) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+// mapKeysProxy extracts keys from a proxy config map for logging.
+func mapKeysProxy(m map[string]*config.ProxyConfig) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
+}
+
 // autostartScript starts a single script from config.
 func (d *Daemon) autostartScript(ctx context.Context, name string, script *config.ScriptConfig, projectPath string) error {
+	log.Printf("[DEBUG] autostartScript: name=%q projectPath=%q", name, projectPath)
+
 	// Check if already running
-	if _, err := d.pm.Get(name); err == nil {
+	if existing, err := d.pm.Get(name); err == nil {
+		log.Printf("[DEBUG] autostartScript: script %q already running (state=%d)", name, existing.State())
 		return nil // Already running
 	}
 
@@ -765,12 +804,17 @@ func (d *Daemon) autostartScript(ctx context.Context, name string, script *confi
 		// Explicit command specified
 		command = script.Command
 		args = script.Args
+		log.Printf("[DEBUG] autostartScript: using explicit command %q %v", command, args)
 	} else {
 		// No command - run as package.json script via detected package manager
+		log.Printf("[DEBUG] autostartScript: detecting project type for path %q", projectPath)
 		proj, err := project.Detect(projectPath)
 		if err != nil {
+			log.Printf("[DEBUG] autostartScript: project detection failed: %v", err)
 			return fmt.Errorf("project detection failed: %v", err)
 		}
+
+		log.Printf("[DEBUG] autostartScript: detected project type=%q package_manager=%q", proj.Type, proj.PackageManager)
 
 		switch proj.Type {
 		case project.ProjectNode:
@@ -794,9 +838,11 @@ func (d *Daemon) autostartScript(ctx context.Context, name string, script *confi
 		default:
 			return fmt.Errorf("cannot run script %q: unknown project type and no command specified", name)
 		}
+		log.Printf("[DEBUG] autostartScript: will run %q %v", command, args)
 	}
 
 	// Create and start process using StartOrReuse for idempotent behavior
+	log.Printf("[DEBUG] autostartScript: starting process id=%q path=%q cmd=%q args=%v", name, projectPath, command, args)
 	result, err := d.pm.StartOrReuse(ctx, process.ProcessConfig{
 		ID:          name,
 		ProjectPath: projectPath,
@@ -805,11 +851,11 @@ func (d *Daemon) autostartScript(ctx context.Context, name string, script *confi
 		Env:         os.Environ(),
 	})
 	if err != nil {
+		log.Printf("[DEBUG] autostartScript: StartOrReuse failed: %v", err)
 		return err
 	}
 
-	_ = result.Reused // Reuse info is reported in the summary output
-
+	log.Printf("[DEBUG] autostartScript: started successfully (reused=%v)", result.Reused)
 	return nil
 }
 
@@ -917,4 +963,23 @@ func (d *Daemon) detectPortForScript(ctx context.Context, scriptName string, pro
 			}
 		}
 	}
+}
+
+// DebugLogPath is the path to the daemon debug log file.
+const DebugLogPath = "/tmp/agnt-daemon.log"
+
+// setupDebugLogging configures file-based logging for the daemon.
+// This allows debugging even when the daemon runs detached (auto-started).
+func setupDebugLogging() {
+	// Open log file (append mode, create if not exists)
+	f, err := os.OpenFile(DebugLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		// Can't open log file, continue with default stderr logging
+		return
+	}
+
+	// Configure log to write to file
+	log.SetOutput(f)
+	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
+	log.Printf("=== Daemon starting (pid=%d) ===", os.Getpid())
 }

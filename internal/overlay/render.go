@@ -197,12 +197,32 @@ func (r *Renderer) DrawIndicator(status Status) {
 		parts = append(parts, fmt.Sprintf("%s%s%s daemon", FgBrightBlack, IconDisconnected, Reset))
 	}
 
-	// Running processes count
+	// Running processes count and collect process URLs (deduplicated by port)
 	runningCount := 0
+	urlsByPort := make(map[string]string) // port -> best URL (prefer localhost)
 	for _, p := range status.Processes {
 		if p.State == "running" {
 			runningCount++
+			// Collect URLs, keeping only one per port (prefer localhost)
+			for _, u := range p.URLs {
+				port := extractPort(u)
+				if port == "" {
+					continue
+				}
+				existing, ok := urlsByPort[port]
+				if !ok {
+					urlsByPort[port] = u
+				} else if isLocalhostURL(u) && !isLocalhostURL(existing) {
+					// Prefer localhost over other addresses
+					urlsByPort[port] = u
+				}
+			}
 		}
+	}
+	// Convert map to slice
+	var processURLs []string
+	for _, u := range urlsByPort {
+		processURLs = append(processURLs, u)
 	}
 	if runningCount > 0 {
 		parts = append(parts, fmt.Sprintf("%s%s %d proc%s", FgCyan, IconProcess, runningCount, Reset))
@@ -224,6 +244,10 @@ func (r *Renderer) DrawIndicator(status Status) {
 			tunnelURL = p.TunnelURL
 		}
 	}
+
+	// Build URL display: proxy URL (or tunnel) + process URLs
+	var urlParts []string
+
 	if proxyCount > 0 {
 		// Prefer tunnel URL over local URL in status bar (more useful for sharing)
 		displayURL := tunnelURL
@@ -236,15 +260,31 @@ func (r *Renderer) DrawIndicator(status Status) {
 		}
 
 		if displayURL != "" {
-			// Show clickable URL (terminals support OSC 8 hyperlinks or just show URL for ctrl+click)
-			if errorProxyCount > 0 {
-				parts = append(parts, fmt.Sprintf("%s%s%s %s%s %s(%d err)%s",
-					FgMagenta, IconProxy, Reset, urlColor+Underline, displayURL, FgRed, errorProxyCount, Reset))
-			} else {
-				parts = append(parts, fmt.Sprintf("%s%s%s %s%s%s",
-					FgMagenta, IconProxy, Reset, urlColor+Underline, displayURL, Reset))
-			}
-		} else if errorProxyCount > 0 {
+			urlParts = append(urlParts, fmt.Sprintf("%s%s%s", urlColor+Underline, displayURL, Reset))
+		}
+	}
+
+	// Add process URLs (normalized to use localhost, underlined for clickability)
+	for _, u := range processURLs {
+		normalized := normalizeProcessURL(u)
+		if normalized != "" {
+			urlParts = append(urlParts, fmt.Sprintf("%s%s%s", FgCyan+Underline, normalized, Reset))
+		}
+	}
+
+	// Display URLs section
+	if len(urlParts) > 0 {
+		urlDisplay := strings.Join(urlParts, fmt.Sprintf(" %s·%s ", FgBrightBlack, Reset))
+		if errorProxyCount > 0 {
+			parts = append(parts, fmt.Sprintf("%s%s%s %s %s(%d err)%s",
+				FgMagenta, IconProxy, Reset, urlDisplay, FgRed, errorProxyCount, Reset))
+		} else {
+			parts = append(parts, fmt.Sprintf("%s%s%s %s",
+				FgMagenta, IconProxy, Reset, urlDisplay))
+		}
+	} else if proxyCount > 0 {
+		// No URLs to show, just show count
+		if errorProxyCount > 0 {
 			parts = append(parts, fmt.Sprintf("%s%s %d proxy%s %s(%d err)%s",
 				FgMagenta, IconProxy, proxyCount, Reset, FgRed, errorProxyCount, Reset))
 		} else {
@@ -292,25 +332,81 @@ func (r *Renderer) DrawIndicator(status Status) {
 	r.write(CursorRestore + CursorShow)
 }
 
-// normalizeListenAddr converts wildcard addresses to localhost for clickable URLs.
+// normalizeListenAddr converts wildcard and loopback addresses to localhost for clickable URLs.
 // This is the most reliable option since LAN IPs can be unreliable in virtual environments
 // (WSL2, Docker, etc.). Users who need LAN access can check the detailed proxy output.
 func normalizeListenAddr(addr string) string {
 	var port string
 
-	// Extract port from wildcard addresses
+	// Extract port from wildcard/loopback addresses (port includes the colon)
 	if strings.HasPrefix(addr, "[::]:") {
 		port = addr[4:] // Get :port part
 	} else if strings.HasPrefix(addr, "0.0.0.0:") {
 		port = addr[7:] // Get :port part
-	} else if addr == "[::]" || addr == "0.0.0.0" {
+	} else if strings.HasPrefix(addr, "127.0.0.1:") {
+		port = addr[9:] // Get :port part
+	} else if addr == "[::]" || addr == "0.0.0.0" || addr == "127.0.0.1" {
 		port = ""
 	} else {
-		// Not a wildcard address, return as-is
+		// Not a wildcard/loopback address, return as-is
 		return addr
 	}
 
 	return "localhost" + port
+}
+
+// normalizeProcessURL normalizes a URL from process output.
+// It converts IP addresses to localhost and returns a clickable URL.
+// E.g., "http://127.0.0.1:3847" → "http://localhost:3847"
+func normalizeProcessURL(urlStr string) string {
+	// Extract protocol and address
+	protocol := "http://"
+	addr := urlStr
+
+	if strings.HasPrefix(addr, "http://") {
+		addr = addr[7:]
+	} else if strings.HasPrefix(addr, "https://") {
+		protocol = "https://"
+		addr = addr[8:]
+	}
+
+	// Normalize localhost variants
+	addr = normalizeListenAddr(addr)
+
+	return protocol + addr
+}
+
+// extractPort extracts the port from a URL string.
+// Returns empty string if no port found.
+func extractPort(urlStr string) string {
+	// Strip protocol
+	addr := urlStr
+	if strings.HasPrefix(addr, "http://") {
+		addr = addr[7:]
+	} else if strings.HasPrefix(addr, "https://") {
+		addr = addr[8:]
+	}
+
+	// Find the last colon (port separator)
+	lastColon := strings.LastIndex(addr, ":")
+	if lastColon == -1 {
+		return ""
+	}
+
+	// Extract port (everything after the colon, before any path)
+	port := addr[lastColon+1:]
+	if slashIdx := strings.Index(port, "/"); slashIdx != -1 {
+		port = port[:slashIdx]
+	}
+
+	return port
+}
+
+// isLocalhostURL checks if a URL uses localhost or loopback address.
+func isLocalhostURL(urlStr string) bool {
+	return strings.Contains(urlStr, "localhost") ||
+		strings.Contains(urlStr, "127.0.0.1") ||
+		strings.Contains(urlStr, "[::1]")
 }
 
 // estimateVisibleLength estimates the visible length of a string with ANSI codes.
