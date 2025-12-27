@@ -5,7 +5,6 @@ go 1.24.4
 toolchain go1.24.11
 
 require (
-	github.com/standardbeagle/go-cli-server v0.0.0
 	github.com/anthropics/anthropic-sdk-go v1.19.0
 	github.com/aymanbagabas/go-pty v0.2.2
 	github.com/creack/pty v1.1.24
@@ -14,6 +13,7 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.1.0
 	github.com/sblinch/kdl-go v0.0.0-20250930225324-bf4099d4614a
 	github.com/spf13/cobra v1.10.2
+	github.com/standardbeagle/go-cli-server v0.0.0
 	github.com/tmc/langchaingo v0.1.14
 	golang.org/x/sys v0.39.0
 	golang.org/x/term v0.38.0
