@@ -1,17 +1,17 @@
 // Package protocol provides the IPC protocol types for agnt daemon communication.
 //
-// This package extends go-mcp-hub/protocol with agnt-specific verbs and types.
+// This package extends go-cli-server/protocol with agnt-specific verbs and types.
 // The core protocol infrastructure (Parser, Writer, Command, Response) comes
-// from go-mcp-hub, while this package adds agnt-specific extensions.
+// from go-cli-server, while this package adds agnt-specific extensions.
 package protocol
 
 import (
-	hubprotocol "github.com/standardbeagle/go-mcp-hub/protocol"
+	hubprotocol "github.com/standardbeagle/go-cli-server/protocol"
 )
 
-// Re-export core types from go-mcp-hub/protocol for convenience.
+// Re-export core types from go-cli-server/protocol for convenience.
 // This allows agnt code to import just "internal/protocol" without
-// needing to know about go-mcp-hub.
+// needing to know about go-cli-server.
 type (
 	// Command represents a parsed command from the client.
 	Command = hubprotocol.Command

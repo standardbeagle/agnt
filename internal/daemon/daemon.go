@@ -12,11 +12,11 @@ import (
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/config"
-	"github.com/standardbeagle/agnt/internal/process"
 	"github.com/standardbeagle/agnt/internal/project"
 	"github.com/standardbeagle/agnt/internal/proxy"
 	"github.com/standardbeagle/agnt/internal/tunnel"
 	"github.com/standardbeagle/agnt/internal/updater"
+	"github.com/standardbeagle/go-cli-server/process"
 )
 
 // Version is the daemon version.
@@ -99,7 +99,7 @@ type Daemon struct {
 
 	// State persistence
 	stateMgr   *StateManager
-	pidTracker *PIDTracker
+	pidTracker *process.FilePIDTracker
 
 	// Update checker
 	updateChecker *updater.UpdateChecker
@@ -139,7 +139,9 @@ func New(config DaemonConfig) *Daemon {
 	scheduler := NewScheduler(DefaultSchedulerConfig(), sessionRegistry, schedulerStateMgr)
 
 	// Create PID tracker for orphan cleanup
-	pidTracker := NewPIDTracker("")
+	pidTracker := process.NewFilePIDTracker(process.FilePIDTrackerConfig{
+		AppName: "devtool-mcp",
+	})
 
 	// Configure process manager with PID tracking
 	procConfig := config.ProcessConfig
@@ -612,8 +614,11 @@ func (d *Daemon) CleanupSessionResources(sessionCode string) {
 func (d *Daemon) acceptLoop() {
 	defer d.wg.Done()
 
+	// Keep local reference to avoid race with Stop() setting d.listener = nil
+	listener := d.listener
+
 	for {
-		conn, err := d.listener.Accept()
+		conn, err := listener.Accept()
 		if err != nil {
 			select {
 			case <-d.ctx.Done():

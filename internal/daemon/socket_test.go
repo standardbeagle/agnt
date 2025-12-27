@@ -302,10 +302,11 @@ func TestNewSocketManager_Defaults(t *testing.T) {
 	// Test with empty config
 	sm := NewSocketManager(SocketConfig{})
 
-	if sm.config.Path == "" {
+	// Default path should be set (we can't access config.Path directly, but Path() should work)
+	if sm.Path() == "" {
 		t.Error("Default path not set")
 	}
-	if sm.config.Mode != 0600 {
-		t.Errorf("Default mode = %o, want %o", sm.config.Mode, 0600)
+	if sm.Path() != DefaultSocketPath() {
+		t.Errorf("Path() = %s, want %s", sm.Path(), DefaultSocketPath())
 	}
 }

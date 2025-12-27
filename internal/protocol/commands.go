@@ -1,6 +1,6 @@
 package protocol
 
-// Agnt-specific command verbs (beyond those in go-mcp-hub).
+// Agnt-specific command verbs (beyond those in go-cli-server).
 const (
 	VerbProxy       = "PROXY"
 	VerbProxyLog    = "PROXYLOG"
@@ -11,7 +11,7 @@ const (
 	VerbOverlay     = "OVERLAY"
 )
 
-// Agnt-specific sub-verbs (beyond those in go-mcp-hub).
+// Agnt-specific sub-verbs (beyond those in go-cli-server).
 const (
 	SubVerbExec       = "EXEC"
 	SubVerbToast      = "TOAST"

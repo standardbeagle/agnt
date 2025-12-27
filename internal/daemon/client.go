@@ -2,142 +2,116 @@ package daemon
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
-	"net"
-	"sync"
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/protocol"
+	"github.com/standardbeagle/go-cli-server/client"
 )
 
+// Re-export error types from go-cli-server for backward compatibility.
 var (
-	// ErrNotConnected is returned when trying to use a closed client.
-	ErrNotConnected = errors.New("not connected to daemon")
-	// ErrServerError is returned when the daemon returns an error response.
-	ErrServerError = errors.New("daemon error")
+	ErrNotConnected = client.ErrNotConnected
+	ErrServerError  = client.ErrServerError
+	// Note: ErrSocketNotFound is already exported from socket_compat.go via socket package
 )
 
 // Client is a client for communicating with the daemon over the socket.
+// This wraps go-cli-server/client.Conn with agnt-specific methods.
 type Client struct {
-	conn   net.Conn
-	parser *protocol.Parser
-	writer *protocol.Writer
+	conn *client.Conn
+}
 
-	mu     sync.Mutex // Protects connection state
-	closed bool
-
-	// Options
+// clientConfig holds options for creating a client.
+type clientConfig struct {
 	socketPath string
 	timeout    time.Duration
 }
 
 // ClientOption configures a Client.
-type ClientOption func(*Client)
+type ClientOption func(*clientConfig)
 
 // WithSocketPath sets the socket path for the client.
 func WithSocketPath(path string) ClientOption {
-	return func(c *Client) {
+	return func(c *clientConfig) {
 		c.socketPath = path
 	}
 }
 
 // WithTimeout sets the default timeout for operations.
 func WithTimeout(d time.Duration) ClientOption {
-	return func(c *Client) {
+	return func(c *clientConfig) {
 		c.timeout = d
 	}
 }
 
 // NewClient creates a new daemon client.
 func NewClient(opts ...ClientOption) *Client {
-	c := &Client{
+	cfg := &clientConfig{
 		socketPath: DefaultSocketPath(),
 		timeout:    30 * time.Second,
 	}
 
 	for _, opt := range opts {
-		opt(c)
+		opt(cfg)
 	}
 
-	return c
+	conn := client.NewConn(
+		client.WithSocketPath(cfg.socketPath),
+		client.WithTimeout(cfg.timeout),
+	)
+
+	return &Client{conn: conn}
+}
+
+// NewClientWithPath creates a new daemon client with a specific socket path.
+func NewClientWithPath(socketPath string) *Client {
+	if socketPath == "" {
+		socketPath = DefaultSocketPath()
+	}
+	return &Client{
+		conn: client.NewConn(
+			client.WithSocketPath(socketPath),
+			client.WithTimeout(30*time.Second),
+		),
+	}
 }
 
 // Connect connects to the daemon.
 func (c *Client) Connect() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.conn != nil && !c.closed {
-		return nil // Already connected
-	}
-
-	conn, err := Connect(c.socketPath)
-	if err != nil {
-		return err
-	}
-
-	c.conn = conn
-	c.parser = protocol.NewParser(conn)
-	c.writer = protocol.NewWriter(conn)
-	c.closed = false
-
-	return nil
+	return c.conn.EnsureConnected()
 }
 
 // Close closes the connection to the daemon.
 func (c *Client) Close() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.closed || c.conn == nil {
-		return nil
-	}
-
-	c.closed = true
 	return c.conn.Close()
 }
 
 // IsConnected returns whether the client is connected.
 func (c *Client) IsConnected() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.conn != nil && !c.closed
+	return c.conn.IsConnected()
+}
+
+// SocketPath returns the socket path.
+func (c *Client) SocketPath() string {
+	return c.conn.SocketPath()
 }
 
 // Ping sends a ping to the daemon and waits for a pong response.
 func (c *Client) Ping() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.closed || c.conn == nil {
-		return ErrNotConnected
-	}
-
-	// Send PING
-	if err := c.writer.WriteCommand(protocol.VerbPing, nil, nil); err != nil {
-		return fmt.Errorf("failed to send ping: %w", err)
-	}
-
-	// Read response
-	resp, err := c.parser.ParseResponse()
-	if err != nil {
-		return fmt.Errorf("failed to read pong: %w", err)
-	}
-
-	if resp.Type != protocol.ResponsePong {
-		return fmt.Errorf("expected PONG, got %s", resp.Type)
-	}
-
-	return nil
+	return c.conn.Ping()
 }
 
 // Info retrieves daemon information.
 func (c *Client) Info() (*DaemonInfo, error) {
-	data, err := c.sendCommand(protocol.VerbInfo, nil, nil, nil)
+	result, err := c.conn.Request(protocol.VerbInfo).JSON()
 	if err != nil {
 		return nil, err
+	}
+
+	data, err := json.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal result: %w", err)
 	}
 
 	var info DaemonInfo
@@ -150,85 +124,26 @@ func (c *Client) Info() (*DaemonInfo, error) {
 
 // Shutdown requests the daemon to shut down.
 func (c *Client) Shutdown() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.closed || c.conn == nil {
-		return ErrNotConnected
-	}
-
-	// Send SHUTDOWN
-	if err := c.writer.WriteCommand(protocol.VerbShutdown, nil, nil); err != nil {
-		return fmt.Errorf("failed to send shutdown: %w", err)
-	}
-
-	// Read response
-	resp, err := c.parser.ParseResponse()
-	if err != nil {
-		return fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.Type == protocol.ResponseErr {
-		return fmt.Errorf("%w: %s", ErrServerError, resp.Message)
-	}
-
-	return nil
+	return c.conn.Request(protocol.VerbShutdown).OK()
 }
 
 // Detect detects the project type at the given path.
 func (c *Client) Detect(path string) (map[string]interface{}, error) {
-	var args []string
+	req := c.conn.Request(protocol.VerbDetect)
 	if path != "" && path != "." {
-		args = []string{path}
+		req = c.conn.Request(protocol.VerbDetect, path)
 	}
-
-	data, err := c.sendCommand(protocol.VerbDetect, args, nil, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
-	}
-
-	return result, nil
+	return req.JSON()
 }
 
 // Run starts a process on the daemon.
 func (c *Client) Run(config protocol.RunConfig) (map[string]interface{}, error) {
-	// Use JSON mode for complex config
-	data, err := json.Marshal(config)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal config: %w", err)
-	}
-
-	result, err := c.sendCommand(protocol.VerbRunJSON, nil, nil, data)
-	if err != nil {
-		return nil, err
-	}
-
-	var resp map[string]interface{}
-	if err := json.Unmarshal(result, &resp); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
-	}
-
-	return resp, nil
+	return c.conn.Request(protocol.VerbRunJSON).WithJSON(config).JSON()
 }
 
 // ProcStatus gets the status of a process.
 func (c *Client) ProcStatus(processID string) (map[string]interface{}, error) {
-	data, err := c.sendCommand(protocol.VerbProc, []string{protocol.SubVerbStatus, processID}, nil, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
-	}
-
-	return result, nil
+	return c.conn.Request(protocol.VerbProc, protocol.SubVerbStatus, processID).JSON()
 }
 
 // ProcOutput gets the output of a process.
@@ -252,13 +167,7 @@ func (c *Client) ProcOutput(processID string, filter protocol.OutputFilter) (str
 		args = append(args, "grep_v")
 	}
 
-	// Output uses chunked responses
-	output, err := c.sendCommandChunked(protocol.VerbProc, args, nil, nil)
-	if err != nil {
-		return "", err
-	}
-
-	return string(output), nil
+	return c.conn.Request(protocol.VerbProc, args...).String()
 }
 
 // ProcStop stops a process.
@@ -267,59 +176,21 @@ func (c *Client) ProcStop(processID string, force bool) (map[string]interface{},
 	if force {
 		args = append(args, "force")
 	}
-
-	data, err := c.sendCommand(protocol.VerbProc, args, nil, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
-	}
-
-	return result, nil
+	return c.conn.Request(protocol.VerbProc, args...).JSON()
 }
 
 // ProcList lists all processes.
 func (c *Client) ProcList(dirFilter protocol.DirectoryFilter) (map[string]interface{}, error) {
-	var data []byte
-	var err error
-
-	// If we have a directory filter, encode it as JSON
+	req := c.conn.Request(protocol.VerbProc, protocol.SubVerbList)
 	if dirFilter.Directory != "" || dirFilter.Global {
-		data, err = json.Marshal(dirFilter)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal directory filter: %w", err)
-		}
+		req = req.WithJSON(dirFilter)
 	}
-
-	resultData, err := c.sendCommand(protocol.VerbProc, []string{protocol.SubVerbList}, nil, data)
-	if err != nil {
-		return nil, err
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(resultData, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
-	}
-
-	return result, nil
+	return req.JSON()
 }
 
 // ProcCleanupPort kills processes on a specific port.
 func (c *Client) ProcCleanupPort(port int) (map[string]interface{}, error) {
-	data, err := c.sendCommand(protocol.VerbProc, []string{protocol.SubVerbCleanupPort, fmt.Sprintf("%d", port)}, nil, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
-	}
-
-	return result, nil
+	return c.conn.Request(protocol.VerbProc, protocol.SubVerbCleanupPort, fmt.Sprintf("%d", port)).JSON()
 }
 
 // ProxyStartConfig holds configuration for starting a proxy.
@@ -342,639 +213,167 @@ func (c *Client) ProxyStartWithConfig(id, targetURL string, port, maxLogSize int
 	if maxLogSize > 0 {
 		args = append(args, fmt.Sprintf("%d", maxLogSize))
 	}
-
-	// Encode config in JSON data
-	data, err := json.Marshal(config)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal config: %w", err)
-	}
-
-	resultData, err := c.sendCommand(protocol.VerbProxy, args, nil, data)
-	if err != nil {
-		return nil, err
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(resultData, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
-	}
-
-	return result, nil
+	return c.conn.Request(protocol.VerbProxy, args...).WithJSON(config).JSON()
 }
 
 // ProxyStop stops a reverse proxy.
 func (c *Client) ProxyStop(id string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.closed || c.conn == nil {
-		return ErrNotConnected
-	}
-
-	// Send command
-	if err := c.writer.WriteCommand(protocol.VerbProxy, []string{protocol.SubVerbStop, id}, nil); err != nil {
-		return fmt.Errorf("failed to send command: %w", err)
-	}
-
-	// Read response
-	resp, err := c.parser.ParseResponse()
-	if err != nil {
-		return fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.Type == protocol.ResponseErr {
-		return fmt.Errorf("%w: [%s] %s", ErrServerError, resp.Code, resp.Message)
-	}
-
-	return nil
+	return c.conn.Request(protocol.VerbProxy, protocol.SubVerbStop, id).OK()
 }
 
 // ProxyStatus gets the status of a proxy.
 func (c *Client) ProxyStatus(id string) (map[string]interface{}, error) {
-	data, err := c.sendCommand(protocol.VerbProxy, []string{protocol.SubVerbStatus, id}, nil, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
-	}
-
-	return result, nil
+	return c.conn.Request(protocol.VerbProxy, protocol.SubVerbStatus, id).JSON()
 }
 
 // ProxyList lists all proxies.
 func (c *Client) ProxyList(dirFilter protocol.DirectoryFilter) (map[string]interface{}, error) {
-	var data []byte
-	var err error
-
-	// If we have a directory filter, encode it as JSON
+	req := c.conn.Request(protocol.VerbProxy, protocol.SubVerbList)
 	if dirFilter.Directory != "" || dirFilter.Global {
-		data, err = json.Marshal(dirFilter)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal directory filter: %w", err)
-		}
+		req = req.WithJSON(dirFilter)
 	}
-
-	resultData, err := c.sendCommand(protocol.VerbProxy, []string{protocol.SubVerbList}, nil, data)
-	if err != nil {
-		return nil, err
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(resultData, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
-	}
-
-	return result, nil
+	return req.JSON()
 }
 
 // ProxyExec executes JavaScript in connected browsers.
 func (c *Client) ProxyExec(id, code string) (map[string]interface{}, error) {
-	data, err := c.sendCommand(protocol.VerbProxy, []string{protocol.SubVerbExec, id}, nil, []byte(code))
-	if err != nil {
-		return nil, err
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
-	}
-
-	return result, nil
+	return c.conn.Request(protocol.VerbProxy, protocol.SubVerbExec, id).WithData([]byte(code)).JSON()
 }
 
 // ProxyToast sends a toast notification to connected browsers.
 func (c *Client) ProxyToast(id string, toast protocol.ToastConfig) (map[string]interface{}, error) {
-	toastData, err := json.Marshal(toast)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal toast config: %w", err)
-	}
-
-	data, err := c.sendCommand(protocol.VerbProxy, []string{protocol.SubVerbToast, id}, nil, toastData)
-	if err != nil {
-		return nil, err
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
-	}
-
-	return result, nil
+	return c.conn.Request(protocol.VerbProxy, protocol.SubVerbToast, id).WithJSON(toast).JSON()
 }
 
 // ProxyLogQuery queries proxy logs.
 func (c *Client) ProxyLogQuery(proxyID string, filter protocol.LogQueryFilter) (map[string]interface{}, error) {
-	filterData, err := json.Marshal(filter)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal filter: %w", err)
-	}
-
-	data, err := c.sendCommand(protocol.VerbProxyLog, []string{protocol.SubVerbQuery, proxyID}, nil, filterData)
-	if err != nil {
-		return nil, err
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
-	}
-
-	return result, nil
+	return c.conn.Request(protocol.VerbProxyLog, protocol.SubVerbQuery, proxyID).WithJSON(filter).JSON()
 }
 
 // ProxyLogClear clears proxy logs.
 func (c *Client) ProxyLogClear(proxyID string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.closed || c.conn == nil {
-		return ErrNotConnected
-	}
-
-	// Send command
-	if err := c.writer.WriteCommand(protocol.VerbProxyLog, []string{protocol.SubVerbClear, proxyID}, nil); err != nil {
-		return fmt.Errorf("failed to send command: %w", err)
-	}
-
-	// Read response
-	resp, err := c.parser.ParseResponse()
-	if err != nil {
-		return fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.Type == protocol.ResponseErr {
-		return fmt.Errorf("%w: [%s] %s", ErrServerError, resp.Code, resp.Message)
-	}
-
-	return nil
+	return c.conn.Request(protocol.VerbProxyLog, protocol.SubVerbClear, proxyID).OK()
 }
 
 // ProxyLogStats gets proxy log statistics.
 func (c *Client) ProxyLogStats(proxyID string) (map[string]interface{}, error) {
-	data, err := c.sendCommand(protocol.VerbProxyLog, []string{protocol.SubVerbStats, proxyID}, nil, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
-	}
-
-	return result, nil
+	return c.conn.Request(protocol.VerbProxyLog, protocol.SubVerbStats, proxyID).JSON()
 }
 
 // CurrentPageList lists active page sessions.
 func (c *Client) CurrentPageList(proxyID string) (map[string]interface{}, error) {
-	data, err := c.sendCommand(protocol.VerbCurrentPage, []string{protocol.SubVerbList, proxyID}, nil, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
-	}
-
-	return result, nil
+	return c.conn.Request(protocol.VerbCurrentPage, protocol.SubVerbList, proxyID).JSON()
 }
 
 // CurrentPageGet gets details for a specific page session.
 func (c *Client) CurrentPageGet(proxyID, sessionID string) (map[string]interface{}, error) {
-	data, err := c.sendCommand(protocol.VerbCurrentPage, []string{protocol.SubVerbGet, proxyID, sessionID}, nil, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
-	}
-
-	return result, nil
+	return c.conn.Request(protocol.VerbCurrentPage, protocol.SubVerbGet, proxyID, sessionID).JSON()
 }
 
 // CurrentPageClear clears page sessions.
 func (c *Client) CurrentPageClear(proxyID string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.closed || c.conn == nil {
-		return ErrNotConnected
-	}
-
-	// Send command
-	if err := c.writer.WriteCommand(protocol.VerbCurrentPage, []string{protocol.SubVerbClear, proxyID}, nil); err != nil {
-		return fmt.Errorf("failed to send command: %w", err)
-	}
-
-	// Read response
-	resp, err := c.parser.ParseResponse()
-	if err != nil {
-		return fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.Type == protocol.ResponseErr {
-		return fmt.Errorf("%w: [%s] %s", ErrServerError, resp.Code, resp.Message)
-	}
-
-	return nil
+	return c.conn.Request(protocol.VerbCurrentPage, protocol.SubVerbClear, proxyID).OK()
 }
 
 // OverlaySet sets the overlay endpoint URL.
-// The endpoint should be the full URL, e.g., "http://127.0.0.1:19191".
 func (c *Client) OverlaySet(endpoint string) (map[string]interface{}, error) {
-	data, err := c.sendCommand(protocol.VerbOverlay, []string{protocol.SubVerbSet, endpoint}, nil, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
-	}
-
-	return result, nil
+	return c.conn.Request(protocol.VerbOverlay, protocol.SubVerbSet, endpoint).JSON()
 }
 
 // OverlayGet gets the current overlay endpoint configuration.
 func (c *Client) OverlayGet() (map[string]interface{}, error) {
-	data, err := c.sendCommand(protocol.VerbOverlay, []string{protocol.SubVerbGet}, nil, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
-	}
-
-	return result, nil
+	return c.conn.Request(protocol.VerbOverlay, protocol.SubVerbGet).JSON()
 }
 
 // OverlayClear clears the overlay endpoint configuration.
 func (c *Client) OverlayClear() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.closed || c.conn == nil {
-		return ErrNotConnected
-	}
-
-	// Send command
-	if err := c.writer.WriteCommand(protocol.VerbOverlay, []string{protocol.SubVerbClear}, nil); err != nil {
-		return fmt.Errorf("failed to send command: %w", err)
-	}
-
-	// Read response
-	resp, err := c.parser.ParseResponse()
-	if err != nil {
-		return fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.Type == protocol.ResponseErr {
-		return fmt.Errorf("%w: [%s] %s", ErrServerError, resp.Code, resp.Message)
-	}
-
-	return nil
+	return c.conn.Request(protocol.VerbOverlay, protocol.SubVerbClear).OK()
 }
 
 // BroadcastActivity broadcasts an activity state update to connected browsers via specified proxies.
-// If proxyIDs is empty, broadcasts to all proxies (backward compatibility).
 func (c *Client) BroadcastActivity(active bool, proxyIDs ...string) error {
 	activeStr := "false"
 	if active {
 		activeStr = "true"
 	}
 	args := append([]string{protocol.SubVerbActivity, activeStr}, proxyIDs...)
-	_, err := c.sendCommand(protocol.VerbOverlay, args, nil, nil)
+	_, err := c.conn.Request(protocol.VerbOverlay, args...).JSON()
 	return err
 }
 
 // TunnelStart starts a tunnel for a local port.
 func (c *Client) TunnelStart(config protocol.TunnelStartConfig) (map[string]interface{}, error) {
-	data, err := json.Marshal(config)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal config: %w", err)
-	}
-
-	resultData, err := c.sendCommand(protocol.VerbTunnel, []string{protocol.SubVerbStart}, nil, data)
-	if err != nil {
-		return nil, err
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(resultData, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
-	}
-
-	return result, nil
+	return c.conn.Request(protocol.VerbTunnel, protocol.SubVerbStart).WithJSON(config).JSON()
 }
 
 // TunnelStop stops a running tunnel.
 func (c *Client) TunnelStop(id string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.closed || c.conn == nil {
-		return ErrNotConnected
-	}
-
-	// Send command
-	if err := c.writer.WriteCommand(protocol.VerbTunnel, []string{protocol.SubVerbStop, id}, nil); err != nil {
-		return fmt.Errorf("failed to send command: %w", err)
-	}
-
-	// Read response
-	resp, err := c.parser.ParseResponse()
-	if err != nil {
-		return fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.Type == protocol.ResponseErr {
-		return fmt.Errorf("%w: [%s] %s", ErrServerError, resp.Code, resp.Message)
-	}
-
-	return nil
+	return c.conn.Request(protocol.VerbTunnel, protocol.SubVerbStop, id).OK()
 }
 
 // TunnelStatus gets the status of a tunnel.
 func (c *Client) TunnelStatus(id string) (map[string]interface{}, error) {
-	data, err := c.sendCommand(protocol.VerbTunnel, []string{protocol.SubVerbStatus, id}, nil, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
-	}
-
-	return result, nil
+	return c.conn.Request(protocol.VerbTunnel, protocol.SubVerbStatus, id).JSON()
 }
 
 // TunnelList lists all active tunnels.
 func (c *Client) TunnelList() (map[string]interface{}, error) {
-	data, err := c.sendCommand(protocol.VerbTunnel, []string{protocol.SubVerbList}, nil, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
-	}
-
-	return result, nil
+	return c.conn.Request(protocol.VerbTunnel, protocol.SubVerbList).JSON()
 }
 
 // ChaosEnable enables chaos injection on a proxy.
 func (c *Client) ChaosEnable(proxyID string) (map[string]interface{}, error) {
-	data, err := c.sendCommand(protocol.VerbChaos, []string{protocol.SubVerbEnable, proxyID}, nil, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
-	}
-
-	return result, nil
+	return c.conn.Request(protocol.VerbChaos, protocol.SubVerbEnable, proxyID).JSON()
 }
 
 // ChaosDisable disables chaos injection on a proxy.
 func (c *Client) ChaosDisable(proxyID string) (map[string]interface{}, error) {
-	data, err := c.sendCommand(protocol.VerbChaos, []string{protocol.SubVerbDisable, proxyID}, nil, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
-	}
-
-	return result, nil
+	return c.conn.Request(protocol.VerbChaos, protocol.SubVerbDisable, proxyID).JSON()
 }
 
 // ChaosStatus gets the chaos status of a proxy.
 func (c *Client) ChaosStatus(proxyID string) (map[string]interface{}, error) {
-	data, err := c.sendCommand(protocol.VerbChaos, []string{protocol.SubVerbStatus, proxyID}, nil, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
-	}
-
-	return result, nil
+	return c.conn.Request(protocol.VerbChaos, protocol.SubVerbStatus, proxyID).JSON()
 }
 
 // ChaosPreset applies a preset chaos configuration to a proxy.
 func (c *Client) ChaosPreset(proxyID, preset string) (map[string]interface{}, error) {
-	data, err := c.sendCommand(protocol.VerbChaos, []string{protocol.SubVerbPreset, proxyID, preset}, nil, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
-	}
-
-	return result, nil
+	return c.conn.Request(protocol.VerbChaos, protocol.SubVerbPreset, proxyID, preset).JSON()
 }
 
 // ChaosSet sets the full chaos configuration on a proxy.
 func (c *Client) ChaosSet(proxyID string, config protocol.ChaosConfigPayload) (map[string]interface{}, error) {
-	configData, err := json.Marshal(config)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal config: %w", err)
-	}
-
-	data, err := c.sendCommand(protocol.VerbChaos, []string{protocol.SubVerbSet, proxyID}, nil, configData)
-	if err != nil {
-		return nil, err
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
-	}
-
-	return result, nil
+	return c.conn.Request(protocol.VerbChaos, protocol.SubVerbSet, proxyID).WithJSON(config).JSON()
 }
 
 // ChaosAddRule adds a single rule to a proxy's chaos engine.
 func (c *Client) ChaosAddRule(proxyID string, rule protocol.ChaosRuleConfig) (map[string]interface{}, error) {
-	ruleData, err := json.Marshal(rule)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal rule: %w", err)
-	}
-
-	data, err := c.sendCommand(protocol.VerbChaos, []string{protocol.SubVerbAddRule, proxyID}, nil, ruleData)
-	if err != nil {
-		return nil, err
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
-	}
-
-	return result, nil
+	return c.conn.Request(protocol.VerbChaos, protocol.SubVerbAddRule, proxyID).WithJSON(rule).JSON()
 }
 
 // ChaosRemoveRule removes a rule from a proxy's chaos engine.
 func (c *Client) ChaosRemoveRule(proxyID, ruleID string) (map[string]interface{}, error) {
-	data, err := c.sendCommand(protocol.VerbChaos, []string{protocol.SubVerbRemoveRule, proxyID, ruleID}, nil, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
-	}
-
-	return result, nil
+	return c.conn.Request(protocol.VerbChaos, protocol.SubVerbRemoveRule, proxyID, ruleID).JSON()
 }
 
 // ChaosListRules lists all chaos rules for a proxy.
 func (c *Client) ChaosListRules(proxyID string) (map[string]interface{}, error) {
-	data, err := c.sendCommand(protocol.VerbChaos, []string{protocol.SubVerbListRules, proxyID}, nil, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
-	}
-
-	return result, nil
+	return c.conn.Request(protocol.VerbChaos, protocol.SubVerbListRules, proxyID).JSON()
 }
 
 // ChaosStats gets chaos statistics for a proxy.
 func (c *Client) ChaosStats(proxyID string) (map[string]interface{}, error) {
-	data, err := c.sendCommand(protocol.VerbChaos, []string{protocol.SubVerbStats, proxyID}, nil, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
-	}
-
-	return result, nil
+	return c.conn.Request(protocol.VerbChaos, protocol.SubVerbStats, proxyID).JSON()
 }
 
 // ChaosClear clears all chaos rules and resets stats for a proxy.
 func (c *Client) ChaosClear(proxyID string) (map[string]interface{}, error) {
-	data, err := c.sendCommand(protocol.VerbChaos, []string{protocol.SubVerbClear, proxyID}, nil, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
-	}
-
-	return result, nil
+	return c.conn.Request(protocol.VerbChaos, protocol.SubVerbClear, proxyID).JSON()
 }
 
 // ChaosListPresets returns the list of available chaos presets.
 func (c *Client) ChaosListPresets() (map[string]interface{}, error) {
-	data, err := c.sendCommand(protocol.VerbChaos, []string{"LIST-PRESETS"}, nil, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
-	}
-
-	return result, nil
-}
-
-// sendCommand sends a command and expects a JSON response.
-func (c *Client) sendCommand(verb string, args []string, subVerb *string, data []byte) ([]byte, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.closed || c.conn == nil {
-		return nil, ErrNotConnected
-	}
-
-	// Send command
-	if err := c.writer.WriteCommandWithData(verb, args, subVerb, data); err != nil {
-		return nil, fmt.Errorf("failed to send command: %w", err)
-	}
-
-	// Read response
-	resp, err := c.parser.ParseResponse()
-	if err != nil {
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.Type == protocol.ResponseErr {
-		return nil, fmt.Errorf("%w: [%s] %s", ErrServerError, resp.Code, resp.Message)
-	}
-
-	if resp.Type != protocol.ResponseJSON {
-		return nil, fmt.Errorf("expected JSON response, got %s", resp.Type)
-	}
-
-	return resp.Data, nil
-}
-
-// sendCommandChunked sends a command and collects chunked response data.
-func (c *Client) sendCommandChunked(verb string, args []string, subVerb *string, data []byte) ([]byte, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.closed || c.conn == nil {
-		return nil, ErrNotConnected
-	}
-
-	// Send command
-	if err := c.writer.WriteCommandWithData(verb, args, subVerb, data); err != nil {
-		return nil, fmt.Errorf("failed to send command: %w", err)
-	}
-
-	// Read chunked response
-	var result []byte
-	for {
-		resp, err := c.parser.ParseResponse()
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			return nil, fmt.Errorf("failed to read response: %w", err)
-		}
-
-		switch resp.Type {
-		case protocol.ResponseChunk:
-			result = append(result, resp.Data...)
-		case protocol.ResponseEnd:
-			return result, nil
-		case protocol.ResponseErr:
-			return nil, fmt.Errorf("%w: [%s] %s", ErrServerError, resp.Code, resp.Message)
-		default:
-			return nil, fmt.Errorf("unexpected response type: %s", resp.Type)
-		}
-	}
-
-	return result, nil
+	return c.conn.Request(protocol.VerbChaos, "LIST-PRESETS").JSON()
 }
 
 // SessionRegister registers a new session with the daemon.
@@ -985,229 +384,68 @@ func (c *Client) SessionRegister(code string, overlayPath string, projectPath st
 		Command:     command,
 		Args:        args,
 	}
-	metadataData, err := json.Marshal(metadata)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal metadata: %w", err)
-	}
-
-	data, err := c.sendCommand(protocol.VerbSession, []string{protocol.SubVerbRegister, code, overlayPath}, nil, metadataData)
-	if err != nil {
-		return nil, err
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
-	}
-
-	return result, nil
+	return c.conn.Request(protocol.VerbSession, protocol.SubVerbRegister, code, overlayPath).WithJSON(metadata).JSON()
 }
 
 // SessionUnregister unregisters a session from the daemon.
 func (c *Client) SessionUnregister(code string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.closed || c.conn == nil {
-		return ErrNotConnected
-	}
-
-	if err := c.writer.WriteCommand(protocol.VerbSession, []string{protocol.SubVerbUnregister, code}, nil); err != nil {
-		return fmt.Errorf("failed to send command: %w", err)
-	}
-
-	resp, err := c.parser.ParseResponse()
-	if err != nil {
-		return fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.Type == protocol.ResponseErr {
-		return fmt.Errorf("%w: [%s] %s", ErrServerError, resp.Code, resp.Message)
-	}
-
-	return nil
+	return c.conn.Request(protocol.VerbSession, protocol.SubVerbUnregister, code).OK()
 }
 
 // SessionHeartbeat sends a heartbeat for a session.
 func (c *Client) SessionHeartbeat(code string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.closed || c.conn == nil {
-		return ErrNotConnected
-	}
-
-	if err := c.writer.WriteCommand(protocol.VerbSession, []string{protocol.SubVerbHeartbeat, code}, nil); err != nil {
-		return fmt.Errorf("failed to send command: %w", err)
-	}
-
-	resp, err := c.parser.ParseResponse()
-	if err != nil {
-		return fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.Type == protocol.ResponseErr {
-		return fmt.Errorf("%w: [%s] %s", ErrServerError, resp.Code, resp.Message)
-	}
-
-	return nil
+	return c.conn.Request(protocol.VerbSession, protocol.SubVerbHeartbeat, code).OK()
 }
 
 // SessionList lists active sessions.
 func (c *Client) SessionList(dirFilter protocol.DirectoryFilter) (map[string]interface{}, error) {
-	var filterData []byte
+	req := c.conn.Request(protocol.VerbSession, protocol.SubVerbList)
 	if dirFilter.Directory != "" || dirFilter.Global {
-		var err error
-		filterData, err = json.Marshal(dirFilter)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal filter: %w", err)
-		}
+		req = req.WithJSON(dirFilter)
 	}
-
-	data, err := c.sendCommand(protocol.VerbSession, []string{protocol.SubVerbList}, nil, filterData)
-	if err != nil {
-		return nil, err
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
-	}
-
-	return result, nil
+	return req.JSON()
 }
 
 // SessionGet retrieves a specific session.
 func (c *Client) SessionGet(code string) (map[string]interface{}, error) {
-	data, err := c.sendCommand(protocol.VerbSession, []string{protocol.SubVerbGet, code}, nil, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
-	}
-
-	return result, nil
+	return c.conn.Request(protocol.VerbSession, protocol.SubVerbGet, code).JSON()
 }
 
 // SessionSend sends an immediate message to a session.
 func (c *Client) SessionSend(code string, message string) (map[string]interface{}, error) {
-	data, err := c.sendCommand(protocol.VerbSession, []string{protocol.SubVerbSend, code}, nil, []byte(message))
-	if err != nil {
-		return nil, err
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
-	}
-
-	return result, nil
+	return c.conn.Request(protocol.VerbSession, protocol.SubVerbSend, code).WithData([]byte(message)).JSON()
 }
 
 // SessionSchedule schedules a message for future delivery.
 func (c *Client) SessionSchedule(code string, duration string, message string) (map[string]interface{}, error) {
-	data, err := c.sendCommand(protocol.VerbSession, []string{protocol.SubVerbSchedule, code, duration}, nil, []byte(message))
-	if err != nil {
-		return nil, err
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
-	}
-
-	return result, nil
+	return c.conn.Request(protocol.VerbSession, protocol.SubVerbSchedule, code, duration).WithData([]byte(message)).JSON()
 }
 
 // SessionCancel cancels a scheduled task.
 func (c *Client) SessionCancel(taskID string) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.closed || c.conn == nil {
-		return ErrNotConnected
-	}
-
-	if err := c.writer.WriteCommand(protocol.VerbSession, []string{protocol.SubVerbCancel, taskID}, nil); err != nil {
-		return fmt.Errorf("failed to send command: %w", err)
-	}
-
-	resp, err := c.parser.ParseResponse()
-	if err != nil {
-		return fmt.Errorf("failed to read response: %w", err)
-	}
-
-	if resp.Type == protocol.ResponseErr {
-		return fmt.Errorf("%w: [%s] %s", ErrServerError, resp.Code, resp.Message)
-	}
-
-	return nil
+	return c.conn.Request(protocol.VerbSession, protocol.SubVerbCancel, taskID).OK()
 }
 
 // SessionTasks lists scheduled tasks.
 func (c *Client) SessionTasks(dirFilter protocol.DirectoryFilter) (map[string]interface{}, error) {
-	var filterData []byte
+	req := c.conn.Request(protocol.VerbSession, protocol.SubVerbTasks)
 	if dirFilter.Directory != "" || dirFilter.Global {
-		var err error
-		filterData, err = json.Marshal(dirFilter)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal filter: %w", err)
-		}
+		req = req.WithJSON(dirFilter)
 	}
-
-	data, err := c.sendCommand(protocol.VerbSession, []string{protocol.SubVerbTasks}, nil, filterData)
-	if err != nil {
-		return nil, err
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
-	}
-
-	return result, nil
+	return req.JSON()
 }
 
 // SessionGenerateCode requests a new session code from the daemon.
-// This is used when auto-generating session codes based on command name.
 func (c *Client) SessionGenerateCode(command string) (string, error) {
-	// For now, generate locally using a simple pattern
-	// In future, could query daemon for unique code
 	return fmt.Sprintf("%s-%d", command, time.Now().UnixNano()%10000), nil
 }
 
 // SessionFind finds a session by directory ancestry.
-// It searches for an active session whose project_path is the directory or a parent of it.
 func (c *Client) SessionFind(directory string) (map[string]interface{}, error) {
-	data, err := c.sendCommand(protocol.VerbSession, []string{protocol.SubVerbFind, directory}, nil, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
-	}
-
-	return result, nil
+	return c.conn.Request(protocol.VerbSession, protocol.SubVerbFind, directory).JSON()
 }
 
 // SessionAttach attaches to a session found by directory ancestry.
-// This is the primary entry point for MCP clients to auto-attach to sessions.
-// Returns the session code and other session info.
 func (c *Client) SessionAttach(directory string) (map[string]interface{}, error) {
-	data, err := c.sendCommand(protocol.VerbSession, []string{protocol.SubVerbAttach, directory}, nil, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(data, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal result: %w", err)
-	}
-
-	return result, nil
+	return c.conn.Request(protocol.VerbSession, protocol.SubVerbAttach, directory).JSON()
 }

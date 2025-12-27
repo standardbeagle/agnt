@@ -141,12 +141,16 @@ func TestClient_Detect(t *testing.T) {
 }
 
 func TestClient_NotConnected(t *testing.T) {
-	client := NewClient()
+	tmpDir := t.TempDir()
+	sockPath := filepath.Join(tmpDir, "nonexistent.sock")
 
-	// Try to ping without connecting
+	client := NewClient(WithSocketPath(sockPath))
+
+	// Try to ping without daemon running - should get ErrSocketNotFound
+	// (The client attempts lazy connection on first operation)
 	err := client.Ping()
-	if err != ErrNotConnected {
-		t.Errorf("Expected ErrNotConnected, got %v", err)
+	if err != ErrSocketNotFound {
+		t.Errorf("Expected ErrSocketNotFound, got %v", err)
 	}
 }
 

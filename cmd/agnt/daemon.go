@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/daemon"
-	"github.com/standardbeagle/agnt/internal/process"
+	"github.com/standardbeagle/go-cli-server/process"
 
 	"github.com/spf13/cobra"
 )

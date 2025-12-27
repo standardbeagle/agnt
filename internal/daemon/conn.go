@@ -60,16 +60,14 @@
 package daemon
 
 import (
-	"encoding/json"
-	"errors"
-	"fmt"
-	"io"
-	"net"
-	"sync"
 	"time"
 
-	"github.com/standardbeagle/agnt/internal/protocol"
+	goclient "github.com/standardbeagle/go-cli-server/client"
 )
+
+// ErrConnectionClosed is returned when operating on a closed connection.
+// Re-exported from the go-cli-server library for backward compatibility.
+var ErrConnectionClosed = goclient.ErrConnectionClosed
 
 // Conn provides a shared, reusable client connection to the daemon.
 // Create one Conn and share it across all components that need
@@ -77,14 +75,7 @@ import (
 //
 // Conn is distinct from Connection (server-side handler in connection.go).
 type Conn struct {
-	socketPath string
-	timeout    time.Duration
-
-	mu     sync.Mutex
-	conn   net.Conn
-	parser *protocol.Parser
-	writer *protocol.Writer
-	closed bool
+	conn *goclient.Conn
 }
 
 // NewConn creates a new shared daemon connection.
@@ -94,96 +85,45 @@ func NewConn(socketPath string) *Conn {
 		socketPath = DefaultSocketPath()
 	}
 	return &Conn{
-		socketPath: socketPath,
-		timeout:    30 * time.Second,
+		conn: goclient.NewConn(
+			goclient.WithSocketPath(socketPath),
+			goclient.WithTimeout(30*time.Second),
+		),
 	}
 }
 
 // SocketPath returns the configured socket path.
 func (c *Conn) SocketPath() string {
-	return c.socketPath
+	return c.conn.SocketPath()
 }
 
 // SetTimeout sets the default timeout for operations.
 func (c *Conn) SetTimeout(d time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.timeout = d
+	c.conn.SetTimeout(d)
 }
 
 // EnsureConnected ensures the connection is established.
 // If already connected, returns nil immediately.
 // If not connected, attempts to connect.
 func (c *Conn) EnsureConnected() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.ensureConnectedLocked()
-}
-
-// ensureConnectedLocked connects if not already connected. Caller must hold mu.
-func (c *Conn) ensureConnectedLocked() error {
-	if c.closed {
-		return ErrConnectionClosed
-	}
-
-	if c.conn != nil {
-		return nil // Already connected
-	}
-
-	conn, err := Connect(c.socketPath)
-	if err != nil {
-		return err
-	}
-
-	c.conn = conn
-	c.parser = protocol.NewParser(conn)
-	c.writer = protocol.NewWriter(conn)
-	return nil
+	return c.conn.EnsureConnected()
 }
 
 // IsConnected returns whether the connection is currently established.
 func (c *Conn) IsConnected() bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.conn != nil && !c.closed
+	return c.conn.IsConnected()
 }
 
 // Close closes the connection permanently.
 // After Close, the Conn cannot be reused.
 func (c *Conn) Close() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.closed {
-		return nil
-	}
-
-	c.closed = true
-	if c.conn != nil {
-		err := c.conn.Close()
-		c.conn = nil
-		c.parser = nil
-		c.writer = nil
-		return err
-	}
-	return nil
+	return c.conn.Close()
 }
 
 // Disconnect closes the current connection but allows reconnection.
 // Use this to release resources temporarily while keeping the Conn usable.
 func (c *Conn) Disconnect() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.conn == nil {
-		return nil
-	}
-
-	err := c.conn.Close()
-	c.conn = nil
-	c.parser = nil
-	c.writer = nil
-	return err
+	return c.conn.Disconnect()
 }
 
 // Request creates a new request builder for the given verb and arguments.
@@ -197,133 +137,32 @@ func (c *Conn) Disconnect() error {
 //	conn.Request("PROXY", "START", id, targetURL, port)
 func (c *Conn) Request(verb string, args ...string) *RequestBuilder {
 	return &RequestBuilder{
-		conn: c,
-		verb: verb,
-		args: args,
+		builder: c.conn.Request(verb, args...),
 	}
 }
 
 // Ping sends a ping to the daemon and waits for a pong response.
 func (c *Conn) Ping() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if err := c.ensureConnectedLocked(); err != nil {
-		return err
-	}
-
-	if err := c.writer.WriteCommand(protocol.VerbPing, nil, nil); err != nil {
-		c.handleErrorLocked()
-		return fmt.Errorf("failed to send ping: %w", err)
-	}
-
-	resp, err := c.parser.ParseResponse()
-	if err != nil {
-		c.handleErrorLocked()
-		return fmt.Errorf("failed to read pong: %w", err)
-	}
-
-	if resp.Type != protocol.ResponsePong {
-		return fmt.Errorf("expected PONG, got %s", resp.Type)
-	}
-
-	return nil
-}
-
-// handleErrorLocked handles a connection error by closing the connection.
-// Caller must hold mu.
-func (c *Conn) handleErrorLocked() {
-	if c.conn != nil {
-		c.conn.Close()
-		c.conn = nil
-		c.parser = nil
-		c.writer = nil
-	}
-}
-
-// execute runs the request and returns the raw response.
-func (c *Conn) execute(verb string, args []string, data []byte) (*protocol.Response, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if err := c.ensureConnectedLocked(); err != nil {
-		return nil, err
-	}
-
-	if err := c.writer.WriteCommandWithData(verb, args, nil, data); err != nil {
-		c.handleErrorLocked()
-		return nil, fmt.Errorf("failed to send command: %w", err)
-	}
-
-	resp, err := c.parser.ParseResponse()
-	if err != nil {
-		c.handleErrorLocked()
-		return nil, fmt.Errorf("failed to read response: %w", err)
-	}
-
-	return resp, nil
-}
-
-// executeChunked runs the request and collects chunked response data.
-func (c *Conn) executeChunked(verb string, args []string, data []byte) ([]byte, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if err := c.ensureConnectedLocked(); err != nil {
-		return nil, err
-	}
-
-	if err := c.writer.WriteCommandWithData(verb, args, nil, data); err != nil {
-		c.handleErrorLocked()
-		return nil, fmt.Errorf("failed to send command: %w", err)
-	}
-
-	var result []byte
-	for {
-		resp, err := c.parser.ParseResponse()
-		if err != nil {
-			if err == io.EOF {
-				break
-			}
-			c.handleErrorLocked()
-			return nil, fmt.Errorf("failed to read response: %w", err)
-		}
-
-		switch resp.Type {
-		case protocol.ResponseChunk:
-			result = append(result, resp.Data...)
-		case protocol.ResponseEnd:
-			return result, nil
-		case protocol.ResponseErr:
-			return nil, fmt.Errorf("%w: [%s] %s", ErrServerError, resp.Code, resp.Message)
-		default:
-			return nil, fmt.Errorf("unexpected response type: %s", resp.Type)
-		}
-	}
-
-	return result, nil
+	return c.conn.Ping()
 }
 
 // RequestBuilder builds and executes requests to the daemon.
 // Use Conn.Request() to create a RequestBuilder.
 type RequestBuilder struct {
-	conn *Conn
-	verb string
-	args []string
-	data []byte
+	builder *goclient.RequestBuilder
 }
 
 // WithArgs appends additional string arguments to the request.
 //
 //	conn.Request("PROC", "OUTPUT", id).WithArgs("tail=50", "stream=stderr")
 func (r *RequestBuilder) WithArgs(args ...string) *RequestBuilder {
-	r.args = append(r.args, args...)
+	r.builder.WithArgs(args...)
 	return r
 }
 
 // WithData sets the request payload as raw bytes.
 func (r *RequestBuilder) WithData(data []byte) *RequestBuilder {
-	r.data = data
+	r.builder.WithData(data)
 	return r
 }
 
@@ -332,14 +171,7 @@ func (r *RequestBuilder) WithData(data []byte) *RequestBuilder {
 //
 //	conn.Request("PROC", "LIST").WithJSON(protocol.DirectoryFilter{Global: true})
 func (r *RequestBuilder) WithJSON(v interface{}) *RequestBuilder {
-	data, err := json.Marshal(v)
-	if err != nil {
-		// Store nil to signal error - execute will fail with "no data"
-		// A more sophisticated approach would store the error
-		r.data = nil
-		return r
-	}
-	r.data = data
+	r.builder.WithJSON(v)
 	return r
 }
 
@@ -348,16 +180,7 @@ func (r *RequestBuilder) WithJSON(v interface{}) *RequestBuilder {
 //
 //	err := conn.Request("PROXY", "STOP", proxyID).OK()
 func (r *RequestBuilder) OK() error {
-	resp, err := r.conn.execute(r.verb, r.args, r.data)
-	if err != nil {
-		return err
-	}
-
-	if resp.Type == protocol.ResponseErr {
-		return fmt.Errorf("%w: [%s] %s", ErrServerError, resp.Code, resp.Message)
-	}
-
-	return nil
+	return r.builder.OK()
 }
 
 // JSON executes the request and returns the response as a map.
@@ -366,25 +189,7 @@ func (r *RequestBuilder) OK() error {
 //	result, err := conn.Request("PROC", "LIST").JSON()
 //	processes := result["processes"].([]interface{})
 func (r *RequestBuilder) JSON() (map[string]interface{}, error) {
-	resp, err := r.conn.execute(r.verb, r.args, r.data)
-	if err != nil {
-		return nil, err
-	}
-
-	if resp.Type == protocol.ResponseErr {
-		return nil, fmt.Errorf("%w: [%s] %s", ErrServerError, resp.Code, resp.Message)
-	}
-
-	if resp.Type != protocol.ResponseJSON {
-		return nil, fmt.Errorf("expected JSON response, got %s", resp.Type)
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(resp.Data, &result); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
-	}
-
-	return result, nil
+	return r.builder.JSON()
 }
 
 // JSONInto executes the request and unmarshals the response into v.
@@ -392,39 +197,13 @@ func (r *RequestBuilder) JSON() (map[string]interface{}, error) {
 //	var info DaemonInfo
 //	err := conn.Request("INFO").JSONInto(&info)
 func (r *RequestBuilder) JSONInto(v interface{}) error {
-	resp, err := r.conn.execute(r.verb, r.args, r.data)
-	if err != nil {
-		return err
-	}
-
-	if resp.Type == protocol.ResponseErr {
-		return fmt.Errorf("%w: [%s] %s", ErrServerError, resp.Code, resp.Message)
-	}
-
-	if resp.Type != protocol.ResponseJSON {
-		return fmt.Errorf("expected JSON response, got %s", resp.Type)
-	}
-
-	if err := json.Unmarshal(resp.Data, v); err != nil {
-		return fmt.Errorf("failed to unmarshal response: %w", err)
-	}
-
-	return nil
+	return r.builder.JSONInto(v)
 }
 
 // Bytes executes the request and returns the raw JSON response bytes.
 // Use this when you need to handle JSON parsing yourself.
 func (r *RequestBuilder) Bytes() ([]byte, error) {
-	resp, err := r.conn.execute(r.verb, r.args, r.data)
-	if err != nil {
-		return nil, err
-	}
-
-	if resp.Type == protocol.ResponseErr {
-		return nil, fmt.Errorf("%w: [%s] %s", ErrServerError, resp.Code, resp.Message)
-	}
-
-	return resp.Data, nil
+	return r.builder.Bytes()
 }
 
 // Chunked executes the request and collects chunked response data.
@@ -432,7 +211,7 @@ func (r *RequestBuilder) Bytes() ([]byte, error) {
 //
 //	data, err := conn.Request("PROC", "OUTPUT", id).WithArgs("tail=100").Chunked()
 func (r *RequestBuilder) Chunked() ([]byte, error) {
-	return r.conn.executeChunked(r.verb, r.args, r.data)
+	return r.builder.Chunked()
 }
 
 // String executes the request with chunked response and returns as string.
@@ -440,12 +219,5 @@ func (r *RequestBuilder) Chunked() ([]byte, error) {
 //
 //	output, err := conn.Request("PROC", "OUTPUT", id).String()
 func (r *RequestBuilder) String() (string, error) {
-	data, err := r.Chunked()
-	if err != nil {
-		return "", err
-	}
-	return string(data), nil
+	return r.builder.String()
 }
-
-// ErrConnectionClosed is returned when operating on a closed connection.
-var ErrConnectionClosed = errors.New("connection closed")

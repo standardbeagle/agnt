@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/standardbeagle/agnt/internal/process"
+	"github.com/standardbeagle/go-cli-server/process"
 )
 
 // findAgntBinary finds the agnt binary for testing.

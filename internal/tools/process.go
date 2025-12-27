@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/standardbeagle/agnt/internal/process"
 	"github.com/standardbeagle/agnt/internal/project"
+	"github.com/standardbeagle/go-cli-server/process"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )

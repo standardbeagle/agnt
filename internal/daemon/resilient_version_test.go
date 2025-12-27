@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/standardbeagle/agnt/internal/process"
+	"github.com/standardbeagle/go-cli-server/process"
 )
 
 // TestResilientClient_VersionValidation tests version checking on connect

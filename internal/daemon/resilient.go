@@ -1,20 +1,19 @@
 package daemon
 
 import (
-	"context"
 	"errors"
-	"sync"
-	"sync/atomic"
 	"time"
+
+	goclient "github.com/standardbeagle/go-cli-server/client"
 
 	"github.com/standardbeagle/agnt/internal/protocol"
 )
 
 var (
 	// ErrReconnecting is returned when an operation is attempted during reconnection.
-	ErrReconnecting = errors.New("client is reconnecting")
+	ErrReconnecting = goclient.ErrReconnecting
 	// ErrShutdown is returned when an operation is attempted after shutdown.
-	ErrShutdown = errors.New("client has been shut down")
+	ErrShutdown = goclient.ErrShutdown
 )
 
 // ReconnectCallback is called after successful reconnection.
@@ -73,417 +72,126 @@ func DefaultResilientClientConfig() ResilientClientConfig {
 	}
 }
 
-// ResilientClient wraps Client with automatic reconnection and health monitoring.
+// ResilientClient wraps client.ResilientConn with automatic reconnection and health monitoring.
+// It provides agnt-specific wrapper methods for convenience.
 type ResilientClient struct {
 	config ResilientClientConfig
-
-	client   *Client
-	clientMu sync.RWMutex
-
-	connected    atomic.Bool
-	reconnecting atomic.Bool
-	shutdown     atomic.Bool
-
-	// Heartbeat management
-	heartbeatCtx    context.Context
-	heartbeatCancel context.CancelFunc
-
-	// Reconnection management
-	reconnectCh chan struct{}
-
-	// Statistics
-	reconnectCount     atomic.Int64
-	lastConnectTime    atomic.Pointer[time.Time]
-	lastDisconnectTime atomic.Pointer[time.Time]
+	rc     *goclient.ResilientConn
 }
 
 // NewResilientClient creates a new resilient client.
 func NewResilientClient(config ResilientClientConfig) *ResilientClient {
-	rc := &ResilientClient{
-		config:      config,
-		reconnectCh: make(chan struct{}, 1),
+	// Map our config to go-cli-server config
+	autoStartCfg := goclient.AutoStartConfig{
+		SocketPath:     config.AutoStartConfig.SocketPath,
+		HubPath:        config.AutoStartConfig.DaemonPath,
+		StartTimeout:   config.AutoStartConfig.StartTimeout,
+		RetryInterval:  config.AutoStartConfig.RetryInterval,
+		MaxRetries:     config.AutoStartConfig.MaxRetries,
+		ProcessMatcher: isAgntDaemonProcess,
 	}
-	return rc
+
+	resilientCfg := goclient.ResilientConfig{
+		AutoStartConfig:      autoStartCfg,
+		HeartbeatInterval:    config.HeartbeatInterval,
+		HeartbeatTimeout:     config.HeartbeatTimeout,
+		ReconnectBackoffMin:  config.ReconnectBackoffMin,
+		ReconnectBackoffMax:  config.ReconnectBackoffMax,
+		MaxReconnectAttempts: config.MaxReconnectAttempts,
+		OnDisconnect:         config.OnDisconnect,
+		OnReconnectFailed:    config.OnReconnectFailed,
+	}
+
+	// Set up version checking if configured
+	if config.ClientVersion != "" {
+		resilientCfg.VersionCheck = func(conn *goclient.Conn) error {
+			// Get daemon info
+			var info DaemonInfo
+			if err := conn.Request("INFO").JSONInto(&info); err != nil {
+				return errors.New("failed to get daemon version: " + err.Error())
+			}
+
+			// Check if versions match
+			if !goclient.VersionsMatch(config.ClientVersion, info.Version) {
+				// Versions don't match - call callback if configured
+				if config.OnVersionMismatch != nil {
+					return config.OnVersionMismatch(config.ClientVersion, info.Version)
+				}
+
+				// No callback - stop the daemon so next connection uses new version
+				_ = conn.Request("SHUTDOWN").OK() // Best effort
+
+				return errors.New("version mismatch: client=" + config.ClientVersion +
+					" daemon=" + info.Version + " (daemon stopped, will restart with new version)")
+			}
+
+			return nil
+		}
+	}
+
+	// Set up reconnect callback wrapper if configured
+	if config.OnReconnect != nil {
+		resilientCfg.OnReconnect = func(conn *goclient.Conn) error {
+			// Wrap the connection in a Client for the callback
+			client := &Client{conn: conn}
+			return config.OnReconnect(client)
+		}
+	}
+
+	return &ResilientClient{
+		config: config,
+		rc:     goclient.NewResilientConn(resilientCfg),
+	}
 }
 
 // Connect establishes the initial connection to the daemon.
 func (rc *ResilientClient) Connect() error {
-	if rc.shutdown.Load() {
-		return ErrShutdown
-	}
-
-	rc.clientMu.Lock()
-	defer rc.clientMu.Unlock()
-
-	// Create new client and connect
-	client, err := EnsureDaemonRunning(rc.config.AutoStartConfig)
-	if err != nil {
-		return err
-	}
-
-	// Check version compatibility if configured
-	if rc.config.ClientVersion != "" {
-		if err := rc.checkVersionCompatibility(client); err != nil {
-			client.Close()
-			return err
-		}
-	}
-
-	rc.client = client
-	rc.connected.Store(true)
-	now := time.Now()
-	rc.lastConnectTime.Store(&now)
-
-	// Start heartbeat monitor
-	rc.startHeartbeat()
-
-	return nil
-}
-
-// checkVersionCompatibility verifies that the daemon version matches the client version.
-func (rc *ResilientClient) checkVersionCompatibility(client *Client) error {
-	// Get daemon info
-	info, err := client.Info()
-	if err != nil {
-		return errors.New("failed to get daemon version: " + err.Error())
-	}
-
-	// Check if versions match
-	if !VersionsMatch(rc.config.ClientVersion, info.Version) {
-		// Versions don't match - call callback if configured
-		if rc.config.OnVersionMismatch != nil {
-			return rc.config.OnVersionMismatch(rc.config.ClientVersion, info.Version)
-		}
-
-		// No callback - stop the daemon so next connection uses new version
-		_ = client.Shutdown() // Best effort
-
-		return errors.New("version mismatch: client=" + rc.config.ClientVersion +
-			" daemon=" + info.Version + " (daemon stopped, will restart with new version)")
-	}
-
-	return nil
+	return rc.rc.Connect()
 }
 
 // Close shuts down the resilient client.
 func (rc *ResilientClient) Close() error {
-	if rc.shutdown.Swap(true) {
-		return nil // Already shut down
-	}
-
-	// Stop heartbeat
-	if rc.heartbeatCancel != nil {
-		rc.heartbeatCancel()
-	}
-
-	// Close underlying client
-	rc.clientMu.Lock()
-	defer rc.clientMu.Unlock()
-
-	if rc.client != nil {
-		return rc.client.Close()
-	}
-	return nil
+	return rc.rc.Close()
 }
 
 // IsConnected returns whether the client is currently connected.
 func (rc *ResilientClient) IsConnected() bool {
-	return rc.connected.Load() && !rc.reconnecting.Load()
+	return rc.rc.IsConnected()
 }
 
 // IsReconnecting returns whether the client is currently reconnecting.
 func (rc *ResilientClient) IsReconnecting() bool {
-	return rc.reconnecting.Load()
+	return rc.rc.IsReconnecting()
 }
 
 // Stats returns connection statistics.
 func (rc *ResilientClient) Stats() map[string]interface{} {
-	stats := map[string]interface{}{
-		"connected":       rc.connected.Load(),
-		"reconnecting":    rc.reconnecting.Load(),
-		"reconnect_count": rc.reconnectCount.Load(),
-	}
-
-	if t := rc.lastConnectTime.Load(); t != nil {
-		stats["last_connect"] = *t
-	}
-	if t := rc.lastDisconnectTime.Load(); t != nil {
-		stats["last_disconnect"] = *t
-	}
-
-	return stats
+	return rc.rc.Stats()
 }
 
 // Client returns the underlying client for direct access.
 // Returns nil if not connected.
 func (rc *ResilientClient) Client() *Client {
-	rc.clientMu.RLock()
-	defer rc.clientMu.RUnlock()
-	return rc.client
+	conn := rc.rc.Conn()
+	if conn == nil {
+		return nil
+	}
+	return &Client{conn: conn}
 }
 
 // WithClient executes a function with the client, handling reconnection.
 func (rc *ResilientClient) WithClient(fn func(*Client) error) error {
-	if rc.shutdown.Load() {
-		return ErrShutdown
-	}
-
-	if rc.reconnecting.Load() {
-		return ErrReconnecting
-	}
-
-	rc.clientMu.RLock()
-	client := rc.client
-	rc.clientMu.RUnlock()
-
-	if client == nil {
-		return ErrNotConnected
-	}
-
-	err := fn(client)
-	if err != nil {
-		// Check if this is a connection error that should trigger reconnection
-		if isConnectionError(err) {
-			rc.triggerReconnect(err)
-		}
-	}
-	return err
-}
-
-// startHeartbeat starts the heartbeat monitoring goroutine.
-func (rc *ResilientClient) startHeartbeat() {
-	if rc.config.HeartbeatInterval <= 0 {
-		return
-	}
-
-	// Cancel any existing heartbeat
-	if rc.heartbeatCancel != nil {
-		rc.heartbeatCancel()
-	}
-
-	rc.heartbeatCtx, rc.heartbeatCancel = context.WithCancel(context.Background())
-
-	go rc.heartbeatLoop()
-}
-
-// heartbeatLoop sends periodic heartbeats and detects connection failures.
-func (rc *ResilientClient) heartbeatLoop() {
-	ticker := time.NewTicker(rc.config.HeartbeatInterval)
-	defer ticker.Stop()
-
-	consecutiveFailures := 0
-	maxConsecutiveFailures := 3
-
-	for {
-		select {
-		case <-rc.heartbeatCtx.Done():
-			return
-		case <-ticker.C:
-			if rc.reconnecting.Load() || rc.shutdown.Load() {
-				continue
-			}
-
-			err := rc.sendHeartbeat()
-			if err != nil {
-				consecutiveFailures++
-				if consecutiveFailures >= maxConsecutiveFailures {
-					rc.triggerReconnect(err)
-					consecutiveFailures = 0
-				}
-			} else {
-				consecutiveFailures = 0
-			}
-		}
-	}
-}
-
-// sendHeartbeat sends a single heartbeat ping.
-func (rc *ResilientClient) sendHeartbeat() error {
-	rc.clientMu.RLock()
-	client := rc.client
-	rc.clientMu.RUnlock()
-
-	if client == nil {
-		return ErrNotConnected
-	}
-
-	// Use a timeout for the ping
-	done := make(chan error, 1)
-	go func() {
-		done <- client.Ping()
-	}()
-
-	select {
-	case err := <-done:
-		return err
-	case <-time.After(rc.config.HeartbeatTimeout):
-		return errors.New("heartbeat timeout")
-	}
-}
-
-// triggerReconnect initiates the reconnection process.
-func (rc *ResilientClient) triggerReconnect(err error) {
-	// Only one reconnection at a time
-	if !rc.reconnecting.CompareAndSwap(false, true) {
-		return
-	}
-
-	rc.connected.Store(false)
-	now := time.Now()
-	rc.lastDisconnectTime.Store(&now)
-
-	// Notify disconnect callback
-	if rc.config.OnDisconnect != nil {
-		go rc.config.OnDisconnect(err)
-	}
-
-	// Start reconnection in background
-	go rc.reconnectLoop()
-}
-
-// reconnectLoop attempts to reconnect with exponential backoff.
-func (rc *ResilientClient) reconnectLoop() {
-	defer rc.reconnecting.Store(false)
-
-	backoff := rc.config.ReconnectBackoffMin
-	attempts := 0
-
-	for {
-		if rc.shutdown.Load() {
-			return
-		}
-
-		attempts++
-
-		// Close old connection
-		rc.clientMu.Lock()
-		if rc.client != nil {
-			rc.client.Close()
-			rc.client = nil
-		}
-		rc.clientMu.Unlock()
-
-		// Attempt to connect
-		client, err := EnsureDaemonRunning(rc.config.AutoStartConfig)
-		if err == nil {
-			rc.clientMu.Lock()
-			rc.client = client
-			rc.clientMu.Unlock()
-
-			rc.connected.Store(true)
-			rc.reconnectCount.Add(1)
-			now := time.Now()
-			rc.lastConnectTime.Store(&now)
-
-			// Call reconnect callback to restore state
-			if rc.config.OnReconnect != nil {
-				// Ignore callback errors - state restoration is best-effort
-				_ = rc.config.OnReconnect(client)
-			}
-
-			// Restart heartbeat
-			rc.startHeartbeat()
-			return
-		}
-
-		// Check if we've exceeded max attempts
-		if rc.config.MaxReconnectAttempts > 0 && attempts >= rc.config.MaxReconnectAttempts {
-			if rc.config.OnReconnectFailed != nil {
-				rc.config.OnReconnectFailed(err)
-			}
-			return
-		}
-
-		// Exponential backoff
-		time.Sleep(backoff)
-		backoff = minDuration(backoff*2, rc.config.ReconnectBackoffMax)
-	}
-}
-
-// isConnectionError checks if an error indicates a connection problem.
-func isConnectionError(err error) bool {
-	if err == nil {
-		return false
-	}
-
-	// Check for known connection errors
-	if errors.Is(err, ErrNotConnected) {
-		return true
-	}
-
-	// Check error message for common connection problems
-	errStr := err.Error()
-	connectionErrors := []string{
-		"connection refused",
-		"broken pipe",
-		"connection reset",
-		"EOF",
-		"no such file or directory",
-		"socket",
-		"network",
-	}
-
-	for _, ce := range connectionErrors {
-		if containsIgnoreCase(errStr, ce) {
-			return true
-		}
-	}
-
-	return false
-}
-
-// containsIgnoreCase checks if s contains substr (case-insensitive).
-func containsIgnoreCase(s, substr string) bool {
-	return len(s) >= len(substr) &&
-		(s == substr ||
-			len(substr) == 0 ||
-			(len(s) > 0 && containsIgnoreCaseHelper(s, substr)))
-}
-
-func containsIgnoreCaseHelper(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if equalFoldAt(s, i, substr) {
-			return true
-		}
-	}
-	return false
-}
-
-func equalFoldAt(s string, i int, substr string) bool {
-	for j := 0; j < len(substr); j++ {
-		c1 := s[i+j]
-		c2 := substr[j]
-		if c1 != c2 {
-			// Simple ASCII case folding
-			if c1 >= 'A' && c1 <= 'Z' {
-				c1 += 'a' - 'A'
-			}
-			if c2 >= 'A' && c2 <= 'Z' {
-				c2 += 'a' - 'A'
-			}
-			if c1 != c2 {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-// minDuration returns the smaller of two durations.
-func minDuration(a, b time.Duration) time.Duration {
-	if a < b {
-		return a
-	}
-	return b
+	return rc.rc.WithConn(func(conn *goclient.Conn) error {
+		client := &Client{conn: conn}
+		return fn(client)
+	})
 }
 
 // Convenience methods that wrap common client operations with resilience
 
 // Ping sends a ping to the daemon.
 func (rc *ResilientClient) Ping() error {
-	return rc.WithClient(func(c *Client) error {
-		return c.Ping()
-	})
+	return rc.rc.Ping()
 }
 
 // Info retrieves daemon information.

@@ -9,10 +9,10 @@ import (
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/daemon"
-	"github.com/standardbeagle/agnt/internal/process"
 	"github.com/standardbeagle/agnt/internal/proxy"
 	"github.com/standardbeagle/agnt/internal/snapshot"
 	"github.com/standardbeagle/agnt/internal/tools"
+	"github.com/standardbeagle/go-cli-server/process"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/spf13/cobra"

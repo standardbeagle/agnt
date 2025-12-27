@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	goclient "github.com/standardbeagle/go-cli-server/client"
 )
 
 // UpgradeConfig holds configuration for daemon upgrades.
@@ -116,7 +118,7 @@ func (u *DaemonUpgrader) Upgrade(ctx context.Context) error {
 
 	// Check if upgrade is needed
 	newVersion := u.getNewVersion()
-	if !u.config.Force && VersionsMatch(info.Version, newVersion) {
+	if !u.config.Force && goclient.VersionsMatch(info.Version, newVersion) {
 		client.Close()
 		u.log("Daemon already at version %s, no upgrade needed", newVersion)
 		return nil
@@ -316,7 +318,7 @@ func (u *DaemonUpgrader) verifyNewVersion(expectedVersion string) error {
 		return err
 	}
 
-	if !VersionsMatch(info.Version, expectedVersion) {
+	if !goclient.VersionsMatch(info.Version, expectedVersion) {
 		return fmt.Errorf("version mismatch after upgrade: expected %s, got %s",
 			expectedVersion, info.Version)
 	}
