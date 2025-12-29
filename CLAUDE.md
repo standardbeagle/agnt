@@ -60,6 +60,18 @@ Browser Indicator ──► agnt Proxy ──► HTTP POST ──► agnt overla
 This allows the floating indicator in the browser to send messages that get typed
 into Claude Code as if the user typed them - working around MCP's lack of server push.
 
+**System Prompt Injection**:
+When `agnt run` starts an AI coding agent, it automatically injects context about the agnt
+MCP tools and any auto-started services. This helps the agent understand what capabilities
+are available:
+
+- **Claude Code**: Uses `--append-system-prompt` flag for native system prompt support
+- **Other agents** (Gemini, Copilot, Aider, Cursor, etc.): Sends a brief initial message via
+  stdin after a 500ms startup delay. The message appears as if the user typed it, informing
+  the agent about available MCP tools (proxy, proc, proxylog, currentpage) and running services.
+
+Supported agents: gemini, copilot, aider, cursor, cursor-agent, opencode, kimi, kimi-cli, auggie
+
 **Core Features**:
 - **Browser Superpowers** - Screenshots, DOM inspection, visual debugging for AI agents
 - **Floating Indicator** - Send messages from browser directly to your AI agent
@@ -71,7 +83,9 @@ into Claude Code as if the user typed them - working around MCP's lack of server
 - **Reverse Proxy** - HTTP traffic logging and frontend instrumentation
 - **Daemon Architecture** - Persistent state survives client disconnections
 - **Agent Overlay** - PTY wrapper for AI tools with browser-to-terminal messaging
-- **Auto System Prompt** - When running `agnt run claude`, auto-injects context about running services
+- **Auto System Prompt** - Injects agnt context for all AI agents:
+  - Claude: via `--append-system-prompt` flag
+  - Others (Gemini, Copilot, Aider, etc.): via initial stdin message
 
 ## Installation
 
@@ -869,6 +883,25 @@ ManagerConfig{
     HealthCheckPeriod: 10 * time.Second,
 }
 ```
+
+### Dev Server URL Tracking
+
+The daemon tracks dev server URLs from process startup output (`internal/daemon/urltracker.go`):
+
+**Design constraints** (focused on `pnpm dev` use case):
+- Only scans **first 8KB** of output (startup phase only)
+- Stores max **5 URLs** per process
+- Only matches **localhost-like URLs with ports** (localhost, 127.0.0.1, 192.168.x.x, etc.)
+- **Ignores**: external URLs, query strings, API paths, static assets, error pages
+
+**Example** (Vite dev server output):
+```
+VITE v5.0.0  ready in 500 ms
+  ➜  Local:   http://localhost:5173/    ← captured
+  ➜  Network: http://192.168.1.100:5173/ ← captured
+```
+
+**URLs returned in**: `PROC LIST` and `PROC STATUS` responses as `urls` array.
 
 ## Common Development Gotchas
 

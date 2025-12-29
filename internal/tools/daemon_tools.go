@@ -377,9 +377,10 @@ func (dt *DaemonTools) makeDetectHandler() func(context.Context, *mcp.CallToolRe
 		}
 
 		// Resolve path to absolute to ensure daemon uses correct directory
+		// Use session project path (from AGNT_PROJECT_PATH) when path is not specified
 		path := input.Path
 		if path == "" {
-			path = "."
+			path = getProjectPath()
 		}
 		absPath, err := filepath.Abs(path)
 		if err != nil {
@@ -421,9 +422,10 @@ func (dt *DaemonTools) makeRunHandler() func(context.Context, *mcp.CallToolReque
 		}
 
 		// Resolve path to absolute to ensure daemon uses correct directory
+		// Use session project path (from AGNT_PROJECT_PATH) when path is not specified
 		path := input.Path
 		if path == "" {
-			path = "."
+			path = getProjectPath()
 		}
 		absPath, err := filepath.Abs(path)
 		if err != nil {

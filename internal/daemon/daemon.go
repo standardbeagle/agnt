@@ -101,6 +101,9 @@ type Daemon struct {
 	stateMgr   *StateManager
 	pidTracker *process.FilePIDTracker
 
+	// URL tracking for processes
+	urlTracker *URLTracker
+
 	// Update checker
 	updateChecker *updater.UpdateChecker
 
@@ -147,15 +150,18 @@ func New(config DaemonConfig) *Daemon {
 	procConfig := config.ProcessConfig
 	procConfig.PIDTracker = pidTracker
 
+	pm := process.NewProcessManager(procConfig)
+
 	d := &Daemon{
 		config:            config,
-		pm:                process.NewProcessManager(procConfig),
+		pm:                pm,
 		proxym:            proxy.NewProxyManager(),
 		tunnelm:           tunnel.NewManager(),
 		sessionRegistry:   sessionRegistry,
 		scheduler:         scheduler,
 		schedulerStateMgr: schedulerStateMgr,
 		pidTracker:        pidTracker,
+		urlTracker:        NewURLTracker(pm, DefaultURLTrackerConfig()),
 		sockMgr:           NewSocketManager(SocketConfig{Path: config.SocketPath}),
 		ctx:               ctx,
 		cancel:            cancel,
@@ -224,6 +230,9 @@ func (d *Daemon) Start() error {
 	if err := d.scheduler.Start(d.ctx); err != nil {
 		log.Printf("[Daemon] failed to start scheduler: %v", err)
 	}
+
+	// Start URL tracker for process URL detection
+	d.urlTracker.Start(d.ctx)
 
 	// Start update checker if enabled
 	if d.updateChecker != nil {

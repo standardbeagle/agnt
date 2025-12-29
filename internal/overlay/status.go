@@ -238,6 +238,14 @@ func (f *StatusFetcher) fetchProcesses() ([]ProcessInfo, error) {
 		if runtime, ok := pm["runtime_ms"].(float64); ok {
 			info.Runtime = time.Duration(runtime) * time.Millisecond
 		}
+		// Get URLs from server (persisted by URL tracker)
+		if urls, ok := pm["urls"].([]interface{}); ok {
+			for _, u := range urls {
+				if urlStr, ok := u.(string); ok {
+					info.URLs = append(info.URLs, urlStr)
+				}
+			}
+		}
 		processes = append(processes, info)
 	}
 
@@ -511,8 +519,9 @@ func parseURLsFromOutput(output string) []string {
 	return urls
 }
 
-// fetchLastOutputForProcesses fetches the last output line for each running process
-// and parses URLs from recent output.
+// fetchLastOutputForProcesses fetches the last output line for each running process.
+// URLs are now provided by the server (via URL tracker), so this only fetches
+// the last output line for display purposes.
 // Limited to first 6 processes to avoid slowing down the status update.
 func (f *StatusFetcher) fetchLastOutputForProcesses(processes []ProcessInfo) {
 	const maxProcesses = 6
@@ -527,16 +536,18 @@ func (f *StatusFetcher) fetchLastOutputForProcesses(processes []ProcessInfo) {
 			continue
 		}
 
-		// Fetch last 50 lines to search for URLs
+		// Fetch last 10 lines for display (URLs come from server)
 		output, err := f.conn.Request(protocol.VerbProc, protocol.SubVerbOutput, proc.ID).
-			WithArgs("stream=combined", "tail=50").
+			WithArgs("stream=combined", "tail=10").
 			String()
 		if err != nil {
 			continue
 		}
 
-		// Parse URLs from the output
-		proc.URLs = parseURLsFromOutput(output)
+		// If server didn't provide URLs, parse from output as fallback
+		if len(proc.URLs) == 0 {
+			proc.URLs = parseURLsFromOutput(output)
+		}
 
 		// Clean up the output for LastOutput field
 		output = strings.TrimSpace(output)

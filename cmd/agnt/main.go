@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/joho/godotenv"
 	"github.com/spf13/cobra"
 	"github.com/standardbeagle/agnt/internal/daemon"
 )
@@ -51,9 +50,6 @@ func init() {
 }
 
 func main() {
-	// Load .env file if present (silently ignore if not found)
-	_ = godotenv.Load()
-
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}

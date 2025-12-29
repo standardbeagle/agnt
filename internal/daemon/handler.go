@@ -314,6 +314,11 @@ func (c *Connection) handleProcStatus(cmd *protocol.Command) error {
 		"summary":    proc.Summary(),
 		"exit_code":  proc.ExitCode(),
 		"runtime":    formatDuration(proc.Runtime()),
+		"runtime_ms": proc.Runtime().Milliseconds(),
+	}
+	// Add URLs from URL tracker
+	if urls := c.daemon.urlTracker.GetURLs(proc.ID); len(urls) > 0 {
+		resp["urls"] = urls
 	}
 
 	data, _ := json.Marshal(resp)
@@ -469,14 +474,20 @@ func (c *Connection) handleProcList(cmd *protocol.Command) error {
 
 	entries := make([]map[string]interface{}, len(filteredProcs))
 	for i, p := range filteredProcs {
-		entries[i] = map[string]interface{}{
+		entry := map[string]interface{}{
 			"id":           p.ID,
 			"command":      p.Command,
 			"state":        p.State().String(),
 			"summary":      p.Summary(),
 			"runtime":      formatDuration(p.Runtime()),
+			"runtime_ms":   p.Runtime().Milliseconds(),
 			"project_path": p.ProjectPath,
 		}
+		// Add URLs from URL tracker
+		if urls := c.daemon.urlTracker.GetURLs(p.ID); len(urls) > 0 {
+			entry["urls"] = urls
+		}
+		entries[i] = entry
 	}
 
 	resp := map[string]interface{}{

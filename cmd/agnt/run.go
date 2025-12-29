@@ -511,6 +511,19 @@ func runWithPTY(ctx context.Context, args []string, socketPath string, sessionCo
 		}
 	}()
 
+	// For non-Claude AI agents, inject initial context about agnt setup
+	// This helps them understand the MCP tools available
+	if !isClaudeCommand(command) && isKnownAIAgent(command) {
+		if prompt := buildAgntSystemPrompt(socketPath); prompt != "" {
+			// Send as initial stdin to the agent (appears as if user typed it)
+			// Use a brief, succinct message
+			msg := fmt.Sprintf("Note: Running under agnt with MCP tools (proxy, proc, proxylog, currentpage) for browser debugging and dev server management. %s\n", prompt)
+			// Give the agent a moment to start up before sending
+			time.Sleep(500 * time.Millisecond)
+			_, _ = ptmx.Write([]byte(msg))
+		}
+	}
+
 	// Handle stdin - either through input router or direct copy
 	wg.Add(1)
 	go func() {
@@ -673,6 +686,31 @@ func isClaudeCommand(command string) bool {
 	// Try to resolve the command to see if it's claude
 	if resolved, err := exec.LookPath(command); err == nil {
 		if strings.HasSuffix(resolved, "/claude") || strings.HasSuffix(resolved, "\\claude") {
+			return true
+		}
+	}
+
+	return false
+}
+
+// isKnownAIAgent checks if the command is a recognized AI coding agent.
+// Returns true for: gemini, copilot, aider, cursor, opencode, kimi, auggie, etc.
+func isKnownAIAgent(command string) bool {
+	knownAgents := []string{
+		"gemini", "copilot", "aider", "cursor", "cursor-agent",
+		"opencode", "kimi", "kimi-cli", "auggie",
+	}
+
+	// Extract base command name (handle paths)
+	baseName := command
+	if idx := strings.LastIndexAny(command, "/\\"); idx != -1 {
+		baseName = command[idx+1:]
+	}
+
+	// Check against known agents
+	baseName = strings.ToLower(baseName)
+	for _, agent := range knownAgents {
+		if baseName == agent {
 			return true
 		}
 	}
