@@ -329,23 +329,6 @@ func runWithConPTY(ctx context.Context, args []string, socketPath string, sessio
 
 			// Log autostart results
 			if result != nil && !skipAutostart {
-				// Log successfully started scripts
-				if scripts, ok := result["autostart_scripts"].([]interface{}); ok && len(scripts) > 0 {
-					for _, s := range scripts {
-						if str, ok := s.(string); ok {
-							fmt.Fprintf(os.Stderr, "[agnt] Started script: %s\r\n", str)
-						}
-					}
-				}
-
-				// Log successfully started proxies
-				if proxies, ok := result["autostart_proxies"].([]interface{}); ok && len(proxies) > 0 {
-					for _, p := range proxies {
-						if str, ok := p.(string); ok {
-							fmt.Fprintf(os.Stderr, "[agnt] Started proxy: %s\r\n", str)
-						}
-					}
-				}
 
 				// Log any autostart errors
 				if errs, ok := result["autostart_errors"].([]interface{}); ok && len(errs) > 0 {
