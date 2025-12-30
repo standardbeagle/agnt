@@ -204,7 +204,7 @@ func (f *StatusFetcher) fetchStatus() {
 }
 
 func (f *StatusFetcher) fetchProcesses() ([]ProcessInfo, error) {
-	// Use request builder - scoped to current project directory
+	// Use request builder - filter by session directory
 	result, err := f.conn.Request(protocol.VerbProc, protocol.SubVerbList).
 		WithJSON(protocol.DirectoryFilter{Directory: f.projectPath}).
 		JSON()
@@ -253,7 +253,7 @@ func (f *StatusFetcher) fetchProcesses() ([]ProcessInfo, error) {
 }
 
 func (f *StatusFetcher) fetchProxies() ([]ProxyInfo, error) {
-	// Use request builder - scoped to current project directory
+	// Use request builder - filter by session directory
 	result, err := f.conn.Request(protocol.VerbProxy, protocol.SubVerbList).
 		WithJSON(protocol.DirectoryFilter{Directory: f.projectPath}).
 		JSON()

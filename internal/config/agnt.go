@@ -43,23 +43,28 @@ type ScriptConfig struct {
 
 // ProxyConfig defines a reverse proxy to start.
 type ProxyConfig struct {
-	// Target is the explicit target URL (e.g., "http://localhost:3000")
-	Target string `kdl:"target"`
-	// Port is the proxy listen port (0 = auto-assign)
-	Port int `kdl:"port"`
 	// Autostart indicates whether to start on session open
 	Autostart bool `kdl:"autostart"`
 	// MaxLogSize is the max number of log entries to keep
 	MaxLogSize int `kdl:"max-log-size"`
 
-	// Script links this proxy to a script for port detection
+	// Script links this proxy to a script for URL detection from output
 	Script string `kdl:"script"`
+
+	// Direct target configuration (mutually exclusive with Script)
+	// URL is the full target URL (e.g., "http://localhost:3000")
+	URL string `kdl:"url"`
+	// Port is the target port (e.g., 3000) - shorthand for http://localhost:PORT
+	Port int `kdl:"port"`
+	// Host is the target host (default: localhost) - only used with Port
+	Host string `kdl:"host"`
+
+	// Legacy fields (deprecated)
+	// Target is the explicit target URL (use URL instead)
+	Target string `kdl:"target"`
+
 	// PortDetect is the detection mode: "auto", "output", "pid", or a regex pattern
 	PortDetect string `kdl:"port-detect"`
-	// FallbackPort is used if port detection fails
-	FallbackPort int `kdl:"fallback-port"`
-	// Host is the target host (default: localhost)
-	Host string `kdl:"host"`
 }
 
 // HooksConfig defines hook behavior.
@@ -212,9 +217,8 @@ func parseAgntConfigSimple(data string) (*AgntConfig, error) {
 				if matches := re.FindStringSubmatch(line); len(matches) > 1 {
 					currentProxyName = matches[1]
 					currentProxy = &ProxyConfig{
-						FallbackPort: 3000,
-						Host:         "localhost",
-						Autostart:    true, // proxies in config are autostart by default
+						Host:      "localhost",
+						Autostart: true, // proxies in config are autostart by default
 					}
 				}
 			} else if strings.HasPrefix(line, "proxies") {
@@ -252,9 +256,8 @@ func parseAgntConfigSimple(data string) (*AgntConfig, error) {
 				if len(parts) >= 1 {
 					currentProxyName = strings.Trim(parts[0], "\"")
 					currentProxy = &ProxyConfig{
-						FallbackPort: 3000,
-						Host:         "localhost",
-						Autostart:    true,
+						Host:      "localhost",
+						Autostart: true,
 					}
 					currentBlock = "proxy" // Switch to proxy mode
 				}
@@ -309,6 +312,8 @@ func parseProxyProperty(line string, proxy *ProxyConfig) {
 			proxy.PortDetect = matches[2]
 		case "target", "target-url":
 			proxy.Target = matches[2]
+		case "url":
+			proxy.URL = matches[2]
 		case "host":
 			proxy.Host = matches[2]
 		}
@@ -318,9 +323,8 @@ func parseProxyProperty(line string, proxy *ProxyConfig) {
 	if matches := intRe.FindStringSubmatch(line); len(matches) > 2 {
 		val, _ := strconv.Atoi(matches[2])
 		switch matches[1] {
-		case "fallback-port":
-			proxy.FallbackPort = val
-		case "port":
+		case "port", "fallback-port":
+			// Both "port" and "fallback-port" set the target port
 			proxy.Port = val
 		case "max-log-size":
 			proxy.MaxLogSize = val
@@ -328,8 +332,8 @@ func parseProxyProperty(line string, proxy *ProxyConfig) {
 		return
 	}
 
-	// Boolean properties
-	if strings.Contains(line, "autostart") {
+	// Boolean properties (handle both "autostart" and "auto-start")
+	if strings.Contains(line, "autostart") || strings.Contains(line, "auto-start") {
 		proxy.Autostart = strings.Contains(line, "true")
 	}
 }
