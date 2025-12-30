@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -218,7 +219,7 @@ func (d *Daemon) Start() error {
 	d.listener = listener
 	d.started = time.Now()
 
-	log.Printf("Daemon started, listening on %s", d.sockMgr.Path())
+	// Removed startup log: Daemon started, listening on %s
 
 	// Clean up orphaned processes from previous crash
 	d.cleanupOrphans()
@@ -257,7 +258,7 @@ func (d *Daemon) restoreProxies() {
 		return
 	}
 
-	log.Printf("[Daemon] restoring %d proxies from state", len(proxies))
+	// Removed startup log: restoring %d proxies from state
 
 	overlayEndpoint := d.OverlayEndpoint()
 
@@ -284,8 +285,7 @@ func (d *Daemon) restoreProxies() {
 			proxyServer.SetOverlayEndpoint(overlayEndpoint)
 		}
 
-		log.Printf("[Daemon] restored proxy %s -> %s on port %d",
-			pc.ID, pc.TargetURL, pc.Port)
+		// Removed startup log: restored proxy %s -> %s on port %d
 	}
 }
 
@@ -728,7 +728,7 @@ func (d *Daemon) RunAutostart(ctx context.Context, projectPath string) *Autostar
 	result := &AutostartResult{}
 
 	if projectPath == "" {
-		log.Printf("[DEBUG] RunAutostart: empty projectPath, skipping")
+		log.Printf("[DEBUG] RunAutostart: projectPath is empty")
 		return result
 	}
 
@@ -737,8 +737,8 @@ func (d *Daemon) RunAutostart(ctx context.Context, projectPath string) *Autostar
 	// Load .agnt.kdl config
 	agntConfig, err := config.LoadAgntConfig(projectPath)
 	if err != nil {
-		log.Printf("[DEBUG] RunAutostart: config load error: %v", err)
 		// No config or error loading - not an error, just nothing to autostart
+		log.Printf("[DEBUG] RunAutostart: config load error: %v", err)
 		return result
 	}
 
@@ -747,16 +747,19 @@ func (d *Daemon) RunAutostart(ctx context.Context, projectPath string) *Autostar
 		return result
 	}
 
+	log.Printf("[DEBUG] RunAutostart: config loaded, scripts=%d proxies=%d",
+		len(agntConfig.Scripts), len(agntConfig.Proxies))
+
 	// Start scripts
 	autostartScripts := agntConfig.GetAutostartScripts()
 	log.Printf("[DEBUG] RunAutostart: found %d autostart scripts: %v", len(autostartScripts), mapKeys(autostartScripts))
 	for name, script := range autostartScripts {
-		log.Printf("[DEBUG] RunAutostart: starting script %q", name)
+		log.Printf("[DEBUG] RunAutostart: starting script %s", name)
 		if err := d.autostartScript(ctx, name, script, projectPath); err != nil {
-			log.Printf("[DEBUG] RunAutostart: script %q error: %v", name, err)
+			log.Printf("[DEBUG] RunAutostart: script %s failed: %v", name, err)
 			result.Errors = append(result.Errors, fmt.Sprintf("script %s: %v", name, err))
 		} else {
-			log.Printf("[DEBUG] RunAutostart: script %q started successfully", name)
+			log.Printf("[DEBUG] RunAutostart: script %s started successfully", name)
 			result.Scripts = append(result.Scripts, name)
 		}
 	}
@@ -765,17 +768,30 @@ func (d *Daemon) RunAutostart(ctx context.Context, projectPath string) *Autostar
 	autostartProxies := agntConfig.GetAutostartProxies()
 	log.Printf("[DEBUG] RunAutostart: found %d autostart proxies: %v", len(autostartProxies), mapKeysProxy(autostartProxies))
 	for name, proxyConfig := range autostartProxies {
-		log.Printf("[DEBUG] RunAutostart: starting proxy %q (target: %s)", name, proxyConfig.Target)
+		log.Printf("[DEBUG] RunAutostart: starting proxy %s (script=%s port=%d)", name, proxyConfig.Script, proxyConfig.Port)
 		if err := d.autostartProxy(ctx, name, proxyConfig, projectPath); err != nil {
-			log.Printf("[DEBUG] RunAutostart: proxy %q error: %v", name, err)
+			log.Printf("[DEBUG] RunAutostart: proxy %s failed: %v", name, err)
 			result.Errors = append(result.Errors, fmt.Sprintf("proxy %s: %v", name, err))
 		} else {
-			log.Printf("[DEBUG] RunAutostart: proxy %q started successfully", name)
+			log.Printf("[DEBUG] RunAutostart: proxy %s started successfully", name)
 			result.Proxies = append(result.Proxies, name)
 		}
 	}
 
 	return result
+}
+
+// makeProcessID creates a unique process ID scoped to a project path.
+// This prevents process ID collisions when multiple sessions from different
+// projects use the same script name (e.g., "dev").
+// Format: <basename>:<name> (e.g., "my-project:dev")
+func makeProcessID(projectPath, name string) string {
+	if projectPath == "" {
+		return name
+	}
+	// Use the last component of the path as a readable prefix
+	basename := filepath.Base(projectPath)
+	return fmt.Sprintf("%s:%s", basename, name)
 }
 
 // mapKeys extracts keys from a script config map for logging.
@@ -798,11 +814,12 @@ func mapKeysProxy(m map[string]*config.ProxyConfig) []string {
 
 // autostartScript starts a single script from config.
 func (d *Daemon) autostartScript(ctx context.Context, name string, script *config.ScriptConfig, projectPath string) error {
-	log.Printf("[DEBUG] autostartScript: name=%q projectPath=%q", name, projectPath)
+
+	// Make process ID unique per project to avoid collisions between sessions
+	processID := makeProcessID(projectPath, name)
 
 	// Check if already running
-	if existing, err := d.pm.Get(name); err == nil {
-		log.Printf("[DEBUG] autostartScript: script %q already running (state=%d)", name, existing.State())
+	if _, err := d.pm.Get(processID); err == nil {
 		return nil // Already running
 	}
 
@@ -813,17 +830,12 @@ func (d *Daemon) autostartScript(ctx context.Context, name string, script *confi
 		// Explicit command specified
 		command = script.Command
 		args = script.Args
-		log.Printf("[DEBUG] autostartScript: using explicit command %q %v", command, args)
 	} else {
 		// No command - run as package.json script via detected package manager
-		log.Printf("[DEBUG] autostartScript: detecting project type for path %q", projectPath)
 		proj, err := project.Detect(projectPath)
 		if err != nil {
-			log.Printf("[DEBUG] autostartScript: project detection failed: %v", err)
 			return fmt.Errorf("project detection failed: %v", err)
 		}
-
-		log.Printf("[DEBUG] autostartScript: detected project type=%q package_manager=%q", proj.Type, proj.PackageManager)
 
 		switch proj.Type {
 		case project.ProjectNode:
@@ -847,47 +859,88 @@ func (d *Daemon) autostartScript(ctx context.Context, name string, script *confi
 		default:
 			return fmt.Errorf("cannot run script %q: unknown project type and no command specified", name)
 		}
-		log.Printf("[DEBUG] autostartScript: will run %q %v", command, args)
 	}
 
 	// Create and start process using StartOrReuse for idempotent behavior
-	log.Printf("[DEBUG] autostartScript: starting process id=%q path=%q cmd=%q args=%v", name, projectPath, command, args)
-	result, err := d.pm.StartOrReuse(ctx, process.ProcessConfig{
-		ID:          name,
+	_, err := d.pm.StartOrReuse(ctx, process.ProcessConfig{
+		ID:          processID,
 		ProjectPath: projectPath,
 		Command:     command,
 		Args:        args,
 		Env:         os.Environ(),
 	})
 	if err != nil {
-		log.Printf("[DEBUG] autostartScript: StartOrReuse failed: %v", err)
 		return err
 	}
 
-	log.Printf("[DEBUG] autostartScript: started successfully (reused=%v)", result.Reused)
 	return nil
 }
 
 // autostartProxy starts a single proxy from config.
 func (d *Daemon) autostartProxy(ctx context.Context, name string, proxyConfig *config.ProxyConfig, projectPath string) error {
+	// Make proxy ID unique per project to avoid collisions between sessions
+	proxyID := makeProcessID(projectPath, name)
+
 	// Check if already running
-	if _, err := d.proxym.Get(name); err == nil {
+	if _, err := d.proxym.Get(proxyID); err == nil {
 		return nil // Already running
 	}
 
-	// Determine target URL
-	targetURL := proxyConfig.Target
+	// Also compute the scoped script ID if this proxy is linked to a script
+	var scriptID string
+	if proxyConfig.Script != "" {
+		scriptID = makeProcessID(projectPath, proxyConfig.Script)
+	}
 
-	// If linked to a script, detect the port
-	if proxyConfig.Script != "" && targetURL == "" {
-		detectedPort, err := d.detectPortForScript(ctx, proxyConfig.Script, proxyConfig)
+	var targetURL string
+
+	// Priority order for target determination:
+	// 1. Script with port-detect "auto" (backwards compat: script + fallback-port)
+	// 2. Explicit URL (e.g., url "http://localhost:3000")
+	// 3. Explicit Port without script (e.g., port 3000)
+	// 4. Legacy Target field
+	// 5. Script without port-detect
+
+	if proxyConfig.Script != "" && proxyConfig.PortDetect == "auto" {
+		// Script detection mode: wait for URL detection from script output
+		// This handles backwards compat with configs that have both script and fallback-port
+		detectedPort, err := d.detectPortForScript(ctx, scriptID, proxyConfig)
 		if err != nil {
-			// Use fallback port if available
-			if proxyConfig.FallbackPort > 0 {
-				detectedPort = proxyConfig.FallbackPort
+			// If detection fails and Port is set, use it as fallback
+			if proxyConfig.Port > 0 {
+				host := proxyConfig.Host
+				if host == "" {
+					host = "localhost"
+				}
+				targetURL = fmt.Sprintf("http://%s:%d", host, proxyConfig.Port)
 			} else {
-				return fmt.Errorf("port detection failed and no fallback: %w", err)
+				return fmt.Errorf("URL detection from script %q failed: %w", proxyConfig.Script, err)
 			}
+		} else {
+			host := proxyConfig.Host
+			if host == "" {
+				host = "localhost"
+			}
+			targetURL = fmt.Sprintf("http://%s:%d", host, detectedPort)
+		}
+	} else if proxyConfig.URL != "" {
+		// Direct mode: explicit URL provided
+		targetURL = proxyConfig.URL
+	} else if proxyConfig.Port > 0 {
+		// Direct mode: port provided, construct URL
+		host := proxyConfig.Host
+		if host == "" {
+			host = "localhost"
+		}
+		targetURL = fmt.Sprintf("http://%s:%d", host, proxyConfig.Port)
+	} else if proxyConfig.Target != "" {
+		// Legacy target field
+		targetURL = proxyConfig.Target
+	} else if proxyConfig.Script != "" {
+		// Script mode without port-detect: wait for URL detection from script output
+		detectedPort, err := d.detectPortForScript(ctx, scriptID, proxyConfig)
+		if err != nil {
+			return fmt.Errorf("URL detection from script %q failed: %w", proxyConfig.Script, err)
 		}
 
 		host := proxyConfig.Host
@@ -898,12 +951,12 @@ func (d *Daemon) autostartProxy(ctx context.Context, name string, proxyConfig *c
 	}
 
 	if targetURL == "" {
-		return nil // No target URL and no script for port detection
+		return nil // No target configured
 	}
 
 	// Create proxy server using the same config format as handler.go
 	proxyServerConfig := proxy.ProxyConfig{
-		ID:          name,
+		ID:          proxyID,
 		TargetURL:   targetURL,
 		ListenPort:  -1,   // Auto-assign port
 		MaxLogSize:  1000, // Default
@@ -990,5 +1043,4 @@ func setupDebugLogging() {
 	// Configure log to write to file
 	log.SetOutput(f)
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
-	log.Printf("=== Daemon starting (pid=%d) ===", os.Getpid())
 }
