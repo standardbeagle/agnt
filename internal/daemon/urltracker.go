@@ -27,8 +27,21 @@ type URLTracker struct {
 	// We only look at the first 8KB of output (startup phase)
 	scannedBytes map[string]int
 
+	// urlMatchers stores URL matcher patterns per process ID
+	// e.g., ["Local:\\s*{url}", "Network:\\s*{url}"]
+	urlMatchers map[string][]string
+
 	// scanInterval is how often to scan for new URLs
 	scanInterval time.Duration
+
+	// onURLDetected is called when a new URL is detected
+	onURLDetected func(processID, url string)
+
+	// onProcessStopped is called when a process is removed/stopped
+	onProcessStopped func(processID string)
+
+	// onProcessFirstSeen is called when a process is first scanned (for loading config)
+	onProcessFirstSeen func(processID string)
 }
 
 // URLTrackerConfig configures the URL tracker.
@@ -56,7 +69,21 @@ func NewURLTracker(pm *process.ProcessManager, config URLTrackerConfig) *URLTrac
 		urls:         make(map[string][]string),
 		seenURLs:     make(map[string]map[string]bool),
 		scannedBytes: make(map[string]int),
+		urlMatchers:  make(map[string][]string),
 		scanInterval: config.ScanInterval,
+	}
+}
+
+// SetURLMatchers sets URL matcher patterns for a specific process.
+// Matchers support patterns like "Local:\\s*{url}" or "(Local|Network):\\s*{url}".
+func (t *URLTracker) SetURLMatchers(processID string, matchers []string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	if len(matchers) > 0 {
+		t.urlMatchers[processID] = matchers
+	} else {
+		delete(t.urlMatchers, processID)
 	}
 }
 
@@ -140,7 +167,16 @@ func (t *URLTracker) scanProcess(p *process.ManagedProcess) {
 		return
 	}
 
+	// Call first-seen callback on first scan (for loading config)
+	// This must happen BEFORE we scan, so matchers are available
+	isFirstScan := t.scannedBytes[p.ID] == 0
+
 	t.mu.Unlock()
+
+	// Load matchers before scanning on first scan
+	if isFirstScan && t.onProcessFirstSeen != nil {
+		t.onProcessFirstSeen(p.ID)
+	}
 
 	// Get combined output
 	output, _ := p.CombinedOutput()
@@ -166,8 +202,11 @@ func (t *URLTracker) scanProcess(p *process.ManagedProcess) {
 	// Update scanned position
 	t.scannedBytes[p.ID] = scanEnd
 
-	// Parse dev server URLs from the new portion
-	urls := parseDevServerURLs(output[scanStart:scanEnd])
+	// Get URL matchers for this process (if any)
+	matchers := t.urlMatchers[p.ID]
+
+	// Parse dev server URLs from the new portion using matchers
+	urls := parseDevServerURLsWithMatchers(output[scanStart:scanEnd], matchers)
 	if len(urls) == 0 {
 		return
 	}
@@ -177,7 +216,10 @@ func (t *URLTracker) scanProcess(p *process.ManagedProcess) {
 		t.seenURLs[p.ID] = make(map[string]bool)
 	}
 
-	// Add new URLs
+	// Add new URLs and track which ones are new for callback notification
+	var newURLs []string
+	processID := p.ID // Save processID for callback after unlock
+
 	for _, url := range urls {
 		if t.seenURLs[p.ID][url] {
 			continue // Already seen
@@ -191,6 +233,18 @@ func (t *URLTracker) scanProcess(p *process.ManagedProcess) {
 		// Add new URL
 		t.urls[p.ID] = append(t.urls[p.ID], url)
 		t.seenURLs[p.ID][url] = true
+		newURLs = append(newURLs, url)
+	}
+
+	// Lock will be released by defer, then we notify about new URLs
+	// We defer the callback to avoid holding the lock during notification
+	if len(newURLs) > 0 && t.onURLDetected != nil {
+		// Note: defer executes in LIFO order, so this runs AFTER the mutex unlock
+		defer func() {
+			for _, url := range newURLs {
+				t.onURLDetected(processID, url)
+			}
+		}()
 	}
 }
 
@@ -203,14 +257,25 @@ func (t *URLTracker) cleanupRemovedProcesses(currentProcs []*process.ManagedProc
 	}
 
 	t.mu.Lock()
-	defer t.mu.Unlock()
 
-	// Remove tracking for processes that don't exist
+	// Remove tracking for processes that don't exist and collect stopped IDs
+	var stoppedProcesses []string
 	for id := range t.urls {
 		if !currentIDs[id] {
 			delete(t.urls, id)
 			delete(t.seenURLs, id)
 			delete(t.scannedBytes, id)
+			delete(t.urlMatchers, id)
+			stoppedProcesses = append(stoppedProcesses, id)
+		}
+	}
+
+	t.mu.Unlock()
+
+	// Notify about stopped processes (after releasing lock)
+	if t.onProcessStopped != nil {
+		for _, id := range stoppedProcesses {
+			t.onProcessStopped(id)
 		}
 	}
 }
@@ -221,30 +286,71 @@ var devServerURLRegex = regexp.MustCompile(`https?://(?:localhost|127\.0\.0\.1|0
 // parseDevServerURLs extracts dev server URLs from output.
 // Only returns localhost-like URLs that look like dev servers.
 func parseDevServerURLs(output []byte) []string {
-	matches := devServerURLRegex.FindAllString(string(output), -1)
+	return parseDevServerURLsWithMatchers(output, nil)
+}
 
-	// Deduplicate and clean URLs
+// parseDevServerURLsWithMatchers extracts URLs matching specific patterns.
+// If matchers is nil or empty, returns all detected URLs.
+// Matchers support patterns like "Local:\s*{url}" or "(Local|Network):\s*{url}".
+func parseDevServerURLsWithMatchers(output []byte, matchers []string) []string {
+	lines := strings.Split(string(output), "\n")
 	seen := make(map[string]bool)
 	var urls []string
-	for _, match := range matches {
-		// Clean trailing punctuation
-		match = strings.TrimRight(match, ".,;:)")
 
-		// Skip if already seen
-		if seen[match] {
+	for _, line := range lines {
+		// If no matchers specified, scan entire line for URLs
+		if len(matchers) == 0 {
+			lineMatches := devServerURLRegex.FindAllString(line, -1)
+			for _, match := range lineMatches {
+				match = strings.TrimRight(match, ".,;:)")
+				if !seen[match] && !shouldIgnoreURL(match) {
+					seen[match] = true
+					urls = append(urls, match)
+				}
+			}
 			continue
 		}
 
-		// Skip URLs that look like error messages or API endpoints
-		if shouldIgnoreURL(match) {
-			continue
+		// Check if line matches any of the patterns
+		for _, matcher := range matchers {
+			if matchesURLPattern(line, matcher) {
+				// Extract URL from the line
+				lineMatches := devServerURLRegex.FindAllString(line, -1)
+				for _, match := range lineMatches {
+					match = strings.TrimRight(match, ".,;:)")
+					if !seen[match] && !shouldIgnoreURL(match) {
+						seen[match] = true
+						urls = append(urls, match)
+					}
+				}
+				break // Line matched, no need to check other patterns
+			}
 		}
-
-		seen[match] = true
-		urls = append(urls, match)
 	}
 
 	return urls
+}
+
+// matchesURLPattern checks if a line matches a URL matcher pattern.
+// Supports patterns like:
+//   - "Local:\s*{url}" - matches lines containing "Local:" followed by a URL
+//   - "(Local|Network):\s*{url}" - matches lines with "Local:" or "Network:"
+//   - "{url}" - matches any line with a URL
+func matchesURLPattern(line, pattern string) bool {
+	// Replace {url} placeholder with a simple marker
+	// We don't need to match the actual URL, just check if the prefix exists
+	pattern = strings.ReplaceAll(pattern, "{url}", "")
+	pattern = strings.TrimSpace(pattern)
+
+	if pattern == "" {
+		// Empty pattern matches any line with a URL
+		return devServerURLRegex.MatchString(line)
+	}
+
+	// Handle regex-style patterns like "(Local|Network):"
+	// Simple matching: check if the line contains the pattern (after removing {url})
+	matched, _ := regexp.MatchString(pattern, line)
+	return matched
 }
 
 // shouldIgnoreURL returns true if the URL should be ignored.

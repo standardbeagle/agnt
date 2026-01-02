@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -260,8 +261,15 @@ func runWithPTY(ctx context.Context, args []string, socketPath string, sessionCo
 		_ = term.Restore(int(os.Stdin.Fd()), oldState)
 	}()
 
+	// Create session-specific overlay socket path to isolate each session
+	overlaySocketPath := ""
+	if defaultPath := DefaultOverlaySocketPath(); defaultPath != "" {
+		dir := filepath.Dir(defaultPath)
+		overlaySocketPath = filepath.Join(dir, fmt.Sprintf("devtool-overlay-%s.sock", sessionCode))
+	}
+
 	// Create network overlay for receiving external events (from browser)
-	netOverlay := newOverlay(socketPath, ptmx)
+	netOverlay := newOverlay(overlaySocketPath, ptmx)
 	_ = netOverlay.Start(ctx) // Best-effort, non-critical for PTY operation
 	defer netOverlay.Stop()
 

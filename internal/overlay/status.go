@@ -7,7 +7,6 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -498,27 +497,6 @@ func (f *StatusFetcher) linkProcessesAndProxies(processes []ProcessInfo, proxies
 	}
 }
 
-// parseURLsFromOutput extracts unique URLs from process output.
-func parseURLsFromOutput(output string) []string {
-	// Regex to match http/https URLs
-	urlRegex := regexp.MustCompile(`https?://[^\s\)\]\}'"]+`)
-	matches := urlRegex.FindAllString(output, -1)
-
-	// Deduplicate and clean URLs
-	seen := make(map[string]bool)
-	var urls []string
-	for _, match := range matches {
-		// Clean trailing punctuation
-		match = strings.TrimRight(match, ".,;:")
-		if !seen[match] {
-			seen[match] = true
-			urls = append(urls, match)
-		}
-	}
-
-	return urls
-}
-
 // fetchLastOutputForProcesses fetches the last output line for each running process.
 // URLs are now provided by the server (via URL tracker), so this only fetches
 // the last output line for display purposes.
@@ -536,17 +514,12 @@ func (f *StatusFetcher) fetchLastOutputForProcesses(processes []ProcessInfo) {
 			continue
 		}
 
-		// Fetch last 10 lines for display (URLs come from server)
+		// Fetch last 10 lines for display (URLs come from server via URLTracker)
 		output, err := f.conn.Request(protocol.VerbProc, protocol.SubVerbOutput, proc.ID).
 			WithArgs("stream=combined", "tail=10").
 			String()
 		if err != nil {
 			continue
-		}
-
-		// If server didn't provide URLs, parse from output as fallback
-		if len(proc.URLs) == 0 {
-			proc.URLs = parseURLsFromOutput(output)
 		}
 
 		// Clean up the output for LastOutput field

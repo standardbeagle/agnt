@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -280,8 +281,15 @@ func runWithConPTY(ctx context.Context, args []string, socketPath string, sessio
 	// Clear screen before child starts outputting
 	fmt.Fprint(os.Stdout, "\x1b[2J\x1b[H")
 
+	// Create session-specific overlay socket path to isolate each session
+	overlaySocketPath := ""
+	if defaultPath := DefaultOverlaySocketPath(); defaultPath != "" {
+		dir := filepath.Dir(defaultPath)
+		overlaySocketPath = filepath.Join(dir, fmt.Sprintf("devtool-overlay-%s.sock", sessionCode))
+	}
+
 	// Create network overlay for receiving external events (from browser)
-	netOverlay := newOverlay(socketPath, ptmx)
+	netOverlay := newOverlay(overlaySocketPath, ptmx)
 	_ = netOverlay.Start(ctx)
 	defer netOverlay.Stop()
 

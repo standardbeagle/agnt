@@ -311,3 +311,37 @@ func TestDefaultSchedulerConfig(t *testing.T) {
 		t.Errorf("DefaultSchedulerConfig() RetryDelay = %v, want 5s", config.RetryDelay)
 	}
 }
+
+func TestNewScheduler_WithEmptyConfig(t *testing.T) {
+	registry := NewSessionRegistry(60 * time.Second)
+
+	// Create scheduler with empty config - should use defaults
+	scheduler := NewScheduler(SchedulerConfig{}, registry, nil)
+
+	if scheduler == nil {
+		t.Fatal("NewScheduler returned nil")
+	}
+	if scheduler.config.TickInterval != 1*time.Second {
+		t.Errorf("NewScheduler() with empty config should use default TickInterval, got %v", scheduler.config.TickInterval)
+	}
+}
+
+func TestScheduler_Start_AlreadyStarted(t *testing.T) {
+	registry := NewSessionRegistry(60 * time.Second)
+	scheduler := NewScheduler(DefaultSchedulerConfig(), registry, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// First start should succeed
+	if err := scheduler.Start(ctx); err != nil {
+		t.Fatalf("First Start() failed: %v", err)
+	}
+	defer scheduler.Stop()
+
+	// Second start should fail
+	err := scheduler.Start(ctx)
+	if err == nil {
+		t.Error("Second Start() should return error for already started scheduler")
+	}
+}

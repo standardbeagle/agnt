@@ -103,10 +103,17 @@ func (c *Client) Ping() error {
 }
 
 // Info retrieves daemon information.
+// Uses STATUS command to get full daemon info (Hub's INFO is minimal).
+// Falls back to INFO if STATUS is not available (for backwards compatibility).
 func (c *Client) Info() (*DaemonInfo, error) {
-	result, err := c.conn.Request(protocol.VerbInfo).JSON()
+	// Try STATUS first (returns full daemon info)
+	result, err := c.conn.Request(protocol.VerbStatus).JSON()
 	if err != nil {
-		return nil, err
+		// Fall back to INFO for older daemons that don't have STATUS
+		result, err = c.conn.Request(protocol.VerbInfo).JSON()
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	data, err := json.Marshal(result)
@@ -448,4 +455,14 @@ func (c *Client) SessionFind(directory string) (map[string]interface{}, error) {
 // SessionAttach attaches to a session found by directory ancestry.
 func (c *Client) SessionAttach(directory string) (map[string]interface{}, error) {
 	return c.conn.Request(protocol.VerbSession, protocol.SubVerbAttach, directory).JSON()
+}
+
+// SessionURL reports a detected URL from an agnt run session.
+// This triggers proxy creation for any matching proxy configurations.
+func (c *Client) SessionURL(code string, url string, scriptName string) (map[string]interface{}, error) {
+	req := c.conn.Request(protocol.VerbSession, protocol.SubVerbURL, code, url)
+	if scriptName != "" {
+		req = req.WithJSON(map[string]string{"script": scriptName})
+	}
+	return req.JSON()
 }
