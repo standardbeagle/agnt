@@ -4,10 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"log"
-	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/proxy"
 	"github.com/standardbeagle/agnt/internal/tunnel"
 	"github.com/standardbeagle/agnt/internal/updater"
+	"github.com/standardbeagle/go-cli-server/hub"
 	"github.com/standardbeagle/go-cli-server/process"
 )
 
@@ -31,6 +33,28 @@ var BuildTime = ""
 // GitCommit is the git commit hash.
 // Set at build time with: -ldflags "-X github.com/standardbeagle/agnt/internal/daemon.GitCommit=$(git rev-parse HEAD)"
 var GitCommit = ""
+
+// ProxyEventType represents the type of proxy event.
+type ProxyEventType int
+
+const (
+	// URLDetected indicates a URL was detected from script output
+	URLDetected ProxyEventType = iota
+	// ExplicitStart indicates a proxy should start with explicit config
+	ExplicitStart
+	// ScriptStopped indicates a script stopped and its proxies should be cleaned up
+	ScriptStopped
+)
+
+// ProxyEvent represents an event that triggers proxy creation or cleanup.
+type ProxyEvent struct {
+	Type     ProxyEventType
+	ScriptID string // Process/script ID that triggered the event
+	URL      string // Detected URL (for URLDetected events)
+	ProxyID  string // Specific proxy ID (for ExplicitStart events)
+	Config   *config.ProxyConfig
+	Path     string // Project path
+}
 
 // DaemonConfig holds configuration for the daemon.
 type DaemonConfig struct {
@@ -85,15 +109,20 @@ func DefaultDaemonConfig() DaemonConfig {
 }
 
 // Daemon is the main daemon process that manages state across client connections.
+// The daemon is built on top of go-cli-server Hub, which owns the ProcessManager
+// and handles session/client lifecycle. Daemon adds agnt-specific functionality:
+// proxy management, tunnel management, URL tracking, and scheduling.
 type Daemon struct {
 	config DaemonConfig
 
-	// Core managers
-	pm      *process.ProcessManager
+	// Core hub (owns ProcessManager, sessions, clients)
+	hub *hub.Hub
+
+	// agnt-specific managers
 	proxym  *proxy.ProxyManager
 	tunnelm *tunnel.Manager
 
-	// Session and scheduling
+	// Session and scheduling (agnt-specific extensions)
 	sessionRegistry   *SessionRegistry
 	scheduler         *Scheduler
 	schedulerStateMgr *SchedulerStateManager
@@ -105,17 +134,13 @@ type Daemon struct {
 	// URL tracking for processes
 	urlTracker *URLTracker
 
+	// Proxy event system
+	proxyEvents   chan ProxyEvent
+	scriptProxies map[string][]string // scriptID -> []proxyID
+	scriptProxyMu sync.RWMutex
+
 	// Update checker
 	updateChecker *updater.UpdateChecker
-
-	// Socket management
-	sockMgr  *SocketManager
-	listener net.Listener
-
-	// Client tracking
-	clients     sync.Map // clientID -> *Connection
-	clientCount atomic.Int64
-	nextID      atomic.Int64
 
 	// Overlay endpoint (can be set dynamically)
 	overlayEndpoint atomic.Pointer[string]
@@ -133,7 +158,7 @@ type Daemon struct {
 func New(config DaemonConfig) *Daemon {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	// Create session registry with 60-second heartbeat timeout
+	// Create session registry with 60-second heartbeat timeout (agnt-specific)
 	sessionRegistry := NewSessionRegistry(60 * time.Second)
 
 	// Create scheduler state manager for per-project task persistence
@@ -147,26 +172,78 @@ func New(config DaemonConfig) *Daemon {
 		AppName: "devtool-mcp",
 	})
 
-	// Configure process manager with PID tracking
+	// Configure Hub with ProcessManager enabled
 	procConfig := config.ProcessConfig
 	procConfig.PIDTracker = pidTracker
 
-	pm := process.NewProcessManager(procConfig)
+	hubConfig := hub.Config{
+		SocketPath:        config.SocketPath,
+		SocketName:        "devtool-mcp", // Keep existing socket name
+		MaxClients:        config.MaxClients,
+		ReadTimeout:       config.ReadTimeout,
+		WriteTimeout:      config.WriteTimeout,
+		EnableProcessMgmt: true,
+		ProcessConfig:     procConfig,
+		Version:           Version,
+	}
+
+	h := hub.New(hubConfig)
 
 	d := &Daemon{
 		config:            config,
-		pm:                pm,
+		hub:               h,
 		proxym:            proxy.NewProxyManager(),
 		tunnelm:           tunnel.NewManager(),
 		sessionRegistry:   sessionRegistry,
 		scheduler:         scheduler,
 		schedulerStateMgr: schedulerStateMgr,
 		pidTracker:        pidTracker,
-		urlTracker:        NewURLTracker(pm, DefaultURLTrackerConfig()),
-		sockMgr:           NewSocketManager(SocketConfig{Path: config.SocketPath}),
+		proxyEvents:       make(chan ProxyEvent, 10), // Buffer 10 events
+		scriptProxies:     make(map[string][]string),
 		ctx:               ctx,
 		cancel:            cancel,
 	}
+
+	// Create URLTracker with callbacks to emit proxy events
+	// Access ProcessManager through Hub
+	urlTracker := NewURLTracker(h.ProcessManager(), DefaultURLTrackerConfig())
+	urlTracker.onURLDetected = func(processID, url string) {
+		// Get project path from process
+		var projectPath string
+		if proc, err := h.ProcessManager().Get(processID); err == nil {
+			projectPath = proc.ProjectPath
+		}
+
+		// Send event to proxy event handler (non-blocking send)
+		select {
+		case d.proxyEvents <- ProxyEvent{
+			Type:     URLDetected,
+			ScriptID: processID,
+			URL:      url,
+			Path:     projectPath,
+		}:
+		default:
+			// Channel full, log warning
+			log.Printf("[WARN] Proxy event channel full, dropping URL detection event for %s: %s", processID, url)
+		}
+	}
+	urlTracker.onProcessStopped = func(processID string) {
+		// Send script stopped event (non-blocking send)
+		select {
+		case d.proxyEvents <- ProxyEvent{
+			Type:     ScriptStopped,
+			ScriptID: processID,
+		}:
+		default:
+			// Channel full, log warning
+			log.Printf("[WARN] Proxy event channel full, dropping process stopped event for %s", processID)
+		}
+	}
+	urlTracker.onProcessFirstSeen = func(processID string) {
+		// Load URL matchers from config when a process is first detected
+		d.LoadURLMatchersForProcess(processID)
+	}
+	d.urlTracker = urlTracker
 
 	// Initialize state manager if persistence is enabled
 	if config.EnableStatePersistence {
@@ -199,6 +276,12 @@ func New(config DaemonConfig) *Daemon {
 	return d
 }
 
+// registerCommands registers agnt-specific commands with the Hub.
+// This delegates to registerAgntCommands() in hub_handlers.go.
+func (d *Daemon) registerCommands() {
+	d.registerAgntCommands()
+}
+
 // Start starts the daemon and begins accepting connections.
 func (d *Daemon) Start() error {
 	d.shutdownMu.Lock()
@@ -211,15 +294,20 @@ func (d *Daemon) Start() error {
 	// Setup file-based logging for debugging (captures output even when daemon runs detached)
 	setupDebugLogging()
 
-	// Create socket
-	listener, err := d.sockMgr.Listen()
-	if err != nil {
-		return fmt.Errorf("failed to create socket: %w", err)
-	}
-	d.listener = listener
-	d.started = time.Now()
+	// Register agnt-specific commands with Hub before starting
+	d.registerCommands()
 
-	// Removed startup log: Daemon started, listening on %s
+	// Register session cleanup callback with Hub
+	// This ensures processes/proxies are stopped when sessions disconnect
+	d.hub.SetSessionCleanup(func(sessionCode string) {
+		d.CleanupSessionResources(sessionCode)
+	})
+
+	// Start the Hub (handles socket creation, accept loop, client management)
+	if err := d.hub.Start(); err != nil {
+		return fmt.Errorf("failed to start hub: %w", err)
+	}
+	d.started = time.Now()
 
 	// Clean up orphaned processes from previous crash
 	d.cleanupOrphans()
@@ -235,14 +323,14 @@ func (d *Daemon) Start() error {
 	// Start URL tracker for process URL detection
 	d.urlTracker.Start(d.ctx)
 
+	// Start proxy event handler for event-driven proxy creation
+	d.wg.Add(1)
+	go d.handleProxyEvents()
+
 	// Start update checker if enabled
 	if d.updateChecker != nil {
 		d.updateChecker.Start()
 	}
-
-	// Start accept loop
-	d.wg.Add(1)
-	go d.acceptLoop()
 
 	return nil
 }
@@ -326,21 +414,12 @@ func (d *Daemon) Stop(ctx context.Context) error {
 	// Signal all goroutines to stop
 	d.cancel()
 
-	// Close listener to unblock accept (sockMgr.Close() will handle cleanup)
-	// We close it here first to unblock the accept loop before waiting for it
-	if d.listener != nil {
-		d.listener.Close()
-		d.listener = nil // Mark as closed so sockMgr.Close() won't try again
+	// Stop Hub (handles listener, clients, connections)
+	if err := d.hub.Stop(ctx); err != nil {
+		log.Printf("[Daemon] error stopping hub: %v", err)
 	}
 
-	// Close all client connections
-	d.clients.Range(func(key, value any) bool {
-		conn := value.(*Connection)
-		conn.Close()
-		return true
-	})
-
-	// Shutdown managers
+	// Shutdown agnt-specific managers
 	var errs []error
 
 	// Stop scheduler
@@ -357,10 +436,6 @@ func (d *Daemon) Stop(ctx context.Context) error {
 
 	if err := d.proxym.Shutdown(ctx); err != nil {
 		errs = append(errs, fmt.Errorf("proxy manager: %w", err))
-	}
-
-	if err := d.pm.Shutdown(ctx); err != nil {
-		errs = append(errs, fmt.Errorf("process manager: %w", err))
 	}
 
 	// Clear PID tracking (clean shutdown)
@@ -384,10 +459,7 @@ func (d *Daemon) Stop(ctx context.Context) error {
 		errs = append(errs, ctx.Err())
 	}
 
-	// Cleanup socket
-	if err := d.sockMgr.Close(); err != nil {
-		errs = append(errs, fmt.Errorf("socket cleanup: %w", err))
-	}
+	// Socket cleanup is handled by Hub.Stop()
 
 	log.Println("Daemon stopped")
 
@@ -409,13 +481,13 @@ func (d *Daemon) Info() DaemonInfo {
 		Version:     Version,
 		BuildTime:   BuildTime,
 		GitCommit:   GitCommit,
-		SocketPath:  d.sockMgr.Path(),
+		SocketPath:  d.hub.SocketPath(),
 		Uptime:      time.Since(d.started),
-		ClientCount: d.clientCount.Load(),
+		ClientCount: d.hub.ClientCount(),
 		ProcessInfo: ProcessInfo{
-			Active:       d.pm.ActiveCount(),
-			TotalStarted: d.pm.TotalStarted(),
-			TotalFailed:  d.pm.TotalFailed(),
+			Active:       d.hub.ProcessManager().ActiveCount(),
+			TotalStarted: d.hub.ProcessManager().TotalStarted(),
+			TotalFailed:  d.hub.ProcessManager().TotalFailed(),
 		},
 		ProxyInfo: ProxyInfo{
 			Active:       d.proxym.ActiveCount(),
@@ -439,7 +511,7 @@ func (d *Daemon) Info() DaemonInfo {
 
 // ProcessManager returns the process manager.
 func (d *Daemon) ProcessManager() *process.ProcessManager {
-	return d.pm
+	return d.hub.ProcessManager()
 }
 
 // ProxyManager returns the proxy manager.
@@ -502,6 +574,51 @@ func (d *Daemon) OverlayEndpoint() string {
 	return *ptr
 }
 
+// LoadURLMatchersForProcess loads URL matchers from agnt.kdl for a process and sets them on the URL tracker.
+// Process ID format: {basename}:{scriptName} (e.g., "my-project:dev")
+// The project path is retrieved from the process's ProjectPath field.
+func (d *Daemon) LoadURLMatchersForProcess(processID string) {
+	// Get process to retrieve its project path
+	proc, err := d.hub.ProcessManager().Get(processID)
+	if err != nil {
+		log.Printf("[DEBUG] LoadURLMatchersForProcess: process %s not found", processID)
+		return
+	}
+
+	projectPath := proc.ProjectPath
+	if projectPath == "" {
+		log.Printf("[DEBUG] LoadURLMatchersForProcess: process %s has no project path", processID)
+		return
+	}
+
+	// Parse process ID to extract script name (second part after colon)
+	parts := strings.SplitN(processID, ":", 2)
+	if len(parts) < 2 {
+		return // Invalid process ID format
+	}
+	scriptName := parts[1]
+
+	// Load agnt config
+	agntConfig, err := config.LoadAgntConfig(projectPath)
+	if err != nil {
+		log.Printf("[DEBUG] LoadURLMatchersForProcess: failed to load config from %s: %v", projectPath, err)
+		return // No config or error - skip URL matchers
+	}
+
+	// Find script config
+	script, ok := agntConfig.Scripts[scriptName]
+	if !ok || script == nil {
+		log.Printf("[DEBUG] LoadURLMatchersForProcess: script %s not found in config", scriptName)
+		return // Script not found in config
+	}
+
+	// Set URL matchers if specified
+	if len(script.URLMatchers) > 0 {
+		d.urlTracker.SetURLMatchers(processID, script.URLMatchers)
+		log.Printf("[DEBUG] Set URL matchers for %s: %v", processID, script.URLMatchers)
+	}
+}
+
 // StopAllResources stops all processes, proxies, and tunnels without shutting down the daemon.
 // Unlike Shutdown, this does NOT prevent new resources from being created afterward.
 // This is typically called explicitly via the daemon management tool, not automatically.
@@ -541,7 +658,7 @@ func (d *Daemon) StopAllResources(ctx context.Context) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		if err := d.pm.StopAll(cleanupCtx); err != nil {
+		if err := d.hub.ProcessManager().StopAll(cleanupCtx); err != nil {
 			log.Printf("[Daemon] error stopping processes: %v", err)
 		}
 	}()
@@ -603,7 +720,7 @@ func (d *Daemon) CleanupSessionResources(sessionCode string) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		stoppedIDs, err := d.pm.StopByProjectPath(ctx, projectPath)
+		stoppedIDs, err := d.hub.ProcessManager().StopByProjectPath(ctx, projectPath)
 		if err != nil {
 			log.Printf("[Daemon] error stopping processes for project %s: %v", projectPath, err)
 		}
@@ -622,60 +739,8 @@ func (d *Daemon) CleanupSessionResources(sessionCode string) {
 	log.Printf("[Daemon] session %s cleanup complete", sessionCode)
 }
 
-// acceptLoop accepts new client connections.
-func (d *Daemon) acceptLoop() {
-	defer d.wg.Done()
-
-	// Keep local reference to avoid race with Stop() setting d.listener = nil
-	listener := d.listener
-
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			select {
-			case <-d.ctx.Done():
-				return // Shutting down
-			default:
-				log.Printf("Accept error: %v", err)
-				continue
-			}
-		}
-
-		// Check max clients
-		if d.config.MaxClients > 0 && d.clientCount.Load() >= int64(d.config.MaxClients) {
-			log.Printf("Max clients reached, rejecting connection")
-			conn.Close()
-			continue
-		}
-
-		// Create connection handler
-		clientID := d.nextID.Add(1)
-		clientConn := newConnection(clientID, conn, d)
-
-		// Register client
-		d.clients.Store(clientID, clientConn)
-		d.clientCount.Add(1)
-
-		// Handle in goroutine
-		d.wg.Add(1)
-		go func() {
-			defer d.wg.Done()
-			defer func() {
-				d.clients.Delete(clientID)
-				d.clientCount.Add(-1)
-
-				// If this connection registered a session, clean up its resources
-				// This ensures processes/proxies started by this session are stopped
-				// when the session ends, without affecting other sessions.
-				if clientConn.sessionCode != "" {
-					d.CleanupSessionResources(clientConn.sessionCode)
-				}
-			}()
-
-			clientConn.Handle(d.ctx)
-		}()
-	}
-}
+// NOTE: acceptLoop is now handled by Hub - removed from Daemon.
+// Session cleanup is registered with Hub via SetSessionCleanup() in Start().
 
 // DaemonInfo holds daemon status information.
 type DaemonInfo struct {
@@ -784,14 +849,24 @@ func (d *Daemon) RunAutostart(ctx context.Context, projectPath string) *Autostar
 // makeProcessID creates a unique process ID scoped to a project path.
 // This prevents process ID collisions when multiple sessions from different
 // projects use the same script name (e.g., "dev").
-// Format: <basename>:<name> (e.g., "my-project:dev")
+// Format: <basename>-<hash>:<name> (e.g., "my-project-a1b2:<name>")
+// The hash is derived from the full path to ensure uniqueness even when
+// different directories have the same basename.
 func makeProcessID(projectPath, name string) string {
 	if projectPath == "" {
 		return name
 	}
-	// Use the last component of the path as a readable prefix
+	// Use basename + short hash of full path for uniqueness
 	basename := filepath.Base(projectPath)
-	return fmt.Sprintf("%s:%s", basename, name)
+	hash := shortPathHash(projectPath)
+	return fmt.Sprintf("%s-%s:%s", basename, hash, name)
+}
+
+// shortPathHash returns a short (4 char) hex hash of a path for ID uniqueness.
+func shortPathHash(path string) string {
+	h := fnv.New32a()
+	h.Write([]byte(path))
+	return fmt.Sprintf("%04x", h.Sum32()&0xFFFF)
 }
 
 // mapKeys extracts keys from a script config map for logging.
@@ -819,7 +894,7 @@ func (d *Daemon) autostartScript(ctx context.Context, name string, script *confi
 	processID := makeProcessID(projectPath, name)
 
 	// Check if already running
-	if _, err := d.pm.Get(processID); err == nil {
+	if _, err := d.hub.ProcessManager().Get(processID); err == nil {
 		return nil // Already running
 	}
 
@@ -862,7 +937,7 @@ func (d *Daemon) autostartScript(ctx context.Context, name string, script *confi
 	}
 
 	// Create and start process using StartOrReuse for idempotent behavior
-	_, err := d.pm.StartOrReuse(ctx, process.ProcessConfig{
+	_, err := d.hub.ProcessManager().StartOrReuse(ctx, process.ProcessConfig{
 		ID:          processID,
 		ProjectPath: projectPath,
 		Command:     command,
@@ -873,61 +948,35 @@ func (d *Daemon) autostartScript(ctx context.Context, name string, script *confi
 		return err
 	}
 
+	// Load and set URL matchers for this process
+	d.LoadURLMatchersForProcess(processID)
+
 	return nil
 }
 
 // autostartProxy starts a single proxy from config.
+// Only handles fully-specified proxies (explicit URL or port).
+// Script-linked proxies are created automatically by the event system when URLs are detected.
 func (d *Daemon) autostartProxy(ctx context.Context, name string, proxyConfig *config.ProxyConfig, projectPath string) error {
-	// Make proxy ID unique per project to avoid collisions between sessions
+	// Skip script-linked proxies - they're handled by URLDetected events
+	if proxyConfig.Script != "" {
+		log.Printf("[DEBUG] Proxy %s is script-linked, skipping auto-start (will be created when URLs detected)", name)
+		return nil
+	}
+
+	// Only auto-start if explicitly requested
+	if !proxyConfig.Autostart {
+		return nil
+	}
+
+	// Make proxy ID unique per project
 	proxyID := makeProcessID(projectPath, name)
 
-	// Check if already running
-	if _, err := d.proxym.Get(proxyID); err == nil {
-		return nil // Already running
-	}
-
-	// Also compute the scoped script ID if this proxy is linked to a script
-	var scriptID string
-	if proxyConfig.Script != "" {
-		scriptID = makeProcessID(projectPath, proxyConfig.Script)
-	}
-
+	// Determine target URL (must be explicitly specified)
 	var targetURL string
-
-	// Priority order for target determination:
-	// 1. Script with port-detect "auto" (backwards compat: script + fallback-port)
-	// 2. Explicit URL (e.g., url "http://localhost:3000")
-	// 3. Explicit Port without script (e.g., port 3000)
-	// 4. Legacy Target field
-	// 5. Script without port-detect
-
-	if proxyConfig.Script != "" && proxyConfig.PortDetect == "auto" {
-		// Script detection mode: wait for URL detection from script output
-		// This handles backwards compat with configs that have both script and fallback-port
-		detectedPort, err := d.detectPortForScript(ctx, scriptID, proxyConfig)
-		if err != nil {
-			// If detection fails and Port is set, use it as fallback
-			if proxyConfig.Port > 0 {
-				host := proxyConfig.Host
-				if host == "" {
-					host = "localhost"
-				}
-				targetURL = fmt.Sprintf("http://%s:%d", host, proxyConfig.Port)
-			} else {
-				return fmt.Errorf("URL detection from script %q failed: %w", proxyConfig.Script, err)
-			}
-		} else {
-			host := proxyConfig.Host
-			if host == "" {
-				host = "localhost"
-			}
-			targetURL = fmt.Sprintf("http://%s:%d", host, detectedPort)
-		}
-	} else if proxyConfig.URL != "" {
-		// Direct mode: explicit URL provided
+	if proxyConfig.URL != "" {
 		targetURL = proxyConfig.URL
 	} else if proxyConfig.Port > 0 {
-		// Direct mode: port provided, construct URL
 		host := proxyConfig.Host
 		if host == "" {
 			host = "localhost"
@@ -936,53 +985,43 @@ func (d *Daemon) autostartProxy(ctx context.Context, name string, proxyConfig *c
 	} else if proxyConfig.Target != "" {
 		// Legacy target field
 		targetURL = proxyConfig.Target
-	} else if proxyConfig.Script != "" {
-		// Script mode without port-detect: wait for URL detection from script output
-		detectedPort, err := d.detectPortForScript(ctx, scriptID, proxyConfig)
-		if err != nil {
-			return fmt.Errorf("URL detection from script %q failed: %w", proxyConfig.Script, err)
-		}
-
-		host := proxyConfig.Host
-		if host == "" {
-			host = "localhost"
-		}
-		targetURL = fmt.Sprintf("http://%s:%d", host, detectedPort)
 	}
 
 	if targetURL == "" {
-		return nil // No target configured
+		log.Printf("[DEBUG] Proxy %s has no explicit target URL, skipping", name)
+		return nil
 	}
 
-	// Create proxy server using the same config format as handler.go
-	proxyServerConfig := proxy.ProxyConfig{
-		ID:          proxyID,
-		TargetURL:   targetURL,
-		ListenPort:  -1,   // Auto-assign port
-		MaxLogSize:  1000, // Default
-		AutoRestart: true,
-		Path:        projectPath,
-	}
-
-	server, err := d.proxym.Create(ctx, proxyServerConfig)
-	if err != nil {
-		if err == proxy.ErrProxyExists {
-			return nil // Already exists, not an error
-		}
-		return err
-	}
-
-	// Set overlay endpoint if configured
-	overlayEndpoint := d.OverlayEndpoint()
-	if overlayEndpoint != "" {
-		server.SetOverlayEndpoint(overlayEndpoint)
+	// Send ExplicitStart event to create the proxy
+	select {
+	case d.proxyEvents <- ProxyEvent{
+		Type:    ExplicitStart,
+		ProxyID: proxyID,
+		Config:  proxyConfig,
+		Path:    projectPath,
+	}:
+		log.Printf("[DEBUG] Queued explicit proxy %s for auto-start", name)
+	default:
+		log.Printf("[WARN] Proxy event channel full, cannot queue proxy %s for auto-start", name)
 	}
 
 	return nil
 }
 
-// detectPortForScript waits for a script to start and detects its listening port.
+// detectPortForScript is deprecated and no longer used.
+// Port detection is now handled by URLTracker emitting URLDetected events.
 func (d *Daemon) detectPortForScript(ctx context.Context, scriptName string, proxyConfig *config.ProxyConfig) (int, error) {
+	return 0, fmt.Errorf("deprecated: use event-driven proxy creation instead")
+}
+
+// Removed old autostartProxy implementation that did synchronous port detection.
+// Now using event-driven approach:
+// 1. URLTracker detects URLs from script output
+// 2. Emits URLDetected events
+// 3. handleURLDetected creates proxies for matching configs
+
+// Old implementation kept detectPortForScript stub for reference, but it's no longer called.
+func (d *Daemon) _old_detectPortForScript(ctx context.Context, scriptName string, proxyConfig *config.ProxyConfig) (int, error) {
 	detector := config.NewPortDetector()
 
 	// Create a timeout context for port detection (30 seconds)
@@ -1000,7 +1039,7 @@ func (d *Daemon) detectPortForScript(ctx context.Context, scriptName string, pro
 
 		case <-ticker.C:
 			// Get process to check if running
-			proc, err := d.pm.Get(scriptName)
+			proc, err := d.hub.ProcessManager().Get(scriptName)
 			if err != nil {
 				continue // Process may not be registered yet
 			}

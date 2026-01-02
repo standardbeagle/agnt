@@ -145,6 +145,7 @@ func init() {
 		VerbChaos,
 		VerbDetect,
 		VerbOverlay,
+		VerbStatus,
 	)
 
 	// Register agnt-specific sub-verbs.
@@ -167,5 +168,6 @@ func init() {
 		SubVerbTasks,
 		SubVerbFind,
 		SubVerbAttach,
+		SubVerbURL,
 	)
 }

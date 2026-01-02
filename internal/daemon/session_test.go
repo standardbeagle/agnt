@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -518,5 +519,155 @@ func TestSessionRegistry_FindByDirectory_OnlyActiveSession(t *testing.T) {
 	_, ok := registry.FindByDirectory("/home/user/project")
 	if ok {
 		t.Error("FindByDirectory should not find disconnected sessions")
+	}
+}
+
+func TestSessionRegistry_ListActive(t *testing.T) {
+	registry := NewSessionRegistry(60 * time.Second)
+
+	// Register active and disconnected sessions
+	activeSession := &Session{
+		Code:        "active-1",
+		ProjectPath: "/project",
+		Command:     "claude",
+		StartedAt:   time.Now(),
+		Status:      SessionStatusActive,
+		LastSeen:    time.Now(),
+	}
+	disconnectedSession := &Session{
+		Code:        "disconnected-1",
+		ProjectPath: "/project2",
+		Command:     "claude",
+		StartedAt:   time.Now(),
+		Status:      SessionStatusDisconnected,
+		LastSeen:    time.Now(),
+	}
+
+	_ = registry.Register(activeSession)
+	_ = registry.Register(disconnectedSession)
+
+	active := registry.ListActive("", true)
+	if len(active) != 1 {
+		t.Errorf("ListActive() returned %d sessions, want 1", len(active))
+	}
+	if len(active) > 0 && active[0].Code != "active-1" {
+		t.Errorf("ListActive() returned wrong session: %s", active[0].Code)
+	}
+}
+
+func TestSessionRegistry_TotalRegistered(t *testing.T) {
+	registry := NewSessionRegistry(60 * time.Second)
+
+	if registry.TotalRegistered() != 0 {
+		t.Errorf("TotalRegistered() = %d, want 0", registry.TotalRegistered())
+	}
+
+	session := &Session{
+		Code:      "test-1",
+		Command:   "claude",
+		StartedAt: time.Now(),
+		Status:    SessionStatusActive,
+	}
+	_ = registry.Register(session)
+
+	if registry.TotalRegistered() != 1 {
+		t.Errorf("TotalRegistered() = %d, want 1", registry.TotalRegistered())
+	}
+}
+
+func TestSessionRegistry_TotalUnregistered(t *testing.T) {
+	registry := NewSessionRegistry(60 * time.Second)
+
+	if registry.TotalUnregistered() != 0 {
+		t.Errorf("TotalUnregistered() = %d, want 0", registry.TotalUnregistered())
+	}
+
+	session := &Session{
+		Code:      "test-1",
+		Command:   "claude",
+		StartedAt: time.Now(),
+		Status:    SessionStatusActive,
+	}
+	_ = registry.Register(session)
+	_ = registry.Unregister("test-1")
+
+	if registry.TotalUnregistered() != 1 {
+		t.Errorf("TotalUnregistered() = %d, want 1", registry.TotalUnregistered())
+	}
+}
+
+func TestSessionRegistry_CheckHeartbeats(t *testing.T) {
+	registry := NewSessionRegistry(100 * time.Millisecond) // Very short timeout
+
+	staleSession := &Session{
+		Code:        "stale-1",
+		ProjectPath: "/project",
+		Command:     "claude",
+		StartedAt:   time.Now(),
+		Status:      SessionStatusActive,
+		LastSeen:    time.Now().Add(-1 * time.Hour), // Very old
+	}
+	freshSession := &Session{
+		Code:        "fresh-1",
+		ProjectPath: "/project2",
+		Command:     "claude",
+		StartedAt:   time.Now(),
+		Status:      SessionStatusActive,
+		LastSeen:    time.Now(),
+	}
+
+	_ = registry.Register(staleSession)
+	_ = registry.Register(freshSession)
+
+	// Check heartbeats should mark stale session as disconnected
+	registry.CheckHeartbeats()
+
+	stale, _ := registry.Get("stale-1")
+	if stale.GetStatus() != SessionStatusDisconnected {
+		t.Errorf("Stale session should be disconnected, got status %s", stale.GetStatus())
+	}
+
+	fresh, _ := registry.Get("fresh-1")
+	if fresh.GetStatus() != SessionStatusActive {
+		t.Errorf("Fresh session should still be active, got status %s", fresh.GetStatus())
+	}
+}
+
+func TestSession_MarshalJSON(t *testing.T) {
+	now := time.Now()
+	session := &Session{
+		Code:        "test-marshal-1",
+		OverlayPath: "/tmp/overlay.sock",
+		ProjectPath: "/home/user/project",
+		Command:     "claude",
+		Args:        []string{"--model", "opus"},
+		StartedAt:   now,
+		Status:      SessionStatusActive,
+		LastSeen:    now,
+	}
+
+	data, err := session.MarshalJSON()
+	if err != nil {
+		t.Fatalf("MarshalJSON() error = %v", err)
+	}
+
+	if len(data) == 0 {
+		t.Error("MarshalJSON() returned empty data")
+	}
+
+	// Verify it contains expected fields
+	jsonStr := string(data)
+	expectedFields := []string{
+		`"code":"test-marshal-1"`,
+		`"overlay_path":"/tmp/overlay.sock"`,
+		`"project_path":"/home/user/project"`,
+		`"command":"claude"`,
+		`"status":"active"`,
+	}
+
+	for _, field := range expectedFields {
+		if !strings.Contains(jsonStr, field) {
+			t.Errorf("MarshalJSON() missing field: %s", field)
+		}
 	}
 }

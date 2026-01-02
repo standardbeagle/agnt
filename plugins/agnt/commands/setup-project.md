@@ -28,12 +28,12 @@ Based on the detected scripts, use AskUserQuestion to ask:
 
 Use AskUserQuestion to ask:
 
-**Question**: "Do you want to auto-start a debugging proxy?"
+**Question**: "Do you want to create debugging proxies for your scripts?"
 
 If yes, ask:
 - **Proxy ID**: A short name (e.g., "dev", "app")
-- **Port detection**: "auto" to detect from script output, or a specific port number
-- **Which script**: Which script's port to monitor (usually the dev server)
+- **Which script**: Which script to link the proxy to (usually the dev server)
+- Note: Proxies will automatically start when the script outputs URLs
 
 ### 4. Write .agnt.kdl Configuration
 
@@ -45,24 +45,29 @@ Create or update `.agnt.kdl` in the project root with KDL format:
 
 // Scripts to auto-start on session open
 scripts {
-    // script-name auto-start=true|false
-    dev auto-start=true
+    dev {
+        auto-start true
+        // URL matchers filter which URLs to create proxies for
+        // Next.js outputs both Local and Network URLs - match both
+        url-matchers "(Local|Network):\\s*{url}"
+    }
 }
 
-// Proxy configuration
-proxy "dev" {
-    // Which script to watch for port detection
-    script "dev"
-
-    // Port detection: "auto" or specific port number
-    port-detect "auto"
-
-    // Fallback port if auto-detection fails
-    fallback-port 3000
-
-    // Optional: specific target host (default: localhost)
-    // host "localhost"
+// Proxy configuration - automatically created when script outputs URLs
+proxies {
+    dev {
+        // Link to script - proxy will be created when URLs are detected
+        script "dev"
+    }
 }
+
+// For fully-specified proxies (explicit port/URL), use auto-start:
+// proxies {
+//     api {
+//         port 8080
+//         auto-start true
+//     }
+// }
 ```
 
 ### 5. Explain What Happens
@@ -72,7 +77,8 @@ After creating the config, inform the user:
 1. **Starting your dev environment**: Run `agnt run claude` to start your AI coding session. This will:
    - Load your `.agnt.kdl` configuration
    - Auto-start all scripts with `autostart: true` in the background
-   - Auto-start all proxies with `autostart: true`
+   - Monitor script output for URLs
+   - Automatically create proxies when URLs are detected from linked scripts
    - Display running services in the status bar at the bottom of your terminal
 
 2. **Status bar information**: The bottom status bar shows:
@@ -98,17 +104,20 @@ After creating the config, inform the user:
 
 ## Example Configuration
 
-For a typical Node.js project:
+For a typical Next.js project:
 
 ```kdl
 scripts {
-    dev auto-start=true
+    dev {
+        auto-start true
+        url-matchers "(Local|Network):\\s*{url}"
+    }
 }
 
-proxy "dev" {
-    script "dev"
-    port-detect "auto"
-    fallback-port 3000
+proxies {
+    dev {
+        script "dev"
+    }
 }
 ```
 
@@ -116,19 +125,39 @@ For a project with multiple services:
 
 ```kdl
 scripts {
+    dev {
+        auto-start true
+        url-matchers "(Local|Network):\\s*{url}"
+    }
+
+    api {
+        auto-start true
+        url-matchers "listening on port {url}"
+    }
+}
+
+proxies {
+    frontend {
+        script "dev"
+    }
+
+    backend {
+        script "api"
+    }
+}
+```
+
+For a project with explicit proxy ports:
+
+```kdl
+scripts {
     dev auto-start=true
-    api auto-start=true
 }
 
-proxy "frontend" {
-    script "dev"
-    port-detect "auto"
-    fallback-port 3000
-}
-
-proxy "backend" {
-    script "api"
-    port-detect "auto"
-    fallback-port 8080
+proxies {
+    api {
+        port 8080
+        auto-start true
+    }
 }
 ```

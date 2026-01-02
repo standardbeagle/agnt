@@ -34,21 +34,23 @@ type AgntConfig struct {
 
 // ScriptConfig defines a script to run.
 type ScriptConfig struct {
-	Command   string            `kdl:"command"`
-	Args      []string          `kdl:"args"`
-	Autostart bool              `kdl:"autostart"`
-	Env       map[string]string `kdl:"env"`
-	Cwd       string            `kdl:"cwd"`
+	Command     string            `kdl:"command"`
+	Args        []string          `kdl:"args"`
+	Autostart   bool              `kdl:"autostart"`
+	URLMatchers []string          `kdl:"url-matchers"` // Patterns for URL detection: "local:{url}", "network:{url}"
+	Env         map[string]string `kdl:"env"`
+	Cwd         string            `kdl:"cwd"`
 }
 
 // ProxyConfig defines a reverse proxy to start.
 type ProxyConfig struct {
-	// Autostart indicates whether to start on session open
+	// Autostart indicates whether to start on session open (only for fully-specified proxies)
 	Autostart bool `kdl:"autostart"`
 	// MaxLogSize is the max number of log entries to keep
 	MaxLogSize int `kdl:"max-log-size"`
 
 	// Script links this proxy to a script for URL detection from output
+	// When set, proxies are auto-created when the script outputs URLs (not auto-started)
 	Script string `kdl:"script"`
 
 	// Direct target configuration (mutually exclusive with Script)
@@ -62,9 +64,6 @@ type ProxyConfig struct {
 	// Legacy fields (deprecated)
 	// Target is the explicit target URL (use URL instead)
 	Target string `kdl:"target"`
-
-	// PortDetect is the detection mode: "auto", "output", "pid", or a regex pattern
-	PortDetect string `kdl:"port-detect"`
 }
 
 // HooksConfig defines hook behavior.
@@ -308,8 +307,6 @@ func parseProxyProperty(line string, proxy *ProxyConfig) {
 		switch matches[1] {
 		case "script":
 			proxy.Script = matches[2]
-		case "port-detect":
-			proxy.PortDetect = matches[2]
 		case "target", "target-url":
 			proxy.Target = matches[2]
 		case "url":

@@ -9,6 +9,7 @@ const (
 	VerbChaos       = "CHAOS"
 	VerbDetect      = "DETECT"
 	VerbOverlay     = "OVERLAY"
+	VerbStatus      = "STATUS" // Full daemon status (Hub's INFO is minimal)
 )
 
 // Agnt-specific sub-verbs (beyond those in go-cli-server).
@@ -31,6 +32,7 @@ const (
 	SubVerbTasks      = "TASKS"
 	SubVerbFind       = "FIND"
 	SubVerbAttach     = "ATTACH"
+	SubVerbURL        = "URL" // Report detected URL from agnt run session
 )
 
 // ProxyStartConfig represents configuration for a PROXY START command.
