@@ -579,11 +579,11 @@ func (rc *ResilientClient) TunnelStatus(id string) (map[string]interface{}, erro
 }
 
 // TunnelList lists all active tunnels.
-func (rc *ResilientClient) TunnelList() (map[string]interface{}, error) {
+func (rc *ResilientClient) TunnelList(dirFilter protocol.DirectoryFilter) (map[string]interface{}, error) {
 	var result map[string]interface{}
 	err := rc.WithClient(func(c *Client) error {
 		var e error
-		result, e = c.TunnelList()
+		result, e = c.TunnelList(dirFilter)
 		return e
 	})
 	return result, err
@@ -714,6 +714,62 @@ func (rc *ResilientClient) SessionAttach(directory string) (map[string]interface
 	err := rc.WithClient(func(c *Client) error {
 		var e error
 		result, e = c.SessionAttach(directory)
+		return e
+	})
+	return result, err
+}
+
+// Store methods
+
+// StoreGet retrieves a value from the key-value store.
+func (rc *ResilientClient) StoreGet(req protocol.StoreGetRequest) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.StoreGet(req)
+		return e
+	})
+	return result, err
+}
+
+// StoreSet stores a value in the key-value store.
+func (rc *ResilientClient) StoreSet(req protocol.StoreSetRequest) error {
+	return rc.WithClient(func(c *Client) error {
+		return c.StoreSet(req)
+	})
+}
+
+// StoreDelete deletes a value from the key-value store.
+func (rc *ResilientClient) StoreDelete(req protocol.StoreDeleteRequest) error {
+	return rc.WithClient(func(c *Client) error {
+		return c.StoreDelete(req)
+	})
+}
+
+// StoreList lists all keys in a scope.
+func (rc *ResilientClient) StoreList(req protocol.StoreListRequest) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.StoreList(req)
+		return e
+	})
+	return result, err
+}
+
+// StoreClear clears all entries in a scope.
+func (rc *ResilientClient) StoreClear(req protocol.StoreClearRequest) error {
+	return rc.WithClient(func(c *Client) error {
+		return c.StoreClear(req)
+	})
+}
+
+// StoreGetAll retrieves all key-value pairs in a scope.
+func (rc *ResilientClient) StoreGetAll(req protocol.StoreGetAllRequest) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.StoreGetAll(req)
 		return e
 	})
 	return result, err

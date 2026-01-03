@@ -21,9 +21,9 @@ func TestParseDevServerURLs(t *testing.T) {
 			expected: []string{"http://127.0.0.1:8080/"},
 		},
 		{
-			name:     "multiple dev server URLs",
+			name:     "localhost only from multiple URLs",
 			input:    "  Local:   http://localhost:5173/\n  Network: http://192.168.1.10:5173/\n",
-			expected: []string{"http://localhost:5173/", "http://192.168.1.10:5173/"},
+			expected: []string{"http://localhost:5173/"},
 		},
 		{
 			name:     "URL with trailing punctuation",
@@ -61,14 +61,34 @@ func TestParseDevServerURLs(t *testing.T) {
 			expected: []string{"http://localhost:3000/app"},
 		},
 		{
-			name:     "vite dev server output",
+			name:     "vite dev server output - localhost only",
 			input:    "  VITE v5.0.0  ready in 500 ms\n\n  ➜  Local:   http://localhost:5173/\n  ➜  Network: http://192.168.1.100:5173/\n",
-			expected: []string{"http://localhost:5173/", "http://192.168.1.100:5173/"},
+			expected: []string{"http://localhost:5173/"},
 		},
 		{
 			name:     "next.js dev server output",
 			input:    "ready - started server on 0.0.0.0:3000, url: http://localhost:3000",
 			expected: []string{"http://localhost:3000"},
+		},
+		{
+			name:     "ignores 192.168.x.x network IPs",
+			input:    "Network: http://192.168.1.100:3000",
+			expected: nil,
+		},
+		{
+			name:     "ignores 10.x.x.x network IPs",
+			input:    "Network: http://10.255.255.254:3737",
+			expected: nil,
+		},
+		{
+			name:     "allows 0.0.0.0 binding",
+			input:    "Listening on http://0.0.0.0:3000",
+			expected: []string{"http://0.0.0.0:3000"},
+		},
+		{
+			name:     "allows IPv6 localhost",
+			input:    "Listening on http://[::1]:3000",
+			expected: []string{"http://[::1]:3000"},
 		},
 	}
 
@@ -190,9 +210,9 @@ func TestParseURLsFromBytes(t *testing.T) {
 			expected: []string{"http://localhost:3000"},
 		},
 		{
-			name:     "multiple URLs",
+			name:     "localhost only from multiple URLs",
 			input:    []byte("Local: http://localhost:3000\nNetwork: http://192.168.1.10:3000"),
-			expected: []string{"http://localhost:3000", "http://192.168.1.10:3000"},
+			expected: []string{"http://localhost:3000"},
 		},
 		{
 			name:     "no URLs",
@@ -337,10 +357,10 @@ func TestParseDevServerURLsWithMatchers(t *testing.T) {
 			expected: []string{"http://localhost:3000"},
 		},
 		{
-			name:     "multiple matchers with or pattern",
+			name:     "multiple matchers with or pattern - localhost only",
 			input:    []byte("Local: http://localhost:5173/\nNetwork: http://192.168.1.10:5173/"),
 			matchers: []string{"(Local|Network):\\s*{url}"},
-			expected: []string{"http://localhost:5173/", "http://192.168.1.10:5173/"},
+			expected: []string{"http://localhost:5173/"},
 		},
 	}
 

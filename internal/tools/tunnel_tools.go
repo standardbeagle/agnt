@@ -18,6 +18,7 @@ type TunnelInput struct {
 	LocalHost  string `json:"local_host,omitempty" jsonschema:"Local host (default: localhost)"`
 	BinaryPath string `json:"binary_path,omitempty" jsonschema:"Optional path to tunnel binary"`
 	ProxyID    string `json:"proxy_id,omitempty" jsonschema:"Optional proxy ID to auto-configure with the tunnel's public URL"`
+	Global     bool   `json:"global,omitempty" jsonschema:"For list: include tunnels from all directories (default: false)"`
 }
 
 // TunnelOutput represents output from the tunnel tool.
@@ -41,6 +42,7 @@ type TunnelEntry struct {
 	State     string `json:"state"`
 	PublicURL string `json:"public_url,omitempty"`
 	LocalAddr string `json:"local_addr"`
+	Path      string `json:"path,omitempty"`
 	Error     string `json:"error,omitempty"`
 }
 
@@ -93,7 +95,7 @@ func (dt *DaemonTools) makeTunnelHandler() func(context.Context, *mcp.CallToolRe
 		case "status":
 			return dt.handleTunnelStatus(input)
 		case "list":
-			return dt.handleTunnelList()
+			return dt.handleTunnelList(input)
 		default:
 			return errorResult(fmt.Sprintf("unknown action: %s (use: start, stop, status, list)", input.Action)), emptyOutput, nil
 		}
@@ -186,8 +188,12 @@ func (dt *DaemonTools) handleTunnelStatus(input TunnelInput) (*mcp.CallToolResul
 	return nil, output, nil
 }
 
-func (dt *DaemonTools) handleTunnelList() (*mcp.CallToolResult, TunnelOutput, error) {
-	result, err := dt.client.TunnelList()
+func (dt *DaemonTools) handleTunnelList(input TunnelInput) (*mcp.CallToolResult, TunnelOutput, error) {
+	dirFilter := protocol.DirectoryFilter{
+		Global: input.Global,
+	}
+
+	result, err := dt.client.TunnelList(dirFilter)
 	if err != nil {
 		return formatDaemonError(err, "tunnel list"), TunnelOutput{Tunnels: []TunnelEntry{}}, nil
 	}
@@ -204,6 +210,7 @@ func (dt *DaemonTools) handleTunnelList() (*mcp.CallToolResult, TunnelOutput, er
 				State:     getString(tm, "state"),
 				PublicURL: getString(tm, "public_url"),
 				LocalAddr: getString(tm, "local_addr"),
+				Path:      getString(tm, "path"),
 				Error:     getString(tm, "error"),
 			})
 		}

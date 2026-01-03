@@ -16,6 +16,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/project"
 	"github.com/standardbeagle/agnt/internal/proxy"
+	"github.com/standardbeagle/agnt/internal/store"
 	"github.com/standardbeagle/agnt/internal/tunnel"
 	"github.com/standardbeagle/agnt/internal/updater"
 	"github.com/standardbeagle/go-cli-server/hub"
@@ -121,6 +122,7 @@ type Daemon struct {
 	// agnt-specific managers
 	proxym  *proxy.ProxyManager
 	tunnelm *tunnel.Manager
+	storem  *store.StoreManager
 
 	// Session and scheduling (agnt-specific extensions)
 	sessionRegistry   *SessionRegistry
@@ -194,6 +196,7 @@ func New(config DaemonConfig) *Daemon {
 		hub:               h,
 		proxym:            proxy.NewProxyManager(),
 		tunnelm:           tunnel.NewManager(),
+		storem:            store.NewStoreManager(),
 		sessionRegistry:   sessionRegistry,
 		scheduler:         scheduler,
 		schedulerStateMgr: schedulerStateMgr,

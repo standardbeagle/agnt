@@ -72,6 +72,9 @@ var (
 	//go:embed session.js
 	sessionJS string
 
+	//go:embed store.js
+	storeJS string
+
 	//go:embed content.js
 	contentJS string
 
@@ -222,22 +225,27 @@ func buildCombinedScript() string {
 	sb.WriteString(wrapModule(sessionJS))
 	sb.WriteString("\n\n")
 
-	// 22. Content extraction (depends on utils)
+	// 22. Store (depends on core)
+	sb.WriteString("  // Store module\n")
+	sb.WriteString(wrapModule(storeJS))
+	sb.WriteString("\n\n")
+
+	// 23. Content extraction (depends on utils)
 	sb.WriteString("  // Content extraction module\n")
 	sb.WriteString(wrapModule(contentJS))
 	sb.WriteString("\n\n")
 
-	// 23. Text fragility analysis (depends on utils)
+	// 24. Text fragility analysis (depends on utils)
 	sb.WriteString("  // Text fragility module\n")
 	sb.WriteString(wrapModule(textFragilityJS))
 	sb.WriteString("\n\n")
 
-	// 24. Responsive risk analysis (depends on utils)
+	// 25. Responsive risk analysis (depends on utils)
 	sb.WriteString("  // Responsive risk module\n")
 	sb.WriteString(wrapModule(responsiveRiskJS))
 	sb.WriteString("\n\n")
 
-	// 25. API (assembles all modules, must be last)
+	// 26. API (assembles all modules, must be last)
 	sb.WriteString("  // API assembly module\n")
 	sb.WriteString(wrapModule(apiJS))
 	sb.WriteString("\n")
@@ -313,6 +321,7 @@ func GetScriptNames() []string {
 		"snapshot-helper.js",
 		"diagnostics.js",
 		"session.js",
+		"store.js",
 		"content.js",
 		"text-fragility.js",
 		"responsive-risk.js",

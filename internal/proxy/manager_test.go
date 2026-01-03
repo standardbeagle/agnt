@@ -146,6 +146,96 @@ func TestProxyManager_GetNotFound(t *testing.T) {
 	}
 }
 
+func TestProxyManager_GetFuzzy(t *testing.T) {
+	pm := NewProxyManager()
+	ctx := context.Background()
+
+	// Create a proxy with compound ID (like auto-generated ones)
+	fullID := "myapp-abc1:dev:localhost-3000"
+	config := ProxyConfig{
+		ID:         fullID,
+		TargetURL:  "http://localhost:9999",
+		ListenPort: 0,
+		MaxLogSize: 100,
+	}
+
+	_, err := pm.Create(ctx, config)
+	if err != nil {
+		t.Fatalf("Failed to create proxy: %v", err)
+	}
+	defer pm.Stop(ctx, fullID)
+
+	// Exact match should work
+	proxy, err := pm.Get(fullID)
+	if err != nil {
+		t.Errorf("Exact match failed: %v", err)
+	}
+	if proxy.ID != fullID {
+		t.Errorf("Expected ID %q, got %q", fullID, proxy.ID)
+	}
+
+	// Fuzzy match on proxy name part should work
+	proxy, err = pm.Get("dev")
+	if err != nil {
+		t.Fatalf("Fuzzy match on 'dev' failed: %v", err)
+	}
+	if proxy.ID != fullID {
+		t.Errorf("Expected ID %q from fuzzy match, got %q", fullID, proxy.ID)
+	}
+}
+
+func TestProxyManager_GetFuzzyAmbiguous(t *testing.T) {
+	pm := NewProxyManager()
+	ctx := context.Background()
+
+	// Create two proxies with same proxy name but different URLs
+	id1 := "myapp-abc1:dev:localhost-3000"
+	id2 := "myapp-abc1:dev:localhost-4000"
+
+	config1 := ProxyConfig{
+		ID:         id1,
+		TargetURL:  "http://localhost:3000",
+		ListenPort: 0,
+		MaxLogSize: 100,
+	}
+	config2 := ProxyConfig{
+		ID:         id2,
+		TargetURL:  "http://localhost:4000",
+		ListenPort: 0,
+		MaxLogSize: 100,
+	}
+
+	_, err := pm.Create(ctx, config1)
+	if err != nil {
+		t.Fatalf("Failed to create proxy1: %v", err)
+	}
+	defer pm.Stop(ctx, id1)
+
+	_, err = pm.Create(ctx, config2)
+	if err != nil {
+		t.Fatalf("Failed to create proxy2: %v", err)
+	}
+	defer pm.Stop(ctx, id2)
+
+	// Fuzzy match on "dev" should fail - ambiguous
+	_, err = pm.Get("dev")
+	if err == nil {
+		t.Error("Expected error for ambiguous fuzzy match")
+	}
+	if err != ErrProxyAmbiguous {
+		t.Errorf("Expected ErrProxyAmbiguous, got %v", err)
+	}
+
+	// But exact match should still work
+	proxy, err := pm.Get(id1)
+	if err != nil {
+		t.Errorf("Exact match failed: %v", err)
+	}
+	if proxy.ID != id1 {
+		t.Errorf("Expected ID %q, got %q", id1, proxy.ID)
+	}
+}
+
 func TestProxyManager_Stop(t *testing.T) {
 	pm := NewProxyManager()
 	ctx := context.Background()

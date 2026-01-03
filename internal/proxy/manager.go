@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 )
@@ -12,6 +13,8 @@ var (
 	ErrProxyExists = errors.New("proxy already exists")
 	// ErrProxyNotFound is returned when a proxy ID is not found.
 	ErrProxyNotFound = errors.New("proxy not found")
+	// ErrProxyAmbiguous is returned when a fuzzy lookup matches multiple proxies.
+	ErrProxyAmbiguous = errors.New("proxy ID is ambiguous - multiple matches")
 )
 
 // ProxyManager manages multiple reverse proxy servers with lock-free access.
@@ -59,13 +62,71 @@ func (pm *ProxyManager) Create(ctx context.Context, config ProxyConfig) (*ProxyS
 	return proxy, nil
 }
 
-// Get retrieves a proxy by ID (lock-free read).
+// Get retrieves a proxy by ID with fuzzy matching support.
+// First tries exact match, then looks for proxies where the ID contains
+// the search string as a component (for compound IDs like "project:name:host-port").
 func (pm *ProxyManager) Get(id string) (*ProxyServer, error) {
-	val, ok := pm.proxies.Load(id)
-	if !ok {
+	return pm.GetWithPathFilter(id, "")
+}
+
+// GetWithPathFilter retrieves a proxy by ID with fuzzy matching, filtered by path.
+// If pathFilter is non-empty, only proxies with matching Path are considered for fuzzy lookup.
+// Exact matches are always returned regardless of path filter.
+func (pm *ProxyManager) GetWithPathFilter(id, pathFilter string) (*ProxyServer, error) {
+	// First try exact match (lock-free read) - always works regardless of path
+	if val, ok := pm.proxies.Load(id); ok {
+		return val.(*ProxyServer), nil
+	}
+
+	// Normalize path filter for comparison
+	normalizedFilter := normalizePath(pathFilter)
+
+	// Fuzzy match: look for proxy where the ID contains the search string as a component
+	// Compound ID format: {project-hash}:{proxy-name}:{host-port}
+	var matches []*ProxyServer
+	pm.proxies.Range(func(key, value any) bool {
+		proxyID := key.(string)
+		proxy := value.(*ProxyServer)
+
+		// If path filter is specified, only consider proxies in that path
+		if normalizedFilter != "" && normalizedFilter != "." {
+			proxyPath := normalizePath(proxy.Path)
+			if proxyPath != normalizedFilter {
+				return true // Skip this proxy, continue iteration
+			}
+		}
+
+		// Check if search string matches a component of the compound ID
+		// Split by ":" and check each part
+		parts := strings.Split(proxyID, ":")
+		for _, part := range parts {
+			if part == id {
+				matches = append(matches, proxy)
+				break
+			}
+		}
+		return true
+	})
+
+	if len(matches) == 0 {
 		return nil, ErrProxyNotFound
 	}
-	return val.(*ProxyServer), nil
+	if len(matches) > 1 {
+		return nil, ErrProxyAmbiguous
+	}
+	return matches[0], nil
+}
+
+// normalizePath normalizes a path for comparison.
+func normalizePath(p string) string {
+	if p == "" {
+		return ""
+	}
+	// Remove trailing slashes and normalize
+	for len(p) > 1 && p[len(p)-1] == '/' {
+		p = p[:len(p)-1]
+	}
+	return p
 }
 
 // Stop stops a proxy server and removes it from the registry.

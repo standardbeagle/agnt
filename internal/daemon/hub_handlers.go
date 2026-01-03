@@ -38,6 +38,46 @@ func normalizePath(path string) string {
 	return abs
 }
 
+// getSessionScopedProxy retrieves a proxy with session-scoped fuzzy matching.
+// If the connection has an associated session, only proxies in that session's
+// project path are considered for fuzzy lookup. Exact ID matches always work.
+func (d *Daemon) getSessionScopedProxy(conn *hubpkg.Connection, proxyID string) (*proxy.ProxyServer, error) {
+	// Get path filter from connection's session
+	pathFilter := ""
+	if sessionCode := conn.SessionCode(); sessionCode != "" {
+		if session, ok := d.sessionRegistry.Get(sessionCode); ok {
+			pathFilter = session.ProjectPath
+		}
+	}
+
+	return d.proxym.GetWithPathFilter(proxyID, pathFilter)
+}
+
+// getSessionScopedTunnel retrieves a tunnel with session-scoped fuzzy matching.
+// If the connection has an associated session, only tunnels in that session's
+// project path are considered for fuzzy lookup. Exact ID matches always work.
+func (d *Daemon) getSessionScopedTunnel(conn *hubpkg.Connection, tunnelID string) (*tunnel.Tunnel, error) {
+	// Get path filter from connection's session
+	pathFilter := ""
+	if sessionCode := conn.SessionCode(); sessionCode != "" {
+		if session, ok := d.sessionRegistry.Get(sessionCode); ok {
+			pathFilter = session.ProjectPath
+		}
+	}
+
+	return d.tunnelm.GetWithPathFilter(tunnelID, pathFilter)
+}
+
+// getSessionProjectPath returns the project path from the connection's session.
+func (d *Daemon) getSessionProjectPath(conn *hubpkg.Connection) string {
+	if sessionCode := conn.SessionCode(); sessionCode != "" {
+		if session, ok := d.sessionRegistry.Get(sessionCode); ok {
+			return session.ProjectPath
+		}
+	}
+	return ""
+}
+
 // registerAgntCommands registers agnt-specific commands with the Hub.
 // This enables Hub's command dispatch to route these commands to the daemon's handlers.
 // Note: Registering a command that Hub already registered will override Hub's handler.
@@ -120,7 +160,15 @@ func (d *Daemon) registerAgntCommands() {
 		Handler:     d.hubHandleStatus,
 	})
 
-	log.Printf("[DEBUG] Registered %d agnt-specific commands with Hub", 10)
+	// STORE command
+	d.hub.RegisterCommand(hubpkg.CommandDefinition{
+		Verb:        "STORE",
+		SubVerbs:    []string{"GET", "SET", "DELETE", "LIST", "CLEAR", "GET-ALL"},
+		Description: "Manage persistent key-value storage",
+		Handler:     d.hubHandleStore,
+	})
+
+	log.Printf("[DEBUG] Registered %d agnt-specific commands with Hub", 11)
 }
 
 // hubHandleProc handles the PROC command (overrides Hub's built-in).
@@ -568,13 +616,20 @@ func (d *Daemon) hubHandleProxyStop(ctx context.Context, conn *hubpkg.Connection
 
 	proxyID := cmd.Args[0]
 
-	if err := d.proxym.Stop(ctx, proxyID); err != nil {
+	// Use session-scoped lookup to resolve the proxy
+	p, err := d.getSessionScopedProxy(conn, proxyID)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
+	}
+
+	// Stop using the resolved full ID
+	if err := d.proxym.Stop(ctx, p.ID); err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
 
 	// Remove from persisted state
 	if d.stateMgr != nil {
-		d.stateMgr.RemoveProxy(proxyID)
+		d.stateMgr.RemoveProxy(p.ID)
 	}
 
 	return conn.WriteOK("proxy stopped")
@@ -588,7 +643,7 @@ func (d *Daemon) hubHandleProxyStatus(conn *hubpkg.Connection, cmd *hubproto.Com
 
 	proxyID := cmd.Args[0]
 
-	p, err := d.proxym.Get(proxyID)
+	p, err := d.getSessionScopedProxy(conn, proxyID)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
@@ -642,6 +697,7 @@ func (d *Daemon) hubHandleProxyList(conn *hubpkg.Connection, cmd *hubproto.Comma
 			"listen_addr": p.ListenAddr,
 			"target_url":  p.TargetURL.String(),
 			"status":      "running",
+			"running":     true,
 			"path":        p.Path,
 		})
 	}
@@ -661,7 +717,7 @@ func (d *Daemon) hubHandleProxyExec(conn *hubpkg.Connection, cmd *hubproto.Comma
 
 	proxyID := cmd.Args[0]
 
-	p, err := d.proxym.Get(proxyID)
+	p, err := d.getSessionScopedProxy(conn, proxyID)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
@@ -709,7 +765,7 @@ func (d *Daemon) hubHandleProxyToast(conn *hubpkg.Connection, cmd *hubproto.Comm
 
 	proxyID := cmd.Args[0]
 
-	p, err := d.proxym.Get(proxyID)
+	p, err := d.getSessionScopedProxy(conn, proxyID)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
@@ -779,7 +835,7 @@ func (d *Daemon) hubHandleProxyLogQuery(conn *hubpkg.Connection, cmd *hubproto.C
 
 	proxyID := cmd.Args[0]
 
-	p, err := d.proxym.Get(proxyID)
+	p, err := d.getSessionScopedProxy(conn, proxyID)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
@@ -803,7 +859,7 @@ func (d *Daemon) hubHandleProxyLogSummary(conn *hubpkg.Connection, cmd *hubproto
 
 	proxyID := cmd.Args[0]
 
-	p, err := d.proxym.Get(proxyID)
+	p, err := d.getSessionScopedProxy(conn, proxyID)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
@@ -827,7 +883,7 @@ func (d *Daemon) hubHandleProxyLogClear(conn *hubpkg.Connection, cmd *hubproto.C
 
 	proxyID := cmd.Args[0]
 
-	p, err := d.proxym.Get(proxyID)
+	p, err := d.getSessionScopedProxy(conn, proxyID)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
@@ -844,7 +900,7 @@ func (d *Daemon) hubHandleProxyLogStats(conn *hubpkg.Connection, cmd *hubproto.C
 
 	proxyID := cmd.Args[0]
 
-	p, err := d.proxym.Get(proxyID)
+	p, err := d.getSessionScopedProxy(conn, proxyID)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
@@ -884,7 +940,7 @@ func (d *Daemon) hubHandleCurrentPageList(conn *hubpkg.Connection, cmd *hubproto
 
 	proxyID := cmd.Args[0]
 
-	p, err := d.proxym.Get(proxyID)
+	p, err := d.getSessionScopedProxy(conn, proxyID)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
@@ -909,7 +965,7 @@ func (d *Daemon) hubHandleCurrentPageGet(conn *hubpkg.Connection, cmd *hubproto.
 	proxyID := cmd.Args[0]
 	sessionID := cmd.Args[1]
 
-	p, err := d.proxym.Get(proxyID)
+	p, err := d.getSessionScopedProxy(conn, proxyID)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
@@ -932,7 +988,7 @@ func (d *Daemon) hubHandleCurrentPageSummary(conn *hubpkg.Connection, cmd *hubpr
 	proxyID := cmd.Args[0]
 	sessionID := cmd.Args[1]
 
-	p, err := d.proxym.Get(proxyID)
+	p, err := d.getSessionScopedProxy(conn, proxyID)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
@@ -955,7 +1011,7 @@ func (d *Daemon) hubHandleCurrentPageClear(conn *hubpkg.Connection, cmd *hubprot
 
 	proxyID := cmd.Args[0]
 
-	p, err := d.proxym.Get(proxyID)
+	p, err := d.getSessionScopedProxy(conn, proxyID)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
@@ -1037,7 +1093,7 @@ func (d *Daemon) hubHandleTunnel(ctx context.Context, conn *hubpkg.Connection, c
 	case "STATUS":
 		return d.hubHandleTunnelStatus(conn, cmd)
 	case "LIST":
-		return d.hubHandleTunnelList(conn)
+		return d.hubHandleTunnelList(conn, cmd)
 	default:
 		return conn.WriteStructuredErr(&hubproto.StructuredError{
 			Code:         hubproto.ErrInvalidArgs,
@@ -1075,11 +1131,15 @@ func (d *Daemon) hubHandleTunnelStart(ctx context.Context, conn *hubpkg.Connecti
 		return conn.WriteErr(hubproto.ErrInvalidArgs, "local_port is required")
 	}
 
+	// Get project path from session for session scoping
+	projectPath := d.getSessionProjectPath(conn)
+
 	tunnelConfig := tunnel.Config{
 		Provider:   tunnel.Provider(config.Provider),
 		LocalPort:  config.LocalPort,
 		LocalHost:  config.LocalHost,
 		BinaryPath: config.BinaryPath,
+		Path:       projectPath,
 	}
 
 	t, err := d.tunnelm.Start(ctx, tunnelID, tunnelConfig)
@@ -1095,7 +1155,7 @@ func (d *Daemon) hubHandleTunnelStart(ctx context.Context, conn *hubpkg.Connecti
 
 	// Update proxy public URL if proxy_id specified
 	if config.ProxyID != "" {
-		if p, err := d.proxym.Get(config.ProxyID); err == nil {
+		if p, err := d.getSessionScopedProxy(conn, config.ProxyID); err == nil {
 			p.SetPublicURL(publicURL)
 		}
 	}
@@ -1120,7 +1180,14 @@ func (d *Daemon) hubHandleTunnelStop(ctx context.Context, conn *hubpkg.Connectio
 
 	tunnelID := cmd.Args[0]
 
-	if err := d.tunnelm.Stop(ctx, tunnelID); err != nil {
+	// Use session-scoped lookup to find the tunnel
+	t, err := d.getSessionScopedTunnel(conn, tunnelID)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
+	}
+
+	// Stop using the resolved full ID
+	if err := d.tunnelm.Stop(ctx, t.ID()); err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
 
@@ -1135,18 +1202,20 @@ func (d *Daemon) hubHandleTunnelStatus(conn *hubpkg.Connection, cmd *hubproto.Co
 
 	tunnelID := cmd.Args[0]
 
-	t, ok := d.tunnelm.Get(tunnelID)
-	if !ok {
-		return conn.WriteErr(hubproto.ErrNotFound, tunnelID)
+	// Use session-scoped lookup to find the tunnel
+	t, err := d.getSessionScopedTunnel(conn, tunnelID)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
 
 	info := t.Info()
 	resp := map[string]interface{}{
-		"id":         tunnelID,
+		"id":         info.ID,
 		"provider":   string(info.Provider),
 		"state":      info.State,
 		"public_url": info.PublicURL,
 		"local_addr": info.LocalAddr,
+		"path":       info.Path,
 	}
 	if info.Error != "" {
 		resp["error"] = info.Error
@@ -1157,16 +1226,37 @@ func (d *Daemon) hubHandleTunnelStatus(conn *hubpkg.Connection, cmd *hubproto.Co
 }
 
 // hubHandleTunnelList handles TUNNEL LIST command.
-func (d *Daemon) hubHandleTunnelList(conn *hubpkg.Connection) error {
-	infos := d.tunnelm.List()
+func (d *Daemon) hubHandleTunnelList(conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	// Parse filter from command data
+	var dirFilter hubproto.DirectoryFilter
+	if len(cmd.Data) > 0 {
+		json.Unmarshal(cmd.Data, &dirFilter)
+	}
+
+	var infos []tunnel.TunnelInfo
+	if dirFilter.Global {
+		// Global: list all tunnels
+		infos = d.tunnelm.List()
+	} else {
+		// Session-scoped: filter by project path
+		projectPath := d.getSessionProjectPath(conn)
+		if projectPath != "" {
+			infos = d.tunnelm.ListByPath(projectPath)
+		} else {
+			// No session, return all (fallback for non-session connections)
+			infos = d.tunnelm.List()
+		}
+	}
 
 	entries := make([]map[string]interface{}, len(infos))
 	for i, info := range infos {
 		entry := map[string]interface{}{
+			"id":         info.ID,
 			"provider":   string(info.Provider),
 			"state":      info.State,
 			"public_url": info.PublicURL,
 			"local_addr": info.LocalAddr,
+			"path":       info.Path,
 		}
 		if info.Error != "" {
 			entry["error"] = info.Error
@@ -1221,7 +1311,7 @@ func (d *Daemon) hubHandleChaosEnable(conn *hubpkg.Connection, cmd *hubproto.Com
 
 	proxyID := cmd.Args[0]
 
-	p, err := d.proxym.Get(proxyID)
+	p, err := d.getSessionScopedProxy(conn, proxyID)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
@@ -1238,7 +1328,7 @@ func (d *Daemon) hubHandleChaosDisable(conn *hubpkg.Connection, cmd *hubproto.Co
 
 	proxyID := cmd.Args[0]
 
-	p, err := d.proxym.Get(proxyID)
+	p, err := d.getSessionScopedProxy(conn, proxyID)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
@@ -1255,7 +1345,7 @@ func (d *Daemon) hubHandleChaosStatus(conn *hubpkg.Connection, cmd *hubproto.Com
 
 	proxyID := cmd.Args[0]
 
-	p, err := d.proxym.Get(proxyID)
+	p, err := d.getSessionScopedProxy(conn, proxyID)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
@@ -1281,7 +1371,7 @@ func (d *Daemon) hubHandleChaosPreset(conn *hubpkg.Connection, cmd *hubproto.Com
 
 	proxyID := cmd.Args[0]
 
-	p, err := d.proxym.Get(proxyID)
+	p, err := d.getSessionScopedProxy(conn, proxyID)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
@@ -1318,7 +1408,7 @@ func (d *Daemon) hubHandleChaosSet(conn *hubpkg.Connection, cmd *hubproto.Comman
 
 	proxyID := cmd.Args[0]
 
-	p, err := d.proxym.Get(proxyID)
+	p, err := d.getSessionScopedProxy(conn, proxyID)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
@@ -1343,7 +1433,7 @@ func (d *Daemon) hubHandleChaosAddRule(conn *hubpkg.Connection, cmd *hubproto.Co
 
 	proxyID := cmd.Args[0]
 
-	p, err := d.proxym.Get(proxyID)
+	p, err := d.getSessionScopedProxy(conn, proxyID)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
@@ -1374,7 +1464,7 @@ func (d *Daemon) hubHandleChaosRemoveRule(conn *hubpkg.Connection, cmd *hubproto
 
 	proxyID := cmd.Args[0]
 
-	p, err := d.proxym.Get(proxyID)
+	p, err := d.getSessionScopedProxy(conn, proxyID)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
@@ -1402,7 +1492,7 @@ func (d *Daemon) hubHandleChaosListRules(conn *hubpkg.Connection, cmd *hubproto.
 
 	proxyID := cmd.Args[0]
 
-	p, err := d.proxym.Get(proxyID)
+	p, err := d.getSessionScopedProxy(conn, proxyID)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
@@ -1428,7 +1518,7 @@ func (d *Daemon) hubHandleChaosStats(conn *hubpkg.Connection, cmd *hubproto.Comm
 
 	proxyID := cmd.Args[0]
 
-	p, err := d.proxym.Get(proxyID)
+	p, err := d.getSessionScopedProxy(conn, proxyID)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
@@ -1447,7 +1537,7 @@ func (d *Daemon) hubHandleChaosClear(conn *hubpkg.Connection, cmd *hubproto.Comm
 
 	proxyID := cmd.Args[0]
 
-	p, err := d.proxym.Get(proxyID)
+	p, err := d.getSessionScopedProxy(conn, proxyID)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
@@ -1897,6 +1987,233 @@ func (d *Daemon) sendMessageToOverlay(socketPath string, message string) error {
 	}
 
 	return nil
+}
+
+// hubHandleStore handles the STORE command and its sub-verbs.
+func (d *Daemon) hubHandleStore(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	switch cmd.SubVerb {
+	case "GET":
+		return d.hubHandleStoreGet(conn, cmd)
+	case "SET":
+		return d.hubHandleStoreSet(conn, cmd)
+	case "DELETE":
+		return d.hubHandleStoreDelete(conn, cmd)
+	case "LIST":
+		return d.hubHandleStoreList(conn, cmd)
+	case "CLEAR":
+		return d.hubHandleStoreClear(conn, cmd)
+	case "GET-ALL":
+		return d.hubHandleStoreGetAll(conn, cmd)
+	default:
+		return conn.WriteStructuredErr(&hubproto.StructuredError{
+			Code:         hubproto.ErrInvalidAction,
+			Message:      "unknown STORE sub-command",
+			Command:      "STORE",
+			ValidActions: []string{"GET", "SET", "DELETE", "LIST", "CLEAR", "GET-ALL"},
+		})
+	}
+}
+
+// hubHandleStoreGet handles STORE GET command.
+func (d *Daemon) hubHandleStoreGet(conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	var req struct {
+		Scope    string `json:"scope"`
+		ScopeKey string `json:"scope_key"`
+		Key      string `json:"key"`
+	}
+	if len(cmd.Data) > 0 {
+		if err := json.Unmarshal(cmd.Data, &req); err != nil {
+			return conn.WriteErr(hubproto.ErrInvalidArgs, "invalid request JSON: "+err.Error())
+		}
+	}
+
+	if req.Scope == "" {
+		return conn.WriteErr(hubproto.ErrMissingParam, "scope is required")
+	}
+	if req.Key == "" {
+		return conn.WriteErr(hubproto.ErrMissingParam, "key is required")
+	}
+
+	// Get project path from session
+	basePath := d.getSessionProjectPath(conn)
+	if basePath == "" {
+		return conn.WriteErr(hubproto.ErrInvalidState, "no active session with project path")
+	}
+
+	entry, err := d.storem.Get(basePath, req.Scope, req.ScopeKey, req.Key)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
+	}
+
+	data, _ := json.Marshal(entry)
+	return conn.WriteJSON(data)
+}
+
+// hubHandleStoreSet handles STORE SET command.
+func (d *Daemon) hubHandleStoreSet(conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	var req struct {
+		Scope    string         `json:"scope"`
+		ScopeKey string         `json:"scope_key"`
+		Key      string         `json:"key"`
+		Value    interface{}    `json:"value"`
+		Metadata map[string]any `json:"metadata,omitempty"`
+	}
+	if len(cmd.Data) > 0 {
+		if err := json.Unmarshal(cmd.Data, &req); err != nil {
+			return conn.WriteErr(hubproto.ErrInvalidArgs, "invalid request JSON: "+err.Error())
+		}
+	}
+
+	if req.Scope == "" {
+		return conn.WriteErr(hubproto.ErrMissingParam, "scope is required")
+	}
+	if req.Key == "" {
+		return conn.WriteErr(hubproto.ErrMissingParam, "key is required")
+	}
+
+	// Get project path from session
+	basePath := d.getSessionProjectPath(conn)
+	if basePath == "" {
+		return conn.WriteErr(hubproto.ErrInvalidState, "no active session with project path")
+	}
+
+	if err := d.storem.Set(basePath, req.Scope, req.ScopeKey, req.Key, req.Value, req.Metadata); err != nil {
+		return conn.WriteErr(hubproto.ErrInternal, err.Error())
+	}
+
+	return conn.WriteOK("value stored")
+}
+
+// hubHandleStoreDelete handles STORE DELETE command.
+func (d *Daemon) hubHandleStoreDelete(conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	var req struct {
+		Scope    string `json:"scope"`
+		ScopeKey string `json:"scope_key"`
+		Key      string `json:"key"`
+	}
+	if len(cmd.Data) > 0 {
+		if err := json.Unmarshal(cmd.Data, &req); err != nil {
+			return conn.WriteErr(hubproto.ErrInvalidArgs, "invalid request JSON: "+err.Error())
+		}
+	}
+
+	if req.Scope == "" {
+		return conn.WriteErr(hubproto.ErrMissingParam, "scope is required")
+	}
+	if req.Key == "" {
+		return conn.WriteErr(hubproto.ErrMissingParam, "key is required")
+	}
+
+	// Get project path from session
+	basePath := d.getSessionProjectPath(conn)
+	if basePath == "" {
+		return conn.WriteErr(hubproto.ErrInvalidState, "no active session with project path")
+	}
+
+	if err := d.storem.Delete(basePath, req.Scope, req.ScopeKey, req.Key); err != nil {
+		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
+	}
+
+	return conn.WriteOK("key deleted")
+}
+
+// hubHandleStoreList handles STORE LIST command.
+func (d *Daemon) hubHandleStoreList(conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	var req struct {
+		Scope    string `json:"scope"`
+		ScopeKey string `json:"scope_key"`
+	}
+	if len(cmd.Data) > 0 {
+		if err := json.Unmarshal(cmd.Data, &req); err != nil {
+			return conn.WriteErr(hubproto.ErrInvalidArgs, "invalid request JSON: "+err.Error())
+		}
+	}
+
+	if req.Scope == "" {
+		return conn.WriteErr(hubproto.ErrMissingParam, "scope is required")
+	}
+
+	// Get project path from session
+	basePath := d.getSessionProjectPath(conn)
+	if basePath == "" {
+		return conn.WriteErr(hubproto.ErrInvalidState, "no active session with project path")
+	}
+
+	keys, err := d.storem.List(basePath, req.Scope, req.ScopeKey)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInternal, err.Error())
+	}
+
+	resp := map[string]interface{}{
+		"keys": keys,
+	}
+
+	data, _ := json.Marshal(resp)
+	return conn.WriteJSON(data)
+}
+
+// hubHandleStoreClear handles STORE CLEAR command.
+func (d *Daemon) hubHandleStoreClear(conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	var req struct {
+		Scope    string `json:"scope"`
+		ScopeKey string `json:"scope_key"`
+	}
+	if len(cmd.Data) > 0 {
+		if err := json.Unmarshal(cmd.Data, &req); err != nil {
+			return conn.WriteErr(hubproto.ErrInvalidArgs, "invalid request JSON: "+err.Error())
+		}
+	}
+
+	if req.Scope == "" {
+		return conn.WriteErr(hubproto.ErrMissingParam, "scope is required")
+	}
+
+	// Get project path from session
+	basePath := d.getSessionProjectPath(conn)
+	if basePath == "" {
+		return conn.WriteErr(hubproto.ErrInvalidState, "no active session with project path")
+	}
+
+	if err := d.storem.Clear(basePath, req.Scope, req.ScopeKey); err != nil {
+		return conn.WriteErr(hubproto.ErrInternal, err.Error())
+	}
+
+	return conn.WriteOK("scope cleared")
+}
+
+// hubHandleStoreGetAll handles STORE GET-ALL command.
+func (d *Daemon) hubHandleStoreGetAll(conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	var req struct {
+		Scope    string `json:"scope"`
+		ScopeKey string `json:"scope_key"`
+	}
+	if len(cmd.Data) > 0 {
+		if err := json.Unmarshal(cmd.Data, &req); err != nil {
+			return conn.WriteErr(hubproto.ErrInvalidArgs, "invalid request JSON: "+err.Error())
+		}
+	}
+
+	if req.Scope == "" {
+		return conn.WriteErr(hubproto.ErrMissingParam, "scope is required")
+	}
+
+	// Get project path from session
+	basePath := d.getSessionProjectPath(conn)
+	if basePath == "" {
+		return conn.WriteErr(hubproto.ErrInvalidState, "no active session with project path")
+	}
+
+	entries, err := d.storem.GetAll(basePath, req.Scope, req.ScopeKey)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInternal, err.Error())
+	}
+
+	resp := map[string]interface{}{
+		"entries": entries,
+	}
+
+	data, _ := json.Marshal(resp)
+	return conn.WriteJSON(data)
 }
 
 // hubHandleStatus handles the STATUS command.

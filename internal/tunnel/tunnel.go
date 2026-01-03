@@ -57,6 +57,8 @@ type Config struct {
 	LocalPort  int
 	LocalHost  string // defaults to "localhost"
 	BinaryPath string // optional: path to tunnel binary, otherwise uses PATH
+	ID         string // tunnel identifier
+	Path       string // project path for session scoping
 }
 
 // Tunnel represents a running tunnel instance.
@@ -76,10 +78,12 @@ type Tunnel struct {
 
 // TunnelInfo contains information about a tunnel.
 type TunnelInfo struct {
+	ID        string   `json:"id"`
 	Provider  Provider `json:"provider"`
 	State     string   `json:"state"`
 	PublicURL string   `json:"public_url,omitempty"`
 	LocalAddr string   `json:"local_addr"`
+	Path      string   `json:"path,omitempty"`
 	Error     string   `json:"error,omitempty"`
 }
 
@@ -160,10 +164,12 @@ func (t *Tunnel) PublicURL() string {
 // Info returns information about the tunnel.
 func (t *Tunnel) Info() TunnelInfo {
 	info := TunnelInfo{
+		ID:        t.config.ID,
 		Provider:  t.config.Provider,
 		State:     t.State().String(),
 		PublicURL: t.PublicURL(),
 		LocalAddr: fmt.Sprintf("%s:%d", t.config.LocalHost, t.config.LocalPort),
+		Path:      t.config.Path,
 	}
 
 	t.errMu.RLock()
@@ -173,6 +179,16 @@ func (t *Tunnel) Info() TunnelInfo {
 	t.errMu.RUnlock()
 
 	return info
+}
+
+// Path returns the project path for this tunnel.
+func (t *Tunnel) Path() string {
+	return t.config.Path
+}
+
+// ID returns the tunnel ID.
+func (t *Tunnel) ID() string {
+	return t.config.ID
 }
 
 // WaitForURL waits for the public URL to be available or timeout.

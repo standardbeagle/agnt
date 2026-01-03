@@ -1281,6 +1281,10 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			// Handle session API requests from browser
 			go ps.handleSessionRequest(conn, msg.Data)
 
+		case "store_request":
+			// Handle store API requests from browser
+			go ps.handleStoreRequest(conn, msg.Data)
+
 		case "voice_start":
 			// Start voice transcription session
 			config := DefaultDeepgramConfig()
@@ -1469,6 +1473,188 @@ func (ps *ProxyServer) handleSessionRequest(conn *websocket.Conn, data map[strin
 
 	default:
 		sendResponse(nil, fmt.Sprintf("unknown session action: %s", action))
+	}
+}
+
+// handleStoreRequest processes store API requests from the browser.
+// It creates a daemon client, executes the store operation, and sends the response back.
+func (ps *ProxyServer) handleStoreRequest(conn *websocket.Conn, data map[string]interface{}) {
+	requestID := getStringField(data, "request_id")
+	action := getStringField(data, "action")
+	params := getMapField(data, "params")
+
+	// Helper to send response
+	sendResponse := func(result interface{}, errMsg string) {
+		resp := map[string]interface{}{
+			"type":       "store_response",
+			"request_id": requestID,
+		}
+		if errMsg != "" {
+			resp["error"] = errMsg
+		} else {
+			resp["result"] = result
+		}
+		conn.WriteJSON(resp)
+	}
+
+	// Check if session client factory is configured (we reuse it for store access)
+	if ps.sessionClientFactory == nil {
+		sendResponse(nil, "store API not available: no client factory configured")
+		return
+	}
+
+	// Create client for this request
+	client, err := ps.sessionClientFactory()
+	if err != nil {
+		sendResponse(nil, fmt.Sprintf("failed to connect to daemon: %v", err))
+		return
+	}
+	defer client.Close()
+
+	// Execute the appropriate store action
+	switch action {
+	case "get":
+		scope := getStringField(params, "scope")
+		scopeKey := getStringField(params, "scope_key")
+		key := getStringField(params, "key")
+
+		if scope == "" {
+			sendResponse(nil, "scope is required")
+			return
+		}
+		if key == "" {
+			sendResponse(nil, "key is required")
+			return
+		}
+
+		result, err := client.StoreGet(protocol.StoreGetRequest{
+			Scope:    scope,
+			ScopeKey: scopeKey,
+			Key:      key,
+		})
+		if err != nil {
+			sendResponse(nil, err.Error())
+		} else {
+			sendResponse(result, "")
+		}
+
+	case "set":
+		scope := getStringField(params, "scope")
+		scopeKey := getStringField(params, "scope_key")
+		key := getStringField(params, "key")
+		value := params["value"]
+		metadata := getMapField(params, "metadata")
+
+		if scope == "" {
+			sendResponse(nil, "scope is required")
+			return
+		}
+		if key == "" {
+			sendResponse(nil, "key is required")
+			return
+		}
+		if value == nil {
+			sendResponse(nil, "value is required")
+			return
+		}
+
+		err = client.StoreSet(protocol.StoreSetRequest{
+			Scope:    scope,
+			ScopeKey: scopeKey,
+			Key:      key,
+			Value:    value,
+			Metadata: metadata,
+		})
+		if err != nil {
+			sendResponse(nil, err.Error())
+		} else {
+			sendResponse(map[string]interface{}{"success": true}, "")
+		}
+
+	case "delete":
+		scope := getStringField(params, "scope")
+		scopeKey := getStringField(params, "scope_key")
+		key := getStringField(params, "key")
+
+		if scope == "" {
+			sendResponse(nil, "scope is required")
+			return
+		}
+		if key == "" {
+			sendResponse(nil, "key is required")
+			return
+		}
+
+		err = client.StoreDelete(protocol.StoreDeleteRequest{
+			Scope:    scope,
+			ScopeKey: scopeKey,
+			Key:      key,
+		})
+		if err != nil {
+			sendResponse(nil, err.Error())
+		} else {
+			sendResponse(map[string]interface{}{"success": true}, "")
+		}
+
+	case "list":
+		scope := getStringField(params, "scope")
+		scopeKey := getStringField(params, "scope_key")
+
+		if scope == "" {
+			sendResponse(nil, "scope is required")
+			return
+		}
+
+		result, err := client.StoreList(protocol.StoreListRequest{
+			Scope:    scope,
+			ScopeKey: scopeKey,
+		})
+		if err != nil {
+			sendResponse(nil, err.Error())
+		} else {
+			sendResponse(result, "")
+		}
+
+	case "clear":
+		scope := getStringField(params, "scope")
+		scopeKey := getStringField(params, "scope_key")
+
+		if scope == "" {
+			sendResponse(nil, "scope is required")
+			return
+		}
+
+		err = client.StoreClear(protocol.StoreClearRequest{
+			Scope:    scope,
+			ScopeKey: scopeKey,
+		})
+		if err != nil {
+			sendResponse(nil, err.Error())
+		} else {
+			sendResponse(map[string]interface{}{"success": true}, "")
+		}
+
+	case "getAll":
+		scope := getStringField(params, "scope")
+		scopeKey := getStringField(params, "scope_key")
+
+		if scope == "" {
+			sendResponse(nil, "scope is required")
+			return
+		}
+
+		result, err := client.StoreGetAll(protocol.StoreGetAllRequest{
+			Scope:    scope,
+			ScopeKey: scopeKey,
+		})
+		if err != nil {
+			sendResponse(nil, err.Error())
+		} else {
+			sendResponse(result, "")
+		}
+
+	default:
+		sendResponse(nil, fmt.Sprintf("unknown store action: %s", action))
 	}
 }
 

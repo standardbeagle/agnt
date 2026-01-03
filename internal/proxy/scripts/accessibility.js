@@ -229,7 +229,13 @@
   }
 
   // Basic accessibility audit (fallback when axe-core unavailable)
-  function runBasicAudit() {
+  // Options:
+  //   detailLevel: 'summary' | 'compact' (default) | 'full'
+  //   maxIssues: number (default: 20)
+  function runBasicAudit(options) {
+    options = options || {};
+    var detailLevel = options.detailLevel || 'compact';
+    var maxIssues = options.maxIssues || 20;
     var issues = [];
 
     // Check images without alt
@@ -309,13 +315,38 @@
       }
     }
 
-    return {
+    // Calculate counts before any filtering
+    var totalCount = issues.length;
+    var errorCount = issues.filter(function(i) { return i.severity === 'error'; }).length;
+    var warningCount = issues.filter(function(i) { return i.severity === 'warning'; }).length;
+
+    var response = {
       mode: 'basic',
-      issues: issues,
-      count: issues.length,
-      errors: issues.filter(function(i) { return i.severity === 'error'; }).length,
-      warnings: issues.filter(function(i) { return i.severity === 'warning'; }).length
+      detailLevel: detailLevel,
+      count: totalCount,
+      errors: errorCount,
+      warnings: warningCount
     };
+
+    if (detailLevel === 'summary') {
+      // Summary: counts only
+      return response;
+    } else if (detailLevel === 'compact') {
+      // Compact: limited issues, truncated fields
+      var limitedIssues = issues.slice(0, maxIssues);
+      response.issues = limitedIssues.map(function(issue) {
+        return compactIssue(issue, options);
+      });
+      if (totalCount > maxIssues) {
+        response.truncated = true;
+        response.shownIssues = maxIssues;
+      }
+    } else {
+      // Full: all issues
+      response.issues = issues;
+    }
+
+    return response;
   }
 
   // Load axe-core from CDN
@@ -339,9 +370,89 @@
     });
   }
 
+  // --- Compact Response Helpers ---
+  // Helper to truncate strings to reduce token usage
+  function truncateString(str, maxLength) {
+    if (!str || typeof str !== 'string') return str;
+    if (str.length <= maxLength) return str;
+    return str.substring(0, maxLength) + '...';
+  }
+
+  // Helper to shorten CSS selectors - keeps last 2-3 path elements
+  function shortenSelector(selector, maxLength) {
+    if (!selector || typeof selector !== 'string') return selector;
+    if (selector.length <= maxLength) return selector;
+
+    // Split by common CSS selector separators
+    var parts = selector.split(/\s+>\s+|\s+/);
+    if (parts.length <= 2) return truncateString(selector, maxLength);
+
+    // Keep last 3 parts
+    var shortened = parts.slice(-3).join(' > ');
+    if (shortened.length <= maxLength) return '...' + shortened;
+
+    return truncateString(shortened, maxLength);
+  }
+
+  // Helper to compact an issue object based on detail level
+  function compactIssue(issue, options) {
+    var maxHtml = options.maxHtmlLength || 100;
+    var maxSelector = options.maxSelectorLength || 80;
+    var detailLevel = options.detailLevel || 'compact';
+
+    var compact = {
+      type: issue.type,
+      severity: issue.severity,
+      message: truncateString(issue.message, 200)
+    };
+
+    if (issue.selector) {
+      compact.selector = shortenSelector(issue.selector, maxSelector);
+    }
+
+    if (issue.html) {
+      compact.html = truncateString(issue.html, maxHtml);
+    }
+
+    if (issue.impact) compact.impact = issue.impact;
+
+    // Only include helpUrl and wcagTags in full mode
+    if (detailLevel === 'full') {
+      if (issue.helpUrl) compact.helpUrl = issue.helpUrl;
+      if (issue.description) compact.description = issue.description;
+      if (issue.wcagTags) compact.wcagTags = issue.wcagTags;
+    }
+
+    // Include category if present (for fast/comprehensive modes)
+    if (issue.category) compact.category = issue.category;
+
+    return compact;
+  }
+
+  // Sort issues by severity (critical > serious > moderate > minor)
+  function sortIssuesBySeverity(issues) {
+    var severityOrder = { critical: 0, serious: 1, moderate: 2, minor: 3 };
+    return issues.slice().sort(function(a, b) {
+      var aOrder = severityOrder[a.impact] !== undefined ? severityOrder[a.impact] : 4;
+      var bOrder = severityOrder[b.impact] !== undefined ? severityOrder[b.impact] : 4;
+      return aOrder - bOrder;
+    });
+  }
+
   // Run axe-core audit with configurable options
+  // Options:
+  //   detailLevel: 'summary' | 'compact' (default) | 'full'
+  //   maxIssues: number (default: 20)
+  //   maxHtmlLength: number (default: 100)
+  //   maxSelectorLength: number (default: 80)
+  //   level: 'a' | 'aa' (default) | 'aaa'
+  //   selector: CSS selector to limit audit scope
   function runAxeAudit(options) {
     options = options || {};
+
+    // Response optimization options (defaults favor token efficiency)
+    var detailLevel = options.detailLevel || 'compact';
+    var maxIssues = options.maxIssues || 20;
 
     // Default to WCAG 2.1 Level AA
     var runOnly = options.level ?
@@ -380,30 +491,70 @@
         });
       });
 
-      return {
+      // Calculate summary counts before filtering
+      var totalCount = allIssues.length;
+      var errorCount = allIssues.filter(function(i) { return i.severity === 'error'; }).length;
+      var warningCount = allIssues.filter(function(i) { return i.severity === 'warning'; }).length;
+      var summary = {
+        critical: allIssues.filter(function(i) { return i.impact === 'critical'; }).length,
+        serious: allIssues.filter(function(i) { return i.impact === 'serious'; }).length,
+        moderate: allIssues.filter(function(i) { return i.impact === 'moderate'; }).length,
+        minor: allIssues.filter(function(i) { return i.impact === 'minor'; }).length
+      };
+
+      // Build response based on detail level
+      var response = {
         mode: 'axe-core',
         version: window.axe.version,
         level: options.level || 'aa',
-        violations: results.violations,
-        passes: results.passes,
-        incomplete: results.incomplete,
-        inapplicable: results.inapplicable,
-        issues: allIssues,
-        count: allIssues.length,
-        errors: allIssues.filter(function(i) { return i.severity === 'error'; }).length,
-        warnings: allIssues.filter(function(i) { return i.severity === 'warning'; }).length,
-        summary: {
-          critical: allIssues.filter(function(i) { return i.impact === 'critical'; }).length,
-          serious: allIssues.filter(function(i) { return i.impact === 'serious'; }).length,
-          moderate: allIssues.filter(function(i) { return i.impact === 'moderate'; }).length,
-          minor: allIssues.filter(function(i) { return i.impact === 'minor'; }).length
-        }
+        detailLevel: detailLevel,
+        count: totalCount,
+        errors: errorCount,
+        warnings: warningCount,
+        summary: summary
       };
+
+      // Handle detail levels
+      if (detailLevel === 'summary') {
+        // Summary mode: counts only, no issues array
+        response.passesCount = results.passes.length;
+        response.incompleteCount = results.incomplete.length;
+      } else if (detailLevel === 'compact') {
+        // Compact mode: limited issues, truncated fields, no raw arrays
+        var sortedIssues = sortIssuesBySeverity(allIssues);
+        var limitedIssues = sortedIssues.slice(0, maxIssues);
+
+        response.issues = limitedIssues.map(function(issue) {
+          return compactIssue(issue, options);
+        });
+        response.passesCount = results.passes.length;
+        response.incompleteCount = results.incomplete.length;
+
+        if (totalCount > maxIssues) {
+          response.truncated = true;
+          response.shownIssues = maxIssues;
+        }
+      } else {
+        // Full mode: all issues and raw arrays (backward compatible)
+        response.violations = results.violations;
+        response.passes = results.passes;
+        response.incomplete = results.incomplete;
+        response.inapplicable = results.inapplicable;
+        response.issues = allIssues;
+      }
+
+      return response;
     });
   }
 
   // Fast improvements mode - quick wins beyond axe
+  // Options:
+  //   detailLevel: 'summary' | 'compact' (default) | 'full'
+  //   maxIssues: number (default: 20)
   function runFastAudit(options) {
+    options = options || {};
+    var detailLevel = options.detailLevel || 'compact';
+    var maxIssues = options.maxIssues || 20;
     var issues = [];
 
     // Get all stylesheets
@@ -503,17 +654,43 @@
       });
     }
 
-    return {
-      mode: 'fast',
-      issues: issues,
-      count: issues.length,
-      errors: issues.filter(function(i) { return i.severity === 'error'; }).length,
-      warnings: issues.filter(function(i) { return i.severity === 'warning'; }).length,
-      categories: {
-        'focus-management': issues.filter(function(i) { return i.category === 'focus-management'; }).length,
-        'color-scheme': issues.filter(function(i) { return i.category === 'color-scheme'; }).length
-      }
+    // Calculate counts before any filtering
+    var totalCount = issues.length;
+    var errorCount = issues.filter(function(i) { return i.severity === 'error'; }).length;
+    var warningCount = issues.filter(function(i) { return i.severity === 'warning'; }).length;
+    var categories = {
+      'focus-management': issues.filter(function(i) { return i.category === 'focus-management'; }).length,
+      'color-scheme': issues.filter(function(i) { return i.category === 'color-scheme'; }).length
     };
+
+    var response = {
+      mode: 'fast',
+      detailLevel: detailLevel,
+      count: totalCount,
+      errors: errorCount,
+      warnings: warningCount,
+      categories: categories
+    };
+
+    if (detailLevel === 'summary') {
+      // Summary: counts only
+      return response;
+    } else if (detailLevel === 'compact') {
+      // Compact: limited issues, truncated fields
+      var limitedIssues = issues.slice(0, maxIssues);
+      response.issues = limitedIssues.map(function(issue) {
+        return compactIssue(issue, options);
+      });
+      if (totalCount > maxIssues) {
+        response.truncated = true;
+        response.shownIssues = maxIssues;
+      }
+    } else {
+      // Full: all issues
+      response.issues = issues;
+    }
+
+    return response;
   }
 
   // Build reverse index of CSS rules and media queries
@@ -677,8 +854,14 @@
 
   // Comprehensive mode - CSS rule analysis and test enumeration
   // BETA: This is a premium feature that will require a license after beta
+  // Options:
+  //   detailLevel: 'summary' | 'compact' (default) | 'full'
+  //   maxIssues: number (default: 20)
+  //   level: 'a' | 'aa' (default) | 'aaa'
   function runComprehensiveAudit(options) {
     options = options || {};
+    var detailLevel = options.detailLevel || 'compact';
+    var maxIssues = options.maxIssues || 20;
     var issues = [];
     var level = options.level || 'aa';
 
@@ -872,30 +1055,27 @@
       }
     }
 
-    return {
+    // Calculate counts before any filtering
+    var totalCount = issues.length;
+    var errorCount = issues.filter(function(i) { return i.severity === 'error'; }).length;
+    var warningCount = issues.filter(function(i) { return i.severity === 'warning'; }).length;
+    var infoCount = issues.filter(function(i) { return i.severity === 'info'; }).length;
+    var categories = {
+      'contrast': issues.filter(function(i) { return i.category === 'contrast'; }).length,
+      'focus-indicator': issues.filter(function(i) { return i.category === 'focus-indicator'; }).length,
+      'css-access': issues.filter(function(i) { return i.category === 'css-access'; }).length,
+      'untested-states': issues.filter(function(i) { return i.category === 'untested-states'; }).length
+    };
+
+    var response = {
       mode: 'comprehensive',
+      detailLevel: detailLevel,
       level: level,
-      issues: issues,
-      count: issues.length,
-      errors: issues.filter(function(i) { return i.severity === 'error'; }).length,
-      warnings: issues.filter(function(i) { return i.severity === 'warning'; }).length,
-      info: issues.filter(function(i) { return i.severity === 'info'; }).length,
-      categories: {
-        'contrast': issues.filter(function(i) { return i.category === 'contrast'; }).length,
-        'focus-indicator': issues.filter(function(i) { return i.category === 'focus-indicator'; }).length,
-        'css-access': issues.filter(function(i) { return i.category === 'css-access'; }).length,
-        'untested-states': issues.filter(function(i) { return i.category === 'untested-states'; }).length
-      },
-      cssAnalysis: {
-        totalStylesheets: document.styleSheets.length,
-        crossOriginSheets: index.crossOriginSheets.length,
-        discoveredBreakpoints: index.discoveredBreakpoints,
-        discoveredColorSchemes: index.discoveredColorSchemes,
-        totalMediaQueries: Object.keys(index.mediaQueries).length,
-        activeMediaQueries: Object.keys(index.mediaQueries).filter(function(q) { return index.mediaQueries[q].active; }).length,
-        elementsByQueryCount: elementsByQueryCount
-      },
-      testingRecommendations: recommendations,
+      count: totalCount,
+      errors: errorCount,
+      warnings: warningCount,
+      info: infoCount,
+      categories: categories,
       summary: {
         testedStates: ['default', 'focus'],
         currentBreakpoint: currentWidth,
@@ -903,6 +1083,50 @@
         totalInteractive: interactive.length
       }
     };
+
+    if (detailLevel === 'summary') {
+      // Summary: counts only, minimal cssAnalysis
+      response.cssAnalysis = {
+        totalStylesheets: document.styleSheets.length,
+        crossOriginSheets: index.crossOriginSheets.length,
+        totalMediaQueries: Object.keys(index.mediaQueries).length
+      };
+      response.recommendationCount = recommendations.length;
+    } else if (detailLevel === 'compact') {
+      // Compact: limited issues, truncated fields, essential cssAnalysis
+      var limitedIssues = issues.slice(0, maxIssues);
+      response.issues = limitedIssues.map(function(issue) {
+        return compactIssue(issue, options);
+      });
+      if (totalCount > maxIssues) {
+        response.truncated = true;
+        response.shownIssues = maxIssues;
+      }
+      response.cssAnalysis = {
+        totalStylesheets: document.styleSheets.length,
+        crossOriginSheets: index.crossOriginSheets.length,
+        discoveredBreakpoints: index.discoveredBreakpoints,
+        discoveredColorSchemes: index.discoveredColorSchemes,
+        totalMediaQueries: Object.keys(index.mediaQueries).length,
+        activeMediaQueries: Object.keys(index.mediaQueries).filter(function(q) { return index.mediaQueries[q].active; }).length
+      };
+      response.testingRecommendations = recommendations;
+    } else {
+      // Full: all issues and detailed cssAnalysis
+      response.issues = issues;
+      response.cssAnalysis = {
+        totalStylesheets: document.styleSheets.length,
+        crossOriginSheets: index.crossOriginSheets.length,
+        discoveredBreakpoints: index.discoveredBreakpoints,
+        discoveredColorSchemes: index.discoveredColorSchemes,
+        totalMediaQueries: Object.keys(index.mediaQueries).length,
+        activeMediaQueries: Object.keys(index.mediaQueries).filter(function(q) { return index.mediaQueries[q].active; }).length,
+        elementsByQueryCount: elementsByQueryCount
+      };
+      response.testingRecommendations = recommendations;
+    }
+
+    return response;
   }
 
   // Main audit function with mode support
@@ -912,7 +1136,7 @@
 
     // If useBasic is explicitly set, skip axe-core
     if (options.useBasic === true) {
-      return Promise.resolve(runBasicAudit());
+      return Promise.resolve(runBasicAudit(options));
     }
 
     // Fast mode - run fast improvements only
@@ -932,7 +1156,7 @@
       })
       .catch(function(error) {
         console.warn('axe-core unavailable, falling back to basic audit:', error.message);
-        var result = runBasicAudit();
+        var result = runBasicAudit(options);
         result.fallback = true;
         result.fallbackReason = error.message;
         return result;
