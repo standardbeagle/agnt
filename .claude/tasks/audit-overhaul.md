@@ -554,16 +554,438 @@ Create a master audit function that runs all audits and provides a unified repor
 
 ---
 
+## Task 9: Build CLI Automation Layer with claude-go
+
+**Files**: `internal/automation/` (new package)
+
+**Purpose**: Create a general-purpose CLI automation layer using [claude-go](https://github.com/standardbeagle/claude-go) (local: `~/work/claude-go`) that enables agent-based processing throughout agnt. This is the foundation for audit processing and other automation tasks.
+
+**Local Development**:
+```bash
+# Add to go.mod for local development
+replace github.com/standardbeagle/claude-go => ../claude-go
+```
+
+**Why claude-go**:
+- Go SDK for Claude Code CLI automation
+- Concurrent session management
+- In-process MCP tool definition
+- Hooks for tool execution control
+- Streaming responses
+- Thread-safe design
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         agnt daemon                              │
+├─────────────────────────────────────────────────────────────────┤
+│  internal/automation/                                            │
+│  ├── processor.go      # Core Processor type                    │
+│  ├── tasks.go          # Task definitions (audit, summarize)    │
+│  ├── prompts.go        # System prompts for each task type      │
+│  └── pool.go           # Worker pool for concurrent processing  │
+├─────────────────────────────────────────────────────────────────┤
+│  Daemon Integration                                              │
+│  └── hub_handlers.go   # AUTOMATE verb handlers                 │
+└─────────────────────────────────────────────────────────────────┘
+         │
+         ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  github.com/standardbeagle/claude-go                            │
+│  ├── Query()           # One-shot processing                    │
+│  ├── Client            # Session management                     │
+│  └── AgentOptions      # Model, permissions, tools              │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Core Components
+
+**1. Processor Type** (`internal/automation/processor.go`):
+```go
+package automation
+
+import (
+    claude "github.com/standardbeagle/claude-go"
+)
+
+// Processor handles agent-based automation tasks
+type Processor struct {
+    client      *claude.Client
+    model       string           // "haiku" for fast tasks, "sonnet" for complex
+    maxBudget   float64          // Cost limit per task
+    prompts     *PromptRegistry  // Task-specific system prompts
+}
+
+// ProcessorConfig configures the automation processor
+type ProcessorConfig struct {
+    Model           string  // Default model (haiku recommended for most tasks)
+    MaxBudgetUSD    float64 // Max cost per task
+    MaxTurns        int     // Max conversation turns
+    WorkingDir      string  // Working directory context
+    AllowedTools    []string
+    DisallowedTools []string
+}
+
+// DefaultConfig returns config optimized for automation tasks
+func DefaultConfig() ProcessorConfig {
+    return ProcessorConfig{
+        Model:        "haiku",     // Fast and cheap for processing
+        MaxBudgetUSD: 0.01,        // $0.01 limit per task
+        MaxTurns:     3,           // Usually 1-2 turns needed
+        DisallowedTools: []string{ // No file/bash access for processing
+            "Bash", "Write", "Edit", "Read",
+        },
+    }
+}
+
+// New creates a new automation processor
+func New(cfg ProcessorConfig) (*Processor, error)
+
+// Process runs a task and returns the result
+func (p *Processor) Process(ctx context.Context, task Task) (*Result, error)
+
+// ProcessBatch runs multiple tasks concurrently
+func (p *Processor) ProcessBatch(ctx context.Context, tasks []Task) ([]*Result, error)
+
+// Close shuts down the processor
+func (p *Processor) Close() error
+```
+
+**2. Task Definition** (`internal/automation/tasks.go`):
+```go
+// TaskType identifies the type of automation task
+type TaskType string
+
+const (
+    TaskTypeAuditProcess    TaskType = "audit_process"    // Process raw audit data
+    TaskTypeSummarize       TaskType = "summarize"        // Summarize content
+    TaskTypePrioritize      TaskType = "prioritize"       // Prioritize action items
+    TaskTypeGenerateFixes   TaskType = "generate_fixes"   // Generate fix suggestions
+    TaskTypeCorrelate       TaskType = "correlate"        // Correlate related issues
+)
+
+// Task represents an automation task to process
+type Task struct {
+    Type     TaskType               // Task type
+    Input    interface{}            // Task-specific input data
+    Context  map[string]interface{} // Additional context (page URL, etc.)
+    Options  TaskOptions            // Processing options
+}
+
+// TaskOptions configures task processing
+type TaskOptions struct {
+    Model       string  // Override default model for this task
+    MaxTokens   int     // Max response tokens
+    Temperature float64 // 0.0-1.0, lower = more deterministic
+}
+
+// Result represents the processed output
+type Result struct {
+    Type      TaskType
+    Output    interface{}            // Task-specific output
+    Tokens    int                    // Tokens used
+    Cost      float64                // Cost in USD
+    Duration  time.Duration          // Processing time
+    Error     error                  // Any error
+}
+
+// AuditProcessInput is input for audit processing tasks
+type AuditProcessInput struct {
+    AuditType string                 // accessibility, security, etc.
+    RawData   map[string]interface{} // Raw audit output from browser
+    PageURL   string                 // URL being audited
+    PageTitle string                 // Page title
+}
+
+// AuditProcessOutput is output from audit processing
+type AuditProcessOutput struct {
+    Summary          string                   // 1-2 sentence summary
+    Score            int                      // 0-100 score
+    Grade            string                   // A-F grade
+    Fixable          []FixableIssue           // Issues with selectors
+    Informational    []InformationalIssue     // Non-actionable info
+    Actions          []string                 // Prioritized actions
+    CorrelatedGroups []CorrelatedGroup        // Related issues grouped
+}
+
+// FixableIssue represents an actionable issue
+type FixableIssue struct {
+    ID       string `json:"id"`
+    Type     string `json:"type"`
+    Severity string `json:"severity"`
+    Impact   int    `json:"impact"`
+    Selector string `json:"selector"`
+    Message  string `json:"message"`
+    Fix      string `json:"fix"`
+    Standard string `json:"standard,omitempty"` // WCAG, etc.
+}
+```
+
+**3. Prompt Registry** (`internal/automation/prompts.go`):
+```go
+// PromptRegistry holds system prompts for each task type
+type PromptRegistry struct {
+    prompts map[TaskType]string
+}
+
+// DefaultPromptRegistry returns prompts optimized for automation
+func DefaultPromptRegistry() *PromptRegistry {
+    return &PromptRegistry{
+        prompts: map[TaskType]string{
+            TaskTypeAuditProcess: auditProcessPrompt,
+            TaskTypeSummarize:    summarizePrompt,
+            TaskTypePrioritize:   prioritizePrompt,
+        },
+    }
+}
+
+var auditProcessPrompt = `You are an audit result processor. Transform raw audit data into actionable output.
+
+RULES:
+1. Generate a 1-2 sentence summary focusing on the most impactful issues
+2. Calculate a 0-100 score based on issue severity and count
+3. Separate issues into "fixable" (have CSS selectors) and "informational"
+4. For each fixable issue, provide a specific fix instruction
+5. Group related issues (e.g., all missing alt texts together)
+6. Prioritize actions by impact (1-10 scale)
+7. Use the exact CSS selectors from the input - do not modify them
+
+OUTPUT FORMAT (JSON):
+{
+  "summary": "...",
+  "score": N,
+  "grade": "A-F",
+  "fixable": [...],
+  "informational": [...],
+  "actions": ["action 1", "action 2", ...],
+  "correlatedGroups": [...]
+}
+
+Do not include explanations outside the JSON. Output only valid JSON.`
+```
+
+**4. Worker Pool** (`internal/automation/pool.go`):
+```go
+// Pool manages concurrent task processing
+type Pool struct {
+    processor   *Processor
+    workers     int
+    taskQueue   chan Task
+    resultQueue chan *Result
+    wg          sync.WaitGroup
+}
+
+// NewPool creates a worker pool for batch processing
+func NewPool(processor *Processor, workers int) *Pool
+
+// Submit adds a task to the queue
+func (p *Pool) Submit(task Task)
+
+// Results returns a channel of results
+func (p *Pool) Results() <-chan *Result
+
+// Wait blocks until all tasks are processed
+func (p *Pool) Wait()
+
+// Close shuts down the pool
+func (p *Pool) Close()
+```
+
+### Daemon Integration
+
+**5. Hub Handlers** (`internal/daemon/hub_handlers.go`):
+```go
+// Add AUTOMATE verb handlers
+
+func (d *Daemon) hubHandleAutomate(ctx context.Context, conn *Connection, cmd *protocol.Command) error {
+    switch cmd.SubVerb {
+    case "PROCESS":
+        return d.hubHandleAutomateProcess(ctx, conn, cmd)
+    case "BATCH":
+        return d.hubHandleAutomateBatch(ctx, conn, cmd)
+    case "STATUS":
+        return d.hubHandleAutomateStatus(ctx, conn, cmd)
+    default:
+        return conn.WriteInvalidAction(cmd.Verb, cmd.SubVerb, []string{"PROCESS", "BATCH", "STATUS"})
+    }
+}
+
+func (d *Daemon) hubHandleAutomateProcess(ctx context.Context, conn *Connection, cmd *protocol.Command) error {
+    var input struct {
+        Type    string                 `json:"type"`
+        Data    map[string]interface{} `json:"data"`
+        Options map[string]interface{} `json:"options,omitempty"`
+    }
+
+    if err := json.Unmarshal(cmd.Data, &input); err != nil {
+        return conn.WriteErr(protocol.ErrInvalidArgs, "invalid JSON")
+    }
+
+    task := automation.Task{
+        Type:  automation.TaskType(input.Type),
+        Input: input.Data,
+    }
+
+    result, err := d.processor.Process(ctx, task)
+    if err != nil {
+        return conn.WriteErr(protocol.ErrInternal, err.Error())
+    }
+
+    return conn.WriteJSONStruct(result)
+}
+```
+
+**6. Protocol Extension** (`internal/protocol/commands.go`):
+```go
+// Add automation verbs
+const (
+    VerbAutomate = "AUTOMATE"
+)
+
+const (
+    SubVerbProcess = "PROCESS"
+    SubVerbBatch   = "BATCH"
+)
+```
+
+### MCP Tool Integration
+
+**7. MCP Tool for Agent Access** (`internal/tools/automate.go`):
+```go
+// AutomateProcessInput is the MCP tool input
+type AutomateProcessInput struct {
+    Type    string                 `json:"type" jsonschema:"enum=audit_process,enum=summarize,enum=prioritize"`
+    Data    map[string]interface{} `json:"data" jsonschema:"description=Raw data to process"`
+    Options AutomateOptions        `json:"options,omitempty"`
+}
+
+type AutomateOptions struct {
+    Model string `json:"model,omitempty" jsonschema:"enum=haiku,enum=sonnet,description=Model to use (haiku recommended)"`
+}
+
+// AutomateProcessOutput is the MCP tool output
+type AutomateProcessOutput struct {
+    Success  bool        `json:"success"`
+    Result   interface{} `json:"result,omitempty"`
+    Error    string      `json:"error,omitempty"`
+    Tokens   int         `json:"tokens_used"`
+    CostUSD  float64     `json:"cost_usd"`
+    Duration string      `json:"duration"`
+}
+
+func (h *Handlers) handleAutomateProcess(ctx context.Context, input AutomateProcessInput) (*mcp.CallToolResult, AutomateProcessOutput, error) {
+    // Implementation
+}
+```
+
+### Audit Integration
+
+**8. Connect Audits to Processor**:
+
+Update `internal/proxy/scripts/indicator.js` to route audit results through processor:
+```javascript
+async function runAuditWithProcessing(auditFn, auditType) {
+    // Run raw audit in browser
+    const rawResult = await auditFn();
+
+    // Send to daemon for agent processing
+    const processed = await fetch('/__devtool_api/automate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            type: 'audit_process',
+            data: {
+                auditType: auditType,
+                rawData: rawResult,
+                pageURL: window.location.href,
+                pageTitle: document.title
+            }
+        })
+    }).then(r => r.json());
+
+    return processed.result;
+}
+```
+
+### Cost Management
+
+**9. Budget Tracking**:
+```go
+// BudgetTracker tracks automation costs
+type BudgetTracker struct {
+    dailyLimit  float64
+    dailySpent  atomic.Value // float64
+    lastReset   atomic.Value // time.Time
+    mu          sync.Mutex
+}
+
+func (b *BudgetTracker) CanSpend(amount float64) bool
+func (b *BudgetTracker) RecordSpend(amount float64)
+func (b *BudgetTracker) DailySpent() float64
+func (b *BudgetTracker) RemainingBudget() float64
+```
+
+### Configuration
+
+**10. Config File Support** (`~/.config/agnt/automation.kdl`):
+```kdl
+automation {
+    enabled true
+    default-model "haiku"
+
+    budget {
+        daily-limit-usd 1.00
+        per-task-limit-usd 0.05
+    }
+
+    tasks {
+        audit_process {
+            model "haiku"
+            max-tokens 2000
+            temperature 0.1
+        }
+        summarize {
+            model "haiku"
+            max-tokens 500
+        }
+    }
+}
+```
+
+### Acceptance Criteria
+
+- [ ] `Processor` type with `Process()` and `ProcessBatch()` methods
+- [ ] Task types for audit processing, summarization, prioritization
+- [ ] Optimized system prompts for each task type
+- [ ] Worker pool for concurrent processing
+- [ ] AUTOMATE verb in daemon protocol
+- [ ] MCP tool exposure for agent access
+- [ ] Budget tracking with daily limits
+- [ ] KDL configuration support
+- [ ] Integration with audit pipeline
+- [ ] Unit tests with VCR recordings
+
+### Testing Strategy
+
+1. **Unit tests** with claude-go VCR recordings (no live API calls)
+2. **Integration tests** with mock processor
+3. **Cost tracking tests** verifying budget enforcement
+4. **Benchmark tests** for processing latency
+
+---
+
 ## Implementation Order
 
-1. **Task 7** (auditAll) - Define unified schema first
-2. **Task 1** (accessibility) - Highest user impact
-3. **Task 4** (security) - Critical for production sites
-4. **Task 6** (performance) - Core Web Vitals focus
-5. **Task 5** (pageQuality/SEO) - Common use case
-6. **Task 2** (DOM complexity) - Developer focused
-7. **Task 3** (CSS) - Developer focused
-8. **Task 8** (indicator UI) - Polish after audits improved
+1. **Task 9** (automation layer) - Foundation for all agent processing
+2. **Task 7** (auditAll) - Define unified schema first
+3. **Task 1** (accessibility) - Highest user impact
+4. **Task 4** (security) - Critical for production sites
+5. **Task 6** (performance) - Core Web Vitals focus
+6. **Task 5** (pageQuality/SEO) - Common use case
+7. **Task 2** (DOM complexity) - Developer focused
+8. **Task 3** (CSS) - Developer focused
+9. **Task 8** (indicator UI) - Polish after audits improved
 
 ---
 
