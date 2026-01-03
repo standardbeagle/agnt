@@ -597,6 +597,13 @@ func (rc *ResilientClient) BroadcastActivity(active bool, proxyIDs ...string) er
 	})
 }
 
+// BroadcastOutputPreview sends output preview lines to connected browsers via proxies.
+func (rc *ResilientClient) BroadcastOutputPreview(lines []string, proxyIDs ...string) error {
+	return rc.WithClient(func(c *Client) error {
+		return c.BroadcastOutputPreview(lines, proxyIDs...)
+	})
+}
+
 // Session methods
 
 // SessionRegister registers a new session with the daemon.

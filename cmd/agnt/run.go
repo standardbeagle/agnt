@@ -558,8 +558,14 @@ func runWithPTY(ctx context.Context, args []string, socketPath string, sessionCo
 		activityCfg := overlay.DefaultActivityMonitorConfig()
 		activityCfg.OnStateChange = func(state overlay.ActivityState) {
 			// Broadcast activity state to daemon (which forwards to proxies)
-			if resilientClient != nil {
-				resilientClient.BroadcastActivity(state == overlay.ActivityActive)
+			if resilientClient != nil && resilientClient.IsConnected() {
+				_ = resilientClient.BroadcastActivity(state == overlay.ActivityActive)
+			}
+		}
+		activityCfg.OnOutputPreview = func(lines []string) {
+			// Broadcast output preview to daemon (which forwards to browser indicator)
+			if resilientClient != nil && resilientClient.IsConnected() {
+				_ = resilientClient.BroadcastOutputPreview(lines)
 			}
 		}
 		activityMonitor = overlay.NewActivityMonitor(outputDest, activityCfg)

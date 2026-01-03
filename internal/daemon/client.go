@@ -308,6 +308,16 @@ func (c *Client) BroadcastActivity(active bool, proxyIDs ...string) error {
 	return err
 }
 
+// BroadcastOutputPreview broadcasts output preview lines to connected browsers via proxies.
+func (c *Client) BroadcastOutputPreview(lines []string, proxyIDs ...string) error {
+	payload := map[string]interface{}{
+		"lines":     lines,
+		"proxy_ids": proxyIDs,
+	}
+	_, err := c.conn.Request(protocol.VerbOverlay, protocol.SubVerbOutputPreview).WithJSON(payload).JSON()
+	return err
+}
+
 // TunnelStart starts a tunnel for a local port.
 func (c *Client) TunnelStart(config protocol.TunnelStartConfig) (map[string]interface{}, error) {
 	return c.conn.Request(protocol.VerbTunnel, protocol.SubVerbStart).WithJSON(config).JSON()

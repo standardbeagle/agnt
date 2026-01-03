@@ -156,6 +156,7 @@ func init() {
 		SubVerbQuery,
 		SubVerbStats,
 		SubVerbActivity,
+		SubVerbOutputPreview,
 		SubVerbEnable,
 		SubVerbDisable,
 		SubVerbAddRule,

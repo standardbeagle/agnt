@@ -454,11 +454,14 @@ func TestHubIntegration_OverlayCommands(t *testing.T) {
 		}
 	})
 
-	// Test OVERLAY ACTIVITY (returns OK, not JSON - it's a heartbeat)
+	// Test OVERLAY ACTIVITY - broadcasts activity state to connected browsers
 	t.Run("ACTIVITY", func(t *testing.T) {
-		err := client.conn.Request("OVERLAY", "ACTIVITY").OK()
+		result, err := client.conn.Request("OVERLAY", "ACTIVITY", "true").JSON()
 		if err != nil {
 			t.Fatalf("Overlay ACTIVITY failed: %v", err)
+		}
+		if result["status"] != "ok" {
+			t.Errorf("Expected status=ok, got %v", result["status"])
 		}
 	})
 }
@@ -1084,9 +1087,9 @@ func TestHubIntegration_ClientMethods(t *testing.T) {
 		}
 	})
 
-	// Test BroadcastActivity - use raw request (handler returns OK)
+	// Test BroadcastActivity - broadcasts activity state to connected browsers
 	t.Run("BroadcastActivity", func(t *testing.T) {
-		err := client.conn.Request("OVERLAY", "ACTIVITY").OK()
+		err := client.BroadcastActivity(true)
 		if err != nil {
 			t.Fatalf("BroadcastActivity failed: %v", err)
 		}

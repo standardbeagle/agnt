@@ -18,6 +18,7 @@
     container: null,
     bug: null,
     panel: null,
+    outputPreview: null, // Floating output preview element
     isExpanded: false,
     isDragging: false,
     dragOffset: { x: 0, y: 0 },
@@ -25,6 +26,7 @@
     isVisible: true,
     isActive: false, // AI tool activity state
     activityTimeout: null,
+    outputPreviewTimeout: null, // Auto-hide timeout for output preview
     requestNotification: true, // Always request notification when task completes
     // Attachments are now logged items with references
     attachments: [] // { id, type, label, summary, timestamp }
@@ -108,6 +110,35 @@
       'border: 2px solid ' + TOKENS.colors.active,
       'opacity: 0',
       'pointer-events: none'
+    ].join(';'),
+
+    // Output preview - floating next to the bug when AI is outputting
+    outputPreview: [
+      'position: fixed',
+      'max-width: 400px',
+      'min-width: 200px',
+      'background: rgba(30, 41, 59, 0.95)',
+      'color: #e2e8f0',
+      'border-radius: ' + TOKENS.radius.md,
+      'padding: 10px 14px',
+      'font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+      'font-size: 12px',
+      'line-height: 1.5',
+      'box-shadow: ' + TOKENS.shadow.lg,
+      'z-index: 2147483645',
+      'pointer-events: none',
+      'opacity: 0',
+      'transform: translateX(10px)',
+      'transition: opacity 0.2s ease, transform 0.2s ease',
+      'overflow: hidden',
+      'white-space: pre-wrap',
+      'word-break: break-word',
+      'backdrop-filter: blur(8px)'
+    ].join(';'),
+
+    outputPreviewVisible: [
+      'opacity: 1',
+      'transform: translateX(0)'
     ].join(';'),
 
     // Panel - the main interface
@@ -465,8 +496,73 @@
 
     createBug();
     createPanel();
+    createOutputPreview();
 
     document.documentElement.appendChild(state.container);
+  }
+
+  // Create floating output preview element
+  function createOutputPreview() {
+    var preview = document.createElement('div');
+    preview.id = '__devtool-output-preview';
+    preview.style.cssText = STYLES.outputPreview;
+    state.outputPreview = preview;
+    state.container.appendChild(preview);
+  }
+
+  // Show output preview with lines floating next to the bug
+  function showOutputPreview(lines) {
+    if (!state.outputPreview || !state.bug || !lines || lines.length === 0) return;
+
+    // Format lines with subtle styling
+    var html = lines.map(function(line) {
+      // Limit each line to prevent overflow
+      if (line.length > 80) {
+        line = line.substring(0, 77) + '...';
+      }
+      return escapeHtml(line);
+    }).join('\n');
+
+    state.outputPreview.innerHTML = html;
+
+    // Position next to the bug (to the right)
+    var bugRect = state.bug.getBoundingClientRect();
+    var previewWidth = Math.min(400, window.innerWidth - bugRect.right - 30);
+
+    state.outputPreview.style.left = (bugRect.right + 12) + 'px';
+    state.outputPreview.style.bottom = state.position.y + 'px';
+    state.outputPreview.style.maxWidth = previewWidth + 'px';
+
+    // If not enough space on right, position on left
+    if (bugRect.right + 220 > window.innerWidth) {
+      state.outputPreview.style.left = 'auto';
+      state.outputPreview.style.right = (window.innerWidth - bugRect.left + 12) + 'px';
+    }
+
+    // Show with animation
+    state.outputPreview.style.cssText = STYLES.outputPreview + ';' + STYLES.outputPreviewVisible;
+    state.outputPreview.style.left = (bugRect.right + 12) + 'px';
+    state.outputPreview.style.bottom = state.position.y + 'px';
+
+    // Auto-hide after 3 seconds of no updates
+    clearTimeout(state.outputPreviewTimeout);
+    state.outputPreviewTimeout = setTimeout(function() {
+      hideOutputPreview();
+    }, 3000);
+  }
+
+  // Hide output preview
+  function hideOutputPreview() {
+    if (!state.outputPreview) return;
+    state.outputPreview.style.cssText = STYLES.outputPreview;
+    clearTimeout(state.outputPreviewTimeout);
+  }
+
+  // Escape HTML to prevent XSS
+  function escapeHtml(text) {
+    var div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
   }
 
   function createBug() {
@@ -566,6 +662,8 @@
         ring.classList.remove('__devtool-active');
         ring.style.opacity = '0';
       }
+      // Hide output preview when going idle
+      hideOutputPreview();
     }
   }
 
@@ -1586,6 +1684,11 @@
     if (message.type === 'activity') {
       var payload = message.payload || message;
       setActivityState(payload.active === true);
+    } else if (message.type === 'output_preview') {
+      var payload = message.payload || message;
+      if (payload.lines && Array.isArray(payload.lines)) {
+        showOutputPreview(payload.lines);
+      }
     }
   }
 
