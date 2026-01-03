@@ -11,6 +11,7 @@ const (
 	VerbOverlay     = "OVERLAY"
 	VerbStatus      = "STATUS" // Full daemon status (Hub's INFO is minimal)
 	VerbStore       = "STORE"
+	VerbAutomate    = "AUTOMATE" // Agent-based automation processing
 )
 
 // Agnt-specific sub-verbs (beyond those in go-cli-server).
@@ -37,6 +38,8 @@ const (
 	SubVerbURL           = "URL"     // Report detected URL from agnt run session
 	SubVerbGetAll        = "GET-ALL" // Get all entries in a scope
 	SubVerbDelete        = "DELETE"  // Delete an entry from a scope
+	SubVerbProcess       = "PROCESS" // Process a single automation task
+	SubVerbBatch         = "BATCH"   // Process multiple automation tasks
 )
 
 // ProxyStartConfig represents configuration for a PROXY START command.
@@ -196,4 +199,34 @@ type StoreClearRequest struct {
 type StoreGetAllRequest struct {
 	Scope    string `json:"scope"`
 	ScopeKey string `json:"scope_key"`
+}
+
+// AutomateProcessRequest represents an AUTOMATE PROCESS command.
+type AutomateProcessRequest struct {
+	Type    string                 `json:"type"`    // Task type (audit_process, summarize, etc.)
+	Data    map[string]interface{} `json:"data"`    // Task-specific input data
+	Context map[string]interface{} `json:"context"` // Additional context
+	Options AutomateOptions        `json:"options,omitempty"`
+}
+
+// AutomateOptions configures automation task processing.
+type AutomateOptions struct {
+	Model       string  `json:"model,omitempty"`       // Model to use (haiku, sonnet)
+	MaxTokens   int     `json:"max_tokens,omitempty"`  // Max response tokens
+	Temperature float64 `json:"temperature,omitempty"` // 0.0-1.0
+}
+
+// AutomateBatchRequest represents an AUTOMATE BATCH command.
+type AutomateBatchRequest struct {
+	Tasks []AutomateProcessRequest `json:"tasks"`
+}
+
+// AutomateProcessResponse represents the response from AUTOMATE PROCESS.
+type AutomateProcessResponse struct {
+	Success  bool        `json:"success"`
+	Result   interface{} `json:"result,omitempty"`
+	Error    string      `json:"error,omitempty"`
+	Tokens   int         `json:"tokens_used"`
+	CostUSD  float64     `json:"cost_usd"`
+	Duration string      `json:"duration"`
 }

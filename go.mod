@@ -12,6 +12,7 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.1.0
 	github.com/sblinch/kdl-go v0.0.0-20250930225324-bf4099d4614a
 	github.com/spf13/cobra v1.10.2
+	github.com/standardbeagle/claude-go v0.0.0
 	github.com/standardbeagle/go-cli-server v0.0.0
 	github.com/stretchr/testify v1.10.0
 	github.com/tmc/langchaingo v0.1.14
@@ -69,7 +70,10 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20250122153221-138b5a5a4fd4 // indirect
 	google.golang.org/grpc v1.70.0 // indirect
 	google.golang.org/protobuf v1.36.3 // indirect
+	gopkg.in/dnaeon/go-vcr.v3 v3.2.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
 replace github.com/standardbeagle/go-cli-server => ../go-cli-server
+
+replace github.com/standardbeagle/claude-go => ../claude-go

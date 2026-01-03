@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/automation"
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/project"
 	"github.com/standardbeagle/agnt/internal/proxy"
@@ -120,9 +121,10 @@ type Daemon struct {
 	hub *hub.Hub
 
 	// agnt-specific managers
-	proxym  *proxy.ProxyManager
-	tunnelm *tunnel.Manager
-	storem  *store.StoreManager
+	proxym    *proxy.ProxyManager
+	tunnelm   *tunnel.Manager
+	storem    *store.StoreManager
+	automator *automation.Processor
 
 	// Session and scheduling (agnt-specific extensions)
 	sessionRegistry   *SessionRegistry
