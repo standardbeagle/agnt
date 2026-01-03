@@ -1,0 +1,874 @@
+/**
+ * Response Stream Panel Styles
+ *
+ * Distinctive technical terminal aesthetic with refined brutalism.
+ * Features custom typography, sharp color palette, and technical precision.
+ */
+
+/* ============================================================================
+   CSS CUSTOM PROPERTIES
+   ============================================================================ */
+
+:root {
+  /* Color Palette - Technical Terminal */
+  --panel-bg: #0a0a0f;
+  --panel-bg-secondary: #12121a;
+  --panel-border: #2a2a35;
+  --panel-border-light: #3a3a45;
+
+  /* Text Colors */
+  --text-primary: #e8e8ec;
+  --text-secondary: #9898a8;
+  --text-muted: #686870;
+
+  /* Accent Colors - Distinctive, non-generic */
+  --accent-primary: #ff6b35;
+  --accent-secondary: #00d4aa;
+  --accent-tertiary: #7c3aed;
+  --accent-warning: #f59e0b;
+
+  /* Status Colors */
+  --agent-idle: #686870;
+  --agent-thinking: #f59e0b;
+  --agent-responding: #00d4aa;
+  --agent-error: #ff4757;
+  --agent-complete: #686870;
+
+  /* Typography */
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'IBM Plex Mono', 'Source Code Pro', monospace;
+  --font-display: 'Space Grotesk', 'Unbounded', 'General Sans', system-ui, sans-serif;
+
+  /* Spacing */
+  --spacing-xs: 4px;
+  --spacing-sm: 8px;
+  --spacing-md: 12px;
+  --spacing-lg: 16px;
+  --spacing-xl: 20px;
+
+  /* Border Radius - Sharp, technical look */
+  --radius-sm: 2px;
+  --radius-md: 4px;
+  --radius-lg: 6px;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.5);
+  --shadow-glow: 0 0 20px rgba(0, 212, 170, 0.15);
+
+  /* Transitions */
+  --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-normal: 250ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-slow: 400ms cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* Panel Dimensions */
+  --panel-width: 400px;
+  --panel-collapsed-height: 44px;
+  --panel-expanded-height: 320px;
+}
+
+/* ============================================================================
+   BASE PANEL
+   ============================================================================ */
+
+.response-stream-panel {
+  position: fixed;
+  z-index: 99998;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg), inset 0 0 0 1px rgba(255, 255, 255, 0.02);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-primary);
+  overflow: hidden;
+  transition: width var(--transition-normal), height var(--transition-normal),
+              transform var(--transition-normal), opacity var(--transition-normal);
+}
+
+/* Position Variants */
+.response-stream-panel.position-bottom-right {
+  bottom: var(--spacing-lg);
+  right: var(--spacing-lg);
+}
+
+.response-stream-panel.position-bottom-left {
+  bottom: var(--spacing-lg);
+  left: var(--spacing-lg);
+}
+
+.response-stream-panel.position-top-right {
+  top: var(--spacing-lg);
+  right: var(--spacing-lg);
+}
+
+.response-stream-panel.position-top-left {
+  top: var(--spacing-lg);
+  left: var(--spacing-lg);
+}
+
+/* Collapsed State */
+.response-stream-panel.collapsed {
+  width: auto;
+  min-width: 180px;
+  height: var(--panel-collapsed-height);
+}
+
+.response-stream-panel.collapsed .panel-content {
+  display: none;
+}
+
+.response-stream-panel.collapsed .collapse-handle {
+  transform: rotate(180deg);
+}
+
+/* Expanded State */
+.response-stream-panel.expanded {
+  width: var(--panel-width);
+  height: var(--panel-expanded-height);
+}
+
+/* Focus Styles */
+.response-stream-panel:focus {
+  outline: none;
+}
+
+.response-stream-panel:focus-within {
+  border-color: var(--accent-secondary);
+  box-shadow: var(--shadow-lg), var(--shadow-glow), inset 0 0 0 1px rgba(0, 212, 170, 0.1);
+}
+
+/* ============================================================================
+   PANEL HEADER
+   ============================================================================ */
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--spacing-sm) var(--spacing-md);
+  background: var(--panel-bg-secondary);
+  border-bottom: 1px solid var(--panel-border);
+  height: var(--panel-collapsed-height);
+  cursor: pointer;
+  user-select: none;
+}
+
+.panel-header:hover {
+  background: linear-gradient(180deg, var(--panel-bg-secondary) 0%, rgba(0, 212, 170, 0.03) 100%);
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+}
+
+/* Status Indicator */
+.status-indicator {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+}
+
+.status-indicator .status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--agent-idle);
+  transition: background var(--transition-fast);
+}
+
+.status-indicator.thinking .status-dot {
+  background: var(--agent-thinking);
+  animation: pulse-glow 1.5s ease-in-out infinite;
+}
+
+.status-indicator.responding .status-dot {
+  background: var(--agent-responding);
+  animation: breathe 2s ease-in-out infinite;
+}
+
+.status-indicator.error .status-dot {
+  background: var(--agent-error);
+}
+
+.status-indicator.complete .status-dot {
+  background: var(--agent-complete);
+}
+
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 4px var(--agent-thinking); }
+  50% { box-shadow: 0 0 12px var(--agent-thinking), 0 0 20px var(--agent-thinking); }
+}
+
+@keyframes breathe {
+  0%, 100% { box-shadow: 0 0 4px var(--agent-responding); }
+  50% { box-shadow: 0 0 8px var(--agent-responding); }
+}
+
+/* Panel Title */
+.panel-title {
+  font-family: var(--font-display);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+/* History Button */
+.history-button {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  background: transparent;
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.history-button:hover {
+  border-color: var(--accent-tertiary);
+  color: var(--accent-tertiary);
+  background: rgba(124, 58, 237, 0.1);
+}
+
+.history-button svg {
+  opacity: 0.7;
+}
+
+.history-button:hover svg {
+  opacity: 1;
+}
+
+/* ============================================================================
+   CLOSE BUTTON
+   ============================================================================ */
+
+.close-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.close-button:hover {
+  background: rgba(255, 71, 87, 0.1);
+  color: var(--agent-error);
+}
+
+.close-button.text {
+  width: auto;
+  padding: var(--spacing-xs) var(--spacing-sm);
+  gap: var(--spacing-xs);
+  font-size: 11px;
+}
+
+.close-button.text:hover {
+  background: rgba(255, 71, 87, 0.1);
+}
+
+/* ============================================================================
+   PANEL CONTENT
+   ============================================================================ */
+
+.panel-content {
+  height: calc(100% - var(--panel-collapsed-height));
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ============================================================================
+   STREAMING INDICATOR
+   ============================================================================ */
+
+.streaming-indicator {
+  padding: var(--spacing-md) var(--spacing-lg);
+  border-bottom: 1px solid var(--panel-border);
+  background: rgba(0, 212, 170, 0.03);
+}
+
+/* ============================================================================
+   TYPING INDICATOR - DOTS
+   ============================================================================ */
+
+.typing-indicator.dots {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.typing-indicator.dots .dot {
+  width: 6px;
+  height: 6px;
+  background: var(--text-muted);
+  border-radius: 50%;
+  animation: dot-bounce 1.4s ease-in-out infinite;
+}
+
+.typing-indicator.dots .dot:nth-child(1) { animation-delay: 0ms; }
+.typing-indicator.dots .dot:nth-child(2) { animation-delay: 200ms; }
+.typing-indicator.dots .dot:nth-child(3) { animation-delay: 400ms; }
+
+@keyframes dot-bounce {
+  0%, 80%, 100% {
+    transform: translateY(0);
+    opacity: 0.4;
+  }
+  40% {
+    transform: translateY(-4px);
+    opacity: 1;
+  }
+}
+
+/* ============================================================================
+   TYPING INDICATOR - PULSE
+   ============================================================================ */
+
+.typing-indicator.pulse {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+  position: relative;
+}
+
+.typing-indicator.pulse .pulse-ring {
+  position: absolute;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 2px solid var(--agent-thinking);
+  animation: ring-pulse 2s ease-out infinite;
+  opacity: 0;
+}
+
+.typing-indicator.pulse .pulse-core {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+
+/* ============================================================================
+   TYPING INDICATOR - WAVEFORM
+   ============================================================================ */
+
+.typing-indicator.waveform {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  height: 24px;
+}
+
+.typing-indicator.waveform .waveform-bar {
+  width: 3px;
+  height: 100%;
+  background: linear-gradient(180deg, var(--accent-secondary) 0%, var(--accent-primary) 100%);
+  border-radius: 2px;
+  animation: waveform-bars 0.8s ease-in-out infinite;
+}
+
+.typing-indicator.waveform .waveform-bar:nth-child(1) { animation-delay: 0ms; height: 40%; }
+.typing-indicator.waveform .waveform-bar:nth-child(2) { animation-delay: 120ms; height: 70%; }
+.typing-indicator.waveform .waveform-bar:nth-child(3) { animation-delay: 240ms; height: 100%; }
+.typing-indicator.waveform .waveform-bar:nth-child(4) { animation-delay: 160ms; height: 60%; }
+.typing-indicator.waveform .waveform-bar:nth-child(5) { animation-delay: 80ms; height: 85%; }
+
+@keyframes waveform-bars {
+  0%, 100% {
+    transform: scaleY(0.3);
+    opacity: 0.5;
+  }
+  50% {
+    transform: scaleY(1);
+    opacity: 1;
+  }
+}
+
+@keyframes ring-pulse {
+  0% {
+    transform: scale(0.5);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1.5);
+    opacity: 0;
+  }
+}
+
+.typing-indicator .status-text {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-left: var(--spacing-sm);
+}
+
+/* ============================================================================
+   CONTENT WRAPPER
+   ============================================================================ */
+
+.content-wrapper {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ============================================================================
+   STREAM CONTENT
+   ============================================================================ */
+
+.stream-content {
+  flex: 1;
+  overflow: auto;
+  padding: var(--spacing-md);
+  scroll-behavior: smooth;
+}
+
+/* Line Numbers */
+.stream-content .line-numbers {
+  display: inline-flex;
+  flex-direction: column;
+  margin-right: var(--spacing-md);
+  padding-right: var(--spacing-md);
+  border-right: 1px solid var(--panel-border);
+  color: var(--text-muted);
+  font-size: 11px;
+  user-select: none;
+}
+
+.stream-content .line-number {
+  height: 20px;
+  line-height: 20px;
+  text-align: right;
+}
+
+/* Content Text */
+.stream-content .content-text {
+  flex: 1;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.stream-content .content-line {
+  min-height: 20px;
+  height: auto;
+}
+
+/* Cursor Blink */
+.cursor-blink {
+  display: inline-block;
+  margin-left: 2px;
+  color: var(--accent-secondary);
+  animation: cursor-blink 1s step-end infinite;
+}
+
+@keyframes cursor-blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+/* ============================================================================
+   STREAMING CONTROLS
+   ============================================================================ */
+
+.streaming-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--spacing-sm) var(--spacing-md);
+  background: var(--panel-bg-secondary);
+  border-top: 1px solid var(--panel-border);
+}
+
+.streaming-controls .control-button {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  background: transparent;
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.streaming-controls .control-button:hover {
+  border-color: var(--agent-error);
+  color: var(--agent-error);
+  background: rgba(255, 71, 87, 0.1);
+}
+
+.streaming-controls .content-length {
+  font-size: 10px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
+/* ============================================================================
+   IDLE STATE
+   ============================================================================ */
+
+.idle-state {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-md);
+  padding: var(--spacing-xl);
+  color: var(--text-muted);
+}
+
+.idle-state .idle-icon {
+  opacity: 0.3;
+}
+
+.idle-state .idle-text {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  margin: 0;
+}
+
+/* ============================================================================
+   COLLAPSE HANDLE
+   ============================================================================ */
+
+.collapse-handle {
+  position: absolute;
+  right: var(--spacing-lg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  z-index: 10;
+}
+
+.collapse-handle.top {
+  top: calc(var(--panel-collapsed-height) / 2 - 14px);
+}
+
+.collapse-handle:hover {
+  border-color: var(--accent-secondary);
+  color: var(--accent-secondary);
+  background: rgba(0, 212, 170, 0.1);
+}
+
+.collapse-handle .chevron {
+  transition: transform var(--transition-fast);
+}
+
+.collapse-handle .chevron.expanded {
+  transform: rotate(180deg);
+}
+
+/* ============================================================================
+   RESIZE HANDLE
+   ============================================================================ */
+
+.resize-handle {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+}
+
+.response-stream-panel:hover .resize-handle {
+  opacity: 0.5;
+}
+
+.resize-handle::before {
+  content: '';
+  position: absolute;
+  bottom: 3px;
+  right: 3px;
+  width: 8px;
+  height: 8px;
+  background: linear-gradient(135deg, transparent 50%, var(--panel-border-light) 50%);
+}
+
+/* ============================================================================
+   PREVIOUS RESPONSES
+   ============================================================================ */
+
+.previous-responses {
+  flex: 1;
+  overflow: auto;
+  padding: var(--spacing-md);
+}
+
+.previous-responses.empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.previous-responses.empty .empty-message {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-muted);
+  margin: 0;
+}
+
+.responses-header {
+  margin-bottom: var(--spacing-md);
+  padding-bottom: var(--spacing-sm);
+  border-bottom: 1px solid var(--panel-border);
+}
+
+.responses-count {
+  font-family: var(--font-display);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+}
+
+.responses-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+}
+
+.response-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+  padding: var(--spacing-sm);
+  background: var(--panel-bg-secondary);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  text-align: left;
+  transition: all var(--transition-fast);
+}
+
+.response-item:hover {
+  border-color: var(--accent-secondary);
+  background: rgba(0, 212, 170, 0.05);
+}
+
+.response-item.error {
+  border-color: rgba(255, 71, 87, 0.3);
+}
+
+.response-item.system {
+  border-color: rgba(124, 58, 237, 0.3);
+}
+
+.response-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.response-time {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-muted);
+}
+
+.response-type {
+  font-family: var(--font-display);
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  background: var(--panel-border);
+  color: var(--text-secondary);
+}
+
+.response-item.error .response-type {
+  background: rgba(255, 71, 87, 0.2);
+  color: var(--agent-error);
+}
+
+.response-item.system .response-type {
+  background: rgba(124, 58, 237, 0.2);
+  color: var(--accent-tertiary);
+}
+
+.response-preview {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* ============================================================================
+   SCROLLBAR STYLING
+   ============================================================================ */
+
+.stream-content::-webkit-scrollbar,
+.previous-responses::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.stream-content::-webkit-scrollbar-track,
+.previous-responses::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.stream-content::-webkit-scrollbar-thumb,
+.previous-responses::-webkit-scrollbar-thumb {
+  background: var(--panel-border);
+  border-radius: 4px;
+}
+
+.stream-content::-webkit-scrollbar-thumb:hover,
+.previous-responses::-webkit-scrollbar-thumb:hover {
+  background: var(--panel-border-light);
+}
+
+/* ============================================================================
+   ANIMATIONS
+   ============================================================================ */
+
+/* Fade In */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.response-stream-panel {
+  animation: fadeIn var(--transition-slow) ease-out;
+}
+
+/* Slide In from Bottom Right */
+.position-bottom-right.response-stream-panel {
+  animation: slideInBR var(--transition-slow) ease-out;
+}
+
+@keyframes slideInBR {
+  from {
+    opacity: 0;
+    transform: translate(20px, 20px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(0, 0);
+  }
+}
+
+/* Slide In from Bottom Left */
+.position-bottom-left.response-stream-panel {
+  animation: slideInBL var(--transition-slow) ease-out;
+}
+
+@keyframes slideInBL {
+  from {
+    opacity: 0;
+    transform: translate(-20px, 20px);
+  }
+  to {
+    opacity: 1;
+    transform: translate(0, 0);
+  }
+}
+
+/* ============================================================================
+   DARK MODE ADJUSTMENTS
+   ============================================================================ */
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    /* Already optimized for dark mode */
+  }
+}
+
+/* ============================================================================
+   HIGH CONTRAST MODE
+   ============================================================================ */
+
+@media (prefers-contrast: high) {
+  :root {
+    --panel-border: #ffffff;
+    --panel-border-light: #ffffff;
+    --text-secondary: #ffffff;
+  }
+
+  .response-stream-panel {
+    border-width: 2px;
+  }
+}
+
+/* ============================================================================
+   REDUCED MOTION
+   ============================================================================ */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ============================================================================
+   PRINT STYLES
+   ============================================================================ */
+
+@media print {
+  .response-stream-panel {
+    position: static;
+    page-break-inside: avoid;
+    box-shadow: none;
+    border: 1px solid #000;
+  }
+
+  .collapse-handle,
+  .close-button,
+  .history-button,
+  .streaming-controls {
+    display: none;
+  }
+}
