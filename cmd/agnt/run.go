@@ -317,13 +317,26 @@ func runWithPTY(ctx context.Context, args []string, socketPath string, sessionCo
 
 			// Log autostart results
 			if result != nil && !skipAutostart {
-
-				// Log any autostart errors
-				if errs, ok := result["autostart_errors"].([]interface{}); ok && len(errs) > 0 {
-					for _, e := range errs {
-						if str, ok := e.(string); ok {
-							fmt.Fprintf(os.Stderr, "[agnt] Autostart error: %s\r\n", str)
+				// Extract autostart result from nested structure
+				if autostart, ok := result["autostart"].(map[string]interface{}); ok {
+					// Log successfully started scripts
+					if scripts, ok := autostart["scripts"].([]interface{}); ok && len(scripts) > 0 {
+						for _, s := range scripts {
+							if str, ok := s.(string); ok {
+								fmt.Fprintf(os.Stderr, "[agnt] Started script: %s\r\n", str)
+							}
 						}
+					}
+
+					// Log any autostart errors prominently
+					if errs, ok := autostart["errors"].([]interface{}); ok && len(errs) > 0 {
+						fmt.Fprintf(os.Stderr, "\r\n[agnt] \x1b[31mAutostart errors:\x1b[0m\r\n")
+						for _, e := range errs {
+							if str, ok := e.(string); ok {
+								fmt.Fprintf(os.Stderr, "  - %s\r\n", str)
+							}
+						}
+						fmt.Fprintf(os.Stderr, "\r\n")
 					}
 				}
 			}

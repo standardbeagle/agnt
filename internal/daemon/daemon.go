@@ -818,12 +818,13 @@ func (d *Daemon) RunAutostart(ctx context.Context, projectPath string) *Autostar
 	log.Printf("[DEBUG] RunAutostart: config loaded, scripts=%d proxies=%d",
 		len(agntConfig.Scripts), len(agntConfig.Proxies))
 
-	// Start scripts
+	// Start scripts (pass proxy configs for port detection)
 	autostartScripts := agntConfig.GetAutostartScripts()
+	proxyConfigs := agntConfig.Proxies // All proxies, not just autostart ones
 	log.Printf("[DEBUG] RunAutostart: found %d autostart scripts: %v", len(autostartScripts), mapKeys(autostartScripts))
 	for name, script := range autostartScripts {
 		log.Printf("[DEBUG] RunAutostart: starting script %s", name)
-		if err := d.autostartScript(ctx, name, script, projectPath); err != nil {
+		if err := d.autostartScript(ctx, name, script, projectPath, proxyConfigs); err != nil {
 			log.Printf("[DEBUG] RunAutostart: script %s failed: %v", name, err)
 			result.Errors = append(result.Errors, fmt.Sprintf("script %s: %v", name, err))
 		} else {
@@ -890,8 +891,8 @@ func mapKeysProxy(m map[string]*config.ProxyConfig) []string {
 	return keys
 }
 
-// autostartScript starts a single script from config.
-func (d *Daemon) autostartScript(ctx context.Context, name string, script *config.ScriptConfig, projectPath string) error {
+// autostartScript starts a single script from config with automatic EADDRINUSE recovery.
+func (d *Daemon) autostartScript(ctx context.Context, name string, script *config.ScriptConfig, projectPath string, proxyConfigs map[string]*config.ProxyConfig) error {
 
 	// Make process ID unique per project to avoid collisions between sessions
 	processID := makeProcessID(projectPath, name)
@@ -939,16 +940,13 @@ func (d *Daemon) autostartScript(ctx context.Context, name string, script *confi
 		}
 	}
 
-	// Create and start process using StartOrReuse for idempotent behavior
-	_, err := d.hub.ProcessManager().StartOrReuse(ctx, process.ProcessConfig{
-		ID:          processID,
-		ProjectPath: projectPath,
-		Command:     command,
-		Args:        args,
-		Env:         os.Environ(),
-	})
-	if err != nil {
-		return err
+	// Determine expected port for pre-flight cleanup and EADDRINUSE recovery
+	expectedPort := d.getExpectedPortForScript(name, script, proxyConfigs, projectPath, command, args)
+
+	// Start with automatic EADDRINUSE recovery
+	_, startupErr := d.startScriptWithRetry(ctx, processID, projectPath, command, args, expectedPort)
+	if startupErr != nil {
+		return startupErr
 	}
 
 	// Load and set URL matchers for this process

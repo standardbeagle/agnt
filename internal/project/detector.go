@@ -189,6 +189,25 @@ func parsePackageJsonScripts(packagePath string) []string {
 	return scripts
 }
 
+// GetScriptCommand returns the command string for a named script from package.json.
+// Returns empty string if not found.
+func GetScriptCommand(projectPath, scriptName string) string {
+	packagePath := filepath.Join(projectPath, "package.json")
+	data, err := os.ReadFile(packagePath)
+	if err != nil {
+		return ""
+	}
+
+	var pkg struct {
+		Scripts map[string]string `json:"scripts"`
+	}
+	if err := json.Unmarshal(data, &pkg); err != nil {
+		return ""
+	}
+
+	return pkg.Scripts[scriptName]
+}
+
 // detectPackageManager determines which package manager to use.
 func detectPackageManager(path string) string {
 	// Check for lock files in priority order
