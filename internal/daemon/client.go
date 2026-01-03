@@ -324,8 +324,12 @@ func (c *Client) TunnelStatus(id string) (map[string]interface{}, error) {
 }
 
 // TunnelList lists all active tunnels.
-func (c *Client) TunnelList() (map[string]interface{}, error) {
-	return c.conn.Request(protocol.VerbTunnel, protocol.SubVerbList).JSON()
+func (c *Client) TunnelList(dirFilter protocol.DirectoryFilter) (map[string]interface{}, error) {
+	req := c.conn.Request(protocol.VerbTunnel, protocol.SubVerbList)
+	if dirFilter.Directory != "" || dirFilter.Global {
+		req = req.WithJSON(dirFilter)
+	}
+	return req.JSON()
 }
 
 // ChaosEnable enables chaos injection on a proxy.
@@ -465,4 +469,34 @@ func (c *Client) SessionURL(code string, url string, scriptName string) (map[str
 		req = req.WithJSON(map[string]string{"script": scriptName})
 	}
 	return req.JSON()
+}
+
+// StoreGet retrieves a value from the key-value store.
+func (c *Client) StoreGet(req protocol.StoreGetRequest) (map[string]interface{}, error) {
+	return c.conn.Request(protocol.VerbStore, protocol.SubVerbGet).WithJSON(req).JSON()
+}
+
+// StoreSet stores a value in the key-value store.
+func (c *Client) StoreSet(req protocol.StoreSetRequest) error {
+	return c.conn.Request(protocol.VerbStore, protocol.SubVerbSet).WithJSON(req).OK()
+}
+
+// StoreDelete deletes a value from the key-value store.
+func (c *Client) StoreDelete(req protocol.StoreDeleteRequest) error {
+	return c.conn.Request(protocol.VerbStore, protocol.SubVerbDelete).WithJSON(req).OK()
+}
+
+// StoreList lists all keys in a scope.
+func (c *Client) StoreList(req protocol.StoreListRequest) (map[string]interface{}, error) {
+	return c.conn.Request(protocol.VerbStore, protocol.SubVerbList).WithJSON(req).JSON()
+}
+
+// StoreClear clears all entries in a scope.
+func (c *Client) StoreClear(req protocol.StoreClearRequest) error {
+	return c.conn.Request(protocol.VerbStore, protocol.SubVerbClear).WithJSON(req).OK()
+}
+
+// StoreGetAll retrieves all key-value pairs in a scope.
+func (c *Client) StoreGetAll(req protocol.StoreGetAllRequest) (map[string]interface{}, error) {
+	return c.conn.Request(protocol.VerbStore, protocol.SubVerbGetAll).WithJSON(req).JSON()
 }

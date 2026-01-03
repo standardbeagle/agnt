@@ -11,6 +11,12 @@ type SessionClient interface {
 	SessionSchedule(code string, duration string, message string) (map[string]interface{}, error)
 	SessionTasks(dirFilter protocol.DirectoryFilter) (map[string]interface{}, error)
 	SessionCancel(taskID string) error
+	StoreGet(req protocol.StoreGetRequest) (map[string]interface{}, error)
+	StoreSet(req protocol.StoreSetRequest) error
+	StoreDelete(req protocol.StoreDeleteRequest) error
+	StoreList(req protocol.StoreListRequest) (map[string]interface{}, error)
+	StoreClear(req protocol.StoreClearRequest) error
+	StoreGetAll(req protocol.StoreGetAllRequest) (map[string]interface{}, error)
 	Close() error
 }
 

@@ -23,6 +23,7 @@
   var design = window.__devtool_design;
   var diagnostics = window.__devtool_diagnostics;
   var session = window.__devtool_session;
+  var store = window.__devtool_store;
   var content = window.__devtool_content;
 
   // Main DevTool API
@@ -133,12 +134,14 @@
 
     // ========================================================================
     // QUALITY AUDITS
+    // All audit functions support options: {detailLevel: 'summary'|'compact'|'full', maxIssues: 20}
     // ========================================================================
 
     auditDOMComplexity: audit.auditDOMComplexity,
     auditCSS: audit.auditCSS,
     auditSecurity: audit.auditSecurity,
     auditPageQuality: audit.auditPageQuality,
+    auditPerformance: audit.auditPerformance,
 
     // ========================================================================
     // INTERACTION TRACKING (NEW)
@@ -275,6 +278,22 @@
       schedule: function() { return Promise.reject(new Error('Session module not loaded')); },
       tasks: function() { return Promise.reject(new Error('Session module not loaded')); },
       cancel: function() { return Promise.reject(new Error('Session module not loaded')); }
+    },
+
+    // ========================================================================
+    // PERSISTENT STORE
+    // ========================================================================
+
+    store: store || {
+      get: function() { return Promise.reject(new Error('Store module not loaded')); },
+      set: function() { return Promise.reject(new Error('Store module not loaded')); },
+      delete: function() { return Promise.reject(new Error('Store module not loaded')); },
+      list: function() { return Promise.reject(new Error('Store module not loaded')); },
+      getAll: function() { return Promise.reject(new Error('Store module not loaded')); },
+      clear: function() { return Promise.reject(new Error('Store module not loaded')); },
+      global: {},
+      folder: {},
+      page: {}
     },
 
     // ========================================================================
@@ -795,16 +814,9 @@
   console.log('[DevTool] Usage:');
   console.log('  __devtool.log("message", "info", {key: "value"})');
   console.log('  __devtool.screenshot("my-screenshot")');
-  console.log('  __devtool.screenshot({region: {x:0, y:0, width:800, height:600}})');
+  console.log('  __devtool.auditAccessibility({mode:"standard", detailLevel:"compact"})');
+  console.log('  __devtool.auditPerformance({detailLevel:"summary"})');
   console.log('  __devtool.interactions.getLastClickContext()');
-  console.log('  __devtool.mutations.highlightRecent(5000)');
   console.log('  __devtool.indicator.toggle() - Toggle floating indicator');
   console.log('  __devtool.sketch.open() - Open sketch mode');
-  console.log('  __devtool.design.start() - Start design iteration mode');
-  console.log('  __devtool.toast.success("Done!", "Title") - Show toast');
-  console.log('  __devtool.diagnostics.outlineAll() - Visual CSS debugging');
-  console.log('  __devtool.session.list() - List active sessions');
-  console.log('  __devtool.content.extractContent() - Extract page as markdown');
-  console.log('  __devtool.content.extractNavigation() - Extract navigation structure');
-  console.log('  __devtool.content.buildSitemap() - Build sitemap from internal links');
 })();

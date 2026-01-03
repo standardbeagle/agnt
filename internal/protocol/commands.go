@@ -10,6 +10,7 @@ const (
 	VerbDetect      = "DETECT"
 	VerbOverlay     = "OVERLAY"
 	VerbStatus      = "STATUS" // Full daemon status (Hub's INFO is minimal)
+	VerbStore       = "STORE"
 )
 
 // Agnt-specific sub-verbs (beyond those in go-cli-server).
@@ -32,7 +33,9 @@ const (
 	SubVerbTasks      = "TASKS"
 	SubVerbFind       = "FIND"
 	SubVerbAttach     = "ATTACH"
-	SubVerbURL        = "URL" // Report detected URL from agnt run session
+	SubVerbURL        = "URL"     // Report detected URL from agnt run session
+	SubVerbGetAll     = "GET-ALL" // Get all entries in a scope
+	SubVerbDelete     = "DELETE"  // Delete an entry from a scope
 )
 
 // ProxyStartConfig represents configuration for a PROXY START command.
@@ -151,4 +154,45 @@ type SessionScheduleConfig struct {
 	Duration    string `json:"duration"`     // Go duration string (e.g., "5m", "1h30m")
 	Message     string `json:"message"`      // Message to deliver
 	ProjectPath string `json:"project_path"` // For project-scoped storage
+}
+
+// StoreGetRequest represents a STORE GET command.
+type StoreGetRequest struct {
+	Scope    string `json:"scope"`
+	ScopeKey string `json:"scope_key"`
+	Key      string `json:"key"`
+}
+
+// StoreSetRequest represents a STORE SET command.
+type StoreSetRequest struct {
+	Scope    string         `json:"scope"`
+	ScopeKey string         `json:"scope_key"`
+	Key      string         `json:"key"`
+	Value    interface{}    `json:"value"`
+	Metadata map[string]any `json:"metadata,omitempty"`
+}
+
+// StoreDeleteRequest represents a STORE DELETE command.
+type StoreDeleteRequest struct {
+	Scope    string `json:"scope"`
+	ScopeKey string `json:"scope_key"`
+	Key      string `json:"key"`
+}
+
+// StoreListRequest represents a STORE LIST command.
+type StoreListRequest struct {
+	Scope    string `json:"scope"`
+	ScopeKey string `json:"scope_key"`
+}
+
+// StoreClearRequest represents a STORE CLEAR command.
+type StoreClearRequest struct {
+	Scope    string `json:"scope"`
+	ScopeKey string `json:"scope_key"`
+}
+
+// StoreGetAllRequest represents a STORE GET_ALL command.
+type StoreGetAllRequest struct {
+	Scope    string `json:"scope"`
+	ScopeKey string `json:"scope_key"`
 }

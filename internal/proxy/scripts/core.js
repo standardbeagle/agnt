@@ -352,6 +352,8 @@
         }
       }
 
+      // Format result - uses compact JSON by default to reduce token usage
+      // Pass {__pretty: true} in result object to get pretty-printed output
       function formatResult(val) {
         try {
           if (val === undefined) {
@@ -362,7 +364,13 @@
             return val.toString();
           } else if (typeof val === 'object') {
             try {
-              return JSON.stringify(val, null, 2);
+              // Check for explicit pretty-print request
+              var pretty = val && val.__pretty === true;
+              if (pretty) {
+                delete val.__pretty;
+              }
+              // Default to compact JSON (no indentation) for token efficiency
+              return JSON.stringify(val, null, pretty ? 2 : 0);
             } catch (e) {
               return String(val);
             }

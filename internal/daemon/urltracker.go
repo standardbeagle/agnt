@@ -280,8 +280,10 @@ func (t *URLTracker) cleanupRemovedProcesses(currentProcs []*process.ManagedProc
 	}
 }
 
-// Regex to match localhost-like dev server URLs
-var devServerURLRegex = regexp.MustCompile(`https?://(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+):\d+[^\s\)\]\}'"<>]*`)
+// Regex to match localhost-like dev server URLs.
+// Only matches true localhost addresses (localhost, 127.0.0.1, 0.0.0.0, [::1]).
+// Network IP addresses (192.168.x.x, 10.x.x.x) are excluded to avoid duplicate proxies.
+var devServerURLRegex = regexp.MustCompile(`https?://(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]):\d+[^\s\)\]\}'"<>]*`)
 
 // parseDevServerURLs extracts dev server URLs from output.
 // Only returns localhost-like URLs that look like dev servers.

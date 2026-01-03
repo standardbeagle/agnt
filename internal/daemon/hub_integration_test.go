@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -176,6 +177,18 @@ func TestHubIntegration_ProxyWorkflow(t *testing.T) {
 	count, ok := list["count"].(float64)
 	if !ok || count < 1 {
 		t.Errorf("Expected at least 1 proxy, got %v", list["count"])
+	}
+
+	// Verify proxy list contains 'running' field (not just 'status')
+	proxies, ok := list["proxies"].([]interface{})
+	if !ok || len(proxies) == 0 {
+		t.Fatal("Expected proxies array with at least one entry")
+	}
+	firstProxy := proxies[0].(map[string]interface{})
+	if running, exists := firstProxy["running"]; !exists {
+		t.Errorf("Proxy list entry missing 'running' field, got keys: %v", firstProxy)
+	} else if running != true {
+		t.Errorf("Expected running=true for active proxy, got %v", running)
 	}
 
 	// Query proxy logs (should be empty but work)
@@ -637,6 +650,101 @@ func TestHubIntegration_CurrentPageCommands(t *testing.T) {
 	})
 }
 
+// TestHubIntegration_SessionScopedProxyLookup tests that proxy lookups are session-scoped.
+// When multiple proxies match a fuzzy ID but only one is in the current session's path,
+// the lookup should succeed without ambiguity.
+func TestHubIntegration_SessionScopedProxyLookup(t *testing.T) {
+	tmpDir := t.TempDir()
+	sockPath := filepath.Join(tmpDir, "test.sock")
+
+	// Create two project directories
+	projectA := filepath.Join(tmpDir, "project-a")
+	projectB := filepath.Join(tmpDir, "project-b")
+	os.MkdirAll(projectA, 0755)
+	os.MkdirAll(projectB, 0755)
+
+	daemon := New(DaemonConfig{
+		SocketPath:   sockPath,
+		MaxClients:   10,
+		WriteTimeout: 5 * time.Second,
+	})
+
+	if err := daemon.Start(); err != nil {
+		t.Fatalf("Failed to start daemon: %v", err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		daemon.Stop(ctx)
+	}()
+
+	client := NewClient(WithSocketPath(sockPath))
+	if err := client.Connect(); err != nil {
+		t.Fatalf("Failed to connect: %v", err)
+	}
+	defer client.Close()
+
+	// Create two proxies with similar fuzzy IDs in different paths
+	proxyA := "proj-a:dev:localhost-3000"
+	proxyB := "proj-b:dev:localhost-4000"
+
+	_, err := client.ProxyStart(proxyA, "http://localhost:3000", 0, 100, projectA)
+	if err != nil {
+		t.Fatalf("ProxyStart A failed: %v", err)
+	}
+	defer client.ProxyStop(proxyA)
+
+	_, err = client.ProxyStart(proxyB, "http://localhost:4000", 0, 100, projectB)
+	if err != nil {
+		t.Fatalf("ProxyStart B failed: %v", err)
+	}
+	defer client.ProxyStop(proxyB)
+
+	// Register a session for project A
+	sessionCode := "test-session-a"
+	_, err = client.conn.Request("SESSION", "REGISTER", sessionCode, projectA).WithJSON(map[string]interface{}{
+		"project_path": projectA,
+		"command":      "test",
+	}).JSON()
+	if err != nil {
+		t.Fatalf("Session register failed: %v", err)
+	}
+
+	// Attach to the session (sets connection's session code) - uses directory to find session
+	_, err = client.conn.Request("SESSION", "ATTACH", projectA).JSON()
+	if err != nil {
+		t.Fatalf("Session attach failed: %v", err)
+	}
+
+	// Now lookup with fuzzy "dev" should find only the proxy in project A's path
+	// (not fail with ambiguous error)
+	t.Run("FuzzyLookup_SessionScoped", func(t *testing.T) {
+		result, err := client.conn.Request("CURRENTPAGE", "LIST", "dev").JSON()
+		if err != nil {
+			t.Errorf("Fuzzy lookup 'dev' failed (should be session-scoped): %v", err)
+		} else {
+			t.Logf("Fuzzy lookup result: %+v", result)
+		}
+	})
+
+	// Global lookup with "dev" should still fail with ambiguous
+	t.Run("FuzzyLookup_GlobalAmbiguous", func(t *testing.T) {
+		// Use a fresh client without session attachment
+		client2 := NewClient(WithSocketPath(sockPath))
+		if err := client2.Connect(); err != nil {
+			t.Fatalf("Failed to connect client2: %v", err)
+		}
+		defer client2.Close()
+
+		_, err := client2.conn.Request("CURRENTPAGE", "LIST", "dev").JSON()
+		if err == nil {
+			t.Error("Expected ambiguous error for global 'dev' lookup")
+		} else if !strings.Contains(err.Error(), "ambiguous") {
+			t.Errorf("Expected ambiguous error, got: %v", err)
+		}
+	})
+}
+
 // TestHubIntegration_ProcErrorPaths tests error paths for PROC commands.
 func TestHubIntegration_ProcErrorPaths(t *testing.T) {
 	tmpDir := t.TempDir()
@@ -1043,7 +1151,7 @@ func TestHubIntegration_TunnelClientMethods(t *testing.T) {
 
 	// Test TunnelList
 	t.Run("TunnelList", func(t *testing.T) {
-		result, err := client.TunnelList()
+		result, err := client.TunnelList(protocol.DirectoryFilter{})
 		if err != nil {
 			t.Fatalf("TunnelList failed: %v", err)
 		}
@@ -2692,7 +2800,7 @@ func TestHubIntegration_TunnelErrorPaths(t *testing.T) {
 
 	t.Run("List", func(t *testing.T) {
 		// List should work even with no tunnels
-		result, err := client.TunnelList()
+		result, err := client.TunnelList(protocol.DirectoryFilter{})
 		if err != nil {
 			t.Errorf("TunnelList failed: %v", err)
 		}

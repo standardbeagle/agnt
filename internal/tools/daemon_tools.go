@@ -364,6 +364,9 @@ This provides a high-level view of active pages and their resources.`,
 
 	// Session tool - register via separate function for organization
 	RegisterSessionTool(server, dt)
+
+	// Store tool - register via separate function for organization
+	RegisterStoreTool(server, dt)
 }
 
 // makeDetectHandler creates a handler for the detect tool.
