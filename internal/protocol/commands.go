@@ -15,27 +15,28 @@ const (
 
 // Agnt-specific sub-verbs (beyond those in go-cli-server).
 const (
-	SubVerbExec       = "EXEC"
-	SubVerbToast      = "TOAST"
-	SubVerbQuery      = "QUERY"
-	SubVerbStats      = "STATS"
-	SubVerbActivity   = "ACTIVITY"
-	SubVerbEnable     = "ENABLE"
-	SubVerbDisable    = "DISABLE"
-	SubVerbAddRule    = "ADD-RULE"
-	SubVerbRemoveRule = "REMOVE-RULE"
-	SubVerbListRules  = "LIST-RULES"
-	SubVerbPreset     = "PRESET"
-	SubVerbReset      = "RESET"
-	SubVerbSend       = "SEND"
-	SubVerbSchedule   = "SCHEDULE"
-	SubVerbCancel     = "CANCEL"
-	SubVerbTasks      = "TASKS"
-	SubVerbFind       = "FIND"
-	SubVerbAttach     = "ATTACH"
-	SubVerbURL        = "URL"     // Report detected URL from agnt run session
-	SubVerbGetAll     = "GET-ALL" // Get all entries in a scope
-	SubVerbDelete     = "DELETE"  // Delete an entry from a scope
+	SubVerbExec          = "EXEC"
+	SubVerbToast         = "TOAST"
+	SubVerbQuery         = "QUERY"
+	SubVerbStats         = "STATS"
+	SubVerbActivity      = "ACTIVITY"
+	SubVerbOutputPreview = "OUTPUT-PREVIEW"
+	SubVerbEnable        = "ENABLE"
+	SubVerbDisable       = "DISABLE"
+	SubVerbAddRule       = "ADD-RULE"
+	SubVerbRemoveRule    = "REMOVE-RULE"
+	SubVerbListRules     = "LIST-RULES"
+	SubVerbPreset        = "PRESET"
+	SubVerbReset         = "RESET"
+	SubVerbSend          = "SEND"
+	SubVerbSchedule      = "SCHEDULE"
+	SubVerbCancel        = "CANCEL"
+	SubVerbTasks         = "TASKS"
+	SubVerbFind          = "FIND"
+	SubVerbAttach        = "ATTACH"
+	SubVerbURL           = "URL"     // Report detected URL from agnt run session
+	SubVerbGetAll        = "GET-ALL" // Get all entries in a scope
+	SubVerbDelete        = "DELETE"  // Delete an entry from a scope
 )
 
 // ProxyStartConfig represents configuration for a PROXY START command.

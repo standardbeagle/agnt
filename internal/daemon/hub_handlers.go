@@ -1030,13 +1030,15 @@ func (d *Daemon) hubHandleOverlay(ctx context.Context, conn *hubpkg.Connection, 
 	case "CLEAR":
 		return d.hubHandleOverlayClear(conn)
 	case "ACTIVITY":
-		return d.hubHandleOverlayActivity(conn)
+		return d.hubHandleOverlayActivity(conn, cmd)
+	case "OUTPUT-PREVIEW":
+		return d.hubHandleOverlayOutputPreview(conn, cmd)
 	default:
 		return conn.WriteStructuredErr(&hubproto.StructuredError{
 			Code:         hubproto.ErrInvalidArgs,
 			Message:      "unknown OVERLAY sub-command",
 			Command:      "OVERLAY",
-			ValidActions: []string{"SET", "GET", "CLEAR", "ACTIVITY"},
+			ValidActions: []string{"SET", "GET", "CLEAR", "ACTIVITY", "OUTPUT-PREVIEW"},
 		})
 	}
 }
@@ -1077,10 +1079,99 @@ func (d *Daemon) hubHandleOverlayClear(conn *hubpkg.Connection) error {
 	return conn.WriteOK("overlay endpoint cleared")
 }
 
-// hubHandleOverlayActivity handles OVERLAY ACTIVITY command (heartbeat).
-func (d *Daemon) hubHandleOverlayActivity(conn *hubpkg.Connection) error {
-	// This is a heartbeat from the overlay to keep the connection alive
-	return conn.WriteOK("activity recorded")
+// hubHandleOverlayActivity handles OVERLAY ACTIVITY command.
+// Args: <active:true/false> [proxyID1 proxyID2 ...]
+// Broadcasts activity state to specified proxies (or all proxies if none specified).
+func (d *Daemon) hubHandleOverlayActivity(conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	if len(cmd.Args) < 1 {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, "OVERLAY ACTIVITY requires: <active:true/false> [proxyIDs...]")
+	}
+
+	// Parse active state
+	active := cmd.Args[0] == "true"
+
+	// Get proxy IDs (if specified)
+	proxyIDs := cmd.Args[1:]
+
+	// Broadcast to specified proxies or all proxies
+	var proxiesToBroadcast []*proxy.ProxyServer
+	if len(proxyIDs) > 0 {
+		// Broadcast to specific proxies
+		for _, proxyID := range proxyIDs {
+			p, err := d.proxym.Get(proxyID)
+			if err != nil {
+				log.Printf("[WARN] Proxy %s not found for activity broadcast: %v", proxyID, err)
+				continue
+			}
+			proxiesToBroadcast = append(proxiesToBroadcast, p)
+		}
+	} else {
+		// Broadcast to all proxies
+		proxiesToBroadcast = d.proxym.List()
+	}
+
+	// Broadcast activity state to each proxy
+	totalSent := 0
+	for _, p := range proxiesToBroadcast {
+		sentCount := p.BroadcastActivityState(active)
+		totalSent += sentCount
+	}
+
+	data, _ := json.Marshal(map[string]interface{}{
+		"status":       "ok",
+		"active":       active,
+		"proxies":      len(proxiesToBroadcast),
+		"clients_sent": totalSent,
+	})
+	return conn.WriteJSON(data)
+}
+
+// hubHandleOverlayOutputPreview handles OVERLAY OUTPUT-PREVIEW command.
+// Broadcasts output preview lines to connected browsers via proxies.
+func (d *Daemon) hubHandleOverlayOutputPreview(conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	var payload struct {
+		Lines    []string `json:"lines"`
+		ProxyIDs []string `json:"proxy_ids"`
+	}
+
+	if len(cmd.Data) > 0 {
+		if err := json.Unmarshal(cmd.Data, &payload); err != nil {
+			return conn.WriteErr(hubproto.ErrInvalidArgs, "invalid payload")
+		}
+	}
+
+	if len(payload.Lines) == 0 {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, "lines required")
+	}
+
+	// Get proxies to broadcast to
+	var proxiesToBroadcast []*proxy.ProxyServer
+	if len(payload.ProxyIDs) > 0 {
+		for _, proxyID := range payload.ProxyIDs {
+			p, err := d.proxym.Get(proxyID)
+			if err != nil {
+				continue
+			}
+			proxiesToBroadcast = append(proxiesToBroadcast, p)
+		}
+	} else {
+		proxiesToBroadcast = d.proxym.List()
+	}
+
+	// Broadcast to each proxy
+	totalSent := 0
+	for _, p := range proxiesToBroadcast {
+		sentCount := p.BroadcastOutputPreview(payload.Lines)
+		totalSent += sentCount
+	}
+
+	data, _ := json.Marshal(map[string]interface{}{
+		"status":       "ok",
+		"lines":        len(payload.Lines),
+		"proxies":      len(proxiesToBroadcast),
+		"clients_sent": totalSent,
+	})
+	return conn.WriteJSON(data)
 }
 
 // hubHandleTunnel handles the TUNNEL command.

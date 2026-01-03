@@ -1899,6 +1899,34 @@ func (ps *ProxyServer) BroadcastToast(toastType, title, message string, duration
 	return sentCount, nil
 }
 
+// BroadcastOutputPreview sends output preview lines to all connected browser clients.
+// Returns the number of clients that received the preview.
+func (ps *ProxyServer) BroadcastOutputPreview(lines []string) int {
+	message := map[string]interface{}{
+		"type": "output_preview",
+		"payload": map[string]interface{}{
+			"lines": lines,
+		},
+	}
+
+	messageBytes, err := json.Marshal(message)
+	if err != nil {
+		return 0
+	}
+
+	sentCount := 0
+	ps.wsConns.Range(func(key, value interface{}) bool {
+		conn := value.(*websocket.Conn)
+		err := conn.WriteMessage(websocket.TextMessage, messageBytes)
+		if err == nil {
+			sentCount++
+		}
+		return true
+	})
+
+	return sentCount
+}
+
 // getArrayField extracts an array from a map field.
 func getArrayField(data map[string]interface{}, key string) []interface{} {
 	if v, ok := data[key]; ok {

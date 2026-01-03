@@ -260,10 +260,17 @@ func TestProxy_PageTracking_ResponseHeaders(t *testing.T) {
 	_, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
 
-	// Check HTTP log entry has correct headers (synchronous - happens in request handler)
-	entries := ps.Logger().Query(LogFilter{Types: []LogEntryType{LogTypeHTTP}, Limit: 1})
+	// Wait for HTTP log entry to appear (logging may be slightly async)
+	var entries []LogEntry
+	for i := 0; i < 50; i++ { // 50 * 10ms = 500ms max wait
+		entries = ps.Logger().Query(LogFilter{Types: []LogEntryType{LogTypeHTTP}, Limit: 1})
+		if len(entries) >= 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	if len(entries) < 1 {
-		t.Fatalf("Expected at least 1 HTTP log entry, got %d", len(entries))
+		t.Fatalf("Expected at least 1 HTTP log entry after 500ms, got %d", len(entries))
 	}
 
 	entry := entries[0].HTTP
