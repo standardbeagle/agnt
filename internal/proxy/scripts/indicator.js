@@ -1110,6 +1110,7 @@
   }
 
   // Format a human-readable summary for audit results
+  // Updated to use new action-oriented audit schema with summary, score, grade
   function formatAuditSummary(auditId, result) {
     if (!result) {
       return 'No data captured';
@@ -1118,6 +1119,18 @@
       return 'Error: ' + result.error;
     }
 
+    // New schema: if result has summary field, use it directly
+    if (result.summary && typeof result.summary === 'string') {
+      var prefix = '';
+      if (result.grade) {
+        prefix = '[' + result.grade + '] ';
+      } else if (result.score !== undefined) {
+        prefix = '[' + result.score + '/100] ';
+      }
+      return prefix + result.summary;
+    }
+
+    // Legacy support for older audit formats
     switch (auditId) {
       // Quality Audits
       case 'fullAudit':
@@ -1125,12 +1138,21 @@
                (result.criticalIssues ? result.criticalIssues.length : 0) + ' critical issues';
 
       case 'accessibility':
+        if (result.stats) {
+          return '[' + (result.grade || '?') + '] ' + result.stats.errors + ' errors, ' + result.stats.warnings + ' warnings';
+        }
         return result.count + ' issue(s): ' + result.errors + ' errors, ' + result.warnings + ' warnings';
 
       case 'security':
+        if (result.stats) {
+          return '[' + (result.grade || '?') + '] ' + result.stats.errors + ' errors, ' + result.stats.warnings + ' warnings';
+        }
         return result.count + ' issue(s): ' + result.errors + ' errors, ' + result.warnings + ' warnings';
 
       case 'seo':
+        if (result.meta && result.meta.title) {
+          return '[' + (result.grade || '?') + '] Title: "' + result.meta.title.value.substring(0, 30) + '"';
+        }
         return result.count + ' issue(s) - Title: "' + (result.title || 'missing').substring(0, 30) + '"';
 
       // Layout & Visual
@@ -1182,10 +1204,16 @@
 
       // Technical
       case 'domComplexity':
+        if (result.metrics) {
+          return '[' + (result.grade || '?') + '] ' + result.metrics.totalElements + ' elements, depth ' + result.metrics.maxDepth;
+        }
         var rating = result.rating || 'unknown';
         return result.totalElements + ' nodes, depth ' + result.maxDepth + ' (' + rating + ')';
 
       case 'css':
+        if (result.metrics) {
+          return '[' + (result.grade || '?') + '] ' + result.metrics.inlineStyleCount + ' inline styles, ' + result.stats.fixable + ' issues';
+        }
         return result.issues.length + ' issue(s), ' + result.inlineStyleCount + ' inline styles';
 
       default:
