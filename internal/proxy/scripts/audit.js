@@ -32,9 +32,11 @@
 
   // Options:
   //   detailLevel: 'summary' | 'compact' (default) | 'full'
+  //   forAutomation: boolean - if true, returns raw data optimized for AI processing
   function auditDOMComplexity(options) {
     options = options || {};
     var detailLevel = options.detailLevel || 'compact';
+    var forAutomation = options.forAutomation || false;
     var elements = document.querySelectorAll('*');
 
     // Helper: Generate readable selector for an element
@@ -61,6 +63,32 @@
         path.unshift(getSelector(current));
         current = current.parentElement;
         depth++;
+      }
+      return path.join(' > ');
+    }
+
+    // Helper: Truncate HTML for context
+    function truncateHtml(el, maxLen) {
+      if (!el) return '';
+      maxLen = maxLen || 120;
+      var html = el.outerHTML || '';
+      if (html.length <= maxLen) return html;
+      // Keep opening tag and truncate
+      var tagEnd = html.indexOf('>');
+      if (tagEnd > 0 && tagEnd < maxLen - 10) {
+        return html.substring(0, tagEnd + 1) + '...</' + el.tagName.toLowerCase() + '>';
+      }
+      return html.substring(0, maxLen) + '...';
+    }
+
+    // Helper: Get tag hierarchy for context
+    function getTagHierarchy(el, depth) {
+      depth = depth || 3;
+      var path = [];
+      var current = el;
+      while (current && current.tagName && path.length < depth) {
+        path.unshift(current.tagName.toLowerCase());
+        current = current.parentElement;
       }
       return path.join(' > ');
     }
@@ -412,6 +440,109 @@
     var warningCount = fixable.filter(function(f) { return f.severity === 'warning'; }).length;
     var infoCount = informational.filter(function(f) { return f.severity === 'info'; }).length;
 
+    // === AUTOMATION RESPONSE ===
+    // Returns raw data optimized for AI processing - no pre-generated actions
+    if (forAutomation) {
+      // Build rich raw data for AI interpretation
+      var rawDuplicateIds = [];
+      for (var dupKey in duplicateIdMap) {
+        var elems = duplicateIdMap[dupKey];
+        rawDuplicateIds.push({
+          id: dupKey,
+          count: elems.length,
+          instances: elems.slice(0, 5).map(function(el) {
+            return {
+              selector: getSelectorPath(el),
+              element: truncateHtml(el, 100),
+              context: getTagHierarchy(el, 4)
+            };
+          })
+        });
+      }
+
+      // Build raw hotspot data with more context
+      var rawHotspots = hotspots.map(function(h) {
+        var el = document.querySelector(h.selector.split(' > ').pop()) || document.body;
+        var childTags = {};
+        var children = el.children;
+        for (var ci = 0; ci < Math.min(children.length, 20); ci++) {
+          var tag = children[ci].tagName.toLowerCase();
+          childTags[tag] = (childTags[tag] || 0) + 1;
+        }
+        return {
+          selector: h.selector,
+          descendants: h.descendants,
+          depth: h.depth,
+          childTagDistribution: childTags,
+          hasRepeatingPattern: Object.values(childTags).some(function(c) { return c > 5; })
+        };
+      });
+
+      // Group fixable issues by type for AI processing
+      var issuesByType = {};
+      for (var fi = 0; fi < fixable.length; fi++) {
+        var issue = fixable[fi];
+        if (!issuesByType[issue.type]) {
+          issuesByType[issue.type] = [];
+        }
+        issuesByType[issue.type].push({
+          selector: issue.selector,
+          severity: issue.severity,
+          impact: issue.impact,
+          // Type-specific data
+          childCount: issue.childCount,
+          depth: issue.depth,
+          itemCount: issue.itemCount,
+          rows: issue.rows,
+          inputCount: issue.inputCount,
+          attributeCount: issue.attributeCount
+        });
+      }
+
+      return {
+        audit: 'dom',
+        summary: summary,
+        score: score,
+        grade: grade,
+        checkedAt: new Date().toISOString(),
+        stats: {
+          errors: errorCount,
+          warnings: warningCount,
+          info: infoCount,
+          totalIssues: fixable.length
+        },
+        // Raw data for AI interpretation - no pre-generated actions
+        raw: {
+          metrics: {
+            totalElements: elements.length,
+            maxDepth: maxDepth,
+            averageChildren: Math.round(averageChildren * 10) / 10,
+            forms: document.forms.length,
+            tables: document.querySelectorAll('table').length,
+            lists: document.querySelectorAll('ul, ol').length
+          },
+          duplicateIds: rawDuplicateIds,
+          hotspots: rawHotspots,
+          issuesByType: issuesByType
+        },
+        // Hints for AI - what to look for in codebase
+        automationHints: {
+          lookFor: [
+            'component patterns for extracting large subtrees',
+            'virtualization libraries (react-window, react-virtualized)',
+            'existing ID naming conventions',
+            'form wizard or multi-step patterns'
+          ],
+          suggestionsNeeded: [
+            rawDuplicateIds.length > 0 ? 'rename strategy for ' + rawDuplicateIds.length + ' duplicate IDs' : null,
+            hotspots.length > 0 ? 'component extraction for ' + hotspots.length + ' large subtrees' : null,
+            issuesByType['large-list'] ? 'virtualization for large lists' : null,
+            issuesByType['large-table'] ? 'pagination for large tables' : null
+          ].filter(Boolean)
+        }
+      };
+    }
+
     // === RESPONSE ===
     var response = {
       summary: summary,
@@ -471,10 +602,12 @@
   // Options:
   //   detailLevel: 'summary' | 'compact' (default) | 'full'
   //   maxIssues: number (default: 20)
+  //   forAutomation: boolean - if true, returns raw data optimized for AI processing
   function auditCSS(options) {
     options = options || {};
     var detailLevel = options.detailLevel || 'compact';
     var maxIssues = options.maxIssues || 20;
+    var forAutomation = options.forAutomation || false;
 
     var inlineStyles = document.querySelectorAll('[style]');
     var checksRun = [
@@ -904,6 +1037,90 @@
       summary += ', ' + patternsToExtract + ' should be extracted to classes';
     }
 
+    // === AUTOMATION RESPONSE ===
+    // Returns raw data optimized for AI processing - AI generates class names using codebase context
+    if (forAutomation) {
+      // Collect all unique colors with usage context
+      var colorData = [];
+      for (var color in colorPatterns) {
+        if (colorPatterns.hasOwnProperty(color)) {
+          colorData.push({
+            color: color,
+            count: colorPatterns[color],
+            // Help AI understand usage context
+            isNeutral: /^#([0-9a-f])\1{2,5}$/i.test(color) || /^(gray|grey|white|black)$/i.test(color),
+            isTransparent: color.indexOf('rgba') !== -1 && /,\s*0(\.\d+)?\)/.test(color)
+          });
+        }
+      }
+      colorData.sort(function(a, b) { return b.count - a.count; });
+
+      // Collect z-index values for AI to design layer system
+      var zIndexData = [];
+      for (var zi = 0; zi < fixable.length; zi++) {
+        if (fixable[zi].type === 'z-index-inflation') {
+          zIndexData.push({
+            selector: fixable[zi].selector,
+            value: fixable[zi].value
+          });
+        }
+      }
+      zIndexData.sort(function(a, b) { return b.value - a.value; });
+
+      // Build pattern data with element samples for AI class naming
+      var patternData = patterns.map(function(p) {
+        return {
+          pattern: p.pattern,
+          count: p.count,
+          selectors: p.selectors,
+          // AI will use codebase context to pick better names
+          suggestedClass: p.suggestedClass,
+          // Parse pattern for AI to understand what it does
+          properties: parseInlineStyle(p.pattern)
+        };
+      });
+
+      return {
+        audit: 'css',
+        summary: summary,
+        score: score,
+        grade: grade,
+        checkedAt: new Date().toISOString(),
+        stats: stats,
+        // Raw data for AI interpretation
+        raw: {
+          metrics: metrics,
+          categoryBreakdown: categoryBreakdown,
+          // Patterns for AI to name classes appropriately
+          inlinePatterns: patternData,
+          // Colors for AI to map to design tokens
+          hardcodedColors: colorData,
+          // Z-index values for AI to design layer system
+          zIndexValues: zIndexData,
+          // Fixed dimensions for AI to suggest responsive alternatives
+          fixedDimensions: fixable.filter(function(f) {
+            return f.type === 'fixed-dimensions';
+          }).map(function(f) {
+            return { selector: f.selector, width: f.width, height: f.height };
+          })
+        },
+        // Hints for AI - what to look for in codebase
+        automationHints: {
+          lookFor: [
+            'existing CSS variables (--color-*, --spacing-*, --z-*)',
+            'utility class patterns (Tailwind, Bootstrap, custom)',
+            'design token files or theme configuration',
+            'CSS-in-JS theme objects'
+          ],
+          suggestionsNeeded: [
+            patternData.length > 0 ? 'utility classes for ' + patternData.length + ' repeated patterns' : null,
+            colorData.length > 0 ? 'CSS variable names for ' + colorData.length + ' colors' : null,
+            zIndexData.length > 0 ? 'z-index layer system for ' + zIndexData.length + ' elevated elements' : null
+          ].filter(Boolean)
+        }
+      };
+    }
+
     var response = {
       summary: summary,
       score: score,
@@ -938,11 +1155,13 @@
   //   detailLevel: 'summary' | 'compact' (default) | 'full'
   //   maxIssues: number (default: 20)
   //   maxUrlLength: number (default: 80)
+  //   forAutomation: boolean - if true, returns raw data optimized for AI processing
   function auditSecurity(options) {
     options = options || {};
     var detailLevel = options.detailLevel || 'compact';
     var maxIssues = options.maxIssues || 20;
     var maxUrlLength = options.maxUrlLength || 80;
+    var forAutomation = options.forAutomation || false;
 
     var critical = [];
     var errors = [];
@@ -1514,6 +1733,95 @@
       });
     }
 
+    // === AUTOMATION RESPONSE ===
+    // Returns raw data for AI to generate context-aware security recommendations
+    if (forAutomation) {
+      // Group issues by type for AI processing
+      var issuesByType = {};
+      var allIssuesForRaw = [].concat(critical, errors, warnings);
+      for (var ri = 0; ri < allIssuesForRaw.length; ri++) {
+        var rIssue = allIssuesForRaw[ri];
+        if (!issuesByType[rIssue.type]) {
+          issuesByType[rIssue.type] = [];
+        }
+        issuesByType[rIssue.type].push({
+          severity: rIssue.severity,
+          selector: rIssue.selector,
+          vector: rIssue.vector,
+          secretType: rIssue.secretType,
+          count: rIssue.count,
+          message: rIssue.message
+        });
+      }
+
+      // Categorize issues by fix complexity for AI prioritization
+      var fixComplexity = {
+        domFixable: [], // Can be fixed by modifying DOM/attributes
+        codeChanges: [], // Requires JavaScript code changes
+        backendChanges: [], // Requires server-side changes
+        configChanges: [] // Requires infrastructure/config changes
+      };
+
+      for (var fc = 0; fc < allIssuesForRaw.length; fc++) {
+        var fcIssue = allIssuesForRaw[fc];
+        var t = fcIssue.type;
+        if (t === 'missing-noopener' || t === 'password-autocomplete' || t === 'insecure-form') {
+          fixComplexity.domFixable.push(fcIssue);
+        } else if (t === 'xss-vector' || t === 'eval-usage' || t === 'postmessage-no-origin') {
+          fixComplexity.codeChanges.push(fcIssue);
+        } else if (t === 'exposed-secret' || t === 'insecure-storage' || t === 'missing-csrf') {
+          fixComplexity.backendChanges.push(fcIssue);
+        } else {
+          fixComplexity.configChanges.push(fcIssue);
+        }
+      }
+
+      return {
+        audit: 'security',
+        summary: summary,
+        score: score,
+        grade: grade,
+        checkedAt: new Date().toISOString(),
+        stats: stats,
+        // Raw data for AI interpretation
+        raw: {
+          issuesByType: issuesByType,
+          fixComplexity: {
+            domFixable: fixComplexity.domFixable.length,
+            codeChanges: fixComplexity.codeChanges.length,
+            backendChanges: fixComplexity.backendChanges.length,
+            configChanges: fixComplexity.configChanges.length
+          },
+          // Detailed issues by complexity for AI to prioritize
+          domFixableIssues: fixComplexity.domFixable.map(function(i) {
+            return { type: i.type, selector: i.selector, count: i.count };
+          }),
+          codeChangeIssues: fixComplexity.codeChanges.map(function(i) {
+            return { type: i.type, vector: i.vector, count: i.count };
+          }),
+          backendIssues: fixComplexity.backendChanges.map(function(i) {
+            return { type: i.type, secretType: i.secretType };
+          })
+        },
+        // Hints for AI - what to look for in codebase
+        automationHints: {
+          lookFor: [
+            'environment variable configuration (.env files)',
+            'sanitization utilities (DOMPurify, sanitize-html)',
+            'authentication/session handling patterns',
+            'CSP configuration files',
+            'framework-specific security middleware'
+          ],
+          suggestionsNeeded: [
+            fixComplexity.domFixable.length > 0 ? 'DOM attribute fixes for ' + fixComplexity.domFixable.length + ' issues' : null,
+            fixComplexity.codeChanges.length > 0 ? 'code refactoring for ' + fixComplexity.codeChanges.length + ' XSS/injection risks' : null,
+            fixComplexity.backendChanges.length > 0 ? 'backend migration for ' + fixComplexity.backendChanges.length + ' exposed secrets' : null,
+            fixComplexity.configChanges.length > 0 ? 'security headers/config for ' + fixComplexity.configChanges.length + ' issues' : null
+          ].filter(Boolean)
+        }
+      };
+    }
+
     // Build response based on detail level
     var response = {
       summary: summary,
@@ -1548,10 +1856,12 @@
   // Options:
   //   detailLevel: 'summary' | 'compact' (default) | 'full'
   //   maxIssues: number (default: 20)
+  //   forAutomation: boolean - if true, returns raw data optimized for AI processing
   function auditPageQuality(options) {
     options = options || {};
     var detailLevel = options.detailLevel || 'compact';
     var maxIssues = options.maxIssues || 20;
+    var forAutomation = options.forAutomation || false;
 
     // Initialize tracking arrays
     var fixable = [];
@@ -2085,6 +2395,83 @@
       informational: informational.length
     };
 
+    // === AUTOMATION RESPONSE ===
+    // Returns raw data for AI to generate context-aware SEO recommendations
+    if (forAutomation) {
+      // Collect missing elements for AI to generate content
+      var missingElements = [];
+      if (!meta.title.value) missingElements.push('title');
+      if (!meta.description.value) missingElements.push('meta description');
+      if (!meta.canonical) missingElements.push('canonical URL');
+      missingElements = missingElements.concat(ogMissing.map(function(t) { return 'og:' + t; }));
+      if (!twitterCard.present) missingElements.push('Twitter card tags');
+
+      // Images needing alt text
+      var imagesNeedingAlt = [];
+      var imgElements = document.querySelectorAll('img:not([alt])');
+      for (var ia = 0; ia < Math.min(imgElements.length, 10); ia++) {
+        var img = imgElements[ia];
+        imagesNeedingAlt.push({
+          src: (img.src || '').split('/').pop().split('?')[0] || 'unknown',
+          context: img.parentElement ? img.parentElement.tagName.toLowerCase() : 'body'
+        });
+      }
+
+      return {
+        audit: 'seo',
+        summary: summary,
+        score: score,
+        grade: grade,
+        checkedAt: new Date().toISOString(),
+        stats: stats,
+        // Raw data for AI interpretation
+        raw: {
+          // Current meta values for AI to improve
+          currentMeta: {
+            title: meta.title.value || null,
+            titleLength: meta.title.length,
+            description: meta.description ? meta.description.value : null,
+            descriptionLength: meta.description ? meta.description.length : 0
+          },
+          // What's missing for AI to generate
+          missingElements: missingElements,
+          // Open Graph status
+          openGraph: {
+            present: ogPresent,
+            missing: ogMissing
+          },
+          // Content for AI to understand page context
+          pageContent: {
+            headingStructure: contentAnalysis.headingStructure,
+            firstH1: document.querySelector('h1') ? document.querySelector('h1').textContent.trim().substring(0, 100) : null,
+            bodyTextSample: (document.body.textContent || '').trim().substring(0, 500)
+          },
+          // Images needing descriptions
+          imagesNeedingAlt: imagesNeedingAlt,
+          // Links that need fixing
+          genericLinkCount: genericLinks.length,
+          uncrawlableLinkCount: totalUncrawlable,
+          // Structured data status
+          hasStructuredData: structuredData.present
+        },
+        // Hints for AI - what to look for in codebase
+        automationHints: {
+          lookFor: [
+            'page templates or layouts with meta tag placeholders',
+            'SEO configuration files or CMS settings',
+            'image alt text patterns in existing code',
+            'structured data templates (JSON-LD)'
+          ],
+          suggestionsNeeded: [
+            missingElements.length > 0 ? 'content for ' + missingElements.length + ' missing meta elements' : null,
+            imagesNeedingAlt.length > 0 ? 'alt text for ' + imagesNeedingAlt.length + ' images' : null,
+            genericLinks.length > 0 ? 'descriptive text for ' + genericLinks.length + ' generic links' : null,
+            !structuredData.present ? 'JSON-LD structured data for page' : null
+          ].filter(Boolean)
+        }
+      };
+    }
+
     // Build response
     var response = {
       summary: summary,
@@ -2120,11 +2507,13 @@
   //   detailLevel: 'summary' | 'compact' (default) | 'full'
   //   maxResources: number (default: 20) - limit resource entries
   //   maxUrlLength: number (default: 60) - truncate resource URLs
+  //   forAutomation: boolean - if true, returns raw data optimized for AI processing
   function auditPerformance(options) {
     options = options || {};
     var detailLevel = options.detailLevel || 'compact';
     var maxResources = options.maxResources || 20;
     var maxUrlLength = options.maxUrlLength || 60;
+    var forAutomation = options.forAutomation || false;
 
     var perf = window.performance;
     if (!perf) {
@@ -2544,6 +2933,82 @@
       informational: informational.length
     };
 
+    // === AUTOMATION RESPONSE ===
+    // Returns raw data optimized for AI processing
+
+    if (forAutomation) {
+      // Build blocking script details for AI decision-making
+      var blockingScriptDetails = [];
+      for (var bs = 0; bs < blockingScripts.length; bs++) {
+        var bsEl = blockingScripts[bs];
+        var bsSrc = bsEl.getAttribute('src') || '';
+        blockingScriptDetails.push({
+          src: bsSrc,
+          selector: getSelector(bsEl),
+          isExternal: bsSrc.indexOf('//') !== -1 || bsSrc.indexOf('http') === 0,
+          domain: getDomain(bsSrc.indexOf('//') === 0 ? 'https:' + bsSrc : bsSrc)
+        });
+      }
+
+      // Build unoptimized image details
+      var unoptimizedImages = fixable.filter(function(f) {
+        return f.type === 'unoptimized-image';
+      }).map(function(img) {
+        return {
+          selector: img.selector,
+          size: img.size,
+          dimensions: img.dimensions,
+          severity: img.severity
+        };
+      });
+
+      // Resource summary by type
+      var resourceSummary = {
+        script: { count: resourcesByType.script.length, totalSize: 0 },
+        css: { count: resourcesByType.css.length, totalSize: 0 },
+        img: { count: resourcesByType.img.length, totalSize: 0 },
+        font: { count: resourcesByType.font.length, totalSize: 0 }
+      };
+      ['script', 'css', 'img', 'font'].forEach(function(type) {
+        resourcesByType[type].forEach(function(r) {
+          resourceSummary[type].totalSize += r.size || 0;
+        });
+        resourceSummary[type].totalSizeFormatted = formatBytes(resourceSummary[type].totalSize);
+      });
+
+      return {
+        audit: 'performance',
+        summary: summary,
+        score: score,
+        grade: grade,
+        raw: {
+          coreWebVitals: coreWebVitals,
+          blockingScripts: blockingScriptDetails,
+          unoptimizedImages: unoptimizedImages,
+          thirdPartyImpact: thirdPartyImpact.slice(0, 10),
+          slowestResources: slowestResources.slice(0, 5),
+          resourceSummary: resourceSummary,
+          fontCount: fontFaces.length,
+          hasFontDisplaySwap: hasSwap
+        },
+        automationHints: {
+          lookFor: [
+            'bundler config (webpack, vite, rollup) for script optimization',
+            'image processing/CDN setup (imagemin, sharp, cloudinary)',
+            'existing async/defer patterns in HTML templates',
+            'critical CSS extraction configuration',
+            'font loading strategy (preload, font-display)'
+          ],
+          suggestionsNeeded: [
+            'which scripts can safely use async vs defer',
+            'image optimization pipeline recommendations',
+            'third-party script evaluation (keep/defer/remove)',
+            'resource preloading priorities'
+          ]
+        }
+      };
+    }
+
     // === BUILD RESPONSE ===
 
     var response = {
@@ -2581,17 +3046,121 @@
   // Options:
   //   detailLevel: 'summary' | 'compact' (default) | 'full'
   //   includeAccessibility: boolean (default: true) - requires async
+  //   forAutomation: boolean - if true, aggregates raw data from all audits for AI processing
   function auditAll(options) {
     options = options || {};
     var detailLevel = options.detailLevel || 'compact';
     var includeAccessibility = options.includeAccessibility !== false;
+    var forAutomation = options.forAutomation || false;
 
-    // Run all synchronous audits
-    var domResult = auditDOMComplexity({ detailLevel: detailLevel });
-    var cssResult = auditCSS({ detailLevel: detailLevel });
-    var securityResult = auditSecurity({ detailLevel: detailLevel });
-    var seoResult = auditPageQuality({ detailLevel: detailLevel });
-    var performanceResult = auditPerformance({ detailLevel: detailLevel });
+    // Run all synchronous audits (with forAutomation if requested)
+    var auditOpts = forAutomation
+      ? { forAutomation: true }
+      : { detailLevel: detailLevel };
+
+    var domResult = auditDOMComplexity(auditOpts);
+    var cssResult = auditCSS(auditOpts);
+    var securityResult = auditSecurity(auditOpts);
+    var seoResult = auditPageQuality(auditOpts);
+    var performanceResult = auditPerformance(auditOpts);
+
+    // === AUTOMATION AGGREGATION ===
+    // Returns combined raw data from all audits for AI to generate contextual summaries
+
+    if (forAutomation) {
+      // Run accessibility audit if available (for automation we want all data)
+      var accessibilityPromise;
+      if (includeAccessibility && window.__devtool_accessibility && window.__devtool_accessibility.auditAccessibility) {
+        accessibilityPromise = window.__devtool_accessibility.auditAccessibility({ mode: 'standard', forAutomation: true })
+          .catch(function() { return null; });
+      } else {
+        accessibilityPromise = Promise.resolve(null);
+      }
+
+      return accessibilityPromise.then(function(accessibilityResult) {
+        // Calculate overall scores for prioritization
+        var scores = {
+          dom: domResult.score,
+          css: cssResult.score,
+          security: securityResult.score,
+          seo: seoResult.score,
+          performance: performanceResult.score
+        };
+
+        if (accessibilityResult) {
+          scores.accessibility = accessibilityResult.score;
+        }
+
+        // Find lowest scoring audits (areas needing most attention)
+        var priorityOrder = Object.keys(scores).sort(function(a, b) {
+          return scores[a] - scores[b];
+        });
+
+        // Calculate overall weighted score
+        var weights = { security: 1.5, accessibility: 1.3, performance: 1.2, seo: 1.0, dom: 0.8, css: 0.7 };
+        var totalWeight = 0;
+        var weightedSum = 0;
+        for (var auditName in scores) {
+          var weight = weights[auditName] || 1.0;
+          weightedSum += scores[auditName] * weight;
+          totalWeight += weight;
+        }
+        var overallScore = Math.round(weightedSum / totalWeight);
+
+        // Grade
+        var grade = 'F';
+        if (overallScore >= 90) grade = 'A';
+        else if (overallScore >= 80) grade = 'B';
+        else if (overallScore >= 70) grade = 'C';
+        else if (overallScore >= 60) grade = 'D';
+
+        // Build summary for AI
+        var lowestAudit = priorityOrder[0];
+        var summary = 'Overall ' + overallScore + '/100 (' + grade + '). Priority: ' +
+          lowestAudit + ' (' + scores[lowestAudit] + ')';
+
+        // Collect all automation hints
+        var allLookFor = [];
+        var allSuggestionsNeeded = [];
+        [domResult, cssResult, securityResult, seoResult, performanceResult, accessibilityResult]
+          .filter(function(r) { return r && r.automationHints; })
+          .forEach(function(r) {
+            if (r.automationHints.lookFor) {
+              allLookFor = allLookFor.concat(r.automationHints.lookFor);
+            }
+            if (r.automationHints.suggestionsNeeded) {
+              allSuggestionsNeeded = allSuggestionsNeeded.concat(r.automationHints.suggestionsNeeded);
+            }
+          });
+
+        return {
+          audit: 'all',
+          summary: summary,
+          overallScore: overallScore,
+          grade: grade,
+          priorityOrder: priorityOrder,
+          scores: scores,
+          audits: {
+            dom: domResult,
+            css: cssResult,
+            security: securityResult,
+            seo: seoResult,
+            performance: performanceResult,
+            accessibility: accessibilityResult
+          },
+          automationHints: {
+            priorityAreas: priorityOrder.slice(0, 3),
+            lookFor: allLookFor,
+            suggestionsNeeded: allSuggestionsNeeded,
+            context: {
+              pageUrl: window.location.href,
+              pageTitle: document.title,
+              doctype: document.doctype ? document.doctype.name : 'unknown'
+            }
+          }
+        };
+      });
+    }
 
     // Combine results
     function combineResults(accessibilityResult) {
