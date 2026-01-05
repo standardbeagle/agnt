@@ -21,6 +21,9 @@ import (
 	hubpkg "github.com/standardbeagle/go-cli-server/hub"
 	goprocess "github.com/standardbeagle/go-cli-server/process"
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
+
+	// Alias for direct process access
+	process "github.com/standardbeagle/go-cli-server/process"
 )
 
 // normalizePath normalizes a path for consistent comparison.
@@ -86,7 +89,7 @@ func (d *Daemon) registerAgntCommands() {
 	// PROC command - override Hub's to add URL tracking and project filtering
 	d.hub.RegisterCommand(hubpkg.CommandDefinition{
 		Verb:        "PROC",
-		SubVerbs:    []string{"STATUS", "OUTPUT", "STOP", "LIST", "CLEANUP-PORT"},
+		SubVerbs:    []string{"STATUS", "OUTPUT", "STOP", "RESTART", "LIST", "CLEANUP-PORT"},
 		Description: "Manage running processes",
 		Handler:     d.hubHandleProc,
 	})
@@ -101,7 +104,7 @@ func (d *Daemon) registerAgntCommands() {
 	// PROXY command
 	d.hub.RegisterCommand(hubpkg.CommandDefinition{
 		Verb:        "PROXY",
-		SubVerbs:    []string{"START", "STOP", "STATUS", "LIST", "EXEC", "TOAST"},
+		SubVerbs:    []string{"START", "STOP", "RESTART", "STATUS", "LIST", "EXEC", "TOAST"},
 		Description: "Manage reverse proxies",
 		Handler:     d.hubHandleProxy,
 	})
@@ -177,7 +180,21 @@ func (d *Daemon) registerAgntCommands() {
 		Handler:     d.hubHandleAutomate,
 	})
 
-	log.Printf("[DEBUG] Registered %d agnt-specific commands with Hub", 12)
+	// STOP-ALL command
+	d.hub.RegisterCommand(hubpkg.CommandDefinition{
+		Verb:        "STOP-ALL",
+		Description: "Stop all running processes, proxies, and tunnels",
+		Handler:     d.hubHandleStopAll,
+	})
+
+	// RESTART-ALL command
+	d.hub.RegisterCommand(hubpkg.CommandDefinition{
+		Verb:        "RESTART-ALL",
+		Description: "Restart all processes and proxies using .agnt.kdl config",
+		Handler:     d.hubHandleRestartAll,
+	})
+
+	log.Printf("[DEBUG] Registered %d agnt-specific commands with Hub", 14)
 }
 
 // hubHandleProc handles the PROC command (overrides Hub's built-in).
@@ -190,6 +207,8 @@ func (d *Daemon) hubHandleProc(ctx context.Context, conn *hubpkg.Connection, cmd
 		return d.hubHandleProcOutput(ctx, conn, cmd)
 	case "STOP":
 		return d.hubHandleProcStop(ctx, conn, cmd)
+	case "RESTART":
+		return d.hubHandleProcRestart(ctx, conn, cmd)
 	case "LIST":
 		return d.hubHandleProcList(ctx, conn, cmd)
 	case "CLEANUP-PORT":
@@ -200,7 +219,7 @@ func (d *Daemon) hubHandleProc(ctx context.Context, conn *hubpkg.Connection, cmd
 			Message:      "action required",
 			Command:      "PROC",
 			Param:        "action",
-			ValidActions: []string{"STATUS", "OUTPUT", "STOP", "LIST", "CLEANUP-PORT"},
+			ValidActions: []string{"STATUS", "OUTPUT", "STOP", "RESTART", "LIST", "CLEANUP-PORT"},
 		})
 	default:
 		return conn.WriteStructuredErr(&hubproto.StructuredError{
@@ -208,7 +227,7 @@ func (d *Daemon) hubHandleProc(ctx context.Context, conn *hubpkg.Connection, cmd
 			Message:      "unknown action",
 			Command:      "PROC",
 			Action:       cmd.SubVerb,
-			ValidActions: []string{"STATUS", "OUTPUT", "STOP", "LIST", "CLEANUP-PORT"},
+			ValidActions: []string{"STATUS", "OUTPUT", "STOP", "RESTART", "LIST", "CLEANUP-PORT"},
 		})
 	}
 }
@@ -328,14 +347,28 @@ func (d *Daemon) hubHandleProcStop(ctx context.Context, conn *hubpkg.Connection,
 	}
 
 	if !proc.IsRunning() {
-		return conn.WriteOK(fmt.Sprintf("process %q already stopped", processID))
+		resp := map[string]interface{}{
+			"process_id": processID,
+			"state":      proc.State().String(),
+			"success":    true,
+			"message":    fmt.Sprintf("process %q already stopped", processID),
+		}
+		data, _ := json.Marshal(resp)
+		return conn.WriteJSON(data)
 	}
 
 	if err := d.hub.ProcessManager().Stop(ctx, processID); err != nil {
 		return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("failed to stop: %v", err))
 	}
 
-	return conn.WriteOK(fmt.Sprintf("process %q stopped", processID))
+	resp := map[string]interface{}{
+		"process_id": processID,
+		"state":      "stopped",
+		"success":    true,
+		"message":    fmt.Sprintf("process %q stopped", processID),
+	}
+	data, _ := json.Marshal(resp)
+	return conn.WriteJSON(data)
 }
 
 // hubHandleProcList handles PROC LIST [filter].
@@ -499,6 +532,8 @@ func (d *Daemon) hubHandleProxy(ctx context.Context, conn *hubpkg.Connection, cm
 		return d.hubHandleProxyStart(ctx, conn, cmd)
 	case "STOP":
 		return d.hubHandleProxyStop(ctx, conn, cmd)
+	case "RESTART":
+		return d.hubHandleProxyRestart(ctx, conn, cmd)
 	case "STATUS":
 		return d.hubHandleProxyStatus(conn, cmd)
 	case "LIST":
@@ -512,7 +547,7 @@ func (d *Daemon) hubHandleProxy(ctx context.Context, conn *hubpkg.Connection, cm
 			Code:         hubproto.ErrInvalidArgs,
 			Message:      "unknown PROXY sub-command",
 			Command:      "PROXY",
-			ValidActions: []string{"START", "STOP", "STATUS", "LIST", "EXEC", "TOAST"},
+			ValidActions: []string{"START", "STOP", "RESTART", "STATUS", "LIST", "EXEC", "TOAST"},
 		})
 	}
 }
@@ -756,6 +791,11 @@ func (d *Daemon) hubHandleProxyExec(conn *hubpkg.Connection, cmd *hubproto.Comma
 			"result":       result.Result,
 			"error":        result.Error,
 			"duration":     result.Duration.String(),
+		}
+
+		// Include file path for large results
+		if result.FilePath != "" {
+			resp["file_path"] = result.FilePath
 		}
 
 		data, _ := json.Marshal(resp)
@@ -2527,6 +2567,277 @@ func (d *Daemon) hubHandleAutomateBatch(ctx context.Context, conn *hubpkg.Connec
 		"total_tokens": totalTokens,
 		"total_cost":   totalCost,
 		"duration":     time.Since(startTime).String(),
+	}
+
+	data, _ := json.Marshal(resp)
+	return conn.WriteJSON(data)
+}
+
+// hubHandleStopAll handles the STOP-ALL command.
+// Stops all running processes, proxies, and tunnels without shutting down the daemon.
+func (d *Daemon) hubHandleStopAll(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	// Count resources before stopping
+	procsBefore := len(d.hub.ProcessManager().List())
+	proxiesBefore := len(d.proxym.List())
+	tunnelsBefore := d.tunnelm.ActiveCount()
+
+	// Stop all resources
+	d.StopAllResources(ctx)
+
+	resp := map[string]interface{}{
+		"success":           true,
+		"processes_stopped": procsBefore,
+		"proxies_stopped":   proxiesBefore,
+		"tunnels_stopped":   tunnelsBefore,
+		"message":           fmt.Sprintf("Stopped %d processes, %d proxies, %d tunnels", procsBefore, proxiesBefore, tunnelsBefore),
+	}
+
+	data, _ := json.Marshal(resp)
+	return conn.WriteJSON(data)
+}
+
+// hubHandleRestartAll handles the RESTART-ALL command.
+// Stops all resources and restarts them with the same configuration.
+func (d *Daemon) hubHandleRestartAll(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	// Capture running resources before stop
+	runningProcs := d.hub.ProcessManager().List()
+	runningProxies := d.proxym.List()
+
+	// Build restart manifests from running resources
+	type procManifest struct {
+		ID          string
+		Command     string
+		Args        []string
+		ProjectPath string
+	}
+	type proxyManifest struct {
+		ID          string
+		TargetURL   string
+		Port        int
+		MaxLogSize  int
+		ProjectPath string
+		BindAddress string
+	}
+
+	var procsToRestart []procManifest
+	var proxiesToRestart []proxyManifest
+
+	for _, p := range runningProcs {
+		if p.State().String() == "running" {
+			procsToRestart = append(procsToRestart, procManifest{
+				ID:          p.ID,
+				Command:     p.Command,
+				Args:        p.Args,
+				ProjectPath: p.ProjectPath,
+			})
+		}
+	}
+
+	for _, p := range runningProxies {
+		if p.IsRunning() {
+			proxiesToRestart = append(proxiesToRestart, proxyManifest{
+				ID:          p.ID,
+				TargetURL:   p.TargetURL.String(),
+				Port:        0, // Will use auto-port
+				MaxLogSize:  int(p.Logger().Stats().MaxSize),
+				ProjectPath: p.Path,
+				BindAddress: p.BindAddress,
+			})
+		}
+	}
+
+	// Stop all resources
+	d.StopAllResources(ctx)
+
+	// Wait a moment for cleanup
+	time.Sleep(100 * time.Millisecond)
+
+	// Restart processes
+	var procsRestarted, procsFailed int
+	var proxyRestarted, proxyFailed int
+
+	for _, pm := range procsToRestart {
+		_, err := d.hub.ProcessManager().StartOrReuse(ctx, process.ProcessConfig{
+			ID:          pm.ID,
+			ProjectPath: pm.ProjectPath,
+			Command:     pm.Command,
+			Args:        pm.Args,
+		})
+		if err != nil {
+			log.Printf("[RESTART-ALL] Failed to restart process %s: %v", pm.ID, err)
+			procsFailed++
+		} else {
+			procsRestarted++
+		}
+	}
+
+	// Restart proxies
+	for _, pm := range proxiesToRestart {
+		_, err := d.proxym.Create(ctx, proxy.ProxyConfig{
+			ID:          pm.ID,
+			TargetURL:   pm.TargetURL,
+			ListenPort:  pm.Port,
+			MaxLogSize:  pm.MaxLogSize,
+			Path:        pm.ProjectPath,
+			BindAddress: pm.BindAddress,
+		})
+		if err != nil {
+			log.Printf("[RESTART-ALL] Failed to restart proxy %s: %v", pm.ID, err)
+			proxyFailed++
+		} else {
+			proxyRestarted++
+		}
+	}
+
+	resp := map[string]interface{}{
+		"success":             true,
+		"processes_restarted": procsRestarted,
+		"processes_failed":    procsFailed,
+		"proxies_restarted":   proxyRestarted,
+		"proxies_failed":      proxyFailed,
+		"message": fmt.Sprintf("Restarted %d/%d processes, %d/%d proxies",
+			procsRestarted, len(procsToRestart), proxyRestarted, len(proxiesToRestart)),
+	}
+
+	data, _ := json.Marshal(resp)
+	return conn.WriteJSON(data)
+}
+
+// hubHandleProcRestart handles PROC RESTART <id>.
+// Stops a process and restarts it with the same configuration.
+func (d *Daemon) hubHandleProcRestart(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	if len(cmd.Args) < 1 {
+		return conn.WriteErr(hubproto.ErrMissingParam, "process_id required")
+	}
+
+	processID := cmd.Args[0]
+
+	// Get the process to capture its config
+	proc, err := d.hub.ProcessManager().Get(processID)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrNotFound, fmt.Sprintf("process %q not found", processID))
+	}
+
+	// Capture config before stopping
+	command := proc.Command
+	args := proc.Args
+	projectPath := proc.ProjectPath
+
+	// Check if process is in a restartable state
+	state := proc.State().String()
+	if state != "running" && state != "stopped" && state != "failed" {
+		return conn.WriteErr(hubproto.ErrInvalidState, fmt.Sprintf("process %q is in state %s, cannot restart", processID, state))
+	}
+
+	// Stop the process if running
+	if state == "running" {
+		stopCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		if err := d.hub.ProcessManager().Stop(stopCtx, processID); err != nil {
+			log.Printf("[PROC RESTART] Warning: error stopping process %s: %v", processID, err)
+		}
+		// Wait for process to fully stop
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	// Remove the old process registration
+	d.hub.ProcessManager().RemoveByPath(processID, projectPath)
+
+	// Start the process with the same config
+	result, err := d.hub.ProcessManager().StartOrReuse(ctx, process.ProcessConfig{
+		ID:          processID,
+		ProjectPath: projectPath,
+		Command:     command,
+		Args:        args,
+	})
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("failed to restart: %v", err))
+	}
+
+	newProc := result.Process
+
+	resp := map[string]interface{}{
+		"id":           processID,
+		"process_id":   processID,
+		"command":      command,
+		"args":         args,
+		"project_path": projectPath,
+		"state":        newProc.State().String(),
+		"pid":          newProc.PID(),
+		"restarted":    true,
+		"success":      true,
+		"message":      fmt.Sprintf("Process %q restarted successfully", processID),
+	}
+
+	data, _ := json.Marshal(resp)
+	return conn.WriteJSON(data)
+}
+
+// hubHandleProxyRestart handles PROXY RESTART <id>.
+// Stops a proxy and restarts it with the same configuration.
+func (d *Daemon) hubHandleProxyRestart(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	if len(cmd.Args) < 1 {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, "PROXY RESTART requires: <id>")
+	}
+
+	proxyID := cmd.Args[0]
+
+	// Get the proxy to capture its config
+	p, err := d.getSessionScopedProxy(conn, proxyID)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
+	}
+
+	// Capture config before stopping
+	targetURL := p.TargetURL.String()
+	maxLogSize := int(p.Logger().Stats().MaxSize)
+	projectPath := p.Path
+	bindAddress := p.BindAddress
+
+	// Stop the proxy
+	if err := d.proxym.Stop(ctx, proxyID); err != nil {
+		log.Printf("[PROXY RESTART] Warning: error stopping proxy %s: %v", proxyID, err)
+	}
+
+	// Remove from persisted state
+	if d.stateMgr != nil {
+		d.stateMgr.RemoveProxy(proxyID)
+	}
+
+	// Wait for cleanup
+	time.Sleep(100 * time.Millisecond)
+
+	// Create new proxy with same config
+	newProxy, err := d.proxym.Create(ctx, proxy.ProxyConfig{
+		ID:          proxyID,
+		TargetURL:   targetURL,
+		ListenPort:  0, // Auto-assign port
+		MaxLogSize:  maxLogSize,
+		Path:        projectPath,
+		BindAddress: bindAddress,
+	})
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("failed to restart proxy: %v", err))
+	}
+
+	// Persist the new proxy state
+	if d.stateMgr != nil {
+		d.stateMgr.AddProxy(PersistentProxyConfig{
+			ID:         proxyID,
+			TargetURL:  targetURL,
+			Port:       0, // Auto-assigned
+			MaxLogSize: maxLogSize,
+			Path:       projectPath,
+		})
+	}
+
+	resp := map[string]interface{}{
+		"id":          proxyID,
+		"target_url":  targetURL,
+		"listen_addr": newProxy.ListenAddr,
+		"restarted":   true,
+		"success":     true,
+		"message":     fmt.Sprintf("Proxy %q restarted successfully", proxyID),
 	}
 
 	data, _ := json.Marshal(resp)

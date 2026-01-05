@@ -40,6 +40,7 @@ const (
 	SubVerbDelete        = "DELETE"  // Delete an entry from a scope
 	SubVerbProcess       = "PROCESS" // Process a single automation task
 	SubVerbBatch         = "BATCH"   // Process multiple automation tasks
+	SubVerbRestart       = "RESTART" // Restart a process or proxy
 )
 
 // ProxyStartConfig represents configuration for a PROXY START command.

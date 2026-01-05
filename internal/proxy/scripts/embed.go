@@ -111,7 +111,8 @@ func buildCombinedScript() string {
 	// Using html2canvas-pro instead of html2canvas because it supports modern CSS
 	// color functions (lab, oklch, oklab, lch) that Firefox and modern browsers use.
 	// See: https://github.com/nickt26/html2canvas-pro
-	sb.WriteString(`<script src="https://cdn.jsdelivr.net/npm/html2canvas-pro@1.5.8/dist/html2canvas-pro.min.js"></script>`)
+	// SRI hash computed: curl -sL <url> | openssl dgst -sha384 -binary | openssl base64 -A
+	sb.WriteString(`<script src="https://cdn.jsdelivr.net/npm/html2canvas-pro@1.5.8/dist/html2canvas-pro.min.js" integrity="sha384-QbVSYhU9faw2C7l92rI0Dmke8Yod6KaOixC1kkbO/dGnMDKtbWhwcxSSOkmHXWom" crossorigin="anonymous"></script>`)
 	sb.WriteString("\n")
 
 	// Main script block

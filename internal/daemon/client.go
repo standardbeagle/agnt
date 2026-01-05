@@ -510,3 +510,23 @@ func (c *Client) StoreClear(req protocol.StoreClearRequest) error {
 func (c *Client) StoreGetAll(req protocol.StoreGetAllRequest) (map[string]interface{}, error) {
 	return c.conn.Request(protocol.VerbStore, protocol.SubVerbGetAll).WithJSON(req).JSON()
 }
+
+// StopAll stops all running processes, proxies, and tunnels.
+func (c *Client) StopAll() (map[string]interface{}, error) {
+	return c.conn.Request("STOP-ALL").JSON()
+}
+
+// RestartAll restarts all running processes and proxies with their original configurations.
+func (c *Client) RestartAll() (map[string]interface{}, error) {
+	return c.conn.Request("RESTART-ALL").JSON()
+}
+
+// ProcRestart restarts a single process by ID.
+func (c *Client) ProcRestart(processID string) (map[string]interface{}, error) {
+	return c.conn.Request(protocol.VerbProc, protocol.SubVerbRestart, processID).JSON()
+}
+
+// ProxyRestart restarts a single proxy by ID.
+func (c *Client) ProxyRestart(id string) (map[string]interface{}, error) {
+	return c.conn.Request(protocol.VerbProxy, protocol.SubVerbRestart, id).JSON()
+}
