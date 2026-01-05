@@ -114,6 +114,11 @@ Modes:
   foreground: Waits for completion, returns exit_code/state/runtime (output via proc)
   foreground-raw: Waits for completion, returns exit_code/state/runtime + stdout/stderr
 
+Restarting: To restart a dev server, use proc stop first, then run again:
+  proc {action: "stop", process_id: "dev"}
+  run {script_name: "dev"}
+Never use pkill or external commands - always use proc stop for clean shutdown.
+
 Examples:
   run {script_name: "test"}
   run {script_name: "test", mode: "foreground"}
@@ -124,12 +129,25 @@ Examples:
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "proc",
 		Description: `Manage running processes.
+
+Actions:
+  list: List all running processes (use global: true for all directories)
+  status: Get process status and info
+  output: Get process output (tail/grep supported)
+  stop: Gracefully stop a process (use force: true for immediate kill)
+  cleanup_port: Kill any process using a specific port
+
+Restarting dev servers: Always use stop action, never pkill or external commands.
+  proc {action: "stop", process_id: "dev"}
+  run {script_name: "dev"}
+
 Examples:
   proc {action: "list"}
   proc {action: "status", process_id: "test"}
   proc {action: "output", process_id: "test", tail: 20}
   proc {action: "output", process_id: "test", grep: "FAIL"}
   proc {action: "stop", process_id: "test"}
+  proc {action: "stop", process_id: "test", force: true}
   proc {action: "cleanup_port", port: 3000}`,
 	}, makeProcHandler(pm))
 }

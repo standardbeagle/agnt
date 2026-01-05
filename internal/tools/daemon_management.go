@@ -11,7 +11,7 @@ import (
 
 // DaemonInput defines input for the daemon management tool.
 type DaemonInput struct {
-	Action string `json:"action" jsonschema:"Action: status, info, start, stop, restart"`
+	Action string `json:"action" jsonschema:"Action: status, info, start, stop, restart, stop_all, restart_all"`
 }
 
 // DaemonOutput defines output for daemon management.
@@ -26,6 +26,14 @@ type DaemonOutput struct {
 	ClientCount int64        `json:"client_count,omitempty"`
 	ProcessInfo *ProcessInfo `json:"process_info,omitempty"`
 	ProxyInfo   *ProxyInfo   `json:"proxy_info,omitempty"`
+
+	// For stop_all/restart_all
+	ProcessesStopped int `json:"processes_stopped,omitempty"`
+	ProxiesStopped   int `json:"proxies_stopped,omitempty"`
+	ProcessesStarted int `json:"processes_started,omitempty"`
+	ProxiesStarted   int `json:"proxies_started,omitempty"`
+	ProcessesFailed  int `json:"processes_failed,omitempty"`
+	ProxiesFailed    int `json:"proxies_failed,omitempty"`
 
 	// For all actions
 	Success bool   `json:"success,omitempty"`
@@ -60,6 +68,8 @@ Actions:
   start: Start the daemon (auto-starts if needed)
   stop: Stop the daemon gracefully
   restart: Restart the daemon
+  stop_all: Stop all processes and proxies (daemon keeps running)
+  restart_all: Restart all processes and proxies (stop then start with same config)
 
 Examples:
   daemon {action: "status"}
@@ -67,8 +77,11 @@ Examples:
   daemon {action: "start"}
   daemon {action: "stop"}
   daemon {action: "restart"}
+  daemon {action: "stop_all"}
+  daemon {action: "restart_all"}
 
-The daemon auto-starts when needed, so manual start is rarely required.`,
+The daemon auto-starts when needed, so manual start is rarely required.
+Use stop_all/restart_all to manage running resources without stopping the daemon.`,
 	}, makeDaemonHandler(dt))
 }
 
@@ -85,8 +98,12 @@ func makeDaemonHandler(dt *DaemonTools) func(context.Context, *mcp.CallToolReque
 			return handleDaemonStop(dt)
 		case "restart":
 			return handleDaemonRestart(dt)
+		case "stop_all":
+			return handleDaemonStopAll(dt)
+		case "restart_all":
+			return handleDaemonRestartAll(dt)
 		default:
-			return errorResult(fmt.Sprintf("unknown action %q. Use: status, info, start, stop, restart", input.Action)), DaemonOutput{}, nil
+			return errorResult(fmt.Sprintf("unknown action %q. Use: status, info, start, stop, restart, stop_all, restart_all", input.Action)), DaemonOutput{}, nil
 		}
 	}
 }
@@ -237,4 +254,52 @@ func formatStatusMessage(running bool) string {
 		return "Daemon is running"
 	}
 	return "Daemon is not running"
+}
+
+func handleDaemonStopAll(dt *DaemonTools) (*mcp.CallToolResult, DaemonOutput, error) {
+	if err := dt.ensureConnected(); err != nil {
+		return errorResult(fmt.Sprintf("daemon not running: %v", err)), DaemonOutput{}, nil
+	}
+
+	result, err := dt.client.StopAll()
+	if err != nil {
+		return errorResult(fmt.Sprintf("failed to stop all: %v", err)), DaemonOutput{}, nil
+	}
+
+	processesStopped := getInt(result, "processes_stopped")
+	proxiesStopped := getInt(result, "proxies_stopped")
+
+	return nil, DaemonOutput{
+		Running:          true,
+		ProcessesStopped: processesStopped,
+		ProxiesStopped:   proxiesStopped,
+		Success:          true,
+		Message:          fmt.Sprintf("Stopped %d processes and %d proxies", processesStopped, proxiesStopped),
+	}, nil
+}
+
+func handleDaemonRestartAll(dt *DaemonTools) (*mcp.CallToolResult, DaemonOutput, error) {
+	if err := dt.ensureConnected(); err != nil {
+		return errorResult(fmt.Sprintf("daemon not running: %v", err)), DaemonOutput{}, nil
+	}
+
+	result, err := dt.client.RestartAll()
+	if err != nil {
+		return errorResult(fmt.Sprintf("failed to restart all: %v", err)), DaemonOutput{}, nil
+	}
+
+	processesRestarted := getInt(result, "processes_restarted")
+	proxiesRestarted := getInt(result, "proxies_restarted")
+	processesFailed := getInt(result, "processes_failed")
+	proxiesFailed := getInt(result, "proxies_failed")
+
+	return nil, DaemonOutput{
+		Running:          true,
+		ProcessesStarted: processesRestarted,
+		ProxiesStarted:   proxiesRestarted,
+		ProcessesFailed:  processesFailed,
+		ProxiesFailed:    proxiesFailed,
+		Success:          processesFailed == 0 && proxiesFailed == 0,
+		Message:          fmt.Sprintf("Restarted %d processes, %d proxies", processesRestarted, proxiesRestarted),
+	}, nil
 }

@@ -781,3 +781,49 @@ func (rc *ResilientClient) StoreGetAll(req protocol.StoreGetAllRequest) (map[str
 	})
 	return result, err
 }
+
+// Restart and StopAll methods
+
+// ProcRestart restarts a process.
+func (rc *ResilientClient) ProcRestart(processID string) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.ProcRestart(processID)
+		return e
+	})
+	return result, err
+}
+
+// ProxyRestart restarts a proxy.
+func (rc *ResilientClient) ProxyRestart(id string) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.ProxyRestart(id)
+		return e
+	})
+	return result, err
+}
+
+// StopAll stops all processes and proxies.
+func (rc *ResilientClient) StopAll() (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.StopAll()
+		return e
+	})
+	return result, err
+}
+
+// RestartAll restarts all processes and proxies.
+func (rc *ResilientClient) RestartAll() (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.RestartAll()
+		return e
+	})
+	return result, err
+}

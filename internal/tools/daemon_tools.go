@@ -177,6 +177,11 @@ Modes:
   foreground: Waits for completion, returns exit_code/state/runtime (output via proc)
   foreground-raw: Waits for completion, returns exit_code/state/runtime + stdout/stderr
 
+Restarting: To restart a dev server, use proc stop first, then run again:
+  proc {action: "stop", process_id: "dev"}
+  run {script_name: "dev"}
+Never use pkill or external commands - always use proc stop for clean shutdown.
+
 Examples:
   run {script_name: "test"}
   run {script_name: "test", mode: "foreground"}
@@ -187,12 +192,30 @@ Examples:
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "proc",
 		Description: `Manage running processes.
+
+Actions:
+  list: List all running processes (use global: true for all directories)
+  status: Get process status and info
+  output: Get process output (tail/grep supported)
+  stop: Gracefully stop a process (use force: true for immediate kill)
+  restart: Restart a running process (stop then start with same config)
+  cleanup_port: Kill any process using a specific port
+
+Restarting dev servers: Use restart action or stop then run again.
+  proc {action: "restart", process_id: "dev"}
+  # Or manually:
+  proc {action: "stop", process_id: "dev"}
+  run {script_name: "dev"}
+Never use pkill or external commands - always use proc stop/restart for clean shutdown.
+
 Examples:
   proc {action: "list"}
   proc {action: "status", process_id: "test"}
   proc {action: "output", process_id: "test", tail: 20}
   proc {action: "output", process_id: "test", grep: "FAIL"}
   proc {action: "stop", process_id: "test"}
+  proc {action: "stop", process_id: "test", force: true}
+  proc {action: "restart", process_id: "dev"}
   proc {action: "cleanup_port", port: 3000}`,
 	}, dt.makeProcHandler())
 
@@ -204,6 +227,7 @@ Examples:
 Actions:
   start: Create and start a reverse proxy
   stop: Stop a running proxy
+  restart: Restart a proxy (stop then start with same config)
   status: Get proxy status and statistics
   list: List all running proxies
   exec: Execute JavaScript in connected browser clients
@@ -487,6 +511,8 @@ func (dt *DaemonTools) makeProcHandler() func(context.Context, *mcp.CallToolRequ
 			return dt.handleProcOutput(input)
 		case "stop":
 			return dt.handleProcStop(input)
+		case "restart":
+			return dt.handleProcRestart(input)
 		case "list":
 			return dt.handleProcList(input)
 		case "cleanup_port":
@@ -554,6 +580,24 @@ func (dt *DaemonTools) handleProcStop(input ProcInput) (*mcp.CallToolResult, Pro
 		ProcessID: getString(result, "process_id"),
 		State:     getString(result, "state"),
 		Success:   getBool(result, "success"),
+	}, nil
+}
+
+func (dt *DaemonTools) handleProcRestart(input ProcInput) (*mcp.CallToolResult, ProcOutput, error) {
+	if input.ProcessID == "" {
+		return errorResult("process_id required for restart"), ProcOutput{}, nil
+	}
+
+	result, err := dt.client.ProcRestart(input.ProcessID)
+	if err != nil {
+		return formatDaemonError(err, "proc"), ProcOutput{}, nil
+	}
+
+	return nil, ProcOutput{
+		ProcessID: getString(result, "process_id"),
+		State:     getString(result, "state"),
+		Success:   getBool(result, "success"),
+		Message:   getString(result, "message"),
 	}, nil
 }
 
@@ -647,6 +691,8 @@ func (dt *DaemonTools) makeProxyHandler() func(context.Context, *mcp.CallToolReq
 			return dt.handleProxyStart(input)
 		case "stop":
 			return dt.handleProxyStop(input)
+		case "restart":
+			return dt.handleProxyRestart(input)
 		case "status":
 			return dt.handleProxyStatus(input)
 		case "list":
@@ -746,6 +792,25 @@ func (dt *DaemonTools) handleProxyStop(input ProxyInput) (*mcp.CallToolResult, P
 	return nil, ProxyOutput{
 		Success: true,
 		Message: fmt.Sprintf("Proxy %s stopped", input.ID),
+	}, nil
+}
+
+func (dt *DaemonTools) handleProxyRestart(input ProxyInput) (*mcp.CallToolResult, ProxyOutput, error) {
+	if input.ID == "" {
+		return errorResult("id required for restart"), ProxyOutput{}, nil
+	}
+
+	result, err := dt.client.ProxyRestart(input.ID)
+	if err != nil {
+		return formatDaemonError(err, "proxy"), ProxyOutput{}, nil
+	}
+
+	return nil, ProxyOutput{
+		ID:         getString(result, "id"),
+		TargetURL:  getString(result, "target_url"),
+		ListenAddr: getString(result, "listen_addr"),
+		Success:    getBool(result, "success"),
+		Message:    getString(result, "message"),
 	}, nil
 }
 
@@ -884,6 +949,21 @@ func (dt *DaemonTools) handleProxyExec(input ProxyInput) (*mcp.CallToolResult, P
 
 	resultVal := getString(result, "result")
 	duration := getString(result, "duration")
+	filePath := getString(result, "file_path")
+
+	// Handle large results saved to file
+	if filePath != "" {
+		return nil, ProxyOutput{
+			Success:     true,
+			ExecutionID: execID,
+			Message: fmt.Sprintf(`JavaScript executed successfully.
+Result: Large response saved to file
+File: %s
+Duration: %s
+
+Use the Read tool to view the full result.`, filePath, duration),
+		}, nil
+	}
 
 	return nil, ProxyOutput{
 		Success:     true,
