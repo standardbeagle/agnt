@@ -1147,16 +1147,24 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			// Log JavaScript execution result
 			execID := getStringField(msg.Data, "exec_id")
 			duration := time.Duration(getInt64Field(msg.Data, "duration")) * time.Millisecond
+			result := getStringField(msg.Data, "result")
 
 			execResult := ExecutionResult{
 				ID:        id,
 				Timestamp: timestamp,
 				Code:      execID, // Will be filled in by the tool
-				Result:    getStringField(msg.Data, "result"),
+				Result:    result,
 				Error:     getStringField(msg.Data, "error"),
 				Duration:  duration,
 				URL:       msg.URL,
 				Data:      msg.Data,
+			}
+
+			// Save large results to file
+			if filePath, err := ps.saveLargeResult(execID, result); err == nil && filePath != "" {
+				execResult.FilePath = filePath
+				// Replace result with summary for logging
+				execResult.Result = fmt.Sprintf("[Large result saved to %s (%d bytes)]", filePath, len(result))
 			}
 
 			ps.logger.LogExecution(execResult)
@@ -1783,6 +1791,28 @@ func (ps *ProxyServer) saveScreenshot(name string, dataURL string) (string, erro
 	err = os.WriteFile(filePath, imageData, 0644)
 	if err != nil {
 		return "", fmt.Errorf("failed to write file: %w", err)
+	}
+
+	return filePath, nil
+}
+
+// LargeResultThreshold is the size in bytes above which results are saved to file.
+const LargeResultThreshold = 50 * 1024 // 50KB
+
+// saveLargeResult saves a large execution result to a temp file.
+// Returns the file path if saved, or empty string if the result was small enough to inline.
+func (ps *ProxyServer) saveLargeResult(execID string, result string) (string, error) {
+	if len(result) < LargeResultThreshold {
+		return "", nil // Small enough to inline
+	}
+
+	tempDir := os.TempDir()
+	filename := fmt.Sprintf("agnt-result-%s-%s.json", ps.ID, execID)
+	filePath := filepath.Join(tempDir, filename)
+
+	err := os.WriteFile(filePath, []byte(result), 0644)
+	if err != nil {
+		return "", fmt.Errorf("failed to write large result: %w", err)
 	}
 
 	return filePath, nil

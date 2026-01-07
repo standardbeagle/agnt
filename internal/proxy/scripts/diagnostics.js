@@ -120,6 +120,8 @@
 
     var closeBtn = document.createElement('button');
     closeBtn.textContent = '×';
+    closeBtn.setAttribute('aria-label', 'Close ' + title);
+    closeBtn.title = 'Close ' + title;
     closeBtn.style.cssText = [
       'background: none',
       'border: none',

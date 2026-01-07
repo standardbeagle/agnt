@@ -600,6 +600,8 @@
     var images = document.querySelectorAll('img');
     for (var i = 0; i < images.length; i++) {
       var img = images[i];
+      // Skip agnt/devtool UI elements
+      if (utils.isDevtoolElement && utils.isDevtoolElement(img)) continue;
       if (!img.alt && !img.getAttribute('role')) {
         fixable.push({
           id: generateIssueId('alt'),
@@ -620,6 +622,8 @@
     var inputs = document.querySelectorAll('input, select, textarea');
     for (var j = 0; j < inputs.length; j++) {
       var input = inputs[j];
+      // Skip agnt/devtool UI elements
+      if (utils.isDevtoolElement && utils.isDevtoolElement(input)) continue;
       if (input.type === 'hidden' || input.type === 'submit' || input.type === 'button') continue;
 
       var hasLabel = input.getAttribute('aria-label') ||
@@ -648,6 +652,8 @@
     var buttons = document.querySelectorAll('button, [role="button"]');
     for (var k = 0; k < buttons.length; k++) {
       var btn = buttons[k];
+      // Skip agnt/devtool UI elements
+      if (utils.isDevtoolElement && utils.isDevtoolElement(btn)) continue;
       var name = getAccessibleName(btn);
       if (!name) {
         fixable.push({
@@ -669,6 +675,8 @@
     var links = document.querySelectorAll('a[href]');
     for (var l = 0; l < links.length; l++) {
       var link = links[l];
+      // Skip agnt/devtool UI elements
+      if (utils.isDevtoolElement && utils.isDevtoolElement(link)) continue;
       var linkText = (link.textContent || '').trim();
       var linkName = getAccessibleName(link);
       if (!linkName && !linkText) {
@@ -905,12 +913,20 @@
 
   // Run axe-core audit with configurable options
   // Overhauled to match action-oriented output schema
+  // Options:
+  //   level: 'a' | 'aa' (default) | 'aaa'
+  //   raw: boolean - if true, returns verbose detailed format (default: false, returns AI-optimized format)
+  //   maxIssueTypes: number (default: 10) - max issue types to include in AI-optimized mode
+  //   maxExamples: number (default: 3) - max examples per issue type in AI-optimized mode
   function runAxeAudit(options) {
     options = options || {};
     issueIdCounter = 0; // Reset ID counter
 
     // Default to WCAG 2.1 Level AA
     var level = options.level || 'aa';
+    var raw = options.raw === true; // Default: false (AI-optimized format)
+    var maxIssueTypes = options.maxIssueTypes || 10;
+    var maxExamples = options.maxExamples || 3;
     var runOnly = level === 'aaa' ? ['wcag2a', 'wcag2aa', 'wcag2aaa'] :
                   level === 'a' ? ['wcag2a'] : ['wcag2a', 'wcag2aa'];
 
@@ -918,7 +934,15 @@
       runOnly: {
         type: 'tag',
         values: runOnly
-      }
+      },
+      // Exclude agnt/devtool UI elements from audit
+      exclude: [
+        ['#__devtool-indicator'],
+        ['#__devtool-panel'],
+        ['#__devtool-overlays'],
+        ['[id^="__devtool"]'],
+        ['[class*="__devtool"]']
+      ]
     };
 
     // Allow custom element selection
@@ -927,6 +951,79 @@
     }
 
     return window.axe.run(axeOptions).then(function(results) {
+      // === AI-OPTIMIZED RESPONSE (DEFAULT) ===
+      // Groups issues by type with limited examples for token efficiency
+      if (!raw) {
+        var issuesByType = {};
+        var totalIssues = 0;
+        var criticalCount = 0;
+        var seriousCount = 0;
+        var moderateCount = 0;
+        var minorCount = 0;
+
+        // Group violations by rule ID
+        results.violations.forEach(function(violation) {
+          var count = violation.nodes.length;
+          totalIssues += count;
+
+          // Count by impact
+          if (violation.impact === 'critical') criticalCount += count;
+          else if (violation.impact === 'serious') seriousCount += count;
+          else if (violation.impact === 'moderate') moderateCount += count;
+          else minorCount += count;
+
+          issuesByType[violation.id] = {
+            ruleId: violation.id,
+            impact: violation.impact,
+            message: violation.help,
+            wcag: wcagReferences[violation.id] || '',
+            fix: getFixInstruction(violation.id, null),
+            count: count,
+            // Limit examples for token efficiency
+            examples: violation.nodes.slice(0, maxExamples).map(function(node) {
+              return {
+                selector: node.target.join(', '),
+                html: (node.html || '').substring(0, 80)
+              };
+            })
+          };
+        });
+
+        // Calculate score based on issue counts and impact
+        var score = 100 - (criticalCount * 10) - (seriousCount * 8) - (moderateCount * 5) - (minorCount * 2);
+        score = Math.max(0, Math.min(100, score));
+
+        return {
+          audit: 'accessibility',
+          mode: 'axe-core',
+          version: window.axe.version,
+          level: level,
+          checkedAt: new Date().toISOString(),
+          score: score,
+          grade: getGrade(score),
+          stats: {
+            totalIssues: totalIssues,
+            critical: criticalCount,
+            serious: seriousCount,
+            moderate: moderateCount,
+            minor: minorCount,
+            passed: results.passes.length,
+            incomplete: results.incomplete.length,
+            rulesChecked: results.passes.length + results.violations.length
+          },
+          // Grouped issues for AI processing - no duplication per node
+          raw: {
+            issuesByType: issuesByType,
+            incompleteRules: results.incomplete.map(function(i) {
+              return { id: i.id, count: i.nodes.length, message: i.help };
+            }),
+            passedRuleCount: results.passes.length
+          }
+        };
+      }
+
+      // === RAW RESPONSE (raw: true) ===
+      // Returns verbose detailed format with all issues and context
       var fixable = [];
       var informational = [];
       var checksRun = [];
@@ -1063,6 +1160,8 @@
 
     for (var i = 0; i < focusable.length && fixable.length < 20; i++) {
       var el = focusable[i];
+      // Skip agnt/devtool UI elements
+      if (utils.isDevtoolElement && utils.isDevtoolElement(el)) continue;
       if (el.disabled || el.offsetParent === null) continue;
 
       // Check if element has focus styles defined
@@ -1348,12 +1447,16 @@
   //   detailLevel: 'summary' | 'compact' (default) | 'full'
   //   maxIssues: number (default: 20)
   //   level: 'a' | 'aa' (default) | 'aaa'
+  //   raw: boolean - if true, returns verbose detailed format (default: false, returns AI-optimized format)
+  //   maxExamples: number (default: 5) - max examples per issue type in AI-optimized mode
   // Comprehensive mode - CSS rule analysis and state-specific testing
   // Overhauled to match action-oriented output schema
   function runComprehensiveAudit(options) {
     options = options || {};
     issueIdCounter = 0; // Reset ID counter
     var level = options.level || 'aa';
+    var raw = options.raw === true; // Default: false (AI-optimized format)
+    var maxExamples = options.maxExamples || 5;
 
     var fixable = [];
     var informational = [];
@@ -1392,6 +1495,8 @@
 
     for (var j = 0; j < interactive.length && elementsTested < maxElements; j++) {
       var el = interactive[j];
+      // Skip agnt/devtool UI elements
+      if (utils.isDevtoolElement && utils.isDevtoolElement(el)) continue;
       if (el.offsetParent === null) continue;
       elementsTested++;
 
@@ -1531,7 +1636,71 @@
     var score = calculateScore(fixable);
     var grade = getGrade(score);
 
-    // Generate summary and actions
+    // === AI-OPTIMIZED RESPONSE (DEFAULT) ===
+    // Groups issues by type with limited examples for token efficiency
+    if (!raw) {
+      var issuesByType = {};
+      var errorCount = 0;
+      var warningCount = 0;
+
+      // Group issues by type
+      fixable.forEach(function(issue) {
+        if (!issuesByType[issue.type]) {
+          issuesByType[issue.type] = {
+            type: issue.type,
+            severity: issue.severity,
+            wcag: issue.wcag || '',
+            fix: issue.fix || '',
+            count: 0,
+            examples: []
+          };
+        }
+        issuesByType[issue.type].count++;
+        if (issue.severity === 'error') errorCount++;
+        else if (issue.severity === 'warning') warningCount++;
+
+        // Limit examples per type
+        if (issuesByType[issue.type].examples.length < maxExamples) {
+          issuesByType[issue.type].examples.push({
+            selector: issue.selector,
+            message: issue.message
+          });
+        }
+      });
+
+      return {
+        audit: 'accessibility',
+        mode: 'comprehensive',
+        level: level,
+        checkedAt: new Date().toISOString(),
+        score: score,
+        grade: grade,
+        stats: {
+          totalIssues: fixable.length,
+          errors: errorCount,
+          warnings: warningCount,
+          info: informational.length,
+          elementsTested: elementsTested,
+          totalInteractive: interactive.length
+        },
+        raw: {
+          issuesByType: issuesByType,
+          cssAnalysis: {
+            currentViewport: currentWidth,
+            currentColorScheme: currentScheme,
+            breakpointsToTest: index.discoveredBreakpoints.filter(function(bp) {
+              return Math.abs(bp - currentWidth) > 50;
+            }).slice(0, 5),
+            colorSchemesToTest: index.discoveredColorSchemes.filter(function(s) {
+              return s !== currentScheme;
+            })
+          }
+        }
+      };
+    }
+
+    // === RAW RESPONSE (raw: true) ===
+    // Returns verbose detailed format with all issues and context
     var summary = generateSummary(fixable, informational, checksRun.length);
     var actions = generateActions(fixable);
 

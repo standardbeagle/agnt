@@ -145,6 +145,11 @@ func runCommand(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
+	// Ignore SIGPIPE to prevent unexpected shutdowns when writing to closed connections.
+	// This is important when the accessibility audit or other JS execution returns large
+	// responses and the connection is interrupted (e.g., Claude Code disconnects).
+	signal.Ignore(syscall.SIGPIPE)
+
 	ctx, cancel := signal.NotifyContext(context.Background(),
 		syscall.SIGINT,
 		syscall.SIGTERM,
@@ -319,15 +324,6 @@ func runWithPTY(ctx context.Context, args []string, socketPath string, sessionCo
 			if result != nil && !skipAutostart {
 				// Extract autostart result from nested structure
 				if autostart, ok := result["autostart"].(map[string]interface{}); ok {
-					// Log successfully started scripts
-					if scripts, ok := autostart["scripts"].([]interface{}); ok && len(scripts) > 0 {
-						for _, s := range scripts {
-							if str, ok := s.(string); ok {
-								fmt.Fprintf(os.Stderr, "[agnt] Started script: %s\r\n", str)
-							}
-						}
-					}
-
 					// Log any autostart errors prominently
 					if errs, ok := autostart["errors"].([]interface{}); ok && len(errs) > 0 {
 						fmt.Fprintf(os.Stderr, "\r\n[agnt] \x1b[31mAutostart errors:\x1b[0m\r\n")

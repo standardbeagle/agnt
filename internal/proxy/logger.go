@@ -128,6 +128,7 @@ type ExecutionResult struct {
 	Duration  time.Duration          `json:"duration"`
 	URL       string                 `json:"url"`
 	Data      map[string]interface{} `json:"data,omitempty"`
+	FilePath  string                 `json:"file_path,omitempty"` // Path to file if result was too large
 }
 
 // ExecutionResponse represents a response sent back to MCP client.

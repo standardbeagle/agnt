@@ -687,6 +687,8 @@
     var closeBtn = document.createElement('button');
     closeBtn.style.cssText = STYLES.closeBtn;
     closeBtn.innerHTML = ICONS.close;
+    closeBtn.setAttribute('aria-label', 'Close panel');
+    closeBtn.title = 'Close panel';
     closeBtn.onclick = function(e) { e.stopPropagation(); togglePanel(false); };
     closeBtn.onmouseenter = function() { closeBtn.style.background = TOKENS.colors.border; };
     closeBtn.onmouseleave = function() { closeBtn.style.background = 'none'; };
@@ -1139,12 +1141,32 @@
 
       case 'accessibility':
         if (result.stats) {
+          // AI-optimized format uses critical/serious/moderate/minor
+          if (result.stats.totalIssues !== undefined) {
+            var criticalCount = (result.stats.critical || 0) + (result.stats.serious || 0);
+            var otherCount = (result.stats.moderate || 0) + (result.stats.minor || 0);
+            if (result.stats.totalIssues === 0) {
+              return '[' + (result.grade || 'A') + '] No accessibility issues found across ' + (result.stats.rulesChecked || result.stats.passed || 0) + ' checks.';
+            }
+            return '[' + (result.grade || '?') + '] ' + criticalCount + ' critical accessibility error' + (criticalCount !== 1 ? 's' : '') + ' found' + (otherCount > 0 ? ': ' + otherCount + ' ' + Object.keys(result.raw?.issuesByType || {}).slice(0, 3).join(', ') : '') + '.';
+          }
+          // Legacy format
           return '[' + (result.grade || '?') + '] ' + result.stats.errors + ' errors, ' + result.stats.warnings + ' warnings';
         }
         return result.count + ' issue(s): ' + result.errors + ' errors, ' + result.warnings + ' warnings';
 
       case 'security':
         if (result.stats) {
+          // AI-optimized format
+          if (result.stats.totalIssues !== undefined) {
+            var criticalCount = (result.stats.critical || 0);
+            var errorCount = (result.stats.errors || 0);
+            if (result.stats.totalIssues === 0) {
+              return '[' + (result.grade || 'A') + '] No security issues found.';
+            }
+            return '[' + (result.grade || '?') + '] ' + criticalCount + ' critical, ' + errorCount + ' errors';
+          }
+          // Legacy format
           return '[' + (result.grade || '?') + '] ' + result.stats.errors + ' errors, ' + result.stats.warnings + ' warnings';
         }
         return result.count + ' issue(s): ' + result.errors + ' errors, ' + result.warnings + ' warnings';
@@ -1226,6 +1248,173 @@
     }
   }
 
+  // Format audit result as actionable markdown for AI agent
+  // Prioritizes issues by severity and provides fix instructions
+  function formatAuditForAgent(auditType, label, result) {
+    if (!result) {
+      return '**' + label + '**: No data';
+    }
+    if (result.error) {
+      return '**' + label + '**: Error - ' + result.error;
+    }
+
+    var lines = [];
+    var grade = result.grade || '?';
+    var score = result.score !== undefined ? result.score + '/100' : '';
+
+    lines.push('**' + label + '** [' + grade + (score ? ', ' + score : '') + ']');
+
+    // Handle accessibility audit (AI-optimized format)
+    if (auditType === 'accessibility' && result.raw && result.raw.issuesByType) {
+      var issues = result.raw.issuesByType;
+      var issueKeys = Object.keys(issues);
+
+      if (issueKeys.length === 0) {
+        lines.push('No issues found.');
+        return lines.join('\n');
+      }
+
+      // Sort by impact: critical > serious > moderate > minor
+      var impactOrder = { critical: 0, serious: 1, moderate: 2, minor: 3 };
+      issueKeys.sort(function(a, b) {
+        return (impactOrder[issues[a].impact] || 4) - (impactOrder[issues[b].impact] || 4);
+      });
+
+      lines.push('');
+      lines.push('**Fix these issues:**');
+
+      // Limit to top 5 most important
+      issueKeys.slice(0, 5).forEach(function(key, idx) {
+        var issue = issues[key];
+        var severity = issue.impact === 'critical' || issue.impact === 'serious' ? 'ERROR' : 'WARN';
+        lines.push((idx + 1) + '. **' + issue.ruleId + '** [' + severity + '] - ' + issue.count + ' instance(s)');
+        lines.push('   ' + issue.message);
+        if (issue.fix) {
+          lines.push('   Fix: ' + issue.fix);
+        }
+        if (issue.examples && issue.examples.length > 0) {
+          lines.push('   Target: `' + issue.examples[0].selector + '`');
+        }
+      });
+
+      if (issueKeys.length > 5) {
+        lines.push('');
+        lines.push('_+ ' + (issueKeys.length - 5) + ' more issues_');
+      }
+
+      return lines.join('\n');
+    }
+
+    // Handle security audit
+    if (auditType === 'security' && result.raw && result.raw.issuesByType) {
+      var issues = result.raw.issuesByType;
+      var issueKeys = Object.keys(issues);
+
+      if (issueKeys.length === 0) {
+        lines.push('No security issues found.');
+        return lines.join('\n');
+      }
+
+      lines.push('');
+      lines.push('**Security issues:**');
+
+      issueKeys.slice(0, 5).forEach(function(key, idx) {
+        var issueList = issues[key];
+        var count = issueList.length;
+        var first = issueList[0] || {};
+        lines.push((idx + 1) + '. **' + key + '** - ' + count + ' instance(s)');
+        if (first.message) lines.push('   ' + first.message);
+        if (first.selector) lines.push('   Target: `' + first.selector + '`');
+      });
+
+      return lines.join('\n');
+    }
+
+    // Handle layout issues audit
+    if (auditType === 'layoutIssues') {
+      var overflows = result.overflows || [];
+      var stacking = result.stackingContexts || [];
+      var offscreen = result.offscreen || [];
+      var totalIssues = overflows.length + stacking.length + offscreen.length;
+
+      if (totalIssues === 0) {
+        lines.push('No layout issues found.');
+        return lines.join('\n');
+      }
+
+      lines.push('');
+
+      if (overflows.length > 0) {
+        lines.push('**Overflow Issues** (' + overflows.length + '):');
+        overflows.slice(0, 3).forEach(function(item, idx) {
+          lines.push((idx + 1) + '. `' + item.selector + '` - ' + item.type + ' overflow');
+          lines.push('   Content: ' + item.scrollWidth + 'x' + item.scrollHeight + ', Container: ' + item.clientWidth + 'x' + item.clientHeight);
+          lines.push('   Fix: Add overflow handling or resize container');
+        });
+        if (overflows.length > 3) {
+          lines.push('   _+ ' + (overflows.length - 3) + ' more_');
+        }
+        lines.push('');
+      }
+
+      if (stacking.length > 0) {
+        lines.push('**Stacking Contexts** (' + stacking.length + '):');
+        stacking.slice(0, 3).forEach(function(item, idx) {
+          var reasons = item.reason ? item.reason.join(', ') : 'unknown';
+          lines.push((idx + 1) + '. `' + item.selector + '` - z-index: ' + item.zIndex);
+          lines.push('   Reason: ' + reasons);
+        });
+        if (stacking.length > 3) {
+          lines.push('   _+ ' + (stacking.length - 3) + ' more_');
+        }
+        lines.push('');
+      }
+
+      if (offscreen.length > 0) {
+        lines.push('**Offscreen Elements** (' + offscreen.length + '):');
+        offscreen.slice(0, 3).forEach(function(item, idx) {
+          var dir = item.direction ? item.direction.join(', ') : 'unknown';
+          lines.push((idx + 1) + '. `' + item.selector + '` - positioned ' + dir);
+          lines.push('   Fix: Check positioning or remove hidden element');
+        });
+        if (offscreen.length > 3) {
+          lines.push('   _+ ' + (offscreen.length - 3) + ' more_');
+        }
+      }
+
+      return lines.join('\n');
+    }
+
+    // Handle other audits with fixable array
+    if (result.fixable && result.fixable.length > 0) {
+      lines.push('');
+      lines.push('**Issues to fix:**');
+
+      result.fixable.slice(0, 5).forEach(function(issue, idx) {
+        lines.push((idx + 1) + '. **' + issue.type + '** [' + (issue.severity || 'info').toUpperCase() + ']');
+        if (issue.message) lines.push('   ' + issue.message);
+        if (issue.fix) lines.push('   Fix: ' + issue.fix);
+        if (issue.selector) lines.push('   Target: `' + issue.selector + '`');
+      });
+
+      if (result.fixable.length > 5) {
+        lines.push('');
+        lines.push('_+ ' + (result.fixable.length - 5) + ' more issues_');
+      }
+
+      return lines.join('\n');
+    }
+
+    // Fallback: use summary if available
+    if (result.summary) {
+      lines.push(result.summary);
+    } else {
+      lines.push('Audit complete. Score: ' + (score || 'N/A'));
+    }
+
+    return lines.join('\n');
+  }
+
   // Attachment chip creation
   function createChip(attachment) {
     var chip = document.createElement('div');
@@ -1250,6 +1439,8 @@
     var removeBtn = document.createElement('button');
     removeBtn.style.cssText = STYLES.chipRemove;
     removeBtn.innerHTML = ICONS.x;
+    removeBtn.setAttribute('aria-label', 'Remove ' + attachment.label);
+    removeBtn.title = 'Remove ' + attachment.label;
     removeBtn.onclick = function(e) {
       e.stopPropagation();
       removeAttachment(attachment.id);
@@ -1341,12 +1532,14 @@
         } else if (att.type === 'sketch') {
           parts.push('- Sketch `' + att.id + '`: ' + att.summary);
         } else if (att.type === 'audit') {
-          parts.push('- Audit `' + att.id + '` (' + att.data.auditType + '): ' + att.summary);
+          // Format audit result as actionable markdown summary
+          parts.push('');
+          parts.push(formatAuditForAgent(att.data.auditType, att.data.label, att.data.result));
         }
       });
 
       parts.push('');
-      parts.push('*Use `proxylog` to fetch capture details. Use `proxy exec` to inspect or interact with the page.*');
+      parts.push('*Use `proxy exec` to inspect or interact with the page.*');
     }
 
     var fullMessage = parts.join('\n');

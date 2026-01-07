@@ -32,11 +32,11 @@
 
   // Options:
   //   detailLevel: 'summary' | 'compact' (default) | 'full'
-  //   forAutomation: boolean - if true, returns raw data optimized for AI processing
+  //   raw: boolean - if true, returns verbose detailed format (default: false, returns AI-optimized format)
   function auditDOMComplexity(options) {
     options = options || {};
     var detailLevel = options.detailLevel || 'compact';
-    var forAutomation = options.forAutomation || false;
+    var raw = options.raw === true; // Default: false (AI-optimized format)
     var elements = document.querySelectorAll('*');
 
     // Helper: Generate readable selector for an element
@@ -117,6 +117,8 @@
 
     for (var i = 0; i < elements.length; i++) {
       var el = elements[i];
+      // Skip agnt/devtool UI elements
+      if (utils.isDevtoolElement && utils.isDevtoolElement(el)) continue;
       var depth = calculateDepth(el);
       var childCount = el.children.length;
 
@@ -146,11 +148,14 @@
     var duplicateIdMap = {};
     var elementsWithId = document.querySelectorAll('[id]');
     for (var j = 0; j < elementsWithId.length; j++) {
-      var id = elementsWithId[j].id;
+      var idEl = elementsWithId[j];
+      // Skip agnt/devtool UI elements
+      if (utils.isDevtoolElement && utils.isDevtoolElement(idEl)) continue;
+      var id = idEl.id;
       if (!ids[id]) {
         ids[id] = [];
       }
-      ids[id].push(elementsWithId[j]);
+      ids[id].push(idEl);
     }
 
     for (var dupId in ids) {
@@ -228,6 +233,8 @@
     var lists = document.querySelectorAll('ul, ol');
     for (var p = 0; p < lists.length; p++) {
       var list = lists[p];
+      // Skip agnt/devtool UI elements
+      if (utils.isDevtoolElement && utils.isDevtoolElement(list)) continue;
       var itemCount = list.querySelectorAll(':scope > li').length;
       if (itemCount > 50) {
         fixable.push({
@@ -246,6 +253,8 @@
     var tables = document.querySelectorAll('table');
     for (var q = 0; q < tables.length; q++) {
       var table = tables[q];
+      // Skip agnt/devtool UI elements
+      if (utils.isDevtoolElement && utils.isDevtoolElement(table)) continue;
       var rows = table.querySelectorAll('tr');
       var cells = table.querySelectorAll('td, th');
       if (rows.length > 100) {
@@ -266,6 +275,8 @@
     var forms = document.querySelectorAll('form');
     for (var r = 0; r < forms.length; r++) {
       var form = forms[r];
+      // Skip agnt/devtool UI elements
+      if (utils.isDevtoolElement && utils.isDevtoolElement(form)) continue;
       var inputs = form.querySelectorAll('input, select, textarea');
       if (inputs.length > 20) {
         fixable.push({
@@ -284,6 +295,8 @@
     var elementsWithHandlers = document.querySelectorAll('[onclick], [onload], [onerror], [onchange], [onsubmit]');
     for (var s = 0; s < elementsWithHandlers.length; s++) {
       var handlerEl = elementsWithHandlers[s];
+      // Skip agnt/devtool UI elements
+      if (utils.isDevtoolElement && utils.isDevtoolElement(handlerEl)) continue;
       var handlerCount = 0;
       var handlerTypes = [];
       if (handlerEl.onclick) { handlerCount++; handlerTypes.push('onclick'); }
@@ -440,9 +453,9 @@
     var warningCount = fixable.filter(function(f) { return f.severity === 'warning'; }).length;
     var infoCount = informational.filter(function(f) { return f.severity === 'info'; }).length;
 
-    // === AUTOMATION RESPONSE ===
-    // Returns raw data optimized for AI processing - no pre-generated actions
-    if (forAutomation) {
+    // === AI-OPTIMIZED RESPONSE (DEFAULT) ===
+    // Returns grouped data optimized for AI processing - no pre-generated actions
+    if (!raw) {
       // Build rich raw data for AI interpretation
       var rawDuplicateIds = [];
       for (var dupKey in duplicateIdMap) {
@@ -543,7 +556,8 @@
       };
     }
 
-    // === RESPONSE ===
+    // === RAW RESPONSE (raw: true) ===
+    // Returns verbose detailed format with all issues and context
     var response = {
       summary: summary,
       score: score,
@@ -602,12 +616,12 @@
   // Options:
   //   detailLevel: 'summary' | 'compact' (default) | 'full'
   //   maxIssues: number (default: 20)
-  //   forAutomation: boolean - if true, returns raw data optimized for AI processing
+  //   raw: boolean - if true, returns verbose detailed format (default: false, returns AI-optimized format)
   function auditCSS(options) {
     options = options || {};
     var detailLevel = options.detailLevel || 'compact';
     var maxIssues = options.maxIssues || 20;
-    var forAutomation = options.forAutomation || false;
+    var raw = options.raw === true; // Default: false (AI-optimized format)
 
     var inlineStyles = document.querySelectorAll('[style]');
     var checksRun = [
@@ -738,6 +752,8 @@
 
     for (var i = 0; i < inlineStyles.length; i++) {
       var elem = inlineStyles[i];
+      // Skip agnt/devtool UI elements
+      if (utils.isDevtoolElement && utils.isDevtoolElement(elem)) continue;
       var styleAttr = elem.getAttribute('style');
       if (!styleAttr) continue;
 
@@ -892,6 +908,8 @@
     var zIndexId = 0;
     for (var i = 0; i < allElements.length; i++) {
       var elem = allElements[i];
+      // Skip agnt/devtool UI elements
+      if (utils.isDevtoolElement && utils.isDevtoolElement(elem)) continue;
       var computed = window.getComputedStyle(elem);
       var zIndex = computed.zIndex;
 
@@ -927,6 +945,8 @@
     var layoutIssueId = 0;
     for (var i = 0; i < inlineStyles.length; i++) {
       var elem = inlineStyles[i];
+      // Skip agnt/devtool UI elements
+      if (utils.isDevtoolElement && utils.isDevtoolElement(elem)) continue;
       var styleAttr = elem.getAttribute('style');
       if (!styleAttr) continue;
 
@@ -1037,9 +1057,9 @@
       summary += ', ' + patternsToExtract + ' should be extracted to classes';
     }
 
-    // === AUTOMATION RESPONSE ===
-    // Returns raw data optimized for AI processing - AI generates class names using codebase context
-    if (forAutomation) {
+    // === AI-OPTIMIZED RESPONSE (DEFAULT) ===
+    // Returns grouped data optimized for AI processing - AI generates class names using codebase context
+    if (!raw) {
       // Collect all unique colors with usage context
       var colorData = [];
       for (var color in colorPatterns) {
@@ -1121,6 +1141,8 @@
       };
     }
 
+    // === RAW RESPONSE (raw: true) ===
+    // Returns verbose detailed format with all issues and context
     var response = {
       summary: summary,
       score: score,
@@ -1155,13 +1177,13 @@
   //   detailLevel: 'summary' | 'compact' (default) | 'full'
   //   maxIssues: number (default: 20)
   //   maxUrlLength: number (default: 80)
-  //   forAutomation: boolean - if true, returns raw data optimized for AI processing
+  //   raw: boolean - if true, returns verbose detailed format (default: false, returns AI-optimized format)
   function auditSecurity(options) {
     options = options || {};
     var detailLevel = options.detailLevel || 'compact';
     var maxIssues = options.maxIssues || 20;
     var maxUrlLength = options.maxUrlLength || 80;
-    var forAutomation = options.forAutomation || false;
+    var raw = options.raw === true; // Default: false (AI-optimized format)
 
     var critical = [];
     var errors = [];
@@ -1195,6 +1217,22 @@
       return secret.substring(0, 6) + '*****';
     }
 
+    // Helper to check if script is a devtool script (filter from all audits)
+    function isDevtoolScript(script) {
+      // Check src attribute for devtool paths
+      var src = script.getAttribute('src') || '';
+      if (src.indexOf('__devtool') !== -1 || src.indexOf('devtool-mcp') !== -1) return true;
+
+      // Check content for devtool markers
+      var content = script.textContent || '';
+      if (content.indexOf('__devtool') !== -1 &&
+          (content.indexOf('window.__devtool') !== -1 ||
+           content.indexOf('__devtool_core') !== -1 ||
+           content.indexOf('__devtool_utils') !== -1)) return true;
+
+      return false;
+    }
+
     // 1. Check for exposed API keys and secrets
     checksRun.push('exposed-secrets');
     var secretPatterns = [
@@ -1210,7 +1248,11 @@
 
     var allScripts = document.querySelectorAll('script');
     for (var i = 0; i < allScripts.length; i++) {
-      var scriptContent = allScripts[i].textContent || '';
+      var script = allScripts[i];
+      // Skip devtool scripts
+      if (isDevtoolScript(script)) continue;
+      var scriptContent = script.textContent || '';
+      var scriptSrc = script.getAttribute('src') || '';
       for (var p = 0; p < secretPatterns.length; p++) {
         var matches = scriptContent.match(secretPatterns[p].pattern);
         if (matches) {
@@ -1221,7 +1263,8 @@
               severity: 'critical',
               secretType: secretPatterns[p].type,
               pattern: maskSecret(matches[m]),
-              selector: getSelector(allScripts[i]),
+              selector: getSelector(script),
+              source: scriptSrc || 'inline script',
               impact: 10,
               message: 'Exposed ' + secretPatterns[p].type + ' in client-side code',
               fix: 'Move secret to server-side environment variable'
@@ -1235,6 +1278,8 @@
     var allElements = document.querySelectorAll('[data-api-key], [data-token], [data-secret]');
     for (var ae = 0; ae < allElements.length; ae++) {
       var el = allElements[ae];
+      // Skip agnt/devtool UI elements
+      if (utils.isDevtoolElement && utils.isDevtoolElement(el)) continue;
       var attrValue = el.getAttribute('data-api-key') || el.getAttribute('data-token') || el.getAttribute('data-secret');
       if (attrValue && attrValue.length > 8) {
         critical.push({
@@ -1254,12 +1299,47 @@
     // 2. Check for XSS vectors
     checksRun.push('xss-vectors');
 
-    // innerHTML usage detection
-    var scriptTexts = Array.prototype.slice.call(document.querySelectorAll('script')).map(function(s) {
+    // Collect non-devtool scripts with source info for better reporting
+    var userScripts = Array.prototype.slice.call(document.querySelectorAll('script')).filter(function(s) {
+      return !isDevtoolScript(s);
+    });
+
+    var scriptTexts = userScripts.map(function(s) {
       return s.textContent || '';
     }).join('\n');
 
-    var innerHTMLUsage = (scriptTexts.match(/\.innerHTML\s*=/g) || []).length;
+    // Build source map for inline scripts (for better issue attribution)
+    var inlineScriptSources = userScripts.filter(function(s) {
+      return !s.src && (s.textContent || '').trim().length > 0;
+    }).map(function(s, idx) {
+      return {
+        index: idx,
+        content: s.textContent || '',
+        selector: getSelector(s)
+      };
+    });
+
+    // Helper to find pattern matches with source file info
+    function findPatternInScripts(pattern, scripts) {
+      var results = [];
+      for (var i = 0; i < scripts.length; i++) {
+        var script = scripts[i];
+        var content = script.textContent || '';
+        var src = script.getAttribute('src') || '';
+        var matches = content.match(pattern);
+        if (matches && matches.length > 0) {
+          results.push({
+            source: src || 'inline script',
+            selector: getSelector(script),
+            count: matches.length
+          });
+        }
+      }
+      return results;
+    }
+
+    var innerHTMLResults = findPatternInScripts(/\.innerHTML\s*=/g, userScripts);
+    var innerHTMLUsage = innerHTMLResults.reduce(function(sum, r) { return sum + r.count; }, 0);
     if (innerHTMLUsage > 0) {
       errors.push({
         id: generateId('innerHTML-usage', 0),
@@ -1267,13 +1347,15 @@
         severity: 'error',
         vector: 'innerHTML',
         count: innerHTMLUsage,
+        sources: innerHTMLResults.slice(0, 5),
         impact: 8,
         message: 'Found ' + innerHTMLUsage + ' innerHTML assignments (XSS risk)',
         fix: 'Use textContent or sanitize HTML before assignment'
       });
     }
 
-    var outerHTMLUsage = (scriptTexts.match(/\.outerHTML\s*=/g) || []).length;
+    var outerHTMLResults = findPatternInScripts(/\.outerHTML\s*=/g, userScripts);
+    var outerHTMLUsage = outerHTMLResults.reduce(function(sum, r) { return sum + r.count; }, 0);
     if (outerHTMLUsage > 0) {
       errors.push({
         id: generateId('outerHTML-usage', 0),
@@ -1281,13 +1363,15 @@
         severity: 'error',
         vector: 'outerHTML',
         count: outerHTMLUsage,
+        sources: outerHTMLResults.slice(0, 5),
         impact: 8,
         message: 'Found ' + outerHTMLUsage + ' outerHTML assignments (XSS risk)',
         fix: 'Use safe DOM manipulation methods'
       });
     }
 
-    var documentWriteUsage = (scriptTexts.match(/document\.write\(/g) || []).length;
+    var documentWriteResults = findPatternInScripts(/document\.write\(/g, userScripts);
+    var documentWriteUsage = documentWriteResults.reduce(function(sum, r) { return sum + r.count; }, 0);
     if (documentWriteUsage > 0) {
       errors.push({
         id: generateId('document-write', 0),
@@ -1295,6 +1379,7 @@
         severity: 'error',
         vector: 'document.write',
         count: documentWriteUsage,
+        sources: documentWriteResults.slice(0, 5),
         impact: 7,
         message: 'Found ' + documentWriteUsage + ' document.write calls (XSS risk)',
         fix: 'Use safe DOM manipulation methods'
@@ -1303,26 +1388,30 @@
 
     // 3. Check for eval usage
     checksRun.push('eval-usage');
-    var evalUsage = (scriptTexts.match(/\beval\s*\(/g) || []).length;
+    var evalResults = findPatternInScripts(/\beval\s*\(/g, userScripts);
+    var evalUsage = evalResults.reduce(function(sum, r) { return sum + r.count; }, 0);
     if (evalUsage > 0) {
       critical.push({
         id: generateId('eval-usage', 0),
         type: 'eval-usage',
         severity: 'critical',
         count: evalUsage,
+        sources: evalResults.slice(0, 5),
         impact: 9,
         message: 'Found ' + evalUsage + ' eval() calls (arbitrary code execution risk)',
         fix: 'Replace eval() with safe alternatives like JSON.parse() or Function constructor'
       });
     }
 
-    var functionConstructor = (scriptTexts.match(/new\s+Function\s*\(/g) || []).length;
+    var funcConstructorResults = findPatternInScripts(/new\s+Function\s*\(/g, userScripts);
+    var functionConstructor = funcConstructorResults.reduce(function(sum, r) { return sum + r.count; }, 0);
     if (functionConstructor > 0) {
       errors.push({
         id: generateId('function-constructor', 0),
         type: 'eval-usage',
         severity: 'error',
         count: functionConstructor,
+        sources: funcConstructorResults.slice(0, 5),
         impact: 8,
         message: 'Found ' + functionConstructor + ' Function constructor calls (code injection risk)',
         fix: 'Avoid dynamic code generation'
@@ -1444,6 +1533,8 @@
     var loginForms = document.querySelectorAll('form');
     for (var lf = 0; lf < loginForms.length; lf++) {
       var form = loginForms[lf];
+      // Skip agnt/devtool UI elements
+      if (utils.isDevtoolElement && utils.isDevtoolElement(form)) continue;
       var hasPassword = form.querySelector('input[type="password"]');
       if (hasPassword && window.location.protocol === 'http:') {
         critical.push({
@@ -1462,6 +1553,8 @@
     var formsWithoutCSRF = [];
     for (var cf = 0; cf < loginForms.length; cf++) {
       var csrfForm = loginForms[cf];
+      // Skip agnt/devtool UI elements
+      if (utils.isDevtoolElement && utils.isDevtoolElement(csrfForm)) continue;
       var method = (csrfForm.method || 'GET').toUpperCase();
       if (method === 'POST') {
         var hasCSRF = csrfForm.querySelector('input[name*="csrf"], input[name*="token"], input[name="_token"]');
@@ -1569,14 +1662,17 @@
     var thirdPartyScripts = [];
     var scriptSources = document.querySelectorAll('script[src]');
     for (var tps = 0; tps < scriptSources.length; tps++) {
-      var src = scriptSources[tps].src;
+      var scriptEl = scriptSources[tps];
+      // Skip devtool scripts
+      if (isDevtoolScript(scriptEl)) continue;
+      var src = scriptEl.src;
       try {
         var srcUrl = new URL(src);
         if (srcUrl.origin !== currentOrigin) {
           thirdPartyScripts.push({
             url: src,
             origin: srcUrl.origin,
-            element: scriptSources[tps]
+            element: scriptEl
           });
         }
       } catch (e) {
@@ -1601,8 +1697,11 @@
     var inlineScripts = document.querySelectorAll('script:not([src])');
     var scriptsWithoutNonce = [];
     for (var isn = 0; isn < inlineScripts.length; isn++) {
-      if (!inlineScripts[isn].nonce && !inlineScripts[isn].hasAttribute('nonce')) {
-        scriptsWithoutNonce.push(inlineScripts[isn]);
+      var inlineScript = inlineScripts[isn];
+      // Skip devtool scripts
+      if (isDevtoolScript(inlineScript)) continue;
+      if (!inlineScript.nonce && !inlineScript.hasAttribute('nonce')) {
+        scriptsWithoutNonce.push(inlineScript);
       }
     }
     if (scriptsWithoutNonce.length > 0) {
@@ -1624,6 +1723,8 @@
     var resourcesWithoutSRI = [];
     for (var sri = 0; sri < externalResources.length; sri++) {
       var resource = externalResources[sri];
+      // Skip devtool scripts
+      if (resource.tagName === 'SCRIPT' && isDevtoolScript(resource)) continue;
       var resourceSrc = resource.src || resource.href;
       try {
         var resourceUrl = new URL(resourceSrc);
@@ -1733,9 +1834,9 @@
       });
     }
 
-    // === AUTOMATION RESPONSE ===
-    // Returns raw data for AI to generate context-aware security recommendations
-    if (forAutomation) {
+    // === AI-OPTIMIZED RESPONSE (DEFAULT) ===
+    // Returns grouped data for AI to generate context-aware security recommendations
+    if (!raw) {
       // Group issues by type for AI processing
       var issuesByType = {};
       var allIssuesForRaw = [].concat(critical, errors, warnings);
@@ -1822,7 +1923,8 @@
       };
     }
 
-    // Build response based on detail level
+    // === RAW RESPONSE (raw: true) ===
+    // Returns verbose detailed format with all issues and context
     var response = {
       summary: summary,
       score: score,
@@ -1856,12 +1958,12 @@
   // Options:
   //   detailLevel: 'summary' | 'compact' (default) | 'full'
   //   maxIssues: number (default: 20)
-  //   forAutomation: boolean - if true, returns raw data optimized for AI processing
+  //   raw: boolean - if true, returns verbose detailed format (default: false, returns AI-optimized format)
   function auditPageQuality(options) {
     options = options || {};
     var detailLevel = options.detailLevel || 'compact';
     var maxIssues = options.maxIssues || 20;
-    var forAutomation = options.forAutomation || false;
+    var raw = options.raw === true; // Default: false (AI-optimized format)
 
     // Initialize tracking arrays
     var fixable = [];
@@ -2190,6 +2292,8 @@
     var previousLevel = 0;
 
     for (var n = 0; n < headings.length; n++) {
+      // Skip agnt/devtool UI elements
+      if (utils.isDevtoolElement && utils.isDevtoolElement(headings[n])) continue;
       var level = parseInt(headings[n].tagName.substring(1));
       headingLevels.push('h' + level);
 
@@ -2260,6 +2364,8 @@
     var genericLinks = [];
 
     for (var p = 0; p < links.length; p++) {
+      // Skip agnt/devtool UI elements
+      if (utils.isDevtoolElement && utils.isDevtoolElement(links[p])) continue;
       var linkText = (links[p].textContent || '').trim().toLowerCase();
       for (var q = 0; q < genericTerms.length; q++) {
         if (linkText === genericTerms[q]) {
@@ -2395,9 +2501,9 @@
       informational: informational.length
     };
 
-    // === AUTOMATION RESPONSE ===
-    // Returns raw data for AI to generate context-aware SEO recommendations
-    if (forAutomation) {
+    // === AI-OPTIMIZED RESPONSE (DEFAULT) ===
+    // Returns grouped data for AI to generate context-aware SEO recommendations
+    if (!raw) {
       // Collect missing elements for AI to generate content
       var missingElements = [];
       if (!meta.title.value) missingElements.push('title');
@@ -2411,6 +2517,8 @@
       var imgElements = document.querySelectorAll('img:not([alt])');
       for (var ia = 0; ia < Math.min(imgElements.length, 10); ia++) {
         var img = imgElements[ia];
+        // Skip agnt/devtool UI elements
+        if (utils.isDevtoolElement && utils.isDevtoolElement(img)) continue;
         imagesNeedingAlt.push({
           src: (img.src || '').split('/').pop().split('?')[0] || 'unknown',
           context: img.parentElement ? img.parentElement.tagName.toLowerCase() : 'body'
@@ -2472,7 +2580,8 @@
       };
     }
 
-    // Build response
+    // === RAW RESPONSE (raw: true) ===
+    // Returns verbose detailed format with all issues and context
     var response = {
       summary: summary,
       score: score,
@@ -2507,13 +2616,13 @@
   //   detailLevel: 'summary' | 'compact' (default) | 'full'
   //   maxResources: number (default: 20) - limit resource entries
   //   maxUrlLength: number (default: 60) - truncate resource URLs
-  //   forAutomation: boolean - if true, returns raw data optimized for AI processing
+  //   raw: boolean - if true, returns verbose detailed format (default: false, returns AI-optimized format)
   function auditPerformance(options) {
     options = options || {};
     var detailLevel = options.detailLevel || 'compact';
     var maxResources = options.maxResources || 20;
     var maxUrlLength = options.maxUrlLength || 60;
-    var forAutomation = options.forAutomation || false;
+    var raw = options.raw === true; // Default: false (AI-optimized format)
 
     var perf = window.performance;
     if (!perf) {
@@ -2697,6 +2806,8 @@
     var blockingScripts = document.querySelectorAll('script[src]:not([async]):not([defer]):not([type="module"])');
     for (var k = 0; k < blockingScripts.length; k++) {
       var script = blockingScripts[k];
+      // Skip agnt/devtool UI elements
+      if (utils.isDevtoolElement && utils.isDevtoolElement(script)) continue;
       var src = script.getAttribute('src');
       if (src && !src.match(/^\s*$/)) {
         fixable.push({
@@ -2715,6 +2826,8 @@
     var blockingStyles = document.querySelectorAll('link[rel="stylesheet"]:not([media="print"])');
     for (var l = 0; l < blockingStyles.length; l++) {
       var link = blockingStyles[l];
+      // Skip agnt/devtool UI elements
+      if (utils.isDevtoolElement && utils.isDevtoolElement(link)) continue;
       informational.push({
         id: 'css-block-' + l,
         type: 'render-blocking-css',
@@ -2730,6 +2843,8 @@
     var unoptimizedCount = 0;
     for (var m = 0; m < images.length; m++) {
       var img = images[m];
+      // Skip agnt/devtool UI elements
+      if (utils.isDevtoolElement && utils.isDevtoolElement(img)) continue;
       var imgSrc = img.getAttribute('src');
       var naturalWidth = img.naturalWidth || 0;
       var naturalHeight = img.naturalHeight || 0;
@@ -2933,10 +3048,9 @@
       informational: informational.length
     };
 
-    // === AUTOMATION RESPONSE ===
-    // Returns raw data optimized for AI processing
-
-    if (forAutomation) {
+    // === AI-OPTIMIZED RESPONSE (DEFAULT) ===
+    // Returns grouped data optimized for AI processing
+    if (!raw) {
       // Build blocking script details for AI decision-making
       var blockingScriptDetails = [];
       for (var bs = 0; bs < blockingScripts.length; bs++) {
@@ -3009,8 +3123,8 @@
       };
     }
 
-    // === BUILD RESPONSE ===
-
+    // === RAW RESPONSE (raw: true) ===
+    // Returns verbose detailed format with all issues and context
     var response = {
       summary: summary,
       score: score,
@@ -3046,16 +3160,16 @@
   // Options:
   //   detailLevel: 'summary' | 'compact' (default) | 'full'
   //   includeAccessibility: boolean (default: true) - requires async
-  //   forAutomation: boolean - if true, aggregates raw data from all audits for AI processing
+  //   raw: boolean - if true, returns verbose detailed format from all audits (default: false, returns AI-optimized format)
   function auditAll(options) {
     options = options || {};
     var detailLevel = options.detailLevel || 'compact';
     var includeAccessibility = options.includeAccessibility !== false;
-    var forAutomation = options.forAutomation || false;
+    var raw = options.raw === true; // Default: false (AI-optimized format)
 
-    // Run all synchronous audits (with forAutomation if requested)
-    var auditOpts = forAutomation
-      ? { forAutomation: true }
+    // Run all synchronous audits (with raw option if requested)
+    var auditOpts = raw
+      ? { raw: true }
       : { detailLevel: detailLevel };
 
     var domResult = auditDOMComplexity(auditOpts);
@@ -3064,14 +3178,13 @@
     var seoResult = auditPageQuality(auditOpts);
     var performanceResult = auditPerformance(auditOpts);
 
-    // === AUTOMATION AGGREGATION ===
-    // Returns combined raw data from all audits for AI to generate contextual summaries
-
-    if (forAutomation) {
+    // === AI-OPTIMIZED AGGREGATION (DEFAULT) ===
+    // Returns combined grouped data from all audits for AI to generate contextual summaries
+    if (!raw) {
       // Run accessibility audit if available (for automation we want all data)
       var accessibilityPromise;
       if (includeAccessibility && window.__devtool_accessibility && window.__devtool_accessibility.auditAccessibility) {
-        accessibilityPromise = window.__devtool_accessibility.auditAccessibility({ mode: 'standard', forAutomation: true })
+        accessibilityPromise = window.__devtool_accessibility.auditAccessibility({ mode: 'standard' })
           .catch(function() { return null; });
       } else {
         accessibilityPromise = Promise.resolve(null);
@@ -3162,7 +3275,8 @@
       });
     }
 
-    // Combine results
+    // === RAW RESPONSE (raw: true) ===
+    // Returns verbose detailed format from all audits
     function combineResults(accessibilityResult) {
       var audits = {
         dom: {
@@ -3276,10 +3390,54 @@
       var prioritizedActions = [];
       for (var j = 0; j < Math.min(10, allFixable.length); j++) {
         var item = allFixable[j];
+        // Generate action text from fix, message, or type-based fallback
+        var actionText = item.fix || item.message;
+        if (!actionText) {
+          // Generate clear direction from type
+          var typeToAction = {
+            'duplicate-id': 'Fix duplicate ID conflicts',
+            'excessive-children': 'Reduce child elements or componentize',
+            'excessive-depth': 'Flatten DOM nesting structure',
+            'excessive-attributes': 'Simplify element attributes',
+            'large-list': 'Implement virtualization or pagination',
+            'large-table': 'Add pagination or virtual scrolling',
+            'large-form': 'Split into multi-step form',
+            'excessive-handlers': 'Refactor inline event handlers',
+            'inline-style-pattern': 'Extract to CSS utility class',
+            'hardcoded-color': 'Replace with CSS variable',
+            'z-index-inflation': 'Implement layered z-index system',
+            'fixed-dimensions': 'Use responsive units',
+            'missing-title': 'Add descriptive page title',
+            'missing-description': 'Add meta description',
+            'missing-canonical': 'Add canonical link tag',
+            'missing-viewport': 'Add viewport meta tag',
+            'missing-og-tags': 'Add Open Graph meta tags',
+            'missing-twitter-tags': 'Add Twitter Card meta tags',
+            'missing-h1': 'Add H1 heading',
+            'heading-hierarchy': 'Fix heading hierarchy order',
+            'missing-structured-data': 'Add JSON-LD structured data',
+            'invalid-structured-data': 'Fix malformed structured data',
+            'exposed-secret': 'Remove secret from client-side code',
+            'xss-vector': 'Sanitize DOM manipulation',
+            'eval-usage': 'Replace eval with safe alternatives',
+            'insecure-storage': 'Use secure session storage',
+            'insecure-form': 'Change form action to HTTPS',
+            'http-login': 'Enable HTTPS for login forms',
+            'missing-csrf': 'Add CSRF token to forms',
+            'sensitive-params': 'Remove sensitive data from URL',
+            'clickjacking': 'Add X-Frame-Options header',
+            'postmessage-no-origin': 'Validate postMessage origin',
+            'missing-sri': 'Add Subresource Integrity',
+            'missing-noopener': 'Add rel="noopener" to links',
+            'render-blocking': 'Defer or async load resources',
+            'large-resource': 'Optimize or compress resource'
+          };
+          actionText = typeToAction[item.type] || ('Address ' + item.type.replace(/-/g, ' ') + ' issue');
+        }
         prioritizedActions.push({
           priority: j + 1,
           audit: item.audit,
-          action: item.fix || item.message,
+          action: actionText,
           impact: item.impact,
           severity: item.severity
         });
@@ -3342,8 +3500,9 @@
     }
 
     // If accessibility is included, we need to return a Promise
+    // For raw mode, we need to request raw format from accessibility audit too
     if (includeAccessibility && window.__devtool_accessibility && window.__devtool_accessibility.auditAccessibility) {
-      return window.__devtool_accessibility.auditAccessibility({ mode: 'standard' })
+      return window.__devtool_accessibility.auditAccessibility({ mode: 'standard', raw: true })
         .then(function(accessibilityResult) {
           return combineResults(accessibilityResult);
         })

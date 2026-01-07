@@ -164,6 +164,10 @@
 
       try {
         var target = event.target || event.srcElement;
+
+        // Skip agnt/devtool UI elements
+        if (utils.isDevtoolElement && utils.isDevtoolElement(target)) return;
+
         var targetInfo = getTargetInfo(target);
         if (!targetInfo) return;
 

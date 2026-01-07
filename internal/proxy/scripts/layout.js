@@ -18,7 +18,6 @@
 
       if (overflow && overflow.hasOverflow) {
         results.push({
-          element: el,
           selector: utils.generateSelector(el),
           type: overflow.x === 'hidden' || overflow.y === 'hidden' ? 'hidden' : 'scrollable',
           scrollWidth: overflow.scrollWidth,
@@ -64,7 +63,6 @@
         }
 
         contexts.push({
-          element: el,
           selector: utils.generateSelector(el),
           zIndex: computed.zIndex,
           reason: reasons
@@ -98,7 +96,6 @@
         if (rect.left > window.innerWidth) direction.push('right');
 
         results.push({
-          element: el,
           selector: utils.generateSelector(el),
           direction: direction,
           rect: rect
