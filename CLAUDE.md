@@ -183,6 +183,10 @@ Pending → Starting → Running → Stopping → Stopped/Failed
 - Accessibility (5): getA11yInfo, auditAccessibility (3 modes), getContrast, etc.
 - Quality Auditing (10+): auditDOMComplexity, auditPageQuality, auditCSS, etc.
 
+**Audit Output Modes**:
+- **Default** (AI-optimized): Grouped issues by type, limited examples, token-efficient
+- **Raw** (`raw: true`): Verbose detailed format with all issues and context
+
 **Accessibility Modes**:
 - **Standard** (axe-core): WCAG 2.1, 90+ rules, ~100-300ms
 - **Fast**: Focus indicators, color schemes, ~50-100ms

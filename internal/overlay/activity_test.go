@@ -8,6 +8,24 @@ import (
 	"time"
 )
 
+// safeWriter is a thread-safe wrapper around bytes.Buffer for concurrent tests.
+type safeWriter struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (sw *safeWriter) Write(p []byte) (n int, err error) {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	return sw.buf.Write(p)
+}
+
+func (sw *safeWriter) String() string {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	return sw.buf.String()
+}
+
 // TestActivityMonitorStateTransitions tests that activity state transitions correctly.
 func TestActivityMonitorStateTransitions(t *testing.T) {
 	var buf bytes.Buffer
@@ -202,7 +220,8 @@ func TestActivityMonitorDebounce(t *testing.T) {
 
 // TestActivityMonitorConcurrentWrites tests thread safety of writes.
 func TestActivityMonitorConcurrentWrites(t *testing.T) {
-	var buf bytes.Buffer
+	// Use thread-safe writer for concurrent test
+	var buf safeWriter
 	var stateChanges atomic.Int32
 
 	cfg := ActivityMonitorConfig{

@@ -95,7 +95,8 @@
    * Event handlers for recording
    */
   function onClick(e) {
-    if (e.target.closest('#__devtool-indicator')) return;
+    // Skip agnt/devtool UI elements
+    if (utils.isDevtoolElement && utils.isDevtoolElement(e.target)) return;
     recordEvent('click', e.target, {
       x: e.clientX,
       y: e.clientY,
@@ -104,14 +105,16 @@
   }
 
   function onInput(e) {
-    if (e.target.closest('#__devtool-indicator')) return;
+    // Skip agnt/devtool UI elements
+    if (utils.isDevtoolElement && utils.isDevtoolElement(e.target)) return;
     recordEvent('input', e.target, {
       value: e.target.value
     });
   }
 
   function onChange(e) {
-    if (e.target.closest('#__devtool-indicator')) return;
+    // Skip agnt/devtool UI elements
+    if (utils.isDevtoolElement && utils.isDevtoolElement(e.target)) return;
     var data = { value: e.target.value };
     if (e.target.type === 'checkbox' || e.target.type === 'radio') {
       data.checked = e.target.checked;
@@ -123,7 +126,8 @@
   }
 
   function onKeydown(e) {
-    if (e.target.closest('#__devtool-indicator')) return;
+    // Skip agnt/devtool UI elements
+    if (utils.isDevtoolElement && utils.isDevtoolElement(e.target)) return;
     // Only record special keys (Enter, Tab, Escape, etc.)
     if (['Enter', 'Tab', 'Escape', 'Backspace', 'Delete'].includes(e.key) || e.ctrlKey || e.metaKey) {
       recordEvent('keydown', e.target, {
@@ -148,7 +152,8 @@
   }
 
   function onSubmit(e) {
-    if (e.target.closest('#__devtool-indicator')) return;
+    // Skip agnt/devtool UI elements
+    if (utils.isDevtoolElement && utils.isDevtoolElement(e.target)) return;
     recordEvent('submit', e.target, {});
   }
 

@@ -186,13 +186,3 @@ func GetFeatureDescription(feature Feature) string {
 	}
 	return string(feature)
 }
-
-// hasFeature checks if a feature is in the license's feature list.
-func hasFeature(features []Feature, target Feature) bool {
-	for _, f := range features {
-		if f == target {
-			return true
-		}
-	}
-	return false
-}

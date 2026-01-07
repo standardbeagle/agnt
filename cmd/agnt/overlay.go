@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/standardbeagle/agnt/internal/overlay"
 )
 
 // PtyWriter is an interface for writing to a PTY.
@@ -25,13 +26,14 @@ type PtyWriter interface {
 
 // Overlay receives events from devtool-mcp and injects them into the PTY.
 type Overlay struct {
-	socketPath string
-	ptmx       PtyWriter
-	server     *http.Server
-	listener   net.Listener
-	upgrader   websocket.Upgrader
-	clients    sync.Map // map[*websocket.Conn]bool
-	mu         sync.RWMutex
+	socketPath      string
+	ptmx            PtyWriter
+	server          *http.Server
+	listener        net.Listener
+	upgrader        websocket.Upgrader
+	clients         sync.Map // map[*websocket.Conn]bool
+	mu              sync.RWMutex
+	auditSummarizer *overlay.AuditSummarizer
 }
 
 // OverlayMessage represents a message from devtool-mcp.
@@ -88,9 +90,17 @@ func newOverlay(socketPath string, ptmx PtyWriter) *Overlay {
 	if socketPath == "" {
 		socketPath = DefaultOverlaySocketPath()
 	}
+
+	// Initialize audit summarizer for LLM-powered audit reports
+	auditSummarizer := overlay.NewAuditSummarizer(overlay.AuditSummarizerConfig{
+		UseAPI:  true, // Use API mode for faster responses
+		Timeout: 30 * time.Second,
+	})
+
 	return &Overlay{
-		socketPath: socketPath,
-		ptmx:       ptmx,
+		socketPath:      socketPath,
+		ptmx:            ptmx,
+		auditSummarizer: auditSummarizer,
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
 				return true // Allow all origins for local development
@@ -291,10 +301,12 @@ func (o *Overlay) processProxyEvent(event ProxyEvent) {
 		var data struct {
 			Message     string `json:"message"`
 			Attachments []struct {
-				Type     string `json:"type"`
-				Selector string `json:"selector"`
-				Tag      string `json:"tag"`
-				Text     string `json:"text"`
+				Type     string          `json:"type"`
+				ID       string          `json:"id"`
+				Selector string          `json:"selector"`
+				Tag      string          `json:"tag"`
+				Text     string          `json:"text"`
+				Data     json.RawMessage `json:"data"` // For audit attachments
 			} `json:"attachments"`
 			RequestNotification bool `json:"request_notification"`
 		}
@@ -303,11 +315,84 @@ func (o *Overlay) processProxyEvent(event ProxyEvent) {
 			return
 		}
 
+		// Check for audit attachments that need LLM summarization
+		var auditReports []string
+		var nonAuditAttachments []struct {
+			Type     string
+			ID       string
+			Selector string
+			Tag      string
+			Text     string
+		}
+
+		for _, att := range data.Attachments {
+			if att.Type == "audit" && len(att.Data) > 0 {
+				// Parse audit data
+				var auditData struct {
+					AuditType string          `json:"auditType"`
+					Label     string          `json:"label"`
+					Summary   string          `json:"summary"`
+					Result    json.RawMessage `json:"result"`
+				}
+				if err := json.Unmarshal(att.Data, &auditData); err != nil {
+					log.Printf("Failed to parse audit data: %v", err)
+					continue
+				}
+
+				// Use LLM to generate quality report
+				if o.auditSummarizer != nil && o.auditSummarizer.IsAvailable() {
+					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+					report, err := o.auditSummarizer.SummarizeAudit(ctx, overlay.AuditData{
+						AuditType: auditData.AuditType,
+						Label:     auditData.Label,
+						Summary:   auditData.Summary,
+						Result:    auditData.Result,
+					}, data.Message)
+					cancel()
+
+					if err != nil {
+						log.Printf("Audit summarization failed: %v", err)
+						// Fallback to basic summary
+						auditReports = append(auditReports, fmt.Sprintf("**%s**: %s", auditData.Label, auditData.Summary))
+					} else {
+						auditReports = append(auditReports, report)
+					}
+				} else {
+					// LLM not available, use basic summary
+					auditReports = append(auditReports, fmt.Sprintf("**%s**: %s", auditData.Label, auditData.Summary))
+				}
+			} else {
+				// Non-audit attachment
+				nonAuditAttachments = append(nonAuditAttachments, struct {
+					Type     string
+					ID       string
+					Selector string
+					Tag      string
+					Text     string
+				}{att.Type, att.ID, att.Selector, att.Tag, att.Text})
+			}
+		}
+
 		// Format the message for the AI tool
-		text := "from agnt current page: " + data.Message
-		if len(data.Attachments) > 0 {
+		// Add default call-to-action if message is empty but there are audit reports
+		userMessage := data.Message
+		if userMessage == "" && len(auditReports) > 0 {
+			userMessage = "Review and fix the issues found in this audit report."
+		}
+		text := "from agnt current page: " + userMessage
+
+		// Add LLM-generated audit reports
+		if len(auditReports) > 0 {
+			text += "\n\n[Audit Report]\n"
+			for _, report := range auditReports {
+				text += report + "\n"
+			}
+		}
+
+		// Add non-audit attachments
+		if len(nonAuditAttachments) > 0 {
 			text += "\n\n[Attachments]\n"
-			for i, att := range data.Attachments {
+			for i, att := range nonAuditAttachments {
 				text += fmt.Sprintf("%d. %s: %s (%s)\n", i+1, att.Type, att.Selector, att.Text)
 			}
 		}
@@ -588,28 +673,38 @@ func (o *Overlay) handleMessage(msg OverlayMessage) {
 }
 
 func (o *Overlay) typeText(msg TypeMessage) {
-	// Always type character by character with delays to simulate realistic typing.
-	// Ink/Claude Code's input handler may not process instant bulk text correctly.
-	delay := 5 * time.Millisecond
-	if !msg.Instant {
-		delay = 10 * time.Millisecond
-	}
+	if msg.Instant {
+		// Send full text as single write - large buffer triggers paste detection
+		// in terminal input handlers without needing bracketed paste escape sequences.
+		o.writeTopty(msg.Text)
 
-	for _, ch := range msg.Text {
-		o.writeTopty(string(ch))
-		time.Sleep(delay)
-	}
+		if msg.Enter {
+			// Two returns 100ms apart
+			time.Sleep(50 * time.Millisecond)
+			o.writeTopty("\r")
+			time.Sleep(100 * time.Millisecond)
+			o.writeTopty("\r")
+		}
+	} else {
+		// Simulate typing character by character
+		delay := 10 * time.Millisecond
 
-	if msg.Enter {
-		// Wait for Ink to process all characters before sending submit sequence
-		time.Sleep(100 * time.Millisecond)
+		for _, ch := range msg.Text {
+			o.writeTopty(string(ch))
+			time.Sleep(delay)
+		}
 
-		// Ink-based apps (like Claude Code) sometimes need two Enters:
-		// - First Enter may be consumed by autocomplete/suggestions UI
-		// - Second Enter actually submits
-		o.writeTopty("\r")
-		time.Sleep(50 * time.Millisecond)
-		o.writeTopty("\r")
+		if msg.Enter {
+			// Wait for Ink to process all characters before sending submit sequence
+			time.Sleep(100 * time.Millisecond)
+
+			// Ink-based apps (like Claude Code) sometimes need two Enters:
+			// - First Enter may be consumed by autocomplete/suggestions UI
+			// - Second Enter actually submits
+			o.writeTopty("\r")
+			time.Sleep(50 * time.Millisecond)
+			o.writeTopty("\r")
+		}
 	}
 }
 

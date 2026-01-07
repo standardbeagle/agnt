@@ -45,6 +45,12 @@ func TestAutoStartDaemon(t *testing.T) {
 	t.Logf("Using daemon path: %s", daemonPath)
 	t.Logf("Config: %+v", config)
 
+	// Ensure cleanup happens even if test fails
+	defer func() {
+		StopDaemon(socketPath)
+		os.Remove(socketPath)
+	}()
+
 	client := NewAutoStartClient(config)
 
 	t.Log("Attempting to connect (should autostart daemon)...")
@@ -60,10 +66,6 @@ func TestAutoStartDaemon(t *testing.T) {
 	if !IsDaemonRunning(socketPath) {
 		t.Error("Daemon should be running after autostart")
 	}
-
-	// Cleanup
-	StopDaemon(socketPath)
-	os.Remove(socketPath)
 }
 
 func TestDefaultAutoStartConfig(t *testing.T) {

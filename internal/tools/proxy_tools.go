@@ -737,6 +737,20 @@ func handleProxyExec(pm *proxy.ProxyManager, input ProxyInput) (*mcp.CallToolRes
 			}, nil
 		}
 
+		// Handle large results saved to file
+		if result.FilePath != "" {
+			return nil, ProxyOutput{
+				Success:     true,
+				ExecutionID: execID,
+				Message: fmt.Sprintf(`JavaScript executed successfully.
+Result: Large response saved to file
+File: %s
+Duration: %v
+
+Use the Read tool to view the full result.`, result.FilePath, result.Duration),
+			}, nil
+		}
+
 		return nil, ProxyOutput{
 			Success:     true,
 			ExecutionID: execID,

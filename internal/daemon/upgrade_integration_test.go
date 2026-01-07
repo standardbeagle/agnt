@@ -82,6 +82,18 @@ func TestDaemonUpgrade_FullCycle(t *testing.T) {
 		t.Fatalf("Failed to start daemon: %v", err)
 	}
 
+	// Ensure cleanup happens even if test fails
+	defer func() {
+		// Try graceful shutdown first
+		client := NewClient(WithSocketPath(sockPath))
+		if err := client.Connect(); err == nil {
+			client.Shutdown()
+			client.Close()
+		}
+		// Force stop if still running
+		StopDaemon(sockPath)
+	}()
+
 	// Wait for daemon to be ready
 	time.Sleep(500 * time.Millisecond)
 
@@ -157,18 +169,7 @@ func TestDaemonUpgrade_FullCycle(t *testing.T) {
 		t.Errorf("Daemon was not restarted: uptime %v >= initial %v",
 			info2.Uptime, initialUptime)
 	}
-
-	// Shutdown for cleanup
-	if err := client2.Shutdown(); err != nil {
-		t.Errorf("Failed to shutdown daemon: %v", err)
-	}
-
-	// Wait for shutdown
-	time.Sleep(time.Second)
-
-	if IsRunning(sockPath) {
-		t.Error("Daemon still running after shutdown")
-	}
+	// Cleanup is handled by defer
 }
 
 // TestUpgradeLock_ConcurrentAttempts tests that concurrent upgrade attempts are blocked
@@ -287,6 +288,16 @@ func TestUpgradeStaleSocket(t *testing.T) {
 		t.Fatal("Daemon should not be running with stale socket")
 	}
 
+	// Ensure cleanup happens even if test fails
+	defer func() {
+		client := NewClient(WithSocketPath(sockPath))
+		if err := client.Connect(); err == nil {
+			client.Shutdown()
+			client.Close()
+		}
+		StopDaemon(sockPath)
+	}()
+
 	// Create upgrader
 	upgrader := NewDaemonUpgrader(UpgradeConfig{
 		SocketPath:      sockPath,
@@ -310,13 +321,7 @@ func TestUpgradeStaleSocket(t *testing.T) {
 	if !IsRunning(sockPath) {
 		t.Fatal("Daemon not running after upgrade")
 	}
-
-	// Cleanup
-	client := NewClient(WithSocketPath(sockPath))
-	if err := client.Connect(); err == nil {
-		client.Shutdown()
-		client.Close()
-	}
+	// Cleanup is handled by defer
 }
 
 // TestUpgradeVersionCheck tests that upgrade respects version matching

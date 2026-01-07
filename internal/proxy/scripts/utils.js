@@ -331,6 +331,49 @@
       }
     }
 
+    // Check if element is part of agnt/devtool UI (should be excluded from audits/tracking)
+    // Matches: #__devtool-*, .__devtool*, [id^="__devtool"], or any element inside these
+    function isDevtoolElement(element) {
+      if (!element) return false;
+
+      try {
+        // Check if element or any ancestor matches devtool patterns
+        var current = element;
+        var depth = 0;
+        var MAX_DEPTH = 50;
+
+        while (current && current.nodeType === ELEMENT_NODE && depth < MAX_DEPTH) {
+          try {
+            // Check ID prefix
+            if (current.id && typeof current.id === 'string') {
+              if (current.id.indexOf('__devtool') === 0) return true;
+            }
+
+            // Check class list for __devtool prefix
+            if (current.classList) {
+              for (var i = 0; i < current.classList.length; i++) {
+                if (current.classList[i].indexOf('__devtool') === 0) return true;
+              }
+            }
+
+            // Check for data attribute marker
+            if (current.hasAttribute && current.hasAttribute('data-devtool-ui')) {
+              return true;
+            }
+          } catch (e) {
+            // Skip this element on error
+          }
+
+          current = current.parentElement;
+          depth++;
+        }
+      } catch (e) {
+        logError('isDevtoolElement_failed', e);
+      }
+
+      return false;
+    }
+
     // Export utilities with existence check
     try {
       if (!window.__devtool_utils) {
@@ -341,7 +384,8 @@
           parseValue: parseValue,
           getRect: getRect,
           isElementInViewport: isElementInViewport,
-          getStackingContext: getStackingContext
+          getStackingContext: getStackingContext,
+          isDevtoolElement: isDevtoolElement
         };
       }
     } catch (e) {
