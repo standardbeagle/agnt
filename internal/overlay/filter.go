@@ -148,165 +148,7 @@ func (pw *ProtectedWriter) Write(p []byte) (n int, err error) {
 
 	for i := 0; i < len(p); i++ {
 		b := p[i]
-
-		switch pw.state {
-		case stateGround:
-			if b == 0x1b { // ESC
-				pw.state = stateEscape
-				pw.escBuf = pw.escBuf[:0]
-				pw.escBuf = append(pw.escBuf, b)
-			} else {
-				out.WriteByte(b)
-			}
-
-		case stateEscape:
-			pw.escBuf = append(pw.escBuf, b)
-			switch b {
-			case '[': // CSI
-				pw.state = stateCSI
-				pw.params = pw.params[:0]
-				pw.paramBuf = pw.paramBuf[:0]
-				pw.intermed = pw.intermed[:0]
-			case ']': // OSC
-				pw.state = stateOSC
-				pw.oscBuf = pw.oscBuf[:0]
-			case 'P': // DCS
-				pw.state = stateDCS
-			case 'X': // SOS
-				pw.state = stateSOS
-			case '^': // PM
-				pw.state = statePM
-			case '_': // APC
-				pw.state = stateAPC
-			case '7': // DECSC - save cursor
-				out.Write(pw.escBuf)
-				pw.state = stateGround
-			case '8': // DECRC - restore cursor
-				out.Write(pw.escBuf)
-				pw.state = stateGround
-			case 'M': // RI - reverse index (scroll down)
-				out.Write(pw.escBuf)
-				pw.state = stateGround
-			case 'D': // IND - index (scroll up)
-				out.Write(pw.escBuf)
-				pw.state = stateGround
-			case 'E': // NEL - next line
-				out.Write(pw.escBuf)
-				pw.state = stateGround
-			case 'c': // RIS - full reset
-				// Allow reset but re-enforce scroll region after
-				out.Write(pw.escBuf)
-				pw.redrawNeeded.Store(true)
-				pw.state = stateGround
-			default:
-				if b >= 0x20 && b <= 0x2f {
-					// Intermediate byte, stay in escape
-				} else if b >= 0x30 && b <= 0x7e {
-					// Final byte
-					out.Write(pw.escBuf)
-					pw.state = stateGround
-				} else {
-					// Invalid, output what we have
-					out.Write(pw.escBuf)
-					pw.state = stateGround
-				}
-			}
-
-		case stateCSI:
-			pw.escBuf = append(pw.escBuf, b)
-			if b >= '0' && b <= '9' {
-				pw.paramBuf = append(pw.paramBuf, b)
-				pw.state = stateCSIParam
-			} else if b == ';' {
-				pw.params = append(pw.params, 0) // Default parameter
-				pw.state = stateCSIParam
-			} else if b == '?' || b == '>' || b == '!' || b == '=' {
-				// Private mode introducer
-				pw.intermed = append(pw.intermed, b)
-			} else if b >= 0x20 && b <= 0x2f {
-				pw.intermed = append(pw.intermed, b)
-				pw.state = stateCSIIntermed
-			} else if b >= 0x40 && b <= 0x7e {
-				// Final byte with no parameters
-				pw.handleCSI(&out, b)
-				pw.state = stateGround
-			} else {
-				// Invalid
-				out.Write(pw.escBuf)
-				pw.state = stateGround
-			}
-
-		case stateCSIParam:
-			pw.escBuf = append(pw.escBuf, b)
-			if b >= '0' && b <= '9' {
-				pw.paramBuf = append(pw.paramBuf, b)
-			} else if b == ';' {
-				pw.finishParam()
-				pw.paramBuf = pw.paramBuf[:0]
-			} else if b == ':' {
-				// Sub-parameter separator (used in SGR)
-				pw.paramBuf = append(pw.paramBuf, b)
-			} else if b >= 0x20 && b <= 0x2f {
-				pw.finishParam()
-				pw.intermed = append(pw.intermed, b)
-				pw.state = stateCSIIntermed
-			} else if b >= 0x40 && b <= 0x7e {
-				pw.finishParam()
-				pw.handleCSI(&out, b)
-				pw.state = stateGround
-			} else {
-				// Invalid
-				out.Write(pw.escBuf)
-				pw.state = stateGround
-			}
-
-		case stateCSIIntermed:
-			pw.escBuf = append(pw.escBuf, b)
-			if b >= 0x20 && b <= 0x2f {
-				pw.intermed = append(pw.intermed, b)
-			} else if b >= 0x40 && b <= 0x7e {
-				pw.handleCSI(&out, b)
-				pw.state = stateGround
-			} else {
-				// Invalid
-				out.Write(pw.escBuf)
-				pw.state = stateGround
-			}
-
-		case stateOSC:
-			pw.escBuf = append(pw.escBuf, b)
-			if b == 0x07 { // BEL terminates OSC
-				out.Write(pw.escBuf)
-				pw.state = stateGround
-			} else if b == 0x1b {
-				pw.state = stateOSCString // Check for ST (ESC \)
-			} else {
-				pw.oscBuf = append(pw.oscBuf, b)
-			}
-
-		case stateOSCString:
-			pw.escBuf = append(pw.escBuf, b)
-			if b == '\\' { // ST (String Terminator)
-				out.Write(pw.escBuf)
-				pw.state = stateGround
-			} else {
-				pw.oscBuf = append(pw.oscBuf, 0x1b, b)
-				pw.state = stateOSC
-			}
-
-		case stateDCS, stateSOS, statePM, stateAPC:
-			pw.escBuf = append(pw.escBuf, b)
-			// Look for ST (ESC \) or single-byte terminator
-			if b == 0x1b {
-				// Might be start of ST
-			} else if b == '\\' && len(pw.escBuf) > 1 && pw.escBuf[len(pw.escBuf)-2] == 0x1b {
-				out.Write(pw.escBuf)
-				pw.state = stateGround
-			} else if b == 0x9c { // Single-byte ST
-				out.Write(pw.escBuf)
-				pw.state = stateGround
-			}
-		}
+		pw.processStateByte(&out, b)
 	}
 
 	// Write any remaining ground state data
@@ -315,6 +157,198 @@ func (pw *ProtectedWriter) Write(p []byte) (n int, err error) {
 	}
 
 	return len(p), err
+}
+
+// processStateByte dispatches byte processing based on current parse state.
+func (pw *ProtectedWriter) processStateByte(out *bytes.Buffer, b byte) {
+	switch pw.state {
+	case stateGround:
+		pw.handleStateGround(out, b)
+	case stateEscape:
+		pw.handleStateEscape(out, b)
+	case stateCSI:
+		pw.handleStateCSI(out, b)
+	case stateCSIParam:
+		pw.handleStateCSIParam(out, b)
+	case stateCSIIntermed:
+		pw.handleStateCSIIntermed(out, b)
+	case stateOSC:
+		pw.handleStateOSC(out, b)
+	case stateOSCString:
+		pw.handleStateOSCString(out, b)
+	case stateDCS, stateSOS, statePM, stateAPC:
+		pw.handleStateStringTerminated(out, b)
+	}
+}
+
+// handleStateGround processes bytes in ground state.
+func (pw *ProtectedWriter) handleStateGround(out *bytes.Buffer, b byte) {
+	if b == 0x1b { // ESC
+		pw.state = stateEscape
+		pw.escBuf = pw.escBuf[:0]
+		pw.escBuf = append(pw.escBuf, b)
+	} else {
+		out.WriteByte(b)
+	}
+}
+
+// handleStateEscape processes bytes after ESC.
+func (pw *ProtectedWriter) handleStateEscape(out *bytes.Buffer, b byte) {
+	pw.escBuf = append(pw.escBuf, b)
+	switch b {
+	case '[': // CSI
+		pw.state = stateCSI
+		pw.params = pw.params[:0]
+		pw.paramBuf = pw.paramBuf[:0]
+		pw.intermed = pw.intermed[:0]
+	case ']': // OSC
+		pw.state = stateOSC
+		pw.oscBuf = pw.oscBuf[:0]
+	case 'P': // DCS
+		pw.state = stateDCS
+	case 'X': // SOS
+		pw.state = stateSOS
+	case '^': // PM
+		pw.state = statePM
+	case '_': // APC
+		pw.state = stateAPC
+	case '7', '8', 'M', 'D', 'E': // DECSC, DECRC, RI, IND, NEL
+		out.Write(pw.escBuf)
+		pw.state = stateGround
+	case 'c': // RIS - full reset
+		// Allow reset but re-enforce scroll region after
+		out.Write(pw.escBuf)
+		pw.redrawNeeded.Store(true)
+		pw.state = stateGround
+	default:
+		pw.handleEscapeDefault(out, b)
+	}
+}
+
+// handleEscapeDefault processes unknown escape sequences.
+func (pw *ProtectedWriter) handleEscapeDefault(out *bytes.Buffer, b byte) {
+	if b >= 0x20 && b <= 0x2f {
+		// Intermediate byte, stay in escape
+	} else if b >= 0x30 && b <= 0x7e {
+		// Final byte
+		out.Write(pw.escBuf)
+		pw.state = stateGround
+	} else {
+		// Invalid, output what we have
+		out.Write(pw.escBuf)
+		pw.state = stateGround
+	}
+}
+
+// handleStateCSI processes bytes in CSI state.
+func (pw *ProtectedWriter) handleStateCSI(out *bytes.Buffer, b byte) {
+	pw.escBuf = append(pw.escBuf, b)
+	switch {
+	case b >= '0' && b <= '9':
+		pw.paramBuf = append(pw.paramBuf, b)
+		pw.state = stateCSIParam
+	case b == ';':
+		pw.params = append(pw.params, 0) // Default parameter
+		pw.state = stateCSIParam
+	case b == '?' || b == '>' || b == '!' || b == '=':
+		// Private mode introducer
+		pw.intermed = append(pw.intermed, b)
+	case b >= 0x20 && b <= 0x2f:
+		pw.intermed = append(pw.intermed, b)
+		pw.state = stateCSIIntermed
+	case b >= 0x40 && b <= 0x7e:
+		// Final byte with no parameters
+		pw.handleCSI(out, b)
+		pw.state = stateGround
+	default:
+		// Invalid
+		out.Write(pw.escBuf)
+		pw.state = stateGround
+	}
+}
+
+// handleStateCSIParam processes bytes in CSI parameter state.
+func (pw *ProtectedWriter) handleStateCSIParam(out *bytes.Buffer, b byte) {
+	pw.escBuf = append(pw.escBuf, b)
+	switch {
+	case b >= '0' && b <= '9':
+		pw.paramBuf = append(pw.paramBuf, b)
+	case b == ';':
+		pw.finishParam()
+		pw.paramBuf = pw.paramBuf[:0]
+	case b == ':':
+		// Sub-parameter separator (used in SGR)
+		pw.paramBuf = append(pw.paramBuf, b)
+	case b >= 0x20 && b <= 0x2f:
+		pw.finishParam()
+		pw.intermed = append(pw.intermed, b)
+		pw.state = stateCSIIntermed
+	case b >= 0x40 && b <= 0x7e:
+		pw.finishParam()
+		pw.handleCSI(out, b)
+		pw.state = stateGround
+	default:
+		// Invalid
+		out.Write(pw.escBuf)
+		pw.state = stateGround
+	}
+}
+
+// handleStateCSIIntermed processes bytes in CSI intermediate state.
+func (pw *ProtectedWriter) handleStateCSIIntermed(out *bytes.Buffer, b byte) {
+	pw.escBuf = append(pw.escBuf, b)
+	switch {
+	case b >= 0x20 && b <= 0x2f:
+		pw.intermed = append(pw.intermed, b)
+	case b >= 0x40 && b <= 0x7e:
+		pw.handleCSI(out, b)
+		pw.state = stateGround
+	default:
+		// Invalid
+		out.Write(pw.escBuf)
+		pw.state = stateGround
+	}
+}
+
+// handleStateOSC processes bytes in OSC state.
+func (pw *ProtectedWriter) handleStateOSC(out *bytes.Buffer, b byte) {
+	pw.escBuf = append(pw.escBuf, b)
+	switch b {
+	case 0x07: // BEL terminates OSC
+		out.Write(pw.escBuf)
+		pw.state = stateGround
+	case 0x1b:
+		pw.state = stateOSCString // Check for ST (ESC \)
+	default:
+		pw.oscBuf = append(pw.oscBuf, b)
+	}
+}
+
+// handleStateOSCString processes bytes waiting for OSC string terminator.
+func (pw *ProtectedWriter) handleStateOSCString(out *bytes.Buffer, b byte) {
+	pw.escBuf = append(pw.escBuf, b)
+	if b == '\\' { // ST (String Terminator)
+		out.Write(pw.escBuf)
+		pw.state = stateGround
+	} else {
+		pw.oscBuf = append(pw.oscBuf, 0x1b, b)
+		pw.state = stateOSC
+	}
+}
+
+// handleStateStringTerminated processes bytes in DCS, SOS, PM, APC states.
+func (pw *ProtectedWriter) handleStateStringTerminated(out *bytes.Buffer, b byte) {
+	pw.escBuf = append(pw.escBuf, b)
+	// Look for ST (ESC \) or single-byte terminator
+	if b == 0x1b {
+		// Might be start of ST
+	} else if b == '\\' && len(pw.escBuf) > 1 && pw.escBuf[len(pw.escBuf)-2] == 0x1b {
+		out.Write(pw.escBuf)
+		pw.state = stateGround
+	} else if b == 0x9c { // Single-byte ST
+		out.Write(pw.escBuf)
+		pw.state = stateGround
+	}
 }
 
 // finishParam adds the current parameter buffer to params.

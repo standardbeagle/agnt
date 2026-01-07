@@ -297,189 +297,244 @@ func (o *Overlay) handleEvent(w http.ResponseWriter, r *http.Request) {
 func (o *Overlay) processProxyEvent(event ProxyEvent) {
 	switch event.Type {
 	case "panel_message":
-		// Handle panel message - could type it into the AI tool
-		var data struct {
-			Message     string `json:"message"`
-			Attachments []struct {
-				Type     string          `json:"type"`
-				ID       string          `json:"id"`
-				Selector string          `json:"selector"`
-				Tag      string          `json:"tag"`
-				Text     string          `json:"text"`
-				Data     json.RawMessage `json:"data"` // For audit attachments
-			} `json:"attachments"`
-			RequestNotification bool `json:"request_notification"`
-		}
-		if err := json.Unmarshal(event.Data, &data); err != nil {
-			log.Printf("Failed to parse panel_message: %v", err)
-			return
-		}
-
-		// Check for audit attachments that need LLM summarization
-		var auditReports []string
-		var nonAuditAttachments []struct {
-			Type     string
-			ID       string
-			Selector string
-			Tag      string
-			Text     string
-		}
-
-		for _, att := range data.Attachments {
-			if att.Type == "audit" && len(att.Data) > 0 {
-				// Parse audit data
-				var auditData struct {
-					AuditType string          `json:"auditType"`
-					Label     string          `json:"label"`
-					Summary   string          `json:"summary"`
-					Result    json.RawMessage `json:"result"`
-				}
-				if err := json.Unmarshal(att.Data, &auditData); err != nil {
-					log.Printf("Failed to parse audit data: %v", err)
-					continue
-				}
-
-				// Use LLM to generate quality report
-				if o.auditSummarizer != nil && o.auditSummarizer.IsAvailable() {
-					ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-					report, err := o.auditSummarizer.SummarizeAudit(ctx, overlay.AuditData{
-						AuditType: auditData.AuditType,
-						Label:     auditData.Label,
-						Summary:   auditData.Summary,
-						Result:    auditData.Result,
-					}, data.Message)
-					cancel()
-
-					if err != nil {
-						log.Printf("Audit summarization failed: %v", err)
-						// Fallback to basic summary
-						auditReports = append(auditReports, fmt.Sprintf("**%s**: %s", auditData.Label, auditData.Summary))
-					} else {
-						auditReports = append(auditReports, report)
-					}
-				} else {
-					// LLM not available, use basic summary
-					auditReports = append(auditReports, fmt.Sprintf("**%s**: %s", auditData.Label, auditData.Summary))
-				}
-			} else {
-				// Non-audit attachment
-				nonAuditAttachments = append(nonAuditAttachments, struct {
-					Type     string
-					ID       string
-					Selector string
-					Tag      string
-					Text     string
-				}{att.Type, att.ID, att.Selector, att.Tag, att.Text})
-			}
-		}
-
-		// Format the message for the AI tool
-		// Add default call-to-action if message is empty but there are audit reports
-		userMessage := data.Message
-		if userMessage == "" && len(auditReports) > 0 {
-			userMessage = "Review and fix the issues found in this audit report."
-		}
-		text := "from agnt current page: " + userMessage
-
-		// Add LLM-generated audit reports
-		if len(auditReports) > 0 {
-			text += "\n\n[Audit Report]\n"
-			for _, report := range auditReports {
-				text += report + "\n"
-			}
-		}
-
-		// Add non-audit attachments
-		if len(nonAuditAttachments) > 0 {
-			text += "\n\n[Attachments]\n"
-			for i, att := range nonAuditAttachments {
-				text += fmt.Sprintf("%d. %s: %s (%s)\n", i+1, att.Type, att.Selector, att.Text)
-			}
-		}
-
-		// Add notification request if enabled
-		if data.RequestNotification {
-			text += "\n\n[Note: When complete, please send a toast notification using: proxy {action: \"toast\", id: \"dev\", toast_message: \"Done!\", toast_type: \"success\"}]"
-		}
-
-		// Type the formatted message into the PTY
-		o.typeText(TypeMessage{
-			Text:    text,
-			Enter:   true,
-			Instant: true,
-		})
-
+		o.handlePanelMessage(event)
 	case "sketch":
-		// Handle sketch - notify user about the sketch
-		var data struct {
-			FilePath     string `json:"file_path"`
-			ElementCount int    `json:"element_count"`
-			Description  string `json:"description"`
-		}
-		if err := json.Unmarshal(event.Data, &data); err != nil {
-			log.Printf("Failed to parse sketch: %v", err)
-			return
-		}
-
-		// Format message with description and file path
-		var text string
-		if data.Description != "" {
-			text = data.Description
-			text += fmt.Sprintf("\n\n[Sketch: %s with %d elements]", data.FilePath, data.ElementCount)
-		} else {
-			text = fmt.Sprintf("[Sketch saved: %s with %d elements]", data.FilePath, data.ElementCount)
-		}
-
-		// Type the formatted message into the PTY
-		o.typeText(TypeMessage{
-			Text:    text,
-			Enter:   true,
-			Instant: true,
-		})
-
+		o.handleSketch(event)
 	case "design_state":
-		// Handle design state - element selected for iteration
-		var data struct {
-			Selector     string `json:"selector"`
-			XPath        string `json:"xpath"`
-			OriginalHTML string `json:"original_html"`
-			ContextHTML  string `json:"context_html"`
-			URL          string `json:"url"`
-			Metadata     struct {
-				Tag     string   `json:"tag"`
-				ID      string   `json:"id"`
-				Classes []string `json:"classes"`
-				Text    string   `json:"text"`
-			} `json:"metadata"`
-		}
-		if err := json.Unmarshal(event.Data, &data); err != nil {
-			log.Printf("Failed to parse design_state: %v", err)
-			return
-		}
+		o.handleDesignState(event)
+	case "design_request":
+		o.handleDesignRequest(event)
+	case "design_chat":
+		o.handleDesignChat(event)
+	default:
+		log.Printf("[Overlay] ERROR: Unhandled proxy event type: %s (proxy_id=%s)", event.Type, event.ProxyID)
+	}
 
-		// Format comprehensive UX designer instructions
-		text := fmt.Sprintf(`[🎨 Design Mode: Premium UX Design Session]
+	// Broadcast to connected clients
+	o.Broadcast("proxy_event", event)
+}
+
+// attachmentInfo holds parsed attachment data for non-audit attachments.
+type attachmentInfo struct {
+	Type     string
+	ID       string
+	Selector string
+	Tag      string
+	Text     string
+}
+
+// handlePanelMessage processes panel_message events from the browser.
+func (o *Overlay) handlePanelMessage(event ProxyEvent) {
+	var data struct {
+		Message     string `json:"message"`
+		Attachments []struct {
+			Type     string          `json:"type"`
+			ID       string          `json:"id"`
+			Selector string          `json:"selector"`
+			Tag      string          `json:"tag"`
+			Text     string          `json:"text"`
+			Data     json.RawMessage `json:"data"`
+		} `json:"attachments"`
+		RequestNotification bool `json:"request_notification"`
+	}
+	if err := json.Unmarshal(event.Data, &data); err != nil {
+		log.Printf("Failed to parse panel_message: %v", err)
+		return
+	}
+
+	// Process attachments - separate audit and non-audit
+	auditReports, nonAuditAttachments := o.processAttachments(data.Attachments, data.Message)
+
+	// Format the message for the AI tool
+	text := o.formatPanelMessage(data.Message, auditReports, nonAuditAttachments, data.RequestNotification)
+
+	o.typeText(TypeMessage{
+		Text:    text,
+		Enter:   true,
+		Instant: true,
+	})
+}
+
+// processAttachments separates audit attachments (with LLM summarization) from regular attachments.
+func (o *Overlay) processAttachments(attachments []struct {
+	Type     string          `json:"type"`
+	ID       string          `json:"id"`
+	Selector string          `json:"selector"`
+	Tag      string          `json:"tag"`
+	Text     string          `json:"text"`
+	Data     json.RawMessage `json:"data"`
+}, userMessage string) ([]string, []attachmentInfo) {
+	var auditReports []string
+	var nonAuditAttachments []attachmentInfo
+
+	for _, att := range attachments {
+		if att.Type == "audit" && len(att.Data) > 0 {
+			report := o.processAuditAttachment(att.Data, userMessage)
+			auditReports = append(auditReports, report)
+		} else {
+			nonAuditAttachments = append(nonAuditAttachments, attachmentInfo{
+				Type:     att.Type,
+				ID:       att.ID,
+				Selector: att.Selector,
+				Tag:      att.Tag,
+				Text:     att.Text,
+			})
+		}
+	}
+	return auditReports, nonAuditAttachments
+}
+
+// processAuditAttachment processes a single audit attachment and returns a summary.
+func (o *Overlay) processAuditAttachment(data json.RawMessage, userMessage string) string {
+	var auditData struct {
+		AuditType string          `json:"auditType"`
+		Label     string          `json:"label"`
+		Summary   string          `json:"summary"`
+		Result    json.RawMessage `json:"result"`
+	}
+	if err := json.Unmarshal(data, &auditData); err != nil {
+		log.Printf("Failed to parse audit data: %v", err)
+		return fmt.Sprintf("**Audit**: (parse error)")
+	}
+
+	// Use LLM to generate quality report if available
+	if o.auditSummarizer != nil && o.auditSummarizer.IsAvailable() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		report, err := o.auditSummarizer.SummarizeAudit(ctx, overlay.AuditData{
+			AuditType: auditData.AuditType,
+			Label:     auditData.Label,
+			Summary:   auditData.Summary,
+			Result:    auditData.Result,
+		}, userMessage)
+
+		if err != nil {
+			log.Printf("Audit summarization failed: %v", err)
+			return fmt.Sprintf("**%s**: %s", auditData.Label, auditData.Summary)
+		}
+		return report
+	}
+
+	// LLM not available, use basic summary
+	return fmt.Sprintf("**%s**: %s", auditData.Label, auditData.Summary)
+}
+
+// formatPanelMessage formats the panel message with audit reports and attachments.
+func (o *Overlay) formatPanelMessage(message string, auditReports []string, attachments []attachmentInfo, requestNotification bool) string {
+	// Add default call-to-action if message is empty but there are audit reports
+	userMessage := message
+	if userMessage == "" && len(auditReports) > 0 {
+		userMessage = "Review and fix the issues found in this audit report."
+	}
+	text := "from agnt current page: " + userMessage
+
+	// Add LLM-generated audit reports
+	if len(auditReports) > 0 {
+		text += "\n\n[Audit Report]\n"
+		for _, report := range auditReports {
+			text += report + "\n"
+		}
+	}
+
+	// Add non-audit attachments
+	if len(attachments) > 0 {
+		text += "\n\n[Attachments]\n"
+		for i, att := range attachments {
+			text += fmt.Sprintf("%d. %s: %s (%s)\n", i+1, att.Type, att.Selector, att.Text)
+		}
+	}
+
+	// Add notification request if enabled
+	if requestNotification {
+		text += "\n\n[Note: When complete, please send a toast notification using: proxy {action: \"toast\", id: \"dev\", toast_message: \"Done!\", toast_type: \"success\"}]"
+	}
+
+	return text
+}
+
+// handleSketch processes sketch events from the browser.
+func (o *Overlay) handleSketch(event ProxyEvent) {
+	var data struct {
+		FilePath     string `json:"file_path"`
+		ElementCount int    `json:"element_count"`
+		Description  string `json:"description"`
+	}
+	if err := json.Unmarshal(event.Data, &data); err != nil {
+		log.Printf("Failed to parse sketch: %v", err)
+		return
+	}
+
+	var text string
+	if data.Description != "" {
+		text = data.Description
+		text += fmt.Sprintf("\n\n[Sketch: %s with %d elements]", data.FilePath, data.ElementCount)
+	} else {
+		text = fmt.Sprintf("[Sketch saved: %s with %d elements]", data.FilePath, data.ElementCount)
+	}
+
+	o.typeText(TypeMessage{
+		Text:    text,
+		Enter:   true,
+		Instant: true,
+	})
+}
+
+// handleDesignState processes design_state events when an element is selected for iteration.
+func (o *Overlay) handleDesignState(event ProxyEvent) {
+	var data struct {
+		Selector     string `json:"selector"`
+		XPath        string `json:"xpath"`
+		OriginalHTML string `json:"original_html"`
+		ContextHTML  string `json:"context_html"`
+		URL          string `json:"url"`
+		Metadata     struct {
+			Tag     string   `json:"tag"`
+			ID      string   `json:"id"`
+			Classes []string `json:"classes"`
+			Text    string   `json:"text"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal(event.Data, &data); err != nil {
+		log.Printf("Failed to parse design_state: %v", err)
+		return
+	}
+
+	text := o.formatDesignStateMessage(data.Selector, data.Metadata.Tag, data.Metadata.ID,
+		data.Metadata.Classes, data.Metadata.Text, event.ProxyID)
+
+	o.typeText(TypeMessage{
+		Text:    text,
+		Enter:   true,
+		Instant: true,
+	})
+}
+
+// formatDesignStateMessage formats the design state message for UX design sessions.
+func (o *Overlay) formatDesignStateMessage(selector, tag, id string, classes []string, textContent, proxyID string) string {
+	text := fmt.Sprintf(`[🎨 Design Mode: Premium UX Design Session]
 
 **Element Selected for Redesign:**
-- Selector: %s`, data.Selector)
-		if data.Metadata.Tag != "" {
-			text += fmt.Sprintf("\n- Element: <%s>", data.Metadata.Tag)
-			if data.Metadata.ID != "" {
-				text += fmt.Sprintf(` id="%s"`, data.Metadata.ID)
-			}
-			if len(data.Metadata.Classes) > 0 {
-				text += fmt.Sprintf(` class="%s"`, strings.Join(data.Metadata.Classes, " "))
-			}
-		}
-		if data.Metadata.Text != "" {
-			textPreview := data.Metadata.Text
-			if len(textPreview) > 50 {
-				textPreview = textPreview[:50] + "..."
-			}
-			text += fmt.Sprintf("\n- Content: %q", textPreview)
-		}
+- Selector: %s`, selector)
 
-		text += fmt.Sprintf(`
+	if tag != "" {
+		text += fmt.Sprintf("\n- Element: <%s>", tag)
+		if id != "" {
+			text += fmt.Sprintf(` id="%s"`, id)
+		}
+		if len(classes) > 0 {
+			text += fmt.Sprintf(` class="%s"`, strings.Join(classes, " "))
+		}
+	}
+	if textContent != "" {
+		textPreview := textContent
+		if len(textPreview) > 50 {
+			textPreview = textPreview[:50] + "..."
+		}
+		text += fmt.Sprintf("\n- Content: %q", textPreview)
+	}
+
+	text += fmt.Sprintf(`
 
 **Your Mission:** Act as a world-class UX designer creating premium, million-dollar designs.
 
@@ -502,68 +557,78 @@ Create 3-5 distinct, premium alternatives that:
 proxy {action: "exec", id: "%s", code: "__devtool_design.addAlternative('<your complete HTML>')"}
 
 Start by taking a screenshot to understand the visual context, then create your designs.`,
-			event.ProxyID, event.ProxyID, event.ProxyID, event.ProxyID,
-			event.ProxyID, data.Selector, event.ProxyID, event.ProxyID)
+		proxyID, proxyID, proxyID, proxyID, proxyID, selector, proxyID, proxyID)
 
-		o.typeText(TypeMessage{
-			Text:    text,
-			Enter:   true,
-			Instant: true,
-		})
+	return text
+}
 
-	case "design_request":
-		// Handle design request - user wants more alternatives
-		var data struct {
-			Selector          string `json:"selector"`
-			XPath             string `json:"xpath"`
-			CurrentHTML       string `json:"current_html"`
-			OriginalHTML      string `json:"original_html"`
-			ContextHTML       string `json:"context_html"`
-			AlternativesCount int    `json:"alternatives_count"`
-			URL               string `json:"url"`
-			Metadata          struct {
-				Tag     string   `json:"tag"`
-				ID      string   `json:"id"`
-				Classes []string `json:"classes"`
-				Text    string   `json:"text"`
-			} `json:"metadata"`
-			ChatHistory []struct {
-				Message string `json:"message"`
-				Role    string `json:"role"`
-			} `json:"chat_history"`
-		}
-		if err := json.Unmarshal(event.Data, &data); err != nil {
-			log.Printf("Failed to parse design_request: %v", err)
-			return
-		}
+// handleDesignRequest processes design_request events when user wants more alternatives.
+func (o *Overlay) handleDesignRequest(event ProxyEvent) {
+	var data struct {
+		Selector          string `json:"selector"`
+		XPath             string `json:"xpath"`
+		CurrentHTML       string `json:"current_html"`
+		OriginalHTML      string `json:"original_html"`
+		ContextHTML       string `json:"context_html"`
+		AlternativesCount int    `json:"alternatives_count"`
+		URL               string `json:"url"`
+		Metadata          struct {
+			Tag     string   `json:"tag"`
+			ID      string   `json:"id"`
+			Classes []string `json:"classes"`
+			Text    string   `json:"text"`
+		} `json:"metadata"`
+		ChatHistory []struct {
+			Message string `json:"message"`
+			Role    string `json:"role"`
+		} `json:"chat_history"`
+	}
+	if err := json.Unmarshal(event.Data, &data); err != nil {
+		log.Printf("Failed to parse design_request: %v", err)
+		return
+	}
 
-		// Format premium designer continuation request
-		text := fmt.Sprintf(`[🎨 Design Mode: More Premium Alternatives Requested]
+	text := o.formatDesignRequestMessage(data.Selector, data.AlternativesCount,
+		data.ChatHistory, data.CurrentHTML, event.ProxyID)
+
+	o.typeText(TypeMessage{
+		Text:    text,
+		Enter:   true,
+		Instant: true,
+	})
+}
+
+// formatDesignRequestMessage formats the design request message for continuation.
+func (o *Overlay) formatDesignRequestMessage(selector string, altCount int, chatHistory []struct {
+	Message string `json:"message"`
+	Role    string `json:"role"`
+}, currentHTML, proxyID string) string {
+	text := fmt.Sprintf(`[🎨 Design Mode: More Premium Alternatives Requested]
 
 **Element:** %s
 **Existing alternatives:** %d
 
-`, data.Selector, data.AlternativesCount)
+`, selector, altCount)
 
-		// Include chat history context if present
-		if len(data.ChatHistory) > 0 {
-			text += "**User feedback/requests:**\n"
-			for _, msg := range data.ChatHistory {
-				if msg.Role == "user" {
-					text += fmt.Sprintf("- %s\n", msg.Message)
-				}
+	// Include chat history context if present
+	if len(chatHistory) > 0 {
+		text += "**User feedback/requests:**\n"
+		for _, msg := range chatHistory {
+			if msg.Role == "user" {
+				text += fmt.Sprintf("- %s\n", msg.Message)
 			}
-			text += "\n"
 		}
+		text += "\n"
+	}
 
-		// Include current HTML (truncated if long)
-		currentHTML := data.CurrentHTML
-		if len(currentHTML) > 500 {
-			currentHTML = currentHTML[:500] + "..."
-		}
-		text += fmt.Sprintf("**Current design:**\n%s\n", currentHTML)
+	// Include current HTML (truncated if long)
+	html := currentHTML
+	if len(html) > 500 {
+		html = html[:500] + "..."
+	}
+	text += fmt.Sprintf("**Current design:**\n%s\n", html)
 
-		text += fmt.Sprintf(`
+	text += fmt.Sprintf(`
 **Continue as a world-class UX designer.** Create 2-3 MORE fresh alternatives that:
 - Are distinctly different from the %d existing options
 - Push creative boundaries while staying functional
@@ -576,36 +641,32 @@ Start by taking a screenshot to understand the visual context, then create your 
 
 **Add each new alternative:**
 proxy {action: "exec", id: "%s", code: "__devtool_design.addAlternative('<your fresh HTML>')"}`,
-			data.AlternativesCount, event.ProxyID, event.ProxyID, event.ProxyID, event.ProxyID)
+		altCount, proxyID, proxyID, proxyID, proxyID)
 
-		o.typeText(TypeMessage{
-			Text:    text,
-			Enter:   true,
-			Instant: true,
-		})
+	return text
+}
 
-	case "design_chat":
-		// Handle design chat - user message about the element
-		var data struct {
-			Message      string `json:"message"`
-			Selector     string `json:"selector"`
-			CurrentHTML  string `json:"current_html"`
-			OriginalHTML string `json:"original_html"`
-			URL          string `json:"url"`
-		}
-		if err := json.Unmarshal(event.Data, &data); err != nil {
-			log.Printf("Failed to parse design_chat: %v", err)
-			return
-		}
+// handleDesignChat processes design_chat events for user feedback on designs.
+func (o *Overlay) handleDesignChat(event ProxyEvent) {
+	var data struct {
+		Message      string `json:"message"`
+		Selector     string `json:"selector"`
+		CurrentHTML  string `json:"current_html"`
+		OriginalHTML string `json:"original_html"`
+		URL          string `json:"url"`
+	}
+	if err := json.Unmarshal(event.Data, &data); err != nil {
+		log.Printf("Failed to parse design_chat: %v", err)
+		return
+	}
 
-		// Include current HTML (truncated if long)
-		currentHTML := data.CurrentHTML
-		if len(currentHTML) > 400 {
-			currentHTML = currentHTML[:400] + "..."
-		}
+	// Truncate HTML if too long
+	currentHTML := data.CurrentHTML
+	if len(currentHTML) > 400 {
+		currentHTML = currentHTML[:400] + "..."
+	}
 
-		// Format design refinement request
-		text := fmt.Sprintf(`[🎨 Design Refinement Request]
+	text := fmt.Sprintf(`[🎨 Design Refinement Request]
 
 **User says:** "%s"
 
@@ -623,22 +684,14 @@ If you need more context:
 
 **Apply the refined design:**
 proxy {action: "exec", id: "%s", code: "__devtool_design.addAlternative('<refined HTML>')"}`,
-			data.Message, data.Selector, currentHTML,
-			event.ProxyID, event.ProxyID, event.ProxyID, event.ProxyID, event.ProxyID)
+		data.Message, data.Selector, currentHTML,
+		event.ProxyID, event.ProxyID, event.ProxyID, event.ProxyID, event.ProxyID)
 
-		o.typeText(TypeMessage{
-			Text:    text,
-			Enter:   true,
-			Instant: true,
-		})
-
-	default:
-		// Log unknown event types as errors - they may indicate missing handlers
-		log.Printf("[Overlay] ERROR: Unhandled proxy event type: %s (proxy_id=%s)", event.Type, event.ProxyID)
-	}
-
-	// Broadcast to connected clients
-	o.Broadcast("proxy_event", event)
+	o.typeText(TypeMessage{
+		Text:    text,
+		Enter:   true,
+		Instant: true,
+	})
 }
 
 func (o *Overlay) handleMessage(msg OverlayMessage) {

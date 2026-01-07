@@ -515,6 +515,19 @@ func (r *InputRouter) executeMenuItem(item MenuItem) {
 // DebugWin32Input enables logging of win32-input-mode parsing
 var DebugWin32Input = false
 
+// win32ParseState holds state during win32 input parsing.
+type win32ParseState struct {
+	result     []byte
+	foundWin32 bool
+}
+
+// debugLog logs a message if DebugWin32Input is enabled.
+func debugLog(format string, args ...interface{}) {
+	if DebugWin32Input {
+		fmt.Fprintf(os.Stderr, "[win32] "+format+"\r\n", args...)
+	}
+}
+
 // parseWin32InputModeInternal parses Windows Terminal win32-input-mode sequences.
 // Format: CSI Vk ; Sc ; Uc ; Kd ; Cs ; Rc _
 // Where Uc is the unicode character value we want.
@@ -522,128 +535,146 @@ var DebugWin32Input = false
 // Returns parsed bytes and any incomplete sequence at the end that should be
 // prepended to the next buffer read.
 func parseWin32InputModeInternal(data []byte) ([]byte, []byte) {
-	var result []byte
-	i := 0
-	foundWin32 := false
-
 	if DebugWin32Input && len(data) > 0 {
-		// Dump first 80 bytes of raw input
 		dump := data
 		if len(dump) > 80 {
 			dump = dump[:80]
 		}
-		fmt.Fprintf(os.Stderr, "[win32] RAW INPUT (%d bytes): %q\r\n", len(data), dump)
+		debugLog("RAW INPUT (%d bytes): %q", len(data), dump)
 	}
 
+	state := &win32ParseState{}
+	i := 0
+
 	for i < len(data) {
-		// Check for ESC byte
 		if data[i] == 0x1b {
-			// We have an ESC - check what follows
-			if DebugWin32Input {
-				if i+1 < len(data) {
-					fmt.Fprintf(os.Stderr, "[win32] ESC at i=%d, next byte=%d (0x%02x '%c')\r\n", i, data[i+1], data[i+1], printableChar(data[i+1]))
-				} else {
-					fmt.Fprintf(os.Stderr, "[win32] ESC at i=%d, no next byte (end of buffer) - saving as remainder\r\n", i)
-				}
+			newIndex, remainder := state.handleEscByte(data, i)
+			if remainder != nil {
+				return state.result, remainder
 			}
-
-			// If ESC is at the end of buffer, save it as remainder for next read
-			if i+1 >= len(data) {
-				if DebugWin32Input && foundWin32 {
-					fmt.Fprintf(os.Stderr, "[win32] input %d bytes -> output %d bytes, remainder %d bytes\r\n", len(data), len(result), len(data)-i)
-				}
-				return result, data[i:]
-			}
-
-			// Check for CSI sequence (ESC [)
-			if data[i+1] == '[' {
-				if DebugWin32Input {
-					fmt.Fprintf(os.Stderr, "[win32] CSI detected at i=%d\r\n", i)
-				}
-
-				// Check for Focus In (ESC [ I) or Focus Out (ESC [ O) - skip these
-				if i+2 < len(data) && (data[i+2] == 'I' || data[i+2] == 'O') {
-					if DebugWin32Input {
-						fmt.Fprintf(os.Stderr, "[win32] skipping focus %c sequence\r\n", data[i+2])
-					}
-					i += 3
-					continue
-				}
-
-				// Need at least one more byte after ESC[ to determine sequence type
-				if i+2 >= len(data) {
-					if DebugWin32Input {
-						fmt.Fprintf(os.Stderr, "[win32] ESC[ at end of buffer - saving as remainder\r\n")
-					}
-					return result, data[i:]
-				}
-
-				// Look for win32-input-mode sequence ending with '_'
-				end := -1
-				hitInvalidChar := false
-				for j := i + 2; j < len(data); j++ {
-					if data[j] == '_' {
-						end = j
-						break
-					}
-					// If we hit another ESC or non-sequence char, stop looking
-					if data[j] == 0x1b || (data[j] < '0' || data[j] > '9') && data[j] != ';' {
-						if DebugWin32Input {
-							fmt.Fprintf(os.Stderr, "[win32] search broke at j=%d byte=%d (0x%02x) - not a win32-input-mode sequence\r\n", j, data[j], data[j])
-						}
-						hitInvalidChar = true
-						break
-					}
-				}
-
-				if end > 0 {
-					foundWin32 = true
-					// Parse the sequence: Vk;Sc;Uc;Kd;Cs;Rc
-					seq := string(data[i+2 : end])
-					parts := splitSemicolon(seq)
-					if len(parts) >= 4 {
-						// Uc (unicode char) is the 3rd field (index 2)
-						// Kd (key down) is the 4th field (index 3)
-						uc := parseInt(parts[2])
-						kd := parseInt(parts[3])
-						// Only emit on key down (kd=1)
-						if uc > 0 && kd == 1 {
-							result = append(result, byte(uc))
-							if DebugWin32Input {
-								fmt.Fprintf(os.Stderr, "[win32] seq=%s -> byte %d (0x%02x)\r\n", seq, uc, uc)
-							}
-						} else if DebugWin32Input {
-							// Log key-up events too
-							fmt.Fprintf(os.Stderr, "[win32] seq=%s -> skipped (uc=%d, kd=%d)\r\n", seq, uc, kd)
-						}
-					}
-					i = end + 1
-					continue
-				}
-
-				// If we didn't find '_' and didn't hit an invalid char, the sequence
-				// might be incomplete (split across buffer boundary)
-				if !hitInvalidChar {
-					if DebugWin32Input {
-						fmt.Fprintf(os.Stderr, "[win32] incomplete CSI sequence at end of buffer - saving as remainder\r\n")
-					}
-					return result, data[i:]
-				}
-				// Otherwise it's not a win32-input-mode sequence, fall through to pass through
+			if newIndex != i {
+				i = newIndex
+				continue
 			}
 		}
 
 		// Regular byte - pass through
-		if DebugWin32Input {
-			fmt.Fprintf(os.Stderr, "[win32] passthrough byte %d (0x%02x) '%c'\r\n", data[i], data[i], printableChar(data[i]))
-		}
-		result = append(result, data[i])
+		debugLog("passthrough byte %d (0x%02x) '%c'", data[i], data[i], printableChar(data[i]))
+		state.result = append(state.result, data[i])
 		i++
 	}
-	if DebugWin32Input && foundWin32 {
-		fmt.Fprintf(os.Stderr, "[win32] input %d bytes -> output %d bytes\r\n", len(data), len(result))
+
+	if DebugWin32Input && state.foundWin32 {
+		debugLog("input %d bytes -> output %d bytes", len(data), len(state.result))
 	}
-	return result, nil
+	return state.result, nil
+}
+
+// handleEscByte processes an ESC byte and returns the new index and any remainder.
+// If remainder is non-nil, parsing should stop and return it.
+// If newIndex != i, the caller should continue from newIndex.
+func (s *win32ParseState) handleEscByte(data []byte, i int) (newIndex int, remainder []byte) {
+	debugLogEscPosition(data, i)
+
+	// ESC at end of buffer - save as remainder
+	if i+1 >= len(data) {
+		if DebugWin32Input && s.foundWin32 {
+			debugLog("input %d bytes -> output %d bytes, remainder %d bytes", len(data), len(s.result), len(data)-i)
+		}
+		return i, data[i:]
+	}
+
+	// Check for CSI sequence (ESC [)
+	if data[i+1] == '[' {
+		return s.handleCSISequence(data, i)
+	}
+
+	return i, nil
+}
+
+// debugLogEscPosition logs ESC byte position information.
+func debugLogEscPosition(data []byte, i int) {
+	if !DebugWin32Input {
+		return
+	}
+	if i+1 < len(data) {
+		debugLog("ESC at i=%d, next byte=%d (0x%02x '%c')", i, data[i+1], data[i+1], printableChar(data[i+1]))
+	} else {
+		debugLog("ESC at i=%d, no next byte (end of buffer) - saving as remainder", i)
+	}
+}
+
+// handleCSISequence processes a CSI sequence starting at position i.
+func (s *win32ParseState) handleCSISequence(data []byte, i int) (newIndex int, remainder []byte) {
+	debugLog("CSI detected at i=%d", i)
+
+	// Check for Focus In/Out sequences - skip them
+	if i+2 < len(data) && (data[i+2] == 'I' || data[i+2] == 'O') {
+		debugLog("skipping focus %c sequence", data[i+2])
+		return i + 3, nil
+	}
+
+	// Need at least one more byte after ESC[ to determine sequence type
+	if i+2 >= len(data) {
+		debugLog("ESC[ at end of buffer - saving as remainder")
+		return i, data[i:]
+	}
+
+	// Look for win32-input-mode sequence ending with '_'
+	end, hitInvalidChar := findWin32SequenceEnd(data, i+2)
+
+	if end > 0 {
+		s.foundWin32 = true
+		s.parseWin32Sequence(data[i+2 : end])
+		return end + 1, nil
+	}
+
+	// Incomplete sequence - save as remainder
+	if !hitInvalidChar {
+		debugLog("incomplete CSI sequence at end of buffer - saving as remainder")
+		return i, data[i:]
+	}
+
+	// Not a win32-input-mode sequence - fall through to pass through
+	return i, nil
+}
+
+// findWin32SequenceEnd looks for the ending '_' of a win32 input sequence.
+// Returns the index of '_' (or -1 if not found) and whether an invalid char was hit.
+func findWin32SequenceEnd(data []byte, start int) (end int, hitInvalidChar bool) {
+	for j := start; j < len(data); j++ {
+		if data[j] == '_' {
+			return j, false
+		}
+		// If we hit another ESC or non-sequence char, stop looking
+		if data[j] == 0x1b || (data[j] < '0' || data[j] > '9') && data[j] != ';' {
+			debugLog("search broke at j=%d byte=%d (0x%02x) - not a win32-input-mode sequence", j, data[j], data[j])
+			return -1, true
+		}
+	}
+	return -1, false
+}
+
+// parseWin32Sequence parses the win32 input sequence content and appends result.
+func (s *win32ParseState) parseWin32Sequence(seqData []byte) {
+	seq := string(seqData)
+	parts := splitSemicolon(seq)
+	if len(parts) < 4 {
+		return
+	}
+
+	// Uc (unicode char) is the 3rd field (index 2)
+	// Kd (key down) is the 4th field (index 3)
+	uc := parseInt(parts[2])
+	kd := parseInt(parts[3])
+
+	// Only emit on key down (kd=1)
+	if uc > 0 && kd == 1 {
+		s.result = append(s.result, byte(uc))
+		debugLog("seq=%s -> byte %d (0x%02x)", seq, uc, uc)
+	} else {
+		debugLog("seq=%s -> skipped (uc=%d, kd=%d)", seq, uc, kd)
+	}
 }
 
 // printableChar returns the character if printable, otherwise '.'
