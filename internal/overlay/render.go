@@ -106,6 +106,71 @@ const (
 	RegionInput = "input"
 )
 
+// StateColorCode returns the ANSI color code for a process state.
+func StateColorCode(state string) string {
+	switch state {
+	case "running":
+		return FgGreen
+	case "failed":
+		return FgRed
+	case "stopped":
+		return FgYellow
+	default:
+		return FgBrightBlack
+	}
+}
+
+// aggregatedURL contains a URL with its extracted port.
+type aggregatedURL struct {
+	URL  string
+	Port string
+}
+
+// aggregateProcessURLs collects unique URLs from running processes, deduplicating by port.
+// Prefers localhost URLs over other addresses for the same port.
+func aggregateProcessURLs(processes []ProcessInfo) []aggregatedURL {
+	urlsByPort := make(map[string]string)
+	for _, p := range processes {
+		if p.State != "running" {
+			continue
+		}
+		for _, u := range p.URLs {
+			port := extractPort(u)
+			if port == "" {
+				continue
+			}
+			if existing, ok := urlsByPort[port]; !ok {
+				urlsByPort[port] = u
+			} else if isLocalhostURL(u) && !isLocalhostURL(existing) {
+				urlsByPort[port] = u
+			}
+		}
+	}
+	result := make([]aggregatedURL, 0, len(urlsByPort))
+	for port, url := range urlsByPort {
+		result = append(result, aggregatedURL{URL: url, Port: port})
+	}
+	return result
+}
+
+// proxyDisplayInfo contains formatted proxy information for display.
+type proxyDisplayInfo struct {
+	LocalURL     string
+	TailscaleURL string
+	TunnelURL    string
+	HasErrors    bool
+}
+
+// formatProxyDisplay formats proxy URLs for display.
+func formatProxyDisplay(proxy ProxyInfo) proxyDisplayInfo {
+	return proxyDisplayInfo{
+		LocalURL:     "http://" + normalizeListenAddr(proxy.ListenAddr),
+		TailscaleURL: proxy.TailscaleURL,
+		TunnelURL:    proxy.TunnelURL,
+		HasErrors:    proxy.HasErrors,
+	}
+}
+
 // Renderer handles drawing to the terminal.
 type Renderer struct {
 	out          io.Writer
@@ -199,31 +264,12 @@ func (r *Renderer) DrawIndicator(status Status) {
 
 	// Running processes count and collect process URLs (deduplicated by port)
 	runningCount := 0
-	urlsByPort := make(map[string]string) // port -> best URL (prefer localhost)
 	for _, p := range status.Processes {
 		if p.State == "running" {
 			runningCount++
-			// Collect URLs, keeping only one per port (prefer localhost)
-			for _, u := range p.URLs {
-				port := extractPort(u)
-				if port == "" {
-					continue
-				}
-				existing, ok := urlsByPort[port]
-				if !ok {
-					urlsByPort[port] = u
-				} else if isLocalhostURL(u) && !isLocalhostURL(existing) {
-					// Prefer localhost over other addresses
-					urlsByPort[port] = u
-				}
-			}
 		}
 	}
-	// Convert map to slice
-	var processURLs []string
-	for _, u := range urlsByPort {
-		processURLs = append(processURLs, u)
-	}
+	aggregatedURLs := aggregateProcessURLs(status.Processes)
 	if runningCount > 0 {
 		parts = append(parts, fmt.Sprintf("%s%s %d proc%s", FgCyan, IconProcess, runningCount, Reset))
 	}
@@ -265,8 +311,8 @@ func (r *Renderer) DrawIndicator(status Status) {
 	}
 
 	// Add process URLs (normalized to use localhost, underlined for clickability)
-	for _, u := range processURLs {
-		normalized := normalizeProcessURL(u)
+	for _, au := range aggregatedURLs {
+		normalized := normalizeProcessURL(au.URL)
 		if normalized != "" {
 			urlParts = append(urlParts, fmt.Sprintf("%s%s%s", FgCyan+Underline, normalized, Reset))
 		}
@@ -913,12 +959,7 @@ func (r *Renderer) DrawMenuWithProcesses(menu Menu, selectedIndex int, processes
 			}
 			r.moveTo(currentRow, startCol+1)
 
-			stateColor := FgBrightBlack
-			if proc.State == "running" {
-				stateColor = FgGreen
-			} else if proc.State == "failed" {
-				stateColor = FgRed
-			}
+			stateColor := StateColorCode(proc.State)
 
 			label := fmt.Sprintf(" [%s%d%s] %s %s(%s)%s",
 				FgCyan, i+1, Reset,

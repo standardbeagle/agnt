@@ -280,100 +280,24 @@ func runWithPTY(ctx context.Context, args []string, socketPath string, sessionCo
 
 	// Register overlay endpoint with daemon so proxies forward events to us
 	// Use ResilientClient for automatic reconnection with overlay re-registration
-	var resilientClient *daemon.ResilientClient
-	var sessionRegistered bool
-	var heartbeatStop chan struct{}
-	go func() {
-		daemonSocketPath, _ := rootCmd.Flags().GetString("socket")
-
-		overlayEndpoint := netOverlay.SocketPath()
-
-		config := daemon.DefaultResilientClientConfig()
-		if daemonSocketPath != "" {
-			config.AutoStartConfig.SocketPath = daemonSocketPath
+	daemonSocketPath, _ := rootCmd.Flags().GetString("socket")
+	daemonHandle := startDaemonSession(ctx, daemonSessionConfig{
+		SessionCode:     sessionCode,
+		OverlayEndpoint: netOverlay.SocketPath(),
+		ProjectPath:     projectPath,
+		Command:         command,
+		CmdArgs:         cmdArgs,
+		SocketPath:      daemonSocketPath,
+		SkipAutostart:   skipAutostart,
+	}, func(errs []string) {
+		// Log autostart errors prominently
+		fmt.Fprintf(os.Stderr, "\r\n[agnt] \x1b[31mAutostart errors:\x1b[0m\r\n")
+		for _, e := range errs {
+			fmt.Fprintf(os.Stderr, "  - %s\r\n", e)
 		}
-
-		// Re-register overlay and session when connection is restored after daemon restart
-		config.OnReconnect = func(client *daemon.Client) error {
-			_, err := client.OverlaySet(overlayEndpoint)
-			if err != nil {
-				return err
-			}
-			// Re-register session
-			_, _ = client.SessionRegister(sessionCode, overlayEndpoint, projectPath, command, cmdArgs)
-			return nil
-		}
-
-		// OnDisconnect and OnReconnectFailed are left nil since we don't want
-		// to pollute the terminal output with daemon connection status messages
-
-		resilientClient = daemon.NewResilientClient(config)
-		if err := resilientClient.Connect(); err != nil {
-			return // Daemon connection is best-effort, non-critical
-		}
-
-		// Register overlay endpoint on initial connect (best-effort)
-		_, _ = resilientClient.OverlaySet(overlayEndpoint)
-
-		// Register session with daemon (autostart happens server-side)
-		result, err := resilientClient.SessionRegister(sessionCode, overlayEndpoint, projectPath, command, cmdArgs)
-		if err == nil {
-			sessionRegistered = true
-
-			// Log autostart results
-			if result != nil && !skipAutostart {
-				// Extract autostart result from nested structure
-				if autostart, ok := result["autostart"].(map[string]interface{}); ok {
-					// Log any autostart errors prominently
-					if errs, ok := autostart["errors"].([]interface{}); ok && len(errs) > 0 {
-						fmt.Fprintf(os.Stderr, "\r\n[agnt] \x1b[31mAutostart errors:\x1b[0m\r\n")
-						for _, e := range errs {
-							if str, ok := e.(string); ok {
-								fmt.Fprintf(os.Stderr, "  - %s\r\n", str)
-							}
-						}
-						fmt.Fprintf(os.Stderr, "\r\n")
-					}
-				}
-			}
-
-			// Start heartbeat goroutine (30-second interval)
-			heartbeatStop = make(chan struct{})
-			go func() {
-				ticker := time.NewTicker(30 * time.Second)
-				defer ticker.Stop()
-				for {
-					select {
-					case <-heartbeatStop:
-						return
-					case <-ctx.Done():
-						return
-					case <-ticker.C:
-						if resilientClient != nil && resilientClient.IsConnected() {
-							_ = resilientClient.SessionHeartbeat(sessionCode)
-						}
-					}
-				}
-			}()
-		} else {
-			fmt.Fprintf(os.Stderr, "[agnt] Session registration failed: %v\r\n", err)
-		}
-	}()
-
-	// Clean up resilient client and session when PTY session ends
-	defer func() {
-		// Stop heartbeat
-		if heartbeatStop != nil {
-			close(heartbeatStop)
-		}
-		// Unregister session
-		if resilientClient != nil && sessionRegistered {
-			_ = resilientClient.SessionUnregister(sessionCode)
-		}
-		if resilientClient != nil {
-			resilientClient.Close()
-		}
-	}()
+		fmt.Fprintf(os.Stderr, "\r\n")
+	})
+	defer daemonHandle.Close()
 
 	// Create terminal overlay (indicator bar and menus)
 	var termOverlay *overlay.Overlay
@@ -554,15 +478,11 @@ func runWithPTY(ctx context.Context, args []string, socketPath string, sessionCo
 		activityCfg := overlay.DefaultActivityMonitorConfig()
 		activityCfg.OnStateChange = func(state overlay.ActivityState) {
 			// Broadcast activity state to daemon (which forwards to proxies)
-			if resilientClient != nil && resilientClient.IsConnected() {
-				_ = resilientClient.BroadcastActivity(state == overlay.ActivityActive)
-			}
+			daemonHandle.BroadcastActivity(state == overlay.ActivityActive)
 		}
 		activityCfg.OnOutputPreview = func(lines []string) {
 			// Broadcast output preview to daemon (which forwards to browser indicator)
-			if resilientClient != nil && resilientClient.IsConnected() {
-				_ = resilientClient.BroadcastOutputPreview(lines)
-			}
+			daemonHandle.BroadcastOutputPreview(lines)
 		}
 		activityMonitor = overlay.NewActivityMonitor(outputDest, activityCfg)
 
