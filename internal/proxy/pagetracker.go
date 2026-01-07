@@ -14,6 +14,19 @@ const (
 	MaxMutationsPerSession    = 100
 )
 
+// appendBounded appends an item to a slice while maintaining a maximum length.
+// If the slice is at capacity, it shifts elements left (FIFO) and appends to the end.
+// Returns the updated slice.
+func appendBounded[T any](slice []T, item T, maxLen int) []T {
+	if len(slice) < maxLen {
+		return append(slice, item)
+	}
+	// Shift and append to maintain most recent
+	copy(slice, slice[1:])
+	slice[maxLen-1] = item
+	return slice
+}
+
 // PageSession represents a browser tab session and its navigation history.
 // All navigations within the same browser tab are grouped together.
 type PageSession struct {
@@ -66,6 +79,26 @@ func NewPageTracker(maxSessions int, sessionTimeout time.Duration) *PageTracker 
 	}
 }
 
+// ResolveSession finds a session by browser session ID with URL fallback.
+// Returns empty string if no session found.
+func (pt *PageTracker) ResolveSession(browserSessionID, url string) string {
+	if sessionID := pt.findSessionByBrowserSession(browserSessionID); sessionID != "" {
+		return sessionID
+	}
+	return pt.findSessionByURL(url)
+}
+
+// updateSessionWithBrowserID updates the session's browser mapping if not set,
+// updates the last activity timestamp, and stores the session.
+func (pt *PageTracker) updateSessionWithBrowserID(sessionID string, session *PageSession, browserSessionID string) {
+	if session.BrowserSession == "" && browserSessionID != "" {
+		session.BrowserSession = browserSessionID
+		pt.browserSessionToPage.Store(browserSessionID, sessionID)
+	}
+	session.LastActivity = time.Now()
+	pt.sessions.Store(sessionID, session)
+}
+
 // TrackHTTPRequest processes an HTTP request and associates it with a page session.
 func (pt *PageTracker) TrackHTTPRequest(entry HTTPLogEntry) {
 	// Extract browser session ID from cookie
@@ -86,11 +119,7 @@ func (pt *PageTracker) TrackHTTPRequest(entry HTTPLogEntry) {
 // TrackError associates a frontend error with a page session.
 // browserSessionID is the unique ID from the browser tab's sessionStorage.
 func (pt *PageTracker) TrackError(err FrontendError, browserSessionID string) {
-	sessionID := pt.findSessionByBrowserSession(browserSessionID)
-	if sessionID == "" {
-		// Fall back to URL matching if browser session not found
-		sessionID = pt.findSessionByURL(err.URL)
-	}
+	sessionID := pt.ResolveSession(browserSessionID, err.URL)
 	if sessionID == "" {
 		return
 	}
@@ -101,26 +130,14 @@ func (pt *PageTracker) TrackError(err FrontendError, browserSessionID string) {
 	}
 
 	session := val.(*PageSession)
-
-	// Update browser session mapping if not set
-	if session.BrowserSession == "" && browserSessionID != "" {
-		session.BrowserSession = browserSessionID
-		pt.browserSessionToPage.Store(browserSessionID, sessionID)
-	}
-
 	session.Errors = append(session.Errors, err)
-	session.LastActivity = time.Now()
-	pt.sessions.Store(sessionID, session)
+	pt.updateSessionWithBrowserID(sessionID, session, browserSessionID)
 }
 
 // TrackPerformance associates performance metrics with a page session.
 // browserSessionID is the unique ID from the browser tab's sessionStorage.
 func (pt *PageTracker) TrackPerformance(perf PerformanceMetric, browserSessionID string) {
-	sessionID := pt.findSessionByBrowserSession(browserSessionID)
-	if sessionID == "" {
-		// Fall back to URL matching if browser session not found
-		sessionID = pt.findSessionByURL(perf.URL)
-	}
+	sessionID := pt.ResolveSession(browserSessionID, perf.URL)
 	if sessionID == "" {
 		return
 	}
@@ -131,26 +148,14 @@ func (pt *PageTracker) TrackPerformance(perf PerformanceMetric, browserSessionID
 	}
 
 	session := val.(*PageSession)
-
-	// Update browser session mapping if not set
-	if session.BrowserSession == "" && browserSessionID != "" {
-		session.BrowserSession = browserSessionID
-		pt.browserSessionToPage.Store(browserSessionID, sessionID)
-	}
-
 	session.Performance = &perf
-	session.LastActivity = time.Now()
-	pt.sessions.Store(sessionID, session)
+	pt.updateSessionWithBrowserID(sessionID, session, browserSessionID)
 }
 
 // TrackInteraction associates a user interaction event with a page session.
 // browserSessionID is the unique ID from the browser tab's sessionStorage.
 func (pt *PageTracker) TrackInteraction(interaction InteractionEvent, browserSessionID string) {
-	sessionID := pt.findSessionByBrowserSession(browserSessionID)
-	if sessionID == "" {
-		// Fall back to URL matching if browser session not found
-		sessionID = pt.findSessionByURL(interaction.URL)
-	}
+	sessionID := pt.ResolveSession(browserSessionID, interaction.URL)
 	if sessionID == "" {
 		return
 	}
@@ -162,34 +167,14 @@ func (pt *PageTracker) TrackInteraction(interaction InteractionEvent, browserSes
 
 	session := val.(*PageSession)
 	session.InteractionCount++
-
-	// Update browser session mapping if not set
-	if session.BrowserSession == "" && browserSessionID != "" {
-		session.BrowserSession = browserSessionID
-		pt.browserSessionToPage.Store(browserSessionID, sessionID)
-	}
-
-	// Maintain bounded history using circular buffer behavior
-	if len(session.Interactions) < MaxInteractionsPerSession {
-		session.Interactions = append(session.Interactions, interaction)
-	} else {
-		// Shift and append to maintain most recent
-		copy(session.Interactions, session.Interactions[1:])
-		session.Interactions[MaxInteractionsPerSession-1] = interaction
-	}
-
-	session.LastActivity = time.Now()
-	pt.sessions.Store(sessionID, session)
+	session.Interactions = appendBounded(session.Interactions, interaction, MaxInteractionsPerSession)
+	pt.updateSessionWithBrowserID(sessionID, session, browserSessionID)
 }
 
 // TrackMutation associates a DOM mutation event with a page session.
 // browserSessionID is the unique ID from the browser tab's sessionStorage.
 func (pt *PageTracker) TrackMutation(mutation MutationEvent, browserSessionID string) {
-	sessionID := pt.findSessionByBrowserSession(browserSessionID)
-	if sessionID == "" {
-		// Fall back to URL matching if browser session not found
-		sessionID = pt.findSessionByURL(mutation.URL)
-	}
+	sessionID := pt.ResolveSession(browserSessionID, mutation.URL)
 	if sessionID == "" {
 		return
 	}
@@ -201,24 +186,8 @@ func (pt *PageTracker) TrackMutation(mutation MutationEvent, browserSessionID st
 
 	session := val.(*PageSession)
 	session.MutationCount++
-
-	// Update browser session mapping if not set
-	if session.BrowserSession == "" && browserSessionID != "" {
-		session.BrowserSession = browserSessionID
-		pt.browserSessionToPage.Store(browserSessionID, sessionID)
-	}
-
-	// Maintain bounded history using circular buffer behavior
-	if len(session.Mutations) < MaxMutationsPerSession {
-		session.Mutations = append(session.Mutations, mutation)
-	} else {
-		// Shift and append to maintain most recent
-		copy(session.Mutations, session.Mutations[1:])
-		session.Mutations[MaxMutationsPerSession-1] = mutation
-	}
-
-	session.LastActivity = time.Now()
-	pt.sessions.Store(sessionID, session)
+	session.Mutations = appendBounded(session.Mutations, mutation, MaxMutationsPerSession)
+	pt.updateSessionWithBrowserID(sessionID, session, browserSessionID)
 }
 
 // GetActiveSessions returns all currently active page sessions.
