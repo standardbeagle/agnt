@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/protocol"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -2383,6 +2384,7 @@ func getTime(m map[string]interface{}, key string) time.Time {
 
 // formatDaemonError parses structured errors from daemon and creates helpful LLM-friendly messages.
 func formatDaemonError(err error, toolName string) *mcp.CallToolResult {
+	debug.Log("tools", "daemon error in %s: %v", toolName, err)
 	errStr := err.Error()
 
 	// Try to extract and parse structured JSON error from daemon response

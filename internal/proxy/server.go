@@ -24,6 +24,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/protocol"
 
 	"github.com/gorilla/websocket"
@@ -111,8 +112,10 @@ func DefaultPortForURL(targetURL string) int {
 
 // NewProxyServer creates a new reverse proxy server.
 func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
+	debug.Log("proxy", "NewProxyServer: id=%s target=%s port=%d", config.ID, config.TargetURL, config.ListenPort)
 	targetURL, err := url.Parse(config.TargetURL)
 	if err != nil {
+		debug.Error("proxy", "invalid target URL %q: %v", config.TargetURL, err)
 		return nil, fmt.Errorf("invalid target URL: %w", err)
 	}
 
@@ -261,10 +264,12 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 
 // Start begins the proxy server.
 func (ps *ProxyServer) Start(ctx context.Context) error {
+	debug.Log("proxy", "Start: id=%s addr=%s", ps.ID, ps.ListenAddr)
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
 	if ps.running.Load() {
+		debug.Log("proxy", "Start: proxy %s already running", ps.ID)
 		return fmt.Errorf("proxy server already running")
 	}
 
@@ -280,13 +285,16 @@ func (ps *ProxyServer) Start(ctx context.Context) error {
 	if err != nil {
 		// If port is in use, try to find an available port
 		if isAddressInUse(err) {
+			debug.Log("proxy", "address %s in use, trying auto-assign", ps.ListenAddr)
 			// Try port 0 to get an auto-assigned port
 			listener, err = net.Listen("tcp", ":0")
 			if err != nil {
+				debug.Error("proxy", "failed to find available port: %v", err)
 				cancel()
 				return fmt.Errorf("failed to find available port: %w", err)
 			}
 		} else {
+			debug.Error("proxy", "failed to listen on %s: %v", ps.ListenAddr, err)
 			cancel()
 			return fmt.Errorf("failed to listen on %s: %w", ps.ListenAddr, err)
 		}
@@ -425,10 +433,12 @@ func isAddressInUse(err error) bool {
 
 // Stop gracefully stops the proxy server.
 func (ps *ProxyServer) Stop(ctx context.Context) error {
+	debug.Log("proxy", "Stop: id=%s", ps.ID)
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
 	if !ps.running.Load() {
+		debug.Log("proxy", "Stop: proxy %s not running", ps.ID)
 		return fmt.Errorf("proxy server not running")
 	}
 
@@ -1008,8 +1018,11 @@ func isTransientConnectionError(errStr string) bool {
 
 // handleWebSocket handles WebSocket connections for frontend metrics.
 func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	debug.Log("proxy", "WebSocket connection attempt from %s to proxy %s", r.RemoteAddr, ps.ID)
+
 	conn, err := ps.wsUpgrader.Upgrade(w, r, nil)
 	if err != nil {
+		debug.Log("proxy", "WebSocket upgrade failed for proxy %s: %v", ps.ID, err)
 		return
 	}
 	defer conn.Close()
@@ -1017,7 +1030,12 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Store connection for sending messages
 	connID := fmt.Sprintf("conn-%d", time.Now().UnixNano())
 	ps.wsConns.Store(connID, conn)
-	defer ps.wsConns.Delete(connID)
+	debug.Log("proxy", "WebSocket client connected: proxy=%s connID=%s remote=%s", ps.ID, connID, r.RemoteAddr)
+
+	defer func() {
+		ps.wsConns.Delete(connID)
+		debug.Log("proxy", "WebSocket client disconnected: proxy=%s connID=%s", ps.ID, connID)
+	}()
 
 	// Cleanup voice session on disconnect
 	defer func() {
@@ -1821,6 +1839,7 @@ func (ps *ProxyServer) saveLargeResult(execID string, result string) (string, er
 // ExecuteJavaScript sends JavaScript code to all connected clients for execution.
 // Returns the execution ID and a channel that will receive the result.
 func (ps *ProxyServer) ExecuteJavaScript(code string) (string, <-chan *ExecutionResult, error) {
+	debug.Log("proxy", "ExecuteJavaScript: proxy=%s code_len=%d", ps.ID, len(code))
 	execID := fmt.Sprintf("exec-%d", time.Now().UnixNano())
 
 	// Create result channel for this execution
@@ -1852,6 +1871,7 @@ func (ps *ProxyServer) ExecuteJavaScript(code string) (string, <-chan *Execution
 	})
 
 	if sentCount == 0 {
+		debug.Log("proxy", "ExecuteJavaScript: no connected clients for proxy %s", ps.ID)
 		ps.pendingExecs.Delete(execID)
 		close(resultChan)
 		return execID, nil, fmt.Errorf("no connected clients")
@@ -1891,6 +1911,16 @@ func (ps *ProxyServer) BroadcastActivityState(active bool) int {
 // BroadcastToast sends a toast notification to all connected browser clients.
 // Returns the number of clients that received the toast.
 func (ps *ProxyServer) BroadcastToast(toastType, title, message string, duration int) (int, error) {
+	debug.Log("proxy", "BroadcastToast called: proxy=%s type=%s title=%q message=%q", ps.ID, toastType, title, message)
+
+	// Count connected clients first for debugging
+	connCount := 0
+	ps.wsConns.Range(func(key, value interface{}) bool {
+		connCount++
+		return true
+	})
+	debug.Log("proxy", "BroadcastToast: %d WebSocket clients connected to proxy %s", connCount, ps.ID)
+
 	// Build toast message
 	toast := map[string]interface{}{
 		"type": "toast",
@@ -1908,24 +1938,30 @@ func (ps *ProxyServer) BroadcastToast(toastType, title, message string, duration
 
 	messageBytes, err := json.Marshal(toast)
 	if err != nil {
+		debug.Error("proxy", "BroadcastToast: failed to marshal: %v", err)
 		return 0, fmt.Errorf("failed to marshal toast: %w", err)
 	}
 
 	// Send to all connected clients
 	sentCount := 0
+	failCount := 0
 	ps.wsConns.Range(func(key, value interface{}) bool {
 		conn := value.(*websocket.Conn)
 		err := conn.WriteMessage(websocket.TextMessage, messageBytes)
 		if err == nil {
 			sentCount++
+			debug.Log("proxy", "BroadcastToast: sent to client %v", key)
+		} else {
+			failCount++
+			debug.Log("proxy", "BroadcastToast: failed to send to client %v: %v", key, err)
 		}
 		return true
 	})
 
-	if sentCount == 0 {
-		return 0, fmt.Errorf("no connected clients")
-	}
+	debug.Log("proxy", "BroadcastToast: sent=%d failed=%d total=%d", sentCount, failCount, connCount)
 
+	// Return success even with no clients - caller can check sent_count
+	// This makes toast a "best effort" operation that doesn't fail builds/workflows
 	return sentCount, nil
 }
 
@@ -2133,9 +2169,14 @@ func parsePanelMessage(data map[string]interface{}, id string, timestamp time.Ti
 	// Parse payload
 	if payload, ok := data["payload"].(map[string]interface{}); ok {
 		msg.Message = getStringField(payload, "message")
+		msg.RequestNotification = getBoolField(payload, "request_notification")
 
-		// Parse attachments
-		if attachments, ok := payload["attachments"].([]interface{}); ok {
+		// Parse attachments - check both "attachments" and "references" (JS uses "references")
+		attachments, ok := payload["attachments"].([]interface{})
+		if !ok {
+			attachments, ok = payload["references"].([]interface{})
+		}
+		if ok {
 			for _, attData := range attachments {
 				if am, ok := attData.(map[string]interface{}); ok {
 					att := PanelAttachment{
