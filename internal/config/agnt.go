@@ -36,6 +36,7 @@ type AgntConfig struct {
 type ScriptConfig struct {
 	Command     string            `kdl:"command"`
 	Args        []string          `kdl:"args"`
+	Run         string            `kdl:"run"` // Shell command string (executed via sh -c)
 	Autostart   bool              `kdl:"autostart"`
 	URLMatchers []string          `kdl:"url-matchers"` // Patterns for URL detection: "local:{url}", "network:{url}"
 	Env         map[string]string `kdl:"env"`
@@ -364,7 +365,13 @@ func WriteDefaultAgntConfig(path string) error {
 
 // Scripts to run (use daemon process management)
 scripts {
-    // Example: dev server
+    // Example: Simple shell command (recommended for quick commands)
+    // serve {
+    //     run "python3 -m http.server 9500"
+    //     autostart true
+    // }
+
+    // Example: dev server with command/args (for complex configurations)
     // dev {
     //     command "npm"
     //     args "run" "dev"
@@ -376,8 +383,7 @@ scripts {
 
     // Example: API server
     // api {
-    //     command "go"
-    //     args "run" "./cmd/server"
+    //     run "go run ./cmd/server"
     //     autostart true
     // }
 }

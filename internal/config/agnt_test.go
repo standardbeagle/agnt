@@ -171,6 +171,41 @@ proxy "dev" {
 	assert.True(t, ok)
 }
 
+func TestParseAgntConfigWithRun(t *testing.T) {
+	input := `scripts {
+    serve {
+        run "python3 -m http.server 9500"
+        autostart true
+    }
+    build {
+        run "npm run build && npm run test"
+        autostart false
+    }
+}`
+
+	cfg, err := ParseAgntConfig(input)
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+
+	// Verify scripts
+	assert.Len(t, cfg.Scripts, 2, "should have 2 scripts")
+
+	serve, ok := cfg.Scripts["serve"]
+	assert.True(t, ok, "should have 'serve' script")
+	if ok {
+		assert.Equal(t, "python3 -m http.server 9500", serve.Run, "serve.Run should match")
+		assert.True(t, serve.Autostart, "serve should have Autostart=true")
+		assert.Empty(t, serve.Command, "serve.Command should be empty when using run")
+	}
+
+	build, ok := cfg.Scripts["build"]
+	assert.True(t, ok, "should have 'build' script")
+	if ok {
+		assert.Equal(t, "npm run build && npm run test", build.Run, "build.Run should match")
+		assert.False(t, build.Autostart, "build should have Autostart=false")
+	}
+}
+
 func TestFindAgntConfigFile(t *testing.T) {
 	// Create temp directory with nested subdirectory
 	tmpDir := t.TempDir()
