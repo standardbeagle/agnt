@@ -25,6 +25,7 @@
   var session = window.__devtool_session;
   var store = window.__devtool_store;
   var content = window.__devtool_content;
+  var wireframe = window.__devtool_wireframe;
 
   // Main DevTool API
   window.__devtool = {
@@ -307,6 +308,58 @@
       extractHeadings: function() { return { error: 'Content module not loaded' }; },
       buildSitemap: function() { return { error: 'Content module not loaded' }; },
       extractStructuredData: function() { return { error: 'Content module not loaded' }; }
+    },
+
+    // ========================================================================
+    // WIREFRAME GENERATION
+    // ========================================================================
+
+    /**
+     * Generate an SVG wireframe from the current DOM.
+     *
+     * Creates a simplified visual representation of the page layout,
+     * useful for understanding page structure without screenshots.
+     *
+     * @param {object} [options] - Configuration options
+     * @param {number} [options.maxDepth=10] - Maximum DOM depth to traverse
+     * @param {number} [options.minWidth=10] - Minimum element width to include
+     * @param {number} [options.minHeight=10] - Minimum element height to include
+     * @param {boolean} [options.includeText=true] - Include text labels
+     * @param {boolean} [options.includeClasses=false] - Include class names in labels
+     * @param {boolean} [options.viewportOnly=false] - Only include visible elements
+     * @param {boolean} [options.simplified=true] - Use simplified wireframe style
+     * @param {string} [options.colorScheme='mono'] - 'mono', 'semantic', or 'depth'
+     * @param {number} [options.fontSize=10] - Font size for labels
+     * @param {number} [options.maxElements=500] - Maximum elements to include
+     * @param {string[]} [options.excludeSelectors] - CSS selectors to exclude
+     * @param {string[]} [options.includeSelectors] - Only include these selectors
+     *
+     * @returns {object} Result with svg string, dimensions, and element list
+     *
+     * Examples:
+     *   __devtool.generateWireframe()
+     *   __devtool.generateWireframe({viewportOnly: true})
+     *   __devtool.generateWireframe({colorScheme: 'semantic'})
+     *   __devtool.generateWireframe({maxDepth: 5, includeText: false})
+     */
+    generateWireframe: wireframe ? wireframe.generate : function() {
+      return { error: 'Wireframe module not loaded' };
+    },
+
+    /**
+     * Generate a minimal wireframe (fewer elements, no labels).
+     * Good for getting a quick structural overview.
+     */
+    generateMinimalWireframe: wireframe ? wireframe.minimal : function() {
+      return { error: 'Wireframe module not loaded' };
+    },
+
+    /**
+     * Generate a semantic wireframe (color-coded by element type).
+     * Colors indicate element semantics: header, nav, main, form, etc.
+     */
+    generateSemanticWireframe: wireframe ? wireframe.semantic : function() {
+      return { error: 'Wireframe module not loaded' };
     },
 
     // ========================================================================
@@ -814,6 +867,7 @@
   console.log('[DevTool] Usage:');
   console.log('  __devtool.log("message", "info", {key: "value"})');
   console.log('  __devtool.screenshot("my-screenshot")');
+  console.log('  __devtool.generateWireframe() - Generate SVG wireframe of DOM');
   console.log('  __devtool.auditAccessibility({mode:"standard", detailLevel:"compact"})');
   console.log('  __devtool.auditPerformance({detailLevel:"summary"})');
   console.log('  __devtool.interactions.getLastClickContext()');
