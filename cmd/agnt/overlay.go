@@ -321,6 +321,16 @@ type attachmentInfo struct {
 	Selector string
 	Tag      string
 	Text     string
+	Summary  string
+	Area     *screenshotArea
+}
+
+// screenshotArea represents coordinates for a screenshot region.
+type screenshotArea struct {
+	X      int `json:"x"`
+	Y      int `json:"y"`
+	Width  int `json:"width"`
+	Height int `json:"height"`
 }
 
 // handlePanelMessage processes panel_message events from the browser.
@@ -333,6 +343,8 @@ func (o *Overlay) handlePanelMessage(event ProxyEvent) {
 			Selector string          `json:"selector"`
 			Tag      string          `json:"tag"`
 			Text     string          `json:"text"`
+			Summary  string          `json:"summary"`
+			Area     *screenshotArea `json:"area"`
 			Data     json.RawMessage `json:"data"`
 		} `json:"attachments"`
 		RequestNotification bool `json:"request_notification"`
@@ -362,6 +374,8 @@ func (o *Overlay) processAttachments(attachments []struct {
 	Selector string          `json:"selector"`
 	Tag      string          `json:"tag"`
 	Text     string          `json:"text"`
+	Summary  string          `json:"summary"`
+	Area     *screenshotArea `json:"area"`
 	Data     json.RawMessage `json:"data"`
 }, userMessage string) ([]string, []attachmentInfo) {
 	var auditReports []string
@@ -378,6 +392,8 @@ func (o *Overlay) processAttachments(attachments []struct {
 				Selector: att.Selector,
 				Tag:      att.Tag,
 				Text:     att.Text,
+				Summary:  att.Summary,
+				Area:     att.Area,
 			})
 		}
 	}
@@ -441,7 +457,38 @@ func (o *Overlay) formatPanelMessage(message string, auditReports []string, atta
 	if len(attachments) > 0 {
 		text += "\n\n[Attachments]\n"
 		for i, att := range attachments {
-			text += fmt.Sprintf("%d. %s: %s (%s)\n", i+1, att.Type, att.Selector, att.Text)
+			text += fmt.Sprintf("%d. %s", i+1, att.Type)
+			switch att.Type {
+			case "screenshot":
+				if att.Area != nil {
+					text += fmt.Sprintf(" (area: %dx%d at %d,%d)", att.Area.Width, att.Area.Height, att.Area.X, att.Area.Y)
+				}
+				if att.Summary != "" {
+					text += fmt.Sprintf(": %s", att.Summary)
+				}
+			case "element":
+				if att.Selector != "" {
+					text += fmt.Sprintf(": %s", att.Selector)
+				}
+				if att.Tag != "" {
+					text += fmt.Sprintf(" (%s)", att.Tag)
+				}
+				if att.Text != "" {
+					text += fmt.Sprintf(" - %q", truncateText(att.Text, 50))
+				}
+			case "sketch":
+				if att.Summary != "" {
+					text += fmt.Sprintf(": %s", att.Summary)
+				}
+			default:
+				if att.Selector != "" {
+					text += fmt.Sprintf(": %s", att.Selector)
+				}
+				if att.Text != "" {
+					text += fmt.Sprintf(" (%s)", att.Text)
+				}
+			}
+			text += "\n"
 		}
 	}
 
@@ -451,6 +498,14 @@ func (o *Overlay) formatPanelMessage(message string, auditReports []string, atta
 	}
 
 	return text
+}
+
+// truncateText truncates text to maxLen characters, adding "..." if truncated.
+func truncateText(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }
 
 // handleSketch processes sketch events from the browser.

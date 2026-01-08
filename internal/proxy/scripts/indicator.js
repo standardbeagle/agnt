@@ -1549,8 +1549,18 @@
       timestamp: Date.now(),
       payload: {
         message: fullMessage,
-        references: state.attachments.map(function(a) {
-          return { id: a.id, type: a.type };
+        attachments: state.attachments.map(function(a) {
+          // Send full attachment data including area/selector info
+          return {
+            id: a.id,
+            type: a.type,
+            selector: a.data && a.data.selector,
+            tag: a.data && a.data.tag,
+            text: a.data && a.data.text,
+            area: a.data && a.data.area,
+            summary: a.summary,
+            data: a.data
+          };
         }),
         url: window.location.href,
         request_notification: state.requestNotification
