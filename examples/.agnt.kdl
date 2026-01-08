@@ -3,7 +3,13 @@
 
 // Scripts to run via the daemon process manager
 scripts {
-    // Example: Next.js dev server
+    // Example: Simple shell command using 'run' (recommended for quick commands)
+    serve {
+        run "python3 -m http.server 9500"
+        autostart true
+    }
+
+    // Example: Next.js dev server using command/args
     dev {
         command "npm"
         args "run" "dev"
@@ -22,10 +28,9 @@ scripts {
         cwd "./backend"
     }
 
-    // Example: Tailwind CSS watcher
+    // Example: Tailwind CSS watcher (shell command with pipes and redirects)
     css {
-        command "npx"
-        args "tailwindcss" "-i" "./src/input.css" "-o" "./dist/output.css" "--watch"
+        run "npx tailwindcss -i ./src/input.css -o ./dist/output.css --watch"
         autostart true
     }
 }
