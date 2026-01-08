@@ -6,6 +6,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/debug"
 )
 
 const appName = "agnt"
@@ -34,9 +35,17 @@ var rootCmd = &cobra.Command{
 	},
 }
 
+var debugMode bool
+var debugLogFile string
+
 func init() {
 	// Global flags
 	rootCmd.PersistentFlags().String("socket", "", "Socket path for daemon communication")
+	rootCmd.PersistentFlags().BoolVarP(&debugMode, "debug", "d", false, "Enable debug logging (also: AGNT_DEBUG=1)")
+	rootCmd.PersistentFlags().StringVar(&debugLogFile, "debug-log", "", "Write debug logs to file (in ~/.cache/agnt/logs/)")
+
+	// Initialize debug mode from flags before command execution
+	cobra.OnInitialize(initDebug)
 
 	// Add subcommands
 	rootCmd.AddCommand(mcpCmd)
@@ -47,6 +56,26 @@ func init() {
 
 	// Custom version output that includes daemon version
 	rootCmd.SetVersionTemplate(getVersionString())
+}
+
+func initDebug() {
+	// Enable debug if flag is set (env var is checked in debug.init())
+	if debugMode {
+		debug.Enable()
+	}
+
+	// Set up log file if specified
+	if debugLogFile != "" {
+		if err := debug.SetLogFile(debugLogFile); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to set debug log file: %v\n", err)
+		} else if debug.IsEnabled() {
+			debug.Log("main", "Debug logging to file: %s", debug.GetLogFilePath())
+		}
+	}
+
+	if debug.IsEnabled() {
+		debug.Log("main", "Debug mode enabled (version: %s)", appVersion)
+	}
 }
 
 func main() {

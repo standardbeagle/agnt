@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/go-cli-server/client"
 )
@@ -79,7 +80,12 @@ func NewClientWithPath(socketPath string) *Client {
 
 // Connect connects to the daemon.
 func (c *Client) Connect() error {
-	return c.conn.EnsureConnected()
+	debug.Log("client", "Connect: socket=%s", c.conn.SocketPath())
+	err := c.conn.EnsureConnected()
+	if err != nil {
+		debug.Log("client", "Connect failed: %v", err)
+	}
+	return err
 }
 
 // Close closes the connection to the daemon.
@@ -106,12 +112,15 @@ func (c *Client) Ping() error {
 // Uses STATUS command to get full daemon info (Hub's INFO is minimal).
 // Falls back to INFO if STATUS is not available (for backwards compatibility).
 func (c *Client) Info() (*DaemonInfo, error) {
+	debug.Log("client", "Info: requesting daemon status")
 	// Try STATUS first (returns full daemon info)
 	result, err := c.conn.Request(protocol.VerbStatus).JSON()
 	if err != nil {
+		debug.Log("client", "STATUS failed, falling back to INFO: %v", err)
 		// Fall back to INFO for older daemons that don't have STATUS
 		result, err = c.conn.Request(protocol.VerbInfo).JSON()
 		if err != nil {
+			debug.Log("client", "Info failed: %v", err)
 			return nil, err
 		}
 	}

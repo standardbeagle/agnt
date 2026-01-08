@@ -6,6 +6,7 @@ import (
 
 	goclient "github.com/standardbeagle/go-cli-server/client"
 
+	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/protocol"
 )
 
@@ -105,14 +106,17 @@ func NewResilientClient(config ResilientClientConfig) *ResilientClient {
 	// Set up version checking if configured
 	if config.ClientVersion != "" {
 		resilientCfg.VersionCheck = func(conn *goclient.Conn) error {
+			debug.Log("client", "checking daemon version (client=%s)", config.ClientVersion)
 			// Get daemon info
 			var info DaemonInfo
 			if err := conn.Request("INFO").JSONInto(&info); err != nil {
+				debug.Error("client", "failed to get daemon version: %v", err)
 				return errors.New("failed to get daemon version: " + err.Error())
 			}
 
 			// Check if versions match
 			if !goclient.VersionsMatch(config.ClientVersion, info.Version) {
+				debug.Log("client", "version mismatch: client=%s daemon=%s", config.ClientVersion, info.Version)
 				// Versions don't match - call callback if configured
 				if config.OnVersionMismatch != nil {
 					return config.OnVersionMismatch(config.ClientVersion, info.Version)
@@ -124,6 +128,7 @@ func NewResilientClient(config ResilientClientConfig) *ResilientClient {
 				return errors.New("version mismatch: client=" + config.ClientVersion +
 					" daemon=" + info.Version + " (daemon stopped, will restart with new version)")
 			}
+			debug.Log("client", "version check passed: %s", info.Version)
 
 			return nil
 		}
