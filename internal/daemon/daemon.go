@@ -15,6 +15,7 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/automation"
 	"github.com/standardbeagle/agnt/internal/config"
+	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/project"
 	"github.com/standardbeagle/agnt/internal/proxy"
 	"github.com/standardbeagle/agnt/internal/store"
@@ -292,6 +293,7 @@ func (d *Daemon) Start() error {
 	d.shutdownMu.Lock()
 	if d.shutdown {
 		d.shutdownMu.Unlock()
+		debug.Log("daemon", "Start() called but daemon already shutdown")
 		return errors.New("daemon already shutdown")
 	}
 	d.shutdownMu.Unlock()
@@ -310,6 +312,7 @@ func (d *Daemon) Start() error {
 
 	// Start the Hub (handles socket creation, accept loop, client management)
 	if err := d.hub.Start(); err != nil {
+		debug.Error("daemon", "failed to start hub: %v", err)
 		return fmt.Errorf("failed to start hub: %w", err)
 	}
 	d.started = time.Now()
@@ -436,10 +439,12 @@ func (d *Daemon) Stop(ctx context.Context) error {
 	}
 
 	if err := d.tunnelm.Shutdown(ctx); err != nil {
+		debug.Error("daemon", "tunnel manager shutdown error: %v", err)
 		errs = append(errs, fmt.Errorf("tunnel manager: %w", err))
 	}
 
 	if err := d.proxym.Shutdown(ctx); err != nil {
+		debug.Error("daemon", "proxy manager shutdown error: %v", err)
 		errs = append(errs, fmt.Errorf("proxy manager: %w", err))
 	}
 
@@ -907,7 +912,11 @@ func (d *Daemon) autostartScript(ctx context.Context, name string, script *confi
 	var command string
 	var args []string
 
-	if script.Command != "" {
+	if script.Run != "" {
+		// Shell command string - execute via sh -c
+		command = "sh"
+		args = []string{"-c", script.Run}
+	} else if script.Command != "" {
 		// Explicit command specified
 		command = script.Command
 		args = script.Args
@@ -915,6 +924,7 @@ func (d *Daemon) autostartScript(ctx context.Context, name string, script *confi
 		// No command - run as package.json script via detected package manager
 		proj, err := project.Detect(projectPath)
 		if err != nil {
+			debug.Error("daemon", "project detection failed for %s: %v", projectPath, err)
 			return fmt.Errorf("project detection failed: %v", err)
 		}
 
@@ -938,6 +948,7 @@ func (d *Daemon) autostartScript(ctx context.Context, name string, script *confi
 			command = "python"
 			args = []string{"-m", name}
 		default:
+			debug.Error("daemon", "cannot run script %q: unknown project type %s", name, proj.Type)
 			return fmt.Errorf("cannot run script %q: unknown project type and no command specified", name)
 		}
 	}

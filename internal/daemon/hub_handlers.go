@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/automation"
+	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/project"
 	"github.com/standardbeagle/agnt/internal/proxy"
 	"github.com/standardbeagle/agnt/internal/tunnel"
@@ -25,6 +26,19 @@ import (
 	// Alias for direct process access
 	process "github.com/standardbeagle/go-cli-server/process"
 )
+
+// writeErr writes an error response and logs it for debugging.
+func writeErr(conn *hubpkg.Connection, code hubproto.ErrorCode, component, format string, args ...interface{}) error {
+	msg := fmt.Sprintf(format, args...)
+	debug.Log(component, "error: %s (code=%v)", msg, code)
+	return conn.WriteErr(code, msg)
+}
+
+// writeStructuredErr writes a structured error response and logs it for debugging.
+func writeStructuredErr(conn *hubpkg.Connection, component string, err *hubproto.StructuredError) error {
+	debug.Log(component, "error: %s - %s (code=%v)", err.Command, err.Message, err.Code)
+	return conn.WriteStructuredErr(err)
+}
 
 // normalizePath normalizes a path for consistent comparison.
 func normalizePath(path string) string {
@@ -200,6 +214,7 @@ func (d *Daemon) registerAgntCommands() {
 // hubHandleProc handles the PROC command (overrides Hub's built-in).
 // Adds URL tracking and project-based filtering.
 func (d *Daemon) hubHandleProc(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	debug.Log("daemon", "PROC %s: args=%v", cmd.SubVerb, cmd.Args)
 	switch cmd.SubVerb {
 	case "STATUS":
 		return d.hubHandleProcStatus(ctx, conn, cmd)
@@ -214,7 +229,7 @@ func (d *Daemon) hubHandleProc(ctx context.Context, conn *hubpkg.Connection, cmd
 	case "CLEANUP-PORT":
 		return d.hubHandleProcCleanupPort(ctx, conn, cmd)
 	case "":
-		return conn.WriteStructuredErr(&hubproto.StructuredError{
+		return writeStructuredErr(conn, "daemon", &hubproto.StructuredError{
 			Code:         hubproto.ErrMissingParam,
 			Message:      "action required",
 			Command:      "PROC",
@@ -222,7 +237,7 @@ func (d *Daemon) hubHandleProc(ctx context.Context, conn *hubpkg.Connection, cmd
 			ValidActions: []string{"STATUS", "OUTPUT", "STOP", "RESTART", "LIST", "CLEANUP-PORT"},
 		})
 	default:
-		return conn.WriteStructuredErr(&hubproto.StructuredError{
+		return writeStructuredErr(conn, "daemon", &hubproto.StructuredError{
 			Code:         hubproto.ErrInvalidAction,
 			Message:      "unknown action",
 			Command:      "PROC",
@@ -500,6 +515,7 @@ func formatDuration(d time.Duration) string {
 
 // hubHandleDetect handles the DETECT command.
 func (d *Daemon) hubHandleDetect(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	debug.Log("daemon", "DETECT: args=%v", cmd.Args)
 	path := "."
 	if len(cmd.Args) > 0 {
 		path = cmd.Args[0]
@@ -527,6 +543,7 @@ func (d *Daemon) hubHandleDetect(ctx context.Context, conn *hubpkg.Connection, c
 
 // hubHandleProxy handles the PROXY command and its sub-verbs.
 func (d *Daemon) hubHandleProxy(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	debug.Log("daemon", "PROXY %s: args=%v", cmd.SubVerb, cmd.Args)
 	switch cmd.SubVerb {
 	case "START":
 		return d.hubHandleProxyStart(ctx, conn, cmd)
@@ -543,7 +560,7 @@ func (d *Daemon) hubHandleProxy(ctx context.Context, conn *hubpkg.Connection, cm
 	case "TOAST":
 		return d.hubHandleProxyToast(conn, cmd)
 	default:
-		return conn.WriteStructuredErr(&hubproto.StructuredError{
+		return writeStructuredErr(conn, "daemon", &hubproto.StructuredError{
 			Code:         hubproto.ErrInvalidArgs,
 			Message:      "unknown PROXY sub-command",
 			Command:      "PROXY",
@@ -808,19 +825,26 @@ func (d *Daemon) hubHandleProxyExec(conn *hubpkg.Connection, cmd *hubproto.Comma
 
 // hubHandleProxyToast handles PROXY TOAST command.
 func (d *Daemon) hubHandleProxyToast(conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	debug.Log("daemon", "PROXY TOAST: args=%v dataLen=%d", cmd.Args, len(cmd.Data))
+
 	if len(cmd.Args) < 1 {
+		debug.Log("daemon", "PROXY TOAST: missing proxy ID")
 		return conn.WriteErr(hubproto.ErrInvalidArgs, "PROXY TOAST requires: <id>")
 	}
 
 	proxyID := cmd.Args[0]
+	debug.Log("daemon", "PROXY TOAST: proxyID=%s", proxyID)
 
 	p, err := d.getSessionScopedProxy(conn, proxyID)
 	if err != nil {
+		debug.Log("daemon", "PROXY TOAST: proxy not found: %v", err)
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
+	debug.Log("daemon", "PROXY TOAST: found proxy %s at %s", p.ID, p.ListenAddr)
 
 	// Toast config is in the data payload
 	if len(cmd.Data) == 0 {
+		debug.Log("daemon", "PROXY TOAST: no data payload")
 		return conn.WriteErr(hubproto.ErrInvalidArgs, "PROXY TOAST requires toast config")
 	}
 
@@ -831,6 +855,7 @@ func (d *Daemon) hubHandleProxyToast(conn *hubpkg.Connection, cmd *hubproto.Comm
 		Duration int    `json:"toast_duration"`
 	}
 	if err := json.Unmarshal(cmd.Data, &toast); err != nil {
+		debug.Log("daemon", "PROXY TOAST: failed to unmarshal: %v", err)
 		return conn.WriteErr(hubproto.ErrInvalidArgs, "invalid toast config: "+err.Error())
 	}
 
@@ -838,13 +863,19 @@ func (d *Daemon) hubHandleProxyToast(conn *hubpkg.Connection, cmd *hubproto.Comm
 		toast.Type = "info"
 	}
 	if toast.Message == "" {
+		debug.Log("daemon", "PROXY TOAST: empty message")
 		return conn.WriteErr(hubproto.ErrInvalidArgs, "toast_message is required")
 	}
 
+	debug.Log("daemon", "PROXY TOAST: sending type=%s title=%q message=%q", toast.Type, toast.Title, toast.Message)
+
 	sentCount, err := p.BroadcastToast(toast.Type, toast.Title, toast.Message, toast.Duration)
 	if err != nil {
+		debug.Log("daemon", "PROXY TOAST: broadcast error: %v", err)
 		return conn.WriteErr(hubproto.ErrInternal, err.Error())
 	}
+
+	debug.Log("daemon", "PROXY TOAST: sent to %d clients", sentCount)
 
 	resp := map[string]interface{}{
 		"success":    true,
@@ -857,6 +888,7 @@ func (d *Daemon) hubHandleProxyToast(conn *hubpkg.Connection, cmd *hubproto.Comm
 
 // hubHandleProxyLog handles the PROXYLOG command and its sub-verbs.
 func (d *Daemon) hubHandleProxyLog(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	debug.Log("daemon", "PROXYLOG %s: args=%v", cmd.SubVerb, cmd.Args)
 	switch cmd.SubVerb {
 	case "QUERY", "":
 		return d.hubHandleProxyLogQuery(conn, cmd)
@@ -867,7 +899,7 @@ func (d *Daemon) hubHandleProxyLog(ctx context.Context, conn *hubpkg.Connection,
 	case "STATS":
 		return d.hubHandleProxyLogStats(conn, cmd)
 	default:
-		return conn.WriteStructuredErr(&hubproto.StructuredError{
+		return writeStructuredErr(conn, "daemon", &hubproto.StructuredError{
 			Code:         hubproto.ErrInvalidArgs,
 			Message:      "unknown PROXYLOG sub-command",
 			Command:      "PROXYLOG",
@@ -962,6 +994,7 @@ func (d *Daemon) hubHandleProxyLogStats(conn *hubpkg.Connection, cmd *hubproto.C
 
 // hubHandleCurrentPage handles the CURRENTPAGE command.
 func (d *Daemon) hubHandleCurrentPage(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	debug.Log("daemon", "CURRENTPAGE %s: args=%v", cmd.SubVerb, cmd.Args)
 	switch cmd.SubVerb {
 	case "LIST", "":
 		return d.hubHandleCurrentPageList(conn, cmd)
@@ -1071,6 +1104,7 @@ func (d *Daemon) hubHandleCurrentPageClear(conn *hubpkg.Connection, cmd *hubprot
 
 // hubHandleOverlay handles the OVERLAY command.
 func (d *Daemon) hubHandleOverlay(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	debug.Log("daemon", "OVERLAY %s: args=%v", cmd.SubVerb, cmd.Args)
 	switch cmd.SubVerb {
 	case "SET":
 		return d.hubHandleOverlaySet(conn, cmd)
@@ -1225,6 +1259,7 @@ func (d *Daemon) hubHandleOverlayOutputPreview(conn *hubpkg.Connection, cmd *hub
 
 // hubHandleTunnel handles the TUNNEL command.
 func (d *Daemon) hubHandleTunnel(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	debug.Log("daemon", "TUNNEL %s: args=%v", cmd.SubVerb, cmd.Args)
 	switch cmd.SubVerb {
 	case "START":
 		return d.hubHandleTunnelStart(ctx, conn, cmd)
@@ -1410,6 +1445,7 @@ func (d *Daemon) hubHandleTunnelList(conn *hubpkg.Connection, cmd *hubproto.Comm
 
 // hubHandleChaos handles the CHAOS command.
 func (d *Daemon) hubHandleChaos(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	debug.Log("daemon", "CHAOS %s: args=%v", cmd.SubVerb, cmd.Args)
 	switch cmd.SubVerb {
 	case "ENABLE":
 		return d.hubHandleChaosEnable(conn, cmd)
@@ -1696,6 +1732,7 @@ func (d *Daemon) hubHandleChaosListPresets(conn *hubpkg.Connection) error {
 
 // hubHandleSession handles the SESSION command.
 func (d *Daemon) hubHandleSession(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	debug.Log("daemon", "SESSION %s: args=%v", cmd.SubVerb, cmd.Args)
 	switch cmd.SubVerb {
 	case "REGISTER":
 		return d.hubHandleSessionRegister(conn, cmd)
@@ -2131,6 +2168,7 @@ func (d *Daemon) sendMessageToOverlay(socketPath string, message string) error {
 
 // hubHandleStore handles the STORE command and its sub-verbs.
 func (d *Daemon) hubHandleStore(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	debug.Log("daemon", "STORE %s: args=%v", cmd.SubVerb, cmd.Args)
 	switch cmd.SubVerb {
 	case "GET":
 		return d.hubHandleStoreGet(conn, cmd)
@@ -2359,6 +2397,7 @@ func (d *Daemon) hubHandleStoreGetAll(conn *hubpkg.Connection, cmd *hubproto.Com
 // hubHandleStatus handles the STATUS command.
 // Returns full daemon info (Hub's built-in INFO only returns minimal data).
 func (d *Daemon) hubHandleStatus(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	debug.Log("daemon", "STATUS: args=%v", cmd.Args)
 	info := d.Info()
 	data, err := json.Marshal(info)
 	if err != nil {
@@ -2369,6 +2408,7 @@ func (d *Daemon) hubHandleStatus(ctx context.Context, conn *hubpkg.Connection, c
 
 // hubHandleAutomate handles the AUTOMATE command and its sub-verbs.
 func (d *Daemon) hubHandleAutomate(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	debug.Log("daemon", "AUTOMATE %s: args=%v", cmd.SubVerb, cmd.Args)
 	switch cmd.SubVerb {
 	case "PROCESS":
 		return d.hubHandleAutomateProcess(ctx, conn, cmd)
@@ -2576,6 +2616,7 @@ func (d *Daemon) hubHandleAutomateBatch(ctx context.Context, conn *hubpkg.Connec
 // hubHandleStopAll handles the STOP-ALL command.
 // Stops all running processes, proxies, and tunnels without shutting down the daemon.
 func (d *Daemon) hubHandleStopAll(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	debug.Log("daemon", "STOP-ALL: args=%v", cmd.Args)
 	// Count resources before stopping
 	procsBefore := len(d.hub.ProcessManager().List())
 	proxiesBefore := len(d.proxym.List())
@@ -2599,6 +2640,7 @@ func (d *Daemon) hubHandleStopAll(ctx context.Context, conn *hubpkg.Connection, 
 // hubHandleRestartAll handles the RESTART-ALL command.
 // Stops all resources and restarts them with the same configuration.
 func (d *Daemon) hubHandleRestartAll(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	debug.Log("daemon", "RESTART-ALL: args=%v", cmd.Args)
 	// Capture running resources before stop
 	runningProcs := d.hub.ProcessManager().List()
 	runningProxies := d.proxym.List()
