@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/project"
 	"github.com/standardbeagle/go-cli-server/process"
 
@@ -455,6 +456,7 @@ func handleCleanupPort(ctx context.Context, pm *process.ProcessManager, input Pr
 }
 
 func errorResult(msg string) *mcp.CallToolResult {
+	debug.Log("tools", "error: %s", msg)
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{
 			&mcp.TextContent{Text: msg},
