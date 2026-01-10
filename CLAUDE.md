@@ -7,7 +7,7 @@ Project guidance for Claude Code when working with this repository.
 **agnt** - Browser superpowers for AI coding agents. Bridges AI agents and the browser for real-time debugging, UI wireframing, and visual feedback.
 
 **Key Info**:
-- **Version**: 0.7.12
+- **Version**: 0.8.0
 - **Language**: Go 1.24.2
 - **Protocol**: MCP over stdio
 - **Repository**: https://github.com/standardbeagle/agnt
