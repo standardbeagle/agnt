@@ -1,7 +1,13 @@
 // Example .agnt.kdl configuration
 // Place this file in your project root to auto-start scripts and proxies
+//
+// Full documentation: https://standardbeagle.github.io/agnt/getting-started
+// Generate interactively: Run /setup-project in Claude Code
 
-// Scripts to run via the daemon process manager
+// ============================================================================
+// SCRIPTS SECTION
+// Define scripts to run via the daemon process manager
+// ============================================================================
 scripts {
     // Example: Simple shell command using 'run' (recommended for quick commands)
     serve {
@@ -18,14 +24,21 @@ scripts {
             NODE_ENV "development"
             PORT "3000"
         }
+        // URL matchers: patterns to detect URLs in script output
+        // Used for automatic proxy creation when linked via 'script' in proxies
+        // {url} placeholder matches the URL pattern
+        url-matchers "(Local|Network):\\s*{url}"
     }
 
-    // Example: API server
+    // Example: API server with working directory
     api {
         command "go"
         args "run" "./cmd/server"
         autostart true
         cwd "./backend"
+        env {
+            GIN_MODE "debug"
+        }
     }
 
     // Example: Tailwind CSS watcher (shell command with pipes and redirects)
@@ -35,36 +48,147 @@ scripts {
     }
 }
 
-// Reverse proxies with traffic logging and browser instrumentation
+// ============================================================================
+// PROXIES SECTION
+// Configure reverse proxies with traffic logging and browser instrumentation
+// ============================================================================
 proxies {
-    // Main frontend proxy
+    // Link proxy to script - auto-creates when script outputs URLs
     frontend {
-        target "http://localhost:3000"
+        script "dev"
+        // No autostart needed - created automatically when URLs detected
+    }
+
+    // Direct target URL with explicit autostart
+    api {
+        target "http://localhost:8080"
+        autostart true
+        max-log-size 2000  // Max log entries to keep (default: 1000)
+    }
+
+    // Shorthand: port only (defaults to localhost)
+    backend {
+        port 4000
         autostart true
     }
 
-    // API proxy on custom port
-    api {
-        target "http://localhost:8080"
-        port 18080
+    // Full specification with custom host
+    external {
+        host "192.168.1.100"
+        port 3000
         autostart true
-        max-log-size 2000
     }
 }
 
-// Hook configuration for browser notifications
+// ============================================================================
+// HOOKS SECTION
+// Configure browser notifications when AI agent responds
+// ============================================================================
 hooks {
-    // What to do when Claude responds
     on-response {
         toast true      // Show toast notification in browser
-        indicator true  // Flash the bug indicator
+        indicator true  // Flash the floating bug indicator
         sound false     // Play notification sound (requires browser permission)
     }
 }
 
-// Toast notification appearance
+// ============================================================================
+// TOAST SECTION
+// Customize toast notification appearance
+// ============================================================================
 toast {
-    duration 4000           // How long to show (ms)
-    position "bottom-right" // Corner: top-right, top-left, bottom-right, bottom-left
-    max-visible 3           // Max simultaneous toasts
+    duration 4000           // Display duration in milliseconds
+    position "bottom-right" // Position: top-right, top-left, bottom-right, bottom-left
+    max-visible 3           // Maximum simultaneous toasts
 }
+
+// ============================================================================
+// SCRIPT OPTIONS REFERENCE
+// ============================================================================
+// run          - Shell command string (executed via sh -c)
+// command      - Executable command (alternative to run)
+// args         - Arguments for command (space-separated in KDL)
+// autostart    - Start automatically when opening project (true/false)
+// env          - Environment variables block
+// cwd          - Working directory for the script
+// url-matchers - Patterns to detect URLs in output (for proxy auto-creation)
+
+// ============================================================================
+// PROXY OPTIONS REFERENCE
+// ============================================================================
+// script       - Link to a script name for URL auto-detection
+// target       - Full target URL (e.g., "http://localhost:3000")
+// url          - Alternative to target for the full URL
+// port         - Target port (shorthand for http://localhost:PORT)
+// host         - Target host (default: localhost, used with port)
+// autostart    - Start automatically (true/false)
+// max-log-size - Maximum log entries to keep (default: 1000)
+
+// ============================================================================
+// FRAMEWORK-SPECIFIC EXAMPLES
+// ============================================================================
+
+// --- Wails (Go Desktop App) ---
+// scripts {
+//     dev {
+//         run "wails dev"
+//         autostart true
+//         // Wails outputs: "Using DevServer URL: http://localhost:34115"
+//         url-matchers "DevServer URL:\\s*{url}"
+//     }
+// }
+// proxies {
+//     app { script "dev" }
+// }
+
+// --- Astro ---
+// scripts {
+//     dev {
+//         run "npm run dev"
+//         autostart true
+//         // Astro outputs: "┃ Local    http://localhost:4321/"
+//         url-matchers "Local\\s+{url}"
+//     }
+// }
+// proxies {
+//     site { script "dev" }
+// }
+
+// --- Jekyll ---
+// scripts {
+//     serve {
+//         run "bundle exec jekyll serve"
+//         autostart true
+//         // Jekyll outputs: "Server address: http://127.0.0.1:4000/"
+//         url-matchers "Server address:\\s*{url}"
+//     }
+// }
+// proxies {
+//     docs { script "serve" }
+// }
+
+// --- Hugo ---
+// scripts {
+//     serve {
+//         run "hugo server -D"
+//         autostart true
+//         // Hugo outputs: "Web Server is available at http://localhost:1313/"
+//         url-matchers "Web Server.*available at {url}"
+//     }
+// }
+// proxies {
+//     site { script "serve" }
+// }
+
+// --- Vite / Vue / React / Svelte ---
+// scripts {
+//     dev {
+//         run "npm run dev"
+//         autostart true
+//         // Vite outputs: "Local:   http://localhost:5173/"
+//         url-matchers "(Local|Network):\\s*{url}"
+//     }
+// }
+// proxies {
+//     app { script "dev" }
+// }

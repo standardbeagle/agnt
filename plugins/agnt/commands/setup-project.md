@@ -35,7 +35,18 @@ If yes, ask:
 - **Which script**: Which script to link the proxy to (usually the dev server)
 - Note: Proxies will automatically start when the script outputs URLs
 
-### 4. Write .agnt.kdl Configuration
+### 4. Ask About Browser Notifications
+
+Use AskUserQuestion to ask:
+
+**Question**: "Do you want browser notifications when your AI agent responds?"
+
+Options:
+- **Toast notifications**: Show popup messages in the browser
+- **Indicator flash**: Flash the floating bug indicator
+- **Sound alerts**: Play notification sounds (requires browser permission)
+
+### 5. Write .agnt.kdl Configuration
 
 Create or update `.agnt.kdl` in the project root with KDL format:
 
@@ -46,7 +57,7 @@ Create or update `.agnt.kdl` in the project root with KDL format:
 // Scripts to auto-start on session open
 scripts {
     dev {
-        auto-start true
+        autostart true
         // URL matchers filter which URLs to create proxies for
         // Next.js outputs both Local and Network URLs - match both
         url-matchers "(Local|Network):\\s*{url}"
@@ -61,16 +72,32 @@ proxies {
     }
 }
 
-// For fully-specified proxies (explicit port/URL), use auto-start:
+// Hook configuration for browser notifications
+hooks {
+    on-response {
+        toast true      // Show toast notification in browser
+        indicator true  // Flash the bug indicator
+        sound false     // Play notification sound
+    }
+}
+
+// Toast notification settings
+toast {
+    duration 4000           // Duration in ms
+    position "bottom-right" // top-right, top-left, bottom-right, bottom-left
+    max-visible 3           // Max simultaneous toasts
+}
+
+// For fully-specified proxies (explicit port/URL), use autostart:
 // proxies {
 //     api {
 //         port 8080
-//         auto-start true
+//         autostart true
 //     }
 // }
 ```
 
-### 5. Explain What Happens
+### 6. Explain What Happens
 
 After creating the config, inform the user:
 
@@ -102,14 +129,14 @@ After creating the config, inform the user:
 
 7. **To restart a service**: Use the MCP tool `proc {action: "restart", process_id: "dev"}` or access via CTRL+Y menu
 
-## Example Configuration
+## Example Configurations
 
-For a typical Next.js project:
+### Next.js Project
 
 ```kdl
 scripts {
     dev {
-        auto-start true
+        autostart true
         url-matchers "(Local|Network):\\s*{url}"
     }
 }
@@ -119,20 +146,32 @@ proxies {
         script "dev"
     }
 }
+
+hooks {
+    on-response {
+        toast true
+        indicator true
+    }
+}
 ```
 
-For a project with multiple services:
+### Multiple Services (Frontend + API)
 
 ```kdl
 scripts {
     dev {
-        auto-start true
+        run "npm run dev"
+        autostart true
         url-matchers "(Local|Network):\\s*{url}"
     }
 
     api {
-        auto-start true
-        url-matchers "listening on port {url}"
+        command "go"
+        args "run" "./cmd/server"
+        autostart true
+        env {
+            GIN_MODE "debug"
+        }
     }
 }
 
@@ -142,22 +181,125 @@ proxies {
     }
 
     backend {
-        script "api"
+        target "http://localhost:8080"
+        autostart true
+        max-log-size 2000
     }
 }
 ```
 
-For a project with explicit proxy ports:
+### Explicit Proxy Ports
 
 ```kdl
 scripts {
-    dev auto-start=true
+    dev {
+        run "npm run dev"
+        autostart true
+    }
 }
 
 proxies {
     api {
         port 8080
-        auto-start true
+        autostart true
+    }
+}
+
+toast {
+    duration 5000
+    position "top-right"
+}
+```
+
+### Python Development
+
+```kdl
+scripts {
+    serve {
+        run "python3 -m http.server 9500"
+        autostart true
+    }
+
+    flask {
+        command "flask"
+        args "run" "--debug"
+        autostart true
+        env {
+            FLASK_APP "app.py"
+            FLASK_ENV "development"
+        }
+        cwd "./backend"
+    }
+}
+
+proxies {
+    app {
+        target "http://localhost:5000"
+        autostart true
+    }
+}
+```
+
+### Wails (Go Desktop App)
+
+```kdl
+scripts {
+    dev {
+        run "wails dev"
+        autostart true
+        // Wails outputs: "Using DevServer URL: http://localhost:34115"
+        url-matchers "DevServer URL:\\s*{url}"
+    }
+}
+
+proxies {
+    app {
+        script "dev"
+    }
+}
+
+hooks {
+    on-response {
+        toast true
+        indicator true
+    }
+}
+```
+
+### Astro
+
+```kdl
+scripts {
+    dev {
+        run "npm run dev"
+        autostart true
+        // Astro outputs: "┃ Local    http://localhost:4321/"
+        url-matchers "Local\\s+{url}"
+    }
+}
+
+proxies {
+    site {
+        script "dev"
+    }
+}
+```
+
+### Jekyll
+
+```kdl
+scripts {
+    serve {
+        run "bundle exec jekyll serve"
+        autostart true
+        // Jekyll outputs: "Server address: http://127.0.0.1:4000/"
+        url-matchers "Server address:\\s*{url}"
+    }
+}
+
+proxies {
+    docs {
+        script "serve"
     }
 }
 ```

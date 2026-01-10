@@ -230,24 +230,69 @@ __devtool.sketch.toJSON()  // Export sketch data
 
 ## Configuration
 
-Create `.agnt.kdl` in your project root:
+Create `.agnt.kdl` in your project root to auto-start scripts, proxies, and configure browser notifications:
 
 ```kdl
+// Scripts to run via daemon process manager
 scripts {
     dev {
-        command "npm"
-        args "run" "dev"
+        run "npm run dev"           // Shell command (recommended)
         autostart true
+        url-matchers "(Local|Network):\\s*{url}"
+    }
+
+    api {
+        command "go"                // Or use command + args
+        args "run" "./cmd/server"
+        autostart true
+        env {
+            GIN_MODE "debug"
+        }
+        cwd "./backend"
     }
 }
 
+// Reverse proxies with traffic logging
 proxies {
     frontend {
-        target "http://localhost:3000"
+        script "dev"               // Link to script for URL auto-detection
+    }
+
+    backend {
+        target "http://localhost:8080"
         autostart true
+        max-log-size 2000
     }
 }
+
+// Browser notifications when AI responds
+hooks {
+    on-response {
+        toast true                 // Show toast notification
+        indicator true             // Flash bug indicator
+        sound false                // Play notification sound
+    }
+}
+
+// Toast appearance
+toast {
+    duration 4000
+    position "bottom-right"        // top-right, top-left, bottom-right, bottom-left
+    max-visible 3
+}
 ```
+
+Run `/setup-project` in Claude Code to interactively generate this configuration.
+
+**Framework-specific URL matchers:**
+
+| Framework | url-matchers |
+|-----------|-------------|
+| Next.js / Vite / React | `"(Local\|Network):\\s*{url}"` |
+| Wails | `"DevServer URL:\\s*{url}"` |
+| Astro | `"Local\\s+{url}"` |
+| Jekyll | `"Server address:\\s*{url}"` |
+| Hugo | `"Web Server.*available at {url}"` |
 
 ## Architecture
 

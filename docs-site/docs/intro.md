@@ -121,6 +121,32 @@ proxy {action: "start", id: "app", target_url: "http://localhost:3000"}
 # Now your AI sees everything
 ```
 
+**Or configure once with `.agnt.kdl`:**
+```kdl title=".agnt.kdl"
+scripts {
+    dev {
+        run "npm run dev"
+        autostart true
+    }
+}
+
+proxies {
+    app {
+        target "http://localhost:3000"
+        autostart true
+    }
+}
+
+hooks {
+    on-response {
+        toast true      // Browser notifications
+        indicator true  // Flash indicator
+    }
+}
+```
+
+Then run `agnt run claude` and everything starts automatically.
+
 Ready for more? See the [Getting Started](/getting-started) guide.
 
 ---
