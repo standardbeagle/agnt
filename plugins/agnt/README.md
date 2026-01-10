@@ -204,6 +204,8 @@ When running with `agnt run`:
 
 ## Configuration
 
+### MCP Configuration
+
 Example MCP configuration (`.mcp.json`):
 
 ```json
@@ -213,6 +215,248 @@ Example MCP configuration (`.mcp.json`):
     "args": ["mcp"],
     "env": {}
   }
+}
+```
+
+### Project Configuration (.agnt.kdl)
+
+Create a `.agnt.kdl` file in your project root to configure auto-start scripts, proxies, and browser notifications.
+
+#### Scripts Section
+
+Define scripts to run via the daemon process manager:
+
+```kdl
+scripts {
+    // Simple shell command (recommended for quick commands)
+    serve {
+        run "python3 -m http.server 9500"
+        autostart true
+    }
+
+    // Command with arguments (for complex configurations)
+    dev {
+        command "npm"
+        args "run" "dev"
+        autostart true
+        env {
+            NODE_ENV "development"
+            PORT "3000"
+        }
+        cwd "./frontend"
+    }
+
+    // URL matchers for automatic proxy creation
+    api {
+        run "go run ./cmd/server"
+        autostart true
+        url-matchers "listening on {url}" "server started at {url}"
+    }
+}
+```
+
+**Script Options:**
+| Option | Description |
+|--------|-------------|
+| `run` | Shell command string (executed via `sh -c`) |
+| `command` | Executable command (alternative to `run`) |
+| `args` | Arguments for command (space-separated in KDL) |
+| `autostart` | Start automatically when opening project (`true`/`false`) |
+| `env` | Environment variables block |
+| `cwd` | Working directory for the script |
+| `url-matchers` | Patterns to detect URLs in output (for proxy auto-creation) |
+
+#### Proxies Section
+
+Configure reverse proxies with traffic logging and browser instrumentation:
+
+```kdl
+proxies {
+    // Link to script - proxy created when script outputs URLs
+    frontend {
+        script "dev"
+    }
+
+    // Direct target URL
+    api {
+        target "http://localhost:8080"
+        autostart true
+        max-log-size 2000
+    }
+
+    // Shorthand: port only (defaults to localhost)
+    backend {
+        port 4000
+        autostart true
+    }
+
+    // Full specification with custom host
+    external {
+        host "192.168.1.100"
+        port 3000
+        autostart true
+    }
+}
+```
+
+**Proxy Options:**
+| Option | Description |
+|--------|-------------|
+| `script` | Link to a script name for URL auto-detection |
+| `target` | Full target URL (e.g., `"http://localhost:3000"`) |
+| `url` | Alternative to `target` for the full URL |
+| `port` | Target port (shorthand for `http://localhost:PORT`) |
+| `host` | Target host (default: `localhost`, used with `port`) |
+| `autostart` | Start automatically (`true`/`false`) |
+| `max-log-size` | Maximum log entries to keep (default: 1000) |
+
+#### Hooks Section
+
+Configure browser notifications when your AI agent responds:
+
+```kdl
+hooks {
+    on-response {
+        toast true      // Show toast notification in browser
+        indicator true  // Flash the floating bug indicator
+        sound false     // Play notification sound (requires browser permission)
+    }
+}
+```
+
+#### Toast Section
+
+Customize toast notification appearance:
+
+```kdl
+toast {
+    duration 4000           // Display duration in milliseconds
+    position "bottom-right" // Position: top-right, top-left, bottom-right, bottom-left
+    max-visible 3           // Maximum simultaneous toasts
+}
+```
+
+#### Framework Examples
+
+**Wails (Go Desktop App)**
+```kdl
+scripts {
+    dev {
+        run "wails dev"
+        autostart true
+        // Wails outputs: "Using DevServer URL: http://localhost:34115"
+        url-matchers "DevServer URL:\\s*{url}"
+    }
+}
+
+proxies {
+    app {
+        script "dev"
+    }
+}
+```
+
+**Astro**
+```kdl
+scripts {
+    dev {
+        run "npm run dev"
+        autostart true
+        // Astro outputs: "┃ Local    http://localhost:4321/"
+        url-matchers "Local\\s+{url}"
+    }
+}
+
+proxies {
+    site {
+        script "dev"
+    }
+}
+```
+
+**Jekyll**
+```kdl
+scripts {
+    serve {
+        run "bundle exec jekyll serve"
+        autostart true
+        // Jekyll outputs: "Server address: http://127.0.0.1:4000/"
+        url-matchers "Server address:\\s*{url}"
+    }
+}
+
+proxies {
+    docs {
+        script "serve"
+    }
+}
+```
+
+**Next.js / Vite / React**
+```kdl
+scripts {
+    dev {
+        run "npm run dev"
+        autostart true
+        // Most Node frameworks output "Local:" or "Network:" prefixes
+        url-matchers "(Local|Network):\\s*{url}"
+    }
+}
+
+proxies {
+    frontend {
+        script "dev"
+    }
+}
+```
+
+#### Complete Example
+
+```kdl
+// .agnt.kdl - Full project configuration
+
+scripts {
+    dev {
+        run "npm run dev"
+        autostart true
+        url-matchers "(Local|Network):\\s*{url}"
+    }
+
+    api {
+        command "go"
+        args "run" "./cmd/server"
+        autostart true
+        env {
+            GIN_MODE "debug"
+            PORT "8080"
+        }
+    }
+}
+
+proxies {
+    frontend {
+        script "dev"
+    }
+
+    backend {
+        target "http://localhost:8080"
+        autostart true
+        max-log-size 2000
+    }
+}
+
+hooks {
+    on-response {
+        toast true
+        indicator true
+        sound false
+    }
+}
+
+toast {
+    duration 4000
+    position "bottom-right"
+    max-visible 3
 }
 ```
 

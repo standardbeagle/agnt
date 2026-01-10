@@ -79,6 +79,69 @@ Add agnt to your Claude Code configuration (`claude_desktop_config.json`):
 
 agnt communicates over stdio. Configure your MCP client to spawn `agnt mcp` and communicate over stdin/stdout.
 
+### Project Configuration (.agnt.kdl)
+
+Create a `.agnt.kdl` file in your project root to auto-start scripts and proxies:
+
+```kdl
+// Scripts to run automatically
+scripts {
+    dev {
+        run "npm run dev"
+        autostart true
+    }
+}
+
+// Reverse proxies for browser debugging
+proxies {
+    frontend {
+        target "http://localhost:3000"
+        autostart true
+    }
+}
+
+// Browser notifications when AI responds
+hooks {
+    on-response {
+        toast true
+        indicator true
+    }
+}
+
+// Toast notification settings
+toast {
+    duration 4000
+    position "bottom-right"
+    max-visible 3
+}
+```
+
+Run `/setup-project` in Claude Code to interactively generate this configuration.
+
+**Script Options:**
+- `run` - Shell command (e.g., `"npm run dev"`)
+- `command` / `args` - Command with arguments
+- `autostart` - Start automatically (`true`/`false`)
+- `env` - Environment variables block
+- `cwd` - Working directory
+- `url-matchers` - Patterns for URL auto-detection
+
+**Proxy Options:**
+- `target` - Full target URL
+- `port` / `host` - Shorthand for localhost proxies
+- `script` - Link to a script for URL auto-detection
+- `autostart` - Start automatically
+- `max-log-size` - Max log entries (default: 1000)
+
+**Common Framework URL Matchers:**
+| Framework | url-matchers Pattern |
+|-----------|---------------------|
+| Next.js / Vite | `"(Local\|Network):\\s*{url}"` |
+| Wails | `"DevServer URL:\\s*{url}"` |
+| Astro | `"Local\\s+{url}"` |
+| Jekyll | `"Server address:\\s*{url}"` |
+| Hugo | `"Web Server.*available at {url}"` |
+
 ## Quick Start
 
 Once configured, your AI assistant has access to all agnt tools. Here's a typical workflow:
