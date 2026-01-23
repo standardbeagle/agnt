@@ -496,6 +496,179 @@
       }
     }
 
+    // Error buffer management for diagnostics panel
+    var MAX_ERROR_ENTRIES = 100;
+    var jsErrorBuffer = [];
+    var consoleErrorBuffer = [];
+    var consoleWarningBuffer = [];
+
+    function addToBuffer(buffer, entry) {
+      buffer.push(entry);
+      if (buffer.length > MAX_ERROR_ENTRIES) {
+        buffer.shift();
+      }
+    }
+
+    function getDeduplicatedErrors(buffer) {
+      var errors = {};
+
+      buffer.forEach(function(entry) {
+        // Group by message (first 100 chars for deduplication)
+        var key = entry.message.substring(0, 100);
+        if (!errors[key]) {
+          errors[key] = {
+            message: entry.message,
+            count: 0,
+            firstSeen: entry.timestamp,
+            lastSeen: entry.timestamp,
+            source: entry.source || '',
+            lineno: entry.lineno || 0,
+            stack: entry.stack || '',
+            examples: []
+          };
+        }
+        errors[key].count++;
+        errors[key].lastSeen = entry.timestamp;
+        if (errors[key].examples.length < 3) {
+          errors[key].examples.push({
+            timestamp: entry.timestamp,
+            source: entry.source,
+            lineno: entry.lineno,
+            colno: entry.colno
+          });
+        }
+      });
+
+      // Convert to array and sort by count
+      var result = [];
+      for (var key in errors) {
+        result.push(errors[key]);
+      }
+      result.sort(function(a, b) {
+        return b.count - a.count;
+      });
+
+      return result;
+    }
+
+    // Override console.error to capture console errors
+    function setupConsoleOverride() {
+      try {
+        var originalConsoleError = console.error;
+        var originalConsoleWarn = console.warn;
+
+        console.error = function() {
+          // Call original console.error
+          originalConsoleError.apply(console, arguments);
+
+          // Capture error
+          try {
+            var message = Array.prototype.slice.call(arguments).map(function(arg) {
+              if (typeof arg === 'object') {
+                try {
+                  return JSON.stringify(arg);
+                } catch (e) {
+                  return String(arg);
+                }
+              }
+              return String(arg);
+            }).join(' ');
+
+            var entry = {
+              message: message,
+              timestamp: Date.now(),
+              source: 'console.error',
+              lineno: 0,
+              colno: 0,
+              stack: ''
+            };
+
+            addToBuffer(consoleErrorBuffer, entry);
+
+            // Also send to server
+            send('error', {
+              message: 'Console Error: ' + message,
+              source: 'console',
+              lineno: 0,
+              colno: 0,
+              error: message,
+              stack: '',
+              timestamp: Date.now()
+            });
+          } catch (e) {
+            reportInternalError('console_error_override_failed', e);
+          }
+        };
+
+        console.warn = function() {
+          // Call original console.warn
+          originalConsoleWarn.apply(console, arguments);
+
+          // Capture warning
+          try {
+            var message = Array.prototype.slice.call(arguments).map(function(arg) {
+              if (typeof arg === 'object') {
+                try {
+                  return JSON.stringify(arg);
+                } catch (e) {
+                  return String(arg);
+                }
+              }
+              return String(arg);
+            }).join(' ');
+
+            var entry = {
+              message: message,
+              timestamp: Date.now(),
+              source: 'console.warn',
+              lineno: 0,
+              colno: 0,
+              stack: ''
+            };
+
+            addToBuffer(consoleWarningBuffer, entry);
+          } catch (e) {
+            reportInternalError('console_warn_override_failed', e);
+          }
+        };
+      } catch (e) {
+        reportInternalError('console_override_setup_failed', e);
+      }
+    }
+
+    // Enhance error tracking to also capture to buffer
+    function setupErrorTrackingWithBuffer() {
+      setupErrorTracking();
+      setupConsoleOverride();
+
+      // Add to existing error listener to also capture to buffer
+      try {
+        if (typeof window.addEventListener !== 'function') return;
+
+        window.addEventListener('error', function(event) {
+          try {
+            if (!event) return;
+
+            var entry = {
+              message: event.message || 'Unknown error',
+              source: event.filename || '',
+              lineno: event.lineno || 0,
+              colno: event.colno || 0,
+              error: event.error ? event.error.toString() : '',
+              stack: event.error && event.error.stack ? event.error.stack : '',
+              timestamp: Date.now()
+            };
+
+            addToBuffer(jsErrorBuffer, entry);
+          } catch (e) {
+            reportInternalError('error_buffer_capture_failed', e);
+          }
+        });
+      } catch (e) {
+        reportInternalError('error_buffer_setup_failed', e);
+      }
+    }
+
     // Performance tracking
     function sendPageLoad() {
       try {
@@ -590,7 +763,7 @@
 
     // Initialize
     try {
-      setupErrorTracking();
+      setupErrorTrackingWithBuffer();
       connect();
     } catch (e) {
       reportInternalError('initialization_failed', e);
@@ -617,6 +790,52 @@
       }
     } catch (e) {
       console.error('[DevTool] Failed to export core API:', e);
+    }
+
+    // Export error tracking API for diagnostics panel
+    try {
+      if (!window.__devtool_errors) {
+        window.__devtool_errors = {
+          getJSErrors: function() {
+            return jsErrorBuffer.slice();
+          },
+          getConsoleErrors: function() {
+            return consoleErrorBuffer.slice();
+          },
+          getConsoleWarnings: function() {
+            return consoleWarningBuffer.slice();
+          },
+          getAllErrors: function() {
+            return {
+              jsErrors: jsErrorBuffer.slice(),
+              consoleErrors: consoleErrorBuffer.slice(),
+              consoleWarnings: consoleWarningBuffer.slice()
+            };
+          },
+          getDeduplicatedErrors: function() {
+            return {
+              jsErrors: getDeduplicatedErrors(jsErrorBuffer),
+              consoleErrors: getDeduplicatedErrors(consoleErrorBuffer),
+              consoleWarnings: getDeduplicatedErrors(consoleWarningBuffer)
+            };
+          },
+          clear: function() {
+            jsErrorBuffer = [];
+            consoleErrorBuffer = [];
+            consoleWarningBuffer = [];
+          },
+          getStats: function() {
+            return {
+              jsErrorCount: jsErrorBuffer.length,
+              consoleErrorCount: consoleErrorBuffer.length,
+              consoleWarningCount: consoleWarningBuffer.length,
+              totalCount: jsErrorBuffer.length + consoleErrorBuffer.length + consoleWarningBuffer.length
+            };
+          }
+        };
+      }
+    } catch (e) {
+      console.error('[DevTool] Failed to export errors API:', e);
     }
 
   } catch (e) {

@@ -21,6 +21,43 @@
 ## [Unreleased]
 
 ### Added
+- **Enhanced diagnostics panel with tabbed interface**: Floating indicator now features a comprehensive 7-tab diagnostics dashboard
+  - **Overview tab**: Health cards showing framework detection, error counts, failed API calls, DOM update rates, and React-specific metrics (rerender rate, input lag)
+  - **Errors tab**: Deduplicated error tracking with console.error/console.warn interception and JS error aggregation
+  - **Network tab**: API call history with status codes, timing, and URL sanitization for sensitive params
+  - **Performance tab**: DOM mutation rate analysis across multiple time windows (1s, 5s, 30s)
+  - **Quality tab**: Placeholder for upcoming quality audits
+  - **Interactions tab**: User interaction history tracking
+  - **Compose tab**: Original message composition interface
+  - Active tab persistence via localStorage
+  - Real-time badge updates showing error counts, failed calls, and performance status
+  - Auto-refresh every second while panel is expanded
+- **Framework detection module** (`framework-detector.js`): Automatic detection of frontend frameworks (React, Vue, Angular, Svelte, etc.) with version extraction
+- **API call tracking module** (`api-tracker.js`): Intercepts fetch and XMLHttpRequest to track API calls with sanitization for sensitive parameters (tokens, API keys, passwords)
+- **Error buffer API** (`window.__devtool_errors`): In-memory error tracking with deduplication, statistics, and examples
+  - `getJSErrors()`, `getConsoleErrors()`, `getConsoleWarnings()`
+  - `getDeduplicatedErrors()` returns grouped errors with counts, timestamps, and stack traces
+  - `getStats()` returns total counts across all error types
+  - `clear()` resets all error buffers
+- **Console override**: Enhanced `console.error` and `console.warn` to capture console output for diagnostics
+
+### Changed
+- **Automation processor**: Removed deprecated `TimeoutSecs` parameter from claude-go API calls
+- **Script module ordering**: Framework detector and API tracker now load before indicator module
+
+### Fixed
+- **go.mod formatting**: Added trailing newline for consistency
+
+### Technical Details
+- Error buffers: Circular buffer with max 100 entries per type (JS errors, console errors, console warnings)
+- Deduplication key: First 100 characters of error message
+- Tab content updates: Only active tab refreshes every 1 second to minimize performance impact
+- React-specific metrics: Correlate input events with DOM mutations to detect rerender hotspots and input lag
+- API sanitization: Automatically truncates sensitive query parameters (token, api_key, key, secret, password, auth)
+
+## [0.8.0] - 2025-01-19
+
+### Added
 - **Session-scoped API**: Processes and proxies are now scoped to sessions, preventing interference between multiple AI coding sessions
   - `SESSION FIND`: Locate session by directory ancestry (walks up the directory tree)
   - `SESSION ATTACH`: Attach MCP client to an existing session for shared resource access

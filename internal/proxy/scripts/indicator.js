@@ -29,7 +29,11 @@
     outputPreviewTimeout: null, // Auto-hide timeout for output preview
     requestNotification: true, // Always request notification when task completes
     // Attachments are now logged items with references
-    attachments: [] // { id, type, label, summary, timestamp }
+    attachments: [], // { id, type, label, summary, timestamp }
+    // Tab management
+    activeTab: 'overview', // overview|errors|network|performance|quality|interactions|compose
+    tabUpdateInterval: null, // Update interval for active tab
+    lastAuditResults: null // Cache audit results
   };
 
   // Design tokens - consistent visual language
@@ -462,6 +466,135 @@
       'letter-spacing: 0.5px',
       'border-bottom: 1px solid ' + TOKENS.colors.border,
       'background: ' + TOKENS.colors.surfaceAlt
+    ].join(';'),
+
+    // Tab styles
+    tabBar: [
+      'display: flex',
+      'align-items: center',
+      'background: ' + TOKENS.colors.surfaceAlt,
+      'border-bottom: 1px solid ' + TOKENS.colors.border,
+      'overflow-x: auto',
+      'overflow-y: hidden',
+      'padding: 0 ' + TOKENS.spacing.sm,
+      'gap: ' + TOKENS.spacing.xs
+    ].join(';'),
+
+    tab: [
+      'padding: ' + TOKENS.spacing.sm + ' ' + TOKENS.spacing.md,
+      'font-size: 12px',
+      'font-weight: 500',
+      'border: none',
+      'background: transparent',
+      'color: ' + TOKENS.colors.textMuted,
+      'cursor: pointer',
+      'border-bottom: 2px solid transparent',
+      'transition: color 0.15s ease, border-color 0.15s ease',
+      'white-space: nowrap',
+      'position: relative',
+      'display: flex',
+      'align-items: center',
+      'gap: 4px'
+    ].join(';'),
+
+    tabActive: [
+      'color: ' + TOKENS.colors.primary,
+      'border-bottom-color: ' + TOKENS.colors.primary
+    ].join(';'),
+
+    tabBadge: [
+      'min-width: 16px',
+      'height: 16px',
+      'padding: 0 4px',
+      'font-size: 10px',
+      'font-weight: 600',
+      'border-radius: ' + TOKENS.radius.full,
+      'display: inline-flex',
+      'align-items: center',
+      'justify-content: center',
+      'line-height: 1'
+    ].join(';'),
+
+    tabBadgeRed: [
+      'background: ' + TOKENS.colors.error,
+      'color: white'
+    ].join(';'),
+
+    tabBadgeYellow: [
+      'background: ' + TOKENS.colors.active,
+      'color: white'
+    ].join(';'),
+
+    tabBadgeGreen: [
+      'background: ' + TOKENS.colors.success,
+      'color: white'
+    ].join(';'),
+
+    tabContent: [
+      'padding: ' + TOKENS.spacing.lg,
+      'max-height: 400px',
+      'overflow-y: auto',
+      'overflow-x: hidden'
+    ].join(';'),
+
+    tabCloseBtn: [
+      'margin-left: auto',
+      'background: none',
+      'border: none',
+      'color: ' + TOKENS.colors.textMuted,
+      'cursor: pointer',
+      'padding: 4px',
+      'display: flex',
+      'flex-shrink: 0'
+    ].join(';'),
+
+    // Tab content specific styles
+    healthCard: [
+      'background: ' + TOKENS.colors.surfaceAlt,
+      'border: 1px solid ' + TOKENS.colors.border,
+      'border-radius: ' + TOKENS.radius.sm,
+      'padding: ' + TOKENS.spacing.md,
+      'margin-bottom: ' + TOKENS.spacing.sm
+    ].join(';'),
+
+    healthLabel: [
+      'font-size: 11px',
+      'color: ' + TOKENS.colors.textMuted,
+      'margin-bottom: 4px',
+      'text-transform: uppercase',
+      'letter-spacing: 0.5px'
+    ].join(';'),
+
+    healthValue: [
+      'font-size: 20px',
+      'font-weight: 600',
+      'color: ' + TOKENS.colors.text
+    ].join(';'),
+
+    errorItem: [
+      'padding: ' + TOKENS.spacing.sm,
+      'border-bottom: 1px solid ' + TOKENS.colors.border,
+      'font-size: 12px',
+      'cursor: pointer',
+      'transition: background 0.15s ease'
+    ].join(';'),
+
+    errorMessage: [
+      'color: ' + TOKENS.colors.text,
+      'margin-bottom: 4px',
+      'font-weight: 500'
+    ].join(';'),
+
+    errorMeta: [
+      'color: ' + TOKENS.colors.textMuted,
+      'font-size: 11px'
+    ].join(';'),
+
+    emptyState: [
+      'text-align: center',
+      'padding: ' + TOKENS.spacing.xl,
+      'color: ' + TOKENS.colors.textMuted,
+      'font-size: 13px'
     ].join(';')
   };
 
@@ -670,35 +803,583 @@
   function createPanel() {
     var panel = document.createElement('div');
     panel.id = '__devtool-panel';
-    panel.style.cssText = STYLES.panel;
+    panel.style.cssText = STYLES.panel + '; display: flex; flex-direction: column;';
     panel.style.display = 'none';
     panel.style.opacity = '0';
     panel.style.transform = 'translateY(8px)';
 
-    // Header
-    var header = document.createElement('div');
-    header.style.cssText = STYLES.header;
+    // Tab bar (replaces header)
+    var tabBar = createTabBar();
+    panel.appendChild(tabBar);
 
-    var title = document.createElement('span');
-    title.style.cssText = STYLES.headerTitle;
-    title.textContent = 'AI';
-    header.appendChild(title);
+    // Tab content area
+    var tabContent = document.createElement('div');
+    tabContent.id = '__devtool-tab-content';
+    tabContent.style.cssText = STYLES.tabContent;
+    panel.appendChild(tabContent);
 
+    state.panel = panel;
+    state.container.appendChild(panel);
+
+    // Load active tab from localStorage
+    try {
+      var savedTab = localStorage.getItem('__devtool_active_tab');
+      if (savedTab) {
+        state.activeTab = savedTab;
+      }
+    } catch (e) {
+      // Ignore localStorage errors
+    }
+
+    // Initial render
+    switchTab(state.activeTab);
+  }
+
+  function createTabBar() {
+    var tabBar = document.createElement('div');
+    tabBar.style.cssText = STYLES.tabBar;
+
+    var tabs = [
+      { id: 'overview', label: 'Overview' },
+      { id: 'errors', label: 'Errors' },
+      { id: 'network', label: 'Network' },
+      { id: 'performance', label: 'Perf' },
+      { id: 'quality', label: 'Quality' },
+      { id: 'interactions', label: 'Interact' },
+      { id: 'compose', label: 'Compose' }
+    ];
+
+    tabs.forEach(function(tabInfo) {
+      var tab = document.createElement('button');
+      tab.id = '__devtool-tab-' + tabInfo.id;
+      tab.style.cssText = STYLES.tab;
+      tab.textContent = tabInfo.label;
+      tab.onclick = function() { switchTab(tabInfo.id); };
+
+      // Highlight active tab
+      if (state.activeTab === tabInfo.id) {
+        tab.style.cssText = STYLES.tab + ';' + STYLES.tabActive;
+      }
+
+      tabBar.appendChild(tab);
+    });
+
+    // Close button at the end
     var closeBtn = document.createElement('button');
-    closeBtn.style.cssText = STYLES.closeBtn;
+    closeBtn.style.cssText = STYLES.tabCloseBtn;
     closeBtn.innerHTML = ICONS.close;
     closeBtn.setAttribute('aria-label', 'Close panel');
     closeBtn.title = 'Close panel';
     closeBtn.onclick = function(e) { e.stopPropagation(); togglePanel(false); };
-    closeBtn.onmouseenter = function() { closeBtn.style.background = TOKENS.colors.border; };
-    closeBtn.onmouseleave = function() { closeBtn.style.background = 'none'; };
-    header.appendChild(closeBtn);
+    closeBtn.onmouseenter = function() { closeBtn.style.color = TOKENS.colors.text; };
+    closeBtn.onmouseleave = function() { closeBtn.style.color = TOKENS.colors.textMuted; };
+    tabBar.appendChild(closeBtn);
 
-    panel.appendChild(header);
+    return tabBar;
+  }
 
-    // Compose area
+  function switchTab(tabId) {
+    state.activeTab = tabId;
+
+    // Save to localStorage
+    try {
+      localStorage.setItem('__devtool_active_tab', tabId);
+    } catch (e) {
+      // Ignore localStorage errors
+    }
+
+    // Update tab bar highlighting
+    var tabs = ['overview', 'errors', 'network', 'performance', 'quality', 'interactions', 'compose'];
+    tabs.forEach(function(id) {
+      var tab = document.getElementById('__devtool-tab-' + id);
+      if (tab) {
+        if (id === tabId) {
+          tab.style.cssText = STYLES.tab + ';' + STYLES.tabActive;
+        } else {
+          tab.style.cssText = STYLES.tab;
+        }
+      }
+    });
+
+    // Render tab content
+    var content = document.getElementById('__devtool-tab-content');
+    if (!content) return;
+
+    content.innerHTML = '';
+
+    switch (tabId) {
+      case 'overview':
+        renderOverviewTab(content);
+        break;
+      case 'errors':
+        renderErrorsTab(content);
+        break;
+      case 'network':
+        renderNetworkTab(content);
+        break;
+      case 'performance':
+        renderPerformanceTab(content);
+        break;
+      case 'quality':
+        renderQualityTab(content);
+        break;
+      case 'interactions':
+        renderInteractionsTab(content);
+        break;
+      case 'compose':
+        renderComposeTab(content);
+        break;
+    }
+
+    // Start update interval for active tab
+    updateTabBadges();
+    startTabUpdates();
+  }
+
+  function startTabUpdates() {
+    // Clear existing interval
+    if (state.tabUpdateInterval) {
+      clearInterval(state.tabUpdateInterval);
+    }
+
+    // Only update if panel is expanded
+    if (!state.isExpanded) return;
+
+    // Update every second
+    state.tabUpdateInterval = setInterval(function() {
+      if (!state.isExpanded) {
+        clearInterval(state.tabUpdateInterval);
+        state.tabUpdateInterval = null;
+        return;
+      }
+
+      updateTabBadges();
+      updateActiveTabContent();
+    }, 1000);
+  }
+
+  function updateTabBadges() {
+    // Update error tab badge
+    var errorTab = document.getElementById('__devtool-tab-errors');
+    if (errorTab && window.__devtool_errors) {
+      var stats = window.__devtool_errors.getStats();
+      var totalErrors = stats.totalCount;
+      updateTabBadge(errorTab, totalErrors, totalErrors > 0 ? 'red' : null);
+    }
+
+    // Update network tab badge
+    var networkTab = document.getElementById('__devtool-tab-network');
+    if (networkTab && window.__devtool_api) {
+      var failedCalls = window.__devtool_api.getFailedCalls().length;
+      updateTabBadge(networkTab, failedCalls, failedCalls > 0 ? 'red' : null);
+    }
+
+    // Update performance tab badge
+    var perfTab = document.getElementById('__devtool-tab-performance');
+    if (perfTab && window.__devtool_mutations) {
+      var rateStats = window.__devtool_mutations.getRateStats([5000]);
+      if (rateStats && rateStats[5000]) {
+        var rate = rateStats[5000].rate;
+        var color = rate > 50 ? 'red' : (rate > 20 ? 'yellow' : 'green');
+        updateTabBadge(perfTab, '●', color);
+      }
+    }
+  }
+
+  function updateTabBadge(tabElement, content, color) {
+    // Remove existing badge
+    var existing = tabElement.querySelector('[data-badge]');
+    if (existing) {
+      existing.remove();
+    }
+
+    if (!content) return;
+
+    var badge = document.createElement('span');
+    badge.setAttribute('data-badge', 'true');
+    badge.style.cssText = STYLES.tabBadge;
+
+    if (color === 'red') {
+      badge.style.cssText += ';' + STYLES.tabBadgeRed;
+    } else if (color === 'yellow') {
+      badge.style.cssText += ';' + STYLES.tabBadgeYellow;
+    } else if (color === 'green') {
+      badge.style.cssText += ';' + STYLES.tabBadgeGreen;
+    }
+
+    badge.textContent = content;
+    tabElement.appendChild(badge);
+  }
+
+  function updateActiveTabContent() {
+    var content = document.getElementById('__devtool-tab-content');
+    if (!content) return;
+
+    // Only update non-compose tabs (compose is static)
+    if (state.activeTab === 'compose') return;
+
+    // Re-render the active tab
+    content.innerHTML = '';
+    switch (state.activeTab) {
+      case 'overview':
+        renderOverviewTab(content);
+        break;
+      case 'errors':
+        renderErrorsTab(content);
+        break;
+      case 'network':
+        renderNetworkTab(content);
+        break;
+      case 'performance':
+        renderPerformanceTab(content);
+        break;
+      case 'quality':
+        renderQualityTab(content);
+        break;
+      case 'interactions':
+        renderInteractionsTab(content);
+        break;
+    }
+  }
+
+  function renderOverviewTab(container) {
+    var framework = window.__devtool_framework ? window.__devtool_framework.detect() : null;
+    var errorStats = window.__devtool_errors ? window.__devtool_errors.getStats() : null;
+    var apiStats = window.__devtool_api ? window.__devtool_api.getStats() : null;
+    var mutationStats = window.__devtool_mutations ? window.__devtool_mutations.getRateStats([5000]) : null;
+    var isReact = framework && framework.name === 'React';
+
+    // Framework badge
+    if (framework) {
+      var fwBadge = document.createElement('div');
+      fwBadge.style.cssText = STYLES.healthCard;
+      var versionText = framework.version && framework.version !== 'unknown' ? ' v' + framework.version : '';
+      fwBadge.innerHTML = '<div style="' + STYLES.healthLabel + '">Framework</div><div style="' + STYLES.healthValue + '; font-size: 16px;">' + framework.name + versionText + '</div>';
+      container.appendChild(fwBadge);
+    }
+
+    // Health cards grid
+    var grid = document.createElement('div');
+    grid.style.cssText = 'display: grid; grid-template-columns: 1fr 1fr; gap: ' + TOKENS.spacing.sm + ';';
+
+    // Error count
+    var errorCard = document.createElement('div');
+    errorCard.style.cssText = STYLES.healthCard;
+    var errorCount = errorStats ? errorStats.totalCount : 0;
+    var errorColor = errorCount > 0 ? TOKENS.colors.error : TOKENS.colors.success;
+    errorCard.innerHTML = '<div style="' + STYLES.healthLabel + '">Errors</div><div style="' + STYLES.healthValue + '; color: ' + errorColor + ';">' + errorCount + '</div>';
+    grid.appendChild(errorCard);
+
+    // Failed API
+    var apiCard = document.createElement('div');
+    apiCard.style.cssText = STYLES.healthCard;
+    var failedCount = apiStats ? apiStats.failed : 0;
+    var apiColor = failedCount > 0 ? TOKENS.colors.error : TOKENS.colors.success;
+    apiCard.innerHTML = '<div style="' + STYLES.healthLabel + '">Failed API</div><div style="' + STYLES.healthValue + '; color: ' + apiColor + ';">' + failedCount + '</div>';
+    grid.appendChild(apiCard);
+
+    // DOM Update Rate
+    var domCard = document.createElement('div');
+    domCard.style.cssText = STYLES.healthCard;
+    var rate = mutationStats && mutationStats[5000] ? mutationStats[5000].rate : 0;
+    var domStatus = rate > 50 ? 'Critical' : (rate > 20 ? 'Warning' : 'OK');
+    var domColor = rate > 50 ? TOKENS.colors.error : (rate > 20 ? TOKENS.colors.active : TOKENS.colors.success);
+    domCard.innerHTML = '<div style="' + STYLES.healthLabel + '">DOM Updates</div><div style="' + STYLES.healthValue + '; color: ' + domColor + ';">' + domStatus + '</div>';
+    grid.appendChild(domCard);
+
+    // Performance
+    var perfCard = document.createElement('div');
+    perfCard.style.cssText = STYLES.healthCard;
+    var avgDuration = apiStats ? apiStats.avgDuration : 0;
+    var perfStatus = avgDuration > 2000 ? 'Slow' : (avgDuration > 500 ? 'OK' : 'Fast');
+    var perfColor = avgDuration > 2000 ? TOKENS.colors.active : TOKENS.colors.success;
+    perfCard.innerHTML = '<div style="' + STYLES.healthLabel + '">Avg API Time</div><div style="' + STYLES.healthValue + '; font-size: 16px; color: ' + perfColor + ';">' + avgDuration + 'ms</div>';
+    grid.appendChild(perfCard);
+
+    // React-specific metrics in overview
+    if (isReact && window.__devtool_mutations) {
+      // React Rerender Rate
+      try {
+        var untriggered = window.__devtool_mutations.getUntriggered ? window.__devtool_mutations.getUntriggered() : [];
+        var recentUntriggered = untriggered.filter(function(m) {
+          return m.timestamp && (Date.now() - m.timestamp) < 30000;
+        });
+        var rerenderRate = (recentUntriggered.length / 30).toFixed(1);
+        var rerenderStatus = rerenderRate > 5 ? 'High' : (rerenderRate > 2 ? 'Moderate' : 'Low');
+        var rerenderColor = rerenderRate > 5 ? TOKENS.colors.error : (rerenderRate > 2 ? TOKENS.colors.active : TOKENS.colors.success);
+
+        var rerenderCard = document.createElement('div');
+        rerenderCard.style.cssText = STYLES.healthCard;
+        rerenderCard.innerHTML = '<div style="' + STYLES.healthLabel + '">React Rerenders</div><div style="' + STYLES.healthValue + '; color: ' + rerenderColor + ';">' + rerenderRate + '/s</div>';
+        grid.appendChild(rerenderCard);
+      } catch (e) {
+        // Ignore
+      }
+
+      // Input Lag
+      try {
+        var correlationStats = window.__devtool_mutations.getCorrelationStats ? window.__devtool_mutations.getCorrelationStats() : null;
+        if (correlationStats && correlationStats.avg_latency) {
+          var inputLag = correlationStats.avg_latency.input || 0;
+          var lagStatus = inputLag > 100 ? 'Slow' : (inputLag > 50 ? 'OK' : 'Fast');
+          var lagColor = inputLag > 100 ? TOKENS.colors.error : (inputLag > 50 ? TOKENS.colors.active : TOKENS.colors.success);
+
+          var lagCard = document.createElement('div');
+          lagCard.style.cssText = STYLES.healthCard;
+          lagCard.innerHTML = '<div style="' + STYLES.healthLabel + '">Input Lag</div><div style="' + STYLES.healthValue + '; color: ' + lagColor + ';">' + inputLag + 'ms</div>';
+          grid.appendChild(lagCard);
+        }
+      } catch (e) {
+        // Ignore
+      }
+    }
+
+    container.appendChild(grid);
+  }
+
+  function renderErrorsTab(container) {
+    if (!window.__devtool_errors) {
+      container.innerHTML = '<div style="' + STYLES.emptyState + '">Error tracking not available</div>';
+      return;
+    }
+
+    var deduplicated = window.__devtool_errors.getDeduplicatedErrors();
+    var allErrors = [].concat(deduplicated.jsErrors || [], deduplicated.consoleErrors || [], deduplicated.consoleWarnings || []);
+
+    if (allErrors.length === 0) {
+      container.innerHTML = '<div style="' + STYLES.emptyState + '">✓ No errors detected</div>';
+      return;
+    }
+
+    allErrors.forEach(function(error) {
+      var item = document.createElement('div');
+      item.style.cssText = STYLES.errorItem;
+
+      var message = document.createElement('div');
+      message.style.cssText = STYLES.errorMessage;
+      message.textContent = (error.count > 1 ? '×' + error.count + ' ' : '') + error.message.substring(0, 100);
+      item.appendChild(message);
+
+      var meta = document.createElement('div');
+      meta.style.cssText = STYLES.errorMeta;
+      var timeAgo = formatTimeAgo(error.lastSeen);
+      meta.textContent = error.source + (error.lineno ? ':' + error.lineno : '') + ' • ' + timeAgo;
+      item.appendChild(meta);
+
+      item.onmouseenter = function() { item.style.background = TOKENS.colors.surfaceAlt; };
+      item.onmouseleave = function() { item.style.background = 'transparent'; };
+
+      container.appendChild(item);
+    });
+  }
+
+  function renderNetworkTab(container) {
+    if (!window.__devtool_api) {
+      container.innerHTML = '<div style="' + STYLES.emptyState + '">Network tracking not available</div>';
+      return;
+    }
+
+    var calls = window.__devtool_api.getCalls();
+    if (calls.length === 0) {
+      container.innerHTML = '<div style="' + STYLES.emptyState + '">No API calls tracked</div>';
+      return;
+    }
+
+    // Show last 20 calls
+    calls.slice(-20).reverse().forEach(function(call) {
+      var item = document.createElement('div');
+      item.style.cssText = STYLES.errorItem;
+
+      var message = document.createElement('div');
+      message.style.cssText = STYLES.errorMessage;
+      var statusColor = call.ok ? TOKENS.colors.success : TOKENS.colors.error;
+      message.innerHTML = '<span style="color: ' + statusColor + ';">' + call.status + '</span> ' + call.method + ' ' + truncate(call.url, 40);
+      item.appendChild(message);
+
+      var meta = document.createElement('div');
+      meta.style.cssText = STYLES.errorMeta;
+      meta.textContent = (call.duration || 0) + 'ms • ' + formatTimeAgo(call.timestamp);
+      item.appendChild(meta);
+
+      item.onmouseenter = function() { item.style.background = TOKENS.colors.surfaceAlt; };
+      item.onmouseleave = function() { item.style.background = 'transparent'; };
+
+      container.appendChild(item);
+    });
+  }
+
+  function renderPerformanceTab(container) {
+    if (!window.__devtool_mutations) {
+      container.innerHTML = '<div style="' + STYLES.emptyState + '">Performance tracking not available</div>';
+      return;
+    }
+
+    var rateStats = window.__devtool_mutations.getRateStats([1000, 5000, 30000]);
+
+    // Standard mutation rate stats
+    var grid = document.createElement('div');
+    grid.style.cssText = 'display: flex; flex-direction: column; gap: ' + TOKENS.spacing.sm + ';';
+
+    if (rateStats) {
+      [1000, 5000, 30000].forEach(function(window) {
+        if (rateStats[window]) {
+          var card = document.createElement('div');
+          card.style.cssText = STYLES.healthCard;
+          var rate = rateStats[window].rate;
+          var status = rate > 50 ? 'Critical' : (rate > 20 ? 'Warning' : 'OK');
+          var color = rate > 50 ? TOKENS.colors.error : (rate > 20 ? TOKENS.colors.active : TOKENS.colors.success);
+          card.innerHTML = '<div style="' + STYLES.healthLabel + '">Mutations (' + (window / 1000) + 's window)</div><div style="' + STYLES.healthValue + '; color: ' + color + ';">' + rate.toFixed(1) + '/s <span style="font-size: 12px; color: ' + TOKENS.colors.textMuted + ';">• ' + status + '</span></div>';
+          grid.appendChild(card);
+        }
+      });
+    }
+
+    container.appendChild(grid);
+
+    // React-specific performance metrics
+    var framework = window.__devtool_framework ? window.__devtool_framework.detect() : null;
+    var isReact = framework && framework.name === 'React';
+
+    if (isReact) {
+      // Section header
+      var reactHeader = document.createElement('div');
+      reactHeader.style.cssText = 'margin-top: ' + TOKENS.spacing.lg + '; padding-bottom: ' + TOKENS.spacing.sm + '; border-bottom: 1px solid ' + TOKENS.colors.border + '; font-size: 11px; font-weight: 600; color: ' + TOKENS.colors.textMuted + '; text-transform: uppercase; letter-spacing: 0.5px;';
+      reactHeader.textContent = 'React Performance';
+      container.appendChild(reactHeader);
+
+      var reactGrid = document.createElement('div');
+      reactGrid.style.cssText = 'display: flex; flex-direction: column; gap: ' + TOKENS.spacing.sm + '; margin-top: ' + TOKENS.spacing.sm + ';';
+
+      // 1. React Rerender Rate (untriggered mutations = likely component rerenders)
+      try {
+        var untriggered = window.__devtool_mutations.getUntriggered ? window.__devtool_mutations.getUntriggered() : [];
+        var recentUntriggered = untriggered.filter(function(m) {
+          return m.timestamp && (Date.now() - m.timestamp) < 30000; // last 30s
+        });
+        var rerenderRate = (recentUntriggered.length / 30).toFixed(1); // per second
+        var rerenderStatus = rerenderRate > 5 ? 'High' : (rerenderRate > 2 ? 'Moderate' : 'Low');
+        var rerenderColor = rerenderRate > 5 ? TOKENS.colors.error : (rerenderRate > 2 ? TOKENS.colors.active : TOKENS.colors.success);
+
+        var rerenderCard = document.createElement('div');
+        rerenderCard.style.cssText = STYLES.healthCard;
+        rerenderCard.innerHTML = '<div style="' + STYLES.healthLabel + '">Rerender Rate (30s)</div>' +
+          '<div style="' + STYLES.healthValue + '; color: ' + rerenderColor + ';">' + rerenderRate + '/s ' +
+          '<span style="font-size: 12px; color: ' + TOKENS.colors.textMuted + ';">• ' + rerenderStatus + '</span></div>' +
+          '<div style="font-size: 11px; color: ' + TOKENS.colors.textMuted + '; margin-top: 4px;">Spontaneous updates: ' + recentUntriggered.length + '</div>';
+        reactGrid.appendChild(rerenderCard);
+      } catch (e) {
+        // Ignore if API not available
+      }
+
+      // 2. Input Lag (correlation stats for input interactions)
+      try {
+        var correlationStats = window.__devtool_mutations.getCorrelationStats ? window.__devtool_mutations.getCorrelationStats() : null;
+        if (correlationStats && correlationStats.avg_latency) {
+          var inputLag = correlationStats.avg_latency.input || 0;
+          var maxInputLag = correlationStats.max_latency.input || 0;
+          var inputCount = correlationStats.by_type ? (correlationStats.by_type.input || 0) : 0;
+
+          var lagStatus = inputLag > 100 ? 'Slow' : (inputLag > 50 ? 'OK' : 'Fast');
+          var lagColor = inputLag > 100 ? TOKENS.colors.error : (inputLag > 50 ? TOKENS.colors.active : TOKENS.colors.success);
+
+          var lagCard = document.createElement('div');
+          lagCard.style.cssText = STYLES.healthCard;
+          lagCard.innerHTML = '<div style="' + STYLES.healthLabel + '">Input Lag</div>' +
+            '<div style="' + STYLES.healthValue + '; color: ' + lagColor + ';">' + inputLag + 'ms ' +
+            '<span style="font-size: 12px; color: ' + TOKENS.colors.textMuted + ';">• ' + lagStatus + '</span></div>' +
+            '<div style="font-size: 11px; color: ' + TOKENS.colors.textMuted + '; margin-top: 4px;">Max: ' + maxInputLag + 'ms • Samples: ' + inputCount + '</div>';
+          reactGrid.appendChild(lagCard);
+        }
+      } catch (e) {
+        // Ignore if API not available
+      }
+
+      // 3. Rerender Hotspots (elements that mutate most frequently)
+      try {
+        var allMutations = window.__devtool_mutations.getHistory ? window.__devtool_mutations.getHistory() : [];
+        var elementCounts = {};
+        var untriggeredMutations = window.__devtool_mutations.getUntriggered ? window.__devtool_mutations.getUntriggered() : [];
+
+        // Count untriggered mutations by element
+        untriggeredMutations.forEach(function(m) {
+          if (m.target_selector) {
+            elementCounts[m.target_selector] = (elementCounts[m.target_selector] || 0) + 1;
+          }
+        });
+
+        // Convert to array and sort by count
+        var hotspots = [];
+        for (var selector in elementCounts) {
+          hotspots.push({ selector: selector, count: elementCounts[selector] });
+        }
+        hotspots.sort(function(a, b) { return b.count - a.count; });
+
+        if (hotspots.length > 0) {
+          var hotspotCard = document.createElement('div');
+          hotspotCard.style.cssText = STYLES.healthCard;
+
+          var header = document.createElement('div');
+          header.style.cssText = STYLES.healthLabel;
+          header.textContent = 'Rerender Hotspots';
+          hotspotCard.appendChild(header);
+
+          // Show top 3 hotspots
+          hotspots.slice(0, 3).forEach(function(hotspot, index) {
+            var hotspotItem = document.createElement('div');
+            hotspotItem.style.cssText = 'font-size: 11px; margin-top: 6px; padding: 4px 6px; background: ' + TOKENS.colors.surfaceAlt + '; border-radius: 4px;';
+            hotspotItem.innerHTML = '<div style="font-weight: 500; color: ' + TOKENS.colors.text + ';">' + truncate(hotspot.selector, 35) + '</div>' +
+              '<div style="color: ' + TOKENS.colors.textMuted + '; margin-top: 2px;">×' + hotspot.count + ' rerenders</div>';
+            hotspotCard.appendChild(hotspotItem);
+          });
+
+          reactGrid.appendChild(hotspotCard);
+        }
+      } catch (e) {
+        // Ignore if API not available
+      }
+
+      container.appendChild(reactGrid);
+    }
+  }
+
+  function renderQualityTab(container) {
+    container.innerHTML = '<div style="' + STYLES.emptyState + '">Quality audits coming soon...</div>';
+  }
+
+  function renderInteractionsTab(container) {
+    if (!window.__devtool_interactions) {
+      container.innerHTML = '<div style="' + STYLES.emptyState + '">Interaction tracking not available</div>';
+      return;
+    }
+
+    var history = window.__devtool_interactions.getHistory ? window.__devtool_interactions.getHistory() : [];
+    if (history.length === 0) {
+      container.innerHTML = '<div style="' + STYLES.emptyState + '">No interactions tracked</div>';
+      return;
+    }
+
+    history.slice(-10).reverse().forEach(function(interaction) {
+      var item = document.createElement('div');
+      item.style.cssText = STYLES.errorItem;
+
+      var message = document.createElement('div');
+      message.style.cssText = STYLES.errorMessage;
+      message.textContent = interaction.type + ' on ' + (interaction.target || 'unknown');
+      item.appendChild(message);
+
+      var meta = document.createElement('div');
+      meta.style.cssText = STYLES.errorMeta;
+      meta.textContent = formatTimeAgo(interaction.timestamp);
+      item.appendChild(meta);
+
+      container.appendChild(item);
+    });
+  }
+
+  function renderComposeTab(container) {
+    // Compose area (exact copy of original)
     var compose = document.createElement('div');
-    compose.style.cssText = STYLES.compose;
+    compose.style.cssText = 'padding: 0;'; // Remove extra padding since tab content already has padding
 
     // Message card (groups message + attachments - Gestalt: Common Region)
     var card = document.createElement('div');
@@ -749,7 +1430,7 @@
     card.appendChild(attachArea);
 
     compose.appendChild(card);
-    panel.appendChild(compose);
+    container.appendChild(compose);
 
     // Toolbar with actions
     var toolbar = document.createElement('div');
@@ -783,10 +1464,21 @@
     sendBtn.onmouseleave = function() { sendBtn.style.background = TOKENS.colors.primary; };
     toolbar.appendChild(sendBtn);
 
-    panel.appendChild(toolbar);
+    container.appendChild(toolbar);
+  }
 
-    state.panel = panel;
-    state.container.appendChild(panel);
+  function formatTimeAgo(timestamp) {
+    var seconds = Math.floor((Date.now() - timestamp) / 1000);
+    if (seconds < 60) return seconds + 's ago';
+    var minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return minutes + 'm ago';
+    var hours = Math.floor(minutes / 60);
+    return hours + 'h ago';
+  }
+
+  function truncate(str, maxLen) {
+    if (str.length <= maxLen) return str;
+    return str.substring(0, maxLen - 3) + '...';
   }
 
   function createToolBtn(label, icon, onClick) {
@@ -1821,15 +2513,22 @@
 
     if (shouldShow) {
       updatePanelPosition();
-      state.panel.style.display = 'block';
+      state.panel.style.display = 'flex'; // Changed to flex for column layout
       requestAnimationFrame(function() {
         state.panel.style.opacity = '1';
         state.panel.style.transform = 'translateY(0)';
       });
+      // Start tab updates
+      startTabUpdates();
     } else {
       state.panel.style.opacity = '0';
       state.panel.style.transform = 'translateY(8px)';
       setTimeout(function() { state.panel.style.display = 'none'; }, 200);
+      // Stop tab updates
+      if (state.tabUpdateInterval) {
+        clearInterval(state.tabUpdateInterval);
+        state.tabUpdateInterval = null;
+      }
     }
   }
 

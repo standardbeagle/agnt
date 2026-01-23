@@ -77,3 +77,4 @@ require (
 replace github.com/standardbeagle/go-cli-server => ../go-cli-server
 
 replace github.com/standardbeagle/claude-go => ../claude-go
+

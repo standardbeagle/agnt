@@ -86,7 +86,6 @@ func New(cfg ProcessorConfig) (*Processor, error) {
 		Model:           cfg.Model,
 		MaxTurns:        cfg.MaxTurns,
 		MaxBudgetUSD:    cfg.MaxBudgetUSD,
-		TimeoutSecs:     cfg.TimeoutSecs,
 		AllowedTools:    cfg.AllowedTools,
 		DisallowedTools: cfg.DisallowedTools,
 		PermissionMode:  claude.PermissionModeBypassPermission,
@@ -128,7 +127,6 @@ func (p *Processor) Process(ctx context.Context, task Task) (*Result, error) {
 		Model:          p.config.Model,
 		MaxTurns:       p.config.MaxTurns,
 		MaxBudgetUSD:   p.config.MaxBudgetUSD,
-		TimeoutSecs:    p.config.TimeoutSecs,
 		SystemPrompt:   systemPrompt,
 		PermissionMode: claude.PermissionModeBypassPermission,
 	}
