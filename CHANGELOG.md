@@ -20,6 +20,8 @@
 
 ## [Unreleased]
 
+## [0.9.0] - 2025-01-23
+
 ### Added
 - **Enhanced diagnostics panel with tabbed interface**: Floating indicator now features a comprehensive 7-tab diagnostics dashboard
   - **Overview tab**: Health cards showing framework detection, error counts, failed API calls, DOM update rates, and React-specific metrics (rerender rate, input lag)
