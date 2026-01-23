@@ -24,10 +24,11 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/andybalholm/brotli"
+	"github.com/gorilla/websocket"
+	"github.com/klauspost/compress/zstd"
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/protocol"
-
-	"github.com/gorilla/websocket"
 )
 
 // ProxyServer is a reverse proxy that logs traffic and injects instrumentation.
@@ -249,6 +250,31 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 
 		// Set protocol - proxy is HTTP
 		req.Header.Set("X-Forwarded-Proto", "http")
+
+		// Filter Accept-Encoding to only include formats we can decompress
+		// This prevents the backend from sending unsupported formats
+		// that would result in garbled output when we can't decompress them
+		if acceptEncoding := req.Header.Get("Accept-Encoding"); acceptEncoding != "" {
+			// Parse the Accept-Encoding values
+			var supported []string
+			for _, encoding := range strings.Split(acceptEncoding, ",") {
+				encoding = strings.TrimSpace(strings.ToLower(encoding))
+				// Remove quality values (e.g., "gzip;q=1.0" -> "gzip")
+				if idx := strings.Index(encoding, ";"); idx != -1 {
+					encoding = encoding[:idx]
+				}
+				// Only include encodings we support
+				if encoding == "gzip" || encoding == "deflate" || encoding == "br" || encoding == "zstd" || encoding == "identity" {
+					supported = append(supported, encoding)
+				}
+			}
+			if len(supported) > 0 {
+				req.Header.Set("Accept-Encoding", strings.Join(supported, ", "))
+			} else {
+				// If no supported encodings, request identity (uncompressed)
+				req.Header.Set("Accept-Encoding", "identity")
+			}
+		}
 	}
 
 	ps.proxy.ErrorHandler = ps.errorHandler
@@ -744,13 +770,32 @@ func (ps *ProxyServer) modifyResponse(resp *http.Response) error {
 		gzReader, err := gzip.NewReader(resp.Body)
 		if err != nil {
 			// If decompression fails, skip injection and pass through original
+			debug.Log("proxy", "Failed to decompress gzip response: %v", err)
 			return nil
 		}
 		defer gzReader.Close()
 		bodyReader = gzReader
 	} else if strings.Contains(encoding, "deflate") {
-		bodyReader = flate.NewReader(resp.Body)
+		deflateReader := flate.NewReader(resp.Body)
+		defer deflateReader.Close()
+		bodyReader = deflateReader
+	} else if strings.Contains(encoding, "br") {
+		brReader := brotli.NewReader(resp.Body)
+		bodyReader = io.NopCloser(brReader)
 		defer bodyReader.Close()
+	} else if strings.Contains(encoding, "zstd") {
+		zstdReader, err := zstd.NewReader(resp.Body)
+		if err != nil {
+			// If decompression fails, skip injection and pass through original
+			debug.Log("proxy", "Failed to decompress zstd response: %v", err)
+			return nil
+		}
+		defer zstdReader.Close()
+		bodyReader = io.NopCloser(zstdReader)
+	} else if encoding != "" && encoding != "identity" {
+		// Unsupported encoding - pass through without modification
+		debug.Log("proxy", "Unsupported Content-Encoding: %s - passing through without injection", encoding)
+		return nil
 	}
 
 	// Read decompressed response body
@@ -1138,15 +1183,26 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				name = fmt.Sprintf("screenshot-%d", timestamp.Unix())
 			}
 
-			filePath, err := ps.saveScreenshot(name, dataURL)
-			if err != nil {
-				// Log error but continue
-				continue
-			}
-
 			selector := getStringField(msg.Data, "selector")
 			if selector == "" {
 				selector = "body"
+			}
+
+			filePath, err := ps.saveScreenshot(name, dataURL)
+			if err != nil {
+				// Log failed screenshot so it appears in proxylog
+				ps.logger.LogScreenshot(Screenshot{
+					ID:        id,
+					Timestamp: timestamp,
+					Name:      name,
+					URL:       msg.URL,
+					Width:     getIntField(msg.Data, "width"),
+					Height:    getIntField(msg.Data, "height"),
+					Format:    getStringField(msg.Data, "format"),
+					Selector:  selector,
+					Error:     err.Error(),
+				})
+				continue
 			}
 
 			ps.logger.LogScreenshot(Screenshot{
@@ -1223,6 +1279,23 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		case "panel_message":
 			// Handle message from floating indicator panel
 			panelMsg := parsePanelMessage(msg.Data, id, timestamp, msg.URL)
+
+			// Save screenshot area attachments and include file paths
+			for i := range panelMsg.Attachments {
+				if panelMsg.Attachments[i].Type == "screenshot" && panelMsg.Attachments[i].Area != nil && panelMsg.Attachments[i].Area.Data != "" {
+					// Save the screenshot area data
+					filePath, err := ps.saveScreenshot(fmt.Sprintf("area-%s", id), panelMsg.Attachments[i].Area.Data)
+					if err == nil {
+						// Store file path in attachment data for overlay reference
+						if panelMsg.Attachments[i].Data == nil {
+							panelMsg.Attachments[i].Data = make(map[string]interface{})
+						}
+						panelMsg.Attachments[i].Data["file_path"] = filePath
+						panelMsg.Attachments[i].Data["file_name"] = filepath.Base(filePath)
+					}
+				}
+			}
+
 			ps.logger.LogPanelMessage(panelMsg)
 
 			// Forward to overlay if configured
@@ -1230,11 +1303,14 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				_ = ps.overlayNotifier.NotifyPanelMessage(ps.ID, &panelMsg)
 			}
 
+			// Update audit folder summary after saving new files
+			_ = UpdateAuditSummary()
+
 		case "sketch":
 			// Handle sketch/wireframe from sketch mode
 			sketchEntry := parseSketchEntry(msg.Data, id, timestamp, msg.URL)
 
-			// Save sketch image to temp file
+			// Save sketch image to audit directory
 			if sketchEntry.ImageData != "" {
 				filePath, err := ps.saveScreenshot("sketch-"+id, sketchEntry.ImageData)
 				if err == nil {
@@ -1248,6 +1324,9 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			if ps.overlayNotifier.IsEnabled() {
 				_ = ps.overlayNotifier.NotifySketch(ps.ID, &sketchEntry)
 			}
+
+			// Update audit folder summary
+			_ = UpdateAuditSummary()
 
 		case "screenshot_capture":
 			// Handle area capture from panel with reference ID
@@ -1780,7 +1859,8 @@ func getFloatField(data map[string]interface{}, key string) float64 {
 	return 0
 }
 
-// saveScreenshot saves a base64 data URL to a temp file.
+// saveScreenshot saves a base64 data URL to the .agnt/audit directory.
+// The file is stored in the project's .agnt/audit folder for easy access by AI agents.
 func (ps *ProxyServer) saveScreenshot(name string, dataURL string) (string, error) {
 	// Parse data URL (format: data:image/png;base64,...)
 	if !strings.HasPrefix(dataURL, "data:") {
@@ -1800,10 +1880,24 @@ func (ps *ProxyServer) saveScreenshot(name string, dataURL string) (string, erro
 		return "", fmt.Errorf("failed to decode base64: %w", err)
 	}
 
-	// Create temp file
-	tempDir := os.TempDir()
-	filename := fmt.Sprintf("%s-%s.png", ps.ID, name)
-	filePath := filepath.Join(tempDir, filename)
+	// Get audit directory (.agnt/audit)
+	auditDir, err := GetAuditDir()
+	if err != nil {
+		// Fallback to temp dir if audit directory unavailable
+		auditDir = os.TempDir()
+	}
+
+	// Create screenshots subdirectory for better organization
+	screenshotDir := filepath.Join(auditDir, "screenshots")
+	if err := os.MkdirAll(screenshotDir, 0755); err != nil {
+		// Fallback to audit dir root if subdirectory creation fails
+		screenshotDir = auditDir
+	}
+
+	// Sanitize filename
+	safeName := sanitizeFilename(name)
+	filename := fmt.Sprintf("screenshot-%s-%s.png", ps.ID, safeName)
+	filePath := filepath.Join(screenshotDir, filename)
 
 	// Write to file
 	err = os.WriteFile(filePath, imageData, 0644)

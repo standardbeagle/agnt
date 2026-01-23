@@ -34,6 +34,7 @@ type Overlay struct {
 	clients         sync.Map // map[*websocket.Conn]bool
 	mu              sync.RWMutex
 	auditSummarizer *overlay.AuditSummarizer
+	activityCh      chan struct{} // Signaled when output activity is detected
 }
 
 // OverlayMessage represents a message from devtool-mcp.
@@ -101,6 +102,7 @@ func newOverlay(socketPath string, ptmx PtyWriter) *Overlay {
 		socketPath:      socketPath,
 		ptmx:            ptmx,
 		auditSummarizer: auditSummarizer,
+		activityCh:      make(chan struct{}, 1), // Buffered to avoid blocking
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
 				return true // Allow all origins for local development
@@ -112,6 +114,16 @@ func newOverlay(socketPath string, ptmx PtyWriter) *Overlay {
 // SocketPath returns the socket path the overlay is listening on.
 func (o *Overlay) SocketPath() string {
 	return o.socketPath
+}
+
+// NotifyActivity signals that output activity has been detected.
+// Called by ActivityMonitor when agent starts producing output.
+func (o *Overlay) NotifyActivity() {
+	select {
+	case o.activityCh <- struct{}{}:
+	default:
+		// Channel already has a signal, don't block
+	}
 }
 
 func (o *Overlay) Start(ctx context.Context) error {
@@ -323,6 +335,8 @@ type attachmentInfo struct {
 	Text     string
 	Summary  string
 	Area     *screenshotArea
+	FilePath string // Path to the saved file (for screenshots, sketches)
+	FileName string // Just the filename for display
 }
 
 // screenshotArea represents coordinates for a screenshot region.
@@ -386,7 +400,7 @@ func (o *Overlay) processAttachments(attachments []struct {
 			report := o.processAuditAttachment(att.Data, userMessage)
 			auditReports = append(auditReports, report)
 		} else {
-			nonAuditAttachments = append(nonAuditAttachments, attachmentInfo{
+			info := attachmentInfo{
 				Type:     att.Type,
 				ID:       att.ID,
 				Selector: att.Selector,
@@ -394,7 +408,22 @@ func (o *Overlay) processAttachments(attachments []struct {
 				Text:     att.Text,
 				Summary:  att.Summary,
 				Area:     att.Area,
-			})
+			}
+
+			// Extract file path and name from attachment data if present
+			if len(att.Data) > 0 {
+				var dataFields map[string]interface{}
+				if err := json.Unmarshal(att.Data, &dataFields); err == nil {
+					if fp, ok := dataFields["file_path"].(string); ok {
+						info.FilePath = fp
+					}
+					if fn, ok := dataFields["file_name"].(string); ok {
+						info.FileName = fn
+					}
+				}
+			}
+
+			nonAuditAttachments = append(nonAuditAttachments, info)
 		}
 	}
 	return auditReports, nonAuditAttachments
@@ -453,18 +482,24 @@ func (o *Overlay) formatPanelMessage(message string, auditReports []string, atta
 		}
 	}
 
-	// Add non-audit attachments
+	// Add non-audit attachments with specific file paths
 	if len(attachments) > 0 {
 		text += "\n\n[Attachments]\n"
 		for i, att := range attachments {
 			text += fmt.Sprintf("%d. %s", i+1, att.Type)
 			switch att.Type {
 			case "screenshot":
+				// Screenshot references are primary - always show file path
 				if att.Area != nil {
 					text += fmt.Sprintf(" (area: %dx%d at %d,%d)", att.Area.Width, att.Area.Height, att.Area.X, att.Area.Y)
 				}
 				if att.Summary != "" {
 					text += fmt.Sprintf(": %s", att.Summary)
+				}
+				text += "\n"
+				// Show specific file path if available
+				if att.FilePath != "" {
+					text += fmt.Sprintf("   → %s\n", att.FilePath)
 				}
 			case "element":
 				if att.Selector != "" {
@@ -476,9 +511,15 @@ func (o *Overlay) formatPanelMessage(message string, auditReports []string, atta
 				if att.Text != "" {
 					text += fmt.Sprintf(" - %q", truncateText(att.Text, 50))
 				}
+				text += "\n"
 			case "sketch":
 				if att.Summary != "" {
 					text += fmt.Sprintf(": %s", att.Summary)
+				}
+				text += "\n"
+				// Show specific file path if available
+				if att.FilePath != "" {
+					text += fmt.Sprintf("   → %s\n", att.FilePath)
 				}
 			default:
 				if att.Selector != "" {
@@ -487,14 +528,22 @@ func (o *Overlay) formatPanelMessage(message string, auditReports []string, atta
 				if att.Text != "" {
 					text += fmt.Sprintf(" (%s)", att.Text)
 				}
+				text += "\n"
 			}
-			text += "\n"
 		}
+	}
+
+	// Add audit data folder reference with summary file
+	if len(auditReports) > 0 || len(attachments) > 0 {
+		text += "\n\n[All Audit Data]\n"
+		text += "Summary of all files: .agnt/audit/SUMMARY.md\n"
 	}
 
 	// Add notification request if enabled
 	if requestNotification {
-		text += "\n\n[Note: When complete, please send a toast notification using: proxy {action: \"toast\", id: \"dev\", toast_message: \"Done!\", toast_type: \"success\"}]"
+		text += "\n\n[Note: Use toast notifications for meaningful status updates, not just completion. " +
+			"Examples: \"Compiling...\", \"Running tests...\", \"Found 3 issues\", \"Build succeeded\". " +
+			"Usage: proxy {action: \"toast\", id: \"dev\", toast_message: \"Your message\", toast_type: \"info|success|warning|error\"}]"
 	}
 
 	return text
@@ -787,11 +836,10 @@ func (o *Overlay) typeText(msg TypeMessage) {
 		o.writeTopty(msg.Text)
 
 		if msg.Enter {
-			// Two returns 100ms apart
-			time.Sleep(50 * time.Millisecond)
-			o.writeTopty("\r")
-			time.Sleep(100 * time.Millisecond)
-			o.writeTopty("\r")
+			// Progressive enter key timing to ensure agent accepts the message.
+			// Send enters at 100ms, 200ms, then 500ms intervals until activity is detected.
+			// This handles different AI agent input processing speeds.
+			o.sendEntersUntilActivity()
 		}
 	} else {
 		// Simulate typing character by character
@@ -806,14 +854,50 @@ func (o *Overlay) typeText(msg TypeMessage) {
 			// Wait for Ink to process all characters before sending submit sequence
 			time.Sleep(100 * time.Millisecond)
 
-			// Ink-based apps (like Claude Code) sometimes need two Enters:
-			// - First Enter may be consumed by autocomplete/suggestions UI
-			// - Second Enter actually submits
-			o.writeTopty("\r")
-			time.Sleep(50 * time.Millisecond)
+			// Progressive enter key timing to ensure agent accepts the message.
+			o.sendEntersUntilActivity()
+		}
+	}
+}
+
+// sendEntersUntilActivity sends enter keys at progressive intervals until
+// the agent starts producing output (activity detected). Timing: 100ms, 200ms,
+// then 500ms intervals. Max 10 enters to prevent infinite loops.
+func (o *Overlay) sendEntersUntilActivity() {
+	// Drain any stale activity signals
+	select {
+	case <-o.activityCh:
+	default:
+	}
+
+	// Progressive timing: 100ms, 200ms, then 500ms intervals
+	delays := []time.Duration{
+		100 * time.Millisecond,
+		200 * time.Millisecond,
+	}
+	const continuedDelay = 500 * time.Millisecond
+	const maxEnters = 10
+
+	for i := 0; i < maxEnters; i++ {
+		// Determine delay for this iteration
+		var delay time.Duration
+		if i < len(delays) {
+			delay = delays[i]
+		} else {
+			delay = continuedDelay
+		}
+
+		// Wait for activity or timeout
+		select {
+		case <-o.activityCh:
+			// Agent started responding, message was accepted
+			return
+		case <-time.After(delay):
+			// No activity yet, send another enter
 			o.writeTopty("\r")
 		}
 	}
+	// Max enters reached - message may or may not have been accepted
 }
 
 func (o *Overlay) sendKey(msg KeyMessage) {

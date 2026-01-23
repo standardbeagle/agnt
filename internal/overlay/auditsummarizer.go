@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/aichannel"
+	"github.com/standardbeagle/agnt/internal/proxy"
 )
 
 // AuditSummarizer uses an AI channel to generate high-quality audit reports.
@@ -82,10 +84,26 @@ type AuditData struct {
 }
 
 // SummarizeAudit generates a high-quality report from audit data.
+// It also saves the full audit data to .agnt/audit/ for later reference.
 func (s *AuditSummarizer) SummarizeAudit(ctx context.Context, audit AuditData, userMessage string) (string, error) {
+	// Save audit data to file for later reference
+	auditFilePath := ""
+	if filePath, err := proxy.SaveAuditData(audit.AuditType, audit.Label, audit.Result); err == nil {
+		auditFilePath = filePath
+		log.Printf("Audit data saved to: %s", filePath)
+		// Update summary after saving
+		_ = proxy.UpdateAuditSummary()
+	} else {
+		log.Printf("Failed to save audit data: %v", err)
+	}
+
 	if !s.IsAvailable() {
 		// Fallback: return a basic formatted summary
-		return s.fallbackSummary(audit, userMessage), nil
+		report := s.fallbackSummary(audit, userMessage)
+		if auditFilePath != "" {
+			report += fmt.Sprintf("\n\n📁 %s", auditFilePath)
+		}
+		return report, nil
 	}
 
 	// Build context with audit data
@@ -101,10 +119,20 @@ func (s *AuditSummarizer) SummarizeAudit(ctx context.Context, audit AuditData, u
 	response, err := s.channel.SendAndParse(ctx, prompt, contextData)
 	if err != nil {
 		// On error, fallback to basic summary
-		return s.fallbackSummary(audit, userMessage), nil
+		report := s.fallbackSummary(audit, userMessage)
+		if auditFilePath != "" {
+			report += fmt.Sprintf("\n\n📁 %s", auditFilePath)
+		}
+		return report, nil
 	}
 
-	return response.Result, nil
+	// Add file reference to the AI-generated report
+	report := response.Result
+	if auditFilePath != "" {
+		report += fmt.Sprintf("\n\n📁 %s", auditFilePath)
+	}
+
+	return report, nil
 }
 
 // buildAuditSystemPrompt returns the system prompt for audit summarization.
