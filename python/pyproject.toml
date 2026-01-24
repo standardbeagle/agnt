@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "devtool-mcp"
-version = "0.9.0"
+version = "0.10.0"
 description = "DEPRECATED: This package has been renamed to 'agnt'. Please install 'agnt' instead."
 readme = "README.md"
 license = "MIT"
@@ -43,7 +43,7 @@ classifiers = [
     "Topic :: Internet :: Proxy Servers",
 ]
 dependencies = [
-    "agnt>=0.9.0",
+    "agnt>=0.10.0",
 ]
 
 [project.urls]
