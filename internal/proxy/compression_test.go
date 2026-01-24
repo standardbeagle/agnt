@@ -8,6 +8,9 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/andybalholm/brotli"
+	"github.com/klauspost/compress/zstd"
 )
 
 func TestModifyResponse_GzipCompression(t *testing.T) {
@@ -284,6 +287,222 @@ func BenchmarkModifyResponse_NoCompression(b *testing.B) {
 				"Content-Type": []string{"text/html"},
 			},
 			Body: io.NopCloser(bytes.NewReader(htmlContent)),
+		}
+		ps.modifyResponse(resp)
+		io.ReadAll(resp.Body)
+	}
+}
+
+func TestModifyResponse_BrotliCompression(t *testing.T) {
+	ps := &ProxyServer{
+		ListenAddr: ":8080",
+	}
+
+	htmlContent := []byte("<html><head><title>Test</title></head><body>Hello World</body></html>")
+
+	// Compress the HTML content with Brotli
+	var buf bytes.Buffer
+	brWriter := brotli.NewWriter(&buf)
+	_, err := brWriter.Write(htmlContent)
+	if err != nil {
+		t.Fatalf("failed to compress: %v", err)
+	}
+	brWriter.Close()
+
+	// Create a response with brotli-compressed content
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header: http.Header{
+			"Content-Type":     []string{"text/html"},
+			"Content-Encoding": []string{"br"},
+		},
+		Body: io.NopCloser(&buf),
+	}
+
+	// Modify the response
+	err = ps.modifyResponse(resp)
+	if err != nil {
+		t.Fatalf("modifyResponse failed: %v", err)
+	}
+
+	// Read the modified response
+	modifiedBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read modified body: %v", err)
+	}
+
+	// Verify it's no longer compressed
+	if resp.Header.Get("Content-Encoding") != "" {
+		t.Errorf("Content-Encoding header should be removed, got: %s", resp.Header.Get("Content-Encoding"))
+	}
+
+	// Verify the content is valid HTML
+	bodyStr := string(modifiedBody)
+	if !strings.Contains(bodyStr, "<html>") {
+		t.Errorf("modified body doesn't contain <html> tag")
+	}
+	if !strings.Contains(bodyStr, "Hello World") {
+		t.Errorf("modified body doesn't contain original content")
+	}
+
+	// Verify instrumentation was injected
+	if !strings.Contains(bodyStr, "__devtool") {
+		t.Errorf("instrumentation script was not injected")
+	}
+}
+
+func TestModifyResponse_ZstdCompression(t *testing.T) {
+	ps := &ProxyServer{
+		ListenAddr: ":8080",
+	}
+
+	htmlContent := []byte("<html><head><title>Test</title></head><body>Hello World</body></html>")
+
+	// Compress the HTML content with Zstandard
+	var buf bytes.Buffer
+	zstdWriter, err := zstd.NewWriter(&buf)
+	if err != nil {
+		t.Fatalf("failed to create zstd writer: %v", err)
+	}
+	_, err = zstdWriter.Write(htmlContent)
+	if err != nil {
+		t.Fatalf("failed to compress: %v", err)
+	}
+	zstdWriter.Close()
+
+	// Create a response with zstd-compressed content
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header: http.Header{
+			"Content-Type":     []string{"text/html"},
+			"Content-Encoding": []string{"zstd"},
+		},
+		Body: io.NopCloser(&buf),
+	}
+
+	// Modify the response
+	err = ps.modifyResponse(resp)
+	if err != nil {
+		t.Fatalf("modifyResponse failed: %v", err)
+	}
+
+	// Read the modified response
+	modifiedBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read modified body: %v", err)
+	}
+
+	// Verify it's no longer compressed
+	if resp.Header.Get("Content-Encoding") != "" {
+		t.Errorf("Content-Encoding header should be removed, got: %s", resp.Header.Get("Content-Encoding"))
+	}
+
+	// Verify the content is valid HTML
+	bodyStr := string(modifiedBody)
+	if !strings.Contains(bodyStr, "<html>") {
+		t.Errorf("modified body doesn't contain <html> tag")
+	}
+	if !strings.Contains(bodyStr, "Hello World") {
+		t.Errorf("modified body doesn't contain original content")
+	}
+
+	// Verify instrumentation was injected
+	if !strings.Contains(bodyStr, "__devtool") {
+		t.Errorf("instrumentation script was not injected")
+	}
+}
+
+func TestModifyResponse_UnsupportedCompression(t *testing.T) {
+	ps := &ProxyServer{
+		ListenAddr: ":8080",
+	}
+
+	// Create a response with an unsupported compression format
+	htmlContent := []byte("<html><head><title>Test</title></head><body>Hello World</body></html>")
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header: http.Header{
+			"Content-Type":     []string{"text/html"},
+			"Content-Encoding": []string{"lzma"},
+		},
+		Body: io.NopCloser(bytes.NewReader(htmlContent)),
+	}
+
+	// Modify the response (should pass through without modification)
+	err := ps.modifyResponse(resp)
+	if err != nil {
+		t.Fatalf("modifyResponse should handle unsupported encoding gracefully, got error: %v", err)
+	}
+
+	// Read the response
+	modifiedBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read body: %v", err)
+	}
+
+	// Verify content is unchanged (no decompression attempted)
+	if !bytes.Equal(modifiedBody, htmlContent) {
+		t.Errorf("body should be unchanged for unsupported encoding")
+	}
+
+	// Verify instrumentation was NOT injected (since we can't decode)
+	if strings.Contains(string(modifiedBody), "__devtool") {
+		t.Errorf("instrumentation should not be injected for unsupported encoding")
+	}
+}
+
+func BenchmarkModifyResponse_Brotli(b *testing.B) {
+	ps := &ProxyServer{
+		ListenAddr: ":8080",
+	}
+
+	htmlContent := []byte("<html><head><title>Test</title></head><body>" + strings.Repeat("Hello World ", 1000) + "</body></html>")
+
+	// Pre-compress content with Brotli
+	var buf bytes.Buffer
+	brWriter := brotli.NewWriter(&buf)
+	brWriter.Write(htmlContent)
+	brWriter.Close()
+	compressedData := buf.Bytes()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		resp := &http.Response{
+			StatusCode: http.StatusOK,
+			Header: http.Header{
+				"Content-Type":     []string{"text/html"},
+				"Content-Encoding": []string{"br"},
+			},
+			Body: io.NopCloser(bytes.NewReader(compressedData)),
+		}
+		ps.modifyResponse(resp)
+		io.ReadAll(resp.Body)
+	}
+}
+
+func BenchmarkModifyResponse_Zstd(b *testing.B) {
+	ps := &ProxyServer{
+		ListenAddr: ":8080",
+	}
+
+	htmlContent := []byte("<html><head><title>Test</title></head><body>" + strings.Repeat("Hello World ", 1000) + "</body></html>")
+
+	// Pre-compress content with Zstandard
+	var buf bytes.Buffer
+	zstdWriter, _ := zstd.NewWriter(&buf)
+	zstdWriter.Write(htmlContent)
+	zstdWriter.Close()
+	compressedData := buf.Bytes()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		resp := &http.Response{
+			StatusCode: http.StatusOK,
+			Header: http.Header{
+				"Content-Type":     []string{"text/html"},
+				"Content-Encoding": []string{"zstd"},
+			},
+			Body: io.NopCloser(bytes.NewReader(compressedData)),
 		}
 		ps.modifyResponse(resp)
 		io.ReadAll(resp.Body)

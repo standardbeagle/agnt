@@ -116,6 +116,7 @@ type Screenshot struct {
 	Height    int       `json:"height"`
 	Format    string    `json:"format"`   // png, jpeg
 	Selector  string    `json:"selector"` // CSS selector for element (or "body" for full page)
+	Error     string    `json:"error,omitempty"`
 }
 
 // ExecutionResult represents the result of executing JavaScript.

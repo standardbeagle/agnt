@@ -1,4 +1,45 @@
-# Changelog - DevTool MCP
+# Changelog - agnt
+
+## [0.8.0] - 2026-01-11
+
+### Added
+- **Debug logging infrastructure**: Comprehensive debug logging for proxy and tools
+  - Enable with `AGNT_DEBUG=1` environment variable
+  - Logs to stderr to avoid interfering with MCP stdio communication
+- **Enhanced indicator metadata**: Attachment metadata in panel messages for richer context
+- **'run' shorthand for script commands**: Simplified `.agnt.kdl` configuration with `run "command"` syntax
+- **SVG wireframe generation**: Generate SVG wireframes from DOM elements via `__devtool` API
+- **AI-optimized audit output**: New default output format designed for token efficiency
+  - Grouped issues by type with limited examples
+  - Use `raw: true` for verbose detailed format
+- **Process/proxy restart functionality**: `proc {action: "restart"}` and `proxy {action: "restart"}`
+- **forAutomation mode**: AI-powered analysis with `forAutomation: true` flag for audit functions
+- **Audit system overhaul**: Action-oriented output with clear remediation steps
+- **User interaction recorder**: Script for tracking and replaying user interactions
+- **Response stream UI components**: Visual components for streaming responses
+- **Shell completion command**: `agnt completion [bash|zsh|fish|powershell]`
+- **Feature licensing framework**: Foundation for premium feature licensing
+- **Activity monitoring**: Output preview broadcast for real-time activity tracking
+- **EADDRINUSE auto-recovery**: Automatic port conflict recovery for script startup
+- **Multi-level data store**: MCP and JS API for structured data storage
+- **Modern compression support**: Brotli (br) and Zstandard (zstd) decompression in proxy
+  - Automatic decompression for HTML injection
+  - Pass-through with logging for unsupported compression formats
+  - Maintains backward compatibility with gzip and deflate
+
+### Changed
+- **Accessibility audit overhaul**: Action-oriented output with clear pass/fail criteria
+- **Refactored overlay code**: Reduced cyclomatic complexity in high-risk functions
+- **Progressive disclosure in currentpage tool**: `action: "list"` now returns lightweight summaries
+  - Returns only counts (interaction_count, mutation_count, error_count, resource_count)
+  - Omits detailed arrays to prevent token bloat (was sending 11.7k tokens for 69 interactions)
+  - Use `action: "get"` with specific `session_id` for full interaction/mutation details
+  - Typical token reduction: ~90% for list views with many interactions
+
+### Fixed
+- Code quality improvements eliminating shotgun surgery patterns
+
+---
 
 ## [0.5.0] - 2025-12-10
 

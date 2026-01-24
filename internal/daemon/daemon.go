@@ -898,11 +898,41 @@ func mapKeysProxy(m map[string]*config.ProxyConfig) []string {
 	return keys
 }
 
+// resolveWorkingDir resolves the working directory for a script.
+// If cwd is empty, returns projectPath.
+// If cwd is absolute, returns it directly.
+// If cwd is relative, joins it with projectPath and cleans the result.
+func resolveWorkingDir(projectPath, cwd string) string {
+	if cwd == "" {
+		return projectPath
+	}
+	if filepath.IsAbs(cwd) {
+		return cwd
+	}
+	return filepath.Clean(filepath.Join(projectPath, cwd))
+}
+
+// envMapToSlice converts a map of environment variables to a slice of "KEY=VALUE" strings.
+func envMapToSlice(env map[string]string) []string {
+	if len(env) == 0 {
+		return nil
+	}
+	result := make([]string, 0, len(env))
+	for k, v := range env {
+		result = append(result, k+"="+v)
+	}
+	return result
+}
+
 // autostartScript starts a single script from config with automatic EADDRINUSE recovery.
 func (d *Daemon) autostartScript(ctx context.Context, name string, script *config.ScriptConfig, projectPath string, proxyConfigs map[string]*config.ProxyConfig) error {
 
 	// Make process ID unique per project to avoid collisions between sessions
 	processID := makeProcessID(projectPath, name)
+
+	// Resolve working directory and environment
+	workingDir := resolveWorkingDir(projectPath, script.Cwd)
+	envSlice := envMapToSlice(script.Env)
 
 	// Check if already running
 	if _, err := d.hub.ProcessManager().Get(processID); err == nil {
@@ -922,9 +952,10 @@ func (d *Daemon) autostartScript(ctx context.Context, name string, script *confi
 		args = script.Args
 	} else {
 		// No command - run as package.json script via detected package manager
-		proj, err := project.Detect(projectPath)
+		// Use workingDir for detection so monorepo subdirectories find their package.json
+		proj, err := project.Detect(workingDir)
 		if err != nil {
-			debug.Error("daemon", "project detection failed for %s: %v", projectPath, err)
+			debug.Error("daemon", "project detection failed for %s: %v", workingDir, err)
 			return fmt.Errorf("project detection failed: %v", err)
 		}
 
@@ -954,10 +985,10 @@ func (d *Daemon) autostartScript(ctx context.Context, name string, script *confi
 	}
 
 	// Determine expected port for pre-flight cleanup and EADDRINUSE recovery
-	expectedPort := d.getExpectedPortForScript(name, script, proxyConfigs, projectPath, command, args)
+	expectedPort := d.getExpectedPortForScript(name, script, proxyConfigs, workingDir, command, args)
 
 	// Start with automatic EADDRINUSE recovery
-	_, startupErr := d.startScriptWithRetry(ctx, processID, projectPath, command, args, expectedPort)
+	_, startupErr := d.startScriptWithRetry(ctx, processID, workingDir, command, args, envSlice, expectedPort)
 	if startupErr != nil {
 		return startupErr
 	}

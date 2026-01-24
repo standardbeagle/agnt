@@ -386,6 +386,21 @@ scripts {
     //     run "go run ./cmd/server"
     //     autostart true
     // }
+
+    // Monorepo example: Run frontend from subdirectory
+    // frontend {
+    //     command "npm"
+    //     args "run" "dev"
+    //     cwd "./packages/frontend"    // Runs in monorepo/packages/frontend
+    //     autostart true
+    // }
+
+    // Monorepo example: Run backend from subdirectory
+    // backend {
+    //     run "go run ./cmd/server"
+    //     cwd "./services/api"         // Runs in monorepo/services/api
+    //     autostart true
+    // }
 }
 
 // Reverse proxies to start

@@ -212,6 +212,53 @@ func (pt *PageTracker) GetActiveSessions() []*PageSession {
 	return sessions
 }
 
+// PageSessionSummary is a lightweight representation of a page session for list views.
+// It omits detailed arrays (interactions, mutations, errors, resources) to reduce token usage.
+type PageSessionSummary struct {
+	ID             string    `json:"id"`
+	URL            string    `json:"url"`
+	PageTitle      string    `json:"page_title,omitempty"`
+	StartTime      time.Time `json:"start_time"`
+	LastActivity   time.Time `json:"last_activity"`
+	Active         bool      `json:"active"`
+	ResourceCount  int       `json:"resource_count"`
+	ErrorCount     int       `json:"error_count"`
+	HasPerformance bool      `json:"has_performance"`
+	LoadTimeMs     int64     `json:"load_time_ms,omitempty"`
+	// Counts only, no detailed arrays
+	InteractionCount int `json:"interaction_count"`
+	MutationCount    int `json:"mutation_count"`
+}
+
+// GetActiveSessionSummaries returns lightweight summaries of active sessions.
+// Use this for list views to avoid sending massive arrays of interactions/mutations.
+func (pt *PageTracker) GetActiveSessionSummaries() []PageSessionSummary {
+	sessions := pt.GetActiveSessions()
+	summaries := make([]PageSessionSummary, len(sessions))
+
+	for i, session := range sessions {
+		summaries[i] = PageSessionSummary{
+			ID:               session.ID,
+			URL:              session.URL,
+			PageTitle:        session.PageTitle,
+			StartTime:        session.StartTime,
+			LastActivity:     session.LastActivity,
+			Active:           session.Active,
+			ResourceCount:    len(session.Resources),
+			ErrorCount:       len(session.Errors),
+			HasPerformance:   session.Performance != nil,
+			InteractionCount: session.InteractionCount,
+			MutationCount:    session.MutationCount,
+		}
+
+		if session.Performance != nil {
+			summaries[i].LoadTimeMs = session.Performance.LoadEventEnd
+		}
+	}
+
+	return summaries
+}
+
 // GetSession returns a specific page session by ID.
 func (pt *PageTracker) GetSession(sessionID string) (*PageSession, bool) {
 	val, ok := pt.sessions.Load(sessionID)

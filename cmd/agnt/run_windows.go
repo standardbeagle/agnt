@@ -498,6 +498,10 @@ func runWithConPTY(ctx context.Context, args []string, socketPath string, sessio
 		activityCfg := overlay.DefaultActivityMonitorConfig()
 		activityCfg.OnStateChange = func(state overlay.ActivityState) {
 			daemonHandle.BroadcastActivity(state == overlay.ActivityActive)
+			// Notify network overlay so typeText can detect when message was accepted
+			if state == overlay.ActivityActive && netOverlay != nil {
+				netOverlay.NotifyActivity()
+			}
 		}
 		activityMonitor = overlay.NewActivityMonitor(browserHelper, activityCfg)
 

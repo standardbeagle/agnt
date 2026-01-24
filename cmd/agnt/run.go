@@ -479,6 +479,10 @@ func runWithPTY(ctx context.Context, args []string, socketPath string, sessionCo
 		activityCfg.OnStateChange = func(state overlay.ActivityState) {
 			// Broadcast activity state to daemon (which forwards to proxies)
 			daemonHandle.BroadcastActivity(state == overlay.ActivityActive)
+			// Notify network overlay so typeText can detect when message was accepted
+			if state == overlay.ActivityActive && netOverlay != nil {
+				netOverlay.NotifyActivity()
+			}
 		}
 		activityCfg.OnOutputPreview = func(lines []string) {
 			// Broadcast output preview to daemon (which forwards to browser indicator)

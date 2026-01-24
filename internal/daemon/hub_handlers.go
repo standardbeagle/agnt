@@ -8,7 +8,9 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -94,6 +96,155 @@ func (d *Daemon) getSessionProjectPath(conn *hubpkg.Connection) string {
 		}
 	}
 	return ""
+}
+
+// RogueProcessInfo contains information about a detected rogue process.
+type RogueProcessInfo struct {
+	Port       int   // The port being used
+	PIDs       []int // PIDs of processes using the port
+	IsManaged  bool  // Whether any of the PIDs are managed by agnt
+	HasWarning bool  // Whether to show warning
+}
+
+// detectRogueProcess checks if there's an unmanaged process using the port
+// associated with a stopped/failed process. Returns info about the rogue process.
+func (d *Daemon) detectRogueProcess(ctx context.Context, proc *goprocess.ManagedProcess) *RogueProcessInfo {
+	// Only check stopped/failed processes
+	state := proc.State()
+	if state != goprocess.StateStopped && state != goprocess.StateFailed {
+		return nil
+	}
+
+	// Try to determine the expected port
+	port := d.getExpectedPortForProcess(proc)
+	if port <= 0 {
+		return nil
+	}
+
+	// Check if port is in use using lsof
+	pids := findProcessesByPort(ctx, port)
+	if len(pids) == 0 {
+		return nil
+	}
+
+	// Check if any of these PIDs are managed by agnt
+	isManaged := false
+	for _, pid := range pids {
+		if d.hub.ProcessManager().IsManagedPID(pid) {
+			isManaged = true
+			break
+		}
+	}
+
+	// If port is in use by unmanaged process, return warning info
+	if !isManaged {
+		return &RogueProcessInfo{
+			Port:       port,
+			PIDs:       pids,
+			IsManaged:  false,
+			HasWarning: true,
+		}
+	}
+
+	return nil
+}
+
+// findProcessesByPort finds PIDs of processes listening on the given port.
+func findProcessesByPort(ctx context.Context, port int) []int {
+	// Try lsof first
+	cmd := exec.CommandContext(ctx, "lsof", "-ti", fmt.Sprintf(":%d", port))
+	output, err := cmd.Output()
+	if err == nil && len(output) > 0 {
+		return parsePIDLines(strings.TrimSpace(string(output)))
+	}
+
+	// Fall back to ss
+	cmd = exec.CommandContext(ctx, "ss", "-tlnp")
+	output, err = cmd.Output()
+	if err != nil {
+		return nil
+	}
+
+	var pids []int
+	lines := strings.Split(string(output), "\n")
+	portPattern := fmt.Sprintf(":%d", port)
+
+	for _, line := range lines {
+		if !strings.Contains(line, portPattern) {
+			continue
+		}
+		// Extract PID from "pid=XXXX," pattern
+		start := strings.Index(line, "pid=")
+		if start == -1 {
+			continue
+		}
+		start += 4
+		end := strings.IndexAny(line[start:], ",)")
+		if end == -1 {
+			continue
+		}
+		var pid int
+		if _, err := fmt.Sscanf(line[start:start+end], "%d", &pid); err == nil {
+			pids = append(pids, pid)
+		}
+	}
+	return pids
+}
+
+// parsePIDLines parses newline-separated PID output from lsof.
+func parsePIDLines(output string) []int {
+	if output == "" {
+		return nil
+	}
+	lines := strings.Split(output, "\n")
+	var pids []int
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var pid int
+		if _, err := fmt.Sscanf(line, "%d", &pid); err == nil {
+			pids = append(pids, pid)
+		}
+	}
+	return pids
+}
+
+// getExpectedPortForProcess extracts the expected port for a process.
+// Checks URLs from URL tracker, then falls back to command-line parsing.
+func (d *Daemon) getExpectedPortForProcess(proc *goprocess.ManagedProcess) int {
+	// First, check URLs from URL tracker
+	urls := d.urlTracker.GetURLs(proc.ID)
+	for _, urlStr := range urls {
+		if port := extractPortFromURL(urlStr); port > 0 {
+			return port
+		}
+	}
+
+	// Fall back to command-line parsing
+	return extractPortFromCommand(proc.Command, proc.Args)
+}
+
+// extractPortFromURL extracts a port number from a URL string.
+func extractPortFromURL(urlStr string) int {
+	// Simple pattern match for localhost URLs with ports
+	patterns := []string{
+		`localhost:(\d+)`,
+		`127\.0\.0\.1:(\d+)`,
+		`0\.0\.0\.0:(\d+)`,
+		`\[::1\]:(\d+)`,
+	}
+
+	for _, pattern := range patterns {
+		re := regexp.MustCompile(pattern)
+		if matches := re.FindStringSubmatch(urlStr); len(matches) > 1 {
+			if port, err := strconv.Atoi(matches[1]); err == nil && port > 0 && port < 65536 {
+				return port
+			}
+		}
+	}
+	return 0
 }
 
 // registerAgntCommands registers agnt-specific commands with the Hub.
@@ -282,6 +433,18 @@ func (d *Daemon) hubHandleProcStatus(ctx context.Context, conn *hubpkg.Connectio
 		resp["urls"] = urls
 	}
 
+	// Check for rogue process using the same port
+	if rogueInfo := d.detectRogueProcess(ctx, proc); rogueInfo != nil && rogueInfo.HasWarning {
+		resp["warning"] = fmt.Sprintf(
+			"Port %d is in use by unmanaged process (PID %v). "+
+				"Run 'proc {action: \"restart\", process_id: \"%s\"}' to kill the rogue process and restart properly.",
+			rogueInfo.Port, rogueInfo.PIDs, proc.ID)
+		resp["rogue_process"] = map[string]interface{}{
+			"port": rogueInfo.Port,
+			"pids": rogueInfo.PIDs,
+		}
+	}
+
 	data, _ := json.Marshal(resp)
 	return conn.WriteJSON(data)
 }
@@ -435,6 +598,7 @@ func (d *Daemon) hubHandleProcList(ctx context.Context, conn *hubpkg.Connection,
 	}
 
 	entries := make([]map[string]interface{}, len(filteredProcs))
+	var warnings []string
 	for i, p := range filteredProcs {
 		entry := map[string]interface{}{
 			"id":           p.ID,
@@ -448,6 +612,19 @@ func (d *Daemon) hubHandleProcList(ctx context.Context, conn *hubpkg.Connection,
 		// Add URLs from URL tracker
 		if urls := d.urlTracker.GetURLs(p.ID); len(urls) > 0 {
 			entry["urls"] = urls
+		}
+		// Check for rogue process using the same port
+		if rogueInfo := d.detectRogueProcess(ctx, p); rogueInfo != nil && rogueInfo.HasWarning {
+			warning := fmt.Sprintf(
+				"Process %q shows as %s but port %d is in use by unmanaged process (PID %v). "+
+					"Run 'proc {action: \"restart\", process_id: \"%s\"}' to kill the rogue process and restart properly.",
+				p.ID, p.State().String(), rogueInfo.Port, rogueInfo.PIDs, p.ID)
+			entry["warning"] = warning
+			entry["rogue_process"] = map[string]interface{}{
+				"port": rogueInfo.Port,
+				"pids": rogueInfo.PIDs,
+			}
+			warnings = append(warnings, warning)
 		}
 		entries[i] = entry
 	}
@@ -463,6 +640,9 @@ func (d *Daemon) hubHandleProcList(ctx context.Context, conn *hubpkg.Connection,
 	}
 	if sessionCode != "" {
 		resp["session_code"] = sessionCode
+	}
+	if len(warnings) > 0 {
+		resp["warnings"] = warnings
 	}
 
 	data, _ := json.Marshal(resp)
@@ -1027,11 +1207,12 @@ func (d *Daemon) hubHandleCurrentPageList(conn *hubpkg.Connection, cmd *hubproto
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
 
-	sessions := p.PageTracker().GetActiveSessions()
+	// Return lightweight summaries instead of full sessions with massive arrays
+	summaries := p.PageTracker().GetActiveSessionSummaries()
 
 	resp := map[string]interface{}{
-		"sessions": sessions,
-		"count":    len(sessions),
+		"sessions": summaries,
+		"count":    len(summaries),
 	}
 
 	data, _ := json.Marshal(resp)
@@ -2747,6 +2928,7 @@ func (d *Daemon) hubHandleRestartAll(ctx context.Context, conn *hubpkg.Connectio
 
 // hubHandleProcRestart handles PROC RESTART <id>.
 // Stops a process and restarts it with the same configuration.
+// If a rogue process is using the expected port, it will be killed first.
 func (d *Daemon) hubHandleProcRestart(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
 	if len(cmd.Args) < 1 {
 		return conn.WriteErr(hubproto.ErrMissingParam, "process_id required")
@@ -2782,6 +2964,18 @@ func (d *Daemon) hubHandleProcRestart(ctx context.Context, conn *hubpkg.Connecti
 		time.Sleep(100 * time.Millisecond)
 	}
 
+	// Detect expected port and clean up any rogue processes using it
+	expectedPort := d.getExpectedPortForProcess(proc)
+	var killedPIDs []int
+	if expectedPort > 0 {
+		killedPIDs, err = d.preflightPortCleanup(ctx, expectedPort)
+		if err != nil {
+			log.Printf("[PROC RESTART] Warning: port cleanup failed for port %d: %v", expectedPort, err)
+		} else if len(killedPIDs) > 0 {
+			log.Printf("[PROC RESTART] Killed rogue process(es) on port %d: %v", expectedPort, killedPIDs)
+		}
+	}
+
 	// Remove the old process registration
 	d.hub.ProcessManager().RemoveByPath(processID, projectPath)
 
@@ -2809,6 +3003,13 @@ func (d *Daemon) hubHandleProcRestart(ctx context.Context, conn *hubpkg.Connecti
 		"restarted":    true,
 		"success":      true,
 		"message":      fmt.Sprintf("Process %q restarted successfully", processID),
+	}
+
+	// Include info about killed rogue processes
+	if len(killedPIDs) > 0 {
+		resp["rogue_processes_killed"] = killedPIDs
+		resp["port_cleaned"] = expectedPort
+		resp["message"] = fmt.Sprintf("Process %q restarted successfully (killed rogue process(es) on port %d)", processID, expectedPort)
 	}
 
 	data, _ := json.Marshal(resp)

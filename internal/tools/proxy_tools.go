@@ -99,6 +99,7 @@ type CurrentPageInput struct {
 	SessionID string   `json:"session_id,omitempty" jsonschema:"Specific session ID (required for get/summary action)"`
 	Detail    []string `json:"detail,omitempty" jsonschema:"For summary: sections to include full detail for (interactions, mutations, errors, resources)"`
 	Limit     int      `json:"limit,omitempty" jsonschema:"For summary: max items per detailed section (default: 5, max: 100)"`
+	Raw       bool     `json:"raw,omitempty" jsonschema:"For get: return full arrays with all details instead of compact format (default: false)"`
 }
 
 // CurrentPageOutput defines output for currentpage tool.
@@ -405,6 +406,7 @@ type ProxyLogInput struct {
 	Until       string   `json:"until,omitempty" jsonschema:"End time (RFC3339)"`
 	Limit       int      `json:"limit,omitempty" jsonschema:"Maximum results (default: 100)"`
 	Detail      []string `json:"detail,omitempty" jsonschema:"For summary: sections to include full detail for (errors, http, performance, interactions, mutations)"`
+	Raw         bool     `json:"raw,omitempty" jsonschema:"For query: return full raw data dumps instead of compact format (default: false)"`
 }
 
 // ProxyLogOutput defines output for proxylog tool.
@@ -435,11 +437,11 @@ type LogEntryOutput struct {
 func RegisterProxyTools(server *mcp.Server, pm *proxy.ProxyManager) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "currentpage",
-		Description: `Get current page sessions with grouped resources and metrics.
+		Description: `Get current page sessions with grouped resources and metrics. Uses compact format by default.
 
 Actions:
-  list: List all active page sessions (default)
-  get: Get detailed information for a specific session
+  list: List all active page sessions with summary counts (default)
+  get: Get information for a specific session (compact by default)
   clear: Clear all page sessions
 
 A page session groups together:
@@ -447,12 +449,25 @@ A page session groups together:
   - All associated resource requests (JS, CSS, images, etc.)
   - Frontend JavaScript errors from that page
   - Performance metrics (page load time, paint timing, etc.)
+  - User interactions (clicks, scrolls, form inputs)
+  - DOM mutations (elements added/removed)
 
-Examples:
+Output Format:
+  - DEFAULT (compact): Counts and metadata only (e.g., resource_count: 15, error_count: 2)
+  - With raw: true: Full arrays with all resources, errors, interactions, mutations
+
+Examples (compact format):
   currentpage {proxy_id: "dev"}
   currentpage {proxy_id: "dev", action: "list"}
   currentpage {proxy_id: "dev", action: "get", session_id: "page-1"}
+
+Full Details (raw format):
+  currentpage {proxy_id: "dev", action: "get", session_id: "page-1", raw: true}
+
+Clear Sessions:
   currentpage {proxy_id: "dev", action: "clear"}
+
+Tip: For detailed summaries with recent errors/interactions, use proxylog summary instead.
 
 This provides a high-level view of active pages and their resources,
 making it easy to understand page load behavior and debug issues.`,
@@ -507,10 +522,11 @@ Each proxy has separate log storage and WebSocket connections.`,
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "proxylog",
-		Description: `Query and analyze proxy traffic logs.
+		Description: `Query and analyze proxy traffic logs with compact, human-readable output by default.
 
 Actions:
-  query: Search logs with filters (default)
+  query: Search logs with filters (default) - returns compact semi-structured format
+  summary: Get overview with counts + top errors + recent items (RECOMMENDED for initial analysis)
   clear: Clear all logs for a proxy
   stats: Get log statistics
 
@@ -522,17 +538,30 @@ Log Types:
   screenshot: Screenshots captured via __devtool.screenshot()
   execution: Results of executed JavaScript code
   response: JavaScript execution responses returned to MCP client
+  interaction: User interactions (clicks, keyboard, scroll)
+  mutation: DOM mutations (elements added/removed/modified)
 
-Examples:
+Output Format:
+  - DEFAULT: Compact semi-structured text (easy to read, token-efficient)
+    Example: "GET /api/users → 200 (45ms)"
+  - With raw: true: Full JSON dumps (for programmatic processing)
+
+Query Examples (compact format):
   proxylog {proxy_id: "dev", types: ["http"], methods: ["GET"]}
   proxylog {proxy_id: "dev", types: ["error"]}
   proxylog {proxy_id: "dev", types: ["performance"]}
-  proxylog {proxy_id: "dev", types: ["custom"], limit: 50}
-  proxylog {proxy_id: "dev", types: ["screenshot"]}
-  proxylog {proxy_id: "dev", types: ["execution"]}
-  proxylog {proxy_id: "dev", types: ["response"]}
-  proxylog {proxy_id: "dev", url_pattern: "/api", status_codes: [500, 502]}
-  proxylog {proxy_id: "dev", since: "5m", limit: 50}
+  proxylog {proxy_id: "dev", types: ["http"], since: "5m", limit: 50}
+
+Query with Full Data (raw format):
+  proxylog {proxy_id: "dev", types: ["error"], raw: true}
+  proxylog {proxy_id: "dev", types: ["http"], raw: true, limit: 20}
+
+Summary Examples (RECOMMENDED for first look):
+  proxylog {proxy_id: "dev", action: "summary"}
+  proxylog {proxy_id: "dev", action: "summary", detail: ["errors"], limit: 10}
+  proxylog {proxy_id: "dev", action: "summary", detail: ["http", "errors"]}
+
+Stats & Clear:
   proxylog {proxy_id: "dev", action: "stats"}
   proxylog {proxy_id: "dev", action: "clear"}
 
@@ -792,12 +821,14 @@ func makeProxyLogHandler(pm *proxy.ProxyManager) func(context.Context, *mcp.Call
 		switch action {
 		case "query":
 			return handleProxyLogQuery(proxyServer, input)
+		case "summary":
+			return handleProxyLogSummary(proxyServer, input)
 		case "clear":
 			return handleProxyLogClear(proxyServer, input)
 		case "stats":
 			return handleProxyLogStats(proxyServer, input)
 		default:
-			return errorResult(fmt.Sprintf("unknown action %q. Use: query, clear, stats", action)), ProxyLogOutput{}, nil
+			return errorResult(fmt.Sprintf("unknown action %q. Use: query, summary, clear, stats", action)), ProxyLogOutput{}, nil
 		}
 	}
 }
@@ -848,6 +879,17 @@ func handleProxyLogQuery(proxyServer *proxy.ProxyServer, input ProxyLogInput) (*
 		entries = entries[:filter.Limit]
 	}
 
+	// Use raw format (JSON dumps) if requested
+	if input.Raw {
+		return handleProxyLogQueryRaw(entries)
+	}
+
+	// Default: compact format
+	return handleProxyLogQueryCompact(entries)
+}
+
+// handleProxyLogQueryRaw returns full JSON dumps of log entries
+func handleProxyLogQueryRaw(entries []proxy.LogEntry) (*mcp.CallToolResult, ProxyLogOutput, error) {
 	// Helper to marshal data to JSON string
 	marshalData := func(data map[string]interface{}) string {
 		b, err := json.Marshal(data)
@@ -946,6 +988,9 @@ func handleProxyLogQuery(proxyServer *proxy.ProxyServer, input ProxyLogInput) (*
 				data["height"] = entry.Screenshot.Height
 				data["format"] = entry.Screenshot.Format
 				data["selector"] = entry.Screenshot.Selector
+				if entry.Screenshot.Error != "" {
+					data["error"] = entry.Screenshot.Error
+				}
 			}
 			output[i] = LogEntryOutput{
 				Type:      string(entry.Type),
@@ -991,6 +1036,162 @@ func handleProxyLogQuery(proxyServer *proxy.ProxyServer, input ProxyLogInput) (*
 	}, nil
 }
 
+// handleProxyLogQueryCompact returns compact semi-structured format (default)
+func handleProxyLogQueryCompact(entries []proxy.LogEntry) (*mcp.CallToolResult, ProxyLogOutput, error) {
+	output := make([]LogEntryOutput, len(entries))
+
+	for i, entry := range entries {
+		var timestamp time.Time
+		var data string
+
+		switch entry.Type {
+		case proxy.LogTypeHTTP:
+			if entry.HTTP != nil {
+				timestamp = entry.HTTP.Timestamp
+				errorSuffix := ""
+				if entry.HTTP.Error != "" {
+					errorSuffix = fmt.Sprintf(" ERROR: %s", entry.HTTP.Error)
+				}
+				data = fmt.Sprintf("%s %s → %d (%dms)%s",
+					entry.HTTP.Method,
+					entry.HTTP.URL,
+					entry.HTTP.StatusCode,
+					entry.HTTP.Duration.Milliseconds(),
+					errorSuffix)
+			}
+
+		case proxy.LogTypeError:
+			if entry.Error != nil {
+				timestamp = entry.Error.Timestamp
+				location := formatLocation(entry.Error.Source, entry.Error.LineNo, entry.Error.ColNo)
+				stackPreview := ""
+				if entry.Error.Stack != "" {
+					stackPreview = "\n  " + truncateStack(entry.Error.Stack, 2)
+				}
+				data = fmt.Sprintf("%s\n  at %s%s",
+					entry.Error.Message,
+					location,
+					stackPreview)
+			}
+
+		case proxy.LogTypePerformance:
+			if entry.Performance != nil {
+				timestamp = entry.Performance.Timestamp
+				data = fmt.Sprintf("%s - Load: %dms, DOMContentLoaded: %dms, FP: %dms",
+					entry.Performance.URL,
+					entry.Performance.LoadEventEnd,
+					entry.Performance.DOMContentLoaded,
+					entry.Performance.FirstPaint)
+			}
+
+		case proxy.LogTypeCustom:
+			if entry.Custom != nil {
+				timestamp = entry.Custom.Timestamp
+				dataStr := ""
+				if len(entry.Custom.Data) > 0 {
+					dataBytes, _ := json.Marshal(entry.Custom.Data)
+					dataStr = fmt.Sprintf(" %s", string(dataBytes))
+				}
+				data = fmt.Sprintf("[%s] %s%s", entry.Custom.Level, entry.Custom.Message, dataStr)
+			}
+
+		case proxy.LogTypeInteraction:
+			if entry.Interaction != nil {
+				timestamp = entry.Interaction.Timestamp
+				target := entry.Interaction.Target.Selector
+				if target == "" {
+					target = entry.Interaction.Target.Tag
+				}
+				data = fmt.Sprintf("%s on %s", entry.Interaction.EventType, target)
+			}
+
+		case proxy.LogTypeMutation:
+			if entry.Mutation != nil {
+				timestamp = entry.Mutation.Timestamp
+				nodeCount := len(entry.Mutation.Added) + len(entry.Mutation.Removed)
+				data = fmt.Sprintf("%s (%d nodes) at %s",
+					entry.Mutation.MutationType,
+					nodeCount,
+					entry.Mutation.Target.Selector)
+			}
+
+		case proxy.LogTypeScreenshot:
+			if entry.Screenshot != nil {
+				timestamp = entry.Screenshot.Timestamp
+				data = fmt.Sprintf("%s (%dx%d) → %s",
+					entry.Screenshot.Name,
+					entry.Screenshot.Width,
+					entry.Screenshot.Height,
+					entry.Screenshot.FilePath)
+			}
+
+		case proxy.LogTypeExecution:
+			if entry.Execution != nil {
+				timestamp = entry.Execution.Timestamp
+				result := entry.Execution.Result
+				if len(result) > 100 {
+					result = result[:97] + "..."
+				}
+				errorSuffix := ""
+				if entry.Execution.Error != "" {
+					errorSuffix = fmt.Sprintf(" ERROR: %s", entry.Execution.Error)
+				}
+				data = fmt.Sprintf("Executed in %dms%s\n  Result: %s",
+					entry.Execution.Duration.Milliseconds(),
+					errorSuffix,
+					result)
+			}
+
+		case proxy.LogTypeResponse:
+			if entry.Response != nil {
+				timestamp = entry.Response.Timestamp
+				status := "success"
+				if !entry.Response.Success {
+					status = "failed"
+				}
+				data = fmt.Sprintf("Response [%s] (%dms) exec_id=%s",
+					status,
+					entry.Response.Duration.Milliseconds(),
+					entry.Response.ExecID)
+			}
+
+		case proxy.LogTypePanelMessage:
+			if entry.PanelMessage != nil {
+				timestamp = entry.PanelMessage.Timestamp
+				attachmentInfo := ""
+				if len(entry.PanelMessage.Attachments) > 0 {
+					attachmentInfo = fmt.Sprintf(" [%d attachments]", len(entry.PanelMessage.Attachments))
+				}
+				data = fmt.Sprintf("%s%s", entry.PanelMessage.Message, attachmentInfo)
+			}
+
+		case proxy.LogTypeSketch:
+			if entry.Sketch != nil {
+				timestamp = entry.Sketch.Timestamp
+				data = fmt.Sprintf("%s (%d elements) → %s",
+					entry.Sketch.Description,
+					entry.Sketch.ElementCount,
+					entry.Sketch.FilePath)
+			}
+
+		default:
+			// For other types, use basic string representation
+			data = fmt.Sprintf("%s event", entry.Type)
+		}
+
+		output[i] = LogEntryOutput{
+			Type:      string(entry.Type),
+			Timestamp: timestamp,
+			Data:      data,
+		}
+	}
+
+	return nil, ProxyLogOutput{
+		Entries: output,
+		Count:   len(output),
+	}, nil
+}
+
 func handleProxyLogClear(proxyServer *proxy.ProxyServer, input ProxyLogInput) (*mcp.CallToolResult, ProxyLogOutput, error) {
 	proxyServer.Logger().Clear()
 
@@ -1011,6 +1212,446 @@ func handleProxyLogStats(proxyServer *proxy.ProxyServer, input ProxyLogInput) (*
 			Dropped:          stats.Dropped,
 		},
 	}, nil
+}
+
+func handleProxyLogSummary(proxyServer *proxy.ProxyServer, input ProxyLogInput) (*mcp.CallToolResult, ProxyLogOutput, error) {
+	// Query all logs
+	allEntries := proxyServer.Logger().Query(proxy.LogFilter{})
+
+	// Set default limit
+	limit := input.Limit
+	if limit == 0 {
+		limit = 5
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	// Build detail sections map
+	detailSections := make(map[string]bool)
+	for _, section := range input.Detail {
+		detailSections[section] = true
+	}
+
+	summary := &ProxyLogSummary{
+		TotalEntries:       len(allEntries),
+		EntriesByType:      make(map[string]int),
+		HTTPByStatus:       make(map[string]int),
+		HTTPByMethod:       make(map[string]int),
+		InteractionsByType: make(map[string]int),
+		MutationsByType:    make(map[string]int),
+		ErrorsByType:       make(map[string]int),
+		OtherTypes:         make(map[string]int),
+		DetailSections:     input.Detail,
+		DetailLimit:        limit,
+	}
+
+	// Track time range
+	var minTime, maxTime time.Time
+
+	// Temporary slices for collecting entries
+	var httpEntries []proxy.HTTPLogEntry
+	var errorEntries []proxy.FrontendError
+	var perfEntries []proxy.PerformanceMetric
+	var interactionEntries []proxy.InteractionEvent
+	var mutationEntries []proxy.MutationEvent
+	var otherEntries []proxy.LogEntry
+
+	// First pass: count and collect
+	for _, entry := range allEntries {
+		summary.EntriesByType[string(entry.Type)]++
+
+		// Track time range
+		var timestamp time.Time
+		switch entry.Type {
+		case proxy.LogTypeHTTP:
+			if entry.HTTP != nil {
+				timestamp = entry.HTTP.Timestamp
+				httpEntries = append(httpEntries, *entry.HTTP)
+				summary.HTTPCount++
+
+				// Count by method
+				summary.HTTPByMethod[entry.HTTP.Method]++
+
+				// Count by status range
+				statusCode := entry.HTTP.StatusCode
+				if statusCode >= 200 && statusCode < 300 {
+					summary.HTTPByStatus["2xx"]++
+				} else if statusCode >= 300 && statusCode < 400 {
+					summary.HTTPByStatus["3xx"]++
+				} else if statusCode >= 400 && statusCode < 500 {
+					summary.HTTPByStatus["4xx"]++
+				} else if statusCode >= 500 {
+					summary.HTTPByStatus["5xx"]++
+				}
+			}
+
+		case proxy.LogTypeError:
+			if entry.Error != nil {
+				timestamp = entry.Error.Timestamp
+				errorEntries = append(errorEntries, *entry.Error)
+				summary.ErrorCount++
+
+				// Extract error type from message (e.g., "ReferenceError: ...")
+				errorType := "Error"
+				if len(entry.Error.Message) > 0 {
+					if idx := len(entry.Error.Message); idx > 0 {
+						// Try to extract error type from message prefix
+						parts := splitFirst(entry.Error.Message, ":")
+						if len(parts) > 1 {
+							errorType = parts[0]
+						}
+					}
+				}
+				summary.ErrorsByType[errorType]++
+			}
+
+		case proxy.LogTypePerformance:
+			if entry.Performance != nil {
+				timestamp = entry.Performance.Timestamp
+				perfEntries = append(perfEntries, *entry.Performance)
+				summary.PerformanceCount++
+			}
+
+		case proxy.LogTypeInteraction:
+			if entry.Interaction != nil {
+				timestamp = entry.Interaction.Timestamp
+				interactionEntries = append(interactionEntries, *entry.Interaction)
+				summary.InteractionCount++
+				summary.InteractionsByType[entry.Interaction.EventType]++
+			}
+
+		case proxy.LogTypeMutation:
+			if entry.Mutation != nil {
+				timestamp = entry.Mutation.Timestamp
+				mutationEntries = append(mutationEntries, *entry.Mutation)
+				summary.MutationCount++
+				summary.MutationsByType[entry.Mutation.MutationType]++
+			}
+
+		default:
+			otherEntries = append(otherEntries, entry)
+			summary.OtherCount++
+			summary.OtherTypes[string(entry.Type)]++
+
+			// Get timestamp for "other" types
+			switch entry.Type {
+			case proxy.LogTypeCustom:
+				if entry.Custom != nil {
+					timestamp = entry.Custom.Timestamp
+				}
+			case proxy.LogTypeScreenshot:
+				if entry.Screenshot != nil {
+					timestamp = entry.Screenshot.Timestamp
+				}
+			case proxy.LogTypeExecution:
+				if entry.Execution != nil {
+					timestamp = entry.Execution.Timestamp
+				}
+			case proxy.LogTypeResponse:
+				if entry.Response != nil {
+					timestamp = entry.Response.Timestamp
+				}
+			case proxy.LogTypePanelMessage:
+				if entry.PanelMessage != nil {
+					timestamp = entry.PanelMessage.Timestamp
+				}
+			case proxy.LogTypeSketch:
+				if entry.Sketch != nil {
+					timestamp = entry.Sketch.Timestamp
+				}
+			}
+		}
+
+		// Update time range
+		if !timestamp.IsZero() {
+			if minTime.IsZero() || timestamp.Before(minTime) {
+				minTime = timestamp
+			}
+			if maxTime.IsZero() || timestamp.After(maxTime) {
+				maxTime = timestamp
+			}
+		}
+	}
+
+	// Set time range
+	if !minTime.IsZero() {
+		summary.TimeRange = TimeRange{Start: minTime, End: maxTime}
+	}
+
+	// Process errors - deduplicate and get top 5
+	errorCounts := make(map[string]*ErrorSummary)
+	for _, err := range errorEntries {
+		key := err.Message
+		if es, exists := errorCounts[key]; exists {
+			es.Count++
+		} else {
+			// Extract error type
+			errorType := "Error"
+			parts := splitFirst(err.Message, ":")
+			if len(parts) > 1 {
+				errorType = parts[0]
+			}
+			errorCounts[key] = &ErrorSummary{
+				Message: err.Message,
+				Type:    errorType,
+				Count:   1,
+			}
+		}
+	}
+
+	// Get top errors by count (max 10)
+	var uniqueErrors []ErrorSummary
+	for _, es := range errorCounts {
+		uniqueErrors = append(uniqueErrors, *es)
+	}
+	// Sort by count descending
+	sortErrorsByCount(uniqueErrors)
+	if len(uniqueErrors) > 10 {
+		uniqueErrors = uniqueErrors[:10]
+	}
+	summary.UniqueErrors = uniqueErrors
+
+	// Recent errors (last 5) or full list if detail includes "errors"
+	if detailSections["errors"] {
+		summary.Errors = make([]CompactError, min(len(errorEntries), limit))
+		startIdx := maxInt(0, len(errorEntries)-limit)
+		for i := startIdx; i < len(errorEntries); i++ {
+			err := errorEntries[i]
+			summary.Errors[i-startIdx] = CompactError{
+				Message:      err.Message,
+				Type:         extractErrorType(err.Message),
+				URL:          err.URL,
+				Location:     formatLocation(err.Source, err.LineNo, err.ColNo),
+				StackPreview: truncateStack(err.Stack, 3),
+				Timestamp:    err.Timestamp.Format(time.RFC3339),
+			}
+		}
+	} else if summary.ErrorCount > 0 {
+		// Show recent 5 errors when detail not specified
+		recentCount := min(5, len(errorEntries))
+		summary.RecentErrors = make([]CompactError, recentCount)
+		startIdx := maxInt(0, len(errorEntries)-5)
+		for i := 0; i < recentCount; i++ {
+			err := errorEntries[startIdx+i]
+			summary.RecentErrors[i] = CompactError{
+				Message:      err.Message,
+				Type:         extractErrorType(err.Message),
+				URL:          err.URL,
+				Location:     formatLocation(err.Source, err.LineNo, err.ColNo),
+				StackPreview: truncateStack(err.Stack, 3),
+				Timestamp:    err.Timestamp.Format(time.RFC3339),
+			}
+		}
+	}
+
+	// HTTP requests - recent or full list
+	if detailSections["http"] {
+		summary.HTTPRequests = make([]CompactHTTPRequest, min(len(httpEntries), limit))
+		startIdx := maxInt(0, len(httpEntries)-limit)
+		for i := startIdx; i < len(httpEntries); i++ {
+			http := httpEntries[i]
+			summary.HTTPRequests[i-startIdx] = CompactHTTPRequest{
+				Method:     http.Method,
+				URL:        http.URL,
+				StatusCode: http.StatusCode,
+				Duration:   http.Duration.Milliseconds(),
+				Timestamp:  http.Timestamp,
+				Error:      http.Error,
+			}
+		}
+	} else if summary.HTTPCount > 0 {
+		// Show recent 5 requests
+		recentCount := min(5, len(httpEntries))
+		summary.RecentHTTP = make([]CompactHTTPRequest, recentCount)
+		startIdx := maxInt(0, len(httpEntries)-5)
+		for i := 0; i < recentCount; i++ {
+			http := httpEntries[startIdx+i]
+			summary.RecentHTTP[i] = CompactHTTPRequest{
+				Method:     http.Method,
+				URL:        http.URL,
+				StatusCode: http.StatusCode,
+				Duration:   http.Duration.Milliseconds(),
+				Timestamp:  http.Timestamp,
+				Error:      http.Error,
+			}
+		}
+	}
+
+	// Performance metrics - average and recent
+	if summary.PerformanceCount > 0 {
+		var totalLoadTime int64
+		for _, perf := range perfEntries {
+			totalLoadTime += perf.LoadEventEnd
+		}
+		summary.AvgLoadTime = totalLoadTime / int64(len(perfEntries))
+
+		if detailSections["performance"] {
+			summary.Performance = make([]CompactPerformance, min(len(perfEntries), limit))
+			startIdx := maxInt(0, len(perfEntries)-limit)
+			for i := startIdx; i < len(perfEntries); i++ {
+				perf := perfEntries[i]
+				summary.Performance[i-startIdx] = CompactPerformance{
+					URL:              perf.URL,
+					LoadTimeMs:       perf.LoadEventEnd,
+					FirstPaintMs:     perf.FirstPaint,
+					DOMContentLoaded: perf.DOMContentLoaded,
+					Timestamp:        perf.Timestamp,
+				}
+			}
+		} else {
+			// Show recent 5
+			recentCount := min(5, len(perfEntries))
+			summary.RecentPerformance = make([]CompactPerformance, recentCount)
+			startIdx := maxInt(0, len(perfEntries)-5)
+			for i := 0; i < recentCount; i++ {
+				perf := perfEntries[startIdx+i]
+				summary.RecentPerformance[i] = CompactPerformance{
+					URL:              perf.URL,
+					LoadTimeMs:       perf.LoadEventEnd,
+					FirstPaintMs:     perf.FirstPaint,
+					DOMContentLoaded: perf.DOMContentLoaded,
+					Timestamp:        perf.Timestamp,
+				}
+			}
+		}
+	}
+
+	// Interactions - recent or full list
+	if detailSections["interactions"] {
+		summary.Interactions = make([]CompactInteraction, min(len(interactionEntries), limit))
+		startIdx := maxInt(0, len(interactionEntries)-limit)
+		for i := startIdx; i < len(interactionEntries); i++ {
+			interaction := interactionEntries[i]
+			summary.Interactions[i-startIdx] = CompactInteraction{
+				Type:      interaction.EventType,
+				Target:    interaction.Target.Selector,
+				Timestamp: interaction.Timestamp,
+			}
+		}
+	} else if summary.InteractionCount > 0 {
+		// Show recent 5
+		recentCount := min(5, len(interactionEntries))
+		summary.RecentInteractions = make([]CompactInteraction, recentCount)
+		startIdx := maxInt(0, len(interactionEntries)-5)
+		for i := 0; i < recentCount; i++ {
+			interaction := interactionEntries[startIdx+i]
+			summary.RecentInteractions[i] = CompactInteraction{
+				Type:      interaction.EventType,
+				Target:    interaction.Target.Selector,
+				Timestamp: interaction.Timestamp,
+			}
+		}
+	}
+
+	// Mutations - recent or full list
+	if detailSections["mutations"] {
+		summary.Mutations = make([]CompactMutation, min(len(mutationEntries), limit))
+		startIdx := maxInt(0, len(mutationEntries)-limit)
+		for i := startIdx; i < len(mutationEntries); i++ {
+			mutation := mutationEntries[i]
+			nodeCount := len(mutation.Added) + len(mutation.Removed)
+			summary.Mutations[i-startIdx] = CompactMutation{
+				Type:      mutation.MutationType,
+				Target:    mutation.Target.Selector,
+				Count:     nodeCount,
+				Timestamp: mutation.Timestamp,
+			}
+		}
+	} else if summary.MutationCount > 0 {
+		// Show recent 5
+		recentCount := min(5, len(mutationEntries))
+		summary.RecentMutations = make([]CompactMutation, recentCount)
+		startIdx := maxInt(0, len(mutationEntries)-5)
+		for i := 0; i < recentCount; i++ {
+			mutation := mutationEntries[startIdx+i]
+			nodeCount := len(mutation.Added) + len(mutation.Removed)
+			summary.RecentMutations[i] = CompactMutation{
+				Type:      mutation.MutationType,
+				Target:    mutation.Target.Selector,
+				Count:     nodeCount,
+				Timestamp: mutation.Timestamp,
+			}
+		}
+	}
+
+	return nil, ProxyLogOutput{
+		Summary: summary,
+	}, nil
+}
+
+// Helper functions for summary
+
+func splitFirst(s, sep string) []string {
+	idx := 0
+	for i := 0; i < len(s); i++ {
+		if s[i:i+len(sep)] == sep {
+			idx = i
+			break
+		}
+	}
+	if idx == 0 {
+		return []string{s}
+	}
+	return []string{s[:idx], s[idx+len(sep):]}
+}
+
+func extractErrorType(message string) string {
+	parts := splitFirst(message, ":")
+	if len(parts) > 1 {
+		return parts[0]
+	}
+	return "Error"
+}
+
+func formatLocation(source string, line, col int) string {
+	if source == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s:%d:%d", source, line, col)
+}
+
+func truncateStack(stack string, maxLines int) string {
+	if stack == "" {
+		return ""
+	}
+	lines := []string{}
+	start := 0
+	for i := 0; i < len(stack) && len(lines) < maxLines; i++ {
+		if stack[i] == '\n' {
+			lines = append(lines, stack[start:i])
+			start = i + 1
+		}
+	}
+	if start < len(stack) && len(lines) < maxLines {
+		lines = append(lines, stack[start:])
+	}
+	result := ""
+	for i, line := range lines {
+		if i > 0 {
+			result += "\n"
+		}
+		result += line
+	}
+	return result
+}
+
+func sortErrorsByCount(errors []ErrorSummary) {
+	// Simple bubble sort by count (descending)
+	for i := 0; i < len(errors); i++ {
+		for j := i + 1; j < len(errors); j++ {
+			if errors[j].Count > errors[i].Count {
+				errors[i], errors[j] = errors[j], errors[i]
+			}
+		}
+	}
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // Helper functions
@@ -1060,11 +1701,27 @@ func makeCurrentPageHandler(pm *proxy.ProxyManager) func(context.Context, *mcp.C
 }
 
 func handleCurrentPageList(proxyServer *proxy.ProxyServer) (*mcp.CallToolResult, CurrentPageOutput, error) {
-	sessions := proxyServer.PageTracker().GetActiveSessions()
+	// Use lightweight summaries to avoid massive token usage
+	summaries := proxyServer.PageTracker().GetActiveSessionSummaries()
 
-	output := make([]PageSessionOutput, len(sessions))
-	for i, session := range sessions {
-		output[i] = convertPageSession(session, false)
+	output := make([]PageSessionOutput, len(summaries))
+	for i, summary := range summaries {
+		output[i] = PageSessionOutput{
+			ID:               summary.ID,
+			URL:              summary.URL,
+			PageTitle:        summary.PageTitle,
+			StartTime:        summary.StartTime,
+			LastActivity:     summary.LastActivity,
+			Active:           summary.Active,
+			ResourceCount:    summary.ResourceCount,
+			ErrorCount:       summary.ErrorCount,
+			HasPerformance:   summary.HasPerformance,
+			LoadTime:         summary.LoadTimeMs,
+			InteractionCount: summary.InteractionCount,
+			MutationCount:    summary.MutationCount,
+			// Note: No Resources, Errors, Interactions, or Mutations arrays
+			// Use action="get" with specific session_id for full details
+		}
 	}
 
 	return nil, CurrentPageOutput{
@@ -1083,7 +1740,8 @@ func handleCurrentPageGet(proxyServer *proxy.ProxyServer, input CurrentPageInput
 		return errorResult(fmt.Sprintf("session not found: %s", input.SessionID)), CurrentPageOutput{}, nil
 	}
 
-	sessionOutput := convertPageSession(session, true)
+	// Use raw format (full arrays) if requested, otherwise compact
+	sessionOutput := convertPageSession(session, input.Raw)
 
 	return nil, CurrentPageOutput{
 		Session: &sessionOutput,
@@ -1102,22 +1760,24 @@ func handleCurrentPageClear(proxyServer *proxy.ProxyServer, input CurrentPageInp
 // convertPageSession converts a PageSession to output format.
 func convertPageSession(session *proxy.PageSession, includeDetails bool) PageSessionOutput {
 	output := PageSessionOutput{
-		ID:             session.ID,
-		URL:            session.URL,
-		PageTitle:      session.PageTitle,
-		StartTime:      session.StartTime,
-		LastActivity:   session.LastActivity,
-		Active:         session.Active,
-		ResourceCount:  len(session.Resources),
-		ErrorCount:     len(session.Errors),
-		HasPerformance: session.Performance != nil,
+		ID:               session.ID,
+		URL:              session.URL,
+		PageTitle:        session.PageTitle,
+		StartTime:        session.StartTime,
+		LastActivity:     session.LastActivity,
+		Active:           session.Active,
+		ResourceCount:    len(session.Resources),
+		ErrorCount:       len(session.Errors),
+		HasPerformance:   session.Performance != nil,
+		InteractionCount: session.InteractionCount,
+		MutationCount:    session.MutationCount,
 	}
 
 	if session.Performance != nil {
 		output.LoadTime = session.Performance.LoadEventEnd
 	}
 
-	// Include detailed information if requested
+	// Include detailed arrays only if requested (to avoid token bloat)
 	if includeDetails {
 		// Add resource URLs
 		output.Resources = make([]string, len(session.Resources))
@@ -1135,6 +1795,51 @@ func convertPageSession(session *proxy.PageSession, includeDetails bool) PageSes
 				"colno":   err.ColNo,
 				"stack":   err.Stack,
 			}
+		}
+
+		// Add interaction details
+		output.Interactions = make([]map[string]interface{}, len(session.Interactions))
+		for i, interaction := range session.Interactions {
+			intMap := map[string]interface{}{
+				"id":         interaction.ID,
+				"event_type": interaction.EventType,
+				"timestamp":  interaction.Timestamp,
+				"url":        interaction.URL,
+			}
+			if interaction.Target.Selector != "" {
+				intMap["target"] = map[string]interface{}{
+					"selector": interaction.Target.Selector,
+					"tag":      interaction.Target.Tag,
+					"id":       interaction.Target.ID,
+					"text":     interaction.Target.Text,
+				}
+			}
+			if interaction.Position != nil {
+				intMap["position"] = map[string]interface{}{
+					"client_x": interaction.Position.ClientX,
+					"client_y": interaction.Position.ClientY,
+				}
+			}
+			output.Interactions[i] = intMap
+		}
+
+		// Add mutation details
+		output.Mutations = make([]map[string]interface{}, len(session.Mutations))
+		for i, mutation := range session.Mutations {
+			mutMap := map[string]interface{}{
+				"id":            mutation.ID,
+				"mutation_type": mutation.MutationType,
+				"timestamp":     mutation.Timestamp,
+				"url":           mutation.URL,
+			}
+			if mutation.Target.Selector != "" {
+				mutMap["target"] = map[string]interface{}{
+					"selector": mutation.Target.Selector,
+					"tag":      mutation.Target.Tag,
+					"id":       mutation.Target.ID,
+				}
+			}
+			output.Mutations[i] = mutMap
 		}
 	}
 

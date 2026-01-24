@@ -153,9 +153,10 @@ func (d *Daemon) preflightPortCleanup(ctx context.Context, port int) ([]int, err
 func (d *Daemon) startScriptWithRetry(
 	ctx context.Context,
 	processID string,
-	projectPath string,
+	workingDir string,
 	command string,
 	args []string,
+	env []string,
 	expectedPort int,
 ) (*process.ManagedProcess, *StartupError) {
 
@@ -171,10 +172,10 @@ func (d *Daemon) startScriptWithRetry(
 	// Start the process
 	result, err := d.hub.ProcessManager().StartOrReuse(ctx, process.ProcessConfig{
 		ID:          processID,
-		ProjectPath: projectPath,
+		ProjectPath: workingDir,
 		Command:     command,
 		Args:        args,
-		Env:         nil, // Will use current environment
+		Env:         env,
 	})
 	if err != nil {
 		return nil, &StartupError{
@@ -201,7 +202,7 @@ func (d *Daemon) startScriptWithRetry(
 
 	// Stop the failed process
 	_ = d.hub.ProcessManager().StopProcess(ctx, proc)
-	d.hub.ProcessManager().RemoveByPath(processID, projectPath)
+	d.hub.ProcessManager().RemoveByPath(processID, workingDir)
 
 	// Clean up the port
 	portToClean := startupErr.Port
@@ -235,10 +236,10 @@ func (d *Daemon) startScriptWithRetry(
 	// Retry: Start the process again
 	result, err = d.hub.ProcessManager().StartOrReuse(ctx, process.ProcessConfig{
 		ID:          processID,
-		ProjectPath: projectPath,
+		ProjectPath: workingDir,
 		Command:     command,
 		Args:        args,
-		Env:         nil,
+		Env:         env,
 	})
 	if err != nil {
 		return nil, &StartupError{
