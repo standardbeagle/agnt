@@ -31,7 +31,7 @@ func TestProxy_PageTracking_Integration(t *testing.T) {
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
-	defer backend.Close()
+	t.Cleanup(func() { backend.Close() })
 
 	// Create proxy pointing to backend
 	config := ProxyConfig{
@@ -47,12 +47,12 @@ func TestProxy_PageTracking_Integration(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(func() { cancel() })
 
 	if err := ps.Start(ctx); err != nil {
 		t.Fatalf("Failed to start proxy: %v", err)
 	}
-	defer ps.Stop(ctx)
+	t.Cleanup(func() { ps.Stop(ctx) })
 
 	// Wait for proxy to be ready
 	select {
@@ -138,7 +138,7 @@ func TestProxy_PageTracking_URLFormat(t *testing.T) {
 		w.Header().Set("Content-Type", "text/html")
 		w.Write([]byte("<html></html>"))
 	}))
-	defer backend.Close()
+	t.Cleanup(func() { backend.Close() })
 
 	config := ProxyConfig{
 		ID:         "test-url",
@@ -153,12 +153,12 @@ func TestProxy_PageTracking_URLFormat(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(func() { cancel() })
 
 	if err := ps.Start(ctx); err != nil {
 		t.Fatalf("Failed to start proxy: %v", err)
 	}
-	defer ps.Stop(ctx)
+	t.Cleanup(func() { ps.Stop(ctx) })
 
 	// Wait for proxy to be ready
 	select {
@@ -218,7 +218,7 @@ func TestProxy_PageTracking_ResponseHeaders(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("<html><body>Test</body></html>"))
 	}))
-	defer backend.Close()
+	t.Cleanup(func() { backend.Close() })
 
 	config := ProxyConfig{
 		ID:         "test-headers",
@@ -233,12 +233,12 @@ func TestProxy_PageTracking_ResponseHeaders(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	t.Cleanup(func() { cancel() })
 
 	if err := ps.Start(ctx); err != nil {
 		t.Fatalf("Failed to start proxy: %v", err)
 	}
-	defer ps.Stop(ctx)
+	t.Cleanup(func() { ps.Stop(ctx) })
 
 	// Wait for proxy to be ready
 	select {

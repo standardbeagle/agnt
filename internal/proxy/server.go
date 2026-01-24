@@ -340,12 +340,6 @@ func (ps *ProxyServer) Start(ctx context.Context) error {
 	ps.startTime = time.Now()
 	ps.running.Store(true)
 
-	// Signal that server is ready to accept connections
-	// This is safe because the listener is already bound
-	ps.readyOnce.Do(func() {
-		close(ps.ready)
-	})
-
 	// Start server in goroutine using existing listener
 	go ps.runServer(ctx, listener)
 
@@ -365,6 +359,14 @@ func (ps *ProxyServer) Start(ctx context.Context) error {
 
 // runServer runs the HTTP server with automatic restart on crash
 func (ps *ProxyServer) runServer(ctx context.Context, listener net.Listener) {
+	// Signal that server is ready to accept connections
+	// This must be done inside runServer to ensure the goroutine has started
+	// and the server is about to call Serve(), which is the point where it
+	// actually starts accepting connections.
+	ps.readyOnce.Do(func() {
+		close(ps.ready)
+	})
+
 	for {
 		err := ps.httpServer.Serve(listener)
 
