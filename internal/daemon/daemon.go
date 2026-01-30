@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/automation"
+	"github.com/standardbeagle/agnt/internal/browser"
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/project"
@@ -27,7 +28,7 @@ import (
 
 // Version is the daemon version.
 // Can be overridden at build time with: -ldflags "-X github.com/standardbeagle/agnt/internal/daemon.Version=x.y.z"
-var Version = "0.10.0"
+var Version = "0.11.0"
 
 // BuildTime is the build timestamp (RFC3339 format).
 // Set at build time with: -ldflags "-X github.com/standardbeagle/agnt/internal/daemon.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -124,6 +125,7 @@ type Daemon struct {
 	// agnt-specific managers
 	proxym    *proxy.ProxyManager
 	tunnelm   *tunnel.Manager
+	browserm  *browser.Manager
 	storem    *store.StoreManager
 	automator *automation.Processor
 
@@ -199,6 +201,7 @@ func New(config DaemonConfig) *Daemon {
 		hub:               h,
 		proxym:            proxy.NewProxyManager(),
 		tunnelm:           tunnel.NewManager(),
+		browserm:          browser.NewManager(),
 		storem:            store.NewStoreManager(),
 		sessionRegistry:   sessionRegistry,
 		scheduler:         scheduler,
@@ -443,6 +446,11 @@ func (d *Daemon) Stop(ctx context.Context) error {
 		errs = append(errs, fmt.Errorf("tunnel manager: %w", err))
 	}
 
+	if err := d.browserm.Shutdown(ctx); err != nil {
+		debug.Error("daemon", "browser manager shutdown error: %v", err)
+		errs = append(errs, fmt.Errorf("browser manager: %w", err))
+	}
+
 	if err := d.proxym.Shutdown(ctx); err != nil {
 		debug.Error("daemon", "proxy manager shutdown error: %v", err)
 		errs = append(errs, fmt.Errorf("proxy manager: %w", err))
@@ -506,6 +514,10 @@ func (d *Daemon) Info() DaemonInfo {
 		TunnelInfo: TunnelInfo{
 			Active: int64(d.tunnelm.ActiveCount()),
 		},
+		BrowserInfo: BrowserInfo{
+			Active:       int64(d.browserm.ActiveCount()),
+			TotalStarted: d.browserm.TotalStarted(),
+		},
 		SessionInfo:   d.sessionRegistry.Info(),
 		SchedulerInfo: d.scheduler.Info(),
 	}
@@ -532,6 +544,11 @@ func (d *Daemon) ProxyManager() *proxy.ProxyManager {
 // TunnelManager returns the tunnel manager.
 func (d *Daemon) TunnelManager() *tunnel.Manager {
 	return d.tunnelm
+}
+
+// BrowserManager returns the browser manager.
+func (d *Daemon) BrowserManager() *browser.Manager {
+	return d.browserm
 }
 
 // SessionRegistry returns the session registry.
@@ -648,6 +665,15 @@ func (d *Daemon) StopAllResources(ctx context.Context) {
 		}
 	}()
 
+	// Stop all browsers
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if _, err := d.browserm.StopAll(cleanupCtx); err != nil {
+			log.Printf("[Daemon] error stopping browsers: %v", err)
+		}
+	}()
+
 	// Stop all proxies and update state
 	wg.Add(1)
 	go func() {
@@ -726,6 +752,19 @@ func (d *Daemon) CleanupSessionResources(sessionCode string) {
 		}
 	}()
 
+	// Stop browsers for this project
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		stoppedIDs, err := d.browserm.StopByProjectPath(ctx, projectPath)
+		if err != nil {
+			log.Printf("[Daemon] error stopping browsers for project %s: %v", projectPath, err)
+		}
+		if len(stoppedIDs) > 0 {
+			log.Printf("[Daemon] stopped browsers: %v", stoppedIDs)
+		}
+	}()
+
 	// Stop processes for this project
 	wg.Add(1)
 	go func() {
@@ -763,6 +802,7 @@ type DaemonInfo struct {
 	ProcessInfo   ProcessInfo         `json:"process_info"`
 	ProxyInfo     ProxyInfo           `json:"proxy_info"`
 	TunnelInfo    TunnelInfo          `json:"tunnel_info"`
+	BrowserInfo   BrowserInfo         `json:"browser_info"`
 	SessionInfo   SessionInfo         `json:"session_info"`
 	SchedulerInfo SchedulerInfo       `json:"scheduler_info"`
 	UpdateInfo    *updater.UpdateInfo `json:"update_info,omitempty"` // Update availability info
@@ -784,6 +824,12 @@ type ProxyInfo struct {
 // TunnelInfo holds tunnel manager statistics.
 type TunnelInfo struct {
 	Active int64 `json:"active"`
+}
+
+// BrowserInfo holds browser manager statistics.
+type BrowserInfo struct {
+	Active       int64 `json:"active"`
+	TotalStarted int64 `json:"total_started"`
 }
 
 // Note: SessionInfo is defined in session.go

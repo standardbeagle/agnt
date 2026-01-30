@@ -94,6 +94,7 @@ func (d *Daemon) handleURLDetected(event ProxyEvent) {
 			MaxLogSize:  proxyConfig.MaxLogSize,
 			AutoRestart: true,
 			Path:        projectPath,
+			BindAddress: proxyConfig.Bind,
 		}
 
 		server, err := d.proxym.Create(d.ctx, proxyServerConfig)
@@ -157,6 +158,7 @@ func (d *Daemon) handleExplicitStart(event ProxyEvent) {
 		MaxLogSize:  event.Config.MaxLogSize,
 		AutoRestart: true,
 		Path:        event.Path,
+		BindAddress: event.Config.Bind,
 	}
 
 	server, err := d.proxym.Create(d.ctx, proxyServerConfig)

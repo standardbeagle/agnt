@@ -231,3 +231,37 @@ func TestFindAgntConfigFile(t *testing.T) {
 	found = FindAgntConfigFile("/nonexistent/path")
 	assert.Equal(t, "", found)
 }
+
+func TestParseProxyWithBind(t *testing.T) {
+	input := `proxy "mobile" {
+    target "http://localhost:3000"
+    bind "0.0.0.0"
+    autostart true
+}
+
+proxy "tailscale" {
+    target "http://localhost:8080"
+    bind-address "100.64.0.1"
+}
+`
+	cfg, err := ParseAgntConfig(input)
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+
+	// Verify mobile proxy with 0.0.0.0 bind
+	mobile, ok := cfg.Proxies["mobile"]
+	assert.True(t, ok, "should have 'mobile' proxy")
+	if ok {
+		assert.Equal(t, "http://localhost:3000", mobile.Target)
+		assert.Equal(t, "0.0.0.0", mobile.Bind, "mobile proxy should bind to 0.0.0.0")
+		assert.True(t, mobile.Autostart)
+	}
+
+	// Verify tailscale proxy with specific IP bind (using bind-address alias)
+	tailscale, ok := cfg.Proxies["tailscale"]
+	assert.True(t, ok, "should have 'tailscale' proxy")
+	if ok {
+		assert.Equal(t, "http://localhost:8080", tailscale.Target)
+		assert.Equal(t, "100.64.0.1", tailscale.Bind, "tailscale proxy should bind to 100.64.0.1")
+	}
+}
