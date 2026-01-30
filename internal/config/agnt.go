@@ -62,6 +62,10 @@ type ProxyConfig struct {
 	// Host is the target host (default: localhost) - only used with Port
 	Host string `kdl:"host"`
 
+	// Bind is the address the proxy listens on
+	// "127.0.0.1" (default, localhost only) or "0.0.0.0" (all interfaces for Tailscale/mobile)
+	Bind string `kdl:"bind"`
+
 	// Legacy fields (deprecated)
 	// Target is the explicit target URL (use URL instead)
 	Target string `kdl:"target"`
@@ -314,6 +318,8 @@ func parseProxyProperty(line string, proxy *ProxyConfig) {
 			proxy.URL = matches[2]
 		case "host":
 			proxy.Host = matches[2]
+		case "bind", "bind-address":
+			proxy.Bind = matches[2]
 		}
 		return
 	}
@@ -417,6 +423,13 @@ proxies {
     //     port 18080
     //     autostart true
     //     max-log-size 2000
+    // }
+
+    // Example: proxy accessible from Tailscale/mobile devices
+    // mobile {
+    //     target "http://localhost:3000"
+    //     bind "0.0.0.0"    // Listen on all interfaces (Tailscale, LAN, etc.)
+    //     autostart true
     // }
 }
 
