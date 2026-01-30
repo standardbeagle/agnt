@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>agnt Test Page</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .card {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1 { color: #333; }
+        .status {
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+        .status.connected { background: #d4edda; color: #155724; }
+        .status.disconnected { background: #f8d7da; color: #721c24; }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 5px;
+        }
+        button:hover { background: #0056b3; }
+        #log {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 15px;
+            border-radius: 4px;
+            font-family: monospace;
+            font-size: 12px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .log-entry { margin: 2px 0; }
+        .log-info { color: #569cd6; }
+        .log-error { color: #f44747; }
+        .log-success { color: #6a9955; }
+    </style>
+</head>
+<body>
+    <h1>agnt Test Page</h1>
+
+    <div class="card">
+        <h2>Connection Status</h2>
+        <div id="status" class="status disconnected">Checking connection...</div>
+    </div>
+
+    <div class="card">
+        <h2>Test Actions</h2>
+        <button onclick="testLog()">Log Message</button>
+        <button onclick="testError()">Trigger Error</button>
+        <button onclick="testScreenshot()">Request Screenshot</button>
+        <button onclick="testCustomEvent()">Send Custom Event</button>
+    </div>
+
+    <div class="card">
+        <h2>Activity Log</h2>
+        <div id="log"></div>
+    </div>
+
+    <script>
+        const logEl = document.getElementById('log');
+        const statusEl = document.getElementById('status');
+
+        function log(message, type = 'info') {
+            const entry = document.createElement('div');
+            entry.className = `log-entry log-${type}`;
+            entry.textContent = `[${new Date().toISOString()}] ${message}`;
+            logEl.appendChild(entry);
+            logEl.scrollTop = logEl.scrollHeight;
+        }
+
+        function checkConnection() {
+            if (window.__devtool && window.__devtool.isConnected()) {
+                statusEl.textContent = 'Connected to agnt proxy';
+                statusEl.className = 'status connected';
+                log('agnt proxy connected', 'success');
+                return true;
+            } else {
+                statusEl.textContent = 'Not connected (load through agnt proxy)';
+                statusEl.className = 'status disconnected';
+                log('agnt proxy not detected', 'error');
+                return false;
+            }
+        }
+
+        function testLog() {
+            if (!checkConnection()) return;
+            window.__devtool.log('Test log message from button click', 'info', {
+                timestamp: Date.now(),
+                source: 'test-page'
+            });
+            log('Sent log message to agnt', 'success');
+        }
+
+        function testError() {
+            log('Triggering intentional error...', 'info');
+            // This will be caught by the error handler
+            setTimeout(() => {
+                throw new Error('Intentional test error from agnt test page');
+            }, 100);
+        }
+
+        function testScreenshot() {
+            if (!checkConnection()) return;
+            window.__devtool.screenshot('test-screenshot');
+            log('Requested screenshot', 'success');
+        }
+
+        function testCustomEvent() {
+            if (!checkConnection()) return;
+            window.__devtool.log('Custom event data', 'custom', {
+                type: 'test-event',
+                data: { foo: 'bar', count: 42 }
+            });
+            log('Sent custom event', 'success');
+        }
+
+        // Check connection on load
+        window.addEventListener('load', () => {
+            log('Page loaded', 'info');
+            // Wait for devtool script to initialize
+            setTimeout(checkConnection, 500);
+        });
+
+        // Set up global error handler
+        window.addEventListener('error', (event) => {
+            log(`Error caught: ${event.message}`, 'error');
+        });
+    </script>
+</body>
+</html>

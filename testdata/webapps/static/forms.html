@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>agnt Form Test Page</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 600px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        .card {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        h1, h2 { color: #333; }
+        label {
+            display: block;
+            margin: 10px 0 5px;
+            font-weight: 500;
+        }
+        input, textarea, select {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+            box-sizing: border-box;
+        }
+        input:focus, textarea:focus, select:focus {
+            outline: none;
+            border-color: #007bff;
+            box-shadow: 0 0 0 2px rgba(0,123,255,0.25);
+        }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            margin-top: 15px;
+        }
+        button:hover { background: #0056b3; }
+        button.secondary {
+            background: #6c757d;
+        }
+        button.secondary:hover { background: #545b62; }
+        .checkbox-group {
+            display: flex;
+            gap: 20px;
+            margin: 10px 0;
+        }
+        .checkbox-group label {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            font-weight: normal;
+        }
+        .checkbox-group input {
+            width: auto;
+        }
+        #result {
+            background: #e9ecef;
+            padding: 15px;
+            border-radius: 4px;
+            margin-top: 20px;
+            font-family: monospace;
+            white-space: pre-wrap;
+            display: none;
+        }
+        #result.visible { display: block; }
+        .field-id {
+            font-size: 10px;
+            color: #666;
+            font-family: monospace;
+        }
+    </style>
+</head>
+<body>
+    <h1>Form Test Page</h1>
+    <p>This page tests form interactions for browser automation.</p>
+
+    <div class="card">
+        <h2>Contact Form</h2>
+        <form id="contactForm">
+            <label for="name">Name <span class="field-id">#name</span></label>
+            <input type="text" id="name" name="name" placeholder="Enter your name" required>
+
+            <label for="email">Email <span class="field-id">#email</span></label>
+            <input type="email" id="email" name="email" placeholder="Enter your email" required>
+
+            <label for="subject">Subject <span class="field-id">#subject</span></label>
+            <select id="subject" name="subject">
+                <option value="">Select a subject</option>
+                <option value="general">General Inquiry</option>
+                <option value="support">Technical Support</option>
+                <option value="feedback">Feedback</option>
+                <option value="bug">Bug Report</option>
+            </select>
+
+            <label for="message">Message <span class="field-id">#message</span></label>
+            <textarea id="message" name="message" rows="4" placeholder="Enter your message"></textarea>
+
+            <label>Options <span class="field-id">.option-checkbox</span></label>
+            <div class="checkbox-group">
+                <label>
+                    <input type="checkbox" name="options" value="newsletter" class="option-checkbox">
+                    Subscribe to newsletter
+                </label>
+                <label>
+                    <input type="checkbox" name="options" value="updates" class="option-checkbox">
+                    Receive updates
+                </label>
+            </div>
+
+            <button type="submit" id="submitBtn">Submit Form</button>
+            <button type="reset" class="secondary" id="resetBtn">Reset</button>
+        </form>
+        <div id="result"></div>
+    </div>
+
+    <div class="card">
+        <h2>Interactive Elements</h2>
+        <label for="slider">Range Slider <span class="field-id">#slider</span></label>
+        <input type="range" id="slider" min="0" max="100" value="50">
+        <span id="sliderValue">50</span>
+
+        <label for="color">Color Picker <span class="field-id">#color</span></label>
+        <input type="color" id="color" value="#007bff">
+
+        <label for="date">Date <span class="field-id">#date</span></label>
+        <input type="date" id="date">
+
+        <label for="search">Search (with autocomplete) <span class="field-id">#search</span></label>
+        <input type="search" id="search" list="suggestions" placeholder="Type to search...">
+        <datalist id="suggestions">
+            <option value="JavaScript">
+            <option value="TypeScript">
+            <option value="Python">
+            <option value="Go">
+            <option value="Rust">
+        </datalist>
+    </div>
+
+    <script>
+        // Form submission handler
+        document.getElementById('contactForm').addEventListener('submit', (e) => {
+            e.preventDefault();
+            const formData = new FormData(e.target);
+            const data = Object.fromEntries(formData.entries());
+
+            // Get all checked options
+            data.options = Array.from(document.querySelectorAll('.option-checkbox:checked'))
+                .map(cb => cb.value);
+
+            const resultEl = document.getElementById('result');
+            resultEl.textContent = JSON.stringify(data, null, 2);
+            resultEl.className = 'visible';
+
+            // Log to agnt if connected
+            if (window.__devtool) {
+                window.__devtool.log('Form submitted', 'info', data);
+            }
+        });
+
+        // Slider value display
+        document.getElementById('slider').addEventListener('input', (e) => {
+            document.getElementById('sliderValue').textContent = e.target.value;
+        });
+
+        // Track all input changes for testing
+        document.querySelectorAll('input, textarea, select').forEach(el => {
+            el.addEventListener('change', (e) => {
+                console.log(`Field changed: ${e.target.id || e.target.name} = ${e.target.value}`);
+                if (window.__devtool) {
+                    window.__devtool.log('Field changed', 'info', {
+                        field: e.target.id || e.target.name,
+                        value: e.target.value,
+                        type: e.target.type
+                    });
+                }
+            });
+        });
+    </script>
+</body>
+</html>

@@ -1,4 +1,4 @@
-.PHONY: build release test clean install install-local run lint
+.PHONY: build release test test-unit test-integration test-browser clean install install-local run lint test-webapp mockagent
 
 # Binary names
 BINARY := devtool-mcp
@@ -34,6 +34,26 @@ test:
 test-coverage:
 	go test -v -coverprofile=coverage.out ./...
 	go tool cover -html=coverage.out -o coverage.html
+
+# Run unit tests only (excludes integration tests)
+test-unit:
+	go test -v ./...
+
+# Run integration tests (requires external dependencies)
+test-integration:
+	go test -v -tags=integration ./...
+
+# Run browser automation tests (requires Chrome)
+test-browser:
+	go test -v -tags=integration ./internal/browser/...
+
+# Build test webapp server
+test-webapp:
+	go build -o testdata/webapps/server/webapp ./testdata/webapps/server/
+
+# Build mock agent
+mockagent:
+	go build -o testdata/mockagent/mockagent ./testdata/mockagent/
 
 # Run benchmarks
 bench:
@@ -91,19 +111,24 @@ deps:
 # Show help
 help:
 	@echo "Available targets:"
-	@echo "  build         - Build agnt and devtool-mcp (copy of agnt)"
-	@echo "  release       - Build production release with optimizations and version info"
-	@echo "  test          - Run tests"
-	@echo "  test-coverage - Run tests with coverage report"
-	@echo "  bench         - Run benchmarks"
-	@echo "  clean         - Remove build artifacts"
-	@echo "  install       - Install all binaries to GOPATH/bin"
-	@echo "  install-local - Build and install all binaries to ~/.local/bin"
-	@echo "  run           - Build and run the MCP server"
-	@echo "  fmt           - Format code"
-	@echo "  vet           - Vet code"
-	@echo "  lint          - Run linter"
-	@echo "  deps          - Update dependencies"
+	@echo "  build            - Build agnt and devtool-mcp (copy of agnt)"
+	@echo "  release          - Build production release with optimizations and version info"
+	@echo "  test             - Run all tests"
+	@echo "  test-unit        - Run unit tests only"
+	@echo "  test-integration - Run integration tests (requires dependencies)"
+	@echo "  test-browser     - Run browser automation tests (requires Chrome)"
+	@echo "  test-coverage    - Run tests with coverage report"
+	@echo "  test-webapp      - Build test webapp server"
+	@echo "  mockagent        - Build mock agent for PTY testing"
+	@echo "  bench            - Run benchmarks"
+	@echo "  clean            - Remove build artifacts"
+	@echo "  install          - Install all binaries to GOPATH/bin"
+	@echo "  install-local    - Build and install all binaries to ~/.local/bin"
+	@echo "  run              - Build and run the MCP server"
+	@echo "  fmt              - Format code"
+	@echo "  vet              - Vet code"
+	@echo "  lint             - Run linter"
+	@echo "  deps             - Update dependencies"
 	@echo ""
 	@echo "MCP registration (claude_desktop_config.json):"
 	@echo '  "devtool": {'
