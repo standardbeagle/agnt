@@ -126,6 +126,7 @@ Available tools:
 	tools.RegisterDaemonTools(server, dt)
 	tools.RegisterDaemonManagementTool(server, dt)
 	tools.RegisterTunnelTool(server, dt)
+	tools.RegisterBrowserTool(server, dt)
 
 	// Register snapshot tools (visual regression testing)
 	snapshotManager, err := snapshot.NewManager("", 0.01) // Default path and 1% threshold

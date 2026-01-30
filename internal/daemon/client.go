@@ -351,6 +351,30 @@ func (c *Client) TunnelList(dirFilter protocol.DirectoryFilter) (map[string]inte
 	return req.JSON()
 }
 
+// BrowserStart starts a browser instance.
+func (c *Client) BrowserStart(config protocol.BrowserStartConfig) (map[string]interface{}, error) {
+	return c.conn.Request(protocol.VerbBrowser, protocol.SubVerbStart).WithJSON(config).JSON()
+}
+
+// BrowserStop stops a running browser instance.
+func (c *Client) BrowserStop(id string) error {
+	return c.conn.Request(protocol.VerbBrowser, protocol.SubVerbStop, id).OK()
+}
+
+// BrowserStatus gets the status of a browser instance.
+func (c *Client) BrowserStatus(id string) (map[string]interface{}, error) {
+	return c.conn.Request(protocol.VerbBrowser, protocol.SubVerbStatus, id).JSON()
+}
+
+// BrowserList lists all active browser instances.
+func (c *Client) BrowserList(dirFilter protocol.DirectoryFilter) (map[string]interface{}, error) {
+	req := c.conn.Request(protocol.VerbBrowser, protocol.SubVerbList)
+	if dirFilter.Directory != "" || dirFilter.Global {
+		req = req.WithJSON(dirFilter)
+	}
+	return req.JSON()
+}
+
 // ChaosEnable enables chaos injection on a proxy.
 func (c *Client) ChaosEnable(proxyID string) (map[string]interface{}, error) {
 	return c.conn.Request(protocol.VerbChaos, protocol.SubVerbEnable, proxyID).JSON()

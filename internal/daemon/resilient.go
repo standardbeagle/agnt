@@ -594,6 +594,48 @@ func (rc *ResilientClient) TunnelList(dirFilter protocol.DirectoryFilter) (map[s
 	return result, err
 }
 
+// Browser methods
+
+// BrowserStart starts a browser instance.
+func (rc *ResilientClient) BrowserStart(config protocol.BrowserStartConfig) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.BrowserStart(config)
+		return e
+	})
+	return result, err
+}
+
+// BrowserStop stops a running browser instance.
+func (rc *ResilientClient) BrowserStop(id string) error {
+	return rc.WithClient(func(c *Client) error {
+		return c.BrowserStop(id)
+	})
+}
+
+// BrowserStatus gets the status of a browser instance.
+func (rc *ResilientClient) BrowserStatus(id string) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.BrowserStatus(id)
+		return e
+	})
+	return result, err
+}
+
+// BrowserList lists all active browser instances.
+func (rc *ResilientClient) BrowserList(dirFilter protocol.DirectoryFilter) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.BrowserList(dirFilter)
+		return e
+	})
+	return result, err
+}
+
 // BroadcastActivity sends an activity state update to connected browsers via specified proxies.
 // If proxyIDs is empty, broadcasts to all proxies (backward compatibility).
 func (rc *ResilientClient) BroadcastActivity(active bool, proxyIDs ...string) error {
