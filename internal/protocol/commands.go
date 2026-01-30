@@ -6,6 +6,7 @@ const (
 	VerbProxyLog    = "PROXYLOG"
 	VerbCurrentPage = "CURRENTPAGE"
 	VerbTunnel      = "TUNNEL"
+	VerbBrowser     = "BROWSER"
 	VerbChaos       = "CHAOS"
 	VerbDetect      = "DETECT"
 	VerbOverlay     = "OVERLAY"
@@ -230,4 +231,13 @@ type AutomateProcessResponse struct {
 	Tokens   int         `json:"tokens_used"`
 	CostUSD  float64     `json:"cost_usd"`
 	Duration string      `json:"duration"`
+}
+
+// BrowserStartConfig represents configuration for a BROWSER START command.
+type BrowserStartConfig struct {
+	ID         string `json:"id,omitempty"`          // Browser ID (auto-generated if empty)
+	URL        string `json:"url,omitempty"`         // URL to open
+	ProxyID    string `json:"proxy_id,omitempty"`    // Proxy to use (auto-starts if needed)
+	Headless   *bool  `json:"headless,omitempty"`    // Default: true
+	BinaryPath string `json:"binary_path,omitempty"` // Optional Chrome path
 }
