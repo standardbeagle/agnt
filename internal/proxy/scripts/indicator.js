@@ -2320,6 +2320,36 @@
     togglePanel(false);
   }
 
+  // Capture screenshot area using html2canvas
+  function captureArea(x, y, w, h, callback) {
+    if (typeof html2canvas === 'undefined') {
+      console.error('[DevTool] html2canvas not loaded for screenshot capture');
+      callback(null);
+      return;
+    }
+
+    // Capture the full page first, then crop to area
+    html2canvas(document.body, {
+      allowTaint: true,
+      useCORS: true,
+      logging: false,
+      x: x,
+      y: y,
+      width: w,
+      height: h,
+      scrollX: 0,
+      scrollY: 0,
+      windowWidth: document.documentElement.scrollWidth,
+      windowHeight: document.documentElement.scrollHeight
+    }).then(function(canvas) {
+      var dataUrl = canvas.toDataURL('image/png');
+      callback(dataUrl);
+    }).catch(function(err) {
+      console.error('[DevTool] Screenshot capture failed:', err);
+      callback(null);
+    });
+  }
+
   // Screenshot mode
   function startScreenshotMode() {
     togglePanel(false);
@@ -2333,12 +2363,14 @@
     if (isDragSelectUnavailable) {
       var w = window.innerWidth;
       var h = window.innerHeight;
-      addAttachment('screenshot', {
-        label: 'Full screen (' + w + '\u00d7' + h + ')',
-        summary: 'Full screen screenshot ' + w + 'x' + h,
-        area: { x: 0, y: 0, width: w, height: h }
+      captureArea(0, 0, w, h, function(dataUrl) {
+        addAttachment('screenshot', {
+          label: 'Full screen (' + w + '\u00d7' + h + ')',
+          summary: 'Full screen screenshot ' + w + 'x' + h,
+          area: { x: 0, y: 0, width: w, height: h, data: dataUrl }
+        });
+        togglePanel(true);
       });
-      togglePanel(true);
       return;
     }
 
@@ -2389,13 +2421,17 @@
       cleanup();
 
       if (w > 20 && h > 20) {
-        // Add attachment with area info
-        addAttachment('screenshot', {
-          label: w + '\u00d7' + h + ' area',
-          summary: 'Screenshot area at (' + x + ',' + y + ') size ' + w + 'x' + h,
-          area: { x: x + window.scrollX, y: y + window.scrollY, width: w, height: h }
+        // Capture the area with actual screenshot data
+        var absX = x + window.scrollX;
+        var absY = y + window.scrollY;
+        captureArea(absX, absY, w, h, function(dataUrl) {
+          addAttachment('screenshot', {
+            label: w + '\u00d7' + h + ' area',
+            summary: 'Screenshot area at (' + x + ',' + y + ') size ' + w + 'x' + h,
+            area: { x: absX, y: absY, width: w, height: h, data: dataUrl }
+          });
+          togglePanel(true);
         });
-        togglePanel(true);
       } else {
         togglePanel(true);
       }

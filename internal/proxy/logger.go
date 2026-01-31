@@ -266,7 +266,9 @@ type ScreenshotCapture struct {
 	ID        string    `json:"id"` // Reference ID for use in messages
 	Timestamp time.Time `json:"timestamp"`
 	URL       string    `json:"url"`
-	Summary   string    `json:"summary"` // Human-readable summary
+	Summary   string    `json:"summary"`    // Human-readable summary
+	ImageData string    `json:"image_data"` // Base64 PNG data (cleared after save)
+	FilePath  string    `json:"file_path"`  // Path to saved image file
 	Area      struct {
 		X      int `json:"x"`
 		Y      int `json:"y"`
