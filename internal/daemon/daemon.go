@@ -1060,14 +1060,20 @@ func (d *Daemon) autostartScript(ctx context.Context, name string, script *confi
 	// Determine expected port for pre-flight cleanup and EADDRINUSE recovery
 	expectedPort := d.getExpectedPortForScript(name, script, proxyConfigs, workingDir, command, args)
 
+	// Set URL matchers BEFORE starting the process to ensure they're available
+	// when the URL tracker first scans the process output
+	if len(script.URLMatchers) > 0 {
+		d.urlTracker.SetURLMatchers(processID, script.URLMatchers)
+		log.Printf("[DEBUG] Pre-set URL matchers for %s: %v", processID, script.URLMatchers)
+	}
+
 	// Start with automatic EADDRINUSE recovery
 	_, startupErr := d.startScriptWithRetry(ctx, processID, workingDir, command, args, envSlice, expectedPort)
 	if startupErr != nil {
+		// Clean up pre-set matchers on failure
+		d.urlTracker.SetURLMatchers(processID, nil)
 		return startupErr
 	}
-
-	// Load and set URL matchers for this process
-	d.LoadURLMatchersForProcess(processID)
 
 	return nil
 }
