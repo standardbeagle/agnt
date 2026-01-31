@@ -21,6 +21,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/standardbeagle/agnt/internal/aichannel"
 	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/overlay"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"golang.org/x/sys/windows"
@@ -138,6 +139,21 @@ func runCommand(cmd *cobra.Command, args []string) {
 			skipAutostart = true
 			commandArgs = append(args[:i], args[i+1:]...)
 			continue
+		case "--debug", "-d":
+			// Handle global debug flag (since DisableFlagParsing prevents cobra from parsing it)
+			debug.Enable()
+			commandArgs = append(args[:i], args[i+1:]...)
+			continue
+		case "--debug-log":
+			// Handle global debug-log flag
+			if i+1 < len(args) {
+				debug.Enable()
+				if err := debug.SetLogFile(args[i+1]); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to set debug log file: %v\n", err)
+				}
+				commandArgs = append(args[:i], args[i+2:]...)
+				continue
+			}
 		}
 		i++
 	}

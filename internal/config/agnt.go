@@ -10,8 +10,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-
-	kdl "github.com/sblinch/kdl-go"
 )
 
 // AgntConfigFileName is the name of the agnt configuration file.
@@ -19,6 +17,9 @@ const AgntConfigFileName = ".agnt.kdl"
 
 // AgntConfig represents the agnt configuration.
 type AgntConfig struct {
+	// Project metadata (optional, for documentation/info only)
+	Project *AgntProjectMeta `kdl:"project"`
+
 	// Scripts to manage
 	Scripts map[string]*ScriptConfig `kdl:"scripts"`
 
@@ -30,6 +31,13 @@ type AgntConfig struct {
 
 	// Toast notification settings
 	Toast *ToastConfig `kdl:"toast"`
+}
+
+// AgntProjectMeta contains optional project metadata in .agnt.kdl.
+// This is informational only and doesn't affect behavior.
+type AgntProjectMeta struct {
+	Type string `kdl:"type"`
+	Name string `kdl:"name"`
 }
 
 // ScriptConfig defines a script to run.
@@ -165,35 +173,23 @@ func LoadAgntConfigFile(path string) (*AgntConfig, error) {
 }
 
 // ParseAgntConfig parses KDL configuration data.
-// It tries kdl-go first, then falls back to a simpler regex parser for
-// formats like: scripts { dev auto-start=true } proxy "dev" { script "dev" }
+// Supports multiple formats:
+//   - Simple: scripts { dev auto-start=true }
+//   - Nested: scripts { dev { run "..." autostart true } }
+//   - Proxy:  proxy "name" { script "dev" }
 func ParseAgntConfig(data string) (*AgntConfig, error) {
-	cfg := DefaultAgntConfig()
-
-	// Try kdl-go first
-	if err := kdl.Unmarshal([]byte(data), cfg); err == nil {
-		// Check if we got anything useful
-		if len(cfg.Scripts) > 0 || len(cfg.Proxies) > 0 {
-			log.Printf("[DEBUG] ParseAgntConfig: kdl-go parsed %d scripts, %d proxies", len(cfg.Scripts), len(cfg.Proxies))
-			return cfg, nil
-		}
-		log.Printf("[DEBUG] ParseAgntConfig: kdl-go succeeded but got empty config, falling back to simple parser")
-	} else {
-		log.Printf("[DEBUG] ParseAgntConfig: kdl-go failed: %v, falling back to simple parser", err)
-	}
-
-	// Fallback to simpler parser for alternate format
 	result, err := parseAgntConfigSimple(data)
 	if result != nil {
-		log.Printf("[DEBUG] ParseAgntConfig: simple parser got %d scripts, %d proxies", len(result.Scripts), len(result.Proxies))
+		log.Printf("[DEBUG] ParseAgntConfig: parsed %d scripts, %d proxies", len(result.Scripts), len(result.Proxies))
 	}
 	return result, err
 }
 
-// parseAgntConfigSimple parses a simpler KDL format:
+// parseAgntConfigSimple parses KDL formats:
 //
-//	scripts { dev auto-start=true }
-//	proxy "name" { script "dev" port-detect "auto" }
+//	Simple: scripts { dev auto-start=true }
+//	Nested: scripts { dev { run "..." autostart true } }
+//	Proxy:  proxy "name" { script "dev" }
 func parseAgntConfigSimple(data string) (*AgntConfig, error) {
 	cfg := DefaultAgntConfig()
 
@@ -201,6 +197,9 @@ func parseAgntConfigSimple(data string) (*AgntConfig, error) {
 	var currentBlock string
 	var currentProxy *ProxyConfig
 	var currentProxyName string
+	var currentScript *ScriptConfig
+	var currentScriptName string
+	var blockDepth int // Track nesting depth
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -212,40 +211,87 @@ func parseAgntConfigSimple(data string) (*AgntConfig, error) {
 
 		// Block start
 		if strings.HasSuffix(line, "{") {
-			if strings.HasPrefix(line, "scripts") {
-				currentBlock = "scripts"
-			} else if strings.HasPrefix(line, "proxy") {
-				currentBlock = "proxy"
-				// Extract proxy ID: proxy "dev" {
-				re := regexp.MustCompile(`proxy\s+"([^"]+)"`)
-				if matches := re.FindStringSubmatch(line); len(matches) > 1 {
-					currentProxyName = matches[1]
-					currentProxy = &ProxyConfig{
-						Host:      "localhost",
-						Autostart: true, // proxies in config are autostart by default
+			blockDepth++
+			if blockDepth == 1 {
+				// Top-level block
+				if strings.HasPrefix(line, "scripts") {
+					currentBlock = "scripts"
+				} else if strings.HasPrefix(line, "proxy") {
+					currentBlock = "proxy"
+					// Extract proxy ID: proxy "dev" {
+					re := regexp.MustCompile(`proxy\s+"([^"]+)"`)
+					if matches := re.FindStringSubmatch(line); len(matches) > 1 {
+						currentProxyName = matches[1]
+						currentProxy = &ProxyConfig{
+							Host:      "localhost",
+							Autostart: true, // proxies in config are autostart by default
+						}
+					}
+				} else if strings.HasPrefix(line, "proxies") {
+					currentBlock = "proxies"
+				} else if strings.HasPrefix(line, "project") {
+					currentBlock = "project"
+				}
+			} else if blockDepth == 2 {
+				// Nested block inside scripts or proxies
+				if currentBlock == "scripts" {
+					// Nested script block: script-name {
+					name := extractBlockName(line)
+					if name != "" {
+						currentScriptName = name
+						currentScript = &ScriptConfig{}
+					}
+				} else if currentBlock == "proxies" {
+					// Nested proxy block: proxy-name {
+					name := extractBlockName(line)
+					if name != "" {
+						currentProxyName = name
+						currentProxy = &ProxyConfig{
+							Host:      "localhost",
+							Autostart: true,
+						}
 					}
 				}
-			} else if strings.HasPrefix(line, "proxies") {
-				currentBlock = "proxies"
 			}
 			continue
 		}
 
 		// Block end
 		if line == "}" {
-			if currentBlock == "proxy" && currentProxy != nil && currentProxyName != "" {
-				cfg.Proxies[currentProxyName] = currentProxy
-				currentProxy = nil
-				currentProxyName = ""
+			if blockDepth == 2 {
+				// End of nested block
+				if currentBlock == "scripts" && currentScript != nil && currentScriptName != "" {
+					cfg.Scripts[currentScriptName] = currentScript
+					currentScript = nil
+					currentScriptName = ""
+				} else if (currentBlock == "proxies" || currentBlock == "proxy") && currentProxy != nil && currentProxyName != "" {
+					cfg.Proxies[currentProxyName] = currentProxy
+					currentProxy = nil
+					currentProxyName = ""
+				}
+			} else if blockDepth == 1 {
+				// End of top-level block
+				if currentBlock == "proxy" && currentProxy != nil && currentProxyName != "" {
+					cfg.Proxies[currentProxyName] = currentProxy
+					currentProxy = nil
+					currentProxyName = ""
+				}
+				currentBlock = ""
 			}
-			currentBlock = ""
+			blockDepth--
 			continue
 		}
 
 		// Parse content based on current block
 		switch currentBlock {
 		case "scripts":
-			parseScriptLine(line, cfg)
+			if currentScript != nil {
+				// Inside nested script block - parse properties
+				parseScriptProperty(line, currentScript)
+			} else {
+				// Simple format: dev auto-start=true
+				parseScriptLine(line, cfg)
+			}
 
 		case "proxy":
 			if currentProxy != nil {
@@ -253,23 +299,63 @@ func parseAgntConfigSimple(data string) (*AgntConfig, error) {
 			}
 
 		case "proxies":
-			// Nested proxy block in proxies { name { ... } }
-			if strings.HasSuffix(line, "{") {
-				// Start of nested block: extract name
-				parts := strings.Fields(line)
-				if len(parts) >= 1 {
-					currentProxyName = strings.Trim(parts[0], "\"")
-					currentProxy = &ProxyConfig{
-						Host:      "localhost",
-						Autostart: true,
-					}
-					currentBlock = "proxy" // Switch to proxy mode
-				}
+			if currentProxy != nil {
+				parseProxyProperty(line, currentProxy)
 			}
+
+		case "project":
+			// Ignore project block contents
 		}
 	}
 
 	return cfg, scanner.Err()
+}
+
+// extractBlockName extracts the name from a line like "script-name {" or "proxy-name {"
+func extractBlockName(line string) string {
+	// Remove trailing {
+	line = strings.TrimSuffix(line, "{")
+	line = strings.TrimSpace(line)
+
+	// Handle quoted names: "script:name"
+	if strings.HasPrefix(line, "\"") {
+		re := regexp.MustCompile(`"([^"]+)"`)
+		if matches := re.FindStringSubmatch(line); len(matches) > 1 {
+			return matches[1]
+		}
+	}
+
+	// Simple name
+	parts := strings.Fields(line)
+	if len(parts) >= 1 {
+		return parts[0]
+	}
+	return ""
+}
+
+// parseScriptProperty parses a property line inside a script block.
+func parseScriptProperty(line string, script *ScriptConfig) {
+	// Match: property "value"
+	stringRe := regexp.MustCompile(`^(\S+)\s+"([^"]+)"`)
+
+	if matches := stringRe.FindStringSubmatch(line); len(matches) > 2 {
+		switch matches[1] {
+		case "run":
+			script.Run = matches[2]
+		case "command":
+			script.Command = matches[2]
+		case "cwd":
+			script.Cwd = matches[2]
+		case "url-matchers":
+			script.URLMatchers = append(script.URLMatchers, matches[2])
+		}
+		return
+	}
+
+	// Boolean properties: autostart true
+	if strings.HasPrefix(line, "autostart") || strings.HasPrefix(line, "auto-start") {
+		script.Autostart = strings.Contains(line, "true")
+	}
 }
 
 // parseScriptLine parses a script line like: dev auto-start=true
