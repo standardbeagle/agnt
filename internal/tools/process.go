@@ -28,13 +28,14 @@ const (
 
 // RunInput defines input for the run tool.
 type RunInput struct {
-	Path       string   `json:"path,omitempty" jsonschema:"Project directory (defaults to current dir)"`
-	ScriptName string   `json:"script_name,omitempty" jsonschema:"Script name from detect (e.g. test, lint, build)"`
-	Raw        bool     `json:"raw,omitempty" jsonschema:"Raw mode: use command and args directly"`
-	Command    string   `json:"command,omitempty" jsonschema:"Raw mode: executable to run"`
-	Args       []string `json:"args,omitempty" jsonschema:"Extra args (appended in script mode, used directly in raw mode)"`
-	ID         string   `json:"id,omitempty" jsonschema:"Process ID (auto-generated if empty)"`
-	Mode       RunMode  `json:"mode,omitempty" jsonschema:"Execution mode: background (default), foreground, foreground-raw"`
+	Path        string   `json:"path,omitempty" jsonschema:"Project directory (defaults to current dir)"`
+	ScriptName  string   `json:"script_name,omitempty" jsonschema:"Script name from detect (e.g. test, lint, build)"`
+	Raw         bool     `json:"raw,omitempty" jsonschema:"Raw mode: use command and args directly"`
+	Command     string   `json:"command,omitempty" jsonschema:"Raw mode: executable to run"`
+	Args        []string `json:"args,omitempty" jsonschema:"Extra args (appended in script mode, used directly in raw mode)"`
+	ID          string   `json:"id,omitempty" jsonschema:"Process ID (auto-generated if empty)"`
+	Mode        RunMode  `json:"mode,omitempty" jsonschema:"Execution mode: background (default), foreground, foreground-raw"`
+	AutoRestart bool     `json:"auto_restart,omitempty" jsonschema:"Enable automatic restart on exit (for dev servers)"`
 }
 
 // RunOutput defines output for run.
@@ -53,8 +54,8 @@ type RunOutput struct {
 
 // ProcInput defines input for the proc tool.
 type ProcInput struct {
-	Action    string `json:"action" jsonschema:"Action: status, output, stop, list, cleanup_port"`
-	ProcessID string `json:"process_id,omitempty" jsonschema:"Process ID (required for status/output/stop)"`
+	Action    string `json:"action" jsonschema:"Action: status, output, stop, restart, list, cleanup_port, autorestart"`
+	ProcessID string `json:"process_id,omitempty" jsonschema:"Process ID (required for status/output/stop/restart/autorestart)"`
 	// Output filters
 	Stream string `json:"stream,omitempty" jsonschema:"stdout, stderr, or combined (default)"`
 	Tail   int    `json:"tail,omitempty" jsonschema:"Last N lines only"`
@@ -67,6 +68,10 @@ type ProcInput struct {
 	Port int `json:"port,omitempty" jsonschema:"Port number (required for cleanup_port)"`
 	// Directory filtering
 	Global bool `json:"global,omitempty" jsonschema:"For list: include processes from all directories (default: false)"`
+	// Auto-restart options
+	AutoRestartEnable bool `json:"auto_restart_enable,omitempty" jsonschema:"For autorestart: enable (true) or disable (false)"`
+	MaxRestarts       int  `json:"max_restarts,omitempty" jsonschema:"For autorestart: max restarts per minute (default: 5, 0=unlimited)"`
+	OnlyOnError       bool `json:"only_on_error,omitempty" jsonschema:"For autorestart: only restart on non-zero exit code"`
 }
 
 // ProcOutput defines output for proc.

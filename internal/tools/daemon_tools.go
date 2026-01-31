@@ -178,6 +178,10 @@ Modes:
   foreground: Waits for completion, returns exit_code/state/runtime (output via proc)
   foreground-raw: Waits for completion, returns exit_code/state/runtime + stdout/stderr
 
+Auto-restart: Use auto_restart: true for dev servers to auto-restart on crash.
+  run {script_name: "dev", auto_restart: true}
+This enables automatic restart with rate limiting (max 5 restarts/minute).
+
 Restarting: To restart a dev server, use proc stop first, then run again:
   proc {action: "stop", process_id: "dev"}
   run {script_name: "dev"}
@@ -185,6 +189,7 @@ Never use pkill or external commands - always use proc stop for clean shutdown.
 
 Examples:
   run {script_name: "test"}
+  run {script_name: "dev", auto_restart: true}
   run {script_name: "test", mode: "foreground"}
   run {script_name: "test", mode: "foreground-raw"}
   run {raw: true, command: "go", args: ["mod", "tidy"], mode: "foreground-raw"}`,
@@ -201,6 +206,7 @@ Actions:
   stop: Gracefully stop a process (use force: true for immediate kill)
   restart: Restart a running process (stop then start with same config)
   cleanup_port: Kill any process using a specific port
+  autorestart: Enable/disable automatic restart when process exits
 
 Restarting dev servers: Use restart action or stop then run again.
   proc {action: "restart", process_id: "dev"}
@@ -208,6 +214,11 @@ Restarting dev servers: Use restart action or stop then run again.
   proc {action: "stop", process_id: "dev"}
   run {script_name: "dev"}
 Never use pkill or external commands - always use proc stop/restart for clean shutdown.
+
+Auto-restart: Automatically restarts crashed dev servers (rate-limited to prevent loops).
+  run {script_name: "dev", auto_restart: true}
+  proc {action: "autorestart", process_id: "dev", auto_restart_enable: true}
+  proc {action: "autorestart", process_id: "dev", auto_restart_enable: false}
 
 Examples:
   proc {action: "list"}
@@ -217,7 +228,8 @@ Examples:
   proc {action: "stop", process_id: "test"}
   proc {action: "stop", process_id: "test", force: true}
   proc {action: "restart", process_id: "dev"}
-  proc {action: "cleanup_port", port: 3000}`,
+  proc {action: "cleanup_port", port: 3000}
+  proc {action: "autorestart", process_id: "dev", auto_restart_enable: true, max_restarts: 3}`,
 	}, dt.makeProcHandler())
 
 	// Proxy tools
@@ -482,9 +494,19 @@ func (dt *DaemonTools) makeRunHandler() func(context.Context, *mcp.CallToolReque
 			return formatDaemonError(err, "run"), RunOutput{}, nil
 		}
 
+		processID := getString(result, "process_id")
+
+		// Enable auto-restart if requested (background mode only)
+		if input.AutoRestart && config.Mode == "background" && processID != "" {
+			_, err := dt.client.ProcAutoRestart(processID, "enable", nil)
+			if err != nil {
+				debug.Log("run", "Warning: failed to enable auto-restart for %s: %v", processID, err)
+			}
+		}
+
 		// Convert to output type
 		output := RunOutput{
-			ProcessID: getString(result, "process_id"),
+			ProcessID: processID,
 			PID:       getInt(result, "pid"),
 			Command:   getString(result, "command"),
 			ExitCode:  getInt(result, "exit_code"),
@@ -518,6 +540,8 @@ func (dt *DaemonTools) makeProcHandler() func(context.Context, *mcp.CallToolRequ
 			return dt.handleProcList(input)
 		case "cleanup_port":
 			return dt.handleProcCleanupPort(input)
+		case "autorestart":
+			return dt.handleProcAutoRestart(input)
 		default:
 			return errorResult(fmt.Sprintf("unknown action %q", input.Action)), ProcOutput{}, nil
 		}
@@ -598,6 +622,38 @@ func (dt *DaemonTools) handleProcRestart(input ProcInput) (*mcp.CallToolResult, 
 		ProcessID: getString(result, "process_id"),
 		State:     getString(result, "state"),
 		Success:   getBool(result, "success"),
+		Message:   getString(result, "message"),
+	}, nil
+}
+
+func (dt *DaemonTools) handleProcAutoRestart(input ProcInput) (*mcp.CallToolResult, ProcOutput, error) {
+	if input.ProcessID == "" {
+		return errorResult("process_id required for autorestart"), ProcOutput{}, nil
+	}
+
+	// Determine action: enable or disable based on auto_restart_enable flag
+	action := "disable"
+	if input.AutoRestartEnable {
+		action = "enable"
+	}
+
+	// Build config if enabling
+	var config *daemon.ProcAutoRestartConfig
+	if action == "enable" {
+		config = &daemon.ProcAutoRestartConfig{
+			MaxRestarts: input.MaxRestarts,
+			OnlyOnError: input.OnlyOnError,
+		}
+	}
+
+	result, err := dt.client.ProcAutoRestart(input.ProcessID, action, config)
+	if err != nil {
+		return formatDaemonError(err, "proc"), ProcOutput{}, nil
+	}
+
+	return nil, ProcOutput{
+		ProcessID: getString(result, "id"),
+		Success:   getBool(result, "auto_restart") == input.AutoRestartEnable,
 		Message:   getString(result, "message"),
 	}, nil
 }
