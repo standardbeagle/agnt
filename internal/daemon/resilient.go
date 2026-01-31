@@ -636,6 +636,81 @@ func (rc *ResilientClient) BrowserList(dirFilter protocol.DirectoryFilter) (map[
 	return result, err
 }
 
+// Automation methods (chromedp sessions)
+
+// AutomationStart starts a chromedp automation session.
+func (rc *ResilientClient) AutomationStart(config protocol.AutomationStartConfig) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.AutomationStart(config)
+		return e
+	})
+	return result, err
+}
+
+// AutomationStop stops an automation session.
+func (rc *ResilientClient) AutomationStop(id string) error {
+	return rc.WithClient(func(c *Client) error {
+		return c.AutomationStop(id)
+	})
+}
+
+// AutomationStatus gets the status of an automation session.
+func (rc *ResilientClient) AutomationStatus(id string) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.AutomationStatus(id)
+		return e
+	})
+	return result, err
+}
+
+// AutomationList lists all active automation sessions.
+func (rc *ResilientClient) AutomationList(dirFilter protocol.DirectoryFilter) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.AutomationList(dirFilter)
+		return e
+	})
+	return result, err
+}
+
+// AutomationScreenshot takes a screenshot in an automation session.
+func (rc *ResilientClient) AutomationScreenshot(config protocol.AutomationScreenshotConfig) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.AutomationScreenshot(config)
+		return e
+	})
+	return result, err
+}
+
+// AutomationNavigate navigates to a URL in an automation session.
+func (rc *ResilientClient) AutomationNavigate(config protocol.AutomationNavigateConfig) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.AutomationNavigate(config)
+		return e
+	})
+	return result, err
+}
+
+// AutomationEvaluate evaluates JavaScript in an automation session.
+func (rc *ResilientClient) AutomationEvaluate(config protocol.AutomationEvaluateConfig) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.AutomationEvaluate(config)
+		return e
+	})
+	return result, err
+}
+
 // BroadcastActivity sends an activity state update to connected browsers via specified proxies.
 // If proxyIDs is empty, broadcasts to all proxies (backward compatibility).
 func (rc *ResilientClient) BroadcastActivity(active bool, proxyIDs ...string) error {
