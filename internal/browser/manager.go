@@ -274,6 +274,12 @@ func (m *Manager) StopAll(ctx context.Context) ([]string, error) {
 				}
 				errMu.Unlock()
 			} else {
+				// Wait for the browser's done channel to ensure cleanup goroutine
+				// has decremented the active count before we return
+				select {
+				case <-b.Done():
+				case <-ctx.Done():
+				}
 				stoppedMu.Lock()
 				stoppedIDs = append(stoppedIDs, id)
 				stoppedMu.Unlock()
