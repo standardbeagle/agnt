@@ -28,14 +28,14 @@ const (
 
 // RunInput defines input for the run tool.
 type RunInput struct {
-	Path        string   `json:"path,omitempty" jsonschema:"Project directory (defaults to current dir)"`
-	ScriptName  string   `json:"script_name,omitempty" jsonschema:"Script name from detect (e.g. test, lint, build)"`
-	Raw         bool     `json:"raw,omitempty" jsonschema:"Raw mode: use command and args directly"`
-	Command     string   `json:"command,omitempty" jsonschema:"Raw mode: executable to run"`
-	Args        []string `json:"args,omitempty" jsonschema:"Extra args (appended in script mode, used directly in raw mode)"`
-	ID          string   `json:"id,omitempty" jsonschema:"Process ID (auto-generated if empty)"`
-	Mode        RunMode  `json:"mode,omitempty" jsonschema:"Execution mode: background (default), foreground, foreground-raw"`
-	AutoRestart bool     `json:"auto_restart,omitempty" jsonschema:"Enable automatic restart on exit (for dev servers)"`
+	Path          string   `json:"path,omitempty" jsonschema:"Project directory (defaults to current dir)"`
+	ScriptName    string   `json:"script_name,omitempty" jsonschema:"Script name from detect (e.g. test, lint, build)"`
+	Raw           bool     `json:"raw,omitempty" jsonschema:"Raw mode: use command and args directly"`
+	Command       string   `json:"command,omitempty" jsonschema:"Raw mode: executable to run"`
+	Args          []string `json:"args,omitempty" jsonschema:"Extra args (appended in script mode, used directly in raw mode)"`
+	ID            string   `json:"id,omitempty" jsonschema:"Process ID (auto-generated if empty)"`
+	Mode          RunMode  `json:"mode,omitempty" jsonschema:"Execution mode: background (default), foreground, foreground-raw"`
+	NoAutoRestart bool     `json:"no_auto_restart,omitempty" jsonschema:"Disable automatic restart (auto-restart is enabled by default for background processes)"`
 }
 
 // RunOutput defines output for run.
