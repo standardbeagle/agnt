@@ -279,3 +279,120 @@ func TestDefaultPythonCommands(t *testing.T) {
 		t.Error("expected 'test' command in Python commands")
 	}
 }
+
+func TestDetect_WailsProject(t *testing.T) {
+	// Create a temp directory with go.mod and wails.json
+	dir := t.TempDir()
+	goMod := `module example.com/mydesktopapp
+
+go 1.23
+`
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(goMod), 0644); err != nil {
+		t.Fatalf("failed to write go.mod: %v", err)
+	}
+
+	wailsJson := `{"name": "MyDesktopApp", "outputfilename": "mydesktopapp"}`
+	if err := os.WriteFile(filepath.Join(dir, "wails.json"), []byte(wailsJson), 0644); err != nil {
+		t.Fatalf("failed to write wails.json: %v", err)
+	}
+
+	// Create frontend directory with pnpm lock file
+	frontendDir := filepath.Join(dir, "frontend")
+	if err := os.Mkdir(frontendDir, 0755); err != nil {
+		t.Fatalf("failed to create frontend dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(frontendDir, "pnpm-lock.yaml"), []byte("lockfileVersion: 6.0"), 0644); err != nil {
+		t.Fatalf("failed to write pnpm-lock.yaml: %v", err)
+	}
+
+	proj, err := Detect(dir)
+	if err != nil {
+		t.Fatalf("Detect failed: %v", err)
+	}
+
+	// Should still be detected as Go type
+	if proj.Type != ProjectGo {
+		t.Errorf("expected type=go, got %s", proj.Type)
+	}
+
+	// Should have Wails metadata
+	if proj.Metadata["framework"] != "wails" {
+		t.Errorf("expected framework=wails in metadata, got %s", proj.Metadata["framework"])
+	}
+
+	// Should detect pnpm for frontend
+	if proj.Metadata["frontend_package_manager"] != "pnpm" {
+		t.Errorf("expected frontend_package_manager=pnpm, got %s", proj.Metadata["frontend_package_manager"])
+	}
+
+	// Should have Wails-specific commands
+	if !HasCommand(proj, "dev") {
+		t.Error("expected 'dev' command for Wails project")
+	}
+
+	// Check that dev command uses wails
+	devCmd := GetCommandByName(proj, "dev")
+	if devCmd == nil || devCmd.Command != "wails" {
+		t.Error("expected 'dev' command to use wails")
+	}
+	if !devCmd.Persistent {
+		t.Error("expected 'dev' command to be persistent")
+	}
+
+	// Should have wails build command
+	if !HasCommand(proj, "build") {
+		t.Error("expected 'build' command for Wails project")
+	}
+	buildCmd := GetCommandByName(proj, "build")
+	if buildCmd == nil || buildCmd.Command != "wails" {
+		t.Error("expected 'build' command to use wails")
+	}
+
+	// Should have doctor command
+	if !HasCommand(proj, "doctor") {
+		t.Error("expected 'doctor' command for Wails project")
+	}
+}
+
+func TestDefaultWailsCommands(t *testing.T) {
+	cmds := DefaultWailsCommands()
+	if len(cmds) == 0 {
+		t.Error("expected non-empty Wails commands")
+	}
+
+	// Check for essential Wails commands
+	hasDev := false
+	hasBuild := false
+	hasDoctor := false
+	for _, cmd := range cmds {
+		switch cmd.Name {
+		case "dev":
+			hasDev = true
+			if cmd.Command != "wails" {
+				t.Errorf("expected wails command for dev, got %s", cmd.Command)
+			}
+			if !cmd.Persistent {
+				t.Error("expected dev command to be persistent")
+			}
+		case "build":
+			hasBuild = true
+			if cmd.Command != "wails" {
+				t.Errorf("expected wails command for build, got %s", cmd.Command)
+			}
+		case "doctor":
+			hasDoctor = true
+			if cmd.Command != "wails" {
+				t.Errorf("expected wails command for doctor, got %s", cmd.Command)
+			}
+		}
+	}
+	if !hasDev {
+		t.Error("expected 'dev' command in Wails commands")
+	}
+	if !hasBuild {
+		t.Error("expected 'build' command in Wails commands")
+	}
+	if !hasDoctor {
+		t.Error("expected 'doctor' command in Wails commands")
+	}
+}

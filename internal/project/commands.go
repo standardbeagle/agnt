@@ -235,6 +235,68 @@ func DefaultPythonCommands() []CommandDef {
 	}
 }
 
+// DefaultWailsCommands returns the default commands for a Wails (Go desktop) project.
+func DefaultWailsCommands() []CommandDef {
+	return []CommandDef{
+		{
+			Name:        "dev",
+			Description: "Start Wails development server with hot reload",
+			Command:     "wails",
+			Args:        []string{"dev"},
+			Persistent:  true,
+		},
+		{
+			Name:        "build",
+			Description: "Build the Wails application",
+			Command:     "wails",
+			Args:        []string{"build"},
+			Timeout:     600,
+		},
+		{
+			Name:        "test",
+			Description: "Run Go tests",
+			Command:     "go",
+			Args:        []string{"test", "-v", "./..."},
+			Timeout:     300,
+		},
+		{
+			Name:        "test-race",
+			Description: "Run Go tests with race detector",
+			Command:     "go",
+			Args:        []string{"test", "-v", "-race", "./..."},
+			Timeout:     600,
+		},
+		{
+			Name:        "lint",
+			Description: "Run golangci-lint",
+			Command:     "golangci-lint",
+			Args:        []string{"run", "./..."},
+			Timeout:     120,
+		},
+		{
+			Name:        "vet",
+			Description: "Run go vet",
+			Command:     "go",
+			Args:        []string{"vet", "./..."},
+			Timeout:     120,
+		},
+		{
+			Name:        "doctor",
+			Description: "Check Wails dependencies",
+			Command:     "wails",
+			Args:        []string{"doctor"},
+			Timeout:     60,
+		},
+		{
+			Name:        "generate",
+			Description: "Generate Wails bindings",
+			Command:     "wails",
+			Args:        []string{"generate", "module"},
+			Timeout:     60,
+		},
+	}
+}
+
 // GetCommandByName finds a command by name in a project.
 func GetCommandByName(proj *Project, name string) *CommandDef {
 	for i := range proj.Commands {

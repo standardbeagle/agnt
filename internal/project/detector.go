@@ -75,7 +75,7 @@ func Detect(path string) (*Project, error) {
 	}, nil
 }
 
-// detectGo checks for a Go project.
+// detectGo checks for a Go project (including Wails desktop apps).
 func detectGo(path string) *Project {
 	goModPath := filepath.Join(path, "go.mod")
 	if _, err := os.Stat(goModPath); err != nil {
@@ -88,6 +88,26 @@ func detectGo(path string) *Project {
 		Name:     parseGoModuleName(goModPath),
 		Commands: DefaultGoCommands(),
 		Metadata: make(map[string]string),
+	}
+
+	// Check for Wails project (Go desktop app with web frontend)
+	if fileExists(filepath.Join(path, "wails.json")) {
+		proj.Metadata["framework"] = "wails"
+		proj.Commands = DefaultWailsCommands()
+
+		// Detect frontend package manager
+		frontendPath := filepath.Join(path, "frontend")
+		if fileExists(frontendPath) {
+			if fileExists(filepath.Join(frontendPath, "pnpm-lock.yaml")) {
+				proj.Metadata["frontend_package_manager"] = "pnpm"
+			} else if fileExists(filepath.Join(frontendPath, "yarn.lock")) {
+				proj.Metadata["frontend_package_manager"] = "yarn"
+			} else if fileExists(filepath.Join(frontendPath, "bun.lockb")) {
+				proj.Metadata["frontend_package_manager"] = "bun"
+			} else {
+				proj.Metadata["frontend_package_manager"] = "npm"
+			}
+		}
 	}
 
 	// Check for common Go tools
