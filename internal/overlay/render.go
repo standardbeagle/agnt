@@ -3,6 +3,7 @@ package overlay
 import (
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -150,6 +151,10 @@ func aggregateProcessURLs(processes []ProcessInfo) []aggregatedURL {
 	for port, url := range urlsByPort {
 		result = append(result, aggregatedURL{URL: url, Port: port})
 	}
+	// Sort by port for stable ordering
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Port < result[j].Port
+	})
 	return result
 }
 

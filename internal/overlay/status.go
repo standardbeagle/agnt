@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -248,6 +249,11 @@ func (f *StatusFetcher) fetchProcesses() ([]ProcessInfo, error) {
 		processes = append(processes, info)
 	}
 
+	// Sort by ID for stable ordering
+	sort.Slice(processes, func(i, j int) bool {
+		return processes[i].ID < processes[j].ID
+	})
+
 	return processes, nil
 }
 
@@ -314,6 +320,11 @@ func (f *StatusFetcher) fetchProxies() ([]ProxyInfo, error) {
 
 		proxies = append(proxies, info)
 	}
+
+	// Sort by ID for stable ordering
+	sort.Slice(proxies, func(i, j int) bool {
+		return proxies[i].ID < proxies[j].ID
+	})
 
 	return proxies, nil
 }
