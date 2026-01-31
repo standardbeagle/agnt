@@ -598,6 +598,23 @@ func (c *Client) ProcRestart(processID string) (map[string]interface{}, error) {
 	return c.conn.Request(protocol.VerbProc, protocol.SubVerbRestart, processID).JSON()
 }
 
+// ProcAutoRestartConfig holds configuration for process auto-restart.
+type ProcAutoRestartConfig struct {
+	MaxRestarts    int  `json:"max_restarts,omitempty"`
+	OnlyOnError    bool `json:"only_on_error,omitempty"`
+	RestartDelayMs int  `json:"restart_delay_ms,omitempty"`
+}
+
+// ProcAutoRestart enables, disables, or queries auto-restart for a process.
+// action can be "enable", "disable", or "status".
+func (c *Client) ProcAutoRestart(processID, action string, config *ProcAutoRestartConfig) (map[string]interface{}, error) {
+	req := c.conn.Request(protocol.VerbProc, "AUTORESTART", processID, action)
+	if config != nil {
+		req = req.WithJSON(config)
+	}
+	return req.JSON()
+}
+
 // ProxyRestart restarts a single proxy by ID.
 func (c *Client) ProxyRestart(id string) (map[string]interface{}, error) {
 	return c.conn.Request(protocol.VerbProxy, protocol.SubVerbRestart, id).JSON()

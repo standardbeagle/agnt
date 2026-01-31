@@ -917,6 +917,17 @@ func (rc *ResilientClient) ProcRestart(processID string) (map[string]interface{}
 	return result, err
 }
 
+// ProcAutoRestart enables, disables, or queries auto-restart for a process.
+func (rc *ResilientClient) ProcAutoRestart(processID, action string, config *ProcAutoRestartConfig) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.ProcAutoRestart(processID, action, config)
+		return e
+	})
+	return result, err
+}
+
 // ProxyRestart restarts a proxy.
 func (rc *ResilientClient) ProxyRestart(id string) (map[string]interface{}, error) {
 	var result map[string]interface{}

@@ -273,7 +273,7 @@ func (d *Daemon) registerAgntCommands() {
 	// PROC command - override Hub's to add URL tracking and project filtering
 	d.hub.RegisterCommand(hubpkg.CommandDefinition{
 		Verb:        "PROC",
-		SubVerbs:    []string{"STATUS", "OUTPUT", "STOP", "RESTART", "LIST", "CLEANUP-PORT"},
+		SubVerbs:    []string{"STATUS", "OUTPUT", "STOP", "RESTART", "LIST", "CLEANUP-PORT", "AUTORESTART"},
 		Description: "Manage running processes",
 		Handler:     d.hubHandleProc,
 	})
@@ -414,13 +414,15 @@ func (d *Daemon) hubHandleProc(ctx context.Context, conn *hubpkg.Connection, cmd
 		return d.hubHandleProcList(ctx, conn, cmd)
 	case "CLEANUP-PORT":
 		return d.hubHandleProcCleanupPort(ctx, conn, cmd)
+	case "AUTORESTART":
+		return d.hubHandleProcAutoRestart(ctx, conn, cmd)
 	case "":
 		return writeStructuredErr(conn, "daemon", &hubproto.StructuredError{
 			Code:         hubproto.ErrMissingParam,
 			Message:      "action required",
 			Command:      "PROC",
 			Param:        "action",
-			ValidActions: []string{"STATUS", "OUTPUT", "STOP", "RESTART", "LIST", "CLEANUP-PORT"},
+			ValidActions: []string{"STATUS", "OUTPUT", "STOP", "RESTART", "LIST", "CLEANUP-PORT", "AUTORESTART"},
 		})
 	default:
 		return writeStructuredErr(conn, "daemon", &hubproto.StructuredError{
@@ -428,7 +430,7 @@ func (d *Daemon) hubHandleProc(ctx context.Context, conn *hubpkg.Connection, cmd
 			Message:      "unknown action",
 			Command:      "PROC",
 			Action:       cmd.SubVerb,
-			ValidActions: []string{"STATUS", "OUTPUT", "STOP", "RESTART", "LIST", "CLEANUP-PORT"},
+			ValidActions: []string{"STATUS", "OUTPUT", "STOP", "RESTART", "LIST", "CLEANUP-PORT", "AUTORESTART"},
 		})
 	}
 }
@@ -3290,6 +3292,88 @@ func (d *Daemon) hubHandleProcRestart(ctx context.Context, conn *hubpkg.Connecti
 
 	data, _ := json.Marshal(resp)
 	return conn.WriteJSON(data)
+}
+
+// hubHandleProcAutoRestart handles PROC AUTORESTART <id> [enable|disable|status].
+// Enables or disables automatic restart for a process when it exits.
+func (d *Daemon) hubHandleProcAutoRestart(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	if len(cmd.Args) < 1 {
+		return conn.WriteErr(hubproto.ErrMissingParam, "process_id required")
+	}
+
+	processID := cmd.Args[0]
+	action := "enable" // default action
+	if len(cmd.Args) > 1 {
+		action = cmd.Args[1]
+	}
+
+	// Get the process
+	proc, err := d.hub.ProcessManager().Get(processID)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrNotFound, fmt.Sprintf("process %q not found", processID))
+	}
+
+	switch action {
+	case "enable":
+		// Parse optional config from JSON payload in cmd.Data
+		config := DefaultAutoRestartConfig()
+		if len(cmd.Data) > 0 {
+			var payload map[string]interface{}
+			if err := json.Unmarshal(cmd.Data, &payload); err == nil {
+				if maxRestarts, ok := payload["max_restarts"].(float64); ok {
+					config.MaxRestarts = int(maxRestarts)
+				}
+				if onlyOnError, ok := payload["only_on_error"].(bool); ok {
+					config.OnlyOnError = onlyOnError
+				}
+				if delayMs, ok := payload["restart_delay_ms"].(float64); ok {
+					config.RestartDelay = time.Duration(delayMs) * time.Millisecond
+				}
+			}
+		}
+
+		// Register for auto-restart
+		d.autoRestarter.Register(processID, config, proc.Command, proc.Args, proc.ProjectPath)
+
+		resp := map[string]interface{}{
+			"id":            processID,
+			"auto_restart":  true,
+			"max_restarts":  config.MaxRestarts,
+			"only_on_error": config.OnlyOnError,
+			"restart_delay": config.RestartDelay.String(),
+			"message":       fmt.Sprintf("Auto-restart enabled for process %q", processID),
+		}
+		data, _ := json.Marshal(resp)
+		return conn.WriteJSON(data)
+
+	case "disable":
+		d.autoRestarter.Unregister(processID)
+
+		resp := map[string]interface{}{
+			"id":           processID,
+			"auto_restart": false,
+			"message":      fmt.Sprintf("Auto-restart disabled for process %q", processID),
+		}
+		data, _ := json.Marshal(resp)
+		return conn.WriteJSON(data)
+
+	case "status":
+		config, enabled := d.autoRestarter.GetConfig(processID)
+		resp := map[string]interface{}{
+			"id":           processID,
+			"auto_restart": enabled,
+		}
+		if enabled {
+			resp["max_restarts"] = config.MaxRestarts
+			resp["only_on_error"] = config.OnlyOnError
+			resp["restart_delay"] = config.RestartDelay.String()
+		}
+		data, _ := json.Marshal(resp)
+		return conn.WriteJSON(data)
+
+	default:
+		return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("unknown autorestart action %q, valid: enable, disable, status", action))
+	}
 }
 
 // hubHandleProxyRestart handles PROXY RESTART <id>.

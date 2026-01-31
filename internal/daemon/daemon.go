@@ -124,12 +124,13 @@ type Daemon struct {
 	hub *hub.Hub
 
 	// agnt-specific managers
-	proxym    *proxy.ProxyManager
-	tunnelm   *tunnel.Manager
-	browserm  *browser.Manager
-	sessionm  *chromedp.SessionManager // chromedp automation sessions
-	storem    *store.StoreManager
-	automator *automation.Processor
+	proxym        *proxy.ProxyManager
+	tunnelm       *tunnel.Manager
+	browserm      *browser.Manager
+	sessionm      *chromedp.SessionManager // chromedp automation sessions
+	storem        *store.StoreManager
+	automator     *automation.Processor
+	autoRestarter *ProcessAutoRestarter // Process auto-restart manager
 
 	// Session and scheduling (agnt-specific extensions)
 	sessionRegistry   *SessionRegistry
@@ -215,6 +216,9 @@ func New(config DaemonConfig) *Daemon {
 		ctx:               ctx,
 		cancel:            cancel,
 	}
+
+	// Initialize process auto-restarter
+	d.autoRestarter = NewProcessAutoRestarter(d)
 
 	// Create URLTracker with callbacks to emit proxy events
 	// Access ProcessManager through Hub
@@ -444,6 +448,11 @@ func (d *Daemon) Stop(ctx context.Context) error {
 		d.updateChecker.Stop()
 	}
 
+	// Stop process auto-restarter first (before processes are stopped)
+	if d.autoRestarter != nil {
+		d.autoRestarter.Shutdown()
+	}
+
 	if err := d.tunnelm.Shutdown(ctx); err != nil {
 		debug.Error("daemon", "tunnel manager shutdown error: %v", err)
 		errs = append(errs, fmt.Errorf("tunnel manager: %w", err))
@@ -562,6 +571,11 @@ func (d *Daemon) BrowserManager() *browser.Manager {
 // SessionManager returns the chromedp session manager.
 func (d *Daemon) SessionManager() *chromedp.SessionManager {
 	return d.sessionm
+}
+
+// AutoRestarter returns the process auto-restart manager.
+func (d *Daemon) AutoRestarter() *ProcessAutoRestarter {
+	return d.autoRestarter
 }
 
 // SessionRegistry returns the session registry.
