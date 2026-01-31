@@ -12,6 +12,7 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/daemon"
 	"github.com/standardbeagle/agnt/internal/debug"
+	"github.com/standardbeagle/agnt/internal/project"
 	"github.com/standardbeagle/agnt/internal/protocol"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -473,17 +474,56 @@ func (dt *DaemonTools) makeRunHandler() func(context.Context, *mcp.CallToolReque
 			return errorResult(fmt.Sprintf("failed to resolve path: %v", err)), RunOutput{}, nil
 		}
 
+		// Resolve script name to command if needed
+		// The daemon's hub doesn't resolve script names, so we must do it here
+		var cmd string
+		var args []string
+		var id string
+
+		if input.Raw {
+			// Raw mode: use command and args directly
+			if input.Command == "" {
+				return errorResult("raw mode requires command"), RunOutput{}, nil
+			}
+			cmd = input.Command
+			args = input.Args
+			id = input.ID
+			if id == "" {
+				id = fmt.Sprintf("proc-%d", time.Now().UnixNano()%100000)
+			}
+		} else if input.ScriptName != "" {
+			// Script mode: resolve script name to command
+			proj, err := project.Detect(absPath)
+			if err != nil {
+				return errorResult(fmt.Sprintf("failed to detect project: %v", err)), RunOutput{}, nil
+			}
+
+			cmdDef := project.GetCommandByName(proj, input.ScriptName)
+			if cmdDef == nil {
+				available := project.GetCommandNames(proj)
+				return errorResult(fmt.Sprintf("unknown script %q. Available: %s", input.ScriptName, strings.Join(available, ", "))), RunOutput{}, nil
+			}
+
+			cmd = cmdDef.Command
+			args = append(cmdDef.Args, input.Args...)
+			id = input.ID
+			if id == "" {
+				id = input.ScriptName
+			}
+		} else {
+			return errorResult("script_name required (or use raw=true with command)"), RunOutput{}, nil
+		}
+
 		// Build daemon protocol config
 		// Pass client's environment to daemon so spawned processes use correct PATH, etc.
 		config := protocol.RunConfig{
-			ID:         input.ID,
-			Path:       absPath,
-			ScriptName: input.ScriptName,
-			Raw:        input.Raw,
-			Command:    input.Command,
-			Args:       input.Args,
-			Mode:       string(input.Mode),
-			Env:        os.Environ(),
+			ID:      id,
+			Path:    absPath,
+			Raw:     true, // Always raw since we resolved the script
+			Command: cmd,
+			Args:    args,
+			Mode:    string(input.Mode),
+			Env:     os.Environ(),
 		}
 
 		if config.Mode == "" {
