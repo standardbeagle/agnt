@@ -15,6 +15,16 @@ First, detect the project to find available scripts:
 detect {path: "."}
 ```
 
+Check the response for:
+- `type`: Project type (go, node, python)
+- `metadata.framework`: Framework detection (e.g., "wails" for Go desktop apps)
+- `commands`: Available commands with their descriptions
+
+**Framework-specific defaults:**
+- **Wails** (`metadata.framework == "wails"`): Recommend `dev` script with `url-matchers "DevServer URL:\\s*{url}"`
+- **Next.js** (node with next in scripts): Use `url-matchers "(Local|Network):\\s*{url}"`
+- **Vite/Astro** (node projects): Use `url-matchers "Local\\s+{url}"`
+
 ### 2. Ask About Scripts to Auto-Start
 
 Based on the detected scripts, use AskUserQuestion to ask:
@@ -48,7 +58,9 @@ Options:
 
 ### 5. Write .agnt.kdl Configuration
 
-Create or update `.agnt.kdl` in the project root with KDL format:
+Create or update `.agnt.kdl` in the project root with KDL format.
+
+**Important**: Use the appropriate `url-matchers` pattern based on the detected framework (see Step 1).
 
 ```kdl
 // .agnt.kdl - agnt project configuration
@@ -59,8 +71,8 @@ scripts {
     dev {
         autostart true
         // URL matchers filter which URLs to create proxies for
-        // Next.js outputs both Local and Network URLs - match both
-        url-matchers "(Local|Network):\\s*{url}"
+        // Use framework-appropriate pattern from Step 1
+        url-matchers "(Local|Network):\\s*{url}"  // Next.js example
     }
 }
 
