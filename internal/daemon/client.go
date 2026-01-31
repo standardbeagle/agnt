@@ -375,6 +375,45 @@ func (c *Client) BrowserList(dirFilter protocol.DirectoryFilter) (map[string]int
 	return req.JSON()
 }
 
+// AutomationStart starts a chromedp automation session.
+func (c *Client) AutomationStart(config protocol.AutomationStartConfig) (map[string]interface{}, error) {
+	return c.conn.Request(protocol.VerbAutomation, protocol.SubVerbStart).WithJSON(config).JSON()
+}
+
+// AutomationStop stops an automation session.
+func (c *Client) AutomationStop(id string) error {
+	return c.conn.Request(protocol.VerbAutomation, protocol.SubVerbStop, id).OK()
+}
+
+// AutomationStatus gets the status of an automation session.
+func (c *Client) AutomationStatus(id string) (map[string]interface{}, error) {
+	return c.conn.Request(protocol.VerbAutomation, protocol.SubVerbStatus, id).JSON()
+}
+
+// AutomationList lists all active automation sessions.
+func (c *Client) AutomationList(dirFilter protocol.DirectoryFilter) (map[string]interface{}, error) {
+	req := c.conn.Request(protocol.VerbAutomation, protocol.SubVerbList)
+	if dirFilter.Directory != "" || dirFilter.Global {
+		req = req.WithJSON(dirFilter)
+	}
+	return req.JSON()
+}
+
+// AutomationScreenshot takes a screenshot in an automation session.
+func (c *Client) AutomationScreenshot(config protocol.AutomationScreenshotConfig) (map[string]interface{}, error) {
+	return c.conn.Request(protocol.VerbAutomation, protocol.SubVerbScreenshot).WithJSON(config).JSON()
+}
+
+// AutomationNavigate navigates to a URL in an automation session.
+func (c *Client) AutomationNavigate(config protocol.AutomationNavigateConfig) (map[string]interface{}, error) {
+	return c.conn.Request(protocol.VerbAutomation, protocol.SubVerbNavigate).WithJSON(config).JSON()
+}
+
+// AutomationEvaluate evaluates JavaScript in an automation session.
+func (c *Client) AutomationEvaluate(config protocol.AutomationEvaluateConfig) (map[string]interface{}, error) {
+	return c.conn.Request(protocol.VerbAutomation, protocol.SubVerbEvaluate).WithJSON(config).JSON()
+}
+
 // ChaosEnable enables chaos injection on a proxy.
 func (c *Client) ChaosEnable(proxyID string) (map[string]interface{}, error) {
 	return c.conn.Request(protocol.VerbChaos, protocol.SubVerbEnable, proxyID).JSON()

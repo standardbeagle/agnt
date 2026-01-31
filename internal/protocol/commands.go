@@ -7,6 +7,7 @@ const (
 	VerbCurrentPage = "CURRENTPAGE"
 	VerbTunnel      = "TUNNEL"
 	VerbBrowser     = "BROWSER"
+	VerbAutomation  = "AUTOMATION" // chromedp-based browser automation sessions
 	VerbChaos       = "CHAOS"
 	VerbDetect      = "DETECT"
 	VerbOverlay     = "OVERLAY"
@@ -36,12 +37,15 @@ const (
 	SubVerbTasks         = "TASKS"
 	SubVerbFind          = "FIND"
 	SubVerbAttach        = "ATTACH"
-	SubVerbURL           = "URL"     // Report detected URL from agnt run session
-	SubVerbGetAll        = "GET-ALL" // Get all entries in a scope
-	SubVerbDelete        = "DELETE"  // Delete an entry from a scope
-	SubVerbProcess       = "PROCESS" // Process a single automation task
-	SubVerbBatch         = "BATCH"   // Process multiple automation tasks
-	SubVerbRestart       = "RESTART" // Restart a process or proxy
+	SubVerbURL           = "URL"        // Report detected URL from agnt run session
+	SubVerbGetAll        = "GET-ALL"    // Get all entries in a scope
+	SubVerbDelete        = "DELETE"     // Delete an entry from a scope
+	SubVerbProcess       = "PROCESS"    // Process a single automation task
+	SubVerbBatch         = "BATCH"      // Process multiple automation tasks
+	SubVerbRestart       = "RESTART"    // Restart a process or proxy
+	SubVerbScreenshot    = "SCREENSHOT" // Take screenshot in automation session
+	SubVerbNavigate      = "NAVIGATE"   // Navigate to URL in automation session
+	SubVerbEvaluate      = "EVALUATE"   // Evaluate JavaScript in automation session
 )
 
 // ProxyStartConfig represents configuration for a PROXY START command.
@@ -240,4 +244,37 @@ type BrowserStartConfig struct {
 	ProxyID    string `json:"proxy_id,omitempty"`    // Proxy to use (auto-starts if needed)
 	Headless   *bool  `json:"headless,omitempty"`    // Default: true
 	BinaryPath string `json:"binary_path,omitempty"` // Optional Chrome path
+}
+
+// AutomationStartConfig represents configuration for an AUTOMATION START command.
+type AutomationStartConfig struct {
+	ID       string `json:"id,omitempty"`       // Session ID (auto-generated if empty)
+	URL      string `json:"url,omitempty"`      // URL to open
+	ProxyID  string `json:"proxy_id,omitempty"` // Proxy to use
+	Headless *bool  `json:"headless,omitempty"` // Default: true
+}
+
+// AutomationScreenshotConfig represents configuration for an AUTOMATION SCREENSHOT command.
+type AutomationScreenshotConfig struct {
+	SessionID string  `json:"session_id"`         // Session ID (required)
+	Type      string  `json:"type,omitempty"`     // viewport, fullpage, element, clip
+	Label     string  `json:"label,omitempty"`    // Optional label for filename
+	Selector  string  `json:"selector,omitempty"` // CSS selector for element type
+	Viewport  string  `json:"viewport,omitempty"` // Viewport preset name
+	X         float64 `json:"x,omitempty"`        // Clip X
+	Y         float64 `json:"y,omitempty"`        // Clip Y
+	Width     float64 `json:"width,omitempty"`    // Clip width
+	Height    float64 `json:"height,omitempty"`   // Clip height
+}
+
+// AutomationNavigateConfig represents configuration for an AUTOMATION NAVIGATE command.
+type AutomationNavigateConfig struct {
+	SessionID string `json:"session_id"` // Session ID (required)
+	URL       string `json:"url"`        // URL to navigate to (required)
+}
+
+// AutomationEvaluateConfig represents configuration for an AUTOMATION EVALUATE command.
+type AutomationEvaluateConfig struct {
+	SessionID string `json:"session_id"` // Session ID (required)
+	Script    string `json:"script"`     // JavaScript to evaluate (required)
 }

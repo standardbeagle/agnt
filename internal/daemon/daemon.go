@@ -15,6 +15,7 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/automation"
 	"github.com/standardbeagle/agnt/internal/browser"
+	"github.com/standardbeagle/agnt/internal/chromedp"
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/project"
@@ -126,6 +127,7 @@ type Daemon struct {
 	proxym    *proxy.ProxyManager
 	tunnelm   *tunnel.Manager
 	browserm  *browser.Manager
+	sessionm  *chromedp.SessionManager // chromedp automation sessions
 	storem    *store.StoreManager
 	automator *automation.Processor
 
@@ -202,6 +204,7 @@ func New(config DaemonConfig) *Daemon {
 		proxym:            proxy.NewProxyManager(),
 		tunnelm:           tunnel.NewManager(),
 		browserm:          browser.NewManager(),
+		sessionm:          chromedp.NewSessionManager(),
 		storem:            store.NewStoreManager(),
 		sessionRegistry:   sessionRegistry,
 		scheduler:         scheduler,
@@ -451,6 +454,11 @@ func (d *Daemon) Stop(ctx context.Context) error {
 		errs = append(errs, fmt.Errorf("browser manager: %w", err))
 	}
 
+	if err := d.sessionm.Shutdown(ctx); err != nil {
+		debug.Error("daemon", "session manager shutdown error: %v", err)
+		errs = append(errs, fmt.Errorf("session manager: %w", err))
+	}
+
 	if err := d.proxym.Shutdown(ctx); err != nil {
 		debug.Error("daemon", "proxy manager shutdown error: %v", err)
 		errs = append(errs, fmt.Errorf("proxy manager: %w", err))
@@ -549,6 +557,11 @@ func (d *Daemon) TunnelManager() *tunnel.Manager {
 // BrowserManager returns the browser manager.
 func (d *Daemon) BrowserManager() *browser.Manager {
 	return d.browserm
+}
+
+// SessionManager returns the chromedp session manager.
+func (d *Daemon) SessionManager() *chromedp.SessionManager {
+	return d.sessionm
 }
 
 // SessionRegistry returns the session registry.
