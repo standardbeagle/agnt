@@ -178,9 +178,10 @@ Modes:
   foreground: Waits for completion, returns exit_code/state/runtime (output via proc)
   foreground-raw: Waits for completion, returns exit_code/state/runtime + stdout/stderr
 
-Auto-restart: Use auto_restart: true for dev servers to auto-restart on crash.
-  run {script_name: "dev", auto_restart: true}
-This enables automatic restart with rate limiting (max 5 restarts/minute).
+Auto-restart: Background processes automatically restart on crash (rate-limited to
+prevent loops: max 5 restarts/minute). Use no_auto_restart: true to disable.
+  run {script_name: "dev"}                    # Auto-restarts by default
+  run {script_name: "test", no_auto_restart: true}  # Disable for one-time tasks
 
 Restarting: To restart a dev server, use proc stop first, then run again:
   proc {action: "stop", process_id: "dev"}
@@ -189,7 +190,7 @@ Never use pkill or external commands - always use proc stop for clean shutdown.
 
 Examples:
   run {script_name: "test"}
-  run {script_name: "dev", auto_restart: true}
+  run {script_name: "dev"}
   run {script_name: "test", mode: "foreground"}
   run {script_name: "test", mode: "foreground-raw"}
   run {raw: true, command: "go", args: ["mod", "tidy"], mode: "foreground-raw"}`,
@@ -215,10 +216,10 @@ Restarting dev servers: Use restart action or stop then run again.
   run {script_name: "dev"}
 Never use pkill or external commands - always use proc stop/restart for clean shutdown.
 
-Auto-restart: Automatically restarts crashed dev servers (rate-limited to prevent loops).
-  run {script_name: "dev", auto_restart: true}
-  proc {action: "autorestart", process_id: "dev", auto_restart_enable: true}
-  proc {action: "autorestart", process_id: "dev", auto_restart_enable: false}
+Auto-restart: Background processes automatically restart on crash by default (rate-limited
+to max 5 restarts/minute to prevent loops). Use autorestart action to check or disable:
+  proc {action: "autorestart", process_id: "dev"}  # Check status
+  proc {action: "autorestart", process_id: "dev", auto_restart_enable: false}  # Disable
 
 Examples:
   proc {action: "list"}
@@ -229,7 +230,7 @@ Examples:
   proc {action: "stop", process_id: "test", force: true}
   proc {action: "restart", process_id: "dev"}
   proc {action: "cleanup_port", port: 3000}
-  proc {action: "autorestart", process_id: "dev", auto_restart_enable: true, max_restarts: 3}`,
+  proc {action: "autorestart", process_id: "dev", auto_restart_enable: false}`,
 	}, dt.makeProcHandler())
 
 	// Proxy tools
@@ -496,8 +497,8 @@ func (dt *DaemonTools) makeRunHandler() func(context.Context, *mcp.CallToolReque
 
 		processID := getString(result, "process_id")
 
-		// Enable auto-restart if requested (background mode only)
-		if input.AutoRestart && config.Mode == "background" && processID != "" {
+		// Enable auto-restart by default for background processes (unless explicitly disabled)
+		if !input.NoAutoRestart && config.Mode == "background" && processID != "" {
 			_, err := dt.client.ProcAutoRestart(processID, "enable", nil)
 			if err != nil {
 				debug.Log("run", "Warning: failed to enable auto-restart for %s: %v", processID, err)
