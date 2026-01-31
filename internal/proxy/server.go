@@ -1333,6 +1333,17 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		case "screenshot_capture":
 			// Handle area capture from panel with reference ID
 			capture := parseScreenshotCapture(msg.Data, timestamp, msg.URL)
+
+			// Save screenshot image to file if present
+			if capture.ImageData != "" {
+				filePath, err := ps.saveScreenshot("area-"+capture.ID, capture.ImageData)
+				if err == nil {
+					capture.FilePath = filePath
+				}
+				// Clear image data from log entry to save memory
+				capture.ImageData = ""
+			}
+
 			ps.logger.LogScreenshotCapture(capture)
 
 		case "element_capture":
@@ -2343,12 +2354,14 @@ func parseScreenshotCapture(data map[string]interface{}, timestamp time.Time, ur
 	if nested, ok := data["data"].(map[string]interface{}); ok {
 		capture.Summary = getStringField(nested, "summary")
 
-		// Parse area
+		// Parse area with image data
 		if area, ok := nested["area"].(map[string]interface{}); ok {
 			capture.Area.X = getIntField(area, "x")
 			capture.Area.Y = getIntField(area, "y")
 			capture.Area.Width = getIntField(area, "width")
 			capture.Area.Height = getIntField(area, "height")
+			// Get image data if present
+			capture.ImageData = getStringField(area, "data")
 		}
 	}
 
