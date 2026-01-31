@@ -247,6 +247,11 @@ func runWithPTY(ctx context.Context, args []string, socketPath string, sessionCo
 	signal.Notify(sizeCh, syscall.SIGWINCH)
 	defer signal.Stop(sizeCh)
 
+	// Handle SIGCHLD to detect when child process is stopped (e.g., by Ctrl+Z)
+	sigchldCh := make(chan os.Signal, 1)
+	signal.Notify(sigchldCh, syscall.SIGCHLD)
+	defer signal.Stop(sigchldCh)
+
 	// Reserve bottom row for indicator bar by telling child the terminal is 1 row shorter.
 	// This prevents the child from drawing in our indicator area.
 	childHeight := height
@@ -430,6 +435,74 @@ func runWithPTY(ctx context.Context, args []string, socketPath string, sessionCo
 				// Update output filter with new dimensions
 				if outputFilter != nil {
 					outputFilter.SetSize(w, h)
+				}
+			}
+		}
+	}()
+
+	// Handle SIGCHLD to detect when child process is stopped (Ctrl+Z in child)
+	// When the child stops itself, we need to:
+	// 1. Restore the terminal to cooked mode
+	// 2. Stop ourselves so the shell can take over
+	// 3. On resume (fg), restore raw mode and continue the child
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-done:
+				return
+			case <-sigchldCh:
+				if c.Process == nil {
+					continue
+				}
+				// Check if child is stopped (not exited) using Wait4 with WUNTRACED
+				var ws syscall.WaitStatus
+				pid, err := syscall.Wait4(c.Process.Pid, &ws, syscall.WUNTRACED|syscall.WNOHANG, nil)
+				if err != nil || pid <= 0 {
+					continue
+				}
+
+				if ws.Stopped() {
+					// Child was stopped (e.g., by Ctrl+Z)
+					// Restore terminal to cooked mode so shell can use it
+					_ = term.Restore(int(os.Stdin.Fd()), oldState)
+
+					// Stop ourselves - the shell will resume us when user runs 'fg'
+					_ = syscall.Kill(syscall.Getpid(), syscall.SIGSTOP)
+
+					// We've been resumed (user ran 'fg')
+					// Restore raw mode
+					_, _ = term.MakeRaw(int(os.Stdin.Fd()))
+
+					// Get current terminal size in case it changed
+					if w, h, err := term.GetSize(int(os.Stdin.Fd())); err == nil {
+						width, height = w, h
+						ch := h
+						if termOverlay != nil && termOverlay.ShowIndicator() && h > 1 {
+							ch = h - 1
+						}
+						_ = pty.Setsize(ptmx, &pty.Winsize{Rows: uint16(ch), Cols: uint16(w)})
+						if termOverlay != nil {
+							termOverlay.SetSize(w, h)
+						}
+						if outputFilter != nil {
+							outputFilter.SetSize(w, h)
+						}
+					}
+
+					// Resume the child process
+					_ = syscall.Kill(c.Process.Pid, syscall.SIGCONT)
+
+					// Redraw indicator bar after resume
+					if termOverlay != nil && showIndicator {
+						if outputFilter != nil {
+							outputFilter.EnforceScrollRegion()
+						}
+						termOverlay.Redraw()
+					}
 				}
 			}
 		}
