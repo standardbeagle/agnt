@@ -1284,16 +1284,27 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 			// Save screenshot area attachments and include file paths
 			for i := range panelMsg.Attachments {
-				if panelMsg.Attachments[i].Type == "screenshot" && panelMsg.Attachments[i].Area != nil && panelMsg.Attachments[i].Area.Data != "" {
-					// Save the screenshot area data
-					filePath, err := ps.saveScreenshot(fmt.Sprintf("area-%s", id), panelMsg.Attachments[i].Area.Data)
-					if err == nil {
+				att := &panelMsg.Attachments[i]
+				areaDataLen := 0
+				if att.Area != nil {
+					areaDataLen = len(att.Area.Data)
+				}
+				debug.Log("proxy", "Panel attachment %d: type=%s, hasArea=%v, areaDataLen=%d",
+					i, att.Type, att.Area != nil, areaDataLen)
+
+				if att.Type == "screenshot" && att.Area != nil && att.Area.Data != "" {
+					// Save the screenshot area data using attachment ID for unique filename
+					filePath, err := ps.saveScreenshot(fmt.Sprintf("area-%s", att.ID), att.Area.Data)
+					if err != nil {
+						debug.Error("proxy", "Failed to save screenshot: %v", err)
+					} else {
+						debug.Log("proxy", "Saved screenshot to: %s", filePath)
 						// Store file path in attachment data for overlay reference
-						if panelMsg.Attachments[i].Data == nil {
-							panelMsg.Attachments[i].Data = make(map[string]interface{})
+						if att.Data == nil {
+							att.Data = make(map[string]interface{})
 						}
-						panelMsg.Attachments[i].Data["file_path"] = filePath
-						panelMsg.Attachments[i].Data["file_name"] = filepath.Base(filePath)
+						att.Data["file_path"] = filePath
+						att.Data["file_name"] = filepath.Base(filePath)
 					}
 				}
 			}
