@@ -31,7 +31,7 @@
     // Attachments are now logged items with references
     attachments: [], // { id, type, label, summary, timestamp }
     // Tab management
-    activeTab: 'overview', // overview|errors|network|performance|quality|interactions|compose
+    activeTab: 'compose', // compose|overview|errors|network|performance|quality|interactions
     tabUpdateInterval: null, // Update interval for active tab
     lastAuditResults: null // Cache audit results
   };
@@ -148,7 +148,7 @@
     // Panel - the main interface
     panel: [
       'position: fixed',
-      'width: 380px',
+      'width: 480px',
       'background: ' + TOKENS.colors.surface,
       'border-radius: ' + TOKENS.radius.lg,
       'box-shadow: ' + TOKENS.shadow.lg,
@@ -481,7 +481,7 @@
     ].join(';'),
 
     tab: [
-      'padding: ' + TOKENS.spacing.sm + ' ' + TOKENS.spacing.md,
+      'padding: 8px 12px',
       'font-size: 12px',
       'font-weight: 500',
       'border: none',
@@ -800,7 +800,57 @@
     }
   }
 
+  // Inject container query styles for responsive tabs
+  function injectContainerQueryStyles() {
+    if (document.getElementById('__devtool-container-style')) return;
+
+    var style = document.createElement('style');
+    style.id = '__devtool-container-style';
+    style.textContent = [
+      // Make panel a container for container queries
+      '#__devtool-panel {',
+      '  container-type: inline-size;',
+      '  container-name: devtool-panel;',
+      '}',
+      // Tab bar uses CSS grid - horizontal row with auto-sizing columns
+      '.__devtool-tab-bar {',
+      '  display: grid !important;',
+      '  grid-template-columns: repeat(7, 1fr) auto;',
+      '  gap: 0;',
+      '  align-items: center;',
+      '}',
+      // Tab buttons - centered text, no overflow
+      '.__devtool-tab {',
+      '  justify-content: center;',
+      '  text-align: center;',
+      '  min-width: 0;',
+      '  white-space: nowrap !important;',
+      '}',
+      // Short label hidden by default (wide panel shows full labels)
+      '.__devtool-tab-short { display: none; }',
+      '.__devtool-tab-full { display: inline; }',
+      // Container query: narrow panel (< 420px) - show short labels
+      '@container devtool-panel (max-width: 420px) {',
+      '  .__devtool-tab { padding: 6px 4px !important; font-size: 11px !important; }',
+      '  .__devtool-tab-short { display: inline; }',
+      '  .__devtool-tab-full { display: none; }',
+      '}',
+      // Container query: very narrow panel (< 300px) - minimal padding
+      '@container devtool-panel (max-width: 300px) {',
+      '  .__devtool-tab { padding: 4px 2px !important; font-size: 10px !important; }',
+      '}',
+      // Container query: wide panel (> 520px) - comfortable spacing
+      '@container devtool-panel (min-width: 520px) {',
+      '  .__devtool-tab { padding: 10px 14px !important; }',
+      '}'
+    ].join('\n');
+    document.head.appendChild(style);
+  }
+
   function createPanel() {
+    // Inject container query styles
+    injectContainerQueryStyles();
+
     var panel = document.createElement('div');
     panel.id = '__devtool-panel';
     panel.style.cssText = STYLES.panel + '; display: flex; flex-direction: column;';
@@ -837,23 +887,28 @@
 
   function createTabBar() {
     var tabBar = document.createElement('div');
+    tabBar.className = '__devtool-tab-bar';
     tabBar.style.cssText = STYLES.tabBar;
 
     var tabs = [
-      { id: 'overview', label: 'Overview' },
-      { id: 'errors', label: 'Errors' },
-      { id: 'network', label: 'Network' },
-      { id: 'performance', label: 'Perf' },
-      { id: 'quality', label: 'Quality' },
-      { id: 'interactions', label: 'Interact' },
-      { id: 'compose', label: 'Compose' }
+      { id: 'compose', label: 'Message', short: 'Msg', title: 'Send message to agent' },
+      { id: 'overview', label: 'Overview', short: 'Info', title: 'Page overview' },
+      { id: 'errors', label: 'Errors', short: 'Err', title: 'JavaScript errors' },
+      { id: 'network', label: 'Network', short: 'Net', title: 'Network requests' },
+      { id: 'performance', label: 'Perf', short: 'Perf', title: 'Performance metrics' },
+      { id: 'quality', label: 'Quality', short: 'Qual', title: 'Quality audit' },
+      { id: 'interactions', label: 'Interact', short: 'Intx', title: 'User interactions' }
     ];
 
     tabs.forEach(function(tabInfo) {
       var tab = document.createElement('button');
       tab.id = '__devtool-tab-' + tabInfo.id;
+      tab.className = '__devtool-tab';
       tab.style.cssText = STYLES.tab;
-      tab.textContent = tabInfo.label;
+      // Add both full and short labels as spans for container query switching
+      tab.innerHTML = '<span class="__devtool-tab-full">' + tabInfo.label + '</span>' +
+                      '<span class="__devtool-tab-short">' + tabInfo.short + '</span>';
+      if (tabInfo.title) tab.title = tabInfo.title;
       tab.onclick = function() { switchTab(tabInfo.id); };
 
       // Highlight active tab
@@ -889,7 +944,7 @@
     }
 
     // Update tab bar highlighting
-    var tabs = ['overview', 'errors', 'network', 'performance', 'quality', 'interactions', 'compose'];
+    var tabs = ['compose', 'overview', 'errors', 'network', 'performance', 'quality', 'interactions'];
     tabs.forEach(function(id) {
       var tab = document.getElementById('__devtool-tab-' + id);
       if (tab) {
