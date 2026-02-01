@@ -5,8 +5,6 @@ import (
 	"log"
 	"sync"
 	"time"
-
-	"github.com/standardbeagle/go-cli-server/process"
 )
 
 // AutoRestartConfig holds auto-restart settings for a process.
@@ -203,23 +201,19 @@ func (r *ProcessAutoRestarter) monitorProcess(processID string) {
 		// Remove old process
 		r.daemon.hub.ProcessManager().RemoveByPath(processID, state.projectPath)
 
-		// Restart with same config
+		// Restart with EADDRINUSE recovery (use startScriptWithRetry instead of StartScript
+		// to avoid re-registering for auto-restart, since we're already monitoring)
 		ctx, cancel := context.WithTimeout(r.ctx, 30*time.Second)
-		result, err := r.daemon.hub.ProcessManager().StartOrReuse(ctx, process.ProcessConfig{
-			ID:          processID,
-			ProjectPath: state.projectPath,
-			Command:     state.command,
-			Args:        state.args,
-		})
+		proc, startupErr := r.daemon.startScriptWithRetry(ctx, processID, state.projectPath, state.command, state.args, nil, 0)
 		cancel()
 
-		if err != nil {
-			log.Printf("[AUTO-RESTART] Failed to restart process %s: %v", processID, err)
+		if startupErr != nil {
+			log.Printf("[AUTO-RESTART] Failed to restart process %s: %v", processID, startupErr)
 			return
 		}
 
 		state.recordRestart()
-		log.Printf("[AUTO-RESTART] Process %s restarted (new PID: %d)", processID, result.Process.PID())
+		log.Printf("[AUTO-RESTART] Process %s restarted (new PID: %d)", processID, proc.PID())
 	}
 }
 

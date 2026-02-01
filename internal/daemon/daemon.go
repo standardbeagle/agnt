@@ -1060,22 +1060,21 @@ func (d *Daemon) autostartScript(ctx context.Context, name string, script *confi
 	// Determine expected port for pre-flight cleanup and EADDRINUSE recovery
 	expectedPort := d.getExpectedPortForScript(name, script, proxyConfigs, workingDir, command, args)
 
-	// Set URL matchers BEFORE starting the process to ensure they're available
-	// when the URL tracker first scans the process output
-	if len(script.URLMatchers) > 0 {
-		d.urlTracker.SetURLMatchers(processID, script.URLMatchers)
-		log.Printf("[DEBUG] Pre-set URL matchers for %s: %v", processID, script.URLMatchers)
-	}
-
-	// Start with automatic EADDRINUSE recovery
-	_, startupErr := d.startScriptWithRetry(ctx, processID, workingDir, command, args, envSlice, expectedPort)
-	if startupErr != nil {
-		// Clean up pre-set matchers on failure
-		d.urlTracker.SetURLMatchers(processID, nil)
-		return startupErr
-	}
-
-	return nil
+	// Use unified StartScript for consistent behavior:
+	// - EADDRINUSE recovery
+	// - URL matcher setup
+	// - Auto-restart registration
+	_, err := d.StartScript(ctx, StartScriptConfig{
+		ProcessID:    processID,
+		WorkingDir:   workingDir,
+		Command:      command,
+		Args:         args,
+		Env:          envSlice,
+		ExpectedPort: expectedPort,
+		URLMatchers:  script.URLMatchers,
+		AutoRestart:  true, // Autostarted scripts should always auto-restart
+	})
+	return err
 }
 
 // autostartProxy starts a single proxy from config.
@@ -1190,14 +1189,69 @@ func (d *Daemon) _old_detectPortForScript(ctx context.Context, scriptName string
 	}
 }
 
-// DebugLogPath is the path to the daemon debug log file.
-const DebugLogPath = "/tmp/agnt-daemon.log"
+// MaxLogSize is the maximum log file size before rotation (5MB).
+const MaxLogSize = 5 * 1024 * 1024
+
+// MaxLogBackups is the number of rotated log files to keep.
+const MaxLogBackups = 3
+
+// GetLogPath returns the path to the daemon log file.
+// Uses XDG_STATE_HOME or ~/.local/state/agnt/daemon.log
+func GetLogPath() string {
+	// Check XDG_STATE_HOME first
+	stateHome := os.Getenv("XDG_STATE_HOME")
+	if stateHome == "" {
+		// Fall back to ~/.local/state
+		home, err := os.UserHomeDir()
+		if err != nil {
+			// Last resort: /tmp
+			return "/tmp/agnt-daemon.log"
+		}
+		stateHome = filepath.Join(home, ".local", "state")
+	}
+	return filepath.Join(stateHome, "agnt", "daemon.log")
+}
+
+// rotateLogIfNeeded rotates the log file if it exceeds MaxLogSize.
+func rotateLogIfNeeded(logPath string) {
+	info, err := os.Stat(logPath)
+	if err != nil {
+		return // File doesn't exist, nothing to rotate
+	}
+
+	if info.Size() < MaxLogSize {
+		return // Below threshold
+	}
+
+	// Rotate: shift existing backups
+	for i := MaxLogBackups - 1; i >= 1; i-- {
+		oldPath := fmt.Sprintf("%s.%d", logPath, i)
+		newPath := fmt.Sprintf("%s.%d", logPath, i+1)
+		os.Rename(oldPath, newPath) // Ignore errors, files may not exist
+	}
+
+	// Move current log to .1
+	os.Rename(logPath, logPath+".1")
+}
 
 // setupDebugLogging configures file-based logging for the daemon.
 // This allows debugging even when the daemon runs detached (auto-started).
+// Log files are rotated when they exceed MaxLogSize.
 func setupDebugLogging() {
+	logPath := GetLogPath()
+
+	// Create log directory if needed
+	logDir := filepath.Dir(logPath)
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		// Can't create dir, continue with default stderr logging
+		return
+	}
+
+	// Rotate if needed before opening
+	rotateLogIfNeeded(logPath)
+
 	// Open log file (append mode, create if not exists)
-	f, err := os.OpenFile(DebugLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		// Can't open log file, continue with default stderr logging
 		return
@@ -1206,4 +1260,5 @@ func setupDebugLogging() {
 	// Configure log to write to file
 	log.SetOutput(f)
 	log.SetFlags(log.Ldate | log.Ltime | log.Lmicroseconds)
+	log.Printf("[INFO] Daemon log started at %s", logPath)
 }
