@@ -28,9 +28,6 @@ import (
 	hubpkg "github.com/standardbeagle/go-cli-server/hub"
 	goprocess "github.com/standardbeagle/go-cli-server/process"
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
-
-	// Alias for direct process access
-	process "github.com/standardbeagle/go-cli-server/process"
 )
 
 // writeErr writes an error response and logs it for debugging.
@@ -3158,14 +3155,10 @@ func (d *Daemon) hubHandleRestartAll(ctx context.Context, conn *hubpkg.Connectio
 	var proxyRestarted, proxyFailed int
 
 	for _, pm := range procsToRestart {
-		_, err := d.hub.ProcessManager().StartOrReuse(ctx, process.ProcessConfig{
-			ID:          pm.ID,
-			ProjectPath: pm.ProjectPath,
-			Command:     pm.Command,
-			Args:        pm.Args,
-		})
-		if err != nil {
-			log.Printf("[RESTART-ALL] Failed to restart process %s: %v", pm.ID, err)
+		// Use startScriptWithRetry for EADDRINUSE recovery
+		_, startupErr := d.startScriptWithRetry(ctx, pm.ID, pm.ProjectPath, pm.Command, pm.Args, nil, 0)
+		if startupErr != nil {
+			log.Printf("[RESTART-ALL] Failed to restart process %s: %v", pm.ID, startupErr)
 			procsFailed++
 		} else {
 			procsRestarted++
@@ -3242,33 +3235,17 @@ func (d *Daemon) hubHandleProcRestart(ctx context.Context, conn *hubpkg.Connecti
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	// Detect expected port and clean up any rogue processes using it
+	// Detect expected port for EADDRINUSE recovery
 	expectedPort := d.getExpectedPortForProcess(proc)
-	var killedPIDs []int
-	if expectedPort > 0 {
-		killedPIDs, err = d.preflightPortCleanup(ctx, expectedPort)
-		if err != nil {
-			log.Printf("[PROC RESTART] Warning: port cleanup failed for port %d: %v", expectedPort, err)
-		} else if len(killedPIDs) > 0 {
-			log.Printf("[PROC RESTART] Killed rogue process(es) on port %d: %v", expectedPort, killedPIDs)
-		}
-	}
 
 	// Remove the old process registration
 	d.hub.ProcessManager().RemoveByPath(processID, projectPath)
 
-	// Start the process with the same config
-	result, err := d.hub.ProcessManager().StartOrReuse(ctx, process.ProcessConfig{
-		ID:          processID,
-		ProjectPath: projectPath,
-		Command:     command,
-		Args:        args,
-	})
-	if err != nil {
-		return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("failed to restart: %v", err))
+	// Start with EADDRINUSE recovery (pre-flight cleanup + startup monitoring)
+	newProc, startupErr := d.startScriptWithRetry(ctx, processID, projectPath, command, args, nil, expectedPort)
+	if startupErr != nil {
+		return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("failed to restart: %v", startupErr))
 	}
-
-	newProc := result.Process
 
 	resp := map[string]interface{}{
 		"id":           processID,
@@ -3281,13 +3258,6 @@ func (d *Daemon) hubHandleProcRestart(ctx context.Context, conn *hubpkg.Connecti
 		"restarted":    true,
 		"success":      true,
 		"message":      fmt.Sprintf("Process %q restarted successfully", processID),
-	}
-
-	// Include info about killed rogue processes
-	if len(killedPIDs) > 0 {
-		resp["rogue_processes_killed"] = killedPIDs
-		resp["port_cleaned"] = expectedPort
-		resp["message"] = fmt.Sprintf("Process %q restarted successfully (killed rogue process(es) on port %d)", processID, expectedPort)
 	}
 
 	data, _ := json.Marshal(resp)

@@ -16,6 +16,75 @@ import (
 	"github.com/standardbeagle/go-cli-server/process"
 )
 
+// StartScriptConfig holds configuration for starting a script/process.
+// This unified config is used by both autostartScript and hub handlers
+// to ensure consistent behavior (EADDRINUSE recovery, URL tracking, auto-restart).
+type StartScriptConfig struct {
+	// ProcessID is the unique identifier for the process
+	ProcessID string
+	// WorkingDir is the working directory for the process
+	WorkingDir string
+	// Command is the executable to run
+	Command string
+	// Args are the command arguments
+	Args []string
+	// Env are environment variables (KEY=VALUE format)
+	Env []string
+	// ExpectedPort is the port the process is expected to use (for EADDRINUSE recovery)
+	ExpectedPort int
+	// URLMatchers are patterns for URL detection in output
+	URLMatchers []string
+	// AutoRestart enables automatic restart on process exit
+	AutoRestart bool
+	// AutoRestartConfig is optional custom restart configuration
+	AutoRestartConfig *AutoRestartConfig
+}
+
+// StartScriptResult holds the result of starting a script.
+type StartScriptResult struct {
+	Process *process.ManagedProcess
+	Reused  bool // True if an existing process was reused
+}
+
+// StartScript starts a script/process with unified behavior:
+// - Pre-flight port cleanup and EADDRINUSE recovery
+// - URL matcher setup for proxy auto-creation
+// - Auto-restart registration for crash recovery
+//
+// This is the canonical way to start processes in the daemon.
+// Both autostartScript and hub handlers should use this.
+func (d *Daemon) StartScript(ctx context.Context, cfg StartScriptConfig) (*StartScriptResult, error) {
+	// Set URL matchers BEFORE starting the process to ensure they're available
+	// when the URL tracker first scans the process output
+	if len(cfg.URLMatchers) > 0 {
+		d.urlTracker.SetURLMatchers(cfg.ProcessID, cfg.URLMatchers)
+		log.Printf("[DEBUG] Pre-set URL matchers for %s: %v", cfg.ProcessID, cfg.URLMatchers)
+	}
+
+	// Start with automatic EADDRINUSE recovery
+	proc, startupErr := d.startScriptWithRetry(ctx, cfg.ProcessID, cfg.WorkingDir, cfg.Command, cfg.Args, cfg.Env, cfg.ExpectedPort)
+	if startupErr != nil {
+		// Clean up pre-set matchers on failure
+		d.urlTracker.SetURLMatchers(cfg.ProcessID, nil)
+		return nil, startupErr
+	}
+
+	// Register for auto-restart if enabled
+	if cfg.AutoRestart && d.autoRestarter != nil {
+		restartConfig := DefaultAutoRestartConfig()
+		if cfg.AutoRestartConfig != nil {
+			restartConfig = *cfg.AutoRestartConfig
+		}
+		d.autoRestarter.Register(cfg.ProcessID, restartConfig, cfg.Command, cfg.Args, cfg.WorkingDir)
+		log.Printf("[DEBUG] Registered %s for auto-restart", cfg.ProcessID)
+	}
+
+	return &StartScriptResult{
+		Process: proc,
+		Reused:  false, // startScriptWithRetry always creates new process
+	}, nil
+}
+
 // StartupError represents a startup failure with recovery information.
 type StartupError struct {
 	ProcessID string
