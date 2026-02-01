@@ -18,12 +18,12 @@ func TestParseDevServerURLs(t *testing.T) {
 		{
 			name:     "127.0.0.1 URL",
 			input:    "Listening on http://127.0.0.1:8080/",
-			expected: []string{"http://127.0.0.1:8080/"},
+			expected: []string{"http://127.0.0.1:8080"},
 		},
 		{
 			name:     "localhost only from multiple URLs",
 			input:    "  Local:   http://localhost:5173/\n  Network: http://192.168.1.10:5173/\n",
-			expected: []string{"http://localhost:5173/"},
+			expected: []string{"http://localhost:5173"},
 		},
 		{
 			name:     "URL with trailing punctuation",
@@ -63,7 +63,7 @@ func TestParseDevServerURLs(t *testing.T) {
 		{
 			name:     "vite dev server output - localhost only",
 			input:    "  VITE v5.0.0  ready in 500 ms\n\n  ➜  Local:   http://localhost:5173/\n  ➜  Network: http://192.168.1.100:5173/\n",
-			expected: []string{"http://localhost:5173/"},
+			expected: []string{"http://localhost:5173"},
 		},
 		{
 			name:     "next.js dev server output",
@@ -342,7 +342,7 @@ func TestParseDevServerURLsWithMatchers(t *testing.T) {
 			name:     "with matching pattern",
 			input:    []byte("Local: http://localhost:5173/"),
 			matchers: []string{"Local:\\s*{url}"},
-			expected: []string{"http://localhost:5173/"},
+			expected: []string{"http://localhost:5173"},
 		},
 		{
 			name:     "with non-matching pattern",
@@ -360,7 +360,7 @@ func TestParseDevServerURLsWithMatchers(t *testing.T) {
 			name:     "multiple matchers with or pattern - localhost only",
 			input:    []byte("Local: http://localhost:5173/\nNetwork: http://192.168.1.10:5173/"),
 			matchers: []string{"(Local|Network):\\s*{url}"},
-			expected: []string{"http://localhost:5173/"},
+			expected: []string{"http://localhost:5173"},
 		},
 	}
 

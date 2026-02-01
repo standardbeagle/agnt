@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"net/url"
 	"regexp"
 	"strings"
 	"sync"
@@ -304,7 +305,7 @@ func parseDevServerURLsWithMatchers(output []byte, matchers []string) []string {
 		if len(matchers) == 0 {
 			lineMatches := devServerURLRegex.FindAllString(line, -1)
 			for _, match := range lineMatches {
-				match = strings.TrimRight(match, ".,;:)")
+				match = normalizeURL(match)
 				if !seen[match] && !shouldIgnoreURL(match) {
 					seen[match] = true
 					urls = append(urls, match)
@@ -319,7 +320,7 @@ func parseDevServerURLsWithMatchers(output []byte, matchers []string) []string {
 				// Extract URL from the line
 				lineMatches := devServerURLRegex.FindAllString(line, -1)
 				for _, match := range lineMatches {
-					match = strings.TrimRight(match, ".,;:)")
+					match = normalizeURL(match)
 					if !seen[match] && !shouldIgnoreURL(match) {
 						seen[match] = true
 						urls = append(urls, match)
@@ -331,6 +332,34 @@ func parseDevServerURLsWithMatchers(output []byte, matchers []string) []string {
 	}
 
 	return urls
+}
+
+// ansiEscapeRegex matches ANSI escape sequences (colors, cursor movement, etc.)
+var ansiEscapeRegex = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
+
+// normalizeURL normalizes a URL for consistent comparison.
+// Removes ANSI escape codes, trailing slashes and punctuation, lowercases the scheme and host.
+func normalizeURL(u string) string {
+	// Strip ANSI escape codes (terminal colors/formatting)
+	u = ansiEscapeRegex.ReplaceAllString(u, "")
+
+	// Trim common trailing chars first
+	u = strings.TrimRight(u, ".,;:)/")
+
+	// Parse and normalize
+	parsed, err := url.Parse(u)
+	if err != nil {
+		return u // Return as-is if parsing fails
+	}
+
+	// Lowercase scheme and host
+	parsed.Scheme = strings.ToLower(parsed.Scheme)
+	parsed.Host = strings.ToLower(parsed.Host)
+
+	// Remove trailing slash from path (but keep root "/" as empty)
+	parsed.Path = strings.TrimSuffix(parsed.Path, "/")
+
+	return parsed.String()
 }
 
 // matchesURLPattern checks if a line matches a URL matcher pattern.

@@ -802,6 +802,12 @@ func (d *Daemon) CleanupSessionResources(sessionCode string) {
 		}
 		if len(stoppedIDs) > 0 {
 			log.Printf("[Daemon] stopped processes: %v", stoppedIDs)
+			// Unregister from auto-restarter to prevent restart attempts
+			if d.autoRestarter != nil {
+				for _, id := range stoppedIDs {
+					d.autoRestarter.Unregister(id)
+				}
+			}
 		}
 	}()
 
