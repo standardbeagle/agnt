@@ -5,15 +5,19 @@ go 1.24.4
 toolchain go1.24.11
 
 require (
+	github.com/andybalholm/brotli v1.2.0
 	github.com/anthropics/anthropic-sdk-go v1.19.0
 	github.com/aymanbagabas/go-pty v0.2.2
+	github.com/chromedp/cdproto v0.0.0-20250724212937-08a3db8b4327
+	github.com/chromedp/chromedp v0.14.2
 	github.com/creack/pty v1.1.24
 	github.com/gorilla/websocket v1.5.3
+	github.com/klauspost/compress v1.18.3
 	github.com/modelcontextprotocol/go-sdk v1.1.0
 	github.com/sblinch/kdl-go v0.0.0-20250930225324-bf4099d4614a
 	github.com/spf13/cobra v1.10.2
-	github.com/standardbeagle/claude-go v0.0.0
-	github.com/standardbeagle/go-cli-server v0.0.0
+	github.com/standardbeagle/claude-go v1.1.0
+	github.com/standardbeagle/go-cli-server v0.1.0
 	github.com/stretchr/testify v1.10.0
 	github.com/tmc/langchaingo v0.1.14
 	golang.org/x/sys v0.39.0
@@ -30,9 +34,6 @@ require (
 	cloud.google.com/go/iam v1.2.2 // indirect
 	cloud.google.com/go/longrunning v0.6.2 // indirect
 	cloud.google.com/go/vertexai v0.12.0 // indirect
-	github.com/andybalholm/brotli v1.2.0 // indirect
-	github.com/chromedp/cdproto v0.0.0-20250724212937-08a3db8b4327 // indirect
-	github.com/chromedp/chromedp v0.14.2 // indirect
 	github.com/chromedp/sysutil v1.1.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/dlclark/regexp2 v1.10.0 // indirect
@@ -51,7 +52,6 @@ require (
 	github.com/googleapis/enterprise-certificate-proxy v0.3.4 // indirect
 	github.com/googleapis/gax-go/v2 v2.14.1 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
-	github.com/klauspost/compress v1.18.3 // indirect
 	github.com/pkoukk/tiktoken-go v0.1.6 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
@@ -82,7 +82,3 @@ require (
 	gopkg.in/dnaeon/go-vcr.v3 v3.2.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
-
-replace github.com/standardbeagle/go-cli-server => ../go-cli-server
-
-replace github.com/standardbeagle/claude-go => ../claude-go
