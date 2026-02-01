@@ -66,6 +66,10 @@ type ProxyConfig struct {
 
 	// Script links this proxy to a script for URL detection from output
 	Script string `kdl:"script"`
+	// URLPattern filters which detected URLs should trigger this proxy.
+	// Regex pattern matched against detected URLs. Use to select specific ports
+	// when a script outputs multiple URLs (e.g., ":34115" to match Wails backend).
+	URLPattern string `kdl:"url-pattern"`
 
 	// URL is the full target URL (e.g., "http://localhost:3000")
 	URL string `kdl:"url"`
@@ -255,6 +259,12 @@ proxies {
     // dev {
     //     script "dev"
     //     fallback-port 3000
+    // }
+
+    // Example: Wails app (filter for backend URL, not Vite frontend)
+    // wails-dev {
+    //     script "wails-dev"
+    //     url-pattern ":34115"
     // }
 
     // Example: explicit target

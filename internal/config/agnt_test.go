@@ -338,7 +338,7 @@ scripts {
     wails-dev {
         run "wails dev"
         autostart true
-        url-matchers "DevServer URL:\\s*{url}"
+        url-matchers "Using DevServer URL:\\s*{url}"
     }
     build {
         run "wails build"
@@ -355,7 +355,7 @@ proxies {
 `,
 			expectScripts: map[string]ScriptConfig{
 				"frontend-dev": {Run: "npm run dev", Cwd: "frontend", Autostart: false},
-				"wails-dev":    {Run: "wails dev", Autostart: true, URLMatchers: []string{`DevServer URL:\s*{url}`}},
+				"wails-dev":    {Run: "wails dev", Autostart: true, URLMatchers: []string{`Using DevServer URL:\s*{url}`}},
 				"build":        {Run: "wails build", Autostart: false},
 			},
 			expectProxies: map[string]ProxyConfig{

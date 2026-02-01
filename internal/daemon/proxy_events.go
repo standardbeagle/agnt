@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net/url"
+	"regexp"
 	"strings"
 
 	"github.com/standardbeagle/agnt/internal/config"
@@ -14,12 +15,15 @@ import (
 // It listens for events and creates/destroys proxies accordingly.
 func (d *Daemon) handleProxyEvents() {
 	defer d.wg.Done()
+	log.Printf("[DEBUG] Proxy event handler started")
 
 	for {
 		select {
 		case <-d.ctx.Done():
+			log.Printf("[DEBUG] Proxy event handler stopping (context done)")
 			return
 		case event := <-d.proxyEvents:
+			log.Printf("[DEBUG] Received proxy event: type=%d scriptID=%s URL=%s path=%s", event.Type, event.ScriptID, event.URL, event.Path)
 			switch event.Type {
 			case URLDetected:
 				d.handleURLDetected(event)
@@ -53,6 +57,7 @@ func (d *Daemon) handleURLDetected(event ProxyEvent) {
 		return
 	}
 	scriptName := parts[1]
+	log.Printf("[DEBUG] Extracted script name: %q from process ID: %s", scriptName, event.ScriptID)
 
 	// Load agnt configuration
 	agntConfig, err := config.LoadAgntConfig(projectPath)
@@ -60,11 +65,28 @@ func (d *Daemon) handleURLDetected(event ProxyEvent) {
 		log.Printf("[WARN] Failed to load agnt config for %s: %v", projectPath, err)
 		return
 	}
+	log.Printf("[DEBUG] Loaded %d proxies from config", len(agntConfig.Proxies))
 
 	// Find proxy configs linked to this script
 	for proxyName, proxyConfig := range agntConfig.Proxies {
+		log.Printf("[DEBUG] Checking proxy %q (script=%q) against scriptName=%q", proxyName, proxyConfig.Script, scriptName)
 		if proxyConfig.Script != scriptName {
+			log.Printf("[DEBUG] Proxy %s script %q != %q, skipping", proxyName, proxyConfig.Script, scriptName)
 			continue // Not linked to this script
+		}
+		log.Printf("[DEBUG] Proxy %s matches script %s, will create proxy for URL %s", proxyName, scriptName, event.URL)
+
+		// Check URL pattern filter if configured
+		if proxyConfig.URLPattern != "" {
+			matched, err := regexp.MatchString(proxyConfig.URLPattern, event.URL)
+			if err != nil {
+				log.Printf("[WARN] Invalid url-pattern regex for proxy %s: %v", proxyName, err)
+				continue
+			}
+			if !matched {
+				log.Printf("[DEBUG] URL %s does not match pattern %q for proxy %s, skipping", event.URL, proxyConfig.URLPattern, proxyName)
+				continue
+			}
 		}
 
 		// Create proxy for this URL

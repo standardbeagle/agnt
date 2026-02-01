@@ -2605,12 +2605,12 @@
     if (shouldShow) {
       updatePanelPosition();
       state.panel.style.display = 'flex'; // Changed to flex for column layout
+      // Re-render active tab now that panel is visible
+      switchTab(state.activeTab);
       requestAnimationFrame(function() {
         state.panel.style.opacity = '1';
         state.panel.style.transform = 'translateY(0)';
       });
-      // Start tab updates
-      startTabUpdates();
     } else {
       state.panel.style.opacity = '0';
       state.panel.style.transform = 'translateY(8px)';
