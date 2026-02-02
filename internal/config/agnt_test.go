@@ -610,6 +610,26 @@ func TestParseAgntConfigErrors(t *testing.T) {
 }`,
 			expectError: "failed to parse KDL config",
 		},
+		{
+			name: "unknown field in script",
+			input: `scripts {
+    dev {
+        run "npm start"
+        unknown-field "should error"
+    }
+}`,
+			expectError: "no struct field into which to unmarshal node",
+		},
+		{
+			name: "unknown field in proxy",
+			input: `proxies {
+    dev {
+        script "dev"
+        invalid-option true
+    }
+}`,
+			expectError: "no struct field into which to unmarshal node",
+		},
 	}
 
 	for _, tt := range tests {
