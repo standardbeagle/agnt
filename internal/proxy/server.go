@@ -279,6 +279,7 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 
 	ps.proxy.ErrorHandler = ps.errorHandler
 	ps.proxy.ModifyResponse = ps.modifyResponse
+	ps.proxy.FlushInterval = -1 // Flush immediately for streaming/WebSocket responses
 
 	// Initialize tunnel manager if configured
 	if config.Tunnel != nil && config.Tunnel.Provider != "" {
@@ -618,6 +619,10 @@ func (ps *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 	// Check if this is a WebSocket upgrade request
 	isWebSocket := strings.ToLower(r.Header.Get("Upgrade")) == "websocket" &&
 		strings.Contains(strings.ToLower(r.Header.Get("Connection")), "upgrade")
+
+	if isWebSocket {
+		debug.Log("proxy", "WebSocket upgrade detected: %s %s", r.Method, r.URL.Path)
+	}
 
 	// Capture request
 	reqHeaders := make(map[string]string)
@@ -999,6 +1004,7 @@ func (ps *ProxyServer) rewriteURLsInBody(body []byte) []byte {
 func (ps *ProxyServer) errorHandler(w http.ResponseWriter, r *http.Request, err error) {
 	seq := ps.requestSeq.Add(1)
 	reqID := fmt.Sprintf("req-%d", seq)
+	timestamp := time.Now()
 
 	errStr := err.Error()
 
@@ -1008,7 +1014,7 @@ func (ps *ProxyServer) errorHandler(w http.ResponseWriter, r *http.Request, err 
 
 	ps.logger.LogHTTP(HTTPLogEntry{
 		ID:         reqID,
-		Timestamp:  time.Now(),
+		Timestamp:  timestamp,
 		Method:     r.Method,
 		URL:        r.URL.String(),
 		StatusCode: http.StatusBadGateway,
@@ -1017,19 +1023,49 @@ func (ps *ProxyServer) errorHandler(w http.ResponseWriter, r *http.Request, err 
 
 	// Provide helpful error message based on error type
 	var userMsg string
+	var diagEvent string
+	var diagLevel ProxyDiagnosticLevel
 
 	if strings.Contains(errStr, "context canceled") {
 		userMsg = fmt.Sprintf("Proxy Error: Request canceled. The proxy may be shutting down, or the target server (%s) is unavailable.", ps.TargetURL.String())
+		diagEvent = "context_canceled"
+		diagLevel = DiagnosticWarning
 	} else if strings.Contains(errStr, "connection refused") {
 		userMsg = fmt.Sprintf("Proxy Error: Cannot connect to target server %s. Make sure the server is running.", ps.TargetURL.String())
+		diagEvent = "connection_refused"
+		diagLevel = DiagnosticError
 	} else if strings.Contains(errStr, "no such host") {
 		userMsg = fmt.Sprintf("Proxy Error: Cannot resolve target host %s. Check the target URL.", ps.TargetURL.String())
+		diagEvent = "dns_error"
+		diagLevel = DiagnosticError
 	} else if isTransient {
 		// Friendly message for transient errors - these are normal during development
 		userMsg = fmt.Sprintf("Connection to %s was interrupted. This often happens when the dev server restarts. Refresh to retry.", ps.TargetURL.Host)
+		diagEvent = "transient_error"
+		diagLevel = DiagnosticWarning
 	} else {
 		userMsg = fmt.Sprintf("Proxy Error: %s (target: %s)", errStr, ps.TargetURL.String())
+		diagEvent = "unknown_error"
+		diagLevel = DiagnosticError
 	}
+
+	// Broadcast diagnostic to connected browser clients
+	ps.BroadcastProxyDiagnostic(&ProxyDiagnostic{
+		Timestamp: timestamp,
+		Level:     diagLevel,
+		Category:  "proxy",
+		Event:     diagEvent,
+		Message:   userMsg,
+		RequestID: reqID,
+		Method:    r.Method,
+		URL:       r.URL.String(),
+		Target:    ps.TargetURL.String(),
+		Data: map[string]any{
+			"raw_error":    errStr,
+			"is_transient": isTransient,
+			"status_code":  http.StatusBadGateway,
+		},
+	})
 
 	http.Error(w, userMsg, http.StatusBadGateway)
 }
@@ -2108,6 +2144,65 @@ func (ps *ProxyServer) BroadcastOutputPreview(lines []string) int {
 		return true
 	})
 
+	return sentCount
+}
+
+// ProxyDiagnosticLevel indicates the severity of a diagnostic event.
+type ProxyDiagnosticLevel string
+
+const (
+	DiagnosticInfo    ProxyDiagnosticLevel = "info"
+	DiagnosticWarning ProxyDiagnosticLevel = "warning"
+	DiagnosticError   ProxyDiagnosticLevel = "error"
+)
+
+// ProxyDiagnostic represents a diagnostic event from the proxy server.
+type ProxyDiagnostic struct {
+	Timestamp time.Time            `json:"timestamp"`
+	Level     ProxyDiagnosticLevel `json:"level"`
+	Category  string               `json:"category"` // "proxy", "connection", "request"
+	Event     string               `json:"event"`    // "error", "timeout", "refused", etc.
+	Message   string               `json:"message"`
+	RequestID string               `json:"request_id,omitempty"`
+	Method    string               `json:"method,omitempty"`
+	URL       string               `json:"url,omitempty"`
+	Target    string               `json:"target,omitempty"`
+	Data      map[string]any       `json:"data,omitempty"`
+}
+
+// BroadcastProxyDiagnostic sends a diagnostic event to all connected browser clients.
+// This allows the browser to receive server-side proxy errors for debugging.
+// Returns the number of clients that received the diagnostic.
+func (ps *ProxyServer) BroadcastProxyDiagnostic(diag *ProxyDiagnostic) int {
+	if diag == nil {
+		return 0
+	}
+
+	// Also log to traffic logger for MCP access
+	ps.logger.LogDiagnostic(*diag)
+
+	message := map[string]interface{}{
+		"type":    "proxy_diagnostic",
+		"payload": diag,
+	}
+
+	messageBytes, err := json.Marshal(message)
+	if err != nil {
+		debug.Error("proxy", "BroadcastProxyDiagnostic: marshal failed: %v", err)
+		return 0
+	}
+
+	sentCount := 0
+	ps.wsConns.Range(func(key, value interface{}) bool {
+		conn := value.(*websocket.Conn)
+		err := conn.WriteMessage(websocket.TextMessage, messageBytes)
+		if err == nil {
+			sentCount++
+		}
+		return true
+	})
+
+	debug.Log("proxy", "BroadcastProxyDiagnostic: sent to %d clients: %s - %s", sentCount, diag.Event, diag.Message)
 	return sentCount
 }
 

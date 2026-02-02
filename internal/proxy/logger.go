@@ -44,6 +44,8 @@ const (
 	LogTypeDesignRequest LogEntryType = "design_request"
 	// LogTypeDesignChat represents a chat message about the selected element.
 	LogTypeDesignChat LogEntryType = "design_chat"
+	// LogTypeDiagnostic represents a server-side diagnostic event (proxy errors, connection issues, etc.).
+	LogTypeDiagnostic LogEntryType = "diagnostic"
 )
 
 // HTTPLogEntry represents a logged HTTP request/response pair.
@@ -391,6 +393,7 @@ type LogEntry struct {
 	DesignState       *DesignState       `json:"design_state,omitempty"`
 	DesignRequest     *DesignRequest     `json:"design_request,omitempty"`
 	DesignChat        *DesignChat        `json:"design_chat,omitempty"`
+	Diagnostic        *ProxyDiagnostic   `json:"diagnostic,omitempty"`
 }
 
 // TrafficLogger stores proxy traffic logs with bounded memory.
@@ -549,6 +552,14 @@ func (tl *TrafficLogger) LogDesignChat(entry DesignChat) {
 	})
 }
 
+// LogDiagnostic adds a server-side diagnostic event.
+func (tl *TrafficLogger) LogDiagnostic(entry ProxyDiagnostic) {
+	tl.log(LogEntry{
+		Type:       LogTypeDiagnostic,
+		Diagnostic: &entry,
+	})
+}
+
 // log adds an entry to the circular buffer.
 func (tl *TrafficLogger) log(entry LogEntry) {
 	pos := tl.head.Add(1) - 1
@@ -624,6 +635,8 @@ type LogFilter struct {
 	Limit            int            `json:"limit,omitempty"`             // Max results (0 = all)
 	InteractionTypes []string       `json:"interaction_types,omitempty"` // click, keydown, scroll, etc.
 	MutationTypes    []string       `json:"mutation_types,omitempty"`    // added, removed, attributes
+	DiagnosticLevels []string       `json:"diagnostic_levels,omitempty"` // info, warning, error
+	ErrorsOnly       bool           `json:"errors_only,omitempty"`       // Filter to errors from all sources
 }
 
 // Matches returns true if the entry matches the filter.
@@ -713,6 +726,10 @@ func (f LogFilter) Matches(entry LogEntry) bool {
 		if entry.DesignChat != nil {
 			timestamp = entry.DesignChat.Timestamp
 		}
+	case LogTypeDiagnostic:
+		if entry.Diagnostic != nil {
+			timestamp = entry.Diagnostic.Timestamp
+		}
 	}
 
 	if f.Since != nil && timestamp.Before(*f.Since) {
@@ -784,6 +801,38 @@ func (f LogFilter) Matches(entry LogEntry) bool {
 			}
 		}
 		if !match {
+			return false
+		}
+	}
+
+	// Diagnostic level filter
+	if entry.Type == LogTypeDiagnostic && entry.Diagnostic != nil && len(f.DiagnosticLevels) > 0 {
+		match := false
+		for _, level := range f.DiagnosticLevels {
+			if string(entry.Diagnostic.Level) == level {
+				match = true
+				break
+			}
+		}
+		if !match {
+			return false
+		}
+	}
+
+	// ErrorsOnly filter - matches errors from any source
+	if f.ErrorsOnly {
+		isError := false
+		switch entry.Type {
+		case LogTypeError:
+			isError = true
+		case LogTypeDiagnostic:
+			isError = entry.Diagnostic != nil && entry.Diagnostic.Level == DiagnosticError
+		case LogTypeHTTP:
+			isError = entry.HTTP != nil && (entry.HTTP.StatusCode >= 400 || entry.HTTP.Error != "")
+		case LogTypeCustom:
+			isError = entry.Custom != nil && entry.Custom.Level == "error"
+		}
+		if !isError {
 			return false
 		}
 	}
