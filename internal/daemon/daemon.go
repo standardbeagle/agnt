@@ -1072,7 +1072,8 @@ func (d *Daemon) autostartScript(ctx context.Context, name string, script *confi
 	// - Auto-restart registration
 	_, err := d.StartScript(ctx, StartScriptConfig{
 		ProcessID:    processID,
-		WorkingDir:   workingDir,
+		ProjectPath:  projectPath, // Root project path (where .agnt.kdl is)
+		WorkingDir:   workingDir,  // Actual working dir (may differ if script has cwd)
 		Command:      command,
 		Args:         args,
 		Env:          envSlice,

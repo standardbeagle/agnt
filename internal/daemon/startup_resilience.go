@@ -22,7 +22,12 @@ import (
 type StartScriptConfig struct {
 	// ProcessID is the unique identifier for the process
 	ProcessID string
-	// WorkingDir is the working directory for the process
+	// ProjectPath is the root project directory (where .agnt.kdl is located).
+	// Used for session association and proxy event handling.
+	// If empty, defaults to WorkingDir.
+	ProjectPath string
+	// WorkingDir is the working directory for the process (may differ from ProjectPath
+	// when script has cwd configured)
 	WorkingDir string
 	// Command is the executable to run
 	Command string
@@ -54,6 +59,12 @@ type StartScriptResult struct {
 // This is the canonical way to start processes in the daemon.
 // Both autostartScript and hub handlers should use this.
 func (d *Daemon) StartScript(ctx context.Context, cfg StartScriptConfig) (*StartScriptResult, error) {
+	// Default ProjectPath to WorkingDir if not set
+	projectPath := cfg.ProjectPath
+	if projectPath == "" {
+		projectPath = cfg.WorkingDir
+	}
+
 	// Set URL matchers BEFORE starting the process to ensure they're available
 	// when the URL tracker first scans the process output
 	if len(cfg.URLMatchers) > 0 {
@@ -62,7 +73,7 @@ func (d *Daemon) StartScript(ctx context.Context, cfg StartScriptConfig) (*Start
 	}
 
 	// Start with automatic EADDRINUSE recovery
-	proc, startupErr := d.startScriptWithRetry(ctx, cfg.ProcessID, cfg.WorkingDir, cfg.Command, cfg.Args, cfg.Env, cfg.ExpectedPort)
+	proc, startupErr := d.startScriptWithRetry(ctx, cfg.ProcessID, projectPath, cfg.WorkingDir, cfg.Command, cfg.Args, cfg.Env, cfg.ExpectedPort)
 	if startupErr != nil {
 		// Clean up pre-set matchers on failure
 		d.urlTracker.SetURLMatchers(cfg.ProcessID, nil)
@@ -75,7 +86,7 @@ func (d *Daemon) StartScript(ctx context.Context, cfg StartScriptConfig) (*Start
 		if cfg.AutoRestartConfig != nil {
 			restartConfig = *cfg.AutoRestartConfig
 		}
-		d.autoRestarter.Register(cfg.ProcessID, restartConfig, cfg.Command, cfg.Args, cfg.WorkingDir)
+		d.autoRestarter.Register(cfg.ProcessID, restartConfig, cfg.Command, cfg.Args, cfg.ProjectPath, cfg.WorkingDir)
 		log.Printf("[DEBUG] Registered %s for auto-restart", cfg.ProcessID)
 	}
 
@@ -219,9 +230,12 @@ func (d *Daemon) preflightPortCleanup(ctx context.Context, port int) ([]int, err
 
 // startScriptWithRetry starts a script with automatic EADDRINUSE recovery.
 // It monitors the process output for startup failures and retries once after cleanup.
+// projectPath is the root project directory (for session association).
+// workingDir is the actual working directory for the process (may differ when script has cwd).
 func (d *Daemon) startScriptWithRetry(
 	ctx context.Context,
 	processID string,
+	projectPath string,
 	workingDir string,
 	command string,
 	args []string,
@@ -239,9 +253,12 @@ func (d *Daemon) startScriptWithRetry(
 	}
 
 	// Start the process
+	// ProjectPath is the root project (for session association and proxy events)
+	// WorkingDir is the actual cwd for the process
 	result, err := d.hub.ProcessManager().StartOrReuse(ctx, process.ProcessConfig{
 		ID:          processID,
-		ProjectPath: workingDir,
+		ProjectPath: projectPath,
+		WorkingDir:  workingDir,
 		Command:     command,
 		Args:        args,
 		Env:         env,
@@ -271,7 +288,7 @@ func (d *Daemon) startScriptWithRetry(
 
 	// Stop the failed process
 	_ = d.hub.ProcessManager().StopProcess(ctx, proc)
-	d.hub.ProcessManager().RemoveByPath(processID, workingDir)
+	d.hub.ProcessManager().RemoveByPath(processID, projectPath)
 
 	// Clean up the port
 	portToClean := startupErr.Port
@@ -305,7 +322,8 @@ func (d *Daemon) startScriptWithRetry(
 	// Retry: Start the process again
 	result, err = d.hub.ProcessManager().StartOrReuse(ctx, process.ProcessConfig{
 		ID:          processID,
-		ProjectPath: workingDir,
+		ProjectPath: projectPath,
+		WorkingDir:  workingDir,
 		Command:     command,
 		Args:        args,
 		Env:         env,

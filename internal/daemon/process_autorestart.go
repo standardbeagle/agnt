@@ -32,7 +32,8 @@ type processRestartState struct {
 	config      AutoRestartConfig
 	command     string
 	args        []string
-	projectPath string
+	projectPath string      // Root project path (for session association)
+	workingDir  string      // Working directory for the process (may differ from projectPath)
 	restarts    []time.Time // Timestamps of recent restarts
 	mu          sync.Mutex
 }
@@ -100,7 +101,7 @@ func NewProcessAutoRestarter(d *Daemon) *ProcessAutoRestarter {
 }
 
 // Register enables auto-restart for a process.
-func (r *ProcessAutoRestarter) Register(processID string, config AutoRestartConfig, command string, args []string, projectPath string) {
+func (r *ProcessAutoRestarter) Register(processID string, config AutoRestartConfig, command string, args []string, projectPath, workingDir string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -109,6 +110,7 @@ func (r *ProcessAutoRestarter) Register(processID string, config AutoRestartConf
 		command:     command,
 		args:        args,
 		projectPath: projectPath,
+		workingDir:  workingDir,
 	}
 
 	// Start monitoring goroutine
@@ -204,7 +206,7 @@ func (r *ProcessAutoRestarter) monitorProcess(processID string) {
 		// Restart with EADDRINUSE recovery (use startScriptWithRetry instead of StartScript
 		// to avoid re-registering for auto-restart, since we're already monitoring)
 		ctx, cancel := context.WithTimeout(r.ctx, 30*time.Second)
-		proc, startupErr := r.daemon.startScriptWithRetry(ctx, processID, state.projectPath, state.command, state.args, nil, 0)
+		proc, startupErr := r.daemon.startScriptWithRetry(ctx, processID, state.projectPath, state.workingDir, state.command, state.args, nil, 0)
 		cancel()
 
 		if startupErr != nil {
