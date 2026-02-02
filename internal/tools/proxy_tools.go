@@ -1068,11 +1068,11 @@ func handleProxyLogQueryRaw(entries []proxy.LogEntry) (*mcp.CallToolResult, Prox
 						data[k] = v
 					}
 				}
-			}
-			output[i] = LogEntryOutput{
-				Type:      string(entry.Type),
-				Timestamp: entry.Diagnostic.Timestamp,
-				Data:      marshalData(data),
+				output[i] = LogEntryOutput{
+					Type:      string(entry.Type),
+					Timestamp: entry.Diagnostic.Timestamp,
+					Data:      marshalData(data),
+				}
 			}
 		}
 	}

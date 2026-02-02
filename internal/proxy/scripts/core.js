@@ -132,7 +132,7 @@
     function generateSessionId() {
       try {
         var timestamp = Date.now().toString(36);
-        var random = Math.random().toString(36).substr(2, 9);
+        var random = Math.random().toString(36).slice(2, 11);
         return 'sess-' + timestamp + '-' + random;
       } catch (e) {
         return 'sess-' + Date.now() + '-fallback';
@@ -542,7 +542,7 @@
 
     function addConsolidatedError(entry) {
       var normalized = {
-        id: 'err-' + Date.now() + '-' + Math.random().toString(36).substr(2, 6),
+        id: 'err-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8),
         timestamp: entry.timestamp || Date.now(),
         source: entry.source || 'unknown',  // proxy, js, console, http, process
         level: entry.level || 'error',      // error, warning, info
