@@ -7,6 +7,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/standardbeagle/agnt/internal/daemon"
 	"github.com/standardbeagle/agnt/internal/debug"
+	"github.com/standardbeagle/agnt/internal/proxy/scripts"
 )
 
 const appName = "agnt"
@@ -39,6 +40,9 @@ var debugMode bool
 var debugLogFile string
 
 func init() {
+	// Set version for script injection (must be before any proxy is created)
+	scripts.Version = appVersion
+
 	// Global flags
 	rootCmd.PersistentFlags().String("socket", "", "Socket path for daemon communication")
 	rootCmd.PersistentFlags().BoolVarP(&debugMode, "debug", "d", false, "Enable debug logging (also: AGNT_DEBUG=1)")

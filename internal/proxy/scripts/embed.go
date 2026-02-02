@@ -102,6 +102,10 @@ var (
 	combinedScriptOnce sync.Once
 )
 
+// Version is the agnt version to inject into scripts.
+// Set this before calling GetCombinedScript() for the first time.
+var Version = "dev"
+
 // GetCombinedScript returns all JavaScript modules combined into a single script.
 // The script is wrapped in appropriate tags and ordered for correct initialization.
 // The result is cached after first call.
@@ -128,6 +132,12 @@ func buildCombinedScript() string {
 	sb.WriteString("<script>\n")
 	sb.WriteString("(function() {\n")
 	sb.WriteString("  'use strict';\n\n")
+
+	// Inject version as first thing in the script
+	sb.WriteString("  // Version injected at build/runtime\n")
+	sb.WriteString("  window.__devtool_version = '")
+	sb.WriteString(Version)
+	sb.WriteString("';\n\n")
 
 	// Order matters: dependencies must load before dependents
 	// 1. Core (WebSocket, send function)

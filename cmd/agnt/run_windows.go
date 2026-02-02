@@ -339,6 +339,7 @@ func runWithConPTY(ctx context.Context, args []string, socketPath string, sessio
 		cfg := overlay.DefaultConfig()
 		cfg.ShowIndicator = showIndicator
 		cfg.Hotkey = overlayHotkey
+		cfg.Version = appVersion
 		cfg.OnAction = func(action overlay.Action) error {
 			switch action {
 			case overlay.ActionRefreshStatus:

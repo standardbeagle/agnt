@@ -139,6 +139,9 @@ type Config struct {
 	// Status refresh interval
 	StatusRefreshInterval time.Duration
 
+	// Version string to display in dashboard
+	Version string
+
 	// Action callback
 	OnAction func(Action) error
 
@@ -161,6 +164,9 @@ func New(ptmx PtyReadWriter, width, height int, cfg Config) *Overlay {
 	renderer := NewRenderer(os.Stdout, width, height)
 	if cfg.Hotkey != 0 {
 		renderer.SetHotkey(cfg.Hotkey)
+	}
+	if cfg.Version != "" {
+		renderer.SetVersion(cfg.Version)
 	}
 
 	o := &Overlay{

@@ -236,6 +236,7 @@ type PanelAttachment struct {
 	ID       string                 `json:"id,omitempty"`
 	Classes  []string               `json:"classes,omitempty"`
 	Text     string                 `json:"text,omitempty"`
+	Summary  string                 `json:"summary,omitempty"`
 	Area     *ScreenshotArea        `json:"area,omitempty"`
 	Data     map[string]interface{} `json:"data,omitempty"`
 }

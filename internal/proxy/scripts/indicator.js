@@ -1,9 +1,18 @@
 // Floating Indicator for DevTool
 // Redesigned with visual hierarchy and Gestalt principles
 // Attachments are logged first, then referenced in messages
+// Uses VanJS for reactive state management
 
 (function() {
   'use strict';
+
+  // VanJS 1.6.0 minified (~1.5KB) - Reactive UI framework
+  // https://vanjs.org - MIT License
+  // prettier-ignore
+  {let e,t,r,o,n,s,l,i,f,h,w,a,u,d,c,_,S,g,y,b,m,v,j,x,O;l=Object.getPrototypeOf,f={},h=l(i={isConnected:1}),w=l(l),a=(e,t,r,o)=>(e??(o?setTimeout(r,o):queueMicrotask(r),new Set)).add(t),u=(e,t,o)=>{let n=r;r=t;try{return e(o)}catch(e){return console.error(e),o}finally{r=n}},d=e=>e.filter(e=>e.t?.isConnected),c=e=>n=a(n,e,()=>{for(let e of n)e.o=d(e.o),e.l=d(e.l);n=s},1e3),_={get val(){return r?.i?.add(this),this.rawVal},get oldVal(){return r?.i?.add(this),this.h},set val(o){r?.u?.add(this),o!==this.rawVal&&(this.rawVal=o,this.o.length+this.l.length?(t?.add(this),e=a(e,this,x)):this.h=o)}},S=e=>({__proto__:_,rawVal:e,h:e,o:[],l:[]}),g=(e,t)=>{let r={i:new Set,u:new Set},n={f:e},s=o;o=[];let l=u(e,r,t);l=(l??document).nodeType?l:new Text(l);for(let e of r.i)r.u.has(e)||(c(e),e.o.push(n));for(let e of o)e.t=l;return o=s,n.t=l},y=(e,t=S(),r)=>{let n={i:new Set,u:new Set},s={f:e,s:t};s.t=r??o?.push(s)??i,t.val=u(e,n,t.rawVal);for(let e of n.i)n.u.has(e)||(c(e),e.l.push(s));return t},b=(e,...t)=>{for(let r of t.flat(1/0)){let t=l(r??0),o=t===_?g(()=>r.val):t===w?g(r):r;o!=s&&e.append(o)}return e},m=(e,t,...r)=>{let[{is:o,...n},...i]=l(r[0]??0)===h?r:[{},...r],a=e?document.createElementNS(e,t,{is:o}):document.createElement(t,{is:o});for(let[e,r]of Object.entries(n)){let o=t=>t?Object.getOwnPropertyDescriptor(t,e)??o(l(t)):s,n=t+","+e,i=f[n]??=o(l(a))?.set??0,h=e.startsWith("on")?(t,r)=>{let o=e.slice(2);a.removeEventListener(o,r),a.addEventListener(o,t)}:i?i.bind(a):a.setAttribute.bind(a,e),u=l(r??0);e.startsWith("on")||u===w&&(r=y(r),u=_),u===_?g(()=>(h(r.val,r.h),a)):h(r)}return b(a,i)},v=e=>({get:(t,r)=>m.bind(s,e,r)}),j=(e,t)=>t?t!==e&&e.replaceWith(t):e.remove(),x=()=>{let r=0,o=[...e].filter(e=>e.rawVal!==e.h);do{t=new Set;for(let e of new Set(o.flatMap(e=>e.l=d(e.l))))y(e.f,e.s,e.t),e.t=s}while(++r<100&&(o=[...t]).length);let n=[...e].filter(e=>e.rawVal!==e.h);e=s;for(let e of new Set(n.flatMap(e=>e.o=d(e.o))))j(e.t,g(e.f,e.t)),e.t=s;for(let e of n)e.h=e.rawVal},O={tags:new Proxy(e=>new Proxy(m,v(e)),v()),hydrate:(e,t)=>j(e,g(t,e)),add:b,state:S,derive:y},window.van=O;}
+
+  var van = window.van;
+  var tags = van.tags;
 
   var core = window.__devtool_core;
   var utils = window.__devtool_utils;
@@ -35,6 +44,577 @@
     tabUpdateInterval: null, // Update interval for active tab
     lastAuditResults: null // Cache audit results
   };
+
+  // ============================================
+  // Reactive Store (VanJS)
+  // Fully reactive state management for all tabs
+  // ============================================
+  var store = {
+    // Compose tab
+    attachments: van.state([]),
+    message: van.state(''),
+
+    // Overview tab data
+    overview: van.state({
+      framework: null,
+      errorCount: 0,
+      failedApiCount: 0,
+      domRate: 0,
+      avgApiTime: 0,
+      rerenderRate: 0,
+      inputLag: 0,
+      version: 'unknown'
+    }),
+
+    // Errors tab data
+    errors: van.state([]),
+
+    // Network tab data
+    network: van.state([]),
+
+    // Performance tab data
+    performance: van.state({
+      rateStats: {},
+      isReact: false,
+      rerenderRate: 0,
+      rerenderCount: 0,
+      inputLag: 0,
+      maxInputLag: 0,
+      inputCount: 0,
+      hotspots: []
+    }),
+
+    // Interactions tab data
+    interactions: van.state([])
+  };
+
+  // ============================================
+  // Data Refresh Functions
+  // These update the reactive store, UI follows automatically
+  // ============================================
+  function refreshOverviewData() {
+    var framework = window.__devtool_framework ? window.__devtool_framework.detect() : null;
+    var errorStats = window.__devtool_errors ? window.__devtool_errors.getStats() : null;
+    var apiStats = window.__devtool_api ? window.__devtool_api.getStats() : null;
+    var mutationStats = window.__devtool_mutations ? window.__devtool_mutations.getRateStats([5000]) : null;
+    var isReact = framework && framework.name === 'React';
+
+    var data = {
+      framework: framework,
+      errorCount: errorStats ? errorStats.totalCount : 0,
+      failedApiCount: apiStats ? apiStats.failed : 0,
+      domRate: mutationStats && mutationStats[5000] ? mutationStats[5000].rate : 0,
+      avgApiTime: apiStats ? apiStats.avgDuration : 0,
+      rerenderRate: 0,
+      inputLag: 0,
+      version: window.__devtool_version || 'unknown'
+    };
+
+    // React-specific metrics
+    if (isReact && window.__devtool_mutations) {
+      try {
+        var untriggered = window.__devtool_mutations.getUntriggered ? window.__devtool_mutations.getUntriggered() : [];
+        var recentUntriggered = untriggered.filter(function(m) {
+          return m.timestamp && (Date.now() - m.timestamp) < 30000;
+        });
+        data.rerenderRate = parseFloat((recentUntriggered.length / 30).toFixed(1));
+      } catch (e) { /* ignore */ }
+
+      try {
+        var correlationStats = window.__devtool_mutations.getCorrelationStats ? window.__devtool_mutations.getCorrelationStats() : null;
+        if (correlationStats && correlationStats.avg_latency) {
+          data.inputLag = correlationStats.avg_latency.input || 0;
+        }
+      } catch (e) { /* ignore */ }
+    }
+
+    store.overview.val = data;
+  }
+
+  function refreshErrorsData() {
+    if (!window.__devtool_errors) {
+      store.errors.val = [];
+      return;
+    }
+    var deduplicated = window.__devtool_errors.getDeduplicatedErrors();
+    var allErrors = [].concat(deduplicated.jsErrors || [], deduplicated.consoleErrors || [], deduplicated.consoleWarnings || []);
+    store.errors.val = allErrors;
+  }
+
+  function refreshNetworkData() {
+    if (!window.__devtool_api) {
+      store.network.val = [];
+      return;
+    }
+    var calls = window.__devtool_api.getCalls();
+    store.network.val = calls.slice(-20).reverse();
+  }
+
+  function refreshPerformanceData() {
+    if (!window.__devtool_mutations) {
+      store.performance.val = { rateStats: {}, isReact: false, rerenderRate: 0, rerenderCount: 0, inputLag: 0, maxInputLag: 0, inputCount: 0, hotspots: [] };
+      return;
+    }
+
+    var rateStats = window.__devtool_mutations.getRateStats([1000, 5000, 30000]) || {};
+    var framework = window.__devtool_framework ? window.__devtool_framework.detect() : null;
+    var isReact = framework && framework.name === 'React';
+
+    var data = {
+      rateStats: rateStats,
+      isReact: isReact,
+      rerenderRate: 0,
+      rerenderCount: 0,
+      inputLag: 0,
+      maxInputLag: 0,
+      inputCount: 0,
+      hotspots: []
+    };
+
+    if (isReact) {
+      try {
+        var untriggered = window.__devtool_mutations.getUntriggered ? window.__devtool_mutations.getUntriggered() : [];
+        var recentUntriggered = untriggered.filter(function(m) {
+          return m.timestamp && (Date.now() - m.timestamp) < 30000;
+        });
+        data.rerenderRate = parseFloat((recentUntriggered.length / 30).toFixed(1));
+        data.rerenderCount = recentUntriggered.length;
+      } catch (e) { /* ignore */ }
+
+      try {
+        var correlationStats = window.__devtool_mutations.getCorrelationStats ? window.__devtool_mutations.getCorrelationStats() : null;
+        if (correlationStats && correlationStats.avg_latency) {
+          data.inputLag = correlationStats.avg_latency.input || 0;
+          data.maxInputLag = correlationStats.max_latency.input || 0;
+          data.inputCount = correlationStats.by_type ? (correlationStats.by_type.input || 0) : 0;
+        }
+      } catch (e) { /* ignore */ }
+
+      try {
+        var untriggeredMutations = window.__devtool_mutations.getUntriggered ? window.__devtool_mutations.getUntriggered() : [];
+        var elementCounts = {};
+        untriggeredMutations.forEach(function(m) {
+          if (m.target_selector) {
+            elementCounts[m.target_selector] = (elementCounts[m.target_selector] || 0) + 1;
+          }
+        });
+        var hotspots = [];
+        for (var selector in elementCounts) {
+          hotspots.push({ selector: selector, count: elementCounts[selector] });
+        }
+        hotspots.sort(function(a, b) { return b.count - a.count; });
+        data.hotspots = hotspots.slice(0, 3);
+      } catch (e) { /* ignore */ }
+    }
+
+    store.performance.val = data;
+  }
+
+  function refreshInteractionsData() {
+    if (!window.__devtool_interactions) {
+      store.interactions.val = [];
+      return;
+    }
+    var history = window.__devtool_interactions.getHistory ? window.__devtool_interactions.getHistory() : [];
+    store.interactions.val = history.slice(-10).reverse();
+  }
+
+  // Refresh all tab data
+  function refreshAllTabData() {
+    refreshOverviewData();
+    refreshErrorsData();
+    refreshNetworkData();
+    refreshPerformanceData();
+    refreshInteractionsData();
+  }
+
+  // Reactive actions - update store, DOM follows automatically
+  var actions = {
+    addAttachment: function(type, data) {
+      var id = generateId();
+      var attachment = {
+        id: id,
+        type: type,
+        label: data.label,
+        summary: data.summary,
+        data: data,
+        timestamp: Date.now()
+      };
+
+      // Log to proxy first (source of truth for backend)
+      core.send(type + '_capture', {
+        id: attachment.id,
+        timestamp: attachment.timestamp,
+        data: data
+      });
+
+      // Update reactive state - DOM updates automatically
+      store.attachments.val = store.attachments.val.concat([attachment]);
+
+      // Sync to legacy state for backward compatibility
+      state.attachments = store.attachments.val;
+
+      return id;
+    },
+
+    removeAttachment: function(id) {
+      store.attachments.val = store.attachments.val.filter(function(a) { return a.id !== id; });
+      state.attachments = store.attachments.val;
+    },
+
+    clearAttachments: function() {
+      store.attachments.val = [];
+      state.attachments = [];
+    },
+
+    setMessage: function(text) {
+      store.message.val = text;
+    }
+  };
+
+  // ============================================
+  // VanJS Components
+  // ============================================
+
+  // Chip component - renders a single attachment chip
+  function ChipComponent(attachment) {
+    var iconSvg = ICONS.element;
+    if (attachment.type === 'screenshot') iconSvg = ICONS.screenshot;
+    else if (attachment.type === 'sketch') iconSvg = ICONS.sketch;
+    else if (attachment.type === 'audit') iconSvg = ICONS.audit;
+
+    var chip = tags.div({
+      style: STYLES.chip + '; cursor: pointer;',
+      'data-id': attachment.id
+    },
+      tags.span({style: STYLES.chipIcon}),
+      tags.span({style: STYLES.chipLabel}, attachment.label),
+      tags.button({
+        style: STYLES.chipRemove,
+        onclick: function(e) {
+          e.stopPropagation();
+          actions.removeAttachment(attachment.id);
+          hideAttachmentPreview();
+        },
+        onmouseenter: function(e) { e.target.style.color = TOKENS.colors.error; },
+        onmouseleave: function(e) { e.target.style.color = TOKENS.colors.textMuted; }
+      })
+    );
+
+    // Set innerHTML for SVG icons (VanJS doesn't parse HTML strings)
+    chip.children[0].innerHTML = iconSvg;
+    chip.children[2].innerHTML = ICONS.close;
+
+    // Hover preview handlers
+    chip.onmouseenter = function() {
+      var rect = chip.getBoundingClientRect();
+      showAttachmentPreview(attachment, rect);
+    };
+    chip.onmouseleave = function() {
+      hideAttachmentPreview();
+    };
+
+    return chip;
+  }
+
+  // AttachmentArea component - reactive list of chips
+  // This re-renders automatically when store.attachments changes
+  function AttachmentAreaComponent() {
+    return function() {
+      var list = store.attachments.val;
+      if (list.length === 0) {
+        return tags.div({style: STYLES.attachmentArea + '; display: none;', id: '__devtool-attachments'});
+      }
+
+      return tags.div({
+        style: STYLES.attachmentArea + '; display: flex;',
+        id: '__devtool-attachments'
+      }, list.map(function(att) { return ChipComponent(att); }));
+    };
+  }
+
+  // ============================================
+  // VanJS Tab Components
+  // ============================================
+
+  // Helper for status colors
+  function getStatusColor(value, warningThreshold, criticalThreshold, invert) {
+    if (invert) {
+      // Lower is better (e.g., errors, failed calls)
+      if (value === 0) return TOKENS.colors.success;
+      return value > criticalThreshold ? TOKENS.colors.error : TOKENS.colors.active;
+    }
+    // Higher is worse (e.g., DOM rate)
+    if (value > criticalThreshold) return TOKENS.colors.error;
+    if (value > warningThreshold) return TOKENS.colors.active;
+    return TOKENS.colors.success;
+  }
+
+  // Overview Tab Component
+  function OverviewTabComponent() {
+    return function() {
+      var data = store.overview.val;
+      var isReact = data.framework && data.framework.name === 'React';
+
+      var children = [];
+
+      // Version badge
+      children.push(tags.div({
+        style: 'text-align: right; font-size: 11px; color: ' + TOKENS.colors.textMuted + '; margin-bottom: ' + TOKENS.spacing.sm + '; font-family: ui-monospace, monospace;',
+        title: 'Press Ctrl+Y to toggle this panel'
+      }, 'agnt v' + data.version));
+
+      // Framework badge
+      if (data.framework) {
+        var versionText = data.framework.version && data.framework.version !== 'unknown' ? ' v' + data.framework.version : '';
+        children.push(tags.div({style: STYLES.healthCard},
+          tags.div({style: STYLES.healthLabel}, 'Framework'),
+          tags.div({style: STYLES.healthValue + '; font-size: 16px;'}, data.framework.name + versionText)
+        ));
+      }
+
+      // Health cards grid
+      var errorColor = data.errorCount > 0 ? TOKENS.colors.error : TOKENS.colors.success;
+      var apiColor = data.failedApiCount > 0 ? TOKENS.colors.error : TOKENS.colors.success;
+      var domStatus = data.domRate > 50 ? 'Critical' : (data.domRate > 20 ? 'Warning' : 'OK');
+      var domColor = getStatusColor(data.domRate, 20, 50, false);
+      var perfColor = data.avgApiTime > 2000 ? TOKENS.colors.active : TOKENS.colors.success;
+
+      var gridChildren = [
+        tags.div({style: STYLES.healthCard},
+          tags.div({style: STYLES.healthLabel}, 'Errors'),
+          tags.div({style: STYLES.healthValue + '; color: ' + errorColor + ';'}, String(data.errorCount))
+        ),
+        tags.div({style: STYLES.healthCard},
+          tags.div({style: STYLES.healthLabel}, 'Failed API'),
+          tags.div({style: STYLES.healthValue + '; color: ' + apiColor + ';'}, String(data.failedApiCount))
+        ),
+        tags.div({style: STYLES.healthCard},
+          tags.div({style: STYLES.healthLabel}, 'DOM Updates'),
+          tags.div({style: STYLES.healthValue + '; color: ' + domColor + ';'}, domStatus)
+        ),
+        tags.div({style: STYLES.healthCard},
+          tags.div({style: STYLES.healthLabel}, 'Avg API Time'),
+          tags.div({style: STYLES.healthValue + '; font-size: 16px; color: ' + perfColor + ';'}, data.avgApiTime + 'ms')
+        )
+      ];
+
+      // React-specific metrics
+      if (isReact) {
+        var rerenderStatus = data.rerenderRate > 5 ? 'High' : (data.rerenderRate > 2 ? 'Moderate' : 'Low');
+        var rerenderColor = getStatusColor(data.rerenderRate, 2, 5, false);
+        gridChildren.push(tags.div({style: STYLES.healthCard},
+          tags.div({style: STYLES.healthLabel}, 'React Rerenders'),
+          tags.div({style: STYLES.healthValue + '; color: ' + rerenderColor + ';'}, data.rerenderRate + '/s')
+        ));
+
+        if (data.inputLag > 0) {
+          var lagStatus = data.inputLag > 100 ? 'Slow' : (data.inputLag > 50 ? 'OK' : 'Fast');
+          var lagColor = getStatusColor(data.inputLag, 50, 100, false);
+          gridChildren.push(tags.div({style: STYLES.healthCard},
+            tags.div({style: STYLES.healthLabel}, 'Input Lag'),
+            tags.div({style: STYLES.healthValue + '; color: ' + lagColor + ';'}, data.inputLag + 'ms')
+          ));
+        }
+      }
+
+      children.push(tags.div({style: 'display: grid; grid-template-columns: 1fr 1fr; gap: ' + TOKENS.spacing.sm + ';'}, gridChildren));
+
+      return tags.div({}, children);
+    };
+  }
+
+  // Errors Tab Component
+  function ErrorsTabComponent() {
+    return function() {
+      var errors = store.errors.val;
+
+      if (!window.__devtool_errors) {
+        return tags.div({style: STYLES.emptyState}, 'Error tracking not available');
+      }
+
+      if (errors.length === 0) {
+        return tags.div({style: STYLES.emptyState}, '\u2713 No errors detected');
+      }
+
+      return tags.div({}, errors.map(function(error) {
+        var timeAgo = formatTimeAgo(error.lastSeen);
+        var countPrefix = error.count > 1 ? '\u00d7' + error.count + ' ' : '';
+
+        var item = tags.div({style: STYLES.errorItem},
+          tags.div({style: STYLES.errorMessage}, countPrefix + error.message.substring(0, 100)),
+          tags.div({style: STYLES.errorMeta}, error.source + (error.lineno ? ':' + error.lineno : '') + ' \u2022 ' + timeAgo)
+        );
+
+        item.onmouseenter = function() { item.style.background = TOKENS.colors.surfaceAlt; };
+        item.onmouseleave = function() { item.style.background = 'transparent'; };
+
+        return item;
+      }));
+    };
+  }
+
+  // Network Tab Component
+  function NetworkTabComponent() {
+    return function() {
+      var calls = store.network.val;
+
+      if (!window.__devtool_api) {
+        return tags.div({style: STYLES.emptyState}, 'Network tracking not available');
+      }
+
+      if (calls.length === 0) {
+        return tags.div({style: STYLES.emptyState}, 'No API calls tracked');
+      }
+
+      return tags.div({}, calls.map(function(call) {
+        var statusColor = call.ok ? TOKENS.colors.success : TOKENS.colors.error;
+        var timeAgo = formatTimeAgo(call.timestamp);
+
+        var item = tags.div({style: STYLES.errorItem},
+          tags.div({style: STYLES.errorMessage},
+            tags.span({style: 'color: ' + statusColor + ';'}, String(call.status)),
+            ' ' + call.method + ' ' + truncate(call.url, 40)
+          ),
+          tags.div({style: STYLES.errorMeta}, (call.duration || 0) + 'ms \u2022 ' + timeAgo)
+        );
+
+        item.onmouseenter = function() { item.style.background = TOKENS.colors.surfaceAlt; };
+        item.onmouseleave = function() { item.style.background = 'transparent'; };
+
+        return item;
+      }));
+    };
+  }
+
+  // Performance Tab Component
+  function PerformanceTabComponent() {
+    return function() {
+      var data = store.performance.val;
+
+      if (!window.__devtool_mutations) {
+        return tags.div({style: STYLES.emptyState}, 'Performance tracking not available');
+      }
+
+      var children = [];
+
+      // Mutation rate stats
+      var gridChildren = [];
+      [1000, 5000, 30000].forEach(function(windowMs) {
+        if (data.rateStats[windowMs]) {
+          var rate = data.rateStats[windowMs].rate;
+          var status = rate > 50 ? 'Critical' : (rate > 20 ? 'Warning' : 'OK');
+          var color = getStatusColor(rate, 20, 50, false);
+          gridChildren.push(tags.div({style: STYLES.healthCard},
+            tags.div({style: STYLES.healthLabel}, 'Mutations (' + (windowMs / 1000) + 's window)'),
+            tags.div({style: STYLES.healthValue + '; color: ' + color + ';'},
+              rate.toFixed(1) + '/s ',
+              tags.span({style: 'font-size: 12px; color: ' + TOKENS.colors.textMuted + ';'}, '\u2022 ' + status)
+            )
+          ));
+        }
+      });
+
+      children.push(tags.div({style: 'display: flex; flex-direction: column; gap: ' + TOKENS.spacing.sm + ';'}, gridChildren));
+
+      // React-specific metrics
+      if (data.isReact) {
+        children.push(tags.div({
+          style: 'margin-top: ' + TOKENS.spacing.lg + '; padding-bottom: ' + TOKENS.spacing.sm + '; border-bottom: 1px solid ' + TOKENS.colors.border + '; font-size: 11px; font-weight: 600; color: ' + TOKENS.colors.textMuted + '; text-transform: uppercase; letter-spacing: 0.5px;'
+        }, 'React Performance'));
+
+        var reactGridChildren = [];
+
+        // Rerender Rate
+        var rerenderStatus = data.rerenderRate > 5 ? 'High' : (data.rerenderRate > 2 ? 'Moderate' : 'Low');
+        var rerenderColor = getStatusColor(data.rerenderRate, 2, 5, false);
+        reactGridChildren.push(tags.div({style: STYLES.healthCard},
+          tags.div({style: STYLES.healthLabel}, 'Rerender Rate (30s)'),
+          tags.div({style: STYLES.healthValue + '; color: ' + rerenderColor + ';'},
+            data.rerenderRate + '/s ',
+            tags.span({style: 'font-size: 12px; color: ' + TOKENS.colors.textMuted + ';'}, '\u2022 ' + rerenderStatus)
+          ),
+          tags.div({style: 'font-size: 11px; color: ' + TOKENS.colors.textMuted + '; margin-top: 4px;'}, 'Spontaneous updates: ' + data.rerenderCount)
+        ));
+
+        // Input Lag
+        if (data.inputLag > 0 || data.inputCount > 0) {
+          var lagStatus = data.inputLag > 100 ? 'Slow' : (data.inputLag > 50 ? 'OK' : 'Fast');
+          var lagColor = getStatusColor(data.inputLag, 50, 100, false);
+          reactGridChildren.push(tags.div({style: STYLES.healthCard},
+            tags.div({style: STYLES.healthLabel}, 'Input Lag'),
+            tags.div({style: STYLES.healthValue + '; color: ' + lagColor + ';'},
+              data.inputLag + 'ms ',
+              tags.span({style: 'font-size: 12px; color: ' + TOKENS.colors.textMuted + ';'}, '\u2022 ' + lagStatus)
+            ),
+            tags.div({style: 'font-size: 11px; color: ' + TOKENS.colors.textMuted + '; margin-top: 4px;'}, 'Max: ' + data.maxInputLag + 'ms \u2022 Samples: ' + data.inputCount)
+          ));
+        }
+
+        // Hotspots
+        if (data.hotspots.length > 0) {
+          var hotspotChildren = [tags.div({style: STYLES.healthLabel}, 'Rerender Hotspots')];
+          data.hotspots.forEach(function(hotspot) {
+            hotspotChildren.push(tags.div({style: 'font-size: 11px; margin-top: 6px; padding: 4px 6px; background: ' + TOKENS.colors.surfaceAlt + '; border-radius: 4px;'},
+              tags.div({style: 'font-weight: 500; color: ' + TOKENS.colors.text + ';'}, truncate(hotspot.selector, 35)),
+              tags.div({style: 'color: ' + TOKENS.colors.textMuted + '; margin-top: 2px;'}, '\u00d7' + hotspot.count + ' rerenders')
+            ));
+          });
+          reactGridChildren.push(tags.div({style: STYLES.healthCard}, hotspotChildren));
+        }
+
+        children.push(tags.div({style: 'display: flex; flex-direction: column; gap: ' + TOKENS.spacing.sm + '; margin-top: ' + TOKENS.spacing.sm + ';'}, reactGridChildren));
+      }
+
+      return tags.div({}, children);
+    };
+  }
+
+  // Quality Tab Component
+  function QualityTabComponent() {
+    return function() {
+      return tags.div({style: STYLES.emptyState}, 'Quality audits coming soon...');
+    };
+  }
+
+  // Helper to format interaction target
+  function formatInteractionTarget(target) {
+    if (!target) return 'unknown';
+    if (typeof target === 'string') return target;
+    if (target.selector) return target.selector;
+    if (target.tag) {
+      var str = target.tag;
+      if (target.id) str += '#' + target.id;
+      return str;
+    }
+    return 'element';
+  }
+
+  // Interactions Tab Component
+  function InteractionsTabComponent() {
+    return function() {
+      var history = store.interactions.val;
+
+      if (!window.__devtool_interactions) {
+        return tags.div({style: STYLES.emptyState}, 'Interaction tracking not available');
+      }
+
+      if (history.length === 0) {
+        return tags.div({style: STYLES.emptyState}, 'No interactions tracked');
+      }
+
+      return tags.div({}, history.map(function(interaction) {
+        var eventType = interaction.event_type || interaction.type || 'unknown';
+        var targetStr = formatInteractionTarget(interaction.target);
+        var timeAgo = formatTimeAgo(interaction.timestamp);
+
+        return tags.div({style: STYLES.errorItem},
+          tags.div({style: STYLES.errorMessage}, eventType + ' on ' + targetStr),
+          tags.div({style: STYLES.errorMeta}, timeAgo)
+        );
+      }));
+    };
+  }
 
   // Design tokens - consistent visual language
   var TOKENS = {
@@ -268,6 +848,50 @@
       'color: ' + TOKENS.colors.textMuted,
       'display: flex',
       'transition: color 0.15s ease'
+    ].join(';'),
+
+    // Attachment preview popup (shown on chip hover)
+    attachmentPreview: [
+      'position: fixed',
+      'z-index: 2147483647',
+      'background: ' + TOKENS.colors.surface,
+      'border: 1px solid ' + TOKENS.colors.border,
+      'border-radius: ' + TOKENS.radius.lg,
+      'box-shadow: 0 8px 24px rgba(0,0,0,0.4)',
+      'padding: ' + TOKENS.spacing.sm,
+      'max-width: 320px',
+      'max-height: 240px',
+      'overflow: hidden',
+      'pointer-events: none',
+      'opacity: 0',
+      'transition: opacity 0.15s ease'
+    ].join(';'),
+
+    attachmentPreviewImage: [
+      'width: 100%',
+      'height: auto',
+      'max-height: 200px',
+      'object-fit: contain',
+      'border-radius: ' + TOKENS.radius.sm
+    ].join(';'),
+
+    attachmentPreviewElement: [
+      'font-family: monospace',
+      'font-size: 11px',
+      'color: ' + TOKENS.colors.text,
+      'white-space: pre-wrap',
+      'word-break: break-word'
+    ].join(';'),
+
+    // Element highlight overlay for element preview
+    elementPreviewHighlight: [
+      'position: fixed',
+      'z-index: 2147483645',
+      'background: rgba(99, 102, 241, 0.2)',
+      'border: 2px solid ' + TOKENS.colors.primary,
+      'border-radius: 2px',
+      'pointer-events: none',
+      'transition: all 0.15s ease'
     ].join(';'),
 
     // Toolbar - secondary actions (Gestalt: Similarity)
@@ -620,6 +1244,18 @@
     loadPrefs();
     createUI();
     setupStatusPolling();
+    setupGlobalShortcuts();
+  }
+
+  // Global keyboard shortcuts
+  function setupGlobalShortcuts() {
+    document.addEventListener('keydown', function(e) {
+      // Ctrl+Y (or Cmd+Y on Mac) - toggle indicator panel
+      if (e.key === 'y' && (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey) {
+        e.preventDefault();
+        togglePanel();
+      }
+    });
   }
 
   function createUI() {
@@ -962,24 +1598,30 @@
 
     content.innerHTML = '';
 
+    // Refresh data for the tab before rendering
     switch (tabId) {
       case 'overview':
-        renderOverviewTab(content);
+        refreshOverviewData();
+        van.add(content, OverviewTabComponent());
         break;
       case 'errors':
-        renderErrorsTab(content);
+        refreshErrorsData();
+        van.add(content, ErrorsTabComponent());
         break;
       case 'network':
-        renderNetworkTab(content);
+        refreshNetworkData();
+        van.add(content, NetworkTabComponent());
         break;
       case 'performance':
-        renderPerformanceTab(content);
+        refreshPerformanceData();
+        van.add(content, PerformanceTabComponent());
         break;
       case 'quality':
-        renderQualityTab(content);
+        van.add(content, QualityTabComponent());
         break;
       case 'interactions':
-        renderInteractionsTab(content);
+        refreshInteractionsData();
+        van.add(content, InteractionsTabComponent());
         break;
       case 'compose':
         renderComposeTab(content);
@@ -1067,368 +1709,28 @@
   }
 
   function updateActiveTabContent() {
-    var content = document.getElementById('__devtool-tab-content');
-    if (!content) return;
-
     // Only update non-compose tabs (compose is static)
     if (state.activeTab === 'compose') return;
 
-    // Re-render the active tab
-    content.innerHTML = '';
+    // Just refresh the store data - VanJS will automatically update the DOM
     switch (state.activeTab) {
       case 'overview':
-        renderOverviewTab(content);
+        refreshOverviewData();
         break;
       case 'errors':
-        renderErrorsTab(content);
+        refreshErrorsData();
         break;
       case 'network':
-        renderNetworkTab(content);
+        refreshNetworkData();
         break;
       case 'performance':
-        renderPerformanceTab(content);
-        break;
-      case 'quality':
-        renderQualityTab(content);
+        refreshPerformanceData();
         break;
       case 'interactions':
-        renderInteractionsTab(content);
+        refreshInteractionsData();
         break;
+      // quality tab has no data to refresh
     }
-  }
-
-  function renderOverviewTab(container) {
-    var framework = window.__devtool_framework ? window.__devtool_framework.detect() : null;
-    var errorStats = window.__devtool_errors ? window.__devtool_errors.getStats() : null;
-    var apiStats = window.__devtool_api ? window.__devtool_api.getStats() : null;
-    var mutationStats = window.__devtool_mutations ? window.__devtool_mutations.getRateStats([5000]) : null;
-    var isReact = framework && framework.name === 'React';
-
-    // Framework badge
-    if (framework) {
-      var fwBadge = document.createElement('div');
-      fwBadge.style.cssText = STYLES.healthCard;
-      var versionText = framework.version && framework.version !== 'unknown' ? ' v' + framework.version : '';
-      fwBadge.innerHTML = '<div style="' + STYLES.healthLabel + '">Framework</div><div style="' + STYLES.healthValue + '; font-size: 16px;">' + framework.name + versionText + '</div>';
-      container.appendChild(fwBadge);
-    }
-
-    // Health cards grid
-    var grid = document.createElement('div');
-    grid.style.cssText = 'display: grid; grid-template-columns: 1fr 1fr; gap: ' + TOKENS.spacing.sm + ';';
-
-    // Error count
-    var errorCard = document.createElement('div');
-    errorCard.style.cssText = STYLES.healthCard;
-    var errorCount = errorStats ? errorStats.totalCount : 0;
-    var errorColor = errorCount > 0 ? TOKENS.colors.error : TOKENS.colors.success;
-    errorCard.innerHTML = '<div style="' + STYLES.healthLabel + '">Errors</div><div style="' + STYLES.healthValue + '; color: ' + errorColor + ';">' + errorCount + '</div>';
-    grid.appendChild(errorCard);
-
-    // Failed API
-    var apiCard = document.createElement('div');
-    apiCard.style.cssText = STYLES.healthCard;
-    var failedCount = apiStats ? apiStats.failed : 0;
-    var apiColor = failedCount > 0 ? TOKENS.colors.error : TOKENS.colors.success;
-    apiCard.innerHTML = '<div style="' + STYLES.healthLabel + '">Failed API</div><div style="' + STYLES.healthValue + '; color: ' + apiColor + ';">' + failedCount + '</div>';
-    grid.appendChild(apiCard);
-
-    // DOM Update Rate
-    var domCard = document.createElement('div');
-    domCard.style.cssText = STYLES.healthCard;
-    var rate = mutationStats && mutationStats[5000] ? mutationStats[5000].rate : 0;
-    var domStatus = rate > 50 ? 'Critical' : (rate > 20 ? 'Warning' : 'OK');
-    var domColor = rate > 50 ? TOKENS.colors.error : (rate > 20 ? TOKENS.colors.active : TOKENS.colors.success);
-    domCard.innerHTML = '<div style="' + STYLES.healthLabel + '">DOM Updates</div><div style="' + STYLES.healthValue + '; color: ' + domColor + ';">' + domStatus + '</div>';
-    grid.appendChild(domCard);
-
-    // Performance
-    var perfCard = document.createElement('div');
-    perfCard.style.cssText = STYLES.healthCard;
-    var avgDuration = apiStats ? apiStats.avgDuration : 0;
-    var perfStatus = avgDuration > 2000 ? 'Slow' : (avgDuration > 500 ? 'OK' : 'Fast');
-    var perfColor = avgDuration > 2000 ? TOKENS.colors.active : TOKENS.colors.success;
-    perfCard.innerHTML = '<div style="' + STYLES.healthLabel + '">Avg API Time</div><div style="' + STYLES.healthValue + '; font-size: 16px; color: ' + perfColor + ';">' + avgDuration + 'ms</div>';
-    grid.appendChild(perfCard);
-
-    // React-specific metrics in overview
-    if (isReact && window.__devtool_mutations) {
-      // React Rerender Rate
-      try {
-        var untriggered = window.__devtool_mutations.getUntriggered ? window.__devtool_mutations.getUntriggered() : [];
-        var recentUntriggered = untriggered.filter(function(m) {
-          return m.timestamp && (Date.now() - m.timestamp) < 30000;
-        });
-        var rerenderRate = (recentUntriggered.length / 30).toFixed(1);
-        var rerenderStatus = rerenderRate > 5 ? 'High' : (rerenderRate > 2 ? 'Moderate' : 'Low');
-        var rerenderColor = rerenderRate > 5 ? TOKENS.colors.error : (rerenderRate > 2 ? TOKENS.colors.active : TOKENS.colors.success);
-
-        var rerenderCard = document.createElement('div');
-        rerenderCard.style.cssText = STYLES.healthCard;
-        rerenderCard.innerHTML = '<div style="' + STYLES.healthLabel + '">React Rerenders</div><div style="' + STYLES.healthValue + '; color: ' + rerenderColor + ';">' + rerenderRate + '/s</div>';
-        grid.appendChild(rerenderCard);
-      } catch (e) {
-        // Ignore
-      }
-
-      // Input Lag
-      try {
-        var correlationStats = window.__devtool_mutations.getCorrelationStats ? window.__devtool_mutations.getCorrelationStats() : null;
-        if (correlationStats && correlationStats.avg_latency) {
-          var inputLag = correlationStats.avg_latency.input || 0;
-          var lagStatus = inputLag > 100 ? 'Slow' : (inputLag > 50 ? 'OK' : 'Fast');
-          var lagColor = inputLag > 100 ? TOKENS.colors.error : (inputLag > 50 ? TOKENS.colors.active : TOKENS.colors.success);
-
-          var lagCard = document.createElement('div');
-          lagCard.style.cssText = STYLES.healthCard;
-          lagCard.innerHTML = '<div style="' + STYLES.healthLabel + '">Input Lag</div><div style="' + STYLES.healthValue + '; color: ' + lagColor + ';">' + inputLag + 'ms</div>';
-          grid.appendChild(lagCard);
-        }
-      } catch (e) {
-        // Ignore
-      }
-    }
-
-    container.appendChild(grid);
-  }
-
-  function renderErrorsTab(container) {
-    if (!window.__devtool_errors) {
-      container.innerHTML = '<div style="' + STYLES.emptyState + '">Error tracking not available</div>';
-      return;
-    }
-
-    var deduplicated = window.__devtool_errors.getDeduplicatedErrors();
-    var allErrors = [].concat(deduplicated.jsErrors || [], deduplicated.consoleErrors || [], deduplicated.consoleWarnings || []);
-
-    if (allErrors.length === 0) {
-      container.innerHTML = '<div style="' + STYLES.emptyState + '">✓ No errors detected</div>';
-      return;
-    }
-
-    allErrors.forEach(function(error) {
-      var item = document.createElement('div');
-      item.style.cssText = STYLES.errorItem;
-
-      var message = document.createElement('div');
-      message.style.cssText = STYLES.errorMessage;
-      message.textContent = (error.count > 1 ? '×' + error.count + ' ' : '') + error.message.substring(0, 100);
-      item.appendChild(message);
-
-      var meta = document.createElement('div');
-      meta.style.cssText = STYLES.errorMeta;
-      var timeAgo = formatTimeAgo(error.lastSeen);
-      meta.textContent = error.source + (error.lineno ? ':' + error.lineno : '') + ' • ' + timeAgo;
-      item.appendChild(meta);
-
-      item.onmouseenter = function() { item.style.background = TOKENS.colors.surfaceAlt; };
-      item.onmouseleave = function() { item.style.background = 'transparent'; };
-
-      container.appendChild(item);
-    });
-  }
-
-  function renderNetworkTab(container) {
-    if (!window.__devtool_api) {
-      container.innerHTML = '<div style="' + STYLES.emptyState + '">Network tracking not available</div>';
-      return;
-    }
-
-    var calls = window.__devtool_api.getCalls();
-    if (calls.length === 0) {
-      container.innerHTML = '<div style="' + STYLES.emptyState + '">No API calls tracked</div>';
-      return;
-    }
-
-    // Show last 20 calls
-    calls.slice(-20).reverse().forEach(function(call) {
-      var item = document.createElement('div');
-      item.style.cssText = STYLES.errorItem;
-
-      var message = document.createElement('div');
-      message.style.cssText = STYLES.errorMessage;
-      var statusColor = call.ok ? TOKENS.colors.success : TOKENS.colors.error;
-      message.innerHTML = '<span style="color: ' + statusColor + ';">' + call.status + '</span> ' + call.method + ' ' + truncate(call.url, 40);
-      item.appendChild(message);
-
-      var meta = document.createElement('div');
-      meta.style.cssText = STYLES.errorMeta;
-      meta.textContent = (call.duration || 0) + 'ms • ' + formatTimeAgo(call.timestamp);
-      item.appendChild(meta);
-
-      item.onmouseenter = function() { item.style.background = TOKENS.colors.surfaceAlt; };
-      item.onmouseleave = function() { item.style.background = 'transparent'; };
-
-      container.appendChild(item);
-    });
-  }
-
-  function renderPerformanceTab(container) {
-    if (!window.__devtool_mutations) {
-      container.innerHTML = '<div style="' + STYLES.emptyState + '">Performance tracking not available</div>';
-      return;
-    }
-
-    var rateStats = window.__devtool_mutations.getRateStats([1000, 5000, 30000]);
-
-    // Standard mutation rate stats
-    var grid = document.createElement('div');
-    grid.style.cssText = 'display: flex; flex-direction: column; gap: ' + TOKENS.spacing.sm + ';';
-
-    if (rateStats) {
-      [1000, 5000, 30000].forEach(function(window) {
-        if (rateStats[window]) {
-          var card = document.createElement('div');
-          card.style.cssText = STYLES.healthCard;
-          var rate = rateStats[window].rate;
-          var status = rate > 50 ? 'Critical' : (rate > 20 ? 'Warning' : 'OK');
-          var color = rate > 50 ? TOKENS.colors.error : (rate > 20 ? TOKENS.colors.active : TOKENS.colors.success);
-          card.innerHTML = '<div style="' + STYLES.healthLabel + '">Mutations (' + (window / 1000) + 's window)</div><div style="' + STYLES.healthValue + '; color: ' + color + ';">' + rate.toFixed(1) + '/s <span style="font-size: 12px; color: ' + TOKENS.colors.textMuted + ';">• ' + status + '</span></div>';
-          grid.appendChild(card);
-        }
-      });
-    }
-
-    container.appendChild(grid);
-
-    // React-specific performance metrics
-    var framework = window.__devtool_framework ? window.__devtool_framework.detect() : null;
-    var isReact = framework && framework.name === 'React';
-
-    if (isReact) {
-      // Section header
-      var reactHeader = document.createElement('div');
-      reactHeader.style.cssText = 'margin-top: ' + TOKENS.spacing.lg + '; padding-bottom: ' + TOKENS.spacing.sm + '; border-bottom: 1px solid ' + TOKENS.colors.border + '; font-size: 11px; font-weight: 600; color: ' + TOKENS.colors.textMuted + '; text-transform: uppercase; letter-spacing: 0.5px;';
-      reactHeader.textContent = 'React Performance';
-      container.appendChild(reactHeader);
-
-      var reactGrid = document.createElement('div');
-      reactGrid.style.cssText = 'display: flex; flex-direction: column; gap: ' + TOKENS.spacing.sm + '; margin-top: ' + TOKENS.spacing.sm + ';';
-
-      // 1. React Rerender Rate (untriggered mutations = likely component rerenders)
-      try {
-        var untriggered = window.__devtool_mutations.getUntriggered ? window.__devtool_mutations.getUntriggered() : [];
-        var recentUntriggered = untriggered.filter(function(m) {
-          return m.timestamp && (Date.now() - m.timestamp) < 30000; // last 30s
-        });
-        var rerenderRate = (recentUntriggered.length / 30).toFixed(1); // per second
-        var rerenderStatus = rerenderRate > 5 ? 'High' : (rerenderRate > 2 ? 'Moderate' : 'Low');
-        var rerenderColor = rerenderRate > 5 ? TOKENS.colors.error : (rerenderRate > 2 ? TOKENS.colors.active : TOKENS.colors.success);
-
-        var rerenderCard = document.createElement('div');
-        rerenderCard.style.cssText = STYLES.healthCard;
-        rerenderCard.innerHTML = '<div style="' + STYLES.healthLabel + '">Rerender Rate (30s)</div>' +
-          '<div style="' + STYLES.healthValue + '; color: ' + rerenderColor + ';">' + rerenderRate + '/s ' +
-          '<span style="font-size: 12px; color: ' + TOKENS.colors.textMuted + ';">• ' + rerenderStatus + '</span></div>' +
-          '<div style="font-size: 11px; color: ' + TOKENS.colors.textMuted + '; margin-top: 4px;">Spontaneous updates: ' + recentUntriggered.length + '</div>';
-        reactGrid.appendChild(rerenderCard);
-      } catch (e) {
-        // Ignore if API not available
-      }
-
-      // 2. Input Lag (correlation stats for input interactions)
-      try {
-        var correlationStats = window.__devtool_mutations.getCorrelationStats ? window.__devtool_mutations.getCorrelationStats() : null;
-        if (correlationStats && correlationStats.avg_latency) {
-          var inputLag = correlationStats.avg_latency.input || 0;
-          var maxInputLag = correlationStats.max_latency.input || 0;
-          var inputCount = correlationStats.by_type ? (correlationStats.by_type.input || 0) : 0;
-
-          var lagStatus = inputLag > 100 ? 'Slow' : (inputLag > 50 ? 'OK' : 'Fast');
-          var lagColor = inputLag > 100 ? TOKENS.colors.error : (inputLag > 50 ? TOKENS.colors.active : TOKENS.colors.success);
-
-          var lagCard = document.createElement('div');
-          lagCard.style.cssText = STYLES.healthCard;
-          lagCard.innerHTML = '<div style="' + STYLES.healthLabel + '">Input Lag</div>' +
-            '<div style="' + STYLES.healthValue + '; color: ' + lagColor + ';">' + inputLag + 'ms ' +
-            '<span style="font-size: 12px; color: ' + TOKENS.colors.textMuted + ';">• ' + lagStatus + '</span></div>' +
-            '<div style="font-size: 11px; color: ' + TOKENS.colors.textMuted + '; margin-top: 4px;">Max: ' + maxInputLag + 'ms • Samples: ' + inputCount + '</div>';
-          reactGrid.appendChild(lagCard);
-        }
-      } catch (e) {
-        // Ignore if API not available
-      }
-
-      // 3. Rerender Hotspots (elements that mutate most frequently)
-      try {
-        var allMutations = window.__devtool_mutations.getHistory ? window.__devtool_mutations.getHistory() : [];
-        var elementCounts = {};
-        var untriggeredMutations = window.__devtool_mutations.getUntriggered ? window.__devtool_mutations.getUntriggered() : [];
-
-        // Count untriggered mutations by element
-        untriggeredMutations.forEach(function(m) {
-          if (m.target_selector) {
-            elementCounts[m.target_selector] = (elementCounts[m.target_selector] || 0) + 1;
-          }
-        });
-
-        // Convert to array and sort by count
-        var hotspots = [];
-        for (var selector in elementCounts) {
-          hotspots.push({ selector: selector, count: elementCounts[selector] });
-        }
-        hotspots.sort(function(a, b) { return b.count - a.count; });
-
-        if (hotspots.length > 0) {
-          var hotspotCard = document.createElement('div');
-          hotspotCard.style.cssText = STYLES.healthCard;
-
-          var header = document.createElement('div');
-          header.style.cssText = STYLES.healthLabel;
-          header.textContent = 'Rerender Hotspots';
-          hotspotCard.appendChild(header);
-
-          // Show top 3 hotspots
-          hotspots.slice(0, 3).forEach(function(hotspot, index) {
-            var hotspotItem = document.createElement('div');
-            hotspotItem.style.cssText = 'font-size: 11px; margin-top: 6px; padding: 4px 6px; background: ' + TOKENS.colors.surfaceAlt + '; border-radius: 4px;';
-            hotspotItem.innerHTML = '<div style="font-weight: 500; color: ' + TOKENS.colors.text + ';">' + truncate(hotspot.selector, 35) + '</div>' +
-              '<div style="color: ' + TOKENS.colors.textMuted + '; margin-top: 2px;">×' + hotspot.count + ' rerenders</div>';
-            hotspotCard.appendChild(hotspotItem);
-          });
-
-          reactGrid.appendChild(hotspotCard);
-        }
-      } catch (e) {
-        // Ignore if API not available
-      }
-
-      container.appendChild(reactGrid);
-    }
-  }
-
-  function renderQualityTab(container) {
-    container.innerHTML = '<div style="' + STYLES.emptyState + '">Quality audits coming soon...</div>';
-  }
-
-  function renderInteractionsTab(container) {
-    if (!window.__devtool_interactions) {
-      container.innerHTML = '<div style="' + STYLES.emptyState + '">Interaction tracking not available</div>';
-      return;
-    }
-
-    var history = window.__devtool_interactions.getHistory ? window.__devtool_interactions.getHistory() : [];
-    if (history.length === 0) {
-      container.innerHTML = '<div style="' + STYLES.emptyState + '">No interactions tracked</div>';
-      return;
-    }
-
-    history.slice(-10).reverse().forEach(function(interaction) {
-      var item = document.createElement('div');
-      item.style.cssText = STYLES.errorItem;
-
-      var message = document.createElement('div');
-      message.style.cssText = STYLES.errorMessage;
-      message.textContent = interaction.type + ' on ' + (interaction.target || 'unknown');
-      item.appendChild(message);
-
-      var meta = document.createElement('div');
-      meta.style.cssText = STYLES.errorMeta;
-      meta.textContent = formatTimeAgo(interaction.timestamp);
-      item.appendChild(meta);
-
-      container.appendChild(item);
-    });
   }
 
   function renderComposeTab(container) {
@@ -1477,12 +1779,9 @@
     };
     card.appendChild(textarea);
 
-    // Attachment chips container
-    var attachArea = document.createElement('div');
-    attachArea.id = '__devtool-attachments';
-    attachArea.style.cssText = STYLES.attachmentArea;
-    attachArea.style.display = 'none';
-    card.appendChild(attachArea);
+    // Attachment chips container - REACTIVE with VanJS
+    // This automatically updates when store.attachments changes
+    van.add(card, AttachmentAreaComponent());
 
     compose.appendChild(card);
     container.appendChild(compose);
@@ -2162,11 +2461,122 @@
     return lines.join('\n');
   }
 
+  // Attachment preview state
+  var previewState = {
+    popup: null,
+    highlight: null
+  };
+
+  // Show attachment preview on hover
+  function showAttachmentPreview(attachment, chipRect) {
+    hideAttachmentPreview();
+
+    var popup = document.createElement('div');
+    popup.id = '__devtool-attachment-preview';
+    popup.style.cssText = STYLES.attachmentPreview;
+
+    if (attachment.type === 'screenshot' && attachment.data && attachment.data.area && attachment.data.area.data) {
+      // Screenshot preview - show the image
+      var img = document.createElement('img');
+      img.style.cssText = STYLES.attachmentPreviewImage;
+      img.src = attachment.data.area.data;
+      img.alt = 'Screenshot preview';
+      popup.appendChild(img);
+    } else if (attachment.type === 'element' && attachment.data) {
+      // Element preview - show selector and highlight the element
+      var info = document.createElement('div');
+      info.style.cssText = STYLES.attachmentPreviewElement;
+      info.innerHTML = '<strong>' + (attachment.data.tag || 'element') + '</strong>\n' +
+        (attachment.data.selector || '') + '\n\n' +
+        (attachment.data.text ? '"' + attachment.data.text.substring(0, 100) + '"' : '');
+      popup.appendChild(info);
+
+      // Highlight the element on the page
+      if (attachment.data.selector) {
+        try {
+          var el = document.querySelector(attachment.data.selector);
+          if (el) {
+            var rect = el.getBoundingClientRect();
+            var highlight = document.createElement('div');
+            highlight.id = '__devtool-preview-highlight';
+            highlight.style.cssText = STYLES.elementPreviewHighlight;
+            highlight.style.left = rect.left + 'px';
+            highlight.style.top = rect.top + 'px';
+            highlight.style.width = rect.width + 'px';
+            highlight.style.height = rect.height + 'px';
+            document.body.appendChild(highlight);
+            previewState.highlight = highlight;
+          }
+        } catch (e) {
+          // Invalid selector, ignore
+        }
+      }
+    } else if (attachment.type === 'sketch' && attachment.data) {
+      // Sketch preview - show thumbnail or info
+      var sketchInfo = document.createElement('div');
+      sketchInfo.style.cssText = STYLES.attachmentPreviewElement;
+      var elements = attachment.data.elements || [];
+      sketchInfo.innerHTML = '<strong>Sketch</strong>\n' +
+        elements.length + ' element' + (elements.length !== 1 ? 's' : '') + '\n' +
+        (attachment.summary || '');
+      popup.appendChild(sketchInfo);
+    } else if (attachment.type === 'audit' && attachment.data) {
+      // Audit preview - show summary
+      var auditInfo = document.createElement('div');
+      auditInfo.style.cssText = STYLES.attachmentPreviewElement;
+      auditInfo.innerHTML = '<strong>' + (attachment.data.auditType || 'Audit') + '</strong>\n' +
+        (attachment.summary || '');
+      popup.appendChild(auditInfo);
+    } else {
+      // Default: show summary
+      var defaultInfo = document.createElement('div');
+      defaultInfo.style.cssText = STYLES.attachmentPreviewElement;
+      defaultInfo.textContent = attachment.summary || attachment.label;
+      popup.appendChild(defaultInfo);
+    }
+
+    // Position the popup above the chip
+    document.body.appendChild(popup);
+    previewState.popup = popup;
+
+    // Calculate position - show above chip, centered
+    var popupRect = popup.getBoundingClientRect();
+    var left = chipRect.left + (chipRect.width / 2) - (popupRect.width / 2);
+    var top = chipRect.top - popupRect.height - 8;
+
+    // Keep within viewport
+    left = Math.max(8, Math.min(left, window.innerWidth - popupRect.width - 8));
+    if (top < 8) {
+      top = chipRect.bottom + 8; // Show below if not enough space above
+    }
+
+    popup.style.left = left + 'px';
+    popup.style.top = top + 'px';
+
+    // Fade in
+    requestAnimationFrame(function() {
+      popup.style.opacity = '1';
+    });
+  }
+
+  // Hide attachment preview
+  function hideAttachmentPreview() {
+    if (previewState.popup) {
+      previewState.popup.parentNode.removeChild(previewState.popup);
+      previewState.popup = null;
+    }
+    if (previewState.highlight) {
+      previewState.highlight.parentNode.removeChild(previewState.highlight);
+      previewState.highlight = null;
+    }
+  }
+
   // Attachment chip creation
   function createChip(attachment) {
     var chip = document.createElement('div');
     chip.style.cssText = STYLES.chip;
     chip.dataset.id = attachment.id;
+    chip.style.cursor = 'pointer';
 
     var icon = document.createElement('span');
     icon.style.cssText = STYLES.chipIcon;
@@ -2180,7 +2590,6 @@
     var label = document.createElement('span');
     label.style.cssText = STYLES.chipLabel;
     label.textContent = attachment.label;
-    label.title = attachment.summary;
     chip.appendChild(label);
 
     var removeBtn = document.createElement('button');
@@ -2191,62 +2600,43 @@
     removeBtn.onclick = function(e) {
       e.stopPropagation();
       removeAttachment(attachment.id);
+      hideAttachmentPreview();
     };
     removeBtn.onmouseenter = function() { removeBtn.style.color = TOKENS.colors.error; };
     removeBtn.onmouseleave = function() { removeBtn.style.color = TOKENS.colors.textMuted; };
     chip.appendChild(removeBtn);
 
+    // Hover preview handlers
+    chip.onmouseenter = function() {
+      var rect = chip.getBoundingClientRect();
+      showAttachmentPreview(attachment, rect);
+    };
+    chip.onmouseleave = function() {
+      hideAttachmentPreview();
+    };
+
     return chip;
   }
 
+  // addAttachment - now uses reactive store (VanJS)
+  // DOM updates automatically via AttachmentAreaComponent
   function addAttachment(type, data) {
-    var attachment = {
-      id: generateId(),
-      type: type,
-      label: data.label,
-      summary: data.summary,
-      data: data,
-      timestamp: Date.now()
-    };
-
-    // Log to proxy first (this is the source of truth)
-    core.send(type + '_capture', {
-      id: attachment.id,
-      timestamp: attachment.timestamp,
-      data: data
-    });
-
-    // Add to local state
-    state.attachments.push(attachment);
-
-    // Update UI
-    var container = document.getElementById('__devtool-attachments');
-    if (container) {
-      container.style.display = 'flex';
-      container.appendChild(createChip(attachment));
-    }
+    return actions.addAttachment(type, data);
 
     return attachment.id;
   }
 
+  // removeAttachment - now uses reactive store (VanJS)
+  // DOM updates automatically via AttachmentAreaComponent
   function removeAttachment(id) {
-    state.attachments = state.attachments.filter(function(a) { return a.id !== id; });
-
-    var container = document.getElementById('__devtool-attachments');
-    if (container) {
-      var chip = container.querySelector('[data-id="' + id + '"]');
-      if (chip) container.removeChild(chip);
-      if (state.attachments.length === 0) container.style.display = 'none';
-    }
+    hideAttachmentPreview();
+    actions.removeAttachment(id);
   }
 
+  // clearAttachments - now uses reactive store (VanJS)
   function clearAttachments() {
-    state.attachments = [];
-    var container = document.getElementById('__devtool-attachments');
-    if (container) {
-      container.innerHTML = '';
-      container.style.display = 'none';
-    }
+    hideAttachmentPreview();
+    actions.clearAttachments();
   }
 
   // Send message - assembles everything into a structured message
@@ -2552,32 +2942,13 @@
     if (window.__devtool_sketch) {
       // Set callback for when sketch is saved
       window.__devtool_sketch.onSave = function(sketchData) {
-        var id = generateId();
-
-        // Log sketch to proxy first
-        core.send('sketch_capture', {
-          id: id,
-          timestamp: Date.now(),
-          data: sketchData
-        });
-
-        // Add as attachment chip
-        var attachment = {
-          id: id,
-          type: 'sketch',
+        // Use reactive addAttachment - DOM updates automatically
+        addAttachment('sketch', {
           label: sketchData.elementCount + ' elements',
           summary: 'Sketch with ' + sketchData.elementCount + ' elements',
-          data: sketchData,
-          timestamp: Date.now()
-        };
-
-        state.attachments.push(attachment);
-
-        var container = document.getElementById('__devtool-attachments');
-        if (container) {
-          container.style.display = 'flex';
-          container.appendChild(createChip(attachment));
-        }
+          elements: sketchData.elements,
+          elementCount: sketchData.elementCount
+        });
 
         togglePanel(true);
       };
