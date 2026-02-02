@@ -60,6 +60,12 @@ Options:
 
 Create or update `.agnt.kdl` in the project root with KDL format.
 
+**Strict Parsing**: The KDL parser rejects unknown or misspelled fields with a clear error message. If you typo `autstart` instead of `autostart`, you'll see:
+```
+failed to parse KDL config: no struct field into which to unmarshal node "autstart"
+```
+This prevents silent failures from configuration mistakes.
+
 **Important**: Use the appropriate `url-matchers` pattern based on the detected framework (see Step 1).
 
 ```kdl
