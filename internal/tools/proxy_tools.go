@@ -396,17 +396,19 @@ type LogStatsOutput struct {
 
 // ProxyLogInput defines input for the proxylog tool.
 type ProxyLogInput struct {
-	ProxyID     string   `json:"proxy_id" jsonschema:"Proxy ID to query logs from"`
-	Action      string   `json:"action,omitempty" jsonschema:"Action: query, summary, clear, stats (default: query)"`
-	Types       []string `json:"types,omitempty" jsonschema:"Filter by type: http, error, performance"`
-	Methods     []string `json:"methods,omitempty" jsonschema:"Filter by HTTP method: GET, POST, etc."`
-	URLPattern  string   `json:"url_pattern,omitempty" jsonschema:"URL substring to match"`
-	StatusCodes []int    `json:"status_codes,omitempty" jsonschema:"Filter by HTTP status code"`
-	Since       string   `json:"since,omitempty" jsonschema:"Start time (RFC3339 or duration like '5m')"`
-	Until       string   `json:"until,omitempty" jsonschema:"End time (RFC3339)"`
-	Limit       int      `json:"limit,omitempty" jsonschema:"Maximum results (default: 100)"`
-	Detail      []string `json:"detail,omitempty" jsonschema:"For summary: sections to include full detail for (errors, http, performance, interactions, mutations)"`
-	Raw         bool     `json:"raw,omitempty" jsonschema:"For query: return full raw data dumps instead of compact format (default: false)"`
+	ProxyID          string   `json:"proxy_id" jsonschema:"Proxy ID to query logs from"`
+	Action           string   `json:"action,omitempty" jsonschema:"Action: query, summary, clear, stats (default: query)"`
+	Types            []string `json:"types,omitempty" jsonschema:"Filter by type: http, error, performance, diagnostic"`
+	Methods          []string `json:"methods,omitempty" jsonschema:"Filter by HTTP method: GET, POST, etc."`
+	URLPattern       string   `json:"url_pattern,omitempty" jsonschema:"URL substring to match"`
+	StatusCodes      []int    `json:"status_codes,omitempty" jsonschema:"Filter by HTTP status code"`
+	Since            string   `json:"since,omitempty" jsonschema:"Start time (RFC3339 or duration like '5m')"`
+	Until            string   `json:"until,omitempty" jsonschema:"End time (RFC3339)"`
+	Limit            int      `json:"limit,omitempty" jsonschema:"Maximum results (default: 100)"`
+	Detail           []string `json:"detail,omitempty" jsonschema:"For summary: sections to include full detail for (errors, http, performance, interactions, mutations, diagnostics)"`
+	Raw              bool     `json:"raw,omitempty" jsonschema:"For query: return full raw data dumps instead of compact format (default: false)"`
+	ErrorsOnly       bool     `json:"errors_only,omitempty" jsonschema:"Filter to errors from all sources (HTTP errors, JS errors, proxy errors, diagnostics)"`
+	DiagnosticLevels []string `json:"diagnostic_levels,omitempty" jsonschema:"Filter diagnostics by level: info, warning, error"`
 }
 
 // ProxyLogOutput defines output for proxylog tool.
@@ -540,17 +542,30 @@ Log Types:
   response: JavaScript execution responses returned to MCP client
   interaction: User interactions (clicks, keyboard, scroll)
   mutation: DOM mutations (elements added/removed/modified)
+  diagnostic: Server-side proxy diagnostics (connection errors, timeouts, etc.)
 
 Output Format:
   - DEFAULT: Compact semi-structured text (easy to read, token-efficient)
     Example: "GET /api/users → 200 (45ms)"
   - With raw: true: Full JSON dumps (for programmatic processing)
 
+Consolidated Error Stream:
+  Use errors_only: true to get all errors from all sources in one query:
+  - HTTP errors (4xx, 5xx status codes)
+  - Frontend JavaScript errors
+  - Proxy diagnostics (connection refused, timeouts, etc.)
+  - Custom error logs
+
 Query Examples (compact format):
   proxylog {proxy_id: "dev", types: ["http"], methods: ["GET"]}
   proxylog {proxy_id: "dev", types: ["error"]}
   proxylog {proxy_id: "dev", types: ["performance"]}
   proxylog {proxy_id: "dev", types: ["http"], since: "5m", limit: 50}
+
+Consolidated Error Examples:
+  proxylog {proxy_id: "dev", errors_only: true}
+  proxylog {proxy_id: "dev", errors_only: true, since: "10m"}
+  proxylog {proxy_id: "dev", types: ["diagnostic"], diagnostic_levels: ["error", "warning"]}
 
 Query with Full Data (raw format):
   proxylog {proxy_id: "dev", types: ["error"], raw: true}
@@ -559,7 +574,7 @@ Query with Full Data (raw format):
 Summary Examples (RECOMMENDED for first look):
   proxylog {proxy_id: "dev", action: "summary"}
   proxylog {proxy_id: "dev", action: "summary", detail: ["errors"], limit: 10}
-  proxylog {proxy_id: "dev", action: "summary", detail: ["http", "errors"]}
+  proxylog {proxy_id: "dev", action: "summary", detail: ["http", "errors", "diagnostics"]}
 
 Stats & Clear:
   proxylog {proxy_id: "dev", action: "stats"}
@@ -836,10 +851,12 @@ func makeProxyLogHandler(pm *proxy.ProxyManager) func(context.Context, *mcp.Call
 func handleProxyLogQuery(proxyServer *proxy.ProxyServer, input ProxyLogInput) (*mcp.CallToolResult, ProxyLogOutput, error) {
 	// Build filter
 	filter := proxy.LogFilter{
-		Methods:     input.Methods,
-		URLPattern:  input.URLPattern,
-		StatusCodes: input.StatusCodes,
-		Limit:       input.Limit,
+		Methods:          input.Methods,
+		URLPattern:       input.URLPattern,
+		StatusCodes:      input.StatusCodes,
+		Limit:            input.Limit,
+		ErrorsOnly:       input.ErrorsOnly,
+		DiagnosticLevels: input.DiagnosticLevels,
 	}
 
 	// Parse types
@@ -1027,6 +1044,36 @@ func handleProxyLogQueryRaw(entries []proxy.LogEntry) (*mcp.CallToolResult, Prox
 				Timestamp: entry.Response.Timestamp,
 				Data:      marshalData(data),
 			}
+
+		case proxy.LogTypeDiagnostic:
+			if entry.Diagnostic != nil {
+				data["level"] = string(entry.Diagnostic.Level)
+				data["category"] = entry.Diagnostic.Category
+				data["event"] = entry.Diagnostic.Event
+				data["message"] = entry.Diagnostic.Message
+				if entry.Diagnostic.RequestID != "" {
+					data["request_id"] = entry.Diagnostic.RequestID
+				}
+				if entry.Diagnostic.Method != "" {
+					data["method"] = entry.Diagnostic.Method
+				}
+				if entry.Diagnostic.URL != "" {
+					data["url"] = entry.Diagnostic.URL
+				}
+				if entry.Diagnostic.Target != "" {
+					data["target"] = entry.Diagnostic.Target
+				}
+				if len(entry.Diagnostic.Data) > 0 {
+					for k, v := range entry.Diagnostic.Data {
+						data[k] = v
+					}
+				}
+			}
+			output[i] = LogEntryOutput{
+				Type:      string(entry.Type),
+				Timestamp: entry.Diagnostic.Timestamp,
+				Data:      marshalData(data),
+			}
 		}
 	}
 
@@ -1172,6 +1219,31 @@ func handleProxyLogQueryCompact(entries []proxy.LogEntry) (*mcp.CallToolResult, 
 					entry.Sketch.Description,
 					entry.Sketch.ElementCount,
 					entry.Sketch.FilePath)
+			}
+
+		case proxy.LogTypeDiagnostic:
+			if entry.Diagnostic != nil {
+				timestamp = entry.Diagnostic.Timestamp
+				levelIcon := ""
+				switch entry.Diagnostic.Level {
+				case proxy.DiagnosticError:
+					levelIcon = "[ERROR]"
+				case proxy.DiagnosticWarning:
+					levelIcon = "[WARN]"
+				case proxy.DiagnosticInfo:
+					levelIcon = "[INFO]"
+				}
+				data = fmt.Sprintf("%s %s:%s - %s",
+					levelIcon,
+					entry.Diagnostic.Category,
+					entry.Diagnostic.Event,
+					entry.Diagnostic.Message)
+				if entry.Diagnostic.URL != "" {
+					data += fmt.Sprintf("\n  URL: %s", entry.Diagnostic.URL)
+				}
+				if entry.Diagnostic.Target != "" {
+					data += fmt.Sprintf("\n  Target: %s", entry.Diagnostic.Target)
+				}
 			}
 
 		default:

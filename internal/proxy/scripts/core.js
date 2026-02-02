@@ -294,6 +294,37 @@
           executeJavaScript(message.id, message.code);
         }
 
+        // Handle proxy diagnostics from server
+        if (message.type === 'proxy_diagnostic' && message.payload) {
+          var diag = message.payload;
+          // Add to diagnostics buffer so it appears in __devtool_diagnostics
+          addDiagnostic('proxy', diag.event || 'unknown', {
+            level: diag.level,
+            category: diag.category,
+            message: diag.message,
+            request_id: diag.request_id,
+            method: diag.method,
+            url: diag.url,
+            target: diag.target,
+            timestamp: diag.timestamp,
+            data: diag.data
+          });
+
+          // Also add to consolidated error stream for errors
+          if (diag.level === 'error' || diag.level === 'warning') {
+            addConsolidatedError({
+              source: 'proxy',
+              level: diag.level,
+              event: diag.event,
+              message: diag.message,
+              url: diag.url,
+              target: diag.target,
+              timestamp: diag.timestamp || Date.now(),
+              data: diag.data
+            });
+          }
+        }
+
         // Notify registered handlers
         for (var i = 0; i < messageHandlers.length; i++) {
           try {
@@ -502,6 +533,46 @@
     var consoleErrorBuffer = [];
     var consoleWarningBuffer = [];
 
+    // Consolidated error stream - combines errors from all sources
+    // Sources: proxy (server-side errors), js (JavaScript errors), console (console.error),
+    //          http (HTTP errors like 4xx/5xx), process (stdout/stderr from processes)
+    var MAX_CONSOLIDATED_ENTRIES = 200;
+    var consolidatedErrorBuffer = [];
+    var consolidatedErrorListeners = [];
+
+    function addConsolidatedError(entry) {
+      var normalized = {
+        id: 'err-' + Date.now() + '-' + Math.random().toString(36).substr(2, 6),
+        timestamp: entry.timestamp || Date.now(),
+        source: entry.source || 'unknown',  // proxy, js, console, http, process
+        level: entry.level || 'error',      // error, warning, info
+        event: entry.event || 'error',      // event type (e.g., connection_refused, js_error)
+        message: entry.message || '',
+        url: entry.url || '',
+        data: entry.data || {}
+      };
+
+      consolidatedErrorBuffer.push(normalized);
+      if (consolidatedErrorBuffer.length > MAX_CONSOLIDATED_ENTRIES) {
+        consolidatedErrorBuffer.shift();
+      }
+
+      // Notify listeners
+      for (var i = 0; i < consolidatedErrorListeners.length; i++) {
+        try {
+          consolidatedErrorListeners[i](normalized);
+        } catch (e) {
+          // Don't let listener errors break the stream
+        }
+      }
+
+      // Log to console in debug mode
+      if (window.__devtool_debug) {
+        var levelIcon = normalized.level === 'error' ? '\u274c' : (normalized.level === 'warning' ? '\u26a0\ufe0f' : '\u2139\ufe0f');
+        console.log('[DevTool Error Stream]', levelIcon, normalized.source + ':', normalized.message);
+      }
+    }
+
     function addToBuffer(buffer, entry) {
       buffer.push(entry);
       if (buffer.length > MAX_ERROR_ENTRIES) {
@@ -585,6 +656,15 @@
 
             addToBuffer(consoleErrorBuffer, entry);
 
+            // Add to consolidated error stream
+            addConsolidatedError({
+              source: 'console',
+              level: 'error',
+              event: 'console_error',
+              message: message,
+              url: safeGetUrl()
+            });
+
             // Also send to server
             send('error', {
               message: 'Console Error: ' + message,
@@ -627,6 +707,15 @@
             };
 
             addToBuffer(consoleWarningBuffer, entry);
+
+            // Add to consolidated error stream
+            addConsolidatedError({
+              source: 'console',
+              level: 'warning',
+              event: 'console_warning',
+              message: message,
+              url: safeGetUrl()
+            });
           } catch (e) {
             reportInternalError('console_warn_override_failed', e);
           }
@@ -660,6 +749,20 @@
             };
 
             addToBuffer(jsErrorBuffer, entry);
+
+            // Add to consolidated error stream
+            addConsolidatedError({
+              source: 'js',
+              level: 'error',
+              event: 'js_error',
+              message: entry.message,
+              url: entry.source,
+              data: {
+                lineno: entry.lineno,
+                colno: entry.colno,
+                stack: entry.stack
+              }
+            });
           } catch (e) {
             reportInternalError('error_buffer_capture_failed', e);
           }
@@ -761,11 +864,172 @@
       }, 100);
     }
 
+    // ============================================
+    // Diagnostics Stream
+    // Track proxy connection events for debugging
+    // ============================================
+    var MAX_DIAG_ENTRIES = 200;
+    var diagnosticsBuffer = [];
+    var diagnosticsListeners = [];
+
+    function addDiagnostic(category, event, data) {
+      var entry = {
+        timestamp: Date.now(),
+        category: category,  // 'websocket', 'send', 'receive', 'proxy'
+        event: event,
+        data: data || {}
+      };
+
+      diagnosticsBuffer.push(entry);
+      if (diagnosticsBuffer.length > MAX_DIAG_ENTRIES) {
+        diagnosticsBuffer.shift();
+      }
+
+      // Notify listeners
+      for (var i = 0; i < diagnosticsListeners.length; i++) {
+        try {
+          diagnosticsListeners[i](entry);
+        } catch (e) {
+          // Don't let listener errors break diagnostics
+        }
+      }
+
+      // Also log to console in debug mode
+      if (window.__devtool_debug) {
+        console.log('[DevTool Diag]', category + ':' + event, data);
+      }
+    }
+
+    // Wrap WebSocket connection with diagnostics
+    function connectWithDiagnostics() {
+      if (!hasWebSocket) {
+        addDiagnostic('websocket', 'unavailable', { reason: 'WebSocket not supported' });
+        return;
+      }
+
+      try {
+        if (reconnectTimer) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+        }
+
+        if (ws) {
+          try {
+            ws.close();
+          } catch (e) {
+            // Ignore close errors
+          }
+        }
+
+        addDiagnostic('websocket', 'connecting', { url: WS_URL, attempt: reconnectAttempts + 1 });
+
+        ws = new WebSocket(WS_URL);
+
+        ws.onopen = function() {
+          try {
+            addDiagnostic('websocket', 'connected', { url: WS_URL, readyState: ws.readyState });
+            console.log('[DevTool] Metrics connection established');
+            reconnectAttempts = 0;
+            sendPageLoad();
+          } catch (e) {
+            reportInternalError('onopen_handler_failed', e);
+          }
+        };
+
+        ws.onmessage = function(event) {
+          try {
+            if (!event || !event.data) return;
+
+            addDiagnostic('websocket', 'message_received', {
+              size: event.data.length,
+              preview: event.data.substring(0, 100)
+            });
+
+            var message = null;
+            try {
+              message = JSON.parse(event.data);
+            } catch (e) {
+              addDiagnostic('websocket', 'parse_error', { error: e.toString(), data: event.data.substring(0, 200) });
+              reportInternalError('message_parse_failed', e);
+              return;
+            }
+
+            if (message) {
+              handleServerMessage(message);
+            }
+          } catch (e) {
+            reportInternalError('onmessage_handler_failed', e);
+          }
+        };
+
+        ws.onclose = function(event) {
+          try {
+            addDiagnostic('websocket', 'closed', {
+              code: event.code,
+              reason: event.reason,
+              wasClean: event.wasClean,
+              reconnectAttempts: reconnectAttempts
+            });
+            console.log('[DevTool] Metrics connection closed');
+
+            if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+              reconnectAttempts++;
+              var delay = 1000 * reconnectAttempts;
+              addDiagnostic('websocket', 'reconnect_scheduled', { delay: delay, attempt: reconnectAttempts });
+              console.log('[DevTool] Reconnecting in ' + delay + 'ms (attempt ' + reconnectAttempts + ')');
+              reconnectTimer = setTimeout(connectWithDiagnostics, delay);
+            } else {
+              addDiagnostic('websocket', 'reconnect_exhausted', { maxAttempts: MAX_RECONNECT_ATTEMPTS });
+              console.warn('[DevTool] Max reconnection attempts reached');
+            }
+          } catch (e) {
+            reportInternalError('onclose_handler_failed', e);
+          }
+        };
+
+        ws.onerror = function(err) {
+          try {
+            addDiagnostic('websocket', 'error', {
+              type: err.type,
+              message: err.message || 'WebSocket error',
+              readyState: ws ? ws.readyState : -1
+            });
+            console.error('[DevTool] Metrics connection error:', err);
+          } catch (e) {
+            // Ignore - error handler itself failed
+          }
+        };
+
+      } catch (e) {
+        addDiagnostic('websocket', 'creation_failed', { error: e.toString() });
+        reportInternalError('websocket_creation_failed', e);
+      }
+    }
+
+    // Enhanced send with diagnostics
+    var originalSend = send;
+    send = function(type, data) {
+      var result = originalSend(type, data);
+
+      addDiagnostic('send', result ? 'success' : 'failed', {
+        type: type,
+        connected: ws && ws.readyState === WebSocket.OPEN,
+        readyState: ws ? ws.readyState : -1
+      });
+
+      return result;
+    };
+
+    // Replace connect with diagnostics version
+    connect = connectWithDiagnostics;
+
     // Initialize
     try {
       setupErrorTrackingWithBuffer();
+      addDiagnostic('core', 'initializing', { version: window.__devtool_version || 'unknown' });
       connect();
     } catch (e) {
+      addDiagnostic('core', 'init_failed', { error: e.toString() });
       reportInternalError('initialization_failed', e);
     }
 
@@ -790,6 +1054,89 @@
       }
     } catch (e) {
       console.error('[DevTool] Failed to export core API:', e);
+    }
+
+    // Export diagnostics API
+    try {
+      if (!window.__devtool_diagnostics) {
+        window.__devtool_diagnostics = {
+          // Get all diagnostic events
+          getHistory: function() {
+            return diagnosticsBuffer.slice();
+          },
+
+          // Get recent events (last N)
+          getRecent: function(count) {
+            count = count || 20;
+            return diagnosticsBuffer.slice(-count);
+          },
+
+          // Filter by category
+          getByCategory: function(category) {
+            return diagnosticsBuffer.filter(function(e) { return e.category === category; });
+          },
+
+          // Subscribe to new events
+          subscribe: function(callback) {
+            if (typeof callback === 'function') {
+              diagnosticsListeners.push(callback);
+              return function unsubscribe() {
+                var idx = diagnosticsListeners.indexOf(callback);
+                if (idx > -1) diagnosticsListeners.splice(idx, 1);
+              };
+            }
+            return function() {};
+          },
+
+          // Get connection state
+          getConnectionState: function() {
+            var states = ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'];
+            return {
+              connected: ws && ws.readyState === WebSocket.OPEN,
+              readyState: ws ? ws.readyState : -1,
+              readyStateLabel: ws ? states[ws.readyState] || 'UNKNOWN' : 'NO_SOCKET',
+              reconnectAttempts: reconnectAttempts,
+              maxReconnectAttempts: MAX_RECONNECT_ATTEMPTS,
+              wsUrl: WS_URL
+            };
+          },
+
+          // Clear history
+          clear: function() {
+            diagnosticsBuffer = [];
+          },
+
+          // Get stats
+          getStats: function() {
+            var stats = { total: diagnosticsBuffer.length, byCategory: {}, byEvent: {} };
+            diagnosticsBuffer.forEach(function(e) {
+              stats.byCategory[e.category] = (stats.byCategory[e.category] || 0) + 1;
+              var key = e.category + ':' + e.event;
+              stats.byEvent[key] = (stats.byEvent[key] || 0) + 1;
+            });
+            return stats;
+          },
+
+          // Enable/disable debug logging
+          setDebug: function(enabled) {
+            window.__devtool_debug = !!enabled;
+          },
+
+          // Force reconnect
+          reconnect: function() {
+            reconnectAttempts = 0;
+            addDiagnostic('websocket', 'manual_reconnect', {});
+            connect();
+          },
+
+          // Log a custom diagnostic
+          log: function(category, event, data) {
+            addDiagnostic(category || 'custom', event || 'log', data);
+          }
+        };
+      }
+    } catch (e) {
+      console.error('[DevTool] Failed to export diagnostics API:', e);
     }
 
     // Export error tracking API for diagnostics panel
@@ -831,6 +1178,70 @@
               consoleWarningCount: consoleWarningBuffer.length,
               totalCount: jsErrorBuffer.length + consoleErrorBuffer.length + consoleWarningBuffer.length
             };
+          },
+
+          // Consolidated error stream - all errors from all sources
+          // Sources: proxy, js, console, http, process
+          getConsolidated: function() {
+            return consolidatedErrorBuffer.slice();
+          },
+
+          getConsolidatedRecent: function(count) {
+            count = count || 20;
+            return consolidatedErrorBuffer.slice(-count);
+          },
+
+          getConsolidatedBySource: function(source) {
+            return consolidatedErrorBuffer.filter(function(e) {
+              return e.source === source;
+            });
+          },
+
+          getConsolidatedByLevel: function(level) {
+            return consolidatedErrorBuffer.filter(function(e) {
+              return e.level === level;
+            });
+          },
+
+          // Subscribe to new consolidated errors
+          subscribeConsolidated: function(callback) {
+            if (typeof callback === 'function') {
+              consolidatedErrorListeners.push(callback);
+              return function unsubscribe() {
+                var idx = consolidatedErrorListeners.indexOf(callback);
+                if (idx > -1) consolidatedErrorListeners.splice(idx, 1);
+              };
+            }
+            return function() {};
+          },
+
+          clearConsolidated: function() {
+            consolidatedErrorBuffer = [];
+          },
+
+          getConsolidatedStats: function() {
+            var stats = {
+              total: consolidatedErrorBuffer.length,
+              bySource: {},
+              byLevel: {}
+            };
+            consolidatedErrorBuffer.forEach(function(e) {
+              stats.bySource[e.source] = (stats.bySource[e.source] || 0) + 1;
+              stats.byLevel[e.level] = (stats.byLevel[e.level] || 0) + 1;
+            });
+            return stats;
+          },
+
+          // Add custom error to consolidated stream (for external integrations)
+          addError: function(source, level, message, data) {
+            addConsolidatedError({
+              source: source || 'custom',
+              level: level || 'error',
+              event: 'custom_error',
+              message: message || '',
+              url: safeGetUrl(),
+              data: data || {}
+            });
           }
         };
       }
