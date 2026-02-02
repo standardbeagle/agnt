@@ -21,7 +21,7 @@ Check the response for:
 - `commands`: Available commands with their descriptions
 
 **Framework-specific defaults:**
-- **Wails** (`metadata.framework == "wails"`): Recommend `dev` script with `url-matchers "DevServer URL:\\s*{url}"`
+- **Wails** (`metadata.framework == "wails"`): Recommend `dev` script with `url-matchers "Using DevServer URL:\\s*{url}"` (must include "Using" to avoid matching "Frontend DevServer URL")
 - **Next.js** (node with next in scripts): Use `url-matchers "(Local|Network):\\s*{url}"`
 - **Vite/Astro** (node projects): Use `url-matchers "Local\\s+{url}"`
 
@@ -259,14 +259,17 @@ scripts {
     dev {
         run "wails dev"
         autostart true
-        // Wails outputs: "Using DevServer URL: http://localhost:34115"
-        url-matchers "DevServer URL:\\s*{url}"
+        // Wails outputs both "Using DevServer URL" (backend) and "Using Frontend DevServer URL" (Vite)
+        // Pattern must include "Using" to avoid matching frontend URL
+        url-matchers "Using DevServer URL:\\s*{url}"
     }
 }
 
 proxies {
     app {
         script "dev"
+        // Optional: filter which URL triggers proxy (useful when script outputs multiple URLs)
+        // url-pattern ":34115"  // Only match URLs containing :34115 (backend port)
     }
 }
 
@@ -274,6 +277,28 @@ hooks {
     on-response {
         toast true
         indicator true
+    }
+}
+```
+
+### Wails with URL Pattern Filter
+
+When Wails outputs both backend and frontend URLs, use `url-pattern` to select which one creates the proxy:
+
+```kdl
+scripts {
+    dev {
+        run "wails dev"
+        autostart true
+        url-matchers "Using DevServer URL:\\s*{url}"
+    }
+}
+
+proxies {
+    backend {
+        script "dev"
+        // Only create proxy for backend URL (port 34115), not frontend (port 5174)
+        url-pattern ":34115"
     }
 }
 ```
