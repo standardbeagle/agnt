@@ -2303,6 +2303,7 @@ func parsePanelMessage(data map[string]interface{}, id string, timestamp time.Ti
 						Tag:      getStringField(am, "tag"),
 						ID:       getStringField(am, "id"),
 						Text:     getStringField(am, "text"),
+						Summary:  getStringField(am, "summary"),
 					}
 
 					// Parse classes
@@ -2323,6 +2324,11 @@ func parsePanelMessage(data map[string]interface{}, id string, timestamp time.Ti
 							Height: getIntField(area, "height"),
 							Data:   getStringField(area, "data"),
 						}
+					}
+
+					// Preserve the original data field for additional metadata
+					if data, ok := am["data"].(map[string]interface{}); ok {
+						att.Data = data
 					}
 
 					msg.Attachments = append(msg.Attachments, att)

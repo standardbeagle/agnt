@@ -181,7 +181,8 @@ type Renderer struct {
 	out          io.Writer
 	width        int
 	height       int
-	hotkey       byte // Hotkey for overlay toggle (for display)
+	hotkey       byte   // Hotkey for overlay toggle (for display)
+	version      string // Version string for dashboard title
 	mu           sync.Mutex
 	screenMgr    *ScreenManager
 	overlayStack *OverlayStack
@@ -209,6 +210,13 @@ func (r *Renderer) SetHotkey(hotkey byte) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.hotkey = hotkey
+}
+
+// SetVersion sets the version displayed in the dashboard title.
+func (r *Renderer) SetVersion(version string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.version = version
 }
 
 // formatHotkey returns a human-readable hotkey string like "Ctrl+Y".
@@ -668,8 +676,12 @@ func (r *Renderer) DrawDashboard(menu Menu, selectedIndex int, status Status) {
 
 	r.write(CursorSave + CursorHide)
 
-	// Draw outer box
-	r.drawBox(startRow, startCol, dashWidth, dashHeight, "agnt Dashboard")
+	// Draw outer box with version in title
+	title := "agnt Dashboard"
+	if r.version != "" {
+		title = fmt.Sprintf("agnt v%s", r.version)
+	}
+	r.drawBox(startRow, startCol, dashWidth, dashHeight, title)
 
 	currentRow := startRow + 2
 
