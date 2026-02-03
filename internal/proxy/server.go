@@ -69,6 +69,11 @@ type ProxyServer struct {
 	// Overlay notifier for sending events to agent overlay
 	overlayNotifier *OverlayNotifier
 
+	// Capture registry maps opaque IDs to file paths for screenshots/sketches
+	// This allows panel_message to look up file paths for previously captured items
+	captureRegistry   map[string]string // ID → FilePath
+	captureRegistryMu sync.RWMutex
+
 	// Voice sessions for speech-to-text (map[connID]*VoiceSession)
 	voiceSessions sync.Map
 
@@ -158,6 +163,7 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 		restartWindow:   1 * time.Minute, // Within 1 minute window
 		restarts:        make([]time.Time, 0, 5),
 		overlayNotifier: NewOverlayNotifier(),
+		captureRegistry: make(map[string]string),
 		chaosEngine:     NewChaosEngine(logger),
 		wsUpgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
@@ -1243,6 +1249,9 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 
+			// Register screenshot by name so proxy exec can look up the file path
+			ps.registerCapture(name, filePath)
+
 			ps.logger.LogScreenshot(Screenshot{
 				ID:        id,
 				Timestamp: timestamp,
@@ -1318,27 +1327,51 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			// Handle message from floating indicator panel
 			panelMsg := parsePanelMessage(msg.Data, id, timestamp, msg.URL)
 
-			// Save screenshot area attachments and include file paths
+			// Process attachments: save inline data or look up previously captured files
 			for i := range panelMsg.Attachments {
 				att := &panelMsg.Attachments[i]
 				areaDataLen := 0
 				if att.Area != nil {
 					areaDataLen = len(att.Area.Data)
 				}
-				debug.Log("proxy", "Panel attachment %d: type=%s, hasArea=%v, areaDataLen=%d",
-					i, att.Type, att.Area != nil, areaDataLen)
+				debug.Log("proxy", "Panel attachment %d: type=%s, id=%s, hasArea=%v, areaDataLen=%d",
+					i, att.Type, att.ID, att.Area != nil, areaDataLen)
 
-				if att.Type == "screenshot" && att.Area != nil && att.Area.Data != "" {
-					// Save the screenshot area data using attachment ID for unique filename
-					filePath, err := ps.saveScreenshot(fmt.Sprintf("area-%s", att.ID), att.Area.Data)
-					if err != nil {
-						debug.Error("proxy", "Failed to save screenshot: %v", err)
-					} else {
-						debug.Log("proxy", "Saved screenshot to: %s", filePath)
-						// Store file path in attachment data for overlay reference
-						if att.Data == nil {
-							att.Data = make(map[string]interface{})
+				// Ensure Data map exists for storing file path
+				if att.Data == nil {
+					att.Data = make(map[string]interface{})
+				}
+
+				// Handle screenshots: either save inline data or look up from registry
+				if att.Type == "screenshot" {
+					if att.Area != nil && att.Area.Data != "" {
+						// Image data sent inline - save it now
+						filePath, err := ps.saveScreenshot(fmt.Sprintf("area-%s", att.ID), att.Area.Data)
+						if err != nil {
+							debug.Error("proxy", "Failed to save screenshot: %v", err)
+						} else {
+							debug.Log("proxy", "Saved screenshot to: %s", filePath)
+							att.Data["file_path"] = filePath
+							att.Data["file_name"] = filepath.Base(filePath)
+							// Also register for future lookups
+							ps.registerCapture(att.ID, filePath)
 						}
+					} else if att.ID != "" {
+						// No inline data - look up from capture registry
+						if filePath := ps.LookupCapture(att.ID); filePath != "" {
+							debug.Log("proxy", "Looked up screenshot from registry: id=%s path=%s", att.ID, filePath)
+							att.Data["file_path"] = filePath
+							att.Data["file_name"] = filepath.Base(filePath)
+						} else {
+							debug.Log("proxy", "Screenshot not found in registry: id=%s", att.ID)
+						}
+					}
+				}
+
+				// Handle sketches: look up from registry
+				if att.Type == "sketch" && att.ID != "" {
+					if filePath := ps.LookupCapture(att.ID); filePath != "" {
+						debug.Log("proxy", "Looked up sketch from registry: id=%s path=%s", att.ID, filePath)
 						att.Data["file_path"] = filePath
 						att.Data["file_name"] = filepath.Base(filePath)
 					}
@@ -1364,6 +1397,8 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				filePath, err := ps.saveScreenshot("sketch-"+id, sketchEntry.ImageData)
 				if err == nil {
 					sketchEntry.FilePath = filePath
+					// Register capture so panel_message can look up the file path by ID
+					ps.registerCapture(id, filePath)
 				}
 			}
 
@@ -1386,6 +1421,8 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				filePath, err := ps.saveScreenshot("area-"+capture.ID, capture.ImageData)
 				if err == nil {
 					capture.FilePath = filePath
+					// Register capture so panel_message can look up the file path by ID
+					ps.registerCapture(capture.ID, filePath)
 				}
 				// Clear image data from log entry to save memory
 				capture.ImageData = ""
@@ -1407,6 +1444,8 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				filePath, err := ps.saveScreenshot("sketch-"+capture.ID, capture.ImageData)
 				if err == nil {
 					capture.FilePath = filePath
+					// Register capture so panel_message can look up the file path by ID
+					ps.registerCapture(capture.ID, filePath)
 				}
 			}
 
@@ -1966,6 +2005,23 @@ func (ps *ProxyServer) saveScreenshot(name string, dataURL string) (string, erro
 	}
 
 	return filePath, nil
+}
+
+// registerCapture stores the mapping from an opaque ID to its file path.
+// This allows panel_message to look up file paths for previously captured items.
+func (ps *ProxyServer) registerCapture(id, filePath string) {
+	ps.captureRegistryMu.Lock()
+	ps.captureRegistry[id] = filePath
+	ps.captureRegistryMu.Unlock()
+	debug.Log("proxy", "Registered capture: id=%s path=%s", id, filePath)
+}
+
+// LookupCapture returns the file path for a capture ID/name, or empty string if not found.
+// This is used by proxy exec to look up screenshot file paths by name.
+func (ps *ProxyServer) LookupCapture(id string) string {
+	ps.captureRegistryMu.RLock()
+	defer ps.captureRegistryMu.RUnlock()
+	return ps.captureRegistry[id]
 }
 
 // LargeResultThreshold is the size in bytes above which results are saved to file.
