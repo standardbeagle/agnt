@@ -795,10 +795,16 @@ Use the Read tool to view the full result.`, result.FilePath, result.Duration),
 			}, nil
 		}
 
+		// Check if result is a screenshot and include file path if available
+		message := fmt.Sprintf("JavaScript executed successfully.\nResult: %s\nDuration: %v", result.Result, result.Duration)
+		if screenshotPath := detectAndLookupScreenshot(proxyServer, result.Result); screenshotPath != "" {
+			message = fmt.Sprintf("JavaScript executed successfully.\nResult: %s\nScreenshot saved: %s\nDuration: %v", result.Result, screenshotPath, result.Duration)
+		}
+
 		return nil, ProxyOutput{
 			Success:     true,
 			ExecutionID: execID,
-			Message:     fmt.Sprintf("JavaScript executed successfully.\nResult: %s\nDuration: %v", result.Result, result.Duration),
+			Message:     message,
 		}, nil
 
 	case <-time.After(timeout):
@@ -815,6 +821,24 @@ Use the Read tool to view the full result.`, result.FilePath, result.Duration),
 
 		return errorResult(fmt.Sprintf("execution timed out after %v (no response from browser)", timeout)), ProxyOutput{}, nil
 	}
+}
+
+// detectAndLookupScreenshot checks if the result looks like a screenshot result
+// and if so, looks up the file path from the proxy's capture registry.
+func detectAndLookupScreenshot(proxyServer *proxy.ProxyServer, resultJSON string) string {
+	var result struct {
+		Name   string `json:"name"`
+		Width  int    `json:"width"`
+		Height int    `json:"height"`
+	}
+	if err := json.Unmarshal([]byte(resultJSON), &result); err != nil {
+		return ""
+	}
+	// Check if this looks like a screenshot result (has name, width, height)
+	if result.Name != "" && result.Width > 0 && result.Height > 0 {
+		return proxyServer.LookupCapture(result.Name)
+	}
+	return ""
 }
 
 func makeProxyLogHandler(pm *proxy.ProxyManager) func(context.Context, *mcp.CallToolRequest, ProxyLogInput) (*mcp.CallToolResult, ProxyLogOutput, error) {
