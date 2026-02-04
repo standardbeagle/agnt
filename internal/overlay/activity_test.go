@@ -384,3 +384,294 @@ func TestActivityMonitorNilCallbacks(t *testing.T) {
 	am.Write([]byte("more data here that is long enough\n"))
 	time.Sleep(100 * time.Millisecond) // Wait for idle timeout
 }
+
+// TestActivityMonitorAnimationDetection tests that carriage returns are detected as animations.
+func TestActivityMonitorAnimationDetection(t *testing.T) {
+	var buf bytes.Buffer
+	var previewLines []string
+	var mu sync.Mutex
+
+	cfg := ActivityMonitorConfig{
+		IdleTimeout:       500 * time.Millisecond,
+		MinActiveBytes:    1,
+		PreviewMaxLines:   5,
+		PreviewDebounce:   10 * time.Millisecond,
+		AnimationDebounce: 50 * time.Millisecond,
+		ShowDoneMessage:   false, // Disable for this test
+		OnOutputPreview: func(lines []string) {
+			mu.Lock()
+			previewLines = make([]string, len(lines))
+			copy(previewLines, lines)
+			mu.Unlock()
+		},
+	}
+
+	am := NewActivityMonitor(&buf, cfg)
+	defer am.Stop()
+
+	// Simulate Ink-style animation: multiple updates to same line via \r
+	am.Write([]byte("Loading."))
+	am.Write([]byte("\rLoading.."))
+	am.Write([]byte("\rLoading..."))
+	am.Write([]byte("\rLoading...."))
+	am.Write([]byte("\rDone!"))
+
+	// Wait for animation debounce to flush
+	time.Sleep(100 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Should only have one line - the final state
+	if len(previewLines) != 1 {
+		t.Errorf("expected 1 preview line (final animation state), got %d: %v", len(previewLines), previewLines)
+		return
+	}
+
+	if previewLines[0] != "Done!" {
+		t.Errorf("expected final line to be %q, got %q", "Done!", previewLines[0])
+	}
+}
+
+// TestActivityMonitorAnimationWithNewline tests that newline commits animating line.
+func TestActivityMonitorAnimationWithNewline(t *testing.T) {
+	var buf bytes.Buffer
+	var previewLines []string
+	var mu sync.Mutex
+
+	cfg := ActivityMonitorConfig{
+		IdleTimeout:       500 * time.Millisecond,
+		MinActiveBytes:    1,
+		PreviewMaxLines:   5,
+		PreviewDebounce:   10 * time.Millisecond,
+		AnimationDebounce: 100 * time.Millisecond,
+		ShowDoneMessage:   false,
+		OnOutputPreview: func(lines []string) {
+			mu.Lock()
+			previewLines = make([]string, len(lines))
+			copy(previewLines, lines)
+			mu.Unlock()
+		},
+	}
+
+	am := NewActivityMonitor(&buf, cfg)
+	defer am.Stop()
+
+	// Animation followed by newline - should commit immediately
+	am.Write([]byte("Processing"))
+	am.Write([]byte("\rProcessing."))
+	am.Write([]byte("\rProcessing.."))
+	am.Write([]byte("\rComplete!\n")) // Newline commits the line
+
+	// Wait for debounce
+	time.Sleep(50 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(previewLines) != 1 {
+		t.Errorf("expected 1 preview line, got %d: %v", len(previewLines), previewLines)
+		return
+	}
+
+	if previewLines[0] != "Complete!" {
+		t.Errorf("expected %q, got %q", "Complete!", previewLines[0])
+	}
+}
+
+// TestActivityMonitorMixedAnimationAndLines tests mixed animated and regular output.
+func TestActivityMonitorMixedAnimationAndLines(t *testing.T) {
+	var buf bytes.Buffer
+	var previewLines []string
+	var mu sync.Mutex
+
+	cfg := ActivityMonitorConfig{
+		IdleTimeout:       500 * time.Millisecond,
+		MinActiveBytes:    1,
+		PreviewMaxLines:   10,
+		PreviewDebounce:   10 * time.Millisecond,
+		AnimationDebounce: 30 * time.Millisecond,
+		ShowDoneMessage:   false,
+		OnOutputPreview: func(lines []string) {
+			mu.Lock()
+			previewLines = make([]string, len(lines))
+			copy(previewLines, lines)
+			mu.Unlock()
+		},
+	}
+
+	am := NewActivityMonitor(&buf, cfg)
+	defer am.Stop()
+
+	// Regular line
+	am.Write([]byte("Starting task\n"))
+
+	// Animated progress
+	am.Write([]byte("Progress: 0%"))
+	am.Write([]byte("\rProgress: 50%"))
+	am.Write([]byte("\rProgress: 100%\n")) // Commit with newline
+
+	// Another regular line
+	am.Write([]byte("Task complete\n"))
+
+	// Wait for debounce
+	time.Sleep(100 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(previewLines) != 3 {
+		t.Errorf("expected 3 preview lines, got %d: %v", len(previewLines), previewLines)
+		return
+	}
+
+	expected := []string{"Starting task", "Progress: 100%", "Task complete"}
+	for i, exp := range expected {
+		if previewLines[i] != exp {
+			t.Errorf("line %d: expected %q, got %q", i, exp, previewLines[i])
+		}
+	}
+}
+
+// TestActivityMonitorDoneMessage tests that done message is added when idle.
+func TestActivityMonitorDoneMessage(t *testing.T) {
+	var buf bytes.Buffer
+	var previewLines []string
+	var mu sync.Mutex
+
+	cfg := ActivityMonitorConfig{
+		IdleTimeout:       100 * time.Millisecond,
+		MinActiveBytes:    1,
+		PreviewMaxLines:   5,
+		PreviewDebounce:   10 * time.Millisecond,
+		AnimationDebounce: 20 * time.Millisecond,
+		ShowDoneMessage:   true,
+		DoneMessage:       "✓ Done",
+		OnOutputPreview: func(lines []string) {
+			mu.Lock()
+			previewLines = make([]string, len(lines))
+			copy(previewLines, lines)
+			mu.Unlock()
+		},
+	}
+
+	am := NewActivityMonitor(&buf, cfg)
+	defer am.Stop()
+
+	// Write some output
+	am.Write([]byte("Working on task\n"))
+
+	// Wait for idle timeout (idle check runs every 500ms)
+	time.Sleep(700 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Should have the line plus done message
+	if len(previewLines) < 2 {
+		t.Errorf("expected at least 2 preview lines (content + done), got %d: %v", len(previewLines), previewLines)
+		return
+	}
+
+	lastLine := previewLines[len(previewLines)-1]
+	if lastLine != "✓ Done" {
+		t.Errorf("expected last line to be %q, got %q", "✓ Done", lastLine)
+	}
+}
+
+// TestActivityMonitorDoneMessageDisabled tests that done message can be disabled.
+func TestActivityMonitorDoneMessageDisabled(t *testing.T) {
+	var buf bytes.Buffer
+	var previewLines []string
+	var mu sync.Mutex
+
+	cfg := ActivityMonitorConfig{
+		IdleTimeout:     100 * time.Millisecond,
+		MinActiveBytes:  1,
+		PreviewMaxLines: 5,
+		PreviewDebounce: 10 * time.Millisecond,
+		ShowDoneMessage: false, // Disabled
+		OnOutputPreview: func(lines []string) {
+			mu.Lock()
+			previewLines = make([]string, len(lines))
+			copy(previewLines, lines)
+			mu.Unlock()
+		},
+	}
+
+	am := NewActivityMonitor(&buf, cfg)
+	defer am.Stop()
+
+	// Write some output
+	am.Write([]byte("Working\n"))
+
+	// Wait for idle timeout
+	time.Sleep(700 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Should only have the content line, no done message
+	if len(previewLines) != 1 {
+		t.Errorf("expected 1 preview line, got %d: %v", len(previewLines), previewLines)
+		return
+	}
+
+	if previewLines[0] == "✓ Done" {
+		t.Error("done message should not appear when disabled")
+	}
+}
+
+// TestActivityMonitorRapidAnimationDebounce tests that rapid animations are properly debounced.
+func TestActivityMonitorRapidAnimationDebounce(t *testing.T) {
+	var buf bytes.Buffer
+	var callCount atomic.Int32
+	var lastLines []string
+	var mu sync.Mutex
+
+	cfg := ActivityMonitorConfig{
+		IdleTimeout:       500 * time.Millisecond,
+		MinActiveBytes:    1,
+		PreviewMaxLines:   5,
+		PreviewDebounce:   50 * time.Millisecond,
+		AnimationDebounce: 100 * time.Millisecond,
+		ShowDoneMessage:   false,
+		OnOutputPreview: func(lines []string) {
+			callCount.Add(1)
+			mu.Lock()
+			lastLines = make([]string, len(lines))
+			copy(lastLines, lines)
+			mu.Unlock()
+		},
+	}
+
+	am := NewActivityMonitor(&buf, cfg)
+	defer am.Stop()
+
+	// Simulate spinner - many rapid updates
+	frames := []string{"|", "/", "-", "\\", "|", "/", "-", "\\"}
+	for _, frame := range frames {
+		am.Write([]byte("\r" + frame + " Loading"))
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Wait for animation debounce
+	time.Sleep(150 * time.Millisecond)
+
+	// Should not have called callback for every frame
+	calls := callCount.Load()
+	if calls >= int32(len(frames)) {
+		t.Errorf("callback called %d times for %d frames, expected debouncing", calls, len(frames))
+	}
+
+	// Should have the final state
+	mu.Lock()
+	defer mu.Unlock()
+	if len(lastLines) != 1 {
+		t.Errorf("expected 1 line, got %d: %v", len(lastLines), lastLines)
+		return
+	}
+	if lastLines[0] != "\\ Loading" {
+		t.Errorf("expected final frame %q, got %q", "\\ Loading", lastLines[0])
+	}
+}

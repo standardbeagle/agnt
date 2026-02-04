@@ -3239,6 +3239,9 @@ func (d *Daemon) hubHandleProcRestart(ctx context.Context, conn *hubpkg.Connecti
 	// Detect expected port for EADDRINUSE recovery
 	expectedPort := d.getExpectedPortForProcess(proc)
 
+	// Clear URL tracker state so new process output is scanned fresh
+	d.urlTracker.ClearProcess(processID)
+
 	// Remove the old process registration
 	d.hub.ProcessManager().RemoveByPath(processID, projectPath)
 

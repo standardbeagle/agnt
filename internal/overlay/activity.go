@@ -20,6 +20,8 @@ const (
 // ActivityMonitor wraps an io.Writer to monitor output activity.
 // It detects when data is being written (active) and when writing stops (idle).
 // It can also broadcast output previews (recent lines) to connected browsers.
+// It handles animated output (like Ink spinners) by detecting carriage returns
+// and debouncing rapid updates to prevent scroll spam.
 type ActivityMonitor struct {
 	writer          io.Writer
 	idleTimeout     time.Duration
@@ -34,12 +36,22 @@ type ActivityMonitor struct {
 
 	// Output preview state
 	previewMu       sync.Mutex
-	previewBuffer   bytes.Buffer // Accumulates output for line extraction
-	previewLines    []string     // Recent complete lines
-	previewMaxLines int          // Max lines to keep
+	previewLines    []string // Recent complete lines
+	previewMaxLines int      // Max lines to keep
 	previewDebounce time.Duration
 	previewLastSent time.Time
 	previewPending  atomic.Bool // Whether a debounced send is pending
+
+	// Animation-aware line buffering
+	currentLine         bytes.Buffer  // Current line being built
+	isAnimating         bool          // True if we've seen \r without \n (line is being updated in place)
+	animationLastUpdate time.Time     // Last time the animating line was updated
+	animationDebounce   time.Duration // How long to wait before flushing animating line
+	animationPending    atomic.Bool   // Whether an animation flush is pending
+
+	// Done message
+	showDoneMessage bool
+	doneMessage     string
 }
 
 // ActivityMonitorConfig configures the activity monitor.
@@ -67,15 +79,31 @@ type ActivityMonitorConfig struct {
 	// PreviewDebounce is the minimum time between output preview broadcasts.
 	// Default: 200ms
 	PreviewDebounce time.Duration
+
+	// AnimationDebounce is how long to wait after the last update to an animating
+	// line before flushing it. This prevents rapid updates (like Ink spinners)
+	// from appearing as scrolling lines. Default: 100ms
+	AnimationDebounce time.Duration
+
+	// ShowDoneMessage adds a persistent "Done" message when activity goes idle.
+	// Default: true
+	ShowDoneMessage bool
+
+	// DoneMessage is the message to show when activity goes idle.
+	// Default: "✓ Done"
+	DoneMessage string
 }
 
 // DefaultActivityMonitorConfig returns the default configuration.
 func DefaultActivityMonitorConfig() ActivityMonitorConfig {
 	return ActivityMonitorConfig{
-		IdleTimeout:     2 * time.Second,
-		MinActiveBytes:  10,
-		PreviewMaxLines: 5,
-		PreviewDebounce: 200 * time.Millisecond,
+		IdleTimeout:       2 * time.Second,
+		MinActiveBytes:    10,
+		PreviewMaxLines:   5,
+		PreviewDebounce:   200 * time.Millisecond,
+		AnimationDebounce: 100 * time.Millisecond,
+		ShowDoneMessage:   true,
+		DoneMessage:       "✓ Done",
 	}
 }
 
@@ -93,16 +121,25 @@ func NewActivityMonitor(w io.Writer, cfg ActivityMonitorConfig) *ActivityMonitor
 	if cfg.PreviewDebounce == 0 {
 		cfg.PreviewDebounce = 200 * time.Millisecond
 	}
+	if cfg.AnimationDebounce == 0 {
+		cfg.AnimationDebounce = 100 * time.Millisecond
+	}
+	if cfg.DoneMessage == "" {
+		cfg.DoneMessage = "✓ Done"
+	}
 
 	am := &ActivityMonitor{
-		writer:          w,
-		idleTimeout:     cfg.IdleTimeout,
-		onStateChange:   cfg.OnStateChange,
-		onOutputPreview: cfg.OnOutputPreview,
-		minActiveBytes:  cfg.MinActiveBytes,
-		previewMaxLines: cfg.PreviewMaxLines,
-		previewDebounce: cfg.PreviewDebounce,
-		stopCh:          make(chan struct{}),
+		writer:            w,
+		idleTimeout:       cfg.IdleTimeout,
+		onStateChange:     cfg.OnStateChange,
+		onOutputPreview:   cfg.OnOutputPreview,
+		minActiveBytes:    cfg.MinActiveBytes,
+		previewMaxLines:   cfg.PreviewMaxLines,
+		previewDebounce:   cfg.PreviewDebounce,
+		animationDebounce: cfg.AnimationDebounce,
+		showDoneMessage:   cfg.ShowDoneMessage,
+		doneMessage:       cfg.DoneMessage,
+		stopCh:            make(chan struct{}),
 	}
 
 	// Start the idle check goroutine
@@ -136,45 +173,68 @@ func (am *ActivityMonitor) Write(p []byte) (n int, err error) {
 }
 
 // captureForPreview accumulates output and extracts complete lines for preview.
+// It handles animated output by detecting carriage returns (\r) and debouncing
+// rapid updates to the same line before forwarding.
 func (am *ActivityMonitor) captureForPreview(p []byte) {
-	var hasLines bool
+	var hasNewLine bool
+	var hasAnimationUpdate bool
+	var shouldScheduleAnimationFlush bool
 
 	am.previewMu.Lock()
-	// Append to buffer
-	am.previewBuffer.Write(p)
 
-	// Extract complete lines
-	for {
-		line, err := am.previewBuffer.ReadString('\n')
-		if err != nil {
-			// No complete line yet, put partial line back
-			if len(line) > 0 {
-				am.previewBuffer.WriteString(line)
+	for _, b := range p {
+		switch b {
+		case '\r':
+			// Carriage return: line is being updated in place (animation)
+			// Reset line content but mark as animating
+			am.currentLine.Reset()
+			am.isAnimating = true
+			am.animationLastUpdate = time.Now()
+			hasAnimationUpdate = true
+
+		case '\n':
+			// Newline: commit the current line
+			if am.currentLine.Len() > 0 || am.isAnimating {
+				cleanLine := am.cleanLine(am.currentLine.String())
+				if cleanLine != "" {
+					am.previewLines = append(am.previewLines, cleanLine)
+					hasNewLine = true
+					// Keep only the last N lines
+					if len(am.previewLines) > am.previewMaxLines {
+						am.previewLines = am.previewLines[len(am.previewLines)-am.previewMaxLines:]
+					}
+				}
 			}
-			break
-		}
+			am.currentLine.Reset()
+			am.isAnimating = false
 
-		// Clean up the line (remove ANSI, trim, limit length)
-		cleanLine := am.cleanLine(line)
-		if cleanLine != "" {
-			am.previewLines = append(am.previewLines, cleanLine)
-			hasLines = true
-			// Keep only the last N lines
-			if len(am.previewLines) > am.previewMaxLines {
-				am.previewLines = am.previewLines[len(am.previewLines)-am.previewMaxLines:]
+		default:
+			// Regular character: append to current line
+			am.currentLine.WriteByte(b)
+			if am.isAnimating {
+				am.animationLastUpdate = time.Now()
+				hasAnimationUpdate = true
 			}
 		}
 	}
 
-	// Limit buffer size to prevent memory issues
-	if am.previewBuffer.Len() > 4096 {
-		am.previewBuffer.Reset()
+	// Limit current line buffer size to prevent memory issues
+	if am.currentLine.Len() > 4096 {
+		am.currentLine.Reset()
+		am.isAnimating = false
 	}
+
+	// Capture isAnimating state while holding lock to avoid race
+	shouldScheduleAnimationFlush = hasAnimationUpdate && am.isAnimating
+
 	am.previewMu.Unlock()
 
-	// Schedule debounced broadcast (outside lock to avoid deadlock)
-	if hasLines {
+	// Schedule broadcasts (outside lock to avoid deadlock)
+	if hasNewLine {
 		am.scheduleBroadcast()
+	}
+	if shouldScheduleAnimationFlush {
+		am.scheduleAnimationFlush()
 	}
 }
 
@@ -245,6 +305,63 @@ func (am *ActivityMonitor) scheduleBroadcast() {
 	}
 }
 
+// scheduleAnimationFlush schedules a debounced flush of the current animating line.
+// This waits until the line has been quiet (no updates) for animationDebounce duration,
+// then flushes the final state as a preview line.
+func (am *ActivityMonitor) scheduleAnimationFlush() {
+	// If already pending, don't schedule another - the existing one will check for updates
+	if am.animationPending.Load() {
+		return
+	}
+
+	if am.animationPending.CompareAndSwap(false, true) {
+		go func() {
+			defer am.animationPending.Store(false)
+
+			for {
+				select {
+				case <-am.stopCh:
+					return
+				case <-time.After(am.animationDebounce):
+					am.previewMu.Lock()
+
+					// Check if we're still animating and if enough time has passed
+					if !am.isAnimating {
+						am.previewMu.Unlock()
+						return
+					}
+
+					timeSinceUpdate := time.Since(am.animationLastUpdate)
+					if timeSinceUpdate < am.animationDebounce {
+						// More updates came in, wait longer
+						am.previewMu.Unlock()
+						continue
+					}
+
+					// Line has been quiet long enough - flush it
+					if am.currentLine.Len() > 0 {
+						cleanLine := am.cleanLine(am.currentLine.String())
+						if cleanLine != "" {
+							am.previewLines = append(am.previewLines, cleanLine)
+							// Keep only the last N lines
+							if len(am.previewLines) > am.previewMaxLines {
+								am.previewLines = am.previewLines[len(am.previewLines)-am.previewMaxLines:]
+							}
+						}
+						am.currentLine.Reset()
+					}
+					am.isAnimating = false
+					am.previewMu.Unlock()
+
+					// Broadcast the update
+					am.scheduleBroadcast()
+					return
+				}
+			}
+		}()
+	}
+}
+
 // sendPreview sends the current preview lines to the callback.
 func (am *ActivityMonitor) sendPreview() {
 	am.previewMu.Lock()
@@ -274,6 +391,28 @@ func (am *ActivityMonitor) setState(newState ActivityState) {
 	if oldState != newState {
 		if newState == ActivityIdle {
 			am.activityCounter.Store(0) // Reset counter on idle
+
+			// Add done message to preview when transitioning to idle
+			if am.showDoneMessage && am.onOutputPreview != nil {
+				am.previewMu.Lock()
+				// Flush any remaining animating line first
+				if am.currentLine.Len() > 0 {
+					cleanLine := am.cleanLine(am.currentLine.String())
+					if cleanLine != "" {
+						am.previewLines = append(am.previewLines, cleanLine)
+					}
+					am.currentLine.Reset()
+					am.isAnimating = false
+				}
+				// Add the done message
+				am.previewLines = append(am.previewLines, am.doneMessage)
+				// Keep only the last N lines
+				if len(am.previewLines) > am.previewMaxLines {
+					am.previewLines = am.previewLines[len(am.previewLines)-am.previewMaxLines:]
+				}
+				am.previewMu.Unlock()
+				am.scheduleBroadcast()
+			}
 		}
 		if am.onStateChange != nil {
 			am.onStateChange(newState)

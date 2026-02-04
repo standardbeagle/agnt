@@ -200,6 +200,9 @@ func (r *ProcessAutoRestarter) monitorProcess(processID string) {
 
 		log.Printf("[AUTO-RESTART] Restarting process %s (exit code was %d)", processID, exitCode)
 
+		// Clear URL tracker state so new process output is scanned fresh
+		r.daemon.urlTracker.ClearProcess(processID)
+
 		// Remove old process
 		r.daemon.hub.ProcessManager().RemoveByPath(processID, state.projectPath)
 
