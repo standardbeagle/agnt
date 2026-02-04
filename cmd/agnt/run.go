@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/aichannel"
+	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/daemon"
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/overlay"
@@ -740,45 +741,73 @@ func isKnownAIAgent(command string) bool {
 
 // buildAgntSystemPrompt queries the daemon for running services and builds
 // a system prompt to inject into Claude with context about agnt and auto-started services.
+// It loads configuration from .agnt.kdl to include configured scripts/proxies and any
+// custom system prompt settings.
 func buildAgntSystemPrompt(socketPath string) string {
 	if socketPath == "" {
 		socketPath = daemon.DefaultSocketPath()
 	}
 
+	// Load agnt config from current directory
+	cwd, _ := os.Getwd()
+	agntConfig, err := config.LoadAgntConfig(cwd)
+	if err != nil {
+		agntConfig = config.DefaultAgntConfig()
+	}
+
+	// If full system prompt override is set, use it directly
+	if agntConfig.AI != nil && agntConfig.AI.SystemPrompt != "" {
+		return agntConfig.AI.SystemPrompt
+	}
+
+	// Build the base prompt from config (includes configured scripts/proxies)
+	basePrompt := agntConfig.BuildSystemPrompt()
+
+	// Try to connect to daemon to add runtime state
 	client := daemon.NewClient(daemon.WithSocketPath(socketPath))
 	if err := client.Connect(); err != nil {
-		// Daemon not running, return minimal prompt
-		return "You are running inside agnt, a tool that gives AI coding agents browser superpowers. The agnt MCP tools (proxy, proc, proxylog, etc.) are available for browser debugging, screenshots, and dev server management."
+		// Daemon not running, return config-based prompt only
+		return basePrompt
 	}
 	defer client.Close()
 
 	var sb strings.Builder
-	sb.WriteString("You are running inside agnt, a tool that gives AI coding agents browser superpowers.\n\n")
+	sb.WriteString(basePrompt)
 
-	// Get running processes (global to see all)
+	// Add current runtime state
+	var hasRuntime bool
+
+	// Get running processes
 	procFilter := protocol.DirectoryFilter{Global: true}
 	procs, err := client.ProcList(procFilter)
 	if err == nil {
 		if processes, ok := procs["processes"].([]interface{}); ok && len(processes) > 0 {
-			sb.WriteString("**Running processes (auto-started by agnt):**\n")
+			if !hasRuntime {
+				sb.WriteString("\n## Current Runtime State\n")
+				hasRuntime = true
+			}
+			sb.WriteString("\n**Running processes:**\n")
 			for _, p := range processes {
 				if pm, ok := p.(map[string]interface{}); ok {
 					id := pm["id"]
 					state := pm["state"]
 					cmd := pm["command"]
-					sb.WriteString(fmt.Sprintf("- %s: %s (state: %s)\n", id, cmd, state))
+					sb.WriteString(fmt.Sprintf("- %s: `%s` (state: %s)\n", id, cmd, state))
 				}
 			}
-			sb.WriteString("\n")
 		}
 	}
 
-	// Get running proxies (global to see all)
+	// Get running proxies
 	proxyFilter := protocol.DirectoryFilter{Global: true}
 	proxies, err := client.ProxyList(proxyFilter)
 	if err == nil {
 		if proxyList, ok := proxies["proxies"].([]interface{}); ok && len(proxyList) > 0 {
-			sb.WriteString("**Running proxies (auto-started by agnt):**\n")
+			if !hasRuntime {
+				sb.WriteString("\n## Current Runtime State\n")
+				hasRuntime = true
+			}
+			sb.WriteString("\n**Running proxies:**\n")
 			for _, p := range proxyList {
 				if pm, ok := p.(map[string]interface{}); ok {
 					id := pm["id"]
@@ -787,11 +816,8 @@ func buildAgntSystemPrompt(socketPath string) string {
 					sb.WriteString(fmt.Sprintf("- %s: %s -> %s\n", id, listen, target))
 				}
 			}
-			sb.WriteString("\n")
 		}
 	}
-
-	sb.WriteString("Use agnt MCP tools (proxy, proc, proxylog, currentpage) for browser debugging, screenshots, JavaScript execution, and dev server management. Do NOT try to start processes or proxies that are already running.")
 
 	return sb.String()
 }
