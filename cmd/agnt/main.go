@@ -57,6 +57,7 @@ func init() {
 	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(daemonCmd)
 	rootCmd.AddCommand(sessionCmd)
+	rootCmd.AddCommand(aiCmd)
 
 	// Custom version output that includes daemon version
 	rootCmd.SetVersionTemplate(getVersionString())

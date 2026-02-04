@@ -16,7 +16,7 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.1.0
 	github.com/sblinch/kdl-go v0.0.0-20250930225324-bf4099d4614a
 	github.com/spf13/cobra v1.10.2
-	github.com/standardbeagle/claude-go v1.1.0
+	github.com/standardbeagle/claude-go v1.2.0
 	github.com/standardbeagle/go-cli-server v0.2.0
 	github.com/stretchr/testify v1.10.0
 	github.com/tmc/langchaingo v0.1.14
