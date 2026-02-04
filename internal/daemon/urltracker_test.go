@@ -381,3 +381,42 @@ func TestParseDevServerURLsWithMatchers(t *testing.T) {
 		})
 	}
 }
+
+// TestURLTracker_ClearProcess_EnablesRescanning verifies that ClearProcess
+// resets the scannedBytes counter, allowing a restarted process with the
+// same ID to have its output re-scanned for URLs.
+// This is a regression test for URL re-detection on process restart.
+func TestURLTracker_ClearProcess_EnablesRescanning(t *testing.T) {
+	config := DefaultURLTrackerConfig()
+	tracker := NewURLTracker(nil, config)
+
+	// Simulate a process that has been fully scanned (maxScanBytes reached)
+	tracker.mu.Lock()
+	tracker.scannedBytes["proc-1"] = maxScanBytes // 8KB - scan limit reached
+	tracker.urls["proc-1"] = []string{"http://localhost:3000"}
+	tracker.seenURLs["proc-1"] = map[string]bool{"http://localhost:3000": true}
+	tracker.mu.Unlock()
+
+	// Verify the process appears fully scanned
+	tracker.mu.RLock()
+	scannedBefore := tracker.scannedBytes["proc-1"]
+	tracker.mu.RUnlock()
+	if scannedBefore != maxScanBytes {
+		t.Fatalf("Expected scannedBytes to be %d, got %d", maxScanBytes, scannedBefore)
+	}
+
+	// Clear the process (simulates what happens during restart)
+	tracker.ClearProcess("proc-1")
+
+	// Verify scannedBytes is cleared
+	tracker.mu.RLock()
+	scannedAfter, exists := tracker.scannedBytes["proc-1"]
+	tracker.mu.RUnlock()
+
+	if exists {
+		t.Errorf("scannedBytes should not exist after ClearProcess, but got %d", scannedAfter)
+	}
+
+	// The key behavior: with scannedBytes cleared, a new process with the
+	// same ID will be scanned from byte 0 again, detecting new URLs
+}
