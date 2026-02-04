@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 
 	kdl "github.com/sblinch/kdl-go"
 )
@@ -24,6 +25,9 @@ type AgntConfig struct {
 
 	// Proxies to manage
 	Proxies map[string]*ProxyConfig `kdl:"proxies"`
+
+	// AI configuration for run and ai commands
+	AI *AIConfig `kdl:"ai"`
 
 	// Hooks configuration
 	Hooks *HooksConfig `kdl:"hooks"`
@@ -114,6 +118,18 @@ type ToastConfig struct {
 	Position string `kdl:"position"`
 	// MaxVisible is the max number of visible toasts (default 3)
 	MaxVisible int `kdl:"max-visible"`
+}
+
+// AIConfig configures AI agent behavior for run and ai commands.
+type AIConfig struct {
+	// Skill is a skill/persona name to use (e.g., "code-review", "debugging")
+	Skill string `kdl:"skill"`
+	// Env are environment variables to set for AI commands
+	Env map[string]string `kdl:"env"`
+	// SystemPrompt is a full system prompt that replaces the default
+	SystemPrompt string `kdl:"system-prompt"`
+	// AppendSystemPrompt is appended to the default system prompt
+	AppendSystemPrompt string `kdl:"append-system-prompt"`
 }
 
 // DefaultAgntConfig returns a config with sensible defaults.
@@ -218,6 +234,97 @@ func (c *AgntConfig) GetAutostartProxies() map[string]*ProxyConfig {
 	return result
 }
 
+// BuildSystemPrompt generates the system prompt based on configuration.
+// If SystemPrompt is set, it returns that directly.
+// Otherwise, it builds a prompt describing agnt features and configured services,
+// then appends AppendSystemPrompt if set.
+func (c *AgntConfig) BuildSystemPrompt() string {
+	// If full system prompt override is set, use it
+	if c.AI != nil && c.AI.SystemPrompt != "" {
+		return c.AI.SystemPrompt
+	}
+
+	var sb strings.Builder
+
+	// Base agnt description
+	sb.WriteString(`You have access to agnt, a tool that gives AI coding agents browser superpowers.
+
+## agnt Features
+
+agnt provides MCP tools for browser debugging and dev server management:
+
+- **proxy**: Reverse proxy with JS injection for browser instrumentation
+  - Start/stop proxies, capture traffic logs, execute JavaScript in browser
+  - Take screenshots, inspect elements, run accessibility audits
+
+- **proc**: Process management for dev servers
+  - Start/stop/restart scripts, view output, auto-restart on crash
+
+- **proxylog**: Query captured HTTP traffic and browser events
+  - Filter by type (error, xhr, console), search request/response bodies
+
+- **automation**: Headless Chrome via chromedp for automated testing
+  - Screenshots at multiple viewports, navigate, evaluate JS
+
+- **currentpage**: Track the active browser page/tab for context
+`)
+
+	// Add configured scripts
+	if len(c.Scripts) > 0 {
+		sb.WriteString("\n## Configured Scripts\n\n")
+		for name, script := range c.Scripts {
+			cmd := script.Run
+			if cmd == "" && script.Command != "" {
+				cmd = script.Command
+				if len(script.Args) > 0 {
+					cmd += " " + strings.Join(script.Args, " ")
+				}
+			}
+			autostart := ""
+			if script.Autostart {
+				autostart = " (autostart)"
+			}
+			sb.WriteString(fmt.Sprintf("- **%s**: `%s`%s\n", name, cmd, autostart))
+		}
+	}
+
+	// Add configured proxies
+	if len(c.Proxies) > 0 {
+		sb.WriteString("\n## Configured Proxies\n\n")
+		for name, proxy := range c.Proxies {
+			target := proxy.URL
+			if target == "" {
+				target = proxy.Target
+			}
+			if target == "" && proxy.Port > 0 {
+				target = fmt.Sprintf("http://localhost:%d", proxy.Port)
+			}
+			if target == "" && proxy.Script != "" {
+				target = fmt.Sprintf("(linked to script '%s')", proxy.Script)
+			}
+			autostart := ""
+			if proxy.Autostart {
+				autostart = " (autostart)"
+			}
+			sb.WriteString(fmt.Sprintf("- **%s**: %s%s\n", name, target, autostart))
+		}
+	}
+
+	sb.WriteString("\n## Usage Notes\n\n")
+	sb.WriteString("- Use `proc {action: \"list\"}` to see running processes\n")
+	sb.WriteString("- Use `proxy {action: \"list\"}` to see running proxies\n")
+	sb.WriteString("- Do NOT start processes or proxies that are already running\n")
+	sb.WriteString("- Use `proxy {action: \"exec\", ...}` to run JS in the browser\n")
+
+	// Append custom prompt if set
+	if c.AI != nil && c.AI.AppendSystemPrompt != "" {
+		sb.WriteString("\n")
+		sb.WriteString(c.AI.AppendSystemPrompt)
+	}
+
+	return sb.String()
+}
+
 // WriteDefaultAgntConfig writes a default configuration file with documentation.
 func WriteDefaultAgntConfig(path string) error {
 	defaultKDL := `// Agnt Configuration
@@ -296,6 +403,23 @@ toast {
     position "bottom-right"
     max-visible 3
 }
+
+// AI configuration for agnt run and agnt ai commands
+// ai {
+//     // Skill/persona to use (e.g., "code-review", "debugging")
+//     // skill "debugging"
+//
+//     // Environment variables for AI commands
+//     // env {
+//     //     ANTHROPIC_API_KEY "sk-..."
+//     // }
+//
+//     // Full system prompt (replaces the default agnt prompt)
+//     // system-prompt "You are a helpful assistant..."
+//
+//     // Append to the default system prompt (recommended)
+//     // append-system-prompt "Additional context for this project..."
+// }
 `
 	return os.WriteFile(path, []byte(defaultKDL), 0644)
 }

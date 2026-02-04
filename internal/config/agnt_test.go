@@ -588,6 +588,164 @@ func TestDefaultAgntConfig(t *testing.T) {
 	assert.Equal(t, 3, cfg.Toast.MaxVisible)
 }
 
+func TestParseAIConfig(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected *AIConfig
+	}{
+		{
+			name:     "no ai section",
+			input:    `scripts {}`,
+			expected: nil,
+		},
+		{
+			name: "ai with skill only",
+			input: `ai {
+    skill "debugging"
+}`,
+			expected: &AIConfig{Skill: "debugging"},
+		},
+		{
+			name: "ai with system-prompt override",
+			input: `ai {
+    system-prompt "You are a helpful assistant."
+}`,
+			expected: &AIConfig{SystemPrompt: "You are a helpful assistant."},
+		},
+		{
+			name: "ai with append-system-prompt",
+			input: `ai {
+    append-system-prompt "Focus on security."
+}`,
+			expected: &AIConfig{AppendSystemPrompt: "Focus on security."},
+		},
+		{
+			name: "ai with all options",
+			input: `ai {
+    skill "code-review"
+    system-prompt ""
+    append-system-prompt "This is a Node.js project."
+}`,
+			expected: &AIConfig{
+				Skill:              "code-review",
+				AppendSystemPrompt: "This is a Node.js project.",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := ParseAgntConfig(tt.input)
+			require.NoError(t, err)
+
+			if tt.expected == nil {
+				assert.Nil(t, cfg.AI)
+			} else {
+				require.NotNil(t, cfg.AI)
+				if tt.expected.Skill != "" {
+					assert.Equal(t, tt.expected.Skill, cfg.AI.Skill)
+				}
+				if tt.expected.SystemPrompt != "" {
+					assert.Equal(t, tt.expected.SystemPrompt, cfg.AI.SystemPrompt)
+				}
+				if tt.expected.AppendSystemPrompt != "" {
+					assert.Equal(t, tt.expected.AppendSystemPrompt, cfg.AI.AppendSystemPrompt)
+				}
+			}
+		})
+	}
+}
+
+func TestBuildSystemPrompt(t *testing.T) {
+	t.Run("full system prompt override", func(t *testing.T) {
+		cfg := &AgntConfig{
+			AI: &AIConfig{
+				SystemPrompt: "Custom system prompt.",
+			},
+			Scripts: map[string]*ScriptConfig{
+				"dev": {Run: "npm run dev"},
+			},
+		}
+
+		prompt := cfg.BuildSystemPrompt()
+		assert.Equal(t, "Custom system prompt.", prompt)
+	})
+
+	t.Run("default prompt with agnt features", func(t *testing.T) {
+		cfg := DefaultAgntConfig()
+
+		prompt := cfg.BuildSystemPrompt()
+		assert.Contains(t, prompt, "agnt")
+		assert.Contains(t, prompt, "proxy")
+		assert.Contains(t, prompt, "proc")
+		assert.Contains(t, prompt, "Usage Notes")
+	})
+
+	t.Run("prompt includes configured scripts", func(t *testing.T) {
+		cfg := DefaultAgntConfig()
+		cfg.Scripts = map[string]*ScriptConfig{
+			"dev":   {Run: "npm run dev", Autostart: true},
+			"build": {Run: "npm run build"},
+		}
+
+		prompt := cfg.BuildSystemPrompt()
+		assert.Contains(t, prompt, "Configured Scripts")
+		assert.Contains(t, prompt, "dev")
+		assert.Contains(t, prompt, "npm run dev")
+		assert.Contains(t, prompt, "(autostart)")
+		assert.Contains(t, prompt, "build")
+	})
+
+	t.Run("prompt includes configured proxies", func(t *testing.T) {
+		cfg := DefaultAgntConfig()
+		cfg.Proxies = map[string]*ProxyConfig{
+			"frontend": {URL: "http://localhost:3000", Autostart: true},
+			"backend":  {Port: 8080},
+		}
+
+		prompt := cfg.BuildSystemPrompt()
+		assert.Contains(t, prompt, "Configured Proxies")
+		assert.Contains(t, prompt, "frontend")
+		assert.Contains(t, prompt, "http://localhost:3000")
+		assert.Contains(t, prompt, "backend")
+		assert.Contains(t, prompt, "http://localhost:8080")
+	})
+
+	t.Run("prompt includes script-linked proxy", func(t *testing.T) {
+		cfg := DefaultAgntConfig()
+		cfg.Proxies = map[string]*ProxyConfig{
+			"dev": {Script: "dev-script"},
+		}
+
+		prompt := cfg.BuildSystemPrompt()
+		assert.Contains(t, prompt, "linked to script 'dev-script'")
+	})
+
+	t.Run("append system prompt", func(t *testing.T) {
+		cfg := DefaultAgntConfig()
+		cfg.AI = &AIConfig{
+			AppendSystemPrompt: "Focus on security best practices.",
+		}
+
+		prompt := cfg.BuildSystemPrompt()
+		assert.Contains(t, prompt, "agnt")                              // Has base prompt
+		assert.Contains(t, prompt, "Focus on security best practices.") // Has appended content
+	})
+
+	t.Run("system prompt takes precedence over append", func(t *testing.T) {
+		cfg := DefaultAgntConfig()
+		cfg.AI = &AIConfig{
+			SystemPrompt:       "Full override.",
+			AppendSystemPrompt: "This should be ignored.",
+		}
+
+		prompt := cfg.BuildSystemPrompt()
+		assert.Equal(t, "Full override.", prompt)
+		assert.NotContains(t, prompt, "This should be ignored.")
+	})
+}
+
 func TestParseAgntConfigErrors(t *testing.T) {
 	tests := []struct {
 		name        string
