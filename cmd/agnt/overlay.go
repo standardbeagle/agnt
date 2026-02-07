@@ -496,11 +496,13 @@ func (o *Overlay) formatPanelMessage(message string, auditReports []string, atta
 				if att.Summary != "" {
 					text += fmt.Sprintf(": %s", att.Summary)
 				}
-				text += "\n"
-				// Show specific file path if available
+				// Always show file path line - either the path or a note that it's missing
 				if att.FilePath != "" {
-					text += fmt.Sprintf("   → %s\n", att.FilePath)
+					text += fmt.Sprintf("\n   → %s", att.FilePath)
+				} else {
+					text += fmt.Sprintf("\n   → (file path not available - ID: %s)", att.ID)
 				}
+				text += "\n"
 			case "element":
 				if att.Selector != "" {
 					text += fmt.Sprintf(": %s", att.Selector)
@@ -510,6 +512,9 @@ func (o *Overlay) formatPanelMessage(message string, auditReports []string, atta
 				}
 				if att.Text != "" {
 					text += fmt.Sprintf(" - %q", truncateText(att.Text, 50))
+				}
+				if att.FilePath != "" {
+					text += fmt.Sprintf("\n   → %s", att.FilePath)
 				}
 				text += "\n"
 			case "sketch":
@@ -527,6 +532,9 @@ func (o *Overlay) formatPanelMessage(message string, auditReports []string, atta
 				}
 				if att.Text != "" {
 					text += fmt.Sprintf(" (%s)", att.Text)
+				}
+				if att.FilePath != "" {
+					text += fmt.Sprintf("\n   → %s", att.FilePath)
 				}
 				text += "\n"
 			}
