@@ -29,6 +29,9 @@ type DaemonTools struct {
 	sessionMu       sync.Mutex // Protects sessionCode
 	noAutoAttach    bool       // If true, skip auto-attach on connect
 	attachAttempted bool       // Whether we've attempted auto-attach
+
+	// Alert delivery via MCP notifications
+	alertSink daemon.MCPAlertSink
 }
 
 // NewDaemonTools creates a new daemon tools wrapper with auto-start and version checking.
@@ -46,6 +49,20 @@ func (dt *DaemonTools) SetNoAutoAttach(noAttach bool) {
 	dt.sessionMu.Lock()
 	defer dt.sessionMu.Unlock()
 	dt.noAutoAttach = noAttach
+}
+
+// SetAlertSink sets the MCP alert sink for delivering process output alerts.
+func (dt *DaemonTools) SetAlertSink(sink daemon.MCPAlertSink) {
+	dt.sessionMu.Lock()
+	defer dt.sessionMu.Unlock()
+	dt.alertSink = sink
+}
+
+// AlertSink returns the current MCP alert sink, if any.
+func (dt *DaemonTools) AlertSink() daemon.MCPAlertSink {
+	dt.sessionMu.Lock()
+	defer dt.sessionMu.Unlock()
+	return dt.alertSink
 }
 
 // SetSessionCode sets the session code directly (useful for testing or explicit attachment).

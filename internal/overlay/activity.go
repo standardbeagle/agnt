@@ -52,6 +52,9 @@ type ActivityMonitor struct {
 	// Done message
 	showDoneMessage bool
 	doneMessage     string
+
+	// Per-line callback for alert scanning
+	onOutputLine func(string)
 }
 
 // ActivityMonitorConfig configures the activity monitor.
@@ -92,6 +95,10 @@ type ActivityMonitorConfig struct {
 	// DoneMessage is the message to show when activity goes idle.
 	// Default: "✓ Done"
 	DoneMessage string
+
+	// OnOutputLine is called with each complete, cleaned line of output.
+	// Used by AlertScanner to detect error/warning patterns.
+	OnOutputLine func(string)
 }
 
 // DefaultActivityMonitorConfig returns the default configuration.
@@ -139,6 +146,7 @@ func NewActivityMonitor(w io.Writer, cfg ActivityMonitorConfig) *ActivityMonitor
 		animationDebounce: cfg.AnimationDebounce,
 		showDoneMessage:   cfg.ShowDoneMessage,
 		doneMessage:       cfg.DoneMessage,
+		onOutputLine:      cfg.OnOutputLine,
 		stopCh:            make(chan struct{}),
 	}
 
@@ -202,6 +210,10 @@ func (am *ActivityMonitor) captureForPreview(p []byte) {
 					// Keep only the last N lines
 					if len(am.previewLines) > am.previewMaxLines {
 						am.previewLines = am.previewLines[len(am.previewLines)-am.previewMaxLines:]
+					}
+					// Notify alert scanner of each complete line
+					if am.onOutputLine != nil {
+						go am.onOutputLine(cleanLine)
 					}
 				}
 			}

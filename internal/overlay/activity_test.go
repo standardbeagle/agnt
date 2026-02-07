@@ -675,3 +675,75 @@ func TestActivityMonitorRapidAnimationDebounce(t *testing.T) {
 		t.Errorf("expected final frame %q, got %q", "\\ Loading", lastLines[0])
 	}
 }
+
+// TestActivityMonitorOnOutputLine verifies that the OnOutputLine callback is
+// invoked with each complete, cleaned line of output.
+func TestActivityMonitorOnOutputLine(t *testing.T) {
+	buf := &safeWriter{}
+	var lines []string
+	var linesMu sync.Mutex
+
+	cfg := DefaultActivityMonitorConfig()
+	cfg.OnOutputPreview = func([]string) {} // Required to enable captureForPreview
+	cfg.OnOutputLine = func(line string) {
+		linesMu.Lock()
+		lines = append(lines, line)
+		linesMu.Unlock()
+	}
+
+	am := NewActivityMonitor(buf, cfg)
+	defer am.Stop()
+
+	// Write lines with newlines
+	am.Write([]byte("first line\nsecond line\nthird\n"))
+
+	// Allow goroutines to run
+	time.Sleep(100 * time.Millisecond)
+
+	linesMu.Lock()
+	defer linesMu.Unlock()
+	if len(lines) != 3 {
+		t.Fatalf("expected 3 lines, got %d: %v", len(lines), lines)
+	}
+	if lines[0] != "first line" {
+		t.Errorf("expected 'first line', got %q", lines[0])
+	}
+	if lines[1] != "second line" {
+		t.Errorf("expected 'second line', got %q", lines[1])
+	}
+	if lines[2] != "third" {
+		t.Errorf("expected 'third', got %q", lines[2])
+	}
+}
+
+// TestActivityMonitorOnOutputLineStripsANSI verifies ANSI codes are stripped from callback lines.
+func TestActivityMonitorOnOutputLineStripsANSI(t *testing.T) {
+	buf := &safeWriter{}
+	var lines []string
+	var linesMu sync.Mutex
+
+	cfg := DefaultActivityMonitorConfig()
+	cfg.OnOutputPreview = func([]string) {}
+	cfg.OnOutputLine = func(line string) {
+		linesMu.Lock()
+		lines = append(lines, line)
+		linesMu.Unlock()
+	}
+
+	am := NewActivityMonitor(buf, cfg)
+	defer am.Stop()
+
+	// Write line with ANSI color codes
+	am.Write([]byte("\x1b[31mERROR:\x1b[0m something failed\n"))
+
+	time.Sleep(100 * time.Millisecond)
+
+	linesMu.Lock()
+	defer linesMu.Unlock()
+	if len(lines) != 1 {
+		t.Fatalf("expected 1 line, got %d: %v", len(lines), lines)
+	}
+	if lines[0] != "ERROR: something failed" {
+		t.Errorf("expected 'ERROR: something failed', got %q", lines[0])
+	}
+}

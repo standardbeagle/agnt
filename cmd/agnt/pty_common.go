@@ -2,9 +2,12 @@ package main
 
 import (
 	"context"
+	"log"
+	"regexp"
 	"sync"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/daemon"
 	"github.com/standardbeagle/agnt/internal/overlay"
 )
@@ -235,4 +238,67 @@ func startDaemonSession(ctx context.Context, cfg daemonSessionConfig, onAutostar
 	}()
 
 	return handle
+}
+
+// setupAlertScanner creates an AlertScanner from .agnt.kdl config.
+// Returns nil if alerts are disabled or config can't be loaded.
+func setupAlertScanner(projectPath, sessionCode string, netOverlay *Overlay, actState func() overlay.ActivityState) *overlay.AlertScanner {
+	agntCfg, _ := config.LoadAgntConfig(projectPath)
+
+	// Check if alerts are explicitly disabled
+	if agntCfg.Alerts != nil && !agntCfg.Alerts.IsEnabled() {
+		return nil
+	}
+
+	scannerCfg := overlay.AlertScannerConfig{
+		ActivityState: actState,
+		OnAlert: func(batch *overlay.AlertBatch) {
+			formatted := batch.Format()
+			if formatted == "" {
+				return
+			}
+			if netOverlay != nil {
+				netOverlay.typeText(TypeMessage{
+					Text:    formatted,
+					Enter:   true,
+					Instant: true,
+				})
+			}
+		},
+	}
+
+	// Apply config overrides
+	if agntCfg.Alerts != nil {
+		if agntCfg.Alerts.BatchWindow > 0 {
+			scannerCfg.BatchWindow = time.Duration(agntCfg.Alerts.BatchWindow) * time.Second
+		}
+		if agntCfg.Alerts.DedupeWindow > 0 {
+			scannerCfg.DedupeWindow = time.Duration(agntCfg.Alerts.DedupeWindow) * time.Second
+		}
+		scannerCfg.DisabledIDs = agntCfg.Alerts.Disable
+
+		// Convert custom patterns from config
+		for id, pcfg := range agntCfg.Alerts.Patterns {
+			compiled, err := regexp.Compile(pcfg.Pattern)
+			if err != nil {
+				log.Printf("[alerts] invalid pattern %q: %v", id, err)
+				continue
+			}
+			sev := overlay.AlertSeverityError
+			switch pcfg.Severity {
+			case "warning":
+				sev = overlay.AlertSeverityWarning
+			case "info":
+				sev = overlay.AlertSeverityInfo
+			}
+			scannerCfg.Patterns = append(scannerCfg.Patterns, &overlay.AlertPattern{
+				ID:       id,
+				Pattern:  compiled,
+				Severity: sev,
+				Category: "custom",
+			})
+		}
+	}
+
+	return overlay.NewAlertScanner(scannerCfg)
 }

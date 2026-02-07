@@ -520,6 +520,20 @@ func runWithConPTY(ctx context.Context, args []string, socketPath string, sessio
 				netOverlay.NotifyActivity()
 			}
 		}
+		// Set up alert scanner for process output monitoring
+		alertScanner := setupAlertScanner(projectPath, sessionCode, netOverlay, func() overlay.ActivityState {
+			if activityMonitor != nil {
+				return activityMonitor.State()
+			}
+			return overlay.ActivityIdle
+		})
+		if alertScanner != nil {
+			defer alertScanner.Stop()
+			activityCfg.OnOutputLine = func(line string) {
+				alertScanner.ProcessLine(line, sessionCode)
+			}
+		}
+
 		activityMonitor = overlay.NewActivityMonitor(browserHelper, activityCfg)
 
 		_, _ = io.Copy(activityMonitor, ptmx)

@@ -798,3 +798,136 @@ func TestParseAgntConfigErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestParseAlertsConfig(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		validate func(t *testing.T, cfg *AgntConfig)
+	}{
+		{
+			name:  "no alerts section",
+			input: `scripts {}`,
+			validate: func(t *testing.T, cfg *AgntConfig) {
+				assert.Nil(t, cfg.Alerts)
+			},
+		},
+		{
+			name: "alerts enabled explicitly",
+			input: `alerts {
+    enabled true
+}`,
+			validate: func(t *testing.T, cfg *AgntConfig) {
+				require.NotNil(t, cfg.Alerts)
+				require.NotNil(t, cfg.Alerts.Enabled)
+				assert.True(t, *cfg.Alerts.Enabled)
+				assert.True(t, cfg.Alerts.IsEnabled())
+			},
+		},
+		{
+			name: "alerts disabled",
+			input: `alerts {
+    enabled false
+}`,
+			validate: func(t *testing.T, cfg *AgntConfig) {
+				require.NotNil(t, cfg.Alerts)
+				require.NotNil(t, cfg.Alerts.Enabled)
+				assert.False(t, *cfg.Alerts.Enabled)
+				assert.False(t, cfg.Alerts.IsEnabled())
+			},
+		},
+		{
+			name: "alerts with custom batch window",
+			input: `alerts {
+    batch-window 5
+    dedupe-window 120
+}`,
+			validate: func(t *testing.T, cfg *AgntConfig) {
+				require.NotNil(t, cfg.Alerts)
+				assert.Equal(t, 5, cfg.Alerts.BatchWindow)
+				assert.Equal(t, 120, cfg.Alerts.DedupeWindow)
+			},
+		},
+		{
+			name: "alerts with disable list",
+			input: `alerts {
+    disable "connection-refused"
+}`,
+			validate: func(t *testing.T, cfg *AgntConfig) {
+				require.NotNil(t, cfg.Alerts)
+				assert.Contains(t, cfg.Alerts.Disable, "connection-refused")
+			},
+		},
+		{
+			name: "alerts with custom patterns",
+			input: `alerts {
+    patterns {
+        "my-custom" {
+            pattern "MY_APP_ERROR:"
+            severity "error"
+        }
+    }
+}`,
+			validate: func(t *testing.T, cfg *AgntConfig) {
+				require.NotNil(t, cfg.Alerts)
+				require.NotNil(t, cfg.Alerts.Patterns)
+				p, ok := cfg.Alerts.Patterns["my-custom"]
+				require.True(t, ok)
+				assert.Equal(t, "MY_APP_ERROR:", p.Pattern)
+				assert.Equal(t, "error", p.Severity)
+			},
+		},
+		{
+			name: "alerts with full config",
+			input: `alerts {
+    enabled true
+    batch-window 3
+    dedupe-window 60
+    patterns {
+        "custom-warn" {
+            pattern "DEPRECATION:"
+            severity "warning"
+        }
+    }
+    disable "generic-segfault"
+}`,
+			validate: func(t *testing.T, cfg *AgntConfig) {
+				require.NotNil(t, cfg.Alerts)
+				assert.True(t, cfg.Alerts.IsEnabled())
+				assert.Equal(t, 3, cfg.Alerts.BatchWindow)
+				assert.Equal(t, 60, cfg.Alerts.DedupeWindow)
+				require.Contains(t, cfg.Alerts.Patterns, "custom-warn")
+				assert.Equal(t, "DEPRECATION:", cfg.Alerts.Patterns["custom-warn"].Pattern)
+				assert.Contains(t, cfg.Alerts.Disable, "generic-segfault")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := ParseAgntConfig(tt.input)
+			require.NoError(t, err)
+			tt.validate(t, cfg)
+		})
+	}
+}
+
+func TestAlertsConfigIsEnabled(t *testing.T) {
+	// nil config defaults to true
+	var nilCfg *AlertsConfig
+	assert.True(t, nilCfg.IsEnabled())
+
+	// nil Enabled field defaults to true
+	cfg := &AlertsConfig{}
+	assert.True(t, cfg.IsEnabled())
+
+	// Explicit true
+	trueVal := true
+	cfg = &AlertsConfig{Enabled: &trueVal}
+	assert.True(t, cfg.IsEnabled())
+
+	// Explicit false
+	falseVal := false
+	cfg = &AlertsConfig{Enabled: &falseVal}
+	assert.False(t, cfg.IsEnabled())
+}
