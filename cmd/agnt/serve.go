@@ -48,6 +48,23 @@ func init() {
 	mcpCmd.Flags().BoolVar(&mcpNoAttach, "no-attach", false, "Don't auto-attach to existing session (operate globally)")
 }
 
+// mcpAlertSink implements daemon.MCPAlertSink to deliver alerts via MCP Log notifications.
+type mcpAlertSink struct {
+	server *mcp.Server
+}
+
+func (s *mcpAlertSink) SendAlert(level string, message string) error {
+	mcpLevel := mcp.LoggingLevel(level)
+	for session := range s.server.Sessions() {
+		_ = session.Log(context.Background(), &mcp.LoggingMessageParams{
+			Level:  mcpLevel,
+			Logger: "agnt-alerts",
+			Data:   message,
+		})
+	}
+	return nil
+}
+
 func runServe(cmd *cobra.Command, args []string) {
 	socketPath, _ := cmd.Flags().GetString("socket")
 	if socketPath == "" {
@@ -136,6 +153,14 @@ Available tools:
 	} else {
 		tools.RegisterSnapshotTools(server, snapshotManager)
 	}
+
+	// Set up MCP alert sink for process output alerts.
+	// The AlertHub in the daemon can route alerts to these sessions.
+	// For now, alerts from process output are delivered via the PTY overlay path
+	// in agnt run. This MCP sink enables future daemon-side alert routing.
+	alertSink := &mcpAlertSink{server: server}
+	_ = alertSink // Available for daemon alert hub integration
+	dt.SetAlertSink(alertSink)
 
 	// Handle context cancellation
 	go func() {

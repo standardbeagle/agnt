@@ -34,6 +34,9 @@ type AgntConfig struct {
 
 	// Toast notification settings
 	Toast *ToastConfig `kdl:"toast"`
+
+	// Alerts configuration for process output monitoring
+	Alerts *AlertsConfig `kdl:"alerts"`
 }
 
 // AgntProjectMeta contains optional project metadata in .agnt.kdl.
@@ -118,6 +121,43 @@ type ToastConfig struct {
 	Position string `kdl:"position"`
 	// MaxVisible is the max number of visible toasts (default 3)
 	MaxVisible int `kdl:"max-visible"`
+}
+
+// AlertsConfig configures process output alert monitoring.
+type AlertsConfig struct {
+	// Enabled controls whether alerts are active. Default: true.
+	Enabled *bool `kdl:"enabled"`
+
+	// Patterns defines custom alert patterns keyed by ID.
+	Patterns map[string]*AlertPatternConfig `kdl:"patterns"`
+
+	// Disable is a list of built-in pattern IDs to disable.
+	Disable []string `kdl:"disable"`
+
+	// BatchWindow is the batching window in seconds before delivering alerts.
+	// Default: 3.
+	BatchWindow int `kdl:"batch-window"`
+
+	// DedupeWindow is the deduplication window in seconds.
+	// Duplicate alerts within this window are suppressed. Default: 60.
+	DedupeWindow int `kdl:"dedupe-window"`
+}
+
+// AlertPatternConfig defines a custom alert pattern in configuration.
+type AlertPatternConfig struct {
+	// Pattern is a regular expression to match against output lines.
+	Pattern string `kdl:"pattern"`
+
+	// Severity is "error", "warning", or "info".
+	Severity string `kdl:"severity"`
+}
+
+// IsEnabled returns whether alerts are enabled (defaults to true).
+func (c *AlertsConfig) IsEnabled() bool {
+	if c == nil || c.Enabled == nil {
+		return true
+	}
+	return *c.Enabled
 }
 
 // AIConfig configures AI agent behavior for run and ai commands.
@@ -403,6 +443,24 @@ toast {
     position "bottom-right"
     max-visible 3
 }
+
+// Process output alert monitoring
+// alerts {
+//     enabled true
+//     batch-window 3
+//     dedupe-window 60
+//
+//     // Custom patterns (keyed by ID)
+//     // patterns {
+//     //     "my-custom" {
+//     //         pattern "MY_APP_ERROR:"
+//     //         severity "error"
+//     //     }
+//     // }
+//
+//     // Disable built-in patterns by ID
+//     // disable "connection-refused"
+// }
 
 // AI configuration for agnt run and agnt ai commands
 // ai {

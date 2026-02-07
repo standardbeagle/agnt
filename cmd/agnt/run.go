@@ -579,6 +579,21 @@ func runWithPTY(ctx context.Context, args []string, socketPath string, sessionCo
 			// Broadcast output preview to daemon (which forwards to browser indicator)
 			daemonHandle.BroadcastOutputPreview(lines)
 		}
+
+		// Set up alert scanner for process output monitoring
+		alertScanner := setupAlertScanner(projectPath, sessionCode, netOverlay, func() overlay.ActivityState {
+			if activityMonitor != nil {
+				return activityMonitor.State()
+			}
+			return overlay.ActivityIdle
+		})
+		if alertScanner != nil {
+			defer alertScanner.Stop()
+			activityCfg.OnOutputLine = func(line string) {
+				alertScanner.ProcessLine(line, sessionCode)
+			}
+		}
+
 		activityMonitor = overlay.NewActivityMonitor(outputDest, activityCfg)
 
 		_, _ = io.Copy(activityMonitor, ptmx)
