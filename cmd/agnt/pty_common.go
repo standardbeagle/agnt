@@ -169,13 +169,9 @@ func startDaemonSession(ctx context.Context, cfg daemonSessionConfig, onAutostar
 			config.AutoStartConfig.SocketPath = cfg.SocketPath
 		}
 
-		// Re-register overlay and session when connection is restored after daemon restart
+		// Re-register session when connection is restored after daemon restart.
+		// Session registration handles per-project overlay endpoint scoping.
 		config.OnReconnect = func(client *daemon.Client) error {
-			_, err := client.OverlaySet(cfg.OverlayEndpoint)
-			if err != nil {
-				return err
-			}
-			// Re-register session
 			_, _ = client.SessionRegister(cfg.SessionCode, cfg.OverlayEndpoint, cfg.ProjectPath, cfg.Command, cfg.CmdArgs)
 			return nil
 		}
@@ -185,10 +181,7 @@ func startDaemonSession(ctx context.Context, cfg daemonSessionConfig, onAutostar
 			return // Daemon connection is best-effort, non-critical
 		}
 
-		// Register overlay endpoint on initial connect (best-effort)
-		_, _ = handle.client.OverlaySet(cfg.OverlayEndpoint)
-
-		// Register session with daemon (autostart happens server-side)
+		// Register session with daemon (autostart and overlay scoping happen server-side)
 		result, err := handle.client.SessionRegister(cfg.SessionCode, cfg.OverlayEndpoint, cfg.ProjectPath, cfg.Command, cfg.CmdArgs)
 		if err != nil {
 			return
