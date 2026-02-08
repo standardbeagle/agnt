@@ -263,11 +263,25 @@ func (c *AgntConfig) GetAutostartScripts() map[string]*ScriptConfig {
 	return result
 }
 
-// GetAutostartProxies returns proxies configured for autostart.
+// HasExplicitTarget returns true if the proxy has an explicitly configured target
+// (URL, Target, or Port) rather than being linked to a script for URL detection.
+func (p *ProxyConfig) HasExplicitTarget() bool {
+	return p.URL != "" || p.Target != "" || p.Port > 0
+}
+
+// ShouldAutostart returns true if this proxy should start automatically.
+// A proxy auto-starts if Autostart is explicitly true, or if it has an explicit
+// target (URL/Target/Port) without being script-linked (script-linked proxies
+// are created automatically when URLs are detected in script output).
+func (p *ProxyConfig) ShouldAutostart() bool {
+	return p.Autostart || (p.HasExplicitTarget() && p.Script == "")
+}
+
+// GetAutostartProxies returns proxies that should auto-start.
 func (c *AgntConfig) GetAutostartProxies() map[string]*ProxyConfig {
 	result := make(map[string]*ProxyConfig)
 	for name, proxy := range c.Proxies {
-		if proxy.Autostart {
+		if proxy.ShouldAutostart() {
 			result[name] = proxy
 		}
 	}
@@ -343,7 +357,7 @@ agnt provides MCP tools for browser debugging and dev server management:
 				target = fmt.Sprintf("(linked to script '%s')", proxy.Script)
 			}
 			autostart := ""
-			if proxy.Autostart {
+			if proxy.ShouldAutostart() {
 				autostart = " (autostart)"
 			}
 			sb.WriteString(fmt.Sprintf("- **%s**: %s%s\n", name, target, autostart))

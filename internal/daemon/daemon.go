@@ -386,8 +386,14 @@ func (d *Daemon) restoreProxies() {
 			continue
 		}
 
-		// Configure overlay endpoint
-		if overlayEndpoint != "" {
+		// Configure overlay endpoint: prefer session-scoped, fall back to global
+		if pc.Path != "" {
+			if session, ok := d.sessionRegistry.FindByDirectory(pc.Path); ok && session.OverlayPath != "" {
+				proxyServer.SetOverlayEndpoint(session.OverlayPath)
+			} else if overlayEndpoint != "" {
+				proxyServer.SetOverlayEndpoint(overlayEndpoint)
+			}
+		} else if overlayEndpoint != "" {
 			proxyServer.SetOverlayEndpoint(overlayEndpoint)
 		}
 
@@ -1085,17 +1091,12 @@ func (d *Daemon) autostartScript(ctx context.Context, name string, script *confi
 }
 
 // autostartProxy starts a single proxy from config.
-// Only handles fully-specified proxies (explicit URL or port).
-// Script-linked proxies are created automatically by the event system when URLs are detected.
+// Called by RunAutostart with proxies from GetAutostartProxies (explicit target or Autostart flag).
+// Script-linked proxies are skipped here — they're created by the event system when URLs are detected.
 func (d *Daemon) autostartProxy(ctx context.Context, name string, proxyConfig *config.ProxyConfig, projectPath string) error {
 	// Skip script-linked proxies - they're handled by URLDetected events
 	if proxyConfig.Script != "" {
 		log.Printf("[DEBUG] Proxy %s is script-linked, skipping auto-start (will be created when URLs detected)", name)
-		return nil
-	}
-
-	// Only auto-start if explicitly requested
-	if !proxyConfig.Autostart {
 		return nil
 	}
 

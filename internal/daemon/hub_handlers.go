@@ -2263,6 +2263,17 @@ func (d *Daemon) hubHandleSessionRegister(conn *hubpkg.Connection, cmd *hubproto
 	// Associate session with this connection for cleanup
 	conn.SetSessionCode(code)
 
+	// Update overlay endpoint for existing proxies matching this project.
+	// This is session-scoped: only proxies for the same project get updated,
+	// avoiding global clobbering that would affect other sessions/projects.
+	if session.OverlayPath != "" && session.ProjectPath != "" {
+		for _, p := range d.proxym.List() {
+			if normalizePath(p.Path) == session.ProjectPath {
+				p.SetOverlayEndpoint(session.OverlayPath)
+			}
+		}
+	}
+
 	// Run autostart for this project
 	autostartResult := d.RunAutostart(context.Background(), metadata.ProjectPath)
 

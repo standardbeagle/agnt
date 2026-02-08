@@ -2923,3 +2923,99 @@ func TestHubIntegration_ProxyHandlerErrors(t *testing.T) {
 		}
 	})
 }
+
+func TestHubIntegration_SessionOverlayScoping(t *testing.T) {
+	tmpDir := t.TempDir()
+	sockPath := filepath.Join(tmpDir, "test.sock")
+
+	projectA := filepath.Join(tmpDir, "project-a")
+	projectB := filepath.Join(tmpDir, "project-b")
+	os.MkdirAll(projectA, 0755)
+	os.MkdirAll(projectB, 0755)
+
+	daemon := New(DaemonConfig{
+		SocketPath:   sockPath,
+		MaxClients:   10,
+		WriteTimeout: 5 * time.Second,
+	})
+
+	if err := daemon.Start(); err != nil {
+		t.Fatalf("Failed to start daemon: %v", err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		daemon.Stop(ctx)
+	}()
+
+	client := NewClient(WithSocketPath(sockPath))
+	if err := client.Connect(); err != nil {
+		t.Fatalf("Failed to connect: %v", err)
+	}
+	defer client.Close()
+
+	// Create proxies in different projects
+	proxyA := "proj-a:dev"
+	proxyB := "proj-b:dev"
+
+	_, err := client.ProxyStart(proxyA, "http://localhost:3000", 0, 100, projectA)
+	if err != nil {
+		t.Fatalf("ProxyStart A failed: %v", err)
+	}
+	defer client.ProxyStop(proxyA)
+
+	_, err = client.ProxyStart(proxyB, "http://localhost:4000", 0, 100, projectB)
+	if err != nil {
+		t.Fatalf("ProxyStart B failed: %v", err)
+	}
+	defer client.ProxyStop(proxyB)
+
+	// Register session for project A with an overlay path
+	overlayA := "/tmp/overlay-a.sock"
+	_, err = client.SessionRegister("session-a", overlayA, projectA, "test", nil)
+	if err != nil {
+		t.Fatalf("Session register A failed: %v", err)
+	}
+
+	// Verify: proxy A should have the overlay endpoint, proxy B should not
+	proxies := daemon.ProxyManager().List()
+	for _, p := range proxies {
+		endpoint := p.OverlayNotifier().GetEndpoint()
+		if p.ID == proxyA {
+			if endpoint != overlayA {
+				t.Errorf("Proxy A overlay: got %q, want %q", endpoint, overlayA)
+			}
+		} else if p.ID == proxyB {
+			if endpoint != "" {
+				t.Errorf("Proxy B overlay: got %q, want empty (different project)", endpoint)
+			}
+		}
+	}
+
+	// Now register session for project B with a different overlay
+	overlayB := "/tmp/overlay-b.sock"
+	client2 := NewClient(WithSocketPath(sockPath))
+	if err := client2.Connect(); err != nil {
+		t.Fatalf("Failed to connect client2: %v", err)
+	}
+	defer client2.Close()
+
+	_, err = client2.SessionRegister("session-b", overlayB, projectB, "test", nil)
+	if err != nil {
+		t.Fatalf("Session register B failed: %v", err)
+	}
+
+	// Verify: proxy A still has overlay A, proxy B now has overlay B
+	for _, p := range daemon.ProxyManager().List() {
+		endpoint := p.OverlayNotifier().GetEndpoint()
+		if p.ID == proxyA {
+			if endpoint != overlayA {
+				t.Errorf("After B registration, proxy A overlay: got %q, want %q", endpoint, overlayA)
+			}
+		} else if p.ID == proxyB {
+			if endpoint != overlayB {
+				t.Errorf("After B registration, proxy B overlay: got %q, want %q", endpoint, overlayB)
+			}
+		}
+	}
+}

@@ -536,6 +536,49 @@ func TestFindAgntConfigFile(t *testing.T) {
 	assert.Equal(t, "", found)
 }
 
+func TestHasExplicitTarget(t *testing.T) {
+	tests := []struct {
+		name   string
+		proxy  ProxyConfig
+		expect bool
+	}{
+		{"URL set", ProxyConfig{URL: "http://localhost:3000"}, true},
+		{"Target set", ProxyConfig{Target: "http://localhost:8080"}, true},
+		{"Port set", ProxyConfig{Port: 3000}, true},
+		{"Script only", ProxyConfig{Script: "dev"}, false},
+		{"Script with fallback port", ProxyConfig{Script: "dev", FallbackPort: 3000}, false},
+		{"Empty config", ProxyConfig{}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expect, tt.proxy.HasExplicitTarget())
+		})
+	}
+}
+
+func TestShouldAutostart(t *testing.T) {
+	tests := []struct {
+		name   string
+		proxy  ProxyConfig
+		expect bool
+	}{
+		{"Autostart flag", ProxyConfig{Autostart: true, Script: "dev"}, true},
+		{"Explicit target without script", ProxyConfig{Target: "http://localhost:3000"}, true},
+		{"Explicit URL without script", ProxyConfig{URL: "http://localhost:3000"}, true},
+		{"Explicit port without script", ProxyConfig{Port: 3000}, true},
+		{"Script-linked with target", ProxyConfig{Script: "dev", Port: 3000}, false},
+		{"Script-linked no target", ProxyConfig{Script: "dev"}, false},
+		{"Empty config", ProxyConfig{}, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expect, tt.proxy.ShouldAutostart())
+		})
+	}
+}
+
 func TestGetAutostartMethods(t *testing.T) {
 	cfg := &AgntConfig{
 		Scripts: map[string]*ScriptConfig{
@@ -559,12 +602,38 @@ func TestGetAutostartMethods(t *testing.T) {
 	assert.NotContains(t, autostartScripts, "build")
 	assert.NotContains(t, autostartScripts, "test")
 
-	// Test GetAutostartProxies
+	// Test GetAutostartProxies - now includes explicit-target proxies
 	autostartProxies := cfg.GetAutostartProxies()
-	assert.Len(t, autostartProxies, 2)
+	assert.Len(t, autostartProxies, 3, "explicit-target proxy 'manual' should auto-start")
 	assert.Contains(t, autostartProxies, "frontend")
 	assert.Contains(t, autostartProxies, "backend")
-	assert.NotContains(t, autostartProxies, "manual")
+	assert.Contains(t, autostartProxies, "manual")
+}
+
+func TestGetAutostartProxiesExplicitTarget(t *testing.T) {
+	cfg := &AgntConfig{
+		Scripts: map[string]*ScriptConfig{},
+		Proxies: map[string]*ProxyConfig{
+			// Explicit target without autostart flag - should auto-start
+			"dev":       {Target: "http://localhost:3847"},
+			"with-url":  {URL: "http://localhost:3000"},
+			"with-port": {Port: 8080},
+			// Script-linked without explicit target - should NOT auto-start
+			"script-only": {Script: "dev", FallbackPort: 3000},
+			// Script-linked with explicit target - should NOT auto-start (script handles it)
+			"script-with-port": {Script: "dev", Port: 3000},
+			// Explicit autostart false with target - should NOT auto-start
+			// Note: Autostart:false is zero value, same as unset for bool.
+			// Since we can't distinguish, explicit-target always auto-starts.
+		},
+	}
+
+	autostartProxies := cfg.GetAutostartProxies()
+	assert.Contains(t, autostartProxies, "dev", "explicit target should auto-start")
+	assert.Contains(t, autostartProxies, "with-url", "explicit URL should auto-start")
+	assert.Contains(t, autostartProxies, "with-port", "explicit port should auto-start")
+	assert.NotContains(t, autostartProxies, "script-only", "script-only should not auto-start")
+	assert.NotContains(t, autostartProxies, "script-with-port", "script-linked with port should not auto-start")
 }
 
 func TestDefaultAgntConfig(t *testing.T) {
