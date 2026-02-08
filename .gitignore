@@ -1,4 +1,5 @@
-# Binaries (root level only, not cmd/devtool-mcp/)
+# Binaries (root level only)
+/agnt
 /devtool-mcp
 *.exe
 *.dll
