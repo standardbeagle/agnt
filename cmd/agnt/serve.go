@@ -8,6 +8,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/debug"
+
 	"github.com/standardbeagle/agnt/internal/daemon"
 	"github.com/standardbeagle/agnt/internal/proxy"
 	"github.com/standardbeagle/agnt/internal/snapshot"
@@ -165,12 +167,12 @@ Available tools:
 	// Handle context cancellation
 	go func() {
 		<-ctx.Done()
-		log.Println("MCP client shutdown signal received...")
+		debug.Log("mcp", "MCP client shutdown signal received")
 	}()
 
 	// Run server over stdio
 	log.SetOutput(os.Stderr)
-	log.Printf("Starting %s v%s (daemon mode)", appName, appVersion)
+	debug.Log("mcp", "Starting %s v%s (daemon mode)", appName, appVersion)
 
 	if err := server.Run(ctx, &mcp.StdioTransport{}); err != nil {
 		if ctx.Err() == nil {
@@ -178,7 +180,7 @@ Available tools:
 		}
 	}
 
-	log.Println("MCP client shutdown complete")
+	debug.Log("mcp", "MCP client shutdown complete")
 }
 
 // runLegacyServer runs in the original mode without a daemon.
@@ -229,7 +231,7 @@ func runLegacyServer() {
 	// Handle shutdown in background
 	go func() {
 		<-ctx.Done()
-		log.Println("Shutdown signal received, stopping all processes and proxies...")
+		debug.Log("mcp", "Shutdown signal received, stopping all processes and proxies")
 
 		shutdownCtx, shutdownCancel := context.WithTimeout(
 			context.Background(),
@@ -238,17 +240,17 @@ func runLegacyServer() {
 		defer shutdownCancel()
 
 		if err := pm.Shutdown(shutdownCtx); err != nil {
-			log.Printf("Process manager shutdown error: %v", err)
+			debug.Error("mcp", "Process manager shutdown error: %v", err)
 		}
 
 		if err := proxym.Shutdown(shutdownCtx); err != nil {
-			log.Printf("Proxy manager shutdown error: %v", err)
+			debug.Error("mcp", "Proxy manager shutdown error: %v", err)
 		}
 	}()
 
 	// Run server over stdio
 	log.SetOutput(os.Stderr)
-	log.Printf("Starting %s v%s (legacy mode)", appName, appVersion)
+	debug.Log("mcp", "Starting %s v%s (legacy mode)", appName, appVersion)
 
 	if err := server.Run(ctx, &mcp.StdioTransport{}); err != nil {
 		if ctx.Err() == nil {
@@ -256,5 +258,5 @@ func runLegacyServer() {
 		}
 	}
 
-	log.Println("Server shutdown complete")
+	debug.Log("mcp", "Server shutdown complete")
 }

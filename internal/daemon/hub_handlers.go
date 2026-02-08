@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"os/exec"
@@ -391,7 +390,7 @@ func (d *Daemon) registerAgntCommands() {
 		Handler:     d.hubHandleRestartAll,
 	})
 
-	log.Printf("[DEBUG] Registered %d agnt-specific commands with Hub", 16)
+	debug.Log("daemon", "Registered %d agnt-specific commands with Hub", 16)
 }
 
 // hubHandleProc handles the PROC command (overrides Hub's built-in).
@@ -846,16 +845,16 @@ func (d *Daemon) hubHandleProxyStart(ctx context.Context, conn *hubpkg.Connectio
 	if path != "" {
 		if session, ok := d.sessionRegistry.FindByDirectory(normalizePath(path)); ok && session.OverlayPath != "" {
 			proxyServer.SetOverlayEndpoint(session.OverlayPath)
-			log.Printf("[DEBUG] Set session-specific overlay endpoint for proxy %s: %s", proxyID, session.OverlayPath)
+			debug.Log("daemon", "Set session-specific overlay endpoint for proxy %s: %s", proxyID, session.OverlayPath)
 		} else if endpoint := d.OverlayEndpoint(); endpoint != "" {
 			// Fallback to global overlay endpoint if no session found
 			proxyServer.SetOverlayEndpoint(endpoint)
-			log.Printf("[DEBUG] Set global overlay endpoint for proxy %s: %s", proxyID, endpoint)
+			debug.Log("daemon", "Set global overlay endpoint for proxy %s: %s", proxyID, endpoint)
 		}
 	} else if endpoint := d.OverlayEndpoint(); endpoint != "" {
 		// Fallback to global overlay endpoint if no path specified
 		proxyServer.SetOverlayEndpoint(endpoint)
-		log.Printf("[DEBUG] Set global overlay endpoint for proxy %s: %s", proxyID, endpoint)
+		debug.Log("daemon", "Set global overlay endpoint for proxy %s: %s", proxyID, endpoint)
 	}
 
 	// Persist proxy config
@@ -1398,7 +1397,7 @@ func (d *Daemon) hubHandleOverlayActivity(conn *hubpkg.Connection, cmd *hubproto
 		for _, proxyID := range proxyIDs {
 			p, err := d.proxym.Get(proxyID)
 			if err != nil {
-				log.Printf("[WARN] Proxy %s not found for activity broadcast: %v", proxyID, err)
+				debug.Warn("daemon", "Proxy %s not found for activity broadcast: %v", proxyID, err)
 				continue
 			}
 			proxiesToBroadcast = append(proxiesToBroadcast, p)
@@ -3170,7 +3169,7 @@ func (d *Daemon) hubHandleRestartAll(ctx context.Context, conn *hubpkg.Connectio
 		// Use ProjectPath as WorkingDir since we don't have separate WorkingDir stored
 		_, startupErr := d.startScriptWithRetry(ctx, pm.ID, pm.ProjectPath, pm.ProjectPath, pm.Command, pm.Args, nil, 0)
 		if startupErr != nil {
-			log.Printf("[RESTART-ALL] Failed to restart process %s: %v", pm.ID, startupErr)
+			debug.Error("daemon", "Failed to restart process %s: %v", pm.ID, startupErr)
 			procsFailed++
 		} else {
 			procsRestarted++
@@ -3188,7 +3187,7 @@ func (d *Daemon) hubHandleRestartAll(ctx context.Context, conn *hubpkg.Connectio
 			BindAddress: pm.BindAddress,
 		})
 		if err != nil {
-			log.Printf("[RESTART-ALL] Failed to restart proxy %s: %v", pm.ID, err)
+			debug.Error("daemon", "Failed to restart proxy %s: %v", pm.ID, err)
 			proxyFailed++
 		} else {
 			proxyRestarted++
@@ -3241,7 +3240,7 @@ func (d *Daemon) hubHandleProcRestart(ctx context.Context, conn *hubpkg.Connecti
 		stopCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
 		if err := d.hub.ProcessManager().Stop(stopCtx, processID); err != nil {
-			log.Printf("[PROC RESTART] Warning: error stopping process %s: %v", processID, err)
+			debug.Warn("daemon", "error stopping process %s: %v", processID, err)
 		}
 		// Wait for process to fully stop
 		time.Sleep(100 * time.Millisecond)
@@ -3385,7 +3384,7 @@ func (d *Daemon) hubHandleProxyRestart(ctx context.Context, conn *hubpkg.Connect
 
 	// Stop the proxy
 	if err := d.proxym.Stop(ctx, proxyID); err != nil {
-		log.Printf("[PROXY RESTART] Warning: error stopping proxy %s: %v", proxyID, err)
+		debug.Warn("daemon", "error stopping proxy %s: %v", proxyID, err)
 	}
 
 	// Remove from persisted state

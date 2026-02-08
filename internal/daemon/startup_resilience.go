@@ -4,7 +4,6 @@ package daemon
 import (
 	"context"
 	"fmt"
-	"log"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -12,6 +11,7 @@ import (
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/config"
+	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/project"
 	"github.com/standardbeagle/go-cli-server/process"
 )
@@ -69,7 +69,7 @@ func (d *Daemon) StartScript(ctx context.Context, cfg StartScriptConfig) (*Start
 	// when the URL tracker first scans the process output
 	if len(cfg.URLMatchers) > 0 {
 		d.urlTracker.SetURLMatchers(cfg.ProcessID, cfg.URLMatchers)
-		log.Printf("[DEBUG] Pre-set URL matchers for %s: %v", cfg.ProcessID, cfg.URLMatchers)
+		debug.Log("daemon", "Pre-set URL matchers for %s: %v", cfg.ProcessID, cfg.URLMatchers)
 	}
 
 	// Start with automatic EADDRINUSE recovery
@@ -87,7 +87,7 @@ func (d *Daemon) StartScript(ctx context.Context, cfg StartScriptConfig) (*Start
 			restartConfig = *cfg.AutoRestartConfig
 		}
 		d.autoRestarter.Register(cfg.ProcessID, restartConfig, cfg.Command, cfg.Args, cfg.ProjectPath, cfg.WorkingDir)
-		log.Printf("[DEBUG] Registered %s for auto-restart", cfg.ProcessID)
+		debug.Log("daemon", "Registered %s for auto-restart", cfg.ProcessID)
 	}
 
 	return &StartScriptResult{
@@ -211,7 +211,7 @@ func (d *Daemon) preflightPortCleanup(ctx context.Context, port int) ([]int, err
 		return nil, nil
 	}
 
-	log.Printf("[DEBUG] Pre-flight cleanup: checking port %d", port)
+	debug.Log("daemon", "Pre-flight cleanup: checking port %d", port)
 
 	// Use the process manager's KillProcessByPort which handles managed process detection
 	killedPIDs, err := d.hub.ProcessManager().KillProcessByPort(ctx, port)
@@ -220,7 +220,7 @@ func (d *Daemon) preflightPortCleanup(ctx context.Context, port int) ([]int, err
 	}
 
 	if len(killedPIDs) > 0 {
-		log.Printf("[INFO] Pre-flight cleanup: killed %d process(es) on port %d: %v", len(killedPIDs), port, killedPIDs)
+		debug.Info("daemon", "Pre-flight cleanup: killed %d process(es) on port %d: %v", len(killedPIDs), port, killedPIDs)
 		// Give processes time to fully terminate
 		time.Sleep(200 * time.Millisecond)
 	}
@@ -246,9 +246,9 @@ func (d *Daemon) startScriptWithRetry(
 	// First attempt: Pre-flight cleanup if we know the port
 	if expectedPort > 0 {
 		if killedPIDs, err := d.preflightPortCleanup(ctx, expectedPort); err != nil {
-			log.Printf("[WARN] Pre-flight cleanup failed for port %d: %v", expectedPort, err)
+			debug.Warn("daemon", "Pre-flight cleanup failed for port %d: %v", expectedPort, err)
 		} else if len(killedPIDs) > 0 {
-			log.Printf("[INFO] Cleaned up port %d before starting %s", expectedPort, processID)
+			debug.Info("daemon", "Cleaned up port %d before starting %s", expectedPort, processID)
 		}
 	}
 
@@ -284,7 +284,7 @@ func (d *Daemon) startScriptWithRetry(
 		return nil, startupErr
 	}
 
-	log.Printf("[INFO] Detected EADDRINUSE on port %d for %s, attempting recovery", startupErr.Port, processID)
+	debug.Info("daemon", "Detected EADDRINUSE on port %d for %s, attempting recovery", startupErr.Port, processID)
 
 	// Stop the failed process
 	_ = d.hub.ProcessManager().StopProcess(ctx, proc)
@@ -316,7 +316,7 @@ func (d *Daemon) startScriptWithRetry(
 				Retried:   true,
 			}
 		}
-		log.Printf("[INFO] Killed %d process(es) on port %d, retrying startup", len(killedPIDs), portToClean)
+		debug.Info("daemon", "Killed %d process(es) on port %d, retrying startup", len(killedPIDs), portToClean)
 	}
 
 	// Retry: Start the process again
@@ -347,7 +347,7 @@ func (d *Daemon) startScriptWithRetry(
 		return nil, retryErr
 	}
 
-	log.Printf("[INFO] Successfully recovered from EADDRINUSE for %s", processID)
+	debug.Info("daemon", "Successfully recovered from EADDRINUSE for %s", processID)
 	return proc, nil
 }
 
