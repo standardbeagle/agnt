@@ -1,8 +1,9 @@
 package daemon
 
 import (
-	"log"
 	"sync"
+
+	"github.com/standardbeagle/agnt/internal/debug"
 )
 
 // MCPAlertSink delivers alert messages via MCP session notifications.
@@ -70,14 +71,14 @@ func (h *AlertHub) Deliver(severity string, formatted string) {
 	// Try overlay (PTY stdin injection)
 	if overlaySink != nil && overlaySink.IsEnabled() {
 		if err := overlaySink.TypeAlert(formatted); err != nil {
-			log.Printf("[alerts] overlay delivery failed: %v", err)
+			debug.Error("alerts", "overlay delivery failed: %v", err)
 		}
 	}
 
 	// Also deliver via MCP session notifications
 	for _, sink := range mcpSinks {
 		if err := sink.SendAlert(severity, formatted); err != nil {
-			log.Printf("[alerts] MCP delivery failed: %v", err)
+			debug.Error("alerts", "MCP delivery failed: %v", err)
 		}
 	}
 }

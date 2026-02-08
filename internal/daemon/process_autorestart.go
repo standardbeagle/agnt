@@ -2,9 +2,10 @@ package daemon
 
 import (
 	"context"
-	"log"
 	"sync"
 	"time"
+
+	"github.com/standardbeagle/agnt/internal/debug"
 )
 
 // AutoRestartConfig holds auto-restart settings for a process.
@@ -179,7 +180,7 @@ func (r *ProcessAutoRestarter) monitorProcess(processID string) {
 
 		exitCode := proc.ExitCode()
 		if !state.shouldRestart(exitCode) {
-			log.Printf("[AUTO-RESTART] Process %s exited (code %d), max restarts reached or disabled", processID, exitCode)
+			debug.Log("daemon", "Process %s exited (code %d), max restarts reached or disabled", processID, exitCode)
 			return
 		}
 
@@ -198,7 +199,7 @@ func (r *ProcessAutoRestarter) monitorProcess(processID string) {
 			return
 		}
 
-		log.Printf("[AUTO-RESTART] Restarting process %s (exit code was %d)", processID, exitCode)
+		debug.Log("daemon", "Restarting process %s (exit code was %d)", processID, exitCode)
 
 		// Clear URL tracker state so new process output is scanned fresh
 		r.daemon.urlTracker.ClearProcess(processID)
@@ -213,12 +214,12 @@ func (r *ProcessAutoRestarter) monitorProcess(processID string) {
 		cancel()
 
 		if startupErr != nil {
-			log.Printf("[AUTO-RESTART] Failed to restart process %s: %v", processID, startupErr)
+			debug.Error("daemon", "Failed to restart process %s: %v", processID, startupErr)
 			return
 		}
 
 		state.recordRestart()
-		log.Printf("[AUTO-RESTART] Process %s restarted (new PID: %d)", processID, proc.PID())
+		debug.Log("daemon", "Process %s restarted (new PID: %d)", processID, proc.PID())
 	}
 }
 

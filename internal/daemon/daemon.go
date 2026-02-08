@@ -240,7 +240,7 @@ func New(config DaemonConfig) *Daemon {
 		}:
 		default:
 			// Channel full, log warning
-			log.Printf("[WARN] Proxy event channel full, dropping URL detection event for %s: %s", processID, url)
+			debug.Warn("daemon", "Proxy event channel full, dropping URL detection event for %s: %s", processID, url)
 		}
 	}
 	urlTracker.onProcessStopped = func(processID string) {
@@ -252,7 +252,7 @@ func New(config DaemonConfig) *Daemon {
 		}:
 		default:
 			// Channel full, log warning
-			log.Printf("[WARN] Proxy event channel full, dropping process stopped event for %s", processID)
+			debug.Warn("daemon", "Proxy event channel full, dropping process stopped event for %s", processID)
 		}
 	}
 	urlTracker.onProcessFirstSeen = func(processID string) {
@@ -335,7 +335,7 @@ func (d *Daemon) Start() error {
 
 	// Start the scheduler for scheduled message delivery
 	if err := d.scheduler.Start(d.ctx); err != nil {
-		log.Printf("[Daemon] failed to start scheduler: %v", err)
+		debug.Log("daemon", "failed to start scheduler: %v", err)
 	}
 
 	// Start URL tracker for process URL detection
@@ -380,7 +380,7 @@ func (d *Daemon) restoreProxies() {
 
 		proxyServer, err := d.proxym.Create(d.ctx, config)
 		if err != nil {
-			log.Printf("[Daemon] failed to restore proxy %s: %v", pc.ID, err)
+			debug.Log("daemon", "failed to restore proxy %s: %v", pc.ID, err)
 			// Remove from state if it can't be restored
 			d.stateMgr.RemoveProxy(pc.ID)
 			continue
@@ -409,17 +409,17 @@ func (d *Daemon) cleanupOrphans() {
 
 	killedCount, err := d.pidTracker.CleanupOrphans(os.Getpid())
 	if err != nil {
-		log.Printf("[Daemon] failed to cleanup orphans: %v", err)
+		debug.Log("daemon", "failed to cleanup orphans: %v", err)
 		return
 	}
 
 	if killedCount > 0 {
-		log.Printf("[Daemon] cleaned up %d orphaned process(es) from previous crash", killedCount)
+		debug.Log("daemon", "cleaned up %d orphaned process(es) from previous crash", killedCount)
 	}
 
 	// Set current daemon PID for future crash detection
 	if err := d.pidTracker.SetDaemonPID(os.Getpid()); err != nil {
-		log.Printf("[Daemon] failed to set daemon PID: %v", err)
+		debug.Log("daemon", "failed to set daemon PID: %v", err)
 	}
 }
 
@@ -433,14 +433,14 @@ func (d *Daemon) Stop(ctx context.Context) error {
 	d.shutdown = true
 	d.shutdownMu.Unlock()
 
-	log.Println("Daemon stopping...")
+	debug.Log("daemon", "Daemon stopping")
 
 	// Signal all goroutines to stop
 	d.cancel()
 
 	// Stop Hub (handles listener, clients, connections)
 	if err := d.hub.Stop(ctx); err != nil {
-		log.Printf("[Daemon] error stopping hub: %v", err)
+		debug.Log("daemon", "error stopping hub: %v", err)
 	}
 
 	// Shutdown agnt-specific managers
@@ -482,7 +482,7 @@ func (d *Daemon) Stop(ctx context.Context) error {
 	// Clear PID tracking (clean shutdown)
 	if d.pidTracker != nil {
 		if err := d.pidTracker.Clear(); err != nil {
-			log.Printf("[Daemon] failed to clear PID tracking: %v", err)
+			debug.Log("daemon", "failed to clear PID tracking: %v", err)
 		}
 	}
 
@@ -502,7 +502,7 @@ func (d *Daemon) Stop(ctx context.Context) error {
 
 	// Socket cleanup is handled by Hub.Stop()
 
-	log.Println("Daemon stopped")
+	debug.Log("daemon", "Daemon stopped")
 
 	if len(errs) > 0 {
 		return errors.Join(errs...)
@@ -641,13 +641,13 @@ func (d *Daemon) LoadURLMatchersForProcess(processID string) {
 	// Get process to retrieve its project path
 	proc, err := d.hub.ProcessManager().Get(processID)
 	if err != nil {
-		log.Printf("[DEBUG] LoadURLMatchersForProcess: process %s not found", processID)
+		debug.Log("daemon", "LoadURLMatchersForProcess: process %s not found", processID)
 		return
 	}
 
 	projectPath := proc.ProjectPath
 	if projectPath == "" {
-		log.Printf("[DEBUG] LoadURLMatchersForProcess: process %s has no project path", processID)
+		debug.Log("daemon", "LoadURLMatchersForProcess: process %s has no project path", processID)
 		return
 	}
 
@@ -661,21 +661,21 @@ func (d *Daemon) LoadURLMatchersForProcess(processID string) {
 	// Load agnt config
 	agntConfig, err := config.LoadAgntConfig(projectPath)
 	if err != nil {
-		log.Printf("[DEBUG] LoadURLMatchersForProcess: failed to load config from %s: %v", projectPath, err)
+		debug.Log("daemon", "LoadURLMatchersForProcess: failed to load config from %s: %v", projectPath, err)
 		return // No config or error - skip URL matchers
 	}
 
 	// Find script config
 	script, ok := agntConfig.Scripts[scriptName]
 	if !ok || script == nil {
-		log.Printf("[DEBUG] LoadURLMatchersForProcess: script %s not found in config", scriptName)
+		debug.Log("daemon", "LoadURLMatchersForProcess: script %s not found in config", scriptName)
 		return // Script not found in config
 	}
 
 	// Set URL matchers if specified
 	if len(script.URLMatchers) > 0 {
 		d.urlTracker.SetURLMatchers(processID, script.URLMatchers)
-		log.Printf("[DEBUG] Set URL matchers for %s: %v", processID, script.URLMatchers)
+		debug.Log("daemon", "Set URL matchers for %s: %v", processID, script.URLMatchers)
 	}
 }
 
@@ -694,7 +694,7 @@ func (d *Daemon) StopAllResources(ctx context.Context) {
 	go func() {
 		defer wg.Done()
 		if err := d.tunnelm.StopAll(cleanupCtx); err != nil {
-			log.Printf("[Daemon] error stopping tunnels: %v", err)
+			debug.Log("daemon", "error stopping tunnels: %v", err)
 		}
 	}()
 
@@ -703,7 +703,7 @@ func (d *Daemon) StopAllResources(ctx context.Context) {
 	go func() {
 		defer wg.Done()
 		if _, err := d.browserm.StopAll(cleanupCtx); err != nil {
-			log.Printf("[Daemon] error stopping browsers: %v", err)
+			debug.Log("daemon", "error stopping browsers: %v", err)
 		}
 	}()
 
@@ -713,7 +713,7 @@ func (d *Daemon) StopAllResources(ctx context.Context) {
 		defer wg.Done()
 		stoppedIDs, err := d.proxym.StopAll(cleanupCtx)
 		if err != nil {
-			log.Printf("[Daemon] error stopping proxies: %v", err)
+			debug.Log("daemon", "error stopping proxies: %v", err)
 		}
 		// Remove stopped proxies from persisted state
 		if d.stateMgr != nil {
@@ -728,7 +728,7 @@ func (d *Daemon) StopAllResources(ctx context.Context) {
 	go func() {
 		defer wg.Done()
 		if err := d.hub.ProcessManager().StopAll(cleanupCtx); err != nil {
-			log.Printf("[Daemon] error stopping processes: %v", err)
+			debug.Log("daemon", "error stopping processes: %v", err)
 		}
 	}()
 
@@ -737,7 +737,7 @@ func (d *Daemon) StopAllResources(ctx context.Context) {
 	// Clear overlay endpoint since no clients are connected
 	d.SetOverlayEndpoint("")
 
-	log.Println("[Daemon] all resources stopped (last client disconnected)")
+	debug.Log("daemon", "all resources stopped (last client disconnected)")
 }
 
 // CleanupSessionResources stops all processes and proxies for a specific session.
@@ -746,19 +746,19 @@ func (d *Daemon) CleanupSessionResources(sessionCode string) {
 	// Get session to find project path
 	session, ok := d.sessionRegistry.Get(sessionCode)
 	if !ok {
-		log.Printf("[Daemon] session %s not found for cleanup", sessionCode)
+		debug.Log("daemon", "session %s not found for cleanup", sessionCode)
 		return
 	}
 
 	projectPath := session.ProjectPath
 	if projectPath == "" {
-		log.Printf("[Daemon] session %s has no project path, skipping resource cleanup", sessionCode)
+		debug.Log("daemon", "session %s has no project path, skipping resource cleanup", sessionCode)
 		// Still unregister the session
 		d.sessionRegistry.Unregister(sessionCode)
 		return
 	}
 
-	log.Printf("[Daemon] cleaning up resources for session %s (project: %s)", sessionCode, projectPath)
+	debug.Log("daemon", "cleaning up resources for session %s (project: %s)", sessionCode, projectPath)
 
 	// Use a reasonable timeout for cleanup
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -772,10 +772,10 @@ func (d *Daemon) CleanupSessionResources(sessionCode string) {
 		defer wg.Done()
 		stoppedIDs, err := d.proxym.StopByProjectPath(ctx, projectPath)
 		if err != nil {
-			log.Printf("[Daemon] error stopping proxies for project %s: %v", projectPath, err)
+			debug.Log("daemon", "error stopping proxies for project %s: %v", projectPath, err)
 		}
 		if len(stoppedIDs) > 0 {
-			log.Printf("[Daemon] stopped proxies: %v", stoppedIDs)
+			debug.Log("daemon", "stopped proxies: %v", stoppedIDs)
 			// Remove from persisted state
 			if d.stateMgr != nil {
 				for _, id := range stoppedIDs {
@@ -791,10 +791,10 @@ func (d *Daemon) CleanupSessionResources(sessionCode string) {
 		defer wg.Done()
 		stoppedIDs, err := d.browserm.StopByProjectPath(ctx, projectPath)
 		if err != nil {
-			log.Printf("[Daemon] error stopping browsers for project %s: %v", projectPath, err)
+			debug.Log("daemon", "error stopping browsers for project %s: %v", projectPath, err)
 		}
 		if len(stoppedIDs) > 0 {
-			log.Printf("[Daemon] stopped browsers: %v", stoppedIDs)
+			debug.Log("daemon", "stopped browsers: %v", stoppedIDs)
 		}
 	}()
 
@@ -804,10 +804,10 @@ func (d *Daemon) CleanupSessionResources(sessionCode string) {
 		defer wg.Done()
 		stoppedIDs, err := d.hub.ProcessManager().StopByProjectPath(ctx, projectPath)
 		if err != nil {
-			log.Printf("[Daemon] error stopping processes for project %s: %v", projectPath, err)
+			debug.Log("daemon", "error stopping processes for project %s: %v", projectPath, err)
 		}
 		if len(stoppedIDs) > 0 {
-			log.Printf("[Daemon] stopped processes: %v", stoppedIDs)
+			debug.Log("daemon", "stopped processes: %v", stoppedIDs)
 			// Unregister from auto-restarter to prevent restart attempts
 			if d.autoRestarter != nil {
 				for _, id := range stoppedIDs {
@@ -821,10 +821,10 @@ func (d *Daemon) CleanupSessionResources(sessionCode string) {
 
 	// Unregister the session
 	if err := d.sessionRegistry.Unregister(sessionCode); err != nil {
-		log.Printf("[Daemon] error unregistering session %s: %v", sessionCode, err)
+		debug.Log("daemon", "error unregistering session %s: %v", sessionCode, err)
 	}
 
-	log.Printf("[Daemon] session %s cleanup complete", sessionCode)
+	debug.Log("daemon", "session %s cleanup complete", sessionCode)
 }
 
 // NOTE: acceptLoop is now handled by Hub - removed from Daemon.
@@ -888,53 +888,53 @@ func (d *Daemon) RunAutostart(ctx context.Context, projectPath string) *Autostar
 	result := &AutostartResult{}
 
 	if projectPath == "" {
-		log.Printf("[DEBUG] RunAutostart: projectPath is empty")
+		debug.Log("daemon", "RunAutostart: projectPath is empty")
 		return result
 	}
 
-	log.Printf("[DEBUG] RunAutostart: loading config from %s", projectPath)
+	debug.Log("daemon", "RunAutostart: loading config from %s", projectPath)
 
 	// Load .agnt.kdl config
 	agntConfig, err := config.LoadAgntConfig(projectPath)
 	if err != nil {
 		// No config or error loading - not an error, just nothing to autostart
-		log.Printf("[DEBUG] RunAutostart: config load error: %v", err)
+		debug.Log("daemon", "RunAutostart: config load error: %v", err)
 		return result
 	}
 
 	if agntConfig == nil {
-		log.Printf("[DEBUG] RunAutostart: config is nil")
+		debug.Log("daemon", "RunAutostart: config is nil")
 		return result
 	}
 
-	log.Printf("[DEBUG] RunAutostart: config loaded, scripts=%d proxies=%d",
+	debug.Log("daemon", "RunAutostart: config loaded, scripts=%d proxies=%d",
 		len(agntConfig.Scripts), len(agntConfig.Proxies))
 
 	// Start scripts (pass proxy configs for port detection)
 	autostartScripts := agntConfig.GetAutostartScripts()
 	proxyConfigs := agntConfig.Proxies // All proxies, not just autostart ones
-	log.Printf("[DEBUG] RunAutostart: found %d autostart scripts: %v", len(autostartScripts), mapKeys(autostartScripts))
+	debug.Log("daemon", "RunAutostart: found %d autostart scripts: %v", len(autostartScripts), mapKeys(autostartScripts))
 	for name, script := range autostartScripts {
-		log.Printf("[DEBUG] RunAutostart: starting script %s", name)
+		debug.Log("daemon", "RunAutostart: starting script %s", name)
 		if err := d.autostartScript(ctx, name, script, projectPath, proxyConfigs); err != nil {
-			log.Printf("[DEBUG] RunAutostart: script %s failed: %v", name, err)
+			debug.Log("daemon", "RunAutostart: script %s failed: %v", name, err)
 			result.Errors = append(result.Errors, fmt.Sprintf("script %s: %v", name, err))
 		} else {
-			log.Printf("[DEBUG] RunAutostart: script %s started successfully", name)
+			debug.Log("daemon", "RunAutostart: script %s started successfully", name)
 			result.Scripts = append(result.Scripts, name)
 		}
 	}
 
 	// Start proxies
 	autostartProxies := agntConfig.GetAutostartProxies()
-	log.Printf("[DEBUG] RunAutostart: found %d autostart proxies: %v", len(autostartProxies), mapKeysProxy(autostartProxies))
+	debug.Log("daemon", "RunAutostart: found %d autostart proxies: %v", len(autostartProxies), mapKeysProxy(autostartProxies))
 	for name, proxyConfig := range autostartProxies {
-		log.Printf("[DEBUG] RunAutostart: starting proxy %s (script=%s port=%d)", name, proxyConfig.Script, proxyConfig.Port)
+		debug.Log("daemon", "RunAutostart: starting proxy %s (script=%s port=%d)", name, proxyConfig.Script, proxyConfig.Port)
 		if err := d.autostartProxy(ctx, name, proxyConfig, projectPath); err != nil {
-			log.Printf("[DEBUG] RunAutostart: proxy %s failed: %v", name, err)
+			debug.Log("daemon", "RunAutostart: proxy %s failed: %v", name, err)
 			result.Errors = append(result.Errors, fmt.Sprintf("proxy %s: %v", name, err))
 		} else {
-			log.Printf("[DEBUG] RunAutostart: proxy %s started successfully", name)
+			debug.Log("daemon", "RunAutostart: proxy %s started successfully", name)
 			result.Proxies = append(result.Proxies, name)
 		}
 	}
@@ -1096,7 +1096,7 @@ func (d *Daemon) autostartScript(ctx context.Context, name string, script *confi
 func (d *Daemon) autostartProxy(ctx context.Context, name string, proxyConfig *config.ProxyConfig, projectPath string) error {
 	// Skip script-linked proxies - they're handled by URLDetected events
 	if proxyConfig.Script != "" {
-		log.Printf("[DEBUG] Proxy %s is script-linked, skipping auto-start (will be created when URLs detected)", name)
+		debug.Log("daemon", "Proxy %s is script-linked, skipping auto-start (will be created when URLs detected)", name)
 		return nil
 	}
 
@@ -1119,7 +1119,7 @@ func (d *Daemon) autostartProxy(ctx context.Context, name string, proxyConfig *c
 	}
 
 	if targetURL == "" {
-		log.Printf("[DEBUG] Proxy %s has no explicit target URL, skipping", name)
+		debug.Log("daemon", "Proxy %s has no explicit target URL, skipping", name)
 		return nil
 	}
 
@@ -1131,9 +1131,9 @@ func (d *Daemon) autostartProxy(ctx context.Context, name string, proxyConfig *c
 		Config:  proxyConfig,
 		Path:    projectPath,
 	}:
-		log.Printf("[DEBUG] Queued explicit proxy %s for auto-start", name)
+		debug.Log("daemon", "Queued explicit proxy %s for auto-start", name)
 	default:
-		log.Printf("[WARN] Proxy event channel full, cannot queue proxy %s for auto-start", name)
+		debug.Warn("daemon", "Proxy event channel full, cannot queue proxy %s for auto-start", name)
 	}
 
 	return nil
