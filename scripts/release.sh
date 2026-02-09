@@ -113,7 +113,7 @@ grep '"version"' npm/agnt/package.json
 grep '^version = ' python/agnt/pyproject.toml
 grep '__version__ = ' python/agnt/src/agnt/__init__.py
 grep '"version"' plugins/agnt/.claude-plugin/plugin.json
-grep '^\*\*Version\*\*:' CLAUDE.md
+grep '\*\*Version\*\*:' CLAUDE.md
 grep '"version"' package.json | head -1
 grep '"version"' npm/devtool-mcp/package.json | head -1
 grep '^version = ' python/pyproject.toml
