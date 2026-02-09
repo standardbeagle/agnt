@@ -2,9 +2,10 @@ package updater
 
 import (
 	"context"
-	"log"
 	"sync"
 	"time"
+
+	"github.com/standardbeagle/agnt/internal/debug"
 )
 
 // UpdateInfo holds information about available updates
@@ -105,11 +106,11 @@ func (uc *UpdateChecker) checkLoop() {
 
 // checkForUpdates performs a single update check
 func (uc *UpdateChecker) checkForUpdates() {
-	log.Printf("[UpdateChecker] Checking for updates...")
+	debug.Log("updater", "Checking for updates...")
 
 	release, err := uc.githubChecker.CheckLatestRelease()
 	if err != nil {
-		log.Printf("[UpdateChecker] Failed to check for updates: %v", err)
+		debug.Log("updater", "Failed to check for updates: %v", err)
 		uc.mu.Lock()
 		uc.updateInfo.CheckError = err.Error()
 		uc.updateInfo.LastChecked = time.Now()
@@ -119,7 +120,7 @@ func (uc *UpdateChecker) checkForUpdates() {
 
 	isNewer, err := release.IsNewer(uc.currentVersion)
 	if err != nil {
-		log.Printf("[UpdateChecker] Failed to compare versions: %v", err)
+		debug.Log("updater", "Failed to compare versions: %v", err)
 		uc.mu.Lock()
 		uc.updateInfo.CheckError = err.Error()
 		uc.updateInfo.LastChecked = time.Now()
@@ -140,10 +141,10 @@ func (uc *UpdateChecker) checkForUpdates() {
 	uc.mu.Unlock()
 
 	if isNewer {
-		log.Printf("[UpdateChecker] Update available: %s -> %s",
+		debug.Log("updater", "Update available: %s -> %s",
 			uc.currentVersion, release.GetVersion())
 	} else {
-		log.Printf("[UpdateChecker] No update available (current: %s, latest: %s)",
+		debug.Log("updater", "No update available (current: %s, latest: %s)",
 			uc.currentVersion, release.GetVersion())
 	}
 }

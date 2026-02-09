@@ -3,12 +3,13 @@ package config
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
 
 	kdl "github.com/sblinch/kdl-go"
+
+	"github.com/standardbeagle/agnt/internal/debug"
 )
 
 // AgntConfigFileName is the name of the agnt configuration file.
@@ -197,11 +198,11 @@ func DefaultAgntConfig() *AgntConfig {
 func LoadAgntConfig(dir string) (*AgntConfig, error) {
 	configPath := FindAgntConfigFile(dir)
 	if configPath == "" {
-		log.Printf("[DEBUG] LoadAgntConfig: no config file found for dir %s", dir)
+		debug.Log("config", "LoadAgntConfig: no config file found for dir %s", dir)
 		return DefaultAgntConfig(), nil
 	}
 
-	log.Printf("[DEBUG] LoadAgntConfig: found config file at %s", configPath)
+	debug.Log("config", "LoadAgntConfig: found config file at %s", configPath)
 	return LoadAgntConfigFile(configPath)
 }
 
@@ -248,7 +249,7 @@ func ParseAgntConfig(data string) (*AgntConfig, error) {
 		return nil, fmt.Errorf("failed to parse KDL config: %w", err)
 	}
 
-	log.Printf("[DEBUG] ParseAgntConfig: parsed %d scripts, %d proxies", len(cfg.Scripts), len(cfg.Proxies))
+	debug.Log("config", "ParseAgntConfig: parsed %d scripts, %d proxies", len(cfg.Scripts), len(cfg.Proxies))
 	return cfg, nil
 }
 
