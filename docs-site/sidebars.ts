@@ -37,6 +37,7 @@ const sidebars: SidebarsConfig = {
         'api/proxy',
         'api/proxylog',
         'api/currentpage',
+        'api/get_errors',
         'api/tunnel',
         'api/daemon',
       ],
