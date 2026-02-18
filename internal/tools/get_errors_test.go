@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/proxy"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -432,5 +433,322 @@ func TestConvertHTTPError(t *testing.T) {
 		results := convertHTTPError("dev", em)
 		assert.Len(t, results, 1)
 		assert.Equal(t, "warning", results[0].Severity)
+	})
+}
+
+func TestParseSince(t *testing.T) {
+	t.Run("empty string", func(t *testing.T) {
+		assert.Nil(t, parseSince(""))
+	})
+
+	t.Run("RFC3339", func(t *testing.T) {
+		ts := "2025-01-15T10:30:00Z"
+		result := parseSince(ts)
+		assert.NotNil(t, result)
+		assert.Equal(t, 2025, result.Year())
+		assert.Equal(t, time.Month(1), result.Month())
+		assert.Equal(t, 15, result.Day())
+	})
+
+	t.Run("duration 5m", func(t *testing.T) {
+		before := time.Now().Add(-5 * time.Minute)
+		result := parseSince("5m")
+		assert.NotNil(t, result)
+		// Should be within a second of 5 minutes ago
+		assert.WithinDuration(t, before, *result, time.Second)
+	})
+
+	t.Run("duration 1h", func(t *testing.T) {
+		before := time.Now().Add(-1 * time.Hour)
+		result := parseSince("1h")
+		assert.NotNil(t, result)
+		assert.WithinDuration(t, before, *result, time.Second)
+	})
+
+	t.Run("invalid string", func(t *testing.T) {
+		assert.Nil(t, parseSince("not-a-time"))
+	})
+}
+
+func TestConvertJSErrorDirect(t *testing.T) {
+	t.Run("basic error", func(t *testing.T) {
+		now := time.Now()
+		fe := &proxy.FrontendError{
+			Timestamp: now,
+			Message:   "TypeError: Cannot read property 'length' of undefined",
+			Source:    "http://localhost:3000/static/js/main.js",
+			LineNo:    42,
+			ColNo:     15,
+			URL:       "http://localhost:3000/dashboard",
+		}
+
+		results := convertJSErrorDirect("dev", fe)
+		assert.Len(t, results, 1)
+		assert.Equal(t, "browser:js", results[0].Source)
+		assert.Equal(t, "error", results[0].Severity)
+		assert.Equal(t, "TypeError", results[0].Category)
+		assert.Contains(t, results[0].Message, "Cannot read property")
+		assert.Equal(t, "http://localhost:3000/static/js/main.js:42:15", results[0].Location)
+		assert.Equal(t, "http://localhost:3000/dashboard", results[0].Page)
+	})
+
+	t.Run("with stack trace", func(t *testing.T) {
+		fe := &proxy.FrontendError{
+			Timestamp: time.Now(),
+			Message:   "ReferenceError: foo is not defined",
+			Stack:     "ReferenceError: foo is not defined\n    at App (src/App.tsx:10:5)\n    at node_modules/react/index.js:1:1",
+		}
+
+		results := convertJSErrorDirect("dev", fe)
+		assert.Len(t, results, 1)
+		assert.Equal(t, "src/App.tsx:10:5", results[0].Location)
+	})
+
+	t.Run("nil error", func(t *testing.T) {
+		results := convertJSErrorDirect("dev", nil)
+		assert.Empty(t, results)
+	})
+
+	t.Run("empty message", func(t *testing.T) {
+		fe := &proxy.FrontendError{Timestamp: time.Now()}
+		results := convertJSErrorDirect("dev", fe)
+		assert.Empty(t, results)
+	})
+}
+
+func TestConvertHTTPErrorDirect(t *testing.T) {
+	t.Run("500 error", func(t *testing.T) {
+		now := time.Now()
+		h := &proxy.HTTPLogEntry{
+			Timestamp:    now,
+			Method:       "POST",
+			URL:          "/api/users",
+			StatusCode:   500,
+			ResponseBody: `{"message":"Validation failed"}`,
+		}
+
+		results := convertHTTPErrorDirect("dev", h)
+		assert.Len(t, results, 1)
+		assert.Equal(t, "proxy:http", results[0].Source)
+		assert.Equal(t, "error", results[0].Severity)
+		assert.Equal(t, "500 Internal Server Error", results[0].Category)
+		assert.Contains(t, results[0].Message, "POST /api/users")
+		assert.Contains(t, results[0].Message, "Validation failed")
+	})
+
+	t.Run("4xx is warning", func(t *testing.T) {
+		h := &proxy.HTTPLogEntry{
+			Timestamp:  time.Now(),
+			Method:     "GET",
+			URL:        "/api/users/123",
+			StatusCode: 404,
+		}
+
+		results := convertHTTPErrorDirect("dev", h)
+		assert.Len(t, results, 1)
+		assert.Equal(t, "warning", results[0].Severity)
+	})
+
+	t.Run("noise filtered", func(t *testing.T) {
+		h := &proxy.HTTPLogEntry{
+			Timestamp:  time.Now(),
+			Method:     "GET",
+			URL:        "/favicon.ico",
+			StatusCode: 404,
+		}
+
+		results := convertHTTPErrorDirect("dev", h)
+		assert.Empty(t, results)
+	})
+
+	t.Run("200 OK skipped", func(t *testing.T) {
+		h := &proxy.HTTPLogEntry{
+			Timestamp:  time.Now(),
+			Method:     "GET",
+			URL:        "/api/data",
+			StatusCode: 200,
+		}
+
+		results := convertHTTPErrorDirect("dev", h)
+		assert.Empty(t, results)
+	})
+
+	t.Run("nil entry", func(t *testing.T) {
+		results := convertHTTPErrorDirect("dev", nil)
+		assert.Empty(t, results)
+	})
+
+	t.Run("error field present", func(t *testing.T) {
+		h := &proxy.HTTPLogEntry{
+			Timestamp:  time.Now(),
+			Method:     "GET",
+			URL:        "/api/data",
+			StatusCode: 502,
+			Error:      "connection refused",
+		}
+
+		results := convertHTTPErrorDirect("dev", h)
+		assert.Len(t, results, 1)
+		assert.Contains(t, results[0].Message, "connection refused")
+	})
+}
+
+func TestConvertDiagnosticErrorDirect(t *testing.T) {
+	t.Run("error level", func(t *testing.T) {
+		d := &proxy.ProxyDiagnostic{
+			Timestamp: time.Now(),
+			Level:     proxy.DiagnosticError,
+			Event:     "connection_refused",
+			Message:   "target server not reachable",
+		}
+
+		results := convertDiagnosticErrorDirect("dev", d)
+		assert.Len(t, results, 1)
+		assert.Equal(t, "proxy:diagnostic", results[0].Source)
+		assert.Equal(t, "error", results[0].Severity)
+		assert.Equal(t, "CONNECTION REFUSED", results[0].Category)
+		assert.Equal(t, "target server not reachable", results[0].Message)
+	})
+
+	t.Run("warning level", func(t *testing.T) {
+		d := &proxy.ProxyDiagnostic{
+			Timestamp: time.Now(),
+			Level:     proxy.DiagnosticWarning,
+			Message:   "slow response",
+		}
+
+		results := convertDiagnosticErrorDirect("dev", d)
+		assert.Len(t, results, 1)
+		assert.Equal(t, "warning", results[0].Severity)
+	})
+
+	t.Run("info level filtered", func(t *testing.T) {
+		d := &proxy.ProxyDiagnostic{
+			Timestamp: time.Now(),
+			Level:     proxy.DiagnosticInfo,
+			Message:   "proxy started",
+		}
+
+		results := convertDiagnosticErrorDirect("dev", d)
+		assert.Empty(t, results)
+	})
+
+	t.Run("nil diagnostic", func(t *testing.T) {
+		results := convertDiagnosticErrorDirect("dev", nil)
+		assert.Empty(t, results)
+	})
+}
+
+func TestConvertCustomErrorDirect(t *testing.T) {
+	t.Run("error level", func(t *testing.T) {
+		c := &proxy.CustomLog{
+			Timestamp: time.Now(),
+			Level:     "error",
+			Message:   "Application crash detected",
+			URL:       "http://localhost:3000/page",
+		}
+
+		results := convertCustomErrorDirect("dev", c)
+		assert.Len(t, results, 1)
+		assert.Equal(t, "browser:custom", results[0].Source)
+		assert.Equal(t, "error", results[0].Severity)
+		assert.Equal(t, "Application crash detected", results[0].Message)
+		assert.Equal(t, "http://localhost:3000/page", results[0].Page)
+	})
+
+	t.Run("warn level", func(t *testing.T) {
+		c := &proxy.CustomLog{
+			Timestamp: time.Now(),
+			Level:     "warn",
+			Message:   "deprecated API call",
+		}
+
+		results := convertCustomErrorDirect("dev", c)
+		assert.Len(t, results, 1)
+		assert.Equal(t, "warning", results[0].Severity)
+	})
+
+	t.Run("info level filtered", func(t *testing.T) {
+		c := &proxy.CustomLog{
+			Timestamp: time.Now(),
+			Level:     "info",
+			Message:   "page loaded",
+		}
+
+		results := convertCustomErrorDirect("dev", c)
+		assert.Empty(t, results)
+	})
+
+	t.Run("nil custom", func(t *testing.T) {
+		results := convertCustomErrorDirect("dev", nil)
+		assert.Empty(t, results)
+	})
+}
+
+func TestConvertProxyEntryDirect(t *testing.T) {
+	t.Run("dispatches error type", func(t *testing.T) {
+		entry := proxy.LogEntry{
+			Type: proxy.LogTypeError,
+			Error: &proxy.FrontendError{
+				Timestamp: time.Now(),
+				Message:   "TypeError: test",
+			},
+		}
+
+		results := convertProxyEntryDirect("dev", entry)
+		assert.Len(t, results, 1)
+		assert.Equal(t, "browser:js", results[0].Source)
+	})
+
+	t.Run("dispatches http type", func(t *testing.T) {
+		entry := proxy.LogEntry{
+			Type: proxy.LogTypeHTTP,
+			HTTP: &proxy.HTTPLogEntry{
+				Timestamp:  time.Now(),
+				Method:     "GET",
+				URL:        "/api/fail",
+				StatusCode: 500,
+			},
+		}
+
+		results := convertProxyEntryDirect("dev", entry)
+		assert.Len(t, results, 1)
+		assert.Equal(t, "proxy:http", results[0].Source)
+	})
+
+	t.Run("dispatches diagnostic type", func(t *testing.T) {
+		entry := proxy.LogEntry{
+			Type: proxy.LogTypeDiagnostic,
+			Diagnostic: &proxy.ProxyDiagnostic{
+				Timestamp: time.Now(),
+				Level:     proxy.DiagnosticError,
+				Message:   "oops",
+			},
+		}
+
+		results := convertProxyEntryDirect("dev", entry)
+		assert.Len(t, results, 1)
+		assert.Equal(t, "proxy:diagnostic", results[0].Source)
+	})
+
+	t.Run("dispatches custom type", func(t *testing.T) {
+		entry := proxy.LogEntry{
+			Type: proxy.LogTypeCustom,
+			Custom: &proxy.CustomLog{
+				Timestamp: time.Now(),
+				Level:     "error",
+				Message:   "custom err",
+			},
+		}
+
+		results := convertProxyEntryDirect("dev", entry)
+		assert.Len(t, results, 1)
+		assert.Equal(t, "browser:custom", results[0].Source)
+	})
+
+	t.Run("unknown type returns nil", func(t *testing.T) {
+		entry := proxy.LogEntry{Type: proxy.LogTypePerformance}
+		results := convertProxyEntryDirect("dev", entry)
+		assert.Empty(t, results)
 	})
 }

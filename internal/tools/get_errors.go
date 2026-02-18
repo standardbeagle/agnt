@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/protocol"
+	"github.com/standardbeagle/agnt/internal/proxy"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -447,6 +448,299 @@ func convertCustomError(proxyID string, em map[string]interface{}) []unifiedErro
 		Message:  message,
 		Page:     pageURL,
 		LastSeen: ts,
+		Count:    1,
+	}}
+}
+
+// RegisterGetErrorsTool registers the get_errors tool for legacy mode (no daemon).
+// Only proxy errors are available in legacy mode (no process alerts without daemon).
+func RegisterGetErrorsTool(server *mcp.Server, pm *proxy.ProxyManager) {
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "get_errors",
+		Description: `Get all current errors across proxies.
+
+Collects errors from: browser JavaScript errors, HTTP 4xx/5xx responses,
+proxy transport errors, and custom error logs.
+
+Note: Running in legacy mode - process output alerts are not available.
+
+Default behavior:
+  - Deduplicates identical errors (shows count)
+  - Reduces stack traces to first application code frame
+  - Filters out noise (static asset 404s, redirects)
+  - Sorts by severity (errors first) then recency
+
+Examples:
+  get_errors {}
+  get_errors {proxy_id: "dev"}
+  get_errors {since: "5m"}
+  get_errors {include_warnings: false}
+  get_errors {raw: true, limit: 50}`,
+	}, func(ctx context.Context, req *mcp.CallToolRequest, input GetErrorsInput) (*mcp.CallToolResult, GetErrorsOutput, error) {
+		includeWarnings := true
+		if input.IncludeWarnings != nil {
+			includeWarnings = *input.IncludeWarnings
+		}
+
+		limit := input.Limit
+		if limit <= 0 {
+			limit = 25
+		}
+
+		// Build time filter
+		var sinceTime *time.Time
+		if input.Since != "" {
+			sinceTime = parseSince(input.Since)
+		}
+
+		// Collect proxies to query
+		var proxies []*proxy.ProxyServer
+		if input.ProxyID != "" {
+			ps, err := pm.Get(input.ProxyID)
+			if err != nil {
+				return errorResult(fmt.Sprintf("proxy %q not found: %v", input.ProxyID, err)), GetErrorsOutput{}, nil
+			}
+			proxies = []*proxy.ProxyServer{ps}
+		} else {
+			proxies = pm.List()
+		}
+
+		// Collect errors from all proxies
+		var allErrors []unifiedError
+		for _, ps := range proxies {
+			filter := proxy.LogFilter{
+				Types: []proxy.LogEntryType{
+					proxy.LogTypeError,
+					proxy.LogTypeHTTP,
+					proxy.LogTypeDiagnostic,
+					proxy.LogTypeCustom,
+				},
+				Since: sinceTime,
+			}
+			entries := ps.Logger().Query(filter)
+			for _, entry := range entries {
+				errs := convertProxyEntryDirect(ps.ID, entry)
+				allErrors = append(allErrors, errs...)
+			}
+		}
+
+		// Deduplicate
+		allErrors = deduplicateErrors(allErrors)
+
+		// Filter warnings if not wanted
+		if !includeWarnings {
+			filtered := allErrors[:0]
+			for _, e := range allErrors {
+				if e.Severity == "error" {
+					filtered = append(filtered, e)
+				}
+			}
+			allErrors = filtered
+		}
+
+		// Sort: errors first, then warnings; within each, most recent first
+		sort.Slice(allErrors, func(i, j int) bool {
+			li, lj := allErrors[i].Severity, allErrors[j].Severity
+			if li != lj {
+				if li == "error" {
+					return true
+				}
+				if lj == "error" {
+					return false
+				}
+			}
+			return allErrors[i].LastSeen.After(allErrors[j].LastSeen)
+		})
+
+		// Count before limiting
+		errorCount, warningCount := 0, 0
+		for _, e := range allErrors {
+			if e.Severity == "error" {
+				errorCount++
+			} else {
+				warningCount++
+			}
+		}
+
+		// Apply limit
+		if len(allErrors) > limit {
+			allErrors = allErrors[:limit]
+		}
+
+		// Format output
+		output := GetErrorsOutput{
+			ErrorCount:   errorCount,
+			WarningCount: warningCount,
+		}
+
+		if input.Raw {
+			b, _ := json.Marshal(allErrors)
+			output.Summary = string(b)
+		} else {
+			output.Summary = formatCompactErrors(allErrors, errorCount, warningCount)
+		}
+
+		return nil, output, nil
+	})
+}
+
+// parseSince parses a "since" parameter as either RFC3339 or a Go duration string.
+// Returns nil if the string is empty or unparseable.
+func parseSince(since string) *time.Time {
+	if since == "" {
+		return nil
+	}
+
+	// Try RFC3339 first
+	if t, err := time.Parse(time.RFC3339, since); err == nil {
+		return &t
+	}
+
+	// Try Go duration (e.g. "5m", "1h", "30s")
+	if d, err := time.ParseDuration(since); err == nil {
+		t := time.Now().Add(-d)
+		return &t
+	}
+
+	return nil
+}
+
+// convertProxyEntryDirect converts a proxy.LogEntry directly to unified errors.
+func convertProxyEntryDirect(proxyID string, entry proxy.LogEntry) []unifiedError {
+	switch entry.Type {
+	case proxy.LogTypeError:
+		return convertJSErrorDirect(proxyID, entry.Error)
+	case proxy.LogTypeHTTP:
+		return convertHTTPErrorDirect(proxyID, entry.HTTP)
+	case proxy.LogTypeDiagnostic:
+		return convertDiagnosticErrorDirect(proxyID, entry.Diagnostic)
+	case proxy.LogTypeCustom:
+		return convertCustomErrorDirect(proxyID, entry.Custom)
+	}
+	return nil
+}
+
+// convertJSErrorDirect converts a FrontendError struct to a unified error.
+func convertJSErrorDirect(proxyID string, fe *proxy.FrontendError) []unifiedError {
+	if fe == nil || fe.Message == "" {
+		return nil
+	}
+
+	message := fe.Message
+	category := "JS Error"
+	if idx := strings.Index(message, ":"); idx > 0 && idx < 30 {
+		category = message[:idx]
+		message = strings.TrimSpace(message[idx+1:])
+	}
+
+	location := ""
+	if fe.Stack != "" {
+		location = extractFirstAppFrame(fe.Stack)
+	}
+	if location == "" && fe.Source != "" && fe.LineNo > 0 {
+		location = fmt.Sprintf("%s:%d:%d", fe.Source, fe.LineNo, fe.ColNo)
+	}
+
+	return []unifiedError{{
+		Source:   "browser:js",
+		Severity: "error",
+		Category: category,
+		Message:  message,
+		Location: location,
+		Page:     fe.URL,
+		LastSeen: fe.Timestamp,
+		Count:    1,
+	}}
+}
+
+// convertHTTPErrorDirect converts an HTTPLogEntry struct to a unified error.
+func convertHTTPErrorDirect(proxyID string, h *proxy.HTTPLogEntry) []unifiedError {
+	if h == nil {
+		return nil
+	}
+
+	if h.StatusCode < 400 && h.Error == "" {
+		return nil
+	}
+
+	if isNoiseError(h.URL, h.StatusCode) {
+		return nil
+	}
+
+	category := categorizeHTTPError(h.StatusCode)
+	message := fmt.Sprintf("%s %s", h.Method, h.URL)
+	if h.Error != "" {
+		message += fmt.Sprintf(" → %q", truncate(h.Error, 200))
+	} else if h.ResponseBody != "" {
+		extracted := extractErrorMessage(h.ResponseBody, 200)
+		if extracted != "" {
+			message += fmt.Sprintf(" → %q", extracted)
+		}
+	}
+
+	level := "error"
+	if h.StatusCode >= 400 && h.StatusCode < 500 {
+		level = "warning"
+	}
+
+	return []unifiedError{{
+		Source:   "proxy:http",
+		Severity: level,
+		Category: category,
+		Message:  message,
+		LastSeen: h.Timestamp,
+		Count:    1,
+	}}
+}
+
+// convertDiagnosticErrorDirect converts a ProxyDiagnostic struct to a unified error.
+func convertDiagnosticErrorDirect(proxyID string, d *proxy.ProxyDiagnostic) []unifiedError {
+	if d == nil {
+		return nil
+	}
+
+	level := string(d.Level)
+	if level != "error" && level != "warning" {
+		return nil
+	}
+
+	category := "PROXY DIAGNOSTIC"
+	if d.Event != "" {
+		category = strings.ToUpper(strings.ReplaceAll(d.Event, "_", " "))
+	}
+
+	return []unifiedError{{
+		Source:   "proxy:diagnostic",
+		Severity: level,
+		Category: category,
+		Message:  d.Message,
+		LastSeen: d.Timestamp,
+		Count:    1,
+	}}
+}
+
+// convertCustomErrorDirect converts a CustomLog struct to a unified error.
+func convertCustomErrorDirect(proxyID string, c *proxy.CustomLog) []unifiedError {
+	if c == nil {
+		return nil
+	}
+
+	if c.Level != "error" && c.Level != "warn" {
+		return nil
+	}
+
+	unifiedLevel := "error"
+	if c.Level == "warn" {
+		unifiedLevel = "warning"
+	}
+
+	return []unifiedError{{
+		Source:   "browser:custom",
+		Severity: unifiedLevel,
+		Category: "CUSTOM ERROR",
+		Message:  c.Message,
+		Page:     c.URL,
+		LastSeen: c.Timestamp,
 		Count:    1,
 	}}
 }

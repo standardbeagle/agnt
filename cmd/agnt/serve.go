@@ -220,6 +220,7 @@ func runLegacyServer() {
 	tools.RegisterProcessTools(server, pm)
 	tools.RegisterProjectTools(server)
 	tools.RegisterProxyTools(server, proxym)
+	tools.RegisterGetErrorsTool(server, proxym)
 
 	// Register snapshot tools (visual regression testing)
 	snapshotManager, err := snapshot.NewManager("", 0.01)
