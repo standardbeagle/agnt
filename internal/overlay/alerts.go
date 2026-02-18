@@ -121,6 +121,9 @@ type AlertScannerConfig struct {
 	OnAlert func(*AlertBatch)
 }
 
+// matchBufSize is the fixed capacity of the ring buffer for recent matches.
+const matchBufSize = 200
+
 // AlertScanner matches process output lines against known error/warning patterns,
 // deduplicates, batches, and delivers alerts through a callback.
 type AlertScanner struct {
@@ -142,6 +145,12 @@ type AlertScanner struct {
 	flushRetries  int
 	maxRetries    int
 	retryInterval time.Duration
+
+	// Ring buffer for recent matches (pre-dedup, all matches retained).
+	matchBuf     [matchBufSize]*AlertMatch
+	matchBufHead int // next write position
+	matchBufLen  int // number of entries (max matchBufSize)
+	matchBufMu   sync.RWMutex
 }
 
 // NewAlertScanner creates and starts a new AlertScanner with the given config.
@@ -191,12 +200,14 @@ func (s *AlertScanner) ProcessLine(line string, scriptID string) {
 			continue
 		}
 		if p.Pattern.MatchString(line) {
-			s.addMatch(&AlertMatch{
+			m := &AlertMatch{
 				Pattern:   p,
 				Line:      strings.TrimSpace(line),
 				Timestamp: time.Now(),
 				ScriptID:  scriptID,
-			})
+			}
+			s.recordMatch(m)
+			s.addMatch(m)
 			break // One pattern match per line is sufficient
 		}
 	}
@@ -363,6 +374,44 @@ func (s *AlertScanner) deliverPending() {
 			})
 		}
 	}
+}
+
+// recordMatch stores a match in the ring buffer. Called from ProcessLine
+// before addMatch, so it captures every match regardless of dedup.
+func (s *AlertScanner) recordMatch(m *AlertMatch) {
+	s.matchBufMu.Lock()
+	s.matchBuf[s.matchBufHead] = m
+	s.matchBufHead = (s.matchBufHead + 1) % matchBufSize
+	if s.matchBufLen < matchBufSize {
+		s.matchBufLen++
+	}
+	s.matchBufMu.Unlock()
+}
+
+// RecentMatches returns matches from the ring buffer with timestamp >= since.
+// If since is the zero time, all buffered matches are returned.
+// Results are ordered oldest-to-newest.
+func (s *AlertScanner) RecentMatches(since time.Time) []*AlertMatch {
+	s.matchBufMu.RLock()
+	defer s.matchBufMu.RUnlock()
+
+	if s.matchBufLen == 0 {
+		return nil
+	}
+
+	// Start index is the oldest entry in the ring buffer.
+	start := (s.matchBufHead - s.matchBufLen + matchBufSize) % matchBufSize
+	isZero := since.IsZero()
+
+	result := make([]*AlertMatch, 0, s.matchBufLen)
+	for i := 0; i < s.matchBufLen; i++ {
+		idx := (start + i) % matchBufSize
+		m := s.matchBuf[idx]
+		if isZero || !m.Timestamp.Before(since) {
+			result = append(result, m)
+		}
+	}
+	return result
 }
 
 // capitalize uppercases the first letter of a string.
