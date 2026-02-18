@@ -960,3 +960,30 @@ func (rc *ResilientClient) RestartAll() (map[string]interface{}, error) {
 	})
 	return result, err
 }
+
+// Alert methods
+
+// AlertReport sends an alert report to the daemon.
+func (rc *ResilientClient) AlertReport(payload protocol.AlertReportPayload) error {
+	return rc.WithClient(func(c *Client) error {
+		return c.AlertReport(payload)
+	})
+}
+
+// AlertQuery queries alerts from the daemon.
+func (rc *ResilientClient) AlertQuery(filter protocol.AlertQueryFilter) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.AlertQuery(filter)
+		return e
+	})
+	return result, err
+}
+
+// AlertClear clears all alerts from the daemon.
+func (rc *ResilientClient) AlertClear() error {
+	return rc.WithClient(func(c *Client) error {
+		return c.AlertClear()
+	})
+}
