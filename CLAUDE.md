@@ -156,12 +156,66 @@ Pending → Starting → Running → Stopping → Stopped/Failed
 | `proxylog` | Query proxy logs (query, clear, stats) |
 | `tunnel` | Tunnel management (cloudflare/ngrok) |
 | `currentpage` | Page session tracking |
+| `get_errors` | Unified error view across processes and proxies |
+| `snapshot` | Visual regression testing (baseline/compare screenshots) |
 | `daemon` | Daemon management |
 
 **Handler pattern**:
 - Input/Output structs with JSON schema tags
 - Return `(*mcp.CallToolResult, OutputStruct, error)`
 - Errors as `CallToolResult{IsError: true}` (NOT Go errors)
+
+### get_errors Tool
+
+Unified error aggregation across all active processes and proxies. Collects, deduplicates, and formats errors from multiple sources into a single view.
+
+**Error Sources**:
+- **Process output** (daemon mode only): Compile errors, panics, exceptions detected by AlertScanner pattern matching
+- **Browser JS errors**: Runtime exceptions captured by injected JS (`window.onerror`)
+- **HTTP errors**: 4xx/5xx responses from proxied requests (4xx = warning, 5xx = error)
+- **Proxy diagnostics**: Transport errors, connection failures
+- **Custom logs**: Application-level `__devtool.log()` calls with error/warn level
+
+**Parameters**:
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `process_id` | string | all | Filter to specific process |
+| `proxy_id` | string | all active | Filter to specific proxy |
+| `since` | string | none | Recency filter (RFC3339 or duration like `5m`, `1h`, `30s`) |
+| `include_warnings` | bool | true | Include warnings alongside errors |
+| `limit` | int | 25 | Max errors returned |
+| `raw` | bool | false | Return full JSON instead of compact text |
+
+**Built-in Intelligence**:
+- Deduplicates identical errors by source+category+message+location (shows count)
+- Reduces stack traces to first application code frame (skips node_modules, runtime, webpack)
+- Filters noise: static asset 404s, redirects (301/302/304), HMR/WebSocket 404s
+- Extracts error messages from JSON/HTML response bodies
+- Sorts by severity (errors first) then recency
+
+**Compact Output Format**:
+```
+=== Errors (2) ===
+
+[browser:js] TypeError (3x, latest 5s ago)
+  Cannot read property 'map' of undefined
+  → src/components/List.tsx:42:15
+  page: http://localhost:3000/dashboard
+
+[proxy:http] 500 Internal Server Error (1x, 12s ago)
+  POST /api/users → "database connection timeout"
+
+=== Warnings (1) ===
+
+[proxy:http] 404 Not Found (1x, 30s ago)
+  GET /api/old-endpoint
+```
+
+**Dual Mode**:
+- **Daemon mode**: Full functionality — process alerts via daemon IPC + proxy errors
+- **Legacy mode** (no daemon): Proxy errors only, process alerts unavailable
+
+**Key Files**: `internal/tools/get_errors.go`, `internal/tools/get_errors_test.go`
 
 ## Frontend API
 
