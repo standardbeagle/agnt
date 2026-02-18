@@ -1,6 +1,7 @@
 package overlay
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 	"sync"
@@ -505,4 +506,68 @@ func TestAlertScannerAddAndDisablePattern(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	assert.Len(t, received, 1, "disabled pattern should not produce more alerts")
+}
+
+func TestAlertScanner_RecentMatches(t *testing.T) {
+	scanner := NewAlertScanner(AlertScannerConfig{
+		BatchWindow:  5 * time.Second, // Long window so batch doesn't fire
+		DedupeWindow: 60 * time.Second,
+	})
+	defer scanner.Stop()
+
+	scanner.ProcessLine("panic: runtime error", "api")
+	scanner.ProcessLine("Build FAILED.", "frontend")
+
+	matches := scanner.RecentMatches(time.Time{})
+	require.Len(t, matches, 2, "should return both matches")
+	assert.Equal(t, "api", matches[0].ScriptID)
+	assert.Equal(t, "go-panic", matches[0].Pattern.ID)
+	assert.Equal(t, "frontend", matches[1].ScriptID)
+	assert.Equal(t, "dotnet-build-error", matches[1].Pattern.ID)
+}
+
+func TestAlertScanner_RecentMatches_SinceFilter(t *testing.T) {
+	scanner := NewAlertScanner(AlertScannerConfig{
+		BatchWindow:  5 * time.Second,
+		DedupeWindow: 60 * time.Second,
+	})
+	defer scanner.Stop()
+
+	scanner.ProcessLine("panic: runtime error", "api")
+	time.Sleep(50 * time.Millisecond)
+
+	cutoff := time.Now()
+	time.Sleep(50 * time.Millisecond)
+
+	scanner.ProcessLine("Build FAILED.", "frontend")
+
+	matches := scanner.RecentMatches(cutoff)
+	require.Len(t, matches, 1, "should return only the match after cutoff")
+	assert.Equal(t, "frontend", matches[0].ScriptID)
+	assert.Equal(t, "dotnet-build-error", matches[0].Pattern.ID)
+}
+
+func TestAlertScanner_RecentMatches_RingBufferOverflow(t *testing.T) {
+	scanner := NewAlertScanner(AlertScannerConfig{
+		BatchWindow:  5 * time.Second,
+		DedupeWindow: 60 * time.Second,
+	})
+	defer scanner.Stop()
+
+	// Write 250 matches (50 more than buffer capacity).
+	// Use unique lines so dedup in addMatch doesn't matter (ring buffer is pre-dedup).
+	for i := 0; i < 250; i++ {
+		// Each line is unique thanks to the index.
+		scanner.ProcessLine(fmt.Sprintf("panic: error number %d", i), "dev")
+	}
+
+	matches := scanner.RecentMatches(time.Time{})
+	require.Len(t, matches, matchBufSize, "should retain exactly matchBufSize entries")
+
+	// Most recent entry should be the last one written.
+	last := matches[len(matches)-1]
+	assert.Contains(t, last.Line, "error number 249")
+	// Oldest entry should be #50 (first 50 were evicted).
+	first := matches[0]
+	assert.Contains(t, first.Line, "error number 50")
 }
