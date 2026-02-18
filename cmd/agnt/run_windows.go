@@ -521,7 +521,7 @@ func runWithConPTY(ctx context.Context, args []string, socketPath string, sessio
 			}
 		}
 		// Set up alert scanner for process output monitoring
-		alertScanner := setupAlertScanner(projectPath, sessionCode, netOverlay, func() overlay.ActivityState {
+		alertScanner := setupAlertScanner(projectPath, sessionCode, netOverlay, daemonHandle, func() overlay.ActivityState {
 			if activityMonitor != nil {
 				return activityMonitor.State()
 			}
