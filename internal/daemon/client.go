@@ -619,3 +619,18 @@ func (c *Client) ProcAutoRestart(processID, action string, config *ProcAutoResta
 func (c *Client) ProxyRestart(id string) (map[string]interface{}, error) {
 	return c.conn.Request(protocol.VerbProxy, protocol.SubVerbRestart, id).JSON()
 }
+
+// AlertReport sends an alert report to the daemon.
+func (c *Client) AlertReport(payload protocol.AlertReportPayload) error {
+	return c.conn.Request(protocol.VerbAlerts, protocol.SubVerbReport).WithJSON(payload).OK()
+}
+
+// AlertQuery queries alerts from the daemon.
+func (c *Client) AlertQuery(filter protocol.AlertQueryFilter) (map[string]interface{}, error) {
+	return c.conn.Request(protocol.VerbAlerts, protocol.SubVerbQuery).WithJSON(filter).JSON()
+}
+
+// AlertClear clears all alerts from the daemon.
+func (c *Client) AlertClear() error {
+	return c.conn.Request(protocol.VerbAlerts, protocol.SubVerbClear).OK()
+}

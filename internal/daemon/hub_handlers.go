@@ -22,6 +22,7 @@ import (
 
 	cdp "github.com/chromedp/chromedp"
 	"github.com/standardbeagle/agnt/internal/project"
+	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/proxy"
 	"github.com/standardbeagle/agnt/internal/tunnel"
 	hubpkg "github.com/standardbeagle/go-cli-server/hub"
@@ -376,6 +377,14 @@ func (d *Daemon) registerAgntCommands() {
 		Handler:     d.hubHandleAutomate,
 	})
 
+	// ALERTS command
+	d.hub.RegisterCommand(hubpkg.CommandDefinition{
+		Verb:        "ALERTS",
+		SubVerbs:    []string{"REPORT", "QUERY", "CLEAR"},
+		Description: "Process output alert queries",
+		Handler:     d.hubHandleAlerts,
+	})
+
 	// STOP-ALL command
 	d.hub.RegisterCommand(hubpkg.CommandDefinition{
 		Verb:        "STOP-ALL",
@@ -390,7 +399,7 @@ func (d *Daemon) registerAgntCommands() {
 		Handler:     d.hubHandleRestartAll,
 	})
 
-	debug.Log("daemon", "Registered %d agnt-specific commands with Hub", 16)
+	debug.Log("daemon", "Registered %d agnt-specific commands with Hub", 17)
 }
 
 // hubHandleProc handles the PROC command (overrides Hub's built-in).
@@ -3836,4 +3845,98 @@ func (d *Daemon) hubHandleAutomationEvaluate(ctx context.Context, conn *hubpkg.C
 
 	data, _ := json.Marshal(resp)
 	return conn.WriteJSON(data)
+}
+
+// ALERTS Command Handlers
+
+// hubHandleAlerts handles the ALERTS command and its sub-verbs.
+func (d *Daemon) hubHandleAlerts(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	debug.Log("daemon", "ALERTS %s: args=%v", cmd.SubVerb, cmd.Args)
+	switch cmd.SubVerb {
+	case "REPORT":
+		return d.hubHandleAlertsReport(conn, cmd)
+	case "QUERY", "":
+		return d.hubHandleAlertsQuery(conn, cmd)
+	case "CLEAR":
+		return d.hubHandleAlertsClear(conn)
+	default:
+		return writeStructuredErr(conn, "daemon", &hubproto.StructuredError{
+			Code:         hubproto.ErrInvalidArgs,
+			Message:      "unknown ALERTS sub-command",
+			Command:      "ALERTS",
+			ValidActions: []string{"REPORT", "QUERY", "CLEAR"},
+		})
+	}
+}
+
+// hubHandleAlertsReport handles ALERTS REPORT command.
+// Receives an AlertReportPayload and stores it in the alert store.
+func (d *Daemon) hubHandleAlertsReport(conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	if len(cmd.Data) == 0 {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, "ALERTS REPORT requires JSON payload")
+	}
+
+	var payload protocol.AlertReportPayload
+	if err := json.Unmarshal(cmd.Data, &payload); err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("invalid payload: %v", err))
+	}
+
+	ts, err := time.Parse(time.RFC3339, payload.Timestamp)
+	if err != nil {
+		ts = time.Now()
+	}
+
+	d.alertStore.Add(&AlertEntry{
+		PatternID:   payload.PatternID,
+		Severity:    payload.Severity,
+		Category:    payload.Category,
+		Description: payload.Description,
+		Line:        payload.Line,
+		ScriptID:    payload.ScriptID,
+		Timestamp:   ts,
+	})
+
+	return conn.WriteOK("alert stored")
+}
+
+// hubHandleAlertsQuery handles ALERTS QUERY command.
+// Receives an optional AlertQueryFilter and returns matching entries.
+func (d *Daemon) hubHandleAlertsQuery(conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	var protoFilter protocol.AlertQueryFilter
+	if len(cmd.Data) > 0 {
+		if err := json.Unmarshal(cmd.Data, &protoFilter); err != nil {
+			debug.Log("daemon", "ALERTS QUERY: invalid filter JSON: %v", err)
+		}
+	}
+
+	filter := AlertStoreFilter{
+		ProcessID: protoFilter.ProcessID,
+		Severity:  protoFilter.Severity,
+		Limit:     protoFilter.Limit,
+	}
+
+	// Parse since: RFC3339 timestamp or Go duration string
+	if protoFilter.Since != "" {
+		if t, err := time.Parse(time.RFC3339, protoFilter.Since); err == nil {
+			filter.Since = t
+		} else if dur, err := time.ParseDuration(protoFilter.Since); err == nil {
+			filter.Since = time.Now().Add(-dur)
+		} else {
+			debug.Log("daemon", "ALERTS QUERY: unparseable since value: %q", protoFilter.Since)
+		}
+	}
+
+	entries := d.alertStore.Query(filter)
+
+	data, _ := json.Marshal(map[string]interface{}{
+		"alerts": entries,
+		"count":  len(entries),
+	})
+	return conn.WriteJSON(data)
+}
+
+// hubHandleAlertsClear handles ALERTS CLEAR command.
+func (d *Daemon) hubHandleAlertsClear(conn *hubpkg.Connection) error {
+	d.alertStore.Clear()
+	return conn.WriteOK("alerts cleared")
 }

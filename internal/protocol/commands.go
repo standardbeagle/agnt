@@ -14,6 +14,7 @@ const (
 	VerbStatus      = "STATUS" // Full daemon status (Hub's INFO is minimal)
 	VerbStore       = "STORE"
 	VerbAutomate    = "AUTOMATE" // Agent-based automation processing
+	VerbAlerts      = "ALERTS"   // Process output alert queries
 )
 
 // Agnt-specific sub-verbs (beyond those in go-cli-server).
@@ -46,6 +47,7 @@ const (
 	SubVerbScreenshot    = "SCREENSHOT" // Take screenshot in automation session
 	SubVerbNavigate      = "NAVIGATE"   // Navigate to URL in automation session
 	SubVerbEvaluate      = "EVALUATE"   // Evaluate JavaScript in automation session
+	SubVerbReport        = "REPORT"     // Report alert matches from agnt run
 )
 
 // ProxyStartConfig represents configuration for a PROXY START command.
@@ -277,4 +279,23 @@ type AutomationNavigateConfig struct {
 type AutomationEvaluateConfig struct {
 	SessionID string `json:"session_id"` // Session ID (required)
 	Script    string `json:"script"`     // JavaScript to evaluate (required)
+}
+
+// AlertReportPayload is sent from agnt run to daemon when alert patterns match.
+type AlertReportPayload struct {
+	PatternID   string `json:"pattern_id"`
+	Severity    string `json:"severity"`    // "error", "warning", "info"
+	Category    string `json:"category"`    // "go", "dotnet", "webpack", "generic", "custom"
+	Description string `json:"description"` // Pattern description
+	Line        string `json:"line"`        // Matched output line
+	ScriptID    string `json:"script_id"`   // Process that produced the line
+	Timestamp   string `json:"timestamp"`   // RFC3339
+}
+
+// AlertQueryFilter filters for ALERTS QUERY.
+type AlertQueryFilter struct {
+	Since     string `json:"since,omitempty"`      // RFC3339 or duration like "5m"
+	ProcessID string `json:"process_id,omitempty"` // Filter to specific process
+	Severity  string `json:"severity,omitempty"`   // Filter by severity
+	Limit     int    `json:"limit,omitempty"`      // Max results (0 = all)
 }

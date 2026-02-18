@@ -131,6 +131,7 @@ type Daemon struct {
 	storem        *store.StoreManager
 	automator     *automation.Processor
 	autoRestarter *ProcessAutoRestarter // Process auto-restart manager
+	alertStore    *ProcessAlertStore    // Ring buffer store for process output alerts
 
 	// Session and scheduling (agnt-specific extensions)
 	sessionRegistry   *SessionRegistry
@@ -207,6 +208,7 @@ func New(config DaemonConfig) *Daemon {
 		browserm:          browser.NewManager(),
 		sessionm:          chromedp.NewSessionManager(),
 		storem:            store.NewStoreManager(),
+		alertStore:        NewProcessAlertStore(500),
 		sessionRegistry:   sessionRegistry,
 		scheduler:         scheduler,
 		schedulerStateMgr: schedulerStateMgr,
@@ -582,6 +584,11 @@ func (d *Daemon) SessionManager() *chromedp.SessionManager {
 // AutoRestarter returns the process auto-restart manager.
 func (d *Daemon) AutoRestarter() *ProcessAutoRestarter {
 	return d.autoRestarter
+}
+
+// AlertStore returns the process alert store.
+func (d *Daemon) AlertStore() *ProcessAlertStore {
+	return d.alertStore
 }
 
 // SessionRegistry returns the session registry.
