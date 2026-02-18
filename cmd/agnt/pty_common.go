@@ -10,6 +10,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/daemon"
 	"github.com/standardbeagle/agnt/internal/overlay"
+	"github.com/standardbeagle/agnt/internal/protocol"
 )
 
 // daemonSessionHandle manages the daemon connection and session registration.
@@ -235,8 +236,13 @@ func startDaemonSession(ctx context.Context, cfg daemonSessionConfig, onAutostar
 
 // setupAlertScanner creates an AlertScanner from .agnt.kdl config.
 // Returns nil if alerts are disabled or config can't be loaded.
-func setupAlertScanner(projectPath, sessionCode string, netOverlay *Overlay, actState func() overlay.ActivityState) *overlay.AlertScanner {
+// If daemonHandle is non-nil, alerts are also pushed to the daemon's alert store
+// so they can be queried by the get_errors MCP tool.
+func setupAlertScanner(projectPath, sessionCode string, netOverlay *Overlay, daemonHandle *daemonSessionHandle, actState func() overlay.ActivityState) *overlay.AlertScanner {
 	agntCfg, _ := config.LoadAgntConfig(projectPath)
+	if agntCfg == nil {
+		agntCfg = config.DefaultAgntConfig()
+	}
 
 	// Check if alerts are explicitly disabled
 	if agntCfg.Alerts != nil && !agntCfg.Alerts.IsEnabled() {
@@ -256,6 +262,20 @@ func setupAlertScanner(projectPath, sessionCode string, netOverlay *Overlay, act
 					Enter:   true,
 					Instant: true,
 				})
+			}
+			// Push alert matches to daemon store for get_errors queries
+			if daemonHandle != nil && daemonHandle.IsConnected() {
+				for _, m := range batch.Matches {
+					_ = daemonHandle.client.AlertReport(protocol.AlertReportPayload{
+						PatternID:   m.Pattern.ID,
+						Severity:    string(m.Pattern.Severity),
+						Category:    m.Pattern.Category,
+						Description: m.Pattern.Description,
+						Line:        m.Line,
+						ScriptID:    m.ScriptID,
+						Timestamp:   m.Timestamp.Format(time.RFC3339),
+					})
+				}
 			}
 		},
 	}
