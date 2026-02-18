@@ -418,6 +418,28 @@ The get action returns full interaction and mutation history (may be large).
 This provides a high-level view of active pages and their resources.`,
 	}, dt.makeCurrentPageHandler())
 
+	// Error aggregation tool
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "get_errors",
+		Description: `Get all current errors across processes and proxies.
+
+Collects errors from: process output (compile errors, panics, exceptions),
+browser JavaScript errors, HTTP 4xx/5xx responses, and proxy transport errors.
+
+Default behavior:
+  - Deduplicates identical errors (shows count)
+  - Reduces stack traces to first application code frame
+  - Filters out noise (static asset 404s, redirects)
+  - Sorts by severity (errors first) then recency
+
+Examples:
+  get_errors {}
+  get_errors {proxy_id: "dev"}
+  get_errors {process_id: "dev-server", since: "5m"}
+  get_errors {include_warnings: false}
+  get_errors {raw: true, limit: 50}`,
+	}, dt.makeGetErrorsHandler())
+
 	// Session tool - register via separate function for organization
 	RegisterSessionTool(server, dt)
 

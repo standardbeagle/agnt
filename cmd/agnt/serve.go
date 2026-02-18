@@ -136,6 +136,7 @@ Available tools:
 - proxy: Reverse proxy with traffic logging and JS instrumentation
 - proxylog: Query proxy traffic logs
 - currentpage: View active page sessions
+- get_errors: Unified error view across processes and proxies
 - snapshot: Visual regression testing (baseline/compare screenshots)
 - daemon: Manage the background daemon service`,
 		},
