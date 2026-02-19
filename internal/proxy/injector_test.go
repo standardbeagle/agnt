@@ -260,3 +260,40 @@ func TestInjectInstrumentation_DifferentPorts(t *testing.T) {
 		}
 	}
 }
+
+func TestInjectProxyMeta(t *testing.T) {
+	// Simulate body after InjectInstrumentation (contains a </script> tag)
+	body := []byte(`<html><head><script>window.__devtool_version='1.0';</script></head><body></body></html>`)
+	result := InjectProxyMeta(body, "my-app")
+	resultStr := string(result)
+
+	if !strings.Contains(resultStr, `window.__devtool_proxy_id="my-app"`) {
+		t.Errorf("Expected proxy ID script, got: %s", resultStr)
+	}
+
+	// Verify it's inserted after the last </script>
+	idx := strings.LastIndex(resultStr, `window.__devtool_proxy_id`)
+	scriptEnd := strings.LastIndex(resultStr[:idx], "</script>")
+	if scriptEnd == -1 {
+		t.Error("Proxy meta should appear after a </script> tag")
+	}
+}
+
+func TestInjectProxyMeta_SpecialChars(t *testing.T) {
+	body := []byte(`<head><script>x=1;</script></head>`)
+	result := InjectProxyMeta(body, `foo"bar`)
+	resultStr := string(result)
+
+	// fmt %q escapes quotes, so the ID should be safely quoted
+	if !strings.Contains(resultStr, `window.__devtool_proxy_id="foo\"bar"`) {
+		t.Errorf("Expected escaped proxy ID, got: %s", resultStr)
+	}
+}
+
+func TestInjectProxyMeta_NoScript(t *testing.T) {
+	body := []byte(`<html><body>hello</body></html>`)
+	result := InjectProxyMeta(body, "test")
+	if string(result) != string(body) {
+		t.Error("Should return body unchanged when no </script> marker exists")
+	}
+}

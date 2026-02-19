@@ -69,10 +69,9 @@ type ProxyServer struct {
 	// Overlay notifier for sending events to agent overlay
 	overlayNotifier *OverlayNotifier
 
-	// Capture registry maps opaque IDs to file paths for screenshots/sketches
-	// This allows panel_message to look up file paths for previously captured items
-	captureRegistry   map[string]string // ID → FilePath
-	captureRegistryMu sync.RWMutex
+	// namedCaptures maps screenshot names to file paths for cross-goroutine lookup.
+	// Used by proxy exec screenshots: the WebSocket goroutine writes, MCP tool handler reads.
+	namedCaptures sync.Map // map[string]string: name → filePath
 
 	// Voice sessions for speech-to-text (map[connID]*VoiceSession)
 	voiceSessions sync.Map
@@ -163,7 +162,6 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 		restartWindow:   1 * time.Minute, // Within 1 minute window
 		restarts:        make([]time.Time, 0, 5),
 		overlayNotifier: NewOverlayNotifier(),
-		captureRegistry: make(map[string]string),
 		chaosEngine:     NewChaosEngine(logger),
 		wsUpgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
@@ -831,6 +829,7 @@ func (ps *ProxyServer) modifyResponse(resp *http.Response) error {
 
 	// Inject instrumentation
 	modifiedBody = InjectInstrumentation(modifiedBody, port)
+	modifiedBody = InjectProxyMeta(modifiedBody, ps.ID)
 
 	// Update response with uncompressed modified content
 	resp.Body = io.NopCloser(bytes.NewReader(modifiedBody))
@@ -1133,6 +1132,11 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
+	// Per-connection capture store: maps browser-generated IDs to saved file paths.
+	// Written by the binary screenshot handler, read by panel_message and sketch handlers.
+	// Single-goroutine access — no locking needed.
+	sessionCaptures := make(map[string]string)
+
 	// Read messages from frontend
 	for {
 		messageType, rawMessage, err := conn.ReadMessage()
@@ -1140,10 +1144,31 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 
-		// Handle binary audio data for voice sessions
+		// Binary messages: voice audio or screenshot PNG bytes
 		if messageType == websocket.BinaryMessage {
 			if session, ok := ps.voiceSessions.Load(connID); ok {
 				session.(*VoiceSession).SendAudio(rawMessage)
+				continue
+			}
+			// Screenshot binary frame: [1 byte: idLen][idLen bytes: id][PNG bytes]
+			if len(rawMessage) >= 2 {
+				idLen := int(rawMessage[0])
+				if idLen > 0 && len(rawMessage) >= 1+idLen+1 {
+					captureID := string(rawMessage[1 : 1+idLen])
+					imgBytes := rawMessage[1+idLen:]
+					filePath, err := ps.savePNGBytes("area-"+captureID, imgBytes)
+					if err != nil {
+						debug.Error("proxy", "Failed to save binary screenshot id=%s: %v", captureID, err)
+					} else {
+						sessionCaptures[captureID] = filePath
+						debug.Log("proxy", "Saved binary screenshot: id=%s path=%s", captureID, filePath)
+						_ = conn.WriteJSON(map[string]interface{}{
+							"type":      "capture_ack",
+							"id":        captureID,
+							"file_path": filePath,
+						})
+					}
+				}
 			}
 			continue
 		}
@@ -1327,7 +1352,7 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			// Handle message from floating indicator panel
 			panelMsg := parsePanelMessage(msg.Data, id, timestamp, msg.URL)
 
-			// Process attachments: save inline data or look up previously captured files
+			// Process attachments: resolve file paths from registry or save inline data
 			for i := range panelMsg.Attachments {
 				att := &panelMsg.Attachments[i]
 				areaDataLen := 0
@@ -1342,38 +1367,25 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 					att.Data = make(map[string]interface{})
 				}
 
-				// Handle screenshots: either save inline data or look up from registry
-				if att.Type == "screenshot" {
-					if att.Area != nil && att.Area.Data != "" {
-						// Image data sent inline - save it now
-						filePath, err := ps.saveScreenshot(fmt.Sprintf("area-%s", att.ID), att.Area.Data)
-						if err != nil {
-							debug.Error("proxy", "Failed to save screenshot: %v", err)
-						} else {
-							debug.Log("proxy", "Saved screenshot to: %s", filePath)
-							att.Data["file_path"] = filePath
-							att.Data["file_name"] = filepath.Base(filePath)
-							// Also register for future lookups
-							ps.registerCapture(att.ID, filePath)
-						}
-					} else if att.ID != "" {
-						// No inline data - look up from capture registry
-						if filePath := ps.LookupCapture(att.ID); filePath != "" {
-							debug.Log("proxy", "Looked up screenshot from registry: id=%s path=%s", att.ID, filePath)
-							att.Data["file_path"] = filePath
-							att.Data["file_name"] = filepath.Base(filePath)
-						} else {
-							debug.Log("proxy", "Screenshot not found in registry: id=%s", att.ID)
-						}
+				// Resolve file paths from the session capture store (populated by binary handler
+				// for screenshots, by sketch_capture JSON handler for sketches).
+				if att.Type == "screenshot" && att.ID != "" {
+					if filePath, ok := sessionCaptures[att.ID]; ok {
+						delete(sessionCaptures, att.ID)
+						att.Data["file_path"] = filePath
+						att.Data["file_name"] = filepath.Base(filePath)
+						debug.Log("proxy", "Resolved screenshot: id=%s path=%s", att.ID, filePath)
+					} else {
+						debug.Error("proxy", "No capture for screenshot id=%s (binary frame missing or failed)", att.ID)
 					}
 				}
 
-				// Handle sketches: look up from registry
 				if att.Type == "sketch" && att.ID != "" {
-					if filePath := ps.LookupCapture(att.ID); filePath != "" {
-						debug.Log("proxy", "Looked up sketch from registry: id=%s path=%s", att.ID, filePath)
+					if filePath, ok := sessionCaptures[att.ID]; ok {
+						delete(sessionCaptures, att.ID)
 						att.Data["file_path"] = filePath
 						att.Data["file_name"] = filepath.Base(filePath)
+						debug.Log("proxy", "Resolved sketch: id=%s path=%s", att.ID, filePath)
 					}
 				}
 			}
@@ -1382,7 +1394,9 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 			// Forward to overlay if configured
 			if ps.overlayNotifier.IsEnabled() {
-				_ = ps.overlayNotifier.NotifyPanelMessage(ps.ID, &panelMsg)
+				if err := ps.overlayNotifier.NotifyPanelMessage(ps.ID, &panelMsg); err != nil {
+					debug.Error("proxy", "Failed to notify overlay of panel message: %v", err)
+				}
 			}
 
 			// Update audit folder summary after saving new files
@@ -1397,8 +1411,6 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				filePath, err := ps.saveScreenshot("sketch-"+id, sketchEntry.ImageData)
 				if err == nil {
 					sketchEntry.FilePath = filePath
-					// Register capture so panel_message can look up the file path by ID
-					ps.registerCapture(id, filePath)
 				}
 			}
 
@@ -1412,24 +1424,6 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			// Update audit folder summary
 			_ = UpdateAuditSummary()
 
-		case "screenshot_capture":
-			// Handle area capture from panel with reference ID
-			capture := parseScreenshotCapture(msg.Data, timestamp, msg.URL)
-
-			// Save screenshot image to file if present
-			if capture.ImageData != "" {
-				filePath, err := ps.saveScreenshot("area-"+capture.ID, capture.ImageData)
-				if err == nil {
-					capture.FilePath = filePath
-					// Register capture so panel_message can look up the file path by ID
-					ps.registerCapture(capture.ID, filePath)
-				}
-				// Clear image data from log entry to save memory
-				capture.ImageData = ""
-			}
-
-			ps.logger.LogScreenshotCapture(capture)
-
 		case "element_capture":
 			// Handle element capture from panel with reference ID
 			capture := parseElementCapture(msg.Data, timestamp, msg.URL)
@@ -1439,14 +1433,14 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			// Handle sketch capture from panel with reference ID
 			capture := parseSketchCapture(msg.Data, timestamp, msg.URL)
 
-			// Save sketch image to temp file if present
+			// Save sketch image to file if present
 			if capture.ImageData != "" {
 				filePath, err := ps.saveScreenshot("sketch-"+capture.ID, capture.ImageData)
 				if err == nil {
 					capture.FilePath = filePath
-					// Register capture so panel_message can look up the file path by ID
-					ps.registerCapture(capture.ID, filePath)
+					sessionCaptures[capture.ID] = filePath
 				}
+				capture.ImageData = ""
 			}
 
 			ps.logger.LogSketchCapture(capture)
@@ -2007,21 +2001,44 @@ func (ps *ProxyServer) saveScreenshot(name string, dataURL string) (string, erro
 	return filePath, nil
 }
 
-// registerCapture stores the mapping from an opaque ID to its file path.
-// This allows panel_message to look up file paths for previously captured items.
-func (ps *ProxyServer) registerCapture(id, filePath string) {
-	ps.captureRegistryMu.Lock()
-	ps.captureRegistry[id] = filePath
-	ps.captureRegistryMu.Unlock()
-	debug.Log("proxy", "Registered capture: id=%s path=%s", id, filePath)
+// registerCapture stores a named screenshot file path for cross-goroutine lookup.
+// Used only for proxy exec screenshots (__devtool.screenshot('name')).
+// Panel screenshots use the per-connection sessionCaptures map instead.
+func (ps *ProxyServer) registerCapture(name, filePath string) {
+	ps.namedCaptures.Store(name, filePath)
+	debug.Log("proxy", "Registered named capture: name=%s path=%s", name, filePath)
 }
 
-// LookupCapture returns the file path for a capture ID/name, or empty string if not found.
-// This is used by proxy exec to look up screenshot file paths by name.
-func (ps *ProxyServer) LookupCapture(id string) string {
-	ps.captureRegistryMu.RLock()
-	defer ps.captureRegistryMu.RUnlock()
-	return ps.captureRegistry[id]
+// LookupCapture returns the file path for a named screenshot, or empty string if not found.
+// Entries are deleted after lookup — consumed once by the MCP tool handler.
+func (ps *ProxyServer) LookupCapture(name string) string {
+	if v, ok := ps.namedCaptures.LoadAndDelete(name); ok {
+		return v.(string)
+	}
+	return ""
+}
+
+// savePNGBytes writes raw PNG bytes directly to the screenshots directory.
+// This is the fast path for binary WebSocket captures — no base64 decode needed.
+func (ps *ProxyServer) savePNGBytes(name string, data []byte) (string, error) {
+	auditDir, err := GetAuditDir()
+	if err != nil {
+		auditDir = os.TempDir()
+	}
+
+	screenshotDir := filepath.Join(auditDir, "screenshots")
+	if err := os.MkdirAll(screenshotDir, 0755); err != nil {
+		screenshotDir = auditDir
+	}
+
+	safeName := sanitizeFilename(name)
+	filename := fmt.Sprintf("screenshot-%s-%s.png", ps.ID, safeName)
+	filePath := filepath.Join(screenshotDir, filename)
+
+	if err := os.WriteFile(filePath, data, 0644); err != nil {
+		return "", fmt.Errorf("failed to write screenshot: %w", err)
+	}
+	return filePath, nil
 }
 
 // LargeResultThreshold is the size in bytes above which results are saved to file.
