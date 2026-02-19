@@ -139,6 +139,7 @@ const sidebars: SidebarsConfig = {
       collapsed: true,
       items: [
         'guides/ecosystem/what-is-mcp',
+        'guides/ecosystem/best-mcp-servers-web-dev',
       ],
     },
   ],
