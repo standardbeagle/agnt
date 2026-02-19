@@ -24,6 +24,38 @@ const config: Config = {
   onBrokenLinks: 'throw',
   onBrokenMarkdownLinks: 'warn',
 
+  metadata: [
+    {name: 'keywords', content: 'MCP server, browser debugging, AI coding agent, Claude Code, Cursor, Windsurf, frontend debugging, error tracking, DOM inspection, screenshots'},
+    {name: 'og:type', content: 'website'},
+    {name: 'og:image', content: 'https://standardbeagle.github.io/agnt/img/docusaurus-social-card.jpg'},
+    {name: 'twitter:card', content: 'summary_large_image'},
+  ],
+  headTags: [
+    {
+      tagName: 'script',
+      attributes: {type: 'application/ld+json'},
+      innerHTML: JSON.stringify({
+        '@context': 'https://schema.org',
+        '@type': 'SoftwareApplication',
+        name: 'agnt',
+        applicationCategory: 'DeveloperApplication',
+        operatingSystem: 'Linux, macOS, Windows',
+        description: 'Browser superpowers for AI coding agents. Screenshots, DOM inspection, error capture, and visual debugging via MCP.',
+        url: 'https://standardbeagle.github.io/agnt/',
+        offers: {
+          '@type': 'Offer',
+          price: '0',
+          priceCurrency: 'USD',
+        },
+        sourceOrganization: {
+          '@type': 'Organization',
+          name: 'Standard Beagle',
+          url: 'https://github.com/standardbeagle',
+        },
+      }),
+    },
+  ],
+
   i18n: {
     defaultLocale: 'en',
     locales: ['en'],
@@ -70,7 +102,7 @@ const config: Config = {
           type: 'docSidebar',
           sidebarId: 'useCasesSidebar',
           position: 'left',
-          label: 'Use Cases',
+          label: 'Guides & Use Cases',
         },
         {
           href: 'https://github.com/standardbeagle/agnt',
@@ -113,6 +145,27 @@ const config: Config = {
             {
               label: 'Reverse Proxy',
               to: '/features/reverse-proxy',
+            },
+          ],
+        },
+        {
+          title: 'Guides',
+          items: [
+            {
+              label: 'What is MCP?',
+              to: '/guides/ecosystem/what-is-mcp',
+            },
+            {
+              label: 'agnt with Claude Code',
+              to: '/guides/ai-tools/claude-code',
+            },
+            {
+              label: 'agnt with Next.js',
+              to: '/guides/frameworks/next-js',
+            },
+            {
+              label: 'Debug Browser Errors with AI',
+              to: '/guides/debug-browser-errors-ai',
             },
           ],
         },
