@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 	"sync"
 
@@ -80,6 +81,23 @@ func InjectInstrumentation(body []byte, wsPort int) []byte {
 	result = append(result, []byte(script)...)
 	result = append(result, body...)
 	return result
+}
+
+// InjectProxyMeta inserts a small script tag setting window.__devtool_proxy_id
+// after the last </script> in the body. This is called after InjectInstrumentation
+// so the instrumentation script's closing tag is the insertion point.
+func InjectProxyMeta(body []byte, proxyID string) []byte {
+	meta := []byte(fmt.Sprintf("<script>window.__devtool_proxy_id=%q;</script>", proxyID))
+	marker := []byte("</script>")
+	if idx := bytes.LastIndex(body, marker); idx != -1 {
+		insertAt := idx + len(marker)
+		result := make([]byte, 0, len(body)+len(meta))
+		result = append(result, body[:insertAt]...)
+		result = append(result, meta...)
+		result = append(result, body[insertAt:]...)
+		return result
+	}
+	return body
 }
 
 // ShouldInject determines if JavaScript should be injected based on content type.

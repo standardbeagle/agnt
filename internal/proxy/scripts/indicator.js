@@ -107,7 +107,8 @@
       avgApiTime: apiStats ? apiStats.avgDuration : 0,
       rerenderRate: 0,
       inputLag: 0,
-      version: window.__devtool_version || 'unknown'
+      version: window.__devtool_version || 'unknown',
+      proxyId: window.__devtool_proxy_id || ''
     };
 
     // React-specific metrics
@@ -232,24 +233,37 @@
   var actions = {
     addAttachment: function(type, data) {
       var id = generateId();
-      var attachment = {
-        id: id,
-        type: type,
-        label: data.label,
-        summary: data.summary,
-        data: data,
-        timestamp: Date.now()
-      };
 
-      // Log to proxy first (source of truth for backend)
-      core.send(type + '_capture', {
-        id: attachment.id,
-        timestamp: attachment.timestamp,
-        data: data
-      });
-
-      // Update reactive state - DOM updates automatically
-      store.attachments.val = store.attachments.val.concat([attachment]);
+      if (type === 'screenshot' && data.imageBuffer) {
+        // Stream raw PNG bytes directly — no base64 encoding, no JSON overhead
+        sendCaptureBinary(id, data.imageBuffer);
+        // Store only metadata; drop the ArrayBuffer from in-memory state
+        var attachment = {
+          id: id,
+          type: type,
+          label: data.label,
+          summary: data.summary,
+          data: { area: data.area },
+          timestamp: Date.now()
+        };
+        store.attachments.val = store.attachments.val.concat([attachment]);
+      } else {
+        // Other types (sketch, element, audit): send JSON capture event
+        var attachment = {
+          id: id,
+          type: type,
+          label: data.label,
+          summary: data.summary,
+          data: data,
+          timestamp: Date.now()
+        };
+        core.send(type + '_capture', {
+          id: id,
+          timestamp: attachment.timestamp,
+          data: data
+        });
+        store.attachments.val = store.attachments.val.concat([attachment]);
+      }
 
       // Sync to legacy state for backward compatibility
       state.attachments = store.attachments.val;
@@ -362,7 +376,7 @@
       children.push(tags.div({
         style: 'text-align: right; font-size: 11px; color: ' + TOKENS.colors.textMuted + '; margin-bottom: ' + TOKENS.spacing.sm + '; font-family: ui-monospace, monospace;',
         title: 'Press Ctrl+Y to toggle this panel'
-      }, 'agnt v' + data.version));
+      }, 'agnt v' + data.version + (data.proxyId ? ' \u00b7 proxy: ' + data.proxyId : '')));
 
       // Framework badge
       if (data.framework) {
@@ -2475,13 +2489,17 @@
     popup.id = '__devtool-attachment-preview';
     popup.style.cssText = STYLES.attachmentPreview;
 
-    if (attachment.type === 'screenshot' && attachment.data && attachment.data.area && attachment.data.area.data) {
-      // Screenshot preview - show the image
-      var img = document.createElement('img');
-      img.style.cssText = STYLES.attachmentPreviewImage;
-      img.src = attachment.data.area.data;
-      img.alt = 'Screenshot preview';
-      popup.appendChild(img);
+    if (attachment.type === 'screenshot') {
+      var info = document.createElement('div');
+      info.style.cssText = STYLES.attachmentPreviewElement;
+      var area = attachment.data && attachment.data.area;
+      var dims = area ? (area.width + '\u00d7' + area.height) : '';
+      if (attachment.filePath) {
+        info.textContent = (dims ? dims + '\n' : '') + attachment.filePath;
+      } else {
+        info.textContent = (dims || 'Screenshot') + '\nSaving\u2026';
+      }
+      popup.appendChild(info);
     } else if (attachment.type === 'element' && attachment.data) {
       // Element preview - show selector and highlight the element
       var info = document.createElement('div');
@@ -2687,17 +2705,24 @@
       payload: {
         message: fullMessage,
         attachments: state.attachments.map(function(a) {
-          // Send full attachment data including area/selector info
-          return {
+          // For screenshots, omit binary area data — already sent via screenshot_capture event.
+          // For other types (audit, element, sketch), include data payload used by the overlay.
+          var area = a.data && a.data.area;
+          var att = {
             id: a.id,
             type: a.type,
             selector: a.data && a.data.selector,
             tag: a.data && a.data.tag,
             text: a.data && a.data.text,
-            area: a.data && a.data.area,
-            summary: a.summary,
-            data: a.data
+            summary: a.summary
           };
+          if (a.type === 'screenshot') {
+            att.area = area ? { x: area.x, y: area.y, width: area.width, height: area.height } : null;
+          } else {
+            att.area = area || null;
+            att.data = a.data;
+          }
+          return att;
         }),
         url: window.location.href,
         request_notification: state.requestNotification
@@ -2710,7 +2735,8 @@
     togglePanel(false);
   }
 
-  // Capture screenshot area using html2canvas
+  // Capture screenshot area using html2canvas.
+  // Calls back with an ArrayBuffer of raw PNG bytes (no base64 encoding).
   function captureArea(x, y, w, h, callback) {
     if (typeof html2canvas === 'undefined') {
       console.error('[DevTool] html2canvas not loaded for screenshot capture');
@@ -2718,7 +2744,6 @@
       return;
     }
 
-    // Capture the full page first, then crop to area
     html2canvas(document.body, {
       allowTaint: true,
       useCORS: true,
@@ -2732,12 +2757,29 @@
       windowWidth: document.documentElement.scrollWidth,
       windowHeight: document.documentElement.scrollHeight
     }).then(function(canvas) {
-      var dataUrl = canvas.toDataURL('image/png');
-      callback(dataUrl);
+      canvas.toBlob(function(blob) {
+        if (!blob) { callback(null); return; }
+        blob.arrayBuffer().then(function(buf) {
+          callback(buf);
+        }).catch(function() { callback(null); });
+      }, 'image/png');
     }).catch(function(err) {
       console.error('[DevTool] Screenshot capture failed:', err);
       callback(null);
     });
+  }
+
+  // Send raw PNG bytes as a binary WebSocket frame.
+  // Frame format: [1 byte: idLen][idLen bytes: id][PNG bytes]
+  function sendCaptureBinary(id, arrayBuffer) {
+    var ws = core.ws && core.ws();
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    var idBytes = new TextEncoder().encode(id);
+    var frame = new Uint8Array(1 + idBytes.length + arrayBuffer.byteLength);
+    frame[0] = idBytes.length;
+    frame.set(idBytes, 1);
+    frame.set(new Uint8Array(arrayBuffer), 1 + idBytes.length);
+    ws.send(frame.buffer);
   }
 
   // Screenshot mode
@@ -2753,11 +2795,12 @@
     if (isDragSelectUnavailable) {
       var w = window.innerWidth;
       var h = window.innerHeight;
-      captureArea(0, 0, w, h, function(dataUrl) {
+      captureArea(0, 0, w, h, function(imageBuffer) {
         addAttachment('screenshot', {
           label: 'Full screen (' + w + '\u00d7' + h + ')',
           summary: 'Full screen screenshot ' + w + 'x' + h,
-          area: { x: 0, y: 0, width: w, height: h, data: dataUrl }
+          area: { x: 0, y: 0, width: w, height: h },
+          imageBuffer: imageBuffer
         });
         togglePanel(true);
       });
@@ -2814,11 +2857,12 @@
         // Capture the area with actual screenshot data
         var absX = x + window.scrollX;
         var absY = y + window.scrollY;
-        captureArea(absX, absY, w, h, function(dataUrl) {
+        captureArea(absX, absY, w, h, function(imageBuffer) {
           addAttachment('screenshot', {
             label: w + '\u00d7' + h + ' area',
             summary: 'Screenshot area at (' + x + ',' + y + ') size ' + w + 'x' + h,
-            area: { x: absX, y: absY, width: w, height: h, data: dataUrl }
+            area: { x: absX, y: absY, width: w, height: h },
+            imageBuffer: imageBuffer
           });
           togglePanel(true);
         });
@@ -3081,6 +3125,12 @@
       if (payload.lines && Array.isArray(payload.lines)) {
         showOutputPreview(payload.lines);
       }
+    } else if (message.type === 'capture_ack' && message.id && message.file_path) {
+      // Server confirmed screenshot saved — update attachment with file path
+      store.attachments.val = store.attachments.val.map(function(a) {
+        if (a.id !== message.id) return a;
+        return Object.assign({}, a, { filePath: message.file_path });
+      });
     }
   }
 
