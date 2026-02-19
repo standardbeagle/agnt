@@ -98,6 +98,31 @@ const sidebars: SidebarsConfig = {
         'use-cases/ci-cd-integration',
         'use-cases/accessibility-auditing',
         'use-cases/frontend-error-tracking',
+        'guides/debug-browser-errors-ai',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'Framework Guides',
+      collapsed: true,
+      items: [
+        'guides/frameworks/next-js',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'AI Tool Guides',
+      collapsed: true,
+      items: [
+        'guides/ai-tools/claude-code',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'Ecosystem',
+      collapsed: true,
+      items: [
+        'guides/ecosystem/what-is-mcp',
       ],
     },
   ],
