@@ -107,6 +107,10 @@ const sidebars: SidebarsConfig = {
       collapsed: true,
       items: [
         'guides/frameworks/next-js',
+        'guides/frameworks/vite-react',
+        'guides/frameworks/django-flask',
+        'guides/frameworks/rails',
+        'guides/frameworks/go-htmx',
       ],
     },
     {
@@ -115,6 +119,10 @@ const sidebars: SidebarsConfig = {
       collapsed: true,
       items: [
         'guides/ai-tools/claude-code',
+        'guides/ai-tools/cursor',
+        'guides/ai-tools/windsurf-copilot',
+        'guides/ai-tools/openclaw-clawdbot',
+        'guides/ai-tools/aider-gemini',
       ],
     },
     {
