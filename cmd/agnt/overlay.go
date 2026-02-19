@@ -868,44 +868,41 @@ func (o *Overlay) typeText(msg TypeMessage) {
 	}
 }
 
-// sendEntersUntilActivity sends enter keys at progressive intervals until
-// the agent starts producing output (activity detected). Timing: 100ms, 200ms,
-// then 500ms intervals. Max 10 enters to prevent infinite loops.
+// sendEntersUntilActivity sends enter keys until the agent starts producing
+// output. Sends the first Enter immediately, waits for the text echo to
+// settle, then retries at 500ms intervals. Max 10 enters total.
 func (o *Overlay) sendEntersUntilActivity() {
-	// Drain any stale activity signals
-	select {
-	case <-o.activityCh:
-	default:
-	}
+	// Send the first Enter immediately — this must always happen
+	// regardless of any activity signals from the text echo.
+	o.writeTopty("\r\n")
 
-	// Progressive timing: 100ms, 200ms, then 500ms intervals
-	delays := []time.Duration{
-		100 * time.Millisecond,
-		200 * time.Millisecond,
-	}
-	const continuedDelay = 500 * time.Millisecond
-	const maxEnters = 10
+	// Wait for the text + first Enter echo to settle through the PTY
+	// and ActivityMonitor before watching for real agent responses.
+	time.Sleep(300 * time.Millisecond)
 
-	for i := 0; i < maxEnters; i++ {
-		// Determine delay for this iteration
-		var delay time.Duration
-		if i < len(delays) {
-			delay = delays[i]
-		} else {
-			delay = continuedDelay
-		}
-
-		// Wait for activity or timeout
+	// Drain all echo-triggered activity signals
+	for {
 		select {
 		case <-o.activityCh:
-			// Agent started responding, message was accepted
-			return
-		case <-time.After(delay):
-			// No activity yet, send another enter
-			o.writeTopty("\r")
+			continue
+		default:
+			goto drained
 		}
 	}
-	// Max enters reached - message may or may not have been accepted
+drained:
+
+	// Now watch for real agent activity with progressive retries
+	const maxRetries = 9
+	const retryDelay = 500 * time.Millisecond
+
+	for i := 0; i < maxRetries; i++ {
+		select {
+		case <-o.activityCh:
+			return // Agent is responding — message was accepted
+		case <-time.After(retryDelay):
+			o.writeTopty("\r\n")
+		}
+	}
 }
 
 func (o *Overlay) sendKey(msg KeyMessage) {
