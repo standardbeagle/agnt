@@ -813,12 +813,14 @@ func (d *Daemon) hubHandleProxyStart(ctx context.Context, conn *hubpkg.Connectio
 	// Parse extended config from JSON data (optional)
 	path := "."
 	bindAddress := ""
+	allowExternal := false
 	publicURL := ""
 	skipTLSVerify := false
 	if len(cmd.Data) > 0 {
 		var data struct {
 			Path          string `json:"path"`
 			BindAddress   string `json:"bind_address"`
+			AllowExternal bool   `json:"allow_external"`
 			PublicURL     string `json:"public_url"`
 			SkipTLSVerify bool   `json:"skip_tls_verify"`
 		}
@@ -827,6 +829,7 @@ func (d *Daemon) hubHandleProxyStart(ctx context.Context, conn *hubpkg.Connectio
 				path = data.Path
 			}
 			bindAddress = data.BindAddress
+			allowExternal = data.AllowExternal
 			publicURL = data.PublicURL
 			skipTLSVerify = data.SkipTLSVerify
 		}
@@ -841,6 +844,7 @@ func (d *Daemon) hubHandleProxyStart(ctx context.Context, conn *hubpkg.Connectio
 		AutoRestart:   true,
 		Path:          normalizePath(path),
 		BindAddress:   bindAddress,
+		AllowExternal: allowExternal,
 		PublicURL:     publicURL,
 		SkipTLSVerify: skipTLSVerify,
 	}
@@ -3128,12 +3132,13 @@ func (d *Daemon) hubHandleRestartAll(ctx context.Context, conn *hubpkg.Connectio
 		ProjectPath string
 	}
 	type proxyManifest struct {
-		ID          string
-		TargetURL   string
-		Port        int
-		MaxLogSize  int
-		ProjectPath string
-		BindAddress string
+		ID            string
+		TargetURL     string
+		Port          int
+		MaxLogSize    int
+		ProjectPath   string
+		BindAddress   string
+		AllowExternal bool
 	}
 
 	var procsToRestart []procManifest
@@ -3153,12 +3158,13 @@ func (d *Daemon) hubHandleRestartAll(ctx context.Context, conn *hubpkg.Connectio
 	for _, p := range runningProxies {
 		if p.IsRunning() {
 			proxiesToRestart = append(proxiesToRestart, proxyManifest{
-				ID:          p.ID,
-				TargetURL:   p.TargetURL.String(),
-				Port:        0, // Will use auto-port
-				MaxLogSize:  int(p.Logger().Stats().MaxSize),
-				ProjectPath: p.Path,
-				BindAddress: p.BindAddress,
+				ID:            p.ID,
+				TargetURL:     p.TargetURL.String(),
+				Port:          0, // Will use auto-port
+				MaxLogSize:    int(p.Logger().Stats().MaxSize),
+				ProjectPath:   p.Path,
+				BindAddress:   p.BindAddress,
+				AllowExternal: p.AllowExternal,
 			})
 		}
 	}
@@ -3188,12 +3194,13 @@ func (d *Daemon) hubHandleRestartAll(ctx context.Context, conn *hubpkg.Connectio
 	// Restart proxies
 	for _, pm := range proxiesToRestart {
 		_, err := d.proxym.Create(ctx, proxy.ProxyConfig{
-			ID:          pm.ID,
-			TargetURL:   pm.TargetURL,
-			ListenPort:  pm.Port,
-			MaxLogSize:  pm.MaxLogSize,
-			Path:        pm.ProjectPath,
-			BindAddress: pm.BindAddress,
+			ID:            pm.ID,
+			TargetURL:     pm.TargetURL,
+			ListenPort:    pm.Port,
+			MaxLogSize:    pm.MaxLogSize,
+			Path:          pm.ProjectPath,
+			BindAddress:   pm.BindAddress,
+			AllowExternal: pm.AllowExternal,
 		})
 		if err != nil {
 			debug.Error("daemon", "Failed to restart proxy %s: %v", pm.ID, err)
@@ -3390,6 +3397,7 @@ func (d *Daemon) hubHandleProxyRestart(ctx context.Context, conn *hubpkg.Connect
 	maxLogSize := int(p.Logger().Stats().MaxSize)
 	projectPath := p.Path
 	bindAddress := p.BindAddress
+	allowExternal := p.AllowExternal
 
 	// Stop the proxy
 	if err := d.proxym.Stop(ctx, proxyID); err != nil {
@@ -3406,12 +3414,13 @@ func (d *Daemon) hubHandleProxyRestart(ctx context.Context, conn *hubpkg.Connect
 
 	// Create new proxy with same config
 	newProxy, err := d.proxym.Create(ctx, proxy.ProxyConfig{
-		ID:          proxyID,
-		TargetURL:   targetURL,
-		ListenPort:  0, // Auto-assign port
-		MaxLogSize:  maxLogSize,
-		Path:        projectPath,
-		BindAddress: bindAddress,
+		ID:            proxyID,
+		TargetURL:     targetURL,
+		ListenPort:    0, // Auto-assign port
+		MaxLogSize:    maxLogSize,
+		Path:          projectPath,
+		BindAddress:   bindAddress,
+		AllowExternal: allowExternal,
 	})
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("failed to restart proxy: %v", err))

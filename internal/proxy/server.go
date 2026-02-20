@@ -33,24 +33,25 @@ import (
 
 // ProxyServer is a reverse proxy that logs traffic and injects instrumentation.
 type ProxyServer struct {
-	ID          string
-	TargetURL   *url.URL
-	ListenAddr  string
-	Path        string
-	BindAddress string // Bind address used (127.0.0.1 or 0.0.0.0)
-	PublicURL   string // Optional public URL for tunnel services
-	logger      *TrafficLogger
-	pageTracker *PageTracker
-	httpServer  *http.Server
-	wsUpgrader  websocket.Upgrader
-	proxy       *httputil.ReverseProxy
-	running     atomic.Bool
-	startTime   time.Time
-	requestSeq  atomic.Int64
-	mu          sync.Mutex
-	cancelFunc  context.CancelFunc
-	wsConns     sync.Map     // Active WebSocket connections
-	lastError   atomic.Value // stores last error (string) if server crashed
+	ID            string
+	TargetURL     *url.URL
+	ListenAddr    string
+	Path          string
+	BindAddress   string // Bind address used (127.0.0.1 or 0.0.0.0)
+	AllowExternal bool   // Whether external binding was explicitly allowed
+	PublicURL     string // Optional public URL for tunnel services
+	logger        *TrafficLogger
+	pageTracker   *PageTracker
+	httpServer    *http.Server
+	wsUpgrader    websocket.Upgrader
+	proxy         *httputil.ReverseProxy
+	running       atomic.Bool
+	startTime     time.Time
+	requestSeq    atomic.Int64
+	mu            sync.Mutex
+	cancelFunc    context.CancelFunc
+	wsConns       sync.Map     // Active WebSocket connections
+	lastError     atomic.Value // stores last error (string) if server crashed
 
 	// Ready signal - closed when server is ready to accept connections
 	ready     chan struct{}
@@ -96,8 +97,24 @@ type ProxyConfig struct {
 	Path          string // Working directory where proxy was created
 	BindAddress   string // Bind address: "127.0.0.1" (default, localhost only) or "0.0.0.0" (all interfaces)
 	PublicURL     string // Optional public URL for tunnel services (e.g., "https://abc123.trycloudflare.com")
+	AllowExternal bool   // Allow binding to non-localhost addresses (0.0.0.0, ::). Requires explicit opt-in for security.
 	SkipTLSVerify bool   // Skip TLS certificate verification (default: false, verifies certs). Set true for self-signed/expired certs in dev.
 	Tunnel        *protocol.TunnelConfig
+}
+
+// isExternalBindAddress returns true if the address would expose the proxy
+// beyond localhost (e.g. 0.0.0.0, ::, or any non-loopback IP).
+func isExternalBindAddress(addr string) bool {
+	switch addr {
+	case "", "127.0.0.1", "localhost", "::1":
+		return false
+	default:
+		ip := net.ParseIP(addr)
+		if ip == nil {
+			return false // unparseable, let net.Listen fail later
+		}
+		return !ip.IsLoopback()
+	}
 }
 
 // DefaultPortForURL computes a stable default port based on the target URL.
@@ -139,6 +156,14 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 		bindAddress = "127.0.0.1"
 	}
 
+	// Reject non-localhost bind addresses unless explicitly allowed
+	if isExternalBindAddress(bindAddress) {
+		if !config.AllowExternal {
+			return nil, fmt.Errorf("binding to %s exposes the proxy to the network; set allow_external: true to confirm", bindAddress)
+		}
+		debug.Warn("proxy", "Proxy %s binding to %s — accessible from external network", config.ID, bindAddress)
+	}
+
 	// Validate public URL if provided
 	if config.PublicURL != "" {
 		if _, err := url.Parse(config.PublicURL); err != nil {
@@ -153,6 +178,7 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 		ListenAddr:      fmt.Sprintf("%s:%d", bindAddress, config.ListenPort),
 		Path:            config.Path,
 		BindAddress:     bindAddress,
+		AllowExternal:   config.AllowExternal,
 		PublicURL:       config.PublicURL,
 		logger:          logger,
 		pageTracker:     NewPageTracker(100, 5*time.Minute),

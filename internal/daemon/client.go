@@ -213,6 +213,7 @@ func (c *Client) ProcCleanupPort(port int) (map[string]interface{}, error) {
 type ProxyStartConfig struct {
 	Path          string                 `json:"path,omitempty"`
 	BindAddress   string                 `json:"bind_address,omitempty"`
+	AllowExternal bool                   `json:"allow_external,omitempty"`
 	PublicURL     string                 `json:"public_url,omitempty"`
 	SkipTLSVerify bool                   `json:"skip_tls_verify,omitempty"`
 	Tunnel        *protocol.TunnelConfig `json:"tunnel,omitempty"`

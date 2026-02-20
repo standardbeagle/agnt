@@ -19,6 +19,7 @@ type ProxyInput struct {
 	Port          int    `json:"port,omitempty" jsonschema:"Listen port (default: stable hash of target URL). Only specify if you need a specific port."`
 	MaxLogSize    int    `json:"max_log_size,omitempty" jsonschema:"Maximum log entries (default: 1000)"`
 	BindAddress   string `json:"bind_address,omitempty" jsonschema:"Bind address: '127.0.0.1' (default, localhost only) or '0.0.0.0' (all interfaces for tunnel/mobile testing)"`
+	AllowExternal bool   `json:"allow_external,omitempty" jsonschema:"Required to bind to non-localhost addresses (0.0.0.0 or ::). Acknowledges network exposure risk."`
 	PublicURL     string `json:"public_url,omitempty" jsonschema:"Public URL for tunnel services (e.g. 'https://abc123.trycloudflare.com'). Used for URL rewriting when behind a tunnel."`
 	SkipTLSVerify bool   `json:"skip_tls_verify,omitempty" jsonschema:"Skip TLS certificate verification (default: false, certs are verified). Set to true for self-signed/expired certs in dev environments."`
 	Code          string `json:"code,omitempty" jsonschema:"JavaScript code to execute (required for exec)"`
@@ -626,6 +627,7 @@ func handleProxyStart(ctx context.Context, pm *proxy.ProxyManager, input ProxyIn
 		ListenPort:    listenPort,
 		MaxLogSize:    input.MaxLogSize,
 		AutoRestart:   true, // Enable auto-restart for development tool
+		AllowExternal: input.AllowExternal,
 		SkipTLSVerify: input.SkipTLSVerify,
 	}
 
