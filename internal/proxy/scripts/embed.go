@@ -93,6 +93,9 @@ var (
 	//go:embed wireframe.js
 	wireframeJS string
 
+	//go:embed responsive.js
+	responsiveJS string
+
 	//go:embed api.js
 	apiJS string
 )
@@ -280,7 +283,12 @@ func buildCombinedScript() string {
 	sb.WriteString(wrapModule(wireframeJS))
 	sb.WriteString("\n\n")
 
-	// 29. API (assembles all modules, must be last)
+	// 29. Responsive audit (depends on utils)
+	sb.WriteString("  // Responsive audit module\n")
+	sb.WriteString(wrapModule(responsiveJS))
+	sb.WriteString("\n\n")
+
+	// 30. API (assembles all modules, must be last)
 	sb.WriteString("  // API assembly module\n")
 	sb.WriteString(wrapModule(apiJS))
 	sb.WriteString("\n")
@@ -363,6 +371,7 @@ func GetScriptNames() []string {
 		"text-fragility.js",
 		"responsive-risk.js",
 		"wireframe.js",
+		"responsive.js",
 		"api.js",
 	}
 }

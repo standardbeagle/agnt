@@ -137,6 +137,7 @@ Available tools:
 - proxylog: Query proxy traffic logs
 - currentpage: View active page sessions
 - get_errors: Unified error view across processes and proxies
+- responsive_audit: Responsive design audits across multiple viewport sizes
 - snapshot: Visual regression testing (baseline/compare screenshots)
 - daemon: Manage the background daemon service`,
 		},
@@ -148,6 +149,7 @@ Available tools:
 	tools.RegisterTunnelTool(server, dt)
 	tools.RegisterBrowserTool(server, dt)
 	tools.RegisterAutomationTool(server, dt)
+	tools.RegisterResponsiveAuditToolDaemon(server, dt)
 
 	// Register snapshot tools (visual regression testing)
 	snapshotManager, err := snapshot.NewManager("", 0.01) // Default path and 1% threshold
@@ -221,6 +223,7 @@ func runLegacyServer() {
 	tools.RegisterProjectTools(server)
 	tools.RegisterProxyTools(server, proxym)
 	tools.RegisterGetErrorsTool(server, proxym)
+	tools.RegisterResponsiveAuditTool(server, proxym)
 
 	// Register snapshot tools (visual regression testing)
 	snapshotManager, err := snapshot.NewManager("", 0.01)

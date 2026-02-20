@@ -26,6 +26,7 @@
   var store = window.__devtool_store;
   var content = window.__devtool_content;
   var wireframe = window.__devtool_wireframe;
+  var responsive = window.__devtool_responsive;
 
   // Main DevTool API
   window.__devtool = {
@@ -435,6 +436,37 @@
         return responsiveRisk.checkResponsiveRisk();
       }
       return { error: 'Responsive risk module not loaded' };
+    },
+
+    // ========================================================================
+    // RESPONSIVE AUDIT
+    // ========================================================================
+
+    /**
+     * Run a responsive design audit across multiple viewport sizes.
+     *
+     * Loads the page in hidden iframes at target sizes and runs layout,
+     * overflow, and accessibility checks in each context.
+     *
+     * @param {object} [options] - Audit options
+     * @param {array} [options.viewports] - Custom viewports [{name, width, height}]
+     * @param {array} [options.checks] - Checks to run: ['layout', 'overflow', 'a11y']
+     * @param {number} [options.timeout] - Load timeout per viewport (ms, default: 10000)
+     * @param {boolean} [options.raw] - Return raw JSON instead of compact text
+     * @returns {Promise<object|string>} Audit results
+     *
+     * Examples:
+     *   __devtool.responsiveAudit()
+     *   __devtool.responsiveAudit({checks: ['layout', 'overflow']})
+     *   __devtool.responsiveAudit({viewports: [{name: 'xs', width: 320, height: 568}]})
+     *   __devtool.responsiveAudit({raw: true})
+     */
+    responsiveAudit: function(options) {
+      var responsive = window.__devtool_responsive;
+      if (responsive && responsive.audit) {
+        return responsive.audit(options || {});
+      }
+      return Promise.reject(new Error('Responsive audit module not loaded'));
     },
 
     // ========================================================================
