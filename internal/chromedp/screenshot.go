@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/pathutil"
+
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/chromedp"
 )
@@ -77,32 +79,7 @@ func generateScreenshotPath(prefix, label, viewport string) (string, error) {
 
 // sanitizeFilename replaces characters that are not safe for filenames.
 func sanitizeFilename(name string) string {
-	// Strip null bytes which can truncate paths on some systems
-	name = strings.ReplaceAll(name, "\x00", "")
-
-	replacer := strings.NewReplacer(
-		" ", "_",
-		"/", "-",
-		"\\", "-",
-		":", "-",
-		"*", "-",
-		"?", "-",
-		"\"", "",
-		"<", "",
-		">", "",
-		"|", "-",
-	)
-	safe := replacer.Replace(name)
-
-	// Strip leading dots to prevent hidden files or relative path tricks
-	safe = strings.TrimLeft(safe, ".")
-
-	// Limit length to avoid filesystem issues
-	if len(safe) > 50 {
-		safe = safe[:50]
-	}
-
-	return safe
+	return pathutil.SafePathComponent(name)
 }
 
 // CaptureViewport captures a screenshot of the current viewport.
