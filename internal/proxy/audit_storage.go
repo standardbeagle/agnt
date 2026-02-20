@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/standardbeagle/agnt/internal/pathutil"
 )
 
 // AuditDirName is the directory name for storing audit data within .agnt
@@ -72,33 +74,7 @@ func SaveAuditData(auditType, label string, result json.RawMessage) (string, err
 
 // sanitizeFilename replaces characters that are not safe for filenames.
 func sanitizeFilename(name string) string {
-	// Strip null bytes which can truncate paths on some systems
-	name = strings.ReplaceAll(name, "\x00", "")
-
-	// Replace characters that are problematic in filenames
-	replacer := strings.NewReplacer(
-		" ", "_",
-		"/", "-",
-		"\\", "-",
-		":", "-",
-		"*", "-",
-		"?", "-",
-		"\"", "",
-		"<", "",
-		">", "",
-		"|", "-",
-	)
-	safe := replacer.Replace(name)
-
-	// Strip leading dots to prevent hidden files or relative path tricks
-	safe = strings.TrimLeft(safe, ".")
-
-	// Limit length to avoid filesystem issues
-	if len(safe) > 50 {
-		safe = safe[:50]
-	}
-
-	return safe
+	return pathutil.SafePathComponent(name)
 }
 
 // FormatAuditReference formats a reference to the audit directory for AI agent messages.

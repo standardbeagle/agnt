@@ -143,7 +143,7 @@ func TestSanitizeFilename_SafeCharacters(t *testing.T) {
 
 func TestSanitizeFilename_EmptyAndWhitespace(t *testing.T) {
 	result := sanitizeFilename("")
-	assert.Equal(t, "", result)
+	assert.Equal(t, "_", result, "empty input should produce safe fallback")
 
 	result = sanitizeFilename("   ")
 	assert.Equal(t, "___", result)

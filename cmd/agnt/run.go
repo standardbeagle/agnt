@@ -21,6 +21,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/daemon"
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/overlay"
+	"github.com/standardbeagle/agnt/internal/pathutil"
 	"github.com/standardbeagle/agnt/internal/protocol"
 
 	"github.com/creack/pty"
@@ -292,7 +293,8 @@ func runWithPTY(ctx context.Context, args []string, socketPath string, sessionCo
 	overlaySocketPath := ""
 	if defaultPath := DefaultOverlaySocketPath(); defaultPath != "" {
 		dir := filepath.Dir(defaultPath)
-		overlaySocketPath = filepath.Join(dir, fmt.Sprintf("devtool-overlay-%s.sock", sessionCode))
+		safeCode := pathutil.SafePathComponent(sessionCode)
+		overlaySocketPath = filepath.Join(dir, fmt.Sprintf("devtool-overlay-%s.sock", safeCode))
 	}
 
 	// Create network overlay for receiving external events (from browser)
