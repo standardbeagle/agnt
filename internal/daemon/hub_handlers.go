@@ -814,13 +814,13 @@ func (d *Daemon) hubHandleProxyStart(ctx context.Context, conn *hubpkg.Connectio
 	path := "."
 	bindAddress := ""
 	publicURL := ""
-	verifyTLS := false
+	skipTLSVerify := false
 	if len(cmd.Data) > 0 {
 		var data struct {
-			Path        string `json:"path"`
-			BindAddress string `json:"bind_address"`
-			PublicURL   string `json:"public_url"`
-			VerifyTLS   bool   `json:"verify_tls"`
+			Path          string `json:"path"`
+			BindAddress   string `json:"bind_address"`
+			PublicURL     string `json:"public_url"`
+			SkipTLSVerify bool   `json:"skip_tls_verify"`
 		}
 		if err := json.Unmarshal(cmd.Data, &data); err == nil {
 			if data.Path != "" {
@@ -828,21 +828,21 @@ func (d *Daemon) hubHandleProxyStart(ctx context.Context, conn *hubpkg.Connectio
 			}
 			bindAddress = data.BindAddress
 			publicURL = data.PublicURL
-			verifyTLS = data.VerifyTLS
+			skipTLSVerify = data.SkipTLSVerify
 		}
 	}
 
 	// Create proxy config
 	proxyConfig := proxy.ProxyConfig{
-		ID:          proxyID,
-		TargetURL:   targetURL,
-		ListenPort:  port,
-		MaxLogSize:  maxLogSize,
-		AutoRestart: true,
-		Path:        normalizePath(path),
-		BindAddress: bindAddress,
-		PublicURL:   publicURL,
-		VerifyTLS:   verifyTLS,
+		ID:            proxyID,
+		TargetURL:     targetURL,
+		ListenPort:    port,
+		MaxLogSize:    maxLogSize,
+		AutoRestart:   true,
+		Path:          normalizePath(path),
+		BindAddress:   bindAddress,
+		PublicURL:     publicURL,
+		SkipTLSVerify: skipTLSVerify,
 	}
 
 	proxyServer, err := d.proxym.Create(ctx, proxyConfig)
