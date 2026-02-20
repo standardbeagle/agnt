@@ -6,6 +6,8 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"golang.org/x/sync/semaphore"
 )
 
 var (
@@ -166,6 +168,9 @@ func (pm *ProxyManager) TotalStarted() int64 {
 	return pm.totalStarted.Load()
 }
 
+// maxParallelStops bounds concurrent proxy stop operations to prevent goroutine explosion.
+const maxParallelStops int64 = 20
+
 // StopAll stops all running proxies and removes them from the registry.
 // Unlike Shutdown, this does NOT set shuttingDown flag, allowing new proxies
 // to be started afterward. This is used for cleanup when the last client disconnects.
@@ -176,6 +181,7 @@ func (pm *ProxyManager) StopAll(ctx context.Context) ([]string, error) {
 	var errs []error
 	var stoppedIDs []string
 	var stoppedMu sync.Mutex
+	sem := semaphore.NewWeighted(maxParallelStops)
 
 	// Collect all proxy IDs to stop
 	var toStop []string
@@ -184,10 +190,14 @@ func (pm *ProxyManager) StopAll(ctx context.Context) ([]string, error) {
 		return true
 	})
 
-	// Stop all proxies in parallel
+	// Stop proxies with bounded concurrency
 	for _, id := range toStop {
+		if err := sem.Acquire(ctx, 1); err != nil {
+			break // context cancelled
+		}
 		stopWg.Add(1)
 		go func(proxyID string) {
+			defer sem.Release(1)
 			defer stopWg.Done()
 			if err := pm.Stop(ctx, proxyID); err != nil {
 				errMu.Lock()
@@ -248,10 +258,15 @@ func (pm *ProxyManager) StopByProjectPath(ctx context.Context, projectPath strin
 	var errs []error
 	var stoppedIDs []string
 	var stoppedMu sync.Mutex
+	sem := semaphore.NewWeighted(maxParallelStops)
 
 	for _, proxy := range toStop {
+		if err := sem.Acquire(ctx, 1); err != nil {
+			break // context cancelled
+		}
 		stopWg.Add(1)
 		go func(p *ProxyServer) {
+			defer sem.Release(1)
 			defer stopWg.Done()
 			if err := pm.Stop(ctx, p.ID); err != nil {
 				errMu.Lock()
@@ -297,22 +312,33 @@ func (pm *ProxyManager) Shutdown(ctx context.Context) error {
 		var stopWg sync.WaitGroup
 		var errMu sync.Mutex
 		var errs []error
+		sem := semaphore.NewWeighted(maxParallelStops)
 
+		// Collect IDs to stop so we don't hold Range while stopping.
+		var toStop []string
 		pm.proxies.Range(func(key, value any) bool {
 			proxy := value.(*ProxyServer)
 			if proxy.IsRunning() {
-				stopWg.Add(1)
-				go func(p *ProxyServer, id string) {
-					defer stopWg.Done()
-					if err := pm.Stop(ctx, id); err != nil {
-						errMu.Lock()
-						errs = append(errs, err)
-						errMu.Unlock()
-					}
-				}(proxy, key.(string))
+				toStop = append(toStop, key.(string))
 			}
 			return true
 		})
+
+		for _, id := range toStop {
+			if err := sem.Acquire(ctx, 1); err != nil {
+				break // context cancelled
+			}
+			stopWg.Add(1)
+			go func(proxyID string) {
+				defer sem.Release(1)
+				defer stopWg.Done()
+				if err := pm.Stop(ctx, proxyID); err != nil {
+					errMu.Lock()
+					errs = append(errs, err)
+					errMu.Unlock()
+				}
+			}(id)
+		}
 
 		done := make(chan struct{})
 		go func() {
