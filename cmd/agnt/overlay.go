@@ -870,7 +870,7 @@ func (o *Overlay) typeText(msg TypeMessage) {
 
 // sendEntersUntilActivity sends enter keys until the agent starts producing
 // output. Sends the first Enter immediately, waits for the text echo to
-// settle, then retries at 500ms intervals. Max 10 enters total.
+// settle, then retries with increasing delays. Max 4 enters total.
 func (o *Overlay) sendEntersUntilActivity() {
 	// Send the first Enter immediately — this must always happen
 	// regardless of any activity signals from the text echo.
@@ -878,7 +878,8 @@ func (o *Overlay) sendEntersUntilActivity() {
 
 	// Wait for the text + first Enter echo to settle through the PTY
 	// and ActivityMonitor before watching for real agent responses.
-	time.Sleep(300 * time.Millisecond)
+	// 1.1s covers the typical agent acknowledgement latency.
+	time.Sleep(1100 * time.Millisecond)
 
 	// Drain all echo-triggered activity signals
 	for {
@@ -891,15 +892,18 @@ func (o *Overlay) sendEntersUntilActivity() {
 	}
 drained:
 
-	// Now watch for real agent activity with progressive retries
-	const maxRetries = 9
-	const retryDelay = 500 * time.Millisecond
+	// Retry with increasing delays: 1.5s, 2s, 3s
+	retryDelays := [3]time.Duration{
+		1500 * time.Millisecond,
+		2000 * time.Millisecond,
+		3000 * time.Millisecond,
+	}
 
-	for i := 0; i < maxRetries; i++ {
+	for _, delay := range retryDelays {
 		select {
 		case <-o.activityCh:
 			return // Agent is responding — message was accepted
-		case <-time.After(retryDelay):
+		case <-time.After(delay):
 			o.writeTopty("\r\n")
 		}
 	}
