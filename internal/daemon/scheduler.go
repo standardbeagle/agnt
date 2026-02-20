@@ -309,8 +309,11 @@ func (s *Scheduler) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop stops the scheduler.
-func (s *Scheduler) Stop() {
+// Stop stops the scheduler. The provided context bounds how long Stop will wait
+// for in-flight delivery goroutines to finish. If ctx expires, Stop returns
+// immediately (goroutines are still cancelled via s.cancel but may not have
+// exited yet).
+func (s *Scheduler) Stop(ctx context.Context) {
 	s.mu.Lock()
 	if !s.started {
 		s.mu.Unlock()
@@ -319,7 +322,16 @@ func (s *Scheduler) Stop() {
 	s.cancel()
 	s.mu.Unlock()
 
-	s.wg.Wait()
+	done := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
 
 	s.mu.Lock()
 	s.started = false

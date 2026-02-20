@@ -449,16 +449,16 @@ func (d *Daemon) Stop(ctx context.Context) error {
 	var errs []error
 
 	// Stop scheduler
-	d.scheduler.Stop()
+	d.scheduler.Stop(ctx)
 
 	// Stop update checker
 	if d.updateChecker != nil {
-		d.updateChecker.Stop()
+		d.updateChecker.Stop(ctx)
 	}
 
 	// Stop process auto-restarter first (before processes are stopped)
 	if d.autoRestarter != nil {
-		d.autoRestarter.Shutdown()
+		d.autoRestarter.Shutdown(ctx)
 	}
 
 	if err := d.tunnelm.Shutdown(ctx); err != nil {

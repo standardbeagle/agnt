@@ -78,10 +78,23 @@ func (uc *UpdateChecker) Start() {
 	go uc.checkLoop()
 }
 
-// Stop stops the update checker
-func (uc *UpdateChecker) Stop() {
+// Stop stops the update checker. The provided context bounds how long Stop will
+// wait for the check loop goroutine to finish. If ctx expires, Stop returns
+// immediately (the goroutine is still cancelled via uc.cancel but may not have
+// exited yet, e.g. if blocked on a network request).
+func (uc *UpdateChecker) Stop(ctx context.Context) {
 	uc.cancel()
-	uc.wg.Wait()
+
+	done := make(chan struct{})
+	go func() {
+		uc.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
 }
 
 // checkLoop runs the periodic update check
