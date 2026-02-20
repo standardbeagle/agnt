@@ -77,6 +77,9 @@ func generateScreenshotPath(prefix, label, viewport string) (string, error) {
 
 // sanitizeFilename replaces characters that are not safe for filenames.
 func sanitizeFilename(name string) string {
+	// Strip null bytes which can truncate paths on some systems
+	name = strings.ReplaceAll(name, "\x00", "")
+
 	replacer := strings.NewReplacer(
 		" ", "_",
 		"/", "-",
@@ -90,6 +93,9 @@ func sanitizeFilename(name string) string {
 		"|", "-",
 	)
 	safe := replacer.Replace(name)
+
+	// Strip leading dots to prevent hidden files or relative path tricks
+	safe = strings.TrimLeft(safe, ".")
 
 	// Limit length to avoid filesystem issues
 	if len(safe) > 50 {
