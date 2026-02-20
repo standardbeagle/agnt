@@ -870,6 +870,7 @@ func (dt *DaemonTools) handleProxyStart(input ProxyInput) (*mcp.CallToolResult, 
 	config := daemon.ProxyStartConfig{
 		Path:          cwd,
 		BindAddress:   input.BindAddress,
+		AllowExternal: input.AllowExternal,
 		PublicURL:     input.PublicURL,
 		SkipTLSVerify: input.SkipTLSVerify,
 	}
