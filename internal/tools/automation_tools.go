@@ -113,6 +113,10 @@ func (dt *DaemonTools) makeAutomationHandler() func(context.Context, *mcp.CallTo
 	return func(ctx context.Context, req *mcp.CallToolRequest, input AutomationInput) (*mcp.CallToolResult, AutomationOutput, error) {
 		emptyOutput := AutomationOutput{Sessions: []AutomationEntry{}}
 
+		if err := validateAutomationInput(input); err != nil {
+			return errorResult(validationError("automation", err)), emptyOutput, nil
+		}
+
 		if err := dt.ensureConnected(); err != nil {
 			return errorResult(err.Error()), emptyOutput, nil
 		}

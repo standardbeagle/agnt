@@ -53,6 +53,10 @@ Example compare:
 }
 
 func handleSnapshot(manager *snapshot.Manager, ctx context.Context, req *mcp.CallToolRequest, input SnapshotInput) (*mcp.CallToolResult, SnapshotOutput, error) {
+	if err := validateSnapshotInput(input); err != nil {
+		return errorResult(validationError("snapshot", err)), SnapshotOutput{}, nil
+	}
+
 	switch input.Action {
 	case "baseline":
 		return handleSnapshotBaseline(manager, input)

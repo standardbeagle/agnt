@@ -93,6 +93,10 @@ func (dt *DaemonTools) makeBrowserHandler() func(context.Context, *mcp.CallToolR
 	return func(ctx context.Context, req *mcp.CallToolRequest, input BrowserInput) (*mcp.CallToolResult, BrowserOutput, error) {
 		emptyOutput := BrowserOutput{Browsers: []BrowserEntry{}}
 
+		if err := validateBrowserInput(input); err != nil {
+			return errorResult(validationError("browser", err)), emptyOutput, nil
+		}
+
 		if err := dt.ensureConnected(); err != nil {
 			return errorResult(err.Error()), emptyOutput, nil
 		}

@@ -587,6 +587,10 @@ Each proxy maintains its own separate log storage.`,
 
 func makeProxyHandler(pm *proxy.ProxyManager) func(context.Context, *mcp.CallToolRequest, ProxyInput) (*mcp.CallToolResult, ProxyOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input ProxyInput) (*mcp.CallToolResult, ProxyOutput, error) {
+		if err := validateProxyInput(input); err != nil {
+			return errorResult(validationError("proxy", err)), ProxyOutput{}, nil
+		}
+
 		switch input.Action {
 		case "start":
 			return handleProxyStart(ctx, pm, input)
@@ -845,6 +849,10 @@ func detectAndLookupScreenshot(proxyServer *proxy.ProxyServer, resultJSON string
 
 func makeProxyLogHandler(pm *proxy.ProxyManager) func(context.Context, *mcp.CallToolRequest, ProxyLogInput) (*mcp.CallToolResult, ProxyLogOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input ProxyLogInput) (*mcp.CallToolResult, ProxyLogOutput, error) {
+		if err := validateProxyLogInput(input); err != nil {
+			return errorResult(validationError("proxylog", err)), ProxyLogOutput{}, nil
+		}
+
 		if input.ProxyID == "" {
 			return errorResult("proxy_id required"), ProxyLogOutput{}, nil
 		}
@@ -1771,6 +1779,10 @@ func parseTime(s string) (time.Time, error) {
 // makeCurrentPageHandler creates the handler for the currentpage tool.
 func makeCurrentPageHandler(pm *proxy.ProxyManager) func(context.Context, *mcp.CallToolRequest, CurrentPageInput) (*mcp.CallToolResult, CurrentPageOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input CurrentPageInput) (*mcp.CallToolResult, CurrentPageOutput, error) {
+		if err := validateCurrentPageInput(input); err != nil {
+			return errorResult(validationError("currentpage", err)), CurrentPageOutput{}, nil
+		}
+
 		if input.ProxyID == "" {
 			return errorResult("proxy_id required"), CurrentPageOutput{}, nil
 		}

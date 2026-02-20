@@ -52,6 +52,10 @@ func (e *unifiedError) dedupKey() string {
 // makeGetErrorsHandler creates a handler for the get_errors tool.
 func (dt *DaemonTools) makeGetErrorsHandler() func(context.Context, *mcp.CallToolRequest, GetErrorsInput) (*mcp.CallToolResult, GetErrorsOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input GetErrorsInput) (*mcp.CallToolResult, GetErrorsOutput, error) {
+		if err := validateGetErrorsInput(input); err != nil {
+			return errorResult(validationError("get_errors", err)), GetErrorsOutput{}, nil
+		}
+
 		if err := dt.ensureConnected(); err != nil {
 			return errorResult(err.Error()), GetErrorsOutput{}, nil
 		}
