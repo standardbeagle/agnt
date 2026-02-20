@@ -2681,7 +2681,12 @@
 
       state.attachments.forEach(function(att) {
         if (att.type === 'screenshot') {
-          parts.push('- Screenshot `' + att.id + '`: ' + att.summary);
+          var desc = '- Screenshot `' + att.id + '`';
+          if (att.filePath) {
+            desc += ' (`' + att.filePath + '`)';
+          }
+          desc += ': ' + att.summary;
+          parts.push(desc);
         } else if (att.type === 'element') {
           parts.push('- Element `' + att.id + '`: `' + att.data.selector + '` (' + att.data.tag + ')');
         } else if (att.type === 'sketch') {
@@ -2714,7 +2719,8 @@
             selector: a.data && a.data.selector,
             tag: a.data && a.data.tag,
             text: a.data && a.data.text,
-            summary: a.summary
+            summary: a.summary,
+            filePath: a.filePath || null
           };
           if (a.type === 'screenshot') {
             att.area = area ? { x: area.x, y: area.y, width: area.width, height: area.height } : null;
@@ -3131,6 +3137,7 @@
         if (a.id !== message.id) return a;
         return Object.assign({}, a, { filePath: message.file_path });
       });
+      state.attachments = store.attachments.val;
     }
   }
 
