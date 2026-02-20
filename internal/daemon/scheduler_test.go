@@ -32,7 +32,7 @@ func setupSchedulerTest(t *testing.T) (*Scheduler, *SessionRegistry, func()) {
 	_ = registry.Register(session)
 
 	cleanup := func() {
-		scheduler.Stop()
+		scheduler.Stop(context.Background())
 	}
 	return scheduler, registry, cleanup
 }
@@ -175,7 +175,7 @@ func TestScheduler_ListTasksByProject(t *testing.T) {
 	registry := NewSessionRegistry(60 * time.Second)
 	config := DefaultSchedulerConfig()
 	scheduler := NewScheduler(config, registry, nil)
-	defer scheduler.Stop()
+	defer scheduler.Stop(context.Background())
 
 	// Register sessions in different projects
 	session1 := &Session{
@@ -273,10 +273,10 @@ func TestScheduler_StartStop(t *testing.T) {
 	}
 
 	// Stop scheduler
-	scheduler.Stop()
+	scheduler.Stop(context.Background())
 
 	// Stop again should be safe
-	scheduler.Stop() // Should not panic
+	scheduler.Stop(context.Background()) // Should not panic
 }
 
 func TestScheduledTask_ToJSON(t *testing.T) {
@@ -335,7 +335,7 @@ func TestScheduler_Start_AlreadyStarted(t *testing.T) {
 	if err := scheduler.Start(ctx); err != nil {
 		t.Fatalf("First Start() failed: %v", err)
 	}
-	defer scheduler.Stop()
+	defer scheduler.Stop(context.Background())
 
 	// Second start should fail
 	err := scheduler.Start(ctx)
@@ -389,7 +389,7 @@ func TestScheduler_DeliveryConcurrencyBound(t *testing.T) {
 	if err := scheduler.Start(ctx); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
-	defer scheduler.Stop()
+	defer scheduler.Stop(context.Background())
 
 	// The semaphore should prevent more than MaxConcurrentDeliveries goroutines.
 	// Delivery will fail (no real overlay socket), causing tasks to be removed
@@ -431,7 +431,7 @@ func TestScheduler_CtxCancellationStopsLoop(t *testing.T) {
 	// Wait for scheduler to stop (Stop blocks on wg.Wait)
 	done := make(chan struct{})
 	go func() {
-		scheduler.Stop()
+		scheduler.Stop(context.Background())
 		close(done)
 	}()
 
@@ -578,7 +578,7 @@ func TestScheduler_ConcurrencyBoundRespected(t *testing.T) {
 	if err := scheduler.Start(ctx); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
-	defer scheduler.Stop()
+	defer scheduler.Stop(context.Background())
 
 	// Wait for delivery attempts to complete.
 	// With concurrency=2 and 1-second delivery timeout, all 10 tasks need
@@ -914,4 +914,46 @@ func TestScheduler_NewScheduledTask(t *testing.T) {
 	assert.Equal(t, TaskStatusPending, task.Status())
 	assert.Equal(t, 0, task.Attempts())
 	assert.Equal(t, "", task.LastError())
+}
+
+func TestScheduler_StopRespectsContextDeadline(t *testing.T) {
+	// Verifies that Stop returns promptly when the provided context expires,
+	// even if goroutines haven't finished yet.
+	registry := NewSessionRegistry(60 * time.Second)
+	config := SchedulerConfig{
+		TickInterval:            50 * time.Millisecond,
+		MaxRetries:              1,
+		RetryDelay:              time.Second,
+		DeliveryTimeout:         10 * time.Second, // Long timeout to simulate slow delivery
+		MaxConcurrentDeliveries: 5,
+	}
+	scheduler := NewScheduler(config, registry, nil)
+
+	session := &Session{
+		Code:        "test-session",
+		OverlayPath: "/tmp/nonexistent.sock",
+		ProjectPath: "/project",
+		Command:     "claude",
+		StartedAt:   time.Now(),
+		Status:      SessionStatusActive,
+		LastSeen:    time.Now(),
+	}
+	require.NoError(t, registry.Register(session))
+
+	require.NoError(t, scheduler.Start(context.Background()))
+
+	// Give the scheduler a tick to start processing
+	time.Sleep(100 * time.Millisecond)
+
+	// Stop with a very short deadline - should return quickly
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	scheduler.Stop(ctx)
+	elapsed := time.Since(start)
+
+	// Stop should have returned within ~200ms (50ms timeout + some overhead),
+	// not waiting for the full DeliveryTimeout.
+	assert.Less(t, elapsed, 500*time.Millisecond, "Stop should respect context deadline")
 }

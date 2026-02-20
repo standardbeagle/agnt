@@ -236,10 +236,23 @@ func (r *ProcessAutoRestarter) monitorProcess(processID string) {
 	}
 }
 
-// Shutdown stops all monitoring goroutines.
-func (r *ProcessAutoRestarter) Shutdown() {
+// Shutdown stops all monitoring goroutines. The provided context bounds how long
+// Shutdown will wait for monitor goroutines to finish. If ctx expires, Shutdown
+// returns immediately (goroutines are still cancelled via r.cancel but may not
+// have exited yet).
+func (r *ProcessAutoRestarter) Shutdown(ctx context.Context) {
 	r.cancel()
-	r.wg.Wait()
+
+	done := make(chan struct{})
+	go func() {
+		r.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
 }
 
 // Stats returns auto-restart statistics.
