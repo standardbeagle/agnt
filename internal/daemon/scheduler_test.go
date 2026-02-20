@@ -3,9 +3,13 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func setupSchedulerTest(t *testing.T) (*Scheduler, *SessionRegistry, func()) {
@@ -51,8 +55,8 @@ func TestScheduler_Schedule(t *testing.T) {
 	if task.Message != "Test message" {
 		t.Errorf("Schedule() Message = %v, want 'Test message'", task.Message)
 	}
-	if task.Status != TaskStatusPending {
-		t.Errorf("Schedule() Status = %v, want pending", task.Status)
+	if task.Status() != TaskStatusPending {
+		t.Errorf("Schedule() Status = %v, want pending", task.Status())
 	}
 	if task.DeliverAt.Before(time.Now()) {
 		t.Error("Schedule() DeliverAt should be in the future")
@@ -277,26 +281,18 @@ func TestScheduler_StartStop(t *testing.T) {
 
 func TestScheduledTask_ToJSON(t *testing.T) {
 	now := time.Now()
-	task := &ScheduledTask{
-		ID:          "task-1",
-		SessionCode: "test-session",
-		Message:     "Test message",
-		DeliverAt:   now.Add(5 * time.Minute),
-		CreatedAt:   now,
-		ProjectPath: "/project",
-		Status:      TaskStatusPending,
-		Attempts:    0,
-	}
+	task := NewScheduledTask("task-1", "test-session", "Test message", "/project",
+		now.Add(5*time.Minute), now, TaskStatusPending)
 
-	json := task.ToJSON()
-	if json["id"] != "task-1" {
-		t.Errorf("ToJSON() id = %v, want task-1", json["id"])
+	j := task.ToJSON()
+	if j["id"] != "task-1" {
+		t.Errorf("ToJSON() id = %v, want task-1", j["id"])
 	}
-	if json["session_code"] != "test-session" {
-		t.Errorf("ToJSON() session_code = %v, want test-session", json["session_code"])
+	if j["session_code"] != "test-session" {
+		t.Errorf("ToJSON() session_code = %v, want test-session", j["session_code"])
 	}
-	if json["status"] != "pending" {
-		t.Errorf("ToJSON() status = %v, want pending", json["status"])
+	if j["status"] != "pending" {
+		t.Errorf("ToJSON() status = %v, want pending", j["status"])
 	}
 }
 
@@ -376,15 +372,14 @@ func TestScheduler_DeliveryConcurrencyBound(t *testing.T) {
 	// Schedule many tasks that are already due
 	past := time.Now().Add(-time.Minute)
 	for i := 0; i < taskCount; i++ {
-		task := &ScheduledTask{
-			ID:          fmt.Sprintf("task-%d", i),
-			SessionCode: "test-session",
-			Message:     fmt.Sprintf("Message %d", i),
-			DeliverAt:   past,
-			CreatedAt:   past,
-			ProjectPath: "/project",
-			Status:      TaskStatusPending,
-		}
+		task := NewScheduledTask(
+			fmt.Sprintf("task-%d", i),
+			"test-session",
+			fmt.Sprintf("Message %d", i),
+			"/project",
+			past, past,
+			TaskStatusPending,
+		)
 		scheduler.tasks.Store(task.ID, task)
 	}
 
@@ -478,15 +473,14 @@ func TestScheduler_CheckDueTasksRespectsCtxCancel(t *testing.T) {
 	// Schedule many due tasks
 	past := time.Now().Add(-time.Minute)
 	for i := 0; i < 10; i++ {
-		task := &ScheduledTask{
-			ID:          fmt.Sprintf("task-%d", i),
-			SessionCode: "test-session",
-			Message:     fmt.Sprintf("Message %d", i),
-			DeliverAt:   past,
-			CreatedAt:   past,
-			ProjectPath: "/project",
-			Status:      TaskStatusPending,
-		}
+		task := NewScheduledTask(
+			fmt.Sprintf("task-%d", i),
+			"test-session",
+			fmt.Sprintf("Message %d", i),
+			"/project",
+			past, past,
+			TaskStatusPending,
+		)
 		scheduler.tasks.Store(task.ID, task)
 	}
 
@@ -567,15 +561,14 @@ func TestScheduler_ConcurrencyBoundRespected(t *testing.T) {
 	// Add due tasks
 	past := time.Now().Add(-time.Minute)
 	for i := 0; i < taskCount; i++ {
-		task := &ScheduledTask{
-			ID:          fmt.Sprintf("conc-task-%d", i),
-			SessionCode: "test-session",
-			Message:     fmt.Sprintf("Message %d", i),
-			DeliverAt:   past,
-			CreatedAt:   past,
-			ProjectPath: "/project",
-			Status:      TaskStatusPending,
-		}
+		task := NewScheduledTask(
+			fmt.Sprintf("conc-task-%d", i),
+			"test-session",
+			fmt.Sprintf("Message %d", i),
+			"/project",
+			past, past,
+			TaskStatusPending,
+		)
 		scheduler.tasks.Store(task.ID, task)
 	}
 
@@ -608,4 +601,317 @@ func TestScheduler_ConcurrencyBoundRespected(t *testing.T) {
 				taskCount, failedTotal, remaining.Load())
 		}
 	}
+}
+
+// --- Race condition tests ---
+
+func TestScheduler_NoDuplicateDelivery(t *testing.T) {
+	// Verifies that a pending task is only claimed once even when
+	// checkDueTasks is called concurrently from multiple goroutines.
+	registry := NewSessionRegistry(60 * time.Second)
+	config := SchedulerConfig{
+		TickInterval:            time.Hour, // manual ticks only
+		MaxRetries:              1,
+		RetryDelay:              time.Second,
+		DeliveryTimeout:         time.Second,
+		MaxConcurrentDeliveries: 50,
+	}
+	scheduler := NewScheduler(config, registry, nil)
+
+	session := &Session{
+		Code:        "test-session",
+		OverlayPath: "/tmp/nonexistent.sock",
+		ProjectPath: "/project",
+		Command:     "claude",
+		StartedAt:   time.Now(),
+		Status:      SessionStatusActive,
+		LastSeen:    time.Now(),
+	}
+	require.NoError(t, registry.Register(session))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	scheduler.ctx = ctx
+	scheduler.cancel = cancel
+
+	// Create a single due task
+	past := time.Now().Add(-time.Minute)
+	task := NewScheduledTask("dup-test", "test-session", "message", "/project",
+		past, past, TaskStatusPending)
+	scheduler.tasks.Store(task.ID, task)
+
+	// Race: call checkDueTasks from many goroutines simultaneously
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			scheduler.checkDueTasks()
+		}()
+	}
+	wg.Wait()
+
+	// Wait for delivery goroutines to complete
+	time.Sleep(500 * time.Millisecond)
+
+	// The task should have been attempted exactly once (MaxRetries=1 -> fails once -> removed)
+	failed := scheduler.totalFailed.Load()
+	assert.Equal(t, int64(1), failed, "task should be delivered exactly once, not duplicated")
+}
+
+func TestScheduler_CancelRaceWithDelivery(t *testing.T) {
+	// Verifies that Cancel and deliverTask don't both succeed on the same task.
+	// One must win the CAS, the other must lose.
+	registry := NewSessionRegistry(60 * time.Second)
+	config := SchedulerConfig{
+		TickInterval:            time.Hour,
+		MaxRetries:              1,
+		RetryDelay:              time.Second,
+		DeliveryTimeout:         time.Second,
+		MaxConcurrentDeliveries: 50,
+	}
+	scheduler := NewScheduler(config, registry, nil)
+
+	session := &Session{
+		Code:        "test-session",
+		OverlayPath: "/tmp/nonexistent.sock",
+		ProjectPath: "/project",
+		Command:     "claude",
+		StartedAt:   time.Now(),
+		Status:      SessionStatusActive,
+		LastSeen:    time.Now(),
+	}
+	require.NoError(t, registry.Register(session))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	scheduler.ctx = ctx
+	scheduler.cancel = cancel
+
+	// Run many iterations to maximize chance of hitting the race window
+	var cancelWins, deliveryWins atomic.Int64
+	iterations := 100
+
+	for i := 0; i < iterations; i++ {
+		task := NewScheduledTask(
+			fmt.Sprintf("race-%d", i),
+			"test-session", "message", "/project",
+			time.Now().Add(-time.Minute), time.Now(),
+			TaskStatusPending,
+		)
+		scheduler.tasks.Store(task.ID, task)
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+
+		// Goroutine 1: try to cancel
+		go func() {
+			defer wg.Done()
+			err := scheduler.Cancel(task.ID)
+			if err == nil {
+				cancelWins.Add(1)
+			}
+		}()
+
+		// Goroutine 2: try to claim for delivery via checkDueTasks
+		go func() {
+			defer wg.Done()
+			// Directly try CAS like checkDueTasks does
+			if task.CompareAndSwapStatus(taskStatusPending, taskStatusDelivering) {
+				deliveryWins.Add(1)
+				// Simulate delivery finishing
+				task.status.Store(uint32(taskStatusFailed))
+				scheduler.tasks.Delete(task.ID)
+			}
+		}()
+
+		wg.Wait()
+	}
+
+	// For each iteration, exactly one of cancel or delivery should win
+	total := cancelWins.Load() + deliveryWins.Load()
+	assert.Equal(t, int64(iterations), total,
+		"exactly one of cancel or delivery should win for each task")
+}
+
+func TestScheduler_ConcurrentCancelSameTask(t *testing.T) {
+	// Verifies that concurrent Cancel calls on the same task only succeed once.
+	scheduler, _, cleanup := setupSchedulerTest(t)
+	defer cleanup()
+
+	task, err := scheduler.Schedule("test-session", 5*time.Minute, "Test message", "/project")
+	require.NoError(t, err)
+
+	var successes atomic.Int64
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := scheduler.Cancel(task.ID); err == nil {
+				successes.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	assert.Equal(t, int64(1), successes.Load(), "exactly one Cancel should succeed")
+}
+
+func TestScheduler_StatusAccessorsSafe(t *testing.T) {
+	// Verifies that status accessors are safe under concurrent access.
+	task := NewScheduledTask("test", "session", "msg", "/project",
+		time.Now(), time.Now(), TaskStatusPending)
+
+	var wg sync.WaitGroup
+
+	// Writer goroutines
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				task.SetStatus(TaskStatusPending)
+				task.IncrementAttempts()
+				task.SetLastError("test error")
+			}
+		}()
+	}
+
+	// Reader goroutines
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				_ = task.Status()
+				_ = task.Attempts()
+				_ = task.LastError()
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	// Just verify no panic/race detector trigger
+	assert.Equal(t, 1000, task.Attempts())
+}
+
+func TestScheduler_CompareAndSwapStatus(t *testing.T) {
+	task := NewScheduledTask("test", "session", "msg", "/project",
+		time.Now(), time.Now(), TaskStatusPending)
+
+	// CAS from pending to delivering should succeed
+	assert.True(t, task.CompareAndSwapStatus(taskStatusPending, taskStatusDelivering))
+	assert.Equal(t, TaskStatusDelivering, task.Status())
+
+	// CAS from pending to delivering should fail (already delivering)
+	assert.False(t, task.CompareAndSwapStatus(taskStatusPending, taskStatusDelivering))
+
+	// CAS from delivering to delivered should succeed
+	assert.True(t, task.CompareAndSwapStatus(taskStatusDelivering, taskStatusDelivered))
+	assert.Equal(t, TaskStatusDelivered, task.Status())
+}
+
+func TestScheduler_DeliveringStatusPreventsDuplicateClaim(t *testing.T) {
+	// Verifies that once a task is claimed (Pending -> Delivering),
+	// subsequent claims fail.
+	task := NewScheduledTask("test", "session", "msg", "/project",
+		time.Now(), time.Now(), TaskStatusPending)
+
+	var claims atomic.Int64
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if task.CompareAndSwapStatus(taskStatusPending, taskStatusDelivering) {
+				claims.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+
+	assert.Equal(t, int64(1), claims.Load(), "exactly one goroutine should claim the task")
+}
+
+func TestScheduler_JSONRoundTrip(t *testing.T) {
+	// Verifies that JSON serialization/deserialization preserves all fields
+	// including atomic status, attempts, and lastError.
+	now := time.Now().Truncate(time.Second) // Truncate for JSON round-trip
+	task := NewScheduledTask("json-test", "session-1", "hello", "/project",
+		now.Add(5*time.Minute), now, TaskStatusPending)
+	task.IncrementAttempts()
+	task.IncrementAttempts()
+	task.SetLastError("connection refused")
+
+	data, err := task.MarshalJSON()
+	require.NoError(t, err)
+
+	var restored ScheduledTask
+	require.NoError(t, restored.UnmarshalJSON(data))
+
+	assert.Equal(t, task.ID, restored.ID)
+	assert.Equal(t, task.SessionCode, restored.SessionCode)
+	assert.Equal(t, task.Message, restored.Message)
+	assert.Equal(t, task.Status(), restored.Status())
+	assert.Equal(t, task.Attempts(), restored.Attempts())
+	assert.Equal(t, task.LastError(), restored.LastError())
+}
+
+func TestScheduler_HandleDeliveryFailureRetriesToPending(t *testing.T) {
+	// Verifies that a failed delivery with retries remaining reverts to pending.
+	registry := NewSessionRegistry(60 * time.Second)
+	config := SchedulerConfig{
+		TickInterval:            time.Hour,
+		MaxRetries:              3,
+		RetryDelay:              time.Second,
+		DeliveryTimeout:         time.Second,
+		MaxConcurrentDeliveries: 10,
+	}
+	scheduler := NewScheduler(config, registry, nil)
+
+	task := NewScheduledTask("retry-test", "session", "msg", "/project",
+		time.Now(), time.Now(), TaskStatusDelivering)
+	scheduler.tasks.Store(task.ID, task)
+
+	// First failure: should revert to pending (1 < 3 retries)
+	scheduler.handleDeliveryFailure(task, "connection refused")
+	assert.Equal(t, TaskStatusPending, task.Status())
+	assert.Equal(t, 1, task.Attempts())
+	assert.Equal(t, "connection refused", task.LastError())
+
+	// Task should still be in the map
+	_, found := scheduler.GetTask("retry-test")
+	assert.True(t, found)
+
+	// Second failure: still pending (2 < 3)
+	task.SetStatus(TaskStatusDelivering)
+	scheduler.handleDeliveryFailure(task, "timeout")
+	assert.Equal(t, TaskStatusPending, task.Status())
+	assert.Equal(t, 2, task.Attempts())
+
+	// Third failure: now fails permanently (3 >= 3)
+	task.SetStatus(TaskStatusDelivering)
+	scheduler.handleDeliveryFailure(task, "still broken")
+	assert.Equal(t, TaskStatusFailed, task.Status())
+	assert.Equal(t, 3, task.Attempts())
+
+	// Task should be removed from the map
+	_, found = scheduler.GetTask("retry-test")
+	assert.False(t, found)
+}
+
+func TestScheduler_NewScheduledTask(t *testing.T) {
+	now := time.Now()
+	task := NewScheduledTask("id-1", "session", "msg", "/project",
+		now.Add(time.Hour), now, TaskStatusPending)
+
+	assert.Equal(t, "id-1", task.ID)
+	assert.Equal(t, "session", task.SessionCode)
+	assert.Equal(t, "msg", task.Message)
+	assert.Equal(t, "/project", task.ProjectPath)
+	assert.Equal(t, TaskStatusPending, task.Status())
+	assert.Equal(t, 0, task.Attempts())
+	assert.Equal(t, "", task.LastError())
 }
