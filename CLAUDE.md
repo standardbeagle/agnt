@@ -157,6 +157,7 @@ Pending → Starting → Running → Stopping → Stopped/Failed
 | `tunnel` | Tunnel management (cloudflare/ngrok) |
 | `currentpage` | Page session tracking |
 | `get_errors` | Unified error view across processes and proxies |
+| `responsive_audit` | Responsive design audits across viewport sizes |
 | `snapshot` | Visual regression testing (baseline/compare screenshots) |
 | `daemon` | Daemon management |
 
@@ -216,6 +217,84 @@ Unified error aggregation across all active processes and proxies. Collects, ded
 - **Legacy mode** (no daemon): Proxy errors only, process alerts unavailable
 
 **Key Files**: `internal/tools/get_errors.go`, `internal/tools/get_errors_test.go`
+
+### responsive_audit Tool
+
+Run responsive design audits across multiple viewport sizes. Detects layout issues, content overflows, and viewport-specific accessibility problems by loading the page in hidden iframes at target sizes.
+
+**Default Viewports**:
+- Mobile: 375x667 (iPhone SE)
+- Tablet: 768x1024 (iPad)
+- Desktop: 1440x900
+
+**Checks Available**:
+| Check | Description |
+|-------|-------------|
+| `layout` | Collapsed content, fixed element coverage, margin/padding squeeze |
+| `overflow` | Horizontal scroll, clipped content, truncated text, squeezed images |
+| `a11y` | Touch target size (mobile), iOS zoom triggers, readability issues |
+
+**Parameters**:
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `proxy_id` | string | required | Proxy ID to run audit on |
+| `viewports` | array | mobile/tablet/desktop | Custom viewports `[{name, width, height}]` |
+| `checks` | array | all | Checks to run: `["layout", "overflow", "a11y"]` |
+| `timeout` | int | 10000 | Load timeout per viewport (ms) |
+| `raw` | bool | false | Return full JSON instead of compact text |
+
+**Examples**:
+```json
+responsive_audit {proxy_id: "dev"}
+responsive_audit {proxy_id: "dev", checks: ["layout", "overflow"]}
+responsive_audit {proxy_id: "dev", viewports: [{name: "xs", width: 320, height: 568}]}
+responsive_audit {proxy_id: "dev", raw: true}
+```
+
+**Compact Output Format**:
+```
+=== Responsive Audit: 3 viewports ===
+
+MOBILE (375px) - 2 issues
+  ! [layout] .header - collapsed content, element has text but zero height
+  o [overflow] .sidebar - truncated text without title/tooltip
+
+TABLET (768px) - 0 issues
+
+DESKTOP (1440px) - 1 issues
+  ! [layout] .fixed-nav - fixed element covers 45% of viewport
+
+SUMMARY: 3 issues (1 critical, 2 minor)
+PATTERNS: 1 mobile-only, 0 tablet-only, 1 cross-viewport
+```
+
+**JSON Output Format** (with `raw: true`):
+```json
+{
+  "viewports": {
+    "mobile": {
+      "width": 375,
+      "issues": [
+        {"type": "layout", "severity": "critical", "selector": ".header", "message": "..."}
+      ]
+    }
+  },
+  "summary": {"total": 3, "critical": 1, "minor": 2},
+  "patterns": {"mobileOnly": 1, "tabletOnly": 0, "crossViewport": 1}
+}
+```
+
+**Issue Severities**:
+- `critical`: Horizontal scroll, collapsed content (breaks layout)
+- `warning`: Touch targets too small, fixed elements covering 25-40% of viewport
+- `info`: Truncated text without tooltip, small font sizes on mobile
+
+**Pattern Detection**:
+- `mobileOnly`: Issues appearing only on mobile viewport
+- `tabletOnly`: Issues appearing only on tablet viewport
+- `crossViewport`: Issues appearing across all viewports
+
+**Key Files**: `internal/tools/responsive_audit.go`, `internal/tools/responsive_audit_test.go`, `internal/proxy/scripts/responsive.js`
 
 ## Frontend API
 
