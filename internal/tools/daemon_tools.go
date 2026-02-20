@@ -868,10 +868,10 @@ func (dt *DaemonTools) handleProxyStart(input ProxyInput) (*mcp.CallToolResult, 
 
 	// Build config with all options
 	config := daemon.ProxyStartConfig{
-		Path:        cwd,
-		BindAddress: input.BindAddress,
-		PublicURL:   input.PublicURL,
-		VerifyTLS:   input.VerifyTLS,
+		Path:          cwd,
+		BindAddress:   input.BindAddress,
+		PublicURL:     input.PublicURL,
+		SkipTLSVerify: input.SkipTLSVerify,
 	}
 
 	// Configure tunnel if specified

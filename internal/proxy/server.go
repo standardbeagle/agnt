@@ -88,16 +88,16 @@ type ProxyServer struct {
 
 // ProxyConfig holds configuration for creating a proxy server.
 type ProxyConfig struct {
-	ID          string
-	TargetURL   string
-	ListenPort  int
-	MaxLogSize  int
-	AutoRestart bool   // Enable automatic restart on crash (default: true)
-	Path        string // Working directory where proxy was created
-	BindAddress string // Bind address: "127.0.0.1" (default, localhost only) or "0.0.0.0" (all interfaces)
-	PublicURL   string // Optional public URL for tunnel services (e.g., "https://abc123.trycloudflare.com")
-	VerifyTLS   bool   // Verify TLS certificates (default: false, accepts self-signed/expired certs for dev)
-	Tunnel      *protocol.TunnelConfig
+	ID            string
+	TargetURL     string
+	ListenPort    int
+	MaxLogSize    int
+	AutoRestart   bool   // Enable automatic restart on crash (default: true)
+	Path          string // Working directory where proxy was created
+	BindAddress   string // Bind address: "127.0.0.1" (default, localhost only) or "0.0.0.0" (all interfaces)
+	PublicURL     string // Optional public URL for tunnel services (e.g., "https://abc123.trycloudflare.com")
+	SkipTLSVerify bool   // Skip TLS certificate verification (default: false, verifies certs). Set true for self-signed/expired certs in dev.
+	Tunnel        *protocol.TunnelConfig
 }
 
 // DefaultPortForURL computes a stable default port based on the target URL.
@@ -174,14 +174,14 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 	ps.proxy = httputil.NewSingleHostReverseProxy(targetURL)
 
 	// Configure base transport
-	// By default, skip TLS verification to support self-signed and expired certs in dev
+	// By default, TLS certificates are verified. SkipTLSVerify opts in to insecure mode.
 	baseTransport := ps.proxy.Transport
 	if baseTransport == nil {
 		baseTransport = http.DefaultTransport
 	}
 
-	// If TLS verification is disabled (default), create transport that accepts any cert
-	if !config.VerifyTLS {
+	if config.SkipTLSVerify {
+		debug.Warn("proxy", "TLS certificate verification disabled for proxy %s — connections to %s will not verify server certificates", config.ID, config.TargetURL)
 		// Clone the default transport and disable TLS verification
 		if defaultTransport, ok := baseTransport.(*http.Transport); ok {
 			clonedTransport := defaultTransport.Clone()
@@ -202,7 +202,12 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 	// On Windows, "localhost" often resolves to [::1] (IPv6) first, but many
 	// development servers only listen on 127.0.0.1 (IPv4), causing connection
 	// failures. This ensures we try IPv4 first for localhost/127.0.0.1.
+	// Always clone the transport to avoid mutating the shared http.DefaultTransport.
 	if transport, ok := baseTransport.(*http.Transport); ok {
+		if transport == http.DefaultTransport.(*http.Transport) {
+			transport = transport.Clone()
+			baseTransport = transport
+		}
 		originalDialContext := transport.DialContext
 		if originalDialContext == nil {
 			var d net.Dialer
