@@ -1406,6 +1406,11 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 						att.Data["file_path"] = filePath
 						att.Data["file_name"] = filepath.Base(filePath)
 						debug.Log("proxy", "Resolved screenshot: id=%s path=%s", att.ID, filePath)
+					} else if att.FilePath != "" {
+						// Fallback: browser sent filePath from capture_ack
+						att.Data["file_path"] = att.FilePath
+						att.Data["file_name"] = filepath.Base(att.FilePath)
+						debug.Log("proxy", "Resolved screenshot from JS filePath: id=%s path=%s", att.ID, att.FilePath)
 					} else {
 						debug.Error("proxy", "No capture for screenshot id=%s (binary frame missing or failed)", att.ID)
 					}
@@ -2503,6 +2508,7 @@ func parsePanelMessage(data map[string]interface{}, id string, timestamp time.Ti
 						ID:       getStringField(am, "id"),
 						Text:     getStringField(am, "text"),
 						Summary:  getStringField(am, "summary"),
+						FilePath: getStringField(am, "filePath"),
 					}
 
 					// Parse classes

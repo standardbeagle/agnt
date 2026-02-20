@@ -239,6 +239,7 @@ type PanelAttachment struct {
 	Classes  []string               `json:"classes,omitempty"`
 	Text     string                 `json:"text,omitempty"`
 	Summary  string                 `json:"summary,omitempty"`
+	FilePath string                 `json:"filePath,omitempty"` // Browser-side file path from capture_ack
 	Area     *ScreenshotArea        `json:"area,omitempty"`
 	Data     map[string]interface{} `json:"data,omitempty"`
 }
