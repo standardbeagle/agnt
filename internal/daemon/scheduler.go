@@ -15,12 +15,25 @@ import (
 	"golang.org/x/sync/semaphore"
 )
 
-// TaskStatus represents the current state of a scheduled task.
+// taskStatus represents the numeric state of a scheduled task for atomic operations.
+type taskStatus uint32
+
+const (
+	taskStatusPending    taskStatus = 0
+	taskStatusDelivering taskStatus = 1
+	taskStatusDelivered  taskStatus = 2
+	taskStatusFailed     taskStatus = 3
+	taskStatusCancelled  taskStatus = 4
+)
+
+// TaskStatus represents the string form of a task status for JSON serialization.
 type TaskStatus string
 
 const (
 	// TaskStatusPending indicates the task is waiting to be delivered.
 	TaskStatusPending TaskStatus = "pending"
+	// TaskStatusDelivering indicates the task is currently being delivered.
+	TaskStatusDelivering TaskStatus = "delivering"
 	// TaskStatusDelivered indicates the task was successfully delivered.
 	TaskStatusDelivered TaskStatus = "delivered"
 	// TaskStatusFailed indicates the task failed after max retries.
@@ -29,17 +42,143 @@ const (
 	TaskStatusCancelled TaskStatus = "cancelled"
 )
 
+// taskStatusToString maps numeric status to string form.
+func taskStatusToString(s taskStatus) TaskStatus {
+	switch s {
+	case taskStatusPending:
+		return TaskStatusPending
+	case taskStatusDelivering:
+		return TaskStatusDelivering
+	case taskStatusDelivered:
+		return TaskStatusDelivered
+	case taskStatusFailed:
+		return TaskStatusFailed
+	case taskStatusCancelled:
+		return TaskStatusCancelled
+	default:
+		return TaskStatusPending
+	}
+}
+
+// taskStatusFromString maps string status to numeric form.
+func taskStatusFromString(s TaskStatus) taskStatus {
+	switch s {
+	case TaskStatusPending:
+		return taskStatusPending
+	case TaskStatusDelivering:
+		return taskStatusDelivering
+	case TaskStatusDelivered:
+		return taskStatusDelivered
+	case TaskStatusFailed:
+		return taskStatusFailed
+	case TaskStatusCancelled:
+		return taskStatusCancelled
+	default:
+		return taskStatusPending
+	}
+}
+
 // ScheduledTask represents a message scheduled for future delivery.
+// All mutable fields use atomic operations for lock-free concurrent access.
 type ScheduledTask struct {
-	ID          string     `json:"id"`                   // Unique task ID (e.g., "task-abc123")
-	SessionCode string     `json:"session_code"`         // Target session
-	Message     string     `json:"message"`              // Message to deliver
-	DeliverAt   time.Time  `json:"deliver_at"`           // Scheduled delivery time
-	CreatedAt   time.Time  `json:"created_at"`           // When task was created
-	ProjectPath string     `json:"project_path"`         // For project-scoped filtering
-	Status      TaskStatus `json:"status"`               // Current status
-	Attempts    int        `json:"attempts"`             // Delivery attempts
-	LastError   string     `json:"last_error,omitempty"` // Last delivery error
+	ID          string    `json:"id"`           // Unique task ID (e.g., "task-abc123")
+	SessionCode string    `json:"session_code"` // Target session
+	Message     string    `json:"message"`      // Message to deliver
+	DeliverAt   time.Time `json:"deliver_at"`   // Scheduled delivery time
+	CreatedAt   time.Time `json:"created_at"`   // When task was created
+	ProjectPath string    `json:"project_path"` // For project-scoped filtering
+
+	// Atomic mutable state (not directly serialized, use accessors)
+	status    atomic.Uint32
+	attempts  atomic.Int32
+	lastError atomic.Pointer[string]
+}
+
+// Status returns the current task status as a string.
+func (t *ScheduledTask) Status() TaskStatus {
+	return taskStatusToString(taskStatus(t.status.Load()))
+}
+
+// SetStatus sets the task status.
+func (t *ScheduledTask) SetStatus(s TaskStatus) {
+	t.status.Store(uint32(taskStatusFromString(s)))
+}
+
+// CompareAndSwapStatus atomically transitions from old to new status.
+// Returns true if the swap succeeded.
+func (t *ScheduledTask) CompareAndSwapStatus(old, new taskStatus) bool {
+	return t.status.CompareAndSwap(uint32(old), uint32(new))
+}
+
+// Attempts returns the current attempt count.
+func (t *ScheduledTask) Attempts() int {
+	return int(t.attempts.Load())
+}
+
+// IncrementAttempts atomically increments and returns the new attempt count.
+func (t *ScheduledTask) IncrementAttempts() int {
+	return int(t.attempts.Add(1))
+}
+
+// LastError returns the last error message.
+func (t *ScheduledTask) LastError() string {
+	if p := t.lastError.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
+
+// SetLastError sets the last error message.
+func (t *ScheduledTask) SetLastError(err string) {
+	t.lastError.Store(&err)
+}
+
+// scheduledTaskJSON is the JSON wire format for ScheduledTask.
+type scheduledTaskJSON struct {
+	ID          string     `json:"id"`
+	SessionCode string     `json:"session_code"`
+	Message     string     `json:"message"`
+	DeliverAt   time.Time  `json:"deliver_at"`
+	CreatedAt   time.Time  `json:"created_at"`
+	ProjectPath string     `json:"project_path"`
+	Status      TaskStatus `json:"status"`
+	Attempts    int        `json:"attempts"`
+	LastError   string     `json:"last_error,omitempty"`
+}
+
+// MarshalJSON implements json.Marshaler for atomic-safe serialization.
+func (t *ScheduledTask) MarshalJSON() ([]byte, error) {
+	return json.Marshal(scheduledTaskJSON{
+		ID:          t.ID,
+		SessionCode: t.SessionCode,
+		Message:     t.Message,
+		DeliverAt:   t.DeliverAt,
+		CreatedAt:   t.CreatedAt,
+		ProjectPath: t.ProjectPath,
+		Status:      t.Status(),
+		Attempts:    t.Attempts(),
+		LastError:   t.LastError(),
+	})
+}
+
+// UnmarshalJSON implements json.Unmarshaler for atomic-safe deserialization.
+func (t *ScheduledTask) UnmarshalJSON(data []byte) error {
+	var raw scheduledTaskJSON
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	t.ID = raw.ID
+	t.SessionCode = raw.SessionCode
+	t.Message = raw.Message
+	t.DeliverAt = raw.DeliverAt
+	t.CreatedAt = raw.CreatedAt
+	t.ProjectPath = raw.ProjectPath
+	t.SetStatus(raw.Status)
+	t.attempts.Store(int32(raw.Attempts))
+	if raw.LastError != "" {
+		t.SetLastError(raw.LastError)
+	}
+	return nil
 }
 
 // ToJSON returns the task as a JSON-serializable map.
@@ -51,10 +190,24 @@ func (t *ScheduledTask) ToJSON() map[string]interface{} {
 		"deliver_at":   t.DeliverAt.Format(time.RFC3339),
 		"created_at":   t.CreatedAt.Format(time.RFC3339),
 		"project_path": t.ProjectPath,
-		"status":       string(t.Status),
-		"attempts":     t.Attempts,
-		"last_error":   t.LastError,
+		"status":       string(t.Status()),
+		"attempts":     t.Attempts(),
+		"last_error":   t.LastError(),
 	}
+}
+
+// NewScheduledTask creates a ScheduledTask with the given initial status.
+func NewScheduledTask(id, sessionCode, message, projectPath string, deliverAt, createdAt time.Time, status TaskStatus) *ScheduledTask {
+	t := &ScheduledTask{
+		ID:          id,
+		SessionCode: sessionCode,
+		Message:     message,
+		DeliverAt:   deliverAt,
+		CreatedAt:   createdAt,
+		ProjectPath: projectPath,
+	}
+	t.SetStatus(status)
+	return t
 }
 
 // SchedulerConfig configures the scheduler.
@@ -144,7 +297,7 @@ func (s *Scheduler) Start(ctx context.Context) error {
 	if s.stateMgr != nil {
 		tasks := s.stateMgr.LoadAllTasks()
 		for _, task := range tasks {
-			if task.Status == TaskStatusPending {
+			if task.Status() == TaskStatusPending {
 				s.tasks.Store(task.ID, task)
 			}
 		}
@@ -191,18 +344,30 @@ func (s *Scheduler) run() {
 }
 
 // checkDueTasks checks for and delivers due tasks.
-// Delivery goroutines are bounded by the delivery semaphore.
+// Uses atomic CAS to claim tasks before spawning delivery goroutines,
+// preventing duplicate delivery.
 func (s *Scheduler) checkDueTasks() {
 	now := time.Now()
 	s.tasks.Range(func(key, value interface{}) bool {
 		task := value.(*ScheduledTask)
-		if task.Status != TaskStatusPending || !task.DeliverAt.Before(now) {
+
+		// Atomically claim: only Pending -> Delivering succeeds.
+		// If another tick or Cancel already transitioned the status, CAS fails
+		// and we skip this task. This eliminates the TOCTOU race.
+		if !task.CompareAndSwapStatus(taskStatusPending, taskStatusDelivering) {
+			return true
+		}
+
+		if !task.DeliverAt.Before(now) {
+			// Not due yet, revert to pending
+			task.status.Store(uint32(taskStatusPending))
 			return true
 		}
 
 		// Acquire semaphore slot, respecting context cancellation.
-		// If the context is cancelled or we can't acquire, skip this tick.
+		// If the context is cancelled or we can't acquire, revert and stop.
 		if err := s.deliverySem.Acquire(s.ctx, 1); err != nil {
+			task.status.Store(uint32(taskStatusPending))
 			return false // context cancelled, stop iteration
 		}
 
@@ -215,30 +380,17 @@ func (s *Scheduler) checkDueTasks() {
 }
 
 // deliverTask attempts to deliver a scheduled task.
+// The task must already be in Delivering status (claimed by checkDueTasks).
 func (s *Scheduler) deliverTask(task *ScheduledTask) {
 	// Get the session
 	session, ok := s.registry.Get(task.SessionCode)
 	if !ok {
-		task.Attempts++
-		task.LastError = fmt.Sprintf("session %q not found", task.SessionCode)
-		if task.Attempts >= s.config.MaxRetries {
-			task.Status = TaskStatusFailed
-			s.totalFailed.Add(1)
-			s.removeTaskFromStorage(task)
-		}
-		s.persistTask(task)
+		s.handleDeliveryFailure(task, fmt.Sprintf("session %q not found", task.SessionCode))
 		return
 	}
 
 	if session.GetStatus() != SessionStatusActive {
-		task.Attempts++
-		task.LastError = "session not active"
-		if task.Attempts >= s.config.MaxRetries {
-			task.Status = TaskStatusFailed
-			s.totalFailed.Add(1)
-			s.removeTaskFromStorage(task)
-		}
-		s.persistTask(task)
+		s.handleDeliveryFailure(task, "session not active")
 		return
 	}
 
@@ -254,14 +406,7 @@ func (s *Scheduler) deliverTask(task *ScheduledTask) {
 
 	data, err := json.Marshal(payload)
 	if err != nil {
-		task.Attempts++
-		task.LastError = fmt.Sprintf("failed to marshal payload: %v", err)
-		if task.Attempts >= s.config.MaxRetries {
-			task.Status = TaskStatusFailed
-			s.totalFailed.Add(1)
-			s.removeTaskFromStorage(task)
-		}
-		s.persistTask(task)
+		s.handleDeliveryFailure(task, fmt.Sprintf("failed to marshal payload: %v", err))
 		return
 	}
 
@@ -271,48 +416,45 @@ func (s *Scheduler) deliverTask(task *ScheduledTask) {
 
 	req, err := http.NewRequestWithContext(ctx, "POST", "http://localhost/type", bytes.NewReader(data))
 	if err != nil {
-		task.Attempts++
-		task.LastError = fmt.Sprintf("failed to create request: %v", err)
-		if task.Attempts >= s.config.MaxRetries {
-			task.Status = TaskStatusFailed
-			s.totalFailed.Add(1)
-			s.removeTaskFromStorage(task)
-		}
-		s.persistTask(task)
+		s.handleDeliveryFailure(task, fmt.Sprintf("failed to create request: %v", err))
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := client.Do(req)
 	if err != nil {
-		task.Attempts++
-		task.LastError = fmt.Sprintf("delivery failed: %v", err)
-		if task.Attempts >= s.config.MaxRetries {
-			task.Status = TaskStatusFailed
-			s.totalFailed.Add(1)
-			s.removeTaskFromStorage(task)
-		}
-		s.persistTask(task)
+		s.handleDeliveryFailure(task, fmt.Sprintf("delivery failed: %v", err))
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		task.Attempts++
-		task.LastError = fmt.Sprintf("overlay returned status %d", resp.StatusCode)
-		if task.Attempts >= s.config.MaxRetries {
-			task.Status = TaskStatusFailed
-			s.totalFailed.Add(1)
-			s.removeTaskFromStorage(task)
-		}
-		s.persistTask(task)
+		s.handleDeliveryFailure(task, fmt.Sprintf("overlay returned status %d", resp.StatusCode))
 		return
 	}
 
-	// Success!
-	task.Status = TaskStatusDelivered
+	// Success: Delivering -> Delivered
+	task.status.Store(uint32(taskStatusDelivered))
 	s.totalDelivered.Add(1)
 	s.removeTaskFromStorage(task)
+}
+
+// handleDeliveryFailure processes a failed delivery attempt.
+// If max retries reached, marks as failed; otherwise reverts to pending for retry.
+func (s *Scheduler) handleDeliveryFailure(task *ScheduledTask, errMsg string) {
+	attempts := task.IncrementAttempts()
+	task.SetLastError(errMsg)
+
+	if attempts >= s.config.MaxRetries {
+		// Delivering -> Failed (terminal)
+		task.status.Store(uint32(taskStatusFailed))
+		s.totalFailed.Add(1)
+		s.removeTaskFromStorage(task)
+	} else {
+		// Delivering -> Pending (retry on next tick)
+		task.status.Store(uint32(taskStatusPending))
+	}
+	s.persistTask(task)
 }
 
 // createOverlayClient creates an HTTP client that connects via Unix socket.
@@ -363,16 +505,7 @@ func (s *Scheduler) Schedule(sessionCode string, duration time.Duration, message
 	taskID := fmt.Sprintf("task-%d", s.nextTaskID.Add(1))
 	now := time.Now()
 
-	task := &ScheduledTask{
-		ID:          taskID,
-		SessionCode: sessionCode,
-		Message:     message,
-		DeliverAt:   now.Add(duration),
-		CreatedAt:   now,
-		ProjectPath: projectPath,
-		Status:      TaskStatusPending,
-		Attempts:    0,
-	}
+	task := NewScheduledTask(taskID, sessionCode, message, projectPath, now.Add(duration), now, TaskStatusPending)
 
 	s.tasks.Store(task.ID, task)
 	s.totalScheduled.Add(1)
@@ -382,6 +515,7 @@ func (s *Scheduler) Schedule(sessionCode string, duration time.Duration, message
 }
 
 // Cancel cancels a scheduled task.
+// Uses atomic CAS to prevent races with concurrent delivery.
 func (s *Scheduler) Cancel(taskID string) error {
 	val, ok := s.tasks.Load(taskID)
 	if !ok {
@@ -389,11 +523,14 @@ func (s *Scheduler) Cancel(taskID string) error {
 	}
 
 	task := val.(*ScheduledTask)
-	if task.Status != TaskStatusPending {
-		return fmt.Errorf("task %q is not pending (status: %s)", taskID, task.Status)
+
+	// Atomically transition Pending -> Cancelled.
+	// If the task is already being delivered (Delivering), the CAS fails.
+	if !task.CompareAndSwapStatus(taskStatusPending, taskStatusCancelled) {
+		currentStatus := task.Status()
+		return fmt.Errorf("task %q is not pending (status: %s)", taskID, currentStatus)
 	}
 
-	task.Status = TaskStatusCancelled
 	s.totalCancelled.Add(1)
 	s.removeTaskFromStorage(task)
 
@@ -427,7 +564,7 @@ func (s *Scheduler) ListPendingTasks(projectPath string, global bool) []*Schedul
 	var result []*ScheduledTask
 	s.tasks.Range(func(key, value interface{}) bool {
 		task := value.(*ScheduledTask)
-		if task.Status == TaskStatusPending {
+		if task.Status() == TaskStatusPending {
 			if global || projectPath == "" || task.ProjectPath == projectPath {
 				result = append(result, task)
 			}
@@ -452,7 +589,7 @@ func (s *Scheduler) Info() SchedulerInfo {
 	var pendingCount int64
 	s.tasks.Range(func(key, value interface{}) bool {
 		task := value.(*ScheduledTask)
-		if task.Status == TaskStatusPending {
+		if task.Status() == TaskStatusPending {
 			pendingCount++
 		}
 		return true
