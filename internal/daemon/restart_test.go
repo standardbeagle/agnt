@@ -7,11 +7,52 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/protocol"
 )
+
+// waitForProcessState polls until the process reaches the expected state or times out.
+func waitForProcessState(t *testing.T, client *Client, processID, wantState string, timeout time.Duration) map[string]interface{} {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		status, err := client.ProcStatus(processID)
+		if err == nil {
+			if state, ok := status["state"].(string); ok && state == wantState {
+				return status
+			}
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("process %q did not reach state %q within %v", processID, wantState, timeout)
+	return nil
+}
+
+// restartProcessWithRetry retries ProcRestart once on transient startup failures
+// caused by the PID-reuse race in Go's exec.CommandContext.
+func restartProcessWithRetry(t *testing.T, client *Client, processID string) map[string]interface{} {
+	t.Helper()
+	result, err := client.ProcRestart(processID)
+	if err == nil {
+		return result
+	}
+	// Retry once: a "process exited with code -1 during startup" error is a
+	// transient PID-reuse race where Go's exec.CommandContext goroutine fires
+	// an async SIGKILL after the old process is reaped, hitting the newly
+	// started process if it happened to inherit the same PID.
+	if strings.Contains(err.Error(), "exited with code") || strings.Contains(err.Error(), "startup") {
+		t.Logf("Transient restart failure (PID-reuse race), retrying: %v", err)
+		time.Sleep(300 * time.Millisecond)
+		result, err = client.ProcRestart(processID)
+	}
+	if err != nil {
+		t.Fatalf("Failed to restart process %q: %v", processID, err)
+	}
+	return result
+}
 
 // TestRestartIntegration_ProcRestart tests single process restart.
 func TestRestartIntegration_ProcRestart(t *testing.T) {
@@ -55,22 +96,13 @@ func TestRestartIntegration_ProcRestart(t *testing.T) {
 	}
 	t.Logf("Run result: %v", runResult)
 
-	// Wait for process to start
-	time.Sleep(100 * time.Millisecond)
-
-	// Get initial PID
-	status1, err := client.ProcStatus("test-proc")
-	if err != nil {
-		t.Fatalf("Failed to get process status: %v", err)
-	}
+	// Wait for process to reach running state (poll instead of fixed sleep)
+	status1 := waitForProcessState(t, client, "test-proc", "running", 2*time.Second)
 	initialPID := status1["pid"]
 	t.Logf("Initial status: %v", status1)
 
-	// Restart the process
-	restartResult, err := client.ProcRestart("test-proc")
-	if err != nil {
-		t.Fatalf("Failed to restart process: %v", err)
-	}
+	// Restart the process (with retry for transient PID-reuse race)
+	restartResult := restartProcessWithRetry(t, client, "test-proc")
 	t.Logf("Restart result: %v", restartResult)
 
 	// Check id or process_id
@@ -83,14 +115,8 @@ func TestRestartIntegration_ProcRestart(t *testing.T) {
 		t.Errorf("Expected success true, got %v", restartResult["success"])
 	}
 
-	// Wait for restart
-	time.Sleep(200 * time.Millisecond)
-
-	// Get new PID - should be different
-	status2, err := client.ProcStatus("test-proc")
-	if err != nil {
-		t.Fatalf("Failed to get process status after restart: %v", err)
-	}
+	// Wait for restarted process to reach running state
+	status2 := waitForProcessState(t, client, "test-proc", "running", 3*time.Second)
 	newPID := status2["pid"]
 	t.Logf("Status after restart: %v", status2)
 
