@@ -25,9 +25,19 @@ go.work
 # Claude Code runtime artifacts
 .claude/workflow-*
 .claude/dartai-*
+.claude/dartai.local.md
 .claude/tasks/
+.claude/plan.md
 **/.claude/workflow-*
 **/.claude/dartai-*
+
+# agnt runtime artifacts
+.agnt/
+**/.agnt/
+
+# E2E test artifacts
+e2e/test-results/
+e2e/*.png
 
 # OS
 .DS_Store
