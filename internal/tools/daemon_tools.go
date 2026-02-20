@@ -453,6 +453,10 @@ func (dt *DaemonTools) makeDetectHandler() func(context.Context, *mcp.CallToolRe
 		// Create empty output with initialized Scripts to avoid null in JSON schema validation
 		emptyOutput := DetectOutput{Scripts: []string{}}
 
+		if err := validateDetectInput(input); err != nil {
+			return errorResult(validationError("detect", err)), emptyOutput, nil
+		}
+
 		if err := dt.ensureConnected(); err != nil {
 			return errorResult(err.Error()), emptyOutput, nil
 		}
@@ -498,6 +502,10 @@ func (dt *DaemonTools) makeDetectHandler() func(context.Context, *mcp.CallToolRe
 // makeRunHandler creates a handler for the run tool.
 func (dt *DaemonTools) makeRunHandler() func(context.Context, *mcp.CallToolRequest, RunInput) (*mcp.CallToolResult, RunOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input RunInput) (*mcp.CallToolResult, RunOutput, error) {
+		if err := validateRunInput(input); err != nil {
+			return errorResult(validationError("run", err)), RunOutput{}, nil
+		}
+
 		if err := dt.ensureConnected(); err != nil {
 			return errorResult(err.Error()), RunOutput{}, nil
 		}
@@ -603,6 +611,10 @@ func (dt *DaemonTools) makeRunHandler() func(context.Context, *mcp.CallToolReque
 // makeProcHandler creates a handler for the proc tool.
 func (dt *DaemonTools) makeProcHandler() func(context.Context, *mcp.CallToolRequest, ProcInput) (*mcp.CallToolResult, ProcOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input ProcInput) (*mcp.CallToolResult, ProcOutput, error) {
+		if err := validateProcInput(input); err != nil {
+			return errorResult(validationError("proc", err)), ProcOutput{}, nil
+		}
+
 		if err := dt.ensureConnected(); err != nil {
 			return errorResult(err.Error()), ProcOutput{}, nil
 		}
@@ -819,6 +831,10 @@ func (dt *DaemonTools) handleProcCleanupPort(input ProcInput) (*mcp.CallToolResu
 // makeProxyHandler creates a handler for the proxy tool.
 func (dt *DaemonTools) makeProxyHandler() func(context.Context, *mcp.CallToolRequest, ProxyInput) (*mcp.CallToolResult, ProxyOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input ProxyInput) (*mcp.CallToolResult, ProxyOutput, error) {
+		if err := validateProxyInput(input); err != nil {
+			return errorResult(validationError("proxy", err)), ProxyOutput{}, nil
+		}
+
 		if err := dt.ensureConnected(); err != nil {
 			return errorResult(err.Error()), ProxyOutput{}, nil
 		}
@@ -1381,6 +1397,10 @@ func (dt *DaemonTools) handleProxyChaos(input ProxyInput) (*mcp.CallToolResult, 
 // makeProxyLogHandler creates a handler for the proxylog tool.
 func (dt *DaemonTools) makeProxyLogHandler() func(context.Context, *mcp.CallToolRequest, ProxyLogInput) (*mcp.CallToolResult, ProxyLogOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input ProxyLogInput) (*mcp.CallToolResult, ProxyLogOutput, error) {
+		if err := validateProxyLogInput(input); err != nil {
+			return errorResult(validationError("proxylog", err)), ProxyLogOutput{}, nil
+		}
+
 		if err := dt.ensureConnected(); err != nil {
 			return errorResult(err.Error()), ProxyLogOutput{}, nil
 		}
@@ -1530,6 +1550,10 @@ func (dt *DaemonTools) handleProxyLogStats(input ProxyLogInput) (*mcp.CallToolRe
 // makeCurrentPageHandler creates a handler for the currentpage tool.
 func (dt *DaemonTools) makeCurrentPageHandler() func(context.Context, *mcp.CallToolRequest, CurrentPageInput) (*mcp.CallToolResult, CurrentPageOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input CurrentPageInput) (*mcp.CallToolResult, CurrentPageOutput, error) {
+		if err := validateCurrentPageInput(input); err != nil {
+			return errorResult(validationError("currentpage", err)), CurrentPageOutput{}, nil
+		}
+
 		if err := dt.ensureConnected(); err != nil {
 			return errorResult(err.Error()), CurrentPageOutput{}, nil
 		}

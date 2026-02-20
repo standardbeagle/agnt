@@ -33,6 +33,10 @@ Example: detect {path: "."} → {type: "go", scripts: ["test", "build", "lint"]}
 }
 
 func handleDetect(ctx context.Context, req *mcp.CallToolRequest, input DetectInput) (*mcp.CallToolResult, DetectOutput, error) {
+	if err := validateDetectInput(input); err != nil {
+		return errorResult(validationError("detect", err)), DetectOutput{}, nil
+	}
+
 	path := input.Path
 	if path == "" {
 		path = "."

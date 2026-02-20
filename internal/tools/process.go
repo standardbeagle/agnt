@@ -160,6 +160,10 @@ Examples:
 
 func makeRunHandler(pm *process.ProcessManager) func(context.Context, *mcp.CallToolRequest, RunInput) (*mcp.CallToolResult, RunOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input RunInput) (*mcp.CallToolResult, RunOutput, error) {
+		if err := validateRunInput(input); err != nil {
+			return errorResult(validationError("run", err)), RunOutput{}, nil
+		}
+
 		path := input.Path
 		if path == "" {
 			path = "."
@@ -274,6 +278,10 @@ func makeRunHandler(pm *process.ProcessManager) func(context.Context, *mcp.CallT
 
 func makeProcHandler(pm *process.ProcessManager) func(context.Context, *mcp.CallToolRequest, ProcInput) (*mcp.CallToolResult, ProcOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input ProcInput) (*mcp.CallToolResult, ProcOutput, error) {
+		if err := validateProcInput(input); err != nil {
+			return errorResult(validationError("proc", err)), ProcOutput{}, nil
+		}
+
 		switch input.Action {
 		case "status":
 			return handleStatus(pm, input)
