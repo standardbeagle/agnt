@@ -2023,9 +2023,9 @@ func (ps *ProxyServer) saveScreenshot(name string, dataURL string) (string, erro
 		screenshotDir = auditDir
 	}
 
-	// Sanitize filename
+	// Sanitize filename (both ID and name — colons are invalid on Windows)
 	safeName := sanitizeFilename(name)
-	filename := fmt.Sprintf("screenshot-%s-%s.png", ps.ID, safeName)
+	filename := fmt.Sprintf("screenshot-%s-%s.png", sanitizeFilename(ps.ID), safeName)
 	filePath := filepath.Join(screenshotDir, filename)
 
 	// Write to file
@@ -2068,7 +2068,7 @@ func (ps *ProxyServer) savePNGBytes(name string, data []byte) (string, error) {
 	}
 
 	safeName := sanitizeFilename(name)
-	filename := fmt.Sprintf("screenshot-%s-%s.png", ps.ID, safeName)
+	filename := fmt.Sprintf("screenshot-%s-%s.png", sanitizeFilename(ps.ID), safeName)
 	filePath := filepath.Join(screenshotDir, filename)
 
 	if err := os.WriteFile(filePath, data, 0644); err != nil {
@@ -2088,7 +2088,7 @@ func (ps *ProxyServer) saveLargeResult(execID string, result string) (string, er
 	}
 
 	tempDir := os.TempDir()
-	filename := fmt.Sprintf("agnt-result-%s-%s.json", ps.ID, execID)
+	filename := fmt.Sprintf("agnt-result-%s-%s.json", sanitizeFilename(ps.ID), execID)
 	filePath := filepath.Join(tempDir, filename)
 
 	err := os.WriteFile(filePath, []byte(result), 0644)
