@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/debug"
+	"golang.org/x/sync/semaphore"
 )
 
 // AutoRestartConfig holds auto-restart settings for a process.
@@ -80,32 +81,35 @@ func (s *processRestartState) recordRestart() {
 	s.restarts = append(s.restarts, time.Now())
 }
 
+// maxConcurrentMonitors is the upper bound on simultaneous monitor goroutines.
+const maxConcurrentMonitors = 50
+
 // ProcessAutoRestarter manages auto-restart for processes.
 type ProcessAutoRestarter struct {
-	daemon    *Daemon
-	processes map[string]*processRestartState // processID -> state
-	mu        sync.RWMutex
-	ctx       context.Context
-	cancel    context.CancelFunc
-	wg        sync.WaitGroup
+	daemon     *Daemon
+	processes  map[string]*processRestartState // processID -> state
+	mu         sync.RWMutex
+	ctx        context.Context
+	cancel     context.CancelFunc
+	wg         sync.WaitGroup
+	monitorSem *semaphore.Weighted // bounds concurrent monitor goroutines
 }
 
 // NewProcessAutoRestarter creates a new auto-restarter.
 func NewProcessAutoRestarter(d *Daemon) *ProcessAutoRestarter {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &ProcessAutoRestarter{
-		daemon:    d,
-		processes: make(map[string]*processRestartState),
-		ctx:       ctx,
-		cancel:    cancel,
+		daemon:     d,
+		processes:  make(map[string]*processRestartState),
+		ctx:        ctx,
+		cancel:     cancel,
+		monitorSem: semaphore.NewWeighted(maxConcurrentMonitors),
 	}
 }
 
 // Register enables auto-restart for a process.
 func (r *ProcessAutoRestarter) Register(processID string, config AutoRestartConfig, command string, args []string, projectPath, workingDir string) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-
 	r.processes[processID] = &processRestartState{
 		config:      config,
 		command:     command,
@@ -113,10 +117,19 @@ func (r *ProcessAutoRestarter) Register(processID string, config AutoRestartConf
 		projectPath: projectPath,
 		workingDir:  workingDir,
 	}
+	r.mu.Unlock()
 
-	// Start monitoring goroutine
+	// Acquire semaphore outside the lock to prevent deadlock: monitor goroutines
+	// need r.mu.RLock, so we cannot hold the write lock while blocking on Acquire.
+	if err := r.monitorSem.Acquire(r.ctx, 1); err != nil {
+		debug.Warn("daemon", "Cannot start monitor for %s: context cancelled", processID)
+		return
+	}
 	r.wg.Add(1)
-	go r.monitorProcess(processID)
+	go func() {
+		defer r.monitorSem.Release(1)
+		r.monitorProcess(processID)
+	}()
 }
 
 // Unregister disables auto-restart for a process.

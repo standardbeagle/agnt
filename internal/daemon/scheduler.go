@@ -11,6 +11,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"golang.org/x/sync/semaphore"
 )
 
 // TaskStatus represents the current state of a scheduled task.
@@ -65,15 +67,19 @@ type SchedulerConfig struct {
 	RetryDelay time.Duration
 	// DeliveryTimeout is the timeout for each delivery attempt.
 	DeliveryTimeout time.Duration
+	// MaxConcurrentDeliveries limits simultaneous delivery goroutines.
+	// Default: 10
+	MaxConcurrentDeliveries int64
 }
 
 // DefaultSchedulerConfig returns sensible defaults.
 func DefaultSchedulerConfig() SchedulerConfig {
 	return SchedulerConfig{
-		TickInterval:    1 * time.Second,
-		MaxRetries:      3,
-		RetryDelay:      5 * time.Second,
-		DeliveryTimeout: 5 * time.Second,
+		TickInterval:            1 * time.Second,
+		MaxRetries:              3,
+		RetryDelay:              5 * time.Second,
+		DeliveryTimeout:         5 * time.Second,
+		MaxConcurrentDeliveries: 10,
 	}
 }
 
@@ -85,6 +91,9 @@ type Scheduler struct {
 
 	// Task storage (sync.Map for lock-free access)
 	tasks sync.Map // map[string]*ScheduledTask
+
+	// Concurrency control for delivery goroutines
+	deliverySem *semaphore.Weighted
 
 	// Lifecycle management
 	ctx     context.Context
@@ -108,10 +117,14 @@ func NewScheduler(config SchedulerConfig, registry *SessionRegistry, stateMgr *S
 	if config.TickInterval == 0 {
 		config = DefaultSchedulerConfig()
 	}
+	if config.MaxConcurrentDeliveries <= 0 {
+		config.MaxConcurrentDeliveries = 10
+	}
 	return &Scheduler{
-		config:   config,
-		registry: registry,
-		stateMgr: stateMgr,
+		config:      config,
+		registry:    registry,
+		stateMgr:    stateMgr,
+		deliverySem: semaphore.NewWeighted(config.MaxConcurrentDeliveries),
 	}
 }
 
@@ -178,14 +191,25 @@ func (s *Scheduler) run() {
 }
 
 // checkDueTasks checks for and delivers due tasks.
+// Delivery goroutines are bounded by the delivery semaphore.
 func (s *Scheduler) checkDueTasks() {
 	now := time.Now()
 	s.tasks.Range(func(key, value interface{}) bool {
 		task := value.(*ScheduledTask)
-		if task.Status == TaskStatusPending && task.DeliverAt.Before(now) {
-			// Attempt delivery in a goroutine
-			go s.deliverTask(task)
+		if task.Status != TaskStatusPending || !task.DeliverAt.Before(now) {
+			return true
 		}
+
+		// Acquire semaphore slot, respecting context cancellation.
+		// If the context is cancelled or we can't acquire, skip this tick.
+		if err := s.deliverySem.Acquire(s.ctx, 1); err != nil {
+			return false // context cancelled, stop iteration
+		}
+
+		go func() {
+			defer s.deliverySem.Release(1)
+			s.deliverTask(task)
+		}()
 		return true
 	})
 }
