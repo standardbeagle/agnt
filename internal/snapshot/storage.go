@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -32,12 +33,30 @@ func NewStorage(basePath string) (*Storage, error) {
 	return &Storage{basePath: basePath}, nil
 }
 
+// containedPath resolves a path component relative to basePath and verifies
+// the result stays within basePath. Returns the resolved path or an error
+// if the path would escape.
+func (s *Storage) containedPath(components ...string) (string, error) {
+	joined := filepath.Join(append([]string{s.basePath}, components...)...)
+	resolved := filepath.Clean(joined)
+	// Ensure resolved path is within basePath (with trailing separator to
+	// avoid prefix-of-longer-name matches like /base matching /baseline).
+	base := filepath.Clean(s.basePath) + string(filepath.Separator)
+	if !strings.HasPrefix(resolved+string(filepath.Separator), base) && resolved != filepath.Clean(s.basePath) {
+		return "", fmt.Errorf("path %q escapes base directory", filepath.Join(components...))
+	}
+	return resolved, nil
+}
+
 // SaveBaseline persists a baseline to disk
 func (s *Storage) SaveBaseline(baseline *Baseline) error {
-	baselineDir := filepath.Join(s.basePath, baseline.Name)
+	baselineDir, err := s.containedPath(baseline.Name)
+	if err != nil {
+		return fmt.Errorf("invalid baseline name: %w", err)
+	}
 
 	// Create baseline directory
-	if err := os.MkdirAll(baselineDir, 0755); err != nil {
+	if err = os.MkdirAll(baselineDir, 0755); err != nil {
 		return fmt.Errorf("create baseline dir: %w", err)
 	}
 
@@ -57,7 +76,11 @@ func (s *Storage) SaveBaseline(baseline *Baseline) error {
 
 // LoadBaseline loads a baseline from disk
 func (s *Storage) LoadBaseline(name string) (*Baseline, error) {
-	metadataPath := filepath.Join(s.basePath, name, "metadata.json")
+	baselineDir, err := s.containedPath(name)
+	if err != nil {
+		return nil, fmt.Errorf("invalid baseline name: %w", err)
+	}
+	metadataPath := filepath.Join(baselineDir, "metadata.json")
 
 	data, err := os.ReadFile(metadataPath)
 	if err != nil {
@@ -109,7 +132,10 @@ func (s *Storage) ListBaselines() ([]*Baseline, error) {
 
 // DeleteBaseline removes a baseline from disk
 func (s *Storage) DeleteBaseline(name string) error {
-	baselineDir := filepath.Join(s.basePath, name)
+	baselineDir, err := s.containedPath(name)
+	if err != nil {
+		return fmt.Errorf("invalid baseline name: %w", err)
+	}
 
 	if err := os.RemoveAll(baselineDir); err != nil {
 		return fmt.Errorf("remove baseline: %w", err)
@@ -118,21 +144,24 @@ func (s *Storage) DeleteBaseline(name string) error {
 	return nil
 }
 
-// GetBaselinePath returns the directory path for a baseline
-func (s *Storage) GetBaselinePath(name string) string {
-	return filepath.Join(s.basePath, name)
+// GetBaselinePath returns the directory path for a baseline.
+// Returns an error if the name would escape the base directory.
+func (s *Storage) GetBaselinePath(name string) (string, error) {
+	return s.containedPath(name)
 }
 
 // SaveScreenshot saves a screenshot file to a baseline
 func (s *Storage) SaveScreenshot(baselineName, filename string, data []byte) error {
-	baselineDir := filepath.Join(s.basePath, baselineName)
+	screenshotPath, err := s.containedPath(baselineName, filename)
+	if err != nil {
+		return fmt.Errorf("invalid screenshot path: %w", err)
+	}
 
-	// Ensure baseline directory exists
-	if err := os.MkdirAll(baselineDir, 0755); err != nil {
+	// Ensure parent directory exists
+	if err := os.MkdirAll(filepath.Dir(screenshotPath), 0755); err != nil {
 		return fmt.Errorf("create baseline dir: %w", err)
 	}
 
-	screenshotPath := filepath.Join(baselineDir, filename)
 	if err := os.WriteFile(screenshotPath, data, 0644); err != nil {
 		return fmt.Errorf("write screenshot: %w", err)
 	}
@@ -140,9 +169,10 @@ func (s *Storage) SaveScreenshot(baselineName, filename string, data []byte) err
 	return nil
 }
 
-// GetScreenshotPath returns the path to a screenshot file
-func (s *Storage) GetScreenshotPath(baselineName, filename string) string {
-	return filepath.Join(s.basePath, baselineName, filename)
+// GetScreenshotPath returns the path to a screenshot file.
+// Returns an error if the path would escape the base directory.
+func (s *Storage) GetScreenshotPath(baselineName, filename string) (string, error) {
+	return s.containedPath(baselineName, filename)
 }
 
 // SaveDiff saves comparison results to disk

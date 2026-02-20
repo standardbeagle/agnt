@@ -129,6 +129,7 @@ const matchBufSize = 200
 type AlertScanner struct {
 	patterns    []*AlertPattern
 	disabledIDs map[string]bool
+	patternMu   sync.RWMutex // protects patterns and disabledIDs
 	onAlert     func(*AlertBatch)
 	actState    func() ActivityState
 
@@ -195,21 +196,28 @@ func (s *AlertScanner) ProcessLine(line string, scriptID string) {
 		return
 	}
 
+	var matched *AlertMatch
+
+	s.patternMu.RLock()
 	for _, p := range s.patterns {
 		if s.disabledIDs[p.ID] {
 			continue
 		}
 		if p.Pattern.MatchString(line) {
-			m := &AlertMatch{
+			matched = &AlertMatch{
 				Pattern:   p,
 				Line:      strings.TrimSpace(line),
 				Timestamp: time.Now(),
 				ScriptID:  scriptID,
 			}
-			s.recordMatch(m)
-			s.addMatch(m)
 			break // One pattern match per line is sufficient
 		}
+	}
+	s.patternMu.RUnlock()
+
+	if matched != nil {
+		s.recordMatch(matched)
+		s.addMatch(matched)
 	}
 }
 
@@ -310,15 +318,15 @@ func (s *AlertScanner) pruneDedup() {
 
 // AddPattern registers an additional alert pattern.
 func (s *AlertScanner) AddPattern(p *AlertPattern) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.patternMu.Lock()
+	defer s.patternMu.Unlock()
 	s.patterns = append(s.patterns, p)
 }
 
 // DisablePattern disables a pattern by ID.
 func (s *AlertScanner) DisablePattern(id string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.patternMu.Lock()
+	defer s.patternMu.Unlock()
 	s.disabledIDs[id] = true
 }
 

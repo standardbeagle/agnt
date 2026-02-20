@@ -127,13 +127,20 @@ func (m *Manager) CompareToBaseline(baselineName string, currentPages []PageCapt
 			return nil, fmt.Errorf("decode current screenshot: %w", err)
 		}
 
-		currentPath := filepath.Join(m.storage.GetBaselinePath(baselineName), currentFilename)
+		currentBaseDir, err := m.storage.GetBaselinePath(baselineName)
+		if err != nil {
+			return nil, fmt.Errorf("invalid baseline name: %w", err)
+		}
+		currentPath := filepath.Join(currentBaseDir, currentFilename)
 		if err := m.storage.SaveScreenshot(baselineName, currentFilename, currentData); err != nil {
 			return nil, fmt.Errorf("save current screenshot: %w", err)
 		}
 
 		// Compare images
-		baselinePath := m.storage.GetScreenshotPath(baselineName, baselinePage.Screenshot)
+		baselinePath, err := m.storage.GetScreenshotPath(baselineName, baselinePage.Screenshot)
+		if err != nil {
+			return nil, fmt.Errorf("invalid screenshot path: %w", err)
+		}
 		diffPercentage, diffImg, err := m.differ.Compare(baselinePath, currentPath)
 		if err != nil {
 			result.Pages = append(result.Pages, PageComparison{
@@ -147,7 +154,11 @@ func (m *Manager) CompareToBaseline(baselineName string, currentPages []PageCapt
 
 		// Save diff image
 		diffFilename := "diff_" + baselinePage.Screenshot
-		diffPath := filepath.Join(m.storage.GetBaselinePath(baselineName), diffFilename)
+		diffBaseDir, err := m.storage.GetBaselinePath(baselineName)
+		if err != nil {
+			return nil, fmt.Errorf("invalid baseline name: %w", err)
+		}
+		diffPath := filepath.Join(diffBaseDir, diffFilename)
 		if err := m.differ.SaveDiffImage(diffImg, diffPath); err != nil {
 			return nil, fmt.Errorf("save diff image: %w", err)
 		}

@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -266,12 +267,13 @@ func TestAlertScannerDisableAtRuntime(t *testing.T) {
 func TestAlertScannerActivityDeferral(t *testing.T) {
 	var received []*AlertBatch
 	var mu sync.Mutex
-	active := true
+	var active atomic.Bool
+	active.Store(true)
 
 	scanner := NewAlertScanner(AlertScannerConfig{
 		BatchWindow: 50 * time.Millisecond,
 		ActivityState: func() ActivityState {
-			if active {
+			if active.Load() {
 				return ActivityActive
 			}
 			return ActivityIdle
@@ -294,7 +296,7 @@ func TestAlertScannerActivityDeferral(t *testing.T) {
 	mu.Unlock()
 
 	// Transition to idle - flush should happen on next retry
-	active = false
+	active.Store(false)
 	time.Sleep(3 * time.Second)
 
 	mu.Lock()
