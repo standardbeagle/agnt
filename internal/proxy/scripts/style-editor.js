@@ -1061,10 +1061,147 @@
     return result;
   }
 
+  // Key properties per category shown in collapsed summary lines.
+  var SUMMARY_PROPERTIES = {
+    'Layout': ['display', 'position', 'width', 'height'],
+    'Spacing': ['margin-top', 'margin-right', 'padding-top', 'padding-right'],
+    'Typography': ['font-size', 'font-weight', 'color', 'line-height'],
+    'Background': ['background-color', 'background-image'],
+    'Border': ['border-width', 'border-style', 'border-color', 'border-radius'],
+    'Effects': ['opacity', 'box-shadow', 'transform']
+  };
+
+  // Build a short summary string for a category's entries (shown when collapsed).
+  function buildCategorySummary(entries) {
+    var cat = entries[0] ? entries[0].category : '';
+    var keys = SUMMARY_PROPERTIES[cat] || [];
+    var parts = [];
+    for (var ki = 0; ki < keys.length && parts.length < 3; ki++) {
+      for (var ei = 0; ei < entries.length; ei++) {
+        if (entries[ei].property === keys[ki] && !entries[ei].isDefault) {
+          var val = entries[ei].value;
+          if (val.length > 24) val = val.substring(0, 21) + '...';
+          parts.push(entries[ei].property + ': ' + val);
+          break;
+        }
+      }
+    }
+    return parts.length > 0 ? parts.join(', ') : '';
+  }
+
+  // Scan document stylesheets for properties with !important on the selected element.
+  // Returns a Set-like object (plain object with property names as keys) for fast lookup.
+  function scanImportantProperties(element) {
+    var result = {};
+    if (!element) return result;
+
+    for (var shi = 0; shi < document.styleSheets.length; shi++) {
+      var sheet = document.styleSheets[shi];
+      var rules;
+      try {
+        rules = sheet.cssRules || sheet.rules;
+      } catch (e) {
+        continue;
+      }
+      if (!rules) continue;
+      scanRulesForImportant(rules, element, result);
+    }
+    return result;
+  }
+
+  // Recursively scan CSS rules for !important declarations matching the element.
+  function scanRulesForImportant(rules, element, result) {
+    for (var ri = 0; ri < rules.length; ri++) {
+      var rule = rules[ri];
+      if (rule.cssRules) {
+        scanRulesForImportant(rule.cssRules, element, result);
+        continue;
+      }
+      if (rule.type !== CSSRule.STYLE_RULE) continue;
+      var ruleStyle = rule.style;
+      if (!ruleStyle) continue;
+
+      var matches = false;
+      try {
+        matches = element.matches(rule.selectorText);
+      } catch (e) {
+        continue;
+      }
+      if (!matches) continue;
+
+      for (var pi = 0; pi < ruleStyle.length; pi++) {
+        var prop = ruleStyle[pi];
+        if (ruleStyle.getPropertyPriority(prop) === 'important') {
+          result[prop] = true;
+        }
+      }
+    }
+  }
+
+  // Apply an inline style edit on the selected element and track in state.changes.
+  function applyInlineStyleEdit(property, newValue) {
+    var element = state.selectedElement;
+    if (!element) return;
+
+    var key = property + '|inline';
+
+    // Capture original on first edit
+    if (!state.originalValues[key]) {
+      state.originalValues[key] = {
+        value: getComputedStyle(element).getPropertyValue(property).trim(),
+        scopeElement: element
+      };
+    }
+
+    element.style.setProperty(property, newValue);
+
+    var found = false;
+    for (var i = 0; i < state.changes.length; i++) {
+      if (state.changes[i].property === property && state.changes[i].scope === 'inline') {
+        state.changes[i].current = newValue;
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      state.changes.push({
+        property: property,
+        scope: 'inline',
+        original: state.originalValues[key].value,
+        current: newValue
+      });
+    }
+
+    updateAttachButton();
+  }
+
+  // Check whether an inline style property has been edited.
+  function isInlineStyleEdited(property) {
+    for (var i = 0; i < state.changes.length; i++) {
+      if (state.changes[i].property === property && state.changes[i].scope === 'inline') {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // Count inline style edits for a given category.
+  function countCategoryChanges(entries) {
+    var count = 0;
+    for (var i = 0; i < entries.length; i++) {
+      if (isInlineStyleEdited(entries[i].property)) {
+        count++;
+      }
+    }
+    return count;
+  }
+
   // Render computed styles as collapsible category sections in the panel.
   // Returns an array of section elements (one per non-empty category).
   function renderComputedStylesSections(styles) {
     if (!styles || styles.length === 0) return [];
+
+    var importantProps = scanImportantProperties(state.selectedElement);
 
     // Group styles by category for section rendering
     var byCategory = {};
@@ -1078,58 +1215,179 @@
 
     var sections = [];
     for (var ci = 0; ci < CATEGORY_ORDER.length; ci++) {
-      var cat = CATEGORY_ORDER[ci];
-      var entries = byCategory[cat];
-      if (!entries || entries.length === 0) continue;
+      (function(cat) {
+        var entries = byCategory[cat];
+        if (!entries || entries.length === 0) return;
 
-      var section = createSection(cat, entries.length, 0);
+        var nonDefaultEntries = [];
+        var defaultEntries = [];
+        for (var si = 0; si < entries.length; si++) {
+          if (entries[si].isDefault) {
+            defaultEntries.push(entries[si]);
+          } else {
+            nonDefaultEntries.push(entries[si]);
+          }
+        }
 
-      for (var ei = 0; ei < entries.length; ei++) {
-        var entry = entries[ei];
+        var changedCount = countCategoryChanges(entries);
+        var section = createSection(cat, entries.length, changedCount);
 
-        var row = document.createElement('div');
-        row.style.cssText = [
-          'display: flex',
-          'align-items: baseline',
-          'gap: 8px',
-          'padding: 3px 0',
-          'font-size: 12px',
-          'line-height: 1.4',
-          entry.isDefault ? 'opacity: 0.45' : ''
-        ].join(';');
-
-        // Property name
-        var nameEl = document.createElement('span');
-        nameEl.style.cssText = [
+        // Summary line (visible only when section is collapsed).
+        // Inserted between header and content so it remains visible when content is hidden.
+        var summaryText = buildCategorySummary(entries);
+        var summaryEl = document.createElement('div');
+        summaryEl.style.cssText = [
           'font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-          'color: ' + (entry.isDefault ? TOKENS.colors.textMuted : TOKENS.colors.text),
-          'font-weight: 500',
+          'font-size: 11px',
+          'color: ' + TOKENS.colors.textMuted,
+          'padding: 2px 12px 6px 30px',
           'white-space: nowrap',
-          'flex-shrink: 0',
-          'min-width: 120px'
-        ].join(';');
-        nameEl.textContent = entry.property;
-        row.appendChild(nameEl);
-
-        // Value display
-        var valueEl = document.createElement('span');
-        valueEl.style.cssText = [
-          'font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-          'color: ' + (entry.isDefault ? TOKENS.colors.textMuted : TOKENS.colors.primary),
-          'flex: 1',
-          'min-width: 0',
           'overflow: hidden',
           'text-overflow: ellipsis',
-          'white-space: nowrap'
+          'display: none'
         ].join(';');
-        valueEl.textContent = entry.value;
-        valueEl.title = entry.property + ': ' + entry.value;
-        row.appendChild(valueEl);
+        summaryEl.textContent = summaryText;
+        summaryEl.title = summaryText;
+        section.insertBefore(summaryEl, section.contentEl);
 
-        section.contentEl.appendChild(row);
-      }
+        // Track rows and controls for refresh
+        var rowControls = [];
+        var showingAll = false;
 
-      sections.push(section);
+        // Build a property row with blue dot, name, control, and optional !important icon.
+        function buildPropertyRow(entry) {
+          var row = document.createElement('div');
+          row.style.cssText = [
+            'display: flex',
+            'align-items: center',
+            'gap: 6px',
+            'padding: 3px 0',
+            'font-size: 12px',
+            'line-height: 1.4',
+            entry.isDefault ? 'opacity: 0.45' : ''
+          ].join(';');
+
+          // Blue dot indicator (hidden by default)
+          var dot = document.createElement('span');
+          dot.style.cssText = [
+            'width: 6px',
+            'height: 6px',
+            'border-radius: 50%',
+            'background: ' + TOKENS.colors.primary,
+            'flex-shrink: 0',
+            'display: ' + (isInlineStyleEdited(entry.property) ? 'inline-block' : 'none')
+          ].join(';');
+          row.appendChild(dot);
+
+          // Property name
+          var nameEl = document.createElement('span');
+          nameEl.style.cssText = [
+            'font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+            'color: ' + (entry.isDefault ? TOKENS.colors.textMuted : TOKENS.colors.text),
+            'font-weight: 500',
+            'white-space: nowrap',
+            'flex-shrink: 0',
+            'min-width: 110px'
+          ].join(';');
+          nameEl.textContent = entry.property;
+          row.appendChild(nameEl);
+
+          // Warning icon for !important properties
+          if (importantProps[entry.property]) {
+            var warnIcon = document.createElement('span');
+            warnIcon.style.cssText = [
+              'flex-shrink: 0',
+              'font-size: 13px',
+              'line-height: 1',
+              'cursor: help'
+            ].join(';');
+            warnIcon.textContent = '\u26A0';
+            warnIcon.title = entry.property + ' has !important in stylesheet';
+            row.appendChild(warnIcon);
+          }
+
+          // Value control
+          var controlContainer = document.createElement('div');
+          controlContainer.style.cssText = [
+            'flex: 1',
+            'min-width: 0',
+            'overflow: hidden'
+          ].join(';');
+
+          var control = renderControl(entry.property, entry.value, function(newValue) {
+            applyInlineStyleEdit(entry.property, newValue);
+            dot.style.display = 'inline-block';
+            section.updateChanged(countCategoryChanges(entries));
+          });
+          controlContainer.appendChild(control);
+          row.appendChild(controlContainer);
+
+          rowControls.push({ row: row, dot: dot, property: entry.property });
+          return row;
+        }
+
+        // Render non-default rows (always visible)
+        var nonDefaultRowContainer = document.createElement('div');
+        for (var ni = 0; ni < nonDefaultEntries.length; ni++) {
+          nonDefaultRowContainer.appendChild(buildPropertyRow(nonDefaultEntries[ni]));
+        }
+        section.contentEl.appendChild(nonDefaultRowContainer);
+
+        // Render default rows (hidden by default, shown with "Show all" toggle)
+        var defaultRowContainer = document.createElement('div');
+        defaultRowContainer.style.display = 'none';
+        for (var di = 0; di < defaultEntries.length; di++) {
+          defaultRowContainer.appendChild(buildPropertyRow(defaultEntries[di]));
+        }
+        section.contentEl.appendChild(defaultRowContainer);
+
+        // "Show all" toggle (only if there are default entries)
+        if (defaultEntries.length > 0) {
+          var toggleBtn = document.createElement('button');
+          toggleBtn.style.cssText = [
+            'background: none',
+            'border: none',
+            'color: ' + TOKENS.colors.textMuted,
+            'font-size: 11px',
+            'cursor: pointer',
+            'padding: 4px 0',
+            'text-decoration: underline',
+            'transition: color 0.15s ease'
+          ].join(';');
+          toggleBtn.textContent = 'Show all (' + defaultEntries.length + ' defaults)';
+          toggleBtn.onmouseenter = function() { toggleBtn.style.color = TOKENS.colors.primary; };
+          toggleBtn.onmouseleave = function() { toggleBtn.style.color = TOKENS.colors.textMuted; };
+          toggleBtn.addEventListener('click', function() {
+            showingAll = !showingAll;
+            defaultRowContainer.style.display = showingAll ? 'block' : 'none';
+            toggleBtn.textContent = showingAll
+              ? 'Hide defaults'
+              : 'Show all (' + defaultEntries.length + ' defaults)';
+          });
+          section.contentEl.appendChild(toggleBtn);
+        }
+
+        // Wire summary visibility to section collapse state
+        var header = section.firstChild;
+        if (header) {
+          header.addEventListener('click', function() {
+            // After createSection's click handler toggles display, check state
+            var contentVisible = section.contentEl.style.display !== 'none';
+            summaryEl.style.display = contentVisible ? 'none' : 'block';
+          });
+        }
+
+        // Expose a refresh method for rows
+        section.refreshRows = function() {
+          for (var ri = 0; ri < rowControls.length; ri++) {
+            var ctrl = rowControls[ri];
+            ctrl.dot.style.display = isInlineStyleEdited(ctrl.property) ? 'inline-block' : 'none';
+          }
+          section.updateChanged(countCategoryChanges(entries));
+        };
+
+        sections.push(section);
+      })(CATEGORY_ORDER[ci]);
     }
 
     return sections;
