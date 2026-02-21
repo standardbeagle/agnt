@@ -488,6 +488,15 @@
       resetBtn.style.borderColor = TOKENS.colors.border;
       resetBtn.style.color = TOKENS.colors.textMuted;
     };
+    resetBtn.addEventListener('click', function() {
+      resetAllVariables();
+      // Refresh all CSS variable section rows to show restored values
+      for (var si = 0; si < state.sections.length; si++) {
+        if (typeof state.sections[si].refreshRows === 'function') {
+          state.sections[si].refreshRows();
+        }
+      }
+    });
     bottomBar.appendChild(resetBtn);
 
     panel.appendChild(bottomBar);
@@ -1126,67 +1135,294 @@
     return sections;
   }
 
+  // Apply a CSS variable edit: sets the property on the scope element,
+  // captures the original value on first edit, and updates the changes array.
+  function applyVariableEdit(name, newValue, scopeElement, scopeSelector) {
+    var key = name + '|' + scopeSelector;
+
+    // Capture original on first edit
+    if (!state.originalValues[key]) {
+      state.originalValues[key] = {
+        value: getComputedStyle(scopeElement).getPropertyValue(name).trim(),
+        scopeElement: scopeElement
+      };
+    }
+
+    // Apply to DOM
+    scopeElement.style.setProperty(name, newValue);
+
+    // Update changes array: replace existing entry or add new
+    var found = false;
+    for (var i = 0; i < state.changes.length; i++) {
+      if (state.changes[i].property === name && state.changes[i].scope === scopeSelector) {
+        state.changes[i].current = newValue;
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      state.changes.push({
+        property: name,
+        scope: scopeSelector,
+        original: state.originalValues[key].value,
+        current: newValue
+      });
+    }
+
+    updateAttachButton();
+  }
+
+  // Reset a single CSS variable edit: removes the inline override and
+  // removes the entry from the changes array.
+  function resetVariableEdit(name, scopeSelector) {
+    var key = name + '|' + scopeSelector;
+    var orig = state.originalValues[key];
+    if (orig) {
+      orig.scopeElement.style.removeProperty(name);
+      delete state.originalValues[key];
+    }
+
+    for (var i = state.changes.length - 1; i >= 0; i--) {
+      if (state.changes[i].property === name && state.changes[i].scope === scopeSelector) {
+        state.changes.splice(i, 1);
+        break;
+      }
+    }
+
+    updateAttachButton();
+  }
+
+  // Reset all CSS variable edits: removes all inline overrides and
+  // clears the changes array.
+  function resetAllVariables() {
+    var keys = Object.keys(state.originalValues);
+    for (var i = 0; i < keys.length; i++) {
+      var orig = state.originalValues[keys[i]];
+      var name = keys[i].split('|')[0];
+      orig.scopeElement.style.removeProperty(name);
+    }
+    state.originalValues = {};
+    state.changes = [];
+    updateAttachButton();
+  }
+
+  // Check whether a variable has been edited
+  function isVariableEdited(name, scopeSelector) {
+    for (var i = 0; i < state.changes.length; i++) {
+      if (state.changes[i].property === name && state.changes[i].scope === scopeSelector) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   // Render the CSS Variables section in the panel content area.
   // Returns the section element (or null if no variables found).
   function renderCSSVariablesSection(variables) {
     if (!variables || variables.length === 0) return null;
 
     var section = createSection('CSS Variables', variables.length, 0);
+    var rowControls = [];
 
     for (var i = 0; i < variables.length; i++) {
-      var v = variables[i];
+      (function(v) {
+        var row = document.createElement('div');
+        row.style.cssText = [
+          'display: flex',
+          'align-items: center',
+          'gap: 6px',
+          'padding: 3px 0',
+          'font-size: 12px',
+          'line-height: 1.4'
+        ].join(';');
 
-      var row = document.createElement('div');
-      row.style.cssText = [
-        'display: flex',
-        'align-items: baseline',
-        'gap: 8px',
-        'padding: 3px 0',
-        'font-size: 12px',
-        'line-height: 1.4'
-      ].join(';');
+        // Blue dot indicator (hidden by default)
+        var dot = document.createElement('span');
+        dot.style.cssText = [
+          'width: 6px',
+          'height: 6px',
+          'border-radius: 50%',
+          'background: ' + TOKENS.colors.primary,
+          'flex-shrink: 0',
+          'display: none'
+        ].join(';');
+        row.appendChild(dot);
 
-      // Variable name
-      var nameEl = document.createElement('span');
-      nameEl.style.cssText = [
-        'font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-        'color: ' + TOKENS.colors.primary,
-        'font-weight: 500',
-        'white-space: nowrap',
-        'flex-shrink: 0'
-      ].join(';');
-      nameEl.textContent = v.name;
-      nameEl.title = v.name + ' (scope: ' + v.scopeSelector + ')';
-      row.appendChild(nameEl);
+        // Variable name
+        var nameEl = document.createElement('span');
+        nameEl.style.cssText = [
+          'font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+          'color: ' + TOKENS.colors.primary,
+          'font-weight: 500',
+          'white-space: nowrap',
+          'flex-shrink: 0'
+        ].join(';');
+        nameEl.textContent = v.name;
+        nameEl.title = v.name + ' (scope: ' + v.scopeSelector + ')';
+        row.appendChild(nameEl);
 
-      // Value display
-      var valueEl = document.createElement('span');
-      valueEl.style.cssText = [
-        'font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-        'color: ' + TOKENS.colors.text,
-        'flex: 1',
-        'min-width: 0',
-        'overflow: hidden',
-        'text-overflow: ellipsis',
-        'white-space: nowrap'
-      ].join(';');
-      valueEl.textContent = v.value;
-      valueEl.title = v.value;
-      row.appendChild(valueEl);
+        // Value container (holds display span or input)
+        var valueContainer = document.createElement('span');
+        valueContainer.style.cssText = [
+          'flex: 1',
+          'min-width: 0',
+          'display: flex',
+          'align-items: center'
+        ].join(';');
 
-      // Scope label
-      var scopeEl = document.createElement('span');
-      scopeEl.style.cssText = [
-        'font-size: 10px',
-        'color: ' + TOKENS.colors.textMuted,
-        'white-space: nowrap',
-        'flex-shrink: 0'
-      ].join(';');
-      scopeEl.textContent = v.scopeSelector;
-      row.appendChild(scopeEl);
+        // Value display (clickable to edit)
+        var valueEl = document.createElement('span');
+        valueEl.style.cssText = [
+          'font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+          'color: ' + TOKENS.colors.text,
+          'cursor: text',
+          'overflow: hidden',
+          'text-overflow: ellipsis',
+          'white-space: nowrap',
+          'flex: 1',
+          'min-width: 0',
+          'padding: 1px 3px',
+          'border-radius: 3px',
+          'border: 1px solid transparent'
+        ].join(';');
+        valueEl.textContent = v.value;
+        valueEl.title = 'Click to edit';
+        valueContainer.appendChild(valueEl);
 
-      section.contentEl.appendChild(row);
+        row.appendChild(valueContainer);
+
+        // Per-variable reset button (hidden by default)
+        var resetBtn = document.createElement('button');
+        resetBtn.style.cssText = [
+          'background: none',
+          'border: none',
+          'color: ' + TOKENS.colors.textMuted,
+          'cursor: pointer',
+          'padding: 0 2px',
+          'font-size: 14px',
+          'line-height: 1',
+          'flex-shrink: 0',
+          'display: none',
+          'opacity: 0.6'
+        ].join(';');
+        resetBtn.innerHTML = '&#x21ba;';
+        resetBtn.title = 'Reset to original';
+        resetBtn.onmouseenter = function() { resetBtn.style.opacity = '1'; };
+        resetBtn.onmouseleave = function() { resetBtn.style.opacity = '0.6'; };
+        row.appendChild(resetBtn);
+
+        // Scope label
+        var scopeEl = document.createElement('span');
+        scopeEl.style.cssText = [
+          'font-size: 10px',
+          'color: ' + TOKENS.colors.textMuted,
+          'white-space: nowrap',
+          'flex-shrink: 0'
+        ].join(';');
+        scopeEl.textContent = v.scopeSelector;
+        row.appendChild(scopeEl);
+
+        // Update visual state of this row based on edit status
+        function updateRowState() {
+          var edited = isVariableEdited(v.name, v.scopeSelector);
+          dot.style.display = edited ? 'inline-block' : 'none';
+          resetBtn.style.display = edited ? 'inline-block' : 'none';
+          // Update section changed badge
+          var changedCount = 0;
+          for (var ci = 0; ci < state.changes.length; ci++) {
+            // Count all variable changes (scope starts with -- prefix check via property)
+            if (state.changes[ci].property.indexOf('--') === 0) {
+              changedCount++;
+            }
+          }
+          section.updateChanged(changedCount);
+        }
+
+        // Enter edit mode: replace value display with an input
+        function startEditing() {
+          if (valueContainer.querySelector('input')) return;
+
+          var input = document.createElement('input');
+          input.type = 'text';
+          input.value = getComputedStyle(v.scopeElement).getPropertyValue(v.name).trim();
+          input.style.cssText = [
+            'font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+            'font-size: 12px',
+            'color: ' + TOKENS.colors.text,
+            'background: ' + TOKENS.colors.surface,
+            'border: 1px solid ' + TOKENS.colors.primary,
+            'border-radius: 3px',
+            'padding: 1px 3px',
+            'outline: none',
+            'width: 100%',
+            'box-sizing: border-box'
+          ].join(';');
+
+          valueEl.style.display = 'none';
+          valueContainer.appendChild(input);
+          input.focus();
+          input.select();
+
+          function commitEdit() {
+            var newValue = input.value.trim();
+            var liveValue = getComputedStyle(v.scopeElement).getPropertyValue(v.name).trim();
+            valueContainer.removeChild(input);
+            valueEl.style.display = '';
+
+            if (newValue && newValue !== liveValue) {
+              applyVariableEdit(v.name, newValue, v.scopeElement, v.scopeSelector);
+              valueEl.textContent = newValue;
+            } else {
+              // No change or empty: show current live value
+              valueEl.textContent = liveValue;
+            }
+            updateRowState();
+          }
+
+          input.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              commitEdit();
+            } else if (e.key === 'Escape') {
+              e.preventDefault();
+              valueContainer.removeChild(input);
+              valueEl.style.display = '';
+            }
+          });
+
+          input.addEventListener('blur', function() {
+            // Guard: input may already be removed by keydown handler
+            if (input.parentNode) {
+              commitEdit();
+            }
+          });
+        }
+
+        valueEl.addEventListener('click', startEditing);
+
+        // Per-variable reset
+        resetBtn.addEventListener('click', function(e) {
+          e.stopPropagation();
+          resetVariableEdit(v.name, v.scopeSelector);
+          valueEl.textContent = getComputedStyle(v.scopeElement).getPropertyValue(v.name).trim();
+          updateRowState();
+        });
+
+        // Store controls for Reset All refresh
+        rowControls.push({ updateRowState: updateRowState, valueEl: valueEl, variable: v });
+
+        section.contentEl.appendChild(row);
+      })(variables[i]);
     }
+
+    // Expose a refresh method for Reset All to update all rows
+    section.refreshRows = function() {
+      for (var ri = 0; ri < rowControls.length; ri++) {
+        var ctrl = rowControls[ri];
+        ctrl.valueEl.textContent = getComputedStyle(ctrl.variable.scopeElement).getPropertyValue(ctrl.variable.name).trim();
+        ctrl.updateRowState();
+      }
+    };
 
     return section;
   }
@@ -1290,12 +1526,18 @@
     return state.isOpen;
   }
 
+  // Return a copy of the current changes array
+  function getChanges() {
+    return state.changes.slice();
+  }
+
   // Export public API
   window.__devtool_style_editor = {
     open: open,
     close: close,
     toggle: toggle,
     getState: getState,
+    getChanges: getChanges,
     attachChanges: attachChanges,
     isOpen: isOpen,
     startSelection: startSelection,
