@@ -12,6 +12,11 @@
   // localStorage key for panel position persistence
   var STORAGE_KEY = '__devtool_style_editor_pos';
 
+  // Cache for browser default computed styles per tag name.
+  // Keys are uppercase tag names (e.g. 'DIV'), values are plain objects
+  // mapping CSS property name to its default computed value string.
+  var defaultStyleCache = {};
+
   // Design tokens matching indicator.js visual language
   var TOKENS = {
     colors: {
@@ -400,6 +405,11 @@
           if (varSection) {
             contentEl.appendChild(varSection);
           }
+          var computedStyles = extractComputedStyles(el);
+          var computedSections = renderComputedStylesSections(computedStyles);
+          for (var csi = 0; csi < computedSections.length; csi++) {
+            contentEl.appendChild(computedSections[csi]);
+          }
         }
       });
     });
@@ -582,13 +592,19 @@
     document.body.appendChild(panel);
     state.panel = panel;
 
-    // Populate CSS Variables section
+    // Populate content sections
     var content = document.getElementById('__devtool-style-content');
     if (content && element) {
       var variables = discoverCSSVariables(element);
       var varSection = renderCSSVariablesSection(variables);
       if (varSection) {
         content.appendChild(varSection);
+      }
+
+      var computedStyles = extractComputedStyles(element);
+      var computedSections = renderComputedStylesSections(computedStyles);
+      for (var csi = 0; csi < computedSections.length; csi++) {
+        content.appendChild(computedSections[csi]);
       }
     }
 
@@ -906,6 +922,210 @@
     }
   }
 
+  // Property-to-category mapping for computed style grouping.
+  // Each key is a category name; the value is an array of property name
+  // prefixes or exact names.  A property matches the first category whose
+  // list contains an entry that the property starts with.
+  var STYLE_CATEGORIES = {
+    'Layout': [
+      'display', 'position', 'top', 'right', 'bottom', 'left',
+      'width', 'height', 'min-width', 'min-height', 'max-width', 'max-height',
+      'flex-', 'grid-', 'order', 'float', 'clear', 'overflow',
+      'z-index', 'box-sizing', 'vertical-align'
+    ],
+    'Spacing': [
+      'margin-', 'padding-'
+    ],
+    'Typography': [
+      'font-size', 'font-weight', 'font-family', 'font-style', 'font-variant',
+      'line-height', 'color', 'text-align', 'text-decoration', 'text-transform',
+      'letter-spacing', 'word-spacing', 'white-space', 'text-indent',
+      'text-overflow', 'text-shadow'
+    ],
+    'Background': [
+      'background-color', 'background-image', 'background-position',
+      'background-repeat', 'background-size'
+    ],
+    'Border': [
+      'border-width', 'border-style', 'border-color', 'border-radius',
+      'border-top-', 'border-right-', 'border-bottom-', 'border-left-',
+      'border-image', 'outline'
+    ],
+    'Effects': [
+      'opacity', 'box-shadow', 'transform', 'transition', 'filter',
+      'animation', 'cursor', 'pointer-events', 'visibility', 'mix-blend-mode'
+    ]
+  };
+
+  // Order of categories for display purposes
+  var CATEGORY_ORDER = ['Layout', 'Spacing', 'Typography', 'Background', 'Border', 'Effects'];
+
+  // Determine which category a CSS property belongs to.
+  // Returns the category name or null if it does not match any.
+  function categorizeProperty(property) {
+    for (var ci = 0; ci < CATEGORY_ORDER.length; ci++) {
+      var cat = CATEGORY_ORDER[ci];
+      var prefixes = STYLE_CATEGORIES[cat];
+      for (var pi = 0; pi < prefixes.length; pi++) {
+        var prefix = prefixes[pi];
+        if (property === prefix || property.indexOf(prefix) === 0) {
+          return cat;
+        }
+      }
+    }
+    return null;
+  }
+
+  // Get browser default computed styles for a given tag name.
+  // Creates a hidden element of the same tag, reads its computed styles,
+  // and caches the result keyed by uppercase tag name.
+  function getDefaultStyles(tagName) {
+    var key = tagName.toUpperCase();
+    if (defaultStyleCache[key]) {
+      return defaultStyleCache[key];
+    }
+
+    var temp = document.createElement(tagName);
+    temp.style.cssText = 'position:absolute;visibility:hidden;pointer-events:none;width:auto;height:auto;';
+    document.body.appendChild(temp);
+
+    var computed = getComputedStyle(temp);
+    var defaults = {};
+    for (var i = 0; i < computed.length; i++) {
+      var prop = computed[i];
+      defaults[prop] = computed.getPropertyValue(prop);
+    }
+
+    document.body.removeChild(temp);
+    defaultStyleCache[key] = defaults;
+    return defaults;
+  }
+
+  // Extract non-default computed styles for the given element, grouped by
+  // category.  Returns an array of {category, property, value, isDefault}
+  // for every categorized property.  Properties whose computed value
+  // matches the browser default for the element's tag have isDefault=true.
+  function extractComputedStyles(element) {
+    if (!element || element.nodeType !== Node.ELEMENT_NODE) return [];
+
+    var computed = getComputedStyle(element);
+    var defaults = getDefaultStyles(element.tagName);
+
+    // Collect entries grouped by category
+    var groups = {};
+    for (var ci = 0; ci < CATEGORY_ORDER.length; ci++) {
+      groups[CATEGORY_ORDER[ci]] = [];
+    }
+
+    for (var i = 0; i < computed.length; i++) {
+      var prop = computed[i];
+      // Skip custom properties (handled by discoverCSSVariables)
+      if (prop.indexOf('--') === 0) continue;
+
+      var cat = categorizeProperty(prop);
+      if (!cat) continue;
+
+      var value = computed.getPropertyValue(prop);
+      var isDefault = defaults[prop] !== undefined && value === defaults[prop];
+
+      groups[cat].push({
+        category: cat,
+        property: prop,
+        value: value,
+        isDefault: isDefault
+      });
+    }
+
+    // Flatten in category order, properties alphabetical within each category
+    var result = [];
+    for (var gi = 0; gi < CATEGORY_ORDER.length; gi++) {
+      var catName = CATEGORY_ORDER[gi];
+      var entries = groups[catName];
+      entries.sort(function(a, b) {
+        return a.property < b.property ? -1 : a.property > b.property ? 1 : 0;
+      });
+      for (var ei = 0; ei < entries.length; ei++) {
+        result.push(entries[ei]);
+      }
+    }
+
+    return result;
+  }
+
+  // Render computed styles as collapsible category sections in the panel.
+  // Returns an array of section elements (one per non-empty category).
+  function renderComputedStylesSections(styles) {
+    if (!styles || styles.length === 0) return [];
+
+    // Group styles by category for section rendering
+    var byCategory = {};
+    for (var i = 0; i < styles.length; i++) {
+      var s = styles[i];
+      if (!byCategory[s.category]) {
+        byCategory[s.category] = [];
+      }
+      byCategory[s.category].push(s);
+    }
+
+    var sections = [];
+    for (var ci = 0; ci < CATEGORY_ORDER.length; ci++) {
+      var cat = CATEGORY_ORDER[ci];
+      var entries = byCategory[cat];
+      if (!entries || entries.length === 0) continue;
+
+      var section = createSection(cat, entries.length, 0);
+
+      for (var ei = 0; ei < entries.length; ei++) {
+        var entry = entries[ei];
+
+        var row = document.createElement('div');
+        row.style.cssText = [
+          'display: flex',
+          'align-items: baseline',
+          'gap: 8px',
+          'padding: 3px 0',
+          'font-size: 12px',
+          'line-height: 1.4',
+          entry.isDefault ? 'opacity: 0.45' : ''
+        ].join(';');
+
+        // Property name
+        var nameEl = document.createElement('span');
+        nameEl.style.cssText = [
+          'font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+          'color: ' + (entry.isDefault ? TOKENS.colors.textMuted : TOKENS.colors.text),
+          'font-weight: 500',
+          'white-space: nowrap',
+          'flex-shrink: 0',
+          'min-width: 120px'
+        ].join(';');
+        nameEl.textContent = entry.property;
+        row.appendChild(nameEl);
+
+        // Value display
+        var valueEl = document.createElement('span');
+        valueEl.style.cssText = [
+          'font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+          'color: ' + (entry.isDefault ? TOKENS.colors.textMuted : TOKENS.colors.primary),
+          'flex: 1',
+          'min-width: 0',
+          'overflow: hidden',
+          'text-overflow: ellipsis',
+          'white-space: nowrap'
+        ].join(';');
+        valueEl.textContent = entry.value;
+        valueEl.title = entry.property + ': ' + entry.value;
+        row.appendChild(valueEl);
+
+        section.contentEl.appendChild(row);
+      }
+
+      sections.push(section);
+    }
+
+    return sections;
+  }
+
   // Render the CSS Variables section in the panel content area.
   // Returns the section element (or null if no variables found).
   function renderCSSVariablesSection(variables) {
@@ -1082,6 +1302,7 @@
     createSection: createSection,
     showPanel: showPanel,
     hidePanel: hidePanel,
-    discoverCSSVariables: discoverCSSVariables
+    discoverCSSVariables: discoverCSSVariables,
+    extractComputedStyles: extractComputedStyles
   };
 })();
