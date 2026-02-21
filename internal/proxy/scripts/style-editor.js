@@ -1580,6 +1580,249 @@
     return container;
   }
 
+  // Per-property range heuristics for the numeric slider.
+  // Maps property name patterns to {min, max, step} in px.
+  // The first matching entry wins (checked via indexOf prefix match).
+  var NUMERIC_RANGES = {
+    'font-size':     { min: 8,   max: 72,  step: 1 },
+    'border-radius': { min: 0,   max: 50,  step: 1 },
+    'padding':       { min: 0,   max: 100, step: 1 },
+    'margin':        { min: 0,   max: 100, step: 1 },
+    'gap':           { min: 0,   max: 64,  step: 1 },
+    'opacity':       { min: 0,   max: 1,   step: 0.01 },
+    'line-height':   { min: 0.5, max: 3,   step: 0.1 },
+    'border-width':  { min: 0,   max: 20,  step: 1 }
+  };
+
+  // Property name order for range lookup (longest prefix first to avoid
+  // 'border-' matching before 'border-radius' or 'border-width').
+  var NUMERIC_RANGE_KEYS = [
+    'border-radius', 'border-width',
+    'font-size', 'line-height',
+    'padding', 'margin', 'gap', 'opacity'
+  ];
+
+  // Unit conversion factors relative to px.
+  // rem and em are approximated at 16px base.
+  var UNIT_PX_FACTORS = {
+    'px': 1,
+    'rem': 16,
+    'em': 16,
+    '%': 1
+  };
+
+  // Look up the range heuristics for a given CSS property name.
+  // For custom properties (--*), infers a range of 0 to 4x the current value
+  // (minimum range of 0-100 when the value is 0).
+  // Returns {min, max, step}.
+  function getRangeForProperty(property, currentValue) {
+    // Check known properties
+    for (var i = 0; i < NUMERIC_RANGE_KEYS.length; i++) {
+      var key = NUMERIC_RANGE_KEYS[i];
+      if (property === key || property.indexOf(key) === 0) {
+        return NUMERIC_RANGES[key];
+      }
+    }
+
+    // Custom properties: infer from current value
+    if (property.indexOf('--') === 0) {
+      var num = parseFloat(currentValue);
+      if (isNaN(num) || num === 0) {
+        return { min: 0, max: 100, step: 1 };
+      }
+      var absVal = Math.abs(num);
+      return { min: 0, max: Math.round(absVal * 4), step: absVal >= 1 ? 1 : 0.01 };
+    }
+
+    // Fallback: infer from current value
+    var fallback = parseFloat(currentValue);
+    if (isNaN(fallback) || fallback === 0) {
+      return { min: 0, max: 100, step: 1 };
+    }
+    var absFb = Math.abs(fallback);
+    return { min: 0, max: Math.round(absFb * 4), step: absFb >= 1 ? 1 : 0.01 };
+  }
+
+  // Convert a numeric value from one unit to another.
+  // Both units must be keys in UNIT_PX_FACTORS.
+  // For '%' conversion, the value is kept as-is (no meaningful px equivalent).
+  function convertUnit(value, fromUnit, toUnit) {
+    if (fromUnit === toUnit) return value;
+    // Convert to px first, then to target unit
+    var pxValue = value * (UNIT_PX_FACTORS[fromUnit] || 1);
+    var result = pxValue / (UNIT_PX_FACTORS[toUnit] || 1);
+    // Round to avoid floating point noise
+    return Math.round(result * 100) / 100;
+  }
+
+  // NumericSlider(property, value, unit, onChange) -- Reusable numeric slider control.
+  // Returns a DOM element containing a synced range slider, number input,
+  // and unit dropdown.  onChange receives the formatted value+unit string
+  // (e.g. "16px", "1.5rem", "0.8").
+  function NumericSlider(property, value, unit, onChange) {
+    var numValue = parseFloat(value);
+    if (isNaN(numValue)) numValue = 0;
+
+    var currentUnit = unit || '';
+    var range = getRangeForProperty(property, numValue);
+    var debounceTimer = null;
+
+    // For unitless properties (opacity, line-height), suppress the unit selector
+    var isUnitless = (property === 'opacity' || property === 'line-height');
+    var units = ['px', 'rem', 'em', '%'];
+
+    function formatOutput(num, u) {
+      // Round to step precision to avoid floating point noise
+      var precision = range.step < 1 ? Math.ceil(-Math.log10(range.step)) : 0;
+      var rounded = parseFloat(num.toFixed(precision));
+      if (isUnitless || !u) return String(rounded);
+      return rounded + u;
+    }
+
+    function debouncedOnChange() {
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(function() {
+        if (typeof onChange === 'function') {
+          onChange(formatOutput(numValue, currentUnit));
+        }
+      }, 16);
+    }
+
+    // Container
+    var container = document.createElement('div');
+    container.style.cssText = [
+      'display: flex',
+      'align-items: center',
+      'gap: 4px'
+    ].join(';');
+
+    // Range slider
+    var slider = document.createElement('input');
+    slider.type = 'range';
+    slider.min = String(range.min);
+    slider.max = String(range.max);
+    slider.step = String(range.step);
+    slider.value = String(numValue);
+    slider.style.cssText = [
+      'flex: 1',
+      'min-width: 60px',
+      'height: 4px',
+      'cursor: pointer'
+    ].join(';');
+    container.appendChild(slider);
+
+    // Number input
+    var numberInput = document.createElement('input');
+    numberInput.type = 'number';
+    numberInput.min = String(range.min);
+    numberInput.max = String(range.max);
+    numberInput.step = String(range.step);
+    numberInput.value = String(numValue);
+    numberInput.style.cssText = [
+      'font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+      'font-size: 12px',
+      'color: ' + TOKENS.colors.text,
+      'background: ' + TOKENS.colors.surface,
+      'border: 1px solid ' + TOKENS.colors.border,
+      'border-radius: ' + TOKENS.radius.sm,
+      'padding: 2px 4px',
+      'width: 56px',
+      'outline: none',
+      'box-sizing: border-box',
+      '-moz-appearance: textfield'
+    ].join(';');
+    numberInput.addEventListener('focus', function() {
+      numberInput.style.borderColor = TOKENS.colors.primary;
+    });
+    numberInput.addEventListener('blur', function() {
+      numberInput.style.borderColor = TOKENS.colors.border;
+    });
+    container.appendChild(numberInput);
+
+    // Unit dropdown (hidden for unitless properties)
+    var unitSelect = null;
+    if (!isUnitless && currentUnit) {
+      unitSelect = document.createElement('select');
+      unitSelect.style.cssText = [
+        'font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+        'font-size: 11px',
+        'color: ' + TOKENS.colors.text,
+        'background: ' + TOKENS.colors.surface,
+        'border: 1px solid ' + TOKENS.colors.border,
+        'border-radius: ' + TOKENS.radius.sm,
+        'padding: 2px 2px',
+        'outline: none',
+        'cursor: pointer'
+      ].join(';');
+
+      for (var ui = 0; ui < units.length; ui++) {
+        var opt = document.createElement('option');
+        opt.value = units[ui];
+        opt.textContent = units[ui];
+        if (units[ui] === currentUnit) opt.selected = true;
+        unitSelect.appendChild(opt);
+      }
+      unitSelect.addEventListener('focus', function() {
+        unitSelect.style.borderColor = TOKENS.colors.primary;
+      });
+      unitSelect.addEventListener('blur', function() {
+        unitSelect.style.borderColor = TOKENS.colors.border;
+      });
+      container.appendChild(unitSelect);
+    }
+
+    // Sync controls from current numValue
+    function syncControls() {
+      slider.value = String(numValue);
+      numberInput.value = String(numValue);
+    }
+
+    // Update range bounds (used when unit changes and ranges need recalculation)
+    function updateRangeBounds() {
+      slider.min = String(range.min);
+      slider.max = String(range.max);
+      slider.step = String(range.step);
+      numberInput.min = String(range.min);
+      numberInput.max = String(range.max);
+      numberInput.step = String(range.step);
+    }
+
+    // Slider input
+    slider.addEventListener('input', function() {
+      numValue = parseFloat(slider.value);
+      numberInput.value = String(numValue);
+      debouncedOnChange();
+    });
+
+    // Number input
+    numberInput.addEventListener('input', function() {
+      var parsed = parseFloat(numberInput.value);
+      if (!isNaN(parsed)) {
+        numValue = parsed;
+        slider.value = String(numValue);
+        debouncedOnChange();
+      }
+    });
+
+    // Unit selector change: convert the current value to the new unit
+    if (unitSelect) {
+      unitSelect.addEventListener('change', function() {
+        var newUnit = unitSelect.value;
+        numValue = convertUnit(numValue, currentUnit, newUnit);
+        currentUnit = newUnit;
+
+        // Recalculate range heuristics scaled to the new unit
+        var baseRange = getRangeForProperty(property, numValue);
+        range = baseRange;
+        updateRangeBounds();
+        syncControls();
+        debouncedOnChange();
+      });
+    }
+
+    return container;
+  }
+
   // Apply a CSS variable edit: sets the property on the scope element,
   // captures the original value on first edit, and updates the changes array.
   function applyVariableEdit(name, newValue, scopeElement, scopeSelector) {
@@ -1991,6 +2234,7 @@
     hidePanel: hidePanel,
     discoverCSSVariables: discoverCSSVariables,
     extractComputedStyles: extractComputedStyles,
-    ColorPicker: ColorPicker
+    ColorPicker: ColorPicker,
+    NumericSlider: NumericSlider
   };
 })();
