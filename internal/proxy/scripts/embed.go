@@ -66,6 +66,9 @@ var (
 	//go:embed design.js
 	designJS string
 
+	//go:embed style-editor.js
+	styleEditorJS string
+
 	//go:embed voice.js
 	voiceJS string
 
@@ -238,57 +241,62 @@ func buildCombinedScript() string {
 	sb.WriteString(wrapModule(designJS))
 	sb.WriteString("\n\n")
 
-	// 20. Floating indicator (depends on core, utils, sketch, design, toast, framework-detector, api-tracker)
+	// 20. Style editor (depends on core, utils)
+	sb.WriteString("  // Style editor module\n")
+	sb.WriteString(wrapModule(styleEditorJS))
+	sb.WriteString("\n\n")
+
+	// 21. Floating indicator (depends on core, utils, sketch, design, style-editor, toast, framework-detector, api-tracker)
 	sb.WriteString("  // Floating indicator module\n")
 	sb.WriteString(wrapModule(indicatorJS))
 	sb.WriteString("\n\n")
 
-	// 21. Snapshot helper (depends on core)
+	// 22. Snapshot helper (depends on core)
 	sb.WriteString("  // Snapshot helper module\n")
 	sb.WriteString(wrapModule(snapshotHelperJS))
 	sb.WriteString("\n\n")
 
-	// 22. Diagnostics (depends on utils, core)
+	// 23. Diagnostics (depends on utils, core)
 	sb.WriteString("  // Diagnostics module\n")
 	sb.WriteString(wrapModule(diagnosticsJS))
 	sb.WriteString("\n\n")
 
-	// 23. Session management (depends on core)
+	// 24. Session management (depends on core)
 	sb.WriteString("  // Session management module\n")
 	sb.WriteString(wrapModule(sessionJS))
 	sb.WriteString("\n\n")
 
-	// 24. Store (depends on core)
+	// 25. Store (depends on core)
 	sb.WriteString("  // Store module\n")
 	sb.WriteString(wrapModule(storeJS))
 	sb.WriteString("\n\n")
 
-	// 25. Content extraction (depends on utils)
+	// 26. Content extraction (depends on utils)
 	sb.WriteString("  // Content extraction module\n")
 	sb.WriteString(wrapModule(contentJS))
 	sb.WriteString("\n\n")
 
-	// 26. Text fragility analysis (depends on utils)
+	// 27. Text fragility analysis (depends on utils)
 	sb.WriteString("  // Text fragility module\n")
 	sb.WriteString(wrapModule(textFragilityJS))
 	sb.WriteString("\n\n")
 
-	// 27. Responsive risk analysis (depends on utils)
+	// 28. Responsive risk analysis (depends on utils)
 	sb.WriteString("  // Responsive risk module\n")
 	sb.WriteString(wrapModule(responsiveRiskJS))
 	sb.WriteString("\n\n")
 
-	// 28. Wireframe generation (depends on utils)
+	// 29. Wireframe generation (depends on utils)
 	sb.WriteString("  // Wireframe generation module\n")
 	sb.WriteString(wrapModule(wireframeJS))
 	sb.WriteString("\n\n")
 
-	// 29. Responsive audit (depends on utils)
+	// 30. Responsive audit (depends on utils)
 	sb.WriteString("  // Responsive audit module\n")
 	sb.WriteString(wrapModule(responsiveJS))
 	sb.WriteString("\n\n")
 
-	// 30. API (assembles all modules, must be last)
+	// 31. API (assembles all modules, must be last)
 	sb.WriteString("  // API assembly module\n")
 	sb.WriteString(wrapModule(apiJS))
 	sb.WriteString("\n")
@@ -362,6 +370,7 @@ func GetScriptNames() []string {
 		"voice.js",
 		"sketch.js",
 		"design.js",
+		"style-editor.js",
 		"indicator.js",
 		"snapshot-helper.js",
 		"diagnostics.js",
