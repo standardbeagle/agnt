@@ -2708,10 +2708,25 @@
           parts.push('- Sketch `' + att.id + '`: ' + att.summary);
         } else if (att.type === 'style-edit') {
           var seChanges = att.data && att.data.changes || [];
-          parts.push('- Style edit `' + att.id + '`: `' + (att.data && att.data.selector || '') + '` (' + seChanges.length + ' change' + (seChanges.length !== 1 ? 's' : '') + ')');
+          var seSelector = att.data && att.data.selector || '';
+          var seHeader = '- Style edit `' + seSelector + '`: ' + seChanges.length + ' CSS change' + (seChanges.length !== 1 ? 's' : '');
+          if (att.data && att.data.reactProps && att.data.reactProps.component) {
+            seHeader += ', React ' + att.data.reactProps.component + ' props attached';
+          }
+          parts.push(seHeader);
           for (var sci = 0; sci < seChanges.length; sci++) {
             var sc = seChanges[sci];
-            parts.push('  - `' + sc.property + '` (' + sc.scope + '): `' + sc.original + '` \u2192 `' + sc.current + '`');
+            parts.push('  ' + sc.property + ': ' + sc.original + ' \u2192 ' + sc.current + ' (' + sc.scope + ')');
+          }
+          if (att.data && att.data.screenshots) {
+            var seBefore = att.data.screenshots.before;
+            var seAfter = att.data.screenshots.after;
+            if (seBefore || seAfter) {
+              var ssIds = [];
+              if (seBefore) ssIds.push('`' + seBefore + '`');
+              if (seAfter) ssIds.push('`' + seAfter + '`');
+              parts.push('  Before/after screenshots: ' + ssIds.join(', '));
+            }
           }
         } else if (att.type === 'audit') {
           // Format audit result as actionable markdown summary
