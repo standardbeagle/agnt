@@ -326,6 +326,14 @@ func (o *Overlay) processProxyEvent(event ProxyEvent) {
 	o.Broadcast("proxy_event", event)
 }
 
+// styleChange represents a single CSS property change in a style-edit attachment.
+type styleChange struct {
+	Property string `json:"property"`
+	Scope    string `json:"scope"`
+	Original string `json:"original"`
+	Current  string `json:"current"`
+}
+
 // attachmentInfo holds parsed attachment data for non-audit attachments.
 type attachmentInfo struct {
 	Type     string
@@ -337,6 +345,13 @@ type attachmentInfo struct {
 	Area     *screenshotArea
 	FilePath string // Path to the saved file (for screenshots, sketches)
 	FileName string // Just the filename for display
+
+	// Style-edit fields
+	StyleChanges     []styleChange
+	ReactComponent   string // e.g. "Button"
+	ReactSource      string // e.g. "src/Button.tsx:42"
+	ScreenshotBefore string
+	ScreenshotAfter  string
 }
 
 // screenshotArea represents coordinates for a screenshot region.
@@ -420,6 +435,9 @@ func (o *Overlay) processAttachments(attachments []struct {
 					if fn, ok := dataFields["file_name"].(string); ok {
 						info.FileName = fn
 					}
+					if att.Type == "style-edit" {
+						extractStyleEditData(&info, dataFields)
+					}
 				}
 			}
 
@@ -463,6 +481,48 @@ func (o *Overlay) processAuditAttachment(data json.RawMessage, userMessage strin
 
 	// LLM not available, use basic summary
 	return fmt.Sprintf("**%s**: %s", auditData.Label, auditData.Summary)
+}
+
+// extractStyleEditData populates style-edit fields on attachmentInfo from raw data.
+func extractStyleEditData(info *attachmentInfo, data map[string]interface{}) {
+	// Extract changes array
+	if changesRaw, ok := data["changes"].([]interface{}); ok {
+		for _, c := range changesRaw {
+			cm, ok := c.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			sc := styleChange{
+				Property: getStr(cm, "property"),
+				Scope:    getStr(cm, "scope"),
+				Original: getStr(cm, "original"),
+				Current:  getStr(cm, "current"),
+			}
+			info.StyleChanges = append(info.StyleChanges, sc)
+		}
+	}
+
+	// Extract reactProps (optional)
+	if rp, ok := data["reactProps"].(map[string]interface{}); ok {
+		info.ReactComponent = getStr(rp, "component")
+		info.ReactSource = getStr(rp, "source")
+	}
+
+	// Extract screenshot paths (already resolved by parsePanelMessage in server.go)
+	if ss, ok := data["screenshots"].(map[string]interface{}); ok {
+		if before, ok := ss["before"].(string); ok {
+			info.ScreenshotBefore = before
+		}
+		if after, ok := ss["after"].(string); ok {
+			info.ScreenshotAfter = after
+		}
+	}
+}
+
+// getStr safely extracts a string from a map.
+func getStr(m map[string]interface{}, key string) string {
+	v, _ := m[key].(string)
+	return v
 }
 
 // formatPanelMessage formats the panel message with audit reports and attachments.
@@ -525,6 +585,38 @@ func (o *Overlay) formatPanelMessage(message string, auditReports []string, atta
 				// Show specific file path if available
 				if att.FilePath != "" {
 					text += fmt.Sprintf("   → %s\n", att.FilePath)
+				}
+			case "style-edit":
+				if att.Selector != "" {
+					text += fmt.Sprintf(" (selector: %s", att.Selector)
+					if len(att.StyleChanges) > 0 {
+						text += fmt.Sprintf(", %d change", len(att.StyleChanges))
+						if len(att.StyleChanges) != 1 {
+							text += "s"
+						}
+					}
+					text += ")"
+				}
+				text += "\n"
+				for _, ch := range att.StyleChanges {
+					scope := ch.Scope
+					if scope == "" {
+						scope = "inline"
+					}
+					text += fmt.Sprintf("   %s: %s → %s (%s)\n", ch.Property, ch.Original, ch.Current, scope)
+				}
+				if att.ReactComponent != "" {
+					react := "   React: " + att.ReactComponent
+					if att.ReactSource != "" {
+						react += " (" + att.ReactSource + ")"
+					}
+					text += react + "\n"
+				}
+				if att.ScreenshotBefore != "" {
+					text += fmt.Sprintf("   → before: %s\n", att.ScreenshotBefore)
+				}
+				if att.ScreenshotAfter != "" {
+					text += fmt.Sprintf("   → after: %s\n", att.ScreenshotAfter)
 				}
 			default:
 				if att.Selector != "" {
