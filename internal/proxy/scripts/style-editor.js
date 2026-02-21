@@ -1185,6 +1185,29 @@
     return false;
   }
 
+  // Reset a single inline style edit: removes the inline override and
+  // removes the entry from the changes array.
+  function resetInlineStyleEdit(property) {
+    var element = state.selectedElement;
+    if (!element) return;
+
+    var key = property + '|inline';
+    if (state.originalValues[key]) {
+      delete state.originalValues[key];
+    }
+
+    element.style.removeProperty(property);
+
+    for (var i = state.changes.length - 1; i >= 0; i--) {
+      if (state.changes[i].property === property && state.changes[i].scope === 'inline') {
+        state.changes.splice(i, 1);
+        break;
+      }
+    }
+
+    updateAttachButton();
+  }
+
   // Count inline style edits for a given category.
   function countCategoryChanges(entries) {
     var count = 0;
@@ -1314,15 +1337,53 @@
             'overflow: hidden'
           ].join(';');
 
+          var resetBtn = document.createElement('button');
+          resetBtn.style.cssText = [
+            'background: none',
+            'border: none',
+            'color: ' + TOKENS.colors.textMuted,
+            'cursor: pointer',
+            'padding: 0 2px',
+            'font-size: 14px',
+            'line-height: 1',
+            'flex-shrink: 0',
+            'display: ' + (isInlineStyleEdited(entry.property) ? 'inline-block' : 'none'),
+            'opacity: 0.6'
+          ].join(';');
+          resetBtn.innerHTML = '&#x21ba;';
+          resetBtn.title = 'Reset to original';
+          resetBtn.onmouseenter = function() { resetBtn.style.opacity = '1'; };
+          resetBtn.onmouseleave = function() { resetBtn.style.opacity = '0.6'; };
+
           var control = renderControl(entry.property, entry.value, function(newValue) {
             applyInlineStyleEdit(entry.property, newValue);
             dot.style.display = 'inline-block';
+            resetBtn.style.display = 'inline-block';
             section.updateChanged(countCategoryChanges(entries));
           });
           controlContainer.appendChild(control);
           row.appendChild(controlContainer);
 
-          rowControls.push({ row: row, dot: dot, property: entry.property });
+          resetBtn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            resetInlineStyleEdit(entry.property);
+            dot.style.display = 'none';
+            resetBtn.style.display = 'none';
+            // Replace control with fresh one showing restored value
+            var liveValue = getComputedStyle(state.selectedElement).getPropertyValue(entry.property);
+            controlContainer.innerHTML = '';
+            var freshControl = renderControl(entry.property, liveValue, function(newValue) {
+              applyInlineStyleEdit(entry.property, newValue);
+              dot.style.display = 'inline-block';
+              resetBtn.style.display = 'inline-block';
+              section.updateChanged(countCategoryChanges(entries));
+            });
+            controlContainer.appendChild(freshControl);
+            section.updateChanged(countCategoryChanges(entries));
+          });
+          row.appendChild(resetBtn);
+
+          rowControls.push({ row: row, dot: dot, resetBtn: resetBtn, controlContainer: controlContainer, property: entry.property });
           return row;
         }
 
@@ -1377,11 +1438,27 @@
           });
         }
 
-        // Expose a refresh method for rows
+        // Expose a refresh method for rows (used by Reset All)
         section.refreshRows = function() {
           for (var ri = 0; ri < rowControls.length; ri++) {
             var ctrl = rowControls[ri];
-            ctrl.dot.style.display = isInlineStyleEdited(ctrl.property) ? 'inline-block' : 'none';
+            var edited = isInlineStyleEdited(ctrl.property);
+            ctrl.dot.style.display = edited ? 'inline-block' : 'none';
+            ctrl.resetBtn.style.display = edited ? 'inline-block' : 'none';
+            if (!edited && state.selectedElement) {
+              // Re-render control with restored computed value
+              var liveValue = getComputedStyle(state.selectedElement).getPropertyValue(ctrl.property);
+              ctrl.controlContainer.innerHTML = '';
+              var freshControl = renderControl(ctrl.property, liveValue, (function(prop, dot, resetBtn) {
+                return function(newValue) {
+                  applyInlineStyleEdit(prop, newValue);
+                  dot.style.display = 'inline-block';
+                  resetBtn.style.display = 'inline-block';
+                  section.updateChanged(countCategoryChanges(entries));
+                };
+              })(ctrl.property, ctrl.dot, ctrl.resetBtn));
+              ctrl.controlContainer.appendChild(freshControl);
+            }
           }
           section.updateChanged(countCategoryChanges(entries));
         };
