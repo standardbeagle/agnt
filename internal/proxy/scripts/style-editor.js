@@ -2290,6 +2290,85 @@
     return input;
   }
 
+  // Shorthand CSS properties that accept multi-value (top right bottom left) input.
+  var SHORTHAND_PROPERTIES = [
+    'margin', 'padding'
+  ];
+
+  // Properties that accept unitless 0-1 float values.
+  var UNITLESS_FLOAT_PROPERTIES = [
+    'opacity', 'line-height'
+  ];
+
+  // Regex for numeric values with optional CSS unit.
+  var NUMERIC_VALUE_RE = /^-?\d+\.?\d*(px|rem|em|%|vw|vh)?$/;
+
+  // Detect the appropriate control type for a CSS property and value.
+  // Returns {type: 'color'|'numeric'|'multivalue'|'dropdown'|'text', config: {...}}
+  // where config contains control-specific parameters.
+  function detectControlType(property, value) {
+    var v = (value || '').trim();
+
+    // 1. Enum properties -> DropdownControl
+    if (ENUM_VALUES[property]) {
+      return { type: 'dropdown', config: { options: ENUM_VALUES[property] } };
+    }
+
+    // 2. Shorthand properties -> MultiValueInput
+    for (var si = 0; si < SHORTHAND_PROPERTIES.length; si++) {
+      if (property === SHORTHAND_PROPERTIES[si]) {
+        return { type: 'multivalue', config: {} };
+      }
+    }
+
+    // 3. Color values -> ColorPicker
+    if (detectColorFormat(v)) {
+      return { type: 'color', config: { format: detectColorFormat(v) } };
+    }
+
+    // 4. Numeric + unit values -> NumericSlider
+    if (NUMERIC_VALUE_RE.test(v)) {
+      var numMatch = v.match(/^(-?\d+\.?\d*)(px|rem|em|%|vw|vh)?$/);
+      var numVal = parseFloat(numMatch[1]);
+      var numUnit = numMatch[2] || '';
+      var numRange = getRangeForProperty(property, numVal);
+      return { type: 'numeric', config: { value: numVal, unit: numUnit, range: numRange } };
+    }
+
+    // 5. Unitless float properties (opacity, line-height) -> NumericSlider
+    //    Checked after unit regex so "24px" still gets the unit path above.
+    for (var fi = 0; fi < UNITLESS_FLOAT_PROPERTIES.length; fi++) {
+      if (property === UNITLESS_FLOAT_PROPERTIES[fi]) {
+        var floatRange = getRangeForProperty(property, v);
+        return { type: 'numeric', config: { value: parseFloat(v) || 0, unit: '', range: floatRange } };
+      }
+    }
+
+    // 6. Fallback -> TextInput
+    return { type: 'text', config: {} };
+  }
+
+  // Create and return the correct DOM control element for a CSS property and value.
+  // onChange receives the new value string when the user edits.
+  function renderControl(property, value, onChange) {
+    var detected = detectControlType(property, value);
+
+    switch (detected.type) {
+      case 'dropdown':
+        return DropdownControl(property, value, onChange);
+      case 'multivalue':
+        return MultiValueInput(property, value, onChange);
+      case 'color':
+        return ColorPicker(value, onChange);
+      case 'numeric':
+        return NumericSlider(property, detected.config.value, detected.config.unit, onChange);
+      case 'text':
+        return TextInput(value, onChange);
+      default:
+        return TextInput(value, onChange);
+    }
+  }
+
   // Apply a CSS variable edit: sets the property on the scope element,
   // captures the original value on first edit, and updates the changes array.
   function applyVariableEdit(name, newValue, scopeElement, scopeSelector) {
@@ -2705,6 +2784,8 @@
     NumericSlider: NumericSlider,
     MultiValueInput: MultiValueInput,
     DropdownControl: DropdownControl,
-    TextInput: TextInput
+    TextInput: TextInput,
+    detectControlType: detectControlType,
+    renderControl: renderControl
   };
 })();
