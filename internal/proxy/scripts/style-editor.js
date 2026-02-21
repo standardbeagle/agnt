@@ -414,7 +414,8 @@
           contentEl.innerHTML = '';
           state.sections = [];
           var variables = discoverCSSVariables(el);
-          var varSection = renderCSSVariablesSection(variables);
+          var varUsage = buildVariableUsageMap(el, variables);
+          var varSection = renderCSSVariablesSection(variables, varUsage);
           if (varSection) {
             contentEl.appendChild(varSection);
           }
@@ -623,7 +624,8 @@
     var content = document.getElementById('__devtool-style-content');
     if (content && element) {
       var variables = discoverCSSVariables(element);
-      var varSection = renderCSSVariablesSection(variables);
+      var varUsage = buildVariableUsageMap(element, variables);
+      var varSection = renderCSSVariablesSection(variables, varUsage);
       if (varSection) {
         content.appendChild(varSection);
       }
@@ -952,6 +954,88 @@
         }
       }
     }
+  }
+
+  // Build a reverse map: varName -> [propertyName, ...] showing which CSS
+  // properties on the element reference each variable via var(--name).
+  // Scans CSS rules matching the element and inline styles for var() usage.
+  function buildVariableUsageMap(element, variables) {
+    if (!element || !variables || variables.length === 0) return {};
+
+    var usage = {};
+    for (var vi = 0; vi < variables.length; vi++) {
+      usage[variables[vi].name] = [];
+    }
+
+    var varNames = Object.keys(usage);
+    if (varNames.length === 0) return usage;
+
+    // Check if a CSS value string references any known variable
+    function scanValue(value, property) {
+      if (!value || value.indexOf('var(') < 0) return;
+      for (var ni = 0; ni < varNames.length; ni++) {
+        var name = varNames[ni];
+        // Match var(--name) or var(--name, fallback)
+        if (value.indexOf('var(' + name + ')') >= 0 ||
+            value.indexOf('var(' + name + ',') >= 0) {
+          // Avoid duplicates
+          var list = usage[name];
+          var dup = false;
+          for (var di = 0; di < list.length; di++) {
+            if (list[di] === property) { dup = true; break; }
+          }
+          if (!dup) list.push(property);
+        }
+      }
+    }
+
+    // 1. Scan element's inline style
+    var style = element.style;
+    for (var si = 0; si < style.length; si++) {
+      var prop = style[si];
+      if (prop.indexOf('--') === 0) continue;
+      scanValue(style.getPropertyValue(prop), prop);
+    }
+
+    // 2. Scan matching CSS rules from stylesheets
+    function scanRulesForUsage(rules) {
+      for (var ri = 0; ri < rules.length; ri++) {
+        var rule = rules[ri];
+        if (rule.cssRules) {
+          scanRulesForUsage(rule.cssRules);
+          continue;
+        }
+        if (rule.type !== CSSRule.STYLE_RULE) continue;
+        var rs = rule.style;
+        if (!rs) continue;
+
+        // Check if this rule matches the element
+        try {
+          if (!element.matches(rule.selectorText)) continue;
+        } catch (e) {
+          continue;
+        }
+
+        for (var pi = 0; pi < rs.length; pi++) {
+          var rp = rs[pi];
+          if (rp.indexOf('--') === 0) continue;
+          scanValue(rs.getPropertyValue(rp), rp);
+        }
+      }
+    }
+
+    for (var shi = 0; shi < document.styleSheets.length; shi++) {
+      var sheet = document.styleSheets[shi];
+      var cssRules;
+      try {
+        cssRules = sheet.cssRules || sheet.rules;
+      } catch (e) {
+        continue;
+      }
+      if (cssRules) scanRulesForUsage(cssRules);
+    }
+
+    return usage;
   }
 
   // Property-to-category mapping for computed style grouping.
@@ -2810,8 +2894,9 @@
 
   // Render the CSS Variables section in the panel content area.
   // Returns the section element (or null if no variables found).
-  function renderCSSVariablesSection(variables) {
+  function renderCSSVariablesSection(variables, usageMap) {
     if (!variables || variables.length === 0) return null;
+    if (!usageMap) usageMap = {};
 
     var section = createSection('CSS Variables', variables.length, 0);
     var rowControls = [];
@@ -3004,6 +3089,21 @@
         rowControls.push({ updateRowState: updateRowState, valueEl: valueEl, variable: v });
 
         section.contentEl.appendChild(row);
+
+        // Usage hint: show which properties reference this variable
+        var props = usageMap[v.name];
+        if (props && props.length > 0) {
+          var hint = document.createElement('div');
+          hint.style.cssText = [
+            'font-size: 10px',
+            'color: ' + TOKENS.colors.textMuted,
+            'padding: 0 0 2px 18px',
+            'line-height: 1.3'
+          ].join(';');
+          hint.textContent = '\u2514 used in: ' + props.join(', ') +
+            ' (' + props.length + (props.length === 1 ? ' usage' : ' usages') + ')';
+          section.contentEl.appendChild(hint);
+        }
       })(variables[i]);
     }
 
@@ -3507,6 +3607,7 @@
     showPanel: showPanel,
     hidePanel: hidePanel,
     discoverCSSVariables: discoverCSSVariables,
+    buildVariableUsageMap: buildVariableUsageMap,
     extractComputedStyles: extractComputedStyles,
     ColorPicker: ColorPicker,
     NumericSlider: NumericSlider,
