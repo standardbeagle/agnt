@@ -2168,6 +2168,76 @@
     return container;
   }
 
+  // Known enum value lists for CSS properties with discrete options.
+  var ENUM_VALUES = {
+    'display': ['none', 'block', 'inline', 'inline-block', 'flex', 'inline-flex', 'grid', 'inline-grid'],
+    'position': ['static', 'relative', 'absolute', 'fixed', 'sticky'],
+    'text-align': ['left', 'center', 'right', 'justify'],
+    'flex-direction': ['row', 'row-reverse', 'column', 'column-reverse'],
+    'justify-content': ['flex-start', 'flex-end', 'center', 'space-between', 'space-around', 'space-evenly'],
+    'align-items': ['flex-start', 'flex-end', 'center', 'stretch', 'baseline'],
+    'overflow': ['visible', 'hidden', 'scroll', 'auto', 'clip'],
+    'overflow-x': ['visible', 'hidden', 'scroll', 'auto', 'clip'],
+    'overflow-y': ['visible', 'hidden', 'scroll', 'auto', 'clip'],
+    'visibility': ['visible', 'hidden', 'collapse'],
+    'cursor': ['pointer', 'default', 'text', 'move', 'not-allowed', 'grab', 'grabbing', 'zoom-in', 'zoom-out', 'crosshair', 'wait', 'help', 'progress']
+  };
+
+  // Dropdown control for enum CSS properties.
+  // Renders a styled <select> that fires onChange immediately on selection.
+  function DropdownControl(property, value, onChange) {
+    var options = ENUM_VALUES[property] || [];
+
+    var select = document.createElement('select');
+    select.style.cssText = [
+      'font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+      'font-size: 12px',
+      'color: ' + TOKENS.colors.text,
+      'background: ' + TOKENS.colors.surface,
+      'border: 1px solid ' + TOKENS.colors.border,
+      'border-radius: ' + TOKENS.radius.sm,
+      'padding: 2px 6px',
+      'outline: none',
+      'cursor: pointer',
+      'width: 100%',
+      'box-sizing: border-box'
+    ].join(';');
+
+    // Populate options; include the current value even if not in the enum list
+    var valueInList = false;
+    for (var i = 0; i < options.length; i++) {
+      var opt = document.createElement('option');
+      opt.value = options[i];
+      opt.textContent = options[i];
+      if (options[i] === value) {
+        opt.selected = true;
+        valueInList = true;
+      }
+      select.appendChild(opt);
+    }
+    if (!valueInList && value) {
+      var customOpt = document.createElement('option');
+      customOpt.value = value;
+      customOpt.textContent = value;
+      customOpt.selected = true;
+      select.insertBefore(customOpt, select.firstChild);
+    }
+
+    select.addEventListener('focus', function() {
+      select.style.borderColor = TOKENS.colors.primary;
+    });
+    select.addEventListener('blur', function() {
+      select.style.borderColor = TOKENS.colors.border;
+    });
+    select.addEventListener('change', function() {
+      if (typeof onChange === 'function') {
+        onChange(select.value);
+      }
+    });
+
+    return select;
+  }
+
   // Apply a CSS variable edit: sets the property on the scope element,
   // captures the original value on first edit, and updates the changes array.
   function applyVariableEdit(name, newValue, scopeElement, scopeSelector) {
@@ -2581,6 +2651,7 @@
     extractComputedStyles: extractComputedStyles,
     ColorPicker: ColorPicker,
     NumericSlider: NumericSlider,
-    MultiValueInput: MultiValueInput
+    MultiValueInput: MultiValueInput,
+    DropdownControl: DropdownControl
   };
 })();
