@@ -462,6 +462,7 @@
       'transition: background 0.15s ease'
     ].join(';');
     attachBtn.textContent = 'Attach Changes (0)';
+    attachBtn.onclick = function() { attachStyleEdits(); };
     attachBtn.onmouseenter = function() { attachBtn.style.background = TOKENS.colors.primaryDark; };
     attachBtn.onmouseleave = function() { attachBtn.style.background = TOKENS.colors.primary; };
     bottomBar.appendChild(attachBtn);
@@ -3090,6 +3091,26 @@
     };
   }
 
+  // Capture an "after" screenshot and add a style-edit attachment to the indicator
+  function attachStyleEdits() {
+    if (!state.selectedElement || state.changes.length === 0) return;
+
+    var indicator = window.__devtool_indicator;
+    if (!indicator || !indicator.addAttachment) return;
+
+    var afterScreenshotId = captureBeforeScreenshot(); // reuse same capture pipeline
+    var changeCount = state.changes.length;
+    var selectorLabel = state.selector || 'element';
+
+    indicator.addAttachment('style-edit', {
+      label: '\uD83C\uDFA8 ' + selectorLabel + ': ' + changeCount + ' change' + (changeCount !== 1 ? 's' : ''),
+      summary: selectorLabel + ': ' + changeCount + ' style change' + (changeCount !== 1 ? 's' : ''),
+      selector: state.selector,
+      changes: state.changes.slice(),
+      screenshots: { before: state.beforeScreenshotId, after: afterScreenshotId }
+    });
+  }
+
   // Check whether the editor is currently open
   function isOpen() {
     return state.isOpen;
@@ -3108,6 +3129,7 @@
     getState: getState,
     getChanges: getChanges,
     attachChanges: attachChanges,
+    attachStyleEdits: attachStyleEdits,
     isOpen: isOpen,
     startSelection: startSelection,
     createSection: createSection,
