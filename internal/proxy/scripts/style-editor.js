@@ -2238,6 +2238,58 @@
     return select;
   }
 
+  // Plain text input for CSS values that don't match any specific control.
+  // Commits on Enter or blur; Escape reverts to the last applied value.
+  function TextInput(value, onChange) {
+    var lastApplied = value;
+
+    var input = document.createElement('input');
+    input.type = 'text';
+    input.value = value;
+    input.style.cssText = [
+      'font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+      'font-size: 12px',
+      'color: ' + TOKENS.colors.text,
+      'background: ' + TOKENS.colors.surface,
+      'border: 1px solid ' + TOKENS.colors.border,
+      'border-radius: ' + TOKENS.radius.sm,
+      'padding: 2px 6px',
+      'outline: none',
+      'width: 100%',
+      'box-sizing: border-box',
+      'transition: border-color 0.15s ease'
+    ].join(';');
+
+    function commit() {
+      var v = input.value;
+      if (v !== lastApplied) {
+        lastApplied = v;
+        if (typeof onChange === 'function') {
+          onChange(v);
+        }
+      }
+    }
+
+    input.addEventListener('focus', function() {
+      input.style.borderColor = TOKENS.colors.primary;
+    });
+    input.addEventListener('blur', function() {
+      input.style.borderColor = TOKENS.colors.border;
+      commit();
+    });
+    input.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') {
+        commit();
+        input.blur();
+      } else if (e.key === 'Escape') {
+        input.value = lastApplied;
+        input.blur();
+      }
+    });
+
+    return input;
+  }
+
   // Apply a CSS variable edit: sets the property on the scope element,
   // captures the original value on first edit, and updates the changes array.
   function applyVariableEdit(name, newValue, scopeElement, scopeSelector) {
@@ -2652,6 +2704,7 @@
     ColorPicker: ColorPicker,
     NumericSlider: NumericSlider,
     MultiValueInput: MultiValueInput,
-    DropdownControl: DropdownControl
+    DropdownControl: DropdownControl,
+    TextInput: TextInput
   };
 })();
