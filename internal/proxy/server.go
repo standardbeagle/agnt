@@ -1424,6 +1424,25 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 						debug.Log("proxy", "Resolved sketch: id=%s path=%s", att.ID, filePath)
 					}
 				}
+
+				if att.Type == "style-edit" {
+					// Resolve before/after screenshot file paths from sessionCaptures
+					if screenshots, ok := att.Data["screenshots"].(map[string]interface{}); ok {
+						resolved := make(map[string]interface{})
+						for key, val := range screenshots {
+							ctxID, _ := val.(string)
+							if ctxID == "" {
+								continue
+							}
+							if filePath, ok := sessionCaptures[ctxID]; ok {
+								delete(sessionCaptures, ctxID)
+								resolved[key] = filePath
+								debug.Log("proxy", "Resolved style-edit %s screenshot: id=%s path=%s", key, ctxID, filePath)
+							}
+						}
+						att.Data["screenshots"] = resolved
+					}
+				}
 			}
 
 			ps.logger.LogPanelMessage(panelMsg)
