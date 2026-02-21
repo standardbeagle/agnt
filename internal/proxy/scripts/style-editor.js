@@ -142,9 +142,11 @@
     return path;
   }
 
-  // Capture a full-page "before" screenshot via the binary WebSocket pipeline.
-  // Returns the screenshot context ID, or null if capture is unavailable.
-  function captureBeforeScreenshot() {
+  // Capture a screenshot of the given element's bounding rect via the binary
+  // WebSocket pipeline. Returns the context ID synchronously; the actual PNG
+  // bytes are sent asynchronously. Falls back to full-page capture when no
+  // element is provided. Returns null when capture prerequisites are missing.
+  function captureElementScreenshot(element) {
     if (typeof html2canvas === 'undefined') {
       return null;
     }
@@ -157,7 +159,8 @@
 
     var id = 'ctx_' + Date.now().toString(36) + Math.random().toString(36).substr(2, 5);
 
-    html2canvas(document.body, {
+    // Calculate capture region from element bounding rect (absolute coords)
+    var opts = {
       allowTaint: true,
       useCORS: true,
       logging: false,
@@ -165,7 +168,17 @@
       scrollY: 0,
       windowWidth: document.documentElement.scrollWidth,
       windowHeight: document.documentElement.scrollHeight
-    }).then(function(canvas) {
+    };
+
+    if (element) {
+      var rect = element.getBoundingClientRect();
+      opts.x = rect.left + window.scrollX;
+      opts.y = rect.top + window.scrollY;
+      opts.width = rect.width;
+      opts.height = rect.height;
+    }
+
+    html2canvas(document.body, opts).then(function(canvas) {
       canvas.toBlob(function(blob) {
         if (!blob) return;
         blob.arrayBuffer().then(function(buf) {
@@ -294,7 +307,7 @@
       // Remove overlay before screenshot so it does not appear in the capture
       removeOverlay();
 
-      var screenshotId = captureBeforeScreenshot();
+      var screenshotId = captureElementScreenshot(element);
 
       if (typeof onSelect === 'function') {
         onSelect(element, selector, xpath, screenshotId);
@@ -3014,7 +3027,7 @@
       state.selectedElement = element;
       state.selector = getUtils().generateSelector(element);
       state.xpath = generateXPath(element);
-      state.beforeScreenshotId = captureBeforeScreenshot();
+      state.beforeScreenshotId = captureElementScreenshot(element);
       showPanel(element, state.selector);
     } else {
       startSelection(function(el, selector, xpath, screenshotId) {
@@ -3098,7 +3111,7 @@
     var indicator = window.__devtool_indicator;
     if (!indicator || !indicator.addAttachment) return;
 
-    var afterScreenshotId = captureBeforeScreenshot(); // reuse same capture pipeline
+    var afterScreenshotId = captureElementScreenshot(state.selectedElement);
     var changeCount = state.changes.length;
     var selectorLabel = state.selector || 'element';
 
