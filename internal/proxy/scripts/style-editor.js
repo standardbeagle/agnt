@@ -423,6 +423,10 @@
           for (var csi = 0; csi < computedSections.length; csi++) {
             contentEl.appendChild(computedSections[csi]);
           }
+          var reactSection = renderReactComponentSection(el);
+          if (reactSection) {
+            contentEl.appendChild(reactSection);
+          }
         }
       });
     });
@@ -628,6 +632,11 @@
       var computedSections = renderComputedStylesSections(computedStyles);
       for (var csi = 0; csi < computedSections.length; csi++) {
         content.appendChild(computedSections[csi]);
+      }
+
+      var reactSection = renderReactComponentSection(element);
+      if (reactSection) {
+        content.appendChild(reactSection);
       }
     }
 
@@ -3010,6 +3019,137 @@
     return section;
   }
 
+  // Render a collapsible section displaying React component info for the selected element.
+  // Returns null if no React component is detected.
+  function renderReactComponentSection(element) {
+    var info = detectReactComponent(element);
+    if (!info) return null;
+
+    var section = createSection('React Component', 1, 0);
+
+    // Component name row
+    var nameRow = document.createElement('div');
+    nameRow.style.cssText = [
+      'display: flex',
+      'align-items: baseline',
+      'gap: 6px',
+      'padding: 3px 0',
+      'font-size: 12px',
+      'line-height: 1.4'
+    ].join(';');
+
+    var nameLabel = document.createElement('span');
+    nameLabel.style.cssText = [
+      'color: ' + TOKENS.colors.textMuted,
+      'font-size: 11px',
+      'flex-shrink: 0'
+    ].join(';');
+    nameLabel.textContent = 'Component';
+    nameRow.appendChild(nameLabel);
+
+    var nameValue = document.createElement('span');
+    nameValue.style.cssText = [
+      'font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+      'color: ' + TOKENS.colors.primary,
+      'font-weight: 600'
+    ].join(';');
+    nameValue.textContent = '<' + info.componentName + '>';
+    nameRow.appendChild(nameValue);
+
+    if (info.hasState) {
+      var stateBadge = document.createElement('span');
+      stateBadge.style.cssText = [
+        'font-size: 10px',
+        'color: ' + TOKENS.colors.textMuted,
+        'background: ' + TOKENS.colors.surfaceAlt,
+        'border: 1px solid ' + TOKENS.colors.border,
+        'border-radius: ' + TOKENS.radius.sm,
+        'padding: 1px 4px'
+      ].join(';');
+      stateBadge.textContent = 'stateful';
+      nameRow.appendChild(stateBadge);
+    }
+
+    section.contentEl.appendChild(nameRow);
+
+    // Source row (if available)
+    if (info.source && info.source.fileName) {
+      var srcRow = document.createElement('div');
+      srcRow.style.cssText = [
+        'display: flex',
+        'align-items: baseline',
+        'gap: 6px',
+        'padding: 3px 0',
+        'font-size: 12px',
+        'line-height: 1.4'
+      ].join(';');
+
+      var srcLabel = document.createElement('span');
+      srcLabel.style.cssText = [
+        'color: ' + TOKENS.colors.textMuted,
+        'font-size: 11px',
+        'flex-shrink: 0'
+      ].join(';');
+      srcLabel.textContent = 'Source';
+      srcRow.appendChild(srcLabel);
+
+      var srcValue = document.createElement('span');
+      srcValue.style.cssText = [
+        'font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+        'color: ' + TOKENS.colors.text,
+        'font-size: 11px',
+        'word-break: break-all'
+      ].join(';');
+      var srcText = info.source.fileName;
+      if (info.source.lineNumber) srcText += ':' + info.source.lineNumber;
+      srcValue.textContent = srcText;
+      srcRow.appendChild(srcValue);
+
+      section.contentEl.appendChild(srcRow);
+    }
+
+    // Props summary row
+    var propKeys = Object.keys(info.props);
+    if (propKeys.length > 0) {
+      var propsRow = document.createElement('div');
+      propsRow.style.cssText = [
+        'display: flex',
+        'align-items: baseline',
+        'gap: 6px',
+        'padding: 3px 0',
+        'font-size: 12px',
+        'line-height: 1.4'
+      ].join(';');
+
+      var propsLabel = document.createElement('span');
+      propsLabel.style.cssText = [
+        'color: ' + TOKENS.colors.textMuted,
+        'font-size: 11px',
+        'flex-shrink: 0'
+      ].join(';');
+      propsLabel.textContent = 'Props';
+      propsRow.appendChild(propsLabel);
+
+      var propsValue = document.createElement('span');
+      propsValue.style.cssText = [
+        'font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+        'color: ' + TOKENS.colors.text,
+        'font-size: 11px',
+        'word-break: break-all'
+      ].join(';');
+      // Show prop names, truncate if too many
+      var displayKeys = propKeys.length > 8 ? propKeys.slice(0, 8) : propKeys;
+      var propsText = displayKeys.join(', ');
+      if (propKeys.length > 8) propsText += ' (+' + (propKeys.length - 8) + ' more)';
+      propsValue.textContent = propsText;
+      propsRow.appendChild(propsValue);
+
+      section.contentEl.appendChild(propsRow);
+    }
+
+    return section;
+  }
+
   // Update the attach button label to reflect current change count
   function updateAttachButton() {
     var btn = document.getElementById('__devtool-style-attach-btn');
@@ -3134,6 +3274,90 @@
     return state.changes.slice();
   }
 
+  // Find the React fiber key on an element.
+  // React attaches internal data using a property like
+  // __reactFiber$xxxx (React 18+) or __reactInternalInstance$xxxx (React 16-17).
+  // Returns the key string or null.
+  function findFiberKey(el) {
+    var keys = Object.keys(el);
+    for (var i = 0; i < keys.length; i++) {
+      if (keys[i].indexOf('__reactFiber$') === 0 ||
+          keys[i].indexOf('__reactInternalInstance$') === 0) {
+        return keys[i];
+      }
+    }
+    return null;
+  }
+
+  // Unwrap React.memo / React.forwardRef wrappers to get the actual component type.
+  // These wrappers nest the real component under .type or .render.
+  function unwrapType(fiberType) {
+    if (!fiberType) return fiberType;
+    // React.memo wraps in { $$typeof: Symbol(react.memo), type: inner }
+    if (fiberType.$$typeof && fiberType.type) return unwrapType(fiberType.type);
+    // React.forwardRef wraps in { $$typeof: Symbol(react.forward_ref), render: fn }
+    if (fiberType.$$typeof && fiberType.render) return fiberType.render;
+    return fiberType;
+  }
+
+  // Extract a human-readable component name from a fiber node.
+  function getComponentName(fiber) {
+    if (!fiber || !fiber.type) return null;
+    var t = unwrapType(fiber.type);
+    if (typeof t === 'string') return null; // native DOM element like 'div'
+    if (typeof t === 'function') return t.displayName || t.name || null;
+    if (typeof t === 'object' && t !== null) return t.displayName || t.name || null;
+    return null;
+  }
+
+  // Detect the React component associated with a DOM element.
+  // Walks up the DOM tree to find the nearest fiber, then walks up the fiber
+  // tree to find the nearest component boundary (non-host fiber).
+  // Returns null if no React detected, or {componentName, props, source, hasState}.
+  function detectReactComponent(element) {
+    if (!element || !element.nodeType) return null;
+
+    // Walk up DOM to find an element that has a fiber key
+    var fiberKey = null;
+    var el = element;
+    while (el && el.nodeType === 1) {
+      fiberKey = findFiberKey(el);
+      if (fiberKey) break;
+      el = el.parentElement;
+    }
+    if (!fiberKey) return null;
+
+    // Get the fiber node from the DOM element
+    var fiber = el[fiberKey];
+    if (!fiber) return null;
+
+    // Walk up the fiber tree to find the nearest component boundary.
+    // Host fibers (tag 5 = HostComponent, tag 6 = HostText) represent DOM nodes;
+    // we want the first ancestor whose type is a function or object (a React component).
+    var current = fiber;
+    while (current) {
+      var name = getComponentName(current);
+      if (name) {
+        var source = null;
+        if (current._debugSource) {
+          source = {
+            fileName: current._debugSource.fileName || null,
+            lineNumber: current._debugSource.lineNumber || null
+          };
+        }
+        return {
+          componentName: name,
+          props: current.memoizedProps || {},
+          source: source,
+          hasState: current.memoizedState !== null && current.memoizedState !== undefined
+        };
+      }
+      current = current.return;
+    }
+
+    return null;
+  }
+
   // Export public API
   window.__devtool_style_editor = {
     open: open,
@@ -3156,6 +3380,7 @@
     DropdownControl: DropdownControl,
     TextInput: TextInput,
     detectControlType: detectControlType,
-    renderControl: renderControl
+    renderControl: renderControl,
+    detectReactComponent: detectReactComponent
   };
 })();
