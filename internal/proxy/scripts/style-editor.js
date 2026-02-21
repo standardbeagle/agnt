@@ -3103,7 +3103,7 @@
     var selectorLabel = state.selector || 'element';
 
     indicator.addAttachment('style-edit', {
-      label: '\uD83C\uDFA8 ' + selectorLabel + ': ' + changeCount + ' change' + (changeCount !== 1 ? 's' : ''),
+      label: selectorLabel + ': ' + changeCount + ' change' + (changeCount !== 1 ? 's' : ''),
       summary: selectorLabel + ': ' + changeCount + ' style change' + (changeCount !== 1 ? 's' : ''),
       selector: state.selector,
       changes: state.changes.slice(),
