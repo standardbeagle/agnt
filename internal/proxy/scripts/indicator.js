@@ -42,7 +42,8 @@
     // Tab management
     activeTab: 'compose', // compose|overview|errors|network|performance|quality|interactions
     tabUpdateInterval: null, // Update interval for active tab
-    lastAuditResults: null // Cache audit results
+    lastAuditResults: null, // Cache audit results
+    inspectBtn: null // Inspect toolbar button (for active state tracking)
   };
 
   // ============================================
@@ -1251,7 +1252,8 @@
     chevronDown: '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>',
     check: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>',
     audit: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>',
-    styleEdit: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.9 0 1.7-.1 2.5-.3"/><path d="M12 2c2.2 0 4 4.5 4 10"/><path d="M12 2c-2.2 0-4 4.5-4 10s1.8 10 4 10"/><path d="M2 12h10"/><path d="M20 14l-4 4 1.5 1.5a2.12 2.12 0 0 0 3 0 2.12 2.12 0 0 0 0-3L20 14z"/></svg>'
+    styleEdit: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.9 0 1.7-.1 2.5-.3"/><path d="M12 2c2.2 0 4 4.5 4 10"/><path d="M12 2c-2.2 0-4 4.5-4 10s1.8 10 4 10"/><path d="M2 12h10"/><path d="M20 14l-4 4 1.5 1.5a2.12 2.12 0 0 0 3 0 2.12 2.12 0 0 0 0-3L20 14z"/></svg>',
+    inspect: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 22l1-6.5 5.5 5.5L2 22z"/><path d="M8.5 15.5L18 6a2.83 2.83 0 1 0-4-4L4.5 11.5"/><circle cx="18" cy="4" r="1" fill="currentColor" stroke="none"/></svg>'
   };
 
   // Initialize
@@ -1815,12 +1817,24 @@
     var elementBtn = createToolBtn('Element', ICONS.element, startElementMode);
     var sketchBtn = createToolBtn('Sketch', ICONS.sketch, openSketch);
     var designBtn = createToolBtn('Design', ICONS.design, startDesignMode);
+    state.inspectBtn = createToolBtn('Inspect', ICONS.inspect, startInspectMode);
+    state.inspectBtn.title = 'Live style editor \u2014 inspect and edit CSS';
+    // Override hover handlers to preserve active state
+    state.inspectBtn.onmouseleave = function() {
+      var active = window.__devtool_style_editor && window.__devtool_style_editor.isOpen();
+      if (!active) {
+        state.inspectBtn.style.background = 'transparent';
+        state.inspectBtn.style.borderColor = TOKENS.colors.border;
+        state.inspectBtn.style.color = TOKENS.colors.textMuted;
+      }
+    };
     var auditDropdown = createActionsDropdown();
 
     actionsContainer.appendChild(screenshotBtn);
     actionsContainer.appendChild(elementBtn);
     actionsContainer.appendChild(sketchBtn);
     actionsContainer.appendChild(designBtn);
+    actionsContainer.appendChild(state.inspectBtn);
     actionsContainer.appendChild(auditDropdown);
     toolbar.appendChild(actionsContainer);
 
@@ -3055,6 +3069,15 @@
     }
   }
 
+  // Inspect mode - open style editor for hover-to-select
+  function startInspectMode() {
+    if (window.__devtool_style_editor) {
+      window.__devtool_style_editor.open();
+    } else {
+      console.error('[Indicator] Style editor module not loaded');
+    }
+  }
+
   // Panel toggle
   function togglePanel(show) {
     var shouldShow = show !== undefined ? show : !state.isExpanded;
@@ -3149,6 +3172,19 @@
       var dot = document.getElementById('__devtool-status');
       if (dot) {
         dot.style.backgroundColor = core.isConnected() ? TOKENS.colors.success : TOKENS.colors.error;
+      }
+      // Update inspect button active state
+      if (state.inspectBtn) {
+        var active = window.__devtool_style_editor && window.__devtool_style_editor.isOpen();
+        if (active) {
+          state.inspectBtn.style.background = TOKENS.colors.surface;
+          state.inspectBtn.style.borderColor = TOKENS.colors.primary;
+          state.inspectBtn.style.color = TOKENS.colors.primary;
+        } else {
+          state.inspectBtn.style.background = 'transparent';
+          state.inspectBtn.style.borderColor = TOKENS.colors.border;
+          state.inspectBtn.style.color = TOKENS.colors.textMuted;
+        }
       }
     }, 1000);
 
