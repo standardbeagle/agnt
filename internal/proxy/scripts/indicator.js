@@ -296,6 +296,7 @@
     if (attachment.type === 'screenshot') iconSvg = ICONS.screenshot;
     else if (attachment.type === 'sketch') iconSvg = ICONS.sketch;
     else if (attachment.type === 'audit') iconSvg = ICONS.audit;
+    else if (attachment.type === 'style-edit') iconSvg = ICONS.styleEdit;
 
     var chip = tags.div({
       style: STYLES.chip + '; cursor: pointer;',
@@ -1249,7 +1250,8 @@
     actions: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
     chevronDown: '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>',
     check: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>',
-    audit: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>'
+    audit: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>',
+    styleEdit: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.9 0 1.7-.1 2.5-.3"/><path d="M12 2c2.2 0 4 4.5 4 10"/><path d="M12 2c-2.2 0-4 4.5-4 10s1.8 10 4 10"/><path d="M2 12h10"/><path d="M20 14l-4 4 1.5 1.5a2.12 2.12 0 0 0 3 0 2.12 2.12 0 0 0 0-3L20 14z"/></svg>'
   };
 
   // Initialize
@@ -2538,6 +2540,18 @@
         elements.length + ' element' + (elements.length !== 1 ? 's' : '') + '\n' +
         (attachment.summary || '');
       popup.appendChild(sketchInfo);
+    } else if (attachment.type === 'style-edit' && attachment.data) {
+      // Style-edit preview - show diff of original -> current values
+      var styleInfo = document.createElement('div');
+      styleInfo.style.cssText = STYLES.attachmentPreviewElement;
+      var changes = attachment.data.changes || [];
+      var lines = ['<strong>' + (attachment.data.selector || 'style-edit') + '</strong>'];
+      for (var ci = 0; ci < changes.length; ci++) {
+        var c = changes[ci];
+        lines.push(c.property + ': ' + c.original + ' \u2192 ' + c.current);
+      }
+      styleInfo.innerHTML = lines.join('\n');
+      popup.appendChild(styleInfo);
     } else if (attachment.type === 'audit' && attachment.data) {
       // Audit preview - show summary
       var auditInfo = document.createElement('div');
@@ -2602,6 +2616,7 @@
     if (attachment.type === 'screenshot') iconSvg = ICONS.screenshot;
     else if (attachment.type === 'sketch') iconSvg = ICONS.sketch;
     else if (attachment.type === 'audit') iconSvg = ICONS.audit;
+    else if (attachment.type === 'style-edit') iconSvg = ICONS.styleEdit;
     icon.innerHTML = iconSvg;
     chip.appendChild(icon);
 
@@ -2691,6 +2706,13 @@
           parts.push('- Element `' + att.id + '`: `' + att.data.selector + '` (' + att.data.tag + ')');
         } else if (att.type === 'sketch') {
           parts.push('- Sketch `' + att.id + '`: ' + att.summary);
+        } else if (att.type === 'style-edit') {
+          var seChanges = att.data && att.data.changes || [];
+          parts.push('- Style edit `' + att.id + '`: `' + (att.data && att.data.selector || '') + '` (' + seChanges.length + ' change' + (seChanges.length !== 1 ? 's' : '') + ')');
+          for (var sci = 0; sci < seChanges.length; sci++) {
+            var sc = seChanges[sci];
+            parts.push('  - `' + sc.property + '` (' + sc.scope + '): `' + sc.original + '` \u2192 `' + sc.current + '`');
+          }
         } else if (att.type === 'audit') {
           // Format audit result as actionable markdown summary
           parts.push('');
@@ -3208,6 +3230,7 @@
     destroy: destroy,
     togglePanel: togglePanel,
     setActivityState: setActivityState,
+    addAttachment: addAttachment,
     state: state
   };
 })();
