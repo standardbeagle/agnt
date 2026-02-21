@@ -3019,84 +3019,249 @@
     return section;
   }
 
+  // Show a brief "Copied!" toast near the cursor position.
+  function showCopiedToast(anchorEl) {
+    var toast = document.createElement('div');
+    toast.style.cssText = [
+      'position: fixed',
+      'z-index: 2147483647',
+      'background: ' + TOKENS.colors.text,
+      'color: ' + TOKENS.colors.textInverse,
+      'font-size: 11px',
+      'padding: 3px 8px',
+      'border-radius: ' + TOKENS.radius.sm,
+      'pointer-events: none',
+      'opacity: 1',
+      'transition: opacity 0.3s ease'
+    ].join(';');
+    toast.textContent = 'Copied!';
+    document.body.appendChild(toast);
+
+    var rect = anchorEl.getBoundingClientRect();
+    toast.style.left = rect.left + 'px';
+    toast.style.top = (rect.top - 24) + 'px';
+
+    setTimeout(function() { toast.style.opacity = '0'; }, 600);
+    setTimeout(function() {
+      if (toast.parentNode) toast.parentNode.removeChild(toast);
+    }, 900);
+  }
+
+  // Determine the display type of a prop value.
+  function propType(val) {
+    if (val === null || val === undefined) return 'string';
+    if (Array.isArray(val)) return 'array';
+    var t = typeof val;
+    if (t === 'object') return 'object';
+    if (t === 'function') return 'function';
+    if (t === 'boolean') return 'boolean';
+    if (t === 'number') return 'number';
+    return 'string';
+  }
+
+  // Format a prop value for display based on its type.
+  function formatPropValue(val, type) {
+    if (type === 'string') {
+      var s = String(val == null ? '' : val);
+      if (s.length > 50) s = s.slice(0, 50) + '\u2026';
+      return '"' + s + '"';
+    }
+    if (type === 'boolean') return String(val);
+    if (type === 'number') return String(val);
+    if (type === 'function') {
+      var name = val.displayName || val.name || '';
+      return '\u0192 ' + name + '()';
+    }
+    if (type === 'array') return '[' + val.length + ' item' + (val.length !== 1 ? 's' : '') + ']';
+    if (type === 'object') {
+      var keys = Object.keys(val);
+      return '{' + keys.length + ' key' + (keys.length !== 1 ? 's' : '') + '}';
+    }
+    return String(val);
+  }
+
+  // Create a type badge element for a prop row.
+  function createTypeBadge(type) {
+    var badge = document.createElement('span');
+    badge.style.cssText = [
+      'font-size: 9px',
+      'color: ' + TOKENS.colors.textMuted,
+      'background: ' + TOKENS.colors.surfaceAlt,
+      'border: 1px solid ' + TOKENS.colors.border,
+      'border-radius: ' + TOKENS.radius.sm,
+      'padding: 0 3px',
+      'flex-shrink: 0',
+      'line-height: 1.6',
+      'text-transform: lowercase'
+    ].join(';');
+    badge.textContent = type;
+    return badge;
+  }
+
+  // Render expanded JSON content for an object or array prop value.
+  function renderExpandedValue(val) {
+    var pre = document.createElement('pre');
+    pre.style.cssText = [
+      'font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+      'font-size: 11px',
+      'color: ' + TOKENS.colors.text,
+      'background: ' + TOKENS.colors.surfaceAlt,
+      'border: 1px solid ' + TOKENS.colors.border,
+      'border-radius: ' + TOKENS.radius.sm,
+      'padding: 6px 8px',
+      'margin: 4px 0 2px 0',
+      'overflow-x: auto',
+      'max-height: 200px',
+      'white-space: pre-wrap',
+      'word-break: break-all'
+    ].join(';');
+    try {
+      pre.textContent = JSON.stringify(val, null, 2);
+    } catch (e) {
+      pre.textContent = String(val);
+    }
+    return pre;
+  }
+
+  // Render a single prop row with name, type badge, value, expand/copy behavior.
+  function renderPropRow(propName, propValue) {
+    var type = propType(propValue);
+    var isExpandable = type === 'object' || type === 'array';
+    var isCopyable = !isExpandable && type !== 'function';
+    var expanded = false;
+
+    var wrapper = document.createElement('div');
+
+    var row = document.createElement('div');
+    row.style.cssText = [
+      'display: flex',
+      'align-items: center',
+      'gap: 6px',
+      'padding: 3px 0',
+      'font-size: 12px',
+      'line-height: 1.4',
+      'cursor: ' + (isExpandable || isCopyable ? 'pointer' : 'default')
+    ].join(';');
+
+    // Prop name
+    var nameEl = document.createElement('span');
+    nameEl.style.cssText = [
+      'font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+      'color: ' + TOKENS.colors.primary,
+      'font-weight: 500',
+      'white-space: nowrap',
+      'flex-shrink: 0'
+    ].join(';');
+    nameEl.textContent = propName;
+    row.appendChild(nameEl);
+
+    // Type badge
+    row.appendChild(createTypeBadge(type));
+
+    // Value
+    var valueEl = document.createElement('span');
+    var valueStyles = [
+      'font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+      'font-size: 11px',
+      'flex: 1',
+      'min-width: 0',
+      'overflow: hidden',
+      'text-overflow: ellipsis',
+      'white-space: nowrap'
+    ];
+
+    if (type === 'boolean') {
+      valueStyles.push('color: ' + TOKENS.colors.textMuted);
+    } else if (type === 'function') {
+      valueStyles.push('color: ' + TOKENS.colors.textMuted);
+      valueStyles.push('font-style: italic');
+    } else if (isExpandable) {
+      valueStyles.push('color: ' + TOKENS.colors.textMuted);
+    } else {
+      valueStyles.push('color: ' + TOKENS.colors.text);
+    }
+
+    valueEl.style.cssText = valueStyles.join(';');
+    valueEl.textContent = formatPropValue(propValue, type);
+    row.appendChild(valueEl);
+
+    // Expand indicator for objects/arrays
+    if (isExpandable) {
+      var arrow = document.createElement('span');
+      arrow.style.cssText = [
+        'display: flex',
+        'align-items: center',
+        'transition: transform 0.15s ease',
+        'color: ' + TOKENS.colors.textMuted,
+        'flex-shrink: 0',
+        'transform: rotate(-90deg)'
+      ].join(';');
+      arrow.innerHTML = ICONS.chevron;
+      row.appendChild(arrow);
+    }
+
+    wrapper.appendChild(row);
+
+    // Expand container for objects/arrays
+    var expandContainer = null;
+    if (isExpandable) {
+      expandContainer = document.createElement('div');
+      expandContainer.style.display = 'none';
+      wrapper.appendChild(expandContainer);
+    }
+
+    // Click handler
+    row.addEventListener('click', function() {
+      if (isExpandable && expandContainer) {
+        expanded = !expanded;
+        if (expanded) {
+          expandContainer.innerHTML = '';
+          expandContainer.appendChild(renderExpandedValue(propValue));
+          expandContainer.style.display = 'block';
+          arrow.style.transform = 'rotate(0deg)';
+        } else {
+          expandContainer.style.display = 'none';
+          arrow.style.transform = 'rotate(-90deg)';
+        }
+      } else if (isCopyable) {
+        var text = type === 'string' ? String(propValue == null ? '' : propValue) : String(propValue);
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text);
+        }
+        showCopiedToast(valueEl);
+      }
+    });
+
+    // Hover feedback
+    row.onmouseenter = function() { row.style.background = TOKENS.colors.surfaceAlt; };
+    row.onmouseleave = function() { row.style.background = 'transparent'; };
+
+    return wrapper;
+  }
+
   // Render a collapsible section displaying React component info for the selected element.
   // Returns null if no React component is detected.
   function renderReactComponentSection(element) {
     var info = detectReactComponent(element);
     if (!info) return null;
 
-    var section = createSection('React Component', 1, 0);
-
-    // Component name row
-    var nameRow = document.createElement('div');
-    nameRow.style.cssText = [
-      'display: flex',
-      'align-items: baseline',
-      'gap: 6px',
-      'padding: 3px 0',
-      'font-size: 12px',
-      'line-height: 1.4'
-    ].join(';');
-
-    var nameLabel = document.createElement('span');
-    nameLabel.style.cssText = [
-      'color: ' + TOKENS.colors.textMuted,
-      'font-size: 11px',
-      'flex-shrink: 0'
-    ].join(';');
-    nameLabel.textContent = 'Component';
-    nameRow.appendChild(nameLabel);
-
-    var nameValue = document.createElement('span');
-    nameValue.style.cssText = [
-      'font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-      'color: ' + TOKENS.colors.primary,
-      'font-weight: 600'
-    ].join(';');
-    nameValue.textContent = '<' + info.componentName + '>';
-    nameRow.appendChild(nameValue);
-
-    if (info.hasState) {
-      var stateBadge = document.createElement('span');
-      stateBadge.style.cssText = [
-        'font-size: 10px',
-        'color: ' + TOKENS.colors.textMuted,
-        'background: ' + TOKENS.colors.surfaceAlt,
-        'border: 1px solid ' + TOKENS.colors.border,
-        'border-radius: ' + TOKENS.radius.sm,
-        'padding: 1px 4px'
-      ].join(';');
-      stateBadge.textContent = 'stateful';
-      nameRow.appendChild(stateBadge);
-    }
-
-    section.contentEl.appendChild(nameRow);
+    var propKeys = Object.keys(info.props);
+    var sectionTitle = 'React: ' + info.componentName;
+    var section = createSection(sectionTitle, propKeys.length, 0);
 
     // Source row (if available)
     if (info.source && info.source.fileName) {
       var srcRow = document.createElement('div');
       srcRow.style.cssText = [
-        'display: flex',
-        'align-items: baseline',
-        'gap: 6px',
-        'padding: 3px 0',
-        'font-size: 12px',
+        'padding: 2px 0 4px 0',
+        'font-size: 11px',
         'line-height: 1.4'
       ].join(';');
-
-      var srcLabel = document.createElement('span');
-      srcLabel.style.cssText = [
-        'color: ' + TOKENS.colors.textMuted,
-        'font-size: 11px',
-        'flex-shrink: 0'
-      ].join(';');
-      srcLabel.textContent = 'Source';
-      srcRow.appendChild(srcLabel);
 
       var srcValue = document.createElement('span');
       srcValue.style.cssText = [
         'font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-        'color: ' + TOKENS.colors.text,
+        'color: ' + TOKENS.colors.textMuted,
         'font-size: 11px',
         'word-break: break-all'
       ].join(';');
@@ -3108,43 +3273,12 @@
       section.contentEl.appendChild(srcRow);
     }
 
-    // Props summary row
-    var propKeys = Object.keys(info.props);
-    if (propKeys.length > 0) {
-      var propsRow = document.createElement('div');
-      propsRow.style.cssText = [
-        'display: flex',
-        'align-items: baseline',
-        'gap: 6px',
-        'padding: 3px 0',
-        'font-size: 12px',
-        'line-height: 1.4'
-      ].join(';');
-
-      var propsLabel = document.createElement('span');
-      propsLabel.style.cssText = [
-        'color: ' + TOKENS.colors.textMuted,
-        'font-size: 11px',
-        'flex-shrink: 0'
-      ].join(';');
-      propsLabel.textContent = 'Props';
-      propsRow.appendChild(propsLabel);
-
-      var propsValue = document.createElement('span');
-      propsValue.style.cssText = [
-        'font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-        'color: ' + TOKENS.colors.text,
-        'font-size: 11px',
-        'word-break: break-all'
-      ].join(';');
-      // Show prop names, truncate if too many
-      var displayKeys = propKeys.length > 8 ? propKeys.slice(0, 8) : propKeys;
-      var propsText = displayKeys.join(', ');
-      if (propKeys.length > 8) propsText += ' (+' + (propKeys.length - 8) + ' more)';
-      propsValue.textContent = propsText;
-      propsRow.appendChild(propsValue);
-
-      section.contentEl.appendChild(propsRow);
+    // Props list
+    for (var i = 0; i < propKeys.length; i++) {
+      var key = propKeys[i];
+      // Skip children prop (React internal) and key/ref
+      if (key === 'children') continue;
+      section.contentEl.appendChild(renderPropRow(key, info.props[key]));
     }
 
     return section;
