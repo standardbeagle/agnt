@@ -1823,6 +1823,351 @@
     return container;
   }
 
+  // Side labels for the four sides of a box-model shorthand property.
+  var SIDE_LABELS = ['top', 'right', 'bottom', 'left'];
+
+  // Parse a CSS shorthand value (e.g. margin, padding) into four side values.
+  // Supports 1-value, 2-value, 3-value, and 4-value shorthand forms.
+  // Returns {values: [top, right, bottom, left], unit: string}.
+  // Each value is a number; unit is extracted from the first token.
+  function parseShorthand(value) {
+    if (!value || typeof value !== 'string') {
+      return { values: [0, 0, 0, 0], unit: 'px' };
+    }
+
+    var tokens = value.trim().split(/\s+/);
+    var unit = 'px';
+    var nums = [];
+
+    for (var i = 0; i < tokens.length; i++) {
+      var match = tokens[i].match(/^(-?[\d.]+)(px|rem|em|%)?$/);
+      if (match) {
+        nums.push(parseFloat(match[1]));
+        if (i === 0 && match[2]) {
+          unit = match[2];
+        }
+      } else {
+        nums.push(0);
+      }
+    }
+
+    if (nums.length === 0) return { values: [0, 0, 0, 0], unit: unit };
+    if (nums.length === 1) return { values: [nums[0], nums[0], nums[0], nums[0]], unit: unit };
+    if (nums.length === 2) return { values: [nums[0], nums[1], nums[0], nums[1]], unit: unit };
+    if (nums.length === 3) return { values: [nums[0], nums[1], nums[2], nums[1]], unit: unit };
+    return { values: [nums[0], nums[1], nums[2], nums[3]], unit: unit };
+  }
+
+  // Collapse four side values back into shortest CSS shorthand form.
+  // Returns a formatted string like "10px", "10px 20px", or "10px 20px 30px 40px".
+  function collapseShorthand(values, unit) {
+    var t = values[0], r = values[1], b = values[2], l = values[3];
+    var u = unit || 'px';
+
+    // Round to avoid floating point noise
+    t = Math.round(t * 100) / 100;
+    r = Math.round(r * 100) / 100;
+    b = Math.round(b * 100) / 100;
+    l = Math.round(l * 100) / 100;
+
+    if (t === r && r === b && b === l) {
+      return t + u;
+    }
+    if (t === b && r === l) {
+      return t + u + ' ' + r + u;
+    }
+    if (r === l) {
+      return t + u + ' ' + r + u + ' ' + b + u;
+    }
+    return t + u + ' ' + r + u + ' ' + b + u + ' ' + l + u;
+  }
+
+  // MultiValueInput(property, value, onChange) -- Reusable multi-value input
+  // for CSS shorthand properties like margin and padding.
+  // Returns a DOM element containing four linked number inputs (top, right,
+  // bottom, left), a "link all" toggle, a shared unit selector, and slider
+  // popups on individual input focus.
+  // onChange receives the collapsed shorthand string (e.g. "10px 20px").
+  function MultiValueInput(property, value, onChange) {
+    var parsed = parseShorthand(value);
+    var sideValues = parsed.values.slice();
+    var currentUnit = parsed.unit;
+    var linked = (sideValues[0] === sideValues[1] &&
+                  sideValues[1] === sideValues[2] &&
+                  sideValues[2] === sideValues[3]);
+    var range = getRangeForProperty(property, sideValues[0]);
+    var units = ['px', 'rem', 'em', '%'];
+    var debounceTimer = null;
+    var activeSliderPopup = null;
+
+    function emitChange() {
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(function() {
+        if (typeof onChange === 'function') {
+          onChange(collapseShorthand(sideValues, currentUnit));
+        }
+      }, 16);
+    }
+
+    // Container
+    var container = document.createElement('div');
+    container.style.cssText = [
+      'display: flex',
+      'flex-direction: column',
+      'gap: 4px'
+    ].join(';');
+
+    // Top row: link toggle + unit selector
+    var topRow = document.createElement('div');
+    topRow.style.cssText = [
+      'display: flex',
+      'align-items: center',
+      'gap: 6px'
+    ].join(';');
+
+    // Link toggle button
+    var linkBtn = document.createElement('button');
+    linkBtn.style.cssText = [
+      'background: none',
+      'border: 1px solid ' + TOKENS.colors.border,
+      'border-radius: ' + TOKENS.radius.sm,
+      'cursor: pointer',
+      'padding: 2px 6px',
+      'font-size: 11px',
+      'color: ' + (linked ? TOKENS.colors.primary : TOKENS.colors.textMuted),
+      'display: flex',
+      'align-items: center',
+      'gap: 3px',
+      'transition: all 0.15s ease',
+      'flex-shrink: 0'
+    ].join(';');
+    linkBtn.innerHTML = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>';
+    linkBtn.title = linked ? 'Unlink sides' : 'Link all sides';
+    if (linked) {
+      linkBtn.style.borderColor = TOKENS.colors.primary;
+    }
+    topRow.appendChild(linkBtn);
+
+    // Unit selector
+    var unitSelect = document.createElement('select');
+    unitSelect.style.cssText = [
+      'font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+      'font-size: 11px',
+      'color: ' + TOKENS.colors.text,
+      'background: ' + TOKENS.colors.surface,
+      'border: 1px solid ' + TOKENS.colors.border,
+      'border-radius: ' + TOKENS.radius.sm,
+      'padding: 2px 2px',
+      'outline: none',
+      'cursor: pointer'
+    ].join(';');
+    for (var ui = 0; ui < units.length; ui++) {
+      var opt = document.createElement('option');
+      opt.value = units[ui];
+      opt.textContent = units[ui];
+      if (units[ui] === currentUnit) opt.selected = true;
+      unitSelect.appendChild(opt);
+    }
+    unitSelect.addEventListener('focus', function() {
+      unitSelect.style.borderColor = TOKENS.colors.primary;
+    });
+    unitSelect.addEventListener('blur', function() {
+      unitSelect.style.borderColor = TOKENS.colors.border;
+    });
+    topRow.appendChild(unitSelect);
+
+    container.appendChild(topRow);
+
+    // Grid of 4 side inputs
+    var inputGrid = document.createElement('div');
+    inputGrid.style.cssText = [
+      'display: grid',
+      'grid-template-columns: 1fr 1fr',
+      'gap: 3px'
+    ].join(';');
+
+    var sideInputs = [];
+
+    function createSideInput(index) {
+      var wrapper = document.createElement('div');
+      wrapper.style.cssText = [
+        'display: flex',
+        'align-items: center',
+        'gap: 3px',
+        'position: relative'
+      ].join(';');
+
+      var label = document.createElement('span');
+      label.style.cssText = [
+        'font-size: 10px',
+        'color: ' + TOKENS.colors.textMuted,
+        'width: 10px',
+        'text-align: right',
+        'flex-shrink: 0',
+        'text-transform: uppercase'
+      ].join(';');
+      label.textContent = SIDE_LABELS[index][0];
+      label.title = SIDE_LABELS[index];
+      wrapper.appendChild(label);
+
+      var input = document.createElement('input');
+      input.type = 'number';
+      input.step = String(range.step);
+      input.value = String(sideValues[index]);
+      input.style.cssText = [
+        'font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+        'font-size: 12px',
+        'color: ' + TOKENS.colors.text,
+        'background: ' + TOKENS.colors.surface,
+        'border: 1px solid ' + TOKENS.colors.border,
+        'border-radius: ' + TOKENS.radius.sm,
+        'padding: 2px 4px',
+        'width: 100%',
+        'min-width: 0',
+        'outline: none',
+        'box-sizing: border-box',
+        '-moz-appearance: textfield'
+      ].join(';');
+      input.addEventListener('focus', function() {
+        input.style.borderColor = TOKENS.colors.primary;
+        showSliderPopup(wrapper, index);
+      });
+      input.addEventListener('blur', function() {
+        input.style.borderColor = TOKENS.colors.border;
+        // Delay hiding to allow slider interaction
+        setTimeout(function() {
+          if (activeSliderPopup && activeSliderPopup.sideIndex === index) {
+            hideSliderPopup();
+          }
+        }, 200);
+      });
+
+      input.addEventListener('input', function() {
+        var val = parseFloat(input.value);
+        if (isNaN(val)) return;
+        if (linked) {
+          for (var si = 0; si < 4; si++) {
+            sideValues[si] = val;
+            sideInputs[si].value = String(val);
+          }
+        } else {
+          sideValues[index] = val;
+        }
+        if (activeSliderPopup && activeSliderPopup.sideIndex === index) {
+          activeSliderPopup.slider.value = String(val);
+        }
+        emitChange();
+      });
+
+      wrapper.appendChild(input);
+      sideInputs.push(input);
+      return wrapper;
+    }
+
+    // Create slider popup shown on individual input focus
+    function showSliderPopup(wrapper, sideIndex) {
+      hideSliderPopup();
+
+      var popup = document.createElement('div');
+      popup.style.cssText = [
+        'position: absolute',
+        'left: 0',
+        'right: 0',
+        'top: 100%',
+        'margin-top: 2px',
+        'background: ' + TOKENS.colors.surface,
+        'border: 1px solid ' + TOKENS.colors.border,
+        'border-radius: ' + TOKENS.radius.sm,
+        'padding: 4px 6px',
+        'box-shadow: 0 2px 8px rgba(0,0,0,0.1)',
+        'z-index: 1'
+      ].join(';');
+
+      var slider = document.createElement('input');
+      slider.type = 'range';
+      slider.min = String(range.min);
+      slider.max = String(range.max);
+      slider.step = String(range.step);
+      slider.value = String(sideValues[sideIndex]);
+      slider.style.cssText = [
+        'width: 100%',
+        'height: 4px',
+        'cursor: pointer'
+      ].join(';');
+
+      slider.addEventListener('input', function() {
+        var val = parseFloat(slider.value);
+        if (linked) {
+          for (var si = 0; si < 4; si++) {
+            sideValues[si] = val;
+            sideInputs[si].value = String(val);
+          }
+        } else {
+          sideValues[sideIndex] = val;
+          sideInputs[sideIndex].value = String(val);
+        }
+        emitChange();
+      });
+
+      // Prevent blur on slider interaction
+      slider.addEventListener('mousedown', function(e) {
+        e.preventDefault();
+      });
+
+      popup.appendChild(slider);
+      wrapper.appendChild(popup);
+      activeSliderPopup = { el: popup, slider: slider, sideIndex: sideIndex };
+    }
+
+    function hideSliderPopup() {
+      if (activeSliderPopup && activeSliderPopup.el.parentNode) {
+        activeSliderPopup.el.parentNode.removeChild(activeSliderPopup.el);
+      }
+      activeSliderPopup = null;
+    }
+
+    // Build inputs in order: top, right, bottom, left
+    for (var si = 0; si < 4; si++) {
+      inputGrid.appendChild(createSideInput(si));
+    }
+    container.appendChild(inputGrid);
+
+    // Link toggle handler
+    linkBtn.addEventListener('click', function() {
+      linked = !linked;
+      linkBtn.style.color = linked ? TOKENS.colors.primary : TOKENS.colors.textMuted;
+      linkBtn.style.borderColor = linked ? TOKENS.colors.primary : TOKENS.colors.border;
+      linkBtn.title = linked ? 'Unlink sides' : 'Link all sides';
+      if (linked) {
+        // Sync all to top value
+        var syncVal = sideValues[0];
+        for (var si = 0; si < 4; si++) {
+          sideValues[si] = syncVal;
+          sideInputs[si].value = String(syncVal);
+        }
+        emitChange();
+      }
+    });
+
+    // Unit selector: convert all values to the new unit
+    unitSelect.addEventListener('change', function() {
+      var newUnit = unitSelect.value;
+      for (var si = 0; si < 4; si++) {
+        sideValues[si] = convertUnit(sideValues[si], currentUnit, newUnit);
+        sideInputs[si].value = String(sideValues[si]);
+      }
+      currentUnit = newUnit;
+      // Recalculate range for new unit
+      range = getRangeForProperty(property, sideValues[0]);
+      for (var ri = 0; ri < sideInputs.length; ri++) {
+        sideInputs[ri].step = String(range.step);
+      }
+      emitChange();
+    });
+
+    return container;
+  }
+
   // Apply a CSS variable edit: sets the property on the scope element,
   // captures the original value on first edit, and updates the changes array.
   function applyVariableEdit(name, newValue, scopeElement, scopeSelector) {
@@ -2235,6 +2580,7 @@
     discoverCSSVariables: discoverCSSVariables,
     extractComputedStyles: extractComputedStyles,
     ColorPicker: ColorPicker,
-    NumericSlider: NumericSlider
+    NumericSlider: NumericSlider,
+    MultiValueInput: MultiValueInput
   };
 })();
