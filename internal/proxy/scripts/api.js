@@ -27,6 +27,7 @@
   var content = window.__devtool_content;
   var wireframe = window.__devtool_wireframe;
   var responsive = window.__devtool_responsive;
+  var styleEditor = window.__devtool_style_editor;
 
   // Main DevTool API
   window.__devtool = {
@@ -892,6 +893,26 @@
       dismiss: function() {},
       dismissAll: function() {},
       configure: function() {}
+    },
+
+    // ========================================================================
+    // STYLE EDITOR
+    // ========================================================================
+
+    styleEditor: styleEditor ? {
+      open: styleEditor.open,
+      close: styleEditor.close,
+      toggle: styleEditor.toggle,
+      getState: styleEditor.getState,
+      attachChanges: styleEditor.attachChanges,
+      isOpen: styleEditor.isOpen
+    } : {
+      open: function() { return { error: 'Style editor module not loaded' }; },
+      close: function() { return { error: 'Style editor module not loaded' }; },
+      toggle: function() { return { error: 'Style editor module not loaded' }; },
+      getState: function() { return { error: 'Style editor module not loaded' }; },
+      attachChanges: function() { return { error: 'Style editor module not loaded' }; },
+      isOpen: function() { return false; }
     }
   };
 
