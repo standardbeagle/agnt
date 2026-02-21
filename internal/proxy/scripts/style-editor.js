@@ -390,6 +390,17 @@
         state.beforeScreenshotId = screenshotId;
         selectorDisplay.textContent = sel;
         selectorDisplay.title = sel;
+        // Refresh content sections
+        var contentEl = document.getElementById('__devtool-style-content');
+        if (contentEl) {
+          contentEl.innerHTML = '';
+          state.sections = [];
+          var variables = discoverCSSVariables(el);
+          var varSection = renderCSSVariablesSection(variables);
+          if (varSection) {
+            contentEl.appendChild(varSection);
+          }
+        }
       });
     });
     titleBar.appendChild(reselectBtn);
@@ -571,6 +582,16 @@
     document.body.appendChild(panel);
     state.panel = panel;
 
+    // Populate CSS Variables section
+    var content = document.getElementById('__devtool-style-content');
+    if (content && element) {
+      var variables = discoverCSSVariables(element);
+      var varSection = renderCSSVariablesSection(variables);
+      if (varSection) {
+        content.appendChild(varSection);
+      }
+    }
+
     // Set up outside-click-to-close (when not pinned)
     // Use setTimeout to avoid the current click event from triggering dismissal
     setTimeout(function() {
@@ -718,6 +739,238 @@
     return section;
   }
 
+  // Generate a short scope label for an element (used in CSS variable display)
+  function scopeLabel(element) {
+    if (!element || element === document.documentElement) return ':root';
+    if (element === document.body) return 'body';
+    return getUtils().generateSelector(element) || element.tagName.toLowerCase();
+  }
+
+  // Discover all CSS custom properties (--*) in scope for the given element.
+  // Returns array of {name, value, scopeElement, scopeSelector} sorted by
+  // closest scope first, alphabetical within each scope.
+  function discoverCSSVariables(element) {
+    if (!element) return [];
+
+    // Map: variable name -> {name, value, scopeElement, scopeSelector, depth}
+    // depth 0 = the element itself, 1 = parent, etc.  Closest scope wins.
+    var found = {};
+
+    // Build ancestor chain from element up to documentElement
+    var ancestors = [];
+    var node = element;
+    while (node && node.nodeType === Node.ELEMENT_NODE) {
+      ancestors.push(node);
+      node = node.parentElement;
+    }
+
+    // 1. getComputedStyle — all resolved custom properties on the element
+    var computed = getComputedStyle(element);
+    for (var i = 0; i < computed.length; i++) {
+      var prop = computed[i];
+      if (prop.indexOf('--') === 0) {
+        found[prop] = {
+          name: prop,
+          value: computed.getPropertyValue(prop).trim(),
+          scopeElement: document.documentElement,
+          scopeSelector: ':root',
+          depth: ancestors.length - 1
+        };
+      }
+    }
+
+    // 2. Walk ancestors — check element.style for inline custom properties
+    for (var ai = 0; ai < ancestors.length; ai++) {
+      var anc = ancestors[ai];
+      var style = anc.style;
+      for (var si = 0; si < style.length; si++) {
+        var sp = style[si];
+        if (sp.indexOf('--') === 0) {
+          var existing = found[sp];
+          if (!existing || ai < existing.depth) {
+            found[sp] = {
+              name: sp,
+              value: style.getPropertyValue(sp).trim(),
+              scopeElement: anc,
+              scopeSelector: scopeLabel(anc),
+              depth: ai
+            };
+          }
+        }
+      }
+    }
+
+    // 3. Scan document.styleSheets — find rules matching element or ancestors
+    for (var shi = 0; shi < document.styleSheets.length; shi++) {
+      var sheet = document.styleSheets[shi];
+      var rules;
+      try {
+        rules = sheet.cssRules || sheet.rules;
+      } catch (e) {
+        // Cross-origin stylesheet — skip silently
+        continue;
+      }
+      if (!rules) continue;
+      scanRules(rules, ancestors, found);
+    }
+
+    // Convert map to array, drop depth field
+    var result = [];
+    var names = Object.keys(found);
+    for (var ri = 0; ri < names.length; ri++) {
+      var entry = found[names[ri]];
+      result.push({
+        name: entry.name,
+        value: entry.value,
+        scopeElement: entry.scopeElement,
+        scopeSelector: entry.scopeSelector,
+        depth: entry.depth
+      });
+    }
+
+    // Sort: closest scope first (lowest depth), alphabetical within same depth
+    result.sort(function(a, b) {
+      if (a.depth !== b.depth) return a.depth - b.depth;
+      return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+    });
+
+    // Strip internal depth field from output
+    for (var di = 0; di < result.length; di++) {
+      delete result[di].depth;
+    }
+
+    return result;
+  }
+
+  // Scan CSS rules (including nested @media/@supports) for custom properties
+  // on elements in the ancestor chain.
+  function scanRules(rules, ancestors, found) {
+    for (var ri = 0; ri < rules.length; ri++) {
+      var rule = rules[ri];
+
+      // Handle nested rules (@media, @supports, @layer, etc.)
+      if (rule.cssRules) {
+        scanRules(rule.cssRules, ancestors, found);
+        continue;
+      }
+
+      // Only process style rules with selectors
+      if (rule.type !== CSSRule.STYLE_RULE) continue;
+
+      var ruleStyle = rule.style;
+      if (!ruleStyle) continue;
+
+      // Check if this rule has any custom properties at all (fast bail)
+      var hasCustom = false;
+      for (var pi = 0; pi < ruleStyle.length; pi++) {
+        if (ruleStyle[pi].indexOf('--') === 0) {
+          hasCustom = true;
+          break;
+        }
+      }
+      if (!hasCustom) continue;
+
+      // Find which ancestor (if any) matches this rule's selector
+      var matchedAncestorIndex = -1;
+      for (var ai = 0; ai < ancestors.length; ai++) {
+        try {
+          if (ancestors[ai].matches(rule.selectorText)) {
+            matchedAncestorIndex = ai;
+            break;
+          }
+        } catch (e) {
+          // Invalid selector — skip
+          break;
+        }
+      }
+      if (matchedAncestorIndex < 0) continue;
+
+      var matchedEl = ancestors[matchedAncestorIndex];
+
+      // Extract custom properties from this rule
+      for (var ci = 0; ci < ruleStyle.length; ci++) {
+        var cp = ruleStyle[ci];
+        if (cp.indexOf('--') !== 0) continue;
+
+        var existing = found[cp];
+        if (!existing || matchedAncestorIndex < existing.depth) {
+          found[cp] = {
+            name: cp,
+            value: ruleStyle.getPropertyValue(cp).trim(),
+            scopeElement: matchedEl,
+            scopeSelector: scopeLabel(matchedEl),
+            depth: matchedAncestorIndex
+          };
+        }
+      }
+    }
+  }
+
+  // Render the CSS Variables section in the panel content area.
+  // Returns the section element (or null if no variables found).
+  function renderCSSVariablesSection(variables) {
+    if (!variables || variables.length === 0) return null;
+
+    var section = createSection('CSS Variables', variables.length, 0);
+
+    for (var i = 0; i < variables.length; i++) {
+      var v = variables[i];
+
+      var row = document.createElement('div');
+      row.style.cssText = [
+        'display: flex',
+        'align-items: baseline',
+        'gap: 8px',
+        'padding: 3px 0',
+        'font-size: 12px',
+        'line-height: 1.4'
+      ].join(';');
+
+      // Variable name
+      var nameEl = document.createElement('span');
+      nameEl.style.cssText = [
+        'font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+        'color: ' + TOKENS.colors.primary,
+        'font-weight: 500',
+        'white-space: nowrap',
+        'flex-shrink: 0'
+      ].join(';');
+      nameEl.textContent = v.name;
+      nameEl.title = v.name + ' (scope: ' + v.scopeSelector + ')';
+      row.appendChild(nameEl);
+
+      // Value display
+      var valueEl = document.createElement('span');
+      valueEl.style.cssText = [
+        'font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+        'color: ' + TOKENS.colors.text,
+        'flex: 1',
+        'min-width: 0',
+        'overflow: hidden',
+        'text-overflow: ellipsis',
+        'white-space: nowrap'
+      ].join(';');
+      valueEl.textContent = v.value;
+      valueEl.title = v.value;
+      row.appendChild(valueEl);
+
+      // Scope label
+      var scopeEl = document.createElement('span');
+      scopeEl.style.cssText = [
+        'font-size: 10px',
+        'color: ' + TOKENS.colors.textMuted,
+        'white-space: nowrap',
+        'flex-shrink: 0'
+      ].join(';');
+      scopeEl.textContent = v.scopeSelector;
+      row.appendChild(scopeEl);
+
+      section.contentEl.appendChild(row);
+    }
+
+    return section;
+  }
+
   // Update the attach button label to reflect current change count
   function updateAttachButton() {
     var btn = document.getElementById('__devtool-style-attach-btn');
@@ -828,6 +1081,7 @@
     startSelection: startSelection,
     createSection: createSection,
     showPanel: showPanel,
-    hidePanel: hidePanel
+    hidePanel: hidePanel,
+    discoverCSSVariables: discoverCSSVariables
   };
 })();
