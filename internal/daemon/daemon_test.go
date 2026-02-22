@@ -4,7 +4,6 @@ package daemon
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -438,11 +437,6 @@ proxies {
 
 	// Should not create proxy due to limit
 	time.Sleep(50 * time.Millisecond)
-}
-
-// writeFile is a helper to write a file
-func writeFile(path, content string) error {
-	return os.WriteFile(path, []byte(content), 0644)
 }
 
 func TestDaemon_HandleURLDetected_WithProxyCreation(t *testing.T) {
