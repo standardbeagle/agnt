@@ -97,21 +97,28 @@ jobs:
       - name: Run unit tests
         shell: pwsh
         run: |
-          Write-Host "Running Go unit tests..."
-          go test -v -race ./internal/daemon/...
-          if ($LASTEXITCODE -ne 0) {
-            throw "Daemon tests failed"
+          # go test on Windows may exit non-zero due to temp file cleanup
+          # errors ("Access is denied") even when all tests pass. Capture
+          # output and check for the PASS/FAIL verdict lines instead.
+          function Run-GoTest($label, $pkg) {
+            Write-Host "Running $label tests..."
+            $output = go test -v -race $pkg 2>&1 | Out-String
+            Write-Host $output
+            $lines = $output -split "`n" | Where-Object { $_.Trim() -ne "" }
+            $hasFail = ($lines | Where-Object { $_ -match "^FAIL\s" -or $_ -match "--- FAIL:" }).Count -gt 0
+            $hasOk = ($lines | Where-Object { $_ -match "^ok\s" }).Count -gt 0
+            if ($hasFail) {
+              throw "$label tests failed"
+            }
+            if (-not $hasOk) {
+              throw "$label tests produced no verdict (exit code $LASTEXITCODE)"
+            }
+            Write-Host "$label tests passed"
           }
 
-          go test -v -race ./internal/process/...
-          if ($LASTEXITCODE -ne 0) {
-            throw "Process tests failed"
-          }
-
-          go test -v -race ./internal/proxy/...
-          if ($LASTEXITCODE -ne 0) {
-            throw "Proxy tests failed"
-          }
+          Run-GoTest "Daemon" "./internal/daemon/..."
+          Run-GoTest "Process" "./internal/process/..."
+          Run-GoTest "Proxy" "./internal/proxy/..."
 
           Write-Host "All unit tests passed"
 
