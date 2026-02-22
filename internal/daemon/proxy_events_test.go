@@ -124,9 +124,9 @@ func TestMakeProcessID(t *testing.T) {
 		},
 		{
 			name:        "root path",
-			projectPath: "/",
+			projectPath: rootPath(),
 			scriptName:  "test",
-			wantPattern: `^/-[0-9a-f]{4}:test$`,
+			wantPattern: `^` + regexp.QuoteMeta(filepath.Base(rootPath())) + `-[0-9a-f]{4}:test$`,
 		},
 		{
 			name:        "trailing slash handled",
@@ -257,8 +257,8 @@ func TestMapKeysProxy(t *testing.T) {
 }
 
 func TestProxyEvent_HandleURLDetected_ProxyLimit(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
+	tmpDir := shortTempDir(t)
+	sockPath := shortSockPath(t)
 
 	daemon := New(DaemonConfig{
 		SocketPath:   sockPath,
@@ -313,8 +313,7 @@ proxies {
 }
 
 func TestProxyEvent_HandleURLDetected_ParseError(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
+	sockPath := shortSockPath(t)
 
 	daemon := New(DaemonConfig{
 		SocketPath:   sockPath,
@@ -343,8 +342,8 @@ func TestProxyEvent_HandleURLDetected_ParseError(t *testing.T) {
 }
 
 func TestProxyEvent_HandleURLDetected_NoMatchingProxyConfig(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
+	tmpDir := shortTempDir(t)
+	sockPath := shortSockPath(t)
 
 	daemon := New(DaemonConfig{
 		SocketPath:   sockPath,
@@ -391,8 +390,8 @@ proxies {
 }
 
 func TestProxyEvent_HandleURLDetected_DuplicateProxy(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
+	tmpDir := shortTempDir(t)
+	sockPath := shortSockPath(t)
 
 	daemon := New(DaemonConfig{
 		SocketPath:   sockPath,
