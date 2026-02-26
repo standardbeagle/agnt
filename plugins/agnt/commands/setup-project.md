@@ -23,7 +23,8 @@ Check the response for:
 **Framework-specific defaults:**
 - **Wails** (`metadata.framework == "wails"`): Recommend `dev` script with `url-matchers "Using DevServer URL:\\s*{url}"` (must include "Using" to avoid matching "Frontend DevServer URL")
 - **Next.js** (node with next in scripts): Use `url-matchers "(Local|Network):\\s*{url}"`
-- **Vite/Astro** (node projects): Use `url-matchers "Local\\s+{url}"`
+- **Vite** (node projects): Use `url-matchers "Local:\\s+{url}"` (Vite outputs `Local:   http://...`)
+- **Astro** (node projects): Use `url-matchers "Local\\s+{url}"` (Astro outputs `Local    http://...`)
 
 ### 2. Ask About Scripts to Auto-Start
 
@@ -67,6 +68,12 @@ failed to parse KDL config: no struct field into which to unmarshal node "autsta
 This prevents silent failures from configuration mistakes.
 
 **Important**: Use the appropriate `url-matchers` pattern based on the detected framework (see Step 1).
+
+**KDL String Escaping**: KDL strings interpret backslash sequences. Unknown escapes like `\s`, `\d`, `\w` silently drop the backslash — `"Local\s+{url}"` becomes the regex `Locals+{url}` which won't match. Always double the backslash for regex metacharacters:
+```
+✗ url-matchers "Local\s+{url}"       // KDL drops \s → "Locals+{url}"
+✓ url-matchers "Local\\s+{url}"      // KDL keeps \\ → regex "Local\s+{url}"
+```
 
 ```kdl
 // .agnt.kdl - agnt project configuration
