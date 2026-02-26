@@ -1,4 +1,4 @@
-.PHONY: build release test test-unit test-integration test-browser clean install install-local run lint test-webapp mockagent
+.PHONY: build release test test-unit test-integration test-browser clean install install-local install-windows run lint test-webapp mockagent
 
 # Binary names
 BINARY := devtool-mcp
@@ -86,6 +86,20 @@ install-local: build
 	@echo "Installed $(AGENT_BINARY), $(BINARY), $(DAEMON_BINARY), and $(AGENT_DAEMON_BINARY) to ~/.local/bin"
 	@echo "Make sure ~/.local/bin is in your PATH"
 
+# Cross-compile and install Windows binaries to Windows ~/.local/bin
+WINDOWS_BIN := /mnt/c/Users/andyb/.local/bin
+install-windows:
+	GOOS=windows GOARCH=amd64 go build -o $(AGENT_BINARY).exe ./cmd/agnt/
+	@# Stop running Windows daemon before installing
+	@$(WINDOWS_BIN)/$(AGENT_BINARY).exe daemon stop 2>/dev/null || true
+	@mkdir -p $(WINDOWS_BIN)
+	@cp $(AGENT_BINARY).exe $(WINDOWS_BIN)/$(AGENT_BINARY).exe
+	@cp $(AGENT_BINARY).exe $(WINDOWS_BIN)/$(BINARY).exe
+	@cp $(AGENT_BINARY).exe $(WINDOWS_BIN)/$(DAEMON_BINARY).exe
+	@cp $(AGENT_BINARY).exe $(WINDOWS_BIN)/$(AGENT_DAEMON_BINARY).exe
+	@rm -f $(AGENT_BINARY).exe
+	@echo "Installed Windows binaries to $(WINDOWS_BIN)"
+
 # Run the server (for development)
 run: build
 	./$(AGENT_BINARY) serve
@@ -124,6 +138,7 @@ help:
 	@echo "  clean            - Remove build artifacts"
 	@echo "  install          - Install all binaries to GOPATH/bin"
 	@echo "  install-local    - Build and install all binaries to ~/.local/bin"
+	@echo "  install-windows  - Cross-compile and install Windows binaries"
 	@echo "  run              - Build and run the MCP server"
 	@echo "  fmt              - Format code"
 	@echo "  vet              - Vet code"

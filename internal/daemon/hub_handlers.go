@@ -548,8 +548,10 @@ func (d *Daemon) hubHandleProcOutput(ctx context.Context, conn *hubpkg.Connectio
 
 	// Return output as chunked response (client expects CHUNK + END for .String())
 	outputStr := strings.Join(filtered, "\n")
-	if err := conn.WriteChunk([]byte(outputStr)); err != nil {
-		return err
+	if len(outputStr) > 0 {
+		if err := conn.WriteChunk([]byte(outputStr)); err != nil {
+			return err
+		}
 	}
 	return conn.WriteEnd()
 }
