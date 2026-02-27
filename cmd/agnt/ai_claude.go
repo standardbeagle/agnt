@@ -26,6 +26,9 @@ var (
 	claudeMCPConfig         string
 	claudeRawOutput         bool
 	claudePromptFlag        string
+	claudeSessionCode       string
+	claudeNoAutostart       bool
+	claudeNoSession         bool
 )
 
 var aiClaudeCmd = &cobra.Command{
@@ -63,6 +66,9 @@ func init() {
 	aiClaudeCmd.Flags().StringVar(&claudeMCPConfig, "mcp-config", "", "Path to MCP config file")
 	aiClaudeCmd.Flags().BoolVar(&claudeRawOutput, "raw", false, "Output compact JSON (JSONL) instead of interactive rendering")
 	aiClaudeCmd.Flags().StringVarP(&claudePromptFlag, "prompt", "p", "", "Prompt (alternative to positional arg)")
+	aiClaudeCmd.Flags().StringVar(&claudeSessionCode, "session", "", "Session code for daemon integration (auto-generated if empty)")
+	aiClaudeCmd.Flags().BoolVar(&claudeNoAutostart, "no-autostart", false, "Skip auto-starting scripts and proxies from .agnt.kdl")
+	aiClaudeCmd.Flags().BoolVar(&claudeNoSession, "no-session", false, "Disable daemon integration entirely")
 }
 
 func runAiClaude(cmd *cobra.Command, args []string) {
@@ -92,6 +98,32 @@ func runAiClaude(cmd *cobra.Command, args []string) {
 
 	// Build agent options
 	opts := buildClaudeOptions()
+
+	// One-shot with optional daemon autostart
+	var daemonHandle *daemonSessionHandle
+	if !claudeNoSession {
+		code := claudeSessionCode
+		if code == "" {
+			code = generateSessionCode("ai-claude")
+		}
+		projectPath, _ := os.Getwd()
+		daemonSocketPath, _ := rootCmd.Flags().GetString("socket")
+		daemonHandle = startDaemonSession(ctx, daemonSessionConfig{
+			SessionCode:   code,
+			ProjectPath:   projectPath,
+			Command:       "agnt",
+			CmdArgs:       []string{"ai", "claude"},
+			SocketPath:    daemonSocketPath,
+			SkipAutostart: claudeNoAutostart,
+		}, func(errs []string) {
+			for _, e := range errs {
+				fmt.Fprintf(os.Stderr, "[agnt] autostart error: %s\n", e)
+			}
+		})
+		defer daemonHandle.Close()
+		// Brief wait for autostart to register processes
+		time.Sleep(200 * time.Millisecond)
+	}
 
 	// Run the query (one-shot is never interactive)
 	if _, err := runClaudeQuery(ctx, prompt, opts, false, nil); err != nil {
@@ -200,11 +232,57 @@ func buildClaudeOptions() *claude.AgentOptions {
 }
 
 // runAiClaudeInteractive runs an interactive REPL loop for multi-turn conversation.
+// When daemon integration is enabled, it starts an AI overlay server and registers
+// a daemon session, allowing message injection via `agnt session send/schedule`
+// and browser events.
 func runAiClaudeInteractive(ctx context.Context) error {
-	scanner := bufio.NewScanner(os.Stdin)
 	opts := buildClaudeOptions()
 	var sessionID string
 	interactive := !claudeRawOutput
+
+	// Daemon integration
+	var aiOverlay *AIOverlay
+	var daemonHandle *daemonSessionHandle
+	var msgCh <-chan string
+
+	if !claudeNoSession {
+		code := claudeSessionCode
+		if code == "" {
+			code = generateSessionCode("ai-claude")
+		}
+
+		// Start AI overlay server
+		aiOverlay = newAIOverlay(code)
+		if err := aiOverlay.Start(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "[agnt] overlay start failed: %v\n", err)
+			// Continue without overlay — non-critical
+		} else {
+			defer aiOverlay.Stop()
+			msgCh = aiOverlay.Messages()
+		}
+
+		// Register daemon session (triggers .agnt.kdl autostart)
+		projectPath, _ := os.Getwd()
+		daemonSocketPath, _ := rootCmd.Flags().GetString("socket")
+		overlayEndpoint := ""
+		if aiOverlay != nil {
+			overlayEndpoint = aiOverlay.SocketPath()
+		}
+		daemonHandle = startDaemonSession(ctx, daemonSessionConfig{
+			SessionCode:     code,
+			OverlayEndpoint: overlayEndpoint,
+			ProjectPath:     projectPath,
+			Command:         "agnt",
+			CmdArgs:         []string{"ai", "claude"},
+			SocketPath:      daemonSocketPath,
+			SkipAutostart:   claudeNoAutostart,
+		}, func(errs []string) {
+			for _, e := range errs {
+				fmt.Fprintf(os.Stderr, "[agnt] autostart error: %s\n", e)
+			}
+		})
+		defer daemonHandle.Close()
+	}
 
 	// Welcome message
 	if interactive {
@@ -213,24 +291,75 @@ func runAiClaudeInteractive(ctx context.Context) error {
 		if opts.SystemPrompt != "" {
 			fmt.Fprintln(os.Stderr, "[agnt context injected]")
 		}
+		if daemonHandle != nil {
+			fmt.Fprintln(os.Stderr, "[daemon session active]")
+		}
 	} else {
 		fmt.Fprintln(os.Stderr, "Interactive mode. Type /exit or /quit to exit, Ctrl+D for EOF.")
 	}
 
+	// Wrap blocking stdin scanner in a goroutine → channel
+	stdinCh := make(chan string)
+	stdinDone := make(chan struct{})
+	go func() {
+		defer close(stdinCh)
+		defer close(stdinDone)
+		scanner := bufio.NewScanner(os.Stdin)
+		for scanner.Scan() {
+			stdinCh <- scanner.Text()
+		}
+	}()
+
+	// REPL loop: multiplex stdin and message queue
 	for {
 		fmt.Fprint(os.Stderr, "> ")
-		if !scanner.Scan() {
-			// EOF or scan error
-			fmt.Fprintln(os.Stderr)
-			return scanner.Err()
-		}
 
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-		if line == "/exit" || line == "/quit" {
-			return nil
+		var prompt string
+		var fromMessage bool
+
+		if msgCh != nil {
+			select {
+			case line, ok := <-stdinCh:
+				if !ok {
+					fmt.Fprintln(os.Stderr)
+					return nil // EOF
+				}
+				line = strings.TrimSpace(line)
+				if line == "" {
+					continue
+				}
+				if line == "/exit" || line == "/quit" {
+					return nil
+				}
+				prompt = line
+			case msg := <-msgCh:
+				// Clear the prompt we printed
+				fmt.Fprint(os.Stderr, "\r\033[K")
+				fmt.Fprintf(os.Stderr, "[message received]\n")
+				prompt = msg
+				fromMessage = true
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		} else {
+			// No message channel — simple stdin-only loop
+			select {
+			case line, ok := <-stdinCh:
+				if !ok {
+					fmt.Fprintln(os.Stderr)
+					return nil
+				}
+				line = strings.TrimSpace(line)
+				if line == "" {
+					continue
+				}
+				if line == "/exit" || line == "/quit" {
+					return nil
+				}
+				prompt = line
+			case <-ctx.Done():
+				return ctx.Err()
+			}
 		}
 
 		if sessionID != "" {
@@ -240,10 +369,14 @@ func runAiClaudeInteractive(ctx context.Context) error {
 		// Show immediate feedback while subprocess starts
 		var spin *stderrSpinner
 		if interactive {
-			spin = newStderrSpinner("Starting...", os.Stderr)
+			label := "Starting..."
+			if fromMessage {
+				label = "Processing message..."
+			}
+			spin = newStderrSpinner(label, os.Stderr)
 		}
 
-		sid, err := runClaudeQuery(ctx, line, opts, interactive, spin)
+		sid, err := runClaudeQuery(ctx, prompt, opts, interactive, spin)
 		if err != nil {
 			if spin != nil {
 				spin.Stop()
@@ -255,9 +388,39 @@ func runAiClaudeInteractive(ctx context.Context) error {
 			sessionID = sid
 		}
 
-		// Add blank line between responses in interactive mode
 		if interactive {
 			fmt.Fprintln(os.Stderr)
+		}
+
+		// Drain queued messages — deliver without waiting for stdin
+		if msgCh != nil {
+			for {
+				select {
+				case msg := <-msgCh:
+					fmt.Fprintf(os.Stderr, "[queued message]\n")
+					opts.Resume = sessionID
+					if interactive {
+						spin = newStderrSpinner("Processing message...", os.Stderr)
+					}
+					sid, err := runClaudeQuery(ctx, msg, opts, interactive, spin)
+					if err != nil {
+						if spin != nil {
+							spin.Stop()
+						}
+						fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+						continue
+					}
+					if sid != "" {
+						sessionID = sid
+					}
+					if interactive {
+						fmt.Fprintln(os.Stderr)
+					}
+				default:
+					goto nextPrompt
+				}
+			}
+		nextPrompt:
 		}
 	}
 }
