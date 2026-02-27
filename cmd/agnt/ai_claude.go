@@ -96,7 +96,7 @@ func runAiClaude(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	// Build agent options
+	// Build agent options (without system prompt — added after daemon registration)
 	opts := buildClaudeOptions()
 
 	// One-shot with optional daemon autostart
@@ -115,15 +115,15 @@ func runAiClaude(cmd *cobra.Command, args []string) {
 			CmdArgs:       []string{"ai", "claude"},
 			SocketPath:    daemonSocketPath,
 			SkipAutostart: claudeNoAutostart,
-		}, func(errs []string) {
-			for _, e := range errs {
-				fmt.Fprintf(os.Stderr, "[agnt] autostart error: %s\n", e)
-			}
 		})
 		defer daemonHandle.Close()
-		// Brief wait for autostart to register processes
-		time.Sleep(200 * time.Millisecond)
+		// Wait for autostart to complete so system prompt includes runtime state
+		daemonHandle.WaitRegistered(2 * time.Second)
+		printDaemonStatus(daemonHandle)
 	}
+
+	// Apply system prompt after daemon registration for runtime-aware context
+	applyAgntSystemPrompt(opts)
 
 	// Run the query (one-shot is never interactive)
 	if _, err := runClaudeQuery(ctx, prompt, opts, false, nil); err != nil {
@@ -167,7 +167,8 @@ func getPrompt(args []string) string {
 	return ""
 }
 
-// buildClaudeOptions constructs AgentOptions from flags.
+// buildClaudeOptions constructs AgentOptions from flags (without system prompt).
+// Call applyAgntSystemPrompt after daemon registration to add runtime-aware context.
 func buildClaudeOptions() *claude.AgentOptions {
 	opts := &claude.AgentOptions{
 		OutputFormat: "stream-json",
@@ -185,24 +186,6 @@ func buildClaudeOptions() *claude.AgentOptions {
 	}
 	if aiMaxBudget > 0 {
 		opts.MaxBudgetUSD = aiMaxBudget
-	}
-
-	// System prompt: combine agnt context with user-provided prompt
-	var systemPrompt string
-	if !claudeNoAgntPrompt {
-		// Get agnt system prompt with running services context
-		socketPath, _ := rootCmd.Flags().GetString("socket")
-		systemPrompt = buildAgntSystemPrompt(socketPath)
-	}
-	if aiSystemPrompt != "" {
-		if systemPrompt != "" {
-			systemPrompt = systemPrompt + "\n\n" + aiSystemPrompt
-		} else {
-			systemPrompt = aiSystemPrompt
-		}
-	}
-	if systemPrompt != "" {
-		opts.SystemPrompt = systemPrompt
 	}
 
 	// Permission handling
@@ -229,6 +212,26 @@ func buildClaudeOptions() *claude.AgentOptions {
 	}
 
 	return opts
+}
+
+// applyAgntSystemPrompt builds and sets the system prompt on the given options.
+// Called after daemon registration so the prompt includes runtime state (running processes/proxies).
+func applyAgntSystemPrompt(opts *claude.AgentOptions) {
+	var systemPrompt string
+	if !claudeNoAgntPrompt {
+		socketPath, _ := rootCmd.Flags().GetString("socket")
+		systemPrompt = buildAgntSystemPrompt(socketPath)
+	}
+	if aiSystemPrompt != "" {
+		if systemPrompt != "" {
+			systemPrompt = systemPrompt + "\n\n" + aiSystemPrompt
+		} else {
+			systemPrompt = aiSystemPrompt
+		}
+	}
+	if systemPrompt != "" {
+		opts.SystemPrompt = systemPrompt
+	}
 }
 
 // runAiClaudeInteractive runs an interactive REPL loop for multi-turn conversation.
@@ -276,13 +279,15 @@ func runAiClaudeInteractive(ctx context.Context) error {
 			CmdArgs:         []string{"ai", "claude"},
 			SocketPath:      daemonSocketPath,
 			SkipAutostart:   claudeNoAutostart,
-		}, func(errs []string) {
-			for _, e := range errs {
-				fmt.Fprintf(os.Stderr, "[agnt] autostart error: %s\n", e)
-			}
 		})
 		defer daemonHandle.Close()
+
+		// Wait for registration to complete before building system prompt
+		daemonHandle.WaitRegistered(5 * time.Second)
 	}
+
+	// Build system prompt AFTER daemon registration so it includes runtime state
+	applyAgntSystemPrompt(opts)
 
 	// Welcome message
 	if interactive {
@@ -291,9 +296,7 @@ func runAiClaudeInteractive(ctx context.Context) error {
 		if opts.SystemPrompt != "" {
 			fmt.Fprintln(os.Stderr, "[agnt context injected]")
 		}
-		if daemonHandle != nil {
-			fmt.Fprintln(os.Stderr, "[daemon session active]")
-		}
+		printDaemonStatus(daemonHandle)
 	} else {
 		fmt.Fprintln(os.Stderr, "Interactive mode. Type /exit or /quit to exit, Ctrl+D for EOF.")
 	}
@@ -671,6 +674,25 @@ func formatTokens(n int) string {
 		return fmt.Sprintf("%.1fk tokens", float64(n)/1_000)
 	}
 	return fmt.Sprintf("%d tokens", n)
+}
+
+// printDaemonStatus prints daemon session and autostart status to stderr.
+func printDaemonStatus(h *daemonSessionHandle) {
+	if h == nil {
+		return
+	}
+	if !h.sessionRegistered {
+		fmt.Fprintln(os.Stderr, "[daemon: not available]")
+		return
+	}
+	fmt.Fprintln(os.Stderr, "[daemon session active]")
+	started := append(h.autostartScripts, h.autostartProxies...)
+	if len(started) > 0 {
+		fmt.Fprintf(os.Stderr, "[autostart: %s]\n", strings.Join(started, ", "))
+	}
+	for _, e := range h.autostartErrors {
+		fmt.Fprintf(os.Stderr, "[autostart error: %s]\n", e)
+	}
 }
 
 // stderrSpinner displays a braille spinner animation on a writer using \r overwrite.

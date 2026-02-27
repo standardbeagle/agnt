@@ -322,11 +322,6 @@ func runWithConPTY(ctx context.Context, args []string, socketPath string, sessio
 		CmdArgs:         cmdArgs,
 		SocketPath:      daemonSocketPath,
 		SkipAutostart:   skipAutostart,
-	}, func(errs []string) {
-		// Log autostart errors
-		for _, e := range errs {
-			fmt.Fprintf(os.Stderr, "[agnt] Autostart error: %s\r\n", e)
-		}
 	})
 	defer daemonHandle.Close()
 
