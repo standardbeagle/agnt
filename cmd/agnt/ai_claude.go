@@ -39,6 +39,10 @@ Prompt sources (in priority order):
   1. Positional argument: agnt ai claude "prompt"
   2. Flag: agnt ai claude -p "prompt"
   3. Stdin: echo "prompt" | agnt ai claude
+  4. Interactive: agnt ai claude (opens REPL when no prompt and stdin is a terminal)
+
+In interactive mode, type prompts at the ">" prompt. Multi-turn conversation
+is maintained via session resumption. Exit with /exit, /quit, or Ctrl+D.
 
 Output format (JSONL - one JSON object per line):
   {"type":"system","subtype":"init","session_id":"..."}
@@ -66,14 +70,6 @@ func init() {
 }
 
 func runAiClaude(cmd *cobra.Command, args []string) {
-	// Determine the prompt from various sources
-	prompt := getPrompt(args)
-	if prompt == "" {
-		fmt.Fprintln(os.Stderr, "Error: prompt is required")
-		fmt.Fprintln(os.Stderr, "Usage: agnt ai claude [prompt] or agnt ai claude -p \"prompt\" or echo \"prompt\" | agnt ai claude")
-		os.Exit(1)
-	}
-
 	// Set up context with signal handling
 	ctx, cancel := signal.NotifyContext(context.Background(),
 		syscall.SIGINT,
@@ -81,11 +77,28 @@ func runAiClaude(cmd *cobra.Command, args []string) {
 	)
 	defer cancel()
 
+	// Determine the prompt from various sources
+	prompt := getPrompt(args)
+	if prompt == "" && isTerminal(os.Stdin) {
+		// Interactive REPL mode
+		if err := runAiClaudeInteractive(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if prompt == "" {
+		fmt.Fprintln(os.Stderr, "Error: prompt is required")
+		fmt.Fprintln(os.Stderr, "Usage: agnt ai claude [prompt] or agnt ai claude -p \"prompt\" or echo \"prompt\" | agnt ai claude")
+		os.Exit(1)
+	}
+
 	// Build agent options
 	opts := buildClaudeOptions()
 
 	// Run the query
-	if err := runClaudeQuery(ctx, prompt, opts); err != nil {
+	if _, err := runClaudeQuery(ctx, prompt, opts); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
@@ -190,12 +203,52 @@ func buildClaudeOptions() *claude.AgentOptions {
 	return opts
 }
 
+// runAiClaudeInteractive runs an interactive REPL loop for multi-turn conversation.
+func runAiClaudeInteractive(ctx context.Context) error {
+	scanner := bufio.NewScanner(os.Stdin)
+	opts := buildClaudeOptions()
+	var sessionID string
+
+	fmt.Fprintln(os.Stderr, "Interactive mode. Type /exit or /quit to exit, Ctrl+D for EOF.")
+
+	for {
+		fmt.Fprint(os.Stderr, "> ")
+		if !scanner.Scan() {
+			// EOF or scan error
+			fmt.Fprintln(os.Stderr)
+			return scanner.Err()
+		}
+
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		if line == "/exit" || line == "/quit" {
+			return nil
+		}
+
+		if sessionID != "" {
+			opts.Resume = sessionID
+		}
+
+		sid, err := runClaudeQuery(ctx, line, opts)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			continue
+		}
+		if sid != "" {
+			sessionID = sid
+		}
+	}
+}
+
 // runClaudeQuery executes the query using the claude-go library and streams output.
-func runClaudeQuery(ctx context.Context, prompt string, opts *claude.AgentOptions) error {
+// Returns the session ID from the ResultMessage for multi-turn resumption.
+func runClaudeQuery(ctx context.Context, prompt string, opts *claude.AgentOptions) (string, error) {
 	// Create the iterator for streaming messages
 	iter, err := claude.NewQueryIterator(ctx, prompt, opts)
 	if err != nil {
-		return fmt.Errorf("failed to create query: %w", err)
+		return "", fmt.Errorf("failed to create query: %w", err)
 	}
 	defer iter.Close()
 
@@ -212,19 +265,17 @@ func runClaudeQuery(ctx context.Context, prompt string, opts *claude.AgentOption
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return "", ctx.Err()
 		case err, ok := <-errCh:
 			if !ok {
-				// Error channel closed, check if messages are also done
 				continue
 			}
 			if err != nil {
-				return fmt.Errorf("query error: %w", err)
+				return "", fmt.Errorf("query error: %w", err)
 			}
 		case msg, ok := <-msgCh:
 			if !ok {
-				// Message channel closed, we're done
-				return nil
+				return "", nil
 			}
 			if msg == nil {
 				continue
@@ -232,12 +283,12 @@ func runClaudeQuery(ctx context.Context, prompt string, opts *claude.AgentOption
 
 			// Output the message as JSON
 			if err := encoder.Encode(msg); err != nil {
-				return fmt.Errorf("failed to encode message: %w", err)
+				return "", fmt.Errorf("failed to encode message: %w", err)
 			}
 
 			// Check if this is a result message (end of query)
-			if _, isResult := msg.(claude.ResultMessage); isResult {
-				return nil
+			if result, isResult := msg.(claude.ResultMessage); isResult {
+				return result.SessionID, nil
 			}
 		}
 	}
