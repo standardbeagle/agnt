@@ -9,7 +9,9 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 	claude "github.com/standardbeagle/claude-go"
@@ -29,11 +31,7 @@ var (
 var aiClaudeCmd = &cobra.Command{
 	Use:   "claude [prompt]",
 	Short: "Run Claude Code with clean JSONL streaming output",
-	Long: `Run Claude Code with clean JSONL streaming output over stdio.
-
-Provides direct JSON-RPC streaming without PTY wrapping - no spinners, no ANSI
-escape sequences, no terminal animation cruft. Each message is a single JSON
-object on its own line, suitable for parsing by other processes.
+	Long: `Run Claude Code with streaming output over stdio.
 
 Prompt sources (in priority order):
   1. Positional argument: agnt ai claude "prompt"
@@ -41,16 +39,14 @@ Prompt sources (in priority order):
   3. Stdin: echo "prompt" | agnt ai claude
   4. Interactive: agnt ai claude (opens REPL when no prompt and stdin is a terminal)
 
-In interactive mode, type prompts at the ">" prompt. Multi-turn conversation
+Interactive mode shows human-readable output: assistant text goes to stdout,
+status indicators and tool activity appear on stderr. Multi-turn conversation
 is maintained via session resumption. Exit with /exit, /quit, or Ctrl+D.
 
-Output format (JSONL - one JSON object per line):
+When piped or with --raw, output is JSONL (one JSON object per line):
   {"type":"system","subtype":"init","session_id":"..."}
   {"type":"assistant","uuid":"..."}
   {"type":"result","duration_ms":1450,"num_turns":1,"result":"..."}
-
-The --raw flag outputs compact JSON (no indentation) for efficient parsing.
-By default, output is pretty-printed for human readability.
 
 Integration example (parse result with jq):
   agnt ai claude --raw "Fix the lint errors" | jq -r 'select(.type=="result") | .result'`,
@@ -65,7 +61,7 @@ func init() {
 	aiClaudeCmd.Flags().StringSliceVar(&claudeAllowedTools, "allowed-tools", nil, "Tools to allow (comma-separated)")
 	aiClaudeCmd.Flags().StringSliceVar(&claudeDisallowedTools, "disallowed-tools", nil, "Tools to disallow (comma-separated)")
 	aiClaudeCmd.Flags().StringVar(&claudeMCPConfig, "mcp-config", "", "Path to MCP config file")
-	aiClaudeCmd.Flags().BoolVar(&claudeRawOutput, "raw", false, "Output raw JSON without formatting")
+	aiClaudeCmd.Flags().BoolVar(&claudeRawOutput, "raw", false, "Output compact JSON (JSONL) instead of interactive rendering")
 	aiClaudeCmd.Flags().StringVarP(&claudePromptFlag, "prompt", "p", "", "Prompt (alternative to positional arg)")
 }
 
@@ -97,8 +93,8 @@ func runAiClaude(cmd *cobra.Command, args []string) {
 	// Build agent options
 	opts := buildClaudeOptions()
 
-	// Run the query
-	if _, err := runClaudeQuery(ctx, prompt, opts); err != nil {
+	// Run the query (one-shot is never interactive)
+	if _, err := runClaudeQuery(ctx, prompt, opts, false); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
@@ -208,8 +204,18 @@ func runAiClaudeInteractive(ctx context.Context) error {
 	scanner := bufio.NewScanner(os.Stdin)
 	opts := buildClaudeOptions()
 	var sessionID string
+	interactive := !claudeRawOutput
 
-	fmt.Fprintln(os.Stderr, "Interactive mode. Type /exit or /quit to exit, Ctrl+D for EOF.")
+	// Welcome message
+	if interactive {
+		fmt.Fprintln(os.Stderr, "agnt ai claude - interactive mode")
+		fmt.Fprintln(os.Stderr, "Type /exit or /quit to exit, Ctrl+D for EOF.")
+		if opts.SystemPrompt != "" {
+			fmt.Fprintln(os.Stderr, "[agnt context injected]")
+		}
+	} else {
+		fmt.Fprintln(os.Stderr, "Interactive mode. Type /exit or /quit to exit, Ctrl+D for EOF.")
+	}
 
 	for {
 		fmt.Fprint(os.Stderr, "> ")
@@ -231,7 +237,7 @@ func runAiClaudeInteractive(ctx context.Context) error {
 			opts.Resume = sessionID
 		}
 
-		sid, err := runClaudeQuery(ctx, line, opts)
+		sid, err := runClaudeQuery(ctx, line, opts, interactive)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			continue
@@ -239,26 +245,77 @@ func runAiClaudeInteractive(ctx context.Context) error {
 		if sid != "" {
 			sessionID = sid
 		}
+
+		// Add blank line between responses in interactive mode
+		if interactive {
+			fmt.Fprintln(os.Stderr)
+		}
 	}
 }
 
 // runClaudeQuery executes the query using the claude-go library and streams output.
 // Returns the session ID from the ResultMessage for multi-turn resumption.
-func runClaudeQuery(ctx context.Context, prompt string, opts *claude.AgentOptions) (string, error) {
-	// Create the iterator for streaming messages
+func runClaudeQuery(ctx context.Context, prompt string, opts *claude.AgentOptions, interactive bool) (string, error) {
 	iter, err := claude.NewQueryIterator(ctx, prompt, opts)
 	if err != nil {
 		return "", fmt.Errorf("failed to create query: %w", err)
 	}
 	defer iter.Close()
 
-	// Create encoder for JSON output
+	if interactive {
+		return streamInteractive(ctx, iter)
+	}
+	return streamJSON(ctx, iter)
+}
+
+// streamInteractive renders messages as human-readable output.
+func streamInteractive(ctx context.Context, iter *claude.QueryIterator) (string, error) {
+	msgCh := iter.Messages()
+	errCh := iter.Errors()
+
+	var spin *stderrSpinner
+	textPrinted := false
+
+	defer func() {
+		if spin != nil {
+			spin.Stop()
+		}
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case err, ok := <-errCh:
+			if !ok {
+				continue
+			}
+			if err != nil {
+				return "", fmt.Errorf("query error: %w", err)
+			}
+		case msg, ok := <-msgCh:
+			if !ok {
+				return "", nil
+			}
+			if msg == nil {
+				continue
+			}
+
+			sid := renderMessageTo(msg, &spin, os.Stdout, os.Stderr, &textPrinted)
+			if sid != "" {
+				return sid, nil
+			}
+		}
+	}
+}
+
+// streamJSON outputs each message as a JSON line (original behavior).
+func streamJSON(ctx context.Context, iter *claude.QueryIterator) (string, error) {
 	encoder := json.NewEncoder(os.Stdout)
 	if !claudeRawOutput {
 		encoder.SetIndent("", "  ")
 	}
 
-	// Stream messages using channels for reliable handling
 	msgCh := iter.Messages()
 	errCh := iter.Errors()
 
@@ -281,15 +338,209 @@ func runClaudeQuery(ctx context.Context, prompt string, opts *claude.AgentOption
 				continue
 			}
 
-			// Output the message as JSON
 			if err := encoder.Encode(msg); err != nil {
 				return "", fmt.Errorf("failed to encode message: %w", err)
 			}
 
-			// Check if this is a result message (end of query)
 			if result, isResult := msg.(claude.ResultMessage); isResult {
 				return result.SessionID, nil
 			}
 		}
 	}
+}
+
+// renderMessage renders a single message in interactive mode (convenience wrapper).
+func renderMessage(msg claude.MessageType, spin **stderrSpinner) string {
+	var textPrinted bool
+	return renderMessageTo(msg, spin, os.Stdout, os.Stderr, &textPrinted)
+}
+
+// renderMessageTo renders a message using the provided writers.
+// textPrinted tracks whether any text was printed during this query (for fallback).
+func renderMessageTo(msg claude.MessageType, spin **stderrSpinner, stdout, stderr io.Writer, textPrinted *bool) string {
+	switch m := msg.(type) {
+	case claude.SystemMessage:
+		renderSystemMessage(m, spin, stderr)
+
+	case claude.AssistantMessage:
+		renderAssistantMessage(m, spin, stdout, stderr, textPrinted)
+
+	case claude.ResultMessage:
+		if *spin != nil {
+			(*spin).Stop()
+			*spin = nil
+		}
+		// Fallback: print result text if no streaming text was rendered
+		if textPrinted != nil && !*textPrinted && m.Result != "" {
+			fmt.Fprintln(stdout, m.Result)
+		}
+		renderResultSummary(m, stderr)
+		return m.SessionID
+
+	default:
+		// StreamEvent, UserMessage — silent
+	}
+	return ""
+}
+
+func renderSystemMessage(m claude.SystemMessage, spin **stderrSpinner, stderr io.Writer) {
+	switch m.Subtype {
+	case "init":
+		// Silent
+	case "hook_started":
+		if *spin != nil {
+			(*spin).Stop()
+		}
+		*spin = newStderrSpinner("Hook running...", stderr)
+	case "hook_response":
+		if *spin != nil {
+			(*spin).Stop()
+			*spin = nil
+		}
+	default:
+		if *spin != nil {
+			(*spin).Stop()
+		}
+		*spin = newStderrSpinner(m.Subtype+"...", stderr)
+	}
+}
+
+func renderAssistantMessage(m claude.AssistantMessage, spin **stderrSpinner, stdout, stderr io.Writer, textPrinted *bool) {
+	for _, block := range m.Content {
+		switch b := block.(type) {
+		case claude.TextBlock:
+			if *spin != nil {
+				(*spin).Stop()
+				*spin = nil
+			}
+			fmt.Fprintln(stdout, b.Text)
+			if textPrinted != nil {
+				*textPrinted = true
+			}
+
+		case claude.ToolUseBlock:
+			if *spin != nil {
+				(*spin).Stop()
+			}
+			fmt.Fprintf(stderr, "\r\033[K[tool: %s]\n", b.Name)
+			*spin = newStderrSpinner("Working...", stderr)
+
+		case claude.ThinkingBlock:
+			if *spin != nil {
+				(*spin).Stop()
+			}
+			*spin = newStderrSpinner("Thinking...", stderr)
+
+		case claude.ToolResultBlock:
+			if b.IsError {
+				if *spin != nil {
+					(*spin).Stop()
+					*spin = nil
+				}
+				fmt.Fprintf(stderr, "\r\033[K[tool error]\n")
+			}
+			// Non-error results are silent
+		}
+	}
+}
+
+// renderResultSummary prints a compact summary line to stderr.
+func renderResultSummary(m claude.ResultMessage, stderr io.Writer) {
+	var parts []string
+
+	// Duration
+	if m.DurationMS > 0 {
+		parts = append(parts, formatDuration(m.DurationMS))
+	}
+
+	// Token count
+	if m.Usage != nil {
+		total := m.Usage.InputTokens + m.Usage.OutputTokens
+		if total > 0 {
+			parts = append(parts, formatTokens(total))
+		}
+	}
+
+	// Cost
+	if m.TotalCostUSD > 0 {
+		parts = append(parts, fmt.Sprintf("$%.2f", m.TotalCostUSD))
+	}
+
+	if len(parts) > 0 {
+		fmt.Fprintf(stderr, "\r\033[K(%s)\n", strings.Join(parts, " · "))
+	}
+}
+
+// formatDuration converts milliseconds to a human-readable duration string.
+func formatDuration(ms int64) string {
+	d := time.Duration(ms) * time.Millisecond
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	mins := int(d.Minutes())
+	secs := int(d.Seconds()) % 60
+	if secs == 0 {
+		return fmt.Sprintf("%dm", mins)
+	}
+	return fmt.Sprintf("%dm %ds", mins, secs)
+}
+
+// formatTokens formats a token count with k/M suffixes.
+func formatTokens(n int) string {
+	if n >= 1_000_000 {
+		return fmt.Sprintf("%.1fM tokens", float64(n)/1_000_000)
+	}
+	if n >= 1_000 {
+		return fmt.Sprintf("%.1fk tokens", float64(n)/1_000)
+	}
+	return fmt.Sprintf("%d tokens", n)
+}
+
+// stderrSpinner displays a braille spinner animation on a writer using \r overwrite.
+type stderrSpinner struct {
+	done chan struct{}
+	wg   sync.WaitGroup
+	w    io.Writer
+}
+
+var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+// newStderrSpinner starts a braille spinner with the given message.
+func newStderrSpinner(message string, w io.Writer) *stderrSpinner {
+	s := &stderrSpinner{
+		done: make(chan struct{}),
+		w:    w,
+	}
+	s.wg.Add(1)
+
+	go func() {
+		defer s.wg.Done()
+		i := 0
+		ticker := time.NewTicker(80 * time.Millisecond)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-s.done:
+				fmt.Fprintf(s.w, "\r\033[K")
+				return
+			case <-ticker.C:
+				fmt.Fprintf(s.w, "\r%s %s", spinnerFrames[i%len(spinnerFrames)], message)
+				i++
+			}
+		}
+	}()
+
+	return s
+}
+
+// Stop halts the spinner and clears the line.
+func (s *stderrSpinner) Stop() {
+	select {
+	case <-s.done:
+		// Already stopped
+	default:
+		close(s.done)
+	}
+	s.wg.Wait()
 }

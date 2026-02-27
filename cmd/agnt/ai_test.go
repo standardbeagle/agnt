@@ -3,11 +3,15 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
 	"testing"
 	"time"
+
+	claude "github.com/standardbeagle/claude-go"
 )
 
 // TestAiClaude_RequiresPrompt verifies that agnt ai claude fails without a prompt.
@@ -49,7 +53,7 @@ func TestAiClaude_HelpOutput(t *testing.T) {
 	// Check for key documentation elements
 	expectedStrings := []string{
 		"JSONL",
-		"JSON-RPC streaming",
+		"Interactive mode",
 		"--raw",
 		"--prompt",
 		"--bypass-permissions",
@@ -175,7 +179,7 @@ func TestAiClaude_RawOutput(t *testing.T) {
 	}
 
 	if !strings.Contains(string(output), "compact JSON") {
-		t.Error("Expected --raw flag description to mention compact JSON")
+		t.Error("Expected --raw flag description to mention 'compact JSON'")
 	}
 }
 
@@ -492,5 +496,413 @@ func TestAiClaude_MultilinePrompt(t *testing.T) {
 	// Should not have complained about invalid prompt
 	if strings.Contains(stderr.String(), "prompt is required") {
 		t.Error("Multiline stdin prompt should be accepted")
+	}
+}
+
+// helper for tests: wraps renderMessageTo with a textPrinted tracker
+func testRender(msg claude.MessageType, spin **stderrSpinner, stdout, stderr io.Writer) string {
+	var tp bool
+	return renderMessageTo(msg, spin, stdout, stderr, &tp)
+}
+
+// TestRenderMessage_TextBlock verifies AssistantMessage with TextBlock prints to stdout.
+func TestRenderMessage_TextBlock(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	var spin *stderrSpinner
+
+	msg := claude.AssistantMessage{
+		Content: []claude.ContentBlock{
+			claude.TextBlock{Text: "Hello, world!"},
+		},
+	}
+
+	sid := testRender(msg, &spin, &stdout, &stderr)
+
+	if sid != "" {
+		t.Errorf("expected empty session ID, got %q", sid)
+	}
+	if got := stdout.String(); got != "Hello, world!\n" {
+		t.Errorf("stdout = %q, want %q", got, "Hello, world!\n")
+	}
+}
+
+// TestRenderMessage_MultipleTextBlocks verifies multiple text blocks are each printed.
+func TestRenderMessage_MultipleTextBlocks(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	var spin *stderrSpinner
+
+	msg := claude.AssistantMessage{
+		Content: []claude.ContentBlock{
+			claude.TextBlock{Text: "First"},
+			claude.TextBlock{Text: "Second"},
+		},
+	}
+
+	testRender(msg, &spin, &stdout, &stderr)
+
+	if got := stdout.String(); got != "First\nSecond\n" {
+		t.Errorf("stdout = %q, want %q", got, "First\nSecond\n")
+	}
+}
+
+// TestRenderMessage_ToolUse verifies ToolUseBlock prints tool name to stderr.
+func TestRenderMessage_ToolUse(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	var spin *stderrSpinner
+
+	msg := claude.AssistantMessage{
+		Content: []claude.ContentBlock{
+			claude.ToolUseBlock{Name: "Read", ID: "123"},
+		},
+	}
+
+	testRender(msg, &spin, &stdout, &stderr)
+
+	if stdout.Len() != 0 {
+		t.Errorf("expected no stdout output, got %q", stdout.String())
+	}
+	stderrStr := stderr.String()
+	if !strings.Contains(stderrStr, "[tool: Read]") {
+		t.Errorf("stderr = %q, want to contain %q", stderrStr, "[tool: Read]")
+	}
+	if spin == nil {
+		t.Error("expected spinner to be started after tool use")
+	}
+	if spin != nil {
+		spin.Stop()
+	}
+}
+
+// TestRenderMessage_ToolResultError verifies tool errors are shown.
+func TestRenderMessage_ToolResultError(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	var spin *stderrSpinner
+
+	msg := claude.AssistantMessage{
+		Content: []claude.ContentBlock{
+			claude.ToolResultBlock{IsError: true, ToolUseID: "123"},
+		},
+	}
+
+	testRender(msg, &spin, &stdout, &stderr)
+
+	if !strings.Contains(stderr.String(), "[tool error]") {
+		t.Errorf("stderr = %q, want to contain %q", stderr.String(), "[tool error]")
+	}
+}
+
+// TestRenderMessage_ToolResultSuccess verifies non-error tool results are silent.
+func TestRenderMessage_ToolResultSuccess(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	var spin *stderrSpinner
+
+	msg := claude.AssistantMessage{
+		Content: []claude.ContentBlock{
+			claude.ToolResultBlock{IsError: false, ToolUseID: "123"},
+		},
+	}
+
+	testRender(msg, &spin, &stdout, &stderr)
+
+	if stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Errorf("expected silent output, got stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+}
+
+// TestRenderMessage_ThinkingBlock verifies thinking starts a spinner.
+func TestRenderMessage_ThinkingBlock(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	var spin *stderrSpinner
+
+	msg := claude.AssistantMessage{
+		Content: []claude.ContentBlock{
+			claude.ThinkingBlock{Thinking: "Let me think..."},
+		},
+	}
+
+	testRender(msg, &spin, &stdout, &stderr)
+
+	if stdout.Len() != 0 {
+		t.Errorf("expected no stdout, got %q", stdout.String())
+	}
+	if spin == nil {
+		t.Error("expected spinner to be started for thinking block")
+	}
+	if spin != nil {
+		spin.Stop()
+	}
+}
+
+// TestRenderMessage_SystemInit verifies init messages are silent.
+func TestRenderMessage_SystemInit(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	var spin *stderrSpinner
+
+	msg := claude.SystemMessage{Subtype: "init"}
+
+	testRender(msg, &spin, &stdout, &stderr)
+
+	if stdout.Len() != 0 || stderr.Len() != 0 {
+		t.Errorf("expected silent output for init, got stdout=%q stderr=%q", stdout.String(), stderr.String())
+	}
+	if spin != nil {
+		t.Error("expected no spinner for init")
+	}
+}
+
+// TestRenderMessage_SystemHook verifies hook messages start/stop spinner.
+func TestRenderMessage_SystemHook(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	var spin *stderrSpinner
+
+	// hook_started should start spinner
+	testRender(claude.SystemMessage{Subtype: "hook_started"}, &spin, &stdout, &stderr)
+	if spin == nil {
+		t.Fatal("expected spinner after hook_started")
+	}
+
+	// hook_response should stop spinner
+	testRender(claude.SystemMessage{Subtype: "hook_response"}, &spin, &stdout, &stderr)
+	if spin != nil {
+		t.Error("expected spinner to be nil after hook_response")
+	}
+}
+
+// TestRenderMessage_ResultSummary verifies result summary formatting.
+func TestRenderMessage_ResultSummary(t *testing.T) {
+	tests := []struct {
+		name     string
+		msg      claude.ResultMessage
+		contains []string
+	}{
+		{
+			name: "duration and tokens",
+			msg: claude.ResultMessage{
+				DurationMS: 84000,
+				Usage:      &claude.Usage{InputTokens: 1000, OutputTokens: 300},
+				SessionID:  "sess-1",
+			},
+			contains: []string{"1m 24s", "1.3k tokens"},
+		},
+		{
+			name: "with cost",
+			msg: claude.ResultMessage{
+				DurationMS:   5000,
+				Usage:        &claude.Usage{InputTokens: 500, OutputTokens: 100},
+				TotalCostUSD: 0.05,
+				SessionID:    "sess-2",
+			},
+			contains: []string{"5s", "600 tokens", "$0.05"},
+		},
+		{
+			name: "large token count",
+			msg: claude.ResultMessage{
+				DurationMS: 120000,
+				Usage:      &claude.Usage{InputTokens: 500000, OutputTokens: 500000},
+				SessionID:  "sess-3",
+			},
+			contains: []string{"2m", "1.0M tokens"},
+		},
+		{
+			name: "zero duration",
+			msg: claude.ResultMessage{
+				SessionID: "sess-4",
+			},
+			contains: nil, // no output expected
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			var spin *stderrSpinner
+
+			sid := testRender(tt.msg, &spin, &stdout, &stderr)
+
+			if sid != tt.msg.SessionID {
+				t.Errorf("session ID = %q, want %q", sid, tt.msg.SessionID)
+			}
+
+			stderrStr := stderr.String()
+			for _, want := range tt.contains {
+				if !strings.Contains(stderrStr, want) {
+					t.Errorf("stderr = %q, want to contain %q", stderrStr, want)
+				}
+			}
+
+			if tt.contains == nil && stderrStr != "" {
+				t.Errorf("expected no output, got stderr=%q", stderrStr)
+			}
+		})
+	}
+}
+
+// TestRenderMessage_ResultFallback verifies ResultMessage.Result prints when no text was streamed.
+func TestRenderMessage_ResultFallback(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	var spin *stderrSpinner
+	textPrinted := false
+
+	msg := claude.ResultMessage{
+		DurationMS: 5000,
+		Result:     "This is the response text.",
+		SessionID:  "sess-fallback",
+	}
+
+	sid := renderMessageTo(msg, &spin, &stdout, &stderr, &textPrinted)
+
+	if sid != "sess-fallback" {
+		t.Errorf("session ID = %q, want %q", sid, "sess-fallback")
+	}
+	if !strings.Contains(stdout.String(), "This is the response text.") {
+		t.Errorf("stdout = %q, want to contain result text", stdout.String())
+	}
+}
+
+// TestRenderMessage_NoFallbackWhenTextPrinted verifies Result is NOT printed when text was streamed.
+func TestRenderMessage_NoFallbackWhenTextPrinted(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	var spin *stderrSpinner
+	textPrinted := true // text was already printed during streaming
+
+	msg := claude.ResultMessage{
+		DurationMS: 5000,
+		Result:     "Duplicate text",
+		SessionID:  "sess-nodup",
+	}
+
+	renderMessageTo(msg, &spin, &stdout, &stderr, &textPrinted)
+
+	if strings.Contains(stdout.String(), "Duplicate text") {
+		t.Error("expected result text to NOT be printed when text was already streamed")
+	}
+}
+
+// TestRenderMessage_SpinnerClearsOnText verifies spinner stops when text arrives.
+func TestRenderMessage_SpinnerClearsOnText(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	var spin *stderrSpinner
+
+	// Start spinner via thinking
+	testRender(claude.AssistantMessage{
+		Content: []claude.ContentBlock{claude.ThinkingBlock{Thinking: "..."}},
+	}, &spin, &stdout, &stderr)
+
+	if spin == nil {
+		t.Fatal("expected spinner to be running")
+	}
+
+	// Text should stop spinner
+	testRender(claude.AssistantMessage{
+		Content: []claude.ContentBlock{claude.TextBlock{Text: "Done"}},
+	}, &spin, &stdout, &stderr)
+
+	if spin != nil {
+		t.Error("expected spinner to be nil after text block")
+	}
+
+	if !strings.Contains(stdout.String(), "Done") {
+		t.Errorf("expected stdout to contain 'Done', got %q", stdout.String())
+	}
+}
+
+// TestParseMessage_AssistantNested verifies claude-go handles nested message.content.
+func TestParseMessage_AssistantNested(t *testing.T) {
+	raw := json.RawMessage(`{"type":"assistant","message":{"content":[{"type":"text","text":"Hello from Claude"}]}}`)
+
+	msg, err := claude.ParseMessage(raw)
+	if err != nil {
+		t.Fatalf("ParseMessage error: %v", err)
+	}
+
+	assistant, ok := msg.(claude.AssistantMessage)
+	if !ok {
+		t.Fatalf("expected AssistantMessage, got %T", msg)
+	}
+
+	if len(assistant.Content) != 1 {
+		t.Fatalf("expected 1 content block, got %d", len(assistant.Content))
+	}
+
+	tb, ok := assistant.Content[0].(claude.TextBlock)
+	if !ok {
+		t.Fatalf("expected TextBlock, got %T", assistant.Content[0])
+	}
+	if tb.Text != "Hello from Claude" {
+		t.Errorf("text = %q, want %q", tb.Text, "Hello from Claude")
+	}
+}
+
+// TestSpinner_StartStop verifies spinner lifecycle.
+func TestSpinner_StartStop(t *testing.T) {
+	var buf bytes.Buffer
+	s := newStderrSpinner("Loading...", &buf)
+
+	// Give spinner time to write at least one frame
+	time.Sleep(150 * time.Millisecond)
+
+	s.Stop()
+
+	output := buf.String()
+	if !strings.Contains(output, "Loading...") {
+		t.Errorf("spinner output = %q, want to contain %q", output, "Loading...")
+	}
+	// Should end with clear sequence
+	if !strings.HasSuffix(output, "\r\033[K") {
+		t.Errorf("spinner output should end with clear sequence, got %q", output)
+	}
+}
+
+// TestSpinner_DoubleStop verifies stopping a spinner twice doesn't panic.
+func TestSpinner_DoubleStop(t *testing.T) {
+	var buf bytes.Buffer
+	s := newStderrSpinner("test", &buf)
+	s.Stop()
+	s.Stop() // Should not panic
+}
+
+// TestFormatDuration verifies duration formatting.
+func TestFormatDuration(t *testing.T) {
+	tests := []struct {
+		ms   int64
+		want string
+	}{
+		{500, "0s"},
+		{5000, "5s"},
+		{59000, "59s"},
+		{60000, "1m"},
+		{84000, "1m 24s"},
+		{120000, "2m"},
+		{3661000, "61m 1s"},
+	}
+
+	for _, tt := range tests {
+		got := formatDuration(tt.ms)
+		if got != tt.want {
+			t.Errorf("formatDuration(%d) = %q, want %q", tt.ms, got, tt.want)
+		}
+	}
+}
+
+// TestFormatTokens verifies token count formatting.
+func TestFormatTokens(t *testing.T) {
+	tests := []struct {
+		n    int
+		want string
+	}{
+		{42, "42 tokens"},
+		{999, "999 tokens"},
+		{1000, "1.0k tokens"},
+		{1300, "1.3k tokens"},
+		{150000, "150.0k tokens"},
+		{1000000, "1.0M tokens"},
+		{2500000, "2.5M tokens"},
+	}
+
+	for _, tt := range tests {
+		got := formatTokens(tt.n)
+		if got != tt.want {
+			t.Errorf("formatTokens(%d) = %q, want %q", tt.n, got, tt.want)
+		}
 	}
 }
