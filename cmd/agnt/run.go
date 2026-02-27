@@ -313,13 +313,6 @@ func runWithPTY(ctx context.Context, args []string, socketPath string, sessionCo
 		CmdArgs:         cmdArgs,
 		SocketPath:      daemonSocketPath,
 		SkipAutostart:   skipAutostart,
-	}, func(errs []string) {
-		// Log autostart errors prominently
-		fmt.Fprintf(os.Stderr, "\r\n[agnt] \x1b[31mAutostart errors:\x1b[0m\r\n")
-		for _, e := range errs {
-			fmt.Fprintf(os.Stderr, "  - %s\r\n", e)
-		}
-		fmt.Fprintf(os.Stderr, "\r\n")
 	})
 	defer daemonHandle.Close()
 

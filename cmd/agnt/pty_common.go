@@ -20,6 +20,12 @@ type daemonSessionHandle struct {
 	heartbeatStop     chan struct{}
 	sessionCode       string
 	sessionRegistered bool
+
+	// Completion signaling for async registration
+	registrationDone chan struct{}
+	autostartScripts []string // scripts successfully started
+	autostartProxies []string // proxies successfully started
+	autostartErrors  []string // errors encountered during autostart
 }
 
 // Close cleans up daemon session resources.
@@ -39,6 +45,20 @@ func (h *daemonSessionHandle) Close() {
 	// Close client
 	if h.client != nil {
 		h.client.Close()
+	}
+}
+
+// WaitRegistered blocks until the registration goroutine completes or the timeout expires.
+// Returns true if registration completed within the timeout.
+func (h *daemonSessionHandle) WaitRegistered(timeout time.Duration) bool {
+	if h == nil || h.registrationDone == nil {
+		return false
+	}
+	select {
+	case <-h.registrationDone:
+		return true
+	case <-time.After(timeout):
+		return false
 	}
 }
 
@@ -158,13 +178,16 @@ type daemonSessionConfig struct {
 
 // startDaemonSession starts daemon connection and session registration in a goroutine.
 // Returns a handle that can be used to interact with the daemon and must be closed when done.
-// The registration happens asynchronously; use handle.IsConnected() to check status.
-func startDaemonSession(ctx context.Context, cfg daemonSessionConfig, onAutostartError func(errs []string)) *daemonSessionHandle {
+// The registration happens asynchronously; use handle.WaitRegistered() to block until complete.
+func startDaemonSession(ctx context.Context, cfg daemonSessionConfig) *daemonSessionHandle {
 	handle := &daemonSessionHandle{
-		sessionCode: cfg.SessionCode,
+		sessionCode:      cfg.SessionCode,
+		registrationDone: make(chan struct{}),
 	}
 
 	go func() {
+		defer close(handle.registrationDone)
+
 		config := daemon.DefaultResilientClientConfig()
 		if cfg.SocketPath != "" {
 			config.AutoStartConfig.SocketPath = cfg.SocketPath
@@ -190,18 +213,28 @@ func startDaemonSession(ctx context.Context, cfg daemonSessionConfig, onAutostar
 
 		handle.sessionRegistered = true
 
-		// Process autostart results
-		if result != nil && !cfg.SkipAutostart && onAutostartError != nil {
+		// Capture autostart results
+		if result != nil && !cfg.SkipAutostart {
 			if autostart, ok := result["autostart"].(map[string]interface{}); ok {
-				if errs, ok := autostart["errors"].([]interface{}); ok && len(errs) > 0 {
-					var errStrs []string
-					for _, e := range errs {
-						if str, ok := e.(string); ok {
-							errStrs = append(errStrs, str)
+				if scripts, ok := autostart["scripts"].([]interface{}); ok {
+					for _, s := range scripts {
+						if str, ok := s.(string); ok {
+							handle.autostartScripts = append(handle.autostartScripts, str)
 						}
 					}
-					if len(errStrs) > 0 {
-						onAutostartError(errStrs)
+				}
+				if proxies, ok := autostart["proxies"].([]interface{}); ok {
+					for _, p := range proxies {
+						if str, ok := p.(string); ok {
+							handle.autostartProxies = append(handle.autostartProxies, str)
+						}
+					}
+				}
+				if errs, ok := autostart["errors"].([]interface{}); ok {
+					for _, e := range errs {
+						if str, ok := e.(string); ok {
+							handle.autostartErrors = append(handle.autostartErrors, str)
+						}
 					}
 				}
 			}
