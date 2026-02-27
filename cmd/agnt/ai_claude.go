@@ -94,7 +94,7 @@ func runAiClaude(cmd *cobra.Command, args []string) {
 	opts := buildClaudeOptions()
 
 	// Run the query (one-shot is never interactive)
-	if _, err := runClaudeQuery(ctx, prompt, opts, false); err != nil {
+	if _, err := runClaudeQuery(ctx, prompt, opts, false, nil); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
 	}
@@ -237,8 +237,17 @@ func runAiClaudeInteractive(ctx context.Context) error {
 			opts.Resume = sessionID
 		}
 
-		sid, err := runClaudeQuery(ctx, line, opts, interactive)
+		// Show immediate feedback while subprocess starts
+		var spin *stderrSpinner
+		if interactive {
+			spin = newStderrSpinner("Starting...", os.Stderr)
+		}
+
+		sid, err := runClaudeQuery(ctx, line, opts, interactive, spin)
 		if err != nil {
+			if spin != nil {
+				spin.Stop()
+			}
 			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 			continue
 		}
@@ -255,7 +264,8 @@ func runAiClaudeInteractive(ctx context.Context) error {
 
 // runClaudeQuery executes the query using the claude-go library and streams output.
 // Returns the session ID from the ResultMessage for multi-turn resumption.
-func runClaudeQuery(ctx context.Context, prompt string, opts *claude.AgentOptions, interactive bool) (string, error) {
+// The spin parameter allows passing a pre-started spinner for immediate feedback.
+func runClaudeQuery(ctx context.Context, prompt string, opts *claude.AgentOptions, interactive bool, spin *stderrSpinner) (string, error) {
 	iter, err := claude.NewQueryIterator(ctx, prompt, opts)
 	if err != nil {
 		return "", fmt.Errorf("failed to create query: %w", err)
@@ -263,17 +273,21 @@ func runClaudeQuery(ctx context.Context, prompt string, opts *claude.AgentOption
 	defer iter.Close()
 
 	if interactive {
-		return streamInteractive(ctx, iter)
+		return streamInteractive(ctx, iter, spin)
+	}
+	if spin != nil {
+		spin.Stop()
 	}
 	return streamJSON(ctx, iter)
 }
 
 // streamInteractive renders messages as human-readable output.
-func streamInteractive(ctx context.Context, iter *claude.QueryIterator) (string, error) {
+// The initialSpin parameter allows passing a pre-started spinner for immediate feedback.
+func streamInteractive(ctx context.Context, iter *claude.QueryIterator, initialSpin *stderrSpinner) (string, error) {
 	msgCh := iter.Messages()
 	errCh := iter.Errors()
 
-	var spin *stderrSpinner
+	spin := initialSpin
 	textPrinted := false
 
 	defer func() {
