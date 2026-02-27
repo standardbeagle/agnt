@@ -8,6 +8,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/daemon"
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/proxy/scripts"
+	"golang.org/x/term"
 )
 
 const appName = "agnt"
@@ -90,11 +91,7 @@ func main() {
 }
 
 func isTerminal(f *os.File) bool {
-	stat, err := f.Stat()
-	if err != nil {
-		return false
-	}
-	return (stat.Mode() & os.ModeCharDevice) != 0
+	return term.IsTerminal(int(f.Fd()))
 }
 
 // getVersionString returns the version string including daemon version if available
