@@ -72,7 +72,8 @@
     changes: [],
     originalValues: {},
     sections: [],
-    panelPosition: null
+    panelPosition: null,
+    boxModelContainer: null
   };
 
   // Load persisted panel position from localStorage
@@ -413,6 +414,10 @@
         if (contentEl) {
           contentEl.innerHTML = '';
           state.sections = [];
+          // Box model diagram at the top
+          state.boxModelContainer = renderBoxModel(el, scrollToBoxModelInput);
+          contentEl.appendChild(state.boxModelContainer);
+
           var variables = discoverCSSVariables(el);
           var varUsage = buildVariableUsageMap(el, variables);
           var varSection = renderCSSVariablesSection(variables, varUsage);
@@ -597,6 +602,46 @@
     });
   }
 
+  // Scroll to and focus the first input for the given box model region.
+  // region is one of 'margin', 'border', 'padding'.
+  function scrollToBoxModelInput(region) {
+    var content = document.getElementById('__devtool-style-content');
+    if (!content) return;
+
+    // Map region to the first CSS property name to find the matching input
+    var target;
+    if (region === 'margin') target = 'margin-top';
+    else if (region === 'padding') target = 'padding-top';
+    else if (region === 'border') target = 'border-top-width';
+    else return;
+
+    // Search sections for the property row. Sections track their contentEl
+    // which may be collapsed (display: none). Expand it before scrolling.
+    for (var si = 0; si < state.sections.length; si++) {
+      var sect = state.sections[si];
+      var rows = sect.contentEl.querySelectorAll('div');
+      for (var ri = 0; ri < rows.length; ri++) {
+        // The property name is in the second span (first is the dot indicator)
+        var spans = rows[ri].querySelectorAll('span');
+        var nameSpan = spans.length > 1 ? spans[1] : spans[0];
+        if (!nameSpan || nameSpan.textContent !== target) continue;
+
+        // Expand the section if collapsed
+        if (sect.contentEl.style.display === 'none') {
+          var hdr = sect.firstChild;
+          if (hdr) hdr.click();
+        }
+
+        rows[ri].scrollIntoView({ behavior: 'smooth', block: 'center' });
+        var focusTarget = rows[ri].querySelector('input, select');
+        if (focusTarget) {
+          setTimeout(function() { focusTarget.focus(); }, 150);
+        }
+        return;
+      }
+    }
+  }
+
   // Show the panel in the DOM, positioned for the given element and selector
   function showPanel(element, selector) {
     if (state.panel) {
@@ -623,6 +668,10 @@
     // Populate content sections
     var content = document.getElementById('__devtool-style-content');
     if (content && element) {
+      // Box model diagram at the top
+      state.boxModelContainer = renderBoxModel(element, scrollToBoxModelInput);
+      content.appendChild(state.boxModelContainer);
+
       var variables = discoverCSSVariables(element);
       var varUsage = buildVariableUsageMap(element, variables);
       var varSection = renderCSSVariablesSection(variables, varUsage);
@@ -673,6 +722,7 @@
     }
     state.panel = null;
     state.sections = [];
+    state.boxModelContainer = null;
 
     if (state.outsideClickHandler) {
       document.removeEventListener('mousedown', state.outsideClickHandler, true);
@@ -1038,6 +1088,185 @@
     return usage;
   }
 
+  // Box model colors matching Chrome DevTools conventions.
+  var BOX_MODEL_COLORS = {
+    margin:  { bg: 'rgba(246, 178, 107, 0.6)', label: '#c47a2a' },
+    border:  { bg: 'rgba(252, 220, 140, 0.6)', label: '#a38b2e' },
+    padding: { bg: 'rgba(147, 196, 125, 0.6)', label: '#4a7a2e' },
+    content: { bg: 'rgba(140, 181, 221, 0.7)', label: '#3a6a9a' }
+  };
+
+  // Box model property groups for reading computed values.
+  var BOX_MODEL_SIDES = ['top', 'right', 'bottom', 'left'];
+
+  // Render an interactive box model diagram for the given element.
+  // Returns a container element with a .refresh() method for live updates.
+  // onClickRegion(regionName) is called when a region is clicked.
+  function renderBoxModel(element, onClickRegion) {
+    var container = document.createElement('div');
+    container.style.cssText = [
+      'padding: ' + TOKENS.spacing.md,
+      'border-bottom: 1px solid ' + TOKENS.colors.border,
+      'background: ' + TOKENS.colors.surfaceAlt
+    ].join(';');
+
+    var diagram = document.createElement('div');
+    diagram.style.cssText = [
+      'position: relative',
+      'font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+      'font-size: 10px',
+      'line-height: 1',
+      'user-select: none'
+    ].join(';');
+
+    // Read computed box model values from the element.
+    function readValues() {
+      var cs = getComputedStyle(element);
+      var vals = { margin: [], border: [], padding: [] };
+      for (var si = 0; si < BOX_MODEL_SIDES.length; si++) {
+        var side = BOX_MODEL_SIDES[si];
+        vals.margin.push(parseFloat(cs.getPropertyValue('margin-' + side)) || 0);
+        vals.border.push(parseFloat(cs.getPropertyValue('border-' + side + '-width')) || 0);
+        vals.padding.push(parseFloat(cs.getPropertyValue('padding-' + side)) || 0);
+      }
+      vals.width = Math.round(parseFloat(cs.getPropertyValue('width')) || 0);
+      vals.height = Math.round(parseFloat(cs.getPropertyValue('height')) || 0);
+      return vals;
+    }
+
+    // Create a single box layer (margin, border, or padding).
+    // Returns {el, labels: [top, right, bottom, left]} for updating.
+    function createLayer(name, color) {
+      var box = document.createElement('div');
+      box.style.cssText = [
+        'position: relative',
+        'background: ' + color.bg,
+        'display: flex',
+        'flex-direction: column',
+        'align-items: center',
+        'cursor: pointer'
+      ].join(';');
+
+      box.addEventListener('click', function(e) {
+        // Only fire if this layer is the direct target (not a child layer)
+        if (e.target === box || e.target === boxLabel || e.target.parentNode === box) {
+          e.stopPropagation();
+          if (onClickRegion) onClickRegion(name);
+        }
+      });
+
+      // Layer label (top-left corner)
+      var boxLabel = document.createElement('span');
+      boxLabel.style.cssText = [
+        'position: absolute',
+        'top: 2px',
+        'left: 4px',
+        'font-size: 9px',
+        'color: ' + color.label,
+        'font-weight: 600',
+        'pointer-events: none'
+      ].join(';');
+      boxLabel.textContent = name;
+      box.appendChild(boxLabel);
+
+      // Side value labels: top, right, bottom, left
+      var labels = [];
+      var positions = [
+        { pos: 'top: 2px; left: 50%; transform: translateX(-50%)' },
+        { pos: 'top: 50%; right: 4px; transform: translateY(-50%)' },
+        { pos: 'bottom: 2px; left: 50%; transform: translateX(-50%)' },
+        { pos: 'top: 50%; left: 4px; transform: translateY(-50%)' }
+      ];
+
+      for (var li = 0; li < 4; li++) {
+        var lbl = document.createElement('span');
+        lbl.style.cssText = [
+          'position: absolute',
+          positions[li].pos,
+          'font-size: 10px',
+          'color: ' + color.label,
+          'font-weight: 500',
+          'pointer-events: none',
+          'white-space: nowrap'
+        ].join(';');
+        lbl.textContent = '0';
+        box.appendChild(lbl);
+        labels.push(lbl);
+      }
+
+      return { el: box, labels: labels };
+    }
+
+    // Create the content box (innermost)
+    var contentBox = document.createElement('div');
+    contentBox.style.cssText = [
+      'background: ' + BOX_MODEL_COLORS.content.bg,
+      'display: flex',
+      'align-items: center',
+      'justify-content: center',
+      'min-height: 32px',
+      'font-size: 11px',
+      'font-weight: 600',
+      'color: ' + BOX_MODEL_COLORS.content.label,
+      'white-space: nowrap'
+    ].join(';');
+    contentBox.addEventListener('click', function(e) { e.stopPropagation(); });
+    var contentLabel = document.createElement('span');
+    contentLabel.style.cssText = 'pointer-events: none';
+    contentLabel.textContent = '0 \u00d7 0';
+    contentBox.appendChild(contentLabel);
+
+    // Build layers from outside in: margin > border > padding > content
+    var marginLayer = createLayer('margin', BOX_MODEL_COLORS.margin);
+    var borderLayer = createLayer('border', BOX_MODEL_COLORS.border);
+    var paddingLayer = createLayer('padding', BOX_MODEL_COLORS.padding);
+
+    // Nest: padding wraps content, border wraps padding, margin wraps border
+    paddingLayer.el.appendChild(contentBox);
+    borderLayer.el.appendChild(paddingLayer.el);
+    marginLayer.el.appendChild(borderLayer.el);
+    diagram.appendChild(marginLayer.el);
+    container.appendChild(diagram);
+
+    // Apply padding to each layer to make space for the value labels.
+    function applyLayerPadding(layer, values) {
+      var t = Math.max(16, values[0] > 0 ? 16 : 14);
+      var r = Math.max(24, values[1] > 0 ? 24 : 20);
+      var b = Math.max(14, values[2] > 0 ? 14 : 12);
+      var l = Math.max(24, values[3] > 0 ? 24 : 20);
+      layer.el.style.padding = t + 'px ' + r + 'px ' + b + 'px ' + l + 'px';
+    }
+
+    // Format a numeric value for display: strip trailing zeros, show '-' for 0
+    function fmtVal(n) {
+      var rounded = Math.round(n * 100) / 100;
+      return rounded === 0 ? '-' : String(rounded);
+    }
+
+    // Update all labels from current computed styles.
+    function refresh() {
+      var v = readValues();
+
+      for (var si = 0; si < 4; si++) {
+        marginLayer.labels[si].textContent = fmtVal(v.margin[si]);
+        borderLayer.labels[si].textContent = fmtVal(v.border[si]);
+        paddingLayer.labels[si].textContent = fmtVal(v.padding[si]);
+      }
+
+      contentLabel.textContent = v.width + ' \u00d7 ' + v.height;
+
+      applyLayerPadding(marginLayer, v.margin);
+      applyLayerPadding(borderLayer, v.border);
+      applyLayerPadding(paddingLayer, v.padding);
+    }
+
+    // Initial render
+    refresh();
+
+    container.refresh = refresh;
+    return container;
+  }
+
   // Property-to-category mapping for computed style grouping.
   // Each key is a category name; the value is an array of property name
   // prefixes or exact names.  A property matches the first category whose
@@ -1280,6 +1509,9 @@
     }
 
     updateAttachButton();
+    if (state.boxModelContainer && state.boxModelContainer.refresh) {
+      state.boxModelContainer.refresh();
+    }
   }
 
   // Check whether an inline style property has been edited.
@@ -1313,6 +1545,9 @@
     }
 
     updateAttachButton();
+    if (state.boxModelContainer && state.boxModelContainer.refresh) {
+      state.boxModelContainer.refresh();
+    }
   }
 
   // Count inline style edits for a given category.
@@ -3616,6 +3851,7 @@
     TextInput: TextInput,
     detectControlType: detectControlType,
     renderControl: renderControl,
-    detectReactComponent: detectReactComponent
+    detectReactComponent: detectReactComponent,
+    renderBoxModel: renderBoxModel
   };
 })();
