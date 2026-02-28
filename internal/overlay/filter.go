@@ -48,6 +48,9 @@ type ProtectedWriter struct {
 	cursorRow atomic.Int32
 	cursorCol atomic.Int32
 
+	// Alt screen tracking
+	inAltScreen atomic.Bool
+
 	// Redraw state
 	redrawNeeded atomic.Bool
 	stopRedraw   chan struct{}
@@ -476,8 +479,14 @@ func (pw *ProtectedWriter) handleCSI(out *bytes.Buffer, final byte) {
 		if isPrivate && len(pw.params) > 0 {
 			switch pw.params[0] {
 			case 1049, 47, 1047: // Alternate screen buffer sequences
-				// Block alt screen - don't let child escape our protected main screen
-				// This keeps our scroll region enforcement active
+				// Allow alt screen transitions through, then re-enforce scroll region
+				// on the new buffer so the indicator bar remains protected.
+				entering := final == 'h'
+				pw.inAltScreen.Store(entering)
+				out.Write(pw.escBuf)
+				// Re-enforce scroll region on the now-active buffer
+				pw.enforceScrollRegion()
+				pw.redrawNeeded.Store(true)
 				return
 			}
 		}
@@ -502,4 +511,9 @@ func (pw *ProtectedWriter) EnforceScrollRegion() {
 	pw.mu.Lock()
 	defer pw.mu.Unlock()
 	pw.enforceScrollRegion()
+}
+
+// InAltScreen returns whether the child process is currently in the alternate screen buffer.
+func (pw *ProtectedWriter) InAltScreen() bool {
+	return pw.inAltScreen.Load()
 }

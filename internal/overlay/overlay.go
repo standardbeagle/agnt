@@ -120,9 +120,16 @@ type Overlay struct {
 	gate *OutputGate
 
 	// Callbacks
-	onAction   func(Action) error
-	onFreeze   func() // Called when screen should freeze (stop PTY output)
-	onUnfreeze func() // Called when screen should unfreeze (send SIGWINCH)
+	onAction         func(Action) error
+	onFreeze         func() // Called when screen should freeze (stop PTY output)
+	onUnfreeze       func() // Called when screen should unfreeze (send SIGWINCH)
+	childInAltScreen func() bool
+
+	// Whether alt screen is currently used for menu/viewer (per open/close cycle)
+	usingAltScreen bool
+
+	// Redraw pausing (prevents indicator writes during streaming)
+	redrawPaused atomic.Bool
 
 	// Mutex for state changes
 	mu sync.Mutex
@@ -196,6 +203,23 @@ func (o *Overlay) SetGate(gate *OutputGate) {
 	o.gate = gate
 }
 
+// SetAltScreenChecker sets a callback that reports whether the child process
+// is currently in the alternate screen buffer. Used to decide whether the
+// overlay can safely use alt screen for menus (only when child is on main screen).
+func (o *Overlay) SetAltScreenChecker(fn func() bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.childInAltScreen = fn
+}
+
+// isChildInAltScreen returns true if the child is in the alt screen buffer.
+func (o *Overlay) isChildInAltScreen() bool {
+	if o.childInAltScreen != nil {
+		return o.childInAltScreen()
+	}
+	return false
+}
+
 // State returns the current overlay state.
 func (o *Overlay) State() State {
 	return State(o.state.Load())
@@ -234,12 +258,18 @@ func (o *Overlay) UpdateStatus(status Status) {
 	o.status.LastUpdate = time.Now()
 	o.statusMu.Unlock()
 
-	// Redraw indicator if visible
-	if o.showBar.Load() && o.State() == StateIndicator {
+	// Redraw indicator if visible and not paused
+	if o.showBar.Load() && o.State() == StateIndicator && !o.redrawPaused.Load() {
 		o.mu.Lock()
 		o.draw()
 		o.mu.Unlock()
 	}
+}
+
+// SetRedrawPaused pauses or resumes indicator redraws.
+// Status updates are still stored — just not rendered until unpaused.
+func (o *Overlay) SetRedrawPaused(paused bool) {
+	o.redrawPaused.Store(paused)
 }
 
 // GetStatus returns the current status.
@@ -299,8 +329,13 @@ func (o *Overlay) showMenu() {
 		o.gate.Freeze()
 	}
 
-	// Switch to alternate screen buffer - preserves main screen content
-	o.renderer.EnterAltScreen()
+	// Use alt screen when child is on main screen (terminal restores content on exit).
+	// When child is in alt screen (fullscreen app), draw directly — SIGWINCH will
+	// trigger the child to redraw when the menu closes.
+	o.usingAltScreen = !o.isChildInAltScreen()
+	if o.usingAltScreen {
+		o.renderer.EnterAltScreen()
+	}
 
 	o.state.Store(int32(StateMenu))
 
@@ -328,15 +363,22 @@ func (o *Overlay) hideMenu() {
 		o.state.Store(int32(StateHidden))
 	}
 
-	// Exit alternate screen - automatically restores main screen content
-	o.renderer.ExitAltScreen()
+	if o.usingAltScreen {
+		// Exit alt screen — terminal restores the previous main screen content.
+		o.renderer.ExitAltScreen()
+	} else {
+		// Child is a fullscreen app in alt screen — just reset internal tracking.
+		// SIGWINCH (via gate unfreeze callback) will trigger it to redraw.
+		o.renderer.ResetMenuRegions()
+	}
 
-	// Unfreeze PTY output so it resumes flowing
+	// Unfreeze PTY output so it resumes flowing.
+	// The gate's onUnfreeze callback sends SIGWINCH and re-enforces scroll region.
 	if o.gate != nil {
 		o.gate.Unfreeze()
 	}
 
-	// Redraw indicator bar (it's in the reserved row, not affected by alt screen)
+	// Redraw indicator bar
 	if o.showBar.Load() {
 		o.draw()
 	}

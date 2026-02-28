@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/standardbeagle/agnt/internal/overlay"
+	"github.com/standardbeagle/agnt/internal/protocol"
 	claude "github.com/standardbeagle/claude-go"
 )
 
@@ -677,6 +679,7 @@ func formatTokens(n int) string {
 }
 
 // printDaemonStatus prints daemon session and autostart status to stderr.
+// Queries daemon for running processes/proxies to display URLs.
 func printDaemonStatus(h *daemonSessionHandle) {
 	if h == nil {
 		return
@@ -692,6 +695,51 @@ func printDaemonStatus(h *daemonSessionHandle) {
 	}
 	for _, e := range h.autostartErrors {
 		fmt.Fprintf(os.Stderr, "[autostart error: %s]\n", e)
+	}
+
+	// Query daemon for running processes and proxies to show URLs
+	if h.client == nil || !h.IsConnected() {
+		return
+	}
+
+	cwd, _ := os.Getwd()
+	dirFilter := protocol.DirectoryFilter{Directory: cwd}
+
+	// Fetch proxies
+	if proxies, err := h.client.ProxyList(dirFilter); err == nil {
+		if proxyList, ok := proxies["proxies"].([]interface{}); ok {
+			for _, p := range proxyList {
+				if pm, ok := p.(map[string]interface{}); ok {
+					id := getString(pm, "id")
+					listenAddr := getString(pm, "listen_addr")
+					if id != "" && listenAddr != "" {
+						fmt.Fprintf(os.Stderr, "[proxy: %s] http://%s\n", id, overlay.NormalizeListenAddr(listenAddr))
+					}
+				}
+			}
+		}
+	}
+
+	// Fetch processes with URLs
+	if procs, err := h.client.ProcList(dirFilter); err == nil {
+		if processes, ok := procs["processes"].([]interface{}); ok {
+			for _, p := range processes {
+				if pm, ok := p.(map[string]interface{}); ok {
+					id := getString(pm, "id")
+					state := getString(pm, "state")
+					if state != "running" {
+						continue
+					}
+					if urls, ok := pm["urls"].([]interface{}); ok {
+						for _, u := range urls {
+							if urlStr, ok := u.(string); ok {
+								fmt.Fprintf(os.Stderr, "[script: %s] %s\n", id, urlStr)
+							}
+						}
+					}
+				}
+			}
+		}
 	}
 }
 
