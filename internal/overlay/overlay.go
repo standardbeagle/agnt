@@ -367,9 +367,10 @@ func (o *Overlay) hideMenu() {
 		// Exit alt screen — terminal restores the previous main screen content.
 		o.renderer.ExitAltScreen()
 	} else {
-		// Child is a fullscreen app in alt screen — just reset internal tracking.
-		// SIGWINCH (via gate unfreeze callback) will trigger it to redraw.
-		o.renderer.ResetMenuRegions()
+		// Child is a fullscreen TUI — clear the visible area so menu artifacts
+		// are gone before the gate unfreezes and SIGWINCH triggers the child
+		// to redraw. Use ED 2 + cursor home (preserves scroll region).
+		o.renderer.ClearVisible()
 	}
 
 	// Unfreeze PTY output so it resumes flowing.

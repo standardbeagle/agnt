@@ -509,6 +509,15 @@ func (r *Renderer) ClearScreen() {
 	r.write(ClearScreen + CursorHome + ResetScroll)
 }
 
+// ClearVisible clears the visible screen and moves cursor home.
+// Unlike ClearScreen, this preserves the scroll region.
+func (r *Renderer) ClearVisible() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.write(ClearScreen + CursorHome)
+}
+
 // EnterAltScreen switches to the alternate screen buffer.
 // The main screen content is preserved and restored when ExitAltScreen is called.
 func (r *Renderer) EnterAltScreen() {
