@@ -140,65 +140,37 @@ func TestProtectedWriter_ClearScreenTriggersRedraw(t *testing.T) {
 	}
 }
 
-func TestProtectedWriter_AltScreenPassthrough(t *testing.T) {
+func TestProtectedWriter_AltScreenBlockedButTracked(t *testing.T) {
 	var buf bytes.Buffer
 	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
 	defer pw.Stop()
 
-	// Enter alt screen - should pass through with scroll region enforcement
+	// Enter alt screen - should be blocked but InAltScreen tracked
 	pw.Write([]byte("\x1b[?1049h"))
-	output := buf.String()
-	if !strings.Contains(output, "\x1b[?1049h") {
-		t.Errorf("expected alt screen enter to pass through, got %q", output)
-	}
-	// Scroll region should be re-enforced on the new buffer
-	if !strings.Contains(output, "\x1b[1;23r") {
-		t.Errorf("expected scroll region enforcement after alt screen enter, got %q", output)
-	}
-	// Scroll region MUST come AFTER the alt screen switch so it lands on the new buffer
-	altIdx := strings.Index(output, "\x1b[?1049h")
-	srIdx := strings.Index(output, "\x1b[1;23r")
-	if altIdx >= srIdx {
-		t.Errorf("scroll region (idx %d) must come after alt screen enter (idx %d), got %q", srIdx, altIdx, output)
+	if buf.String() != "" {
+		t.Errorf("expected alt screen enter to be blocked, got %q", buf.String())
 	}
 	if !pw.InAltScreen() {
 		t.Error("expected InAltScreen() to return true after entering alt screen")
 	}
-	if !pw.redrawNeeded.Load() {
-		t.Error("expected redrawNeeded to be true after alt screen enter")
-	}
 
 	buf.Reset()
-	pw.redrawNeeded.Store(false)
 
-	// Exit alt screen - should pass through with scroll region enforcement
+	// Exit alt screen - should be blocked but InAltScreen tracked
 	pw.Write([]byte("\x1b[?1049l"))
-	output = buf.String()
-	if !strings.Contains(output, "\x1b[?1049l") {
-		t.Errorf("expected alt screen exit to pass through, got %q", output)
-	}
-	if !strings.Contains(output, "\x1b[1;23r") {
-		t.Errorf("expected scroll region enforcement after alt screen exit, got %q", output)
-	}
-	// Scroll region MUST come AFTER the alt screen exit so it lands on the restored main buffer
-	altIdx = strings.Index(output, "\x1b[?1049l")
-	srIdx = strings.Index(output, "\x1b[1;23r")
-	if altIdx >= srIdx {
-		t.Errorf("scroll region (idx %d) must come after alt screen exit (idx %d), got %q", srIdx, altIdx, output)
+	if buf.String() != "" {
+		t.Errorf("expected alt screen exit to be blocked, got %q", buf.String())
 	}
 	if pw.InAltScreen() {
 		t.Error("expected InAltScreen() to return false after exiting alt screen")
 	}
-	if !pw.redrawNeeded.Load() {
-		t.Error("expected redrawNeeded to be true after alt screen exit")
-	}
 
 	buf.Reset()
 
-	// Older alt screen sequences should also pass through
+	// Older alt screen sequences should also be blocked but tracked
 	pw.Write([]byte("\x1b[?47h"))
-	if !strings.Contains(buf.String(), "\x1b[?47h") {
-		t.Errorf("expected ?47h to pass through, got %q", buf.String())
+	if buf.String() != "" {
+		t.Errorf("expected ?47h to be blocked, got %q", buf.String())
 	}
 	if !pw.InAltScreen() {
 		t.Error("expected InAltScreen() to return true after ?47h")
@@ -206,8 +178,8 @@ func TestProtectedWriter_AltScreenPassthrough(t *testing.T) {
 
 	buf.Reset()
 	pw.Write([]byte("\x1b[?1047h"))
-	if !strings.Contains(buf.String(), "\x1b[?1047h") {
-		t.Errorf("expected ?1047h to pass through, got %q", buf.String())
+	if buf.String() != "" {
+		t.Errorf("expected ?1047h to be blocked, got %q", buf.String())
 	}
 }
 
