@@ -479,19 +479,10 @@ func (pw *ProtectedWriter) handleCSI(out *bytes.Buffer, final byte) {
 		if isPrivate && len(pw.params) > 0 {
 			switch pw.params[0] {
 			case 1049, 47, 1047: // Alternate screen buffer sequences
-				// Allow alt screen transitions through, then re-enforce scroll region
-				// on the new buffer so the indicator bar remains protected.
-				entering := final == 'h'
-				pw.inAltScreen.Store(entering)
-				out.Write(pw.escBuf)
-				// Enforce scroll region into the buffer (not pw.out) so it arrives
-				// AFTER the alt screen switch reaches the terminal.
-				bottom := pw.height - pw.config.ProtectBottomRows
-				if bottom < 1 {
-					bottom = 1
-				}
-				fmt.Fprintf(out, "\x1b[1;%dr", bottom)
-				pw.redrawNeeded.Store(true)
+				// Block alt screen — keep the child on the main screen so the
+				// scroll region protects the indicator bar. Track the child's
+				// intent so the overlay's hybrid menu logic can adapt.
+				pw.inAltScreen.Store(final == 'h')
 				return
 			}
 		}
