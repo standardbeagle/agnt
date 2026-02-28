@@ -155,6 +155,12 @@ func TestProtectedWriter_AltScreenPassthrough(t *testing.T) {
 	if !strings.Contains(output, "\x1b[1;23r") {
 		t.Errorf("expected scroll region enforcement after alt screen enter, got %q", output)
 	}
+	// Scroll region MUST come AFTER the alt screen switch so it lands on the new buffer
+	altIdx := strings.Index(output, "\x1b[?1049h")
+	srIdx := strings.Index(output, "\x1b[1;23r")
+	if altIdx >= srIdx {
+		t.Errorf("scroll region (idx %d) must come after alt screen enter (idx %d), got %q", srIdx, altIdx, output)
+	}
 	if !pw.InAltScreen() {
 		t.Error("expected InAltScreen() to return true after entering alt screen")
 	}
@@ -173,6 +179,12 @@ func TestProtectedWriter_AltScreenPassthrough(t *testing.T) {
 	}
 	if !strings.Contains(output, "\x1b[1;23r") {
 		t.Errorf("expected scroll region enforcement after alt screen exit, got %q", output)
+	}
+	// Scroll region MUST come AFTER the alt screen exit so it lands on the restored main buffer
+	altIdx = strings.Index(output, "\x1b[?1049l")
+	srIdx = strings.Index(output, "\x1b[1;23r")
+	if altIdx >= srIdx {
+		t.Errorf("scroll region (idx %d) must come after alt screen exit (idx %d), got %q", srIdx, altIdx, output)
 	}
 	if pw.InAltScreen() {
 		t.Error("expected InAltScreen() to return false after exiting alt screen")

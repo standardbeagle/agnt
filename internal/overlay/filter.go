@@ -484,8 +484,13 @@ func (pw *ProtectedWriter) handleCSI(out *bytes.Buffer, final byte) {
 				entering := final == 'h'
 				pw.inAltScreen.Store(entering)
 				out.Write(pw.escBuf)
-				// Re-enforce scroll region on the now-active buffer
-				pw.enforceScrollRegion()
+				// Enforce scroll region into the buffer (not pw.out) so it arrives
+				// AFTER the alt screen switch reaches the terminal.
+				bottom := pw.height - pw.config.ProtectBottomRows
+				if bottom < 1 {
+					bottom = 1
+				}
+				fmt.Fprintf(out, "\x1b[1;%dr", bottom)
 				pw.redrawNeeded.Store(true)
 				return
 			}
