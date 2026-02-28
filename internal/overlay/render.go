@@ -169,7 +169,7 @@ type proxyDisplayInfo struct {
 // formatProxyDisplay formats proxy URLs for display.
 func formatProxyDisplay(proxy ProxyInfo) proxyDisplayInfo {
 	return proxyDisplayInfo{
-		LocalURL:     "http://" + normalizeListenAddr(proxy.ListenAddr),
+		LocalURL:     "http://" + NormalizeListenAddr(proxy.ListenAddr),
 		TailscaleURL: proxy.TailscaleURL,
 		TunnelURL:    proxy.TunnelURL,
 		HasErrors:    proxy.HasErrors,
@@ -297,7 +297,7 @@ func (r *Renderer) DrawIndicator(status Status) {
 			errorProxyCount++
 		}
 		if proxyURL == "" && p.ListenAddr != "" {
-			proxyURL = "http://" + normalizeListenAddr(p.ListenAddr)
+			proxyURL = "http://" + NormalizeListenAddr(p.ListenAddr)
 		}
 		if tunnelURL == "" && p.TunnelURL != "" {
 			tunnelURL = p.TunnelURL
@@ -391,10 +391,10 @@ func (r *Renderer) DrawIndicator(status Status) {
 	r.write(CursorRestore + CursorShow)
 }
 
-// normalizeListenAddr converts wildcard and loopback addresses to localhost for clickable URLs.
+// NormalizeListenAddr converts wildcard and loopback addresses to localhost for clickable URLs.
 // This is the most reliable option since LAN IPs can be unreliable in virtual environments
 // (WSL2, Docker, etc.). Users who need LAN access can check the detailed proxy output.
-func normalizeListenAddr(addr string) string {
+func NormalizeListenAddr(addr string) string {
 	var port string
 
 	// Extract port from wildcard/loopback addresses (port includes the colon)
@@ -430,7 +430,7 @@ func normalizeProcessURL(urlStr string) string {
 	}
 
 	// Normalize localhost variants
-	addr = normalizeListenAddr(addr)
+	addr = NormalizeListenAddr(addr)
 
 	return protocol + addr
 }
@@ -763,7 +763,7 @@ func (r *Renderer) DrawDashboard(menu Menu, selectedIndex int, status Status) {
 			currentRow++
 
 			// Show proxy listen address on next line
-			proxyURL := "http://" + normalizeListenAddr(proxy.ListenAddr)
+			proxyURL := "http://" + NormalizeListenAddr(proxy.ListenAddr)
 			r.moveTo(currentRow, startCol+7)
 			r.write(fmt.Sprintf("%s-%s %s%s%s",
 				FgBrightBlack, Reset,

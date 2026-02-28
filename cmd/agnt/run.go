@@ -342,8 +342,23 @@ func runWithPTY(ctx context.Context, args []string, socketPath string, sessionCo
 		// When menu is open, gate freezes (discards) PTY output to prevent corruption
 		outputGate = overlay.NewOutputGate(os.Stdout)
 
+		// When the gate unfreezes (menu/viewer closes), send SIGWINCH to the child
+		// process to trigger a full redraw, clearing any overlay artifacts.
+		outputGate.SetCallbacks(nil, func() {
+			if c.Process != nil {
+				_ = c.Process.Signal(syscall.SIGWINCH)
+			}
+			// Re-enforce scroll region on the active buffer
+			if outputFilter != nil {
+				outputFilter.EnforceScrollRegion()
+			}
+		})
+
 		termOverlay = overlay.New(ptmx, width, height, cfg)
 		termOverlay.SetGate(outputGate) // Give overlay control of the gate
+		if outputFilter != nil {
+			termOverlay.SetAltScreenChecker(outputFilter.InAltScreen)
+		}
 		inputRouter = overlay.NewInputRouter(ptmx, termOverlay, overlayHotkey)
 
 		// Create shared daemon connection for all components

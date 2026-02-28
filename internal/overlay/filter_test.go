@@ -140,32 +140,62 @@ func TestProtectedWriter_ClearScreenTriggersRedraw(t *testing.T) {
 	}
 }
 
-func TestProtectedWriter_AltScreenBlocked(t *testing.T) {
+func TestProtectedWriter_AltScreenPassthrough(t *testing.T) {
 	var buf bytes.Buffer
 	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
 	defer pw.Stop()
 
-	// Enter alt screen - should be blocked (not passed through)
+	// Enter alt screen - should pass through with scroll region enforcement
 	pw.Write([]byte("\x1b[?1049h"))
-	if buf.String() != "" {
-		t.Errorf("expected alt screen enter to be blocked, got %q", buf.String())
+	output := buf.String()
+	if !strings.Contains(output, "\x1b[?1049h") {
+		t.Errorf("expected alt screen enter to pass through, got %q", output)
+	}
+	// Scroll region should be re-enforced on the new buffer
+	if !strings.Contains(output, "\x1b[1;23r") {
+		t.Errorf("expected scroll region enforcement after alt screen enter, got %q", output)
+	}
+	if !pw.InAltScreen() {
+		t.Error("expected InAltScreen() to return true after entering alt screen")
+	}
+	if !pw.redrawNeeded.Load() {
+		t.Error("expected redrawNeeded to be true after alt screen enter")
 	}
 
 	buf.Reset()
+	pw.redrawNeeded.Store(false)
 
-	// Exit alt screen - should also be blocked
+	// Exit alt screen - should pass through with scroll region enforcement
 	pw.Write([]byte("\x1b[?1049l"))
-	if buf.String() != "" {
-		t.Errorf("expected alt screen exit to be blocked, got %q", buf.String())
+	output = buf.String()
+	if !strings.Contains(output, "\x1b[?1049l") {
+		t.Errorf("expected alt screen exit to pass through, got %q", output)
+	}
+	if !strings.Contains(output, "\x1b[1;23r") {
+		t.Errorf("expected scroll region enforcement after alt screen exit, got %q", output)
+	}
+	if pw.InAltScreen() {
+		t.Error("expected InAltScreen() to return false after exiting alt screen")
+	}
+	if !pw.redrawNeeded.Load() {
+		t.Error("expected redrawNeeded to be true after alt screen exit")
 	}
 
 	buf.Reset()
 
-	// Older alt screen sequences should also be blocked
+	// Older alt screen sequences should also pass through
 	pw.Write([]byte("\x1b[?47h"))
+	if !strings.Contains(buf.String(), "\x1b[?47h") {
+		t.Errorf("expected ?47h to pass through, got %q", buf.String())
+	}
+	if !pw.InAltScreen() {
+		t.Error("expected InAltScreen() to return true after ?47h")
+	}
+
+	buf.Reset()
 	pw.Write([]byte("\x1b[?1047h"))
-	if buf.String() != "" {
-		t.Errorf("expected older alt screen sequences to be blocked, got %q", buf.String())
+	if !strings.Contains(buf.String(), "\x1b[?1047h") {
+		t.Errorf("expected ?1047h to pass through, got %q", buf.String())
 	}
 }
 

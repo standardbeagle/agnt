@@ -54,7 +54,8 @@ type InputRouter struct {
 	summarizer      StatusSummarizer
 
 	// Process viewer state
-	viewerActive bool
+	viewerActive         bool
+	viewerUsingAltScreen bool
 
 	// Last error from daemon connection attempt
 	lastDaemonError string
@@ -855,7 +856,7 @@ func (r *EscapeSequenceReader) IsPending() bool {
 	return r.state != 0
 }
 
-// showProcessViewer shows the output of the Nth process on the alt screen.
+// showProcessViewer shows the output of the Nth process as a full-screen overlay.
 func (r *InputRouter) showProcessViewer(n int) {
 	if r.outputFetcher == nil {
 		return
@@ -875,17 +876,44 @@ func (r *InputRouter) showProcessViewer(n int) {
 		output = "Error fetching output: " + err.Error()
 	}
 
-	// Enter alt screen and display output
 	r.viewerActive = true
-	r.overlay.renderer.EnterAltScreen()
+
+	// Freeze gate to prevent PTY output from corrupting the viewer
+	if r.overlay.gate != nil {
+		r.overlay.gate.Freeze()
+	}
+
+	// Use alt screen when child is on main screen (restores content on close).
+	// When child is in alt screen (fullscreen app), draw directly.
+	r.viewerUsingAltScreen = !r.overlay.isChildInAltScreen()
+	if r.viewerUsingAltScreen {
+		r.overlay.renderer.EnterAltScreen()
+	}
+
 	r.overlay.renderer.DrawProcessOutput(proc.ID, proc.Command, proc.State, output)
 }
 
-// closeProcessViewer closes the process viewer and returns to main screen.
+// closeProcessViewer closes the process viewer.
 func (r *InputRouter) closeProcessViewer() {
 	if !r.viewerActive {
 		return
 	}
 	r.viewerActive = false
-	r.overlay.renderer.ExitAltScreen()
+
+	if r.viewerUsingAltScreen {
+		r.overlay.renderer.ExitAltScreen()
+	}
+
+	// Unfreeze gate — callback sends SIGWINCH and re-enforces scroll region.
+	if r.overlay.gate != nil {
+		r.overlay.gate.Unfreeze()
+	}
+
+	// Redraw indicator bar
+	if r.overlay.showBar.Load() {
+		r.overlay.statusMu.RLock()
+		status := r.overlay.status
+		r.overlay.statusMu.RUnlock()
+		r.overlay.renderer.DrawIndicator(status)
+	}
 }
