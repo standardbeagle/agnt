@@ -902,6 +902,8 @@ func (r *InputRouter) closeProcessViewer() {
 
 	if r.viewerUsingAltScreen {
 		r.overlay.renderer.ExitAltScreen()
+	} else {
+		r.overlay.renderer.ClearVisible()
 	}
 
 	// Unfreeze gate — callback sends SIGWINCH and re-enforces scroll region.

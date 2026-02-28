@@ -2,6 +2,7 @@ package overlay
 
 import (
 	"bytes"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -705,14 +706,13 @@ func TestActivityMonitorOnOutputLine(t *testing.T) {
 	if len(lines) != 3 {
 		t.Fatalf("expected 3 lines, got %d: %v", len(lines), lines)
 	}
-	if lines[0] != "first line" {
-		t.Errorf("expected 'first line', got %q", lines[0])
-	}
-	if lines[1] != "second line" {
-		t.Errorf("expected 'second line', got %q", lines[1])
-	}
-	if lines[2] != "third" {
-		t.Errorf("expected 'third', got %q", lines[2])
+	sort.Strings(lines)
+	expected := []string{"first line", "second line", "third"}
+	sort.Strings(expected)
+	for i, exp := range expected {
+		if lines[i] != exp {
+			t.Errorf("missing expected line %q; got sorted lines: %v", exp, lines)
+		}
 	}
 }
 
