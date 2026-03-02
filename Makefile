@@ -1,4 +1,4 @@
-.PHONY: build release test test-unit test-integration test-browser clean install install-local install-windows run lint test-webapp mockagent
+.PHONY: build release test test-unit test-integration test-browser clean clean-zombies install install-local install-windows run lint test-webapp mockagent
 
 # Binary names
 BINARY := devtool-mcp
@@ -26,8 +26,8 @@ release:
 	cp $(AGENT_BINARY) $(BINARY); \
 	echo "Production build complete: $(AGENT_BINARY) v$$VERSION"
 
-# Run tests
-test:
+# Run tests (cleans up zombie test daemons first)
+test: clean-zombies
 	go test -v ./...
 
 # Run tests with coverage
@@ -60,9 +60,25 @@ bench:
 	go test -bench=. -benchmem ./...
 
 # Clean build artifacts
-clean:
+clean: clean-zombies
 	rm -f $(BINARY) $(AGENT_BINARY)
 	rm -f coverage.out coverage.html
+
+# Kill orphaned test daemon processes left behind by failed tests
+# [a]gnt trick prevents pgrep from matching its own parent shell's cmdline
+clean-zombies:
+	@pids=$$(pgrep -f '[a]gnt daemon start --socket /tmp/Test' 2>/dev/null); \
+	if [ -n "$$pids" ]; then \
+		count=$$(echo "$$pids" | wc -l); \
+		echo "Killing $$count orphaned test daemon(s)..."; \
+		echo "$$pids" | xargs kill -TERM 2>/dev/null || true; \
+		sleep 1; \
+		pids2=$$(pgrep -f '[a]gnt daemon start --socket /tmp/Test' 2>/dev/null); \
+		if [ -n "$$pids2" ]; then \
+			echo "$$pids2" | xargs kill -9 2>/dev/null || true; \
+		fi; \
+		echo "Done."; \
+	fi
 
 # Install to GOPATH/bin (all binaries)
 install: build
@@ -135,7 +151,8 @@ help:
 	@echo "  test-webapp      - Build test webapp server"
 	@echo "  mockagent        - Build mock agent for PTY testing"
 	@echo "  bench            - Run benchmarks"
-	@echo "  clean            - Remove build artifacts"
+	@echo "  clean            - Remove build artifacts and kill zombie daemons"
+	@echo "  clean-zombies    - Kill orphaned test daemon processes"
 	@echo "  install          - Install all binaries to GOPATH/bin"
 	@echo "  install-local    - Build and install all binaries to ~/.local/bin"
 	@echo "  install-windows  - Cross-compile and install Windows binaries"
