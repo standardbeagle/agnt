@@ -862,6 +862,85 @@ func TestSpinner_DoubleStop(t *testing.T) {
 	s.Stop() // Should not panic
 }
 
+// TestSpinner_ElapsedTime verifies spinner shows elapsed time after threshold.
+func TestSpinner_ElapsedTime(t *testing.T) {
+	var buf bytes.Buffer
+	s := newStderrSpinner("Working...", &buf)
+
+	// Backdate start time to simulate 10s elapsed
+	s.mu.Lock()
+	s.startTime = time.Now().Add(-10 * time.Second)
+	s.mu.Unlock()
+
+	// Wait for at least one frame with elapsed time
+	time.Sleep(150 * time.Millisecond)
+
+	s.Stop()
+
+	output := buf.String()
+	if !strings.Contains(output, "10s") && !strings.Contains(output, "11s") {
+		t.Errorf("expected elapsed time in output, got %q", output)
+	}
+	if !strings.Contains(output, "Working...") {
+		t.Errorf("expected message in output, got %q", output)
+	}
+}
+
+// TestSpinner_NoElapsedBeforeThreshold verifies spinner hides elapsed time under 5s.
+func TestSpinner_NoElapsedBeforeThreshold(t *testing.T) {
+	var buf bytes.Buffer
+	s := newStderrSpinner("Loading...", &buf)
+
+	// Wait for a frame (startTime is now, so elapsed < 5s)
+	time.Sleep(150 * time.Millisecond)
+	s.Stop()
+
+	output := buf.String()
+	if strings.Contains(output, "(") {
+		t.Errorf("expected no elapsed time before 5s threshold, got %q", output)
+	}
+}
+
+// TestSpinner_UpdateLabel verifies label can be changed while running.
+func TestSpinner_UpdateLabel(t *testing.T) {
+	var buf bytes.Buffer
+	s := newStderrSpinner("Initial...", &buf)
+
+	time.Sleep(100 * time.Millisecond)
+	s.UpdateLabel("Updated...")
+	time.Sleep(100 * time.Millisecond)
+
+	s.Stop()
+
+	output := buf.String()
+	if !strings.Contains(output, "Updated...") {
+		t.Errorf("expected updated label in output, got %q", output)
+	}
+}
+
+// TestFormatElapsed verifies elapsed time formatting.
+func TestFormatElapsed(t *testing.T) {
+	tests := []struct {
+		d    time.Duration
+		want string
+	}{
+		{0, "0s"},
+		{5 * time.Second, "5s"},
+		{59 * time.Second, "59s"},
+		{60 * time.Second, "1m"},
+		{90 * time.Second, "1m 30s"},
+		{120 * time.Second, "2m"},
+		{123 * time.Second, "2m 3s"},
+	}
+
+	for _, tt := range tests {
+		got := formatElapsed(tt.d)
+		if got != tt.want {
+			t.Errorf("formatElapsed(%v) = %q, want %q", tt.d, got, tt.want)
+		}
+	}
+}
+
 // TestFormatDuration verifies duration formatting.
 func TestFormatDuration(t *testing.T) {
 	tests := []struct {
