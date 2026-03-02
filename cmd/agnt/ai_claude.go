@@ -396,7 +396,7 @@ func runAiClaudeLegacy(ctx context.Context, opts *claude.AgentOptions, daemonHan
 				prompt = line
 			case msg := <-msgCh:
 				fmt.Fprint(os.Stderr, "\r\033[K")
-				fmt.Fprintf(os.Stderr, "[message received]\n")
+				fmt.Fprintf(os.Stderr, "[message] %s\n", msg)
 				prompt = msg
 				fromMessage = true
 			case <-ctx.Done():
@@ -456,7 +456,7 @@ func runAiClaudeLegacy(ctx context.Context, opts *claude.AgentOptions, daemonHan
 			for {
 				select {
 				case msg := <-msgCh:
-					fmt.Fprintf(os.Stderr, "[queued message]\n")
+					fmt.Fprintf(os.Stderr, "[queued message] %s\n", msg)
 					opts.Resume = sessionID
 					if interactive {
 						spin = newStderrSpinner("Processing message...", os.Stderr)
@@ -668,7 +668,7 @@ func runAiClaudeOverlay(ctx context.Context, opts *claude.AgentOptions, daemonHa
 			}
 			return nil
 		}():
-			fmt.Fprint(rawWriter, "\r\033[K[message received]\n")
+			fmt.Fprintf(rawWriter, "\r\033[K[message] %s\n", msg)
 			prompt = msg
 			fromMessage = true
 
@@ -713,7 +713,7 @@ func runAiClaudeOverlay(ctx context.Context, opts *claude.AgentOptions, daemonHa
 			for draining {
 				select {
 				case msg := <-msgCh:
-					fmt.Fprintln(rawWriter, "[queued message]")
+					fmt.Fprintf(rawWriter, "[queued message] %s\n", msg)
 					opts.Resume = sessionID
 					spin = newStderrSpinner("Processing message...", rawWriter)
 					sid, err := runClaudeQueryWith(ctx, msg, opts, true, spin, rawWriter, rawWriter)
@@ -867,6 +867,7 @@ func streamInteractiveWith(ctx context.Context, iter *claude.QueryIterator, init
 			return "", ctx.Err()
 		case err, ok := <-errCh:
 			if !ok {
+				errCh = nil // nil channel blocks in select, prevents busy-loop
 				continue
 			}
 			if err != nil {
@@ -904,6 +905,7 @@ func streamJSON(ctx context.Context, iter *claude.QueryIterator) (string, error)
 			return "", ctx.Err()
 		case err, ok := <-errCh:
 			if !ok {
+				errCh = nil // nil channel blocks in select, prevents busy-loop
 				continue
 			}
 			if err != nil {
@@ -1152,10 +1154,14 @@ func printDaemonStatus(h *daemonSessionHandle) {
 }
 
 // stderrSpinner displays a braille spinner animation on a writer using \r overwrite.
+// Shows elapsed time after 5 seconds of spinning.
 type stderrSpinner struct {
-	done chan struct{}
-	wg   sync.WaitGroup
-	w    io.Writer
+	done      chan struct{}
+	wg        sync.WaitGroup
+	w         io.Writer
+	mu        sync.RWMutex
+	message   string
+	startTime time.Time
 }
 
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
@@ -1163,8 +1169,10 @@ var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "�
 // newStderrSpinner starts a braille spinner with the given message.
 func newStderrSpinner(message string, w io.Writer) *stderrSpinner {
 	s := &stderrSpinner{
-		done: make(chan struct{}),
-		w:    w,
+		done:      make(chan struct{}),
+		w:         w,
+		message:   message,
+		startTime: time.Now(),
 	}
 	s.wg.Add(1)
 
@@ -1180,13 +1188,32 @@ func newStderrSpinner(message string, w io.Writer) *stderrSpinner {
 				fmt.Fprintf(s.w, "\r\033[K")
 				return
 			case <-ticker.C:
-				fmt.Fprintf(s.w, "\r%s %s", spinnerFrames[i%len(spinnerFrames)], message)
+				s.mu.RLock()
+				msg := s.message
+				start := s.startTime
+				s.mu.RUnlock()
+
+				elapsed := time.Since(start)
+				frame := spinnerFrames[i%len(spinnerFrames)]
+
+				if elapsed >= 5*time.Second {
+					fmt.Fprintf(s.w, "\r\033[K%s %s (%s)", frame, msg, formatElapsed(elapsed))
+				} else {
+					fmt.Fprintf(s.w, "\r\033[K%s %s", frame, msg)
+				}
 				i++
 			}
 		}
 	}()
 
 	return s
+}
+
+// UpdateLabel changes the spinner message.
+func (s *stderrSpinner) UpdateLabel(msg string) {
+	s.mu.Lock()
+	s.message = msg
+	s.mu.Unlock()
 }
 
 // Stop halts the spinner and clears the line.
@@ -1198,4 +1225,18 @@ func (s *stderrSpinner) Stop() {
 		close(s.done)
 	}
 	s.wg.Wait()
+}
+
+// formatElapsed formats a duration as compact elapsed time (e.g. "12s", "1m 23s").
+func formatElapsed(d time.Duration) string {
+	secs := int(d.Truncate(time.Second).Seconds())
+	if secs < 60 {
+		return fmt.Sprintf("%ds", secs)
+	}
+	mins := secs / 60
+	rem := secs % 60
+	if rem == 0 {
+		return fmt.Sprintf("%dm", mins)
+	}
+	return fmt.Sprintf("%dm %ds", mins, rem)
 }
