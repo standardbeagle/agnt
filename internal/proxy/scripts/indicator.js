@@ -43,7 +43,9 @@
     activeTab: 'compose', // compose|overview|errors|network|performance|quality|interactions
     tabUpdateInterval: null, // Update interval for active tab
     lastAuditResults: null, // Cache audit results
-    inspectBtn: null // Inspect toolbar button (for active state tracking)
+    inspectBtn: null, // Inspect toolbar button (for active state tracking)
+    microToast: null, // Micro toast element (compact pill near bug)
+    microToastTimeout: null // Auto-hide timer for micro toast
   };
 
   // ============================================
@@ -86,7 +88,10 @@
     }),
 
     // Interactions tab data
-    interactions: van.state([])
+    interactions: van.state([]),
+
+    // History tab data (chronological event log)
+    history: van.state([])
   };
 
   // ============================================
@@ -629,6 +634,63 @@
           tags.div({style: STYLES.errorMeta}, timeAgo)
         );
       }));
+    };
+  }
+
+  // History Tab Component
+  function HistoryTabComponent() {
+    var HISTORY_COLORS = {
+      tool: '#6366f1',
+      message: '#3b82f6',
+      error: '#ef4444',
+      network: '#8b5cf6',
+      screenshot: '#22c55e',
+      system: '#94a3b8'
+    };
+    var HISTORY_ICONS = {
+      tool: '\u2699',
+      message: '\u2709',
+      error: '\u2718',
+      network: '\u21c4',
+      screenshot: '\ud83d\udcf7',
+      system: '\u25cb'
+    };
+
+    return function() {
+      var events = store.history.val;
+
+      if (events.length === 0) {
+        return tags.div({style: STYLES.emptyState}, 'No events recorded yet');
+      }
+
+      var clearBtn = tags.button({
+        style: 'border: none; background: none; font-size: 11px; color: ' + TOKENS.colors.textMuted + '; cursor: pointer; padding: 2px 6px; margin-bottom: 8px; float: right;',
+        onclick: function() { store.history.val = []; }
+      }, 'Clear');
+
+      var list = tags.div({style: 'clear: both;'},
+        events.map(function(evt) {
+          var color = HISTORY_COLORS[evt.type] || HISTORY_COLORS.system;
+          var icon = HISTORY_ICONS[evt.type] || HISTORY_ICONS.system;
+          var timeAgo = formatTimeAgo(evt.timestamp);
+
+          var item = tags.div({style: STYLES.historyItem},
+            tags.div({style: STYLES.historyDot + '; background: ' + color + ';'}),
+            tags.div({style: STYLES.historyBody},
+              tags.div({style: STYLES.historyText}, icon + ' ' + evt.text),
+              evt.detail ? tags.div({style: STYLES.historyMeta}, truncate(evt.detail, 60)) : ''
+            ),
+            tags.div({style: STYLES.historyTime}, timeAgo)
+          );
+
+          item.onmouseenter = function() { item.style.background = TOKENS.colors.surfaceAlt; };
+          item.onmouseleave = function() { item.style.background = 'transparent'; };
+
+          return item;
+        })
+      );
+
+      return tags.div({}, clearBtn, list);
     };
   }
 
@@ -1235,6 +1297,81 @@
       'padding: ' + TOKENS.spacing.xl,
       'color: ' + TOKENS.colors.textMuted,
       'font-size: 13px'
+    ].join(';'),
+
+    // Micro toast - compact pill near the bug
+    microToast: [
+      'position: fixed',
+      'background: rgba(15, 23, 42, 0.92)',
+      'color: #e2e8f0',
+      'font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+      'font-size: 11px',
+      'font-weight: 500',
+      'padding: 5px 12px',
+      'border-radius: ' + TOKENS.radius.full,
+      'white-space: nowrap',
+      'backdrop-filter: blur(12px)',
+      'pointer-events: none',
+      'z-index: 2147483646',
+      'opacity: 0',
+      'transform: translateY(6px) scale(0.92)',
+      'transition: opacity 0.25s cubic-bezier(0.16,1,0.3,1), transform 0.25s cubic-bezier(0.16,1,0.3,1)',
+      'box-shadow: 0 4px 20px rgba(0,0,0,0.25), inset 0 0.5px 0 rgba(255,255,255,0.06)',
+      'letter-spacing: 0.3px',
+      'max-width: 260px',
+      'overflow: hidden',
+      'text-overflow: ellipsis'
+    ].join(';'),
+
+    microToastVisible: [
+      'opacity: 1',
+      'transform: translateY(0) scale(1)'
+    ].join(';'),
+
+    // History tab item
+    historyItem: [
+      'display: flex',
+      'align-items: flex-start',
+      'gap: 10px',
+      'padding: 8px 0',
+      'border-bottom: 1px solid ' + TOKENS.colors.border,
+      'font-size: 12px',
+      'line-height: 1.4',
+      'transition: background 0.12s ease'
+    ].join(';'),
+
+    historyDot: [
+      'flex-shrink: 0',
+      'width: 8px',
+      'height: 8px',
+      'border-radius: ' + TOKENS.radius.full,
+      'margin-top: 4px'
+    ].join(';'),
+
+    historyBody: [
+      'flex: 1',
+      'min-width: 0'
+    ].join(';'),
+
+    historyText: [
+      'color: ' + TOKENS.colors.text,
+      'white-space: nowrap',
+      'overflow: hidden',
+      'text-overflow: ellipsis'
+    ].join(';'),
+
+    historyMeta: [
+      'font-size: 10px',
+      'color: ' + TOKENS.colors.textMuted,
+      'margin-top: 1px'
+    ].join(';'),
+
+    historyTime: [
+      'flex-shrink: 0',
+      'font-size: 10px',
+      'color: ' + TOKENS.colors.textMuted,
+      'margin-top: 3px',
+      'white-space: nowrap'
     ].join(';')
   };
 
@@ -1284,6 +1421,7 @@
     createBug();
     createPanel();
     createOutputPreview();
+    createMicroToast();
 
     document.documentElement.appendChild(state.container);
   }
@@ -1345,6 +1483,75 @@
     clearTimeout(state.outputPreviewTimeout);
   }
 
+  // Create micro toast element
+  function createMicroToast() {
+    var toast = document.createElement('div');
+    toast.id = '__devtool-micro-toast';
+    toast.style.cssText = STYLES.microToast;
+    state.microToast = toast;
+    state.container.appendChild(toast);
+  }
+
+  // Show a compact micro toast near the bug
+  function showMicroToast(text, color) {
+    if (!state.microToast || !state.bug) return;
+
+    // Set content
+    state.microToast.textContent = text;
+
+    // Subtle left accent line
+    var accentColor = color || TOKENS.colors.primary;
+    state.microToast.style.cssText = STYLES.microToast;
+    state.microToast.style.borderLeft = '2px solid ' + accentColor;
+
+    // Position above the bug, centered
+    var bugRect = state.bug.getBoundingClientRect();
+    var toastW = state.microToast.offsetWidth || 120;
+    var left = bugRect.left + (bugRect.width / 2) - (toastW / 2);
+    // Keep on screen
+    left = Math.max(8, Math.min(left, window.innerWidth - toastW - 8));
+
+    state.microToast.style.left = left + 'px';
+    state.microToast.style.bottom = (window.innerHeight - bugRect.top + 8) + 'px';
+
+    // Animate in
+    requestAnimationFrame(function() {
+      state.microToast.style.cssText = STYLES.microToast + ';' + STYLES.microToastVisible;
+      state.microToast.style.borderLeft = '2px solid ' + accentColor;
+      state.microToast.style.left = left + 'px';
+      state.microToast.style.bottom = (window.innerHeight - bugRect.top + 8) + 'px';
+    });
+
+    // Auto-hide after 2.5 seconds
+    clearTimeout(state.microToastTimeout);
+    state.microToastTimeout = setTimeout(function() {
+      hideMicroToast();
+    }, 2500);
+  }
+
+  // Hide the micro toast
+  function hideMicroToast() {
+    if (!state.microToast) return;
+    state.microToast.style.cssText = STYLES.microToast;
+    clearTimeout(state.microToastTimeout);
+  }
+
+  // Log an event to the history store
+  function logHistoryEvent(type, text, detail) {
+    var maxHistory = 200;
+    var entry = {
+      id: Date.now() + '_' + Math.random().toString(36).substr(2, 4),
+      type: type,       // 'tool', 'message', 'error', 'network', 'screenshot', 'system'
+      text: text,
+      detail: detail || '',
+      timestamp: Date.now()
+    };
+    var current = store.history.val.slice();
+    current.unshift(entry);
+    if (current.length > maxHistory) current = current.slice(0, maxHistory);
+    store.history.val = current;
+  }
+
   // Escape HTML to prevent XSS
   function escapeHtml(text) {
     var div = document.createElement('div');
@@ -1375,6 +1582,16 @@
     dot.style.backgroundColor = core.isConnected() ? TOKENS.colors.success : TOKENS.colors.error;
     bug.appendChild(dot);
 
+    // Entrance animation, then idle breathing
+    bug.classList.add('__devtool-entrance');
+    bug.addEventListener('animationend', function handler() {
+      bug.classList.remove('__devtool-entrance');
+      if (!state.isActive) {
+        bug.classList.add('__devtool-breathe');
+      }
+      bug.removeEventListener('animationend', handler);
+    });
+
     // Drag and click handling
     bug.addEventListener('mousedown', handleDragStart);
     bug.addEventListener('mouseenter', function() {
@@ -1399,26 +1616,48 @@
     var style = document.createElement('style');
     style.id = '__devtool-activity-style';
     style.textContent = [
-      // Ring pulse animation (expanding outward)
-      '@keyframes __devtool-pulse {',
-      '  0% { transform: scale(1); opacity: 0.8; }',
-      '  50% { transform: scale(1.15); opacity: 0.4; }',
-      '  100% { transform: scale(1.3); opacity: 0; }',
+      // Entrance animation - spring bounce with rotation
+      '@keyframes __devtool-entrance {',
+      '  0% { transform: scale(0) rotate(-180deg); opacity: 0; }',
+      '  50% { transform: scale(1.12) rotate(8deg); opacity: 1; }',
+      '  70% { transform: scale(0.96) rotate(-3deg); }',
+      '  100% { transform: scale(1) rotate(0deg); }',
+      '}',
+      '.__devtool-entrance {',
+      '  animation: __devtool-entrance 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) both;',
+      '}',
+      // Idle breathing glow
+      '@keyframes __devtool-breathe {',
+      '  0%, 100% { box-shadow: 0 10px 40px rgba(0,0,0,0.15), 0 0 20px rgba(99,102,241,0.2); }',
+      '  50% { box-shadow: 0 10px 40px rgba(0,0,0,0.15), 0 0 28px rgba(99,102,241,0.4); }',
+      '}',
+      '.__devtool-breathe {',
+      '  animation: __devtool-breathe 3s ease-in-out infinite;',
+      '}',
+      // Orbital ring - rotating glow
+      '@keyframes __devtool-orbit {',
+      '  0% { transform: rotate(0deg) scale(1); box-shadow: 4px 0 10px rgba(245,158,11,0.5), -4px 0 10px rgba(99,102,241,0.3); }',
+      '  25% { transform: rotate(90deg) scale(1.06); box-shadow: 0 4px 12px rgba(245,158,11,0.6), 0 -4px 10px rgba(99,102,241,0.4); }',
+      '  50% { transform: rotate(180deg) scale(1.1); box-shadow: -4px 0 14px rgba(245,158,11,0.7), 4px 0 10px rgba(99,102,241,0.5); }',
+      '  75% { transform: rotate(270deg) scale(1.06); box-shadow: 0 -4px 12px rgba(245,158,11,0.6), 0 4px 10px rgba(99,102,241,0.4); }',
+      '  100% { transform: rotate(360deg) scale(1); box-shadow: 4px 0 10px rgba(245,158,11,0.5), -4px 0 10px rgba(99,102,241,0.3); }',
       '}',
       '.__devtool-active {',
-      '  animation: __devtool-pulse 1.5s ease-out infinite;',
+      '  animation: __devtool-orbit 2.5s linear infinite;',
       '}',
-      // Bug outline throb animation
-      '@keyframes __devtool-throb {',
+      // Bug active pulse - scale + shadow throb
+      '@keyframes __devtool-active-pulse {',
       '  0%, 100% {',
+      '    transform: scale(1);',
       '    box-shadow: 0 10px 40px rgba(0,0,0,0.15), 0 0 20px rgba(99,102,241,0.3), 0 0 0 0 rgba(245,158,11,0);',
       '  }',
       '  50% {',
-      '    box-shadow: 0 10px 40px rgba(0,0,0,0.15), 0 0 20px rgba(99,102,241,0.3), 0 0 0 4px rgba(245,158,11,0.6);',
+      '    transform: scale(1.06);',
+      '    box-shadow: 0 10px 40px rgba(0,0,0,0.15), 0 0 25px rgba(99,102,241,0.5), 0 0 12px rgba(245,158,11,0.35);',
       '  }',
       '}',
       '.__devtool-bug-active {',
-      '  animation: __devtool-throb 1.2s ease-in-out infinite !important;',
+      '  animation: __devtool-active-pulse 2s ease-in-out infinite !important;',
       '}'
     ].join('\\n');
     document.head.appendChild(style);
@@ -1431,25 +1670,23 @@
     var bug = state.bug;
 
     if (isActive) {
-      // Throb the bug outline
       if (bug) {
+        bug.classList.remove('__devtool-breathe');
         bug.classList.add('__devtool-bug-active');
       }
-      // Also show expanding ring
       if (ring) {
         ring.classList.add('__devtool-active');
         ring.style.opacity = '1';
       }
     } else {
-      // Stop throb
       if (bug) {
         bug.classList.remove('__devtool-bug-active');
+        bug.classList.add('__devtool-breathe');
       }
       if (ring) {
         ring.classList.remove('__devtool-active');
         ring.style.opacity = '0';
       }
-      // Hide output preview when going idle
       hideOutputPreview();
     }
   }
@@ -1469,7 +1706,7 @@
       // Tab bar uses CSS grid - horizontal row with auto-sizing columns
       '.__devtool-tab-bar {',
       '  display: grid !important;',
-      '  grid-template-columns: repeat(7, 1fr) auto;',
+      '  grid-template-columns: repeat(8, 1fr) auto;',
       '  gap: 0;',
       '  align-items: center;',
       '}',
@@ -1551,7 +1788,8 @@
       { id: 'network', label: 'Network', short: 'Net', title: 'Network requests' },
       { id: 'performance', label: 'Perf', short: 'Perf', title: 'Performance metrics' },
       { id: 'quality', label: 'Quality', short: 'Qual', title: 'Quality audit' },
-      { id: 'interactions', label: 'Interact', short: 'Intx', title: 'User interactions' }
+      { id: 'interactions', label: 'Interact', short: 'Intx', title: 'User interactions' },
+      { id: 'history', label: 'History', short: 'Hist', title: 'Event history' }
     ];
 
     tabs.forEach(function(tabInfo) {
@@ -1598,7 +1836,7 @@
     }
 
     // Update tab bar highlighting
-    var tabs = ['compose', 'overview', 'errors', 'network', 'performance', 'quality', 'interactions'];
+    var tabs = ['compose', 'overview', 'errors', 'network', 'performance', 'quality', 'interactions', 'history'];
     tabs.forEach(function(id) {
       var tab = document.getElementById('__devtool-tab-' + id);
       if (tab) {
@@ -1641,9 +1879,17 @@
         refreshInteractionsData();
         van.add(content, InteractionsTabComponent());
         break;
+      case 'history':
+        van.add(content, HistoryTabComponent());
+        break;
       case 'compose':
         renderComposeTab(content);
         break;
+    }
+
+    // Adjust panel width for history tab (needs more room for timestamps)
+    if (state.panel) {
+      state.panel.style.width = (tabId === 'history') ? '540px' : '480px';
     }
 
     // Start update interval for active tab
@@ -1687,6 +1933,15 @@
     if (networkTab && window.__devtool_api) {
       var failedCalls = window.__devtool_api.getFailedCalls().length;
       updateTabBadge(networkTab, failedCalls, failedCalls > 0 ? 'red' : null);
+    }
+
+    // Update history tab badge (show count of recent events)
+    var historyTab = document.getElementById('__devtool-tab-history');
+    if (historyTab) {
+      var recentEvents = store.history.val.filter(function(e) {
+        return (Date.now() - e.timestamp) < 30000; // Last 30 seconds
+      }).length;
+      updateTabBadge(historyTab, recentEvents > 0 ? recentEvents : null, recentEvents > 0 ? null : null);
     }
 
     // Update performance tab badge
@@ -1746,6 +2001,10 @@
         break;
       case 'interactions':
         refreshInteractionsData();
+        break;
+      case 'history':
+        // Force re-render to update relative timestamps
+        store.history.val = store.history.val.slice();
         break;
       // quality tab has no data to refresh
     }
@@ -3198,19 +3457,51 @@
   function handleMessage(message) {
     if (message.type === 'activity') {
       var payload = message.payload || message;
-      setActivityState(payload.active === true);
+      var active = payload.active === true;
+      setActivityState(active);
+      if (active) {
+        showMicroToast('\u26a1 Working...', TOKENS.colors.active);
+        logHistoryEvent('system', 'Agent active', '');
+      } else {
+        showMicroToast('\u2713 Idle', TOKENS.colors.success);
+        logHistoryEvent('system', 'Agent idle', '');
+      }
     } else if (message.type === 'output_preview') {
       var payload = message.payload || message;
       if (payload.lines && Array.isArray(payload.lines)) {
         showOutputPreview(payload.lines);
       }
+    } else if (message.type === 'tool_event') {
+      // Tool call from the AI agent
+      var payload = message.payload || message;
+      var toolName = payload.name || 'unknown';
+      var toolAction = payload.action || 'call';
+      if (toolAction === 'error') {
+        showMicroToast('\u2718 ' + toolName, TOKENS.colors.error);
+        logHistoryEvent('error', 'Tool error: ' + toolName, payload.detail || '');
+      } else {
+        showMicroToast('\u2699 ' + toolName, TOKENS.colors.primary);
+        logHistoryEvent('tool', toolName, payload.detail || '');
+      }
+    } else if (message.type === 'execute') {
+      showMicroToast('\u25b6 exec', TOKENS.colors.secondary);
+      logHistoryEvent('tool', 'Proxy exec', (message.code || '').substring(0, 80));
+    } else if (message.type === 'proxy_diagnostic') {
+      var payload = message.payload || message;
+      var level = payload.level || 'info';
+      var diagMsg = payload.message || 'diagnostic';
+      var color = level === 'error' ? TOKENS.colors.error : TOKENS.colors.active;
+      showMicroToast((level === 'error' ? '\u2718 ' : '\u26a0 ') + diagMsg.substring(0, 30), color);
+      logHistoryEvent(level === 'error' ? 'error' : 'system', diagMsg, '');
     } else if (message.type === 'capture_ack' && message.id && message.file_path) {
-      // Server confirmed screenshot saved — update attachment with file path
+      // Server confirmed screenshot saved
       store.attachments.val = store.attachments.val.map(function(a) {
         if (a.id !== message.id) return a;
         return Object.assign({}, a, { filePath: message.file_path });
       });
       state.attachments = store.attachments.val;
+      showMicroToast('\ud83d\udcf7 Screenshot saved', TOKENS.colors.success);
+      logHistoryEvent('screenshot', 'Screenshot captured', message.file_path);
     }
   }
 
@@ -3282,6 +3573,8 @@
     togglePanel: togglePanel,
     setActivityState: setActivityState,
     addAttachment: addAttachment,
+    showMicroToast: showMicroToast,
+    logHistoryEvent: logHistoryEvent,
     state: state
   };
 })();
