@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -54,12 +57,21 @@ var daemonInfoCmd = &cobra.Command{
 	Run:   runDaemonInfo,
 }
 
+var daemonCleanupCmd = &cobra.Command{
+	Use:   "cleanup",
+	Short: "Kill orphaned test/zombie daemon processes",
+	Long: `Find and kill orphaned daemon processes left behind by failed tests
+or crashed sessions. Skips the current active daemon.`,
+	Run: runDaemonCleanup,
+}
+
 func init() {
 	daemonCmd.AddCommand(daemonStartCmd)
 	daemonCmd.AddCommand(daemonStopCmd)
 	daemonCmd.AddCommand(daemonRestartCmd)
 	daemonCmd.AddCommand(daemonStatusCmd)
 	daemonCmd.AddCommand(daemonInfoCmd)
+	daemonCmd.AddCommand(daemonCleanupCmd)
 }
 
 func getSocketPath(cmd *cobra.Command) string {
@@ -213,5 +225,68 @@ func runDaemonInfo(cmd *cobra.Command, args []string) {
 			fmt.Printf("\n✓ Up to date (last checked: %s ago)\n",
 				time.Since(info.UpdateInfo.LastChecked).Round(time.Second))
 		}
+	}
+}
+
+func runDaemonCleanup(cmd *cobra.Command, args []string) {
+	// Find orphaned test daemon processes (socket path contains /tmp/Test)
+	out, err := exec.Command("pgrep", "-f", "agnt daemon start --socket /tmp/Test").Output()
+	if err != nil {
+		fmt.Println("No orphaned test daemons found.")
+
+		// Still check for general zombie daemons via socket library
+		socketPath := getSocketPath(cmd)
+		cleaned := daemon.CleanupZombieDaemons(socketPath)
+		if cleaned > 0 {
+			fmt.Printf("Cleaned up %d stale socket(s).\n", cleaned)
+		}
+		return
+	}
+
+	var killed int
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		pid, err := strconv.Atoi(strings.TrimSpace(line))
+		if err != nil || pid <= 0 || pid == os.Getpid() {
+			continue
+		}
+
+		p, err := os.FindProcess(pid)
+		if err != nil {
+			continue
+		}
+
+		_ = p.Signal(syscall.SIGTERM)
+		killed++
+	}
+
+	if killed > 0 {
+		fmt.Printf("Sent SIGTERM to %d orphaned test daemon(s).\n", killed)
+		time.Sleep(time.Second)
+
+		// Force kill any survivors
+		out2, err := exec.Command("pgrep", "-f", "agnt daemon start --socket /tmp/Test").Output()
+		if err == nil {
+			var forced int
+			for _, line := range strings.Split(strings.TrimSpace(string(out2)), "\n") {
+				pid, err := strconv.Atoi(strings.TrimSpace(line))
+				if err != nil || pid <= 0 {
+					continue
+				}
+				if p, err := os.FindProcess(pid); err == nil {
+					_ = p.Signal(syscall.SIGKILL)
+					forced++
+				}
+			}
+			if forced > 0 {
+				fmt.Printf("Force killed %d remaining daemon(s).\n", forced)
+			}
+		}
+	}
+
+	// Also clean up stale sockets via socket library
+	socketPath := getSocketPath(cmd)
+	cleaned := daemon.CleanupZombieDaemons(socketPath)
+	if cleaned > 0 {
+		fmt.Printf("Cleaned up %d stale socket(s).\n", cleaned)
 	}
 }

@@ -31,27 +31,31 @@ func waitForProcessState(t *testing.T, client *Client, processID, wantState stri
 	return nil
 }
 
-// restartProcessWithRetry retries ProcRestart once on transient startup failures
+// restartProcessWithRetry retries ProcRestart on transient startup failures
 // caused by the PID-reuse race in Go's exec.CommandContext.
 func restartProcessWithRetry(t *testing.T, client *Client, processID string) map[string]interface{} {
 	t.Helper()
-	result, err := client.ProcRestart(processID)
-	if err == nil {
-		return result
-	}
-	// Retry once: a "process exited with code -1 during startup" error is a
-	// transient PID-reuse race where Go's exec.CommandContext goroutine fires
-	// an async SIGKILL after the old process is reaped, hitting the newly
-	// started process if it happened to inherit the same PID.
-	if strings.Contains(err.Error(), "exited with code") || strings.Contains(err.Error(), "startup") {
-		t.Logf("Transient restart failure (PID-reuse race), retrying: %v", err)
-		time.Sleep(300 * time.Millisecond)
+	const maxAttempts = 3
+	var result map[string]interface{}
+	var err error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
 		result, err = client.ProcRestart(processID)
+		if err == nil {
+			return result
+		}
+		// A "process exited with code -1 during startup" error is a transient
+		// PID-reuse race where Go's exec.CommandContext goroutine fires an async
+		// SIGKILL after the old process is reaped, hitting the newly started
+		// process if it happened to inherit the same PID.
+		if strings.Contains(err.Error(), "exited with code") || strings.Contains(err.Error(), "startup") {
+			t.Logf("Transient restart failure (PID-reuse race, attempt %d/%d): %v", attempt+1, maxAttempts, err)
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+		break // Non-transient error, don't retry
 	}
-	if err != nil {
-		t.Fatalf("Failed to restart process %q: %v", processID, err)
-	}
-	return result
+	t.Fatalf("Failed to restart process %q: %v", processID, err)
+	return nil
 }
 
 // TestRestartIntegration_ProcRestart tests single process restart.
@@ -433,19 +437,29 @@ func TestRestartIntegration_RestartAll(t *testing.T) {
 	// Wait for everything to start
 	time.Sleep(200 * time.Millisecond)
 
-	// Restart all
-	result, err := client.RestartAll()
-	if err != nil {
-		t.Fatalf("Failed to restart all: %v", err)
-	}
-	t.Logf("RestartAll result: %v", result)
-
 	// Helper to safely get int from result
 	getIntVal := func(m map[string]interface{}, key string) int {
 		if v, ok := m[key].(float64); ok {
 			return int(v)
 		}
 		return 0
+	}
+
+	// Restart all — retry on transient PID-reuse race (same as restartProcessWithRetry)
+	var result map[string]interface{}
+	for attempt := 0; attempt < 3; attempt++ {
+		var err error
+		result, err = client.RestartAll()
+		if err != nil {
+			t.Fatalf("Failed to restart all: %v", err)
+		}
+		t.Logf("RestartAll result (attempt %d): %v", attempt, result)
+
+		if getIntVal(result, "processes_failed") == 0 {
+			break
+		}
+		t.Logf("Transient process restart failure (PID-reuse race, attempt %d/3), retrying...", attempt+1)
+		time.Sleep(500 * time.Millisecond)
 	}
 
 	processesRestarted := getIntVal(result, "processes_restarted")

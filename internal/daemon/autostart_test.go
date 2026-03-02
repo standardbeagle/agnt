@@ -2,7 +2,11 @@ package daemon
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -45,9 +49,24 @@ func TestAutoStartDaemon(t *testing.T) {
 	t.Logf("Using daemon path: %s", daemonPath)
 	t.Logf("Config: %+v", config)
 
-	// Ensure cleanup happens even if test fails
+	// Ensure cleanup happens even if test fails — force kill by PID if graceful fails
 	defer func() {
-		StopDaemon(socketPath)
+		_ = StopDaemon(socketPath)
+		time.Sleep(200 * time.Millisecond)
+		// Force kill any process still using this socket path
+		out, err := exec.Command("pgrep", "-f", socketPath).Output()
+		if err == nil {
+			for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+				pid, err := strconv.Atoi(strings.TrimSpace(line))
+				if err != nil || pid <= 0 {
+					continue
+				}
+				if p, err := os.FindProcess(pid); err == nil {
+					_ = p.Signal(syscall.SIGKILL)
+					_, _ = p.Wait()
+				}
+			}
+		}
 		os.Remove(socketPath)
 	}()
 

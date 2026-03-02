@@ -6,12 +6,41 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/standardbeagle/go-cli-server/process"
 )
+
+// cleanupTestDaemon aggressively cleans up a test daemon process.
+// Tries graceful socket shutdown first, then finds and kills the process
+// by matching its socket path in /proc cmdline.
+func cleanupTestDaemon(t *testing.T, sockPath string) {
+	t.Helper()
+
+	// Try graceful shutdown first
+	_ = StopDaemon(sockPath)
+	time.Sleep(200 * time.Millisecond)
+
+	// Force kill any process still using this socket path
+	out, err := exec.Command("pgrep", "-f", sockPath).Output()
+	if err != nil {
+		return // No matching processes
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		pid, err := strconv.Atoi(strings.TrimSpace(line))
+		if err != nil || pid <= 0 {
+			continue
+		}
+		if p, err := os.FindProcess(pid); err == nil {
+			_ = p.Signal(syscall.SIGKILL)
+			_, _ = p.Wait()
+		}
+	}
+}
 
 // findAgntBinary finds the agnt binary for testing.
 // Returns the path to the binary or skips the test if not found.
@@ -82,17 +111,7 @@ func TestDaemonUpgrade_FullCycle(t *testing.T) {
 		t.Fatalf("Failed to start daemon: %v", err)
 	}
 
-	// Ensure cleanup happens even if test fails
-	defer func() {
-		// Try graceful shutdown first
-		client := NewClient(WithSocketPath(sockPath))
-		if err := client.Connect(); err == nil {
-			client.Shutdown()
-			client.Close()
-		}
-		// Force stop if still running
-		StopDaemon(sockPath)
-	}()
+	defer func() { cleanupTestDaemon(t, sockPath) }()
 
 	// Wait for daemon to be ready
 	time.Sleep(500 * time.Millisecond)
@@ -200,13 +219,7 @@ func TestUpgradeLock_ConcurrentAttempts(t *testing.T) {
 	if err := daemon.Start(); err != nil {
 		t.Fatalf("Failed to start daemon: %v", err)
 	}
-	defer func() {
-		client := NewClient(WithSocketPath(sockPath))
-		if err := client.Connect(); err == nil {
-			client.Shutdown()
-			client.Close()
-		}
-	}()
+	defer func() { cleanupTestDaemon(t, sockPath) }()
 
 	time.Sleep(500 * time.Millisecond)
 
@@ -288,15 +301,7 @@ func TestUpgradeStaleSocket(t *testing.T) {
 		t.Fatal("Daemon should not be running with stale socket")
 	}
 
-	// Ensure cleanup happens even if test fails
-	defer func() {
-		client := NewClient(WithSocketPath(sockPath))
-		if err := client.Connect(); err == nil {
-			client.Shutdown()
-			client.Close()
-		}
-		StopDaemon(sockPath)
-	}()
+	defer func() { cleanupTestDaemon(t, sockPath) }()
 
 	// Create upgrader
 	upgrader := NewDaemonUpgrader(UpgradeConfig{
@@ -352,13 +357,7 @@ func TestUpgradeVersionCheck(t *testing.T) {
 	if err := daemon.Start(); err != nil {
 		t.Fatalf("Failed to start daemon: %v", err)
 	}
-	defer func() {
-		client := NewClient(WithSocketPath(sockPath))
-		if err := client.Connect(); err == nil {
-			client.Shutdown()
-			client.Close()
-		}
-	}()
+	defer func() { cleanupTestDaemon(t, sockPath) }()
 
 	time.Sleep(500 * time.Millisecond)
 
