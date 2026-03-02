@@ -1014,8 +1014,7 @@ func renderAssistantMessage(m claude.AssistantMessage, spin **stderrSpinner, std
 			if *spin != nil {
 				(*spin).Stop()
 			}
-			fmt.Fprintf(stderr, "\r\033[K[tool: %s]\n", b.Name)
-			*spin = newStderrSpinner("Working...", stderr)
+			*spin = newStderrSpinner(fmt.Sprintf("[tool: %s]", b.Name), stderr)
 
 		case claude.ThinkingBlock:
 			if *spin != nil {
@@ -1196,11 +1195,7 @@ func newStderrSpinner(message string, w io.Writer) *stderrSpinner {
 				elapsed := time.Since(start)
 				frame := spinnerFrames[i%len(spinnerFrames)]
 
-				if elapsed >= 5*time.Second {
-					fmt.Fprintf(s.w, "\r\033[K%s %s (%s)", frame, msg, formatElapsed(elapsed))
-				} else {
-					fmt.Fprintf(s.w, "\r\033[K%s %s", frame, msg)
-				}
+				fmt.Fprintf(s.w, "\r\033[K%s %s (%s)", frame, msg, formatElapsed(elapsed))
 				i++
 			}
 		}

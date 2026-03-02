@@ -562,15 +562,17 @@ func TestRenderMessage_ToolUse(t *testing.T) {
 	if stdout.Len() != 0 {
 		t.Errorf("expected no stdout output, got %q", stdout.String())
 	}
-	stderrStr := stderr.String()
-	if !strings.Contains(stderrStr, "[tool: Read]") {
-		t.Errorf("stderr = %q, want to contain %q", stderrStr, "[tool: Read]")
-	}
 	if spin == nil {
 		t.Error("expected spinner to be started after tool use")
 	}
+	// Wait for spinner to write at least one frame
+	time.Sleep(150 * time.Millisecond)
 	if spin != nil {
 		spin.Stop()
+	}
+	stderrStr := stderr.String()
+	if !strings.Contains(stderrStr, "[tool: Read]") {
+		t.Errorf("stderr = %q, want to contain %q", stderrStr, "[tool: Read]")
 	}
 }
 
@@ -886,18 +888,18 @@ func TestSpinner_ElapsedTime(t *testing.T) {
 	}
 }
 
-// TestSpinner_NoElapsedBeforeThreshold verifies spinner hides elapsed time under 5s.
-func TestSpinner_NoElapsedBeforeThreshold(t *testing.T) {
+// TestSpinner_AlwaysShowsElapsedTime verifies spinner always shows elapsed time.
+func TestSpinner_AlwaysShowsElapsedTime(t *testing.T) {
 	var buf bytes.Buffer
 	s := newStderrSpinner("Loading...", &buf)
 
-	// Wait for a frame (startTime is now, so elapsed < 5s)
+	// Wait for a frame (startTime is now, so elapsed ~0s)
 	time.Sleep(150 * time.Millisecond)
 	s.Stop()
 
 	output := buf.String()
-	if strings.Contains(output, "(") {
-		t.Errorf("expected no elapsed time before 5s threshold, got %q", output)
+	if !strings.Contains(output, "(") {
+		t.Errorf("expected elapsed time in output, got %q", output)
 	}
 }
 
