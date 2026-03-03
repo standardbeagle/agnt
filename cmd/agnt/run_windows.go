@@ -272,15 +272,21 @@ func runWithConPTY(ctx context.Context, args []string, socketPath string, sessio
 		log.Printf("warning: failed to set initial PTY size: %v", err)
 	}
 
-	// Find the command
-	cmdPath, err := exec.LookPath(command)
+	// Resolve the command using multi-step fallback
+	resolvedPath, shellWrap, err := resolveCommand(command)
 	if err != nil {
 		stopSpinner()
-		return fmt.Errorf("command not found: %s", command)
+		return err
 	}
 
 	// Create and start the command attached to the PTY
-	cmd := ptmx.Command(cmdPath, cmdArgs...)
+	var cmd *pty.Cmd
+	if shellWrap {
+		psArgs := buildPowerShellWrapArgs(command, cmdArgs)
+		cmd = ptmx.Command(resolvedPath, psArgs...)
+	} else {
+		cmd = ptmx.Command(resolvedPath, cmdArgs...)
+	}
 	// Pass project path to child process so MCP server can filter by correct directory
 	cmd.Env = append(os.Environ(), "AGNT_PROJECT_PATH="+projectPath)
 	if err := cmd.Start(); err != nil {
@@ -917,4 +923,98 @@ func generateSessionCode(command string) string {
 
 	// Fallback: use timestamp-based code if daemon unavailable
 	return fmt.Sprintf("%s-%d", base, time.Now().UnixNano()%10000)
+}
+
+// resolveCommand resolves a command using multi-step fallback:
+//  1. exec.LookPath — direct PATH lookup (fast path)
+//  2. PowerShell Get-Command — finds commands PowerShell knows about
+//  3. cmd.exe where — finds commands in PATH extensions (.cmd, .bat, etc.)
+//  4. PowerShell shell wrap — runs the command inside PowerShell (like Unix bash -ic)
+func resolveCommand(command string) (path string, shellWrap bool, err error) {
+	// Step 1: Direct PATH lookup
+	if p, err := exec.LookPath(command); err == nil {
+		return p, false, nil
+	}
+
+	// Step 2: PowerShell Get-Command resolution
+	if p := resolveViaPowerShell(command); p != "" {
+		return p, false, nil
+	}
+
+	// Step 3: cmd.exe where fallback
+	if p := resolveViaWhere(command); p != "" {
+		return p, false, nil
+	}
+
+	// Step 4: Shell wrap in PowerShell (like Unix bash -ic)
+	psPath, err := exec.LookPath("powershell.exe")
+	if err != nil {
+		return "", false, fmt.Errorf("command not found: %s (powershell.exe also not available for fallback)", command)
+	}
+	return psPath, true, nil
+}
+
+// resolveViaPowerShell uses PowerShell's Get-Command to find a command's path.
+// Returns empty string if resolution fails.
+func resolveViaPowerShell(command string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	// Use -NoProfile to skip profile loading for speed
+	cmd := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-Command",
+		fmt.Sprintf("(Get-Command %s -ErrorAction SilentlyContinue).Source", psQuote(command)))
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	result := strings.TrimSpace(string(out))
+	if result == "" {
+		return ""
+	}
+	return result
+}
+
+// resolveViaWhere uses cmd.exe's where command to find executables.
+// Returns empty string if resolution fails.
+func resolveViaWhere(command string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "cmd.exe", "/c", "where", command)
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	// where may return multiple lines; take the first
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	if len(lines) > 0 {
+		result := strings.TrimSpace(lines[0])
+		if result != "" {
+			return result
+		}
+	}
+	return ""
+}
+
+// buildPowerShellWrapArgs builds arguments for running a command inside PowerShell.
+// PowerShell loads $PROFILE automatically, so commands available in the user's
+// PowerShell session (aliases, functions, PATH additions) will be found.
+func buildPowerShellWrapArgs(command string, args []string) []string {
+	var parts []string
+	parts = append(parts, psQuote(command))
+	for _, arg := range args {
+		parts = append(parts, psQuote(arg))
+	}
+	cmdStr := strings.Join(parts, " ")
+	return []string{"-NoLogo", "-Command", "& { " + cmdStr + " }"}
+}
+
+// psQuote quotes a string for safe use in PowerShell commands.
+// Uses single quotes and doubles embedded single quotes.
+func psQuote(s string) string {
+	if !strings.ContainsAny(s, " \t\n'\"\\$`(){}[]<>&|;,@#") {
+		return s
+	}
+	// PowerShell single-quote escaping: double the single quotes
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
