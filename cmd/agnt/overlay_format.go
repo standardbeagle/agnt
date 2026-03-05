@@ -53,7 +53,7 @@ func formatPanelMessageText(event ProxyEvent, summarizer *overlay.AuditSummarize
 	}
 
 	auditReports, nonAuditAttachments := processAttachments(data.Attachments, data.Message, summarizer)
-	return formatPanelMessageBody(data.Message, auditReports, nonAuditAttachments, data.RequestNotification)
+	return formatPanelMessageBody(data.Message, auditReports, nonAuditAttachments)
 }
 
 // processAttachments separates audit attachments (with LLM summarization) from regular attachments.
@@ -141,7 +141,7 @@ func processAuditAttachment(data json.RawMessage, userMessage string, summarizer
 }
 
 // formatPanelMessageBody formats the panel message with audit reports and attachments.
-func formatPanelMessageBody(message string, auditReports []string, attachments []attachmentInfo, requestNotification bool) string {
+func formatPanelMessageBody(message string, auditReports []string, attachments []attachmentInfo) string {
 	userMessage := message
 	if userMessage == "" && len(auditReports) > 0 {
 		userMessage = "Review and fix the issues found in this audit report."
@@ -245,12 +245,6 @@ func formatPanelMessageBody(message string, auditReports []string, attachments [
 	if len(auditReports) > 0 || len(attachments) > 0 {
 		text += "\n\n[All Audit Data]\n"
 		text += "Summary of all files: .agnt/audit/SUMMARY.md\n"
-	}
-
-	if requestNotification {
-		text += "\n\n[Note: Use toast notifications for meaningful status updates, not just completion. " +
-			"Examples: \"Compiling...\", \"Running tests...\", \"Found 3 issues\", \"Build succeeded\". " +
-			"Usage: proxy {action: \"toast\", id: \"dev\", toast_message: \"Your message\", toast_type: \"info|success|warning|error\"}]"
 	}
 
 	return text
