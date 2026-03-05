@@ -40,7 +40,7 @@
     // Attachments are now logged items with references
     attachments: [], // { id, type, label, summary, timestamp }
     // Tab management
-    activeTab: 'compose', // compose|overview|errors|network|performance|quality|interactions
+    activeTab: 'compose', // compose|overview|errors|network|performance|interactions
     tabUpdateInterval: null, // Update interval for active tab
     lastAuditResults: null, // Cache audit results
     inspectBtn: null, // Inspect toolbar button (for active state tracking)
@@ -591,12 +591,6 @@
     };
   }
 
-  // Quality Tab Component
-  function QualityTabComponent() {
-    return function() {
-      return tags.div({style: STYLES.emptyState}, 'Quality audits coming soon...');
-    };
-  }
 
   // Helper to format interaction target
   function formatInteractionTarget(target) {
@@ -1787,7 +1781,6 @@
       { id: 'errors', label: 'Errors', short: 'Err', title: 'JavaScript errors' },
       { id: 'network', label: 'Network', short: 'Net', title: 'Network requests' },
       { id: 'performance', label: 'Perf', short: 'Perf', title: 'Performance metrics' },
-      { id: 'quality', label: 'Quality', short: 'Qual', title: 'Quality audit' },
       { id: 'interactions', label: 'Interact', short: 'Intx', title: 'User interactions' },
       { id: 'history', label: 'History', short: 'Hist', title: 'Event history' }
     ];
@@ -1836,7 +1829,7 @@
     }
 
     // Update tab bar highlighting
-    var tabs = ['compose', 'overview', 'errors', 'network', 'performance', 'quality', 'interactions', 'history'];
+    var tabs = ['compose', 'overview', 'errors', 'network', 'performance', 'interactions', 'history'];
     tabs.forEach(function(id) {
       var tab = document.getElementById('__devtool-tab-' + id);
       if (tab) {
@@ -1871,9 +1864,6 @@
       case 'performance':
         refreshPerformanceData();
         van.add(content, PerformanceTabComponent());
-        break;
-      case 'quality':
-        van.add(content, QualityTabComponent());
         break;
       case 'interactions':
         refreshInteractionsData();
@@ -2006,7 +1996,7 @@
         // Force re-render to update relative timestamps
         store.history.val = store.history.val.slice();
         break;
-      // quality tab has no data to refresh
+      // other tabs have no data to refresh
     }
   }
 
