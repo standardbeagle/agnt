@@ -464,7 +464,7 @@ func (o *Overlay) typeText(msg TypeMessage) {
 func (o *Overlay) sendEntersUntilActivity() {
 	// Send the first Enter immediately — this must always happen
 	// regardless of any activity signals from the text echo.
-	o.writeTopty("\r\n")
+	o.writeTopty("\r")
 
 	// Wait for the text + first Enter echo to settle through the PTY
 	// and ActivityMonitor before watching for real agent responses.
@@ -494,7 +494,7 @@ drained:
 		case <-o.activityCh:
 			return // Agent is responding — message was accepted
 		case <-time.After(delay):
-			o.writeTopty("\r\n")
+			o.writeTopty("\r")
 		}
 	}
 }
@@ -517,7 +517,7 @@ func (o *Overlay) buildKeySequence(msg KeyMessage) string {
 	// Handle special keys
 	switch msg.Key {
 	case "Enter", "Return":
-		return "\r\n"
+		return "\r"
 	case "Tab":
 		return "\t"
 	case "Escape", "Esc":
