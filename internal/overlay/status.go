@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -571,6 +572,15 @@ func NewDaemonBashRunner(conn *daemon.Conn) *DaemonBashRunner {
 	}
 }
 
+// platformShell returns the shell command and args for running a command string
+// on the current platform.
+func platformShell(command string) (string, []string) {
+	if runtime.GOOS == "windows" {
+		return "cmd.exe", []string{"/c", command}
+	}
+	return "sh", []string{"-c", command}
+}
+
 // RunBashCommand runs a bash command via the daemon and returns the process ID.
 func (r *DaemonBashRunner) RunBashCommand(command string) (string, error) {
 	// Generate unique process ID
@@ -583,14 +593,15 @@ func (r *DaemonBashRunner) RunBashCommand(command string) (string, error) {
 		cwd = "."
 	}
 
-	// Run the command via the daemon using request builder
+	// Run the command via the daemon using request shell
+	shell, shellArgs := platformShell(command)
 	runConfig := protocol.RunConfig{
 		ID:      processID,
 		Path:    cwd,
 		Mode:    "background",
 		Raw:     true,
-		Command: "sh",
-		Args:    []string{"-c", command},
+		Command: shell,
+		Args:    shellArgs,
 	}
 
 	_, err = r.conn.Request(protocol.VerbRunJSON).

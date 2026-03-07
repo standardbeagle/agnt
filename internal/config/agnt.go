@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	kdl "github.com/sblinch/kdl-go"
@@ -49,12 +50,21 @@ type AgntProjectMeta struct {
 
 // ScriptConfig defines a script to run.
 type ScriptConfig struct {
-	// Run is a shell command string (executed via sh -c)
+	// Run is a shell command string (executed via platform shell)
+	// On Unix: sh -c "..."
+	// On Windows: cmd.exe /c "..."
+	// Override with Shell field
 	Run string `kdl:"run"`
 	// Command is the executable name (used with Args)
 	Command string `kdl:"command"`
 	// Args are command arguments (used with Command)
 	Args []string `kdl:"args"`
+	// Shell overrides the shell used for "run" commands.
+	// Examples: "bash", "powershell", "cmd.exe", "sh"
+	// If empty, uses platform default (sh on Unix, cmd.exe on Windows)
+	Shell string `kdl:"shell"`
+	// ShellArgs overrides the shell arguments. Default: ["-c"] for sh/bash, ["/c"] for cmd.exe
+	ShellArgs []string `kdl:"shell-args"`
 	// Autostart starts the script when session opens
 	Autostart bool `kdl:"autostart"`
 	// URLMatchers are patterns for URL detection in output
@@ -63,6 +73,37 @@ type ScriptConfig struct {
 	Env map[string]string `kdl:"env"`
 	// Cwd is the working directory for the script
 	Cwd string `kdl:"cwd"`
+}
+
+// ResolveShell returns the shell command and arguments for executing a "run" command.
+// Priority: explicit Shell/ShellArgs config > platform default.
+func (s *ScriptConfig) ResolveShell() (shell string, shellArgs []string) {
+	if s.Shell != "" {
+		shell = s.Shell
+		if len(s.ShellArgs) > 0 {
+			shellArgs = append(s.ShellArgs, s.Run)
+		} else {
+			// Infer shell args from shell name
+			base := strings.ToLower(filepath.Base(shell))
+			base = strings.TrimSuffix(base, ".exe")
+			switch base {
+			case "cmd":
+				shellArgs = []string{"/c", s.Run}
+			case "powershell", "pwsh":
+				shellArgs = []string{"-NoLogo", "-Command", s.Run}
+			default:
+				// sh, bash, zsh, etc.
+				shellArgs = []string{"-c", s.Run}
+			}
+		}
+		return shell, shellArgs
+	}
+
+	// Platform default
+	if runtime.GOOS == "windows" {
+		return "cmd.exe", []string{"/c", s.Run}
+	}
+	return "sh", []string{"-c", s.Run}
 }
 
 // ProxyConfig defines a reverse proxy to start.
@@ -404,6 +445,13 @@ scripts {
     // frontend {
     //     run "npm run dev"
     //     cwd "packages/frontend"
+    //     autostart true
+    // }
+
+    // Example: custom shell (e.g., Git Bash on Windows)
+    // dev {
+    //     run "npm run dev"
+    //     shell "C:\\Program Files\\Git\\bin\\bash.exe"
     //     autostart true
     // }
 

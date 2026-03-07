@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"log"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -265,6 +268,26 @@ func startDaemonSession(ctx context.Context, cfg daemonSessionConfig) *daemonSes
 	}()
 
 	return handle
+}
+
+// displayAutostartResults waits for daemon registration to complete and writes
+// autostart results (started services and errors) to the given writer.
+// This should be called in a goroutine after the PTY is started.
+func displayAutostartResults(handle *daemonSessionHandle, w io.Writer, timeout time.Duration) {
+	if handle == nil {
+		return
+	}
+	if !handle.WaitRegistered(timeout) {
+		return
+	}
+
+	started := append(handle.autostartScripts, handle.autostartProxies...)
+	if len(started) > 0 {
+		fmt.Fprintf(w, "\r\n\x1b[36m[agnt] auto-started: %s\x1b[0m\r\n", strings.Join(started, ", "))
+	}
+	for _, e := range handle.autostartErrors {
+		fmt.Fprintf(w, "\r\n\x1b[31m[agnt] autostart error: %s\x1b[0m\r\n", e)
+	}
 }
 
 // setupAlertScanner creates an AlertScanner from .agnt.kdl config.
