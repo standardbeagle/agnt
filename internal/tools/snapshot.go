@@ -33,7 +33,7 @@ func RegisterSnapshotTools(server *mcp.Server, manager *snapshot.Manager) {
 		return handleSnapshot(manager, ctx, req, input)
 	}
 
-	mcp.AddTool(server, &mcp.Tool{
+	addLenientTool(server, &mcp.Tool{
 		Name: "snapshot",
 		Description: `Capture and compare visual snapshots for regression testing.
 

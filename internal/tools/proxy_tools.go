@@ -438,7 +438,7 @@ type LogEntryOutput struct {
 
 // RegisterProxyTools adds proxy-related MCP tools to the server.
 func RegisterProxyTools(server *mcp.Server, pm *proxy.ProxyManager) {
-	mcp.AddTool(server, &mcp.Tool{
+	addLenientTool(server, &mcp.Tool{
 		Name: "currentpage",
 		Description: `Get current page sessions with grouped resources and metrics. Uses compact format by default.
 
@@ -476,7 +476,7 @@ This provides a high-level view of active pages and their resources,
 making it easy to understand page load behavior and debug issues.`,
 	}, makeCurrentPageHandler(pm))
 
-	mcp.AddTool(server, &mcp.Tool{
+	addLenientTool(server, &mcp.Tool{
 		Name: "proxy",
 		Description: `Manage reverse proxy servers with traffic logging and frontend instrumentation.
 
@@ -523,7 +523,7 @@ Common __devtool examples:
 Each proxy has separate log storage and WebSocket connections.`,
 	}, makeProxyHandler(pm))
 
-	mcp.AddTool(server, &mcp.Tool{
+	addLenientTool(server, &mcp.Tool{
 		Name: "proxylog",
 		Description: `Query and analyze proxy traffic logs with compact, human-readable output by default.
 

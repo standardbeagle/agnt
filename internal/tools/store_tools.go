@@ -41,7 +41,7 @@ type StoreEntryOutput struct {
 
 // RegisterStoreTool registers the store MCP tool with the server.
 func RegisterStoreTool(server *mcp.Server, dt *DaemonTools) {
-	mcp.AddTool(server, &mcp.Tool{
+	addLenientTool(server, &mcp.Tool{
 		Name: "store",
 		Description: `Persistent key-value storage with scoped namespaces.
 

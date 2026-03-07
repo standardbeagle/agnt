@@ -25,7 +25,7 @@ type DetectOutput struct {
 
 // RegisterProjectTools adds project-related MCP tools to the server.
 func RegisterProjectTools(server *mcp.Server) {
-	mcp.AddTool(server, &mcp.Tool{
+	addLenientTool(server, &mcp.Tool{
 		Name: "detect",
 		Description: `Detect project type and available scripts.
 Example: detect {path: "."} → {type: "go", scripts: ["test", "build", "lint"]}`,

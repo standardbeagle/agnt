@@ -53,7 +53,7 @@ type BrowserEntry struct {
 
 // RegisterBrowserTool registers the browser MCP tool with the server.
 func RegisterBrowserTool(server *mcp.Server, dt *DaemonTools) {
-	mcp.AddTool(server, &mcp.Tool{
+	addLenientTool(server, &mcp.Tool{
 		Name: "browser",
 		Description: `Launch and manage Chrome browser instances for automation.
 
