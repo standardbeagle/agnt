@@ -1035,9 +1035,8 @@ func (d *Daemon) autostartScript(ctx context.Context, name string, script *confi
 	var args []string
 
 	if script.Run != "" {
-		// Shell command string - execute via sh -c
-		command = "sh"
-		args = []string{"-c", script.Run}
+		// Shell command string - resolve via config or platform default
+		command, args = script.ResolveShell()
 	} else if script.Command != "" {
 		// Explicit command specified
 		command = script.Command
@@ -1094,7 +1093,15 @@ func (d *Daemon) autostartScript(ctx context.Context, name string, script *confi
 		URLMatchers:  script.URLMatchers,
 		AutoRestart:  true, // Autostarted scripts should always auto-restart
 	})
-	return err
+	if err != nil {
+		// Include resolved command in error for debugging (especially Windows shell issues)
+		cmdStr := command
+		if len(args) > 0 {
+			cmdStr = fmt.Sprintf("%s %s", command, strings.Join(args, " "))
+		}
+		return fmt.Errorf("%w (resolved command: %s, cwd: %s)", err, cmdStr, workingDir)
+	}
+	return nil
 }
 
 // autostartProxy starts a single proxy from config.

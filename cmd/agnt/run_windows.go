@@ -425,6 +425,13 @@ func runWithConPTY(ctx context.Context, args []string, socketPath string, sessio
 		}()
 	}
 
+	// Display autostart results (errors, started services) once registration completes
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		displayAutostartResults(daemonHandle, os.Stderr, 10*time.Second)
+	}()
+
 	// Handle terminal resize (polling on Windows since no SIGWINCH)
 	wg.Add(1)
 	go func() {
