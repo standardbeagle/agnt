@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/overlay"
 )
 
@@ -128,20 +129,20 @@ func (o *Overlay) NotifyActivity() {
 func (o *Overlay) Start(ctx context.Context) error {
 	// Remove stale socket if it exists
 	if _, err := os.Stat(o.socketPath); err == nil {
-		log.Printf("[Overlay] removing stale socket: %s", o.socketPath)
+		debug.Log("overlay", "removing stale socket: %s", o.socketPath)
 		if err := os.Remove(o.socketPath); err != nil {
-			log.Printf("[Overlay] WARNING: failed to remove stale socket %s: %v", o.socketPath, err)
+			debug.Log("overlay", "failed to remove stale socket %s: %v", o.socketPath, err)
 		}
 	}
 
 	// Create Unix socket listener
-	log.Printf("[Overlay] creating Unix socket listener at: %s", o.socketPath)
+	debug.Log("overlay", "creating Unix socket listener at: %s", o.socketPath)
 	listener, err := net.Listen("unix", o.socketPath)
 	if err != nil {
 		return fmt.Errorf("failed to create overlay socket at %s: %w", o.socketPath, err)
 	}
 	o.listener = listener
-	log.Printf("[Overlay] socket listener started successfully")
+	debug.Log("overlay", "socket listener started successfully")
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", o.handleWebSocket)
@@ -311,13 +312,13 @@ func (o *Overlay) handleEvent(w http.ResponseWriter, r *http.Request) {
 }
 
 func (o *Overlay) processProxyEvent(event ProxyEvent) {
-	log.Printf("[Overlay] received proxy event: type=%s proxy_id=%s data_len=%d", event.Type, event.ProxyID, len(event.Data))
+	debug.Log("overlay", "received proxy event: type=%s proxy_id=%s data_len=%d", event.Type, event.ProxyID, len(event.Data))
 	text := formatProxyEventText(event, o.auditSummarizer)
 	if text != "" {
-		log.Printf("[Overlay] injecting %d chars into PTY for event type=%s", len(text), event.Type)
+		debug.Log("overlay", "injecting %d chars into PTY for event type=%s", len(text), event.Type)
 		o.typeText(TypeMessage{Text: text, Enter: true, Instant: true})
 	} else {
-		log.Printf("[Overlay] WARNING: formatProxyEventText returned empty for type=%s", event.Type)
+		debug.Log("overlay", "formatProxyEventText returned empty for type=%s", event.Type)
 	}
 	o.Broadcast("proxy_event", event)
 }
@@ -586,12 +587,12 @@ func (o *Overlay) writeTopty(s string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if o.ptmx == nil {
-		log.Printf("[Overlay] writeTopty: ptmx is nil, dropping %d bytes", len(s))
+		debug.Log("overlay", "writeTopty: ptmx is nil, dropping %d bytes", len(s))
 		return
 	}
 	n, err := o.ptmx.Write([]byte(s))
 	if err != nil {
-		log.Printf("[Overlay] writeTopty error: %v (wrote %d/%d bytes)", err, n, len(s))
+		debug.Log("overlay", "writeTopty error: %v (wrote %d/%d bytes)", err, n, len(s))
 	}
 	// Sync if available (for *os.File)
 	if syncer, ok := o.ptmx.(interface{ Sync() error }); ok {

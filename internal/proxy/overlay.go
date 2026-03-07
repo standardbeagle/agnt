@@ -166,7 +166,7 @@ func (n *OverlayNotifier) send(event OverlayEvent) error {
 	// Use dummy host - actual connection is via Unix socket
 	resp, err := client.Post("http://localhost/event", "application/json", bytes.NewReader(data))
 	if err != nil {
-		debug.Error("overlay-notifier", "failed to POST %s event to overlay socket %s: %v", event.Type, socketPath, err)
+		debug.Log("overlay-notifier", "failed to POST %s event to overlay socket %s: %v", event.Type, socketPath, err)
 		return err
 	}
 	defer resp.Body.Close()

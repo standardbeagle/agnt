@@ -3,7 +3,6 @@ package debug
 
 import (
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -88,8 +87,8 @@ func SetLogFile(name string) error {
 
 	logFile = f
 
-	// Write to both stderr and file
-	logger.SetOutput(io.MultiWriter(os.Stderr, f))
+	// Write to file only (stderr corrupts PTY/MCP output)
+	logger.SetOutput(f)
 
 	return nil
 }

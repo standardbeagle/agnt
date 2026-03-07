@@ -315,7 +315,7 @@ func runWithConPTY(ctx context.Context, args []string, socketPath string, sessio
 	// Create network overlay for receiving external events (from browser)
 	netOverlay := newOverlay(overlaySocketPath, ptmx)
 	if err := netOverlay.Start(ctx); err != nil {
-		log.Printf("WARNING: overlay socket failed to start: %v (proxy→agent messages will not work)", err)
+		debug.Warn("overlay", "socket failed to start: %v (proxy→agent messages will not work)", err)
 	}
 	defer netOverlay.Stop()
 
