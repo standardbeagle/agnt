@@ -867,14 +867,14 @@ func (d *Daemon) hubHandleProxyStart(ctx context.Context, conn *hubpkg.Connectio
 			proxyServer.SetOverlayEndpoint(endpoint)
 			debug.Log("daemon", "Set global overlay endpoint for proxy %s: %s", proxyID, endpoint)
 		} else {
-			debug.Warn("daemon", "No overlay endpoint found for proxy %s (path=%q, normalized=%q) — proxy→agent messages will not work", proxyID, path, normalizedPath)
+			debug.Log("daemon", "No overlay endpoint found for proxy %s (path=%q, normalized=%q) — proxy→agent messages will not work", proxyID, path, normalizedPath)
 		}
 	} else if endpoint := d.OverlayEndpoint(); endpoint != "" {
 		// Fallback to global overlay endpoint if no path specified
 		proxyServer.SetOverlayEndpoint(endpoint)
 		debug.Log("daemon", "Set global overlay endpoint for proxy %s: %s", proxyID, endpoint)
 	} else {
-		debug.Warn("daemon", "No overlay endpoint found for proxy %s (no path, no global endpoint) — proxy→agent messages will not work", proxyID)
+		debug.Log("daemon", "No overlay endpoint found for proxy %s (no path, no global endpoint) — proxy→agent messages will not work", proxyID)
 	}
 
 	// Persist proxy config
@@ -2298,7 +2298,7 @@ func (d *Daemon) hubHandleSessionRegister(conn *hubpkg.Connection, cmd *hubproto
 			}
 		}
 	} else {
-		debug.Warn("daemon", "session register: cannot update proxies — overlayPath=%q projectPath=%q", session.OverlayPath, session.ProjectPath)
+		debug.Log("daemon", "session register: cannot update proxies — overlayPath=%q projectPath=%q", session.OverlayPath, session.ProjectPath)
 	}
 
 	// Run autostart for this project
