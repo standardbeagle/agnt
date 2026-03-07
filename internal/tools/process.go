@@ -111,7 +111,7 @@ type ProcEntry struct {
 
 // RegisterProcessTools adds process-related MCP tools to the server.
 func RegisterProcessTools(server *mcp.Server, pm *process.ProcessManager) {
-	mcp.AddTool(server, &mcp.Tool{
+	addLenientTool(server, &mcp.Tool{
 		Name: "run",
 		Description: `Run a project script or raw command.
 
@@ -132,7 +132,7 @@ Examples:
   run {raw: true, command: "go", args: ["mod", "tidy"], mode: "foreground-raw"}`,
 	}, makeRunHandler(pm))
 
-	mcp.AddTool(server, &mcp.Tool{
+	addLenientTool(server, &mcp.Tool{
 		Name: "proc",
 		Description: `Manage running processes.
 

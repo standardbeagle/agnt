@@ -68,7 +68,7 @@ var validCheckTypes = map[string]bool{
 
 // RegisterResponsiveAuditTool registers the responsive_audit tool for legacy mode.
 func RegisterResponsiveAuditTool(server *mcp.Server, pm *proxy.ProxyManager) {
-	mcp.AddTool(server, &mcp.Tool{
+	addLenientTool(server, &mcp.Tool{
 		Name:        "responsive_audit",
 		Description: responsiveAuditToolDescription,
 	}, makeResponsiveAuditHandler(pm))
@@ -97,7 +97,7 @@ func makeResponsiveAuditHandler(pm *proxy.ProxyManager) func(context.Context, *m
 
 // RegisterResponsiveAuditToolDaemon registers the responsive_audit tool for daemon mode.
 func RegisterResponsiveAuditToolDaemon(server *mcp.Server, dt *DaemonTools) {
-	mcp.AddTool(server, &mcp.Tool{
+	addLenientTool(server, &mcp.Tool{
 		Name:        "responsive_audit",
 		Description: responsiveAuditToolDescription,
 	}, dt.makeResponsiveAuditHandlerDaemon())

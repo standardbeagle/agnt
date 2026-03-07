@@ -48,7 +48,7 @@ type TunnelEntry struct {
 
 // RegisterTunnelTool registers the tunnel MCP tool with the server.
 func RegisterTunnelTool(server *mcp.Server, dt *DaemonTools) {
-	mcp.AddTool(server, &mcp.Tool{
+	addLenientTool(server, &mcp.Tool{
 		Name: "tunnel",
 		Description: `Manage tunnel connections for exposing local services publicly.
 

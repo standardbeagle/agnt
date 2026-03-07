@@ -67,7 +67,7 @@ type AutomationEntry struct {
 
 // RegisterAutomationTool registers the automation MCP tool with the server.
 func RegisterAutomationTool(server *mcp.Server, dt *DaemonTools) {
-	mcp.AddTool(server, &mcp.Tool{
+	addLenientTool(server, &mcp.Tool{
 		Name: "automation",
 		Description: `Control browser automation sessions for programmatic testing and screenshots.
 

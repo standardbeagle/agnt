@@ -55,7 +55,7 @@ type ProxyInfo struct {
 
 // RegisterDaemonManagementTool adds the daemon management tool to the server.
 func RegisterDaemonManagementTool(server *mcp.Server, dt *DaemonTools) {
-	mcp.AddTool(server, &mcp.Tool{
+	addLenientTool(server, &mcp.Tool{
 		Name: "daemon",
 		Description: `Manage the devtool daemon service.
 

@@ -73,7 +73,7 @@ type TaskEntry struct {
 
 // RegisterSessionTool adds the session MCP tool to the server.
 func RegisterSessionTool(server *mcp.Server, dt *DaemonTools) {
-	mcp.AddTool(server, &mcp.Tool{
+	addLenientTool(server, &mcp.Tool{
 		Name: "session",
 		Description: `Manage agnt run sessions and schedule messages for AI agents.
 

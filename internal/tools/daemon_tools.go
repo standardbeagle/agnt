@@ -180,14 +180,14 @@ func (dt *DaemonTools) Close() error {
 // RegisterDaemonTools adds all MCP tools that communicate with the daemon.
 func RegisterDaemonTools(server *mcp.Server, dt *DaemonTools) {
 	// Project tools
-	mcp.AddTool(server, &mcp.Tool{
+	addLenientTool(server, &mcp.Tool{
 		Name: "detect",
 		Description: `Detect project type and available scripts.
 Example: detect {path: "."} → {type: "go", scripts: ["test", "build", "lint"]}`,
 	}, dt.makeDetectHandler())
 
 	// Process tools
-	mcp.AddTool(server, &mcp.Tool{
+	addLenientTool(server, &mcp.Tool{
 		Name: "run",
 		Description: `Run a project script or raw command.
 
@@ -214,7 +214,7 @@ Examples:
   run {raw: true, command: "go", args: ["mod", "tidy"], mode: "foreground-raw"}`,
 	}, dt.makeRunHandler())
 
-	mcp.AddTool(server, &mcp.Tool{
+	addLenientTool(server, &mcp.Tool{
 		Name: "proc",
 		Description: `Manage running processes.
 
@@ -252,7 +252,7 @@ Examples:
 	}, dt.makeProcHandler())
 
 	// Proxy tools
-	mcp.AddTool(server, &mcp.Tool{
+	addLenientTool(server, &mcp.Tool{
 		Name: "proxy",
 		Description: `Manage reverse proxy servers with traffic logging and frontend instrumentation.
 
@@ -308,7 +308,7 @@ Common __devtool examples:
 Each proxy has separate log storage and WebSocket connections.`,
 	}, dt.makeProxyHandler())
 
-	mcp.AddTool(server, &mcp.Tool{
+	addLenientTool(server, &mcp.Tool{
 		Name: "proxylog",
 		Description: `Query and analyze proxy traffic logs.
 
@@ -372,7 +372,7 @@ Other Actions:
 Each proxy maintains its own separate log storage.`,
 	}, dt.makeProxyLogHandler())
 
-	mcp.AddTool(server, &mcp.Tool{
+	addLenientTool(server, &mcp.Tool{
 		Name: "currentpage",
 		Description: `Get current page sessions with grouped resources and metrics.
 
@@ -419,7 +419,7 @@ This provides a high-level view of active pages and their resources.`,
 	}, dt.makeCurrentPageHandler())
 
 	// Error aggregation tool
-	mcp.AddTool(server, &mcp.Tool{
+	addLenientTool(server, &mcp.Tool{
 		Name: "get_errors",
 		Description: `Get all current errors across processes and proxies.
 
@@ -870,11 +870,8 @@ func (dt *DaemonTools) handleProxyStart(input ProxyInput) (*mcp.CallToolResult, 
 		return errorResult("target_url required for start"), ProxyOutput{}, nil
 	}
 
-	// Get current working directory
-	cwd, err := os.Getwd()
-	if err != nil {
-		return errorResult(fmt.Sprintf("failed to get working directory: %v", err)), ProxyOutput{}, nil
-	}
+	// Get project path (prefers AGNT_PROJECT_PATH from agnt run, falls back to cwd)
+	cwd := getProjectPath()
 
 	// Use -1 to signal "use default" (hash-based port), 0 means auto-assign
 	port := input.Port

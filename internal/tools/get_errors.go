@@ -459,7 +459,7 @@ func convertCustomError(proxyID string, em map[string]interface{}) []unifiedErro
 // RegisterGetErrorsTool registers the get_errors tool for legacy mode (no daemon).
 // Only proxy errors are available in legacy mode (no process alerts without daemon).
 func RegisterGetErrorsTool(server *mcp.Server, pm *proxy.ProxyManager) {
-	mcp.AddTool(server, &mcp.Tool{
+	addLenientTool(server, &mcp.Tool{
 		Name: "get_errors",
 		Description: `Get all current errors across proxies.
 
