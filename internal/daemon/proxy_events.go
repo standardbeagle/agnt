@@ -133,6 +133,8 @@ func (d *Daemon) handleURLDetected(event ProxyEvent) {
 			// Fallback to global overlay endpoint if no session found
 			server.SetOverlayEndpoint(overlayEndpoint)
 			debug.Log("daemon", "Set global overlay endpoint for proxy %s: %s", proxyID, overlayEndpoint)
+		} else {
+			debug.Warn("daemon", "No overlay endpoint found for URL-detected proxy %s (path=%q) — proxy→agent messages will not work", proxyID, projectPath)
 		}
 
 		// Track script -> proxy association
@@ -198,11 +200,15 @@ func (d *Daemon) handleExplicitStart(event ProxyEvent) {
 			// Fallback to global overlay endpoint if no session found
 			server.SetOverlayEndpoint(overlayEndpoint)
 			debug.Log("daemon", "Set global overlay endpoint for explicit proxy %s: %s", event.ProxyID, overlayEndpoint)
+		} else {
+			debug.Warn("daemon", "No overlay endpoint found for explicit proxy %s (path=%q) — proxy→agent messages will not work", event.ProxyID, event.Path)
 		}
 	} else if overlayEndpoint := d.OverlayEndpoint(); overlayEndpoint != "" {
 		// Fallback to global overlay endpoint if no path specified
 		server.SetOverlayEndpoint(overlayEndpoint)
 		debug.Log("daemon", "Set global overlay endpoint for explicit proxy %s: %s", event.ProxyID, overlayEndpoint)
+	} else {
+		debug.Warn("daemon", "No overlay endpoint found for explicit proxy %s (no path, no global endpoint) — proxy→agent messages will not work", event.ProxyID)
 	}
 
 	debug.Log("daemon", "Created explicit proxy %s targeting %s", event.ProxyID, targetURL)
