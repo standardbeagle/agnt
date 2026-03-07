@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/standardbeagle/agnt/internal/debug"
 )
 
 // OverlayNotifier sends events to the agent overlay server via Unix socket.
@@ -42,6 +44,7 @@ func (n *OverlayNotifier) SetEndpoint(socketPath string) {
 	n.enabled = socketPath != ""
 
 	if n.enabled {
+		debug.Log("overlay-notifier", "endpoint set: %s", socketPath)
 		// Create HTTP client with Unix socket transport
 		n.client = &http.Client{
 			Timeout: 5 * time.Second,
@@ -52,6 +55,7 @@ func (n *OverlayNotifier) SetEndpoint(socketPath string) {
 			},
 		}
 	} else {
+		debug.Log("overlay-notifier", "endpoint cleared")
 		n.client = nil
 	}
 }
@@ -144,9 +148,12 @@ func (n *OverlayNotifier) send(event OverlayEvent) error {
 	n.mu.RLock()
 	if !n.enabled || n.client == nil {
 		n.mu.RUnlock()
-		return nil // Not enabled, silently drop
+		debug.Log("overlay-notifier", "event %s dropped: notifier not enabled (enabled=%v, client=%v, socketPath=%q)",
+			event.Type, n.enabled, n.client != nil, n.socketPath)
+		return nil
 	}
 	client := n.client
+	socketPath := n.socketPath
 	n.mu.RUnlock()
 
 	data, err := json.Marshal(event)
@@ -154,13 +161,17 @@ func (n *OverlayNotifier) send(event OverlayEvent) error {
 		return err
 	}
 
+	debug.Log("overlay-notifier", "sending %s event to overlay socket %s (%d bytes)", event.Type, socketPath, len(data))
+
 	// Use dummy host - actual connection is via Unix socket
 	resp, err := client.Post("http://localhost/event", "application/json", bytes.NewReader(data))
 	if err != nil {
+		debug.Error("overlay-notifier", "failed to POST %s event to overlay socket %s: %v", event.Type, socketPath, err)
 		return err
 	}
 	defer resp.Body.Close()
 
+	debug.Log("overlay-notifier", "%s event delivered to overlay (status=%d)", event.Type, resp.StatusCode)
 	return nil
 }
 

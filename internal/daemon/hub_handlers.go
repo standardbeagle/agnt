@@ -858,18 +858,23 @@ func (d *Daemon) hubHandleProxyStart(ctx context.Context, conn *hubpkg.Connectio
 
 	// Find session for this project to get session-specific overlay endpoint
 	if path != "" {
-		if session, ok := d.sessionRegistry.FindByDirectory(normalizePath(path)); ok && session.OverlayPath != "" {
+		normalizedPath := normalizePath(path)
+		if session, ok := d.sessionRegistry.FindByDirectory(normalizedPath); ok && session.OverlayPath != "" {
 			proxyServer.SetOverlayEndpoint(session.OverlayPath)
 			debug.Log("daemon", "Set session-specific overlay endpoint for proxy %s: %s", proxyID, session.OverlayPath)
 		} else if endpoint := d.OverlayEndpoint(); endpoint != "" {
 			// Fallback to global overlay endpoint if no session found
 			proxyServer.SetOverlayEndpoint(endpoint)
 			debug.Log("daemon", "Set global overlay endpoint for proxy %s: %s", proxyID, endpoint)
+		} else {
+			debug.Warn("daemon", "No overlay endpoint found for proxy %s (path=%q, normalized=%q) — proxy→agent messages will not work", proxyID, path, normalizedPath)
 		}
 	} else if endpoint := d.OverlayEndpoint(); endpoint != "" {
 		// Fallback to global overlay endpoint if no path specified
 		proxyServer.SetOverlayEndpoint(endpoint)
 		debug.Log("daemon", "Set global overlay endpoint for proxy %s: %s", proxyID, endpoint)
+	} else {
+		debug.Warn("daemon", "No overlay endpoint found for proxy %s (no path, no global endpoint) — proxy→agent messages will not work", proxyID)
 	}
 
 	// Persist proxy config
@@ -2281,11 +2286,19 @@ func (d *Daemon) hubHandleSessionRegister(conn *hubpkg.Connection, cmd *hubproto
 	// This is session-scoped: only proxies for the same project get updated,
 	// avoiding global clobbering that would affect other sessions/projects.
 	if session.OverlayPath != "" && session.ProjectPath != "" {
-		for _, p := range d.proxym.List() {
-			if normalizePath(p.Path) == session.ProjectPath {
+		proxies := d.proxym.List()
+		debug.Log("daemon", "session register: updating overlay endpoint on %d existing proxies (sessionPath=%q, overlayPath=%q)", len(proxies), session.ProjectPath, session.OverlayPath)
+		for _, p := range proxies {
+			proxyPath := normalizePath(p.Path)
+			if proxyPath == session.ProjectPath {
 				p.SetOverlayEndpoint(session.OverlayPath)
+				debug.Log("daemon", "session register: updated proxy %s overlay to %s", p.ID, session.OverlayPath)
+			} else {
+				debug.Log("daemon", "session register: proxy %s path %q != session path %q, skipping", p.ID, proxyPath, session.ProjectPath)
 			}
 		}
+	} else {
+		debug.Warn("daemon", "session register: cannot update proxies — overlayPath=%q projectPath=%q", session.OverlayPath, session.ProjectPath)
 	}
 
 	// Run autostart for this project

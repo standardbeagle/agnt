@@ -1449,9 +1449,12 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 			// Forward to overlay if configured
 			if ps.overlayNotifier.IsEnabled() {
+				debug.Log("proxy", "forwarding panel_message to overlay (proxy_id=%s, endpoint=%s)", ps.ID, ps.overlayNotifier.GetEndpoint())
 				if err := ps.overlayNotifier.NotifyPanelMessage(ps.ID, &panelMsg); err != nil {
 					debug.Error("proxy", "Failed to notify overlay of panel message: %v", err)
 				}
+			} else {
+				debug.Warn("proxy", "panel_message received but overlay notifier NOT enabled for proxy %s — message will not reach agent", ps.ID)
 			}
 
 			// Update audit folder summary after saving new files
