@@ -286,7 +286,19 @@ func displayAutostartResults(handle *daemonSessionHandle, w io.Writer, timeout t
 		fmt.Fprintf(w, "\r\n\x1b[36m[agnt] auto-started: %s\x1b[0m\r\n", strings.Join(started, ", "))
 	}
 	for _, e := range handle.autostartErrors {
-		fmt.Fprintf(w, "\r\n\x1b[31m[agnt] autostart error: %s\x1b[0m\r\n", e)
+		// Split error into first line (summary) and remaining lines (output)
+		lines := strings.SplitN(e, "\n", 2)
+		summary := lines[0]
+		fmt.Fprintf(w, "\r\n\x1b[31m[agnt] autostart error: %s\x1b[0m\r\n", summary)
+		if len(lines) > 1 && strings.TrimSpace(lines[1]) != "" {
+			// Show process output indented and dimmed
+			for _, outputLine := range strings.Split(strings.TrimSpace(lines[1]), "\n") {
+				fmt.Fprintf(w, "\x1b[2m  │ %s\x1b[0m\r\n", outputLine)
+			}
+		}
+	}
+	if len(handle.autostartErrors) > 0 {
+		fmt.Fprintf(w, "\x1b[33m[agnt] tip: run the failed command directly to see full output, or use get_errors for details\x1b[0m\r\n")
 	}
 }
 

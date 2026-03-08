@@ -102,6 +102,7 @@ type StartupError struct {
 	Port      int
 	ErrorType string // "EADDRINUSE", "generic"
 	Message   string
+	Output    string // Last lines of process output (for user-facing diagnostics)
 	Retried   bool
 }
 
@@ -395,6 +396,7 @@ func (d *Daemon) monitorStartupFailure(
 					Port:      expectedPort,
 					ErrorType: "startup_failed",
 					Message:   fmt.Sprintf("process exited with code %d during startup", exitCode),
+					Output:    lastLines(combined, 15),
 				}
 			}
 
@@ -451,4 +453,23 @@ func (d *Daemon) getExpectedPortForScript(
 	}
 
 	return 0
+}
+
+// lastLines returns the last n non-empty lines from text.
+func lastLines(text string, n int) string {
+	lines := strings.Split(strings.TrimSpace(text), "\n")
+	// Filter empty lines
+	var nonEmpty []string
+	for _, l := range lines {
+		if trimmed := strings.TrimSpace(l); trimmed != "" {
+			nonEmpty = append(nonEmpty, trimmed)
+		}
+	}
+	if len(nonEmpty) == 0 {
+		return ""
+	}
+	if len(nonEmpty) > n {
+		nonEmpty = nonEmpty[len(nonEmpty)-n:]
+	}
+	return strings.Join(nonEmpty, "\n")
 }
