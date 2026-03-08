@@ -920,15 +920,26 @@ func (d *Daemon) RunAutostart(ctx context.Context, projectPath string) *Autostar
 	// Start scripts (pass proxy configs for port detection)
 	autostartScripts := agntConfig.GetAutostartScripts()
 	proxyConfigs := agntConfig.Proxies // All proxies, not just autostart ones
+	failedScripts := make(map[string]bool)
 	debug.Log("daemon", "RunAutostart: found %d autostart scripts: %v", len(autostartScripts), mapKeys(autostartScripts))
 	for name, script := range autostartScripts {
 		debug.Log("daemon", "RunAutostart: starting script %s", name)
 		if err := d.autostartScript(ctx, name, script, projectPath, proxyConfigs); err != nil {
 			debug.Log("daemon", "RunAutostart: script %s failed: %v", name, err)
 			result.Errors = append(result.Errors, fmt.Sprintf("script %s: %v", name, err))
+			failedScripts[name] = true
 		} else {
 			debug.Log("daemon", "RunAutostart: script %s started successfully", name)
 			result.Scripts = append(result.Scripts, name)
+		}
+	}
+
+	// Warn about proxies that depend on failed scripts
+	for proxyName, proxyConfig := range proxyConfigs {
+		if proxyConfig.Script != "" && failedScripts[proxyConfig.Script] {
+			result.Errors = append(result.Errors, fmt.Sprintf(
+				"proxy %q will not start: depends on script %q which failed",
+				proxyName, proxyConfig.Script))
 		}
 	}
 
@@ -1094,12 +1105,18 @@ func (d *Daemon) autostartScript(ctx context.Context, name string, script *confi
 		AutoRestart:  true, // Autostarted scripts should always auto-restart
 	})
 	if err != nil {
-		// Include resolved command in error for debugging (especially Windows shell issues)
+		// Include resolved command and process output in error for debugging
 		cmdStr := command
 		if len(args) > 0 {
 			cmdStr = fmt.Sprintf("%s %s", command, strings.Join(args, " "))
 		}
-		return fmt.Errorf("%w (resolved command: %s, cwd: %s)", err, cmdStr, workingDir)
+		msg := fmt.Sprintf("%s (resolved command: %s, cwd: %s)", err.Error(), cmdStr, workingDir)
+
+		// Include process output if available (from StartupError)
+		if startupErr, ok := err.(*StartupError); ok && startupErr.Output != "" {
+			msg += "\n" + startupErr.Output
+		}
+		return fmt.Errorf("%s", msg)
 	}
 	return nil
 }

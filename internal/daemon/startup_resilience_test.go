@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestExtractPortFromCommand(t *testing.T) {
@@ -101,4 +103,14 @@ func TestDetectEADDRINUSE(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestLastLines(t *testing.T) {
+	assert.Equal(t, "", lastLines("", 5))
+	assert.Equal(t, "", lastLines("   \n  \n  ", 5))
+	assert.Equal(t, "hello", lastLines("hello", 5))
+	assert.Equal(t, "line1\nline2\nline3", lastLines("line1\nline2\nline3", 5))
+	assert.Equal(t, "line2\nline3", lastLines("line1\nline2\nline3", 2))
+	assert.Equal(t, "a\nb\nc", lastLines("\n\na\n\nb\n\nc\n\n", 5), "filters empty lines")
+	assert.Equal(t, "c", lastLines("a\nb\nc", 1))
 }
