@@ -6,6 +6,49 @@
 
   var core = window.__devtool_core;
 
+  // Pre-render same-origin iframe content for html2canvas capture.
+  function html2canvasWithIframes(element, canvasOpts) {
+    var root = element === document.body ? document.documentElement : element;
+    var iframes = Array.prototype.slice.call(root.querySelectorAll('iframe'));
+    if (element.tagName === 'IFRAME') iframes.unshift(element);
+    if (iframes.length === 0) return html2canvas(element, canvasOpts);
+
+    var renderPromises = iframes.map(function(iframe) {
+      try {
+        var doc = iframe.contentDocument || iframe.contentWindow.document;
+        if (!doc || !doc.body) return Promise.resolve(null);
+        return html2canvas(doc.body, {
+          allowTaint: true, useCORS: true, logging: false,
+          width: iframe.clientWidth || iframe.offsetWidth,
+          height: iframe.clientHeight || iframe.offsetHeight
+        }).then(function(c) { return c.toDataURL('image/png'); })
+          .catch(function() { return null; });
+      } catch (e) { return Promise.resolve(null); }
+    });
+
+    return Promise.all(renderPromises).then(function(dataUrls) {
+      var origOnclone = canvasOpts.onclone;
+      canvasOpts.onclone = function(clonedDoc, clonedEl) {
+        var clonedRoot = clonedEl || clonedDoc.documentElement;
+        var clonedIframes = Array.prototype.slice.call(clonedRoot.querySelectorAll('iframe'));
+        clonedIframes.forEach(function(cf, i) {
+          if (!dataUrls[i] || !cf.parentNode) return;
+          var img = clonedDoc.createElement('img');
+          img.src = dataUrls[i];
+          var computed = window.getComputedStyle(iframes[i]);
+          img.style.width = computed.width;
+          img.style.height = computed.height;
+          img.style.display = computed.display === 'none' ? 'none' : 'block';
+          img.style.border = computed.border;
+          img.style.margin = computed.margin;
+          cf.parentNode.replaceChild(img, cf);
+        });
+        if (origOnclone) origOnclone(clonedDoc, clonedEl);
+      };
+      return html2canvas(element, canvasOpts);
+    });
+  }
+
   // Helper to capture current page as PageCapture format
   function captureCurrentPage() {
     return new Promise(function(resolve, reject) {
@@ -14,7 +57,7 @@
         return;
       }
 
-      html2canvas(document.body, {
+      html2canvasWithIframes(document.body, {
         allowTaint: true,
         useCORS: true,
         logging: false,

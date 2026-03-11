@@ -534,6 +534,57 @@
           return;
         }
 
+        // Wrapper that pre-renders same-origin iframe content so html2canvas
+        // can include it (html2canvas treats iframes as empty white boxes).
+        function html2canvasWithIframes(element, canvasOpts) {
+          var root = element === document.body ? document.documentElement : element;
+          var iframes = Array.prototype.slice.call(root.querySelectorAll('iframe'));
+          if (element.tagName === 'IFRAME') iframes.unshift(element);
+          if (iframes.length === 0) return html2canvas(element, canvasOpts);
+
+          var renderPromises = iframes.map(function(iframe) {
+            try {
+              var doc = iframe.contentDocument || iframe.contentWindow.document;
+              if (!doc || !doc.body) return Promise.resolve(null);
+              return html2canvas(doc.body, {
+                allowTaint: true,
+                useCORS: true,
+                logging: false,
+                width: iframe.clientWidth || iframe.offsetWidth,
+                height: iframe.clientHeight || iframe.offsetHeight
+              }).then(function(c) {
+                return c.toDataURL('image/png');
+              }).catch(function() { return null; });
+            } catch (e) {
+              return Promise.resolve(null); // cross-origin — skip
+            }
+          });
+
+          return Promise.all(renderPromises).then(function(dataUrls) {
+            var origOnclone = canvasOpts.onclone;
+            canvasOpts.onclone = function(clonedDoc, clonedEl) {
+              var clonedRoot = clonedEl || clonedDoc.documentElement;
+              var clonedIframes = Array.prototype.slice.call(
+                clonedRoot.querySelectorAll('iframe')
+              );
+              clonedIframes.forEach(function(cf, i) {
+                if (!dataUrls[i] || !cf.parentNode) return;
+                var img = clonedDoc.createElement('img');
+                img.src = dataUrls[i];
+                var computed = window.getComputedStyle(iframes[i]);
+                img.style.width = computed.width;
+                img.style.height = computed.height;
+                img.style.display = computed.display === 'none' ? 'none' : 'block';
+                img.style.border = computed.border;
+                img.style.margin = computed.margin;
+                cf.parentNode.replaceChild(img, cf);
+              });
+              if (origOnclone) origOnclone(clonedDoc, clonedEl);
+            };
+            return html2canvas(element, canvasOpts);
+          });
+        }
+
         // Parse options
         var options = {};
         var name = null;
@@ -618,7 +669,7 @@
             canvasOptions.windowHeight = isFullPage ? ph : vh;
           }
 
-          html2canvas(element, canvasOptions).then(function(canvas) {
+          html2canvasWithIframes(element, canvasOptions).then(function(canvas) {
             var mimeType = format === 'jpeg' ? 'image/jpeg' : 'image/png';
             var dataUrl = format === 'jpeg' ? canvas.toDataURL(mimeType, quality) : canvas.toDataURL(mimeType);
 
@@ -654,7 +705,7 @@
             y: scrollY
           };
 
-          html2canvas(document.body, canvasOptions).then(function(canvas) {
+          html2canvasWithIframes(document.body, canvasOptions).then(function(canvas) {
             var mimeType = format === 'jpeg' ? 'image/jpeg' : 'image/png';
             var dataUrl = format === 'jpeg' ? canvas.toDataURL(mimeType, quality) : canvas.toDataURL(mimeType);
 
@@ -694,7 +745,7 @@
             scale: overviewScale
           };
 
-          html2canvas(document.body, overviewOptions).then(function(overviewCanvas) {
+          html2canvasWithIframes(document.body, overviewOptions).then(function(overviewCanvas) {
             // Now capture detail sections
             var captures = {
               overview: overviewCanvas
@@ -828,7 +879,7 @@
               height: height
             };
 
-            html2canvas(document.body, canvasOptions).then(resolve).catch(reject);
+            html2canvasWithIframes(document.body, canvasOptions).then(resolve).catch(reject);
           });
         }
 
@@ -850,7 +901,7 @@
               height: reg.height
             };
 
-            html2canvas(document.body, canvasOptions).then(function(canvas) {
+            html2canvasWithIframes(document.body, canvasOptions).then(function(canvas) {
               var mimeType = format === 'jpeg' ? 'image/jpeg' : 'image/png';
               var dataUrl = format === 'jpeg' ? canvas.toDataURL(mimeType, quality) : canvas.toDataURL(mimeType);
 
