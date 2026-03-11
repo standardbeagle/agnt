@@ -4,13 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/overlay"
 	"github.com/standardbeagle/agnt/internal/pathutil"
 )
@@ -79,7 +79,7 @@ func (a *AIOverlay) Start(ctx context.Context) error {
 
 	go func() {
 		if err := a.server.Serve(listener); err != nil && err != http.ErrServerClosed {
-			log.Printf("AI overlay server error: %v", err)
+			debug.Error("overlay", "AI overlay server error: %v", err)
 		}
 	}()
 
@@ -167,6 +167,6 @@ func (a *AIOverlay) enqueue(text string) {
 	select {
 	case a.messages <- text:
 	default:
-		log.Printf("[AI overlay] message queue full, dropping message")
+		debug.Warn("overlay", "AI overlay message queue full, dropping message")
 	}
 }

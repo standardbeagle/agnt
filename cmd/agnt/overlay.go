@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"os"
@@ -158,7 +157,7 @@ func (o *Overlay) Start(ctx context.Context) error {
 
 	go func() {
 		if err := o.server.Serve(listener); err != nil && err != http.ErrServerClosed {
-			log.Printf("Overlay server error: %v", err)
+			debug.Error("overlay", "server error: %v", err)
 		}
 	}()
 
@@ -198,7 +197,7 @@ func (o *Overlay) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (o *Overlay) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	conn, err := o.upgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Printf("WebSocket upgrade error: %v", err)
+		debug.Error("overlay", "WebSocket upgrade error: %v", err)
 		return
 	}
 	defer conn.Close()
@@ -210,14 +209,14 @@ func (o *Overlay) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		_, message, err := conn.ReadMessage()
 		if err != nil {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
-				log.Printf("WebSocket error: %v", err)
+				debug.Warn("overlay", "WebSocket error: %v", err)
 			}
 			break
 		}
 
 		var msg OverlayMessage
 		if err := json.Unmarshal(message, &msg); err != nil {
-			log.Printf("Invalid message: %v", err)
+			debug.Warn("overlay", "invalid message: %v", err)
 			continue
 		}
 
@@ -411,7 +410,7 @@ func (o *Overlay) handleMessage(msg OverlayMessage) {
 	case "type":
 		var typeMsg TypeMessage
 		if err := json.Unmarshal(msg.Payload, &typeMsg); err != nil {
-			log.Printf("Invalid type message: %v", err)
+			debug.Warn("overlay", "invalid type message: %v", err)
 			return
 		}
 		o.typeText(typeMsg)
@@ -419,7 +418,7 @@ func (o *Overlay) handleMessage(msg OverlayMessage) {
 	case "key":
 		var keyMsg KeyMessage
 		if err := json.Unmarshal(msg.Payload, &keyMsg); err != nil {
-			log.Printf("Invalid key message: %v", err)
+			debug.Warn("overlay", "invalid key message: %v", err)
 			return
 		}
 		o.sendKey(keyMsg)
@@ -433,7 +432,7 @@ func (o *Overlay) handleMessage(msg OverlayMessage) {
 		o.writeTopty("\x1b")
 
 	default:
-		log.Printf("Unknown message type: %s", msg.Type)
+		debug.Warn("overlay", "unknown message type: %s", msg.Type)
 	}
 }
 

@@ -4,10 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/overlay"
 )
 
@@ -26,7 +26,7 @@ func formatProxyEventText(event ProxyEvent, summarizer *overlay.AuditSummarizer)
 	case "design_chat":
 		return formatDesignChatText(event)
 	default:
-		log.Printf("[Overlay] ERROR: Unhandled proxy event type: %s (proxy_id=%s)", event.Type, event.ProxyID)
+		debug.Error("overlay", "unhandled proxy event type: %s (proxy_id=%s)", event.Type, event.ProxyID)
 		return ""
 	}
 }
@@ -48,7 +48,7 @@ func formatPanelMessageText(event ProxyEvent, summarizer *overlay.AuditSummarize
 		RequestNotification bool `json:"request_notification"`
 	}
 	if err := json.Unmarshal(event.Data, &data); err != nil {
-		log.Printf("Failed to parse panel_message: %v", err)
+		debug.Warn("overlay", "failed to parse panel_message: %v", err)
 		return ""
 	}
 
@@ -115,7 +115,7 @@ func processAuditAttachment(data json.RawMessage, userMessage string, summarizer
 		Result    json.RawMessage `json:"result"`
 	}
 	if err := json.Unmarshal(data, &auditData); err != nil {
-		log.Printf("Failed to parse audit data: %v", err)
+		debug.Warn("overlay", "failed to parse audit data: %v", err)
 		return fmt.Sprintf("**Audit**: (parse error)")
 	}
 
@@ -131,7 +131,7 @@ func processAuditAttachment(data json.RawMessage, userMessage string, summarizer
 		}, userMessage)
 
 		if err != nil {
-			log.Printf("Audit summarization failed: %v", err)
+			debug.Warn("overlay", "audit summarization failed: %v", err)
 			return fmt.Sprintf("**%s**: %s", auditData.Label, auditData.Summary)
 		}
 		return report
@@ -258,7 +258,7 @@ func formatSketchText(event ProxyEvent) string {
 		Description  string `json:"description"`
 	}
 	if err := json.Unmarshal(event.Data, &data); err != nil {
-		log.Printf("Failed to parse sketch: %v", err)
+		debug.Warn("overlay", "failed to parse sketch: %v", err)
 		return ""
 	}
 
@@ -284,7 +284,7 @@ func formatDesignStateText(event ProxyEvent) string {
 		} `json:"metadata"`
 	}
 	if err := json.Unmarshal(event.Data, &data); err != nil {
-		log.Printf("Failed to parse design_state: %v", err)
+		debug.Warn("overlay", "failed to parse design_state: %v", err)
 		return ""
 	}
 
@@ -366,7 +366,7 @@ func formatDesignRequestText(event ProxyEvent) string {
 		} `json:"chat_history"`
 	}
 	if err := json.Unmarshal(event.Data, &data); err != nil {
-		log.Printf("Failed to parse design_request: %v", err)
+		debug.Warn("overlay", "failed to parse design_request: %v", err)
 		return ""
 	}
 
@@ -430,7 +430,7 @@ func formatDesignChatText(event ProxyEvent) string {
 		URL          string `json:"url"`
 	}
 	if err := json.Unmarshal(event.Data, &data); err != nil {
-		log.Printf("Failed to parse design_chat: %v", err)
+		debug.Warn("overlay", "failed to parse design_chat: %v", err)
 		return ""
 	}
 

@@ -143,6 +143,12 @@ func runCommand(cmd *cobra.Command, args []string) {
 		case "--debug", "-d":
 			// Handle global debug flag (since DisableFlagParsing prevents cobra from parsing it)
 			debug.Enable()
+			if debug.GetLogFilePath() == "" {
+				// In PTY context, stderr corrupts terminal output — force file logging
+				if err := debug.SetLogFile("agnt-run.log"); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to set debug log file: %v\n", err)
+				}
+			}
 			commandArgs = append(args[:i], args[i+1:]...)
 			continue
 		case "--debug-log":
@@ -162,6 +168,14 @@ func runCommand(cmd *cobra.Command, args []string) {
 	if len(commandArgs) == 0 {
 		fmt.Fprintln(os.Stderr, "Error: command is required")
 		os.Exit(1)
+	}
+
+	// If debug was enabled (via env var or flag) but no log file was set,
+	// force file-only logging. In PTY context, stderr output corrupts the terminal.
+	if debug.IsEnabled() && debug.GetLogFilePath() == "" {
+		if err := debug.SetLogFile("agnt-run.log"); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to set debug log file: %v\n", err)
+		}
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(),
