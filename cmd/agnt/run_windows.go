@@ -441,11 +441,17 @@ func runWithConPTY(ctx context.Context, args []string, socketPath string, sessio
 		}()
 	}
 
-	// Display autostart results (errors, started services) once registration completes
+	// Display autostart results (errors, started services) once registration completes.
+	// Write through the output gate (not os.Stderr) so messages go through the
+	// output chain and don't race with the child process's terminal output.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		displayAutostartResults(daemonHandle, os.Stderr, 10*time.Second)
+		var autostartOut io.Writer = os.Stdout
+		if outputGate != nil {
+			autostartOut = outputGate
+		}
+		displayAutostartResults(daemonHandle, autostartOut, 10*time.Second)
 	}()
 
 	// Handle terminal resize (polling on Windows since no SIGWINCH)

@@ -406,6 +406,43 @@ func TestProtectedWriter_IncrementalEscapeSequence(t *testing.T) {
 	}
 }
 
+func TestProtectedWriter_DA1ResponseSuppressed(t *testing.T) {
+	var buf bytes.Buffer
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
+	defer pw.Stop()
+
+	// DA1 response (CSI ? Ps c) should be suppressed — it's a terminal-to-app
+	// message that can leak when the PTY echoes before the child disables echo.
+	da1 := "\x1b[?61;4;6;7;14;21;22;23;24;28;32;42;52c"
+	pw.Write([]byte(da1))
+	if buf.String() != "" {
+		t.Errorf("DA1 response should be suppressed, got %q", buf.String())
+	}
+
+	// DA1 with simpler params
+	buf.Reset()
+	pw.Write([]byte("\x1b[?1;2c"))
+	if buf.String() != "" {
+		t.Errorf("Simple DA1 response should be suppressed, got %q", buf.String())
+	}
+
+	// Non-private CSI c (DA query, no ?) should pass through
+	buf.Reset()
+	csiC := "\x1b[c"
+	pw.Write([]byte(csiC))
+	if buf.String() != csiC {
+		t.Errorf("DA query should pass through, expected %q got %q", csiC, buf.String())
+	}
+
+	// ESC c (RIS - reset) should still pass through (it's not a CSI sequence)
+	buf.Reset()
+	ris := "\x1b" + "c"
+	pw.Write([]byte(ris))
+	if buf.String() != ris {
+		t.Errorf("RIS should pass through, expected %q got %q", ris, buf.String())
+	}
+}
+
 func TestProtectedWriter_ResetSequence(t *testing.T) {
 	var buf bytes.Buffer
 	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})

@@ -487,6 +487,15 @@ func (pw *ProtectedWriter) handleCSI(out *bytes.Buffer, final byte) {
 			}
 		}
 		// Pass through
+
+	case 'c': // DA - Device Attributes response
+		if isPrivate {
+			// Suppress DA1 responses (CSI ? Ps c) — these are terminal-to-app
+			// messages that should never appear in visible output. They can leak
+			// when the PTY echoes input before the child disables echo mode.
+			return
+		}
+		// Pass through (non-private CSI c is rarely used)
 	}
 
 	// Default: pass through unmodified
