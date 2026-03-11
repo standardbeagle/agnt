@@ -142,6 +142,12 @@ func runCommand(cmd *cobra.Command, args []string) {
 		case "--debug", "-d":
 			// Handle global debug flag (since DisableFlagParsing prevents cobra from parsing it)
 			debug.Enable()
+			if debug.GetLogFilePath() == "" {
+				// In PTY context, stderr corrupts terminal output — force file logging
+				if err := debug.SetLogFile("agnt-run.log"); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to set debug log file: %v\n", err)
+				}
+			}
 			commandArgs = append(args[:i], args[i+1:]...)
 			continue
 		case "--debug-log":
@@ -161,6 +167,14 @@ func runCommand(cmd *cobra.Command, args []string) {
 	if len(commandArgs) == 0 {
 		fmt.Fprintln(os.Stderr, "Error: command is required")
 		os.Exit(1)
+	}
+
+	// If debug was enabled (via env var or flag) but no log file was set,
+	// force file-only logging. In PTY context, stderr output corrupts the terminal.
+	if debug.IsEnabled() && debug.GetLogFilePath() == "" {
+		if err := debug.SetLogFile("agnt-run.log"); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to set debug log file: %v\n", err)
+		}
 	}
 
 	// Ignore SIGPIPE to prevent unexpected shutdowns when writing to closed connections.
@@ -277,7 +291,7 @@ func runWithPTY(ctx context.Context, args []string, socketPath string, sessionCo
 		childHeight = height - 1
 	}
 	if err := pty.Setsize(ptmx, &pty.Winsize{Rows: uint16(childHeight), Cols: uint16(width)}); err != nil {
-		log.Printf("error setting pty size: %s", err)
+		debug.Warn("run", "error setting pty size: %s", err)
 	}
 
 	// Set stdin in raw mode
@@ -463,7 +477,7 @@ func runWithPTY(ctx context.Context, args []string, socketPath string, sessionCo
 					ch = h - 1
 				}
 				if err := pty.Setsize(ptmx, &pty.Winsize{Rows: uint16(ch), Cols: uint16(w)}); err != nil {
-					log.Printf("error resizing pty: %s", err)
+					debug.Warn("run", "error resizing pty: %s", err)
 				}
 				// Update overlay with full terminal dimensions (it draws in the reserved row)
 				if termOverlay != nil {
