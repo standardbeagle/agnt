@@ -345,7 +345,7 @@ func TestActivityMonitor_ConcurrentWriteAndState(t *testing.T) {
 // --- Race Tests for OutputGate ---
 
 func TestOutputGate_ConcurrentFreezeWrite(t *testing.T) {
-	gate := NewOutputGate(nil)
+	gate := NewOutputGate(io.Discard)
 
 	var wg sync.WaitGroup
 
