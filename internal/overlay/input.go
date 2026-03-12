@@ -44,6 +44,7 @@ type InputRouter struct {
 	ptmx            PtyReadWriter
 	overlay         *Overlay
 	hotkey          byte
+	input           io.Reader // defaults to os.Stdin
 	running         atomic.Bool
 	done            chan struct{}
 	escReader       *EscapeSequenceReader
@@ -111,10 +112,14 @@ func (r *InputRouter) Run() error {
 	inputCh := make(chan byte, 16)
 	errCh := make(chan error, 1)
 
-	// Start a goroutine to read from stdin using the win32-input-mode iterator.
-	// The iterator handles buffer boundaries and escape sequence parsing internally.
+	// Start a goroutine to read from the input source using the win32-input-mode
+	// iterator. The iterator handles buffer boundaries and escape sequence parsing.
+	inputSrc := r.input
+	if inputSrc == nil {
+		inputSrc = os.Stdin
+	}
 	go func() {
-		for b := range ScanWin32Input(os.Stdin) {
+		for b := range ScanWin32Input(inputSrc) {
 			inputCh <- b
 		}
 		errCh <- io.EOF
@@ -172,8 +177,36 @@ func (r *InputRouter) Run() error {
 				// Hotkey pressed - toggle overlay
 				r.overlay.Toggle()
 			} else {
-				// Pass through to PTY
-				r.ptmx.Write([]byte{b})
+				// Pass through to PTY - batch with any pending bytes to keep
+				// multi-byte escape sequences (e.g. arrow keys \x1b[A) intact.
+				buf := []byte{b}
+
+				// If this looks like the start of an escape sequence, give the
+				// producer goroutine a moment to push the rest of the sequence
+				// into the channel before we drain.
+				if b == 0x1b {
+					time.Sleep(1 * time.Millisecond)
+				}
+
+				drain := true
+				for drain {
+					select {
+					case nb := <-inputCh:
+						if nb == r.hotkey {
+							r.ptmx.Write(buf)
+							buf = nil
+							r.overlay.Toggle()
+							drain = false
+						} else {
+							buf = append(buf, nb)
+						}
+					default:
+						drain = false
+					}
+				}
+				if len(buf) > 0 {
+					r.ptmx.Write(buf)
+				}
 			}
 		}
 	}
