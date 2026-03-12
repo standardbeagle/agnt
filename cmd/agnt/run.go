@@ -449,9 +449,8 @@ func runWithPTY(ctx context.Context, args []string, socketPath string, sessionCo
 		}()
 	}
 
-	// Display autostart results (errors, started services) once registration completes.
-	// Write through the output gate (not os.Stderr) so messages go through the
-	// output chain and don't race with the child process's terminal output.
+	// Display autostart results in the overlay status bar. Errors fall back to
+	// the output gate since they need multiple lines.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -459,7 +458,7 @@ func runWithPTY(ctx context.Context, args []string, socketPath string, sessionCo
 		if outputGate != nil {
 			autostartOut = outputGate
 		}
-		displayAutostartResults(daemonHandle, autostartOut, 10*time.Second)
+		displayAutostartResults(daemonHandle, termOverlay, autostartOut, 10*time.Second)
 	}()
 
 	// Handle terminal resize

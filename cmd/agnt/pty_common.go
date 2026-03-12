@@ -270,10 +270,11 @@ func startDaemonSession(ctx context.Context, cfg daemonSessionConfig) *daemonSes
 	return handle
 }
 
-// displayAutostartResults waits for daemon registration to complete and writes
-// autostart results (started services and errors) to the given writer.
-// This should be called in a goroutine after the PTY is started.
-func displayAutostartResults(handle *daemonSessionHandle, w io.Writer, timeout time.Duration) {
+// displayAutostartResults waits for daemon registration to complete and shows
+// autostart results in the overlay status bar. Success messages appear as a
+// transient status bar message that fades back to the normal indicator after 3s.
+// Errors are written to the fallback writer since they need more space.
+func displayAutostartResults(handle *daemonSessionHandle, ov *overlay.Overlay, w io.Writer, timeout time.Duration) {
 	if handle == nil {
 		return
 	}
@@ -282,22 +283,34 @@ func displayAutostartResults(handle *daemonSessionHandle, w io.Writer, timeout t
 	}
 
 	started := append(handle.autostartScripts, handle.autostartProxies...)
-	if len(started) > 0 {
-		fmt.Fprintf(w, "\r\n\x1b[36m[agnt] auto-started: %s\x1b[0m\r\n", strings.Join(started, ", "))
+	hasErrors := len(handle.autostartErrors) > 0
+
+	if len(started) > 0 && ov != nil {
+		msg := "auto-started: " + strings.Join(started, ", ")
+		if hasErrors {
+			msg += fmt.Sprintf(" (%d errors)", len(handle.autostartErrors))
+		}
+		ov.DrawStatusBarMessage(msg)
+
+		// Restore normal indicator after 3 seconds
+		go func() {
+			time.Sleep(3 * time.Second)
+			ov.RedrawIndicator()
+		}()
 	}
+
+	// Errors still go to the terminal since they need multiple lines
 	for _, e := range handle.autostartErrors {
-		// Split error into first line (summary) and remaining lines (output)
 		lines := strings.SplitN(e, "\n", 2)
 		summary := lines[0]
-		fmt.Fprintf(w, "\r\n\x1b[31m[agnt] autostart error: %s\x1b[0m\r\n", summary)
+		fmt.Fprintf(w, "\x1b[31m[agnt] autostart error: %s\x1b[0m\r\n", summary)
 		if len(lines) > 1 && strings.TrimSpace(lines[1]) != "" {
-			// Show process output indented and dimmed
 			for _, outputLine := range strings.Split(strings.TrimSpace(lines[1]), "\n") {
 				fmt.Fprintf(w, "\x1b[2m  │ %s\x1b[0m\r\n", outputLine)
 			}
 		}
 	}
-	if len(handle.autostartErrors) > 0 {
+	if hasErrors {
 		fmt.Fprintf(w, "\x1b[33m[agnt] tip: run the failed command directly to see full output, or use get_errors for details\x1b[0m\r\n")
 	}
 }
