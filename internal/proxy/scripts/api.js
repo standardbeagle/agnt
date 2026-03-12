@@ -542,16 +542,30 @@
           if (element.tagName === 'IFRAME') iframes.unshift(element);
           if (iframes.length === 0) return html2canvas(element, canvasOpts);
 
+          // Wait for a paint cycle in the given document's window
+          function waitForPaint(win) {
+            return new Promise(function(resolve) {
+              var raf = (win && win.requestAnimationFrame) || requestAnimationFrame;
+              raf(function() { raf(function() { resolve(); }); });
+            });
+          }
+
           var renderPromises = iframes.map(function(iframe) {
             try {
               var doc = iframe.contentDocument || iframe.contentWindow.document;
-              if (!doc || !doc.body) return Promise.resolve(null);
-              return html2canvas(doc.body, {
-                allowTaint: true,
-                useCORS: true,
-                logging: false,
-                width: iframe.clientWidth || iframe.offsetWidth,
-                height: iframe.clientHeight || iframe.offsetHeight
+              if (!doc || !doc.body || doc.body.scrollHeight <= 0) {
+                return Promise.resolve(null);
+              }
+              // Wait for iframe content to paint, then capture at untransformed dimensions
+              var iframeWin = iframe.contentWindow;
+              return waitForPaint(iframeWin).then(function() {
+                return html2canvas(doc.body, {
+                  allowTaint: true,
+                  useCORS: true,
+                  logging: false,
+                  width: iframe.clientWidth || iframe.offsetWidth,
+                  height: iframe.clientHeight || iframe.offsetHeight
+                });
               }).then(function(c) {
                 return c.toDataURL('image/png');
               }).catch(function() { return null; });
@@ -577,7 +591,11 @@
                 img.style.display = computed.display === 'none' ? 'none' : 'block';
                 img.style.border = computed.border;
                 img.style.margin = computed.margin;
-                cf.parentNode.replaceChild(img, cf);
+                // Preserve CSS transforms (e.g. scale() on preview iframes)
+                if (computed.transform && computed.transform !== 'none') {
+                  img.style.transform = computed.transform;
+                  img.style.transformOrigin = computed.transformOrigin;
+                }
               });
               if (origOnclone) origOnclone(clonedDoc, clonedEl);
             };
