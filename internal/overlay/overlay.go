@@ -91,6 +91,14 @@ type Status struct {
 	LastUpdate      time.Time
 }
 
+// PanelItem represents a navigable panel in the horizontal panel view.
+type PanelItem struct {
+	Type    string // "overview", "process", "proxy"
+	ID      string // process or proxy ID
+	Label   string // short display label for tab bar
+	Content string // cached content for display
+}
+
 // Overlay manages the terminal overlay display.
 type Overlay struct {
 	// Terminal state
@@ -112,6 +120,11 @@ type Overlay struct {
 
 	// Menu selection
 	selectedIndex int
+
+	// Panel navigation (niri-style horizontal panels)
+	panelIndex int         // Current panel index (0 = overview)
+	panelItems []PanelItem // Available panels built from status
+	panelMode  bool        // Whether in panel view (vs overview/menu)
 
 	// Rendering
 	renderer *Renderer
@@ -350,12 +363,56 @@ func (o *Overlay) showMenu() {
 		o.menuStack = []Menu{DisconnectedMenu()}
 	}
 	o.selectedIndex = 0
+	o.panelMode = false
+	o.panelIndex = 0
+	o.buildPanelItems()
 	o.draw()
+}
+
+// buildPanelItems builds the panel list from current status.
+// Panel 0 is always the overview/actions panel.
+func (o *Overlay) buildPanelItems() {
+	o.statusMu.RLock()
+	status := o.status
+	o.statusMu.RUnlock()
+
+	items := []PanelItem{
+		{Type: "overview", Label: "overview"},
+	}
+
+	for _, p := range status.Processes {
+		label := p.ID
+		if len(label) > 12 {
+			label = label[:12]
+		}
+		items = append(items, PanelItem{
+			Type:  "process",
+			ID:    p.ID,
+			Label: label,
+		})
+	}
+
+	for _, p := range status.Proxies {
+		label := p.ID
+		if len(label) > 12 {
+			label = label[:12]
+		}
+		items = append(items, PanelItem{
+			Type:  "proxy",
+			ID:    p.ID,
+			Label: label,
+		})
+	}
+
+	o.panelItems = items
 }
 
 func (o *Overlay) hideMenu() {
 	o.menuStack = nil
 	o.inputBuffer = ""
+	o.panelMode = false
+	o.panelIndex = 0
+	o.panelItems = nil
 
 	if o.showBar.Load() {
 		o.state.Store(int32(StateIndicator))
@@ -394,7 +451,14 @@ func (o *Overlay) draw() {
 	case StateIndicator:
 		o.renderer.DrawIndicator(status)
 	case StateMenu:
-		if len(o.menuStack) > 0 {
+		if o.panelMode && len(o.panelItems) > 0 {
+			// Panel view: full-screen panel with tab bar
+			idx := o.panelIndex
+			if idx >= len(o.panelItems) {
+				idx = len(o.panelItems) - 1
+			}
+			o.renderer.DrawPanelView(o.panelItems, idx, status)
+		} else if len(o.menuStack) > 0 {
 			o.renderer.DrawIndicator(status)
 			// Use DrawDashboard for the main menu (comprehensive view)
 			if len(o.menuStack) == 1 {

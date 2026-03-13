@@ -88,6 +88,12 @@ const (
 	BoxCross            = "┼"
 	BoxDoubleHorizontal = "═"
 	BoxDoubleVertical   = "║"
+
+	// Rounded box drawing characters (niri-style).
+	RoundTopLeft     = "╭"
+	RoundTopRight    = "╮"
+	RoundBottomLeft  = "╰"
+	RoundBottomRight = "╯"
 )
 
 // Status icons.
@@ -613,96 +619,35 @@ func (r *Renderer) DrawMenu(menu Menu, selectedIndex int) {
 	r.write(CursorRestore + CursorShow)
 }
 
-// DrawDashboard draws a comprehensive dashboard with status, proxies, processes, and menu.
+// DrawDashboard draws a niri-style dashboard with centered panels.
+// Panels are stacked vertically in the center with rounded corners,
+// gradient borders, and gaps between them (inspired by niri window manager).
 func (r *Renderer) DrawDashboard(menu Menu, selectedIndex int, status Status) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// Calculate dashboard dimensions - use more screen real estate
-	dashWidth := min(r.width-4, 80)
+	const panelGap = 1    // Gap between panels (niri-style spacing)
+	const panelMargin = 1 // Margin from screen edges
 
-	// Calculate content rows needed
-	browserCount := min(len(status.BrowserSessions), 4)
+	// Panel width: centered, capped at 60 cols
+	panelWidth := min(r.width-panelMargin*2, 60)
+	if panelWidth < 30 {
+		panelWidth = min(30, r.width-2)
+	}
+	panelCol := (r.width - panelWidth) / 2
+	if panelCol < 1 {
+		panelCol = 1
+	}
+
+	// Calculate available vertical space
+	availHeight := r.height - 2 // Leave room for status bar
+
+	// Determine which panels to show and their sizes
 	processCount := min(len(status.Processes), 6)
+	browserCount := min(len(status.BrowserSessions), 4)
+	proxyCount := len(status.Proxies)
 	menuItemCount := len(menu.Items)
 
-	// Count process lines (each process + its URLs)
-	processLineCount := 0
-	for i, p := range status.Processes {
-		if i >= 6 {
-			break
-		}
-		processLineCount++              // process line
-		processLineCount += len(p.URLs) // URL lines
-	}
-
-	// Count proxy lines (each proxy can have multiple URL lines)
-	proxyLineCount := 0
-	for _, p := range status.Proxies {
-		proxyLineCount++ // proxy ID + target URL
-		proxyLineCount++ // listen address
-		if p.TailscaleURL != "" {
-			proxyLineCount++
-		}
-		if p.TunnelURL != "" {
-			proxyLineCount++
-		}
-	}
-
-	// Dashboard sections:
-	// 1. Header (title + connection status)
-	// 2. Processes section (with URLs from logs)
-	// 3. Proxies section (with URLs)
-	// 4. Browser sessions section (if any)
-	// 5. Menu section
-	// 6. Footer
-	dashHeight := 4 + menuItemCount // header + menu + footer
-	if processCount > 0 {
-		dashHeight += processLineCount + 1 // processes + URLs + spacing
-	}
-	if len(status.Proxies) > 0 {
-		dashHeight += proxyLineCount + 2 // "proxies" header + spacing + proxy lines
-	}
-	if browserCount > 0 {
-		dashHeight += browserCount + 2
-	}
-	dashHeight = min(dashHeight, r.height-2)
-
-	// Center the dashboard
-	startRow := max((r.height-dashHeight)/2, 1)
-	startCol := max((r.width-dashWidth)/2, 1)
-
-	// Track the region for later clearing
-	if r.currentMenuRegion == nil {
-		r.currentMenuRegion = &ScreenRegion{
-			Row:    startRow,
-			Col:    startCol,
-			Width:  dashWidth,
-			Height: dashHeight,
-		}
-		r.overlayStack.Push(RegionMenu, *r.currentMenuRegion)
-	}
-
-	r.write(CursorSave + CursorHide)
-
-	// Draw outer box with version in title
-	title := "agnt Dashboard"
-	if r.version != "" {
-		title = fmt.Sprintf("agnt v%s", r.version)
-	}
-	r.drawBox(startRow, startCol, dashWidth, dashHeight, title)
-
-	currentRow := startRow + 2
-
-	// === CONNECTION STATUS ===
-	r.moveTo(currentRow, startCol+2)
-	connStatus := fmt.Sprintf("%s%s%s Connected", FgGreen, IconConnected, Reset)
-	if status.DaemonConnected != ConnectionConnected {
-		connStatus = fmt.Sprintf("%s%s%s Disconnected", FgYellow, IconDisconnected, Reset)
-	}
-	r.write(connStatus)
-
-	// Show error count on same line if any
 	recentErrors := 0
 	cutoff := time.Now().Add(-5 * time.Minute)
 	for _, e := range status.RecentErrors {
@@ -710,177 +655,825 @@ func (r *Renderer) DrawDashboard(menu Menu, selectedIndex int, status Status) {
 			recentErrors++
 		}
 	}
-	if recentErrors > 0 {
-		r.write(fmt.Sprintf("  %s%s %d errors%s", FgRed, IconWarning, recentErrors, Reset))
-	}
-	currentRow++
 
-	// Build proxy lookup map for quick access
-	proxyByID := make(map[string]ProxyInfo)
-	for _, p := range status.Proxies {
-		proxyByID[p.ID] = p
+	// Calculate panel heights
+	// Process panel: header + per-process lines (ID + last output + URLs)
+	processLines := 0
+	for i, p := range status.Processes {
+		if i >= 6 {
+			processLines++ // "... and N more"
+			break
+		}
+		processLines++ // process line
+		if p.LastOutput != "" {
+			processLines++ // last output
+		}
+		processLines += len(p.URLs)
 	}
-
-	// === PROCESSES SECTION ===
+	processPanelH := 0
 	if processCount > 0 {
-		currentRow++ // spacing
-		for i, proc := range status.Processes {
-			if i >= 6 {
-				r.moveTo(currentRow, startCol+2)
-				r.write(FgBrightBlack + fmt.Sprintf("... and %d more", len(status.Processes)-6) + Reset)
-				currentRow++
-				break
-			}
-			r.moveTo(currentRow, startCol+2)
-
-			// Build simple process line: [1] test
-			line := fmt.Sprintf("[%s%d%s] %s",
-				FgCyan, i+1, Reset,
-				proc.ID)
-
-			r.write(line)
-			currentRow++
-
-			// Show parsed URLs from process output
-			for _, urlStr := range proc.URLs {
-				r.moveTo(currentRow, startCol+17)
-				r.write(fmt.Sprintf("%s-%s %s",
-					FgBrightBlack, Reset,
-					urlStr))
-				currentRow++
-			}
-		}
+		processPanelH = processLines + 2 // border top/bottom
 	}
 
-	// === PROXIES SECTION ===
-	if len(status.Proxies) > 0 {
-		currentRow++ // spacing
-		r.moveTo(currentRow, startCol+2)
-		r.write("proxies")
-		currentRow++
-
-		for _, proxy := range status.Proxies {
-			r.moveTo(currentRow, startCol+3)
-
-			// Show proxy ID and target URL
-			line := fmt.Sprintf("%s %s-%s %s",
-				proxy.ID,
-				FgBrightBlack, Reset,
-				proxy.TargetURL)
-
-			r.write(line)
-			currentRow++
-
-			// Show proxy listen address on next line
-			proxyURL := "http://" + NormalizeListenAddr(proxy.ListenAddr)
-			r.moveTo(currentRow, startCol+7)
-			r.write(fmt.Sprintf("%s-%s %s%s%s",
-				FgBrightBlack, Reset,
-				FgBrightCyan+Underline, proxyURL, Reset))
-			currentRow++
-
-			// Show Tailscale URL if available
-			if proxy.TailscaleURL != "" {
-				r.moveTo(currentRow, startCol+7)
-				r.write(fmt.Sprintf("%s-%s %s%s%s",
-					FgBrightBlack, Reset,
-					FgMagenta+Underline, proxy.TailscaleURL, Reset))
-				currentRow++
-			}
-
-			// Show tunnel URL if available
-			if proxy.TunnelURL != "" {
-				r.moveTo(currentRow, startCol+7)
-				r.write(fmt.Sprintf("%s-%s %s%s%s",
-					FgBrightBlack, Reset,
-					FgBrightMagenta+Underline, proxy.TunnelURL, Reset))
-				currentRow++
-			}
-		}
+	// Error panel
+	errorPanelH := 0
+	if recentErrors > 0 {
+		errorPanelH = min(recentErrors, 5) + 2
 	}
 
-	// === BROWSER SESSIONS SECTION ===
+	// Proxy panel
+	proxyLines := 0
+	for _, p := range status.Proxies {
+		proxyLines++ // proxy ID line
+		proxyLines++ // listen addr
+		if p.TailscaleURL != "" {
+			proxyLines++
+		}
+		if p.TunnelURL != "" {
+			proxyLines++
+		}
+	}
+	proxyPanelH := 0
+	if proxyCount > 0 {
+		proxyPanelH = proxyLines + 2
+	}
+
+	// Browser panel
+	browserPanelH := 0
 	if browserCount > 0 {
-		currentRow++ // spacing
-		r.moveTo(currentRow, startCol+2)
-		r.write(FgCyan + Bold + "BROWSERS" + Reset + FgBrightBlack + " (connected sessions)" + Reset)
-		currentRow++
+		browserPanelH = browserCount + 2
+	}
 
-		for i, session := range status.BrowserSessions {
-			if i >= 4 {
-				r.moveTo(currentRow, startCol+3)
-				r.write(FgBrightBlack + fmt.Sprintf("  ... and %d more", len(status.BrowserSessions)-4) + Reset)
-				currentRow++
+	// Menu panel: always shown
+	menuPanelH := menuItemCount + 3 // items + title line + border top/bottom
+
+	// Calculate total height needed
+	totalPanels := 0
+	totalHeight := 0
+	panelHeights := []int{}
+	if processPanelH > 0 {
+		totalPanels++
+		panelHeights = append(panelHeights, processPanelH)
+		totalHeight += processPanelH
+	}
+	if errorPanelH > 0 {
+		totalPanels++
+		panelHeights = append(panelHeights, errorPanelH)
+		totalHeight += errorPanelH
+	}
+	if proxyPanelH > 0 {
+		totalPanels++
+		panelHeights = append(panelHeights, proxyPanelH)
+		totalHeight += proxyPanelH
+	}
+	if browserPanelH > 0 {
+		totalPanels++
+		panelHeights = append(panelHeights, browserPanelH)
+		totalHeight += browserPanelH
+	}
+	totalPanels++
+	panelHeights = append(panelHeights, menuPanelH)
+	totalHeight += menuPanelH
+
+	// Add gaps
+	totalHeight += (totalPanels - 1) * panelGap
+
+	// Shrink panels proportionally if needed
+	if totalHeight > availHeight && len(panelHeights) > 0 {
+		excess := totalHeight - availHeight
+		// Shrink largest panels first
+		for excess > 0 {
+			maxIdx := 0
+			for i, h := range panelHeights {
+				if h > panelHeights[maxIdx] {
+					maxIdx = i
+				}
+			}
+			if panelHeights[maxIdx] <= 3 {
+				break // Can't shrink further
+			}
+			panelHeights[maxIdx]--
+			excess--
+		}
+	}
+
+	// Track the full region for clearing
+	regionHeight := min(totalHeight, availHeight)
+	// Vertically center the panels
+	startRow := max((availHeight-regionHeight)/2+1, panelMargin)
+	if r.currentMenuRegion == nil {
+		r.currentMenuRegion = &ScreenRegion{
+			Row:    startRow,
+			Col:    panelCol,
+			Width:  panelWidth,
+			Height: regionHeight,
+		}
+		r.overlayStack.Push(RegionMenu, *r.currentMenuRegion)
+	}
+
+	r.write(CursorSave + CursorHide)
+
+	// Draw panels top-to-bottom, centered
+	currentRow := startRow
+	panelIdx := 0
+
+	// === PROCESSES PANEL ===
+	if processCount > 0 && panelIdx < len(panelHeights) {
+		h := panelHeights[panelIdx]
+		panelIdx++
+
+		title := fmt.Sprintf("%s processes", IconProcess)
+		r.drawNiriPanel(currentRow, panelCol, panelWidth, h, title, gradientProcess)
+
+		row := currentRow + 1
+		contentWidth := panelWidth - 4
+		for i, proc := range status.Processes {
+			if i >= 6 || row >= currentRow+h-1 {
+				if len(status.Processes) > 6 && row < currentRow+h-1 {
+					r.moveTo(row, panelCol+2)
+					r.write(FgBrightBlack + fmt.Sprintf("… %d more", len(status.Processes)-6) + Reset)
+				}
 				break
 			}
-			r.moveTo(currentRow, startCol+3)
 
-			// Truncate URL for display
-			displayURL := session.URL
-			maxURLLen := dashWidth - 30
-			if len(displayURL) > maxURLLen {
-				displayURL = displayURL[:maxURLLen-3] + "..."
+			r.moveTo(row, panelCol+2)
+			stateColor := StateColorCode(proc.State)
+			stateIcon := IconConnected
+			if proc.State != "running" {
+				stateIcon = IconDisconnected
 			}
 
-			// Activity indicator
+			// Process line: icon ID (state) runtime
+			runtimeStr := ""
+			if proc.Runtime > 0 {
+				runtimeStr = formatShortDuration(proc.Runtime)
+			}
+
+			idStr := proc.ID
+			if len(idStr) > contentWidth-15 {
+				idStr = idStr[:contentWidth-15] + "…"
+			}
+
+			line := fmt.Sprintf("%s%s%s %s%s%s",
+				stateColor, stateIcon, Reset,
+				FgWhite, idStr, Reset)
+			if runtimeStr != "" {
+				line += fmt.Sprintf(" %s%s%s", FgBrightBlack, runtimeStr, Reset)
+			}
+			r.write(line)
+			row++
+
+			// Show last output line (dimmed)
+			if proc.LastOutput != "" && row < currentRow+h-1 {
+				r.moveTo(row, panelCol+4)
+				out := proc.LastOutput
+				if len(out) > contentWidth-2 {
+					out = out[:contentWidth-5] + "…"
+				}
+				r.write(FgBrightBlack + out + Reset)
+				row++
+			}
+
+			// Show URLs
+			for _, urlStr := range proc.URLs {
+				if row >= currentRow+h-1 {
+					break
+				}
+				r.moveTo(row, panelCol+4)
+				displayURL := urlStr
+				if len(displayURL) > contentWidth-2 {
+					displayURL = displayURL[:contentWidth-5] + "…"
+				}
+				r.write(FgBrightCyan + Underline + displayURL + Reset)
+				row++
+			}
+		}
+
+		currentRow += h + panelGap
+	}
+
+	// === ERRORS PANEL ===
+	if recentErrors > 0 && panelIdx < len(panelHeights) {
+		h := panelHeights[panelIdx]
+		panelIdx++
+
+		title := fmt.Sprintf("%s %d errors", IconWarning, recentErrors)
+		r.drawNiriPanel(currentRow, panelCol, panelWidth, h, title, gradientError)
+
+		row := currentRow + 1
+		contentWidth := panelWidth - 4
+		shown := 0
+		for _, e := range status.RecentErrors {
+			if !e.Timestamp.After(cutoff) || row >= currentRow+h-1 || shown >= 5 {
+				break
+			}
+
+			r.moveTo(row, panelCol+2)
+			msg := e.Message
+			if len(msg) > contentWidth {
+				msg = msg[:contentWidth-3] + "…"
+			}
+			ago := formatShortTimeAgo(e.Timestamp)
+			srcColor := FgRed
+			r.write(fmt.Sprintf("%s%s%s %s%s%s %s%s%s",
+				srcColor, IconError, Reset,
+				FgWhite, msg, Reset,
+				FgBrightBlack, ago, Reset))
+			row++
+			shown++
+		}
+
+		currentRow += h + panelGap
+	}
+
+	// === PROXIES PANEL ===
+	if proxyCount > 0 && panelIdx < len(panelHeights) {
+		h := panelHeights[panelIdx]
+		panelIdx++
+
+		title := fmt.Sprintf("%s proxies", IconProxy)
+		r.drawNiriPanel(currentRow, panelCol, panelWidth, h, title, gradientProxy)
+
+		row := currentRow + 1
+		contentWidth := panelWidth - 4
+		for _, proxy := range status.Proxies {
+			if row >= currentRow+h-1 {
+				break
+			}
+
+			// Proxy ID and target
+			r.moveTo(row, panelCol+2)
+			errIndicator := ""
+			if proxy.HasErrors {
+				errIndicator = fmt.Sprintf(" %s%s%d%s", FgRed, IconWarning, proxy.ErrorCount, Reset)
+			}
+			target := proxy.TargetURL
+			if len(target) > contentWidth-len(proxy.ID)-5 {
+				target = target[:contentWidth-len(proxy.ID)-8] + "…"
+			}
+			r.write(fmt.Sprintf("%s%s%s %s→%s %s%s",
+				FgWhite+Bold, proxy.ID, Reset,
+				FgBrightBlack, Reset,
+				target, errIndicator))
+			row++
+
+			// Listen address
+			if row < currentRow+h-1 {
+				proxyURL := "http://" + NormalizeListenAddr(proxy.ListenAddr)
+				r.moveTo(row, panelCol+4)
+				if len(proxyURL) > contentWidth-2 {
+					proxyURL = proxyURL[:contentWidth-5] + "…"
+				}
+				r.write(FgBrightCyan + Underline + proxyURL + Reset)
+				row++
+			}
+
+			// Tailscale URL
+			if proxy.TailscaleURL != "" && row < currentRow+h-1 {
+				r.moveTo(row, panelCol+4)
+				tsURL := proxy.TailscaleURL
+				if len(tsURL) > contentWidth-2 {
+					tsURL = tsURL[:contentWidth-5] + "…"
+				}
+				r.write(FgMagenta + Underline + tsURL + Reset)
+				row++
+			}
+
+			// Tunnel URL
+			if proxy.TunnelURL != "" && row < currentRow+h-1 {
+				r.moveTo(row, panelCol+4)
+				tunURL := proxy.TunnelURL
+				if len(tunURL) > contentWidth-2 {
+					tunURL = tunURL[:contentWidth-5] + "…"
+				}
+				r.write(FgBrightMagenta + Underline + tunURL + Reset)
+				row++
+			}
+		}
+
+		currentRow += h + panelGap
+	}
+
+	// === BROWSER SESSIONS PANEL ===
+	if browserCount > 0 && panelIdx < len(panelHeights) {
+		h := panelHeights[panelIdx]
+		panelIdx++
+
+		title := "browsers"
+		r.drawNiriPanel(currentRow, panelCol, panelWidth, h, title, gradientBrowser)
+
+		row := currentRow + 1
+		contentWidth := panelWidth - 4
+		for i, session := range status.BrowserSessions {
+			if i >= 4 || row >= currentRow+h-1 {
+				break
+			}
+			r.moveTo(row, panelCol+2)
+
+			displayURL := session.URL
+			maxURLLen := contentWidth - 6
+			if len(displayURL) > maxURLLen {
+				displayURL = displayURL[:maxURLLen-3] + "…"
+			}
+
 			activityIcon := FgGreen + IconConnected + Reset
 			if time.Since(session.LastActivity) > 30*time.Second {
 				activityIcon = FgBrightBlack + IconDisconnected + Reset
 			}
 
-			line := fmt.Sprintf("%s %s%s%s",
-				activityIcon,
-				FgWhite, displayURL, Reset)
+			line := fmt.Sprintf("%s %s%s%s", activityIcon, FgWhite, displayURL, Reset)
+			r.write(line)
+			row++
+		}
 
-			// Show interactions/mutations if any
-			if session.Interactions > 0 || session.Mutations > 0 {
-				line += fmt.Sprintf(" %s(%d clicks, %d mutations)%s",
-					FgBrightBlack, session.Interactions, session.Mutations, Reset)
+		currentRow += h + panelGap
+	}
+
+	// === ACTIONS PANEL (always shown) ===
+	{
+		h := panelHeights[panelIdx]
+
+		versionTitle := "agnt"
+		if r.version != "" {
+			versionTitle = fmt.Sprintf("agnt v%s", r.version)
+		}
+		r.drawNiriPanel(currentRow, panelCol, panelWidth, h, versionTitle, gradientMenu)
+
+		// Connection status on first content line
+		row := currentRow + 1
+		r.moveTo(row, panelCol+2)
+		if status.DaemonConnected == ConnectionConnected {
+			r.write(fmt.Sprintf("%s%s%s connected", FgGreen, IconConnected, Reset))
+		} else {
+			r.write(fmt.Sprintf("%s%s%s disconnected", FgYellow, IconDisconnected, Reset))
+		}
+		row++
+
+		// Menu items
+		for i, item := range menu.Items {
+			if row >= currentRow+h-1 {
+				break
+			}
+			r.moveTo(row, panelCol+2)
+
+			if i == selectedIndex {
+				r.write(BgBlue + FgWhite + Bold)
 			}
 
-			r.write(line)
-			currentRow++
+			shortcut := " "
+			if item.Shortcut != 0 {
+				shortcut = string(item.Shortcut)
+			}
+
+			label := fmt.Sprintf("[%s] %s", shortcut, item.Label)
+			label = r.padRight(label, panelWidth-4)
+			r.write(label)
+
+			if i == selectedIndex {
+				r.write(Reset)
+			}
+			row++
 		}
 	}
 
-	// === MENU SECTION ===
-	currentRow++ // spacing
-	r.moveTo(currentRow, startCol+2)
-	r.write(FgCyan + Bold + "ACTIONS" + Reset)
-	currentRow++
-
-	for i, item := range menu.Items {
-		r.moveTo(currentRow, startCol+3)
-
-		if i == selectedIndex {
-			r.write(BgBlue + FgWhite + Bold)
-		}
-
-		shortcut := " "
-		if item.Shortcut != 0 {
-			shortcut = string(item.Shortcut)
-		}
-
-		label := fmt.Sprintf("[%s] %s", shortcut, item.Label)
-		label = r.padRight(label, dashWidth-6)
-		r.write(label)
-
-		if i == selectedIndex {
-			r.write(Reset)
-		}
-		currentRow++
-	}
-
-	// === FOOTER ===
-	footerRow := startRow + dashHeight - 1
-	r.moveTo(footerRow, startCol+1)
+	// Draw navigation hint at the very bottom of the last panel
+	lastPanelBottom := currentRow + panelHeights[panelIdx] - 1
+	r.moveTo(lastPanelBottom, panelCol+1)
 	r.write(FgBrightBlack)
-	hint := " ↑↓ Navigate │ Enter Select │ 1-9 View Process │ Esc Close "
-	hint = r.padCenter(hint, dashWidth-2)
-	r.write(hint)
+	hint := "↑↓ Nav  Enter Sel  1-9 Proc  Esc Close"
+	if len(hint) > panelWidth-2 {
+		hint = hint[:panelWidth-2]
+	}
+	r.write(r.padCenter(hint, panelWidth-2))
 	r.write(Reset)
 
 	r.write(CursorRestore + CursorShow)
+}
+
+// DrawPanelView draws a full-screen panel view with a niri-style tab bar at top.
+// Panels are arranged horizontally like niri columns: Ctrl+Left/Right to navigate.
+func (r *Renderer) DrawPanelView(panels []PanelItem, activeIndex int, status Status) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.write(ClearScreen + CursorHome + CursorHide)
+
+	if activeIndex >= len(panels) {
+		activeIndex = len(panels) - 1
+	}
+	if activeIndex < 0 {
+		activeIndex = 0
+	}
+
+	active := panels[activeIndex]
+
+	// === TAB BAR (row 1-2) ===
+	r.drawPanelTabBar(panels, activeIndex)
+
+	// === CONTENT PANEL ===
+	const contentStartRow = 3
+	const margin = 1
+	panelWidth := r.width - margin*2
+	panelHeight := r.height - contentStartRow - 1 // Leave room for footer
+	panelCol := margin + 1
+
+	// Choose gradient based on panel type
+	grad := gradientMenu
+	switch active.Type {
+	case "process":
+		grad = gradientProcess
+	case "proxy":
+		grad = gradientProxy
+	}
+
+	// Draw the content panel
+	title := active.Label
+	if active.Type != "overview" {
+		title = active.Type + ": " + active.ID
+	}
+	r.drawNiriPanel(contentStartRow, panelCol, panelWidth, panelHeight, title, grad)
+
+	// Fill content based on panel type
+	contentRow := contentStartRow + 1
+	contentWidth := panelWidth - 4
+
+	switch active.Type {
+	case "overview":
+		r.drawOverviewContent(contentRow, panelCol+2, contentWidth, panelHeight-2, status)
+	case "process":
+		r.drawProcessPanelContent(contentRow, panelCol+2, contentWidth, panelHeight-2, active, status)
+	case "proxy":
+		r.drawProxyPanelContent(contentRow, panelCol+2, contentWidth, panelHeight-2, active, status)
+	}
+
+	// === FOOTER ===
+	footerRow := r.height
+	r.moveTo(footerRow, 1)
+	r.write(BgBrightBlack + FgWhite)
+	hint := fmt.Sprintf(" Ctrl+← → Navigate panels (%d/%d)  Esc Back ", activeIndex+1, len(panels))
+	hint = r.padRight(hint, r.width)
+	r.write(hint)
+	r.write(Reset)
+
+	r.write(CursorShow)
+}
+
+// drawPanelTabBar draws the horizontal tab bar showing all panels.
+func (r *Renderer) drawPanelTabBar(panels []PanelItem, activeIndex int) {
+	// Row 1: Tab bar with panel labels
+	r.moveTo(1, 1)
+	r.write(ClearLine)
+
+	// Build tab bar fitting within screen width
+	var tabBar strings.Builder
+	tabBar.WriteString(" ")
+
+	for i, panel := range panels {
+		label := panel.Label
+
+		// Choose tab style based on type
+		var tabColor string
+		switch panel.Type {
+		case "process":
+			tabColor = gradientProcess.fromFg
+		case "proxy":
+			tabColor = gradientProxy.fromFg
+		case "overview":
+			tabColor = gradientMenu.fromFg
+		default:
+			tabColor = FgBrightBlack
+		}
+
+		if i == activeIndex {
+			// Active tab: bold with underline, brighter
+			tabBar.WriteString(tabColor + Bold + Underline)
+			tabBar.WriteString(" " + label + " ")
+			tabBar.WriteString(Reset)
+		} else {
+			// Inactive tab: dimmed
+			tabBar.WriteString(FgBrightBlack)
+			tabBar.WriteString(" " + label + " ")
+			tabBar.WriteString(Reset)
+		}
+
+		// Tab separator
+		if i < len(panels)-1 {
+			tabBar.WriteString(FgBrightBlack + "│" + Reset)
+		}
+	}
+
+	r.write(tabBar.String())
+
+	// Row 2: Thin separator line with gradient
+	r.moveTo(2, 1)
+	r.write(ClearLine)
+
+	// Draw a gradient separator spanning the width
+	half := r.width / 2
+	for i := 0; i < r.width; i++ {
+		if i < half {
+			r.write(gradientProcess.fromFg + "─" + Reset)
+		} else {
+			r.write(gradientProxy.fromFg + "─" + Reset)
+		}
+	}
+}
+
+// drawOverviewContent draws the overview panel content (system summary).
+func (r *Renderer) drawOverviewContent(startRow, col, width, maxRows int, status Status) {
+	row := startRow
+
+	// Connection status
+	r.moveTo(row, col)
+	if status.DaemonConnected == ConnectionConnected {
+		pingStr := ""
+		if status.DaemonPingMs > 0 {
+			pingStr = fmt.Sprintf(" %s(%dms)%s", FgBrightBlack, status.DaemonPingMs, Reset)
+		}
+		r.write(fmt.Sprintf("%s%s%s connected%s", FgGreen, IconConnected, Reset, pingStr))
+	} else {
+		r.write(fmt.Sprintf("%s%s%s disconnected", FgYellow, IconDisconnected, Reset))
+	}
+	row += 2
+
+	// Processes summary
+	if len(status.Processes) > 0 && row < startRow+maxRows {
+		r.moveTo(row, col)
+		r.write(Bold + "processes" + Reset)
+		row++
+
+		for i, proc := range status.Processes {
+			if row >= startRow+maxRows || i >= 8 {
+				break
+			}
+			r.moveTo(row, col+1)
+			stateColor := StateColorCode(proc.State)
+			stateIcon := IconConnected
+			if proc.State != "running" {
+				stateIcon = IconDisconnected
+			}
+
+			idStr := proc.ID
+			if len(idStr) > width-20 {
+				idStr = idStr[:width-23] + "…"
+			}
+
+			r.write(fmt.Sprintf("%s%s%s %s", stateColor, stateIcon, Reset, idStr))
+
+			if proc.Runtime > 0 {
+				r.write(fmt.Sprintf(" %s%s%s", FgBrightBlack, formatShortDuration(proc.Runtime), Reset))
+			}
+
+			// Show URLs inline
+			for _, u := range proc.URLs {
+				display := u
+				if len(display) > width-10 {
+					display = display[:width-13] + "…"
+				}
+				r.write(fmt.Sprintf(" %s%s%s", FgBrightCyan+Underline, display, Reset))
+			}
+			row++
+		}
+		row++
+	}
+
+	// Proxies summary
+	if len(status.Proxies) > 0 && row < startRow+maxRows {
+		r.moveTo(row, col)
+		r.write(Bold + "proxies" + Reset)
+		row++
+
+		for _, proxy := range status.Proxies {
+			if row >= startRow+maxRows {
+				break
+			}
+			r.moveTo(row, col+1)
+			proxyURL := "http://" + NormalizeListenAddr(proxy.ListenAddr)
+			errStr := ""
+			if proxy.HasErrors {
+				errStr = fmt.Sprintf(" %s%s%d%s", FgRed, IconWarning, proxy.ErrorCount, Reset)
+			}
+			r.write(fmt.Sprintf("%s%s%s %s→%s %s%s%s%s",
+				FgWhite+Bold, proxy.ID, Reset,
+				FgBrightBlack, Reset,
+				FgBrightCyan+Underline, proxyURL, Reset,
+				errStr))
+			row++
+		}
+		row++
+	}
+
+	// Recent errors
+	recentErrors := 0
+	cutoff := time.Now().Add(-5 * time.Minute)
+	for _, e := range status.RecentErrors {
+		if e.Timestamp.After(cutoff) {
+			recentErrors++
+		}
+	}
+	if recentErrors > 0 && row < startRow+maxRows {
+		r.moveTo(row, col)
+		r.write(fmt.Sprintf("%s%s %d recent errors%s", FgRed+Bold, IconWarning, recentErrors, Reset))
+		row++
+		for _, e := range status.RecentErrors {
+			if !e.Timestamp.After(cutoff) || row >= startRow+maxRows {
+				break
+			}
+			r.moveTo(row, col+1)
+			msg := e.Message
+			if len(msg) > width-10 {
+				msg = msg[:width-13] + "…"
+			}
+			r.write(fmt.Sprintf("%s%s%s %s %s%s%s",
+				FgRed, IconError, Reset, msg,
+				FgBrightBlack, formatShortTimeAgo(e.Timestamp), Reset))
+			row++
+		}
+	}
+}
+
+// drawProcessPanelContent draws the content for a process panel.
+func (r *Renderer) drawProcessPanelContent(startRow, col, width, maxRows int, panel PanelItem, status Status) {
+	// Find the process
+	var proc *ProcessInfo
+	for i := range status.Processes {
+		if status.Processes[i].ID == panel.ID {
+			proc = &status.Processes[i]
+			break
+		}
+	}
+
+	row := startRow
+	if proc == nil {
+		r.moveTo(row, col)
+		r.write(FgBrightBlack + "process not found" + Reset)
+		return
+	}
+
+	// Process header info
+	r.moveTo(row, col)
+	stateColor := StateColorCode(proc.State)
+	r.write(fmt.Sprintf("%s %s%s%s%s",
+		proc.Command,
+		stateColor+Bold, proc.State, Reset,
+		func() string {
+			if proc.Runtime > 0 {
+				return fmt.Sprintf(" %s%s%s", FgBrightBlack, formatShortDuration(proc.Runtime), Reset)
+			}
+			return ""
+		}()))
+	row++
+
+	// URLs
+	for _, u := range proc.URLs {
+		if row >= startRow+maxRows {
+			break
+		}
+		r.moveTo(row, col)
+		r.write(FgBrightCyan + Underline + u + Reset)
+		row++
+	}
+
+	// Separator
+	if row < startRow+maxRows {
+		row++
+		r.moveTo(row, col)
+		sepColor := gradientProcess.borderColorAt(0.3)
+		sepWidth := min(width, r.width-col-2)
+		r.write(sepColor + strings.Repeat("╌", sepWidth) + Reset)
+		row++
+	}
+
+	// Output content
+	if panel.Content != "" {
+		lines := strings.Split(panel.Content, "\n")
+
+		// Show last lines that fit
+		startLine := 0
+		availLines := startRow + maxRows - row
+		if len(lines) > availLines {
+			startLine = len(lines) - availLines
+		}
+
+		for i := startLine; i < len(lines) && row < startRow+maxRows; i++ {
+			r.moveTo(row, col)
+			line := lines[i]
+			if len(line) > width {
+				line = line[:width]
+			}
+			r.write(line)
+			row++
+		}
+	} else {
+		r.moveTo(row, col)
+		r.write(FgBrightBlack + "use Ctrl+← → to navigate, content loads on focus" + Reset)
+	}
+}
+
+// drawProxyPanelContent draws the content for a proxy panel.
+func (r *Renderer) drawProxyPanelContent(startRow, col, width, maxRows int, panel PanelItem, status Status) {
+	// Find the proxy
+	var proxy *ProxyInfo
+	for i := range status.Proxies {
+		if status.Proxies[i].ID == panel.ID {
+			proxy = &status.Proxies[i]
+			break
+		}
+	}
+
+	row := startRow
+	if proxy == nil {
+		r.moveTo(row, col)
+		r.write(FgBrightBlack + "proxy not found" + Reset)
+		return
+	}
+
+	// Proxy header
+	r.moveTo(row, col)
+	r.write(fmt.Sprintf("%s→%s %s", FgBrightBlack, Reset, proxy.TargetURL))
+	row++
+
+	// URLs
+	proxyURL := "http://" + NormalizeListenAddr(proxy.ListenAddr)
+	r.moveTo(row, col)
+	r.write(FgBrightCyan + Underline + proxyURL + Reset)
+	row++
+
+	if proxy.TailscaleURL != "" {
+		r.moveTo(row, col)
+		r.write(FgMagenta + Underline + proxy.TailscaleURL + Reset)
+		row++
+	}
+	if proxy.TunnelURL != "" {
+		r.moveTo(row, col)
+		r.write(FgBrightMagenta + Underline + proxy.TunnelURL + Reset)
+		row++
+	}
+
+	// Error indicator
+	if proxy.HasErrors {
+		r.moveTo(row, col)
+		r.write(fmt.Sprintf("%s%s %d errors%s", FgRed, IconWarning, proxy.ErrorCount, Reset))
+		row++
+	}
+
+	// Separator
+	if row < startRow+maxRows {
+		row++
+		r.moveTo(row, col)
+		sepColor := gradientProxy.borderColorAt(0.3)
+		sepWidth := min(width, r.width-col-2)
+		r.write(sepColor + strings.Repeat("╌", sepWidth) + Reset)
+		row++
+	}
+
+	// Log content
+	if panel.Content != "" {
+		lines := strings.Split(panel.Content, "\n")
+		startLine := 0
+		availLines := startRow + maxRows - row
+		if len(lines) > availLines {
+			startLine = len(lines) - availLines
+		}
+		for i := startLine; i < len(lines) && row < startRow+maxRows; i++ {
+			r.moveTo(row, col)
+			line := lines[i]
+			if len(line) > width {
+				line = line[:width]
+			}
+			r.write(line)
+			row++
+		}
+	} else {
+		r.moveTo(row, col)
+		r.write(FgBrightBlack + "use Ctrl+← → to navigate, content loads on focus" + Reset)
+	}
+}
+
+// formatShortDuration formats a duration compactly for panel display.
+func formatShortDuration(d time.Duration) string {
+	if d < time.Second {
+		return fmt.Sprintf("%dms", d.Milliseconds())
+	}
+	if d < time.Minute {
+		return fmt.Sprintf("%.0fs", d.Seconds())
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%.0fm", d.Minutes())
+	}
+	return fmt.Sprintf("%.1fh", d.Hours())
+}
+
+// formatShortTimeAgo formats a timestamp as a short relative time string.
+func formatShortTimeAgo(t time.Time) string {
+	d := time.Since(t)
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	}
+	return fmt.Sprintf("%dh", int(d.Hours()))
 }
 
 // DrawMenuWithProcesses draws a popup menu with a process list below it.
@@ -1151,6 +1744,98 @@ func (r *Renderer) drawBox(row, col, width, height int, title string) {
 	r.write(Reset)
 }
 
+// niriGradient defines a two-color gradient for niri-style panel borders.
+// Uses 256-color ANSI for broad terminal compatibility.
+type niriGradient struct {
+	fromFg string // Start color (top/left)
+	toFg   string // End color (bottom/right)
+}
+
+// Predefined gradients for different panel types (niri-inspired).
+var (
+	gradientProcess = niriGradient{
+		fromFg: "\x1b[38;5;75m",  // Steel blue
+		toFg:   "\x1b[38;5;69m",  // Medium blue
+	}
+	gradientError = niriGradient{
+		fromFg: "\x1b[38;5;209m", // Salmon
+		toFg:   "\x1b[38;5;167m", // Indian red
+	}
+	gradientProxy = niriGradient{
+		fromFg: "\x1b[38;5;114m", // Pale green
+		toFg:   "\x1b[38;5;72m",  // Cadet blue
+	}
+	gradientBrowser = niriGradient{
+		fromFg: "\x1b[38;5;183m", // Plum
+		toFg:   "\x1b[38;5;141m", // Medium purple
+	}
+	gradientMenu = niriGradient{
+		fromFg: "\x1b[38;5;252m", // Light grey
+		toFg:   "\x1b[38;5;245m", // Grey
+	}
+)
+
+// borderColorAt returns the interpolated border color for a given position
+// along a gradient (0.0 = start, 1.0 = end).
+func (g niriGradient) borderColorAt(t float64) string {
+	if t <= 0.5 {
+		return g.fromFg
+	}
+	return g.toFg
+}
+
+// drawNiriPanel draws a niri-style panel with rounded corners and gradient border.
+// The panel has a 1-cell gap on all sides for the characteristic niri spacing.
+func (r *Renderer) drawNiriPanel(row, col, width, height int, title string, grad niriGradient) {
+	if height < 2 || width < 4 {
+		return
+	}
+
+	// Top border with rounded corners
+	r.moveTo(row, col)
+	topColor := grad.borderColorAt(0)
+	r.write(topColor)
+	r.write(RoundTopLeft)
+	if title != "" {
+		remaining := width - 2
+		titleDisplay := " " + title + " "
+		titleLen := len(titleDisplay)
+		if titleLen > remaining {
+			titleLen = remaining
+			titleDisplay = titleDisplay[:titleLen]
+		}
+		leftBar := 1
+		rightBar := remaining - titleLen - leftBar
+		if rightBar < 0 {
+			rightBar = 0
+		}
+		r.write(strings.Repeat(BoxHorizontal, leftBar))
+		r.write(Reset + Bold + topColor + titleDisplay + Reset + topColor)
+		r.write(strings.Repeat(BoxHorizontal, rightBar))
+	} else {
+		r.write(strings.Repeat(BoxHorizontal, width-2))
+	}
+	r.write(RoundTopRight + Reset)
+
+	// Side borders with gradient
+	for i := 1; i < height-1; i++ {
+		t := float64(i) / float64(height-1)
+		sideColor := grad.borderColorAt(t)
+		r.moveTo(row+i, col)
+		r.write(sideColor + BoxVertical + Reset)
+		r.write(strings.Repeat(" ", width-2))
+		r.write(sideColor + BoxVertical + Reset)
+	}
+
+	// Bottom border with rounded corners
+	r.moveTo(row+height-1, col)
+	bottomColor := grad.borderColorAt(1)
+	r.write(bottomColor)
+	r.write(RoundBottomLeft)
+	r.write(strings.Repeat(BoxHorizontal, width-2))
+	r.write(RoundBottomRight + Reset)
+}
+
 // padRight pads a string to the right to reach the target width.
 func (r *Renderer) padRight(s string, width int) string {
 	visLen := r.estimateVisibleLength(s)
@@ -1171,47 +1856,84 @@ func (r *Renderer) padCenter(s string, width int) string {
 	return strings.Repeat(" ", leftPad) + s + strings.Repeat(" ", rightPad)
 }
 
-// DrawProcessOutput draws the process output viewer on the alt screen.
+// DrawProcessOutput draws the process output viewer on the alt screen
+// using niri-style panel with rounded corners and gradient border.
 func (r *Renderer) DrawProcessOutput(processID, command, state, output string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// Clear screen and draw header
+	// Clear screen
 	r.write(ClearScreen + CursorHome + CursorHide)
 
-	// Draw header bar (row 1)
-	r.moveTo(1, 1)
-	r.write(ClearLine)
-	r.write(BgBrightBlack + FgWhite + Bold)
-	header := fmt.Sprintf(" Process: %s | Command: %s | State: %s ", processID, command, state)
-	header = r.padRight(header, r.width)
-	r.write(header)
-	r.write(Reset)
+	// Panel dimensions: centered with niri-style margins
+	const margin = 2
+	panelWidth := r.width - margin*2
+	panelHeight := r.height - margin*2
+	if panelWidth < 20 {
+		panelWidth = r.width
+	}
+	if panelHeight < 5 {
+		panelHeight = r.height
+	}
+	panelCol := (r.width - panelWidth) / 2
+	if panelCol < 1 {
+		panelCol = 1
+	}
+	panelRow := margin
 
-	// Draw separator (row 2)
-	r.moveTo(2, 1)
-	r.write(ClearLine)
-	r.write(FgBrightBlack + strings.Repeat("─", r.width) + Reset)
+	// Choose gradient based on state
+	grad := gradientProcess
+	if state == "failed" {
+		grad = gradientError
+	}
 
-	// Draw output lines (leave room for header, separator, and footer)
+	// Draw niri-style panel
+	stateIcon := IconConnected
+	if state != "running" {
+		stateIcon = IconDisconnected
+	}
+	title := fmt.Sprintf("%s %s", stateIcon, processID)
+	r.drawNiriPanel(panelRow, panelCol, panelWidth, panelHeight, title, grad)
+
+	// Draw header info inside panel
+	headerRow := panelRow + 1
+	contentWidth := panelWidth - 4
+	r.moveTo(headerRow, panelCol+2)
+
+	stateColor := StateColorCode(state)
+	cmdDisplay := command
+	if len(cmdDisplay) > contentWidth-len(state)-5 {
+		cmdDisplay = cmdDisplay[:contentWidth-len(state)-8] + "…"
+	}
+	r.write(fmt.Sprintf("%s%s%s %s%s%s",
+		FgBrightBlack, cmdDisplay, Reset,
+		stateColor+Bold, state, Reset))
+
+	// Separator line
+	sepRow := headerRow + 1
+	r.moveTo(sepRow, panelCol+1)
+	sepColor := grad.borderColorAt(0.1)
+	r.write(sepColor + strings.Repeat("╌", panelWidth-2) + Reset)
+
+	// Draw output lines
 	lines := strings.Split(output, "\n")
-	maxLines := r.height - 4 // header + separator + footer + blank
+	outputWidth := panelWidth - 4
+	maxLines := panelHeight - 5 // header + separator + footer margins
 
-	// Wrap long lines and collect all display lines
+	// Wrap long lines
 	var displayLines []string
 	for _, line := range lines {
 		if len(line) == 0 {
 			displayLines = append(displayLines, "")
 			continue
 		}
-		// Wrap long lines instead of truncating
 		for len(line) > 0 {
-			if len(line) <= r.width {
+			if len(line) <= outputWidth {
 				displayLines = append(displayLines, line)
 				break
 			}
-			displayLines = append(displayLines, line[:r.width])
-			line = line[r.width:]
+			displayLines = append(displayLines, line[:outputWidth])
+			line = line[outputWidth:]
 		}
 	}
 
@@ -1221,29 +1943,20 @@ func (r *Renderer) DrawProcessOutput(processID, command, state, output string) {
 		startLine = len(displayLines) - maxLines
 	}
 
-	// Draw each line at explicit row positions
-	currentRow := 3
-	for i := startLine; i < len(displayLines) && currentRow < r.height-1; i++ {
-		r.moveTo(currentRow, 1)
-		r.write(ClearLine)
+	currentRow := sepRow + 1
+	for i := startLine; i < len(displayLines) && currentRow < panelRow+panelHeight-2; i++ {
+		r.moveTo(currentRow, panelCol+2)
 		r.write(displayLines[i])
 		currentRow++
 	}
 
-	// Clear any remaining lines
-	for currentRow < r.height-1 {
-		r.moveTo(currentRow, 1)
-		r.write(ClearLine)
-		currentRow++
-	}
-
-	// Move to bottom and draw footer
-	r.moveTo(r.height, 1)
-	r.write(ClearLine)
-	r.write(BgBrightBlack + FgWhite)
-	footer := " Press any key to close "
-	footer = r.padCenter(footer, r.width)
-	r.write(footer)
+	// Footer hint inside the panel bottom border area
+	footerRow := panelRow + panelHeight - 1
+	r.moveTo(footerRow, panelCol+1)
+	footerColor := grad.borderColorAt(1)
+	r.write(footerColor)
+	hint := " press any key to close "
+	r.write(r.padCenter(hint, panelWidth-2))
 	r.write(Reset)
 }
 

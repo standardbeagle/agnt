@@ -255,10 +255,28 @@ func (r *InputRouter) handleMenuKey(key string) {
 
 	switch key {
 	case "Escape":
+		if r.overlay.panelMode {
+			// Return to overview from panel view
+			r.overlay.panelMode = false
+			r.overlay.renderer.ClearScreen()
+			r.overlay.draw()
+			return
+		}
 		r.overlay.hideMenu()
 		return
 
+	case "Ctrl+Right":
+		r.handlePanelNav(1)
+		return
+
+	case "Ctrl+Left":
+		r.handlePanelNav(-1)
+		return
+
 	case "\r", "\n": // Enter
+		if r.overlay.panelMode {
+			return // No-op in panel view
+		}
 		if r.overlay.selectedIndex >= 0 && r.overlay.selectedIndex < len(menu.Items) {
 			item := menu.Items[r.overlay.selectedIndex]
 			r.executeMenuItem(item)
@@ -266,6 +284,9 @@ func (r *InputRouter) handleMenuKey(key string) {
 		return
 
 	case "Up", "k": // Up arrow or vim style
+		if r.overlay.panelMode {
+			return // No-op in panel view
+		}
 		if r.overlay.selectedIndex > 0 {
 			r.overlay.selectedIndex--
 			r.overlay.draw()
@@ -273,20 +294,77 @@ func (r *InputRouter) handleMenuKey(key string) {
 		return
 
 	case "Down", "j": // Down arrow or vim style
+		if r.overlay.panelMode {
+			return // No-op in panel view
+		}
 		if r.overlay.selectedIndex < len(menu.Items)-1 {
 			r.overlay.selectedIndex++
 			r.overlay.draw()
 		}
 		return
 
+	case "Right": // Plain right arrow enters panel mode on first panel
+		if !r.overlay.panelMode && len(r.overlay.panelItems) > 1 {
+			r.handlePanelNav(1)
+			return
+		}
+
+	case "Left": // Plain left arrow in panel mode goes back
+		if r.overlay.panelMode {
+			r.handlePanelNav(-1)
+			return
+		}
+
 	case "q": // Quick close
+		if r.overlay.panelMode {
+			r.overlay.panelMode = false
+			r.overlay.renderer.ClearScreen()
+			r.overlay.draw()
+			return
+		}
 		r.overlay.hideMenu()
 		return
 	}
 
-	// Check for 1-9 to view process output (only in main menu)
+	// Check for 1-9 to view process output
+	// In panel mode: jump to the Nth process panel
+	// In menu mode: open the legacy process viewer
 	if len(key) == 1 && key[0] >= '1' && key[0] <= '9' {
 		processNum := int(key[0] - '0')
+
+		// Try to jump to the process panel directly
+		if len(r.overlay.panelItems) > 0 {
+			procIdx := 0
+			for i, p := range r.overlay.panelItems {
+				if p.Type == "process" {
+					procIdx++
+					if procIdx == processNum {
+						// Navigate directly to this panel
+						r.overlay.panelIndex = i
+						r.overlay.panelMode = true
+
+						// Fetch content
+						panel := &r.overlay.panelItems[i]
+						if r.outputFetcher != nil {
+							r.overlay.mu.Unlock()
+							output, err := r.outputFetcher.GetProcessOutput(panel.ID, 200)
+							r.overlay.mu.Lock()
+							if err == nil {
+								panel.Content = output
+							} else {
+								panel.Content = "Error: " + err.Error()
+							}
+						}
+
+						r.overlay.renderer.ClearScreen()
+						r.overlay.draw()
+						return
+					}
+				}
+			}
+		}
+
+		// Fallback: legacy process viewer
 		r.overlay.hideMenu()
 		r.overlay.mu.Unlock()
 		r.showProcessViewer(processNum)
@@ -305,6 +383,59 @@ func (r *InputRouter) handleMenuKey(key string) {
 			}
 		}
 	}
+}
+
+// handlePanelNav handles Ctrl+Left/Right panel navigation.
+// Must be called with overlay.mu held.
+func (r *InputRouter) handlePanelNav(delta int) {
+	if len(r.overlay.panelItems) == 0 {
+		r.overlay.buildPanelItems()
+	}
+	if len(r.overlay.panelItems) <= 1 {
+		return
+	}
+
+	wasInPanelMode := r.overlay.panelMode
+
+	newIndex := r.overlay.panelIndex + delta
+	if newIndex < 0 {
+		if r.overlay.panelMode {
+			// Going left from first panel exits panel mode
+			r.overlay.panelMode = false
+			r.overlay.panelIndex = 0
+			r.overlay.renderer.ClearScreen()
+			r.overlay.draw()
+			return
+		}
+		return
+	}
+	if newIndex >= len(r.overlay.panelItems) {
+		return
+	}
+
+	r.overlay.panelIndex = newIndex
+	r.overlay.panelMode = true
+
+	// Fetch content for the focused panel
+	panel := &r.overlay.panelItems[newIndex]
+	if panel.Type == "process" && r.outputFetcher != nil {
+		// Release lock during I/O
+		r.overlay.mu.Unlock()
+		output, err := r.outputFetcher.GetProcessOutput(panel.ID, 200)
+		r.overlay.mu.Lock()
+		if err == nil {
+			panel.Content = output
+		} else {
+			panel.Content = "Error: " + err.Error()
+		}
+	}
+	// Proxy content could be fetched similarly in the future
+
+	if !wasInPanelMode {
+		// Clear the dashboard before drawing panel view
+		r.overlay.renderer.ClearScreen()
+	}
+	r.overlay.draw()
 }
 
 // handleTextInput handles input in text input mode.
@@ -842,6 +973,19 @@ func (r *EscapeSequenceReader) Feed(b byte) (key string, complete bool) {
 	case "\x1b[3~":
 		r.state = 0
 		return "Delete", true
+	// Ctrl+Arrow sequences (xterm-style)
+	case "\x1b[1;5C":
+		r.state = 0
+		return "Ctrl+Right", true
+	case "\x1b[1;5D":
+		r.state = 0
+		return "Ctrl+Left", true
+	case "\x1b[1;5A":
+		r.state = 0
+		return "Ctrl+Up", true
+	case "\x1b[1;5B":
+		r.state = 0
+		return "Ctrl+Down", true
 	}
 
 	// After \x1b, if next byte is not '[', it's not a CSI sequence
