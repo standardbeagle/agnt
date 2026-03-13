@@ -1154,15 +1154,54 @@ func (d *Daemon) hubHandleProxyLogQuery(conn *hubpkg.Connection, cmd *hubproto.C
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
 
-	var filter proxy.LogFilter
-	if len(cmd.Data) > 0 {
-		json.Unmarshal(cmd.Data, &filter)
-	}
+	filter := convertLogQueryFilter(cmd.Data)
 
 	entries := p.Logger().Query(filter)
 
 	data, _ := json.Marshal(map[string]interface{}{"logs": entries})
 	return conn.WriteJSON(data)
+}
+
+// convertLogQueryFilter unmarshals protocol LogQueryFilter data into a proxy.LogFilter,
+// parsing string Since/Until values into *time.Time.
+func convertLogQueryFilter(data []byte) proxy.LogFilter {
+	if len(data) == 0 {
+		return proxy.LogFilter{}
+	}
+
+	var pf protocol.LogQueryFilter
+	json.Unmarshal(data, &pf)
+
+	filter := proxy.LogFilter{
+		Methods:     pf.Methods,
+		URLPattern:  pf.URLPattern,
+		StatusCodes: pf.StatusCodes,
+		Limit:       pf.Limit,
+		Since:       parseTimeString(pf.Since),
+		Until:       parseTimeString(pf.Until),
+	}
+
+	for _, t := range pf.Types {
+		filter.Types = append(filter.Types, proxy.LogEntryType(t))
+	}
+
+	return filter
+}
+
+// parseTimeString parses a time string as either RFC3339 or a Go duration.
+// Duration strings like "5m" are interpreted as that duration ago from now.
+func parseTimeString(s string) *time.Time {
+	if s == "" {
+		return nil
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return &t
+	}
+	if d, err := time.ParseDuration(s); err == nil {
+		t := time.Now().Add(-d)
+		return &t
+	}
+	return nil
 }
 
 // hubHandleProxyLogSummary handles PROXYLOG SUMMARY command.
