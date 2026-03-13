@@ -153,7 +153,9 @@ func (c *Client) Detect(path string) (map[string]interface{}, error) {
 }
 
 // Run starts a process on the daemon.
-func (c *Client) Run(config protocol.RunConfig) (map[string]interface{}, error) {
+// The config is marshaled to JSON and can be protocol.RunConfig or any struct
+// that embeds it (e.g., with additional fields like no_auto_restart).
+func (c *Client) Run(config interface{}) (map[string]interface{}, error) {
 	return c.conn.Request(protocol.VerbRunJSON).WithJSON(config).JSON()
 }
 

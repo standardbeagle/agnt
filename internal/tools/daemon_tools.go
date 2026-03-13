@@ -561,20 +561,27 @@ func (dt *DaemonTools) makeRunHandler() func(context.Context, *mcp.CallToolReque
 			return errorResult("script_name required (or use raw=true with command)"), RunOutput{}, nil
 		}
 
-		// Build daemon protocol config
+		// Build daemon protocol config with agnt-specific extensions.
 		// Pass client's environment to daemon so spawned processes use correct PATH, etc.
-		config := protocol.RunConfig{
-			ID:      id,
-			Path:    absPath,
-			Raw:     true, // Always raw since we resolved the script
-			Command: cmd,
-			Args:    args,
-			Mode:    string(input.Mode),
-			Env:     os.Environ(),
+		mode := string(input.Mode)
+		if mode == "" {
+			mode = "background"
 		}
 
-		if config.Mode == "" {
-			config.Mode = "background"
+		config := struct {
+			protocol.RunConfig
+			NoAutoRestart bool `json:"no_auto_restart,omitempty"`
+		}{
+			RunConfig: protocol.RunConfig{
+				ID:      id,
+				Path:    absPath,
+				Raw:     true, // Always raw since we resolved the script
+				Command: cmd,
+				Args:    args,
+				Mode:    mode,
+				Env:     os.Environ(),
+			},
+			NoAutoRestart: input.NoAutoRestart,
 		}
 
 		result, err := dt.client.Run(config)
@@ -584,13 +591,8 @@ func (dt *DaemonTools) makeRunHandler() func(context.Context, *mcp.CallToolReque
 
 		processID := getString(result, "process_id")
 
-		// Enable auto-restart by default for background processes (unless explicitly disabled)
-		if !input.NoAutoRestart && config.Mode == "background" && processID != "" {
-			_, err := dt.client.ProcAutoRestart(processID, "enable", nil)
-			if err != nil {
-				debug.Log("run", "Warning: failed to enable auto-restart for %s: %v", processID, err)
-			}
-		}
+		// Auto-restart is registered atomically by the daemon's RUN handler.
+		// The no_auto_restart flag is sent via the protocol config (see agntRunConfig).
 
 		// Convert to output type
 		output := RunOutput{
