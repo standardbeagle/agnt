@@ -262,7 +262,9 @@ func (rc *ResilientClient) Detect(path string) (map[string]interface{}, error) {
 }
 
 // Run starts a process on the daemon.
-func (rc *ResilientClient) Run(config protocol.RunConfig) (map[string]interface{}, error) {
+// The config is marshaled to JSON and can be protocol.RunConfig or any struct
+// that embeds it (e.g., with additional fields like no_auto_restart).
+func (rc *ResilientClient) Run(config interface{}) (map[string]interface{}, error) {
 	var result map[string]interface{}
 	err := rc.WithClient(func(c *Client) error {
 		var e error

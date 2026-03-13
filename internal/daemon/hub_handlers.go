@@ -267,6 +267,20 @@ func extractPortFromURL(urlStr string) int {
 // This enables Hub's command dispatch to route these commands to the daemon's handlers.
 // Note: Registering a command that Hub already registered will override Hub's handler.
 func (d *Daemon) registerAgntCommands() {
+	// RUN/RUN-JSON commands - override Hub's to add atomic auto-restart registration.
+	// Hub's handler returns "id" but tools expect "process_id", and auto-restart
+	// must be registered before the response so there's no race with fast-crashing processes.
+	d.hub.RegisterCommand(hubpkg.CommandDefinition{
+		Verb:        "RUN",
+		Description: "Start a process with auto-restart",
+		Handler:     d.hubHandleRun,
+	})
+	d.hub.RegisterCommand(hubpkg.CommandDefinition{
+		Verb:        "RUN-JSON",
+		Description: "Start a process with auto-restart (JSON config)",
+		Handler:     d.hubHandleRun,
+	})
+
 	// PROC command - override Hub's to add URL tracking and project filtering
 	d.hub.RegisterCommand(hubpkg.CommandDefinition{
 		Verb:        "PROC",
@@ -399,7 +413,69 @@ func (d *Daemon) registerAgntCommands() {
 		Handler:     d.hubHandleRestartAll,
 	})
 
-	debug.Log("daemon", "Registered %d agnt-specific commands with Hub", 17)
+	debug.Log("daemon", "Registered %d agnt-specific commands with Hub", 19)
+}
+
+// agntRunConfig extends the hub's RunConfig with agnt-specific fields.
+// Extra fields are ignored by the hub's JSON unmarshaling but parsed here.
+type agntRunConfig struct {
+	hubproto.RunConfig
+	NoAutoRestart bool `json:"no_auto_restart,omitempty"`
+}
+
+// hubHandleRun handles RUN and RUN-JSON commands (overrides Hub's built-in).
+// Adds atomic auto-restart registration for background processes and returns
+// "process_id" (matching what daemon_tools.go expects).
+func (d *Daemon) hubHandleRun(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	var cfg agntRunConfig
+	if len(cmd.Data) > 0 {
+		if err := json.Unmarshal(cmd.Data, &cfg); err != nil {
+			return conn.WriteErr(hubproto.ErrInvalidArgs, "invalid JSON config")
+		}
+	}
+
+	if cfg.Command == "" && cfg.ScriptName == "" {
+		return conn.WriteMissingParam("RUN", "command", "command or script_name required")
+	}
+
+	procCfg := goprocess.ProcessConfig{
+		ID:          cfg.ID,
+		ProjectPath: cfg.Path,
+		Command:     cfg.Command,
+		Args:        cfg.Args,
+		Env:         cfg.Env,
+		EnableStdin: cfg.EnableStdin,
+	}
+
+	result, err := d.hub.ProcessManager().StartOrReuse(ctx, procCfg)
+	if err != nil {
+		return conn.WriteInternalErr(err.Error())
+	}
+
+	proc := result.Process
+
+	// Register auto-restart atomically for background processes before responding.
+	// This eliminates the race where a fast-crashing process exits before the
+	// client can send a separate PROC AUTORESTART ENABLE request.
+	isBackground := cfg.Mode == "" || cfg.Mode == "background"
+	if isBackground && !cfg.NoAutoRestart && d.autoRestarter != nil && !result.Reused {
+		restartConfig := DefaultAutoRestartConfig()
+		d.autoRestarter.Register(proc.ID, restartConfig, proc.Command, proc.Args, proc.ProjectPath, proc.WorkingDir)
+		debug.Log("daemon", "Auto-restart registered for %s (atomic with start)", proc.ID)
+	}
+
+	response := map[string]interface{}{
+		"id":         proc.ID,
+		"process_id": proc.ID,
+		"pid":        proc.PID(),
+		"state":      proc.State().String(),
+		"reused":     result.Reused,
+		"cleaned":    result.Cleaned,
+		"command":    proc.Command,
+	}
+
+	data, _ := json.Marshal(response)
+	return conn.WriteJSON(data)
 }
 
 // hubHandleProc handles the PROC command (overrides Hub's built-in).
@@ -577,6 +653,12 @@ func (d *Daemon) hubHandleProcStop(ctx context.Context, conn *hubpkg.Connection,
 		}
 		data, _ := json.Marshal(resp)
 		return conn.WriteJSON(data)
+	}
+
+	// Unregister from auto-restart before stopping to prevent the monitor
+	// from restarting the process after an explicit user stop.
+	if d.autoRestarter != nil {
+		d.autoRestarter.Unregister(processID)
 	}
 
 	if err := d.hub.ProcessManager().Stop(ctx, processID); err != nil {
@@ -3305,6 +3387,15 @@ func (d *Daemon) hubHandleProcRestart(ctx context.Context, conn *hubpkg.Connecti
 		return conn.WriteErr(hubproto.ErrInvalidState, fmt.Sprintf("process %q is in state %s, cannot restart", processID, state))
 	}
 
+	// Capture auto-restart state before stopping so we can re-register after restart.
+	wasAutoRestart := d.autoRestarter != nil && d.autoRestarter.IsRegistered(processID)
+
+	// Unregister from auto-restart before stopping to prevent the monitor from
+	// racing with this explicit restart.
+	if d.autoRestarter != nil {
+		d.autoRestarter.Unregister(processID)
+	}
+
 	// Stop the process if running
 	if state == "running" {
 		stopCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
@@ -3330,6 +3421,12 @@ func (d *Daemon) hubHandleProcRestart(ctx context.Context, conn *hubpkg.Connecti
 	newProc, startupErr := d.startScriptWithRetry(ctx, processID, projectPath, projectPath, command, args, nil, expectedPort)
 	if startupErr != nil {
 		return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("failed to restart: %v", startupErr))
+	}
+
+	// Re-register auto-restart if it was previously enabled
+	if wasAutoRestart && d.autoRestarter != nil {
+		restartConfig := DefaultAutoRestartConfig()
+		d.autoRestarter.Register(processID, restartConfig, command, args, projectPath, projectPath)
 	}
 
 	resp := map[string]interface{}{
