@@ -573,17 +573,25 @@ func (tl *TrafficLogger) log(entry LogEntry) {
 	tl.count.Add(1)
 }
 
-// Query retrieves log entries matching the filter.
+// Query retrieves log entries matching the filter in chronological order.
 func (tl *TrafficLogger) Query(filter LogFilter) []LogEntry {
 	tl.mu.RLock()
 	defer tl.mu.RUnlock()
 
-	total := tl.count.Load()
-	available := int(min(total, int64(tl.maxSize)))
+	head := tl.head.Load()
+	available := int(min(head, int64(tl.maxSize)))
+
+	// When the buffer has wrapped, the oldest entry is at head % maxSize.
+	// When it hasn't wrapped, entries start at index 0.
+	start := 0
+	if head > int64(tl.maxSize) {
+		start = int(head % int64(tl.maxSize))
+	}
 
 	var results []LogEntry
 	for i := 0; i < available; i++ {
-		entry := tl.entries[i]
+		idx := (start + i) % tl.maxSize
+		entry := tl.entries[idx]
 		if filter.Matches(entry) {
 			results = append(results, entry)
 		}

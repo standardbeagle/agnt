@@ -287,6 +287,195 @@ func TestTrafficLogger_Clear(t *testing.T) {
 	}
 }
 
+func TestTrafficLogger_QueryAfterWrap_ChronologicalOrder(t *testing.T) {
+	maxSize := 5
+	logger := NewTrafficLogger(maxSize)
+
+	// Write 8 entries into a buffer of size 5.
+	// After 8 writes: head=8, indices are:
+	//   idx 0: write 5, idx 1: write 6, idx 2: write 7
+	//   idx 3: write 3, idx 4: write 4
+	// Chronological order should be: write 3, 4, 5, 6, 7
+	baseTime := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < 8; i++ {
+		logger.LogHTTP(HTTPLogEntry{
+			ID:         "req-" + string(rune('A'+i)),
+			Timestamp:  baseTime.Add(time.Duration(i) * time.Second),
+			Method:     "GET",
+			URL:        "/test",
+			StatusCode: 200,
+		})
+	}
+
+	results := logger.Query(LogFilter{})
+	if len(results) != maxSize {
+		t.Fatalf("Expected %d entries, got %d", maxSize, len(results))
+	}
+
+	// Verify chronological order: entries 3, 4, 5, 6, 7
+	for i, r := range results {
+		expectedID := string(rune('A' + 3 + i))
+		if r.HTTP.ID != "req-"+expectedID {
+			t.Errorf("Entry %d: expected ID req-%s, got %s", i, expectedID, r.HTTP.ID)
+		}
+	}
+
+	// Verify timestamps are strictly increasing
+	for i := 1; i < len(results); i++ {
+		if !results[i].HTTP.Timestamp.After(results[i-1].HTTP.Timestamp) {
+			t.Errorf("Entry %d timestamp %v not after entry %d timestamp %v",
+				i, results[i].HTTP.Timestamp, i-1, results[i-1].HTTP.Timestamp)
+		}
+	}
+}
+
+func TestTrafficLogger_QueryAfterWrap_NoStaleEntries(t *testing.T) {
+	maxSize := 5
+	logger := NewTrafficLogger(maxSize)
+
+	// Write exactly 3 entries (no wrap), then query
+	for i := 0; i < 3; i++ {
+		logger.LogHTTP(HTTPLogEntry{
+			ID:        "req-" + string(rune('A'+i)),
+			Timestamp: time.Now(),
+			Method:    "GET",
+			URL:       "/test",
+		})
+	}
+
+	results := logger.Query(LogFilter{})
+	if len(results) != 3 {
+		t.Fatalf("Expected 3 entries before wrap, got %d", len(results))
+	}
+	for _, r := range results {
+		if r.Type != LogTypeHTTP {
+			t.Errorf("Expected type %s, got %s", LogTypeHTTP, r.Type)
+		}
+	}
+
+	// Now write enough to wrap
+	for i := 3; i < 12; i++ {
+		logger.LogHTTP(HTTPLogEntry{
+			ID:        "req-" + string(rune('A'+i)),
+			Timestamp: time.Now(),
+			Method:    "POST",
+			URL:       "/wrapped",
+		})
+	}
+
+	results = logger.Query(LogFilter{})
+	if len(results) != maxSize {
+		t.Fatalf("Expected %d entries after wrap, got %d", maxSize, len(results))
+	}
+
+	// All entries must be POST (from the recent writes), not stale GET entries
+	for i, r := range results {
+		if r.Type == "" {
+			t.Errorf("Entry %d has empty type (stale entry leaked)", i)
+		}
+		if r.HTTP == nil {
+			t.Errorf("Entry %d has nil HTTP data (stale entry leaked)", i)
+		} else if r.HTTP.Method != "POST" {
+			t.Errorf("Entry %d: expected POST (recent), got %s (stale)", i, r.HTTP.Method)
+		}
+	}
+}
+
+func TestTrafficLogger_QueryAfterExactWrap(t *testing.T) {
+	maxSize := 5
+	logger := NewTrafficLogger(maxSize)
+
+	// Write exactly maxSize entries (buffer full, no wrap yet)
+	baseTime := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < maxSize; i++ {
+		logger.LogHTTP(HTTPLogEntry{
+			ID:        "req-" + string(rune('A'+i)),
+			Timestamp: baseTime.Add(time.Duration(i) * time.Second),
+			Method:    "GET",
+			URL:       "/exact",
+		})
+	}
+
+	results := logger.Query(LogFilter{})
+	if len(results) != maxSize {
+		t.Fatalf("Expected %d entries, got %d", maxSize, len(results))
+	}
+
+	// Should be in order A, B, C, D, E
+	for i, r := range results {
+		expectedID := string(rune('A' + i))
+		if r.HTTP.ID != "req-"+expectedID {
+			t.Errorf("Entry %d: expected req-%s, got %s", i, expectedID, r.HTTP.ID)
+		}
+	}
+
+	// Write one more to trigger first wrap
+	logger.LogHTTP(HTTPLogEntry{
+		ID:        "req-F",
+		Timestamp: baseTime.Add(5 * time.Second),
+		Method:    "GET",
+		URL:       "/exact",
+	})
+
+	results = logger.Query(LogFilter{})
+	if len(results) != maxSize {
+		t.Fatalf("Expected %d entries after first wrap, got %d", maxSize, len(results))
+	}
+
+	// Should be B, C, D, E, F (oldest A dropped)
+	expected := []string{"req-B", "req-C", "req-D", "req-E", "req-F"}
+	for i, r := range results {
+		if r.HTTP.ID != expected[i] {
+			t.Errorf("Entry %d: expected %s, got %s", i, expected[i], r.HTTP.ID)
+		}
+	}
+}
+
+func TestTrafficLogger_QueryWithFilterAfterWrap(t *testing.T) {
+	maxSize := 5
+	logger := NewTrafficLogger(maxSize)
+
+	// Write mixed types that wrap
+	for i := 0; i < 8; i++ {
+		if i%2 == 0 {
+			logger.LogHTTP(HTTPLogEntry{
+				ID:        "req-" + string(rune('A'+i)),
+				Timestamp: time.Now(),
+				Method:    "GET",
+				URL:       "/test",
+			})
+		} else {
+			logger.LogError(FrontendError{
+				ID:        "err-" + string(rune('A'+i)),
+				Timestamp: time.Now(),
+				Message:   "test error",
+			})
+		}
+	}
+
+	// Query only HTTP entries after wrap
+	results := logger.Query(LogFilter{Types: []LogEntryType{LogTypeHTTP}})
+	for _, r := range results {
+		if r.Type != LogTypeHTTP {
+			t.Errorf("Expected HTTP type, got %s", r.Type)
+		}
+		if r.HTTP == nil {
+			t.Error("HTTP data is nil for HTTP type entry")
+		}
+	}
+
+	// Query only error entries after wrap
+	results = logger.Query(LogFilter{Types: []LogEntryType{LogTypeError}})
+	for _, r := range results {
+		if r.Type != LogTypeError {
+			t.Errorf("Expected Error type, got %s", r.Type)
+		}
+		if r.Error == nil {
+			t.Error("Error data is nil for Error type entry")
+		}
+	}
+}
+
 func TestTrafficLogger_ConcurrentWrites(t *testing.T) {
 	logger := NewTrafficLogger(1000)
 
