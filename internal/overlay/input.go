@@ -265,11 +265,11 @@ func (r *InputRouter) handleMenuKey(key string) {
 		r.overlay.hideMenu()
 		return
 
-	case "Ctrl+Right":
+	case "Ctrl+Right", "\t": // Ctrl+Right or Tab: next panel
 		r.handlePanelNav(1)
 		return
 
-	case "Ctrl+Left":
+	case "Ctrl+Left", "Shift+Tab": // Ctrl+Left or Shift+Tab: previous panel
 		r.handlePanelNav(-1)
 		return
 
@@ -986,6 +986,10 @@ func (r *EscapeSequenceReader) Feed(b byte) (key string, complete bool) {
 	case "\x1b[1;5B":
 		r.state = 0
 		return "Ctrl+Down", true
+	// Shift+Tab (backtab)
+	case "\x1b[Z":
+		r.state = 0
+		return "Shift+Tab", true
 	}
 
 	// After \x1b, if next byte is not '[', it's not a CSI sequence

@@ -1040,7 +1040,7 @@ func (r *Renderer) DrawDashboard(menu Menu, selectedIndex int, status Status) {
 	lastPanelBottom := currentRow + panelHeights[panelIdx] - 1
 	r.moveTo(lastPanelBottom, panelCol+1)
 	r.write(FgBrightBlack)
-	hint := "↑↓ Nav  Enter Sel  1-9 Proc  Esc Close"
+	hint := "↑↓ Nav  Tab Panels  1-9 Proc  Esc Close"
 	if len(hint) > panelWidth-2 {
 		hint = hint[:panelWidth-2]
 	}
@@ -1110,7 +1110,7 @@ func (r *Renderer) DrawPanelView(panels []PanelItem, activeIndex int, status Sta
 	footerRow := r.height
 	r.moveTo(footerRow, 1)
 	r.write(BgBrightBlack + FgWhite)
-	hint := fmt.Sprintf(" Ctrl+← → Navigate panels (%d/%d)  Esc Back ", activeIndex+1, len(panels))
+	hint := fmt.Sprintf(" Tab/Shift+Tab Navigate panels (%d/%d)  Esc Back ", activeIndex+1, len(panels))
 	hint = r.padRight(hint, r.width)
 	r.write(hint)
 	r.write(Reset)
@@ -1366,7 +1366,7 @@ func (r *Renderer) drawProcessPanelContent(startRow, col, width, maxRows int, pa
 		}
 	} else {
 		r.moveTo(row, col)
-		r.write(FgBrightBlack + "use Ctrl+← → to navigate, content loads on focus" + Reset)
+		r.write(FgBrightBlack + "Tab/Shift+Tab to navigate panels" + Reset)
 	}
 }
 
@@ -1446,7 +1446,7 @@ func (r *Renderer) drawProxyPanelContent(startRow, col, width, maxRows int, pane
 		}
 	} else {
 		r.moveTo(row, col)
-		r.write(FgBrightBlack + "use Ctrl+← → to navigate, content loads on focus" + Reset)
+		r.write(FgBrightBlack + "Tab/Shift+Tab to navigate panels" + Reset)
 	}
 }
 
