@@ -641,9 +641,17 @@ func runWithPTY(ctx context.Context, args []string, socketPath string, sessionCo
 	// Wait for context cancellation or process exit
 	select {
 	case <-ctx.Done():
-		// Send interrupt to the process
+		// Send interrupt to the entire process group so all children
+		// receive the signal and can clean up. PTY processes get their
+		// own session (via creack/pty's Setsid), so the negative PID
+		// targets all processes in that session's process group.
 		if c.Process != nil {
-			_ = c.Process.Signal(syscall.SIGINT)
+			pgid, err := syscall.Getpgid(c.Process.Pid)
+			if err == nil && pgid > 0 {
+				_ = syscall.Kill(-pgid, syscall.SIGINT)
+			} else {
+				_ = c.Process.Signal(syscall.SIGINT)
+			}
 		}
 	case <-done:
 		// Process exited normally
