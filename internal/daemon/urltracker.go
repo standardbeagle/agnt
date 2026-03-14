@@ -301,6 +301,11 @@ func parseDevServerURLsWithMatchers(output []byte, matchers []string) []string {
 	var urls []string
 
 	for _, line := range lines {
+		// Strip ANSI escape codes so patterns and URL regex match
+		// even when output contains terminal color/formatting sequences
+		// (e.g., Vite wraps URLs in \x1b[36m...\x1b[0m)
+		line = ansiEscapeRegex.ReplaceAllString(line, "")
+
 		// If no matchers specified, scan entire line for URLs
 		if len(matchers) == 0 {
 			lineMatches := devServerURLRegex.FindAllString(line, -1)

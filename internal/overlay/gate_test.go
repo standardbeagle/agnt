@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestOutputGate_Write(t *testing.T) {
@@ -121,6 +122,38 @@ func TestOutputGate_DoubleUnfreeze(t *testing.T) {
 
 	if callCount != 1 {
 		t.Errorf("expected callback to be called once, got %d", callCount)
+	}
+}
+
+// TestOutputGate_CallbackWritesToGate verifies that an onUnfreeze callback
+// can write to the gate without deadlocking. This reproduces the scenario
+// where EnforceScrollRegion writes through the gate from within the callback.
+func TestOutputGate_CallbackWritesToGate(t *testing.T) {
+	var buf bytes.Buffer
+	gate := NewOutputGate(&buf)
+
+	done := make(chan struct{})
+	gate.SetCallbacks(nil, func() {
+		// This write acquires gate.mu — previously deadlocked when
+		// the callback ran inside Unfreeze's lock.
+		gate.Write([]byte("from-callback"))
+		close(done)
+	})
+
+	gate.Freeze()
+	gate.Write([]byte("frozen-write")) // discarded
+
+	gate.Unfreeze()
+
+	// If we reach here without hanging, the deadlock is fixed
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("deadlock: onUnfreeze callback did not complete")
+	}
+
+	if buf.String() != "from-callback" {
+		t.Errorf("expected 'from-callback', got %q", buf.String())
 	}
 }
 

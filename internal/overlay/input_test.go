@@ -195,6 +195,58 @@ func TestInputBatchingMultipleEscapeSequences(t *testing.T) {
 	}
 }
 
+// TestPanelShortcutDelta verifies Ctrl+Arrow detection.
+func TestPanelShortcutDelta(t *testing.T) {
+	tests := []struct {
+		name  string
+		input []byte
+		want  int
+	}{
+		{"Ctrl+Right", []byte("\x1b[1;5C"), 1},
+		{"Ctrl+Left", []byte("\x1b[1;5D"), -1},
+		{"plain Right", []byte("\x1b[C"), 0},
+		{"plain Left", []byte("\x1b[D"), 0},
+		{"regular text", []byte("hello"), 0},
+		{"Ctrl+Up", []byte("\x1b[1;5A"), 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := panelShortcutDelta(tt.input)
+			if got != tt.want {
+				t.Errorf("panelShortcutDelta(%q) = %d, want %d", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestCtrlArrowInterceptedFromIndicator verifies that Ctrl+Right from the
+// indicator state does NOT pass through to the PTY (it opens panel mode).
+func TestCtrlArrowInterceptedFromIndicator(t *testing.T) {
+	rec := &writeRecorder{}
+	cfg := DefaultConfig()
+	cfg.ShowIndicator = true
+	ov := New(rec, 80, 24, cfg)
+	ov.state.Store(int32(StateIndicator))
+
+	pr, pw := io.Pipe()
+	router := NewInputRouter(rec, ov, 0x19)
+	router.input = pr
+
+	go router.Run()
+	defer router.Stop()
+
+	// Send Ctrl+Right — should be intercepted, not written to PTY
+	pw.Write([]byte("\x1b[1;5C"))
+	time.Sleep(50 * time.Millisecond)
+
+	writes := rec.getWrites()
+	for _, w := range writes {
+		if bytes.Equal(w, []byte("\x1b[1;5C")) {
+			t.Fatal("Ctrl+Right was passed through to PTY; should have been intercepted")
+		}
+	}
+}
+
 // --- Integration tests (full InputRouter with pipe I/O) ---
 
 // newTestRouter creates an InputRouter wired to a pipe input and a write recorder.

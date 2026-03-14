@@ -122,9 +122,10 @@ type Overlay struct {
 	selectedIndex int
 
 	// Panel navigation (niri-style horizontal panels)
-	panelIndex int         // Current panel index (0 = overview)
-	panelItems []PanelItem // Available panels built from status
-	panelMode  bool        // Whether in panel view (vs overview/menu)
+	panelIndex       int         // Current panel index (0 = overview)
+	panelItems       []PanelItem // Available panels built from status
+	panelMode        bool        // Whether in panel view (vs overview/menu)
+	directPanelEntry bool        // Entered panel mode directly (Ctrl+Arrow from indicator)
 
 	// Rendering
 	renderer *Renderer
@@ -337,6 +338,23 @@ func (o *Overlay) ToggleIndicator() {
 }
 
 func (o *Overlay) showMenu() {
+	o.activateOverlay(false)
+	o.draw()
+}
+
+// showPanelDirect prepares the overlay to enter panel mode directly from the
+// indicator state (bypassing the menu overview). The caller should follow up
+// with handlePanelNav to navigate to the target panel.
+// Must be called with mu held.
+func (o *Overlay) showPanelDirect() {
+	o.activateOverlay(true)
+}
+
+// activateOverlay is the shared setup for opening the overlay.
+// When directPanel is true, the overlay enters panel mode directly (no draw);
+// when false, the normal menu overview is shown.
+// Must be called with mu held.
+func (o *Overlay) activateOverlay(directPanel bool) {
 	// Freeze PTY output so it doesn't corrupt the menu
 	if o.gate != nil {
 		o.gate.Freeze()
@@ -363,10 +381,10 @@ func (o *Overlay) showMenu() {
 		o.menuStack = []Menu{DisconnectedMenu()}
 	}
 	o.selectedIndex = 0
+	o.directPanelEntry = directPanel
 	o.panelMode = false
 	o.panelIndex = 0
 	o.buildPanelItems()
-	o.draw()
 }
 
 // buildPanelItems builds the panel list from current status.
@@ -413,6 +431,7 @@ func (o *Overlay) hideMenu() {
 	o.panelMode = false
 	o.panelIndex = 0
 	o.panelItems = nil
+	o.directPanelEntry = false
 
 	if o.showBar.Load() {
 		o.state.Store(int32(StateIndicator))
