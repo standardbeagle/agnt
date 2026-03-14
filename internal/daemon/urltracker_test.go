@@ -112,6 +112,103 @@ func TestParseDevServerURLs(t *testing.T) {
 	}
 }
 
+func TestParseDevServerURLs_ANSIStripping(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected []string
+	}{
+		{
+			name:     "URL wrapped in ANSI color codes",
+			input:    "  \x1b[32m➜\x1b[0m  \x1b[1mLocal:\x1b[0m   \x1b[36mhttp://localhost:5173/\x1b[0m",
+			expected: []string{"http://localhost:5173"},
+		},
+		{
+			name:     "vite output with full ANSI formatting",
+			input:    "\x1b[32m➜\x1b[0m  \x1b[1mLocal:\x1b[0m   \x1b[36mhttp://localhost:5173/\x1b[0m\n\x1b[32m➜\x1b[0m  \x1b[1mNetwork:\x1b[0m use --host to expose",
+			expected: []string{"http://localhost:5173"},
+		},
+		{
+			name:     "URL with bold and underline ANSI codes",
+			input:    "Server: \x1b[1;4mhttp://localhost:3000\x1b[0m",
+			expected: []string{"http://localhost:3000"},
+		},
+		{
+			name:     "mixed clean and ANSI lines",
+			input:    "Starting...\n\x1b[36mhttp://localhost:8080\x1b[0m ready",
+			expected: []string{"http://localhost:8080"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseDevServerURLs([]byte(tt.input))
+			if len(got) != len(tt.expected) {
+				t.Errorf("parseDevServerURLs() got %d URLs, want %d", len(got), len(tt.expected))
+				t.Errorf("got: %v", got)
+				t.Errorf("want: %v", tt.expected)
+				return
+			}
+			for i, url := range got {
+				if url != tt.expected[i] {
+					t.Errorf("parseDevServerURLs()[%d] = %q, want %q", i, url, tt.expected[i])
+				}
+			}
+		})
+	}
+}
+
+func TestParseDevServerURLsWithMatchers_ANSIStripping(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    []byte
+		matchers []string
+		expected []string
+	}{
+		{
+			name:     "ANSI-wrapped vite output with Local matcher",
+			input:    []byte("\x1b[32m➜\x1b[0m  \x1b[1mLocal:\x1b[0m   \x1b[36mhttp://localhost:5173/\x1b[0m"),
+			matchers: []string{"Local:\\s+{url}"},
+			expected: []string{"http://localhost:5173"},
+		},
+		{
+			name:     "ANSI-wrapped output with or-pattern matcher",
+			input:    []byte("\x1b[1mLocal:\x1b[0m   \x1b[36mhttp://localhost:5173/\x1b[0m\n\x1b[1mNetwork:\x1b[0m http://192.168.1.10:5173/"),
+			matchers: []string{"(Local|Network):\\s*{url}"},
+			expected: []string{"http://localhost:5173"},
+		},
+		{
+			name:     "ANSI output with non-matching matcher",
+			input:    []byte("\x1b[1mNetwork:\x1b[0m \x1b[36mhttp://localhost:5173/\x1b[0m"),
+			matchers: []string{"Local:\\s*{url}"},
+			expected: nil,
+		},
+		{
+			name:     "clean output still works with matchers",
+			input:    []byte("Local: http://localhost:5173/"),
+			matchers: []string{"Local:\\s*{url}"},
+			expected: []string{"http://localhost:5173"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseDevServerURLsWithMatchers(tt.input, tt.matchers)
+			if len(got) != len(tt.expected) {
+				t.Errorf("parseDevServerURLsWithMatchers() got %d URLs, want %d", len(got), len(tt.expected))
+				t.Errorf("got: %v", got)
+				t.Errorf("want: %v", tt.expected)
+				return
+			}
+			for i, url := range got {
+				if url != tt.expected[i] {
+					t.Errorf("parseDevServerURLsWithMatchers()[%d] = %q, want %q", i, url, tt.expected[i])
+				}
+			}
+		})
+	}
+}
+
 func TestShouldIgnoreURL(t *testing.T) {
 	tests := []struct {
 		url      string

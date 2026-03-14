@@ -372,9 +372,6 @@ func runWithPTY(ctx context.Context, args []string, socketPath string, sessionCo
 
 		termOverlay = overlay.New(ptmx, width, height, cfg)
 		termOverlay.SetGate(outputGate) // Give overlay control of the gate
-		if outputFilter != nil {
-			termOverlay.SetAltScreenChecker(outputFilter.InAltScreen)
-		}
 		inputRouter = overlay.NewInputRouter(ptmx, termOverlay, overlayHotkey)
 
 		// Create shared daemon connection for all components
@@ -413,6 +410,7 @@ func runWithPTY(ctx context.Context, args []string, socketPath string, sessionCo
 				},
 			}
 			outputFilter = overlay.NewProtectedWriter(outputGate, width, height, filterCfg)
+			termOverlay.SetAltScreenChecker(outputFilter.InAltScreen)
 		}
 
 		// Start status fetcher to update the indicator using shared connection

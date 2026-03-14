@@ -205,6 +205,11 @@ func (r *InputRouter) Run() error {
 					}
 				}
 				if len(buf) > 0 {
+					// Intercept Ctrl+Arrow for direct panel browsing
+					if delta := panelShortcutDelta(buf); delta != 0 {
+						r.enterPanelBrowse(delta)
+						continue
+					}
 					r.ptmx.Write(buf)
 				}
 			}
@@ -256,10 +261,7 @@ func (r *InputRouter) handleMenuKey(key string) {
 	switch key {
 	case "Escape":
 		if r.overlay.panelMode {
-			// Return to overview from panel view
-			r.overlay.panelMode = false
-			r.overlay.renderer.ClearScreen()
-			r.overlay.draw()
+			r.exitPanelMode()
 			return
 		}
 		r.overlay.hideMenu()
@@ -317,9 +319,7 @@ func (r *InputRouter) handleMenuKey(key string) {
 
 	case "q": // Quick close
 		if r.overlay.panelMode {
-			r.overlay.panelMode = false
-			r.overlay.renderer.ClearScreen()
-			r.overlay.draw()
+			r.exitPanelMode()
 			return
 		}
 		r.overlay.hideMenu()
@@ -385,6 +385,20 @@ func (r *InputRouter) handleMenuKey(key string) {
 	}
 }
 
+// exitPanelMode closes panel mode. If entered directly via Ctrl+Arrow,
+// the overlay closes entirely; otherwise returns to the menu overview.
+// Must be called with overlay.mu held.
+func (r *InputRouter) exitPanelMode() {
+	if r.overlay.directPanelEntry {
+		r.overlay.hideMenu()
+	} else {
+		r.overlay.panelMode = false
+		r.overlay.panelIndex = 0
+		r.overlay.renderer.ClearScreen()
+		r.overlay.draw()
+	}
+}
+
 // handlePanelNav handles Ctrl+Left/Right panel navigation.
 // Must be called with overlay.mu held.
 func (r *InputRouter) handlePanelNav(delta int) {
@@ -400,12 +414,7 @@ func (r *InputRouter) handlePanelNav(delta int) {
 	newIndex := r.overlay.panelIndex + delta
 	if newIndex < 0 {
 		if r.overlay.panelMode {
-			// Going left from first panel exits panel mode
-			r.overlay.panelMode = false
-			r.overlay.panelIndex = 0
-			r.overlay.renderer.ClearScreen()
-			r.overlay.draw()
-			return
+			r.exitPanelMode()
 		}
 		return
 	}
@@ -436,6 +445,43 @@ func (r *InputRouter) handlePanelNav(delta int) {
 		r.overlay.renderer.ClearScreen()
 	}
 	r.overlay.draw()
+}
+
+// panelShortcutDelta checks if a collected input buffer matches a panel
+// navigation shortcut (Ctrl+Right or Ctrl+Left). Returns +1, -1, or 0.
+func panelShortcutDelta(buf []byte) int {
+	s := string(buf)
+	switch s {
+	case "\x1b[1;5C": // Ctrl+Right
+		return 1
+	case "\x1b[1;5D": // Ctrl+Left
+		return -1
+	}
+	return 0
+}
+
+// enterPanelBrowse opens the overlay directly into panel mode, bypassing the
+// menu overview. Called when Ctrl+Arrow is pressed from the indicator state.
+func (r *InputRouter) enterPanelBrowse(delta int) {
+	r.overlay.mu.Lock()
+	defer r.overlay.mu.Unlock()
+
+	r.overlay.showPanelDirect()
+
+	if len(r.overlay.panelItems) <= 1 {
+		// No process/proxy panels to browse
+		r.overlay.hideMenu()
+		return
+	}
+
+	// Set starting position so handlePanelNav lands on the right panel
+	if delta > 0 {
+		r.overlay.panelIndex = 0 // handlePanelNav(1) → index 1 (first process/proxy)
+	} else {
+		r.overlay.panelIndex = len(r.overlay.panelItems) // handlePanelNav(-1) → last panel
+	}
+
+	r.handlePanelNav(delta)
 }
 
 // handleTextInput handles input in text input mode.

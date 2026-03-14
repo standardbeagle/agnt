@@ -47,33 +47,39 @@ func (og *OutputGate) Write(p []byte) (n int, err error) {
 
 // Freeze stops writing to the underlying writer (discards writes).
 // Calls onFreeze callback if set and not already frozen.
+// The callback runs after the lock is released to prevent deadlock
+// when the callback writes to this gate.
 func (og *OutputGate) Freeze() {
 	og.mu.Lock()
-	defer og.mu.Unlock()
-
 	if og.frozen {
-		return // Already frozen, don't call callback again
+		og.mu.Unlock()
+		return
 	}
-
 	og.frozen = true
-	if og.onFreeze != nil {
-		og.onFreeze()
+	cb := og.onFreeze
+	og.mu.Unlock()
+
+	if cb != nil {
+		cb()
 	}
 }
 
 // Unfreeze resumes writing to the underlying writer.
 // Calls onUnfreeze callback if set and was frozen.
+// The callback runs after the lock is released to prevent deadlock
+// when the callback writes to this gate (e.g. EnforceScrollRegion).
 func (og *OutputGate) Unfreeze() {
 	og.mu.Lock()
-	defer og.mu.Unlock()
-
 	if !og.frozen {
-		return // Already unfrozen, don't call callback again
+		og.mu.Unlock()
+		return
 	}
-
 	og.frozen = false
-	if og.onUnfreeze != nil {
-		og.onUnfreeze()
+	cb := og.onUnfreeze
+	og.mu.Unlock()
+
+	if cb != nil {
+		cb()
 	}
 }
 
