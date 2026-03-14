@@ -233,7 +233,8 @@ func TestProtectedWriter_EnforceScrollRegion(t *testing.T) {
 
 	pw.EnforceScrollRegion()
 
-	expected := "\x1b[1;23r"
+	// DECSC + DECSTBM + DECRC: save cursor, set scroll region, restore cursor
+	expected := "\x1b7\x1b[1;23r\x1b8"
 	if buf.String() != expected {
 		t.Errorf("expected %q, got %q", expected, buf.String())
 	}
