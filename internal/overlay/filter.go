@@ -503,12 +503,14 @@ func (pw *ProtectedWriter) handleCSI(out *bytes.Buffer, final byte) {
 }
 
 // enforceScrollRegion writes the scroll region sequence to protect bottom rows.
+// DECSTBM resets cursor to (1,1), so we save/restore cursor around it.
 func (pw *ProtectedWriter) enforceScrollRegion() {
 	bottom := pw.height - pw.config.ProtectBottomRows
 	if bottom < 1 {
 		bottom = 1
 	}
-	fmt.Fprintf(pw.out, "\x1b[1;%dr", bottom)
+	// \x1b7 = DECSC (save cursor), \x1b8 = DECRC (restore cursor)
+	fmt.Fprintf(pw.out, "\x1b7\x1b[1;%dr\x1b8", bottom)
 }
 
 // EnforceScrollRegion can be called externally to re-apply scroll region protection.
