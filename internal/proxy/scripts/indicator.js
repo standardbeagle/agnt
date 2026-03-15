@@ -1413,11 +1413,12 @@
     if (!state.isVisible) state.container.style.display = 'none';
 
     // Isolate indicator clicks from page handlers (e.g., dropdown "click outside" detectors)
-    state.container.addEventListener('click', function(e) { e.stopPropagation(); }, true);
-    state.container.addEventListener('mousedown', function(e) { e.stopPropagation(); }, true);
-    state.container.addEventListener('mouseup', function(e) { e.stopPropagation(); }, true);
-    state.container.addEventListener('pointerdown', function(e) { e.stopPropagation(); }, true);
-    state.container.addEventListener('pointerup', function(e) { e.stopPropagation(); }, true);
+    // Use bubbling phase (not capture) so events still reach child elements inside the container
+    state.container.addEventListener('click', function(e) { e.stopPropagation(); });
+    state.container.addEventListener('mousedown', function(e) { e.stopPropagation(); });
+    state.container.addEventListener('mouseup', function(e) { e.stopPropagation(); });
+    state.container.addEventListener('pointerdown', function(e) { e.stopPropagation(); });
+    state.container.addEventListener('pointerup', function(e) { e.stopPropagation(); });
 
     createBug();
     createPanel();
