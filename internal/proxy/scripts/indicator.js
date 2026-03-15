@@ -1412,6 +1412,13 @@
     state.container.id = '__devtool-indicator';
     if (!state.isVisible) state.container.style.display = 'none';
 
+    // Isolate indicator clicks from page handlers (e.g., dropdown "click outside" detectors)
+    state.container.addEventListener('click', function(e) { e.stopPropagation(); }, true);
+    state.container.addEventListener('mousedown', function(e) { e.stopPropagation(); }, true);
+    state.container.addEventListener('mouseup', function(e) { e.stopPropagation(); }, true);
+    state.container.addEventListener('pointerdown', function(e) { e.stopPropagation(); }, true);
+    state.container.addEventListener('pointerup', function(e) { e.stopPropagation(); }, true);
+
     createBug();
     createPanel();
     createOutputPreview();

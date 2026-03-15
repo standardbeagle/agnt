@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -29,15 +31,30 @@ func DefaultAutoRestartConfig() AutoRestartConfig {
 	}
 }
 
+// RestartEvent captures information about a process restart for output display.
+type RestartEvent struct {
+	Timestamp  time.Time     // When the restart occurred
+	ExitCode   int           // Exit code of the failed process
+	Runtime    time.Duration // How long the process ran before failing
+	LastOutput string        // Last N lines of output before crash
+}
+
+// maxRestartEvents is the maximum number of restart events to retain per process.
+const maxRestartEvents = 10
+
+// maxLastOutputLines is the number of output lines to capture from the failed process.
+const maxLastOutputLines = 20
+
 // processRestartState tracks restart history for rate limiting.
 type processRestartState struct {
-	config      AutoRestartConfig
-	command     string
-	args        []string
-	projectPath string      // Root project path (for session association)
-	workingDir  string      // Working directory for the process (may differ from projectPath)
-	restarts    []time.Time // Timestamps of recent restarts
-	mu          sync.Mutex
+	config        AutoRestartConfig
+	command       string
+	args          []string
+	projectPath   string         // Root project path (for session association)
+	workingDir    string         // Working directory for the process (may differ from projectPath)
+	restarts      []time.Time    // Timestamps of recent restarts
+	restartEvents []RestartEvent // History of restart events for output display
+	mu            sync.Mutex
 }
 
 // shouldRestart checks if a restart is allowed based on rate limits.
@@ -79,6 +96,28 @@ func (s *processRestartState) recordRestart() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.restarts = append(s.restarts, time.Now())
+}
+
+// addRestartEvent records a restart event with debug info from the failed process.
+func (s *processRestartState) addRestartEvent(event RestartEvent) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.restartEvents = append(s.restartEvents, event)
+	if len(s.restartEvents) > maxRestartEvents {
+		s.restartEvents = s.restartEvents[len(s.restartEvents)-maxRestartEvents:]
+	}
+}
+
+// getRestartEvents returns a copy of all restart events.
+func (s *processRestartState) getRestartEvents() []RestartEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.restartEvents) == 0 {
+		return nil
+	}
+	events := make([]RestartEvent, len(s.restartEvents))
+	copy(events, s.restartEvents)
+	return events
 }
 
 // maxConcurrentMonitors is the upper bound on simultaneous monitor goroutines.
@@ -158,6 +197,64 @@ func (r *ProcessAutoRestarter) GetConfig(processID string) (AutoRestartConfig, b
 	return state.config, true
 }
 
+// GetRestartEvents returns restart event history for a process.
+// Returns nil if the process is not registered or has no restart events.
+func (r *ProcessAutoRestarter) GetRestartEvents(processID string) []RestartEvent {
+	r.mu.RLock()
+	state, exists := r.processes[processID]
+	r.mu.RUnlock()
+	if !exists {
+		return nil
+	}
+	return state.getRestartEvents()
+}
+
+// FormatRestartDelimiter formats restart events as a delimiter string
+// that can be prepended to process output.
+func FormatRestartDelimiter(events []RestartEvent) string {
+	if len(events) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for i, event := range events {
+		b.WriteString("═══════════════════════════════════════════════\n")
+		b.WriteString(fmt.Sprintf(" PROCESS RESTARTED (exit code: %d) at %s\n",
+			event.ExitCode, event.Timestamp.Format("15:04:05")))
+		if event.Runtime > 0 {
+			b.WriteString(fmt.Sprintf(" Previous run: %s\n", formatRestartRuntime(event.Runtime)))
+		}
+		b.WriteString("═══════════════════════════════════════════════\n")
+		if event.LastOutput != "" {
+			b.WriteString(" Last output before exit:\n")
+			for _, line := range strings.Split(event.LastOutput, "\n") {
+				b.WriteString("   ")
+				b.WriteString(line)
+				b.WriteString("\n")
+			}
+		}
+		b.WriteString("───────────────────────────────────────────────\n")
+		if i < len(events)-1 {
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
+}
+
+func formatRestartRuntime(d time.Duration) string {
+	if d < time.Second {
+		return fmt.Sprintf("%dms", d.Milliseconds())
+	}
+	if d < time.Minute {
+		return fmt.Sprintf("%.0fs", d.Seconds())
+	}
+	m := int(d.Minutes())
+	s := int(d.Seconds()) % 60
+	if s == 0 {
+		return fmt.Sprintf("%dm", m)
+	}
+	return fmt.Sprintf("%dm %ds", m, s)
+}
+
 // monitorProcess watches a process and restarts it when it exits.
 func (r *ProcessAutoRestarter) monitorProcess(processID string) {
 	defer r.wg.Done()
@@ -214,6 +311,17 @@ func (r *ProcessAutoRestarter) monitorProcess(processID string) {
 
 		debug.Log("daemon", "Restarting process %s (exit code was %d)", processID, exitCode)
 
+		// Capture restart event from the dying process before removing it
+		stdout, _ := proc.Stdout()
+		stderr, _ := proc.Stderr()
+		combined := string(stdout) + "\n" + string(stderr)
+		state.addRestartEvent(RestartEvent{
+			Timestamp:  time.Now(),
+			ExitCode:   exitCode,
+			Runtime:    proc.Runtime(),
+			LastOutput: lastLines(combined, maxLastOutputLines),
+		})
+
 		// Clear URL tracker state so new process output is scanned fresh
 		r.daemon.urlTracker.ClearProcess(processID)
 
@@ -233,6 +341,9 @@ func (r *ProcessAutoRestarter) monitorProcess(processID string) {
 
 		state.recordRestart()
 		debug.Log("daemon", "Process %s restarted (new PID: %d)", processID, proc.PID())
+
+		// Flush stale connections on proxies linked to this process
+		r.daemon.FlushScriptProxyConnections(processID)
 	}
 }
 

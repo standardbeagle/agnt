@@ -145,6 +145,9 @@ type Daemon struct {
 	// URL tracking for processes
 	urlTracker *URLTracker
 
+	// Readiness coordination for dependency-ordered autostart
+	readySignaler *ReadySignaler
+
 	// Proxy event system
 	proxyEvents   chan ProxyEvent
 	scriptProxies map[string][]string // scriptID -> []proxyID
@@ -222,10 +225,16 @@ func New(config DaemonConfig) *Daemon {
 	// Initialize process auto-restarter
 	d.autoRestarter = NewProcessAutoRestarter(d)
 
+	// Initialize ready signaler for dependency-ordered autostart
+	d.readySignaler = NewReadySignaler()
+
 	// Create URLTracker with callbacks to emit proxy events
 	// Access ProcessManager through Hub
 	urlTracker := NewURLTracker(h.ProcessManager(), DefaultURLTrackerConfig())
 	urlTracker.onURLDetected = func(processID, url string) {
+		// Signal readiness for dependency ordering
+		d.readySignaler.SignalReady(processID)
+
 		// Get project path from process
 		var projectPath string
 		if proc, err := h.ProcessManager().Get(processID); err == nil {
@@ -890,6 +899,12 @@ type AutostartResult struct {
 
 // RunAutostart loads .agnt.kdl config from projectPath and starts configured processes/proxies.
 // This is called during SESSION REGISTER to ensure autostart happens once per project.
+// Scripts are started in dependency order using topological sort:
+//   - Layer 0 scripts (no dependencies) start concurrently
+//   - Layer 1+ scripts wait for all their dependencies to become ready
+//   - Readiness is signaled by URL detection or TCP port probe
+//   - Timeout on dependency wait logs a warning and starts the script anyway
+//
 // Returns the list of started scripts/proxies and any errors encountered.
 func (d *Daemon) RunAutostart(ctx context.Context, projectPath string) *AutostartResult {
 	result := &AutostartResult{}
@@ -917,20 +932,92 @@ func (d *Daemon) RunAutostart(ctx context.Context, projectPath string) *Autostar
 	debug.Log("daemon", "RunAutostart: config loaded, scripts=%d proxies=%d",
 		len(agntConfig.Scripts), len(agntConfig.Proxies))
 
-	// Start scripts (pass proxy configs for port detection)
+	// Start scripts in dependency order
 	autostartScripts := agntConfig.GetAutostartScripts()
 	proxyConfigs := agntConfig.Proxies // All proxies, not just autostart ones
 	failedScripts := make(map[string]bool)
 	debug.Log("daemon", "RunAutostart: found %d autostart scripts: %v", len(autostartScripts), mapKeys(autostartScripts))
-	for name, script := range autostartScripts {
-		debug.Log("daemon", "RunAutostart: starting script %s", name)
-		if err := d.autostartScript(ctx, name, script, projectPath, proxyConfigs); err != nil {
-			debug.Log("daemon", "RunAutostart: script %s failed: %v", name, err)
-			result.Errors = append(result.Errors, fmt.Sprintf("script %s: %v", name, err))
-			failedScripts[name] = true
+
+	if len(autostartScripts) > 0 {
+		// Topological sort to get execution layers
+		layers, sortErr := config.TopologicalSort(autostartScripts)
+		if sortErr != nil {
+			debug.Log("daemon", "RunAutostart: topological sort failed: %v", sortErr)
+			result.Errors = append(result.Errors, fmt.Sprintf("dependency sort: %v", sortErr))
+			// Fall through to proxy startup
 		} else {
-			debug.Log("daemon", "RunAutostart: script %s started successfully", name)
-			result.Scripts = append(result.Scripts, name)
+			debug.Log("daemon", "RunAutostart: %d layers from topological sort", len(layers))
+
+			// Protect result fields from concurrent writes
+			var resultMu sync.Mutex
+
+			for layerIdx, layer := range layers {
+				debug.Log("daemon", "RunAutostart: starting layer %d with %d scripts: %v", layerIdx, len(layer), layer)
+
+				var layerWg sync.WaitGroup
+				for _, name := range layer {
+					script := autostartScripts[name]
+					if script == nil {
+						continue
+					}
+
+					layerWg.Add(1)
+					go func(name string, script *config.ScriptConfig) {
+						defer layerWg.Done()
+
+						// For layer 1+, wait on each dependency
+						if layerIdx > 0 {
+							for _, dep := range script.DependsOn {
+								depProcessID := makeProcessID(projectPath, dep.Name)
+								timeout := dep.Timeout
+								if timeout == 0 {
+									timeout = config.DefaultDependencyTimeout
+								}
+								if err := d.readySignaler.WaitReady(depProcessID, timeout); err != nil {
+									debug.Warn("daemon", "RunAutostart: timeout waiting for dependency %q of script %q: %v (starting anyway)", dep.Name, name, err)
+								} else {
+									debug.Log("daemon", "RunAutostart: dependency %q ready for script %q", dep.Name, name)
+								}
+							}
+						}
+
+						// Start the script
+						processID := makeProcessID(projectPath, name)
+						debug.Log("daemon", "RunAutostart: starting script %s (layer %d)", name, layerIdx)
+						if err := d.autostartScript(ctx, name, script, projectPath, proxyConfigs); err != nil {
+							debug.Log("daemon", "RunAutostart: script %s failed: %v", name, err)
+							resultMu.Lock()
+							result.Errors = append(result.Errors, fmt.Sprintf("script %s: %v", name, err))
+							failedScripts[name] = true
+							resultMu.Unlock()
+							return
+						}
+
+						debug.Log("daemon", "RunAutostart: script %s started successfully", name)
+						resultMu.Lock()
+						result.Scripts = append(result.Scripts, name)
+						resultMu.Unlock()
+
+						// Start TCP port probe as a fallback readiness signal.
+						// URL detection (via urlTracker.onURLDetected) will also signal
+						// readiness, whichever fires first wins.
+						expectedPort := d.getExpectedPortForScript(name, script, proxyConfigs,
+							resolveWorkingDir(projectPath, script.Cwd),
+							"", nil) // command/args not yet resolved here; proxy config and package.json checks suffice
+						if expectedPort > 0 {
+							debug.Log("daemon", "RunAutostart: starting port probe for %s on port %d", name, expectedPort)
+							d.readySignaler.StartPortProbe(processID, expectedPort, ctx)
+						}
+					}(name, script)
+				}
+
+				layerWg.Wait()
+			}
+
+			// Cleanup signaler channels for this autostart batch
+			for name := range autostartScripts {
+				d.readySignaler.Cleanup(makeProcessID(projectPath, name))
+			}
 		}
 	}
 

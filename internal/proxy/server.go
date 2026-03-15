@@ -29,6 +29,7 @@ import (
 	"github.com/klauspost/compress/zstd"
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/protocol"
+	"github.com/standardbeagle/agnt/internal/proxy/scripts"
 )
 
 // ProxyServer is a reverse proxy that logs traffic and injects instrumentation.
@@ -66,6 +67,9 @@ type ProxyServer struct {
 
 	// Pending executions for async results
 	pendingExecs sync.Map // map[string]chan *ExecutionResult
+
+	// Base transport for connection pool management (CloseIdleConnections on backend restart)
+	baseTransport *http.Transport
 
 	// Overlay notifier for sending events to agent overlay
 	overlayNotifier *OverlayNotifier
@@ -253,6 +257,16 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 		}
 	}
 
+	// Configure transport timeouts for dev server proxying.
+	// Without these, requests to a dead backend hang until the OS TCP timeout
+	// (15-60s+), which makes page refreshes after a backend restart hang forever.
+	if transport, ok := baseTransport.(*http.Transport); ok {
+		transport.ResponseHeaderTimeout = 5 * time.Second // Dead backend fails in 5s, not forever
+		transport.IdleConnTimeout = 10 * time.Second      // Evict stale connections faster
+		transport.MaxIdleConnsPerHost = 6                 // Limit pooled connections per backend
+		ps.baseTransport = transport
+	}
+
 	// Wrap the transport with chaos transport for failure injection
 	ps.proxy.Transport = NewChaosTransport(baseTransport, ps.chaosEngine)
 
@@ -340,6 +354,7 @@ func (ps *ProxyServer) Start(ctx context.Context) error {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/__devtool_metrics", ps.handleWebSocket)
+	mux.HandleFunc("/__devtool_axe", handleAxeCore)
 	mux.HandleFunc("/", ps.handleProxy)
 
 	// Try to bind to requested port first
@@ -589,6 +604,27 @@ func (ps *ProxyServer) SetSessionClientFactory(factory SessionClientFactory) {
 // OverlayNotifier returns the overlay notifier for direct access.
 func (ps *ProxyServer) OverlayNotifier() *OverlayNotifier {
 	return ps.overlayNotifier
+}
+
+// FlushConnections replaces the transport to kill both idle and in-flight
+// connections to the backend. Call this when the backend restarts so requests
+// don't hang on half-open TCP connections waiting for the OS timeout.
+func (ps *ProxyServer) FlushConnections() {
+	if ps.baseTransport == nil {
+		return
+	}
+	// Clone the transport to get a fresh connection pool while preserving
+	// all dial/TLS/timeout settings. The old transport's connections (including
+	// in-flight ones) will be closed when they next attempt I/O.
+	newTransport := ps.baseTransport.Clone()
+	ps.baseTransport.CloseIdleConnections()
+	ps.baseTransport = newTransport
+
+	// Update the chaos transport wrapper to use the new base transport
+	if ct, ok := ps.proxy.Transport.(*ChaosTransport); ok {
+		ct.underlying = newTransport
+	}
+	debug.Log("proxy", "Replaced transport for proxy %s (flushed all connections)", ps.ID)
 }
 
 // Stats returns proxy statistics.
@@ -1048,6 +1084,12 @@ func (ps *ProxyServer) errorHandler(w http.ResponseWriter, r *http.Request, err 
 	// These happen when dev servers restart, connections timeout, etc.
 	isTransient := isTransientConnectionError(errStr)
 
+	// Flush stale connections on transient errors so the browser's immediate
+	// reconnect (especially WebSocket/HMR) gets a fresh connection to the backend.
+	if isTransient || strings.Contains(errStr, "context canceled") {
+		ps.FlushConnections()
+	}
+
 	ps.logger.LogHTTP(HTTPLogEntry{
 		ID:         reqID,
 		Timestamp:  timestamp,
@@ -1133,6 +1175,13 @@ func isTransientConnectionError(errStr string) bool {
 		}
 	}
 	return false
+}
+
+// handleAxeCore serves the bundled axe-core library for offline accessibility auditing.
+func handleAxeCore(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/javascript")
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	w.Write([]byte(scripts.GetAxeCore()))
 }
 
 // handleWebSocket handles WebSocket connections for frontend metrics.

@@ -89,7 +89,7 @@ func TestInjectInstrumentation_AfterHeadOpen(t *testing.T) {
 	if scriptIdx == -1 {
 		t.Error("Script tag not found")
 	}
-	if scriptIdx <= headOpenIdx+6 {
+	if scriptIdx < headOpenIdx+6 {
 		t.Error("Script should be injected after <head>")
 	}
 }
@@ -119,7 +119,7 @@ func TestInjectInstrumentation_AfterBody(t *testing.T) {
 	if scriptIdx == -1 {
 		t.Error("Script tag not found")
 	}
-	if scriptIdx <= bodyOpenIdx+6 {
+	if scriptIdx < bodyOpenIdx+6 {
 		t.Error("Script should be injected after <body>")
 	}
 }

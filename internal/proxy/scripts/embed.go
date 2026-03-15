@@ -101,6 +101,12 @@ var (
 
 	//go:embed api.js
 	apiJS string
+
+	//go:embed html2canvas-pro.min.js
+	html2canvasProJS string
+
+	//go:embed axe-core.min.js
+	axeCoreJS string
 )
 
 var (
@@ -126,16 +132,17 @@ func GetCombinedScript() string {
 func buildCombinedScript() string {
 	var sb strings.Builder
 
+	// Main script block
+	sb.WriteString("<script>\n")
+
 	// External dependencies (html2canvas-pro for screenshots)
 	// Using html2canvas-pro instead of html2canvas because it supports modern CSS
 	// color functions (lab, oklch, oklab, lch) that Firefox and modern browsers use.
 	// See: https://github.com/nickt26/html2canvas-pro
-	// SRI hash computed: curl -sL <url> | openssl dgst -sha384 -binary | openssl base64 -A
-	sb.WriteString(`<script src="https://cdn.jsdelivr.net/npm/html2canvas-pro@1.5.8/dist/html2canvas-pro.min.js" integrity="sha384-QbVSYhU9faw2C7l92rI0Dmke8Yod6KaOixC1kkbO/dGnMDKtbWhwcxSSOkmHXWom" crossorigin="anonymous"></script>`)
+	// Bundled at compile time to avoid CDN dependency (jsdelivr.net can be unreachable)
+	sb.WriteString(html2canvasProJS)
 	sb.WriteString("\n")
 
-	// Main script block
-	sb.WriteString("<script>\n")
 	sb.WriteString("(function() {\n")
 	sb.WriteString("  'use strict';\n\n")
 
@@ -346,6 +353,11 @@ func wrapModule(js string) string {
 	}
 
 	return js
+}
+
+// GetAxeCore returns the bundled axe-core JavaScript library.
+func GetAxeCore() string {
+	return axeCoreJS
 }
 
 // GetScriptNames returns the list of embedded script names for debugging.
