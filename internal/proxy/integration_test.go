@@ -77,8 +77,16 @@ func TestProxy_PageTracking_Integration(t *testing.T) {
 	t.Logf("HTML response Content-Type: %s", resp.Header.Get("Content-Type"))
 	t.Logf("HTML response body length: %d", len(body))
 
-	// Check that page session was created (synchronous - happens in request handler)
-	sessions := ps.PageTracker().GetActiveSessions()
+	// Poll for session creation — logging runs after ServeHTTP returns,
+	// which can race with the client reading the response under load.
+	var sessions []*PageSession
+	for i := 0; i < 50; i++ {
+		sessions = ps.PageTracker().GetActiveSessions()
+		if len(sessions) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	t.Logf("Page sessions after HTML request: %d", len(sessions))
 
 	if len(sessions) != 1 {
@@ -180,11 +188,19 @@ func TestProxy_PageTracking_URLFormat(t *testing.T) {
 	_, _ = io.ReadAll(resp.Body)
 	resp.Body.Close()
 
-	// Check what URL was stored in the session (synchronous - happens in request handler)
-	sessions := ps.PageTracker().GetActiveSessions()
+	// Poll for session creation — logging runs after ServeHTTP returns,
+	// which can race with the client reading the response under load.
+	var sessions []*PageSession
+	for i := 0; i < 50; i++ { // 50 * 10ms = 500ms max wait
+		sessions = ps.PageTracker().GetActiveSessions()
+		if len(sessions) > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	if len(sessions) == 0 {
 		entries := ps.Logger().Query(LogFilter{Types: []LogEntryType{LogTypeHTTP}, Limit: 10})
-		t.Fatalf("No sessions created (found %d HTTP log entries)", len(entries))
+		t.Fatalf("No sessions created after 500ms (found %d HTTP log entries)", len(entries))
 	}
 
 	// Find the session for our test URL
