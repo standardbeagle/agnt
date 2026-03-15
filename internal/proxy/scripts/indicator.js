@@ -1414,11 +1414,11 @@
 
     // Isolate indicator clicks from page handlers (e.g., dropdown "click outside" detectors)
     // Use bubbling phase (not capture) so events still reach child elements inside the container
+    // Only stop click/mousedown/pointerdown — NOT mouseup/pointerup, which must reach
+    // document for drag release detection in handleDragStart
     state.container.addEventListener('click', function(e) { e.stopPropagation(); });
     state.container.addEventListener('mousedown', function(e) { e.stopPropagation(); });
-    state.container.addEventListener('mouseup', function(e) { e.stopPropagation(); });
     state.container.addEventListener('pointerdown', function(e) { e.stopPropagation(); });
-    state.container.addEventListener('pointerup', function(e) { e.stopPropagation(); });
 
     createBug();
     createPanel();
