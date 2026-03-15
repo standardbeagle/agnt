@@ -597,6 +597,14 @@ func (d *Daemon) hubHandleProcOutput(ctx context.Context, conn *hubpkg.Connectio
 		output, _ = proc.CombinedOutput()
 	}
 
+	// Prepend restart event delimiters if this process was auto-restarted
+	if d.autoRestarter != nil {
+		if events := d.autoRestarter.GetRestartEvents(processID); len(events) > 0 {
+			delimiter := FormatRestartDelimiter(events)
+			output = append([]byte(delimiter), output...)
+		}
+	}
+
 	// Apply filters
 	lines := strings.Split(string(output), "\n")
 	var filtered []string

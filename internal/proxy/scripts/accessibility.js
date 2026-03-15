@@ -779,7 +779,7 @@
       }
 
       var script = document.createElement('script');
-      script.src = 'https://cdnjs.cloudflare.com/ajax/libs/axe-core/4.8.3/axe.min.js';
+      script.src = '/__devtool_axe';
       script.onload = function() {
         resolve();
       };

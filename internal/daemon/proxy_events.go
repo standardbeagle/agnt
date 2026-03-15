@@ -241,6 +241,20 @@ func (d *Daemon) handleScriptStopped(event ProxyEvent) {
 	d.clearScriptProxies(event.ScriptID)
 }
 
+// FlushScriptProxyConnections closes idle connections on all proxies linked to a script.
+// Call this when a backend process restarts to avoid stale connection errors.
+func (d *Daemon) FlushScriptProxyConnections(scriptID string) {
+	d.scriptProxyMu.RLock()
+	proxyIDs := d.scriptProxies[scriptID]
+	d.scriptProxyMu.RUnlock()
+
+	for _, proxyID := range proxyIDs {
+		if ps, err := d.proxym.Get(proxyID); err == nil {
+			ps.FlushConnections()
+		}
+	}
+}
+
 // trackScriptProxy records a script -> proxy association.
 func (d *Daemon) trackScriptProxy(scriptID, proxyID string) {
 	d.scriptProxyMu.Lock()

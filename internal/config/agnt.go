@@ -73,6 +73,8 @@ type ScriptConfig struct {
 	Env map[string]string `kdl:"env"`
 	// Cwd is the working directory for the script
 	Cwd string `kdl:"cwd"`
+	// DependsOn lists scripts that must be ready before this script starts.
+	DependsOn DependsOnList `kdl:"depends-on"`
 }
 
 // ResolveShell returns the shell command and arguments for executing a "run" command.
@@ -288,6 +290,17 @@ func ParseAgntConfig(data string) (*AgntConfig, error) {
 
 	if err := kdl.Unmarshal([]byte(data), cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse KDL config: %w", err)
+	}
+
+	// Validate dependencies if any scripts have them
+	if len(cfg.Scripts) > 0 {
+		warnings, err := ValidateDependencies(cfg.Scripts)
+		if err != nil {
+			return nil, fmt.Errorf("dependency validation failed: %w", err)
+		}
+		for _, w := range warnings {
+			debug.Log("config", "WARNING: %s", w)
+		}
 	}
 
 	debug.Log("config", "ParseAgntConfig: parsed %d scripts, %d proxies", len(cfg.Scripts), len(cfg.Proxies))
