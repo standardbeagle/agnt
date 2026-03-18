@@ -1247,8 +1247,13 @@ func (d *Daemon) hubHandleProxyLogQuery(conn *hubpkg.Connection, cmd *hubproto.C
 	filter := convertLogQueryFilter(cmd.Data)
 
 	entries := p.Logger().Query(filter)
+	stats := p.Logger().Stats()
 
-	data, _ := json.Marshal(map[string]interface{}{"logs": entries})
+	data, _ := json.Marshal(map[string]interface{}{
+		"entries":         entries,
+		"count":           len(entries),
+		"total_available": stats.AvailableEntries,
+	})
 	return conn.WriteJSON(data)
 }
 
