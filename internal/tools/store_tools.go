@@ -25,7 +25,7 @@ type StoreOutput struct {
 	Entry   *StoreEntryOutput            `json:"entry,omitempty"`
 	Entries map[string]*StoreEntryOutput `json:"entries,omitempty"`
 	Keys    []string                     `json:"keys,omitempty"`
-	Count   int                          `json:"count,omitempty"`
+	Count   int                          `json:"count"`
 	Message string                       `json:"message,omitempty"`
 	Error   string                       `json:"error,omitempty"`
 }

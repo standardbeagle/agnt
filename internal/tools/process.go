@@ -87,7 +87,7 @@ type ProcOutput struct {
 	Lines     int    `json:"lines,omitempty"`
 	Truncated bool   `json:"truncated,omitempty"`
 	// For list
-	Count       int         `json:"count,omitempty"`
+	Count       int         `json:"count"`
 	Processes   []ProcEntry `json:"processes,omitempty"`
 	ProjectPath string      `json:"project_path,omitempty"`
 	SessionCode string      `json:"session_code,omitempty"`

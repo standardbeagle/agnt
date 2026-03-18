@@ -25,7 +25,7 @@ type SessionInput struct {
 type SessionOutput struct {
 	// For list
 	Sessions []SessionEntry `json:"sessions,omitempty"`
-	Count    int            `json:"count,omitempty"`
+	Count    int            `json:"count"`
 
 	// For get
 	Session *SessionEntry `json:"session,omitempty"`

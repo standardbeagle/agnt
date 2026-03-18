@@ -65,3 +65,28 @@ func TestProxyLogOutputFilteredShowsContext(t *testing.T) {
 	assert.Contains(t, s, `"total_available":42`)
 	assert.Contains(t, s, `"filtered":true`)
 }
+
+func TestOutputStructsSerializeZeroCount(t *testing.T) {
+	tests := []struct {
+		name   string
+		output interface{}
+	}{
+		{"ProcOutput", ProcOutput{}},
+		{"ProxyOutput", ProxyOutput{}},
+		{"CurrentPageOutput", CurrentPageOutput{}},
+		{"StoreOutput", StoreOutput{}},
+		{"AutomationOutput", AutomationOutput{}},
+		{"BrowserOutput", BrowserOutput{}},
+		{"SessionOutput", SessionOutput{}},
+		{"TunnelOutput", TunnelOutput{}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b, err := json.Marshal(tt.output)
+			require.NoError(t, err)
+			s := string(b)
+			assert.Contains(t, s, `"count":0`, "count:0 must always appear even when zero")
+		})
+	}
+}
