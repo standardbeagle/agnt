@@ -1444,8 +1444,16 @@ func (dt *DaemonTools) handleProxyLogQuery(input ProxyLogInput) (*mcp.CallToolRe
 		return formatDaemonError(err, "proxylog"), ProxyLogOutput{}, nil
 	}
 
+	count := getInt(result, "count")
+	totalAvailable := getInt(result, "total_available")
+	limit := input.Limit
+	if limit == 0 {
+		limit = 100
+	}
+	pag := NewPagination(count, totalAvailable, limit, input.hasFilters())
+
 	output := ProxyLogOutput{
-		Count: getInt(result, "count"),
+		Pagination: &pag,
 	}
 
 	if entries, ok := result["entries"].([]interface{}); ok {

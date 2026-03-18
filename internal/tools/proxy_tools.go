@@ -412,11 +412,17 @@ type ProxyLogInput struct {
 	DiagnosticLevels []string `json:"diagnostic_levels,omitempty" jsonschema:"Filter diagnostics by level: info, warning, error"`
 }
 
+func (input ProxyLogInput) hasFilters() bool {
+	return len(input.Types) > 0 || input.URLPattern != "" || len(input.Methods) > 0 ||
+		len(input.StatusCodes) > 0 || input.Since != "" || input.Until != "" ||
+		input.ErrorsOnly || len(input.DiagnosticLevels) > 0
+}
+
 // ProxyLogOutput defines output for proxylog tool.
 type ProxyLogOutput struct {
 	// For query
-	Entries []LogEntryOutput `json:"entries,omitempty"`
-	Count   int              `json:"count,omitempty"`
+	Entries    []LogEntryOutput `json:"entries,omitempty"`
+	Pagination *Pagination      `json:"pagination,omitempty"`
 
 	// For summary
 	Summary *ProxyLogSummary `json:"summary,omitempty"`
@@ -930,17 +936,21 @@ func handleProxyLogQuery(proxyServer *proxy.ProxyServer, input ProxyLogInput) (*
 		entries = entries[:filter.Limit]
 	}
 
+	// Build pagination context
+	stats := proxyServer.Logger().Stats()
+	pag := NewPagination(len(entries), int(stats.AvailableEntries), filter.Limit, input.hasFilters())
+
 	// Use raw format (JSON dumps) if requested
 	if input.Raw {
-		return handleProxyLogQueryRaw(entries)
+		return handleProxyLogQueryRaw(entries, &pag)
 	}
 
 	// Default: compact format
-	return handleProxyLogQueryCompact(entries)
+	return handleProxyLogQueryCompact(entries, &pag)
 }
 
 // handleProxyLogQueryRaw returns full JSON dumps of log entries
-func handleProxyLogQueryRaw(entries []proxy.LogEntry) (*mcp.CallToolResult, ProxyLogOutput, error) {
+func handleProxyLogQueryRaw(entries []proxy.LogEntry, pag *Pagination) (*mcp.CallToolResult, ProxyLogOutput, error) {
 	// Helper to marshal data to JSON string
 	marshalData := func(data map[string]interface{}) string {
 		b, err := json.Marshal(data)
@@ -1112,13 +1122,13 @@ func handleProxyLogQueryRaw(entries []proxy.LogEntry) (*mcp.CallToolResult, Prox
 	}
 
 	return nil, ProxyLogOutput{
-		Entries: output,
-		Count:   len(output),
+		Entries:    output,
+		Pagination: pag,
 	}, nil
 }
 
 // handleProxyLogQueryCompact returns compact semi-structured format (default)
-func handleProxyLogQueryCompact(entries []proxy.LogEntry) (*mcp.CallToolResult, ProxyLogOutput, error) {
+func handleProxyLogQueryCompact(entries []proxy.LogEntry, pag *Pagination) (*mcp.CallToolResult, ProxyLogOutput, error) {
 	output := make([]LogEntryOutput, len(entries))
 
 	for i, entry := range entries {
@@ -1293,8 +1303,8 @@ func handleProxyLogQueryCompact(entries []proxy.LogEntry) (*mcp.CallToolResult, 
 	}
 
 	return nil, ProxyLogOutput{
-		Entries: output,
-		Count:   len(output),
+		Entries:    output,
+		Pagination: pag,
 	}, nil
 }
 
