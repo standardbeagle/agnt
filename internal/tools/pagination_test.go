@@ -38,3 +38,30 @@ func TestNewPagination(t *testing.T) {
 	assert.Equal(t, 100, p.Limit)
 	assert.True(t, p.Filtered)
 }
+
+func TestProxyLogOutputZeroCountSerializes(t *testing.T) {
+	pag := NewPagination(0, 0, 100, false)
+	output := ProxyLogOutput{
+		Pagination: &pag,
+	}
+	b, err := json.Marshal(output)
+	require.NoError(t, err)
+	s := string(b)
+	assert.Contains(t, s, `"count":0`)
+	assert.Contains(t, s, `"total_available":0`)
+	assert.Contains(t, s, `"limit":100`)
+	assert.NotEqual(t, "{}", s, "zero-result output must not be empty JSON")
+}
+
+func TestProxyLogOutputFilteredShowsContext(t *testing.T) {
+	pag := NewPagination(0, 42, 100, true)
+	output := ProxyLogOutput{
+		Pagination: &pag,
+	}
+	b, err := json.Marshal(output)
+	require.NoError(t, err)
+	s := string(b)
+	assert.Contains(t, s, `"count":0`)
+	assert.Contains(t, s, `"total_available":42`)
+	assert.Contains(t, s, `"filtered":true`)
+}
