@@ -637,7 +637,7 @@ func (dt *DaemonTools) makeProcHandler() func(context.Context, *mcp.CallToolRequ
 		case "autorestart":
 			return dt.handleProcAutoRestart(input)
 		default:
-			return errorResult(fmt.Sprintf("unknown action %q", input.Action)), ProcOutput{}, nil
+			return errorResult(fmt.Sprintf("unknown action %q. Use: status, output, stop, restart, list, cleanup_port, autorestart", input.Action)), ProcOutput{}, nil
 		}
 	}
 }
@@ -859,7 +859,7 @@ func (dt *DaemonTools) makeProxyHandler() func(context.Context, *mcp.CallToolReq
 		case "chaos":
 			return dt.handleProxyChaos(input)
 		default:
-			return errorResult(fmt.Sprintf("unknown action %q", input.Action)), ProxyOutput{}, nil
+			return errorResult(fmt.Sprintf("unknown action %q. Use: start, stop, restart, status, list, exec, toast, chaos", input.Action)), ProxyOutput{}, nil
 		}
 	}
 }
@@ -1423,7 +1423,7 @@ func (dt *DaemonTools) makeProxyLogHandler() func(context.Context, *mcp.CallTool
 		case "stats":
 			return dt.handleProxyLogStats(input)
 		default:
-			return errorResult(fmt.Sprintf("unknown action %q", action)), ProxyLogOutput{}, nil
+			return errorResult(fmt.Sprintf("unknown action %q. Use: query, summary, clear, stats", action)), ProxyLogOutput{}, nil
 		}
 	}
 }
@@ -1584,7 +1584,7 @@ func (dt *DaemonTools) makeCurrentPageHandler() func(context.Context, *mcp.CallT
 		case "clear":
 			return dt.handleCurrentPageClear(input)
 		default:
-			return errorResult(fmt.Sprintf("unknown action %q", action)), CurrentPageOutput{}, nil
+			return errorResult(fmt.Sprintf("unknown action %q. Use: list, get, summary, clear", action)), CurrentPageOutput{}, nil
 		}
 	}
 }
