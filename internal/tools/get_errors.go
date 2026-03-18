@@ -256,7 +256,7 @@ func (dt *DaemonTools) collectProxyErrors(proxyID, since string) ([]unifiedError
 			continue // Skip this proxy on error
 		}
 
-		logs, ok := result["logs"].([]interface{})
+		logs, ok := result["entries"].([]interface{})
 		if !ok {
 			continue
 		}
