@@ -107,7 +107,7 @@ type CurrentPageInput struct {
 type CurrentPageOutput struct {
 	// For list
 	Sessions []PageSessionOutput `json:"sessions,omitempty"`
-	Count    int                 `json:"count,omitempty"`
+	Count    int                 `json:"count"`
 
 	// For get
 	Session *PageSessionOutput `json:"session,omitempty"`
@@ -324,7 +324,7 @@ type ProxyOutput struct {
 	Tunnel        *TunnelStatus   `json:"tunnel,omitempty"` // Tunnel status if configured
 
 	// For list
-	Count       int          `json:"count,omitempty"`
+	Count       int          `json:"count"`
 	Proxies     []ProxyEntry `json:"proxies,omitempty"`
 	ProjectPath string       `json:"project_path,omitempty"`
 	SessionCode string       `json:"session_code,omitempty"`

@@ -41,7 +41,7 @@ type AutomationOutput struct {
 	Error     string            `json:"error,omitempty"`
 	Success   bool              `json:"success,omitempty"`
 	Message   string            `json:"message,omitempty"`
-	Count     int               `json:"count,omitempty"`
+	Count     int               `json:"count"`
 	Sessions  []AutomationEntry `json:"sessions,omitempty"`
 	// Screenshot fields
 	ScreenshotPath string `json:"screenshot_path,omitempty"`
