@@ -196,8 +196,14 @@ func TestHubIntegration_ProxyWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProxyLogQuery failed: %v", err)
 	}
-	if logs["entries"] == nil {
-		t.Logf("Log query result: %+v", logs)
+	if _, hasEntries := logs["entries"]; !hasEntries {
+		t.Errorf("Expected 'entries' key in proxylog query response, got keys: %v", logs)
+	}
+	if _, hasCount := logs["count"]; !hasCount {
+		t.Errorf("Expected 'count' key in proxylog query response, got keys: %v", logs)
+	}
+	if _, hasTotalAvailable := logs["total_available"]; !hasTotalAvailable {
+		t.Errorf("Expected 'total_available' key in proxylog query response, got keys: %v", logs)
 	}
 
 	// Get log stats
@@ -3018,4 +3024,77 @@ func TestHubIntegration_SessionOverlayScoping(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestHubIntegration_ProxyLogQueryResponseKeys verifies that PROXYLOG QUERY returns
+// "entries", "count", and "total_available" keys (not "logs").
+func TestHubIntegration_ProxyLogQueryResponseKeys(t *testing.T) {
+	tmpDir := t.TempDir()
+	sockPath := filepath.Join(tmpDir, "test.sock")
+
+	daemon := New(DaemonConfig{
+		SocketPath:   sockPath,
+		MaxClients:   10,
+		WriteTimeout: 5 * time.Second,
+	})
+
+	if err := daemon.Start(); err != nil {
+		t.Fatalf("Failed to start daemon: %v", err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		daemon.Stop(ctx)
+	}()
+
+	client := NewClient(WithSocketPath(sockPath))
+	if err := client.Connect(); err != nil {
+		t.Fatalf("Failed to connect: %v", err)
+	}
+	defer client.Close()
+
+	// Start a proxy so we have something to query
+	proxyID := "test-proxylog-keys"
+	_, err := client.ProxyStart(proxyID, "http://localhost:9999", 0, 100, ".")
+	if err != nil {
+		t.Fatalf("ProxyStart failed: %v", err)
+	}
+	defer client.ProxyStop(proxyID)
+
+	// Query proxy logs
+	result, err := client.ProxyLogQuery(proxyID, protocol.LogQueryFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("ProxyLogQuery failed: %v", err)
+	}
+
+	// Verify response uses correct keys
+	if _, ok := result["entries"]; !ok {
+		t.Errorf("Response missing 'entries' key; got keys: %v", testMapKeys(result))
+	}
+	if _, ok := result["count"]; !ok {
+		t.Errorf("Response missing 'count' key; got keys: %v", testMapKeys(result))
+	}
+	if _, ok := result["total_available"]; !ok {
+		t.Errorf("Response missing 'total_available' key; got keys: %v", testMapKeys(result))
+	}
+
+	// Verify "logs" key is NOT present (old incorrect key)
+	if _, ok := result["logs"]; ok {
+		t.Errorf("Response should not contain deprecated 'logs' key")
+	}
+
+	// Verify count matches entries length
+	entries, _ := result["entries"].([]interface{})
+	count, _ := result["count"].(float64)
+	if int(count) != len(entries) {
+		t.Errorf("count=%v does not match len(entries)=%d", count, len(entries))
+	}
+}
+
+func testMapKeys(m map[string]interface{}) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	return keys
 }
