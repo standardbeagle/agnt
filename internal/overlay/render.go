@@ -127,6 +127,23 @@ func StateColorCode(state string) string {
 	}
 }
 
+// processStateIcon returns a distinct shape and color for a process state.
+// Uses different shapes for accessibility (not just color).
+func processStateIcon(state string) (icon, color string) {
+	switch state {
+	case "running":
+		return "●", FgGreen // Filled circle = running
+	case "failed":
+		return "✗", FgRed // X = crashed/exited with error
+	case "stopped":
+		return "✗", FgYellow // X = stopped/exited
+	case "starting":
+		return "◌", FgCyan // Dashed circle = starting
+	default:
+		return "○", FgBrightBlack // Empty circle = unknown/pending
+	}
+}
+
 // aggregatedURL contains a URL with its extracted port.
 type aggregatedURL struct {
 	URL  string
@@ -291,16 +308,15 @@ func (r *Renderer) DrawIndicator(status Status) {
 		parts = append(parts, fmt.Sprintf("%s%s%s daemon", FgBrightBlack, IconDisconnected, Reset))
 	}
 
-	// Running processes count and collect process URLs (deduplicated by port)
-	runningCount := 0
-	for _, p := range status.Processes {
-		if p.State == "running" {
-			runningCount++
-		}
-	}
+	// Per-process status indicators: distinct shape + color per state
 	aggregatedURLs := aggregateProcessURLs(status.Processes)
-	if runningCount > 0 {
-		parts = append(parts, fmt.Sprintf("%s%s %d proc%s", FgCyan, IconProcess, runningCount, Reset))
+	for _, p := range status.Processes {
+		label := p.ID
+		if len(label) > 10 {
+			label = label[:10]
+		}
+		icon, color := processStateIcon(p.State)
+		parts = append(parts, fmt.Sprintf("%s%s%s %s", color, icon, Reset, label))
 	}
 
 	// Running proxies with clickable URL
