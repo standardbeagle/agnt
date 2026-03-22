@@ -16,6 +16,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unsafe"
 
 	"github.com/aymanbagabas/go-pty"
 	"github.com/spf13/cobra"
@@ -250,6 +251,17 @@ func runWithConPTY(ctx context.Context, args []string, socketPath string, sessio
 		childHeight = height - 1
 	}
 
+	// Save stdout console mode BEFORE any changes so we can restore on exit.
+	// This must happen before MakeRaw since ConPTY creation can alter modes.
+	stdoutHandle, err := windows.GetStdHandle(windows.STD_OUTPUT_HANDLE)
+	var savedStdoutMode uint32
+	hasStdoutMode := false
+	if err == nil {
+		if err := windows.GetConsoleMode(stdoutHandle, &savedStdoutMode); err == nil {
+			hasStdoutMode = true
+		}
+	}
+
 	// Set stdin in raw mode BEFORE creating ConPTY
 	// This ensures ConPTY doesn't inherit/interfere with console mode
 	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
@@ -257,17 +269,24 @@ func runWithConPTY(ctx context.Context, args []string, socketPath string, sessio
 		return fmt.Errorf("failed to set raw mode: %w", err)
 	}
 	defer func() {
+		// Disable win32-input-mode BEFORE restoring console modes.
+		// This must happen while VT processing is still enabled.
+		fmt.Fprint(os.Stdout, "\x1b[?9001l")
+
 		_ = term.Restore(int(os.Stdin.Fd()), oldState)
+
+		// Restore stdout console mode to what it was before we started.
+		// This prevents leftover VT processing mode from causing the
+		// terminal to display raw escape sequences after exit.
+		if hasStdoutMode {
+			_ = windows.SetConsoleMode(stdoutHandle, savedStdoutMode)
+		}
 	}()
 
 	// Enable Virtual Terminal Processing on stdout
-	stdoutHandle, err := windows.GetStdHandle(windows.STD_OUTPUT_HANDLE)
-	if err == nil {
-		var stdoutMode uint32
-		if err := windows.GetConsoleMode(stdoutHandle, &stdoutMode); err == nil {
-			newMode := stdoutMode | 0x0004 // ENABLE_VIRTUAL_TERMINAL_PROCESSING
-			_ = windows.SetConsoleMode(stdoutHandle, newMode)
-		}
+	if hasStdoutMode {
+		newMode := savedStdoutMode | 0x0004 // ENABLE_VIRTUAL_TERMINAL_PROCESSING
+		_ = windows.SetConsoleMode(stdoutHandle, newMode)
 	}
 
 	// Show startup animation (after raw mode so spinner works)
@@ -308,6 +327,18 @@ func runWithConPTY(ctx context.Context, args []string, socketPath string, sessio
 		return fmt.Errorf("failed to start process: %w", err)
 	}
 	stopSpinner()
+
+	// Create a Job Object so all child processes are killed when agnt exits.
+	// Without this, grandchild processes (dev servers, npm, etc.) survive.
+	jobHandle, err := createJobObject()
+	if err != nil {
+		debug.Warn("job", "failed to create job object: %v", err)
+	} else {
+		defer windows.CloseHandle(jobHandle)
+		if err := assignProcessToJob(jobHandle, cmd.Process.Pid); err != nil {
+			debug.Warn("job", "failed to assign process to job: %v", err)
+		}
+	}
 
 	// Disable win32-input-mode - ConPTY requests this by default which causes
 	// Windows Terminal to send extended key event sequences instead of raw bytes.
@@ -646,6 +677,50 @@ func cleanupTerminal(height int) {
 
 	// Move cursor to a reasonable position (bottom-left)
 	fmt.Fprintf(os.Stdout, "\x1b[%d;1H", height)
+}
+
+// createJobObject creates a Windows Job Object configured to kill all assigned
+// processes when the handle is closed. This is the Windows equivalent of Unix
+// process groups for ensuring child process cleanup.
+func createJobObject() (windows.Handle, error) {
+	job, err := windows.CreateJobObject(nil, nil)
+	if err != nil {
+		return 0, fmt.Errorf("CreateJobObject: %w", err)
+	}
+
+	info := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{
+		BasicLimitInformation: windows.JOBOBJECT_BASIC_LIMIT_INFORMATION{
+			LimitFlags: windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+		},
+	}
+
+	_, err = windows.SetInformationJobObject(
+		job,
+		windows.JobObjectExtendedLimitInformation,
+		uintptr(unsafe.Pointer(&info)),
+		uint32(unsafe.Sizeof(info)),
+	)
+	if err != nil {
+		windows.CloseHandle(job)
+		return 0, fmt.Errorf("SetInformationJobObject: %w", err)
+	}
+
+	return job, nil
+}
+
+// assignProcessToJob assigns a process (by PID) to a Job Object.
+func assignProcessToJob(job windows.Handle, pid int) error {
+	proc, err := windows.OpenProcess(
+		windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE,
+		false,
+		uint32(pid),
+	)
+	if err != nil {
+		return fmt.Errorf("OpenProcess(%d): %w", pid, err)
+	}
+	defer windows.CloseHandle(proc)
+
+	return windows.AssignProcessToJobObject(job, proc)
 }
 
 // isClaudeCommand checks if the command appears to be Claude Code.
