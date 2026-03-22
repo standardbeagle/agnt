@@ -108,6 +108,7 @@ type CurrentPageOutput struct {
 	// For list
 	Sessions []PageSessionOutput `json:"sessions,omitempty"`
 	Count    int                 `json:"count"`
+	Hint     string              `json:"hint,omitempty"`
 
 	// For get
 	Session *PageSessionOutput `json:"session,omitempty"`
