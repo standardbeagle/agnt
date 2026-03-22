@@ -2,6 +2,7 @@ package overlay
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"sync"
 	"testing"
@@ -408,5 +409,160 @@ func TestInputRouterExtendedEscapeSequenceIntegration(t *testing.T) {
 	}
 	if !bytes.Equal(writes[0], f5) {
 		t.Fatalf("expected F5 sequence %v, got %v", f5, writes[0])
+	}
+}
+
+// --- Win32 input mode parser tests ---
+
+// buildWin32Seq creates a win32-input-mode sequence: ESC [ Vk;Sc;Uc;Kd;Cs;Rc _
+func buildWin32Seq(vk, sc, uc, kd, cs, rc int) []byte {
+	s := []byte{0x1b, '['}
+	s = append(s, []byte(fmt.Sprintf("%d;%d;%d;%d;%d;%d", vk, sc, uc, kd, cs, rc))...)
+	s = append(s, '_')
+	return s
+}
+
+func TestParseWin32ArrowKeys(t *testing.T) {
+	tests := []struct {
+		name string
+		vk   int
+		want []byte
+	}{
+		{"up", 0x26, []byte{0x1b, '[', 'A'}},
+		{"down", 0x28, []byte{0x1b, '[', 'B'}},
+		{"right", 0x27, []byte{0x1b, '[', 'C'}},
+		{"left", 0x25, []byte{0x1b, '[', 'D'}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			seq := buildWin32Seq(tt.vk, 0, 0, 1, 0, 1) // key down, no modifiers
+			got, remainder := parseWin32InputModeInternal(seq)
+			if remainder != nil {
+				t.Fatalf("unexpected remainder: %v", remainder)
+			}
+			if !bytes.Equal(got, tt.want) {
+				t.Fatalf("expected %v, got %v", tt.want, got)
+			}
+		})
+	}
+}
+
+func TestParseWin32CtrlArrowKeys(t *testing.T) {
+	tests := []struct {
+		name string
+		vk   int
+		want []byte
+	}{
+		{"ctrl+right", 0x27, []byte{0x1b, '[', '1', ';', '5', 'C'}},
+		{"ctrl+left", 0x25, []byte{0x1b, '[', '1', ';', '5', 'D'}},
+		{"ctrl+up", 0x26, []byte{0x1b, '[', '1', ';', '5', 'A'}},
+		{"ctrl+down", 0x28, []byte{0x1b, '[', '1', ';', '5', 'B'}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			seq := buildWin32Seq(tt.vk, 0, 0, 1, 0x08, 1) // key down, ctrl held
+			got, remainder := parseWin32InputModeInternal(seq)
+			if remainder != nil {
+				t.Fatalf("unexpected remainder: %v", remainder)
+			}
+			if !bytes.Equal(got, tt.want) {
+				t.Fatalf("expected %v, got %v", tt.want, got)
+			}
+		})
+	}
+}
+
+func TestParseWin32HomeEnd(t *testing.T) {
+	tests := []struct {
+		name string
+		vk   int
+		want []byte
+	}{
+		{"home", 0x24, []byte{0x1b, '[', 'H'}},
+		{"end", 0x23, []byte{0x1b, '[', 'F'}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			seq := buildWin32Seq(tt.vk, 0, 0, 1, 0, 1)
+			got, _ := parseWin32InputModeInternal(seq)
+			if !bytes.Equal(got, tt.want) {
+				t.Fatalf("expected %v, got %v", tt.want, got)
+			}
+		})
+	}
+}
+
+func TestParseWin32Delete(t *testing.T) {
+	seq := buildWin32Seq(0x2E, 0, 0, 1, 0, 1) // VK_DELETE
+	got, _ := parseWin32InputModeInternal(seq)
+	want := []byte{0x1b, '[', '3', '~'}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("expected %v, got %v", want, got)
+	}
+}
+
+func TestParseWin32KeyUpIgnored(t *testing.T) {
+	// Key-up events (kd=0) should produce no output
+	seq := buildWin32Seq(0x26, 0, 0, 0, 0, 1)
+	got, _ := parseWin32InputModeInternal(seq)
+	if len(got) != 0 {
+		t.Fatalf("expected empty output for key-up, got %v", got)
+	}
+}
+
+func TestParseWin32UnicodeCharStillWorks(t *testing.T) {
+	// Regular characters with uc > 0 should still work
+	seq := buildWin32Seq(65, 0, 97, 1, 0, 1) // 'a' key, uc=97
+	got, _ := parseWin32InputModeInternal(seq)
+	if !bytes.Equal(got, []byte{'a'}) {
+		t.Fatalf("expected [97], got %v", got)
+	}
+}
+
+func TestParseWin32CtrlY(t *testing.T) {
+	// Ctrl+Y: vk=89, uc=25 (0x19)
+	seq := buildWin32Seq(89, 21, 25, 1, 8, 1)
+	got, _ := parseWin32InputModeInternal(seq)
+	if !bytes.Equal(got, []byte{0x19}) {
+		t.Fatalf("expected [0x19], got %v", got)
+	}
+}
+
+func TestParseWin32MixedSequences(t *testing.T) {
+	// Multiple win32 sequences in one buffer: 'h' + arrow-up + 'i'
+	var buf []byte
+	buf = append(buf, buildWin32Seq(72, 0, 104, 1, 0, 1)...) // 'h'
+	buf = append(buf, buildWin32Seq(0x26, 0, 0, 1, 0, 1)...) // arrow up
+	buf = append(buf, buildWin32Seq(73, 0, 105, 1, 0, 1)...) // 'i'
+
+	got, remainder := parseWin32InputModeInternal(buf)
+	if remainder != nil {
+		t.Fatalf("unexpected remainder: %v", remainder)
+	}
+	want := []byte{'h', 0x1b, '[', 'A', 'i'}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("expected %v, got %v", want, got)
+	}
+}
+
+func TestParseWin32F5Key(t *testing.T) {
+	seq := buildWin32Seq(0x74, 0, 0, 1, 0, 1) // VK_F5
+	got, _ := parseWin32InputModeInternal(seq)
+	want := []byte{0x1b, '[', '1', '5', '~'}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("expected %v, got %v", want, got)
+	}
+}
+
+func TestParseWin32ShiftArrow(t *testing.T) {
+	// Shift+Right: mod=2
+	seq := buildWin32Seq(0x27, 0, 0, 1, 0x10, 1) // VK_RIGHT, shift
+	got, _ := parseWin32InputModeInternal(seq)
+	want := []byte{0x1b, '[', '1', ';', '2', 'C'}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("expected %v, got %v", want, got)
 	}
 }

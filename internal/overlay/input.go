@@ -866,6 +866,119 @@ func findWin32SequenceEnd(data []byte, start int) (end int, hitInvalidChar bool)
 	return -1, false
 }
 
+// Win32 Virtual Key codes for non-character keys that need ANSI translation.
+const (
+	vkBack   = 0x08
+	vkTab    = 0x09
+	vkReturn = 0x0D
+	vkEscape = 0x1B
+	vkEnd    = 0x23
+	vkHome   = 0x24
+	vkLeft   = 0x25
+	vkUp     = 0x26
+	vkRight  = 0x27
+	vkDown   = 0x28
+	vkInsert = 0x2D
+	vkDelete = 0x2E
+	vkF1     = 0x70
+	vkF2     = 0x71
+	vkF3     = 0x72
+	vkF4     = 0x73
+	vkF5     = 0x74
+	vkF6     = 0x75
+	vkF7     = 0x76
+	vkF8     = 0x77
+	vkF9     = 0x78
+	vkF10    = 0x79
+	vkF11    = 0x7A
+	vkF12    = 0x7B
+)
+
+// Win32 control key state flags (Cs field).
+const (
+	csShift    = 0x10
+	csCtrl     = 0x08 // LEFT_CTRL_PRESSED or RIGHT_CTRL_PRESSED
+	csAlt      = 0x03 // LEFT_ALT_PRESSED or RIGHT_ALT_PRESSED
+	csCtrlMask = 0x0C // Either ctrl key
+	csAltMask  = 0x03 // Either alt key
+)
+
+// vkToANSI maps a virtual key code + control state to ANSI escape bytes.
+// Returns nil if the key doesn't map to an ANSI sequence.
+func vkToANSI(vk, cs int) []byte {
+	// Calculate xterm modifier parameter: 1 + (shift?1:0) + (alt?2:0) + (ctrl?4:0)
+	mod := 1
+	if cs&csShift != 0 {
+		mod += 1
+	}
+	if cs&csAltMask != 0 {
+		mod += 2
+	}
+	if cs&csCtrlMask != 0 {
+		mod += 4
+	}
+
+	// Arrow keys: ESC [ 1 ; mod A/B/C/D (or ESC [ A/B/C/D without modifiers)
+	if vk >= vkLeft && vk <= vkDown {
+		suffix := []byte{'D', 'A', 'C', 'B'}[vk-vkLeft] // Left=D Up=A Right=C Down=B
+		if mod > 1 {
+			return []byte{0x1b, '[', '1', ';', byte('0' + mod), suffix}
+		}
+		return []byte{0x1b, '[', suffix}
+	}
+
+	// Home/End: ESC [ 1 ; mod H/F (or ESC [ H/F)
+	if vk == vkHome || vk == vkEnd {
+		suffix := byte('H')
+		if vk == vkEnd {
+			suffix = 'F'
+		}
+		if mod > 1 {
+			return []byte{0x1b, '[', '1', ';', byte('0' + mod), suffix}
+		}
+		return []byte{0x1b, '[', suffix}
+	}
+
+	// Insert/Delete: ESC [ 2~ / ESC [ 3~ (with modifiers: ESC [ 2 ; mod ~)
+	if vk == vkInsert || vk == vkDelete {
+		code := byte('2')
+		if vk == vkDelete {
+			code = '3'
+		}
+		if mod > 1 {
+			return []byte{0x1b, '[', code, ';', byte('0' + mod), '~'}
+		}
+		return []byte{0x1b, '[', code, '~'}
+	}
+
+	// F1-F4: ESC O P/Q/R/S (or ESC [ 1 ; mod P/Q/R/S with modifiers)
+	if vk >= vkF1 && vk <= vkF4 {
+		suffix := byte('P' + byte(vk-vkF1))
+		if mod > 1 {
+			return []byte{0x1b, '[', '1', ';', byte('0' + mod), suffix}
+		}
+		return []byte{0x1b, 'O', suffix}
+	}
+
+	// F5-F12: ESC [ code ~ (with modifiers: ESC [ code ; mod ~)
+	if vk >= vkF5 && vk <= vkF12 {
+		codes := []string{"15", "17", "18", "19", "20", "21", "23", "24"}
+		code := codes[vk-vkF5]
+		if mod > 1 {
+			seq := []byte{0x1b, '['}
+			seq = append(seq, code...)
+			seq = append(seq, ';', byte('0'+mod), '~')
+			return seq
+		}
+		seq := []byte{0x1b, '['}
+		seq = append(seq, code...)
+		seq = append(seq, '~')
+		return seq
+	}
+
+	return nil
+}
+
 // parseWin32Sequence parses the win32 input sequence content and appends result.
 func (s *win32ParseState) parseWin32Sequence(seqData []byte) {
 	seq := string(seqData)
@@ -874,18 +987,36 @@ func (s *win32ParseState) parseWin32Sequence(seqData []byte) {
 		return
 	}
 
-	// Uc (unicode char) is the 3rd field (index 2)
-	// Kd (key down) is the 4th field (index 3)
+	// Format: Vk ; Sc ; Uc ; Kd ; Cs ; Rc
+	vk := parseInt(parts[0])
 	uc := parseInt(parts[2])
 	kd := parseInt(parts[3])
 
-	// Only emit on key down (kd=1)
-	if uc > 0 && kd == 1 {
+	// Only process key-down events (kd=1)
+	if kd != 1 {
+		debugLog("seq=%s -> skipped (kd=%d, key up)", seq, kd)
+		return
+	}
+
+	// If there's a unicode character, emit it directly
+	if uc > 0 {
 		s.result = append(s.result, byte(uc))
 		debugLog("seq=%s -> byte %d (0x%02x)", seq, uc, uc)
-	} else {
-		debugLog("seq=%s -> skipped (uc=%d, kd=%d)", seq, uc, kd)
+		return
 	}
+
+	// No unicode char (uc=0) — check for virtual keys that need ANSI translation
+	cs := 0
+	if len(parts) >= 5 {
+		cs = parseInt(parts[4])
+	}
+	if ansi := vkToANSI(vk, cs); ansi != nil {
+		s.result = append(s.result, ansi...)
+		debugLog("seq=%s -> vk=%d cs=%d ansi=%q", seq, vk, cs, ansi)
+		return
+	}
+
+	debugLog("seq=%s -> skipped (uc=0, vk=%d, no mapping)", seq, vk)
 }
 
 // printableChar returns the character if printable, otherwise '.'

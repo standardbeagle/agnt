@@ -1330,8 +1330,8 @@ func GetLogPath() string {
 		// Fall back to ~/.local/state
 		home, err := os.UserHomeDir()
 		if err != nil {
-			// Last resort: /tmp
-			return "/tmp/agnt-daemon.log"
+			// Last resort: OS temp directory
+			return filepath.Join(os.TempDir(), "agnt-daemon.log")
 		}
 		stateHome = filepath.Join(home, ".local", "state")
 	}
