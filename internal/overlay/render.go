@@ -127,6 +127,59 @@ func StateColorCode(state string) string {
 	}
 }
 
+// shortenProcessLabels returns display labels for processes, truncated to fit
+// the status bar but kept long enough to distinguish between similar IDs.
+func shortenProcessLabels(procs []ProcessInfo) []string {
+	labels := make([]string, len(procs))
+	for i, p := range procs {
+		labels[i] = p.ID
+	}
+
+	if len(procs) <= 1 {
+		// Single process: truncate to 12
+		for i := range labels {
+			if len(labels[i]) > 12 {
+				labels[i] = labels[i][:12]
+			}
+		}
+		return labels
+	}
+
+	// Multiple processes: find minimum prefix length that keeps all labels unique
+	maxLen := 12
+	for minLen := 6; minLen <= maxLen; minLen++ {
+		truncated := make([]string, len(labels))
+		for i, l := range labels {
+			if len(l) > minLen {
+				truncated[i] = l[:minLen]
+			} else {
+				truncated[i] = l
+			}
+		}
+		// Check uniqueness
+		seen := make(map[string]bool)
+		unique := true
+		for _, t := range truncated {
+			if seen[t] {
+				unique = false
+				break
+			}
+			seen[t] = true
+		}
+		if unique {
+			return truncated
+		}
+	}
+
+	// Fallback: use full IDs (capped at maxLen)
+	for i := range labels {
+		if len(labels[i]) > maxLen {
+			labels[i] = labels[i][:maxLen]
+		}
+	}
+	return labels
+}
+
 // processStateIcon returns a distinct shape and color for a process state.
 // Uses different shapes for accessibility (not just color).
 func processStateIcon(state string) (icon, color string) {
@@ -310,13 +363,10 @@ func (r *Renderer) DrawIndicator(status Status) {
 
 	// Per-process status indicators: distinct shape + color per state
 	aggregatedURLs := aggregateProcessURLs(status.Processes)
-	for _, p := range status.Processes {
-		label := p.ID
-		if len(label) > 10 {
-			label = label[:10]
-		}
+	procLabels := shortenProcessLabels(status.Processes)
+	for i, p := range status.Processes {
 		icon, color := processStateIcon(p.State)
-		parts = append(parts, fmt.Sprintf("%s%s%s %s", color, icon, Reset, label))
+		parts = append(parts, fmt.Sprintf("%s%s%s %s", color, icon, Reset, procLabels[i]))
 	}
 
 	// Running proxies with clickable URL
@@ -402,12 +452,22 @@ func (r *Renderer) DrawIndicator(status Status) {
 	hotkeyStr := formatHotkey(r.hotkey)
 	hotkeyHint := fmt.Sprintf("%s%s%s", FgBrightBlack, hotkeyStr, Reset)
 
-	// Calculate padding
-	// Note: This is approximate due to ANSI codes; for accurate width we'd need to strip codes
-	visibleLen := r.estimateVisibleLength(statusText)
+	// Calculate available space: width minus leading space, hotkey, trailing space, and separator
 	hotkeyLen := len(hotkeyStr)
-	padding := r.width - visibleLen - hotkeyLen - 4 // 4 for " │ " separator and spaces
+	maxStatusVisible := r.width - hotkeyLen - 4 // 4 for " " prefix, " │ " separator, " " suffix
 
+	// Truncate status text if it would cause the bar to wrap
+	visibleLen := r.estimateVisibleLength(statusText)
+	if maxStatusVisible < 4 {
+		// Terminal too narrow for any content, just show hotkey
+		statusText = ""
+		visibleLen = 0
+	} else if visibleLen > maxStatusVisible {
+		statusText = r.truncateANSI(statusText, maxStatusVisible-1) + "…"
+		visibleLen = maxStatusVisible
+	}
+
+	padding := r.width - visibleLen - hotkeyLen - 4
 	if padding < 1 {
 		padding = 1
 	}
@@ -519,6 +579,34 @@ func (r *Renderer) estimateVisibleLength(s string) int {
 		length++
 	}
 	return length
+}
+
+// truncateANSI truncates a string containing ANSI escape codes to maxVisible
+// visible characters. ANSI sequences are preserved up to the cut point, and a
+// Reset is appended to close any open attributes.
+func (r *Renderer) truncateANSI(s string, maxVisible int) string {
+	var buf strings.Builder
+	inEscape := false
+	visible := 0
+	for _, ch := range s {
+		if visible >= maxVisible && !inEscape {
+			break
+		}
+		buf.WriteRune(ch)
+		if ch == '\x1b' {
+			inEscape = true
+			continue
+		}
+		if inEscape {
+			if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') {
+				inEscape = false
+			}
+			continue
+		}
+		visible++
+	}
+	buf.WriteString(Reset)
+	return buf.String()
 }
 
 // ClearIndicator clears the indicator bar.
