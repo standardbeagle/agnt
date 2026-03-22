@@ -1566,7 +1566,22 @@ func (dt *DaemonTools) makeCurrentPageHandler() func(context.Context, *mcp.CallT
 		}
 
 		if input.ProxyID == "" {
-			return errorResult("proxy_id required"), CurrentPageOutput{}, nil
+			// Help the agent find the right proxy_id
+			proxies, listErr := dt.client.ProxyList(protocol.DirectoryFilter{Global: true})
+			if listErr == nil {
+				if proxyList, ok := proxies["proxies"].([]interface{}); ok && len(proxyList) > 0 {
+					var ids []string
+					for _, p := range proxyList {
+						if pm, ok := p.(map[string]interface{}); ok {
+							if id, ok := pm["id"].(string); ok {
+								ids = append(ids, id)
+							}
+						}
+					}
+					return errorResult(fmt.Sprintf("proxy_id required. Running proxies: %s\nExample: currentpage {proxy_id: %q}", strings.Join(ids, ", "), ids[0])), CurrentPageOutput{}, nil
+				}
+			}
+			return errorResult("proxy_id required. No proxies are running. Start one with: proxy {action: \"start\", id: \"dev\", target_url: \"http://localhost:3000\"}"), CurrentPageOutput{}, nil
 		}
 
 		action := input.Action
@@ -1605,6 +1620,23 @@ func (dt *DaemonTools) handleCurrentPageList(input CurrentPageInput) (*mcp.CallT
 				output.Sessions = append(output.Sessions, convertToPageSessionOutput(sm))
 			}
 		}
+	}
+
+	if output.Count == 0 {
+		// Get proxy info for troubleshooting
+		proxyStatus, statusErr := dt.client.ProxyStatus(input.ProxyID)
+		listenAddr := ""
+		if statusErr == nil {
+			if addr, ok := proxyStatus["listen_addr"].(string); ok {
+				listenAddr = addr
+			}
+		}
+		hint := fmt.Sprintf("No page sessions found for proxy %q. ", input.ProxyID)
+		if listenAddr != "" {
+			hint += fmt.Sprintf("Open http://%s in a browser to start capturing page data. ", normalizeAddr(listenAddr))
+		}
+		hint += "Page sessions are created when a browser loads an HTML page through the proxy."
+		output.Hint = hint
 	}
 
 	return nil, output, nil
@@ -2697,4 +2729,11 @@ func (o PageSessionOutput) MarshalJSON() ([]byte, error) {
 	}{
 		Alias: Alias(o),
 	})
+}
+
+// normalizeAddr replaces 0.0.0.0 or [::] with localhost for display.
+func normalizeAddr(addr string) string {
+	addr = strings.Replace(addr, "0.0.0.0", "localhost", 1)
+	addr = strings.Replace(addr, "[::]", "localhost", 1)
+	return addr
 }
