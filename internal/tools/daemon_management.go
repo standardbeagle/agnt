@@ -11,7 +11,7 @@ import (
 
 // DaemonInput defines input for the daemon management tool.
 type DaemonInput struct {
-	Action string `json:"action" jsonschema:"Action: status, info, start, stop, restart, stop_all, restart_all"`
+	Action string `json:"action" jsonschema:"Action: status, info, start, stop, restart, stop_all, restart_all, startup_log"`
 }
 
 // DaemonOutput defines output for daemon management.
@@ -102,8 +102,10 @@ func makeDaemonHandler(dt *DaemonTools) func(context.Context, *mcp.CallToolReque
 			return handleDaemonStopAll(dt)
 		case "restart_all":
 			return handleDaemonRestartAll(dt)
+		case "startup_log":
+			return handleDaemonStartupLog(dt)
 		default:
-			return errorResult(fmt.Sprintf("unknown action %q. Use: status, info, start, stop, restart, stop_all, restart_all", input.Action)), DaemonOutput{}, nil
+			return errorResult(fmt.Sprintf("unknown action %q. Use: status, info, start, stop, restart, stop_all, restart_all, startup_log", input.Action)), DaemonOutput{}, nil
 		}
 	}
 }
@@ -302,4 +304,57 @@ func handleDaemonRestartAll(dt *DaemonTools) (*mcp.CallToolResult, DaemonOutput,
 		Success:          processesFailed == 0 && proxiesFailed == 0,
 		Message:          fmt.Sprintf("Restarted %d processes, %d proxies", processesRestarted, proxiesRestarted),
 	}, nil
+}
+
+func handleDaemonStartupLog(dt *DaemonTools) (*mcp.CallToolResult, DaemonOutput, error) {
+	if err := dt.ensureConnected(); err != nil {
+		return errorResult(fmt.Sprintf("daemon not running: %v", err)), DaemonOutput{}, nil
+	}
+
+	result, err := dt.client.StartupLog(50)
+	if err != nil {
+		return errorResult(fmt.Sprintf("failed to query startup log: %v", err)), DaemonOutput{}, nil
+	}
+
+	entries, _ := result["entries"].([]interface{})
+	count := len(entries)
+
+	// Format as readable text
+	var text string
+	if count == 0 {
+		text = "No startup log entries."
+	} else {
+		text = fmt.Sprintf("=== Startup Log (%d entries) ===\n\n", count)
+		for _, e := range entries {
+			entry, ok := e.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			level, _ := entry["level"].(string)
+			eventType, _ := entry["event_type"].(string)
+			scriptName, _ := entry["script_name"].(string)
+			message, _ := entry["message"].(string)
+			timestamp, _ := entry["timestamp"].(string)
+			output, _ := entry["output"].(string)
+
+			icon := "  "
+			switch level {
+			case "error":
+				icon = "✗ "
+			case "warning":
+				icon = "⚠ "
+			case "info":
+				icon = "  "
+			}
+
+			text += fmt.Sprintf("%s[%s] %s: %s (%s)\n", icon, eventType, scriptName, message, timestamp)
+			if output != "" {
+				text += "  output: " + output + "\n"
+			}
+		}
+	}
+
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{&mcp.TextContent{Text: text}},
+	}, DaemonOutput{Success: true, Message: text}, nil
 }

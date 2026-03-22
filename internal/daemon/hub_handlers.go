@@ -4032,12 +4032,14 @@ func (d *Daemon) hubHandleAlerts(ctx context.Context, conn *hubpkg.Connection, c
 		return d.hubHandleAlertsQuery(conn, cmd)
 	case "CLEAR":
 		return d.hubHandleAlertsClear(conn)
+	case "STARTUP-LOG", "STARTUP-ERRORS":
+		return d.hubHandleStartupLog(conn, cmd)
 	default:
 		return writeStructuredErr(conn, "daemon", &hubproto.StructuredError{
 			Code:         hubproto.ErrInvalidArgs,
 			Message:      "unknown ALERTS sub-command",
 			Command:      "ALERTS",
-			ValidActions: []string{"REPORT", "QUERY", "CLEAR"},
+			ValidActions: []string{"REPORT", "QUERY", "CLEAR", "STARTUP-LOG"},
 		})
 	}
 }
@@ -4088,16 +4090,7 @@ func (d *Daemon) hubHandleAlertsQuery(conn *hubpkg.Connection, cmd *hubproto.Com
 		Limit:     protoFilter.Limit,
 	}
 
-	// Parse since: RFC3339 timestamp or Go duration string
-	if protoFilter.Since != "" {
-		if t, err := time.Parse(time.RFC3339, protoFilter.Since); err == nil {
-			filter.Since = t
-		} else if dur, err := time.ParseDuration(protoFilter.Since); err == nil {
-			filter.Since = time.Now().Add(-dur)
-		} else {
-			debug.Log("daemon", "ALERTS QUERY: unparseable since value: %q", protoFilter.Since)
-		}
-	}
+	filter.Since = parseSinceFilter(protoFilter.Since)
 
 	entries := d.alertStore.Query(filter)
 
@@ -4112,4 +4105,58 @@ func (d *Daemon) hubHandleAlertsQuery(conn *hubpkg.Connection, cmd *hubproto.Com
 func (d *Daemon) hubHandleAlertsClear(conn *hubpkg.Connection) error {
 	d.alertStore.Clear()
 	return conn.WriteOK("alerts cleared")
+}
+
+// parseSinceFilter parses a "since" string as RFC3339 or Go duration (e.g. "5m").
+func parseSinceFilter(s string) time.Time {
+	if s == "" {
+		return time.Time{}
+	}
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t
+	}
+	if dur, err := time.ParseDuration(s); err == nil {
+		return time.Now().Add(-dur)
+	}
+	return time.Time{}
+}
+
+// hubHandleStartupLog handles ALERTS STARTUP-LOG command.
+func (d *Daemon) hubHandleStartupLog(conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	filter := StartupLogFilter{
+		Since: time.Now().Add(-30 * time.Minute),
+		Limit: 50,
+	}
+
+	if len(cmd.Data) > 0 {
+		var f struct {
+			Since     string `json:"since,omitempty"`
+			ProcessID string `json:"process_id,omitempty"`
+			Level     string `json:"level,omitempty"`
+			Limit     int    `json:"limit,omitempty"`
+		}
+		if err := json.Unmarshal(cmd.Data, &f); err == nil {
+			if f.ProcessID != "" {
+				filter.ProcessID = f.ProcessID
+			}
+			if f.Level != "" {
+				filter.Level = f.Level
+			}
+			if f.Limit > 0 {
+				filter.Limit = f.Limit
+			}
+			filter.Since = parseSinceFilter(f.Since)
+			if filter.Since.IsZero() {
+				filter.Since = time.Now().Add(-30 * time.Minute)
+			}
+		}
+	}
+
+	entries := d.startupErrorStore.Query(filter)
+
+	data, _ := json.Marshal(map[string]interface{}{
+		"entries": entries,
+		"count":   len(entries),
+	})
+	return conn.WriteJSON(data)
 }

@@ -989,3 +989,14 @@ func (rc *ResilientClient) AlertClear() error {
 		return c.AlertClear()
 	})
 }
+
+// StartupLog queries the startup log from the daemon.
+func (rc *ResilientClient) StartupLog(limit int) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.StartupLog(limit)
+		return e
+	})
+	return result, err
+}

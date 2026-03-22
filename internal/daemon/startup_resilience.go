@@ -77,6 +77,19 @@ func (d *Daemon) StartScript(ctx context.Context, cfg StartScriptConfig) (*Start
 	if startupErr != nil {
 		// Clean up pre-set matchers on failure
 		d.urlTracker.SetURLMatchers(cfg.ProcessID, nil)
+
+		// Record in startup error store for later diagnosis
+		d.startupErrorStore.Add(&StartupLogEntry{
+			ProcessID:  cfg.ProcessID,
+			ScriptName: stripProcessPrefix(cfg.ProcessID),
+			Level:      "error",
+			EventType:  startupErr.ErrorType,
+			Message:    startupErr.Message,
+			Output:     startupErr.Output,
+			Port:       startupErr.Port,
+			Timestamp:  time.Now(),
+		})
+
 		return nil, startupErr
 	}
 
@@ -179,6 +192,11 @@ func extractPortFromProxyConfig(proxyConfig *config.ProxyConfig) int {
 		}
 	}
 
+	// Fallback port (used when URL detection fails)
+	if proxyConfig.FallbackPort > 0 {
+		return proxyConfig.FallbackPort
+	}
+
 	return 0
 }
 
@@ -248,8 +266,20 @@ func (d *Daemon) startScriptWithRetry(
 	if expectedPort > 0 {
 		if killedPIDs, err := d.preflightPortCleanup(ctx, expectedPort); err != nil {
 			debug.Warn("daemon", "Pre-flight cleanup failed for port %d: %v", expectedPort, err)
+			d.startupErrorStore.Add(&StartupLogEntry{
+				ProcessID: processID, ScriptName: stripProcessPrefix(processID),
+				Level: "warning", EventType: "port_cleanup",
+				Message: fmt.Sprintf("port %d cleanup failed: %v", expectedPort, err),
+				Port:    expectedPort, Timestamp: time.Now(),
+			})
 		} else if len(killedPIDs) > 0 {
 			debug.Info("daemon", "Cleaned up port %d before starting %s", expectedPort, processID)
+			d.startupErrorStore.Add(&StartupLogEntry{
+				ProcessID: processID, ScriptName: stripProcessPrefix(processID),
+				Level: "info", EventType: "port_cleanup",
+				Message: fmt.Sprintf("killed %d process(es) on port %d", len(killedPIDs), expectedPort),
+				Port:    expectedPort, Timestamp: time.Now(),
+			})
 		}
 	}
 

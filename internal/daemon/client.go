@@ -637,3 +637,9 @@ func (c *Client) AlertQuery(filter protocol.AlertQueryFilter) (map[string]interf
 func (c *Client) AlertClear() error {
 	return c.conn.Request(protocol.VerbAlerts, protocol.SubVerbClear).OK()
 }
+
+// StartupLog queries the startup log from the daemon.
+func (c *Client) StartupLog(limit int) (map[string]interface{}, error) {
+	return c.conn.Request(protocol.VerbAlerts, protocol.SubVerbStartupLog).
+		WithJSON(map[string]interface{}{"limit": limit}).JSON()
+}

@@ -287,7 +287,15 @@ func (r *InputRouter) handleMenuKey(key string) {
 
 	case "Up", "k": // Up arrow or vim style
 		if r.overlay.panelMode {
-			return // No-op in panel view
+			// Scroll up in panel content
+			if r.overlay.panelIndex >= 0 && r.overlay.panelIndex < len(r.overlay.panelItems) {
+				panel := &r.overlay.panelItems[r.overlay.panelIndex]
+				if panel.ScrollOffset < panel.ContentLines()-1 {
+					panel.ScrollOffset++
+					r.overlay.draw()
+				}
+			}
+			return
 		}
 		if r.overlay.selectedIndex > 0 {
 			r.overlay.selectedIndex--
@@ -297,7 +305,15 @@ func (r *InputRouter) handleMenuKey(key string) {
 
 	case "Down", "j": // Down arrow or vim style
 		if r.overlay.panelMode {
-			return // No-op in panel view
+			// Scroll down in panel content (toward bottom)
+			if r.overlay.panelIndex >= 0 && r.overlay.panelIndex < len(r.overlay.panelItems) {
+				panel := &r.overlay.panelItems[r.overlay.panelIndex]
+				if panel.ScrollOffset > 0 {
+					panel.ScrollOffset--
+					r.overlay.draw()
+				}
+			}
+			return
 		}
 		if r.overlay.selectedIndex < len(menu.Items)-1 {
 			r.overlay.selectedIndex++
@@ -324,6 +340,12 @@ func (r *InputRouter) handleMenuKey(key string) {
 		}
 		r.overlay.hideMenu()
 		return
+
+	case "x": // Close current panel (only if process has stopped)
+		if r.overlay.panelMode {
+			r.closeCurrentPanel()
+			return
+		}
 	}
 
 	// Check for 1-9 to view process output
@@ -343,17 +365,9 @@ func (r *InputRouter) handleMenuKey(key string) {
 						r.overlay.panelIndex = i
 						r.overlay.panelMode = true
 
-						// Fetch content
 						panel := &r.overlay.panelItems[i]
-						if r.outputFetcher != nil {
-							r.overlay.mu.Unlock()
-							output, err := r.outputFetcher.GetProcessOutput(panel.ID, 200)
-							r.overlay.mu.Lock()
-							if err == nil {
-								panel.Content = output
-							} else {
-								panel.Content = "Error: " + err.Error()
-							}
+						if panel.Type == "process" && r.outputFetcher != nil {
+							r.fetchAndAppendOutput(panel)
 						}
 
 						r.overlay.renderer.ClearScreen()
@@ -385,18 +399,73 @@ func (r *InputRouter) handleMenuKey(key string) {
 	}
 }
 
-// exitPanelMode closes panel mode. If entered directly via Ctrl+Arrow,
-// the overlay closes entirely; otherwise returns to the menu overview.
+// exitPanelMode closes panel mode entirely.
 // Must be called with overlay.mu held.
 func (r *InputRouter) exitPanelMode() {
-	if r.overlay.directPanelEntry {
-		r.overlay.hideMenu()
-	} else {
-		r.overlay.panelMode = false
-		r.overlay.panelIndex = 0
-		r.overlay.renderer.ClearScreen()
-		r.overlay.draw()
+	r.overlay.hideMenu()
+}
+
+// fetchAndAppendOutput fetches process output and appends new lines to the panel's content buffer.
+// Must be called with overlay.mu held (temporarily releases during I/O).
+const maxPanelLines = 2000
+
+func (r *InputRouter) fetchAndAppendOutput(panel *PanelItem) {
+	if r.outputFetcher == nil {
+		return
 	}
+	r.overlay.mu.Unlock()
+	output, err := r.outputFetcher.GetProcessOutput(panel.ID, 500)
+	r.overlay.mu.Lock()
+
+	if err != nil || output == "" {
+		return
+	}
+	output = strings.TrimRight(output, "\n")
+
+	if panel.Content == "" {
+		panel.SetContent(output)
+		return
+	}
+
+	// Detect whether output extends existing content or is from a restart
+	if strings.HasSuffix(output, panel.Content) || len(output) <= len(panel.Content) {
+		return // no new content
+	}
+	if strings.HasPrefix(output, panel.Content) {
+		panel.SetContent(output)
+	} else {
+		panel.AppendContent(output, "\n--- restarted ---\n", maxPanelLines)
+	}
+}
+
+// closeCurrentPanel removes the current panel if the process has stopped.
+// Must be called with overlay.mu held.
+func (r *InputRouter) closeCurrentPanel() {
+	if !r.overlay.panelMode || r.overlay.panelIndex >= len(r.overlay.panelItems) {
+		return
+	}
+	panel := r.overlay.panelItems[r.overlay.panelIndex]
+	if !panel.IsDone() {
+		return // Can't close running process panels
+	}
+	// Remove the panel
+	r.overlay.panelItems = append(
+		r.overlay.panelItems[:r.overlay.panelIndex],
+		r.overlay.panelItems[r.overlay.panelIndex+1:]...,
+	)
+	// Adjust index
+	if r.overlay.panelIndex >= len(r.overlay.panelItems) {
+		r.overlay.panelIndex = len(r.overlay.panelItems) - 1
+	}
+	if r.overlay.panelIndex < 0 {
+		r.overlay.panelIndex = 0
+	}
+	if len(r.overlay.panelItems) == 0 {
+		r.exitPanelMode()
+		return
+	}
+	r.overlay.renderer.ClearScreen()
+	r.overlay.draw()
 }
 
 // handlePanelNav handles Ctrl+Left/Right panel navigation.
@@ -428,17 +497,8 @@ func (r *InputRouter) handlePanelNav(delta int) {
 	// Fetch content for the focused panel
 	panel := &r.overlay.panelItems[newIndex]
 	if panel.Type == "process" && r.outputFetcher != nil {
-		// Release lock during I/O
-		r.overlay.mu.Unlock()
-		output, err := r.outputFetcher.GetProcessOutput(panel.ID, 200)
-		r.overlay.mu.Lock()
-		if err == nil {
-			panel.Content = output
-		} else {
-			panel.Content = "Error: " + err.Error()
-		}
+		r.fetchAndAppendOutput(panel)
 	}
-	// Proxy content could be fetched similarly in the future
 
 	if !wasInPanelMode {
 		// Clear the dashboard before drawing panel view
@@ -469,8 +529,10 @@ func (r *InputRouter) enterPanelBrowse(delta int) {
 	r.overlay.showPanelDirect()
 
 	if len(r.overlay.panelItems) <= 1 {
-		// No process/proxy panels to browse
-		r.overlay.hideMenu()
+		// No process/proxy panels — show the overview
+		r.overlay.panelMode = true
+		r.overlay.panelIndex = 0
+		r.overlay.draw()
 		return
 	}
 
