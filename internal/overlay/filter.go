@@ -89,6 +89,9 @@ func NewProtectedWriter(out io.Writer, width, height int, config FilterConfig) *
 		escBuf:       make([]byte, 0, 32),
 		stopRedraw:   make(chan struct{}),
 	}
+	// Initialize cursor to top-left so scroll protection works immediately
+	pw.cursorRow.Store(1)
+	pw.cursorCol.Store(1)
 
 	// Start periodic redraw if configured
 	if config.RedrawInterval > 0 && config.OnRedraw != nil {
@@ -190,7 +193,61 @@ func (pw *ProtectedWriter) handleStateGround(out *bytes.Buffer, b byte) {
 		pw.state = stateEscape
 		pw.escBuf = pw.escBuf[:0]
 		pw.escBuf = append(pw.escBuf, b)
-	} else {
+		return
+	}
+
+	row := int(pw.cursorRow.Load())
+	col := int(pw.cursorCol.Load())
+
+	switch b {
+	case '\n': // Linefeed
+		if row >= pw.protectedRow-1 {
+			// At the last allowed row — scroll up instead of letting the
+			// terminal scroll naturally (which overwrites the status bar
+			// on ConPTY where DECSTBM is unreliable).
+			fmt.Fprintf(out, "\x1b[%d;1H\x1b[S\x1b[%d;1H", 1, pw.protectedRow-1)
+			pw.cursorCol.Store(1)
+			pw.redrawNeeded.Store(true)
+			return
+		}
+		if row > 0 {
+			pw.cursorRow.Store(int32(row + 1))
+		}
+		out.WriteByte(b)
+
+	case '\r': // Carriage return
+		pw.cursorCol.Store(1)
+		out.WriteByte(b)
+
+	case '\b': // Backspace
+		if col > 1 {
+			pw.cursorCol.Store(int32(col - 1))
+		}
+		out.WriteByte(b)
+
+	default:
+		if b >= 0x20 && b < 0x7f { // Printable ASCII
+			if col > 0 {
+				newCol := col + 1
+				if newCol > pw.width {
+					// Line wrap — advance to next row
+					newCol = 1
+					newRow := row + 1
+					if newRow >= pw.protectedRow {
+						// Wrap would push into protected area — scroll up
+						fmt.Fprintf(out, "\x1b[%d;1H\x1b[S\x1b[%d;1H", 1, pw.protectedRow-1)
+						pw.cursorRow.Store(int32(pw.protectedRow - 1))
+						pw.cursorCol.Store(1)
+						pw.redrawNeeded.Store(true)
+						out.WriteByte(b)
+						pw.cursorCol.Store(2)
+						return
+					}
+					pw.cursorRow.Store(int32(newRow))
+				}
+				pw.cursorCol.Store(int32(newCol))
+			}
+		}
 		out.WriteByte(b)
 	}
 }
@@ -215,8 +272,46 @@ func (pw *ProtectedWriter) handleStateEscape(out *bytes.Buffer, b byte) {
 		pw.state = statePM
 	case '_': // APC
 		pw.state = stateAPC
-	case '7', '8', 'M', 'D', 'E': // DECSC, DECRC, RI, IND, NEL
+	case '7': // DECSC - save cursor
 		out.Write(pw.escBuf)
+		pw.state = stateGround
+	case '8': // DECRC - restore cursor
+		out.Write(pw.escBuf)
+		pw.state = stateGround
+	case 'M': // RI - Reverse Index (scroll down)
+		out.Write(pw.escBuf)
+		row := int(pw.cursorRow.Load())
+		if row > 1 {
+			pw.cursorRow.Store(int32(row - 1))
+		}
+		pw.state = stateGround
+	case 'D': // IND - Index (scroll up / move cursor down)
+		row := int(pw.cursorRow.Load())
+		if row >= pw.protectedRow-1 {
+			// Would scroll into protected area — manual scroll up
+			fmt.Fprintf(out, "\x1b[%d;1H\x1b[S\x1b[%d;%dH", 1, pw.protectedRow-1, pw.cursorCol.Load())
+			pw.redrawNeeded.Store(true)
+		} else {
+			out.Write(pw.escBuf)
+			if row > 0 {
+				pw.cursorRow.Store(int32(row + 1))
+			}
+		}
+		pw.state = stateGround
+	case 'E': // NEL - Next Line
+		row := int(pw.cursorRow.Load())
+		if row >= pw.protectedRow-1 {
+			// Would scroll into protected area — manual scroll up
+			fmt.Fprintf(out, "\x1b[%d;1H\x1b[S\x1b[%d;1H", 1, pw.protectedRow-1)
+			pw.cursorCol.Store(1)
+			pw.redrawNeeded.Store(true)
+		} else {
+			out.Write(pw.escBuf)
+			if row > 0 {
+				pw.cursorRow.Store(int32(row + 1))
+			}
+			pw.cursorCol.Store(1)
+		}
 		pw.state = stateGround
 	case 'c': // RIS - full reset
 		// Allow reset but re-enforce scroll region after

@@ -48,6 +48,7 @@ type ProcessInfo struct {
 	LastOutput    string   // Last line of output (trimmed)
 	URLs          []string // URLs parsed from recent output
 	LinkedProxyID string   // ID of proxy targeting this process (if any)
+	HasAlerts     bool     // Whether process has recent alerts/errors
 }
 
 // ProxyInfo holds information about a running proxy.
