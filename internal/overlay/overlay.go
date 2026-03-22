@@ -215,6 +215,20 @@ func (o *Overlay) SetGate(gate *OutputGate) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.gate = gate
+
+	// Route renderer writes through the gate's mutex so overlay draws
+	// and PTY output never interleave on stdout. Critical on Windows
+	// ConPTY where scroll regions aren't reliably enforced.
+	o.renderer.SetOutput(gateDirectWriter{gate})
+}
+
+// gateDirectWriter is an io.Writer that routes through OutputGate.WriteDirect.
+type gateDirectWriter struct {
+	gate *OutputGate
+}
+
+func (w gateDirectWriter) Write(p []byte) (int, error) {
+	return w.gate.WriteDirect(p)
 }
 
 // SetAltScreenChecker sets a callback that reports whether the child process

@@ -89,3 +89,12 @@ func (og *OutputGate) IsFrozen() bool {
 	defer og.mu.Unlock()
 	return og.frozen
 }
+
+// WriteDirect writes to the underlying writer regardless of freeze state,
+// while holding the gate's mutex. This is used by the overlay renderer to
+// write indicator/menu content without interleaving with PTY output.
+func (og *OutputGate) WriteDirect(p []byte) (n int, err error) {
+	og.mu.Lock()
+	defer og.mu.Unlock()
+	return og.out.Write(p)
+}

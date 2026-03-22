@@ -233,6 +233,16 @@ func formatHotkey(b byte) string {
 	return fmt.Sprintf("0x%02X", b)
 }
 
+// SetOutput changes the writer used for rendering. This is used to route
+// output through a synchronized writer (e.g. OutputGate.WriteDirect) to
+// prevent interleaving with PTY output on the same stdout.
+func (r *Renderer) SetOutput(out io.Writer) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.out = out
+	r.screenMgr.SetOutput(out)
+}
+
 // SetSize updates the terminal dimensions.
 func (r *Renderer) SetSize(width, height int) {
 	r.mu.Lock()
@@ -1754,8 +1764,8 @@ type niriGradient struct {
 // Predefined gradients for different panel types (niri-inspired).
 var (
 	gradientProcess = niriGradient{
-		fromFg: "\x1b[38;5;75m",  // Steel blue
-		toFg:   "\x1b[38;5;69m",  // Medium blue
+		fromFg: "\x1b[38;5;75m", // Steel blue
+		toFg:   "\x1b[38;5;69m", // Medium blue
 	}
 	gradientError = niriGradient{
 		fromFg: "\x1b[38;5;209m", // Salmon

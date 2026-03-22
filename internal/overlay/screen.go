@@ -42,6 +42,13 @@ func NewScreenManager(out io.Writer, width, height int) *ScreenManager {
 	}
 }
 
+// SetOutput changes the writer used for screen output.
+func (sm *ScreenManager) SetOutput(out io.Writer) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.out = out
+}
+
 // SetSize updates the terminal dimensions.
 func (sm *ScreenManager) SetSize(width, height int) {
 	sm.mu.Lock()
