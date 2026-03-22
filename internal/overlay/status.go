@@ -196,9 +196,16 @@ func (f *StatusFetcher) fetchStatus() {
 	}
 
 	// Fetch recent errors from proxy logs
-	errors, err := f.fetchRecentErrors()
+	recentErrors, err := f.fetchRecentErrors()
 	if err == nil {
-		status.RecentErrors = errors
+		status.RecentErrors = recentErrors
+	}
+
+	// Fetch startup log (also extracts errors into RecentErrors)
+	startupLog, startupErrors, err := f.fetchStartupLog()
+	if err == nil {
+		status.StartupLog = startupLog
+		status.RecentErrors = append(status.RecentErrors, startupErrors...)
 	}
 
 	f.overlay.UpdateStatus(status)
@@ -393,6 +400,64 @@ func (f *StatusFetcher) fetchRecentErrors() ([]ErrorInfo, error) {
 	return errors, nil
 }
 
+// fetchStartupLog fetches the startup log and also extracts errors into the provided slice.
+func (f *StatusFetcher) fetchStartupLog() ([]StartupLogEntry, []ErrorInfo, error) {
+	result, err := f.conn.Request(protocol.VerbAlerts, protocol.SubVerbStartupLog).
+		WithJSON(map[string]interface{}{"limit": 20}).
+		JSON()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	entriesRaw, ok := result["entries"].([]interface{})
+	if !ok {
+		return nil, nil, nil
+	}
+
+	cutoff := time.Now().Add(-5 * time.Minute)
+	var entries []StartupLogEntry
+	var errors []ErrorInfo
+
+	for _, e := range entriesRaw {
+		entry, ok := e.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		var timestamp time.Time
+		if ts, ok := entry["timestamp"].(string); ok {
+			timestamp, _ = time.Parse(time.RFC3339, ts)
+		}
+		scriptName, _ := entry["script_name"].(string)
+		level, _ := entry["level"].(string)
+		eventType, _ := entry["event_type"].(string)
+		message, _ := entry["message"].(string)
+
+		entries = append(entries, StartupLogEntry{
+			ScriptName: scriptName,
+			Level:      level,
+			EventType:  eventType,
+			Message:    message,
+			Timestamp:  timestamp,
+		})
+
+		// Also collect recent errors for the error display
+		if level == "error" && timestamp.After(cutoff) {
+			source := "startup:" + scriptName
+			if scriptName == "" {
+				if pid, ok := entry["process_id"].(string); ok {
+					source = "startup:" + pid
+				}
+			}
+			errors = append(errors, ErrorInfo{
+				Source:    source,
+				Message:   message,
+				Timestamp: timestamp,
+			})
+		}
+	}
+	return entries, errors, nil
+}
+
 func (f *StatusFetcher) fetchBrowserSessions(proxies []ProxyInfo) ([]BrowserSession, error) {
 	var sessions []BrowserSession
 
@@ -522,7 +587,7 @@ func (f *StatusFetcher) fetchLastOutputForProcesses(processes []ProcessInfo) {
 			break
 		}
 		proc := &processes[i]
-		if proc.State != "running" {
+		if proc.State != "running" && proc.State != "failed" {
 			continue
 		}
 

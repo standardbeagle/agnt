@@ -124,14 +124,15 @@ type Daemon struct {
 	hub *hub.Hub
 
 	// agnt-specific managers
-	proxym        *proxy.ProxyManager
-	tunnelm       *tunnel.Manager
-	browserm      *browser.Manager
-	sessionm      *chromedp.SessionManager // chromedp automation sessions
-	storem        *store.StoreManager
-	automator     *automation.Processor
-	autoRestarter *ProcessAutoRestarter // Process auto-restart manager
-	alertStore    *ProcessAlertStore    // Ring buffer store for process output alerts
+	proxym            *proxy.ProxyManager
+	tunnelm           *tunnel.Manager
+	browserm          *browser.Manager
+	sessionm          *chromedp.SessionManager // chromedp automation sessions
+	storem            *store.StoreManager
+	automator         *automation.Processor
+	autoRestarter     *ProcessAutoRestarter // Process auto-restart manager
+	alertStore        *ProcessAlertStore    // Ring buffer store for process output alerts
+	startupErrorStore *StartupLogStore      // Ring buffer for startup events
 
 	// Session and scheduling (agnt-specific extensions)
 	sessionRegistry   *SessionRegistry
@@ -212,6 +213,7 @@ func New(config DaemonConfig) *Daemon {
 		sessionm:          chromedp.NewSessionManager(),
 		storem:            store.NewStoreManager(),
 		alertStore:        NewProcessAlertStore(500),
+		startupErrorStore: NewStartupLogStore(100),
 		sessionRegistry:   sessionRegistry,
 		scheduler:         scheduler,
 		schedulerStateMgr: schedulerStateMgr,
@@ -600,6 +602,11 @@ func (d *Daemon) AlertStore() *ProcessAlertStore {
 	return d.alertStore
 }
 
+// StartupLogStore returns the startup log store.
+func (d *Daemon) StartupLogStore() *StartupLogStore {
+	return d.startupErrorStore
+}
+
 // SessionRegistry returns the session registry.
 func (d *Daemon) SessionRegistry() *SessionRegistry {
 	return d.sessionRegistry
@@ -975,6 +982,12 @@ func (d *Daemon) RunAutostart(ctx context.Context, projectPath string) *Autostar
 								}
 								if err := d.readySignaler.WaitReady(depProcessID, timeout); err != nil {
 									debug.Warn("daemon", "RunAutostart: timeout waiting for dependency %q of script %q: %v (starting anyway)", dep.Name, name, err)
+									d.startupErrorStore.Add(&StartupLogEntry{
+										ProcessID: makeProcessID(projectPath, name), ScriptName: name,
+										Level: "warning", EventType: "dependency_wait",
+										Message:   fmt.Sprintf("timeout waiting for %s: %v (starting anyway)", dep.Name, err),
+										Timestamp: time.Now(),
+									})
 								} else {
 									debug.Log("daemon", "RunAutostart: dependency %q ready for script %q", dep.Name, name)
 								}
@@ -984,16 +997,35 @@ func (d *Daemon) RunAutostart(ctx context.Context, projectPath string) *Autostar
 						// Start the script
 						processID := makeProcessID(projectPath, name)
 						debug.Log("daemon", "RunAutostart: starting script %s (layer %d)", name, layerIdx)
+						d.startupErrorStore.Info(processID, name, "starting", fmt.Sprintf("starting script %s (layer %d)", name, layerIdx))
+
 						if err := d.autostartScript(ctx, name, script, projectPath, proxyConfigs); err != nil {
 							debug.Log("daemon", "RunAutostart: script %s failed: %v", name, err)
 							resultMu.Lock()
 							result.Errors = append(result.Errors, fmt.Sprintf("script %s: %v", name, err))
 							failedScripts[name] = true
 							resultMu.Unlock()
+
+							// Record failure in startup log
+							entry := &StartupLogEntry{
+								ProcessID:  processID,
+								ScriptName: name,
+								Level:      "error",
+								EventType:  "autostart",
+								Message:    err.Error(),
+								Timestamp:  time.Now(),
+							}
+							if startupErr, ok := err.(*StartupError); ok {
+								entry.EventType = startupErr.ErrorType
+								entry.Output = startupErr.Output
+								entry.Port = startupErr.Port
+							}
+							d.startupErrorStore.Add(entry)
 							return
 						}
 
 						debug.Log("daemon", "RunAutostart: script %s started successfully", name)
+						d.startupErrorStore.Info(processID, name, "started", fmt.Sprintf("script %s started successfully", name))
 						resultMu.Lock()
 						result.Scripts = append(result.Scripts, name)
 						resultMu.Unlock()
@@ -1070,6 +1102,15 @@ func shortPathHash(path string) string {
 	return fmt.Sprintf("%04x", h.Sum32()&0xFFFF)
 }
 
+// stripProcessPrefix extracts the script name from a process ID.
+// Process IDs use the format "project-hash:name"; this returns just "name".
+func stripProcessPrefix(processID string) string {
+	if idx := strings.Index(processID, ":"); idx >= 0 {
+		return processID[idx+1:]
+	}
+	return processID
+}
+
 // mapKeys extracts keys from a script config map for logging.
 func mapKeys(m map[string]*config.ScriptConfig) []string {
 	keys := make([]string, 0, len(m))
@@ -1124,9 +1165,18 @@ func (d *Daemon) autostartScript(ctx context.Context, name string, script *confi
 	workingDir := resolveWorkingDir(projectPath, script.Cwd)
 	envSlice := envMapToSlice(script.Env)
 
-	// Check if already running
-	if _, err := d.hub.ProcessManager().Get(processID); err == nil {
-		return nil // Already running
+	// Check if already running — only skip if actually running/starting.
+	// Failed/stopped processes from previous sessions must be cleaned up and restarted.
+	if existing, err := d.hub.ProcessManager().Get(processID); err == nil {
+		state := existing.State()
+		switch state {
+		case process.StateRunning, process.StateStarting:
+			return nil // Truly running, skip
+		default:
+			// Dead process from previous session — remove so StartScript can recreate
+			debug.Log("daemon", "autostartScript: removing stale process %s (state=%s)", processID, state)
+			d.hub.ProcessManager().RemoveByPath(processID, projectPath)
+		}
 	}
 
 	var command string

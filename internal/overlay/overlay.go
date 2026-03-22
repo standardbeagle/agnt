@@ -6,6 +6,7 @@ package overlay
 import (
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -81,6 +82,15 @@ type BrowserSession struct {
 	LastActivity time.Time
 }
 
+// StartupLogEntry holds a startup log entry for display.
+type StartupLogEntry struct {
+	ScriptName string
+	Level      string // "info", "warning", "error"
+	EventType  string
+	Message    string
+	Timestamp  time.Time
+}
+
 // Status holds the current system status for display.
 type Status struct {
 	DaemonConnected ConnectionStatus
@@ -89,15 +99,64 @@ type Status struct {
 	Proxies         []ProxyInfo
 	BrowserSessions []BrowserSession
 	RecentErrors    []ErrorInfo
+	StartupLog      []StartupLogEntry
 	LastUpdate      time.Time
 }
 
 // PanelItem represents a navigable panel in the horizontal panel view.
+// Process panels persist until explicitly closed by the user.
 type PanelItem struct {
-	Type    string // "overview", "process", "proxy"
-	ID      string // process or proxy ID
-	Label   string // short display label for tab bar
-	Content string // cached content for display
+	Type         string // "overview", "process", "proxy"
+	ID           string // process or proxy ID
+	Label        string // short display label for tab bar
+	Content      string // cached output content (accumulates across restarts)
+	ScrollOffset int    // lines scrolled up from bottom (0 = pinned to bottom)
+	ProcessState string // last known process state ("running", "failed", "stopped", "")
+	lineCount    int    // cached line count, updated by SetContent
+}
+
+// IsDone returns true if the process has stopped and the panel can be closed.
+func (p *PanelItem) IsDone() bool {
+	return p.ProcessState == "stopped" || p.ProcessState == "failed"
+}
+
+// ContentLines returns the cached number of lines in the panel's content.
+func (p *PanelItem) ContentLines() int {
+	return p.lineCount
+}
+
+// SetContent replaces the panel content and updates the cached line count.
+func (p *PanelItem) SetContent(content string) {
+	p.Content = content
+	p.lineCount = countLines(content)
+}
+
+// AppendContent appends text to the panel content with a separator and caps at maxLines.
+func (p *PanelItem) AppendContent(text, separator string, maxLines int) {
+	if p.Content == "" {
+		p.SetContent(text)
+		return
+	}
+	combined := p.Content + separator + text
+	// Cap content size
+	lines := strings.Split(combined, "\n")
+	if len(lines) > maxLines {
+		lines = lines[len(lines)-maxLines:]
+	}
+	p.SetContent(strings.Join(lines, "\n"))
+}
+
+func countLines(s string) int {
+	if s == "" {
+		return 0
+	}
+	n := 1
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\n' {
+			n++
+		}
+	}
+	return n
 }
 
 // Overlay manages the terminal overlay display.
@@ -184,9 +243,6 @@ func DefaultConfig() Config {
 // New creates a new Overlay.
 func New(ptmx PtyReadWriter, width, height int, cfg Config) *Overlay {
 	renderer := NewRenderer(os.Stdout, width, height)
-	if cfg.Hotkey != 0 {
-		renderer.SetHotkey(cfg.Hotkey)
-	}
 	if cfg.Version != "" {
 		renderer.SetVersion(cfg.Version)
 	}
@@ -353,7 +409,10 @@ func (o *Overlay) ToggleIndicator() {
 }
 
 func (o *Overlay) showMenu() {
-	o.activateOverlay(false)
+	o.activateOverlay(true)
+	// Go directly to the overview panel
+	o.panelMode = true
+	o.panelIndex = 0
 	o.draw()
 }
 
@@ -402,42 +461,67 @@ func (o *Overlay) activateOverlay(directPanel bool) {
 	o.buildPanelItems()
 }
 
-// buildPanelItems builds the panel list from current status.
-// Panel 0 is always the overview/actions panel.
+// buildPanelItems merges current status into the panel list.
+// Existing panels are preserved (content, scroll); new processes/proxies are added.
 func (o *Overlay) buildPanelItems() {
 	o.statusMu.RLock()
 	status := o.status
 	o.statusMu.RUnlock()
 
-	items := []PanelItem{
-		{Type: "overview", Label: "overview"},
+	// Ensure overview exists at index 0
+	if len(o.panelItems) == 0 || o.panelItems[0].Type != "overview" {
+		o.panelItems = append([]PanelItem{{Type: "overview", Label: "overview"}}, o.panelItems...)
 	}
 
+	// Index existing panels and build process status lookup in one pass
+	existing := make(map[string]int, len(o.panelItems))
+	for i, p := range o.panelItems {
+		if p.ID != "" {
+			existing[p.ID] = i
+		}
+	}
+	activeProcesses := make(map[string]string, len(status.Processes))
 	for _, p := range status.Processes {
-		label := p.ID
-		if len(label) > 12 {
-			label = label[:12]
-		}
-		items = append(items, PanelItem{
-			Type:  "process",
-			ID:    p.ID,
-			Label: label,
-		})
+		activeProcesses[p.ID] = p.State
 	}
 
+	// Update existing panels and add new ones
+	for id, state := range activeProcesses {
+		if idx, ok := existing[id]; ok {
+			o.panelItems[idx].ProcessState = state
+		} else {
+			label := stripProjectPrefix(id)
+			if len(label) > 12 {
+				label = label[:12]
+			}
+			o.panelItems = append(o.panelItems, PanelItem{
+				Type: "process", ID: id, Label: label, ProcessState: state,
+			})
+		}
+	}
+
+	// Mark panels whose process is gone as stopped
+	for i := range o.panelItems {
+		p := &o.panelItems[i]
+		if p.Type == "process" && activeProcesses[p.ID] == "" {
+			if p.ProcessState == "" || p.ProcessState == "running" {
+				p.ProcessState = "stopped"
+			}
+		}
+	}
+
+	// Add new proxies
 	for _, p := range status.Proxies {
-		label := p.ID
-		if len(label) > 12 {
-			label = label[:12]
+		if _, ok := existing[p.ID]; !ok {
+			label := stripProjectPrefix(p.ID)
+			if len(label) > 12 {
+				label = label[:12]
+			}
+			o.panelItems = append(o.panelItems, PanelItem{
+				Type: "proxy", ID: p.ID, Label: label,
+			})
 		}
-		items = append(items, PanelItem{
-			Type:  "proxy",
-			ID:    p.ID,
-			Label: label,
-		})
 	}
-
-	o.panelItems = items
 }
 
 func (o *Overlay) hideMenu() {
@@ -445,7 +529,7 @@ func (o *Overlay) hideMenu() {
 	o.inputBuffer = ""
 	o.panelMode = false
 	o.panelIndex = 0
-	o.panelItems = nil
+	// panelItems are intentionally NOT cleared — they persist across open/close
 	o.directPanelEntry = false
 
 	if o.showBar.Load() {

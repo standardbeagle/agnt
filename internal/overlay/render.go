@@ -127,52 +127,79 @@ func StateColorCode(state string) string {
 	}
 }
 
+// scriptEmojiRules maps script name/command substrings to emoji labels.
+// Checked in order; first match wins. Both the script name and command are searched.
+var scriptEmojiRules = []struct {
+	substring string
+	emoji     string
+}{
+	{"test", "🧪"},
+	{"lint", "🔍"},
+	{"check", "🔍"},
+	{"build", "🔨"},
+	{"compile", "🔨"},
+	{"watch", "👁"},
+	{"dev", "🚀"},
+	{"start", "🚀"},
+	{"serve", "🌐"},
+	{"server", "🌐"},
+	{"web", "🌐"},
+	{"api", "📡"},
+	{"gate", "📡"},
+	{"db", "🗄"},
+	{"database", "🗄"},
+	{"migrate", "🗄"},
+	{"docker", "🐳"},
+	{"compose", "🐳"},
+	{"redis", "📮"},
+	{"queue", "📮"},
+	{"worker", "⛏"},
+	{"job", "⛏"},
+	{"cron", "⏰"},
+	{"schedule", "⏰"},
+	{"log", "📋"},
+	{"monitor", "📋"},
+	{"dotnet", "🟣"},
+	{"aspnet", "🟣"},
+	{"next", "▲"},
+	{"vite", "⚡"},
+	{"webpack", "📦"},
+	{"lib", "📚"},
+	{"docs", "📖"},
+	{"storybook", "📖"},
+	{"format", "✨"},
+	{"deploy", "🚢"},
+	{"publish", "🚢"},
+}
+
+// processEmoji returns a contextual emoji for a process based on its name or command.
+func processEmoji(name, command string) string {
+	lower := strings.ToLower(name + " " + command)
+	for _, rule := range scriptEmojiRules {
+		if strings.Contains(lower, rule.substring) {
+			return rule.emoji
+		}
+	}
+	return "⚙"
+}
+
+// stripProjectPrefix removes the "project-hash:" prefix from a process/proxy ID.
+// IDs use the format "project-hash:name" (e.g., "bifrost-9cf0:dev"). Since the
+// overlay is scoped to the current project, the prefix is redundant for display.
+func stripProjectPrefix(id string) string {
+	if idx := strings.Index(id, ":"); idx >= 0 {
+		return id[idx+1:]
+	}
+	return id
+}
+
 // shortenProcessLabels returns display labels for processes, truncated to fit
-// the status bar but kept long enough to distinguish between similar IDs.
+// the status bar. Strips the project prefix since the bar is project-scoped.
 func shortenProcessLabels(procs []ProcessInfo) []string {
+	const maxLen = 12
 	labels := make([]string, len(procs))
 	for i, p := range procs {
-		labels[i] = p.ID
-	}
-
-	if len(procs) <= 1 {
-		// Single process: truncate to 12
-		for i := range labels {
-			if len(labels[i]) > 12 {
-				labels[i] = labels[i][:12]
-			}
-		}
-		return labels
-	}
-
-	// Multiple processes: find minimum prefix length that keeps all labels unique
-	maxLen := 12
-	for minLen := 6; minLen <= maxLen; minLen++ {
-		truncated := make([]string, len(labels))
-		for i, l := range labels {
-			if len(l) > minLen {
-				truncated[i] = l[:minLen]
-			} else {
-				truncated[i] = l
-			}
-		}
-		// Check uniqueness
-		seen := make(map[string]bool)
-		unique := true
-		for _, t := range truncated {
-			if seen[t] {
-				unique = false
-				break
-			}
-			seen[t] = true
-		}
-		if unique {
-			return truncated
-		}
-	}
-
-	// Fallback: use full IDs (capped at maxLen)
-	for i := range labels {
+		labels[i] = stripProjectPrefix(p.ID)
 		if len(labels[i]) > maxLen {
 			labels[i] = labels[i][:maxLen]
 		}
@@ -257,7 +284,6 @@ type Renderer struct {
 	out          io.Writer
 	width        int
 	height       int
-	hotkey       byte   // Hotkey for overlay toggle (for display)
 	version      string // Version string for dashboard title
 	mu           sync.Mutex
 	screenMgr    *ScreenManager
@@ -275,17 +301,9 @@ func NewRenderer(out io.Writer, width, height int) *Renderer {
 		out:          out,
 		width:        width,
 		height:       height,
-		hotkey:       0x19, // Ctrl+Y default
 		screenMgr:    sm,
 		overlayStack: NewOverlayStack(sm),
 	}
-}
-
-// SetHotkey sets the hotkey displayed in the indicator bar.
-func (r *Renderer) SetHotkey(hotkey byte) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.hotkey = hotkey
 }
 
 // SetVersion sets the version displayed in the dashboard title.
@@ -293,14 +311,6 @@ func (r *Renderer) SetVersion(version string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.version = version
-}
-
-// formatHotkey returns a human-readable hotkey string like "Ctrl+Y".
-func formatHotkey(b byte) string {
-	if b >= 1 && b <= 26 {
-		return fmt.Sprintf("Ctrl+%c", 'A'+b-1)
-	}
-	return fmt.Sprintf("0x%02X", b)
 }
 
 // SetOutput changes the writer used for rendering. This is used to route
@@ -345,32 +355,27 @@ func (r *Renderer) DrawIndicator(status Status) {
 	// Build status bar content
 	var parts []string
 
-	// Daemon connection status
+	// Daemon connection status: emoji + status icon
 	switch status.DaemonConnected {
 	case ConnectionConnected:
-		pingStr := ""
-		if status.DaemonPingMs > 0 {
-			pingStr = fmt.Sprintf(" %dms", status.DaemonPingMs)
-		}
-		parts = append(parts, fmt.Sprintf("%s%s%s daemon%s%s", FgGreen, IconConnected, Reset, FgBrightBlack, pingStr+Reset))
+		parts = append(parts, fmt.Sprintf("🔗 %s%s%s", FgGreen, IconConnected, Reset))
 	case ConnectionDisconnected:
-		parts = append(parts, fmt.Sprintf("%s%s%s daemon", FgYellow, IconDisconnected, Reset))
+		parts = append(parts, fmt.Sprintf("🔗 %s%s%s", FgYellow, IconDisconnected, Reset))
 	case ConnectionError:
-		parts = append(parts, fmt.Sprintf("%s%s%s daemon", FgRed, IconError, Reset))
+		parts = append(parts, fmt.Sprintf("🔗 %s%s%s", FgRed, IconError, Reset))
 	default:
-		parts = append(parts, fmt.Sprintf("%s%s%s daemon", FgBrightBlack, IconDisconnected, Reset))
+		parts = append(parts, fmt.Sprintf("🔗 %s%s%s", FgBrightBlack, IconDisconnected, Reset))
 	}
 
-	// Per-process status indicators: distinct shape + color per state
-	aggregatedURLs := aggregateProcessURLs(status.Processes)
-	procLabels := shortenProcessLabels(status.Processes)
-	for i, p := range status.Processes {
+	// Per-process state icons with contextual emoji
+	for _, p := range status.Processes {
 		icon, color := processStateIcon(p.State)
-		parts = append(parts, fmt.Sprintf("%s%s%s %s", color, icon, Reset, procLabels[i]))
+		label := processEmoji(stripProjectPrefix(p.ID), p.Command)
+		parts = append(parts, fmt.Sprintf("%s %s%s%s", label, color, icon, Reset))
 	}
 
-	// Running proxies with clickable URL
-	proxyCount := len(status.Proxies)
+	// Running proxies — collect URLs for display
+	aggregatedURLs := aggregateProcessURLs(status.Processes)
 	errorProxyCount := 0
 	var proxyURL string
 	var tunnelURL string
@@ -387,25 +392,23 @@ func (r *Renderer) DrawIndicator(status Status) {
 	}
 
 	// Build URL display: proxy URL (or tunnel) + process URLs
+	proxyCount := len(status.Proxies)
 	var urlParts []string
 
 	if proxyCount > 0 {
-		// Prefer tunnel URL over local URL in status bar (more useful for sharing)
 		displayURL := tunnelURL
 		if displayURL == "" {
 			displayURL = proxyURL
 		}
 		urlColor := FgBrightCyan
 		if tunnelURL != "" {
-			urlColor = FgBrightMagenta // Different color for tunnel URLs
+			urlColor = FgBrightMagenta
 		}
-
 		if displayURL != "" {
 			urlParts = append(urlParts, fmt.Sprintf("%s%s%s", urlColor+Underline, displayURL, Reset))
 		}
 	}
 
-	// Add process URLs (normalized to use localhost, underlined for clickability)
 	for _, au := range aggregatedURLs {
 		normalized := normalizeProcessURL(au.URL)
 		if normalized != "" {
@@ -448,12 +451,12 @@ func (r *Renderer) DrawIndicator(status Status) {
 	// Join parts with separator
 	statusText := strings.Join(parts, fmt.Sprintf(" %s│%s ", FgBrightBlack, Reset))
 
-	// Add hotkey hint on the right
-	hotkeyStr := formatHotkey(r.hotkey)
-	hotkeyHint := fmt.Sprintf("%s%s%s", FgBrightBlack, hotkeyStr, Reset)
+	// Navigation hint on the right (constant: "Ctrl+→" = 6 visible chars)
+	const hotkeyStr = "Ctrl+→"
+	const hotkeyLen = 6
+	hotkeyHint := FgBrightBlack + hotkeyStr + Reset
 
 	// Calculate available space: width minus leading space, hotkey, trailing space, and separator
-	hotkeyLen := len(hotkeyStr)
 	maxStatusVisible := r.width - hotkeyLen - 4 // 4 for " " prefix, " │ " separator, " " suffix
 
 	// Truncate status text if it would cause the bar to wrap
@@ -1224,7 +1227,7 @@ func (r *Renderer) DrawPanelView(panels []PanelItem, activeIndex int, status Sta
 	footerRow := r.height
 	r.moveTo(footerRow, 1)
 	r.write(BgBrightBlack + FgWhite)
-	hint := fmt.Sprintf(" Tab/Shift+Tab Navigate panels (%d/%d)  Esc Back ", activeIndex+1, len(panels))
+	hint := fmt.Sprintf(" Tab Navigate  ↑↓ Scroll  1-9 Jump  x Close stopped  Esc Exit  (%d/%d) ", activeIndex+1, len(panels))
 	hint = r.padRight(hint, r.width)
 	r.write(hint)
 	r.write(Reset)
@@ -1327,7 +1330,7 @@ func (r *Renderer) drawOverviewContent(startRow, col, width, maxRows int, status
 				stateIcon = IconDisconnected
 			}
 
-			idStr := proc.ID
+			idStr := stripProjectPrefix(proc.ID)
 			if len(idStr) > width-20 {
 				idStr = idStr[:width-23] + "…"
 			}
@@ -1368,7 +1371,7 @@ func (r *Renderer) drawOverviewContent(startRow, col, width, maxRows int, status
 				errStr = fmt.Sprintf(" %s%s%d%s", FgRed, IconWarning, proxy.ErrorCount, Reset)
 			}
 			r.write(fmt.Sprintf("%s%s%s %s→%s %s%s%s%s",
-				FgWhite+Bold, proxy.ID, Reset,
+				FgWhite+Bold, stripProjectPrefix(proxy.ID), Reset,
 				FgBrightBlack, Reset,
 				FgBrightCyan+Underline, proxyURL, Reset,
 				errStr))
@@ -1404,6 +1407,69 @@ func (r *Renderer) drawOverviewContent(startRow, col, width, maxRows int, status
 			row++
 		}
 	}
+
+	// Startup log entries
+	if len(status.StartupLog) > 0 && row < startRow+maxRows-1 {
+		row++
+		r.moveTo(row, col)
+		r.write(Bold + "startup log" + Reset)
+		row++
+
+		for _, entry := range status.StartupLog {
+			if row >= startRow+maxRows-2 {
+				break
+			}
+			r.moveTo(row, col+1)
+			icon := " "
+			levelColor := FgBrightBlack
+			switch entry.Level {
+			case "error":
+				icon = IconError
+				levelColor = FgRed
+			case "warning":
+				icon = IconWarning
+				levelColor = FgYellow
+			case "info":
+				icon = IconOK
+				levelColor = FgGreen
+			}
+
+			msg := entry.Message
+			maxMsg := width - 20
+			if maxMsg > 0 && len(msg) > maxMsg {
+				msg = msg[:maxMsg-1] + "…"
+			}
+
+			r.write(fmt.Sprintf("%s%s%s %s %s%s%s",
+				levelColor, icon, Reset, msg,
+				FgBrightBlack, formatShortTimeAgo(entry.Timestamp), Reset))
+			row++
+		}
+	}
+
+	// Actions
+	if row < startRow+maxRows-1 {
+		row++
+		r.moveTo(row, col)
+		r.write(Bold + "actions" + Reset)
+		row++
+
+		actions := []struct{ key, label string }{
+			{"r", "Run script"},
+			{"b", "Bash command"},
+			{"m", "Summarize status"},
+			{"s", "Refresh"},
+			{"i", "Toggle indicator"},
+		}
+		for _, a := range actions {
+			if row >= startRow+maxRows {
+				break
+			}
+			r.moveTo(row, col+1)
+			r.write(fmt.Sprintf("%s%s%s %s", FgCyan+Bold, a.key, Reset, a.label))
+			row++
+		}
+	}
 }
 
 // drawProcessPanelContent draws the content for a process panel.
@@ -1419,33 +1485,45 @@ func (r *Renderer) drawProcessPanelContent(startRow, col, width, maxRows int, pa
 
 	row := startRow
 	if proc == nil {
+		// Process removed from registry — show header as stopped
 		r.moveTo(row, col)
-		r.write(FgBrightBlack + "process not found" + Reset)
-		return
-	}
-
-	// Process header info
-	r.moveTo(row, col)
-	stateColor := StateColorCode(proc.State)
-	r.write(fmt.Sprintf("%s %s%s%s%s",
-		proc.Command,
-		stateColor+Bold, proc.State, Reset,
-		func() string {
-			if proc.Runtime > 0 {
-				return fmt.Sprintf(" %s%s%s", FgBrightBlack, formatShortDuration(proc.Runtime), Reset)
-			}
-			return ""
-		}()))
-	row++
-
-	// URLs
-	for _, u := range proc.URLs {
-		if row >= startRow+maxRows {
-			break
+		state := panel.ProcessState
+		if state == "" {
+			state = "stopped"
 		}
-		r.moveTo(row, col)
-		r.write(FgBrightCyan + Underline + u + Reset)
+		stateColor := StateColorCode(state)
+		r.write(fmt.Sprintf("%s %s%s%s", stripProjectPrefix(panel.ID), stateColor+Bold, state, Reset))
+		if panel.IsDone() {
+			r.write(fmt.Sprintf("  %sx%s close", FgBrightBlack+Bold, Reset))
+		}
 		row++
+	} else {
+		// Process header info
+		r.moveTo(row, col)
+		stateColor := StateColorCode(proc.State)
+		r.write(fmt.Sprintf("%s %s%s%s%s",
+			proc.Command,
+			stateColor+Bold, proc.State, Reset,
+			func() string {
+				if proc.Runtime > 0 {
+					return fmt.Sprintf(" %s%s%s", FgBrightBlack, formatShortDuration(proc.Runtime), Reset)
+				}
+				return ""
+			}()))
+		if panel.IsDone() {
+			r.write(fmt.Sprintf("  %sx%s close", FgBrightBlack+Bold, Reset))
+		}
+		row++
+
+		// URLs
+		for _, u := range proc.URLs {
+			if row >= startRow+maxRows {
+				break
+			}
+			r.moveTo(row, col)
+			r.write(FgBrightCyan + Underline + u + Reset)
+			row++
+		}
 	}
 
 	// Separator
@@ -1458,29 +1536,55 @@ func (r *Renderer) drawProcessPanelContent(startRow, col, width, maxRows int, pa
 		row++
 	}
 
-	// Output content
-	if panel.Content != "" {
-		lines := strings.Split(panel.Content, "\n")
+	// Output content with scroll support
+	r.drawScrollableContent(row, col, width, startRow+maxRows-row, panel)
+}
 
-		// Show last lines that fit
-		startLine := 0
-		availLines := startRow + maxRows - row
-		if len(lines) > availLines {
-			startLine = len(lines) - availLines
-		}
+// drawScrollableContent renders panel content with vertical scroll support.
+// ScrollOffset 0 = pinned to bottom (showing latest output).
+func (r *Renderer) drawScrollableContent(startRow, col, width, availLines int, panel PanelItem) {
+	if panel.Content == "" {
+		r.moveTo(startRow, col)
+		r.write(FgBrightBlack + "no output" + Reset)
+		return
+	}
 
-		for i := startLine; i < len(lines) && row < startRow+maxRows; i++ {
-			r.moveTo(row, col)
-			line := lines[i]
-			if len(line) > width {
-				line = line[:width]
-			}
-			r.write(line)
-			row++
-		}
-	} else {
+	lines := strings.Split(panel.Content, "\n")
+
+	// Calculate visible window
+	endLine := len(lines) - panel.ScrollOffset
+	if endLine <= 0 {
+		endLine = 1
+	}
+	if endLine > len(lines) {
+		endLine = len(lines)
+	}
+	fromLine := endLine - availLines
+	if fromLine < 0 {
+		fromLine = 0
+	}
+
+	row := startRow
+	for i := fromLine; i < endLine && row < startRow+availLines; i++ {
 		r.moveTo(row, col)
-		r.write(FgBrightBlack + "Tab/Shift+Tab to navigate panels" + Reset)
+		line := lines[i]
+		if len(line) > width {
+			line = line[:width]
+		}
+		r.write(line)
+		row++
+	}
+
+	// Scroll indicators
+	if panel.ScrollOffset > 0 {
+		indicator := fmt.Sprintf("↓ %d", panel.ScrollOffset)
+		r.moveTo(startRow+availLines-1, col+width-len(indicator)-1)
+		r.write(FgBrightBlack + indicator + Reset)
+	}
+	if fromLine > 0 {
+		indicator := fmt.Sprintf("↑ %d", fromLine)
+		r.moveTo(startRow, col+width-len(indicator)-1)
+		r.write(FgBrightBlack + indicator + Reset)
 	}
 }
 
