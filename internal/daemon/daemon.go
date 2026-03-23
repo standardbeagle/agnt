@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"hash/fnv"
 	"log"
 	"os"
 	"path/filepath"
@@ -25,6 +24,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/updater"
 	"github.com/standardbeagle/go-cli-server/hub"
 	"github.com/standardbeagle/go-cli-server/process"
+	"github.com/standardbeagle/go-cli-server/script"
 )
 
 // Version is the daemon version.
@@ -133,7 +133,8 @@ type Daemon struct {
 	autoRestarter     *ProcessAutoRestarter // Process auto-restart manager
 	alertStore        *ProcessAlertStore    // Ring buffer store for process output alerts
 	startupErrorStore *StartupLogStore      // Ring buffer for startup events
-	scriptRegistry    *ScriptRegistry       // Per-script state that persists across process restarts
+	scriptRegistry    *script.Registry      // Per-script state that persists across process restarts
+	scriptConfigs     sync.Map              // processID -> *config.ScriptConfig (agnt-specific config)
 
 	// Session and scheduling (agnt-specific extensions)
 	sessionRegistry   *SessionRegistry
@@ -215,7 +216,7 @@ func New(config DaemonConfig) *Daemon {
 		storem:            store.NewStoreManager(),
 		alertStore:        NewProcessAlertStore(500),
 		startupErrorStore: NewStartupLogStore(100),
-		scriptRegistry:    NewScriptRegistry(),
+		scriptRegistry:    script.NewRegistry(),
 		sessionRegistry:   sessionRegistry,
 		scheduler:         scheduler,
 		schedulerStateMgr: schedulerStateMgr,
@@ -225,6 +226,9 @@ func New(config DaemonConfig) *Daemon {
 		ctx:               ctx,
 		cancel:            cancel,
 	}
+
+	// Wire script registry into ProcessManager for automatic lifecycle updates
+	h.ProcessManager().SetScriptRegistry(d.scriptRegistry)
 
 	// Initialize process auto-restarter
 	d.autoRestarter = NewProcessAutoRestarter(d)
@@ -610,7 +614,7 @@ func (d *Daemon) StartupLogStore() *StartupLogStore {
 }
 
 // ScriptRegistry returns the script registry.
-func (d *Daemon) ScriptRegistry() *ScriptRegistry {
+func (d *Daemon) ScriptRegistry() *script.Registry {
 	return d.scriptRegistry
 }
 
@@ -806,7 +810,7 @@ func (d *Daemon) CleanupSessionResources(sessionCode string) {
 			debug.Log("daemon", "transferred ownership of script %s from %s to %s", entry.Name, sessionCode, newOwner)
 		} else {
 			debug.Log("daemon", "no observers for script %s, marking for stop", entry.Name)
-			entry.SetState(StateStopped)
+			entry.SetState(script.StateStopped)
 			orphanedProcessIDs = append(orphanedProcessIDs, entry.ProcessID)
 		}
 	}
@@ -1134,27 +1138,9 @@ func (d *Daemon) RunAutostart(ctx context.Context, projectPath string) *Autostar
 	return result
 }
 
-// makeProcessID creates a unique process ID scoped to a project path.
-// This prevents process ID collisions when multiple sessions from different
-// projects use the same script name (e.g., "dev").
-// Format: <basename>-<hash>:<name> (e.g., "my-project-a1b2:<name>")
-// The hash is derived from the full path to ensure uniqueness even when
-// different directories have the same basename.
+// makeProcessID delegates to script.MakeProcessID for process ID generation.
 func makeProcessID(projectPath, name string) string {
-	if projectPath == "" {
-		return name
-	}
-	// Use basename + short hash of full path for uniqueness
-	basename := filepath.Base(projectPath)
-	hash := shortPathHash(projectPath)
-	return fmt.Sprintf("%s-%s:%s", basename, hash, name)
-}
-
-// shortPathHash returns a short (4 char) hex hash of a path for ID uniqueness.
-func shortPathHash(path string) string {
-	h := fnv.New32a()
-	h.Write([]byte(path))
-	return fmt.Sprintf("%04x", h.Sum32()&0xFFFF)
+	return script.MakeProcessID(projectPath, name)
 }
 
 // stripProcessPrefix extracts the script name from a process ID.
@@ -1210,20 +1196,37 @@ func envMapToSlice(env map[string]string) []string {
 	return result
 }
 
+// scriptConfigToEntry converts agnt's ScriptConfig to go-cli-server's script.Config.
+func scriptConfigToEntry(cfg *config.ScriptConfig) *script.Config {
+	return &script.Config{
+		Run:       cfg.Run,
+		Command:   cfg.Command,
+		Args:      cfg.Args,
+		Shell:     cfg.Shell,
+		ShellArgs: cfg.ShellArgs,
+		Autostart: cfg.Autostart,
+		Env:       cfg.Env,
+		Cwd:       cfg.Cwd,
+	}
+}
+
 // autostartScript starts a single script from config with automatic EADDRINUSE recovery.
-func (d *Daemon) autostartScript(ctx context.Context, name string, script *config.ScriptConfig, projectPath string, proxyConfigs map[string]*config.ProxyConfig) error {
+func (d *Daemon) autostartScript(ctx context.Context, name string, scriptCfg *config.ScriptConfig, projectPath string, proxyConfigs map[string]*config.ProxyConfig) error {
 
 	// Make process ID unique per project to avoid collisions between sessions
 	processID := makeProcessID(projectPath, name)
 
+	// Store agnt-specific config for later use (e.g., restart with URLMatchers)
+	d.scriptConfigs.Store(processID, scriptCfg)
+
 	// Register in ScriptRegistry before starting (idempotent)
-	entry, regErr := d.scriptRegistry.Register(name, projectPath, script)
+	entry, regErr := d.scriptRegistry.Register(name, projectPath, scriptConfigToEntry(scriptCfg))
 	if regErr != nil {
 		return fmt.Errorf("script registry: %w", regErr)
 	}
 
 	// Check ScriptRegistry state: if already running/starting, skip
-	if state := entry.State(); state == StateRunning || state == StateStarting {
+	if state := entry.State(); state == script.StateRunning || state == script.StateStarting {
 		debug.Log("daemon", "autostartScript: script %s already %s, skipping", name, state)
 		return nil
 	}
@@ -1238,26 +1241,26 @@ func (d *Daemon) autostartScript(ctx context.Context, name string, script *confi
 	}
 
 	// Resolve working directory and environment
-	workingDir := resolveWorkingDir(projectPath, script.Cwd)
-	envSlice := envMapToSlice(script.Env)
+	workingDir := resolveWorkingDir(projectPath, scriptCfg.Cwd)
+	envSlice := envMapToSlice(scriptCfg.Env)
 
 	var command string
 	var args []string
 
-	if script.Run != "" {
+	if scriptCfg.Run != "" {
 		// Shell command string - resolve via config or platform default
-		command, args = script.ResolveShell()
-	} else if script.Command != "" {
+		command, args = scriptCfg.ResolveShell()
+	} else if scriptCfg.Command != "" {
 		// Explicit command specified
-		command = script.Command
-		args = script.Args
+		command = scriptCfg.Command
+		args = scriptCfg.Args
 	} else {
 		// No command - run as package.json script via detected package manager
 		// Use workingDir for detection so monorepo subdirectories find their package.json
 		proj, err := project.Detect(workingDir)
 		if err != nil {
 			debug.Error("daemon", "project detection failed for %s: %v", workingDir, err)
-			entry.SetState(StateFailed)
+			entry.SetState(script.StateFailed)
 			entry.SetLastError(fmt.Sprintf("project detection failed: %v", err))
 			entry.IncrementFailCount()
 			return fmt.Errorf("project detection failed: %v", err)
@@ -1284,7 +1287,7 @@ func (d *Daemon) autostartScript(ctx context.Context, name string, script *confi
 			args = []string{"-m", name}
 		default:
 			debug.Error("daemon", "cannot run script %q: unknown project type %s", name, proj.Type)
-			entry.SetState(StateFailed)
+			entry.SetState(script.StateFailed)
 			entry.SetLastError(fmt.Sprintf("unknown project type: %s", proj.Type))
 			entry.IncrementFailCount()
 			return fmt.Errorf("cannot run script %q: unknown project type and no command specified", name)
@@ -1294,12 +1297,11 @@ func (d *Daemon) autostartScript(ctx context.Context, name string, script *confi
 	// Record resolved command in ScriptEntry
 	entry.SetResolvedCommand(command, args)
 
-	// Transition to starting
-	entry.SetState(StateStarting)
-	entry.IncrementStartCount()
+	// Transition to starting (ProcessManager lifecycle handles Running state and StartCount)
+	entry.SetState(script.StateStarting)
 
 	// Determine expected port for pre-flight cleanup and EADDRINUSE recovery
-	expectedPort := d.getExpectedPortForScript(name, script, proxyConfigs, workingDir, command, args)
+	expectedPort := d.getExpectedPortForScript(name, scriptCfg, proxyConfigs, workingDir, command, args)
 
 	// Use unified StartScript for consistent behavior:
 	// - EADDRINUSE recovery
@@ -1313,11 +1315,11 @@ func (d *Daemon) autostartScript(ctx context.Context, name string, script *confi
 		Args:         args,
 		Env:          envSlice,
 		ExpectedPort: expectedPort,
-		URLMatchers:  script.URLMatchers,
+		URLMatchers:  scriptCfg.URLMatchers,
 		AutoRestart:  true, // Autostarted scripts should always auto-restart
 	})
 	if err != nil {
-		entry.SetState(StateFailed)
+		entry.SetState(script.StateFailed)
 		entry.SetLastError(err.Error())
 		entry.IncrementFailCount()
 
@@ -1335,8 +1337,7 @@ func (d *Daemon) autostartScript(ctx context.Context, name string, script *confi
 		return fmt.Errorf("%s", msg)
 	}
 
-	// Success: mark as running
-	entry.SetState(StateRunning)
+	// Success: ProcessManager lifecycle sets StateRunning automatically
 	return nil
 }
 

@@ -18,6 +18,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/automation"
 	"github.com/standardbeagle/agnt/internal/browser"
 	"github.com/standardbeagle/agnt/internal/chromedp"
+	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
 
 	cdp "github.com/chromedp/chromedp"
@@ -28,6 +29,7 @@ import (
 	hubpkg "github.com/standardbeagle/go-cli-server/hub"
 	goprocess "github.com/standardbeagle/go-cli-server/process"
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
+	"github.com/standardbeagle/go-cli-server/script"
 )
 
 // writeErr writes an error response and logs it for debugging.
@@ -4233,8 +4235,8 @@ func (d *Daemon) resolveScriptProjectPath(conn *hubpkg.Connection, cmd *hubproto
 	return ""
 }
 
-// scriptEntryToSummary converts a ScriptEntry to a JSON-friendly summary map.
-func scriptEntryToSummary(entry *ScriptEntry) map[string]interface{} {
+// scriptEntryToSummary converts a script.Entry to a JSON-friendly summary map.
+func scriptEntryToSummary(entry *script.Entry) map[string]interface{} {
 	cmd, args := entry.ResolvedCommand()
 
 	summary := map[string]interface{}{
@@ -4259,7 +4261,7 @@ func scriptEntryToSummary(entry *ScriptEntry) map[string]interface{} {
 	// Derive last_started from state history
 	history := entry.StateHistory()
 	for i := len(history) - 1; i >= 0; i-- {
-		if history[i].State == StateStarting {
+		if history[i].State == script.StateStarting {
 			summary["last_started"] = history[i].Timestamp.Format(time.RFC3339)
 			break
 		}
@@ -4400,9 +4402,16 @@ func (d *Daemon) hubHandleScriptRestart(ctx context.Context, conn *hubpkg.Connec
 
 	// Restart via autostartScript which handles resolution and StartScript
 	entry.AddRestartMarker()
-	entry.SetState(StateRestarting)
+	entry.SetState(script.StateRestarting)
 
-	if err := d.autostartScript(ctx, name, entry.Config, entry.ProjectPath, nil); err != nil {
+	// Look up agnt-specific config stored during initial autostart
+	cfgVal, ok := d.scriptConfigs.Load(entry.ProcessID)
+	if !ok {
+		return conn.WriteErr(hubproto.ErrNotFound, fmt.Sprintf("no config found for script %q", name))
+	}
+	scriptCfg := cfgVal.(*config.ScriptConfig)
+
+	if err := d.autostartScript(ctx, name, scriptCfg, entry.ProjectPath, nil); err != nil {
 		return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("failed to restart script: %v", err))
 	}
 
@@ -4436,7 +4445,7 @@ func (d *Daemon) hubHandleScriptStop(ctx context.Context, conn *hubpkg.Connectio
 
 	proc, err := d.hub.ProcessManager().Get(entry.ProcessID)
 	if err != nil || !proc.IsRunning() {
-		entry.SetState(StateStopped)
+		entry.SetState(script.StateStopped)
 		resp := map[string]interface{}{
 			"name":       name,
 			"process_id": entry.ProcessID,
@@ -4457,7 +4466,7 @@ func (d *Daemon) hubHandleScriptStop(ctx context.Context, conn *hubpkg.Connectio
 		return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("failed to stop: %v", stopErr))
 	}
 
-	entry.SetState(StateStopped)
+	entry.SetState(script.StateStopped)
 
 	resp := map[string]interface{}{
 		"name":       name,
