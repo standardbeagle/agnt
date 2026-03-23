@@ -643,3 +643,37 @@ func (c *Client) StartupLog(limit int) (map[string]interface{}, error) {
 	return c.conn.Request(protocol.VerbAlerts, protocol.SubVerbStartupLog).
 		WithJSON(map[string]interface{}{"limit": limit}).JSON()
 }
+
+// ScriptList lists all scripts for a project directory.
+func (c *Client) ScriptList(projectPath string) (map[string]interface{}, error) {
+	return c.conn.Request(protocol.VerbScript, protocol.SubVerbList).
+		WithJSON(map[string]interface{}{"directory": projectPath}).JSON()
+}
+
+// ScriptGet retrieves full detail for a named script.
+func (c *Client) ScriptGet(name, projectPath string) (map[string]interface{}, error) {
+	return c.conn.Request(protocol.VerbScript, protocol.SubVerbGet, name).
+		WithJSON(map[string]interface{}{"directory": projectPath}).JSON()
+}
+
+// ScriptOutput retrieves output history for a named script.
+func (c *Client) ScriptOutput(name, projectPath string, tail int) (map[string]interface{}, error) {
+	payload := map[string]interface{}{"directory": projectPath}
+	if tail > 0 {
+		payload["tail"] = tail
+	}
+	return c.conn.Request(protocol.VerbScript, protocol.SubVerbOutput, name).
+		WithJSON(payload).JSON()
+}
+
+// ScriptRestart restarts a script by name.
+func (c *Client) ScriptRestart(name, projectPath string) (map[string]interface{}, error) {
+	return c.conn.Request(protocol.VerbScript, protocol.SubVerbRestart, name).
+		WithJSON(map[string]interface{}{"directory": projectPath}).JSON()
+}
+
+// ScriptStop stops a script by name.
+func (c *Client) ScriptStop(name, projectPath string) (map[string]interface{}, error) {
+	return c.conn.Request(protocol.VerbScript, protocol.SubVerbStop, name).
+		WithJSON(map[string]interface{}{"directory": projectPath}).JSON()
+}
