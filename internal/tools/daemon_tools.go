@@ -221,11 +221,14 @@ Examples:
 Actions:
   list: List all running processes (use global: true for all directories)
   status: Get process status and info
-  output: Get process output (tail/grep supported)
+  output: Get process output (tail/grep supported, falls back to script output history)
   stop: Gracefully stop a process (use force: true for immediate kill)
   restart: Restart a running process (stop then start with same config)
   cleanup_port: Kill any process using a specific port
   autorestart: Enable/disable automatic restart when process exits
+  scripts: List all registered scripts with state and start/fail counts
+  script_output: Get script output history across restarts
+  script_history: Get script state transition history
 
 Restarting dev servers: Use restart action or stop then run again.
   proc {action: "restart", process_id: "dev"}
@@ -248,7 +251,10 @@ Examples:
   proc {action: "stop", process_id: "test", force: true}
   proc {action: "restart", process_id: "dev"}
   proc {action: "cleanup_port", port: 3000}
-  proc {action: "autorestart", process_id: "dev", auto_restart_enable: false}`,
+  proc {action: "autorestart", process_id: "dev", auto_restart_enable: false}
+  proc {action: "scripts"}
+  proc {action: "script_output", script_name: "dev", tail: 50}
+  proc {action: "script_history", script_name: "dev"}`,
 	}, dt.makeProcHandler())
 
 	// Proxy tools
@@ -636,8 +642,14 @@ func (dt *DaemonTools) makeProcHandler() func(context.Context, *mcp.CallToolRequ
 			return dt.handleProcCleanupPort(input)
 		case "autorestart":
 			return dt.handleProcAutoRestart(input)
+		case "scripts":
+			return dt.handleScriptList(input)
+		case "script_output":
+			return dt.handleScriptOutput(input)
+		case "script_history":
+			return dt.handleScriptHistory(input)
 		default:
-			return errorResult(fmt.Sprintf("unknown action %q. Use: status, output, stop, restart, list, cleanup_port, autorestart", input.Action)), ProcOutput{}, nil
+			return errorResult(fmt.Sprintf("unknown action %q. Use: status, output, stop, restart, list, cleanup_port, autorestart, scripts, script_output, script_history", input.Action)), ProcOutput{}, nil
 		}
 	}
 }
@@ -676,6 +688,19 @@ func (dt *DaemonTools) handleProcOutput(input ProcInput) (*mcp.CallToolResult, P
 
 	output, err := dt.client.ProcOutput(input.ProcessID, filter)
 	if err != nil {
+		// Fall back to script output if process not found
+		projectPath := getProjectPath()
+		if projectPath != "" {
+			scriptResult, scriptErr := dt.client.ScriptOutput(input.ProcessID, projectPath, input.Tail)
+			if scriptErr == nil {
+				lines := getStringSlice(scriptResult, "lines")
+				return nil, ProcOutput{
+					ProcessID: input.ProcessID,
+					Output:    strings.Join(lines, "\n"),
+					Lines:     len(lines),
+				}, nil
+			}
+		}
 		return formatDaemonError(err, "proc"), ProcOutput{}, nil
 	}
 
@@ -784,14 +809,20 @@ func (dt *DaemonTools) handleProcList(input ProcInput) (*mcp.CallToolResult, Pro
 	if processes, ok := result["processes"].([]interface{}); ok {
 		for _, p := range processes {
 			if pm, ok := p.(map[string]interface{}); ok {
-				output.Processes = append(output.Processes, ProcEntry{
-					ID:          getString(pm, "id"),
+				id := getString(pm, "id")
+				entry := ProcEntry{
+					ID:          id,
 					Command:     getString(pm, "command"),
 					State:       getString(pm, "state"),
 					Summary:     getString(pm, "summary"),
 					Runtime:     getString(pm, "runtime"),
 					ProjectPath: getString(pm, "project_path"),
-				})
+				}
+				// Extract script name from process ID (format: "project-hash:scriptname")
+				if idx := strings.Index(id, ":"); idx >= 0 {
+					entry.ScriptName = id[idx+1:]
+				}
+				output.Processes = append(output.Processes, entry)
 			}
 		}
 	}
@@ -828,6 +859,112 @@ func (dt *DaemonTools) handleProcCleanupPort(input ProcInput) (*mcp.CallToolResu
 	}
 
 	return nil, output, nil
+}
+
+func (dt *DaemonTools) handleScriptList(input ProcInput) (*mcp.CallToolResult, ProcOutput, error) {
+	projectPath := getProjectPath()
+	if projectPath == "" {
+		return errorResult("could not determine project path"), ProcOutput{}, nil
+	}
+
+	result, err := dt.client.ScriptList(projectPath)
+	if err != nil {
+		return formatDaemonError(err, "proc"), ProcOutput{}, nil
+	}
+
+	scripts, ok := result["scripts"].([]interface{})
+	if !ok {
+		return nil, ProcOutput{Count: 0}, nil
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("=== Scripts (%d) ===\n", len(scripts)))
+
+	entries := make([]ProcEntry, 0, len(scripts))
+	for _, s := range scripts {
+		sm, ok := s.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		name := getString(sm, "name")
+		state := getString(sm, "state")
+		startCount := getInt(sm, "start_count")
+		failCount := getInt(sm, "fail_count")
+		lastErr := getString(sm, "last_error")
+
+		sb.WriteString(fmt.Sprintf("\n%s [%s] starts:%d fails:%d", name, state, startCount, failCount))
+		if lastErr != "" {
+			sb.WriteString(fmt.Sprintf("\n  last_error: %s", lastErr))
+		}
+
+		entries = append(entries, ProcEntry{
+			ID:         getString(sm, "process_id"),
+			State:      state,
+			ScriptName: name,
+		})
+	}
+
+	return nil, ProcOutput{
+		Count:     len(entries),
+		Processes: entries,
+		Output:    sb.String(),
+	}, nil
+}
+
+func (dt *DaemonTools) handleScriptOutput(input ProcInput) (*mcp.CallToolResult, ProcOutput, error) {
+	if input.ScriptName == "" {
+		return errorResult("script_name required for script_output"), ProcOutput{}, nil
+	}
+
+	projectPath := getProjectPath()
+	if projectPath == "" {
+		return errorResult("could not determine project path"), ProcOutput{}, nil
+	}
+
+	result, err := dt.client.ScriptOutput(input.ScriptName, projectPath, input.Tail)
+	if err != nil {
+		return formatDaemonError(err, "proc"), ProcOutput{}, nil
+	}
+
+	lines := getStringSlice(result, "lines")
+	return nil, ProcOutput{
+		Output: strings.Join(lines, "\n"),
+		Lines:  len(lines),
+	}, nil
+}
+
+func (dt *DaemonTools) handleScriptHistory(input ProcInput) (*mcp.CallToolResult, ProcOutput, error) {
+	if input.ScriptName == "" {
+		return errorResult("script_name required for script_history"), ProcOutput{}, nil
+	}
+
+	projectPath := getProjectPath()
+	if projectPath == "" {
+		return errorResult("could not determine project path"), ProcOutput{}, nil
+	}
+
+	result, err := dt.client.ScriptGet(input.ScriptName, projectPath)
+	if err != nil {
+		return formatDaemonError(err, "proc"), ProcOutput{}, nil
+	}
+
+	var sb strings.Builder
+	name := getString(result, "name")
+	state := getString(result, "state")
+	sb.WriteString(fmt.Sprintf("=== %s [%s] ===\n", name, state))
+
+	if history, ok := result["history"].([]interface{}); ok {
+		sb.WriteString(fmt.Sprintf("\nTransitions (%d):\n", len(history)))
+		for _, h := range history {
+			if hm, ok := h.(map[string]interface{}); ok {
+				sb.WriteString(fmt.Sprintf("  %s → %s\n", getString(hm, "timestamp"), getString(hm, "state")))
+			}
+		}
+	}
+
+	return nil, ProcOutput{
+		Output: sb.String(),
+	}, nil
 }
 
 // makeProxyHandler creates a handler for the proxy tool.
@@ -2571,6 +2708,20 @@ func getBool(m map[string]interface{}, key string) bool {
 		return v
 	}
 	return false
+}
+
+func getStringSlice(m map[string]interface{}, key string) []string {
+	arr, ok := m[key].([]interface{})
+	if !ok {
+		return nil
+	}
+	result := make([]string, 0, len(arr))
+	for _, v := range arr {
+		if s, ok := v.(string); ok {
+			result = append(result, s)
+		}
+	}
+	return result
 }
 
 func getTime(m map[string]interface{}, key string) time.Time {

@@ -82,6 +82,7 @@ func validateProcInput(input ProcInput) error {
 	checks := []error{
 		validateStringLen("action", input.Action, maxIDLength),
 		validateStringLen("process_id", input.ProcessID, maxIDLength),
+		validateStringLen("script_name", input.ScriptName, maxIDLength),
 		validateStringLen("stream", input.Stream, maxIDLength),
 		validateStringLen("grep", input.Grep, maxGrepPattern),
 		validatePort("port", input.Port),
