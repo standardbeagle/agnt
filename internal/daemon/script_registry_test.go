@@ -341,3 +341,120 @@ func TestScriptRegistry_IsolationByProject(t *testing.T) {
 	entry1.SetState(StateRunning)
 	assert.Equal(t, StateIdle, entry2.State(), "state must be isolated per project")
 }
+
+func TestScriptEntry_Ownership(t *testing.T) {
+	reg := NewScriptRegistry()
+	cfg := &config.ScriptConfig{Run: "npm start"}
+	entry, _ := reg.Register("dev", "/home/user/myapp", cfg)
+
+	// Initially unowned
+	assert.Equal(t, "", entry.Owner())
+
+	// Set owner
+	entry.SetOwner("session-1")
+	assert.Equal(t, "session-1", entry.Owner())
+
+	// Change owner
+	entry.SetOwner("session-2")
+	assert.Equal(t, "session-2", entry.Owner())
+}
+
+func TestScriptEntry_ObserverCount(t *testing.T) {
+	reg := NewScriptRegistry()
+	cfg := &config.ScriptConfig{Run: "npm start"}
+	entry, _ := reg.Register("dev", "/home/user/myapp", cfg)
+
+	assert.Equal(t, 0, entry.ObserverCount())
+
+	entry.AddSession("s1")
+	assert.Equal(t, 1, entry.ObserverCount())
+
+	entry.AddSession("s2")
+	entry.AddSession("s3")
+	assert.Equal(t, 3, entry.ObserverCount())
+
+	entry.RemoveSession("s2")
+	assert.Equal(t, 2, entry.ObserverCount())
+}
+
+func TestScriptEntry_TransferOwnership(t *testing.T) {
+	reg := NewScriptRegistry()
+	cfg := &config.ScriptConfig{Run: "npm start"}
+	entry, _ := reg.Register("dev", "/home/user/myapp", cfg)
+
+	entry.SetOwner("owner-1")
+	entry.AddSession("observer-a")
+	entry.AddSession("observer-b")
+
+	// Remove owner from observers (simulating disconnect)
+	// Transfer ownership should pick one of the remaining observers
+	newOwner := entry.TransferOwnership()
+	assert.NotEmpty(t, newOwner)
+	assert.Equal(t, newOwner, entry.Owner())
+	assert.Contains(t, []string{"observer-a", "observer-b"}, newOwner)
+}
+
+func TestScriptEntry_TransferOwnershipNoObservers(t *testing.T) {
+	reg := NewScriptRegistry()
+	cfg := &config.ScriptConfig{Run: "npm start"}
+	entry, _ := reg.Register("dev", "/home/user/myapp", cfg)
+
+	entry.SetOwner("owner-1")
+
+	// No observers — transfer clears ownership
+	newOwner := entry.TransferOwnership()
+	assert.Equal(t, "", newOwner)
+	assert.Equal(t, "", entry.Owner())
+}
+
+func TestScriptEntry_ConcurrentStartProtection(t *testing.T) {
+	reg := NewScriptRegistry()
+	cfg := &config.ScriptConfig{Run: "npm start"}
+	entry, _ := reg.Register("dev", "/home/user/myapp", cfg)
+
+	// Simulate two sessions racing to start the same script via CAS
+	var wg sync.WaitGroup
+	winners := make(chan int, 20)
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			if entry.CompareAndSwapState(StateIdle, StateStarting) {
+				winners <- id
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(winners)
+
+	// Exactly one goroutine should win the CAS
+	var winnerIDs []int
+	for id := range winners {
+		winnerIDs = append(winnerIDs, id)
+	}
+	assert.Len(t, winnerIDs, 1, "exactly one goroutine should win the CAS")
+	assert.Equal(t, StateStarting, entry.State())
+}
+
+func TestScriptEntry_OwnershipAtomicity(t *testing.T) {
+	reg := NewScriptRegistry()
+	cfg := &config.ScriptConfig{Run: "npm start"}
+	entry, _ := reg.Register("dev", "/home/user/myapp", cfg)
+
+	// Concurrent ownership changes should not panic or corrupt
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			code := fmt.Sprintf("session-%d", id)
+			entry.SetOwner(code)
+			entry.Owner()
+		}(i)
+	}
+	wg.Wait()
+
+	// Owner should be one of the sessions
+	owner := entry.Owner()
+	assert.NotEmpty(t, owner)
+}

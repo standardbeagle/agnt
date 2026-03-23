@@ -790,69 +790,112 @@ func (d *Daemon) CleanupSessionResources(sessionCode string) {
 
 	debug.Log("daemon", "cleaning up resources for session %s (project: %s)", sessionCode, projectPath)
 
+	// Handle script ownership transfer or cleanup.
+	// Remove the session as observer first, then check ownership.
+	var orphanedProcessIDs []string
+	for _, entry := range d.scriptRegistry.List(projectPath) {
+		entry.RemoveSession(sessionCode)
+
+		if entry.Owner() != sessionCode {
+			continue
+		}
+
+		// This session owns this script — transfer or stop
+		newOwner := entry.TransferOwnership()
+		if newOwner != "" {
+			debug.Log("daemon", "transferred ownership of script %s from %s to %s", entry.Name, sessionCode, newOwner)
+		} else {
+			debug.Log("daemon", "no observers for script %s, marking for stop", entry.Name)
+			entry.SetState(StateStopped)
+			orphanedProcessIDs = append(orphanedProcessIDs, entry.ProcessID)
+		}
+	}
+
 	// Use a reasonable timeout for cleanup
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	// Check if any other sessions remain for this project
+	hasOtherSessions := false
+	for _, s := range d.sessionRegistry.List(projectPath, false) {
+		if s.Code != sessionCode {
+			hasOtherSessions = true
+			break
+		}
+	}
+
 	var wg sync.WaitGroup
 
-	// Stop proxies for this project
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		stoppedIDs, err := d.proxym.StopByProjectPath(ctx, projectPath)
-		if err != nil {
-			debug.Log("daemon", "error stopping proxies for project %s: %v", projectPath, err)
-		}
-		if len(stoppedIDs) > 0 {
-			debug.Log("daemon", "stopped proxies: %v", stoppedIDs)
-			// Remove from persisted state
-			if d.stateMgr != nil {
-				for _, id := range stoppedIDs {
-					d.stateMgr.RemoveProxy(id)
+	if !hasOtherSessions {
+		// Last session for this project — stop all proxies and browsers
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			stoppedIDs, err := d.proxym.StopByProjectPath(ctx, projectPath)
+			if err != nil {
+				debug.Log("daemon", "error stopping proxies for project %s: %v", projectPath, err)
+			}
+			if len(stoppedIDs) > 0 {
+				debug.Log("daemon", "stopped proxies: %v", stoppedIDs)
+				if d.stateMgr != nil {
+					for _, id := range stoppedIDs {
+						d.stateMgr.RemoveProxy(id)
+					}
 				}
 			}
-		}
-	}()
+		}()
 
-	// Stop browsers for this project
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		stoppedIDs, err := d.browserm.StopByProjectPath(ctx, projectPath)
-		if err != nil {
-			debug.Log("daemon", "error stopping browsers for project %s: %v", projectPath, err)
-		}
-		if len(stoppedIDs) > 0 {
-			debug.Log("daemon", "stopped browsers: %v", stoppedIDs)
-		}
-	}()
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			stoppedIDs, err := d.browserm.StopByProjectPath(ctx, projectPath)
+			if err != nil {
+				debug.Log("daemon", "error stopping browsers for project %s: %v", projectPath, err)
+			}
+			if len(stoppedIDs) > 0 {
+				debug.Log("daemon", "stopped browsers: %v", stoppedIDs)
+			}
+		}()
+	}
 
-	// Stop processes for this project
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		stoppedIDs, err := d.hub.ProcessManager().StopByProjectPath(ctx, projectPath)
-		if err != nil {
-			debug.Log("daemon", "error stopping processes for project %s: %v", projectPath, err)
-		}
-		if len(stoppedIDs) > 0 {
-			debug.Log("daemon", "stopped processes: %v", stoppedIDs)
-			// Unregister from auto-restarter to prevent restart attempts
-			if d.autoRestarter != nil {
-				for _, id := range stoppedIDs {
-					d.autoRestarter.Unregister(id)
+	// Stop only orphaned script processes (no remaining observers)
+	if len(orphanedProcessIDs) > 0 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			pm := d.hub.ProcessManager()
+			for _, pid := range orphanedProcessIDs {
+				if err := pm.Stop(ctx, pid); err != nil {
+					debug.Log("daemon", "error stopping orphaned process %s: %v", pid, err)
+				} else {
+					debug.Log("daemon", "stopped orphaned process %s", pid)
+					if d.autoRestarter != nil {
+						d.autoRestarter.Unregister(pid)
+					}
 				}
 			}
-		}
-	}()
+		}()
+	} else if !hasOtherSessions {
+		// No orphaned scripts but last session — stop all remaining processes
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			stoppedIDs, err := d.hub.ProcessManager().StopByProjectPath(ctx, projectPath)
+			if err != nil {
+				debug.Log("daemon", "error stopping processes for project %s: %v", projectPath, err)
+			}
+			if len(stoppedIDs) > 0 {
+				debug.Log("daemon", "stopped processes: %v", stoppedIDs)
+				if d.autoRestarter != nil {
+					for _, id := range stoppedIDs {
+						d.autoRestarter.Unregister(id)
+					}
+				}
+			}
+		}()
+	}
 
 	wg.Wait()
-
-	// Remove session from ScriptEntries (entries persist, only session association removed)
-	for _, entry := range d.scriptRegistry.List(projectPath) {
-		entry.RemoveSession(sessionCode)
-	}
 
 	// Unregister the session
 	if err := d.sessionRegistry.Unregister(sessionCode); err != nil {
