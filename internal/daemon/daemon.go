@@ -133,6 +133,7 @@ type Daemon struct {
 	autoRestarter     *ProcessAutoRestarter // Process auto-restart manager
 	alertStore        *ProcessAlertStore    // Ring buffer store for process output alerts
 	startupErrorStore *StartupLogStore      // Ring buffer for startup events
+	scriptRegistry    *ScriptRegistry       // Per-script state that persists across process restarts
 
 	// Session and scheduling (agnt-specific extensions)
 	sessionRegistry   *SessionRegistry
@@ -214,6 +215,7 @@ func New(config DaemonConfig) *Daemon {
 		storem:            store.NewStoreManager(),
 		alertStore:        NewProcessAlertStore(500),
 		startupErrorStore: NewStartupLogStore(100),
+		scriptRegistry:    NewScriptRegistry(),
 		sessionRegistry:   sessionRegistry,
 		scheduler:         scheduler,
 		schedulerStateMgr: schedulerStateMgr,
@@ -607,6 +609,11 @@ func (d *Daemon) StartupLogStore() *StartupLogStore {
 	return d.startupErrorStore
 }
 
+// ScriptRegistry returns the script registry.
+func (d *Daemon) ScriptRegistry() *ScriptRegistry {
+	return d.scriptRegistry
+}
+
 // SessionRegistry returns the session registry.
 func (d *Daemon) SessionRegistry() *SessionRegistry {
 	return d.sessionRegistry
@@ -841,6 +848,11 @@ func (d *Daemon) CleanupSessionResources(sessionCode string) {
 	}()
 
 	wg.Wait()
+
+	// Remove session from ScriptEntries (entries persist, only session association removed)
+	for _, entry := range d.scriptRegistry.List(projectPath) {
+		entry.RemoveSession(sessionCode)
+	}
 
 	// Unregister the session
 	if err := d.sessionRegistry.Unregister(sessionCode); err != nil {
@@ -1161,23 +1173,30 @@ func (d *Daemon) autostartScript(ctx context.Context, name string, script *confi
 	// Make process ID unique per project to avoid collisions between sessions
 	processID := makeProcessID(projectPath, name)
 
-	// Resolve working directory and environment
-	workingDir := resolveWorkingDir(projectPath, script.Cwd)
-	envSlice := envMapToSlice(script.Env)
+	// Register in ScriptRegistry before starting (idempotent)
+	entry, regErr := d.scriptRegistry.Register(name, projectPath, script)
+	if regErr != nil {
+		return fmt.Errorf("script registry: %w", regErr)
+	}
 
-	// Check if already running — only skip if actually running/starting.
-	// Failed/stopped processes from previous sessions must be cleaned up and restarted.
+	// Check ScriptRegistry state: if already running/starting, skip
+	if state := entry.State(); state == StateRunning || state == StateStarting {
+		debug.Log("daemon", "autostartScript: script %s already %s, skipping", name, state)
+		return nil
+	}
+
+	// Clean up stale ProcessManager entry if it exists but isn't running
 	if existing, err := d.hub.ProcessManager().Get(processID); err == nil {
 		state := existing.State()
-		switch state {
-		case process.StateRunning, process.StateStarting:
-			return nil // Truly running, skip
-		default:
-			// Dead process from previous session — remove so StartScript can recreate
+		if state != process.StateRunning && state != process.StateStarting {
 			debug.Log("daemon", "autostartScript: removing stale process %s (state=%s)", processID, state)
 			d.hub.ProcessManager().RemoveByPath(processID, projectPath)
 		}
 	}
+
+	// Resolve working directory and environment
+	workingDir := resolveWorkingDir(projectPath, script.Cwd)
+	envSlice := envMapToSlice(script.Env)
 
 	var command string
 	var args []string
@@ -1195,6 +1214,9 @@ func (d *Daemon) autostartScript(ctx context.Context, name string, script *confi
 		proj, err := project.Detect(workingDir)
 		if err != nil {
 			debug.Error("daemon", "project detection failed for %s: %v", workingDir, err)
+			entry.SetState(StateFailed)
+			entry.SetLastError(fmt.Sprintf("project detection failed: %v", err))
+			entry.IncrementFailCount()
 			return fmt.Errorf("project detection failed: %v", err)
 		}
 
@@ -1219,9 +1241,19 @@ func (d *Daemon) autostartScript(ctx context.Context, name string, script *confi
 			args = []string{"-m", name}
 		default:
 			debug.Error("daemon", "cannot run script %q: unknown project type %s", name, proj.Type)
+			entry.SetState(StateFailed)
+			entry.SetLastError(fmt.Sprintf("unknown project type: %s", proj.Type))
+			entry.IncrementFailCount()
 			return fmt.Errorf("cannot run script %q: unknown project type and no command specified", name)
 		}
 	}
+
+	// Record resolved command in ScriptEntry
+	entry.SetResolvedCommand(command, args)
+
+	// Transition to starting
+	entry.SetState(StateStarting)
+	entry.IncrementStartCount()
 
 	// Determine expected port for pre-flight cleanup and EADDRINUSE recovery
 	expectedPort := d.getExpectedPortForScript(name, script, proxyConfigs, workingDir, command, args)
@@ -1242,6 +1274,10 @@ func (d *Daemon) autostartScript(ctx context.Context, name string, script *confi
 		AutoRestart:  true, // Autostarted scripts should always auto-restart
 	})
 	if err != nil {
+		entry.SetState(StateFailed)
+		entry.SetLastError(err.Error())
+		entry.IncrementFailCount()
+
 		// Include resolved command and process output in error for debugging
 		cmdStr := command
 		if len(args) > 0 {
@@ -1255,6 +1291,9 @@ func (d *Daemon) autostartScript(ctx context.Context, name string, script *confi
 		}
 		return fmt.Errorf("%s", msg)
 	}
+
+	// Success: mark as running
+	entry.SetState(StateRunning)
 	return nil
 }
 

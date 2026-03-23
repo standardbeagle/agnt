@@ -661,3 +661,171 @@ proxies {
 		time.Sleep(100 * time.Millisecond)
 	})
 }
+
+func TestDaemon_ScriptRegistryInitialized(t *testing.T) {
+	tmpDir := t.TempDir()
+	sockPath := filepath.Join(tmpDir, "test.sock")
+
+	d := New(DaemonConfig{
+		SocketPath:   sockPath,
+		MaxClients:   10,
+		WriteTimeout: 5 * time.Second,
+	})
+
+	if d.ScriptRegistry() == nil {
+		t.Fatal("ScriptRegistry should be initialized in New()")
+	}
+}
+
+func TestDaemon_AutostartRegistersInScriptRegistry(t *testing.T) {
+	tmpDir := t.TempDir()
+	sockPath := filepath.Join(tmpDir, "test.sock")
+
+	configPath := filepath.Join(tmpDir, ".agnt.kdl")
+	configContent := `
+scripts {
+    test {
+        command "echo"
+        args "hello"
+        autostart true
+    }
+}
+`
+	if err := writeFile(configPath, configContent); err != nil {
+		t.Fatalf("Failed to write config file: %v", err)
+	}
+
+	d := New(DaemonConfig{
+		SocketPath:   sockPath,
+		MaxClients:   10,
+		WriteTimeout: 5 * time.Second,
+	})
+
+	if err := d.Start(); err != nil {
+		t.Fatalf("Failed to start daemon: %v", err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		d.Stop(ctx)
+	}()
+
+	ctx := context.Background()
+	d.RunAutostart(ctx, tmpDir)
+
+	// Give time for script to start
+	time.Sleep(500 * time.Millisecond)
+
+	// Verify ScriptEntry was registered
+	entry, ok := d.ScriptRegistry().Get("test", tmpDir)
+	if !ok {
+		t.Fatal("ScriptEntry should exist after autostart")
+	}
+
+	if entry.Name != "test" {
+		t.Errorf("Expected name 'test', got %q", entry.Name)
+	}
+
+	if entry.ProjectPath != tmpDir {
+		t.Errorf("Expected projectPath %q, got %q", tmpDir, entry.ProjectPath)
+	}
+
+	// echo exits immediately and succeeds, so state should be Running
+	// (the process starts and the monitoring period passes)
+	state := entry.State()
+	if state != StateRunning && state != StateFailed {
+		t.Errorf("Expected state Running or Failed (echo exits fast), got %s", state)
+	}
+
+	if entry.StartCount() < 1 {
+		t.Error("StartCount should be at least 1")
+	}
+
+	// Resolved command should be set
+	cmd, _ := entry.ResolvedCommand()
+	if cmd != "echo" {
+		t.Errorf("Expected resolved command 'echo', got %q", cmd)
+	}
+}
+
+func TestDaemon_AutostartSkipsRunningScript(t *testing.T) {
+	tmpDir := t.TempDir()
+	sockPath := filepath.Join(tmpDir, "test.sock")
+
+	d := New(DaemonConfig{
+		SocketPath:   sockPath,
+		MaxClients:   10,
+		WriteTimeout: 5 * time.Second,
+	})
+
+	if err := d.Start(); err != nil {
+		t.Fatalf("Failed to start daemon: %v", err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		d.Stop(ctx)
+	}()
+
+	// Pre-register a script as Running in the registry
+	cfg := &config.ScriptConfig{Command: "echo", Args: []string{"hello"}}
+	entry, err := d.ScriptRegistry().Register("test", tmpDir, cfg)
+	if err != nil {
+		t.Fatalf("Register failed: %v", err)
+	}
+	entry.SetState(StateRunning)
+
+	// Now call autostartScript directly -- should skip because ScriptRegistry says Running
+	proxyConfigs := map[string]*config.ProxyConfig{}
+	err = d.autostartScript(context.Background(), "test", cfg, tmpDir, proxyConfigs)
+	if err != nil {
+		t.Fatalf("autostartScript should succeed (skip) when already running: %v", err)
+	}
+
+	// StartCount should still be 0 since it was skipped
+	if entry.StartCount() != 0 {
+		t.Errorf("StartCount should be 0 (skipped), got %d", entry.StartCount())
+	}
+}
+
+func TestDaemon_ScriptRegistryLastError(t *testing.T) {
+	reg := NewScriptRegistry()
+	cfg := &config.ScriptConfig{Run: "npm start"}
+
+	entry, err := reg.Register("dev", "/home/user/myapp", cfg)
+	if err != nil {
+		t.Fatalf("Register failed: %v", err)
+	}
+
+	if entry.LastError() != "" {
+		t.Error("LastError should be empty initially")
+	}
+
+	entry.SetLastError("port 3000 in use")
+	if entry.LastError() != "port 3000 in use" {
+		t.Errorf("Expected 'port 3000 in use', got %q", entry.LastError())
+	}
+}
+
+func TestScriptRegistry_GetByProcessID(t *testing.T) {
+	reg := NewScriptRegistry()
+	cfg := &config.ScriptConfig{Run: "npm start"}
+
+	entry, err := reg.Register("dev", "/home/user/myapp", cfg)
+	if err != nil {
+		t.Fatalf("Register failed: %v", err)
+	}
+
+	found, ok := reg.GetByProcessID(entry.ProcessID)
+	if !ok {
+		t.Fatal("GetByProcessID should find the entry")
+	}
+	if found != entry {
+		t.Error("GetByProcessID should return the same entry")
+	}
+
+	_, ok = reg.GetByProcessID("nonexistent-id")
+	if ok {
+		t.Error("GetByProcessID should return false for unknown ID")
+	}
+}

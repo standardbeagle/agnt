@@ -317,6 +317,11 @@ func (d *Daemon) startScriptWithRetry(
 
 	debug.Info("daemon", "Detected EADDRINUSE on port %d for %s, attempting recovery", startupErr.Port, processID)
 
+	// Record EADDRINUSE retry in ScriptEntry
+	if scriptEntry, ok := d.scriptRegistry.GetByProcessID(processID); ok {
+		scriptEntry.AddRestartMarker()
+	}
+
 	// Stop the failed process
 	_ = d.hub.ProcessManager().StopProcess(ctx, proc)
 	d.hub.ProcessManager().RemoveByPath(processID, projectPath)
