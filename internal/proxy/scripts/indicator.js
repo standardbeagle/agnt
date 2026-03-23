@@ -2022,6 +2022,7 @@
     textarea.id = '__devtool-message';
     textarea.style.cssText = STYLES.textarea;
     textarea.placeholder = 'Describe what you need help with... (Ctrl+Enter to send)';
+    textarea.value = store.message.val;
     textarea.onfocus = function() {
       card.style.cssText = STYLES.messageCard + ';' + STYLES.messageCardFocused;
     };
@@ -2030,6 +2031,7 @@
     };
     // Auto-expand textarea based on content
     textarea.oninput = function() {
+      store.message.val = textarea.value;
       var previousHeight = state.panel ? state.panel.offsetHeight : 0;
       textarea.style.height = 'auto';
       textarea.style.height = Math.min(Math.max(textarea.scrollHeight, 80), 200) + 'px';
@@ -3045,6 +3047,7 @@
 
     // Clear
     if (textarea) textarea.value = '';
+    store.message.val = '';
     clearAttachments();
     togglePanel(false);
   }
