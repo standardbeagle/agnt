@@ -289,6 +289,18 @@ func (r *ProcessAutoRestarter) monitorProcess(processID string) {
 		}
 
 		exitCode := proc.ExitCode()
+
+		// Update ScriptEntry state on process exit
+		if scriptEntry, ok := r.daemon.scriptRegistry.GetByProcessID(processID); ok {
+			if exitCode == 0 {
+				scriptEntry.SetState(StateStopped)
+			} else {
+				scriptEntry.SetState(StateFailed)
+				scriptEntry.SetLastError(fmt.Sprintf("exit code %d", exitCode))
+				scriptEntry.IncrementFailCount()
+			}
+		}
+
 		if !state.shouldRestart(exitCode) {
 			debug.Log("daemon", "Process %s exited (code %d), max restarts reached or disabled", processID, exitCode)
 			return
@@ -310,6 +322,13 @@ func (r *ProcessAutoRestarter) monitorProcess(processID string) {
 		}
 
 		debug.Log("daemon", "Restarting process %s (exit code was %d)", processID, exitCode)
+
+		// Update ScriptEntry to restarting state
+		if scriptEntry, ok := r.daemon.scriptRegistry.GetByProcessID(processID); ok {
+			scriptEntry.SetState(StateRestarting)
+			scriptEntry.AddRestartMarker()
+			scriptEntry.IncrementStartCount()
+		}
 
 		// Capture restart event from the dying process before removing it
 		stdout, _ := proc.Stdout()
@@ -336,11 +355,22 @@ func (r *ProcessAutoRestarter) monitorProcess(processID string) {
 
 		if startupErr != nil {
 			debug.Error("daemon", "Failed to restart process %s: %v", processID, startupErr)
+			// Update ScriptEntry to failed state
+			if scriptEntry, ok := r.daemon.scriptRegistry.GetByProcessID(processID); ok {
+				scriptEntry.SetState(StateFailed)
+				scriptEntry.SetLastError(startupErr.Error())
+				scriptEntry.IncrementFailCount()
+			}
 			return
 		}
 
 		state.recordRestart()
 		debug.Log("daemon", "Process %s restarted (new PID: %d)", processID, proc.PID())
+
+		// Update ScriptEntry to running state
+		if scriptEntry, ok := r.daemon.scriptRegistry.GetByProcessID(processID); ok {
+			scriptEntry.SetState(StateRunning)
+		}
 
 		// Flush stale connections on proxies linked to this process
 		r.daemon.FlushScriptProxyConnections(processID)

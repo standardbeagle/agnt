@@ -68,7 +68,7 @@ type ScriptEntry struct {
 	startCount atomic.Int64
 	failCount  atomic.Int64
 
-	// Protected by mu: output history and state history
+	// Protected by mu: output history, state history, and last error
 	mu           sync.RWMutex
 	outputLines  []string
 	outputHead   int
@@ -76,6 +76,7 @@ type ScriptEntry struct {
 	stateHistory []StateTransition
 	resolvedCmd  string
 	resolvedArgs []string
+	lastError    string
 
 	// Session tracking (lock-free via sync.Map)
 	sessions sync.Map // map[string]struct{}
@@ -222,6 +223,20 @@ func (e *ScriptEntry) ResolvedCommand() (string, []string) {
 	return e.resolvedCmd, e.resolvedArgs
 }
 
+// SetLastError records the last error message for the script.
+func (e *ScriptEntry) SetLastError(msg string) {
+	e.mu.Lock()
+	e.lastError = msg
+	e.mu.Unlock()
+}
+
+// LastError returns the last error message.
+func (e *ScriptEntry) LastError() string {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.lastError
+}
+
 // AddSession registers a session as observing this script.
 func (e *ScriptEntry) AddSession(sessionCode string) {
 	e.sessions.Store(sessionCode, struct{}{})
@@ -299,6 +314,24 @@ func (r *ScriptRegistry) List(projectPath string) []*ScriptEntry {
 		return true
 	})
 	return result
+}
+
+// GetByProcessID retrieves a ScriptEntry by its process ID.
+// This is used by the auto-restarter which only knows the processID.
+func (r *ScriptRegistry) GetByProcessID(processID string) (*ScriptEntry, bool) {
+	var found *ScriptEntry
+	r.entries.Range(func(key, value interface{}) bool {
+		entry := value.(*ScriptEntry)
+		if entry.ProcessID == processID {
+			found = entry
+			return false
+		}
+		return true
+	})
+	if found == nil {
+		return nil, false
+	}
+	return found, true
 }
 
 // ListAll returns all ScriptEntry instances across all projects.
