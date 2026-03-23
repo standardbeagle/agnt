@@ -193,20 +193,6 @@ func stripProjectPrefix(id string) string {
 	return id
 }
 
-// shortenProcessLabels returns display labels for processes, truncated to fit
-// the status bar. Strips the project prefix since the bar is project-scoped.
-func shortenProcessLabels(procs []ProcessInfo) []string {
-	const maxLen = 12
-	labels := make([]string, len(procs))
-	for i, p := range procs {
-		labels[i] = stripProjectPrefix(p.ID)
-		if len(labels[i]) > maxLen {
-			labels[i] = labels[i][:maxLen]
-		}
-	}
-	return labels
-}
-
 // processStateIcon returns a distinct shape and color for a process state.
 // Uses different shapes for accessibility (not just color).
 func processStateIcon(state string) (icon, color string) {
@@ -219,6 +205,10 @@ func processStateIcon(state string) (icon, color string) {
 		return "✗", FgYellow // X = stopped/exited
 	case "starting":
 		return "◌", FgCyan // Dashed circle = starting
+	case "restarting":
+		return "◌", FgYellow // Dashed circle = restarting
+	case "idle":
+		return "○", FgBrightBlack // Empty circle = idle/never started
 	default:
 		return "○", FgBrightBlack // Empty circle = unknown/pending
 	}
@@ -367,10 +357,10 @@ func (r *Renderer) DrawIndicator(status Status) {
 		parts = append(parts, fmt.Sprintf("🔗 %s%s%s", FgBrightBlack, IconDisconnected, Reset))
 	}
 
-	// Per-process state icons with contextual emoji
-	for _, p := range status.Processes {
-		icon, color := processStateIcon(p.State)
-		label := processEmoji(stripProjectPrefix(p.ID), p.Command)
+	// Per-script state icons with contextual emoji (persistent across restarts)
+	for _, s := range status.Scripts {
+		icon, color := processStateIcon(s.State)
+		label := processEmoji(s.Name, s.Command)
 		parts = append(parts, fmt.Sprintf("%s %s%s%s", label, color, icon, Reset))
 	}
 
@@ -760,7 +750,7 @@ func (r *Renderer) DrawDashboard(menu Menu, selectedIndex int, status Status) {
 	availHeight := r.height - 2 // Leave room for status bar
 
 	// Determine which panels to show and their sizes
-	processCount := min(len(status.Processes), 6)
+	scriptCount := min(len(status.Scripts), 6)
 	browserCount := min(len(status.BrowserSessions), 4)
 	proxyCount := len(status.Proxies)
 	menuItemCount := len(menu.Items)
@@ -774,22 +764,21 @@ func (r *Renderer) DrawDashboard(menu Menu, selectedIndex int, status Status) {
 	}
 
 	// Calculate panel heights
-	// Process panel: header + per-process lines (ID + last output + URLs)
-	processLines := 0
-	for i, p := range status.Processes {
+	// Script panel: header + per-script lines
+	scriptLines := 0
+	for i, s := range status.Scripts {
 		if i >= 6 {
-			processLines++ // "... and N more"
+			scriptLines++ // "... and N more"
 			break
 		}
-		processLines++ // process line
-		if p.LastOutput != "" {
-			processLines++ // last output
+		scriptLines++ // script line
+		if s.LastError != "" && s.State == "failed" {
+			scriptLines++ // error line
 		}
-		processLines += len(p.URLs)
 	}
-	processPanelH := 0
-	if processCount > 0 {
-		processPanelH = processLines + 2 // border top/bottom
+	scriptPanelH := 0
+	if scriptCount > 0 {
+		scriptPanelH = scriptLines + 2 // border top/bottom
 	}
 
 	// Error panel
@@ -828,10 +817,10 @@ func (r *Renderer) DrawDashboard(menu Menu, selectedIndex int, status Status) {
 	totalPanels := 0
 	totalHeight := 0
 	panelHeights := []int{}
-	if processPanelH > 0 {
+	if scriptPanelH > 0 {
 		totalPanels++
-		panelHeights = append(panelHeights, processPanelH)
-		totalHeight += processPanelH
+		panelHeights = append(panelHeights, scriptPanelH)
+		totalHeight += scriptPanelH
 	}
 	if errorPanelH > 0 {
 		totalPanels++
@@ -894,74 +883,50 @@ func (r *Renderer) DrawDashboard(menu Menu, selectedIndex int, status Status) {
 	currentRow := startRow
 	panelIdx := 0
 
-	// === PROCESSES PANEL ===
-	if processCount > 0 && panelIdx < len(panelHeights) {
+	// === SCRIPTS PANEL ===
+	if scriptCount > 0 && panelIdx < len(panelHeights) {
 		h := panelHeights[panelIdx]
 		panelIdx++
 
-		title := fmt.Sprintf("%s processes", IconProcess)
+		title := fmt.Sprintf("%s scripts", IconProcess)
 		r.drawNiriPanel(currentRow, panelCol, panelWidth, h, title, gradientProcess)
 
 		row := currentRow + 1
 		contentWidth := panelWidth - 4
-		for i, proc := range status.Processes {
+		for i, script := range status.Scripts {
 			if i >= 6 || row >= currentRow+h-1 {
-				if len(status.Processes) > 6 && row < currentRow+h-1 {
+				if len(status.Scripts) > 6 && row < currentRow+h-1 {
 					r.moveTo(row, panelCol+2)
-					r.write(FgBrightBlack + fmt.Sprintf("… %d more", len(status.Processes)-6) + Reset)
+					r.write(FgBrightBlack + fmt.Sprintf("… %d more", len(status.Scripts)-6) + Reset)
 				}
 				break
 			}
 
 			r.moveTo(row, panelCol+2)
-			stateColor := StateColorCode(proc.State)
-			stateIcon := IconConnected
-			if proc.State != "running" {
-				stateIcon = IconDisconnected
-			}
+			icon, iconColor := processStateIcon(script.State)
 
-			// Process line: icon ID (state) runtime
-			runtimeStr := ""
-			if proc.Runtime > 0 {
-				runtimeStr = formatShortDuration(proc.Runtime)
-			}
-
-			idStr := proc.ID
-			if len(idStr) > contentWidth-15 {
-				idStr = idStr[:contentWidth-15] + "…"
+			nameStr := script.Name
+			if len(nameStr) > contentWidth-15 {
+				nameStr = nameStr[:contentWidth-15] + "…"
 			}
 
 			line := fmt.Sprintf("%s%s%s %s%s%s",
-				stateColor, stateIcon, Reset,
-				FgWhite, idStr, Reset)
-			if runtimeStr != "" {
-				line += fmt.Sprintf(" %s%s%s", FgBrightBlack, runtimeStr, Reset)
+				iconColor, icon, Reset,
+				FgWhite, nameStr, Reset)
+			if script.StartCount > 1 {
+				line += fmt.Sprintf(" %sstarts:%d%s", FgBrightBlack, script.StartCount, Reset)
 			}
 			r.write(line)
 			row++
 
-			// Show last output line (dimmed)
-			if proc.LastOutput != "" && row < currentRow+h-1 {
+			// Show last error for failed scripts
+			if script.LastError != "" && script.State == "failed" && row < currentRow+h-1 {
 				r.moveTo(row, panelCol+4)
-				out := proc.LastOutput
-				if len(out) > contentWidth-2 {
-					out = out[:contentWidth-5] + "…"
+				errMsg := script.LastError
+				if len(errMsg) > contentWidth-2 {
+					errMsg = errMsg[:contentWidth-5] + "…"
 				}
-				r.write(FgBrightBlack + out + Reset)
-				row++
-			}
-
-			// Show URLs
-			for _, urlStr := range proc.URLs {
-				if row >= currentRow+h-1 {
-					break
-				}
-				r.moveTo(row, panelCol+4)
-				displayURL := urlStr
-				if len(displayURL) > contentWidth-2 {
-					displayURL = displayURL[:contentWidth-5] + "…"
-				}
-				r.write(FgBrightCyan + Underline + displayURL + Reset)
+				r.write(FgRed + errMsg + Reset)
 				row++
 			}
 		}
@@ -1313,41 +1278,39 @@ func (r *Renderer) drawOverviewContent(startRow, col, width, maxRows int, status
 	}
 	row += 2
 
-	// Processes summary
-	if len(status.Processes) > 0 && row < startRow+maxRows {
+	// Scripts summary (persistent state from ScriptRegistry)
+	if len(status.Scripts) > 0 && row < startRow+maxRows {
 		r.moveTo(row, col)
-		r.write(Bold + "processes" + Reset)
+		r.write(Bold + "scripts" + Reset)
 		row++
 
-		for i, proc := range status.Processes {
+		for i, script := range status.Scripts {
 			if row >= startRow+maxRows || i >= 8 {
 				break
 			}
 			r.moveTo(row, col+1)
-			stateColor := StateColorCode(proc.State)
-			stateIcon := IconConnected
-			if proc.State != "running" {
-				stateIcon = IconDisconnected
+			icon, iconColor := processStateIcon(script.State)
+
+			nameStr := script.Name
+			if len(nameStr) > width-20 {
+				nameStr = nameStr[:width-23] + "…"
 			}
 
-			idStr := stripProjectPrefix(proc.ID)
-			if len(idStr) > width-20 {
-				idStr = idStr[:width-23] + "…"
+			r.write(fmt.Sprintf("%s%s%s %s", iconColor, icon, Reset, nameStr))
+
+			if script.FailCount > 0 {
+				r.write(fmt.Sprintf(" %sfails:%d%s", FgRed, script.FailCount, Reset))
 			}
 
-			r.write(fmt.Sprintf("%s%s%s %s", stateColor, stateIcon, Reset, idStr))
-
-			if proc.Runtime > 0 {
-				r.write(fmt.Sprintf(" %s%s%s", FgBrightBlack, formatShortDuration(proc.Runtime), Reset))
-			}
-
-			// Show URLs inline
-			for _, u := range proc.URLs {
-				display := u
-				if len(display) > width-10 {
-					display = display[:width-13] + "…"
+			if script.LastError != "" && script.State == "failed" {
+				errMsg := script.LastError
+				maxErr := width - len(nameStr) - 20
+				if maxErr > 0 && len(errMsg) > maxErr {
+					errMsg = errMsg[:maxErr-1] + "…"
 				}
-				r.write(fmt.Sprintf(" %s%s%s", FgBrightCyan+Underline, display, Reset))
+				if maxErr > 0 {
+					r.write(fmt.Sprintf(" %s%s%s", FgBrightBlack, errMsg, Reset))
+				}
 			}
 			row++
 		}
@@ -1408,45 +1371,6 @@ func (r *Renderer) drawOverviewContent(startRow, col, width, maxRows int, status
 		}
 	}
 
-	// Startup log entries
-	if len(status.StartupLog) > 0 && row < startRow+maxRows-1 {
-		row++
-		r.moveTo(row, col)
-		r.write(Bold + "startup log" + Reset)
-		row++
-
-		for _, entry := range status.StartupLog {
-			if row >= startRow+maxRows-2 {
-				break
-			}
-			r.moveTo(row, col+1)
-			icon := " "
-			levelColor := FgBrightBlack
-			switch entry.Level {
-			case "error":
-				icon = IconError
-				levelColor = FgRed
-			case "warning":
-				icon = IconWarning
-				levelColor = FgYellow
-			case "info":
-				icon = IconOK
-				levelColor = FgGreen
-			}
-
-			msg := entry.Message
-			maxMsg := width - 20
-			if maxMsg > 0 && len(msg) > maxMsg {
-				msg = msg[:maxMsg-1] + "…"
-			}
-
-			r.write(fmt.Sprintf("%s%s%s %s %s%s%s",
-				levelColor, icon, Reset, msg,
-				FgBrightBlack, formatShortTimeAgo(entry.Timestamp), Reset))
-			row++
-		}
-	}
-
 	// Actions
 	if row < startRow+maxRows-1 {
 		row++
@@ -1473,55 +1397,53 @@ func (r *Renderer) drawOverviewContent(startRow, col, width, maxRows int, status
 }
 
 // drawProcessPanelContent draws the content for a process panel.
+// Panel.ID is the script name; state comes from the ScriptInfo in status.Scripts.
 func (r *Renderer) drawProcessPanelContent(startRow, col, width, maxRows int, panel PanelItem, status Status) {
-	// Find the process
-	var proc *ProcessInfo
-	for i := range status.Processes {
-		if status.Processes[i].ID == panel.ID {
-			proc = &status.Processes[i]
+	// Find the script by name
+	var script *ScriptInfo
+	for i := range status.Scripts {
+		if status.Scripts[i].Name == panel.ID {
+			script = &status.Scripts[i]
 			break
 		}
 	}
 
 	row := startRow
-	if proc == nil {
-		// Process removed from registry — show header as stopped
+	if script == nil {
+		// Script removed from registry — show header with last known state
 		r.moveTo(row, col)
 		state := panel.ProcessState
 		if state == "" {
 			state = "stopped"
 		}
 		stateColor := StateColorCode(state)
-		r.write(fmt.Sprintf("%s %s%s%s", stripProjectPrefix(panel.ID), stateColor+Bold, state, Reset))
+		r.write(fmt.Sprintf("%s %s%s%s", panel.ID, stateColor+Bold, state, Reset))
 		if panel.IsDone() {
 			r.write(fmt.Sprintf("  %sx%s close", FgBrightBlack+Bold, Reset))
 		}
 		row++
 	} else {
-		// Process header info
+		// Script header info
 		r.moveTo(row, col)
-		stateColor := StateColorCode(proc.State)
-		r.write(fmt.Sprintf("%s %s%s%s%s",
-			proc.Command,
-			stateColor+Bold, proc.State, Reset,
-			func() string {
-				if proc.Runtime > 0 {
-					return fmt.Sprintf(" %s%s%s", FgBrightBlack, formatShortDuration(proc.Runtime), Reset)
-				}
-				return ""
-			}()))
+		stateColor := StateColorCode(script.State)
+		r.write(fmt.Sprintf("%s %s%s%s",
+			script.Command,
+			stateColor+Bold, script.State, Reset))
+		if script.StartCount > 1 {
+			r.write(fmt.Sprintf(" %sstarts:%d%s", FgBrightBlack, script.StartCount, Reset))
+		}
 		if panel.IsDone() {
 			r.write(fmt.Sprintf("  %sx%s close", FgBrightBlack+Bold, Reset))
 		}
 		row++
 
-		// URLs
-		for _, u := range proc.URLs {
-			if row >= startRow+maxRows {
-				break
-			}
+		if script.LastError != "" && script.State == "failed" {
 			r.moveTo(row, col)
-			r.write(FgBrightCyan + Underline + u + Reset)
+			errMsg := script.LastError
+			if len(errMsg) > width {
+				errMsg = errMsg[:width-1] + "…"
+			}
+			r.write(fmt.Sprintf("%s%s%s", FgRed, errMsg, Reset))
 			row++
 		}
 	}

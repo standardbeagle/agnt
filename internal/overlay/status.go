@@ -171,7 +171,13 @@ func (f *StatusFetcher) fetchStatus() {
 	status.DaemonConnected = ConnectionConnected
 	status.DaemonPingMs = pingMs
 
-	// Fetch processes
+	// Fetch scripts (persistent state from ScriptRegistry)
+	scripts, err := f.fetchScripts()
+	if err == nil {
+		status.Scripts = scripts
+	}
+
+	// Fetch processes (still needed for proxy linking and URLs)
 	processes, err := f.fetchProcesses()
 	if err == nil {
 		status.Processes = processes
@@ -186,9 +192,6 @@ func (f *StatusFetcher) fetchStatus() {
 	// Link processes and proxies together
 	f.linkProcessesAndProxies(status.Processes, status.Proxies)
 
-	// Fetch last output for running processes (limited to first few to avoid slowdown)
-	f.fetchLastOutputForProcesses(status.Processes)
-
 	// Fetch browser sessions from each proxy
 	sessions, err := f.fetchBrowserSessions(proxies)
 	if err == nil {
@@ -201,14 +204,61 @@ func (f *StatusFetcher) fetchStatus() {
 		status.RecentErrors = recentErrors
 	}
 
-	// Fetch startup log (also extracts errors into RecentErrors)
-	startupLog, startupErrors, err := f.fetchStartupLog()
-	if err == nil {
-		status.StartupLog = startupLog
-		status.RecentErrors = append(status.RecentErrors, startupErrors...)
+	f.overlay.UpdateStatus(status)
+}
+
+func (f *StatusFetcher) fetchScripts() ([]ScriptInfo, error) {
+	result, err := f.conn.Request(protocol.VerbScript, protocol.SubVerbList).
+		WithJSON(protocol.DirectoryFilter{Directory: f.projectPath}).
+		JSON()
+	if err != nil {
+		return nil, err
 	}
 
-	f.overlay.UpdateStatus(status)
+	scriptsRaw, ok := result["scripts"].([]interface{})
+	if !ok {
+		return nil, nil
+	}
+
+	scripts := make([]ScriptInfo, 0, len(scriptsRaw))
+	for _, s := range scriptsRaw {
+		sm, ok := s.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		info := ScriptInfo{}
+		if name, ok := sm["name"].(string); ok {
+			info.Name = name
+		}
+		if pid, ok := sm["process_id"].(string); ok {
+			info.ProcessID = pid
+		}
+		if state, ok := sm["state"].(string); ok {
+			info.State = state
+		}
+		if cmd, ok := sm["command"].(string); ok {
+			info.Command = cmd
+		}
+		if sc, ok := sm["start_count"].(float64); ok {
+			info.StartCount = int64(sc)
+		}
+		if fc, ok := sm["fail_count"].(float64); ok {
+			info.FailCount = int64(fc)
+		}
+		if le, ok := sm["last_error"].(string); ok {
+			info.LastError = le
+		}
+
+		scripts = append(scripts, info)
+	}
+
+	// Sort by name for stable ordering
+	sort.Slice(scripts, func(i, j int) bool {
+		return scripts[i].Name < scripts[j].Name
+	})
+
+	return scripts, nil
 }
 
 func (f *StatusFetcher) fetchProcesses() ([]ProcessInfo, error) {
@@ -400,64 +450,6 @@ func (f *StatusFetcher) fetchRecentErrors() ([]ErrorInfo, error) {
 	return errors, nil
 }
 
-// fetchStartupLog fetches the startup log and also extracts errors into the provided slice.
-func (f *StatusFetcher) fetchStartupLog() ([]StartupLogEntry, []ErrorInfo, error) {
-	result, err := f.conn.Request(protocol.VerbAlerts, protocol.SubVerbStartupLog).
-		WithJSON(map[string]interface{}{"limit": 20}).
-		JSON()
-	if err != nil {
-		return nil, nil, err
-	}
-
-	entriesRaw, ok := result["entries"].([]interface{})
-	if !ok {
-		return nil, nil, nil
-	}
-
-	cutoff := time.Now().Add(-5 * time.Minute)
-	var entries []StartupLogEntry
-	var errors []ErrorInfo
-
-	for _, e := range entriesRaw {
-		entry, ok := e.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		var timestamp time.Time
-		if ts, ok := entry["timestamp"].(string); ok {
-			timestamp, _ = time.Parse(time.RFC3339, ts)
-		}
-		scriptName, _ := entry["script_name"].(string)
-		level, _ := entry["level"].(string)
-		eventType, _ := entry["event_type"].(string)
-		message, _ := entry["message"].(string)
-
-		entries = append(entries, StartupLogEntry{
-			ScriptName: scriptName,
-			Level:      level,
-			EventType:  eventType,
-			Message:    message,
-			Timestamp:  timestamp,
-		})
-
-		// Also collect recent errors for the error display
-		if level == "error" && timestamp.After(cutoff) {
-			source := "startup:" + scriptName
-			if scriptName == "" {
-				if pid, ok := entry["process_id"].(string); ok {
-					source = "startup:" + pid
-				}
-			}
-			errors = append(errors, ErrorInfo{
-				Source:    source,
-				Message:   message,
-				Timestamp: timestamp,
-			})
-		}
-	}
-	return entries, errors, nil
-}
-
 func (f *StatusFetcher) fetchBrowserSessions(proxies []ProxyInfo) ([]BrowserSession, error) {
 	var sessions []BrowserSession
 
@@ -574,56 +566,6 @@ func (f *StatusFetcher) linkProcessesAndProxies(processes []ProcessInfo, proxies
 	}
 }
 
-// fetchLastOutputForProcesses fetches the last output line for each running process.
-// URLs are now provided by the server (via URL tracker), so this only fetches
-// the last output line for display purposes.
-// Limited to first 6 processes to avoid slowing down the status update.
-func (f *StatusFetcher) fetchLastOutputForProcesses(processes []ProcessInfo) {
-	const maxProcesses = 6
-	const maxOutputLen = 120 // Truncate long lines for LastOutput
-
-	for i := range processes {
-		if i >= maxProcesses {
-			break
-		}
-		proc := &processes[i]
-		if proc.State != "running" && proc.State != "failed" {
-			continue
-		}
-
-		// Fetch last 10 lines for display (URLs come from server via URLTracker)
-		output, err := f.conn.Request(protocol.VerbProc, protocol.SubVerbOutput, proc.ID).
-			WithArgs("stream=combined", "tail=10").
-			String()
-		if err != nil {
-			continue
-		}
-
-		// Clean up the output for LastOutput field
-		output = strings.TrimSpace(output)
-		if output == "" {
-			continue
-		}
-
-		// Take only the last non-empty line for LastOutput
-		lines := strings.Split(output, "\n")
-		for j := len(lines) - 1; j >= 0; j-- {
-			line := strings.TrimSpace(lines[j])
-			if line != "" {
-				output = line
-				break
-			}
-		}
-
-		// Truncate if too long
-		if len(output) > maxOutputLen {
-			output = output[:maxOutputLen-3] + "..."
-		}
-
-		proc.LastOutput = output
-	}
-}
-
 // DaemonBashRunner implements BashRunner using a shared daemon connection.
 type DaemonBashRunner struct {
 	conn    *daemon.Conn
@@ -681,27 +623,60 @@ func (r *DaemonBashRunner) RunBashCommand(command string) (string, error) {
 
 // DaemonOutputFetcher implements ProcessOutputFetcher using a shared daemon connection.
 type DaemonOutputFetcher struct {
-	conn *daemon.Conn
+	conn        *daemon.Conn
+	projectPath string
 }
 
 // NewDaemonOutputFetcher creates a new DaemonOutputFetcher using a shared connection.
 func NewDaemonOutputFetcher(conn *daemon.Conn) *DaemonOutputFetcher {
+	projectPath, err := os.Getwd()
+	if err != nil {
+		projectPath = ""
+	}
 	return &DaemonOutputFetcher{
-		conn: conn,
+		conn:        conn,
+		projectPath: projectPath,
 	}
 }
 
 // GetProcessOutput fetches the last N lines of output for a process.
 func (f *DaemonOutputFetcher) GetProcessOutput(processID string, tailLines int) (string, error) {
-	// Fetch output with tail filter using request builder
 	output, err := f.conn.Request(protocol.VerbProc, protocol.SubVerbOutput, processID).
 		WithArgs("stream=combined", fmt.Sprintf("tail=%d", tailLines)).
 		String()
 	if err != nil {
 		return "", err
 	}
-
 	return output, nil
+}
+
+// GetScriptOutput fetches the last N lines of output for a script by name.
+func (f *DaemonOutputFetcher) GetScriptOutput(scriptName string, tailLines int) (string, error) {
+	payload := map[string]interface{}{
+		"directory": f.projectPath,
+	}
+	if tailLines > 0 {
+		payload["tail"] = tailLines
+	}
+	result, err := f.conn.Request(protocol.VerbScript, protocol.SubVerbOutput, scriptName).
+		WithJSON(payload).
+		JSON()
+	if err != nil {
+		return "", err
+	}
+
+	linesRaw, ok := result["lines"].([]interface{})
+	if !ok {
+		return "", nil
+	}
+
+	lines := make([]string, 0, len(linesRaw))
+	for _, l := range linesRaw {
+		if s, ok := l.(string); ok {
+			lines = append(lines, s)
+		}
+	}
+	return strings.Join(lines, "\n"), nil
 }
 
 // DaemonConnectorImpl implements DaemonConnector using a shared connection.
