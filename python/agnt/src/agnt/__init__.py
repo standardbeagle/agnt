@@ -23,7 +23,7 @@ For more information, see:
     https://standardbeagle.github.io/agnt/
 """
 
-__version__ = "0.12.15"
+__version__ = "0.12.16"
 __all__ = ["main", "get_binary_path", "run"]
 
 import os
