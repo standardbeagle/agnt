@@ -82,13 +82,16 @@ type BrowserSession struct {
 	LastActivity time.Time
 }
 
-// StartupLogEntry holds a startup log entry for display.
-type StartupLogEntry struct {
-	ScriptName string
-	Level      string // "info", "warning", "error"
-	EventType  string
-	Message    string
-	Timestamp  time.Time
+// ScriptInfo holds information about a managed script from the ScriptRegistry.
+// Scripts persist across process lifetimes, so their state is always available.
+type ScriptInfo struct {
+	Name       string // Script name (e.g., "dev")
+	ProcessID  string // Current process ID (empty if idle)
+	State      string // "idle", "starting", "running", "failed", "stopped", "restarting"
+	Command    string
+	StartCount int64
+	FailCount  int64
+	LastError  string
 }
 
 // Status holds the current system status for display.
@@ -96,10 +99,10 @@ type Status struct {
 	DaemonConnected ConnectionStatus
 	DaemonPingMs    int64
 	Processes       []ProcessInfo
+	Scripts         []ScriptInfo
 	Proxies         []ProxyInfo
 	BrowserSessions []BrowserSession
 	RecentErrors    []ErrorInfo
-	StartupLog      []StartupLogEntry
 	LastUpdate      time.Time
 }
 
@@ -462,7 +465,8 @@ func (o *Overlay) activateOverlay(directPanel bool) {
 }
 
 // buildPanelItems merges current status into the panel list.
-// Existing panels are preserved (content, scroll); new processes/proxies are added.
+// Existing panels are preserved (content, scroll); new scripts/proxies are added.
+// Panel IDs for scripts use the script name (not the process ID).
 func (o *Overlay) buildPanelItems() {
 	o.statusMu.RLock()
 	status := o.status
@@ -473,37 +477,39 @@ func (o *Overlay) buildPanelItems() {
 		o.panelItems = append([]PanelItem{{Type: "overview", Label: "overview"}}, o.panelItems...)
 	}
 
-	// Index existing panels and build process status lookup in one pass
+	// Index existing panels
 	existing := make(map[string]int, len(o.panelItems))
 	for i, p := range o.panelItems {
 		if p.ID != "" {
 			existing[p.ID] = i
 		}
 	}
-	activeProcesses := make(map[string]string, len(status.Processes))
-	for _, p := range status.Processes {
-		activeProcesses[p.ID] = p.State
+
+	// Build script state lookup
+	activeScripts := make(map[string]string, len(status.Scripts))
+	for _, s := range status.Scripts {
+		activeScripts[s.Name] = s.State
 	}
 
-	// Update existing panels and add new ones
-	for id, state := range activeProcesses {
-		if idx, ok := existing[id]; ok {
-			o.panelItems[idx].ProcessState = state
+	// Update existing script panels and add new ones
+	for _, s := range status.Scripts {
+		if idx, ok := existing[s.Name]; ok {
+			o.panelItems[idx].ProcessState = s.State
 		} else {
-			label := stripProjectPrefix(id)
+			label := s.Name
 			if len(label) > 12 {
 				label = label[:12]
 			}
 			o.panelItems = append(o.panelItems, PanelItem{
-				Type: "process", ID: id, Label: label, ProcessState: state,
+				Type: "process", ID: s.Name, Label: label, ProcessState: s.State,
 			})
 		}
 	}
 
-	// Mark panels whose process is gone as stopped
+	// Mark panels whose script is gone as stopped
 	for i := range o.panelItems {
 		p := &o.panelItems[i]
-		if p.Type == "process" && activeProcesses[p.ID] == "" {
+		if p.Type == "process" && activeScripts[p.ID] == "" {
 			if p.ProcessState == "" || p.ProcessState == "running" {
 				p.ProcessState = "stopped"
 			}

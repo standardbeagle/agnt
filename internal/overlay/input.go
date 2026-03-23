@@ -20,6 +20,8 @@ type BashRunner interface {
 type ProcessOutputFetcher interface {
 	// GetProcessOutput fetches the last N lines of output for a process.
 	GetProcessOutput(processID string, tailLines int) (string, error)
+	// GetScriptOutput fetches the last N lines of output for a script by name.
+	GetScriptOutput(scriptName string, tailLines int) (string, error)
 }
 
 // DaemonConnector is an interface for connecting to and managing the daemon.
@@ -367,7 +369,7 @@ func (r *InputRouter) handleMenuKey(key string) {
 
 						panel := &r.overlay.panelItems[i]
 						if panel.Type == "process" && r.outputFetcher != nil {
-							r.fetchAndAppendOutput(panel)
+							r.fetchScriptOutput(panel)
 						}
 
 						r.overlay.renderer.ClearScreen()
@@ -405,37 +407,24 @@ func (r *InputRouter) exitPanelMode() {
 	r.overlay.hideMenu()
 }
 
-// fetchAndAppendOutput fetches process output and appends new lines to the panel's content buffer.
+// fetchScriptOutput fetches script output and replaces the panel's content buffer.
+// Script output includes restart markers from the ScriptRegistry, so no diffing is needed.
 // Must be called with overlay.mu held (temporarily releases during I/O).
 const maxPanelLines = 2000
 
-func (r *InputRouter) fetchAndAppendOutput(panel *PanelItem) {
+func (r *InputRouter) fetchScriptOutput(panel *PanelItem) {
 	if r.outputFetcher == nil {
 		return
 	}
 	r.overlay.mu.Unlock()
-	output, err := r.outputFetcher.GetProcessOutput(panel.ID, 500)
+	output, err := r.outputFetcher.GetScriptOutput(panel.ID, maxPanelLines)
 	r.overlay.mu.Lock()
 
 	if err != nil || output == "" {
 		return
 	}
 	output = strings.TrimRight(output, "\n")
-
-	if panel.Content == "" {
-		panel.SetContent(output)
-		return
-	}
-
-	// Detect whether output extends existing content or is from a restart
-	if strings.HasSuffix(output, panel.Content) || len(output) <= len(panel.Content) {
-		return // no new content
-	}
-	if strings.HasPrefix(output, panel.Content) {
-		panel.SetContent(output)
-	} else {
-		panel.AppendContent(output, "\n--- restarted ---\n", maxPanelLines)
-	}
+	panel.SetContent(output)
 }
 
 // closeCurrentPanel removes the current panel if the process has stopped.
@@ -497,7 +486,7 @@ func (r *InputRouter) handlePanelNav(delta int) {
 	// Fetch content for the focused panel
 	panel := &r.overlay.panelItems[newIndex]
 	if panel.Type == "process" && r.outputFetcher != nil {
-		r.fetchAndAppendOutput(panel)
+		r.fetchScriptOutput(panel)
 	}
 
 	if !wasInPanelMode {
@@ -1276,22 +1265,22 @@ func (r *EscapeSequenceReader) IsPending() bool {
 	return r.state != 0
 }
 
-// showProcessViewer shows the output of the Nth process as a full-screen overlay.
+// showProcessViewer shows the output of the Nth script as a full-screen overlay.
 func (r *InputRouter) showProcessViewer(n int) {
 	if r.outputFetcher == nil {
 		return
 	}
 
-	// Get the process list from overlay status
+	// Get the script list from overlay status
 	status := r.overlay.GetStatus()
-	if n < 1 || n > len(status.Processes) {
+	if n < 1 || n > len(status.Scripts) {
 		return
 	}
 
-	proc := status.Processes[n-1]
+	script := status.Scripts[n-1]
 
-	// Fetch the process output
-	output, err := r.outputFetcher.GetProcessOutput(proc.ID, 100)
+	// Fetch the script output
+	output, err := r.outputFetcher.GetScriptOutput(script.Name, 100)
 	if err != nil {
 		output = "Error fetching output: " + err.Error()
 	}
@@ -1310,7 +1299,7 @@ func (r *InputRouter) showProcessViewer(n int) {
 		r.overlay.renderer.EnterAltScreen()
 	}
 
-	r.overlay.renderer.DrawProcessOutput(proc.ID, proc.Command, proc.State, output)
+	r.overlay.renderer.DrawProcessOutput(script.Name, script.Command, script.State, output)
 }
 
 // closeProcessViewer closes the process viewer.
