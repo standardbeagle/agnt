@@ -54,8 +54,10 @@ type RunOutput struct {
 
 // ProcInput defines input for the proc tool.
 type ProcInput struct {
-	Action    string `json:"action" jsonschema:"Action: status, output, stop, restart, list, cleanup_port, autorestart"`
+	Action    string `json:"action" jsonschema:"Action: status, output, stop, restart, list, cleanup_port, autorestart, scripts, script_output, script_history"`
 	ProcessID string `json:"process_id,omitempty" jsonschema:"Process ID (required for status/output/stop/restart/autorestart)"`
+	// Script actions
+	ScriptName string `json:"script_name,omitempty" jsonschema:"Script name (required for script_output/script_history)"`
 	// Output filters
 	Stream string `json:"stream,omitempty" jsonschema:"stdout, stderr, or combined (default)"`
 	Tail   int    `json:"tail,omitempty" jsonschema:"Last N lines only"`
@@ -107,6 +109,7 @@ type ProcEntry struct {
 	Summary     string `json:"summary"`
 	Runtime     string `json:"runtime"`
 	ProjectPath string `json:"project_path,omitempty"`
+	ScriptName  string `json:"script_name,omitempty"`
 }
 
 // RegisterProcessTools adds process-related MCP tools to the server.
@@ -293,6 +296,8 @@ func makeProcHandler(pm *process.ProcessManager) func(context.Context, *mcp.Call
 			return handleList(pm)
 		case "cleanup_port":
 			return handleCleanupPort(ctx, pm, input)
+		case "scripts", "script_output", "script_history":
+			return errorResult("script actions require daemon mode"), ProcOutput{}, nil
 		default:
 			return errorResult(fmt.Sprintf("unknown action %q. Use: status, output, stop, list, cleanup_port", input.Action)), ProcOutput{}, nil
 		}
