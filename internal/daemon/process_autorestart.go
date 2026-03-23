@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/debug"
+	"github.com/standardbeagle/go-cli-server/script"
 	"golang.org/x/sync/semaphore"
 )
 
@@ -290,16 +291,7 @@ func (r *ProcessAutoRestarter) monitorProcess(processID string) {
 
 		exitCode := proc.ExitCode()
 
-		// Update ScriptEntry state on process exit
-		if scriptEntry, ok := r.daemon.scriptRegistry.GetByProcessID(processID); ok {
-			if exitCode == 0 {
-				scriptEntry.SetState(StateStopped)
-			} else {
-				scriptEntry.SetState(StateFailed)
-				scriptEntry.SetLastError(fmt.Sprintf("exit code %d", exitCode))
-				scriptEntry.IncrementFailCount()
-			}
-		}
+		// ScriptEntry state on process exit is now handled by ProcessManager lifecycle
 
 		if !state.shouldRestart(exitCode) {
 			debug.Log("daemon", "Process %s exited (code %d), max restarts reached or disabled", processID, exitCode)
@@ -323,11 +315,10 @@ func (r *ProcessAutoRestarter) monitorProcess(processID string) {
 
 		debug.Log("daemon", "Restarting process %s (exit code was %d)", processID, exitCode)
 
-		// Update ScriptEntry to restarting state
+		// Mark ScriptEntry as restarting (not handled by ProcessManager lifecycle)
 		if scriptEntry, ok := r.daemon.scriptRegistry.GetByProcessID(processID); ok {
-			scriptEntry.SetState(StateRestarting)
+			scriptEntry.SetState(script.StateRestarting)
 			scriptEntry.AddRestartMarker()
-			scriptEntry.IncrementStartCount()
 		}
 
 		// Capture restart event from the dying process before removing it
@@ -355,9 +346,9 @@ func (r *ProcessAutoRestarter) monitorProcess(processID string) {
 
 		if startupErr != nil {
 			debug.Error("daemon", "Failed to restart process %s: %v", processID, startupErr)
-			// Update ScriptEntry to failed state
+			// Update ScriptEntry to failed state (process never started, so lifecycle won't handle this)
 			if scriptEntry, ok := r.daemon.scriptRegistry.GetByProcessID(processID); ok {
-				scriptEntry.SetState(StateFailed)
+				scriptEntry.SetState(script.StateFailed)
 				scriptEntry.SetLastError(startupErr.Error())
 				scriptEntry.IncrementFailCount()
 			}
@@ -367,10 +358,7 @@ func (r *ProcessAutoRestarter) monitorProcess(processID string) {
 		state.recordRestart()
 		debug.Log("daemon", "Process %s restarted (new PID: %d)", processID, proc.PID())
 
-		// Update ScriptEntry to running state
-		if scriptEntry, ok := r.daemon.scriptRegistry.GetByProcessID(processID); ok {
-			scriptEntry.SetState(StateRunning)
-		}
+		// ScriptEntry running state is now set by ProcessManager lifecycle on process start
 
 		// Flush stale connections on proxies linked to this process
 		r.daemon.FlushScriptProxyConnections(processID)

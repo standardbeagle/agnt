@@ -10,6 +10,7 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/protocol"
+	"github.com/standardbeagle/go-cli-server/script"
 )
 
 func TestDaemon_ScriptProxyTracking(t *testing.T) {
@@ -733,7 +734,7 @@ scripts {
 	// echo exits immediately and succeeds, so state should be Running
 	// (the process starts and the monitoring period passes)
 	state := entry.State()
-	if state != StateRunning && state != StateFailed {
+	if state != script.StateRunning && state != script.StateFailed {
 		t.Errorf("Expected state Running or Failed (echo exits fast), got %s", state)
 	}
 
@@ -769,11 +770,11 @@ func TestDaemon_AutostartSkipsRunningScript(t *testing.T) {
 
 	// Pre-register a script as Running in the registry
 	cfg := &config.ScriptConfig{Command: "echo", Args: []string{"hello"}}
-	entry, err := d.ScriptRegistry().Register("test", tmpDir, cfg)
+	entry, err := d.ScriptRegistry().Register("test", tmpDir, scriptConfigToEntry(cfg))
 	if err != nil {
 		t.Fatalf("Register failed: %v", err)
 	}
-	entry.SetState(StateRunning)
+	entry.SetState(script.StateRunning)
 
 	// Now call autostartScript directly -- should skip because ScriptRegistry says Running
 	proxyConfigs := map[string]*config.ProxyConfig{}
@@ -789,8 +790,8 @@ func TestDaemon_AutostartSkipsRunningScript(t *testing.T) {
 }
 
 func TestDaemon_ScriptRegistryLastError(t *testing.T) {
-	reg := NewScriptRegistry()
-	cfg := &config.ScriptConfig{Run: "npm start"}
+	reg := script.NewRegistry()
+	cfg := &script.Config{Run: "npm start"}
 
 	entry, err := reg.Register("dev", "/home/user/myapp", cfg)
 	if err != nil {
@@ -808,8 +809,8 @@ func TestDaemon_ScriptRegistryLastError(t *testing.T) {
 }
 
 func TestScriptRegistry_GetByProcessID(t *testing.T) {
-	reg := NewScriptRegistry()
-	cfg := &config.ScriptConfig{Run: "npm start"}
+	reg := script.NewRegistry()
+	cfg := &script.Config{Run: "npm start"}
 
 	entry, err := reg.Register("dev", "/home/user/myapp", cfg)
 	if err != nil {
