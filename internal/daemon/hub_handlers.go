@@ -399,6 +399,14 @@ func (d *Daemon) registerAgntCommands() {
 		Handler:     d.hubHandleAlerts,
 	})
 
+	// SCRIPT command
+	d.hub.RegisterCommand(hubpkg.CommandDefinition{
+		Verb:        "SCRIPT",
+		SubVerbs:    []string{"LIST", "GET", "OUTPUT", "RESTART", "STOP"},
+		Description: "Query and control managed scripts",
+		Handler:     d.hubHandleScript,
+	})
+
 	// STOP-ALL command
 	d.hub.RegisterCommand(hubpkg.CommandDefinition{
 		Verb:        "STOP-ALL",
@@ -413,7 +421,7 @@ func (d *Daemon) registerAgntCommands() {
 		Handler:     d.hubHandleRestartAll,
 	})
 
-	debug.Log("daemon", "Registered %d agnt-specific commands with Hub", 19)
+	debug.Log("daemon", "Registered %d agnt-specific commands with Hub", 20)
 }
 
 // agntRunConfig extends the hub's RunConfig with agnt-specific fields.
@@ -4158,5 +4166,291 @@ func (d *Daemon) hubHandleStartupLog(conn *hubpkg.Connection, cmd *hubproto.Comm
 		"entries": entries,
 		"count":   len(entries),
 	})
+	return conn.WriteJSON(data)
+}
+
+// hubHandleScript handles the SCRIPT command and its sub-verbs.
+func (d *Daemon) hubHandleScript(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	debug.Log("daemon", "SCRIPT %s: args=%v", cmd.SubVerb, cmd.Args)
+	switch cmd.SubVerb {
+	case "LIST":
+		return d.hubHandleScriptList(conn, cmd)
+	case "GET":
+		return d.hubHandleScriptGet(conn, cmd)
+	case "OUTPUT":
+		return d.hubHandleScriptOutput(conn, cmd)
+	case "RESTART":
+		return d.hubHandleScriptRestart(ctx, conn, cmd)
+	case "STOP":
+		return d.hubHandleScriptStop(ctx, conn, cmd)
+	case "":
+		return writeStructuredErr(conn, "daemon", &hubproto.StructuredError{
+			Code:         hubproto.ErrMissingParam,
+			Message:      "action required",
+			Command:      "SCRIPT",
+			Param:        "action",
+			ValidActions: []string{"LIST", "GET", "OUTPUT", "RESTART", "STOP"},
+		})
+	default:
+		return writeStructuredErr(conn, "daemon", &hubproto.StructuredError{
+			Code:         hubproto.ErrInvalidAction,
+			Message:      "unknown action",
+			Command:      "SCRIPT",
+			Action:       cmd.SubVerb,
+			ValidActions: []string{"LIST", "GET", "OUTPUT", "RESTART", "STOP"},
+		})
+	}
+}
+
+// resolveScriptProjectPath extracts the project path from the command's JSON data
+// or falls back to the connection's session project path.
+func (d *Daemon) resolveScriptProjectPath(conn *hubpkg.Connection, cmd *hubproto.Command) string {
+	var filter struct {
+		Directory string `json:"directory"`
+	}
+	if len(cmd.Data) > 0 {
+		_ = json.Unmarshal(cmd.Data, &filter)
+	}
+	if filter.Directory != "" {
+		return normalizePath(filter.Directory)
+	}
+	if sessionCode := conn.SessionCode(); sessionCode != "" {
+		if session, ok := d.sessionRegistry.Get(sessionCode); ok {
+			return normalizePath(session.ProjectPath)
+		}
+	}
+	return ""
+}
+
+// scriptEntryToSummary converts a ScriptEntry to a JSON-friendly summary map.
+func scriptEntryToSummary(entry *ScriptEntry) map[string]interface{} {
+	cmd, args := entry.ResolvedCommand()
+
+	summary := map[string]interface{}{
+		"name":        entry.Name,
+		"state":       entry.State().String(),
+		"process_id":  entry.ProcessID,
+		"start_count": entry.StartCount(),
+		"fail_count":  entry.FailCount(),
+		"command":     cmd,
+		"args":        args,
+	}
+
+	lastErr := entry.LastError()
+	if lastErr != "" {
+		summary["last_error"] = lastErr
+	}
+
+	// Derive last_started from state history
+	history := entry.StateHistory()
+	for i := len(history) - 1; i >= 0; i-- {
+		if history[i].State == StateStarting {
+			summary["last_started"] = history[i].Timestamp.Format(time.RFC3339)
+			break
+		}
+	}
+
+	return summary
+}
+
+// hubHandleScriptList handles SCRIPT LIST.
+func (d *Daemon) hubHandleScriptList(conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	projectPath := d.resolveScriptProjectPath(conn, cmd)
+	if projectPath == "" {
+		return conn.WriteErr(hubproto.ErrMissingParam, "directory required (via JSON data or session)")
+	}
+
+	entries := d.scriptRegistry.List(projectPath)
+
+	scripts := make([]map[string]interface{}, 0, len(entries))
+	for _, entry := range entries {
+		scripts = append(scripts, scriptEntryToSummary(entry))
+	}
+
+	data, _ := json.Marshal(map[string]interface{}{
+		"scripts": scripts,
+		"count":   len(scripts),
+	})
+	return conn.WriteJSON(data)
+}
+
+// hubHandleScriptGet handles SCRIPT GET <name>.
+func (d *Daemon) hubHandleScriptGet(conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	if len(cmd.Args) < 1 {
+		return conn.WriteErr(hubproto.ErrMissingParam, "script name required")
+	}
+
+	name := cmd.Args[0]
+	projectPath := d.resolveScriptProjectPath(conn, cmd)
+	if projectPath == "" {
+		return conn.WriteErr(hubproto.ErrMissingParam, "directory required (via JSON data or session)")
+	}
+
+	entry, ok := d.scriptRegistry.Get(name, projectPath)
+	if !ok {
+		return conn.WriteErr(hubproto.ErrNotFound, fmt.Sprintf("script %q not found in %s", name, projectPath))
+	}
+
+	detail := scriptEntryToSummary(entry)
+
+	// Add output tail (last 100 lines)
+	allLines := entry.OutputLines()
+	if len(allLines) > 100 {
+		allLines = allLines[len(allLines)-100:]
+	}
+	detail["output"] = allLines
+
+	// Add state history
+	history := entry.StateHistory()
+	historyMaps := make([]map[string]interface{}, len(history))
+	for i, h := range history {
+		historyMaps[i] = map[string]interface{}{
+			"state":     h.State.String(),
+			"timestamp": h.Timestamp.Format(time.RFC3339),
+		}
+	}
+	detail["history"] = historyMaps
+
+	data, _ := json.Marshal(detail)
+	return conn.WriteJSON(data)
+}
+
+// hubHandleScriptOutput handles SCRIPT OUTPUT <name>.
+func (d *Daemon) hubHandleScriptOutput(conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	if len(cmd.Args) < 1 {
+		return conn.WriteErr(hubproto.ErrMissingParam, "script name required")
+	}
+
+	name := cmd.Args[0]
+	projectPath := d.resolveScriptProjectPath(conn, cmd)
+	if projectPath == "" {
+		return conn.WriteErr(hubproto.ErrMissingParam, "directory required (via JSON data or session)")
+	}
+
+	entry, ok := d.scriptRegistry.Get(name, projectPath)
+	if !ok {
+		return conn.WriteErr(hubproto.ErrNotFound, fmt.Sprintf("script %q not found in %s", name, projectPath))
+	}
+
+	// Parse optional tail count from JSON data
+	tail := 0
+	if len(cmd.Data) > 0 {
+		var opts struct {
+			Tail int `json:"tail"`
+		}
+		_ = json.Unmarshal(cmd.Data, &opts)
+		tail = opts.Tail
+	}
+
+	allLines := entry.OutputLines()
+	total := len(allLines)
+	if tail > 0 && tail < total {
+		allLines = allLines[total-tail:]
+	}
+
+	data, _ := json.Marshal(map[string]interface{}{
+		"lines": allLines,
+		"count": len(allLines),
+		"total": total,
+	})
+	return conn.WriteJSON(data)
+}
+
+// hubHandleScriptRestart handles SCRIPT RESTART <name>.
+func (d *Daemon) hubHandleScriptRestart(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	if len(cmd.Args) < 1 {
+		return conn.WriteErr(hubproto.ErrMissingParam, "script name required")
+	}
+
+	name := cmd.Args[0]
+	projectPath := d.resolveScriptProjectPath(conn, cmd)
+	if projectPath == "" {
+		return conn.WriteErr(hubproto.ErrMissingParam, "directory required (via JSON data or session)")
+	}
+
+	entry, ok := d.scriptRegistry.Get(name, projectPath)
+	if !ok {
+		return conn.WriteErr(hubproto.ErrNotFound, fmt.Sprintf("script %q not found in %s", name, projectPath))
+	}
+
+	// Stop existing process if running
+	if proc, err := d.hub.ProcessManager().Get(entry.ProcessID); err == nil && proc.IsRunning() {
+		if d.autoRestarter != nil {
+			d.autoRestarter.Unregister(entry.ProcessID)
+		}
+		if stopErr := d.hub.ProcessManager().Stop(ctx, entry.ProcessID); stopErr != nil {
+			return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("failed to stop process: %v", stopErr))
+		}
+	}
+
+	// Restart via autostartScript which handles resolution and StartScript
+	entry.AddRestartMarker()
+	entry.SetState(StateRestarting)
+
+	if err := d.autostartScript(ctx, name, entry.Config, entry.ProjectPath, nil); err != nil {
+		return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("failed to restart script: %v", err))
+	}
+
+	resp := map[string]interface{}{
+		"name":       name,
+		"process_id": entry.ProcessID,
+		"state":      entry.State().String(),
+		"success":    true,
+		"message":    fmt.Sprintf("script %q restarted", name),
+	}
+	data, _ := json.Marshal(resp)
+	return conn.WriteJSON(data)
+}
+
+// hubHandleScriptStop handles SCRIPT STOP <name>.
+func (d *Daemon) hubHandleScriptStop(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	if len(cmd.Args) < 1 {
+		return conn.WriteErr(hubproto.ErrMissingParam, "script name required")
+	}
+
+	name := cmd.Args[0]
+	projectPath := d.resolveScriptProjectPath(conn, cmd)
+	if projectPath == "" {
+		return conn.WriteErr(hubproto.ErrMissingParam, "directory required (via JSON data or session)")
+	}
+
+	entry, ok := d.scriptRegistry.Get(name, projectPath)
+	if !ok {
+		return conn.WriteErr(hubproto.ErrNotFound, fmt.Sprintf("script %q not found in %s", name, projectPath))
+	}
+
+	proc, err := d.hub.ProcessManager().Get(entry.ProcessID)
+	if err != nil || !proc.IsRunning() {
+		entry.SetState(StateStopped)
+		resp := map[string]interface{}{
+			"name":       name,
+			"process_id": entry.ProcessID,
+			"state":      entry.State().String(),
+			"success":    true,
+			"message":    fmt.Sprintf("script %q already stopped", name),
+		}
+		data, _ := json.Marshal(resp)
+		return conn.WriteJSON(data)
+	}
+
+	// Unregister from auto-restart before stopping
+	if d.autoRestarter != nil {
+		d.autoRestarter.Unregister(entry.ProcessID)
+	}
+
+	if stopErr := d.hub.ProcessManager().Stop(ctx, entry.ProcessID); stopErr != nil {
+		return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("failed to stop: %v", stopErr))
+	}
+
+	entry.SetState(StateStopped)
+
+	resp := map[string]interface{}{
+		"name":       name,
+		"process_id": entry.ProcessID,
+		"state":      "stopped",
+		"success":    true,
+		"message":    fmt.Sprintf("script %q stopped", name),
+	}
+	data, _ := json.Marshal(resp)
 	return conn.WriteJSON(data)
 }

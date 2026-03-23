@@ -15,6 +15,7 @@ const (
 	VerbStore       = "STORE"
 	VerbAutomate    = "AUTOMATE" // Agent-based automation processing
 	VerbAlerts      = "ALERTS"   // Process output alert queries
+	VerbScript      = "SCRIPT"   // Script registry queries and control
 )
 
 // Agnt-specific sub-verbs (beyond those in go-cli-server).

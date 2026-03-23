@@ -1000,3 +1000,38 @@ func (rc *ResilientClient) StartupLog(limit int) (map[string]interface{}, error)
 	})
 	return result, err
 }
+
+// Script methods
+
+// ScriptList lists all scripts for a project directory.
+func (rc *ResilientClient) ScriptList(projectPath string) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.ScriptList(projectPath)
+		return e
+	})
+	return result, err
+}
+
+// ScriptGet retrieves full detail for a named script.
+func (rc *ResilientClient) ScriptGet(name, projectPath string) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.ScriptGet(name, projectPath)
+		return e
+	})
+	return result, err
+}
+
+// ScriptOutput retrieves output history for a named script.
+func (rc *ResilientClient) ScriptOutput(name, projectPath string, tail int) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.ScriptOutput(name, projectPath, tail)
+		return e
+	})
+	return result, err
+}
