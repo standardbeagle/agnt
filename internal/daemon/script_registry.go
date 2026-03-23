@@ -80,6 +80,9 @@ type ScriptEntry struct {
 
 	// Session tracking (lock-free via sync.Map)
 	sessions sync.Map // map[string]struct{}
+
+	// Ownership tracking (lock-free via atomic pointer)
+	ownerSession atomic.Pointer[string]
 }
 
 // newScriptEntry creates a new ScriptEntry with the given parameters.
@@ -255,6 +258,46 @@ func (e *ScriptEntry) ListSessions() []string {
 		return true
 	})
 	return codes
+}
+
+// SetOwner sets the owning session for this script (the session that started it).
+func (e *ScriptEntry) SetOwner(sessionCode string) {
+	e.ownerSession.Store(&sessionCode)
+}
+
+// Owner returns the session code that owns this script, or empty string if unowned.
+func (e *ScriptEntry) Owner() string {
+	p := e.ownerSession.Load()
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
+// ObserverCount returns the number of sessions observing this script.
+func (e *ScriptEntry) ObserverCount() int {
+	count := 0
+	e.sessions.Range(func(_, _ interface{}) bool {
+		count++
+		return true
+	})
+	return count
+}
+
+// TransferOwnership picks a remaining observer to become the new owner.
+// Returns the new owner's session code, or empty string if no observers remain.
+func (e *ScriptEntry) TransferOwnership() string {
+	var newOwner string
+	e.sessions.Range(func(key, _ interface{}) bool {
+		newOwner = key.(string)
+		return false // stop after first
+	})
+	if newOwner != "" {
+		e.ownerSession.Store(&newOwner)
+	} else {
+		e.ownerSession.Store(nil)
+	}
+	return newOwner
 }
 
 // ScriptRegistry manages ScriptEntry instances with lock-free operations.

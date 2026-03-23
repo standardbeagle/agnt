@@ -2446,6 +2446,17 @@ func (d *Daemon) hubHandleSessionRegister(conn *hubpkg.Connection, cmd *hubproto
 	// Run autostart for this project
 	autostartResult := d.RunAutostart(context.Background(), metadata.ProjectPath)
 
+	// Add session as observer of all project scripts (including newly autostarted ones)
+	// and claim ownership of any unowned scripts
+	if session.ProjectPath != "" {
+		for _, entry := range d.scriptRegistry.List(session.ProjectPath) {
+			entry.AddSession(code)
+			if entry.Owner() == "" {
+				entry.SetOwner(code)
+			}
+		}
+	}
+
 	resp := map[string]interface{}{
 		"code":      code,
 		"autostart": autostartResult,
@@ -4240,6 +4251,10 @@ func scriptEntryToSummary(entry *ScriptEntry) map[string]interface{} {
 	if lastErr != "" {
 		summary["last_error"] = lastErr
 	}
+
+	// Ownership and observer tracking
+	summary["owner_session"] = entry.Owner()
+	summary["observer_count"] = entry.ObserverCount()
 
 	// Derive last_started from state history
 	history := entry.StateHistory()
