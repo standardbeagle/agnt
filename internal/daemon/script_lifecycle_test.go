@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/go-cli-server/script"
 )
 
@@ -370,5 +371,127 @@ scripts {
 
 	if entry.State() != script.StateIdle {
 		t.Errorf("Expected StateIdle for non-autostart script, got %s", entry.State())
+	}
+}
+
+// TestScriptLifecycle_ConfigPortsUsedForCleanup verifies that explicit ports
+// declared in .agnt.kdl are used for pre-flight orphan cleanup.
+func TestScriptLifecycle_ConfigPortsUsedForCleanup(t *testing.T) {
+	tmpDir := t.TempDir()
+	sockPath := filepath.Join(tmpDir, "test.sock")
+
+	// Script declares port 9876 explicitly
+	configContent := `
+scripts {
+    api {
+        command "sleep"
+        args "30"
+        ports 9876
+        autostart true
+    }
+}
+`
+	if err := writeFile(filepath.Join(tmpDir, ".agnt.kdl"), configContent); err != nil {
+		t.Fatalf("Failed to write config: %v", err)
+	}
+
+	d := New(DaemonConfig{
+		SocketPath:   sockPath,
+		MaxClients:   10,
+		WriteTimeout: 5 * time.Second,
+	})
+	if err := d.Start(); err != nil {
+		t.Fatalf("Failed to start daemon: %v", err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		d.Stop(ctx)
+	}()
+
+	// Verify getExpectedPortsForScript returns the declared port
+	agntConfig, err := config.LoadAgntConfig(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to load config: %v", err)
+	}
+
+	scriptCfg := agntConfig.Scripts["api"]
+	if scriptCfg == nil {
+		t.Fatal("Script 'api' not found in config")
+	}
+
+	ports := d.getExpectedPortsForScript("api", scriptCfg, agntConfig.Proxies, tmpDir, "sleep", []string{"30"})
+	if len(ports) == 0 {
+		t.Fatal("Expected at least 1 port from config, got none")
+	}
+
+	found := false
+	for _, p := range ports {
+		if p == 9876 {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("Expected port 9876 in ports list, got %v", ports)
+	}
+}
+
+// TestScriptLifecycle_MultiplePortsFromConfig verifies that multiple ports
+// declared in config are all returned.
+func TestScriptLifecycle_MultiplePortsFromConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	sockPath := filepath.Join(tmpDir, "test.sock")
+
+	configContent := `
+scripts {
+    backend {
+        command "sleep"
+        args "30"
+        ports 5000 5001 5002
+        autostart true
+    }
+}
+`
+	if err := writeFile(filepath.Join(tmpDir, ".agnt.kdl"), configContent); err != nil {
+		t.Fatalf("Failed to write config: %v", err)
+	}
+
+	d := New(DaemonConfig{
+		SocketPath:   sockPath,
+		MaxClients:   10,
+		WriteTimeout: 5 * time.Second,
+	})
+	if err := d.Start(); err != nil {
+		t.Fatalf("Failed to start daemon: %v", err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		d.Stop(ctx)
+	}()
+
+	agntConfig, err := config.LoadAgntConfig(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to load config: %v", err)
+	}
+
+	scriptCfg := agntConfig.Scripts["backend"]
+	ports := d.getExpectedPortsForScript("backend", scriptCfg, agntConfig.Proxies, tmpDir, "sleep", []string{"30"})
+
+	if len(ports) < 3 {
+		t.Errorf("Expected at least 3 ports, got %d: %v", len(ports), ports)
+	}
+
+	expected := map[int]bool{5000: true, 5001: true, 5002: true}
+	for _, p := range ports {
+		delete(expected, p)
+	}
+	if len(expected) > 0 {
+		missing := make([]int, 0)
+		for p := range expected {
+			missing = append(missing, p)
+		}
+		t.Errorf("Missing ports: %v (got %v)", missing, ports)
 	}
 }

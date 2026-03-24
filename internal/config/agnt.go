@@ -75,6 +75,9 @@ type ScriptConfig struct {
 	Cwd string `kdl:"cwd"`
 	// DependsOn lists scripts that must be ready before this script starts.
 	DependsOn DependsOnList `kdl:"depends-on"`
+	// Ports lists the ports this script uses. Used for pre-flight orphan cleanup
+	// and EADDRINUSE recovery. Multiple ports supported (e.g., API + WebSocket).
+	Ports []int `kdl:"ports"`
 }
 
 // ResolveShell returns the shell command and arguments for executing a "run" command.

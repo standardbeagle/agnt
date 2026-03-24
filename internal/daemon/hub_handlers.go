@@ -3352,7 +3352,7 @@ func (d *Daemon) hubHandleRestartAll(ctx context.Context, conn *hubpkg.Connectio
 	for _, pm := range procsToRestart {
 		// Use startScriptWithRetry for EADDRINUSE recovery
 		// Use ProjectPath as WorkingDir since we don't have separate WorkingDir stored
-		_, startupErr := d.startScriptWithRetry(ctx, pm.ID, pm.ProjectPath, pm.ProjectPath, pm.Command, pm.Args, nil, 0)
+		_, startupErr := d.startScriptWithRetry(ctx, pm.ID, pm.ProjectPath, pm.ProjectPath, pm.Command, pm.Args, nil, nil)
 		if startupErr != nil {
 			debug.Error("daemon", "Failed to restart process %s: %v", pm.ID, startupErr)
 			procsFailed++
@@ -3452,7 +3452,7 @@ func (d *Daemon) hubHandleProcRestart(ctx context.Context, conn *hubpkg.Connecti
 
 	// Start with EADDRINUSE recovery (pre-flight cleanup + startup monitoring)
 	// Use projectPath as workingDir since we don't have separate WorkingDir stored
-	newProc, startupErr := d.startScriptWithRetry(ctx, processID, projectPath, projectPath, command, args, nil, expectedPort)
+	newProc, startupErr := d.startScriptWithRetry(ctx, processID, projectPath, projectPath, command, args, nil, []int{expectedPort})
 	if startupErr != nil {
 		return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("failed to restart: %v", startupErr))
 	}
