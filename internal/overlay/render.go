@@ -553,9 +553,9 @@ func isLocalhostURL(urlStr string) bool {
 		strings.Contains(urlStr, "[::1]")
 }
 
-// estimateVisibleLength estimates the visible length of a string with ANSI codes.
+// estimateVisibleLength estimates the visible cell width of a string with ANSI codes.
+// Emoji and other wide characters count as 2 cells (matching terminal rendering).
 func (r *Renderer) estimateVisibleLength(s string) int {
-	// Strip ANSI escape codes for length calculation
 	inEscape := false
 	length := 0
 	for _, ch := range s {
@@ -569,9 +569,45 @@ func (r *Renderer) estimateVisibleLength(s string) int {
 			}
 			continue
 		}
-		length++
+		if isWideChar(ch) {
+			length += 2
+		} else {
+			length++
+		}
 	}
 	return length
+}
+
+// isWideChar returns true for characters that occupy 2 cells in a terminal.
+// Covers emoji, CJK ideographs, and other East Asian wide characters.
+func isWideChar(ch rune) bool {
+	// Emoji: most are in these ranges
+	if ch >= 0x1F300 && ch <= 0x1FBFF { // Miscellaneous Symbols, Emoticons, etc.
+		return true
+	}
+	if ch >= 0x2600 && ch <= 0x27BF { // Misc symbols, Dingbats
+		return true
+	}
+	if ch >= 0x2B50 && ch <= 0x2B55 { // Stars, circles
+		return true
+	}
+	// CJK Unified Ideographs
+	if ch >= 0x4E00 && ch <= 0x9FFF {
+		return true
+	}
+	// CJK Compatibility Ideographs
+	if ch >= 0xF900 && ch <= 0xFAFF {
+		return true
+	}
+	// Fullwidth forms
+	if ch >= 0xFF01 && ch <= 0xFF60 {
+		return true
+	}
+	// Common emoji in BMP
+	if ch >= 0x2702 && ch <= 0x27B0 {
+		return true
+	}
+	return false
 }
 
 // truncateANSI truncates a string containing ANSI escape codes to maxVisible
@@ -596,7 +632,11 @@ func (r *Renderer) truncateANSI(s string, maxVisible int) string {
 			}
 			continue
 		}
-		visible++
+		if isWideChar(ch) {
+			visible += 2
+		} else {
+			visible++
+		}
 	}
 	buf.WriteString(Reset)
 	return buf.String()
