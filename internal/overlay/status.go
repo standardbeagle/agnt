@@ -204,6 +204,12 @@ func (f *StatusFetcher) fetchStatus() {
 		status.RecentErrors = recentErrors
 	}
 
+	// Fetch startup log for the log panel
+	startupLog, err := f.fetchStartupLog()
+	if err == nil {
+		status.StartupLog = startupLog
+	}
+
 	f.overlay.UpdateStatus(status)
 }
 
@@ -448,6 +454,45 @@ func (f *StatusFetcher) fetchRecentErrors() ([]ErrorInfo, error) {
 	}
 
 	return errors, nil
+}
+
+func (f *StatusFetcher) fetchStartupLog() ([]StartupLogEntry, error) {
+	result, err := f.conn.Request(protocol.VerbAlerts, protocol.SubVerbStartupLog).
+		WithJSON(map[string]interface{}{"limit": 100}).
+		JSON()
+	if err != nil {
+		return nil, err
+	}
+
+	entriesRaw, ok := result["entries"].([]interface{})
+	if !ok {
+		return nil, nil
+	}
+
+	var entries []StartupLogEntry
+	for _, e := range entriesRaw {
+		entry, ok := e.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		var ts time.Time
+		if tsStr, ok := entry["timestamp"].(string); ok {
+			ts, _ = time.Parse(time.RFC3339, tsStr)
+		}
+		scriptName, _ := entry["script_name"].(string)
+		level, _ := entry["level"].(string)
+		eventType, _ := entry["event_type"].(string)
+		message, _ := entry["message"].(string)
+
+		entries = append(entries, StartupLogEntry{
+			ScriptName: scriptName,
+			Level:      level,
+			EventType:  eventType,
+			Message:    message,
+			Timestamp:  ts,
+		})
+	}
+	return entries, nil
 }
 
 func (f *StatusFetcher) fetchBrowserSessions(proxies []ProxyInfo) ([]BrowserSession, error) {

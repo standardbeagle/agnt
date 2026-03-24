@@ -94,6 +94,15 @@ type ScriptInfo struct {
 	LastError  string
 }
 
+// StartupLogEntry holds a startup log entry for display.
+type StartupLogEntry struct {
+	ScriptName string
+	Level      string // "info", "warning", "error"
+	EventType  string
+	Message    string
+	Timestamp  time.Time
+}
+
 // Status holds the current system status for display.
 type Status struct {
 	DaemonConnected ConnectionStatus
@@ -103,6 +112,7 @@ type Status struct {
 	Proxies         []ProxyInfo
 	BrowserSessions []BrowserSession
 	RecentErrors    []ErrorInfo
+	StartupLog      []StartupLogEntry
 	LastUpdate      time.Time
 }
 
@@ -528,6 +538,47 @@ func (o *Overlay) buildPanelItems() {
 			})
 		}
 	}
+
+	// Ensure log panel exists as the last panel and update its content
+	logIdx := -1
+	for i, p := range o.panelItems {
+		if p.Type == "log" {
+			logIdx = i
+			break
+		}
+	}
+	if logIdx == -1 {
+		o.panelItems = append(o.panelItems, PanelItem{Type: "log", ID: "__log", Label: "log"})
+		logIdx = len(o.panelItems) - 1
+	}
+	o.panelItems[logIdx].SetContent(formatStartupLog(status.StartupLog))
+}
+
+// formatStartupLog formats startup log entries into readable text for the log panel.
+func formatStartupLog(entries []StartupLogEntry) string {
+	if len(entries) == 0 {
+		return "no startup log entries"
+	}
+	var b strings.Builder
+	for _, e := range entries {
+		icon := "  "
+		switch e.Level {
+		case "error":
+			icon = "✗ "
+		case "warning":
+			icon = "⚠ "
+		case "info":
+			icon = "✓ "
+		}
+		line := icon + "[" + e.EventType + "]"
+		if e.ScriptName != "" {
+			line += " " + e.ScriptName + ":"
+		}
+		line += " " + e.Message
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 func (o *Overlay) hideMenu() {

@@ -1210,8 +1210,11 @@ func (r *Renderer) DrawPanelView(panels []PanelItem, activeIndex int, status Sta
 
 	// Draw the content panel
 	title := active.Label
-	if active.Type != "overview" {
+	if active.Type != "overview" && active.Type != "log" {
 		title = active.Type + ": " + active.ID
+	}
+	if active.Type == "log" {
+		title = "session log"
 	}
 	r.drawNiriPanel(contentStartRow, panelCol, panelWidth, panelHeight, title, grad)
 
@@ -1226,6 +1229,8 @@ func (r *Renderer) DrawPanelView(panels []PanelItem, activeIndex int, status Sta
 		r.drawProcessPanelContent(contentRow, panelCol+2, contentWidth, panelHeight-2, active, status)
 	case "proxy":
 		r.drawProxyPanelContent(contentRow, panelCol+2, contentWidth, panelHeight-2, active, status)
+	case "log":
+		r.drawScrollableContent(contentRow, panelCol+2, contentWidth, panelHeight-2, active)
 	}
 
 	// === FOOTER ===
