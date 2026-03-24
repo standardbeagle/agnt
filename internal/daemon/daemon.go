@@ -974,173 +974,161 @@ type AutostartResult struct {
 // Returns the list of started scripts/proxies and any errors encountered.
 func (d *Daemon) RunAutostart(ctx context.Context, projectPath string) *AutostartResult {
 	result := &AutostartResult{}
+	log := d.startupErrorStore // short alias
 
+	// Step 1: Validate input
 	if projectPath == "" {
-		debug.Log("daemon", "RunAutostart: projectPath is empty")
+		log.Error("", "", "autostart", "projectPath is empty")
 		return result
 	}
+	log.Info("", "", "autostart", fmt.Sprintf("starting autostart for %s", projectPath))
 
-	debug.Log("daemon", "RunAutostart: loading config from %s", projectPath)
-
-	// Load .agnt.kdl config
+	// Step 2: Load .agnt.kdl
 	agntConfig, err := config.LoadAgntConfig(projectPath)
 	if err != nil {
-		// No config or error loading - not an error, just nothing to autostart
-		debug.Log("daemon", "RunAutostart: config load error: %v", err)
+		log.Error("", "", "config_error", fmt.Sprintf("failed to load .agnt.kdl from %s: %v", projectPath, err))
 		return result
 	}
-
 	if agntConfig == nil {
-		debug.Log("daemon", "RunAutostart: config is nil")
+		log.Info("", "", "no_config", fmt.Sprintf("no .agnt.kdl in %s", projectPath))
 		return result
 	}
+	log.Info("", "", "config_loaded", fmt.Sprintf("%d scripts, %d proxies from %s", len(agntConfig.Scripts), len(agntConfig.Proxies), projectPath))
 
-	debug.Log("daemon", "RunAutostart: config loaded, scripts=%d proxies=%d",
-		len(agntConfig.Scripts), len(agntConfig.Proxies))
-
-	// Register ALL scripts in ScriptRegistry (not just autostart ones).
-	// Non-autostart scripts get StateIdle so the overlay can show them.
+	// Step 3: Register ALL scripts (autostart and manual) so the overlay can see them
 	for name, scriptCfg := range agntConfig.Scripts {
 		processID := makeProcessID(projectPath, name)
 		d.scriptConfigs.Store(processID, scriptCfg)
-		d.scriptRegistry.Register(name, projectPath, scriptConfigToEntry(scriptCfg))
+		if _, err := d.scriptRegistry.Register(name, projectPath, scriptConfigToEntry(scriptCfg)); err != nil {
+			log.Error(processID, name, "register_failed", fmt.Sprintf("failed to register script: %v", err))
+		}
 	}
 
-	// Start scripts in dependency order
-	autostartScripts := agntConfig.GetAutostartScripts()
-	proxyConfigs := agntConfig.Proxies // All proxies, not just autostart ones
+	// Step 4: Start autostart scripts in dependency order
+	failedScripts := d.startAutostartScripts(ctx, agntConfig, projectPath, result)
+
+	// Step 5: Start proxies (skip those depending on failed scripts)
+	d.startAutostartProxies(ctx, agntConfig, projectPath, failedScripts, result)
+
+	return result
+}
+
+// startAutostartScripts starts scripts in topological dependency order.
+// Returns a set of script names that failed to start.
+func (d *Daemon) startAutostartScripts(ctx context.Context, cfg *config.AgntConfig, projectPath string, result *AutostartResult) map[string]bool {
+	log := d.startupErrorStore
+	autostartScripts := cfg.GetAutostartScripts()
+	proxyConfigs := cfg.Proxies
 	failedScripts := make(map[string]bool)
-	debug.Log("daemon", "RunAutostart: found %d autostart scripts: %v", len(autostartScripts), mapKeys(autostartScripts))
 
-	if len(autostartScripts) > 0 {
-		// Topological sort to get execution layers
-		layers, sortErr := config.TopologicalSort(autostartScripts)
-		if sortErr != nil {
-			debug.Log("daemon", "RunAutostart: topological sort failed: %v", sortErr)
-			result.Errors = append(result.Errors, fmt.Sprintf("dependency sort: %v", sortErr))
-			// Fall through to proxy startup
-		} else {
-			debug.Log("daemon", "RunAutostart: %d layers from topological sort", len(layers))
+	if len(autostartScripts) == 0 {
+		return failedScripts
+	}
 
-			// Protect result fields from concurrent writes
-			var resultMu sync.Mutex
+	layers, sortErr := config.TopologicalSort(autostartScripts)
+	if sortErr != nil {
+		log.Error("", "", "dependency_sort", fmt.Sprintf("topological sort failed: %v", sortErr))
+		result.Errors = append(result.Errors, fmt.Sprintf("dependency sort: %v", sortErr))
+		return failedScripts
+	}
 
-			for layerIdx, layer := range layers {
-				debug.Log("daemon", "RunAutostart: starting layer %d with %d scripts: %v", layerIdx, len(layer), layer)
+	var resultMu sync.Mutex
 
-				var layerWg sync.WaitGroup
-				for _, name := range layer {
-					script := autostartScripts[name]
-					if script == nil {
-						continue
-					}
+	for layerIdx, layer := range layers {
+		var layerWg sync.WaitGroup
+		for _, name := range layer {
+			scriptCfg := autostartScripts[name]
+			if scriptCfg == nil {
+				continue
+			}
 
-					layerWg.Add(1)
-					go func(name string, script *config.ScriptConfig) {
-						defer layerWg.Done()
+			layerWg.Add(1)
+			go func(name string, scriptCfg *config.ScriptConfig) {
+				defer layerWg.Done()
+				processID := makeProcessID(projectPath, name)
 
-						// For layer 1+, wait on each dependency
-						if layerIdx > 0 {
-							for _, dep := range script.DependsOn {
-								depProcessID := makeProcessID(projectPath, dep.Name)
-								timeout := dep.Timeout
-								if timeout == 0 {
-									timeout = config.DefaultDependencyTimeout
-								}
-								if err := d.readySignaler.WaitReady(depProcessID, timeout); err != nil {
-									debug.Warn("daemon", "RunAutostart: timeout waiting for dependency %q of script %q: %v (starting anyway)", dep.Name, name, err)
-									d.startupErrorStore.Add(&StartupLogEntry{
-										ProcessID: makeProcessID(projectPath, name), ScriptName: name,
-										Level: "warning", EventType: "dependency_wait",
-										Message:   fmt.Sprintf("timeout waiting for %s: %v (starting anyway)", dep.Name, err),
-										Timestamp: time.Now(),
-									})
-								} else {
-									debug.Log("daemon", "RunAutostart: dependency %q ready for script %q", dep.Name, name)
-								}
-							}
-						}
+				// Wait for dependencies (layer 1+)
+				d.waitForDependencies(ctx, name, scriptCfg, projectPath, layerIdx)
 
-						// Start the script
-						processID := makeProcessID(projectPath, name)
-						debug.Log("daemon", "RunAutostart: starting script %s (layer %d)", name, layerIdx)
-						d.startupErrorStore.Info(processID, name, "starting", fmt.Sprintf("starting script %s (layer %d)", name, layerIdx))
-
-						if err := d.autostartScript(ctx, name, script, projectPath, proxyConfigs); err != nil {
-							debug.Log("daemon", "RunAutostart: script %s failed: %v", name, err)
-							resultMu.Lock()
-							result.Errors = append(result.Errors, fmt.Sprintf("script %s: %v", name, err))
-							failedScripts[name] = true
-							resultMu.Unlock()
-
-							// Record failure in startup log
-							entry := &StartupLogEntry{
-								ProcessID:  processID,
-								ScriptName: name,
-								Level:      "error",
-								EventType:  "autostart",
-								Message:    err.Error(),
-								Timestamp:  time.Now(),
-							}
-							if startupErr, ok := err.(*StartupError); ok {
-								entry.EventType = startupErr.ErrorType
-								entry.Output = startupErr.Output
-								entry.Port = startupErr.Port
-							}
-							d.startupErrorStore.Add(entry)
-							return
-						}
-
-						debug.Log("daemon", "RunAutostart: script %s started successfully", name)
-						d.startupErrorStore.Info(processID, name, "started", fmt.Sprintf("script %s started successfully", name))
-						resultMu.Lock()
-						result.Scripts = append(result.Scripts, name)
-						resultMu.Unlock()
-
-						// Start TCP port probe as a fallback readiness signal.
-						probePorts := d.getExpectedPortsForScript(name, script, proxyConfigs,
-							resolveWorkingDir(projectPath, script.Cwd), "", nil)
-						if len(probePorts) > 0 {
-							debug.Log("daemon", "RunAutostart: starting port probe for %s on port %d", name, probePorts[0])
-							d.readySignaler.StartPortProbe(processID, probePorts[0], ctx)
-						}
-					}(name, script)
+				// Start the script
+				log.Info(processID, name, "starting", fmt.Sprintf("starting %s (layer %d)", name, layerIdx))
+				if err := d.autostartScript(ctx, name, scriptCfg, projectPath, proxyConfigs); err != nil {
+					log.Error(processID, name, "start_failed", err.Error())
+					resultMu.Lock()
+					result.Errors = append(result.Errors, fmt.Sprintf("script %s: %v", name, err))
+					failedScripts[name] = true
+					resultMu.Unlock()
+					return
 				}
 
-				layerWg.Wait()
-			}
+				log.Info(processID, name, "started", fmt.Sprintf("%s started", name))
+				resultMu.Lock()
+				result.Scripts = append(result.Scripts, name)
+				resultMu.Unlock()
 
-			// Cleanup signaler channels for this autostart batch
-			for name := range autostartScripts {
-				d.readySignaler.Cleanup(makeProcessID(projectPath, name))
-			}
+				// Port probe for dependency readiness signaling
+				probePorts := d.getExpectedPortsForScript(name, scriptCfg, proxyConfigs,
+					resolveWorkingDir(projectPath, scriptCfg.Cwd), "", nil)
+				if len(probePorts) > 0 {
+					d.readySignaler.StartPortProbe(processID, probePorts[0], ctx)
+				}
+			}(name, scriptCfg)
 		}
+		layerWg.Wait()
 	}
 
-	// Warn about proxies that depend on failed scripts
-	for proxyName, proxyConfig := range proxyConfigs {
+	// Cleanup signaler channels
+	for name := range autostartScripts {
+		d.readySignaler.Cleanup(makeProcessID(projectPath, name))
+	}
+
+	return failedScripts
+}
+
+// waitForDependencies blocks until all dependencies for a script are ready.
+func (d *Daemon) waitForDependencies(ctx context.Context, name string, scriptCfg *config.ScriptConfig, projectPath string, layerIdx int) {
+	if layerIdx == 0 {
+		return
+	}
+	for _, dep := range scriptCfg.DependsOn {
+		depProcessID := makeProcessID(projectPath, dep.Name)
+		timeout := dep.Timeout
+		if timeout == 0 {
+			timeout = config.DefaultDependencyTimeout
+		}
+		if err := d.readySignaler.WaitReady(depProcessID, timeout); err != nil {
+			d.startupErrorStore.Add(&StartupLogEntry{
+				ProcessID: makeProcessID(projectPath, name), ScriptName: name,
+				Level: "warning", EventType: "dependency_wait",
+				Message:   fmt.Sprintf("timeout waiting for %s: %v (starting anyway)", dep.Name, err),
+				Timestamp: time.Now(),
+			})
+		}
+	}
+}
+
+// startAutostartProxies starts proxies, skipping those that depend on failed scripts.
+func (d *Daemon) startAutostartProxies(ctx context.Context, cfg *config.AgntConfig, projectPath string, failedScripts map[string]bool, result *AutostartResult) {
+	log := d.startupErrorStore
+
+	for proxyName, proxyConfig := range cfg.Proxies {
 		if proxyConfig.Script != "" && failedScripts[proxyConfig.Script] {
-			result.Errors = append(result.Errors, fmt.Sprintf(
-				"proxy %q will not start: depends on script %q which failed",
-				proxyName, proxyConfig.Script))
+			msg := fmt.Sprintf("proxy %q skipped: depends on failed script %q", proxyName, proxyConfig.Script)
+			log.Error("", proxyName, "proxy_skipped", msg)
+			result.Errors = append(result.Errors, msg)
 		}
 	}
 
-	// Start proxies
-	autostartProxies := agntConfig.GetAutostartProxies()
-	debug.Log("daemon", "RunAutostart: found %d autostart proxies: %v", len(autostartProxies), mapKeysProxy(autostartProxies))
-	for name, proxyConfig := range autostartProxies {
-		debug.Log("daemon", "RunAutostart: starting proxy %s (script=%s port=%d)", name, proxyConfig.Script, proxyConfig.Port)
+	for name, proxyConfig := range cfg.GetAutostartProxies() {
+		log.Info("", name, "proxy_starting", fmt.Sprintf("starting proxy %s", name))
 		if err := d.autostartProxy(ctx, name, proxyConfig, projectPath); err != nil {
-			debug.Log("daemon", "RunAutostart: proxy %s failed: %v", name, err)
+			log.Error("", name, "proxy_failed", err.Error())
 			result.Errors = append(result.Errors, fmt.Sprintf("proxy %s: %v", name, err))
 		} else {
-			debug.Log("daemon", "RunAutostart: proxy %s started successfully", name)
+			log.Info("", name, "proxy_started", fmt.Sprintf("proxy %s started", name))
 			result.Proxies = append(result.Proxies, name)
 		}
 	}
-
-	return result
 }
 
 // makeProcessID delegates to script.MakeProcessID for process ID generation.
