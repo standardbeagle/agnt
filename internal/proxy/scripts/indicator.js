@@ -3264,18 +3264,47 @@
       if (hovered) {
         var selector = utils.generateSelector(hovered);
         var tag = hovered.tagName.toLowerCase();
-        var text = (hovered.textContent || '').trim().substring(0, 50);
+        var text = (hovered.textContent || '').trim().substring(0, 100);
+        var computed = window.getComputedStyle(hovered);
 
-        addAttachment('element', {
+        var meta = {
           label: selector.length > 30 ? tag + (hovered.id ? '#' + hovered.id : '') : selector,
-          summary: selector + ' - "' + text + '"',
+          summary: selector + ' - "' + text.substring(0, 50) + '"',
           selector: selector,
           tag: tag,
           id: hovered.id || null,
           classes: Array.from(hovered.classList),
           text: text,
           rect: hovered.getBoundingClientRect()
-        });
+        };
+
+        // Semantic attributes
+        var attrs = ['role', 'aria-label', 'name', 'type', 'href', 'data-testid', 'data-test-id', 'placeholder', 'title', 'alt'];
+        attrs.forEach(function(a) { var v = hovered.getAttribute(a); if (v) meta[a.replace(/-/g, '_')] = v; });
+
+        // Framework detection
+        var reactKey = Object.keys(hovered).find(function(k) { return k.startsWith('__reactFiber$') || k.startsWith('__reactInternalInstance$'); });
+        if (reactKey) {
+          var fiber = hovered[reactKey];
+          if (fiber && fiber.type) {
+            meta.framework = 'react';
+            meta.component = typeof fiber.type === 'function' ? (fiber.type.displayName || fiber.type.name || 'Anonymous') : String(fiber.type);
+          }
+        }
+        if (hovered.__vue__) { meta.framework = 'vue'; meta.component = hovered.__vue__.$options.name || 'Anonymous'; }
+        if (hovered.__svelte_meta) { meta.framework = 'svelte'; }
+
+        // Layout-relevant computed styles
+        if (computed.display !== 'block' && computed.display !== 'inline') meta.display = computed.display;
+        if (computed.position !== 'static') meta.position = computed.position;
+        if (computed.overflow !== 'visible') meta.overflow = computed.overflow;
+
+        // Event listeners (Chrome DevTools API only)
+        if (typeof getEventListeners === 'function') {
+          try { var ls = getEventListeners(hovered); var lt = Object.keys(ls); if (lt.length) meta.listeners = lt; } catch (e) {}
+        }
+
+        addAttachment('element', meta);
       }
 
       togglePanel(true);
