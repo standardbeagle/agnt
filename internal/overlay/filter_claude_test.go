@@ -1,0 +1,190 @@
+package overlay
+
+import (
+	"bytes"
+	"strings"
+	"testing"
+)
+
+// These tests reproduce the Claude Code status line interleaving bug.
+// Claude Code uses \r to overwrite its status line in place, plus cursor
+// save/restore for tool call rendering. The ProtectedWriter must track
+// cursor position correctly through these sequences.
+
+// TestProtectedWriter_CarriageReturnOverwrite verifies that \r followed
+// by new text overwrites the current line without creating extra lines.
+// This is Claude Code's basic spinner pattern.
+func TestProtectedWriter_CarriageReturnOverwrite(t *testing.T) {
+	var buf bytes.Buffer
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
+	defer pw.Stop()
+
+	// Write status line, then \r, then overwrite, then \r\n for next line
+	pw.Write([]byte("Mustering...\r"))
+	pw.Write([]byte("Running...  \r"))
+	pw.Write([]byte("Done.       \r\n"))
+
+	// After \r\n: cursor should be row 2, col 1
+	row := int(pw.cursorRow.Load())
+	col := int(pw.cursorCol.Load())
+	if row != 2 {
+		t.Errorf("Cursor row should be 2 after \\r\\n, got %d", row)
+	}
+	if col != 1 {
+		t.Errorf("Cursor col should be 1 after \\r\\n, got %d", col)
+	}
+}
+
+// TestProtectedWriter_StatusLineThenToolOutput verifies that a status line
+// followed by tool call output on the next line doesn't interleave.
+func TestProtectedWriter_StatusLineThenToolOutput(t *testing.T) {
+	var buf bytes.Buffer
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
+	defer pw.Stop()
+
+	// Claude Code pattern: spinner + tool call output
+	pw.Write([]byte("● plugin:slop-mcp - execute_tool (MCP)\r"))
+	pw.Write([]byte("  ⎿  Running…\r"))
+	pw.Write([]byte("  ⎿  {\n"))
+	pw.Write([]byte("       \"name\": \"dev\"\n"))
+	pw.Write([]byte("     }\n"))
+
+	output := buf.String()
+
+	// The tool output should appear cleanly — no status text embedded in it
+	lines := strings.Split(output, "\n")
+	for _, line := range lines {
+		if strings.Contains(line, "Running") && strings.Contains(line, "name") {
+			t.Errorf("Status text and tool output interleaved on same line: %q", line)
+		}
+	}
+}
+
+// TestProtectedWriter_CursorColResetOnCR verifies that \r properly resets
+// the column to 1 regardless of current position.
+func TestProtectedWriter_CursorColResetOnCR(t *testing.T) {
+	var buf bytes.Buffer
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
+	defer pw.Stop()
+
+	pw.Write([]byte("Hello World"))
+	col := int(pw.cursorCol.Load())
+	if col != 12 { // "Hello World" = 11 chars, cursor at 12
+		t.Errorf("After 'Hello World', col should be 12, got %d", col)
+	}
+
+	pw.Write([]byte("\r"))
+	col = int(pw.cursorCol.Load())
+	if col != 1 {
+		t.Errorf("After \\r, col should be 1, got %d", col)
+	}
+
+	// Row should not change on \r
+	row := int(pw.cursorRow.Load())
+	if row != 1 {
+		t.Errorf("After \\r, row should still be 1, got %d", row)
+	}
+}
+
+// TestProtectedWriter_MultibyteCharsColumnTracking verifies that multi-byte
+// UTF-8 characters (emoji, CJK) are tracked as the correct column width.
+// Wide chars take 2 columns; narrow chars take 1.
+func TestProtectedWriter_MultibyteCharsColumnTracking(t *testing.T) {
+	var buf bytes.Buffer
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
+	defer pw.Stop()
+
+	// "●" is a single-width Unicode char (1 column, 3 bytes UTF-8)
+	pw.Write([]byte("●"))
+	col := int(pw.cursorCol.Load())
+	// The bullet should advance by 1 column, not 3
+	if col != 2 {
+		t.Errorf("After '●' (1 col), cursor should be at 2, got %d", col)
+	}
+}
+
+// TestProtectedWriter_RapidCROverwriteNearBottom verifies that rapid \r
+// overwrites near the protected row don't trigger false scroll protection.
+func TestProtectedWriter_RapidCROverwriteNearBottom(t *testing.T) {
+	var buf bytes.Buffer
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
+	defer pw.Stop()
+
+	// Move cursor to row 22 (one above protected row 23 on a 24-row terminal)
+	pw.Write([]byte("\x1b[22;1H"))
+
+	// Now do rapid \r overwrites — these should NOT trigger scrolling
+	// because we're overwriting the same row, not advancing
+	pw.Write([]byte("Status 1...\r"))
+	pw.Write([]byte("Status 2...\r"))
+	pw.Write([]byte("Status 3...\r"))
+
+	row := int(pw.cursorRow.Load())
+	if row != 22 {
+		t.Errorf("Row should still be 22 after \\r overwrites, got %d", row)
+	}
+
+	// Output should not contain scroll sequences
+	output := buf.String()
+	if strings.Contains(output, "\x1b[S") {
+		t.Error("Scroll-up sequence should not appear for \\r overwrites on same row")
+	}
+}
+
+// TestProtectedWriter_CursorSaveRestoreTracking verifies that cursor
+// save/restore sequences are tracked correctly for position.
+func TestProtectedWriter_CursorSaveRestoreTracking(t *testing.T) {
+	var buf bytes.Buffer
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
+	defer pw.Stop()
+
+	// Move to row 5, col 10
+	pw.Write([]byte("\x1b[5;10H"))
+	row := int(pw.cursorRow.Load())
+	col := int(pw.cursorCol.Load())
+	if row != 5 || col != 10 {
+		t.Errorf("After CUP(5,10), expected row=5 col=10, got row=%d col=%d", row, col)
+	}
+
+	// Save cursor
+	pw.Write([]byte("\x1b[s"))
+
+	// Move somewhere else
+	pw.Write([]byte("\x1b[1;1H"))
+	row = int(pw.cursorRow.Load())
+	col = int(pw.cursorCol.Load())
+	if row != 1 || col != 1 {
+		t.Errorf("After CUP(1,1), expected row=1 col=1, got row=%d col=%d", row, col)
+	}
+
+	// Restore cursor — should go back to 5,10
+	pw.Write([]byte("\x1b[u"))
+	row = int(pw.cursorRow.Load())
+	col = int(pw.cursorCol.Load())
+	if row != 5 || col != 10 {
+		t.Errorf("After restore, expected row=5 col=10, got row=%d col=%d", row, col)
+	}
+}
+
+// TestProtectedWriter_ProtectedRowNotCorrupted verifies that output never
+// writes into the protected bottom row, even with rapid status updates.
+func TestProtectedWriter_ProtectedRowNotCorrupted(t *testing.T) {
+	var buf bytes.Buffer
+	// Small terminal: 80x5 with 1 protected row
+	pw := NewProtectedWriter(&buf, 80, 5, FilterConfig{ProtectBottomRows: 1})
+	defer pw.Stop()
+
+	// Fill the terminal with lines — should scroll, never write to row 5
+	for i := 0; i < 10; i++ {
+		pw.Write([]byte("Line of output\n"))
+	}
+
+	// Move cursor directly to protected row (row 5) — should be blocked
+	pw.Write([]byte("\x1b[5;1H"))
+	pw.Write([]byte("SHOULD NOT APPEAR"))
+
+	row := int(pw.cursorRow.Load())
+	if row >= 5 {
+		t.Errorf("Cursor should be clamped above protected row 5, got row %d", row)
+	}
+}
