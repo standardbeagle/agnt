@@ -67,6 +67,18 @@
         call.status = response.status;
         call.ok = response.ok;
         call.duration = Date.now() - startTime;
+        call.statusText = response.statusText;
+        // Capture error response body (first 1KB) for 4xx/5xx
+        if (!response.ok && response.status >= 400) {
+          response.clone().text().then(function(body) {
+            call.responseBody = body.substring(0, 1024);
+            // Try to extract error message from JSON
+            try {
+              var json = JSON.parse(body);
+              call.errorMessage = json.error || json.message || json.detail || json.title || null;
+            } catch (e) {}
+          }).catch(function() {});
+        }
         addCall(call);
         return response;
       })
@@ -107,10 +119,22 @@
         url: xhr.__devtool_api.url,
         method: xhr.__devtool_api.method,
         status: xhr.status,
+        statusText: xhr.statusText,
         duration: Date.now() - xhr.__devtool_api.startTime,
         ok: xhr.status >= 200 && xhr.status < 300,
         error: xhr.status === 0 ? 'Network error' : null
       };
+      // Capture error response body (first 1KB) for 4xx/5xx
+      if (xhr.status >= 400) {
+        try {
+          var body = xhr.responseText || '';
+          call.responseBody = body.substring(0, 1024);
+          try {
+            var json = JSON.parse(body);
+            call.errorMessage = json.error || json.message || json.detail || json.title || null;
+          } catch (e) {}
+        } catch (e) {}
+      }
       addCall(call);
     };
 

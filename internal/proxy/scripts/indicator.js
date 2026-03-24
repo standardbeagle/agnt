@@ -462,12 +462,47 @@
         var timeAgo = formatTimeAgo(error.lastSeen);
         var countPrefix = error.count > 1 ? '\u00d7' + error.count + ' ' : '';
 
-        var item = tags.div({style: STYLES.errorItem},
-          tags.div({style: STYLES.errorMessage}, countPrefix + error.message.substring(0, 100)),
-          tags.div({style: STYLES.errorMeta}, error.source + (error.lineno ? ':' + error.lineno : '') + ' \u2022 ' + timeAgo)
+        var summary = tags.div({style: STYLES.errorMessage + '; cursor: pointer;'},
+          countPrefix + error.message.substring(0, 100)
+        );
+        var meta = tags.div({style: STYLES.errorMeta},
+          error.source + (error.lineno ? ':' + error.lineno : '') +
+          (error.colno ? ':' + error.colno : '') + ' \u2022 ' + timeAgo
         );
 
-        item.onmouseenter = function() { item.style.background = TOKENS.colors.surfaceAlt; };
+        // Detail panel with full error + stack trace
+        var detail = document.createElement('div');
+        detail.style.cssText = 'display: none; margin-top: 6px; padding: 8px; background: ' + TOKENS.colors.surfaceAlt + '; border-radius: 4px; font-size: 11px; font-family: monospace; white-space: pre-wrap; word-break: break-all; max-height: 150px; overflow-y: auto;';
+
+        var fullText = error.message + '\n';
+        if (error.source) fullText += 'source: ' + error.source + (error.lineno ? ':' + error.lineno : '') + (error.colno ? ':' + error.colno : '') + '\n';
+        if (error.stack) fullText += '\n' + error.stack;
+        if (error.count > 1) fullText += '\noccurrences: ' + error.count;
+        detail.textContent = fullText;
+
+        var copyBtn = document.createElement('button');
+        copyBtn.style.cssText = 'margin-top: 6px; padding: 2px 8px; font-size: 10px; background: ' + TOKENS.colors.surface + '; border: 1px solid ' + TOKENS.colors.border + '; border-radius: 3px; color: ' + TOKENS.colors.textMuted + '; cursor: pointer;';
+        copyBtn.textContent = 'copy';
+        copyBtn.onclick = function(e) {
+          e.stopPropagation();
+          navigator.clipboard.writeText(fullText).then(function() {
+            copyBtn.textContent = 'copied';
+            setTimeout(function() { copyBtn.textContent = 'copy'; }, 1500);
+          });
+        };
+        detail.appendChild(copyBtn);
+
+        var item = tags.div({style: STYLES.errorItem});
+        item.appendChild(summary);
+        item.appendChild(meta);
+        item.appendChild(detail);
+
+        var expanded = false;
+        item.onclick = function() {
+          expanded = !expanded;
+          detail.style.display = expanded ? 'block' : 'none';
+        };
+        item.onmouseenter = function() { item.style.background = expanded ? 'transparent' : TOKENS.colors.surfaceAlt; };
         item.onmouseleave = function() { item.style.background = 'transparent'; };
 
         return item;
@@ -491,16 +526,55 @@
       return tags.div({}, calls.map(function(call) {
         var statusColor = call.ok ? TOKENS.colors.success : TOKENS.colors.error;
         var timeAgo = formatTimeAgo(call.timestamp);
+        var isError = !call.ok;
 
-        var item = tags.div({style: STYLES.errorItem},
-          tags.div({style: STYLES.errorMessage},
-            tags.span({style: 'color: ' + statusColor + ';'}, String(call.status)),
-            ' ' + call.method + ' ' + truncate(call.url, 40)
-          ),
-          tags.div({style: STYLES.errorMeta}, (call.duration || 0) + 'ms \u2022 ' + timeAgo)
+        // Summary row
+        var summary = tags.div({style: STYLES.errorMessage + '; cursor: pointer;'},
+          tags.span({style: 'color: ' + statusColor + '; font-weight: 600;'}, String(call.status || 0)),
+          ' ' + call.method + ' ' + truncate(call.url, 40)
         );
 
-        item.onmouseenter = function() { item.style.background = TOKENS.colors.surfaceAlt; };
+        var meta = tags.div({style: STYLES.errorMeta},
+          (call.duration || 0) + 'ms \u2022 ' + timeAgo +
+          (call.statusText && isError ? ' \u2022 ' + call.statusText : '')
+        );
+
+        // Detail panel (hidden by default)
+        var detail = document.createElement('div');
+        detail.style.cssText = 'display: none; margin-top: 6px; padding: 8px; background: ' + TOKENS.colors.surfaceAlt + '; border-radius: 4px; font-size: 11px; font-family: monospace; white-space: pre-wrap; word-break: break-all; max-height: 120px; overflow-y: auto;';
+
+        var detailText = call.method + ' ' + call.url + '\n';
+        detailText += 'status: ' + (call.status || 0) + (call.statusText ? ' ' + call.statusText : '') + '\n';
+        detailText += 'duration: ' + (call.duration || 0) + 'ms\n';
+        if (call.errorMessage) detailText += 'error: ' + call.errorMessage + '\n';
+        if (call.responseBody) detailText += '\n' + call.responseBody;
+        if (call.error) detailText += '\nerror: ' + call.error;
+        detail.textContent = detailText;
+
+        // Copy button (inside detail)
+        var copyBtn = document.createElement('button');
+        copyBtn.style.cssText = 'margin-top: 6px; padding: 2px 8px; font-size: 10px; background: ' + TOKENS.colors.surface + '; border: 1px solid ' + TOKENS.colors.border + '; border-radius: 3px; color: ' + TOKENS.colors.textMuted + '; cursor: pointer;';
+        copyBtn.textContent = 'copy';
+        copyBtn.onclick = function(e) {
+          e.stopPropagation();
+          navigator.clipboard.writeText(detailText).then(function() {
+            copyBtn.textContent = 'copied';
+            setTimeout(function() { copyBtn.textContent = 'copy'; }, 1500);
+          });
+        };
+        detail.appendChild(copyBtn);
+
+        var item = tags.div({style: STYLES.errorItem});
+        item.appendChild(summary);
+        item.appendChild(meta);
+        item.appendChild(detail);
+
+        var expanded = false;
+        item.onclick = function() {
+          expanded = !expanded;
+          detail.style.display = expanded ? 'block' : 'none';
+        };
+        item.onmouseenter = function() { item.style.background = expanded ? 'transparent' : TOKENS.colors.surfaceAlt; };
         item.onmouseleave = function() { item.style.background = 'transparent'; };
 
         return item;
