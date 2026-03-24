@@ -396,7 +396,7 @@ func (d *Daemon) registerAgntCommands() {
 	// ALERTS command
 	d.hub.RegisterCommand(hubpkg.CommandDefinition{
 		Verb:        "ALERTS",
-		SubVerbs:    []string{"REPORT", "QUERY", "CLEAR"},
+		SubVerbs:    []string{"REPORT", "QUERY", "CLEAR", "STARTUP-LOG"},
 		Description: "Process output alert queries",
 		Handler:     d.hubHandleAlerts,
 	})
