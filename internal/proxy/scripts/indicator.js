@@ -289,6 +289,25 @@
 
     setMessage: function(text) {
       store.message.val = text;
+    },
+
+    // Send context (error or network issue) to the AI agent.
+    // Creates an attachment, pre-fills the message, switches to compose tab.
+    sendToAgent: function(type, summary, detail) {
+      var id = generateId();
+      var attachment = {
+        id: id,
+        type: type,
+        label: summary.substring(0, 40),
+        summary: summary,
+        data: { detail: detail, tag: type, text: summary },
+        timestamp: Date.now()
+      };
+      store.attachments.val = store.attachments.val.concat([attachment]);
+      state.attachments = store.attachments.val;
+      store.message.val = 'Fix this ' + type + ': ' + summary;
+      switchTab('compose');
+      togglePanel(true);
     }
   };
 
@@ -480,8 +499,11 @@
         if (error.count > 1) fullText += '\noccurrences: ' + error.count;
         detail.textContent = fullText;
 
+        var btnBar = document.createElement('div');
+        btnBar.style.cssText = 'margin-top: 6px; display: flex; gap: 6px;';
+
         var copyBtn = document.createElement('button');
-        copyBtn.style.cssText = 'margin-top: 6px; padding: 2px 8px; font-size: 10px; background: ' + TOKENS.colors.surface + '; border: 1px solid ' + TOKENS.colors.border + '; border-radius: 3px; color: ' + TOKENS.colors.textMuted + '; cursor: pointer;';
+        copyBtn.style.cssText = 'padding: 2px 8px; font-size: 10px; background: ' + TOKENS.colors.surface + '; border: 1px solid ' + TOKENS.colors.border + '; border-radius: 3px; color: ' + TOKENS.colors.textMuted + '; cursor: pointer;';
         copyBtn.textContent = 'copy';
         copyBtn.onclick = function(e) {
           e.stopPropagation();
@@ -490,7 +512,18 @@
             setTimeout(function() { copyBtn.textContent = 'copy'; }, 1500);
           });
         };
-        detail.appendChild(copyBtn);
+
+        var sendBtn = document.createElement('button');
+        sendBtn.style.cssText = 'padding: 2px 8px; font-size: 10px; background: ' + TOKENS.colors.active + '; border: none; border-radius: 3px; color: white; cursor: pointer;';
+        sendBtn.textContent = '\u2709 send to agent';
+        sendBtn.onclick = function(e) {
+          e.stopPropagation();
+          actions.sendToAgent('error', error.message.substring(0, 80), fullText);
+        };
+
+        btnBar.appendChild(copyBtn);
+        btnBar.appendChild(sendBtn);
+        detail.appendChild(btnBar);
 
         var item = tags.div({style: STYLES.errorItem});
         item.appendChild(summary);
@@ -551,9 +584,11 @@
         if (call.error) detailText += '\nerror: ' + call.error;
         detail.textContent = detailText;
 
-        // Copy button (inside detail)
+        var btnBar = document.createElement('div');
+        btnBar.style.cssText = 'margin-top: 6px; display: flex; gap: 6px;';
+
         var copyBtn = document.createElement('button');
-        copyBtn.style.cssText = 'margin-top: 6px; padding: 2px 8px; font-size: 10px; background: ' + TOKENS.colors.surface + '; border: 1px solid ' + TOKENS.colors.border + '; border-radius: 3px; color: ' + TOKENS.colors.textMuted + '; cursor: pointer;';
+        copyBtn.style.cssText = 'padding: 2px 8px; font-size: 10px; background: ' + TOKENS.colors.surface + '; border: 1px solid ' + TOKENS.colors.border + '; border-radius: 3px; color: ' + TOKENS.colors.textMuted + '; cursor: pointer;';
         copyBtn.textContent = 'copy';
         copyBtn.onclick = function(e) {
           e.stopPropagation();
@@ -562,7 +597,22 @@
             setTimeout(function() { copyBtn.textContent = 'copy'; }, 1500);
           });
         };
-        detail.appendChild(copyBtn);
+
+        // Send to agent — only for error responses
+        if (isError) {
+          var sendBtn = document.createElement('button');
+          sendBtn.style.cssText = 'padding: 2px 8px; font-size: 10px; background: ' + TOKENS.colors.active + '; border: none; border-radius: 3px; color: white; cursor: pointer;';
+          sendBtn.textContent = '\u2709 send to agent';
+          sendBtn.onclick = function(e) {
+            e.stopPropagation();
+            var summary = call.status + ' ' + call.method + ' ' + call.url.substring(0, 60);
+            actions.sendToAgent('network', summary, detailText);
+          };
+          btnBar.appendChild(sendBtn);
+        }
+
+        btnBar.appendChild(copyBtn);
+        detail.appendChild(btnBar);
 
         var item = tags.div({style: STYLES.errorItem});
         item.appendChild(summary);

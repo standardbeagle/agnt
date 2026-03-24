@@ -217,6 +217,18 @@ func formatPanelMessageBody(proxyID, pageURL, message string, auditReports []str
 				b.WriteString("  after: " + att.ScreenshotAfter + "\n")
 			}
 
+		case "error":
+			b.WriteString("\nerror: " + att.Summary + "\n")
+			if detail, _ := att.RawData["detail"].(string); detail != "" {
+				b.WriteString(detail + "\n")
+			}
+
+		case "network":
+			b.WriteString("\nnetwork: " + att.Summary + "\n")
+			if detail, _ := att.RawData["detail"].(string); detail != "" {
+				b.WriteString(detail + "\n")
+			}
+
 		default:
 			b.WriteString("\n" + att.Type + ": ")
 			if att.Selector != "" {
