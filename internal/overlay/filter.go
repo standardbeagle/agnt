@@ -540,12 +540,16 @@ func (pw *ProtectedWriter) handleCSI(out *bytes.Buffer, final byte) {
 			if row < 1 {
 				row = 1
 			}
-			pw.redrawNeeded.Store(true) // Something tried to enter protected area
+			pw.redrawNeeded.Store(true)
+			// Must rewrite since we clamped
+			pw.cursorRow.Store(int32(row))
+			pw.cursorCol.Store(int32(col))
+			fmt.Fprintf(out, "\x1b[%d;%d%c", row, col, final)
+			return
 		}
+		// No clamping needed — pass through original bytes unchanged
 		pw.cursorRow.Store(int32(row))
 		pw.cursorCol.Store(int32(col))
-		fmt.Fprintf(out, "\x1b[%d;%d%c", row, col, final)
-		return
 
 	case 'A': // CUU - Cursor Up
 		n := 1
@@ -565,35 +569,38 @@ func (pw *ProtectedWriter) handleCSI(out *bytes.Buffer, final byte) {
 			n = pw.params[0]
 		}
 		row := int(pw.cursorRow.Load()) + n
-		// Clamp to protected region
 		if row >= pw.protectedRow {
 			row = pw.protectedRow - 1
 			if row < 1 {
 				row = 1
 			}
 			pw.redrawNeeded.Store(true)
+			// Rewrite as absolute position since we're clamping
+			pw.cursorRow.Store(int32(row))
 			fmt.Fprintf(out, "\x1b[%d;%dH", row, pw.cursorCol.Load())
 			return
 		}
 		pw.cursorRow.Store(int32(row))
-		// Pass through
+		// No clamping — pass through original
 
 	case 'd': // VPA - Vertical Position Absolute
 		row := 1
 		if len(pw.params) >= 1 && pw.params[0] > 0 {
 			row = pw.params[0]
 		}
-		// Clamp to protected region
 		if row >= pw.protectedRow {
 			row = pw.protectedRow - 1
 			if row < 1 {
 				row = 1
 			}
 			pw.redrawNeeded.Store(true)
+			// Rewrite since we clamped
+			pw.cursorRow.Store(int32(row))
+			fmt.Fprintf(out, "\x1b[%dd", row)
+			return
 		}
 		pw.cursorRow.Store(int32(row))
-		fmt.Fprintf(out, "\x1b[%dd", row)
-		return
+		// No clamping — pass through original
 
 	case 'J': // ED - Erase in Display
 		mode := 0
