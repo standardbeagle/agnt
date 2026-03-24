@@ -51,6 +51,10 @@ type ProtectedWriter struct {
 	// Alt screen tracking
 	inAltScreen atomic.Bool
 
+	// Saved cursor position (for ESC[s / ESC[u)
+	savedRow int32
+	savedCol int32
+
 	// Redraw state
 	redrawNeeded atomic.Bool
 	stopRedraw   chan struct{}
@@ -226,27 +230,28 @@ func (pw *ProtectedWriter) handleStateGround(out *bytes.Buffer, b byte) {
 		out.WriteByte(b)
 
 	default:
-		if b >= 0x20 && b < 0x7f { // Printable ASCII
-			if col > 0 {
-				newCol := col + 1
-				if newCol > pw.width {
-					// Line wrap — advance to next row
-					newCol = 1
-					newRow := row + 1
-					if newRow >= pw.protectedRow {
-						// Wrap would push into protected area — scroll up
-						fmt.Fprintf(out, "\x1b[%d;1H\x1b[S\x1b[%d;1H", 1, pw.protectedRow-1)
-						pw.cursorRow.Store(int32(pw.protectedRow - 1))
-						pw.cursorCol.Store(1)
-						pw.redrawNeeded.Store(true)
-						out.WriteByte(b)
-						pw.cursorCol.Store(2)
-						return
-					}
-					pw.cursorRow.Store(int32(newRow))
+		// Track column for printable characters.
+		// ASCII printable: 1 column. UTF-8 leading bytes: 1 column (continuation
+		// bytes 0x80-0xBF don't advance). This is approximate — wide chars (emoji, CJK)
+		// should be 2 columns but we can't easily detect that byte-by-byte.
+		isPrintable := (b >= 0x20 && b < 0x7f) || (b >= 0xC0) // ASCII printable or UTF-8 lead byte
+		if isPrintable && col > 0 {
+			newCol := col + 1
+			if newCol > pw.width {
+				newCol = 1
+				newRow := row + 1
+				if newRow >= pw.protectedRow {
+					fmt.Fprintf(out, "\x1b[%d;1H\x1b[S\x1b[%d;1H", 1, pw.protectedRow-1)
+					pw.cursorRow.Store(int32(pw.protectedRow - 1))
+					pw.cursorCol.Store(1)
+					pw.redrawNeeded.Store(true)
+					out.WriteByte(b)
+					pw.cursorCol.Store(2)
+					return
 				}
-				pw.cursorCol.Store(int32(newCol))
+				pw.cursorRow.Store(int32(newRow))
 			}
+			pw.cursorCol.Store(int32(newCol))
 		}
 		out.WriteByte(b)
 	}
@@ -580,6 +585,18 @@ func (pw *ProtectedWriter) handleCSI(out *bytes.Buffer, final byte) {
 				pw.inAltScreen.Store(final == 'h')
 				return
 			}
+		}
+		// Pass through
+
+	case 's': // SCP - Save Cursor Position
+		pw.savedRow = pw.cursorRow.Load()
+		pw.savedCol = pw.cursorCol.Load()
+		// Pass through
+
+	case 'u': // RCP - Restore Cursor Position
+		if pw.savedRow > 0 {
+			pw.cursorRow.Store(pw.savedRow)
+			pw.cursorCol.Store(pw.savedCol)
 		}
 		// Pass through
 
