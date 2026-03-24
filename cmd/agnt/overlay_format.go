@@ -35,6 +35,7 @@ func formatProxyEventText(event ProxyEvent, summarizer *overlay.AuditSummarizer)
 func formatPanelMessageText(event ProxyEvent, summarizer *overlay.AuditSummarizer) string {
 	var data struct {
 		Message     string `json:"message"`
+		URL         string `json:"url"`
 		Attachments []struct {
 			Type     string          `json:"type"`
 			ID       string          `json:"id"`
@@ -53,7 +54,7 @@ func formatPanelMessageText(event ProxyEvent, summarizer *overlay.AuditSummarize
 	}
 
 	auditReports, nonAuditAttachments := processAttachments(data.Attachments, data.Message, summarizer)
-	return formatPanelMessageBody(data.Message, auditReports, nonAuditAttachments)
+	return formatPanelMessageBody(event.ProxyID, data.URL, data.Message, auditReports, nonAuditAttachments)
 }
 
 // processAttachments separates audit attachments (with LLM summarization) from regular attachments.
@@ -141,12 +142,21 @@ func processAuditAttachment(data json.RawMessage, userMessage string, summarizer
 }
 
 // formatPanelMessageBody formats the panel message with audit reports and attachments.
-func formatPanelMessageBody(message string, auditReports []string, attachments []attachmentInfo) string {
+func formatPanelMessageBody(proxyID, pageURL, message string, auditReports []string, attachments []attachmentInfo) string {
 	userMessage := message
 	if userMessage == "" && len(auditReports) > 0 {
 		userMessage = "Review and fix the issues found in this audit report."
 	}
-	text := "from agnt current page: " + userMessage
+
+	// Include source identification for multi-proxy/multi-window disambiguation
+	source := "agnt"
+	if proxyID != "" {
+		source = "agnt proxy:" + proxyID
+	}
+	text := "from " + source + ": " + userMessage
+	if pageURL != "" {
+		text += "\npage: " + pageURL
+	}
 
 	if len(auditReports) > 0 {
 		text += "\n\n[Audit Report]\n"
