@@ -148,12 +148,12 @@ func formatPanelMessageBody(proxyID, pageURL, message string, auditReports []str
 		userMessage = "Review and fix the issues found in this audit report."
 	}
 
-	// Include source identification for multi-proxy/multi-window disambiguation
-	source := "agnt"
+	// Source identification — proxy_id and page URL are machine-readable values
+	// that can be passed directly to MCP tool parameters like proxylog, get_errors, proxy exec.
+	text := "from agnt browser: " + userMessage
 	if proxyID != "" {
-		source = "agnt proxy:" + proxyID
+		text += "\nproxy_id: " + proxyID
 	}
-	text := "from " + source + ": " + userMessage
 	if pageURL != "" {
 		text += "\npage: " + pageURL
 	}
