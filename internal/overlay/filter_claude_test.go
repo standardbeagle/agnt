@@ -140,8 +140,8 @@ func TestProtectedWriter_MixedASCIIAndEmoji(t *testing.T) {
 // with emoji doesn't cause line wrapping that corrupts the protected row.
 func TestProtectedWriter_StatusBarDoesNotOverflow(t *testing.T) {
 	var buf bytes.Buffer
-	// 80-col terminal, 1 protected row
-	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
+	// 80-col terminal, 1 protected row, aggressive mode for ConPTY testing
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1, AggressiveMode: true})
 	defer pw.Stop()
 
 	// Move to last safe row
@@ -259,7 +259,7 @@ func TestProtectedWriter_CursorSaveRestoreTracking(t *testing.T) {
 func TestProtectedWriter_ProtectedRowNotCorrupted(t *testing.T) {
 	var buf bytes.Buffer
 	// Small terminal: 80x5 with 1 protected row
-	pw := NewProtectedWriter(&buf, 80, 5, FilterConfig{ProtectBottomRows: 1})
+	pw := NewProtectedWriter(&buf, 80, 5, FilterConfig{ProtectBottomRows: 1, AggressiveMode: true})
 	defer pw.Stop()
 
 	// Fill the terminal with lines — should scroll, never write to row 5

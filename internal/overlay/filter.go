@@ -16,6 +16,12 @@ type FilterConfig struct {
 	// Scroll region will be set to exclude these rows.
 	ProtectBottomRows int
 
+	// AggressiveMode enables full cursor clamping, manual scroll, and alt screen
+	// blocking. Required for ConPTY (Windows) where DECSTBM is unreliable.
+	// When false (default), only scroll region enforcement and DA1 suppression
+	// are active — cursor positioning passes through unchanged.
+	AggressiveMode bool
+
 	// RedrawInterval is how often to check if indicator needs redrawing.
 	// Set to 0 to disable periodic redraw.
 	RedrawInterval time.Duration
@@ -210,10 +216,8 @@ func (pw *ProtectedWriter) handleStateGround(out *bytes.Buffer, b byte) {
 
 	switch b {
 	case '\n': // Linefeed
-		if row >= pw.protectedRow-1 {
-			// At the last allowed row — scroll up instead of letting the
-			// terminal scroll naturally (which overwrites the status bar
-			// on ConPTY where DECSTBM is unreliable).
+		if pw.config.AggressiveMode && row >= pw.protectedRow-1 {
+			// ConPTY: manual scroll since DECSTBM is unreliable
 			fmt.Fprintf(out, "\x1b[%d;1H\x1b[S\x1b[%d;1H", 1, pw.protectedRow-1)
 			pw.cursorCol.Store(1)
 			pw.redrawNeeded.Store(true)
@@ -323,8 +327,7 @@ func (pw *ProtectedWriter) handleStateEscape(out *bytes.Buffer, b byte) {
 		pw.state = stateGround
 	case 'D': // IND - Index (scroll up / move cursor down)
 		row := int(pw.cursorRow.Load())
-		if row >= pw.protectedRow-1 {
-			// Would scroll into protected area — manual scroll up
+		if pw.config.AggressiveMode && row >= pw.protectedRow-1 {
 			fmt.Fprintf(out, "\x1b[%d;1H\x1b[S\x1b[%d;%dH", 1, pw.protectedRow-1, pw.cursorCol.Load())
 			pw.redrawNeeded.Store(true)
 		} else {
@@ -336,8 +339,7 @@ func (pw *ProtectedWriter) handleStateEscape(out *bytes.Buffer, b byte) {
 		pw.state = stateGround
 	case 'E': // NEL - Next Line
 		row := int(pw.cursorRow.Load())
-		if row >= pw.protectedRow-1 {
-			// Would scroll into protected area — manual scroll up
+		if pw.config.AggressiveMode && row >= pw.protectedRow-1 {
 			fmt.Fprintf(out, "\x1b[%d;1H\x1b[S\x1b[%d;1H", 1, pw.protectedRow-1)
 			pw.cursorCol.Store(1)
 			pw.redrawNeeded.Store(true)
@@ -534,20 +536,17 @@ func (pw *ProtectedWriter) handleCSI(out *bytes.Buffer, final byte) {
 		if len(pw.params) >= 2 && pw.params[1] > 0 {
 			col = pw.params[1]
 		}
-		// Clamp row to avoid protected region
-		if row >= pw.protectedRow {
+		if pw.config.AggressiveMode && row >= pw.protectedRow {
 			row = pw.protectedRow - 1
 			if row < 1 {
 				row = 1
 			}
 			pw.redrawNeeded.Store(true)
-			// Must rewrite since we clamped
 			pw.cursorRow.Store(int32(row))
 			pw.cursorCol.Store(int32(col))
 			fmt.Fprintf(out, "\x1b[%d;%d%c", row, col, final)
 			return
 		}
-		// No clamping needed — pass through original bytes unchanged
 		pw.cursorRow.Store(int32(row))
 		pw.cursorCol.Store(int32(col))
 
@@ -569,38 +568,34 @@ func (pw *ProtectedWriter) handleCSI(out *bytes.Buffer, final byte) {
 			n = pw.params[0]
 		}
 		row := int(pw.cursorRow.Load()) + n
-		if row >= pw.protectedRow {
+		if pw.config.AggressiveMode && row >= pw.protectedRow {
 			row = pw.protectedRow - 1
 			if row < 1 {
 				row = 1
 			}
 			pw.redrawNeeded.Store(true)
-			// Rewrite as absolute position since we're clamping
 			pw.cursorRow.Store(int32(row))
 			fmt.Fprintf(out, "\x1b[%d;%dH", row, pw.cursorCol.Load())
 			return
 		}
 		pw.cursorRow.Store(int32(row))
-		// No clamping — pass through original
 
 	case 'd': // VPA - Vertical Position Absolute
 		row := 1
 		if len(pw.params) >= 1 && pw.params[0] > 0 {
 			row = pw.params[0]
 		}
-		if row >= pw.protectedRow {
+		if pw.config.AggressiveMode && row >= pw.protectedRow {
 			row = pw.protectedRow - 1
 			if row < 1 {
 				row = 1
 			}
 			pw.redrawNeeded.Store(true)
-			// Rewrite since we clamped
 			pw.cursorRow.Store(int32(row))
 			fmt.Fprintf(out, "\x1b[%dd", row)
 			return
 		}
 		pw.cursorRow.Store(int32(row))
-		// No clamping — pass through original
 
 	case 'J': // ED - Erase in Display
 		mode := 0
@@ -617,11 +612,12 @@ func (pw *ProtectedWriter) handleCSI(out *bytes.Buffer, final byte) {
 		if isPrivate && len(pw.params) > 0 {
 			switch pw.params[0] {
 			case 1049, 47, 1047: // Alternate screen buffer sequences
-				// Block alt screen — keep the child on the main screen so the
-				// scroll region protects the indicator bar. Track the child's
-				// intent so the overlay's hybrid menu logic can adapt.
 				pw.inAltScreen.Store(final == 'h')
-				return
+				if pw.config.AggressiveMode {
+					// ConPTY: block alt screen to keep scroll region protection
+					return
+				}
+				// Normal: track intent but let it through
 			}
 		}
 		// Pass through
@@ -659,11 +655,10 @@ func (pw *ProtectedWriter) advanceCol(out *bytes.Buffer, row, col, width int) {
 	}
 	newCol := col + width
 	if newCol > pw.width {
-		// Line wrap
-		newCol = 1 + (width - 1) // handle wide char at edge
+		newCol = 1 + (width - 1)
 		newRow := row + 1
-		if newRow >= pw.protectedRow {
-			// Would push into protected area — scroll up
+		if pw.config.AggressiveMode && newRow >= pw.protectedRow {
+			// ConPTY: manual scroll since DECSTBM is unreliable
 			fmt.Fprintf(out, "\x1b[%d;1H\x1b[S\x1b[%d;1H", 1, pw.protectedRow-1)
 			pw.cursorRow.Store(int32(pw.protectedRow - 1))
 			pw.cursorCol.Store(int32(newCol))

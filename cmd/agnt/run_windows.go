@@ -432,6 +432,7 @@ func runWithConPTY(ctx context.Context, args []string, socketPath string, sessio
 		if showIndicator {
 			filterCfg := overlay.FilterConfig{
 				ProtectBottomRows: 1,
+				AggressiveMode:    true, // ConPTY needs full cursor clamping
 				RedrawInterval:    200 * time.Millisecond,
 				OnRedraw: func() {
 					if termOverlay != nil {

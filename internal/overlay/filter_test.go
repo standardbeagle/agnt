@@ -11,7 +11,7 @@ import (
 
 func TestProtectedWriter_PassthroughNormalText(t *testing.T) {
 	var buf bytes.Buffer
-	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1, AggressiveMode: true})
 	defer pw.Stop()
 
 	input := "Hello, World!\n"
@@ -30,7 +30,7 @@ func TestProtectedWriter_PassthroughNormalText(t *testing.T) {
 
 func TestProtectedWriter_ScrollRegionReset(t *testing.T) {
 	var buf bytes.Buffer
-	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1, AggressiveMode: true})
 	defer pw.Stop()
 
 	// Send a scroll region reset: ESC [ r
@@ -46,7 +46,7 @@ func TestProtectedWriter_ScrollRegionReset(t *testing.T) {
 
 func TestProtectedWriter_ScrollRegionWithParams(t *testing.T) {
 	var buf bytes.Buffer
-	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1, AggressiveMode: true})
 	defer pw.Stop()
 
 	// Send scroll region 1-24, should be clamped to 1-23
@@ -61,7 +61,7 @@ func TestProtectedWriter_ScrollRegionWithParams(t *testing.T) {
 
 func TestProtectedWriter_ScrollRegionAlreadyValid(t *testing.T) {
 	var buf bytes.Buffer
-	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1, AggressiveMode: true})
 	defer pw.Stop()
 
 	// Send scroll region 1-20, should pass through as-is (within bounds)
@@ -76,7 +76,7 @@ func TestProtectedWriter_ScrollRegionAlreadyValid(t *testing.T) {
 
 func TestProtectedWriter_CursorMoveToProtectedRow(t *testing.T) {
 	var buf bytes.Buffer
-	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1, AggressiveMode: true})
 	defer pw.Stop()
 
 	// Move cursor to row 24 (protected), should be clamped to row 23
@@ -91,7 +91,7 @@ func TestProtectedWriter_CursorMoveToProtectedRow(t *testing.T) {
 
 func TestProtectedWriter_CursorMoveToValidRow(t *testing.T) {
 	var buf bytes.Buffer
-	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1, AggressiveMode: true})
 	defer pw.Stop()
 
 	// Move cursor to row 10, should pass through
@@ -106,7 +106,7 @@ func TestProtectedWriter_CursorMoveToValidRow(t *testing.T) {
 
 func TestProtectedWriter_VPA_VerticalPositionAbsolute(t *testing.T) {
 	var buf bytes.Buffer
-	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1, AggressiveMode: true})
 	defer pw.Stop()
 
 	// VPA to row 24 (protected), should be clamped
@@ -142,7 +142,7 @@ func TestProtectedWriter_ClearScreenTriggersRedraw(t *testing.T) {
 
 func TestProtectedWriter_AltScreenBlockedButTracked(t *testing.T) {
 	var buf bytes.Buffer
-	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1, AggressiveMode: true})
 	defer pw.Stop()
 
 	// Enter alt screen - should be blocked but InAltScreen tracked
@@ -210,7 +210,7 @@ func TestProtectedWriter_PeriodicRedraw(t *testing.T) {
 
 func TestProtectedWriter_SetSize(t *testing.T) {
 	var buf bytes.Buffer
-	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1, AggressiveMode: true})
 	defer pw.Stop()
 
 	// Change size
@@ -228,7 +228,7 @@ func TestProtectedWriter_SetSize(t *testing.T) {
 
 func TestProtectedWriter_EnforceScrollRegion(t *testing.T) {
 	var buf bytes.Buffer
-	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1, AggressiveMode: true})
 	defer pw.Stop()
 
 	pw.EnforceScrollRegion()
@@ -242,7 +242,7 @@ func TestProtectedWriter_EnforceScrollRegion(t *testing.T) {
 
 func TestProtectedWriter_MixedContent(t *testing.T) {
 	var buf bytes.Buffer
-	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1, AggressiveMode: true})
 	defer pw.Stop()
 
 	// Mix of text and escape sequences
@@ -258,7 +258,7 @@ func TestProtectedWriter_MixedContent(t *testing.T) {
 
 func TestProtectedWriter_OSCSequence(t *testing.T) {
 	var buf bytes.Buffer
-	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1, AggressiveMode: true})
 	defer pw.Stop()
 
 	// OSC sequence (set window title) - should pass through
@@ -272,7 +272,7 @@ func TestProtectedWriter_OSCSequence(t *testing.T) {
 
 func TestProtectedWriter_OSCWithST(t *testing.T) {
 	var buf bytes.Buffer
-	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1, AggressiveMode: true})
 	defer pw.Stop()
 
 	// OSC sequence with ST terminator (ESC \)
@@ -286,7 +286,7 @@ func TestProtectedWriter_OSCWithST(t *testing.T) {
 
 func TestProtectedWriter_SGRSequence(t *testing.T) {
 	var buf bytes.Buffer
-	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1, AggressiveMode: true})
 	defer pw.Stop()
 
 	// SGR (Set Graphics Rendition) - should pass through
@@ -300,7 +300,7 @@ func TestProtectedWriter_SGRSequence(t *testing.T) {
 
 func TestProtectedWriter_CursorDown_ClampedAtProtected(t *testing.T) {
 	var buf bytes.Buffer
-	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1, AggressiveMode: true})
 	defer pw.Stop()
 
 	// Set cursor position to row 22 first
@@ -318,7 +318,7 @@ func TestProtectedWriter_CursorDown_ClampedAtProtected(t *testing.T) {
 
 func TestProtectedWriter_MultipleProtectedRows(t *testing.T) {
 	var buf bytes.Buffer
-	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 3})
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 3, AggressiveMode: true})
 	defer pw.Stop()
 
 	// With 3 protected rows, rows 22-24 are protected, max valid is 21
@@ -341,7 +341,7 @@ func TestProtectedWriter_MultipleProtectedRows(t *testing.T) {
 
 func TestProtectedWriter_PrivateModePassthrough(t *testing.T) {
 	var buf bytes.Buffer
-	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1, AggressiveMode: true})
 	defer pw.Stop()
 
 	// Private mode sequences (like cursor visibility) should pass through
@@ -363,7 +363,7 @@ func TestProtectedWriter_PrivateModePassthrough(t *testing.T) {
 
 func TestProtectedWriter_ConcurrentWrites(t *testing.T) {
 	var buf bytes.Buffer
-	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1, AggressiveMode: true})
 	defer pw.Stop()
 
 	// Write from multiple goroutines
@@ -390,7 +390,7 @@ func TestProtectedWriter_ConcurrentWrites(t *testing.T) {
 
 func TestProtectedWriter_IncrementalEscapeSequence(t *testing.T) {
 	var buf bytes.Buffer
-	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1, AggressiveMode: true})
 	defer pw.Stop()
 
 	// Send escape sequence in pieces (simulating network chunking)
@@ -409,7 +409,7 @@ func TestProtectedWriter_IncrementalEscapeSequence(t *testing.T) {
 
 func TestProtectedWriter_DA1ResponseSuppressed(t *testing.T) {
 	var buf bytes.Buffer
-	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1, AggressiveMode: true})
 	defer pw.Stop()
 
 	// DA1 response (CSI ? Ps c) should be suppressed — it's a terminal-to-app
@@ -446,7 +446,7 @@ func TestProtectedWriter_DA1ResponseSuppressed(t *testing.T) {
 
 func TestProtectedWriter_ResetSequence(t *testing.T) {
 	var buf bytes.Buffer
-	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1, AggressiveMode: true})
 	defer pw.Stop()
 
 	// RIS (Reset to Initial State) - should pass through and trigger redraw
