@@ -579,32 +579,35 @@ func (r *Renderer) estimateVisibleLength(s string) int {
 }
 
 // isWideChar returns true for characters that occupy 2 cells in a terminal.
-// Covers emoji, CJK ideographs, and other East Asian wide characters.
+// Based on Unicode East Asian Width: only W (Wide) and F (Fullwidth) characters.
+// BMP symbols like ⚙ (U+2699), ⚠ (U+26A0), ✗, ● are narrow (1 cell).
 func isWideChar(ch rune) bool {
-	// Emoji: most are in these ranges
-	if ch >= 0x1F300 && ch <= 0x1FBFF { // Miscellaneous Symbols, Emoticons, etc.
+	// Supplementary emoji (U+1F300–U+1FBFF): all wide
+	if ch >= 0x1F300 && ch <= 0x1FBFF {
 		return true
 	}
-	if ch >= 0x2600 && ch <= 0x27BF { // Misc symbols, Dingbats
-		return true
-	}
-	if ch >= 0x2B50 && ch <= 0x2B55 { // Stars, circles
-		return true
-	}
-	// CJK Unified Ideographs
+	// CJK Unified Ideographs (U+4E00–U+9FFF)
 	if ch >= 0x4E00 && ch <= 0x9FFF {
 		return true
 	}
-	// CJK Compatibility Ideographs
+	// CJK Extension A (U+3400–U+4DBF)
+	if ch >= 0x3400 && ch <= 0x4DBF {
+		return true
+	}
+	// CJK Compatibility Ideographs (U+F900–U+FAFF)
 	if ch >= 0xF900 && ch <= 0xFAFF {
 		return true
 	}
-	// Fullwidth forms
+	// Fullwidth forms (U+FF01–U+FF60)
 	if ch >= 0xFF01 && ch <= 0xFF60 {
 		return true
 	}
-	// Common emoji in BMP
-	if ch >= 0x2702 && ch <= 0x27B0 {
+	// Hangul Syllables (U+AC00–U+D7AF)
+	if ch >= 0xAC00 && ch <= 0xD7AF {
+		return true
+	}
+	// CJK Extension B+ (U+20000–U+2FA1F)
+	if ch >= 0x20000 && ch <= 0x2FA1F {
 		return true
 	}
 	return false
