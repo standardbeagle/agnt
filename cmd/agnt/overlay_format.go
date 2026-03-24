@@ -89,6 +89,7 @@ func processAttachments(attachments []struct {
 			if len(att.Data) > 0 {
 				var dataFields map[string]interface{}
 				if err := json.Unmarshal(att.Data, &dataFields); err == nil {
+					info.RawData = dataFields
 					if fp, ok := dataFields["file_path"].(string); ok {
 						info.FilePath = fp
 					}
@@ -141,123 +142,189 @@ func processAuditAttachment(data json.RawMessage, userMessage string, summarizer
 	return fmt.Sprintf("**%s**: %s", auditData.Label, auditData.Summary)
 }
 
-// formatPanelMessageBody formats the panel message with audit reports and attachments.
+// formatPanelMessageBody formats the panel message with structured headings.
+// Each section uses a labeled heading (proxy:, page:, screenshot:, element:, etc.)
+// so the AI agent can parse values directly into MCP tool parameters.
 func formatPanelMessageBody(proxyID, pageURL, message string, auditReports []string, attachments []attachmentInfo) string {
 	userMessage := message
 	if userMessage == "" && len(auditReports) > 0 {
 		userMessage = "Review and fix the issues found in this audit report."
 	}
 
-	// Source identification — proxy_id and page URL are machine-readable values
-	// that can be passed directly to MCP tool parameters like proxylog, get_errors, proxy exec.
-	text := "from agnt browser: " + userMessage
+	var b strings.Builder
+	b.WriteString("from agnt browser: " + userMessage + "\n")
+
 	if proxyID != "" {
-		text += "\nproxy_id: " + proxyID
+		b.WriteString("proxy: " + proxyID + "\n")
 	}
 	if pageURL != "" {
-		text += "\npage: " + pageURL
+		b.WriteString("page: " + pageURL + "\n")
 	}
 
-	if len(auditReports) > 0 {
-		text += "\n\n[Audit Report]\n"
-		for _, report := range auditReports {
-			text += report + "\n"
-		}
-	}
+	for _, att := range attachments {
+		switch att.Type {
+		case "screenshot":
+			b.WriteString("\nscreenshot: ")
+			if att.Area != nil {
+				b.WriteString(fmt.Sprintf("%dx%d at (%d,%d)", att.Area.Width, att.Area.Height, att.Area.X, att.Area.Y))
+			} else {
+				b.WriteString("full page")
+			}
+			if att.Summary != "" {
+				b.WriteString(" — " + att.Summary)
+			}
+			b.WriteString("\n")
+			if att.FilePath != "" {
+				b.WriteString("  file: " + att.FilePath + "\n")
+			} else if att.ID != "" {
+				b.WriteString("  id: " + att.ID + "\n")
+			}
 
-	if len(attachments) > 0 {
-		text += "\n\n[Attachments]\n"
-		for i, att := range attachments {
-			text += fmt.Sprintf("%d. %s", i+1, att.Type)
-			switch att.Type {
-			case "screenshot":
-				if att.Area != nil {
-					text += fmt.Sprintf(" (area: %dx%d at %d,%d)", att.Area.Width, att.Area.Height, att.Area.X, att.Area.Y)
+		case "element":
+			b.WriteString("\nelement: " + att.Selector + "\n")
+			formatElementMeta(&b, att)
+
+		case "sketch":
+			b.WriteString("\nsketch: ")
+			if att.Summary != "" {
+				b.WriteString(att.Summary)
+			}
+			b.WriteString("\n")
+			if att.FilePath != "" {
+				b.WriteString("  file: " + att.FilePath + "\n")
+			}
+
+		case "style-edit":
+			b.WriteString("\nstyle-edit: " + att.Selector + "\n")
+			for _, ch := range att.StyleChanges {
+				scope := ch.Scope
+				if scope == "" {
+					scope = "inline"
 				}
-				if att.Summary != "" {
-					text += fmt.Sprintf(": %s", att.Summary)
+				b.WriteString(fmt.Sprintf("  %s: %s → %s (%s)\n", ch.Property, ch.Original, ch.Current, scope))
+			}
+			if att.ReactComponent != "" {
+				b.WriteString("  component: " + att.ReactComponent)
+				if att.ReactSource != "" {
+					b.WriteString(" (" + att.ReactSource + ")")
 				}
-				if att.FilePath != "" {
-					text += fmt.Sprintf("\n   → %s", att.FilePath)
-				} else {
-					text += fmt.Sprintf("\n   → (file path not available - ID: %s)", att.ID)
-				}
-				text += "\n"
-			case "element":
-				if att.Selector != "" {
-					text += fmt.Sprintf(": %s", att.Selector)
-				}
-				if att.Tag != "" {
-					text += fmt.Sprintf(" (%s)", att.Tag)
-				}
-				if att.Text != "" {
-					text += fmt.Sprintf(" - %q", truncateText(att.Text, 50))
-				}
-				if att.FilePath != "" {
-					text += fmt.Sprintf("\n   → %s", att.FilePath)
-				}
-				text += "\n"
-			case "sketch":
-				if att.Summary != "" {
-					text += fmt.Sprintf(": %s", att.Summary)
-				}
-				text += "\n"
-				if att.FilePath != "" {
-					text += fmt.Sprintf("   → %s\n", att.FilePath)
-				}
-			case "style-edit":
-				if att.Selector != "" {
-					text += fmt.Sprintf(" (selector: %s", att.Selector)
-					if len(att.StyleChanges) > 0 {
-						text += fmt.Sprintf(", %d change", len(att.StyleChanges))
-						if len(att.StyleChanges) != 1 {
-							text += "s"
-						}
-					}
-					text += ")"
-				}
-				text += "\n"
-				for _, ch := range att.StyleChanges {
-					scope := ch.Scope
-					if scope == "" {
-						scope = "inline"
-					}
-					text += fmt.Sprintf("   %s: %s → %s (%s)\n", ch.Property, ch.Original, ch.Current, scope)
-				}
-				if att.ReactComponent != "" {
-					react := "   React: " + att.ReactComponent
-					if att.ReactSource != "" {
-						react += " (" + att.ReactSource + ")"
-					}
-					text += react + "\n"
-				}
-				if att.ScreenshotBefore != "" {
-					text += fmt.Sprintf("   → before: %s\n", att.ScreenshotBefore)
-				}
-				if att.ScreenshotAfter != "" {
-					text += fmt.Sprintf("   → after: %s\n", att.ScreenshotAfter)
-				}
-			default:
-				if att.Selector != "" {
-					text += fmt.Sprintf(": %s", att.Selector)
-				}
-				if att.Text != "" {
-					text += fmt.Sprintf(" (%s)", att.Text)
-				}
-				if att.FilePath != "" {
-					text += fmt.Sprintf("\n   → %s", att.FilePath)
-				}
-				text += "\n"
+				b.WriteString("\n")
+			}
+			if att.ScreenshotBefore != "" {
+				b.WriteString("  before: " + att.ScreenshotBefore + "\n")
+			}
+			if att.ScreenshotAfter != "" {
+				b.WriteString("  after: " + att.ScreenshotAfter + "\n")
+			}
+
+		default:
+			b.WriteString("\n" + att.Type + ": ")
+			if att.Selector != "" {
+				b.WriteString(att.Selector)
+			}
+			if att.Text != "" {
+				b.WriteString(" — " + truncateText(att.Text, 60))
+			}
+			b.WriteString("\n")
+			if att.FilePath != "" {
+				b.WriteString("  file: " + att.FilePath + "\n")
 			}
 		}
 	}
 
-	if len(auditReports) > 0 || len(attachments) > 0 {
-		text += "\n\n[All Audit Data]\n"
-		text += "Summary of all files: .agnt/audit/SUMMARY.md\n"
+	for _, report := range auditReports {
+		b.WriteString("\naudit:\n" + report + "\n")
 	}
 
-	return text
+	if len(auditReports) > 0 {
+		b.WriteString("\nall audit data: .agnt/audit/SUMMARY.md\n")
+	}
+
+	return b.String()
+}
+
+// formatElementMeta writes heuristically selected metadata lines for an element.
+// Picks the most actionable fields: framework/component, semantic role, text content,
+// ID/test ID, relevant classes, key attributes, computed layout, and event listeners.
+func formatElementMeta(b *strings.Builder, att attachmentInfo) {
+	d := att.RawData
+
+	// Framework + component (most useful for finding the source code)
+	if fw, _ := d["framework"].(string); fw != "" {
+		comp, _ := d["component"].(string)
+		if comp != "" {
+			b.WriteString("  component: " + comp + " (" + fw + ")\n")
+		} else {
+			b.WriteString("  framework: " + fw + "\n")
+		}
+	}
+
+	// Tag + semantic role
+	line := "  tag: " + att.Tag
+	if role, _ := d["role"].(string); role != "" {
+		line += "  role: " + role
+	}
+	b.WriteString(line + "\n")
+
+	// ID and test ID (direct selectors for code search)
+	if id, _ := d["id"].(string); id != "" {
+		b.WriteString("  id: " + id + "\n")
+	}
+	if tid, _ := d["data_testid"].(string); tid != "" {
+		b.WriteString("  test-id: " + tid + "\n")
+	} else if tid, _ = d["data_test_id"].(string); tid != "" {
+		b.WriteString("  test-id: " + tid + "\n")
+	}
+
+	// Semantic classes (filter out utility/generated classes, keep meaningful ones)
+	if classes, ok := d["classes"].([]interface{}); ok && len(classes) > 0 {
+		var meaningful []string
+		for _, c := range classes {
+			cls, _ := c.(string)
+			if cls == "" || len(cls) > 30 {
+				continue
+			}
+			meaningful = append(meaningful, cls)
+		}
+		if len(meaningful) > 0 {
+			if len(meaningful) > 5 {
+				meaningful = meaningful[:5]
+			}
+			b.WriteString("  classes: " + strings.Join(meaningful, " ") + "\n")
+		}
+	}
+
+	// Text content
+	if att.Text != "" {
+		b.WriteString("  text: " + truncateText(att.Text, 80) + "\n")
+	}
+
+	// Key attributes (href, name, type, placeholder, title, alt, aria-label)
+	for _, key := range []string{"href", "name", "type", "placeholder", "title", "alt", "aria_label"} {
+		if v, _ := d[key].(string); v != "" {
+			b.WriteString("  " + strings.ReplaceAll(key, "_", "-") + ": " + truncateText(v, 60) + "\n")
+		}
+	}
+
+	// Computed layout (only non-default values)
+	for _, key := range []string{"display", "position", "overflow"} {
+		if v, _ := d[key].(string); v != "" {
+			b.WriteString("  " + key + ": " + v + "\n")
+		}
+	}
+
+	// Event listeners
+	if listeners, ok := d["listeners"].([]interface{}); ok && len(listeners) > 0 {
+		var names []string
+		for _, l := range listeners {
+			if s, ok := l.(string); ok {
+				names = append(names, s)
+			}
+		}
+		if len(names) > 0 {
+			b.WriteString("  listeners: " + strings.Join(names, ", ") + "\n")
+		}
+	}
 }
 
 // formatSketchText formats a sketch event into text for the AI agent.

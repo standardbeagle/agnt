@@ -341,6 +341,7 @@ type attachmentInfo struct {
 	Area     *screenshotArea
 	FilePath string // Path to the saved file (for screenshots, sketches)
 	FileName string // Just the filename for display
+	RawData  map[string]interface{}
 
 	// Style-edit fields
 	StyleChanges     []styleChange
