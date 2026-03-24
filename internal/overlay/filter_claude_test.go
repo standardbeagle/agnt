@@ -196,6 +196,29 @@ func TestProtectedWriter_RapidCROverwriteNearBottom(t *testing.T) {
 	}
 }
 
+// TestProtectedWriter_CUPPassthroughPreservesOriginal verifies that cursor
+// position sequences are passed through with original bytes when no clamping
+// is needed — not rewritten with explicit params.
+func TestProtectedWriter_CUPPassthroughPreservesOriginal(t *testing.T) {
+	var buf bytes.Buffer
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
+	defer pw.Stop()
+
+	// \x1b[5H means "move to row 5" — should pass through as-is
+	pw.Write([]byte("\x1b[5H"))
+	output := buf.String()
+	if output != "\x1b[5H" {
+		t.Errorf("CUP should pass through as \\x1b[5H, got %q", output)
+	}
+
+	buf.Reset()
+	pw.Write([]byte("\x1b[3;10H"))
+	output = buf.String()
+	if output != "\x1b[3;10H" {
+		t.Errorf("CUP should pass through as \\x1b[3;10H, got %q", output)
+	}
+}
+
 // TestProtectedWriter_CursorSaveRestoreTracking verifies that cursor
 // save/restore sequences are tracked correctly for position.
 func TestProtectedWriter_CursorSaveRestoreTracking(t *testing.T) {
