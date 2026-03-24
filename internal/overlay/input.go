@@ -517,22 +517,11 @@ func (r *InputRouter) enterPanelBrowse(delta int) {
 
 	r.overlay.showPanelDirect()
 
-	if len(r.overlay.panelItems) <= 1 {
-		// No process/proxy panels — show the overview
-		r.overlay.panelMode = true
-		r.overlay.panelIndex = 0
-		r.overlay.draw()
-		return
-	}
-
-	// Set starting position so handlePanelNav lands on the right panel
-	if delta > 0 {
-		r.overlay.panelIndex = 0 // handlePanelNav(1) → index 1 (first process/proxy)
-	} else {
-		r.overlay.panelIndex = len(r.overlay.panelItems) // handlePanelNav(-1) → last panel
-	}
-
-	r.handlePanelNav(delta)
+	// Start at overview (index 0)
+	r.overlay.panelMode = true
+	r.overlay.panelIndex = 0
+	r.overlay.renderer.ClearScreen()
+	r.overlay.draw()
 }
 
 // handleTextInput handles input in text input mode.
