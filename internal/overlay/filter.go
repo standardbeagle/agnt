@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"os"
+	"runtime"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -17,9 +19,10 @@ type FilterConfig struct {
 	ProtectBottomRows int
 
 	// AggressiveMode enables full cursor clamping, manual scroll, and alt screen
-	// blocking. Required for ConPTY (Windows) where DECSTBM is unreliable.
+	// blocking. Required for terminals where DECSTBM is unreliable (ConPTY).
 	// When false (default), only scroll region enforcement and DA1 suppression
 	// are active — cursor positioning passes through unchanged.
+	// Use NeedsAggressiveMode() to detect automatically.
 	AggressiveMode bool
 
 	// RedrawInterval is how often to check if indicator needs redrawing.
@@ -28,6 +31,36 @@ type FilterConfig struct {
 
 	// OnRedraw is called when the indicator should be redrawn.
 	OnRedraw func()
+}
+
+// NeedsAggressiveMode detects whether the current terminal needs aggressive
+// filtering. Returns true for ConPTY (Windows Terminal, VS Code terminal)
+// where DECSTBM scroll regions are unreliable. Returns false for Unix PTYs,
+// WSL, mintty, and other terminals with proper DECSTBM support.
+func NeedsAggressiveMode() bool {
+	// ConPTY sets WT_SESSION (Windows Terminal) or specific TERM_PROGRAM values.
+	// Check for known ConPTY indicators.
+	if os.Getenv("WT_SESSION") != "" {
+		return true // Windows Terminal uses ConPTY
+	}
+	if os.Getenv("TERM_PROGRAM") == "vscode" && runtime.GOOS == "windows" {
+		return true // VS Code on Windows uses ConPTY
+	}
+	// Native Windows console without WT_SESSION — likely ConPTY or legacy console
+	if runtime.GOOS == "windows" {
+		// Check if running under WSL or Cygwin/MSYS2 (which have proper PTYs)
+		if os.Getenv("WSL_DISTRO_NAME") != "" {
+			return false // WSL has a real PTY
+		}
+		if os.Getenv("MSYSTEM") != "" {
+			return false // MSYS2/Git Bash uses mintty
+		}
+		if os.Getenv("CYGWIN") != "" {
+			return false // Cygwin has proper PTY
+		}
+		return true // Default: assume ConPTY on Windows
+	}
+	return false // Unix — proper DECSTBM support
 }
 
 // ProtectedWriter filters PTY output to protect the status bar area.
