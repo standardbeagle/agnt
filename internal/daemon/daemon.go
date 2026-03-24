@@ -998,6 +998,14 @@ func (d *Daemon) RunAutostart(ctx context.Context, projectPath string) *Autostar
 	debug.Log("daemon", "RunAutostart: config loaded, scripts=%d proxies=%d",
 		len(agntConfig.Scripts), len(agntConfig.Proxies))
 
+	// Register ALL scripts in ScriptRegistry (not just autostart ones).
+	// Non-autostart scripts get StateIdle so the overlay can show them.
+	for name, scriptCfg := range agntConfig.Scripts {
+		processID := makeProcessID(projectPath, name)
+		d.scriptConfigs.Store(processID, scriptCfg)
+		d.scriptRegistry.Register(name, projectPath, scriptConfigToEntry(scriptCfg))
+	}
+
 	// Start scripts in dependency order
 	autostartScripts := agntConfig.GetAutostartScripts()
 	proxyConfigs := agntConfig.Proxies // All proxies, not just autostart ones

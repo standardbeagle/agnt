@@ -14,6 +14,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/project"
 	"github.com/standardbeagle/go-cli-server/process"
+	"github.com/standardbeagle/go-cli-server/script"
 )
 
 // StartScriptConfig holds configuration for starting a script/process.
@@ -64,6 +65,14 @@ func (d *Daemon) StartScript(ctx context.Context, cfg StartScriptConfig) (*Start
 	if projectPath == "" {
 		projectPath = cfg.WorkingDir
 	}
+
+	// Ensure a ScriptEntry exists (idempotent). For standalone processes not
+	// from .agnt.kdl, this creates the entry so the code path is uniform.
+	scriptName := stripProcessPrefix(cfg.ProcessID)
+	d.scriptRegistry.Register(scriptName, projectPath, &script.Config{
+		Command: cfg.Command,
+		Args:    cfg.Args,
+	})
 
 	// Set URL matchers BEFORE starting the process to ensure they're available
 	// when the URL tracker first scans the process output
@@ -283,16 +292,23 @@ func (d *Daemon) startScriptWithRetry(
 		}
 	}
 
+	// Wire output callback to feed ScriptEntry output buffer
+	var outputCB process.OutputCallback
+	if entry, ok := d.scriptRegistry.Get(stripProcessPrefix(processID), projectPath); ok {
+		outputCB = func(_ string, line string) {
+			entry.AppendOutput(line)
+		}
+	}
+
 	// Start the process
-	// ProjectPath is the root project (for session association and proxy events)
-	// WorkingDir is the actual cwd for the process
 	result, err := d.hub.ProcessManager().StartOrReuse(ctx, process.ProcessConfig{
-		ID:          processID,
-		ProjectPath: projectPath,
-		WorkingDir:  workingDir,
-		Command:     command,
-		Args:        args,
-		Env:         env,
+		ID:             processID,
+		ProjectPath:    projectPath,
+		WorkingDir:     workingDir,
+		Command:        command,
+		Args:           args,
+		Env:            env,
+		OutputCallback: outputCB,
 	})
 	if err != nil {
 		return nil, &StartupError{
