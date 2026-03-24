@@ -97,9 +97,74 @@ func TestProtectedWriter_MultibyteCharsColumnTracking(t *testing.T) {
 	// "●" is a single-width Unicode char (1 column, 3 bytes UTF-8)
 	pw.Write([]byte("●"))
 	col := int(pw.cursorCol.Load())
-	// The bullet should advance by 1 column, not 3
 	if col != 2 {
 		t.Errorf("After '●' (1 col), cursor should be at 2, got %d", col)
+	}
+}
+
+// TestProtectedWriter_WideEmojiColumnTracking verifies that wide emoji
+// characters advance the cursor by 2 columns.
+func TestProtectedWriter_WideEmojiColumnTracking(t *testing.T) {
+	var buf bytes.Buffer
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
+	defer pw.Stop()
+
+	// "🔗" is a wide emoji (2 columns, 4 bytes UTF-8)
+	pw.Write([]byte("🔗"))
+	col := int(pw.cursorCol.Load())
+	if col != 3 { // started at 1, advance 2 = 3
+		t.Errorf("After '🔗' (2 cols), cursor should be at 3, got %d", col)
+	}
+}
+
+// TestProtectedWriter_MixedASCIIAndEmoji verifies column tracking for
+// mixed ASCII and emoji content like the status bar.
+func TestProtectedWriter_MixedASCIIAndEmoji(t *testing.T) {
+	var buf bytes.Buffer
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
+	defer pw.Stop()
+
+	// "🔗 ● │ ⚙ ●" — status bar fragment
+	// 🔗(2) + space(1) + ●(1) + space(1) + │(1) + space(1) + ⚙(1) + space(1) + ●(1) = 10 cols
+	input := "🔗 ● │ ⚙ ●"
+	pw.Write([]byte(input))
+	col := int(pw.cursorCol.Load())
+	// 🔗=2, rest are 1 each (8 chars) = 10 total, cursor at 11
+	expected := 11
+	if col != expected {
+		t.Errorf("After %q (%d cols), cursor should be at %d, got %d", input, expected-1, expected, col)
+	}
+}
+
+// TestProtectedWriter_StatusBarDoesNotOverflow verifies that a full status bar
+// with emoji doesn't cause line wrapping that corrupts the protected row.
+func TestProtectedWriter_StatusBarDoesNotOverflow(t *testing.T) {
+	var buf bytes.Buffer
+	// 80-col terminal, 1 protected row
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
+	defer pw.Stop()
+
+	// Move to last safe row
+	pw.Write([]byte("\x1b[23;1H"))
+
+	// Write a line with emoji that's exactly 80 columns
+	// Each 🔗 = 2 cols, so 40 of them = 80 cols
+	for i := 0; i < 40; i++ {
+		pw.Write([]byte("🔗"))
+	}
+
+	// Should NOT have scrolled (exactly fits)
+	row := int(pw.cursorRow.Load())
+	if row != 23 {
+		t.Errorf("Row should still be 23 after exactly fitting, got %d", row)
+	}
+
+	// One more char should trigger scroll
+	pw.Write([]byte("X"))
+	row = int(pw.cursorRow.Load())
+	// Should have wrapped and scrolled since we're at the protected boundary
+	if row >= 24 {
+		t.Errorf("Cursor should not enter protected row 24, got row %d", row)
 	}
 }
 

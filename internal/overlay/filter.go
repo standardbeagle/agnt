@@ -51,6 +51,11 @@ type ProtectedWriter struct {
 	// Alt screen tracking
 	inAltScreen atomic.Bool
 
+	// UTF-8 accumulator for multi-byte character width detection
+	utf8Buf  [4]byte
+	utf8Len  int // bytes accumulated so far
+	utf8Need int // total bytes needed for current char
+
 	// Saved cursor position (for ESC[s / ESC[u)
 	savedRow int32
 	savedCol int32
@@ -230,29 +235,55 @@ func (pw *ProtectedWriter) handleStateGround(out *bytes.Buffer, b byte) {
 		out.WriteByte(b)
 
 	default:
-		// Track column for printable characters.
-		// ASCII printable: 1 column. UTF-8 leading bytes: 1 column (continuation
-		// bytes 0x80-0xBF don't advance). This is approximate — wide chars (emoji, CJK)
-		// should be 2 columns but we can't easily detect that byte-by-byte.
-		isPrintable := (b >= 0x20 && b < 0x7f) || (b >= 0xC0) // ASCII printable or UTF-8 lead byte
-		if isPrintable && col > 0 {
-			newCol := col + 1
-			if newCol > pw.width {
-				newCol = 1
-				newRow := row + 1
-				if newRow >= pw.protectedRow {
-					fmt.Fprintf(out, "\x1b[%d;1H\x1b[S\x1b[%d;1H", 1, pw.protectedRow-1)
-					pw.cursorRow.Store(int32(pw.protectedRow - 1))
-					pw.cursorCol.Store(1)
-					pw.redrawNeeded.Store(true)
-					out.WriteByte(b)
-					pw.cursorCol.Store(2)
-					return
-				}
-				pw.cursorRow.Store(int32(newRow))
-			}
-			pw.cursorCol.Store(int32(newCol))
+		// Accumulate UTF-8 bytes to detect character width.
+		// ASCII printable (0x20-0x7F): 1 column, emit immediately.
+		// UTF-8 lead byte (0xC0+): start accumulating.
+		// UTF-8 continuation (0x80-0xBF): continue accumulating.
+		// When complete rune is assembled, advance column by its display width.
+
+		if b >= 0x20 && b < 0x7f {
+			// ASCII printable — 1 column
+			pw.advanceCol(out, row, col, 1)
+			out.WriteByte(b)
+			return
 		}
+
+		if b >= 0xC0 {
+			// UTF-8 lead byte — start accumulating
+			pw.utf8Buf[0] = b
+			pw.utf8Len = 1
+			if b < 0xE0 {
+				pw.utf8Need = 2
+			} else if b < 0xF0 {
+				pw.utf8Need = 3
+			} else {
+				pw.utf8Need = 4
+			}
+			out.WriteByte(b)
+			return
+		}
+
+		if b >= 0x80 && b < 0xC0 && pw.utf8Len > 0 {
+			// UTF-8 continuation byte
+			pw.utf8Buf[pw.utf8Len] = b
+			pw.utf8Len++
+			out.WriteByte(b)
+
+			if pw.utf8Len >= pw.utf8Need {
+				// Complete rune — decode and check width
+				r := decodeUTF8(pw.utf8Buf[:pw.utf8Len])
+				width := 1
+				if isWideChar(r) {
+					width = 2
+				}
+				pw.advanceCol(out, row, col, width)
+				pw.utf8Len = 0
+				pw.utf8Need = 0
+			}
+			return
+		}
+
+		// Control chars or unexpected bytes — pass through
 		out.WriteByte(b)
 	}
 }
@@ -612,6 +643,45 @@ func (pw *ProtectedWriter) handleCSI(out *bytes.Buffer, final byte) {
 
 	// Default: pass through unmodified
 	out.Write(pw.escBuf)
+}
+
+// advanceCol advances the cursor column by width, handling line wrap and scroll protection.
+func (pw *ProtectedWriter) advanceCol(out *bytes.Buffer, row, col, width int) {
+	if col <= 0 {
+		return
+	}
+	newCol := col + width
+	if newCol > pw.width {
+		// Line wrap
+		newCol = 1 + (width - 1) // handle wide char at edge
+		newRow := row + 1
+		if newRow >= pw.protectedRow {
+			// Would push into protected area — scroll up
+			fmt.Fprintf(out, "\x1b[%d;1H\x1b[S\x1b[%d;1H", 1, pw.protectedRow-1)
+			pw.cursorRow.Store(int32(pw.protectedRow - 1))
+			pw.cursorCol.Store(int32(newCol))
+			pw.redrawNeeded.Store(true)
+			return
+		}
+		pw.cursorRow.Store(int32(newRow))
+	}
+	pw.cursorCol.Store(int32(newCol))
+}
+
+// decodeUTF8 decodes a UTF-8 byte sequence into a rune.
+func decodeUTF8(b []byte) rune {
+	switch len(b) {
+	case 1:
+		return rune(b[0])
+	case 2:
+		return rune(b[0]&0x1F)<<6 | rune(b[1]&0x3F)
+	case 3:
+		return rune(b[0]&0x0F)<<12 | rune(b[1]&0x3F)<<6 | rune(b[2]&0x3F)
+	case 4:
+		return rune(b[0]&0x07)<<18 | rune(b[1]&0x3F)<<12 | rune(b[2]&0x3F)<<6 | rune(b[3]&0x3F)
+	default:
+		return 0xFFFD // replacement character
+	}
 }
 
 // enforceScrollRegion writes the scroll region sequence to protect bottom rows.
