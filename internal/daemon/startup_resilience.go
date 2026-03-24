@@ -36,8 +36,8 @@ type StartScriptConfig struct {
 	Args []string
 	// Env are environment variables (KEY=VALUE format)
 	Env []string
-	// ExpectedPort is the port the process is expected to use (for EADDRINUSE recovery)
-	ExpectedPort int
+	// ExpectedPorts are the ports the process is expected to use (for pre-flight cleanup and EADDRINUSE recovery)
+	ExpectedPorts []int
 	// URLMatchers are patterns for URL detection in output
 	URLMatchers []string
 	// AutoRestart enables automatic restart on process exit
@@ -82,7 +82,7 @@ func (d *Daemon) StartScript(ctx context.Context, cfg StartScriptConfig) (*Start
 	}
 
 	// Start with automatic EADDRINUSE recovery
-	proc, startupErr := d.startScriptWithRetry(ctx, cfg.ProcessID, projectPath, cfg.WorkingDir, cfg.Command, cfg.Args, cfg.Env, cfg.ExpectedPort)
+	proc, startupErr := d.startScriptWithRetry(ctx, cfg.ProcessID, projectPath, cfg.WorkingDir, cfg.Command, cfg.Args, cfg.Env, cfg.ExpectedPorts)
 	if startupErr != nil {
 		// Clean up pre-set matchers on failure
 		d.urlTracker.SetURLMatchers(cfg.ProcessID, nil)
@@ -268,26 +268,20 @@ func (d *Daemon) startScriptWithRetry(
 	command string,
 	args []string,
 	env []string,
-	expectedPort int,
+	expectedPorts []int,
 ) (*process.ManagedProcess, *StartupError) {
 
-	// First attempt: Pre-flight cleanup if we know the port
-	if expectedPort > 0 {
-		if killedPIDs, err := d.preflightPortCleanup(ctx, expectedPort); err != nil {
-			debug.Warn("daemon", "Pre-flight cleanup failed for port %d: %v", expectedPort, err)
-			d.startupErrorStore.Add(&StartupLogEntry{
-				ProcessID: processID, ScriptName: stripProcessPrefix(processID),
-				Level: "warning", EventType: "port_cleanup",
-				Message: fmt.Sprintf("port %d cleanup failed: %v", expectedPort, err),
-				Port:    expectedPort, Timestamp: time.Now(),
-			})
+	// Pre-flight cleanup: kill orphans on all expected ports
+	for _, port := range expectedPorts {
+		if killedPIDs, err := d.preflightPortCleanup(ctx, port); err != nil {
+			debug.Warn("daemon", "Pre-flight cleanup failed for port %d: %v", port, err)
 		} else if len(killedPIDs) > 0 {
-			debug.Info("daemon", "Cleaned up port %d before starting %s", expectedPort, processID)
+			debug.Info("daemon", "Cleaned up port %d before starting %s", port, processID)
 			d.startupErrorStore.Add(&StartupLogEntry{
 				ProcessID: processID, ScriptName: stripProcessPrefix(processID),
 				Level: "info", EventType: "port_cleanup",
-				Message: fmt.Sprintf("killed %d process(es) on port %d", len(killedPIDs), expectedPort),
-				Port:    expectedPort, Timestamp: time.Now(),
+				Message: fmt.Sprintf("killed %d process(es) on port %d", len(killedPIDs), port),
+				Port:    port, Timestamp: time.Now(),
 			})
 		}
 	}
@@ -321,6 +315,11 @@ func (d *Daemon) startScriptWithRetry(
 	proc := result.Process
 
 	// Monitor for early failure (first 3 seconds)
+	// Use first expected port for EADDRINUSE detection
+	expectedPort := 0
+	if len(expectedPorts) > 0 {
+		expectedPort = expectedPorts[0]
+	}
 	startupErr := d.monitorStartupFailure(ctx, proc, expectedPort, 3*time.Second)
 	if startupErr == nil {
 		return proc, nil
@@ -471,39 +470,46 @@ func (d *Daemon) monitorStartupFailure(
 	}
 }
 
-// getExpectedPortForScript determines the expected port for a script.
-// It checks the proxy config first, then the command/args, then package.json scripts.
-func (d *Daemon) getExpectedPortForScript(
+// getExpectedPortsForScript determines the ports a script uses.
+// Checks: explicit config ports, linked proxy, command args, package.json.
+func (d *Daemon) getExpectedPortsForScript(
 	scriptName string,
 	script *config.ScriptConfig,
 	proxyConfigs map[string]*config.ProxyConfig,
 	projectPath string,
 	command string,
 	args []string,
-) int {
+) []int {
+	seen := make(map[int]bool)
+	var ports []int
+	add := func(port int) {
+		if port > 0 && !seen[port] {
+			seen[port] = true
+			ports = append(ports, port)
+		}
+	}
 
-	// Check if there's a linked proxy with a port
+	// Explicit ports from config (most reliable)
+	for _, p := range script.Ports {
+		add(p)
+	}
+
+	// Linked proxy port
 	for _, proxyConfig := range proxyConfigs {
 		if proxyConfig.Script == scriptName {
-			if port := extractPortFromProxyConfig(proxyConfig); port > 0 {
-				return port
-			}
+			add(extractPortFromProxyConfig(proxyConfig))
 		}
 	}
 
 	// Extract from command line arguments
-	if port := extractPortFromCommand(command, args); port > 0 {
-		return port
-	}
+	add(extractPortFromCommand(command, args))
 
 	// For Node.js projects, check the package.json script content
 	if scriptCmd := project.GetScriptCommand(projectPath, scriptName); scriptCmd != "" {
-		if port := extractPortFromCommand(scriptCmd, nil); port > 0 {
-			return port
-		}
+		add(extractPortFromCommand(scriptCmd, nil))
 	}
 
-	return 0
+	return ports
 }
 
 // lastLines returns the last n non-empty lines from text.

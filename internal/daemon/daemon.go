@@ -1098,14 +1098,11 @@ func (d *Daemon) RunAutostart(ctx context.Context, projectPath string) *Autostar
 						resultMu.Unlock()
 
 						// Start TCP port probe as a fallback readiness signal.
-						// URL detection (via urlTracker.onURLDetected) will also signal
-						// readiness, whichever fires first wins.
-						expectedPort := d.getExpectedPortForScript(name, script, proxyConfigs,
-							resolveWorkingDir(projectPath, script.Cwd),
-							"", nil) // command/args not yet resolved here; proxy config and package.json checks suffice
-						if expectedPort > 0 {
-							debug.Log("daemon", "RunAutostart: starting port probe for %s on port %d", name, expectedPort)
-							d.readySignaler.StartPortProbe(processID, expectedPort, ctx)
+						probePorts := d.getExpectedPortsForScript(name, script, proxyConfigs,
+							resolveWorkingDir(projectPath, script.Cwd), "", nil)
+						if len(probePorts) > 0 {
+							debug.Log("daemon", "RunAutostart: starting port probe for %s on port %d", name, probePorts[0])
+							d.readySignaler.StartPortProbe(processID, probePorts[0], ctx)
 						}
 					}(name, script)
 				}
@@ -1308,23 +1305,19 @@ func (d *Daemon) autostartScript(ctx context.Context, name string, scriptCfg *co
 	// Transition to starting (ProcessManager lifecycle handles Running state and StartCount)
 	entry.SetState(script.StateStarting)
 
-	// Determine expected port for pre-flight cleanup and EADDRINUSE recovery
-	expectedPort := d.getExpectedPortForScript(name, scriptCfg, proxyConfigs, workingDir, command, args)
+	// Determine expected ports for pre-flight cleanup and EADDRINUSE recovery
+	expectedPorts := d.getExpectedPortsForScript(name, scriptCfg, proxyConfigs, workingDir, command, args)
 
-	// Use unified StartScript for consistent behavior:
-	// - EADDRINUSE recovery
-	// - URL matcher setup
-	// - Auto-restart registration
 	_, err := d.StartScript(ctx, StartScriptConfig{
-		ProcessID:    processID,
-		ProjectPath:  projectPath, // Root project path (where .agnt.kdl is)
-		WorkingDir:   workingDir,  // Actual working dir (may differ if script has cwd)
-		Command:      command,
-		Args:         args,
-		Env:          envSlice,
-		ExpectedPort: expectedPort,
-		URLMatchers:  scriptCfg.URLMatchers,
-		AutoRestart:  true, // Autostarted scripts should always auto-restart
+		ProcessID:     processID,
+		ProjectPath:   projectPath,
+		WorkingDir:    workingDir,
+		Command:       command,
+		Args:          args,
+		Env:           envSlice,
+		ExpectedPorts: expectedPorts,
+		URLMatchers:   scriptCfg.URLMatchers,
+		AutoRestart:   true,
 	})
 	if err != nil {
 		entry.SetState(script.StateFailed)

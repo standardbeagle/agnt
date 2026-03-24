@@ -341,7 +341,7 @@ func (r *ProcessAutoRestarter) monitorProcess(processID string) {
 		// Restart with EADDRINUSE recovery (use startScriptWithRetry instead of StartScript
 		// to avoid re-registering for auto-restart, since we're already monitoring)
 		ctx, cancel := context.WithTimeout(r.ctx, 30*time.Second)
-		proc, startupErr := r.daemon.startScriptWithRetry(ctx, processID, state.projectPath, state.workingDir, state.command, state.args, nil, 0)
+		proc, startupErr := r.daemon.startScriptWithRetry(ctx, processID, state.projectPath, state.workingDir, state.command, state.args, nil, nil)
 		cancel()
 
 		if startupErr != nil {
