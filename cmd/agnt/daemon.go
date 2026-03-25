@@ -107,6 +107,12 @@ func runDaemonStart(cmd *cobra.Command, args []string) {
 
 	d := daemon.New(config)
 
+	// When the hub receives a remote SHUTDOWN command, cancel the signal
+	// context so this process exits cleanly.  On Windows, Unix signals are
+	// not delivered, so without this callback the process would linger
+	// after the hub has already torn down its socket.
+	d.SetOnShutdown(cancel)
+
 	// Start daemon
 	if err := d.Start(); err != nil {
 		log.Fatalf("Failed to start daemon: %v", err)
@@ -114,7 +120,7 @@ func runDaemonStart(cmd *cobra.Command, args []string) {
 
 	log.Printf("Daemon started on %s", socketPath)
 
-	// Wait for shutdown signal
+	// Wait for shutdown signal or remote SHUTDOWN command
 	<-ctx.Done()
 	log.Println("Daemon shutdown signal received...")
 
@@ -140,13 +146,27 @@ func runDaemonStop(cmd *cobra.Command, args []string) {
 		fmt.Fprintf(os.Stderr, "Daemon is not running: %v\n", err)
 		os.Exit(1)
 	}
-	defer client.Close()
 
 	if err := client.Shutdown(); err != nil {
+		client.Close()
 		fmt.Fprintf(os.Stderr, "Failed to stop daemon: %v\n", err)
 		os.Exit(1)
 	}
+	client.Close()
 
+	// Verify the daemon actually stopped by checking the socket is no longer
+	// accepting connections.  This is important on Windows where Unix signals
+	// are not delivered and the process could linger.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if !daemon.IsRunning(socketPath) {
+			fmt.Println("Daemon stopped")
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	fmt.Fprintf(os.Stderr, "Warning: daemon may not have stopped cleanly\n")
 	fmt.Println("Daemon stopped")
 }
 
@@ -158,8 +178,14 @@ func runDaemonRestart(cmd *cobra.Command, args []string) {
 	if err := client.Connect(); err == nil {
 		_ = client.Shutdown()
 		client.Close()
-		// Give it time to shut down
-		time.Sleep(500 * time.Millisecond)
+		// Wait for the daemon to actually stop
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			if !daemon.IsRunning(socketPath) {
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
 	}
 
 	// Start new daemon
