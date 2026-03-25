@@ -16,6 +16,7 @@ const (
 	VerbAutomate    = "AUTOMATE" // Agent-based automation processing
 	VerbAlerts      = "ALERTS"   // Process output alert queries
 	VerbScript      = "SCRIPT"   // Script registry queries and control
+	VerbDoctor      = "DOCTOR"   // Health check / diagnostic report
 )
 
 // Agnt-specific sub-verbs (beyond those in go-cli-server).

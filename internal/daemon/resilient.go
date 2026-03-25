@@ -1035,3 +1035,14 @@ func (rc *ResilientClient) ScriptOutput(name, projectPath string, tail int) (map
 	})
 	return result, err
 }
+
+// Doctor runs health checks and returns a diagnostic report.
+func (rc *ResilientClient) Doctor(projectPath string) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.Doctor(projectPath)
+		return e
+	})
+	return result, err
+}
