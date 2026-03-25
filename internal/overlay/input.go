@@ -41,6 +41,9 @@ type StatusSummarizer interface {
 	IsAvailable() bool
 }
 
+// panelRefreshInterval is the polling period for live-refreshing process panels.
+const panelRefreshInterval = 750 * time.Millisecond
+
 // InputRouter routes input between the PTY and the overlay.
 type InputRouter struct {
 	ptmx            PtyReadWriter
@@ -59,6 +62,9 @@ type InputRouter struct {
 	// Process viewer state
 	viewerActive         bool
 	viewerUsingAltScreen bool
+
+	// Panel refresh ticker for live-tailing process output
+	panelRefreshStop chan struct{} // closed to stop the refresh goroutine
 
 	// Last error from daemon connection attempt
 	lastDaemonError string
@@ -221,6 +227,9 @@ func (r *InputRouter) Run() error {
 
 // Stop stops the input router.
 func (r *InputRouter) Stop() {
+	r.overlay.mu.Lock()
+	r.stopPanelRefresh()
+	r.overlay.mu.Unlock()
 	if r.running.Load() {
 		close(r.done)
 	}
@@ -256,6 +265,7 @@ func (r *InputRouter) handleMenuKey(key string) {
 	// Handle "Escape+X" keys (when Escape is followed quickly by another key)
 	if strings.HasPrefix(key, "Escape+") {
 		// Just treat as Escape - close the menu
+		r.stopPanelRefresh()
 		r.overlay.hideMenu()
 		return
 	}
@@ -370,6 +380,7 @@ func (r *InputRouter) handleMenuKey(key string) {
 						panel := &r.overlay.panelItems[i]
 						if panel.Type == "process" && r.outputFetcher != nil {
 							r.fetchScriptOutput(panel)
+							r.startPanelRefresh(panel.ID)
 						}
 
 						r.overlay.renderer.ClearScreen()
@@ -404,6 +415,7 @@ func (r *InputRouter) handleMenuKey(key string) {
 // exitPanelMode closes panel mode entirely.
 // Must be called with overlay.mu held.
 func (r *InputRouter) exitPanelMode() {
+	r.stopPanelRefresh()
 	r.overlay.hideMenu()
 }
 
@@ -427,6 +439,79 @@ func (r *InputRouter) fetchScriptOutput(panel *PanelItem) {
 	panel.SetContent(output)
 }
 
+// startPanelRefresh starts a background goroutine that periodically polls
+// script output for the given process panel and redraws on change.
+// Must be called with overlay.mu held.
+func (r *InputRouter) startPanelRefresh(panelID string) {
+	r.stopPanelRefresh()
+	if r.outputFetcher == nil {
+		return
+	}
+	stop := make(chan struct{})
+	r.panelRefreshStop = stop
+
+	go r.runPanelRefresh(stop, panelID)
+}
+
+// stopPanelRefresh stops any running panel refresh goroutine.
+// Safe to call when no refresh is active.
+func (r *InputRouter) stopPanelRefresh() {
+	if r.panelRefreshStop != nil {
+		close(r.panelRefreshStop)
+		r.panelRefreshStop = nil
+	}
+}
+
+// runPanelRefresh is the background loop that polls script output.
+func (r *InputRouter) runPanelRefresh(stop <-chan struct{}, panelID string) {
+	ticker := time.NewTicker(panelRefreshInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			r.refreshPanelContent(panelID)
+		}
+	}
+}
+
+// refreshPanelContent fetches the latest output for a process panel and
+// redraws if the content changed. Respects ScrollOffset (only auto-scrolls
+// when the user is pinned to the bottom).
+func (r *InputRouter) refreshPanelContent(panelID string) {
+	output, err := r.outputFetcher.GetScriptOutput(panelID, maxPanelLines)
+	if err != nil {
+		return
+	}
+	output = strings.TrimRight(output, "\n")
+
+	r.overlay.mu.Lock()
+	defer r.overlay.mu.Unlock()
+
+	// Verify panel is still the active process panel
+	if !r.overlay.panelMode || r.overlay.panelIndex >= len(r.overlay.panelItems) {
+		return
+	}
+	panel := &r.overlay.panelItems[r.overlay.panelIndex]
+	if panel.Type != "process" || panel.ID != panelID {
+		return
+	}
+
+	// Skip redraw when content is unchanged
+	if panel.Content == output {
+		return
+	}
+
+	wasAtBottom := panel.ScrollOffset == 0
+	panel.SetContent(output)
+	if wasAtBottom {
+		panel.ScrollOffset = 0
+	}
+	r.overlay.draw()
+}
+
 // closeCurrentPanel removes the current panel if the process has stopped.
 // Must be called with overlay.mu held.
 func (r *InputRouter) closeCurrentPanel() {
@@ -437,6 +522,7 @@ func (r *InputRouter) closeCurrentPanel() {
 	if !panel.IsDone() {
 		return // Can't close running process panels
 	}
+	r.stopPanelRefresh()
 	// Remove the panel
 	r.overlay.panelItems = append(
 		r.overlay.panelItems[:r.overlay.panelIndex],
@@ -483,10 +569,13 @@ func (r *InputRouter) handlePanelNav(delta int) {
 	r.overlay.panelIndex = newIndex
 	r.overlay.panelMode = true
 
-	// Fetch content for the focused panel
+	// Fetch content for the focused panel and manage refresh ticker
 	panel := &r.overlay.panelItems[newIndex]
 	if panel.Type == "process" && r.outputFetcher != nil {
 		r.fetchScriptOutput(panel)
+		r.startPanelRefresh(panel.ID)
+	} else {
+		r.stopPanelRefresh()
 	}
 
 	if !wasInPanelMode {

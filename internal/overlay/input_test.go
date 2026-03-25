@@ -7,6 +7,9 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // writeRecorder records each Write call's payload to verify batching.
@@ -565,4 +568,246 @@ func TestParseWin32ShiftArrow(t *testing.T) {
 	if !bytes.Equal(got, want) {
 		t.Fatalf("expected %v, got %v", want, got)
 	}
+}
+
+// --- Panel refresh tests ---
+
+// mockOutputFetcher records calls and returns configurable output.
+type mockOutputFetcher struct {
+	mu        sync.Mutex
+	output    string
+	callCount int
+	calls     []string // script names passed to GetScriptOutput
+}
+
+func (m *mockOutputFetcher) GetProcessOutput(_ string, _ int) (string, error) {
+	return "", nil
+}
+
+func (m *mockOutputFetcher) GetScriptOutput(name string, _ int) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.callCount++
+	m.calls = append(m.calls, name)
+	return m.output, nil
+}
+
+func (m *mockOutputFetcher) setOutput(s string) {
+	m.mu.Lock()
+	m.output = s
+	m.mu.Unlock()
+}
+
+func (m *mockOutputFetcher) getCallCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.callCount
+}
+
+// newPanelTestRouter creates an InputRouter with a process panel ready for refresh testing.
+func newPanelTestRouter(t *testing.T) (*InputRouter, *Overlay, *mockOutputFetcher) {
+	t.Helper()
+	rec := &writeRecorder{}
+	cfg := DefaultConfig()
+	cfg.ShowIndicator = false
+	ov := New(rec, 80, 24, cfg)
+
+	router := NewInputRouter(rec, ov, 0x19)
+	fetcher := &mockOutputFetcher{output: "line1\nline2"}
+	router.SetOutputFetcher(fetcher)
+
+	// Set up a process panel as the active panel
+	ov.panelItems = []PanelItem{
+		{Type: "overview", Label: "overview"},
+		{Type: "process", ID: "dev", Label: "dev"},
+	}
+	ov.panelMode = true
+	ov.panelIndex = 1
+	ov.state.Store(int32(StateMenu))
+
+	return router, ov, fetcher
+}
+
+func TestPanelRefreshStartsAndStops(t *testing.T) {
+	router, _, fetcher := newPanelTestRouter(t)
+
+	// Start refresh
+	router.overlay.mu.Lock()
+	router.startPanelRefresh("dev")
+	router.overlay.mu.Unlock()
+
+	// Wait for at least one refresh tick
+	time.Sleep(panelRefreshInterval + 200*time.Millisecond)
+	count := fetcher.getCallCount()
+	assert.GreaterOrEqual(t, count, 1, "expected at least 1 refresh call")
+
+	// Stop refresh
+	router.stopPanelRefresh()
+
+	// Record count after stop, wait, verify no more calls
+	countAfterStop := fetcher.getCallCount()
+	time.Sleep(panelRefreshInterval + 200*time.Millisecond)
+	assert.Equal(t, countAfterStop, fetcher.getCallCount(), "no calls expected after stop")
+}
+
+func TestPanelRefreshSkipsUnchangedContent(t *testing.T) {
+	router, ov, fetcher := newPanelTestRouter(t)
+
+	// Pre-fill panel with same content the fetcher returns
+	fetcher.setOutput("line1\nline2")
+	ov.mu.Lock()
+	ov.panelItems[1].SetContent("line1\nline2")
+	ov.mu.Unlock()
+
+	// Start refresh
+	router.overlay.mu.Lock()
+	router.startPanelRefresh("dev")
+	router.overlay.mu.Unlock()
+
+	time.Sleep(panelRefreshInterval + 200*time.Millisecond)
+
+	// Content should remain unchanged (no redraw needed)
+	ov.mu.Lock()
+	content := ov.panelItems[1].Content
+	ov.mu.Unlock()
+	assert.Equal(t, "line1\nline2", content)
+
+	// Now change the output
+	fetcher.setOutput("line1\nline2\nline3")
+	time.Sleep(panelRefreshInterval + 200*time.Millisecond)
+
+	ov.mu.Lock()
+	content = ov.panelItems[1].Content
+	ov.mu.Unlock()
+	assert.Equal(t, "line1\nline2\nline3", content)
+
+	router.stopPanelRefresh()
+}
+
+func TestPanelRefreshRespectsScrollOffset(t *testing.T) {
+	router, ov, fetcher := newPanelTestRouter(t)
+
+	// User has scrolled up
+	ov.mu.Lock()
+	ov.panelItems[1].ScrollOffset = 5
+	ov.panelItems[1].SetContent("old content")
+	ov.mu.Unlock()
+
+	fetcher.setOutput("new content with more lines")
+
+	router.overlay.mu.Lock()
+	router.startPanelRefresh("dev")
+	router.overlay.mu.Unlock()
+
+	time.Sleep(panelRefreshInterval + 200*time.Millisecond)
+
+	ov.mu.Lock()
+	offset := ov.panelItems[1].ScrollOffset
+	content := ov.panelItems[1].Content
+	ov.mu.Unlock()
+
+	// Content should be updated
+	assert.Equal(t, "new content with more lines", content)
+	// ScrollOffset should be preserved since user was not at bottom
+	assert.Equal(t, 5, offset)
+
+	router.stopPanelRefresh()
+}
+
+func TestPanelRefreshAutoScrollsWhenAtBottom(t *testing.T) {
+	router, ov, fetcher := newPanelTestRouter(t)
+
+	// User is at bottom (ScrollOffset == 0)
+	ov.mu.Lock()
+	ov.panelItems[1].ScrollOffset = 0
+	ov.panelItems[1].SetContent("old")
+	ov.mu.Unlock()
+
+	fetcher.setOutput("new output")
+
+	router.overlay.mu.Lock()
+	router.startPanelRefresh("dev")
+	router.overlay.mu.Unlock()
+
+	time.Sleep(panelRefreshInterval + 200*time.Millisecond)
+
+	ov.mu.Lock()
+	offset := ov.panelItems[1].ScrollOffset
+	ov.mu.Unlock()
+
+	assert.Equal(t, 0, offset, "should auto-scroll to bottom")
+
+	router.stopPanelRefresh()
+}
+
+func TestPanelRefreshStopsOnPanelSwitch(t *testing.T) {
+	router, ov, fetcher := newPanelTestRouter(t)
+
+	// Start refresh on process panel
+	ov.mu.Lock()
+	router.startPanelRefresh("dev")
+	ov.mu.Unlock()
+
+	time.Sleep(panelRefreshInterval + 200*time.Millisecond)
+	require.GreaterOrEqual(t, fetcher.getCallCount(), 1)
+
+	// Navigate away to overview panel
+	ov.mu.Lock()
+	ov.panelIndex = 0 // overview
+	router.stopPanelRefresh()
+	ov.mu.Unlock()
+
+	countAfterStop := fetcher.getCallCount()
+	time.Sleep(panelRefreshInterval + 200*time.Millisecond)
+	assert.Equal(t, countAfterStop, fetcher.getCallCount())
+}
+
+func TestPanelRefreshIgnoresWrongPanel(t *testing.T) {
+	router, ov, fetcher := newPanelTestRouter(t)
+
+	fetcher.setOutput("updated output")
+	ov.mu.Lock()
+	ov.panelItems[1].SetContent("original")
+	ov.mu.Unlock()
+
+	// Start refresh for "dev" but switch active panel to overview
+	router.overlay.mu.Lock()
+	router.startPanelRefresh("dev")
+	router.overlay.mu.Unlock()
+
+	// Switch to overview between ticks
+	ov.mu.Lock()
+	ov.panelIndex = 0
+	ov.mu.Unlock()
+
+	time.Sleep(panelRefreshInterval + 200*time.Millisecond)
+
+	// The refresh should have called GetScriptOutput but skipped the update
+	// because the active panel is no longer "dev"
+	ov.mu.Lock()
+	content := ov.panelItems[1].Content
+	ov.mu.Unlock()
+	assert.Equal(t, "original", content, "should not update non-active panel")
+
+	router.stopPanelRefresh()
+}
+
+func TestPanelRefreshDoubleStartReplacesOld(t *testing.T) {
+	router, _, fetcher := newPanelTestRouter(t)
+
+	router.overlay.mu.Lock()
+	router.startPanelRefresh("dev")
+	// Starting again should stop the old one
+	router.startPanelRefresh("dev")
+	router.overlay.mu.Unlock()
+
+	time.Sleep(panelRefreshInterval + 200*time.Millisecond)
+	count := fetcher.getCallCount()
+	router.stopPanelRefresh()
+
+	// Should have had at most ~2 calls (one from each goroutine's first tick
+	// at most, since the old one is stopped almost immediately)
+	time.Sleep(panelRefreshInterval + 200*time.Millisecond)
+	finalCount := fetcher.getCallCount()
+	assert.Equal(t, count, finalCount, "old goroutine should be stopped")
 }
