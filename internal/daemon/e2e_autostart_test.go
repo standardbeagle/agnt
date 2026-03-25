@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/standardbeagle/go-cli-server/process"
+	"github.com/standardbeagle/go-cli-server/script"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -373,4 +375,156 @@ func TestE2E_FixtureScript_WellBehaved(t *testing.T) {
 	// ensures bash's wait builtin is interrupted and the trap fires.
 	require.NoError(t, syscall.Kill(-pid, syscall.SIGTERM))
 	assertProcessDead(t, pid, 5*time.Second)
+}
+
+// runSingleScriptAutostart is a shared helper for the three single-script e2e tests.
+// It writes a .agnt.kdl pointing at the given fixture script, calls RunAutostart,
+// and returns the dynamic port, PID file path, and process ID for assertions.
+func runSingleScriptAutostart(t *testing.T, env *e2eEnv, scriptName, fixtureName string) (port int, pidFilePath string, processID string) {
+	t.Helper()
+	port = freePort(t)
+	pidFilePath = filepath.Join(env.ProjectDir, scriptName+".pid")
+	fixturePath := testdataPath(t, fixtureName)
+
+	kdl := fmt.Sprintf(`scripts {
+    %s {
+        run "bash %s %d %s"
+        autostart true
+        ports %d
+    }
+}
+`, scriptName, fixturePath, port, pidFilePath, port)
+	writeAgntKDL(t, env.ProjectDir, kdl)
+
+	ctx := context.Background()
+	result := env.Daemon.RunAutostart(ctx, env.ProjectDir)
+	require.Empty(t, result.Errors, "RunAutostart errors: %v", result.Errors)
+	require.Contains(t, result.Scripts, scriptName, "script not in result.Scripts")
+
+	processID = script.MakeProcessID(env.ProjectDir, scriptName)
+	return port, pidFilePath, processID
+}
+
+// verifyRunningDataStructures checks that after autostart the daemon's internal
+// data structures accurately reflect a running process.
+func verifyRunningDataStructures(t *testing.T, env *e2eEnv, scriptName, processID string, port int, pidFilePath string) int {
+	t.Helper()
+
+	// Wait for the PID file to appear (script writes it on startup)
+	pid := readPIDFile(t, pidFilePath, 10*time.Second)
+	require.Greater(t, pid, 0, "PID must be positive")
+
+	// Wait for port to be bound
+	require.NoError(t, waitForPort(port, 10*time.Second), "port %d not bound", port)
+
+	// ProcessManager must contain the process entry
+	pm := env.Daemon.ProcessManager()
+	proc, err := pm.Get(processID)
+	require.NoError(t, err, "process %s not found in ProcessManager", processID)
+
+	// Atomic state field must be Running
+	assert.Equal(t, process.StateRunning, proc.State(), "process state")
+
+	// The ProcessManager tracks the shell wrapper PID (sh -c "bash ..."),
+	// while the PID file contains the inner bash script's PID. Verify the
+	// PID file PID is a descendant of the managed process PID.
+	pmPID := proc.PID()
+	assert.Greater(t, pmPID, 0, "ProcessManager PID must be positive")
+	descendants := getDescendants(pmPID)
+	assert.Contains(t, descendants, pid, "PID file PID %d should be a descendant of managed PID %d", pid, pmPID)
+
+	// ActiveCount must reflect the running process
+	assert.GreaterOrEqual(t, pm.ActiveCount(), int64(1), "ActiveCount")
+
+	// RingBuffer must contain output from the script
+	stdout, _ := proc.Stdout()
+	assert.NotEmpty(t, stdout, "stdout ring buffer should contain output")
+
+	// ScriptRegistry must have the entry in Running state
+	sr := env.Daemon.ScriptRegistry()
+	entry, ok := sr.Get(scriptName, env.ProjectDir)
+	require.True(t, ok, "script %s not in ScriptRegistry", scriptName)
+	assert.Equal(t, script.StateRunning, entry.State(), "ScriptEntry state")
+
+	// Process must be alive at the OS level
+	assertProcessAlive(t, pid)
+
+	return pid
+}
+
+// verifyStoppedDataStructures checks that after daemon stop the data structures
+// reflect a stopped/cleaned-up process.
+func verifyStoppedDataStructures(t *testing.T, pid, port int) {
+	t.Helper()
+	assertProcessDead(t, pid, 10*time.Second)
+
+	// Port must be free after process dies
+	err := waitForPort(port, 500*time.Millisecond)
+	assert.Error(t, err, "port %d should be free after stop", port)
+}
+
+func TestE2E_AutostartSingleScript_PnpmWatch(t *testing.T) {
+	env := setupDaemonForE2E(t)
+	port, pidFilePath, processID := runSingleScriptAutostart(t, env, "dev", "fake-pnpm-watch.sh")
+
+	// Verify data structures while running
+	pid := verifyRunningDataStructures(t, env, "dev", processID, port, pidFilePath)
+
+	// Verify stdout contains expected pnpm-watch output
+	proc, _ := env.Daemon.ProcessManager().Get(processID)
+	stdout, _ := proc.Stdout()
+	assert.Contains(t, string(stdout), "pnpm:watch listening on", "expected pnpm-watch banner")
+
+	// Stop daemon gracefully (triggers process shutdown)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	env.Daemon.Stop(ctx)
+
+	// Verify cleanup
+	verifyStoppedDataStructures(t, pid, port)
+}
+
+func TestE2E_AutostartSingleScript_Vitest(t *testing.T) {
+	env := setupDaemonForE2E(t)
+	port, pidFilePath, processID := runSingleScriptAutostart(t, env, "test", "fake-vitest.sh")
+
+	pid := verifyRunningDataStructures(t, env, "test", processID, port, pidFilePath)
+
+	// Verify stdout contains expected vitest output
+	proc, _ := env.Daemon.ProcessManager().Get(processID)
+	stdout, _ := proc.Stdout()
+	assert.Contains(t, string(stdout), "vitest listening on", "expected vitest banner")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	env.Daemon.Stop(ctx)
+
+	verifyStoppedDataStructures(t, pid, port)
+}
+
+func TestE2E_AutostartSingleScript_DotnetWatch(t *testing.T) {
+	env := setupDaemonForE2E(t)
+	port, pidFilePath, processID := runSingleScriptAutostart(t, env, "serve", "fake-dotnet-watch.sh")
+
+	pid := verifyRunningDataStructures(t, env, "serve", processID, port, pidFilePath)
+
+	// Verify stdout contains expected dotnet-watch output
+	proc, _ := env.Daemon.ProcessManager().Get(processID)
+	stdout, _ := proc.Stdout()
+	assert.Contains(t, string(stdout), "dotnet-watch parent=", "expected dotnet-watch banner")
+
+	// Record descendant PIDs before shutdown
+	descendants := getDescendants(pid)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	env.Daemon.Stop(ctx)
+
+	verifyStoppedDataStructures(t, pid, port)
+
+	// The setsid grandchild must also be dead (not orphaned)
+	for _, dpid := range descendants {
+		assertProcessDead(t, dpid, 10*time.Second)
+	}
+	assertAllDescendantsDead(t, pid, 10*time.Second)
 }
