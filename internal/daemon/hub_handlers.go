@@ -4267,7 +4267,9 @@ func (d *Daemon) resolveScriptProjectPath(conn *hubpkg.Connection, cmd *hubproto
 }
 
 // scriptEntryToSummary converts a script.Entry to a JSON-friendly summary map.
-func scriptEntryToSummary(entry *script.Entry) map[string]interface{} {
+// If alertStore is non-nil, includes a has_alerts field based on recent alerts
+// for this script's process ID.
+func scriptEntryToSummary(entry *script.Entry, alertStore *ProcessAlertStore) map[string]interface{} {
 	cmd, args := entry.ResolvedCommand()
 
 	summary := map[string]interface{}{
@@ -4298,6 +4300,16 @@ func scriptEntryToSummary(entry *script.Entry) map[string]interface{} {
 		}
 	}
 
+	// Check for recent alerts (last 5 minutes)
+	if alertStore != nil {
+		alerts := alertStore.Query(AlertStoreFilter{
+			Since:     time.Now().Add(-5 * time.Minute),
+			ProcessID: entry.ProcessID,
+			Limit:     1,
+		})
+		summary["has_alerts"] = len(alerts) > 0
+	}
+
 	return summary
 }
 
@@ -4312,7 +4324,7 @@ func (d *Daemon) hubHandleScriptList(conn *hubpkg.Connection, cmd *hubproto.Comm
 
 	scripts := make([]map[string]interface{}, 0, len(entries))
 	for _, entry := range entries {
-		scripts = append(scripts, scriptEntryToSummary(entry))
+		scripts = append(scripts, scriptEntryToSummary(entry, d.alertStore))
 	}
 
 	data, _ := json.Marshal(map[string]interface{}{
@@ -4339,7 +4351,7 @@ func (d *Daemon) hubHandleScriptGet(conn *hubpkg.Connection, cmd *hubproto.Comma
 		return conn.WriteErr(hubproto.ErrNotFound, fmt.Sprintf("script %q not found in %s", name, projectPath))
 	}
 
-	detail := scriptEntryToSummary(entry)
+	detail := scriptEntryToSummary(entry, d.alertStore)
 
 	// Add output tail (last 100 lines)
 	allLines := entry.OutputLines()

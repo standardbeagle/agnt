@@ -195,22 +195,26 @@ func stripProjectPrefix(id string) string {
 
 // processStateIcon returns a distinct shape and color for a process state.
 // Uses different shapes for accessibility (not just color).
-func processStateIcon(state string) (icon, color string) {
+// When hasAlerts is true and state is "running", shows a warning indicator.
+func processStateIcon(state string, hasAlerts bool) (icon, color string) {
 	switch state {
 	case "running":
-		return "●", FgGreen // Filled circle = running
+		if hasAlerts {
+			return "\u25a0", FgYellow // Filled square = running with errors
+		}
+		return "\u25cf", FgGreen // Filled circle = running
 	case "failed":
-		return "✗", FgRed // X = crashed/exited with error
+		return "\u2717", FgRed // X = crashed/exited with error
 	case "stopped":
-		return "✗", FgYellow // X = stopped/exited
+		return "\u2717", FgYellow // X = stopped/exited
 	case "starting":
-		return "◌", FgCyan // Dashed circle = starting
+		return "\u25cc", FgCyan // Dashed circle = starting
 	case "restarting":
-		return "◌", FgYellow // Dashed circle = restarting
+		return "\u25cc", FgYellow // Dashed circle = restarting
 	case "idle":
-		return "○", FgBrightBlack // Empty circle = idle/never started
+		return "\u25cb", FgBrightBlack // Empty circle = idle/never started
 	default:
-		return "○", FgBrightBlack // Empty circle = unknown/pending
+		return "\u25cb", FgBrightBlack // Empty circle = unknown/pending
 	}
 }
 
@@ -359,7 +363,7 @@ func (r *Renderer) DrawIndicator(status Status) {
 
 	// Per-script state icons with contextual emoji (persistent across restarts)
 	for _, s := range status.Scripts {
-		icon, color := processStateIcon(s.State)
+		icon, color := processStateIcon(s.State, s.HasAlerts)
 		label := processEmoji(s.Name, s.Command)
 		parts = append(parts, fmt.Sprintf("%s %s%s%s", label, color, icon, Reset))
 	}
@@ -946,7 +950,7 @@ func (r *Renderer) DrawDashboard(menu Menu, selectedIndex int, status Status) {
 			}
 
 			r.moveTo(row, panelCol+2)
-			icon, iconColor := processStateIcon(script.State)
+			icon, iconColor := processStateIcon(script.State, script.HasAlerts)
 
 			nameStr := script.Name
 			if len(nameStr) > contentWidth-15 {
@@ -1337,7 +1341,7 @@ func (r *Renderer) drawOverviewContent(startRow, col, width, maxRows int, status
 				break
 			}
 			r.moveTo(row, col+1)
-			icon, iconColor := processStateIcon(script.State)
+			icon, iconColor := processStateIcon(script.State, script.HasAlerts)
 
 			nameStr := script.Name
 			if len(nameStr) > width-20 {

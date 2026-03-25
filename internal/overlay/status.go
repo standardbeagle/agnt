@@ -255,6 +255,9 @@ func (f *StatusFetcher) fetchScripts() ([]ScriptInfo, error) {
 		if le, ok := sm["last_error"].(string); ok {
 			info.LastError = le
 		}
+		if ha, ok := sm["has_alerts"].(bool); ok {
+			info.HasAlerts = ha
+		}
 
 		scripts = append(scripts, info)
 	}
