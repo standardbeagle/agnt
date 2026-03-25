@@ -989,6 +989,12 @@ func (d *Daemon) RunAutostart(ctx context.Context, projectPath string) *Autostar
 		log.Error("", "", "autostart", "projectPath is empty")
 		return result
 	}
+
+	// Normalize path so script registry keys match lookup queries.
+	// On Windows, normalizePath lowercases the path for case-insensitive
+	// matching, which prevents mismatches between Register and List.
+	projectPath = normalizePath(projectPath)
+
 	log.Info("", "", "autostart", fmt.Sprintf("starting autostart for %s", projectPath))
 
 	// Step 2: Load .agnt.kdl
