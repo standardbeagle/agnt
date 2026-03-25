@@ -276,3 +276,168 @@ func TestProtectedWriter_ProtectedRowNotCorrupted(t *testing.T) {
 		t.Errorf("Cursor should be clamped above protected row 5, got row %d", row)
 	}
 }
+
+// TestProtectedWriter_LinefeedAtScrollBoundary verifies that \n at the
+// bottom of the scroll region doesn't drift the cursor row upward.
+// This is the core bug: repeated \n at scrollBottom caused cursorRow to
+// increment past the scroll region, making scroll protection fire on
+// subsequent output at wrong positions.
+func TestProtectedWriter_LinefeedAtScrollBoundary(t *testing.T) {
+	var buf bytes.Buffer
+	// 80x24, 1 protected row → scroll region 1-23
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
+	defer pw.Stop()
+
+	// Move cursor to scroll region bottom (row 23)
+	pw.Write([]byte("\x1b[23;1H"))
+	row := int(pw.cursorRow.Load())
+	if row != 23 {
+		t.Fatalf("Setup: expected row 23, got %d", row)
+	}
+
+	// Send multiple linefeeds at the boundary. The terminal scrolls content
+	// up but the cursor stays on row 23. Our tracker must not drift.
+	for i := 0; i < 5; i++ {
+		pw.Write([]byte("\n"))
+	}
+
+	row = int(pw.cursorRow.Load())
+	if row != 23 {
+		t.Errorf("After linefeeds at scroll boundary, row should stay 23, got %d", row)
+	}
+}
+
+// TestProtectedWriter_SpinnerThenMultilineOutput reproduces the exact Claude
+// Code interleaving pattern: spinner overwrites on one line, then multi-line
+// tool output. The cursor row must not drift during the spinner phase so
+// that tool output lines are tracked correctly.
+func TestProtectedWriter_SpinnerThenMultilineOutput(t *testing.T) {
+	var buf bytes.Buffer
+	// Small terminal: 80x10, 1 protected row → scroll region 1-9
+	pw := NewProtectedWriter(&buf, 80, 10, FilterConfig{ProtectBottomRows: 1})
+	defer pw.Stop()
+
+	// Fill terminal to push cursor to the scroll boundary
+	for i := 0; i < 8; i++ {
+		pw.Write([]byte("line\n"))
+	}
+	// Cursor is now at row 9 (scroll region bottom) after 8 linefeeds
+
+	// Spinner phase: rapid \r overwrites on the same row at scroll boundary
+	pw.Write([]byte("Mustering...\r"))
+	pw.Write([]byte("Running...  \r"))
+	pw.Write([]byte("Executing...\r"))
+
+	row := int(pw.cursorRow.Load())
+	if row != 9 {
+		t.Errorf("After spinner phase, row should be 9, got %d", row)
+	}
+
+	// Tool output phase: \n moves to next line (causes scroll)
+	buf.Reset()
+	pw.Write([]byte("Result line 1\n"))
+	pw.Write([]byte("Result line 2\n"))
+	pw.Write([]byte("Result line 3"))
+
+	row = int(pw.cursorRow.Load())
+	if row != 9 {
+		t.Errorf("After tool output at scroll boundary, row should be 9, got %d", row)
+	}
+
+	// Output must contain the tool results without scroll-up sequences
+	// (scroll-up is for aggressive/ConPTY mode only)
+	output := buf.String()
+	if strings.Contains(output, "\x1b[S") {
+		t.Error("Non-aggressive mode should not emit scroll-up sequences")
+	}
+	if !strings.Contains(output, "Result line 1") {
+		t.Error("Tool output missing from written output")
+	}
+}
+
+// TestProtectedWriter_CursorRestoreClampedInAggressive verifies that
+// restoring a cursor position saved in the protected region gets clamped
+// in aggressive mode.
+func TestProtectedWriter_CursorRestoreClampedInAggressive(t *testing.T) {
+	var buf bytes.Buffer
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1, AggressiveMode: true})
+	defer pw.Stop()
+
+	// Save cursor at a safe position
+	pw.Write([]byte("\x1b[23;1H"))
+	pw.Write([]byte("\x1b[s"))
+
+	// Move to protected row and save (simulating a buggy program)
+	pw.cursorRow.Store(24)
+	pw.savedRow = 24
+	pw.savedCol = 1
+
+	// Restore should clamp to row 23
+	pw.Write([]byte("\x1b[u"))
+
+	row := int(pw.cursorRow.Load())
+	if row != 23 {
+		t.Errorf("Restored cursor should be clamped to 23, got %d", row)
+	}
+}
+
+// TestProtectedWriter_ScrollRegionTrackingAfterReset verifies that scroll
+// region bounds are updated when a DECSTBM command is processed.
+func TestProtectedWriter_ScrollRegionTrackingAfterReset(t *testing.T) {
+	var buf bytes.Buffer
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
+	defer pw.Stop()
+
+	// Default scroll region should be 1-23
+	if pw.scrollTop != 1 || pw.scrollBottom != 23 {
+		t.Errorf("Initial scroll region should be 1-23, got %d-%d", pw.scrollTop, pw.scrollBottom)
+	}
+
+	// Set scroll region to 5-20
+	pw.Write([]byte("\x1b[5;20r"))
+
+	if pw.scrollTop != 5 || pw.scrollBottom != 20 {
+		t.Errorf("After DECSTBM 5;20, scroll region should be 5-20, got %d-%d", pw.scrollTop, pw.scrollBottom)
+	}
+
+	// Reset scroll region (no params)
+	pw.Write([]byte("\x1b[r"))
+
+	if pw.scrollTop != 1 || pw.scrollBottom != 23 {
+		t.Errorf("After DECSTBM reset, scroll region should be 1-23, got %d-%d", pw.scrollTop, pw.scrollBottom)
+	}
+}
+
+// TestProtectedWriter_RapidCRLinefeedCycleNearBottom is the complete
+// reproduction of the interleaving bug. Claude Code does:
+//  1. Write status text
+//  2. \r to go back to column 1
+//  3. Overwrite with new status
+//  4. \n to advance to next line
+//  5. Write tool output
+//
+// When step 4 happens at the scroll boundary, the old code incremented
+// cursorRow past scrollBottom, causing all subsequent tracking to be wrong.
+func TestProtectedWriter_RapidCRLinefeedCycleNearBottom(t *testing.T) {
+	var buf bytes.Buffer
+	pw := NewProtectedWriter(&buf, 80, 10, FilterConfig{ProtectBottomRows: 1})
+	defer pw.Stop()
+
+	// Move to scroll boundary (row 9 in 10-row terminal with 1 protected)
+	pw.Write([]byte("\x1b[9;1H"))
+
+	// Simulate 10 cycles of status line overwrite + linefeed
+	for i := 0; i < 10; i++ {
+		pw.Write([]byte("Status update\r"))
+		pw.Write([]byte("New status   \n"))
+	}
+
+	// The cursor row must never exceed scrollBottom (9)
+	row := int(pw.cursorRow.Load())
+	if row > 9 {
+		t.Errorf("Cursor row drifted past scroll boundary: got %d, want <= 9", row)
+	}
+	if row < 1 {
+		t.Errorf("Cursor row underflowed: got %d", row)
+	}
+}

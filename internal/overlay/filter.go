@@ -87,6 +87,10 @@ type ProtectedWriter struct {
 	cursorRow atomic.Int32
 	cursorCol atomic.Int32
 
+	// Scroll region tracking (1-indexed, 0 means use default)
+	scrollTop    int
+	scrollBottom int
+
 	// Alt screen tracking
 	inAltScreen atomic.Bool
 
@@ -140,6 +144,8 @@ func NewProtectedWriter(out io.Writer, width, height int, config FilterConfig) *
 	// Initialize cursor to top-left so scroll protection works immediately
 	pw.cursorRow.Store(1)
 	pw.cursorCol.Store(1)
+	pw.scrollTop = 1
+	pw.scrollBottom = height - config.ProtectBottomRows
 
 	// Start periodic redraw if configured
 	if config.RedrawInterval > 0 && config.OnRedraw != nil {
@@ -157,6 +163,8 @@ func (pw *ProtectedWriter) SetSize(width, height int) {
 	pw.width = width
 	pw.height = height
 	pw.protectedRow = height - pw.config.ProtectBottomRows + 1
+	pw.scrollTop = 1
+	pw.scrollBottom = height - pw.config.ProtectBottomRows
 
 	// After resize, enforce scroll region
 	pw.enforceScrollRegion()
@@ -256,7 +264,10 @@ func (pw *ProtectedWriter) handleStateGround(out *bytes.Buffer, b byte) {
 			pw.redrawNeeded.Store(true)
 			return
 		}
-		if row > 0 {
+		// When cursor is at the bottom of the scroll region, linefeed
+		// causes the terminal to scroll content up -- the cursor row
+		// stays the same. Only increment row if not at the boundary.
+		if row > 0 && row < pw.scrollBottom {
 			pw.cursorRow.Store(int32(row + 1))
 		}
 		out.WriteByte(b)
@@ -365,7 +376,8 @@ func (pw *ProtectedWriter) handleStateEscape(out *bytes.Buffer, b byte) {
 			pw.redrawNeeded.Store(true)
 		} else {
 			out.Write(pw.escBuf)
-			if row > 0 {
+			// At scroll region bottom, IND scrolls -- cursor stays put
+			if row > 0 && row < pw.scrollBottom {
 				pw.cursorRow.Store(int32(row + 1))
 			}
 		}
@@ -378,7 +390,8 @@ func (pw *ProtectedWriter) handleStateEscape(out *bytes.Buffer, b byte) {
 			pw.redrawNeeded.Store(true)
 		} else {
 			out.Write(pw.escBuf)
-			if row > 0 {
+			// At scroll region bottom, NEL scrolls -- cursor stays on same row
+			if row > 0 && row < pw.scrollBottom {
 				pw.cursorRow.Store(int32(row + 1))
 			}
 			pw.cursorCol.Store(1)
@@ -387,6 +400,8 @@ func (pw *ProtectedWriter) handleStateEscape(out *bytes.Buffer, b byte) {
 	case 'c': // RIS - full reset
 		// Allow reset but re-enforce scroll region after
 		out.Write(pw.escBuf)
+		pw.scrollTop = 1
+		pw.scrollBottom = pw.height - pw.config.ProtectBottomRows
 		pw.redrawNeeded.Store(true)
 		pw.state = stateGround
 	default:
@@ -555,6 +570,8 @@ func (pw *ProtectedWriter) handleCSI(out *bytes.Buffer, final byte) {
 			if len(pw.params) >= 2 && pw.params[1] > 0 {
 				bottom = min(pw.params[1], pw.height-pw.config.ProtectBottomRows)
 			}
+			pw.scrollTop = top
+			pw.scrollBottom = bottom
 			// Write modified scroll region
 			fmt.Fprintf(out, "\x1b[%d;%dr", top, bottom)
 			return
@@ -662,7 +679,15 @@ func (pw *ProtectedWriter) handleCSI(out *bytes.Buffer, final byte) {
 
 	case 'u': // RCP - Restore Cursor Position
 		if pw.savedRow > 0 {
-			pw.cursorRow.Store(pw.savedRow)
+			row := pw.savedRow
+			if pw.config.AggressiveMode && int(row) >= pw.protectedRow {
+				row = int32(pw.protectedRow - 1)
+				if row < 1 {
+					row = 1
+				}
+				pw.redrawNeeded.Store(true)
+			}
+			pw.cursorRow.Store(row)
 			pw.cursorCol.Store(pw.savedCol)
 		}
 		// Pass through
@@ -698,7 +723,10 @@ func (pw *ProtectedWriter) advanceCol(out *bytes.Buffer, row, col, width int) {
 			pw.redrawNeeded.Store(true)
 			return
 		}
-		pw.cursorRow.Store(int32(newRow))
+		// At scroll region bottom, wrap causes scroll -- cursor stays on same row
+		if newRow <= pw.scrollBottom {
+			pw.cursorRow.Store(int32(newRow))
+		}
 	}
 	pw.cursorCol.Store(int32(newCol))
 }
