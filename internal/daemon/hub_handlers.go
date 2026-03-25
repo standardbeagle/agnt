@@ -409,6 +409,13 @@ func (d *Daemon) registerAgntCommands() {
 		Handler:     d.hubHandleScript,
 	})
 
+	// DOCTOR command
+	d.hub.RegisterCommand(hubpkg.CommandDefinition{
+		Verb:        protocol.VerbDoctor,
+		Description: "Run health checks and return diagnostic report",
+		Handler:     d.hubHandleDoctor,
+	})
+
 	// STOP-ALL command
 	d.hub.RegisterCommand(hubpkg.CommandDefinition{
 		Verb:        "STOP-ALL",
@@ -423,7 +430,7 @@ func (d *Daemon) registerAgntCommands() {
 		Handler:     d.hubHandleRestartAll,
 	})
 
-	debug.Log("daemon", "Registered %d agnt-specific commands with Hub", 20)
+	debug.Log("daemon", "Registered %d agnt-specific commands with Hub", 21)
 }
 
 // agntRunConfig extends the hub's RunConfig with agnt-specific fields.
@@ -3040,6 +3047,30 @@ func (d *Daemon) hubHandleStoreGetAll(conn *hubpkg.Connection, cmd *hubproto.Com
 	}
 
 	data, _ := json.Marshal(resp)
+	return conn.WriteJSON(data)
+}
+
+// hubHandleDoctor handles the DOCTOR command.
+// Runs all health checks and returns a structured diagnostic report.
+func (d *Daemon) hubHandleDoctor(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	debug.Log("daemon", "DOCTOR: args=%v", cmd.Args)
+
+	projectPath := ""
+	if len(cmd.Args) > 0 {
+		projectPath = cmd.Args[0]
+	}
+	if projectPath == "" {
+		projectPath = d.getSessionProjectPath(conn)
+	}
+
+	checkCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	report := d.RunDoctor(checkCtx, projectPath)
+	data, err := json.Marshal(report)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInternal, err.Error())
+	}
 	return conn.WriteJSON(data)
 }
 

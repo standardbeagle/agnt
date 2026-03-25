@@ -11,7 +11,7 @@ import (
 
 // DaemonInput defines input for the daemon management tool.
 type DaemonInput struct {
-	Action string `json:"action" jsonschema:"Action: status, info, start, stop, restart, stop_all, restart_all, startup_log"`
+	Action string `json:"action" jsonschema:"Action: status, info, start, stop, restart, stop_all, restart_all, startup_log, doctor"`
 }
 
 // DaemonOutput defines output for daemon management.
@@ -70,6 +70,7 @@ Actions:
   restart: Restart the daemon
   stop_all: Stop all processes and proxies (daemon keeps running)
   restart_all: Restart all processes and proxies (stop then start with same config)
+  doctor: Run health checks and return diagnostic report
 
 Examples:
   daemon {action: "status"}
@@ -79,6 +80,7 @@ Examples:
   daemon {action: "restart"}
   daemon {action: "stop_all"}
   daemon {action: "restart_all"}
+  daemon {action: "doctor"}
 
 The daemon auto-starts when needed, so manual start is rarely required.
 Use stop_all/restart_all to manage running resources without stopping the daemon.`,
@@ -104,8 +106,10 @@ func makeDaemonHandler(dt *DaemonTools) func(context.Context, *mcp.CallToolReque
 			return handleDaemonRestartAll(dt)
 		case "startup_log":
 			return handleDaemonStartupLog(dt)
+		case "doctor":
+			return handleDaemonDoctor(dt)
 		default:
-			return errorResult(fmt.Sprintf("unknown action %q. Use: status, info, start, stop, restart, stop_all, restart_all, startup_log", input.Action)), DaemonOutput{}, nil
+			return errorResult(fmt.Sprintf("unknown action %q. Use: status, info, start, stop, restart, stop_all, restart_all, startup_log, doctor", input.Action)), DaemonOutput{}, nil
 		}
 	}
 }
@@ -304,6 +308,52 @@ func handleDaemonRestartAll(dt *DaemonTools) (*mcp.CallToolResult, DaemonOutput,
 		Success:          processesFailed == 0 && proxiesFailed == 0,
 		Message:          fmt.Sprintf("Restarted %d processes, %d proxies", processesRestarted, proxiesRestarted),
 	}, nil
+}
+
+func handleDaemonDoctor(dt *DaemonTools) (*mcp.CallToolResult, DaemonOutput, error) {
+	if err := dt.ensureConnected(); err != nil {
+		return errorResult(fmt.Sprintf("daemon not running: %v", err)), DaemonOutput{}, nil
+	}
+
+	result, err := dt.client.Doctor(getProjectPath())
+	if err != nil {
+		return errorResult(fmt.Sprintf("failed to run doctor: %v", err)), DaemonOutput{}, nil
+	}
+
+	status, _ := result["status"].(string)
+	checks, _ := result["checks"].([]interface{})
+
+	var text string
+	text = fmt.Sprintf("=== Doctor Report: %s ===\n\n", status)
+	for _, c := range checks {
+		check, ok := c.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		name, _ := check["name"].(string)
+		st, _ := check["status"].(string)
+		msg, _ := check["message"].(string)
+		fix, _ := check["fix"].(string)
+
+		icon := "  "
+		switch st {
+		case "error":
+			icon = "X "
+		case "warning":
+			icon = "! "
+		case "ok":
+			icon = "  "
+		}
+
+		text += fmt.Sprintf("%s[%s] %s: %s\n", icon, st, name, msg)
+		if fix != "" {
+			text += "  fix: " + fix + "\n"
+		}
+	}
+
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{&mcp.TextContent{Text: text}},
+	}, DaemonOutput{Success: status != "error", Message: text}, nil
 }
 
 func handleDaemonStartupLog(dt *DaemonTools) (*mcp.CallToolResult, DaemonOutput, error) {

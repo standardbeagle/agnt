@@ -644,6 +644,15 @@ func (c *Client) StartupLog(limit int) (map[string]interface{}, error) {
 		WithJSON(map[string]interface{}{"limit": limit}).JSON()
 }
 
+// Doctor runs health checks and returns a diagnostic report.
+func (c *Client) Doctor(projectPath string) (map[string]interface{}, error) {
+	args := []string{}
+	if projectPath != "" {
+		args = append(args, projectPath)
+	}
+	return c.conn.Request(protocol.VerbDoctor, args...).JSON()
+}
+
 // ScriptList lists all scripts for a project directory.
 func (c *Client) ScriptList(projectPath string) (map[string]interface{}, error) {
 	return c.conn.Request(protocol.VerbScript, protocol.SubVerbList).
