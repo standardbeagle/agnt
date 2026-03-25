@@ -238,6 +238,14 @@ func runWithPTY(ctx context.Context, args []string, socketPath string, sessionCo
 	// Get project path for session registration
 	projectPath, _ := os.Getwd()
 
+	// Validate .agnt.kdl config early — before any PTY/terminal setup.
+	// Parse errors are fatal: the user has a config they expect to work.
+	if configPath := config.FindAgntConfigFile(projectPath); configPath != "" {
+		if _, err := config.LoadAgntConfigFile(configPath); err != nil {
+			return fmt.Errorf("%s: %w", configPath, err)
+		}
+	}
+
 	// For Claude, inject system prompt with agnt context
 	// Check if command is Claude (handles aliases, paths like /usr/bin/claude, etc.)
 	if isClaudeCommand(command) {
@@ -807,10 +815,12 @@ func buildAgntSystemPrompt(socketPath string) string {
 		socketPath = daemon.DefaultSocketPath()
 	}
 
-	// Load agnt config from current directory
+	// Load agnt config from current directory.
+	// Config was already validated at startup; errors here are unexpected.
 	cwd, _ := os.Getwd()
 	agntConfig, err := config.LoadAgntConfig(cwd)
 	if err != nil {
+		debug.Log("run", "unexpected config load error in buildAgntSystemPrompt: %v", err)
 		agntConfig = config.DefaultAgntConfig()
 	}
 
