@@ -87,8 +87,16 @@ func (r *InputRouter) SetBashRunner(runner BashRunner) {
 }
 
 // SetOutputFetcher sets the output fetcher for viewing process output.
+// Also wires up the before-unfreeze callback so the active process panel
+// is refreshed from the daemon when the overlay closes.
 func (r *InputRouter) SetOutputFetcher(fetcher ProcessOutputFetcher) {
 	r.outputFetcher = fetcher
+	r.overlay.SetBeforeUnfreezeCallback(func(panelID string) {
+		if panelID == "" || r.outputFetcher == nil {
+			return
+		}
+		r.eagerRefreshPanel(panelID)
+	})
 }
 
 // SetDaemonConnector sets the daemon connector for connecting to the daemon.
@@ -513,6 +521,29 @@ func (r *InputRouter) refreshPanelContent(panelID string) {
 	// Try diff-based refresh to avoid full-screen flicker
 	if !r.overlay.renderer.RefreshPanelContent(*panel) {
 		r.overlay.draw()
+	}
+}
+
+// eagerRefreshPanel fetches the latest output for a process panel by ID.
+// Unlike refreshPanelContent, this does not check panelMode since it runs
+// during the hide transition when panelMode has already been cleared.
+// Called from the before-unfreeze callback without overlay.mu held.
+func (r *InputRouter) eagerRefreshPanel(panelID string) {
+	output, err := r.outputFetcher.GetScriptOutput(panelID, maxPanelLines)
+	if err != nil {
+		return
+	}
+	output = strings.TrimRight(output, "\n")
+
+	r.overlay.mu.Lock()
+	defer r.overlay.mu.Unlock()
+
+	for i := range r.overlay.panelItems {
+		p := &r.overlay.panelItems[i]
+		if p.Type == "process" && p.ID == panelID {
+			p.SetContent(output)
+			return
+		}
 	}
 }
 

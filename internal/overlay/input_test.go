@@ -792,6 +792,103 @@ func TestPanelRefreshIgnoresWrongPanel(t *testing.T) {
 	router.stopPanelRefresh()
 }
 
+func TestEagerRefreshOnUnfreeze(t *testing.T) {
+	router, ov, fetcher := newPanelTestRouter(t)
+
+	// Set up gate so hideMenu can freeze/unfreeze
+	gate := NewOutputGate(&writeRecorder{})
+	ov.SetGate(gate)
+
+	// Pre-fill panel with stale content
+	ov.mu.Lock()
+	ov.panelItems[1].SetContent("stale content")
+	ov.mu.Unlock()
+
+	// Update daemon output (simulates new output arriving while frozen)
+	fetcher.setOutput("fresh content from daemon")
+
+	// Open and close the overlay to trigger hideMenu -> before-unfreeze callback
+	ov.mu.Lock()
+	ov.activateOverlay(true)
+	ov.panelMode = true
+	ov.panelIndex = 1
+	ov.mu.Unlock()
+
+	ov.mu.Lock()
+	router.exitPanelMode()
+	ov.mu.Unlock()
+
+	// Verify the panel content was refreshed from the daemon
+	ov.mu.Lock()
+	content := ov.panelItems[1].Content
+	ov.mu.Unlock()
+	assert.Equal(t, "fresh content from daemon", content)
+
+	// Verify the fetcher was called for the correct panel
+	fetcher.mu.Lock()
+	calls := fetcher.calls
+	fetcher.mu.Unlock()
+	found := false
+	for _, c := range calls {
+		if c == "dev" {
+			found = true
+			break
+		}
+	}
+	assert.True(t, found, "expected eager refresh call for 'dev' panel")
+}
+
+func TestEagerRefreshSkippedWhenNoProcessPanel(t *testing.T) {
+	router, ov, fetcher := newPanelTestRouter(t)
+
+	gate := NewOutputGate(&writeRecorder{})
+	ov.SetGate(gate)
+
+	// Set active panel to overview (not a process panel)
+	ov.mu.Lock()
+	ov.activateOverlay(true)
+	ov.panelMode = true
+	ov.panelIndex = 0 // overview
+	ov.mu.Unlock()
+
+	initialCount := fetcher.getCallCount()
+
+	ov.mu.Lock()
+	router.exitPanelMode()
+	ov.mu.Unlock()
+
+	// No daemon fetch should have happened for the overview panel
+	assert.Equal(t, initialCount, fetcher.getCallCount())
+}
+
+func TestEagerRefreshSkippedWithoutFetcher(t *testing.T) {
+	rec := &writeRecorder{}
+	cfg := DefaultConfig()
+	cfg.ShowIndicator = false
+	ov := New(rec, 80, 24, cfg)
+	router := NewInputRouter(rec, ov, 0x19)
+	// No output fetcher set
+
+	gate := NewOutputGate(&writeRecorder{})
+	ov.SetGate(gate)
+
+	ov.panelItems = []PanelItem{
+		{Type: "overview", Label: "overview"},
+		{Type: "process", ID: "dev", Label: "dev"},
+	}
+
+	ov.mu.Lock()
+	ov.activateOverlay(true)
+	ov.panelMode = true
+	ov.panelIndex = 1
+	ov.mu.Unlock()
+
+	// Should not panic or fail without a fetcher
+	ov.mu.Lock()
+	router.exitPanelMode()
+	ov.mu.Unlock()
+}
+
 func TestPanelRefreshDoubleStartReplacesOld(t *testing.T) {
 	router, _, fetcher := newPanelTestRouter(t)
 
