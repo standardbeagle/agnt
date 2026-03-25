@@ -509,7 +509,11 @@ func (r *InputRouter) refreshPanelContent(panelID string) {
 	if wasAtBottom {
 		panel.ScrollOffset = 0
 	}
-	r.overlay.draw()
+
+	// Try diff-based refresh to avoid full-screen flicker
+	if !r.overlay.renderer.RefreshPanelContent(*panel) {
+		r.overlay.draw()
+	}
 }
 
 // closeCurrentPanel removes the current panel if the process has stopped.

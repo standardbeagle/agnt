@@ -286,6 +286,13 @@ type Renderer struct {
 	// Track current overlay regions for proper clearing
 	currentMenuRegion  *ScreenRegion
 	currentInputRegion *ScreenRegion
+
+	// Diff-based panel refresh state: cached visible lines from last render
+	lastPanelLines []string
+	lastPanelStart int // startRow of the cached content area
+	lastPanelCol   int // column of the cached content area
+	lastPanelWidth int // width of the cached content area
+	lastPanelAvail int // available lines in the content area
 }
 
 // NewRenderer creates a new Renderer.
@@ -1186,6 +1193,8 @@ func (r *Renderer) DrawPanelView(panels []PanelItem, activeIndex int, status Sta
 	defer r.mu.Unlock()
 
 	r.write(ClearScreen + CursorHome + CursorHide)
+	// Full redraw invalidates diff cache; drawScrollableContent will repopulate it
+	r.lastPanelLines = nil
 
 	if activeIndex >= len(panels) {
 		activeIndex = len(panels) - 1
@@ -1517,15 +1526,34 @@ func (r *Renderer) drawProcessPanelContent(startRow, col, width, maxRows int, pa
 // drawScrollableContent renders panel content with vertical scroll support.
 // ScrollOffset 0 = pinned to bottom (showing latest output).
 func (r *Renderer) drawScrollableContent(startRow, col, width, availLines int, panel PanelItem) {
+	visible := visibleLines(panel, availLines, width)
+
+	row := startRow
+	for _, line := range visible {
+		r.moveTo(row, col)
+		r.write(line)
+		row++
+	}
+
+	// Cache for diff-based refresh
+	r.lastPanelLines = visible
+	r.lastPanelStart = startRow
+	r.lastPanelCol = col
+	r.lastPanelWidth = width
+	r.lastPanelAvail = availLines
+
+	// Scroll indicators
+	r.drawScrollIndicators(startRow, col, width, availLines, panel)
+}
+
+// visibleLines computes the truncated lines visible in a scrollable panel.
+func visibleLines(panel PanelItem, availLines, width int) []string {
 	if panel.Content == "" {
-		r.moveTo(startRow, col)
-		r.write(FgBrightBlack + "no output" + Reset)
-		return
+		return []string{FgBrightBlack + "no output" + Reset}
 	}
 
 	lines := strings.Split(panel.Content, "\n")
 
-	// Calculate visible window
 	endLine := len(lines) - panel.ScrollOffset
 	if endLine <= 0 {
 		endLine = 1
@@ -1538,18 +1566,39 @@ func (r *Renderer) drawScrollableContent(startRow, col, width, availLines int, p
 		fromLine = 0
 	}
 
-	row := startRow
-	for i := fromLine; i < endLine && row < startRow+availLines; i++ {
-		r.moveTo(row, col)
+	count := endLine - fromLine
+	if count > availLines {
+		count = availLines
+	}
+	out := make([]string, 0, count)
+	for i := fromLine; i < endLine && len(out) < availLines; i++ {
 		line := lines[i]
 		if len(line) > width {
 			line = line[:width]
 		}
-		r.write(line)
-		row++
+		out = append(out, line)
+	}
+	return out
+}
+
+// drawScrollIndicators renders the up/down scroll position hints.
+func (r *Renderer) drawScrollIndicators(startRow, col, width, availLines int, panel PanelItem) {
+	if panel.Content == "" {
+		return
+	}
+	lines := strings.Split(panel.Content, "\n")
+	endLine := len(lines) - panel.ScrollOffset
+	if endLine <= 0 {
+		endLine = 1
+	}
+	if endLine > len(lines) {
+		endLine = len(lines)
+	}
+	fromLine := endLine - availLines
+	if fromLine < 0 {
+		fromLine = 0
 	}
 
-	// Scroll indicators
 	if panel.ScrollOffset > 0 {
 		indicator := fmt.Sprintf("↓ %d", panel.ScrollOffset)
 		r.moveTo(startRow+availLines-1, col+width-len(indicator)-1)
@@ -1560,6 +1609,54 @@ func (r *Renderer) drawScrollableContent(startRow, col, width, availLines int, p
 		r.moveTo(startRow, col+width-len(indicator)-1)
 		r.write(FgBrightBlack + indicator + Reset)
 	}
+}
+
+// RefreshPanelContent performs a diff-based update of the scrollable content
+// area within the current panel view. Only lines that differ from the last
+// render are redrawn, reducing terminal flicker during live refresh.
+// Returns false if no cached state exists (caller should do a full draw).
+func (r *Renderer) RefreshPanelContent(panel PanelItem) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.lastPanelLines == nil {
+		return false
+	}
+
+	startRow := r.lastPanelStart
+	col := r.lastPanelCol
+	width := r.lastPanelWidth
+	availLines := r.lastPanelAvail
+
+	newLines := visibleLines(panel, availLines, width)
+
+	r.write(CursorHide)
+
+	maxLen := len(newLines)
+	if len(r.lastPanelLines) > maxLen {
+		maxLen = len(r.lastPanelLines)
+	}
+
+	for i := 0; i < maxLen; i++ {
+		var oldLine, newLine string
+		if i < len(r.lastPanelLines) {
+			oldLine = r.lastPanelLines[i]
+		}
+		if i < len(newLines) {
+			newLine = newLines[i]
+		}
+		if oldLine == newLine {
+			continue
+		}
+		r.moveTo(startRow+i, col)
+		r.write(ClearToEOL)
+		r.write(newLine)
+	}
+
+	r.lastPanelLines = newLines
+	r.drawScrollIndicators(startRow, col, width, availLines, panel)
+	r.write(CursorShow)
+	return true
 }
 
 // drawProxyPanelContent draws the content for a proxy panel.
