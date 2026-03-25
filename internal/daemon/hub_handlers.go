@@ -2452,11 +2452,42 @@ func (d *Daemon) hubHandleSessionRegister(conn *hubpkg.Connection, cmd *hubproto
 		debug.Log("daemon", "session register: cannot update proxies — overlayPath=%q projectPath=%q", session.OverlayPath, session.ProjectPath)
 	}
 
-	// Run autostart for this project
-	autostartResult := d.RunAutostart(context.Background(), metadata.ProjectPath)
+	// Check if another active session already owns scripts for this project.
+	// If so, join as observer (skip autostart). Different project paths always
+	// get their own autostart.
+	var autostartResult *AutostartResult
+	existingSessions := d.sessionRegistry.ListActive(session.ProjectPath, false)
+	hasExistingOwner := false
+	for _, existing := range existingSessions {
+		if existing.Code != code {
+			hasExistingOwner = true
+			break
+		}
+	}
 
-	// Add session as observer of all project scripts (including newly autostarted ones)
-	// and claim ownership of any unowned scripts
+	if hasExistingOwner {
+		// Another session already started scripts for this project.
+		// Join as observer — report what's already running, skip autostart.
+		autostartResult = &AutostartResult{}
+		for _, entry := range d.scriptRegistry.List(session.ProjectPath) {
+			state := entry.State()
+			if state == script.StateRunning || state == script.StateStarting {
+				autostartResult.Scripts = append(autostartResult.Scripts, entry.Name)
+			}
+		}
+		for _, p := range d.proxym.List() {
+			if normalizePath(p.Path) == session.ProjectPath {
+				autostartResult.Proxies = append(autostartResult.Proxies, p.ID)
+			}
+		}
+		debug.Log("daemon", "session %s joining existing project %s (skipping autostart, %d scripts, %d proxies already running)",
+			code, session.ProjectPath, len(autostartResult.Scripts), len(autostartResult.Proxies))
+	} else {
+		// First session for this project — run autostart
+		autostartResult = d.RunAutostart(context.Background(), metadata.ProjectPath)
+	}
+
+	// Add session as observer of all project scripts and claim ownership of unowned ones
 	if session.ProjectPath != "" {
 		for _, entry := range d.scriptRegistry.List(session.ProjectPath) {
 			entry.AddSession(code)
