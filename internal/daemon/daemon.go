@@ -1061,6 +1061,20 @@ func (d *Daemon) startAutostartScripts(ctx context.Context, cfg *config.AgntConf
 				defer layerWg.Done()
 				processID := makeProcessID(projectPath, name)
 
+				// Skip if script is already running (idempotent autostart).
+				// This prevents double-start when multiple sessions register
+				// for the same project path concurrently.
+				if entry, ok := d.scriptRegistry.Get(name, projectPath); ok {
+					state := entry.State()
+					if state == script.StateRunning || state == script.StateStarting {
+						log.Info(processID, name, "already_running", fmt.Sprintf("%s already %s, skipping", name, state.String()))
+						resultMu.Lock()
+						result.Scripts = append(result.Scripts, name)
+						resultMu.Unlock()
+						return
+					}
+				}
+
 				// Wait for dependencies (layer 1+)
 				d.waitForDependencies(ctx, name, scriptCfg, projectPath, layerIdx)
 
