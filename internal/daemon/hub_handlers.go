@@ -325,7 +325,7 @@ func (d *Daemon) registerAgntCommands() {
 	// OVERLAY command
 	d.hub.RegisterCommand(hubpkg.CommandDefinition{
 		Verb:        "OVERLAY",
-		SubVerbs:    []string{"SET", "GET", "CLEAR", "ACTIVITY"},
+		SubVerbs:    []string{"SET", "GET", "CLEAR", "ACTIVITY", "OUTPUT-PREVIEW"},
 		Description: "Configure overlay endpoint",
 		Handler:     d.hubHandleOverlay,
 	})
