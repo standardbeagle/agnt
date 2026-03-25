@@ -535,6 +535,14 @@ func (d *Daemon) Wait() {
 	d.wg.Wait()
 }
 
+// SetOnShutdown registers a callback invoked when the hub receives a remote
+// SHUTDOWN command.  The host process typically uses this to cancel its own
+// signal context so it exits cleanly instead of lingering (important on
+// Windows where Unix signals are not delivered).
+func (d *Daemon) SetOnShutdown(fn func()) {
+	d.hub.SetOnShutdown(fn)
+}
+
 // Info returns daemon information.
 func (d *Daemon) Info() DaemonInfo {
 	info := DaemonInfo{
