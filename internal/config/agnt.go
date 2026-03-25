@@ -78,6 +78,12 @@ type ScriptConfig struct {
 	// Ports lists the ports this script uses. Used for pre-flight orphan cleanup
 	// and EADDRINUSE recovery. Multiple ports supported (e.g., API + WebSocket).
 	Ports []int `kdl:"ports"`
+	// ErrorPattern is a regex that flags the process as unhealthy when matched.
+	// If empty, DefaultHealthPatterns() are used based on common frameworks.
+	ErrorPattern string `kdl:"error-pattern"`
+	// HealthyPattern is a regex that clears the unhealthy flag when matched.
+	// If empty, DefaultHealthPatterns() are used based on common frameworks.
+	HealthyPattern string `kdl:"healthy-pattern"`
 }
 
 // ResolveShell returns the shell command and arguments for executing a "run" command.
@@ -445,6 +451,22 @@ When something isn't working:
 	}
 
 	return sb.String()
+}
+
+// HealthPatterns holds compiled error and healthy regex patterns for a script.
+type HealthPatterns struct {
+	Error   string // Regex that indicates an error
+	Healthy string // Regex that clears the error state
+}
+
+// DefaultHealthPatterns returns the default error/healthy patterns.
+// These cover common dev server frameworks so most users get good behavior
+// without explicit configuration.
+func DefaultHealthPatterns() HealthPatterns {
+	return HealthPatterns{
+		Error:   `(?i)(ERROR|FAIL|Cannot find module|Build FAILED|panic:|SyntaxError:|EADDRINUSE|Segmentation fault|unhandled exception|out of memory)`,
+		Healthy: `(?i)(ready in|compiled successfully|listening on|started server|build succeeded|Compiled|Server running|Serving!)`,
+	}
 }
 
 // WriteDefaultAgntConfig writes a default configuration file with documentation.

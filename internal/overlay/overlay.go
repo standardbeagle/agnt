@@ -92,6 +92,7 @@ type ScriptInfo struct {
 	StartCount int64
 	FailCount  int64
 	LastError  string
+	HasAlerts  bool // Whether process has recent alerts/errors
 }
 
 // StartupLogEntry holds a startup log entry for display.

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestNewOverlay(t *testing.T) {
@@ -390,4 +392,53 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.StatusRefreshInterval <= 0 {
 		t.Error("expected positive StatusRefreshInterval")
 	}
+}
+
+func TestProcessStateIconHealthy(t *testing.T) {
+	// Running without alerts = green circle
+	icon, color := processStateIcon("running", false)
+	assert.Equal(t, "\u25cf", icon)
+	assert.Equal(t, FgGreen, color)
+}
+
+func TestProcessStateIconWithAlerts(t *testing.T) {
+	// Running with alerts = yellow square
+	icon, color := processStateIcon("running", true)
+	assert.Equal(t, "\u25a0", icon)
+	assert.Equal(t, FgYellow, color)
+}
+
+func TestProcessStateIconFailed(t *testing.T) {
+	// Failed ignores hasAlerts (already an error state)
+	icon, color := processStateIcon("failed", false)
+	assert.Equal(t, "\u2717", icon)
+	assert.Equal(t, FgRed, color)
+
+	icon2, color2 := processStateIcon("failed", true)
+	assert.Equal(t, icon, icon2)
+	assert.Equal(t, color, color2)
+}
+
+func TestProcessStateIconStopped(t *testing.T) {
+	icon, color := processStateIcon("stopped", false)
+	assert.Equal(t, "\u2717", icon)
+	assert.Equal(t, FgYellow, color)
+}
+
+func TestProcessStateIconStarting(t *testing.T) {
+	icon, color := processStateIcon("starting", false)
+	assert.Equal(t, "\u25cc", icon)
+	assert.Equal(t, FgCyan, color)
+}
+
+func TestProcessStateIconIdle(t *testing.T) {
+	icon, color := processStateIcon("idle", false)
+	assert.Equal(t, "\u25cb", icon)
+	assert.Equal(t, FgBrightBlack, color)
+}
+
+func TestProcessStateIconUnknown(t *testing.T) {
+	icon, color := processStateIcon("something-else", false)
+	assert.Equal(t, "\u25cb", icon)
+	assert.Equal(t, FgBrightBlack, color)
 }
