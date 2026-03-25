@@ -361,24 +361,32 @@ func (c *AgntConfig) BuildSystemPrompt() string {
 	// Base agnt description
 	sb.WriteString(`You have access to agnt, a tool that gives AI coding agents browser superpowers.
 
-## agnt Features
+## agnt Tools
 
-agnt provides MCP tools for browser debugging and dev server management:
+- **get_errors**: Unified error view across processes and proxies (JS errors, HTTP errors, process failures)
+- **proxy**: Reverse proxy with JS injection — start/stop, capture traffic, execute JS, take screenshots
+- **proc**: Process management — start/stop/restart scripts, view output, auto-restart on crash
+- **proxylog**: Query captured HTTP traffic — filter by type (error, xhr, console), search bodies
+- **responsive_audit**: Responsive design audit across viewport sizes (mobile, tablet, desktop)
+- **automation**: Headless Chrome via chromedp — screenshots at multiple viewports, navigate, evaluate JS
+- **currentpage**: Track the active browser page/URL for context
 
-- **proxy**: Reverse proxy with JS injection for browser instrumentation
-  - Start/stop proxies, capture traffic logs, execute JavaScript in browser
-  - Take screenshots, inspect elements, run accessibility audits
+## Debugging Workflow
 
-- **proc**: Process management for dev servers
-  - Start/stop/restart scripts, view output, auto-restart on crash
+When something isn't working:
+1. get_errors {} — check for JS errors, HTTP errors, process failures
+2. currentpage {} — see what page/URL the user is viewing
+3. proc {action: "output", id: "..."} — check process output for crashes/errors
+4. proxylog {action: "query", types: ["error"]} — check HTTP/API errors
+5. proxy {action: "exec", ...} — run diagnostic JS in the browser
+6. Take a screenshot if visual issue suspected
 
-- **proxylog**: Query captured HTTP traffic and browser events
-  - Filter by type (error, xhr, console), search request/response bodies
+## Common Patterns
 
-- **automation**: Headless Chrome via chromedp for automated testing
-  - Screenshots at multiple viewports, navigate, evaluate JS
-
-- **currentpage**: Track the active browser page/tab for context
+- "Page is blank" — get_errors, then proc output for build errors
+- "API returns 500" — proxylog query for the specific endpoint
+- "Style looks wrong" — responsive_audit or screenshot
+- "Process crashed" — proc output, then restart
 `)
 
 	// Add configured scripts
@@ -422,11 +430,13 @@ agnt provides MCP tools for browser debugging and dev server management:
 		}
 	}
 
-	sb.WriteString("\n## Usage Notes\n\n")
-	sb.WriteString("- Use `proc {action: \"list\"}` to see running processes\n")
-	sb.WriteString("- Use `proxy {action: \"list\"}` to see running proxies\n")
+	sb.WriteString("\n## Process Management\n\n")
+	sb.WriteString("- proc {action: \"list\"} — see all processes and their states\n")
+	sb.WriteString("- proc {action: \"output\", id: \"...\"} — see recent output lines\n")
+	sb.WriteString("- proc {action: \"stop\", id: \"...\"} then run {script: \"...\"} — restart\n")
+	sb.WriteString("- proxy {action: \"list\"} — see all proxies and their states\n")
+	sb.WriteString("- proxy {action: \"exec\", ...} — run JS in the browser\n")
 	sb.WriteString("- Do NOT start processes or proxies that are already running\n")
-	sb.WriteString("- Use `proxy {action: \"exec\", ...}` to run JS in the browser\n")
 
 	// Append custom prompt if set
 	if c.AI != nil && c.AI.AppendSystemPrompt != "" {

@@ -745,10 +745,15 @@ func TestBuildSystemPrompt(t *testing.T) {
 		cfg := DefaultAgntConfig()
 
 		prompt := cfg.BuildSystemPrompt()
-		assert.Contains(t, prompt, "agnt")
+		assert.Contains(t, prompt, "agnt Tools")
+		assert.Contains(t, prompt, "get_errors")
 		assert.Contains(t, prompt, "proxy")
 		assert.Contains(t, prompt, "proc")
-		assert.Contains(t, prompt, "Usage Notes")
+		assert.Contains(t, prompt, "responsive_audit")
+		assert.Contains(t, prompt, "currentpage")
+		assert.Contains(t, prompt, "Debugging Workflow")
+		assert.Contains(t, prompt, "Common Patterns")
+		assert.Contains(t, prompt, "Process Management")
 	})
 
 	t.Run("prompt includes configured scripts", func(t *testing.T) {
