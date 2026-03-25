@@ -294,8 +294,13 @@ func (am *ActivityMonitor) scheduleBroadcast() {
 		return
 	}
 
+	// Read previewLastSent under lock to avoid racing with sendPreviewLocked.
+	am.previewMu.Lock()
+	elapsed := time.Since(am.previewLastSent)
+	am.previewMu.Unlock()
+
 	// Check if we've waited long enough since last send
-	if time.Since(am.previewLastSent) >= am.previewDebounce {
+	if elapsed >= am.previewDebounce {
 		// Can send immediately
 		am.sendPreview()
 		return
@@ -303,11 +308,12 @@ func (am *ActivityMonitor) scheduleBroadcast() {
 
 	// Schedule delayed send
 	if am.previewPending.CompareAndSwap(false, true) {
+		delay := am.previewDebounce - elapsed
 		go func() {
 			select {
 			case <-am.stopCh:
 				return
-			case <-time.After(am.previewDebounce - time.Since(am.previewLastSent)):
+			case <-time.After(delay):
 				am.previewPending.Store(false)
 				am.previewMu.Lock()
 				am.sendPreviewLocked()
