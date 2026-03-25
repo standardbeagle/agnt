@@ -490,9 +490,8 @@ func TestAiClaude_MultilinePrompt(t *testing.T) {
 		t.Fatalf("Failed to start command: %v", err)
 	}
 
-	// Kill after verifying it started
-	time.Sleep(100 * time.Millisecond)
-	cmd.Process.Kill()
+	// Wait for process to exit (context timeout or natural exit)
+	_ = cmd.Wait()
 
 	// Should not have complained about invalid prompt
 	if strings.Contains(stderr.String(), "prompt is required") {

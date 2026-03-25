@@ -12,6 +12,7 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/overlay"
 	"github.com/standardbeagle/agnt/internal/protocol"
 )
@@ -320,8 +321,9 @@ func displayAutostartResults(handle *daemonSessionHandle, ov *overlay.Overlay, w
 // If daemonHandle is non-nil, alerts are also pushed to the daemon's alert store
 // so they can be queried by the get_errors MCP tool.
 func setupAlertScanner(projectPath, sessionCode string, netOverlay *Overlay, daemonHandle *daemonSessionHandle, actState func() overlay.ActivityState) *overlay.AlertScanner {
-	agntCfg, _ := config.LoadAgntConfig(projectPath)
-	if agntCfg == nil {
+	agntCfg, err := config.LoadAgntConfig(projectPath)
+	if err != nil {
+		debug.Log("alerts", "failed to load config for alert scanner: %v", err)
 		agntCfg = config.DefaultAgntConfig()
 	}
 

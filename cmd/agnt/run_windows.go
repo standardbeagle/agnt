@@ -21,6 +21,7 @@ import (
 	"github.com/aymanbagabas/go-pty"
 	"github.com/spf13/cobra"
 	"github.com/standardbeagle/agnt/internal/aichannel"
+	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/daemon"
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/overlay"
@@ -233,6 +234,14 @@ func runWithConPTY(ctx context.Context, args []string, socketPath string, sessio
 
 	// Get project path for session registration and MCP directory filtering
 	projectPath, _ := os.Getwd()
+
+	// Validate .agnt.kdl config early — before any PTY/terminal setup.
+	// Parse errors are fatal: the user has a config they expect to work.
+	if configPath := config.FindAgntConfigFile(projectPath); configPath != "" {
+		if _, err := config.LoadAgntConfigFile(configPath); err != nil {
+			return fmt.Errorf("%s: %w", configPath, err)
+		}
+	}
 
 	// For Claude, inject system prompt with agnt context
 	if isClaudeCommand(command) {
