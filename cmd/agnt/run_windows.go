@@ -450,7 +450,20 @@ func runWithConPTY(ctx context.Context, args []string, socketPath string, sessio
 				},
 			}
 			outputFilter = overlay.NewProtectedWriter(outputGate, width, height, filterCfg)
+			termOverlay.SetAltScreenChecker(outputFilter.InAltScreen)
 		}
+
+		// On Windows there is no SIGWINCH, so after a menu closes (gate unfreezes)
+		// we re-enforce the scroll region and redraw the indicator to clean up
+		// any visual artifacts left by the overlay.
+		outputGate.SetCallbacks(nil, func() {
+			if outputFilter != nil {
+				outputFilter.EnforceScrollRegion()
+			}
+			if termOverlay != nil {
+				termOverlay.Redraw()
+			}
+		})
 
 		// Start status fetcher using shared connection
 		statusFetcher = overlay.NewStatusFetcher(daemonConn, termOverlay, 2*time.Second)
