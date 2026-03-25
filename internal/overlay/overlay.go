@@ -209,8 +209,9 @@ type Overlay struct {
 
 	// Callbacks
 	onAction         func(Action) error
-	onFreeze         func() // Called when screen should freeze (stop PTY output)
-	onUnfreeze       func() // Called when screen should unfreeze (send SIGWINCH)
+	onFreeze         func()               // Called when screen should freeze (stop PTY output)
+	onUnfreeze       func()               // Called when screen should unfreeze (send SIGWINCH)
+	onBeforeUnfreeze func(panelID string) // Called before gate unfreeze with the active process panel ID
 	childInAltScreen func() bool
 
 	// Whether alt screen is currently used for menu/viewer (per open/close cycle)
@@ -300,6 +301,16 @@ type gateDirectWriter struct {
 
 func (w gateDirectWriter) Write(p []byte) (int, error) {
 	return w.gate.WriteDirect(p)
+}
+
+// SetBeforeUnfreezeCallback sets a callback that fires before the gate unfreezes
+// when closing the overlay. The callback receives the ID of the active process
+// panel (empty string if no process panel was active). This allows the panel's
+// cached content to be refreshed from the daemon before the overlay fully closes.
+func (o *Overlay) SetBeforeUnfreezeCallback(fn func(panelID string)) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.onBeforeUnfreeze = fn
 }
 
 // SetAltScreenChecker sets a callback that reports whether the child process
@@ -583,6 +594,16 @@ func formatStartupLog(entries []StartupLogEntry) string {
 }
 
 func (o *Overlay) hideMenu() {
+	// Capture the active process panel ID before resetting state.
+	// This lets the before-unfreeze callback refresh the panel's cached
+	// content from the daemon so it's up-to-date for the next open.
+	var activePanelID string
+	if o.panelMode && o.panelIndex < len(o.panelItems) {
+		if p := o.panelItems[o.panelIndex]; p.Type == "process" {
+			activePanelID = p.ID
+		}
+	}
+
 	o.menuStack = nil
 	o.inputBuffer = ""
 	o.panelMode = false
@@ -604,6 +625,16 @@ func (o *Overlay) hideMenu() {
 		// are gone before the gate unfreezes and SIGWINCH triggers the child
 		// to redraw. Use ED 2 + cursor home (preserves scroll region).
 		o.renderer.ClearVisible()
+	}
+
+	// Refresh the active panel's content from the daemon before unfreezing.
+	// This captures any output that arrived while the overlay was open,
+	// ensuring the panel history is complete for the next open.
+	if activePanelID != "" && o.onBeforeUnfreeze != nil {
+		cb := o.onBeforeUnfreeze
+		o.mu.Unlock()
+		cb(activePanelID)
+		o.mu.Lock()
 	}
 
 	// Unfreeze PTY output so it resumes flowing.
