@@ -454,14 +454,13 @@ func runWithConPTY(ctx context.Context, args []string, socketPath string, sessio
 		}
 
 		// On Windows there is no SIGWINCH, so after a menu closes (gate unfreezes)
-		// we re-enforce the scroll region and redraw the indicator to clean up
-		// any visual artifacts left by the overlay.
+		// we re-enforce the scroll region. The caller (hideMenu / closeProcessViewer)
+		// handles redrawing the indicator after Unfreeze returns, so we must NOT
+		// call termOverlay.Redraw() here — hideMenu holds overlay.mu when it calls
+		// gate.Unfreeze(), and Redraw() also locks overlay.mu, causing a deadlock.
 		outputGate.SetCallbacks(nil, func() {
 			if outputFilter != nil {
 				outputFilter.EnforceScrollRegion()
-			}
-			if termOverlay != nil {
-				termOverlay.Redraw()
 			}
 		})
 
