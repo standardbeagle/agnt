@@ -740,3 +740,229 @@ proxies {
 
 	verifyStoppedDataStructures(t, goodPid, goodPort)
 }
+
+// registerSessionForE2E replicates the logic of hubHandleSessionRegister
+// for direct daemon testing without IPC. It registers a session, runs
+// autostart if this is the first session for the project, and adds the
+// session as observer/owner of project scripts.
+func registerSessionForE2E(t *testing.T, env *e2eEnv, sessionCode string) *AutostartResult {
+	t.Helper()
+
+	session := &Session{
+		Code:        sessionCode,
+		OverlayPath: "",
+		ProjectPath: env.ProjectDir,
+		Command:     "test",
+		StartedAt:   time.Now(),
+		Status:      SessionStatusActive,
+		LastSeen:    time.Now(),
+	}
+	require.NoError(t, env.Daemon.SessionRegistry().Register(session))
+
+	// Check if another active session already owns scripts for this project.
+	var autostartResult *AutostartResult
+	existingSessions := env.Daemon.SessionRegistry().ListActive(env.ProjectDir, false)
+	hasExistingOwner := false
+	for _, existing := range existingSessions {
+		if existing.Code != sessionCode {
+			hasExistingOwner = true
+			break
+		}
+	}
+
+	if hasExistingOwner {
+		autostartResult = &AutostartResult{}
+		for _, entry := range env.Daemon.ScriptRegistry().List(env.ProjectDir) {
+			state := entry.State()
+			if state == script.StateRunning || state == script.StateStarting {
+				autostartResult.Scripts = append(autostartResult.Scripts, entry.Name)
+			}
+		}
+	} else {
+		autostartResult = env.Daemon.RunAutostart(context.Background(), env.ProjectDir)
+	}
+
+	// Add session as observer and claim ownership of unowned scripts
+	for _, entry := range env.Daemon.ScriptRegistry().List(env.ProjectDir) {
+		entry.AddSession(sessionCode)
+		if entry.Owner() == "" {
+			entry.SetOwner(sessionCode)
+		}
+	}
+
+	return autostartResult
+}
+
+// TestE2E_AutostartIdempotent_SecondSessionJoins verifies that a second
+// session for the same project joins without restarting processes, and that
+// processes are cleaned up only when the last session disconnects.
+func TestE2E_AutostartIdempotent_SecondSessionJoins(t *testing.T) {
+	env := setupDaemonForE2E(t)
+
+	port := freePort(t)
+	pidFile := filepath.Join(env.ProjectDir, "api.pid")
+	fixturePath := testdataPath(t, "fake-pnpm-watch.sh")
+
+	kdl := fmt.Sprintf(`scripts {
+    api {
+        run "bash %s %d %s"
+        autostart true
+        ports %d
+    }
+}
+`, fixturePath, port, pidFile, port)
+	writeAgntKDL(t, env.ProjectDir, kdl)
+
+	// Step 1: Register session 1 -> triggers RunAutostart
+	result1 := registerSessionForE2E(t, env, "session-1")
+	require.Empty(t, result1.Errors, "session-1 autostart errors: %v", result1.Errors)
+	require.Contains(t, result1.Scripts, "api", "session-1 should start api script")
+
+	// Step 2: Verify process is running and record PID
+	processID := script.MakeProcessID(env.ProjectDir, "api")
+	pid1 := verifyRunningDataStructures(t, env, "api", processID, port, pidFile)
+
+	pm := env.Daemon.ProcessManager()
+	proc1, err := pm.Get(processID)
+	require.NoError(t, err)
+	pmPID1 := proc1.PID()
+
+	// Step 3: Register session 2 for same project -> should join, not restart
+	result2 := registerSessionForE2E(t, env, "session-2")
+	require.Empty(t, result2.Errors, "session-2 join errors: %v", result2.Errors)
+	assert.Contains(t, result2.Scripts, "api", "session-2 should see api as already running")
+
+	// Step 4: Verify PID is unchanged (process was NOT restarted)
+	proc2, err := pm.Get(processID)
+	require.NoError(t, err)
+	pmPID2 := proc2.PID()
+	assert.Equal(t, pmPID1, pmPID2, "ProcessManager PID must not change on second session join")
+	assertProcessAlive(t, pid1)
+
+	// Step 5: Verify session count and ownership
+	sr := env.Daemon.ScriptRegistry()
+	entry, ok := sr.Get("api", env.ProjectDir)
+	require.True(t, ok)
+	assert.Equal(t, 2, entry.ObserverCount(), "both sessions should be observers")
+	assert.Equal(t, "session-1", entry.Owner(), "session-1 should remain owner")
+	assert.Equal(t, script.StateRunning, entry.State())
+
+	// Step 6: Disconnect session 2 -> process should remain alive (session 1 still owns)
+	env.Daemon.CleanupSessionResources("session-2")
+
+	assertProcessAlive(t, pid1)
+	assert.Equal(t, script.StateRunning, entry.State(), "script should still be Running after session-2 leaves")
+	assert.Equal(t, "session-1", entry.Owner(), "session-1 should still own after session-2 leaves")
+	assert.Equal(t, 1, entry.ObserverCount(), "only session-1 should remain as observer")
+
+	// Process still registered in ProcessManager (ActiveCount tracks registered, not running)
+	_, err = pm.Get(processID)
+	require.NoError(t, err, "process should still be in ProcessManager")
+
+	// Step 7: Disconnect session 1 (last owner) -> process should stop.
+	// Unregister from auto-restarter first to prevent restart race
+	// (CleanupSessionResources stops the process, but auto-restarter may
+	// see the exit and restart before Unregister is called internally).
+	if ar := env.Daemon.AutoRestarter(); ar != nil {
+		ar.Unregister(processID)
+	}
+	env.Daemon.CleanupSessionResources("session-1")
+
+	verifyStoppedDataStructures(t, pid1, port)
+
+	// Verify the process is no longer running in ProcessManager
+	proc, err := pm.Get(processID)
+	require.NoError(t, err, "process entry should still exist in ProcessManager")
+	procState := proc.State()
+	assert.True(t, procState == process.StateStopped || procState == process.StateFailed,
+		"ProcessManager process should be Stopped or Failed, got %s", procState)
+}
+
+// TestE2E_AutostartIdempotent_RestartsAfterAllDisconnect verifies that after
+// all sessions disconnect and processes stop, a new session triggers a fresh
+// autostart with a new PID.
+func TestE2E_AutostartIdempotent_RestartsAfterAllDisconnect(t *testing.T) {
+	env := setupDaemonForE2E(t)
+
+	port := freePort(t)
+	pidFile := filepath.Join(env.ProjectDir, "api.pid")
+	fixturePath := testdataPath(t, "fake-pnpm-watch.sh")
+
+	kdl := fmt.Sprintf(`scripts {
+    api {
+        run "bash %s %d %s"
+        autostart true
+        ports %d
+    }
+}
+`, fixturePath, port, pidFile, port)
+	writeAgntKDL(t, env.ProjectDir, kdl)
+
+	// Step 1: Register session 1 and verify process starts
+	result1 := registerSessionForE2E(t, env, "session-a")
+	require.Empty(t, result1.Errors, "session-a autostart errors: %v", result1.Errors)
+	require.Contains(t, result1.Scripts, "api")
+
+	processID := script.MakeProcessID(env.ProjectDir, "api")
+	pid1 := verifyRunningDataStructures(t, env, "api", processID, port, pidFile)
+
+	pm := env.Daemon.ProcessManager()
+	proc1, err := pm.Get(processID)
+	require.NoError(t, err)
+	pmPID1 := proc1.PID()
+
+	// Step 2: Disconnect session-a (last owner) -> process stops.
+	// Unregister from auto-restarter first to prevent restart race.
+	if ar := env.Daemon.AutoRestarter(); ar != nil {
+		ar.Unregister(processID)
+	}
+	env.Daemon.CleanupSessionResources("session-a")
+	verifyStoppedDataStructures(t, pid1, port)
+
+	// Verify process is stopped/failed in ProcessManager
+	proc1After, err := pm.Get(processID)
+	require.NoError(t, err)
+	procState := proc1After.State()
+	assert.True(t, procState == process.StateStopped || procState == process.StateFailed,
+		"ProcessManager process should be Stopped or Failed, got %s", procState)
+
+	// Verify ScriptRegistry shows Stopped or Failed (killed processes may exit non-zero)
+	sr := env.Daemon.ScriptRegistry()
+	entry, ok := sr.Get("api", env.ProjectDir)
+	require.True(t, ok)
+	state := entry.State()
+	assert.True(t, state == script.StateStopped || state == script.StateFailed,
+		"script should be Stopped or Failed after last session leaves, got %s", state)
+
+	// Remove stale PID file so the restarted process can write a fresh one
+	os.Remove(pidFile)
+
+	// Step 3: Register new session -> autostart fires again with new process
+	result2 := registerSessionForE2E(t, env, "session-b")
+	require.Empty(t, result2.Errors, "session-b autostart errors: %v", result2.Errors)
+	require.Contains(t, result2.Scripts, "api", "session-b should start api")
+
+	// Step 4: Verify new process with new PID
+	pid2 := readPIDFile(t, pidFile, 10*time.Second)
+	require.Greater(t, pid2, 0, "new PID must be positive")
+	require.NoError(t, waitForPort(port, 10*time.Second), "port %d not bound after restart", port)
+
+	proc2, err := pm.Get(processID)
+	require.NoError(t, err)
+	pmPID2 := proc2.PID()
+	assert.NotEqual(t, pmPID1, pmPID2, "restarted process must have a NEW ProcessManager PID")
+	assertProcessAlive(t, pid2)
+
+	// Verify ScriptRegistry shows Running again
+	entry2, ok := sr.Get("api", env.ProjectDir)
+	require.True(t, ok)
+	assert.Equal(t, script.StateRunning, entry2.State(), "script should be Running after restart")
+	assert.Equal(t, "session-b", entry2.Owner(), "session-b should own the restarted script")
+
+	// Cleanup: stop daemon to kill process
+	stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	env.Daemon.Stop(stopCtx)
+
+	verifyStoppedDataStructures(t, pid2, port)
+}
