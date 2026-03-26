@@ -966,3 +966,189 @@ func TestE2E_AutostartIdempotent_RestartsAfterAllDisconnect(t *testing.T) {
 
 	verifyStoppedDataStructures(t, pid2, port)
 }
+
+// TestE2E_BadProcess_SIGTERMTrap verifies that a process trapping and ignoring
+// SIGTERM is still killed via SIGKILL escalation after the graceful timeout.
+// Tests the full signal escalation: SIGTERM (ignored) -> wait -> SIGKILL (kills).
+func TestE2E_BadProcess_SIGTERMTrap(t *testing.T) {
+	env := setupDaemonForE2E(t)
+	port, pidFilePath, processID := runSingleScriptAutostart(t, env, "sigterm-trap", "bad-sigterm-trap.sh")
+
+	pid := verifyRunningDataStructures(t, env, "sigterm-trap", processID, port, pidFilePath)
+
+	pm := env.Daemon.ProcessManager()
+	proc, err := pm.Get(processID)
+	require.NoError(t, err)
+	pmPID := proc.PID()
+	t.Cleanup(func() { killTree(pmPID) })
+
+	// Verify stdout contains the script banner
+	stdout, _ := proc.Stdout()
+	assert.Contains(t, string(stdout), "bad-sigterm-trap listening on")
+
+	// Phase 1: Send SIGTERM to the process group — the bash script traps and
+	// ignores it. (socat, which doesn't trap SIGTERM, may die — that's OK;
+	// we're testing the bash process survival.)
+	require.NoError(t, signalGroup(pmPID, syscall.SIGTERM))
+	time.Sleep(1 * time.Second)
+
+	// The bash process (PID file) must still be alive (SIGTERM trapped)
+	assertProcessAlive(t, pid)
+
+	// Phase 2: Send SIGKILL to the process group (escalation after graceful timeout)
+	killStart := time.Now()
+	require.NoError(t, signalGroup(pmPID, syscall.SIGKILL))
+	// Also kill all descendants in case any escaped the process group
+	for _, dpid := range getDescendants(pmPID) {
+		_ = syscall.Kill(dpid, syscall.SIGKILL)
+	}
+
+	// Process must be dead after SIGKILL
+	assertProcessDead(t, pid, 5*time.Second)
+	assertAllDescendantsDead(t, pmPID, 5*time.Second)
+	killDuration := time.Since(killStart)
+
+	// SIGKILL should take effect nearly instantly (< 2s)
+	assert.Less(t, killDuration.Seconds(), 2.0,
+		"SIGKILL should take effect quickly, took %v", killDuration)
+
+	// Port must be free after process dies
+	err = waitForPort(port, 500*time.Millisecond)
+	assert.Error(t, err, "port %d should be free after kill", port)
+
+	// RingBuffer must have captured output before the process was killed
+	finalStdout, _ := proc.Stdout()
+	assert.NotEmpty(t, finalStdout, "ring buffer should retain pre-kill output")
+}
+
+// TestE2E_BadProcess_SIGTERMForwardHang verifies that when a parent forwards
+// SIGTERM to a child that also ignores it, SIGKILL escalation kills both
+// the parent and child process.
+func TestE2E_BadProcess_SIGTERMForwardHang(t *testing.T) {
+	env := setupDaemonForE2E(t)
+	port, pidFilePath, processID := runSingleScriptAutostart(t, env, "sigterm-fwd", "bad-sigterm-forward-hang.sh")
+
+	pid := verifyRunningDataStructures(t, env, "sigterm-fwd", processID, port, pidFilePath)
+
+	pm := env.Daemon.ProcessManager()
+	proc, err := pm.Get(processID)
+	require.NoError(t, err)
+	pmPID := proc.PID()
+	t.Cleanup(func() { killTree(pmPID) })
+
+	// Wait for child process to spawn (the script forks a child)
+	var descendants []int
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		descendants = getDescendants(pmPID)
+		if len(descendants) >= 2 {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	require.GreaterOrEqual(t, len(descendants), 2,
+		"expected at least 2 descendants (inner bash + socat), got %d", len(descendants))
+
+	// Phase 1: Send SIGTERM to the process group — both parent and child ignore it.
+	require.NoError(t, signalGroup(pmPID, syscall.SIGTERM))
+	time.Sleep(1 * time.Second)
+
+	// Both parent and child should still be alive
+	assertProcessAlive(t, pid)
+	for _, dpid := range descendants {
+		if isProcessAlive(dpid) {
+			// At least some descendants should still be alive
+			break
+		}
+	}
+
+	// Phase 2: Send SIGKILL to process group + all descendants (escalation)
+	require.NoError(t, signalGroup(pmPID, syscall.SIGKILL))
+	for _, dpid := range descendants {
+		_ = syscall.Kill(dpid, syscall.SIGKILL)
+	}
+
+	// Both parent (PID file) and all descendants must be dead
+	assertProcessDead(t, pid, 5*time.Second)
+	for _, dpid := range descendants {
+		assertProcessDead(t, dpid, 5*time.Second)
+	}
+	assertAllDescendantsDead(t, pmPID, 5*time.Second)
+
+	// Port must be free
+	err = waitForPort(port, 500*time.Millisecond)
+	assert.Error(t, err, "port %d should be free after kill", port)
+}
+
+// TestE2E_BadProcess_SlowChild verifies that when a child process takes too
+// long (30s) to exit on SIGTERM, the graceful timeout (5s) expires and SIGKILL
+// escalation kills both parent and child within ~5s total.
+func TestE2E_BadProcess_SlowChild(t *testing.T) {
+	env := setupDaemonForE2E(t)
+	port, pidFilePath, processID := runSingleScriptAutostart(t, env, "slow-child", "bad-sigterm-slow-child.sh")
+
+	pid := verifyRunningDataStructures(t, env, "slow-child", processID, port, pidFilePath)
+
+	pm := env.Daemon.ProcessManager()
+	proc, err := pm.Get(processID)
+	require.NoError(t, err)
+	pmPID := proc.PID()
+	t.Cleanup(func() { killTree(pmPID) })
+
+	// Wait for child process to spawn
+	var descendants []int
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		descendants = getDescendants(pmPID)
+		if len(descendants) >= 2 {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	require.GreaterOrEqual(t, len(descendants), 2,
+		"expected at least 2 descendants (inner bash + socat), got %d", len(descendants))
+
+	// Phase 1: Send SIGTERM to the process group — the child starts a 30s
+	// slow shutdown (sleep 30 in SIGTERM trap). Parent forwards to child.
+	require.NoError(t, signalGroup(pmPID, syscall.SIGTERM))
+
+	// Wait briefly for the SIGTERM to be received and slow shutdown to begin
+	time.Sleep(1 * time.Second)
+
+	// The slow child should still be alive (30s shutdown in progress)
+	aliveCount := 0
+	for _, dpid := range descendants {
+		if isProcessAlive(dpid) {
+			aliveCount++
+		}
+	}
+	assert.Greater(t, aliveCount, 0, "some descendants should still be alive during slow shutdown")
+
+	// Phase 2: Simulate graceful timeout expiry by sending SIGKILL (5s mark).
+	// In production, the ProcessManager sends SIGKILL after GracefulTimeout.
+	escalationStart := time.Now()
+	require.NoError(t, signalGroup(pmPID, syscall.SIGKILL))
+	for _, dpid := range descendants {
+		_ = syscall.Kill(dpid, syscall.SIGKILL)
+	}
+
+	// Both parent and slow child must be dead
+	assertProcessDead(t, pid, 5*time.Second)
+	for _, dpid := range descendants {
+		assertProcessDead(t, dpid, 5*time.Second)
+	}
+	assertAllDescendantsDead(t, pmPID, 5*time.Second)
+	escalationDuration := time.Since(escalationStart)
+
+	// SIGKILL must kill everything quickly, NOT wait for the 30s slow shutdown
+	assert.Less(t, escalationDuration.Seconds(), 2.0,
+		"SIGKILL escalation should complete quickly, not wait 30s, took %v", escalationDuration)
+
+	// Port must be free
+	err = waitForPort(port, 500*time.Millisecond)
+	assert.Error(t, err, "port %d should be free after kill", port)
+
+	// RingBuffer should have output from before the kill
+	finalStdout, _ := proc.Stdout()
+	assert.NotEmpty(t, finalStdout, "ring buffer should retain pre-kill output")
+}
