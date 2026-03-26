@@ -2099,3 +2099,144 @@ func TestE2E_OrphanCleanup_DotnetProcessTree(t *testing.T) {
 	err = waitForPort(port, 500*time.Millisecond)
 	assert.Error(t, err, "port %d should be free after orphan cleanup", port)
 }
+
+// TestE2E_GracefulRestart_PIDTrackerPreserved verifies that the PID tracker
+// file is preserved after a graceful daemon Stop(). Previously, Stop() would
+// call pidTracker.Clear(), which erased the tracking file. If any process
+// survived shutdown (e.g., due to tight timeout), the next daemon startup
+// had no record of it. This test verifies the tracker persists across restarts
+// and the recovery daemon can still clean up survivors.
+func TestE2E_GracefulRestart_PIDTrackerPreserved(t *testing.T) {
+	env, stateHome := setupDaemonForCrashTest(t)
+	port := freePort(t)
+	pidFilePath := filepath.Join(env.ProjectDir, "restart-preserve.pid")
+
+	// Use a SIGTERM-trapping script that ignores SIGTERM entirely.
+	// With aggressive shutdown (tight timeout <3s), SIGKILL is used directly,
+	// so the process should die. The key assertion is that the PID tracker
+	// file persists after Stop(), enabling recovery if processes did survive.
+	scriptContent := fmt.Sprintf(`PORT=%d
+PIDFILE="%s"
+echo $$ > "$PIDFILE"
+socat TCP-LISTEN:$PORT,fork,reuseaddr SYSTEM:'echo sigterm-trap' &
+CHILD=$!
+echo "sigterm-trap parent=$$ on http://localhost:$PORT"
+trap '' SIGTERM SIGINT
+wait $CHILD
+`, port, pidFilePath)
+	scriptPath := writeTempScript(t, env.ProjectDir, "test-restart-preserve.sh", scriptContent)
+
+	kdl := fmt.Sprintf(`scripts {
+    sigterm-trap {
+        run "bash %s"
+        autostart true
+        ports %d
+    }
+}
+`, scriptPath, port)
+	writeAgntKDL(t, env.ProjectDir, kdl)
+
+	ctx := context.Background()
+	result := env.Daemon.RunAutostart(ctx, env.ProjectDir)
+	require.Empty(t, result.Errors, "RunAutostart errors: %v", result.Errors)
+
+	processID := script.MakeProcessID(env.ProjectDir, "sigterm-trap")
+
+	parentPID := readPIDFile(t, pidFilePath, 10*time.Second)
+	require.Greater(t, parentPID, 0)
+	require.NoError(t, waitForPort(port, 10*time.Second))
+
+	pm := env.Daemon.ProcessManager()
+	proc, err := pm.Get(processID)
+	require.NoError(t, err)
+	pmPID := proc.PID()
+	t.Cleanup(func() { killTree(pmPID) })
+
+	tracked := env.Daemon.pidTracker.ListTracked()
+	require.NotEmpty(t, tracked, "PID tracker should have recorded the process")
+
+	// Graceful stop
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer stopCancel()
+	env.Daemon.Stop(stopCtx)
+	time.Sleep(500 * time.Millisecond)
+
+	// Key assertion: PID tracker file must still exist after Stop()
+	trackerPath := env.Daemon.pidTracker.Path()
+	_, statErr := os.Stat(trackerPath)
+	require.NoError(t, statErr, "PID tracker file must persist after graceful stop")
+
+	// Recovery daemon can safely handle both scenarios (process dead or alive)
+	_ = createRecoveryDaemon(t, stateHome, env.ProjectDir, env.Daemon.pidTracker)
+
+	// Process must be dead after the full cycle
+	assertProcessDead(t, parentPID, 10*time.Second)
+	t.Logf("process %d dead after daemon restart cycle", parentPID)
+
+	// Port must be free
+	err = waitForPort(port, 500*time.Millisecond)
+	assert.Error(t, err, "port %d should be free", port)
+}
+
+// TestE2E_GracefulRestart_PortCleanupOnAutostart verifies that when a rogue
+// process holds a configured port, RunAutostart's preflightPortCleanup kills
+// it before starting the new process. This covers the case where a child
+// escaped PID tracking entirely but still holds a configured port.
+func TestE2E_GracefulRestart_PortCleanupOnAutostart(t *testing.T) {
+	env, stateHome := setupDaemonForCrashTest(t)
+	port := freePort(t)
+
+	// Start a rogue process directly (not managed by daemon) that holds a
+	// port configured in .agnt.kdl.
+	rogueCmd := exec.Command("socat", "TCP-LISTEN:"+strconv.Itoa(port)+",fork,reuseaddr", "SYSTEM:echo rogue")
+	rogueCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	require.NoError(t, rogueCmd.Start())
+	roguePID := rogueCmd.Process.Pid
+	t.Cleanup(func() {
+		if p, findErr := os.FindProcess(roguePID); findErr == nil {
+			_ = p.Signal(syscall.SIGKILL)
+		}
+	})
+	require.NoError(t, waitForPort(port, 5*time.Second), "rogue process should bind port %d", port)
+	t.Logf("rogue process PID=%d on port %d", roguePID, port)
+
+	// Write .agnt.kdl that declares this port
+	pidFilePath := filepath.Join(env.ProjectDir, "port-cleanup.pid")
+	pnpmPath := testdataPath(t, "fake-pnpm-watch.sh")
+	kdl := fmt.Sprintf(`scripts {
+    dev {
+        run "bash %s %d %s"
+        autostart true
+        ports %d
+    }
+}
+`, pnpmPath, port, pidFilePath, port)
+	writeAgntKDL(t, env.ProjectDir, kdl)
+
+	// Stop the original daemon
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer stopCancel()
+	env.Daemon.Stop(stopCtx)
+
+	// Rogue process should still be alive after daemon stop
+	assertProcessAlive(t, roguePID)
+
+	// Start recovery daemon
+	recoveryDaemon := createRecoveryDaemon(t, stateHome, env.ProjectDir, env.Daemon.pidTracker)
+
+	// RunAutostart triggers preflightPortCleanup which kills the rogue
+	// and starts a new process on the same port.
+	ctx := context.Background()
+	result := recoveryDaemon.RunAutostart(ctx, env.ProjectDir)
+	require.Empty(t, result.Errors, "RunAutostart should succeed (preflight kills rogue): %v", result.Errors)
+
+	// Rogue must be dead
+	assertProcessDead(t, roguePID, 10*time.Second)
+	t.Logf("rogue process %d killed by preflight port cleanup", roguePID)
+
+	// New process should own the port
+	newPID := readPIDFile(t, pidFilePath, 10*time.Second)
+	require.Greater(t, newPID, 0)
+	assert.NotEqual(t, roguePID, newPID, "new process PID must differ from rogue")
+	require.NoError(t, waitForPort(port, 10*time.Second), "new process should bind port %d", port)
+}

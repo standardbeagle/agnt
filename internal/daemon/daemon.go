@@ -346,7 +346,9 @@ func (d *Daemon) Start() error {
 	}
 	d.started = time.Now()
 
-	// Clean up orphaned processes from previous crash
+	// Clean up orphaned processes from previous crash.
+	// Note: port-based cleanup happens lazily in preflightPortCleanup when
+	// scripts are started via StartScript/RunAutostart, not at daemon startup.
 	d.cleanupOrphans()
 
 	// Restore proxies from persisted state
@@ -457,7 +459,7 @@ func (d *Daemon) Stop(ctx context.Context) error {
 	// Signal all goroutines to stop
 	d.cancel()
 
-	// Stop Hub (handles listener, clients, connections)
+	// Stop Hub (handles listener, clients, connections, and ProcessManager)
 	if err := d.hub.Stop(ctx); err != nil {
 		debug.Log("daemon", "error stopping hub: %v", err)
 	}
@@ -498,12 +500,13 @@ func (d *Daemon) Stop(ctx context.Context) error {
 		errs = append(errs, fmt.Errorf("proxy manager: %w", err))
 	}
 
-	// Clear PID tracking (clean shutdown)
-	if d.pidTracker != nil {
-		if err := d.pidTracker.Clear(); err != nil {
-			debug.Log("daemon", "failed to clear PID tracking: %v", err)
-		}
-	}
+	// Preserve PID tracking file across daemon restarts. Do NOT clear it
+	// here -- if any processes survived hub shutdown (e.g., grandchildren
+	// that escaped process group signals), the next daemon startup will
+	// find and kill them via cleanupOrphans(). Clearing the tracker here
+	// would lose track of survivors, leaving them as permanent orphans.
+	// The cleanupOrphans() path handles stale entries gracefully by
+	// checking isProcessAlive before killing.
 
 	// Wait for goroutines with timeout
 	done := make(chan struct{})
