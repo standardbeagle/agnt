@@ -122,6 +122,22 @@
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
+    },
+    {
+      "task_id": "lbsCmHSvZBIZ",
+      "iteration": 8,
+      "status": "completed",
+      "started_at": "2026-03-26T01:55:00Z",
+      "completed_at": "2026-03-26T02:02:00Z",
+      "phase_completed": "phase-9",
+      "failed_phase": null,
+      "files_changed": 1,
+      "tests_added": 2,
+      "plan_adjustments": 0,
+      "completion_summary": "Added 2 e2e tests for well-behaved process orphan detection after daemon crash: OrphanCleanup_DaemonCrash verifies 2 scripts (pnpm-watch + vitest) survive crash, recovery daemon kills both via orphan cleanup, both ports freed, and re-autostart succeeds without EADDRINUSE; OrphanCleanup_DotnetProcessTree verifies dotnet-watch setsid grandchild is killed via stored descendants after crash",
+      "failure_reason": null,
+      "fix_task_created": false,
+      "fix_task_id": null
     }
   ]
 }

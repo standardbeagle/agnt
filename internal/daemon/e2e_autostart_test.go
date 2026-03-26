@@ -1905,3 +1905,197 @@ wait
 	err = waitForPort(port, 500*time.Millisecond)
 	assert.Error(t, err, "port %d should be free after orphan cleanup", port)
 }
+
+// TestE2E_OrphanCleanup_DaemonCrash verifies that after a daemon crash, two
+// well-behaved autostart processes (fake-pnpm-watch and fake-vitest) survive
+// the crash as orphans, are killed by the recovery daemon's orphan cleanup,
+// and a subsequent autostart on the recovery daemon succeeds without EADDRINUSE.
+func TestE2E_OrphanCleanup_DaemonCrash(t *testing.T) {
+	env, stateHome := setupDaemonForCrashTest(t)
+
+	devPort := freePort(t)
+	testPort := freePort(t)
+	devPidFile := filepath.Join(env.ProjectDir, "dev.pid")
+	testPidFile := filepath.Join(env.ProjectDir, "test.pid")
+	pnpmPath := testdataPath(t, "fake-pnpm-watch.sh")
+	vitestPath := testdataPath(t, "fake-vitest.sh")
+
+	kdl := fmt.Sprintf(`scripts {
+    dev {
+        run "bash %s %d %s"
+        autostart true
+        ports %d
+    }
+    test {
+        run "bash %s %d %s"
+        autostart true
+        ports %d
+    }
+}
+`, pnpmPath, devPort, devPidFile, devPort,
+		vitestPath, testPort, testPidFile, testPort)
+	writeAgntKDL(t, env.ProjectDir, kdl)
+
+	ctx := context.Background()
+	result := env.Daemon.RunAutostart(ctx, env.ProjectDir)
+	require.Empty(t, result.Errors, "RunAutostart errors: %v", result.Errors)
+	require.Len(t, result.Scripts, 2, "expected 2 scripts started")
+
+	devProcessID := script.MakeProcessID(env.ProjectDir, "dev")
+	testProcessID := script.MakeProcessID(env.ProjectDir, "test")
+
+	devPid := verifyRunningDataStructures(t, env, "dev", devProcessID, devPort, devPidFile)
+	testPid := verifyRunningDataStructures(t, env, "test", testProcessID, testPort, testPidFile)
+
+	pm := env.Daemon.ProcessManager()
+	devProc, err := pm.Get(devProcessID)
+	require.NoError(t, err)
+	devPmPID := devProc.PID()
+	testProc, err := pm.Get(testProcessID)
+	require.NoError(t, err)
+	testPmPID := testProc.PID()
+	t.Cleanup(func() {
+		killTree(devPmPID)
+		killTree(testPmPID)
+	})
+
+	// Verify PID tracker recorded both processes
+	tracked := env.Daemon.pidTracker.ListTracked()
+	require.GreaterOrEqual(t, len(tracked), 2, "PID tracker should have at least 2 entries")
+	t.Logf("PID tracker has %d tracked process(es)", len(tracked))
+
+	// Simulate daemon crash: cancel context without calling Stop()
+	env.Daemon.cancel()
+	time.Sleep(500 * time.Millisecond)
+
+	// Both orphaned processes should still be alive after crash
+	assertProcessAlive(t, devPid)
+	assertProcessAlive(t, testPid)
+	t.Logf("both processes survived daemon crash: dev=%d test=%d", devPid, testPid)
+
+	// Both ports should still be bound
+	require.NoError(t, waitForPort(devPort, 2*time.Second), "dev port %d should still be bound", devPort)
+	require.NoError(t, waitForPort(testPort, 2*time.Second), "test port %d should still be bound", testPort)
+
+	// Start recovery daemon - orphan cleanup kills both processes
+	recoveryDaemon := createRecoveryDaemon(t, stateHome, env.ProjectDir, env.Daemon.pidTracker)
+
+	// Both processes must be killed by orphan cleanup
+	assertProcessDead(t, devPid, 10*time.Second)
+	assertProcessDead(t, testPid, 10*time.Second)
+	t.Logf("orphan cleanup killed both processes")
+
+	// Both ports must be free
+	err = waitForPort(devPort, 500*time.Millisecond)
+	assert.Error(t, err, "dev port %d should be free after orphan cleanup", devPort)
+	err = waitForPort(testPort, 500*time.Millisecond)
+	assert.Error(t, err, "test port %d should be free after orphan cleanup", testPort)
+
+	// Recovery daemon's ProcessManager must be clean (no stale entries)
+	recoveryPM := recoveryDaemon.ProcessManager()
+	assert.Empty(t, recoveryPM.List(), "recovery daemon ProcessManager should have no stale entries")
+
+	// Remove stale PID files so new processes can write fresh ones
+	os.Remove(devPidFile)
+	os.Remove(testPidFile)
+
+	// Re-autostart on recovery daemon must succeed without EADDRINUSE
+	result2 := recoveryDaemon.RunAutostart(ctx, env.ProjectDir)
+	require.Empty(t, result2.Errors, "re-autostart errors (would indicate EADDRINUSE): %v", result2.Errors)
+	require.Len(t, result2.Scripts, 2, "re-autostart should start 2 scripts")
+
+	// Verify new processes are running with new PIDs
+	newDevPid := readPIDFile(t, devPidFile, 10*time.Second)
+	newTestPid := readPIDFile(t, testPidFile, 10*time.Second)
+	require.Greater(t, newDevPid, 0)
+	require.Greater(t, newTestPid, 0)
+	assert.NotEqual(t, devPid, newDevPid, "new dev PID must differ from orphaned PID")
+	assert.NotEqual(t, testPid, newTestPid, "new test PID must differ from orphaned PID")
+
+	// Verify new processes bind the ports successfully
+	require.NoError(t, waitForPort(devPort, 10*time.Second), "new dev process should bind port %d", devPort)
+	require.NoError(t, waitForPort(testPort, 10*time.Second), "new test process should bind port %d", testPort)
+
+	assertProcessAlive(t, newDevPid)
+	assertProcessAlive(t, newTestPid)
+}
+
+// TestE2E_OrphanCleanup_DotnetProcessTree verifies that after a daemon crash,
+// a dotnet-watch process (which spawns a setsid grandchild) is fully cleaned
+// up by the recovery daemon's orphan cleanup using stored descendants.
+func TestE2E_OrphanCleanup_DotnetProcessTree(t *testing.T) {
+	env, stateHome := setupDaemonForCrashTest(t)
+	port, pidFilePath, processID := runSingleScriptAutostart(t, env, "serve", "fake-dotnet-watch.sh")
+
+	parentPid := verifyRunningDataStructures(t, env, "serve", processID, port, pidFilePath)
+
+	pm := env.Daemon.ProcessManager()
+	proc, err := pm.Get(processID)
+	require.NoError(t, err)
+	pmPID := proc.PID()
+
+	// Find the setsid grandchild by looking at descendants and checking for
+	// a different process group (setsid creates a new session/group).
+	var grandchildPID int
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		descendants := getDescendants(pmPID)
+		for _, dpid := range descendants {
+			pgid := getProcessPGID(dpid)
+			if pgid > 0 && pgid != pmPID && pgid != getProcessPGID(pmPID) {
+				grandchildPID = dpid
+				break
+			}
+		}
+		if grandchildPID > 0 {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	// Fall back to port user if PGID check didn't find a clear setsid child
+	if grandchildPID == 0 {
+		grandchildPID = findPortUser(port)
+	}
+	require.Greater(t, grandchildPID, 0, "must find setsid grandchild")
+	assertProcessAlive(t, grandchildPID)
+	t.Logf("parent PID=%d, grandchild PID=%d, managed PID=%d", parentPid, grandchildPID, pmPID)
+
+	t.Cleanup(func() {
+		killTree(pmPID)
+		if p, findErr := os.FindProcess(grandchildPID); findErr == nil {
+			_ = p.Signal(syscall.SIGKILL)
+		}
+	})
+
+	// Wait for the descendant scanner (5s interval) to record the grandchild
+	time.Sleep(6 * time.Second)
+
+	// Verify descendants are stored in the PID tracker
+	tracked := env.Daemon.pidTracker.ListTracked()
+	var storedDescendants []int
+	for _, tp := range tracked {
+		storedDescendants = append(storedDescendants, tp.DescendantPIDs...)
+	}
+	t.Logf("stored descendants: %v", storedDescendants)
+
+	// Simulate daemon crash
+	env.Daemon.cancel()
+	time.Sleep(500 * time.Millisecond)
+
+	// Both parent and setsid grandchild should survive the crash
+	assertProcessAlive(t, parentPid)
+	assertProcessAlive(t, grandchildPID)
+	t.Logf("both parent and grandchild survived daemon crash")
+
+	// Start recovery daemon - orphan cleanup kills parent + stored descendants
+	_ = createRecoveryDaemon(t, stateHome, env.ProjectDir, env.Daemon.pidTracker)
+
+	// Both parent and setsid grandchild must be killed
+	assertProcessDead(t, parentPid, 10*time.Second)
+	assertProcessDead(t, grandchildPID, 10*time.Second)
+	t.Logf("orphan cleanup killed parent and setsid grandchild")
+
+	// Port must be free
+	err = waitForPort(port, 500*time.Millisecond)
+	assert.Error(t, err, "port %d should be free after orphan cleanup", port)
+}
