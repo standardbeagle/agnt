@@ -442,3 +442,103 @@ func TestProcessStateIconUnknown(t *testing.T) {
 	assert.Equal(t, "\u25cb", icon)
 	assert.Equal(t, FgBrightBlack, color)
 }
+
+func TestTransitionSpinnerStartsOnHideMenu(t *testing.T) {
+	var buf bytes.Buffer
+	cfg := DefaultConfig()
+	cfg.ShowIndicator = true
+	o := New(nil, 80, 24, cfg)
+	gate := NewOutputGate(&buf)
+	o.SetGate(gate)
+
+	// Open the overlay to enter menu state
+	o.Show()
+	assert.Equal(t, StateMenu, o.State())
+
+	// Close the overlay (triggers transition spinner)
+	o.Hide()
+	assert.Equal(t, StateIndicator, o.State())
+
+	// Spinner should be running
+	o.mu.Lock()
+	assert.NotNil(t, o.transitionStop, "spinner should be running after hideMenu")
+	o.mu.Unlock()
+
+	// Stop it to clean up
+	o.stopTransitionSpinner()
+}
+
+func TestTransitionSpinnerStopsOnUpdateStatus(t *testing.T) {
+	var buf bytes.Buffer
+	cfg := DefaultConfig()
+	cfg.ShowIndicator = true
+	o := New(nil, 80, 24, cfg)
+	gate := NewOutputGate(&buf)
+	o.SetGate(gate)
+
+	// Open and close to start the spinner
+	o.Show()
+	o.Hide()
+
+	o.mu.Lock()
+	assert.NotNil(t, o.transitionStop, "spinner should be running")
+	o.mu.Unlock()
+
+	// UpdateStatus should stop the spinner
+	o.UpdateStatus(Status{DaemonConnected: ConnectionConnected})
+
+	o.mu.Lock()
+	assert.Nil(t, o.transitionStop, "spinner should be stopped after UpdateStatus")
+	o.mu.Unlock()
+}
+
+func TestTransitionSpinnerStopsOnShowMenu(t *testing.T) {
+	var buf bytes.Buffer
+	cfg := DefaultConfig()
+	cfg.ShowIndicator = true
+	o := New(nil, 80, 24, cfg)
+	gate := NewOutputGate(&buf)
+	o.SetGate(gate)
+
+	// Start spinner
+	o.Show()
+	o.Hide()
+
+	o.mu.Lock()
+	assert.NotNil(t, o.transitionStop, "spinner should be running")
+	o.mu.Unlock()
+
+	// Re-opening should stop the spinner
+	o.Show()
+
+	o.mu.Lock()
+	assert.Nil(t, o.transitionStop, "spinner should be stopped after Show")
+	o.mu.Unlock()
+
+	o.Hide()
+}
+
+func TestTransitionSpinnerNotStartedWhenBarHidden(t *testing.T) {
+	var buf bytes.Buffer
+	cfg := DefaultConfig()
+	cfg.ShowIndicator = false
+	o := New(nil, 80, 24, cfg)
+	gate := NewOutputGate(&buf)
+	o.SetGate(gate)
+
+	o.Show()
+	o.Hide()
+
+	o.mu.Lock()
+	assert.Nil(t, o.transitionStop, "spinner should not start when bar is hidden")
+	o.mu.Unlock()
+}
+
+func TestTransitionSpinnerDoubleStopIsSafe(t *testing.T) {
+	cfg := DefaultConfig()
+	o := New(nil, 80, 24, cfg)
+
+	// Stopping when nothing is running should not panic
+	o.stopTransitionSpinner()
+	o.stopTransitionSpinner()
+}
