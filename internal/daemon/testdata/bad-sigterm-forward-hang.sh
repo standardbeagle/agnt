@@ -19,7 +19,9 @@ CHILD_PID=$!
 
 echo "bad-sigterm-forward-hang parent=$$ child=$CHILD_PID on http://localhost:${PORT}"
 
-# Parent forwards SIGTERM to child (which ignores it), then keeps waiting
+# Parent forwards SIGTERM to child (which ignores it), then keeps waiting.
+# Use "sleep 60 || true" to prevent set -e from exiting when sleep is
+# interrupted by a signal (sleep returns 128+signum on signal delivery).
 trap "kill $CHILD_PID 2>/dev/null || true" SIGTERM
 
-while true; do sleep 60; done
+while true; do sleep 60 || true; done
