@@ -1071,6 +1071,15 @@ func (d *Daemon) startAutostartScripts(ctx context.Context, cfg *config.AgntConf
 					state := entry.State()
 					if state == script.StateRunning || state == script.StateStarting {
 						log.Info(processID, name, "already_running", fmt.Sprintf("%s already %s, skipping", name, state.String()))
+						// Signal ready so dependents don't wait for a signal that will never come.
+						// Start a port probe if ports are known; otherwise signal immediately.
+						probePorts := d.getExpectedPortsForScript(name, scriptCfg, proxyConfigs,
+							resolveWorkingDir(projectPath, scriptCfg.Cwd), "", nil)
+						if len(probePorts) > 0 {
+							d.readySignaler.StartPortProbe(processID, probePorts[0], ctx)
+						} else {
+							d.readySignaler.SignalReady(processID)
+						}
 						resultMu.Lock()
 						result.Scripts = append(result.Scripts, name)
 						resultMu.Unlock()
@@ -1132,6 +1141,13 @@ func (d *Daemon) waitForDependencies(ctx context.Context, name string, scriptCfg
 				ProcessID: makeProcessID(projectPath, name), ScriptName: name,
 				Level: "warning", EventType: "dependency_wait",
 				Message:   fmt.Sprintf("timeout waiting for %s: %v (starting anyway)", dep.Name, err),
+				Timestamp: time.Now(),
+			})
+		} else {
+			d.startupErrorStore.Add(&StartupLogEntry{
+				ProcessID: makeProcessID(projectPath, name), ScriptName: name,
+				Level: "info", EventType: "dependency_ready",
+				Message:   fmt.Sprintf("dependency %s is ready", dep.Name),
 				Timestamp: time.Now(),
 			})
 		}
