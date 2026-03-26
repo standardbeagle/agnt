@@ -28,6 +28,12 @@ type e2eEnv struct {
 	Daemon     *Daemon
 	SocketPath string
 	ProjectDir string // temp dir acting as project root
+	ports      []int  // ports used by test fixtures (for cleanup sweep)
+}
+
+// TrackPort records a port for cleanup sweep on test teardown.
+func (e *e2eEnv) TrackPort(port int) {
+	e.ports = append(e.ports, port)
 }
 
 // setupDaemonForE2E builds the agnt binary (once), creates a temp dir and
@@ -71,6 +77,9 @@ func setupDaemonForE2E(t *testing.T) *e2eEnv {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		d.Stop(ctx)
+		// Final safety-net: kill any orphaned processes that reference
+		// the test's temp dir or are listening on test ports.
+		cleanupTestProcesses(t, tmpDir, env.ports)
 	})
 
 	return env
@@ -249,20 +258,51 @@ func signalGroup(pid int, sig syscall.Signal) error {
 	return syscall.Kill(-pid, sig)
 }
 
-// killTree sends SIGKILL to a process group and all descendants.
+// killTree sends SIGKILL to a process group, all descendants, and
+// the process group of each descendant (catches setsid children).
 // Used in test cleanup to ensure nothing leaks.
 func killTree(pid int) {
 	// Kill the process group first (covers processes started with Setpgid)
 	_ = syscall.Kill(-pid, syscall.SIGKILL)
-	// Also walk descendants in case any escaped the group
+	// Walk descendants and kill each one individually AND by their process
+	// group (descendants that called setsid have a different PGID).
 	descendants := getDescendants(pid)
 	for _, d := range descendants {
-		if p, err := os.FindProcess(d); err == nil {
-			_ = p.Signal(syscall.SIGKILL)
+		pgid := getProcessPGID(d)
+		if pgid > 0 && pgid != pid {
+			_ = syscall.Kill(-pgid, syscall.SIGKILL)
+		}
+		_ = syscall.Kill(d, syscall.SIGKILL)
+	}
+	_ = syscall.Kill(pid, syscall.SIGKILL)
+}
+
+// cleanupTestProcesses is a safety-net cleanup that kills ALL processes
+// whose command line references the given temp directory. This catches
+// orphans that escaped process groups (setsid), were reparented to init
+// (double-fork), or were detached via nohup. Also kills any socat
+// processes on the given ports.
+func cleanupTestProcesses(t *testing.T, tmpDir string, ports []int) {
+	t.Helper()
+
+	// Sweep 1: kill any process whose cmdline contains the temp dir path.
+	// This catches scripts written to tmpDir and their arguments.
+	if out, err := exec.Command("pgrep", "-f", tmpDir).Output(); err == nil {
+		for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+			if pid, err := strconv.Atoi(strings.TrimSpace(line)); err == nil && pid != os.Getpid() {
+				_ = syscall.Kill(-pid, syscall.SIGKILL) // try group first
+				_ = syscall.Kill(pid, syscall.SIGKILL)
+			}
 		}
 	}
-	if p, err := os.FindProcess(pid); err == nil {
-		_ = p.Signal(syscall.SIGKILL)
+
+	// Sweep 2: kill any process listening on test ports (catches fully
+	// detached socat instances that have no reference to tmpDir).
+	for _, port := range ports {
+		if pid := findPortUser(port); pid > 0 && pid != os.Getpid() {
+			_ = syscall.Kill(-pid, syscall.SIGKILL)
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		}
 	}
 }
 
@@ -383,6 +423,7 @@ func TestE2E_FixtureScript_WellBehaved(t *testing.T) {
 func runSingleScriptAutostart(t *testing.T, env *e2eEnv, scriptName, fixtureName string) (port int, pidFilePath string, processID string) {
 	t.Helper()
 	port = freePort(t)
+	env.TrackPort(port)
 	pidFilePath = filepath.Join(env.ProjectDir, scriptName+".pid")
 	fixturePath := testdataPath(t, fixtureName)
 
@@ -539,6 +580,9 @@ func TestE2E_AutostartMultiScript_DependencyOrder(t *testing.T) {
 	apiPort := freePort(t)
 	testPort := freePort(t)
 	docsPort := freePort(t)
+	env.TrackPort(apiPort)
+	env.TrackPort(testPort)
+	env.TrackPort(docsPort)
 
 	apiPidFile := filepath.Join(env.ProjectDir, "api.pid")
 	testPidFile := filepath.Join(env.ProjectDir, "test.pid")
@@ -661,10 +705,12 @@ func TestE2E_AutostartMultiScript_PartialFailure(t *testing.T) {
 	env := setupDaemonForE2E(t)
 
 	goodPort := freePort(t)
+	env.TrackPort(goodPort)
 	goodPidFile := filepath.Join(env.ProjectDir, "good.pid")
 	pnpmPath := testdataPath(t, "fake-pnpm-watch.sh")
 
 	badPort := freePort(t)
+	env.TrackPort(badPort)
 
 	kdl := fmt.Sprintf(`scripts {
     bad {
@@ -800,6 +846,7 @@ func TestE2E_AutostartIdempotent_SecondSessionJoins(t *testing.T) {
 	env := setupDaemonForE2E(t)
 
 	port := freePort(t)
+	env.TrackPort(port)
 	pidFile := filepath.Join(env.ProjectDir, "api.pid")
 	fixturePath := testdataPath(t, "fake-pnpm-watch.sh")
 
@@ -885,6 +932,7 @@ func TestE2E_AutostartIdempotent_RestartsAfterAllDisconnect(t *testing.T) {
 	env := setupDaemonForE2E(t)
 
 	port := freePort(t)
+	env.TrackPort(port)
 	pidFile := filepath.Join(env.ProjectDir, "api.pid")
 	fixturePath := testdataPath(t, "fake-pnpm-watch.sh")
 
@@ -1219,6 +1267,7 @@ func writeTempScript(t *testing.T, dir, name, content string) string {
 func TestE2E_BadProcess_ForkDetach(t *testing.T) {
 	env := setupDaemonForE2E(t)
 	port := freePort(t)
+	env.TrackPort(port)
 	pidFilePath := filepath.Join(env.ProjectDir, "fork-detach.pid")
 
 	// Write a script that spawns a setsid child and stays alive long enough
@@ -1311,6 +1360,7 @@ wait
 func TestE2E_BadProcess_DoubleFork(t *testing.T) {
 	env := setupDaemonForE2E(t)
 	port := freePort(t)
+	env.TrackPort(port)
 	pidFilePath := filepath.Join(env.ProjectDir, "double-fork.pid")
 	grandchildPIDFile := filepath.Join(env.ProjectDir, "grandchild.pid")
 
@@ -1558,6 +1608,12 @@ func setupDaemonForCrashTest(t *testing.T) (*e2eEnv, string) {
 		ProjectDir: tmpDir,
 	}
 
+	t.Cleanup(func() {
+		// Final safety-net: kill any orphaned processes that reference
+		// the test's temp dir or are listening on test ports.
+		cleanupTestProcesses(t, tmpDir, env.ports)
+	})
+
 	return env, stateHome
 }
 
@@ -1714,6 +1770,7 @@ func TestE2E_BadProcess_SIGTERMTrap_DaemonCrash(t *testing.T) {
 func TestE2E_BadProcess_ForkDetach_DaemonCrash(t *testing.T) {
 	env, stateHome := setupDaemonForCrashTest(t)
 	port := freePort(t)
+	env.TrackPort(port)
 	pidFilePath := filepath.Join(env.ProjectDir, "fork-detach.pid")
 
 	// Write a script that spawns a setsid child and stays alive long enough
@@ -1807,6 +1864,7 @@ wait
 func TestE2E_BadProcess_DoubleFork_DaemonCrash(t *testing.T) {
 	env, stateHome := setupDaemonForCrashTest(t)
 	port := freePort(t)
+	env.TrackPort(port)
 	pidFilePath := filepath.Join(env.ProjectDir, "double-fork.pid")
 	grandchildPIDFile := filepath.Join(env.ProjectDir, "grandchild.pid")
 
@@ -1915,6 +1973,8 @@ func TestE2E_OrphanCleanup_DaemonCrash(t *testing.T) {
 
 	devPort := freePort(t)
 	testPort := freePort(t)
+	env.TrackPort(devPort)
+	env.TrackPort(testPort)
 	devPidFile := filepath.Join(env.ProjectDir, "dev.pid")
 	testPidFile := filepath.Join(env.ProjectDir, "test.pid")
 	pnpmPath := testdataPath(t, "fake-pnpm-watch.sh")
@@ -2109,6 +2169,7 @@ func TestE2E_OrphanCleanup_DotnetProcessTree(t *testing.T) {
 func TestE2E_GracefulRestart_PIDTrackerPreserved(t *testing.T) {
 	env, stateHome := setupDaemonForCrashTest(t)
 	port := freePort(t)
+	env.TrackPort(port)
 	pidFilePath := filepath.Join(env.ProjectDir, "restart-preserve.pid")
 
 	// Use a SIGTERM-trapping script that ignores SIGTERM entirely.
@@ -2185,6 +2246,7 @@ wait $CHILD
 func TestE2E_GracefulRestart_PortCleanupOnAutostart(t *testing.T) {
 	env, stateHome := setupDaemonForCrashTest(t)
 	port := freePort(t)
+	env.TrackPort(port)
 
 	// Start a rogue process directly (not managed by daemon) that holds a
 	// port configured in .agnt.kdl.
