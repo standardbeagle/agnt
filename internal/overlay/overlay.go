@@ -220,6 +220,9 @@ type Overlay struct {
 	// Redraw pausing (prevents indicator writes during streaming)
 	redrawPaused atomic.Bool
 
+	// Transition spinner: signals the spinner goroutine to stop
+	transitionStop chan struct{}
+
 	// Mutex for state changes
 	mu sync.Mutex
 }
@@ -371,6 +374,7 @@ func (o *Overlay) UpdateStatus(status Status) {
 	// Redraw indicator if visible and not paused
 	if o.showBar.Load() && o.State() == StateIndicator && !o.redrawPaused.Load() {
 		o.mu.Lock()
+		o.stopTransitionSpinnerLocked()
 		o.draw()
 		o.mu.Unlock()
 	}
@@ -434,6 +438,7 @@ func (o *Overlay) ToggleIndicator() {
 }
 
 func (o *Overlay) showMenu() {
+	o.stopTransitionSpinnerLocked()
 	o.activateOverlay(true)
 	// Go directly to the overview panel
 	o.panelMode = true
@@ -637,15 +642,63 @@ func (o *Overlay) hideMenu() {
 		o.mu.Lock()
 	}
 
+	// Start a transition spinner on the status bar before unfreezing.
+	// This gives visual feedback while the child process redraws.
+	if o.showBar.Load() {
+		o.startTransitionSpinner()
+	}
+
 	// Unfreeze PTY output so it resumes flowing.
 	// The gate's onUnfreeze callback sends SIGWINCH and re-enforces scroll region.
 	if o.gate != nil {
 		o.gate.Unfreeze()
 	}
+}
 
-	// Redraw indicator bar
-	if o.showBar.Load() {
-		o.draw()
+// spinnerFrames are ASCII spinner characters compatible with all terminals.
+var spinnerFrames = [4]string{"|", "/", "-", "\\"}
+
+// startTransitionSpinner launches a goroutine that cycles a spinner character
+// on the status bar. It runs until stopTransitionSpinner is called or
+// UpdateStatus fires (indicating real content has arrived).
+// Must be called with mu held.
+func (o *Overlay) startTransitionSpinner() {
+	o.stopTransitionSpinnerLocked()
+
+	stop := make(chan struct{})
+	o.transitionStop = stop
+
+	go func() {
+		ticker := time.NewTicker(200 * time.Millisecond)
+		defer ticker.Stop()
+
+		i := 0
+		o.renderer.DrawStatusBarMessage(spinnerFrames[i] + " loading...")
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				i = (i + 1) % len(spinnerFrames)
+				o.renderer.DrawStatusBarMessage(spinnerFrames[i] + " loading...")
+			}
+		}
+	}()
+}
+
+// stopTransitionSpinner stops the transition spinner if running and redraws
+// the normal indicator. Safe to call when no spinner is active.
+func (o *Overlay) stopTransitionSpinner() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.stopTransitionSpinnerLocked()
+}
+
+// stopTransitionSpinnerLocked stops the transition spinner. Must be called with mu held.
+func (o *Overlay) stopTransitionSpinnerLocked() {
+	if o.transitionStop != nil {
+		close(o.transitionStop)
+		o.transitionStop = nil
 	}
 }
 
