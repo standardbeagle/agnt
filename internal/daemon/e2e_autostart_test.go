@@ -1500,3 +1500,408 @@ func TestE2E_BadProcess_ForkBombLite(t *testing.T) {
 	assert.True(t, state == process.StateStopped || state == process.StateFailed,
 		"process state should be Stopped or Failed, got %s", state)
 }
+
+// isProcessZombie returns true if the process with the given PID exists as a
+// zombie (state "Z" in /proc/<pid>/status).
+func isProcessZombie(pid int) bool {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, "State:") && strings.Contains(line, "zombie") {
+			return true
+		}
+	}
+	return false
+}
+
+// setupDaemonForCrashTest creates a daemon with a PID tracker that uses
+// a test-specific directory (via XDG_STATE_HOME). This ensures that when
+// we create a second daemon in the same test, it reads the same PID tracker
+// file and can perform orphan cleanup. Returns the environment and the
+// XDG_STATE_HOME path that must be reused for the recovery daemon.
+func setupDaemonForCrashTest(t *testing.T) (*e2eEnv, string) {
+	t.Helper()
+
+	wd, err := os.Getwd()
+	require.NoError(t, err)
+	projectRoot := filepath.Join(wd, "..", "..")
+
+	binaryPath := filepath.Join(projectRoot, "agnt")
+	if _, err := os.Stat(binaryPath); os.IsNotExist(err) {
+		cmd := exec.Command("go", "build", "-o", binaryPath, "./cmd/agnt/")
+		cmd.Dir = projectRoot
+		out, buildErr := cmd.CombinedOutput()
+		require.NoError(t, buildErr, "go build failed: %s", string(out))
+	}
+
+	tmpDir := t.TempDir()
+	sockPath := filepath.Join(tmpDir, "e2e.sock")
+	stateHome := filepath.Join(tmpDir, "state")
+	require.NoError(t, os.MkdirAll(stateHome, 0755))
+
+	// Set XDG_STATE_HOME so the PID tracker writes to our test directory
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	d := New(DaemonConfig{
+		SocketPath:   sockPath,
+		MaxClients:   10,
+		WriteTimeout: 5 * time.Second,
+	})
+	require.NoError(t, d.Start())
+
+	env := &e2eEnv{
+		BinaryPath: binaryPath,
+		Daemon:     d,
+		SocketPath: sockPath,
+		ProjectDir: tmpDir,
+	}
+
+	return env, stateHome
+}
+
+// createRecoveryDaemon creates a new daemon instance that shares the same PID
+// tracker path (via XDG_STATE_HOME). On Start(), the new daemon detects the
+// previous daemon's orphaned processes and kills them with SIGKILL.
+//
+// Since both daemons run in the same test process (os.Getpid() is identical),
+// we must overwrite the stored daemon PID in the tracker file to simulate a
+// different daemon PID from the "crashed" daemon. This triggers the orphan
+// detection path in CleanupOrphans.
+func createRecoveryDaemon(t *testing.T, stateHome, projectDir string, crashedTracker *process.FilePIDTracker) *Daemon {
+	t.Helper()
+
+	// Overwrite the stored daemon PID to a non-existent PID so that the
+	// recovery daemon's CleanupOrphans detects a different daemon PID and
+	// enters crash recovery mode.
+	require.NoError(t, crashedTracker.SetDaemonPID(99999))
+
+	sockPath := filepath.Join(projectDir, "recovery.sock")
+
+	// Ensure XDG_STATE_HOME points to the same location
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	d := New(DaemonConfig{
+		SocketPath:   sockPath,
+		MaxClients:   10,
+		WriteTimeout: 5 * time.Second,
+	})
+	require.NoError(t, d.Start())
+
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		d.Stop(ctx)
+	})
+
+	return d
+}
+
+// TestE2E_BadProcess_ZombieParent verifies that a process creating zombies
+// (spawns child that exits, parent never calls wait) is cleaned up on
+// graceful daemon stop, and the zombie is reaped when the parent dies.
+func TestE2E_BadProcess_ZombieParent(t *testing.T) {
+	env := setupDaemonForE2E(t)
+	port, pidFilePath, processID := runSingleScriptAutostart(t, env, "zombie-parent", "bad-zombie-parent.sh")
+
+	pid := verifyRunningDataStructures(t, env, "zombie-parent", processID, port, pidFilePath)
+
+	pm := env.Daemon.ProcessManager()
+	proc, err := pm.Get(processID)
+	require.NoError(t, err)
+	pmPID := proc.PID()
+	t.Cleanup(func() { killTree(pmPID) })
+
+	// The script spawns a child that exits immediately. The parent never
+	// calls wait, so the child becomes a zombie. Give time for the child
+	// to spawn and become a zombie.
+	time.Sleep(1 * time.Second)
+
+	// Find zombie children of the managed process tree. Walk descendants
+	// looking for any in zombie state.
+	descendants := getDescendants(pmPID)
+	var zombiePIDs []int
+	for _, dpid := range descendants {
+		if isProcessZombie(dpid) {
+			zombiePIDs = append(zombiePIDs, dpid)
+		}
+	}
+
+	// A zombie should exist (the child that exited without being waited on).
+	// Note: on some systems the zombie may already have been reaped if bash
+	// implicitly waits. If no zombie is found, the test still validates
+	// cleanup behavior.
+	if len(zombiePIDs) > 0 {
+		t.Logf("found %d zombie(s): %v", len(zombiePIDs), zombiePIDs)
+	} else {
+		t.Logf("no zombie found (child may have been reaped already); continuing cleanup test")
+	}
+
+	// Stop daemon gracefully (triggers SIGTERM -> SIGKILL escalation)
+	stopCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	env.Daemon.Stop(stopCtx)
+
+	// Parent must be dead after daemon stop
+	assertProcessDead(t, pid, 10*time.Second)
+
+	// All zombies must be reaped (parent death causes zombie cleanup by init)
+	for _, zpid := range zombiePIDs {
+		assertProcessDead(t, zpid, 5*time.Second)
+	}
+
+	// No descendants should remain alive
+	assertAllDescendantsDead(t, pmPID, 10*time.Second)
+
+	// Port must be free
+	err = waitForPort(port, 500*time.Millisecond)
+	assert.Error(t, err, "port %d should be free after stop", port)
+}
+
+// TestE2E_BadProcess_SIGTERMTrap_DaemonCrash verifies that after a daemon
+// crash (SIGKILL), a SIGTERM-trapping process survives the crash but is
+// killed by the new daemon's orphan cleanup which uses SIGKILL directly.
+func TestE2E_BadProcess_SIGTERMTrap_DaemonCrash(t *testing.T) {
+	env, stateHome := setupDaemonForCrashTest(t)
+	port, pidFilePath, processID := runSingleScriptAutostart(t, env, "sigterm-trap", "bad-sigterm-trap.sh")
+
+	pid := verifyRunningDataStructures(t, env, "sigterm-trap", processID, port, pidFilePath)
+
+	pm := env.Daemon.ProcessManager()
+	proc, err := pm.Get(processID)
+	require.NoError(t, err)
+	pmPID := proc.PID()
+	t.Cleanup(func() { killTree(pmPID) })
+
+	// Verify the PID tracker has recorded the process
+	tracked := env.Daemon.pidTracker.ListTracked()
+	require.NotEmpty(t, tracked, "PID tracker should have recorded the process")
+	t.Logf("PID tracker has %d tracked process(es), path=%s", len(tracked), env.Daemon.pidTracker.Path())
+
+	// Simulate daemon crash: cancel context without calling Stop().
+	// This leaves the PID tracker file intact (Stop would call Clear).
+	env.Daemon.cancel()
+	// Give time for goroutines to wind down without cleanup
+	time.Sleep(500 * time.Millisecond)
+
+	// The SIGTERM-trapping process should still be alive (no cleanup was sent)
+	assertProcessAlive(t, pid)
+	t.Logf("process %d survived daemon crash (SIGTERM trap active)", pid)
+
+	// Verify the PID tracker file still exists with process data
+	trackerPath := env.Daemon.pidTracker.Path()
+	_, statErr := os.Stat(trackerPath)
+	require.NoError(t, statErr, "PID tracker file should still exist after crash")
+
+	// Start a recovery daemon. On Start(), it calls cleanupOrphans() which
+	// detects a different daemon PID and sends SIGKILL to all tracked PIDs.
+	_ = createRecoveryDaemon(t, stateHome, env.ProjectDir, env.Daemon.pidTracker)
+
+	// The SIGTERM-trapping process must now be dead (killed by SIGKILL, not SIGTERM)
+	assertProcessDead(t, pid, 10*time.Second)
+	t.Logf("process %d killed by orphan cleanup after crash recovery", pid)
+
+	// Port must be free
+	err = waitForPort(port, 500*time.Millisecond)
+	assert.Error(t, err, "port %d should be free after orphan cleanup", port)
+}
+
+// TestE2E_BadProcess_ForkDetach_DaemonCrash verifies that after a daemon
+// crash, a process that spawned a detached child (setsid+nohup) is cleaned
+// up by the new daemon's orphan recovery, which uses stored descendants to
+// kill the detached child that escaped the process group.
+func TestE2E_BadProcess_ForkDetach_DaemonCrash(t *testing.T) {
+	env, stateHome := setupDaemonForCrashTest(t)
+	port := freePort(t)
+	pidFilePath := filepath.Join(env.ProjectDir, "fork-detach.pid")
+
+	// Write a script that spawns a setsid child and stays alive long enough
+	// for the descendant scanner to record the child.
+	scriptContent := fmt.Sprintf(`PORT=%d
+PIDFILE="%s"
+echo $$ > "$PIDFILE"
+setsid nohup bash -c "exec 0</dev/null 1>/dev/null 2>/dev/null; socat TCP-LISTEN:$PORT,fork,reuseaddr SYSTEM:'echo detached-child' 2>/dev/null" &
+echo "fork-detach parent=$$ on http://localhost:$PORT"
+trap 'exit 0' SIGTERM SIGINT
+sleep 3600 &
+wait
+`, port, pidFilePath)
+	scriptPath := writeTempScript(t, env.ProjectDir, "test-fork-detach-crash.sh", scriptContent)
+
+	kdl := fmt.Sprintf(`scripts {
+    fork-detach {
+        run "bash %s"
+        autostart true
+        ports %d
+    }
+}
+`, scriptPath, port)
+	writeAgntKDL(t, env.ProjectDir, kdl)
+
+	ctx := context.Background()
+	result := env.Daemon.RunAutostart(ctx, env.ProjectDir)
+	require.Empty(t, result.Errors, "RunAutostart errors: %v", result.Errors)
+
+	processID := script.MakeProcessID(env.ProjectDir, "fork-detach")
+
+	// Wait for parent PID file and port
+	parentPID := readPIDFile(t, pidFilePath, 10*time.Second)
+	require.Greater(t, parentPID, 0)
+	require.NoError(t, waitForPort(port, 10*time.Second), "detached child should bind port %d", port)
+
+	detachedPID := findPortUser(port)
+	require.Greater(t, detachedPID, 0, "must find detached child on port %d", port)
+	assertProcessAlive(t, detachedPID)
+	t.Logf("parent PID=%d, detached child PID=%d", parentPID, detachedPID)
+
+	pm := env.Daemon.ProcessManager()
+	proc, err := pm.Get(processID)
+	require.NoError(t, err)
+	pmPID := proc.PID()
+	t.Cleanup(func() {
+		killTree(pmPID)
+		if p, findErr := os.FindProcess(detachedPID); findErr == nil {
+			_ = p.Signal(syscall.SIGKILL)
+		}
+	})
+
+	// Wait for the descendant scanner (5s interval) to record the detached child
+	time.Sleep(6 * time.Second)
+
+	// Verify descendants are stored in the PID tracker
+	tracked := env.Daemon.pidTracker.ListTracked()
+	var storedDescendants []int
+	for _, tp := range tracked {
+		storedDescendants = append(storedDescendants, tp.DescendantPIDs...)
+	}
+	t.Logf("stored descendants: %v", storedDescendants)
+
+	// Simulate daemon crash
+	env.Daemon.cancel()
+	time.Sleep(500 * time.Millisecond)
+
+	// Both parent and detached child should survive the crash
+	assertProcessAlive(t, parentPID)
+	assertProcessAlive(t, detachedPID)
+	t.Logf("both parent and detached child survived crash")
+
+	// Start recovery daemon
+	_ = createRecoveryDaemon(t, stateHome, env.ProjectDir, env.Daemon.pidTracker)
+
+	// Orphan cleanup should kill parent via stored PID and detached child
+	// via stored descendants
+	assertProcessDead(t, parentPID, 10*time.Second)
+	assertProcessDead(t, detachedPID, 10*time.Second)
+	t.Logf("orphan cleanup killed both parent and detached child")
+
+	// Port must be free
+	err = waitForPort(port, 500*time.Millisecond)
+	assert.Error(t, err, "port %d should be free after orphan cleanup", port)
+}
+
+// TestE2E_BadProcess_DoubleFork_DaemonCrash verifies that a classic
+// double-fork daemon pattern (parent -> child -> grandchild, where the
+// grandchild is reparented to init) is cleaned up by the new daemon's
+// orphan recovery using stored descendants from the PID tracker.
+func TestE2E_BadProcess_DoubleFork_DaemonCrash(t *testing.T) {
+	env, stateHome := setupDaemonForCrashTest(t)
+	port := freePort(t)
+	pidFilePath := filepath.Join(env.ProjectDir, "double-fork.pid")
+	grandchildPIDFile := filepath.Join(env.ProjectDir, "grandchild.pid")
+
+	// Write a double-fork script. The parent and child subshell stay alive
+	// long enough for the descendant scanner to record the grandchild tree.
+	scriptContent := fmt.Sprintf(`PORT=%d
+PIDFILE="%s"
+GCPIDFILE="%s"
+echo $$ > "$PIDFILE"
+# First fork: child subshell
+(
+    # Second fork: grandchild in new session, closes fds to fully detach
+    setsid bash -c "echo \$\$ > $GCPIDFILE; exec 0</dev/null 1>/dev/null 2>/dev/null; socat TCP-LISTEN:$PORT,fork,reuseaddr SYSTEM:'echo double-fork-grandchild' 2>/dev/null" &
+    # Child stays alive (scanner needs to see grandchild as descendant)
+    trap 'exit 0' SIGTERM SIGINT
+    sleep 3600 &
+    wait
+) &
+echo "double-fork parent=$$ on http://localhost:$PORT"
+trap 'exit 0' SIGTERM SIGINT
+sleep 3600 &
+wait
+`, port, pidFilePath, grandchildPIDFile)
+	scriptPath := writeTempScript(t, env.ProjectDir, "test-double-fork-crash.sh", scriptContent)
+
+	kdl := fmt.Sprintf(`scripts {
+    double-fork {
+        run "bash %s"
+        autostart true
+        ports %d
+    }
+}
+`, scriptPath, port)
+	writeAgntKDL(t, env.ProjectDir, kdl)
+
+	ctx := context.Background()
+	result := env.Daemon.RunAutostart(ctx, env.ProjectDir)
+	require.Empty(t, result.Errors, "RunAutostart errors: %v", result.Errors)
+
+	processID := script.MakeProcessID(env.ProjectDir, "double-fork")
+
+	// Wait for parent PID file
+	parentPID := readPIDFile(t, pidFilePath, 10*time.Second)
+	require.Greater(t, parentPID, 0)
+
+	// Wait for grandchild to bind port
+	require.NoError(t, waitForPort(port, 10*time.Second), "grandchild should bind port %d", port)
+
+	// Find grandchild PID
+	grandchildPID := readPIDFile(t, grandchildPIDFile, 5*time.Second)
+	if grandchildPID <= 0 {
+		grandchildPID = findPortUser(port)
+	}
+	require.Greater(t, grandchildPID, 0, "must find grandchild")
+	assertProcessAlive(t, grandchildPID)
+	t.Logf("parent PID=%d, grandchild PID=%d", parentPID, grandchildPID)
+
+	pm := env.Daemon.ProcessManager()
+	proc, err := pm.Get(processID)
+	require.NoError(t, err)
+	pmPID := proc.PID()
+	t.Cleanup(func() {
+		killTree(pmPID)
+		if p, findErr := os.FindProcess(grandchildPID); findErr == nil {
+			_ = p.Signal(syscall.SIGKILL)
+		}
+	})
+
+	// Wait for the descendant scanner (5s interval) to record the tree
+	time.Sleep(6 * time.Second)
+
+	// Verify descendants include the grandchild
+	tracked := env.Daemon.pidTracker.ListTracked()
+	var allStoredDescendants []int
+	for _, tp := range tracked {
+		allStoredDescendants = append(allStoredDescendants, tp.DescendantPIDs...)
+	}
+	t.Logf("stored descendants: %v", allStoredDescendants)
+
+	// Simulate daemon crash
+	env.Daemon.cancel()
+	time.Sleep(500 * time.Millisecond)
+
+	// Grandchild (reparented to init via setsid) should survive the crash
+	assertProcessAlive(t, grandchildPID)
+	t.Logf("grandchild %d survived daemon crash", grandchildPID)
+
+	// Start recovery daemon
+	_ = createRecoveryDaemon(t, stateHome, env.ProjectDir, env.Daemon.pidTracker)
+
+	// Orphan cleanup should use stored descendants to find and kill grandchild
+	assertProcessDead(t, grandchildPID, 10*time.Second)
+	t.Logf("orphan cleanup killed grandchild via stored descendants")
+
+	// Port must be free
+	err = waitForPort(port, 500*time.Millisecond)
+	assert.Error(t, err, "port %d should be free after orphan cleanup", port)
+}
