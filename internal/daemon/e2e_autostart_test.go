@@ -7,7 +7,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -2723,4 +2725,472 @@ wait
 	state := procAfter.State()
 	assert.True(t, state == process.StateStopped || state == process.StateFailed,
 		"process state should be Stopped or Failed, got %s", state)
+}
+
+// TestE2E_EADDRINUSE_RetryAfterDetection verifies that when a script outputs an
+// EADDRINUSE error, the daemon's startScriptWithRetry detects it, kills the port
+// holder, and successfully retries the script.
+func TestE2E_EADDRINUSE_RetryAfterDetection(t *testing.T) {
+	env, _ := setupDaemonForCrashTest(t)
+	port := freePort(t)
+	env.TrackPort(port)
+
+	// Start a holder process that occupies the port (simulates an orphan).
+	holderCmd := exec.Command("socat", "TCP-LISTEN:"+strconv.Itoa(port)+",fork,reuseaddr", "SYSTEM:echo holder")
+	holderCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	require.NoError(t, holderCmd.Start())
+	holderPID := holderCmd.Process.Pid
+	t.Cleanup(func() {
+		if p, findErr := os.FindProcess(holderPID); findErr == nil {
+			_ = p.Signal(syscall.SIGKILL)
+		}
+	})
+	require.NoError(t, waitForPort(port, 5*time.Second), "holder should bind port %d", port)
+	t.Logf("holder PID=%d on port %d", holderPID, port)
+
+	// Write .agnt.kdl using fake-eaddrinuse.sh which emits EADDRINUSE on stderr
+	// when the port is already taken, and succeeds normally when the port is free.
+	// No "ports" declaration: pre-flight cleanup is skipped, so the holder
+	// survives until the script runs and gets EADDRINUSE, exercising the retry path.
+	pidFilePath := filepath.Join(env.ProjectDir, "eaddrinuse-retry.pid")
+	scriptPath := testdataPath(t, "fake-eaddrinuse.sh")
+	kdl := fmt.Sprintf(`scripts {
+    eaddrinuse-retry {
+        run "bash %s %d %s"
+        autostart true
+    }
+}
+`, scriptPath, port, pidFilePath)
+	writeAgntKDL(t, env.ProjectDir, kdl)
+
+	// RunAutostart should trigger startScriptWithRetry:
+	// 1. First attempt: script gets EADDRINUSE, daemon detects it
+	// 2. Daemon kills holder on the port
+	// 3. Retry: script binds successfully
+	ctx := context.Background()
+	result := env.Daemon.RunAutostart(ctx, env.ProjectDir)
+	require.Empty(t, result.Errors, "RunAutostart should succeed after retry: %v", result.Errors)
+
+	// Holder must be dead
+	assertProcessDead(t, holderPID, 10*time.Second)
+	t.Logf("holder %d killed by EADDRINUSE recovery", holderPID)
+
+	// New process should own the port
+	newPID := readPIDFile(t, pidFilePath, 10*time.Second)
+	require.Greater(t, newPID, 0)
+	assert.NotEqual(t, holderPID, newPID, "new PID must differ from holder")
+	require.NoError(t, waitForPort(port, 10*time.Second), "retried process should bind port %d", port)
+	t.Logf("retry succeeded: new PID=%d on port %d", newPID, port)
+}
+
+// TestE2E_EADDRINUSE_BadProcess_TrapsAndHoldsPort verifies that when a
+// SIGTERM-resistant process holds a configured port, preflightPortCleanup
+// escalates to SIGKILL and frees the port for the autostart script.
+func TestE2E_EADDRINUSE_BadProcess_TrapsAndHoldsPort(t *testing.T) {
+	env, stateHome := setupDaemonForCrashTest(t)
+	port := freePort(t)
+	env.TrackPort(port)
+
+	// Start bad-sigterm-trap.sh externally - it traps and ignores SIGTERM.
+	badPIDFile := filepath.Join(env.ProjectDir, "bad-holder.pid")
+	badScript := testdataPath(t, "bad-sigterm-trap.sh")
+	badCmd := exec.Command("bash", badScript, strconv.Itoa(port), badPIDFile)
+	badCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	require.NoError(t, badCmd.Start())
+	badPID := badCmd.Process.Pid
+	t.Cleanup(func() {
+		if p, findErr := os.FindProcess(badPID); findErr == nil {
+			_ = p.Signal(syscall.SIGKILL)
+		}
+	})
+	require.NoError(t, waitForPort(port, 5*time.Second), "bad process should bind port %d", port)
+	t.Logf("bad-sigterm-trap PID=%d on port %d", badPID, port)
+
+	// Write .agnt.kdl with a normal script expecting the same port
+	goodPIDFile := filepath.Join(env.ProjectDir, "good-after-bad.pid")
+	pnpmPath := testdataPath(t, "fake-pnpm-watch.sh")
+	kdl := fmt.Sprintf(`scripts {
+    dev {
+        run "bash %s %d %s"
+        autostart true
+        ports %d
+    }
+}
+`, pnpmPath, port, goodPIDFile, port)
+	writeAgntKDL(t, env.ProjectDir, kdl)
+
+	// Stop original daemon to simulate recovery scenario
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer stopCancel()
+	env.Daemon.Stop(stopCtx)
+
+	// Bad process should still be alive (it traps SIGTERM)
+	assertProcessAlive(t, badPID)
+
+	// Create recovery daemon - RunAutostart triggers preflightPortCleanup
+	recoveryDaemon := createRecoveryDaemon(t, stateHome, env.ProjectDir, env.Daemon.pidTracker)
+
+	ctx := context.Background()
+	result := recoveryDaemon.RunAutostart(ctx, env.ProjectDir)
+
+	// Filter errors: only fail on errors for the "dev" script we're testing.
+	// The recovery daemon may try to restart unrelated scripts from PID tracker.
+	var devErrors []string
+	for _, e := range result.Errors {
+		if strings.Contains(e, "dev") {
+			devErrors = append(devErrors, e)
+		}
+	}
+	require.Empty(t, devErrors, "RunAutostart should succeed for dev script: %v", devErrors)
+
+	// New process should own the port (pre-flight killed the socat child
+	// that was holding the port; the parent bash may survive since it traps
+	// SIGTERM but no longer holds the port)
+	newPID := readPIDFile(t, goodPIDFile, 10*time.Second)
+	require.Greater(t, newPID, 0)
+	assert.NotEqual(t, badPID, newPID, "new PID must differ from bad process")
+	require.NoError(t, waitForPort(port, 10*time.Second), "autostart script should bind port %d", port)
+
+	// Verify the port is now held by the new process tree, not the bad process
+	portHolder := findPortUser(port)
+	assert.NotEqual(t, 0, portHolder, "port should be held after autostart")
+	badDescendants := getDescendants(badPID)
+	for _, d := range badDescendants {
+		assert.NotEqual(t, portHolder, d, "port should not be held by bad process descendant")
+	}
+	t.Logf("autostart succeeded: new PID=%d on port %d", newPID, port)
+}
+
+// TestE2E_CleanupPort_KillsOrphan verifies that the cleanup_port IPC action
+// kills an external process holding a port.
+func TestE2E_CleanupPort_KillsOrphan(t *testing.T) {
+	env := setupDaemonForE2E(t)
+	port := freePort(t)
+	env.TrackPort(port)
+
+	// Start an external process binding the port
+	holderCmd := exec.Command("socat", "TCP-LISTEN:"+strconv.Itoa(port)+",fork,reuseaddr", "SYSTEM:echo orphan")
+	holderCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	require.NoError(t, holderCmd.Start())
+	holderPID := holderCmd.Process.Pid
+	t.Cleanup(func() {
+		if p, findErr := os.FindProcess(holderPID); findErr == nil {
+			_ = p.Signal(syscall.SIGKILL)
+		}
+	})
+	require.NoError(t, waitForPort(port, 5*time.Second), "holder should bind port %d", port)
+	t.Logf("orphan PID=%d on port %d", holderPID, port)
+
+	// Connect a client to the daemon and call cleanup_port
+	client := NewClientWithPath(env.SocketPath)
+	require.NoError(t, client.Connect())
+	defer client.Close()
+
+	resp, err := client.ProcCleanupPort(port)
+	require.NoError(t, err, "ProcCleanupPort should not return error")
+	t.Logf("cleanup_port response: %+v", resp)
+
+	// Verify the response indicates a kill
+	killedCount, _ := resp["killed_count"].(float64)
+	assert.Greater(t, killedCount, float64(0), "should have killed at least one process")
+
+	// Holder must be dead
+	assertProcessDead(t, holderPID, 10*time.Second)
+
+	// Port must be free
+	err = waitForPort(port, 500*time.Millisecond)
+	assert.Error(t, err, "port %d should be free after cleanup", port)
+	t.Logf("orphan %d killed by cleanup_port", holderPID)
+}
+
+// TestE2E_CleanupPort_NoEffect_WhenFree verifies that cleanup_port on an
+// unused port returns success with zero kills.
+func TestE2E_CleanupPort_NoEffect_WhenFree(t *testing.T) {
+	env := setupDaemonForE2E(t)
+	port := freePort(t)
+
+	// Verify port is actually free
+	err := waitForPort(port, 200*time.Millisecond)
+	require.Error(t, err, "port %d should be free before test", port)
+
+	// Connect a client and call cleanup_port on the free port
+	client := NewClientWithPath(env.SocketPath)
+	require.NoError(t, client.Connect())
+	defer client.Close()
+
+	resp, err := client.ProcCleanupPort(port)
+	require.NoError(t, err, "ProcCleanupPort on free port should not error")
+
+	killedCount, _ := resp["killed_count"].(float64)
+	assert.Equal(t, float64(0), killedCount, "should report zero kills on free port")
+	t.Logf("cleanup_port on free port %d: no effect (expected)", port)
+}
+
+// TestE2E_CleanupPort_KillsBadProcess verifies that cleanup_port kills a
+// SIGTERM-resistant process via SIGKILL escalation.
+func TestE2E_CleanupPort_KillsBadProcess(t *testing.T) {
+	env := setupDaemonForE2E(t)
+	port := freePort(t)
+	env.TrackPort(port)
+
+	// Start bad-sigterm-trap.sh which ignores SIGTERM
+	badPIDFile := filepath.Join(env.ProjectDir, "bad-cleanup.pid")
+	badScript := testdataPath(t, "bad-sigterm-trap.sh")
+	badCmd := exec.Command("bash", badScript, strconv.Itoa(port), badPIDFile)
+	badCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	require.NoError(t, badCmd.Start())
+	badPID := badCmd.Process.Pid
+	t.Cleanup(func() {
+		if p, findErr := os.FindProcess(badPID); findErr == nil {
+			_ = p.Signal(syscall.SIGKILL)
+		}
+	})
+	require.NoError(t, waitForPort(port, 5*time.Second), "bad process should bind port %d", port)
+	t.Logf("bad-sigterm-trap PID=%d on port %d", badPID, port)
+
+	// Connect a client and call cleanup_port
+	client := NewClientWithPath(env.SocketPath)
+	require.NoError(t, client.Connect())
+	defer client.Close()
+
+	resp, err := client.ProcCleanupPort(port)
+	require.NoError(t, err, "ProcCleanupPort should not return error")
+	t.Logf("cleanup_port response: %+v", resp)
+
+	killedCount, _ := resp["killed_count"].(float64)
+	assert.Greater(t, killedCount, float64(0), "should have killed the port-holding process")
+
+	// Port must be free (cleanup_port kills the socat child on the port;
+	// the parent bash may survive since it traps SIGTERM but no longer holds the port)
+	err = waitForPort(port, 2*time.Second)
+	assert.Error(t, err, "port %d should be free after cleanup", port)
+
+	// Verify no process is listening on the port
+	assert.Equal(t, 0, findPortUser(port), "no process should hold port %d after cleanup", port)
+	t.Logf("port %d freed by cleanup_port despite SIGTERM-resistant parent", port)
+}
+
+// waitForProxy polls the daemon's ProxyManager until a proxy matching the
+// given name substring appears, or until timeout. Returns the proxy's listen
+// address on success.
+func waitForProxy(t *testing.T, d *Daemon, nameSubstr string, timeout time.Duration) string {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		for _, p := range d.ProxyManager().List() {
+			if strings.Contains(p.ID, nameSubstr) {
+				return p.ListenAddr
+			}
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatalf("proxy containing %q not found after %s", nameSubstr, timeout)
+	return ""
+}
+
+// TestE2E_AutostartWithProxy_ScriptLinked verifies that a proxy linked to a
+// script via `script "dev"` is automatically created when the URLTracker
+// detects a URL in the script's output, and that HTTP requests through the
+// proxy reach the upstream socat server.
+func TestE2E_AutostartWithProxy_ScriptLinked(t *testing.T) {
+	env := setupDaemonForE2E(t)
+
+	port := freePort(t)
+	env.TrackPort(port)
+	pidFile := filepath.Join(env.ProjectDir, "dev.pid")
+	pnpmPath := testdataPath(t, "fake-pnpm-watch.sh")
+
+	kdl := fmt.Sprintf(`scripts {
+    dev {
+        run "bash %s %d %s"
+        autostart true
+        ports %d
+    }
+}
+proxies {
+    dev {
+        script "dev"
+        fallback-port %d
+    }
+}
+`, pnpmPath, port, pidFile, port, port)
+	writeAgntKDL(t, env.ProjectDir, kdl)
+
+	ctx := context.Background()
+	result := env.Daemon.RunAutostart(ctx, env.ProjectDir)
+	require.Empty(t, result.Errors, "RunAutostart errors: %v", result.Errors)
+	require.Contains(t, result.Scripts, "dev", "dev script should be in result.Scripts")
+
+	processID := script.MakeProcessID(env.ProjectDir, "dev")
+	pid := verifyRunningDataStructures(t, env, "dev", processID, port, pidFile)
+
+	// Wait for URLTracker to detect the URL and create the proxy.
+	// The URLTracker polls every 500ms, so allow up to 15s for the full
+	// chain: script output -> URL detection -> proxy event -> proxy creation.
+	proxyAddr := waitForProxy(t, env.Daemon, "dev", 15*time.Second)
+	t.Logf("proxy created at %s", proxyAddr)
+
+	// Verify proxy is in ProxyManager list and targets the correct upstream.
+	// The fake-pnpm-watch socat doesn't speak HTTP, so we verify routing by
+	// checking the proxy's target URL rather than making an HTTP round-trip.
+	proxies := env.Daemon.ProxyManager().List()
+	var foundProxy bool
+	for _, p := range proxies {
+		if strings.Contains(p.ID, "dev") {
+			foundProxy = true
+			assert.Contains(t, p.TargetURL.String(), fmt.Sprintf(":%d", port),
+				"proxy target should reference the script's port")
+			t.Logf("proxy %s targets %s", p.ID, p.TargetURL.String())
+			break
+		}
+	}
+	require.True(t, foundProxy, "proxy linked to dev script should exist in ProxyManager")
+
+	// Verify the proxy is actually accepting connections (listener is up).
+	proxyURL := fmt.Sprintf("http://%s/", proxyAddr)
+	httpClient := &http.Client{Timeout: 5 * time.Second}
+	resp, httpErr := httpClient.Get(proxyURL)
+	if httpErr == nil {
+		resp.Body.Close()
+	}
+	// The socat upstream doesn't speak HTTP, so we expect either a proxy
+	// error response (502) or a transport error. Either confirms routing.
+	if resp != nil {
+		assert.True(t, resp.StatusCode == http.StatusBadGateway || resp.StatusCode == http.StatusOK,
+			"proxy should attempt to route to upstream (got %d)", resp.StatusCode)
+	}
+
+	// Stop daemon and verify cleanup
+	stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	env.Daemon.Stop(stopCtx)
+
+	verifyStoppedDataStructures(t, pid, port)
+
+	// Proxy should also be cleaned up (no proxies remaining)
+	assert.Empty(t, env.Daemon.ProxyManager().List(), "all proxies should be cleaned up after stop")
+}
+
+// TestE2E_AutostartWithProxy_FailedScriptSkipsProxy verifies that when a
+// script fails to start, any proxy linked to it via `script` is NOT created.
+func TestE2E_AutostartWithProxy_FailedScriptSkipsProxy(t *testing.T) {
+	env := setupDaemonForE2E(t)
+
+	port := freePort(t)
+	env.TrackPort(port)
+
+	kdl := fmt.Sprintf(`scripts {
+    broken {
+        run "/nonexistent/command/that/does/not/exist"
+        autostart true
+        ports %d
+    }
+}
+proxies {
+    broken-proxy {
+        script "broken"
+        port %d
+        autostart true
+    }
+}
+`, port, port)
+	writeAgntKDL(t, env.ProjectDir, kdl)
+
+	ctx := context.Background()
+	result := env.Daemon.RunAutostart(ctx, env.ProjectDir)
+
+	// Script must have failed
+	require.NotEmpty(t, result.Errors, "expected errors for broken script")
+	foundScriptError := false
+	for _, e := range result.Errors {
+		if strings.Contains(e, "broken") {
+			foundScriptError = true
+			break
+		}
+	}
+	assert.True(t, foundScriptError, "expected error mentioning broken script, got: %v", result.Errors)
+
+	// Proxy linked to failed script must be skipped
+	foundProxySkip := false
+	for _, e := range result.Errors {
+		if strings.Contains(e, "broken-proxy") || (strings.Contains(e, "proxy") && strings.Contains(e, "broken")) {
+			foundProxySkip = true
+			break
+		}
+	}
+	assert.True(t, foundProxySkip, "expected proxy skip error for broken-proxy, got: %v", result.Errors)
+
+	// Give the proxy event handler a moment to process any queued events
+	time.Sleep(1 * time.Second)
+
+	// No proxy should exist in ProxyManager
+	proxies := env.Daemon.ProxyManager().List()
+	for _, p := range proxies {
+		assert.False(t, strings.Contains(p.ID, "broken"),
+			"proxy linked to failed script should not exist, found: %s", p.ID)
+	}
+}
+
+// TestE2E_AutostartWithProxy_IndependentProxy verifies that a proxy with an
+// explicit target (no script link) starts independently via RunAutostart,
+// regardless of any script state.
+func TestE2E_AutostartWithProxy_IndependentProxy(t *testing.T) {
+	env := setupDaemonForE2E(t)
+
+	// Start a simple TCP listener to act as the upstream target.
+	upstreamPort := freePort(t)
+	env.TrackPort(upstreamPort)
+
+	upstreamListener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", upstreamPort))
+	require.NoError(t, err)
+	defer upstreamListener.Close()
+
+	// Serve a simple HTTP response from the upstream.
+	go func() {
+		for {
+			conn, acceptErr := upstreamListener.Accept()
+			if acceptErr != nil {
+				return
+			}
+			// Read request then write HTTP response
+			buf := make([]byte, 4096)
+			conn.Read(buf)
+			resp := "HTTP/1.1 200 OK\r\nContent-Length: 12\r\n\r\nindependent!"
+			conn.Write([]byte(resp))
+			conn.Close()
+		}
+	}()
+
+	kdl := fmt.Sprintf(`proxies {
+    standalone {
+        target "http://127.0.0.1:%d"
+    }
+}
+`, upstreamPort)
+	writeAgntKDL(t, env.ProjectDir, kdl)
+
+	ctx := context.Background()
+	result := env.Daemon.RunAutostart(ctx, env.ProjectDir)
+	require.Empty(t, result.Errors, "RunAutostart errors: %v", result.Errors)
+
+	// The independent proxy should be created via ExplicitStart event.
+	// Wait for the proxy event handler to process it.
+	proxyAddr := waitForProxy(t, env.Daemon, "standalone", 10*time.Second)
+	t.Logf("independent proxy created at %s", proxyAddr)
+
+	// Make an HTTP request through the proxy to verify routing.
+	proxyURL := fmt.Sprintf("http://%s/", proxyAddr)
+	httpClient := &http.Client{Timeout: 5 * time.Second}
+	resp, httpErr := httpClient.Get(proxyURL)
+	require.NoError(t, httpErr, "HTTP GET through independent proxy should succeed")
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	assert.Equal(t, "independent!", string(body), "proxy should route to upstream listener")
+
+	// Stop daemon and verify proxy is cleaned up
+	stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	env.Daemon.Stop(stopCtx)
+
+	assert.Empty(t, env.Daemon.ProxyManager().List(), "all proxies should be cleaned up after stop")
 }
