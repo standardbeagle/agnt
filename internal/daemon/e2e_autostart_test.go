@@ -1152,3 +1152,351 @@ func TestE2E_BadProcess_SlowChild(t *testing.T) {
 	finalStdout, _ := proc.Stdout()
 	assert.NotEmpty(t, finalStdout, "ring buffer should retain pre-kill output")
 }
+
+// getProcessPGID returns the process group ID for a given PID by reading
+// /proc/<pid>/stat. Returns -1 if the process is not found.
+func getProcessPGID(pid int) int {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return -1
+	}
+	// /proc/PID/stat format: pid (comm) state ppid pgrp ...
+	// Find the closing paren to skip the comm field (may contain spaces)
+	s := string(data)
+	closeParen := strings.LastIndex(s, ")")
+	if closeParen < 0 {
+		return -1
+	}
+	fields := strings.Fields(s[closeParen+1:])
+	if len(fields) < 3 {
+		return -1
+	}
+	// fields[0]=state, fields[1]=ppid, fields[2]=pgrp
+	pgid, err := strconv.Atoi(fields[2])
+	if err != nil {
+		return -1
+	}
+	return pgid
+}
+
+// getProcessPPID returns the parent PID for a given PID by reading
+// /proc/<pid>/stat. Returns -1 if the process is not found.
+func getProcessPPID(pid int) int {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return -1
+	}
+	s := string(data)
+	closeParen := strings.LastIndex(s, ")")
+	if closeParen < 0 {
+		return -1
+	}
+	fields := strings.Fields(s[closeParen+1:])
+	if len(fields) < 2 {
+		return -1
+	}
+	// fields[0]=state, fields[1]=ppid
+	ppid, err := strconv.Atoi(fields[1])
+	if err != nil {
+		return -1
+	}
+	return ppid
+}
+
+// writeTempScript writes a bash script to the project directory and returns
+// its absolute path. The script is made executable.
+func writeTempScript(t *testing.T, dir, name, content string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	err := os.WriteFile(path, []byte("#!/usr/bin/env bash\nset -euo pipefail\n"+content), 0755)
+	require.NoError(t, err)
+	return path
+}
+
+// TestE2E_BadProcess_ForkDetach verifies that a process which spawns a child
+// via setsid+nohup (escaping the process group) is still tracked and cleaned
+// up by the daemon's descendant scanner and stored-descendant kill.
+func TestE2E_BadProcess_ForkDetach(t *testing.T) {
+	env := setupDaemonForE2E(t)
+	port := freePort(t)
+	pidFilePath := filepath.Join(env.ProjectDir, "fork-detach.pid")
+
+	// Write a script that spawns a setsid child and stays alive long enough
+	// for the descendant scanner (5s interval) to record the child.
+	scriptContent := fmt.Sprintf(`PORT=%d
+PIDFILE="%s"
+echo $$ > "$PIDFILE"
+setsid nohup bash -c "exec 0</dev/null 1>/dev/null 2>/dev/null; socat TCP-LISTEN:$PORT,fork,reuseaddr SYSTEM:'echo detached-child' 2>/dev/null" &
+echo "fork-detach parent=$$ on http://localhost:$PORT"
+trap 'exit 0' SIGTERM SIGINT
+sleep 3600 &
+wait
+`, port, pidFilePath)
+	scriptPath := writeTempScript(t, env.ProjectDir, "test-fork-detach.sh", scriptContent)
+
+	kdl := fmt.Sprintf(`scripts {
+    fork-detach {
+        run "bash %s"
+        autostart true
+        ports %d
+    }
+}
+`, scriptPath, port)
+	writeAgntKDL(t, env.ProjectDir, kdl)
+
+	ctx := context.Background()
+	result := env.Daemon.RunAutostart(ctx, env.ProjectDir)
+	require.Empty(t, result.Errors, "RunAutostart errors: %v", result.Errors)
+
+	processID := script.MakeProcessID(env.ProjectDir, "fork-detach")
+
+	// Wait for the parent PID file and port to be bound by the detached child
+	parentPID := readPIDFile(t, pidFilePath, 10*time.Second)
+	require.Greater(t, parentPID, 0)
+	require.NoError(t, waitForPort(port, 10*time.Second), "detached child should bind port %d", port)
+
+	// Find the detached child PID by looking at who is listening on the port
+	detachedPID := findPortUser(port)
+	require.Greater(t, detachedPID, 0, "must find the detached child on port %d", port)
+	assertProcessAlive(t, detachedPID)
+	t.Logf("parent PID=%d, detached child PID=%d", parentPID, detachedPID)
+
+	pm := env.Daemon.ProcessManager()
+	proc, err := pm.Get(processID)
+	require.NoError(t, err)
+	pmPID := proc.PID()
+	t.Cleanup(func() {
+		killTree(pmPID)
+		if p, findErr := os.FindProcess(detachedPID); findErr == nil {
+			_ = p.Signal(syscall.SIGKILL)
+		}
+	})
+
+	// Verify the detached child is in a DIFFERENT process group than the
+	// managed process (setsid creates a new session/group).
+	detachedPGID := getProcessPGID(detachedPID)
+	require.Greater(t, detachedPGID, 0, "detached child PGID must be valid")
+	assert.NotEqual(t, pmPID, detachedPGID,
+		"detached child (pgid=%d) must be in a different process group than managed process (pgid=%d)", detachedPGID, pmPID)
+
+	// Wait for the descendant scanner to record the detached child.
+	// The scanner runs every 5s; wait for at least one full cycle.
+	time.Sleep(6 * time.Second)
+
+	// Stop daemon gracefully — triggers signalProcessGroup (SIGTERM to PGID +
+	// live descendants + stored descendants) then SIGKILL escalation.
+	stopCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	env.Daemon.Stop(stopCtx)
+
+	// The detached child must be dead after daemon stop.
+	assertProcessDead(t, detachedPID, 10*time.Second)
+
+	// Port must be free after cleanup
+	err = waitForPort(port, 500*time.Millisecond)
+	assert.Error(t, err, "port %d should be free after cleanup", port)
+
+	// ProcessManager entry must reflect cleanup
+	procAfter, getErr := pm.Get(processID)
+	require.NoError(t, getErr)
+	state := procAfter.State()
+	assert.True(t, state == process.StateStopped || state == process.StateFailed,
+		"process state should be Stopped or Failed, got %s", state)
+}
+
+// TestE2E_BadProcess_DoubleFork verifies that a classic double-fork daemon
+// pattern (parent -> child -> grandchild, parent+child exit, grandchild
+// reparented to init/PID 1) is still tracked and killed by the daemon's
+// stored-descendant mechanism.
+func TestE2E_BadProcess_DoubleFork(t *testing.T) {
+	env := setupDaemonForE2E(t)
+	port := freePort(t)
+	pidFilePath := filepath.Join(env.ProjectDir, "double-fork.pid")
+	grandchildPIDFile := filepath.Join(env.ProjectDir, "grandchild.pid")
+
+	// Write a script that does the double-fork pattern. The parent stays alive
+	// so the descendant scanner can record the grandchild tree before cleanup.
+	// Double-fork pattern: parent -> child subshell -> grandchild (setsid).
+	// The grandchild creates a new session (setsid) and closes all fds to
+	// fully detach. The child subshell stays alive long enough for the
+	// descendant scanner to record the entire tree. The parent stays alive
+	// to keep the process tree intact for cleanup verification.
+	scriptContent := fmt.Sprintf(`PORT=%d
+PIDFILE="%s"
+GCPIDFILE="%s"
+echo $$ > "$PIDFILE"
+# First fork: child subshell
+(
+    # Second fork: grandchild in new session, closes fds to fully detach
+    setsid bash -c "echo \$\$ > $GCPIDFILE; exec 0</dev/null 1>/dev/null 2>/dev/null; socat TCP-LISTEN:$PORT,fork,reuseaddr SYSTEM:'echo double-fork-grandchild' 2>/dev/null" &
+    # Child stays alive (scanner needs to see grandchild as descendant)
+    trap 'exit 0' SIGTERM SIGINT
+    sleep 3600 &
+    wait
+) &
+echo "double-fork parent=$$ on http://localhost:$PORT"
+trap 'exit 0' SIGTERM SIGINT
+sleep 3600 &
+wait
+`, port, pidFilePath, grandchildPIDFile)
+	scriptPath := writeTempScript(t, env.ProjectDir, "test-double-fork.sh", scriptContent)
+
+	kdl := fmt.Sprintf(`scripts {
+    double-fork {
+        run "bash %s"
+        autostart true
+        ports %d
+    }
+}
+`, scriptPath, port)
+	writeAgntKDL(t, env.ProjectDir, kdl)
+
+	ctx := context.Background()
+	result := env.Daemon.RunAutostart(ctx, env.ProjectDir)
+	require.Empty(t, result.Errors, "RunAutostart errors: %v", result.Errors)
+
+	processID := script.MakeProcessID(env.ProjectDir, "double-fork")
+
+	// Wait for the parent PID file
+	parentPID := readPIDFile(t, pidFilePath, 10*time.Second)
+	require.Greater(t, parentPID, 0)
+
+	// Wait for the grandchild to bind the port
+	require.NoError(t, waitForPort(port, 10*time.Second), "grandchild should bind port %d", port)
+
+	// Find grandchild PID from its PID file, fall back to port listener
+	grandchildPID := readPIDFile(t, grandchildPIDFile, 5*time.Second)
+	if grandchildPID <= 0 {
+		grandchildPID = findPortUser(port)
+	}
+	require.Greater(t, grandchildPID, 0, "must find grandchild")
+	assertProcessAlive(t, grandchildPID)
+	t.Logf("parent PID=%d, grandchild PID=%d", parentPID, grandchildPID)
+
+	pm := env.Daemon.ProcessManager()
+	proc, err := pm.Get(processID)
+	require.NoError(t, err)
+	pmPID := proc.PID()
+	t.Cleanup(func() {
+		killTree(pmPID)
+		if p, findErr := os.FindProcess(grandchildPID); findErr == nil {
+			_ = p.Signal(syscall.SIGKILL)
+		}
+	})
+
+	// The grandchild used setsid so it is in a different process group.
+	grandchildPGID := getProcessPGID(grandchildPID)
+	require.Greater(t, grandchildPGID, 0, "grandchild PGID must be valid")
+	assert.NotEqual(t, pmPID, grandchildPGID,
+		"grandchild (pgid=%d) must be in a different process group than managed process (pgid=%d)",
+		grandchildPGID, pmPID)
+
+	// Wait for the descendant scanner to record the grandchild tree.
+	// Scanner runs every 5s; wait for at least one full cycle.
+	time.Sleep(6 * time.Second)
+
+	// Verify the grandchild is still a descendant of the managed process
+	// (child subshell is alive, keeping the tree intact).
+	descendants := getDescendants(pmPID)
+	assert.Contains(t, descendants, grandchildPID,
+		"grandchild PID %d should be in descendant tree of managed PID %d", grandchildPID, pmPID)
+
+	// Stop daemon gracefully — cleanup chain should kill the grandchild
+	// via stored descendants even though it is in a different session.
+	stopCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	env.Daemon.Stop(stopCtx)
+
+	// Grandchild must be dead after daemon stop
+	assertProcessDead(t, grandchildPID, 10*time.Second)
+
+	// Port must be free
+	err = waitForPort(port, 500*time.Millisecond)
+	assert.Error(t, err, "port %d should be free after cleanup", port)
+
+	// ProcessManager entry must reflect cleanup
+	procAfter, getErr := pm.Get(processID)
+	require.NoError(t, getErr)
+	state := procAfter.State()
+	assert.True(t, state == process.StateStopped || state == process.StateFailed,
+		"process state should be Stopped or Failed, got %s", state)
+}
+
+// TestE2E_BadProcess_ForkBombLite verifies that a process spawning 10
+// background sleep children is fully cleaned up when the daemon stops,
+// because all children share the parent's process group.
+func TestE2E_BadProcess_ForkBombLite(t *testing.T) {
+	env := setupDaemonForE2E(t)
+	port, pidFilePath, processID := runSingleScriptAutostart(t, env, "fork-bomb", "bad-fork-bomb-lite.sh")
+
+	pid := verifyRunningDataStructures(t, env, "fork-bomb", processID, port, pidFilePath)
+
+	pm := env.Daemon.ProcessManager()
+	proc, err := pm.Get(processID)
+	require.NoError(t, err)
+	pmPID := proc.PID()
+	t.Cleanup(func() { killTree(pmPID) })
+
+	// Wait for all 10 grandchildren to appear. The script spawns 10 "sleep 3600"
+	// children plus a socat, all as direct children of the bash script PID.
+	var grandchildren []int
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		grandchildren = getDescendants(pmPID)
+		// The managed process tree: sh -c "bash ..." -> bash script -> 10 sleeps + socat
+		// We need at least 11 descendants (10 sleeps + socat) below the managed PID.
+		if len(grandchildren) >= 11 {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	require.GreaterOrEqual(t, len(grandchildren), 11,
+		"expected at least 11 descendants (10 sleeps + socat), got %d: %v", len(grandchildren), grandchildren)
+	t.Logf("parent PID=%d, found %d descendants", pid, len(grandchildren))
+
+	// Verify all grandchildren share the parent's process group.
+	// The fork-bomb script does NOT call setsid, so all children inherit
+	// the parent's PGID (set by Setpgid: true on the managed process).
+	parentPGID := getProcessPGID(pmPID)
+	require.Greater(t, parentPGID, 0, "parent PGID must be valid")
+
+	sameGroupCount := 0
+	for _, gpid := range grandchildren {
+		childPGID := getProcessPGID(gpid)
+		if childPGID == parentPGID {
+			sameGroupCount++
+		}
+	}
+	// All descendants should be in the same process group (socat forks may
+	// add extra PIDs, so check that at least 10 share the group).
+	assert.GreaterOrEqual(t, sameGroupCount, 10,
+		"at least 10 grandchildren should share parent's PGID %d, got %d", parentPGID, sameGroupCount)
+
+	// Record all grandchild PIDs before shutdown for later verification
+	preShutdownGrandchildren := make([]int, len(grandchildren))
+	copy(preShutdownGrandchildren, grandchildren)
+
+	// Stop daemon gracefully — SIGTERM to process group should hit all children
+	stopCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	env.Daemon.Stop(stopCtx)
+
+	// All grandchildren must be dead
+	for _, gpid := range preShutdownGrandchildren {
+		assertProcessDead(t, gpid, 10*time.Second)
+	}
+
+	// No orphans remain under the managed process PID
+	assertAllDescendantsDead(t, pmPID, 10*time.Second)
+
+	// Port must be free
+	err = waitForPort(port, 500*time.Millisecond)
+	assert.Error(t, err, "port %d should be free after cleanup", port)
+
+	// ProcessManager entry must reflect cleanup
+	procAfter, getErr := pm.Get(processID)
+	require.NoError(t, getErr)
+	state := procAfter.State()
+	assert.True(t, state == process.StateStopped || state == process.StateFailed,
+		"process state should be Stopped or Failed, got %s", state)
+}
