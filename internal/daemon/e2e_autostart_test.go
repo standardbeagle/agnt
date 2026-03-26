@@ -528,3 +528,215 @@ func TestE2E_AutostartSingleScript_DotnetWatch(t *testing.T) {
 	}
 	assertAllDescendantsDead(t, pid, 10*time.Second)
 }
+
+// TestE2E_AutostartMultiScript_DependencyOrder verifies that RunAutostart
+// starts multiple scripts in correct dependency order: layer 0 scripts (api,
+// docs) start concurrently, layer 1 scripts (test, depends-on api) start
+// after their dependencies are ready.
+func TestE2E_AutostartMultiScript_DependencyOrder(t *testing.T) {
+	env := setupDaemonForE2E(t)
+
+	apiPort := freePort(t)
+	testPort := freePort(t)
+	docsPort := freePort(t)
+
+	apiPidFile := filepath.Join(env.ProjectDir, "api.pid")
+	testPidFile := filepath.Join(env.ProjectDir, "test.pid")
+	docsPidFile := filepath.Join(env.ProjectDir, "docs.pid")
+
+	pnpmPath := testdataPath(t, "fake-pnpm-watch.sh")
+	vitestPath := testdataPath(t, "fake-vitest.sh")
+	slowPath := testdataPath(t, "fake-slow-start.sh")
+
+	kdl := fmt.Sprintf(`scripts {
+    api {
+        run "bash %s %d %s"
+        autostart true
+        ports %d
+    }
+    test {
+        run "bash %s %d %s"
+        autostart true
+        ports %d
+        depends-on "api"
+    }
+    docs {
+        run "bash %s %d %s 0"
+        autostart true
+        ports %d
+    }
+}
+`, pnpmPath, apiPort, apiPidFile, apiPort,
+		vitestPath, testPort, testPidFile, testPort,
+		slowPath, docsPort, docsPidFile, docsPort)
+	writeAgntKDL(t, env.ProjectDir, kdl)
+
+	ctx := context.Background()
+	result := env.Daemon.RunAutostart(ctx, env.ProjectDir)
+
+	// All 3 scripts must appear in result.Scripts
+	require.Len(t, result.Scripts, 3, "expected 3 scripts, got %v (errors: %v)", result.Scripts, result.Errors)
+	require.Empty(t, result.Errors, "unexpected errors: %v", result.Errors)
+	assert.Contains(t, result.Scripts, "api")
+	assert.Contains(t, result.Scripts, "test")
+	assert.Contains(t, result.Scripts, "docs")
+
+	// Build process IDs
+	apiProcessID := script.MakeProcessID(env.ProjectDir, "api")
+	testProcessID := script.MakeProcessID(env.ProjectDir, "test")
+	docsProcessID := script.MakeProcessID(env.ProjectDir, "docs")
+
+	// Verify all 3 processes in ProcessManager with correct states
+	pm := env.Daemon.ProcessManager()
+
+	apiPid := verifyRunningDataStructures(t, env, "api", apiProcessID, apiPort, apiPidFile)
+	testPid := verifyRunningDataStructures(t, env, "test", testProcessID, testPort, testPidFile)
+	docsPid := verifyRunningDataStructures(t, env, "docs", docsProcessID, docsPort, docsPidFile)
+
+	// ActiveCount must equal 3
+	assert.Equal(t, int64(3), pm.ActiveCount(), "ActiveCount should be 3")
+
+	// ProcessManager.List must contain all 3 entries
+	allProcs := pm.List()
+	assert.Len(t, allProcs, 3, "ProcessManager should have 3 entries")
+
+	// Verify dependency ordering: api must start before test.
+	// Use ManagedProcess.StartTime() which is the atomic timestamp.
+	apiProc, _ := pm.Get(apiProcessID)
+	testProc, _ := pm.Get(testProcessID)
+	docsProc, _ := pm.Get(docsProcessID)
+
+	apiStart := apiProc.StartTime()
+	testStart := testProc.StartTime()
+	docsStart := docsProc.StartTime()
+
+	require.NotNil(t, apiStart, "api StartTime must be set")
+	require.NotNil(t, testStart, "test StartTime must be set")
+	require.NotNil(t, docsStart, "docs StartTime must be set")
+
+	assert.True(t, apiStart.Before(*testStart) || apiStart.Equal(*testStart),
+		"api (layer 0) must start before or at same time as test (layer 1): api=%v test=%v", apiStart, testStart)
+
+	// docs (layer 0, no dependency) should start concurrently with api.
+	// Both are in layer 0, so their start times should be close (within 2s).
+	apiDocsGap := docsStart.Sub(*apiStart)
+	if apiDocsGap < 0 {
+		apiDocsGap = -apiDocsGap
+	}
+	assert.Less(t, apiDocsGap.Seconds(), 2.0,
+		"api and docs (both layer 0) should start concurrently, gap=%v", apiDocsGap)
+
+	// Verify each script's RingBuffer has its expected output
+	apiOut, _ := apiProc.Stdout()
+	assert.Contains(t, string(apiOut), "pnpm:watch listening on")
+
+	testOut, _ := testProc.Stdout()
+	assert.Contains(t, string(testOut), "vitest listening on")
+
+	docsOut, _ := docsProc.Stdout()
+	assert.Contains(t, string(docsOut), "slow-start listening on")
+
+	// Verify ScriptRegistry tracks all 3 with Running state
+	sr := env.Daemon.ScriptRegistry()
+	for _, name := range []string{"api", "test", "docs"} {
+		entry, ok := sr.Get(name, env.ProjectDir)
+		require.True(t, ok, "script %s not in ScriptRegistry", name)
+		assert.Equal(t, script.StateRunning, entry.State(), "script %s state", name)
+	}
+
+	// Stop daemon and verify all processes die
+	stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	env.Daemon.Stop(stopCtx)
+
+	verifyStoppedDataStructures(t, apiPid, apiPort)
+	verifyStoppedDataStructures(t, testPid, testPort)
+	verifyStoppedDataStructures(t, docsPid, docsPort)
+}
+
+// TestE2E_AutostartMultiScript_PartialFailure verifies that when one script
+// fails to start, errors are reported but remaining scripts still start
+// successfully, and proxies linked to the failed script are skipped.
+func TestE2E_AutostartMultiScript_PartialFailure(t *testing.T) {
+	env := setupDaemonForE2E(t)
+
+	goodPort := freePort(t)
+	goodPidFile := filepath.Join(env.ProjectDir, "good.pid")
+	pnpmPath := testdataPath(t, "fake-pnpm-watch.sh")
+
+	badPort := freePort(t)
+
+	kdl := fmt.Sprintf(`scripts {
+    bad {
+        run "/nonexistent/command/that/does/not/exist"
+        autostart true
+        ports %d
+    }
+    good {
+        run "bash %s %d %s"
+        autostart true
+        ports %d
+    }
+}
+proxies {
+    bad-proxy {
+        script "bad"
+        port %d
+        autostart true
+    }
+}
+`, badPort,
+		pnpmPath, goodPort, goodPidFile, goodPort,
+		badPort)
+	writeAgntKDL(t, env.ProjectDir, kdl)
+
+	ctx := context.Background()
+	result := env.Daemon.RunAutostart(ctx, env.ProjectDir)
+
+	// The good script must have started
+	assert.Contains(t, result.Scripts, "good", "good script should be in result.Scripts")
+
+	// The bad script must have produced an error
+	require.NotEmpty(t, result.Errors, "expected errors for bad script")
+	foundBadError := false
+	for _, e := range result.Errors {
+		if strings.Contains(e, "bad") {
+			foundBadError = true
+			break
+		}
+	}
+	assert.True(t, foundBadError, "expected error mentioning 'bad' script, got: %v", result.Errors)
+
+	// Verify the good script is properly running in data structures
+	pm := env.Daemon.ProcessManager()
+	goodProcessID := script.MakeProcessID(env.ProjectDir, "good")
+	goodPid := verifyRunningDataStructures(t, env, "good", goodProcessID, goodPort, goodPidFile)
+
+	// The bad script should have a Failed state in ProcessManager (if registered)
+	badProcessID := script.MakeProcessID(env.ProjectDir, "bad")
+	badProc, err := pm.Get(badProcessID)
+	if err == nil {
+		assert.Equal(t, process.StateFailed, badProc.State(),
+			"bad script process should be in Failed state, got %s", badProc.State())
+	}
+
+	// Proxy linked to bad script should be skipped (error reported)
+	foundProxySkip := false
+	for _, e := range result.Errors {
+		if strings.Contains(e, "bad-proxy") || (strings.Contains(e, "proxy") && strings.Contains(e, "bad")) {
+			foundProxySkip = true
+			break
+		}
+	}
+	assert.True(t, foundProxySkip, "expected proxy skip error for bad-proxy, got: %v", result.Errors)
+
+	// ActiveCount should reflect only the good process
+	assert.GreaterOrEqual(t, pm.ActiveCount(), int64(1), "at least 1 active process (good)")
+
+	// Stop daemon and verify cleanup
+	stopCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	env.Daemon.Stop(stopCtx)
+
+	verifyStoppedDataStructures(t, goodPid, goodPort)
+}
