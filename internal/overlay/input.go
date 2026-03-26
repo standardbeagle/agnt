@@ -507,19 +507,33 @@ func (r *InputRouter) refreshPanelContent(panelID string) {
 		return
 	}
 
-	// Skip redraw when content is unchanged
-	if panel.Content == output {
+	// Check if the process state changed (e.g., failed -> running after restart)
+	stateChanged := false
+	r.overlay.statusMu.RLock()
+	for _, s := range r.overlay.status.Scripts {
+		if s.Name == panelID && s.State != panel.ProcessState {
+			panel.ProcessState = s.State
+			stateChanged = true
+			break
+		}
+	}
+	r.overlay.statusMu.RUnlock()
+
+	// Skip redraw when content and state are both unchanged
+	if panel.Content == output && !stateChanged {
 		return
 	}
 
 	wasAtBottom := panel.ScrollOffset == 0
-	panel.SetContent(output)
-	if wasAtBottom {
-		panel.ScrollOffset = 0
+	if panel.Content != output {
+		panel.SetContent(output)
+		if wasAtBottom {
+			panel.ScrollOffset = 0
+		}
 	}
 
-	// Try diff-based refresh to avoid full-screen flicker
-	if !r.overlay.renderer.RefreshPanelContent(*panel) {
+	// Full redraw when state changed (header needs update) or no diff cache
+	if stateChanged || !r.overlay.renderer.RefreshPanelContent(*panel) {
 		r.overlay.draw()
 	}
 }
