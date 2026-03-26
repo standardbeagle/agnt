@@ -5,6 +5,7 @@ package daemon
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"os"
@@ -2301,4 +2302,425 @@ func TestE2E_GracefulRestart_PortCleanupOnAutostart(t *testing.T) {
 	require.Greater(t, newPID, 0)
 	assert.NotEqual(t, roguePID, newPID, "new process PID must differ from rogue")
 	require.NoError(t, waitForPort(port, 10*time.Second), "new process should bind port %d", port)
+}
+
+// TestE2E_PIDTracker_FileFormat verifies that the PID tracker file (pids.json)
+// contains the expected JSON structure: daemon_pid, processes array with pid,
+// pgid, project_path, and updated_at timestamp. This reads the file directly
+// rather than going through the tracker API.
+func TestE2E_PIDTracker_FileFormat(t *testing.T) {
+	env, _ := setupDaemonForCrashTest(t)
+	port, pidFilePath, processID := runSingleScriptAutostart(t, env, "format-check", "fake-pnpm-watch.sh")
+
+	pid := verifyRunningDataStructures(t, env, "format-check", processID, port, pidFilePath)
+
+	pm := env.Daemon.ProcessManager()
+	proc, err := pm.Get(processID)
+	require.NoError(t, err)
+	pmPID := proc.PID()
+	t.Cleanup(func() { killTree(pmPID) })
+
+	// Read pids.json directly and validate structure
+	trackerPath := env.Daemon.pidTracker.Path()
+	data, err := os.ReadFile(trackerPath)
+	require.NoError(t, err, "pids.json must be readable")
+
+	var tracking process.PIDTracking
+	require.NoError(t, json.Unmarshal(data, &tracking), "pids.json must be valid JSON")
+
+	// Validate daemon_pid matches the current test process PID
+	assert.Equal(t, os.Getpid(), tracking.DaemonPID, "daemon_pid should be current process PID")
+
+	// Validate processes array
+	require.NotEmpty(t, tracking.Processes, "processes array must not be empty")
+
+	var found bool
+	for _, p := range tracking.Processes {
+		if p.ProjectPath == env.ProjectDir {
+			found = true
+			assert.Greater(t, p.PID, 0, "tracked process PID must be positive")
+			assert.Greater(t, p.PGID, 0, "tracked process PGID must be positive")
+			assert.NotEmpty(t, p.ID, "tracked process ID must not be empty")
+			assert.False(t, p.StartedAt.IsZero(), "tracked process started_at must be set")
+			t.Logf("tracked: id=%s pid=%d pgid=%d project=%s", p.ID, p.PID, p.PGID, p.ProjectPath)
+		}
+	}
+	assert.True(t, found, "must find tracked process for project %s", env.ProjectDir)
+
+	// Validate updated_at is recent
+	assert.False(t, tracking.UpdatedAt.IsZero(), "updated_at must be set")
+	assert.WithinDuration(t, time.Now(), tracking.UpdatedAt, 30*time.Second, "updated_at should be recent")
+
+	// Verify the raw JSON has expected top-level keys
+	var raw map[string]json.RawMessage
+	require.NoError(t, json.Unmarshal(data, &raw))
+	assert.Contains(t, raw, "daemon_pid", "JSON must have daemon_pid key")
+	assert.Contains(t, raw, "processes", "JSON must have processes key")
+	assert.Contains(t, raw, "updated_at", "JSON must have updated_at key")
+
+	_ = pid // verified via verifyRunningDataStructures
+}
+
+// TestE2E_PIDTracker_PreservedFileAfterStop verifies that after a graceful
+// daemon Stop(), the pids.json file persists on disk (not deleted) with valid
+// JSON. Processes are individually removed during shutdown as each is stopped,
+// so the processes array is empty. The daemon_pid field is preserved, enabling
+// the next daemon to detect a clean restart.
+func TestE2E_PIDTracker_PreservedFileAfterStop(t *testing.T) {
+	env, stateHome := setupDaemonForCrashTest(t)
+	port, pidFilePath, processID := runSingleScriptAutostart(t, env, "preserve-file", "fake-pnpm-watch.sh")
+
+	_ = verifyRunningDataStructures(t, env, "preserve-file", processID, port, pidFilePath)
+
+	pm := env.Daemon.ProcessManager()
+	proc, err := pm.Get(processID)
+	require.NoError(t, err)
+	pmPID := proc.PID()
+	t.Cleanup(func() { killTree(pmPID) })
+
+	// Read pids.json before stop to capture initial state
+	trackerPath := env.Daemon.pidTracker.Path()
+	dataBefore, err := os.ReadFile(trackerPath)
+	require.NoError(t, err)
+
+	var trackingBefore process.PIDTracking
+	require.NoError(t, json.Unmarshal(dataBefore, &trackingBefore))
+	require.NotEmpty(t, trackingBefore.Processes, "processes must exist before stop")
+	t.Logf("before stop: daemon_pid=%d, processes=%d", trackingBefore.DaemonPID, len(trackingBefore.Processes))
+
+	// Graceful stop: processes are killed and individually removed from tracker
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer stopCancel()
+	env.Daemon.Stop(stopCtx)
+	time.Sleep(500 * time.Millisecond)
+
+	// File must still exist (not deleted by Stop)
+	dataAfter, err := os.ReadFile(trackerPath)
+	require.NoError(t, err, "pids.json must persist after graceful stop")
+
+	var trackingAfter process.PIDTracking
+	require.NoError(t, json.Unmarshal(dataAfter, &trackingAfter), "pids.json must be valid JSON after stop")
+
+	// Processes are empty because each was individually removed during shutdown
+	assert.Empty(t, trackingAfter.Processes, "processes should be empty after graceful shutdown")
+
+	// daemon_pid is preserved
+	assert.Equal(t, trackingBefore.DaemonPID, trackingAfter.DaemonPID, "daemon PID must be preserved")
+	t.Logf("after stop: daemon_pid=%d, processes=%d", trackingAfter.DaemonPID, len(trackingAfter.Processes))
+
+	// Recovery daemon detects same daemon PID scenario (clean restart)
+	_ = createRecoveryDaemon(t, stateHome, env.ProjectDir, env.Daemon.pidTracker)
+
+	// After recovery, pids.json is updated with new daemon PID (os.Getpid()
+	// of the recovery daemon, which in tests is the same test process PID)
+	dataRecovery, err := os.ReadFile(trackerPath)
+	require.NoError(t, err)
+	var trackingRecovery process.PIDTracking
+	require.NoError(t, json.Unmarshal(dataRecovery, &trackingRecovery))
+	assert.Empty(t, trackingRecovery.Processes, "processes must remain empty after recovery")
+	// createRecoveryDaemon sets stored PID to 99999 to trigger crash detection;
+	// recovery daemon then sets it back to os.Getpid(). Verify it's not 99999.
+	assert.NotEqual(t, 99999, trackingRecovery.DaemonPID,
+		"recovery daemon must update PID from simulated crash value")
+	assert.Equal(t, os.Getpid(), trackingRecovery.DaemonPID,
+		"recovery daemon PID must be current process PID")
+}
+
+// TestE2E_PIDTracker_CrashRetainsProcesses verifies that after a daemon crash
+// (context cancel without Stop), pids.json retains the full process entries
+// with PIDs, PGIDs, and project paths. The recovery daemon reads this data
+// to detect and kill orphans.
+func TestE2E_PIDTracker_CrashRetainsProcesses(t *testing.T) {
+	env, stateHome := setupDaemonForCrashTest(t)
+	port, pidFilePath, processID := runSingleScriptAutostart(t, env, "crash-retain", "fake-pnpm-watch.sh")
+
+	pid := verifyRunningDataStructures(t, env, "crash-retain", processID, port, pidFilePath)
+
+	pm := env.Daemon.ProcessManager()
+	proc, err := pm.Get(processID)
+	require.NoError(t, err)
+	pmPID := proc.PID()
+	t.Cleanup(func() { killTree(pmPID) })
+
+	trackerPath := env.Daemon.pidTracker.Path()
+
+	// Read pids.json before crash
+	dataBefore, err := os.ReadFile(trackerPath)
+	require.NoError(t, err)
+	var trackingBefore process.PIDTracking
+	require.NoError(t, json.Unmarshal(dataBefore, &trackingBefore))
+	require.NotEmpty(t, trackingBefore.Processes)
+	storedPID := trackingBefore.Processes[0].PID
+	storedPGID := trackingBefore.Processes[0].PGID
+	storedID := trackingBefore.Processes[0].ID
+	t.Logf("before crash: daemon_pid=%d, process id=%s pid=%d pgid=%d",
+		trackingBefore.DaemonPID, storedID, storedPID, storedPGID)
+
+	// Simulate crash: cancel context without calling Stop
+	env.Daemon.cancel()
+	time.Sleep(500 * time.Millisecond)
+
+	// Process should survive the crash
+	assertProcessAlive(t, pid)
+
+	// Read pids.json after crash - must retain all data
+	dataAfter, err := os.ReadFile(trackerPath)
+	require.NoError(t, err, "pids.json must survive crash")
+	var trackingAfter process.PIDTracking
+	require.NoError(t, json.Unmarshal(dataAfter, &trackingAfter))
+
+	// Processes must still be recorded
+	require.NotEmpty(t, trackingAfter.Processes, "processes must be retained after crash")
+	assert.Equal(t, storedPID, trackingAfter.Processes[0].PID, "PID must be retained after crash")
+	assert.Equal(t, storedPGID, trackingAfter.Processes[0].PGID, "PGID must be retained after crash")
+	assert.Equal(t, storedID, trackingAfter.Processes[0].ID, "process ID must be retained after crash")
+	assert.Equal(t, trackingBefore.DaemonPID, trackingAfter.DaemonPID, "daemon PID must be retained after crash")
+
+	// Recovery daemon reads retained data and kills orphans
+	_ = createRecoveryDaemon(t, stateHome, env.ProjectDir, env.Daemon.pidTracker)
+	assertProcessDead(t, pid, 10*time.Second)
+
+	// After recovery: processes cleared, daemon PID updated
+	dataRecovery, err := os.ReadFile(trackerPath)
+	require.NoError(t, err)
+	var trackingRecovery process.PIDTracking
+	require.NoError(t, json.Unmarshal(dataRecovery, &trackingRecovery))
+	assert.Empty(t, trackingRecovery.Processes, "processes must be cleared after recovery")
+	t.Logf("after recovery: daemon_pid=%d, processes=%d", trackingRecovery.DaemonPID, len(trackingRecovery.Processes))
+
+	// Port must be free
+	err = waitForPort(port, 500*time.Millisecond)
+	assert.Error(t, err, "port %d should be free after orphan cleanup", port)
+}
+
+// TestE2E_PIDTracker_AtomicWrites verifies that pids.json is always valid JSON
+// even during rapid process additions, and that no .tmp files are left behind.
+func TestE2E_PIDTracker_AtomicWrites(t *testing.T) {
+	env, _ := setupDaemonForCrashTest(t)
+
+	// Create multiple scripts that all autostart simultaneously
+	ports := make([]int, 4)
+	pidFiles := make([]string, 4)
+	pnpmPath := testdataPath(t, "fake-pnpm-watch.sh")
+
+	var kdlBuilder strings.Builder
+	kdlBuilder.WriteString("scripts {\n")
+	for i := range ports {
+		ports[i] = freePort(t)
+		env.TrackPort(ports[i])
+		pidFiles[i] = filepath.Join(env.ProjectDir, fmt.Sprintf("atomic-%d.pid", i))
+		kdlBuilder.WriteString(fmt.Sprintf("    script%d {\n        run \"bash %s %d %s\"\n        autostart true\n        ports %d\n    }\n",
+			i, pnpmPath, ports[i], pidFiles[i], ports[i]))
+	}
+	kdlBuilder.WriteString("}\n")
+	writeAgntKDL(t, env.ProjectDir, kdlBuilder.String())
+
+	trackerPath := env.Daemon.pidTracker.Path()
+	trackerDir := filepath.Dir(trackerPath)
+
+	// Start reading pids.json rapidly in a goroutine during autostart
+	stopReader := make(chan struct{})
+	readerDone := make(chan struct{})
+	var readErrors []string
+	var readCount int
+	go func() {
+		defer close(readerDone)
+		for {
+			select {
+			case <-stopReader:
+				return
+			default:
+			}
+			data, err := os.ReadFile(trackerPath)
+			if err != nil {
+				// File may not exist yet during first write
+				time.Sleep(5 * time.Millisecond)
+				continue
+			}
+			readCount++
+			if !json.Valid(data) {
+				readErrors = append(readErrors, fmt.Sprintf("read %d: invalid JSON (%d bytes)", readCount, len(data)))
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+
+	// Run autostart which adds 4 processes rapidly
+	ctx := context.Background()
+	result := env.Daemon.RunAutostart(ctx, env.ProjectDir)
+	require.Empty(t, result.Errors, "RunAutostart errors: %v", result.Errors)
+	require.Len(t, result.Scripts, 4, "expected 4 scripts started")
+
+	// Wait for all processes to start
+	for i, port := range ports {
+		require.NoError(t, waitForPort(port, 10*time.Second), "script%d port %d not bound", i, port)
+	}
+
+	// Stop the reader goroutine and wait for it
+	close(stopReader)
+	<-readerDone
+
+	// All reads must have produced valid JSON
+	assert.Empty(t, readErrors, "pids.json had invalid JSON during rapid writes: %v", readErrors)
+	assert.Greater(t, readCount, 0, "must have read pids.json at least once")
+	t.Logf("read pids.json %d times during rapid autostart, all valid JSON", readCount)
+
+	// Check no .tmp files left behind
+	entries, err := os.ReadDir(trackerDir)
+	require.NoError(t, err)
+	for _, entry := range entries {
+		assert.False(t, strings.HasSuffix(entry.Name(), ".tmp"),
+			"leftover temp file found: %s", entry.Name())
+	}
+
+	// Final read should show all 4 processes
+	data, err := os.ReadFile(trackerPath)
+	require.NoError(t, err)
+	var tracking process.PIDTracking
+	require.NoError(t, json.Unmarshal(data, &tracking))
+	assert.Len(t, tracking.Processes, 4, "all 4 processes should be tracked")
+	t.Logf("final pids.json: daemon_pid=%d, processes=%d", tracking.DaemonPID, len(tracking.Processes))
+
+	// Cleanup
+	pm := env.Daemon.ProcessManager()
+	for i := range ports {
+		processID := script.MakeProcessID(env.ProjectDir, fmt.Sprintf("script%d", i))
+		if proc, getErr := pm.Get(processID); getErr == nil {
+			t.Cleanup(func() { killTree(proc.PID()) })
+		}
+	}
+}
+
+// TestE2E_ProcessTree_DeepNesting verifies that a 3-level deep process tree
+// (sh -> sh -> sh -> sleep 300) where all levels stay alive is fully cleaned
+// up when the daemon stops. All children share the managed process's PGID
+// (no setsid), so SIGTERM to the process group should kill all levels.
+//
+// This differs from DoubleFork (which uses setsid to escape PGID) and
+// ForkBombLite (which spawns many children at one level). Deep nesting tests
+// that the process group signal reaches children at arbitrary depth.
+func TestE2E_ProcessTree_DeepNesting(t *testing.T) {
+	env := setupDaemonForE2E(t)
+	port := freePort(t)
+	env.TrackPort(port)
+	pidFilePath := filepath.Join(env.ProjectDir, "deep-nest.pid")
+	level2PIDFile := filepath.Join(env.ProjectDir, "deep-nest-level2.pid")
+	level3PIDFile := filepath.Join(env.ProjectDir, "deep-nest-level3.pid")
+
+	// 3-level nesting: level1 (bash) -> level2 (bash) -> level3 (bash+socat+sleep)
+	// All levels stay alive via "sleep & wait" so the full tree is intact at
+	// cleanup time. No setsid — all share the managed process's PGID.
+	scriptContent := fmt.Sprintf(`#!/usr/bin/env bash
+PORT=%d
+PIDFILE="%s"
+L2PID="%s"
+L3PID="%s"
+echo $$ > "$PIDFILE"
+
+# Level 2: subshell that spawns level 3
+bash -c '
+echo $$ > "'"$L2PID"'"
+# Level 3: subshell with socat + sleep
+bash -c '"'"'
+echo $$ > "'"$L3PID"'"
+socat TCP-LISTEN:'"$PORT"',fork,reuseaddr SYSTEM:"echo deep-nest-level3" &
+sleep 300 &
+trap "exit 0" SIGTERM SIGINT
+wait
+'"'"' &
+sleep 300 &
+trap "exit 0" SIGTERM SIGINT
+wait
+' &
+
+echo "deep-nest parent=$$ on http://localhost:$PORT"
+trap 'exit 0' SIGTERM SIGINT
+sleep 300 &
+wait
+`, port, pidFilePath, level2PIDFile, level3PIDFile)
+	scriptPath := writeTempScript(t, env.ProjectDir, "test-deep-nest.sh", scriptContent)
+
+	kdl := fmt.Sprintf(`scripts {
+    deep-nest {
+        run "bash %s"
+        autostart true
+        ports %d
+    }
+}
+`, scriptPath, port)
+	writeAgntKDL(t, env.ProjectDir, kdl)
+
+	ctx := context.Background()
+	result := env.Daemon.RunAutostart(ctx, env.ProjectDir)
+	require.Empty(t, result.Errors, "RunAutostart errors: %v", result.Errors)
+
+	processID := script.MakeProcessID(env.ProjectDir, "deep-nest")
+
+	// Wait for level 1 PID file
+	parentPID := readPIDFile(t, pidFilePath, 10*time.Second)
+	require.Greater(t, parentPID, 0)
+
+	// Wait for level 3 to bind the port
+	require.NoError(t, waitForPort(port, 10*time.Second), "level 3 should bind port %d", port)
+
+	// Read level 2 and level 3 PIDs
+	level2PID := readPIDFile(t, level2PIDFile, 5*time.Second)
+	require.Greater(t, level2PID, 0, "level 2 PID must be recorded")
+	level3PID := readPIDFile(t, level3PIDFile, 5*time.Second)
+	require.Greater(t, level3PID, 0, "level 3 PID must be recorded")
+
+	t.Logf("level1 PID=%d, level2 PID=%d, level3 PID=%d", parentPID, level2PID, level3PID)
+
+	pm := env.Daemon.ProcessManager()
+	proc, err := pm.Get(processID)
+	require.NoError(t, err)
+	pmPID := proc.PID()
+	t.Cleanup(func() { killTree(pmPID) })
+
+	// All 3 levels must be alive
+	assertProcessAlive(t, parentPID)
+	assertProcessAlive(t, level2PID)
+	assertProcessAlive(t, level3PID)
+
+	// All levels should share the managed process's PGID (no setsid used)
+	parentPGID := getProcessPGID(pmPID)
+	require.Greater(t, parentPGID, 0, "managed process PGID must be valid")
+
+	l1PGID := getProcessPGID(parentPID)
+	l2PGID := getProcessPGID(level2PID)
+	l3PGID := getProcessPGID(level3PID)
+	assert.Equal(t, parentPGID, l1PGID, "level 1 should share managed process PGID")
+	assert.Equal(t, parentPGID, l2PGID, "level 2 should share managed process PGID")
+	assert.Equal(t, parentPGID, l3PGID, "level 3 should share managed process PGID")
+
+	// Verify all 3 are in the descendant tree of the managed process
+	descendants := getDescendants(pmPID)
+	assert.Contains(t, descendants, parentPID, "level 1 should be descendant of managed process")
+	assert.Contains(t, descendants, level2PID, "level 2 should be descendant of managed process")
+	assert.Contains(t, descendants, level3PID, "level 3 should be descendant of managed process")
+	t.Logf("managed PID=%d has %d descendants: %v", pmPID, len(descendants), descendants)
+
+	// Stop daemon gracefully — SIGTERM to process group should kill all levels
+	stopCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	env.Daemon.Stop(stopCtx)
+
+	// All 3 levels must be dead
+	assertProcessDead(t, parentPID, 10*time.Second)
+	assertProcessDead(t, level2PID, 10*time.Second)
+	assertProcessDead(t, level3PID, 10*time.Second)
+
+	// No orphans remain under the managed process PID
+	assertAllDescendantsDead(t, pmPID, 10*time.Second)
+
+	// Port must be free
+	err = waitForPort(port, 500*time.Millisecond)
+	assert.Error(t, err, "port %d should be free after cleanup", port)
+
+	// ProcessManager entry must reflect cleanup
+	procAfter, getErr := pm.Get(processID)
+	require.NoError(t, getErr)
+	state := procAfter.State()
+	assert.True(t, state == process.StateStopped || state == process.StateFailed,
+		"process state should be Stopped or Failed, got %s", state)
 }
