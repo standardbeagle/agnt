@@ -149,6 +149,28 @@ func TestReadySignaler_CleanupNonexistent(t *testing.T) {
 	rs.Cleanup("nonexistent")
 }
 
+func TestReadySignaler_PortProbeImmediateDetection(t *testing.T) {
+	// Start a TCP listener BEFORE starting the probe.
+	ln, err := net.Listen("tcp", "localhost:0")
+	require.NoError(t, err)
+	defer ln.Close()
+
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	rs := NewReadySignaler()
+	ctx := context.Background()
+
+	start := time.Now()
+	rs.StartPortProbe("proc1", port, ctx)
+
+	err = rs.WaitReady("proc1", 3*time.Second)
+	elapsed := time.Since(start)
+
+	assert.NoError(t, err, "probe should detect already-bound port immediately")
+	// The immediate check plus dial timeout should resolve well under 2s.
+	assert.Less(t, elapsed, 2*time.Second, "should resolve quickly via immediate check")
+}
+
 func TestReadySignaler_PortProbeReplacesExisting(t *testing.T) {
 	// Start a listener.
 	ln, err := net.Listen("tcp", "localhost:0")

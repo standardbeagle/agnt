@@ -90,6 +90,15 @@ func (rs *ReadySignaler) StartPortProbe(processID string, port int, ctx context.
 
 	addr := fmt.Sprintf("localhost:%d", port)
 	go func() {
+		// Check immediately before waiting for the first tick, so an
+		// already-bound port is detected without a 500ms delay.
+		conn, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
+		if err == nil {
+			conn.Close()
+			rs.SignalReady(processID)
+			return
+		}
+
 		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()
 		for {
