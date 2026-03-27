@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -139,8 +138,8 @@ func (d *Daemon) detectRogueProcess(ctx context.Context, proc *goprocess.Managed
 		return nil
 	}
 
-	// Check if port is in use using lsof
-	pids := findProcessesByPort(ctx, port)
+	// Check if port is in use
+	pids := config.FindPIDsByPort(ctx, port)
 	if len(pids) == 0 {
 		return nil
 	}
@@ -165,68 +164,6 @@ func (d *Daemon) detectRogueProcess(ctx context.Context, proc *goprocess.Managed
 	}
 
 	return nil
-}
-
-// findProcessesByPort finds PIDs of processes listening on the given port.
-func findProcessesByPort(ctx context.Context, port int) []int {
-	// Try lsof first
-	cmd := exec.CommandContext(ctx, "lsof", "-ti", fmt.Sprintf(":%d", port))
-	output, err := cmd.Output()
-	if err == nil && len(output) > 0 {
-		return parsePIDLines(strings.TrimSpace(string(output)))
-	}
-
-	// Fall back to ss
-	cmd = exec.CommandContext(ctx, "ss", "-tlnp")
-	output, err = cmd.Output()
-	if err != nil {
-		return nil
-	}
-
-	var pids []int
-	lines := strings.Split(string(output), "\n")
-	portPattern := fmt.Sprintf(":%d", port)
-
-	for _, line := range lines {
-		if !strings.Contains(line, portPattern) {
-			continue
-		}
-		// Extract PID from "pid=XXXX," pattern
-		start := strings.Index(line, "pid=")
-		if start == -1 {
-			continue
-		}
-		start += 4
-		end := strings.IndexAny(line[start:], ",)")
-		if end == -1 {
-			continue
-		}
-		var pid int
-		if _, err := fmt.Sscanf(line[start:start+end], "%d", &pid); err == nil {
-			pids = append(pids, pid)
-		}
-	}
-	return pids
-}
-
-// parsePIDLines parses newline-separated PID output from lsof.
-func parsePIDLines(output string) []int {
-	if output == "" {
-		return nil
-	}
-	lines := strings.Split(output, "\n")
-	var pids []int
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		var pid int
-		if _, err := fmt.Sscanf(line, "%d", &pid); err == nil {
-			pids = append(pids, pid)
-		}
-	}
-	return pids
 }
 
 // getExpectedPortForProcess extracts the expected port for a process.
