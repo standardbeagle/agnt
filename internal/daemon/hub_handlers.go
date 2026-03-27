@@ -414,7 +414,7 @@ func (d *Daemon) hubHandleRun(ctx context.Context, conn *hubpkg.Connection, cmd 
 	isBackground := cfg.Mode == "" || cfg.Mode == "background"
 	if isBackground && !cfg.NoAutoRestart && d.autoRestarter != nil && !result.Reused {
 		restartConfig := DefaultAutoRestartConfig()
-		d.autoRestarter.Register(proc.ID, restartConfig, proc.Command, proc.Args, proc.ProjectPath, proc.WorkingDir)
+		d.autoRestarter.Register(proc.ID, restartConfig, proc.Command, proc.Args, nil, nil, proc.ProjectPath, proc.WorkingDir)
 		debug.Log("daemon", "Auto-restart registered for %s (atomic with start)", proc.ID)
 	}
 
@@ -3469,7 +3469,7 @@ func (d *Daemon) hubHandleProcRestart(ctx context.Context, conn *hubpkg.Connecti
 	// Re-register auto-restart if it was previously enabled
 	if wasAutoRestart && d.autoRestarter != nil {
 		restartConfig := DefaultAutoRestartConfig()
-		d.autoRestarter.Register(processID, restartConfig, command, args, projectPath, projectPath)
+		d.autoRestarter.Register(processID, restartConfig, command, args, nil, []int{expectedPort}, projectPath, projectPath)
 	}
 
 	resp := map[string]interface{}{
@@ -3528,7 +3528,7 @@ func (d *Daemon) hubHandleProcAutoRestart(ctx context.Context, conn *hubpkg.Conn
 		}
 
 		// Register for auto-restart
-		d.autoRestarter.Register(processID, config, proc.Command, proc.Args, proc.ProjectPath, proc.WorkingDir)
+		d.autoRestarter.Register(processID, config, proc.Command, proc.Args, nil, nil, proc.ProjectPath, proc.WorkingDir)
 
 		resp := map[string]interface{}{
 			"id":            processID,

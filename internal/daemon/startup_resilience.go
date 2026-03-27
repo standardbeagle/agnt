@@ -109,7 +109,7 @@ func (d *Daemon) StartScript(ctx context.Context, cfg StartScriptConfig) (*Start
 		if cfg.AutoRestartConfig != nil {
 			restartConfig = *cfg.AutoRestartConfig
 		}
-		d.autoRestarter.Register(cfg.ProcessID, restartConfig, cfg.Command, cfg.Args, cfg.ProjectPath, cfg.WorkingDir)
+		d.autoRestarter.Register(cfg.ProcessID, restartConfig, cfg.Command, cfg.Args, cfg.Env, cfg.ExpectedPorts, cfg.ProjectPath, cfg.WorkingDir)
 		debug.Log("daemon", "Registered %s for auto-restart", cfg.ProcessID)
 	}
 

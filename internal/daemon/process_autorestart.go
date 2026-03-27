@@ -51,6 +51,8 @@ type processRestartState struct {
 	config           AutoRestartConfig
 	command          string
 	args             []string
+	env              []string
+	expectedPorts    []int          // Ports to clean up before restart (preflight cleanup)
 	projectPath      string         // Root project path (for session association)
 	workingDir       string         // Working directory for the process (may differ from projectPath)
 	restarts         []time.Time    // Timestamps of recent restarts
@@ -149,14 +151,16 @@ func NewProcessAutoRestarter(d *Daemon) *ProcessAutoRestarter {
 }
 
 // Register enables auto-restart for a process.
-func (r *ProcessAutoRestarter) Register(processID string, config AutoRestartConfig, command string, args []string, projectPath, workingDir string) {
+func (r *ProcessAutoRestarter) Register(processID string, config AutoRestartConfig, command string, args []string, env []string, expectedPorts []int, projectPath, workingDir string) {
 	r.mu.Lock()
 	r.processes[processID] = &processRestartState{
-		config:      config,
-		command:     command,
-		args:        args,
-		projectPath: projectPath,
-		workingDir:  workingDir,
+		config:        config,
+		command:       command,
+		args:          args,
+		env:           env,
+		expectedPorts: expectedPorts,
+		projectPath:   projectPath,
+		workingDir:    workingDir,
 	}
 	r.mu.Unlock()
 
@@ -358,7 +362,7 @@ func (r *ProcessAutoRestarter) monitorProcess(processID string) {
 		// Restart with EADDRINUSE recovery (use startScriptWithRetry instead of StartScript
 		// to avoid re-registering for auto-restart, since we're already monitoring)
 		ctx, cancel := context.WithTimeout(r.ctx, 30*time.Second)
-		proc, startupErr := r.daemon.startScriptWithRetry(ctx, processID, state.projectPath, state.workingDir, state.command, state.args, nil, nil)
+		proc, startupErr := r.daemon.startScriptWithRetry(ctx, processID, state.projectPath, state.workingDir, state.command, state.args, state.env, state.expectedPorts)
 		cancel()
 
 		if startupErr != nil {

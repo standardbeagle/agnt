@@ -3194,3 +3194,86 @@ func TestE2E_AutostartWithProxy_IndependentProxy(t *testing.T) {
 
 	assert.Empty(t, env.Daemon.ProxyManager().List(), "all proxies should be cleaned up after stop")
 }
+
+// assertPortFree polls until a port is free or fails the test.
+func assertPortFree(t *testing.T, port int, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 100*time.Millisecond)
+		if err != nil {
+			return // port is free
+		}
+		conn.Close()
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Errorf("Port %d still in use after %v", port, timeout)
+}
+
+// TestE2E_AutoRestart_PortCleanupOnRetry verifies that when a process with
+// declared ports fails and auto-restart fires, the preflight port cleanup
+// runs before the retry — killing any stale port holder from the previous
+// instance. This is the exact scenario that causes restart storms on Windows
+// when vite dies and the next instance races with the dying one for the port.
+func TestE2E_AutoRestart_PortCleanupOnRetry(t *testing.T) {
+	env, _ := setupDaemonForCrashTest(t)
+	d := env.Daemon
+
+	port := freePort(t)
+	env.TrackPort(port)
+
+	attemptFile := filepath.Join(env.ProjectDir, "attempt")
+
+	// Write a script that binds the port then exits (simulating a crash).
+	// Leaves socat running on the port — the auto-restarter must clean it.
+	crashScript := writeTempScript(t, env.ProjectDir, "crash-then-succeed.sh", fmt.Sprintf(`#!/bin/bash
+if [ ! -f "%s" ]; then
+    echo "1" > "%s"
+    socat TCP-LISTEN:%d,fork,reuseaddr SYSTEM:'echo first' &
+    echo "first attempt, bound port %d"
+    sleep 1
+    exit 1
+fi
+
+ATTEMPT=$(cat "%s")
+echo "$((ATTEMPT + 1))" > "%s"
+echo "attempt $((ATTEMPT + 1)), binding port %d"
+exec socat TCP-LISTEN:%d,fork,reuseaddr SYSTEM:'echo success'
+`, attemptFile, attemptFile, port, port, attemptFile, attemptFile, port, port))
+
+	// Write .agnt.kdl with ports declaration
+	writeAgntKDL(t, env.ProjectDir, fmt.Sprintf(`
+scripts {
+    crasher {
+        run "bash %s"
+        autostart true
+        ports %d
+    }
+}
+`, crashScript, port))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	result := d.RunAutostart(ctx, env.ProjectDir)
+	require.NotNil(t, result)
+
+	// Wait for crash + backoff + restart + port probe
+	time.Sleep(8 * time.Second)
+
+	// Port should be bound by the successful retry
+	conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 2*time.Second)
+	require.NoError(t, err, "Port %d should be bound by successful restart (preflight cleanup should have killed stale socat)", port)
+	conn.Close()
+
+	// Verify the attempt file shows at least 2 attempts
+	attemptData, err := os.ReadFile(attemptFile)
+	require.NoError(t, err)
+	t.Logf("Attempt count: %s", string(attemptData))
+
+	// Stop daemon
+	stopCtx, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel2()
+	d.Stop(stopCtx)
+
+	assertPortFree(t, port, 5*time.Second)
+}
