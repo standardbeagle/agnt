@@ -351,6 +351,9 @@ func (d *Daemon) Start() error {
 	// scripts are started via StartScript/RunAutostart, not at daemon startup.
 	d.cleanupOrphans()
 
+	// Check Chrome version for browser diagnostics
+	d.checkBrowserVersion()
+
 	// Restore proxies from persisted state
 	d.restoreProxies()
 
@@ -419,6 +422,21 @@ func (d *Daemon) restoreProxies() {
 		}
 
 		// Removed startup log: restored proxy %s -> %s on port %d
+	}
+}
+
+// checkBrowserVersion logs a warning if Chrome is outdated or missing.
+func (d *Daemon) checkBrowserVersion() {
+	info := browser.CheckVersion()
+	if warning := browser.FormatWarning(info); warning != "" {
+		debug.Log("daemon", "browser check: %s", warning)
+		d.startupErrorStore.Add(&StartupLogEntry{
+			Level: "warning", EventType: "browser_check",
+			Message:   warning,
+			Timestamp: time.Now(),
+		})
+	} else if info != nil {
+		debug.Log("daemon", "browser: Chrome %s at %s", info.FullVersion, info.Path)
 	}
 }
 
