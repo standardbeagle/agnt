@@ -2,7 +2,11 @@
 
 package browser
 
-import "os"
+import (
+	"os"
+	"path/filepath"
+	"sort"
+)
 
 // platformDiscoverer implements Discoverer for Linux.
 type platformDiscoverer struct{}
@@ -34,7 +38,28 @@ func (d *platformDiscoverer) Find() string {
 		return path
 	}
 
+	// Try Playwright-managed Chromium (kept current via npm install)
+	if path := findPlaywrightChromium(); path != "" {
+		return path
+	}
+
 	return ""
+}
+
+// findPlaywrightChromium finds the latest Playwright-managed Chromium binary.
+func findPlaywrightChromium() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	pattern := filepath.Join(home, ".cache", "ms-playwright", "chromium-*", "chrome-linux64", "chrome")
+	matches, err := filepath.Glob(pattern)
+	if err != nil || len(matches) == 0 {
+		return ""
+	}
+	sort.Strings(matches)
+	// Return the highest version (last alphabetically, e.g. chromium-1208 > chromium-1179)
+	return matches[len(matches)-1]
 }
 
 // fileExists checks if a file exists.
