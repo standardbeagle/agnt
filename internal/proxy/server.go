@@ -1249,11 +1249,13 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 					} else {
 						sessionCaptures[captureID] = filePath
 						debug.Log("proxy", "Saved binary screenshot: id=%s path=%s", captureID, filePath)
-						_ = conn.WriteJSON(map[string]interface{}{
+						if wErr := conn.WriteJSON(map[string]interface{}{
 							"type":      "capture_ack",
 							"id":        captureID,
 							"file_path": filePath,
-						})
+						}); wErr != nil {
+							debug.Error("proxy", "failed to send capture_ack: %v", wErr)
+						}
 					}
 				}
 			}
@@ -1611,10 +1613,12 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 			session, err := NewVoiceSession(connID, conn, config)
 			if err != nil {
-				conn.WriteJSON(map[string]interface{}{
+				if wErr := conn.WriteJSON(map[string]interface{}{
 					"type":  "voice_error",
 					"error": err.Error(),
-				})
+				}); wErr != nil {
+					debug.Error("proxy", "voice_start: failed to send error to client: %v", wErr)
+				}
 				continue
 			}
 
@@ -1635,10 +1639,12 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			if session, ok := ps.voiceSessions.LoadAndDelete(connID); ok {
 				session.(*VoiceSession).Close()
 
-				conn.WriteJSON(map[string]interface{}{
+				if wErr := conn.WriteJSON(map[string]interface{}{
 					"type":    "voice_stopped",
 					"message": "Transcription session ended",
-				})
+				}); wErr != nil {
+					debug.Error("proxy", "voice_stop: failed to send response to client: %v", wErr)
+				}
 
 				// Log voice stop
 				ps.logger.LogCustom(CustomLog{
@@ -1671,7 +1677,9 @@ func (ps *ProxyServer) handleSessionRequest(conn *websocket.Conn, data map[strin
 		} else {
 			resp["result"] = result
 		}
-		conn.WriteJSON(resp)
+		if wErr := conn.WriteJSON(resp); wErr != nil {
+			debug.Error("proxy", "session_response: failed to send response to client: %v", wErr)
+		}
 	}
 
 	// Check if session client factory is configured
@@ -1806,7 +1814,9 @@ func (ps *ProxyServer) handleStoreRequest(conn *websocket.Conn, data map[string]
 		} else {
 			resp["result"] = result
 		}
-		conn.WriteJSON(resp)
+		if wErr := conn.WriteJSON(resp); wErr != nil {
+			debug.Error("proxy", "failed to send exec response: %v", wErr)
+		}
 	}
 
 	// Check if session client factory is configured (we reuse it for store access)
