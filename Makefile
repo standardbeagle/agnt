@@ -1,4 +1,4 @@
-.PHONY: build release test test-unit test-integration test-browser clean clean-zombies install install-local install-windows run lint test-webapp mockagent
+.PHONY: build release test test-unit test-integration test-browser test-e2e clean clean-zombies install install-local install-windows run lint test-webapp mockagent
 
 # Binary names
 BINARY := devtool-mcp
@@ -46,6 +46,10 @@ test-integration:
 # Run browser automation tests (requires Chrome)
 test-browser:
 	go test -v -tags=integration ./internal/browser/...
+
+# Run Playwright e2e tests (installs/updates Chromium automatically)
+test-e2e:
+	cd e2e && npm install && npx playwright test
 
 # Build test webapp server
 test-webapp:
@@ -147,6 +151,7 @@ help:
 	@echo "  test-unit        - Run unit tests only"
 	@echo "  test-integration - Run integration tests (requires dependencies)"
 	@echo "  test-browser     - Run browser automation tests (requires Chrome)"
+	@echo "  test-e2e         - Run Playwright e2e tests (auto-installs Chromium)"
 	@echo "  test-coverage    - Run tests with coverage report"
 	@echo "  test-webapp      - Build test webapp server"
 	@echo "  mockagent        - Build mock agent for PTY testing"

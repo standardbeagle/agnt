@@ -10,7 +10,8 @@
     "test:debug": "PWDEBUG=1 playwright test",
     "test:report": "playwright show-report",
     "fixtures": "http-server fixtures -p 8765 -c-1",
-    "clean": "rm -rf playwright-report test-results"
+    "clean": "rm -rf playwright-report test-results",
+    "postinstall": "playwright install --with-deps chromium"
   },
   "keywords": ["agnt", "e2e", "playwright", "testing"],
   "author": "Standard Beagle",
