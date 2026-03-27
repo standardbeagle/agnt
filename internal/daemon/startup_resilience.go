@@ -4,6 +4,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -249,11 +250,38 @@ func (d *Daemon) preflightPortCleanup(ctx context.Context, port int) ([]int, err
 
 	if len(killedPIDs) > 0 {
 		debug.Info("daemon", "Pre-flight cleanup: killed %d process(es) on port %d: %v", len(killedPIDs), port, killedPIDs)
-		// Give processes time to fully terminate
-		time.Sleep(200 * time.Millisecond)
+		// Poll until the port is actually free (up to 5 seconds)
+		d.waitForPortFree(port, 5*time.Second)
 	}
 
 	return killedPIDs, nil
+}
+
+// waitForPortFree polls until the given port is free or timeout expires.
+// Checks both IPv4 and IPv6 loopback since the process may bind on either.
+func (d *Daemon) waitForPortFree(port int, timeout time.Duration) {
+	deadline := time.Now().Add(timeout)
+	addrs := []string{
+		fmt.Sprintf("127.0.0.1:%d", port),
+		fmt.Sprintf("[::1]:%d", port),
+	}
+	for time.Now().Before(deadline) {
+		allFree := true
+		for _, addr := range addrs {
+			conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
+			if err == nil {
+				conn.Close()
+				allFree = false
+				break
+			}
+		}
+		if allFree {
+			debug.Log("daemon", "Port %d is free", port)
+			return
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	debug.Warn("daemon", "Port %d still in use after %v", port, timeout)
 }
 
 // startScriptWithRetry starts a script with automatic EADDRINUSE recovery.

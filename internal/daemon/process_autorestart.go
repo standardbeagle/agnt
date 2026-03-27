@@ -48,14 +48,15 @@ const maxLastOutputLines = 20
 
 // processRestartState tracks restart history for rate limiting.
 type processRestartState struct {
-	config        AutoRestartConfig
-	command       string
-	args          []string
-	projectPath   string         // Root project path (for session association)
-	workingDir    string         // Working directory for the process (may differ from projectPath)
-	restarts      []time.Time    // Timestamps of recent restarts
-	restartEvents []RestartEvent // History of restart events for output display
-	mu            sync.Mutex
+	config           AutoRestartConfig
+	command          string
+	args             []string
+	projectPath      string         // Root project path (for session association)
+	workingDir       string         // Working directory for the process (may differ from projectPath)
+	restarts         []time.Time    // Timestamps of recent restarts
+	restartEvents    []RestartEvent // History of restart events for output display
+	consecutiveFails int            // Consecutive rapid failures for backoff calculation
+	mu               sync.Mutex
 }
 
 // shouldRestart checks if a restart is allowed based on rate limits.
@@ -298,11 +299,27 @@ func (r *ProcessAutoRestarter) monitorProcess(processID string) {
 			return
 		}
 
+		// Calculate restart delay with exponential backoff for rapid failures.
+		// A process that ran < 5s is considered a rapid failure (likely port conflict).
+		delay := state.config.RestartDelay
+		state.mu.Lock()
+		if proc.Runtime() < 5*time.Second {
+			state.consecutiveFails++
+			// Exponential backoff: 1s, 2s, 4s, 8s, 16s (capped)
+			for i := 1; i < state.consecutiveFails && delay < 16*time.Second; i++ {
+				delay *= 2
+			}
+			debug.Log("daemon", "Process %s failed rapidly (%v), backoff delay %v (attempt %d)", processID, proc.Runtime(), delay, state.consecutiveFails)
+		} else {
+			state.consecutiveFails = 0 // Reset on successful run
+		}
+		state.mu.Unlock()
+
 		// Wait before restart
 		select {
 		case <-r.ctx.Done():
 			return
-		case <-time.After(state.config.RestartDelay):
+		case <-time.After(delay):
 		}
 
 		// Double-check we're still registered
