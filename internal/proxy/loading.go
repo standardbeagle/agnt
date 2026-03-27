@@ -39,6 +39,11 @@ word-break:break-all;margin-bottom:1rem}
 .timer{font-size:2rem;font-variant-numeric:tabular-nums;
 font-weight:600;color:var(--fg);margin-bottom:.75rem}
 .hint{color:var(--muted);font-size:.85rem;line-height:1.5}
+.history{margin-top:1rem;text-align:left;max-height:150px;overflow-y:auto;
+font-family:monospace;font-size:.8rem;color:var(--muted);line-height:1.6;
+background:var(--bg);border-radius:6px;padding:.5rem .75rem}
+.history-title{font-size:.75rem;text-transform:uppercase;letter-spacing:.05em;
+margin-bottom:.25rem;color:var(--muted)}
 </style>
 </head>
 <body>
@@ -48,6 +53,7 @@ font-weight:600;color:var(--fg);margin-bottom:.75rem}
 <div class="target">%s</div>
 <div class="timer" id="timer">%s</div>
 <p class="hint">The page will refresh automatically when the server is ready.</p>
+%s
 </div>
 <script>
 (function(){
@@ -75,6 +81,39 @@ func acceptsHTML(r *http.Request) bool {
 // maxLoadingWait is how long the loading page auto-refreshes before showing a permanent error.
 const maxLoadingWait = 60 * time.Second
 
+// maxConnAttempts is the max number of connection attempts to retain.
+const maxConnAttempts = 20
+
+// ConnAttempt records a failed connection attempt for the loading page.
+type ConnAttempt struct {
+	Timestamp time.Time
+	Event     string // "connection_refused", "timeout", "reset", etc.
+	Message   string
+}
+
+// recordConnAttempt adds a connection attempt to the log.
+func (ps *ProxyServer) recordConnAttempt(event, message string) {
+	ps.connAttemptsMu.Lock()
+	defer ps.connAttemptsMu.Unlock()
+	ps.connAttempts = append(ps.connAttempts, ConnAttempt{
+		Timestamp: time.Now(),
+		Event:     event,
+		Message:   message,
+	})
+	if len(ps.connAttempts) > maxConnAttempts {
+		ps.connAttempts = ps.connAttempts[len(ps.connAttempts)-maxConnAttempts:]
+	}
+}
+
+// getConnAttempts returns a copy of recent connection attempts.
+func (ps *ProxyServer) getConnAttempts() []ConnAttempt {
+	ps.connAttemptsMu.Lock()
+	defer ps.connAttemptsMu.Unlock()
+	result := make([]ConnAttempt, len(ps.connAttempts))
+	copy(result, ps.connAttempts)
+	return result
+}
+
 // serveLoadingPage writes the loading page HTML as an HTTP response.
 // After maxLoadingWait, it shows a permanent error page instead of auto-refreshing.
 func (ps *ProxyServer) serveLoadingPage(w http.ResponseWriter, _ *http.Request, targetURL string) {
@@ -90,7 +129,20 @@ func (ps *ProxyServer) serveLoadingPage(w http.ResponseWriter, _ *http.Request, 
 	timerStr := fmt.Sprintf("%02d:%02d", mins, secs)
 	startUnix := ps.startTime.Unix()
 
-	page := fmt.Sprintf(loadingPageHTML, targetURL, timerStr, startUnix)
+	// Build connection history HTML
+	historyHTML := ""
+	attempts := ps.getConnAttempts()
+	if len(attempts) > 0 {
+		var lines []string
+		for _, a := range attempts {
+			ts := a.Timestamp.Format("15:04:05")
+			lines = append(lines, fmt.Sprintf("%s  %s", ts, a.Event))
+		}
+		historyHTML = fmt.Sprintf(`<div class="history"><div class="history-title">Connection Log (%d attempts)</div>%s</div>`,
+			len(attempts), strings.Join(lines, "<br>"))
+	}
+
+	page := fmt.Sprintf(loadingPageHTML, targetURL, timerStr, historyHTML, startUnix)
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Retry-After", "3")

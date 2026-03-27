@@ -58,6 +58,10 @@ type ProxyServer struct {
 	ready     chan struct{}
 	readyOnce sync.Once
 
+	// Connection attempt log for the loading page
+	connAttempts   []ConnAttempt
+	connAttemptsMu sync.Mutex
+
 	// Auto-restart configuration
 	autoRestart   bool
 	maxRestarts   int
@@ -1144,6 +1148,9 @@ func (ps *ProxyServer) errorHandler(w http.ResponseWriter, r *http.Request, err 
 			"status_code":  http.StatusBadGateway,
 		},
 	})
+
+	// Record this connection attempt for the loading page history
+	ps.recordConnAttempt(diagEvent, userMsg)
 
 	// For browser requests hitting a server that isn't up yet, serve a friendly
 	// loading page with auto-refresh instead of a cryptic error string.
