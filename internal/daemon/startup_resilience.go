@@ -145,13 +145,24 @@ var portPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`vite.*--port\s*(\d+)`), // vite --port 3000
 }
 
-// eaddrinusePatterns matches EADDRINUSE error messages
+// eaddrinusePatterns matches EADDRINUSE error messages across platforms.
+// Includes Node.js EADDRINUSE, Go bind errors, .NET HttpListener conflicts,
+// and generic port-in-use messages.
 var eaddrinusePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)EADDRINUSE.*:(\d+)`),
 	regexp.MustCompile(`(?i)address already in use.*:(\d+)`),
 	regexp.MustCompile(`(?i)listen.*EADDRINUSE`),
 	regexp.MustCompile(`(?i)port (\d+).*already in use`),
 	regexp.MustCompile(`(?i)address.*:(\d+).*in use`),
+	// .NET HttpListener / HTTP.sys on Windows
+	regexp.MustCompile(`(?i)conflicts with an existing registration.*:(\d+)`),
+	regexp.MustCompile(`(?i)Failed to listen on prefix.*:(\d+)`),
+	// .NET Kestrel
+	regexp.MustCompile(`(?i)Unable to bind to.*:(\d+)`),
+	// Python
+	regexp.MustCompile(`(?i)OSError.*Address already in use.*:(\d+)`),
+	regexp.MustCompile(`(?i)\[Errno 98\].*:(\d+)`),    // Linux
+	regexp.MustCompile(`(?i)\[Errno 10048\].*:(\d+)`), // Windows
 }
 
 // extractPortFromCommand extracts a port number from a command and its arguments.
