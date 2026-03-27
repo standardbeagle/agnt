@@ -178,7 +178,11 @@ func (s *AuditSummarizer) buildAuditContext(audit AuditData) string {
 	if len(audit.Result) > 0 {
 		var parsed interface{}
 		if err := json.Unmarshal(audit.Result, &parsed); err == nil {
-			prettyResult, _ = json.MarshalIndent(parsed, "", "  ")
+			var marshalErr error
+			prettyResult, marshalErr = json.MarshalIndent(parsed, "", "  ")
+			if marshalErr != nil {
+				prettyResult = audit.Result
+			}
 		} else {
 			prettyResult = audit.Result
 		}
