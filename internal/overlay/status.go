@@ -727,6 +727,56 @@ func (f *DaemonOutputFetcher) GetScriptOutput(scriptName string, tailLines int) 
 	return strings.Join(lines, "\n"), nil
 }
 
+// DaemonScriptController implements ScriptController using a shared daemon connection.
+type DaemonScriptController struct {
+	conn        *daemon.Conn
+	projectPath string
+}
+
+// NewDaemonScriptController creates a new DaemonScriptController.
+func NewDaemonScriptController(conn *daemon.Conn) *DaemonScriptController {
+	projectPath, err := os.Getwd()
+	if err != nil {
+		projectPath = ""
+	}
+	return &DaemonScriptController{
+		conn:        conn,
+		projectPath: projectPath,
+	}
+}
+
+// StopScript stops a script by name.
+func (c *DaemonScriptController) StopScript(name string) error {
+	_, err := c.conn.Request(protocol.VerbScript, protocol.SubVerbStop, name).
+		WithJSON(map[string]interface{}{"directory": c.projectPath}).JSON()
+	return err
+}
+
+// RestartScript restarts a script by name.
+func (c *DaemonScriptController) RestartScript(name string) error {
+	_, err := c.conn.Request(protocol.VerbScript, protocol.SubVerbRestart, name).
+		WithJSON(map[string]interface{}{"directory": c.projectPath}).JSON()
+	return err
+}
+
+// StartScript starts a stopped script by name (uses restart which handles both cases).
+func (c *DaemonScriptController) StartScript(name string) error {
+	_, err := c.conn.Request(protocol.VerbScript, protocol.SubVerbRestart, name).
+		WithJSON(map[string]interface{}{"directory": c.projectPath}).JSON()
+	return err
+}
+
+// RunCommand runs an ad-hoc shell command as a background process.
+func (c *DaemonScriptController) RunCommand(command string) error {
+	_, err := c.conn.Request("RUN-JSON", "", "").
+		WithJSON(map[string]interface{}{
+			"command":   command,
+			"mode":      "background",
+			"directory": c.projectPath,
+		}).JSON()
+	return err
+}
+
 // DaemonConnectorImpl implements DaemonConnector using a shared connection.
 type DaemonConnectorImpl struct {
 	conn *daemon.Conn

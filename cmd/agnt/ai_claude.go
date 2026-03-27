@@ -576,6 +576,8 @@ func runAiClaudeOverlay(ctx context.Context, opts *claude.AgentOptions, daemonHa
 	inputRouter.SetOutputFetcher(outputFetcher)
 	daemonConnector := overlay.NewDaemonConnector(daemonConn)
 	inputRouter.SetDaemonConnector(daemonConnector)
+	scriptController := overlay.NewDaemonScriptController(daemonConn)
+	inputRouter.SetScriptController(scriptController)
 
 	// Set up summarizer
 	if agent := detectAIAgent(); agent != "" {

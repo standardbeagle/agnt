@@ -201,6 +201,13 @@ type Overlay struct {
 	panelMode        bool        // Whether in panel view (vs overview/menu)
 	directPanelEntry bool        // Entered panel mode directly (Ctrl+Arrow from indicator)
 
+	// Overview panel: interactive script selection
+	overviewSelectedIdx int // Selected script row in overview (0-based)
+
+	// Command input mode (bottom of overview)
+	commandInput  bool   // Whether command input is active
+	commandBuffer string // Current command text being typed
+
 	// Rendering
 	renderer *Renderer
 
@@ -569,6 +576,15 @@ func (o *Overlay) buildPanelItems() {
 		logIdx = len(o.panelItems) - 1
 	}
 	o.panelItems[logIdx].SetContent(formatStartupLog(status.StartupLog))
+
+	// Clamp overview selection to script count
+	if n := len(status.Scripts); n > 0 {
+		if o.overviewSelectedIdx >= n {
+			o.overviewSelectedIdx = n - 1
+		}
+	} else {
+		o.overviewSelectedIdx = 0
+	}
 }
 
 // formatStartupLog formats startup log entries into readable text for the log panel.
@@ -717,7 +733,7 @@ func (o *Overlay) draw() {
 			if idx >= len(o.panelItems) {
 				idx = len(o.panelItems) - 1
 			}
-			o.renderer.DrawPanelView(o.panelItems, idx, status)
+			o.renderer.DrawPanelView(o.panelItems, idx, status, o.overviewSelectedIdx, o.commandInput, o.commandBuffer)
 		} else if len(o.menuStack) > 0 {
 			o.renderer.DrawIndicator(status)
 			// Use DrawDashboard for the main menu (comprehensive view)
