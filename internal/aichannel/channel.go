@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/standardbeagle/agnt/internal/debug"
 )
 
 // Common errors
@@ -151,7 +153,7 @@ func (c *Channel) createProvider() Provider {
 		MaxTokens: c.config.MaxTokens,
 	})
 	if err != nil {
-		// Log error but return nil - IsAvailable will handle this
+		debug.Warn("aichannel", "failed to initialize %s provider: %v", string(provider), err)
 		return nil
 	}
 
