@@ -2,7 +2,11 @@
 
 package browser
 
-import "os"
+import (
+	"os"
+	"path/filepath"
+	"sort"
+)
 
 // platformDiscoverer implements Discoverer for macOS.
 type platformDiscoverer struct{}
@@ -32,7 +36,27 @@ func (d *platformDiscoverer) Find() string {
 		}
 	}
 
+	// Try Playwright-managed Chromium (kept current via npm install)
+	if path := findPlaywrightChromium(); path != "" {
+		return path
+	}
+
 	return ""
+}
+
+// findPlaywrightChromium finds the latest Playwright-managed Chromium binary.
+func findPlaywrightChromium() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	pattern := filepath.Join(home, "Library", "Caches", "ms-playwright", "chromium-*", "chrome-mac", "Chromium.app", "Contents", "MacOS", "Chromium")
+	matches, err := filepath.Glob(pattern)
+	if err != nil || len(matches) == 0 {
+		return ""
+	}
+	sort.Strings(matches)
+	return matches[len(matches)-1]
 }
 
 // fileExists checks if a file exists.

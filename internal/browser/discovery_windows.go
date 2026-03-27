@@ -5,6 +5,7 @@ package browser
 import (
 	"os"
 	"path/filepath"
+	"sort"
 )
 
 // platformDiscoverer implements Discoverer for Windows.
@@ -53,7 +54,27 @@ func (d *platformDiscoverer) Find() string {
 		return path
 	}
 
+	// Try Playwright-managed Chromium (kept current via npm install)
+	if path := findPlaywrightChromium(); path != "" {
+		return path
+	}
+
 	return ""
+}
+
+// findPlaywrightChromium finds the latest Playwright-managed Chromium binary.
+func findPlaywrightChromium() string {
+	localAppData := os.Getenv("LOCALAPPDATA")
+	if localAppData == "" {
+		return ""
+	}
+	pattern := filepath.Join(localAppData, "ms-playwright", "chromium-*", "chrome-win", "chrome.exe")
+	matches, err := filepath.Glob(pattern)
+	if err != nil || len(matches) == 0 {
+		return ""
+	}
+	sort.Strings(matches)
+	return matches[len(matches)-1]
 }
 
 // fileExists checks if a file exists.
