@@ -173,7 +173,7 @@ func checkPortConflicts(ctx context.Context, projectPath string, pm *goprocess.P
 	var conflicts []map[string]interface{}
 	for scriptName, sc := range cfg.Scripts {
 		for _, port := range sc.Ports {
-			pids := findProcessesByPort(ctx, port)
+			pids := config.FindPIDsByPort(ctx, port)
 			if len(pids) == 0 {
 				continue
 			}

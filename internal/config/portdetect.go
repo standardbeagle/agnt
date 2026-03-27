@@ -3,11 +3,8 @@ package config
 
 import (
 	"context"
-	"fmt"
-	"os/exec"
 	"regexp"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -51,86 +48,11 @@ func (pd *PortDetector) DetectFromOutput(output string) int {
 	return 0
 }
 
-// DetectFromPID finds listening TCP ports for a process using ss or lsof.
-// Returns all detected ports.
+// DetectFromPID finds listening TCP ports for a process.
+// Uses platform-native APIs: /proc/net/tcp on Linux, lsof on macOS,
+// netstat on Windows. Returns all detected ports.
 func (pd *PortDetector) DetectFromPID(ctx context.Context, pid int) []int {
-	// Try ss first (faster, more common on Linux)
-	ports := pd.detectWithSs(ctx, pid)
-	if len(ports) > 0 {
-		return ports
-	}
-
-	// Fallback to lsof
-	return pd.detectWithLsof(ctx, pid)
-}
-
-// detectWithSs uses ss to find listening ports for a process.
-func (pd *PortDetector) detectWithSs(ctx context.Context, pid int) []int {
-	// ss -tlnp: TCP, listening, numeric, show processes
-	cmd := exec.CommandContext(ctx, "ss", "-tlnp")
-	output, err := cmd.Output()
-	if err != nil {
-		return nil
-	}
-
-	var ports []int
-	pidStr := fmt.Sprintf("pid=%d", pid)
-
-	for _, line := range strings.Split(string(output), "\n") {
-		// Look for lines containing our PID
-		if !strings.Contains(line, pidStr) {
-			continue
-		}
-
-		// Parse port from Local Address column
-		// Format: LISTEN 0 128 0.0.0.0:3000 0.0.0.0:*
-		// Or: LISTEN 0 128 [::]:3000 [::]:*
-		fields := strings.Fields(line)
-		for _, field := range fields {
-			// Look for address:port patterns
-			if idx := strings.LastIndex(field, ":"); idx != -1 {
-				portStr := field[idx+1:]
-				if port, err := strconv.Atoi(portStr); err == nil && port > 0 && port < 65536 {
-					// Avoid duplicates
-					found := false
-					for _, p := range ports {
-						if p == port {
-							found = true
-							break
-						}
-					}
-					if !found {
-						ports = append(ports, port)
-					}
-				}
-			}
-		}
-	}
-
-	return ports
-}
-
-// detectWithLsof uses lsof to find listening ports for a process.
-func (pd *PortDetector) detectWithLsof(ctx context.Context, pid int) []int {
-	// lsof -iTCP -sTCP:LISTEN -p PID -n -P
-	cmd := exec.CommandContext(ctx, "lsof", "-iTCP", "-sTCP:LISTEN", "-p", strconv.Itoa(pid), "-n", "-P")
-	output, err := cmd.Output()
-	if err != nil {
-		return nil
-	}
-
-	var ports []int
-	portRe := regexp.MustCompile(`:(\d+)\s+\(LISTEN\)`)
-
-	for _, line := range strings.Split(string(output), "\n") {
-		if matches := portRe.FindStringSubmatch(line); len(matches) > 1 {
-			if port, err := strconv.Atoi(matches[1]); err == nil && port > 0 && port < 65536 {
-				ports = append(ports, port)
-			}
-		}
-	}
-
-	return ports
+	return detectPortsForPID(ctx, pid)
 }
 
 // WaitForPort waits for a port to be detected, either from output or PID.
