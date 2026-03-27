@@ -542,13 +542,17 @@ func (d *Daemon) hubHandleProcOutput(ctx context.Context, conn *hubpkg.Connectio
 	}
 
 	var output []byte
+	var truncated bool
 	switch filter.Stream {
 	case "stdout":
-		output, _ = proc.Stdout()
+		output, truncated = proc.Stdout()
 	case "stderr":
-		output, _ = proc.Stderr()
+		output, truncated = proc.Stderr()
 	default:
-		output, _ = proc.CombinedOutput()
+		output, truncated = proc.CombinedOutput()
+	}
+	if truncated {
+		debug.Warn("process %q output was truncated (stream=%s)", processID, filter.Stream)
 	}
 
 	// Prepend restart event delimiters if this process was auto-restarted
@@ -586,6 +590,12 @@ func (d *Daemon) hubHandleProcOutput(ctx context.Context, conn *hubpkg.Connectio
 
 	// Return output as chunked response (client expects CHUNK + END for .String())
 	outputStr := strings.Join(filtered, "\n")
+	if truncated {
+		notice := "[WARNING: output was truncated due to buffer size limit]\n"
+		if err := conn.WriteChunk([]byte(notice)); err != nil {
+			return err
+		}
+	}
 	if len(outputStr) > 0 {
 		if err := conn.WriteChunk([]byte(outputStr)); err != nil {
 			return err
@@ -4221,7 +4231,9 @@ func (d *Daemon) resolveScriptProjectPath(conn *hubpkg.Connection, cmd *hubproto
 		Directory string `json:"directory"`
 	}
 	if len(cmd.Data) > 0 {
-		_ = json.Unmarshal(cmd.Data, &filter)
+		if err := json.Unmarshal(cmd.Data, &filter); err != nil {
+			debug.Warn("hub", "resolveScriptProjectPath: invalid JSON in command data: %v", err)
+		}
 	}
 	if filter.Directory != "" {
 		return normalizePath(filter.Directory)
@@ -4366,7 +4378,9 @@ func (d *Daemon) hubHandleScriptOutput(conn *hubpkg.Connection, cmd *hubproto.Co
 		var opts struct {
 			Tail int `json:"tail"`
 		}
-		_ = json.Unmarshal(cmd.Data, &opts)
+		if err := json.Unmarshal(cmd.Data, &opts); err != nil {
+			debug.Warn("hub", "hubHandleRunOutput: invalid JSON in command data: %v", err)
+		}
 		tail = opts.Tail
 	}
 

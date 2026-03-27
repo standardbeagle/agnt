@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/standardbeagle/agnt/internal/debug"
 )
 
 // VoiceSession manages a single voice transcription session between browser and Deepgram.
@@ -157,7 +158,9 @@ func (vs *VoiceSession) Close() {
 	// Send close message to Deepgram
 	closeMsg := map[string]string{"type": "CloseStream"}
 	if data, err := json.Marshal(closeMsg); err == nil {
-		vs.deepgramConn.WriteMessage(websocket.TextMessage, data)
+		if wErr := vs.deepgramConn.WriteMessage(websocket.TextMessage, data); wErr != nil {
+			debug.Error("voice", "failed to send close stream: %v", wErr)
+		}
 	}
 
 	vs.deepgramConn.Close()
@@ -235,7 +238,9 @@ func (vs *VoiceSession) sendToBrowser(msg interface{}) {
 		return
 	}
 
-	vs.browserConn.WriteJSON(msg)
+	if err := vs.browserConn.WriteJSON(msg); err != nil {
+		debug.Error("voice", "failed to send transcription to browser: %v", err)
+	}
 }
 
 // keepAlive sends periodic keepalive messages to Deepgram.
@@ -252,7 +257,9 @@ func (vs *VoiceSession) keepAlive() {
 			if !vs.closed {
 				msg := map[string]string{"type": "KeepAlive"}
 				if data, err := json.Marshal(msg); err == nil {
-					vs.deepgramConn.WriteMessage(websocket.TextMessage, data)
+					if wErr := vs.deepgramConn.WriteMessage(websocket.TextMessage, data); wErr != nil {
+						debug.Error("voice", "failed to send keepalive to Deepgram: %v", wErr)
+					}
 				}
 			}
 			vs.mu.Unlock()
