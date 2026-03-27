@@ -426,6 +426,8 @@ func runWithConPTY(ctx context.Context, args []string, socketPath string, sessio
 		inputRouter.SetOutputFetcher(outputFetcher)
 		daemonConnector := overlay.NewDaemonConnector(daemonConn)
 		inputRouter.SetDaemonConnector(daemonConnector)
+		scriptController := overlay.NewDaemonScriptController(daemonConn)
+		inputRouter.SetScriptController(scriptController)
 
 		// Set up summarizer using shared connection
 		if agent := detectAIAgent(); agent != "" {

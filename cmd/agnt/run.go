@@ -394,6 +394,8 @@ func runWithPTY(ctx context.Context, args []string, socketPath string, sessionCo
 		inputRouter.SetOutputFetcher(outputFetcher)
 		daemonConnector := overlay.NewDaemonConnector(daemonConn)
 		inputRouter.SetDaemonConnector(daemonConnector)
+		scriptController := overlay.NewDaemonScriptController(daemonConn)
+		inputRouter.SetScriptController(scriptController)
 
 		// Set up summarizer - detect first available AI agent
 		if agent := detectAIAgent(); agent != "" {

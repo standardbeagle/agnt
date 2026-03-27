@@ -1188,7 +1188,7 @@ func (r *Renderer) DrawDashboard(menu Menu, selectedIndex int, status Status) {
 
 // DrawPanelView draws a full-screen panel view with a niri-style tab bar at top.
 // Panels are arranged horizontally like niri columns: Ctrl+Left/Right to navigate.
-func (r *Renderer) DrawPanelView(panels []PanelItem, activeIndex int, status Status) {
+func (r *Renderer) DrawPanelView(panels []PanelItem, activeIndex int, status Status, overviewSelectedIdx int, commandInput bool, commandBuffer string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -1240,7 +1240,7 @@ func (r *Renderer) DrawPanelView(panels []PanelItem, activeIndex int, status Sta
 
 	switch active.Type {
 	case "overview":
-		r.drawOverviewContent(contentRow, panelCol+2, contentWidth, panelHeight-2, status)
+		r.drawOverviewContent(contentRow, panelCol+2, contentWidth, panelHeight-2, status, overviewSelectedIdx, commandInput, commandBuffer)
 	case "process":
 		r.drawProcessPanelContent(contentRow, panelCol+2, contentWidth, panelHeight-2, active, status)
 	case "proxy":
@@ -1253,7 +1253,12 @@ func (r *Renderer) DrawPanelView(panels []PanelItem, activeIndex int, status Sta
 	footerRow := r.height
 	r.moveTo(footerRow, 1)
 	r.write(BgBrightBlack + FgWhite)
-	hint := fmt.Sprintf(" Tab Navigate  ↑↓ Scroll  1-9 Jump  x Close stopped  Esc Exit  (%d/%d) ", activeIndex+1, len(panels))
+	var hint string
+	if active.Type == "overview" && len(status.Scripts) > 0 {
+		hint = fmt.Sprintf(" ↑↓ Select  Enter Open  a Start  s Stop  r Restart  : Run cmd  Esc Exit  (%d/%d) ", activeIndex+1, len(panels))
+	} else {
+		hint = fmt.Sprintf(" Tab Navigate  ↑↓ Scroll  1-9 Jump  x Close stopped  Esc Exit  (%d/%d) ", activeIndex+1, len(panels))
+	}
 	hint = r.padRight(hint, r.width)
 	r.write(hint)
 	r.write(Reset)
@@ -1323,7 +1328,8 @@ func (r *Renderer) drawPanelTabBar(panels []PanelItem, activeIndex int) {
 }
 
 // drawOverviewContent draws the overview panel content (system summary).
-func (r *Renderer) drawOverviewContent(startRow, col, width, maxRows int, status Status) {
+// selectedIdx is the highlighted script row index (0-based, -1 for no selection).
+func (r *Renderer) drawOverviewContent(startRow, col, width, maxRows int, status Status, selectedIdx int, commandInput bool, commandBuffer string) {
 	row := startRow
 
 	// Connection status
@@ -1350,6 +1356,12 @@ func (r *Renderer) drawOverviewContent(startRow, col, width, maxRows int, status
 				break
 			}
 			r.moveTo(row, col+1)
+
+			selected := i == selectedIdx
+			if selected {
+				r.write(Reverse)
+			}
+
 			icon, iconColor := processStateIcon(script.State, script.HasAlerts)
 
 			nameStr := script.Name
@@ -1358,9 +1370,16 @@ func (r *Renderer) drawOverviewContent(startRow, col, width, maxRows int, status
 			}
 
 			r.write(fmt.Sprintf("%s%s%s %s", iconColor, icon, Reset, nameStr))
+			if selected {
+				// Re-apply reverse after Reset from icon color
+				r.write(Reverse)
+			}
 
 			if script.FailCount > 0 {
 				r.write(fmt.Sprintf(" %sfails:%d%s", FgRed, script.FailCount, Reset))
+				if selected {
+					r.write(Reverse)
+				}
 			}
 
 			if script.LastError != "" && script.State == "failed" {
@@ -1371,7 +1390,15 @@ func (r *Renderer) drawOverviewContent(startRow, col, width, maxRows int, status
 				}
 				if maxErr > 0 {
 					r.write(fmt.Sprintf(" %s%s%s", FgBrightBlack, errMsg, Reset))
+					if selected {
+						r.write(Reverse)
+					}
 				}
+			}
+
+			// Pad to fill the row for a clean highlight bar
+			if selected {
+				r.write(Reset)
 			}
 			row++
 		}
@@ -1432,27 +1459,19 @@ func (r *Renderer) drawOverviewContent(startRow, col, width, maxRows int, status
 		}
 	}
 
-	// Actions
+	// Command input (bottom of overview)
 	if row < startRow+maxRows-1 {
 		row++
 		r.moveTo(row, col)
-		r.write(Bold + "actions" + Reset)
-		row++
-
-		actions := []struct{ key, label string }{
-			{"r", "Run script"},
-			{"b", "Bash command"},
-			{"m", "Summarize status"},
-			{"s", "Refresh"},
-			{"i", "Toggle indicator"},
-		}
-		for _, a := range actions {
-			if row >= startRow+maxRows {
-				break
-			}
-			r.moveTo(row, col+1)
-			r.write(fmt.Sprintf("%s%s%s %s", FgCyan+Bold, a.key, Reset, a.label))
+		if commandInput {
+			r.write(Bold + "run command" + Reset)
 			row++
+			r.moveTo(row, col)
+			r.write(fmt.Sprintf("%s>%s %s", FgCyan+Bold, Reset, commandBuffer))
+			// Cursor position indicator
+			r.write(FgBrightBlack + "█" + Reset)
+		} else {
+			r.write(FgBrightBlack + "Press " + Reset + FgCyan + Bold + ":" + Reset + FgBrightBlack + " to run a command" + Reset)
 		}
 	}
 }

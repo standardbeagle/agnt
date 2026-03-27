@@ -33,6 +33,18 @@ type DaemonConnector interface {
 	IsConnected() bool
 }
 
+// ScriptController is an interface for stopping, starting, and restarting scripts via the daemon.
+type ScriptController interface {
+	// StopScript stops a script by name.
+	StopScript(name string) error
+	// RestartScript restarts a script by name.
+	RestartScript(name string) error
+	// StartScript starts a stopped script by name.
+	StartScript(name string) error
+	// RunCommand runs an ad-hoc shell command as a background process.
+	RunCommand(command string) error
+}
+
 // StatusSummarizer is an interface for summarizing system status.
 type StatusSummarizer interface {
 	// Summarize aggregates all system data and generates a summary.
@@ -46,18 +58,19 @@ const panelRefreshInterval = 750 * time.Millisecond
 
 // InputRouter routes input between the PTY and the overlay.
 type InputRouter struct {
-	ptmx            PtyReadWriter
-	overlay         *Overlay
-	hotkey          byte
-	input           io.Reader // defaults to os.Stdin
-	running         atomic.Bool
-	done            chan struct{}
-	escReader       *EscapeSequenceReader
-	bashRunner      BashRunner
-	outputFetcher   ProcessOutputFetcher
-	daemonConnector DaemonConnector
-	statusFetcher   *StatusFetcher
-	summarizer      StatusSummarizer
+	ptmx             PtyReadWriter
+	overlay          *Overlay
+	hotkey           byte
+	input            io.Reader // defaults to os.Stdin
+	running          atomic.Bool
+	done             chan struct{}
+	escReader        *EscapeSequenceReader
+	bashRunner       BashRunner
+	outputFetcher    ProcessOutputFetcher
+	daemonConnector  DaemonConnector
+	scriptController ScriptController
+	statusFetcher    *StatusFetcher
+	summarizer       StatusSummarizer
 
 	// Process viewer state
 	viewerActive         bool
@@ -79,6 +92,11 @@ func NewInputRouter(ptmx PtyReadWriter, overlay *Overlay, hotkey byte) *InputRou
 		done:      make(chan struct{}),
 		escReader: NewEscapeSequenceReader(),
 	}
+}
+
+// SetScriptController sets the script controller for stopping/restarting scripts.
+func (r *InputRouter) SetScriptController(ctrl ScriptController) {
+	r.scriptController = ctrl
 }
 
 // SetBashRunner sets the bash runner for executing bash commands via the daemon.
@@ -297,7 +315,11 @@ func (r *InputRouter) handleMenuKey(key string) {
 
 	case "\r", "\n": // Enter
 		if r.overlay.panelMode {
-			return // No-op in panel view
+			if r.isOverviewWithScripts() {
+				r.overviewEnter()
+				return
+			}
+			return // No-op in other panel views
 		}
 		if r.overlay.selectedIndex >= 0 && r.overlay.selectedIndex < len(menu.Items) {
 			item := menu.Items[r.overlay.selectedIndex]
@@ -307,6 +329,13 @@ func (r *InputRouter) handleMenuKey(key string) {
 
 	case "Up", "k": // Up arrow or vim style
 		if r.overlay.panelMode {
+			if r.isOverviewWithScripts() {
+				if r.overlay.overviewSelectedIdx > 0 {
+					r.overlay.overviewSelectedIdx--
+					r.overlay.draw()
+				}
+				return
+			}
 			// Scroll up in panel content
 			if r.overlay.panelIndex >= 0 && r.overlay.panelIndex < len(r.overlay.panelItems) {
 				panel := &r.overlay.panelItems[r.overlay.panelIndex]
@@ -325,6 +354,16 @@ func (r *InputRouter) handleMenuKey(key string) {
 
 	case "Down", "j": // Down arrow or vim style
 		if r.overlay.panelMode {
+			if r.isOverviewWithScripts() {
+				r.overlay.statusMu.RLock()
+				scriptCount := len(r.overlay.status.Scripts)
+				r.overlay.statusMu.RUnlock()
+				if r.overlay.overviewSelectedIdx < scriptCount-1 {
+					r.overlay.overviewSelectedIdx++
+					r.overlay.draw()
+				}
+				return
+			}
 			// Scroll down in panel content (toward bottom)
 			if r.overlay.panelIndex >= 0 && r.overlay.panelIndex < len(r.overlay.panelItems) {
 				panel := &r.overlay.panelItems[r.overlay.panelIndex]
@@ -407,6 +446,32 @@ func (r *InputRouter) handleMenuKey(key string) {
 		return
 	}
 
+	// Overview panel: intercept 's' (stop) and 'r' (restart) for selected script
+	// Command input mode: all keys go to the command buffer
+	if r.overlay.commandInput {
+		r.handleCommandInput(key)
+		return
+	}
+
+	if r.isOverviewWithScripts() && len(key) == 1 {
+		switch key[0] {
+		case 's', 'S':
+			r.overviewStopScript()
+			return
+		case 'r', 'R':
+			r.overviewRestartScript()
+			return
+		case 'a', 'A':
+			r.overviewStartScript()
+			return
+		case ':', '/':
+			r.overlay.commandInput = true
+			r.overlay.commandBuffer = ""
+			r.overlay.draw()
+			return
+		}
+	}
+
 	// Check for shortcut keys (single character keys)
 	if len(key) == 1 {
 		b := key[0]
@@ -425,6 +490,137 @@ func (r *InputRouter) handleMenuKey(key string) {
 func (r *InputRouter) exitPanelMode() {
 	r.stopPanelRefresh()
 	r.overlay.hideMenu()
+}
+
+// isOverviewWithScripts returns true if the overlay is in panel mode on the
+// overview panel and there are scripts to select.
+// Must be called with overlay.mu held.
+func (r *InputRouter) isOverviewWithScripts() bool {
+	if !r.overlay.panelMode || r.overlay.panelIndex != 0 {
+		return false
+	}
+	if len(r.overlay.panelItems) == 0 || r.overlay.panelItems[0].Type != "overview" {
+		return false
+	}
+	r.overlay.statusMu.RLock()
+	n := len(r.overlay.status.Scripts)
+	r.overlay.statusMu.RUnlock()
+	return n > 0
+}
+
+// selectedScript returns the ScriptInfo at the current overview selection index,
+// or nil if out of range.
+// Must be called with overlay.mu held.
+func (r *InputRouter) selectedScript() *ScriptInfo {
+	r.overlay.statusMu.RLock()
+	defer r.overlay.statusMu.RUnlock()
+	idx := r.overlay.overviewSelectedIdx
+	if idx < 0 || idx >= len(r.overlay.status.Scripts) {
+		return nil
+	}
+	s := r.overlay.status.Scripts[idx]
+	return &s
+}
+
+// overviewEnter navigates to the panel for the selected script.
+// Must be called with overlay.mu held.
+func (r *InputRouter) overviewEnter() {
+	script := r.selectedScript()
+	if script == nil {
+		return
+	}
+	// Find the panel matching this script name
+	for i, p := range r.overlay.panelItems {
+		if p.Type == "process" && p.ID == script.Name {
+			r.overlay.panelIndex = i
+			panel := &r.overlay.panelItems[i]
+			if r.outputFetcher != nil {
+				r.fetchScriptOutput(panel)
+				r.startPanelRefresh(panel.ID)
+			}
+			r.overlay.renderer.ClearScreen()
+			r.overlay.draw()
+			return
+		}
+	}
+}
+
+// overviewStopScript stops the selected script via the daemon.
+// Must be called with overlay.mu held.
+func (r *InputRouter) overviewStopScript() {
+	if r.scriptController == nil {
+		return
+	}
+	script := r.selectedScript()
+	if script == nil {
+		return
+	}
+	name := script.Name
+	r.overlay.mu.Unlock()
+	_ = r.scriptController.StopScript(name)
+	r.overlay.mu.Lock()
+	r.overlay.draw()
+}
+
+// overviewRestartScript restarts the selected script via the daemon.
+// Must be called with overlay.mu held.
+func (r *InputRouter) overviewRestartScript() {
+	if r.scriptController == nil {
+		return
+	}
+	script := r.selectedScript()
+	if script == nil {
+		return
+	}
+	name := script.Name
+	r.overlay.mu.Unlock()
+	_ = r.scriptController.RestartScript(name)
+	r.overlay.mu.Lock()
+	r.overlay.draw()
+}
+
+// overviewStartScript starts the selected stopped script via the daemon.
+func (r *InputRouter) overviewStartScript() {
+	if r.scriptController == nil {
+		return
+	}
+	script := r.selectedScript()
+	if script == nil {
+		return
+	}
+	name := script.Name
+	r.overlay.mu.Unlock()
+	_ = r.scriptController.StartScript(name)
+	r.overlay.mu.Lock()
+	r.overlay.draw()
+}
+
+// handleCommandInput processes keystrokes while the command input is active.
+func (r *InputRouter) handleCommandInput(key string) {
+	switch {
+	case key == "Escape" || (len(key) == 1 && key[0] == 27):
+		r.overlay.commandInput = false
+		r.overlay.commandBuffer = ""
+		r.overlay.draw()
+	case key == "Enter" || (len(key) == 1 && key[0] == 13):
+		cmd := r.overlay.commandBuffer
+		r.overlay.commandInput = false
+		r.overlay.commandBuffer = ""
+		if cmd != "" && r.scriptController != nil {
+			r.overlay.mu.Unlock()
+			_ = r.scriptController.RunCommand(cmd)
+			r.overlay.mu.Lock()
+		}
+		r.overlay.draw()
+	case key == "Backspace" || (len(key) == 1 && key[0] == 127):
+		if len(r.overlay.commandBuffer) > 0 {
+			r.overlay.commandBuffer = r.overlay.commandBuffer[:len(r.overlay.commandBuffer)-1]
+			r.overlay.draw()
+		}
+	case len(key) == 1 && key[0] >= 32 && key[0] < 127: // Printable ASCII
+		r.overlay.commandBuffer += key
+		r.overlay.draw()
+	}
 }
 
 // fetchScriptOutput fetches script output and replaces the panel's content buffer.
