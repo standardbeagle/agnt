@@ -40,7 +40,7 @@ func TestServeLoadingPage(t *testing.T) {
 	}
 
 	w := httptest.NewRecorder()
-	ps.serveLoadingPage(w, "http://localhost:3000")
+	ps.serveLoadingPage(w, nil, "http://localhost:3000")
 
 	resp := w.Result()
 	require.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
@@ -56,14 +56,33 @@ func TestServeLoadingPage(t *testing.T) {
 
 func TestServeLoadingPageTimerFormat(t *testing.T) {
 	ps := &ProxyServer{
-		startTime: time.Now().Add(-65 * time.Second),
+		startTime: time.Now().Add(-45 * time.Second),
 	}
 
 	w := httptest.NewRecorder()
-	ps.serveLoadingPage(w, "http://localhost:8080")
+	ps.serveLoadingPage(w, nil, "http://localhost:8080")
 
 	body := w.Body.String()
-	assert.Contains(t, body, "01:05")
+	assert.Contains(t, body, "00:45")
+}
+
+func TestServeLoadingPageTimeout(t *testing.T) {
+	// After maxLoadingWait, should serve error page instead of loading page
+	ps := &ProxyServer{
+		startTime: time.Now().Add(-90 * time.Second),
+	}
+
+	w := httptest.NewRecorder()
+	ps.serveLoadingPage(w, nil, "http://localhost:3456")
+
+	resp := w.Result()
+	require.Equal(t, http.StatusBadGateway, resp.StatusCode)
+
+	body := w.Body.String()
+	assert.Contains(t, body, "Server not responding")
+	assert.Contains(t, body, "http://localhost:3456")
+	assert.Contains(t, body, "Retry")
+	assert.NotContains(t, body, `meta http-equiv="refresh"`, "error page should not auto-refresh")
 }
 
 func TestLoadingPageDarkModeSupport(t *testing.T) {
@@ -72,7 +91,7 @@ func TestLoadingPageDarkModeSupport(t *testing.T) {
 	}
 
 	w := httptest.NewRecorder()
-	ps.serveLoadingPage(w, "http://localhost:3000")
+	ps.serveLoadingPage(w, nil, "http://localhost:3000")
 
 	body := w.Body.String()
 	assert.Contains(t, body, "prefers-color-scheme:dark")
@@ -84,7 +103,7 @@ func TestLoadingPageNoExternalDependencies(t *testing.T) {
 	}
 
 	w := httptest.NewRecorder()
-	ps.serveLoadingPage(w, "http://localhost:3000")
+	ps.serveLoadingPage(w, nil, "http://localhost:3000")
 
 	body := w.Body.String()
 	// No external URLs (http:// or https://) except the target URL itself

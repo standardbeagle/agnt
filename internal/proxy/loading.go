@@ -72,10 +72,19 @@ func acceptsHTML(r *http.Request) bool {
 	return strings.Contains(r.Header.Get("Accept"), "text/html")
 }
 
+// maxLoadingWait is how long the loading page auto-refreshes before showing a permanent error.
+const maxLoadingWait = 60 * time.Second
+
 // serveLoadingPage writes the loading page HTML as an HTTP response.
-// It uses the proxy's start time to show elapsed seconds.
-func (ps *ProxyServer) serveLoadingPage(w http.ResponseWriter, targetURL string) {
+// After maxLoadingWait, it shows a permanent error page instead of auto-refreshing.
+func (ps *ProxyServer) serveLoadingPage(w http.ResponseWriter, _ *http.Request, targetURL string) {
 	elapsed := time.Since(ps.startTime)
+
+	if elapsed > maxLoadingWait {
+		ps.serveErrorPage(w, targetURL, elapsed)
+		return
+	}
+
 	mins := int(elapsed.Minutes())
 	secs := int(elapsed.Seconds()) % 60
 	timerStr := fmt.Sprintf("%02d:%02d", mins, secs)
@@ -86,5 +95,66 @@ func (ps *ProxyServer) serveLoadingPage(w http.ResponseWriter, targetURL string)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Retry-After", "3")
 	w.WriteHeader(http.StatusServiceUnavailable)
+	w.Write([]byte(page))
+}
+
+// errorPageHTML is shown when the upstream server hasn't started after maxLoadingWait.
+const errorPageHTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Server not responding</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#f8f9fa;--fg:#1a1a2e;--muted:#6c757d;--card:#fff;--border:#dee2e6;--err:#e63946}
+@media(prefers-color-scheme:dark){
+:root{--bg:#1a1a2e;--fg:#e8e8e8;--muted:#8a8a9a;--card:#16213e;--border:#2a2a4a;--err:#ff6b6b}
+}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+background:var(--bg);color:var(--fg);display:flex;align-items:center;
+justify-content:center;min-height:100vh}
+.panel{background:var(--card);border:1px solid var(--border);border-radius:12px;
+padding:2.5rem;max-width:520px;width:90%%;text-align:center}
+.icon{font-size:2.5rem;margin-bottom:1rem}
+h1{font-size:1.25rem;color:var(--err);margin-bottom:.5rem}
+.target{font-family:monospace;font-size:.95rem;word-break:break-all;margin-bottom:1rem;
+color:var(--muted)}
+.msg{color:var(--fg);font-size:.95rem;line-height:1.6;margin-bottom:1.5rem;text-align:left}
+.msg code{background:var(--bg);padding:.15em .4em;border-radius:4px;font-size:.9em}
+.retry{display:inline-block;padding:.6rem 1.5rem;background:var(--err);color:#fff;
+border:none;border-radius:6px;font-size:.95rem;cursor:pointer;text-decoration:none}
+.retry:hover{opacity:.9}
+.elapsed{color:var(--muted);font-size:.8rem;margin-top:1rem}
+</style>
+</head>
+<body>
+<div class="panel">
+<div class="icon">&#x26A0;</div>
+<h1>Server not responding</h1>
+<div class="target">%s</div>
+<div class="msg">
+The upstream server at this address did not become reachable after %s.<br><br>
+Check that:<br>
+&bull; The server process is running<br>
+&bull; It is listening on the expected port<br>
+&bull; There are no startup errors in the process output
+</div>
+<a class="retry" href="javascript:location.reload()">Retry</a>
+<div class="elapsed">Proxy has been waiting since startup (%s ago)</div>
+</div>
+</body>
+</html>`
+
+// serveErrorPage writes a permanent error page when the upstream never started.
+func (ps *ProxyServer) serveErrorPage(w http.ResponseWriter, targetURL string, elapsed time.Duration) {
+	mins := int(elapsed.Minutes())
+	secs := int(elapsed.Seconds()) % 60
+	elapsedStr := fmt.Sprintf("%dm%02ds", mins, secs)
+
+	page := fmt.Sprintf(errorPageHTML, targetURL, elapsedStr, elapsedStr)
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusBadGateway)
 	w.Write([]byte(page))
 }

@@ -1148,7 +1148,7 @@ func (ps *ProxyServer) errorHandler(w http.ResponseWriter, r *http.Request, err 
 	// For browser requests hitting a server that isn't up yet, serve a friendly
 	// loading page with auto-refresh instead of a cryptic error string.
 	if (isTransient || diagEvent == "connection_refused") && acceptsHTML(r) {
-		ps.serveLoadingPage(w, ps.TargetURL.String())
+		ps.serveLoadingPage(w, r, ps.TargetURL.String())
 		return
 	}
 
