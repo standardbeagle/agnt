@@ -22,13 +22,15 @@ type AutoRestartConfig struct {
 }
 
 // DefaultAutoRestartConfig returns sensible defaults.
+// Auto-restart is disabled by default — users restart manually from the overlay
+// or via MCP tools. Enable explicitly in .agnt.kdl with `auto-restart true`.
 func DefaultAutoRestartConfig() AutoRestartConfig {
 	return AutoRestartConfig{
-		Enabled:       true,
+		Enabled:       false,
 		MaxRestarts:   5,
 		RestartWindow: time.Minute,
-		RestartDelay:  time.Second,
-		OnlyOnError:   false, // Restart on any exit (dev servers often exit cleanly)
+		RestartDelay:  2 * time.Second,
+		OnlyOnError:   false,
 	}
 }
 
@@ -360,10 +362,9 @@ func (r *ProcessAutoRestarter) monitorProcess(processID string) {
 		r.daemon.hub.ProcessManager().RemoveByPath(processID, state.projectPath)
 
 		// Restart with EADDRINUSE recovery (use startScriptWithRetry instead of StartScript
-		// to avoid re-registering for auto-restart, since we're already monitoring)
-		ctx, cancel := context.WithTimeout(r.ctx, 30*time.Second)
-		proc, startupErr := r.daemon.startScriptWithRetry(ctx, processID, state.projectPath, state.workingDir, state.command, state.args, state.env, state.expectedPorts)
-		cancel()
+		// to avoid re-registering for auto-restart, since we're already monitoring).
+		// No timeout — startup may take a long time (e.g., dotnet restore + compile).
+		proc, startupErr := r.daemon.startScriptWithRetry(r.ctx, processID, state.projectPath, state.workingDir, state.command, state.args, state.env, state.expectedPorts)
 
 		if startupErr != nil {
 			debug.Error("daemon", "Failed to restart process %s: %v", processID, startupErr)

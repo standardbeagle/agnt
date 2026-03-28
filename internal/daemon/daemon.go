@@ -1370,7 +1370,7 @@ func (d *Daemon) autostartScript(ctx context.Context, name string, scriptCfg *co
 		Env:           envSlice,
 		ExpectedPorts: expectedPorts,
 		URLMatchers:   scriptCfg.URLMatchers,
-		AutoRestart:   true,
+		AutoRestart:   scriptCfg.AutoRestart,
 	})
 	if err != nil {
 		entry.SetState(script.StateFailed)

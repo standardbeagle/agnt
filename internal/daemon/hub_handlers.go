@@ -408,15 +408,9 @@ func (d *Daemon) hubHandleRun(ctx context.Context, conn *hubpkg.Connection, cmd 
 
 	proc := result.Process
 
-	// Register auto-restart atomically for background processes before responding.
-	// This eliminates the race where a fast-crashing process exits before the
-	// client can send a separate PROC AUTORESTART ENABLE request.
-	isBackground := cfg.Mode == "" || cfg.Mode == "background"
-	if isBackground && !cfg.NoAutoRestart && d.autoRestarter != nil && !result.Reused {
-		restartConfig := DefaultAutoRestartConfig()
-		d.autoRestarter.Register(proc.ID, restartConfig, proc.Command, proc.Args, nil, nil, proc.ProjectPath, proc.WorkingDir)
-		debug.Log("daemon", "Auto-restart registered for %s (atomic with start)", proc.ID)
-	}
+	// Auto-restart is only active when explicitly enabled via .agnt.kdl
+	// `auto-restart true` or PROC AUTORESTART ENABLE. No longer auto-registered
+	// for background processes — users restart manually from the overlay.
 
 	response := map[string]interface{}{
 		"id":         proc.ID,
@@ -3466,9 +3460,10 @@ func (d *Daemon) hubHandleProcRestart(ctx context.Context, conn *hubpkg.Connecti
 		return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("failed to restart: %v", startupErr))
 	}
 
-	// Re-register auto-restart if it was previously enabled
+	// Re-register auto-restart if it was previously explicitly enabled
 	if wasAutoRestart && d.autoRestarter != nil {
 		restartConfig := DefaultAutoRestartConfig()
+		restartConfig.Enabled = true // Preserve the explicit enable
 		d.autoRestarter.Register(processID, restartConfig, command, args, nil, []int{expectedPort}, projectPath, projectPath)
 	}
 
@@ -4423,11 +4418,9 @@ func (d *Daemon) hubHandleScriptRestart(ctx context.Context, conn *hubpkg.Connec
 		if stopErr := d.hub.ProcessManager().Stop(ctx, entry.ProcessID); stopErr != nil {
 			return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("failed to stop process: %v", stopErr))
 		}
+		// Remove the stopped process so StartScript creates a fresh one
+		d.hub.ProcessManager().RemoveByPath(entry.ProcessID, entry.ProjectPath)
 	}
-
-	// Restart via autostartScript which handles resolution and StartScript
-	entry.AddRestartMarker()
-	entry.SetState(script.StateRestarting)
 
 	// Look up agnt-specific config stored during initial autostart
 	cfgVal, ok := d.scriptConfigs.Load(entry.ProcessID)
@@ -4435,6 +4428,17 @@ func (d *Daemon) hubHandleScriptRestart(ctx context.Context, conn *hubpkg.Connec
 		return conn.WriteErr(hubproto.ErrNotFound, fmt.Sprintf("no config found for script %q", name))
 	}
 	scriptCfg := cfgVal.(*config.ScriptConfig)
+
+	// Wait for declared ports to be free before restarting
+	expectedPorts := d.getExpectedPortsForScript(name, scriptCfg, nil,
+		resolveWorkingDir(entry.ProjectPath, scriptCfg.Cwd), "", nil)
+	for _, port := range expectedPorts {
+		d.waitForPortFree(port, 5*time.Second)
+	}
+
+	// Restart via autostartScript which handles resolution and StartScript
+	entry.AddRestartMarker()
+	entry.SetState(script.StateRestarting)
 
 	if err := d.autostartScript(ctx, name, scriptCfg, entry.ProjectPath, nil); err != nil {
 		return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("failed to restart script: %v", err))
