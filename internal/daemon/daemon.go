@@ -351,9 +351,6 @@ func (d *Daemon) Start() error {
 	// scripts are started via StartScript/RunAutostart, not at daemon startup.
 	d.cleanupOrphans()
 
-	// Check Chrome version for browser diagnostics
-	d.checkBrowserVersion()
-
 	// Restore proxies from persisted state
 	d.restoreProxies()
 
