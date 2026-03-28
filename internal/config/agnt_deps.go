@@ -8,7 +8,8 @@ import (
 )
 
 // DefaultDependencyTimeout is the default timeout for script dependencies.
-const DefaultDependencyTimeout = 30 * time.Second
+// 120s accommodates slow-starting processes like dotnet run (NuGet restore + compile).
+const DefaultDependencyTimeout = 120 * time.Second
 
 // ScriptDependency represents a dependency on another script.
 type ScriptDependency struct {
