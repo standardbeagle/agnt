@@ -398,13 +398,10 @@ func (d *Daemon) startScriptWithRetry(
 			}
 		}
 		if len(killedPIDs) == 0 {
-			return nil, &StartupError{
-				ProcessID: processID,
-				Port:      portToClean,
-				ErrorType: "port_in_use",
-				Message:   fmt.Sprintf("port %d in use but no process found to kill", portToClean),
-				Retried:   true,
-			}
+			// No process found — port may be in TIME_WAIT or held by the kernel.
+			// Wait for it to free naturally before retrying.
+			debug.Log("daemon", "Port %d in use but no process found — waiting for release", portToClean)
+			d.waitForPortFree(portToClean, 10*time.Second)
 		}
 		debug.Info("daemon", "Killed %d process(es) on port %d, retrying startup", len(killedPIDs), portToClean)
 	}

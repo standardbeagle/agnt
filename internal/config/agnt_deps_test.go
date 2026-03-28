@@ -26,7 +26,7 @@ func TestParseDependsOn_ArgsFormat(t *testing.T) {
 		api := cfg.Scripts["api"]
 		require.Len(t, api.DependsOn, 1)
 		assert.Equal(t, "redis", api.DependsOn[0].Name)
-		assert.Equal(t, 30*time.Second, api.DependsOn[0].Timeout)
+		assert.Equal(t, DefaultDependencyTimeout, api.DependsOn[0].Timeout)
 	})
 
 	t.Run("multiple dependencies default timeout", func(t *testing.T) {
@@ -101,8 +101,8 @@ func TestParseDependsOn_ChildNodeFormat(t *testing.T) {
 		for _, d := range api.DependsOn {
 			depMap[d.Name] = d.Timeout
 		}
-		assert.Equal(t, 30*time.Second, depMap["redis"])
-		assert.Equal(t, 60*time.Second, depMap["postgres"])
+		assert.Equal(t, 30*time.Second, depMap["redis"])    // explicit timeout=30 in KDL
+		assert.Equal(t, 60*time.Second, depMap["postgres"]) // explicit timeout=60 in KDL
 	})
 
 	t.Run("child nodes with default timeout", func(t *testing.T) {
@@ -123,7 +123,7 @@ func TestParseDependsOn_ChildNodeFormat(t *testing.T) {
 		api := cfg.Scripts["api"]
 		require.Len(t, api.DependsOn, 1)
 		assert.Equal(t, "redis", api.DependsOn[0].Name)
-		assert.Equal(t, 30*time.Second, api.DependsOn[0].Timeout)
+		assert.Equal(t, DefaultDependencyTimeout, api.DependsOn[0].Timeout)
 	})
 }
 
@@ -172,8 +172,8 @@ func TestTopologicalSort_SimpleChain(t *testing.T) {
 	// c -> b -> a
 	scripts := map[string]*ScriptConfig{
 		"a": {Run: "echo a"},
-		"b": {Run: "echo b", DependsOn: DependsOnList{{Name: "a", Timeout: 30 * time.Second}}},
-		"c": {Run: "echo c", DependsOn: DependsOnList{{Name: "b", Timeout: 30 * time.Second}}},
+		"b": {Run: "echo b", DependsOn: DependsOnList{{Name: "a", Timeout: DefaultDependencyTimeout}}},
+		"c": {Run: "echo c", DependsOn: DependsOnList{{Name: "b", Timeout: DefaultDependencyTimeout}}},
 	}
 
 	layers, err := TopologicalSort(scripts)
@@ -193,11 +193,11 @@ func TestTopologicalSort_Diamond(t *testing.T) {
 	//     d
 	scripts := map[string]*ScriptConfig{
 		"a": {Run: "echo a"},
-		"b": {Run: "echo b", DependsOn: DependsOnList{{Name: "a", Timeout: 30 * time.Second}}},
-		"c": {Run: "echo c", DependsOn: DependsOnList{{Name: "a", Timeout: 30 * time.Second}}},
+		"b": {Run: "echo b", DependsOn: DependsOnList{{Name: "a", Timeout: DefaultDependencyTimeout}}},
+		"c": {Run: "echo c", DependsOn: DependsOnList{{Name: "a", Timeout: DefaultDependencyTimeout}}},
 		"d": {Run: "echo d", DependsOn: DependsOnList{
-			{Name: "b", Timeout: 30 * time.Second},
-			{Name: "c", Timeout: 30 * time.Second},
+			{Name: "b", Timeout: DefaultDependencyTimeout},
+			{Name: "c", Timeout: DefaultDependencyTimeout},
 		}},
 	}
 
@@ -232,9 +232,9 @@ func TestTopologicalSort_ParallelRoots(t *testing.T) {
 
 func TestTopologicalSort_Cycle(t *testing.T) {
 	scripts := map[string]*ScriptConfig{
-		"a": {Run: "echo a", DependsOn: DependsOnList{{Name: "b", Timeout: 30 * time.Second}}},
-		"b": {Run: "echo b", DependsOn: DependsOnList{{Name: "c", Timeout: 30 * time.Second}}},
-		"c": {Run: "echo c", DependsOn: DependsOnList{{Name: "a", Timeout: 30 * time.Second}}},
+		"a": {Run: "echo a", DependsOn: DependsOnList{{Name: "b", Timeout: DefaultDependencyTimeout}}},
+		"b": {Run: "echo b", DependsOn: DependsOnList{{Name: "c", Timeout: DefaultDependencyTimeout}}},
+		"c": {Run: "echo c", DependsOn: DependsOnList{{Name: "a", Timeout: DefaultDependencyTimeout}}},
 	}
 
 	_, err := TopologicalSort(scripts)
@@ -244,7 +244,7 @@ func TestTopologicalSort_Cycle(t *testing.T) {
 
 func TestTopologicalSort_UnknownDependency(t *testing.T) {
 	scripts := map[string]*ScriptConfig{
-		"a": {Run: "echo a", DependsOn: DependsOnList{{Name: "nonexistent", Timeout: 30 * time.Second}}},
+		"a": {Run: "echo a", DependsOn: DependsOnList{{Name: "nonexistent", Timeout: DefaultDependencyTimeout}}},
 	}
 
 	_, err := TopologicalSort(scripts)
@@ -368,7 +368,7 @@ proxies {
 	frontend := cfg.Scripts["frontend"]
 	require.Len(t, frontend.DependsOn, 1)
 	assert.Equal(t, "api", frontend.DependsOn[0].Name)
-	assert.Equal(t, 30*time.Second, frontend.DependsOn[0].Timeout)
+	assert.Equal(t, DefaultDependencyTimeout, frontend.DependsOn[0].Timeout)
 
 	// Verify topological sort works with this config
 	layers, err := TopologicalSort(cfg.Scripts)
