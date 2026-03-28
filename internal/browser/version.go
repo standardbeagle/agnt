@@ -34,12 +34,18 @@ func CheckVersion() *VersionInfo {
 func CheckVersionAt(path string) *VersionInfo {
 	info := &VersionInfo{Path: path}
 
-	out, err := exec.Command(path, "--version").Output()
+	// On Windows, `chrome.exe --version` opens a browser window.
+	// Use --headless=new --disable-gpu to prevent GUI, or try registry.
+	out, err := exec.Command(path, "--headless=new", "--disable-gpu", "--version").Output()
 	if err != nil {
-		return info
+		// Fallback: try reading version from file properties on Windows
+		out, err = exec.Command(path, "--product-version").Output()
+		if err != nil {
+			return info
+		}
 	}
 
-	// Parse "Google Chrome 146.0.7680.164" or "Chromium 120.0.6099.0"
+	// Parse "Google Chrome 146.0.7680.164" or "Chromium 120.0.6099.0" or just "146.0.7680.164"
 	version := strings.TrimSpace(string(out))
 	parts := strings.Fields(version)
 	if len(parts) == 0 {
