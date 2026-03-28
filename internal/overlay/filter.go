@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"os"
-	"runtime"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -18,49 +16,12 @@ type FilterConfig struct {
 	// Scroll region will be set to exclude these rows.
 	ProtectBottomRows int
 
-	// AggressiveMode enables full cursor clamping, manual scroll, and alt screen
-	// blocking. Required for terminals where DECSTBM is unreliable (ConPTY).
-	// When false (default), only scroll region enforcement and DA1 suppression
-	// are active — cursor positioning passes through unchanged.
-	// Use NeedsAggressiveMode() to detect automatically.
-	AggressiveMode bool
-
 	// RedrawInterval is how often to check if indicator needs redrawing.
 	// Set to 0 to disable periodic redraw.
 	RedrawInterval time.Duration
 
 	// OnRedraw is called when the indicator should be redrawn.
 	OnRedraw func()
-}
-
-// NeedsAggressiveMode detects whether the current terminal needs aggressive
-// filtering. Returns true for ConPTY (Windows Terminal, VS Code terminal)
-// where DECSTBM scroll regions are unreliable. Returns false for Unix PTYs,
-// WSL, mintty, and other terminals with proper DECSTBM support.
-func NeedsAggressiveMode() bool {
-	// ConPTY sets WT_SESSION (Windows Terminal) or specific TERM_PROGRAM values.
-	// Check for known ConPTY indicators.
-	if os.Getenv("WT_SESSION") != "" {
-		return true // Windows Terminal uses ConPTY
-	}
-	if os.Getenv("TERM_PROGRAM") == "vscode" && runtime.GOOS == "windows" {
-		return true // VS Code on Windows uses ConPTY
-	}
-	// Native Windows console without WT_SESSION — likely ConPTY or legacy console
-	if runtime.GOOS == "windows" {
-		// Check if running under WSL or Cygwin/MSYS2 (which have proper PTYs)
-		if os.Getenv("WSL_DISTRO_NAME") != "" {
-			return false // WSL has a real PTY
-		}
-		if os.Getenv("MSYSTEM") != "" {
-			return false // MSYS2/Git Bash uses mintty
-		}
-		if os.Getenv("CYGWIN") != "" {
-			return false // Cygwin has proper PTY
-		}
-		return true // Default: assume ConPTY on Windows
-	}
-	return false // Unix — proper DECSTBM support
 }
 
 // ProtectedWriter filters PTY output to protect the status bar area.
@@ -257,13 +218,6 @@ func (pw *ProtectedWriter) handleStateGround(out *bytes.Buffer, b byte) {
 
 	switch b {
 	case '\n': // Linefeed
-		if pw.config.AggressiveMode && row >= pw.protectedRow-1 {
-			// ConPTY: manual scroll since DECSTBM is unreliable
-			fmt.Fprintf(out, "\x1b[%d;1H\x1b[S\x1b[%d;1H", 1, pw.protectedRow-1)
-			pw.cursorCol.Store(1)
-			pw.redrawNeeded.Store(true)
-			return
-		}
 		// When cursor is at the bottom of the scroll region, linefeed
 		// causes the terminal to scroll content up -- the cursor row
 		// stays the same. Only increment row if not at the boundary.
@@ -371,31 +325,20 @@ func (pw *ProtectedWriter) handleStateEscape(out *bytes.Buffer, b byte) {
 		pw.state = stateGround
 	case 'D': // IND - Index (scroll up / move cursor down)
 		row := int(pw.cursorRow.Load())
-		if pw.config.AggressiveMode && row >= pw.protectedRow-1 {
-			fmt.Fprintf(out, "\x1b[%d;1H\x1b[S\x1b[%d;%dH", 1, pw.protectedRow-1, pw.cursorCol.Load())
-			pw.redrawNeeded.Store(true)
-		} else {
-			out.Write(pw.escBuf)
-			// At scroll region bottom, IND scrolls -- cursor stays put
-			if row > 0 && row < pw.scrollBottom {
-				pw.cursorRow.Store(int32(row + 1))
-			}
+		out.Write(pw.escBuf)
+		// At scroll region bottom, IND scrolls -- cursor stays put
+		if row > 0 && row < pw.scrollBottom {
+			pw.cursorRow.Store(int32(row + 1))
 		}
 		pw.state = stateGround
 	case 'E': // NEL - Next Line
 		row := int(pw.cursorRow.Load())
-		if pw.config.AggressiveMode && row >= pw.protectedRow-1 {
-			fmt.Fprintf(out, "\x1b[%d;1H\x1b[S\x1b[%d;1H", 1, pw.protectedRow-1)
-			pw.cursorCol.Store(1)
-			pw.redrawNeeded.Store(true)
-		} else {
-			out.Write(pw.escBuf)
-			// At scroll region bottom, NEL scrolls -- cursor stays on same row
-			if row > 0 && row < pw.scrollBottom {
-				pw.cursorRow.Store(int32(row + 1))
-			}
-			pw.cursorCol.Store(1)
+		out.Write(pw.escBuf)
+		// At scroll region bottom, NEL scrolls -- cursor stays on same row
+		if row > 0 && row < pw.scrollBottom {
+			pw.cursorRow.Store(int32(row + 1))
 		}
+		pw.cursorCol.Store(1)
 		pw.state = stateGround
 	case 'c': // RIS - full reset
 		// Allow reset but re-enforce scroll region after
@@ -586,17 +529,6 @@ func (pw *ProtectedWriter) handleCSI(out *bytes.Buffer, final byte) {
 		if len(pw.params) >= 2 && pw.params[1] > 0 {
 			col = pw.params[1]
 		}
-		if pw.config.AggressiveMode && row >= pw.protectedRow {
-			row = pw.protectedRow - 1
-			if row < 1 {
-				row = 1
-			}
-			pw.redrawNeeded.Store(true)
-			pw.cursorRow.Store(int32(row))
-			pw.cursorCol.Store(int32(col))
-			fmt.Fprintf(out, "\x1b[%d;%d%c", row, col, final)
-			return
-		}
 		pw.cursorRow.Store(int32(row))
 		pw.cursorCol.Store(int32(col))
 
@@ -618,32 +550,12 @@ func (pw *ProtectedWriter) handleCSI(out *bytes.Buffer, final byte) {
 			n = pw.params[0]
 		}
 		row := int(pw.cursorRow.Load()) + n
-		if pw.config.AggressiveMode && row >= pw.protectedRow {
-			row = pw.protectedRow - 1
-			if row < 1 {
-				row = 1
-			}
-			pw.redrawNeeded.Store(true)
-			pw.cursorRow.Store(int32(row))
-			fmt.Fprintf(out, "\x1b[%d;%dH", row, pw.cursorCol.Load())
-			return
-		}
 		pw.cursorRow.Store(int32(row))
 
 	case 'd': // VPA - Vertical Position Absolute
 		row := 1
 		if len(pw.params) >= 1 && pw.params[0] > 0 {
 			row = pw.params[0]
-		}
-		if pw.config.AggressiveMode && row >= pw.protectedRow {
-			row = pw.protectedRow - 1
-			if row < 1 {
-				row = 1
-			}
-			pw.redrawNeeded.Store(true)
-			pw.cursorRow.Store(int32(row))
-			fmt.Fprintf(out, "\x1b[%dd", row)
-			return
 		}
 		pw.cursorRow.Store(int32(row))
 
@@ -663,11 +575,6 @@ func (pw *ProtectedWriter) handleCSI(out *bytes.Buffer, final byte) {
 			switch pw.params[0] {
 			case 1049, 47, 1047: // Alternate screen buffer sequences
 				pw.inAltScreen.Store(final == 'h')
-				if pw.config.AggressiveMode {
-					// ConPTY: block alt screen to keep scroll region protection
-					return
-				}
-				// Normal: track intent but let it through
 			}
 		}
 		// Pass through
@@ -679,15 +586,7 @@ func (pw *ProtectedWriter) handleCSI(out *bytes.Buffer, final byte) {
 
 	case 'u': // RCP - Restore Cursor Position
 		if pw.savedRow > 0 {
-			row := pw.savedRow
-			if pw.config.AggressiveMode && int(row) >= pw.protectedRow {
-				row = int32(pw.protectedRow - 1)
-				if row < 1 {
-					row = 1
-				}
-				pw.redrawNeeded.Store(true)
-			}
-			pw.cursorRow.Store(row)
+			pw.cursorRow.Store(pw.savedRow)
 			pw.cursorCol.Store(pw.savedCol)
 		}
 		// Pass through
@@ -706,7 +605,7 @@ func (pw *ProtectedWriter) handleCSI(out *bytes.Buffer, final byte) {
 	out.Write(pw.escBuf)
 }
 
-// advanceCol advances the cursor column by width, handling line wrap and scroll protection.
+// advanceCol advances the cursor column by width, handling line wrap.
 func (pw *ProtectedWriter) advanceCol(out *bytes.Buffer, row, col, width int) {
 	if col <= 0 {
 		return
@@ -715,14 +614,6 @@ func (pw *ProtectedWriter) advanceCol(out *bytes.Buffer, row, col, width int) {
 	if newCol > pw.width {
 		newCol = 1 + (width - 1)
 		newRow := row + 1
-		if pw.config.AggressiveMode && newRow >= pw.protectedRow {
-			// ConPTY: manual scroll since DECSTBM is unreliable
-			fmt.Fprintf(out, "\x1b[%d;1H\x1b[S\x1b[%d;1H", 1, pw.protectedRow-1)
-			pw.cursorRow.Store(int32(pw.protectedRow - 1))
-			pw.cursorCol.Store(int32(newCol))
-			pw.redrawNeeded.Store(true)
-			return
-		}
 		// At scroll region bottom, wrap causes scroll -- cursor stays on same row
 		if newRow <= pw.scrollBottom {
 			pw.cursorRow.Store(int32(newRow))

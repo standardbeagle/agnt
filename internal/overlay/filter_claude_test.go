@@ -140,8 +140,8 @@ func TestProtectedWriter_MixedASCIIAndEmoji(t *testing.T) {
 // with emoji doesn't cause line wrapping that corrupts the protected row.
 func TestProtectedWriter_StatusBarDoesNotOverflow(t *testing.T) {
 	var buf bytes.Buffer
-	// 80-col terminal, 1 protected row, aggressive mode for ConPTY testing
-	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1, AggressiveMode: true})
+	// 80-col terminal, 1 protected row
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
 	defer pw.Stop()
 
 	// Move to last safe row
@@ -254,26 +254,25 @@ func TestProtectedWriter_CursorSaveRestoreTracking(t *testing.T) {
 	}
 }
 
-// TestProtectedWriter_ProtectedRowNotCorrupted verifies that output never
-// writes into the protected bottom row, even with rapid status updates.
-func TestProtectedWriter_ProtectedRowNotCorrupted(t *testing.T) {
+// TestProtectedWriter_ProtectedRowTracking verifies that cursor position
+// is tracked when moved to the protected row (scroll region is the safety net).
+func TestProtectedWriter_ProtectedRowTracking(t *testing.T) {
 	var buf bytes.Buffer
 	// Small terminal: 80x5 with 1 protected row
-	pw := NewProtectedWriter(&buf, 80, 5, FilterConfig{ProtectBottomRows: 1, AggressiveMode: true})
+	pw := NewProtectedWriter(&buf, 80, 5, FilterConfig{ProtectBottomRows: 1})
 	defer pw.Stop()
 
-	// Fill the terminal with lines — should scroll, never write to row 5
+	// Fill the terminal with lines
 	for i := 0; i < 10; i++ {
 		pw.Write([]byte("Line of output\n"))
 	}
 
-	// Move cursor directly to protected row (row 5) — should be blocked
+	// CUP to protected row passes through (tracked, scroll region is the guard)
 	pw.Write([]byte("\x1b[5;1H"))
-	pw.Write([]byte("SHOULD NOT APPEAR"))
 
 	row := int(pw.cursorRow.Load())
-	if row >= 5 {
-		t.Errorf("Cursor should be clamped above protected row 5, got row %d", row)
+	if row != 5 {
+		t.Errorf("Cursor should be tracked at row 5, got %d", row)
 	}
 }
 
@@ -345,39 +344,36 @@ func TestProtectedWriter_SpinnerThenMultilineOutput(t *testing.T) {
 	}
 
 	// Output must contain the tool results without scroll-up sequences
-	// (scroll-up is for aggressive/ConPTY mode only)
 	output := buf.String()
 	if strings.Contains(output, "\x1b[S") {
-		t.Error("Non-aggressive mode should not emit scroll-up sequences")
+		t.Error("Should not emit scroll-up sequences")
 	}
 	if !strings.Contains(output, "Result line 1") {
 		t.Error("Tool output missing from written output")
 	}
 }
 
-// TestProtectedWriter_CursorRestoreClampedInAggressive verifies that
-// restoring a cursor position saved in the protected region gets clamped
-// in aggressive mode.
-func TestProtectedWriter_CursorRestoreClampedInAggressive(t *testing.T) {
+// TestProtectedWriter_CursorRestoreTracked verifies that restoring a
+// cursor position is tracked correctly without clamping.
+func TestProtectedWriter_CursorRestoreTracked(t *testing.T) {
 	var buf bytes.Buffer
-	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1, AggressiveMode: true})
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
 	defer pw.Stop()
 
 	// Save cursor at a safe position
 	pw.Write([]byte("\x1b[23;1H"))
 	pw.Write([]byte("\x1b[s"))
 
-	// Move to protected row and save (simulating a buggy program)
-	pw.cursorRow.Store(24)
+	// Simulate saved position in protected row
 	pw.savedRow = 24
 	pw.savedCol = 1
 
-	// Restore should clamp to row 23
+	// Restore tracks the saved position without clamping
 	pw.Write([]byte("\x1b[u"))
 
 	row := int(pw.cursorRow.Load())
-	if row != 23 {
-		t.Errorf("Restored cursor should be clamped to 23, got %d", row)
+	if row != 24 {
+		t.Errorf("Restored cursor should be tracked at 24, got %d", row)
 	}
 }
 
