@@ -3,7 +3,6 @@ package overlay
 import (
 	"bytes"
 	"fmt"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -11,7 +10,7 @@ import (
 
 func TestProtectedWriter_PassthroughNormalText(t *testing.T) {
 	var buf bytes.Buffer
-	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1, AggressiveMode: true})
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
 	defer pw.Stop()
 
 	input := "Hello, World!\n"
@@ -30,7 +29,7 @@ func TestProtectedWriter_PassthroughNormalText(t *testing.T) {
 
 func TestProtectedWriter_ScrollRegionReset(t *testing.T) {
 	var buf bytes.Buffer
-	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1, AggressiveMode: true})
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
 	defer pw.Stop()
 
 	// Send a scroll region reset: ESC [ r
@@ -46,7 +45,7 @@ func TestProtectedWriter_ScrollRegionReset(t *testing.T) {
 
 func TestProtectedWriter_ScrollRegionWithParams(t *testing.T) {
 	var buf bytes.Buffer
-	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1, AggressiveMode: true})
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
 	defer pw.Stop()
 
 	// Send scroll region 1-24, should be clamped to 1-23
@@ -61,7 +60,7 @@ func TestProtectedWriter_ScrollRegionWithParams(t *testing.T) {
 
 func TestProtectedWriter_ScrollRegionAlreadyValid(t *testing.T) {
 	var buf bytes.Buffer
-	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1, AggressiveMode: true})
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
 	defer pw.Stop()
 
 	// Send scroll region 1-20, should pass through as-is (within bounds)
@@ -76,22 +75,25 @@ func TestProtectedWriter_ScrollRegionAlreadyValid(t *testing.T) {
 
 func TestProtectedWriter_CursorMoveToProtectedRow(t *testing.T) {
 	var buf bytes.Buffer
-	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1, AggressiveMode: true})
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
 	defer pw.Stop()
 
-	// Move cursor to row 24 (protected), should be clamped to row 23
+	// Move cursor to row 24 — passes through (scroll region is the safety net)
 	input := "\x1b[24;1H"
 	pw.Write([]byte(input))
 
-	expected := "\x1b[23;1H"
-	if buf.String() != expected {
-		t.Errorf("expected %q, got %q", expected, buf.String())
+	if buf.String() != input {
+		t.Errorf("expected passthrough %q, got %q", input, buf.String())
+	}
+	// Cursor position should be tracked
+	if row := int(pw.cursorRow.Load()); row != 24 {
+		t.Errorf("expected cursor row 24, got %d", row)
 	}
 }
 
 func TestProtectedWriter_CursorMoveToValidRow(t *testing.T) {
 	var buf bytes.Buffer
-	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1, AggressiveMode: true})
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
 	defer pw.Stop()
 
 	// Move cursor to row 10, should pass through
@@ -106,16 +108,18 @@ func TestProtectedWriter_CursorMoveToValidRow(t *testing.T) {
 
 func TestProtectedWriter_VPA_VerticalPositionAbsolute(t *testing.T) {
 	var buf bytes.Buffer
-	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1, AggressiveMode: true})
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
 	defer pw.Stop()
 
-	// VPA to row 24 (protected), should be clamped
+	// VPA to row 24 — passes through (scroll region is the safety net)
 	input := "\x1b[24d"
 	pw.Write([]byte(input))
 
-	expected := "\x1b[23d"
-	if buf.String() != expected {
-		t.Errorf("expected %q, got %q", expected, buf.String())
+	if buf.String() != input {
+		t.Errorf("expected passthrough %q, got %q", input, buf.String())
+	}
+	if row := int(pw.cursorRow.Load()); row != 24 {
+		t.Errorf("expected cursor row 24, got %d", row)
 	}
 }
 
@@ -140,15 +144,15 @@ func TestProtectedWriter_ClearScreenTriggersRedraw(t *testing.T) {
 	}
 }
 
-func TestProtectedWriter_AltScreenBlockedButTracked(t *testing.T) {
+func TestProtectedWriter_AltScreenPassthroughAndTracked(t *testing.T) {
 	var buf bytes.Buffer
-	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1, AggressiveMode: true})
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
 	defer pw.Stop()
 
-	// Enter alt screen - should be blocked but InAltScreen tracked
+	// Enter alt screen - should pass through and InAltScreen tracked
 	pw.Write([]byte("\x1b[?1049h"))
-	if buf.String() != "" {
-		t.Errorf("expected alt screen enter to be blocked, got %q", buf.String())
+	if buf.String() != "\x1b[?1049h" {
+		t.Errorf("expected alt screen enter to pass through, got %q", buf.String())
 	}
 	if !pw.InAltScreen() {
 		t.Error("expected InAltScreen() to return true after entering alt screen")
@@ -156,10 +160,10 @@ func TestProtectedWriter_AltScreenBlockedButTracked(t *testing.T) {
 
 	buf.Reset()
 
-	// Exit alt screen - should be blocked but InAltScreen tracked
+	// Exit alt screen - should pass through and InAltScreen tracked
 	pw.Write([]byte("\x1b[?1049l"))
-	if buf.String() != "" {
-		t.Errorf("expected alt screen exit to be blocked, got %q", buf.String())
+	if buf.String() != "\x1b[?1049l" {
+		t.Errorf("expected alt screen exit to pass through, got %q", buf.String())
 	}
 	if pw.InAltScreen() {
 		t.Error("expected InAltScreen() to return false after exiting alt screen")
@@ -167,10 +171,10 @@ func TestProtectedWriter_AltScreenBlockedButTracked(t *testing.T) {
 
 	buf.Reset()
 
-	// Older alt screen sequences should also be blocked but tracked
+	// Older alt screen sequences should also pass through and be tracked
 	pw.Write([]byte("\x1b[?47h"))
-	if buf.String() != "" {
-		t.Errorf("expected ?47h to be blocked, got %q", buf.String())
+	if buf.String() != "\x1b[?47h" {
+		t.Errorf("expected ?47h to pass through, got %q", buf.String())
 	}
 	if !pw.InAltScreen() {
 		t.Error("expected InAltScreen() to return true after ?47h")
@@ -178,8 +182,8 @@ func TestProtectedWriter_AltScreenBlockedButTracked(t *testing.T) {
 
 	buf.Reset()
 	pw.Write([]byte("\x1b[?1047h"))
-	if buf.String() != "" {
-		t.Errorf("expected ?1047h to be blocked, got %q", buf.String())
+	if buf.String() != "\x1b[?1047h" {
+		t.Errorf("expected ?1047h to pass through, got %q", buf.String())
 	}
 }
 
@@ -210,25 +214,35 @@ func TestProtectedWriter_PeriodicRedraw(t *testing.T) {
 
 func TestProtectedWriter_SetSize(t *testing.T) {
 	var buf bytes.Buffer
-	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1, AggressiveMode: true})
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
 	defer pw.Stop()
 
 	// Change size
 	pw.SetSize(100, 30)
 
-	// Now row 30 is protected, 29 is max valid
+	// Verify scroll region was updated (protectedRow = 30, scrollBottom = 29)
 	buf.Reset()
-	pw.Write([]byte("\x1b[30;1H"))
+	pw.Write([]byte("\x1b[r"))
 
-	expected := "\x1b[29;1H"
+	expected := "\x1b[1;29r"
 	if buf.String() != expected {
 		t.Errorf("expected %q after resize, got %q", expected, buf.String())
+	}
+
+	// CUP to row 30 passes through (tracked, not clamped)
+	buf.Reset()
+	pw.Write([]byte("\x1b[30;1H"))
+	if buf.String() != "\x1b[30;1H" {
+		t.Errorf("expected passthrough, got %q", buf.String())
+	}
+	if row := int(pw.cursorRow.Load()); row != 30 {
+		t.Errorf("expected cursor row 30, got %d", row)
 	}
 }
 
 func TestProtectedWriter_EnforceScrollRegion(t *testing.T) {
 	var buf bytes.Buffer
-	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1, AggressiveMode: true})
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
 	defer pw.Stop()
 
 	pw.EnforceScrollRegion()
@@ -242,15 +256,15 @@ func TestProtectedWriter_EnforceScrollRegion(t *testing.T) {
 
 func TestProtectedWriter_MixedContent(t *testing.T) {
 	var buf bytes.Buffer
-	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1, AggressiveMode: true})
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
 	defer pw.Stop()
 
 	// Mix of text and escape sequences
 	input := "Hello\x1b[24;1HWorld\x1b[rDone"
 	pw.Write([]byte(input))
 
-	// Row 24 should be clamped to 23, scroll region reset should be modified
-	expected := "Hello\x1b[23;1HWorld\x1b[1;23rDone"
+	// CUP passes through, scroll region reset is still modified
+	expected := "Hello\x1b[24;1HWorld\x1b[1;23rDone"
 	if buf.String() != expected {
 		t.Errorf("expected %q, got %q", expected, buf.String())
 	}
@@ -258,7 +272,7 @@ func TestProtectedWriter_MixedContent(t *testing.T) {
 
 func TestProtectedWriter_OSCSequence(t *testing.T) {
 	var buf bytes.Buffer
-	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1, AggressiveMode: true})
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
 	defer pw.Stop()
 
 	// OSC sequence (set window title) - should pass through
@@ -272,7 +286,7 @@ func TestProtectedWriter_OSCSequence(t *testing.T) {
 
 func TestProtectedWriter_OSCWithST(t *testing.T) {
 	var buf bytes.Buffer
-	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1, AggressiveMode: true})
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
 	defer pw.Stop()
 
 	// OSC sequence with ST terminator (ESC \)
@@ -286,7 +300,7 @@ func TestProtectedWriter_OSCWithST(t *testing.T) {
 
 func TestProtectedWriter_SGRSequence(t *testing.T) {
 	var buf bytes.Buffer
-	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1, AggressiveMode: true})
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
 	defer pw.Stop()
 
 	// SGR (Set Graphics Rendition) - should pass through
@@ -298,30 +312,32 @@ func TestProtectedWriter_SGRSequence(t *testing.T) {
 	}
 }
 
-func TestProtectedWriter_CursorDown_ClampedAtProtected(t *testing.T) {
+func TestProtectedWriter_CursorDown_TrackedPastProtected(t *testing.T) {
 	var buf bytes.Buffer
-	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1, AggressiveMode: true})
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
 	defer pw.Stop()
 
 	// Set cursor position to row 22 first
 	pw.Write([]byte("\x1b[22;1H"))
 	buf.Reset()
 
-	// Now move down 5 rows - should be clamped at row 23
+	// Move down 5 rows — passes through, cursor tracked at 27
 	pw.Write([]byte("\x1b[5B"))
 
-	// Should output cursor position to row 23 instead of down command
-	if !strings.Contains(buf.String(), "\x1b[23;") {
-		t.Errorf("expected cursor to be clamped to row 23, got %q", buf.String())
+	if buf.String() != "\x1b[5B" {
+		t.Errorf("expected passthrough \\x1b[5B, got %q", buf.String())
+	}
+	if row := int(pw.cursorRow.Load()); row != 27 {
+		t.Errorf("expected cursor row 27, got %d", row)
 	}
 }
 
 func TestProtectedWriter_MultipleProtectedRows(t *testing.T) {
 	var buf bytes.Buffer
-	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 3, AggressiveMode: true})
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 3})
 	defer pw.Stop()
 
-	// With 3 protected rows, rows 22-24 are protected, max valid is 21
+	// With 3 protected rows, scroll region should be 1-21
 	input := "\x1b[r"
 	pw.Write([]byte(input))
 
@@ -330,18 +346,21 @@ func TestProtectedWriter_MultipleProtectedRows(t *testing.T) {
 		t.Errorf("expected %q, got %q", expected, buf.String())
 	}
 
+	// CUP to row 22 passes through (tracked, not clamped)
 	buf.Reset()
 	pw.Write([]byte("\x1b[22;1H"))
 
-	expected = "\x1b[21;1H"
-	if buf.String() != expected {
-		t.Errorf("expected %q, got %q", expected, buf.String())
+	if buf.String() != "\x1b[22;1H" {
+		t.Errorf("expected passthrough, got %q", buf.String())
+	}
+	if row := int(pw.cursorRow.Load()); row != 22 {
+		t.Errorf("expected cursor row 22, got %d", row)
 	}
 }
 
 func TestProtectedWriter_PrivateModePassthrough(t *testing.T) {
 	var buf bytes.Buffer
-	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1, AggressiveMode: true})
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
 	defer pw.Stop()
 
 	// Private mode sequences (like cursor visibility) should pass through
@@ -363,7 +382,7 @@ func TestProtectedWriter_PrivateModePassthrough(t *testing.T) {
 
 func TestProtectedWriter_ConcurrentWrites(t *testing.T) {
 	var buf bytes.Buffer
-	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1, AggressiveMode: true})
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
 	defer pw.Stop()
 
 	// Write from multiple goroutines
@@ -390,7 +409,7 @@ func TestProtectedWriter_ConcurrentWrites(t *testing.T) {
 
 func TestProtectedWriter_IncrementalEscapeSequence(t *testing.T) {
 	var buf bytes.Buffer
-	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1, AggressiveMode: true})
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
 	defer pw.Stop()
 
 	// Send escape sequence in pieces (simulating network chunking)
@@ -401,15 +420,19 @@ func TestProtectedWriter_IncrementalEscapeSequence(t *testing.T) {
 	pw.Write([]byte("1"))
 	pw.Write([]byte("H"))
 
-	expected := "\x1b[23;1H"
+	// CUP passes through as-is, cursor tracked at row 24
+	expected := "\x1b[24;1H"
 	if buf.String() != expected {
 		t.Errorf("expected %q, got %q", expected, buf.String())
+	}
+	if row := int(pw.cursorRow.Load()); row != 24 {
+		t.Errorf("expected cursor row 24, got %d", row)
 	}
 }
 
 func TestProtectedWriter_DA1ResponseSuppressed(t *testing.T) {
 	var buf bytes.Buffer
-	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1, AggressiveMode: true})
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
 	defer pw.Stop()
 
 	// DA1 response (CSI ? Ps c) should be suppressed — it's a terminal-to-app
@@ -446,7 +469,7 @@ func TestProtectedWriter_DA1ResponseSuppressed(t *testing.T) {
 
 func TestProtectedWriter_ResetSequence(t *testing.T) {
 	var buf bytes.Buffer
-	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1, AggressiveMode: true})
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
 	defer pw.Stop()
 
 	// RIS (Reset to Initial State) - should pass through and trigger redraw

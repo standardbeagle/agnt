@@ -439,11 +439,12 @@ func runWithConPTY(ctx context.Context, args []string, socketPath string, sessio
 			inputRouter.SetSummarizer(summarizer)
 		}
 
-		// Create output filter to protect indicator bar
+		// Create output filter to protect indicator bar.
+		// The child PTY is already sized to rows-1, so the child cannot
+		// reach our status bar row. Scroll region enforcement is the safety net.
 		if showIndicator {
 			filterCfg := overlay.FilterConfig{
 				ProtectBottomRows: 1,
-				AggressiveMode:    overlay.NeedsAggressiveMode(),
 				RedrawInterval:    200 * time.Millisecond,
 				OnRedraw: func() {
 					if termOverlay != nil {
