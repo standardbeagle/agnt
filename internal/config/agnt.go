@@ -84,6 +84,9 @@ type ScriptConfig struct {
 	// HealthyPattern is a regex that clears the unhealthy flag when matched.
 	// If empty, DefaultHealthPatterns() are used based on common frameworks.
 	HealthyPattern string `kdl:"healthy-pattern"`
+	// AutoRestart enables automatic restart when the process exits.
+	// Default: false — user restarts manually from the overlay.
+	AutoRestart bool `kdl:"auto-restart"`
 }
 
 // ResolveShell returns the shell command and arguments for executing a "run" command.
