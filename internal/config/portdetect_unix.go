@@ -191,6 +191,32 @@ func findPIDsByPortProc(port int) []int {
 	return pids
 }
 
+// ProcessNameByPID returns the process name for a given PID.
+// Returns empty string if the PID doesn't exist or can't be read.
+func ProcessNameByPID(pid int) string {
+	if pid <= 0 {
+		return ""
+	}
+	if runtime.GOOS == "linux" {
+		data, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid))
+		if err == nil {
+			name := strings.TrimSpace(string(data))
+			if name != "" {
+				return name
+			}
+		}
+	}
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+	if err != nil {
+		return ""
+	}
+	parts := strings.SplitN(string(data), "\x00", 2)
+	if len(parts) > 0 && parts[0] != "" {
+		return filepath.Base(parts[0])
+	}
+	return ""
+}
+
 // findPIDsByPortLsof uses lsof to find PIDs on macOS.
 func findPIDsByPortLsof(ctx context.Context, port int) []int {
 	cmd := exec.CommandContext(ctx, "lsof", "-ti", fmt.Sprintf(":%d", port))
