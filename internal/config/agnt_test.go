@@ -986,6 +986,55 @@ func TestParseAlertsConfig(t *testing.T) {
 	}
 }
 
+func TestPortConflictPolicy_Parsing(t *testing.T) {
+	tests := []struct {
+		name     string
+		kdl      string
+		expected string
+	}{
+		{
+			"default when unset",
+			"scripts {\n    api {\n        run \"go run .\"\n    }\n}",
+			"",
+		},
+		{
+			"prompt",
+			"project {\n    port-conflict \"prompt\"\n}\nscripts {\n    api {\n        run \"go run .\"\n    }\n}",
+			"prompt",
+		},
+		{
+			"auto-kill",
+			"project {\n    port-conflict \"auto-kill\"\n}\nscripts {\n    api {\n        run \"go run .\"\n    }\n}",
+			"auto-kill",
+		},
+		{
+			"skip",
+			"project {\n    port-conflict \"skip\"\n}\nscripts {\n    api {\n        run \"go run .\"\n    }\n}",
+			"skip",
+		},
+		{
+			"fail",
+			"project {\n    port-conflict \"fail\"\n}\nscripts {\n    api {\n        run \"go run .\"\n    }\n}",
+			"fail",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := ParseAgntConfig(tt.kdl)
+			require.NoError(t, err)
+			got := cfg.PortConflictPolicy()
+			assert.Equal(t, tt.expected, got)
+		})
+	}
+}
+
+func TestPortConflictPolicy_DefaultsToPrompt(t *testing.T) {
+	cfg, err := ParseAgntConfig("scripts {\n    api {\n        run \"go run .\"\n    }\n}")
+	require.NoError(t, err)
+	assert.Equal(t, "prompt", cfg.EffectivePortConflictPolicy())
+}
+
 func TestAlertsConfigIsEnabled(t *testing.T) {
 	// nil config defaults to true
 	var nilCfg *AlertsConfig

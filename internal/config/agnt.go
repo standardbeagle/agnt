@@ -42,10 +42,10 @@ type AgntConfig struct {
 }
 
 // AgntProjectMeta contains optional project metadata in .agnt.kdl.
-// This is informational only and doesn't affect behavior.
 type AgntProjectMeta struct {
-	Type string `kdl:"type"`
-	Name string `kdl:"name"`
+	Type         string `kdl:"type"`
+	Name         string `kdl:"name"`
+	PortConflict string `kdl:"port-conflict"`
 }
 
 // ScriptConfig defines a script to run.
@@ -328,6 +328,23 @@ func (c *AgntConfig) GetAutostartScripts() map[string]*ScriptConfig {
 		}
 	}
 	return result
+}
+
+// PortConflictPolicy returns the raw port-conflict policy from config.
+func (c *AgntConfig) PortConflictPolicy() string {
+	if c.Project == nil {
+		return ""
+	}
+	return c.Project.PortConflict
+}
+
+// EffectivePortConflictPolicy returns the port-conflict policy, defaulting to "prompt".
+func (c *AgntConfig) EffectivePortConflictPolicy() string {
+	p := c.PortConflictPolicy()
+	if p == "" {
+		return "prompt"
+	}
+	return p
 }
 
 // HasExplicitTarget returns true if the proxy has an explicitly configured target
