@@ -376,6 +376,27 @@ ManagerConfig{
 - Stores max 5 URLs per process
 - Only localhost-like URLs with ports
 
+**Port Conflict Pre-flight** (`internal/daemon/port_preflight.go`, `daemon.go:RunAutostart`):
+
+Before launching autostart scripts, the daemon scans all declared `ports` from autostart scripts for unmanaged processes. Configurable via `port-conflict` in the `project` node of `.agnt.kdl`:
+
+```kdl
+project {
+    port-conflict "prompt"   // prompt (default) | auto-kill | skip | fail
+}
+```
+
+| Policy | Behavior |
+|--------|----------|
+| `prompt` | Return conflicts to client, wait for `AUTOSTART CLEAR-PORTS` or `AUTOSTART CONTINUE` IPC |
+| `auto-kill` | Kill blocking process trees automatically, log what was killed |
+| `skip` | Log warning, start scripts anyway (they'll fail on bind) |
+| `fail` | Abort autostart entirely |
+
+Kill uses `ProcessManager.KillProcessByPort()` with process-group SIGTERM → 3s wait → SIGKILL escalation + descendant tree walk. `AutostartResult` extended with `PortConflicts` and `PortsCleared` fields.
+
+**Key files**: `port_preflight.go` (detect + kill), `daemon.go` (RunAutostart integration + pendingAutostarts), `hub_handlers.go` (AUTOSTART verb), `client.go` (AutostartClearPorts/Continue), `pty_common.go` (client prompt)
+
 ## Testing
 
 **Coverage areas**:
