@@ -925,6 +925,17 @@ func (d *Daemon) hubHandleProxyStart(ctx context.Context, conn *hubpkg.Connectio
 		debug.Log("daemon", "No overlay endpoint found for proxy %s (no path, no global endpoint) — proxy→agent messages will not work", proxyID)
 	}
 
+	if !proxyServer.HasOverlayEndpoint() {
+		d.startupErrorStore.Add(&StartupLogEntry{
+			ProcessID:  proxyID,
+			ScriptName: proxyID,
+			Level:      "warning",
+			EventType:  "proxy_no_overlay",
+			Message:    fmt.Sprintf("proxy %s has no overlay endpoint — browser messages will not reach agent", proxyID),
+			Timestamp:  time.Now(),
+		})
+	}
+
 	// Persist proxy config
 	if d.stateMgr != nil {
 		d.stateMgr.AddProxy(PersistentProxyConfig{
@@ -2374,24 +2385,9 @@ func (d *Daemon) hubHandleSessionRegister(conn *hubpkg.Connection, cmd *hubproto
 	// Associate session with this connection for cleanup
 	conn.SetSessionCode(code)
 
-	// Update overlay endpoint for existing proxies matching this project.
-	// This is session-scoped: only proxies for the same project get updated,
-	// avoiding global clobbering that would affect other sessions/projects.
-	if session.OverlayPath != "" && session.ProjectPath != "" {
-		proxies := d.proxym.List()
-		debug.Log("daemon", "session register: updating overlay endpoint on %d existing proxies (sessionPath=%q, overlayPath=%q)", len(proxies), session.ProjectPath, session.OverlayPath)
-		for _, p := range proxies {
-			proxyPath := normalizePath(p.Path)
-			if proxyPath == session.ProjectPath {
-				p.SetOverlayEndpoint(session.OverlayPath)
-				debug.Log("daemon", "session register: updated proxy %s overlay to %s", p.ID, session.OverlayPath)
-			} else {
-				debug.Log("daemon", "session register: proxy %s path %q != session path %q, skipping", p.ID, proxyPath, session.ProjectPath)
-			}
-		}
-	} else {
-		debug.Log("daemon", "session register: cannot update proxies — overlayPath=%q projectPath=%q", session.OverlayPath, session.ProjectPath)
-	}
+	// Rebind overlay endpoints for existing proxies that may have been
+	// created before this session registered.
+	d.rebindProxyOverlays(session)
 
 	// Check if another active session already owns scripts for this project.
 	// If so, join as observer (skip autostart). Different project paths always

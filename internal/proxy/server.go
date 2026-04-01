@@ -592,6 +592,11 @@ func (ps *ProxyServer) SetOverlayEndpoint(endpoint string) {
 	ps.overlayNotifier.SetEndpoint(endpoint)
 }
 
+// HasOverlayEndpoint returns true if this proxy has an overlay endpoint bound.
+func (ps *ProxyServer) HasOverlayEndpoint() bool {
+	return ps.overlayNotifier.IsEnabled()
+}
+
 // SetPublicURL sets the public URL for tunnel services.
 // This URL is used for URL rewriting when behind a tunnel.
 // Example: "https://abc123.trycloudflare.com"
