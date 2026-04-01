@@ -162,6 +162,9 @@ type Daemon struct {
 	// Overlay endpoint (can be set dynamically)
 	overlayEndpoint atomic.Pointer[string]
 
+	// Pending two-phase autostarts (prompt mode)
+	pendingAutostarts sync.Map // projectPath → *pendingAutostart
+
 	// Lifecycle
 	ctx        context.Context
 	cancel     context.CancelFunc
@@ -984,9 +987,18 @@ type BrowserInfo struct {
 
 // AutostartResult holds the results of an autostart operation.
 type AutostartResult struct {
-	Scripts []string `json:"scripts,omitempty"`
-	Proxies []string `json:"proxies,omitempty"`
-	Errors  []string `json:"errors,omitempty"`
+	Scripts       []string       `json:"scripts,omitempty"`
+	Proxies       []string       `json:"proxies,omitempty"`
+	Errors        []string       `json:"errors,omitempty"`
+	PortConflicts []PortConflict `json:"port_conflicts,omitempty"`
+	PortsCleared  []PortConflict `json:"ports_cleared,omitempty"`
+}
+
+// pendingAutostart holds state for a two-phase autostart (prompt mode).
+type pendingAutostart struct {
+	config      *config.AgntConfig
+	projectPath string
+	conflicts   []PortConflict
 }
 
 // RunAutostart loads .agnt.kdl config from projectPath and starts configured processes/proxies.
@@ -1027,8 +1039,96 @@ func (d *Daemon) RunAutostart(ctx context.Context, projectPath string) *Autostar
 	}
 	log.Info("", "", "config_loaded", fmt.Sprintf("%d scripts, %d proxies from %s", len(agntConfig.Scripts), len(agntConfig.Proxies), projectPath))
 
-	// Step 3: Register ALL scripts (autostart and manual) so the overlay can see them
-	for name, scriptCfg := range agntConfig.Scripts {
+	// Step 3: Port pre-flight check
+	autostartScripts := agntConfig.GetAutostartScripts()
+	managedPIDs := d.collectManagedPIDs()
+	conflicts := detectPortConflicts(ctx, autostartScripts, managedPIDs)
+
+	if len(conflicts) > 0 {
+		policy := agntConfig.EffectivePortConflictPolicy()
+
+		for _, c := range conflicts {
+			log.Add(&StartupLogEntry{
+				ProcessID:  makeProcessID(projectPath, c.ScriptName),
+				ScriptName: c.ScriptName,
+				Level:      "warning",
+				EventType:  "port_conflict_detected",
+				Message:    fmt.Sprintf("port %d blocked by %s (PIDs: %v)", c.Port, c.ProcessName, c.PIDs),
+				Port:       c.Port,
+				Timestamp:  time.Now(),
+			})
+		}
+
+		switch policy {
+		case "fail":
+			msg := fmt.Sprintf("port conflicts detected, aborting (port-conflict: fail): %d conflict(s)", len(conflicts))
+			log.Error("", "", "port_conflict_abort", msg)
+			result.Errors = append(result.Errors, msg)
+			result.PortConflicts = conflicts
+			return result
+
+		case "skip":
+			for _, c := range conflicts {
+				log.Add(&StartupLogEntry{
+					ProcessID:  makeProcessID(projectPath, c.ScriptName),
+					ScriptName: c.ScriptName,
+					Level:      "warning",
+					EventType:  "port_conflict_skipped",
+					Message:    fmt.Sprintf("port %d conflict skipped (policy: skip)", c.Port),
+					Port:       c.Port,
+					Timestamp:  time.Now(),
+				})
+			}
+
+		case "auto-kill":
+			killResults := killPortBlockers(ctx, d.hub.ProcessManager(), conflicts)
+			for _, kr := range killResults {
+				if kr.Killed {
+					result.PortsCleared = append(result.PortsCleared, kr.PortConflict)
+					log.Info(makeProcessID(projectPath, kr.ScriptName), kr.ScriptName,
+						"port_conflict_killed",
+						fmt.Sprintf("cleared port %d (was: %s PIDs %v)", kr.Port, kr.ProcessName, kr.PIDs))
+				} else {
+					log.Error(makeProcessID(projectPath, kr.ScriptName), kr.ScriptName,
+						"port_conflict_failed", kr.Error)
+					result.Errors = append(result.Errors, kr.Error)
+				}
+			}
+
+		case "prompt":
+			d.pendingAutostarts.Store(projectPath, &pendingAutostart{
+				config:      agntConfig,
+				projectPath: projectPath,
+				conflicts:   conflicts,
+			})
+			result.PortConflicts = conflicts
+			return result
+		}
+	}
+
+	// Step 4: Register + start
+	d.registerAndStartScripts(ctx, agntConfig, projectPath, result)
+	return result
+}
+
+// collectManagedPIDs returns a set of all PIDs currently managed by the daemon.
+func (d *Daemon) collectManagedPIDs() map[int]bool {
+	managed := make(map[int]bool)
+	for _, proc := range d.hub.ProcessManager().List() {
+		pid := proc.PID()
+		if pid > 0 {
+			managed[pid] = true
+		}
+	}
+	return managed
+}
+
+// registerAndStartScripts registers all scripts, starts autostart scripts in
+// dependency order, then starts proxies. Shared by RunAutostart and resumeAutostart.
+func (d *Daemon) registerAndStartScripts(ctx context.Context, cfg *config.AgntConfig, projectPath string, result *AutostartResult) {
+	log := d.startupErrorStore
+
+	for name, scriptCfg := range cfg.Scripts {
 		processID := makeProcessID(projectPath, name)
 		d.scriptConfigs.Store(processID, scriptCfg)
 		if _, err := d.scriptRegistry.Register(name, projectPath, scriptConfigToEntry(scriptCfg)); err != nil {
@@ -1036,12 +1136,22 @@ func (d *Daemon) RunAutostart(ctx context.Context, projectPath string) *Autostar
 		}
 	}
 
-	// Step 4: Start autostart scripts in dependency order
-	failedScripts := d.startAutostartScripts(ctx, agntConfig, projectPath, result)
+	failedScripts := d.startAutostartScripts(ctx, cfg, projectPath, result)
+	d.startAutostartProxies(ctx, cfg, projectPath, failedScripts, result)
+}
 
-	// Step 5: Start proxies (skip those depending on failed scripts)
-	d.startAutostartProxies(ctx, agntConfig, projectPath, failedScripts, result)
+// resumeAutostart continues a paused autostart after port conflict resolution.
+func (d *Daemon) resumeAutostart(ctx context.Context, projectPath string) *AutostartResult {
+	result := &AutostartResult{}
 
+	val, ok := d.pendingAutostarts.LoadAndDelete(projectPath)
+	if !ok {
+		result.Errors = append(result.Errors, "no pending autostart for this project")
+		return result
+	}
+	pending := val.(*pendingAutostart)
+
+	d.registerAndStartScripts(ctx, pending.config, pending.projectPath, result)
 	return result
 }
 

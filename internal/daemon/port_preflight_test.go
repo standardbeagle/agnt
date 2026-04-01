@@ -2,11 +2,16 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"os"
+	"os/exec"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/standardbeagle/agnt/internal/config"
+	goprocess "github.com/standardbeagle/go-cli-server/process"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -71,4 +76,63 @@ func TestDetectPortConflicts_MultiplePortsMultipleScripts(t *testing.T) {
 	}
 	conflicts := detectPortConflicts(context.Background(), scripts, nil)
 	assert.Len(t, conflicts, 2)
+}
+
+func TestKillPortBlockers_FreesPort(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("don't run as root")
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	port := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+
+	// Start a subprocess that listens on the port
+	cmd := exec.Command("python3", "-c",
+		fmt.Sprintf(`import socket,time; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); s.bind(('127.0.0.1',%d)); s.listen(1); time.sleep(60)`, port))
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	require.NoError(t, cmd.Start())
+	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
+
+	// Wait for port to be bound
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 100*time.Millisecond); err == nil {
+			conn.Close()
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	pm := goprocess.NewProcessManager(goprocess.DefaultManagerConfig())
+	defer pm.Shutdown(context.Background())
+
+	conflicts := []PortConflict{{
+		ScriptName: "test", Port: port, PIDs: []int{cmd.Process.Pid},
+	}}
+
+	results := killPortBlockers(context.Background(), pm, conflicts)
+	require.Len(t, results, 1)
+	assert.True(t, results[0].Killed)
+	assert.Empty(t, results[0].Error)
+
+	// Verify port is free
+	ln2, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	assert.NoError(t, err, "port should be free after kill")
+	if ln2 != nil {
+		ln2.Close()
+	}
+}
+
+func TestKillPortBlockers_NonExistentPID(t *testing.T) {
+	pm := goprocess.NewProcessManager(goprocess.DefaultManagerConfig())
+	defer pm.Shutdown(context.Background())
+
+	conflicts := []PortConflict{{
+		ScriptName: "test", Port: 9999, PIDs: []int{999999999},
+	}}
+	results := killPortBlockers(context.Background(), pm, conflicts)
+	require.Len(t, results, 1)
+	assert.True(t, results[0].Killed)
 }
