@@ -3277,3 +3277,186 @@ scripts {
 
 	assertPortFree(t, port, 5*time.Second)
 }
+
+// ---------------------------------------------------------------------------
+// Port pre-flight e2e tests
+// ---------------------------------------------------------------------------
+
+// TestE2E_AutostartPortPreflight_AutoKill verifies that auto-kill policy kills
+// a rogue process holding a declared port, then starts the script.
+func TestE2E_AutostartPortPreflight_AutoKill(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e test")
+	}
+
+	env := setupDaemonForE2E(t)
+	d := env.Daemon
+	port := freePort(t)
+	env.TrackPort(port)
+
+	// Start an external blocker process holding the port.
+	blockerCmd := exec.Command("python3", "-c",
+		fmt.Sprintf(`import socket,time; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); s.bind(('127.0.0.1',%d)); s.listen(1); time.sleep(60)`, port))
+	blockerCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	require.NoError(t, blockerCmd.Start())
+	t.Cleanup(func() { _ = blockerCmd.Process.Kill(); _ = blockerCmd.Wait() })
+	require.NoError(t, waitForPort(port, 5*time.Second), "blocker should bind port %d", port)
+
+	// Use sleep so the script stays alive long enough to be registered as running.
+	writeAgntKDL(t, env.ProjectDir, fmt.Sprintf(`
+project {
+    port-conflict "auto-kill"
+}
+scripts {
+    server {
+        run "sleep 30"
+        autostart true
+        ports %d
+    }
+}`, port))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	result := d.RunAutostart(ctx, env.ProjectDir)
+	require.NotNil(t, result)
+
+	assert.NotEmpty(t, result.PortsCleared, "should have cleared ports")
+	assert.Contains(t, result.Scripts, "server", "script should have started")
+}
+
+// TestE2E_AutostartPortPreflight_Fail verifies that fail policy aborts autostart
+// when a port conflict is detected and returns errors + conflicts.
+func TestE2E_AutostartPortPreflight_Fail(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e test")
+	}
+
+	env := setupDaemonForE2E(t)
+	d := env.Daemon
+	port := freePort(t)
+	env.TrackPort(port)
+
+	// Use an external blocker to avoid preflightPortCleanup killing the test.
+	blockerCmd := exec.Command("python3", "-c",
+		fmt.Sprintf(`import socket,time; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); s.bind(('127.0.0.1',%d)); s.listen(1); time.sleep(60)`, port))
+	blockerCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	require.NoError(t, blockerCmd.Start())
+	t.Cleanup(func() { _ = blockerCmd.Process.Kill(); _ = blockerCmd.Wait() })
+	require.NoError(t, waitForPort(port, 5*time.Second), "blocker should bind port %d", port)
+
+	writeAgntKDL(t, env.ProjectDir, fmt.Sprintf(`
+project {
+    port-conflict "fail"
+}
+scripts {
+    server {
+        run "echo hello"
+        autostart true
+        ports %d
+    }
+}`, port))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	result := d.RunAutostart(ctx, env.ProjectDir)
+	require.NotNil(t, result)
+
+	assert.Empty(t, result.Scripts, "no scripts should start in fail mode")
+	assert.NotEmpty(t, result.Errors, "should have error about port conflict abort")
+	assert.NotEmpty(t, result.PortConflicts, "should report conflicts")
+}
+
+// TestE2E_AutostartPortPreflight_Skip verifies that skip policy ignores port
+// conflicts at the policy level and proceeds to start scripts. The low-level
+// preflightPortCleanup in StartScript will still kill the blocker, so the
+// script starts successfully.
+func TestE2E_AutostartPortPreflight_Skip(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e test")
+	}
+
+	env := setupDaemonForE2E(t)
+	d := env.Daemon
+	port := freePort(t)
+	env.TrackPort(port)
+
+	// Use an external process so preflightPortCleanup can kill it without
+	// killing the test process itself.
+	blockerCmd := exec.Command("python3", "-c",
+		fmt.Sprintf(`import socket,time; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); s.bind(('127.0.0.1',%d)); s.listen(1); time.sleep(60)`, port))
+	blockerCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	require.NoError(t, blockerCmd.Start())
+	t.Cleanup(func() { _ = blockerCmd.Process.Kill(); _ = blockerCmd.Wait() })
+	require.NoError(t, waitForPort(port, 5*time.Second), "blocker should bind port %d", port)
+
+	writeAgntKDL(t, env.ProjectDir, fmt.Sprintf(`
+project {
+    port-conflict "skip"
+}
+scripts {
+    server {
+        run "sleep 30"
+        autostart true
+        ports %d
+    }
+}`, port))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	result := d.RunAutostart(ctx, env.ProjectDir)
+	require.NotNil(t, result)
+
+	assert.Contains(t, result.Scripts, "server", "script should start despite conflict")
+	assert.Empty(t, result.PortConflicts, "skip mode doesn't return conflicts to client")
+}
+
+// TestE2E_AutostartPortPreflight_Prompt verifies that prompt policy pauses
+// autostart, reports conflicts, and resumes after user confirmation.
+func TestE2E_AutostartPortPreflight_Prompt(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e test")
+	}
+
+	env := setupDaemonForE2E(t)
+	d := env.Daemon
+	port := freePort(t)
+	env.TrackPort(port)
+
+	// Use an external blocker so preflightPortCleanup during resume can kill
+	// it without affecting the test process.
+	blockerCmd := exec.Command("python3", "-c",
+		fmt.Sprintf(`import socket,time; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); s.bind(('127.0.0.1',%d)); s.listen(1); time.sleep(60)`, port))
+	blockerCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	require.NoError(t, blockerCmd.Start())
+	t.Cleanup(func() { _ = blockerCmd.Process.Kill(); _ = blockerCmd.Wait() })
+	require.NoError(t, waitForPort(port, 5*time.Second), "blocker should bind port %d", port)
+
+	writeAgntKDL(t, env.ProjectDir, fmt.Sprintf(`
+project {
+    port-conflict "prompt"
+}
+scripts {
+    server {
+        run "sleep 30"
+        autostart true
+        ports %d
+    }
+}`, port))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	result := d.RunAutostart(ctx, env.ProjectDir)
+	require.NotNil(t, result)
+
+	assert.NotEmpty(t, result.PortConflicts, "should report conflicts")
+	assert.Empty(t, result.Scripts, "should not start scripts in prompt mode")
+
+	// Kill the blocker so the port is free for resume.
+	_ = blockerCmd.Process.Kill()
+	_ = blockerCmd.Wait()
+
+	// Resume via CONTINUE (simulates user approval after port freed).
+	resumeResult := d.resumeAutostart(ctx, env.ProjectDir)
+	require.NotNil(t, resumeResult)
+	assert.Contains(t, resumeResult.Scripts, "server", "should start after continue")
+}
