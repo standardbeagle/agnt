@@ -2,9 +2,13 @@ package daemon
 
 import (
 	"context"
+	"fmt"
+	"net"
 	"sort"
+	"time"
 
 	"github.com/standardbeagle/agnt/internal/config"
+	goprocess "github.com/standardbeagle/go-cli-server/process"
 )
 
 // PortConflict describes an unmanaged process blocking a declared port.
@@ -53,4 +57,50 @@ func detectPortConflicts(ctx context.Context, scripts map[string]*config.ScriptC
 		}
 	}
 	return conflicts
+}
+
+// KillResult reports what happened for each conflict.
+type KillResult struct {
+	PortConflict
+	Killed bool   `json:"killed"`
+	Error  string `json:"error,omitempty"`
+}
+
+// killPortBlockers kills processes blocking declared ports using the
+// ProcessManager's full escalation path (process groups + descendants).
+// Verifies each port is free after kill.
+func killPortBlockers(ctx context.Context, pm *goprocess.ProcessManager, conflicts []PortConflict) []KillResult {
+	results := make([]KillResult, len(conflicts))
+
+	for i, c := range conflicts {
+		results[i].PortConflict = c
+
+		_, err := pm.KillProcessByPort(ctx, c.Port)
+		if err != nil {
+			results[i].Error = fmt.Sprintf("kill failed for port %d: %v", c.Port, err)
+			continue
+		}
+
+		if waitPortFree(c.Port, 2*time.Second) {
+			results[i].Killed = true
+		} else {
+			results[i].Error = fmt.Sprintf("port %d still in use after kill", c.Port)
+		}
+	}
+
+	return results
+}
+
+// waitPortFree polls until port is free or timeout expires.
+func waitPortFree(port int, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+		if err == nil {
+			ln.Close()
+			return true
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return false
 }
