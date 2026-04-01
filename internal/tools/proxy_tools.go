@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/proxy"
@@ -1119,6 +1120,59 @@ func handleProxyLogQueryRaw(entries []proxy.LogEntry, pag *Pagination) (*mcp.Cal
 					Data:      marshalData(data),
 				}
 			}
+
+		case proxy.LogTypePanelMessage:
+			if entry.PanelMessage != nil {
+				data["id"] = entry.PanelMessage.ID
+				data["message"] = entry.PanelMessage.Message
+				data["url"] = entry.PanelMessage.URL
+				data["request_notification"] = entry.PanelMessage.RequestNotification
+				if len(entry.PanelMessage.Attachments) > 0 {
+					attachments := make([]map[string]interface{}, len(entry.PanelMessage.Attachments))
+					for j, att := range entry.PanelMessage.Attachments {
+						a := map[string]interface{}{
+							"type": att.Type,
+						}
+						if att.Selector != "" {
+							a["selector"] = att.Selector
+						}
+						if att.Tag != "" {
+							a["tag"] = att.Tag
+						}
+						if att.ID != "" {
+							a["id"] = att.ID
+						}
+						if att.Text != "" {
+							a["text"] = att.Text
+						}
+						if att.Summary != "" {
+							a["summary"] = att.Summary
+						}
+						if att.FilePath != "" {
+							a["file_path"] = att.FilePath
+						}
+						if len(att.Classes) > 0 {
+							a["classes"] = att.Classes
+						}
+						if att.Area != nil {
+							a["area"] = map[string]interface{}{
+								"x": att.Area.X, "y": att.Area.Y,
+								"width": att.Area.Width, "height": att.Area.Height,
+							}
+						}
+						if len(att.Data) > 0 {
+							a["data"] = att.Data
+						}
+						attachments[j] = a
+					}
+					data["attachments"] = attachments
+				}
+				output[i] = LogEntryOutput{
+					Type:      string(entry.Type),
+					Timestamp: entry.PanelMessage.Timestamp,
+					Data:      marshalData(data),
+				}
+			}
 		}
 	}
 
@@ -1250,11 +1304,29 @@ func handleProxyLogQueryCompact(entries []proxy.LogEntry, pag *Pagination) (*mcp
 		case proxy.LogTypePanelMessage:
 			if entry.PanelMessage != nil {
 				timestamp = entry.PanelMessage.Timestamp
-				attachmentInfo := ""
+				parts := []string{entry.PanelMessage.Message}
 				if len(entry.PanelMessage.Attachments) > 0 {
-					attachmentInfo = fmt.Sprintf(" [%d attachments]", len(entry.PanelMessage.Attachments))
+					attParts := make([]string, len(entry.PanelMessage.Attachments))
+					for j, att := range entry.PanelMessage.Attachments {
+						desc := att.Type
+						if att.Selector != "" {
+							desc += ":" + att.Selector
+						}
+						if att.Summary != "" {
+							desc += " (" + att.Summary + ")"
+						}
+						if att.FilePath != "" {
+							desc += " → " + att.FilePath
+						}
+						attParts[j] = desc
+					}
+					parts = append(parts, fmt.Sprintf("[%d attachments: %s]",
+						len(entry.PanelMessage.Attachments), strings.Join(attParts, ", ")))
 				}
-				data = fmt.Sprintf("%s%s", entry.PanelMessage.Message, attachmentInfo)
+				if entry.PanelMessage.URL != "" {
+					parts = append(parts, "page: "+entry.PanelMessage.URL)
+				}
+				data = strings.Join(parts, "\n  ")
 			}
 
 		case proxy.LogTypeSketch:
