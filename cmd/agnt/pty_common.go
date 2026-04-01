@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -16,6 +17,14 @@ import (
 	"github.com/standardbeagle/agnt/internal/overlay"
 	"github.com/standardbeagle/agnt/internal/protocol"
 )
+
+// portConflictInfo describes a port conflict detected during autostart.
+type portConflictInfo struct {
+	ScriptName  string
+	Port        int
+	PIDs        []int
+	ProcessName string
+}
 
 // daemonSessionHandle manages the daemon connection and session registration.
 // It encapsulates the resilient client, heartbeat goroutine, and session state.
@@ -30,6 +39,9 @@ type daemonSessionHandle struct {
 	autostartScripts []string // scripts successfully started
 	autostartProxies []string // proxies successfully started
 	autostartErrors  []string // errors encountered during autostart
+	portConflicts    []portConflictInfo
+	portsCleared     []portConflictInfo
+	projectPath      string
 }
 
 // Close cleans up daemon session resources.
@@ -216,6 +228,7 @@ func startDaemonSession(ctx context.Context, cfg daemonSessionConfig) *daemonSes
 		}
 
 		handle.sessionRegistered = true
+		handle.projectPath = cfg.ProjectPath
 
 		// Capture autostart results
 		if result != nil && !cfg.SkipAutostart {
@@ -238,6 +251,47 @@ func startDaemonSession(ctx context.Context, cfg daemonSessionConfig) *daemonSes
 					for _, e := range errs {
 						if str, ok := e.(string); ok {
 							handle.autostartErrors = append(handle.autostartErrors, str)
+						}
+					}
+				}
+				if conflicts, ok := autostart["port_conflicts"].([]interface{}); ok {
+					for _, c := range conflicts {
+						if cm, ok := c.(map[string]interface{}); ok {
+							info := portConflictInfo{}
+							if s, ok := cm["script_name"].(string); ok {
+								info.ScriptName = s
+							}
+							if p, ok := cm["port"].(float64); ok {
+								info.Port = int(p)
+							}
+							if s, ok := cm["process_name"].(string); ok {
+								info.ProcessName = s
+							}
+							if pids, ok := cm["pids"].([]interface{}); ok {
+								for _, p := range pids {
+									if pid, ok := p.(float64); ok {
+										info.PIDs = append(info.PIDs, int(pid))
+									}
+								}
+							}
+							handle.portConflicts = append(handle.portConflicts, info)
+						}
+					}
+				}
+				if cleared, ok := autostart["ports_cleared"].([]interface{}); ok {
+					for _, c := range cleared {
+						if cm, ok := c.(map[string]interface{}); ok {
+							info := portConflictInfo{}
+							if s, ok := cm["script_name"].(string); ok {
+								info.ScriptName = s
+							}
+							if p, ok := cm["port"].(float64); ok {
+								info.Port = int(p)
+							}
+							if s, ok := cm["process_name"].(string); ok {
+								info.ProcessName = s
+							}
+							handle.portsCleared = append(handle.portsCleared, info)
 						}
 					}
 				}
@@ -271,6 +325,34 @@ func startDaemonSession(ctx context.Context, cfg daemonSessionConfig) *daemonSes
 	return handle
 }
 
+// mergeAutostartResult updates the handle with results from the resumed autostart.
+func mergeAutostartResult(handle *daemonSessionHandle, result map[string]interface{}) {
+	if result == nil {
+		return
+	}
+	if scripts, ok := result["scripts"].([]interface{}); ok {
+		for _, s := range scripts {
+			if str, ok := s.(string); ok {
+				handle.autostartScripts = append(handle.autostartScripts, str)
+			}
+		}
+	}
+	if proxies, ok := result["proxies"].([]interface{}); ok {
+		for _, p := range proxies {
+			if str, ok := p.(string); ok {
+				handle.autostartProxies = append(handle.autostartProxies, str)
+			}
+		}
+	}
+	if errs, ok := result["errors"].([]interface{}); ok {
+		for _, e := range errs {
+			if str, ok := e.(string); ok {
+				handle.autostartErrors = append(handle.autostartErrors, str)
+			}
+		}
+	}
+}
+
 // displayAutostartResults waits for daemon registration to complete and shows
 // autostart results in the overlay status bar. Success messages appear as a
 // transient status bar message that fades back to the normal indicator after 3s.
@@ -281,6 +363,52 @@ func displayAutostartResults(handle *daemonSessionHandle, ov *overlay.Overlay, w
 	}
 	if !handle.WaitRegistered(timeout) {
 		return
+	}
+
+	// Show auto-cleared ports (auto-kill mode)
+	for _, c := range handle.portsCleared {
+		fmt.Fprintf(w, "\x1b[33m[agnt] cleared port %d (was: %s PID %v)\x1b[0m\r\n", c.Port, c.ProcessName, c.PIDs)
+	}
+
+	// Handle port conflicts (prompt mode)
+	if len(handle.portConflicts) > 0 {
+		fmt.Fprintf(w, "\x1b[33m[agnt] port conflicts detected:\x1b[0m\r\n")
+		for _, c := range handle.portConflicts {
+			fmt.Fprintf(w, "\x1b[33m  %d (%s) <- %s (PID %v)\x1b[0m\r\n", c.Port, c.ScriptName, c.ProcessName, c.PIDs)
+		}
+		fmt.Fprintf(w, "\x1b[33m  Kill all blocking processes? [Y/n] \x1b[0m")
+
+		// Read single character from stdin (PTY is in raw mode)
+		buf := make([]byte, 1)
+		n, err := os.Stdin.Read(buf)
+		answer := byte('Y')
+		if err == nil && n > 0 && buf[0] != '\n' && buf[0] != '\r' {
+			answer = buf[0]
+		}
+
+		if answer == 'n' || answer == 'N' {
+			fmt.Fprintf(w, "\r\n\x1b[2m[agnt] proceeding without killing -- scripts may fail to bind\x1b[0m\r\n")
+			if handle.IsConnected() {
+				var result map[string]interface{}
+				_ = handle.client.WithClient(func(c *daemon.Client) error {
+					var err error
+					result, err = c.AutostartContinue(handle.projectPath)
+					return err
+				})
+				mergeAutostartResult(handle, result)
+			}
+		} else {
+			fmt.Fprintf(w, "\r\n")
+			if handle.IsConnected() {
+				var result map[string]interface{}
+				_ = handle.client.WithClient(func(c *daemon.Client) error {
+					var err error
+					result, err = c.AutostartClearPorts(handle.projectPath)
+					return err
+				})
+				mergeAutostartResult(handle, result)
+			}
+		}
 	}
 
 	started := append(handle.autostartScripts, handle.autostartProxies...)
@@ -307,7 +435,7 @@ func displayAutostartResults(handle *daemonSessionHandle, ov *overlay.Overlay, w
 		fmt.Fprintf(w, "\x1b[31m[agnt] autostart error: %s\x1b[0m\r\n", summary)
 		if len(lines) > 1 && strings.TrimSpace(lines[1]) != "" {
 			for _, outputLine := range strings.Split(strings.TrimSpace(lines[1]), "\n") {
-				fmt.Fprintf(w, "\x1b[2m  │ %s\x1b[0m\r\n", outputLine)
+				fmt.Fprintf(w, "\x1b[2m  | %s\x1b[0m\r\n", outputLine)
 			}
 		}
 	}
