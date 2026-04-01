@@ -13,10 +13,11 @@ const (
 	VerbOverlay     = "OVERLAY"
 	VerbStatus      = "STATUS" // Full daemon status (Hub's INFO is minimal)
 	VerbStore       = "STORE"
-	VerbAutomate    = "AUTOMATE" // Agent-based automation processing
-	VerbAlerts      = "ALERTS"   // Process output alert queries
-	VerbScript      = "SCRIPT"   // Script registry queries and control
-	VerbDoctor      = "DOCTOR"   // Health check / diagnostic report
+	VerbAutomate    = "AUTOMATE"  // Agent-based automation processing
+	VerbAlerts      = "ALERTS"    // Process output alert queries
+	VerbScript      = "SCRIPT"    // Script registry queries and control
+	VerbDoctor      = "DOCTOR"    // Health check / diagnostic report
+	VerbAutostart   = "AUTOSTART" // Resolve port conflicts and resume autostart
 )
 
 // Agnt-specific sub-verbs (beyond those in go-cli-server).
@@ -51,6 +52,8 @@ const (
 	SubVerbEvaluate      = "EVALUATE"    // Evaluate JavaScript in automation session
 	SubVerbReport        = "REPORT"      // Report alert matches from agnt run
 	SubVerbStartupLog    = "STARTUP-LOG" // Query startup log (successes and failures)
+	SubVerbClearPorts    = "CLEAR-PORTS" // Kill port blockers and resume autostart
+	SubVerbContinue      = "CONTINUE"    // Resume autostart without killing blockers
 )
 
 // ProxyStartConfig represents configuration for a PROXY START command.

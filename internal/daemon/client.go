@@ -686,3 +686,13 @@ func (c *Client) ScriptStop(name, projectPath string) (map[string]interface{}, e
 	return c.conn.Request(protocol.VerbScript, protocol.SubVerbStop, name).
 		WithJSON(map[string]interface{}{"directory": projectPath}).JSON()
 }
+
+// AutostartClearPorts kills port blockers and resumes autostart for a project.
+func (c *Client) AutostartClearPorts(projectPath string) (map[string]interface{}, error) {
+	return c.conn.Request(protocol.VerbAutostart, protocol.SubVerbClearPorts, projectPath).JSON()
+}
+
+// AutostartContinue resumes autostart without killing port blockers.
+func (c *Client) AutostartContinue(projectPath string) (map[string]interface{}, error) {
+	return c.conn.Request(protocol.VerbAutostart, protocol.SubVerbContinue, projectPath).JSON()
+}
