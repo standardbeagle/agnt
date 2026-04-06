@@ -3574,6 +3574,68 @@
     return wrapper;
   }
 
+  // Capture surrounding DOM context (parent and siblings) for AI context.
+  function captureContextHTML(element) {
+    var parent = element.parentElement;
+    if (!parent) return element.outerHTML.substring(0, 2000);
+    var clone = parent.cloneNode(true);
+    // Strip script/style content and deeply nested children to keep context compact
+    var scripts = clone.querySelectorAll('script, style');
+    for (var i = 0; i < scripts.length; i++) scripts[i].remove();
+    var html = clone.outerHTML;
+    if (html.length > 4000) html = html.substring(0, 4000) + '...';
+    return html;
+  }
+
+  // Build a serializable props snapshot, converting non-JSON-safe values to descriptors.
+  function serializeProps(props) {
+    var result = {};
+    var keys = Object.keys(props);
+    for (var i = 0; i < keys.length; i++) {
+      var key = keys[i];
+      if (key === 'children') continue;
+      var val = props[key];
+      if (typeof val === 'function') {
+        result[key] = '[Function]';
+      } else if (val instanceof Element) {
+        result[key] = '[Element: ' + val.tagName.toLowerCase() + ']';
+      } else {
+        try { JSON.stringify(val); result[key] = val; }
+        catch (e) { result[key] = String(val); }
+      }
+    }
+    return result;
+  }
+
+  // Send React component data to the AI agent via the indicator compose tab.
+  function sendReactPropsToAgent(element, info) {
+    var indicator = window.__devtool_indicator;
+    if (!indicator || !indicator.addAttachment) return;
+
+    var propsSnapshot = serializeProps(info.props);
+    var contextHTML = captureContextHTML(element);
+
+    var reactProps = {
+      component: info.componentName,
+      props: propsSnapshot,
+      source: info.source || null,
+      contextHTML: contextHTML
+    };
+
+    indicator.addAttachment('style-edit', {
+      label: info.componentName + ' React props',
+      summary: info.componentName + ' component props + source location',
+      selector: state.selector || '',
+      changes: state.changes.slice(),
+      screenshots: { before: state.beforeScreenshotId || null, after: null },
+      reactProps: reactProps
+    });
+
+    indicator.setMessage('Update the ' + info.componentName + ' component:');
+    indicator.switchTab('compose');
+    indicator.togglePanel(true);
+  }
+
   // Render a collapsible section displaying React component info for the selected element.
   // Returns null if no React component is detected.
   function renderReactComponentSection(element) {
@@ -3615,6 +3677,27 @@
       if (key === 'children') continue;
       section.contentEl.appendChild(renderPropRow(key, info.props[key]));
     }
+
+    // "Edit via AI" button
+    var editBtn = document.createElement('button');
+    editBtn.style.cssText = [
+      'width: 100%',
+      'margin-top: 6px',
+      'padding: 6px 12px',
+      'background: ' + TOKENS.colors.primary,
+      'color: ' + TOKENS.colors.textInverse,
+      'border: none',
+      'border-radius: ' + TOKENS.radius.sm,
+      'font-size: 12px',
+      'font-weight: 600',
+      'cursor: pointer',
+      'transition: background 0.15s ease'
+    ].join(';');
+    editBtn.textContent = 'Edit via AI';
+    editBtn.onmouseenter = function() { editBtn.style.background = TOKENS.colors.primaryDark; };
+    editBtn.onmouseleave = function() { editBtn.style.background = TOKENS.colors.primary; };
+    editBtn.onclick = function() { sendReactPropsToAgent(element, info); };
+    section.contentEl.appendChild(editBtn);
 
     return section;
   }
@@ -3852,6 +3935,9 @@
     detectControlType: detectControlType,
     renderControl: renderControl,
     detectReactComponent: detectReactComponent,
-    renderBoxModel: renderBoxModel
+    renderBoxModel: renderBoxModel,
+    serializeProps: serializeProps,
+    captureContextHTML: captureContextHTML,
+    sendReactPropsToAgent: sendReactPropsToAgent
   };
 })();
