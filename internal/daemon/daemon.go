@@ -948,6 +948,26 @@ func (d *Daemon) CleanupSessionResources(sessionCode string) {
 
 	wg.Wait()
 
+	// Remove orphaned script entries from the registry.
+	// This must happen after processes are stopped to avoid race conditions.
+	if !hasOtherSessions {
+		// Last session: remove ALL script entries for this project.
+		// The next session will re-register from current .agnt.kdl config.
+		for _, entry := range d.scriptRegistry.List(projectPath) {
+			d.scriptRegistry.Remove(entry.Name, projectPath)
+			d.scriptConfigs.Delete(entry.ProcessID)
+		}
+		debug.Log("daemon", "cleared script registry for project %s (last session)", projectPath)
+	} else {
+		// Other sessions remain: only remove entries that were orphaned (no observers).
+		for _, pid := range orphanedProcessIDs {
+			if entry, ok := d.scriptRegistry.GetByProcessID(pid); ok {
+				d.scriptRegistry.Remove(entry.Name, entry.ProjectPath)
+				d.scriptConfigs.Delete(pid)
+			}
+		}
+	}
+
 	// Unregister the session
 	if err := d.sessionRegistry.Unregister(sessionCode); err != nil {
 		debug.Log("daemon", "error unregistering session %s: %v", sessionCode, err)

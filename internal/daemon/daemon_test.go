@@ -867,3 +867,82 @@ func TestScriptRegistry_PruneStaleEntries(t *testing.T) {
 		t.Errorf("expected remaining script to be 'dev', got %q", entries[0].Name)
 	}
 }
+
+func TestCleanupSessionResources_ClearsScriptRegistry(t *testing.T) {
+	// The real bug: CleanupSessionResources must remove script entries from
+	// the registry when the last session disconnects. Otherwise, the next
+	// session sees stale entries and renders extra status bar indicators.
+	tmpDir := t.TempDir()
+	sockPath := filepath.Join(tmpDir, "test.sock")
+	projectPath := "/home/user/project"
+
+	d := New(DaemonConfig{
+		SocketPath:   sockPath,
+		MaxClients:   10,
+		WriteTimeout: 5 * time.Second,
+	})
+
+	if err := d.Start(); err != nil {
+		t.Fatalf("Failed to start daemon: %v", err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		d.Stop(ctx)
+	}()
+
+	// Simulate session registering 3 scripts
+	sessionCode := "session-1"
+	session := &Session{
+		Code:        sessionCode,
+		ProjectPath: projectPath,
+		StartedAt:   time.Now(),
+		Status:      SessionStatusActive,
+		LastSeen:    time.Now(),
+	}
+	if err := d.sessionRegistry.Register(session); err != nil {
+		t.Fatalf("Register session failed: %v", err)
+	}
+
+	for _, name := range []string{"dev", "test", "lint"} {
+		entry, err := d.scriptRegistry.Register(name, projectPath, &script.Config{
+			Run:       "echo " + name,
+			Autostart: true,
+		})
+		if err != nil {
+			t.Fatalf("Register %s failed: %v", name, err)
+		}
+		entry.SetOwner(sessionCode)
+		entry.AddSession(sessionCode)
+		// Store in scriptConfigs too
+		d.scriptConfigs.Store(entry.ProcessID, config.ScriptConfig{Run: "echo " + name})
+	}
+
+	// Verify 3 entries exist
+	entries := d.scriptRegistry.List(projectPath)
+	if len(entries) != 3 {
+		t.Fatalf("expected 3 scripts before cleanup, got %d", len(entries))
+	}
+
+	// Cleanup session (last session disconnecting)
+	d.CleanupSessionResources(sessionCode)
+
+	// Registry should now be empty — all entries cleared
+	entries = d.scriptRegistry.List(projectPath)
+	if len(entries) != 0 {
+		t.Errorf("expected 0 scripts after cleanup, got %d", len(entries))
+		for _, e := range entries {
+			t.Errorf("  stale entry: %s (state=%s)", e.Name, e.State())
+		}
+	}
+
+	// scriptConfigs should also be cleared
+	configCount := 0
+	d.scriptConfigs.Range(func(_, _ interface{}) bool {
+		configCount++
+		return true
+	})
+	if configCount != 0 {
+		t.Errorf("expected 0 scriptConfigs after cleanup, got %d", configCount)
+	}
+}
