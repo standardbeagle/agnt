@@ -3725,6 +3725,8 @@
     toggle: toggle,
     destroy: destroy,
     togglePanel: togglePanel,
+    switchTab: switchTab,
+    setMessage: actions.setMessage,
     setActivityState: setActivityState,
     addAttachment: addAttachment,
     showMicroToast: showMicroToast,
