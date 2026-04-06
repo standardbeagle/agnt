@@ -156,8 +156,8 @@ func TestScreenshotWithSingleIframe(t *testing.T) {
 	session := helperStartSession(t, ctx, manager, "iframe-single", srv.URL+"/single-iframe")
 	defer manager.Stop(ctx, "iframe-single")
 
-	// Wait for iframe to load
-	require.NoError(t, session.Run(cdp.Sleep(500*time.Millisecond)))
+	// Wait for iframe to load (longer for WSL/headless)
+	require.NoError(t, session.Run(cdp.Sleep(2*time.Second)))
 
 	result, err := CaptureViewport(session, ScreenshotOptions{Label: "single-iframe"})
 	require.NoError(t, err)

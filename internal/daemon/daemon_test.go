@@ -830,3 +830,40 @@ func TestScriptRegistry_GetByProcessID(t *testing.T) {
 		t.Error("GetByProcessID should return false for unknown ID")
 	}
 }
+
+func TestScriptRegistry_PruneStaleEntries(t *testing.T) {
+	// Simulates the scenario: session 1 registers 3 scripts, session 2 has only 1.
+	// After registerAndStartScripts, stale entries should be removed.
+	reg := script.NewRegistry()
+	projectPath := "/home/user/myapp"
+
+	// Session 1 registered 3 scripts
+	for _, name := range []string{"dev", "test", "lint"} {
+		_, err := reg.Register(name, projectPath, &script.Config{Run: "npm run " + name})
+		if err != nil {
+			t.Fatalf("Register %s failed: %v", name, err)
+		}
+	}
+
+	if len(reg.List(projectPath)) != 3 {
+		t.Fatalf("expected 3 scripts, got %d", len(reg.List(projectPath)))
+	}
+
+	// Session 2 config only has "dev"
+	newConfig := map[string]bool{"dev": true}
+
+	// Prune stale entries (same logic as registerAndStartScripts)
+	for _, entry := range reg.List(projectPath) {
+		if !newConfig[entry.Name] {
+			reg.Remove(entry.Name, projectPath)
+		}
+	}
+
+	entries := reg.List(projectPath)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 script after pruning, got %d", len(entries))
+	}
+	if entries[0].Name != "dev" {
+		t.Errorf("expected remaining script to be 'dev', got %q", entries[0].Name)
+	}
+}

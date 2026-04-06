@@ -49,16 +49,20 @@ const (
 	ExplicitStart
 	// ScriptStopped indicates a script stopped and its proxies should be cleaned up
 	ScriptStopped
+	// FallbackPortCheck indicates a delayed check for script-linked proxies that
+	// weren't created by URL detection — creates proxy using fallback-port if needed
+	FallbackPortCheck
 )
 
 // ProxyEvent represents an event that triggers proxy creation or cleanup.
 type ProxyEvent struct {
-	Type     ProxyEventType
-	ScriptID string // Process/script ID that triggered the event
-	URL      string // Detected URL (for URLDetected events)
-	ProxyID  string // Specific proxy ID (for ExplicitStart events)
-	Config   *config.ProxyConfig
-	Path     string // Project path
+	Type      ProxyEventType
+	ScriptID  string // Process/script ID that triggered the event
+	URL       string // Detected URL (for URLDetected events)
+	ProxyID   string // Specific proxy ID (for ExplicitStart events)
+	ProxyName string // Config proxy name (for FallbackPortCheck events)
+	Config    *config.ProxyConfig
+	Path      string // Project path
 }
 
 // DaemonConfig holds configuration for the daemon.
@@ -261,8 +265,15 @@ func New(config DaemonConfig) *Daemon {
 			Path:     projectPath,
 		}:
 		default:
-			// Channel full, log warning
 			debug.Warn("daemon", "Proxy event channel full, dropping URL detection event for %s: %s", processID, url)
+			if d.startupErrorStore != nil {
+				d.startupErrorStore.Add(&StartupLogEntry{
+					ProcessID: processID, ScriptName: stripProcessPrefix(processID),
+					Level: "warning", EventType: "proxy_event_dropped",
+					Message:   fmt.Sprintf("proxy event channel full: URL %s detected but event dropped — proxy may not be created", url),
+					Timestamp: time.Now(),
+				})
+			}
 		}
 	}
 	urlTracker.onProcessStopped = func(processID string) {
@@ -273,8 +284,15 @@ func New(config DaemonConfig) *Daemon {
 			ScriptID: processID,
 		}:
 		default:
-			// Channel full, log warning
 			debug.Warn("daemon", "Proxy event channel full, dropping process stopped event for %s", processID)
+			if d.startupErrorStore != nil {
+				d.startupErrorStore.Add(&StartupLogEntry{
+					ProcessID: processID, ScriptName: stripProcessPrefix(processID),
+					Level: "warning", EventType: "proxy_event_dropped",
+					Message:   fmt.Sprintf("proxy event channel full: script stopped event dropped for %s — proxies may not be cleaned up", processID),
+					Timestamp: time.Now(),
+				})
+			}
 		}
 	}
 	urlTracker.onProcessFirstSeen = func(processID string) {
@@ -1136,6 +1154,20 @@ func (d *Daemon) registerAndStartScripts(ctx context.Context, cfg *config.AgntCo
 		}
 	}
 
+	// Prune stale script entries that are no longer in config.
+	// This handles the case where scripts were removed from .agnt.kdl between sessions.
+	for _, entry := range d.scriptRegistry.List(projectPath) {
+		if _, inConfig := cfg.Scripts[entry.Name]; !inConfig {
+			d.scriptRegistry.Remove(entry.Name, projectPath)
+			d.scriptConfigs.Delete(entry.ProcessID)
+			if d.autoRestarter != nil {
+				d.autoRestarter.Unregister(entry.ProcessID)
+			}
+			log.Info(entry.ProcessID, entry.Name, "pruned_stale_script",
+				fmt.Sprintf("removed script %q (no longer in config)", entry.Name))
+		}
+	}
+
 	failedScripts := d.startAutostartScripts(ctx, cfg, projectPath, result)
 	d.startAutostartProxies(ctx, cfg, projectPath, failedScripts, result)
 }
@@ -1280,6 +1312,8 @@ func (d *Daemon) waitForDependencies(ctx context.Context, name string, scriptCfg
 }
 
 // startAutostartProxies starts proxies, skipping those that depend on failed scripts.
+// For script-linked proxies with fallback-port, schedules a delayed check to create
+// the proxy if URL detection doesn't fire in time.
 func (d *Daemon) startAutostartProxies(ctx context.Context, cfg *config.AgntConfig, projectPath string, failedScripts map[string]bool, result *AutostartResult) {
 	log := d.startupErrorStore
 
@@ -1300,6 +1334,63 @@ func (d *Daemon) startAutostartProxies(ctx context.Context, cfg *config.AgntConf
 			log.Info("", name, "proxy_started", fmt.Sprintf("proxy %s started", name))
 			result.Proxies = append(result.Proxies, name)
 		}
+	}
+
+	// Schedule fallback-port checks for script-linked proxies.
+	// These proxies aren't started above (they rely on URL detection).
+	// After a delay, check if URL detection created them; if not, use fallback-port.
+	d.scheduleFallbackPortChecks(ctx, cfg, projectPath, failedScripts)
+}
+
+// scheduleFallbackPortChecks schedules delayed FallbackPortCheck events for
+// script-linked proxies that have a fallback-port configured.
+func (d *Daemon) scheduleFallbackPortChecks(ctx context.Context, cfg *config.AgntConfig, projectPath string, failedScripts map[string]bool) {
+	for proxyName, proxyConfig := range cfg.Proxies {
+		if proxyConfig.Script == "" {
+			continue // Not script-linked
+		}
+		if failedScripts[proxyConfig.Script] {
+			continue // Script failed to start
+		}
+		if proxyConfig.FallbackPort <= 0 {
+			continue // No fallback configured
+		}
+
+		// Capture for goroutine
+		name := proxyName
+		pc := proxyConfig
+		scriptID := makeProcessID(projectPath, pc.Script)
+
+		go func() {
+			// Wait for URL detection to have a chance
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(30 * time.Second):
+			}
+
+			select {
+			case d.proxyEvents <- ProxyEvent{
+				Type:      FallbackPortCheck,
+				ScriptID:  scriptID,
+				ProxyName: name,
+				Config:    pc,
+				Path:      projectPath,
+			}:
+				debug.Log("daemon", "Scheduled fallback-port check for proxy %s (script %s)", name, pc.Script)
+			default:
+				debug.Warn("daemon", "Proxy event channel full, cannot schedule fallback check for proxy %s", name)
+				if d.startupErrorStore != nil {
+					d.startupErrorStore.Add(&StartupLogEntry{
+						ScriptName: name,
+						Level:      "warning",
+						EventType:  "proxy_event_dropped",
+						Message:    fmt.Sprintf("proxy event channel full: fallback-port check for proxy %s could not be scheduled", name),
+						Timestamp:  time.Now(),
+					})
+				}
+			}
+		}()
 	}
 }
 
@@ -1507,8 +1598,13 @@ func (d *Daemon) autostartScript(ctx context.Context, name string, scriptCfg *co
 // Script-linked proxies are skipped here — they're created by the event system when URLs are detected.
 func (d *Daemon) autostartProxy(ctx context.Context, name string, proxyConfig *config.ProxyConfig, projectPath string) error {
 	// Skip script-linked proxies - they're handled by URLDetected events
+	// or by FallbackPortCheck events if URL detection fails
 	if proxyConfig.Script != "" {
-		debug.Log("daemon", "Proxy %s is script-linked, skipping auto-start (will be created when URLs detected)", name)
+		msg := fmt.Sprintf("proxy %s: waiting for URL detection from script %q", name, proxyConfig.Script)
+		if proxyConfig.FallbackPort > 0 {
+			msg += fmt.Sprintf(" (fallback-port %d if detection fails)", proxyConfig.FallbackPort)
+		}
+		debug.Log("daemon", "%s", msg)
 		return nil
 	}
 
