@@ -1173,195 +1173,23 @@ func handleProxyLogQueryRaw(entries []proxy.LogEntry, pag *Pagination) (*mcp.Cal
 					Data:      marshalData(data),
 				}
 			}
-
-		case proxy.LogTypeInteraction:
-			if entry.Interaction != nil {
-				data["id"] = entry.Interaction.ID
-				data["event_type"] = entry.Interaction.EventType
-				data["url"] = entry.Interaction.URL
-				data["target_selector"] = entry.Interaction.Target.Selector
-				data["target_tag"] = entry.Interaction.Target.Tag
-				if entry.Interaction.Target.ID != "" {
-					data["target_id"] = entry.Interaction.Target.ID
-				}
-				if entry.Interaction.Target.Text != "" {
-					data["target_text"] = entry.Interaction.Target.Text
-				}
-				if entry.Interaction.Position != nil {
-					data["position"] = map[string]interface{}{
-						"client_x": entry.Interaction.Position.ClientX,
-						"client_y": entry.Interaction.Position.ClientY,
-					}
-				}
-				if entry.Interaction.Key != nil {
-					data["key"] = entry.Interaction.Key.Key
-					data["code"] = entry.Interaction.Key.Code
-				}
-				if entry.Interaction.Value != "" {
-					data["value"] = entry.Interaction.Value
-				}
-				output[i] = LogEntryOutput{
-					Type:      string(entry.Type),
-					Timestamp: entry.Interaction.Timestamp,
-					Data:      marshalData(data),
-				}
-			}
-
-		case proxy.LogTypeMutation:
-			if entry.Mutation != nil {
-				data["id"] = entry.Mutation.ID
-				data["mutation_type"] = entry.Mutation.MutationType
-				data["url"] = entry.Mutation.URL
-				data["target_selector"] = entry.Mutation.Target.Selector
-				data["target_tag"] = entry.Mutation.Target.Tag
-				if entry.Mutation.Target.ID != "" {
-					data["target_id"] = entry.Mutation.Target.ID
-				}
-				data["added_count"] = len(entry.Mutation.Added)
-				data["removed_count"] = len(entry.Mutation.Removed)
-				if entry.Mutation.Attribute != nil {
-					data["attribute"] = map[string]interface{}{
-						"name":      entry.Mutation.Attribute.Name,
-						"old_value": entry.Mutation.Attribute.OldValue,
-						"new_value": entry.Mutation.Attribute.NewValue,
-					}
-				}
-				output[i] = LogEntryOutput{
-					Type:      string(entry.Type),
-					Timestamp: entry.Mutation.Timestamp,
-					Data:      marshalData(data),
-				}
-			}
-
-		case proxy.LogTypeSketch:
-			if entry.Sketch != nil {
-				data["id"] = entry.Sketch.ID
-				data["url"] = entry.Sketch.URL
-				data["description"] = entry.Sketch.Description
-				data["element_count"] = entry.Sketch.ElementCount
-				data["file_path"] = entry.Sketch.FilePath
-				output[i] = LogEntryOutput{
-					Type:      string(entry.Type),
-					Timestamp: entry.Sketch.Timestamp,
-					Data:      marshalData(data),
-				}
-			}
-
-		case proxy.LogTypeScreenshotCapture:
-			if entry.ScreenshotCapture != nil {
-				data["id"] = entry.ScreenshotCapture.ID
-				data["url"] = entry.ScreenshotCapture.URL
-				data["summary"] = entry.ScreenshotCapture.Summary
-				data["file_path"] = entry.ScreenshotCapture.FilePath
-				data["area"] = map[string]interface{}{
-					"x": entry.ScreenshotCapture.Area.X, "y": entry.ScreenshotCapture.Area.Y,
-					"width": entry.ScreenshotCapture.Area.Width, "height": entry.ScreenshotCapture.Area.Height,
-				}
-				output[i] = LogEntryOutput{
-					Type:      string(entry.Type),
-					Timestamp: entry.ScreenshotCapture.Timestamp,
-					Data:      marshalData(data),
-				}
-			}
-
-		case proxy.LogTypeElementCapture:
-			if entry.ElementCapture != nil {
-				data["id"] = entry.ElementCapture.ID
-				data["url"] = entry.ElementCapture.URL
-				data["summary"] = entry.ElementCapture.Summary
-				data["selector"] = entry.ElementCapture.Selector
-				data["tag"] = entry.ElementCapture.Tag
-				if entry.ElementCapture.ElementID != "" {
-					data["element_id"] = entry.ElementCapture.ElementID
-				}
-				if entry.ElementCapture.Text != "" {
-					data["text"] = entry.ElementCapture.Text
-				}
-				output[i] = LogEntryOutput{
-					Type:      string(entry.Type),
-					Timestamp: entry.ElementCapture.Timestamp,
-					Data:      marshalData(data),
-				}
-			}
-
-		case proxy.LogTypeSketchCapture:
-			if entry.SketchCapture != nil {
-				data["id"] = entry.SketchCapture.ID
-				data["url"] = entry.SketchCapture.URL
-				data["summary"] = entry.SketchCapture.Summary
-				data["element_count"] = entry.SketchCapture.ElementCount
-				if entry.SketchCapture.FilePath != "" {
-					data["file_path"] = entry.SketchCapture.FilePath
-				}
-				output[i] = LogEntryOutput{
-					Type:      string(entry.Type),
-					Timestamp: entry.SketchCapture.Timestamp,
-					Data:      marshalData(data),
-				}
-			}
-
-		case proxy.LogTypeDesignState:
-			if entry.DesignState != nil {
-				data["id"] = entry.DesignState.ID
-				data["selector"] = entry.DesignState.Selector
-				data["xpath"] = entry.DesignState.XPath
-				data["original_html"] = entry.DesignState.OriginalHTML
-				data["context_html"] = entry.DesignState.ContextHTML
-				data["url"] = entry.DesignState.URL
-				data["metadata"] = map[string]interface{}{
-					"tag": entry.DesignState.Metadata.Tag,
-					"id":  entry.DesignState.Metadata.ID,
-				}
-				output[i] = LogEntryOutput{
-					Type:      string(entry.Type),
-					Timestamp: entry.DesignState.Timestamp,
-					Data:      marshalData(data),
-				}
-			}
-
-		case proxy.LogTypeDesignRequest:
-			if entry.DesignRequest != nil {
-				data["id"] = entry.DesignRequest.ID
-				data["selector"] = entry.DesignRequest.Selector
-				data["xpath"] = entry.DesignRequest.XPath
-				data["current_html"] = entry.DesignRequest.CurrentHTML
-				data["original_html"] = entry.DesignRequest.OriginalHTML
-				data["context_html"] = entry.DesignRequest.ContextHTML
-				data["alternatives_count"] = entry.DesignRequest.AlternativesCount
-				data["url"] = entry.DesignRequest.URL
-				output[i] = LogEntryOutput{
-					Type:      string(entry.Type),
-					Timestamp: entry.DesignRequest.Timestamp,
-					Data:      marshalData(data),
-				}
-			}
-
-		case proxy.LogTypeDesignChat:
-			if entry.DesignChat != nil {
-				data["id"] = entry.DesignChat.ID
-				data["message"] = entry.DesignChat.Message
-				data["selector"] = entry.DesignChat.Selector
-				data["xpath"] = entry.DesignChat.XPath
-				data["current_html"] = entry.DesignChat.CurrentHTML
-				data["url"] = entry.DesignChat.URL
-				if len(entry.DesignChat.ChatHistory) > 0 {
-					data["chat_history_count"] = len(entry.DesignChat.ChatHistory)
-				}
-				output[i] = LogEntryOutput{
-					Type:      string(entry.Type),
-					Timestamp: entry.DesignChat.Timestamp,
-					Data:      marshalData(data),
-				}
-			}
-
 		default:
-			// Generic fallback: marshal the entire LogEntry to prevent silent data loss
-			// for log types that don't have explicit formatting.
-			b, _ := json.Marshal(entry)
-			output[i] = LogEntryOutput{
-				Type:      string(entry.Type),
-				Timestamp: time.Now(),
-				Data:      string(b),
+			// Fallback: serialize entire entry to JSON
+			if b, err := json.Marshal(entry); err == nil {
+				output[i] = LogEntryOutput{
+					Type: string(entry.Type),
+					Data: string(b),
+				}
+				if em := make(map[string]interface{}); json.Unmarshal(b, &em) == nil {
+					if ts, ok := em["timestamp"].(string); ok {
+						if t, err := time.Parse(time.RFC3339, ts); err == nil {
+							output[i].Timestamp = t
+						}
+					}
+					if output[i].Timestamp.IsZero() {
+						output[i].Timestamp = time.Now()
+					}
+				}
 			}
 		}
 	}
@@ -1556,70 +1384,57 @@ func handleProxyLogQueryCompact(entries []proxy.LogEntry, pag *Pagination) (*mcp
 		case proxy.LogTypeScreenshotCapture:
 			if entry.ScreenshotCapture != nil {
 				timestamp = entry.ScreenshotCapture.Timestamp
-				data = fmt.Sprintf("Capture %s (%dx%d) → %s",
-					entry.ScreenshotCapture.Summary,
-					entry.ScreenshotCapture.Area.Width,
-					entry.ScreenshotCapture.Area.Height,
-					entry.ScreenshotCapture.FilePath)
+				data = fmt.Sprintf("Screenshot: %s", entry.ScreenshotCapture.Summary)
 			}
-
 		case proxy.LogTypeElementCapture:
 			if entry.ElementCapture != nil {
 				timestamp = entry.ElementCapture.Timestamp
-				data = fmt.Sprintf("Element %s <%s> %s",
-					entry.ElementCapture.Selector,
-					entry.ElementCapture.Tag,
-					entry.ElementCapture.Summary)
+				data = fmt.Sprintf("Element: %s %s", entry.ElementCapture.Tag, entry.ElementCapture.Selector)
 			}
-
 		case proxy.LogTypeSketchCapture:
 			if entry.SketchCapture != nil {
 				timestamp = entry.SketchCapture.Timestamp
-				data = fmt.Sprintf("Sketch %s (%d elements)",
-					entry.SketchCapture.Summary,
-					entry.SketchCapture.ElementCount)
-				if entry.SketchCapture.FilePath != "" {
-					data += " → " + entry.SketchCapture.FilePath
-				}
+				data = fmt.Sprintf("Sketch: %s", entry.SketchCapture.Summary)
 			}
-
 		case proxy.LogTypeDesignState:
 			if entry.DesignState != nil {
 				timestamp = entry.DesignState.Timestamp
-				data = fmt.Sprintf("Design selected: %s <%s>",
-					entry.DesignState.Selector,
-					entry.DesignState.Metadata.Tag)
-				if entry.DesignState.URL != "" {
-					data += "\n  page: " + entry.DesignState.URL
+				data = fmt.Sprintf("Design selected: %s", entry.DesignState.Selector)
+				if entry.DesignState.Metadata.Tag != "" {
+					data += fmt.Sprintf(" (%s)", entry.DesignState.Metadata.Tag)
 				}
 			}
-
 		case proxy.LogTypeDesignRequest:
 			if entry.DesignRequest != nil {
 				timestamp = entry.DesignRequest.Timestamp
-				data = fmt.Sprintf("Design request: %s (%d existing alternatives)",
-					entry.DesignRequest.Selector,
-					entry.DesignRequest.AlternativesCount)
+				data = fmt.Sprintf("Design request: %s with %d existing alternatives", entry.DesignRequest.Selector, entry.DesignRequest.AlternativesCount)
 			}
-
 		case proxy.LogTypeDesignChat:
 			if entry.DesignChat != nil {
 				timestamp = entry.DesignChat.Timestamp
-				msg := entry.DesignChat.Message
-				if len(msg) > 100 {
-					msg = msg[:97] + "..."
-				}
-				data = fmt.Sprintf("Design chat on %s: %s",
-					entry.DesignChat.Selector,
-					msg)
+				data = fmt.Sprintf("Design chat: %s", entry.DesignChat.Message)
 			}
-
 		default:
-			// Generic fallback: marshal the entire LogEntry to prevent silent data loss
-			// for log types that don't have explicit formatting.
-			timestamp = time.Now()
-			b, _ := json.Marshal(entry)
-			data = string(b)
+			// For other types, use JSON serialization
+			if b, err := json.Marshal(entry); err == nil {
+				data = string(b)
+				if em := make(map[string]interface{}); json.Unmarshal(b, &em) == nil {
+					if sub, ok := em[string(entry.Type)].(map[string]interface{}); ok {
+						if ts, ok := sub["timestamp"].(string); ok {
+							if t, err := time.Parse(time.RFC3339, ts); err == nil {
+								timestamp = t
+							}
+						}
+					}
+				}
+			}
+			if timestamp.IsZero() {
+				timestamp = time.Now()
+			}
+			if data == "" {
+				data = fmt.Sprintf("%s event", entry.Type)
+			}
+			data = fmt.Sprintf("%s event", entry.Type)
 		}
 
 		output[i] = LogEntryOutput{
@@ -1802,34 +1617,6 @@ func handleProxyLogSummary(proxyServer *proxy.ProxyServer, input ProxyLogInput) 
 			case proxy.LogTypeSketch:
 				if entry.Sketch != nil {
 					timestamp = entry.Sketch.Timestamp
-				}
-			case proxy.LogTypeScreenshotCapture:
-				if entry.ScreenshotCapture != nil {
-					timestamp = entry.ScreenshotCapture.Timestamp
-				}
-			case proxy.LogTypeElementCapture:
-				if entry.ElementCapture != nil {
-					timestamp = entry.ElementCapture.Timestamp
-				}
-			case proxy.LogTypeSketchCapture:
-				if entry.SketchCapture != nil {
-					timestamp = entry.SketchCapture.Timestamp
-				}
-			case proxy.LogTypeDesignState:
-				if entry.DesignState != nil {
-					timestamp = entry.DesignState.Timestamp
-				}
-			case proxy.LogTypeDesignRequest:
-				if entry.DesignRequest != nil {
-					timestamp = entry.DesignRequest.Timestamp
-				}
-			case proxy.LogTypeDesignChat:
-				if entry.DesignChat != nil {
-					timestamp = entry.DesignChat.Timestamp
-				}
-			case proxy.LogTypeDiagnostic:
-				if entry.Diagnostic != nil {
-					timestamp = entry.Diagnostic.Timestamp
 				}
 			}
 		}
