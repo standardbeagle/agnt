@@ -316,6 +316,32 @@
     return summary;
   }
 
+  /**
+   * Get sparkline data: request counts bucketed by second over a rolling window.
+   * Returns { buckets: number[], window: number, maxBucket: number }
+   */
+  function getSparklineData(windowSec) {
+    windowSec = windowSec || 60;
+    var now = Date.now();
+    var buckets = new Array(windowSec);
+    var i;
+    for (i = 0; i < windowSec; i++) {
+      buckets[i] = 0;
+    }
+    var maxBucket = 0;
+    for (i = 0; i < callBuffer.length; i++) {
+      var call = callBuffer[i];
+      var age = now - call.timestamp;
+      if (age < 0 || age >= windowSec * 1000) continue;
+      var idx = Math.floor(age / 1000);
+      buckets[windowSec - 1 - idx]++;
+    }
+    for (i = 0; i < windowSec; i++) {
+      if (buckets[i] > maxBucket) maxBucket = buckets[i];
+    }
+    return { buckets: buckets, window: windowSec, maxBucket: maxBucket };
+  }
+
   // Export API
   window.__devtool_api = {
     getCalls: getCalls,
@@ -326,6 +352,7 @@
     getCallsByStatus: getCallsByStatus,
     getRecentCalls: getRecentCalls,
     getErrorSummary: getErrorSummary,
+    getSparklineData: getSparklineData,
     clear: clear
   };
 })();

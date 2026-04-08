@@ -262,12 +262,13 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 	}
 
 	// Configure transport timeouts for dev server proxying.
-	// Without these, requests to a dead backend hang until the OS TCP timeout
-	// (15-60s+), which makes page refreshes after a backend restart hang forever.
+	// ResponseHeaderTimeout is 0 (no limit) because upstream APIs like Figma
+	// may take 4-5+ seconds to respond. The custom DialContext handles dead
+	// backend detection via TCP connect timeout instead.
 	if transport, ok := baseTransport.(*http.Transport); ok {
-		transport.ResponseHeaderTimeout = 5 * time.Second // Dead backend fails in 5s, not forever
-		transport.IdleConnTimeout = 10 * time.Second      // Evict stale connections faster
-		transport.MaxIdleConnsPerHost = 6                 // Limit pooled connections per backend
+		transport.ResponseHeaderTimeout = 0          // No limit - slow APIs are valid
+		transport.IdleConnTimeout = 10 * time.Second // Evict stale connections faster
+		transport.MaxIdleConnsPerHost = 6            // Limit pooled connections per backend
 		ps.baseTransport = transport
 	}
 
