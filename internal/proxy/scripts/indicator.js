@@ -28,6 +28,8 @@
     bug: null,
     panel: null,
     outputPreview: null, // Floating output preview element
+    sparkline: null, // API activity sparkline element
+    sparklineInterval: null, // Update interval for sparkline
     isExpanded: false,
     isDragging: false,
     dragOffset: { x: 0, y: 0 },
@@ -921,6 +923,19 @@
       'transform: translateX(0)'
     ].join(';'),
 
+    // API activity sparkline - thin strip below the bug
+    sparkline: [
+      'position: fixed',
+      'width: 52px',
+      'height: 12px',
+      'border-radius: 6px',
+      'background: rgba(99,102,241,0.15)',
+      'overflow: hidden',
+      'pointer-events: none',
+      'z-index: 2147483645',
+      'transition: opacity 0.3s ease'
+    ].join(';'),
+
     // Panel - the main interface
     panel: [
       'position: fixed',
@@ -1550,6 +1565,7 @@
     createMicroToast();
 
     document.documentElement.appendChild(state.container);
+    createSparkline();
   }
 
   // Create floating output preview element
@@ -1660,6 +1676,71 @@
     if (!state.microToast) return;
     state.microToast.style.cssText = STYLES.microToast;
     clearTimeout(state.microToastTimeout);
+  }
+
+  // Create the API activity sparkline element
+  function createSparkline() {
+    var el = document.createElement('div');
+    el.id = '__devtool-sparkline';
+    el.style.cssText = STYLES.sparkline;
+    el.innerHTML = '<svg width="52" height="12" viewBox="0 0 52 12" xmlns="http://www.w3.org/2000/svg"></svg>';
+    state.sparkline = el;
+    state.container.appendChild(el);
+    positionSparkline();
+    updateSparkline();
+    // Refresh every 2 seconds
+    state.sparklineInterval = setInterval(updateSparkline, 2000);
+  }
+
+  // Position sparkline below the bug
+  function positionSparkline() {
+    if (!state.sparkline || !state.bug) return;
+    var bugRect = state.bug.getBoundingClientRect();
+    state.sparkline.style.left = bugRect.left + 'px';
+    state.sparkline.style.bottom = (window.innerHeight - bugRect.bottom - 18) + 'px';
+  }
+
+  // Update sparkline SVG from API tracker data
+  function updateSparkline() {
+    if (!state.sparkline) return;
+    if (!window.__devtool_api || !window.__devtool_api.getSparklineData) return;
+
+    var data = window.__devtool_api.getSparklineData(60);
+    var buckets = data.buckets;
+    var maxBucket = data.maxBucket || 1;
+    var svg = state.sparkline.querySelector('svg');
+    if (!svg) return;
+
+    // Downsample 60 buckets to 26 bars (fit in 52px with 2px per bar)
+    var barCount = 26;
+    var barWidth = 2;
+    var maxH = 10; // leave 1px padding top+bottom
+    var step = Math.max(1, Math.floor(buckets.length / barCount));
+    var points = '';
+    for (var i = 0; i < barCount; i++) {
+      var sum = 0;
+      var count = 0;
+      for (var j = 0; j < step && (i * step + j) < buckets.length; j++) {
+        sum += buckets[i * step + j];
+        count++;
+      }
+      var avg = count > 0 ? sum / count : 0;
+      var h = Math.round((avg / maxBucket) * maxH);
+      if (h < 1 && avg > 0) h = 1; // minimum visible bar for activity
+      var x = i * barWidth;
+      var y = 12 - h;
+      points += '<rect x="' + x + '" y="' + y + '" width="' + (barWidth - 0.5) + '" height="' + h + '" fill="rgba(99,102,241,0.7)" rx="0.5"/>';
+    }
+
+    svg.innerHTML = points;
+    positionSparkline();
+
+    // Fade out if no recent activity
+    var recentTotal = 0;
+    for (var k = buckets.length - 5; k < buckets.length; k++) {
+      if (k >= 0) recentTotal += buckets[k];
+    }
+    state.sparkline.style.opacity = recentTotal > 0 ? '1' : '0.3';
   }
 
   // Log an event to the history store
@@ -3560,6 +3641,7 @@
         state.bug.style.left = x + 'px';
         state.bug.style.bottom = y + 'px';
         updatePanelPosition();
+        positionSparkline();
       }
     }
 
