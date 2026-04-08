@@ -10,9 +10,11 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/overlay"
 )
@@ -34,6 +36,11 @@ type Overlay struct {
 	mu              sync.RWMutex
 	auditSummarizer *overlay.AuditSummarizer
 	activityCh      chan struct{} // Signaled when output activity is detected
+
+	// Auto-forward state for browser/proxy errors
+	autoForward        *config.AutoForwardConfig
+	lastForwardNs      atomic.Int64 // Unix nano of last forwarded error
+	autoForwardEnabled atomic.Bool  // Runtime toggle (config + indicator override)
 }
 
 // OverlayMessage represents a message from devtool-mcp.
@@ -312,6 +319,14 @@ func (o *Overlay) handleEvent(w http.ResponseWriter, r *http.Request) {
 
 func (o *Overlay) processProxyEvent(event ProxyEvent) {
 	debug.Log("overlay", "received proxy event: type=%s proxy_id=%s data_len=%d", event.Type, event.ProxyID, len(event.Data))
+
+	// Auto-forward errors go through debounce filter before formatting
+	if event.Type == "browser_error" || event.Type == "http_error" {
+		o.processAutoForwardEvent(event)
+		o.Broadcast("proxy_event", event)
+		return
+	}
+
 	text := formatProxyEventText(event, o.auditSummarizer)
 	if text != "" {
 		debug.Log("overlay", "injecting %d chars into PTY for event type=%s", len(text), event.Type)
@@ -320,6 +335,86 @@ func (o *Overlay) processProxyEvent(event ProxyEvent) {
 		debug.Log("overlay", "formatProxyEventText returned empty for type=%s", event.Type)
 	}
 	o.Broadcast("proxy_event", event)
+}
+
+// processAutoForwardEvent handles browser_error and http_error events with
+// debounce and source filtering. Only injects into the PTY if auto-forward
+// is enabled, the source is in the forward list, and debounce has elapsed.
+func (o *Overlay) processAutoForwardEvent(event ProxyEvent) {
+	if !o.autoForwardEnabled.Load() {
+		return
+	}
+
+	// Check source filter
+	source := "browser"
+	if event.Type == "http_error" {
+		source = "http"
+	}
+	if o.autoForward != nil && !o.autoForward.ShouldForwardSource(source) {
+		return
+	}
+
+	// Check severity filter for HTTP errors (4xx = warning, 5xx = error)
+	if event.Type == "http_error" && o.autoForward != nil {
+		minSev := o.autoForward.GetSeverity()
+		var data struct {
+			StatusCode int `json:"status_code"`
+		}
+		if json.Unmarshal(event.Data, &data) == nil {
+			if minSev == "error" && data.StatusCode < 500 {
+				return // Skip warnings when severity threshold is "error"
+			}
+		}
+	}
+
+	// Check debounce
+	debounceSec := 10
+	if o.autoForward != nil {
+		debounceSec = o.autoForward.GetDebounceSeconds()
+	}
+	debounceNs := int64(debounceSec) * int64(time.Second)
+	now := time.Now().UnixNano()
+	last := o.lastForwardNs.Load()
+	if now-last < debounceNs {
+		return // Debounced
+	}
+
+	// Format and inject
+	text := formatProxyEventText(event, o.auditSummarizer)
+	if text == "" {
+		return
+	}
+
+	// Update last forward time (CAS loop for concurrency safety)
+	for {
+		last := o.lastForwardNs.Load()
+		if now-last >= debounceNs {
+			if o.lastForwardNs.CompareAndSwap(last, now) {
+				break
+			}
+			continue
+		}
+		return // Another goroutine forwarded during our window
+	}
+
+	debug.Log("overlay", "auto-forwarding %s to PTY (%d chars, debounce=%ds)", event.Type, len(text), debounceSec)
+	o.typeText(TypeMessage{Text: text, Enter: true, Instant: true})
+}
+
+// SetAutoForwardConfig configures the auto-forward filter from .agnt.kdl alerts config.
+func (o *Overlay) SetAutoForwardConfig(cfg *config.AutoForwardConfig) {
+	o.autoForward = cfg
+	o.autoForwardEnabled.Store(cfg.IsEnabled())
+}
+
+// SetAutoForwardEnabled toggles auto-forward at runtime (e.g., from indicator).
+func (o *Overlay) SetAutoForwardEnabled(enabled bool) {
+	o.autoForwardEnabled.Store(enabled)
+}
+
+// IsAutoForwardEnabled returns the current auto-forward state.
+func (o *Overlay) IsAutoForwardEnabled() bool {
+	return o.autoForwardEnabled.Load()
 }
 
 // styleChange represents a single CSS property change in a style-edit attachment.

@@ -197,6 +197,66 @@ type AlertsConfig struct {
 	// DedupeWindow is the deduplication window in seconds.
 	// Duplicate alerts within this window are suppressed. Default: 60.
 	DedupeWindow int `kdl:"dedupe-window"`
+
+	// AutoForward configures automatic forwarding of browser/proxy errors to the AI agent.
+	AutoForward *AutoForwardConfig `kdl:"auto-forward"`
+}
+
+// AutoForwardConfig configures automatic error forwarding to the AI agent.
+type AutoForwardConfig struct {
+	// Enabled controls whether browser/proxy errors are auto-forwarded. Default: true.
+	Enabled *bool `kdl:"enabled"`
+
+	// Sources specifies which error sources to forward. Default: ["browser", "http"].
+	Sources []string `kdl:"sources"`
+
+	// Debounce is the minimum seconds between forwarded errors. Default: 10.
+	Debounce int `kdl:"debounce"`
+
+	// Severity is the minimum severity to forward: "error" or "warning". Default: "error".
+	Severity string `kdl:"severity"`
+}
+
+// IsEnabled returns whether auto-forward is enabled (defaults to true).
+func (c *AutoForwardConfig) IsEnabled() bool {
+	if c == nil || c.Enabled == nil {
+		return true
+	}
+	return *c.Enabled
+}
+
+// GetSources returns the sources to forward (defaults to ["browser", "http"]).
+func (c *AutoForwardConfig) GetSources() []string {
+	if c == nil || len(c.Sources) == 0 {
+		return []string{"browser", "http"}
+	}
+	return c.Sources
+}
+
+// GetDebounceSeconds returns the debounce interval (defaults to 10).
+func (c *AutoForwardConfig) GetDebounceSeconds() int {
+	if c == nil || c.Debounce <= 0 {
+		return 10
+	}
+	return c.Debounce
+}
+
+// GetSeverity returns the minimum severity (defaults to "error").
+func (c *AutoForwardConfig) GetSeverity() string {
+	if c == nil || c.Severity == "" {
+		return "error"
+	}
+	return c.Severity
+}
+
+// ShouldForwardSource checks if a given source is in the forward list.
+func (c *AutoForwardConfig) ShouldForwardSource(source string) bool {
+	for _, s := range c.GetSources() {
+		if s == source {
+			return true
+		}
+	}
+	return false
 }
 
 // AlertPatternConfig defines a custom alert pattern in configuration.
@@ -618,6 +678,14 @@ toast {
 //     enabled true
 //     batch-window 3
 //     dedupe-window 60
+//
+//     // Auto-forward browser/proxy errors to the AI agent
+//     // auto-forward {
+//     //     enabled true
+//     //     sources "browser" "http"
+//     //     debounce 10
+//     //     severity "error"
+//     // }
 //
 //     // Custom patterns (keyed by ID)
 //     // patterns {
