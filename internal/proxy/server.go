@@ -834,6 +834,11 @@ func (ps *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 
 	// Track page session
 	ps.pageTracker.TrackHTTPRequest(httpEntry)
+
+	// Auto-forward HTTP errors (5xx, 4xx) to overlay for PTY injection
+	if ps.overlayNotifier.IsEnabled() && httpEntry.StatusCode >= 400 {
+		_ = ps.overlayNotifier.NotifyHTTPError(ps.ID, httpEntry)
+	}
 }
 
 // modifyResponse rewrites URLs and injects JavaScript into HTML responses.
@@ -1306,6 +1311,11 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			}
 			ps.logger.LogError(errEntry)
 			ps.pageTracker.TrackError(errEntry, msg.SessionID)
+
+			// Auto-forward browser errors to overlay for PTY injection
+			if ps.overlayNotifier.IsEnabled() {
+				_ = ps.overlayNotifier.NotifyBrowserError(ps.ID, errEntry)
+			}
 
 		case "performance":
 			metric := PerformanceMetric{

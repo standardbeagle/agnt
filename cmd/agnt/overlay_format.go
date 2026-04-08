@@ -25,6 +25,10 @@ func formatProxyEventText(event ProxyEvent, summarizer *overlay.AuditSummarizer)
 		return formatDesignRequestText(event)
 	case "design_chat":
 		return formatDesignChatText(event)
+	case "browser_error":
+		return formatBrowserErrorText(event)
+	case "http_error":
+		return formatHTTPErrorText(event)
 	default:
 		debug.Error("overlay", "unhandled proxy event type: %s (proxy_id=%s)", event.Type, event.ProxyID)
 		return ""
@@ -548,4 +552,177 @@ If you need more context:
 proxy {action: "exec", id: "%s", code: "__devtool_design.addAlternative('<refined HTML>')"}`,
 		data.Message, data.Selector, currentHTML,
 		event.ProxyID, event.ProxyID, event.ProxyID, event.ProxyID, event.ProxyID)
+}
+
+// formatBrowserErrorText formats a browser_error event into compact text for PTY injection.
+func formatBrowserErrorText(event ProxyEvent) string {
+	var data struct {
+		Message string `json:"message"`
+		Source  string `json:"source"`
+		LineNo  int    `json:"lineno"`
+		ColNo   int    `json:"colno"`
+		Error   string `json:"error"`
+		Stack   string `json:"stack"`
+		URL     string `json:"url"`
+	}
+	if err := json.Unmarshal(event.Data, &data); err != nil {
+		debug.Warn("overlay", "failed to parse browser_error: %v", err)
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString("[browser error] ")
+	b.WriteString(data.Message)
+
+	if data.Source != "" {
+		b.WriteString("\n  source: " + data.Source)
+		if data.LineNo > 0 {
+			b.WriteString(fmt.Sprintf(":%d:%d", data.LineNo, data.ColNo))
+		}
+	}
+
+	// Extract first application code frame from stack
+	if data.Stack != "" {
+		frame := firstAppFrame(data.Stack)
+		if frame != "" {
+			b.WriteString("\n  at " + frame)
+		}
+	}
+
+	if data.URL != "" {
+		b.WriteString("\n  page: " + data.URL)
+	}
+	b.WriteString("\nproxy: " + event.ProxyID + "\n")
+
+	return b.String()
+}
+
+// firstAppFrame extracts the first application code frame from a JS stack trace,
+// skipping node_modules, runtime, and webpack internals.
+func firstAppFrame(stack string) string {
+	lines := strings.Split(stack, "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		// Skip runtime/node_modules/webpack frames
+		if strings.Contains(trimmed, "node_modules") ||
+			strings.Contains(trimmed, "webpack-internal") ||
+			strings.Contains(trimmed, "chrome-extension") ||
+			strings.HasPrefix(trimmed, "Error") {
+			continue
+		}
+		// Return first meaningful frame
+		return trimmed
+	}
+	return ""
+}
+
+// formatHTTPErrorText formats an http_error event into compact text for PTY injection.
+func formatHTTPErrorText(event ProxyEvent) string {
+	var data struct {
+		Method       string `json:"method"`
+		URL          string `json:"url"`
+		StatusCode   int    `json:"status_code"`
+		ResponseBody string `json:"response_body"`
+	}
+	if err := json.Unmarshal(event.Data, &data); err != nil {
+		debug.Warn("overlay", "failed to parse http_error: %v", err)
+		return ""
+	}
+
+	/// Skip common noise: static asset 404s, HMR/WebSocket 404s, redirects
+	if isHTTPNoise(data.StatusCode, data.Method, data.URL) {
+		return ""
+	}
+
+	var b strings.Builder
+	severity := "warning"
+	if data.StatusCode >= 500 {
+		severity = "error"
+	}
+
+	b.WriteString(fmt.Sprintf("[http %s] %d %s %s", severity, data.StatusCode, data.Method, data.URL))
+
+	// Extract error message from response body
+	if data.ResponseBody != "" {
+		msg := extractHTTPErrorMessage(data.ResponseBody)
+		if msg != "" {
+			b.WriteString("\n  " + msg)
+		}
+	}
+
+	b.WriteString("\nproxy: " + event.ProxyID + "\n")
+
+	return b.String()
+}
+
+// isHTTPNoise filters out common non-actionable HTTP errors.
+func isHTTPNoise(statusCode int, method, url string) bool {
+	// Redirects are not errors
+	if statusCode == 301 || statusCode == 302 || statusCode == 304 {
+		return true
+	}
+	// Static asset 404s are noise
+	if statusCode == 404 {
+		ext := strings.ToLower(url)
+		for _, s := range []string{".css", ".js", ".map", ".ico", ".png", ".jpg", ".svg", ".woff", ".ttf"} {
+			if strings.HasSuffix(ext, s) {
+				return true
+			}
+		}
+		// HMR/WebSocket 404s
+		if strings.Contains(url, "/@") || strings.Contains(url, "/__webpack") ||
+			strings.Contains(url, "/socket") || strings.Contains(url, "/hot") {
+			return true
+		}
+	}
+	return false
+}
+
+// extractHTTPErrorMessage tries to extract a meaningful error message from an HTTP response body.
+func extractHTTPErrorMessage(body string) string {
+	// Try JSON error body
+	var jsonErr struct {
+		Error   string `json:"error"`
+		Message string `json:"message"`
+		Detail  string `json:"detail"`
+	}
+	if json.Unmarshal([]byte(body), &jsonErr) == nil {
+		if jsonErr.Message != "" {
+			return jsonErr.Message
+		}
+		if jsonErr.Error != "" {
+			return jsonErr.Error
+		}
+		if jsonErr.Detail != "" {
+			return jsonErr.Detail
+		}
+	}
+
+	// For HTML responses, try to extract <title>
+	if strings.Contains(body, "<html") || strings.Contains(body, "<!DOCTYPE") {
+		if idx := strings.Index(body, "<title>"); idx != -1 {
+			end := strings.Index(body[idx:], "</title>")
+			if end != -1 {
+				title := body[idx+7 : idx+end]
+				if title != "" {
+					return title
+				}
+			}
+		}
+	}
+
+	// Return first line of body, truncated
+	lines := strings.Split(strings.TrimSpace(body), "\n")
+	if len(lines) > 0 {
+		first := strings.TrimSpace(lines[0])
+		if len(first) > 200 {
+			return first[:200] + "..."
+		}
+		return first
+	}
+
+	return ""
 }

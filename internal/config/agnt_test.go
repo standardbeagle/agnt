@@ -1224,3 +1224,113 @@ func TestDefaultHealthPatterns_HealthyNoFalsePositive(t *testing.T) {
 		})
 	}
 }
+
+// ── AutoForwardConfig ────────────────────────────────────────────────────────
+
+func TestAutoForwardConfig_IsEnabled_Nil(t *testing.T) {
+	var cfg *AutoForwardConfig
+	assert.True(t, cfg.IsEnabled(), "nil config should default to enabled")
+}
+
+func TestAutoForwardConfig_IsEnabled_NilBool(t *testing.T) {
+	cfg := &AutoForwardConfig{}
+	assert.True(t, cfg.IsEnabled(), "nil Enabled should default to true")
+}
+
+func TestAutoForwardConfig_IsEnabled_True(t *testing.T) {
+	enabled := true
+	cfg := &AutoForwardConfig{Enabled: &enabled}
+	assert.True(t, cfg.IsEnabled())
+}
+
+func TestAutoForwardConfig_IsEnabled_False(t *testing.T) {
+	enabled := false
+	cfg := &AutoForwardConfig{Enabled: &enabled}
+	assert.False(t, cfg.IsEnabled())
+}
+
+func TestAutoForwardConfig_GetSources_Default(t *testing.T) {
+	var cfg *AutoForwardConfig
+	sources := cfg.GetSources()
+	assert.Equal(t, []string{"browser", "http"}, sources)
+}
+
+func TestAutoForwardConfig_GetSources_Custom(t *testing.T) {
+	cfg := &AutoForwardConfig{Sources: []string{"browser"}}
+	sources := cfg.GetSources()
+	assert.Equal(t, []string{"browser"}, sources)
+}
+
+func TestAutoForwardConfig_GetDebounceSeconds_Default(t *testing.T) {
+	var cfg *AutoForwardConfig
+	assert.Equal(t, 10, cfg.GetDebounceSeconds())
+}
+
+func TestAutoForwardConfig_GetDebounceSeconds_Custom(t *testing.T) {
+	cfg := &AutoForwardConfig{Debounce: 30}
+	assert.Equal(t, 30, cfg.GetDebounceSeconds())
+}
+
+func TestAutoForwardConfig_GetDebounceSeconds_Zero(t *testing.T) {
+	cfg := &AutoForwardConfig{Debounce: 0}
+	assert.Equal(t, 10, cfg.GetDebounceSeconds(), "zero should use default")
+}
+
+func TestAutoForwardConfig_GetSeverity_Default(t *testing.T) {
+	var cfg *AutoForwardConfig
+	assert.Equal(t, "error", cfg.GetSeverity())
+}
+
+func TestAutoForwardConfig_GetSeverity_Warning(t *testing.T) {
+	cfg := &AutoForwardConfig{Severity: "warning"}
+	assert.Equal(t, "warning", cfg.GetSeverity())
+}
+
+func TestAutoForwardConfig_ShouldForwardSource(t *testing.T) {
+	var cfg *AutoForwardConfig
+	assert.True(t, cfg.ShouldForwardSource("browser"), "nil config should forward all sources")
+	assert.True(t, cfg.ShouldForwardSource("http"), "nil config should forward all sources")
+
+	cfg2 := &AutoForwardConfig{Sources: []string{"browser"}}
+	assert.True(t, cfg2.ShouldForwardSource("browser"))
+	assert.False(t, cfg2.ShouldForwardSource("http"))
+}
+
+func TestParseAgntConfig_AutoForward(t *testing.T) {
+	cfg, err := ParseAgntConfig(`alerts {
+    enabled true
+    auto-forward {
+        enabled true
+        sources "browser" "http"
+        debounce 30
+        severity "warning"
+    }
+}`)
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Alerts)
+	require.NotNil(t, cfg.Alerts.AutoForward)
+	assert.True(t, cfg.Alerts.AutoForward.IsEnabled())
+	assert.Equal(t, []string{"browser", "http"}, cfg.Alerts.AutoForward.GetSources())
+	assert.Equal(t, 30, cfg.Alerts.AutoForward.GetDebounceSeconds())
+	assert.Equal(t, "warning", cfg.Alerts.AutoForward.GetSeverity())
+}
+
+func TestParseAgntConfig_AutoForwardDisabled(t *testing.T) {
+	cfg, err := ParseAgntConfig(`alerts {
+    auto-forward {
+        enabled false
+    }
+}`)
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Alerts.AutoForward)
+	assert.False(t, cfg.Alerts.AutoForward.IsEnabled())
+}
+
+func TestParseAgntConfig_NoAutoForward(t *testing.T) {
+	cfg, err := ParseAgntConfig(`alerts {
+    enabled true
+}`)
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Alerts)
+	assert.Nil(t, cfg.Alerts.AutoForward)
+}

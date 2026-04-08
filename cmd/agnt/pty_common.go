@@ -460,6 +460,15 @@ func setupAlertScanner(projectPath, sessionCode string, netOverlay *Overlay, dae
 		return nil
 	}
 
+	// Configure auto-forward for browser/proxy errors
+	if netOverlay != nil {
+		var afCfg *config.AutoForwardConfig
+		if agntCfg.Alerts != nil {
+			afCfg = agntCfg.Alerts.AutoForward
+		}
+		netOverlay.SetAutoForwardConfig(afCfg)
+	}
+
 	scannerCfg := overlay.AlertScannerConfig{
 		ActivityState: actState,
 		OnAlert: func(batch *overlay.AlertBatch) {

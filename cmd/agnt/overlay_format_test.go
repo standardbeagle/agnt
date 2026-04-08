@@ -495,3 +495,215 @@ func TestFormatProxyEventText_PanelMessageWithAllAttachmentTypes(t *testing.T) {
 	assertContains(t, result, "tag: header")
 	assertContains(t, result, "text: Site Header")
 }
+
+// ── formatBrowserErrorText ───────────────────────────────────────────────────
+
+func TestFormatBrowserErrorText_Basic(t *testing.T) {
+	event := makeEvent("browser_error", "proxy-1", map[string]interface{}{
+		"message": "Cannot read property 'map' of undefined",
+		"source":  "src/App.tsx",
+		"lineno":  42,
+		"colno":   15,
+		"url":     "http://localhost:3000/dashboard",
+	})
+	result := formatBrowserErrorText(event)
+	assertContains(t, result, "[browser error] Cannot read property 'map' of undefined")
+	assertContains(t, result, "source: src/App.tsx:42:15")
+	assertContains(t, result, "page: http://localhost:3000/dashboard")
+	assertContains(t, result, "proxy: proxy-1")
+}
+
+func TestFormatBrowserErrorText_WithStack(t *testing.T) {
+	event := makeEvent("browser_error", "p1", map[string]interface{}{
+		"message": "TypeError",
+		"stack":   "Error\n    at node_modules/react/index.js:1:1\n    at src/App.tsx:42:15",
+	})
+	result := formatBrowserErrorText(event)
+	assertContains(t, result, "[browser error] TypeError")
+	assertContains(t, result, "src/App.tsx:42:15")
+	assertNotContains(t, result, "node_modules")
+}
+
+func TestFormatBrowserErrorText_InvalidJSON(t *testing.T) {
+	event := ProxyEvent{Type: "browser_error", ProxyID: "p1", Data: json.RawMessage(`{invalid}`)}
+	result := formatBrowserErrorText(event)
+	if result != "" {
+		t.Errorf("expected empty for invalid JSON, got %q", result)
+	}
+}
+
+func TestFormatProxyEventText_BrowserErrorDispatches(t *testing.T) {
+	event := makeEvent("browser_error", "proxy-1", map[string]interface{}{
+		"message": "test error",
+	})
+	result := formatProxyEventText(event, nil)
+	assertContains(t, result, "[browser error] test error")
+}
+
+// ── formatHTTPErrorText ──────────────────────────────────────────────────────
+
+func TestFormatHTTPErrorText_500(t *testing.T) {
+	event := makeEvent("http_error", "proxy-1", map[string]interface{}{
+		"method":        "POST",
+		"url":           "/api/users",
+		"status_code":   500,
+		"response_body": `{"error":"database connection timeout"}`,
+	})
+	result := formatHTTPErrorText(event)
+	assertContains(t, result, "[http error] 500 POST /api/users")
+	assertContains(t, result, "database connection timeout")
+	assertContains(t, result, "proxy: proxy-1")
+}
+
+func TestFormatHTTPErrorText_404(t *testing.T) {
+	event := makeEvent("http_error", "proxy-1", map[string]interface{}{
+		"method":      "GET",
+		"url":         "/api/users",
+		"status_code": 404,
+	})
+	result := formatHTTPErrorText(event)
+	assertContains(t, result, "[http warning] 404 GET /api/users")
+}
+
+func TestFormatHTTPErrorText_Static404Filtered(t *testing.T) {
+	event := makeEvent("http_error", "proxy-1", map[string]interface{}{
+		"method":      "GET",
+		"url":         "/static/app.js",
+		"status_code": 404,
+	})
+	result := formatHTTPErrorText(event)
+	if result != "" {
+		t.Errorf("expected empty for static asset 404, got %q", result)
+	}
+}
+
+func TestFormatHTTPErrorText_HMR404Filtered(t *testing.T) {
+	event := makeEvent("http_error", "proxy-1", map[string]interface{}{
+		"method":      "GET",
+		"url":         "/@vite/client",
+		"status_code": 404,
+	})
+	result := formatHTTPErrorText(event)
+	if result != "" {
+		t.Errorf("expected empty for HMR 404, got %q", result)
+	}
+}
+
+func TestFormatHTTPErrorText_301Filtered(t *testing.T) {
+	event := makeEvent("http_error", "proxy-1", map[string]interface{}{
+		"method":      "GET",
+		"url":         "/old-path",
+		"status_code": 301,
+	})
+	result := formatHTTPErrorText(event)
+	if result != "" {
+		t.Errorf("expected empty for redirect, got %q", result)
+	}
+}
+
+func TestFormatHTTPErrorText_HTMLBody(t *testing.T) {
+	event := makeEvent("http_error", "proxy-1", map[string]interface{}{
+		"method":        "GET",
+		"url":           "/api/data",
+		"status_code":   500,
+		"response_body": "<html><head><title>Internal Server Error</title></head><body>Error</body></html>",
+	})
+	result := formatHTTPErrorText(event)
+	assertContains(t, result, "Internal Server Error")
+}
+
+func TestFormatHTTPErrorText_InvalidJSON(t *testing.T) {
+	event := ProxyEvent{Type: "http_error", ProxyID: "p1", Data: json.RawMessage(`{bad}`)}
+	result := formatHTTPErrorText(event)
+	if result != "" {
+		t.Errorf("expected empty for invalid JSON, got %q", result)
+	}
+}
+
+func TestFormatProxyEventText_HTTPErrorDispatches(t *testing.T) {
+	event := makeEvent("http_error", "proxy-1", map[string]interface{}{
+		"method":      "GET",
+		"url":         "/api/broken",
+		"status_code": 500,
+	})
+	result := formatProxyEventText(event, nil)
+	assertContains(t, result, "[http error] 500 GET /api/broken")
+}
+
+// ── isHTTPNoise ──────────────────────────────────────────────────────────────
+
+func TestIsHTTPNoise(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+		method     string
+		url        string
+		expect     bool
+	}{
+		{"redirect 301", 301, "GET", "/old", true},
+		{"redirect 302", 302, "GET", "/old", true},
+		{"not modified 304", 304, "GET", "/page", true},
+		{"static JS 404", 404, "GET", "/app.js", true},
+		{"static CSS 404", 404, "GET", "/style.css", true},
+		{"static map 404", 404, "GET", "/app.js.map", true},
+		{"HMR at 404", 404, "GET", "/@vite/client", true},
+		{"webpack 404", 404, "GET", "/__webpack/hmr", true},
+		{"API 404", 404, "GET", "/api/users", false},
+		{"500 error", 500, "POST", "/api/data", false},
+		{"400 error", 400, "POST", "/api/submit", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := isHTTPNoise(tt.statusCode, tt.method, tt.url)
+			if result != tt.expect {
+				t.Errorf("isHTTPNoise(%d, %s, %s) = %v, want %v", tt.statusCode, tt.method, tt.url, result, tt.expect)
+			}
+		})
+	}
+}
+
+// ── firstAppFrame ────────────────────────────────────────────────────────────
+
+func TestFirstAppFrame(t *testing.T) {
+	tests := []struct {
+		name   string
+		stack  string
+		expect string
+	}{
+		{
+			name:   "skips node_modules",
+			stack:  "Error\n    at node_modules/react/index.js:1:1\n    at src/App.tsx:42:15",
+			expect: "at src/App.tsx:42:15",
+		},
+		{
+			name:   "skips Error prefix",
+			stack:  "Error: something\n    at real-file.js:10:5",
+			expect: "at real-file.js:10:5",
+		},
+		{
+			name:   "skips webpack-internal",
+			stack:  "    at webpack-internal:///./src/index.js:10:5\n    at src/component.tsx:3:1",
+			expect: "at src/component.tsx:3:1",
+		},
+		{
+			name:   "empty stack",
+			stack:  "",
+			expect: "",
+		},
+		{
+			name:   "only node_modules",
+			stack:  "Error\n    at node_modules/foo/bar.js:1:1",
+			expect: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := firstAppFrame(tt.stack)
+			if result != tt.expect {
+				t.Errorf("firstAppFrame(%q) = %q, want %q", tt.stack, result, tt.expect)
+			}
+		})
+	}
+}

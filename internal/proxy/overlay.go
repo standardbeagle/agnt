@@ -144,6 +144,26 @@ func (n *OverlayNotifier) NotifyCustom(proxyID, eventType string, data interface
 	})
 }
 
+// NotifyBrowserError sends a browser JS error to the overlay for auto-forwarding.
+func (n *OverlayNotifier) NotifyBrowserError(proxyID string, err FrontendError) error {
+	return n.send(OverlayEvent{
+		Type:      "browser_error",
+		ProxyID:   proxyID,
+		Timestamp: time.Now(),
+		Data:      err,
+	})
+}
+
+// NotifyHTTPError sends an HTTP error (4xx/5xx) to the overlay for auto-forwarding.
+func (n *OverlayNotifier) NotifyHTTPError(proxyID string, entry HTTPLogEntry) error {
+	return n.send(OverlayEvent{
+		Type:      "http_error",
+		ProxyID:   proxyID,
+		Timestamp: time.Now(),
+		Data:      entry,
+	})
+}
+
 func (n *OverlayNotifier) send(event OverlayEvent) error {
 	n.mu.RLock()
 	if !n.enabled || n.client == nil {
