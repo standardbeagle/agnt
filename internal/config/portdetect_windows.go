@@ -48,6 +48,11 @@ func detectPortsForPID(ctx context.Context, pid int) []int {
 	return ports
 }
 
+// ProcessNameByPID returns the process name for a given PID.
+func ProcessNameByPID(pid int) string {
+	return ""
+}
+
 // FindPIDsByPort returns PIDs of processes listening on the given TCP port.
 // Uses netstat -ano on Windows.
 func FindPIDsByPort(ctx context.Context, port int) []int {

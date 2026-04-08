@@ -482,10 +482,48 @@ type HealthPatterns struct {
 // DefaultHealthPatterns returns the default error/healthy patterns.
 // These cover common dev server frameworks so most users get good behavior
 // without explicit configuration.
+//
+// Covered frameworks (healthy): Vite, Next.js, Webpack, Go stdlib, dotnet run,
+// dotnet watch, Flask, uvicorn, gunicorn, Django, Spring Boot, Gradle, Maven,
+// Rails, PHP artisan/built-in, Vapor (Swift), Phoenix (Elixir).
+//
+// Covered frameworks (error): Go panics, Node.js module/syntax errors,
+// TypeScript compiler, Rust compiler, Python tracebacks, .NET exceptions,
+// EADDRINUSE, segfaults, OOM, fatal errors.
 func DefaultHealthPatterns() HealthPatterns {
 	return HealthPatterns{
-		Error:   `(?i)(ERROR|FAIL|Cannot find module|Build FAILED|panic:|SyntaxError:|EADDRINUSE|Segmentation fault|unhandled exception|out of memory)`,
-		Healthy: `(?i)(ready in|compiled successfully|listening on|started server|build succeeded|Compiled|Server running|Serving!)`,
+		Error: `(?i)(` +
+			`\bERROR\b|` +
+			`\bFAIL\b|` +
+			`Cannot find module|` +
+			`Build FAILED|` +
+			`EADDRINUSE|` +
+			`SyntaxError:|` +
+			`Segmentation fault|` +
+			`Traceback \(most recent call last\)|` +
+			`error TS\d|` +
+			`error\[E\d|` +
+			`out of memory|` +
+			`panic:|` +
+			`unhandled exception|` +
+			`\bFATAL\b` +
+			`)`,
+		Healthy: `(?i)(` +
+			`ready in|` +
+			`compiled successfully|` +
+			`listening (on|at):?|` +
+			`started server|` +
+			`build (succeeded|success(?:ful)?)\b|` +
+			`compiled\b|` +
+			`server running|` +
+			`serving!|` +
+			`running on|` +
+			`start(?:ing|ed) .*(?:development|laravel|php) server|` +
+			`started \S+ in \d|` +
+			`watch.*started|` +
+			`server starting|` +
+			`running .+endpoint` +
+			`)`,
 	}
 }
 

@@ -41,19 +41,20 @@ const (
 	SubVerbTasks         = "TASKS"
 	SubVerbFind          = "FIND"
 	SubVerbAttach        = "ATTACH"
-	SubVerbURL           = "URL"         // Report detected URL from agnt run session
-	SubVerbGetAll        = "GET-ALL"     // Get all entries in a scope
-	SubVerbDelete        = "DELETE"      // Delete an entry from a scope
-	SubVerbProcess       = "PROCESS"     // Process a single automation task
-	SubVerbBatch         = "BATCH"       // Process multiple automation tasks
-	SubVerbRestart       = "RESTART"     // Restart a process or proxy
-	SubVerbScreenshot    = "SCREENSHOT"  // Take screenshot in automation session
-	SubVerbNavigate      = "NAVIGATE"    // Navigate to URL in automation session
-	SubVerbEvaluate      = "EVALUATE"    // Evaluate JavaScript in automation session
-	SubVerbReport        = "REPORT"      // Report alert matches from agnt run
-	SubVerbStartupLog    = "STARTUP-LOG" // Query startup log (successes and failures)
-	SubVerbClearPorts    = "CLEAR-PORTS" // Kill port blockers and resume autostart
-	SubVerbContinue      = "CONTINUE"    // Resume autostart without killing blockers
+	SubVerbURL           = "URL"           // Report detected URL from agnt run session
+	SubVerbGetAll        = "GET-ALL"       // Get all entries in a scope
+	SubVerbDelete        = "DELETE"        // Delete an entry from a scope
+	SubVerbProcess       = "PROCESS"       // Process a single automation task
+	SubVerbBatch         = "BATCH"         // Process multiple automation tasks
+	SubVerbRestart       = "RESTART"       // Restart a process or proxy
+	SubVerbScreenshot    = "SCREENSHOT"    // Take screenshot in automation session
+	SubVerbNavigate      = "NAVIGATE"      // Navigate to URL in automation session
+	SubVerbEvaluate      = "EVALUATE"      // Evaluate JavaScript in automation session
+	SubVerbReport        = "REPORT"        // Report alert matches from agnt run
+	SubVerbStartupLog    = "STARTUP-LOG"   // Query startup log (successes and failures)
+	SubVerbClearPorts    = "CLEAR-PORTS"   // Kill port blockers and resume autostart
+	SubVerbContinue      = "CONTINUE"      // Resume autostart without killing blockers
+	SubVerbClearProcess  = "CLEAR-PROCESS" // Clear alerts for a specific process
 )
 
 // ProxyStartConfig represents configuration for a PROXY START command.
