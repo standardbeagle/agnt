@@ -535,3 +535,84 @@ func setupAlertScanner(projectPath, sessionCode string, netOverlay *Overlay, dae
 
 	return overlay.NewAlertScanner(scannerCfg)
 }
+
+// daemonClientAdapter wraps *daemon.Conn to implement overlay.DaemonClient.
+// Defined in cmd/agnt because it bridges the daemon and overlay packages,
+// which must not import each other.
+type daemonClientAdapter struct {
+	conn *daemon.Conn
+}
+
+// newDaemonClientAdapter wraps a *daemon.Conn as an overlay.DaemonClient.
+func newDaemonClientAdapter(conn *daemon.Conn) overlay.DaemonClient {
+	return &daemonClientAdapter{conn: conn}
+}
+
+func (a *daemonClientAdapter) SocketPath() string     { return a.conn.SocketPath() }
+func (a *daemonClientAdapter) EnsureConnected() error { return a.conn.EnsureConnected() }
+func (a *daemonClientAdapter) IsConnected() bool      { return a.conn.IsConnected() }
+func (a *daemonClientAdapter) Close() error           { return a.conn.Close() }
+func (a *daemonClientAdapter) Disconnect() error      { return a.conn.Disconnect() }
+func (a *daemonClientAdapter) Ping() error            { return a.conn.Ping() }
+
+func (a *daemonClientAdapter) RequestJSON(verb string, payload interface{}, args ...string) (map[string]interface{}, error) {
+	req := a.conn.Request(verb, args...)
+	if payload != nil {
+		req.WithJSON(payload)
+	}
+	return req.JSON()
+}
+
+func (a *daemonClientAdapter) RequestString(verb string, args ...string) (string, error) {
+	return a.conn.Request(verb, args...).String()
+}
+
+func (a *daemonClientAdapter) RequestOK(verb string, payload interface{}, args ...string) error {
+	req := a.conn.Request(verb, args...)
+	if payload != nil {
+		req.WithJSON(payload)
+	}
+	return req.OK()
+}
+
+// daemonConnector implements overlay.DaemonConnector using a shared daemon connection.
+// Defined in cmd/agnt because it requires daemon-specific auto-start functionality
+// (CleanupZombieDaemons, AutoStartConfig) that the overlay package cannot import.
+type daemonConnector struct {
+	conn *daemon.Conn
+}
+
+// newDaemonConnector creates a new overlay.DaemonConnector using a shared connection.
+func newDaemonConnector(conn *daemon.Conn) overlay.DaemonConnector {
+	return &daemonConnector{conn: conn}
+}
+
+// Connect attempts to connect to the daemon, auto-starting it if needed.
+func (c *daemonConnector) Connect() error {
+	socketPath := c.conn.SocketPath()
+
+	// First clean up any zombie daemons
+	daemon.CleanupZombieDaemons(socketPath)
+
+	// Use auto-start client to ensure daemon is running
+	config := daemon.AutoStartConfig{
+		SocketPath:    socketPath,
+		StartTimeout:  5 * time.Second,
+		RetryInterval: 100 * time.Millisecond,
+		MaxRetries:    50,
+	}
+	autoClient := daemon.NewAutoStartClient(config)
+
+	if err := autoClient.Connect(); err != nil {
+		return err
+	}
+	autoClient.Close()
+
+	// Now connect the shared connection
+	return c.conn.EnsureConnected()
+}
+
+// IsConnected returns true if currently connected to the daemon.
+func (c *daemonConnector) IsConnected() bool {
+	return c.conn.IsConnected()
+}

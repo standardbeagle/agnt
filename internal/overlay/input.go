@@ -11,6 +11,30 @@ import (
 	"time"
 )
 
+// DaemonClient provides a shared, reusable client connection to the daemon.
+// Implemented by daemon.Conn via a thin adapter (cmd/agnt/pty_common.go).
+// Uses non-chaining methods to avoid Go interface compatibility issues with
+// concrete return types.
+type DaemonClient interface {
+	SocketPath() string
+	EnsureConnected() error
+	IsConnected() bool
+	Close() error
+	Disconnect() error
+	Ping() error
+
+	// RequestJSON sends a request with a JSON payload and optional additional arguments.
+	// Args are verb sub-command and identifiers (e.g., "LIST", processID).
+	RequestJSON(verb string, payload interface{}, args ...string) (map[string]interface{}, error)
+
+	// RequestString sends a request with arguments and returns the response as a string.
+	// All args are passed as protocol arguments (sub-verb, ID, key=value pairs, etc).
+	RequestString(verb string, args ...string) (string, error)
+
+	// RequestOK sends a request and returns nil on success.
+	RequestOK(verb string, payload interface{}, args ...string) error
+}
+
 // BashRunner is an interface for running bash commands via the daemon.
 type BashRunner interface {
 	RunBashCommand(command string) (processID string, err error)

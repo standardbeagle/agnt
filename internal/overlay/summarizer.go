@@ -9,14 +9,13 @@ import (
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/aichannel"
-	"github.com/standardbeagle/agnt/internal/daemon"
 	"github.com/standardbeagle/agnt/internal/protocol"
 )
 
 // Summarizer aggregates system status and uses an AI channel to generate summaries.
-// It uses a shared daemon.Conn for all requests.
+// It uses a shared DaemonClient for all requests.
 type Summarizer struct {
-	conn        *daemon.Conn
+	conn        DaemonClient
 	channel     *aichannel.Channel
 	debugOutput io.Writer
 	projectPath string // Current project directory for filtering processes/proxies
@@ -54,7 +53,7 @@ type SummarizerConfig struct {
 // For Claude agent, uses CLI mode (required for Claude Code Max plan).
 // For all other agents, automatically uses Anthropic API mode as a fallback
 // since those CLIs may not be available or may require their own subscriptions.
-func NewSummarizer(conn *daemon.Conn, config SummarizerConfig) *Summarizer {
+func NewSummarizer(conn DaemonClient, config SummarizerConfig) *Summarizer {
 	channelConfig := aichannel.Config{
 		Agent:   config.Agent,
 		Command: config.Command,
@@ -211,9 +210,7 @@ func (s *Summarizer) Summarize(ctx context.Context) (*SummaryResult, error) {
 
 func (s *Summarizer) gatherProcesses() ([]ProcessSummary, error) {
 	// Get process list - scoped to current project directory
-	result, err := s.conn.Request(protocol.VerbProc, protocol.SubVerbList).
-		WithJSON(protocol.DirectoryFilter{Directory: s.projectPath}).
-		JSON()
+	result, err := s.conn.RequestJSON(protocol.VerbProc, protocol.DirectoryFilter{Directory: s.projectPath}, protocol.SubVerbList)
 	if err != nil {
 		return nil, err
 	}
@@ -243,9 +240,7 @@ func (s *Summarizer) gatherProcesses() ([]ProcessSummary, error) {
 
 		// Fetch last 50 lines of output
 		if summary.ID != "" {
-			output, err := s.conn.Request(protocol.VerbProc, protocol.SubVerbOutput, summary.ID).
-				WithArgs("stream=combined", "tail=50").
-				String()
+			output, err := s.conn.RequestString(protocol.VerbProc, protocol.SubVerbOutput, summary.ID, "stream=combined", "tail=50")
 			if err == nil {
 				summary.Output = output
 				// Check for error patterns in output
@@ -261,9 +256,7 @@ func (s *Summarizer) gatherProcesses() ([]ProcessSummary, error) {
 
 func (s *Summarizer) gatherProxies() ([]ProxySummary, error) {
 	// Get proxy list - scoped to current project directory
-	result, err := s.conn.Request(protocol.VerbProxy, protocol.SubVerbList).
-		WithJSON(protocol.DirectoryFilter{Directory: s.projectPath}).
-		JSON()
+	result, err := s.conn.RequestJSON(protocol.VerbProxy, protocol.DirectoryFilter{Directory: s.projectPath}, protocol.SubVerbList)
 	if err != nil {
 		return nil, err
 	}
@@ -299,7 +292,7 @@ func (s *Summarizer) gatherProxies() ([]ProxySummary, error) {
 		}
 
 		// Get page count using request builder
-		pagesResult, err := s.conn.Request(protocol.VerbCurrentPage, protocol.SubVerbList, summary.ID).JSON()
+		pagesResult, err := s.conn.RequestJSON(protocol.VerbCurrentPage, nil, protocol.SubVerbList, summary.ID)
 		if err == nil {
 			if sessions, ok := pagesResult["sessions"].([]interface{}); ok {
 				summary.PageCount = len(sessions)
@@ -312,9 +305,7 @@ func (s *Summarizer) gatherProxies() ([]ProxySummary, error) {
 			Types: []string{"error", "panel_message", "custom", "sketch"},
 			Limit: 20, // Last 20 relevant entries
 		}
-		logsResult, err := s.conn.Request(protocol.VerbProxyLog, protocol.SubVerbQuery, summary.ID).
-			WithJSON(logFilter).
-			JSON()
+		logsResult, err := s.conn.RequestJSON(protocol.VerbProxyLog, logFilter, protocol.SubVerbQuery, summary.ID)
 		if err == nil {
 			summary.RecentLogs = formatProxyLogs(logsResult)
 		}
