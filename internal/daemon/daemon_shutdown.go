@@ -1,0 +1,298 @@
+package daemon
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"sync"
+	"time"
+
+	"github.com/standardbeagle/agnt/internal/browser"
+	"github.com/standardbeagle/agnt/internal/debug"
+	"github.com/standardbeagle/agnt/internal/proxy"
+)
+
+func (d *Daemon) restoreProxies() {
+	if d.stateMgr == nil {
+		return
+	}
+
+	proxies := d.stateMgr.GetProxies()
+	if len(proxies) == 0 {
+		return
+	}
+
+	// Removed startup log: restoring %d proxies from state
+
+	overlayEndpoint := d.OverlayEndpoint()
+
+	for _, pc := range proxies {
+		config := proxy.ProxyConfig{
+			ID:          pc.ID,
+			TargetURL:   pc.TargetURL,
+			ListenPort:  pc.Port,
+			MaxLogSize:  pc.MaxLogSize,
+			AutoRestart: true,
+			Path:        pc.Path,
+		}
+
+		proxyServer, err := d.proxym.Create(d.ctx, config)
+		if err != nil {
+			debug.Log("daemon", "failed to restore proxy %s: %v", pc.ID, err)
+			// Remove from state if it can't be restored
+			d.stateMgr.RemoveProxy(pc.ID)
+			continue
+		}
+
+		// Configure overlay endpoint: prefer session-scoped, fall back to global
+		if pc.Path != "" {
+			if session, ok := d.sessionRegistry.FindByDirectory(pc.Path); ok && session.OverlayPath != "" {
+				proxyServer.SetOverlayEndpoint(session.OverlayPath)
+			} else if overlayEndpoint != "" {
+				proxyServer.SetOverlayEndpoint(overlayEndpoint)
+			}
+		} else if overlayEndpoint != "" {
+			proxyServer.SetOverlayEndpoint(overlayEndpoint)
+		}
+
+		// Removed startup log: restored proxy %s -> %s on port %d
+	}
+}
+
+func (d *Daemon) checkBrowserVersion() {
+	info := browser.CheckVersion()
+	if warning := browser.FormatWarning(info); warning != "" {
+		debug.Log("daemon", "browser check: %s", warning)
+		d.startupErrorStore.Add(&StartupLogEntry{
+			Level: "warning", EventType: "browser_check",
+			Message:   warning,
+			Timestamp: time.Now(),
+		})
+	} else if info != nil {
+		debug.Log("daemon", "browser: Chrome %s at %s", info.FullVersion, info.Path)
+	}
+}
+
+func (d *Daemon) cleanupOrphans() {
+	if d.pidTracker == nil {
+		return
+	}
+
+	killedCount, err := d.pidTracker.CleanupOrphans(os.Getpid())
+	if err != nil {
+		debug.Log("daemon", "failed to cleanup orphans: %v", err)
+		d.startupErrorStore.Add(&StartupLogEntry{
+			ProcessID: "",
+			Level:     "warning",
+			EventType: "orphan_cleanup_failed",
+			Message:   fmt.Sprintf("failed to cleanup orphans: %v", err),
+			Timestamp: time.Now(),
+		})
+		return
+	}
+
+	if killedCount > 0 {
+		debug.Log("daemon", "cleaned up %d orphaned process(es) from previous crash", killedCount)
+		d.startupErrorStore.Add(&StartupLogEntry{
+			ProcessID: "",
+			Level:     "info",
+			EventType: "orphan_cleanup",
+			Message:   fmt.Sprintf("cleaned up %d orphaned process(es) from previous crash", killedCount),
+			Timestamp: time.Now(),
+		})
+	}
+
+	// Set current daemon PID for future crash detection
+	if err := d.pidTracker.SetDaemonPID(os.Getpid()); err != nil {
+		debug.Log("daemon", "failed to set daemon PID: %v", err)
+	}
+}
+
+func (d *Daemon) Stop(ctx context.Context) error {
+	d.shutdownMu.Lock()
+	if d.shutdown {
+		d.shutdownMu.Unlock()
+		return nil
+	}
+	d.shutdown = true
+	d.shutdownMu.Unlock()
+
+	debug.Log("daemon", "Daemon stopping")
+
+	// Signal all goroutines to stop
+	d.cancel()
+
+	// Stop Hub (handles listener, clients, connections, and ProcessManager)
+	if err := d.hub.Stop(ctx); err != nil {
+		debug.Log("daemon", "error stopping hub: %v", err)
+	}
+
+	// Shutdown agnt-specific managers
+	var errs []error
+
+	// Stop scheduler
+	d.scheduler.Stop(ctx)
+
+	// Stop update checker
+	if d.updateChecker != nil {
+		d.updateChecker.Stop(ctx)
+	}
+
+	// Stop process auto-restarter first (before processes are stopped)
+	if d.autoRestarter != nil {
+		d.autoRestarter.Shutdown(ctx)
+	}
+
+	if err := d.tunnelm.Shutdown(ctx); err != nil {
+		debug.Error("daemon", "tunnel manager shutdown error: %v", err)
+		errs = append(errs, fmt.Errorf("tunnel manager: %w", err))
+	}
+
+	if err := d.browserm.Shutdown(ctx); err != nil {
+		debug.Error("daemon", "browser manager shutdown error: %v", err)
+		errs = append(errs, fmt.Errorf("browser manager: %w", err))
+	}
+
+	if err := d.sessionm.Shutdown(ctx); err != nil {
+		debug.Error("daemon", "session manager shutdown error: %v", err)
+		errs = append(errs, fmt.Errorf("session manager: %w", err))
+	}
+
+	if err := d.proxym.Shutdown(ctx); err != nil {
+		debug.Error("daemon", "proxy manager shutdown error: %v", err)
+		errs = append(errs, fmt.Errorf("proxy manager: %w", err))
+	}
+
+	// Preserve PID tracking file across daemon restarts. Do NOT clear it
+	// here -- if any processes survived hub shutdown (e.g., grandchildren
+	// that escaped process group signals), the next daemon startup will
+	// find and kill them via cleanupOrphans(). Clearing the tracker here
+	// would lose track of survivors, leaving them as permanent orphans.
+	// The cleanupOrphans() path handles stale entries gracefully by
+	// checking isProcessAlive before killing.
+
+	// Wait for goroutines with timeout
+	done := make(chan struct{})
+	go func() {
+		d.wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Clean exit
+	case <-ctx.Done():
+		errs = append(errs, ctx.Err())
+	}
+
+	// Socket cleanup is handled by Hub.Stop()
+
+	debug.Log("daemon", "Daemon stopped")
+
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
+}
+
+func (d *Daemon) Wait() {
+	<-d.ctx.Done()
+	d.wg.Wait()
+}
+
+// SetOnShutdown registers a callback invoked when the hub receives a remote
+// SHUTDOWN command.  The host process typically uses this to cancel its own
+// signal context so it exits cleanly instead of lingering (important on
+// Windows where Unix signals are not delivered).
+func (d *Daemon) SetOnShutdown(fn func()) {
+	d.hub.SetOnShutdown(fn)
+}
+
+func (d *Daemon) StopAllResources(ctx context.Context) {
+	// Use a reasonable timeout for cleanup
+	cleanupCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	var wg sync.WaitGroup
+
+	// Stop all tunnels
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := d.tunnelm.StopAll(cleanupCtx); err != nil {
+			debug.Log("daemon", "error stopping tunnels: %v", err)
+			d.startupErrorStore.Add(&StartupLogEntry{
+				ProcessID: "",
+				Level:     "warning",
+				EventType: "stop_failed",
+				Message:   fmt.Sprintf("error stopping tunnels: %v", err),
+				Timestamp: time.Now(),
+			})
+		}
+	}()
+
+	// Stop all browsers
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if _, err := d.browserm.StopAll(cleanupCtx); err != nil {
+			debug.Log("daemon", "error stopping browsers: %v", err)
+			d.startupErrorStore.Add(&StartupLogEntry{
+				ProcessID: "",
+				Level:     "warning",
+				EventType: "stop_failed",
+				Message:   fmt.Sprintf("error stopping browsers: %v", err),
+				Timestamp: time.Now(),
+			})
+		}
+	}()
+
+	// Stop all proxies and update state
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		stoppedIDs, err := d.proxym.StopAll(cleanupCtx)
+		if err != nil {
+			debug.Log("daemon", "error stopping proxies: %v", err)
+			d.startupErrorStore.Add(&StartupLogEntry{
+				ProcessID: "",
+				Level:     "warning",
+				EventType: "proxy_stop_failed",
+				Message:   fmt.Sprintf("error stopping proxies: %v", err),
+				Timestamp: time.Now(),
+			})
+		}
+		// Remove stopped proxies from persisted state
+		if d.stateMgr != nil {
+			for _, id := range stoppedIDs {
+				d.stateMgr.RemoveProxy(id)
+			}
+		}
+	}()
+
+	// Stop all processes
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if err := d.hub.ProcessManager().StopAll(cleanupCtx); err != nil {
+			debug.Log("daemon", "error stopping processes: %v", err)
+			d.startupErrorStore.Add(&StartupLogEntry{
+				ProcessID: "",
+				Level:     "warning",
+				EventType: "stop_failed",
+				Message:   fmt.Sprintf("error stopping processes: %v", err),
+				Timestamp: time.Now(),
+			})
+		}
+	}()
+
+	wg.Wait()
+
+	// Clear overlay endpoint since no clients are connected
+	d.SetOverlayEndpoint("")
+
+	debug.Log("daemon", "all resources stopped (last client disconnected)")
+}
+
+// CleanupSessionResources stops all processes and proxies for a specific session.

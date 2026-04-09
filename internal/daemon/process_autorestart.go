@@ -297,11 +297,30 @@ func (r *ProcessAutoRestarter) monitorProcess(processID string) {
 		}
 
 		exitCode := proc.ExitCode()
+		scriptName := stripProcessPrefix(processID)
+
+		// Log process death to session log
+		r.daemon.startupErrorStore.Add(&StartupLogEntry{
+			ProcessID:  processID,
+			ScriptName: scriptName,
+			Level:      "info",
+			EventType:  "exited",
+			Message:    fmt.Sprintf("process exited with code %d (runtime: %s)", exitCode, formatRestartRuntime(proc.Runtime())),
+			Timestamp:  time.Now(),
+		})
 
 		// ScriptEntry state on process exit is now handled by ProcessManager lifecycle
 
 		if !state.shouldRestart(exitCode) {
 			debug.Log("daemon", "Process %s exited (code %d), max restarts reached or disabled", processID, exitCode)
+			r.daemon.startupErrorStore.Add(&StartupLogEntry{
+				ProcessID:  processID,
+				ScriptName: scriptName,
+				Level:      "warning",
+				EventType:  "restart_gave_up",
+				Message:    fmt.Sprintf("auto-restart exhausted or disabled (exit code %d)", exitCode),
+				Timestamp:  time.Now(),
+			})
 			return
 		}
 
@@ -316,6 +335,14 @@ func (r *ProcessAutoRestarter) monitorProcess(processID string) {
 				delay *= 2
 			}
 			debug.Log("daemon", "Process %s failed rapidly (%v), backoff delay %v (attempt %d)", processID, proc.Runtime(), delay, state.consecutiveFails)
+			r.daemon.startupErrorStore.Add(&StartupLogEntry{
+				ProcessID:  processID,
+				ScriptName: scriptName,
+				Level:      "warning",
+				EventType:  "crash_loop_backoff",
+				Message:    fmt.Sprintf("rapid failure (runtime %v), backoff delay %v (attempt %d)", proc.Runtime(), delay, state.consecutiveFails),
+				Timestamp:  time.Now(),
+			})
 		} else {
 			state.consecutiveFails = 0 // Reset on successful run
 		}
@@ -368,6 +395,18 @@ func (r *ProcessAutoRestarter) monitorProcess(processID string) {
 
 		if startupErr != nil {
 			debug.Error("daemon", "Failed to restart process %s: %v", processID, startupErr)
+
+			// Log restart failure to session log
+			r.daemon.startupErrorStore.Add(&StartupLogEntry{
+				ProcessID:  processID,
+				ScriptName: scriptName,
+				Level:      "error",
+				EventType:  "restart_failed",
+				Message:    fmt.Sprintf("restart failed: %s", startupErr.Message),
+				Output:     startupErr.Output,
+				Port:       startupErr.Port,
+				Timestamp:  time.Now(),
+			})
 			// Update ScriptEntry to failed state (process never started, so lifecycle won't handle this)
 			if scriptEntry, ok := r.daemon.scriptRegistry.GetByProcessID(processID); ok {
 				scriptEntry.SetState(script.StateFailed)
@@ -379,6 +418,16 @@ func (r *ProcessAutoRestarter) monitorProcess(processID string) {
 
 		state.recordRestart()
 		debug.Log("daemon", "Process %s restarted (new PID: %d)", processID, proc.PID())
+
+		// Log restart success to session log
+		r.daemon.startupErrorStore.Add(&StartupLogEntry{
+			ProcessID:  processID,
+			ScriptName: scriptName,
+			Level:      "info",
+			EventType:  "restarted",
+			Message:    fmt.Sprintf("process restarted with new PID %d", proc.PID()),
+			Timestamp:  time.Now(),
+		})
 
 		// ScriptEntry running state is now set by ProcessManager lifecycle on process start
 
