@@ -5,6 +5,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
@@ -47,6 +48,13 @@ func (d *Daemon) handleURLDetected(event ProxyEvent) {
 	projectPath := event.Path
 	if projectPath == "" {
 		debug.Warn("daemon", "No project path in URL detection event for script %s", event.ScriptID)
+		d.startupErrorStore.Add(&StartupLogEntry{
+			ProcessID: event.ScriptID,
+			Level:     "warning",
+			EventType: "proxy_creation_failed",
+			Message:   "no project path in URL detection event, proxy not created",
+			Timestamp: time.Now(),
+		})
 		return
 	}
 
@@ -63,6 +71,13 @@ func (d *Daemon) handleURLDetected(event ProxyEvent) {
 	agntConfig, err := config.LoadAgntConfig(projectPath)
 	if err != nil {
 		debug.Warn("daemon", "Failed to load agnt config for %s: %v", projectPath, err)
+		d.startupErrorStore.Add(&StartupLogEntry{
+			ProcessID: event.ScriptID,
+			Level:     "warning",
+			EventType: "proxy_creation_failed",
+			Message:   fmt.Sprintf("failed to load agnt config for %s: %v", projectPath, err),
+			Timestamp: time.Now(),
+		})
 		return
 	}
 	debug.Log("daemon", "Loaded %d proxies from config", len(agntConfig.Proxies))
@@ -105,6 +120,13 @@ func (d *Daemon) handleURLDetected(event ProxyEvent) {
 
 		if currentCount >= 5 {
 			debug.Warn("daemon", "Proxy limit (5) reached for script %s, skipping %s", event.ScriptID, event.URL)
+			d.startupErrorStore.Add(&StartupLogEntry{
+				ProcessID: event.ScriptID,
+				Level:     "warning",
+				EventType: "proxy_limit_reached",
+				Message:   fmt.Sprintf("proxy limit (5) reached, skipping URL %s", event.URL),
+				Timestamp: time.Now(),
+			})
 			continue
 		}
 
@@ -122,6 +144,13 @@ func (d *Daemon) handleURLDetected(event ProxyEvent) {
 		server, err := d.proxym.Create(d.ctx, proxyServerConfig)
 		if err != nil {
 			debug.Error("daemon", "Failed to create proxy %s: %v", proxyID, err)
+			d.startupErrorStore.Add(&StartupLogEntry{
+				ProcessID: event.ScriptID,
+				Level:     "error",
+				EventType: "proxy_creation_failed",
+				Message:   fmt.Sprintf("failed to create proxy %s: %v", proxyID, err),
+				Timestamp: time.Now(),
+			})
 			continue
 		}
 
@@ -188,6 +217,13 @@ func (d *Daemon) handleExplicitStart(event ProxyEvent) {
 	server, err := d.proxym.Create(d.ctx, proxyServerConfig)
 	if err != nil {
 		debug.Error("daemon", "Failed to create proxy %s: %v", event.ProxyID, err)
+		d.startupErrorStore.Add(&StartupLogEntry{
+			ProcessID: event.ProxyID,
+			Level:     "error",
+			EventType: "proxy_creation_failed",
+			Message:   fmt.Sprintf("failed to create explicit proxy %s: %v", event.ProxyID, err),
+			Timestamp: time.Now(),
+		})
 		return
 	}
 
@@ -234,6 +270,13 @@ func (d *Daemon) handleScriptStopped(event ProxyEvent) {
 		debug.Log("daemon", "Stopping proxy %s (script: %s)", proxyID, event.ScriptID)
 		if err := d.proxym.Stop(d.ctx, proxyID); err != nil {
 			debug.Warn("daemon", "Failed to stop proxy %s: %v", proxyID, err)
+			d.startupErrorStore.Add(&StartupLogEntry{
+				ProcessID: event.ScriptID,
+				Level:     "warning",
+				EventType: "proxy_stop_failed",
+				Message:   fmt.Sprintf("failed to stop proxy %s on script stop: %v", proxyID, err),
+				Timestamp: time.Now(),
+			})
 		}
 	}
 
