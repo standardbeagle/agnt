@@ -139,6 +139,11 @@ func (d *Daemon) Stop(ctx context.Context) error {
 		d.updateChecker.Stop(ctx)
 	}
 
+	// Stop duplicate process scanner
+	if d.dupScanner != nil {
+		d.dupScanner.Stop()
+	}
+
 	// Stop process auto-restarter first (before processes are stopped)
 	if d.autoRestarter != nil {
 		d.autoRestarter.Shutdown(ctx)

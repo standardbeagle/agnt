@@ -142,6 +142,17 @@ func (d *Daemon) hubHandleSessionRegister(conn *hubpkg.Connection, cmd *hubproto
 		}
 	}
 
+	// Trigger duplicate process scan for this project on session connect.
+	// Cleans up leftover dev servers from previous sessions.
+	if d.dupScanner != nil && session.ProjectPath != "" {
+		go func() {
+			result := d.dupScanner.ScanForProject(session.ProjectPath)
+			if len(result.Killed) > 0 {
+				d.dupScanner.notify(result)
+			}
+		}()
+	}
+
 	resp := map[string]interface{}{
 		"code":      code,
 		"autostart": autostartResult,
