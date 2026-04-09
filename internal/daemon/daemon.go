@@ -158,6 +158,9 @@ type Daemon struct {
 	// Update checker
 	updateChecker *updater.UpdateChecker
 
+	// Duplicate process scanner
+	dupScanner *DuplicateScanner
+
 	// Overlay endpoint (can be set dynamically)
 	overlayEndpoint atomic.Pointer[string]
 
@@ -324,6 +327,9 @@ func New(config DaemonConfig) *Daemon {
 		d.updateChecker = updater.NewUpdateChecker(updateConfig)
 	}
 
+	// Initialize duplicate process scanner
+	d.dupScanner = NewDuplicateScanner(d)
+
 	return d
 }
 
@@ -385,6 +391,11 @@ func (d *Daemon) Start() error {
 	// Start update checker if enabled
 	if d.updateChecker != nil {
 		d.updateChecker.Start()
+	}
+
+	// Start duplicate process scanner (periodic cleanup)
+	if d.dupScanner != nil {
+		d.dupScanner.Start()
 	}
 
 	return nil
