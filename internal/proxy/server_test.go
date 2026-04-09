@@ -1,8 +1,10 @@
 package proxy
 
 import (
+	"net"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -213,4 +215,170 @@ func TestNewProxyServer_HTTPTargetNoTLSConfig(t *testing.T) {
 		assert.False(t, transport.TLSClientConfig.InsecureSkipVerify,
 			"HTTP target should not have InsecureSkipVerify set")
 	}
+}
+
+// --- Health check probe tests ---
+
+func TestProbeTCP_Success(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer listener.Close()
+
+	err = probeTCP(listener.Addr().String(), time.Second)
+	assert.NoError(t, err, "probeTCP should succeed when backend is listening")
+}
+
+func TestProbeTCP_Failure(t *testing.T) {
+	err := probeTCP("127.0.0.1:1", 100*time.Millisecond)
+	assert.Error(t, err, "probeTCP should fail when nothing is listening")
+}
+
+func TestProbeBackend_HealthyToUnhealthy(t *testing.T) {
+	config := ProxyConfig{
+		ID:                  "health-dead",
+		TargetURL:           "http://127.0.0.1:1",
+		ListenPort:          0,
+		MaxLogSize:          100,
+		HealthCheckInterval: 30 * time.Second,
+		HealthFailThreshold: 3,
+	}
+
+	ps, err := NewProxyServer(config)
+	require.NoError(t, err)
+	ps.healthProbeTimeout = 100 * time.Millisecond // fast timeout for test
+	ps.backendHealthy.Store(true)
+
+	// First two failures: should not trigger unhealthy
+	ps.probeBackend()
+	assert.True(t, ps.backendHealthy.Load(), "should still be healthy after 1 failure")
+	assert.Equal(t, int32(1), ps.healthFailCount.Load())
+
+	ps.probeBackend()
+	assert.True(t, ps.backendHealthy.Load(), "should still be healthy after 2 failures")
+	assert.Equal(t, int32(2), ps.healthFailCount.Load())
+
+	// Third failure: should trigger unhealthy
+	ps.probeBackend()
+	assert.False(t, ps.backendHealthy.Load(), "should be unhealthy after 3 failures")
+	assert.Equal(t, int32(3), ps.healthFailCount.Load())
+
+	// Verify diagnostic was logged
+	diags := ps.logger.Query(LogFilter{Types: []LogEntryType{LogTypeDiagnostic}})
+	require.Len(t, diags, 1, "should have logged one unhealthy diagnostic")
+	assert.Equal(t, "backend_unhealthy", diags[0].Diagnostic.Event)
+}
+
+func TestProbeBackend_UnhealthyRecovery(t *testing.T) {
+	backend, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer backend.Close()
+
+	_, port, _ := net.SplitHostPort(backend.Addr().String())
+	config := ProxyConfig{
+		ID:                  "health-recover",
+		TargetURL:           "http://127.0.0.1:" + port,
+		ListenPort:          0,
+		MaxLogSize:          100,
+		HealthCheckInterval: 30 * time.Second,
+		HealthFailThreshold: 2,
+	}
+
+	ps, err := NewProxyServer(config)
+	require.NoError(t, err)
+
+	// Simulate prior unhealthy state
+	ps.healthFailCount.Store(2)
+	ps.backendHealthy.Store(false)
+
+	// Backend is listening, so probe should succeed and trigger recovery
+	ps.probeBackend()
+
+	assert.True(t, ps.backendHealthy.Load(), "should recover when backend responds")
+	assert.Equal(t, int32(0), ps.healthFailCount.Load(), "failure count should reset on recovery")
+}
+
+func TestProbeBackend_HealthyBackendStaysHealthy(t *testing.T) {
+	backend, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer backend.Close()
+
+	_, port, _ := net.SplitHostPort(backend.Addr().String())
+	config := ProxyConfig{
+		ID:                  "health-ok",
+		TargetURL:           "http://127.0.0.1:" + port,
+		ListenPort:          0,
+		MaxLogSize:          100,
+		HealthCheckInterval: 30 * time.Second,
+		HealthFailThreshold: 3,
+	}
+
+	ps, err := NewProxyServer(config)
+	require.NoError(t, err)
+	ps.backendHealthy.Store(true)
+
+	for i := 0; i < 5; i++ {
+		ps.probeBackend()
+	}
+
+	assert.True(t, ps.backendHealthy.Load(), "should stay healthy")
+	assert.Equal(t, int32(0), ps.healthFailCount.Load(), "failure count should stay at 0")
+}
+
+func TestStats_IncludesBackendHealth(t *testing.T) {
+	backend, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer backend.Close()
+
+	_, port, _ := net.SplitHostPort(backend.Addr().String())
+	config := ProxyConfig{
+		ID:                  "health-stats",
+		TargetURL:           "http://127.0.0.1:" + port,
+		ListenPort:          0,
+		MaxLogSize:          100,
+		HealthCheckInterval: 30 * time.Second,
+		HealthFailThreshold: 3,
+	}
+
+	ps, err := NewProxyServer(config)
+	require.NoError(t, err)
+	ps.backendHealthy.Store(true)
+
+	stats := ps.Stats()
+	assert.True(t, stats.BackendHealthy, "BackendHealthy should be true")
+	assert.Equal(t, int32(0), stats.ConsecutiveFailures, "no failures expected")
+
+	// Simulate some failures
+	ps.healthFailCount.Store(2)
+	stats = ps.Stats()
+	assert.Equal(t, int32(2), stats.ConsecutiveFailures)
+}
+
+func TestHealthCheckInterval_Default(t *testing.T) {
+	config := ProxyConfig{
+		ID:         "health-defaults",
+		TargetURL:  "http://localhost:3000",
+		ListenPort: 0,
+		MaxLogSize: 100,
+	}
+
+	ps, err := NewProxyServer(config)
+	require.NoError(t, err)
+
+	assert.Equal(t, 30*time.Second, ps.healthCheckInterval, "default interval should be 30s")
+	assert.Equal(t, int32(3), ps.healthFailThreshold, "default threshold should be 3")
+}
+
+func TestHealthCheckThreshold_Custom(t *testing.T) {
+	config := ProxyConfig{
+		ID:                  "health-custom-threshold",
+		TargetURL:           "http://localhost:3000",
+		ListenPort:          0,
+		MaxLogSize:          100,
+		HealthFailThreshold: 5,
+	}
+
+	ps, err := NewProxyServer(config)
+	require.NoError(t, err)
+
+	assert.Equal(t, int32(5), ps.healthFailThreshold, "custom threshold should be set")
 }

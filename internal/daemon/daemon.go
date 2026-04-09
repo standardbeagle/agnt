@@ -1,3 +1,43 @@
+// Package daemon implements the agnt background service.
+//
+// # go-cli-server Boundary
+//
+// The daemon is built on top of github.com/standardbeagle/go-cli-server, which
+// provides the core IPC hub, process management, and script registry. The boundary
+// between the two packages is:
+//
+// go-cli-server owns:
+//   - hub.Hub — socket server, client lifecycle, session management
+//   - hub.Connection — per-client connection handler
+//   - process.ProcessManager — process creation, monitoring, termination
+//   - process.ManagedProcess — individual process state machine
+//   - script.Registry — per-script state that persists across process restarts
+//   - protocol.Command — parsed IPC command (Verb, SubVerb, Args)
+//   - protocol.StructuredError — typed error responses
+//   - client.Conn — client-side IPC connection
+//   - socket.Manager — Unix socket / named pipe lifecycle
+//
+// agnt/daemon owns:
+//   - Daemon — composes hub.Hub with agnt-specific managers (proxy, tunnel, browser, etc.)
+//   - proxy.ProxyManager — reverse proxy lifecycle
+//   - tunnel.Manager — cloudflare/ngrok tunnel management
+//   - browser.Manager — browser instance management
+//   - SessionRegistry — agnt session tracking (distinct from hub sessions)
+//   - URLTracker — URL detection from process output
+//   - All hub_*.go handlers — agnt-specific command implementations
+//   - Conn / RequestBuilder — shared client connection wrapper (see conn.go)
+//
+// Import convention within this package:
+//   - hubpkg  = go-cli-server/hub
+//   - goprocess = go-cli-server/process
+//   - hubproto  = go-cli-server/protocol
+//   - goclient  = go-cli-server/client
+//   - Direct imports for go-cli-server/script (no alias needed)
+//
+// No go-cli-server types are re-exported from this package. A small number of
+// error sentinel values are re-exported for internal convenience (see
+// socket_compat.go, conn.go). Consumers that need go-cli-server types should
+// import go-cli-server directly.
 package daemon
 
 import (
