@@ -1171,6 +1171,10 @@
       'right: 0',
       'bottom: 0',
       'z-index: 2147483647',
+      'background: transparent',
+      'pointer-events: auto',
+      'user-select: none',
+      '-webkit-user-select: none',
       'cursor: crosshair'
     ].join(';'),
 
@@ -3306,18 +3310,34 @@
 
   // Screenshot mode
   function startScreenshotMode() {
-    togglePanel(false);
+    // Hide panel immediately without animation so overlay is the topmost interactive layer
+    state.panel.style.display = 'none';
+    state.isExpanded = false;
+    if (state.tabUpdateInterval) {
+      clearInterval(state.tabUpdateInterval);
+      state.tabUpdateInterval = null;
+    }
 
     // Detect responsive mode or touch device
     var isResponsive = window.innerWidth < 768; // Common tablet breakpoint
     var isTouchDevice = 'ontouchstart' in window || navigator.maxTouchPoints > 0;
     var isDragSelectUnavailable = isResponsive || isTouchDevice;
 
+    // Hide indicator during capture to avoid including it in screenshots
+    function hideIndicatorForCapture() {
+      if (state.container) state.container.style.display = 'none';
+    }
+    function restoreIndicator() {
+      if (state.container && state.isVisible) state.container.style.display = 'block';
+    }
+
     // If drag select is not available, capture full screen immediately
     if (isDragSelectUnavailable) {
       var w = window.innerWidth;
       var h = window.innerHeight;
+      hideIndicatorForCapture();
       captureArea(0, 0, w, h, function(imageBuffer) {
+        restoreIndicator();
         addAttachment('screenshot', {
           label: 'Full screen (' + w + '\u00d7' + h + ')',
           summary: 'Full screen screenshot ' + w + 'x' + h,
@@ -3331,7 +3351,7 @@
 
     // Desktop mode: show drag selection overlay
     var overlay = document.createElement('div');
-    overlay.style.cssText = STYLES.overlay + ';' + STYLES.overlayDimmed;
+    overlay.style.cssText = STYLES.overlay;
 
     var box = document.createElement('div');
     box.style.cssText = STYLES.selectionBox;
@@ -3345,16 +3365,28 @@
 
     var start = null;
 
-    overlay.onmousedown = function(e) {
+    // Block all events from reaching the page underneath (capture phase)
+    function block(e) {
+      e.preventDefault();
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+    }
+
+    var blockTypes = ['mousedown', 'mouseup', 'mousemove', 'click', 'pointerdown', 'pointerup', 'pointermove', 'contextmenu'];
+    blockTypes.forEach(function(type) {
+      overlay.addEventListener(type, block, true);
+    });
+
+    overlay.addEventListener('mousedown', function(e) {
       start = { x: e.clientX, y: e.clientY };
       box.style.display = 'block';
       box.style.left = start.x + 'px';
       box.style.top = start.y + 'px';
       box.style.width = '0';
       box.style.height = '0';
-    };
+    }, true);
 
-    overlay.onmousemove = function(e) {
+    overlay.addEventListener('mousemove', function(e) {
       if (!start) return;
       var x = Math.min(start.x, e.clientX);
       var y = Math.min(start.y, e.clientY);
@@ -3364,9 +3396,9 @@
       box.style.top = y + 'px';
       box.style.width = w + 'px';
       box.style.height = h + 'px';
-    };
+    }, true);
 
-    overlay.onmouseup = function(e) {
+    overlay.addEventListener('mouseup', function(e) {
       if (!start) return;
       var x = Math.min(start.x, e.clientX);
       var y = Math.min(start.y, e.clientY);
@@ -3376,10 +3408,12 @@
       cleanup();
 
       if (w > 20 && h > 20) {
-        // Capture the area with actual screenshot data
+        // Hide indicator before capture to avoid including it in screenshot
+        hideIndicatorForCapture();
         var absX = x + window.scrollX;
         var absY = y + window.scrollY;
         captureArea(absX, absY, w, h, function(imageBuffer) {
+          restoreIndicator();
           addAttachment('screenshot', {
             label: w + '\u00d7' + h + ' area',
             summary: 'Screenshot area at (' + x + ',' + y + ') size ' + w + 'x' + h,
@@ -3391,7 +3425,10 @@
       } else {
         togglePanel(true);
       }
-    };
+    }, true);
+
+    // Prevent clicks on the instruction bar from starting a selection
+    instructions.addEventListener('mousedown', function(e) { e.stopPropagation(); }, true);
 
     function cleanup() {
       document.removeEventListener('keydown', onKey);
