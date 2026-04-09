@@ -91,6 +91,14 @@ type ProxyServer struct {
 	// Chaos engine for failure injection
 	chaosEngine *ChaosEngine
 
+	// Backend health probe
+	healthCheckInterval time.Duration
+	healthFailThreshold int32
+	healthFailCount     atomic.Int32
+	backendHealthy      atomic.Bool
+	lastHealthCheck     atomic.Value // stores time.Time
+	healthProbeTimeout  time.Duration
+
 	// Session client factory for handling session API requests from browser
 	sessionClientFactory SessionClientFactory
 }
@@ -108,6 +116,14 @@ type ProxyConfig struct {
 	AllowExternal bool   // Allow binding to non-localhost addresses (0.0.0.0, ::). Requires explicit opt-in for security.
 	SkipTLSVerify bool   // Skip TLS certificate verification (default: false, verifies certs). Set true for self-signed/expired certs in dev.
 	Tunnel        *protocol.TunnelConfig
+
+	// HealthCheckInterval controls how often the backend is probed.
+	// Zero disables health checks. Default: 30s.
+	HealthCheckInterval time.Duration
+	// HealthFailThreshold is the number of consecutive failures before
+	// marking the backend unhealthy and emitting a diagnostic event.
+	// Default: 3.
+	HealthFailThreshold int
 }
 
 // isExternalBindAddress returns true if the address would expose the proxy
@@ -180,23 +196,37 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 	}
 
 	logger := NewTrafficLogger(config.MaxLogSize)
+
+	// Health check defaults
+	healthInterval := config.HealthCheckInterval
+	if healthInterval == 0 {
+		healthInterval = 30 * time.Second
+	}
+	healthThreshold := int32(config.HealthFailThreshold)
+	if healthThreshold == 0 {
+		healthThreshold = 3
+	}
+
 	ps := &ProxyServer{
-		ID:              config.ID,
-		TargetURL:       targetURL,
-		ListenAddr:      fmt.Sprintf("%s:%d", bindAddress, config.ListenPort),
-		Path:            config.Path,
-		BindAddress:     bindAddress,
-		AllowExternal:   config.AllowExternal,
-		PublicURL:       config.PublicURL,
-		logger:          logger,
-		pageTracker:     NewPageTracker(100, 5*time.Minute),
-		ready:           make(chan struct{}),
-		autoRestart:     config.AutoRestart,
-		maxRestarts:     5,               // Max 5 restarts
-		restartWindow:   1 * time.Minute, // Within 1 minute window
-		restarts:        make([]time.Time, 0, 5),
-		overlayNotifier: NewOverlayNotifier(),
-		chaosEngine:     NewChaosEngine(logger),
+		ID:                  config.ID,
+		TargetURL:           targetURL,
+		ListenAddr:          fmt.Sprintf("%s:%d", bindAddress, config.ListenPort),
+		Path:                config.Path,
+		BindAddress:         bindAddress,
+		AllowExternal:       config.AllowExternal,
+		PublicURL:           config.PublicURL,
+		logger:              logger,
+		pageTracker:         NewPageTracker(100, 5*time.Minute),
+		ready:               make(chan struct{}),
+		autoRestart:         config.AutoRestart,
+		maxRestarts:         5,               // Max 5 restarts
+		restartWindow:       1 * time.Minute, // Within 1 minute window
+		restarts:            make([]time.Time, 0, 5),
+		overlayNotifier:     NewOverlayNotifier(),
+		chaosEngine:         NewChaosEngine(logger),
+		healthCheckInterval: healthInterval,
+		healthFailThreshold: healthThreshold,
+		healthProbeTimeout:  5 * time.Second,
 		wsUpgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
 				return true // Allow all origins for development
@@ -399,6 +429,10 @@ func (ps *ProxyServer) Start(ctx context.Context) error {
 	// Start server in goroutine using existing listener
 	go ps.runServer(ctx, listener)
 
+	// Start backend health probe (non-zero interval means enabled)
+	ps.backendHealthy.Store(true)
+	go ps.runHealthCheck(ctx)
+
 	// Start tunnel if configured
 	if ps.tunnel != nil {
 		if err := ps.tunnel.Start(ctx); err != nil {
@@ -503,6 +537,90 @@ func (ps *ProxyServer) recordRestart() {
 	ps.restartsMu.Lock()
 	defer ps.restartsMu.Unlock()
 	ps.restarts = append(ps.restarts, time.Now())
+}
+
+// runHealthCheck periodically probes the backend target via TCP connect.
+// It tracks consecutive failures and emits a diagnostic event when the
+// backend transitions from healthy to unhealthy, and logs recovery.
+func (ps *ProxyServer) runHealthCheck(ctx context.Context) {
+	if ps.healthCheckInterval <= 0 {
+		return
+	}
+
+	ticker := time.NewTicker(ps.healthCheckInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if !ps.running.Load() {
+				return
+			}
+			ps.probeBackend()
+		}
+	}
+}
+
+// probeBackend attempts a TCP connect to the backend target.
+// On consecutive failures exceeding the threshold, it marks the backend
+// unhealthy and emits a diagnostic event. Recovery resets the failure count.
+func (ps *ProxyServer) probeBackend() {
+	host := ps.TargetURL.Host
+	err := probeTCP(host, ps.healthProbeTimeout)
+	now := time.Now()
+	ps.lastHealthCheck.Store(now)
+
+	if err == nil {
+		// Backend responded — reset failure count
+		failCount := ps.healthFailCount.Swap(0)
+		wasUnhealthy := !ps.backendHealthy.Swap(true)
+		if wasUnhealthy && failCount > 0 {
+			debug.Log("proxy", "backend %s recovered after %d failures for proxy %s", host, failCount, ps.ID)
+			ps.logger.LogDiagnostic(ProxyDiagnostic{
+				Timestamp: now,
+				Level:     DiagnosticInfo,
+				Category:  "health",
+				Event:     "backend_recovered",
+				Message:   fmt.Sprintf("Backend %s recovered", host),
+				Target:    ps.TargetURL.String(),
+			})
+		}
+		return
+	}
+
+	// Backend unreachable
+	failCount := ps.healthFailCount.Add(1)
+	debug.Log("proxy", "health check failed for %s (consecutive: %d/%d): %v",
+		host, failCount, ps.healthFailThreshold, err)
+
+	if failCount == ps.healthFailThreshold {
+		ps.backendHealthy.Store(false)
+		ps.logger.LogDiagnostic(ProxyDiagnostic{
+			Timestamp: now,
+			Level:     DiagnosticError,
+			Category:  "health",
+			Event:     "backend_unhealthy",
+			Message:   fmt.Sprintf("Backend %s unreachable after %d consecutive failures: %v", host, failCount, err),
+			Target:    ps.TargetURL.String(),
+			Data: map[string]any{
+				"consecutive_failures": failCount,
+				"threshold":            ps.healthFailThreshold,
+				"last_error":           err.Error(),
+			},
+		})
+	}
+}
+
+// probeTCP attempts a TCP connect to the given host:port with a timeout.
+func probeTCP(host string, timeout time.Duration) error {
+	conn, err := net.DialTimeout("tcp", host, timeout)
+	if err != nil {
+		return err
+	}
+	conn.Close()
+	return nil
 }
 
 // isAddressInUse checks if the error is due to address already in use.
@@ -671,6 +789,13 @@ func (ps *ProxyServer) Stats() ProxyStats {
 	ps.restartsMu.Unlock()
 	stats.RestartCount = restartCount
 
+	// Backend health probe state
+	stats.BackendHealthy = ps.backendHealthy.Load()
+	stats.ConsecutiveFailures = ps.healthFailCount.Load()
+	if t, ok := ps.lastHealthCheck.Load().(time.Time); ok && !t.IsZero() {
+		stats.LastHealthCheck = t
+	}
+
 	return stats
 }
 
@@ -689,6 +814,11 @@ type ProxyStats struct {
 	LastError     string        `json:"last_error,omitempty"` // Set if server crashed
 	RestartCount  int           `json:"restart_count"`        // Number of restarts in current window
 	AutoRestart   bool          `json:"auto_restart"`         // Whether auto-restart is enabled
+
+	// Backend health probe state
+	BackendHealthy      bool      `json:"backend_healthy"`                // false after consecutive probe failures
+	LastHealthCheck     time.Time `json:"last_health_check,omitempty"`    // time of last probe
+	ConsecutiveFailures int32     `json:"consecutive_failures,omitempty"` // current consecutive failure count
 }
 
 // handleProxy handles HTTP requests and logs traffic.

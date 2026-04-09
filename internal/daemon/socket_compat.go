@@ -1,9 +1,5 @@
 //go:build !windows
 
-// Package daemon provides the stateful daemon process that manages
-// processes, proxies, and traffic logs across client connections.
-//
-// This file provides socket compatibility layer using go-cli-server/socket.
 package daemon
 
 import (
@@ -18,7 +14,8 @@ import (
 // SocketName is the socket name used for agnt daemon.
 const SocketName = "devtool-mcp"
 
-// Re-export error types from go-cli-server/socket for backward compatibility.
+// Socket errors re-exported from go-cli-server/socket for convenience.
+// These are used by cmd/agnt when checking daemon status before startup.
 var (
 	ErrSocketInUse    = socket.ErrSocketInUse
 	ErrSocketNotFound = socket.ErrSocketNotFound
@@ -26,7 +23,7 @@ var (
 )
 
 // SocketConfig holds configuration for socket management.
-// This is a compatibility wrapper around socket.Config.
+// Wraps go-cli-server/socket.Config with agnt-specific defaults (socket name, process matcher).
 type SocketConfig struct {
 	Path string
 	Mode os.FileMode

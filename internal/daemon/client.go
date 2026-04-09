@@ -10,13 +10,6 @@ import (
 	"github.com/standardbeagle/go-cli-server/client"
 )
 
-// Re-export error types from go-cli-server for backward compatibility.
-var (
-	ErrNotConnected = client.ErrNotConnected
-	ErrServerError  = client.ErrServerError
-	// Note: ErrSocketNotFound is already exported from socket_compat.go via socket package
-)
-
 // Client is a client for communicating with the daemon over the socket.
 // This wraps go-cli-server/client.Conn with agnt-specific methods.
 type Client struct {

@@ -1,62 +1,3 @@
-// Package daemon provides client connectivity to the agnt daemon.
-//
-// # Shared Connection Design
-//
-// The Conn type provides a shared, reusable client connection to the daemon.
-// Instead of each component creating its own client with a socket path,
-// a single Conn is created at startup and shared across all consumers.
-//
-// ## Why This Design?
-//
-// Previously, each component (StatusFetcher, Summarizer, BashRunner, etc.)
-// independently managed socket paths and created daemon.Client instances.
-// This led to:
-//   - Redundant socket path passing throughout the codebase
-//   - Multiple disconnected clients that could get out of sync
-//   - No ability to batch requests (each client locks independently)
-//   - Verbose client API with 50+ wrapper methods
-//
-// ## Request Builder Pattern
-//
-// Instead of method-per-command (client.ProcList(), client.ProxyList(), etc.),
-// Conn exposes a fluent Request builder:
-//
-//	// Single request returning JSON map
-//	result, err := conn.Request("PROC", "LIST").
-//	    WithJSON(filter).
-//	    JSON()
-//
-//	// Request with inline args
-//	output, err := conn.Request("PROC", "OUTPUT", processID).
-//	    WithArgs("tail=50", "stream=combined").
-//	    String()
-//
-//	// Request expecting OK/ERR only
-//	err := conn.Request("PROXY", "STOP", proxyID).OK()
-//
-// This keeps the API surface small while allowing direct use of protocol verbs.
-//
-// ## Sharing the Connection
-//
-// Create one Conn at startup and pass it to all components:
-//
-//	conn := daemon.NewConn(socketPath)
-//	defer conn.Close()
-//
-//	statusFetcher := overlay.NewStatusFetcher(conn, overlay)
-//	summarizer := overlay.NewSummarizer(conn, config)
-//	bashRunner := overlay.NewBashRunner(conn)
-//
-// ## Thread Safety
-//
-// Conn is thread-safe. Multiple goroutines can issue requests concurrently.
-// Requests are serialized internally (the daemon protocol is request-response,
-// not pipelined).
-//
-// ## Auto-Reconnection
-//
-// If the connection drops, the next request will automatically reconnect.
-// Use EnsureConnected() to explicitly verify connectivity before issuing requests.
 package daemon
 
 import (
@@ -66,14 +7,32 @@ import (
 )
 
 // ErrConnectionClosed is returned when operating on a closed connection.
-// Re-exported from the go-cli-server library for backward compatibility.
+// Re-exported from go-cli-server/client for use within this package.
 var ErrConnectionClosed = goclient.ErrConnectionClosed
 
 // Conn provides a shared, reusable client connection to the daemon.
 // Create one Conn and share it across all components that need
 // to communicate with the daemon.
 //
+// Conn wraps go-cli-server/client.Conn. Use this type instead of importing
+// go-cli-server/client directly to share a single connection across components.
+//
 // Conn is distinct from Connection (server-side handler in connection.go).
+//
+// # Request Builder
+//
+// Conn exposes a fluent request builder instead of per-command methods:
+//
+//	result, err := conn.Request("PROC", "LIST").WithJSON(filter).JSON()
+//	err := conn.Request("PROXY", "STOP", proxyID).OK()
+//
+// # Thread Safety
+//
+// Conn is thread-safe. Multiple goroutines can issue requests concurrently.
+//
+// # Auto-Reconnection
+//
+// If the connection drops, the next request will automatically reconnect.
 type Conn struct {
 	conn *goclient.Conn
 }
