@@ -5,13 +5,12 @@ import (
 	"testing"
 
 	"github.com/standardbeagle/agnt/internal/aichannel"
-	"github.com/standardbeagle/agnt/internal/daemon"
 )
 
-// testConn returns a nil connection for tests that don't need daemon connectivity.
+// testConn returns nil for tests that don't need daemon connectivity.
 // The summarizer only uses the connection during Summarize(), which these tests don't call.
-func testConn() *daemon.Conn {
-	return daemon.NewConn("/tmp/test.sock")
+func testConn() DaemonClient {
+	return nil
 }
 
 func TestNewSummarizer(t *testing.T) {

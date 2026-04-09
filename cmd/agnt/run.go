@@ -388,18 +388,19 @@ func runWithPTY(ctx context.Context, args []string, socketPath string, sessionCo
 		defer daemonConn.Close()
 
 		// Set up bash runner, output fetcher, and daemon connector using shared connection
-		bashRunner := overlay.NewDaemonBashRunner(daemonConn)
+		daemonClient := newDaemonClientAdapter(daemonConn)
+		bashRunner := overlay.NewDaemonBashRunner(daemonClient)
 		inputRouter.SetBashRunner(bashRunner)
-		outputFetcher := overlay.NewDaemonOutputFetcher(daemonConn)
+		outputFetcher := overlay.NewDaemonOutputFetcher(daemonClient)
 		inputRouter.SetOutputFetcher(outputFetcher)
-		daemonConnector := overlay.NewDaemonConnector(daemonConn)
+		daemonConnector := newDaemonConnector(daemonConn)
 		inputRouter.SetDaemonConnector(daemonConnector)
-		scriptController := overlay.NewDaemonScriptController(daemonConn)
+		scriptController := overlay.NewDaemonScriptController(daemonClient)
 		inputRouter.SetScriptController(scriptController)
 
 		// Set up summarizer - detect first available AI agent
 		if agent := detectAIAgent(); agent != "" {
-			summarizer := overlay.NewSummarizer(daemonConn, overlay.SummarizerConfig{
+			summarizer := overlay.NewSummarizer(daemonClient, overlay.SummarizerConfig{
 				Agent:       aichannel.AgentType(agent),
 				Timeout:     2 * time.Minute,
 				ProjectPath: projectPath,
@@ -424,7 +425,7 @@ func runWithPTY(ctx context.Context, args []string, socketPath string, sessionCo
 		}
 
 		// Start status fetcher to update the indicator using shared connection
-		statusFetcher = overlay.NewStatusFetcher(daemonConn, termOverlay, 2*time.Second)
+		statusFetcher = overlay.NewStatusFetcher(daemonClient, termOverlay, 2*time.Second)
 		statusFetcher.Start(ctx)
 		defer statusFetcher.Stop()
 

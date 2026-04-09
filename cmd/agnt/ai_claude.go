@@ -570,19 +570,20 @@ func runAiClaudeOverlay(ctx context.Context, opts *claude.AgentOptions, daemonHa
 	daemonConn := daemon.NewConn(daemonSocketPath)
 	defer daemonConn.Close()
 
-	bashRunner := overlay.NewDaemonBashRunner(daemonConn)
+	daemonClient := newDaemonClientAdapter(daemonConn)
+	bashRunner := overlay.NewDaemonBashRunner(daemonClient)
 	inputRouter.SetBashRunner(bashRunner)
-	outputFetcher := overlay.NewDaemonOutputFetcher(daemonConn)
+	outputFetcher := overlay.NewDaemonOutputFetcher(daemonClient)
 	inputRouter.SetOutputFetcher(outputFetcher)
-	daemonConnector := overlay.NewDaemonConnector(daemonConn)
+	daemonConnector := newDaemonConnector(daemonConn)
 	inputRouter.SetDaemonConnector(daemonConnector)
-	scriptController := overlay.NewDaemonScriptController(daemonConn)
+	scriptController := overlay.NewDaemonScriptController(daemonClient)
 	inputRouter.SetScriptController(scriptController)
 
 	// Set up summarizer
 	if agent := detectAIAgent(); agent != "" {
 		projectPath, _ := os.Getwd()
-		summarizer := overlay.NewSummarizer(daemonConn, overlay.SummarizerConfig{
+		summarizer := overlay.NewSummarizer(daemonClient, overlay.SummarizerConfig{
 			Agent:       aichannel.AgentType(agent),
 			Timeout:     2 * time.Minute,
 			ProjectPath: projectPath,
@@ -591,7 +592,7 @@ func runAiClaudeOverlay(ctx context.Context, opts *claude.AgentOptions, daemonHa
 	}
 
 	// Start status fetcher
-	statusFetcher = overlay.NewStatusFetcher(daemonConn, termOverlay, 2*time.Second)
+	statusFetcher = overlay.NewStatusFetcher(daemonClient, termOverlay, 2*time.Second)
 	statusFetcher.Start(ctx)
 	defer statusFetcher.Stop()
 

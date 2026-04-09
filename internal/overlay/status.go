@@ -14,7 +14,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/standardbeagle/agnt/internal/daemon"
 	"github.com/standardbeagle/agnt/internal/protocol"
 )
 
@@ -83,10 +82,10 @@ func detectTailscaleDNS() string {
 }
 
 // StatusFetcher fetches status from the daemon periodically.
-// It uses a shared daemon.Conn for all requests.
+// It uses a shared DaemonClient for all requests.
 // By default, it only fetches processes/proxies from the current project directory.
 type StatusFetcher struct {
-	conn        *daemon.Conn
+	conn        DaemonClient
 	overlay     *Overlay
 	interval    time.Duration
 	projectPath string // Current project directory for filtering
@@ -97,7 +96,7 @@ type StatusFetcher struct {
 
 // NewStatusFetcher creates a new StatusFetcher using a shared connection.
 // It automatically detects the current working directory for scoping.
-func NewStatusFetcher(conn *daemon.Conn, overlay *Overlay, interval time.Duration) *StatusFetcher {
+func NewStatusFetcher(conn DaemonClient, overlay *Overlay, interval time.Duration) *StatusFetcher {
 	// Get current working directory for session scoping
 	projectPath, err := os.Getwd()
 	if err != nil {
@@ -214,9 +213,7 @@ func (f *StatusFetcher) fetchStatus() {
 }
 
 func (f *StatusFetcher) fetchScripts() ([]ScriptInfo, error) {
-	result, err := f.conn.Request(protocol.VerbScript, protocol.SubVerbList).
-		WithJSON(protocol.DirectoryFilter{Directory: f.projectPath}).
-		JSON()
+	result, err := f.conn.RequestJSON(protocol.VerbScript, protocol.DirectoryFilter{Directory: f.projectPath}, protocol.SubVerbList)
 	if err != nil {
 		return nil, err
 	}
@@ -272,9 +269,7 @@ func (f *StatusFetcher) fetchScripts() ([]ScriptInfo, error) {
 
 func (f *StatusFetcher) fetchProcesses() ([]ProcessInfo, error) {
 	// Use request builder - filter by session directory
-	result, err := f.conn.Request(protocol.VerbProc, protocol.SubVerbList).
-		WithJSON(protocol.DirectoryFilter{Directory: f.projectPath}).
-		JSON()
+	result, err := f.conn.RequestJSON(protocol.VerbProc, protocol.DirectoryFilter{Directory: f.projectPath}, protocol.SubVerbList)
 	if err != nil {
 		return nil, err
 	}
@@ -326,9 +321,7 @@ func (f *StatusFetcher) fetchProcesses() ([]ProcessInfo, error) {
 
 func (f *StatusFetcher) fetchProxies() ([]ProxyInfo, error) {
 	// Use request builder - filter by session directory
-	result, err := f.conn.Request(protocol.VerbProxy, protocol.SubVerbList).
-		WithJSON(protocol.DirectoryFilter{Directory: f.projectPath}).
-		JSON()
+	result, err := f.conn.RequestJSON(protocol.VerbProxy, protocol.DirectoryFilter{Directory: f.projectPath}, protocol.SubVerbList)
 	if err != nil {
 		return nil, err
 	}
@@ -415,9 +408,7 @@ func (f *StatusFetcher) fetchRecentErrors() ([]ErrorInfo, error) {
 			Limit: 10,
 		}
 
-		result, err := f.conn.Request(protocol.VerbProxyLog, protocol.SubVerbQuery, proxy.ID).
-			WithJSON(filter).
-			JSON()
+		result, err := f.conn.RequestJSON(protocol.VerbProxyLog, filter, protocol.SubVerbQuery, proxy.ID)
 		if err != nil {
 			continue
 		}
@@ -460,9 +451,7 @@ func (f *StatusFetcher) fetchRecentErrors() ([]ErrorInfo, error) {
 }
 
 func (f *StatusFetcher) fetchStartupLog() ([]StartupLogEntry, error) {
-	result, err := f.conn.Request(protocol.VerbAlerts, protocol.SubVerbStartupLog).
-		WithJSON(map[string]interface{}{"limit": 100}).
-		JSON()
+	result, err := f.conn.RequestJSON(protocol.VerbAlerts, map[string]interface{}{"limit": 100}, protocol.SubVerbStartupLog)
 	if err != nil {
 		return nil, err
 	}
@@ -503,7 +492,7 @@ func (f *StatusFetcher) fetchBrowserSessions(proxies []ProxyInfo) ([]BrowserSess
 
 	for _, proxy := range proxies {
 		// Use request builder for current page list
-		result, err := f.conn.Request(protocol.VerbCurrentPage, protocol.SubVerbList, proxy.ID).JSON()
+		result, err := f.conn.RequestJSON(protocol.VerbCurrentPage, nil, protocol.SubVerbList, proxy.ID)
 		if err != nil {
 			continue
 		}
@@ -616,12 +605,12 @@ func (f *StatusFetcher) linkProcessesAndProxies(processes []ProcessInfo, proxies
 
 // DaemonBashRunner implements BashRunner using a shared daemon connection.
 type DaemonBashRunner struct {
-	conn    *daemon.Conn
+	conn    DaemonClient
 	counter atomic.Int64
 }
 
 // NewDaemonBashRunner creates a new DaemonBashRunner using a shared connection.
-func NewDaemonBashRunner(conn *daemon.Conn) *DaemonBashRunner {
+func NewDaemonBashRunner(conn DaemonClient) *DaemonBashRunner {
 	return &DaemonBashRunner{
 		conn: conn,
 	}
@@ -659,9 +648,7 @@ func (r *DaemonBashRunner) RunBashCommand(command string) (string, error) {
 		Args:    shellArgs,
 	}
 
-	_, err = r.conn.Request(protocol.VerbRunJSON).
-		WithJSON(runConfig).
-		JSON()
+	_, err = r.conn.RequestJSON(protocol.VerbRunJSON, runConfig)
 	if err != nil {
 		return "", fmt.Errorf("failed to run command: %w", err)
 	}
@@ -671,12 +658,12 @@ func (r *DaemonBashRunner) RunBashCommand(command string) (string, error) {
 
 // DaemonOutputFetcher implements ProcessOutputFetcher using a shared daemon connection.
 type DaemonOutputFetcher struct {
-	conn        *daemon.Conn
+	conn        DaemonClient
 	projectPath string
 }
 
 // NewDaemonOutputFetcher creates a new DaemonOutputFetcher using a shared connection.
-func NewDaemonOutputFetcher(conn *daemon.Conn) *DaemonOutputFetcher {
+func NewDaemonOutputFetcher(conn DaemonClient) *DaemonOutputFetcher {
 	projectPath, err := os.Getwd()
 	if err != nil {
 		projectPath = ""
@@ -689,9 +676,7 @@ func NewDaemonOutputFetcher(conn *daemon.Conn) *DaemonOutputFetcher {
 
 // GetProcessOutput fetches the last N lines of output for a process.
 func (f *DaemonOutputFetcher) GetProcessOutput(processID string, tailLines int) (string, error) {
-	output, err := f.conn.Request(protocol.VerbProc, protocol.SubVerbOutput, processID).
-		WithArgs("stream=combined", fmt.Sprintf("tail=%d", tailLines)).
-		String()
+	output, err := f.conn.RequestString(protocol.VerbProc, protocol.SubVerbOutput, processID, "stream=combined", fmt.Sprintf("tail=%d", tailLines))
 	if err != nil {
 		return "", err
 	}
@@ -706,9 +691,7 @@ func (f *DaemonOutputFetcher) GetScriptOutput(scriptName string, tailLines int) 
 	if tailLines > 0 {
 		payload["tail"] = tailLines
 	}
-	result, err := f.conn.Request(protocol.VerbScript, protocol.SubVerbOutput, scriptName).
-		WithJSON(payload).
-		JSON()
+	result, err := f.conn.RequestJSON(protocol.VerbScript, payload, protocol.SubVerbOutput, scriptName)
 	if err != nil {
 		return "", err
 	}
@@ -729,12 +712,12 @@ func (f *DaemonOutputFetcher) GetScriptOutput(scriptName string, tailLines int) 
 
 // DaemonScriptController implements ScriptController using a shared daemon connection.
 type DaemonScriptController struct {
-	conn        *daemon.Conn
+	conn        DaemonClient
 	projectPath string
 }
 
 // NewDaemonScriptController creates a new DaemonScriptController.
-func NewDaemonScriptController(conn *daemon.Conn) *DaemonScriptController {
+func NewDaemonScriptController(conn DaemonClient) *DaemonScriptController {
 	projectPath, err := os.Getwd()
 	if err != nil {
 		projectPath = ""
@@ -747,74 +730,28 @@ func NewDaemonScriptController(conn *daemon.Conn) *DaemonScriptController {
 
 // StopScript stops a script by name.
 func (c *DaemonScriptController) StopScript(name string) error {
-	_, err := c.conn.Request(protocol.VerbScript, protocol.SubVerbStop, name).
-		WithJSON(map[string]interface{}{"directory": c.projectPath}).JSON()
+	_, err := c.conn.RequestJSON(protocol.VerbScript, map[string]interface{}{"directory": c.projectPath}, protocol.SubVerbStop, name)
 	return err
 }
 
 // RestartScript restarts a script by name.
 func (c *DaemonScriptController) RestartScript(name string) error {
-	_, err := c.conn.Request(protocol.VerbScript, protocol.SubVerbRestart, name).
-		WithJSON(map[string]interface{}{"directory": c.projectPath}).JSON()
+	_, err := c.conn.RequestJSON(protocol.VerbScript, map[string]interface{}{"directory": c.projectPath}, protocol.SubVerbRestart, name)
 	return err
 }
 
 // StartScript starts a stopped script by name (uses restart which handles both cases).
 func (c *DaemonScriptController) StartScript(name string) error {
-	_, err := c.conn.Request(protocol.VerbScript, protocol.SubVerbRestart, name).
-		WithJSON(map[string]interface{}{"directory": c.projectPath}).JSON()
+	_, err := c.conn.RequestJSON(protocol.VerbScript, map[string]interface{}{"directory": c.projectPath}, protocol.SubVerbRestart, name)
 	return err
 }
 
 // RunCommand runs an ad-hoc shell command as a background process.
 func (c *DaemonScriptController) RunCommand(command string) error {
-	_, err := c.conn.Request("RUN-JSON", "", "").
-		WithJSON(map[string]interface{}{
-			"command":   command,
-			"mode":      "background",
-			"directory": c.projectPath,
-		}).JSON()
+	_, err := c.conn.RequestJSON("RUN-JSON", map[string]interface{}{
+		"command":   command,
+		"mode":      "background",
+		"directory": c.projectPath,
+	}, "", "")
 	return err
-}
-
-// DaemonConnectorImpl implements DaemonConnector using a shared connection.
-type DaemonConnectorImpl struct {
-	conn *daemon.Conn
-}
-
-// NewDaemonConnector creates a new DaemonConnector using a shared connection.
-func NewDaemonConnector(conn *daemon.Conn) *DaemonConnectorImpl {
-	return &DaemonConnectorImpl{
-		conn: conn,
-	}
-}
-
-// Connect attempts to connect to the daemon, auto-starting it if needed.
-func (c *DaemonConnectorImpl) Connect() error {
-	socketPath := c.conn.SocketPath()
-
-	// First clean up any zombie daemons
-	daemon.CleanupZombieDaemons(socketPath)
-
-	// Use auto-start client to ensure daemon is running
-	config := daemon.AutoStartConfig{
-		SocketPath:    socketPath,
-		StartTimeout:  5 * time.Second,
-		RetryInterval: 100 * time.Millisecond,
-		MaxRetries:    50,
-	}
-	autoClient := daemon.NewAutoStartClient(config)
-
-	if err := autoClient.Connect(); err != nil {
-		return err
-	}
-	autoClient.Close()
-
-	// Now connect the shared connection
-	return c.conn.EnsureConnected()
-}
-
-// IsConnected returns true if currently connected to the daemon.
-func (c *DaemonConnectorImpl) IsConnected() bool {
-	return c.conn.IsConnected()
 }
