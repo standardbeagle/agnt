@@ -1,0 +1,572 @@
+package proxy
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/gorilla/websocket"
+	"github.com/standardbeagle/agnt/internal/debug"
+)
+
+// errorHandler handles proxy errors.
+func (ps *ProxyServer) errorHandler(w http.ResponseWriter, r *http.Request, err error) {
+	seq := ps.requestSeq.Add(1)
+	reqID := fmt.Sprintf("req-%d", seq)
+	timestamp := time.Now()
+
+	errStr := err.Error()
+
+	// Check if this is a transient connection error (common during development)
+	// These happen when dev servers restart, connections timeout, etc.
+	isTransient := isTransientConnectionError(errStr)
+
+	// Flush stale connections on transient errors so the browser's immediate
+	// reconnect (especially WebSocket/HMR) gets a fresh connection to the backend.
+	if isTransient || strings.Contains(errStr, "context canceled") {
+		ps.FlushConnections()
+	}
+
+	ps.logger.LogHTTP(HTTPLogEntry{
+		ID:         reqID,
+		Timestamp:  timestamp,
+		Method:     r.Method,
+		URL:        r.URL.String(),
+		StatusCode: http.StatusBadGateway,
+		Error:      errStr,
+	})
+
+	// Provide helpful error message based on error type
+	var userMsg string
+	var diagEvent string
+	var diagLevel ProxyDiagnosticLevel
+
+	if strings.Contains(errStr, "context canceled") {
+		userMsg = fmt.Sprintf("Proxy Error: Request canceled. The proxy may be shutting down, or the target server (%s) is unavailable.", ps.TargetURL.String())
+		diagEvent = "context_canceled"
+		diagLevel = DiagnosticWarning
+	} else if strings.Contains(errStr, "connection refused") {
+		userMsg = fmt.Sprintf("Proxy Error: Cannot connect to target server %s. Make sure the server is running.", ps.TargetURL.String())
+		diagEvent = "connection_refused"
+		diagLevel = DiagnosticError
+	} else if strings.Contains(errStr, "no such host") {
+		userMsg = fmt.Sprintf("Proxy Error: Cannot resolve target host %s. Check the target URL.", ps.TargetURL.String())
+		diagEvent = "dns_error"
+		diagLevel = DiagnosticError
+	} else if isTransient {
+		// Friendly message for transient errors - these are normal during development
+		userMsg = fmt.Sprintf("Connection to %s was interrupted. This often happens when the dev server restarts. Refresh to retry.", ps.TargetURL.Host)
+		diagEvent = "transient_error"
+		diagLevel = DiagnosticWarning
+	} else {
+		userMsg = fmt.Sprintf("Proxy Error: %s (target: %s)", errStr, ps.TargetURL.String())
+		diagEvent = "unknown_error"
+		diagLevel = DiagnosticError
+	}
+
+	// Broadcast diagnostic to connected browser clients
+	ps.BroadcastProxyDiagnostic(&ProxyDiagnostic{
+		Timestamp: timestamp,
+		Level:     diagLevel,
+		Category:  "proxy",
+		Event:     diagEvent,
+		Message:   userMsg,
+		RequestID: reqID,
+		Method:    r.Method,
+		URL:       r.URL.String(),
+		Target:    ps.TargetURL.String(),
+		Data: map[string]any{
+			"raw_error":    errStr,
+			"is_transient": isTransient,
+			"status_code":  http.StatusBadGateway,
+		},
+	})
+
+	// Record this connection attempt for the loading page history
+	ps.recordConnAttempt(diagEvent, userMsg)
+
+	// For browser requests hitting a server that isn't up yet, serve a friendly
+	// loading page with auto-refresh instead of a cryptic error string.
+	if (isTransient || diagEvent == "connection_refused") && acceptsHTML(r) {
+		ps.serveLoadingPage(w, r, ps.TargetURL.String())
+		return
+	}
+
+	http.Error(w, userMsg, http.StatusBadGateway)
+}
+
+// handleWebSocket handles WebSocket connections for frontend metrics.
+func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	debug.Log("proxy", "WebSocket connection attempt from %s to proxy %s", r.RemoteAddr, ps.ID)
+
+	conn, err := ps.wsUpgrader.Upgrade(w, r, nil)
+	if err != nil {
+		debug.Log("proxy", "WebSocket upgrade failed for proxy %s: %v", ps.ID, err)
+		return
+	}
+	defer conn.Close()
+
+	// Store connection for sending messages
+	connID := fmt.Sprintf("conn-%d", time.Now().UnixNano())
+	ps.wsConns.Store(connID, conn)
+	debug.Log("proxy", "WebSocket client connected: proxy=%s connID=%s remote=%s", ps.ID, connID, r.RemoteAddr)
+
+	defer func() {
+		ps.wsConns.Delete(connID)
+		debug.Log("proxy", "WebSocket client disconnected: proxy=%s connID=%s", ps.ID, connID)
+	}()
+
+	// Cleanup voice session on disconnect
+	defer func() {
+		if session, ok := ps.voiceSessions.LoadAndDelete(connID); ok {
+			session.(*VoiceSession).Close()
+		}
+	}()
+
+	// Per-connection capture store: maps browser-generated IDs to saved file paths.
+	// Written by the binary screenshot handler, read by panel_message and sketch handlers.
+	// Single-goroutine access — no locking needed.
+	sessionCaptures := make(map[string]string)
+
+	// Read messages from frontend
+	for {
+		messageType, rawMessage, err := conn.ReadMessage()
+		if err != nil {
+			break
+		}
+
+		// Binary messages: voice audio or screenshot PNG bytes
+		if messageType == websocket.BinaryMessage {
+			if session, ok := ps.voiceSessions.Load(connID); ok {
+				session.(*VoiceSession).SendAudio(rawMessage)
+				continue
+			}
+			// Screenshot binary frame: [1 byte: idLen][idLen bytes: id][PNG bytes]
+			if len(rawMessage) >= 2 {
+				idLen := int(rawMessage[0])
+				if idLen > 0 && len(rawMessage) >= 1+idLen+1 {
+					captureID := string(rawMessage[1 : 1+idLen])
+					imgBytes := rawMessage[1+idLen:]
+					filePath, err := ps.savePNGBytes("area-"+captureID, imgBytes)
+					if err != nil {
+						debug.Error("proxy", "Failed to save binary screenshot id=%s: %v", captureID, err)
+					} else {
+						sessionCaptures[captureID] = filePath
+						debug.Log("proxy", "Saved binary screenshot: id=%s path=%s", captureID, filePath)
+						if wErr := conn.WriteJSON(map[string]interface{}{
+							"type":      "capture_ack",
+							"id":        captureID,
+							"file_path": filePath,
+						}); wErr != nil {
+							debug.Error("proxy", "failed to send capture_ack: %v", wErr)
+						}
+					}
+				}
+			}
+			continue
+		}
+
+		// Parse JSON message
+		var msg struct {
+			Type      string                 `json:"type"`
+			Data      map[string]interface{} `json:"data"`
+			URL       string                 `json:"url"`
+			SessionID string                 `json:"session_id"`
+		}
+
+		if err := json.Unmarshal(rawMessage, &msg); err != nil {
+			continue
+		}
+
+		seq := ps.requestSeq.Add(1)
+		id := fmt.Sprintf("metric-%d", seq)
+		timestamp := time.Now()
+
+		switch msg.Type {
+		case "error":
+			errEntry := FrontendError{
+				ID:        id,
+				Timestamp: timestamp,
+				Message:   getStringField(msg.Data, "message"),
+				Source:    getStringField(msg.Data, "source"),
+				LineNo:    getIntField(msg.Data, "lineno"),
+				ColNo:     getIntField(msg.Data, "colno"),
+				Error:     getStringField(msg.Data, "error"),
+				Stack:     getStringField(msg.Data, "stack"),
+				URL:       msg.URL,
+			}
+			ps.logger.LogError(errEntry)
+			ps.pageTracker.TrackError(errEntry, msg.SessionID)
+
+			// Auto-forward browser errors to overlay for PTY injection
+			if ps.overlayNotifier.IsEnabled() {
+				_ = ps.overlayNotifier.NotifyBrowserError(ps.ID, errEntry)
+			}
+
+		case "performance":
+			metric := PerformanceMetric{
+				ID:                   id,
+				Timestamp:            timestamp,
+				URL:                  msg.URL,
+				NavigationStart:      getInt64Field(msg.Data, "navigation_start"),
+				LoadEventEnd:         getInt64Field(msg.Data, "load_event_end"),
+				DOMContentLoaded:     getInt64Field(msg.Data, "dom_content_loaded"),
+				FirstPaint:           getInt64Field(msg.Data, "first_paint"),
+				FirstContentfulPaint: getInt64Field(msg.Data, "first_contentful_paint"),
+				Custom:               msg.Data,
+			}
+
+			// Extract resources if present
+			if resourcesData, ok := msg.Data["resources"].([]interface{}); ok {
+				for _, r := range resourcesData {
+					if rm, ok := r.(map[string]interface{}); ok {
+						metric.Resources = append(metric.Resources, ResourceTiming{
+							Name:     getStringField(rm, "name"),
+							Duration: getInt64Field(rm, "duration"),
+							Size:     getInt64Field(rm, "size"),
+						})
+					}
+				}
+			}
+
+			ps.logger.LogPerformance(metric)
+			ps.pageTracker.TrackPerformance(metric, msg.SessionID)
+
+		case "custom_log":
+			ps.logger.LogCustom(CustomLog{
+				ID:        id,
+				Timestamp: timestamp,
+				Level:     getStringField(msg.Data, "level"),
+				Message:   getStringField(msg.Data, "message"),
+				Data:      msg.Data,
+				URL:       msg.URL,
+			})
+
+		case "screenshot":
+			// Save screenshot to temp file
+			dataURL := getStringField(msg.Data, "data")
+			name := getStringField(msg.Data, "name")
+			if name == "" {
+				name = fmt.Sprintf("screenshot-%d", timestamp.Unix())
+			}
+
+			selector := getStringField(msg.Data, "selector")
+			if selector == "" {
+				selector = "body"
+			}
+
+			filePath, err := ps.saveScreenshot(name, dataURL)
+			if err != nil {
+				// Log failed screenshot so it appears in proxylog
+				ps.logger.LogScreenshot(Screenshot{
+					ID:        id,
+					Timestamp: timestamp,
+					Name:      name,
+					URL:       msg.URL,
+					Width:     getIntField(msg.Data, "width"),
+					Height:    getIntField(msg.Data, "height"),
+					Format:    getStringField(msg.Data, "format"),
+					Selector:  selector,
+					Error:     err.Error(),
+				})
+				continue
+			}
+
+			// Register screenshot by name so proxy exec can look up the file path
+			ps.registerCapture(name, filePath)
+
+			ps.logger.LogScreenshot(Screenshot{
+				ID:        id,
+				Timestamp: timestamp,
+				Name:      name,
+				FilePath:  filePath,
+				URL:       msg.URL,
+				Width:     getIntField(msg.Data, "width"),
+				Height:    getIntField(msg.Data, "height"),
+				Format:    getStringField(msg.Data, "format"),
+				Selector:  selector,
+			})
+
+		case "execution":
+			// Log JavaScript execution result
+			execID := getStringField(msg.Data, "exec_id")
+			duration := time.Duration(getInt64Field(msg.Data, "duration")) * time.Millisecond
+			result := getStringField(msg.Data, "result")
+
+			execResult := ExecutionResult{
+				ID:        id,
+				Timestamp: timestamp,
+				Code:      execID, // Will be filled in by the tool
+				Result:    result,
+				Error:     getStringField(msg.Data, "error"),
+				Duration:  duration,
+				URL:       msg.URL,
+				Data:      msg.Data,
+			}
+
+			// Save large results to file
+			if filePath, err := ps.saveLargeResult(execID, result); err == nil && filePath != "" {
+				execResult.FilePath = filePath
+				// Replace result with summary for logging
+				execResult.Result = fmt.Sprintf("[Large result saved to %s (%d bytes)]", filePath, len(result))
+			}
+
+			ps.logger.LogExecution(execResult)
+
+			// Send result to waiting channel if one exists
+			if ch, ok := ps.pendingExecs.LoadAndDelete(execID); ok {
+				resultChan := ch.(chan *ExecutionResult)
+				select {
+				case resultChan <- &execResult:
+					close(resultChan)
+				default:
+					close(resultChan)
+				}
+			}
+
+		case "interactions":
+			// Handle batched interaction events from frontend
+			events := getArrayField(msg.Data, "events")
+			for _, eventData := range events {
+				if em, ok := eventData.(map[string]interface{}); ok {
+					interaction := parseInteractionEvent(em, id, timestamp, msg.URL)
+					ps.logger.LogInteraction(interaction)
+					ps.pageTracker.TrackInteraction(interaction, msg.SessionID)
+				}
+			}
+
+		case "mutations":
+			// Handle batched mutation events from frontend
+			events := getArrayField(msg.Data, "events")
+			for _, eventData := range events {
+				if em, ok := eventData.(map[string]interface{}); ok {
+					mutation := parseMutationEvent(em, id, timestamp, msg.URL)
+					ps.logger.LogMutation(mutation)
+					ps.pageTracker.TrackMutation(mutation, msg.SessionID)
+				}
+			}
+
+		case "panel_message":
+			// Handle message from floating indicator panel
+			panelMsg := parsePanelMessage(msg.Data, id, timestamp, msg.URL)
+
+			// Process attachments: resolve file paths from registry or save inline data
+			for i := range panelMsg.Attachments {
+				att := &panelMsg.Attachments[i]
+				areaDataLen := 0
+				if att.Area != nil {
+					areaDataLen = len(att.Area.Data)
+				}
+				debug.Log("proxy", "Panel attachment %d: type=%s, id=%s, hasArea=%v, areaDataLen=%d",
+					i, att.Type, att.ID, att.Area != nil, areaDataLen)
+
+				// Ensure Data map exists for storing file path
+				if att.Data == nil {
+					att.Data = make(map[string]interface{})
+				}
+
+				// Resolve file paths from the session capture store (populated by binary handler
+				// for screenshots, by sketch_capture JSON handler for sketches).
+				if att.Type == "screenshot" && att.ID != "" {
+					if filePath, ok := sessionCaptures[att.ID]; ok {
+						delete(sessionCaptures, att.ID)
+						att.Data["file_path"] = filePath
+						att.Data["file_name"] = filepath.Base(filePath)
+						debug.Log("proxy", "Resolved screenshot: id=%s path=%s", att.ID, filePath)
+					} else if att.FilePath != "" {
+						// Fallback: browser sent filePath from capture_ack
+						att.Data["file_path"] = att.FilePath
+						att.Data["file_name"] = filepath.Base(att.FilePath)
+						debug.Log("proxy", "Resolved screenshot from JS filePath: id=%s path=%s", att.ID, att.FilePath)
+					} else {
+						debug.Error("proxy", "No capture for screenshot id=%s (binary frame missing or failed)", att.ID)
+					}
+				}
+
+				if att.Type == "sketch" && att.ID != "" {
+					if filePath, ok := sessionCaptures[att.ID]; ok {
+						delete(sessionCaptures, att.ID)
+						att.Data["file_path"] = filePath
+						att.Data["file_name"] = filepath.Base(filePath)
+						debug.Log("proxy", "Resolved sketch: id=%s path=%s", att.ID, filePath)
+					}
+				}
+
+				if att.Type == "style-edit" {
+					// Resolve before/after screenshot file paths from sessionCaptures
+					if screenshots, ok := att.Data["screenshots"].(map[string]interface{}); ok {
+						resolved := make(map[string]interface{})
+						for key, val := range screenshots {
+							ctxID, _ := val.(string)
+							if ctxID == "" {
+								continue
+							}
+							if filePath, ok := sessionCaptures[ctxID]; ok {
+								delete(sessionCaptures, ctxID)
+								resolved[key] = filePath
+								debug.Log("proxy", "Resolved style-edit %s screenshot: id=%s path=%s", key, ctxID, filePath)
+							}
+						}
+						att.Data["screenshots"] = resolved
+					}
+				}
+			}
+
+			ps.logger.LogPanelMessage(panelMsg)
+
+			// Forward to overlay if configured
+			if ps.overlayNotifier.IsEnabled() {
+				debug.Log("proxy", "forwarding panel_message to overlay (proxy_id=%s, endpoint=%s)", ps.ID, ps.overlayNotifier.GetEndpoint())
+				if err := ps.overlayNotifier.NotifyPanelMessage(ps.ID, &panelMsg); err != nil {
+					debug.Log("proxy", "Failed to notify overlay of panel message: %v", err)
+				}
+			} else {
+				debug.Log("proxy", "panel_message received but overlay notifier NOT enabled for proxy %s — message will not reach agent", ps.ID)
+			}
+
+			// Update audit folder summary after saving new files
+			_ = UpdateAuditSummary()
+
+		case "sketch":
+			// Handle sketch/wireframe from sketch mode
+			sketchEntry := parseSketchEntry(msg.Data, id, timestamp, msg.URL)
+
+			// Save sketch image to audit directory
+			if sketchEntry.ImageData != "" {
+				filePath, err := ps.saveScreenshot("sketch-"+id, sketchEntry.ImageData)
+				if err == nil {
+					sketchEntry.FilePath = filePath
+				}
+			}
+
+			ps.logger.LogSketch(sketchEntry)
+
+			// Forward to overlay if configured
+			if ps.overlayNotifier.IsEnabled() {
+				_ = ps.overlayNotifier.NotifySketch(ps.ID, &sketchEntry)
+			}
+
+			// Update audit folder summary
+			_ = UpdateAuditSummary()
+
+		case "element_capture":
+			// Handle element capture from panel with reference ID
+			capture := parseElementCapture(msg.Data, timestamp, msg.URL)
+			ps.logger.LogElementCapture(capture)
+
+		case "sketch_capture":
+			// Handle sketch capture from panel with reference ID
+			capture := parseSketchCapture(msg.Data, timestamp, msg.URL)
+
+			// Save sketch image to file if present
+			if capture.ImageData != "" {
+				filePath, err := ps.saveScreenshot("sketch-"+capture.ID, capture.ImageData)
+				if err == nil {
+					capture.FilePath = filePath
+					sessionCaptures[capture.ID] = filePath
+				}
+				capture.ImageData = ""
+			}
+
+			ps.logger.LogSketchCapture(capture)
+
+		case "design_state":
+			// Handle design state when element is selected for iteration
+			designState := parseDesignState(msg.Data, id, timestamp, msg.URL)
+			ps.logger.LogDesignState(designState)
+
+			// Forward to overlay if configured
+			if ps.overlayNotifier.IsEnabled() {
+				_ = ps.overlayNotifier.NotifyDesignState(ps.ID, &designState)
+			}
+
+		case "design_request":
+			// Handle request for new design alternatives
+			designRequest := parseDesignRequest(msg.Data, id, timestamp, msg.URL)
+			ps.logger.LogDesignRequest(designRequest)
+
+			// Forward to overlay if configured
+			if ps.overlayNotifier.IsEnabled() {
+				_ = ps.overlayNotifier.NotifyDesignRequest(ps.ID, &designRequest)
+			}
+
+		case "design_chat":
+			// Handle chat message about selected element
+			designChat := parseDesignChat(msg.Data, id, timestamp, msg.URL)
+			ps.logger.LogDesignChat(designChat)
+
+			// Forward to overlay if configured
+			if ps.overlayNotifier.IsEnabled() {
+				_ = ps.overlayNotifier.NotifyDesignChat(ps.ID, &designChat)
+			}
+
+		case "session_request":
+			// Handle session API requests from browser
+			go ps.handleSessionRequest(conn, msg.Data)
+
+		case "store_request":
+			// Handle store API requests from browser
+			go ps.handleStoreRequest(conn, msg.Data)
+
+		case "voice_start":
+			// Start voice transcription session
+			config := DefaultDeepgramConfig()
+
+			// Apply any config from message
+			if lang := getStringField(msg.Data, "language"); lang != "" {
+				config.Language = lang
+			}
+			if model := getStringField(msg.Data, "model"); model != "" {
+				config.Model = model
+			}
+
+			session, err := NewVoiceSession(connID, conn, config)
+			if err != nil {
+				if wErr := conn.WriteJSON(map[string]interface{}{
+					"type":  "voice_error",
+					"error": err.Error(),
+				}); wErr != nil {
+					debug.Error("proxy", "voice_start: failed to send error to client: %v", wErr)
+				}
+				continue
+			}
+
+			ps.voiceSessions.Store(connID, session)
+
+			// Log voice start
+			ps.logger.LogCustom(CustomLog{
+				ID:        id,
+				Timestamp: timestamp,
+				Level:     "info",
+				Message:   "[Voice] Transcription session started",
+				Data:      map[string]interface{}{"model": config.Model, "language": config.Language},
+				URL:       msg.URL,
+			})
+
+		case "voice_stop":
+			// Stop voice transcription session
+			if session, ok := ps.voiceSessions.LoadAndDelete(connID); ok {
+				session.(*VoiceSession).Close()
+
+				if wErr := conn.WriteJSON(map[string]interface{}{
+					"type":    "voice_stopped",
+					"message": "Transcription session ended",
+				}); wErr != nil {
+					debug.Error("proxy", "voice_stop: failed to send response to client: %v", wErr)
+				}
+
+				// Log voice stop
+				ps.logger.LogCustom(CustomLog{
+					ID:        id,
+					Timestamp: timestamp,
+					Level:     "info",
+					Message:   "[Voice] Transcription session stopped",
+					URL:       msg.URL,
+				})
+			}
+		}
+	}
+}
