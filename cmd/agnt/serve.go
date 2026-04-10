@@ -149,7 +149,7 @@ Available tools:
 	tools.RegisterTunnelTool(server, dt)
 	tools.RegisterBrowserTool(server, dt)
 	tools.RegisterAutomationTool(server, dt)
-	tools.RegisterResponsiveAuditToolDaemon(server, dt)
+	tools.RegisterResponsiveAuditTool(server, dt, nil)
 
 	// Register snapshot tools (visual regression testing)
 	snapshotManager, err := snapshot.NewManager("", 0.01) // Default path and 1% threshold
@@ -222,8 +222,8 @@ func runLegacyServer() {
 	tools.RegisterProcessTools(server, pm)
 	tools.RegisterProjectTools(server)
 	tools.RegisterProxyTools(server, proxym)
-	tools.RegisterGetErrorsTool(server, proxym)
-	tools.RegisterResponsiveAuditTool(server, proxym)
+	tools.RegisterGetErrorsTool(server, nil, proxym)
+	tools.RegisterResponsiveAuditTool(server, nil, proxym)
 
 	// Register snapshot tools (visual regression testing)
 	snapshotManager, err := snapshot.NewManager("", 0.01)

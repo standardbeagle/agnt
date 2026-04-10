@@ -49,15 +49,61 @@ func (e *unifiedError) dedupKey() string {
 	return e.Source + "|" + e.Category + "|" + e.Message + "|" + e.Location
 }
 
-// makeGetErrorsHandler creates a handler for the get_errors tool.
+// getErrorsBackend holds either a daemon client or a direct proxy manager,
+// enabling a single registration path for both daemon and legacy modes.
+type getErrorsBackend struct {
+	daemon *DaemonTools
+	legacy *proxy.ProxyManager
+}
+
+// makeGetErrorsHandler creates a handler for the get_errors tool on DaemonTools.
 func (dt *DaemonTools) makeGetErrorsHandler() func(context.Context, *mcp.CallToolRequest, GetErrorsInput) (*mcp.CallToolResult, GetErrorsOutput, error) {
+	backend := &getErrorsBackend{daemon: dt}
+	return backend.makeHandler()
+}
+
+// RegisterGetErrorsTool registers the get_errors tool.
+// Exactly one of dt or pm must be non-nil.
+func RegisterGetErrorsTool(server *mcp.Server, dt *DaemonTools, pm *proxy.ProxyManager) {
+	backend := &getErrorsBackend{daemon: dt, legacy: pm}
+
+	desc := `Get all current errors across proxies.
+
+Collects errors from: browser JavaScript errors, HTTP 4xx/5xx responses,
+proxy transport errors, and custom error logs.`
+
+	if backend.daemon == nil {
+		desc += `
+
+Note: Running in legacy mode - process output alerts are not available.`
+	}
+
+	desc += `
+
+Default behavior:
+  - Deduplicates identical errors (shows count)
+  - Reduces stack traces to first application code frame
+  - Filters out noise (static asset 404s, redirects)
+  - Sorts by severity (errors first) then recency
+
+Examples:
+  get_errors {}
+  get_errors {proxy_id: "dev"}
+  get_errors {since: "5m"}
+  get_errors {include_warnings: false}
+  get_errors {raw: true, limit: 50}`
+
+	addLenientTool(server, &mcp.Tool{
+		Name:        "get_errors",
+		Description: desc,
+	}, backend.makeHandler())
+}
+
+// makeHandler creates a handler that dispatches to daemon or legacy path.
+func (b *getErrorsBackend) makeHandler() func(context.Context, *mcp.CallToolRequest, GetErrorsInput) (*mcp.CallToolResult, GetErrorsOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input GetErrorsInput) (*mcp.CallToolResult, GetErrorsOutput, error) {
 		if err := validateGetErrorsInput(input); err != nil {
 			return errorResult(validationError("get_errors", err)), GetErrorsOutput{}, nil
-		}
-
-		if err := dt.ensureConnected(); err != nil {
-			return errorResult(err.Error()), GetErrorsOutput{}, nil
 		}
 
 		includeWarnings := true
@@ -70,87 +116,157 @@ func (dt *DaemonTools) makeGetErrorsHandler() func(context.Context, *mcp.CallToo
 			limit = 25
 		}
 
-		allErrors := make([]unifiedError, 0)
+		var allErrors []unifiedError
+		var toolErr *mcp.CallToolResult
 
-		// 1. Collect process alerts
-		processErrors, procErr := dt.collectProcessAlerts(input.ProcessID, input.Since)
-		if procErr != nil {
-			return procErr, GetErrorsOutput{}, nil
-		}
-		allErrors = append(allErrors, processErrors...)
-
-		// 2. Collect startup errors
-		startupErrors, startupErr := dt.collectStartupErrors(input.ProcessID, input.Since)
-		if startupErr != nil {
-			return startupErr, GetErrorsOutput{}, nil
-		}
-		allErrors = append(allErrors, startupErrors...)
-
-		// 3. Collect proxy errors
-		proxyErrors, proxyErr := dt.collectProxyErrors(input.ProxyID, input.Since)
-		if proxyErr != nil {
-			return proxyErr, GetErrorsOutput{}, nil
-		}
-		allErrors = append(allErrors, proxyErrors...)
-
-		// 4. Deduplicate
-		allErrors = deduplicateErrors(allErrors)
-
-		// 5. Filter warnings if not wanted
-		if !includeWarnings {
-			filtered := allErrors[:0]
-			for _, e := range allErrors {
-				if e.Severity == "error" {
-					filtered = append(filtered, e)
-				}
+		if b.daemon != nil {
+			if err := b.daemon.ensureConnected(); err != nil {
+				return errorResult(err.Error()), GetErrorsOutput{}, nil
 			}
-			allErrors = filtered
+			allErrors, toolErr = b.collectDaemonErrors(input)
+		} else {
+			allErrors, toolErr = b.collectLegacyErrors(input)
 		}
 
-		// 6. Sort: errors first, then warnings; within each, most recent first
-		sort.Slice(allErrors, func(i, j int) bool {
-			li, lj := allErrors[i].Severity, allErrors[j].Severity
-			if li != lj {
-				if li == "error" {
-					return true
-				}
-				if lj == "error" {
-					return false
-				}
-			}
-			return allErrors[i].LastSeen.After(allErrors[j].LastSeen)
-		})
+		if toolErr != nil {
+			return toolErr, GetErrorsOutput{}, nil
+		}
 
-		// 7. Count before limiting
-		errorCount, warningCount := 0, 0
+		result, output := formatErrorsOutput(allErrors, includeWarnings, limit, input.Raw)
+		return result, output, nil
+	}
+}
+
+// collectDaemonErrors collects errors via the daemon IPC path.
+func (b *getErrorsBackend) collectDaemonErrors(input GetErrorsInput) ([]unifiedError, *mcp.CallToolResult) {
+	allErrors := make([]unifiedError, 0)
+
+	// 1. Collect process alerts
+	processErrors, procErr := b.daemon.collectProcessAlerts(input.ProcessID, input.Since)
+	if procErr != nil {
+		return nil, procErr
+	}
+	allErrors = append(allErrors, processErrors...)
+
+	// 2. Collect startup errors
+	startupErrors, startupErr := b.daemon.collectStartupErrors(input.ProcessID, input.Since)
+	if startupErr != nil {
+		return nil, startupErr
+	}
+	allErrors = append(allErrors, startupErrors...)
+
+	// 3. Collect proxy errors
+	proxyErrors, proxyErr := b.daemon.collectProxyErrors(input.ProxyID, input.Since)
+	if proxyErr != nil {
+		return nil, proxyErr
+	}
+	allErrors = append(allErrors, proxyErrors...)
+
+	return allErrors, nil
+}
+
+// collectLegacyErrors collects errors via direct proxy access (no daemon).
+func (b *getErrorsBackend) collectLegacyErrors(input GetErrorsInput) ([]unifiedError, *mcp.CallToolResult) {
+	// Build time filter
+	var sinceTime *time.Time
+	if input.Since != "" {
+		sinceTime = parseSince(input.Since)
+	}
+
+	// Collect proxies to query
+	var proxies []*proxy.ProxyServer
+	if input.ProxyID != "" {
+		ps, err := b.legacy.Get(input.ProxyID)
+		if err != nil {
+			return nil, errorResult(fmt.Sprintf("proxy %q not found: %v", input.ProxyID, err))
+		}
+		proxies = []*proxy.ProxyServer{ps}
+	} else {
+		proxies = b.legacy.List()
+	}
+
+	// Collect errors from all proxies
+	var allErrors []unifiedError
+	for _, ps := range proxies {
+		filter := proxy.LogFilter{
+			Types: []proxy.LogEntryType{
+				proxy.LogTypeError,
+				proxy.LogTypeHTTP,
+				proxy.LogTypeDiagnostic,
+				proxy.LogTypeCustom,
+			},
+			Since: sinceTime,
+		}
+		entries := ps.Logger().Query(filter)
+		for _, entry := range entries {
+			errs := convertProxyEntryDirect(ps.ID, entry)
+			allErrors = append(allErrors, errs...)
+		}
+	}
+
+	return allErrors, nil
+}
+
+// formatErrorsOutput applies deduplication, filtering, sorting, limiting, and formatting
+// to a collected set of unified errors. Shared between daemon and legacy paths.
+func formatErrorsOutput(allErrors []unifiedError, includeWarnings bool, limit int, raw bool) (*mcp.CallToolResult, GetErrorsOutput) {
+	// Deduplicate
+	allErrors = deduplicateErrors(allErrors)
+
+	// Filter warnings if not wanted
+	if !includeWarnings {
+		filtered := allErrors[:0]
 		for _, e := range allErrors {
 			if e.Severity == "error" {
-				errorCount++
-			} else {
-				warningCount++
+				filtered = append(filtered, e)
 			}
 		}
-
-		// 8. Apply limit
-		if len(allErrors) > limit {
-			allErrors = allErrors[:limit]
-		}
-
-		// 9. Format output
-		output := GetErrorsOutput{
-			ErrorCount:   errorCount,
-			WarningCount: warningCount,
-		}
-
-		if input.Raw {
-			b, _ := json.Marshal(allErrors)
-			output.Summary = string(b)
-		} else {
-			output.Summary = formatCompactErrors(allErrors, errorCount, warningCount)
-		}
-
-		return nil, output, nil
+		allErrors = filtered
 	}
+
+	// Sort: errors first, then warnings; within each, most recent first
+	sort.Slice(allErrors, func(i, j int) bool {
+		li, lj := allErrors[i].Severity, allErrors[j].Severity
+		if li != lj {
+			if li == "error" {
+				return true
+			}
+			if lj == "error" {
+				return false
+			}
+		}
+		return allErrors[i].LastSeen.After(allErrors[j].LastSeen)
+	})
+
+	// Count before limiting
+	errorCount, warningCount := 0, 0
+	for _, e := range allErrors {
+		if e.Severity == "error" {
+			errorCount++
+		} else {
+			warningCount++
+		}
+	}
+
+	// Apply limit
+	if len(allErrors) > limit {
+		allErrors = allErrors[:limit]
+	}
+
+	// Format output
+	output := GetErrorsOutput{
+		ErrorCount:   errorCount,
+		WarningCount: warningCount,
+	}
+
+	if raw {
+		b, _ := json.Marshal(allErrors)
+		output.Summary = string(b)
+	} else {
+		output.Summary = formatCompactErrors(allErrors, errorCount, warningCount)
+	}
+
+	return nil, output
 }
 
 // collectProcessAlerts queries the daemon alert store and converts to unified errors.
@@ -547,138 +663,6 @@ func convertCustomError(proxyID string, em map[string]interface{}) []unifiedErro
 		LastSeen: ts,
 		Count:    1,
 	}}
-}
-
-// RegisterGetErrorsTool registers the get_errors tool for legacy mode (no daemon).
-// Only proxy errors are available in legacy mode (no process alerts without daemon).
-func RegisterGetErrorsTool(server *mcp.Server, pm *proxy.ProxyManager) {
-	addLenientTool(server, &mcp.Tool{
-		Name: "get_errors",
-		Description: `Get all current errors across proxies.
-
-Collects errors from: browser JavaScript errors, HTTP 4xx/5xx responses,
-proxy transport errors, and custom error logs.
-
-Note: Running in legacy mode - process output alerts are not available.
-
-Default behavior:
-  - Deduplicates identical errors (shows count)
-  - Reduces stack traces to first application code frame
-  - Filters out noise (static asset 404s, redirects)
-  - Sorts by severity (errors first) then recency
-
-Examples:
-  get_errors {}
-  get_errors {proxy_id: "dev"}
-  get_errors {since: "5m"}
-  get_errors {include_warnings: false}
-  get_errors {raw: true, limit: 50}`,
-	}, func(ctx context.Context, req *mcp.CallToolRequest, input GetErrorsInput) (*mcp.CallToolResult, GetErrorsOutput, error) {
-		includeWarnings := true
-		if input.IncludeWarnings != nil {
-			includeWarnings = *input.IncludeWarnings
-		}
-
-		limit := input.Limit
-		if limit <= 0 {
-			limit = 25
-		}
-
-		// Build time filter
-		var sinceTime *time.Time
-		if input.Since != "" {
-			sinceTime = parseSince(input.Since)
-		}
-
-		// Collect proxies to query
-		var proxies []*proxy.ProxyServer
-		if input.ProxyID != "" {
-			ps, err := pm.Get(input.ProxyID)
-			if err != nil {
-				return errorResult(fmt.Sprintf("proxy %q not found: %v", input.ProxyID, err)), GetErrorsOutput{}, nil
-			}
-			proxies = []*proxy.ProxyServer{ps}
-		} else {
-			proxies = pm.List()
-		}
-
-		// Collect errors from all proxies
-		var allErrors []unifiedError
-		for _, ps := range proxies {
-			filter := proxy.LogFilter{
-				Types: []proxy.LogEntryType{
-					proxy.LogTypeError,
-					proxy.LogTypeHTTP,
-					proxy.LogTypeDiagnostic,
-					proxy.LogTypeCustom,
-				},
-				Since: sinceTime,
-			}
-			entries := ps.Logger().Query(filter)
-			for _, entry := range entries {
-				errs := convertProxyEntryDirect(ps.ID, entry)
-				allErrors = append(allErrors, errs...)
-			}
-		}
-
-		// Deduplicate
-		allErrors = deduplicateErrors(allErrors)
-
-		// Filter warnings if not wanted
-		if !includeWarnings {
-			filtered := allErrors[:0]
-			for _, e := range allErrors {
-				if e.Severity == "error" {
-					filtered = append(filtered, e)
-				}
-			}
-			allErrors = filtered
-		}
-
-		// Sort: errors first, then warnings; within each, most recent first
-		sort.Slice(allErrors, func(i, j int) bool {
-			li, lj := allErrors[i].Severity, allErrors[j].Severity
-			if li != lj {
-				if li == "error" {
-					return true
-				}
-				if lj == "error" {
-					return false
-				}
-			}
-			return allErrors[i].LastSeen.After(allErrors[j].LastSeen)
-		})
-
-		// Count before limiting
-		errorCount, warningCount := 0, 0
-		for _, e := range allErrors {
-			if e.Severity == "error" {
-				errorCount++
-			} else {
-				warningCount++
-			}
-		}
-
-		// Apply limit
-		if len(allErrors) > limit {
-			allErrors = allErrors[:limit]
-		}
-
-		// Format output
-		output := GetErrorsOutput{
-			ErrorCount:   errorCount,
-			WarningCount: warningCount,
-		}
-
-		if input.Raw {
-			b, _ := json.Marshal(allErrors)
-			output.Summary = string(b)
-		} else {
-			output.Summary = formatCompactErrors(allErrors, errorCount, warningCount)
-		}
-
-		return nil, output, nil
-	})
 }
 
 // parseSince parses a "since" parameter as either RFC3339 or a Go duration string.
