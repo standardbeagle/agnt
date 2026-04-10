@@ -145,6 +145,7 @@
     auditSecurity: audit.auditSecurity,
     auditPageQuality: audit.auditPageQuality,
     auditPerformance: audit.auditPerformance,
+    auditAll: audit.auditAll,
 
     // ========================================================================
     // INTERACTION TRACKING (NEW)
