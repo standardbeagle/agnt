@@ -1,10 +1,10 @@
 {
-  "status": "interrupted",
-  "iterations": 3,
+  "status": "running",
+  "iterations": 4,
   "spawns": 0,
   "started_at": "2026-04-10T18:34:00Z",
   "completed_at": null,
-  "last_iteration_at": "2026-04-10T20:55:00Z",
+  "last_iteration_at": "2026-04-10T22:10:00Z",
   "last_subagent": "task-executor",
   "loop_task_id": "bBc5Sk6SWQg4",
   "dartboard": "Personal/agnt",
@@ -19,14 +19,9 @@
       "started_at": "2026-04-10T18:40:00Z",
       "completed_at": "2026-04-10T19:00:00Z",
       "phase_completed": "phase-9",
-      "failed_phase": null,
       "files_changed": 5,
       "tests_added": 9,
-      "plan_adjustments": 0,
-      "completion_summary": "Added startup splash text and animated starting indicator in status bar",
-      "failure_reason": null,
-      "fix_task_created": false,
-      "fix_task_id": null
+      "completion_summary": "Added startup splash text and animated starting indicator in status bar"
     },
     {
       "task_id": "7VZfDcxbjOOJ",
@@ -35,14 +30,9 @@
       "started_at": "2026-04-10T19:10:00Z",
       "completed_at": "2026-04-10T19:20:00Z",
       "phase_completed": "phase-9",
-      "failed_phase": null,
       "files_changed": 1,
       "tests_added": 0,
-      "plan_adjustments": 1,
-      "completion_summary": "Converted audit dropdown to multi-column mega menu with blurbs for each audit type",
-      "failure_reason": null,
-      "fix_task_created": false,
-      "fix_task_id": null
+      "completion_summary": "Converted audit dropdown to mega menu with blurbs"
     },
     {
       "task_id": "FKHv5HsLIAb8",
@@ -51,15 +41,20 @@
       "started_at": "2026-04-10T20:25:00Z",
       "completed_at": "2026-04-10T20:55:00Z",
       "phase_completed": "phase-9",
-      "failed_phase": null,
       "files_changed": 10,
       "tests_added": 16,
-      "plan_adjustments": 0,
-      "completion_summary": "Added daemon StreamEvents hub command with channel-based StreamSink, TrafficLogger OnLogEntry callback, filtering, keepalive, and client streaming method",
-      "failure_reason": null,
-      "fix_task_created": false,
-      "fix_task_id": null
+      "completion_summary": "Added daemon StreamEvents hub command"
+    },
+    {
+      "task_id": "nsAwWyVb0xTk",
+      "iteration": 4,
+      "status": "completed",
+      "started_at": "2026-04-10T21:30:00Z",
+      "completed_at": "2026-04-10T22:10:00Z",
+      "phase_completed": "phase-9",
+      "files_changed": 4,
+      "tests_added": 25,
+      "completion_summary": "Added agnt monitor CLI subcommand with compact/json output"
     }
-  ],
-  "interrupted_at": "2026-04-10T21:25:45.041Z"
+  ]
 }
