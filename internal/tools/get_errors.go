@@ -79,17 +79,24 @@ func (dt *DaemonTools) makeGetErrorsHandler() func(context.Context, *mcp.CallToo
 		}
 		allErrors = append(allErrors, processErrors...)
 
-		// 2. Collect proxy errors
+		// 2. Collect startup errors
+		startupErrors, startupErr := dt.collectStartupErrors(input.ProcessID, input.Since)
+		if startupErr != nil {
+			return startupErr, GetErrorsOutput{}, nil
+		}
+		allErrors = append(allErrors, startupErrors...)
+
+		// 3. Collect proxy errors
 		proxyErrors, proxyErr := dt.collectProxyErrors(input.ProxyID, input.Since)
 		if proxyErr != nil {
 			return proxyErr, GetErrorsOutput{}, nil
 		}
 		allErrors = append(allErrors, proxyErrors...)
 
-		// 3. Deduplicate
+		// 4. Deduplicate
 		allErrors = deduplicateErrors(allErrors)
 
-		// 4. Filter warnings if not wanted
+		// 5. Filter warnings if not wanted
 		if !includeWarnings {
 			filtered := allErrors[:0]
 			for _, e := range allErrors {
@@ -100,7 +107,7 @@ func (dt *DaemonTools) makeGetErrorsHandler() func(context.Context, *mcp.CallToo
 			allErrors = filtered
 		}
 
-		// 5. Sort: errors first, then warnings; within each, most recent first
+		// 6. Sort: errors first, then warnings; within each, most recent first
 		sort.Slice(allErrors, func(i, j int) bool {
 			li, lj := allErrors[i].Severity, allErrors[j].Severity
 			if li != lj {
@@ -114,7 +121,7 @@ func (dt *DaemonTools) makeGetErrorsHandler() func(context.Context, *mcp.CallToo
 			return allErrors[i].LastSeen.After(allErrors[j].LastSeen)
 		})
 
-		// 6. Count before limiting
+		// 7. Count before limiting
 		errorCount, warningCount := 0, 0
 		for _, e := range allErrors {
 			if e.Severity == "error" {
@@ -124,12 +131,12 @@ func (dt *DaemonTools) makeGetErrorsHandler() func(context.Context, *mcp.CallToo
 			}
 		}
 
-		// 7. Apply limit
+		// 8. Apply limit
 		if len(allErrors) > limit {
 			allErrors = allErrors[:limit]
 		}
 
-		// 8. Format output
+		// 9. Format output
 		output := GetErrorsOutput{
 			ErrorCount:   errorCount,
 			WarningCount: warningCount,
@@ -205,6 +212,92 @@ func (dt *DaemonTools) collectProcessAlerts(processID, since string) ([]unifiedE
 	}
 
 	return errors, nil
+}
+
+// collectStartupErrors queries the daemon startup log for error-level entries.
+func (dt *DaemonTools) collectStartupErrors(processID, since string) ([]unifiedError, *mcp.CallToolResult) {
+	result, err := dt.client.StartupLog(50)
+	if err != nil {
+		// Non-fatal: daemon might not support startup log
+		return nil, nil
+	}
+
+	entries, ok := result["entries"].([]interface{})
+	if !ok {
+		return nil, nil
+	}
+
+	sinceTime := parseSince(since)
+
+	var errors []unifiedError
+	for _, e := range entries {
+		em, ok := e.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		// Filter by process_id if specified
+		if processID != "" {
+			if getString(em, "process_id") != processID {
+				continue
+			}
+		}
+
+		// Filter by since if specified
+		ts := getTime(em, "timestamp")
+		if sinceTime != nil && !sinceTime.IsZero() && ts.Before(*sinceTime) {
+			continue
+		}
+
+		converted := convertStartupLogEntry(em)
+		if converted != nil {
+			errors = append(errors, *converted)
+		}
+	}
+
+	return errors, nil
+}
+
+// convertStartupLogEntry converts a startup log entry map to a unified error.
+// Returns nil for non-error/non-warning entries or entries with empty messages.
+func convertStartupLogEntry(em map[string]interface{}) *unifiedError {
+	level := getString(em, "level")
+	if level != "error" && level != "warning" {
+		return nil
+	}
+
+	message := getString(em, "message")
+	if message == "" {
+		return nil
+	}
+
+	severity := "error"
+	if level == "warning" {
+		severity = "warning"
+	}
+
+	scriptName := getString(em, "script_name")
+	source := "startup:" + scriptName
+	if scriptName == "" {
+		source = "startup"
+	}
+
+	eventType := getString(em, "event_type")
+	category := "STARTUP ERROR"
+	if eventType != "" {
+		category = strings.ToUpper(strings.ReplaceAll(eventType, "_", " "))
+	}
+
+	ts := getTime(em, "timestamp")
+
+	return &unifiedError{
+		Source:   source,
+		Severity: severity,
+		Category: category,
+		Message:  message,
+		LastSeen: ts,
+		Count:    1,
+	}
 }
 
 // collectProxyErrors lists proxies and queries their logs for errors.

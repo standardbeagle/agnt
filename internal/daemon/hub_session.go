@@ -137,6 +137,20 @@ func (d *Daemon) hubHandleSessionRegister(conn *hubpkg.Connection, cmd *hubproto
 	}
 	projectMu.Unlock()
 
+	// Emit autostart errors to the alert store so get_errors picks them up
+	// immediately without waiting for the agent to query the startup log.
+	if len(autostartResult.Errors) > 0 {
+		for _, errMsg := range autostartResult.Errors {
+			d.alertStore.Add(&AlertEntry{
+				Severity:    "error",
+				Category:    "autostart",
+				Description: errMsg,
+				ScriptID:    session.ProjectPath,
+				Timestamp:   time.Now(),
+			})
+		}
+	}
+
 	// Add session as observer of all project scripts and claim ownership of unowned ones
 	if session.ProjectPath != "" {
 		for _, entry := range d.scriptRegistry.List(session.ProjectPath) {
