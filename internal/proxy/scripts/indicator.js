@@ -2505,6 +2505,18 @@
         }
         return { error: 'Audit module not loaded' };
       }
+    },
+    {
+      id: 'performance',
+      label: 'Performance',
+      description: 'Resource timing, render-blocking, layout thrash',
+      async: true,
+      fn: function() {
+        if (window.__devtool_audit) {
+          return window.__devtool_audit.auditPerformance();
+        }
+        return { error: 'Audit module not loaded' };
+      }
     }
   ];
 
@@ -2528,7 +2540,7 @@
       { label: 'Layout & Visual', ids: ['layoutIssues', 'textFragility', 'responsiveRisk'] },
       { label: 'Debug Context', ids: ['lastClick', 'recentMutations'] },
       { label: 'State & Network', ids: ['captureState', 'networkSummary'] },
-      { label: 'Technical', ids: ['domComplexity', 'css'] }
+      { label: 'Technical', ids: ['domComplexity', 'css', 'performance'] }
     ];
 
     // Build menu with sections
