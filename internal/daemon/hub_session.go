@@ -100,7 +100,11 @@ func (d *Daemon) hubHandleSessionRegister(conn *hubpkg.Connection, cmd *hubproto
 	// Check if another active session already owns scripts for this project.
 	// If so, join as observer (skip autostart). Different project paths always
 	// get their own autostart.
+	// The per-project lock ensures the check+autostart decision is atomic,
+	// preventing concurrent sessions from both starting autostart.
 	var autostartResult *AutostartResult
+	projectMu := d.getProjectLock(session.ProjectPath)
+	projectMu.Lock()
 	existingSessions := d.sessionRegistry.ListActive(session.ProjectPath, false)
 	hasExistingOwner := false
 	for _, existing := range existingSessions {
@@ -131,6 +135,7 @@ func (d *Daemon) hubHandleSessionRegister(conn *hubpkg.Connection, cmd *hubproto
 		// First session for this project — run autostart
 		autostartResult = d.RunAutostart(context.Background(), metadata.ProjectPath)
 	}
+	projectMu.Unlock()
 
 	// Add session as observer of all project scripts and claim ownership of unowned ones
 	if session.ProjectPath != "" {
