@@ -382,3 +382,176 @@ func TestHealthCheckThreshold_Custom(t *testing.T) {
 
 	assert.Equal(t, int32(5), ps.healthFailThreshold, "custom threshold should be set")
 }
+
+// --- Restart backoff tests ---
+
+func TestRestartBackoff_InitialDelayIsOneSecond(t *testing.T) {
+	config := ProxyConfig{
+		ID:         "backoff-init",
+		TargetURL:  "http://localhost:3000",
+		ListenPort: 0,
+		MaxLogSize: 100,
+	}
+
+	ps, err := NewProxyServer(config)
+	require.NoError(t, err)
+
+	// Initial backoff should be 0 (no restarts yet)
+	assert.Equal(t, time.Duration(0), ps.restartDelay(), "initial delay should be zero")
+
+	// After first restart, backoff should start at 1s
+	ps.advanceBackoff()
+	delay := ps.restartDelay()
+	assert.GreaterOrEqual(t, delay, 750*time.Millisecond, "jitter should not go below 75%% of base")
+	assert.LessOrEqual(t, delay, 1250*time.Millisecond, "jitter should not exceed 125%% of base")
+}
+
+func TestRestartBackoff_DoublesEachRestart(t *testing.T) {
+	config := ProxyConfig{
+		ID:         "backoff-double",
+		TargetURL:  "http://localhost:3000",
+		ListenPort: 0,
+		MaxLogSize: 100,
+	}
+
+	ps, err := NewProxyServer(config)
+	require.NoError(t, err)
+
+	expectedBases := []time.Duration{1 * time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second}
+	for i, expectedBase := range expectedBases {
+		ps.advanceBackoff()
+		delay := ps.restartDelay()
+		minDelay := time.Duration(float64(expectedBase) * 0.75)
+		maxDelay := time.Duration(float64(expectedBase) * 1.25)
+		assert.GreaterOrEqual(t, delay, minDelay, "restart %d: delay should be >= 75%% of %v", i+1, expectedBase)
+		assert.LessOrEqual(t, delay, maxDelay, "restart %d: delay should be <= 125%% of %v", i+1, expectedBase)
+	}
+}
+
+func TestRestartBackoff_CapsAtMax(t *testing.T) {
+	config := ProxyConfig{
+		ID:         "backoff-cap",
+		TargetURL:  "http://localhost:3000",
+		ListenPort: 0,
+		MaxLogSize: 100,
+	}
+
+	ps, err := NewProxyServer(config)
+	require.NoError(t, err)
+
+	// Advance beyond the sequence to verify it caps
+	for i := 0; i < 10; i++ {
+		ps.advanceBackoff()
+	}
+	delay := ps.restartDelay()
+	maxAllowed := time.Duration(float64(16*time.Second) * 1.25)
+	assert.LessOrEqual(t, delay, maxAllowed, "backoff should cap at 16s (plus jitter)")
+}
+
+func TestRestartBackoff_ResetsAfterStablePeriod(t *testing.T) {
+	config := ProxyConfig{
+		ID:         "backoff-reset",
+		TargetURL:  "http://localhost:3000",
+		ListenPort: 0,
+		MaxLogSize: 100,
+	}
+
+	ps, err := NewProxyServer(config)
+	require.NoError(t, err)
+
+	// Advance backoff to 8s
+	for i := 0; i < 4; i++ {
+		ps.advanceBackoff()
+	}
+	delay := ps.restartDelay()
+	assert.GreaterOrEqual(t, delay, 6*time.Second, "should be at 8s base before reset")
+
+	// Simulate 30s of stable operation
+	ps.resetBackoff()
+
+	// Backoff should be back to zero
+	assert.Equal(t, time.Duration(0), ps.restartDelay(), "should reset after stable period")
+
+	// Next advance should start at 1s again
+	ps.advanceBackoff()
+	delay = ps.restartDelay()
+	assert.GreaterOrEqual(t, delay, 750*time.Millisecond, "should restart at 1s base after reset")
+	assert.LessOrEqual(t, delay, 1250*time.Millisecond, "should restart at 1s base after reset")
+}
+
+func TestRestartBackoff_JitterRange(t *testing.T) {
+	config := ProxyConfig{
+		ID:         "backoff-jitter",
+		TargetURL:  "http://localhost:3000",
+		ListenPort: 0,
+		MaxLogSize: 100,
+	}
+
+	ps, err := NewProxyServer(config)
+	require.NoError(t, err)
+
+	// Set a known backoff for deterministic jitter testing
+	ps.advanceBackoff() // 1s base
+
+	// Collect many samples to verify jitter distribution
+	var minSeen, maxSeen time.Duration
+	for i := 0; i < 100; i++ {
+		d := ps.restartDelay()
+		if i == 0 || d < minSeen {
+			minSeen = d
+		}
+		if i == 0 || d > maxSeen {
+			maxSeen = d
+		}
+	}
+
+	// With 100 samples of +-25% jitter on 1s, we should see spread
+	assert.GreaterOrEqual(t, minSeen, 750*time.Millisecond, "min jitter should be >= 75%% of base")
+	assert.LessOrEqual(t, maxSeen, 1250*time.Millisecond, "max jitter should be <= 125%% of base")
+	// Verify actual variation (extremely unlikely all 100 are identical with rand)
+	assert.NotEqual(t, minSeen, maxSeen, "jitter should produce different values")
+}
+
+func TestRestartBackoff_IntegrationWithShouldRestart(t *testing.T) {
+	config := ProxyConfig{
+		ID:         "backoff-integration",
+		TargetURL:  "http://localhost:3000",
+		ListenPort: 0,
+		MaxLogSize: 100,
+	}
+
+	ps, err := NewProxyServer(config)
+	require.NoError(t, err)
+
+	// shouldRestart should still work independently of backoff
+	assert.True(t, ps.shouldRestart(), "should allow first restart")
+
+	// Record restarts up to the limit
+	for i := 0; i < 5; i++ {
+		ps.recordRestart()
+	}
+	assert.False(t, ps.shouldRestart(), "should block after 5 restarts")
+}
+
+func TestRestartBackoff_StatsIncludesBackoffInfo(t *testing.T) {
+	config := ProxyConfig{
+		ID:         "backoff-stats",
+		TargetURL:  "http://localhost:3000",
+		ListenPort: 0,
+		MaxLogSize: 100,
+	}
+
+	ps, err := NewProxyServer(config)
+	require.NoError(t, err)
+
+	// Before any restarts
+	stats := ps.Stats()
+	assert.Equal(t, time.Duration(0), stats.BackoffDelay, "initial backoff should be zero")
+
+	// After 3 restarts: 0->1s->2s->4s
+	ps.advanceBackoff()
+	ps.advanceBackoff()
+	ps.advanceBackoff()
+	stats = ps.Stats()
+	assert.Equal(t, 4*time.Second, stats.BackoffDelay, "should show 4s base backoff (3 advances)")
+}

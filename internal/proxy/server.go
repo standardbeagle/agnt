@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"io"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -98,6 +99,9 @@ type ProxyServer struct {
 	backendHealthy      atomic.Bool
 	lastHealthCheck     atomic.Value // stores time.Time
 	healthProbeTimeout  time.Duration
+
+	// Restart backoff (nanoseconds stored as int64 for lock-free access)
+	backoffDuration atomic.Int64
 
 	// Session client factory for handling session API requests from browser
 	sessionClientFactory SessionClientFactory
@@ -458,6 +462,7 @@ func (ps *ProxyServer) runServer(ctx context.Context, listener net.Listener) {
 	})
 
 	for {
+		serveStart := time.Now()
 		err := ps.httpServer.Serve(listener)
 
 		// Normal shutdown, exit
@@ -479,6 +484,26 @@ func (ps *ProxyServer) runServer(ctx context.Context, listener net.Listener) {
 			if !ps.shouldRestart() {
 				ps.lastError.Store(fmt.Sprintf("max restarts exceeded: %v", err.Error()))
 				return
+			}
+
+			// Reset backoff if server ran stably for the stable period
+			if time.Since(serveStart) >= stablePeriod {
+				ps.resetBackoff()
+			}
+
+			// Advance backoff for this restart attempt
+			ps.advanceBackoff()
+
+			// Wait for backoff delay before restarting
+			delay := ps.restartDelay()
+			if delay > 0 {
+				debug.Log("proxy", "proxy %s backing off for %v before restart (crash after %v)",
+					ps.ID, delay, time.Since(serveStart).Round(time.Millisecond))
+				select {
+				case <-time.After(delay):
+				case <-ctx.Done():
+					return
+				}
 			}
 
 			// Record restart
@@ -537,6 +562,43 @@ func (ps *ProxyServer) recordRestart() {
 	ps.restartsMu.Lock()
 	defer ps.restartsMu.Unlock()
 	ps.restarts = append(ps.restarts, time.Now())
+}
+
+const (
+	initialBackoff = 1 * time.Second
+	maxBackoff     = 16 * time.Second
+	stablePeriod   = 30 * time.Second
+)
+
+// advanceBackoff doubles the backoff duration for the next restart attempt.
+// Sequence: 1s, 2s, 4s, 8s, 16s (capped).
+func (ps *ProxyServer) advanceBackoff() {
+	current := time.Duration(ps.backoffDuration.Load())
+	if current == 0 {
+		ps.backoffDuration.Store(int64(initialBackoff))
+		return
+	}
+	next := current * 2
+	if next > maxBackoff {
+		next = maxBackoff
+	}
+	ps.backoffDuration.Store(int64(next))
+}
+
+// resetBackoff clears the backoff duration, called after stable operation.
+func (ps *ProxyServer) resetBackoff() {
+	ps.backoffDuration.Store(0)
+}
+
+// restartDelay returns the current backoff duration with +-25% jitter.
+// Returns 0 if no backoff is active (first restart).
+func (ps *ProxyServer) restartDelay() time.Duration {
+	base := time.Duration(ps.backoffDuration.Load())
+	if base == 0 {
+		return 0
+	}
+	jitter := time.Duration(float64(base) * (0.75 + rand.Float64()*0.5))
+	return jitter
 }
 
 // runHealthCheck periodically probes the backend target via TCP connect.
@@ -796,6 +858,9 @@ func (ps *ProxyServer) Stats() ProxyStats {
 		stats.LastHealthCheck = t
 	}
 
+	// Restart backoff state
+	stats.BackoffDelay = time.Duration(ps.backoffDuration.Load())
+
 	return stats
 }
 
@@ -819,6 +884,9 @@ type ProxyStats struct {
 	BackendHealthy      bool      `json:"backend_healthy"`                // false after consecutive probe failures
 	LastHealthCheck     time.Time `json:"last_health_check,omitempty"`    // time of last probe
 	ConsecutiveFailures int32     `json:"consecutive_failures,omitempty"` // current consecutive failure count
+
+	// Restart backoff
+	BackoffDelay time.Duration `json:"backoff_delay,omitempty"` // current backoff base duration (0 = no backoff active)
 }
 
 // handleProxy handles HTTP requests and logs traffic.
