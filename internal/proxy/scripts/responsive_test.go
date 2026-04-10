@@ -43,21 +43,21 @@ func TestResponsiveModuleOrder(t *testing.T) {
 	combined := buildCombinedScript()
 
 	// Responsive module should come after wireframe and before api
-	responsiveIdx := strings.Index(combined, "// Responsive audit module")
+	responsiveIdx := strings.Index(combined, "// responsive module")
 	if responsiveIdx == -1 {
-		t.Error("Responsive audit module comment not found")
+		t.Error("Responsive module comment not found")
 		return
 	}
 
-	wireframeIdx := strings.Index(combined, "// Wireframe generation module")
+	wireframeIdx := strings.Index(combined, "// wireframe module")
 	if wireframeIdx == -1 {
-		t.Error("Wireframe generation module comment not found")
+		t.Error("Wireframe module comment not found")
 		return
 	}
 
-	apiIdx := strings.Index(combined, "// API assembly module")
+	apiIdx := strings.Index(combined, "// api module")
 	if apiIdx == -1 {
-		t.Error("API assembly module comment not found")
+		t.Error("API module comment not found")
 		return
 	}
 

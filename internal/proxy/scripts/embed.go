@@ -133,6 +133,105 @@ var (
 // Set this before calling GetCombinedScript() for the first time.
 var Version = "dev"
 
+// moduleEntry declares a JS module and its hard dependencies.
+// Dependencies must appear earlier in moduleOrder.
+type moduleEntry struct {
+	name string
+	deps []string
+}
+
+// moduleOrder defines the load order for all embedded modules.
+// Each entry names the module and lists modules it requires at load time.
+// The buildCombinedScript function iterates this slice instead of a
+// hardcoded sequence so that the dependency declarations are authoritative
+// and verified at build time by TestModuleDependencyOrder.
+var moduleOrder = []moduleEntry{
+	{"core", nil},
+	{"framework-detector", nil},
+	{"api-tracker", nil},
+	{"utils", nil},
+	{"overlay", []string{"utils"}},
+	{"inspection", []string{"utils"}},
+	{"tree", []string{"utils"}},
+	{"visual", []string{"utils"}},
+	{"layout", []string{"utils", "inspection", "visual"}},
+	{"interactive", []string{"utils"}},
+	{"capture", []string{"utils"}},
+	{"accessibility", []string{"utils"}},
+	{"audit-utils", nil},
+	{"audit-dom", []string{"utils"}},
+	{"audit-css", []string{"utils"}},
+	{"audit-security", []string{"utils", "audit-utils"}},
+	{"audit-performance", []string{"utils", "audit-utils"}},
+	{"audit-quality", []string{"utils", "audit-dom", "audit-css", "audit-security", "audit-performance"}},
+	{"interaction", []string{"utils", "core"}},
+	{"mutation", []string{"utils", "core"}},
+	{"toast", nil},
+	{"voice", []string{"core"}},
+	{"sketch", []string{"core", "voice"}},
+	{"design", []string{"core", "utils"}},
+	{"style-editor", []string{"core", "utils"}},
+	{"indicator", []string{"core", "utils", "sketch", "design", "style-editor", "toast", "framework-detector", "api-tracker"}},
+	{"snapshot-helper", []string{"core"}},
+	{"diagnostics", []string{"utils", "core"}},
+	{"session", []string{"core"}},
+	{"store", []string{"core"}},
+	{"content", []string{"utils"}},
+	{"text-fragility", []string{"utils"}},
+	{"responsive-risk", []string{"utils"}},
+	{"wireframe", []string{"utils"}},
+	{"responsive", []string{"utils"}},
+	{"api", []string{
+		"core", "utils", "overlay", "inspection", "tree", "visual",
+		"layout", "interactive", "capture", "accessibility",
+		"audit-quality", "interaction", "mutation",
+		"voice", "indicator", "sketch", "design",
+		"diagnostics", "session", "store", "content",
+		"wireframe", "responsive", "style-editor",
+		"text-fragility", "responsive-risk", "snapshot-helper", "toast",
+	}},
+}
+
+// moduleScript maps module names to their embedded JS variables.
+var moduleScript = map[string]string{
+	"core":               coreJS,
+	"framework-detector": frameworkDetectorJS,
+	"api-tracker":        apiTrackerJS,
+	"utils":              utilsJS,
+	"overlay":            overlayJS,
+	"inspection":         inspectionJS,
+	"tree":               treeJS,
+	"visual":             visualJS,
+	"layout":             layoutJS,
+	"interactive":        interactiveJS,
+	"capture":            captureJS,
+	"accessibility":      accessibilityJS,
+	"audit-utils":        auditUtilsJS,
+	"audit-dom":          auditDomJS,
+	"audit-css":          auditCssJS,
+	"audit-security":     auditSecurityJS,
+	"audit-performance":  auditPerformanceJS,
+	"audit-quality":      auditQualityJS,
+	"interaction":        interactionJS,
+	"mutation":           mutationJS,
+	"toast":              toastJS,
+	"voice":              voiceJS,
+	"sketch":             sketchJS,
+	"design":             designJS,
+	"style-editor":       styleEditorJS,
+	"indicator":          indicatorJS,
+	"snapshot-helper":    snapshotHelperJS,
+	"diagnostics":        diagnosticsJS,
+	"session":            sessionJS,
+	"store":              storeJS,
+	"content":            contentJS,
+	"text-fragility":     textFragilityJS,
+	"responsive-risk":    responsiveRiskJS,
+	"wireframe":          wireframeJS,
+	"responsive":         responsiveJS,
+	"api":                apiJS,
+}
+
 // GetCombinedScript returns all JavaScript modules combined into a single script.
 // The script is wrapped in appropriate tags and ordered for correct initialization.
 // The result is cached after first call.
@@ -143,7 +242,7 @@ func GetCombinedScript() string {
 	return combinedScript
 }
 
-// buildCombinedScript assembles all modules in the correct order.
+// buildCombinedScript assembles all modules in dependency order defined by moduleOrder.
 func buildCombinedScript() string {
 	var sb strings.Builder
 
@@ -167,186 +266,14 @@ func buildCombinedScript() string {
 	sb.WriteString(Version)
 	sb.WriteString("';\n\n")
 
-	// Order matters: dependencies must load before dependents
-	// 1. Core (WebSocket, send function)
-	sb.WriteString("  // Core module\n")
-	sb.WriteString(wrapModule(coreJS))
-	sb.WriteString("\n\n")
-
-	// 2. Framework detector (no dependencies, used by indicator)
-	sb.WriteString("  // Framework detector module\n")
-	sb.WriteString(wrapModule(frameworkDetectorJS))
-	sb.WriteString("\n\n")
-
-	// 3. API tracker (no dependencies, used by indicator)
-	sb.WriteString("  // API tracker module\n")
-	sb.WriteString(wrapModule(apiTrackerJS))
-	sb.WriteString("\n\n")
-
-	// 4. Utils (shared helpers)
-	sb.WriteString("  // Utils module\n")
-	sb.WriteString(wrapModule(utilsJS))
-	sb.WriteString("\n\n")
-
-	// 5. Overlay (visual system, depends on utils)
-	sb.WriteString("  // Overlay module\n")
-	sb.WriteString(wrapModule(overlayJS))
-	sb.WriteString("\n\n")
-
-	// 6. Inspection (depends on utils)
-	sb.WriteString("  // Inspection module\n")
-	sb.WriteString(wrapModule(inspectionJS))
-	sb.WriteString("\n\n")
-
-	// 7. Tree (depends on utils)
-	sb.WriteString("  // Tree module\n")
-	sb.WriteString(wrapModule(treeJS))
-	sb.WriteString("\n\n")
-
-	// 8. Visual (depends on utils)
-	sb.WriteString("  // Visual module\n")
-	sb.WriteString(wrapModule(visualJS))
-	sb.WriteString("\n\n")
-
-	// 9. Layout (depends on utils, inspection, visual)
-	sb.WriteString("  // Layout module\n")
-	sb.WriteString(wrapModule(layoutJS))
-	sb.WriteString("\n\n")
-
-	// 10. Interactive (depends on utils)
-	sb.WriteString("  // Interactive module\n")
-	sb.WriteString(wrapModule(interactiveJS))
-	sb.WriteString("\n\n")
-
-	// 11. Capture (depends on utils)
-	sb.WriteString("  // Capture module\n")
-	sb.WriteString(wrapModule(captureJS))
-	sb.WriteString("\n\n")
-
-	// 12. Accessibility (depends on utils)
-	sb.WriteString("  // Accessibility module\n")
-	sb.WriteString(wrapModule(accessibilityJS))
-	sb.WriteString("\n\n")
-
-	// 13. Audit utils (shared audit helpers)
-	sb.WriteString("  // Audit utilities module\n")
-	sb.WriteString(wrapModule(auditUtilsJS))
-	sb.WriteString("\n\n")
-
-	// 13a. Audit DOM (depends on utils)
-	sb.WriteString("  // Audit DOM module\n")
-	sb.WriteString(wrapModule(auditDomJS))
-	sb.WriteString("\n\n")
-
-	// 13b. Audit CSS (depends on utils)
-	sb.WriteString("  // Audit CSS module\n")
-	sb.WriteString(wrapModule(auditCssJS))
-	sb.WriteString("\n\n")
-
-	// 13c. Audit security (depends on utils, audit-utils)
-	sb.WriteString("  // Audit security module\n")
-	sb.WriteString(wrapModule(auditSecurityJS))
-	sb.WriteString("\n\n")
-
-	// 13d. Audit performance (depends on utils, audit-utils)
-	sb.WriteString("  // Audit performance module\n")
-	sb.WriteString(wrapModule(auditPerformanceJS))
-	sb.WriteString("\n\n")
-
-	// 13e. Audit quality (depends on utils, all other audit modules)
-	sb.WriteString("  // Audit quality module\n")
-	sb.WriteString(wrapModule(auditQualityJS))
-	sb.WriteString("\n\n")
-
-	// 14. Interaction tracking (depends on utils, core)
-	sb.WriteString("  // Interaction tracking module\n")
-	sb.WriteString(wrapModule(interactionJS))
-	sb.WriteString("\n\n")
-
-	// 15. Mutation tracking (depends on utils, core)
-	sb.WriteString("  // Mutation tracking module\n")
-	sb.WriteString(wrapModule(mutationJS))
-	sb.WriteString("\n\n")
-
-	// 16. Toast notifications (no dependencies)
-	sb.WriteString("  // Toast notification module\n")
-	sb.WriteString(wrapModule(toastJS))
-	sb.WriteString("\n\n")
-
-	// 17. Voice transcription (depends on core)
-	sb.WriteString("  // Voice transcription module\n")
-	sb.WriteString(wrapModule(voiceJS))
-	sb.WriteString("\n\n")
-
-	// 18. Sketch mode (depends on core, voice)
-	sb.WriteString("  // Sketch mode module\n")
-	sb.WriteString(wrapModule(sketchJS))
-	sb.WriteString("\n\n")
-
-	// 19. Design mode (depends on core, utils)
-	sb.WriteString("  // Design mode module\n")
-	sb.WriteString(wrapModule(designJS))
-	sb.WriteString("\n\n")
-
-	// 20. Style editor (depends on core, utils)
-	sb.WriteString("  // Style editor module\n")
-	sb.WriteString(wrapModule(styleEditorJS))
-	sb.WriteString("\n\n")
-
-	// 21. Floating indicator (depends on core, utils, sketch, design, style-editor, toast, framework-detector, api-tracker)
-	sb.WriteString("  // Floating indicator module\n")
-	sb.WriteString(wrapModule(indicatorJS))
-	sb.WriteString("\n\n")
-
-	// 22. Snapshot helper (depends on core)
-	sb.WriteString("  // Snapshot helper module\n")
-	sb.WriteString(wrapModule(snapshotHelperJS))
-	sb.WriteString("\n\n")
-
-	// 23. Diagnostics (depends on utils, core)
-	sb.WriteString("  // Diagnostics module\n")
-	sb.WriteString(wrapModule(diagnosticsJS))
-	sb.WriteString("\n\n")
-
-	// 24. Session management (depends on core)
-	sb.WriteString("  // Session management module\n")
-	sb.WriteString(wrapModule(sessionJS))
-	sb.WriteString("\n\n")
-
-	// 25. Store (depends on core)
-	sb.WriteString("  // Store module\n")
-	sb.WriteString(wrapModule(storeJS))
-	sb.WriteString("\n\n")
-
-	// 26. Content extraction (depends on utils)
-	sb.WriteString("  // Content extraction module\n")
-	sb.WriteString(wrapModule(contentJS))
-	sb.WriteString("\n\n")
-
-	// 27. Text fragility analysis (depends on utils)
-	sb.WriteString("  // Text fragility module\n")
-	sb.WriteString(wrapModule(textFragilityJS))
-	sb.WriteString("\n\n")
-
-	// 28. Responsive risk analysis (depends on utils)
-	sb.WriteString("  // Responsive risk module\n")
-	sb.WriteString(wrapModule(responsiveRiskJS))
-	sb.WriteString("\n\n")
-
-	// 29. Wireframe generation (depends on utils)
-	sb.WriteString("  // Wireframe generation module\n")
-	sb.WriteString(wrapModule(wireframeJS))
-	sb.WriteString("\n\n")
-
-	// 30. Responsive audit (depends on utils)
-	sb.WriteString("  // Responsive audit module\n")
-	sb.WriteString(wrapModule(responsiveJS))
-	sb.WriteString("\n\n")
-
-	// 31. API (assembles all modules, must be last)
-	sb.WriteString("  // API assembly module\n")
-	sb.WriteString(wrapModule(apiJS))
-	sb.WriteString("\n")
+	// Load modules in dependency order from moduleOrder
+	for _, m := range moduleOrder {
+		sb.WriteString("  // ")
+		sb.WriteString(m.name)
+		sb.WriteString(" module\n")
+		sb.WriteString(wrapModule(moduleScript[m.name]))
+		sb.WriteString("\n\n")
+	}
 
 	sb.WriteString("})();\n")
 	sb.WriteString("</script>\n")
@@ -402,42 +329,9 @@ func GetAxeCore() string {
 
 // GetScriptNames returns the list of embedded script names for debugging.
 func GetScriptNames() []string {
-	return []string{
-		"core.js",
-		"framework-detector.js",
-		"api-tracker.js",
-		"utils.js",
-		"overlay.js",
-		"inspection.js",
-		"tree.js",
-		"visual.js",
-		"layout.js",
-		"interactive.js",
-		"capture.js",
-		"accessibility.js",
-		"audit-utils.js",
-		"audit-dom.js",
-		"audit-css.js",
-		"audit-security.js",
-		"audit-performance.js",
-		"audit-quality.js",
-		"interaction.js",
-		"mutation.js",
-		"toast.js",
-		"voice.js",
-		"sketch.js",
-		"design.js",
-		"style-editor.js",
-		"indicator.js",
-		"snapshot-helper.js",
-		"diagnostics.js",
-		"session.js",
-		"store.js",
-		"content.js",
-		"text-fragility.js",
-		"responsive-risk.js",
-		"wireframe.js",
-		"responsive.js",
-		"api.js",
+	names := make([]string, len(moduleOrder))
+	for i, m := range moduleOrder {
+		names[i] = m.name + ".js"
 	}
+	return names
 }
