@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/debug"
@@ -88,6 +89,20 @@ func (d *Daemon) hubHandleSessionRegister(conn *hubpkg.Connection, cmd *hubproto
 
 	if err := d.sessionRegistry.Register(session); err != nil {
 		return conn.WriteErr(hubproto.ErrAlreadyExists, err.Error())
+	}
+
+	// Log target process startup to the startup log so the overlay shows it
+	if session.Command != "" {
+		cmdLabel := session.Command
+		if len(session.Args) > 0 {
+			cmdLabel += " " + strings.Join(session.Args, " ")
+		}
+		d.startupErrorStore.Add(&StartupLogEntry{
+			Level:     "info",
+			EventType: "target_starting",
+			Message:   fmt.Sprintf("starting %s", cmdLabel),
+			Timestamp: time.Now(),
+		})
 	}
 
 	// Associate session with this connection for cleanup
