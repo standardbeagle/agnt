@@ -6,6 +6,7 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/proxy"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestExtractFirstAppFrame(t *testing.T) {
@@ -750,5 +751,104 @@ func TestConvertProxyEntryDirect(t *testing.T) {
 		entry := proxy.LogEntry{Type: proxy.LogTypePerformance}
 		results := convertProxyEntryDirect("dev", entry)
 		assert.Empty(t, results)
+	})
+}
+
+func TestConvertStartupLogEntry(t *testing.T) {
+	t.Run("error level entry", func(t *testing.T) {
+		now := time.Now()
+		em := map[string]interface{}{
+			"level":       "error",
+			"event_type":  "start_failed",
+			"message":     "script dev: exit status 1 (resolved command: npm run dev, cwd: /home/user/project)",
+			"process_id":  "/home/user/project:dev",
+			"script_name": "dev",
+			"timestamp":   now.Format(time.RFC3339),
+		}
+
+		result := convertStartupLogEntry(em)
+		require.NotNil(t, result)
+		assert.Equal(t, "startup:dev", result.Source)
+		assert.Equal(t, "error", result.Severity)
+		assert.Equal(t, "START FAILED", result.Category)
+		assert.Contains(t, result.Message, "exit status 1")
+		assert.Equal(t, now.Truncate(time.Second), result.LastSeen.Truncate(time.Second))
+		assert.Equal(t, 1, result.Count)
+	})
+
+	t.Run("warning level entry", func(t *testing.T) {
+		em := map[string]interface{}{
+			"level":       "warning",
+			"event_type":  "port_conflict_detected",
+			"message":     "port 3000 blocked by node (PIDs: [12345])",
+			"script_name": "dev",
+		}
+
+		result := convertStartupLogEntry(em)
+		require.NotNil(t, result)
+		assert.Equal(t, "warning", result.Severity)
+		assert.Equal(t, "startup:dev", result.Source)
+		assert.Equal(t, "PORT CONFLICT DETECTED", result.Category)
+	})
+
+	t.Run("info level filtered out", func(t *testing.T) {
+		em := map[string]interface{}{
+			"level":      "info",
+			"event_type": "started",
+			"message":    "dev started successfully",
+		}
+
+		result := convertStartupLogEntry(em)
+		assert.Nil(t, result)
+	})
+
+	t.Run("empty message filtered out", func(t *testing.T) {
+		em := map[string]interface{}{
+			"level":      "error",
+			"event_type": "start_failed",
+			"message":    "",
+		}
+
+		result := convertStartupLogEntry(em)
+		assert.Nil(t, result)
+	})
+
+	t.Run("no script name uses startup source", func(t *testing.T) {
+		em := map[string]interface{}{
+			"level":      "error",
+			"event_type": "config_error",
+			"message":    "failed to load .agnt.kdl",
+		}
+
+		result := convertStartupLogEntry(em)
+		require.NotNil(t, result)
+		assert.Equal(t, "startup", result.Source)
+		assert.Equal(t, "CONFIG ERROR", result.Category)
+	})
+
+	t.Run("no event type uses STARTUP ERROR", func(t *testing.T) {
+		em := map[string]interface{}{
+			"level":   "error",
+			"message": "something went wrong",
+		}
+
+		result := convertStartupLogEntry(em)
+		require.NotNil(t, result)
+		assert.Equal(t, "STARTUP ERROR", result.Category)
+	})
+
+	t.Run("proxy skipped event", func(t *testing.T) {
+		em := map[string]interface{}{
+			"level":       "error",
+			"event_type":  "proxy_skipped",
+			"message":     `proxy "web" skipped: depends on failed script "dev"`,
+			"script_name": "web",
+		}
+
+		result := convertStartupLogEntry(em)
+		require.NotNil(t, result)
+		assert.Equal(t, "startup:web", result.Source)
+		assert.Equal(t, "PROXY SKIPPED", result.Category)
+		assert.Contains(t, result.Message, "depends on failed script")
 	})
 }

@@ -426,6 +426,7 @@ This provides a high-level view of active pages and their resources.`,
 		Description: `Get all current errors across processes and proxies.
 
 Collects errors from: process output (compile errors, panics, exceptions),
+autostart failures (script start failures, port conflicts, proxy errors),
 browser JavaScript errors, HTTP 4xx/5xx responses, and proxy transport errors.
 
 Default behavior:
