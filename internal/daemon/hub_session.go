@@ -144,7 +144,17 @@ func (d *Daemon) hubHandleSessionRegister(conn *hubpkg.Connection, cmd *hubproto
 		debug.Log("daemon", "session %s joining existing project %s (skipping autostart, %d scripts, %d proxies already running)",
 			code, session.ProjectPath, len(autostartResult.Scripts), len(autostartResult.Proxies))
 	} else {
-		// First session for this project — run autostart
+		// First session for this project — clean up then run autostart
+
+		// Duplicate scan runs synchronously BEFORE autostart so that
+		// orphaned processes are killed and ports freed before new ones start.
+		if d.dupScanner != nil && session.ProjectPath != "" {
+			result := d.dupScanner.ScanForProject(session.ProjectPath)
+			if len(result.Killed) > 0 {
+				d.dupScanner.notify(result)
+			}
+		}
+
 		autostartResult = d.RunAutostart(context.Background(), metadata.ProjectPath)
 	}
 	projectMu.Unlock()
@@ -171,17 +181,6 @@ func (d *Daemon) hubHandleSessionRegister(conn *hubpkg.Connection, cmd *hubproto
 				entry.SetOwner(code)
 			}
 		}
-	}
-
-	// Trigger duplicate process scan for this project on session connect.
-	// Cleans up leftover dev servers from previous sessions.
-	if d.dupScanner != nil && session.ProjectPath != "" {
-		go func() {
-			result := d.dupScanner.ScanForProject(session.ProjectPath)
-			if len(result.Killed) > 0 {
-				d.dupScanner.notify(result)
-			}
-		}()
 	}
 
 	resp := map[string]interface{}{

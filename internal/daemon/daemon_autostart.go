@@ -151,8 +151,9 @@ func (d *Daemon) collectManagedPIDs() map[int]bool {
 	return managed
 }
 
-// registerAndStartScripts registers all scripts, starts autostart scripts in
-// dependency order, then starts proxies. Shared by RunAutostart and resumeAutostart.
+// registerAndStartScripts registers all scripts, cleans up stale entries,
+// starts autostart scripts in dependency order, then starts proxies.
+// Shared by RunAutostart and resumeAutostart.
 func (d *Daemon) registerAndStartScripts(ctx context.Context, cfg *config.AgntConfig, projectPath string, result *AutostartResult) {
 	log := d.startupErrorStore
 
@@ -175,6 +176,21 @@ func (d *Daemon) registerAndStartScripts(ctx context.Context, cfg *config.AgntCo
 			}
 			log.Info(entry.ProcessID, entry.Name, "pruned_stale_script",
 				fmt.Sprintf("removed script %q (no longer in config)", entry.Name))
+		}
+	}
+
+	// Clean up stale ProcessManager entries for autostart scripts BEFORE starting.
+	// This ensures ports are freed and resources reclaimed before new processes launch.
+	autostartScripts := cfg.GetAutostartScripts()
+	for name := range autostartScripts {
+		processID := makeProcessID(projectPath, name)
+		if existing, err := d.hub.ProcessManager().Get(processID); err == nil {
+			state := existing.State()
+			if state != process.StateRunning && state != process.StateStarting {
+				log.Info(processID, name, "stale_cleanup",
+					fmt.Sprintf("removing stale process (state=%s)", state))
+				d.hub.ProcessManager().RemoveByPath(processID, projectPath)
+			}
 		}
 	}
 
@@ -422,23 +438,6 @@ func (d *Daemon) autostartScript(ctx context.Context, name string, scriptCfg *co
 	if state := entry.State(); state == script.StateRunning || state == script.StateStarting {
 		debug.Log("daemon", "autostartScript: script %s already %s, skipping", name, state)
 		return nil
-	}
-
-	// Clean up stale ProcessManager entry if it exists but isn't running
-	if existing, err := d.hub.ProcessManager().Get(processID); err == nil {
-		state := existing.State()
-		if state != process.StateRunning && state != process.StateStarting {
-			debug.Log("daemon", "autostartScript: removing stale process %s (state=%s)", processID, state)
-			d.startupErrorStore.Add(&StartupLogEntry{
-				ProcessID:  processID,
-				ScriptName: stripProcessPrefix(processID),
-				Level:      "info",
-				EventType:  "stale_cleanup",
-				Message:    fmt.Sprintf("removing stale process (state=%s)", state),
-				Timestamp:  time.Now(),
-			})
-			d.hub.ProcessManager().RemoveByPath(processID, projectPath)
-		}
 	}
 
 	// Resolve working directory and environment
