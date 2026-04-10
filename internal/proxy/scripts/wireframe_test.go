@@ -56,8 +56,8 @@ func TestWireframeScriptInCombined(t *testing.T) {
 func TestWireframeScriptOrder(t *testing.T) {
 	combined := GetCombinedScript()
 
-	wireframeIdx := strings.Index(combined, "// Wireframe generation module")
-	apiIdx := strings.Index(combined, "// API assembly module")
+	wireframeIdx := strings.Index(combined, "// wireframe module")
+	apiIdx := strings.Index(combined, "// api module")
 
 	if wireframeIdx == -1 {
 		t.Error("Wireframe module comment not found in combined script")
