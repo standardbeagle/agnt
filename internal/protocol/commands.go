@@ -2,22 +2,23 @@ package protocol
 
 // Agnt-specific command verbs (beyond those in go-cli-server).
 const (
-	VerbProxy       = "PROXY"
-	VerbProxyLog    = "PROXYLOG"
-	VerbCurrentPage = "CURRENTPAGE"
-	VerbTunnel      = "TUNNEL"
-	VerbBrowser     = "BROWSER"
-	VerbAutomation  = "AUTOMATION" // chromedp-based browser automation sessions
-	VerbChaos       = "CHAOS"
-	VerbDetect      = "DETECT"
-	VerbOverlay     = "OVERLAY"
-	VerbStatus      = "STATUS" // Full daemon status (Hub's INFO is minimal)
-	VerbStore       = "STORE"
-	VerbAutomate    = "AUTOMATE"  // Agent-based automation processing
-	VerbAlerts      = "ALERTS"    // Process output alert queries
-	VerbScript      = "SCRIPT"    // Script registry queries and control
-	VerbDoctor      = "DOCTOR"    // Health check / diagnostic report
-	VerbAutostart   = "AUTOSTART" // Resolve port conflicts and resume autostart
+	VerbProxy        = "PROXY"
+	VerbProxyLog     = "PROXYLOG"
+	VerbCurrentPage  = "CURRENTPAGE"
+	VerbTunnel       = "TUNNEL"
+	VerbBrowser      = "BROWSER"
+	VerbAutomation   = "AUTOMATION" // chromedp-based browser automation sessions
+	VerbChaos        = "CHAOS"
+	VerbDetect       = "DETECT"
+	VerbOverlay      = "OVERLAY"
+	VerbStatus       = "STATUS" // Full daemon status (Hub's INFO is minimal)
+	VerbStore        = "STORE"
+	VerbAutomate     = "AUTOMATE"      // Agent-based automation processing
+	VerbAlerts       = "ALERTS"        // Process output alert queries
+	VerbScript       = "SCRIPT"        // Script registry queries and control
+	VerbDoctor       = "DOCTOR"        // Health check / diagnostic report
+	VerbAutostart    = "AUTOSTART"     // Resolve port conflicts and resume autostart
+	VerbStreamEvents = "STREAM-EVENTS" // Long-lived event stream
 )
 
 // Agnt-specific sub-verbs (beyond those in go-cli-server).
@@ -305,4 +306,12 @@ type AlertQueryFilter struct {
 	ProcessID string `json:"process_id,omitempty"` // Filter to specific process
 	Severity  string `json:"severity,omitempty"`   // Filter by severity
 	Limit     int    `json:"limit,omitempty"`      // Max results (0 = all)
+}
+
+// StreamEventFilter filters events for STREAM-EVENTS command.
+type StreamEventFilter struct {
+	Types     []string `json:"types,omitempty"`      // Log entry types: error, http, panel_message, etc.
+	ProxyID   string   `json:"proxy_id,omitempty"`   // Filter to specific proxy
+	ProcessID string   `json:"process_id,omitempty"` // Filter to specific process (via proxy association)
+	Severity  string   `json:"severity,omitempty"`   // Filter by severity: error, warning, info
 }

@@ -399,11 +399,12 @@ type LogEntry struct {
 
 // TrafficLogger stores proxy traffic logs with bounded memory.
 type TrafficLogger struct {
-	entries []LogEntry
-	maxSize int
-	head    atomic.Int64 // Next write position
-	count   atomic.Int64 // Total entries written (for ID generation)
-	mu      sync.RWMutex // Protects entries slice
+	entries    []LogEntry
+	maxSize    int
+	head       atomic.Int64                   // Next write position
+	count      atomic.Int64                   // Total entries written (for ID generation)
+	mu         sync.RWMutex                   // Protects entries slice
+	onLogEntry atomic.Pointer[func(LogEntry)] // Optional callback fired after each entry
 }
 
 // NewTrafficLogger creates a new logger with specified max entries.
@@ -571,6 +572,17 @@ func (tl *TrafficLogger) log(entry LogEntry) {
 	tl.mu.Unlock()
 
 	tl.count.Add(1)
+
+	// Fire callback if set (non-blocking, used for streaming events).
+	if cb := tl.onLogEntry.Load(); cb != nil {
+		(*cb)(entry)
+	}
+}
+
+// SetOnLogEntry sets a callback fired after each log entry.
+// The callback must not block — use a buffered channel if forwarding.
+func (tl *TrafficLogger) SetOnLogEntry(fn func(LogEntry)) {
+	tl.onLogEntry.Store(&fn)
 }
 
 // Query retrieves log entries matching the filter in chronological order.

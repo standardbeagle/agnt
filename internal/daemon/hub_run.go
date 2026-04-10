@@ -182,7 +182,14 @@ func (d *Daemon) registerAgntCommands() {
 		Handler:     d.hubHandleRestartAll,
 	})
 
-	debug.Log("daemon", "Registered %d agnt-specific commands with Hub", 22)
+	// STREAM-EVENTS command
+	d.hub.RegisterCommand(hubpkg.CommandDefinition{
+		Verb:        protocol.VerbStreamEvents,
+		Description: "Stream proxy events in real-time with optional filters",
+		Handler:     d.hubHandleStreamEvents,
+	})
+
+	debug.Log("daemon", "Registered %d agnt-specific commands with Hub", 23)
 }
 
 // agntRunConfig extends the hub's RunConfig with agnt-specific fields.

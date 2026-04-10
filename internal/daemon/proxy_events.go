@@ -154,6 +154,8 @@ func (d *Daemon) handleURLDetected(event ProxyEvent) {
 			continue
 		}
 
+		d.wireProxyLogger(server)
+
 		// Find session for this project to get session-specific overlay endpoint
 		if session, ok := d.sessionRegistry.FindByDirectory(projectPath); ok && session.OverlayPath != "" {
 			server.SetOverlayEndpoint(session.OverlayPath)
@@ -226,6 +228,8 @@ func (d *Daemon) handleExplicitStart(event ProxyEvent) {
 		})
 		return
 	}
+
+	d.wireProxyLogger(server)
 
 	// Find session for this project to get session-specific overlay endpoint
 	if event.Path != "" {

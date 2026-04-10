@@ -172,6 +172,7 @@ type Daemon struct {
 	autoRestarter     *ProcessAutoRestarter // Process auto-restart manager
 	alertStore        *ProcessAlertStore    // Ring buffer store for process output alerts
 	startupErrorStore *StartupLogStore      // Ring buffer for startup events
+	alertHub          *AlertHub             // Routes alerts to overlay/MCP/stream sinks
 	scriptRegistry    *script.Registry      // Per-script state that persists across process restarts
 	scriptConfigs     sync.Map              // processID -> *config.ScriptConfig (agnt-specific config)
 
@@ -265,6 +266,7 @@ func New(config DaemonConfig) *Daemon {
 		storem:            store.NewStoreManager(),
 		alertStore:        NewProcessAlertStore(500),
 		startupErrorStore: NewStartupLogStore(100),
+		alertHub:          NewAlertHub(),
 		scriptRegistry:    script.NewRegistry(),
 		sessionRegistry:   sessionRegistry,
 		scheduler:         scheduler,
@@ -530,6 +532,11 @@ func (d *Daemon) AutoRestarter() *ProcessAutoRestarter {
 // AlertStore returns the process alert store.
 func (d *Daemon) AlertStore() *ProcessAlertStore {
 	return d.alertStore
+}
+
+// AlertHub returns the alert hub for event routing.
+func (d *Daemon) AlertHub() *AlertHub {
+	return d.alertHub
 }
 
 // StartupLogStore returns the startup log store.

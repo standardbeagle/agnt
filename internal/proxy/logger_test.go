@@ -508,3 +508,58 @@ func TestTrafficLogger_ConcurrentWrites(t *testing.T) {
 		t.Errorf("Expected %d total entries, got %d", expectedTotal, stats.TotalEntries)
 	}
 }
+
+func TestTrafficLogger_OnLogEntry(t *testing.T) {
+	logger := NewTrafficLogger(10)
+
+	var received []LogEntry
+	logger.SetOnLogEntry(func(entry LogEntry) {
+		received = append(received, entry)
+	})
+
+	logger.LogHTTP(HTTPLogEntry{ID: "req-1", Method: "GET", URL: "/test", StatusCode: 200})
+	logger.LogError(FrontendError{Message: "oops"})
+
+	if len(received) != 2 {
+		t.Fatalf("Expected 2 callback invocations, got %d", len(received))
+	}
+	if received[0].Type != LogTypeHTTP {
+		t.Errorf("First callback: expected HTTP type, got %s", received[0].Type)
+	}
+	if received[1].Type != LogTypeError {
+		t.Errorf("Second callback: expected Error type, got %s", received[1].Type)
+	}
+}
+
+func TestTrafficLogger_OnLogEntry_Nil(t *testing.T) {
+	logger := NewTrafficLogger(10)
+
+	// No callback set — should not panic
+	logger.LogHTTP(HTTPLogEntry{ID: "req-1", Method: "GET", URL: "/test", StatusCode: 200})
+}
+
+func TestTrafficLogger_SetOnLogEntry_Replaces(t *testing.T) {
+	logger := NewTrafficLogger(10)
+
+	count1 := 0
+	count2 := 0
+
+	logger.SetOnLogEntry(func(entry LogEntry) {
+		count1++
+	})
+
+	logger.LogHTTP(HTTPLogEntry{ID: "req-1", Method: "GET", URL: "/test", StatusCode: 200})
+
+	logger.SetOnLogEntry(func(entry LogEntry) {
+		count2++
+	})
+
+	logger.LogError(FrontendError{Message: "oops"})
+
+	if count1 != 1 {
+		t.Errorf("First callback: expected 1 call, got %d", count1)
+	}
+	if count2 != 1 {
+		t.Errorf("Second callback: expected 1 call, got %d", count2)
+	}
+}
