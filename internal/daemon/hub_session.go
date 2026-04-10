@@ -105,6 +105,18 @@ func (d *Daemon) hubHandleSessionRegister(conn *hubpkg.Connection, cmd *hubproto
 	var autostartResult *AutostartResult
 	projectMu := d.getProjectLock(session.ProjectPath)
 	projectMu.Lock()
+
+	// Reconcile script states against OS truth before deciding autostart.
+	// Detects processes that died between sessions and transitions them to
+	// Stopped, ensuring the agent receives verified-accurate state.
+	if reconciled := d.reconcileScriptStates(session.ProjectPath); len(reconciled) > 0 {
+		names := make([]string, len(reconciled))
+		for i, e := range reconciled {
+			names[i] = e.Name
+		}
+		debug.Log("daemon", "session %s: reconciled %d dead scripts: %v", code, len(reconciled), names)
+	}
+
 	existingSessions := d.sessionRegistry.ListActive(session.ProjectPath, false)
 	hasExistingOwner := false
 	for _, existing := range existingSessions {

@@ -868,6 +868,166 @@ func TestScriptRegistry_PruneStaleEntries(t *testing.T) {
 	}
 }
 
+func TestReconcileScriptStates_DeadPIDTransitioned(t *testing.T) {
+	// When a script entry says Running but the OS PID is dead,
+	// reconcileScriptStates must transition it to Stopped and emit ScriptStopped.
+	tmpDir := t.TempDir()
+	sockPath := filepath.Join(tmpDir, "test.sock")
+
+	d := New(DaemonConfig{
+		SocketPath:   sockPath,
+		MaxClients:   10,
+		WriteTimeout: 5 * time.Second,
+	})
+
+	if err := d.Start(); err != nil {
+		t.Fatalf("Failed to start daemon: %v", err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		d.Stop(ctx)
+	}()
+
+	projectPath := "/home/user/project"
+
+	// Register a script and set it to Running
+	entry, err := d.scriptRegistry.Register("dev", projectPath, &script.Config{
+		Run:       "sleep 999",
+		Autostart: true,
+	})
+	if err != nil {
+		t.Fatalf("Register failed: %v", err)
+	}
+	entry.SetState(script.StateRunning)
+
+	// Track a proxy for the script so we can verify it gets cleaned up
+	d.trackScriptProxy(entry.ProcessID, "reconcile-test-proxy")
+
+	// Run reconciliation — no managed process exists for this script,
+	// so it should be detected as dead.
+	reconciled := d.reconcileScriptStates(projectPath)
+
+	if len(reconciled) != 1 {
+		t.Fatalf("Expected 1 reconciled script, got %d", len(reconciled))
+	}
+	if reconciled[0].Name != "dev" {
+		t.Errorf("Expected reconciled script 'dev', got %q", reconciled[0].Name)
+	}
+	if reconciled[0].State() != script.StateStopped {
+		t.Errorf("Expected StateStopped, got %s", reconciled[0].State())
+	}
+}
+
+func TestReconcileScriptStates_LiveProcessUnchanged(t *testing.T) {
+	// A script whose managed process is actually alive should remain Running.
+	tmpDir := t.TempDir()
+	sockPath := filepath.Join(tmpDir, "test.sock")
+
+	d := New(DaemonConfig{
+		SocketPath:   sockPath,
+		MaxClients:   10,
+		WriteTimeout: 5 * time.Second,
+	})
+
+	if err := d.Start(); err != nil {
+		t.Fatalf("Failed to start daemon: %v", err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		d.Stop(ctx)
+	}()
+
+	ctx := context.Background()
+
+	// Start a real long-running process
+	_, err := d.StartScript(ctx, StartScriptConfig{
+		ProcessID:   makeProcessID(tmpDir, "alive"),
+		ProjectPath: tmpDir,
+		WorkingDir:  tmpDir,
+		Command:     "sleep",
+		Args:        []string{"30"},
+	})
+	if err != nil {
+		t.Fatalf("StartScript failed: %v", err)
+	}
+
+	time.Sleep(500 * time.Millisecond)
+
+	// Verify it's in the registry as running
+	entry, ok := d.scriptRegistry.Get("alive", tmpDir)
+	if !ok {
+		t.Fatal("Script 'alive' should exist after StartScript")
+	}
+	if state := entry.State(); state != script.StateRunning {
+		t.Fatalf("Expected StateRunning, got %s", state)
+	}
+
+	// Run reconciliation — process is alive, nothing should change
+	reconciled := d.reconcileScriptStates(tmpDir)
+	if len(reconciled) != 0 {
+		t.Errorf("Expected 0 reconciled scripts (live process), got %d", len(reconciled))
+		for _, r := range reconciled {
+			t.Errorf("  reconciled: %s (state=%s)", r.Name, r.State())
+		}
+	}
+
+	// State should still be Running
+	if entry.State() != script.StateRunning {
+		t.Errorf("Expected StateRunning after reconcile, got %s", entry.State())
+	}
+}
+
+func TestReconcileScriptStates_IgnoresStoppedScripts(t *testing.T) {
+	// Scripts already in Stopped/Failed/Idle states should not be touched.
+	tmpDir := t.TempDir()
+	sockPath := filepath.Join(tmpDir, "test.sock")
+
+	d := New(DaemonConfig{
+		SocketPath:   sockPath,
+		MaxClients:   10,
+		WriteTimeout: 5 * time.Second,
+	})
+
+	if err := d.Start(); err != nil {
+		t.Fatalf("Failed to start daemon: %v", err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		d.Stop(ctx)
+	}()
+
+	projectPath := "/home/user/project"
+
+	// Register scripts in various non-running states
+	stoppedEntry, _ := d.scriptRegistry.Register("stopped", projectPath, &script.Config{Run: "true"})
+	stoppedEntry.SetState(script.StateStopped)
+
+	failedEntry, _ := d.scriptRegistry.Register("failed", projectPath, &script.Config{Run: "false"})
+	failedEntry.SetState(script.StateFailed)
+
+	idleEntry, _ := d.scriptRegistry.Register("idle", projectPath, &script.Config{Run: "echo"})
+	// idleEntry stays at StateIdle (default)
+
+	reconciled := d.reconcileScriptStates(projectPath)
+	if len(reconciled) != 0 {
+		t.Errorf("Expected 0 reconciled scripts (all in terminal states), got %d", len(reconciled))
+	}
+
+	// States should be unchanged
+	if stoppedEntry.State() != script.StateStopped {
+		t.Errorf("stopped script should remain Stopped, got %s", stoppedEntry.State())
+	}
+	if failedEntry.State() != script.StateFailed {
+		t.Errorf("failed script should remain Failed, got %s", failedEntry.State())
+	}
+	if idleEntry.State() != script.StateIdle {
+		t.Errorf("idle script should remain Idle, got %s", idleEntry.State())
+	}
+}
+
 func TestCleanupSessionResources_ClearsScriptRegistry(t *testing.T) {
 	// The real bug: CleanupSessionResources must remove script entries from
 	// the registry when the last session disconnects. Otherwise, the next
