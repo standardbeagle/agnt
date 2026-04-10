@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -193,10 +194,18 @@ func stripProjectPrefix(id string) string {
 	return id
 }
 
+// startingAnimFrames are cycled through when a process is in "starting" state.
+// The animation provides a subtle visual pulse using different circle glyphs.
+var startingAnimFrames = []string{"\u25cc", "\u25ce", "\u25c9", "\u25ce"}
+
+// restartingAnimFrames are cycled through when a process is in "restarting" state.
+var restartingAnimFrames = []string{"\u25cc", "\u25ce", "\u25c9", "\u25ce"}
+
 // processStateIcon returns a distinct shape and color for a process state.
 // Uses different shapes for accessibility (not just color).
 // When hasAlerts is true and state is "running", shows a warning indicator.
-func processStateIcon(state string, hasAlerts bool) (icon, color string) {
+// The frame parameter drives animation for starting/restarting states.
+func processStateIcon(state string, hasAlerts bool, frame int) (icon, color string) {
 	switch state {
 	case "running":
 		if hasAlerts {
@@ -208,9 +217,11 @@ func processStateIcon(state string, hasAlerts bool) (icon, color string) {
 	case "stopped":
 		return "\u2717", FgYellow // X = stopped/exited
 	case "starting":
-		return "\u25cc", FgCyan // Dashed circle = starting
+		idx := frame % len(startingAnimFrames)
+		return startingAnimFrames[idx], FgCyan // Animated circle = starting
 	case "restarting":
-		return "\u25cc", FgYellow // Dashed circle = restarting
+		idx := frame % len(restartingAnimFrames)
+		return restartingAnimFrames[idx], FgYellow // Animated circle = restarting
 	case "idle":
 		return "\u25cb", FgBrightBlack // Empty circle = idle/never started
 	default:
@@ -293,6 +304,11 @@ type Renderer struct {
 	lastPanelCol   int // column of the cached content area
 	lastPanelWidth int // width of the cached content area
 	lastPanelAvail int // available lines in the content area
+
+	// Animation frame counter for starting-state indicator. Incremented
+	// atomically on each DrawIndicator call; read by processStateIcon
+	// to produce frame-based animation when a process is starting.
+	animFrame atomic.Int32
 }
 
 // NewRenderer creates a new Renderer.
@@ -348,6 +364,9 @@ func (r *Renderer) DrawIndicator(status Status) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	// Advance animation frame on each draw cycle
+	frame := int(r.animFrame.Add(1))
+
 	// Save cursor, hide it, move to bottom
 	r.write(CursorSave + CursorHide)
 	r.moveTo(r.height, 1)
@@ -370,7 +389,7 @@ func (r *Renderer) DrawIndicator(status Status) {
 
 	// Per-script state icons with contextual emoji (persistent across restarts)
 	for _, s := range status.Scripts {
-		icon, color := processStateIcon(s.State, s.HasAlerts)
+		icon, color := processStateIcon(s.State, s.HasAlerts, frame)
 		label := processEmoji(s.Name, s.Command)
 		parts = append(parts, fmt.Sprintf("%s %s%s%s", label, color, icon, Reset))
 	}
@@ -957,7 +976,7 @@ func (r *Renderer) DrawDashboard(menu Menu, selectedIndex int, status Status) {
 			}
 
 			r.moveTo(row, panelCol+2)
-			icon, iconColor := processStateIcon(script.State, script.HasAlerts)
+			icon, iconColor := processStateIcon(script.State, script.HasAlerts, 0)
 
 			nameStr := script.Name
 			if len(nameStr) > contentWidth-15 {
@@ -1362,7 +1381,7 @@ func (r *Renderer) drawOverviewContent(startRow, col, width, maxRows int, status
 				r.write(Reverse)
 			}
 
-			icon, iconColor := processStateIcon(script.State, script.HasAlerts)
+			icon, iconColor := processStateIcon(script.State, script.HasAlerts, 0)
 
 			nameStr := script.Name
 			if len(nameStr) > width-20 {

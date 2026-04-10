@@ -458,6 +458,15 @@ func runWithPTY(ctx context.Context, args []string, socketPath string, sessionCo
 		}()
 	}
 
+	// Start splash text to fill the gap between PTY start and first child output.
+	// The splash shows rotating tips above the protected status bar area.
+	// It clears itself when the ActivityMonitor detects first output from the child.
+	var startupSplash *overlay.StartupSplash
+	if outputGate != nil {
+		startupSplash = overlay.NewStartupSplash(outputGate, width, height)
+		startupSplash.Start()
+	}
+
 	// Display autostart results in the overlay status bar. Errors fall back to
 	// the output gate since they need multiple lines.
 	wg.Add(1)
@@ -627,6 +636,11 @@ func runWithPTY(ctx context.Context, args []string, socketPath string, sessionCo
 			daemonHandle.BroadcastOutputPreview(lines)
 		}
 
+		// Clear splash text on first child output
+		if startupSplash != nil {
+			activityCfg.OnFirstActivity = startupSplash.OnFirstActivity()
+		}
+
 		// Set up alert scanner for process output monitoring
 		alertScanner := setupAlertScanner(projectPath, sessionCode, netOverlay, daemonHandle, func() overlay.ActivityState {
 			if activityMonitor != nil {
@@ -669,6 +683,11 @@ func runWithPTY(ctx context.Context, args []string, socketPath string, sessionCo
 	// Stop input router if running
 	if inputRouter != nil {
 		inputRouter.Stop()
+	}
+
+	// Stop splash if still active
+	if startupSplash != nil {
+		startupSplash.Stop()
 	}
 
 	// Stop output filter if running

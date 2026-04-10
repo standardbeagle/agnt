@@ -396,49 +396,49 @@ func TestDefaultConfig(t *testing.T) {
 
 func TestProcessStateIconHealthy(t *testing.T) {
 	// Running without alerts = green circle
-	icon, color := processStateIcon("running", false)
+	icon, color := processStateIcon("running", false, 0)
 	assert.Equal(t, "\u25cf", icon)
 	assert.Equal(t, FgGreen, color)
 }
 
 func TestProcessStateIconWithAlerts(t *testing.T) {
 	// Running with alerts = yellow square
-	icon, color := processStateIcon("running", true)
+	icon, color := processStateIcon("running", true, 0)
 	assert.Equal(t, "\u25a0", icon)
 	assert.Equal(t, FgYellow, color)
 }
 
 func TestProcessStateIconFailed(t *testing.T) {
 	// Failed ignores hasAlerts (already an error state)
-	icon, color := processStateIcon("failed", false)
+	icon, color := processStateIcon("failed", false, 0)
 	assert.Equal(t, "\u2717", icon)
 	assert.Equal(t, FgRed, color)
 
-	icon2, color2 := processStateIcon("failed", true)
+	icon2, color2 := processStateIcon("failed", true, 0)
 	assert.Equal(t, icon, icon2)
 	assert.Equal(t, color, color2)
 }
 
 func TestProcessStateIconStopped(t *testing.T) {
-	icon, color := processStateIcon("stopped", false)
+	icon, color := processStateIcon("stopped", false, 0)
 	assert.Equal(t, "\u2717", icon)
 	assert.Equal(t, FgYellow, color)
 }
 
 func TestProcessStateIconStarting(t *testing.T) {
-	icon, color := processStateIcon("starting", false)
+	icon, color := processStateIcon("starting", false, 0)
 	assert.Equal(t, "\u25cc", icon)
 	assert.Equal(t, FgCyan, color)
 }
 
 func TestProcessStateIconIdle(t *testing.T) {
-	icon, color := processStateIcon("idle", false)
+	icon, color := processStateIcon("idle", false, 0)
 	assert.Equal(t, "\u25cb", icon)
 	assert.Equal(t, FgBrightBlack, color)
 }
 
 func TestProcessStateIconUnknown(t *testing.T) {
-	icon, color := processStateIcon("something-else", false)
+	icon, color := processStateIcon("something-else", false, 0)
 	assert.Equal(t, "\u25cb", icon)
 	assert.Equal(t, FgBrightBlack, color)
 }
