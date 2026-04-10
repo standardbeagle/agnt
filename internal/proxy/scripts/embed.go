@@ -39,8 +39,23 @@ var (
 	//go:embed accessibility.js
 	accessibilityJS string
 
-	//go:embed audit.js
-	auditJS string
+	//go:embed audit-utils.js
+	auditUtilsJS string
+
+	//go:embed audit-dom.js
+	auditDomJS string
+
+	//go:embed audit-css.js
+	auditCssJS string
+
+	//go:embed audit-security.js
+	auditSecurityJS string
+
+	//go:embed audit-performance.js
+	auditPerformanceJS string
+
+	//go:embed audit-quality.js
+	auditQualityJS string
 
 	//go:embed interaction.js
 	interactionJS string
@@ -213,9 +228,34 @@ func buildCombinedScript() string {
 	sb.WriteString(wrapModule(accessibilityJS))
 	sb.WriteString("\n\n")
 
-	// 13. Audit (depends on utils)
-	sb.WriteString("  // Audit module\n")
-	sb.WriteString(wrapModule(auditJS))
+	// 13. Audit utils (shared audit helpers)
+	sb.WriteString("  // Audit utilities module\n")
+	sb.WriteString(wrapModule(auditUtilsJS))
+	sb.WriteString("\n\n")
+
+	// 13a. Audit DOM (depends on utils)
+	sb.WriteString("  // Audit DOM module\n")
+	sb.WriteString(wrapModule(auditDomJS))
+	sb.WriteString("\n\n")
+
+	// 13b. Audit CSS (depends on utils)
+	sb.WriteString("  // Audit CSS module\n")
+	sb.WriteString(wrapModule(auditCssJS))
+	sb.WriteString("\n\n")
+
+	// 13c. Audit security (depends on utils, audit-utils)
+	sb.WriteString("  // Audit security module\n")
+	sb.WriteString(wrapModule(auditSecurityJS))
+	sb.WriteString("\n\n")
+
+	// 13d. Audit performance (depends on utils, audit-utils)
+	sb.WriteString("  // Audit performance module\n")
+	sb.WriteString(wrapModule(auditPerformanceJS))
+	sb.WriteString("\n\n")
+
+	// 13e. Audit quality (depends on utils, all other audit modules)
+	sb.WriteString("  // Audit quality module\n")
+	sb.WriteString(wrapModule(auditQualityJS))
 	sb.WriteString("\n\n")
 
 	// 14. Interaction tracking (depends on utils, core)
@@ -375,7 +415,12 @@ func GetScriptNames() []string {
 		"interactive.js",
 		"capture.js",
 		"accessibility.js",
-		"audit.js",
+		"audit-utils.js",
+		"audit-dom.js",
+		"audit-css.js",
+		"audit-security.js",
+		"audit-performance.js",
+		"audit-quality.js",
 		"interaction.js",
 		"mutation.js",
 		"toast.js",
