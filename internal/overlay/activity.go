@@ -55,6 +55,11 @@ type ActivityMonitor struct {
 
 	// Per-line callback for alert scanning
 	onOutputLine func(string)
+
+	// One-shot callback fired the first time the monitor transitions to active.
+	// Used by StartupSplash to clear itself when child output begins.
+	onFirstActivity    func()
+	firstActivityFired atomic.Bool
 }
 
 // ActivityMonitorConfig configures the activity monitor.
@@ -99,6 +104,10 @@ type ActivityMonitorConfig struct {
 	// OnOutputLine is called with each complete, cleaned line of output.
 	// Used by AlertScanner to detect error/warning patterns.
 	OnOutputLine func(string)
+
+	// OnFirstActivity is called once when the monitor first transitions to active state.
+	// Used by StartupSplash to clear splash text when child output begins.
+	OnFirstActivity func()
 }
 
 // DefaultActivityMonitorConfig returns the default configuration.
@@ -147,6 +156,7 @@ func NewActivityMonitor(w io.Writer, cfg ActivityMonitorConfig) *ActivityMonitor
 		showDoneMessage:   cfg.ShowDoneMessage,
 		doneMessage:       cfg.DoneMessage,
 		onOutputLine:      cfg.OnOutputLine,
+		onFirstActivity:   cfg.OnFirstActivity,
 		stopCh:            make(chan struct{}),
 	}
 
@@ -431,6 +441,10 @@ func (am *ActivityMonitor) setState(newState ActivityState) {
 				am.previewMu.Unlock()
 				am.scheduleBroadcast()
 			}
+		}
+		// Fire one-shot first-activity callback on transition to active
+		if newState == ActivityActive && am.onFirstActivity != nil && am.firstActivityFired.CompareAndSwap(false, true) {
+			go am.onFirstActivity()
 		}
 		if am.onStateChange != nil {
 			am.onStateChange(newState)
