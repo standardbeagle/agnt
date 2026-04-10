@@ -46,6 +46,8 @@ func (d *Daemon) restoreProxies() {
 			continue
 		}
 
+		d.wireProxyLogger(proxyServer)
+
 		// Configure overlay endpoint: prefer session-scoped, fall back to global
 		if pc.Path != "" {
 			if session, ok := d.sessionRegistry.FindByDirectory(pc.Path); ok && session.OverlayPath != "" {

@@ -122,7 +122,7 @@ func (d *Daemon) hubHandleRestartAll(ctx context.Context, conn *hubpkg.Connectio
 
 	// Restart proxies
 	for _, pm := range proxiesToRestart {
-		_, err := d.proxym.Create(ctx, proxy.ProxyConfig{
+		proxyServer, err := d.proxym.Create(ctx, proxy.ProxyConfig{
 			ID:            pm.ID,
 			TargetURL:     pm.TargetURL,
 			ListenPort:    pm.Port,
@@ -142,6 +142,7 @@ func (d *Daemon) hubHandleRestartAll(ctx context.Context, conn *hubpkg.Connectio
 			})
 			proxyFailed++
 		} else {
+			d.wireProxyLogger(proxyServer)
 			proxyRestarted++
 		}
 	}

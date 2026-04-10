@@ -105,6 +105,8 @@ func (d *Daemon) hubHandleProxyStart(ctx context.Context, conn *hubpkg.Connectio
 		return conn.WriteErr(hubproto.ErrInternal, err.Error())
 	}
 
+	d.wireProxyLogger(proxyServer)
+
 	// Find session for this project to get session-specific overlay endpoint
 	if path != "" {
 		normalizedPath := normalizePath(path)
@@ -439,6 +441,8 @@ func (d *Daemon) hubHandleProxyRestart(ctx context.Context, conn *hubpkg.Connect
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("failed to restart proxy: %v", err))
 	}
+
+	d.wireProxyLogger(newProxy)
 
 	// Persist the new proxy state
 	if d.stateMgr != nil {

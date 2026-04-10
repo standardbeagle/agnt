@@ -91,6 +91,8 @@ func (d *Daemon) hubHandleBrowserStart(ctx context.Context, conn *hubpkg.Connect
 				return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("failed to auto-start proxy: %v", err))
 			}
 
+			d.wireProxyLogger(proxyServer)
+
 			// Configure overlay endpoint
 			if overlayEndpoint := d.OverlayEndpoint(); overlayEndpoint != "" {
 				proxyServer.SetOverlayEndpoint(overlayEndpoint)

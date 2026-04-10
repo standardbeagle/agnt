@@ -250,3 +250,14 @@ func (d *Daemon) hubHandleDetect(ctx context.Context, conn *hubpkg.Connection, c
 
 	return conn.WriteJSON(data)
 }
+
+// wireProxyLogger connects a proxy's traffic logger to the alert hub
+// so that log entries are broadcast to active stream sinks.
+func (d *Daemon) wireProxyLogger(server *proxy.ProxyServer) {
+	if d.alertHub == nil {
+		return
+	}
+	server.Logger().SetOnLogEntry(func(entry proxy.LogEntry) {
+		d.alertHub.BroadcastLogEntry(entry, server.ID)
+	})
+}
