@@ -1251,60 +1251,111 @@
       'white-space: nowrap'
     ].join(';'),
 
-    // Dropdown menu
-    dropdownMenu: [
+    // Mega menu (audit dropdown)
+    megaMenu: [
       'position: absolute',
       'bottom: calc(100% + 4px)',
       'left: 0',
-      'min-width: 180px',
+      'width: 480px',
+      'max-width: calc(100vw - 16px)',
       'background: ' + TOKENS.colors.surface,
       'border: 1px solid ' + TOKENS.colors.border,
       'border-radius: ' + TOKENS.radius.md,
       'box-shadow: ' + TOKENS.shadow.lg,
       'z-index: 2147483648',
-      'overflow: hidden',
       'opacity: 0',
       'transform: translateY(4px)',
       'pointer-events: none',
       'transition: opacity 0.15s ease, transform 0.15s ease'
     ].join(';'),
 
-    dropdownMenuVisible: [
+    megaMenuVisible: [
       'opacity: 1',
       'transform: translateY(0)',
       'pointer-events: auto'
     ].join(';'),
 
-    // Dropdown menu item
-    dropdownItem: [
-      'display: flex',
-      'align-items: center',
-      'gap: 8px',
-      'padding: 10px 12px',
-      'font-size: 13px',
+    // Top row of mega menu: 4 columns for the first 4 sections
+    megaMenuTopRow: [
+      'display: grid',
+      'grid-template-columns: 1fr 1fr 1fr 1fr',
+      'gap: 0'
+    ].join(';'),
+
+    // Bottom row of mega menu: Technical section spanning full width
+    megaMenuBottomRow: [
+      'border-top: 1px solid ' + TOKENS.colors.border
+    ].join(';'),
+
+    // Column within mega menu
+    megaMenuColumn: [
+      'padding: ' + TOKENS.spacing.sm + ' 0',
+      'border-right: 1px solid ' + TOKENS.colors.border
+    ].join(';'),
+
+    megaMenuColumnLast: [
+      'border-right: none'
+    ].join(';'),
+
+    // Column header in mega menu
+    megaMenuColumnHeader: [
+      'padding: 4px ' + TOKENS.spacing.sm,
+      'font-size: 10px',
+      'font-weight: 600',
+      'color: ' + TOKENS.colors.textMuted,
+      'text-transform: uppercase',
+      'letter-spacing: 0.5px',
+      'margin-bottom: 2px'
+    ].join(';'),
+
+    // Menu item with label + description blurb
+    megaMenuItem: [
+      'display: block',
+      'padding: 5px ' + TOKENS.spacing.sm,
+      'font-size: 12px',
       'color: ' + TOKENS.colors.text,
       'cursor: pointer',
       'transition: background 0.1s ease',
       'border: none',
       'background: none',
       'width: 100%',
-      'text-align: left'
+      'text-align: left',
+      'line-height: 1.3'
     ].join(';'),
 
-    dropdownItemHover: [
+    megaMenuItemHover: [
       'background: ' + TOKENS.colors.surfaceAlt
     ].join(';'),
 
-    // Dropdown section header
-    dropdownHeader: [
-      'padding: 6px 12px',
+    megaMenuItemLabel: [
+      'font-weight: 600',
+      'font-size: 12px',
+      'color: ' + TOKENS.colors.text
+    ].join(';'),
+
+    megaMenuItemDesc: [
+      'font-weight: 400',
+      'font-size: 10px',
+      'color: ' + TOKENS.colors.textMuted,
+      'display: block',
+      'margin-top: 1px'
+    ].join(';'),
+
+    // Technical section: 3-column grid spanning full width
+    megaMenuTechnicalGrid: [
+      'display: grid',
+      'grid-template-columns: 1fr 1fr 1fr',
+      'padding: ' + TOKENS.spacing.sm + ' 0'
+    ].join(';'),
+
+    megaMenuTechnicalHeader: [
+      'padding: 4px ' + TOKENS.spacing.sm,
       'font-size: 10px',
       'font-weight: 600',
       'color: ' + TOKENS.colors.textMuted,
       'text-transform: uppercase',
       'letter-spacing: 0.5px',
-      'border-bottom: 1px solid ' + TOKENS.colors.border,
-      'background: ' + TOKENS.colors.surfaceAlt
+      'border-top: none'
     ].join(';'),
 
     // Tab styles
@@ -2531,7 +2582,7 @@
     container.appendChild(btn);
 
     var menu = document.createElement('div');
-    menu.style.cssText = STYLES.dropdownMenu + ';max-height:400px;overflow-y:auto';
+    menu.style.cssText = STYLES.megaMenu;
     menu.id = '__devtool-audit-menu';
 
     // Group actions by category
@@ -2543,43 +2594,84 @@
       { label: 'Technical', ids: ['domComplexity', 'css', 'performance'] }
     ];
 
-    // Build menu with sections
-    sections.forEach(function(section, sectionIndex) {
-      // Add section header
-      var header = document.createElement('div');
-      header.style.cssText = STYLES.dropdownHeader;
-      if (sectionIndex > 0) {
-        header.style.borderTop = '1px solid ' + TOKENS.colors.border;
-      }
-      header.textContent = section.label;
-      menu.appendChild(header);
+    // Helper: build a menu item with label + description blurb
+    function buildMenuItem(action) {
+      var item = document.createElement('button');
+      item.style.cssText = STYLES.megaMenuItem;
+      var labelSpan = document.createElement('span');
+      labelSpan.style.cssText = STYLES.megaMenuItemLabel;
+      labelSpan.textContent = action.label;
+      var descSpan = document.createElement('span');
+      descSpan.style.cssText = STYLES.megaMenuItemDesc;
+      descSpan.textContent = action.description;
+      item.appendChild(labelSpan);
+      item.appendChild(descSpan);
 
-      // Add items in this section
+      item.onmouseenter = function() {
+        item.style.cssText = STYLES.megaMenuItem + ';' + STYLES.megaMenuItemHover;
+      };
+      item.onmouseleave = function() {
+        item.style.cssText = STYLES.megaMenuItem;
+      };
+
+      item.onclick = function(e) {
+        e.stopPropagation();
+        closeDropdown();
+        runAuditAction(action);
+      };
+
+      return item;
+    }
+
+    // Top row: first 4 sections as columns
+    var topSections = sections.slice(0, 4);
+    var topRow = document.createElement('div');
+    topRow.style.cssText = STYLES.megaMenuTopRow;
+
+    topSections.forEach(function(section, colIndex) {
+      var col = document.createElement('div');
+      col.style.cssText = STYLES.megaMenuColumn;
+      if (colIndex === topSections.length - 1) {
+        col.style.cssText = STYLES.megaMenuColumn + ';' + STYLES.megaMenuColumnLast;
+      }
+
+      var header = document.createElement('div');
+      header.style.cssText = STYLES.megaMenuColumnHeader;
+      header.textContent = section.label;
+      col.appendChild(header);
+
       section.ids.forEach(function(actionId) {
         var action = AUDIT_ACTIONS.find(function(a) { return a.id === actionId; });
         if (!action) return;
-
-        var item = document.createElement('button');
-        item.style.cssText = STYLES.dropdownItem;
-        item.innerHTML = action.label;
-        item.title = action.description;
-
-        item.onmouseenter = function() {
-          item.style.cssText = STYLES.dropdownItem + ';' + STYLES.dropdownItemHover;
-        };
-        item.onmouseleave = function() {
-          item.style.cssText = STYLES.dropdownItem;
-        };
-
-        item.onclick = function(e) {
-          e.stopPropagation();
-          closeDropdown();
-          runAuditAction(action);
-        };
-
-        menu.appendChild(item);
+        col.appendChild(buildMenuItem(action));
       });
+
+      topRow.appendChild(col);
     });
+
+    menu.appendChild(topRow);
+
+    // Bottom row: Technical section spanning full width
+    var techSection = sections[4];
+    var bottomRow = document.createElement('div');
+    bottomRow.style.cssText = STYLES.megaMenuBottomRow;
+
+    var techHeader = document.createElement('div');
+    techHeader.style.cssText = STYLES.megaMenuTechnicalHeader;
+    techHeader.textContent = techSection.label;
+    bottomRow.appendChild(techHeader);
+
+    var techGrid = document.createElement('div');
+    techGrid.style.cssText = STYLES.megaMenuTechnicalGrid;
+
+    techSection.ids.forEach(function(actionId) {
+      var action = AUDIT_ACTIONS.find(function(a) { return a.id === actionId; });
+      if (!action) return;
+      techGrid.appendChild(buildMenuItem(action));
+    });
+
+    bottomRow.appendChild(techGrid);
+    menu.appendChild(bottomRow);
 
     container.appendChild(menu);
 
@@ -2588,7 +2680,18 @@
 
     function openDropdown() {
       isOpen = true;
-      menu.style.cssText = STYLES.dropdownMenu + ';' + STYLES.dropdownMenuVisible;
+      menu.style.cssText = STYLES.megaMenu + ';' + STYLES.megaMenuVisible;
+      // Responsive: reduce columns on narrow viewports
+      var vw = window.innerWidth;
+      if (vw < 360) {
+        topRow.style.gridTemplateColumns = '1fr 1fr';
+        techGrid.style.gridTemplateColumns = '1fr 1fr';
+      } else if (vw < 480) {
+        topRow.style.gridTemplateColumns = '1fr 1fr';
+      } else {
+        topRow.style.gridTemplateColumns = '1fr 1fr 1fr 1fr';
+        techGrid.style.gridTemplateColumns = '1fr 1fr 1fr';
+      }
       btn.style.background = TOKENS.colors.surface;
       btn.style.borderColor = TOKENS.colors.primary;
       btn.style.color = TOKENS.colors.primary;
@@ -2597,7 +2700,7 @@
 
     function closeDropdown() {
       isOpen = false;
-      menu.style.cssText = STYLES.dropdownMenu;
+      menu.style.cssText = STYLES.megaMenu;
       btn.style.background = 'transparent';
       btn.style.borderColor = TOKENS.colors.border;
       btn.style.color = TOKENS.colors.textMuted;
