@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/browser"
+	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/proxy"
 )
@@ -107,6 +108,87 @@ func (d *Daemon) cleanupOrphans() {
 	if err := d.pidTracker.SetDaemonPID(os.Getpid()); err != nil {
 		debug.Log("daemon", "failed to set daemon PID: %v", err)
 	}
+}
+
+// startupPortCleanup scans ports referenced by persisted proxy state and kills
+// any unmanaged processes holding them. This runs after cleanupOrphans() to
+// handle the race where orphaned processes were killed but ports remain bound
+// by zombie child processes that escaped the process group.
+// Returns the number of ports cleaned.
+func (d *Daemon) startupPortCleanup(ctx context.Context) int {
+	ports := d.collectPersistedPorts()
+	if len(ports) == 0 {
+		return 0
+	}
+
+	managedPIDs := d.collectManagedPIDs()
+	selfPID := os.Getpid()
+	cleaned := 0
+
+	for _, port := range ports {
+		pids := config.FindPIDsByPort(ctx, port)
+		var unmanaged []int
+		for _, pid := range pids {
+			if pid == selfPID || managedPIDs[pid] {
+				continue
+			}
+			unmanaged = append(unmanaged, pid)
+		}
+		if len(unmanaged) == 0 {
+			continue
+		}
+
+		procName := config.ProcessNameByPID(unmanaged[0])
+		debug.Info("daemon", "startup port cleanup: port %d held by %s (PIDs: %v), killing", port, procName, unmanaged)
+		d.startupErrorStore.Add(&StartupLogEntry{
+			ProcessID: "",
+			Level:     "info",
+			EventType: "startup_port_cleanup",
+			Message:   fmt.Sprintf("port %d held by %s (PIDs: %v), killing", port, procName, unmanaged),
+			Port:      port,
+			Timestamp: time.Now(),
+		})
+
+		if killed, err := d.hub.ProcessManager().KillProcessByPort(ctx, port); err != nil {
+			debug.Warn("daemon", "startup port cleanup: failed to kill process on port %d: %v", port, err)
+			d.startupErrorStore.Add(&StartupLogEntry{
+				ProcessID: "",
+				Level:     "warning",
+				EventType: "startup_port_cleanup_failed",
+				Message:   fmt.Sprintf("failed to kill process on port %d: %v", port, err),
+				Port:      port,
+				Timestamp: time.Now(),
+			})
+		} else {
+			debug.Log("daemon", "startup port cleanup: killed %d process(es) on port %d", len(killed), port)
+			if waitPortFree(port, 2*time.Second) {
+				cleaned++
+			} else {
+				debug.Warn("daemon", "startup port cleanup: port %d still in use after kill", port)
+			}
+		}
+	}
+
+	if cleaned > 0 {
+		debug.Info("daemon", "startup port cleanup: freed %d port(s)", cleaned)
+	}
+	return cleaned
+}
+
+// collectPersistedPorts returns deduplicated ports from persisted proxy state.
+func (d *Daemon) collectPersistedPorts() []int {
+	if d.stateMgr == nil {
+		return nil
+	}
+	seen := make(map[int]bool)
+	var ports []int
+	for _, pc := range d.stateMgr.GetProxies() {
+		if pc.Port > 0 && !seen[pc.Port] {
+			seen[pc.Port] = true
+			ports = append(ports, pc.Port)
+		}
+	}
+	return ports
 }
 
 func (d *Daemon) Stop(ctx context.Context) error {

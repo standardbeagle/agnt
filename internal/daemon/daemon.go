@@ -413,6 +413,11 @@ func (d *Daemon) Start() error {
 	// scripts are started via StartScript/RunAutostart, not at daemon startup.
 	d.cleanupOrphans()
 
+	// Clean up orphaned port bindings from persisted proxy state.
+	// This handles the race where orphaned processes were killed above but
+	// child/zombie processes still hold the ports.
+	d.startupPortCleanup(d.ctx)
+
 	// Restore proxies from persisted state
 	d.restoreProxies()
 
