@@ -1,12 +1,16 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net"
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/protocol"
+	"github.com/standardbeagle/agnt/internal/proxy"
 	"github.com/standardbeagle/go-cli-server/client"
 )
 
@@ -688,4 +692,69 @@ func (c *Client) AutostartClearPorts(projectPath string) (map[string]interface{}
 // AutostartContinue resumes autostart without killing port blockers.
 func (c *Client) AutostartContinue(projectPath string) (map[string]interface{}, error) {
 	return c.conn.Request(protocol.VerbAutostart, protocol.SubVerbContinue, projectPath).JSON()
+}
+
+// StreamEvents opens a long-lived event stream from the daemon.
+// It creates a dedicated connection and calls handler for each event received.
+// The stream runs until ctx is cancelled or the connection drops.
+func (c *Client) StreamEvents(ctx context.Context, filter protocol.StreamEventFilter, handler func(proxy.LogEntry) error) error {
+	conn, err := net.Dial("unix", c.conn.SocketPath())
+	if err != nil {
+		return fmt.Errorf("stream connect failed: %w", err)
+	}
+	defer conn.Close()
+
+	w := protocol.NewWriter(conn)
+	filterData, _ := json.Marshal(filter)
+	if err := w.WriteCommandWithSubVerb(protocol.VerbStreamEvents, "", nil, filterData); err != nil {
+		return fmt.Errorf("stream send failed: %w", err)
+	}
+
+	p := protocol.NewParser(conn)
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		default:
+		}
+
+		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+
+		resp, err := p.ParseResponse()
+		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				continue
+			}
+			if err == io.EOF {
+				return nil
+			}
+			if ctx.Err() != nil {
+				return nil
+			}
+			return fmt.Errorf("stream read failed: %w", err)
+		}
+
+		switch resp.Type {
+		case protocol.ResponseOK:
+			continue
+		case protocol.ResponseChunk:
+			if len(resp.Data) > 0 {
+				if string(resp.Data) == `{"type":"keepalive"}` {
+					continue
+				}
+				var entry proxy.LogEntry
+				if err := json.Unmarshal(resp.Data, &entry); err != nil {
+					debug.Log("client", "StreamEvents: failed to unmarshal event: %v", err)
+					continue
+				}
+				if err := handler(entry); err != nil {
+					return err
+				}
+			}
+		case protocol.ResponseEnd:
+			return nil
+		case protocol.ResponseErr:
+			return fmt.Errorf("server error: [%s] %s", resp.Code, resp.Message)
+		}
+	}
 }
