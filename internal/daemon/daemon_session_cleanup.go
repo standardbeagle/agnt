@@ -10,8 +10,79 @@ import (
 	"github.com/standardbeagle/go-cli-server/script"
 )
 
+// cleanupGracePeriod is how long to wait before actually cleaning up session
+// resources after a connection drops. This allows the ResilientClient to
+// reconnect and re-register without killing processes. Must be longer than
+// the typical reconnect cycle (heartbeat interval * max failures + backoff).
+const cleanupGracePeriod = 5 * time.Second
+
+// cancelPendingCleanup cancels any deferred cleanup for the given session code.
+// Called when a session is re-registered (reconnection) to prevent killing
+// processes that are still running.
+func (d *Daemon) cancelPendingCleanup(sessionCode string) {
+	if val, ok := d.pendingCleanups.LoadAndDelete(sessionCode); ok {
+		val.(*time.Timer).Stop()
+		debug.Log("daemon", "cancelled pending cleanup for session %s (re-registered)", sessionCode)
+	}
+}
+
+// CleanupSessionResources performs immediate session resource cleanup.
+// Used for explicit UNREGISTER and direct calls. For connection drops, use
+// CleanupSessionResourcesDeferred instead.
 func (d *Daemon) CleanupSessionResources(sessionCode string) {
+	// Cancel any pending deferred cleanup first
+	d.cancelPendingCleanup(sessionCode)
+	d.doCleanup(sessionCode)
+}
+
+// CleanupSessionResourcesDeferred schedules resource cleanup with a grace period.
+// Called when a connection drops unexpectedly. The ResilientClient may reconnect
+// and re-register the same session within seconds — the grace period prevents
+// killing processes during that window. If the session is re-registered before
+// the timer fires, the cleanup is cancelled entirely.
+func (d *Daemon) CleanupSessionResourcesDeferred(sessionCode string) {
 	// Get session to find project path
+	session, ok := d.sessionRegistry.Get(sessionCode)
+	if !ok {
+		debug.Log("daemon", "session %s not found for deferred cleanup", sessionCode)
+		return
+	}
+
+	projectPath := session.ProjectPath
+	if projectPath == "" {
+		debug.Log("daemon", "session %s has no project path, skipping deferred cleanup", sessionCode)
+		d.sessionRegistry.Unregister(sessionCode)
+		return
+	}
+
+	debug.Log("daemon", "deferring cleanup for session %s (project: %s, grace: %s)", sessionCode, projectPath, cleanupGracePeriod)
+
+	// Cancel any previously scheduled cleanup for this session (e.g., rapid
+	// reconnect/disconnect cycles).
+	d.cancelPendingCleanup(sessionCode)
+
+	// Schedule the actual cleanup. If the session is re-registered before the
+	// timer fires (ResilientClient reconnect → OnReconnect → SessionRegister),
+	// cancelPendingCleanup will cancel this timer and processes stay alive.
+	timer := time.AfterFunc(cleanupGracePeriod, func() {
+		d.pendingCleanups.Delete(sessionCode)
+
+		// Re-check: if the session was re-registered during the grace period,
+		// it will exist in the registry with a fresh LastSeen. Skip cleanup.
+		if s, ok := d.sessionRegistry.Get(sessionCode); ok {
+			if time.Since(s.LastSeen) < cleanupGracePeriod {
+				debug.Log("daemon", "skipping deferred cleanup for session %s — re-registered during grace period", sessionCode)
+				return
+			}
+		}
+
+		d.doCleanup(sessionCode)
+	})
+	d.pendingCleanups.Store(sessionCode, timer)
+}
+
+// doCleanup performs the actual session resource cleanup.
+func (d *Daemon) doCleanup(sessionCode string) {
 	session, ok := d.sessionRegistry.Get(sessionCode)
 	if !ok {
 		debug.Log("daemon", "session %s not found for cleanup", sessionCode)
@@ -21,7 +92,6 @@ func (d *Daemon) CleanupSessionResources(sessionCode string) {
 	projectPath := session.ProjectPath
 	if projectPath == "" {
 		debug.Log("daemon", "session %s has no project path, skipping resource cleanup", sessionCode)
-		// Still unregister the session
 		d.sessionRegistry.Unregister(sessionCode)
 		return
 	}
@@ -193,6 +263,3 @@ func (d *Daemon) CleanupSessionResources(sessionCode string) {
 
 	debug.Log("daemon", "session %s cleanup complete", sessionCode)
 }
-
-// NOTE: acceptLoop is now handled by Hub - removed from Daemon.
-// Session cleanup is registered with Hub via SetSessionCleanup() in Start().

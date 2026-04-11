@@ -208,6 +208,10 @@ type Daemon struct {
 	// Pending two-phase autostarts (prompt mode)
 	pendingAutostarts sync.Map // projectPath → *pendingAutostart
 
+	// Pending session cleanups — deferred to allow reconnection to cancel them.
+	// Key: session code, Value: *time.Timer (Stop cancels, fire runs cleanup).
+	pendingCleanups sync.Map
+
 	// Per-project locks to prevent concurrent autostart during session registration.
 	// Keyed by normalized project path so only sessions for the same project serialize.
 	projectLocks sync.Map // string → *sync.Mutex
@@ -411,9 +415,9 @@ func (d *Daemon) Start() error {
 	d.registerCommands()
 
 	// Register session cleanup callback with Hub
-	// This ensures processes/proxies are stopped when sessions disconnect
+	// Uses deferred cleanup so ResilientClient reconnects don't kill processes.
 	d.hub.SetSessionCleanup(func(sessionCode string) {
-		d.CleanupSessionResources(sessionCode)
+		d.CleanupSessionResourcesDeferred(sessionCode)
 	})
 
 	// Start the Hub (handles socket creation, accept loop, client management)
