@@ -88,7 +88,12 @@ func (d *Daemon) hubHandleSessionRegister(conn *hubpkg.Connection, cmd *hubproto
 	}
 
 	if err := d.sessionRegistry.Register(session); err != nil {
-		return conn.WriteErr(hubproto.ErrAlreadyExists, err.Error())
+		// Session already exists — this is a re-registration (reconnect).
+		// Cancel any pending cleanup from the old connection and update LastSeen.
+		d.cancelPendingCleanup(code)
+		if existing, ok := d.sessionRegistry.Get(code); ok {
+			existing.UpdateLastSeen()
+		}
 	}
 
 	// Log target process startup to the startup log so the overlay shows it
