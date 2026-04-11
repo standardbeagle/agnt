@@ -200,6 +200,13 @@ type AlertsConfig struct {
 
 	// AutoForward configures automatic forwarding of browser/proxy errors to the AI agent.
 	AutoForward *AutoForwardConfig `kdl:"auto-forward"`
+
+	// Push configures which push channels are active for alert delivery.
+	Push *PushConfig `kdl:"push"`
+
+	// Preset names a predefined push channel configuration (e.g., "claude-code", "universal").
+	// When set, it expands into a PushConfig. An explicit Push block takes precedence.
+	Preset string `kdl:"preset"`
 }
 
 // AutoForwardConfig configures automatic error forwarding to the AI agent.
@@ -257,6 +264,81 @@ func (c *AutoForwardConfig) ShouldForwardSource(source string) bool {
 		}
 	}
 	return false
+}
+
+// PushConfig controls which push channels are active for delivering alerts
+// to the AI client. When no push config is present, all channels are enabled
+// (universal behavior).
+type PushConfig struct {
+	// MCPNotifications controls delivery via MCP session.Log().
+	// Works natively in Claude Desktop; may be dropped by other clients.
+	// Defaults to true when unset.
+	MCPNotifications *bool `kdl:"mcp-notifications"`
+
+	// PTYInjection controls delivery via stdin typing into the PTY.
+	// Universal channel that works in all clients (Claude Code, OpenCode, etc).
+	// Defaults to true when unset.
+	PTYInjection *bool `kdl:"pty-injection"`
+}
+
+// PresetPushConfig returns a PushConfig for the named preset.
+// Returns nil for unknown preset names.
+func PresetPushConfig(name string) *PushConfig {
+	switch name {
+	case "claude-code":
+		// Claude Code: MCP notifications are dropped, rely on Monitor tool.
+		// Disable PTY injection since Monitor is preferred.
+		f := false
+		t := true
+		return &PushConfig{
+			MCPNotifications: &t,
+			PTYInjection:     &f,
+		}
+	case "universal":
+		// Universal: enable all channels for maximum compatibility.
+		t := true
+		return &PushConfig{
+			MCPNotifications: &t,
+			PTYInjection:     &t,
+		}
+	default:
+		return nil
+	}
+}
+
+// MCPNotificationsEnabled returns whether MCP notification delivery is enabled.
+// Defaults to true when the config is nil or the field is unset.
+func (c *PushConfig) MCPNotificationsEnabled() bool {
+	if c == nil || c.MCPNotifications == nil {
+		return true
+	}
+	return *c.MCPNotifications
+}
+
+// PTYInjectionEnabled returns whether PTY stdin injection is enabled.
+// Defaults to true when the config is nil or the field is unset.
+func (c *PushConfig) PTYInjectionEnabled() bool {
+	if c == nil || c.PTYInjection == nil {
+		return true
+	}
+	return *c.PTYInjection
+}
+
+// GetPushConfig returns the effective PushConfig, applying presets if set.
+// If no alerts config exists, returns nil (which means all channels enabled).
+// When Preset is set and Push is nil, the preset is expanded into a PushConfig.
+// An explicit Push block takes precedence over a preset.
+func (c *AlertsConfig) GetPushConfig() *PushConfig {
+	if c == nil {
+		return nil
+	}
+	if c.Push != nil {
+		return c.Push
+	}
+	if c.Preset != "" {
+		return PresetPushConfig(c.Preset)
+	}
+	return nil
 }
 
 // AlertPatternConfig defines a custom alert pattern in configuration.
