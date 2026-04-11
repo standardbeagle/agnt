@@ -208,11 +208,12 @@ func TestSessionBasedCleanup(t *testing.T) {
 		t.Fatalf("Failed to create project2 dir: %v", err)
 	}
 
-	// Start daemon
+	// Start daemon with zero grace period so cleanup is immediate
 	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
+		SocketPath:         sockPath,
+		MaxClients:         10,
+		WriteTimeout:       5 * time.Second,
+		CleanupGracePeriod: 1, // immediate deferred cleanup
 	})
 
 	if err := daemon.Start(); err != nil {

@@ -107,6 +107,7 @@ func (d *Daemon) StartScript(ctx context.Context, cfg StartScriptConfig) (*Start
 	// Register for auto-restart if enabled
 	if cfg.AutoRestart && d.autoRestarter != nil {
 		restartConfig := DefaultAutoRestartConfig()
+		restartConfig.Enabled = true
 		if cfg.AutoRestartConfig != nil {
 			restartConfig = *cfg.AutoRestartConfig
 		}

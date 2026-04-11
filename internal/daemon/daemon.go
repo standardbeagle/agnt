@@ -136,6 +136,12 @@ type DaemonConfig struct {
 	// UpdateCheckInterval is the interval between update checks.
 	// Default: 24 hours
 	UpdateCheckInterval time.Duration
+
+	// CleanupGracePeriod is how long to wait before cleaning up session
+	// resources after a connection drops. Allows ResilientClient reconnects
+	// to cancel the cleanup. Set to 0 for immediate cleanup (tests).
+	// Default: 5s
+	CleanupGracePeriod time.Duration
 }
 
 // DefaultDaemonConfig returns sensible defaults.
@@ -149,6 +155,7 @@ func DefaultDaemonConfig() DaemonConfig {
 		EnableStatePersistence: true,
 		EnableUpdateCheck:      true,
 		UpdateCheckInterval:    24 * time.Hour,
+		CleanupGracePeriod:     5 * time.Second,
 	}
 }
 
