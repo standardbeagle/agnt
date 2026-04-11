@@ -3481,10 +3481,11 @@
     var start = null;
 
     // Block all events from reaching the page underneath (capture phase)
+    // Uses stopPropagation (not stopImmediatePropagation) so sibling
+    // handlers for mousedown/mousemove/mouseup on this overlay still fire.
     function block(e) {
       e.preventDefault();
       e.stopPropagation();
-      e.stopImmediatePropagation();
     }
 
     var blockTypes = ['mousedown', 'mouseup', 'mousemove', 'click', 'pointerdown', 'pointerup', 'pointermove', 'contextmenu'];
