@@ -443,6 +443,28 @@ Examples:
   get_errors {raw: true, limit: 50}`,
 	}, dt.makeGetErrorsHandler())
 
+	// Watch tool - returns monitor command for Claude's Monitor tool
+	addLenientTool(server, &mcp.Tool{
+		Name: "watch",
+		Description: `Get the shell command for streaming agnt events via Monitor.
+
+Returns a command string that can be passed to Claude's Monitor tool.
+Bridges the gap between the MCP client (which knows the daemon socket) and Monitor.
+
+Targets:
+  errors: Browser JS errors, HTTP errors, diagnostics
+  interactions: Panel messages, clicks, keyboard, sketch events
+  process: Process output for a specific process
+  all: All agnt events (default)
+
+Examples:
+  watch {target: "errors", proxy_id: "dev"}
+  watch {target: "interactions", proxy_id: "dev"}
+  watch {target: "process", process_id: "app"}
+  watch {target: "all"}
+  watch {}`,
+	}, dt.makeWatchHandler())
+
 	// Session tool - register via separate function for organization
 	RegisterSessionTool(server, dt)
 
