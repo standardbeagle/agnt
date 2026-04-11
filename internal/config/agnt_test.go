@@ -1334,3 +1334,274 @@ func TestParseAgntConfig_NoAutoForward(t *testing.T) {
 	require.NotNil(t, cfg.Alerts)
 	assert.Nil(t, cfg.Alerts.AutoForward)
 }
+
+func TestParsePushConfig(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		validate func(t *testing.T, cfg *AgntConfig)
+	}{
+		{
+			name:  "no push config defaults to all enabled",
+			input: `scripts {}`,
+			validate: func(t *testing.T, cfg *AgntConfig) {
+				pc := cfg.Alerts.GetPushConfig()
+				assert.Nil(t, pc, "no alerts config returns nil push config")
+			},
+		},
+		{
+			name: "alerts with no push block defaults to all enabled",
+			input: `alerts {
+	    enabled true
+	}`,
+			validate: func(t *testing.T, cfg *AgntConfig) {
+				pc := cfg.Alerts.GetPushConfig()
+				assert.Nil(t, pc, "no push block returns nil")
+			},
+		},
+		{
+			name: "push both channels enabled",
+			input: `alerts {
+	    push {
+	        mcp-notifications true
+	        pty-injection true
+	    }
+	}`,
+			validate: func(t *testing.T, cfg *AgntConfig) {
+				pc := cfg.Alerts.GetPushConfig()
+				require.NotNil(t, pc)
+				assert.True(t, pc.MCPNotificationsEnabled())
+				assert.True(t, pc.PTYInjectionEnabled())
+			},
+		},
+		{
+			name: "push both channels disabled",
+			input: `alerts {
+	    push {
+	        mcp-notifications false
+	        pty-injection false
+	    }
+	}`,
+			validate: func(t *testing.T, cfg *AgntConfig) {
+				pc := cfg.Alerts.GetPushConfig()
+				require.NotNil(t, pc)
+				assert.False(t, pc.MCPNotificationsEnabled())
+				assert.False(t, pc.PTYInjectionEnabled())
+			},
+		},
+		{
+			name: "push only mcp-notifications",
+			input: `alerts {
+	    push {
+	        mcp-notifications true
+	        pty-injection false
+	    }
+	}`,
+			validate: func(t *testing.T, cfg *AgntConfig) {
+				pc := cfg.Alerts.GetPushConfig()
+				require.NotNil(t, pc)
+				assert.True(t, pc.MCPNotificationsEnabled())
+				assert.False(t, pc.PTYInjectionEnabled())
+			},
+		},
+		{
+			name: "push only pty-injection",
+			input: `alerts {
+	    push {
+	        mcp-notifications false
+	        pty-injection true
+	    }
+	}`,
+			validate: func(t *testing.T, cfg *AgntConfig) {
+				pc := cfg.Alerts.GetPushConfig()
+				require.NotNil(t, pc)
+				assert.False(t, pc.MCPNotificationsEnabled())
+				assert.True(t, pc.PTYInjectionEnabled())
+			},
+		},
+		{
+			name: "push block with no fields defaults to all enabled",
+			input: `alerts {
+	    push {
+	    }
+	}`,
+			validate: func(t *testing.T, cfg *AgntConfig) {
+				pc := cfg.Alerts.GetPushConfig()
+				require.NotNil(t, pc)
+				assert.True(t, pc.MCPNotificationsEnabled())
+				assert.True(t, pc.PTYInjectionEnabled())
+			},
+		},
+		{
+			name: "push with only mcp-notifications set",
+			input: `alerts {
+	    push {
+	        mcp-notifications false
+	    }
+	}`,
+			validate: func(t *testing.T, cfg *AgntConfig) {
+				pc := cfg.Alerts.GetPushConfig()
+				require.NotNil(t, pc)
+				assert.False(t, pc.MCPNotificationsEnabled())
+				assert.True(t, pc.PTYInjectionEnabled(), "unset pty-injection defaults to true")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := ParseAgntConfig(tt.input)
+			require.NoError(t, err)
+			tt.validate(t, cfg)
+		})
+	}
+}
+
+func TestParsePushConfig_Presets(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		validate func(t *testing.T, cfg *AgntConfig)
+	}{
+		{
+			name: "preset claude-code",
+			input: `alerts {
+	    preset "claude-code"
+	}`,
+			validate: func(t *testing.T, cfg *AgntConfig) {
+				require.NotNil(t, cfg.Alerts)
+				assert.Equal(t, "claude-code", cfg.Alerts.Preset)
+				pc := cfg.Alerts.GetPushConfig()
+				require.NotNil(t, pc)
+				assert.True(t, pc.MCPNotificationsEnabled())
+				assert.False(t, pc.PTYInjectionEnabled())
+			},
+		},
+		{
+			name: "preset universal",
+			input: `alerts {
+	    preset "universal"
+	}`,
+			validate: func(t *testing.T, cfg *AgntConfig) {
+				require.NotNil(t, cfg.Alerts)
+				assert.Equal(t, "universal", cfg.Alerts.Preset)
+				pc := cfg.Alerts.GetPushConfig()
+				require.NotNil(t, pc)
+				assert.True(t, pc.MCPNotificationsEnabled())
+				assert.True(t, pc.PTYInjectionEnabled())
+			},
+		},
+		{
+			name: "explicit push takes precedence over preset",
+			input: `alerts {
+	    preset "claude-code"
+	    push {
+	        mcp-notifications false
+	        pty-injection true
+	    }
+	}`,
+			validate: func(t *testing.T, cfg *AgntConfig) {
+				require.NotNil(t, cfg.Alerts)
+				pc := cfg.Alerts.GetPushConfig()
+				require.NotNil(t, pc)
+				assert.False(t, pc.MCPNotificationsEnabled(), "explicit push overrides preset")
+				assert.True(t, pc.PTYInjectionEnabled(), "explicit push overrides preset")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := ParseAgntConfig(tt.input)
+			require.NoError(t, err)
+			tt.validate(t, cfg)
+		})
+	}
+}
+
+func TestPresetPushConfig(t *testing.T) {
+	t.Run("claude-code preset", func(t *testing.T) {
+		pc := PresetPushConfig("claude-code")
+		require.NotNil(t, pc)
+		assert.True(t, pc.MCPNotificationsEnabled())
+		assert.False(t, pc.PTYInjectionEnabled())
+	})
+
+	t.Run("universal preset", func(t *testing.T) {
+		pc := PresetPushConfig("universal")
+		require.NotNil(t, pc)
+		assert.True(t, pc.MCPNotificationsEnabled())
+		assert.True(t, pc.PTYInjectionEnabled())
+	})
+
+	t.Run("unknown preset returns nil", func(t *testing.T) {
+		pc := PresetPushConfig("unknown")
+		assert.Nil(t, pc)
+	})
+}
+
+func TestPushConfig_Defaults(t *testing.T) {
+	t.Run("nil config defaults to enabled", func(t *testing.T) {
+		var pc *PushConfig
+		assert.True(t, pc.MCPNotificationsEnabled())
+		assert.True(t, pc.PTYInjectionEnabled())
+	})
+
+	t.Run("empty config defaults to enabled", func(t *testing.T) {
+		pc := &PushConfig{}
+		assert.True(t, pc.MCPNotificationsEnabled())
+		assert.True(t, pc.PTYInjectionEnabled())
+	})
+
+	t.Run("explicit true", func(t *testing.T) {
+		v := true
+		pc := &PushConfig{MCPNotifications: &v, PTYInjection: &v}
+		assert.True(t, pc.MCPNotificationsEnabled())
+		assert.True(t, pc.PTYInjectionEnabled())
+	})
+
+	t.Run("explicit false", func(t *testing.T) {
+		v := false
+		pc := &PushConfig{MCPNotifications: &v, PTYInjection: &v}
+		assert.False(t, pc.MCPNotificationsEnabled())
+		assert.False(t, pc.PTYInjectionEnabled())
+	})
+}
+
+func TestAlertsConfig_GetPushConfig(t *testing.T) {
+	t.Run("nil alerts config returns nil", func(t *testing.T) {
+		var ac *AlertsConfig
+		assert.Nil(t, ac.GetPushConfig())
+	})
+
+	t.Run("alerts with no push or preset returns nil", func(t *testing.T) {
+		ac := &AlertsConfig{}
+		assert.Nil(t, ac.GetPushConfig())
+	})
+
+	t.Run("alerts with preset returns preset config", func(t *testing.T) {
+		ac := &AlertsConfig{Preset: "claude-code"}
+		pc := ac.GetPushConfig()
+		require.NotNil(t, pc)
+		assert.True(t, pc.MCPNotificationsEnabled())
+		assert.False(t, pc.PTYInjectionEnabled())
+	})
+
+	t.Run("alerts with unknown preset returns nil", func(t *testing.T) {
+		ac := &AlertsConfig{Preset: "unknown-preset"}
+		pc := ac.GetPushConfig()
+		assert.Nil(t, pc)
+	})
+
+	t.Run("explicit push takes precedence", func(t *testing.T) {
+		v := false
+		ac := &AlertsConfig{
+			Preset: "universal",
+			Push:   &PushConfig{PTYInjection: &v},
+		}
+		pc := ac.GetPushConfig()
+		require.NotNil(t, pc)
+		assert.True(t, pc.MCPNotificationsEnabled())
+		assert.False(t, pc.PTYInjectionEnabled())
+	})
+}

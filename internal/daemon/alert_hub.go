@@ -3,6 +3,7 @@ package daemon
 import (
 	"sync"
 
+	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/proxy"
 )
@@ -82,12 +83,22 @@ type AlertHub struct {
 	overlaySink OverlayAlertSink
 	mcpSinks    []MCPAlertSink
 	streamSinks []*StreamSink
+	pushConfig  *config.PushConfig
 	mu          sync.RWMutex
 }
 
 // NewAlertHub creates a new AlertHub.
 func NewAlertHub() *AlertHub {
 	return &AlertHub{}
+}
+
+// SetPushConfig sets the push channel configuration.
+// When set, Deliver checks each channel before dispatching.
+// A nil config means all channels are enabled (universal default).
+func (h *AlertHub) SetPushConfig(pc *config.PushConfig) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.pushConfig = pc
 }
 
 // SetOverlaySink sets the overlay (PTY stdin) delivery sink.
@@ -162,6 +173,7 @@ func (h *AlertHub) BroadcastLogEntry(entry proxy.LogEntry, proxyID string) {
 }
 
 // Deliver sends a pre-formatted alert message to all available sinks.
+// Checks the push config to determine which channels are enabled.
 func (h *AlertHub) Deliver(severity string, formatted string) {
 	if formatted == "" {
 		return
@@ -171,19 +183,22 @@ func (h *AlertHub) Deliver(severity string, formatted string) {
 	overlaySink := h.overlaySink
 	mcpSinks := make([]MCPAlertSink, len(h.mcpSinks))
 	copy(mcpSinks, h.mcpSinks)
+	pushCfg := h.pushConfig
 	h.mu.RUnlock()
 
 	// Try overlay (PTY stdin injection)
-	if overlaySink != nil && overlaySink.IsEnabled() {
+	if pushCfg.PTYInjectionEnabled() && overlaySink != nil && overlaySink.IsEnabled() {
 		if err := overlaySink.TypeAlert(formatted); err != nil {
 			debug.Error("alerts", "overlay delivery failed: %v", err)
 		}
 	}
 
 	// Also deliver via MCP session notifications
-	for _, sink := range mcpSinks {
-		if err := sink.SendAlert(severity, formatted); err != nil {
-			debug.Error("alerts", "MCP delivery failed: %v", err)
+	if pushCfg.MCPNotificationsEnabled() {
+		for _, sink := range mcpSinks {
+			if err := sink.SendAlert(severity, formatted); err != nil {
+				debug.Error("alerts", "MCP delivery failed: %v", err)
+			}
 		}
 	}
 }
