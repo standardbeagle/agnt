@@ -474,8 +474,8 @@ func (d *Daemon) hubHandleProcAutoRestart(ctx context.Context, conn *hubpkg.Conn
 
 	switch action {
 	case "enable":
-		// Parse optional config from JSON payload in cmd.Data
 		config := DefaultAutoRestartConfig()
+		config.Enabled = true
 		if len(cmd.Data) > 0 {
 			var payload map[string]interface{}
 			if err := json.Unmarshal(cmd.Data, &payload); err == nil {

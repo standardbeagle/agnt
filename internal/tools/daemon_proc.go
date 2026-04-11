@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/project"
 	"github.com/standardbeagle/agnt/internal/protocol"
 
@@ -57,22 +58,33 @@ func (dt *DaemonTools) makeRunHandler() func(context.Context, *mcp.CallToolReque
 			}
 		} else if input.ScriptName != "" {
 
-			proj, err := project.Detect(absPath)
-			if err != nil {
-				return errorResult(fmt.Sprintf("failed to detect project: %v", err)), RunOutput{}, nil
-			}
+			// First check .agnt.kdl for the script
+			if resolvedCmd, resolvedArgs, err := resolveKDLScript(absPath, input.ScriptName, input.Args); err == nil {
+				cmd = resolvedCmd
+				args = resolvedArgs
+				id = input.ID
+				if id == "" {
+					id = input.ScriptName
+				}
+			} else {
+				// Fall back to project detection (package.json scripts, etc.)
+				proj, detectErr := project.Detect(absPath)
+				if detectErr != nil {
+					return errorResult(fmt.Sprintf("failed to detect project: %v", detectErr)), RunOutput{}, nil
+				}
 
-			cmdDef := project.GetCommandByName(proj, input.ScriptName)
-			if cmdDef == nil {
-				available := project.GetCommandNames(proj)
-				return errorResult(fmt.Sprintf("unknown script %q. Available: %s", input.ScriptName, strings.Join(available, ", "))), RunOutput{}, nil
-			}
+				cmdDef := project.GetCommandByName(proj, input.ScriptName)
+				if cmdDef == nil {
+					available := project.GetCommandNames(proj)
+					return errorResult(fmt.Sprintf("unknown script %q. Available: %s", input.ScriptName, strings.Join(available, ", "))), RunOutput{}, nil
+				}
 
-			cmd = cmdDef.Command
-			args = append(cmdDef.Args, input.Args...)
-			id = input.ID
-			if id == "" {
-				id = input.ScriptName
+				cmd = cmdDef.Command
+				args = append(cmdDef.Args, input.Args...)
+				id = input.ID
+				if id == "" {
+					id = input.ScriptName
+				}
 			}
 		} else {
 			return errorResult("script_name required (or use raw=true with command)"), RunOutput{}, nil
@@ -468,4 +480,35 @@ func (dt *DaemonTools) handleScriptHistory(input ProcInput) (*mcp.CallToolResult
 	return nil, ProcOutput{
 		Output: sb.String(),
 	}, nil
+}
+
+func resolveKDLScript(projectPath, scriptName string, extraArgs []string) (string, []string, error) {
+	agntCfg, err := config.LoadAgntConfig(projectPath)
+	if err != nil || agntCfg == nil {
+		return "", nil, fmt.Errorf("no .agnt.kdl config")
+	}
+
+	scriptCfg, ok := agntCfg.Scripts[scriptName]
+	if !ok {
+		return "", nil, fmt.Errorf("script %q not in .agnt.kdl", scriptName)
+	}
+
+	if scriptCfg.Run != "" {
+		shell, shellArgs := scriptCfg.ResolveShell()
+		return shell, append(shellArgs, extraArgs...), nil
+	}
+
+	if scriptCfg.Command != "" {
+		return scriptCfg.Command, append(scriptCfg.Args, extraArgs...), nil
+	}
+
+	proj, err := project.Detect(projectPath)
+	if err != nil {
+		return "", nil, fmt.Errorf("no command/run and project detection failed: %w", err)
+	}
+	pm := proj.PackageManager
+	if pm == "" {
+		pm = "npm"
+	}
+	return pm, append([]string{"run", scriptName}, extraArgs...), nil
 }

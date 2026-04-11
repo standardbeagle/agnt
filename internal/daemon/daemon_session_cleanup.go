@@ -10,11 +10,15 @@ import (
 	"github.com/standardbeagle/go-cli-server/script"
 )
 
-// cleanupGracePeriod is how long to wait before actually cleaning up session
-// resources after a connection drops. This allows the ResilientClient to
-// reconnect and re-register without killing processes. Must be longer than
-// the typical reconnect cycle (heartbeat interval * max failures + backoff).
-const cleanupGracePeriod = 5 * time.Second
+// defaultCleanupGracePeriod is used when config has no explicit value.
+const defaultCleanupGracePeriod = 5 * time.Second
+
+func (d *Daemon) cleanupGracePeriod() time.Duration {
+	if d.config.CleanupGracePeriod > 0 {
+		return d.config.CleanupGracePeriod
+	}
+	return defaultCleanupGracePeriod
+}
 
 // cancelPendingCleanup cancels any deferred cleanup for the given session code.
 // Called when a session is re-registered (reconnection) to prevent killing
@@ -55,7 +59,9 @@ func (d *Daemon) CleanupSessionResourcesDeferred(sessionCode string) {
 		return
 	}
 
-	debug.Log("daemon", "deferring cleanup for session %s (project: %s, grace: %s)", sessionCode, projectPath, cleanupGracePeriod)
+	grace := d.cleanupGracePeriod()
+
+	debug.Log("daemon", "deferring cleanup for session %s (project: %s, grace: %s)", sessionCode, projectPath, grace)
 
 	// Cancel any previously scheduled cleanup for this session (e.g., rapid
 	// reconnect/disconnect cycles).
@@ -64,13 +70,11 @@ func (d *Daemon) CleanupSessionResourcesDeferred(sessionCode string) {
 	// Schedule the actual cleanup. If the session is re-registered before the
 	// timer fires (ResilientClient reconnect → OnReconnect → SessionRegister),
 	// cancelPendingCleanup will cancel this timer and processes stay alive.
-	timer := time.AfterFunc(cleanupGracePeriod, func() {
+	timer := time.AfterFunc(grace, func() {
 		d.pendingCleanups.Delete(sessionCode)
 
-		// Re-check: if the session was re-registered during the grace period,
-		// it will exist in the registry with a fresh LastSeen. Skip cleanup.
 		if s, ok := d.sessionRegistry.Get(sessionCode); ok {
-			if time.Since(s.LastSeen) < cleanupGracePeriod {
+			if time.Since(s.LastSeen) < grace {
 				debug.Log("daemon", "skipping deferred cleanup for session %s — re-registered during grace period", sessionCode)
 				return
 			}

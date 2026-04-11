@@ -183,24 +183,29 @@ func makeRunHandler(pm *process.ProcessManager) func(context.Context, *mcp.CallT
 			cmd = input.Command
 			args = input.Args
 		} else {
-			// Script mode: look up from project
+			// Script mode: check .agnt.kdl first, then project detection
 			if input.ScriptName == "" {
 				return errorResult("script_name required (or use raw=true with command)"), RunOutput{}, nil
 			}
 
-			proj, err := project.Detect(path)
-			if err != nil {
-				return errorResult(fmt.Sprintf("failed to detect project: %v", err)), RunOutput{}, nil
-			}
+			if resolvedCmd, resolvedArgs, err := resolveKDLScript(path, input.ScriptName, input.Args); err == nil {
+				cmd = resolvedCmd
+				args = resolvedArgs
+			} else {
+				proj, detectErr := project.Detect(path)
+				if detectErr != nil {
+					return errorResult(fmt.Sprintf("failed to detect project: %v", detectErr)), RunOutput{}, nil
+				}
 
-			cmdDef := project.GetCommandByName(proj, input.ScriptName)
-			if cmdDef == nil {
-				available := project.GetCommandNames(proj)
-				return errorResult(fmt.Sprintf("unknown script %q. Available: %s", input.ScriptName, strings.Join(available, ", "))), RunOutput{}, nil
-			}
+				cmdDef := project.GetCommandByName(proj, input.ScriptName)
+				if cmdDef == nil {
+					available := project.GetCommandNames(proj)
+					return errorResult(fmt.Sprintf("unknown script %q. Available: %s", input.ScriptName, strings.Join(available, ", "))), RunOutput{}, nil
+				}
 
-			cmd = cmdDef.Command
-			args = append(cmdDef.Args, input.Args...)
+				cmd = cmdDef.Command
+				args = append(cmdDef.Args, input.Args...)
+			}
 		}
 
 		// Generate ID if not provided
