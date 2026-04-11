@@ -9,6 +9,7 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
+	"github.com/standardbeagle/agnt/internal/platform"
 	"github.com/standardbeagle/agnt/internal/project"
 	"github.com/standardbeagle/go-cli-server/process"
 	"github.com/standardbeagle/go-cli-server/script"
@@ -139,15 +140,54 @@ func (d *Daemon) RunAutostart(ctx context.Context, projectPath string) *Autostar
 	return result
 }
 
-// collectManagedPIDs returns a set of all PIDs currently managed by the daemon.
+// collectManagedPIDs returns a set of all PIDs currently managed by the daemon,
+// plus any child/descendant processes spawned by managed processes.
 func (d *Daemon) collectManagedPIDs() map[int]bool {
 	managed := make(map[int]bool)
+	var roots []int
+
+	// Collect directly managed PIDs
 	for _, proc := range d.hub.ProcessManager().List() {
 		pid := proc.PID()
 		if pid > 0 {
 			managed[pid] = true
+			roots = append(roots, pid)
 		}
 	}
+
+	// Walk parent chain: find all processes whose ancestor is a managed PID.
+	// This protects children like `dotnet` (spawned by `dotnet watch`),
+	// `node` (spawned by `npx vite`), etc.
+	allProcs, _ := platform.Scan()
+	byPID := make(map[int]platform.ProcInfo, len(allProcs))
+	for _, p := range allProcs {
+		byPID[p.PID] = p
+	}
+
+	// For each process, walk its parent chain looking for a managed root
+	for _, p := range allProcs {
+		if managed[p.PID] {
+			continue // already known
+		}
+		visited := make(map[int]bool)
+		for ppid := p.PPID; ppid > 1; {
+			if visited[ppid] {
+				break // cycle protection
+			}
+			visited[ppid] = true
+			if managed[ppid] {
+				managed[p.PID] = true
+				break
+			}
+			parent, ok := byPID[ppid]
+			if !ok {
+				break
+			}
+			ppid = parent.PPID
+		}
+	}
+
+	_ = roots
 	return managed
 }
 

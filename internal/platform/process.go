@@ -3,6 +3,7 @@ package platform
 // ProcInfo describes a running process discovered via OS-level scanning.
 type ProcInfo struct {
 	PID     int
+	PPID    int    // parent PID (0 if unavailable)
 	Command string // basename of the executable
 	Cmdline string // full command line
 	Cwd     string // working directory (may be empty on some platforms)
