@@ -310,8 +310,10 @@ type AlertQueryFilter struct {
 
 // StreamEventFilter filters events for STREAM-EVENTS command.
 type StreamEventFilter struct {
-	Types     []string `json:"types,omitempty"`      // Log entry types: error, http, panel_message, etc.
-	ProxyID   string   `json:"proxy_id,omitempty"`   // Filter to specific proxy
-	ProcessID string   `json:"process_id,omitempty"` // Filter to specific process (via proxy association)
-	Severity  string   `json:"severity,omitempty"`   // Filter by severity: error, warning, info
+	Types      []string `json:"types,omitempty"`       // Log entry types: error, http, panel_message, process, etc.
+	ProxyID    string   `json:"proxy_id,omitempty"`    // Filter to specific proxy
+	ProcessID  string   `json:"process_id,omitempty"`  // Filter to specific process output
+	Severity   string   `json:"severity,omitempty"`    // Filter by severity: error, warning, info
+	Grep       string   `json:"grep,omitempty"`        // Substring match on process output lines
+	GrepStream string   `json:"grep_stream,omitempty"` // Filter process output stream: "stdout" or "stderr"
 }

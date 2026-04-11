@@ -77,8 +77,11 @@ func (d *Daemon) hubHandleStreamEvents(ctx context.Context, conn *hubpkg.Connect
 // buildStreamFilter converts a protocol StreamEventFilter into an internal streamFilter.
 func buildStreamFilter(f protocol.StreamEventFilter) streamFilter {
 	sf := streamFilter{
-		proxyID:  f.ProxyID,
-		severity: f.Severity,
+		proxyID:    f.ProxyID,
+		processID:  f.ProcessID,
+		severity:   f.Severity,
+		grep:       f.Grep,
+		grepStream: f.GrepStream,
 	}
 	if len(f.Types) > 0 {
 		sf.types = make(map[proxy.LogEntryType]bool, len(f.Types))
