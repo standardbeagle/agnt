@@ -238,27 +238,17 @@ func (s *DuplicateScanner) findDuplicates(procs []platform.ProcInfo, projectPath
 }
 
 // killDuplicates kills duplicate processes, keeping the oldest unmanaged one.
-// Daemon-managed processes and their children are never killed.
+// Daemon-managed processes (and their children) are never killed.
 func (s *DuplicateScanner) killDuplicates(group DuplicateGroup, managedPIDs map[int]bool) []KilledProcess {
-	// If any managed process exists in this group, all unmanaged processes
-	// are likely children spawned by the managed parent (e.g., dotnet watch
-	// spawning a dotnet child, or node spawning a vite child). Skip the
-	// entire group to avoid killing legitimate child processes.
-	hasManaged := false
-	for _, p := range group.Procs {
-		if managedPIDs[p.PID] {
-			hasManaged = true
-			break
-		}
-	}
-	if hasManaged {
-		return nil
-	}
-
 	var killed []KilledProcess
 	keptUnmanaged := false
 
 	for _, p := range group.Procs {
+		// Never kill daemon-managed processes or their children
+		if managedPIDs[p.PID] {
+			continue
+		}
+
 		// Keep the first (oldest) unmanaged process
 		if !keptUnmanaged {
 			keptUnmanaged = true

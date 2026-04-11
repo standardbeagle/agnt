@@ -1,5 +1,5 @@
 {
-  "status": "running",
+  "status": "interrupted",
   "iterations": 4,
   "spawns": 0,
   "started_at": "2026-04-10T18:34:00Z",
@@ -12,9 +12,30 @@
   "runner_email": "claude@anthropic.com",
   "runner_dart_id": null,
   "tasks": [
-    {"task_id": "G5RmaK2TLTJv", "iteration": 1, "status": "completed", "completion_summary": "Startup splash text + animated starting indicator"},
-    {"task_id": "7VZfDcxbjOOJ", "iteration": 2, "status": "completed", "completion_summary": "Audit mega menu with blurbs"},
-    {"task_id": "FKHv5HsLIAb8", "iteration": 3, "status": "completed", "completion_summary": "Daemon StreamEvents hub command"},
-    {"task_id": "nsAwWyVb0xTk", "iteration": 4, "status": "completed", "completion_summary": "agnt monitor CLI subcommand"}
-  ]
+    {
+      "task_id": "G5RmaK2TLTJv",
+      "iteration": 1,
+      "status": "completed",
+      "completion_summary": "Startup splash text + animated starting indicator"
+    },
+    {
+      "task_id": "7VZfDcxbjOOJ",
+      "iteration": 2,
+      "status": "completed",
+      "completion_summary": "Audit mega menu with blurbs"
+    },
+    {
+      "task_id": "FKHv5HsLIAb8",
+      "iteration": 3,
+      "status": "completed",
+      "completion_summary": "Daemon StreamEvents hub command"
+    },
+    {
+      "task_id": "nsAwWyVb0xTk",
+      "iteration": 4,
+      "status": "completed",
+      "completion_summary": "agnt monitor CLI subcommand"
+    }
+  ],
+  "interrupted_at": "2026-04-11T00:33:44.791Z"
 }
