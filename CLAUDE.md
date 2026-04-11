@@ -17,6 +17,8 @@ Project guidance for Claude Code when working with this repository.
 - `agnt-daemon`: Copy for daemon auto-start (workaround for fork prevention in sandboxed environments)
 - `devtool-mcp`: Legacy alias (backwards compatibility)
 
+**CLI Subcommands**: `mcp` (MCP server), `run` (PTY wrapper), `monitor` (event stream), `ai` (interactive AI), `setup-project`
+
 **Core Architecture Decisions**:
 
 1. **Binary copies instead of self-exec**: Sandboxed environments (like Claude Code) prevent binaries from fork/exec'ing themselves. Using separate binary copies bypasses this restriction.
@@ -130,6 +132,40 @@ Pending → Starting → Running → Stopping → Stopped/Failed
 - Circular buffer (1000 entries default)
 - 14 log types: HTTP, Error, Performance, Custom, Screenshot, Execution, Response, Interaction, Mutation, PanelMessage, Sketch, DesignState, DesignRequest, DesignChat
 - Thread-safe `sync.RWMutex`
+- `onLogEntry` callback fires after each logged entry (feeds StreamEvents hub)
+
+### StreamEvents Hub
+
+**AlertHub** (`internal/daemon/alert_hub.go`):
+Three delivery sinks for alert/event routing:
+- **OverlayAlertSink**: PTY stdin injection for terminal overlay
+- **MCPAlertSink**: MCP session `Log()` notifications
+- **StreamSink**: Channel-based streaming with filtering (for `agnt monitor`)
+
+**Push channel config** (`alerts.push` in `.agnt.kdl`):
+- Controls which delivery channels are active per session
+- Presets: `claude-code` (MCP only), `universal` (all channels)
+- Default (no config): all channels enabled
+
+**STREAM-EVENTS** (`internal/daemon/hub_stream.go`):
+- Daemon-side handler registers a `StreamSink` with type/proxy/process/severity/grep filters
+- 30s keepalive heartbeat, chunked JSON output
+- `BroadcastLogEntry()` and `BroadcastProcessOutput()` push filtered events to all matching sinks
+
+### Startup Splash
+
+**StartupSplash** (`internal/overlay/splash.go`):
+- Displays rotating tip text between PTY start and first child output
+- Auto-expires after 30s, clears instantly on `OnFirstActivity` callback from ActivityMonitor
+- Message rotation on 2.5s timer
+- Writes above the protected status bar row, uses cursor save/restore to avoid disturbing child cursor
+
+### Animated Status Indicator
+
+**Renderer** (`internal/overlay/render.go`):
+- `animFrame` atomic counter incremented each `DrawIndicator` call
+- `processStateIcon` cycles through pulse frames (filled/empty circle variants) for processes in "starting" or "restarting" state
+- Frame-based animation distinguishes active startup from static states
 
 ### PTY Output Protection
 
@@ -160,6 +196,7 @@ Pending → Starting → Running → Stopping → Stopped/Failed
 | `responsive_audit` | Responsive design audits across viewport sizes |
 | `snapshot` | Visual regression testing (baseline/compare screenshots) |
 | `daemon` | Daemon management |
+| `watch` | Get monitor command for streaming events (errors, interactions, process, all) |
 
 **Handler pattern**:
 - Input/Output structs with JSON schema tags
@@ -296,6 +333,29 @@ PATTERNS: 1 mobile-only, 0 tablet-only, 1 cross-viewport
 
 **Key Files**: `internal/tools/responsive_audit.go`, `internal/tools/responsive_audit_test.go`, `internal/proxy/scripts/responsive.js`
 
+### watch Tool
+
+Returns a shell command string for streaming daemon events via the `agnt monitor` CLI. Bridges MCP clients (which know the daemon socket path) to the Monitor tool.
+
+**Targets**:
+| Target | Description | Required Params |
+|--------|-------------|-----------------|
+| `errors` | Error and diagnostic events | Optional `proxy_id` |
+| `interactions` | User interactions (panel messages, clicks, sketch) | Optional `proxy_id` |
+| `process` | Process output stream | Required `process_id` |
+| `all` | All daemon events (default) | None |
+
+**Parameters**:
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `target` | string | `all` | What to watch: `errors`, `interactions`, `process`, `all` |
+| `proxy_id` | string | none | Filter to specific proxy |
+| `process_id` | string | none | Filter to specific process (required for `process` target) |
+
+**Output**: Returns a `command` string (e.g., `agnt monitor --socket /run/user/... --types error,diagnostic --format compact`) and a human-readable `description`.
+
+**Key Files**: `internal/tools/watch.go`, `internal/tools/watch_test.go`
+
 ## Frontend API
 
 **`window.__devtool`** (~50 diagnostic primitives):
@@ -359,6 +419,19 @@ proxy {action: "start", bind_address: "0.0.0.0", ...}
 tunnel {action: "start", provider: "cloudflare", local_port: 12345, proxy_id: "dev"}
 ```
 
+### Event Streaming (`agnt monitor`)
+
+CLI subcommand that streams daemon events to stdout in real time:
+```bash
+agnt monitor                           # All events
+agnt monitor --types error,diagnostic  # Errors only
+agnt monitor --proxy dev --format json # NDJSON for specific proxy
+agnt monitor --process app             # Process output follow mode
+```
+
+Flags: `--types`, `--proxy`, `--process`, `--severity`, `--format` (compact/json), `--socket`
+Auto-reconnects on daemon restart. Clean exit on SIGINT/SIGTERM.
+
 ## Configuration
 
 **Hardcoded defaults** (`main.go:31-36`):
@@ -395,7 +468,34 @@ project {
 
 Kill uses `ProcessManager.KillProcessByPort()` with process-group SIGTERM → 3s wait → SIGKILL escalation + descendant tree walk. `AutostartResult` extended with `PortConflicts` and `PortsCleared` fields.
 
+**Autostart Cleanup Ordering** (`internal/daemon/daemon_autostart.go`):
+1. **Duplicate scan** (sync, before autostart) — kills orphaned dev server processes using `collectManagedPIDs()` PPID chain walking to protect managed children
+2. **Stale process cleanup** (sync, before autostart) — stops processes from previous sessions
+3. **Starting** — launches autostart scripts in dependency order
+4. **Started** — confirms all scripts launched
+
 **Key files**: `port_preflight.go` (detect + kill), `daemon.go` (RunAutostart integration + pendingAutostarts), `hub_handlers.go` (AUTOSTART verb), `client.go` (AutostartClearPorts/Continue), `pty_common.go` (client prompt)
+
+**Alert Push Channels** (`internal/config/agnt.go`, `alerts.push` in `.agnt.kdl`):
+
+Controls which delivery channels push alerts to the AI client:
+
+```kdl
+alerts {
+    push {
+        mcp-notifications true   // MCP session.Log() notifications
+        pty-injection false      // PTY stdin injection
+    }
+    // Or use a preset:
+    preset "claude-code"   // MCP only, no PTY injection
+}
+```
+
+| Preset | MCP Notifications | PTY Injection |
+|--------|------------------|---------------|
+| `claude-code` | enabled | disabled |
+| `universal` | enabled | enabled |
+| (none) | enabled | enabled |
 
 ## Testing
 
@@ -407,6 +507,8 @@ Kill uses `ProcessManager.KillProcessByPort()` with process-group SIGTERM → 3s
 - `internal/proxy/injector_test.go`: JS injection
 - `internal/overlay/filter_test.go`: ANSI parsing, scroll region
 - `internal/overlay/gate_test.go`: Freeze/unfreeze
+- `internal/tools/watch_test.go`: Watch command builder
+- `cmd/agnt/monitor_test.go`: Monitor event formatting (compact + JSON)
 
 ## Important Constraints
 
@@ -433,7 +535,7 @@ Kill uses `ProcessManager.KillProcessByPort()` with process-group SIGTERM → 3s
 
 ### Platform Support
 
-**Linux/macOS**: `Setpgid: true`, SIGTERM/SIGKILL, `creack/pty`, SIGWINCH resize
+**Linux/macOS**: `Setpgid: true`, SIGTERM/SIGKILL, `creack/pty`, SIGWINCH resize, PPID chain walking via `/proc/<pid>/stat` for descendant process tracking
 **Windows**: ConPTY, Job Objects, `CTRL_BREAK_EVENT`, named pipes (`\\.\pipe\devtool-mcp-<username>`)
 **Common**: Context cancellation respected, ANSI escape sequences for overlay
 
