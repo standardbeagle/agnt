@@ -468,3 +468,218 @@ func TestAlertHub_Deliver_ClaudeCodePreset(t *testing.T) {
 	assert.Empty(t, overlay.alerts, "claude-code preset disables PTY injection")
 	assert.Len(t, mcp.alerts, 1, "claude-code preset enables MCP notifications")
 }
+
+func TestStreamFilter_MatchesProcessIDFilter(t *testing.T) {
+	sf := streamFilter{
+		processID: "dev-server",
+	}
+
+	// Matching process output
+	assert.True(t, sf.matches(proxy.LogEntry{
+		Type: proxy.LogTypeProcessOutput,
+		ProcessOutput: &proxy.ProcessOutputEvent{
+			ProcessID: "dev-server",
+			Line:      "listening on :3000",
+		},
+	}, ""))
+
+	// Non-matching process ID
+	assert.False(t, sf.matches(proxy.LogEntry{
+		Type: proxy.LogTypeProcessOutput,
+		ProcessOutput: &proxy.ProcessOutputEvent{
+			ProcessID: "test-runner",
+			Line:      "test passed",
+		},
+	}, ""))
+
+	// Non-process entries pass through when processID filter is set
+	// (processID filter only applies to LogTypeProcessOutput)
+	assert.True(t, sf.matches(proxy.LogEntry{Type: proxy.LogTypeError}, ""))
+}
+
+func TestStreamFilter_MatchesGrepFilter(t *testing.T) {
+	sf := streamFilter{
+		grep: "error",
+	}
+
+	// Line contains grep string
+	assert.True(t, sf.matches(proxy.LogEntry{
+		Type: proxy.LogTypeProcessOutput,
+		ProcessOutput: &proxy.ProcessOutputEvent{
+			ProcessID: "dev",
+			Line:      "error: connection refused",
+		},
+	}, ""))
+
+	// Line does not contain grep string
+	assert.False(t, sf.matches(proxy.LogEntry{
+		Type: proxy.LogTypeProcessOutput,
+		ProcessOutput: &proxy.ProcessOutputEvent{
+			ProcessID: "dev",
+			Line:      "listening on :3000",
+		},
+	}, ""))
+
+	// Non-process entries are not affected by grep filter
+	assert.True(t, sf.matches(proxy.LogEntry{Type: proxy.LogTypeError}, ""))
+}
+
+func TestStreamFilter_MatchesGrepStreamFilter(t *testing.T) {
+	sf := streamFilter{
+		grepStream: "stdout",
+	}
+
+	// Matching stream
+	assert.True(t, sf.matches(proxy.LogEntry{
+		Type: proxy.LogTypeProcessOutput,
+		ProcessOutput: &proxy.ProcessOutputEvent{
+			ProcessID: "dev",
+			Stream:    "stdout",
+			Line:      "hello",
+		},
+	}, ""))
+
+	// Non-matching stream
+	assert.False(t, sf.matches(proxy.LogEntry{
+		Type: proxy.LogTypeProcessOutput,
+		ProcessOutput: &proxy.ProcessOutputEvent{
+			ProcessID: "dev",
+			Stream:    "stderr",
+			Line:      "hello",
+		},
+	}, ""))
+}
+
+func TestStreamFilter_MatchesProcessCombinedFilter(t *testing.T) {
+	sf := streamFilter{
+		processID: "dev",
+		grep:      "error",
+		types:     map[proxy.LogEntryType]bool{proxy.LogTypeProcessOutput: true},
+	}
+
+	// All filters match
+	assert.True(t, sf.matches(proxy.LogEntry{
+		Type: proxy.LogTypeProcessOutput,
+		ProcessOutput: &proxy.ProcessOutputEvent{
+			ProcessID: "dev",
+			Line:      "error: something broke",
+		},
+	}, ""))
+
+	// Wrong process ID
+	assert.False(t, sf.matches(proxy.LogEntry{
+		Type: proxy.LogTypeProcessOutput,
+		ProcessOutput: &proxy.ProcessOutputEvent{
+			ProcessID: "test",
+			Line:      "error: something broke",
+		},
+	}, ""))
+
+	// Grep not matching
+	assert.False(t, sf.matches(proxy.LogEntry{
+		Type: proxy.LogTypeProcessOutput,
+		ProcessOutput: &proxy.ProcessOutputEvent{
+			ProcessID: "dev",
+			Line:      "all good",
+		},
+	}, ""))
+
+	// Wrong type
+	assert.False(t, sf.matches(proxy.LogEntry{Type: proxy.LogTypeError}, ""))
+}
+
+func TestAlertHub_BroadcastProcessOutput_DeliversToMatchingSink(t *testing.T) {
+	hub := NewAlertHub()
+
+	sink := hub.AddStreamSink(streamFilter{
+		processID: "dev-server",
+	})
+	defer hub.RemoveStreamSink(sink)
+
+	entry := proxy.LogEntry{
+		Type: proxy.LogTypeProcessOutput,
+		ProcessOutput: &proxy.ProcessOutputEvent{
+			ProcessID: "dev-server",
+			Stream:    "combined",
+			Line:      "Server started on :3000",
+			Timestamp: time.Now(),
+		},
+	}
+
+	hub.BroadcastProcessOutput(entry)
+
+	select {
+	case received := <-sink.Ch:
+		assert.Equal(t, proxy.LogTypeProcessOutput, received.Type)
+		require.NotNil(t, received.ProcessOutput)
+		assert.Equal(t, "dev-server", received.ProcessOutput.ProcessID)
+		assert.Equal(t, "Server started on :3000", received.ProcessOutput.Line)
+	case <-time.After(time.Second):
+		t.Fatal("expected to receive process output event on sink channel")
+	}
+}
+
+func TestAlertHub_BroadcastProcessOutput_FiltersNonMatching(t *testing.T) {
+	hub := NewAlertHub()
+
+	sink := hub.AddStreamSink(streamFilter{
+		processID: "dev-server",
+	})
+	defer hub.RemoveStreamSink(sink)
+
+	entry := proxy.LogEntry{
+		Type: proxy.LogTypeProcessOutput,
+		ProcessOutput: &proxy.ProcessOutputEvent{
+			ProcessID: "test-runner",
+			Line:      "test passed",
+		},
+	}
+
+	hub.BroadcastProcessOutput(entry)
+
+	select {
+	case <-sink.Ch:
+		t.Fatal("should not receive event for wrong process ID")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestAlertHub_BroadcastProcessOutput_WithGrepFilter(t *testing.T) {
+	hub := NewAlertHub()
+
+	sink := hub.AddStreamSink(streamFilter{
+		grep: "ERROR",
+	})
+	defer hub.RemoveStreamSink(sink)
+
+	// Matching grep
+	hub.BroadcastProcessOutput(proxy.LogEntry{
+		Type: proxy.LogTypeProcessOutput,
+		ProcessOutput: &proxy.ProcessOutputEvent{
+			ProcessID: "dev",
+			Line:      "ERROR: connection refused",
+		},
+	})
+
+	select {
+	case received := <-sink.Ch:
+		assert.Equal(t, "ERROR: connection refused", received.ProcessOutput.Line)
+	case <-time.After(time.Second):
+		t.Fatal("expected to receive event matching grep filter")
+	}
+
+	// Non-matching grep
+	hub.BroadcastProcessOutput(proxy.LogEntry{
+		Type: proxy.LogTypeProcessOutput,
+		ProcessOutput: &proxy.ProcessOutputEvent{
+			ProcessID: "dev",
+			Line:      "Listening on :3000",
+		},
+	})
+
+	select {
+	case <-sink.Ch:
+		t.Fatal("should not receive event not matching grep filter")
+	case <-time.After(50 * time.Millisecond):
+	}
+}

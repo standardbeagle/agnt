@@ -14,6 +14,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/project"
+	"github.com/standardbeagle/agnt/internal/proxy"
 	"github.com/standardbeagle/go-cli-server/process"
 	"github.com/standardbeagle/go-cli-server/script"
 )
@@ -341,12 +342,25 @@ func (d *Daemon) startScriptWithRetry(
 		}
 	}
 
-	// Wire output callback to feed ScriptEntry output buffer
-	var outputCB process.OutputCallback
-	if entry, ok := d.scriptRegistry.Get(stripProcessPrefix(processID), projectPath); ok {
-		outputCB = func(_ string, line string) {
-			entry.AppendOutput(line)
+	// Wire output callback to feed ScriptEntry output buffer and broadcast to stream sinks.
+	// The OutputCallback does not distinguish stdout/stderr, so stream is set to "combined".
+	var scriptEntry *script.Entry
+	if e, ok := d.scriptRegistry.Get(stripProcessPrefix(processID), projectPath); ok {
+		scriptEntry = e
+	}
+	outputCB := func(_ string, line string) {
+		if scriptEntry != nil {
+			scriptEntry.AppendOutput(line)
 		}
+		d.alertHub.BroadcastProcessOutput(proxy.LogEntry{
+			Type: proxy.LogTypeProcessOutput,
+			ProcessOutput: &proxy.ProcessOutputEvent{
+				ProcessID: processID,
+				Stream:    "combined",
+				Line:      line,
+				Timestamp: time.Now(),
+			},
+		})
 	}
 
 	// Start the process

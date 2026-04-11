@@ -196,6 +196,7 @@ func TestFormatCompactNilFields(t *testing.T) {
 		proxy.LogTypeError, proxy.LogTypeHTTP, proxy.LogTypePanelMessage,
 		proxy.LogTypeInteraction, proxy.LogTypeMutation, proxy.LogTypeDesignChat,
 		proxy.LogTypeSketch, proxy.LogTypeDiagnostic, proxy.LogTypeCustom,
+		proxy.LogTypeProcessOutput,
 	}
 	for _, typ := range types {
 		entry := proxy.LogEntry{Type: typ}
@@ -333,4 +334,45 @@ func TestFormatCompactLongMessage(t *testing.T) {
 	got := formatCompact(entry)
 	assert.True(t, len(got) < 150, "compact output should be short, got %d chars: %s", len(got), got)
 	assert.Contains(t, got, "...")
+}
+
+func TestFormatCompactProcessOutput(t *testing.T) {
+	entry := proxy.LogEntry{
+		Type: proxy.LogTypeProcessOutput,
+		ProcessOutput: &proxy.ProcessOutputEvent{
+			ProcessID: "dev-server",
+			Stream:    "combined",
+			Line:      "Listening on http://localhost:3000",
+		},
+	}
+	got := formatCompact(entry)
+	assert.Equal(t, `[process:dev-server] Listening on http://localhost:3000`, got)
+}
+
+func TestFormatCompactProcessOutputNil(t *testing.T) {
+	entry := proxy.LogEntry{Type: proxy.LogTypeProcessOutput}
+	got := formatCompact(entry)
+	assert.Equal(t, "", got)
+}
+
+func TestFormatJSONProcessOutput(t *testing.T) {
+	ts := time.Date(2026, 4, 11, 0, 0, 0, 0, time.UTC)
+	entry := proxy.LogEntry{
+		Type: proxy.LogTypeProcessOutput,
+		ProcessOutput: &proxy.ProcessOutputEvent{
+			ProcessID: "dev",
+			Stream:    "combined",
+			Line:      "Server started",
+			Timestamp: ts,
+		},
+	}
+	got := formatJSON(entry)
+	assert.NotEmpty(t, got)
+
+	var result monitorJSONEntry
+	assert.NoError(t, json.Unmarshal([]byte(got), &result))
+	assert.Equal(t, "process", result.Type)
+	assert.Equal(t, "Server started", result.Message)
+	assert.Equal(t, "dev", result.Location)
+	assert.Equal(t, ts.Format(time.RFC3339), result.Timestamp)
 }

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"strings"
 	"sync"
 
 	"github.com/standardbeagle/agnt/internal/config"
@@ -28,9 +29,12 @@ type StreamSink struct {
 
 // streamFilter holds criteria for filtering events sent to a StreamSink.
 type streamFilter struct {
-	types    map[proxy.LogEntryType]bool
-	proxyID  string
-	severity string // "error", "warning", "info" — matches against error/custom/diagnostic levels
+	types      map[proxy.LogEntryType]bool
+	proxyID    string
+	processID  string // Filter to specific process output
+	severity   string // "error", "warning", "info" — matches against error/custom/diagnostic levels
+	grep       string // Substring match on process output lines
+	grepStream string // "stdout", "stderr", or "" for both
 }
 
 // matches returns true if the log entry passes the filter.
@@ -40,6 +44,21 @@ func (f *streamFilter) matches(entry proxy.LogEntry, proxyID string) bool {
 	}
 	if f.proxyID != "" && proxyID != f.proxyID {
 		return false
+	}
+	if f.processID != "" && entry.Type == proxy.LogTypeProcessOutput {
+		if entry.ProcessOutput == nil || entry.ProcessOutput.ProcessID != f.processID {
+			return false
+		}
+	}
+	if f.grepStream != "" && entry.Type == proxy.LogTypeProcessOutput {
+		if entry.ProcessOutput == nil || entry.ProcessOutput.Stream != f.grepStream {
+			return false
+		}
+	}
+	if f.grep != "" && entry.Type == proxy.LogTypeProcessOutput {
+		if entry.ProcessOutput == nil || !containsSubstring(entry.ProcessOutput.Line, f.grep) {
+			return false
+		}
 	}
 	if f.severity != "" {
 		if !entryHasSeverity(entry, f.severity) {
@@ -170,6 +189,33 @@ func (h *AlertHub) BroadcastLogEntry(entry proxy.LogEntry, proxyID string) {
 			}
 		}
 	}
+}
+
+// BroadcastProcessOutput sends a process output line to all matching stream sinks.
+// This reuses the same sink mechanism as BroadcastLogEntry so process events
+// flow through the unified STREAM-EVENTS channel alongside proxy events.
+func (h *AlertHub) BroadcastProcessOutput(entry proxy.LogEntry) {
+	h.mu.RLock()
+	sinks := make([]*StreamSink, len(h.streamSinks))
+	copy(sinks, h.streamSinks)
+	h.mu.RUnlock()
+
+	for _, sink := range sinks {
+		if sink.filter.matches(entry, "") {
+			select {
+			case sink.Ch <- entry:
+			default:
+				if entry.ProcessOutput != nil {
+					debug.Warn("alert-hub", "stream sink channel full, dropping process output proc=%s", entry.ProcessOutput.ProcessID)
+				}
+			}
+		}
+	}
+}
+
+// containsSubstring reports whether substr is within s.
+func containsSubstring(s, substr string) bool {
+	return strings.Contains(s, substr)
 }
 
 // Deliver sends a pre-formatted alert message to all available sinks.

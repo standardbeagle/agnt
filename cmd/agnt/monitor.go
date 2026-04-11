@@ -206,6 +206,13 @@ func formatCompact(entry proxy.LogEntry) string {
 		c := entry.Custom
 		return fmt.Sprintf("[custom:%s] %s", c.Level, c.Message)
 
+	case proxy.LogTypeProcessOutput:
+		if entry.ProcessOutput == nil {
+			return ""
+		}
+		po := entry.ProcessOutput
+		return fmt.Sprintf("[process:%s] %s", po.ProcessID, po.Line)
+
 	default:
 		return ""
 	}
@@ -305,6 +312,14 @@ func formatJSON(entry proxy.LogEntry) string {
 		out.Message = entry.Custom.Message
 		out.Severity = entry.Custom.Level
 		out.Timestamp = entry.Custom.Timestamp.Format(time.RFC3339)
+
+	case proxy.LogTypeProcessOutput:
+		if entry.ProcessOutput == nil {
+			return ""
+		}
+		out.Message = entry.ProcessOutput.Line
+		out.Location = entry.ProcessOutput.ProcessID
+		out.Timestamp = entry.ProcessOutput.Timestamp.Format(time.RFC3339)
 
 	default:
 		return ""

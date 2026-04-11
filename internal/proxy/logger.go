@@ -46,6 +46,8 @@ const (
 	LogTypeDesignChat LogEntryType = "design_chat"
 	// LogTypeDiagnostic represents a server-side diagnostic event (proxy errors, connection issues, etc.).
 	LogTypeDiagnostic LogEntryType = "diagnostic"
+	// LogTypeProcessOutput represents a line of process stdout/stderr output.
+	LogTypeProcessOutput LogEntryType = "process"
 )
 
 // HTTPLogEntry represents a logged HTTP request/response pair.
@@ -374,27 +376,36 @@ type DesignChat struct {
 	URL          string                `json:"url"`
 }
 
+// ProcessOutputEvent represents a line of output from a managed process.
+type ProcessOutputEvent struct {
+	ProcessID string    `json:"process_id"`
+	Stream    string    `json:"stream"`    // "stdout" or "stderr"
+	Line      string    `json:"line"`      // Output line content (without trailing newline)
+	Timestamp time.Time `json:"timestamp"` // When the line was received
+}
+
 // LogEntry is a union type for all log entry types.
 type LogEntry struct {
-	Type              LogEntryType       `json:"type"`
-	HTTP              *HTTPLogEntry      `json:"http,omitempty"`
-	Error             *FrontendError     `json:"error,omitempty"`
-	Performance       *PerformanceMetric `json:"performance,omitempty"`
-	Custom            *CustomLog         `json:"custom,omitempty"`
-	Screenshot        *Screenshot        `json:"screenshot,omitempty"`
-	Execution         *ExecutionResult   `json:"execution,omitempty"`
-	Response          *ExecutionResponse `json:"response,omitempty"`
-	Interaction       *InteractionEvent  `json:"interaction,omitempty"`
-	Mutation          *MutationEvent     `json:"mutation,omitempty"`
-	PanelMessage      *PanelMessage      `json:"panel_message,omitempty"`
-	Sketch            *SketchEntry       `json:"sketch,omitempty"`
-	ScreenshotCapture *ScreenshotCapture `json:"screenshot_capture,omitempty"`
-	ElementCapture    *ElementCapture    `json:"element_capture,omitempty"`
-	SketchCapture     *SketchCapture     `json:"sketch_capture,omitempty"`
-	DesignState       *DesignState       `json:"design_state,omitempty"`
-	DesignRequest     *DesignRequest     `json:"design_request,omitempty"`
-	DesignChat        *DesignChat        `json:"design_chat,omitempty"`
-	Diagnostic        *ProxyDiagnostic   `json:"diagnostic,omitempty"`
+	Type              LogEntryType        `json:"type"`
+	HTTP              *HTTPLogEntry       `json:"http,omitempty"`
+	Error             *FrontendError      `json:"error,omitempty"`
+	Performance       *PerformanceMetric  `json:"performance,omitempty"`
+	Custom            *CustomLog          `json:"custom,omitempty"`
+	Screenshot        *Screenshot         `json:"screenshot,omitempty"`
+	Execution         *ExecutionResult    `json:"execution,omitempty"`
+	Response          *ExecutionResponse  `json:"response,omitempty"`
+	Interaction       *InteractionEvent   `json:"interaction,omitempty"`
+	Mutation          *MutationEvent      `json:"mutation,omitempty"`
+	PanelMessage      *PanelMessage       `json:"panel_message,omitempty"`
+	Sketch            *SketchEntry        `json:"sketch,omitempty"`
+	ScreenshotCapture *ScreenshotCapture  `json:"screenshot_capture,omitempty"`
+	ElementCapture    *ElementCapture     `json:"element_capture,omitempty"`
+	SketchCapture     *SketchCapture      `json:"sketch_capture,omitempty"`
+	DesignState       *DesignState        `json:"design_state,omitempty"`
+	DesignRequest     *DesignRequest      `json:"design_request,omitempty"`
+	DesignChat        *DesignChat         `json:"design_chat,omitempty"`
+	Diagnostic        *ProxyDiagnostic    `json:"diagnostic,omitempty"`
+	ProcessOutput     *ProcessOutputEvent `json:"process,omitempty"`
 }
 
 // TrafficLogger stores proxy traffic logs with bounded memory.
@@ -750,6 +761,10 @@ func (f LogFilter) Matches(entry LogEntry) bool {
 	case LogTypeDiagnostic:
 		if entry.Diagnostic != nil {
 			timestamp = entry.Diagnostic.Timestamp
+		}
+	case LogTypeProcessOutput:
+		if entry.ProcessOutput != nil {
+			timestamp = entry.ProcessOutput.Timestamp
 		}
 	}
 
