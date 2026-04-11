@@ -1,10 +1,10 @@
 {
-  "status": "interrupted",
+  "status": "running",
   "iterations": 4,
   "spawns": 0,
   "started_at": "2026-04-10T18:34:00Z",
   "completed_at": null,
-  "last_iteration_at": "2026-04-10T23:00:00Z",
+  "last_iteration_at": "2026-04-11T00:33:44Z",
   "last_subagent": "task-executor",
   "loop_task_id": "bBc5Sk6SWQg4",
   "dartboard": "Personal/agnt",
@@ -36,6 +36,5 @@
       "status": "completed",
       "completion_summary": "agnt monitor CLI subcommand"
     }
-  ],
-  "interrupted_at": "2026-04-11T00:33:44.791Z"
+  ]
 }
