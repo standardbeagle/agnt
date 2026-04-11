@@ -64,10 +64,11 @@ type DuplicateScanner struct {
 	// Set by the caller (pty_common.go integration point).
 	OnNotify func(message string)
 
-	mu     sync.Mutex
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	mu         sync.Mutex
+	lastScanAt time.Time
+	ctx        context.Context
+	cancel     context.CancelFunc
+	wg         sync.WaitGroup
 }
 
 // NewDuplicateScanner creates a new scanner bound to a daemon instance.
@@ -108,6 +109,13 @@ func (s *DuplicateScanner) Stop() {
 	s.wg.Wait()
 }
 
+// LastScanAt returns the timestamp of the most recent completed scan.
+func (s *DuplicateScanner) LastScanAt() time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastScanAt
+}
+
 // ScanForProject runs a scan for a specific project path.
 // Returns the cleanup result. The caller is responsible for notification.
 func (s *DuplicateScanner) ScanForProject(projectPath string) *CleanupResult {
@@ -117,20 +125,49 @@ func (s *DuplicateScanner) ScanForProject(projectPath string) *CleanupResult {
 // ScanAndCleanup scans for duplicates and kills them.
 // If projectPath is non-empty, only processes under that path are considered.
 // If projectPath is empty, all active project paths are scanned.
+//
+// The lock is held only during the scan phase (process listing + duplicate
+// detection). Kills happen outside the lock to avoid blocking concurrent
+// callers during SIGTERM + grace period waits.
 func (s *DuplicateScanner) ScanAndCleanup(projectPath string) *CleanupResult {
+	// Phase 1: Scan under lock — collect process list and identify duplicates.
+	groups, managedPIDs := s.scanDuplicates(projectPath)
+	if len(groups) == 0 {
+		return &CleanupResult{}
+	}
+
+	// Phase 2: Kill outside lock — SIGTERM + wait happens without holding mu.
+	var result CleanupResult
+	for _, group := range groups {
+		killed := s.killDuplicates(group, managedPIDs)
+		result.Killed = append(result.Killed, killed...)
+	}
+
+	// Phase 3: Update scan timestamp under lock.
+	s.mu.Lock()
+	s.lastScanAt = time.Now()
+	s.mu.Unlock()
+
+	return &result
+}
+
+// scanDuplicates holds the lock while scanning processes and detecting
+// duplicates. Returns the duplicate groups and managed PID set for use
+// by the caller outside the lock.
+func (s *DuplicateScanner) scanDuplicates(projectPath string) ([]DuplicateGroup, map[int]bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	paths := s.resolveProjectPaths(projectPath)
 	if len(paths) == 0 {
-		return &CleanupResult{}
+		return nil, nil
 	}
 
 	// Gather all running processes
 	allProcs, err := platform.Scan()
 	if err != nil {
 		debug.Log("dup-scanner", "platform scan failed: %v", err)
-		return &CleanupResult{}
+		return nil, nil
 	}
 
 	// If WSL, also scan Windows-side processes
@@ -144,17 +181,14 @@ func (s *DuplicateScanner) ScanAndCleanup(projectPath string) *CleanupResult {
 	}
 
 	managedPIDs := s.daemon.collectManagedPIDs()
-	var result CleanupResult
+	var groups []DuplicateGroup
 
 	for _, pp := range paths {
-		groups := s.findDuplicates(allProcs, pp, managedPIDs)
-		for _, group := range groups {
-			killed := s.killDuplicates(group, managedPIDs)
-			result.Killed = append(result.Killed, killed...)
-		}
+		found := s.findDuplicates(allProcs, pp, managedPIDs)
+		groups = append(groups, found...)
 	}
 
-	return &result
+	return groups, managedPIDs
 }
 
 // resolveProjectPaths returns the set of project paths to scan.

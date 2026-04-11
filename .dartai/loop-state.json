@@ -1,15 +1,32 @@
 {
   "status": "running",
-  "iterations": 0,
-  "spawns": 0,
+  "iterations": 1,
+  "spawns": 1,
   "started_at": "2026-04-11T21:54:00Z",
   "completed_at": null,
-  "last_iteration_at": null,
+  "last_iteration_at": "2026-04-11T22:00:00Z",
   "last_subagent": null,
   "loop_task_id": "Idn6IdmJXITx",
   "dartboard": "Personal/agnt",
   "runner_instance_id": "beagle-ab2-3766433",
   "runner_email": "claude@anthropic.com",
   "runner_dart_id": null,
-  "tasks": []
+  "tasks": [
+    {
+      "task_id": "Puvz4SAdFkkS",
+      "iteration": 1,
+      "status": "completed",
+      "started_at": "2026-04-11T21:55:00Z",
+      "completed_at": "2026-04-11T22:00:00Z",
+      "phase_completed": "phase-9",
+      "failed_phase": null,
+      "files_changed": 2,
+      "tests_added": 8,
+      "plan_adjustments": 0,
+      "completion_summary": "Split ScanAndCleanup into scan phase (under lock) and kill phase (outside lock) to reduce mutex hold time from 0.1-5s to just the scan duration",
+      "failure_reason": null,
+      "fix_task_created": false,
+      "fix_task_id": null
+    }
+  ]
 }
