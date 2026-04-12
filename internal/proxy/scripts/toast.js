@@ -50,7 +50,11 @@
       'pointer-events: none',
       'max-width: 380px',
       'width: 100%',
-      'padding: 20px'
+      'padding: 20px',
+      // Scope layout/style invalidation so adding/removing toasts does not
+      // invalidate the rest of the document. paint is omitted because per-toast
+      // box-shadows extend slightly beyond the flex box and must render freely.
+      'contain: layout style'
     ].join(';'),
 
     toast: [
@@ -68,7 +72,14 @@
       'pointer-events: auto',
       'opacity: 0',
       'transform: translateX(100%)',
-      'transition: opacity 0.3s ease, transform 0.3s ease'
+      'transition: opacity 0.3s ease, transform 0.3s ease',
+      // Each toast is a short-lived element (default 4s). contain: layout style
+      // keeps per-toast relayouts scoped; will-change promotes the element to
+      // its own compositor layer for the enter/leave transform+opacity
+      // transition. GPU memory footprint is bounded because toasts dismiss
+      // quickly and maxVisible defaults to 3.
+      'contain: layout style',
+      'will-change: transform, opacity'
     ].join(';'),
 
     toastVisible: [

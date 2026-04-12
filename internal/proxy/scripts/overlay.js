@@ -28,7 +28,13 @@
       'bottom: 0',
       'pointer-events: none',
       'z-index: 2147483647',
-      'overflow: hidden'
+      'overflow: hidden',
+      // Scope layout/style invalidation to the overlay subtree. The container is
+      // already viewport-sized via fixed top/left/right/bottom, and children use
+      // position:absolute (not fixed), so contain: layout style cannot reparent
+      // their containing block. paint is intentionally omitted because callers
+      // may add highlights whose bounds extend via border/box-shadow.
+      'contain: layout style'
     ].join(';');
 
     document.documentElement.appendChild(container);

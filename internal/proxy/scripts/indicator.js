@@ -867,7 +867,12 @@
       'align-items: center',
       'justify-content: center',
       'transition: transform 0.2s ease, box-shadow 0.2s ease',
-      'user-select: none'
+      'user-select: none',
+      // Size is fixed (52x52), so layout/style invalidation here cannot affect
+      // the rest of the document. paint is intentionally omitted because the
+      // glow box-shadow and activity ring (position:absolute with top:-4px...)
+      // deliberately extend outside the 52x52 box.
+      'contain: layout style'
     ].join(';'),
 
     statusDot: [
@@ -915,7 +920,10 @@
       'overflow: hidden',
       'white-space: pre-wrap',
       'word-break: break-word',
-      'backdrop-filter: blur(8px)'
+      'backdrop-filter: blur(8px)',
+      // Already has overflow:hidden, so paint would be redundant with existing
+      // clipping. contain: layout style scopes invalidation to the preview box.
+      'contain: layout style'
     ].join(';'),
 
     outputPreviewVisible: [
@@ -933,7 +941,10 @@
       'overflow: hidden',
       'pointer-events: none',
       'z-index: 2147483645',
-      'transition: opacity 0.3s ease'
+      'transition: opacity 0.3s ease',
+      // Fixed 52x12 size with overflow:hidden; safe to use the strict `content`
+      // shorthand (layout + style + paint) because the SVG bars stay inside.
+      'contain: content'
     ].join(';'),
 
     // Panel - the main interface
@@ -948,7 +959,12 @@
       'font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
       'font-size: 14px',
       'color: ' + TOKENS.colors.text,
-      'transition: opacity 0.2s ease, transform 0.2s ease'
+      'transition: opacity 0.2s ease, transform 0.2s ease',
+      // Scope layout/style invalidation to the panel. paint is omitted because
+      // the audit dropdown megaMenu inside the panel uses position:absolute
+      // with bottom:calc(100% + 4px) to open upward and its box-shadow extends
+      // outside the panel's bounds.
+      'contain: layout style'
     ].join(';'),
 
     // Header - minimal, functional
@@ -1424,7 +1440,14 @@
       'padding: ' + TOKENS.spacing.lg,
       'max-height: 400px',
       'overflow-y: auto',
-      'overflow-x: hidden'
+      'overflow-x: hidden',
+      // Switching tabs rewrites tabContent.innerHTML; scope layout/style to
+      // this subtree so a tab swap does not invalidate the rest of the panel.
+      // paint is intentionally omitted to avoid any interaction with the audit
+      // megaMenu dropdown inside the Compose tab, which uses position:absolute
+      // with bottom:calc(100% + 4px) to open upward. The existing overflow-y:
+      // auto already clips within-box content.
+      'contain: layout style'
     ].join(';'),
 
     tabCloseBtn: [
@@ -1508,7 +1531,12 @@
       'letter-spacing: 0.3px',
       'max-width: 260px',
       'overflow: hidden',
-      'text-overflow: ellipsis'
+      'text-overflow: ellipsis',
+      // 2.5s-lived pill with transform+opacity enter/leave. Scope layout/style
+      // and promote to a compositor layer for the duration of the animation.
+      // paint omitted because the box-shadow renders outside the pill bounds.
+      'contain: layout style',
+      'will-change: transform, opacity'
     ].join(';'),
 
     microToastVisible: [
@@ -1886,9 +1914,12 @@
       '  100% { transform: scale(1) rotate(0deg); }',
       '}',
       '.__devtool-entrance {',
+      // will-change scoped to the class so it is only present during the
+      // 0.6s entrance animation; the class is removed on animationend above.
+      '  will-change: transform, opacity;',
       '  animation: __devtool-entrance 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) both;',
       '}',
-      // Idle breathing glow
+      // Idle breathing glow (box-shadow only; no transform/opacity -> no GPU promotion needed)
       '@keyframes __devtool-breathe {',
       '  0%, 100% { box-shadow: 0 10px 40px rgba(0,0,0,0.15), 0 0 20px rgba(99,102,241,0.2); }',
       '  50% { box-shadow: 0 10px 40px rgba(0,0,0,0.15), 0 0 28px rgba(99,102,241,0.4); }',
@@ -1905,6 +1936,10 @@
       '  100% { transform: rotate(360deg) scale(1); box-shadow: 4px 0 10px rgba(245,158,11,0.5), -4px 0 10px rgba(99,102,241,0.3); }',
       '}',
       '.__devtool-active {',
+      // Toggled via setActivityState(true/false) in indicator.js; will-change
+      // is scoped to the class and removed when the class is removed, so GPU
+      // memory is reclaimed when the activity ring is idle.
+      '  will-change: transform;',
       '  animation: __devtool-orbit 2.5s linear infinite;',
       '}',
       // Bug active pulse - scale + shadow throb
@@ -1919,6 +1954,9 @@
       '  }',
       '}',
       '.__devtool-bug-active {',
+      // Toggled via setActivityState(true/false); removed when idle so the
+      // bug bug does not keep a compositor layer around when not pulsing.
+      '  will-change: transform;',
       '  animation: __devtool-active-pulse 2s ease-in-out infinite !important;',
       '}'
     ].join('\\n');
@@ -3820,16 +3858,35 @@
     if (shouldShow) {
       updatePanelPosition();
       state.panel.style.display = 'flex'; // Changed to flex for column layout
+      // Promote the panel to a compositor layer just for the duration of the
+      // 0.2s opacity+transform transition. Cleared below after the transition
+      // completes so we don't pin GPU memory for an idle panel.
+      state.panel.style.willChange = 'transform, opacity';
       // Re-render active tab now that panel is visible
       switchTab(state.activeTab);
       requestAnimationFrame(function() {
         state.panel.style.opacity = '1';
         state.panel.style.transform = 'translateY(0)';
       });
+      // Release will-change after the enter transition settles (0.2s +
+      // small safety margin). Stored on state so rapid toggles replace it.
+      clearTimeout(state.panelWillChangeTimeout);
+      state.panelWillChangeTimeout = setTimeout(function() {
+        if (state.panel && state.isExpanded) {
+          state.panel.style.willChange = 'auto';
+        }
+      }, 300);
     } else {
+      state.panel.style.willChange = 'transform, opacity';
       state.panel.style.opacity = '0';
       state.panel.style.transform = 'translateY(8px)';
-      setTimeout(function() { state.panel.style.display = 'none'; }, 200);
+      clearTimeout(state.panelWillChangeTimeout);
+      setTimeout(function() {
+        state.panel.style.display = 'none';
+        if (!state.isExpanded) {
+          state.panel.style.willChange = 'auto';
+        }
+      }, 200);
       // Stop tab updates
       if (state.tabUpdateInterval) {
         clearInterval(state.tabUpdateInterval);
