@@ -251,10 +251,13 @@ func (d *Daemon) doCleanup(sessionCode string) {
 		// Clear session log — next session starts fresh
 		d.startupErrorStore.Clear()
 
-		// Drop the autostart handle so the next session triggers a fresh
-		// autostart run. Matching the "script registry is ephemeral" rule:
-		// autostart state does not carry over between sessions.
+		// Cancel any in-flight autostart run for this project, then drop the
+		// handle so the next session triggers a fresh autostart. Matching the
+		// "script registry is ephemeral" rule: autostart state does not carry
+		// over between sessions. Cancel must precede Remove — Cancel(projectPath)
+		// looks the handle up by key and is a no-op once the entry is gone.
 		if d.autostartManager != nil {
+			d.autostartManager.Cancel(projectPath)
 			d.autostartManager.Remove(projectPath)
 		}
 	} else {
