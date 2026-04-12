@@ -86,9 +86,3 @@ func FindPIDsByPort(ctx context.Context, port int) []int {
 	}
 	return pids
 }
-
-// ProcessNameByPID returns the process name for a given PID.
-// TODO: implement via Windows API (CreateToolhelp32Snapshot)
-func ProcessNameByPID(pid int) string {
-	return ""
-}

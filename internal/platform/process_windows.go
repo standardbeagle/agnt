@@ -70,3 +70,9 @@ func killPID(pid int, _ int) error {
 func ScanWindows() ([]ProcInfo, error) {
 	return nil, nil
 }
+
+// IsWSL returns false on native Windows. WSL processes run as Linux binaries
+// and use the unix build of this package.
+func IsWSL() bool {
+	return false
+}
