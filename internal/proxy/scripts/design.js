@@ -102,14 +102,26 @@
     overlay.appendChild(instructions);
 
     var hoveredElement = null;
+    // rAF-batch layout reads triggered by mousemove. We capture the latest
+    // pointer coords into pendingMove and defer the elementFromPoint +
+    // getBoundingClientRect work to the next animation frame. Multiple
+    // mousemove events within the same frame coalesce to a single layout
+    // read. rafId is cancelled on overlay teardown (see hideSelectionOverlay).
+    var rafId = 0;
+    var pendingMove = null;
 
-    overlay.addEventListener('mousemove', function(e) {
+    function processPendingMove() {
+      rafId = 0;
+      var move = pendingMove;
+      pendingMove = null;
+      if (!move) return;
+
       overlay.style.pointerEvents = 'none';
-      var el = document.elementFromPoint(e.clientX, e.clientY);
+      var el = document.elementFromPoint(move.x, move.y);
       overlay.style.pointerEvents = 'auto';
 
       // Ignore devtool elements
-      if (!el || el.id && el.id.startsWith('__devtool')) {
+      if (!el || (el.id && el.id.startsWith('__devtool'))) {
         highlight.style.display = 'none';
         tooltip.style.display = 'none';
         hoveredElement = null;
@@ -130,7 +142,22 @@
       tooltip.style.display = 'block';
       tooltip.style.left = Math.min(rect.left, window.innerWidth - 200) + 'px';
       tooltip.style.top = Math.max(rect.top - 28, 5) + 'px';
+    }
+
+    overlay.addEventListener('mousemove', function(e) {
+      pendingMove = { x: e.clientX, y: e.clientY };
+      if (rafId) return; // already scheduled; coalesce into pending frame
+      rafId = requestAnimationFrame(processPendingMove);
     });
+
+    // Expose teardown for hideSelectionOverlay so we cancel any pending frame
+    overlay.__devtoolCancelRaf = function() {
+      if (rafId) {
+        cancelAnimationFrame(rafId);
+        rafId = 0;
+      }
+      pendingMove = null;
+    };
 
     overlay.addEventListener('click', function(e) {
       e.preventDefault();
@@ -156,6 +183,9 @@
   // Hide selection overlay
   function hideSelectionOverlay() {
     if (state.overlay) {
+      if (typeof state.overlay.__devtoolCancelRaf === 'function') {
+        state.overlay.__devtoolCancelRaf();
+      }
       if (state.overlay.parentNode) {
         state.overlay.parentNode.removeChild(state.overlay);
       }

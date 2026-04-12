@@ -266,10 +266,21 @@
     overlay.appendChild(instructions);
 
     var hoveredElement = null;
+    // rAF-batch layout reads triggered by mousemove. The mousemove handler
+    // only records the latest cursor coords; the real work (elementFromPoint
+    // + getBoundingClientRect) runs once per animation frame. rafId is
+    // cancelled by the teardown hook attached to the overlay.
+    var rafId = 0;
+    var pendingMove = null;
 
-    overlay.addEventListener('mousemove', function(e) {
+    function processPendingMove() {
+      rafId = 0;
+      var move = pendingMove;
+      pendingMove = null;
+      if (!move) return;
+
       overlay.style.pointerEvents = 'none';
-      var el = document.elementFromPoint(e.clientX, e.clientY);
+      var el = document.elementFromPoint(move.x, move.y);
       overlay.style.pointerEvents = 'auto';
 
       if (!el || (el.id && el.id.indexOf('__devtool') === 0)) {
@@ -293,7 +304,21 @@
       tooltip.style.display = 'block';
       tooltip.style.left = Math.min(rect.left, window.innerWidth - 200) + 'px';
       tooltip.style.top = Math.max(rect.top - 28, 5) + 'px';
+    }
+
+    overlay.addEventListener('mousemove', function(e) {
+      pendingMove = { x: e.clientX, y: e.clientY };
+      if (rafId) return; // coalesce multiple mousemove events into one frame
+      rafId = requestAnimationFrame(processPendingMove);
     });
+
+    overlay.__devtoolCancelRaf = function() {
+      if (rafId) {
+        cancelAnimationFrame(rafId);
+        rafId = 0;
+      }
+      pendingMove = null;
+    };
 
     overlay.addEventListener('click', function(e) {
       e.preventDefault();
@@ -326,6 +351,9 @@
 
     function removeOverlay() {
       state.selecting = false;
+      if (typeof overlay.__devtoolCancelRaf === 'function') {
+        overlay.__devtoolCancelRaf();
+      }
       if (overlay.parentNode) {
         overlay.parentNode.removeChild(overlay);
       }
@@ -698,7 +726,11 @@
         if (state.pinned) return;
         if (!state.panel) return;
         if (state.selecting) return;
-        if (state.panel.contains(e.target)) return;
+        // Use composedPath() for constant-time "is event inside panel" check
+        // instead of Node.contains() which walks the DOM tree on each call.
+        var path = typeof e.composedPath === 'function' ? e.composedPath() : null;
+        if (path && path.indexOf(state.panel) !== -1) return;
+        if (!path && state.panel.contains(e.target)) return;
         // Ignore clicks on devtool elements
         if (e.target.id && e.target.id.indexOf('__devtool') === 0) return;
         close();
@@ -3746,8 +3778,13 @@
 
     if (state.selecting) {
       state.selecting = false;
-      if (state.overlay && state.overlay.parentNode) {
-        state.overlay.parentNode.removeChild(state.overlay);
+      if (state.overlay) {
+        if (typeof state.overlay.__devtoolCancelRaf === 'function') {
+          state.overlay.__devtoolCancelRaf();
+        }
+        if (state.overlay.parentNode) {
+          state.overlay.parentNode.removeChild(state.overlay);
+        }
       }
       if (state.escapeHandler) {
         document.removeEventListener('keydown', state.escapeHandler);

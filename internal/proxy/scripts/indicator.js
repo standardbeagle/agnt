@@ -2289,23 +2289,81 @@
     textarea.onblur = function() {
       card.style.cssText = STYLES.messageCard;
     };
-    // Auto-expand textarea based on content
+    // Off-screen measurement element mirrors the textarea so we can read
+    // content height without triggering synchronous layout on the live
+    // textarea. We defer both the measurement read AND the subsequent
+    // style.height write into a single rAF callback, so no read follows a
+    // write on the same element within the same frame.
+    var measureEl = null;
+    var textareaRafId = 0;
+    var textareaLastHeight = 0;
+
+    function getMeasureEl() {
+      if (measureEl) return measureEl;
+      measureEl = document.createElement('div');
+      // Position off-screen but still laid out so offsetHeight is accurate.
+      // visibility:hidden keeps it invisible without opting out of layout.
+      measureEl.style.cssText = [
+        'position: absolute',
+        'left: -9999px',
+        'top: 0',
+        'visibility: hidden',
+        'white-space: pre-wrap',
+        'word-wrap: break-word',
+        'box-sizing: border-box',
+        'pointer-events: none'
+      ].join(';');
+      // Mirror font + sizing properties once on creation. textarea styles
+      // are static (from STYLES.textarea) so we do not need to re-read.
+      var cs = window.getComputedStyle(textarea);
+      measureEl.style.width = cs.width;
+      measureEl.style.fontFamily = cs.fontFamily;
+      measureEl.style.fontSize = cs.fontSize;
+      measureEl.style.fontWeight = cs.fontWeight;
+      measureEl.style.lineHeight = cs.lineHeight;
+      measureEl.style.padding = cs.padding;
+      measureEl.style.border = cs.border;
+      measureEl.style.letterSpacing = cs.letterSpacing;
+      document.body.appendChild(measureEl);
+      return measureEl;
+    }
+
+    function scheduleTextareaResize() {
+      if (textareaRafId) return;
+      textareaRafId = requestAnimationFrame(function() {
+        textareaRafId = 0;
+        var m = getMeasureEl();
+        // Use a trailing space so a pure-newline last line still contributes
+        // a measurable row (textContent collapses trailing whitespace runs).
+        m.textContent = textarea.value + ' ';
+        // Read measurement element's height (safe — no pending write on it)
+        var measured = m.offsetHeight;
+        var newHeight = Math.min(Math.max(measured, 80), 200);
+        if (newHeight === textareaLastHeight) return;
+
+        var previousHeight = state.panel ? state.panel.offsetHeight : 0;
+        textarea.style.height = newHeight + 'px';
+        textareaLastHeight = newHeight;
+
+        // Reposition panel to expand upward on next frame to let the
+        // textarea height change settle before we read panel.offsetHeight.
+        if (state.panel && state.isExpanded) {
+          requestAnimationFrame(function() {
+            var panelHeight = state.panel ? state.panel.offsetHeight : 0;
+            var heightDiff = panelHeight - previousHeight;
+            if (heightDiff !== 0) {
+              var currentTop = parseInt(state.panel.style.top) || 0;
+              state.panel.style.top = (currentTop - heightDiff) + 'px';
+            }
+          });
+        }
+      });
+    }
+
+    // Auto-expand textarea based on content (rAF-batched, no layout thrash)
     textarea.oninput = function() {
       store.message.val = textarea.value;
-      var previousHeight = state.panel ? state.panel.offsetHeight : 0;
-      textarea.style.height = 'auto';
-      textarea.style.height = Math.min(Math.max(textarea.scrollHeight, 80), 200) + 'px';
-      // Reposition panel to expand upward
-      if (state.panel && state.isExpanded) {
-        requestAnimationFrame(function() {
-          var newHeight = state.panel.offsetHeight;
-          var heightDiff = newHeight - previousHeight;
-          if (heightDiff !== 0) {
-            var currentTop = parseInt(state.panel.style.top) || 0;
-            state.panel.style.top = (currentTop - heightDiff) + 'px';
-          }
-        });
-      }
+      scheduleTextareaResize();
     };
     // Ctrl+Enter to send
     textarea.onkeydown = function(e) {
@@ -2708,6 +2766,13 @@
     }
 
     function handleOutsideClick(e) {
+      // Prefer composedPath() for constant-time "is event inside container"
+      // check instead of Node.contains() which walks the DOM tree.
+      var path = typeof e.composedPath === 'function' ? e.composedPath() : null;
+      if (path) {
+        if (path.indexOf(container) === -1) closeDropdown();
+        return;
+      }
       if (!container.contains(e.target)) {
         closeDropdown();
       }
@@ -3585,10 +3650,21 @@
     overlay.appendChild(instructions);
 
     var hovered = null;
+    // rAF-batch layout reads triggered by element-select mousemove. Each
+    // mousemove only caches the latest pointer coordinates; the actual
+    // elementFromPoint + getBoundingClientRect work runs once per animation
+    // frame via processPendingMove. rafId is cancelled in cleanup().
+    var rafId = 0;
+    var pendingMove = null;
 
-    overlay.onmousemove = function(e) {
+    function processPendingMove() {
+      rafId = 0;
+      var move = pendingMove;
+      pendingMove = null;
+      if (!move) return;
+
       overlay.style.pointerEvents = 'none';
-      var el = document.elementFromPoint(e.clientX, e.clientY);
+      var el = document.elementFromPoint(move.x, move.y);
       overlay.style.pointerEvents = 'auto';
 
       if (!el || el === state.container || state.container.contains(el)) {
@@ -3612,6 +3688,12 @@
       tooltip.style.display = 'block';
       tooltip.style.left = Math.min(rect.left, window.innerWidth - 200) + 'px';
       tooltip.style.top = Math.max(rect.top - 28, 5) + 'px';
+    }
+
+    overlay.onmousemove = function(e) {
+      pendingMove = { x: e.clientX, y: e.clientY };
+      if (rafId) return; // coalesce events within one frame
+      rafId = requestAnimationFrame(processPendingMove);
     };
 
     overlay.onclick = function(e) {
@@ -3670,6 +3752,11 @@
 
     function cleanup() {
       document.removeEventListener('keydown', onKey);
+      if (rafId) {
+        cancelAnimationFrame(rafId);
+        rafId = 0;
+      }
+      pendingMove = null;
       if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
     }
 
@@ -3776,6 +3863,33 @@
     var startPos = { x: state.position.x, y: state.position.y };
     var dragged = false;
 
+    // rAF-batch drag updates. Each mousemove updates pendingDelta only; the
+    // rAF callback applies the style write once per frame and then runs the
+    // dependent layout reads (updatePanelPosition, positionSparkline).
+    // Coalescing multiple mousemove events into one frame avoids synchronous
+    // layout thrash from reading bounding rects after each style write.
+    var rafId = 0;
+    var pendingDelta = null;
+
+    function applyPendingDrag() {
+      rafId = 0;
+      var d = pendingDelta;
+      pendingDelta = null;
+      if (!d) return;
+
+      var x = startPos.x + d.dx;
+      var y = startPos.y - d.dy;
+
+      x = Math.max(0, Math.min(x, window.innerWidth - 52));
+      y = Math.max(0, Math.min(y, window.innerHeight - 52));
+
+      state.position = { x: x, y: y };
+      state.bug.style.left = x + 'px';
+      state.bug.style.bottom = y + 'px';
+      updatePanelPosition();
+      positionSparkline();
+    }
+
     function onMove(e) {
       var dx = e.clientX - startX;
       var dy = e.clientY - startY;
@@ -3784,23 +3898,24 @@
 
       if (dragged) {
         state.isDragging = true;
-        var x = startPos.x + dx;
-        var y = startPos.y - dy;
-
-        x = Math.max(0, Math.min(x, window.innerWidth - 52));
-        y = Math.max(0, Math.min(y, window.innerHeight - 52));
-
-        state.position = { x: x, y: y };
-        state.bug.style.left = x + 'px';
-        state.bug.style.bottom = y + 'px';
-        updatePanelPosition();
-        positionSparkline();
+        pendingDelta = { dx: dx, dy: dy };
+        if (rafId) return; // coalesce into pending frame
+        rafId = requestAnimationFrame(applyPendingDrag);
       }
     }
 
     function onUp() {
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
+      if (rafId) {
+        cancelAnimationFrame(rafId);
+        rafId = 0;
+      }
+      // Flush any pending delta so the final drag position is applied
+      // before we persist preferences.
+      if (pendingDelta) {
+        applyPendingDrag();
+      }
 
       if (dragged) {
         savePrefs();
