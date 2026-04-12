@@ -286,22 +286,27 @@ func TestSessionBasedCleanup(t *testing.T) {
 	// Close client1 (should trigger cleanup for project1 only)
 	client1.Close()
 
-	// Give cleanup a moment to complete
-	time.Sleep(500 * time.Millisecond)
-
-	// Verify only proc2 is still running
-	procs, err = client2.ProcList(protocol.DirectoryFilter{Global: true})
-	if err != nil {
-		t.Fatalf("Failed to list processes after cleanup: %v", err)
-	}
-
-	procsList, ok = procs["processes"].([]interface{})
-	if !ok {
-		t.Fatalf("Expected processes list after cleanup, got %T", procs["processes"])
-	}
-
-	if len(procsList) != 1 {
-		t.Errorf("Expected 1 process after cleanup, got %d", len(procsList))
+	// Poll until cleanup completes. The daemon runs cleanup via a deferred
+	// timer (CleanupGracePeriod=1ns), so we must not assert before the
+	// goroutine has observed the disconnect — but we also must not pin the
+	// test to a fixed wall-clock wait.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		procs, err = client2.ProcList(protocol.DirectoryFilter{Global: true})
+		if err != nil {
+			t.Fatalf("Failed to list processes after cleanup: %v", err)
+		}
+		procsList, ok = procs["processes"].([]interface{})
+		if !ok {
+			t.Fatalf("Expected processes list after cleanup, got %T", procs["processes"])
+		}
+		if len(procsList) == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Expected 1 process after cleanup within 5s, still have %d", len(procsList))
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
 
 	if len(procsList) > 0 {
