@@ -1313,11 +1313,27 @@
       'white-space: nowrap'
     ].join(';'),
 
-    // Mega menu (audit dropdown)
+    // Mega menu (audit dropdown). Uses position: fixed so it escapes
+    // ancestor overflow clipping (e.g. .tabContent's overflow-y: auto).
+    //
+    // Modern path: rendered via native HTML Popover API — top-layer
+    //   rendering + built-in light-dismiss + Escape handling. Visibility
+    //   and fade/translate transitions are handled by [popover]:popover-open
+    //   CSS rules injected by injectAuditMenuStyles() — NOT by toggling
+    //   this inline cssText. margin/inset are explicitly overridden because
+    //   browsers default [popover] elements to margin:auto + inset:0 to
+    //   center in viewport, which would fight our JS-computed top/left.
+    //
+    // Legacy path (pre-baseline browsers without popover support): the
+    //   megaMenuVisible rule below is composed on top of this via inline
+    //   cssText in the legacy openDropdown(), which still toggles the
+    //   opacity/transform/pointer-events properties manually.
+    //
+    // Both paths set top/left dynamically via getBoundingClientRect.
     megaMenu: [
-      'position: absolute',
-      'bottom: calc(100% + 4px)',
-      'left: 0',
+      'position: fixed',
+      'margin: 0',
+      'inset: unset',
       'width: 480px',
       'max-width: calc(100vw - 16px)',
       'background: ' + TOKENS.colors.surface,
@@ -2091,6 +2107,50 @@
     styleTarget().appendChild(style);
   }
 
+  // Inject CSS rules for the audit mega menu popover's fade/translate
+  // transition. The native Popover API ties visibility to the :popover-open
+  // pseudo-class and the `display`/`overlay` properties — both of which are
+  // discrete (not animatable) by default, so the menu would pop in/out
+  // instantly without the transition rules below. `allow-discrete` opts into
+  // animating the discrete transitions, and `@starting-style` provides the
+  // "from" state for the initial open so the fade-in actually happens
+  // instead of starting at the "to" state.
+  //
+  // The `[popover]#__devtool-audit-menu` selector works even when the menu
+  // is inside a shadow root because both the `popover` attribute and the id
+  // are on the same element; the selector does not cross the shadow
+  // boundary, it only matches inside the styleTarget() tree.
+  function injectAuditMenuStyles() {
+    if (getInMount('__devtool-audit-menu-style')) return;
+    // Feature gate: no-op for browsers without popover support so the
+    // rules don't leak onto legacy-path elements that toggle visibility
+    // via inline cssText.
+    if (!(typeof HTMLElement !== 'undefined' && 'popover' in HTMLElement.prototype)) return;
+
+    var style = document.createElement('style');
+    style.id = '__devtool-audit-menu-style';
+    style.textContent = [
+      '[popover]#__devtool-audit-menu {',
+      '  opacity: 0;',
+      '  transform: translateY(4px);',
+      '  pointer-events: none;',
+      '  transition: opacity 0.15s ease, transform 0.15s ease, overlay 0.15s allow-discrete, display 0.15s allow-discrete;',
+      '}',
+      '[popover]#__devtool-audit-menu:popover-open {',
+      '  opacity: 1;',
+      '  transform: translateY(0);',
+      '  pointer-events: auto;',
+      '}',
+      '@starting-style {',
+      '  [popover]#__devtool-audit-menu:popover-open {',
+      '    opacity: 0;',
+      '    transform: translateY(4px);',
+      '  }',
+      '}'
+    ].join('\n');
+    styleTarget().appendChild(style);
+  }
+
   function createPanel() {
     // Inject container query styles
     injectContainerQueryStyles();
@@ -2727,6 +2787,15 @@
 
   // Create the Actions dropdown
   function createActionsDropdown() {
+    // Baseline (April 2026): Chrome 114+, Edge 114+, Firefox 125+, Safari 17+.
+    // Older browsers fall through to the legacy absolute-positioning code
+    // path further down. Keep the legacy block byte-for-byte identical to
+    // its pre-migration implementation so we don't regress.
+    var supportsPopover = typeof HTMLElement !== 'undefined' && 'popover' in HTMLElement.prototype;
+
+    // Inject the popover transition rules (no-op for legacy browsers).
+    injectAuditMenuStyles();
+
     var container = document.createElement('div');
     container.style.cssText = STYLES.dropdownContainer;
 
@@ -2770,11 +2839,37 @@
 
       item.onclick = function(e) {
         e.stopPropagation();
-        closeDropdown();
+        dismissMenu();
         runAuditAction(action);
       };
 
       return item;
+    }
+
+    // Legacy close handle. Assigned inside the legacy branch below; the
+    // `dismissMenu` helper reads this so the shared scope can invoke the
+    // block-scoped closeDropdown defined inside the legacy path.
+    var legacyClose = null;
+
+    // Unified dismissal: hide the popover on the modern path, fall through
+    // to the legacy close routine otherwise. Safe to call before
+    // legacyClose is assigned because this wrapper is only invoked in
+    // response to a click on an already-open menu item, by which time
+    // one of the two paths has wired itself up.
+    function dismissMenu() {
+      if (supportsPopover) {
+        try {
+          if (menu.matches && menu.matches(':popover-open')) {
+            menu.hidePopover();
+          }
+        } catch (_e) {
+          // hidePopover() can throw InvalidStateError if the menu was
+          // already dismissed by a light-dismiss race. Swallow it — the
+          // menu is closed either way.
+        }
+      } else if (legacyClose) {
+        legacyClose();
+      }
     }
 
     // Top row: first 4 sections as columns
@@ -2827,58 +2922,74 @@
     bottomRow.appendChild(techGrid);
     menu.appendChild(bottomRow);
 
-    container.appendChild(menu);
+    // -----------------------------------------------------------------
+    // Path split: modern (native Popover API) vs legacy (JS-positioned
+    // position:fixed). Both paths are shown the same DOM, differ only in
+    // how the menu is mounted and how it's toggled + positioned.
+    //
+    // The hover handlers and the scheduleReposition/repositionMenu helpers
+    // are shared between both paths because they only read/write local
+    // closure state (`isOpen`, `rafPositionId`) which each path manages.
+    // -----------------------------------------------------------------
 
-    // Toggle dropdown
+    // Toggle state — read by shared helpers (repositionMenu guard,
+    // btn.onmouseenter/leave) and written by both paths' open/close flows.
     var isOpen = false;
+    // rAF handle for resize-coalesced reposition. Cancelled in closeDropdown
+    // (legacy) and in the 'closed' branch of beforetoggle (modern) to avoid
+    // a ghost reposition after the menu is closed.
+    var rafPositionId = 0;
 
-    function openDropdown() {
-      isOpen = true;
-      menu.style.cssText = STYLES.megaMenu + ';' + STYLES.megaMenuVisible;
-      // Responsive: reduce columns on narrow viewports
+    // Reposition the menu relative to the audit button. Uses position: fixed
+    // coordinates so ancestor overflow boxes (.tabContent) cannot clip us.
+    // Opens upward by default; falls back to opening below when the upward
+    // slot would clip the top of the viewport. Used by both paths.
+    function repositionMenu() {
+      var btnRect = btn.getBoundingClientRect();
+      var menuW = menu.offsetWidth;
+      var menuH = menu.offsetHeight;
       var vw = window.innerWidth;
-      if (vw < 360) {
-        topRow.style.gridTemplateColumns = '1fr 1fr';
-        techGrid.style.gridTemplateColumns = '1fr 1fr';
-      } else if (vw < 480) {
-        topRow.style.gridTemplateColumns = '1fr 1fr';
-      } else {
-        topRow.style.gridTemplateColumns = '1fr 1fr 1fr 1fr';
-        techGrid.style.gridTemplateColumns = '1fr 1fr 1fr';
+      var vh = window.innerHeight;
+
+      // Prefer opening above the button (matches previous bottom: 100% behavior).
+      var top = btnRect.top - menuH - 4;
+      if (top < 8) {
+        // Not enough room above; open below the button instead.
+        top = btnRect.bottom + 4;
+        // Clamp bottom edge to viewport.
+        if (top + menuH > vh - 8) {
+          top = Math.max(8, vh - menuH - 8);
+        }
       }
-      btn.style.background = TOKENS.colors.surface;
-      btn.style.borderColor = TOKENS.colors.primary;
-      btn.style.color = TOKENS.colors.primary;
-      document.addEventListener('click', handleOutsideClick);
+
+      var left = btnRect.left;
+      if (left + menuW > vw - 8) {
+        left = vw - menuW - 8;
+      }
+      if (left < 8) {
+        left = 8;
+      }
+
+      menu.style.top = top + 'px';
+      menu.style.left = left + 'px';
     }
 
-    function closeDropdown() {
-      isOpen = false;
-      menu.style.cssText = STYLES.megaMenu;
-      btn.style.background = 'transparent';
-      btn.style.borderColor = TOKENS.colors.border;
-      btn.style.color = TOKENS.colors.textMuted;
-      document.removeEventListener('click', handleOutsideClick);
+    // Stable handler reference so removeEventListener matches addEventListener.
+    // Declared once in the closure (NOT recreated per open) so open/close
+    // flows always reference the same function identity. Shared by both paths.
+    function scheduleReposition() {
+      if (rafPositionId) {
+        cancelAnimationFrame(rafPositionId);
+      }
+      rafPositionId = requestAnimationFrame(function() {
+        rafPositionId = 0;
+        if (isOpen) {
+          repositionMenu();
+        }
+      });
     }
 
-    function handleOutsideClick(e) {
-      // Prefer composedPath() for constant-time "is event inside container"
-      // check instead of Node.contains() which walks the DOM tree.
-      var path = typeof e.composedPath === 'function' ? e.composedPath() : null;
-      if (path) {
-        if (path.indexOf(container) === -1) closeDropdown();
-        return;
-      }
-      if (!container.contains(e.target)) {
-        closeDropdown();
-      }
-    }
-
-    btn.onclick = function(e) {
-      e.stopPropagation();
-      isOpen ? closeDropdown() : openDropdown();
-    };
-
+    // Hover affordance on the audit button. Shared by both paths.
     btn.onmouseenter = function() {
       if (!isOpen) {
         btn.style.background = TOKENS.colors.surface;
@@ -2893,6 +3004,206 @@
         btn.style.color = TOKENS.colors.textMuted;
       }
     };
+
+    if (!supportsPopover) {
+      // ==================== LEGACY PATH ====================
+      // Byte-for-byte the pre-migration behavior: menu appended to the
+      // dropdownContainer, manual outside-click/scroll close, manual open
+      // and close helpers. Kept intact for pre-baseline browsers.
+
+      container.appendChild(menu);
+
+      function handleScrollClose() {
+        closeDropdown();
+      }
+
+      // Iter 13 migration: prefer composedPath() over Node.contains() so
+      // outside-click detection is O(1) relative to the event path length
+      // instead of walking the entire subtree.
+      function handleOutsideClick(e) {
+        var path = typeof e.composedPath === 'function' ? e.composedPath() : null;
+        if (path) {
+          if (path.indexOf(container) === -1) closeDropdown();
+          return;
+        }
+        if (!container.contains(e.target)) {
+          closeDropdown();
+        }
+      }
+
+      function openDropdown() {
+        isOpen = true;
+        // Apply visible styles FIRST so offsetWidth/offsetHeight are accurate
+        // when repositionMenu() measures the menu.
+        menu.style.cssText = STYLES.megaMenu + ';' + STYLES.megaMenuVisible;
+
+        // Responsive: reduce columns on narrow viewports. Must happen BEFORE
+        // repositionMenu() so width/height are measured at final column count.
+        var vw = window.innerWidth;
+        if (vw < 360) {
+          topRow.style.gridTemplateColumns = '1fr 1fr';
+          techGrid.style.gridTemplateColumns = '1fr 1fr';
+        } else if (vw < 480) {
+          topRow.style.gridTemplateColumns = '1fr 1fr';
+        } else {
+          topRow.style.gridTemplateColumns = '1fr 1fr 1fr 1fr';
+          techGrid.style.gridTemplateColumns = '1fr 1fr 1fr';
+        }
+
+        // Initial positioning: sync (not rAF) so the menu never flashes at 0,0.
+        repositionMenu();
+
+        btn.style.background = TOKENS.colors.surface;
+        btn.style.borderColor = TOKENS.colors.primary;
+        btn.style.color = TOKENS.colors.primary;
+
+        // Lifecycle listeners. scroll uses capture:true so it catches scrolls
+        // on any ancestor (including .tabContent) since scroll events do not
+        // bubble.
+        window.addEventListener('resize', scheduleReposition);
+        document.addEventListener('scroll', handleScrollClose, { capture: true, passive: true });
+        document.addEventListener('click', handleOutsideClick);
+      }
+
+      function closeDropdown() {
+        isOpen = false;
+        menu.style.cssText = STYLES.megaMenu;
+        // Clear the dynamic positions so a stale top/left from this open does
+        // not flicker into view on the next open before repositionMenu() runs.
+        menu.style.top = '';
+        menu.style.left = '';
+
+        // Cancel any pending rAF reposition to avoid a ghost update after close.
+        if (rafPositionId) {
+          cancelAnimationFrame(rafPositionId);
+          rafPositionId = 0;
+        }
+
+        btn.style.background = 'transparent';
+        btn.style.borderColor = TOKENS.colors.border;
+        btn.style.color = TOKENS.colors.textMuted;
+
+        // Remove with the same function references and option flags used in open.
+        window.removeEventListener('resize', scheduleReposition);
+        document.removeEventListener('scroll', handleScrollClose, { capture: true, passive: true });
+        document.removeEventListener('click', handleOutsideClick);
+      }
+
+      btn.onclick = function(e) {
+        e.stopPropagation();
+        isOpen ? closeDropdown() : openDropdown();
+      };
+
+      // Expose to shared-scope dismissMenu so item clicks can close us.
+      legacyClose = closeDropdown;
+
+      return container;
+    }
+
+    // ==================== MODERN PATH (Popover API) ====================
+    // The native HTML Popover API renders the menu in the top layer so no
+    // ancestor overflow/contain/transform stacking context can clip it. The
+    // browser also handles light-dismiss (outside click) and Escape for us,
+    // replacing the handleOutsideClick and keydown wiring from the legacy
+    // path.
+    //
+    // Mount location: same mount root as the rest of the indicator (shadow
+    // root if iter 15's shadow-root.js is active, else document.body). The
+    // popover top layer is per-document, so visually the menu still floats
+    // above every page element regardless of which tree it's attached to.
+    // Mounting inside the same tree as btn is required so the native
+    // `popovertarget` attribute can resolve menu.id via the containing
+    // tree's getElementById — popovertarget does NOT cross shadow
+    // boundaries, so if btn is inside the shadow root, menu must be too.
+    menu.popover = 'auto';
+    btn.setAttribute('popovertarget', menu.id);
+    // Important: menu is NOT appended to `container` on the modern path.
+    // It's a sibling of the rest of the indicator UI inside the mount root.
+    // The audit button stays inside `container`; the popover is wired back
+    // to it only by the popovertarget attribute.
+    mountRoot().appendChild(menu);
+
+    var resizeListener = null;
+    var scrollListener = null;
+
+    menu.addEventListener('beforetoggle', function(e) {
+      if (e.newState === 'open') {
+        isOpen = true;
+
+        // Responsive column layout must happen BEFORE measuring so the
+        // menu has its final dimensions when repositionMenu reads them.
+        var vw = window.innerWidth;
+        if (vw < 360) {
+          topRow.style.gridTemplateColumns = '1fr 1fr';
+          techGrid.style.gridTemplateColumns = '1fr 1fr';
+        } else if (vw < 480) {
+          topRow.style.gridTemplateColumns = '1fr 1fr';
+        } else {
+          topRow.style.gridTemplateColumns = '1fr 1fr 1fr 1fr';
+          techGrid.style.gridTemplateColumns = '1fr 1fr 1fr';
+        }
+
+        // Compute position AFTER the browser has laid out the popover in
+        // the top layer. rAF is needed because offsetWidth/offsetHeight
+        // return 0 during the beforetoggle event — the popover isn't
+        // painted yet.
+        requestAnimationFrame(function() {
+          if (isOpen) repositionMenu();
+        });
+
+        // Active button styling.
+        btn.style.background = TOKENS.colors.surface;
+        btn.style.borderColor = TOKENS.colors.primary;
+        btn.style.color = TOKENS.colors.primary;
+
+        // Reposition on window resize; close on any ancestor scroll. Save
+        // the function references in closure-scoped vars so the matching
+        // removeEventListener calls in the 'closed' branch can find them
+        // regardless of whether closure was caused by click, Escape, or
+        // light-dismiss (the same beforetoggle fires for all of them).
+        resizeListener = scheduleReposition;
+        scrollListener = function() {
+          try {
+            if (menu.matches && menu.matches(':popover-open')) {
+              menu.hidePopover();
+            }
+          } catch (_e) {
+            // Swallow InvalidStateError from a race with light-dismiss.
+          }
+        };
+        window.addEventListener('resize', resizeListener);
+        document.addEventListener('scroll', scrollListener, { capture: true, passive: true });
+      } else if (e.newState === 'closed') {
+        isOpen = false;
+
+        // Reset button styling.
+        btn.style.background = 'transparent';
+        btn.style.borderColor = TOKENS.colors.border;
+        btn.style.color = TOKENS.colors.textMuted;
+
+        // Clear computed coordinates so stale top/left from this open does
+        // not flicker into view on the next open before repositionMenu runs.
+        menu.style.top = '';
+        menu.style.left = '';
+
+        // Cancel any pending rAF reposition to avoid a ghost update after close.
+        if (rafPositionId) {
+          cancelAnimationFrame(rafPositionId);
+          rafPositionId = 0;
+        }
+
+        // Unregister lifecycle listeners. Must use the same references
+        // and option flags we passed to addEventListener above.
+        if (resizeListener) {
+          window.removeEventListener('resize', resizeListener);
+          resizeListener = null;
+        }
+        if (scrollListener) {
+          document.removeEventListener('scroll', scrollListener, { capture: true, passive: true });
+          scrollListener = null;
+        }
+      }
+    });
 
     return container;
   }
