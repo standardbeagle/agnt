@@ -1,6 +1,7 @@
 package overlay
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"sort"
@@ -309,6 +310,11 @@ type Renderer struct {
 	// atomically on each DrawIndicator call; read by processStateIcon
 	// to produce frame-based animation when a process is starting.
 	animFrame atomic.Int32
+
+	// buf accumulates ANSI output under lock so the terminal write
+	// happens after the lock is released. Set by beginBuffer, flushed
+	// by flushBuffer. Nil when not buffering.
+	buf *bytes.Buffer
 }
 
 // NewRenderer creates a new Renderer.
@@ -349,9 +355,30 @@ func (r *Renderer) SetSize(width, height int) {
 	r.screenMgr.SetSize(width, height)
 }
 
-// write outputs a string without locking (caller must hold lock).
+// write outputs a string. When a buffer is active (beginBuffer was called)
+// the data goes to the in-memory buffer; otherwise it writes directly to r.out.
+// Caller must hold r.mu.
 func (r *Renderer) write(s string) {
+	if r.buf != nil {
+		r.buf.WriteString(s)
+		return
+	}
 	io.WriteString(r.out, s)
+}
+
+// beginBuffer starts buffering all write calls into an in-memory buffer.
+// Caller must hold r.mu. Pair with flushBuffer after releasing the lock.
+func (r *Renderer) beginBuffer() {
+	r.buf = &bytes.Buffer{}
+}
+
+// flushBuffer writes the accumulated buffer to r.out and clears the buffer.
+// Must be called WITHOUT holding r.mu (that is the whole point — keep the
+// slow terminal I/O outside the lock).
+func (r *Renderer) flushBuffer(buf *bytes.Buffer) {
+	if buf.Len() > 0 {
+		r.out.Write(buf.Bytes())
+	}
 }
 
 // moveTo moves cursor to row, col (1-indexed).
@@ -362,7 +389,7 @@ func (r *Renderer) moveTo(row, col int) {
 // DrawIndicator draws the status indicator bar at the bottom of the screen.
 func (r *Renderer) DrawIndicator(status Status) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.beginBuffer()
 
 	// Advance animation frame on each draw cycle
 	frame := int(r.animFrame.Add(1))
@@ -504,6 +531,11 @@ func (r *Renderer) DrawIndicator(status Status) {
 
 	// Restore cursor
 	r.write(CursorRestore + CursorShow)
+
+	buf := r.buf
+	r.buf = nil
+	r.mu.Unlock()
+	r.flushBuffer(buf)
 }
 
 // NormalizeListenAddr converts wildcard and loopback addresses to localhost for clickable URLs.
@@ -678,52 +710,75 @@ func (r *Renderer) truncateANSI(s string, maxVisible int) string {
 // ClearIndicator clears the indicator bar.
 func (r *Renderer) ClearIndicator() {
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.beginBuffer()
 
 	r.write(CursorSave + CursorHide)
 	r.moveTo(r.height, 1)
 	r.write(ClearLine)
 	r.write(CursorRestore + CursorShow)
+
+	buf := r.buf
+	r.buf = nil
+	r.mu.Unlock()
+	r.flushBuffer(buf)
 }
 
 // ClearScreen clears the entire screen and resets cursor to home.
 func (r *Renderer) ClearScreen() {
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.beginBuffer()
 
 	// Clear entire screen, move cursor home, reset scroll region
 	r.write(ClearScreen + CursorHome + ResetScroll)
+
+	buf := r.buf
+	r.buf = nil
+	r.mu.Unlock()
+	r.flushBuffer(buf)
 }
 
 // ClearVisible clears the visible screen and moves cursor home.
 // Unlike ClearScreen, this preserves the scroll region.
 func (r *Renderer) ClearVisible() {
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.beginBuffer()
 
 	r.write(ClearScreen + CursorHome)
+
+	buf := r.buf
+	r.buf = nil
+	r.mu.Unlock()
+	r.flushBuffer(buf)
 }
 
 // EnterAltScreen switches to the alternate screen buffer.
 // The main screen content is preserved and restored when ExitAltScreen is called.
 func (r *Renderer) EnterAltScreen() {
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.beginBuffer()
 	r.write(EnterAltScreen + CursorHome)
+	buf := r.buf
+	r.buf = nil
+	r.mu.Unlock()
+	r.flushBuffer(buf)
 }
 
 // ExitAltScreen switches back to the main screen buffer.
 // The main screen content that was preserved when EnterAltScreen was called is restored.
 func (r *Renderer) ExitAltScreen() {
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.beginBuffer()
 	r.write(ExitAltScreen)
+	buf := r.buf
+	r.buf = nil
+	r.mu.Unlock()
+	r.flushBuffer(buf)
 }
 
 // DrawMenu draws a popup menu in the center of the screen.
 func (r *Renderer) DrawMenu(menu Menu, selectedIndex int) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.beginBuffer()
 
 	// Calculate menu dimensions
 	menuWidth := len(menu.Title) + 4
@@ -797,6 +852,11 @@ func (r *Renderer) DrawMenu(menu Menu, selectedIndex int) {
 	r.write(Reset)
 
 	r.write(CursorRestore + CursorShow)
+
+	buf := r.buf
+	r.buf = nil
+	r.mu.Unlock()
+	r.flushBuffer(buf)
 }
 
 // DrawDashboard draws a niri-style dashboard with centered panels.
@@ -804,7 +864,7 @@ func (r *Renderer) DrawMenu(menu Menu, selectedIndex int) {
 // gradient borders, and gaps between them (inspired by niri window manager).
 func (r *Renderer) DrawDashboard(menu Menu, selectedIndex int, status Status) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.beginBuffer()
 
 	const panelGap = 1    // Gap between panels (niri-style spacing)
 	const panelMargin = 1 // Margin from screen edges
@@ -1203,13 +1263,18 @@ func (r *Renderer) DrawDashboard(menu Menu, selectedIndex int, status Status) {
 	r.write(Reset)
 
 	r.write(CursorRestore + CursorShow)
+
+	buf := r.buf
+	r.buf = nil
+	r.mu.Unlock()
+	r.flushBuffer(buf)
 }
 
 // DrawPanelView draws a full-screen panel view with a niri-style tab bar at top.
 // Panels are arranged horizontally like niri columns: Ctrl+Left/Right to navigate.
 func (r *Renderer) DrawPanelView(panels []PanelItem, activeIndex int, status Status, overviewSelectedIdx int, commandInput bool, commandBuffer string) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.beginBuffer()
 
 	r.write(ClearScreen + CursorHome + CursorHide)
 	// Full redraw invalidates diff cache; drawScrollableContent will repopulate it
@@ -1283,6 +1348,11 @@ func (r *Renderer) DrawPanelView(panels []PanelItem, activeIndex int, status Sta
 	r.write(Reset)
 
 	r.write(CursorShow)
+
+	buf := r.buf
+	r.buf = nil
+	r.mu.Unlock()
+	r.flushBuffer(buf)
 }
 
 // drawPanelTabBar draws the horizontal tab bar showing all panels.
@@ -1655,11 +1725,13 @@ func (r *Renderer) drawScrollIndicators(startRow, col, width, availLines int, pa
 // Returns false if no cached state exists (caller should do a full draw).
 func (r *Renderer) RefreshPanelContent(panel PanelItem) bool {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 
 	if r.lastPanelLines == nil {
+		r.mu.Unlock()
 		return false
 	}
+
+	r.beginBuffer()
 
 	startRow := r.lastPanelStart
 	col := r.lastPanelCol
@@ -1694,6 +1766,11 @@ func (r *Renderer) RefreshPanelContent(panel PanelItem) bool {
 	r.lastPanelLines = newLines
 	r.drawScrollIndicators(startRow, col, width, availLines, panel)
 	r.write(CursorShow)
+
+	buf := r.buf
+	r.buf = nil
+	r.mu.Unlock()
+	r.flushBuffer(buf)
 	return true
 }
 
@@ -1807,7 +1884,7 @@ func formatShortTimeAgo(t time.Time) string {
 // Deprecated: Use DrawDashboard for a more comprehensive view.
 func (r *Renderer) DrawMenuWithProcesses(menu Menu, selectedIndex int, processes []ProcessInfo) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.beginBuffer()
 
 	// Calculate menu dimensions
 	menuWidth := len(menu.Title) + 4
@@ -1931,12 +2008,17 @@ func (r *Renderer) DrawMenuWithProcesses(menu Menu, selectedIndex int, processes
 	r.write(Reset)
 
 	r.write(CursorRestore + CursorShow)
+
+	buf := r.buf
+	r.buf = nil
+	r.mu.Unlock()
+	r.flushBuffer(buf)
 }
 
 // DrawInput draws a text input dialog.
 func (r *Renderer) DrawInput(prompt, value string) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.beginBuffer()
 
 	inputWidth := max(len(prompt)+4, 40)
 	inputWidth = min(inputWidth, r.width-4)
@@ -1992,6 +2074,11 @@ func (r *Renderer) DrawInput(prompt, value string) {
 	r.write(Reset)
 
 	r.write(CursorRestore + CursorShow)
+
+	buf := r.buf
+	r.buf = nil
+	r.mu.Unlock()
+	r.flushBuffer(buf)
 }
 
 // ClearMenu clears all overlay regions (menu and input dialogs).
@@ -2187,7 +2274,7 @@ func (r *Renderer) padCenter(s string, width int) string {
 // using niri-style panel with rounded corners and gradient border.
 func (r *Renderer) DrawProcessOutput(processID, command, state, output string) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.beginBuffer()
 
 	// Clear screen
 	r.write(ClearScreen + CursorHome + CursorHide)
@@ -2285,13 +2372,18 @@ func (r *Renderer) DrawProcessOutput(processID, command, state, output string) {
 	hint := " press any key to close "
 	r.write(r.padCenter(hint, panelWidth-2))
 	r.write(Reset)
+
+	buf := r.buf
+	r.buf = nil
+	r.mu.Unlock()
+	r.flushBuffer(buf)
 }
 
 // DrawStatusBarMessage draws a message on the status bar at the bottom of the screen.
 // Use this for transient status updates like spinners.
 func (r *Renderer) DrawStatusBarMessage(message string) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.beginBuffer()
 
 	r.write(CursorSave + CursorHide)
 	r.moveTo(r.height, 1)
@@ -2308,16 +2400,26 @@ func (r *Renderer) DrawStatusBarMessage(message string) {
 	r.write(Reset)
 
 	r.write(CursorRestore + CursorShow)
+
+	buf := r.buf
+	r.buf = nil
+	r.mu.Unlock()
+	r.flushBuffer(buf)
 }
 
 // ClearStatusBarMessage clears any message on the status bar.
 // After clearing, the regular indicator should be redrawn.
 func (r *Renderer) ClearStatusBarMessage() {
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.beginBuffer()
 
 	r.write(CursorSave + CursorHide)
 	r.moveTo(r.height, 1)
 	r.write(ClearLine)
 	r.write(CursorRestore + CursorShow)
+
+	buf := r.buf
+	r.buf = nil
+	r.mu.Unlock()
+	r.flushBuffer(buf)
 }
