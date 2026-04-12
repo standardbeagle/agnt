@@ -286,10 +286,18 @@ func New(config DaemonConfig) *Daemon {
 		pidTracker:        pidTracker,
 		proxyEvents:       make(chan ProxyEvent, 10), // Buffer 10 events
 		scriptProxies:     make(map[string][]string),
-		autostartManager:  NewAutostartManager(),
 		ctx:               ctx,
 		cancel:            cancel,
 	}
+
+	// Autostart manager fans every progress event out to the alert hub so
+	// that monitor/MCP watch subscribers see real-time autostart phases.
+	// The closure captures `d` lazily; alertHub is set on the line above
+	// via the struct literal so it is safe to dereference inside the
+	// callback.
+	d.autostartManager = NewAutostartManagerWithBroadcast(func(projectPath string, ev AutostartProgress) {
+		d.broadcastAutostartProgress(projectPath, ev)
+	})
 
 	// Wire script registry into ProcessManager for automatic lifecycle updates
 	h.ProcessManager().SetScriptRegistry(d.scriptRegistry)
@@ -457,10 +465,12 @@ func (d *Daemon) Start() error {
 		d.updateChecker.Start()
 	}
 
-	// Start duplicate process scanner (periodic cleanup)
-	if d.dupScanner != nil {
-		d.dupScanner.Start()
-	}
+	// Periodic duplicate process scanner is intentionally NOT started.
+	// The pre-autostart scan in makeAutostartStartFn handles orphans from
+	// previous sessions; running a periodic scan during normal operation
+	// races against managed dotnet/node child process trees and kills
+	// legitimate descendants. dupScanner is still constructed because
+	// makeAutostartStartFn calls ScanForProject directly.
 
 	return nil
 }

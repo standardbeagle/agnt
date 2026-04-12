@@ -7,8 +7,11 @@ import (
 	"github.com/sblinch/kdl-go/document"
 )
 
-// DefaultDependencyTimeout is the default timeout for script dependencies.
-// 120s accommodates slow-starting processes like dotnet run (NuGet restore + compile).
+// DefaultDependencyTimeout is the legacy default timeout for script
+// dependencies. The current parser defaults to 0 (wait indefinitely until
+// the parent context is cancelled or an explicit per-dep timeout is set in
+// .agnt.kdl), so this constant is retained only for backward compatibility
+// with internal/autostart and existing tests.
 const DefaultDependencyTimeout = 120 * time.Second
 
 // ScriptDependency represents a dependency on another script.
@@ -16,6 +19,10 @@ type ScriptDependency struct {
 	// Name is the name of the script this depends on.
 	Name string
 	// Timeout is how long to wait for the dependency to become ready.
+	// Zero means wait indefinitely (until the autostart context is cancelled
+	// or the dependency's ready signal arrives). A positive value enforces
+	// a hard upper bound on the wait — only set when the user explicitly
+	// configures `timeout=N` in .agnt.kdl.
 	Timeout time.Duration
 }
 
@@ -43,7 +50,10 @@ func (d *DependsOnList) UnmarshalKDL(node *document.Node) error {
 
 	// Arguments-only format: depends-on "api" "redis" timeout=45
 	if len(node.Children) == 0 {
-		timeout := DefaultDependencyTimeout
+		// Default to 0 (wait indefinitely). Per .claude/rules/daemon-lifecycle.md
+		// a Starting process must never be abandoned by a hardcoded timeout —
+		// only an explicit user-set `timeout=N` should bound the wait.
+		var timeout time.Duration
 		if node.Properties.Exist() {
 			if tv, ok := node.Properties.Get("timeout"); ok {
 				if tval, ok := toSeconds(tv.Value); ok {
@@ -69,7 +79,8 @@ func (d *DependsOnList) UnmarshalKDL(node *document.Node) error {
 	// Child node format: depends-on { api timeout=30; redis timeout=60 }
 	for _, child := range node.Children {
 		name := child.Name.ValueString()
-		dep := ScriptDependency{Name: name, Timeout: DefaultDependencyTimeout}
+		// Default to 0 (wait indefinitely). See note in the args branch above.
+		dep := ScriptDependency{Name: name, Timeout: 0}
 		if child.Properties.Exist() {
 			if tv, ok := child.Properties.Get("timeout"); ok {
 				if tval, ok := toSeconds(tv.Value); ok {

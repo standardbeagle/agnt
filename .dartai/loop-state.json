@@ -1,10 +1,10 @@
 {
-  "status": "running",
-  "iterations": 9,
+  "status": "interrupted",
+  "iterations": 10,
   "spawns": 1,
   "started_at": "2026-04-11T21:54:00Z",
   "completed_at": null,
-  "last_iteration_at": "2026-04-12T03:35:00Z",
+  "last_iteration_at": "2026-04-12T04:00:00Z",
   "last_subagent": "dartai:task-executor",
   "loop_task_id": "Idn6IdmJXITx",
   "dartboard": "Personal/agnt",
@@ -155,6 +155,23 @@
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
+    },
+    {
+      "task_id": "EpE2DBQQBLlQ",
+      "iteration": 10,
+      "status": "completed",
+      "started_at": "2026-04-12T03:50:00Z",
+      "completed_at": "2026-04-12T04:00:00Z",
+      "phase_completed": "phase-9",
+      "failed_phase": null,
+      "files_changed": 4,
+      "tests_added": 2,
+      "plan_adjustments": 1,
+      "completion_summary": "Removed the 120s implicit dependency-wait fallback. Root cause was two-fold: (1) waitForSingleDependency wrapped every wait in DefaultDependencyTimeout when the parent ctx had no deadline (production session ctx never has a deadline), and (2) the .agnt.kdl parser defaulted every dep.Timeout to 120s, so even removing the daemon-side fallback would not have produced indefinite waits. Fix: parser now defaults dep.Timeout to 0 (wait indefinitely); waitForSingleDependency wraps the wait in context.WithTimeout only when dep.Timeout > 0 (explicit user-set timeout in KDL still honored). Removed parentHasDeadline branch and parameter. DefaultDependencyTimeout constant retained for backward compat with internal/autostart (dead/parallel impl) and existing topo-sort fixture tests. Added two tests: NoFallbackTimeout_WaitsIndefinitely (proves the wait blocks past 6s and unblocks promptly on parent ctx cancel), ExplicitDependencyTimeout_StillHonored (proves timeout=2 in KDL still bounds the wait, and never falls into 120s fallback). Updated 3 assertions in agnt_deps_test.go from DefaultDependencyTimeout to 0. Build, vet, gofmt clean; targeted daemon+config tests pass with -race.",
+      "failure_reason": null,
+      "fix_task_created": false,
+      "fix_task_id": null
     }
-  ]
+  ],
+  "interrupted_at": "2026-04-12T04:42:58.411Z"
 }

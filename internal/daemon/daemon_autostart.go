@@ -368,6 +368,11 @@ func (d *Daemon) startAutostartScripts(ctx context.Context, cfg *config.AgntConf
 					result.Errors = append(result.Errors, fmt.Sprintf("script %s: %v", name, err))
 					failedScripts[name] = true
 					resultMu.Unlock()
+					// Unblock any dependents that were waiting on this script.
+					// Without this, dependents wait forever on the ready
+					// signal. Downstream layers still see failedScripts[name]
+					// and can react accordingly.
+					d.readySignaler.SignalReady(processID)
 					return
 				}
 
@@ -423,28 +428,32 @@ func (d *Daemon) startAutostartScripts(ctx context.Context, cfg *config.AgntConf
 }
 
 // waitForDependenciesCtx blocks until all dependencies for a script are ready
-// or the context is cancelled. Uses context cancellation for the primary wait.
-// If the parent context has no deadline, applies per-dependency timeouts as
-// a fallback to avoid blocking forever.
+// or the context is cancelled. The wait is bounded only by the parent context
+// (session lifetime) and any explicit per-dependency `timeout=N` declared in
+// .agnt.kdl. There is no implicit fallback timeout — a slow-starting backend
+// (e.g. dotnet cold start, NuGet restore) is "Starting", not "Stalled", per
+// .claude/rules/daemon-lifecycle.md, so dependents must wait indefinitely
+// rather than launch against a not-yet-listening dependency.
 // Emits progress events for each dependency wait and resolution.
 func (d *Daemon) waitForDependenciesCtx(ctx context.Context, name string, scriptCfg *config.ScriptConfig, projectPath string, layerIdx int, progress chan<- AutostartProgress) {
 	if layerIdx == 0 {
 		return
 	}
-	_, parentHasDeadline := ctx.Deadline()
 	processID := makeProcessID(projectPath, name)
 	for _, dep := range scriptCfg.DependsOn {
 		if ctx.Err() != nil {
 			return
 		}
-		d.waitForSingleDependency(ctx, parentHasDeadline, name, processID, dep, projectPath, layerIdx, progress)
+		d.waitForSingleDependency(ctx, name, processID, dep, projectPath, layerIdx, progress)
 	}
 }
 
-// waitForSingleDependency waits for one dependency to become ready, applying a
-// per-dep timeout when the parent context has no deadline. Separated from the
-// loop so that timeout contexts can be cancelled per iteration via defer.
-func (d *Daemon) waitForSingleDependency(ctx context.Context, parentHasDeadline bool, name, processID string, dep config.ScriptDependency, projectPath string, layerIdx int, progress chan<- AutostartProgress) {
+// waitForSingleDependency waits for one dependency to become ready. The wait
+// is unbounded (parent ctx only) unless the user set an explicit per-dep
+// `timeout=N` in .agnt.kdl, in which case it is wrapped in a context with
+// that deadline. Separated from the loop so the optional timeout context can
+// be cancelled per iteration via defer.
+func (d *Daemon) waitForSingleDependency(ctx context.Context, name, processID string, dep config.ScriptDependency, projectPath string, layerIdx int, progress chan<- AutostartProgress) {
 	depProcessID := makeProcessID(projectPath, dep.Name)
 
 	emitProgress(progress, projectPath, AutostartProgress{
@@ -452,13 +461,9 @@ func (d *Daemon) waitForSingleDependency(ctx context.Context, parentHasDeadline 
 	})
 
 	waitCtx := ctx
-	if !parentHasDeadline {
-		timeout := dep.Timeout
-		if timeout == 0 {
-			timeout = config.DefaultDependencyTimeout
-		}
+	if dep.Timeout > 0 {
 		var cancel context.CancelFunc
-		waitCtx, cancel = context.WithTimeout(ctx, timeout)
+		waitCtx, cancel = context.WithTimeout(ctx, dep.Timeout)
 		defer cancel()
 	}
 

@@ -108,19 +108,46 @@ func (h *AutostartHandle) Cancel() {
 	}
 }
 
+// AutostartBroadcastFunc receives a stamped progress event for fan-out to
+// external observers (alert hub, monitor stream, etc.). It is invoked from
+// the manager's drain goroutine while holding no locks. The function MUST
+// be non-blocking and MUST NOT panic — the manager treats it as a fire-and
+// forget sink and does not recover.
+//
+// projectPath is the normalized handle key. event has ProjectPath and
+// Timestamp fields already populated by the manager.
+type AutostartBroadcastFunc func(projectPath string, event AutostartProgress)
+
 // AutostartManager coordinates at-most-one autostart run per project path.
 // Callers invoke GetOrCreate with a startFn; the first caller for a given
 // path starts the run, and subsequent callers receive the same handle.
 //
 // All operations are safe for concurrent use. The registry itself is
 // lock-free: it relies on sync.Map.LoadOrStore for exactly-once semantics.
+//
+// If a non-nil broadcast callback was provided to NewAutostartManagerWith
+// Broadcast, the drain goroutine invokes it for every progress event
+// (including the synthetic PhaseDone) AFTER recording the event in the
+// handle. This ordering means a subscriber that observes a PhaseDone
+// broadcast and immediately reads handle.Result() is guaranteed to see
+// a populated result. The callback is invoked while holding no handle
+// locks so subscribers cannot deadlock with Progress()/Result() callers.
 type AutostartManager struct {
-	handles sync.Map // normalizedPath (string) → *AutostartHandle
+	handles   sync.Map // normalizedPath (string) → *AutostartHandle
+	broadcast AutostartBroadcastFunc
 }
 
-// NewAutostartManager returns a ready-to-use AutostartManager.
+// NewAutostartManager returns a ready-to-use AutostartManager with no
+// broadcast callback. Equivalent to NewAutostartManagerWithBroadcast(nil).
 func NewAutostartManager() *AutostartManager {
 	return &AutostartManager{}
+}
+
+// NewAutostartManagerWithBroadcast returns an AutostartManager that fans
+// every stamped progress event out to the supplied broadcast callback.
+// Pass nil to disable broadcasting (equivalent to NewAutostartManager).
+func NewAutostartManagerWithBroadcast(broadcast AutostartBroadcastFunc) *AutostartManager {
+	return &AutostartManager{broadcast: broadcast}
 }
 
 // GetOrCreate returns the existing handle for projectPath if one is present,
@@ -247,6 +274,15 @@ func (m *AutostartManager) run(ctx context.Context, h *AutostartHandle, startFn 
 			h.scripts[ev.Script] = phaseName(ev.Phase)
 		}
 		h.mu.Unlock()
+
+		// Fan out to the broadcast sink (alert hub) AFTER recording so
+		// observers and Progress() callers see consistent state. The
+		// broadcast call must not hold any handle lock — alert hub
+		// dispatch may itself acquire locks and we want to avoid
+		// inversion with subscribers.
+		if m.broadcast != nil {
+			m.broadcast(h.projectPath, ev)
+		}
 	}
 
 	// Ensure the worker goroutine has actually returned before we publish
@@ -256,14 +292,22 @@ func (m *AutostartManager) run(ctx context.Context, h *AutostartHandle, startFn 
 	workerWg.Wait()
 
 	// Publish final state.
-	h.mu.Lock()
-	h.result = result
-	h.progress = append(h.progress, AutostartProgress{
+	doneEvent := AutostartProgress{
 		ProjectPath: h.projectPath,
 		Phase:       PhaseDone,
 		Timestamp:   time.Now(),
-	})
+	}
+	h.mu.Lock()
+	h.result = result
+	h.progress = append(h.progress, doneEvent)
 	h.mu.Unlock()
+
+	// Broadcast the synthetic PhaseDone after publishing so subscribers
+	// observing PhaseDone can call handle.Result() and get a populated
+	// value (not nil).
+	if m.broadcast != nil {
+		m.broadcast(h.projectPath, doneEvent)
+	}
 
 	// Release the context to avoid leaking the cancel func, then signal done.
 	h.cancel()

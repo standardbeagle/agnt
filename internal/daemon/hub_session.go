@@ -242,35 +242,11 @@ func (d *Daemon) makeAutostartStartFn(normalizedPath, metadataPath string) Autos
 			}
 		}
 
-		// Fan the progress channel out to the alert hub / startup log so that
-		// external observers (agnt monitor, overlay) can see progress in real
-		// time. RunAutostartAsync already logs to startupErrorStore, so the
-		// tee here is mainly for stream subscribers that want structured
-		// phase events rather than plain text log lines.
-		//
-		// Ownership:
-		//   - `teed` is created and owned by this function.
-		//   - RunAutostartAsync writes to `teed` but does NOT close it.
-		//   - After RunAutostartAsync returns, we close `teed` so the reader
-		//     goroutine exits cleanly, then wait for it.
-		//   - `progress` is owned by AutostartManager; we write to it from
-		//     the reader goroutine and must never close it.
-		teed := make(chan AutostartProgress, 64)
-		readerDone := make(chan struct{})
-		go func() {
-			defer close(readerDone)
-			for ev := range teed {
-				d.broadcastAutostartProgress(normalizedPath, ev)
-				select {
-				case progress <- ev:
-				default:
-				}
-			}
-		}()
-
-		result := d.RunAutostartAsync(ctx, metadataPath, teed)
-		close(teed)
-		<-readerDone
+		// Run autostart, writing progress directly to the manager's channel.
+		// The AutostartManager broadcast callback (configured at construction
+		// time on the daemon) fans these events out to the alert hub for
+		// monitor/MCP watch subscribers — no manual tee required here.
+		result := d.RunAutostartAsync(ctx, metadataPath, progress)
 
 		emitAutostartErrorsToAlertStore(d, normalizedPath, result)
 		return result
