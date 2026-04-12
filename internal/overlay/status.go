@@ -17,42 +17,51 @@ import (
 	"github.com/standardbeagle/agnt/internal/protocol"
 )
 
-// tailscaleDNSCache caches the Tailscale DNS name to avoid repeated exec calls.
+// tailscaleDNS holds the cached Tailscale DNS name using lock-free atomics.
+// Refresh happens asynchronously — callers always get the current (possibly stale) value.
 var (
-	tailscaleDNSCache  string
-	tailscaleDNSCached bool
-	tailscaleDNSMu     sync.RWMutex
-	tailscaleCacheTime time.Time
-	tailscaleCacheTTL  = 5 * time.Minute // Re-check every 5 minutes
+	tailscaleDNSPtr   atomic.Pointer[string] // cached DNS name (nil = never fetched)
+	tailscaleDNSTime  atomic.Int64           // unix nanos of last successful refresh
+	tailscaleDNSBusy  atomic.Bool            // true while a refresh goroutine is running
+	tailscaleCacheTTL = 5 * time.Minute      // re-check every 5 minutes
+
+	// tailscaleDetectFunc is the function that performs the actual DNS detection.
+	// Replaced in tests to avoid exec calls.
+	tailscaleDetectFunc = detectTailscaleDNS
 )
 
 // getTailscaleDNS returns the Tailscale DNS name if available, or empty string if not.
-// Results are cached for efficiency.
+// This is lock-free: it reads from an atomic pointer and triggers background refresh
+// when the cache expires. During refresh, callers receive the stale cached value.
 func getTailscaleDNS() string {
-	tailscaleDNSMu.RLock()
-	if tailscaleDNSCached && time.Since(tailscaleCacheTime) < tailscaleCacheTTL {
-		result := tailscaleDNSCache
-		tailscaleDNSMu.RUnlock()
-		return result
-	}
-	tailscaleDNSMu.RUnlock()
+	// Read current cached value (may be nil on first call)
+	cached := tailscaleDNSPtr.Load()
 
-	// Need to fetch - acquire write lock
-	tailscaleDNSMu.Lock()
-	defer tailscaleDNSMu.Unlock()
-
-	// Double-check after acquiring write lock
-	if tailscaleDNSCached && time.Since(tailscaleCacheTime) < tailscaleCacheTTL {
-		return tailscaleDNSCache
+	// Check if cache is still fresh
+	lastRefresh := tailscaleDNSTime.Load()
+	if lastRefresh > 0 && time.Since(time.Unix(0, lastRefresh)) < tailscaleCacheTTL {
+		if cached != nil {
+			return *cached
+		}
+		return ""
 	}
 
-	// Try to get Tailscale DNS name
-	dnsName := detectTailscaleDNS()
-	tailscaleDNSCache = dnsName
-	tailscaleDNSCached = true
-	tailscaleCacheTime = time.Now()
+	// Cache expired or never populated — trigger async refresh if not already running
+	if tailscaleDNSBusy.CompareAndSwap(false, true) {
+		detectFn := tailscaleDetectFunc // capture before goroutine to avoid race with test overrides
+		go func() {
+			defer tailscaleDNSBusy.Store(false)
+			dnsName := detectFn()
+			tailscaleDNSPtr.Store(&dnsName)
+			tailscaleDNSTime.Store(time.Now().UnixNano())
+		}()
+	}
 
-	return dnsName
+	// Return current value while refresh runs (stale is acceptable for DNS names)
+	if cached != nil {
+		return *cached
+	}
+	return ""
 }
 
 // detectTailscaleDNS runs tailscale status to get the DNS name.
