@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/debug"
@@ -61,6 +62,12 @@ type processRestartState struct {
 	restartEvents    []RestartEvent // History of restart events for output display
 	consecutiveFails int            // Consecutive rapid failures for backoff calculation
 	mu               sync.Mutex
+
+	// Atomic stats for lock-free reads from Stats().
+	// These mirror data in the mutex-protected fields above but allow
+	// Stats() to avoid acquiring per-process locks.
+	restartCount    atomic.Int64
+	lastRestartTime atomic.Pointer[time.Time]
 }
 
 // shouldRestart checks if a restart is allowed based on rate limits.
@@ -99,9 +106,12 @@ func (s *processRestartState) shouldRestart(exitCode int) bool {
 
 // recordRestart records a restart timestamp.
 func (s *processRestartState) recordRestart() {
+	now := time.Now()
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.restarts = append(s.restarts, time.Now())
+	s.restarts = append(s.restarts, now)
+	s.mu.Unlock()
+	s.restartCount.Add(1)
+	s.lastRestartTime.Store(&now)
 }
 
 // addRestartEvent records a restart event with debug info from the failed process.
@@ -456,20 +466,24 @@ func (r *ProcessAutoRestarter) Shutdown(ctx context.Context) {
 }
 
 // Stats returns auto-restart statistics.
+// Uses atomic fields for restart_count and last_restart to avoid acquiring
+// per-process locks, eliminating the nested lock pattern (r.mu RLock + state.mu Lock).
 func (r *ProcessAutoRestarter) Stats() map[string]interface{} {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
 	stats := make(map[string]interface{})
 	for id, state := range r.processes {
-		state.mu.Lock()
-		stats[id] = map[string]interface{}{
+		entry := map[string]interface{}{
 			"enabled":       state.config.Enabled,
 			"max_restarts":  state.config.MaxRestarts,
-			"restart_count": len(state.restarts),
+			"restart_count": state.restartCount.Load(),
 			"only_on_error": state.config.OnlyOnError,
 		}
-		state.mu.Unlock()
+		if t := state.lastRestartTime.Load(); t != nil {
+			entry["last_restart"] = t.Format(time.RFC3339)
+		}
+		stats[id] = entry
 	}
 	return stats
 }
