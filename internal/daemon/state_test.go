@@ -3,8 +3,12 @@ package daemon
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestDefaultStateManagerConfig(t *testing.T) {
@@ -55,6 +59,7 @@ func TestNewStateManager(t *testing.T) {
 	}
 
 	sm := NewStateManager(config)
+	defer sm.Close()
 	if sm == nil {
 		t.Fatal("Expected non-nil StateManager")
 	}
@@ -71,6 +76,7 @@ func TestNewStateManager_WithDefaults(t *testing.T) {
 	}
 
 	sm := NewStateManager(config)
+	defer sm.Close()
 	if sm == nil {
 		t.Fatal("Expected non-nil StateManager")
 	}
@@ -87,6 +93,7 @@ func TestStateManager_LoadSave(t *testing.T) {
 	}
 
 	sm := NewStateManager(config)
+	defer sm.Close()
 
 	// Save initial state
 	err := sm.Save()
@@ -116,6 +123,7 @@ func TestStateManager_LoadNonExistent(t *testing.T) {
 	}
 
 	sm := NewStateManager(config)
+	defer sm.Close()
 
 	// Load should succeed with no file (empty state)
 	err := sm.Load()
@@ -134,6 +142,7 @@ func TestStateManager_OverlayEndpoint(t *testing.T) {
 	}
 
 	sm := NewStateManager(config)
+	defer sm.Close()
 
 	// Set overlay endpoint
 	sm.SetOverlayEndpoint("http://localhost:19191")
@@ -155,6 +164,7 @@ func TestStateManager_ProxyOperations(t *testing.T) {
 	}
 
 	sm := NewStateManager(config)
+	defer sm.Close()
 
 	// Add proxy
 	proxy := PersistentProxyConfig{
@@ -198,6 +208,7 @@ func TestStateManager_Clear(t *testing.T) {
 	}
 
 	sm := NewStateManager(config)
+	defer sm.Close()
 
 	// Add some data
 	sm.SetOverlayEndpoint("http://localhost:19191")
@@ -226,6 +237,7 @@ func TestStateManager_SaveDebounced(t *testing.T) {
 	}
 
 	sm := NewStateManager(config)
+	defer sm.Close()
 
 	// Multiple debounced saves
 	sm.SaveDebounced()
@@ -252,6 +264,7 @@ func TestStateManager_Flush(t *testing.T) {
 	}
 
 	sm := NewStateManager(config)
+	defer sm.Close()
 	sm.SetOverlayEndpoint("http://test")
 
 	// Flush forces immediate save
@@ -276,6 +289,7 @@ func TestStateManager_State(t *testing.T) {
 	}
 
 	sm := NewStateManager(config)
+	defer sm.Close()
 	sm.SetOverlayEndpoint("http://test")
 
 	// Get raw state
@@ -301,6 +315,7 @@ func TestStateManager_LoadInvalidJSON(t *testing.T) {
 	}
 
 	sm := NewStateManager(config)
+	defer sm.Close()
 
 	// Load should error on invalid JSON
 	err = sm.Load()
@@ -326,12 +341,14 @@ func TestStateManager_PersistAcrossRestart(t *testing.T) {
 	if err := sm1.Save(); err != nil {
 		t.Fatalf("Failed to save: %v", err)
 	}
+	sm1.Close()
 
 	// Second state manager (simulating restart)
 	sm2 := NewStateManager(StateManagerConfig{
 		StatePath: statePath,
 		AutoLoad:  true, // Enable auto-load
 	})
+	defer sm2.Close()
 
 	// Verify data persisted
 	if sm2.GetOverlayEndpoint() != "http://persist-test" {
@@ -344,4 +361,149 @@ func TestStateManager_PersistAcrossRestart(t *testing.T) {
 	if proxies[0].ID != "persist-proxy" {
 		t.Errorf("Expected proxy ID persist-proxy, got %s", proxies[0].ID)
 	}
+}
+
+// New tests for write-behind channel behavior
+
+func TestStateManager_ConcurrentSaveLoadNoDeadlock(t *testing.T) {
+	tmpDir := t.TempDir()
+	statePath := filepath.Join(tmpDir, "concurrent-state.json")
+
+	sm := NewStateManager(StateManagerConfig{
+		StatePath:    statePath,
+		SaveInterval: 10 * time.Millisecond,
+		AutoLoad:     false,
+	})
+	defer sm.Close()
+
+	var wg sync.WaitGroup
+	const goroutines = 20
+	const iterations = 50
+
+	// Writers
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				sm.SetOverlayEndpoint("http://test")
+				sm.AddProxy(PersistentProxyConfig{
+					ID:        "proxy",
+					TargetURL: "http://localhost:3000",
+				})
+				sm.RemoveProxy("proxy")
+				sm.SaveDebounced()
+			}
+		}(i)
+	}
+
+	// Readers
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				_ = sm.GetOverlayEndpoint()
+				_ = sm.GetProxies()
+				_ = sm.State()
+			}
+		}()
+	}
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Success: no deadlock
+	case <-time.After(10 * time.Second):
+		t.Fatal("Deadlock detected: concurrent operations did not complete in 10s")
+	}
+
+	require.NoError(t, sm.Flush())
+}
+
+func TestStateManager_FlushOnClose(t *testing.T) {
+	tmpDir := t.TempDir()
+	statePath := filepath.Join(tmpDir, "flush-close-state.json")
+
+	sm := NewStateManager(StateManagerConfig{
+		StatePath:    statePath,
+		SaveInterval: 10 * time.Second, // Very long debounce
+		AutoLoad:     false,
+	})
+
+	// Mutate state but don't flush
+	sm.SetOverlayEndpoint("http://flush-test")
+	sm.AddProxy(PersistentProxyConfig{
+		ID:        "flush-proxy",
+		TargetURL: "http://localhost:9999",
+	})
+
+	// Close should flush pending writes
+	require.NoError(t, sm.Close())
+
+	// Verify file was written
+	data, err := os.ReadFile(statePath)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "flush-test")
+	assert.Contains(t, string(data), "flush-proxy")
+}
+
+func TestStateManager_DebouncedSavesCoalesce(t *testing.T) {
+	tmpDir := t.TempDir()
+	statePath := filepath.Join(tmpDir, "coalesce-state.json")
+
+	sm := NewStateManager(StateManagerConfig{
+		StatePath:    statePath,
+		SaveInterval: 100 * time.Millisecond,
+		AutoLoad:     false,
+	})
+	defer sm.Close()
+
+	// Rapid mutations — should coalesce into one write
+	for i := 0; i < 100; i++ {
+		sm.SetOverlayEndpoint("http://test")
+	}
+
+	// Wait for debounce
+	time.Sleep(200 * time.Millisecond)
+
+	// Verify file exists with final state
+	data, err := os.ReadFile(statePath)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "http://test")
+}
+
+func TestStateManager_CloseIdempotent(t *testing.T) {
+	tmpDir := t.TempDir()
+	statePath := filepath.Join(tmpDir, "close-idem.json")
+
+	sm := NewStateManager(StateManagerConfig{
+		StatePath: statePath,
+		AutoLoad:  false,
+	})
+
+	require.NoError(t, sm.Close())
+	require.NoError(t, sm.Close()) // Second close should be safe
+}
+
+func TestStateManager_FlushAfterClose(t *testing.T) {
+	tmpDir := t.TempDir()
+	statePath := filepath.Join(tmpDir, "flush-after-close.json")
+
+	sm := NewStateManager(StateManagerConfig{
+		StatePath: statePath,
+		AutoLoad:  false,
+	})
+
+	sm.SetOverlayEndpoint("http://after-close")
+	require.NoError(t, sm.Close())
+
+	// Flush after close should still write (direct path)
+	err := sm.Flush()
+	require.NoError(t, err)
 }

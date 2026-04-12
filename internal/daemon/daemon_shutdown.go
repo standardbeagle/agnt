@@ -253,6 +253,20 @@ func (d *Daemon) Stop(ctx context.Context) error {
 		errs = append(errs, fmt.Errorf("proxy manager: %w", err))
 	}
 
+	// Flush and close state managers so pending writes reach disk
+	if d.stateMgr != nil {
+		if err := d.stateMgr.Close(); err != nil {
+			debug.Error("daemon", "state manager close error: %v", err)
+			errs = append(errs, fmt.Errorf("state manager: %w", err))
+		}
+	}
+	if d.schedulerStateMgr != nil {
+		if err := d.schedulerStateMgr.Close(); err != nil {
+			debug.Error("daemon", "scheduler state manager close error: %v", err)
+			errs = append(errs, fmt.Errorf("scheduler state manager: %w", err))
+		}
+	}
+
 	// Preserve PID tracking file across daemon restarts. Do NOT clear it
 	// here -- if any processes survived hub shutdown (e.g., grandchildren
 	// that escaped process group signals), the next daemon startup will
