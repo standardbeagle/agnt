@@ -11,10 +11,10 @@ import (
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/debug"
+	"github.com/standardbeagle/agnt/internal/proxy"
 
 	hubpkg "github.com/standardbeagle/go-cli-server/hub"
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
-	"github.com/standardbeagle/go-cli-server/script"
 )
 
 func (d *Daemon) hubHandleSession(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
@@ -117,15 +117,6 @@ func (d *Daemon) hubHandleSessionRegister(conn *hubpkg.Connection, cmd *hubproto
 	// created before this session registered.
 	d.rebindProxyOverlays(session)
 
-	// Check if another active session already owns scripts for this project.
-	// If so, join as observer (skip autostart). Different project paths always
-	// get their own autostart.
-	// The per-project lock ensures the check+autostart decision is atomic,
-	// preventing concurrent sessions from both starting autostart.
-	var autostartResult *AutostartResult
-	projectMu := d.getProjectLock(session.ProjectPath)
-	projectMu.Lock()
-
 	// Reconcile script states against OS truth before deciding autostart.
 	// Detects processes that died between sessions and transitions them to
 	// Stopped, ensuring the agent receives verified-accurate state.
@@ -137,6 +128,10 @@ func (d *Daemon) hubHandleSessionRegister(conn *hubpkg.Connection, cmd *hubproto
 		debug.Log("daemon", "session %s: reconciled %d dead scripts: %v", code, len(reconciled), names)
 	}
 
+	// Determine whether this session is the first owner of the project or
+	// merely a late-joining observer. Late joiners do NOT trigger
+	// GetOrCreate — they report whatever the project already has and, if an
+	// autostart handle exists, piggyback on its progress.
 	existingSessions := d.sessionRegistry.ListActive(session.ProjectPath, false)
 	hasExistingOwner := false
 	for _, existing := range existingSessions {
@@ -146,54 +141,37 @@ func (d *Daemon) hubHandleSessionRegister(conn *hubpkg.Connection, cmd *hubproto
 		}
 	}
 
+	var (
+		handle     *AutostartHandle
+		joinStatus string
+	)
+
 	if hasExistingOwner {
-		// Another session already started scripts for this project.
-		// Join as observer — report what's already running, skip autostart.
-		autostartResult = &AutostartResult{}
-		for _, entry := range d.scriptRegistry.List(session.ProjectPath) {
-			state := entry.State()
-			if state == script.StateRunning || state == script.StateStarting {
-				autostartResult.Scripts = append(autostartResult.Scripts, entry.Name)
-			}
+		// Another session already started scripts for this project. Skip
+		// GetOrCreate entirely. If an autostart handle is still tracked for
+		// this project, we join as an observer on it; otherwise this is a
+		// pure observer of already-running state.
+		joinStatus = "joined"
+		if d.autostartManager != nil {
+			handle = d.autostartManager.Get(session.ProjectPath)
 		}
-		for _, p := range d.proxym.List() {
-			if normalizePath(p.Path) == session.ProjectPath {
-				autostartResult.Proxies = append(autostartResult.Proxies, p.ID)
-			}
-		}
-		debug.Log("daemon", "session %s joining existing project %s (skipping autostart, %d scripts, %d proxies already running)",
-			code, session.ProjectPath, len(autostartResult.Scripts), len(autostartResult.Proxies))
+		debug.Log("daemon", "session %s joining existing project %s (observer)",
+			code, session.ProjectPath)
 	} else {
-		// First session for this project — clean up then run autostart
-
-		// Duplicate scan runs synchronously BEFORE autostart so that
-		// orphaned processes are killed and ports freed before new ones start.
-		if d.dupScanner != nil && session.ProjectPath != "" {
-			result := d.dupScanner.ScanForProject(session.ProjectPath)
-			if len(result.Killed) > 0 {
-				d.dupScanner.notify(result)
-			}
-		}
-
-		autostartResult = d.RunAutostart(context.Background(), metadata.ProjectPath)
-	}
-	projectMu.Unlock()
-
-	// Emit autostart errors to the alert store so get_errors picks them up
-	// immediately without waiting for the agent to query the startup log.
-	if len(autostartResult.Errors) > 0 {
-		for _, errMsg := range autostartResult.Errors {
-			d.alertStore.Add(&AlertEntry{
-				Severity:    "error",
-				Category:    "autostart",
-				Description: errMsg,
-				ScriptID:    session.ProjectPath,
-				Timestamp:   time.Now(),
-			})
-		}
+		// First session for this project — start (or join) a project-scoped
+		// autostart run. GetOrCreate guarantees at-most-one startFn invocation
+		// per project path, so two concurrent registrations for the same
+		// project cannot both run autostart.
+		projectPath := session.ProjectPath
+		startFn := d.makeAutostartStartFn(projectPath, metadata.ProjectPath)
+		handle = d.autostartManager.GetOrCreate(projectPath, startFn)
+		joinStatus = "starting"
 	}
 
-	// Add session as observer of all project scripts and claim ownership of unowned ones
+	// Add session as observer of all project scripts and claim ownership of
+	// unowned ones. Script entries created by autostart may not exist yet if
+	// the run is still in its early phase — that's fine, subsequent SCRIPT
+	// LIST queries will pick them up.
 	if session.ProjectPath != "" {
 		for _, entry := range d.scriptRegistry.List(session.ProjectPath) {
 			entry.AddSession(code)
@@ -203,13 +181,177 @@ func (d *Daemon) hubHandleSessionRegister(conn *hubpkg.Connection, cmd *hubproto
 		}
 	}
 
+	// Build the response. We never block on handle.Done(): the whole point of
+	// this handler is that it returns immediately so PTY registration is not
+	// gated on autostart. However, if the run happens to already be finished
+	// by the time we get here (empty config, cache hit, late joiner on a
+	// completed run), we include the full AutostartResult so clients get
+	// synchronous semantics when they can.
 	resp := map[string]interface{}{
-		"code":      code,
-		"autostart": autostartResult,
+		"code": code,
+	}
+
+	if handle != nil {
+		resp["autostart_handle"] = handle.ProjectPath()
+		progressSnapshot := handle.Progress()
+		resp["progress"] = progressProtoEvents(progressSnapshot)
+
+		select {
+		case <-handle.Done():
+			// Run finished — publish the full result AND a "done" status.
+			result := handle.Result()
+			if result == nil {
+				result = &AutostartResult{}
+			}
+			emitAutostartErrorsToAlertStore(d, session.ProjectPath, result)
+			resp["status"] = "done"
+			resp["result"] = result
+			resp["autostart"] = result // backward compat for existing clients
+		default:
+			// Run still in flight. Report the join status and emit an empty
+			// backward-compat autostart map so clients that blindly read
+			// result["autostart"] don't crash.
+			resp["status"] = joinStatus
+			resp["autostart"] = &AutostartResult{}
+		}
+	} else {
+		// No autostart handle at all (late joiner on an untracked project).
+		// Report an empty result for backward compatibility.
+		resp["status"] = joinStatus
+		resp["autostart"] = &AutostartResult{}
+		resp["progress"] = []map[string]interface{}{}
 	}
 
 	data, _ := json.Marshal(resp)
 	return conn.WriteJSON(data)
+}
+
+// makeAutostartStartFn returns an AutostartStartFunc that runs the duplicate
+// scan then invokes RunAutostartAsync. The function captures both the
+// normalized project path (used for scans and as the handle key) and the
+// original (unnormalized) metadata path, which RunAutostartAsync needs so
+// that its own normalization stays consistent with legacy callers.
+func (d *Daemon) makeAutostartStartFn(normalizedPath, metadataPath string) AutostartStartFunc {
+	return func(ctx context.Context, progress chan<- AutostartProgress) *AutostartResult {
+		// Duplicate scan runs synchronously BEFORE autostart so that orphaned
+		// processes are killed and ports freed before new ones start.
+		if d.dupScanner != nil && normalizedPath != "" {
+			result := d.dupScanner.ScanForProject(normalizedPath)
+			if len(result.Killed) > 0 {
+				d.dupScanner.notify(result)
+			}
+		}
+
+		// Fan the progress channel out to the alert hub / startup log so that
+		// external observers (agnt monitor, overlay) can see progress in real
+		// time. RunAutostartAsync already logs to startupErrorStore, so the
+		// tee here is mainly for stream subscribers that want structured
+		// phase events rather than plain text log lines.
+		//
+		// Ownership:
+		//   - `teed` is created and owned by this function.
+		//   - RunAutostartAsync writes to `teed` but does NOT close it.
+		//   - After RunAutostartAsync returns, we close `teed` so the reader
+		//     goroutine exits cleanly, then wait for it.
+		//   - `progress` is owned by AutostartManager; we write to it from
+		//     the reader goroutine and must never close it.
+		teed := make(chan AutostartProgress, 64)
+		readerDone := make(chan struct{})
+		go func() {
+			defer close(readerDone)
+			for ev := range teed {
+				d.broadcastAutostartProgress(normalizedPath, ev)
+				select {
+				case progress <- ev:
+				default:
+				}
+			}
+		}()
+
+		result := d.RunAutostartAsync(ctx, metadataPath, teed)
+		close(teed)
+		<-readerDone
+
+		emitAutostartErrorsToAlertStore(d, normalizedPath, result)
+		return result
+	}
+}
+
+// broadcastAutostartProgress forwards an autostart progress event onto the
+// alert hub as a diagnostic-style log entry so stream subscribers see it.
+// Silently no-ops when the hub is unavailable.
+func (d *Daemon) broadcastAutostartProgress(projectPath string, ev AutostartProgress) {
+	if d.alertHub == nil {
+		return
+	}
+	msg := fmt.Sprintf("autostart phase=%s script=%s layer=%d", phaseName(ev.Phase), ev.Script, ev.Layer)
+	if ev.Err != nil {
+		msg += " err=" + ev.Err.Error()
+	}
+	entry := proxy.LogEntry{
+		Type: proxy.LogTypeDiagnostic,
+		Diagnostic: &proxy.ProxyDiagnostic{
+			Level:     diagnosticLevelForPhase(ev.Phase),
+			Category:  "autostart",
+			Event:     phaseName(ev.Phase),
+			Message:   msg,
+			Timestamp: ev.Timestamp,
+		},
+	}
+	d.alertHub.BroadcastLogEntry(entry, projectPath)
+}
+
+// diagnosticLevelForPhase maps an autostart phase to a diagnostic level used
+// by stream subscribers to filter events.
+func diagnosticLevelForPhase(p AutostartPhase) proxy.ProxyDiagnosticLevel {
+	if p == PhaseScriptFailed {
+		return proxy.DiagnosticError
+	}
+	return proxy.DiagnosticInfo
+}
+
+// progressProtoEvents converts a slice of AutostartProgress into the
+// wire-format progress payload returned by SESSION REGISTER.
+func progressProtoEvents(events []AutostartProgress) []map[string]interface{} {
+	out := make([]map[string]interface{}, 0, len(events))
+	for _, ev := range events {
+		entry := map[string]interface{}{
+			"phase": phaseName(ev.Phase),
+			"layer": ev.Layer,
+		}
+		if ev.Script != "" {
+			entry["script"] = ev.Script
+		}
+		if ev.Dependency != "" {
+			entry["dependency"] = ev.Dependency
+		}
+		if !ev.Timestamp.IsZero() {
+			entry["timestamp"] = ev.Timestamp.Format(time.RFC3339Nano)
+		}
+		if ev.Err != nil {
+			entry["error"] = ev.Err.Error()
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+// emitAutostartErrorsToAlertStore pushes autostart errors into the
+// agent-facing alert store so `get_errors` surfaces them immediately.
+// Idempotent for the caller: safe to invoke multiple times if errors change.
+func emitAutostartErrorsToAlertStore(d *Daemon, projectPath string, result *AutostartResult) {
+	if result == nil || len(result.Errors) == 0 || d.alertStore == nil {
+		return
+	}
+	for _, errMsg := range result.Errors {
+		d.alertStore.Add(&AlertEntry{
+			Severity:    "error",
+			Category:    "autostart",
+			Description: errMsg,
+			ScriptID:    projectPath,
+			Timestamp:   time.Now(),
+		})
+	}
 }
 
 // hubHandleSessionUnregister handles SESSION UNREGISTER command.

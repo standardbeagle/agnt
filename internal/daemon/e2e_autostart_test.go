@@ -977,13 +977,16 @@ func TestE2E_AutostartIdempotent_RestartsAfterAllDisconnect(t *testing.T) {
 	assert.True(t, procState == process.StateStopped || procState == process.StateFailed,
 		"ProcessManager process should be Stopped or Failed, got %s", procState)
 
-	// Verify ScriptRegistry shows Stopped or Failed (killed processes may exit non-zero)
+	// After the last session disconnects, CleanupSessionResources clears
+	// the script registry for this project (registry is ephemeral — next
+	// session rebuilds it from config). The entry may therefore be gone
+	// entirely; if it still exists, it must be Stopped or Failed.
 	sr := env.Daemon.ScriptRegistry()
-	entry, ok := sr.Get("api", env.ProjectDir)
-	require.True(t, ok)
-	state := entry.State()
-	assert.True(t, state == script.StateStopped || state == script.StateFailed,
-		"script should be Stopped or Failed after last session leaves, got %s", state)
+	if entry, ok := sr.Get("api", env.ProjectDir); ok {
+		state := entry.State()
+		assert.True(t, state == script.StateStopped || state == script.StateFailed,
+			"script should be Stopped or Failed after last session leaves, got %s", state)
+	}
 
 	// Remove stale PID file so the restarted process can write a fresh one
 	os.Remove(pidFile)

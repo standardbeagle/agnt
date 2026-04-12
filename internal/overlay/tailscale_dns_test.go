@@ -185,8 +185,14 @@ func TestGetTailscaleDNS_OnlySingleRefreshAtOnce(t *testing.T) {
 		return "test.ts.net"
 	}
 	defer func() {
-		tailscaleDetectFunc = detectTailscaleDNS
 		close(refreshBlock)
+		// Wait for the background goroutine to finish before restoring the
+		// detect function and returning — otherwise its delayed write to
+		// tailscaleDNSPtr can leak into subsequent tests.
+		require.Eventually(t, func() bool {
+			return !tailscaleDNSBusy.Load()
+		}, time.Second, 10*time.Millisecond)
+		tailscaleDetectFunc = detectTailscaleDNS
 	}()
 
 	// Call getTailscaleDNS many times — should only spawn one refresh

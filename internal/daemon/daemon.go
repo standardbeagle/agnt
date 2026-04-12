@@ -219,9 +219,10 @@ type Daemon struct {
 	// Key: session code, Value: *time.Timer (Stop cancels, fire runs cleanup).
 	pendingCleanups sync.Map
 
-	// Per-project locks to prevent concurrent autostart during session registration.
-	// Keyed by normalized project path so only sessions for the same project serialize.
-	projectLocks sync.Map // string → *sync.Mutex
+	// autostartManager coordinates at-most-one autostart run per project path.
+	// Session registration delegates autostart to GetOrCreate so multiple
+	// concurrent registrations for the same project share a single run.
+	autostartManager *AutostartManager
 
 	// Lifecycle
 	ctx        context.Context
@@ -285,6 +286,7 @@ func New(config DaemonConfig) *Daemon {
 		pidTracker:        pidTracker,
 		proxyEvents:       make(chan ProxyEvent, 10), // Buffer 10 events
 		scriptProxies:     make(map[string][]string),
+		autostartManager:  NewAutostartManager(),
 		ctx:               ctx,
 		cancel:            cancel,
 	}
@@ -394,15 +396,6 @@ func New(config DaemonConfig) *Daemon {
 // This delegates to registerAgntCommands() in hub_handlers.go.
 func (d *Daemon) registerCommands() {
 	d.registerAgntCommands()
-}
-
-// getProjectLock returns a per-project mutex used to serialize the check-then-act
-// pattern in session registration (check existing sessions, then run autostart).
-// Uses sync.Map keyed by normalized project path so only sessions for the same
-// project serialize against each other, not all sessions globally.
-func (d *Daemon) getProjectLock(projectPath string) *sync.Mutex {
-	val, _ := d.projectLocks.LoadOrStore(projectPath, &sync.Mutex{})
-	return val.(*sync.Mutex)
 }
 
 // Start starts the daemon and begins accepting connections.
