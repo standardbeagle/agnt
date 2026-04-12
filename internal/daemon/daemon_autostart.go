@@ -23,6 +23,39 @@ type AutostartResult struct {
 	PortsCleared  []PortConflict `json:"ports_cleared,omitempty"`
 }
 
+// AutostartPhase identifies the phase of an autostart progress event.
+type AutostartPhase int
+
+const (
+	PhaseScriptStarting AutostartPhase = iota
+	PhaseDependencyWaitStart
+	PhaseDependencyReady
+	PhaseScriptStarted
+	PhaseScriptFailed
+	PhaseLayerComplete
+)
+
+// AutostartProgress reports progress during asynchronous autostart.
+type AutostartProgress struct {
+	Phase      AutostartPhase
+	Script     string // Script name (empty for layer-level events)
+	Dependency string // Dependency name (for dependency phases)
+	Layer      int    // Topological layer index
+	Err        error  // Non-nil for PhaseScriptFailed
+}
+
+// emitProgress sends a progress event if the channel is non-nil.
+// Never blocks: drops the event if the channel is full.
+func emitProgress(ch chan<- AutostartProgress, p AutostartProgress) {
+	if ch == nil {
+		return
+	}
+	select {
+	case ch <- p:
+	default:
+	}
+}
+
 // pendingAutostart holds state for a two-phase autostart (prompt mode).
 type pendingAutostart struct {
 	config      *config.AgntConfig
@@ -30,16 +63,28 @@ type pendingAutostart struct {
 	conflicts   []PortConflict
 }
 
-// RunAutostart loads .agnt.kdl config from projectPath and starts configured processes/proxies.
-// This is called during SESSION REGISTER to ensure autostart happens once per project.
+// RunAutostart loads .agnt.kdl config from projectPath and starts configured
+// processes/proxies synchronously. It delegates to RunAutostartAsync with a nil
+// progress channel.
+func (d *Daemon) RunAutostart(ctx context.Context, projectPath string) *AutostartResult {
+	return d.RunAutostartAsync(ctx, projectPath, nil)
+}
+
+// RunAutostartAsync loads .agnt.kdl config from projectPath and starts
+// configured processes/proxies. Progress events are emitted to the progress
+// channel (if non-nil) after each milestone: script start, dependency wait,
+// dependency ready, script failure, and layer completion.
+//
 // Scripts are started in dependency order using topological sort:
 //   - Layer 0 scripts (no dependencies) start concurrently
 //   - Layer 1+ scripts wait for all their dependencies to become ready
 //   - Readiness is signaled by URL detection or TCP port probe
-//   - Timeout on dependency wait logs a warning and starts the script anyway
-//
-
-func (d *Daemon) RunAutostart(ctx context.Context, projectPath string) *AutostartResult {
+//   - Context cancellation replaces fixed dependency timeouts
+func (d *Daemon) RunAutostartAsync(
+	ctx context.Context,
+	projectPath string,
+	progress chan<- AutostartProgress,
+) *AutostartResult {
 	result := &AutostartResult{}
 	log := d.startupErrorStore // short alias
 
@@ -136,7 +181,7 @@ func (d *Daemon) RunAutostart(ctx context.Context, projectPath string) *Autostar
 	}
 
 	// Step 4: Register + start
-	d.registerAndStartScripts(ctx, agntConfig, projectPath, result)
+	d.registerAndStartScripts(ctx, agntConfig, projectPath, result, progress)
 	return result
 }
 
@@ -193,8 +238,8 @@ func (d *Daemon) collectManagedPIDs() map[int]bool {
 
 // registerAndStartScripts registers all scripts, cleans up stale entries,
 // starts autostart scripts in dependency order, then starts proxies.
-// Shared by RunAutostart and resumeAutostart.
-func (d *Daemon) registerAndStartScripts(ctx context.Context, cfg *config.AgntConfig, projectPath string, result *AutostartResult) {
+// Shared by RunAutostartAsync and resumeAutostart.
+func (d *Daemon) registerAndStartScripts(ctx context.Context, cfg *config.AgntConfig, projectPath string, result *AutostartResult, progress chan<- AutostartProgress) {
 	log := d.startupErrorStore
 
 	for name, scriptCfg := range cfg.Scripts {
@@ -234,7 +279,7 @@ func (d *Daemon) registerAndStartScripts(ctx context.Context, cfg *config.AgntCo
 		}
 	}
 
-	failedScripts := d.startAutostartScripts(ctx, cfg, projectPath, result)
+	failedScripts := d.startAutostartScripts(ctx, cfg, projectPath, result, progress)
 	d.startAutostartProxies(ctx, cfg, projectPath, failedScripts, result)
 }
 
@@ -249,13 +294,13 @@ func (d *Daemon) resumeAutostart(ctx context.Context, projectPath string) *Autos
 	}
 	pending := val.(*pendingAutostart)
 
-	d.registerAndStartScripts(ctx, pending.config, pending.projectPath, result)
+	d.registerAndStartScripts(ctx, pending.config, pending.projectPath, result, nil)
 	return result
 }
 
 // startAutostartScripts starts scripts in topological dependency order.
 // Returns a set of script names that failed to start.
-func (d *Daemon) startAutostartScripts(ctx context.Context, cfg *config.AgntConfig, projectPath string, result *AutostartResult) map[string]bool {
+func (d *Daemon) startAutostartScripts(ctx context.Context, cfg *config.AgntConfig, projectPath string, result *AutostartResult, progress chan<- AutostartProgress) map[string]bool {
 	log := d.startupErrorStore
 	autostartScripts := cfg.GetAutostartScripts()
 	proxyConfigs := cfg.Proxies
@@ -275,7 +320,10 @@ func (d *Daemon) startAutostartScripts(ctx context.Context, cfg *config.AgntConf
 	var resultMu sync.Mutex
 
 	for layerIdx, layer := range layers {
+		// Use a done channel so we can select on ctx.Done() alongside layer completion.
+		layerDone := make(chan struct{})
 		var layerWg sync.WaitGroup
+
 		for _, name := range layer {
 			scriptCfg := autostartScripts[name]
 			if scriptCfg == nil {
@@ -288,14 +336,10 @@ func (d *Daemon) startAutostartScripts(ctx context.Context, cfg *config.AgntConf
 				processID := makeProcessID(projectPath, name)
 
 				// Skip if script is already running (idempotent autostart).
-				// This prevents double-start when multiple sessions register
-				// for the same project path concurrently.
 				if entry, ok := d.scriptRegistry.Get(name, projectPath); ok {
 					state := entry.State()
 					if state == script.StateRunning || state == script.StateStarting {
 						log.Info(processID, name, "already_running", fmt.Sprintf("%s already %s, skipping", name, state.String()))
-						// Signal ready so dependents don't wait for a signal that will never come.
-						// Start a port probe if ports are known; otherwise signal immediately.
 						probePorts := d.getExpectedPortsForScript(name, scriptCfg, proxyConfigs,
 							resolveWorkingDir(projectPath, scriptCfg.Cwd), "", nil)
 						if len(probePorts) > 0 {
@@ -310,13 +354,25 @@ func (d *Daemon) startAutostartScripts(ctx context.Context, cfg *config.AgntConf
 					}
 				}
 
+				emitProgress(progress, AutostartProgress{
+					Phase: PhaseScriptStarting, Script: name, Layer: layerIdx,
+				})
+
 				// Wait for dependencies (layer 1+)
-				d.waitForDependencies(ctx, name, scriptCfg, projectPath, layerIdx)
+				d.waitForDependenciesCtx(ctx, name, scriptCfg, projectPath, layerIdx, progress)
+
+				// Check if context was cancelled during dependency wait
+				if ctx.Err() != nil {
+					return
+				}
 
 				// Start the script
 				log.Info(processID, name, "starting", fmt.Sprintf("starting %s (layer %d)", name, layerIdx))
 				if err := d.autostartScript(ctx, name, scriptCfg, projectPath, proxyConfigs); err != nil {
 					log.Error(processID, name, "start_failed", err.Error())
+					emitProgress(progress, AutostartProgress{
+						Phase: PhaseScriptFailed, Script: name, Layer: layerIdx, Err: err,
+					})
 					resultMu.Lock()
 					result.Errors = append(result.Errors, fmt.Sprintf("script %s: %v", name, err))
 					failedScripts[name] = true
@@ -325,19 +381,46 @@ func (d *Daemon) startAutostartScripts(ctx context.Context, cfg *config.AgntConf
 				}
 
 				log.Info(processID, name, "started", fmt.Sprintf("%s started", name))
+				emitProgress(progress, AutostartProgress{
+					Phase: PhaseScriptStarted, Script: name, Layer: layerIdx,
+				})
 				resultMu.Lock()
 				result.Scripts = append(result.Scripts, name)
 				resultMu.Unlock()
 
-				// Port probe for dependency readiness signaling
+				// Port probe for dependency readiness signaling.
+				// If no ports are expected, signal ready immediately so
+				// dependents are unblocked.
 				probePorts := d.getExpectedPortsForScript(name, scriptCfg, proxyConfigs,
 					resolveWorkingDir(projectPath, scriptCfg.Cwd), "", nil)
 				if len(probePorts) > 0 {
 					d.readySignaler.StartPortProbe(processID, probePorts[0], ctx)
+				} else {
+					d.readySignaler.SignalReady(processID)
 				}
 			}(name, scriptCfg)
 		}
-		layerWg.Wait()
+
+		// Close layerDone when all goroutines in this layer finish.
+		go func() {
+			layerWg.Wait()
+			close(layerDone)
+		}()
+
+		// Wait for either layer completion or context cancellation.
+		select {
+		case <-layerDone:
+			// Layer finished normally.
+		case <-ctx.Done():
+			// Context cancelled. Wait for in-flight goroutines to notice
+			// and exit, then return partial results.
+			<-layerDone
+			return failedScripts
+		}
+
+		emitProgress(progress, AutostartProgress{
+			Phase: PhaseLayerComplete, Layer: layerIdx,
+		})
 	}
 
 	// Cleanup signaler channels
@@ -348,32 +431,63 @@ func (d *Daemon) startAutostartScripts(ctx context.Context, cfg *config.AgntConf
 	return failedScripts
 }
 
-// waitForDependencies blocks until all dependencies for a script are ready.
-func (d *Daemon) waitForDependencies(ctx context.Context, name string, scriptCfg *config.ScriptConfig, projectPath string, layerIdx int) {
+// waitForDependenciesCtx blocks until all dependencies for a script are ready
+// or the context is cancelled. Uses context cancellation for the primary wait.
+// If the parent context has no deadline, applies per-dependency timeouts as
+// a fallback to avoid blocking forever.
+// Emits progress events for each dependency wait and resolution.
+func (d *Daemon) waitForDependenciesCtx(ctx context.Context, name string, scriptCfg *config.ScriptConfig, projectPath string, layerIdx int, progress chan<- AutostartProgress) {
 	if layerIdx == 0 {
 		return
 	}
+	_, parentHasDeadline := ctx.Deadline()
+	processID := makeProcessID(projectPath, name)
 	for _, dep := range scriptCfg.DependsOn {
-		depProcessID := makeProcessID(projectPath, dep.Name)
+		if ctx.Err() != nil {
+			return
+		}
+		d.waitForSingleDependency(ctx, parentHasDeadline, name, processID, dep, projectPath, layerIdx, progress)
+	}
+}
+
+// waitForSingleDependency waits for one dependency to become ready, applying a
+// per-dep timeout when the parent context has no deadline. Separated from the
+// loop so that timeout contexts can be cancelled per iteration via defer.
+func (d *Daemon) waitForSingleDependency(ctx context.Context, parentHasDeadline bool, name, processID string, dep config.ScriptDependency, projectPath string, layerIdx int, progress chan<- AutostartProgress) {
+	depProcessID := makeProcessID(projectPath, dep.Name)
+
+	emitProgress(progress, AutostartProgress{
+		Phase: PhaseDependencyWaitStart, Script: name, Dependency: dep.Name, Layer: layerIdx,
+	})
+
+	waitCtx := ctx
+	if !parentHasDeadline {
 		timeout := dep.Timeout
 		if timeout == 0 {
 			timeout = config.DefaultDependencyTimeout
 		}
-		if err := d.readySignaler.WaitReady(depProcessID, timeout); err != nil {
-			d.startupErrorStore.Add(&StartupLogEntry{
-				ProcessID: makeProcessID(projectPath, name), ScriptName: name,
-				Level: "warning", EventType: "dependency_wait",
-				Message:   fmt.Sprintf("timeout waiting for %s: %v (starting anyway)", dep.Name, err),
-				Timestamp: time.Now(),
-			})
-		} else {
-			d.startupErrorStore.Add(&StartupLogEntry{
-				ProcessID: makeProcessID(projectPath, name), ScriptName: name,
-				Level: "info", EventType: "dependency_ready",
-				Message:   fmt.Sprintf("dependency %s is ready", dep.Name),
-				Timestamp: time.Now(),
-			})
-		}
+		var cancel context.CancelFunc
+		waitCtx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+
+	if err := d.readySignaler.WaitReadyCtx(depProcessID, waitCtx); err != nil {
+		d.startupErrorStore.Add(&StartupLogEntry{
+			ProcessID: processID, ScriptName: name,
+			Level: "warning", EventType: "dependency_wait",
+			Message:   fmt.Sprintf("cancelled waiting for %s: %v (starting anyway)", dep.Name, err),
+			Timestamp: time.Now(),
+		})
+	} else {
+		emitProgress(progress, AutostartProgress{
+			Phase: PhaseDependencyReady, Script: name, Dependency: dep.Name, Layer: layerIdx,
+		})
+		d.startupErrorStore.Add(&StartupLogEntry{
+			ProcessID: processID, ScriptName: name,
+			Level: "info", EventType: "dependency_ready",
+			Message:   fmt.Sprintf("dependency %s is ready", dep.Name),
+			Timestamp: time.Now(),
+		})
 	}
 }
 

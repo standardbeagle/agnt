@@ -71,6 +71,19 @@ func (rs *ReadySignaler) WaitReady(processID string, timeout time.Duration) erro
 	}
 }
 
+// WaitReadyCtx blocks until processID is signaled ready or the context is
+// cancelled. Returns nil if ready, or ctx.Err() wrapped with context on
+// cancellation.
+func (rs *ReadySignaler) WaitReadyCtx(processID string, ctx context.Context) error {
+	ch := rs.GetOrCreate(processID)
+	select {
+	case <-ch:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("ready_signaler: context cancelled waiting for %q: %w", processID, ctx.Err())
+	}
+}
+
 // StartPortProbe launches a goroutine that polls TCP connect on localhost:port
 // every 500ms. When the port accepts a connection, it calls SignalReady. The
 // probe stops when ctx is cancelled or the port is reached.
