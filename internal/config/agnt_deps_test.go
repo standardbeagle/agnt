@@ -26,7 +26,9 @@ func TestParseDependsOn_ArgsFormat(t *testing.T) {
 		api := cfg.Scripts["api"]
 		require.Len(t, api.DependsOn, 1)
 		assert.Equal(t, "redis", api.DependsOn[0].Name)
-		assert.Equal(t, DefaultDependencyTimeout, api.DependsOn[0].Timeout)
+		// Default is 0 (wait indefinitely) — only an explicit `timeout=N` in
+		// .agnt.kdl bounds the wait. See .claude/rules/daemon-lifecycle.md.
+		assert.Equal(t, time.Duration(0), api.DependsOn[0].Timeout)
 	})
 
 	t.Run("multiple dependencies default timeout", func(t *testing.T) {
@@ -123,7 +125,8 @@ func TestParseDependsOn_ChildNodeFormat(t *testing.T) {
 		api := cfg.Scripts["api"]
 		require.Len(t, api.DependsOn, 1)
 		assert.Equal(t, "redis", api.DependsOn[0].Name)
-		assert.Equal(t, DefaultDependencyTimeout, api.DependsOn[0].Timeout)
+		// Default in child-node format is also 0 (wait indefinitely).
+		assert.Equal(t, time.Duration(0), api.DependsOn[0].Timeout)
 	})
 }
 
@@ -368,7 +371,8 @@ proxies {
 	frontend := cfg.Scripts["frontend"]
 	require.Len(t, frontend.DependsOn, 1)
 	assert.Equal(t, "api", frontend.DependsOn[0].Name)
-	assert.Equal(t, DefaultDependencyTimeout, frontend.DependsOn[0].Timeout)
+	// No explicit timeout in KDL → default 0 (wait indefinitely).
+	assert.Equal(t, time.Duration(0), frontend.DependsOn[0].Timeout)
 
 	// Verify topological sort works with this config
 	layers, err := TopologicalSort(cfg.Scripts)

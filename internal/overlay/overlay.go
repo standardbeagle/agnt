@@ -588,6 +588,8 @@ func (o *Overlay) buildPanelItems() {
 }
 
 // formatStartupLog formats startup log entries into readable text for the log panel.
+// Each line is prefixed with HH:MM:SS so users can correlate events with timing.
+// Entries with a zero Timestamp render with blank time padding so columns stay aligned.
 func formatStartupLog(entries []StartupLogEntry) string {
 	if len(entries) == 0 {
 		return "no startup log entries"
@@ -603,7 +605,11 @@ func formatStartupLog(entries []StartupLogEntry) string {
 		case "info":
 			icon = "✓ "
 		}
-		line := icon + "[" + e.EventType + "]"
+		ts := "        "
+		if !e.Timestamp.IsZero() {
+			ts = e.Timestamp.Format("15:04:05")
+		}
+		line := ts + " " + icon + "[" + e.EventType + "]"
 		if e.ScriptName != "" {
 			line += " " + e.ScriptName + ":"
 		}

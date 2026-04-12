@@ -287,6 +287,169 @@ scripts {
 	assert.Contains(t, result.Scripts, "test")
 }
 
+// TestRunAutostartAsync_NoFallbackTimeout_WaitsIndefinitely verifies that a
+// dependency with no explicit per-dep timeout does NOT silently abandon the
+// wait after ~120s (the old hardcoded fallback). The dependency "a" never
+// reaches ready (ports 99999 is unbindable), so "b" should still be in
+// dependency_wait when we cancel the parent ctx after ~3s — proving that
+// the wait was active and not silently exited via fallback timeout.
+func TestRunAutostartAsync_NoFallbackTimeout_WaitsIndefinitely(t *testing.T) {
+	tmpDir := t.TempDir()
+	sockPath := filepath.Join(tmpDir, "test.sock")
+
+	// "a" binds an unreachable port so its readySignaler never fires.
+	// "b" depends on "a" with NO explicit timeout (default 0 = indefinite).
+	configContent := `
+scripts {
+    a {
+        run "sleep 60"
+        autostart true
+        ports 99999
+    }
+    b {
+        run "sleep 60"
+        autostart true
+        depends-on "a"
+    }
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, ".agnt.kdl"), []byte(configContent), 0o644))
+
+	d := New(DaemonConfig{
+		SocketPath:   sockPath,
+		MaxClients:   10,
+		WriteTimeout: 5 * time.Second,
+	})
+	require.NoError(t, d.Start())
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		d.Stop(stopCtx)
+	}()
+
+	progress := make(chan AutostartProgress, 100)
+
+	// Parent context has NO deadline. The session-style ctx in production also
+	// has no deadline; this is the exact scenario the bug report describes.
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Run autostart in a goroutine. We expect it to block on b's dep wait.
+	done := make(chan *AutostartResult, 1)
+	go func() {
+		done <- d.RunAutostartAsync(ctx, tmpDir, progress)
+	}()
+
+	// Wait long enough that the OLD fallback (120s) would NOT have fired,
+	// but enough for layer 0 to settle and b to enter its dep wait. Layer 0
+	// startup includes process spawn + duplicate scanner, which can take
+	// several seconds on slow CI.
+	select {
+	case <-done:
+		t.Fatal("autostart returned before parent ctx was cancelled — fallback timeout was not removed")
+	case <-time.After(8 * time.Second):
+	}
+
+	// Cancel the parent ctx. The dep wait must unblock promptly via ctx.Done.
+	cancelStart := time.Now()
+	cancel()
+
+	select {
+	case result := <-done:
+		unblockTime := time.Since(cancelStart)
+		assert.Less(t, unblockTime, 1500*time.Millisecond,
+			"dependency wait should unblock within ~1.5s of parent ctx cancel, took %v", unblockTime)
+		// "a" started (layer 0); "b" should NOT be in result.Scripts because
+		// the dep wait was cancelled before b could start.
+		assert.Contains(t, result.Scripts, "a", "script 'a' should have started")
+		assert.NotContains(t, result.Scripts, "b",
+			"script 'b' must not have started — its dep wait was cancelled before ready")
+	case <-time.After(5 * time.Second):
+		t.Fatal("autostart did not return within 5s of parent ctx cancellation")
+	}
+
+	close(progress)
+
+	// Verify a dep wait event was actually emitted (proving b reached the wait).
+	var gotDependencyWait bool
+	for ev := range progress {
+		if ev.Phase == PhaseDependencyWaitStart && ev.Script == "b" && ev.Dependency == "a" {
+			gotDependencyWait = true
+		}
+	}
+	assert.True(t, gotDependencyWait, "expected PhaseDependencyWaitStart for b->a")
+}
+
+// TestRunAutostartAsync_ExplicitDependencyTimeout_StillHonored verifies that
+// when the user explicitly sets `depends-on "x" timeout=N` in .agnt.kdl, the
+// wait is still bounded by that timeout (we did not remove the per-dep
+// timeout, only the implicit 120s fallback).
+func TestRunAutostartAsync_ExplicitDependencyTimeout_StillHonored(t *testing.T) {
+	tmpDir := t.TempDir()
+	sockPath := filepath.Join(tmpDir, "test.sock")
+
+	// "a" binds an unreachable port so its readySignaler never fires.
+	// "b" depends on "a" with an EXPLICIT 2s timeout — this should still bound
+	// the wait even though the parent ctx has no deadline.
+	configContent := `
+scripts {
+    a {
+        run "sleep 60"
+        autostart true
+        ports 99999
+    }
+    b {
+        run "sleep 60"
+        autostart true
+        depends-on "a" timeout=2
+    }
+}
+`
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, ".agnt.kdl"), []byte(configContent), 0o644))
+
+	d := New(DaemonConfig{
+		SocketPath:   sockPath,
+		MaxClients:   10,
+		WriteTimeout: 5 * time.Second,
+	})
+	require.NoError(t, d.Start())
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		d.Stop(stopCtx)
+	}()
+
+	progress := make(chan AutostartProgress, 100)
+	// No deadline on the parent ctx — exactly the production session ctx.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	start := time.Now()
+	result := d.RunAutostartAsync(ctx, tmpDir, progress)
+	elapsed := time.Since(start)
+	close(progress)
+
+	// The explicit per-dep timeout (2s) must bound the wait. Without the
+	// timeout the wait would be indefinite, and with the OLD fallback it
+	// would have been ~120s. Allow generous slack for layer 0 startup +
+	// b's own process launch on slow CI.
+	assert.Less(t, elapsed.Seconds(), 30.0,
+		"explicit 2s dep timeout should bound the wait (NOT 120s fallback, NOT indefinite), took %v", elapsed)
+
+	// "a" started (layer 0). "b" should have proceeded after the timeout
+	// elapsed ("starting anyway") even though "a" never became ready.
+	assert.Contains(t, result.Scripts, "a", "script 'a' should have started")
+
+	// Verify the dep wait event was actually emitted (proves we exercised
+	// the per-dep timeout code path, not some other early-exit branch).
+	var gotDependencyWait bool
+	for ev := range progress {
+		if ev.Phase == PhaseDependencyWaitStart && ev.Script == "b" && ev.Dependency == "a" {
+			gotDependencyWait = true
+		}
+	}
+	assert.True(t, gotDependencyWait, "expected PhaseDependencyWaitStart for b->a (per-dep timeout path)")
+}
+
 func TestReadySignaler_WaitReadyCtx(t *testing.T) {
 	t.Run("signal before wait", func(t *testing.T) {
 		rs := NewReadySignaler()
