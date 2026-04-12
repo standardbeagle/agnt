@@ -214,7 +214,7 @@ func checkDaemonHealthStatic(version string, uptime time.Duration, clientCount i
 	return CheckResult{
 		Name:    "daemon_health",
 		Status:  StatusOK,
-		Message: fmt.Sprintf("v%s, up %s, %d client(s)", version, uptime.Truncate(time.Second), clientCount),
+		Message: fmt.Sprintf("v%s, up %s", version, uptime.Truncate(time.Second)),
 		Details: map[string]interface{}{
 			"version":       version,
 			"uptime_sec":    int(uptime.Seconds()),
