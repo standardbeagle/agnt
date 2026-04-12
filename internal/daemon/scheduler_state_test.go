@@ -3,14 +3,19 @@ package daemon
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestSchedulerStateManager_SaveTask(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	sm := NewSchedulerStateManager()
+	sm := NewSchedulerStateManagerWithInterval(10 * time.Millisecond)
+	defer sm.Close()
 
 	// Test saving a task
 	task := NewScheduledTask(
@@ -23,6 +28,9 @@ func TestSchedulerStateManager_SaveTask(t *testing.T) {
 		t.Fatalf("SaveTask failed: %v", err)
 	}
 
+	// Flush to ensure disk write
+	require.NoError(t, sm.Flush())
+
 	// Verify the state file was created
 	statePath := filepath.Join(tmpDir, SchedulerStateDir, SchedulerStateFile)
 	if _, err := os.Stat(statePath); os.IsNotExist(err) {
@@ -31,7 +39,8 @@ func TestSchedulerStateManager_SaveTask(t *testing.T) {
 }
 
 func TestSchedulerStateManager_SaveTaskEmptyPath(t *testing.T) {
-	sm := NewSchedulerStateManager()
+	sm := NewSchedulerStateManagerWithInterval(10 * time.Millisecond)
+	defer sm.Close()
 
 	task := NewScheduledTask(
 		"test-task", "", "test", "",
@@ -46,7 +55,8 @@ func TestSchedulerStateManager_SaveTaskEmptyPath(t *testing.T) {
 
 func TestSchedulerStateManager_LoadTasks(t *testing.T) {
 	tmpDir := t.TempDir()
-	sm := NewSchedulerStateManager()
+	sm := NewSchedulerStateManagerWithInterval(10 * time.Millisecond)
+	defer sm.Close()
 
 	// Load from non-existent path should return empty
 	tasks, err := sm.LoadTasks(tmpDir)
@@ -66,7 +76,7 @@ func TestSchedulerStateManager_LoadTasks(t *testing.T) {
 		t.Fatalf("SaveTask failed: %v", err)
 	}
 
-	// Now load should return the task
+	// Now load should return the task (from in-memory cache)
 	tasks, err = sm.LoadTasks(tmpDir)
 	if err != nil {
 		t.Fatalf("LoadTasks failed: %v", err)
@@ -81,7 +91,8 @@ func TestSchedulerStateManager_LoadTasks(t *testing.T) {
 
 func TestSchedulerStateManager_RemoveTask(t *testing.T) {
 	tmpDir := t.TempDir()
-	sm := NewSchedulerStateManager()
+	sm := NewSchedulerStateManagerWithInterval(10 * time.Millisecond)
+	defer sm.Close()
 
 	// Save a task first
 	task := NewScheduledTask(
@@ -109,7 +120,8 @@ func TestSchedulerStateManager_RemoveTask(t *testing.T) {
 }
 
 func TestSchedulerStateManager_RemoveTaskEmptyPath(t *testing.T) {
-	sm := NewSchedulerStateManager()
+	sm := NewSchedulerStateManagerWithInterval(10 * time.Millisecond)
+	defer sm.Close()
 
 	err := sm.RemoveTask("task-id", "")
 	if err == nil {
@@ -119,7 +131,8 @@ func TestSchedulerStateManager_RemoveTaskEmptyPath(t *testing.T) {
 
 func TestSchedulerStateManager_RemoveTaskNonExistent(t *testing.T) {
 	tmpDir := t.TempDir()
-	sm := NewSchedulerStateManager()
+	sm := NewSchedulerStateManagerWithInterval(10 * time.Millisecond)
+	defer sm.Close()
 
 	// Remove from non-existent state should succeed (no-op)
 	err := sm.RemoveTask("nonexistent-task", tmpDir)
@@ -130,7 +143,8 @@ func TestSchedulerStateManager_RemoveTaskNonExistent(t *testing.T) {
 
 func TestSchedulerStateManager_ScanForProjects(t *testing.T) {
 	tmpDir := t.TempDir()
-	sm := NewSchedulerStateManager()
+	sm := NewSchedulerStateManagerWithInterval(10 * time.Millisecond)
+	defer sm.Close()
 
 	// Create a state directory with a state file
 	stateDir := filepath.Join(tmpDir, SchedulerStateDir)
@@ -158,7 +172,8 @@ func TestSchedulerStateManager_ScanForProjects(t *testing.T) {
 }
 
 func TestSchedulerStateManager_RegisterProject(t *testing.T) {
-	sm := NewSchedulerStateManager()
+	sm := NewSchedulerStateManagerWithInterval(10 * time.Millisecond)
+	defer sm.Close()
 
 	// Register a project
 	sm.RegisterProject("/test/project")
@@ -178,7 +193,8 @@ func TestSchedulerStateManager_RegisterProject(t *testing.T) {
 }
 
 func TestSchedulerStateManager_ListProjectsWithTasks(t *testing.T) {
-	sm := NewSchedulerStateManager()
+	sm := NewSchedulerStateManagerWithInterval(10 * time.Millisecond)
+	defer sm.Close()
 
 	// Initially empty
 	projects := sm.ListProjectsWithTasks()
@@ -198,7 +214,8 @@ func TestSchedulerStateManager_ListProjectsWithTasks(t *testing.T) {
 
 func TestSchedulerStateManager_ClearProject(t *testing.T) {
 	tmpDir := t.TempDir()
-	sm := NewSchedulerStateManager()
+	sm := NewSchedulerStateManagerWithInterval(10 * time.Millisecond)
+	defer sm.Close()
 
 	// Save a task first
 	task := NewScheduledTask(
@@ -208,6 +225,7 @@ func TestSchedulerStateManager_ClearProject(t *testing.T) {
 	if err := sm.SaveTask(task); err != nil {
 		t.Fatalf("SaveTask failed: %v", err)
 	}
+	require.NoError(t, sm.Flush())
 
 	// Clear the project
 	err := sm.ClearProject(tmpDir)
@@ -233,7 +251,8 @@ func TestSchedulerStateManager_ClearProject(t *testing.T) {
 func TestSchedulerStateManager_LoadAllTasks(t *testing.T) {
 	tmpDir1 := t.TempDir()
 	tmpDir2 := t.TempDir()
-	sm := NewSchedulerStateManager()
+	sm := NewSchedulerStateManagerWithInterval(10 * time.Millisecond)
+	defer sm.Close()
 
 	// Save tasks in two projects
 	task1 := NewScheduledTask(
@@ -261,7 +280,8 @@ func TestSchedulerStateManager_LoadAllTasks(t *testing.T) {
 
 func TestSchedulerStateManager_UpdateExistingTask(t *testing.T) {
 	tmpDir := t.TempDir()
-	sm := NewSchedulerStateManager()
+	sm := NewSchedulerStateManagerWithInterval(10 * time.Millisecond)
+	defer sm.Close()
 
 	// Save a task
 	task := NewScheduledTask(
@@ -279,7 +299,7 @@ func TestSchedulerStateManager_UpdateExistingTask(t *testing.T) {
 		t.Fatalf("SaveTask (update) failed: %v", err)
 	}
 
-	// Load and verify update
+	// Load and verify update (from in-memory cache)
 	tasks, err := sm.LoadTasks(tmpDir)
 	if err != nil {
 		t.Fatalf("LoadTasks failed: %v", err)
@@ -297,7 +317,8 @@ func TestSchedulerStateManager_UpdateExistingTask(t *testing.T) {
 
 func TestSchedulerStateManager_ClearNonExistentProject(t *testing.T) {
 	tmpDir := t.TempDir()
-	sm := NewSchedulerStateManager()
+	sm := NewSchedulerStateManagerWithInterval(10 * time.Millisecond)
+	defer sm.Close()
 
 	// Clear a project that doesn't have a state file
 	err := sm.ClearProject(tmpDir)
@@ -308,7 +329,8 @@ func TestSchedulerStateManager_ClearNonExistentProject(t *testing.T) {
 
 func TestSchedulerStateManager_RemoveLastTask(t *testing.T) {
 	tmpDir := t.TempDir()
-	sm := NewSchedulerStateManager()
+	sm := NewSchedulerStateManagerWithInterval(10 * time.Millisecond)
+	defer sm.Close()
 
 	// Save one task
 	task := NewScheduledTask(
@@ -318,6 +340,9 @@ func TestSchedulerStateManager_RemoveLastTask(t *testing.T) {
 	if err := sm.SaveTask(task); err != nil {
 		t.Fatalf("SaveTask failed: %v", err)
 	}
+
+	// Flush to ensure file exists
+	require.NoError(t, sm.Flush())
 
 	// Verify state file exists
 	statePath := filepath.Join(tmpDir, SchedulerStateDir, SchedulerStateFile)
@@ -334,4 +359,130 @@ func TestSchedulerStateManager_RemoveLastTask(t *testing.T) {
 	if _, err := os.Stat(statePath); !os.IsNotExist(err) {
 		t.Error("State file should be removed when last task is deleted")
 	}
+}
+
+// New tests for write-behind channel behavior
+
+func TestSchedulerState_ConcurrentSaveLoadNoDeadlock(t *testing.T) {
+	tmpDir := t.TempDir()
+	sm := NewSchedulerStateManagerWithInterval(10 * time.Millisecond)
+	defer sm.Close()
+
+	var wg sync.WaitGroup
+	const goroutines = 20
+	const iterations = 50
+
+	// Writers
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				task := NewScheduledTask(
+					"task-concurrent", "session", "msg", tmpDir,
+					time.Now().Add(1*time.Hour), time.Now(), TaskStatusPending,
+				)
+				_ = sm.SaveTask(task)
+			}
+		}(i)
+	}
+
+	// Readers
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < iterations; j++ {
+				_, _ = sm.LoadTasks(tmpDir)
+			}
+		}()
+	}
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// No deadlock
+	case <-time.After(10 * time.Second):
+		t.Fatal("Deadlock detected: concurrent operations did not complete in 10s")
+	}
+
+	require.NoError(t, sm.Flush())
+}
+
+func TestSchedulerState_FlushOnClose(t *testing.T) {
+	tmpDir := t.TempDir()
+	sm := NewSchedulerStateManagerWithInterval(10 * time.Second) // Very long debounce
+
+	task := NewScheduledTask(
+		"close-flush-task", "session", "msg", tmpDir,
+		time.Now().Add(1*time.Hour), time.Now(), TaskStatusPending,
+	)
+	require.NoError(t, sm.SaveTask(task))
+
+	// Close should flush pending writes
+	require.NoError(t, sm.Close())
+
+	// Verify file was written
+	statePath := filepath.Join(tmpDir, SchedulerStateDir, SchedulerStateFile)
+	data, err := os.ReadFile(statePath)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "close-flush-task")
+}
+
+func TestSchedulerState_DebouncedSavesCoalesce(t *testing.T) {
+	tmpDir := t.TempDir()
+	sm := NewSchedulerStateManagerWithInterval(100 * time.Millisecond)
+	defer sm.Close()
+
+	// Rapid mutations — should coalesce
+	for i := 0; i < 100; i++ {
+		task := NewScheduledTask(
+			"coalesce-task", "session", "msg", tmpDir,
+			time.Now().Add(1*time.Hour), time.Now(), TaskStatusPending,
+		)
+		require.NoError(t, sm.SaveTask(task))
+	}
+
+	// Wait for debounce
+	time.Sleep(200 * time.Millisecond)
+
+	// Verify file exists with task
+	statePath := filepath.Join(tmpDir, SchedulerStateDir, SchedulerStateFile)
+	data, err := os.ReadFile(statePath)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "coalesce-task")
+}
+
+func TestSchedulerState_PersistAcrossRestart(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// First manager: save task and close
+	sm1 := NewSchedulerStateManagerWithInterval(10 * time.Millisecond)
+	task := NewScheduledTask(
+		"persist-task", "session", "persist msg", tmpDir,
+		time.Now().Add(1*time.Hour), time.Now(), TaskStatusPending,
+	)
+	require.NoError(t, sm1.SaveTask(task))
+	require.NoError(t, sm1.Close())
+
+	// Second manager: should load from disk
+	sm2 := NewSchedulerStateManagerWithInterval(10 * time.Millisecond)
+	defer sm2.Close()
+
+	tasks, err := sm2.LoadTasks(tmpDir)
+	require.NoError(t, err)
+	require.Len(t, tasks, 1)
+	assert.Equal(t, "persist-task", tasks[0].ID)
+	assert.Equal(t, "persist msg", tasks[0].Message)
+}
+
+func TestSchedulerState_CloseIdempotent(t *testing.T) {
+	sm := NewSchedulerStateManagerWithInterval(10 * time.Millisecond)
+	require.NoError(t, sm.Close())
+	require.NoError(t, sm.Close())
 }

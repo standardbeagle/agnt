@@ -253,6 +253,7 @@ func TestStateManager_ConcurrentReadWrite(t *testing.T) {
 		SaveInterval: 10 * time.Millisecond,
 		AutoLoad:     false,
 	})
+	defer sm.Close()
 
 	var wg sync.WaitGroup
 
@@ -307,6 +308,7 @@ func TestStateManager_ConcurrentSaveLoad(t *testing.T) {
 		SaveInterval: 5 * time.Millisecond,
 		AutoLoad:     false,
 	})
+	defer sm.Close()
 
 	var wg sync.WaitGroup
 
@@ -358,6 +360,7 @@ func TestStateManager_ConcurrentAddRemoveProxy(t *testing.T) {
 		SaveInterval: 50 * time.Millisecond,
 		AutoLoad:     false,
 	})
+	defer sm.Close()
 
 	var wg sync.WaitGroup
 
@@ -428,6 +431,7 @@ func TestStateManager_PathTraversal_StatePath(t *testing.T) {
 				StatePath: tt.statePath,
 				AutoLoad:  false,
 			})
+			defer sm.Close()
 
 			sm.SetOverlayEndpoint("http://test")
 			err := sm.Save()
@@ -456,6 +460,7 @@ func TestStateManager_PathTraversal_ProxyID(t *testing.T) {
 		StatePath: statePath,
 		AutoLoad:  false,
 	})
+	defer sm.Close()
 
 	// Proxy IDs should not be used for filesystem operations, but
 	// verify they don't cause issues when stored/retrieved
@@ -487,6 +492,7 @@ func TestStateManager_PathTraversal_ProxyID(t *testing.T) {
 		StatePath: statePath,
 		AutoLoad:  true,
 	})
+	defer sm2.Close()
 
 	proxies2 := sm2.GetProxies()
 	assert.Equal(t, len(maliciousIDs), len(proxies2))
