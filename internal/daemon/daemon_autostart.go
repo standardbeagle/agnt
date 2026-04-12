@@ -23,32 +23,23 @@ type AutostartResult struct {
 	PortsCleared  []PortConflict `json:"ports_cleared,omitempty"`
 }
 
-// AutostartPhase identifies the phase of an autostart progress event.
-type AutostartPhase int
-
-const (
-	PhaseScriptStarting AutostartPhase = iota
-	PhaseDependencyWaitStart
-	PhaseDependencyReady
-	PhaseScriptStarted
-	PhaseScriptFailed
-	PhaseLayerComplete
-)
-
-// AutostartProgress reports progress during asynchronous autostart.
-type AutostartProgress struct {
-	Phase      AutostartPhase
-	Script     string // Script name (empty for layer-level events)
-	Dependency string // Dependency name (for dependency phases)
-	Layer      int    // Topological layer index
-	Err        error  // Non-nil for PhaseScriptFailed
-}
+// AutostartPhase, AutostartProgress, and the Phase* constants live in
+// autostart_manager.go so that AutostartManager and RunAutostartAsync share
+// a single definition.
 
 // emitProgress sends a progress event if the channel is non-nil.
-// Never blocks: drops the event if the channel is full.
-func emitProgress(ch chan<- AutostartProgress, p AutostartProgress) {
+// Never blocks: drops the event if the channel is full. The ProjectPath and
+// Timestamp fields are populated here so that events observed directly on
+// the channel (outside of AutostartManager) still carry that metadata.
+func emitProgress(ch chan<- AutostartProgress, projectPath string, p AutostartProgress) {
 	if ch == nil {
 		return
+	}
+	if p.ProjectPath == "" {
+		p.ProjectPath = projectPath
+	}
+	if p.Timestamp.IsZero() {
+		p.Timestamp = time.Now()
 	}
 	select {
 	case ch <- p:
@@ -354,7 +345,7 @@ func (d *Daemon) startAutostartScripts(ctx context.Context, cfg *config.AgntConf
 					}
 				}
 
-				emitProgress(progress, AutostartProgress{
+				emitProgress(progress, projectPath, AutostartProgress{
 					Phase: PhaseScriptStarting, Script: name, Layer: layerIdx,
 				})
 
@@ -370,7 +361,7 @@ func (d *Daemon) startAutostartScripts(ctx context.Context, cfg *config.AgntConf
 				log.Info(processID, name, "starting", fmt.Sprintf("starting %s (layer %d)", name, layerIdx))
 				if err := d.autostartScript(ctx, name, scriptCfg, projectPath, proxyConfigs); err != nil {
 					log.Error(processID, name, "start_failed", err.Error())
-					emitProgress(progress, AutostartProgress{
+					emitProgress(progress, projectPath, AutostartProgress{
 						Phase: PhaseScriptFailed, Script: name, Layer: layerIdx, Err: err,
 					})
 					resultMu.Lock()
@@ -381,7 +372,7 @@ func (d *Daemon) startAutostartScripts(ctx context.Context, cfg *config.AgntConf
 				}
 
 				log.Info(processID, name, "started", fmt.Sprintf("%s started", name))
-				emitProgress(progress, AutostartProgress{
+				emitProgress(progress, projectPath, AutostartProgress{
 					Phase: PhaseScriptStarted, Script: name, Layer: layerIdx,
 				})
 				resultMu.Lock()
@@ -418,7 +409,7 @@ func (d *Daemon) startAutostartScripts(ctx context.Context, cfg *config.AgntConf
 			return failedScripts
 		}
 
-		emitProgress(progress, AutostartProgress{
+		emitProgress(progress, projectPath, AutostartProgress{
 			Phase: PhaseLayerComplete, Layer: layerIdx,
 		})
 	}
@@ -456,7 +447,7 @@ func (d *Daemon) waitForDependenciesCtx(ctx context.Context, name string, script
 func (d *Daemon) waitForSingleDependency(ctx context.Context, parentHasDeadline bool, name, processID string, dep config.ScriptDependency, projectPath string, layerIdx int, progress chan<- AutostartProgress) {
 	depProcessID := makeProcessID(projectPath, dep.Name)
 
-	emitProgress(progress, AutostartProgress{
+	emitProgress(progress, projectPath, AutostartProgress{
 		Phase: PhaseDependencyWaitStart, Script: name, Dependency: dep.Name, Layer: layerIdx,
 	})
 
@@ -479,7 +470,7 @@ func (d *Daemon) waitForSingleDependency(ctx context.Context, parentHasDeadline 
 			Timestamp: time.Now(),
 		})
 	} else {
-		emitProgress(progress, AutostartProgress{
+		emitProgress(progress, projectPath, AutostartProgress{
 			Phase: PhaseDependencyReady, Script: name, Dependency: dep.Name, Layer: layerIdx,
 		})
 		d.startupErrorStore.Add(&StartupLogEntry{
