@@ -12,6 +12,9 @@ var (
 	//go:embed core.js
 	coreJS string
 
+	//go:embed shadow-root.js
+	shadowRootJS string
+
 	//go:embed utils.js
 	utilsJS string
 
@@ -147,10 +150,14 @@ type moduleEntry struct {
 // and verified at build time by TestModuleDependencyOrder.
 var moduleOrder = []moduleEntry{
 	{"core", nil},
+	// shadow-root.js MUST be loaded before any module that mounts UI so that
+	// window.__devtoolGetMountRoot() is available when indicator/overlay init.
+	// It has no dependencies of its own — pure DOM bootstrap.
+	{"shadow-root", nil},
 	{"framework-detector", nil},
 	{"api-tracker", nil},
 	{"utils", nil},
-	{"overlay", []string{"utils"}},
+	{"overlay", []string{"utils", "shadow-root"}},
 	{"inspection", []string{"utils"}},
 	{"tree", []string{"utils"}},
 	{"visual", []string{"utils"}},
@@ -171,7 +178,7 @@ var moduleOrder = []moduleEntry{
 	{"sketch", []string{"core", "voice"}},
 	{"design", []string{"core", "utils"}},
 	{"style-editor", []string{"core", "utils"}},
-	{"indicator", []string{"core", "utils", "sketch", "design", "style-editor", "toast", "framework-detector", "api-tracker"}},
+	{"indicator", []string{"core", "utils", "sketch", "design", "style-editor", "toast", "framework-detector", "api-tracker", "shadow-root"}},
 	{"snapshot-helper", []string{"core"}},
 	{"diagnostics", []string{"utils", "core"}},
 	{"session", []string{"core"}},
@@ -195,6 +202,7 @@ var moduleOrder = []moduleEntry{
 // moduleScript maps module names to their embedded JS variables.
 var moduleScript = map[string]string{
 	"core":               coreJS,
+	"shadow-root":        shadowRootJS,
 	"framework-detector": frameworkDetectorJS,
 	"api-tracker":        apiTrackerJS,
 	"utils":              utilsJS,

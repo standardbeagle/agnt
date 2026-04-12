@@ -17,6 +17,52 @@
   var core = window.__devtool_core;
   var utils = window.__devtool_utils;
 
+  // Shadow DOM mount helpers
+  //
+  // All indicator UI is mounted into a shadow root (via shadow-root.js) for
+  // style isolation from the host page. When the shadow root is unavailable
+  // (legacy browser, CSP failure), mountRoot() falls back to document.body
+  // and the helpers transparently use document-level lookups.
+  //
+  // Helpers:
+  //   mountRoot()                   -> ShadowRoot or document.body
+  //   isShadowMount()               -> true if mountRoot is a ShadowRoot
+  //   getInMount(id)                -> element lookup by id scoped to mount
+  //   styleTarget()                 -> where to append a <style> so its rules
+  //                                    affect the indicator UI (shadow root
+  //                                    when shadow, document.head when fallback)
+  function mountRoot() {
+    return typeof window.__devtoolGetMountRoot === 'function'
+      ? window.__devtoolGetMountRoot()
+      : document.body;
+  }
+  function isShadowMount() {
+    return typeof window.__devtoolIsShadowMount === 'function' && window.__devtoolIsShadowMount();
+  }
+  // Get element by id from the active mount root. ShadowRoot inherits
+  // getElementById from DocumentFragment; document.body does not, so we
+  // branch and use document.getElementById in the fallback path.
+  function getInMount(id) {
+    if (isShadowMount()) {
+      var root = mountRoot();
+      // ShadowRoot.getElementById exists per DOM spec.
+      if (root && typeof root.getElementById === 'function') {
+        return root.getElementById(id);
+      }
+    }
+    return document.getElementById(id);
+  }
+  // When injecting a <style> that targets UI inside the mount root, append
+  // it to the mount root itself (shadow) or document.head (fallback). Using
+  // document.head when the UI is inside a shadow root would not work — host
+  // stylesheets do not cascade into shadow roots.
+  function styleTarget() {
+    if (isShadowMount()) {
+      return mountRoot();
+    }
+    return document.head;
+  }
+
   // Generate unique IDs for attachments
   function generateId() {
     return 'ctx_' + Date.now().toString(36) + Math.random().toString(36).substr(2, 5);
@@ -1647,7 +1693,9 @@
     createOutputPreview();
     createMicroToast();
 
-    document.documentElement.appendChild(state.container);
+    // Mount the indicator container into the devtool shadow root (or
+    // document.body in the fallback path). See mountRoot() helper at top.
+    mountRoot().appendChild(state.container);
     createSparkline();
   }
 
@@ -1901,7 +1949,9 @@
 
   // Inject CSS keyframes for activity animation
   function injectActivityAnimation() {
-    if (document.getElementById('__devtool-activity-style')) return;
+    // Dedupe against the appropriate target: shadow root or document.head.
+    // getInMount resolves to the correct scope automatically.
+    if (getInMount('__devtool-activity-style')) return;
 
     var style = document.createElement('style');
     style.id = '__devtool-activity-style';
@@ -1960,13 +2010,16 @@
       '  animation: __devtool-active-pulse 2s ease-in-out infinite !important;',
       '}'
     ].join('\\n');
-    document.head.appendChild(style);
+    // Append to the shadow root (if active) so the keyframes/classes apply
+    // to the indicator UI inside the shadow boundary. Falls back to
+    // document.head when the UI mounts on document.body.
+    styleTarget().appendChild(style);
   }
 
   // Set activity state (called when AI tool becomes active/idle)
   function setActivityState(isActive) {
     state.isActive = isActive;
-    var ring = document.getElementById('__devtool-activity-ring');
+    var ring = getInMount('__devtool-activity-ring');
     var bug = state.bug;
 
     if (isActive) {
@@ -1993,7 +2046,7 @@
 
   // Inject container query styles for responsive tabs
   function injectContainerQueryStyles() {
-    if (document.getElementById('__devtool-container-style')) return;
+    if (getInMount('__devtool-container-style')) return;
 
     var style = document.createElement('style');
     style.id = '__devtool-container-style';
@@ -2035,7 +2088,7 @@
       '  .__devtool-tab { padding: 10px 14px !important; }',
       '}'
     ].join('\n');
-    document.head.appendChild(style);
+    styleTarget().appendChild(style);
   }
 
   function createPanel() {
@@ -2137,7 +2190,7 @@
     // Update tab bar highlighting
     var tabs = ['compose', 'overview', 'errors', 'network', 'performance', 'interactions', 'history'];
     tabs.forEach(function(id) {
-      var tab = document.getElementById('__devtool-tab-' + id);
+      var tab = getInMount('__devtool-tab-' + id);
       if (tab) {
         if (id === tabId) {
           tab.style.cssText = STYLES.tab + ';' + STYLES.tabActive;
@@ -2148,7 +2201,7 @@
     });
 
     // Render tab content
-    var content = document.getElementById('__devtool-tab-content');
+    var content = getInMount('__devtool-tab-content');
     if (!content) return;
 
     content.innerHTML = '';
@@ -2217,7 +2270,7 @@
 
   function updateTabBadges() {
     // Update error tab badge
-    var errorTab = document.getElementById('__devtool-tab-errors');
+    var errorTab = getInMount('__devtool-tab-errors');
     if (errorTab && window.__devtool_errors) {
       var stats = window.__devtool_errors.getStats();
       var totalErrors = stats.totalCount;
@@ -2225,14 +2278,14 @@
     }
 
     // Update network tab badge
-    var networkTab = document.getElementById('__devtool-tab-network');
+    var networkTab = getInMount('__devtool-tab-network');
     if (networkTab && window.__devtool_api) {
       var failedCalls = window.__devtool_api.getFailedCalls().length;
       updateTabBadge(networkTab, failedCalls, failedCalls > 0 ? 'red' : null);
     }
 
     // Update history tab badge (show count of recent events)
-    var historyTab = document.getElementById('__devtool-tab-history');
+    var historyTab = getInMount('__devtool-tab-history');
     if (historyTab) {
       var recentEvents = store.history.val.filter(function(e) {
         return (Date.now() - e.timestamp) < 30000; // Last 30 seconds
@@ -2241,7 +2294,7 @@
     }
 
     // Update performance tab badge
-    var perfTab = document.getElementById('__devtool-tab-performance');
+    var perfTab = getInMount('__devtool-tab-performance');
     if (perfTab && window.__devtool_mutations) {
       var rateStats = window.__devtool_mutations.getRateStats([5000]);
       if (rateStats && rateStats[5000]) {
@@ -2362,7 +2415,12 @@
       measureEl.style.padding = cs.padding;
       measureEl.style.border = cs.border;
       measureEl.style.letterSpacing = cs.letterSpacing;
-      document.body.appendChild(measureEl);
+      // Mount measurement element inside the shadow root when possible so
+      // it inherits the same font resolution as the textarea it measures.
+      // getComputedStyle values (fontFamily/fontSize) are absolute strings
+      // so shadow vs body placement is measurement-equivalent, but keeping
+      // all devtool DOM nodes inside the same root keeps cleanup simple.
+      mountRoot().appendChild(measureEl);
       return measureEl;
     }
 
@@ -3224,7 +3282,8 @@
             highlight.style.top = rect.top + 'px';
             highlight.style.width = rect.width + 'px';
             highlight.style.height = rect.height + 'px';
-            document.body.appendChild(highlight);
+            // position:fixed; mounted into shadow root for style isolation.
+            mountRoot().appendChild(highlight);
             previewState.highlight = highlight;
           }
         } catch (e) {
@@ -3268,7 +3327,7 @@
     }
 
     // Position the popup above the chip
-    document.body.appendChild(popup);
+    mountRoot().appendChild(popup);
     previewState.popup = popup;
 
     // Calculate position - show above chip, centered
@@ -3374,7 +3433,7 @@
 
   // Send message - assembles everything into a structured message
   function handleSend() {
-    var textarea = document.getElementById('__devtool-message');
+    var textarea = getInMount('__devtool-message');
     var userMessage = textarea ? textarea.value.trim() : '';
 
     if (!userMessage && state.attachments.length === 0) return;
@@ -3662,7 +3721,9 @@
     }
     document.addEventListener('keydown', onKey);
 
-    document.body.appendChild(overlay);
+    // Mount into shadow root (or body in fallback). position:fixed + full
+    // viewport overlay works identically inside open shadow roots.
+    mountRoot().appendChild(overlay);
   }
 
   // Element selection mode
@@ -3806,7 +3867,11 @@
     }
     document.addEventListener('keydown', onKey);
 
-    document.body.appendChild(overlay);
+    // Mount overlay into shadow root. Hit-testing via document.elementFromPoint
+    // still sees elements in the host page because open shadow roots are
+    // hit-testable from document level, and the overlay toggles its own
+    // pointer-events: none while reading elementFromPoint (see above).
+    mountRoot().appendChild(overlay);
   }
 
   // Sketch mode - opens sketch, on save adds as attachment
@@ -3989,7 +4054,7 @@
   // Status polling and message handling
   function setupStatusPolling() {
     setInterval(function() {
-      var dot = document.getElementById('__devtool-status');
+      var dot = getInMount('__devtool-status');
       if (dot) {
         dot.style.backgroundColor = core.isConnected() ? TOKENS.colors.success : TOKENS.colors.error;
       }
