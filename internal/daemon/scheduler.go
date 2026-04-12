@@ -283,6 +283,13 @@ func NewScheduler(config SchedulerConfig, registry *SessionRegistry, stateMgr *S
 
 // Start begins the scheduler's tick loop.
 func (s *Scheduler) Start(ctx context.Context) error {
+	// Load persisted tasks before acquiring the lock to avoid holding
+	// s.mu during potentially slow disk reads.
+	var loaded []*ScheduledTask
+	if s.stateMgr != nil {
+		loaded = s.stateMgr.LoadAllTasks()
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -293,13 +300,9 @@ func (s *Scheduler) Start(ctx context.Context) error {
 	s.ctx, s.cancel = context.WithCancel(ctx)
 	s.started = true
 
-	// Load persisted tasks from all project directories
-	if s.stateMgr != nil {
-		tasks := s.stateMgr.LoadAllTasks()
-		for _, task := range tasks {
-			if task.Status() == TaskStatusPending {
-				s.tasks.Store(task.ID, task)
-			}
+	for _, task := range loaded {
+		if task.Status() == TaskStatusPending {
+			s.tasks.Store(task.ID, task)
 		}
 	}
 
