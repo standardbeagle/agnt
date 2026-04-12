@@ -1,16 +1,17 @@
 {
-  "status": "interrupted",
-  "iterations": 10,
+  "status": "running",
+  "iterations": 11,
   "spawns": 1,
   "started_at": "2026-04-11T21:54:00Z",
   "completed_at": null,
-  "last_iteration_at": "2026-04-12T04:00:00Z",
+  "last_iteration_at": "2026-04-12T11:10:00Z",
   "last_subagent": "dartai:task-executor",
   "loop_task_id": "Idn6IdmJXITx",
   "dartboard": "Personal/agnt",
-  "runner_instance_id": "beagle-ab2-3766433",
+  "runner_instance_id": "beagle-ab2-277612",
   "runner_email": "claude@anthropic.com",
   "runner_dart_id": null,
+  "resumed_at": "2026-04-12T07:08:00Z",
   "tasks": [
     {
       "task_id": "Puvz4SAdFkkS",
@@ -151,7 +152,7 @@
       "files_changed": 2,
       "tests_added": 5,
       "plan_adjustments": 0,
-      "completion_summary": "Wired autostart cancellation into the last-session cleanup path. doCleanup now calls autostartManager.Cancel(projectPath) BEFORE Remove(projectPath) — order matters because Cancel looks the handle up by key and is a no-op once Remove deletes the entry. This propagates ctx.Done() to the RunAutostartAsync goroutine so an in-flight autostart actually stops when the project's last session disconnects (previously Remove orphaned the goroutine). The 5s deferred-cleanup grace period in CleanupSessionResourcesDeferred is unchanged, so reconnecting clients still withdraw the cancellation. Added daemon_session_cleanup_test.go with 5 race-clean tests: cancel-on-last-session, no-cancel-when-other-sessions-remain, cancel-after-both-disconnect, reconnect-within-grace-withdraws-cancel, and no-panic-when-no-handle. Full daemon suite passes with -race in 217s; gofmt and go vet clean.",
+      "completion_summary": "Wired autostart cancellation into the last-session cleanup path. doCleanup now calls autostartManager.Cancel(projectPath) BEFORE Remove(projectPath) \u2014 order matters because Cancel looks the handle up by key and is a no-op once Remove deletes the entry. This propagates ctx.Done() to the RunAutostartAsync goroutine so an in-flight autostart actually stops when the project's last session disconnects (previously Remove orphaned the goroutine). The 5s deferred-cleanup grace period in CleanupSessionResourcesDeferred is unchanged, so reconnecting clients still withdraw the cancellation. Added daemon_session_cleanup_test.go with 5 race-clean tests: cancel-on-last-session, no-cancel-when-other-sessions-remain, cancel-after-both-disconnect, reconnect-within-grace-withdraws-cancel, and no-panic-when-no-handle. Full daemon suite passes with -race in 217s; gofmt and go vet clean.",
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
@@ -168,6 +169,22 @@
       "tests_added": 2,
       "plan_adjustments": 1,
       "completion_summary": "Removed the 120s implicit dependency-wait fallback. Root cause was two-fold: (1) waitForSingleDependency wrapped every wait in DefaultDependencyTimeout when the parent ctx had no deadline (production session ctx never has a deadline), and (2) the .agnt.kdl parser defaulted every dep.Timeout to 120s, so even removing the daemon-side fallback would not have produced indefinite waits. Fix: parser now defaults dep.Timeout to 0 (wait indefinitely); waitForSingleDependency wraps the wait in context.WithTimeout only when dep.Timeout > 0 (explicit user-set timeout in KDL still honored). Removed parentHasDeadline branch and parameter. DefaultDependencyTimeout constant retained for backward compat with internal/autostart (dead/parallel impl) and existing topo-sort fixture tests. Added two tests: NoFallbackTimeout_WaitsIndefinitely (proves the wait blocks past 6s and unblocks promptly on parent ctx cancel), ExplicitDependencyTimeout_StillHonored (proves timeout=2 in KDL still bounds the wait, and never falls into 120s fallback). Updated 3 assertions in agnt_deps_test.go from DefaultDependencyTimeout to 0. Build, vet, gofmt clean; targeted daemon+config tests pass with -race.",
+      "failure_reason": null,
+      "fix_task_created": false,
+      "fix_task_id": null
+    },
+    {
+      "task_id": "ChziBamGzNn5",
+      "iteration": 11,
+      "status": "completed",
+      "started_at": "2026-04-12T08:56:00Z",
+      "completed_at": "2026-04-12T11:10:00Z",
+      "phase_completed": "phase-9",
+      "failed_phase": null,
+      "files_changed": 3,
+      "tests_added": 0,
+      "plan_adjustments": 1,
+      "completion_summary": "Refactored daemon_autostart.go (startAutostartScripts 130->33 lines via runLayer+startOneScript+setupReadinessSignal extraction) and hub_session.go (hubHandleSessionRegister 168->41 lines via parseSessionRegisterArgs+joinOrStartAutostart+buildSessionRegisterResponse+logSessionTargetStarting+claimProjectScripts extraction); deleted dead code _old_detectPortForScript and detectPortForScript stub plus the test that validated them. AutostartProgress field audit found no unused fields (all 7 fields are read).",
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null

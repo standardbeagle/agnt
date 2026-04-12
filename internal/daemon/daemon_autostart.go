@@ -291,6 +291,9 @@ func (d *Daemon) resumeAutostart(ctx context.Context, projectPath string) *Autos
 
 // startAutostartScripts starts scripts in topological dependency order.
 // Returns a set of script names that failed to start.
+//
+// Pure layer orchestration: topo sort + per-layer waitgroup + context
+// cancellation select. Per-script work lives in startOneScript.
 func (d *Daemon) startAutostartScripts(ctx context.Context, cfg *config.AgntConfig, projectPath string, result *AutostartResult, progress chan<- AutostartProgress) map[string]bool {
 	log := d.startupErrorStore
 	autostartScripts := cfg.GetAutostartScripts()
@@ -309,122 +312,161 @@ func (d *Daemon) startAutostartScripts(ctx context.Context, cfg *config.AgntConf
 	}
 
 	var resultMu sync.Mutex
-
 	for layerIdx, layer := range layers {
-		// Use a done channel so we can select on ctx.Done() alongside layer completion.
-		layerDone := make(chan struct{})
-		var layerWg sync.WaitGroup
-
-		for _, name := range layer {
-			scriptCfg := autostartScripts[name]
-			if scriptCfg == nil {
-				continue
-			}
-
-			layerWg.Add(1)
-			go func(name string, scriptCfg *config.ScriptConfig) {
-				defer layerWg.Done()
-				processID := makeProcessID(projectPath, name)
-
-				// Skip if script is already running (idempotent autostart).
-				if entry, ok := d.scriptRegistry.Get(name, projectPath); ok {
-					state := entry.State()
-					if state == script.StateRunning || state == script.StateStarting {
-						log.Info(processID, name, "already_running", fmt.Sprintf("%s already %s, skipping", name, state.String()))
-						probePorts := d.getExpectedPortsForScript(name, scriptCfg, proxyConfigs,
-							resolveWorkingDir(projectPath, scriptCfg.Cwd), "", nil)
-						if len(probePorts) > 0 {
-							d.readySignaler.StartPortProbe(processID, probePorts[0], ctx)
-						} else {
-							d.readySignaler.SignalReady(processID)
-						}
-						resultMu.Lock()
-						result.Scripts = append(result.Scripts, name)
-						resultMu.Unlock()
-						return
-					}
-				}
-
-				emitProgress(progress, projectPath, AutostartProgress{
-					Phase: PhaseScriptStarting, Script: name, Layer: layerIdx,
-				})
-
-				// Wait for dependencies (layer 1+)
-				d.waitForDependenciesCtx(ctx, name, scriptCfg, projectPath, layerIdx, progress)
-
-				// Check if context was cancelled during dependency wait
-				if ctx.Err() != nil {
-					return
-				}
-
-				// Start the script
-				log.Info(processID, name, "starting", fmt.Sprintf("starting %s (layer %d)", name, layerIdx))
-				if err := d.autostartScript(ctx, name, scriptCfg, projectPath, proxyConfigs); err != nil {
-					log.Error(processID, name, "start_failed", err.Error())
-					emitProgress(progress, projectPath, AutostartProgress{
-						Phase: PhaseScriptFailed, Script: name, Layer: layerIdx, Err: err,
-					})
-					resultMu.Lock()
-					result.Errors = append(result.Errors, fmt.Sprintf("script %s: %v", name, err))
-					failedScripts[name] = true
-					resultMu.Unlock()
-					// Unblock any dependents that were waiting on this script.
-					// Without this, dependents wait forever on the ready
-					// signal. Downstream layers still see failedScripts[name]
-					// and can react accordingly.
-					d.readySignaler.SignalReady(processID)
-					return
-				}
-
-				log.Info(processID, name, "started", fmt.Sprintf("%s started", name))
-				emitProgress(progress, projectPath, AutostartProgress{
-					Phase: PhaseScriptStarted, Script: name, Layer: layerIdx,
-				})
-				resultMu.Lock()
-				result.Scripts = append(result.Scripts, name)
-				resultMu.Unlock()
-
-				// Port probe for dependency readiness signaling.
-				// If no ports are expected, signal ready immediately so
-				// dependents are unblocked.
-				probePorts := d.getExpectedPortsForScript(name, scriptCfg, proxyConfigs,
-					resolveWorkingDir(projectPath, scriptCfg.Cwd), "", nil)
-				if len(probePorts) > 0 {
-					d.readySignaler.StartPortProbe(processID, probePorts[0], ctx)
-				} else {
-					d.readySignaler.SignalReady(processID)
-				}
-			}(name, scriptCfg)
-		}
-
-		// Close layerDone when all goroutines in this layer finish.
-		go func() {
-			layerWg.Wait()
-			close(layerDone)
-		}()
-
-		// Wait for either layer completion or context cancellation.
-		select {
-		case <-layerDone:
-			// Layer finished normally.
-		case <-ctx.Done():
-			// Context cancelled. Wait for in-flight goroutines to notice
-			// and exit, then return partial results.
-			<-layerDone
+		if cancelled := d.runLayer(ctx, layer, layerIdx, autostartScripts, proxyConfigs,
+			projectPath, result, &resultMu, failedScripts, progress); cancelled {
 			return failedScripts
 		}
-
 		emitProgress(progress, projectPath, AutostartProgress{
 			Phase: PhaseLayerComplete, Layer: layerIdx,
 		})
 	}
 
-	// Cleanup signaler channels
 	for name := range autostartScripts {
 		d.readySignaler.Cleanup(makeProcessID(projectPath, name))
 	}
-
 	return failedScripts
+}
+
+// runLayer launches one topological layer of scripts concurrently and waits
+// for either the layer to finish or the context to be cancelled. Returns
+// true if the wait ended because the context was cancelled, in which case
+// the caller should abort remaining layers.
+func (d *Daemon) runLayer(
+	ctx context.Context,
+	layer []string,
+	layerIdx int,
+	autostartScripts map[string]*config.ScriptConfig,
+	proxyConfigs map[string]*config.ProxyConfig,
+	projectPath string,
+	result *AutostartResult,
+	resultMu *sync.Mutex,
+	failedScripts map[string]bool,
+	progress chan<- AutostartProgress,
+) (cancelled bool) {
+	layerDone := make(chan struct{})
+	var layerWg sync.WaitGroup
+
+	for _, name := range layer {
+		scriptCfg := autostartScripts[name]
+		if scriptCfg == nil {
+			continue
+		}
+		layerWg.Add(1)
+		go func(name string, scriptCfg *config.ScriptConfig) {
+			defer layerWg.Done()
+			d.startOneScript(ctx, name, scriptCfg, projectPath, layerIdx,
+				proxyConfigs, result, resultMu, failedScripts, progress)
+		}(name, scriptCfg)
+	}
+
+	go func() {
+		layerWg.Wait()
+		close(layerDone)
+	}()
+
+	// Wait for layer completion or context cancellation. On cancellation,
+	// drain layerDone so in-flight goroutines exit before returning.
+	select {
+	case <-layerDone:
+		return false
+	case <-ctx.Done():
+		<-layerDone
+		return true
+	}
+}
+
+// startOneScript runs the body of the per-script goroutine launched by
+// startAutostartScripts. It handles the idempotent already-running fast path,
+// dependency wait, script start, error reporting, and readiness signaling.
+//
+// The failedScripts map and result slice are protected by resultMu; callers
+// must supply the same mutex for all goroutines within a layer.
+func (d *Daemon) startOneScript(
+	ctx context.Context,
+	name string,
+	scriptCfg *config.ScriptConfig,
+	projectPath string,
+	layerIdx int,
+	proxyConfigs map[string]*config.ProxyConfig,
+	result *AutostartResult,
+	resultMu *sync.Mutex,
+	failedScripts map[string]bool,
+	progress chan<- AutostartProgress,
+) {
+	log := d.startupErrorStore
+	processID := makeProcessID(projectPath, name)
+
+	// Idempotent fast path: if the script is already running (e.g. a previous
+	// session left it up), skip the start but still configure readiness so
+	// dependents can proceed.
+	if entry, ok := d.scriptRegistry.Get(name, projectPath); ok {
+		state := entry.State()
+		if state == script.StateRunning || state == script.StateStarting {
+			log.Info(processID, name, "already_running",
+				fmt.Sprintf("%s already %s, skipping", name, state.String()))
+			d.setupReadinessSignal(ctx, processID, name, scriptCfg, proxyConfigs, projectPath)
+			resultMu.Lock()
+			result.Scripts = append(result.Scripts, name)
+			resultMu.Unlock()
+			return
+		}
+	}
+
+	emitProgress(progress, projectPath, AutostartProgress{
+		Phase: PhaseScriptStarting, Script: name, Layer: layerIdx,
+	})
+
+	// Wait for dependencies (layer 1+).
+	d.waitForDependenciesCtx(ctx, name, scriptCfg, projectPath, layerIdx, progress)
+	if ctx.Err() != nil {
+		return
+	}
+
+	log.Info(processID, name, "starting", fmt.Sprintf("starting %s (layer %d)", name, layerIdx))
+	if err := d.autostartScript(ctx, name, scriptCfg, projectPath, proxyConfigs); err != nil {
+		log.Error(processID, name, "start_failed", err.Error())
+		emitProgress(progress, projectPath, AutostartProgress{
+			Phase: PhaseScriptFailed, Script: name, Layer: layerIdx, Err: err,
+		})
+		resultMu.Lock()
+		result.Errors = append(result.Errors, fmt.Sprintf("script %s: %v", name, err))
+		failedScripts[name] = true
+		resultMu.Unlock()
+		// Unblock dependents so they don't wait forever on the ready signal.
+		// Downstream layers still observe failedScripts[name] and react.
+		d.readySignaler.SignalReady(processID)
+		return
+	}
+
+	log.Info(processID, name, "started", fmt.Sprintf("%s started", name))
+	emitProgress(progress, projectPath, AutostartProgress{
+		Phase: PhaseScriptStarted, Script: name, Layer: layerIdx,
+	})
+	resultMu.Lock()
+	result.Scripts = append(result.Scripts, name)
+	resultMu.Unlock()
+
+	d.setupReadinessSignal(ctx, processID, name, scriptCfg, proxyConfigs, projectPath)
+}
+
+// setupReadinessSignal configures the ready signaler for a script. If the
+// script has expected ports, a TCP port probe is started; otherwise the
+// signaler is marked ready immediately so dependents are unblocked.
+func (d *Daemon) setupReadinessSignal(
+	ctx context.Context,
+	processID, name string,
+	scriptCfg *config.ScriptConfig,
+	proxyConfigs map[string]*config.ProxyConfig,
+	projectPath string,
+) {
+	probePorts := d.getExpectedPortsForScript(name, scriptCfg, proxyConfigs,
+		resolveWorkingDir(projectPath, scriptCfg.Cwd), "", nil)
+	if len(probePorts) > 0 {
+		d.readySignaler.StartPortProbe(processID, probePorts[0], ctx)
+		return
+	}
+	d.readySignaler.SignalReady(processID)
 }
 
 // waitForDependenciesCtx blocks until all dependencies for a script are ready
@@ -769,63 +811,9 @@ func (d *Daemon) autostartProxy(ctx context.Context, name string, proxyConfig *c
 	return nil
 }
 
-// detectPortForScript is deprecated and no longer used.
-// Port detection is now handled by URLTracker emitting URLDetected events.
-func (d *Daemon) detectPortForScript(ctx context.Context, scriptName string, proxyConfig *config.ProxyConfig) (int, error) {
-	return 0, fmt.Errorf("deprecated: use event-driven proxy creation instead")
-}
-
-// Removed old autostartProxy implementation that did synchronous port detection.
-// Now using event-driven approach:
-// 1. URLTracker detects URLs from script output
-// 2. Emits URLDetected events
-// 3. handleURLDetected creates proxies for matching configs
-
-// Old implementation kept detectPortForScript stub for reference, but it's no longer called.
-func (d *Daemon) _old_detectPortForScript(ctx context.Context, scriptName string, proxyConfig *config.ProxyConfig) (int, error) {
-	detector := config.NewPortDetector()
-
-	// Create a timeout context for port detection (30 seconds)
-	detectCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-
-	// Poll for port detection
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-detectCtx.Done():
-			return 0, fmt.Errorf("timeout waiting for port detection")
-
-		case <-ticker.C:
-			// Get process to check if running
-			proc, err := d.hub.ProcessManager().Get(scriptName)
-			if err != nil {
-				continue // Process may not be registered yet
-			}
-
-			// Check if process is running
-			if !proc.IsRunning() {
-				continue
-			}
-
-			// Try to get output and detect port from it
-			output, _ := proc.CombinedOutput()
-			if port := detector.DetectFromOutput(string(output)); port > 0 {
-				return port, nil
-			}
-
-			// Try PID-based detection
-			pid := proc.PID()
-			if pid > 0 {
-				if ports := detector.DetectFromPID(detectCtx, pid); len(ports) > 0 {
-					return ports[0], nil
-				}
-			}
-		}
-	}
-}
+// Note: legacy synchronous port detection (detectPortForScript /
+// _old_detectPortForScript) has been removed. Proxy creation is now driven by
+// URLTracker → URLDetected events; see proxy_events.go.
 
 // MaxLogSize is the maximum log file size before rotation (5MB).
 const MaxLogSize = 5 * 1024 * 1024
