@@ -250,6 +250,13 @@ func (d *Daemon) doCleanup(sessionCode string) {
 
 		// Clear session log — next session starts fresh
 		d.startupErrorStore.Clear()
+
+		// Drop the autostart handle so the next session triggers a fresh
+		// autostart run. Matching the "script registry is ephemeral" rule:
+		// autostart state does not carry over between sessions.
+		if d.autostartManager != nil {
+			d.autostartManager.Remove(projectPath)
+		}
 	} else {
 		// Other sessions remain: only remove entries that were orphaned (no observers).
 		for _, pid := range orphanedProcessIDs {

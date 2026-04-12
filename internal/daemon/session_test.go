@@ -1,9 +1,9 @@
 package daemon
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
@@ -673,64 +673,34 @@ func TestSession_MarshalJSON(t *testing.T) {
 		}
 	}
 }
-func TestDaemon_GetProjectLock_SamePath(t *testing.T) {
+
+// TestDaemon_AutostartManager_SharedPerProject verifies that two calls into
+// the AutostartManager for the same project path share a single handle, and
+// that different paths get distinct handles. This replaces the per-project
+// mutex tests that were superseded by AutostartManager.GetOrCreate.
+func TestDaemon_AutostartManager_SharedPerProject(t *testing.T) {
 	d := New(DaemonConfig{
 		SocketPath:   filepath.Join(t.TempDir(), "test.sock"),
 		MaxClients:   10,
 		WriteTimeout: 5 * time.Second,
 	})
 
-	lock1 := d.getProjectLock("/home/user/project-a")
-	lock2 := d.getProjectLock("/home/user/project-a")
-
-	if lock1 != lock2 {
-		t.Error("getProjectLock should return the same mutex for the same path")
+	noop := func(ctx context.Context, progress chan<- AutostartProgress) *AutostartResult {
+		return &AutostartResult{}
 	}
-}
 
-func TestDaemon_GetProjectLock_DifferentPaths(t *testing.T) {
-	d := New(DaemonConfig{
-		SocketPath:   filepath.Join(t.TempDir(), "test.sock"),
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	lock1 := d.getProjectLock("/home/user/project-a")
-	lock2 := d.getProjectLock("/home/user/project-b")
-
-	if lock1 == lock2 {
-		t.Error("getProjectLock should return different mutexes for different paths")
+	h1 := d.autostartManager.GetOrCreate("/home/user/project-a", noop)
+	h2 := d.autostartManager.GetOrCreate("/home/user/project-a", noop)
+	if h1 != h2 {
+		t.Error("GetOrCreate should return the same handle for the same project")
 	}
-}
 
-func TestDaemon_GetProjectLock_ConcurrentAccess(t *testing.T) {
-	d := New(DaemonConfig{
-		SocketPath:   filepath.Join(t.TempDir(), "test.sock"),
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	const goroutines = 100
-	locks := make(chan *sync.Mutex, goroutines)
-
-	var wg sync.WaitGroup
-	for i := 0; i < goroutines; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			locks <- d.getProjectLock("/home/user/project-a")
-		}()
+	h3 := d.autostartManager.GetOrCreate("/home/user/project-b", noop)
+	if h1 == h3 {
+		t.Error("GetOrCreate should return different handles for different projects")
 	}
-	wg.Wait()
-	close(locks)
 
-	var first *sync.Mutex
-	for lock := range locks {
-		if first == nil {
-			first = lock
-		} else if lock != first {
-			t.Error("concurrent getProjectLock calls returned different mutexes for same path")
-			return
-		}
-	}
+	// Drain handles so goroutines exit.
+	<-h1.Done()
+	<-h3.Done()
 }
