@@ -44,22 +44,23 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	socketPath := getSocketPath(cmd)
 	projectPath, _ := os.Getwd()
 
-	// Try daemon first for comprehensive checks
-	if daemon.IsRunning(socketPath) {
-		return runDoctorViaDaemon(socketPath, projectPath)
-	}
-
-	// Daemon not available - run standalone OS-level checks
-	return runDoctorStandalone(projectPath)
-}
-
-// runDoctorViaDaemon connects to the daemon and prints its report.
-func runDoctorViaDaemon(socketPath, projectPath string) error {
+	// Try daemon first for comprehensive checks. Attempt a direct connect
+	// instead of a separate IsRunning probe — the probe dials and closes a
+	// socket whose handler goroutine races with the real doctor connect, so
+	// clientCount briefly reads both connections and makes the output say
+	// "2 client(s)" when only the doctor is really connected.
 	client := daemon.NewClient(daemon.WithSocketPath(socketPath))
 	if err := client.Connect(); err != nil {
-		fmt.Fprintf(os.Stderr, "Daemon connect failed, falling back to standalone: %v\n", err)
+		// Daemon not available — run standalone OS-level checks.
 		return runDoctorStandalone(projectPath)
 	}
+	return runDoctorViaDaemon(client, projectPath)
+}
+
+// runDoctorViaDaemon runs the daemon-side checks via an already-connected
+// client and prints the report. The caller owns the client and must provide
+// one that is already Connect()'d.
+func runDoctorViaDaemon(client *daemon.Client, projectPath string) error {
 	defer client.Close()
 
 	result, err := client.Doctor(projectPath)
