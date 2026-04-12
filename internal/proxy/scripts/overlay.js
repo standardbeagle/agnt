@@ -37,7 +37,14 @@
       'contain: layout style'
     ].join(';');
 
-    document.documentElement.appendChild(container);
+    // Mount into the devtool shadow root when available (style isolation
+    // from host page). Falls back to document.body via the helper when the
+    // shadow root could not be created. We intentionally do NOT mount on
+    // documentElement anymore because that would bypass shadow isolation.
+    var mountRoot = typeof window.__devtoolGetMountRoot === 'function'
+      ? window.__devtoolGetMountRoot()
+      : document.documentElement;
+    mountRoot.appendChild(container);
     overlayState.container = container;
     return container;
   }

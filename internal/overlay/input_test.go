@@ -179,12 +179,17 @@ func TestInputBatchingMultipleEscapeSequences(t *testing.T) {
 	inputCh <- 0x1b
 	inputCh <- '['
 	inputCh <- 'A'
-	time.Sleep(10 * time.Millisecond)
+	// 10ms was too tight under heavy concurrent test load: the goroutine
+	// might not have drained the first escape sequence before the second
+	// one starts arriving, causing the two writes to merge into one.
+	// 100ms gives the drain goroutine + the 1ms ESC sleep inside it enough
+	// slack even when the scheduler is oversubscribed by parallel tests.
+	time.Sleep(100 * time.Millisecond)
 
 	inputCh <- 0x1b
 	inputCh <- '['
 	inputCh <- 'B'
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond)
 	close(done)
 
 	writes := rec.getWrites()

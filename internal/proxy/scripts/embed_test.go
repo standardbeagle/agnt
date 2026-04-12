@@ -36,8 +36,9 @@ func TestModuleDependencyOrder(t *testing.T) {
 
 	// Verify all embedded variables are in moduleScript
 	embeddedVars := map[string]string{
-		"core": coreJS, "framework-detector": frameworkDetectorJS,
-		"api-tracker": apiTrackerJS, "utils": utilsJS,
+		"core": coreJS, "shadow-root": shadowRootJS,
+		"framework-detector": frameworkDetectorJS,
+		"api-tracker":        apiTrackerJS, "utils": utilsJS,
 		"overlay": overlayJS, "inspection": inspectionJS,
 		"tree": treeJS, "visual": visualJS,
 		"layout": layoutJS, "interactive": interactiveJS,
@@ -80,5 +81,67 @@ func TestModuleDependencyOrder(t *testing.T) {
 		if _, exists := pos[name]; !exists {
 			t.Errorf("moduleScript entry %q is not in moduleOrder", name)
 		}
+	}
+}
+
+// TestShadowRootBootstrapOrder verifies that shadow-root.js is registered as
+// a dependency of every module that mounts UI into the mount root, so that
+// window.__devtoolGetMountRoot is always available before those modules init.
+func TestShadowRootBootstrapOrder(t *testing.T) {
+	consumers := []string{"overlay", "indicator"}
+
+	// Build a dep lookup
+	deps := make(map[string][]string)
+	for _, m := range moduleOrder {
+		deps[m.name] = m.deps
+	}
+
+	for _, name := range consumers {
+		modDeps, ok := deps[name]
+		if !ok {
+			t.Errorf("consumer module %q not found in moduleOrder", name)
+			continue
+		}
+		found := false
+		for _, d := range modDeps {
+			if d == "shadow-root" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("module %q must declare %q as a dependency so the mount helper is available at init time",
+				name, "shadow-root")
+		}
+	}
+
+	// Verify the shadow-root.js source exports the public helpers consumers rely on.
+	if !strings.Contains(shadowRootJS, "__devtoolGetMountRoot") {
+		t.Errorf("shadow-root.js does not expose window.__devtoolGetMountRoot")
+	}
+	if !strings.Contains(shadowRootJS, "__devtoolIsShadowMount") {
+		t.Errorf("shadow-root.js does not expose window.__devtoolIsShadowMount")
+	}
+	// Verify it uses 'open' mode (intentional — see shadow-root.js header comment).
+	if !strings.Contains(shadowRootJS, "mode: 'open'") {
+		t.Errorf("shadow-root.js should use attachShadow({ mode: 'open' }); closed mode breaks devtool self-inspection")
+	}
+
+	// Verify the combined script emits shadow-root before overlay and indicator.
+	combined := GetCombinedScript()
+	shadowIdx := strings.Index(combined, "// shadow-root module")
+	overlayIdx := strings.Index(combined, "// overlay module")
+	indicatorIdx := strings.Index(combined, "// indicator module")
+	if shadowIdx < 0 {
+		t.Fatalf("combined script missing shadow-root module marker")
+	}
+	if overlayIdx < 0 || indicatorIdx < 0 {
+		t.Fatalf("combined script missing overlay or indicator marker")
+	}
+	if shadowIdx >= overlayIdx {
+		t.Errorf("shadow-root must be emitted before overlay (got shadowIdx=%d, overlayIdx=%d)", shadowIdx, overlayIdx)
+	}
+	if shadowIdx >= indicatorIdx {
+		t.Errorf("shadow-root must be emitted before indicator (got shadowIdx=%d, indicatorIdx=%d)", shadowIdx, indicatorIdx)
 	}
 }
