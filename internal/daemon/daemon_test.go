@@ -121,41 +121,6 @@ func TestDaemon_StopAllResources(t *testing.T) {
 	}
 }
 
-func TestDaemon_DetectPortForScript(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	// Create daemon
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
-
-	ctx := context.Background()
-
-	// Test detectPortForScript (deprecated, returns error)
-	_, err := daemon.detectPortForScript(ctx, "test-script", nil)
-	if err == nil {
-		t.Error("Expected error from deprecated detectPortForScript")
-	}
-
-	// Test _old_detectPortForScript (will timeout without a running script)
-	// Just check it doesn't panic
-	ctx2, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
-	defer cancel()
-	_, _ = daemon._old_detectPortForScript(ctx2, "nonexistent", nil)
-}
-
 func TestDaemon_HandleExplicitStart(t *testing.T) {
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "test.sock")

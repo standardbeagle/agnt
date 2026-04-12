@@ -54,64 +54,154 @@ func (d *Daemon) hubHandleSession(ctx context.Context, conn *hubpkg.Connection, 
 	}
 }
 
-// hubHandleSessionRegister handles SESSION REGISTER command.
-// SESSION REGISTER <code> <overlay_path> -- <json_metadata>
+// sessionRegisterMetadata mirrors the JSON metadata payload clients send on
+// SESSION REGISTER. Stored as its own type so parseSessionRegisterArgs can
+// return both the unnormalized original project path (which
+// RunAutostartAsync needs) and the fully-built Session struct.
+type sessionRegisterMetadata struct {
+	ProjectPath string   `json:"project_path"`
+	Command     string   `json:"command"`
+	Args        []string `json:"args"`
+}
 
-func (d *Daemon) hubHandleSessionRegister(conn *hubpkg.Connection, cmd *hubproto.Command) error {
+// parseSessionRegisterArgs validates the SESSION REGISTER command and
+// constructs a Session from its Args/Data payload. Returns the session plus
+// the raw (unnormalized) metadata — callers that need the pre-normalization
+// project path for downstream calls use the metadata.ProjectPath field.
+func parseSessionRegisterArgs(cmd *hubproto.Command) (*Session, sessionRegisterMetadata, error) {
+	var metadata sessionRegisterMetadata
 	if len(cmd.Args) < 2 {
-		return conn.WriteErr(hubproto.ErrInvalidArgs, "SESSION REGISTER requires: <code> <overlay_path>")
+		return nil, metadata, fmt.Errorf("SESSION REGISTER requires: <code> <overlay_path>")
 	}
-
 	code := cmd.Args[0]
 	overlayPath := cmd.Args[1]
 
-	// Parse optional metadata from data payload
-	var metadata struct {
-		ProjectPath string   `json:"project_path"`
-		Command     string   `json:"command"`
-		Args        []string `json:"args"`
-	}
 	if len(cmd.Data) > 0 {
 		json.Unmarshal(cmd.Data, &metadata)
 	}
 
-	// Create session
+	now := time.Now()
 	session := &Session{
 		Code:        code,
 		OverlayPath: overlayPath,
 		ProjectPath: normalizePath(metadata.ProjectPath),
 		Command:     metadata.Command,
 		Args:        metadata.Args,
-		StartedAt:   time.Now(),
+		StartedAt:   now,
 		Status:      SessionStatusActive,
-		LastSeen:    time.Now(),
+		LastSeen:    now,
+	}
+	return session, metadata, nil
+}
+
+// joinOrStartAutostart decides whether this session should start a new
+// autostart run for the project or join an existing one as an observer.
+// Returns the project's autostart handle (nil for late joiners on an
+// untracked project) and the join status string reported back to the client.
+//
+// rawProjectPath is the pre-normalization metadata path that
+// RunAutostartAsync still normalizes on its own for legacy-caller parity.
+func (d *Daemon) joinOrStartAutostart(session *Session, rawProjectPath string) (*AutostartHandle, string) {
+	existingSessions := d.sessionRegistry.ListActive(session.ProjectPath, false)
+	hasExistingOwner := false
+	for _, existing := range existingSessions {
+		if existing.Code != session.Code {
+			hasExistingOwner = true
+			break
+		}
+	}
+
+	if hasExistingOwner {
+		// Another session already started scripts for this project. Skip
+		// GetOrCreate entirely. If an autostart handle is still tracked for
+		// this project we join as an observer on it; otherwise this is a
+		// pure observer of already-running state.
+		var handle *AutostartHandle
+		if d.autostartManager != nil {
+			handle = d.autostartManager.Get(session.ProjectPath)
+		}
+		debug.Log("daemon", "session %s joining existing project %s (observer)",
+			session.Code, session.ProjectPath)
+		return handle, "joined"
+	}
+
+	// First session for this project — start (or join) a project-scoped
+	// autostart run. GetOrCreate guarantees at-most-one startFn invocation
+	// per project path, so two concurrent registrations for the same
+	// project cannot both run autostart.
+	startFn := d.makeAutostartStartFn(session.ProjectPath, rawProjectPath)
+	handle := d.autostartManager.GetOrCreate(session.ProjectPath, startFn)
+	return handle, "starting"
+}
+
+// buildSessionRegisterResponse assembles the SESSION REGISTER response map.
+// Never blocks on handle.Done() — if the run is already finished by the time
+// we get here (empty config, cache hit, late joiner on a completed run), the
+// full AutostartResult is folded in so clients get synchronous semantics
+// when available. Otherwise the response carries only the join status and an
+// empty backward-compat result.
+func buildSessionRegisterResponse(
+	d *Daemon,
+	code, projectPath string,
+	handle *AutostartHandle,
+	joinStatus string,
+) map[string]interface{} {
+	resp := map[string]interface{}{"code": code}
+
+	if handle == nil {
+		// No autostart handle at all (late joiner on an untracked project).
+		resp["status"] = joinStatus
+		resp["autostart"] = &AutostartResult{}
+		resp["progress"] = []map[string]interface{}{}
+		return resp
+	}
+
+	resp["autostart_handle"] = handle.ProjectPath()
+	resp["progress"] = progressProtoEvents(handle.Progress())
+
+	select {
+	case <-handle.Done():
+		// Run finished — publish the full result AND a "done" status.
+		result := handle.Result()
+		if result == nil {
+			result = &AutostartResult{}
+		}
+		emitAutostartErrorsToAlertStore(d, projectPath, result)
+		resp["status"] = "done"
+		resp["result"] = result
+		resp["autostart"] = result // backward compat for existing clients
+	default:
+		// Run still in flight. Report the join status and emit an empty
+		// backward-compat autostart map so clients that blindly read
+		// result["autostart"] don't crash.
+		resp["status"] = joinStatus
+		resp["autostart"] = &AutostartResult{}
+	}
+	return resp
+}
+
+// hubHandleSessionRegister handles SESSION REGISTER command.
+// SESSION REGISTER <code> <overlay_path> -- <json_metadata>
+//
+// The handler returns immediately after kicking off (or joining) the
+// project's autostart run. PTY registration must not block on autostart.
+func (d *Daemon) hubHandleSessionRegister(conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	session, metadata, err := parseSessionRegisterArgs(cmd)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
 	}
 
 	if err := d.sessionRegistry.Register(session); err != nil {
 		// Session already exists — this is a re-registration (reconnect).
 		// Cancel any pending cleanup from the old connection and update LastSeen.
-		d.cancelPendingCleanup(code)
-		if existing, ok := d.sessionRegistry.Get(code); ok {
+		d.cancelPendingCleanup(session.Code)
+		if existing, ok := d.sessionRegistry.Get(session.Code); ok {
 			existing.UpdateLastSeen()
 		}
 	}
 
-	// Log target process startup to the startup log so the overlay shows it
-	if session.Command != "" {
-		cmdLabel := session.Command
-		if len(session.Args) > 0 {
-			cmdLabel += " " + strings.Join(session.Args, " ")
-		}
-		d.startupErrorStore.Add(&StartupLogEntry{
-			Level:     "info",
-			EventType: "target_starting",
-			Message:   fmt.Sprintf("starting %s", cmdLabel),
-			Timestamp: time.Now(),
-		})
-	}
-
-	// Associate session with this connection for cleanup
-	conn.SetSessionCode(code)
+	d.logSessionTargetStarting(session)
+	conn.SetSessionCode(session.Code)
 
 	// Rebind overlay endpoints for existing proxies that may have been
 	// created before this session registered.
@@ -119,111 +209,57 @@ func (d *Daemon) hubHandleSessionRegister(conn *hubpkg.Connection, cmd *hubproto
 
 	// Reconcile script states against OS truth before deciding autostart.
 	// Detects processes that died between sessions and transitions them to
-	// Stopped, ensuring the agent receives verified-accurate state.
+	// Stopped so the agent receives verified-accurate state.
 	if reconciled := d.reconcileScriptStates(session.ProjectPath); len(reconciled) > 0 {
 		names := make([]string, len(reconciled))
 		for i, e := range reconciled {
 			names[i] = e.Name
 		}
-		debug.Log("daemon", "session %s: reconciled %d dead scripts: %v", code, len(reconciled), names)
+		debug.Log("daemon", "session %s: reconciled %d dead scripts: %v",
+			session.Code, len(reconciled), names)
 	}
 
-	// Determine whether this session is the first owner of the project or
-	// merely a late-joining observer. Late joiners do NOT trigger
-	// GetOrCreate — they report whatever the project already has and, if an
-	// autostart handle exists, piggyback on its progress.
-	existingSessions := d.sessionRegistry.ListActive(session.ProjectPath, false)
-	hasExistingOwner := false
-	for _, existing := range existingSessions {
-		if existing.Code != code {
-			hasExistingOwner = true
-			break
-		}
-	}
+	handle, joinStatus := d.joinOrStartAutostart(session, metadata.ProjectPath)
+	d.claimProjectScripts(session)
 
-	var (
-		handle     *AutostartHandle
-		joinStatus string
-	)
-
-	if hasExistingOwner {
-		// Another session already started scripts for this project. Skip
-		// GetOrCreate entirely. If an autostart handle is still tracked for
-		// this project, we join as an observer on it; otherwise this is a
-		// pure observer of already-running state.
-		joinStatus = "joined"
-		if d.autostartManager != nil {
-			handle = d.autostartManager.Get(session.ProjectPath)
-		}
-		debug.Log("daemon", "session %s joining existing project %s (observer)",
-			code, session.ProjectPath)
-	} else {
-		// First session for this project — start (or join) a project-scoped
-		// autostart run. GetOrCreate guarantees at-most-one startFn invocation
-		// per project path, so two concurrent registrations for the same
-		// project cannot both run autostart.
-		projectPath := session.ProjectPath
-		startFn := d.makeAutostartStartFn(projectPath, metadata.ProjectPath)
-		handle = d.autostartManager.GetOrCreate(projectPath, startFn)
-		joinStatus = "starting"
-	}
-
-	// Add session as observer of all project scripts and claim ownership of
-	// unowned ones. Script entries created by autostart may not exist yet if
-	// the run is still in its early phase — that's fine, subsequent SCRIPT
-	// LIST queries will pick them up.
-	if session.ProjectPath != "" {
-		for _, entry := range d.scriptRegistry.List(session.ProjectPath) {
-			entry.AddSession(code)
-			if entry.Owner() == "" {
-				entry.SetOwner(code)
-			}
-		}
-	}
-
-	// Build the response. We never block on handle.Done(): the whole point of
-	// this handler is that it returns immediately so PTY registration is not
-	// gated on autostart. However, if the run happens to already be finished
-	// by the time we get here (empty config, cache hit, late joiner on a
-	// completed run), we include the full AutostartResult so clients get
-	// synchronous semantics when they can.
-	resp := map[string]interface{}{
-		"code": code,
-	}
-
-	if handle != nil {
-		resp["autostart_handle"] = handle.ProjectPath()
-		progressSnapshot := handle.Progress()
-		resp["progress"] = progressProtoEvents(progressSnapshot)
-
-		select {
-		case <-handle.Done():
-			// Run finished — publish the full result AND a "done" status.
-			result := handle.Result()
-			if result == nil {
-				result = &AutostartResult{}
-			}
-			emitAutostartErrorsToAlertStore(d, session.ProjectPath, result)
-			resp["status"] = "done"
-			resp["result"] = result
-			resp["autostart"] = result // backward compat for existing clients
-		default:
-			// Run still in flight. Report the join status and emit an empty
-			// backward-compat autostart map so clients that blindly read
-			// result["autostart"] don't crash.
-			resp["status"] = joinStatus
-			resp["autostart"] = &AutostartResult{}
-		}
-	} else {
-		// No autostart handle at all (late joiner on an untracked project).
-		// Report an empty result for backward compatibility.
-		resp["status"] = joinStatus
-		resp["autostart"] = &AutostartResult{}
-		resp["progress"] = []map[string]interface{}{}
-	}
-
+	resp := buildSessionRegisterResponse(d, session.Code, session.ProjectPath, handle, joinStatus)
 	data, _ := json.Marshal(resp)
 	return conn.WriteJSON(data)
+}
+
+// logSessionTargetStarting writes a "target_starting" entry to the startup
+// log so the overlay shows the PTY target command as soon as the session
+// registers. No-op when the session has no command metadata.
+func (d *Daemon) logSessionTargetStarting(session *Session) {
+	if session.Command == "" {
+		return
+	}
+	cmdLabel := session.Command
+	if len(session.Args) > 0 {
+		cmdLabel += " " + strings.Join(session.Args, " ")
+	}
+	d.startupErrorStore.Add(&StartupLogEntry{
+		Level:     "info",
+		EventType: "target_starting",
+		Message:   fmt.Sprintf("starting %s", cmdLabel),
+		Timestamp: time.Now(),
+	})
+}
+
+// claimProjectScripts adds the session as an observer of all scripts for its
+// project and claims ownership of any that are currently unowned. Script
+// entries created by autostart may not exist yet if the run is still in its
+// early phase — that's fine, subsequent SCRIPT LIST queries will pick them up.
+func (d *Daemon) claimProjectScripts(session *Session) {
+	if session.ProjectPath == "" {
+		return
+	}
+	for _, entry := range d.scriptRegistry.List(session.ProjectPath) {
+		entry.AddSession(session.Code)
+		if entry.Owner() == "" {
+			entry.SetOwner(session.Code)
+		}
+	}
 }
 
 // makeAutostartStartFn returns an AutostartStartFunc that runs the duplicate
