@@ -62,6 +62,11 @@ type processHealthState struct {
 	// for this process. Stored as uint32 so we can read it lock-free.
 	lastObservedState atomic.Uint32
 
+	// previousObservedState is the state the tracker observed immediately
+	// before lastObservedState. Used by OutageClassifier to detect direct
+	// Running → Failed transitions (no Stopping intermediate).
+	previousObservedState atomic.Uint32
+
 	// lastHealthyAt is the wall-clock time the process most recently
 	// transitioned INTO Running. nil if it has never reached Running.
 	lastHealthyAt atomic.Pointer[time.Time]
@@ -70,6 +75,23 @@ type processHealthState struct {
 	// marker without a matching "close". Used to make markers fire exactly
 	// once per edge.
 	suppressionOpen atomic.Bool
+
+	// outageStartedAt is the wall-clock time the process most recently
+	// LEFT the Running state into a suppress state. nil while the process
+	// is healthy. Used by OutageClassifier to compute outage duration.
+	outageStartedAt atomic.Pointer[time.Time]
+
+	// daemonInitiatedStop is set to true by daemon code immediately before
+	// triggering a stop/restart on a process (RestartAll, auto-restart,
+	// autostart recovery). Cleared by the classifier when the process
+	// returns to Running Healthy. While set, an outage is biased toward
+	// "Rebuild" classification.
+	daemonInitiatedStop atomic.Bool
+
+	// lastRebuildSignalAt is the most recent timestamp the AlertScanner
+	// matched a rebuild/compile pattern in the process output. Used as a
+	// secondary signal to bias outage classification toward Rebuild.
+	lastRebuildSignalAt atomic.Pointer[time.Time]
 }
 
 // HealthTracker observes process state for the purpose of gating proxy
@@ -91,6 +113,16 @@ type HealthTracker struct {
 
 	// nowFn returns the current time. Injected for deterministic tests.
 	nowFn func() time.Time
+
+	// onOutageStart is fired exactly once per Running → suppress edge,
+	// inside the slow-path mutex. The classifier sets this to populate
+	// its crash-rate ring buffer. May be nil — emission is best-effort.
+	onOutageStart func(processID string, ts time.Time)
+
+	// onReturnToHealthy is fired exactly once per suppress → Running
+	// edge, inside the slow-path mutex. The classifier sets this to
+	// reset per-outage one-shot markers (e.g. "expired warning").
+	onReturnToHealthy func(processID string)
 }
 
 // NewHealthTracker constructs a HealthTracker with production lookups.
@@ -195,13 +227,53 @@ func (h *HealthTracker) observe(proxyID, processID string, currentState goproces
 	}
 
 	// Record the new state up-front so concurrent observers see it.
+	// previousObservedState carries the prior state so the classifier
+	// can detect direct Running → Failed transitions.
+	st.previousObservedState.Store(uint32(prevState))
 	st.lastObservedState.Store(uint32(currentState))
 
-	// On transition INTO Running, stamp lastHealthyAt and clear the
-	// suppression-open flag. The grace period is honoured by the caller.
+	// On transition INTO Running, stamp lastHealthyAt, clear the outage
+	// start marker, and consume the daemon-initiated flag. The grace
+	// period is honoured by the caller.
+	returnedToHealthy := false
 	if currentState == goprocess.StateRunning && prevState != goprocess.StateRunning {
 		now := h.nowFn()
 		st.lastHealthyAt.Store(&now)
+		// Clear the outage marker — we're back to healthy. The classifier
+		// considers the outage "concluded" and any future stop starts a
+		// fresh outage with a fresh daemon-initiated decision.
+		st.outageStartedAt.Store(nil)
+		st.daemonInitiatedStop.Store(false)
+		returnedToHealthy = true
+	}
+
+	// On transition OUT of Running into a non-healthy state, stamp the
+	// outage start time. We use the prevState check (rather than a "was
+	// healthy" predicate) because Pending → Starting is a normal startup,
+	// not an outage. Only Running → suppress counts.
+	outageStarted := false
+	var outageStartTime time.Time
+	if prevState == goprocess.StateRunning && currentState != goprocess.StateRunning {
+		outageStartTime = h.nowFn()
+		st.outageStartedAt.Store(&outageStartTime)
+		outageStarted = true
+	}
+
+	// Fire edge callbacks under the per-process lock so the classifier's
+	// ring buffer and one-shot flags update atomically with the tracker
+	// bookkeeping. Recover from any panic — the gate hot path must not
+	// take down the daemon if a callback misbehaves.
+	if outageStarted && h.onOutageStart != nil {
+		func() {
+			defer func() { _ = recover() }()
+			h.onOutageStart(processID, outageStartTime)
+		}()
+	}
+	if returnedToHealthy && h.onReturnToHealthy != nil {
+		func() {
+			defer func() { _ = recover() }()
+			h.onReturnToHealthy(processID)
+		}()
 	}
 
 	// Decide whether to emit a marker. We emit "open" when entering a
@@ -274,6 +346,130 @@ func (h *HealthTracker) Forget(processID string) {
 		return
 	}
 	h.states.Delete(processID)
+}
+
+// MarkDaemonInitiatedStop records that the daemon (not the OS, not the
+// child) is about to stop or restart processID. The flag is consumed by
+// the OutageClassifier — while set, a subsequent outage is biased toward
+// "Rebuild" rather than "Crash". Callers MUST set this immediately before
+// issuing the stop, never after, otherwise the classifier may observe the
+// stop edge before the flag is set.
+//
+// Safe to call before any state has been observed for the process: this
+// creates the per-process tracker entry on demand.
+func (h *HealthTracker) MarkDaemonInitiatedStop(processID string) {
+	if h == nil || processID == "" {
+		return
+	}
+	st := h.getOrCreate(processID)
+	st.daemonInitiatedStop.Store(true)
+}
+
+// IsDaemonInitiatedStop reports whether MarkDaemonInitiatedStop was called
+// for processID and the flag has not been consumed yet.
+func (h *HealthTracker) IsDaemonInitiatedStop(processID string) bool {
+	if h == nil || processID == "" {
+		return false
+	}
+	st, ok := h.lookup(processID)
+	if !ok {
+		return false
+	}
+	return st.daemonInitiatedStop.Load()
+}
+
+// RecordRebuildSignal stamps the current time as the most recent moment
+// the AlertScanner detected a rebuild/compile pattern in processID's
+// output. Read by the OutageClassifier as evidence the next stop edge is
+// part of an in-progress rebuild rather than a crash.
+func (h *HealthTracker) RecordRebuildSignal(processID string) {
+	if h == nil || processID == "" {
+		return
+	}
+	st := h.getOrCreate(processID)
+	now := h.nowFn()
+	st.lastRebuildSignalAt.Store(&now)
+}
+
+// LastRebuildSignal returns the most recent rebuild-signal timestamp for
+// processID, or the zero time if none has been recorded.
+func (h *HealthTracker) LastRebuildSignal(processID string) time.Time {
+	if h == nil || processID == "" {
+		return time.Time{}
+	}
+	st, ok := h.lookup(processID)
+	if !ok {
+		return time.Time{}
+	}
+	t := st.lastRebuildSignalAt.Load()
+	if t == nil {
+		return time.Time{}
+	}
+	return *t
+}
+
+// LastHealthyAt returns the wall-clock time processID most recently
+// transitioned INTO Running, or the zero time if it never has.
+func (h *HealthTracker) LastHealthyAt(processID string) time.Time {
+	if h == nil || processID == "" {
+		return time.Time{}
+	}
+	st, ok := h.lookup(processID)
+	if !ok {
+		return time.Time{}
+	}
+	t := st.lastHealthyAt.Load()
+	if t == nil {
+		return time.Time{}
+	}
+	return *t
+}
+
+// OutageStartedAt returns the wall-clock time processID most recently
+// LEFT the Running state, or the zero time if it is currently healthy or
+// has never been observed.
+func (h *HealthTracker) OutageStartedAt(processID string) time.Time {
+	if h == nil || processID == "" {
+		return time.Time{}
+	}
+	st, ok := h.lookup(processID)
+	if !ok {
+		return time.Time{}
+	}
+	t := st.outageStartedAt.Load()
+	if t == nil {
+		return time.Time{}
+	}
+	return *t
+}
+
+// LastObservedState returns the most recent process state observed by
+// the tracker. Returns the zero value (StatePending) if no state has been
+// observed yet — the caller should treat that as "unknown".
+func (h *HealthTracker) LastObservedState(processID string) goprocess.ProcessState {
+	if h == nil || processID == "" {
+		return goprocess.StatePending
+	}
+	st, ok := h.lookup(processID)
+	if !ok {
+		return goprocess.StatePending
+	}
+	return goprocess.ProcessState(st.lastObservedState.Load())
+}
+
+// PreviousObservedState returns the state observed immediately before
+// the current LastObservedState. Used by the classifier to detect direct
+// Running → Failed transitions without a Stopping intermediate. Returns
+// StatePending if the process has never transitioned.
+func (h *HealthTracker) PreviousObservedState(processID string) goprocess.ProcessState {
+	if h == nil || processID == "" {
+		return goprocess.StatePending
+	}
+	st, ok := h.lookup(processID)
+	if !ok {
+		return goprocess.StatePending
+	}
+	return goprocess.ProcessState(st.previousObservedState.Load())
 }
 
 func (h *HealthTracker) getOrCreate(processID string) *processHealthState {

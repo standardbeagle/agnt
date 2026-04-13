@@ -364,6 +364,9 @@ func (d *Daemon) clearScriptProxies(scriptID string) {
 	if d.healthTracker != nil {
 		d.healthTracker.Forget(scriptID)
 	}
+	if d.outageClassifier != nil {
+		d.outageClassifier.Forget(scriptID)
+	}
 	debug.Log("daemon", "Cleared proxy tracking for script %s", scriptID)
 }
 

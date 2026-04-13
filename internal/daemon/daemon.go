@@ -209,6 +209,12 @@ type Daemon struct {
 	// internal/daemon/health_tracker.go for the suppression contract.
 	healthTracker *HealthTracker
 
+	// outageClassifier wraps healthTracker with rebuild-vs-crash
+	// classification. The proxy broadcast gate consults its
+	// SuppressionMode() on every log entry. See
+	// internal/daemon/outage_classifier.go for the rules.
+	outageClassifier *OutageClassifier
+
 	// Update checker
 	updateChecker *updater.UpdateChecker
 
@@ -309,6 +315,31 @@ func New(config DaemonConfig) *Daemon {
 				return
 			}
 			d.alertHub.BroadcastLogEntry(entry, proxyID)
+		},
+	)
+
+	// OutageClassifier extends HealthTracker with rebuild/crash
+	// classification. It needs the same process lookup, an emitter for
+	// long-rebuild heartbeats and the expired-rebuild warning, and a
+	// reverse lookup from processID → proxyID so heartbeat diagnostics
+	// can be addressed to the right proxy.
+	d.outageClassifier = NewOutageClassifier(
+		d.healthTracker,
+		func(processID string) (*process.ManagedProcess, error) {
+			return d.hub.ProcessManager().Get(processID)
+		},
+		func(entry proxy.LogEntry, proxyID string) {
+			if d.alertHub == nil {
+				return
+			}
+			d.alertHub.BroadcastLogEntry(entry, proxyID)
+		},
+		func(processID string) string {
+			proxies := d.getProxiesForScript(processID)
+			if len(proxies) == 0 {
+				return ""
+			}
+			return proxies[0]
 		},
 	)
 

@@ -282,17 +282,70 @@ func (d *Daemon) wireProxyLogger(server *proxy.ProxyServer) {
 // entries always pass through (they're how the daemon communicates the
 // suppression state itself to the agent). Extracted from wireProxyLogger
 // so it can be unit-tested without spinning up a real ProxyServer.
+//
+// The gate consults the OutageClassifier for tri-state suppression:
+//
+//	ModeOff             — broadcast normally
+//	ModeFull            — drop everything except diagnostics
+//	ModeDiagnosticOnly  — drop error-class entries, forward warnings
+//
+// HealthTracker.IsInSuppressionWindow remains the upstream signal: the
+// classifier reads its bookkeeping (lastObservedState, lastHealthyAt,
+// outageStartedAt) which is populated as a side-effect of the call.
+// We invoke it once for its side-effects and then read SuppressionMode.
 func (d *Daemon) proxyBroadcastGate(proxyID string, entry proxy.LogEntry) bool {
 	if entry.Type == proxy.LogTypeDiagnostic {
 		return true
 	}
 	linkedProcessID := d.linkedScriptForProxy(proxyID)
-	if d.healthTracker.IsInSuppressionWindow(proxyID, linkedProcessID) {
+	if linkedProcessID == "" {
+		// Unlinked proxies never suppress. Match the legacy behaviour.
+		return true
+	}
+	// Drive the tracker bookkeeping. The boolean result is no longer
+	// the gate decision, but the call is required: it triggers edge
+	// detection, populates outageStartedAt, and emits open markers.
+	_ = d.healthTracker.IsInSuppressionWindow(proxyID, linkedProcessID)
+
+	mode := d.outageClassifier.SuppressionMode(linkedProcessID)
+	switch mode {
+	case ModeFull:
+		return false
+	case ModeDiagnosticOnly:
+		// The TrafficLogger only distinguishes error / non-error log
+		// types today. We forward anything that isn't the canonical
+		// "error" class so warning-level customs and HTTP 4xx-as-info
+		// can still surface.
+		if isErrorClassEntry(entry) {
+			return false
+		}
+		return true
+	case ModeOff:
+		fallthrough
+	default:
+		// Just past the grace window — emit the close marker now
+		// (idempotent) so the agent sees suppression end at the same
+		// instant errors actually start flowing again.
+		d.healthTracker.MaybeCloseGraceWindow(proxyID, linkedProcessID)
+		return true
+	}
+}
+
+// isErrorClassEntry reports whether a proxy log entry is "error class"
+// for the purposes of ModeDiagnosticOnly suppression. Frontend errors,
+// HTTP 5xx responses, and explicit error-level diagnostics all qualify.
+// Diagnostics are handled before this gate function runs, so callers
+// only see non-diagnostic types here.
+func isErrorClassEntry(entry proxy.LogEntry) bool {
+	switch entry.Type {
+	case proxy.LogTypeError:
+		return true
+	case proxy.LogTypeHTTP:
+		if entry.HTTP != nil && entry.HTTP.StatusCode >= 500 {
+			return true
+		}
+		return false
+	default:
 		return false
 	}
-	// Just past the grace window — emit the close marker now (idempotent)
-	// so the agent sees suppression end at the same instant errors
-	// actually start flowing again.
-	d.healthTracker.MaybeCloseGraceWindow(proxyID, linkedProcessID)
-	return true
 }

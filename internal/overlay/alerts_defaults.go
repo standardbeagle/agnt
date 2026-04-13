@@ -145,5 +145,47 @@ func DefaultAlertPatterns() []*AlertPattern {
 			Category:    "generic",
 			Description: "Out of memory",
 		},
+
+		// Rebuild signals — info-severity matches that the OutageClassifier
+		// reads as evidence the next process stop is part of an intentional
+		// rebuild rather than a crash. These never get surfaced as alerts
+		// (severity is info, batched only with other info entries) but they
+		// stamp lastRebuildSignalAt on the health tracker via the daemon's
+		// alert-scanner output hook.
+		{
+			ID:          "rebuild-generic",
+			Pattern:     regexp.MustCompile(`(?i)\b(rebuilding|rebuild finished|recompiling|compiling\.\.\.|restarting)\b`),
+			Severity:    AlertSeverityInfo,
+			Category:    "rebuild",
+			Description: "Generic rebuild/recompile signal",
+		},
+		{
+			ID:          "rebuild-vite",
+			Pattern:     regexp.MustCompile(`vite:(reload|hmr update)|page reload`),
+			Severity:    AlertSeverityInfo,
+			Category:    "rebuild",
+			Description: "Vite reload or HMR update",
+		},
+		{
+			ID:          "rebuild-dotnet-watch",
+			Pattern:     regexp.MustCompile(`(?i)(watch attached|file changed:|hot reload of changes)`),
+			Severity:    AlertSeverityInfo,
+			Category:    "rebuild",
+			Description: "dotnet watch rebuild signal",
+		},
+		{
+			ID:          "rebuild-go-watch",
+			Pattern:     regexp.MustCompile(`(?i)(running\.\.\. ok|build ok|reflex.*starting|air.*restarting)`),
+			Severity:    AlertSeverityInfo,
+			Category:    "rebuild",
+			Description: "Go file-watcher rebuild signal (air, reflex)",
+		},
+		{
+			ID:          "rebuild-build-success",
+			Pattern:     regexp.MustCompile(`(?i)build (succeeded|completed)`),
+			Severity:    AlertSeverityInfo,
+			Category:    "rebuild",
+			Description: "Build success signal",
+		},
 	}
 }
