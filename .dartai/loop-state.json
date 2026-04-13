@@ -1,5 +1,7 @@
 {
-  "status": "running",
+  "status": "completed",
+  "completed_at": "2026-04-13T23:40:00Z",
+  "stop_reason": "no actionable tasks remain on Personal/agnt (2/2 completed)",
   "iterations": 2,
   "spawns": 2,
   "started_at": "2026-04-13T22:48:30Z",
