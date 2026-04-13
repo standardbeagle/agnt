@@ -62,3 +62,59 @@ No subsystem may silently skip an expected action. If config declares a proxy, p
 ## Config Authority
 
 If `.agnt.kdl` declares expected state (a proxy with `fallback-port`, a script with `depends-on`), the system must honor it. Config fields that are parsed but not acted on are bugs.
+
+## Session Containment
+
+A session owns more than the processes it explicitly registered with `proc run`. The AI agent behind an `agnt run` session routinely spawns background work through non-interactive bash — `npm run dev &`, `cargo watch &`, `python manage.py runserver &` — and non-interactive bash does not enable job control. That means those jobs inherit the PTY child's process group instead of getting one of their own, and the daemon has no explicit handle on them. Without containment, session B cannot claim ports that session A's backgrounded jobs are still holding.
+
+### The Session pgid Invariant
+
+The PTY child started by `agnt run` is given its own POSIX session via `setsid` (creack/pty does this). Its PID doubles as the session pgid, and every descendant process — interactive shells, tool invocations, and backgrounded jobs spawned via `sh -c 'cmd &'` — inherits that pgid unless the descendant explicitly escapes it (see below).
+
+The daemon holds this invariant through three primitives:
+
+1. **Wire-through at registration.** The `agnt run` client captures the PTY child PID and passes it to the daemon as `SessionPGID` during `SessionRegister`. The field survives the client → protocol → hub handler → registry round trip.
+2. **Kill on cleanup.** `CleanupSessionResources` → `doCleanup` calls `killSessionPGID` **before** touching managed processes. Sends SIGTERM to the group, waits a 2s grace window, escalates to SIGKILL on any survivors. Self-exclusion protects the daemon's own PID if it ever (defensively) shares the group.
+3. **Startup orphan scan.** On `Start()`, the daemon walks `/proc` looking for pgids whose leader is dead but whose members are still alive — the "daemon crashed mid-session" case — and reaps them via the same kill primitive. UID-filtered, gated on the `session.orphan-pgid-scan` config (default on).
+
+### What Is Caught
+
+| Scenario | Caught? | By which primitive |
+|----------|---------|--------------------|
+| `npm run dev &` in non-interactive bash | yes | session pgid kill on cleanup |
+| `nohup cmd &` (SIGHUP blocked) | yes | pgid kill uses SIGTERM/SIGKILL, not SIGHUP |
+| `disown %1` after backgrounding | yes | `disown` affects the shell's job table, not the pgid |
+| Managed `proc run` scripts | yes | ProcessManager path; redundant with pgid kill |
+| Leaked pgid after daemon crash | yes | startup orphan `/proc` scan |
+| Grandchildren of backgrounded jobs | yes | they inherit the pgid transitively |
+
+### Accepted Escape Hatches
+
+These **intentionally** escape the session pgid. They represent a conscious "I want to survive session shutdown" decision and the daemon must not try to track them:
+
+| Escape | Why it escapes | Operator responsibility |
+|--------|----------------|------------------------|
+| `setsid cmd &` | Creates a new session + pgid at exec time | User explicitly asked for a detached process; they own cleanup |
+| Double-fork daemon (fork → setsid → fork → exit) | Classic Unix daemonization | Same — this is the explicit "become a daemon" pattern |
+| `systemd-run --scope`, `systemd-run --user` | Hands the process to systemd's cgroup | systemd owns the lifetime |
+| Container runtimes (`docker run -d`, `podman run -d`) | Container PID1 is the runtime, not the session | Runtime owns cleanup |
+| Processes that re-exec into a different uid | `/proc` scan filters by uid | Outside our blast radius |
+
+Each of these leaves a port or resource held after session shutdown, but that is the operator's explicit choice. The repro test `TestSessionContainment_SetsidEscapes` asserts that `setsid` escapes the containment — a regression to it would accidentally reap detached processes, which is worse than leaking them.
+
+### File Ownership
+
+| Primitive | File |
+|-----------|------|
+| `KillSessionPGID`, `MembersOfPGID`, `readPGID` | `internal/platform/sessionpgid_unix.go` |
+| `ScanOrphanPGIDs` (dead-leader scan) | `internal/platform/orphanpgid_unix.go` |
+| `killSessionPGID` wiring + `doCleanup` ordering | `internal/daemon/daemon_session_cleanup.go` |
+| `startupOrphanPGIDScan` + config gate | `internal/daemon/daemon_orphan_pgid.go` |
+| PTY child PID capture + wire-through | `cmd/agnt/pty_common.go`, `internal/daemon/client.go` (`SessionRegisterWithPGID`) |
+| Session struct field | `internal/daemon/session.go` (`SessionPGID`) |
+| Primitive-level regression tests | `internal/daemon/daemon_session_pgid_test.go`, `internal/daemon/daemon_orphan_pgid_test.go` |
+| End-to-end port-reuse repro | `internal/daemon/daemon_session_containment_test.go` |
+
+### Cross-Platform Note
+
+The session pgid primitives are Unix-only (`//go:build !windows`). On Windows, Job Objects already provide equivalent cascade-kill semantics for the PTY child tree, and `SessionPGID` is always 0 — `killSessionPGID` is a no-op guarded by `pgid <= 1`. The startup orphan scan is Linux-only (`//go:build linux`) because it walks `/proc`; on non-Linux Unix, `ScanOrphanPGIDs` returns an empty slice.
