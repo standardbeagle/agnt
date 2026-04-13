@@ -1,9 +1,10 @@
 {
-  "status": "running",
+  "status": "completed",
   "iterations": 18,
   "spawns": 1,
   "started_at": "2026-04-11T21:54:00Z",
-  "completed_at": null,
+  "completed_at": "2026-04-12T20:40:00Z",
+  "stop_reason": "no actionable tasks remain on Personal/agnt (2 cross-repo tasks skipped: HOvzgoPV81oj standardbeagle-tools, vroUWYlKIeVG slop-mcp)",
   "last_iteration_at": "2026-04-12T22:55:00Z",
   "last_subagent": "dartai:task-executor",
   "loop_task_id": "Idn6IdmJXITx",
