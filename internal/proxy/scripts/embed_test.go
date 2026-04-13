@@ -127,6 +127,34 @@ func TestShadowRootBootstrapOrder(t *testing.T) {
 		t.Errorf("shadow-root.js should use attachShadow({ mode: 'open' }); closed mode breaks devtool self-inspection")
 	}
 
+	// Regression guard (DART-wV4wNZb8XWW3): the shadow host's inline cssText
+	// must not set `pointer-events: none`. When an ancestor has
+	// pointer-events:none, hit testing skips the element AND any descendants
+	// that do not explicitly set pointer-events to a non-none value. The
+	// indicator bug / panel / buttons inherit the default `auto` and therefore
+	// become unclickable and undraggable when this rule is set. The host is
+	// already 0x0 and position:static so it cannot intercept clicks on its own
+	// — setting pointer-events:none is both unnecessary and harmful.
+	//
+	// We scan the host.style.cssText assignment specifically (not the whole
+	// file, which contains explanatory comments referencing the forbidden
+	// rule).
+	cssTextIdx := strings.Index(shadowRootJS, "host.style.cssText")
+	if cssTextIdx < 0 {
+		t.Fatalf("shadow-root.js missing host.style.cssText assignment; test cannot guard against pointer-events regression")
+	}
+	// Find the end of the statement (semicolon after the closing quote).
+	rest := shadowRootJS[cssTextIdx:]
+	stmtEnd := strings.Index(rest, ";\n")
+	if stmtEnd < 0 {
+		t.Fatalf("shadow-root.js host.style.cssText assignment not terminated with ;\\n; cannot parse")
+	}
+	cssTextStmt := rest[:stmtEnd]
+	if strings.Contains(cssTextStmt, "pointer-events: none") ||
+		strings.Contains(cssTextStmt, "pointer-events:none") {
+		t.Errorf("shadow-root.js host.style.cssText must not set pointer-events:none — it blocks hit testing of shadow descendants (indicator bug/panel/buttons). Assignment:\n  %s", cssTextStmt)
+	}
+
 	// Verify the combined script emits shadow-root before overlay and indicator.
 	combined := GetCombinedScript()
 	shadowIdx := strings.Index(combined, "// shadow-root module")
