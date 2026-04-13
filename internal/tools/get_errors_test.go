@@ -852,3 +852,69 @@ func TestConvertStartupLogEntry(t *testing.T) {
 		assert.Contains(t, result.Message, "depends on failed script")
 	})
 }
+
+// TestAlertMapToUnifiedError_ProcessLifecycle verifies that a daemon
+// AlertEntry with category "process_lifecycle" converts into a unified
+// error that agents can read — the exit-code summary from the
+// description PLUS the stderr tail from the line field.
+//
+// This is the regression guard for the diagnostic gap that triggered
+// this task: an agent seeing proxy 502s needs to see a "vite exited"
+// entry alongside them.
+func TestAlertMapToUnifiedError_ProcessLifecycle(t *testing.T) {
+	ts := time.Now().Add(-5 * time.Minute)
+	am := map[string]interface{}{
+		"severity":    "error",
+		"category":    "process_lifecycle",
+		"description": "process vite:dev exited (code 1, reason crash, uptime 12m34s)",
+		"line":        "[vite] Internal server error: ECONNREFUSED",
+		"script_id":   "vite:dev",
+		"timestamp":   ts.Format(time.RFC3339Nano),
+	}
+
+	ue := alertMapToUnifiedError(am)
+	require.NotNil(t, ue)
+	assert.Equal(t, "process:vite:dev", ue.Source)
+	assert.Equal(t, "error", ue.Severity)
+	assert.Equal(t, "PROCESS LIFECYCLE", ue.Category, "snake_case category must be humanised")
+	// Message carries BOTH the exit summary and the stderr tail so
+	// agents get the full picture in one entry.
+	assert.Contains(t, ue.Message, "exited")
+	assert.Contains(t, ue.Message, "code 1")
+	assert.Contains(t, ue.Message, "Internal server error")
+}
+
+// TestAlertMapToUnifiedError_InfoBecomesWarning verifies that info-level
+// lifecycle entries (clean stops) downgrade to warning so they can be
+// suppressed with include_warnings=false.
+func TestAlertMapToUnifiedError_InfoSeverity(t *testing.T) {
+	am := map[string]interface{}{
+		"severity":    "info",
+		"category":    "process_lifecycle",
+		"description": "process cleanup exited (code 0, reason stopped, uptime 2s)",
+		"script_id":   "cleanup",
+		"timestamp":   time.Now().Format(time.RFC3339Nano),
+	}
+	ue := alertMapToUnifiedError(am)
+	require.NotNil(t, ue)
+	assert.Equal(t, "warning", ue.Severity)
+}
+
+// TestAlertMapToUnifiedError_BackwardCompat_ProcessError verifies that
+// the existing AlertScanner-sourced entries (category "process error"
+// or similar) still convert correctly — the lifecycle addition must
+// not break the existing error path.
+func TestAlertMapToUnifiedError_BackwardCompat_ProcessError(t *testing.T) {
+	am := map[string]interface{}{
+		"severity":  "error",
+		"category":  "compile error",
+		"line":      "src/main.ts:42:5 - error TS2304: Cannot find name 'foo'",
+		"script_id": "web:dev",
+		"timestamp": time.Now().Format(time.RFC3339Nano),
+	}
+	ue := alertMapToUnifiedError(am)
+	require.NotNil(t, ue)
+	assert.Equal(t, "process:web:dev", ue.Source)
+	assert.Equal(t, "COMPILE ERROR", ue.Category)
+	assert.Contains(t, ue.Message, "TS2304")
+}

@@ -293,41 +293,70 @@ func (dt *DaemonTools) collectProcessAlerts(processID, since string) ([]unifiedE
 		if !ok {
 			continue
 		}
-
-		severity := getString(am, "severity")
-		level := "error"
-		if severity == "warning" || severity == "info" {
-			level = "warning"
+		if ue := alertMapToUnifiedError(am); ue != nil {
+			errors = append(errors, *ue)
 		}
-
-		scriptID := getString(am, "script_id")
-		source := "process:" + scriptID
-		category := strings.ToUpper(getString(am, "category"))
-		if category == "" {
-			category = "PROCESS ERROR"
-		}
-
-		description := getString(am, "description")
-		line := getString(am, "line")
-		ts := getTime(am, "timestamp")
-
-		// Use the matched line as message, falling back to description
-		message := line
-		if message == "" {
-			message = description
-		}
-
-		errors = append(errors, unifiedError{
-			Source:   source,
-			Severity: level,
-			Category: category,
-			Message:  message,
-			LastSeen: ts,
-			Count:    1,
-		})
 	}
 
 	return errors, nil
+}
+
+// alertMapToUnifiedError converts a raw daemon AlertEntry JSON map into a
+// unifiedError. Kept separate from collectProcessAlerts so it can be
+// tested without a live daemon client.
+//
+// Process-lifecycle entries (category "process_lifecycle") get special
+// handling: the category is rendered as "PROCESS LIFECYCLE" for the
+// compact output, and the description is prepended to the message so
+// agents see the exit-code summary plus the stderr tail.
+func alertMapToUnifiedError(am map[string]interface{}) *unifiedError {
+	severity := getString(am, "severity")
+	level := "error"
+	if severity == "warning" || severity == "info" {
+		level = "warning"
+	}
+
+	scriptID := getString(am, "script_id")
+	source := "process:" + scriptID
+
+	rawCategory := getString(am, "category")
+	category := strings.ToUpper(rawCategory)
+	if category == "" {
+		category = "PROCESS ERROR"
+	}
+	// Humanise snake_case categories. The daemon uses "process_lifecycle"
+	// for exit events; compact output reads cleaner as "PROCESS LIFECYCLE".
+	if strings.Contains(category, "_") {
+		category = strings.ReplaceAll(category, "_", " ")
+	}
+
+	description := getString(am, "description")
+	line := getString(am, "line")
+	ts := getTime(am, "timestamp")
+
+	// For lifecycle entries the description carries the exit summary
+	// ("process X exited (code 1, reason crash, uptime 12m34s)") and the
+	// line carries the stderr tail that explains WHY. Combine both so
+	// the agent gets the full picture in one entry.
+	message := line
+	if rawCategory == "process_lifecycle" && description != "" {
+		if message == "" || message == description {
+			message = description
+		} else {
+			message = description + " — " + message
+		}
+	} else if message == "" {
+		message = description
+	}
+
+	return &unifiedError{
+		Source:   source,
+		Severity: level,
+		Category: category,
+		Message:  message,
+		LastSeen: ts,
+		Count:    1,
+	}
 }
 
 // collectStartupErrors queries the daemon startup log for error-level entries.

@@ -231,6 +231,13 @@ func (d *Daemon) hubHandleRun(ctx context.Context, conn *hubpkg.Connection, cmd 
 
 	proc := result.Process
 
+	// Register process-death watcher so proc status / get_errors surface
+	// the exit when this process dies. Skip if we reused an existing
+	// process — it already has a watcher from the original start.
+	if !result.Reused {
+		d.watchProcessExit(proc)
+	}
+
 	// Auto-restart is only active when explicitly enabled via .agnt.kdl
 	// `auto-restart true` or PROC AUTORESTART ENABLE. No longer auto-registered
 	// for background processes — users restart manually from the overlay.
