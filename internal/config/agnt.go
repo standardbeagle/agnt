@@ -39,6 +39,40 @@ type AgntConfig struct {
 
 	// Alerts configuration for process output monitoring
 	Alerts *AlertsConfig `kdl:"alerts"`
+
+	// Session lifecycle configuration (daemon-side cleanup policies)
+	Session *SessionConfig `kdl:"session"`
+}
+
+// SessionConfig controls daemon-side session lifecycle behaviors.
+//
+// The daemon reads this at startup to decide which cleanup steps run.
+// Every field must stay optional so a project with no `session {}` block
+// still gets sensible defaults from DefaultAgntConfig().
+type SessionConfig struct {
+	// OrphanPGIDScan controls whether daemon startup scans /proc for
+	// orphaned POSIX process groups (pgid leader dead, members still
+	// running) and kills them. Defaults to true.
+	//
+	// This handles the case where the daemon crashed or was restarted
+	// mid-session: the SessionRegistry is lost so slice-A session-pgid
+	// tracking cannot fire on cleanup. The startup scan is the crash-
+	// recovery fallback.
+	//
+	// Set to false to disable if the scan is interfering with other
+	// long-running session leaders on the system (e.g. a tmux session
+	// daemon that shares a pgid layout the scan cannot distinguish).
+	OrphanPGIDScan *bool `kdl:"orphan-pgid-scan"`
+}
+
+// OrphanPGIDScanEnabled returns whether orphaned-pgid scanning is enabled
+// at daemon startup. Defaults to true when the SessionConfig block is
+// absent or the field is unset.
+func (c *SessionConfig) OrphanPGIDScanEnabled() bool {
+	if c == nil || c.OrphanPGIDScan == nil {
+		return true
+	}
+	return *c.OrphanPGIDScan
 }
 
 // AgntProjectMeta contains optional project metadata in .agnt.kdl.

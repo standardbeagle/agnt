@@ -498,6 +498,15 @@ func (d *Daemon) Start() error {
 	// child/zombie processes still hold the ports.
 	d.startupPortCleanup(d.ctx)
 
+	// Scan /proc for orphaned POSIX process groups whose leader PID is
+	// dead but whose members are still running. These are leftovers from
+	// a daemon crash mid-session: the session-pgid tracker from Slice A
+	// was in memory, so it could not fire. No project path is known yet
+	// at daemon startup -- the scan runs with default config (enabled).
+	// Per-project overrides via session.orphan-pgid-scan still apply if
+	// the daemon is later reinvoked with a projectPath.
+	d.startupOrphanPGIDScan("")
+
 	// Restore proxies from persisted state
 	d.restoreProxies()
 
