@@ -1,8 +1,10 @@
 {
-  "status": "running",
+  "status": "completed",
   "iterations": 6,
   "spawns": 6,
   "started_at": "2026-04-13T19:56:00Z",
+  "completed_at": "2026-04-14T01:45:00Z",
+  "stop_reason": "no actionable tasks remain on Personal/agnt (6/6 completed)",
   "last_iteration_at": "2026-04-14T01:05:00Z",
   "loop_task_id": "rGfTFSiXDhCt",
   "dartboard": "Personal/agnt",
