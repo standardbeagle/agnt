@@ -1,5 +1,23 @@
 //go:build windows
 
+// PATCH: agnt/7YAvGz5W7l5u
+//
+// Upstream go-cli-server v0.3.8 calls findAllDescendants(pid) from
+// lifecycle.go:snapshotDescendants (not build-tagged), but the function is
+// only defined in lifecycle_unix.go (//go:build !windows). This breaks
+// `GOOS=windows GOARCH=amd64 go build ./...`.
+//
+// We add a Windows stub that returns nil. This is semantically correct:
+// Windows process-tree cleanup goes through Job Objects
+// (TerminateJobObject kills the entire tree atomically), so the caller's
+// descendant snapshot path is a no-op on Windows anyway.
+//
+// If `go mod vendor` re-clobbers this file, restore the patch by re-adding
+// both this comment block and the findAllDescendants stub below, or update
+// go-cli-server to a version that includes the upstream fix and drop the
+// patch. See PATCHES.md at the repo root for the full list of vendor
+// patches.
+
 package process
 
 import (
@@ -202,6 +220,14 @@ func isNoSuchProcess(err error) bool {
 // getProcessGroupID returns the process group ID for a given PID.
 func getProcessGroupID(pid int) int {
 	return pid
+}
+
+// findAllDescendants returns all descendant PIDs of pid. On Windows this is
+// a no-op: process-tree cleanup is handled by Job Objects, so the caller's
+// snapshot path has nothing useful to do. See the PATCH comment at the top
+// of this file for background.
+func findAllDescendants(pid int) []int {
+	return nil
 }
 
 // cleanupProcessTree forcefully terminates a process and its job-object tree.
