@@ -84,6 +84,14 @@ type ProcOutput struct {
 	Summary   string `json:"summary,omitempty"`
 	ExitCode  int    `json:"exit_code,omitempty"`
 	Runtime   string `json:"runtime,omitempty"`
+	// Last known death record — populated when the process has exited
+	// (cleanly or via crash/signal) within the retention window. Lets the
+	// agent tell "never started" from "started and died at T".
+	LastExitAt     string `json:"last_exit_at,omitempty"`
+	LastExitCode   *int   `json:"last_exit_code,omitempty"`
+	LastExitReason string `json:"last_exit_reason,omitempty"` // "stopped" | "crash" | "signal"
+	LastUptime     string `json:"last_uptime,omitempty"`
+	LastStderrTail string `json:"last_stderr_tail,omitempty"`
 	// For output
 	Output    string `json:"output,omitempty"`
 	Lines     int    `json:"lines,omitempty"`
@@ -110,6 +118,12 @@ type ProcEntry struct {
 	Runtime     string `json:"runtime"`
 	ProjectPath string `json:"project_path,omitempty"`
 	ScriptName  string `json:"script_name,omitempty"`
+	// Last known death record — see ProcOutput for field semantics.
+	LastExitAt     string `json:"last_exit_at,omitempty"`
+	LastExitCode   *int   `json:"last_exit_code,omitempty"`
+	LastExitReason string `json:"last_exit_reason,omitempty"`
+	LastUptime     string `json:"last_uptime,omitempty"`
+	LastStderrTail string `json:"last_stderr_tail,omitempty"`
 }
 
 // RegisterProcessTools adds process-related MCP tools to the server.

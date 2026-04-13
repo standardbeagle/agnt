@@ -392,6 +392,7 @@ func (d *Daemon) startScriptWithRetry(
 	}
 	startupErr := d.monitorStartupFailure(ctx, proc, expectedPort, 3*time.Second)
 	if startupErr == nil {
+		d.watchProcessExit(proc)
 		return proc, nil
 	}
 
@@ -489,6 +490,7 @@ func (d *Daemon) startScriptWithRetry(
 		Message:   fmt.Sprintf("successfully recovered from EADDRINUSE"),
 		Timestamp: time.Now(),
 	})
+	d.watchProcessExit(proc)
 	return proc, nil
 }
 

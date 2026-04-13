@@ -178,6 +178,7 @@ type Daemon struct {
 	automator         *automation.Processor
 	autoRestarter     *ProcessAutoRestarter // Process auto-restart manager
 	alertStore        *ProcessAlertStore    // Ring buffer store for process output alerts
+	processExitInfo   *processExitInfoStore // In-memory death records (proc status + get_errors)
 	startupErrorStore *StartupLogStore      // Ring buffer for startup events
 	alertHub          *AlertHub             // Routes alerts to overlay/MCP/stream sinks
 	scriptRegistry    *script.Registry      // Per-script state that persists across process restarts
@@ -289,6 +290,7 @@ func New(config DaemonConfig) *Daemon {
 		sessionm:          chromedp.NewSessionManager(),
 		storem:            store.NewStoreManager(),
 		alertStore:        NewProcessAlertStore(500),
+		processExitInfo:   newProcessExitInfoStore(defaultExitInfoRetention),
 		startupErrorStore: NewStartupLogStore(100),
 		alertHub:          NewAlertHub(),
 		scriptRegistry:    script.NewRegistry(),

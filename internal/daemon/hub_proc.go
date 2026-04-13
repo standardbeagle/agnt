@@ -82,6 +82,12 @@ func (d *Daemon) hubHandleProcStatus(ctx context.Context, conn *hubpkg.Connectio
 		resp["exit_code"] = proc.ExitCode()
 	}
 
+	// Surface the last known death record so a simple status call
+	// reveals "never started" vs "died at T with code C".
+	if info, ok := d.processExitInfo.Get(processID); ok {
+		exitInfoToResponse(resp, info)
+	}
+
 	// Add URLs from URL tracker
 	if urls := d.urlTracker.GetURLs(processID); len(urls) > 0 {
 		resp["urls"] = urls
@@ -295,6 +301,11 @@ func (d *Daemon) hubHandleProcList(ctx context.Context, conn *hubpkg.Connection,
 		// Add URLs from URL tracker
 		if urls := d.urlTracker.GetURLs(p.ID); len(urls) > 0 {
 			entry["urls"] = urls
+		}
+		// Surface death records inline so proc list shows dead processes
+		// at a glance.
+		if info, ok := d.processExitInfo.Get(p.ID); ok {
+			exitInfoToResponse(entry, info)
 		}
 		// Check for rogue process using the same port
 		if rogueInfo := d.detectRogueProcess(ctx, p); rogueInfo != nil && rogueInfo.HasWarning {

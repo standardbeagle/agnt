@@ -181,13 +181,20 @@ func (dt *DaemonTools) handleProcStatus(input ProcInput) (*mcp.CallToolResult, P
 		return formatDaemonError(err, "proc"), ProcOutput{}, nil
 	}
 
-	return nil, ProcOutput{
+	out := ProcOutput{
 		ProcessID: getString(result, "process_id"),
 		State:     getString(result, "state"),
 		Summary:   getString(result, "summary"),
 		ExitCode:  getInt(result, "exit_code"),
 		Runtime:   getString(result, "runtime"),
-	}, nil
+	}
+	// ProcStatus uses "id" in the daemon response; fall back to it when
+	// process_id is empty (both fields are populated by the daemon).
+	if out.ProcessID == "" {
+		out.ProcessID = getString(result, "id")
+	}
+	populateLastExitFields(&out, result)
+	return nil, out, nil
 }
 
 func (dt *DaemonTools) handleProcOutput(input ProcInput) (*mcp.CallToolResult, ProcOutput, error) {
@@ -337,6 +344,7 @@ func (dt *DaemonTools) handleProcList(input ProcInput) (*mcp.CallToolResult, Pro
 				if idx := strings.Index(id, ":"); idx >= 0 {
 					entry.ScriptName = id[idx+1:]
 				}
+				populateLastExitFieldsEntry(&entry, pm)
 				output.Processes = append(output.Processes, entry)
 			}
 		}
@@ -511,4 +519,52 @@ func resolveKDLScript(projectPath, scriptName string, extraArgs []string) (strin
 		pm = "npm"
 	}
 	return pm, append([]string{"run", scriptName}, extraArgs...), nil
+}
+
+// populateLastExitFields copies last-exit fields from a daemon response
+// map onto a ProcOutput. Uses pointer-to-int for LastExitCode so a real
+// zero exit code (clean shutdown) is distinguishable from "field absent".
+func populateLastExitFields(out *ProcOutput, resp map[string]interface{}) {
+	if out == nil || resp == nil {
+		return
+	}
+	if at := getString(resp, "last_exit_at"); at != "" {
+		out.LastExitAt = at
+	}
+	if _, ok := resp["last_exit_code"]; ok {
+		code := getInt(resp, "last_exit_code")
+		out.LastExitCode = &code
+	}
+	if reason := getString(resp, "last_exit_reason"); reason != "" {
+		out.LastExitReason = reason
+	}
+	if uptime := getString(resp, "last_uptime"); uptime != "" {
+		out.LastUptime = uptime
+	}
+	if tail := getString(resp, "last_stderr_tail"); tail != "" {
+		out.LastStderrTail = tail
+	}
+}
+
+// populateLastExitFieldsEntry is the per-entry variant for proc list.
+func populateLastExitFieldsEntry(entry *ProcEntry, resp map[string]interface{}) {
+	if entry == nil || resp == nil {
+		return
+	}
+	if at := getString(resp, "last_exit_at"); at != "" {
+		entry.LastExitAt = at
+	}
+	if _, ok := resp["last_exit_code"]; ok {
+		code := getInt(resp, "last_exit_code")
+		entry.LastExitCode = &code
+	}
+	if reason := getString(resp, "last_exit_reason"); reason != "" {
+		entry.LastExitReason = reason
+	}
+	if uptime := getString(resp, "last_uptime"); uptime != "" {
+		entry.LastUptime = uptime
+	}
+	if tail := getString(resp, "last_stderr_tail"); tail != "" {
+		entry.LastStderrTail = tail
+	}
 }
