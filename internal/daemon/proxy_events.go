@@ -303,12 +303,33 @@ func (d *Daemon) FlushScriptProxyConnections(scriptID string) {
 }
 
 // trackScriptProxy records a script -> proxy association.
+//
+// Maintains both the forward index (scriptID → []proxyID, used to clean up
+// proxies on script stop) and the reverse index (proxyID → scriptID, used
+// by the health tracker to look up the linked process for suppression
+// decisions on every proxy log entry).
 func (d *Daemon) trackScriptProxy(scriptID, proxyID string) {
 	d.scriptProxyMu.Lock()
 	defer d.scriptProxyMu.Unlock()
 
 	d.scriptProxies[scriptID] = append(d.scriptProxies[scriptID], proxyID)
+	if d.proxyToScript == nil {
+		d.proxyToScript = make(map[string]string)
+	}
+	d.proxyToScript[proxyID] = scriptID
 	debug.Log("daemon", "Tracked proxy %s for script %s", proxyID, scriptID)
+}
+
+// linkedScriptForProxy returns the script ID a proxy is linked to, or
+// empty string for unlinked proxies. Lock-free for hot-path callers when
+// the entry already exists, taking only an RLock for the lookup.
+func (d *Daemon) linkedScriptForProxy(proxyID string) string {
+	d.scriptProxyMu.RLock()
+	defer d.scriptProxyMu.RUnlock()
+	if d.proxyToScript == nil {
+		return ""
+	}
+	return d.proxyToScript[proxyID]
 }
 
 // getProxiesForScript returns all proxy IDs for a script.
@@ -324,11 +345,25 @@ func (d *Daemon) getProxiesForScript(scriptID string) []string {
 }
 
 // clearScriptProxies removes all proxy tracking for a script.
+//
+// Drops both the forward index entry and any reverse index entries for
+// proxies owned by the script. Also instructs the health tracker to
+// forget the script so it does not retain a stale lastHealthyAt entry
+// for a process that no longer exists.
 func (d *Daemon) clearScriptProxies(scriptID string) {
 	d.scriptProxyMu.Lock()
-	defer d.scriptProxyMu.Unlock()
-
+	proxyIDs := d.scriptProxies[scriptID]
 	delete(d.scriptProxies, scriptID)
+	if d.proxyToScript != nil {
+		for _, proxyID := range proxyIDs {
+			delete(d.proxyToScript, proxyID)
+		}
+	}
+	d.scriptProxyMu.Unlock()
+
+	if d.healthTracker != nil {
+		d.healthTracker.Forget(scriptID)
+	}
 	debug.Log("daemon", "Cleared proxy tracking for script %s", scriptID)
 }
 
