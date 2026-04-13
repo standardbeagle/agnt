@@ -16,7 +16,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-	"unsafe"
 
 	"github.com/aymanbagabas/go-pty"
 	"github.com/spf13/cobra"
@@ -26,6 +25,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/overlay"
 	"github.com/standardbeagle/agnt/internal/pathutil"
+	"github.com/standardbeagle/agnt/internal/platform"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"golang.org/x/sys/windows"
 	"golang.org/x/term"
@@ -337,15 +337,41 @@ func runWithConPTY(ctx context.Context, args []string, socketPath string, sessio
 	}
 	stopSpinner()
 
-	// Create a Job Object so all child processes are killed when agnt exits.
-	// Without this, grandchild processes (dev servers, npm, etc.) survive.
-	jobHandle, err := createJobObject()
+	// Create a Job Object so all child processes are killed when agnt
+	// exits. Without this, grandchild processes (dev servers, npm,
+	// etc.) survive. The handle is also reported to the daemon as
+	// SessionJobHandle so explicit `SESSION UNREGISTER` cleanup can
+	// call TerminateJobObject immediately rather than waiting for the
+	// agnt process exit to fire JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.
+	//
+	// Uses platform.CreateSessionJobObject / AssignPIDToSessionJob so
+	// the Unix pgid path and Windows job-object path share a single
+	// cross-platform API surface (see internal/platform/sessionjob_*).
+	var sessionJobHandle uint64
+	jobHandle, err := platform.CreateSessionJobObject()
 	if err != nil {
-		debug.Warn("job", "failed to create job object: %v", err)
+		// Surface the failure both to the debug log file AND to
+		// stderr so the user sees it before the PTY takes over the
+		// terminal — silent-failure prohibition (see
+		// .claude/rules/daemon-architecture.md). Without the job
+		// object, grandchild dev servers can survive `agnt run`
+		// termination, which is the exact bug Slice C exists to
+		// prevent.
+		debug.Warn("job", "failed to create session job object: %v", err)
+		fmt.Fprintf(os.Stderr, "warning: failed to create session job object: %v (child processes may survive agnt exit)\n", err)
 	} else {
 		defer windows.CloseHandle(jobHandle)
-		if err := assignProcessToJob(jobHandle, cmd.Process.Pid); err != nil {
-			debug.Warn("job", "failed to assign process to job: %v", err)
+		if err := platform.AssignPIDToSessionJob(jobHandle, cmd.Process.Pid); err != nil {
+			debug.Warn("job", "failed to assign PTY child to session job: %v", err)
+			fmt.Fprintf(os.Stderr, "warning: failed to assign PTY child to session job: %v\n", err)
+		} else {
+			// Only publish the handle to the daemon if assignment
+			// succeeded. An empty job (created but no process
+			// assigned) has no containment value — reporting it
+			// would cause the daemon to call TerminateJobObject on
+			// a job with nothing in it, which succeeds trivially
+			// and misleadingly.
+			sessionJobHandle = uint64(jobHandle)
 		}
 	}
 
@@ -377,13 +403,14 @@ func runWithConPTY(ctx context.Context, args []string, socketPath string, sessio
 	// Use ResilientClient for automatic reconnection with overlay re-registration
 	daemonSocketPath, _ := rootCmd.Flags().GetString("socket")
 	daemonHandle := startDaemonSession(ctx, daemonSessionConfig{
-		SessionCode:     sessionCode,
-		OverlayEndpoint: netOverlay.SocketPath(),
-		ProjectPath:     projectPath,
-		Command:         command,
-		CmdArgs:         cmdArgs,
-		SocketPath:      daemonSocketPath,
-		SkipAutostart:   skipAutostart,
+		SessionCode:      sessionCode,
+		OverlayEndpoint:  netOverlay.SocketPath(),
+		ProjectPath:      projectPath,
+		Command:          command,
+		CmdArgs:          cmdArgs,
+		SocketPath:       daemonSocketPath,
+		SkipAutostart:    skipAutostart,
+		SessionJobHandle: sessionJobHandle,
 	})
 	defer daemonHandle.Close()
 
@@ -705,49 +732,10 @@ func cleanupTerminal(height int) {
 	fmt.Fprintf(os.Stdout, "\x1b[%d;1H", height)
 }
 
-// createJobObject creates a Windows Job Object configured to kill all assigned
-// processes when the handle is closed. This is the Windows equivalent of Unix
-// process groups for ensuring child process cleanup.
-func createJobObject() (windows.Handle, error) {
-	job, err := windows.CreateJobObject(nil, nil)
-	if err != nil {
-		return 0, fmt.Errorf("CreateJobObject: %w", err)
-	}
-
-	info := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{
-		BasicLimitInformation: windows.JOBOBJECT_BASIC_LIMIT_INFORMATION{
-			LimitFlags: windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-		},
-	}
-
-	_, err = windows.SetInformationJobObject(
-		job,
-		windows.JobObjectExtendedLimitInformation,
-		uintptr(unsafe.Pointer(&info)),
-		uint32(unsafe.Sizeof(info)),
-	)
-	if err != nil {
-		windows.CloseHandle(job)
-		return 0, fmt.Errorf("SetInformationJobObject: %w", err)
-	}
-
-	return job, nil
-}
-
-// assignProcessToJob assigns a process (by PID) to a Job Object.
-func assignProcessToJob(job windows.Handle, pid int) error {
-	proc, err := windows.OpenProcess(
-		windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE,
-		false,
-		uint32(pid),
-	)
-	if err != nil {
-		return fmt.Errorf("OpenProcess(%d): %w", pid, err)
-	}
-	defer windows.CloseHandle(proc)
-
-	return windows.AssignProcessToJobObject(job, proc)
-}
+// createJobObject / assignProcessToJob were moved to
+// internal/platform/sessionjob_windows.go so the same API surface is
+// usable from daemon cleanup code without import cycles. See
+// platform.CreateSessionJobObject and platform.AssignPIDToSessionJob.
 
 // isClaudeCommand checks if the command appears to be Claude Code.
 func isClaudeCommand(command string) bool {

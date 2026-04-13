@@ -59,10 +59,11 @@ func (d *Daemon) hubHandleSession(ctx context.Context, conn *hubpkg.Connection, 
 // return both the unnormalized original project path (which
 // RunAutostartAsync needs) and the fully-built Session struct.
 type sessionRegisterMetadata struct {
-	ProjectPath string   `json:"project_path"`
-	Command     string   `json:"command"`
-	Args        []string `json:"args"`
-	SessionPGID int      `json:"session_pgid,omitempty"`
+	ProjectPath      string   `json:"project_path"`
+	Command          string   `json:"command"`
+	Args             []string `json:"args"`
+	SessionPGID      int      `json:"session_pgid,omitempty"`
+	SessionJobHandle uint64   `json:"session_job_handle,omitempty"`
 }
 
 // parseSessionRegisterArgs validates the SESSION REGISTER command and
@@ -83,15 +84,16 @@ func parseSessionRegisterArgs(cmd *hubproto.Command) (*Session, sessionRegisterM
 
 	now := time.Now()
 	session := &Session{
-		Code:        code,
-		OverlayPath: overlayPath,
-		ProjectPath: normalizePath(metadata.ProjectPath),
-		Command:     metadata.Command,
-		Args:        metadata.Args,
-		StartedAt:   now,
-		Status:      SessionStatusActive,
-		LastSeen:    now,
-		SessionPGID: metadata.SessionPGID,
+		Code:             code,
+		OverlayPath:      overlayPath,
+		ProjectPath:      normalizePath(metadata.ProjectPath),
+		Command:          metadata.Command,
+		Args:             metadata.Args,
+		StartedAt:        now,
+		Status:           SessionStatusActive,
+		LastSeen:         now,
+		SessionPGID:      metadata.SessionPGID,
+		SessionJobHandle: metadata.SessionJobHandle,
 	}
 	return session, metadata, nil
 }
@@ -196,13 +198,19 @@ func (d *Daemon) hubHandleSessionRegister(conn *hubpkg.Connection, cmd *hubproto
 	if err := d.sessionRegistry.Register(session); err != nil {
 		// Session already exists — this is a re-registration (reconnect).
 		// Cancel any pending cleanup from the old connection and update LastSeen.
-		// Refresh SessionPGID in case the client restarted with a new leader.
+		// Refresh SessionPGID and SessionJobHandle in case the client
+		// restarted with a new leader / rebuilt its job object.
 		d.cancelPendingCleanup(session.Code)
 		if existing, ok := d.sessionRegistry.Get(session.Code); ok {
 			existing.UpdateLastSeen()
-			if session.SessionPGID > 0 {
+			if session.SessionPGID > 0 || session.SessionJobHandle != 0 {
 				existing.mu.Lock()
-				existing.SessionPGID = session.SessionPGID
+				if session.SessionPGID > 0 {
+					existing.SessionPGID = session.SessionPGID
+				}
+				if session.SessionJobHandle != 0 {
+					existing.SessionJobHandle = session.SessionJobHandle
+				}
 				existing.mu.Unlock()
 			}
 		}
