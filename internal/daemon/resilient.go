@@ -739,10 +739,18 @@ func (rc *ResilientClient) SessionRegister(code, overlayPath, projectPath, comma
 // process group ID of the PTY child (the session leader). See Client's
 // equivalent method for details.
 func (rc *ResilientClient) SessionRegisterWithPGID(code, overlayPath, projectPath, command string, args []string, sessionPGID int) (map[string]interface{}, error) {
+	return rc.SessionRegisterWithContainment(code, overlayPath, projectPath, command, args, sessionPGID, 0)
+}
+
+// SessionRegisterWithContainment registers a new session and reports
+// both the Unix session pgid and the Windows Job Object handle for the
+// PTY child subtree. See Client.SessionRegisterWithContainment for
+// platform semantics.
+func (rc *ResilientClient) SessionRegisterWithContainment(code, overlayPath, projectPath, command string, args []string, sessionPGID int, sessionJobHandle uint64) (map[string]interface{}, error) {
 	var result map[string]interface{}
 	err := rc.WithClient(func(c *Client) error {
 		var e error
-		result, e = c.SessionRegisterWithPGID(code, overlayPath, projectPath, command, args, sessionPGID)
+		result, e = c.SessionRegisterWithContainment(code, overlayPath, projectPath, command, args, sessionPGID, sessionJobHandle)
 		return e
 	})
 	return result, err

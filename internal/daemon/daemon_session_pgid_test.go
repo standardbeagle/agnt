@@ -132,3 +132,85 @@ func TestCleanupSessionResources_NoPGIDIsNoOp(t *testing.T) {
 		t.Fatal("session not unregistered after cleanup")
 	}
 }
+
+// TestSessionRegister_CarriesSessionJobHandle is the wire round-trip
+// guarantee for Slice C: the SessionJobHandle field must survive
+// client → protocol → hub handler → registry. On Unix (where this
+// test runs) the daemon-side killSessionJobObject path no-ops via the
+// platform stub, so this test asserts only the wire format — the
+// end-to-end kill behavior is exercised by the Windows-tagged
+// integration test in internal/platform/sessionjob_windows_test.go.
+func TestSessionRegister_CarriesSessionJobHandle(t *testing.T) {
+	d := newCleanupTestDaemon(t, 10*time.Millisecond)
+	tmpDir := t.TempDir()
+
+	client := NewClientWithPath(d.config.SocketPath)
+	defer client.Close()
+
+	const wantHandle uint64 = 0xDEADBEEFCAFEBABE
+	_, err := client.SessionRegisterWithContainment(
+		"job-wire", "/tmp/overlay.sock", tmpDir, "test", nil, 0, wantHandle,
+	)
+	require.NoError(t, err)
+
+	sess, ok := d.sessionRegistry.Get("job-wire")
+	require.True(t, ok, "session not registered")
+	sess.mu.RLock()
+	defer sess.mu.RUnlock()
+	if sess.SessionJobHandle != wantHandle {
+		t.Fatalf("session_job_handle round-trip failed: got 0x%x, want 0x%x",
+			sess.SessionJobHandle, wantHandle)
+	}
+}
+
+// TestCleanupSessionResources_NoJobHandleIsNoOp verifies that
+// cleanup does not panic when SessionJobHandle is zero — the Unix
+// path where the client never reports a job handle. This is the
+// default state for every non-Windows session and must remain a
+// no-op.
+func TestCleanupSessionResources_NoJobHandleIsNoOp(t *testing.T) {
+	d := newCleanupTestDaemon(t, 10*time.Millisecond)
+	tmpDir := t.TempDir()
+
+	require.NoError(t, d.sessionRegistry.Register(&Session{
+		Code:             "no-job",
+		ProjectPath:      tmpDir,
+		SessionJobHandle: 0, // explicit
+		StartedAt:        time.Now(),
+		Status:           SessionStatusActive,
+		LastSeen:         time.Now(),
+	}))
+
+	d.CleanupSessionResources("no-job")
+
+	if _, ok := d.sessionRegistry.Get("no-job"); ok {
+		t.Fatal("session not unregistered after cleanup")
+	}
+}
+
+// TestCleanupSessionResources_StaleJobHandleIsNoOpOnUnix verifies
+// that a stale or non-zero SessionJobHandle on Unix does not cause
+// cleanup to fail. The platform stub in sessionjob_other.go returns
+// nil unconditionally so even a garbage handle value must be safe.
+// This guards against accidentally calling Windows-specific APIs
+// from Unix code paths.
+func TestCleanupSessionResources_StaleJobHandleIsNoOpOnUnix(t *testing.T) {
+	d := newCleanupTestDaemon(t, 10*time.Millisecond)
+	tmpDir := t.TempDir()
+
+	require.NoError(t, d.sessionRegistry.Register(&Session{
+		Code:             "stale-job",
+		ProjectPath:      tmpDir,
+		SessionJobHandle: 0xDEADBEEF, // garbage — stub should ignore
+		StartedAt:        time.Now(),
+		Status:           SessionStatusActive,
+		LastSeen:         time.Now(),
+	}))
+
+	// Must not panic or error out.
+	d.CleanupSessionResources("stale-job")
+
+	if _, ok := d.sessionRegistry.Get("stale-job"); ok {
+		t.Fatal("session not unregistered after cleanup")
+	}
+}

@@ -194,9 +194,18 @@ type daemonSessionConfig struct {
 	// session leader). The daemon uses it at session cleanup time to
 	// reap every descendant the coding agent spawned via non-interactive
 	// bash (`npm run dev &` etc.) that the daemon has no explicit handle
-	// on. Zero on Windows (Job Object cleanup is handled out-of-band by
-	// run_windows.go) or when the caller cannot determine a pgid.
+	// on. Zero on Windows (Job Object cleanup is reported via
+	// SessionJobHandle instead) or when the caller cannot determine a
+	// pgid.
 	SessionPGID int
+	// SessionJobHandle is the Windows Job Object handle for the PTY
+	// child subtree. Windows equivalent of SessionPGID: every process
+	// assigned to this job (and its descendants) is killed when the
+	// job is terminated via platform.KillSessionJobObject. Stored as
+	// uint64 because windows.Handle is not available on non-Windows
+	// builds — the protocol-level JSON field is also uint64. Zero on
+	// Unix or when the caller cannot create a job.
+	SessionJobHandle uint64
 }
 
 // startDaemonSession starts daemon connection and session registration in a goroutine.
@@ -219,7 +228,7 @@ func startDaemonSession(ctx context.Context, cfg daemonSessionConfig) *daemonSes
 		// Re-register session when connection is restored after daemon restart.
 		// Session registration handles per-project overlay endpoint scoping.
 		config.OnReconnect = func(client *daemon.Client) error {
-			_, _ = client.SessionRegisterWithPGID(cfg.SessionCode, cfg.OverlayEndpoint, cfg.ProjectPath, cfg.Command, cfg.CmdArgs, cfg.SessionPGID)
+			_, _ = client.SessionRegisterWithContainment(cfg.SessionCode, cfg.OverlayEndpoint, cfg.ProjectPath, cfg.Command, cfg.CmdArgs, cfg.SessionPGID, cfg.SessionJobHandle)
 			return nil
 		}
 
@@ -229,7 +238,7 @@ func startDaemonSession(ctx context.Context, cfg daemonSessionConfig) *daemonSes
 		}
 
 		// Register session with daemon (autostart and overlay scoping happen server-side)
-		result, err := handle.client.SessionRegisterWithPGID(cfg.SessionCode, cfg.OverlayEndpoint, cfg.ProjectPath, cfg.Command, cfg.CmdArgs, cfg.SessionPGID)
+		result, err := handle.client.SessionRegisterWithContainment(cfg.SessionCode, cfg.OverlayEndpoint, cfg.ProjectPath, cfg.Command, cfg.CmdArgs, cfg.SessionPGID, cfg.SessionJobHandle)
 		if err != nil {
 			return
 		}

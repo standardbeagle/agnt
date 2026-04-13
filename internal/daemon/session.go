@@ -41,6 +41,23 @@ type Session struct {
 	// cleanup is handled separately) or when the client didn't report one.
 	SessionPGID int `json:"session_pgid,omitempty"`
 
+	// SessionJobHandle is the Windows Job Object handle for the PTY child
+	// subtree, reported by `agnt run` on Windows. The Windows equivalent
+	// of SessionPGID: every process assigned to this job (and its
+	// descendants) is killed when the job is terminated via
+	// platform.KillSessionJobObject. Zero on Unix or when the client
+	// didn't report one. Stored as uint64 because windows.Handle is not
+	// available outside the Windows build-tagged platform package.
+	//
+	// Caveat: job handles are per-process on Windows. This field is a
+	// best-effort hint for the daemon; the authoritative containment is
+	// JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE on the owning `agnt run`
+	// process. When the daemon IS the owner (shared process) or when
+	// the handle is still valid cross-process (e.g. via inheritance),
+	// explicit KillSessionJobObject at session cleanup accelerates
+	// teardown.
+	SessionJobHandle uint64 `json:"session_job_handle,omitempty"`
+
 	// Internal fields (not serialized)
 	mu sync.RWMutex
 }
@@ -77,15 +94,16 @@ func (s *Session) ToJSON() map[string]interface{} {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return map[string]interface{}{
-		"code":         s.Code,
-		"overlay_path": s.OverlayPath,
-		"project_path": s.ProjectPath,
-		"command":      s.Command,
-		"args":         s.Args,
-		"started_at":   s.StartedAt.Format(time.RFC3339),
-		"status":       string(s.Status),
-		"last_seen":    s.LastSeen.Format(time.RFC3339),
-		"session_pgid": s.SessionPGID,
+		"code":               s.Code,
+		"overlay_path":       s.OverlayPath,
+		"project_path":       s.ProjectPath,
+		"command":            s.Command,
+		"args":               s.Args,
+		"started_at":         s.StartedAt.Format(time.RFC3339),
+		"status":             string(s.Status),
+		"last_seen":          s.LastSeen.Format(time.RFC3339),
+		"session_pgid":       s.SessionPGID,
+		"session_job_handle": s.SessionJobHandle,
 	}
 }
 
@@ -342,26 +360,28 @@ func (s *Session) MarshalJSON() ([]byte, error) {
 	defer s.mu.RUnlock()
 
 	type sessionJSON struct {
-		Code        string   `json:"code"`
-		OverlayPath string   `json:"overlay_path"`
-		ProjectPath string   `json:"project_path"`
-		Command     string   `json:"command"`
-		Args        []string `json:"args"`
-		StartedAt   string   `json:"started_at"`
-		Status      string   `json:"status"`
-		LastSeen    string   `json:"last_seen"`
-		SessionPGID int      `json:"session_pgid,omitempty"`
+		Code             string   `json:"code"`
+		OverlayPath      string   `json:"overlay_path"`
+		ProjectPath      string   `json:"project_path"`
+		Command          string   `json:"command"`
+		Args             []string `json:"args"`
+		StartedAt        string   `json:"started_at"`
+		Status           string   `json:"status"`
+		LastSeen         string   `json:"last_seen"`
+		SessionPGID      int      `json:"session_pgid,omitempty"`
+		SessionJobHandle uint64   `json:"session_job_handle,omitempty"`
 	}
 
 	return json.Marshal(sessionJSON{
-		Code:        s.Code,
-		OverlayPath: s.OverlayPath,
-		ProjectPath: s.ProjectPath,
-		Command:     s.Command,
-		Args:        s.Args,
-		StartedAt:   s.StartedAt.Format(time.RFC3339),
-		Status:      string(s.Status),
-		LastSeen:    s.LastSeen.Format(time.RFC3339),
-		SessionPGID: s.SessionPGID,
+		Code:             s.Code,
+		OverlayPath:      s.OverlayPath,
+		ProjectPath:      s.ProjectPath,
+		Command:          s.Command,
+		Args:             s.Args,
+		StartedAt:        s.StartedAt.Format(time.RFC3339),
+		Status:           string(s.Status),
+		LastSeen:         s.LastSeen.Format(time.RFC3339),
+		SessionPGID:      s.SessionPGID,
+		SessionJobHandle: s.SessionJobHandle,
 	})
 }

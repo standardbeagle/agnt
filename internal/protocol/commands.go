@@ -162,11 +162,12 @@ type ChaosConfigPayload struct {
 // SessionRegisterConfig represents configuration for a SESSION REGISTER command.
 // This extends the base hub SessionRegisterConfig with agnt-specific fields.
 type SessionRegisterConfig struct {
-	OverlayPath string   `json:"overlay_path"`           // Unix socket path for overlay
-	ProjectPath string   `json:"project_path"`           // Directory where session was started
-	Command     string   `json:"command"`                // Command being run (e.g., "claude")
-	Args        []string `json:"args,omitempty"`         // Command arguments
-	SessionPGID int      `json:"session_pgid,omitempty"` // POSIX process group ID of the PTY child (session leader); 0 on Windows or when unavailable
+	OverlayPath      string   `json:"overlay_path"`                 // Unix socket path for overlay
+	ProjectPath      string   `json:"project_path"`                 // Directory where session was started
+	Command          string   `json:"command"`                      // Command being run (e.g., "claude")
+	Args             []string `json:"args,omitempty"`               // Command arguments
+	SessionPGID      int      `json:"session_pgid,omitempty"`       // POSIX process group ID of the PTY child (session leader); 0 on Windows or when unavailable
+	SessionJobHandle uint64   `json:"session_job_handle,omitempty"` // Windows Job Object handle for the PTY child subtree; 0 on Unix or when unavailable. Handles are per-process on Windows — this is a best-effort hint for daemon cleanup, not a stable cross-process identifier.
 }
 
 // SessionScheduleConfig represents configuration for a SESSION SCHEDULE command.

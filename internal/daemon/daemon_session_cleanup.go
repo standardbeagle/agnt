@@ -51,6 +51,49 @@ func (d *Daemon) killSessionPGID(session *Session) {
 	}
 }
 
+// killSessionJobObject is the Windows equivalent of killSessionPGID: it
+// terminates every process assigned to the PTY child's Job Object and
+// closes the handle. No-op on Unix (SessionJobHandle is always 0 — the
+// stub in platform/sessionjob_other.go returns nil) or when the client
+// didn't report a handle.
+//
+// This coexists with killSessionPGID at the dispatch level: on Unix
+// only pgid is active, on Windows only the job handle is active. Both
+// are called unconditionally from doCleanup because each no-ops on the
+// wrong platform.
+//
+// Handle lifetime caveat: Windows job handles are per-process. The
+// handle reported by `agnt run` is only valid in the daemon process if
+// the daemon and `agnt run` are the same process (unusual) or if the
+// handle has been duplicated explicitly across processes. In the
+// common case an explicit TerminateJobObject from the daemon will
+// fail with ERROR_INVALID_HANDLE — we log that as a warning but do
+// NOT treat it as fatal because the owning `agnt run` process still
+// has JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE as a backstop when its
+// handle is finally closed.
+func (d *Daemon) killSessionJobObject(session *Session) {
+	session.mu.RLock()
+	handle := session.SessionJobHandle
+	code := session.Code
+	session.mu.RUnlock()
+
+	if handle == 0 {
+		return
+	}
+
+	debug.Log("daemon", "session %s: terminating job object 0x%x", code, handle)
+
+	if err := platform.KillSessionJobObject(uintptr(handle)); err != nil {
+		debug.Warn("daemon", "session %s: TerminateJobObject(0x%x) failed: %v", code, handle, err)
+		d.startupErrorStore.Add(&StartupLogEntry{
+			Level:     "warning",
+			EventType: "session_job_kill_failed",
+			Message:   fmt.Sprintf("session %s: failed to terminate job 0x%x: %v", code, handle, err),
+			Timestamp: time.Now(),
+		})
+	}
+}
+
 func (d *Daemon) cleanupGracePeriod() time.Duration {
 	if d.config.CleanupGracePeriod > 0 {
 		return d.config.CleanupGracePeriod
@@ -134,21 +177,32 @@ func (d *Daemon) doCleanup(sessionCode string) {
 	projectPath := session.ProjectPath
 	if projectPath == "" {
 		debug.Log("daemon", "session %s has no project path, skipping resource cleanup", sessionCode)
-		d.killSessionPGID(session) // still try to reap descendants
+		// Still try to reap descendants on both platforms — the pgid
+		// path no-ops on Windows and the job path no-ops on Unix, so
+		// invoking both is always safe.
+		d.killSessionPGID(session)
+		d.killSessionJobObject(session)
 		d.sessionRegistry.Unregister(sessionCode)
 		return
 	}
 
 	debug.Log("daemon", "cleaning up resources for session %s (project: %s)", sessionCode, projectPath)
 
-	// Reap every process in the PTY child's session pgid BEFORE we touch
-	// managed processes or proxies. This catches background jobs the
-	// coding agent spawned through non-interactive bash (e.g.
-	// `npm run dev &`) that the daemon has no explicit handle on.
-	// Managed `proc run` children live in their own pgids and are
-	// stopped separately below via ProcessManager — losing this call
-	// would leak anything the agent started outside the daemon's view.
+	// Reap every process in the PTY child's session pgid / Job Object
+	// BEFORE we touch managed processes or proxies. This catches
+	// background jobs the coding agent spawned through non-interactive
+	// bash (e.g. `npm run dev &`) that the daemon has no explicit
+	// handle on. Managed `proc run` children live in their own pgids
+	// and are stopped separately below via ProcessManager — losing
+	// these calls would leak anything the agent started outside the
+	// daemon's view.
+	//
+	// Both calls are issued unconditionally: pgid cleanup no-ops on
+	// Windows (SessionPGID is always 0 there) and job-object cleanup
+	// no-ops on Unix (SessionJobHandle is always 0 there). The platform
+	// package's build-tagged stubs guarantee cross-platform safety.
 	d.killSessionPGID(session)
+	d.killSessionJobObject(session)
 
 	// Handle script ownership transfer or cleanup.
 	// Remove the session as observer first, then check ownership.

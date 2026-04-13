@@ -481,12 +481,25 @@ func (c *Client) SessionRegister(code string, overlayPath string, projectPath st
 // agent spawned via non-interactive bash. Pass 0 for the PGID on Windows
 // or when the caller has no pgid to share.
 func (c *Client) SessionRegisterWithPGID(code string, overlayPath string, projectPath string, command string, args []string, sessionPGID int) (map[string]interface{}, error) {
+	return c.SessionRegisterWithContainment(code, overlayPath, projectPath, command, args, sessionPGID, 0)
+}
+
+// SessionRegisterWithContainment registers a new session and reports
+// both the Unix session pgid and the Windows Job Object handle for the
+// PTY child subtree. Callers on Unix pass sessionPGID and 0 for
+// sessionJobHandle; callers on Windows pass 0 for sessionPGID and the
+// uint64 form of a windows.Handle for sessionJobHandle. The daemon
+// invokes whichever containment path matches the running OS at
+// cleanup time; both are safe no-ops when their corresponding field
+// is unset.
+func (c *Client) SessionRegisterWithContainment(code string, overlayPath string, projectPath string, command string, args []string, sessionPGID int, sessionJobHandle uint64) (map[string]interface{}, error) {
 	metadata := protocol.SessionRegisterConfig{
-		OverlayPath: overlayPath,
-		ProjectPath: projectPath,
-		Command:     command,
-		Args:        args,
-		SessionPGID: sessionPGID,
+		OverlayPath:      overlayPath,
+		ProjectPath:      projectPath,
+		Command:          command,
+		Args:             args,
+		SessionPGID:      sessionPGID,
+		SessionJobHandle: sessionJobHandle,
 	}
 	return c.conn.Request(protocol.VerbSession, protocol.SubVerbRegister, code, overlayPath).WithJSON(metadata).JSON()
 }
