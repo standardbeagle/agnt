@@ -729,10 +729,17 @@ func (rc *ResilientClient) BroadcastOutputPreview(lines []string, proxyIDs ...st
 
 // SessionRegister registers a new session with the daemon.
 func (rc *ResilientClient) SessionRegister(code, overlayPath, projectPath, command string, args []string) (map[string]interface{}, error) {
+	return rc.SessionRegisterWithPGID(code, overlayPath, projectPath, command, args, 0)
+}
+
+// SessionRegisterWithPGID registers a new session and reports the POSIX
+// process group ID of the PTY child (the session leader). See Client's
+// equivalent method for details.
+func (rc *ResilientClient) SessionRegisterWithPGID(code, overlayPath, projectPath, command string, args []string, sessionPGID int) (map[string]interface{}, error) {
 	var result map[string]interface{}
 	err := rc.WithClient(func(c *Client) error {
 		var e error
-		result, e = c.SessionRegister(code, overlayPath, projectPath, command, args)
+		result, e = c.SessionRegisterWithPGID(code, overlayPath, projectPath, command, args, sessionPGID)
 		return e
 	})
 	return result, err

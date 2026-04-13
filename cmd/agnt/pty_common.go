@@ -190,6 +190,13 @@ type daemonSessionConfig struct {
 	SocketPath        string
 	SkipAutostart     bool
 	HeartbeatInterval time.Duration
+	// SessionPGID is the POSIX process group ID of the PTY child (the
+	// session leader). The daemon uses it at session cleanup time to
+	// reap every descendant the coding agent spawned via non-interactive
+	// bash (`npm run dev &` etc.) that the daemon has no explicit handle
+	// on. Zero on Windows (Job Object cleanup is handled out-of-band by
+	// run_windows.go) or when the caller cannot determine a pgid.
+	SessionPGID int
 }
 
 // startDaemonSession starts daemon connection and session registration in a goroutine.
@@ -212,7 +219,7 @@ func startDaemonSession(ctx context.Context, cfg daemonSessionConfig) *daemonSes
 		// Re-register session when connection is restored after daemon restart.
 		// Session registration handles per-project overlay endpoint scoping.
 		config.OnReconnect = func(client *daemon.Client) error {
-			_, _ = client.SessionRegister(cfg.SessionCode, cfg.OverlayEndpoint, cfg.ProjectPath, cfg.Command, cfg.CmdArgs)
+			_, _ = client.SessionRegisterWithPGID(cfg.SessionCode, cfg.OverlayEndpoint, cfg.ProjectPath, cfg.Command, cfg.CmdArgs, cfg.SessionPGID)
 			return nil
 		}
 
@@ -222,7 +229,7 @@ func startDaemonSession(ctx context.Context, cfg daemonSessionConfig) *daemonSes
 		}
 
 		// Register session with daemon (autostart and overlay scoping happen server-side)
-		result, err := handle.client.SessionRegister(cfg.SessionCode, cfg.OverlayEndpoint, cfg.ProjectPath, cfg.Command, cfg.CmdArgs)
+		result, err := handle.client.SessionRegisterWithPGID(cfg.SessionCode, cfg.OverlayEndpoint, cfg.ProjectPath, cfg.Command, cfg.CmdArgs, cfg.SessionPGID)
 		if err != nil {
 			return
 		}

@@ -484,11 +484,19 @@ func (c *Client) ChaosListPresets() (map[string]interface{}, error) {
 
 // SessionRegister registers a new session with the daemon.
 func (c *Client) SessionRegister(code string, overlayPath string, projectPath string, command string, args []string) (map[string]interface{}, error) {
+	return c.SessionRegisterWithPGID(code, overlayPath, projectPath, command, args, 0)
+}
+
+// SessionRegisterWithPGID registers a new session and reports the POSIX
+// process group ID of the PTY child (the session leader). See the daemon
+// package's equivalent method for details.
+func (c *Client) SessionRegisterWithPGID(code string, overlayPath string, projectPath string, command string, args []string, sessionPGID int) (map[string]interface{}, error) {
 	metadata := protocol.SessionRegisterConfig{
 		OverlayPath: overlayPath,
 		ProjectPath: projectPath,
 		Command:     command,
 		Args:        args,
+		SessionPGID: sessionPGID,
 	}
 	return c.conn.Request(protocol.VerbSession, protocol.SubVerbRegister, code, overlayPath).WithJSON(metadata).JSON()
 }

@@ -33,6 +33,14 @@ type Session struct {
 	Status      SessionStatus `json:"status"`       // Current status
 	LastSeen    time.Time     `json:"last_seen"`    // Last heartbeat timestamp
 
+	// SessionPGID is the POSIX process group ID of the PTY child. The PTY
+	// child is started as its own session leader (via creack/pty's Setsid),
+	// so on Unix this equals the PTY child PID and identifies every process
+	// the coding agent spawned via non-interactive bash, including
+	// backgrounded `npm run dev &` style jobs. Zero on Windows (Job Object
+	// cleanup is handled separately) or when the client didn't report one.
+	SessionPGID int `json:"session_pgid,omitempty"`
+
 	// Internal fields (not serialized)
 	mu sync.RWMutex
 }
@@ -77,6 +85,7 @@ func (s *Session) ToJSON() map[string]interface{} {
 		"started_at":   s.StartedAt.Format(time.RFC3339),
 		"status":       string(s.Status),
 		"last_seen":    s.LastSeen.Format(time.RFC3339),
+		"session_pgid": s.SessionPGID,
 	}
 }
 
@@ -341,6 +350,7 @@ func (s *Session) MarshalJSON() ([]byte, error) {
 		StartedAt   string   `json:"started_at"`
 		Status      string   `json:"status"`
 		LastSeen    string   `json:"last_seen"`
+		SessionPGID int      `json:"session_pgid,omitempty"`
 	}
 
 	return json.Marshal(sessionJSON{
@@ -352,5 +362,6 @@ func (s *Session) MarshalJSON() ([]byte, error) {
 		StartedAt:   s.StartedAt.Format(time.RFC3339),
 		Status:      string(s.Status),
 		LastSeen:    s.LastSeen.Format(time.RFC3339),
+		SessionPGID: s.SessionPGID,
 	})
 }

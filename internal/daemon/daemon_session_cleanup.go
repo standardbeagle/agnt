@@ -3,15 +3,53 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/debug"
+	"github.com/standardbeagle/agnt/internal/platform"
 	"github.com/standardbeagle/go-cli-server/script"
 )
 
 // defaultCleanupGracePeriod is used when config has no explicit value.
 const defaultCleanupGracePeriod = 5 * time.Second
+
+// sessionPGIDGracePeriod is how long we give the PTY child session pgid
+// to respond to SIGTERM before escalating to SIGKILL. Kept short because
+// this fires AFTER the agnt run process has already exited — anything
+// still in the pgid at this point is an orphaned background job (e.g.
+// a `npm run dev &` the coding agent forgot to stop), not an interactive
+// process that might print a shutdown banner.
+const sessionPGIDGracePeriod = 2 * time.Second
+
+// killSessionPGID reaps every process that inherited the session pgid
+// from the PTY child. No-op on Windows (SessionPGID is always 0) or when
+// the client didn't report a pgid at registration time. Self-exclusion
+// protects the daemon process in the (defensive) case where they
+// accidentally share a pgid.
+func (d *Daemon) killSessionPGID(session *Session) {
+	session.mu.RLock()
+	pgid := session.SessionPGID
+	code := session.Code
+	session.mu.RUnlock()
+
+	if pgid <= 1 {
+		return
+	}
+
+	debug.Log("daemon", "session %s: killing pgid %d (grace=%s)", code, pgid, sessionPGIDGracePeriod)
+
+	if err := platform.KillSessionPGID(pgid, os.Getpid(), sessionPGIDGracePeriod, false); err != nil {
+		debug.Warn("daemon", "session %s: killpg(%d) failed: %v", code, pgid, err)
+		d.startupErrorStore.Add(&StartupLogEntry{
+			Level:     "warning",
+			EventType: "session_pgid_kill_failed",
+			Message:   fmt.Sprintf("session %s: failed to reap pgid %d: %v", code, pgid, err),
+			Timestamp: time.Now(),
+		})
+	}
+}
 
 func (d *Daemon) cleanupGracePeriod() time.Duration {
 	if d.config.CleanupGracePeriod > 0 {
@@ -96,11 +134,21 @@ func (d *Daemon) doCleanup(sessionCode string) {
 	projectPath := session.ProjectPath
 	if projectPath == "" {
 		debug.Log("daemon", "session %s has no project path, skipping resource cleanup", sessionCode)
+		d.killSessionPGID(session) // still try to reap descendants
 		d.sessionRegistry.Unregister(sessionCode)
 		return
 	}
 
 	debug.Log("daemon", "cleaning up resources for session %s (project: %s)", sessionCode, projectPath)
+
+	// Reap every process in the PTY child's session pgid BEFORE we touch
+	// managed processes or proxies. This catches background jobs the
+	// coding agent spawned through non-interactive bash (e.g.
+	// `npm run dev &`) that the daemon has no explicit handle on.
+	// Managed `proc run` children live in their own pgids and are
+	// stopped separately below via ProcessManager — losing this call
+	// would leak anything the agent started outside the daemon's view.
+	d.killSessionPGID(session)
 
 	// Handle script ownership transfer or cleanup.
 	// Remove the session as observer first, then check ownership.
