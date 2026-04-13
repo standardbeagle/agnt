@@ -62,6 +62,7 @@ type sessionRegisterMetadata struct {
 	ProjectPath string   `json:"project_path"`
 	Command     string   `json:"command"`
 	Args        []string `json:"args"`
+	SessionPGID int      `json:"session_pgid,omitempty"`
 }
 
 // parseSessionRegisterArgs validates the SESSION REGISTER command and
@@ -90,6 +91,7 @@ func parseSessionRegisterArgs(cmd *hubproto.Command) (*Session, sessionRegisterM
 		StartedAt:   now,
 		Status:      SessionStatusActive,
 		LastSeen:    now,
+		SessionPGID: metadata.SessionPGID,
 	}
 	return session, metadata, nil
 }
@@ -194,9 +196,15 @@ func (d *Daemon) hubHandleSessionRegister(conn *hubpkg.Connection, cmd *hubproto
 	if err := d.sessionRegistry.Register(session); err != nil {
 		// Session already exists — this is a re-registration (reconnect).
 		// Cancel any pending cleanup from the old connection and update LastSeen.
+		// Refresh SessionPGID in case the client restarted with a new leader.
 		d.cancelPendingCleanup(session.Code)
 		if existing, ok := d.sessionRegistry.Get(session.Code); ok {
 			existing.UpdateLastSeen()
+			if session.SessionPGID > 0 {
+				existing.mu.Lock()
+				existing.SessionPGID = session.SessionPGID
+				existing.mu.Unlock()
+			}
 		}
 	}
 

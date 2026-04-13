@@ -268,6 +268,21 @@ func runWithPTY(ctx context.Context, args []string, socketPath string, sessionCo
 		return fmt.Errorf("failed to start pty: %w", err)
 	}
 
+	// Capture the PTY child's pgid. creack/pty sets Setsid=true on the
+	// child, which makes the child both a new session leader and a new
+	// pgid leader — so the child's pgid equals its PID and identifies
+	// every process the coding agent spawns via non-interactive bash
+	// (including backgrounded jobs like `npm run dev &`). On session
+	// cleanup the daemon uses this pgid to reap orphans via killpg.
+	sessionPGID := 0
+	if c.Process != nil {
+		if pgid, err := syscall.Getpgid(c.Process.Pid); err == nil {
+			sessionPGID = pgid
+		} else {
+			debug.Warn("run", "getpgid(%d): %v (session pgid tracking disabled)", c.Process.Pid, err)
+		}
+	}
+
 	// Clear screen before child starts outputting to prevent visual artifacts
 	// from previous terminal content showing through
 	fmt.Fprint(os.Stdout, "\x1b[2J\x1b[H") // Clear screen + move cursor home
@@ -337,6 +352,7 @@ func runWithPTY(ctx context.Context, args []string, socketPath string, sessionCo
 		CmdArgs:         cmdArgs,
 		SocketPath:      daemonSocketPath,
 		SkipAutostart:   skipAutostart,
+		SessionPGID:     sessionPGID,
 	})
 	defer daemonHandle.Close()
 
