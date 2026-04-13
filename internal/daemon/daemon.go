@@ -201,7 +201,13 @@ type Daemon struct {
 	// Proxy event system
 	proxyEvents   chan ProxyEvent
 	scriptProxies map[string][]string // scriptID -> []proxyID
+	proxyToScript map[string]string   // proxyID -> scriptID (reverse index for suppression lookup)
 	scriptProxyMu sync.RWMutex
+
+	// healthTracker observes process state edges to drive proxy error
+	// stream suppression during rebuild/restart windows. See
+	// internal/daemon/health_tracker.go for the suppression contract.
+	healthTracker *HealthTracker
 
 	// Update checker
 	updateChecker *updater.UpdateChecker
@@ -286,9 +292,25 @@ func New(config DaemonConfig) *Daemon {
 		pidTracker:        pidTracker,
 		proxyEvents:       make(chan ProxyEvent, 10), // Buffer 10 events
 		scriptProxies:     make(map[string][]string),
+		proxyToScript:     make(map[string]string),
 		ctx:               ctx,
 		cancel:            cancel,
 	}
+
+	// HealthTracker is initialised after the struct so it can capture `d`
+	// in its lookup closures. Its emitDiagnostic routes back through the
+	// AlertHub directly so suppression markers always bypass the gate.
+	d.healthTracker = NewHealthTracker(
+		func(processID string) (*process.ManagedProcess, error) {
+			return d.hub.ProcessManager().Get(processID)
+		},
+		func(entry proxy.LogEntry, proxyID string) {
+			if d.alertHub == nil {
+				return
+			}
+			d.alertHub.BroadcastLogEntry(entry, proxyID)
+		},
+	)
 
 	// Autostart manager fans every progress event out to the alert hub so
 	// that monitor/MCP watch subscribers see real-time autostart phases.

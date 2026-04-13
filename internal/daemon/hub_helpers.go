@@ -253,11 +253,46 @@ func (d *Daemon) hubHandleDetect(ctx context.Context, conn *hubpkg.Connection, c
 
 // wireProxyLogger connects a proxy's traffic logger to the alert hub
 // so that log entries are broadcast to active stream sinks.
+//
+// The TrafficLogger ring buffer always receives the entry first (the
+// ring write happens upstream in TrafficLogger.LogEntry, before the
+// SetOnLogEntry callback runs), so `proxylog query` continues to surface
+// suppressed entries on demand.
+//
+// Suppression contract: when the proxy is linked to a process that is in
+// a transient/unhealthy state (Starting, Stopping, Failed, or within the
+// 5s grace window after returning to Running), the gate drops the
+// broadcast to the alert hub. See proxyBroadcastGate for the gate logic
+// and internal/daemon/health_tracker.go for the full state matrix.
 func (d *Daemon) wireProxyLogger(server *proxy.ProxyServer) {
 	if d.alertHub == nil {
 		return
 	}
+	proxyID := server.ID
 	server.Logger().SetOnLogEntry(func(entry proxy.LogEntry) {
-		d.alertHub.BroadcastLogEntry(entry, server.ID)
+		if !d.proxyBroadcastGate(proxyID, entry) {
+			return
+		}
+		d.alertHub.BroadcastLogEntry(entry, proxyID)
 	})
+}
+
+// proxyBroadcastGate returns true if entry should be forwarded to the
+// alert hub for proxyID, false if it should be suppressed. Diagnostic
+// entries always pass through (they're how the daemon communicates the
+// suppression state itself to the agent). Extracted from wireProxyLogger
+// so it can be unit-tested without spinning up a real ProxyServer.
+func (d *Daemon) proxyBroadcastGate(proxyID string, entry proxy.LogEntry) bool {
+	if entry.Type == proxy.LogTypeDiagnostic {
+		return true
+	}
+	linkedProcessID := d.linkedScriptForProxy(proxyID)
+	if d.healthTracker.IsInSuppressionWindow(proxyID, linkedProcessID) {
+		return false
+	}
+	// Just past the grace window — emit the close marker now (idempotent)
+	// so the agent sees suppression end at the same instant errors
+	// actually start flowing again.
+	d.healthTracker.MaybeCloseGraceWindow(proxyID, linkedProcessID)
+	return true
 }
