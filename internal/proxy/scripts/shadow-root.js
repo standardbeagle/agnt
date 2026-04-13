@@ -45,7 +45,16 @@
     // `all: initial` resets any host-page CSS targeting this id.
     // position:static + 0x0 keeps the host out of layout flow — the actual
     // UI is position:fixed inside the shadow root.
-    host.style.cssText = 'all: initial; position: static; width: 0; height: 0; pointer-events: none;';
+    //
+    // NOTE: do NOT set `pointer-events: none` on the host. When an ancestor
+    // has pointer-events:none, hit testing skips both it and any descendants
+    // whose pointer-events computes to the default `auto` — meaning the
+    // indicator bug, panel, and its buttons would all become unclickable and
+    // undraggable. The host is already 0x0 + position:static, so it cannot
+    // intercept clicks on its own; the defensive `pointer-events: none` was
+    // unnecessary AND caused a full regression of the indicator's click/drag
+    // affordances (DART-wV4wNZb8XWW3).
+    host.style.cssText = 'all: initial; position: static; width: 0; height: 0;';
 
     var root = document.documentElement || document.body;
     if (!root) {
