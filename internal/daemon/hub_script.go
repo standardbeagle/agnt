@@ -248,6 +248,9 @@ func (d *Daemon) hubHandleScriptRestart(ctx context.Context, conn *hubpkg.Connec
 		if d.autoRestarter != nil {
 			d.autoRestarter.Unregister(entry.ProcessID)
 		}
+		// Mark this stop as daemon-initiated so the OutageClassifier
+		// treats the upcoming outage as a Rebuild rather than a Crash.
+		d.healthTracker.MarkDaemonInitiatedStop(entry.ProcessID)
 		if stopErr := d.hub.ProcessManager().Stop(ctx, entry.ProcessID); stopErr != nil {
 			return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("failed to stop process: %v", stopErr))
 		}

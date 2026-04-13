@@ -341,18 +341,21 @@ func TestNilTracker_NeverSuppresses(t *testing.T) {
 // newGateDaemon builds a minimal Daemon struct around the supplied
 // process table so we can exercise proxyBroadcastGate without spinning
 // up the full hub. The fields touched by the gate are: alertHub (nil
-// here — gate never calls into it), healthTracker, scriptProxyMu, and
-// proxyToScript. Everything else stays zero-valued.
+// here — gate never calls into it), healthTracker, outageClassifier,
+// scriptProxyMu, and proxyToScript. Everything else stays zero-valued.
 func newGateDaemon(t *testing.T, table *procTable) (*Daemon, *trackerSpy, *fakeClock) {
 	t.Helper()
 	spy := &trackerSpy{}
 	clock := newFakeClock(time.Date(2026, 4, 12, 12, 0, 0, 0, time.UTC))
 	tracker := NewHealthTracker(table.lookup, spy.emit)
 	tracker.nowFn = clock.Now
+	classifier := NewOutageClassifier(tracker, table.lookup, spy.emit, func(string) string { return "" })
+	classifier.nowFn = clock.Now
 	d := &Daemon{
-		scriptProxies: make(map[string][]string),
-		proxyToScript: make(map[string]string),
-		healthTracker: tracker,
+		scriptProxies:    make(map[string][]string),
+		proxyToScript:    make(map[string]string),
+		healthTracker:    tracker,
+		outageClassifier: classifier,
 	}
 	return d, spy, clock
 }

@@ -72,6 +72,9 @@ func (d *Daemon) hubHandleRestartAll(ctx context.Context, conn *hubpkg.Connectio
 				Args:        p.Args,
 				ProjectPath: p.ProjectPath,
 			})
+			// Mark this stop as daemon-initiated so the OutageClassifier
+			// biases the imminent outage toward Rebuild rather than Crash.
+			d.healthTracker.MarkDaemonInitiatedStop(p.ID)
 		}
 	}
 
