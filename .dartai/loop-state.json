@@ -1,9 +1,9 @@
 {
   "status": "running",
-  "iterations": 1,
-  "spawns": 1,
+  "iterations": 2,
+  "spawns": 2,
   "started_at": "2026-04-13T19:56:00Z",
-  "last_iteration_at": "2026-04-13T20:25:00Z",
+  "last_iteration_at": "2026-04-13T22:40:00Z",
   "loop_task_id": "rGfTFSiXDhCt",
   "dartboard": "Personal/agnt",
   "runner_instance_id": "beagle-ab2-2098203",
@@ -28,6 +28,22 @@
       "fix_task_created": false,
       "fix_task_id": null,
       "slices_spun_off": ["eKsKJJqdpFXh", "AkhOhiZL8LRK", "g2jU4K9racxg"]
+    },
+    {
+      "task_id": "eKsKJJqdpFXh",
+      "iteration": 2,
+      "status": "completed",
+      "started_at": "2026-04-13T20:26:00Z",
+      "completed_at": "2026-04-13T22:40:00Z",
+      "phase_completed": "phase-9",
+      "failed_phase": null,
+      "files_changed": 7,
+      "tests_added": 10,
+      "plan_adjustments": 1,
+      "completion_summary": "Slice B: daemon startup now scans /proc for orphaned pgids (leader dead, members alive, uid-filtered) and reaps them via Slice A primitives; gated by session.orphan-pgid-scan config",
+      "failure_reason": null,
+      "fix_task_created": false,
+      "fix_task_id": null
     }
   ]
 }
