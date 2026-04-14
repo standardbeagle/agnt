@@ -10,7 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/protocol"
+	"github.com/standardbeagle/agnt/internal/proxy"
 )
 
 // TestHubIntegration_CommandDispatch verifies that commands are dispatched through Hub.
@@ -2534,6 +2536,170 @@ func TestDaemon_RunAutostart(t *testing.T) {
 
 	if err := client.Ping(); err != nil {
 		t.Fatalf("Ping failed after RunAutostart: %v", err)
+	}
+}
+
+// TestHubIntegration_FallbackPortCheck_EventLoopCreatesProxy verifies that
+// FallbackPortCheck events delivered through the daemon's proxyEvents channel
+// (the same channel scheduleFallbackPortChecks uses after the 30s timer) are
+// picked up by handleProxyEvents and result in a proxy being created.
+//
+// This is the end-to-end guard against the original bug where the event type
+// fell through to the `default` branch of the switch and was silently dropped.
+// We drive the handler via the channel directly rather than waiting on the
+// real 30s timer, per the task's test-seam constraint.
+func TestHubIntegration_FallbackPortCheck_EventLoopCreatesProxy(t *testing.T) {
+	tmpDir := t.TempDir()
+	sockPath := filepath.Join(tmpDir, "test.sock")
+
+	daemon := New(DaemonConfig{
+		SocketPath:   sockPath,
+		MaxClients:   10,
+		WriteTimeout: 5 * time.Second,
+	})
+	if err := daemon.Start(); err != nil {
+		t.Fatalf("Failed to start daemon: %v", err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		daemon.Stop(ctx)
+	}()
+
+	proxyName := "dev"
+	scriptName := "weird-dev-server"
+	scriptID := makeProcessID(tmpDir, scriptName)
+	proxyCfg := &config.ProxyConfig{
+		Script:       scriptName,
+		FallbackPort: 18089,
+	}
+
+	// Emit the event the same way scheduleFallbackPortChecks does after the
+	// 30s timer — put it on the daemon's proxyEvents channel and let
+	// handleProxyEvents consume it.
+	daemon.proxyEvents <- ProxyEvent{
+		Type:      FallbackPortCheck,
+		ScriptID:  scriptID,
+		ProxyName: proxyName,
+		Config:    proxyCfg,
+		Path:      tmpDir,
+	}
+
+	// Wait for the event to be processed. Poll for the proxy's existence
+	// rather than sleeping a fixed duration.
+	expectedID := makeProcessID(tmpDir, proxyName)
+	deadline := time.Now().Add(2 * time.Second)
+	var server interface{}
+	var err error
+	for time.Now().Before(deadline) {
+		server, err = daemon.proxym.Get(expectedID)
+		if err == nil && server != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err != nil || server == nil {
+		t.Fatalf("Expected fallback proxy %q to exist after event dispatch, got err=%v", expectedID, err)
+	}
+
+	// A startup_proxy_fallback_used entry must be recorded in the store —
+	// this is the "visible telemetry" contract from the task.
+	entries := daemon.startupErrorStore.Query(StartupLogFilter{})
+	found := false
+	for _, e := range entries {
+		if e.EventType == "startup_proxy_fallback_used" && e.ScriptName == proxyName {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("Expected startup_proxy_fallback_used entry for proxy %q, got %d entries", proxyName, len(entries))
+		for _, e := range entries {
+			t.Logf("  entry: level=%s event=%s script=%s msg=%s", e.Level, e.EventType, e.ScriptName, e.Message)
+		}
+	}
+}
+
+// TestHubIntegration_FallbackPortCheck_URLDetectedWinsRace verifies that a
+// FallbackPortCheck event delivered via the channel after URL detection
+// already created a proxy does NOT duplicate the proxy and emits a
+// startup_proxy_fallback_skipped_already_running entry instead.
+func TestHubIntegration_FallbackPortCheck_URLDetectedWinsRace(t *testing.T) {
+	tmpDir := t.TempDir()
+	sockPath := filepath.Join(tmpDir, "test.sock")
+
+	daemon := New(DaemonConfig{
+		SocketPath:   sockPath,
+		MaxClients:   10,
+		WriteTimeout: 5 * time.Second,
+	})
+	if err := daemon.Start(); err != nil {
+		t.Fatalf("Failed to start daemon: %v", err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		daemon.Stop(ctx)
+	}()
+
+	proxyName := "dev"
+	scriptName := "weird-dev-server"
+	scriptID := makeProcessID(tmpDir, scriptName)
+
+	// Simulate URL detection having won the race: create a proxy under the
+	// URL-derived id scheme and track it against the script.
+	urlProxyID := makeProxyIDFromURL(tmpDir, proxyName, "http://localhost:3000")
+	if _, err := daemon.proxym.Create(daemon.ctx, proxy.ProxyConfig{
+		ID:         urlProxyID,
+		TargetURL:  "http://localhost:3000",
+		ListenPort: -1,
+		Path:       tmpDir,
+	}); err != nil {
+		t.Fatalf("Failed to pre-create proxy: %v", err)
+	}
+	daemon.trackScriptProxy(scriptID, urlProxyID)
+
+	daemon.proxyEvents <- ProxyEvent{
+		Type:      FallbackPortCheck,
+		ScriptID:  scriptID,
+		ProxyName: proxyName,
+		Config: &config.ProxyConfig{
+			Script:       scriptName,
+			FallbackPort: 18090,
+		},
+		Path: tmpDir,
+	}
+
+	// Wait for the skip entry to appear rather than sleeping a fixed time.
+	deadline := time.Now().Add(2 * time.Second)
+	skipped := false
+	for time.Now().Before(deadline) {
+		entries := daemon.startupErrorStore.Query(StartupLogFilter{})
+		for _, e := range entries {
+			if e.EventType == "startup_proxy_fallback_skipped_already_running" {
+				skipped = true
+				break
+			}
+		}
+		if skipped {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !skipped {
+		t.Fatalf("Expected startup_proxy_fallback_skipped_already_running entry within 2s")
+	}
+
+	// The fallback-id proxy must NOT have been created.
+	fallbackID := makeProcessID(tmpDir, proxyName)
+	if _, err := daemon.proxym.Get(fallbackID); err == nil {
+		t.Errorf("Expected fallback proxy %q to NOT exist (URL detection won), but it was created", fallbackID)
+	}
+
+	// Only one proxy tracked under the script (the URL-detected one).
+	tracked := daemon.getProxiesForScript(scriptID)
+	if len(tracked) != 1 {
+		t.Errorf("Expected 1 tracked proxy after skip, got %d: %v", len(tracked), tracked)
 	}
 }
 

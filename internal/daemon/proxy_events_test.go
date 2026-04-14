@@ -448,3 +448,341 @@ proxies {
 		t.Errorf("Expected 1 proxy (duplicate skipped), got %d", len(proxies))
 	}
 }
+
+// newFallbackTestDaemon spins up a full daemon with a short temp socket and
+// registers a deferred cleanup. Returns the daemon and the tmp project dir.
+// Shared by the FallbackPortCheck handler tests. Uses the full daemon.Start
+// path (rather than the minimal newTestDaemon helper in proxy_waitfor_test.go)
+// because handleFallbackPortCheck depends on startupErrorStore and
+// sessionRegistry, which the minimal constructor doesn't populate.
+func newFallbackTestDaemon(t *testing.T) (*Daemon, string) {
+	t.Helper()
+	tmpDir := shortTempDir(t)
+	sockPath := shortSockPath(t)
+
+	daemon := New(DaemonConfig{
+		SocketPath:   sockPath,
+		MaxClients:   10,
+		WriteTimeout: 5 * time.Second,
+	})
+	if err := daemon.Start(); err != nil {
+		t.Fatalf("Failed to start daemon: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		daemon.Stop(ctx)
+	})
+	return daemon, tmpDir
+}
+
+// countStartupEntriesByEvent returns the number of startupErrorStore entries
+// with the given event type.
+func countStartupEntriesByEvent(daemon *Daemon, eventType string) int {
+	entries := daemon.startupErrorStore.Query(StartupLogFilter{})
+	count := 0
+	for _, e := range entries {
+		if e.EventType == eventType {
+			count++
+		}
+	}
+	return count
+}
+
+// TestProxyEvent_HandleFallbackPortCheck_CreatesProxy verifies that a
+// FallbackPortCheck event with no pre-existing proxy creates a proxy targeting
+// localhost:<fallback-port> and records a startup_proxy_fallback_used entry.
+func TestProxyEvent_HandleFallbackPortCheck_CreatesProxy(t *testing.T) {
+	daemon, tmpDir := newFallbackTestDaemon(t)
+
+	proxyName := "dev"
+	scriptName := "weird-dev-server"
+	scriptID := makeProcessID(tmpDir, scriptName)
+	proxyCfg := &config.ProxyConfig{
+		Script:       scriptName,
+		FallbackPort: 8080,
+	}
+
+	daemon.handleFallbackPortCheck(ProxyEvent{
+		Type:      FallbackPortCheck,
+		ScriptID:  scriptID,
+		ProxyName: proxyName,
+		Config:    proxyCfg,
+		Path:      tmpDir,
+	})
+
+	// Proxy should exist under the explicit-start id scheme.
+	expectedID := makeProcessID(tmpDir, proxyName)
+	server, err := daemon.proxym.Get(expectedID)
+	if err != nil {
+		t.Fatalf("Expected fallback proxy %q to exist, got error: %v", expectedID, err)
+	}
+	if server == nil {
+		t.Fatalf("Expected non-nil proxy server for %q", expectedID)
+	}
+
+	// Target URL must point at localhost:<fallback-port>.
+	wantTarget := "http://localhost:8080"
+	if got := server.Stats().TargetURL; got != wantTarget {
+		t.Errorf("Expected target URL %q, got %q", wantTarget, got)
+	}
+
+	// startup_proxy_fallback_used entry must be recorded.
+	if n := countStartupEntriesByEvent(daemon, "startup_proxy_fallback_used"); n != 1 {
+		t.Errorf("Expected 1 startup_proxy_fallback_used entry, got %d", n)
+	}
+	if n := countStartupEntriesByEvent(daemon, "startup_proxy_fallback_failed"); n != 0 {
+		t.Errorf("Expected 0 startup_proxy_fallback_failed entries, got %d", n)
+	}
+
+	// Proxy should be tracked under the script so ScriptStopped tears it down.
+	tracked := daemon.getProxiesForScript(scriptID)
+	found := false
+	for _, id := range tracked {
+		if id == expectedID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("Expected fallback proxy %q to be tracked under script %q, got %v", expectedID, scriptID, tracked)
+	}
+}
+
+// TestProxyEvent_HandleFallbackPortCheck_SkipsWhenProxyExists verifies that a
+// FallbackPortCheck event whose target proxy was already created (URL
+// detection won the race) does NOT create a duplicate proxy and records a
+// startup_proxy_fallback_skipped_already_running entry instead.
+func TestProxyEvent_HandleFallbackPortCheck_SkipsWhenProxyExists(t *testing.T) {
+	daemon, tmpDir := newFallbackTestDaemon(t)
+
+	proxyName := "dev"
+	scriptName := "weird-dev-server"
+	scriptID := makeProcessID(tmpDir, scriptName)
+
+	// Simulate URL detection winning: create a proxy via makeProxyIDFromURL
+	// and track it under the script.
+	urlProxyID := makeProxyIDFromURL(tmpDir, proxyName, "http://localhost:3000")
+	if _, err := daemon.proxym.Create(daemon.ctx, proxy.ProxyConfig{
+		ID:         urlProxyID,
+		TargetURL:  "http://localhost:3000",
+		ListenPort: -1,
+		Path:       tmpDir,
+	}); err != nil {
+		t.Fatalf("Failed to pre-create proxy: %v", err)
+	}
+	daemon.trackScriptProxy(scriptID, urlProxyID)
+
+	proxyCfg := &config.ProxyConfig{
+		Script:       scriptName,
+		FallbackPort: 8080,
+	}
+
+	daemon.handleFallbackPortCheck(ProxyEvent{
+		Type:      FallbackPortCheck,
+		ScriptID:  scriptID,
+		ProxyName: proxyName,
+		Config:    proxyCfg,
+		Path:      tmpDir,
+	})
+
+	// The fallback-id proxy must NOT exist.
+	fallbackID := makeProcessID(tmpDir, proxyName)
+	if _, err := daemon.proxym.Get(fallbackID); err == nil {
+		t.Errorf("Expected fallback proxy %q to NOT exist (URL detection won), but it was created", fallbackID)
+	}
+
+	// Script should still have exactly one proxy tracked (the URL-detected one).
+	tracked := daemon.getProxiesForScript(scriptID)
+	if len(tracked) != 1 {
+		t.Errorf("Expected 1 tracked proxy after skip, got %d: %v", len(tracked), tracked)
+	}
+
+	// startup_proxy_fallback_skipped_already_running entry must be recorded.
+	if n := countStartupEntriesByEvent(daemon, "startup_proxy_fallback_skipped_already_running"); n != 1 {
+		t.Errorf("Expected 1 startup_proxy_fallback_skipped_already_running entry, got %d", n)
+	}
+	if n := countStartupEntriesByEvent(daemon, "startup_proxy_fallback_used"); n != 0 {
+		t.Errorf("Expected 0 startup_proxy_fallback_used entries, got %d", n)
+	}
+}
+
+// TestProxyEvent_HandleFallbackPortCheck_SkipsWhenFallbackIDExists verifies
+// that a second FallbackPortCheck for the same proxy name is a no-op (the
+// fallback-id proxy already exists from the first check).
+func TestProxyEvent_HandleFallbackPortCheck_SkipsWhenFallbackIDExists(t *testing.T) {
+	daemon, tmpDir := newFallbackTestDaemon(t)
+
+	proxyName := "dev"
+	scriptName := "weird-dev-server"
+	scriptID := makeProcessID(tmpDir, scriptName)
+
+	// Pre-create a proxy using the fallback id scheme (simulates a first
+	// FallbackPortCheck having already run).
+	fallbackID := makeProcessID(tmpDir, proxyName)
+	if _, err := daemon.proxym.Create(daemon.ctx, proxy.ProxyConfig{
+		ID:         fallbackID,
+		TargetURL:  "http://localhost:8080",
+		ListenPort: -1,
+		Path:       tmpDir,
+	}); err != nil {
+		t.Fatalf("Failed to pre-create proxy: %v", err)
+	}
+
+	proxyCfg := &config.ProxyConfig{
+		Script:       scriptName,
+		FallbackPort: 8080,
+	}
+
+	daemon.handleFallbackPortCheck(ProxyEvent{
+		Type:      FallbackPortCheck,
+		ScriptID:  scriptID,
+		ProxyName: proxyName,
+		Config:    proxyCfg,
+		Path:      tmpDir,
+	})
+
+	if n := countStartupEntriesByEvent(daemon, "startup_proxy_fallback_skipped_already_running"); n != 1 {
+		t.Errorf("Expected 1 startup_proxy_fallback_skipped_already_running entry, got %d", n)
+	}
+}
+
+// TestProxyEvent_HandleFallbackPortCheck_InvalidEvent verifies that events
+// missing required fields are not silently dropped — they emit a
+// startup_proxy_fallback_failed entry.
+func TestProxyEvent_HandleFallbackPortCheck_InvalidEvent(t *testing.T) {
+	daemon, tmpDir := newFallbackTestDaemon(t)
+
+	cases := []struct {
+		name  string
+		event ProxyEvent
+	}{
+		{
+			name: "missing config",
+			event: ProxyEvent{
+				Type:      FallbackPortCheck,
+				ScriptID:  "script",
+				ProxyName: "dev",
+				Path:      tmpDir,
+			},
+		},
+		{
+			name: "missing proxy name",
+			event: ProxyEvent{
+				Type:     FallbackPortCheck,
+				ScriptID: "script",
+				Path:     tmpDir,
+				Config:   &config.ProxyConfig{FallbackPort: 8080},
+			},
+		},
+		{
+			name: "missing path",
+			event: ProxyEvent{
+				Type:      FallbackPortCheck,
+				ScriptID:  "script",
+				ProxyName: "dev",
+				Config:    &config.ProxyConfig{FallbackPort: 8080},
+			},
+		},
+		{
+			name: "zero fallback port",
+			event: ProxyEvent{
+				Type:      FallbackPortCheck,
+				ScriptID:  "script",
+				ProxyName: "dev",
+				Path:      tmpDir,
+				Config:    &config.ProxyConfig{Script: "dev"},
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			before := countStartupEntriesByEvent(daemon, "startup_proxy_fallback_failed")
+			daemon.handleFallbackPortCheck(tc.event)
+			after := countStartupEntriesByEvent(daemon, "startup_proxy_fallback_failed")
+			if after != before+1 {
+				t.Errorf("Expected startup_proxy_fallback_failed entry count to grow by 1 (before=%d, after=%d)", before, after)
+			}
+		})
+	}
+}
+
+// TestProxyEvent_HandleFallbackPortCheck_SiblingProxyDoesNotSkip verifies
+// that if a script has multiple linked proxy configs and URL detection
+// created a proxy for ONE of them, the fallback handler for a DIFFERENT
+// proxy name does NOT skip. The skip must be scoped to the specific proxy
+// name, not to "any proxy tracked under this script".
+func TestProxyEvent_HandleFallbackPortCheck_SiblingProxyDoesNotSkip(t *testing.T) {
+	daemon, tmpDir := newFallbackTestDaemon(t)
+
+	scriptName := "web"
+	scriptID := makeProcessID(tmpDir, scriptName)
+
+	// URL detection created a proxy for the "public" proxy config.
+	siblingID := makeProxyIDFromURL(tmpDir, "public", "http://localhost:3000")
+	if _, err := daemon.proxym.Create(daemon.ctx, proxy.ProxyConfig{
+		ID:         siblingID,
+		TargetURL:  "http://localhost:3000",
+		ListenPort: -1,
+		Path:       tmpDir,
+	}); err != nil {
+		t.Fatalf("Failed to pre-create sibling proxy: %v", err)
+	}
+	daemon.trackScriptProxy(scriptID, siblingID)
+
+	// Fire a FallbackPortCheck for a DIFFERENT proxy name ("api") linked to
+	// the same script. It must create its own fallback proxy rather than
+	// skipping because a sibling already exists.
+	daemon.handleFallbackPortCheck(ProxyEvent{
+		Type:      FallbackPortCheck,
+		ScriptID:  scriptID,
+		ProxyName: "api",
+		Config: &config.ProxyConfig{
+			Script:       scriptName,
+			FallbackPort: 8081,
+		},
+		Path: tmpDir,
+	})
+
+	// The api fallback proxy must exist.
+	apiID := makeProcessID(tmpDir, "api")
+	if _, err := daemon.proxym.Get(apiID); err != nil {
+		t.Fatalf("Expected fallback proxy %q to exist, got error: %v", apiID, err)
+	}
+
+	if n := countStartupEntriesByEvent(daemon, "startup_proxy_fallback_used"); n != 1 {
+		t.Errorf("Expected 1 startup_proxy_fallback_used entry, got %d", n)
+	}
+	if n := countStartupEntriesByEvent(daemon, "startup_proxy_fallback_skipped_already_running"); n != 0 {
+		t.Errorf("Expected 0 skipped entries (sibling should not cause skip), got %d", n)
+	}
+}
+
+// TestProxyEvent_HandleFallbackPortCheck_CustomHost verifies that the Host
+// field on the proxy config is honored when building the target URL.
+func TestProxyEvent_HandleFallbackPortCheck_CustomHost(t *testing.T) {
+	daemon, tmpDir := newFallbackTestDaemon(t)
+
+	proxyCfg := &config.ProxyConfig{
+		Script:       "dev",
+		FallbackPort: 9090,
+		Host:         "127.0.0.1",
+	}
+
+	daemon.handleFallbackPortCheck(ProxyEvent{
+		Type:      FallbackPortCheck,
+		ScriptID:  makeProcessID(tmpDir, "dev"),
+		ProxyName: "api",
+		Config:    proxyCfg,
+		Path:      tmpDir,
+	})
+
+	server, err := daemon.proxym.Get(makeProcessID(tmpDir, "api"))
+	if err != nil {
+		t.Fatalf("Expected fallback proxy to exist: %v", err)
+	}
+	if got, want := server.Stats().TargetURL, "http://127.0.0.1:9090"; got != want {
+		t.Errorf("Expected target URL %q, got %q", want, got)
+	}
+}

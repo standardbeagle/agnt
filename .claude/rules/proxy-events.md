@@ -9,13 +9,14 @@ paths:
 
 ## Event Types
 
-Three event types flow through the `proxyEvents` channel:
+Four event types flow through the `proxyEvents` channel:
 
 | Event | Trigger | Handler | Result |
 |-------|---------|---------|--------|
 | `URLDetected` | URLTracker finds a URL in process output | `handleURLDetected` | Create proxy targeting detected URL |
 | `ExplicitStart` | `autostartProxy` for non-script-linked proxies | `handleExplicitStart` | Create proxy with explicit target |
 | `ScriptStopped` | Process exits or is cleaned up | `handleScriptStopped` | Stop all proxies linked to that script |
+| `FallbackPortCheck` | `scheduleFallbackPortChecks` 30s after autostart | `handleFallbackPortCheck` | Create proxy targeting `localhost:<fallback-port>` if URL detection never fired |
 
 ## Event Channel Contract
 
@@ -45,20 +46,35 @@ Process IDs have format `{project-hash}:{scriptName}`. The event handler splits 
 - Process IDs MUST maintain the `prefix:name` format
 - The script name in the process ID MUST match the key in `.agnt.kdl` `scripts {}` block
 
-## Fallback Flow (Required — Currently Missing)
+## Fallback Flow (FallbackPortCheck)
 
-When URL detection fails for a script-linked proxy:
+When URL detection fails for a script-linked proxy that declares `fallback-port`:
 
 ```
-Script reaches Running state
-  → Health check runs (periodic or on-connect)
-  → Finds: config expects proxy for script, no proxy exists, script is running
-  → Checks: does proxy config have fallback-port?
-    → Yes: create proxy targeting localhost:fallback-port
-    → No: emit warning event — "proxy X expected but no URL detected and no fallback-port configured"
+autostart → scheduleFallbackPortChecks spawns one goroutine per
+             script-linked proxy with fallback-port > 0
+  → goroutine waits 30s (or ctx cancel)
+  → emits FallbackPortCheck event onto d.proxyEvents
+    → handleProxyEvents dispatches to handleFallbackPortCheck
+      → if proxy already exists under makeProcessID id
+          or URL detection already created any proxy for the script
+        → log startup_proxy_fallback_skipped_already_running (info)
+      → else create proxy targeting http://localhost:<fallback-port>
+        → on success: startup_proxy_fallback_used (info)
+        → on failure: startup_proxy_fallback_failed (warning)
 ```
 
-This flow does not exist today and is the primary bug to fix.
+The fallback handler uses the same proxy-id scheme as the explicit-start
+path (`makeProcessID(projectPath, proxyName)`) so idempotency checks align
+and so a subsequent URL-detection event (which uses `makeProxyIDFromURL`) can
+still create its own distinct entry if it fires late.
+
+Both success and failure entries flow through `startupErrorStore`, so the
+outcome surfaces in `get_errors` and the overlay — never silent.
+
+The 30s timer constant must not be shortened for production; tests exercise
+`handleFallbackPortCheck` directly or deliver `FallbackPortCheck` events to
+the channel, bypassing the timer.
 
 ## Silent Failure Points (Known)
 
