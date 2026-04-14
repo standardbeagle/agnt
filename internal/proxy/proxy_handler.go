@@ -136,6 +136,103 @@ func (ps *ProxyServer) FlushConnections() {
 	debug.Log("proxy", "Replaced transport for proxy %s (flushed all connections)", ps.ID)
 }
 
+// SetDependencies registers the set of dependency names the proxy
+// must wait on before it begins forwarding requests. Passing an empty
+// or nil slice opens the gate immediately. See readiness.go for the
+// full contract.
+func (ps *ProxyServer) SetDependencies(deps []string) {
+	if ps.readiness == nil {
+		return
+	}
+	ps.readiness.SetDependencies(deps)
+}
+
+// MarkDependencyReady removes dep from the pending set. Returns true
+// when the call transitions the gate from closed to open, so the
+// caller can fire a one-shot proxy_ready event.
+func (ps *ProxyServer) MarkDependencyReady(dep string) (openedNow bool) {
+	if ps.readiness == nil {
+		return false
+	}
+	return ps.readiness.MarkDependencyReady(dep)
+}
+
+// IsReadyForForwarding returns true when the readiness gate is open
+// (no pending dependencies). This is separate from IsRunning, which
+// only reports whether the underlying HTTP server is serving
+// connections — a running proxy may still be gated.
+func (ps *ProxyServer) IsReadyForForwarding() bool {
+	if ps.readiness == nil {
+		return true
+	}
+	return ps.readiness.IsReady()
+}
+
+// PendingDependencies returns the sorted list of dependencies the
+// proxy is still waiting on. Returns an empty slice when the gate is
+// open. Callers may modify the returned slice safely.
+func (ps *ProxyServer) PendingDependencies() []string {
+	if ps.readiness == nil {
+		return nil
+	}
+	return ps.readiness.PendingDependencies()
+}
+
+// formatPendingJSON renders a JSON array literal for the pending list.
+// Kept separate from encoding/json.Marshal so the logging branch in
+// handleProxy can build the body without allocating a map.
+func formatPendingJSON(pending []string) string {
+	if len(pending) == 0 {
+		return "[]"
+	}
+	out := "["
+	for i, p := range pending {
+		if i > 0 {
+			out += ","
+		}
+		// Minimal JSON string escape for the characters that can legally
+		// appear in a process ID (letters, digits, colon, dash, dot,
+		// underscore). Any escape-requiring char is replaced with a
+		// placeholder so the JSON stays valid without pulling in
+		// encoding/json here.
+		out += `"` + escapePendingName(p) + `"`
+	}
+	out += "]"
+	return out
+}
+
+// escapePendingName replaces JSON-unsafe characters in a dependency
+// name. In practice dependency names are script IDs or process IDs,
+// which only contain alphanumerics and `:-._/`; the escape is a
+// defensive no-op for the common case.
+func escapePendingName(s string) string {
+	needsEscape := false
+	for _, r := range s {
+		if r == '"' || r == '\\' || r < 0x20 {
+			needsEscape = true
+			break
+		}
+	}
+	if !needsEscape {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r == '"':
+			b.WriteString(`\"`)
+		case r == '\\':
+			b.WriteString(`\\`)
+		case r < 0x20:
+			b.WriteRune(' ')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
 // Stats returns proxy statistics.
 func (ps *ProxyServer) Stats() ProxyStats {
 	stats := ProxyStats{
@@ -180,6 +277,17 @@ func (ps *ProxyServer) Stats() ProxyStats {
 	// Restart backoff state
 	stats.BackoffDelay = time.Duration(ps.backoffDuration.Load())
 
+	// Readiness gate state — distinguishes "waiting for dependencies"
+	// from plain "running" in proxy list / proxy status output. When
+	// the proxy has no declared `wait-for`, ReadyForForwarding is
+	// always true and WaitingFor is empty.
+	if ps.readiness != nil {
+		stats.ReadyForForwarding = ps.readiness.IsReady()
+		stats.WaitingFor = ps.readiness.PendingDependencies()
+	} else {
+		stats.ReadyForForwarding = true
+	}
+
 	return stats
 }
 
@@ -206,6 +314,13 @@ type ProxyStats struct {
 
 	// Restart backoff
 	BackoffDelay time.Duration `json:"backoff_delay,omitempty"` // current backoff base duration (0 = no backoff active)
+
+	// Readiness gate (wait-for dependencies). ReadyForForwarding is
+	// false while the proxy is gating on declared script dependencies;
+	// WaitingFor holds the sorted list of pending dep names. An empty
+	// WaitingFor with ReadyForForwarding=true is the normal running case.
+	ReadyForForwarding bool     `json:"ready_for_forwarding"`
+	WaitingFor         []string `json:"waiting_for,omitempty"`
 }
 
 // handleProxy handles HTTP requests and logs traffic.
@@ -213,6 +328,34 @@ func (ps *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
 	seq := ps.requestSeq.Add(1)
 	reqID := fmt.Sprintf("req-%d", seq)
+
+	// Readiness gate: if the proxy is still waiting on declared
+	// dependencies, reject with a sentinel 503 instead of forwarding.
+	// The body marker (`agnt_proxy_not_ready`) lets `get_errors` drop
+	// these responses from its error feed during the startup race.
+	if ps.readiness != nil && !ps.readiness.IsReady() {
+		pending := ps.readiness.PendingDependencies()
+		writeReadinessNotReady(w, pending)
+
+		// Log the 503 so proxylog query can still surface it on demand,
+		// but leave it flagged as a gate response via the Error field.
+		reqHeaders := make(map[string]string)
+		for k, v := range r.Header {
+			reqHeaders[k] = strings.Join(v, ", ")
+		}
+		ps.logger.LogHTTP(HTTPLogEntry{
+			ID:             reqID,
+			Timestamp:      startTime,
+			Method:         r.Method,
+			URL:            r.URL.String(),
+			RequestHeaders: reqHeaders,
+			StatusCode:     http.StatusServiceUnavailable,
+			ResponseBody:   `{"error":"` + ReadinessSentinel + `","pending":` + formatPendingJSON(pending) + `}`,
+			Duration:       time.Since(startTime),
+			Error:          ReadinessSentinel,
+		})
+		return
+	}
 
 	// Check if this is a WebSocket upgrade request
 	isWebSocket := strings.ToLower(r.Header.Get("Upgrade")) == "websocket" &&

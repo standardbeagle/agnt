@@ -171,7 +171,19 @@ func ProxyListMenu(proxies []ProxyInfo) Menu {
 
 	for _, proxy := range proxies {
 		label := proxy.ID + " → " + proxy.TargetURL
-		if proxy.HasErrors {
+		if proxy.State == "waiting_for_dependencies" {
+			// Distinguish a bound-but-gated proxy from a plain
+			// running proxy. The hourglass + dependency list makes
+			// it obvious at a glance that the 503s flowing from this
+			// proxy are readiness sentinels, not upstream failures.
+			label += " ⏳ waiting: "
+			for i, dep := range proxy.WaitingOn {
+				if i > 0 {
+					label += ", "
+				}
+				label += dep
+			}
+		} else if proxy.HasErrors {
 			label += " ⚠"
 		}
 		items = append(items, MenuItem{

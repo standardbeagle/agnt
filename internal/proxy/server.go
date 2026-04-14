@@ -92,6 +92,13 @@ type ProxyServer struct {
 
 	// Session client factory for handling session API requests from browser
 	sessionClientFactory SessionClientFactory
+
+	// readiness gates the forwarding path while the proxy is waiting for
+	// declared script dependencies to reach Running Healthy (or Running
+	// With Errors). When the gate is closed, handleProxy returns a 503
+	// with the ReadinessSentinel body instead of forwarding. See
+	// readiness.go for the full contract.
+	readiness *readinessGate
 }
 
 // ProxyConfig holds configuration for creating a proxy server.
@@ -223,6 +230,7 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 				return true // Allow all origins for development
 			},
 		},
+		readiness: newReadinessGate(),
 	}
 
 	// Create reverse proxy with custom Director for proper Host handling

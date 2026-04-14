@@ -171,6 +171,10 @@ func (d *Daemon) handleURLDetected(event ProxyEvent) {
 		// Track script -> proxy association
 		d.trackScriptProxy(event.ScriptID, proxyID)
 
+		// Register wait-for dependencies — gates the proxy's
+		// forwarding path until every listed script signals ready.
+		d.registerProxyDependencies(server, proxyID, proxyConfig, projectPath)
+
 		debug.Log("daemon", "Created proxy %s targeting %s", proxyID, event.URL)
 	}
 }
@@ -250,6 +254,13 @@ func (d *Daemon) handleExplicitStart(event ProxyEvent) {
 	} else {
 		debug.Log("daemon", "No overlay endpoint found for explicit proxy %s (no path, no global endpoint) — proxy→agent messages will not work", event.ProxyID)
 	}
+
+	// Register wait-for dependencies for explicit proxies too.
+	// Explicit proxies (e.g. `autostart true` without a script link)
+	// can still declare `wait-for` to hold forwarding until backend
+	// scripts bind. The dependency names resolve against the project
+	// scripts just like the script-linked path.
+	d.registerProxyDependencies(server, event.ProxyID, event.Config, event.Path)
 
 	debug.Log("daemon", "Created explicit proxy %s targeting %s", event.ProxyID, targetURL)
 }

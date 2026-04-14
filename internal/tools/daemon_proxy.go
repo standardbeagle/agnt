@@ -160,8 +160,21 @@ func (dt *DaemonTools) handleProxyStatus(input ProxyInput) (*mcp.CallToolResult,
 		BindAddress:   getString(result, "bind_address"),
 		PublicURL:     getString(result, "public_url"),
 		Running:       getBool(result, "running"),
+		State:         getString(result, "status"),
+		WaitingOn:     getStringSlice(result, "waiting_for"),
 		Uptime:        getString(result, "uptime"),
 		TotalRequests: getInt64(result, "total_requests"),
+	}
+
+	// Fall back to the stats block for log-stats and readiness state
+	// in case the server didn't surface them at the top level.
+	if stats, ok := result["stats"].(map[string]interface{}); ok {
+		if output.State == "" || output.State == "running" {
+			if readyForForwarding, ok := stats["ready_for_forwarding"].(bool); ok && !readyForForwarding {
+				output.State = "waiting_for_dependencies"
+				output.WaitingOn = getStringSlice(stats, "waiting_for")
+			}
+		}
 	}
 
 	if logStats, ok := result["log_stats"].(map[string]interface{}); ok {
@@ -215,6 +228,8 @@ func (dt *DaemonTools) handleProxyList(input ProxyInput) (*mcp.CallToolResult, P
 					PublicURL:     getString(pm, "public_url"),
 					Path:          getString(pm, "path"),
 					Running:       getBool(pm, "running"),
+					State:         getString(pm, "status"),
+					WaitingOn:     getStringSlice(pm, "waiting_for"),
 					Uptime:        getString(pm, "uptime"),
 					TotalRequests: getInt64(pm, "total_requests"),
 				})

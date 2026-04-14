@@ -325,6 +325,13 @@ type ProxyOutput struct {
 	LogStats      *LogStatsOutput `json:"log_stats,omitempty"`
 	Tunnel        *TunnelStatus   `json:"tunnel,omitempty"` // Tunnel status if configured
 
+	// Readiness-gate state: when a proxy declares `wait-for`, it
+	// binds immediately but does not forward until every listed
+	// script signals ready. State is "waiting_for_dependencies"
+	// while gating, "running" once the gate opens.
+	State     string   `json:"state,omitempty"`
+	WaitingOn []string `json:"waiting_on,omitempty"`
+
 	// For list
 	Count       int          `json:"count"`
 	Proxies     []ProxyEntry `json:"proxies,omitempty"`
@@ -387,6 +394,12 @@ type ProxyEntry struct {
 	TotalRequests int64  `json:"total_requests"`
 	TunnelURL     string `json:"tunnel_url,omitempty"`
 	TunnelRunning bool   `json:"tunnel_running,omitempty"`
+
+	// Readiness-gate fields: populated when the proxy is waiting on
+	// declared `wait-for` dependencies. State is
+	// "waiting_for_dependencies" while gating, "running" otherwise.
+	State     string   `json:"state,omitempty"`
+	WaitingOn []string `json:"waiting_on,omitempty"`
 }
 
 // LogStatsOutput holds logger statistics.
@@ -690,6 +703,8 @@ func handleProxyStatus(pm *proxy.ProxyManager, input ProxyInput) (*mcp.CallToolR
 		TargetURL:     stats.TargetURL,
 		ListenAddr:    stats.ListenAddr,
 		Running:       stats.Running,
+		State:         runtimeStateFromStats(stats),
+		WaitingOn:     stats.WaitingFor,
 		Uptime:        formatDuration(stats.Uptime),
 		TotalRequests: stats.TotalRequests,
 		LogStats: &LogStatsOutput{
@@ -699,6 +714,20 @@ func handleProxyStatus(pm *proxy.ProxyManager, input ProxyInput) (*mcp.CallToolR
 			Dropped:          stats.LoggerStats.Dropped,
 		},
 	}, nil
+}
+
+// runtimeStateFromStats returns the `state` string emitted in
+// proxy status / proxy list output. Mirrors the daemon-side
+// proxyRuntimeStatus helper so legacy mode (no daemon) surfaces the
+// same vocabulary the AI agent already understands.
+func runtimeStateFromStats(stats proxy.ProxyStats) string {
+	if !stats.Running {
+		return "stopped"
+	}
+	if !stats.ReadyForForwarding {
+		return "waiting_for_dependencies"
+	}
+	return "running"
 }
 
 func handleProxyList(pm *proxy.ProxyManager) (*mcp.CallToolResult, ProxyOutput, error) {
@@ -712,6 +741,8 @@ func handleProxyList(pm *proxy.ProxyManager) (*mcp.CallToolResult, ProxyOutput, 
 			TargetURL:     stats.TargetURL,
 			ListenAddr:    stats.ListenAddr,
 			Running:       stats.Running,
+			State:         runtimeStateFromStats(stats),
+			WaitingOn:     stats.WaitingFor,
 			Uptime:        formatDuration(stats.Uptime),
 			TotalRequests: stats.TotalRequests,
 		}

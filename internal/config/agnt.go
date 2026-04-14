@@ -185,6 +185,25 @@ type ProxyConfig struct {
 
 	// Websocket enables WebSocket proxying
 	Websocket bool `kdl:"websocket"`
+
+	// WaitFor lists script ids that must reach Running Healthy (or
+	// Running With Errors) before this proxy begins forwarding
+	// requests. While any entry is pending, the proxy binds and is
+	// visible to `proxy list`, but every incoming request receives a
+	// 503 with the `agnt_proxy_not_ready` sentinel body. When every
+	// listed script signals ready (URL detected, port bound, or
+	// ready-signal fired), the proxy flips to ready atomically.
+	//
+	// The proxy is a readiness gate, not a build gate. Per
+	// .claude/rules/daemon-lifecycle.md, a process that is bound and
+	// producing output (including compile errors) counts as "running"
+	// — the readiness signal fires as soon as the port is listening,
+	// regardless of whether the child is in a clean or errored state.
+	//
+	// Every entry must resolve to a declared script in the same
+	// `scripts {}` block; unknown names fail config parsing. Proxy →
+	// proxy dependencies are not supported.
+	WaitFor []string `kdl:"wait-for"`
 }
 
 // HooksConfig defines hook behavior.
@@ -489,6 +508,13 @@ func ParseAgntConfig(data string) (*AgntConfig, error) {
 		for _, w := range warnings {
 			debug.Log("config", "WARNING: %s", w)
 		}
+	}
+
+	// Validate proxy `wait-for` references — every listed script must
+	// be declared in the scripts block. Catches typos at parse time
+	// rather than waiting for startup races.
+	if err := validateProxyWaitFor(cfg.Proxies, cfg.Scripts); err != nil {
+		return nil, err
 	}
 
 	debug.Log("config", "ParseAgntConfig: parsed %d scripts, %d proxies", len(cfg.Scripts), len(cfg.Proxies))

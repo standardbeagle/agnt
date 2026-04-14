@@ -63,6 +63,19 @@ type ProxyInfo struct {
 	TunnelRunning   bool
 	LinkedProcessID string // ID of process this proxy targets (if any)
 	TailscaleURL    string // Tailscale DNS URL if available (e.g., http://machine.tailnet.ts.net:port)
+
+	// State is the runtime state reported by the daemon. Values:
+	//   "running"                   — forwarding requests normally
+	//   "waiting_for_dependencies"  — bound, but holding the gate until
+	//                                 every `wait-for` script reports ready
+	//   "stopped"                   — not running
+	// When empty, renderers fall back to the legacy "running" vs
+	// "error" distinction.
+	State string
+
+	// WaitingOn holds the sorted list of pending `wait-for` script
+	// names. Populated only when State is "waiting_for_dependencies".
+	WaitingOn []string
 }
 
 // ErrorInfo holds recent error information.

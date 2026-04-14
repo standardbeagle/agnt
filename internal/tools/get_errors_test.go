@@ -129,43 +129,91 @@ func TestExtractErrorMessage(t *testing.T) {
 
 func TestIsNoiseError(t *testing.T) {
 	t.Run("favicon 404", func(t *testing.T) {
-		assert.True(t, isNoiseError("/favicon.ico", 404))
+		assert.True(t, isNoiseError("/favicon.ico", 404, "", ""))
 	})
 
 	t.Run("source map 404", func(t *testing.T) {
-		assert.True(t, isNoiseError("/static/js/main.js.map", 404))
+		assert.True(t, isNoiseError("/static/js/main.js.map", 404, "", ""))
 	})
 
 	t.Run("webpack HMR 404", func(t *testing.T) {
-		assert.True(t, isNoiseError("/__webpack_hmr", 404))
+		assert.True(t, isNoiseError("/__webpack_hmr", 404, "", ""))
 	})
 
 	t.Run("hot update 404", func(t *testing.T) {
-		assert.True(t, isNoiseError("/app.abc123.hot-update.js", 404))
+		assert.True(t, isNoiseError("/app.abc123.hot-update.js", 404, "", ""))
 	})
 
 	t.Run("301 redirect", func(t *testing.T) {
-		assert.True(t, isNoiseError("/old-page", 301))
+		assert.True(t, isNoiseError("/old-page", 301, "", ""))
 	})
 
 	t.Run("302 redirect", func(t *testing.T) {
-		assert.True(t, isNoiseError("/redirect", 302))
+		assert.True(t, isNoiseError("/redirect", 302, "", ""))
 	})
 
 	t.Run("304 not modified", func(t *testing.T) {
-		assert.True(t, isNoiseError("/api/data", 304))
+		assert.True(t, isNoiseError("/api/data", 304, "", ""))
 	})
 
 	t.Run("real 404", func(t *testing.T) {
-		assert.False(t, isNoiseError("/api/users/123", 404))
+		assert.False(t, isNoiseError("/api/users/123", 404, "", ""))
 	})
 
 	t.Run("500 error", func(t *testing.T) {
-		assert.False(t, isNoiseError("/api/users", 500))
+		assert.False(t, isNoiseError("/api/users", 500, "", ""))
 	})
 
 	t.Run("200 OK", func(t *testing.T) {
-		assert.False(t, isNoiseError("/api/data", 200))
+		assert.False(t, isNoiseError("/api/data", 200, "", ""))
+	})
+
+	// Proxy readiness-gate 503s — filtered by body sentinel so they
+	// never reach the AI agent during the startup race window.
+	t.Run("proxy readiness gate 503 via body", func(t *testing.T) {
+		body := `{"error":"agnt_proxy_not_ready","pending":["dev-backend"]}`
+		assert.True(t, isNoiseError("/api/data", 503, body, ""))
+	})
+
+	t.Run("proxy readiness gate 503 via error field", func(t *testing.T) {
+		assert.True(t, isNoiseError("/api/data", 503, "", "agnt_proxy_not_ready"))
+	})
+
+	// Genuine upstream 5xx must still surface — the status code alone
+	// is not enough to identify the gate response, so a real backend
+	// error (no sentinel) is preserved.
+	t.Run("real 500 from upstream preserved", func(t *testing.T) {
+		body := `{"error":"database connection timeout"}`
+		assert.False(t, isNoiseError("/api/users", 500, body, ""))
+	})
+
+	t.Run("real 503 from upstream preserved", func(t *testing.T) {
+		body := "Service temporarily unavailable"
+		assert.False(t, isNoiseError("/api/health", 503, body, ""))
+	})
+}
+
+func TestIsProxyReadinessSentinel(t *testing.T) {
+	t.Run("body contains sentinel", func(t *testing.T) {
+		body := `{"error":"agnt_proxy_not_ready","pending":["dev-backend"]}`
+		assert.True(t, isProxyReadinessSentinel(body, ""))
+	})
+
+	t.Run("error field contains sentinel", func(t *testing.T) {
+		assert.True(t, isProxyReadinessSentinel("", "agnt_proxy_not_ready"))
+	})
+
+	t.Run("empty inputs", func(t *testing.T) {
+		assert.False(t, isProxyReadinessSentinel("", ""))
+	})
+
+	t.Run("unrelated body", func(t *testing.T) {
+		assert.False(t, isProxyReadinessSentinel(`{"error":"ECONNREFUSED"}`, ""))
+	})
+
+	t.Run("sentinel embedded in larger body", func(t *testing.T) {
+		body := `some prefix agnt_proxy_not_ready some suffix`
+		assert.True(t, isProxyReadinessSentinel(body, ""))
 	})
 }
 

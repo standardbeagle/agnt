@@ -206,16 +206,35 @@ func (d *Daemon) hubHandleProxyStatus(conn *hubpkg.Connection, cmd *hubproto.Com
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
 
+	stats := p.Stats()
 	resp := map[string]interface{}{
 		"id":          p.ID,
 		"listen_addr": p.ListenAddr,
 		"target_url":  p.TargetURL.String(),
-		"status":      "running",
-		"stats":       p.Stats(),
+		"status":      proxyRuntimeStatus(stats),
+		"stats":       stats,
+	}
+	if !stats.ReadyForForwarding {
+		resp["waiting_for"] = stats.WaitingFor
 	}
 
 	data, _ := json.Marshal(resp)
 	return conn.WriteJSON(data)
+}
+
+// proxyRuntimeStatus derives the `status` string exposed in
+// PROXY STATUS / PROXY LIST responses. Distinguishes a bound-but-
+// gated proxy (waiting for declared `wait-for` dependencies) from a
+// plain running proxy so the AI agent and the overlay status bar
+// can render the state distinctly.
+func proxyRuntimeStatus(stats proxy.ProxyStats) string {
+	if !stats.Running {
+		return "stopped"
+	}
+	if !stats.ReadyForForwarding {
+		return "waiting_for_dependencies"
+	}
+	return "running"
 }
 
 // hubHandleProxyList handles PROXY LIST command.
@@ -251,14 +270,19 @@ func (d *Daemon) hubHandleProxyList(conn *hubpkg.Connection, cmd *hubproto.Comma
 			continue
 		}
 
-		result = append(result, map[string]interface{}{
+		stats := p.Stats()
+		entry := map[string]interface{}{
 			"id":          p.ID,
 			"listen_addr": p.ListenAddr,
 			"target_url":  p.TargetURL.String(),
-			"status":      "running",
-			"running":     true,
+			"status":      proxyRuntimeStatus(stats),
+			"running":     stats.Running,
 			"path":        p.Path,
-		})
+		}
+		if !stats.ReadyForForwarding {
+			entry["waiting_for"] = stats.WaitingFor
+		}
+		result = append(result, entry)
 	}
 
 	data, _ := json.Marshal(map[string]interface{}{
