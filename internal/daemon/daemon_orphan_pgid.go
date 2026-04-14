@@ -5,6 +5,8 @@ package daemon
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -124,9 +126,43 @@ func (d *Daemon) startupOrphanPGIDScan(projectPath string) int {
 	})
 	debug.Info("daemon", "startup orphan-pgid scan: found %d orphan(s)", len(orphans))
 
+	// Ownership gate: before reaping any candidate pgid, verify it
+	// plausibly belongs to THIS daemon by walking each live member's
+	// parent chain and matching cmdline+cwd evidence against the
+	// daemon's known project set and binary path. See pgidOwnershipCheck
+	// docstring for the full predicate.
+	//
+	// This fence is the fix for task wJimXk0hzYAC: without it, a second
+	// daemon on the same host (including test daemons spawned by
+	// `go test ./internal/daemon/...`) can SIGKILL the live session
+	// pgids of an unrelated, healthy daemon owned by the same uid —
+	// uid alone is not sufficient isolation between multiple daemons.
+	knownProjects := d.knownProjectPaths(projectPath)
+	daemonBinary := resolvedDaemonBinary()
+
 	killed := 0
 	for _, o := range orphans {
-		debug.Info("daemon", "startup orphan-pgid scan: killing pgid %d (members=%v)", o.PGID, o.Members)
+		owned, reason := pgidOwnershipCheck(
+			o.Members,
+			knownProjects,
+			daemonBinary,
+			platform.WalkParents,
+		)
+		if !owned {
+			debug.Info("daemon", "startup orphan-pgid scan: skip pgid %d (unowned): %s", o.PGID, reason)
+			log.Add(&StartupLogEntry{
+				Level:     "info",
+				EventType: "startup_orphan_pgid_skipped_unowned",
+				Message: fmt.Sprintf(
+					"skipped orphan pgid %d (%d member(s)): %s",
+					o.PGID, len(o.Members), reason,
+				),
+				Timestamp: time.Now(),
+			})
+			continue
+		}
+		debug.Info("daemon", "startup orphan-pgid scan: killing pgid %d (members=%v) owned: %s",
+			o.PGID, o.Members, reason)
 		if err := platform.KillSessionPGID(o.PGID, selfPID, startupOrphanPGIDGrace, false); err != nil {
 			debug.Warn("daemon", "startup orphan-pgid scan: killpg(%d) failed: %v", o.PGID, err)
 			log.Add(&StartupLogEntry{
@@ -141,7 +177,10 @@ func (d *Daemon) startupOrphanPGIDScan(projectPath string) int {
 		log.Add(&StartupLogEntry{
 			Level:     "info",
 			EventType: "startup_orphan_pgid_killed",
-			Message:   fmt.Sprintf("reaped orphan pgid %d (%d member(s))", o.PGID, len(o.Members)),
+			Message: fmt.Sprintf(
+				"reaped orphan pgid %d (%d member(s)): %s",
+				o.PGID, len(o.Members), reason,
+			),
 			Timestamp: time.Now(),
 		})
 	}
@@ -171,4 +210,230 @@ func (d *Daemon) liveSessionPGIDs() []int {
 		}
 	}
 	return out
+}
+
+// knownProjectPaths assembles the set of project directories this daemon
+// considers its own. The union of:
+//
+//  1. The projectPath argument, if non-empty.
+//  2. Every ProjectPath recorded on a currently-registered session.
+//
+// Used by the orphan-pgid ownership gate to decide whether a candidate
+// pgid's ancestor cwd identifies it as ours. Returns a deduped slice with
+// empty entries dropped. Order is not stable — callers must not rely on it.
+//
+// This is the scanning daemon's own view of "what projects do I manage".
+// It is emphatically NOT a global view of every agnt project on the host —
+// a second daemon has its own knownProjectPaths set and its own ancestor
+// chains to match against. The asymmetry is the point: it lets each daemon
+// reap only its own crash leftovers and leave other daemons' live sessions
+// alone.
+func (d *Daemon) knownProjectPaths(projectPath string) []string {
+	seen := make(map[string]bool, 4)
+	var out []string
+	add := func(p string) {
+		if p == "" {
+			return
+		}
+		clean := filepath.Clean(p)
+		if clean == "" || clean == "." {
+			return
+		}
+		if seen[clean] {
+			return
+		}
+		seen[clean] = true
+		out = append(out, clean)
+	}
+
+	add(projectPath)
+
+	if d.sessionRegistry != nil {
+		for _, s := range d.sessionRegistry.List("", true) {
+			s.mu.RLock()
+			p := s.ProjectPath
+			s.mu.RUnlock()
+			add(p)
+		}
+	}
+	return out
+}
+
+// cmdlineLooksLikeAgnt returns true if a /proc/<pid>/cmdline string
+// identifies the process as either an agnt run invocation or a daemon
+// binary. Matching is intentionally permissive:
+//
+//   - "agnt run" substring — covers `agnt run claude`, `/usr/local/bin/agnt run ...`,
+//     and renamed copies like `agnt-daemon run` (the binary-copy workaround).
+//   - daemon binary path prefix — covers any invocation of `/path/to/agnt daemon start ...`
+//     or bare `/path/to/agnt` as pid 0 of a daemon subprocess.
+//
+// The daemonBinary argument is whatever this daemon's own os.Executable()
+// returned (resolved via filepath.EvalSymlinks when possible). Empty
+// daemonBinary disables the binary-path branch — only substring matching
+// applies. Empty cmdline always returns false.
+func cmdlineLooksLikeAgnt(cmdline, daemonBinary string) bool {
+	if cmdline == "" {
+		return false
+	}
+	if strings.Contains(cmdline, "agnt run") {
+		return true
+	}
+	if daemonBinary != "" {
+		// Match as prefix OR as the first space-separated token
+		// (handles cmdlines like "/opt/agnt/bin/agnt daemon start").
+		if strings.HasPrefix(cmdline, daemonBinary+" ") || cmdline == daemonBinary {
+			return true
+		}
+		// Also match just the basename at the start, for cases where
+		// the cmdline path differs from os.Executable() (e.g. agnt copy
+		// at agnt-daemon, symlinks). Conservative: require an exact
+		// basename match as the first token.
+		base := filepath.Base(daemonBinary)
+		if base != "" && (strings.HasPrefix(cmdline, base+" ") || cmdline == base) {
+			return true
+		}
+	}
+	return false
+}
+
+// cwdIsInsideKnownProject returns true if cwd is equal to or a
+// descendant of any entry in knownProjects. Path comparison uses
+// filepath.Rel to avoid sibling-prefix collisions (e.g. /proj/foo must
+// NOT match /proj/foobar). Empty cwd or empty known set returns false.
+func cwdIsInsideKnownProject(cwd string, knownProjects []string) bool {
+	if cwd == "" || len(knownProjects) == 0 {
+		return false
+	}
+	cleanCwd := filepath.Clean(cwd)
+	for _, proj := range knownProjects {
+		if proj == "" {
+			continue
+		}
+		cleanProj := filepath.Clean(proj)
+		if cleanCwd == cleanProj {
+			return true
+		}
+		rel, err := filepath.Rel(cleanProj, cleanCwd)
+		if err != nil {
+			continue
+		}
+		// rel must not start with ".." and must not be "."; "." is
+		// already handled above. A rel like "packages/frontend" means
+		// cwd is inside proj. A rel like "../foobar" means they are
+		// siblings (or unrelated).
+		if rel == "." || rel == "" {
+			return true
+		}
+		if !strings.HasPrefix(rel, "..") && !strings.HasPrefix(rel, string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
+}
+
+// pgidOwnershipCheck is the ownership gate for daemon-startup orphan-pgid
+// reaping. It answers: "does this candidate pgid plausibly belong to the
+// scanning daemon, such that reaping it is safe?"
+//
+// The gate is a conjunction of two evidence categories, collected across
+// the parent chains of ALL live members:
+//
+//  1. cmdline evidence: at least one ancestor has cmdline matching
+//     cmdlineLooksLikeAgnt (agnt run or daemon binary).
+//  2. cwd evidence: at least one ancestor has cwd inside a directory in
+//     knownProjects (exact match or descendant via filepath.Rel).
+//
+// Both must be true SOMEWHERE in the walked chains — they need not come
+// from the same ancestor. If either evidence is missing the pgid is
+// classified as unowned and the caller must log it as
+// startup_orphan_pgid_skipped_unowned rather than reaping.
+//
+// walkFn is injected for testability. Production passes
+// platform.WalkParents; tests pass hand-rolled chains. walkFn is called
+// once per live member. A nil walkFn or empty members slice always
+// returns (false, reason).
+//
+// The returned reason string is diagnostic-only — it is included in the
+// structured log entry so operators can see WHY a pgid was or was not
+// reaped. Never shown to end users as an error.
+func pgidOwnershipCheck(
+	members []int,
+	knownProjects []string,
+	daemonBinary string,
+	walkFn func(int) []platform.AncestorInfo,
+) (bool, string) {
+	if len(members) == 0 {
+		return false, "no live members to walk"
+	}
+	if walkFn == nil {
+		return false, "no parent-chain walker"
+	}
+	if len(knownProjects) == 0 {
+		return false, "no known project paths configured for this daemon"
+	}
+
+	var (
+		sawCmdlineMatch bool
+		sawCwdMatch     bool
+		matchingCmdline string
+		matchingCwd     string
+	)
+
+	for _, m := range members {
+		if m <= 1 {
+			continue
+		}
+		chain := walkFn(m)
+		for _, anc := range chain {
+			if !sawCmdlineMatch && cmdlineLooksLikeAgnt(anc.Cmdline, daemonBinary) {
+				sawCmdlineMatch = true
+				matchingCmdline = anc.Cmdline
+			}
+			if !sawCwdMatch && cwdIsInsideKnownProject(anc.Cwd, knownProjects) {
+				sawCwdMatch = true
+				matchingCwd = anc.Cwd
+			}
+			if sawCmdlineMatch && sawCwdMatch {
+				return true, fmt.Sprintf(
+					"ancestor cmdline=%q cwd=%q matches this daemon",
+					truncateForLog(matchingCmdline, 200),
+					matchingCwd,
+				)
+			}
+		}
+	}
+
+	switch {
+	case !sawCmdlineMatch && !sawCwdMatch:
+		return false, "no ancestor cmdline or cwd matched this daemon"
+	case !sawCmdlineMatch:
+		return false, fmt.Sprintf("cwd %q in known project but no agnt cmdline ancestor found", matchingCwd)
+	default:
+		return false, fmt.Sprintf("cmdline %q looks like agnt but no ancestor cwd in known projects", truncateForLog(matchingCmdline, 200))
+	}
+}
+
+// truncateForLog limits a diagnostic string to n runes, appending "…" if
+// clipped. Prevents unbounded log lines for pathological cmdlines.
+func truncateForLog(s string, n int) string {
+	if n <= 0 || len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
+}
+
+// resolvedDaemonBinary returns the path of the running daemon binary,
+// resolved through symlinks where possible. Used as one of the cmdline
+// match targets in pgidOwnershipCheck. Returns empty string on any error
+// so the gate falls back to substring-only matching on "agnt run".
+func resolvedDaemonBinary() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		return resolved
+	}
+	return exe
 }

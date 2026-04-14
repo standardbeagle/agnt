@@ -13,7 +13,9 @@
 package platform
 
 import (
+	"os"
 	"os/exec"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -220,5 +222,125 @@ func TestIsProcessAlive_DeadPID(t *testing.T) {
 	if isProcessAlive(pid) {
 		// Kernel may keep the pid reusable but ESRCH should be reported.
 		t.Errorf("isProcessAlive(%d) should be false after Wait", pid)
+	}
+}
+
+func TestReadProcCmdline_Self(t *testing.T) {
+	got := ReadProcCmdline(os.Getpid())
+	if got == "" {
+		t.Skip("/proc/self/cmdline unreadable (non-Linux?)")
+	}
+	// Test-binary cmdline should contain ".test" somewhere (go test
+	// convention). We assert non-emptiness and absence of NUL bytes to
+	// make sure the rewrite worked.
+	if strings.Contains(got, "\x00") {
+		t.Errorf("cmdline contains raw NUL bytes: %q", got)
+	}
+	if !strings.Contains(got, ".test") {
+		t.Logf("note: self cmdline %q does not contain '.test' — non-standard test runner?", got)
+	}
+}
+
+func TestReadProcCmdline_NonexistentPID(t *testing.T) {
+	// PID 2 million is effectively always nonexistent on sane systems.
+	got := ReadProcCmdline(2_000_000)
+	if got != "" {
+		t.Errorf("ReadProcCmdline for nonexistent pid returned %q, want empty", got)
+	}
+}
+
+func TestReadProcCmdline_ZeroPID(t *testing.T) {
+	if got := ReadProcCmdline(0); got != "" {
+		t.Errorf("ReadProcCmdline(0) = %q, want empty", got)
+	}
+	if got := ReadProcCmdline(-1); got != "" {
+		t.Errorf("ReadProcCmdline(-1) = %q, want empty", got)
+	}
+}
+
+func TestReadProcCwd_Self(t *testing.T) {
+	got := ReadProcCwd(os.Getpid())
+	if got == "" {
+		t.Skip("/proc/self/cwd unreadable (non-Linux?)")
+	}
+	// Should match os.Getwd() up to symlink resolution. We only assert
+	// non-emptiness and absoluteness to stay portable.
+	if !strings.HasPrefix(got, "/") {
+		t.Errorf("ReadProcCwd(self) = %q, want absolute path", got)
+	}
+}
+
+func TestReadProcCwd_NonexistentPID(t *testing.T) {
+	if got := ReadProcCwd(2_000_000); got != "" {
+		t.Errorf("ReadProcCwd for nonexistent pid returned %q, want empty", got)
+	}
+}
+
+func TestWalkParents_SelfChain(t *testing.T) {
+	// Walking from our own pid must return at least one ancestor
+	// (go test, the shell, or init — depending on environment).
+	// Each returned AncestorInfo must have a non-zero PID and a
+	// non-empty Cmdline for the walk to be useful to the daemon gate.
+	chain := WalkParents(os.Getpid())
+	if len(chain) == 0 {
+		t.Skip("WalkParents returned empty chain (non-Linux /proc?)")
+	}
+	for i, anc := range chain {
+		if anc.PID <= 0 {
+			t.Errorf("chain[%d] has invalid PID %d", i, anc.PID)
+		}
+		// Cmdline may be empty for kernel threads, but at the
+		// userspace levels we expect to see something.
+		if anc.Cmdline == "" && anc.PID > 1 {
+			t.Logf("chain[%d] pid=%d has empty cmdline (race or kernel thread)", i, anc.PID)
+		}
+	}
+}
+
+func TestWalkParents_InvalidPID(t *testing.T) {
+	if chain := WalkParents(0); len(chain) != 0 {
+		t.Errorf("WalkParents(0) = %+v, want empty", chain)
+	}
+	if chain := WalkParents(-1); len(chain) != 0 {
+		t.Errorf("WalkParents(-1) = %+v, want empty", chain)
+	}
+	if chain := WalkParents(1); len(chain) != 0 {
+		t.Errorf("WalkParents(1) = %+v, want empty (init has no parents to walk)", chain)
+	}
+}
+
+func TestWalkParents_SpawnedChild(t *testing.T) {
+	// Spawn a long-running child and confirm walking from the child
+	// includes our own PID as an ancestor. This validates the ppid
+	// chain traversal end-to-end with a known-good hierarchy.
+	cmd := exec.Command("sh", "-c", "sleep 5")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("spawn child: %v", err)
+	}
+	defer func() {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+	}()
+
+	childPID := cmd.Process.Pid
+	chain := WalkParents(childPID)
+	if len(chain) == 0 {
+		t.Skip("WalkParents returned empty chain (non-Linux /proc?)")
+	}
+
+	var sawSelf bool
+	self := os.Getpid()
+	for _, anc := range chain {
+		if anc.PID == self {
+			sawSelf = true
+			break
+		}
+	}
+	if !sawSelf {
+		var pids []int
+		for _, a := range chain {
+			pids = append(pids, a.PID)
+		}
+		t.Errorf("WalkParents(child pid=%d) chain %v did not include self pid=%d", childPID, pids, self)
 	}
 }

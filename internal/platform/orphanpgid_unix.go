@@ -23,6 +23,22 @@ type OrphanPGID struct {
 	Members []int // live member PIDs currently in this pgid
 }
 
+// AncestorInfo captures the per-process fields consulted by daemon-startup
+// ownership gates when deciding whether an orphan pgid is plausibly owned
+// by this daemon. Populated from /proc/<pid>/{cmdline,cwd,stat}.
+//
+// PID is the ancestor's PID. Cmdline is the NUL-joined /proc/<pid>/cmdline
+// rewritten as a single space-delimited string for substring matching.
+// Cwd is the resolved /proc/<pid>/cwd symlink. Any field may be the empty
+// string if the source /proc entry was unreadable (races where the process
+// disappeared mid-walk are tolerated).
+type AncestorInfo struct {
+	PID     int
+	PPID    int
+	Cmdline string
+	Cwd     string
+}
+
 // ScanOrphanedPGIDs enumerates /proc and returns every pgid that qualifies
 // as orphaned for the purpose of daemon-startup cleanup. A pgid is orphaned
 // when ALL of the following are true:
@@ -135,6 +151,142 @@ func allMembersOwnedBy(members []int, wantUID int) bool {
 		matched++
 	}
 	return matched > 0
+}
+
+// ReadProcCmdline returns the /proc/<pid>/cmdline contents with NUL
+// separators rewritten to spaces, trimmed of any trailing whitespace. An
+// empty string is returned on any read error or when the entry is empty
+// (kernel threads, raced-away processes).
+//
+// The returned string is suitable for substring matching against
+// well-known invocations like "agnt run" or a daemon binary path. Callers
+// must not attempt to round-trip it back into argv — the space-join is
+// lossy for arguments that themselves contain spaces.
+func ReadProcCmdline(pid int) string {
+	if pid <= 0 {
+		return ""
+	}
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+	if err != nil || len(data) == 0 {
+		return ""
+	}
+	// Trim trailing NULs then rewrite remaining NULs as spaces.
+	trimmed := strings.TrimRight(string(data), "\x00")
+	return strings.ReplaceAll(trimmed, "\x00", " ")
+}
+
+// ReadProcCwd returns the resolved /proc/<pid>/cwd symlink target. An
+// empty string is returned on any error (permission denied, process gone,
+// non-Linux /proc without cwd entries). Callers must not assume the path
+// is still meaningful if the target directory has been deleted — the
+// kernel reports "(deleted)" suffixes in that case, which this function
+// preserves verbatim so callers can detect it if they care.
+func ReadProcCwd(pid int) string {
+	if pid <= 0 {
+		return ""
+	}
+	cwd, err := os.Readlink(fmt.Sprintf("/proc/%d/cwd", pid))
+	if err != nil {
+		return ""
+	}
+	return cwd
+}
+
+// readProcPPID returns the parent PID of pid by parsing /proc/<pid>/stat.
+// Returns 0 on any error. The stat layout after the comm field is:
+//
+//	state(1) ppid(2) pgrp(3) ...
+//
+// where indices are 1-based relative to the first field AFTER the closing
+// paren of comm.
+func readProcPPID(pid int) int {
+	if pid <= 0 {
+		return 0
+	}
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return 0
+	}
+	idx := strings.LastIndex(string(data), ")")
+	if idx < 0 || idx+1 >= len(data) {
+		return 0
+	}
+	fields := strings.Fields(string(data[idx+1:]))
+	if len(fields) < 2 {
+		return 0
+	}
+	ppid, err := strconv.Atoi(fields[1])
+	if err != nil {
+		return 0
+	}
+	return ppid
+}
+
+// WalkParents walks the parent chain of pid upward, returning each
+// visited ancestor as an AncestorInfo with Cmdline and Cwd prepopulated.
+// The walk includes PID 1 (init) in the chain — in production that's
+// /sbin/init or systemd, whose cmdline and cwd will not match any agnt
+// pattern and therefore contribute no evidence to ownership gates. In a
+// PID namespace (unshare), PID 1 may be a meaningful ancestor (e.g. the
+// namespace's designated init), which is exactly why we visit it: the
+// procisolation daemon tests need to resolve reparented grandchildren
+// back to a PID-namespaced init that impersonates a live agnt run.
+//
+// The walk stops when:
+//
+//  1. The next ppid is <= 0 (we've gone past init or the PID is a kernel
+//     thread with no parent recorded).
+//  2. The current pid itself is 0 (/proc/0 does not exist).
+//  3. /proc/<pid>/stat cannot be read for the current pid (race: the
+//     ancestor vanished between visits).
+//  4. A cycle is detected (PID re-seen; defensive, should not happen).
+//  5. A safety limit of 64 ancestors is reached (defensive).
+//
+// The returned slice does NOT include pid itself — only strict ancestors.
+// Callers that want the starting pid in the chain should prepend it.
+//
+// This function is used by the daemon-startup orphan-pgid ownership gate
+// to find an ancestor whose cmdline/cwd identifies the candidate pgid as
+// owned by this daemon. Errors reading individual ancestors are silently
+// skipped: the walk proceeds with whatever it can read.
+func WalkParents(pid int) []AncestorInfo {
+	if pid <= 1 {
+		return nil
+	}
+	const maxDepth = 64
+	visited := make(map[int]bool, 8)
+	out := make([]AncestorInfo, 0, 8)
+
+	cur := pid
+	for depth := 0; depth < maxDepth; depth++ {
+		ppid := readProcPPID(cur)
+		if ppid <= 0 {
+			// No recorded parent — either kernel thread or /proc race.
+			return out
+		}
+		if visited[ppid] {
+			// Cycle — defensive. Stop.
+			return out
+		}
+		visited[ppid] = true
+
+		ancestor := AncestorInfo{
+			PID:     ppid,
+			PPID:    readProcPPID(ppid),
+			Cmdline: ReadProcCmdline(ppid),
+			Cwd:     ReadProcCwd(ppid),
+		}
+		out = append(out, ancestor)
+
+		// Stop AFTER visiting init. PID 1 has no meaningful parent to
+		// continue walking into; its own ppid in /proc is 0.
+		if ppid == 1 {
+			return out
+		}
+
+		cur = ppid
+	}
+	return out
 }
 
 // readProcUID returns the real uid of pid by parsing /proc/<pid>/status.
