@@ -32,6 +32,8 @@ func (d *Daemon) handleProxyEvents() {
 				d.handleExplicitStart(event)
 			case ScriptStopped:
 				d.handleScriptStopped(event)
+			case FallbackPortCheck:
+				d.handleFallbackPortCheck(event)
 			default:
 				debug.Warn("daemon", "Unknown proxy event type: %d", event.Type)
 			}
@@ -263,6 +265,167 @@ func (d *Daemon) handleExplicitStart(event ProxyEvent) {
 	d.registerProxyDependencies(server, event.ProxyID, event.Config, event.Path)
 
 	debug.Log("daemon", "Created explicit proxy %s targeting %s", event.ProxyID, targetURL)
+}
+
+// handleFallbackPortCheck handles delayed fallback-port checks for script-linked
+// proxies whose URL detection never fired. Scheduled by
+// scheduleFallbackPortChecks 30 seconds after autostart, it either:
+//
+//  1. Finds an already-created proxy (URL detection won the race) and logs
+//     startup_proxy_fallback_skipped_already_running, or
+//  2. Creates a proxy targeting http://localhost:<fallback-port> using the
+//     same proxy-id scheme as handleExplicitStart (makeProcessID), and logs
+//     startup_proxy_fallback_used on success or startup_proxy_fallback_failed
+//     on failure.
+//
+// Both success and failure entries flow through startupErrorStore so the
+// decision is visible via get_errors and the overlay — no silent drops.
+func (d *Daemon) handleFallbackPortCheck(event ProxyEvent) {
+	if event.Config == nil || event.ProxyName == "" || event.Path == "" {
+		debug.Warn("daemon", "Invalid FallbackPortCheck event: missing config, proxyName, or path")
+		d.startupErrorStore.Add(&StartupLogEntry{
+			ProcessID:  event.ScriptID,
+			ScriptName: event.ProxyName,
+			Level:      "warning",
+			EventType:  "startup_proxy_fallback_failed",
+			Message:    "invalid FallbackPortCheck event: missing config, proxy name, or project path",
+			Timestamp:  time.Now(),
+		})
+		return
+	}
+
+	if event.Config.FallbackPort <= 0 {
+		debug.Warn("daemon", "FallbackPortCheck for proxy %s has no fallback-port configured", event.ProxyName)
+		d.startupErrorStore.Add(&StartupLogEntry{
+			ProcessID:  event.ScriptID,
+			ScriptName: event.ProxyName,
+			Level:      "warning",
+			EventType:  "startup_proxy_fallback_failed",
+			Message:    fmt.Sprintf("fallback-port check for proxy %s has no fallback-port configured", event.ProxyName),
+			Timestamp:  time.Now(),
+		})
+		return
+	}
+
+	// Use the explicit-start proxy id scheme. Script-linked proxies created
+	// via URLDetected use makeProxyIDFromURL (which embeds host+port), so we
+	// also need to scan any existing proxies linked to this script to detect
+	// the URL-detection-won-the-race case.
+	fallbackProxyID := makeProcessID(event.Path, event.ProxyName)
+
+	// Race check 1: an existing proxy with the fallback id (another fallback
+	// check for the same name somehow fired twice, or explicit-start path
+	// already created one).
+	if _, err := d.proxym.Get(fallbackProxyID); err == nil {
+		debug.Log("daemon", "Fallback proxy %s already exists, skipping", fallbackProxyID)
+		d.startupErrorStore.Add(&StartupLogEntry{
+			ProcessID:  event.ScriptID,
+			ScriptName: event.ProxyName,
+			Level:      "info",
+			EventType:  "startup_proxy_fallback_skipped_already_running",
+			Message:    fmt.Sprintf("fallback-port check for proxy %s: proxy already running (id=%s)", event.ProxyName, fallbackProxyID),
+			Timestamp:  time.Now(),
+		})
+		return
+	}
+
+	// Race check 2: URL detection created a proxy via makeProxyIDFromURL
+	// whose id has the form "{fallbackProxyID}:{host}-{port}". Match by
+	// prefix so we only skip when a proxy for THIS specific proxy-name was
+	// already created (not a sibling proxy config linked to the same
+	// script). This matters when a single script has multiple linked
+	// proxy configs and only some of them have URL detection succeed.
+	if event.ScriptID != "" {
+		idPrefix := fallbackProxyID + ":"
+		d.scriptProxyMu.RLock()
+		tracked := d.scriptProxies[event.ScriptID]
+		var raceWinner string
+		for _, id := range tracked {
+			if strings.HasPrefix(id, idPrefix) {
+				raceWinner = id
+				break
+			}
+		}
+		d.scriptProxyMu.RUnlock()
+		if raceWinner != "" {
+			debug.Log("daemon", "Fallback proxy %s: URL detection already created %s, skipping", event.ProxyName, raceWinner)
+			d.startupErrorStore.Add(&StartupLogEntry{
+				ProcessID:  event.ScriptID,
+				ScriptName: event.ProxyName,
+				Level:      "info",
+				EventType:  "startup_proxy_fallback_skipped_already_running",
+				Message:    fmt.Sprintf("fallback-port check for proxy %s: URL detection already created proxy %s for script %s", event.ProxyName, raceWinner, event.Config.Script),
+				Timestamp:  time.Now(),
+			})
+			return
+		}
+	}
+
+	// No proxy exists — create one targeting the fallback port.
+	host := event.Config.Host
+	if host == "" {
+		host = "localhost"
+	}
+	targetURL := fmt.Sprintf("http://%s:%d", host, event.Config.FallbackPort)
+
+	proxyServerConfig := proxy.ProxyConfig{
+		ID:          fallbackProxyID,
+		TargetURL:   targetURL,
+		ListenPort:  -1, // Auto-assign
+		MaxLogSize:  event.Config.MaxLogSize,
+		AutoRestart: true,
+		Path:        event.Path,
+		BindAddress: event.Config.Bind,
+	}
+
+	server, err := d.proxym.Create(d.ctx, proxyServerConfig)
+	if err != nil {
+		debug.Error("daemon", "Failed to create fallback proxy %s: %v", fallbackProxyID, err)
+		d.startupErrorStore.Add(&StartupLogEntry{
+			ProcessID:  event.ScriptID,
+			ScriptName: event.ProxyName,
+			Level:      "warning",
+			EventType:  "startup_proxy_fallback_failed",
+			Message:    fmt.Sprintf("failed to create fallback proxy %s targeting %s: %v", event.ProxyName, targetURL, err),
+			Port:       event.Config.FallbackPort,
+			Timestamp:  time.Now(),
+		})
+		return
+	}
+
+	d.wireProxyLogger(server)
+
+	// Overlay endpoint: prefer the session bound to this project path.
+	if session, ok := d.sessionRegistry.FindByDirectory(event.Path); ok && session.OverlayPath != "" {
+		server.SetOverlayEndpoint(session.OverlayPath)
+		debug.Log("daemon", "Set session-specific overlay endpoint for fallback proxy %s: %s", fallbackProxyID, session.OverlayPath)
+	} else if overlayEndpoint := d.OverlayEndpoint(); overlayEndpoint != "" {
+		server.SetOverlayEndpoint(overlayEndpoint)
+		debug.Log("daemon", "Set global overlay endpoint for fallback proxy %s: %s", fallbackProxyID, overlayEndpoint)
+	} else {
+		debug.Log("daemon", "No overlay endpoint found for fallback proxy %s — proxy→agent messages will not work", fallbackProxyID)
+	}
+
+	// Track script → proxy so ScriptStopped tears this proxy down. Mirrors
+	// the URL-detected path; keeps the reverse index consistent for the
+	// health tracker and suppression logic.
+	if event.ScriptID != "" {
+		d.trackScriptProxy(event.ScriptID, fallbackProxyID)
+	}
+
+	// Register wait-for dependencies (script names in event.Config.WaitFor).
+	d.registerProxyDependencies(server, fallbackProxyID, event.Config, event.Path)
+
+	d.startupErrorStore.Add(&StartupLogEntry{
+		ProcessID:  event.ScriptID,
+		ScriptName: event.ProxyName,
+		Level:      "info",
+		EventType:  "startup_proxy_fallback_used",
+		Message:    fmt.Sprintf("created fallback proxy %s for script %s targeting %s", event.ProxyName, event.Config.Script, targetURL),
+		Port:       event.Config.FallbackPort,
+		Timestamp:  time.Now(),
+	})
+	debug.Log("daemon", "Created fallback proxy %s targeting %s (script %s)", fallbackProxyID, targetURL, event.Config.Script)
 }
 
 // handleScriptStopped handles script stopped events.
