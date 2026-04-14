@@ -56,6 +56,18 @@ proxies {
     // Link proxy to script - auto-creates when script outputs URLs
     frontend {
         script "dev"
+        // Readiness gate: list script ids whose Running Healthy state
+        // must hold before this proxy forwards requests. While any listed
+        // dep is not ready, the proxy is bound (visible in `proxy list`)
+        // but returns 503 with the `agnt_proxy_not_ready` sentinel JSON.
+        // `get_errors` filters the sentinel, so the startup window no
+        // longer floods the AI agent with false ECONNREFUSED lines from
+        // the front end's `/api` fetches.
+        //
+        // The gate is a READINESS gate, not a build gate: a dep in
+        // "Running With Errors" (compile errors, responding with stack
+        // traces) still passes the gate because it IS responsive.
+        wait-for "api"
         // No autostart needed - created automatically when URLs detected
     }
 
@@ -123,6 +135,15 @@ toast {
 // host         - Target host (default: localhost, used with port)
 // autostart    - Start automatically (true/false)
 // max-log-size - Maximum log entries to keep (default: 1000)
+// wait-for     - Script ids that must reach ready before forwarding.
+//                Space-separated within a single wait-for line.
+//                Example: wait-for "api" "db"
+//                While any listed script is not yet ready, the proxy
+//                returns 503 with an agnt_proxy_not_ready JSON sentinel
+//                that get_errors filters as noise. Use this to suppress
+//                false ECONNREFUSED during startup races when the
+//                front-end (Vite, Next.js, etc) binds before the
+//                back-end (.NET, Flask, Go) finishes listening.
 
 // ============================================================================
 // FRAMEWORK-SPECIFIC EXAMPLES
