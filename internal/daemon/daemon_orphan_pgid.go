@@ -41,6 +41,20 @@ const startupOrphanPGIDGrace = 2 * time.Second
 func (d *Daemon) startupOrphanPGIDScan(projectPath string) int {
 	log := d.startupErrorStore
 
+	// Test safety escape hatch. The daemon test package's TestMain sets
+	// AGNT_DISABLE_ORPHAN_SCAN=1 before running the suite so that the dozens
+	// of integration tests that call daemon.Start() do not issue real kill(2)
+	// syscalls against unrelated host pgids. Tests that specifically exercise
+	// the scan unset this env var via t.Setenv and are build-tagged
+	// `procisolation` so they only run inside a PID namespace via
+	// `make test-isolated`. In production the env var is never set.
+	//
+	// This env var is NOT a config option and must not be documented as one
+	// for end users — it is a test-only fence.
+	if os.Getenv("AGNT_DISABLE_ORPHAN_SCAN") != "" {
+		return 0
+	}
+
 	// Load config for gate evaluation. Failure to load is non-fatal --
 	// we fall back to the default (scan enabled) and continue.
 	enabled := true

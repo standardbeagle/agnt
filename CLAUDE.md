@@ -499,6 +499,21 @@ alerts {
 
 ## Testing
 
+**Two-tier test suite**:
+
+| Target | Command | Scope | Where to run |
+|--------|---------|-------|--------------|
+| Default | `make test` | Everything except `procisolation`-tagged files | Any platform. Safe on any host. |
+| Isolated | `make test-isolated` | Only `procisolation`-tagged files, inside `unshare --user --pid --mount --fork --mount-proc` | Linux with user+pid namespaces (Ubuntu/Debian/Fedora/Arch/WSL2). Skips loud on other hosts. |
+
+The isolated target exists because a subset of tests exercise host-global primitives — real `/proc` walks and real `kill(2)` syscalls against pgids whose leader is dead — which can reap unrelated processes owned by the same uid when run natively. Running them inside a PID namespace gives `/proc` a private view and makes host pids unreachable, so the tests exercise the real code without risk.
+
+Files tagged `procisolation`:
+- `internal/daemon/daemon_orphan_pgid_test.go` — calls `startupOrphanPGIDScan` directly
+- `internal/platform/orphanpgid_unix_test.go` — calls `ScanOrphanedPGIDs` + `KillSessionPGID` directly
+
+All other daemon tests run natively under `make test`. They call `daemon.Start()` dozens of times, but the scan inside `Start()` is gated by `AGNT_DISABLE_ORPHAN_SCAN=1`, set in the daemon package's `TestMain`. The env var is a **test-only fence** — it must never be documented as a user-facing config knob, and the isolated target explicitly clears it so the scan actually runs under its namespace.
+
 **Coverage areas**:
 - `internal/process/ringbuf_test.go`: Thread safety, overflow
 - `internal/process/lifecycle_test.go`: State transitions, shutdown
@@ -509,6 +524,8 @@ alerts {
 - `internal/overlay/gate_test.go`: Freeze/unfreeze
 - `internal/tools/watch_test.go`: Watch command builder
 - `cmd/agnt/monitor_test.go`: Monitor event formatting (compact + JSON)
+- `internal/daemon/daemon_orphan_pgid_test.go`: Orphan pgid scan (procisolation)
+- `internal/platform/orphanpgid_unix_test.go`: Orphan pgid primitives (procisolation)
 
 ## Important Constraints
 

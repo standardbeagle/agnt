@@ -1,4 +1,14 @@
-//go:build !windows
+//go:build !windows && procisolation
+
+// Tagged `procisolation` because the tests here exercise the system-global
+// primitives ScanOrphanedPGIDs + KillSessionPGID directly against host /proc.
+// Default `go test ./internal/platform/...` excludes this file; run via:
+//
+//     make test-isolated
+//
+// which places the test binary inside a PID namespace via
+// `unshare --user --pid --mount --fork --mount-proc` so kill syscalls can
+// not reach host processes.
 
 package platform
 

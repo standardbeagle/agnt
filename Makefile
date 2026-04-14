@@ -1,4 +1,4 @@
-.PHONY: build release test test-unit test-integration test-browser test-e2e clean clean-zombies install install-local install-windows run lint test-webapp mockagent
+.PHONY: build release test test-unit test-integration test-browser test-e2e test-isolated clean clean-zombies install install-local install-windows run lint test-webapp mockagent
 
 # Binary names
 BINARY := devtool-mcp
@@ -34,6 +34,38 @@ test: clean-zombies
 test-coverage:
 	go test -v -coverprofile=coverage.out ./...
 	go tool cover -html=coverage.out -o coverage.html
+
+# Run invasive process-namespace tests inside a PID + mount namespace.
+#
+# Tests tagged `procisolation` (daemon_orphan_pgid_test.go,
+# platform/orphanpgid_unix_test.go) exercise host-global primitives —
+# real /proc walks, real kill(2) syscalls against pgids whose leader is
+# dead. Running them natively can reap unrelated processes owned by the
+# same uid. This target places the test binary inside its own PID
+# namespace via `unshare`, so /proc only lists processes spawned inside
+# the namespace and kill syscalls cannot reach host pids.
+#
+# Requires: Linux kernel with user namespaces and unprivileged clone
+# enabled (the default on modern distros, Ubuntu/Debian/Fedora/Arch,
+# and WSL2). Skip-loud on non-Linux or restricted hosts.
+test-isolated:
+	@if [ "$$(uname -s)" != "Linux" ]; then \
+		echo "SKIPPED: test-isolated requires Linux PID namespaces (host is $$(uname -s))"; \
+		exit 0; \
+	fi
+	@if ! command -v unshare >/dev/null 2>&1; then \
+		echo "SKIPPED: test-isolated requires util-linux unshare"; \
+		exit 0; \
+	fi
+	@if ! unshare --user --pid --mount --fork --mount-proc true 2>/dev/null; then \
+		echo "SKIPPED: user+pid namespaces unavailable (kernel.unprivileged_userns_clone disabled?)"; \
+		exit 0; \
+	fi
+	@echo "Running procisolation tests inside unshare PID namespace..."
+	unshare --user --pid --mount --fork --mount-proc \
+		env -u AGNT_DISABLE_ORPHAN_SCAN \
+		go test -tags procisolation -count=1 -v \
+		./internal/daemon/... ./internal/platform/...
 
 # Run unit tests only (excludes integration tests)
 test-unit:
@@ -147,7 +179,8 @@ help:
 	@echo "Available targets:"
 	@echo "  build            - Build agnt and devtool-mcp (copy of agnt)"
 	@echo "  release          - Build production release with optimizations and version info"
-	@echo "  test             - Run all tests"
+	@echo "  test             - Run all tests (excludes procisolation tag)"
+	@echo "  test-isolated    - Run procisolation tests inside unshare PID namespace (Linux)"
 	@echo "  test-unit        - Run unit tests only"
 	@echo "  test-integration - Run integration tests (requires dependencies)"
 	@echo "  test-browser     - Run browser automation tests (requires Chrome)"
