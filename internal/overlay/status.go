@@ -359,6 +359,20 @@ func (f *StatusFetcher) fetchProxies() ([]ProxyInfo, error) {
 			info.ListenAddr = listen
 		}
 
+		// Readiness-gate state: the daemon emits "status":
+		// "waiting_for_dependencies" for gated proxies and a
+		// "waiting_for" array with the pending script names.
+		if state, ok := pm["status"].(string); ok {
+			info.State = state
+		}
+		if waitingRaw, ok := pm["waiting_for"].([]interface{}); ok {
+			for _, v := range waitingRaw {
+				if s, ok := v.(string); ok {
+					info.WaitingOn = append(info.WaitingOn, s)
+				}
+			}
+		}
+
 		// Check stats for error count
 		if stats, ok := pm["stats"].(map[string]interface{}); ok {
 			if errCount, ok := stats["error_count"].(float64); ok {
