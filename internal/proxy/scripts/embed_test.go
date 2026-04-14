@@ -173,3 +173,109 @@ func TestShadowRootBootstrapOrder(t *testing.T) {
 		t.Errorf("shadow-root must be emitted before indicator (got shadowIdx=%d, indicatorIdx=%d)", shadowIdx, indicatorIdx)
 	}
 }
+
+// TestScreenshotOverlayBlockHandler guards against a recurring regression in
+// startScreenshotMode's `block` helper: if it calls preventDefault on pointer*
+// events (pointerdown / pointermove / pointerup), per the Pointer Events spec
+// the browser suppresses the compatibility mousedown / mousemove / mouseup
+// that the drag selection handlers depend on, and the rectangle never draws.
+// Two prior commits already attempted to fix this regression
+// (commit 4cceb2e introduced the bug, commit aaf0c36 made it less broken by
+// removing stopImmediatePropagation but left preventDefault for pointer events
+// in place). The current fix routes preventDefault past pointer events.
+func TestScreenshotOverlayBlockHandler(t *testing.T) {
+	// Locate the block helper inside startScreenshotMode.
+	const marker = "function block(e)"
+	idx := strings.Index(indicatorJS, marker)
+	if idx < 0 {
+		t.Fatalf("indicator.js missing %q; cannot guard screenshot drag regression", marker)
+	}
+	end := strings.Index(indicatorJS[idx:], "}")
+	if end < 0 {
+		t.Fatalf("block() helper in indicator.js not terminated with }; cannot parse")
+	}
+	body := indicatorJS[idx : idx+end+1]
+
+	// Must not unconditionally preventDefault — that re-introduces the
+	// pointer-events compatibility-mouse suppression bug. Verify each
+	// preventDefault call sits inside an if-block whose condition tests the
+	// event type for "pointer". A nearby preceding `if (` line referencing
+	// `pointer` is treated as a valid gate.
+	lines := strings.Split(body, "\n")
+	preventDefaultLines := []int{}
+	for i, line := range lines {
+		if strings.Contains(line, "e.preventDefault()") {
+			preventDefaultLines = append(preventDefaultLines, i)
+		}
+	}
+	if len(preventDefaultLines) == 0 {
+		t.Errorf("block() in indicator.js no longer calls preventDefault — non-pointer mouse/click/contextmenu events need it to suppress text selection and the right-click menu.\nblock body:\n%s", body)
+	}
+	for _, lineNum := range preventDefaultLines {
+		guarded := false
+		for j := lineNum - 1; j >= 0 && j >= lineNum-3; j-- {
+			if strings.Contains(lines[j], "if (") && strings.Contains(lines[j], "pointer") {
+				guarded = true
+				break
+			}
+		}
+		if !guarded {
+			t.Errorf("block() in indicator.js calls e.preventDefault() at body line %d without an enclosing pointer-event gate — "+
+				"this suppresses compatibility mouse events and breaks screenshot drag selection.\nblock body:\n%s", lineNum, body)
+		}
+	}
+
+	// Must call stopPropagation (otherwise click pass-through to the page
+	// underneath comes back).
+	if !strings.Contains(body, "e.stopPropagation()") {
+		t.Errorf("block() in indicator.js missing e.stopPropagation() — clicks will pass through to the page beneath the overlay")
+	}
+
+	// Must NOT use stopImmediatePropagation — that blocks sibling handlers on
+	// the same overlay from firing (the original bug from commit 4cceb2e).
+	if strings.Contains(body, "stopImmediatePropagation") {
+		t.Errorf("block() in indicator.js uses stopImmediatePropagation — this blocks the drag handlers registered as siblings on the same overlay element")
+	}
+}
+
+// TestAuditMegaMenuVisibilityNotInlinedForPopover guards against a regression
+// where STYLES.megaMenu's inline opacity:0 / transform / pointer-events:none
+// values beat the stylesheet rules from injectAuditMenuStyles() that toggle
+// those properties on :popover-open. Inline styles always win over stylesheet
+// rules (without !important), so the popover opens but renders invisible.
+//
+// The fix in createAuditButton clears those three inline properties when on
+// the modern (Popover API) path, leaving the stylesheet rules in control.
+// This test parses the createAuditButton body and verifies the cleanup is
+// still present and gated on supportsPopover.
+func TestAuditMegaMenuVisibilityNotInlinedForPopover(t *testing.T) {
+	// Find the menu-creation block.
+	const idMarker = "menu.id = '__devtool-audit-menu';"
+	idx := strings.Index(indicatorJS, idMarker)
+	if idx < 0 {
+		t.Fatalf("indicator.js missing audit menu id assignment %q; cannot guard regression", idMarker)
+	}
+	// Look at the next ~25 lines after the id assignment for the cleanup.
+	tail := indicatorJS[idx:]
+	if len(tail) > 1500 {
+		tail = tail[:1500]
+	}
+
+	// Cleanup must be gated on supportsPopover so the legacy path keeps its
+	// inline visibility defaults.
+	if !strings.Contains(tail, "if (supportsPopover)") {
+		t.Errorf("createAuditButton must clear inline visibility properties under `if (supportsPopover)` after creating the menu so :popover-open stylesheet rules can take effect. Block:\n%s", tail)
+	}
+
+	// All three properties must be cleared.
+	required := []string{
+		"menu.style.opacity = ''",
+		"menu.style.transform = ''",
+		"menu.style.pointerEvents = ''",
+	}
+	for _, expr := range required {
+		if !strings.Contains(tail, expr) {
+			t.Errorf("createAuditButton missing %q after menu creation — inline visibility will beat the :popover-open stylesheet rules and the audit menu will render invisible", expr)
+		}
+	}
+}

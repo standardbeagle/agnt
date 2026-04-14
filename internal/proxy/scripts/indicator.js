@@ -2808,6 +2808,19 @@
     menu.style.cssText = STYLES.megaMenu;
     menu.id = '__devtool-audit-menu';
 
+    // Modern path: visibility (opacity / transform / pointer-events) is owned
+    // by the stylesheet rules from injectAuditMenuStyles() via :popover-open.
+    // STYLES.megaMenu still includes the "hidden" defaults so the legacy path
+    // can toggle them inline, but inline styles beat stylesheet rules — so
+    // when the popover opens, the inline opacity:0 wins and the menu renders
+    // invisible. Clear the visibility properties from inline on the modern
+    // path so the stylesheet can take over.
+    if (supportsPopover) {
+      menu.style.opacity = '';
+      menu.style.transform = '';
+      menu.style.pointerEvents = '';
+    }
+
     // Group actions by category
     var sections = [
       { label: 'Quality Audits', ids: ['fullAudit', 'accessibility', 'security', 'seo'] },
@@ -3956,9 +3969,17 @@
     // Block all events from reaching the page underneath (capture phase)
     // Uses stopPropagation (not stopImmediatePropagation) so sibling
     // handlers for mousedown/mousemove/mouseup on this overlay still fire.
+    //
+    // preventDefault is intentionally NOT called for pointer* events: per the
+    // Pointer Events spec, preventDefault() on pointerdown suppresses the
+    // compatibility mousedown/mousemove/mouseup events that the drag handlers
+    // below depend on. We still preventDefault on mouse events / click /
+    // contextmenu to suppress text selection and the right-click menu.
     function block(e) {
-      e.preventDefault();
       e.stopPropagation();
+      if (!e.type.startsWith('pointer')) {
+        e.preventDefault();
+      }
     }
 
     var blockTypes = ['mousedown', 'mouseup', 'mousemove', 'click', 'pointerdown', 'pointerup', 'pointermove', 'contextmenu'];
