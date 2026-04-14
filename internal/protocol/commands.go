@@ -1,5 +1,7 @@
 package protocol
 
+import "encoding/json"
+
 // Agnt-specific command verbs (beyond those in go-cli-server).
 const (
 	VerbProxy        = "PROXY"
@@ -19,6 +21,7 @@ const (
 	VerbDoctor       = "DOCTOR"        // Health check / diagnostic report
 	VerbAutostart    = "AUTOSTART"     // Resolve port conflicts and resume autostart
 	VerbStreamEvents = "STREAM-EVENTS" // Long-lived event stream
+	VerbHook         = "HOOK"          // Claude Code hook dispatcher enqueue
 )
 
 // Agnt-specific sub-verbs (beyond those in go-cli-server).
@@ -318,4 +321,22 @@ type StreamEventFilter struct {
 	Severity   string   `json:"severity,omitempty"`    // Filter by severity: error, warning, info
 	Grep       string   `json:"grep,omitempty"`        // Substring match on process output lines
 	GrepStream string   `json:"grep_stream,omitempty"` // Filter process output stream: "stdout" or "stderr"
+}
+
+// HookPayload is sent from the `agnt hook` CLI dispatcher to the daemon when
+// a Claude Code (or other agent) hook fires. The wire shape is intentionally
+// tiny so the CLI can enqueue-and-exit in ~fork+write+ack time: the hook is
+// synchronous from Claude's perspective and any added latency is directly
+// visible to the user.
+//
+// `Event` is the hook name (PreToolUse, Notification, Stop, …). `Payload` is
+// the raw JSON blob Claude Code wrote to stdin, preserved verbatim so
+// downstream consumers can read any future fields without the CLI knowing
+// about them. `Tags` carries caller-provided key/value context — project
+// path, agent id, session code — so the daemon can filter and route without
+// re-parsing the opaque payload.
+type HookPayload struct {
+	Event   string            `json:"event"`
+	Payload json.RawMessage   `json:"payload,omitempty"`
+	Tags    map[string]string `json:"tags,omitempty"`
 }

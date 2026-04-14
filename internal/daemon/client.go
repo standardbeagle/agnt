@@ -3,16 +3,37 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
+	"syscall"
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/proxy"
 	"github.com/standardbeagle/go-cli-server/client"
+	"github.com/standardbeagle/go-cli-server/socket"
 )
+
+// hookSendDeadline bounds the total wall time an `agnt hook` CLI invocation
+// will spend talking to the daemon. Claude Code blocks on hook exit, so this
+// number is visible as added latency on every tool call. 50ms is the agreed
+// upper bound — anything longer and the CLI hits one of the sentinel errors
+// below and falls through to silent exit 0 so the hook remains invisible.
+const hookSendDeadline = 50 * time.Millisecond
+
+// ErrHookDaemonDown is returned from HookSend when the daemon socket is not
+// reachable (connection refused, socket file missing, etc). The CLI maps
+// this to silent exit 0 — hooks are fire-and-forget and a missing daemon is
+// not a user-visible failure.
+var ErrHookDaemonDown = errors.New("agnt hook: daemon not reachable")
+
+// ErrHookDeadline is returned from HookSend when the write or ack did not
+// complete inside hookSendDeadline. The CLI maps this to silent exit 0 —
+// dropping a hook silently is far better than blocking Claude's tool call.
+var ErrHookDeadline = errors.New("agnt hook: daemon enqueue deadline exceeded")
 
 // Client is a client for communicating with the daemon over the socket.
 // This wraps go-cli-server/client.Conn with agnt-specific methods.
@@ -716,6 +737,107 @@ func (c *Client) AutostartClearPorts(projectPath string) (map[string]interface{}
 // AutostartContinue resumes autostart without killing port blockers.
 func (c *Client) AutostartContinue(projectPath string) (map[string]interface{}, error) {
 	return c.conn.Request(protocol.VerbAutostart, protocol.SubVerbContinue, projectPath).JSON()
+}
+
+// HookSend enqueues a Claude Code hook event in the daemon's ring buffer and
+// returns as fast as possible. The protocol is fire-and-ack: the daemon's
+// verb handler pushes the event into an in-memory ring buffer and replies OK
+// synchronously off the drain path, so the CLI's wall-clock cost is
+// dominated by the connect + write + single-line read.
+//
+// The total operation is bounded by hookSendDeadline. On deadline, refused
+// connection, or EAGAIN we return a typed sentinel error so the CLI can map
+// it to silent exit 0 — hooks must never block Claude's tool call with a
+// visible error.
+//
+// Unlike the rest of this client HookSend does NOT reuse Client.conn. The
+// shared Conn does not expose SetWriteDeadline on its underlying socket, and
+// the hook hot path needs a deadline strictly scoped to this one call so
+// that a slow or wedged daemon on a previous request cannot stretch into the
+// hook. A dedicated short-lived socket is the cleanest way to get that
+// containment on both Unix and Windows.
+func (c *Client) HookSend(ctx context.Context, event string, payloadJSON json.RawMessage, tags map[string]string) error {
+	if event == "" {
+		return fmt.Errorf("HookSend: event required")
+	}
+
+	// Scope the deadline to the caller's context as well. If the caller
+	// cancels (e.g. Claude killed the hook process) we want to bail out
+	// immediately regardless of the 50ms budget.
+	deadline := time.Now().Add(hookSendDeadline)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
+	}
+
+	conn, err := socket.Connect(c.conn.SocketPath())
+	if err != nil {
+		return mapHookSendError(err)
+	}
+	defer conn.Close()
+
+	// Single deadline covers both the outbound write and the OK ack. The
+	// daemon handler is non-blocking (ring buffer push + write OK), so the
+	// ack ought to return within a microsecond or two of the write
+	// completing. If it doesn't, we want to bail out, not wait.
+	if err := conn.SetDeadline(deadline); err != nil {
+		return mapHookSendError(err)
+	}
+
+	payload := protocol.HookPayload{
+		Event:   event,
+		Payload: payloadJSON,
+		Tags:    tags,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("HookSend: marshal payload: %w", err)
+	}
+
+	w := protocol.NewWriter(conn)
+	if err := w.WriteCommandWithSubVerb(protocol.VerbHook, "", nil, body); err != nil {
+		return mapHookSendError(err)
+	}
+
+	p := protocol.NewParser(conn)
+	resp, err := p.ParseResponse()
+	if err != nil {
+		return mapHookSendError(err)
+	}
+
+	switch resp.Type {
+	case protocol.ResponseOK:
+		return nil
+	case protocol.ResponseErr:
+		return fmt.Errorf("HookSend: daemon error: [%s] %s", resp.Code, resp.Message)
+	default:
+		return fmt.Errorf("HookSend: unexpected response type %q", resp.Type)
+	}
+}
+
+// mapHookSendError translates a raw network/io error into the appropriate
+// sentinel the CLI can test against. Keep this tight: we only want to hide
+// the specific "daemon isn't talking to us in time" cases. Anything else
+// (e.g. malformed data, server error) falls through as a wrapped error and
+// the CLI will surface it on its verbose path.
+func mapHookSendError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, io.EOF) {
+		return fmt.Errorf("%w: %v", ErrHookDaemonDown, err)
+	}
+	if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ENOENT) {
+		return fmt.Errorf("%w: %v", ErrHookDaemonDown, err)
+	}
+	if errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EWOULDBLOCK) {
+		return fmt.Errorf("%w: %v", ErrHookDeadline, err)
+	}
+	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		return fmt.Errorf("%w: %v", ErrHookDeadline, err)
+	}
+	// Fall through: unknown error, surface it verbatim so the CLI's
+	// verbose path can print it.
+	return err
 }
 
 // StreamEvents opens a long-lived event stream from the daemon.
