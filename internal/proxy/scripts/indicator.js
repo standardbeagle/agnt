@@ -2127,9 +2127,24 @@
     // via inline cssText.
     if (!(typeof HTMLElement !== 'undefined' && 'popover' in HTMLElement.prototype)) return;
 
-    var style = document.createElement('style');
-    style.id = '__devtool-audit-menu-style';
-    style.textContent = [
+    // Progressive enhancement: CSS Anchor Positioning API.
+    // When supported (Chrome 125+, Edge 125+), the browser places the
+    // popover directly relative to the audit button without any JS
+    // layout reads — no rAF dance, no resize listener, no upper-left
+    // corner flash on first open. The `position-try-fallbacks` value
+    // makes the browser flip block/inline direction automatically if
+    // there's not enough room in the preferred slot.
+    //
+    // Feature detection uses CSS.supports() which returns true only on
+    // engines that have shipped the property, so legacy browsers receive
+    // no anchor rules at all and keep the JS fallback path.
+    var supportsAnchor =
+      typeof CSS !== 'undefined' &&
+      typeof CSS.supports === 'function' &&
+      CSS.supports('anchor-name: --x') &&
+      CSS.supports('position-anchor: --x');
+
+    var rules = [
       '[popover]#__devtool-audit-menu {',
       '  opacity: 0;',
       '  transform: translateY(4px);',
@@ -2147,7 +2162,31 @@
       '    transform: translateY(4px);',
       '  }',
       '}'
-    ].join('\n');
+    ];
+
+    if (supportsAnchor) {
+      // Modern path: declare the anchor on the button, anchor the menu
+      // to the button's bottom-left, and let the browser flip sides if
+      // the preferred slot overflows the viewport. No JS positioning.
+      //
+      // The explicit `top`/`left` here override the empty-string auto
+      // values that would otherwise leave the popover at the containing
+      // block origin (viewport 0,0) — that was the upper-left-corner
+      // bug on the pre-anchor rAF path.
+      rules.push('#__devtool-audit-btn {');
+      rules.push('  anchor-name: --devtool-audit-anchor;');
+      rules.push('}');
+      rules.push('[popover]#__devtool-audit-menu {');
+      rules.push('  position-anchor: --devtool-audit-anchor;');
+      rules.push('  top: anchor(bottom);');
+      rules.push('  left: anchor(left);');
+      rules.push('  position-try-fallbacks: flip-block, flip-inline;');
+      rules.push('}');
+    }
+
+    var style = document.createElement('style');
+    style.id = '__devtool-audit-menu-style';
+    style.textContent = rules.join('\n');
     styleTarget().appendChild(style);
   }
 
@@ -2793,13 +2832,33 @@
     // its pre-migration implementation so we don't regress.
     var supportsPopover = typeof HTMLElement !== 'undefined' && 'popover' in HTMLElement.prototype;
 
-    // Inject the popover transition rules (no-op for legacy browsers).
+    // Progressive enhancement: CSS Anchor Positioning API. When both
+    // `anchor-name` and `position-anchor` are supported, the browser
+    // places the popover relative to the button via the stylesheet
+    // rules emitted by injectAuditMenuStyles(). The JS `repositionMenu`
+    // dance (getBoundingClientRect + rAF + resize listener) is skipped
+    // entirely on this path, which also fixes the upper-left-corner
+    // race that bit pre-anchor implementations.
+    var supportsAnchorPositioning =
+      typeof CSS !== 'undefined' &&
+      typeof CSS.supports === 'function' &&
+      CSS.supports('anchor-name: --x') &&
+      CSS.supports('position-anchor: --x');
+
+    // Inject the popover transition + anchor positioning rules
+    // (no-op for legacy browsers; anchor rules only emitted when the
+    // feature is detected above inside injectAuditMenuStyles).
     injectAuditMenuStyles();
 
     var container = document.createElement('div');
     container.style.cssText = STYLES.dropdownContainer;
 
     var btn = document.createElement('button');
+    // The id is required so the #__devtool-audit-btn { anchor-name: ... }
+    // rule injected by injectAuditMenuStyles() can target this element.
+    // It also makes the button easy to inspect in devtools when triaging
+    // positioning regressions.
+    btn.id = '__devtool-audit-btn';
     btn.style.cssText = STYLES.dropdownBtn;
     btn.innerHTML = ICONS.actions + ' Audit ' + ICONS.chevronDown;
     container.appendChild(btn);
@@ -2819,6 +2878,27 @@
       menu.style.opacity = '';
       menu.style.transform = '';
       menu.style.pointerEvents = '';
+    }
+
+    // Anchor-positioning path: the `inset: unset` inline expansion from
+    // STYLES.megaMenu sets top/right/bottom/left to auto at inline
+    // specificity, which would beat the stylesheet's
+    // `top: anchor(bottom); left: anchor(left);` rules and leave the
+    // menu at the top-layer containing-block origin (viewport 0,0).
+    // Clear those four longhands so the stylesheet cascade can apply
+    // the anchor() values unopposed.
+    //
+    // Note: we clear the individual longhands (not the `inset`
+    // shorthand) because browsers expand shorthand assignments into
+    // longhand inline declarations, and setting `inset = ''` only
+    // removes a pending shorthand value — the already-expanded
+    // longhands would persist. Clearing the longhands directly is the
+    // only reliable way to drop them from the inline style map.
+    if (supportsAnchorPositioning) {
+      menu.style.top = '';
+      menu.style.right = '';
+      menu.style.bottom = '';
+      menu.style.left = '';
     }
 
     // Group actions by category
@@ -3156,25 +3236,49 @@
           techGrid.style.gridTemplateColumns = '1fr 1fr 1fr';
         }
 
-        // Compute position AFTER the browser has laid out the popover in
-        // the top layer. rAF is needed because offsetWidth/offsetHeight
-        // return 0 during the beforetoggle event — the popover isn't
-        // painted yet.
-        requestAnimationFrame(function() {
-          if (isOpen) repositionMenu();
-        });
+        if (!supportsAnchorPositioning) {
+          // Legacy rAF path for engines with the Popover API but without
+          // CSS Anchor Positioning (Firefox stable as of writing, older
+          // Safari). Compute position AFTER the browser has laid out the
+          // popover in the top layer.
+          //
+          // DOUBLE rAF is required: a single rAF callback runs after
+          // style/layout for the current frame but BEFORE the popover's
+          // top-layer promotion + display change has been committed in
+          // some engines (the HTML spec dispatches beforetoggle before
+          // the element is added to the top layer). In that race,
+          // offsetWidth/offsetHeight still return 0 and repositionMenu
+          // would place the menu at nonsensical coordinates, leaving
+          // it at the viewport upper-left.
+          //
+          // The second rAF nested inside the first guarantees we run
+          // AFTER the first post-beforetoggle paint, at which point
+          // the popover is laid out in the top layer and the measure
+          // call returns real pixel dimensions.
+          requestAnimationFrame(function() {
+            requestAnimationFrame(function() {
+              if (isOpen) repositionMenu();
+            });
+          });
+
+          // Reposition on window resize. Save the function reference in
+          // a closure-scoped var so the matching removeEventListener call
+          // in the 'closed' branch can find it.
+          resizeListener = scheduleReposition;
+          window.addEventListener('resize', resizeListener);
+        }
+        // Modern anchor-positioning path: the browser handles placement
+        // and resize automatically via the stylesheet rules in
+        // injectAuditMenuStyles(). No rAF, no resize listener.
 
         // Active button styling.
         btn.style.background = TOKENS.colors.surface;
         btn.style.borderColor = TOKENS.colors.primary;
         btn.style.color = TOKENS.colors.primary;
 
-        // Reposition on window resize; close on any ancestor scroll. Save
-        // the function references in closure-scoped vars so the matching
-        // removeEventListener calls in the 'closed' branch can find them
-        // regardless of whether closure was caused by click, Escape, or
-        // light-dismiss (the same beforetoggle fires for all of them).
-        resizeListener = scheduleReposition;
+        // Close on any ancestor scroll (matches legacy path behavior,
+        // and satisfies the "scroll closes the menu" acceptance
+        // criterion on both the anchor-positioning and rAF paths).
         scrollListener = function() {
           try {
             if (menu.matches && menu.matches(':popover-open')) {
@@ -3184,7 +3288,6 @@
             // Swallow InvalidStateError from a race with light-dismiss.
           }
         };
-        window.addEventListener('resize', resizeListener);
         document.addEventListener('scroll', scrollListener, { capture: true, passive: true });
       } else if (e.newState === 'closed') {
         isOpen = false;

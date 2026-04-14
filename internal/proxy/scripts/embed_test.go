@@ -279,3 +279,169 @@ func TestAuditMegaMenuVisibilityNotInlinedForPopover(t *testing.T) {
 		}
 	}
 }
+
+// TestAuditMenuAnchorPositioningProgressiveEnhancement guards the progressive
+// enhancement for audit menu placement (DART-UfSx4Exbzsuc).
+//
+// The modern path uses the CSS Anchor Positioning API to place the popover
+// relative to the audit button without any JS layout reads. When supported,
+// the browser:
+//   - Places the menu directly below the button via anchor(bottom) / anchor(left)
+//   - Flips block/inline direction automatically via position-try-fallbacks
+//   - Re-anchors on resize without a JS resize listener
+//
+// The legacy JS fallback (older browsers without anchor positioning) keeps
+// the existing requestAnimationFrame + getBoundingClientRect dance. Both the
+// anchor-positioning CSS rules AND the repositionMenu JS fallback must be
+// present for this regression test to pass.
+func TestAuditMenuAnchorPositioningProgressiveEnhancement(t *testing.T) {
+	// 1. The injected stylesheet must declare the anchor-name/position-anchor
+	//    rules, gated on CSS.supports so legacy browsers don't see them.
+	//
+	// Find the injectAuditMenuStyles function body.
+	const marker = "function injectAuditMenuStyles()"
+	idx := strings.Index(indicatorJS, marker)
+	if idx < 0 {
+		t.Fatalf("indicator.js missing %q; cannot guard anchor positioning regression", marker)
+	}
+	// Scan a generous window for the function body.
+	window := indicatorJS[idx:]
+	if len(window) > 3000 {
+		window = window[:3000]
+	}
+
+	// Feature-detect gate: CSS.supports('anchor-name: --x') must be tested.
+	// Accept either the two-argument or one-argument form of CSS.supports.
+	if !strings.Contains(window, "CSS.supports") {
+		t.Errorf("injectAuditMenuStyles must feature-detect anchor positioning via CSS.supports so legacy browsers skip the anchor rules. Body:\n%s", window)
+	}
+	if !strings.Contains(window, "anchor-name") {
+		t.Errorf("injectAuditMenuStyles must feature-detect 'anchor-name' so the modern path can skip JS positioning. Body:\n%s", window)
+	}
+
+	// The anchor positioning CSS rules themselves must be emitted when the
+	// feature is supported. The audit button needs anchor-name, the menu
+	// needs position-anchor + anchor() values + position-try-fallbacks.
+	rules := []string{
+		"anchor-name: --devtool-audit-anchor",
+		"position-anchor: --devtool-audit-anchor",
+		"anchor(",                // at least one anchor() function (top/bottom/left/right)
+		"position-try-fallbacks", // flip-block / flip-inline
+	}
+	for _, rule := range rules {
+		if !strings.Contains(window, rule) {
+			t.Errorf("injectAuditMenuStyles missing anchor positioning rule %q. Body:\n%s", rule, window)
+		}
+	}
+
+	// 2. The audit button must have an id so the #__devtool-audit-btn selector
+	//    in the stylesheet rule can target it. Without an id, anchor-name
+	//    won't apply to it.
+	if !strings.Contains(indicatorJS, "btn.id = '__devtool-audit-btn'") {
+		t.Errorf("createAuditButton must assign btn.id = '__devtool-audit-btn' so the #__devtool-audit-btn anchor-name rule can target it")
+	}
+
+	// 3. The JS fallback function repositionMenu must still be defined so
+	//    pre-anchor-positioning browsers (Firefox stable, older Safari) keep
+	//    working. This is the "legacy path still intact" regression guard.
+	if !strings.Contains(indicatorJS, "function repositionMenu()") {
+		t.Errorf("repositionMenu JS fallback must still be defined for browsers without CSS anchor positioning support")
+	}
+
+	// 4. The JS fallback must use DOUBLE requestAnimationFrame for the
+	//    beforetoggle-triggered reposition. A single rAF fires before the
+	//    popover's top-layer layout is fully committed in some engines; the
+	//    second rAF runs after the first paint, at which point offsetWidth/
+	//    offsetHeight are guaranteed to be non-zero.
+	//
+	// Find the beforetoggle handler in createAuditButton.
+	btIdx := strings.Index(indicatorJS, "menu.addEventListener('beforetoggle'")
+	if btIdx < 0 {
+		t.Fatalf("createAuditButton missing beforetoggle listener; cannot guard rAF race")
+	}
+	btTail := indicatorJS[btIdx:]
+	if len(btTail) > 2500 {
+		btTail = btTail[:2500]
+	}
+	// Look for double rAF: a requestAnimationFrame whose callback calls
+	// requestAnimationFrame again before calling repositionMenu. The exact
+	// syntax varies but both calls must appear within the open-state branch.
+	rafCount := strings.Count(btTail, "requestAnimationFrame")
+	if rafCount < 2 {
+		t.Errorf("beforetoggle open-state branch must use double requestAnimationFrame to avoid the upper-left-corner race (got %d rAF calls in the handler tail). The first rAF runs before popover layout is committed in some engines; the second rAF runs after paint with valid offsetWidth/offsetHeight. Body:\n%s", rafCount, btTail)
+	}
+}
+
+// TestAuditMenuAnchorClearsInsetLonghands guards against an inline-cascade
+// regression where STYLES.megaMenu's `inset: unset` shorthand expands into
+// four inline longhand declarations (top/right/bottom/left = auto). On the
+// anchor-positioning path, those inline longhands would beat the stylesheet
+// rules `top: anchor(bottom); left: anchor(left);` because inline styles
+// always win over selector rules without `!important`. Result: the menu
+// would render at the top-layer containing-block origin (0,0) — the exact
+// upper-left-corner bug we're fixing.
+//
+// The fix: after assigning `menu.style.cssText = STYLES.megaMenu;`, clear
+// the four inline longhand positioning properties under the
+// supportsAnchorPositioning gate so the stylesheet cascade can apply the
+// anchor() values unopposed.
+func TestAuditMenuAnchorClearsInsetLonghands(t *testing.T) {
+	// Find the createAuditButton block that runs after menu creation.
+	const idMarker = "menu.id = '__devtool-audit-menu';"
+	idx := strings.Index(indicatorJS, idMarker)
+	if idx < 0 {
+		t.Fatalf("indicator.js missing audit menu id assignment %q", idMarker)
+	}
+	tail := indicatorJS[idx:]
+	if len(tail) > 2500 {
+		tail = tail[:2500]
+	}
+
+	// The longhand cleanup must be gated on supportsAnchorPositioning so
+	// the legacy (non-anchor) popover path keeps setting top/left inline
+	// from repositionMenu() without having them cleared out.
+	if !strings.Contains(tail, "if (supportsAnchorPositioning)") {
+		t.Errorf("createAuditButton must clear inset longhands under `if (supportsAnchorPositioning)` so the stylesheet anchor() rules take effect. Block:\n%s", tail)
+	}
+
+	// All four inset longhands must be cleared. Clearing the `inset`
+	// shorthand alone does NOT remove the already-expanded inline
+	// longhands from the inline style map, so each must be cleared
+	// individually.
+	required := []string{
+		"menu.style.top = ''",
+		"menu.style.right = ''",
+		"menu.style.bottom = ''",
+		"menu.style.left = ''",
+	}
+	for _, expr := range required {
+		if !strings.Contains(tail, expr) {
+			t.Errorf("createAuditButton missing %q inside the supportsAnchorPositioning cleanup block — the inline `inset: unset` shorthand expansion will override the stylesheet's anchor() positioning rules", expr)
+		}
+	}
+}
+
+// TestAuditMenuAnchorPositionedSkipsJSFallback verifies the short-circuit:
+// when CSS anchor positioning is supported, createAuditButton must NOT wire
+// up the resize listener or the rAF-based repositionMenu beforetoggle path,
+// because the browser handles placement + flip fallbacks natively.
+//
+// The guard here is that the beforetoggle handler's open branch is gated
+// on supportsAnchorPositioning being false (or equivalently, the anchor-
+// positioning path returns early / skips the JS wiring). We verify this by
+// ensuring a supportsAnchorPositioning variable is declared and consulted
+// in the modern path.
+func TestAuditMenuAnchorPositionedSkipsJSFallback(t *testing.T) {
+	// Must declare a local variable feature-detecting anchor positioning
+	// inside createAuditButton so the two internal branches can diverge.
+	if !strings.Contains(indicatorJS, "supportsAnchorPositioning") {
+		t.Errorf("createAuditButton must declare a supportsAnchorPositioning feature-detect variable so the modern path can skip the rAF reposition dance")
+	}
+	// And must actually branch on it — the variable must be read, not just
+	// declared. Grep for any usage beyond the declaration (at least 2
+	// occurrences: the assignment and one conditional).
+	occurrences := strings.Count(indicatorJS, "supportsAnchorPositioning")
+	if occurrences < 2 {
+		t.Errorf("supportsAnchorPositioning is declared but never read (%d occurrences). The modern path must branch on it to skip JS positioning.", occurrences)
+	}
+}
