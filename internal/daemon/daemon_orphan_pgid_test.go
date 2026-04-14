@@ -1,4 +1,18 @@
-//go:build unix
+//go:build unix && procisolation
+
+// This file is tagged `procisolation` because every test it contains calls
+// startupOrphanPGIDScan directly. That function walks host /proc and issues
+// real kill(2) syscalls against any pgid whose leader is dead. The daemon
+// test package's TestMain sets AGNT_DISABLE_ORPHAN_SCAN=1 so the other tests
+// in this package cannot accidentally trigger the scan via daemon.Start();
+// each test below must clear that env var via t.Setenv to actually exercise
+// the scan. Run via:
+//
+//     make test-isolated
+//
+// which uses `unshare --user --pid --mount --fork --mount-proc` to put the
+// test binary in its own PID namespace, so kill syscalls cannot reach host
+// processes owned by the same uid.
 
 package daemon
 
@@ -59,6 +73,7 @@ func spawnOrphanPGIDFixture(t *testing.T) (int, func()) {
 // guarantee for Slice B: a pgid whose leader is dead but whose members
 // are still running is found by startupOrphanPGIDScan and drained.
 func TestStartupOrphanPGIDScan_ReapsLeakedSession(t *testing.T) {
+	t.Setenv("AGNT_DISABLE_ORPHAN_SCAN", "")
 	d := newCleanupTestDaemon(t, 10*time.Millisecond)
 
 	pgid, cleanup := spawnOrphanPGIDFixture(t)
@@ -98,6 +113,7 @@ func TestStartupOrphanPGIDScan_ReapsLeakedSession(t *testing.T) {
 // the scan from running. The orphan is left intact and the decision is
 // recorded in the startup error store (not silent).
 func TestStartupOrphanPGIDScan_ConfigGateDisables(t *testing.T) {
+	t.Setenv("AGNT_DISABLE_ORPHAN_SCAN", "")
 	d := newCleanupTestDaemon(t, 10*time.Millisecond)
 	projectDir := t.TempDir()
 
@@ -153,6 +169,7 @@ func TestStartupOrphanPGIDScan_ConfigGateDisables(t *testing.T) {
 // do" case: the scan runs, finds nothing, and logs an info entry so the
 // decision is visible to operators.
 func TestStartupOrphanPGIDScan_NoOrphans(t *testing.T) {
+	t.Setenv("AGNT_DISABLE_ORPHAN_SCAN", "")
 	d := newCleanupTestDaemon(t, 10*time.Millisecond)
 
 	// No fixture -- just ensure the scan runs cleanly and emits an info
