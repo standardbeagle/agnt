@@ -189,7 +189,16 @@ func (d *Daemon) registerAgntCommands() {
 		Handler:     d.hubHandleStreamEvents,
 	})
 
-	debug.Log("daemon", "Registered %d agnt-specific commands with Hub", 23)
+	// HOOK command - Claude Code hook dispatcher enqueue (phase 1 scope).
+	// Hot path: push into ring buffer and ack OK. All fan-out happens off
+	// the socket goroutine via drainHooks.
+	d.hub.RegisterCommand(hubpkg.CommandDefinition{
+		Verb:        protocol.VerbHook,
+		Description: "Enqueue a Claude Code hook event for async fan-out",
+		Handler:     d.hubHandleHook,
+	})
+
+	debug.Log("daemon", "Registered %d agnt-specific commands with Hub", 24)
 }
 
 // agntRunConfig extends the hub's RunConfig with agnt-specific fields.

@@ -20,6 +20,15 @@ type OverlayAlertSink interface {
 	IsEnabled() bool
 }
 
+// HookEventSink receives Claude Code hook events drained from the daemon
+// ring buffer. Implementations must be non-blocking: BroadcastHookEvent
+// fans out under the hub's read lock and a slow sink would stall the
+// drain goroutine. Sinks that need to queue should own an internal buffer
+// and drop on overflow.
+type HookEventSink interface {
+	EmitHookEvent(ev HookEvent)
+}
+
 // StreamSink receives filtered proxy log events via a channel.
 // The consumer reads from Ch until it is closed (on unregister or daemon shutdown).
 type StreamSink struct {
@@ -102,6 +111,7 @@ type AlertHub struct {
 	overlaySink OverlayAlertSink
 	mcpSinks    []MCPAlertSink
 	streamSinks []*StreamSink
+	hookSinks   []HookEventSink
 	pushConfig  *config.PushConfig
 	mu          sync.RWMutex
 }
@@ -188,6 +198,54 @@ func (h *AlertHub) BroadcastLogEntry(entry proxy.LogEntry, proxyID string) {
 				debug.Warn("alert-hub", "stream sink channel full, dropping event type=%s proxy=%s", entry.Type, proxyID)
 			}
 		}
+	}
+}
+
+// AddHookSink registers a hook event sink. Safe to call while the drain
+// goroutine is running — registration takes the write lock, broadcast
+// takes the read lock, so the sink starts seeing events on the next push
+// after this call returns.
+func (h *AlertHub) AddHookSink(sink HookEventSink) {
+	if sink == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.hookSinks = append(h.hookSinks, sink)
+}
+
+// RemoveHookSink unregisters a hook event sink. No-op if the sink was
+// never registered. Matching is by interface identity (pointer equality
+// for pointer receivers).
+func (h *AlertHub) RemoveHookSink(sink HookEventSink) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for i, s := range h.hookSinks {
+		if s == sink {
+			h.hookSinks = append(h.hookSinks[:i], h.hookSinks[i+1:]...)
+			return
+		}
+	}
+}
+
+// BroadcastHookEvent fans a single HookEvent out to every registered
+// hook sink. Called exclusively from drainHooks on the dedicated drain
+// goroutine, so ordering is preserved: sinks see events in the order
+// they were pushed into the ring buffer.
+//
+// The sink slice is copied under the read lock and emission happens
+// outside the lock so a slow sink cannot block registration. Sinks are
+// contracted to be non-blocking; if that contract is violated the drain
+// goroutine stalls and ring buffer overflow kicks in — which is the
+// right failure mode (surfaced via hookRing.OverflowCount).
+func (h *AlertHub) BroadcastHookEvent(ev HookEvent) {
+	h.mu.RLock()
+	sinks := make([]HookEventSink, len(h.hookSinks))
+	copy(sinks, h.hookSinks)
+	h.mu.RUnlock()
+
+	for _, sink := range sinks {
+		sink.EmitHookEvent(ev)
 	}
 }
 

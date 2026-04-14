@@ -181,6 +181,7 @@ type Daemon struct {
 	processExitInfo   *processExitInfoStore // In-memory death records (proc status + get_errors)
 	startupErrorStore *StartupLogStore      // Ring buffer for startup events
 	alertHub          *AlertHub             // Routes alerts to overlay/MCP/stream sinks
+	hookRing          *hookRingBuffer       // Claude Code hook event ring buffer (phase 1 scope)
 	scriptRegistry    *script.Registry      // Per-script state that persists across process restarts
 	scriptConfigs     sync.Map              // processID -> *config.ScriptConfig (agnt-specific config)
 
@@ -293,6 +294,7 @@ func New(config DaemonConfig) *Daemon {
 		processExitInfo:   newProcessExitInfoStore(defaultExitInfoRetention),
 		startupErrorStore: NewStartupLogStore(100),
 		alertHub:          NewAlertHub(),
+		hookRing:          newHookRingBuffer(hookRingCapacity),
 		scriptRegistry:    script.NewRegistry(),
 		sessionRegistry:   sessionRegistry,
 		scheduler:         scheduler,
@@ -523,6 +525,16 @@ func (d *Daemon) Start() error {
 	// Start proxy event handler for event-driven proxy creation
 	d.wg.Add(1)
 	go d.handleProxyEvents()
+
+	// Start the hook event drain goroutine. It pops events from the
+	// hookRing (pushed by the HOOK verb handler on each `agnt hook`
+	// RPC) and fans them out through the alertHub to any registered
+	// HookEventSinks. Exits when d.ctx is cancelled.
+	d.wg.Add(1)
+	go func() {
+		defer d.wg.Done()
+		d.drainHooks(d.ctx)
+	}()
 
 	// Start update checker if enabled
 	if d.updateChecker != nil {
