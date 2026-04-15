@@ -42,12 +42,6 @@ Project guidance for Claude Code when working with this repository.
 
 ## Installation
 
-**Marketplace (Recommended)**:
-```bash
-claude mcp add agnt --plugin agnt@agnt-marketplace
-```
-
-**Manual**:
 ```bash
 # Install binary
 go install github.com/standardbeagle/agnt/cmd/agnt@latest
@@ -56,6 +50,9 @@ go install github.com/standardbeagle/agnt/cmd/agnt@latest
 # Register MCP
 claude mcp add agnt -s user -- agnt mcp
 ```
+
+The Claude Code plugin has been moved to a standalone marketplace repo — this
+repository ships the `agnt` binary + MCP server only.
 
 **MCP Config** (`claude_desktop_config.json`):
 ```json

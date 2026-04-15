@@ -20,10 +20,6 @@ The version number is managed across multiple files:
 - `python/agnt/src/agnt/__init__.py` - __version__ variable
 - `python/pyproject.toml` - Deprecated wrapper (version + dependency)
 
-### Plugin Metadata
-- `plugins/agnt/.claude-plugin/plugin.json` - Claude Code plugin version
-- `.claude-plugin/marketplace.json` - Marketplace metadata (2 locations)
-
 ### Documentation
 - `CLAUDE.md` - Project overview version
 
@@ -74,8 +70,6 @@ grep -h 'var Version = ' internal/daemon/daemon.go
 grep -h '"version"' npm/agnt/package.json npm/devtool-mcp/package.json package.json
 grep -h '^version = ' python/agnt/pyproject.toml python/pyproject.toml
 grep -h '__version__ = ' python/agnt/src/agnt/__init__.py
-grep -h '"version"' plugins/agnt/.claude-plugin/plugin.json
-grep -h '"version"' .claude-plugin/marketplace.json
 grep '^\*\*Version\*\*:' CLAUDE.md
 ```
 
@@ -99,10 +93,9 @@ git push origin main && git push origin v<VERSION>
 
 All version files MUST be kept in sync. The release script ensures this. Never update version numbers manually unless you're certain you've updated all files.
 
-## Marketplace Updates
+## Claude Code Plugin
 
-The `.claude-plugin/marketplace.json` file contains two version fields:
-- `metadata.version` - Marketplace version
-- `plugins[0].version` - Plugin version
-
-Both must match the binary version.
+The Claude Code plugin and its marketplace manifest were moved to a standalone
+marketplace repository. This repository no longer ships `plugins/agnt/` or
+`.claude-plugin/marketplace.json`; the release script only updates binary +
+package versions.
