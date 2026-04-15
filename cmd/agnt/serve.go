@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
 
 	"github.com/standardbeagle/agnt/internal/daemon"
@@ -99,14 +100,14 @@ func runDaemonClient(socketPath string, noAttach ...bool) {
 	defer cancel()
 
 	// Configure daemon tools with auto-start
-	config := daemon.AutoStartConfig{
+	daemonCfg := daemon.AutoStartConfig{
 		SocketPath:    socketPath,
 		StartTimeout:  5 * time.Second,
 		RetryInterval: 100 * time.Millisecond,
 		MaxRetries:    50,
 	}
 
-	dt := tools.NewDaemonTools(config, appVersion)
+	dt := tools.NewDaemonTools(daemonCfg, appVersion)
 	defer dt.Close()
 
 	// Disable auto-attach if requested
@@ -115,14 +116,9 @@ func runDaemonClient(socketPath string, noAttach ...bool) {
 	}
 
 	// Create MCP server
-	server := mcp.NewServer(
-		&mcp.Implementation{
-			Name:    appName,
-			Version: appVersion,
-		},
-		&mcp.ServerOptions{
-			HasTools: true,
-			Instructions: `Development tool server for project detection, process management, and reverse proxy with traffic logging.
+	serverOpts := &mcp.ServerOptions{
+		HasTools: true,
+		Instructions: `Development tool server for project detection, process management, and reverse proxy with traffic logging.
 
 Uses a background daemon for persistent state across connections:
 - Processes and proxies survive client disconnections
@@ -140,7 +136,21 @@ Available tools:
 - responsive_audit: Responsive design audits across multiple viewport sizes
 - snapshot: Visual regression testing (baseline/compare screenshots)
 - daemon: Manage the background daemon service`,
+	}
+
+	// Load .agnt.kdl and apply channel capability when enabled.
+	agntCfg, cfgErr := config.LoadAgntConfig(".")
+	if cfgErr != nil {
+		agntCfg = config.DefaultAgntConfig()
+	}
+	serverOpts = tools.ChannelServerOptions(serverOpts, agntCfg.Channel)
+
+	server := mcp.NewServer(
+		&mcp.Implementation{
+			Name:    appName,
+			Version: appVersion,
 		},
+		serverOpts,
 	)
 
 	// Register daemon-aware tools
@@ -207,15 +217,24 @@ func runLegacyServer() {
 	proxym := proxy.NewProxyManager()
 
 	// Create MCP server
+	legacyOpts := &mcp.ServerOptions{
+		HasTools:     true,
+		Instructions: "Development tool server for project detection, process management, and reverse proxy with traffic logging. Running in legacy mode - state will be lost when server stops.",
+	}
+
+	// Load .agnt.kdl and apply channel capability when enabled.
+	agntCfg, cfgErr := config.LoadAgntConfig(".")
+	if cfgErr != nil {
+		agntCfg = config.DefaultAgntConfig()
+	}
+	legacyOpts = tools.ChannelServerOptions(legacyOpts, agntCfg.Channel)
+
 	server := mcp.NewServer(
 		&mcp.Implementation{
 			Name:    appName,
 			Version: appVersion,
 		},
-		&mcp.ServerOptions{
-			HasTools:     true,
-			Instructions: "Development tool server for project detection, process management, and reverse proxy with traffic logging. Running in legacy mode - state will be lost when server stops.",
-		},
+		legacyOpts,
 	)
 
 	// Register legacy tools (direct process management)
