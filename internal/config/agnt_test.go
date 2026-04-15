@@ -1734,6 +1734,100 @@ func TestPushConfig_Defaults(t *testing.T) {
 	})
 }
 
+func TestParseChannelConfig_Defaults(t *testing.T) {
+	cfg := DefaultAgntConfig()
+	require.NotNil(t, cfg.Channel, "DefaultAgntConfig should include a Channel block")
+	assert.False(t, cfg.Channel.IsEnabled(), "channel should default to disabled")
+	assert.True(t, cfg.Channel.ReplyToolEnabled(), "reply-tool should default to true")
+	assert.Equal(t, "warning", cfg.Channel.GetSeverity(), "severity should default to warning")
+	assert.Equal(t, 2000, cfg.Channel.GetDedupeWindow(), "dedupe-window should default to 2000ms")
+	assert.Empty(t, cfg.Channel.Events, "events should default to empty (all types)")
+}
+
+func TestParseChannelConfig_NilDefaults(t *testing.T) {
+	var cc *ChannelConfig
+	assert.False(t, cc.IsEnabled(), "nil ChannelConfig should default to disabled")
+	assert.True(t, cc.ReplyToolEnabled(), "nil ChannelConfig reply-tool should default to true")
+	assert.Equal(t, "warning", cc.GetSeverity(), "nil ChannelConfig severity should default to warning")
+	assert.Equal(t, 2000, cc.GetDedupeWindow(), "nil ChannelConfig dedupe-window should default to 2000")
+	assert.Empty(t, cc.GetEvents(), "nil ChannelConfig events should default to empty")
+}
+
+func TestParseChannelConfig_AllFields(t *testing.T) {
+	input := `channel {
+    enabled true
+    events "error" "diagnostic" "interaction"
+    severity "error"
+    dedupe-window 5000
+    reply-tool false
+}`
+	cfg, err := ParseAgntConfig(input)
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Channel)
+
+	assert.True(t, cfg.Channel.IsEnabled())
+	assert.Equal(t, []string{"error", "diagnostic", "interaction"}, cfg.Channel.Events)
+	assert.Equal(t, "error", cfg.Channel.Severity)
+	assert.Equal(t, 5000, cfg.Channel.DedupeWindow)
+	assert.False(t, cfg.Channel.ReplyToolEnabled())
+}
+
+func TestParseChannelConfig_PartialFields(t *testing.T) {
+	input := `channel {
+    enabled true
+    severity "info"
+}`
+	cfg, err := ParseAgntConfig(input)
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Channel)
+
+	assert.True(t, cfg.Channel.IsEnabled())
+	assert.Equal(t, "info", cfg.Channel.Severity)
+	assert.Equal(t, 2000, cfg.Channel.GetDedupeWindow(), "unset dedupe-window should use default")
+	assert.True(t, cfg.Channel.ReplyToolEnabled(), "unset reply-tool should use default")
+	assert.Empty(t, cfg.Channel.Events, "unset events should be empty")
+}
+
+func TestParseChannelConfig_NoChannelBlock(t *testing.T) {
+	input := `scripts {}`
+	cfg, err := ParseAgntConfig(input)
+	require.NoError(t, err)
+	// Channel should come from defaults
+	require.NotNil(t, cfg.Channel)
+	assert.False(t, cfg.Channel.IsEnabled())
+}
+
+func TestParseChannelConfig_BadSeverity(t *testing.T) {
+	input := `channel {
+    enabled true
+    severity "bogus"
+}`
+	_, err := ParseAgntConfig(input)
+	assert.Error(t, err, "unknown severity should fail validation")
+	assert.Contains(t, err.Error(), "severity")
+}
+
+func TestParseChannelConfig_BadEventType(t *testing.T) {
+	input := `channel {
+    enabled true
+    events "error" "not-a-real-type"
+}`
+	_, err := ParseAgntConfig(input)
+	assert.Error(t, err, "unknown event type should fail validation")
+	assert.Contains(t, err.Error(), "event type")
+}
+
+func TestParseChannelConfig_EmptyBlock(t *testing.T) {
+	input := `channel {}`
+	cfg, err := ParseAgntConfig(input)
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Channel)
+	assert.False(t, cfg.Channel.IsEnabled(), "empty channel block should default to disabled")
+	assert.True(t, cfg.Channel.ReplyToolEnabled())
+	assert.Equal(t, "warning", cfg.Channel.GetSeverity())
+	assert.Equal(t, 2000, cfg.Channel.GetDedupeWindow())
+}
+
 func TestAlertsConfig_GetPushConfig(t *testing.T) {
 	t.Run("nil alerts config returns nil", func(t *testing.T) {
 		var ac *AlertsConfig
