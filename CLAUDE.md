@@ -686,3 +686,7 @@ All other daemon tests run natively under `make test`. They call `daemon.Start()
 - **Binary copies**: Workaround for fork prevention in sandboxed environments
 - **agnt run setup**: Complex PTY wrapper to overcome MCP notification limitations
 - **Future**: KDL config support (`internal/config/`), persistent logs, HAR export, SSL/TLS, process labels
+
+## Forked Dependencies
+
+- **`github.com/modelcontextprotocol/go-sdk`** -> `github.com/standardbeagle/go-sdk v1.5.0-agnt.1`: Adds `ServerSession.Notify(ctx, method, params)` for custom notification methods. Remove when upstream PR is merged and released.

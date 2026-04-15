@@ -2,6 +2,8 @@ module github.com/standardbeagle/agnt
 
 go 1.25.0
 
+replace github.com/modelcontextprotocol/go-sdk => github.com/standardbeagle/go-sdk v1.5.0-agnt.1
+
 require (
 	github.com/andybalholm/brotli v1.2.0
 	github.com/anthropics/anthropic-sdk-go v1.19.0
