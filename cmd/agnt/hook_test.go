@@ -212,6 +212,37 @@ func TestHook_MissingEventArg(t *testing.T) {
 	assert.Contains(t, stderr.String(), "event")
 }
 
+// TestHook_CobraArgs_AcceptsAnyArity is the regression for the silent
+// "Failed with non-blocking status code: No stderr output" bug. Before
+// the fix, cobra.ExactArgs(1) + SilenceErrors would reject a bare
+// `agnt hook` before RunE ever ran, main() would os.Exit(1), and Claude
+// Code would see exit 1 + empty stderr. The fix is to use ArbitraryArgs
+// so the empty-event path reaches runHookInternal (which handles it with
+// a visible exit 2 + stderr message) and extra positional args — e.g.
+// from a shell expansion that produced two tokens instead of one — are
+// silently accepted.
+//
+// We assert against the Args validator directly rather than driving
+// hookCmd.Execute(): Execute() walks to rootCmd and parses os.Args, so
+// SetArgs on a child command doesn't do what it looks like it does, and
+// runHookInternal calls os.Exit(2) on the empty-event path which would
+// kill the test binary. The Args validator is the exact contract this
+// test guards, so checking it directly is both more precise and safer.
+func TestHook_CobraArgs_AcceptsAnyArity(t *testing.T) {
+	require.NotNil(t, hookCmd.Args, "hookCmd.Args must be set")
+
+	cases := [][]string{
+		nil,                             // zero args — the original failure mode
+		{},                              // empty slice — same shape, different spelling
+		{"pre-tool-use"},                // the normal case
+		{"pre-tool-use", "extra-token"}, // shell expansion producing extras
+	}
+	for _, args := range cases {
+		err := hookCmd.Args(hookCmd, args)
+		assert.NoError(t, err, "Args validator must accept args=%v", args)
+	}
+}
+
 // TestHook_MalformedTag asserts that a malformed --tag entry produces
 // exit 2 before the CLI ever touches the daemon.
 func TestHook_MalformedTag(t *testing.T) {

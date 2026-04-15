@@ -292,13 +292,21 @@ func (d *Daemon) fanOutHookEvent(ev HookEvent) {
 	}
 	d.alertHub.BroadcastLogEntry(logEntry, "")
 
-	// 3. Notification toast fan-out. This is the back-compat path for
-	//    `agnt notify` after phase 3 collapsed it into a pure HookSend
-	//    alias: the daemon-side drain is now responsible for translating
-	//    notification hook events into per-proxy ToastConfig broadcasts.
-	//    Any other event passes through untouched.
-	if ev.Event == "notification" {
+	// 3. Toast fan-out for notification, stop, and stop-failure events.
+	//    - notification: user-facing notification from the agent (back-compat
+	//      for `agnt notify` and the Notification hook)
+	//    - stop: agent finished responding successfully
+	//    - stop-failure: turn ended due to an API error (Claude Code's
+	//      StopFailure event; name follows the lowercase-hyphenated
+	//      convention shared with pre-tool-use, subagent-stop, etc.)
+	//    All other events skip the toast path.
+	switch ev.Event {
+	case "notification":
 		d.broadcastNotificationToast(ev)
+	case "stop":
+		d.broadcastStopToast(ev)
+	case "stop-failure":
+		d.broadcastStopFailureToast(ev)
 	}
 
 	// 4. Typed HookEventSink fan-out (existing phase 1 path, kept for
@@ -347,6 +355,84 @@ func (d *Daemon) broadcastNotificationToast(ev HookEvent) {
 		notif.Type = "info"
 	}
 
+	d.toastAllProxies(notif.Type, notif.Title, notif.Message, notif.Duration)
+}
+
+// broadcastStopToast decodes a Stop hook event and sends a success toast
+// to every active proxy. Claude Code's Stop payload contains
+// {stop_hook_active, last_assistant_message, ...}. We skip the toast when
+// stop_hook_active is true (Claude is re-activating because a previous
+// stop hook told it to continue — the user doesn't need a repeated toast).
+func (d *Daemon) broadcastStopToast(ev HookEvent) {
+	if d.proxym == nil || len(ev.Payload) == 0 {
+		return
+	}
+
+	var payload struct {
+		StopHookActive   bool   `json:"stop_hook_active"`
+		LastAssistantMsg string `json:"last_assistant_message"`
+	}
+	if err := json.Unmarshal(ev.Payload, &payload); err != nil {
+		debug.Log("hook-hub", "stop payload decode failed: %v", err)
+		return
+	}
+
+	if payload.StopHookActive {
+		return
+	}
+
+	message := payload.LastAssistantMsg
+	if len(message) > 200 {
+		message = message[:197] + "..."
+	}
+	if message == "" {
+		message = "completed"
+	}
+
+	// Toast type must be one of success/error/warning/info — other values
+	// fall through to the info color in the frontend palette (see
+	// internal/proxy/scripts/toast.js). "success" is the right semantics
+	// for a successful Stop.
+	d.toastAllProxies("success", "Claude Finished", message, 0)
+}
+
+// broadcastStopFailureToast decodes a StopFailure hook event and sends an
+// error toast to every active proxy. Claude Code's StopFailure payload
+// contains {error, error_details, last_assistant_message, ...}.
+func (d *Daemon) broadcastStopFailureToast(ev HookEvent) {
+	if d.proxym == nil || len(ev.Payload) == 0 {
+		return
+	}
+
+	var payload struct {
+		Error       string `json:"error"`
+		ErrorDetail string `json:"error_details"`
+		LastMsg     string `json:"last_assistant_message"`
+	}
+	if err := json.Unmarshal(ev.Payload, &payload); err != nil {
+		debug.Log("hook-hub", "stop-failure payload decode failed: %v", err)
+		return
+	}
+
+	var message string
+	if payload.ErrorDetail != "" {
+		message = payload.Error + ": " + payload.ErrorDetail
+	} else if payload.LastMsg != "" {
+		message = payload.LastMsg
+	} else {
+		message = "API error: " + payload.Error
+	}
+	if len(message) > 300 {
+		message = message[:297] + "..."
+	}
+
+	d.toastAllProxies("error", "Claude Error", message, 0)
+}
+
+// toastAllProxies sends a BroadcastToast to every active proxy. Per-proxy
+// errors are swallowed at debug level so one wedged WS client does not
+// block the others.
+func (d *Daemon) toastAllProxies(toastType, title, message string, duration int) {
 	proxies := d.proxym.List()
 	if len(proxies) == 0 {
 		return
@@ -355,10 +441,7 @@ func (d *Daemon) broadcastNotificationToast(ev HookEvent) {
 		if p == nil {
 			continue
 		}
-		// BroadcastToast returns (sentCount, err). Per-proxy errors are
-		// per-spec swallowed: the contract is that one wedged WS client
-		// must not stop the others from receiving the toast.
-		if _, err := p.BroadcastToast(notif.Type, notif.Title, notif.Message, notif.Duration); err != nil {
+		if _, err := p.BroadcastToast(toastType, title, message, duration); err != nil {
 			debug.Log("hook-hub", "BroadcastToast failed for proxy %s: %v", p.ID, err)
 		}
 	}
