@@ -1,7 +1,0 @@
-{
-  "agnt": {
-    "command": "agnt",
-    "args": ["mcp"],
-    "env": {}
-  }
-}
