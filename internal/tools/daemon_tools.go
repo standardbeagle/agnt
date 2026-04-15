@@ -9,7 +9,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/debug"
+	"github.com/standardbeagle/agnt/internal/protocol"
+	"github.com/standardbeagle/agnt/internal/proxy"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -171,6 +175,57 @@ func (dt *DaemonTools) Close() error {
 		return dt.client.Close()
 	}
 	return nil
+}
+
+// StartChannelSink starts a goroutine that subscribes to daemon StreamEvents
+// and forwards matching entries as MCP channel notifications. Returns a cancel
+// function to stop the sink. No-op and returns nil if channel is not enabled.
+func (dt *DaemonTools) StartChannelSink(server *mcp.Server, cfg *config.ChannelConfig) context.CancelFunc {
+	if cfg == nil || !cfg.IsEnabled() {
+		return func() {}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	notify := func(ctx context.Context, method string, params any) error {
+		for session := range server.Sessions() {
+			_ = session.Notify(ctx, method, params)
+		}
+		return nil
+	}
+
+	sink := NewChannelSink(cfg, notify)
+
+	// Build filter from config: include only event types the channel cares about.
+	filter := protocol.StreamEventFilter{}
+	if events := cfg.GetEvents(); len(events) > 0 {
+		filter.Types = events
+	}
+
+	go func() {
+		for {
+			if ctx.Err() != nil {
+				return
+			}
+			// Create a raw client for streaming (dedicated socket per stream).
+			client := daemon.NewClient(daemon.WithSocketPath(dt.config.SocketPath))
+			err := client.StreamEvents(ctx, filter, func(entry proxy.LogEntry) error {
+				sink.HandleEntry(ctx, entry)
+				return nil
+			})
+			if err != nil {
+				debug.Log("channel-sink", "stream ended: %v", err)
+			}
+			// Reconnect after brief pause unless cancelled.
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(2 * time.Second):
+			}
+		}
+	}()
+
+	return cancel
 }
 
 // RegisterDaemonTools adds all MCP tools that communicate with the daemon.
