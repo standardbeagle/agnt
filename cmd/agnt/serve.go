@@ -177,6 +177,13 @@ Available tools:
 	_ = alertSink // Available for daemon alert hub integration
 	dt.SetAlertSink(alertSink)
 
+	// When channel mode is active, subscribe a ChannelSink to the daemon's
+	// event stream. Events that pass severity/type filtering and deduplication
+	// are forwarded as notifications/claude/channel notifications to all
+	// connected MCP sessions.
+	channelCancel := dt.StartChannelSink(server, agntCfg.Channel)
+	defer channelCancel()
+
 	// Handle context cancellation
 	go func() {
 		<-ctx.Done()
