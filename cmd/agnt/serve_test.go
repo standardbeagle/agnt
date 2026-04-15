@@ -3,13 +3,16 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/standardbeagle/agnt/internal/config"
+	"github.com/standardbeagle/agnt/internal/daemon"
 	"github.com/standardbeagle/agnt/internal/tools"
 )
 
@@ -186,6 +189,120 @@ func TestChannelServerOptions_DoNotMutate(t *testing.T) {
 	}
 }
 
+// TestChannelAutostartHandler_DisabledReturnsNil verifies that
+// channelAutostartHandler returns nil when channel is disabled.
+func TestChannelAutostartHandler_DisabledReturnsNil(t *testing.T) {
+	var called bool
+	noop := func(dir string) (map[string]interface{}, error) {
+		called = true
+		return nil, nil
+	}
+
+	// nil config
+	handler := channelAutostartHandler(nil, noop)
+	if handler != nil {
+		t.Error("expected nil handler for nil config")
+	}
+
+	// explicitly disabled
+	disabled := false
+	cfg := &config.ChannelConfig{Enabled: &disabled}
+	handler = channelAutostartHandler(cfg, noop)
+	if handler != nil {
+		t.Error("expected nil handler for disabled config")
+	}
+
+	if called {
+		t.Error("runAutostart should not have been called")
+	}
+}
+
+// TestChannelAutostartHandler_EnabledInvokesRunAutostart verifies that when
+// channel mode is enabled, the returned handler calls runAutostart with the
+// working directory. This test uses an InMemoryTransport to perform a real MCP
+// initialize/initialized handshake so the SDK fires the InitializedHandler.
+func TestChannelAutostartHandler_EnabledInvokesRunAutostart(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	ct, st := mcp.NewInMemoryTransports()
+
+	var mu sync.Mutex
+	var capturedDir string
+	autostartCalled := make(chan struct{}, 1)
+
+	mockRunAutostart := func(dir string) (map[string]interface{}, error) {
+		mu.Lock()
+		capturedDir = dir
+		mu.Unlock()
+		select {
+		case autostartCalled <- struct{}{}:
+		default:
+		}
+		return map[string]interface{}{
+			"scripts": []string{"dev"},
+		}, nil
+	}
+
+	enabled := true
+	cfg := &config.ChannelConfig{Enabled: &enabled}
+
+	opts := defaultDaemonServerOptions()
+	opts = tools.ChannelServerOptions(opts, cfg)
+	opts.InitializedHandler = channelAutostartHandler(cfg, mockRunAutostart)
+
+	server := mcp.NewServer(
+		&mcp.Implementation{Name: "test-server", Version: "0.0.0"},
+		opts,
+	)
+	ss, err := server.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	defer ss.Close()
+
+	// Perform the initialize + initialized handshake to trigger the handler.
+	performInitHandshake(t, ctx, ct)
+
+	// Wait for the autostart to be called (handler runs in a goroutine).
+	select {
+	case <-autostartCalled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runAutostart was not called within timeout")
+	}
+
+	mu.Lock()
+	dir := capturedDir
+	mu.Unlock()
+
+	if dir == "" {
+		t.Error("expected runAutostart to be called with a non-empty directory")
+	}
+}
+
+// TestChannelAutostartHandler_HandlerIsNilOnDisabledServer verifies that when
+// channel mode is disabled, the server's InitializedHandler is nil and no
+// autostart call is made during handshake.
+func TestChannelAutostartHandler_HandlerIsNilOnDisabled(t *testing.T) {
+	var called bool
+	noop := func(dir string) (map[string]interface{}, error) {
+		called = true
+		return nil, nil
+	}
+
+	// With disabled config, channelAutostartHandler returns nil.
+	disabled := false
+	cfg := &config.ChannelConfig{Enabled: &disabled}
+	handler := channelAutostartHandler(cfg, noop)
+
+	if handler != nil {
+		t.Error("expected nil handler for disabled config")
+	}
+	if called {
+		t.Error("runAutostart should not have been called")
+	}
+}
+
 // defaultDaemonServerOptions returns the same ServerOptions that runDaemonClient
 // uses, extracted into a helper so tests can construct matching state.
 func defaultDaemonServerOptions() *mcp.ServerOptions {
@@ -258,4 +375,133 @@ func performInitHandshake(t *testing.T, ctx context.Context, ct *mcp.InMemoryTra
 	}
 
 	return &initResult
+}
+
+// TestRegisterChannelSession_DisabledReturnsNil verifies that
+// RegisterChannelSession returns nil when channel is disabled.
+func TestRegisterChannelSession_DisabledReturnsNil(t *testing.T) {
+	dt := tools.NewDaemonTools(daemon.AutoStartConfig{}, "test")
+	ctx := context.Background()
+
+	// nil config
+	h := dt.RegisterChannelSession(ctx, nil, ".")
+	if h != nil {
+		t.Error("expected nil handle for nil config")
+	}
+
+	// explicitly disabled
+	disabled := false
+	cfg := &config.ChannelConfig{Enabled: &disabled}
+	h = dt.RegisterChannelSession(ctx, cfg, ".")
+	if h != nil {
+		t.Error("expected nil handle for disabled config")
+	}
+}
+
+// TestRegisterChannelSession_SetsSessionCode verifies that after a
+// successful registration the session code is stored, and after Close it
+// is cleared. This test starts a real daemon so the resilient client can
+// connect.
+func TestRegisterChannelSession_SetsSessionCode(t *testing.T) {
+	t.Setenv("AGNT_DISABLE_ORPHAN_SCAN", "1")
+	tmpDir := t.TempDir()
+	sockPath := filepath.Join(tmpDir, "test.sock")
+
+	d := daemon.New(daemon.DaemonConfig{
+		SocketPath:   sockPath,
+		MaxClients:   10,
+		WriteTimeout: 5 * time.Second,
+	})
+	if err := d.Start(); err != nil {
+		t.Fatalf("daemon start: %v", err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		d.Stop(ctx)
+	}()
+
+	dt := tools.NewDaemonTools(daemon.AutoStartConfig{
+		SocketPath:    sockPath,
+		StartTimeout:  2 * time.Second,
+		RetryInterval: 50 * time.Millisecond,
+		MaxRetries:    20,
+	}, "test")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	enabled := true
+	cfg := &config.ChannelConfig{Enabled: &enabled}
+
+	h := dt.RegisterChannelSession(ctx, cfg, ".")
+	if h == nil {
+		t.Fatal("expected non-nil handle for enabled config")
+	}
+
+	code := dt.ChannelSessionCode()
+	if code == "" {
+		t.Error("expected session code to be set after registration")
+	}
+	if !strings.HasPrefix(code, "mcp-") {
+		t.Errorf("expected session code to have mcp- prefix, got %q", code)
+	}
+
+	// Close should clear the session code.
+	h.Close()
+	if dt.ChannelSessionCode() != "" {
+		t.Error("expected session code to be cleared after Close")
+	}
+}
+
+// TestRegisterChannelSession_CloseIdempotent verifies that calling Close
+// multiple times on the handle is safe.
+func TestRegisterChannelSession_CloseIdempotent(t *testing.T) {
+	t.Setenv("AGNT_DISABLE_ORPHAN_SCAN", "1")
+	tmpDir := t.TempDir()
+	sockPath := filepath.Join(tmpDir, "test.sock")
+
+	d := daemon.New(daemon.DaemonConfig{
+		SocketPath:   sockPath,
+		MaxClients:   10,
+		WriteTimeout: 5 * time.Second,
+	})
+	if err := d.Start(); err != nil {
+		t.Fatalf("daemon start: %v", err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		d.Stop(ctx)
+	}()
+
+	dt := tools.NewDaemonTools(daemon.AutoStartConfig{
+		SocketPath:    sockPath,
+		StartTimeout:  2 * time.Second,
+		RetryInterval: 50 * time.Millisecond,
+		MaxRetries:    20,
+	}, "test")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	enabled := true
+	cfg := &config.ChannelConfig{Enabled: &enabled}
+
+	h := dt.RegisterChannelSession(ctx, cfg, ".")
+	if h == nil {
+		t.Fatal("expected non-nil handle")
+	}
+
+	// Close multiple times should not panic.
+	h.Close()
+	h.Close()
+	h.Close()
+}
+
+// TestChannelSessionHandle_CloseNilIsSafe verifies that Close on a nil
+// handle is a safe no-op.
+func TestChannelSessionHandle_CloseNilIsSafe(t *testing.T) {
+	var h *tools.ChannelSessionHandle
+	h.Close() // should not panic
 }

@@ -21,8 +21,11 @@ Event types: error, diagnostic, interaction, process, panel_message, sketch, des
 Severity levels: trace, debug, info, warning, error
 The proxy attribute is the agnt proxy ID (stable per dev server).
 
-When the channel-reply tool is registered, you can send messages back to the
-developer's browser overlay via that tool.`
+When the channel_reply tool is registered, you can send messages back to the
+developer's browser overlay via that tool:
+  channel_reply {content: "Your message here"}
+  channel_reply {content: "Choose an option", title: "Decision needed", severity: "warning", proxy_id: "dev"}
+Omit proxy_id to fan out to all active proxies.`
 
 // ChannelServerOptions returns a ServerOptions with channel-specific
 // modifications applied. When channel is disabled (cfg is nil or not enabled),

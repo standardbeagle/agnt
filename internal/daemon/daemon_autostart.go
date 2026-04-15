@@ -61,6 +61,39 @@ func (d *Daemon) RunAutostart(ctx context.Context, projectPath string) *Autostar
 	return d.RunAutostartAsync(ctx, projectPath, nil)
 }
 
+// RunAutostartNonInteractive runs autostart for a non-interactive caller (the
+// MCP InitializedHandler in channel mode). It is identical to RunAutostart
+// except that the "prompt" port-conflict policy falls back to "skip" because
+// there is no stdin for the interactive prompt. A warning is logged for each
+// conflict that is skipped.
+func (d *Daemon) RunAutostartNonInteractive(ctx context.Context, projectPath string) *AutostartResult {
+	if projectPath == "" {
+		return &AutostartResult{}
+	}
+	projectPath = normalizePath(projectPath)
+
+	// Load config to check port-conflict policy.
+	agntConfig, err := config.LoadAgntConfig(projectPath)
+	if err != nil || agntConfig == nil {
+		// No config or error: fall through to normal RunAutostart which
+		// handles empty config gracefully.
+		return d.RunAutostart(ctx, projectPath)
+	}
+
+	// If the policy is "prompt", temporarily override to "skip" for this call.
+	if agntConfig.EffectivePortConflictPolicy() == "prompt" {
+		agntConfig.Project.PortConflict = "skip"
+		d.nonInteractiveConfigOverride.Store(projectPath, agntConfig)
+		defer d.nonInteractiveConfigOverride.Delete(projectPath)
+
+		log := d.startupErrorStore
+		log.Info("", "", "autostart_non_interactive",
+			fmt.Sprintf("port-conflict policy overridden from prompt to skip (non-interactive) for %s", projectPath))
+	}
+
+	return d.RunAutostart(ctx, projectPath)
+}
+
 // RunAutostartAsync loads .agnt.kdl config from projectPath and starts
 // configured processes/proxies. Progress events are emitted to the progress
 // channel (if non-nil) after each milestone: script start, dependency wait,
@@ -92,11 +125,17 @@ func (d *Daemon) RunAutostartAsync(
 
 	log.Info("", "", "autostart", fmt.Sprintf("starting autostart for %s", projectPath))
 
-	// Step 2: Load .agnt.kdl
-	agntConfig, err := config.LoadAgntConfig(projectPath)
-	if err != nil {
-		log.Error("", "", "config_error", fmt.Sprintf("failed to load .agnt.kdl from %s: %v", projectPath, err))
-		return result
+	// Step 2: Load .agnt.kdl (or use non-interactive override if present).
+	var agntConfig *config.AgntConfig
+	if override, ok := d.nonInteractiveConfigOverride.Load(projectPath); ok {
+		agntConfig = override.(*config.AgntConfig)
+	} else {
+		var err error
+		agntConfig, err = config.LoadAgntConfig(projectPath)
+		if err != nil {
+			log.Error("", "", "config_error", fmt.Sprintf("failed to load .agnt.kdl from %s: %v", projectPath, err))
+			return result
+		}
 	}
 	if agntConfig == nil {
 		log.Info("", "", "no_config", fmt.Sprintf("no .agnt.kdl in %s", projectPath))

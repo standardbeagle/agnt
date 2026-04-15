@@ -17,13 +17,15 @@ func (d *Daemon) hubHandleAutostart(ctx context.Context, conn *hubpkg.Connection
 		return d.hubHandleAutostartClearPorts(ctx, conn, cmd)
 	case protocol.SubVerbContinue:
 		return d.hubHandleAutostartContinue(ctx, conn, cmd)
+	case protocol.SubVerbAutostartRun:
+		return d.hubHandleAutostartRun(ctx, conn, cmd)
 	default:
 		return writeStructuredErr(conn, "daemon", &hubproto.StructuredError{
 			Code:         hubproto.ErrInvalidAction,
 			Message:      "unknown action",
 			Command:      "AUTOSTART",
 			Action:       cmd.SubVerb,
-			ValidActions: []string{protocol.SubVerbClearPorts, protocol.SubVerbContinue},
+			ValidActions: []string{protocol.SubVerbClearPorts, protocol.SubVerbContinue, protocol.SubVerbAutostartRun},
 		})
 	}
 }
@@ -95,6 +97,30 @@ func (d *Daemon) hubHandleAutostartContinue(ctx context.Context, conn *hubpkg.Co
 
 	// Resume autostart without killing — background context for longevity
 	result := d.resumeAutostart(context.Background(), projectPath)
+
+	data, _ := json.Marshal(result)
+	return conn.WriteJSON(data)
+}
+
+// hubHandleAutostartRun handles AUTOSTART RUN. It runs autostart for a project
+// from a non-interactive caller (the MCP InitializedHandler in channel mode).
+// When nonInteractive is true, the "prompt" port-conflict policy falls back to
+// "skip" because there is no stdin for the interactive prompt.
+func (d *Daemon) hubHandleAutostartRun(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	var cfg protocol.AutostartRunConfig
+	if len(cmd.Data) > 0 {
+		if err := json.Unmarshal(cmd.Data, &cfg); err != nil {
+			return conn.WriteErr(hubproto.ErrInvalidArgs, "invalid JSON config")
+		}
+	}
+	if cfg.ProjectPath == "" && len(cmd.Args) >= 1 {
+		cfg.ProjectPath = cmd.Args[0]
+	}
+	if cfg.ProjectPath == "" {
+		return conn.WriteErr(hubproto.ErrMissingParam, "project path required")
+	}
+
+	result := d.RunAutostartNonInteractive(ctx, cfg.ProjectPath)
 
 	data, _ := json.Marshal(result)
 	return conn.WriteJSON(data)

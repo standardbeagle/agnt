@@ -739,6 +739,17 @@ func (c *Client) AutostartContinue(projectPath string) (map[string]interface{}, 
 	return c.conn.Request(protocol.VerbAutostart, protocol.SubVerbContinue, projectPath).JSON()
 }
 
+// AutostartRun triggers a non-interactive autostart run for a project path.
+// Used by the MCP InitializedHandler in channel mode. The daemon-side handler
+// overrides port-conflict "prompt" to "skip" because there is no stdin.
+func (c *Client) AutostartRun(projectPath string) (map[string]interface{}, error) {
+	cfg := protocol.AutostartRunConfig{
+		ProjectPath:    projectPath,
+		NonInteractive: true,
+	}
+	return c.conn.Request(protocol.VerbAutostart, protocol.SubVerbAutostartRun).WithJSON(cfg).JSON()
+}
+
 // HookSend enqueues a Claude Code hook event in the daemon's ring buffer and
 // returns as fast as possible. The protocol is fire-and-ack: the daemon's
 // verb handler pushes the event into an in-memory ring buffer and replies OK

@@ -58,6 +58,7 @@ const (
 	SubVerbStartupLog    = "STARTUP-LOG"   // Query startup log (successes and failures)
 	SubVerbClearPorts    = "CLEAR-PORTS"   // Kill port blockers and resume autostart
 	SubVerbContinue      = "CONTINUE"      // Resume autostart without killing blockers
+	SubVerbAutostartRun  = "RUN"           // Run autostart from MCP InitializedHandler (non-interactive)
 	SubVerbClearProcess  = "CLEAR-PROCESS" // Clear alerts for a specific process
 )
 
@@ -339,4 +340,14 @@ type HookPayload struct {
 	Event   string            `json:"event"`
 	Payload json.RawMessage   `json:"payload,omitempty"`
 	Tags    map[string]string `json:"tags,omitempty"`
+}
+
+// AutostartRunConfig is the JSON payload for AUTOSTART RUN. Sent from the MCP
+// InitializedHandler to trigger project autostart in non-interactive (channel)
+// mode where there is no PTY session. When NonInteractive is true, the
+// port-conflict "prompt" policy falls back to "skip" with a warning because
+// there is no stdin to present the prompt to.
+type AutostartRunConfig struct {
+	ProjectPath    string `json:"project_path"`
+	NonInteractive bool   `json:"non_interactive"`
 }
