@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -145,6 +146,11 @@ Available tools:
 	}
 	serverOpts = tools.ChannelServerOptions(serverOpts, agntCfg.Channel)
 
+	// When channel mode is active, trigger project autostart on MCP
+	// initialized. In channel mode there is no PTY session to drive autostart
+	// through SESSION REGISTER, so the InitializedHandler kicks it off instead.
+	serverOpts.InitializedHandler = channelAutostartHandler(agntCfg.Channel, dt.RunAutostart)
+
 	server := mcp.NewServer(
 		&mcp.Implementation{
 			Name:    appName,
@@ -160,6 +166,11 @@ Available tools:
 	tools.RegisterBrowserTool(server, dt)
 	tools.RegisterAutomationTool(server, dt)
 	tools.RegisterResponsiveAuditTool(server, dt, nil)
+
+	// Register channel_reply tool when channel mode is enabled and reply-tool is on.
+	if agntCfg.Channel != nil && agntCfg.Channel.IsEnabled() && agntCfg.Channel.ReplyToolEnabled() {
+		tools.RegisterChannelReplyTool(server, dt)
+	}
 
 	// Register snapshot tools (visual regression testing)
 	snapshotManager, err := snapshot.NewManager("", 0.01) // Default path and 1% threshold
@@ -183,6 +194,18 @@ Available tools:
 	// connected MCP sessions.
 	channelCancel := dt.StartChannelSink(server, agntCfg.Channel)
 	defer channelCancel()
+
+	// When channel mode is active, register a daemon session so the MCP
+	// process is tracked like an agnt run session. SessionPGID=0 because
+	// there is no PTY child (no pgid containment needed). Cleanup
+	// (unregister + heartbeat stop) runs when the handle is closed.
+	var channelSession *tools.ChannelSessionHandle
+	if cwd, err := os.Getwd(); err == nil {
+		channelSession = dt.RegisterChannelSession(ctx, agntCfg.Channel, cwd)
+	} else {
+		channelSession = dt.RegisterChannelSession(ctx, agntCfg.Channel, ".")
+	}
+	defer channelSession.Close()
 
 	// Handle context cancellation
 	go func() {
@@ -290,4 +313,33 @@ func runLegacyServer() {
 	}
 
 	debug.Log("mcp", "Server shutdown complete")
+}
+
+// runAutostartFunc is the signature for triggering a non-interactive autostart.
+type runAutostartFunc func(projectDir string) (map[string]interface{}, error)
+
+// channelAutostartHandler returns an InitializedHandler that triggers project
+// autostart when channel mode is enabled, or nil when disabled. The handler
+// calls the provided runAutostart function with the current working directory.
+func channelAutostartHandler(cfg *config.ChannelConfig, runAutostart runAutostartFunc) func(context.Context, *mcp.InitializedRequest) {
+	if cfg == nil || !cfg.IsEnabled() {
+		return nil
+	}
+	return func(ctx context.Context, req *mcp.InitializedRequest) {
+		cwd, err := os.Getwd()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[agnt] autostart: failed to get working directory: %v\n", err)
+			return
+		}
+
+		result, err := runAutostart(cwd)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "[agnt] autostart failed: %v\n", err)
+			return
+		}
+
+		if scripts, ok := result["scripts"]; ok {
+			fmt.Fprintf(os.Stderr, "[agnt] autostart completed: scripts=%v\n", scripts)
+		}
+	}
 }

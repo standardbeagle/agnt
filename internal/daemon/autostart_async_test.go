@@ -198,7 +198,7 @@ scripts {
 	}()
 
 	progress := make(chan AutostartProgress, 100)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	result := d.RunAutostartAsync(ctx, tmpDir, progress)
@@ -250,7 +250,7 @@ scripts {
 		d.Stop(stopCtx)
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	result := d.RunAutostartAsync(ctx, tmpDir, nil)

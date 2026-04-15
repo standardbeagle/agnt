@@ -229,6 +229,11 @@ type Daemon struct {
 	// Pending two-phase autostarts (prompt mode)
 	pendingAutostarts sync.Map // projectPath → *pendingAutostart
 
+	// Non-interactive config override: when set, RunAutostartAsync uses this
+	// config instead of loading from disk. Set by RunAutostartNonInteractive
+	// to override port-conflict "prompt" with "skip" in channel mode.
+	nonInteractiveConfigOverride sync.Map // projectPath → *config.AgntConfig
+
 	// Pending session cleanups — deferred to allow reconnection to cancel them.
 	// Key: session code, Value: *time.Timer (Stop cancels, fire runs cleanup).
 	pendingCleanups sync.Map

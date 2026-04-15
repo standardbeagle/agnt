@@ -163,7 +163,7 @@ func (d *Daemon) registerAgntCommands() {
 	// AUTOSTART command
 	d.hub.RegisterCommand(hubpkg.CommandDefinition{
 		Verb:        protocol.VerbAutostart,
-		SubVerbs:    []string{protocol.SubVerbClearPorts, protocol.SubVerbContinue},
+		SubVerbs:    []string{protocol.SubVerbClearPorts, protocol.SubVerbContinue, protocol.SubVerbAutostartRun},
 		Description: "Resolve port conflicts and resume autostart",
 		Handler:     d.hubHandleAutostart,
 	})

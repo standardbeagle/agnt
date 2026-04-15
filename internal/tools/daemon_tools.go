@@ -30,6 +30,10 @@ type DaemonTools struct {
 	noAutoAttach    bool       // If true, skip auto-attach on connect
 	attachAttempted bool       // Whether we've attempted auto-attach
 
+	// Channel session management (agnt mcp in channel mode)
+	channelSessionCode string        // Session code for the channel session (empty if not registered)
+	channelHeartbeat   chan struct{} // Closed to stop heartbeat goroutine
+
 	// Alert delivery via MCP notifications
 	alertSink daemon.MCPAlertSink
 }
@@ -177,6 +181,16 @@ func (dt *DaemonTools) Close() error {
 	return nil
 }
 
+// RunAutostart triggers a non-interactive autostart for the given project
+// directory via the daemon. Used by the MCP InitializedHandler in channel
+// mode. Returns the raw autostart result map from the daemon.
+func (dt *DaemonTools) RunAutostart(projectDir string) (map[string]interface{}, error) {
+	if err := dt.ensureConnected(); err != nil {
+		return nil, err
+	}
+	return dt.client.Client().AutostartRun(projectDir)
+}
+
 // StartChannelSink starts a goroutine that subscribes to daemon StreamEvents
 // and forwards matching entries as MCP channel notifications. Returns a cancel
 // function to stop the sink. No-op and returns nil if channel is not enabled.
@@ -226,6 +240,110 @@ func (dt *DaemonTools) StartChannelSink(server *mcp.Server, cfg *config.ChannelC
 	}()
 
 	return cancel
+}
+
+// ChannelSessionHandle manages the lifecycle of a daemon session registered
+// by agnt mcp in channel mode. Call Close to unregister the session and stop
+// the heartbeat.
+type ChannelSessionHandle struct {
+	dt       *DaemonTools
+	stopOnce sync.Once
+}
+
+// Close unregisters the channel session from the daemon and stops the heartbeat.
+func (h *ChannelSessionHandle) Close() {
+	if h == nil || h.dt == nil {
+		return
+	}
+	h.stopOnce.Do(func() {
+		h.dt.closeChannelSession()
+	})
+}
+
+// RegisterChannelSession registers a daemon session for the MCP process when
+// running in channel mode. In channel mode there is no PTY child, so
+// SessionPGID is 0 (pgid cleanup is a no-op; managed processes still clean up
+// normally via the daemon's ProcessManager). Returns a handle that must be
+// closed on shutdown to unregister the session and stop the heartbeat.
+// Returns nil if channel mode is disabled.
+func (dt *DaemonTools) RegisterChannelSession(ctx context.Context, cfg *config.ChannelConfig, projectPath string) *ChannelSessionHandle {
+	if cfg == nil || !cfg.IsEnabled() {
+		return nil
+	}
+
+	if err := dt.ensureConnected(); err != nil {
+		fmt.Fprintf(os.Stderr, "[agnt] channel session: failed to connect to daemon: %v\n", err)
+		return nil
+	}
+
+	// Generate a session code for this MCP instance.
+	sessionCode := fmt.Sprintf("mcp-%d", time.Now().UnixNano()%10000)
+
+	// Register with SessionPGID=0 (no PTY child in channel mode).
+	// Overlay path is "-" because there is no overlay socket in channel mode.
+	_, err := dt.client.SessionRegisterWithPGID(sessionCode, "-", projectPath, "mcp", nil, 0)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[agnt] channel session: registration failed: %v\n", err)
+		return nil
+	}
+
+	dt.sessionMu.Lock()
+	dt.channelSessionCode = sessionCode
+	dt.channelHeartbeat = make(chan struct{})
+	dt.sessionMu.Unlock()
+
+	// Start heartbeat goroutine.
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if dt.client != nil && dt.client.IsConnected() {
+					_ = dt.client.SessionHeartbeat(sessionCode)
+				}
+			case <-dt.channelHeartbeat:
+				return
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	return &ChannelSessionHandle{dt: dt}
+}
+
+// closeChannelSession unregisters the channel session from the daemon and
+// stops the heartbeat goroutine.
+func (dt *DaemonTools) closeChannelSession() {
+	dt.sessionMu.Lock()
+	code := dt.channelSessionCode
+	hb := dt.channelHeartbeat
+	dt.channelSessionCode = ""
+	dt.channelHeartbeat = nil
+	dt.sessionMu.Unlock()
+
+	if code == "" {
+		return
+	}
+
+	// Stop heartbeat.
+	if hb != nil {
+		close(hb)
+	}
+
+	// Unregister from daemon so CleanupSessionResources fires.
+	if dt.client != nil && dt.client.IsConnected() {
+		_ = dt.client.SessionUnregister(code)
+	}
+}
+
+// ChannelSessionCode returns the session code for the active channel session,
+// or empty string if none is registered.
+func (dt *DaemonTools) ChannelSessionCode() string {
+	dt.sessionMu.Lock()
+	defer dt.sessionMu.Unlock()
+	return dt.channelSessionCode
 }
 
 // RegisterDaemonTools adds all MCP tools that communicate with the daemon.
