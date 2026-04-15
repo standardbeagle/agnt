@@ -1,7 +1,9 @@
 {
-  "status": "running",
+  "status": "completed",
+  "stop_reason": "hooks feature (l9H72BWuHjBg) shipped across 3 phases, user asked to wrap the loop; only remaining task BXZUCL3hvL4D is unrelated Low-priority proxy config work and intentionally deferred",
   "started_at": "2026-04-14T18:30:00Z",
   "last_iteration_at": "2026-04-15T00:25:00Z",
+  "completed_at": "2026-04-15T00:45:00Z",
   "iterations": 4,
   "spawns": 5,
   "last_subagent": "task-executor",
