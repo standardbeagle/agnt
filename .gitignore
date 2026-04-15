@@ -28,8 +28,10 @@ go.work
 .claude/dartai.local.md
 .claude/tasks/
 .claude/plan.md
+.claude/scheduled_tasks.lock
 **/.claude/workflow-*
 **/.claude/dartai-*
+**/.claude/scheduled_tasks.lock
 
 # agnt runtime artifacts
 .agnt/
