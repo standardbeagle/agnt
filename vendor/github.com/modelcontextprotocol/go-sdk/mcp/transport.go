@@ -15,6 +15,7 @@ import (
 	"os"
 	"sync"
 
+	internaljson "github.com/modelcontextprotocol/go-sdk/internal/json"
 	"github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
 	"github.com/modelcontextprotocol/go-sdk/internal/xcontext"
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
@@ -23,6 +24,10 @@ import (
 // ErrConnectionClosed is returned when sending a message to a connection that
 // is closed or in the process of closing.
 var ErrConnectionClosed = errors.New("connection closed")
+
+// ErrSessionMissing is returned when the session is known to not be present on
+// the server.
+var ErrSessionMissing = errors.New("session not found")
 
 // A Transport is used to create a bidirectional connection between MCP client
 // and server.
@@ -69,7 +74,7 @@ type Connection interface {
 type clientConnection interface {
 	Connection
 
-	// SessionUpdated is called whenever the client session state changes.
+	// sessionUpdated is called whenever the client session state changes.
 	sessionUpdated(clientSessionState)
 }
 
@@ -189,7 +194,7 @@ type canceller struct {
 func (c *canceller) Preempt(ctx context.Context, req *jsonrpc.Request) (result any, err error) {
 	if req.Method == notificationCancelled {
 		var params CancelledParams
-		if err := json.Unmarshal(req.Params, &params); err != nil {
+		if err := internaljson.Unmarshal(req.Params, &params); err != nil {
 			return nil, err
 		}
 		id, err := jsonrpc2.MakeID(params.RequestID)
@@ -204,8 +209,7 @@ func (c *canceller) Preempt(ctx context.Context, req *jsonrpc.Request) (result a
 // call executes and awaits a jsonrpc2 call on the given connection,
 // translating errors into the mcp domain.
 func call(ctx context.Context, conn *jsonrpc2.Connection, method string, params Params, result Result) error {
-	// TODO: the "%w"s in this function effectively make jsonrpc2.WireError part of the API.
-	// Consider alternatives.
+	// The "%w"s in this function expose jsonrpc.Error as part of the API.
 	call := conn.Call(ctx, method, params)
 	err := call.Await(ctx, result)
 	switch {
@@ -217,6 +221,18 @@ func call(ctx context.Context, conn *jsonrpc2.Connection, method string, params 
 			Reason:    ctx.Err().Error(),
 			RequestID: call.ID().Raw(),
 		})
+		// By default, the jsonrpc2 library waits for graceful shutdown when the
+		// connection is closed, meaning it expects all outgoing and incoming
+		// requests to complete. However, for MCP this expectation is unrealistic,
+		// and can lead to hanging shutdown. For example, if a streamable client is
+		// killed, the server will not be able to detect this event, except via
+		// keepalive pings (if they are configured), and so outgoing calls may hang
+		// indefinitely.
+		//
+		// Therefore, we choose to eagerly retire calls, removing them from the
+		// outgoingCalls map, when the caller context is cancelled: if the caller
+		// will never receive the response, there's no need to track it.
+		conn.Retire(call, ctx.Err())
 		return errors.Join(ctx.Err(), err)
 	case err != nil:
 		return fmt.Errorf("calling %q: %w", method, err)
@@ -328,7 +344,11 @@ func (r rwc) Close() error {
 //
 // See [msgBatch] for more discussion of message batching.
 type ioConn struct {
-	protocolVersion string // negotiated version, set during session initialization.
+	// protocolVersion is the negotiated version of the protocol,
+	// set during session initialization.
+	// Since writes may be concurrent to reads, we need to guard this with a mutex.
+	sessionMu       sync.Mutex
+	protocolVersion string
 
 	writeMu sync.Mutex         // guards Write, which must be concurrency safe.
 	rwc     io.ReadWriteCloser // the underlying stream
@@ -381,7 +401,8 @@ func newIOConn(rwc io.ReadWriteCloser) *ioConn {
 				var tr [1]byte
 				if n, readErr := dec.Buffered().Read(tr[:]); n > 0 {
 					// If read byte is not a newline, it is an error.
-					if tr[0] != '\n' {
+					// Support both Unix (\n) and Windows (\r\n) line endings.
+					if tr[0] != '\n' && tr[0] != '\r' {
 						err = fmt.Errorf("invalid trailing data at the end of stream")
 					}
 				} else if readErr != nil && readErr != io.EOF {
@@ -413,9 +434,15 @@ func (c *ioConn) sessionUpdated(state ServerSessionState) {
 		protocolVersion = state.InitializeParams.ProtocolVersion
 	}
 	if protocolVersion == "" {
+		// 2025-03-26 is used, because it's the last spec version
+		// where specifying the protocol version in the HTTP header
+		// was not required.
 		protocolVersion = protocolVersion20250326
 	}
-	c.protocolVersion = negotiatedVersion(protocolVersion)
+	protocolVersion = negotiatedVersion(protocolVersion)
+	c.sessionMu.Lock()
+	c.protocolVersion = protocolVersion
+	c.sessionMu.Unlock()
 }
 
 // addBatch records a msgBatch for an incoming batch payload.
@@ -516,8 +543,12 @@ func (t *ioConn) Read(ctx context.Context) (jsonrpc.Message, error) {
 	if err != nil {
 		return nil, err
 	}
-	if batch && t.protocolVersion >= protocolVersion20250618 {
-		return nil, fmt.Errorf("JSON-RPC batching is not supported in %s and later (request version: %s)", protocolVersion20250618, t.protocolVersion)
+	var protocolVersion string
+	t.sessionMu.Lock()
+	protocolVersion = t.protocolVersion
+	t.sessionMu.Unlock()
+	if batch && protocolVersion >= protocolVersion20250618 {
+		return nil, fmt.Errorf("JSON-RPC batching is not supported in %s and later (request version: %s)", protocolVersion20250618, protocolVersion)
 	}
 
 	t.queue = msgs[1:]
@@ -553,7 +584,7 @@ func (t *ioConn) Read(ctx context.Context) (jsonrpc.Message, error) {
 func readBatch(data []byte) (msgs []jsonrpc.Message, isBatch bool, _ error) {
 	// Try to read an array of messages first.
 	var rawBatch []json.RawMessage
-	if err := json.Unmarshal(data, &rawBatch); err == nil {
+	if err := internaljson.Unmarshal(data, &rawBatch); err == nil {
 		if len(rawBatch) == 0 {
 			return nil, true, fmt.Errorf("empty batch")
 		}
