@@ -90,6 +90,27 @@ proxies {
         port 3000
         autostart true
     }
+
+    // External HTTPS target with self-signed cert + pinned listen port.
+    // Use this when you need a stable, shareable dev URL and the
+    // upstream is a local HTTPS endpoint (e.g. a WordPress theme
+    // served via a wildcard self-signed cert on a *.local domain).
+    //
+    // `listen-port`     — bind the proxy to this exact port (instead
+    //                     of the hash-based 10000–60000 allocator).
+    //                     Must be free at autostart; the daemon logs
+    //                     the owning process if the port is held.
+    // `skip-tls-verify` — disable upstream TLS verification. Only
+    //                     affects the client→upstream connection,
+    //                     not the listen side (proxy is still plain
+    //                     HTTP on localhost). Default is false.
+    //
+    // tdo-dev {
+    //     url "https://tdo-local.sbdev.io"
+    //     listen-port 4444
+    //     skip-tls-verify true
+    //     autostart true
+    // }
 }
 
 // ============================================================================
@@ -183,14 +204,25 @@ toast {
 // ============================================================================
 // PROXY OPTIONS REFERENCE
 // ============================================================================
-// script       - Link to a script name for URL auto-detection
-// target       - Full target URL (e.g., "http://localhost:3000")
-// url          - Alternative to target for the full URL
-// port         - Target port (shorthand for http://localhost:PORT)
-// host         - Target host (default: localhost, used with port)
-// autostart    - Start automatically (true/false)
-// max-log-size - Maximum log entries to keep (default: 1000)
-// wait-for     - Script ids that must reach ready before forwarding.
+// script         - Link to a script name for URL auto-detection
+// target         - Full target URL (e.g., "http://localhost:3000") [deprecated, use url]
+// url            - Full target URL (preferred over target)
+// port           - Target port (shorthand for http://localhost:PORT)
+// host           - Target host (default: localhost, used with port)
+// autostart      - Start automatically (true/false)
+// max-log-size   - Maximum log entries to keep (default: 1000)
+// bind           - Listen address ("127.0.0.1" default, "0.0.0.0" for external)
+// listen-port    - Explicit bind port. When unset, a hash-based stable
+//                  port in 10000–60000 is picked per target URL. When set,
+//                  the proxy MUST bind to this port or fail — no silent
+//                  fallback to a random port. Use for stable shareable
+//                  dev URLs, CORS origin registration, and mobile/Tailscale
+//                  testing where the port can't drift across sessions.
+// skip-tls-verify - Disable upstream TLS certificate verification
+//                  (default false). Use for local HTTPS targets with
+//                  self-signed or expired certificates. Only affects the
+//                  client→target connection; listen side stays plain HTTP.
+// wait-for       - Script ids that must reach ready before forwarding.
 //                Space-separated within a single wait-for line.
 //                Example: wait-for "api" "db"
 //                While any listed script is not yet ready, the proxy

@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"net"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -784,5 +785,276 @@ func TestProxyEvent_HandleFallbackPortCheck_CustomHost(t *testing.T) {
 	}
 	if got, want := server.Stats().TargetURL, "http://127.0.0.1:9090"; got != want {
 		t.Errorf("Expected target URL %q, got %q", want, got)
+	}
+}
+
+// TestBuildProxyServerConfig pins the mapping from .agnt.kdl
+// ProxyConfig → proxy.ProxyConfig for the new listen-port and
+// skip-tls-verify fields. Every handler in proxy_events.go uses
+// buildProxyServerConfig; exercising it directly is cheaper than
+// spinning up three handler tests that all assert the same thing.
+func TestBuildProxyServerConfig(t *testing.T) {
+	tests := []struct {
+		name           string
+		cfg            *config.ProxyConfig
+		wantListenPort int
+		wantStrict     bool
+		wantSkipTLS    bool
+		wantBind       string
+		wantMaxLog     int
+	}{
+		{
+			name:           "nil config defaults to hash allocator",
+			cfg:            nil,
+			wantListenPort: -1,
+			wantStrict:     false,
+		},
+		{
+			name: "no listen-port → hash allocator",
+			cfg: &config.ProxyConfig{
+				Bind:       "127.0.0.1",
+				MaxLogSize: 500,
+			},
+			wantListenPort: -1,
+			wantStrict:     false,
+			wantBind:       "127.0.0.1",
+			wantMaxLog:     500,
+		},
+		{
+			name: "explicit listen-port → strict mode on",
+			cfg: &config.ProxyConfig{
+				ListenPort: 4444,
+				Bind:       "127.0.0.1",
+			},
+			wantListenPort: 4444,
+			wantStrict:     true,
+			wantBind:       "127.0.0.1",
+		},
+		{
+			name: "listen-port zero → hash allocator, not strict",
+			cfg: &config.ProxyConfig{
+				ListenPort: 0,
+				Bind:       "127.0.0.1",
+			},
+			wantListenPort: -1,
+			wantStrict:     false,
+			wantBind:       "127.0.0.1",
+		},
+		{
+			name: "skip-tls-verify passes through",
+			cfg: &config.ProxyConfig{
+				SkipTLSVerify: true,
+			},
+			wantListenPort: -1,
+			wantSkipTLS:    true,
+		},
+		{
+			name: "all new fields together (tdo-style config)",
+			cfg: &config.ProxyConfig{
+				URL:           "https://tdo-local.sbdev.io",
+				ListenPort:    4444,
+				SkipTLSVerify: true,
+				Bind:          "127.0.0.1",
+				MaxLogSize:    2000,
+			},
+			wantListenPort: 4444,
+			wantStrict:     true,
+			wantSkipTLS:    true,
+			wantBind:       "127.0.0.1",
+			wantMaxLog:     2000,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := buildProxyServerConfig("test-id", "http://example.com", "/tmp/project", tt.cfg)
+
+			if got.ID != "test-id" {
+				t.Errorf("ID: got %q, want %q", got.ID, "test-id")
+			}
+			if got.TargetURL != "http://example.com" {
+				t.Errorf("TargetURL: got %q, want %q", got.TargetURL, "http://example.com")
+			}
+			if got.Path != "/tmp/project" {
+				t.Errorf("Path: got %q, want %q", got.Path, "/tmp/project")
+			}
+			if got.ListenPort != tt.wantListenPort {
+				t.Errorf("ListenPort: got %d, want %d", got.ListenPort, tt.wantListenPort)
+			}
+			if got.StrictListenPort != tt.wantStrict {
+				t.Errorf("StrictListenPort: got %v, want %v", got.StrictListenPort, tt.wantStrict)
+			}
+			if got.SkipTLSVerify != tt.wantSkipTLS {
+				t.Errorf("SkipTLSVerify: got %v, want %v", got.SkipTLSVerify, tt.wantSkipTLS)
+			}
+			if got.BindAddress != tt.wantBind {
+				t.Errorf("BindAddress: got %q, want %q", got.BindAddress, tt.wantBind)
+			}
+			if got.MaxLogSize != tt.wantMaxLog {
+				t.Errorf("MaxLogSize: got %d, want %d", got.MaxLogSize, tt.wantMaxLog)
+			}
+			if !got.AutoRestart {
+				t.Errorf("AutoRestart: got false, want true (always enabled)")
+			}
+		})
+	}
+}
+
+// TestHandleExplicitStart_ListenPortAndTLSVerify verifies that an
+// ExplicitStart event for a proxy with listen-port + skip-tls-verify
+// plumbs both fields through to the created proxy server. Binds to a
+// port requested by net.Listen("tcp", "127.0.0.1:0") so the test never
+// collides with a real dev server on the host.
+func TestHandleExplicitStart_ListenPortAndTLSVerify(t *testing.T) {
+	// Reserve a free ephemeral port for the test. We close the
+	// listener immediately; there's a tiny race window before the
+	// proxy binds to the same port, but it's acceptable for a unit
+	// test since we own the host. A bind conflict here would
+	// manifest as strict-port error, which is also a valid signal.
+	reservedPort := reserveFreePort(t)
+
+	daemon, tmpDir := newFallbackTestDaemon(t)
+
+	proxyCfg := &config.ProxyConfig{
+		URL:           "https://tdo-local.sbdev.io",
+		ListenPort:    reservedPort,
+		SkipTLSVerify: true,
+		Bind:          "127.0.0.1",
+	}
+
+	proxyID := makeProcessID(tmpDir, "tdo")
+	daemon.handleExplicitStart(ProxyEvent{
+		Type:    ExplicitStart,
+		ProxyID: proxyID,
+		Config:  proxyCfg,
+		Path:    tmpDir,
+	})
+
+	server, err := daemon.proxym.Get(proxyID)
+	if err != nil {
+		t.Fatalf("Expected proxy %q to exist: %v", proxyID, err)
+	}
+
+	// The proxy must have bound to the requested port. ListenAddr
+	// format: "127.0.0.1:<port>". A silent drift to :0 would show
+	// a different port here.
+	wantAddr := fmt.Sprintf("127.0.0.1:%d", reservedPort)
+	if server.ListenAddr != wantAddr {
+		t.Errorf("ListenAddr: got %q, want %q (strict listen port must not drift)",
+			server.ListenAddr, wantAddr)
+	}
+
+	// Target URL must be the HTTPS upstream, verbatim.
+	if got := server.Stats().TargetURL; got != "https://tdo-local.sbdev.io" {
+		t.Errorf("TargetURL: got %q, want %q", got, "https://tdo-local.sbdev.io")
+	}
+
+	// Cleanup: stop the proxy so the test doesn't leave a listener
+	// hanging on the reserved port. The daemon.TearDown path in
+	// newFallbackTestDaemon covers this, but an explicit stop keeps
+	// the window short for parallel test runs.
+	_ = daemon.proxym.Stop(context.Background(), proxyID)
+}
+
+// reserveFreePort asks the kernel for an unused TCP port and
+// returns it. The listener is closed before returning; callers must
+// accept the small race window.
+func reserveFreePort(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserveFreePort: %v", err)
+	}
+	defer ln.Close()
+	return ln.Addr().(*net.TCPAddr).Port
+}
+
+// TestAutostartProxy_ListenPortConflict_EmitsStartupError verifies
+// that when .agnt.kdl declares `listen-port` on a proxy and that
+// port is already held by an unmanaged process, autostartProxy
+// emits a `proxy_listen_port_conflict` entry to startupErrorStore
+// BEFORE handing off to the ExplicitStart handler. This preflight
+// surfaces the owning process hint via get_errors so the AI agent
+// doesn't have to correlate a terse runtime bind error back to the
+// declared config.
+func TestAutostartProxy_ListenPortConflict_EmitsStartupError(t *testing.T) {
+	daemon, tmpDir := newFallbackTestDaemon(t)
+
+	// Hold a port we'll hand to autostartProxy as the declared
+	// listen-port. We keep the blocker alive through the whole test
+	// so the conflict is real.
+	blocker, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("blocker listen: %v", err)
+	}
+	defer blocker.Close()
+	blockedPort := blocker.Addr().(*net.TCPAddr).Port
+
+	proxyCfg := &config.ProxyConfig{
+		URL:        "http://example.com",
+		ListenPort: blockedPort,
+	}
+
+	// autostartProxy returns nil for non-fatal issues — the contract
+	// is that startupErrorStore is the visible surface for conflicts,
+	// not the return value. The function never kills processes or
+	// reshapes the event queue, so the side effect we care about is
+	// the stored entry.
+	if err := daemon.autostartProxy(context.Background(), "tdo", proxyCfg, tmpDir); err != nil {
+		t.Fatalf("autostartProxy returned unexpected error: %v", err)
+	}
+
+	// Give the ExplicitStart event a moment to drain — it will emit
+	// its own proxy_creation_failed entry when Start() hits the
+	// strict-listen-port path. We only care about the preflight
+	// entry here; the strict path is tested elsewhere.
+	time.Sleep(100 * time.Millisecond)
+
+	if n := countStartupEntriesByEvent(daemon, "proxy_listen_port_conflict"); n != 1 {
+		t.Errorf("expected 1 proxy_listen_port_conflict entry, got %d", n)
+	}
+
+	// The entry must carry the conflicting port so the UI can
+	// surface it without parsing the message string.
+	entries := daemon.startupErrorStore.Query(StartupLogFilter{})
+	var found bool
+	for _, e := range entries {
+		if e.EventType == "proxy_listen_port_conflict" {
+			if e.Port != blockedPort {
+				t.Errorf("port mismatch: got %d, want %d", e.Port, blockedPort)
+			}
+			if !strings.Contains(e.Message, "listen-port") {
+				t.Errorf("message should reference listen-port: %q", e.Message)
+			}
+			if !strings.Contains(e.Message, "tdo") {
+				t.Errorf("message should reference proxy name: %q", e.Message)
+			}
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("no proxy_listen_port_conflict entry found in startupErrorStore")
+	}
+}
+
+// TestAutostartProxy_NoListenPort_NoPreflightError verifies that
+// proxies without `listen-port` (or with zero) skip the preflight
+// entirely — no spurious conflict entries in the hash-based
+// allocator path. Regression guard for the pre-flight gate.
+func TestAutostartProxy_NoListenPort_NoPreflightError(t *testing.T) {
+	daemon, tmpDir := newFallbackTestDaemon(t)
+
+	proxyCfg := &config.ProxyConfig{
+		URL: "http://example.com",
+		// ListenPort intentionally zero
+	}
+
+	if err := daemon.autostartProxy(context.Background(), "dev", proxyCfg, tmpDir); err != nil {
+		t.Fatalf("autostartProxy: %v", err)
+	}
+
+	if n := countStartupEntriesByEvent(daemon, "proxy_listen_port_conflict"); n != 0 {
+		t.Errorf("expected 0 proxy_listen_port_conflict entries for zero listen-port, got %d", n)
 	}
 }

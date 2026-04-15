@@ -183,6 +183,29 @@ type ProxyConfig struct {
 	// "127.0.0.1" (default) or "0.0.0.0" (all interfaces)
 	Bind string `kdl:"bind"`
 
+	// ListenPort is the explicit port the proxy binds to. When zero or
+	// unset, the hash-based stable allocator in
+	// proxy.DefaultPortForURL picks a port in the 10000-60000 range.
+	//
+	// When set, the proxy MUST bind to Bind:ListenPort or fail — the
+	// daemon does not silently fall back to an auto-assigned port, and
+	// the runtime Start() path honors StrictListenPort so a bind
+	// conflict surfaces as a visible error event instead of getting
+	// papered over with a random port. Intended for CORS origin
+	// registration, shareable dev URLs that must not drift across
+	// sessions, and reverse proxies to external hostnames that pin to
+	// a specific listen port.
+	ListenPort int `kdl:"listen-port"`
+
+	// SkipTLSVerify disables TLS certificate verification on the
+	// upstream (target) connection. Defaults to false — certs are
+	// verified. Set to true to proxy to targets with self-signed,
+	// expired, or otherwise untrusted certificates (common in local
+	// dev environments with wildcard self-signed certs). The listen
+	// side of the proxy is unaffected; this only controls the client
+	// TLS config used when dialing the upstream URL.
+	SkipTLSVerify bool `kdl:"skip-tls-verify"`
+
 	// Websocket enables WebSocket proxying
 	Websocket bool `kdl:"websocket"`
 
