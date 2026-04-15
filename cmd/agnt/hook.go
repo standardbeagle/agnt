@@ -42,8 +42,15 @@ This subcommand is intended to be wired from ~/.claude/settings.json hook entrie
 (or the equivalent for other agent harnesses). Missing daemon, wedged daemon, and
 daemon-side rejection all exit 0 silently so a broken agnt install never breaks
 the agent's tool call. Only user configuration mistakes (missing event name,
-malformed --tag flag) exit 2 with a visible stderr message.`,
-	Args: cobra.ExactArgs(1),
+malformed --tag flag) exit 2 with a visible stderr message.
+
+Argument validation is intentionally loose: cobra's strict ExactArgs would
+fail before RunE runs, and with SilenceErrors that produces a silent exit 1
+which Claude Code reports as "Failed with non-blocking status code: No
+stderr output" — exactly the failure mode the exit-0 contract exists to
+prevent. Missing event name is handled inside runHookInternal with a loud
+exit 2 + stderr message; extra positional args are ignored.`,
+	Args: cobra.ArbitraryArgs,
 	RunE: runHookCmd,
 	// Disable the automatic usage-on-error dump. Hook callers are piping
 	// JSON on stdin; a cobra usage splat in that context is noise.
@@ -73,8 +80,15 @@ func init() {
 // unit tests can drive the full code path with a custom stdin/stderr and
 // inspect the exit code without spinning a subprocess.
 func runHookCmd(cmd *cobra.Command, args []string) error {
+	// ArbitraryArgs means args may be empty. runHookInternal handles the
+	// empty-event case with a loud exit 2; a silent exit 1 from cobra's
+	// strict validator would break the agent's tool call.
+	var event string
+	if len(args) > 0 {
+		event = args[0]
+	}
 	opts := hookInvocation{
-		event:         args[0],
+		event:         event,
 		eventOverride: hookEventOverride,
 		sessionID:     hookSessionID,
 		projectPath:   hookProjectPath,

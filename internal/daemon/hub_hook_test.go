@@ -729,3 +729,200 @@ func TestDrainHooks_DrainGoroutineDeliversAllConsumers(t *testing.T) {
 		t.Fatal("drainHooks goroutine did not exit after cancel")
 	}
 }
+
+// --- stop / stop-failure toast tests -----------------------------------------
+
+// TestDrainHooks_StopEventBroadcastsToast asserts that a "stop" event with a
+// valid Claude Code Stop payload triggers BroadcastToast on every registered
+// proxy, showing the last_assistant_message.
+func TestDrainHooks_StopEventBroadcastsToast(t *testing.T) {
+	d := drainFanoutTestDaemon(t)
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	_, err := d.proxym.Create(context.Background(), proxy.ProxyConfig{
+		ID:         "stop-proxy",
+		TargetURL:  backend.URL,
+		ListenPort: 0,
+		MaxLogSize: 50,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = d.proxym.Stop(context.Background(), "stop-proxy") })
+
+	// Subscribe stream sink to prove LogEntry also fires.
+	sink := d.alertHub.AddStreamSink(streamFilter{
+		types: map[proxy.LogEntryType]bool{proxy.LogTypeHook: true},
+	})
+	defer d.alertHub.RemoveStreamSink(sink)
+
+	ev := HookEvent{
+		Event:      "stop",
+		Payload:    json.RawMessage(`{"stop_hook_active":false,"last_assistant_message":"Refactored auth module"}`),
+		ReceivedAt: time.Now(),
+	}
+
+	assert.NotPanics(t, func() { d.fanOutHookEvent(ev) })
+
+	// LogEntry path fires.
+	select {
+	case got := <-sink.Ch:
+		assert.Equal(t, "stop", got.Hook.Event)
+	case <-time.After(time.Second):
+		t.Fatal("stop event should flow through StreamSink")
+	}
+
+	// Proxy still alive (BroadcastToast is safe with zero WS clients).
+	assert.Len(t, d.proxym.List(), 1)
+}
+
+// TestDrainHooks_StopHookActiveSkipsToast asserts that when stop_hook_active
+// is true (Claude re-activating due to a previous stop hook), no toast is sent.
+func TestDrainHooks_StopHookActiveSkipsToast(t *testing.T) {
+	d := drainFanoutTestDaemon(t)
+
+	ev := HookEvent{
+		Event:      "stop",
+		Payload:    json.RawMessage(`{"stop_hook_active":true,"last_assistant_message":"continuing..."}`),
+		ReceivedAt: time.Now(),
+	}
+
+	// Must not panic even with nil proxym.
+	assert.NotPanics(t, func() { d.fanOutHookEvent(ev) })
+}
+
+// TestDrainHooks_StopEmptyMessageDefaultsToCompleted asserts that a stop event
+// with no last_assistant_message defaults to "completed".
+func TestDrainHooks_StopEmptyMessageDefaultsToCompleted(t *testing.T) {
+	d := drainFanoutTestDaemon(t)
+
+	ev := HookEvent{
+		Event:      "stop",
+		Payload:    json.RawMessage(`{"stop_hook_active":false}`),
+		ReceivedAt: time.Now(),
+	}
+
+	assert.NotPanics(t, func() { d.fanOutHookEvent(ev) })
+}
+
+// TestDrainHooks_StopMalformedPayload asserts a stop event with garbage
+// payload does not panic.
+func TestDrainHooks_StopMalformedPayload(t *testing.T) {
+	d := drainFanoutTestDaemon(t)
+
+	ev := HookEvent{
+		Event:      "stop",
+		Payload:    json.RawMessage(`not json at all`),
+		ReceivedAt: time.Now(),
+	}
+
+	assert.NotPanics(t, func() { d.fanOutHookEvent(ev) })
+}
+
+// TestDrainHooks_StopFailureBroadcastsErrorToast asserts that a "stop-failure"
+// event decodes error fields and broadcasts an error toast.
+func TestDrainHooks_StopFailureBroadcastsErrorToast(t *testing.T) {
+	d := drainFanoutTestDaemon(t)
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	_, err := d.proxym.Create(context.Background(), proxy.ProxyConfig{
+		ID:         "fail-proxy",
+		TargetURL:  backend.URL,
+		ListenPort: 0,
+		MaxLogSize: 50,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = d.proxym.Stop(context.Background(), "fail-proxy") })
+
+	sink := d.alertHub.AddStreamSink(streamFilter{
+		types: map[proxy.LogEntryType]bool{proxy.LogTypeHook: true},
+	})
+	defer d.alertHub.RemoveStreamSink(sink)
+
+	ev := HookEvent{
+		Event: "stop-failure",
+		Payload: json.RawMessage(`{
+			"error": "rate_limit",
+			"error_details": "429 Too Many Requests",
+			"last_assistant_message": "API Error: Rate limit reached"
+		}`),
+		ReceivedAt: time.Now(),
+	}
+
+	assert.NotPanics(t, func() { d.fanOutHookEvent(ev) })
+
+	select {
+	case got := <-sink.Ch:
+		assert.Equal(t, "stop-failure", got.Hook.Event)
+	case <-time.After(time.Second):
+		t.Fatal("stop-failure event should flow through StreamSink")
+	}
+
+	assert.Len(t, d.proxym.List(), 1)
+}
+
+// TestDrainHooks_StopFailureMalformedPayload asserts a stop-failure event with
+// garbage payload does not panic.
+func TestDrainHooks_StopFailureMalformedPayload(t *testing.T) {
+	d := drainFanoutTestDaemon(t)
+
+	ev := HookEvent{
+		Event:      "stop-failure",
+		Payload:    json.RawMessage(`<<<garbage>>>`),
+		ReceivedAt: time.Now(),
+	}
+
+	assert.NotPanics(t, func() { d.fanOutHookEvent(ev) })
+}
+
+// TestDrainHooks_StopFailureEmptyErrorUsesLastMessage asserts that when
+// error_details is empty but last_assistant_message exists, the message falls
+// back to the last assistant message.
+func TestDrainHooks_StopFailureEmptyErrorDetailsFallsBack(t *testing.T) {
+	d := drainFanoutTestDaemon(t)
+
+	ev := HookEvent{
+		Event: "stop-failure",
+		Payload: json.RawMessage(`{
+			"error": "server_error",
+			"last_assistant_message": "API Error: Internal server error"
+		}`),
+		ReceivedAt: time.Now(),
+	}
+
+	assert.NotPanics(t, func() { d.fanOutHookEvent(ev) })
+}
+
+// TestDrainHooks_NonToastEventsUnchanged asserts that events other than
+// notification/stop/stop-failure still pass through fanOutHookEvent without
+// touching the toast path.
+func TestDrainHooks_NonToastEventsUnchanged(t *testing.T) {
+	d := drainFanoutTestDaemon(t)
+
+	sink := d.alertHub.AddStreamSink(streamFilter{
+		types: map[proxy.LogEntryType]bool{proxy.LogTypeHook: true},
+	})
+	defer d.alertHub.RemoveStreamSink(sink)
+
+	for _, event := range []string{"pre-tool-use", "post-tool-use", "user-prompt-submit", "subagent-stop"} {
+		ev := HookEvent{
+			Event:      event,
+			Payload:    json.RawMessage(`{}`),
+			ReceivedAt: time.Now(),
+		}
+		assert.NotPanics(t, func() { d.fanOutHookEvent(ev) })
+
+		select {
+		case got := <-sink.Ch:
+			assert.Equal(t, event, got.Hook.Event)
+		case <-time.After(time.Second):
+			t.Fatalf("event %q should flow through StreamSink", event)
+		}
+	}
+}

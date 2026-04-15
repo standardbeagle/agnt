@@ -454,8 +454,9 @@ mutex push into a 1024-slot ring buffer.
 |-------|-----------|---------------------|
 | `pre-tool-use` | Before each tool call | StreamSink + heartbeat |
 | `post-tool-use` | After each tool call | StreamSink + heartbeat |
-| `notification` | On `notify`-style messages | StreamSink + heartbeat + per-proxy `BroadcastToast` |
-| `stop` | When the agent stops | StreamSink + heartbeat |
+| `notification` | On `notify`-style messages | StreamSink + heartbeat + per-proxy `BroadcastToast` (payload type/title/message) |
+| `stop` | When the agent finishes responding | StreamSink + heartbeat + per-proxy `BroadcastToast` (`success`/"Claude Finished"/`last_assistant_message`, suppressed when `stop_hook_active=true`) |
+| `stop-failure` | When the turn ends due to an API error (Claude Code's `StopFailure` event) | StreamSink + heartbeat + per-proxy `BroadcastToast` (`error`/"Claude Error"/`error` + `error_details`) |
 | `subagent-stop` | When a subagent stops | StreamSink + heartbeat |
 | `user-prompt-submit` | On user prompt submission | StreamSink + heartbeat |
 | `session-start` | Session start | StreamSink + heartbeat |
