@@ -432,6 +432,97 @@ agnt monitor --process app             # Process output follow mode
 Flags: `--types`, `--proxy`, `--process`, `--severity`, `--format` (compact/json), `--socket`
 Auto-reconnects on daemon restart. Clean exit on SIGINT/SIGTERM.
 
+### Hook Dispatcher (`agnt hook`)
+
+CLI subcommand that pushes Claude Code (or any agent) hook events into the
+daemon's lock-free ring buffer for fan-out. The dispatcher is a
+fire-and-forget alias designed to be installed in `~/.claude/settings.json`
+hook entries: it must never break the agent loop, must complete in
+single-digit milliseconds even when the daemon is wedged, and must always
+exit 0 on any transient failure (daemon down, deadline exceeded, payload
+errors). The only non-zero exit is `--message`/arg validation.
+
+**Cost contract**: p99 cold exit ≤5ms, measured ~270µs in
+`cmd/agnt/hook_bench_test.go`. The dispatcher uses a 50ms hard deadline on
+the daemon round-trip, opens a dedicated short-lived client (no shared
+state), and writes the entire enqueue path on the daemon side as a single
+mutex push into a 1024-slot ring buffer.
+
+**Supported events** (Claude Code hook nomenclature):
+
+| Event | When fired | Drain-side behavior |
+|-------|-----------|---------------------|
+| `pre-tool-use` | Before each tool call | StreamSink + heartbeat |
+| `post-tool-use` | After each tool call | StreamSink + heartbeat |
+| `notification` | On `notify`-style messages | StreamSink + heartbeat + per-proxy `BroadcastToast` |
+| `stop` | When the agent stops | StreamSink + heartbeat |
+| `subagent-stop` | When a subagent stops | StreamSink + heartbeat |
+| `user-prompt-submit` | On user prompt submission | StreamSink + heartbeat |
+| `session-start` | Session start | StreamSink + heartbeat |
+| `session-end` | Session end | StreamSink + heartbeat |
+| `pre-compact` | Before context compaction | StreamSink + heartbeat |
+
+Any other event name is enqueued and fanned out the same way; the table
+above is the canonical Claude Code set, not a whitelist. Custom event
+names work transparently.
+
+**Drain fan-out** (in cheapest-first order — see `drainHooks` →
+`fanOutHookEvent` in `internal/daemon/hub_hook.go`):
+
+1. Session heartbeat (in-memory `LastSeen` bump on the SessionRegistry —
+   hook traffic counts as proof-of-life for the parent `agnt run` session)
+2. StreamSink fan-out as a synthetic `LogEntry{Type: hook}` so
+   `agnt monitor --types hook` streams events live
+3. If event is `notification`, decode payload as
+   `{type, title, message, duration}` and call `BroadcastToast` on every
+   active proxy (back-compat for the legacy `agnt notify` path)
+4. Typed `HookEventSink` fan-out via `BroadcastHookEvent` for direct
+   subscribers (overlay panel, future MCP push)
+
+The drain goroutine never blocks on a slow consumer: `BroadcastLogEntry`
+uses channel-send-with-default, `BroadcastToast` errors are swallowed
+per-proxy, and any malformed payload short-circuits at the decode step.
+If a consumer stalls hard enough to wedge fan-out, ring buffer
+overflow kicks in and `hookRing.OverflowCount()` surfaces the pressure.
+
+**Sample `~/.claude/settings.json`**:
+```json
+{
+  "hooks": {
+    "preToolUse": [
+      { "type": "command", "command": "agnt hook pre-tool-use --session-id $CLAUDE_SESSION_ID --project-path $PWD" }
+    ],
+    "postToolUse": [
+      { "type": "command", "command": "agnt hook post-tool-use --session-id $CLAUDE_SESSION_ID --project-path $PWD" }
+    ],
+    "notification": [
+      { "type": "command", "command": "agnt hook notification --session-id $CLAUDE_SESSION_ID" }
+    ],
+    "stop": [
+      { "type": "command", "command": "agnt hook stop --session-id $CLAUDE_SESSION_ID" }
+    ]
+  }
+}
+```
+
+**Streaming hook events live**:
+```bash
+agnt monitor --types hook                # All hook events, compact
+agnt monitor --types hook --format json  # NDJSON for jq pipelines
+```
+The `--severity` filter is a no-op for hook events; type filter is the
+active discriminator. Provenance hints (session ID, agent name, project
+path) are included in the `Location` field of the JSON output so jq
+pipelines can correlate events without unwrapping the payload.
+
+**`agnt notify` compatibility**: `agnt notify --message "hi"` is preserved
+as a thin alias for `agnt hook notification`. It marshals
+`{type, title, message}` and calls `HookSend("notification", ...)`. The
+daemon-side drain handles the per-proxy `BroadcastToast` loop, so the
+browser surface is identical to the legacy implementation. The
+client-side per-proxy iteration that used to live in `cmd/agnt/notify.go`
+was removed in phase 3.
+
 ## Configuration
 
 **Hardcoded defaults** (`main.go:31-36`):

@@ -9,6 +9,7 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/protocol"
+	"github.com/standardbeagle/agnt/internal/proxy"
 	hubpkg "github.com/standardbeagle/go-cli-server/hub"
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
 )
@@ -213,9 +214,19 @@ func (d *Daemon) hubHandleHook(ctx context.Context, conn *hubpkg.Connection, cmd
 }
 
 // drainHooks is the single drain goroutine launched from Daemon.Start. It
-// pops events from the ring buffer and fans them out to the AlertHub. The
-// loop exits on ctx cancel; any events remaining in the buffer at shutdown
-// are discarded, which is safe because hook events are fire-and-forget.
+// pops events from the ring buffer and fans them out to four consumers in
+// strict cheapest-first order so a slow downstream cannot wedge the drain:
+//
+//  1. session heartbeat (in-memory atomic-ish bump on the SessionRegistry)
+//  2. StreamSink fan-out via BroadcastLogEntry (channel send with default,
+//     drops on backpressure — the same contract as proxy log fan-out)
+//  3. notification toast fan-out (only when ev.Event == "notification";
+//     calls into proxy WS broadcast which can be slower if a client is wedged)
+//  4. typed HookEventSink fan-out via BroadcastHookEvent (existing path)
+//
+// The loop exits on ctx cancel; any events remaining in the buffer at
+// shutdown are discarded, which is safe because hook events are
+// fire-and-forget by contract (see hookRingCapacity comment).
 func (d *Daemon) drainHooks(ctx context.Context) {
 	if d.hookRing == nil || d.alertHub == nil {
 		return
@@ -231,7 +242,7 @@ func (d *Daemon) drainHooks(ctx context.Context) {
 			if !ok {
 				break
 			}
-			d.alertHub.BroadcastHookEvent(ev)
+			d.fanOutHookEvent(ev)
 		}
 
 		select {
@@ -239,6 +250,116 @@ func (d *Daemon) drainHooks(ctx context.Context) {
 			return
 		case <-d.hookRing.notify:
 			// wake and drain again
+		}
+	}
+}
+
+// fanOutHookEvent dispatches a single hook event to every downstream
+// consumer. Split out from drainHooks so unit tests can drive the fan-out
+// path directly without standing up a real drain goroutine, and so the
+// per-event ordering contract (cheapest first) is documented in one place.
+//
+// Errors from individual sinks are intentionally swallowed to debug log:
+// hook delivery is fire-and-forget, and one wedged consumer must not
+// stop the next consumer from receiving the event.
+func (d *Daemon) fanOutHookEvent(ev HookEvent) {
+	// 1. Session heartbeat (cheap, in-memory). Best-effort: a hook event
+	//    with no SessionID, or one whose session is not registered, is a
+	//    silent no-op — not every hook ties back to an active agnt run
+	//    session (e.g. the user might run `agnt hook ...` from a script
+	//    outside any PTY wrapper).
+	if ev.SessionID != "" && d.sessionRegistry != nil {
+		if sess, ok := d.sessionRegistry.Get(ev.SessionID); ok {
+			sess.UpdateLastSeen()
+		}
+	}
+
+	// 2. StreamSink fan-out via the unified LogEntry channel. The empty
+	//    proxy ID means "global event, not tied to any single proxy" —
+	//    same convention BroadcastProcessOutput uses for process lines.
+	//    BroadcastLogEntry does a channel-send-with-default per sink, so
+	//    a wedged consumer cannot stall the drain goroutine.
+	logEntry := proxy.LogEntry{
+		Type: proxy.LogTypeHook,
+		Hook: &proxy.HookLogEntry{
+			Event:       ev.Event,
+			Payload:     ev.Payload,
+			SessionID:   ev.SessionID,
+			ProjectPath: ev.ProjectPath,
+			Agent:       ev.Agent,
+			ReceivedAt:  ev.ReceivedAt,
+		},
+	}
+	d.alertHub.BroadcastLogEntry(logEntry, "")
+
+	// 3. Notification toast fan-out. This is the back-compat path for
+	//    `agnt notify` after phase 3 collapsed it into a pure HookSend
+	//    alias: the daemon-side drain is now responsible for translating
+	//    notification hook events into per-proxy ToastConfig broadcasts.
+	//    Any other event passes through untouched.
+	if ev.Event == "notification" {
+		d.broadcastNotificationToast(ev)
+	}
+
+	// 4. Typed HookEventSink fan-out (existing phase 1 path, kept for
+	//    tests and future typed subscribers like the overlay panel).
+	d.alertHub.BroadcastHookEvent(ev)
+}
+
+// broadcastNotificationToast decodes a notification hook event payload
+// and fans the resulting ToastConfig out to every active proxy as a
+// browser toast. This is the daemon-side replacement for the per-proxy
+// ProxyToast loop that `agnt notify` used to do client-side: phase 3
+// moves the iteration here so any HookSend("notification", ...) call
+// from anywhere — `agnt notify`, a Claude Code hook script, a future
+// MCP tool — produces the same browser surface.
+//
+// Failures are swallowed at debug level by design:
+//   - malformed JSON payload: drain must not stall on garbage input
+//   - per-proxy BroadcastToast errors: one wedged WS consumer must not
+//     skip toasts on the other proxies
+func (d *Daemon) broadcastNotificationToast(ev HookEvent) {
+	if d.proxym == nil || len(ev.Payload) == 0 {
+		return
+	}
+
+	// Decode into a small local struct that mirrors the wire shape of
+	// `sendNotifyHook` in cmd/agnt/notify.go. We do not use
+	// protocol.ToastConfig directly because notify uses lowercase JSON
+	// field names ({type,title,message}) without the toast_ prefix that
+	// the legacy PROXY TOAST verb expects — keeping the decode struct
+	// local makes the contract explicit.
+	var notif struct {
+		Type     string `json:"type"`
+		Title    string `json:"title"`
+		Message  string `json:"message"`
+		Duration int    `json:"duration"`
+	}
+	if err := json.Unmarshal(ev.Payload, &notif); err != nil {
+		debug.Log("hook-hub", "notification payload decode failed (event=%s): %v", ev.Event, err)
+		return
+	}
+	if notif.Message == "" {
+		debug.Log("hook-hub", "notification event missing message field, skipping toast")
+		return
+	}
+	if notif.Type == "" {
+		notif.Type = "info"
+	}
+
+	proxies := d.proxym.List()
+	if len(proxies) == 0 {
+		return
+	}
+	for _, p := range proxies {
+		if p == nil {
+			continue
+		}
+		// BroadcastToast returns (sentCount, err). Per-proxy errors are
+		// per-spec swallowed: the contract is that one wedged WS client
+		// must not stop the others from receiving the toast.
+		if _, err := p.BroadcastToast(notif.Type, notif.Title, notif.Message, notif.Duration); err != nil {
+			debug.Log("hook-hub", "BroadcastToast failed for proxy %s: %v", p.ID, err)
 		}
 	}
 }

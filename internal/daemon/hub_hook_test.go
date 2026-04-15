@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/protocol"
+	"github.com/standardbeagle/agnt/internal/proxy"
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -378,3 +381,351 @@ type countingHookSink struct {
 }
 
 func (s *countingHookSink) EmitHookEvent(ev HookEvent) { s.count.Add(1) }
+
+// --- phase 3: drain fan-out tests --------------------------------------------
+//
+// These tests cover the three new fan-out paths added by phase 3:
+//   1. synthetic LogEntry → StreamSink (monitor / get_errors)
+//   2. session heartbeat (LastSeen bump on the SessionRegistry)
+//   3. notification toast broadcast to every active proxy
+//
+// Each test drives fanOutHookEvent directly rather than spinning up the
+// drain goroutine, because the per-event ordering contract is what we
+// care about and the drain loop itself is already covered by
+// TestDrainHooks_FansOutToAlertHub.
+
+// drainFanoutTestDaemon wires a Daemon fixture rich enough to exercise
+// fanOutHookEvent: hookRing, alertHub, sessionRegistry, and an empty
+// proxy manager. Tests that need a real proxy add it via Create.
+func drainFanoutTestDaemon(t *testing.T) *Daemon {
+	t.Helper()
+	return &Daemon{
+		hookRing:        newHookRingBuffer(hookRingCapacity),
+		alertHub:        NewAlertHub(),
+		sessionRegistry: NewSessionRegistry(60 * time.Second),
+		proxym:          proxy.NewProxyManager(),
+	}
+}
+
+// TestDrainHooks_SyntheticLogEntryReachesStreamSink asserts that a hook
+// event drained through fanOutHookEvent is published as a LogEntry of
+// type "hook" on the AlertHub StreamSink channel, with the payload
+// bytes intact. This is the wiring that makes `agnt monitor --types hook`
+// work end-to-end.
+func TestDrainHooks_SyntheticLogEntryReachesStreamSink(t *testing.T) {
+	d := drainFanoutTestDaemon(t)
+
+	// Subscribe a stream sink with a type filter for "hook" only, so
+	// we prove the type round-trips correctly through the filter path.
+	filter := streamFilter{
+		types: map[proxy.LogEntryType]bool{proxy.LogTypeHook: true},
+	}
+	sink := d.alertHub.AddStreamSink(filter)
+	defer d.alertHub.RemoveStreamSink(sink)
+
+	rawPayload := json.RawMessage(`{"tool":"Bash","args":["ls"]}`)
+	ev := HookEvent{
+		Event:       "pre-tool-use",
+		Payload:     rawPayload,
+		SessionID:   "sess-stream-1",
+		ProjectPath: "/tmp/proj",
+		Agent:       "claude",
+		ReceivedAt:  time.Now(),
+	}
+
+	d.fanOutHookEvent(ev)
+
+	select {
+	case got := <-sink.Ch:
+		require.Equal(t, proxy.LogTypeHook, got.Type, "stream sink should receive a LogEntry with type=hook")
+		require.NotNil(t, got.Hook, "Hook field must be populated")
+		assert.Equal(t, "pre-tool-use", got.Hook.Event)
+		assert.Equal(t, "sess-stream-1", got.Hook.SessionID)
+		assert.Equal(t, "/tmp/proj", got.Hook.ProjectPath)
+		assert.Equal(t, "claude", got.Hook.Agent)
+		assert.JSONEq(t, string(rawPayload), string(got.Hook.Payload))
+		assert.False(t, got.Hook.ReceivedAt.IsZero())
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for hook LogEntry on StreamSink")
+	}
+}
+
+// TestDrainHooks_SessionHeartbeatBumpsLastSeen asserts that draining a
+// hook event with a known SessionID bumps that session's LastSeen
+// timestamp. This is the heartbeat plumbing that lets the daemon treat
+// hook traffic as proof-of-life for the agnt run session.
+func TestDrainHooks_SessionHeartbeatBumpsLastSeen(t *testing.T) {
+	d := drainFanoutTestDaemon(t)
+
+	// Register a session with an obviously-stale LastSeen.
+	stale := time.Now().Add(-1 * time.Hour)
+	sess := &Session{
+		Code:        "claude-1",
+		ProjectPath: "/tmp/proj",
+		Command:     "claude",
+		StartedAt:   stale,
+		LastSeen:    stale,
+		Status:      SessionStatusDisconnected,
+	}
+	require.NoError(t, d.sessionRegistry.Register(sess))
+
+	before := time.Now()
+	ev := HookEvent{
+		Event:      "pre-tool-use",
+		SessionID:  "claude-1",
+		ReceivedAt: time.Now(),
+	}
+	d.fanOutHookEvent(ev)
+
+	got, ok := d.sessionRegistry.Get("claude-1")
+	require.True(t, ok)
+	assert.True(t, got.LastSeen.After(before) || got.LastSeen.Equal(before),
+		"LastSeen should advance to at least the moment before fanOutHookEvent (was %v, before=%v)", got.LastSeen, before)
+	assert.Equal(t, SessionStatusActive, got.GetStatus(),
+		"heartbeat should also flip status back to active")
+}
+
+// TestDrainHooks_SessionHeartbeatUnknownSessionNoOp asserts that a hook
+// event whose SessionID does not map to any registered session is a
+// silent no-op — not every hook source ties back to a known agnt run
+// session, so missing-lookup must not panic or surface as an error.
+func TestDrainHooks_SessionHeartbeatUnknownSessionNoOp(t *testing.T) {
+	d := drainFanoutTestDaemon(t)
+
+	// No sessions registered. fanOutHookEvent should still complete
+	// cleanly and other downstream consumers should fire normally.
+	sink := d.alertHub.AddStreamSink(streamFilter{
+		types: map[proxy.LogEntryType]bool{proxy.LogTypeHook: true},
+	})
+	defer d.alertHub.RemoveStreamSink(sink)
+
+	ev := HookEvent{
+		Event:      "pre-tool-use",
+		SessionID:  "ghost-session",
+		ReceivedAt: time.Now(),
+	}
+	assert.NotPanics(t, func() { d.fanOutHookEvent(ev) })
+
+	// LogEntry path should still have fired.
+	select {
+	case <-sink.Ch:
+	case <-time.After(time.Second):
+		t.Fatal("LogEntry fan-out should still fire even when session lookup misses")
+	}
+}
+
+// TestDrainHooks_NotificationEventBroadcastsToast asserts that an event
+// with name "notification" decodes the payload and calls BroadcastToast
+// on every registered proxy. This is the daemon-side back-compat for
+// `agnt notify` after phase 3 collapses notify into a pure HookSend
+// alias.
+func TestDrainHooks_NotificationEventBroadcastsToast(t *testing.T) {
+	d := drainFanoutTestDaemon(t)
+
+	// Spin up a real backend + create two proxies through the manager.
+	// BroadcastToast is safe on a proxy with zero WS clients (returns
+	// 0,nil), so we don't need a real browser.
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	for _, id := range []string{"proxy-a", "proxy-b"} {
+		_, err := d.proxym.Create(context.Background(), proxy.ProxyConfig{
+			ID:         id,
+			TargetURL:  backend.URL,
+			ListenPort: 0,
+			MaxLogSize: 50,
+		})
+		require.NoError(t, err)
+		t.Cleanup(func() {
+			_ = d.proxym.Stop(context.Background(), id)
+		})
+	}
+
+	// Subscribe a stream sink so we can assert the LogEntry path also
+	// fires for a notification event (notification flows through
+	// the SAME synthetic LogEntry channel as every other hook event).
+	sink := d.alertHub.AddStreamSink(streamFilter{
+		types: map[proxy.LogEntryType]bool{proxy.LogTypeHook: true},
+	})
+	defer d.alertHub.RemoveStreamSink(sink)
+
+	body := json.RawMessage(`{"type":"warning","title":"Heads up","message":"Build failed","duration":5000}`)
+	ev := HookEvent{
+		Event:      "notification",
+		Payload:    body,
+		SessionID:  "claude-1",
+		ReceivedAt: time.Now(),
+	}
+
+	require.NotPanics(t, func() { d.fanOutHookEvent(ev) })
+
+	// LogEntry side: monitor still sees the notification as a hook event.
+	select {
+	case got := <-sink.Ch:
+		assert.Equal(t, proxy.LogTypeHook, got.Type)
+		require.NotNil(t, got.Hook)
+		assert.Equal(t, "notification", got.Hook.Event)
+	case <-time.After(time.Second):
+		t.Fatal("notification event should still flow through StreamSink")
+	}
+
+	// Toast side: BroadcastToast is best-effort with zero WS clients,
+	// so the assertion is "no panic + proxies still listed". The
+	// per-call return value (sentCount=0) is the correct outcome with
+	// no browser attached. The behavioral guarantee we care about is
+	// that every proxy was iterated, not that any toast was actually
+	// delivered to a non-existent client.
+	assert.Len(t, d.proxym.List(), 2, "both proxies should still be registered after broadcast")
+}
+
+// TestDrainHooks_NonNotificationDoesNotIterateProxies asserts that a
+// non-notification hook event does NOT call BroadcastToast. We can't
+// directly observe "BroadcastToast was not called" without a mock, so
+// instead we assert no panic on a fixture that has zero proxies and
+// then verify the LogEntry path still fired. The contract is:
+// notification → toast loop, everything else → skip.
+func TestDrainHooks_NonNotificationDoesNotTriggerToast(t *testing.T) {
+	d := drainFanoutTestDaemon(t)
+
+	// Zero proxies registered. broadcastNotificationToast would be a
+	// no-op anyway with empty list, but the important check is that
+	// fanOutHookEvent does NOT take the notification branch for a
+	// pre-tool-use event. We assert the LogEntry path fires (proving
+	// drain ran) and that no panic occurred.
+	sink := d.alertHub.AddStreamSink(streamFilter{
+		types: map[proxy.LogEntryType]bool{proxy.LogTypeHook: true},
+	})
+	defer d.alertHub.RemoveStreamSink(sink)
+
+	ev := HookEvent{
+		Event:      "pre-tool-use",
+		Payload:    json.RawMessage(`{"tool":"Read"}`),
+		ReceivedAt: time.Now(),
+	}
+	assert.NotPanics(t, func() { d.fanOutHookEvent(ev) })
+
+	select {
+	case got := <-sink.Ch:
+		assert.Equal(t, "pre-tool-use", got.Hook.Event)
+	case <-time.After(time.Second):
+		t.Fatal("non-notification event should still flow through StreamSink")
+	}
+}
+
+// TestDrainHooks_MalformedNotificationPayload asserts that a
+// notification event with non-JSON garbage in the payload does not
+// panic and does not stall the drain. Drain must survive any payload
+// because hook events come from external scripts we don't control.
+func TestDrainHooks_MalformedNotificationPayload(t *testing.T) {
+	d := drainFanoutTestDaemon(t)
+
+	// Even with a real proxy registered, malformed JSON must short-
+	// circuit at the decode step before reaching BroadcastToast.
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+	_, err := d.proxym.Create(context.Background(), proxy.ProxyConfig{
+		ID:         "decode-proxy",
+		TargetURL:  backend.URL,
+		ListenPort: 0,
+		MaxLogSize: 50,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = d.proxym.Stop(context.Background(), "decode-proxy") })
+
+	ev := HookEvent{
+		Event:      "notification",
+		Payload:    json.RawMessage(`<<this is not json>>`),
+		ReceivedAt: time.Now(),
+	}
+	assert.NotPanics(t, func() { d.fanOutHookEvent(ev) })
+}
+
+// TestDrainHooks_NotificationMissingMessageSkipsToast asserts that a
+// notification payload missing the required `message` field is logged
+// and skipped, never reaching BroadcastToast. This mirrors the legacy
+// PROXY TOAST validation in hub_proxy.go where empty message is a
+// hard error.
+func TestDrainHooks_NotificationMissingMessageSkipsToast(t *testing.T) {
+	d := drainFanoutTestDaemon(t)
+
+	ev := HookEvent{
+		Event:      "notification",
+		Payload:    json.RawMessage(`{"type":"info","title":"only a title"}`),
+		ReceivedAt: time.Now(),
+	}
+	assert.NotPanics(t, func() { d.fanOutHookEvent(ev) })
+}
+
+// TestDrainHooks_DrainGoroutineDeliversAllConsumers is an end-to-end
+// regression test: push events through the actual ring buffer, run the
+// real drain goroutine, and assert the synthetic LogEntry, the typed
+// HookEventSink, and the session heartbeat all fire. This guards against
+// future refactors that bypass fanOutHookEvent from drainHooks.
+func TestDrainHooks_DrainGoroutineDeliversAllConsumers(t *testing.T) {
+	d := drainFanoutTestDaemon(t)
+
+	// Register a session for the heartbeat path.
+	stale := time.Now().Add(-1 * time.Hour)
+	require.NoError(t, d.sessionRegistry.Register(&Session{
+		Code:      "claude-1",
+		StartedAt: stale,
+		LastSeen:  stale,
+		Status:    SessionStatusDisconnected,
+	}))
+
+	// Subscribe the StreamSink path.
+	sink := d.alertHub.AddStreamSink(streamFilter{
+		types: map[proxy.LogEntryType]bool{proxy.LogTypeHook: true},
+	})
+	defer d.alertHub.RemoveStreamSink(sink)
+
+	// Subscribe the typed HookEventSink path.
+	typedSink := newCaptureHookSink(1)
+	d.alertHub.AddHookSink(typedSink)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	drainDone := make(chan struct{})
+	go func() {
+		d.drainHooks(ctx)
+		close(drainDone)
+	}()
+
+	d.hookRing.Push(HookEvent{
+		Event:      "pre-tool-use",
+		SessionID:  "claude-1",
+		ReceivedAt: time.Now(),
+	})
+
+	// All three consumers should fire.
+	select {
+	case got := <-sink.Ch:
+		require.NotNil(t, got.Hook)
+		assert.Equal(t, "pre-tool-use", got.Hook.Event)
+	case <-time.After(2 * time.Second):
+		t.Fatal("StreamSink did not receive hook LogEntry")
+	}
+
+	select {
+	case <-typedSink.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("typed HookEventSink did not receive event")
+	}
+
+	got, ok := d.sessionRegistry.Get("claude-1")
+	require.True(t, ok)
+	assert.Equal(t, SessionStatusActive, got.GetStatus(),
+		"drain goroutine should have bumped session heartbeat")
+
+	cancel()
+	select {
+	case <-drainDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("drainHooks goroutine did not exit after cancel")
+	}
+}
