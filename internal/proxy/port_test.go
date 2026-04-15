@@ -1,7 +1,10 @@
 package proxy
 
 import (
+	"context"
+	"net"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -123,4 +126,90 @@ func TestNewProxyServer_DefaultPort(t *testing.T) {
 	}
 
 	t.Logf("Target %s -> ListenAddr %s (expected port %d)", targetURL, ps.ListenAddr, expectedPort)
+}
+
+// TestProxyServer_StrictListenPort_ConflictFailsHard verifies the
+// contract for .agnt.kdl `listen-port`: when a caller sets
+// StrictListenPort and ListenPort, a bind conflict must produce a
+// hard error from Start() — the proxy must NOT silently fall back to
+// :0. Regression guard against the default auto-assign path in
+// Start() that would otherwise hide the conflict.
+func TestProxyServer_StrictListenPort_ConflictFailsHard(t *testing.T) {
+	// Occupy a port to force the conflict.
+	blocker, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to reserve blocker port: %v", err)
+	}
+	defer blocker.Close()
+	blockedPort := blocker.Addr().(*net.TCPAddr).Port
+
+	ps, err := NewProxyServer(ProxyConfig{
+		ID:               "strict-test",
+		TargetURL:        "http://localhost:3000",
+		ListenPort:       blockedPort,
+		StrictListenPort: true,
+		BindAddress:      "127.0.0.1",
+	})
+	if err != nil {
+		t.Fatalf("NewProxyServer: %v", err)
+	}
+
+	err = ps.Start(context.Background())
+	if err == nil {
+		_ = ps.Stop(context.Background())
+		t.Fatalf("expected Start() to fail on strict listen port conflict, got nil")
+	}
+
+	// Error must clearly mention the strict listen port — an AI
+	// agent reading the log needs to correlate the failure back to
+	// the declared port, not chase a generic bind error.
+	if !strings.Contains(err.Error(), "strict listen port") {
+		t.Errorf("error must mention strict listen port, got: %v", err)
+	}
+
+	// ListenAddr should still point at the requested port, not at
+	// some auto-assigned fallback. Silent port drift would defeat
+	// the feature.
+	wantAddr := "127.0.0.1:" + strconv.Itoa(blockedPort)
+	if ps.ListenAddr != wantAddr {
+		t.Errorf("ListenAddr after conflict: got %q, want %q (no silent drift)", ps.ListenAddr, wantAddr)
+	}
+}
+
+// TestProxyServer_NonStrictListenPort_FallsBack verifies that the
+// legacy behavior (no StrictListenPort flag) still auto-assigns a
+// port on conflict. Regression guard for existing .agnt.kdl configs
+// that don't use `listen-port` — they must continue to drift to a
+// free port silently, because the hash-based allocator is a
+// best-effort hint, not a commitment.
+func TestProxyServer_NonStrictListenPort_FallsBack(t *testing.T) {
+	blocker, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to reserve blocker port: %v", err)
+	}
+	defer blocker.Close()
+	blockedPort := blocker.Addr().(*net.TCPAddr).Port
+
+	ps, err := NewProxyServer(ProxyConfig{
+		ID:         "nonstrict-test",
+		TargetURL:  "http://localhost:3000",
+		ListenPort: blockedPort,
+		// StrictListenPort intentionally omitted (zero value)
+		BindAddress: "127.0.0.1",
+	})
+	if err != nil {
+		t.Fatalf("NewProxyServer: %v", err)
+	}
+
+	if err := ps.Start(context.Background()); err != nil {
+		t.Fatalf("non-strict Start() should auto-assign on conflict, got: %v", err)
+	}
+	defer ps.Stop(context.Background())
+
+	// Post-Start ListenAddr must show a different port — the
+	// runtime rebound to a free one via :0.
+	if strings.HasSuffix(ps.ListenAddr, ":"+strconv.Itoa(blockedPort)) {
+		t.Errorf("expected non-strict fallback to drift away from blocked port %d, but ListenAddr=%q",
+			blockedPort, ps.ListenAddr)
+	}
 }

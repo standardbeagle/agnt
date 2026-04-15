@@ -12,6 +12,52 @@ import (
 	"github.com/standardbeagle/agnt/internal/proxy"
 )
 
+// buildProxyServerConfig builds a proxy.ProxyConfig from a .agnt.kdl
+// ProxyConfig, honoring explicit ListenPort / SkipTLSVerify when set.
+//
+// Behavior:
+//   - ListenPort <= 0 in the .agnt.kdl config → pass -1 to trigger the
+//     hash-based stable allocator (preserves pre-feature behavior).
+//   - ListenPort > 0 → pass the literal port and set StrictListenPort
+//     so Start() will NOT silently fall back to :0 on bind conflict.
+//   - SkipTLSVerify is a pure pass-through; the runtime already
+//     supports it (see proxy/server.go).
+//
+// Callers are responsible for pre-flight port conflict detection
+// when ListenPort is set — the daemon autostart path surfaces the
+// owning process via the startupErrorStore before Create() even
+// runs, so the conflict is visible to the AI agent even if the
+// runtime bind error would otherwise be terse.
+func buildProxyServerConfig(id, targetURL, projectPath string, cfg *config.ProxyConfig) proxy.ProxyConfig {
+	listenPort := -1 // default: hash-based allocator
+	strict := false
+	if cfg != nil && cfg.ListenPort > 0 {
+		listenPort = cfg.ListenPort
+		strict = true
+	}
+	var (
+		maxLog        int
+		bind          string
+		skipTLSVerify bool
+	)
+	if cfg != nil {
+		maxLog = cfg.MaxLogSize
+		bind = cfg.Bind
+		skipTLSVerify = cfg.SkipTLSVerify
+	}
+	return proxy.ProxyConfig{
+		ID:               id,
+		TargetURL:        targetURL,
+		ListenPort:       listenPort,
+		StrictListenPort: strict,
+		MaxLogSize:       maxLog,
+		AutoRestart:      true,
+		Path:             projectPath,
+		BindAddress:      bind,
+		SkipTLSVerify:    skipTLSVerify,
+	}
+}
+
 // handleProxyEvents runs the proxy event handling loop.
 // It listens for events and creates/destroys proxies accordingly.
 func (d *Daemon) handleProxyEvents() {
@@ -133,15 +179,7 @@ func (d *Daemon) handleURLDetected(event ProxyEvent) {
 		}
 
 		// Create proxy
-		proxyServerConfig := proxy.ProxyConfig{
-			ID:          proxyID,
-			TargetURL:   event.URL,
-			ListenPort:  -1, // Auto-assign
-			MaxLogSize:  proxyConfig.MaxLogSize,
-			AutoRestart: true,
-			Path:        projectPath,
-			BindAddress: proxyConfig.Bind,
-		}
+		proxyServerConfig := buildProxyServerConfig(proxyID, event.URL, projectPath, proxyConfig)
 
 		server, err := d.proxym.Create(d.ctx, proxyServerConfig)
 		if err != nil {
@@ -212,15 +250,7 @@ func (d *Daemon) handleExplicitStart(event ProxyEvent) {
 	}
 
 	// Create proxy
-	proxyServerConfig := proxy.ProxyConfig{
-		ID:          event.ProxyID,
-		TargetURL:   targetURL,
-		ListenPort:  -1, // Auto-assign
-		MaxLogSize:  event.Config.MaxLogSize,
-		AutoRestart: true,
-		Path:        event.Path,
-		BindAddress: event.Config.Bind,
-	}
+	proxyServerConfig := buildProxyServerConfig(event.ProxyID, targetURL, event.Path, event.Config)
 
 	server, err := d.proxym.Create(d.ctx, proxyServerConfig)
 	if err != nil {
@@ -368,15 +398,7 @@ func (d *Daemon) handleFallbackPortCheck(event ProxyEvent) {
 	}
 	targetURL := fmt.Sprintf("http://%s:%d", host, event.Config.FallbackPort)
 
-	proxyServerConfig := proxy.ProxyConfig{
-		ID:          fallbackProxyID,
-		TargetURL:   targetURL,
-		ListenPort:  -1, // Auto-assign
-		MaxLogSize:  event.Config.MaxLogSize,
-		AutoRestart: true,
-		Path:        event.Path,
-		BindAddress: event.Config.Bind,
-	}
+	proxyServerConfig := buildProxyServerConfig(fallbackProxyID, targetURL, event.Path, event.Config)
 
 	server, err := d.proxym.Create(d.ctx, proxyServerConfig)
 	if err != nil {

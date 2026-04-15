@@ -28,19 +28,25 @@ type ProxyServer struct {
 	Path          string
 	BindAddress   string // Bind address used (127.0.0.1 or 0.0.0.0)
 	AllowExternal bool   // Whether external binding was explicitly allowed
-	PublicURL     string // Optional public URL for tunnel services
-	logger        *TrafficLogger
-	pageTracker   *PageTracker
-	httpServer    *http.Server
-	wsUpgrader    websocket.Upgrader
-	proxy         *httputil.ReverseProxy
-	running       atomic.Bool
-	startTime     time.Time
-	requestSeq    atomic.Int64
-	mu            sync.Mutex
-	cancelFunc    context.CancelFunc
-	wsConns       sync.Map     // Active WebSocket connections
-	lastError     atomic.Value // stores last error (string) if server crashed
+	// StrictListenPort, when true, disables the silent :0 auto-assign
+	// fallback in Start(). A bind failure on the requested listen port
+	// becomes a hard error instead of being papered over with a random
+	// port. Set by callers that hand us an explicit listen port (e.g.
+	// autostart with .agnt.kdl `listen-port`).
+	StrictListenPort bool
+	PublicURL        string // Optional public URL for tunnel services
+	logger           *TrafficLogger
+	pageTracker      *PageTracker
+	httpServer       *http.Server
+	wsUpgrader       websocket.Upgrader
+	proxy            *httputil.ReverseProxy
+	running          atomic.Bool
+	startTime        time.Time
+	requestSeq       atomic.Int64
+	mu               sync.Mutex
+	cancelFunc       context.CancelFunc
+	wsConns          sync.Map     // Active WebSocket connections
+	lastError        atomic.Value // stores last error (string) if server crashed
 
 	// Ready signal - closed when server is ready to accept connections
 	ready     chan struct{}
@@ -113,7 +119,13 @@ type ProxyConfig struct {
 	PublicURL     string // Optional public URL for tunnel services (e.g., "https://abc123.trycloudflare.com")
 	AllowExternal bool   // Allow binding to non-localhost addresses (0.0.0.0, ::). Requires explicit opt-in for security.
 	SkipTLSVerify bool   // Skip TLS certificate verification (default: false, verifies certs). Set true for self-signed/expired certs in dev.
-	Tunnel        *protocol.TunnelConfig
+	// StrictListenPort disables the silent :0 auto-assign fallback when
+	// ListenPort is already in use. When true, a bind conflict surfaces
+	// as a hard error from Start(). Used by autostart when a user
+	// explicitly declares `listen-port` in .agnt.kdl — an explicit port
+	// means "this port or nothing", not "this port or a random one".
+	StrictListenPort bool
+	Tunnel           *protocol.TunnelConfig
 
 	// HealthCheckInterval controls how often the backend is probed.
 	// Zero disables health checks. Default: 30s.
@@ -212,6 +224,7 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 		Path:                config.Path,
 		BindAddress:         bindAddress,
 		AllowExternal:       config.AllowExternal,
+		StrictListenPort:    config.StrictListenPort && config.ListenPort > 0,
 		PublicURL:           config.PublicURL,
 		logger:              logger,
 		pageTracker:         NewPageTracker(100, 5*time.Minute),
@@ -394,8 +407,13 @@ func (ps *ProxyServer) Start(ctx context.Context) error {
 	// Try to bind to requested port first
 	listener, err := net.Listen("tcp", ps.ListenAddr)
 	if err != nil {
-		// If port is in use, try to find an available port
-		if isAddressInUse(err) {
+		// If port is in use, try to find an available port — unless
+		// the caller pinned an explicit listen port. A strict listen
+		// port means "this port or fail"; silently drifting to a
+		// random port would defeat the whole purpose of declaring one
+		// in .agnt.kdl (CORS origin registration, shareable URLs,
+		// hostname→port mapping).
+		if isAddressInUse(err) && !ps.StrictListenPort {
 			debug.Log("proxy", "address %s in use, trying auto-assign", ps.ListenAddr)
 			// Try port 0 to get an auto-assigned port
 			listener, err = net.Listen("tcp", ":0")
@@ -407,6 +425,9 @@ func (ps *ProxyServer) Start(ctx context.Context) error {
 		} else {
 			debug.Error("proxy", "failed to listen on %s: %v", ps.ListenAddr, err)
 			cancel()
+			if ps.StrictListenPort && isAddressInUse(err) {
+				return fmt.Errorf("strict listen port %s in use: %w", ps.ListenAddr, err)
+			}
 			return fmt.Errorf("failed to listen on %s: %w", ps.ListenAddr, err)
 		}
 	}

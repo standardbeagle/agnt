@@ -788,6 +788,46 @@ func (d *Daemon) autostartProxy(ctx context.Context, name string, proxyConfig *c
 		return nil
 	}
 
+	// Pre-flight check for explicit listen-port. An explicit port
+	// means "this port or fail" (see StrictListenPort in proxy.Config);
+	// surface the owning process name/PID via startupErrorStore before
+	// Create() even runs, so the conflict is visible to the AI agent
+	// even if the terse runtime bind error would otherwise be hard to
+	// correlate. No kill action here — the user explicitly declared a
+	// port, and silently killing the incumbent would be too surprising
+	// for proxy config (scripts go through the port-conflict policy at
+	// autostart time; proxies don't have an equivalent policy knob and
+	// a conservative fail-loud default is the right call).
+	if proxyConfig.ListenPort > 0 {
+		pids := config.FindPIDsByPort(ctx, proxyConfig.ListenPort)
+		if len(pids) > 0 {
+			procName := config.ProcessNameByPID(pids[0])
+			ownerHint := ""
+			if procName != "" {
+				ownerHint = fmt.Sprintf(" (owner: %s pid=%d)", procName, pids[0])
+			} else {
+				ownerHint = fmt.Sprintf(" (owner pid=%d)", pids[0])
+			}
+			msg := fmt.Sprintf("proxy %s: explicit listen-port %d is in use%s — proxy will fail to start; free the port or change listen-port", name, proxyConfig.ListenPort, ownerHint)
+			debug.Warn("daemon", "%s", msg)
+			d.startupErrorStore.Add(&StartupLogEntry{
+				ProcessID: "",
+				Level:     "error",
+				EventType: "proxy_listen_port_conflict",
+				Message:   msg,
+				Port:      proxyConfig.ListenPort,
+				Timestamp: time.Now(),
+			})
+			// Fall through to enqueue the ExplicitStart event anyway —
+			// the strict-listen-port path in proxy.Start() will emit a
+			// matching proxy_creation_failed entry with the actual bind
+			// error, and we want both signals (preflight diagnosis +
+			// hard failure) for debuggability. This also ensures we
+			// don't silently skip the proxy if the owning process
+			// releases the port between our scan and Create().
+		}
+	}
+
 	// Send ExplicitStart event to create the proxy
 	select {
 	case d.proxyEvents <- ProxyEvent{

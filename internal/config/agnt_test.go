@@ -637,6 +637,172 @@ func TestGetAutostartProxiesExplicitTarget(t *testing.T) {
 	assert.NotContains(t, autostartProxies, "script-with-port", "script-linked with port should not auto-start")
 }
 
+// TestParseProxyListenPortAndSkipTLSVerify covers the two new
+// .agnt.kdl proxy fields. Behavior pinned:
+//
+//   - `listen-port` is parsed as an int, round-trips through
+//     ParseAgntConfig, and is reachable via cfg.Proxies[name].
+//   - Omitting `listen-port` leaves the field zero (caller treats
+//     that as "use the hash-based allocator").
+//   - `skip-tls-verify` is parsed as a bool, defaults to false when
+//     absent, and flips to true when declared.
+//   - Both fields coexist with existing fields (url, bind, autostart,
+//     max-log-size, etc.) without interfering.
+//   - A proxy with all three new-style fields (url + listen-port +
+//     skip-tls-verify) still enters GetAutostartProxies via the
+//     explicit-target auto-start path.
+func TestParseProxyListenPortAndSkipTLSVerify(t *testing.T) {
+	tests := []struct {
+		name              string
+		input             string
+		wantProxyName     string
+		wantListenPort    int
+		wantSkipTLSVerify bool
+		wantURL           string
+		wantBind          string
+		wantAutostart     bool
+	}{
+		{
+			name: "listen-port only",
+			input: `proxies {
+    dev {
+        url "http://localhost:3000"
+        listen-port 4444
+    }
+}`,
+			wantProxyName:  "dev",
+			wantListenPort: 4444,
+			wantURL:        "http://localhost:3000",
+		},
+		{
+			name: "skip-tls-verify only",
+			input: `proxies {
+    dev {
+        url "https://self-signed.local"
+        skip-tls-verify true
+    }
+}`,
+			wantProxyName:     "dev",
+			wantURL:           "https://self-signed.local",
+			wantSkipTLSVerify: true,
+		},
+		{
+			name: "both listen-port and skip-tls-verify with bind and autostart",
+			input: `proxies {
+    tdo {
+        url "https://tdo-local.sbdev.io"
+        listen-port 4444
+        skip-tls-verify true
+        bind "127.0.0.1"
+        autostart true
+    }
+}`,
+			wantProxyName:     "tdo",
+			wantURL:           "https://tdo-local.sbdev.io",
+			wantListenPort:    4444,
+			wantSkipTLSVerify: true,
+			wantBind:          "127.0.0.1",
+			wantAutostart:     true,
+		},
+		{
+			name: "both fields omitted keeps defaults",
+			input: `proxies {
+    dev {
+        url "http://localhost:3000"
+    }
+}`,
+			wantProxyName:     "dev",
+			wantURL:           "http://localhost:3000",
+			wantListenPort:    0,
+			wantSkipTLSVerify: false,
+		},
+		{
+			name: "skip-tls-verify false is explicit default",
+			input: `proxies {
+    dev {
+        url "https://api.local"
+        skip-tls-verify false
+    }
+}`,
+			wantProxyName:     "dev",
+			wantURL:           "https://api.local",
+			wantSkipTLSVerify: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := ParseAgntConfig(tt.input)
+			require.NoError(t, err)
+			require.NotNil(t, cfg)
+
+			p, ok := cfg.Proxies[tt.wantProxyName]
+			require.True(t, ok, "proxy %q not found", tt.wantProxyName)
+			assert.Equal(t, tt.wantListenPort, p.ListenPort, "ListenPort mismatch")
+			assert.Equal(t, tt.wantSkipTLSVerify, p.SkipTLSVerify, "SkipTLSVerify mismatch")
+			assert.Equal(t, tt.wantURL, p.URL, "URL mismatch")
+			if tt.wantBind != "" {
+				assert.Equal(t, tt.wantBind, p.Bind, "Bind mismatch")
+			}
+			assert.Equal(t, tt.wantAutostart, p.Autostart, "Autostart mismatch")
+		})
+	}
+}
+
+// TestProxyListenPortExplicitTargetAutostart verifies that a proxy
+// declaring url + listen-port + skip-tls-verify still flows through
+// the explicit-target autostart path (ShouldAutostart returns true).
+// Regression guard: the new fields must not accidentally shadow the
+// explicit-target detection logic in HasExplicitTarget.
+func TestProxyListenPortExplicitTargetAutostart(t *testing.T) {
+	input := `proxies {
+    tdo {
+        url "https://tdo-local.sbdev.io"
+        listen-port 4444
+        skip-tls-verify true
+    }
+}`
+	cfg, err := ParseAgntConfig(input)
+	require.NoError(t, err)
+
+	autostart := cfg.GetAutostartProxies()
+	assert.Contains(t, autostart, "tdo",
+		"explicit-url proxy with listen-port and skip-tls-verify should auto-start")
+
+	p := autostart["tdo"]
+	require.NotNil(t, p)
+	assert.True(t, p.HasExplicitTarget(), "HasExplicitTarget should be true for url-only proxy")
+	assert.Equal(t, 4444, p.ListenPort)
+	assert.True(t, p.SkipTLSVerify)
+}
+
+// TestProxyListenPortBadValueCoercesToZero pins the kdl-go parser's
+// current behavior for malformed int values: instead of failing the
+// unmarshal, it silently coerces the field to zero. A zero ListenPort
+// is treated as "use the hash-based allocator" downstream, so a
+// typo in .agnt.kdl falls back to the default port rather than
+// killing autostart — gracefully degraded, at the cost of a silent
+// misconfiguration. Regression test for the fallback path.
+//
+// If kdl-go ever tightens its numeric coercion, this test will flip
+// to the stricter contract and we should remove the coerce-to-zero
+// note from the ProxyConfig.ListenPort docstring.
+func TestProxyListenPortBadValueCoercesToZero(t *testing.T) {
+	input := `proxies {
+    dev {
+        url "http://localhost:3000"
+        listen-port "not-a-number"
+    }
+}`
+	cfg, err := ParseAgntConfig(input)
+	require.NoError(t, err)
+	require.NotNil(t, cfg)
+	p, ok := cfg.Proxies["dev"]
+	require.True(t, ok)
+	assert.Equal(t, 0, p.ListenPort,
+		"malformed int falls back to zero → hash-based allocator")
+}
+
 func TestDefaultAgntConfig(t *testing.T) {
 	cfg := DefaultAgntConfig()
 
