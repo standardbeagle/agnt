@@ -40,6 +40,9 @@ type AgntConfig struct {
 	// Alerts configuration for process output monitoring
 	Alerts *AlertsConfig `kdl:"alerts"`
 
+	// Channel configuration for MCP push-based event forwarding
+	Channel *ChannelConfig `kdl:"channel"`
+
 	// Session lifecycle configuration (daemon-side cleanup policies)
 	Session *SessionConfig `kdl:"session"`
 }
@@ -73,6 +76,82 @@ func (c *SessionConfig) OrphanPGIDScanEnabled() bool {
 		return true
 	}
 	return *c.OrphanPGIDScan
+}
+
+// validSeverities is the set of accepted severity strings for ChannelConfig.
+var validSeverities = map[string]struct{}{
+	"trace": {}, "debug": {}, "info": {}, "warning": {}, "error": {},
+}
+
+// validEventTypes is the set of accepted event type strings for ChannelConfig.
+var validEventTypes = map[string]struct{}{
+	"error": {}, "diagnostic": {}, "interaction": {},
+}
+
+// ChannelConfig configures the MCP push-based channel for event forwarding.
+// When enabled, the daemon pushes events to connected MCP sessions via a
+// dedicated channel tool. This is pure configuration plumbing — no runtime
+// behavior change until later tasks wire consumers.
+type ChannelConfig struct {
+	// Enabled controls whether the channel is active. Default: false.
+	Enabled *bool `kdl:"enabled"`
+
+	// Events is an allowlist of event types to forward.
+	// Empty/omitted means all types. Valid values: "error", "diagnostic", "interaction".
+	Events []string `kdl:"events"`
+
+	// Severity is the minimum event severity to forward.
+	// Valid values: "trace", "debug", "info", "warning", "error".
+	// Default: "warning".
+	Severity string `kdl:"severity"`
+
+	// DedupeWindow is the per-event deduplication window in milliseconds.
+	// 0 disables deduplication. Default: 2000.
+	DedupeWindow int `kdl:"dedupe-window"`
+
+	// ReplyTool controls whether the channel-reply MCP tool is registered.
+	// Default: true.
+	ReplyTool *bool `kdl:"reply-tool"`
+}
+
+// IsEnabled returns whether the channel is enabled (defaults to false).
+func (c *ChannelConfig) IsEnabled() bool {
+	if c == nil || c.Enabled == nil {
+		return false
+	}
+	return *c.Enabled
+}
+
+// ReplyToolEnabled returns whether the reply tool is registered (defaults to true).
+func (c *ChannelConfig) ReplyToolEnabled() bool {
+	if c == nil || c.ReplyTool == nil {
+		return true
+	}
+	return *c.ReplyTool
+}
+
+// GetSeverity returns the minimum severity (defaults to "warning").
+func (c *ChannelConfig) GetSeverity() string {
+	if c == nil || c.Severity == "" {
+		return "warning"
+	}
+	return c.Severity
+}
+
+// GetDedupeWindow returns the deduplication window in milliseconds (defaults to 2000).
+func (c *ChannelConfig) GetDedupeWindow() int {
+	if c == nil || c.DedupeWindow == 0 {
+		return 2000
+	}
+	return c.DedupeWindow
+}
+
+// GetEvents returns the event type allowlist (defaults to empty = all types).
+func (c *ChannelConfig) GetEvents() []string {
+	if c == nil {
+		return nil
+	}
+	return c.Events
 }
 
 // AgntProjectMeta contains optional project metadata in .agnt.kdl.
@@ -448,6 +527,8 @@ type AIConfig struct {
 
 // DefaultAgntConfig returns a config with sensible defaults.
 func DefaultAgntConfig() *AgntConfig {
+	channelDisabled := false
+	channelReplyTool := true
 	return &AgntConfig{
 		Scripts: make(map[string]*ScriptConfig),
 		Proxies: make(map[string]*ProxyConfig),
@@ -462,6 +543,12 @@ func DefaultAgntConfig() *AgntConfig {
 			Duration:   4000,
 			Position:   "bottom-right",
 			MaxVisible: 3,
+		},
+		Channel: &ChannelConfig{
+			Enabled:      &channelDisabled,
+			Severity:     "warning",
+			DedupeWindow: 2000,
+			ReplyTool:    &channelReplyTool,
 		},
 	}
 }
@@ -537,6 +624,11 @@ func ParseAgntConfig(data string) (*AgntConfig, error) {
 	// be declared in the scripts block. Catches typos at parse time
 	// rather than waiting for startup races.
 	if err := validateProxyWaitFor(cfg.Proxies, cfg.Scripts); err != nil {
+		return nil, err
+	}
+
+	// Validate channel config fields if present.
+	if err := validateChannelConfig(cfg.Channel); err != nil {
 		return nil, err
 	}
 
@@ -750,6 +842,26 @@ func DefaultHealthPatterns() HealthPatterns {
 			`running .+endpoint` +
 			`)`,
 	}
+}
+
+// validateChannelConfig checks that the channel block's severity and event
+// type fields contain only accepted values. Returns nil when cfg is nil or
+// when all fields are valid.
+func validateChannelConfig(cfg *ChannelConfig) error {
+	if cfg == nil {
+		return nil
+	}
+	if cfg.Severity != "" {
+		if _, ok := validSeverities[cfg.Severity]; !ok {
+			return fmt.Errorf("channel: unknown severity %q (valid: trace, debug, info, warning, error)", cfg.Severity)
+		}
+	}
+	for _, ev := range cfg.Events {
+		if _, ok := validEventTypes[ev]; !ok {
+			return fmt.Errorf("channel: unknown event type %q (valid: error, diagnostic, interaction)", ev)
+		}
+	}
+	return nil
 }
 
 // WriteDefaultAgntConfig writes a default configuration file with documentation.
