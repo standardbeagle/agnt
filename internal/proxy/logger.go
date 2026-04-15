@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"encoding/json"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -48,6 +49,11 @@ const (
 	LogTypeDiagnostic LogEntryType = "diagnostic"
 	// LogTypeProcessOutput represents a line of process stdout/stderr output.
 	LogTypeProcessOutput LogEntryType = "process"
+	// LogTypeHook represents a Claude Code (or other agent) hook event
+	// drained from the daemon's hook ring buffer. The payload carries the
+	// raw hook JSON plus daemon-side provenance so StreamSink subscribers
+	// can filter and display it via `agnt monitor --types hook`.
+	LogTypeHook LogEntryType = "hook"
 )
 
 // HTTPLogEntry represents a logged HTTP request/response pair.
@@ -384,6 +390,22 @@ type ProcessOutputEvent struct {
 	Timestamp time.Time `json:"timestamp"` // When the line was received
 }
 
+// HookLogEntry is the proxy-package representation of a daemon HookEvent
+// after it has been fanned out through BroadcastLogEntry as a unified
+// LogEntry. The proxy package cannot import daemon (the import graph is
+// daemon → proxy), so this struct mirrors the wire shape of HookEvent
+// without introducing a cycle. Fields are flat by design — StreamSink
+// consumers (monitor, get_errors) need direct access to event/payload/
+// session_id without unwrapping a nested map.
+type HookLogEntry struct {
+	Event       string          `json:"event"`
+	Payload     json.RawMessage `json:"payload,omitempty"`
+	SessionID   string          `json:"session_id,omitempty"`
+	ProjectPath string          `json:"project_path,omitempty"`
+	Agent       string          `json:"agent,omitempty"`
+	ReceivedAt  time.Time       `json:"received_at"`
+}
+
 // LogEntry is a union type for all log entry types.
 type LogEntry struct {
 	Type              LogEntryType        `json:"type"`
@@ -406,6 +428,7 @@ type LogEntry struct {
 	DesignChat        *DesignChat         `json:"design_chat,omitempty"`
 	Diagnostic        *ProxyDiagnostic    `json:"diagnostic,omitempty"`
 	ProcessOutput     *ProcessOutputEvent `json:"process,omitempty"`
+	Hook              *HookLogEntry       `json:"hook,omitempty"`
 }
 
 // TrafficLogger stores proxy traffic logs with bounded memory.

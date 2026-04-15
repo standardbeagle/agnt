@@ -196,7 +196,7 @@ func TestFormatCompactNilFields(t *testing.T) {
 		proxy.LogTypeError, proxy.LogTypeHTTP, proxy.LogTypePanelMessage,
 		proxy.LogTypeInteraction, proxy.LogTypeMutation, proxy.LogTypeDesignChat,
 		proxy.LogTypeSketch, proxy.LogTypeDiagnostic, proxy.LogTypeCustom,
-		proxy.LogTypeProcessOutput,
+		proxy.LogTypeProcessOutput, proxy.LogTypeHook,
 	}
 	for _, typ := range types {
 		entry := proxy.LogEntry{Type: typ}
@@ -375,4 +375,92 @@ func TestFormatJSONProcessOutput(t *testing.T) {
 	assert.Equal(t, "Server started", result.Message)
 	assert.Equal(t, "dev", result.Location)
 	assert.Equal(t, ts.Format(time.RFC3339), result.Timestamp)
+}
+
+// --- LogTypeHook formatting (phase 3) ----------------------------------------
+
+func TestFormatCompactHookWithSessionID(t *testing.T) {
+	entry := proxy.LogEntry{
+		Type: proxy.LogTypeHook,
+		Hook: &proxy.HookLogEntry{
+			Event:     "pre-tool-use",
+			SessionID: "claude-1",
+			Agent:     "claude",
+		},
+	}
+	got := formatCompact(entry)
+	assert.Equal(t, "[hook:pre-tool-use] claude-1", got)
+}
+
+func TestFormatCompactHookFallsBackToAgent(t *testing.T) {
+	entry := proxy.LogEntry{
+		Type: proxy.LogTypeHook,
+		Hook: &proxy.HookLogEntry{
+			Event: "notification",
+			Agent: "gemini",
+		},
+	}
+	got := formatCompact(entry)
+	assert.Equal(t, "[hook:notification] gemini", got)
+}
+
+func TestFormatCompactHookNoProvenance(t *testing.T) {
+	entry := proxy.LogEntry{
+		Type: proxy.LogTypeHook,
+		Hook: &proxy.HookLogEntry{Event: "stop"},
+	}
+	got := formatCompact(entry)
+	assert.Equal(t, "[hook:stop]", got)
+}
+
+func TestFormatCompactHookNil(t *testing.T) {
+	entry := proxy.LogEntry{Type: proxy.LogTypeHook}
+	assert.Equal(t, "", formatCompact(entry))
+}
+
+func TestFormatJSONHook(t *testing.T) {
+	ts := time.Date(2026, 4, 14, 9, 30, 0, 0, time.UTC)
+	entry := proxy.LogEntry{
+		Type: proxy.LogTypeHook,
+		Hook: &proxy.HookLogEntry{
+			Event:       "post-tool-use",
+			SessionID:   "claude-1",
+			Agent:       "claude",
+			ProjectPath: "/tmp/proj",
+			ReceivedAt:  ts,
+			Payload:     []byte(`{"tool":"Read","ok":true}`),
+		},
+	}
+	got := formatJSON(entry)
+	assert.NotEmpty(t, got)
+
+	var result monitorJSONEntry
+	assert.NoError(t, json.Unmarshal([]byte(got), &result))
+	assert.Equal(t, "hook", result.Type)
+	assert.Equal(t, "post-tool-use", result.Message)
+	// SessionID is the highest-priority provenance hint.
+	assert.Equal(t, "claude-1", result.Location)
+	assert.Equal(t, ts.Format(time.RFC3339), result.Timestamp)
+}
+
+func TestFormatJSONHookProjectPathFallback(t *testing.T) {
+	entry := proxy.LogEntry{
+		Type: proxy.LogTypeHook,
+		Hook: &proxy.HookLogEntry{
+			Event:       "session-start",
+			ProjectPath: "/tmp/proj",
+			ReceivedAt:  time.Now(),
+		},
+	}
+	got := formatJSON(entry)
+	assert.NotEmpty(t, got)
+
+	var result monitorJSONEntry
+	assert.NoError(t, json.Unmarshal([]byte(got), &result))
+	assert.Equal(t, "/tmp/proj", result.Location, "ProjectPath should be the fallback when SessionID and Agent are empty")
+}
+
+func TestFormatJSONHookNil(t *testing.T) {
+	entry := proxy.LogEntry{Type: proxy.LogTypeHook}
+	assert.Equal(t, "", formatJSON(entry))
 }

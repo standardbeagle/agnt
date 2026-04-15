@@ -37,7 +37,7 @@ var (
 )
 
 func init() {
-	monitorCmd.Flags().StringVar(&monitorTypes, "types", "", "Comma-separated event types (error,http,panel_message,design_chat,sketch,interaction,mutation,diagnostic,process)")
+	monitorCmd.Flags().StringVar(&monitorTypes, "types", "", "Comma-separated event types (error,http,panel_message,design_chat,sketch,interaction,mutation,diagnostic,process,hook)")
 	monitorCmd.Flags().StringVar(&monitorProxy, "proxy", "", "Filter to specific proxy ID")
 	monitorCmd.Flags().StringVar(&monitorProcess, "process", "", "Filter to specific process ID")
 	monitorCmd.Flags().StringVar(&monitorSeverity, "severity", "", "Minimum severity (info,warning,error)")
@@ -213,6 +213,26 @@ func formatCompact(entry proxy.LogEntry) string {
 		po := entry.ProcessOutput
 		return fmt.Sprintf("[process:%s] %s", po.ProcessID, po.Line)
 
+	case proxy.LogTypeHook:
+		if entry.Hook == nil {
+			return ""
+		}
+		h := entry.Hook
+		// Compact form mirrors the other categories: tag the line with
+		// the type plus event name, then the cheapest provenance hint
+		// (session ID if present, otherwise agent). Payload bytes are
+		// deliberately omitted from the compact view — they're free-
+		// form JSON and would blow the line budget. Use --format json
+		// to get the full payload.
+		hint := h.SessionID
+		if hint == "" {
+			hint = h.Agent
+		}
+		if hint != "" {
+			return fmt.Sprintf("[hook:%s] %s", h.Event, hint)
+		}
+		return fmt.Sprintf("[hook:%s]", h.Event)
+
 	default:
 		return ""
 	}
@@ -320,6 +340,25 @@ func formatJSON(entry proxy.LogEntry) string {
 		out.Message = entry.ProcessOutput.Line
 		out.Location = entry.ProcessOutput.ProcessID
 		out.Timestamp = entry.ProcessOutput.Timestamp.Format(time.RFC3339)
+
+	case proxy.LogTypeHook:
+		if entry.Hook == nil {
+			return ""
+		}
+		h := entry.Hook
+		out.Message = h.Event
+		// Location carries the cheapest provenance hint so JSON
+		// consumers (jq pipelines, dashboards) can correlate events
+		// to a session/agent without reaching into the payload.
+		switch {
+		case h.SessionID != "":
+			out.Location = h.SessionID
+		case h.Agent != "":
+			out.Location = h.Agent
+		case h.ProjectPath != "":
+			out.Location = h.ProjectPath
+		}
+		out.Timestamp = h.ReceivedAt.Format(time.RFC3339)
 
 	default:
 		return ""

@@ -105,6 +105,61 @@ hooks {
 }
 
 // ============================================================================
+// CLAUDE CODE HOOK DISPATCHER REGISTRATIONS (operator reference)
+// ============================================================================
+// Hook events are dispatched into the daemon's lock-free ring buffer via
+// the `agnt hook <event>` CLI. The daemon drain goroutine fans each event
+// out to: session heartbeat (LastSeen bump), the StreamSink monitor channel
+// (`agnt monitor --types hook`), per-proxy BroadcastToast for `notification`
+// events, and any registered HookEventSink consumers.
+//
+// These are NOT .agnt.kdl entries — Claude Code reads them from
+// ~/.claude/settings.json. The block below is a copy-pasteable reference for
+// operators integrating agnt with Claude Code. Drop the JSON into your
+// settings file (NOT .agnt.kdl) and the daemon will start receiving events
+// immediately. p99 dispatcher cost is ~270µs measured cold, ≤5ms contracted.
+//
+// Sample ~/.claude/settings.json:
+//
+//   {
+//     "hooks": {
+//       "preToolUse": [
+//         { "type": "command", "command": "agnt hook pre-tool-use --session-id $CLAUDE_SESSION_ID --project-path $PWD" }
+//       ],
+//       "postToolUse": [
+//         { "type": "command", "command": "agnt hook post-tool-use --session-id $CLAUDE_SESSION_ID --project-path $PWD" }
+//       ],
+//       "notification": [
+//         { "type": "command", "command": "agnt hook notification --session-id $CLAUDE_SESSION_ID" }
+//       ],
+//       "userPromptSubmit": [
+//         { "type": "command", "command": "agnt hook user-prompt-submit --session-id $CLAUDE_SESSION_ID" }
+//       ],
+//       "sessionStart": [
+//         { "type": "command", "command": "agnt hook session-start --session-id $CLAUDE_SESSION_ID --project-path $PWD" }
+//       ],
+//       "sessionEnd": [
+//         { "type": "command", "command": "agnt hook session-end --session-id $CLAUDE_SESSION_ID" }
+//       ],
+//       "stop": [
+//         { "type": "command", "command": "agnt hook stop --session-id $CLAUDE_SESSION_ID" }
+//       ],
+//       "subagentStop": [
+//         { "type": "command", "command": "agnt hook subagent-stop --session-id $CLAUDE_SESSION_ID" }
+//       ],
+//       "preCompact": [
+//         { "type": "command", "command": "agnt hook pre-compact --session-id $CLAUDE_SESSION_ID" }
+//       ]
+//     }
+//   }
+//
+// Verify the wiring with:
+//   agnt monitor --types hook
+//
+// then run any tool in Claude Code; you should see the corresponding
+// pre-tool-use / post-tool-use lines stream in real time.
+
+// ============================================================================
 // TOAST SECTION
 // Customize toast notification appearance
 // ============================================================================
