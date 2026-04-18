@@ -1,0 +1,57 @@
+package agentadapter
+
+import (
+	"fmt"
+	"time"
+)
+
+// stdinAdapter covers every non-Claude AI coding agent. It injects a
+// brief note (plus the agnt system prompt body) as the agent's first
+// user message, written to the child's stdin after StdinDelay.
+type stdinAdapter struct {
+	name    string
+	aliases []string
+	delay   time.Duration
+}
+
+// newStdinAdapter constructs a stdin-based adapter. `name` is the
+// canonical lowercase identifier used in config overrides and logging;
+// `aliases` is the set of base names that should match (typically just
+// one entry equal to name, but e.g. future aliases like "gcp-cli" can
+// go here).
+func newStdinAdapter(name string, aliases []string) *stdinAdapter {
+	if len(aliases) == 0 {
+		aliases = []string{name}
+	}
+	return &stdinAdapter{
+		name:    name,
+		aliases: aliases,
+		delay:   DefaultStdinDelay,
+	}
+}
+
+func (s *stdinAdapter) Name() string { return s.name }
+
+func (s *stdinAdapter) Matches(command string) bool {
+	_, ok := resolveBaseName(command, s.aliases)
+	return ok
+}
+
+func (s *stdinAdapter) BuildArgs(baseArgs []string, prompt string) []string {
+	return cloneArgs(baseArgs)
+}
+
+func (s *stdinAdapter) InitialStdin(prompt string) []byte {
+	if prompt == "" {
+		return nil
+	}
+	// The trailing newline is required — the message must look like a
+	// completed line for the agent to treat it as submitted input.
+	msg := fmt.Sprintf(
+		"Note: Running under agnt with MCP tools (proxy, proc, proxylog, currentpage) for browser debugging and dev server management. %s\n",
+		prompt,
+	)
+	return []byte(msg)
+}
+
+func (s *stdinAdapter) StdinDelay() time.Duration { return s.delay }
