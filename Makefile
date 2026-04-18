@@ -1,4 +1,4 @@
-.PHONY: build release test test-unit test-integration test-browser test-e2e test-isolated clean clean-zombies install install-local install-windows run lint test-webapp mockagent
+.PHONY: build release test test-unit test-integration test-browser test-e2e test-isolated clean clean-zombies install install-local install-windows run lint test-webapp mockagent generate generate-check
 
 # Binary names
 BINARY := devtool-mcp
@@ -8,6 +8,26 @@ AGENT_DAEMON_BINARY := agnt-daemon
 
 # Default target
 all: build
+
+# Regenerate code-generated files. Currently just the __devtool API docs
+# catalog (internal/tools/apidocs_gen.go), sourced from JSDoc blocks in
+# internal/proxy/scripts/*.js via scripts/gen-apidocs.go.
+#
+# Run this any time you add / edit / rename a JSDoc block tagged @devtool.
+# CI enforces drift via TestAPIDocsNoDrift in internal/tools.
+generate:
+	go run ./scripts/gen-apidocs.go \
+		-scripts internal/proxy/scripts \
+		-out internal/tools/apidocs_gen.go
+
+# Check-only variant: non-zero exit if the generated file would change.
+# Useful as a pre-commit hook or standalone CI step (the Go test harness
+# already covers this in TestAPIDocsNoDrift).
+generate-check:
+	go run ./scripts/gen-apidocs.go \
+		-scripts internal/proxy/scripts \
+		-out internal/tools/apidocs_gen.go \
+		-check
 
 # Build both binaries (agnt is the source, devtool-mcp is a copy for MCP compatibility)
 # Version is defined in cmd/agnt/main.go and managed by scripts/release.sh
