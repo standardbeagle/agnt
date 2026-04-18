@@ -1,0 +1,14 @@
+{
+  "iterations": 0,
+  "spawns": 0,
+  "status": "running",
+  "started_at": "2026-04-18T19:00:00Z",
+  "last_iteration_at": null,
+  "last_subagent": null,
+  "loop_task_id": "SZcgIavO18Mk",
+  "dartboard": "Personal/agnt",
+  "runner_instance_id": "beagle-ab2-419131",
+  "runner_email": "claude@anthropic.com",
+  "runner_dart_id": null,
+  "tasks": []
+}
