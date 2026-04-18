@@ -194,7 +194,7 @@ Three delivery sinks for alert/event routing:
 | `snapshot` | Visual regression testing (baseline/compare screenshots) |
 | `daemon` | Daemon management |
 | `watch` | Get monitor command for streaming events (errors, interactions, process, all) |
-| `channel_reply` | Send messages to developer's browser overlay (channel mode only) |
+| `channel_reply` | Send messages to developer's browser overlay (channel mode beta) |
 
 **Handler pattern**:
 - Input/Output structs with JSON schema tags
@@ -587,7 +587,9 @@ alerts {
 | `universal` | enabled | enabled |
 | (none) | enabled | enabled |
 
-### Channel Mode (Claude Code only)
+### Channel Mode (Beta — Claude Code only)
+
+> **Beta / Experimental**: Channel mode depends on a forked `modelcontextprotocol/go-sdk` and the `--dangerously-load-development-channels` flag in Claude Code. The protocol, schema, and tool shapes may change before stabilization.
 
 Push-based event forwarding via the MCP `claude/channel` protocol. When enabled, the daemon streams browser errors, diagnostics, and user interactions directly into Claude's context as `<channel>` events -- no PTY wrapper or `agnt run` required.
 
@@ -618,7 +620,7 @@ channel {
 | Field | KDL key | Type | Default | Description |
 |-------|---------|------|---------|-------------|
 | Enabled | `enabled` | bool | `false` | Activate channel event forwarding |
-| Events | `events` | string list | (all) | Allowlist of event types: `error`, `diagnostic`, `interaction` |
+| Events | `events` | string list | (all) | Allowlist of event types: `error`, `diagnostic`, `interaction`, `http`, `custom`, `panel_message` |
 | Severity | `severity` | string | `"warning"` | Minimum severity: `trace`, `debug`, `info`, `warning`, `error` |
 | DedupeWindow | `dedupe-window` | int | `2000` | Per-event dedup window in ms; `0` disables |
 | ReplyTool | `reply-tool` | bool | `true` | Register the `channel_reply` MCP tool |

@@ -105,7 +105,9 @@ agnt run aider
 
 This adds a terminal overlay menu (Ctrl+P) and enables the browser-to-terminal message bridge.
 
-### Channel Mode (Claude Code only)
+### Channel Mode (Beta — Claude Code only)
+
+> **Beta / Experimental**: Channel mode requires a forked MCP SDK and a development flag in Claude Code. Behavior and schema may change.
 
 Claude Code v2.1.80+ can receive real-time browser errors, diagnostics, and user interactions as push events in context -- without the PTY wrapper. Add `channel { enabled true }` to `.agnt.kdl` and launch with `claude --dangerously-load-development-channels server:agnt`. See the [Channel Mode section in CLAUDE.md](CLAUDE.md#channel-mode-claude-code-only) for full schema, event format, and the `channel_reply` tool for sending messages back to the browser overlay.
 
