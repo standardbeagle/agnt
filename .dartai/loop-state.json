@@ -1,14 +1,31 @@
 {
-  "iterations": 0,
-  "spawns": 0,
+  "iterations": 1,
+  "spawns": 1,
   "status": "running",
   "started_at": "2026-04-18T19:00:00Z",
-  "last_iteration_at": null,
-  "last_subagent": null,
+  "last_iteration_at": "2026-04-18T22:51:00Z",
+  "last_subagent": "dartai:task-executor",
   "loop_task_id": "SZcgIavO18Mk",
   "dartboard": "Personal/agnt",
   "runner_instance_id": "beagle-ab2-419131",
   "runner_email": "claude@anthropic.com",
   "runner_dart_id": null,
-  "tasks": []
+  "tasks": [
+    {
+      "task_id": "tENG8i6Dkfq5",
+      "iteration": 1,
+      "status": "completed",
+      "started_at": "2026-04-18T19:01:00Z",
+      "completed_at": "2026-04-18T22:51:00Z",
+      "phase_completed": "phase-9",
+      "failed_phase": null,
+      "files_changed": 3,
+      "tests_added": 5,
+      "plan_adjustments": 0,
+      "completion_summary": "Added server-side wrong-key detection (arguments/args/input -> parameters) to slop-mcp execute_tool with 5 TDD tests; fixed plugin docs with corrected examples and Common Errors table.",
+      "failure_reason": null,
+      "fix_task_created": false,
+      "fix_task_id": null
+    }
+  ]
 }
