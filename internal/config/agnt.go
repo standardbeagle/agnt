@@ -523,6 +523,26 @@ type AIConfig struct {
 	SystemPrompt string `kdl:"system-prompt"`
 	// AppendSystemPrompt is appended to the default system prompt
 	AppendSystemPrompt string `kdl:"append-system-prompt"`
+	// Adapters is the map of per-adapter injection overrides, keyed by
+	// lowercase agent name (e.g. "claude", "aider"). Empty / missing
+	// entries inherit the adapter's default behavior.
+	//
+	// See internal/agentadapter for the set of built-in adapters and
+	// docs/agent-adapters.md for a guide to adding a new one.
+	Adapters map[string]*AIAdapterConfig `kdl:"adapters"`
+}
+
+// AIAdapterConfig overrides the built-in behavior of a single
+// [agentadapter.Adapter]. All fields are optional.
+type AIAdapterConfig struct {
+	// Disabled disables prompt injection for this agent entirely.
+	Disabled bool `kdl:"disabled"`
+	// FlagName overrides the CLI flag used for flag-based injection.
+	// Ignored by stdin-based adapters. Example: "--system-prompt".
+	FlagName string `kdl:"flag-name"`
+	// StdinDelayMs overrides the delay (in milliseconds) before
+	// injecting initial stdin. Ignored by flag-based adapters.
+	StdinDelayMs int `kdl:"stdin-delay-ms"`
 }
 
 // DefaultAgntConfig returns a config with sensible defaults.

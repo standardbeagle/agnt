@@ -243,11 +243,14 @@ func runWithConPTY(ctx context.Context, args []string, socketPath string, sessio
 		}
 	}
 
-	// For Claude, inject system prompt with agnt context
-	if isClaudeCommand(command) {
-		if prompt := buildAgntSystemPrompt(socketPath); prompt != "" {
-			cmdArgs = append(cmdArgs, "--append-system-prompt", prompt)
-		}
+	// Resolve an agent adapter for this command (Claude, Gemini, etc.).
+	// See run.go for the rationale — the windows entrypoint uses the
+	// same abstraction so the two stay in lockstep.
+	adapter := resolveAgentAdapter(command, projectPath)
+	var adapterPrompt string
+	if adapter != nil {
+		adapterPrompt = buildAgntSystemPrompt(socketPath)
+		cmdArgs = adapter.BuildArgs(cmdArgs, adapterPrompt)
 	}
 
 	// Get initial terminal size BEFORE any mode changes
@@ -576,16 +579,12 @@ func runWithConPTY(ctx context.Context, args []string, socketPath string, sessio
 		}
 	}()
 
-	// For non-Claude AI agents, inject initial context about agnt setup
-	// This helps them understand the MCP tools available
-	if !isClaudeCommand(command) && isKnownAIAgent(command) {
-		if prompt := buildAgntSystemPrompt(socketPath); prompt != "" {
-			// Send as initial stdin to the agent (appears as if user typed it)
-			// Use a brief, succinct message
-			msg := fmt.Sprintf("Note: Running under agnt with MCP tools (proxy, proc, proxylog, currentpage) for browser debugging and dev server management. %s\n", prompt)
-			// Give the agent a moment to start up before sending
-			time.Sleep(500 * time.Millisecond)
-			_, _ = ptmx.Write([]byte(msg))
+	// For stdin-based adapters, inject the initial context message.
+	// See run.go for details on the two-phase injection model.
+	if adapter != nil {
+		if stdin := adapter.InitialStdin(adapterPrompt); len(stdin) > 0 {
+			time.Sleep(adapter.StdinDelay())
+			_, _ = ptmx.Write(stdin)
 		}
 	}
 
@@ -737,45 +736,8 @@ func cleanupTerminal(height int) {
 // usable from daemon cleanup code without import cycles. See
 // platform.CreateSessionJobObject and platform.AssignPIDToSessionJob.
 
-// isClaudeCommand checks if the command appears to be Claude Code.
-func isClaudeCommand(command string) bool {
-	if command == "claude" || command == "claude.exe" {
-		return true
-	}
-	if strings.HasSuffix(command, "\\claude") || strings.HasSuffix(command, "\\claude.exe") {
-		return true
-	}
-	if strings.HasSuffix(command, "/claude") || strings.HasSuffix(command, "/claude.exe") {
-		return true
-	}
-	return false
-}
-
-// isKnownAIAgent checks if the command is a recognized AI coding agent.
-// Returns true for: gemini, copilot, aider, cursor, opencode, kimi, auggie, etc.
-func isKnownAIAgent(command string) bool {
-	knownAgents := []string{
-		"gemini", "copilot", "aider", "cursor", "cursor-agent",
-		"opencode", "kimi", "kimi-cli", "auggie",
-	}
-
-	// Extract base command name (handle paths and .exe extension)
-	baseName := command
-	if idx := strings.LastIndexAny(command, "/\\"); idx != -1 {
-		baseName = command[idx+1:]
-	}
-	baseName = strings.TrimSuffix(baseName, ".exe")
-
-	// Check against known agents
-	baseName = strings.ToLower(baseName)
-	for _, agent := range knownAgents {
-		if baseName == agent {
-			return true
-		}
-	}
-
-	return false
-}
+// resolveAgentAdapter + adapterOverridesFromConfig live in adapter_resolve.go
+// so both the unix and windows entrypoints share the same implementation.
 
 // buildAgntSystemPrompt queries the daemon for running services and builds
 // a system prompt to inject into Claude with context about agnt.

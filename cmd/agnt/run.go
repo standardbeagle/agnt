@@ -246,12 +246,16 @@ func runWithPTY(ctx context.Context, args []string, socketPath string, sessionCo
 		}
 	}
 
-	// For Claude, inject system prompt with agnt context
-	// Check if command is Claude (handles aliases, paths like /usr/bin/claude, etc.)
-	if isClaudeCommand(command) {
-		if prompt := buildAgntSystemPrompt(socketPath); prompt != "" {
-			cmdArgs = append(cmdArgs, "--append-system-prompt", prompt)
-		}
+	// Resolve an agent adapter for this command (Claude, Gemini, Aider,
+	// etc.). The adapter encapsulates the injection strategy — flag vs.
+	// stdin — and honors any per-agent overrides from `ai.adapters` in
+	// `.agnt.kdl`. A nil adapter means "unknown command" and we skip
+	// injection entirely, matching legacy behavior.
+	adapter := resolveAgentAdapter(command, projectPath)
+	var adapterPrompt string
+	if adapter != nil {
+		adapterPrompt = buildAgntSystemPrompt(socketPath)
+		cmdArgs = adapter.BuildArgs(cmdArgs, adapterPrompt)
 	}
 
 	// Show startup animation
@@ -598,16 +602,13 @@ func runWithPTY(ctx context.Context, args []string, socketPath string, sessionCo
 		}
 	}()
 
-	// For non-Claude AI agents, inject initial context about agnt setup
-	// This helps them understand the MCP tools available
-	if !isClaudeCommand(command) && isKnownAIAgent(command) {
-		if prompt := buildAgntSystemPrompt(socketPath); prompt != "" {
-			// Send as initial stdin to the agent (appears as if user typed it)
-			// Use a brief, succinct message
-			msg := fmt.Sprintf("Note: Running under agnt with MCP tools (proxy, proc, proxylog, currentpage) for browser debugging and dev server management. %s\n", prompt)
-			// Give the agent a moment to start up before sending
-			time.Sleep(500 * time.Millisecond)
-			_, _ = ptmx.Write([]byte(msg))
+	// For stdin-based adapters (everything except Claude by default),
+	// inject the initial context message as if the user typed it. The
+	// adapter chooses the delay and the message body.
+	if adapter != nil {
+		if stdin := adapter.InitialStdin(adapterPrompt); len(stdin) > 0 {
+			time.Sleep(adapter.StdinDelay())
+			_, _ = ptmx.Write(stdin)
 		}
 	}
 
@@ -796,53 +797,8 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
-// isClaudeCommand checks if the command appears to be Claude Code.
-// Handles: "claude", "/usr/bin/claude", aliases that resolve to claude, etc.
-func isClaudeCommand(command string) bool {
-	// Direct match
-	if command == "claude" {
-		return true
-	}
-
-	// Check if it's a path ending with "claude"
-	if strings.HasSuffix(command, "/claude") || strings.HasSuffix(command, "\\claude") {
-		return true
-	}
-
-	// Try to resolve the command to see if it's claude
-	if resolved, err := exec.LookPath(command); err == nil {
-		if strings.HasSuffix(resolved, "/claude") || strings.HasSuffix(resolved, "\\claude") {
-			return true
-		}
-	}
-
-	return false
-}
-
-// isKnownAIAgent checks if the command is a recognized AI coding agent.
-// Returns true for: gemini, copilot, aider, cursor, opencode, kimi, auggie, etc.
-func isKnownAIAgent(command string) bool {
-	knownAgents := []string{
-		"gemini", "copilot", "aider", "cursor", "cursor-agent",
-		"opencode", "kimi", "kimi-cli", "auggie",
-	}
-
-	// Extract base command name (handle paths)
-	baseName := command
-	if idx := strings.LastIndexAny(command, "/\\"); idx != -1 {
-		baseName = command[idx+1:]
-	}
-
-	// Check against known agents
-	baseName = strings.ToLower(baseName)
-	for _, agent := range knownAgents {
-		if baseName == agent {
-			return true
-		}
-	}
-
-	return false
-}
+// resolveAgentAdapter + adapterOverridesFromConfig live in adapter_resolve.go
+// so they are shared with run_windows.go.
 
 // buildAgntSystemPrompt queries the daemon for running services and builds
 // a system prompt to inject into Claude with context about agnt and auto-started services.
