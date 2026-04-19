@@ -27,7 +27,7 @@ func (d *Daemon) hubHandleCurrentPageList(conn *hubpkg.Connection, cmd *hubproto
 
 	proxyID := cmd.Args[0]
 
-	p, err := d.getSessionScopedProxy(conn, proxyID)
+	p, err := getSessionScoped(d, conn, proxyID, d.proxym.GetWithPathFilter)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
@@ -54,7 +54,7 @@ func (d *Daemon) hubHandleCurrentPageGet(conn *hubpkg.Connection, cmd *hubproto.
 	proxyID := cmd.Args[0]
 	sessionID := cmd.Args[1]
 
-	p, err := d.getSessionScopedProxy(conn, proxyID)
+	p, err := getSessionScoped(d, conn, proxyID, d.proxym.GetWithPathFilter)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
@@ -78,7 +78,7 @@ func (d *Daemon) hubHandleCurrentPageSummary(conn *hubpkg.Connection, cmd *hubpr
 	proxyID := cmd.Args[0]
 	sessionID := cmd.Args[1]
 
-	p, err := d.getSessionScopedProxy(conn, proxyID)
+	p, err := getSessionScoped(d, conn, proxyID, d.proxym.GetWithPathFilter)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
@@ -102,7 +102,7 @@ func (d *Daemon) hubHandleCurrentPageClear(conn *hubpkg.Connection, cmd *hubprot
 
 	proxyID := cmd.Args[0]
 
-	p, err := d.getSessionScopedProxy(conn, proxyID)
+	p, err := getSessionScoped(d, conn, proxyID, d.proxym.GetWithPathFilter)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}

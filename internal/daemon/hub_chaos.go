@@ -36,7 +36,7 @@ func (d *Daemon) hubHandleChaosEnable(conn *hubpkg.Connection, cmd *hubproto.Com
 
 	proxyID := cmd.Args[0]
 
-	p, err := d.getSessionScopedProxy(conn, proxyID)
+	p, err := getSessionScoped(d, conn, proxyID, d.proxym.GetWithPathFilter)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
@@ -54,7 +54,7 @@ func (d *Daemon) hubHandleChaosDisable(conn *hubpkg.Connection, cmd *hubproto.Co
 
 	proxyID := cmd.Args[0]
 
-	p, err := d.getSessionScopedProxy(conn, proxyID)
+	p, err := getSessionScoped(d, conn, proxyID, d.proxym.GetWithPathFilter)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
@@ -72,7 +72,7 @@ func (d *Daemon) hubHandleChaosStatus(conn *hubpkg.Connection, cmd *hubproto.Com
 
 	proxyID := cmd.Args[0]
 
-	p, err := d.getSessionScopedProxy(conn, proxyID)
+	p, err := getSessionScoped(d, conn, proxyID, d.proxym.GetWithPathFilter)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
@@ -99,7 +99,7 @@ func (d *Daemon) hubHandleChaosPreset(conn *hubpkg.Connection, cmd *hubproto.Com
 
 	proxyID := cmd.Args[0]
 
-	p, err := d.getSessionScopedProxy(conn, proxyID)
+	p, err := getSessionScoped(d, conn, proxyID, d.proxym.GetWithPathFilter)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
@@ -137,7 +137,7 @@ func (d *Daemon) hubHandleChaosClear(conn *hubpkg.Connection, cmd *hubproto.Comm
 
 	proxyID := cmd.Args[0]
 
-	p, err := d.getSessionScopedProxy(conn, proxyID)
+	p, err := getSessionScoped(d, conn, proxyID, d.proxym.GetWithPathFilter)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
@@ -163,7 +163,7 @@ func (d *Daemon) hubHandleChaosSet(conn *hubpkg.Connection, cmd *hubproto.Comman
 
 	proxyID := cmd.Args[0]
 
-	p, err := d.getSessionScopedProxy(conn, proxyID)
+	p, err := getSessionScoped(d, conn, proxyID, d.proxym.GetWithPathFilter)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
@@ -188,7 +188,7 @@ func (d *Daemon) hubHandleChaosAddRule(conn *hubpkg.Connection, cmd *hubproto.Co
 
 	proxyID := cmd.Args[0]
 
-	p, err := d.getSessionScopedProxy(conn, proxyID)
+	p, err := getSessionScoped(d, conn, proxyID, d.proxym.GetWithPathFilter)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
@@ -219,7 +219,7 @@ func (d *Daemon) hubHandleChaosRemoveRule(conn *hubpkg.Connection, cmd *hubproto
 
 	proxyID := cmd.Args[0]
 
-	p, err := d.getSessionScopedProxy(conn, proxyID)
+	p, err := getSessionScoped(d, conn, proxyID, d.proxym.GetWithPathFilter)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
@@ -247,7 +247,7 @@ func (d *Daemon) hubHandleChaosListRules(conn *hubpkg.Connection, cmd *hubproto.
 
 	proxyID := cmd.Args[0]
 
-	p, err := d.getSessionScopedProxy(conn, proxyID)
+	p, err := getSessionScoped(d, conn, proxyID, d.proxym.GetWithPathFilter)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
@@ -273,7 +273,7 @@ func (d *Daemon) hubHandleChaosStats(conn *hubpkg.Connection, cmd *hubproto.Comm
 
 	proxyID := cmd.Args[0]
 
-	p, err := d.getSessionScopedProxy(conn, proxyID)
+	p, err := getSessionScoped(d, conn, proxyID, d.proxym.GetWithPathFilter)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}

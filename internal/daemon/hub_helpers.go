@@ -11,13 +11,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/standardbeagle/agnt/internal/browser"
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
 
 	"github.com/standardbeagle/agnt/internal/project"
 	"github.com/standardbeagle/agnt/internal/proxy"
-	"github.com/standardbeagle/agnt/internal/tunnel"
 	hubpkg "github.com/standardbeagle/go-cli-server/hub"
 	goprocess "github.com/standardbeagle/go-cli-server/process"
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
@@ -53,52 +51,17 @@ func normalizePath(path string) string {
 	return abs
 }
 
-// getSessionScopedProxy retrieves a proxy with session-scoped fuzzy matching.
-// If the connection has an associated session, only proxies in that session's
+// getSessionScoped retrieves a resource with session-scoped fuzzy matching.
+// If the connection has an associated session, only resources in that session's
 // project path are considered for fuzzy lookup. Exact ID matches always work.
-
-func (d *Daemon) getSessionScopedProxy(conn *hubpkg.Connection, proxyID string) (*proxy.ProxyServer, error) {
-	// Get path filter from connection's session
-	pathFilter := ""
+func getSessionScoped[T any](d *Daemon, conn *hubpkg.Connection, id string, getFn func(string, string) (T, error)) (T, error) {
+	var pathFilter string
 	if sessionCode := conn.SessionCode(); sessionCode != "" {
 		if session, ok := d.sessionRegistry.Get(sessionCode); ok {
 			pathFilter = session.ProjectPath
 		}
 	}
-
-	return d.proxym.GetWithPathFilter(proxyID, pathFilter)
-}
-
-// getSessionScopedTunnel retrieves a tunnel with session-scoped fuzzy matching.
-// If the connection has an associated session, only tunnels in that session's
-// project path are considered for fuzzy lookup. Exact ID matches always work.
-
-func (d *Daemon) getSessionScopedTunnel(conn *hubpkg.Connection, tunnelID string) (*tunnel.Tunnel, error) {
-	// Get path filter from connection's session
-	pathFilter := ""
-	if sessionCode := conn.SessionCode(); sessionCode != "" {
-		if session, ok := d.sessionRegistry.Get(sessionCode); ok {
-			pathFilter = session.ProjectPath
-		}
-	}
-
-	return d.tunnelm.GetWithPathFilter(tunnelID, pathFilter)
-}
-
-// getSessionScopedBrowser retrieves a browser with session-scoped fuzzy matching.
-// If the connection has an associated session, only browsers in that session's
-// project path are considered for fuzzy lookup. Exact ID matches always work.
-
-func (d *Daemon) getSessionScopedBrowser(conn *hubpkg.Connection, browserID string) (*browser.Browser, error) {
-	// Get path filter from connection's session
-	pathFilter := ""
-	if sessionCode := conn.SessionCode(); sessionCode != "" {
-		if session, ok := d.sessionRegistry.Get(sessionCode); ok {
-			pathFilter = session.ProjectPath
-		}
-	}
-
-	return d.browserm.GetWithPathFilter(browserID, pathFilter)
+	return getFn(id, pathFilter)
 }
 
 // getSessionProjectPath returns the project path from the connection's session.

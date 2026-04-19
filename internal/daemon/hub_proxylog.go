@@ -30,7 +30,7 @@ func (d *Daemon) hubHandleProxyLogQuery(conn *hubpkg.Connection, cmd *hubproto.C
 
 	proxyID := cmd.Args[0]
 
-	p, err := d.getSessionScopedProxy(conn, proxyID)
+	p, err := getSessionScoped(d, conn, proxyID, d.proxym.GetWithPathFilter)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
@@ -101,7 +101,7 @@ func (d *Daemon) hubHandleProxyLogSummary(conn *hubpkg.Connection, cmd *hubproto
 
 	proxyID := cmd.Args[0]
 
-	p, err := d.getSessionScopedProxy(conn, proxyID)
+	p, err := getSessionScoped(d, conn, proxyID, d.proxym.GetWithPathFilter)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
@@ -126,7 +126,7 @@ func (d *Daemon) hubHandleProxyLogClear(conn *hubpkg.Connection, cmd *hubproto.C
 
 	proxyID := cmd.Args[0]
 
-	p, err := d.getSessionScopedProxy(conn, proxyID)
+	p, err := getSessionScoped(d, conn, proxyID, d.proxym.GetWithPathFilter)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
@@ -144,7 +144,7 @@ func (d *Daemon) hubHandleProxyLogStats(conn *hubpkg.Connection, cmd *hubproto.C
 
 	proxyID := cmd.Args[0]
 
-	p, err := d.getSessionScopedProxy(conn, proxyID)
+	p, err := getSessionScoped(d, conn, proxyID, d.proxym.GetWithPathFilter)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}

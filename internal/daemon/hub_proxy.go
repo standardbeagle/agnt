@@ -159,7 +159,7 @@ func (d *Daemon) hubHandleProxyStop(ctx context.Context, conn *hubpkg.Connection
 	proxyID := cmd.Args[0]
 
 	// Use session-scoped lookup to resolve the proxy
-	p, err := d.getSessionScopedProxy(conn, proxyID)
+	p, err := getSessionScoped(d, conn, proxyID, d.proxym.GetWithPathFilter)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
@@ -186,7 +186,7 @@ func (d *Daemon) hubHandleProxyStatus(conn *hubpkg.Connection, cmd *hubproto.Com
 
 	proxyID := cmd.Args[0]
 
-	p, err := d.getSessionScopedProxy(conn, proxyID)
+	p, err := getSessionScoped(d, conn, proxyID, d.proxym.GetWithPathFilter)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
@@ -286,7 +286,7 @@ func (d *Daemon) hubHandleProxyExec(conn *hubpkg.Connection, cmd *hubproto.Comma
 
 	proxyID := cmd.Args[0]
 
-	p, err := d.getSessionScopedProxy(conn, proxyID)
+	p, err := getSessionScoped(d, conn, proxyID, d.proxym.GetWithPathFilter)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
@@ -344,7 +344,7 @@ func (d *Daemon) hubHandleProxyToast(conn *hubpkg.Connection, cmd *hubproto.Comm
 	proxyID := cmd.Args[0]
 	debug.Log("daemon", "PROXY TOAST: proxyID=%s", proxyID)
 
-	p, err := d.getSessionScopedProxy(conn, proxyID)
+	p, err := getSessionScoped(d, conn, proxyID, d.proxym.GetWithPathFilter)
 	if err != nil {
 		debug.Log("daemon", "PROXY TOAST: proxy not found: %v", err)
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
@@ -405,7 +405,7 @@ func (d *Daemon) hubHandleProxyRestart(ctx context.Context, conn *hubpkg.Connect
 	proxyID := cmd.Args[0]
 
 	// Get the proxy to capture its config
-	p, err := d.getSessionScopedProxy(conn, proxyID)
+	p, err := getSessionScoped(d, conn, proxyID, d.proxym.GetWithPathFilter)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
@@ -480,5 +480,3 @@ func (d *Daemon) hubHandleProxyRestart(ctx context.Context, conn *hubpkg.Connect
 // ============================================================================
 // AUTOMATION Command Handlers (chromedp sessions)
 // ============================================================================
-
-// getSessionScopedAutomationSession retrieves an automation session with session-scoped fuzzy matching.
