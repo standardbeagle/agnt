@@ -2,6 +2,8 @@ package browser
 
 import (
 	"context"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -52,6 +54,45 @@ func TestBrowserCustomWindowSize(t *testing.T) {
 	b := New(config)
 	if b.config.WindowSize != "1280,720" {
 		t.Errorf("WindowSize = %q, want %q", b.config.WindowSize, "1280,720")
+	}
+}
+
+func TestBrowserBuildArgsPasswordStore(t *testing.T) {
+	b := New(Config{ID: "test", Headless: true})
+	args := b.buildArgs()
+
+	found := false
+	for _, arg := range args {
+		if arg == "--password-store=basic" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("buildArgs() missing --password-store=basic; got: %v", args)
+	}
+}
+
+func TestBrowserBuildArgsMockKeychainDarwin(t *testing.T) {
+	b := New(Config{ID: "test", Headless: true})
+	args := b.buildArgs()
+
+	hasMockKeychain := false
+	for _, arg := range args {
+		if strings.Contains(arg, "use-mock-keychain") {
+			hasMockKeychain = true
+			break
+		}
+	}
+
+	if runtime.GOOS == "darwin" {
+		if !hasMockKeychain {
+			t.Error("darwin: buildArgs() missing --use-mock-keychain")
+		}
+	} else {
+		if hasMockKeychain {
+			t.Error("non-darwin: buildArgs() should not include --use-mock-keychain")
+		}
 	}
 }
 
