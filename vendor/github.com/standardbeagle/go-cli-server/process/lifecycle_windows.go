@@ -199,6 +199,12 @@ func isNoSuchProcess(err error) bool {
 	return os.IsNotExist(err) || err == os.ErrProcessDone
 }
 
+// findAllDescendants returns descendant PIDs for a process.
+// On Windows, Job Objects handle child tracking, so this returns empty.
+func findAllDescendants(pid int) []int {
+	return nil
+}
+
 // getProcessGroupID returns the process group ID for a given PID.
 func getProcessGroupID(pid int) int {
 	return pid
