@@ -29,6 +29,7 @@ type ProxyInput struct {
 	Describe      string `json:"describe,omitempty" jsonschema:"For exec: show detailed docs for a specific function (e.g. 'screenshot', 'interactions.getLastClick')"`
 	Search        string `json:"search,omitempty" jsonschema:"For exec: case-insensitive substring search across __devtool function names, descriptions, and signatures. Returns up to 10 compact matches. Combine with category to narrow results."`
 	Category      string `json:"category,omitempty" jsonschema:"For exec search: optional category filter (e.g. 'accessibility', 'layout', 'inspection'). AND-combined with 'search'."`
+	Hints         *bool  `json:"hints,omitempty" jsonschema:"For exec: scan submitted JS for raw DOM patterns and suggest __devtool helpers. Default: true. Set false to opt out."`
 	ToastType     string `json:"toast_type,omitempty" jsonschema:"For toast: notification type (success, error, warning, info). Default: info"`
 	ToastTitle    string `json:"toast_title,omitempty" jsonschema:"For toast: notification title (optional)"`
 	ToastMessage  string `json:"toast_message,omitempty" jsonschema:"For toast: notification message (required for toast)"`
@@ -348,6 +349,9 @@ type ProxyOutput struct {
 
 	// For exec search
 	SearchResult *APISearchResult `json:"search_result,omitempty"`
+
+	// For exec: advisory hints when raw DOM patterns duplicate __devtool helpers
+	ExecHints []string `json:"hints,omitempty"`
 
 	// For chaos
 	ChaosEnabled bool              `json:"chaos_enabled,omitempty"`
@@ -765,6 +769,13 @@ func handleProxyExec(pm *proxy.ProxyManager, input ProxyInput) (*mcp.CallToolRes
 		return errorResult("code required for exec"), ProxyOutput{}, nil
 	}
 
+	// Scan for anti-pattern hints before execution (advisory only, never blocks).
+	// Default enabled; set hints: false to opt out.
+	var execHints []string
+	if input.Hints == nil || *input.Hints {
+		execHints = ScanForHints(input.Code)
+	}
+
 	proxyServer, err := pm.Get(input.ID)
 	if err != nil {
 		return errorResult(fmt.Sprintf("proxy not found: %s", input.ID)), ProxyOutput{}, nil
@@ -809,6 +820,7 @@ func handleProxyExec(pm *proxy.ProxyManager, input ProxyInput) (*mcp.CallToolRes
 			return nil, ProxyOutput{
 				Success:     true,
 				ExecutionID: execID,
+				ExecHints:   execHints,
 				Message: fmt.Sprintf(`JavaScript executed successfully.
 Result: Large response saved to file
 File: %s
@@ -827,6 +839,7 @@ Use the Read tool to view the full result.`, result.FilePath, result.Duration),
 		return nil, ProxyOutput{
 			Success:     true,
 			ExecutionID: execID,
+			ExecHints:   execHints,
 			Message:     message,
 		}, nil
 
