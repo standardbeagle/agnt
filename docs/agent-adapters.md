@@ -48,6 +48,19 @@ Two injection strategies are supported:
 
 All adapters match by **base name** of the command, case-insensitive, with `.exe` stripped on Windows. That covers bare invocations (`claude`), absolute paths (`/usr/bin/claude`, `C:\bin\claude.exe`), and relative paths (`./aider`). When the command is a shell alias or wrapper, the adapter also tries `exec.LookPath` and matches on the resolved path's base name.
 
+## Prompt payload: what the adapter receives
+
+Adapters are intentionally **dumb** about the prompt's contents — they forward the string `buildAgntSystemPrompt` returns, whatever it contains. That keeps the "which agent gets what" question out of each adapter and lets prompt authors evolve the payload in one place (`cmd/agnt/run.go`, `internal/config`, `internal/agntprompt`).
+
+The payload is assembled, in order:
+
+1. **Base prompt** from `internal/config.AgntConfig.BuildSystemPrompt` — agnt tool overview, configured scripts, configured proxies.
+2. **`__devtool.*` helpers cheat sheet** from `internal/agntprompt.BuildCheatSheet` — a ~40-line compact reference of ~15 promoted helpers grouped by category (logging, inspection, layout, accessibility, audit, interactions, mutations). It steers agents toward `__devtool.*` instead of raw `document.*` / `window.*` / `getBoundingClientRect` calls when writing `proxy exec` snippets. Opt out with `ai { helpers-cheat-sheet false }` in `.agnt.kdl`.
+3. **Runtime state** from the daemon (when reachable) — currently running processes and proxies.
+4. **`ai.append-system-prompt`** (if set) — user-authored trailer appended last.
+
+Every adapter receives **byte-identical** content for 1–4; the only adapter-visible difference is the wrapping (Claude's `--append-system-prompt <payload>` vs. the stdin adapter's `"Note: Running under agnt... " + payload + "\n"` prefix/suffix). Regression tests in `cmd/agnt/cheatsheet_prompt_test.go` pin this invariant.
+
 ## Per-agent overrides via `.agnt.kdl`
 
 Project-level overrides live in the `ai.adapters` block:

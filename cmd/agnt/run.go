@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/agntprompt"
 	"github.com/standardbeagle/agnt/internal/aichannel"
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/daemon"
@@ -23,6 +24,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/overlay"
 	"github.com/standardbeagle/agnt/internal/pathutil"
 	"github.com/standardbeagle/agnt/internal/protocol"
+	"github.com/standardbeagle/agnt/internal/tools"
 
 	"github.com/creack/pty"
 	"github.com/spf13/cobra"
@@ -823,8 +825,16 @@ func buildAgntSystemPrompt(socketPath string) string {
 		return agntConfig.AI.SystemPrompt
 	}
 
-	// Build the base prompt from config (includes configured scripts/proxies)
+	// Build the base prompt from config (includes configured scripts/proxies).
+	// The cheat sheet is appended here (rather than inside config.BuildSystemPrompt)
+	// because internal/tools imports internal/config — the reverse import would be
+	// a cycle. Every agent-prompt consumer (Claude flag, stdin adapters, `agnt ai`
+	// REPL) flows through buildAgntSystemPrompt, so one site covers all delivery
+	// paths with identical content.
 	basePrompt := agntConfig.BuildSystemPrompt()
+	if agntConfig.AI.CheatSheetEnabled() {
+		basePrompt = basePrompt + "\n" + agntprompt.BuildCheatSheet(tools.DevToolAPIFunctions)
+	}
 
 	// Try to connect to daemon to add runtime state
 	client := daemon.NewClient(daemon.WithSocketPath(socketPath))
