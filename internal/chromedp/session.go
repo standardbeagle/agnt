@@ -3,6 +3,7 @@ package chromedp
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -121,29 +122,7 @@ func (s *AutomationSession) Start(ctx context.Context) error {
 	}
 
 	// Build allocator options
-	opts := []chromedp.ExecAllocatorOption{
-		chromedp.NoFirstRun,
-		chromedp.NoDefaultBrowserCheck,
-		chromedp.DisableGPU,
-		chromedp.WindowSize(width, height),
-
-		// Disable features that interfere with automation
-		chromedp.Flag("disable-background-networking", true),
-		chromedp.Flag("disable-default-apps", true),
-		chromedp.Flag("disable-extensions", true),
-		chromedp.Flag("disable-sync", true),
-		chromedp.Flag("disable-dev-shm-usage", true), // Docker/container support
-	}
-
-	// Configure headless mode
-	if s.config.Headless {
-		opts = append(opts, chromedp.Headless)
-	}
-
-	// Configure proxy - critical for agnt integration
-	if s.config.ProxyURL != "" {
-		opts = append(opts, chromedp.ProxyServer(s.config.ProxyURL))
-	}
+	opts := s.buildAllocatorOpts(width, height)
 
 	// Create allocator context
 	s.allocCtx, s.allocCancel = chromedp.NewExecAllocator(ctx, opts...)
@@ -319,6 +298,41 @@ func (s *AutomationSession) Info() SessionInfo {
 // Config returns the session configuration.
 func (s *AutomationSession) Config() SessionConfig {
 	return s.config
+}
+
+// buildAllocatorOpts constructs the ExecAllocator options for a session.
+// Extracted for testability.
+func (s *AutomationSession) buildAllocatorOpts(width, height int) []chromedp.ExecAllocatorOption {
+	opts := []chromedp.ExecAllocatorOption{
+		chromedp.NoFirstRun,
+		chromedp.NoDefaultBrowserCheck,
+		chromedp.DisableGPU,
+		chromedp.WindowSize(width, height),
+
+		// Disable features that interfere with automation
+		chromedp.Flag("disable-background-networking", true),
+		chromedp.Flag("disable-default-apps", true),
+		chromedp.Flag("disable-extensions", true),
+		chromedp.Flag("disable-sync", true),
+		chromedp.Flag("disable-dev-shm-usage", true), // Docker/container support
+
+		// Prevent OS credential/keyring popups that freeze headless sessions
+		chromedp.Flag("password-store", "basic"),
+	}
+
+	if runtime.GOOS == "darwin" {
+		opts = append(opts, chromedp.Flag("use-mock-keychain", true))
+	}
+
+	if s.config.Headless {
+		opts = append(opts, chromedp.Headless)
+	}
+
+	if s.config.ProxyURL != "" {
+		opts = append(opts, chromedp.ProxyServer(s.config.ProxyURL))
+	}
+
+	return opts
 }
 
 func (s *AutomationSession) setState(state State) {

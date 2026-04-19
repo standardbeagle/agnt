@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -156,6 +157,12 @@ func (b *Browser) buildArgs() []string {
 		"--no-first-run",
 		"--no-default-browser-check",
 		fmt.Sprintf("--window-size=%s", b.config.WindowSize),
+		// Prevent OS credential/keyring popups that freeze headless sessions
+		"--password-store=basic",
+	}
+
+	if runtime.GOOS == "darwin" {
+		args = append(args, "--use-mock-keychain")
 	}
 
 	if b.config.Headless {
