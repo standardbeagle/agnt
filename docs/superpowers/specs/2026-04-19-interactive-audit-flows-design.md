@@ -92,7 +92,7 @@ Current audit outputs have these limitations:
 ### Components
 
 1. **`audit-report.js`** — New browser module that standardizes audit output schema and manages session state
-2. **`audit-panel.js`** — New browser module that renders the Audits tab in the indicator panel
+2. **`audit-sidebar.js`** — New browser module that renders the left sidebar with findings, checkboxes, and actions
 3. **Upgraded audit scripts** — `accessibility.js`, `audit-quality.js`, `audit-css.js`, `audit-dom.js`, `audit-performance.js`, `audit-security.js`, `responsive.js` all return consistent `AuditReport`
 4. **Upgraded Go tools** — `responsive_audit.go` and `get_errors.go` return detail reports in both modes
 
@@ -159,42 +159,112 @@ interface Finding {
 
 ## Browser Panel Design
 
-### New "Audits" Tab
+### Audit Sidebar (Left Panel)
 
-Added to the existing indicator panel tabs: `compose | overview | errors | network | performance | interactions | **audits**`
+Instead of cramming audit details into the indicator panel's small tab area, the audit report renders in a **dedicated left sidebar** that pushes the main page content to the right.
 
-### Panel States
+```
+┌──────────────┬──────────────────────────────────────┐
+│ Audit Sidebar│  Main Page (shifted right)           │
+│              │                                      │
+│ Score: 72/100│  ┌────────────────────────────────┐  │
+│ (C)          │  │                                │  │
+│              │  │  Content shifted by            │  │
+│ ☑ Missing alt│  │  sidebar width                 │  │
+│   ☐ img.logo │  │                                │  │
+│   ☑ img.hero │  │                                │  │
+│              │  │                                │  │
+│ ☑ Contrast   │  │                                │  │
+│   ☑ .btn-pri │  │                                │  │
+│              │  └────────────────────────────────┘  │
+│ [Send 3 to   │                                      │
+│  Fix]        │                                      │
+│              │  ┌──┐ ← indicator bug (floating)    │
+│ [×]          │  └──┘                                │
+└──────────────┴──────────────────────────────────────┘
+```
+
+**Behavior:**
+- **Triggered by:** Audit completion, clicking an audit notification in the indicator, or calling `__devtool_audit_sidebar.show(report)`
+- **Width:** 380px fixed (wide enough for readable findings, narrow enough to leave room for content)
+- **Push behavior:** Adds `margin-left: 380px` to `<body>` or a wrapper element; restores on close
+- **Close:** `×` button or `Escape` key; body margin restored
+- **Coexists with indicator:** The floating indicator bug remains for status/notifications
+
+### Sidebar States
 
 1. **Empty state** — "No audits run yet. Use `responsive_audit`, `auditAccessibility`, or other audit tools to get started."
-2. **List state** — Shows all audits run in this session with score/grade, click to expand
-3. **Detail state** — Expanded view of one audit with grouped findings
+2. **List state** — Shows all audits run in this session with score/grade; click one to expand
+3. **Detail state** — Full view of one audit with grouped findings, checkboxes, and actions
 
 ### Detail View
 
 ```
-┌─ Accessibility Audit ─────────────────────────┐
-│ Score: 72/100 (C)          [Re-run] [Clear]  │
-├───────────────────────────────────────────────┤
-│ ☑ Missing alt text                    (3)    │
-│   ☐ img.logo      "Add alt attribute"    👁  │
-│   ☑ img.hero      "Add alt attribute"    👁  │
-│   ☐ img.nav-icon  "Add alt attribute"    👁  │
-├───────────────────────────────────────────────┤
-│ ☑ Color contrast issues               (2)    │
-│   ☑ .btn-primary  "Increase contrast"    👁  │
-│   ☑ .text-muted   "Increase contrast"    👁  │
-├───────────────────────────────────────────────┤
-│ ☐ Heading hierarchy                   (1)    │
-│   ☐ h3.page-title "Fix heading order"    👁  │
-├───────────────────────────────────────────────┤
-│ [Send 3 selected to Fix]  [Select All]        │
-└───────────────────────────────────────────────┘
+┌─ Accessibility Audit ───────────────────────────┐
+│ Score: 72/100 (C)              [Re-run] [Clear] │
+│                                                 │
+│ ☑ Missing alt text                        (3)   │
+│   ☐ img.logo      "Add alt attribute"      👁   │
+│   ☑ img.hero      "Add alt attribute"      👁   │
+│   ☐ img.nav-icon  "Add alt attribute"      👁   │
+│                                                 │
+│ ☑ Color contrast issues                   (2)   │
+│   ☑ .btn-primary  "Increase contrast"      👁   │
+│   ☑ .text-muted   "Increase contrast"      👁   │
+│                                                 │
+│ ☐ Heading hierarchy                       (1)   │
+│   ☐ h3.page-title "Fix heading order"      👁   │
+│                                                 │
+│ [Send 3 selected to Fix]    [Select All]        │
+└─────────────────────────────────────────────────┘
 ```
 
 - **Group checkbox** — toggles all findings in the group
 - **Individual checkbox** — toggles one finding; state persisted in `__devtool_audit_state`
-- **Eye icon (👁)** — hover to highlight element; click to persist highlight
+- **Eye icon (👁)** — hover to highlight element in the main page; click to persist highlight
 - **"Send to Fix"** — formats selected findings into fix prompt
+
+### Sidebar Implementation
+
+```javascript
+var sidebarState = {
+  container: null,      // The sidebar DOM element
+  isOpen: false,
+  width: 380,
+  originalBodyMargin: ''  // Saved to restore on close
+};
+
+function openSidebar(report) {
+  // Save original body margin
+  sidebarState.originalBodyMargin = document.body.style.marginLeft;
+  
+  // Create or update sidebar
+  var sidebar = getOrCreateSidebar();
+  renderReport(sidebar, report);
+  
+  // Push main content
+  document.body.style.marginLeft = sidebarState.width + 'px';
+  document.body.style.transition = 'margin-left 0.2s ease';
+  
+  sidebarState.isOpen = true;
+}
+
+function closeSidebar() {
+  document.body.style.marginLeft = sidebarState.originalBodyMargin;
+  var sidebar = document.getElementById('__devtool-audit-sidebar');
+  if (sidebar) sidebar.style.display = 'none';
+  sidebarState.isOpen = false;
+  
+  // Clear any persisted highlights
+  window.__devtool_overlay.clearAllOverlays();
+}
+```
+
+**Style notes:**
+- Sidebar is `position: fixed; left: 0; top: 0; bottom: 0; width: 380px`
+- `z-index: 2147483646` (just below overlay layer at 2147483647)
+- Shadow DOM mount for style isolation (same as indicator)
+- Scrollable content area with sticky header for score/actions
 
 ### Highlight Interaction
 
@@ -388,19 +458,20 @@ Returns the full `AuditReport` JSON with the standardized `findings` array:
 
 **Files:**
 - `internal/proxy/scripts/accessibility.js` (modify)
-- `internal/proxy/scripts/audit-panel.js` (new, minimal)
-- `internal/proxy/scripts/indicator.js` (modify — add Audits tab)
+- `internal/proxy/scripts/audit-sidebar.js` (new, minimal)
+- `internal/proxy/scripts/indicator.js` (modify — add open-sidebar button/notification)
 
 **Tasks:**
 1. Refactor `accessibility.js` to use `audit-report.js` helpers
    - Replace `fixable`/`informational`/`actions` with unified `findings[]`
    - Ensure every finding has a stable `id`, `selector`, `message`, `fix`
    - Return `AuditReport` shape in both raw and compact modes
-2. Create minimal `audit-panel.js`:
-   - Render findings list with checkboxes
+2. Create minimal `audit-sidebar.js`:
+   - Render findings list with checkboxes in a left sidebar
+   - Push main content with `body.style.marginLeft`
    - Wire up hover → `__devtool_overlay.highlight()`
    - Wire up "Send to Fix" → inject prompt into compose tab
-3. Add "Audits" tab to indicator panel
+3. Add audit-complete notification to indicator with "View Details" button that opens sidebar
 4. Test: run `auditAccessibility`, verify panel shows findings, verify highlight works
 
 ### Phase 3: Rollout — All Browser Audits (Day 2-3)
@@ -452,7 +523,7 @@ Returns the full `AuditReport` JSON with the standardized `findings` array:
 **Goal:** Complete the interactive experience.
 
 **Files:**
-- `internal/proxy/scripts/audit-panel.js` (complete)
+- `internal/proxy/scripts/audit-sidebar.js` (complete)
 - `internal/proxy/scripts/indicator.js` (modify)
 
 **Tasks:**
@@ -460,9 +531,10 @@ Returns the full `AuditReport` JSON with the standardized `findings` array:
 2. Add "Select All" / "Select None" buttons
 3. Add group expand/collapse
 4. Add audit run history (list of past audits in session)
-5. Style the panel to match existing indicator design
-6. Add keyboard shortcuts (e.g., `Esc` to clear highlights)
-7. Test end-to-end: run audit → select findings → send to fix → verify prompt
+5. Style sidebar to match existing indicator design language
+6. Add keyboard shortcuts (`Esc` to close sidebar, `H` to clear highlights)
+7. Make sidebar resizable (drag edge to resize)
+8. Test end-to-end: run audit → sidebar opens → select findings → highlight elements → send to fix → verify prompt
 
 ## Testing Strategy
 
@@ -477,7 +549,7 @@ Returns the full `AuditReport` JSON with the standardized `findings` array:
 | File | Purpose |
 |------|---------|
 | `internal/proxy/scripts/audit-report.js` | Standardized schema and session state |
-| `internal/proxy/scripts/audit-panel.js` | Audits tab UI in indicator panel |
+| `internal/proxy/scripts/audit-sidebar.js` | Left sidebar UI for audit details |
 | `internal/tools/audit_fix_tools.go` | MCP tools for fix workflow |
 | `docs/superpowers/specs/2026-04-19-interactive-audit-flows-design.md` | This design doc |
 
