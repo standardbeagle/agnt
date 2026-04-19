@@ -514,187 +514,86 @@ func (dt *DaemonTools) collectProxyErrors(proxyID, since string) ([]unifiedError
 	return allErrors, nil
 }
 
-// convertProxyEntry converts a proxy log entry to zero or more unified errors.
+// convertProxyEntry converts a proxy log entry (map form from IPC) to zero or
+// more unified errors by extracting typed structs and delegating to the Direct
+// variants, which contain the single source of truth for conversion logic.
 func convertProxyEntry(proxyID, entryType string, em map[string]interface{}) []unifiedError {
 	switch entryType {
 	case "error":
-		return convertJSError(proxyID, em)
+		return convertJSErrorDirect(proxyID, extractFrontendError(em))
 	case "http":
-		return convertHTTPError(proxyID, em)
+		return convertHTTPErrorDirect(proxyID, extractHTTPLogEntry(em))
 	case "diagnostic":
-		return convertDiagnosticError(proxyID, em)
+		return convertDiagnosticErrorDirect(proxyID, extractProxyDiagnostic(em))
 	case "custom":
-		return convertCustomError(proxyID, em)
+		return convertCustomErrorDirect(proxyID, extractCustomLog(em))
 	}
 	return nil
 }
 
-// convertJSError converts a browser JS error log entry.
-func convertJSError(proxyID string, em map[string]interface{}) []unifiedError {
+// extractFrontendError builds a proxy.FrontendError from a map-form log entry.
+func extractFrontendError(em map[string]interface{}) *proxy.FrontendError {
 	errData, ok := em["error"].(map[string]interface{})
 	if !ok {
 		return nil
 	}
-
 	message := getString(errData, "message")
 	if message == "" {
 		return nil
 	}
-
-	// Extract error type from message (e.g. "TypeError: ..." -> "TypeError")
-	category := "JS Error"
-	if idx := strings.Index(message, ":"); idx > 0 && idx < 30 {
-		category = message[:idx]
-		message = strings.TrimSpace(message[idx+1:])
+	return &proxy.FrontendError{
+		Message:   message,
+		Source:    getString(errData, "source"),
+		LineNo:    getInt(errData, "lineno"),
+		ColNo:     getInt(errData, "colno"),
+		Stack:     getString(errData, "stack"),
+		URL:       getString(errData, "url"),
+		Timestamp: getTime(errData, "timestamp"),
 	}
-
-	location := ""
-	stack := getString(errData, "stack")
-	if stack != "" {
-		location = extractFirstAppFrame(stack)
-	}
-	if location == "" {
-		source := getString(errData, "source")
-		lineNo := getInt(errData, "lineno")
-		colNo := getInt(errData, "colno")
-		if source != "" && lineNo > 0 {
-			location = fmt.Sprintf("%s:%d:%d", source, lineNo, colNo)
-		}
-	}
-
-	pageURL := getString(errData, "url")
-	ts := getTime(errData, "timestamp")
-
-	return []unifiedError{{
-		Source:   "browser:js",
-		Severity: "error",
-		Category: category,
-		Message:  message,
-		Location: location,
-		Page:     pageURL,
-		LastSeen: ts,
-		Count:    1,
-	}}
 }
 
-// convertHTTPError converts an HTTP log entry to an error if status >= 400.
-func convertHTTPError(proxyID string, em map[string]interface{}) []unifiedError {
+// extractHTTPLogEntry builds a proxy.HTTPLogEntry from a map-form log entry.
+func extractHTTPLogEntry(em map[string]interface{}) *proxy.HTTPLogEntry {
 	httpData, ok := em["http"].(map[string]interface{})
 	if !ok {
 		return nil
 	}
-
-	statusCode := getInt(httpData, "status_code")
-	url := getString(httpData, "url")
-	errField := getString(httpData, "error")
-	responseBody := getString(httpData, "response_body")
-
-	// Skip non-error statuses (unless there's an error field)
-	if statusCode < 400 && errField == "" {
-		return nil
+	return &proxy.HTTPLogEntry{
+		Method:       getString(httpData, "method"),
+		URL:          getString(httpData, "url"),
+		StatusCode:   getInt(httpData, "status_code"),
+		ResponseBody: getString(httpData, "response_body"),
+		Error:        getString(httpData, "error"),
+		Timestamp:    getTime(httpData, "timestamp"),
 	}
-
-	// Noise filtering — includes the proxy readiness sentinel check,
-	// which filters gate 503s by body (not status) so genuine upstream
-	// 5xx responses still surface.
-	if isNoiseError(url, statusCode, responseBody, errField) {
-		return nil
-	}
-
-	method := getString(httpData, "method")
-	category := categorizeHTTPError(statusCode)
-
-	message := fmt.Sprintf("%s %s", method, url)
-	if errField != "" {
-		message += fmt.Sprintf(" → %q", truncate(errField, 200))
-	} else {
-		body := getString(httpData, "response_body")
-		if body != "" {
-			extracted := extractErrorMessage(body, 200)
-			if extracted != "" {
-				message += fmt.Sprintf(" → %q", extracted)
-			}
-		}
-	}
-
-	level := "error"
-	if statusCode >= 400 && statusCode < 500 {
-		level = "warning"
-	}
-
-	ts := getTime(httpData, "timestamp")
-
-	return []unifiedError{{
-		Source:   "proxy:http",
-		Severity: level,
-		Category: category,
-		Message:  message,
-		LastSeen: ts,
-		Count:    1,
-	}}
 }
 
-// convertDiagnosticError converts a proxy diagnostic entry.
-func convertDiagnosticError(proxyID string, em map[string]interface{}) []unifiedError {
+// extractProxyDiagnostic builds a proxy.ProxyDiagnostic from a map-form log entry.
+func extractProxyDiagnostic(em map[string]interface{}) *proxy.ProxyDiagnostic {
 	diagData, ok := em["diagnostic"].(map[string]interface{})
 	if !ok {
 		return nil
 	}
-
-	level := getString(diagData, "level")
-	if level != "error" && level != "warning" {
-		return nil
+	return &proxy.ProxyDiagnostic{
+		Level:     proxy.ProxyDiagnosticLevel(getString(diagData, "level")),
+		Event:     getString(diagData, "event"),
+		Message:   getString(diagData, "message"),
+		Timestamp: getTime(diagData, "timestamp"),
 	}
-
-	message := getString(diagData, "message")
-	event := getString(diagData, "event")
-	ts := getTime(diagData, "timestamp")
-
-	category := "PROXY DIAGNOSTIC"
-	if event != "" {
-		category = strings.ToUpper(strings.ReplaceAll(event, "_", " "))
-	}
-
-	return []unifiedError{{
-		Source:   "proxy:diagnostic",
-		Severity: level,
-		Category: category,
-		Message:  message,
-		LastSeen: ts,
-		Count:    1,
-	}}
 }
 
-// convertCustomError converts a custom log entry with error level.
-func convertCustomError(proxyID string, em map[string]interface{}) []unifiedError {
+// extractCustomLog builds a proxy.CustomLog from a map-form log entry.
+func extractCustomLog(em map[string]interface{}) *proxy.CustomLog {
 	customData, ok := em["custom"].(map[string]interface{})
 	if !ok {
 		return nil
 	}
-
-	level := getString(customData, "level")
-	if level != "error" && level != "warn" {
-		return nil
+	return &proxy.CustomLog{
+		Level:     getString(customData, "level"),
+		Message:   getString(customData, "message"),
+		URL:       getString(customData, "url"),
+		Timestamp: getTime(customData, "timestamp"),
 	}
-
-	unifiedLevel := "error"
-	if level == "warn" {
-		unifiedLevel = "warning"
-	}
-
-	message := getString(customData, "message")
-	pageURL := getString(customData, "url")
-	ts := getTime(customData, "timestamp")
-
-	return []unifiedError{{
-		Source:   "browser:custom",
-		Severity: unifiedLevel,
-		Category: "CUSTOM ERROR",
-		Message:  message,
-		Page:     pageURL,
-		LastSeen: ts,
-		Count:    1,
-	}}
 }
 
 // parseSince parses a "since" parameter as either RFC3339 or a Go duration string.

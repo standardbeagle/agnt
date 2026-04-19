@@ -385,7 +385,7 @@ func TestConvertJSError(t *testing.T) {
 			},
 		}
 
-		results := convertJSError("dev", em)
+		results := convertProxyEntry("dev", "error", em)
 		assert.Len(t, results, 1)
 		assert.Equal(t, "browser:js", results[0].Source)
 		assert.Equal(t, "error", results[0].Severity)
@@ -404,7 +404,7 @@ func TestConvertJSError(t *testing.T) {
 			},
 		}
 
-		results := convertJSError("dev", em)
+		results := convertProxyEntry("dev", "error", em)
 		assert.Len(t, results, 1)
 		assert.Equal(t, "src/App.tsx:10:5", results[0].Location)
 	})
@@ -413,7 +413,7 @@ func TestConvertJSError(t *testing.T) {
 		em := map[string]interface{}{
 			"type": "error",
 		}
-		results := convertJSError("dev", em)
+		results := convertProxyEntry("dev", "error", em)
 		assert.Empty(t, results)
 	})
 }
@@ -431,7 +431,7 @@ func TestConvertHTTPError(t *testing.T) {
 			},
 		}
 
-		results := convertHTTPError("dev", em)
+		results := convertProxyEntry("dev", "http", em)
 		assert.Len(t, results, 1)
 		assert.Equal(t, "proxy:http", results[0].Source)
 		assert.Equal(t, "error", results[0].Severity)
@@ -450,7 +450,7 @@ func TestConvertHTTPError(t *testing.T) {
 			},
 		}
 
-		results := convertHTTPError("dev", em)
+		results := convertProxyEntry("dev", "http", em)
 		assert.Empty(t, results)
 	})
 
@@ -464,7 +464,7 @@ func TestConvertHTTPError(t *testing.T) {
 			},
 		}
 
-		results := convertHTTPError("dev", em)
+		results := convertProxyEntry("dev", "http", em)
 		assert.Empty(t, results)
 	})
 
@@ -479,7 +479,7 @@ func TestConvertHTTPError(t *testing.T) {
 			},
 		}
 
-		results := convertHTTPError("dev", em)
+		results := convertProxyEntry("dev", "http", em)
 		assert.Len(t, results, 1)
 		assert.Equal(t, "warning", results[0].Severity)
 	})
