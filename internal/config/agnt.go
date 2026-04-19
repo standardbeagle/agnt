@@ -45,6 +45,60 @@ type AgntConfig struct {
 
 	// Session lifecycle configuration (daemon-side cleanup policies)
 	Session *SessionConfig `kdl:"session"`
+
+	// HookRules configures the `agnt hook check-bash` / `check-prompt`
+	// interceptors. Parsed here so the hookrules package can pull a
+	// single AgntConfig via LoadAgntConfig rather than re-parsing KDL.
+	HookRules *HookRulesConfig `kdl:"hook-rules"`
+}
+
+// HookRulesConfig is the KDL override block for hook interception rules.
+// It lives in .agnt.kdl as:
+//
+//	hook-rules {
+//	    bypass-env "AGNT_HOOK_BYPASS"
+//	    bash-patterns {
+//	        block-rm-rf { pattern "rm -rf /"; action "block"; replacement "n/a"; reason "dangerous" }
+//	    }
+//	    prompt-patterns {
+//	        start-server { pattern "start.*server"; reminder "use agnt.run" }
+//	    }
+//	}
+//
+// Rules are merged with the builtin catalog in hookrules.LoadForProject.
+// Invalid regexes in this block are silently skipped on the hot path (the
+// hook must fail-open) but surfaced by `agnt hook rules test`.
+type HookRulesConfig struct {
+	// BypassEnv overrides the default AGNT_HOOK_BYPASS env-var name.
+	BypassEnv string `kdl:"bypass-env"`
+
+	// BashPatterns is a map from rule name to bash pattern rule. The
+	// rule name is used only for diagnostics (rules list output) and
+	// does not affect matching order relative to builtins.
+	BashPatterns map[string]*HookBashPattern `kdl:"bash-patterns"`
+
+	// PromptPatterns is a map from rule name to prompt pattern rule.
+	PromptPatterns map[string]*HookPromptPattern `kdl:"prompt-patterns"`
+}
+
+// HookBashPattern is one KDL-side Bash rule. The Pattern field is the
+// regex matched against the Bash command string. Action must be one of
+// "allow", "soft-warn", or "block" (case-insensitive); empty defaults to
+// "block" consistent with the builtin catalog. Replacement cites the
+// recommended MCP invocation shown in the block message.
+type HookBashPattern struct {
+	Pattern     string `kdl:"pattern"`
+	Action      string `kdl:"action"`
+	Replacement string `kdl:"replacement"`
+	Reason      string `kdl:"reason"`
+}
+
+// HookPromptPattern is one KDL-side prompt rule. The Pattern field is the
+// case-insensitive regex matched against the user prompt text; Reminder is
+// the body of the <system-reminder> emitted on match.
+type HookPromptPattern struct {
+	Pattern  string `kdl:"pattern"`
+	Reminder string `kdl:"reminder"`
 }
 
 // SessionConfig controls daemon-side session lifecycle behaviors.

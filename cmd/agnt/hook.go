@@ -179,6 +179,24 @@ func runHookInternal(opts hookInvocation) int {
 		return 0
 	}
 
+	// Pre-tool-use chain: when this is a PreToolUse event for the Bash
+	// tool, pipe the payload through the check-bash interceptor inline
+	// before enqueuing. This lets a single hook entry in settings.json
+	// do both telemetry forwarding AND Bash redirection without a
+	// separate shell pipeline. The chain respects the same 1s fail-open
+	// budget — any check-bash error falls through to telemetry-only.
+	if event == "pre-tool-use" && len(payload) > 0 {
+		if code := maybeChainCheckBash(payload, tags, opts.stderr); code == 2 {
+			// Block decision wins over telemetry: exit 2 immediately
+			// so the agent's tool call is intercepted. Telemetry is
+			// deliberately NOT forwarded in this case because the
+			// tool call never happened from Claude's perspective, so
+			// a PreToolUse telemetry event for a blocked call would
+			// be misleading.
+			return 2
+		}
+	}
+
 	// Dial the daemon. Any connect error → silent exit 0. We
 	// deliberately do NOT create a new client with a custom dialer
 	// here: the daemon.Client's Connect() already handles both Unix
@@ -292,6 +310,51 @@ func writeHookDropLog(opts hookInvocation, event string, cause error) {
 	// cannot inject extra log lines (and confuse line-counting tests).
 	msg := strings.ReplaceAll(cause.Error(), "\n", " ")
 	_, _ = fmt.Fprintf(f, "%s %s %s\n", nowFn().UTC().Format(time.RFC3339), event, msg)
+}
+
+// maybeChainCheckBash runs the inline Bash interceptor against a
+// PreToolUse payload that has already been read from stdin. It reuses the
+// check-bash decision logic via an in-memory strings.Reader so we do not
+// fork a second process on the hot path — the whole chain must stay
+// inside the same single-digit-ms budget as plain telemetry forwarding.
+//
+// Returns the exit code the outer hook dispatcher should use:
+//   - 2 when a block decision fired (caller exits early, skipping
+//     telemetry enqueue)
+//   - 0 when the command was allowed or soft-warned (caller continues to
+//     telemetry forwarding)
+//
+// The project path is pulled from tags["project_path"] which the standard
+// Claude Code wiring populates via `--project-path $PWD`. When empty, the
+// scope guard inside runCheckBashImpl still fires (fail-open for
+// unattributed hooks).
+func maybeChainCheckBash(payload []byte, tags map[string]string, stderr io.Writer) int {
+	projectPath := ""
+	if tags != nil {
+		projectPath = tags["project_path"]
+	}
+	return runCheckBashImpl(bytesReader(payload), stderr, projectPath, os.Getenv)
+}
+
+// bytesReader wraps a byte slice in an io.Reader without depending on
+// bytes.NewReader — keeps the chain allocation-free-ish and mirrors the
+// shape of cmd.InOrStdin() which check-bash expects.
+func bytesReader(b []byte) io.Reader {
+	return &byteSliceReader{b: b}
+}
+
+type byteSliceReader struct {
+	b   []byte
+	pos int
+}
+
+func (r *byteSliceReader) Read(p []byte) (int, error) {
+	if r.pos >= len(r.b) {
+		return 0, io.EOF
+	}
+	n := copy(p, r.b[r.pos:])
+	r.pos += n
+	return n, nil
 }
 
 // defaultHookDropLogPath resolves the drop-log location. XDG_CACHE_HOME
