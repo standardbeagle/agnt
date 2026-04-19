@@ -69,14 +69,13 @@ var validCheckTypes = map[string]bool{
 // responsiveAuditBackend holds either a daemon client or a direct proxy manager,
 // enabling a single registration path for both daemon and legacy modes.
 type responsiveAuditBackend struct {
-	daemon *DaemonTools
-	legacy *proxy.ProxyManager
+	DualBackend[DaemonTools, proxy.ProxyManager]
 }
 
 // RegisterResponsiveAuditTool registers the responsive_audit tool.
 // Exactly one of dt or pm must be non-nil.
 func RegisterResponsiveAuditTool(server *mcp.Server, dt *DaemonTools, pm *proxy.ProxyManager) {
-	backend := &responsiveAuditBackend{daemon: dt, legacy: pm}
+	backend := &responsiveAuditBackend{DualBackend[DaemonTools, proxy.ProxyManager]{Daemon: dt, Legacy: pm}}
 	addLenientTool(server, &mcp.Tool{
 		Name:        "responsive_audit",
 		Description: responsiveAuditToolDescription,
@@ -94,18 +93,29 @@ func (b *responsiveAuditBackend) makeHandler() func(context.Context, *mcp.CallTo
 			return errorResult("proxy_id required"), ResponsiveAuditOutput{}, nil
 		}
 
-		if b.daemon != nil {
-			if err := b.daemon.ensureConnected(); err != nil {
-				return errorResult(err.Error()), ResponsiveAuditOutput{}, nil
-			}
-			return b.daemon.executeResponsiveAuditDaemon(input)
+		type auditResult struct {
+			toolResult *mcp.CallToolResult
+			output     ResponsiveAuditOutput
+			err        error
 		}
-
-		proxyServer, err := b.legacy.Get(input.ProxyID)
-		if err != nil {
-			return errorResult(fmt.Sprintf("proxy not found: %s", input.ProxyID)), ResponsiveAuditOutput{}, nil
-		}
-		return executeResponsiveAuditLegacy(proxyServer, input)
+		res, _ := DispatchResult(b.DualBackend,
+			func(dt *DaemonTools) (auditResult, error) {
+				if err := dt.ensureConnected(); err != nil {
+					return auditResult{toolResult: errorResult(err.Error())}, nil
+				}
+				r, o, e := dt.executeResponsiveAuditDaemon(input)
+				return auditResult{toolResult: r, output: o, err: e}, nil
+			},
+			func(pm *proxy.ProxyManager) (auditResult, error) {
+				proxyServer, err := pm.Get(input.ProxyID)
+				if err != nil {
+					return auditResult{toolResult: errorResult(fmt.Sprintf("proxy not found: %s", input.ProxyID))}, nil
+				}
+				r, o, e := executeResponsiveAuditLegacy(proxyServer, input)
+				return auditResult{toolResult: r, output: o, err: e}, nil
+			},
+		)
+		return res.toolResult, res.output, res.err
 	}
 }
 

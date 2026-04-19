@@ -50,27 +50,26 @@ func (e *unifiedError) dedupKey() string {
 // getErrorsBackend holds either a daemon client or a direct proxy manager,
 // enabling a single registration path for both daemon and legacy modes.
 type getErrorsBackend struct {
-	daemon *DaemonTools
-	legacy *proxy.ProxyManager
+	DualBackend[DaemonTools, proxy.ProxyManager]
 }
 
 // makeGetErrorsHandler creates a handler for the get_errors tool on DaemonTools.
 func (dt *DaemonTools) makeGetErrorsHandler() func(context.Context, *mcp.CallToolRequest, GetErrorsInput) (*mcp.CallToolResult, GetErrorsOutput, error) {
-	backend := &getErrorsBackend{daemon: dt}
+	backend := &getErrorsBackend{DualBackend[DaemonTools, proxy.ProxyManager]{Daemon: dt}}
 	return backend.makeHandler()
 }
 
 // RegisterGetErrorsTool registers the get_errors tool.
 // Exactly one of dt or pm must be non-nil.
 func RegisterGetErrorsTool(server *mcp.Server, dt *DaemonTools, pm *proxy.ProxyManager) {
-	backend := &getErrorsBackend{daemon: dt, legacy: pm}
+	backend := &getErrorsBackend{DualBackend[DaemonTools, proxy.ProxyManager]{Daemon: dt, Legacy: pm}}
 
 	desc := `Get all current errors across proxies.
 
 Collects errors from: browser JavaScript errors, HTTP 4xx/5xx responses,
 proxy transport errors, and custom error logs.`
 
-	if backend.daemon == nil {
+	if backend.Daemon == nil {
 		desc += `
 
 Note: Running in legacy mode - process output alerts are not available.`
@@ -114,17 +113,26 @@ func (b *getErrorsBackend) makeHandler() func(context.Context, *mcp.CallToolRequ
 			limit = 25
 		}
 
-		var allErrors []unifiedError
-		var toolErr *mcp.CallToolResult
-
-		if b.daemon != nil {
-			if err := b.daemon.ensureConnected(); err != nil {
-				return errorResult(err.Error()), GetErrorsOutput{}, nil
-			}
-			allErrors, toolErr = b.collectDaemonErrors(input)
-		} else {
-			allErrors, toolErr = b.collectLegacyErrors(input)
+		type collectResult struct {
+			errors  []unifiedError
+			toolErr *mcp.CallToolResult
 		}
+		var collected collectResult
+		_ = b.Dispatch(
+			func(dt *DaemonTools) error {
+				if err := dt.ensureConnected(); err != nil {
+					collected.toolErr = errorResult(err.Error())
+					return nil
+				}
+				collected.errors, collected.toolErr = b.collectDaemonErrors(input)
+				return nil
+			},
+			func(_ *proxy.ProxyManager) error {
+				collected.errors, collected.toolErr = b.collectLegacyErrors(input)
+				return nil
+			},
+		)
+		allErrors, toolErr := collected.errors, collected.toolErr
 
 		if toolErr != nil {
 			return toolErr, GetErrorsOutput{}, nil
@@ -137,24 +145,25 @@ func (b *getErrorsBackend) makeHandler() func(context.Context, *mcp.CallToolRequ
 
 // collectDaemonErrors collects errors via the daemon IPC path.
 func (b *getErrorsBackend) collectDaemonErrors(input GetErrorsInput) ([]unifiedError, *mcp.CallToolResult) {
+	dt := b.Daemon
 	allErrors := make([]unifiedError, 0)
 
 	// 1. Collect process alerts
-	processErrors, procErr := b.daemon.collectProcessAlerts(input.ProcessID, input.Since)
+	processErrors, procErr := dt.collectProcessAlerts(input.ProcessID, input.Since)
 	if procErr != nil {
 		return nil, procErr
 	}
 	allErrors = append(allErrors, processErrors...)
 
 	// 2. Collect startup errors
-	startupErrors, startupErr := b.daemon.collectStartupErrors(input.ProcessID, input.Since)
+	startupErrors, startupErr := dt.collectStartupErrors(input.ProcessID, input.Since)
 	if startupErr != nil {
 		return nil, startupErr
 	}
 	allErrors = append(allErrors, startupErrors...)
 
 	// 3. Collect proxy errors
-	proxyErrors, proxyErr := b.daemon.collectProxyErrors(input.ProxyID, input.Since)
+	proxyErrors, proxyErr := dt.collectProxyErrors(input.ProxyID, input.Since)
 	if proxyErr != nil {
 		return nil, proxyErr
 	}
@@ -172,15 +181,16 @@ func (b *getErrorsBackend) collectLegacyErrors(input GetErrorsInput) ([]unifiedE
 	}
 
 	// Collect proxies to query
+	pm := b.Legacy
 	var proxies []*proxy.ProxyServer
 	if input.ProxyID != "" {
-		ps, err := b.legacy.Get(input.ProxyID)
+		ps, err := pm.Get(input.ProxyID)
 		if err != nil {
 			return nil, errorResult(fmt.Sprintf("proxy %q not found: %v", input.ProxyID, err))
 		}
 		proxies = []*proxy.ProxyServer{ps}
 	} else {
-		proxies = b.legacy.List()
+		proxies = pm.List()
 	}
 
 	// Collect errors from all proxies
