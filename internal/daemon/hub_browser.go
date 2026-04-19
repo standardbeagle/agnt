@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/browser"
-	"github.com/standardbeagle/agnt/internal/debug"
 
 	"github.com/standardbeagle/agnt/internal/proxy"
 	hubpkg "github.com/standardbeagle/go-cli-server/hub"
@@ -15,24 +14,12 @@ import (
 )
 
 func (d *Daemon) hubHandleBrowser(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	debug.Log("daemon", "BROWSER %s: args=%v", cmd.SubVerb, cmd.Args)
-	switch cmd.SubVerb {
-	case "START":
-		return d.hubHandleBrowserStart(ctx, conn, cmd)
-	case "STOP":
-		return d.hubHandleBrowserStop(ctx, conn, cmd)
-	case "STATUS":
-		return d.hubHandleBrowserStatus(conn, cmd)
-	case "LIST":
-		return d.hubHandleBrowserList(conn, cmd)
-	default:
-		return conn.WriteStructuredErr(&hubproto.StructuredError{
-			Code:         hubproto.ErrInvalidArgs,
-			Message:      "unknown BROWSER sub-command",
-			Command:      "BROWSER",
-			ValidActions: []string{"START", "STOP", "STATUS", "LIST"},
-		})
-	}
+	return newCommandRouter("BROWSER").dispatch(ctx, conn, cmd, map[string]handlerFn{
+		"START":  d.hubHandleBrowserStart,
+		"STOP":   d.hubHandleBrowserStop,
+		"STATUS": noCtx(d.hubHandleBrowserStatus),
+		"LIST":   noCtx(d.hubHandleBrowserList),
+	})
 }
 
 // hubHandleBrowserStart handles BROWSER START command.

@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/standardbeagle/agnt/internal/debug"
-
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/proxy"
 	hubpkg "github.com/standardbeagle/go-cli-server/hub"
@@ -14,24 +12,13 @@ import (
 )
 
 func (d *Daemon) hubHandleProxyLog(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	debug.Log("daemon", "PROXYLOG %s: args=%v", cmd.SubVerb, cmd.Args)
-	switch cmd.SubVerb {
-	case "QUERY", "":
-		return d.hubHandleProxyLogQuery(conn, cmd)
-	case "SUMMARY":
-		return d.hubHandleProxyLogSummary(conn, cmd)
-	case "CLEAR":
-		return d.hubHandleProxyLogClear(conn, cmd)
-	case "STATS":
-		return d.hubHandleProxyLogStats(conn, cmd)
-	default:
-		return writeStructuredErr(conn, "daemon", &hubproto.StructuredError{
-			Code:         hubproto.ErrInvalidArgs,
-			Message:      "unknown PROXYLOG sub-command",
-			Command:      "PROXYLOG",
-			ValidActions: []string{"QUERY", "SUMMARY", "CLEAR", "STATS"},
-		})
-	}
+	return newCommandRouter("PROXYLOG").dispatch(ctx, conn, cmd, map[string]handlerFn{
+		"QUERY":   noCtx(d.hubHandleProxyLogQuery),
+		"":        noCtx(d.hubHandleProxyLogQuery),
+		"SUMMARY": noCtx(d.hubHandleProxyLogSummary),
+		"CLEAR":   noCtx(d.hubHandleProxyLogClear),
+		"STATS":   noCtx(d.hubHandleProxyLogStats),
+	})
 }
 
 // hubHandleProxyLogQuery handles PROXYLOG QUERY command.

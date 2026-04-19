@@ -14,24 +14,14 @@ import (
 )
 
 func (d *Daemon) hubHandleAlerts(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	debug.Log("daemon", "ALERTS %s: args=%v", cmd.SubVerb, cmd.Args)
-	switch cmd.SubVerb {
-	case "REPORT":
-		return d.hubHandleAlertsReport(conn, cmd)
-	case "QUERY", "":
-		return d.hubHandleAlertsQuery(conn, cmd)
-	case "CLEAR":
-		return d.hubHandleAlertsClear(conn)
-	case "STARTUP-LOG", "STARTUP-ERRORS":
-		return d.hubHandleStartupLog(conn, cmd)
-	default:
-		return writeStructuredErr(conn, "daemon", &hubproto.StructuredError{
-			Code:         hubproto.ErrInvalidArgs,
-			Message:      "unknown ALERTS sub-command",
-			Command:      "ALERTS",
-			ValidActions: []string{"REPORT", "QUERY", "CLEAR", "STARTUP-LOG"},
-		})
-	}
+	return newCommandRouter("ALERTS").dispatch(ctx, conn, cmd, map[string]handlerFn{
+		"REPORT":         noCtx(d.hubHandleAlertsReport),
+		"QUERY":          noCtx(d.hubHandleAlertsQuery),
+		"":               noCtx(d.hubHandleAlertsQuery),
+		"CLEAR":          connOnly(d.hubHandleAlertsClear),
+		"STARTUP-LOG":    noCtx(d.hubHandleStartupLog),
+		"STARTUP-ERRORS": noCtx(d.hubHandleStartupLog),
+	})
 }
 
 // hubHandleAlertsReport handles ALERTS REPORT command.

@@ -4,35 +4,29 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/standardbeagle/agnt/internal/debug"
-
 	hubpkg "github.com/standardbeagle/go-cli-server/hub"
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
 )
 
 func (d *Daemon) hubHandleStore(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	debug.Log("daemon", "STORE %s: args=%v", cmd.SubVerb, cmd.Args)
-	switch cmd.SubVerb {
-	case "GET":
-		return d.hubHandleStoreGet(conn, cmd)
-	case "SET":
-		return d.hubHandleStoreSet(conn, cmd)
-	case "DELETE":
-		return d.hubHandleStoreDelete(conn, cmd)
-	case "LIST":
-		return d.hubHandleStoreList(conn, cmd)
-	case "CLEAR":
-		return d.hubHandleStoreClear(conn, cmd)
-	case "GET-ALL":
-		return d.hubHandleStoreGetAll(conn, cmd)
-	default:
-		return conn.WriteStructuredErr(&hubproto.StructuredError{
-			Code:         hubproto.ErrInvalidAction,
-			Message:      "unknown STORE sub-command",
-			Command:      "STORE",
-			ValidActions: []string{"GET", "SET", "DELETE", "LIST", "CLEAR", "GET-ALL"},
+	valid := []string{"GET", "SET", "DELETE", "LIST", "CLEAR", "GET-ALL"}
+	return newCommandRouter("STORE").
+		withDefault(func(_ context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
+			return writeStructuredErr(conn, "daemon", &hubproto.StructuredError{
+				Code:         hubproto.ErrInvalidAction,
+				Message:      "unknown STORE sub-command",
+				Command:      "STORE",
+				ValidActions: valid,
+			})
+		}).
+		dispatch(ctx, conn, cmd, map[string]handlerFn{
+			"GET":     noCtx(d.hubHandleStoreGet),
+			"SET":     noCtx(d.hubHandleStoreSet),
+			"DELETE":  noCtx(d.hubHandleStoreDelete),
+			"LIST":    noCtx(d.hubHandleStoreList),
+			"CLEAR":   noCtx(d.hubHandleStoreClear),
+			"GET-ALL": noCtx(d.hubHandleStoreGetAll),
 		})
-	}
 }
 
 // hubHandleStoreGet handles STORE GET command.

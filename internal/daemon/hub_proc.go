@@ -16,39 +16,35 @@ import (
 )
 
 func (d *Daemon) hubHandleProc(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	debug.Log("daemon", "PROC %s: args=%v", cmd.SubVerb, cmd.Args)
-	switch cmd.SubVerb {
-	case "STATUS":
-		return d.hubHandleProcStatus(ctx, conn, cmd)
-	case "OUTPUT":
-		return d.hubHandleProcOutput(ctx, conn, cmd)
-	case "STOP":
-		return d.hubHandleProcStop(ctx, conn, cmd)
-	case "RESTART":
-		return d.hubHandleProcRestart(ctx, conn, cmd)
-	case "LIST":
-		return d.hubHandleProcList(ctx, conn, cmd)
-	case "CLEANUP-PORT":
-		return d.hubHandleProcCleanupPort(ctx, conn, cmd)
-	case "AUTORESTART":
-		return d.hubHandleProcAutoRestart(ctx, conn, cmd)
-	case "":
-		return writeStructuredErr(conn, "daemon", &hubproto.StructuredError{
-			Code:         hubproto.ErrMissingParam,
-			Message:      "action required",
-			Command:      "PROC",
-			Param:        "action",
-			ValidActions: []string{"STATUS", "OUTPUT", "STOP", "RESTART", "LIST", "CLEANUP-PORT", "AUTORESTART"},
+	valid := []string{"STATUS", "OUTPUT", "STOP", "RESTART", "LIST", "CLEANUP-PORT", "AUTORESTART"}
+	return newCommandRouter("PROC").
+		withDefault(func(_ context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
+			return writeStructuredErr(conn, "daemon", &hubproto.StructuredError{
+				Code:         hubproto.ErrInvalidAction,
+				Message:      "unknown action",
+				Command:      "PROC",
+				Action:       cmd.SubVerb,
+				ValidActions: valid,
+			})
+		}).
+		dispatch(ctx, conn, cmd, map[string]handlerFn{
+			"STATUS":       d.hubHandleProcStatus,
+			"OUTPUT":       d.hubHandleProcOutput,
+			"STOP":         d.hubHandleProcStop,
+			"RESTART":      d.hubHandleProcRestart,
+			"LIST":         d.hubHandleProcList,
+			"CLEANUP-PORT": d.hubHandleProcCleanupPort,
+			"AUTORESTART":  d.hubHandleProcAutoRestart,
+			"": func(_ context.Context, conn *hubpkg.Connection, _ *hubproto.Command) error {
+				return writeStructuredErr(conn, "daemon", &hubproto.StructuredError{
+					Code:         hubproto.ErrMissingParam,
+					Message:      "action required",
+					Command:      "PROC",
+					Param:        "action",
+					ValidActions: valid,
+				})
+			},
 		})
-	default:
-		return writeStructuredErr(conn, "daemon", &hubproto.StructuredError{
-			Code:         hubproto.ErrInvalidAction,
-			Message:      "unknown action",
-			Command:      "PROC",
-			Action:       cmd.SubVerb,
-			ValidActions: []string{"STATUS", "OUTPUT", "STOP", "RESTART", "LIST", "CLEANUP-PORT", "AUTORESTART"},
-		})
-	}
 }
 
 // hubHandleProcStatus handles PROC STATUS <id>.

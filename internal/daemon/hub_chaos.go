@@ -6,46 +6,25 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/standardbeagle/agnt/internal/debug"
-
 	"github.com/standardbeagle/agnt/internal/proxy"
 	hubpkg "github.com/standardbeagle/go-cli-server/hub"
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
 )
 
 func (d *Daemon) hubHandleChaos(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	debug.Log("daemon", "CHAOS %s: args=%v", cmd.SubVerb, cmd.Args)
-	switch cmd.SubVerb {
-	case "ENABLE":
-		return d.hubHandleChaosEnable(conn, cmd)
-	case "DISABLE":
-		return d.hubHandleChaosDisable(conn, cmd)
-	case "STATUS":
-		return d.hubHandleChaosStatus(conn, cmd)
-	case "PRESET":
-		return d.hubHandleChaosPreset(conn, cmd)
-	case "SET":
-		return d.hubHandleChaosSet(conn, cmd)
-	case "ADD-RULE":
-		return d.hubHandleChaosAddRule(conn, cmd)
-	case "REMOVE-RULE":
-		return d.hubHandleChaosRemoveRule(conn, cmd)
-	case "LIST-RULES":
-		return d.hubHandleChaosListRules(conn, cmd)
-	case "STATS":
-		return d.hubHandleChaosStats(conn, cmd)
-	case "CLEAR":
-		return d.hubHandleChaosClear(conn, cmd)
-	case "LIST-PRESETS":
-		return d.hubHandleChaosListPresets(conn)
-	default:
-		return conn.WriteStructuredErr(&hubproto.StructuredError{
-			Code:         hubproto.ErrInvalidArgs,
-			Message:      "unknown CHAOS sub-command",
-			Command:      "CHAOS",
-			ValidActions: []string{"ENABLE", "DISABLE", "STATUS", "PRESET", "SET", "ADD-RULE", "REMOVE-RULE", "LIST-RULES", "STATS", "CLEAR", "LIST-PRESETS"},
-		})
-	}
+	return newCommandRouter("CHAOS").dispatch(ctx, conn, cmd, map[string]handlerFn{
+		"ENABLE":       noCtx(d.hubHandleChaosEnable),
+		"DISABLE":      noCtx(d.hubHandleChaosDisable),
+		"STATUS":       noCtx(d.hubHandleChaosStatus),
+		"PRESET":       noCtx(d.hubHandleChaosPreset),
+		"SET":          noCtx(d.hubHandleChaosSet),
+		"ADD-RULE":     noCtx(d.hubHandleChaosAddRule),
+		"REMOVE-RULE":  noCtx(d.hubHandleChaosRemoveRule),
+		"LIST-RULES":   noCtx(d.hubHandleChaosListRules),
+		"STATS":        noCtx(d.hubHandleChaosStats),
+		"CLEAR":        noCtx(d.hubHandleChaosClear),
+		"LIST-PRESETS": connOnly(d.hubHandleChaosListPresets),
+	})
 }
 
 // hubHandleChaosEnable handles CHAOS ENABLE command.

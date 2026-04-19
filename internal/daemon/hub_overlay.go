@@ -12,26 +12,14 @@ import (
 )
 
 func (d *Daemon) hubHandleOverlay(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	debug.Log("daemon", "OVERLAY %s: args=%v", cmd.SubVerb, cmd.Args)
-	switch cmd.SubVerb {
-	case "SET":
-		return d.hubHandleOverlaySet(conn, cmd)
-	case "GET", "":
-		return d.hubHandleOverlayGet(conn)
-	case "CLEAR":
-		return d.hubHandleOverlayClear(conn)
-	case "ACTIVITY":
-		return d.hubHandleOverlayActivity(conn, cmd)
-	case "OUTPUT-PREVIEW":
-		return d.hubHandleOverlayOutputPreview(conn, cmd)
-	default:
-		return conn.WriteStructuredErr(&hubproto.StructuredError{
-			Code:         hubproto.ErrInvalidArgs,
-			Message:      "unknown OVERLAY sub-command",
-			Command:      "OVERLAY",
-			ValidActions: []string{"SET", "GET", "CLEAR", "ACTIVITY", "OUTPUT-PREVIEW"},
-		})
-	}
+	return newCommandRouter("OVERLAY").dispatch(ctx, conn, cmd, map[string]handlerFn{
+		"SET":            noCtx(d.hubHandleOverlaySet),
+		"GET":            connOnly(d.hubHandleOverlayGet),
+		"":               connOnly(d.hubHandleOverlayGet),
+		"CLEAR":          connOnly(d.hubHandleOverlayClear),
+		"ACTIVITY":       noCtx(d.hubHandleOverlayActivity),
+		"OUTPUT-PREVIEW": noCtx(d.hubHandleOverlayOutputPreview),
+	})
 }
 
 // hubHandleOverlaySet handles OVERLAY SET command.

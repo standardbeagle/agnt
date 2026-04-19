@@ -5,32 +5,18 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/standardbeagle/agnt/internal/debug"
-
 	"github.com/standardbeagle/agnt/internal/tunnel"
 	hubpkg "github.com/standardbeagle/go-cli-server/hub"
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
 )
 
 func (d *Daemon) hubHandleTunnel(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	debug.Log("daemon", "TUNNEL %s: args=%v", cmd.SubVerb, cmd.Args)
-	switch cmd.SubVerb {
-	case "START":
-		return d.hubHandleTunnelStart(ctx, conn, cmd)
-	case "STOP":
-		return d.hubHandleTunnelStop(ctx, conn, cmd)
-	case "STATUS":
-		return d.hubHandleTunnelStatus(conn, cmd)
-	case "LIST":
-		return d.hubHandleTunnelList(conn, cmd)
-	default:
-		return conn.WriteStructuredErr(&hubproto.StructuredError{
-			Code:         hubproto.ErrInvalidArgs,
-			Message:      "unknown TUNNEL sub-command",
-			Command:      "TUNNEL",
-			ValidActions: []string{"START", "STOP", "STATUS", "LIST"},
-		})
-	}
+	return newCommandRouter("TUNNEL").dispatch(ctx, conn, cmd, map[string]handlerFn{
+		"START":  d.hubHandleTunnelStart,
+		"STOP":   d.hubHandleTunnelStop,
+		"STATUS": noCtx(d.hubHandleTunnelStatus),
+		"LIST":   noCtx(d.hubHandleTunnelList),
+	})
 }
 
 // hubHandleTunnelStart handles TUNNEL START command.
