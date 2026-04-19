@@ -503,50 +503,8 @@ making it easy to understand page load behavior and debug issues.`,
 	}, makeCurrentPageHandler(pm))
 
 	addLenientTool(server, &mcp.Tool{
-		Name: "proxy",
-		Description: `Manage reverse proxy servers with traffic logging and frontend instrumentation.
-
-Actions:
-  start: Create and start a reverse proxy
-  stop: Stop a running proxy
-  status: Get proxy status and statistics
-  list: List all running proxies
-  exec: Execute JavaScript in connected browser clients
-
-Examples:
-  proxy {action: "start", id: "dev", target_url: "http://localhost:3000"}
-  proxy {action: "status", id: "dev"}
-  proxy {action: "list"}
-  proxy {action: "exec", id: "dev", code: "document.title"}
-  proxy {action: "stop", id: "dev"}
-
-The proxy automatically:
-  - Assigns a stable port based on the target URL (same URL always gets same port)
-  - Logs all HTTP traffic (requests/responses)
-  - Injects JavaScript to capture frontend errors
-  - Captures performance metrics (page load, resources)
-  - Provides WebSocket endpoint for metrics
-  - Injects __devtool API with 50+ diagnostic functions
-
-Port selection:
-  - Default: A stable port derived from target URL hash (range 10000-60000)
-  - Only specify 'port' if you need a specific port number
-  - The assigned port is returned in the response's 'listen_addr' field
-
-__devtool API (injected into browser):
-  proxy {action: "exec", help: true}                    # Full API overview
-  proxy {action: "exec", describe: "screenshot"}        # Detailed function docs
-  proxy {action: "exec", describe: "interactions.getLastClick"}
-
-Common __devtool examples:
-  proxy {action: "exec", id: "dev", code: "__devtool.screenshot('homepage')"}
-  proxy {action: "exec", id: "dev", code: "__devtool.log('test', 'info', {data: 1})"}
-  proxy {action: "exec", id: "dev", code: "__devtool.interactions.getLastClickContext()"}
-  proxy {action: "exec", id: "dev", code: "__devtool.mutations.highlightRecent(5000)"}
-  proxy {action: "exec", id: "dev", code: "__devtool.inspect('#submit-btn')"}
-  proxy {action: "exec", id: "dev", code: "__devtool.auditAccessibility()"}
-
-Each proxy has separate log storage and WebSocket connections.`,
+		Name:        "proxy",
+		Description: ProxyToolDescription,
 	}, makeProxyHandler(pm))
 
 	addLenientTool(server, &mcp.Tool{
