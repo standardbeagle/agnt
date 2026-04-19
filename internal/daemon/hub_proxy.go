@@ -15,30 +15,15 @@ import (
 )
 
 func (d *Daemon) hubHandleProxy(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	debug.Log("daemon", "PROXY %s: args=%v", cmd.SubVerb, cmd.Args)
-	switch cmd.SubVerb {
-	case "START":
-		return d.hubHandleProxyStart(ctx, conn, cmd)
-	case "STOP":
-		return d.hubHandleProxyStop(ctx, conn, cmd)
-	case "RESTART":
-		return d.hubHandleProxyRestart(ctx, conn, cmd)
-	case "STATUS":
-		return d.hubHandleProxyStatus(conn, cmd)
-	case "LIST":
-		return d.hubHandleProxyList(conn, cmd)
-	case "EXEC":
-		return d.hubHandleProxyExec(conn, cmd)
-	case "TOAST":
-		return d.hubHandleProxyToast(conn, cmd)
-	default:
-		return writeStructuredErr(conn, "daemon", &hubproto.StructuredError{
-			Code:         hubproto.ErrInvalidArgs,
-			Message:      "unknown PROXY sub-command",
-			Command:      "PROXY",
-			ValidActions: []string{"START", "STOP", "RESTART", "STATUS", "LIST", "EXEC", "TOAST"},
-		})
-	}
+	return newCommandRouter("PROXY").dispatch(ctx, conn, cmd, map[string]handlerFn{
+		"START":   d.hubHandleProxyStart,
+		"STOP":    d.hubHandleProxyStop,
+		"RESTART": d.hubHandleProxyRestart,
+		"STATUS":  noCtx(d.hubHandleProxyStatus),
+		"LIST":    noCtx(d.hubHandleProxyList),
+		"EXEC":    noCtx(d.hubHandleProxyExec),
+		"TOAST":   noCtx(d.hubHandleProxyToast),
+	})
 }
 
 // hubHandleProxyStart handles PROXY START command.

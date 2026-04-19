@@ -4,31 +4,18 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/standardbeagle/agnt/internal/debug"
-
 	hubpkg "github.com/standardbeagle/go-cli-server/hub"
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
 )
 
 func (d *Daemon) hubHandleCurrentPage(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	debug.Log("daemon", "CURRENTPAGE %s: args=%v", cmd.SubVerb, cmd.Args)
-	switch cmd.SubVerb {
-	case "LIST", "":
-		return d.hubHandleCurrentPageList(conn, cmd)
-	case "GET":
-		return d.hubHandleCurrentPageGet(conn, cmd)
-	case "SUMMARY":
-		return d.hubHandleCurrentPageSummary(conn, cmd)
-	case "CLEAR":
-		return d.hubHandleCurrentPageClear(conn, cmd)
-	default:
-		return conn.WriteStructuredErr(&hubproto.StructuredError{
-			Code:         hubproto.ErrInvalidArgs,
-			Message:      "unknown CURRENTPAGE sub-command",
-			Command:      "CURRENTPAGE",
-			ValidActions: []string{"LIST", "GET", "SUMMARY", "CLEAR"},
-		})
-	}
+	return newCommandRouter("CURRENTPAGE").dispatch(ctx, conn, cmd, map[string]handlerFn{
+		"LIST":    noCtx(d.hubHandleCurrentPageList),
+		"":        noCtx(d.hubHandleCurrentPageList),
+		"GET":     noCtx(d.hubHandleCurrentPageGet),
+		"SUMMARY": noCtx(d.hubHandleCurrentPageSummary),
+		"CLEAR":   noCtx(d.hubHandleCurrentPageClear),
+	})
 }
 
 // hubHandleCurrentPageList handles CURRENTPAGE LIST command.

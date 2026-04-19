@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/chromedp"
-	"github.com/standardbeagle/agnt/internal/debug"
 
 	cdp "github.com/chromedp/chromedp"
 	hubpkg "github.com/standardbeagle/go-cli-server/hub"
@@ -27,30 +26,15 @@ func (d *Daemon) getSessionScopedAutomationSession(conn *hubpkg.Connection, sess
 // hubHandleAutomation handles the AUTOMATION command for chromedp sessions.
 
 func (d *Daemon) hubHandleAutomation(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	debug.Log("daemon", "AUTOMATION %s: args=%v", cmd.SubVerb, cmd.Args)
-	switch cmd.SubVerb {
-	case "START":
-		return d.hubHandleAutomationStart(ctx, conn, cmd)
-	case "STOP":
-		return d.hubHandleAutomationStop(ctx, conn, cmd)
-	case "STATUS":
-		return d.hubHandleAutomationStatus(conn, cmd)
-	case "LIST":
-		return d.hubHandleAutomationList(conn, cmd)
-	case "SCREENSHOT":
-		return d.hubHandleAutomationScreenshot(ctx, conn, cmd)
-	case "NAVIGATE":
-		return d.hubHandleAutomationNavigate(ctx, conn, cmd)
-	case "EVALUATE":
-		return d.hubHandleAutomationEvaluate(ctx, conn, cmd)
-	default:
-		return conn.WriteStructuredErr(&hubproto.StructuredError{
-			Code:         hubproto.ErrInvalidArgs,
-			Message:      "unknown AUTOMATION sub-command",
-			Command:      "AUTOMATION",
-			ValidActions: []string{"START", "STOP", "STATUS", "LIST", "SCREENSHOT", "NAVIGATE", "EVALUATE"},
-		})
-	}
+	return newCommandRouter("AUTOMATION").dispatch(ctx, conn, cmd, map[string]handlerFn{
+		"START":      d.hubHandleAutomationStart,
+		"STOP":       d.hubHandleAutomationStop,
+		"STATUS":     noCtx(d.hubHandleAutomationStatus),
+		"LIST":       noCtx(d.hubHandleAutomationList),
+		"SCREENSHOT": d.hubHandleAutomationScreenshot,
+		"NAVIGATE":   d.hubHandleAutomationNavigate,
+		"EVALUATE":   d.hubHandleAutomationEvaluate,
+	})
 }
 
 // hubHandleAutomationStart handles AUTOMATION START command.

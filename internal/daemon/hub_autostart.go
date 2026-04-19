@@ -12,22 +12,22 @@ import (
 )
 
 func (d *Daemon) hubHandleAutostart(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	switch cmd.SubVerb {
-	case protocol.SubVerbClearPorts:
-		return d.hubHandleAutostartClearPorts(ctx, conn, cmd)
-	case protocol.SubVerbContinue:
-		return d.hubHandleAutostartContinue(ctx, conn, cmd)
-	case protocol.SubVerbAutostartRun:
-		return d.hubHandleAutostartRun(ctx, conn, cmd)
-	default:
-		return writeStructuredErr(conn, "daemon", &hubproto.StructuredError{
-			Code:         hubproto.ErrInvalidAction,
-			Message:      "unknown action",
-			Command:      "AUTOSTART",
-			Action:       cmd.SubVerb,
-			ValidActions: []string{protocol.SubVerbClearPorts, protocol.SubVerbContinue, protocol.SubVerbAutostartRun},
+	valid := []string{protocol.SubVerbClearPorts, protocol.SubVerbContinue, protocol.SubVerbAutostartRun}
+	return newCommandRouter("AUTOSTART").
+		withDefault(func(_ context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
+			return writeStructuredErr(conn, "daemon", &hubproto.StructuredError{
+				Code:         hubproto.ErrInvalidAction,
+				Message:      "unknown action",
+				Command:      "AUTOSTART",
+				Action:       cmd.SubVerb,
+				ValidActions: valid,
+			})
+		}).
+		dispatch(ctx, conn, cmd, map[string]handlerFn{
+			protocol.SubVerbClearPorts:   d.hubHandleAutostartClearPorts,
+			protocol.SubVerbContinue:     d.hubHandleAutostartContinue,
+			protocol.SubVerbAutostartRun: d.hubHandleAutostartRun,
 		})
-	}
 }
 
 // hubHandleAutostartClearPorts handles AUTOSTART CLEAR-PORTS <projectPath>.

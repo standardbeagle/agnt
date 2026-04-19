@@ -7,27 +7,26 @@ import (
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/automation"
-	"github.com/standardbeagle/agnt/internal/debug"
 
 	hubpkg "github.com/standardbeagle/go-cli-server/hub"
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
 )
 
 func (d *Daemon) hubHandleAutomate(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	debug.Log("daemon", "AUTOMATE %s: args=%v", cmd.SubVerb, cmd.Args)
-	switch cmd.SubVerb {
-	case "PROCESS":
-		return d.hubHandleAutomateProcess(ctx, conn, cmd)
-	case "BATCH":
-		return d.hubHandleAutomateBatch(ctx, conn, cmd)
-	default:
-		return conn.WriteStructuredErr(&hubproto.StructuredError{
-			Code:         hubproto.ErrInvalidAction,
-			Message:      "unknown AUTOMATE sub-command",
-			Command:      "AUTOMATE",
-			ValidActions: []string{"PROCESS", "BATCH"},
+	valid := []string{"PROCESS", "BATCH"}
+	return newCommandRouter("AUTOMATE").
+		withDefault(func(_ context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
+			return writeStructuredErr(conn, "daemon", &hubproto.StructuredError{
+				Code:         hubproto.ErrInvalidAction,
+				Message:      "unknown AUTOMATE sub-command",
+				Command:      "AUTOMATE",
+				ValidActions: valid,
+			})
+		}).
+		dispatch(ctx, conn, cmd, map[string]handlerFn{
+			"PROCESS": d.hubHandleAutomateProcess,
+			"BATCH":   d.hubHandleAutomateBatch,
 		})
-	}
 }
 
 // getOrCreateAutomator returns the automation processor, creating it on first use.

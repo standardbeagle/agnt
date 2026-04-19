@@ -15,35 +15,33 @@ import (
 )
 
 func (d *Daemon) hubHandleScript(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	debug.Log("daemon", "SCRIPT %s: args=%v", cmd.SubVerb, cmd.Args)
-	switch cmd.SubVerb {
-	case "LIST":
-		return d.hubHandleScriptList(conn, cmd)
-	case "GET":
-		return d.hubHandleScriptGet(conn, cmd)
-	case "OUTPUT":
-		return d.hubHandleScriptOutput(conn, cmd)
-	case "RESTART":
-		return d.hubHandleScriptRestart(ctx, conn, cmd)
-	case "STOP":
-		return d.hubHandleScriptStop(ctx, conn, cmd)
-	case "":
-		return writeStructuredErr(conn, "daemon", &hubproto.StructuredError{
-			Code:         hubproto.ErrMissingParam,
-			Message:      "action required",
-			Command:      "SCRIPT",
-			Param:        "action",
-			ValidActions: []string{"LIST", "GET", "OUTPUT", "RESTART", "STOP"},
+	valid := []string{"LIST", "GET", "OUTPUT", "RESTART", "STOP"}
+	return newCommandRouter("SCRIPT").
+		withDefault(func(_ context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
+			return writeStructuredErr(conn, "daemon", &hubproto.StructuredError{
+				Code:         hubproto.ErrInvalidAction,
+				Message:      "unknown action",
+				Command:      "SCRIPT",
+				Action:       cmd.SubVerb,
+				ValidActions: valid,
+			})
+		}).
+		dispatch(ctx, conn, cmd, map[string]handlerFn{
+			"LIST":    noCtx(d.hubHandleScriptList),
+			"GET":     noCtx(d.hubHandleScriptGet),
+			"OUTPUT":  noCtx(d.hubHandleScriptOutput),
+			"RESTART": d.hubHandleScriptRestart,
+			"STOP":    d.hubHandleScriptStop,
+			"": func(_ context.Context, conn *hubpkg.Connection, _ *hubproto.Command) error {
+				return writeStructuredErr(conn, "daemon", &hubproto.StructuredError{
+					Code:         hubproto.ErrMissingParam,
+					Message:      "action required",
+					Command:      "SCRIPT",
+					Param:        "action",
+					ValidActions: valid,
+				})
+			},
 		})
-	default:
-		return writeStructuredErr(conn, "daemon", &hubproto.StructuredError{
-			Code:         hubproto.ErrInvalidAction,
-			Message:      "unknown action",
-			Command:      "SCRIPT",
-			Action:       cmd.SubVerb,
-			ValidActions: []string{"LIST", "GET", "OUTPUT", "RESTART", "STOP"},
-		})
-	}
 }
 
 // resolveScriptProjectPath extracts the project path from the command's JSON data

@@ -18,40 +18,20 @@ import (
 )
 
 func (d *Daemon) hubHandleSession(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	debug.Log("daemon", "SESSION %s: args=%v", cmd.SubVerb, cmd.Args)
-	switch cmd.SubVerb {
-	case "REGISTER":
-		return d.hubHandleSessionRegister(conn, cmd)
-	case "UNREGISTER":
-		return d.hubHandleSessionUnregister(conn, cmd)
-	case "HEARTBEAT":
-		return d.hubHandleSessionHeartbeat(conn, cmd)
-	case "LIST":
-		return d.hubHandleSessionList(conn, cmd)
-	case "GET":
-		return d.hubHandleSessionGet(conn, cmd)
-	case "SEND":
-		return d.hubHandleSessionSend(conn, cmd)
-	case "SCHEDULE":
-		return d.hubHandleSessionSchedule(conn, cmd)
-	case "CANCEL":
-		return d.hubHandleSessionCancel(conn, cmd)
-	case "TASKS":
-		return d.hubHandleSessionTasks(conn, cmd)
-	case "FIND":
-		return d.hubHandleSessionFind(conn, cmd)
-	case "ATTACH":
-		return d.hubHandleSessionAttach(conn, cmd)
-	case "URL":
-		return d.hubHandleSessionURL(conn, cmd)
-	default:
-		return conn.WriteStructuredErr(&hubproto.StructuredError{
-			Code:         hubproto.ErrInvalidArgs,
-			Message:      "unknown SESSION sub-command",
-			Command:      "SESSION",
-			ValidActions: []string{"REGISTER", "UNREGISTER", "HEARTBEAT", "LIST", "GET", "SEND", "SCHEDULE", "CANCEL", "TASKS", "FIND", "ATTACH", "URL"},
-		})
-	}
+	return newCommandRouter("SESSION").dispatch(ctx, conn, cmd, map[string]handlerFn{
+		"REGISTER":   noCtx(d.hubHandleSessionRegister),
+		"UNREGISTER": noCtx(d.hubHandleSessionUnregister),
+		"HEARTBEAT":  noCtx(d.hubHandleSessionHeartbeat),
+		"LIST":       noCtx(d.hubHandleSessionList),
+		"GET":        noCtx(d.hubHandleSessionGet),
+		"SEND":       noCtx(d.hubHandleSessionSend),
+		"SCHEDULE":   noCtx(d.hubHandleSessionSchedule),
+		"CANCEL":     noCtx(d.hubHandleSessionCancel),
+		"TASKS":      noCtx(d.hubHandleSessionTasks),
+		"FIND":       noCtx(d.hubHandleSessionFind),
+		"ATTACH":     noCtx(d.hubHandleSessionAttach),
+		"URL":        noCtx(d.hubHandleSessionURL),
+	})
 }
 
 // sessionRegisterMetadata mirrors the JSON metadata payload clients send on
