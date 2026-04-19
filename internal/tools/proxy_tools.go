@@ -27,6 +27,8 @@ type ProxyInput struct {
 	Global        bool   `json:"global,omitempty" jsonschema:"For list: include proxies from all directories (default: false)"`
 	Help          bool   `json:"help,omitempty" jsonschema:"For exec: show __devtool API overview instead of executing code"`
 	Describe      string `json:"describe,omitempty" jsonschema:"For exec: show detailed docs for a specific function (e.g. 'screenshot', 'interactions.getLastClick')"`
+	Search        string `json:"search,omitempty" jsonschema:"For exec: case-insensitive substring search across __devtool function names, descriptions, and signatures. Returns up to 10 compact matches. Combine with category to narrow results."`
+	Category      string `json:"category,omitempty" jsonschema:"For exec search: optional category filter (e.g. 'accessibility', 'layout', 'inspection'). AND-combined with 'search'."`
 	ToastType     string `json:"toast_type,omitempty" jsonschema:"For toast: notification type (success, error, warning, info). Default: info"`
 	ToastTitle    string `json:"toast_title,omitempty" jsonschema:"For toast: notification title (optional)"`
 	ToastMessage  string `json:"toast_message,omitempty" jsonschema:"For toast: notification message (required for toast)"`
@@ -343,6 +345,9 @@ type ProxyOutput struct {
 	Success     bool   `json:"success,omitempty"`
 	Message     string `json:"message,omitempty"`
 	ExecutionID string `json:"execution_id,omitempty"` // For exec action
+
+	// For exec search
+	SearchResult *APISearchResult `json:"search_result,omitempty"`
 
 	// For chaos
 	ChaosEnabled bool              `json:"chaos_enabled,omitempty"`
@@ -777,6 +782,21 @@ func handleProxyExec(pm *proxy.ProxyManager, input ProxyInput) (*mcp.CallToolRes
 		return nil, ProxyOutput{
 			Success: true,
 			Message: doc,
+		}, nil
+	}
+
+	// Handle search request - no proxy ID required. Mutually exclusive
+	// with code execution: if both are present, favor the discovery path
+	// but surface the conflict so callers don't silently get the wrong
+	// behavior.
+	if input.Search != "" || input.Category != "" {
+		if input.Code != "" {
+			return errorResult("cannot combine 'search' with 'code'; run search first, then exec with the resolved function"), ProxyOutput{}, nil
+		}
+		result := SearchAPIFunctions(input.Search, input.Category)
+		return nil, ProxyOutput{
+			Success:      true,
+			SearchResult: &result,
 		}, nil
 	}
 

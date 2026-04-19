@@ -108,6 +108,8 @@ func validateProxyInput(input ProxyInput) error {
 		validateStringLen("public_url", input.PublicURL, maxURLLength),
 		validateStringLen("code", input.Code, maxCodeLength),
 		validateStringLen("describe", input.Describe, maxIDLength),
+		validateStringLen("search", input.Search, maxStringField),
+		validateStringLen("category", input.Category, maxIDLength),
 		validateStringLen("toast_type", input.ToastType, maxIDLength),
 		validateStringLen("toast_title", input.ToastTitle, maxStringField),
 		validateStringLen("toast_message", input.ToastMessage, maxMessageLength),

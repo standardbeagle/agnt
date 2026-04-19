@@ -265,6 +265,19 @@ func (dt *DaemonTools) handleProxyExec(input ProxyInput) (*mcp.CallToolResult, P
 		}, nil
 	}
 
+	// Handle search request - no proxy ID required. Mutually exclusive
+	// with code execution (see legacy handler for rationale).
+	if input.Search != "" || input.Category != "" {
+		if input.Code != "" {
+			return errorResult("cannot combine 'search' with 'code'; run search first, then exec with the resolved function"), ProxyOutput{}, nil
+		}
+		result := SearchAPIFunctions(input.Search, input.Category)
+		return nil, ProxyOutput{
+			Success:      true,
+			SearchResult: &result,
+		}, nil
+	}
+
 	if input.ID == "" {
 		return errorResult("id required for exec"), ProxyOutput{}, nil
 	}
