@@ -22,12 +22,7 @@ func (d *Daemon) hubHandleStreamEvents(ctx context.Context, conn *hubpkg.Connect
 	debug.Log("daemon", "STREAM-EVENTS: starting event stream")
 
 	// Parse filter from request data
-	var filter protocol.StreamEventFilter
-	if len(cmd.Data) > 0 {
-		if err := json.Unmarshal(cmd.Data, &filter); err != nil {
-			debug.Log("daemon", "STREAM-EVENTS: invalid filter JSON: %v", err)
-		}
-	}
+	filter, _ := unmarshalCommand[protocol.StreamEventFilter](cmd)
 
 	// Build internal filter
 	sf := buildStreamFilter(filter)

@@ -57,7 +57,7 @@ func convertLogQueryFilter(data []byte) proxy.LogFilter {
 	}
 
 	var pf protocol.LogQueryFilter
-	json.Unmarshal(data, &pf)
+	_ = json.Unmarshal(data, &pf)
 
 	filter := proxy.LogFilter{
 		Methods:     pf.Methods,

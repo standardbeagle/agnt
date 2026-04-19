@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/standardbeagle/agnt/internal/debug"
-
 	"github.com/standardbeagle/agnt/internal/protocol"
 	hubpkg "github.com/standardbeagle/go-cli-server/hub"
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
@@ -32,8 +30,8 @@ func (d *Daemon) hubHandleAlertsReport(conn *hubpkg.Connection, cmd *hubproto.Co
 		return conn.WriteErr(hubproto.ErrInvalidArgs, "ALERTS REPORT requires JSON payload")
 	}
 
-	var payload protocol.AlertReportPayload
-	if err := json.Unmarshal(cmd.Data, &payload); err != nil {
+	payload, err := unmarshalCommand[protocol.AlertReportPayload](cmd)
+	if err != nil {
 		return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("invalid payload: %v", err))
 	}
 
@@ -66,12 +64,7 @@ func (d *Daemon) hubHandleAlertsReport(conn *hubpkg.Connection, cmd *hubproto.Co
 // Receives an optional AlertQueryFilter and returns matching entries.
 
 func (d *Daemon) hubHandleAlertsQuery(conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	var protoFilter protocol.AlertQueryFilter
-	if len(cmd.Data) > 0 {
-		if err := json.Unmarshal(cmd.Data, &protoFilter); err != nil {
-			debug.Log("daemon", "ALERTS QUERY: invalid filter JSON: %v", err)
-		}
-	}
+	protoFilter, _ := unmarshalCommand[protocol.AlertQueryFilter](cmd)
 
 	filter := AlertStoreFilter{
 		ProcessID: protoFilter.ProcessID,
@@ -120,27 +113,24 @@ func (d *Daemon) hubHandleStartupLog(conn *hubpkg.Connection, cmd *hubproto.Comm
 		Limit: 50,
 	}
 
-	if len(cmd.Data) > 0 {
-		var f struct {
-			Since     string `json:"since,omitempty"`
-			ProcessID string `json:"process_id,omitempty"`
-			Level     string `json:"level,omitempty"`
-			Limit     int    `json:"limit,omitempty"`
+	if f, err := unmarshalCommand[struct {
+		Since     string `json:"since,omitempty"`
+		ProcessID string `json:"process_id,omitempty"`
+		Level     string `json:"level,omitempty"`
+		Limit     int    `json:"limit,omitempty"`
+	}](cmd); err == nil {
+		if f.ProcessID != "" {
+			filter.ProcessID = f.ProcessID
 		}
-		if err := json.Unmarshal(cmd.Data, &f); err == nil {
-			if f.ProcessID != "" {
-				filter.ProcessID = f.ProcessID
-			}
-			if f.Level != "" {
-				filter.Level = f.Level
-			}
-			if f.Limit > 0 {
-				filter.Limit = f.Limit
-			}
-			filter.Since = parseSinceFilter(f.Since)
-			if filter.Since.IsZero() {
-				filter.Since = time.Now().Add(-30 * time.Minute)
-			}
+		if f.Level != "" {
+			filter.Level = f.Level
+		}
+		if f.Limit > 0 {
+			filter.Limit = f.Limit
+		}
+		filter.Since = parseSinceFilter(f.Since)
+		if filter.Since.IsZero() {
+			filter.Since = time.Now().Add(-30 * time.Minute)
 		}
 	}
 

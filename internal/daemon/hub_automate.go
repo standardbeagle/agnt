@@ -55,7 +55,7 @@ func (d *Daemon) hubHandleAutomateProcess(ctx context.Context, conn *hubpkg.Conn
 	}
 
 	// Parse the task request
-	var req struct {
+	req, err := unmarshalCommand[struct {
 		Type    string                 `json:"type"`
 		Data    map[string]interface{} `json:"data"`
 		Context map[string]interface{} `json:"context"`
@@ -64,8 +64,8 @@ func (d *Daemon) hubHandleAutomateProcess(ctx context.Context, conn *hubpkg.Conn
 			MaxTokens   int     `json:"max_tokens,omitempty"`
 			Temperature float64 `json:"temperature,omitempty"`
 		} `json:"options,omitempty"`
-	}
-	if err := json.Unmarshal(cmd.Data, &req); err != nil {
+	}](cmd)
+	if err != nil {
 		return conn.WriteErr(hubproto.ErrInvalidArgs, "invalid task JSON: "+err.Error())
 	}
 
@@ -126,7 +126,7 @@ func (d *Daemon) hubHandleAutomateBatch(ctx context.Context, conn *hubpkg.Connec
 	}
 
 	// Parse the batch request
-	var req struct {
+	req, err := unmarshalCommand[struct {
 		Tasks []struct {
 			Type    string                 `json:"type"`
 			Data    map[string]interface{} `json:"data"`
@@ -137,8 +137,8 @@ func (d *Daemon) hubHandleAutomateBatch(ctx context.Context, conn *hubpkg.Connec
 				Temperature float64 `json:"temperature,omitempty"`
 			} `json:"options,omitempty"`
 		} `json:"tasks"`
-	}
-	if err := json.Unmarshal(cmd.Data, &req); err != nil {
+	}](cmd)
+	if err != nil {
 		return conn.WriteErr(hubproto.ErrInvalidArgs, "invalid batch JSON: "+err.Error())
 	}
 

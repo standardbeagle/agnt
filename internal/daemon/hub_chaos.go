@@ -104,12 +104,9 @@ func (d *Daemon) hubHandleChaosPreset(conn *hubpkg.Connection, cmd *hubproto.Com
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
 
-	var config struct {
+	config, _ := unmarshalCommand[struct {
 		Preset string `json:"chaos_preset"`
-	}
-	if len(cmd.Data) > 0 {
-		json.Unmarshal(cmd.Data, &config)
-	}
+	}](cmd)
 
 	if config.Preset == "" {
 		return conn.WriteErr(hubproto.ErrInvalidArgs, "chaos_preset is required")
@@ -168,10 +165,7 @@ func (d *Daemon) hubHandleChaosSet(conn *hubpkg.Connection, cmd *hubproto.Comman
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
 
-	var config proxy.ChaosConfig
-	if len(cmd.Data) > 0 {
-		json.Unmarshal(cmd.Data, &config)
-	}
+	config, _ := unmarshalCommand[proxy.ChaosConfig](cmd)
 
 	if err := p.ChaosEngine().SetConfig(&config); err != nil {
 		return conn.WriteErr(hubproto.ErrInternal, err.Error())
@@ -193,12 +187,9 @@ func (d *Daemon) hubHandleChaosAddRule(conn *hubpkg.Connection, cmd *hubproto.Co
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
 
-	var wrapper struct {
+	wrapper, _ := unmarshalCommand[struct {
 		Rule proxy.ChaosRule `json:"chaos_rule"`
-	}
-	if len(cmd.Data) > 0 {
-		json.Unmarshal(cmd.Data, &wrapper)
-	}
+	}](cmd)
 
 	if wrapper.Rule.ID == "" {
 		return conn.WriteErr(hubproto.ErrInvalidArgs, "rule id is required")
@@ -224,12 +215,9 @@ func (d *Daemon) hubHandleChaosRemoveRule(conn *hubpkg.Connection, cmd *hubproto
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
 
-	var config struct {
+	config, _ := unmarshalCommand[struct {
 		RuleID string `json:"chaos_rule_id"`
-	}
-	if len(cmd.Data) > 0 {
-		json.Unmarshal(cmd.Data, &config)
-	}
+	}](cmd)
 
 	if config.RuleID == "" {
 		return conn.WriteErr(hubproto.ErrInvalidArgs, "chaos_rule_id is required")

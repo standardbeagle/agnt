@@ -213,11 +213,9 @@ type agntRunConfig struct {
 // "process_id" (matching what daemon_tools.go expects).
 
 func (d *Daemon) hubHandleRun(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	var cfg agntRunConfig
-	if len(cmd.Data) > 0 {
-		if err := json.Unmarshal(cmd.Data, &cfg); err != nil {
-			return conn.WriteErr(hubproto.ErrInvalidArgs, "invalid JSON config")
-		}
+	cfg, err := unmarshalCommand[agntRunConfig](cmd)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, "invalid JSON config")
 	}
 
 	if cfg.Command == "" && cfg.ScriptName == "" {

@@ -32,15 +32,13 @@ func (d *Daemon) hubHandleStore(ctx context.Context, conn *hubpkg.Connection, cm
 // hubHandleStoreGet handles STORE GET command.
 
 func (d *Daemon) hubHandleStoreGet(conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	var req struct {
+	req, err := unmarshalCommand[struct {
 		Scope    string `json:"scope"`
 		ScopeKey string `json:"scope_key"`
 		Key      string `json:"key"`
-	}
-	if len(cmd.Data) > 0 {
-		if err := json.Unmarshal(cmd.Data, &req); err != nil {
-			return conn.WriteErr(hubproto.ErrInvalidArgs, "invalid request JSON: "+err.Error())
-		}
+	}](cmd)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, "invalid request JSON: "+err.Error())
 	}
 
 	if req.Scope == "" {
@@ -68,17 +66,15 @@ func (d *Daemon) hubHandleStoreGet(conn *hubpkg.Connection, cmd *hubproto.Comman
 // hubHandleStoreSet handles STORE SET command.
 
 func (d *Daemon) hubHandleStoreSet(conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	var req struct {
+	req, err := unmarshalCommand[struct {
 		Scope    string         `json:"scope"`
 		ScopeKey string         `json:"scope_key"`
 		Key      string         `json:"key"`
 		Value    interface{}    `json:"value"`
 		Metadata map[string]any `json:"metadata,omitempty"`
-	}
-	if len(cmd.Data) > 0 {
-		if err := json.Unmarshal(cmd.Data, &req); err != nil {
-			return conn.WriteErr(hubproto.ErrInvalidArgs, "invalid request JSON: "+err.Error())
-		}
+	}](cmd)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, "invalid request JSON: "+err.Error())
 	}
 
 	if req.Scope == "" {
@@ -104,15 +100,13 @@ func (d *Daemon) hubHandleStoreSet(conn *hubpkg.Connection, cmd *hubproto.Comman
 // hubHandleStoreDelete handles STORE DELETE command.
 
 func (d *Daemon) hubHandleStoreDelete(conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	var req struct {
+	req, err := unmarshalCommand[struct {
 		Scope    string `json:"scope"`
 		ScopeKey string `json:"scope_key"`
 		Key      string `json:"key"`
-	}
-	if len(cmd.Data) > 0 {
-		if err := json.Unmarshal(cmd.Data, &req); err != nil {
-			return conn.WriteErr(hubproto.ErrInvalidArgs, "invalid request JSON: "+err.Error())
-		}
+	}](cmd)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, "invalid request JSON: "+err.Error())
 	}
 
 	if req.Scope == "" {
@@ -138,14 +132,12 @@ func (d *Daemon) hubHandleStoreDelete(conn *hubpkg.Connection, cmd *hubproto.Com
 // hubHandleStoreList handles STORE LIST command.
 
 func (d *Daemon) hubHandleStoreList(conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	var req struct {
+	req, err := unmarshalCommand[struct {
 		Scope    string `json:"scope"`
 		ScopeKey string `json:"scope_key"`
-	}
-	if len(cmd.Data) > 0 {
-		if err := json.Unmarshal(cmd.Data, &req); err != nil {
-			return conn.WriteErr(hubproto.ErrInvalidArgs, "invalid request JSON: "+err.Error())
-		}
+	}](cmd)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, "invalid request JSON: "+err.Error())
 	}
 
 	if req.Scope == "" {
@@ -174,14 +166,12 @@ func (d *Daemon) hubHandleStoreList(conn *hubpkg.Connection, cmd *hubproto.Comma
 // hubHandleStoreClear handles STORE CLEAR command.
 
 func (d *Daemon) hubHandleStoreClear(conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	var req struct {
+	req, err := unmarshalCommand[struct {
 		Scope    string `json:"scope"`
 		ScopeKey string `json:"scope_key"`
-	}
-	if len(cmd.Data) > 0 {
-		if err := json.Unmarshal(cmd.Data, &req); err != nil {
-			return conn.WriteErr(hubproto.ErrInvalidArgs, "invalid request JSON: "+err.Error())
-		}
+	}](cmd)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, "invalid request JSON: "+err.Error())
 	}
 
 	if req.Scope == "" {
@@ -204,14 +194,12 @@ func (d *Daemon) hubHandleStoreClear(conn *hubpkg.Connection, cmd *hubproto.Comm
 // hubHandleStoreGetAll handles STORE GET-ALL command.
 
 func (d *Daemon) hubHandleStoreGetAll(conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	var req struct {
+	req, err := unmarshalCommand[struct {
 		Scope    string `json:"scope"`
 		ScopeKey string `json:"scope_key"`
-	}
-	if len(cmd.Data) > 0 {
-		if err := json.Unmarshal(cmd.Data, &req); err != nil {
-			return conn.WriteErr(hubproto.ErrInvalidArgs, "invalid request JSON: "+err.Error())
-		}
+	}](cmd)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, "invalid request JSON: "+err.Error())
 	}
 
 	if req.Scope == "" {

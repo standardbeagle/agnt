@@ -119,11 +119,9 @@ func (d *Daemon) hubHandleProcOutput(ctx context.Context, conn *hubpkg.Connectio
 	}
 
 	// Parse optional filter from JSON data
-	var filter hubproto.OutputFilter
-	if len(cmd.Data) > 0 {
-		if err := json.Unmarshal(cmd.Data, &filter); err != nil {
-			return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("invalid filter JSON: %v", err))
-		}
+	filter, err := unmarshalCommand[hubproto.OutputFilter](cmd)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("invalid filter JSON: %v", err))
 	}
 
 	var output []byte
@@ -239,11 +237,9 @@ func (d *Daemon) hubHandleProcList(ctx context.Context, conn *hubpkg.Connection,
 	procs := d.hub.ProcessManager().List()
 
 	// Parse directory filter from JSON data (optional)
-	var dirFilter hubproto.DirectoryFilter
-	if len(cmd.Data) > 0 {
-		if err := json.Unmarshal(cmd.Data, &dirFilter); err != nil {
-			return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("invalid filter JSON: %v", err))
-		}
+	dirFilter, err := unmarshalCommand[hubproto.DirectoryFilter](cmd)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("invalid filter JSON: %v", err))
 	}
 
 	// Resolve the project path for filtering
@@ -486,18 +482,17 @@ func (d *Daemon) hubHandleProcAutoRestart(ctx context.Context, conn *hubpkg.Conn
 	case "enable":
 		config := DefaultAutoRestartConfig()
 		config.Enabled = true
-		if len(cmd.Data) > 0 {
-			var payload map[string]interface{}
-			if err := json.Unmarshal(cmd.Data, &payload); err == nil {
-				if maxRestarts, ok := payload["max_restarts"].(float64); ok {
-					config.MaxRestarts = int(maxRestarts)
-				}
-				if onlyOnError, ok := payload["only_on_error"].(bool); ok {
-					config.OnlyOnError = onlyOnError
-				}
-				if delayMs, ok := payload["restart_delay_ms"].(float64); ok {
-					config.RestartDelay = time.Duration(delayMs) * time.Millisecond
-				}
+		if payload, err := unmarshalCommand[struct {
+			MaxRestarts    int     `json:"max_restarts"`
+			OnlyOnError    bool    `json:"only_on_error"`
+			RestartDelayMs float64 `json:"restart_delay_ms"`
+		}](cmd); err == nil {
+			if payload.MaxRestarts > 0 {
+				config.MaxRestarts = payload.MaxRestarts
+			}
+			config.OnlyOnError = payload.OnlyOnError
+			if payload.RestartDelayMs > 0 {
+				config.RestartDelay = time.Duration(payload.RestartDelayMs) * time.Millisecond
 			}
 		}
 

@@ -6,9 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/standardbeagle/agnt/internal/chromedp"
-
 	cdp "github.com/chromedp/chromedp"
+	"github.com/standardbeagle/agnt/internal/chromedp"
 	hubpkg "github.com/standardbeagle/go-cli-server/hub"
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
 )
@@ -30,16 +29,12 @@ func (d *Daemon) hubHandleAutomation(ctx context.Context, conn *hubpkg.Connectio
 // hubHandleAutomationStart handles AUTOMATION START command.
 
 func (d *Daemon) hubHandleAutomationStart(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	var config struct {
+	config, _ := unmarshalCommand[struct {
 		ID       string `json:"id"`
 		URL      string `json:"url"`
 		ProxyID  string `json:"proxy_id"`
 		Headless *bool  `json:"headless"`
-	}
-
-	if len(cmd.Data) > 0 {
-		json.Unmarshal(cmd.Data, &config)
-	}
+	}](cmd)
 
 	// Accept ID from args for convenience
 	if config.ID == "" && len(cmd.Args) > 0 {
@@ -170,10 +165,7 @@ func (d *Daemon) hubHandleAutomationStatus(conn *hubpkg.Connection, cmd *hubprot
 // hubHandleAutomationList handles AUTOMATION LIST command.
 
 func (d *Daemon) hubHandleAutomationList(conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	var dirFilter hubproto.DirectoryFilter
-	if len(cmd.Data) > 0 {
-		json.Unmarshal(cmd.Data, &dirFilter)
-	}
+	dirFilter, _ := unmarshalCommand[hubproto.DirectoryFilter](cmd)
 
 	var infos []chromedp.SessionInfo
 	if dirFilter.Global {
@@ -214,7 +206,7 @@ func (d *Daemon) hubHandleAutomationList(conn *hubpkg.Connection, cmd *hubproto.
 // hubHandleAutomationScreenshot handles AUTOMATION SCREENSHOT command.
 
 func (d *Daemon) hubHandleAutomationScreenshot(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	var config struct {
+	config, _ := unmarshalCommand[struct {
 		SessionID string `json:"session_id"`
 		Type      string `json:"type"`     // viewport, fullpage, element, clip
 		Label     string `json:"label"`    // Optional label for filename
@@ -225,11 +217,7 @@ func (d *Daemon) hubHandleAutomationScreenshot(ctx context.Context, conn *hubpkg
 		Y      float64 `json:"y"`
 		Width  float64 `json:"width"`
 		Height float64 `json:"height"`
-	}
-
-	if len(cmd.Data) > 0 {
-		json.Unmarshal(cmd.Data, &config)
-	}
+	}](cmd)
 
 	// Session ID from args takes precedence
 	if len(cmd.Args) > 0 {
@@ -312,14 +300,10 @@ func (d *Daemon) hubHandleAutomationScreenshot(ctx context.Context, conn *hubpkg
 // hubHandleAutomationNavigate handles AUTOMATION NAVIGATE command.
 
 func (d *Daemon) hubHandleAutomationNavigate(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	var config struct {
+	config, _ := unmarshalCommand[struct {
 		SessionID string `json:"session_id"`
 		URL       string `json:"url"`
-	}
-
-	if len(cmd.Data) > 0 {
-		json.Unmarshal(cmd.Data, &config)
-	}
+	}](cmd)
 
 	// Accept session_id and URL from args
 	if len(cmd.Args) >= 1 {
@@ -357,14 +341,10 @@ func (d *Daemon) hubHandleAutomationNavigate(ctx context.Context, conn *hubpkg.C
 // hubHandleAutomationEvaluate handles AUTOMATION EVALUATE command.
 
 func (d *Daemon) hubHandleAutomationEvaluate(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	var config struct {
+	config, _ := unmarshalCommand[struct {
 		SessionID string `json:"session_id"`
 		Script    string `json:"script"`
-	}
-
-	if len(cmd.Data) > 0 {
-		json.Unmarshal(cmd.Data, &config)
-	}
+	}](cmd)
 
 	// Accept session_id from args
 	if len(cmd.Args) >= 1 {

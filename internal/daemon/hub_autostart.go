@@ -107,11 +107,9 @@ func (d *Daemon) hubHandleAutostartContinue(ctx context.Context, conn *hubpkg.Co
 // When nonInteractive is true, the "prompt" port-conflict policy falls back to
 // "skip" because there is no stdin for the interactive prompt.
 func (d *Daemon) hubHandleAutostartRun(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	var cfg protocol.AutostartRunConfig
-	if len(cmd.Data) > 0 {
-		if err := json.Unmarshal(cmd.Data, &cfg); err != nil {
-			return conn.WriteErr(hubproto.ErrInvalidArgs, "invalid JSON config")
-		}
+	cfg, err := unmarshalCommand[protocol.AutostartRunConfig](cmd)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, "invalid JSON config")
 	}
 	if cfg.ProjectPath == "" && len(cmd.Args) >= 1 {
 		cfg.ProjectPath = cmd.Args[0]

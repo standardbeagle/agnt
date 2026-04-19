@@ -28,17 +28,13 @@ func (d *Daemon) hubHandleTunnelStart(ctx context.Context, conn *hubpkg.Connecti
 
 	tunnelID := cmd.Args[0]
 
-	var config struct {
+	config, _ := unmarshalCommand[struct {
 		Provider   string `json:"provider"`
 		LocalPort  int    `json:"local_port"`
 		LocalHost  string `json:"local_host"`
 		ProxyID    string `json:"proxy_id"`
 		BinaryPath string `json:"binary_path"`
-	}
-
-	if len(cmd.Data) > 0 {
-		json.Unmarshal(cmd.Data, &config)
-	}
+	}](cmd)
 
 	if config.Provider == "" {
 		return conn.WriteErr(hubproto.ErrInvalidArgs, "provider is required")
@@ -147,10 +143,7 @@ func (d *Daemon) hubHandleTunnelStatus(conn *hubpkg.Connection, cmd *hubproto.Co
 
 func (d *Daemon) hubHandleTunnelList(conn *hubpkg.Connection, cmd *hubproto.Command) error {
 	// Parse filter from command data
-	var dirFilter hubproto.DirectoryFilter
-	if len(cmd.Data) > 0 {
-		json.Unmarshal(cmd.Data, &dirFilter)
-	}
+	dirFilter, _ := unmarshalCommand[hubproto.DirectoryFilter](cmd)
 
 	var infos []tunnel.TunnelInfo
 	if dirFilter.Global {

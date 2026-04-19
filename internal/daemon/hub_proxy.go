@@ -52,23 +52,20 @@ func (d *Daemon) hubHandleProxyStart(ctx context.Context, conn *hubpkg.Connectio
 	allowExternal := false
 	publicURL := ""
 	skipTLSVerify := false
-	if len(cmd.Data) > 0 {
-		var data struct {
-			Path          string `json:"path"`
-			BindAddress   string `json:"bind_address"`
-			AllowExternal bool   `json:"allow_external"`
-			PublicURL     string `json:"public_url"`
-			SkipTLSVerify bool   `json:"skip_tls_verify"`
+	if ext, err := unmarshalCommand[struct {
+		Path          string `json:"path"`
+		BindAddress   string `json:"bind_address"`
+		AllowExternal bool   `json:"allow_external"`
+		PublicURL     string `json:"public_url"`
+		SkipTLSVerify bool   `json:"skip_tls_verify"`
+	}](cmd); err == nil {
+		if ext.Path != "" {
+			path = ext.Path
 		}
-		if err := json.Unmarshal(cmd.Data, &data); err == nil {
-			if data.Path != "" {
-				path = data.Path
-			}
-			bindAddress = data.BindAddress
-			allowExternal = data.AllowExternal
-			publicURL = data.PublicURL
-			skipTLSVerify = data.SkipTLSVerify
-		}
+		bindAddress = ext.BindAddress
+		allowExternal = ext.AllowExternal
+		publicURL = ext.PublicURL
+		skipTLSVerify = ext.SkipTLSVerify
 	}
 
 	// Create proxy config
@@ -226,10 +223,7 @@ func proxyRuntimeStatus(stats proxy.ProxyStats) string {
 
 func (d *Daemon) hubHandleProxyList(conn *hubpkg.Connection, cmd *hubproto.Command) error {
 	// Parse filter from command data
-	var dirFilter hubproto.DirectoryFilter
-	if len(cmd.Data) > 0 {
-		json.Unmarshal(cmd.Data, &dirFilter)
-	}
+	dirFilter, _ := unmarshalCommand[hubproto.DirectoryFilter](cmd)
 
 	// Resolve filter path from session code or directory
 	filterPath := ""
@@ -357,13 +351,13 @@ func (d *Daemon) hubHandleProxyToast(conn *hubpkg.Connection, cmd *hubproto.Comm
 		return conn.WriteErr(hubproto.ErrInvalidArgs, "PROXY TOAST requires toast config")
 	}
 
-	var toast struct {
+	toast, err := unmarshalCommand[struct {
 		Message  string `json:"toast_message"`
 		Type     string `json:"toast_type"`
 		Title    string `json:"toast_title"`
 		Duration int    `json:"toast_duration"`
-	}
-	if err := json.Unmarshal(cmd.Data, &toast); err != nil {
+	}](cmd)
+	if err != nil {
 		debug.Log("daemon", "PROXY TOAST: failed to unmarshal: %v", err)
 		return conn.WriteErr(hubproto.ErrInvalidArgs, "invalid toast config: "+err.Error())
 	}
