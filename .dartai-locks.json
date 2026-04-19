@@ -1,3 +1,9 @@
 {
-  "claims": {}
+  "claims": {
+    "vWK9T0m6hYpT": {
+      "claimed_at": "2026-04-19T07:15:00Z",
+      "runner_instance_id": "beagle-ab2-855089",
+      "iteration": 5
+    }
+  }
 }
