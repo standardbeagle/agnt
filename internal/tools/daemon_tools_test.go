@@ -271,6 +271,53 @@ func TestGetProjectPath_WindowsCaseNormalization(t *testing.T) {
 	}
 }
 
+// TestProxyToolDescription_DiscoveryFirstOrder verifies that the shared proxy
+// tool description presents the discovery ladder (search → describe → code)
+// before raw lifecycle examples.
+func TestProxyToolDescription_DiscoveryFirstOrder(t *testing.T) {
+	desc := ProxyToolDescription
+
+	searchIdx := strings.Index(desc, "search:")
+	describeIdx := strings.Index(desc, "describe:")
+	codeIdx := strings.Index(desc, "code:")
+
+	if searchIdx < 0 {
+		t.Error(`ProxyToolDescription must contain exec search example (search:)`)
+	}
+	if describeIdx < 0 {
+		t.Error(`ProxyToolDescription must contain exec describe example (describe:)`)
+	}
+	if codeIdx < 0 {
+		t.Error(`ProxyToolDescription must contain exec code example (code:)`)
+	}
+
+	if searchIdx > describeIdx {
+		t.Errorf("search (%d) must appear before describe (%d) in description", searchIdx, describeIdx)
+	}
+	if describeIdx > codeIdx {
+		t.Errorf("describe (%d) must appear before code (%d) in description", describeIdx, codeIdx)
+	}
+}
+
+// TestProxyToolDescription_NoRawDevtoolCalls verifies that the description
+// does not contain bare __devtool.X(...) examples that encourage copy-paste
+// of raw API strings.
+func TestProxyToolDescription_NoRawDevtoolCalls(t *testing.T) {
+	desc := ProxyToolDescription
+	if strings.Contains(desc, "__devtool.") {
+		t.Error("ProxyToolDescription must not contain raw __devtool.X(...) examples; use discovery ladder instead")
+	}
+}
+
+// TestProxyToolDescription_LineLimit verifies the description stays within
+// the 80-line budget defined in the task spec.
+func TestProxyToolDescription_LineLimit(t *testing.T) {
+	lines := strings.Split(ProxyToolDescription, "\n")
+	if len(lines) > 80 {
+		t.Errorf("ProxyToolDescription has %d lines; must be ≤80", len(lines))
+	}
+}
+
 // TestDaemonTools_SessionCode tests the session code getter and setter.
 func TestDaemonTools_SessionCode(t *testing.T) {
 	dt := NewDaemonTools(dummyAutoStartConfig(), "1.0.0")
