@@ -1,6 +1,128 @@
 package tools
 
+import (
+	"sort"
+	"strings"
+)
+
 //go:generate go run ../../scripts/gen-apidocs.go -scripts ../proxy/scripts -out apidocs_gen.go
+
+// APISearchMatch is a compact entry returned by SearchAPIFunctions — just
+// enough for the caller to decide which function to describe next without
+// blowing the response budget on full parameter lists and examples.
+type APISearchMatch struct {
+	Name        string `json:"name"`
+	Signature   string `json:"signature"`
+	Category    string `json:"category"`
+	Description string `json:"description"`
+}
+
+// APISearchResult is the response shape for the proxy exec search action.
+type APISearchResult struct {
+	Matches   []APISearchMatch `json:"matches"`
+	Count     int              `json:"count"`
+	Truncated bool             `json:"truncated"`
+}
+
+// maxAPISearchResults caps the compact response so the AI agent never has
+// to scroll past 10 hits. If the user's query is that ambiguous, they can
+// refine with category or a more specific substring.
+const maxAPISearchResults = 10
+
+// matchTier ranks a single function against the lowercased query — lower
+// is better. Exact name match wins, then name-prefix, then name-contains,
+// then description/signature contains. This matters because substring
+// matching alone produces noisy ordering (e.g. a `click` query returning
+// `onInteraction` before `getLastClick` because it hit the description).
+func matchTier(fn APIFunction, q string) int {
+	name := strings.ToLower(fn.Name)
+	switch {
+	case name == q:
+		return 0
+	case strings.HasPrefix(name, q):
+		return 1
+	case strings.Contains(name, q):
+		return 2
+	case strings.Contains(strings.ToLower(fn.Description), q),
+		strings.Contains(strings.ToLower(fn.Signature), q):
+		return 3
+	}
+	return -1
+}
+
+// SearchAPIFunctions filters DevToolAPIFunctions by a case-insensitive
+// substring query across name, description, and signature, with an
+// optional category filter (exact, case-insensitive). Results are ranked
+// by match tier (exact > prefix > substring-in-name > substring-elsewhere)
+// then alphabetically by name, and capped at maxAPISearchResults. An
+// empty query with a category returns everything in that category (still
+// capped). Returns an empty Matches slice (not nil) when nothing matches.
+func SearchAPIFunctions(query, category string) APISearchResult {
+	q := strings.ToLower(strings.TrimSpace(query))
+	cat := strings.ToLower(strings.TrimSpace(category))
+
+	type scored struct {
+		fn   APIFunction
+		tier int
+	}
+	var hits []scored
+	for _, fn := range DevToolAPIFunctions {
+		if cat != "" && !strings.EqualFold(fn.Category, cat) {
+			continue
+		}
+		tier := 0
+		if q != "" {
+			tier = matchTier(fn, q)
+			if tier < 0 {
+				continue
+			}
+		}
+		hits = append(hits, scored{fn: fn, tier: tier})
+	}
+
+	sort.SliceStable(hits, func(i, j int) bool {
+		if hits[i].tier != hits[j].tier {
+			return hits[i].tier < hits[j].tier
+		}
+		return hits[i].fn.Name < hits[j].fn.Name
+	})
+
+	total := len(hits)
+	truncated := false
+	if total > maxAPISearchResults {
+		hits = hits[:maxAPISearchResults]
+		truncated = true
+	}
+
+	matches := make([]APISearchMatch, len(hits))
+	for i, h := range hits {
+		matches[i] = APISearchMatch{
+			Name:        h.fn.Name,
+			Signature:   h.fn.Signature,
+			Category:    h.fn.Category,
+			Description: truncateDescription(h.fn.Description),
+		}
+	}
+	return APISearchResult{
+		Matches:   matches,
+		Count:     len(matches),
+		Truncated: truncated,
+	}
+}
+
+// truncateDescription trims a description to its first sentence or 120
+// runes, whichever comes first. Keeps the compact response readable when
+// the generator picked up a multi-sentence JSDoc summary.
+func truncateDescription(desc string) string {
+	desc = strings.TrimSpace(desc)
+	if idx := strings.Index(desc, ". "); idx >= 0 && idx < 120 {
+		return desc[:idx+1]
+	}
+	if len(desc) > 120 {
+		return desc[:117] + "..."
+	}
+	return desc
+}
 
 // APIFunction describes a single function in the __devtool API.
 type APIFunction struct {
