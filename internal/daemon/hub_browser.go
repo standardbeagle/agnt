@@ -57,7 +57,7 @@ func (d *Daemon) hubHandleBrowserStart(ctx context.Context, conn *hubpkg.Connect
 
 	// If proxy_id is specified, use the proxy's URL
 	if config.ProxyID != "" {
-		proxyServer, err := d.getSessionScopedProxy(conn, config.ProxyID)
+		proxyServer, err := getSessionScoped(d, conn, config.ProxyID, d.proxym.GetWithPathFilter)
 		if err != nil {
 			// Proxy doesn't exist - need URL to auto-start
 			if url == "" {
@@ -143,7 +143,7 @@ func (d *Daemon) hubHandleBrowserStop(ctx context.Context, conn *hubpkg.Connecti
 	browserID := cmd.Args[0]
 
 	// Use session-scoped lookup to find the browser
-	b, err := d.getSessionScopedBrowser(conn, browserID)
+	b, err := getSessionScoped(d, conn, browserID, d.browserm.GetWithPathFilter)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
@@ -166,7 +166,7 @@ func (d *Daemon) hubHandleBrowserStatus(conn *hubpkg.Connection, cmd *hubproto.C
 	browserID := cmd.Args[0]
 
 	// Use session-scoped lookup to find the browser
-	b, err := d.getSessionScopedBrowser(conn, browserID)
+	b, err := getSessionScoped(d, conn, browserID, d.browserm.GetWithPathFilter)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}

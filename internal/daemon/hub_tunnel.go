@@ -71,7 +71,7 @@ func (d *Daemon) hubHandleTunnelStart(ctx context.Context, conn *hubpkg.Connecti
 
 	// Update proxy public URL if proxy_id specified
 	if config.ProxyID != "" {
-		if p, err := d.getSessionScopedProxy(conn, config.ProxyID); err == nil {
+		if p, err := getSessionScoped(d, conn, config.ProxyID, d.proxym.GetWithPathFilter); err == nil {
 			p.SetPublicURL(publicURL)
 		}
 	}
@@ -98,7 +98,7 @@ func (d *Daemon) hubHandleTunnelStop(ctx context.Context, conn *hubpkg.Connectio
 	tunnelID := cmd.Args[0]
 
 	// Use session-scoped lookup to find the tunnel
-	t, err := d.getSessionScopedTunnel(conn, tunnelID)
+	t, err := getSessionScoped(d, conn, tunnelID, d.tunnelm.GetWithPathFilter)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
@@ -121,7 +121,7 @@ func (d *Daemon) hubHandleTunnelStatus(conn *hubpkg.Connection, cmd *hubproto.Co
 	tunnelID := cmd.Args[0]
 
 	// Use session-scoped lookup to find the tunnel
-	t, err := d.getSessionScopedTunnel(conn, tunnelID)
+	t, err := getSessionScoped(d, conn, tunnelID, d.tunnelm.GetWithPathFilter)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}

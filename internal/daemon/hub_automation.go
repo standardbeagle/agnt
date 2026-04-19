@@ -13,16 +13,6 @@ import (
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
 )
 
-func (d *Daemon) getSessionScopedAutomationSession(conn *hubpkg.Connection, sessionID string) (*chromedp.AutomationSession, error) {
-	pathFilter := ""
-	if sessionCode := conn.SessionCode(); sessionCode != "" {
-		if session, ok := d.sessionRegistry.Get(sessionCode); ok {
-			pathFilter = session.ProjectPath
-		}
-	}
-	return d.sessionm.GetWithPathFilter(sessionID, pathFilter)
-}
-
 // hubHandleAutomation handles the AUTOMATION command for chromedp sessions.
 
 func (d *Daemon) hubHandleAutomation(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
@@ -73,7 +63,7 @@ func (d *Daemon) hubHandleAutomationStart(ctx context.Context, conn *hubpkg.Conn
 	// Determine proxy URL
 	var proxyURL string
 	if config.ProxyID != "" {
-		p, err := d.getSessionScopedProxy(conn, config.ProxyID)
+		p, err := getSessionScoped(d, conn, config.ProxyID, d.proxym.GetWithPathFilter)
 		if err != nil {
 			return conn.WriteErr(hubproto.ErrNotFound, fmt.Sprintf("proxy %q not found: %v", config.ProxyID, err))
 		}
@@ -127,7 +117,7 @@ func (d *Daemon) hubHandleAutomationStop(ctx context.Context, conn *hubpkg.Conne
 	sessionID := cmd.Args[0]
 
 	// Use session-scoped lookup
-	session, err := d.getSessionScopedAutomationSession(conn, sessionID)
+	session, err := getSessionScoped(d, conn, sessionID, d.sessionm.GetWithPathFilter)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
@@ -148,7 +138,7 @@ func (d *Daemon) hubHandleAutomationStatus(conn *hubpkg.Connection, cmd *hubprot
 
 	sessionID := cmd.Args[0]
 
-	session, err := d.getSessionScopedAutomationSession(conn, sessionID)
+	session, err := getSessionScoped(d, conn, sessionID, d.sessionm.GetWithPathFilter)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
@@ -255,7 +245,7 @@ func (d *Daemon) hubHandleAutomationScreenshot(ctx context.Context, conn *hubpkg
 		config.Type = "viewport"
 	}
 
-	session, err := d.getSessionScopedAutomationSession(conn, config.SessionID)
+	session, err := getSessionScoped(d, conn, config.SessionID, d.sessionm.GetWithPathFilter)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
@@ -346,7 +336,7 @@ func (d *Daemon) hubHandleAutomationNavigate(ctx context.Context, conn *hubpkg.C
 		return conn.WriteErr(hubproto.ErrInvalidArgs, "url required")
 	}
 
-	session, err := d.getSessionScopedAutomationSession(conn, config.SessionID)
+	session, err := getSessionScoped(d, conn, config.SessionID, d.sessionm.GetWithPathFilter)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
@@ -388,7 +378,7 @@ func (d *Daemon) hubHandleAutomationEvaluate(ctx context.Context, conn *hubpkg.C
 		return conn.WriteErr(hubproto.ErrInvalidArgs, "script required")
 	}
 
-	session, err := d.getSessionScopedAutomationSession(conn, config.SessionID)
+	session, err := getSessionScoped(d, conn, config.SessionID, d.sessionm.GetWithPathFilter)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
