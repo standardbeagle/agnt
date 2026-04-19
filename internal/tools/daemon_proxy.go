@@ -285,6 +285,13 @@ func (dt *DaemonTools) handleProxyExec(input ProxyInput) (*mcp.CallToolResult, P
 		return errorResult("code required for exec"), ProxyOutput{}, nil
 	}
 
+	// Scan for anti-pattern hints before execution (advisory only, never blocks).
+	// Default enabled; set hints: false to opt out.
+	var execHints []string
+	if input.Hints == nil || *input.Hints {
+		execHints = ScanForHints(input.Code)
+	}
+
 	result, err := dt.client.ProxyExec(input.ID, input.Code)
 	if err != nil {
 		return formatDaemonError(err, "proxy"), ProxyOutput{}, nil
@@ -310,6 +317,7 @@ func (dt *DaemonTools) handleProxyExec(input ProxyInput) (*mcp.CallToolResult, P
 		return nil, ProxyOutput{
 			Success:     true,
 			ExecutionID: execID,
+			ExecHints:   execHints,
 			Message: fmt.Sprintf(`JavaScript executed successfully.
 Result: Large response saved to file
 File: %s
@@ -322,6 +330,7 @@ Use the Read tool to view the full result.`, filePath, duration),
 	return nil, ProxyOutput{
 		Success:     true,
 		ExecutionID: execID,
+		ExecHints:   execHints,
 		Message:     fmt.Sprintf("JavaScript executed successfully.\nResult: %s\nDuration: %s", resultVal, duration),
 	}, nil
 }
