@@ -530,6 +530,21 @@ type AIConfig struct {
 	// See internal/agentadapter for the set of built-in adapters and
 	// docs/agent-adapters.md for a guide to adding a new one.
 	Adapters map[string]*AIAdapterConfig `kdl:"adapters"`
+	// HelpersCheatSheet controls whether the compact __devtool.*
+	// helpers cheat sheet is appended to the default system prompt.
+	// nil (the default) means "enabled"; set to an explicit false to
+	// omit the cheat sheet — useful when the agent is already primed
+	// via skill/prompt overrides and the extra ~40 lines are noise.
+	HelpersCheatSheet *bool `kdl:"helpers-cheat-sheet"`
+}
+
+// CheatSheetEnabled reports whether the helpers cheat sheet should be
+// included. Default is true; explicit false disables it.
+func (c *AIConfig) CheatSheetEnabled() bool {
+	if c == nil || c.HelpersCheatSheet == nil {
+		return true
+	}
+	return *c.HelpersCheatSheet
 }
 
 // AIAdapterConfig overrides the built-in behavior of a single

@@ -19,6 +19,7 @@ import (
 
 	"github.com/aymanbagabas/go-pty"
 	"github.com/spf13/cobra"
+	"github.com/standardbeagle/agnt/internal/agntprompt"
 	"github.com/standardbeagle/agnt/internal/aichannel"
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/daemon"
@@ -27,6 +28,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/pathutil"
 	"github.com/standardbeagle/agnt/internal/platform"
 	"github.com/standardbeagle/agnt/internal/protocol"
+	"github.com/standardbeagle/agnt/internal/tools"
 	"golang.org/x/sys/windows"
 	"golang.org/x/term"
 )
@@ -746,9 +748,19 @@ func buildAgntSystemPrompt(socketPath string) string {
 		socketPath = daemon.DefaultSocketPath()
 	}
 
+	// Cheat sheet is opt-outable via ai.helpers-cheat-sheet in .agnt.kdl.
+	// Loaded up-front so it participates in both the daemon-connected and
+	// fallback prompt paths below.
+	var cheatSheet string
+	if cwd, err := os.Getwd(); err == nil {
+		if cfg, err := config.LoadAgntConfig(cwd); err == nil && cfg.AI.CheatSheetEnabled() {
+			cheatSheet = "\n" + agntprompt.BuildCheatSheet(tools.DevToolAPIFunctions)
+		}
+	}
+
 	client := daemon.NewClient(daemon.WithSocketPath(socketPath))
 	if err := client.Connect(); err != nil {
-		return "You are running inside agnt, a tool that gives AI coding agents browser superpowers. The agnt MCP tools (proxy, proc, proxylog, etc.) are available for browser debugging, screenshots, and dev server management."
+		return "You are running inside agnt, a tool that gives AI coding agents browser superpowers. The agnt MCP tools (proxy, proc, proxylog, etc.) are available for browser debugging, screenshots, and dev server management." + cheatSheet
 	}
 	defer client.Close()
 
@@ -790,6 +802,7 @@ func buildAgntSystemPrompt(socketPath string) string {
 	}
 
 	sb.WriteString("Use agnt MCP tools (proxy, proc, proxylog, currentpage) for browser debugging, screenshots, JavaScript execution, and dev server management. Do NOT try to start processes or proxies that are already running.")
+	sb.WriteString(cheatSheet)
 
 	return sb.String()
 }
