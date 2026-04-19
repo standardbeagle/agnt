@@ -28,6 +28,9 @@ Current audit outputs have these limitations:
 | Highlight mechanism | Reuse `__devtool_overlay.highlight()` via selector | Already implemented, supports both selector and bounding box |
 | Implementation order | Pilot a11y → responsive → proxy exec audits → get_errors | A11y has the richest `fixable` array; get_errors has no DOM context |
 | Session persistence | Store selected IDs in `__devtool_audit_state` keyed by `auditName + url` | Simple, survives re-audit, cleared on navigation |
+| Sidebar open behavior | Auto-open on audit completion | Immediate visibility; user can close if intrusive |
+| Compact mode purpose | Lightweight LLM pre-processing for larger LLM | Unchanged from current behavior; summary only |
+| Multiple audits | Replace previous audit in sidebar | Focus on review-before-send workflow; history out of scope |
 
 ## Architecture
 
@@ -185,11 +188,12 @@ Instead of cramming audit details into the indicator panel's small tab area, the
 ```
 
 **Behavior:**
-- **Triggered by:** Audit completion, clicking an audit notification in the indicator, or calling `__devtool_audit_sidebar.show(report)`
+- **Triggered by:** Auto-opens on audit completion; also callable via `__devtool_audit_sidebar.show(report)`
 - **Width:** 380px fixed (wide enough for readable findings, narrow enough to leave room for content)
 - **Push behavior:** Adds `margin-left: 380px` to `<body>` or a wrapper element; restores on close
 - **Close:** `×` button or `Escape` key; body margin restored
 - **Coexists with indicator:** The floating indicator bug remains for status/notifications
+- **Multiple audits:** New audit replaces the previous one in the sidebar (no history/stack)
 
 ### Sidebar States
 
@@ -530,11 +534,9 @@ Returns the full `AuditReport` JSON with the standardized `findings` array:
 1. Add severity filtering (show/hide info/warning/error)
 2. Add "Select All" / "Select None" buttons
 3. Add group expand/collapse
-4. Add audit run history (list of past audits in session)
-5. Style sidebar to match existing indicator design language
-6. Add keyboard shortcuts (`Esc` to close sidebar, `H` to clear highlights)
-7. Make sidebar resizable (drag edge to resize)
-8. Test end-to-end: run audit → sidebar opens → select findings → highlight elements → send to fix → verify prompt
+4. Style sidebar to match existing indicator design language
+5. Add keyboard shortcuts (`Esc` to close sidebar, `H` to clear highlights)
+6. Test end-to-end: run audit → sidebar opens → select findings → highlight elements → send to fix → verify prompt
 
 ## Testing Strategy
 
