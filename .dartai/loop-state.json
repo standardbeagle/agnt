@@ -1,13 +1,14 @@
 {
   "iterations": 9,
   "spawns": 9,
-  "status": "running",
+  "status": "complete",
   "started_at": "2026-04-18T19:00:00Z",
   "last_iteration_at": "2026-04-19T01:45:00Z",
+  "completed_at": "2026-04-19T02:32:00Z",
   "last_subagent": "dartai:task-executor",
   "loop_task_id": "SZcgIavO18Mk",
   "dartboard": "Personal/agnt",
-  "runner_instance_id": "beagle-ab2-419131",
+  "runner_instance_id": "beagle-ab2-700641",
   "runner_email": "andybrummer@standardbeagle.com",
   "runner_dart_id": null,
   "tasks": [
@@ -70,7 +71,7 @@
       "files_changed": 7,
       "tests_added": 9,
       "plan_adjustments": 1,
-      "completion_summary": "Appended __devtool helpers cheat sheet (~15 helpers, 30 lines) to buildAgntSystemPrompt so every adapter (Claude flag, stdin, agnt ai REPL) gets identical content. New internal/agntprompt package with hardcoded PromotedFunctions slice (chose over @promote JSDoc route — list is small/stable/prompt-authoring, not API-authoring). Added ai.helpers-cheat-sheet KDL toggle (default true). Tests cover header presence, line budget, adapter parity, config toggle, and catalog drift. make test green; go vet clean; drift check passes.",
+      "completion_summary": "Appended __devtool helpers cheat sheet (~15 helpers, 30 lines) to buildAgntSystemPrompt so every adapter (Claude flag, stdin, agnt ai REPL) gets identical content. New internal/agntprompt package with hardcoded PromotedFunctions slice. Added ai.helpers-cheat-sheet KDL toggle (default true). Tests cover header presence, line budget, adapter parity, config toggle, and catalog drift. make test green; go vet clean; drift check passes.",
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
@@ -86,7 +87,7 @@
       "files_changed": 5,
       "tests_added": 14,
       "plan_adjustments": 1,
-      "completion_summary": "Added agnt hook check-bash / check-prompt / rules subcommands that redirect raw Bash (npm run dev, go run, kill, lsof, tail -f, curl localhost, grep error, ps|grep, ss/netstat) toward agnt MCP tools. New internal/hookrules package: 9 compiled built-in bash regexes + 2 prompt regexes, first-match-wins, sync.OnceValue compilation. KDL override via HookRulesConfig in .agnt.kdl (bash-patterns / prompt-patterns maps + bypass-env). Three bypass mechanisms: # agnt-allow inline marker, AGNT_HOOK_BYPASS env, .agnt.kdl scope guard. pre-tool-use event chains into check-bash inline on Bash payloads (exit 2 wins over telemetry). BenchmarkCheckBash = 233 ns/op (target <1ms). 11-row regression corpus + 10 CLI integration tests. docs/hook-rules.md documents ruleset, bypasses, KDL overrides, plugin wiring fragments for standardbeagle-tools marketplace.",
+      "completion_summary": "Added agnt hook check-bash / check-prompt / rules subcommands. New internal/hookrules package: 9 compiled built-in bash regexes + 2 prompt regexes. KDL override via HookRulesConfig. BenchmarkCheckBash = 233 ns/op. 11-row regression corpus + 10 CLI integration tests. docs/hook-rules.md.",
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
@@ -102,7 +103,7 @@
       "files_changed": 0,
       "tests_added": 0,
       "plan_adjustments": 0,
-      "completion_summary": "Verified that search+category params for proxy exec were fully implemented in a prior iteration. SearchAPIFunctions in apidocs.go, ProxyInput.Search/Category schema, validation in validate.go, handlers in daemon_proxy.go and proxy_tools.go, 11 tests in proxy_search_test.go. All acceptance criteria confirmed. make test + go vet clean.",
+      "completion_summary": "Verified that search+category params for proxy exec were fully implemented. make test + go vet clean.",
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
@@ -118,7 +119,7 @@
       "files_changed": 4,
       "tests_added": 3,
       "plan_adjustments": 0,
-      "completion_summary": "Rewrote proxy tool description for discovery-first workflow. New shared ProxyToolDescription const in proxy_description.go; both daemon_tools.go and proxy_tools.go reference it. Discovery ladder (search->describe->code) leads, lifecycle follows, raw __devtool examples removed. Three tests verify ordering, absence of raw calls, and 80-line budget.",
+      "completion_summary": "Rewrote proxy tool description for discovery-first workflow. New shared ProxyToolDescription const. Three tests verify ordering, absence of raw calls, and 80-line budget.",
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
@@ -134,7 +135,7 @@
       "files_changed": 4,
       "tests_added": 23,
       "plan_adjustments": 0,
-      "completion_summary": "Added anti-pattern hint scanner for proxy exec raw JS. New internal/tools/exec_hints.go with 10-rule table compiled once via sync.Once. ScanForHints returns advisory []string. ProxyInput.Hints *bool field (nil=true default). ProxyOutput.ExecHints []string appended when non-empty. Wired into both daemon_proxy.go and proxy_tools.go exec handlers. 23 tests: 10 positive + 10 negative per rule + multi-rule + empty input. make test green; go vet clean.",
+      "completion_summary": "Added anti-pattern hint scanner for proxy exec raw JS. New internal/tools/exec_hints.go with 10-rule table. ProxyInput.Hints *bool field (nil=true default). ProxyOutput.ExecHints []string. 23 tests. make test green; go vet clean.",
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
@@ -150,7 +151,7 @@
       "files_changed": 4,
       "tests_added": 6,
       "plan_adjustments": 1,
-      "completion_summary": "Added --password-store=basic to all Chromium launch paths (browser.go buildArgs and chromedp/session.go buildAllocatorOpts). Added --use-mock-keychain on darwin. Extracted buildAllocatorOpts helper for testability. 6 tests covering flag presence, platform guards, headless/proxy opt counts. make test + go vet clean.",
+      "completion_summary": "Added --password-store=basic to all Chromium launch paths. Added --use-mock-keychain on darwin. 6 tests. make test + go vet clean.",
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
