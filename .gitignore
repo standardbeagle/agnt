@@ -33,6 +33,11 @@ go.work
 **/.claude/dartai-*
 **/.claude/scheduled_tasks.lock
 
+# dartai local state (loop state, local config)
+.dartai/loop-state.json
+.dartai/config.local.md
+.dartai-locks.json
+
 # agnt runtime artifacts
 .agnt/
 **/.agnt/
