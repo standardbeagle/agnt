@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/config"
-	"github.com/standardbeagle/agnt/internal/debug"
 
 	hubpkg "github.com/standardbeagle/go-cli-server/hub"
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
@@ -48,14 +47,9 @@ func (d *Daemon) hubHandleScript(ctx context.Context, conn *hubpkg.Connection, c
 // or falls back to the connection's session project path.
 
 func (d *Daemon) resolveScriptProjectPath(conn *hubpkg.Connection, cmd *hubproto.Command) string {
-	var filter struct {
+	filter, _ := unmarshalCommand[struct {
 		Directory string `json:"directory"`
-	}
-	if len(cmd.Data) > 0 {
-		if err := json.Unmarshal(cmd.Data, &filter); err != nil {
-			debug.Warn("hub", "resolveScriptProjectPath: invalid JSON in command data: %v", err)
-		}
-	}
+	}](cmd)
 	if filter.Directory != "" {
 		return normalizePath(filter.Directory)
 	}
@@ -198,16 +192,10 @@ func (d *Daemon) hubHandleScriptOutput(conn *hubpkg.Connection, cmd *hubproto.Co
 	}
 
 	// Parse optional tail count from JSON data
-	tail := 0
-	if len(cmd.Data) > 0 {
-		var opts struct {
-			Tail int `json:"tail"`
-		}
-		if err := json.Unmarshal(cmd.Data, &opts); err != nil {
-			debug.Warn("hub", "hubHandleRunOutput: invalid JSON in command data: %v", err)
-		}
-		tail = opts.Tail
-	}
+	opts, _ := unmarshalCommand[struct {
+		Tail int `json:"tail"`
+	}](cmd)
+	tail := opts.Tail
 
 	allLines := entry.OutputLines()
 	total := len(allLines)

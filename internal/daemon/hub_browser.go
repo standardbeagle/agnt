@@ -25,17 +25,13 @@ func (d *Daemon) hubHandleBrowser(ctx context.Context, conn *hubpkg.Connection, 
 // hubHandleBrowserStart handles BROWSER START command.
 
 func (d *Daemon) hubHandleBrowserStart(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	var config struct {
+	config, _ := unmarshalCommand[struct {
 		ID         string `json:"id"`
 		URL        string `json:"url"`
 		ProxyID    string `json:"proxy_id"`
 		Headless   *bool  `json:"headless"`
 		BinaryPath string `json:"binary_path"`
-	}
-
-	if len(cmd.Data) > 0 {
-		json.Unmarshal(cmd.Data, &config)
-	}
+	}](cmd)
 
 	// Also accept ID from args for convenience
 	if config.ID == "" && len(cmd.Args) > 0 {
@@ -201,10 +197,7 @@ func (d *Daemon) hubHandleBrowserStatus(conn *hubpkg.Connection, cmd *hubproto.C
 
 func (d *Daemon) hubHandleBrowserList(conn *hubpkg.Connection, cmd *hubproto.Command) error {
 	// Parse filter from command data
-	var dirFilter hubproto.DirectoryFilter
-	if len(cmd.Data) > 0 {
-		json.Unmarshal(cmd.Data, &dirFilter)
-	}
+	dirFilter, _ := unmarshalCommand[hubproto.DirectoryFilter](cmd)
 
 	var infos []browser.Info
 	if dirFilter.Global {

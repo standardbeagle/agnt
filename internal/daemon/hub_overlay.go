@@ -25,13 +25,9 @@ func (d *Daemon) hubHandleOverlay(ctx context.Context, conn *hubpkg.Connection, 
 // hubHandleOverlaySet handles OVERLAY SET command.
 
 func (d *Daemon) hubHandleOverlaySet(conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	var config struct {
+	config, _ := unmarshalCommand[struct {
 		Endpoint string `json:"endpoint"`
-	}
-
-	if len(cmd.Data) > 0 {
-		json.Unmarshal(cmd.Data, &config)
-	}
+	}](cmd)
 
 	if config.Endpoint == "" {
 		return conn.WriteErr(hubproto.ErrInvalidArgs, "endpoint is required")
@@ -113,15 +109,12 @@ func (d *Daemon) hubHandleOverlayActivity(conn *hubpkg.Connection, cmd *hubproto
 // Broadcasts output preview lines to connected browsers via proxies.
 
 func (d *Daemon) hubHandleOverlayOutputPreview(conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	var payload struct {
+	payload, err := unmarshalCommand[struct {
 		Lines    []string `json:"lines"`
 		ProxyIDs []string `json:"proxy_ids"`
-	}
-
-	if len(cmd.Data) > 0 {
-		if err := json.Unmarshal(cmd.Data, &payload); err != nil {
-			return conn.WriteErr(hubproto.ErrInvalidArgs, "invalid payload")
-		}
+	}](cmd)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, "invalid payload")
 	}
 
 	if len(payload.Lines) == 0 {

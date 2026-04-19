@@ -58,9 +58,7 @@ func parseSessionRegisterArgs(cmd *hubproto.Command) (*Session, sessionRegisterM
 	code := cmd.Args[0]
 	overlayPath := cmd.Args[1]
 
-	if len(cmd.Data) > 0 {
-		json.Unmarshal(cmd.Data, &metadata)
-	}
+	metadata, _ = unmarshalCommand[sessionRegisterMetadata](cmd)
 
 	now := time.Now()
 	session := &Session{
@@ -399,14 +397,10 @@ func (d *Daemon) hubHandleSessionHeartbeat(conn *hubpkg.Connection, cmd *hubprot
 // SESSION LIST [-- <directory_filter_json>]
 
 func (d *Daemon) hubHandleSessionList(conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	var filter struct {
+	filter, _ := unmarshalCommand[struct {
 		Directory string `json:"directory"`
 		Global    bool   `json:"global"`
-	}
-
-	if len(cmd.Data) > 0 {
-		json.Unmarshal(cmd.Data, &filter)
-	}
+	}](cmd)
 
 	sessions := d.sessionRegistry.List(normalizePath(filter.Directory), filter.Global)
 
@@ -550,14 +544,10 @@ func (d *Daemon) hubHandleSessionCancel(conn *hubpkg.Connection, cmd *hubproto.C
 // SESSION TASKS [-- <directory_filter_json>]
 
 func (d *Daemon) hubHandleSessionTasks(conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	var filter struct {
+	filter, _ := unmarshalCommand[struct {
 		Directory string `json:"directory"`
 		Global    bool   `json:"global"`
-	}
-
-	if len(cmd.Data) > 0 {
-		json.Unmarshal(cmd.Data, &filter)
-	}
+	}](cmd)
 
 	tasks := d.scheduler.ListTasks(normalizePath(filter.Directory), filter.Global)
 
@@ -647,13 +637,10 @@ func (d *Daemon) hubHandleSessionURL(conn *hubpkg.Connection, cmd *hubproto.Comm
 
 	// Parse script name from data payload (default to "dev")
 	scriptName := "dev"
-	if len(cmd.Data) > 0 {
-		var data struct {
-			Script string `json:"script"`
-		}
-		if err := json.Unmarshal(cmd.Data, &data); err == nil && data.Script != "" {
-			scriptName = data.Script
-		}
+	if data, err := unmarshalCommand[struct {
+		Script string `json:"script"`
+	}](cmd); err == nil && data.Script != "" {
+		scriptName = data.Script
 	}
 
 	// Construct scriptID in the format: {basename}:{scriptName}

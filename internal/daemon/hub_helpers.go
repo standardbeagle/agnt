@@ -21,6 +21,21 @@ import (
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
 )
 
+// unmarshalCommand decodes cmd.Data into T. Returns zero value of T with nil
+// error when Data is empty (valid case — no config provided). Returns an error
+// when Data is non-empty but cannot be decoded.
+func unmarshalCommand[T any](cmd *hubproto.Command) (T, error) {
+	var zero T
+	if len(cmd.Data) == 0 {
+		return zero, nil
+	}
+	var v T
+	if err := json.Unmarshal(cmd.Data, &v); err != nil {
+		return zero, err
+	}
+	return v, nil
+}
+
 func writeErr(conn *hubpkg.Connection, code hubproto.ErrorCode, component, format string, args ...interface{}) error {
 	msg := fmt.Sprintf(format, args...)
 	debug.Log(component, "error: %s (code=%v)", msg, code)
