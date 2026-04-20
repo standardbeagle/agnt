@@ -35,6 +35,27 @@ func DefaultAlertPatterns() []*AlertPattern {
 			Category:    "dotnet",
 			Description: ".NET build failure",
 		},
+		{
+			ID:          "dotnet-watch-error",
+			Pattern:     regexp.MustCompile(`dotnet watch ❌`),
+			Severity:    AlertSeverityError,
+			Category:    "dotnet",
+			Description: "dotnet watch error (emoji prefix)",
+		},
+		{
+			ID:          "dotnet-watch-warning",
+			Pattern:     regexp.MustCompile(`dotnet watch ⚠`),
+			Severity:    AlertSeverityWarning,
+			Category:    "dotnet",
+			Description: "dotnet watch warning (emoji prefix)",
+		},
+		{
+			ID:          "dotnet-watch-restore-failed",
+			Pattern:     regexp.MustCompile(`dotnet watch 🔨.*Failed to`),
+			Severity:    AlertSeverityError,
+			Category:    "dotnet",
+			Description: "dotnet watch restore/build failure",
+		},
 
 		// Webpack
 		{
