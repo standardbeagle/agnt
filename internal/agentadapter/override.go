@@ -29,12 +29,17 @@ func (o *overriddenAdapter) BuildArgs(baseArgs []string, prompt string) []string
 	if o.override.Disabled {
 		return cloneArgs(baseArgs)
 	}
-	// For Claude the flag override needs to be honored. We detect a
-	// flag-capable adapter by trying to retype; other adapters ignore
-	// the flag field entirely (stdin-based agents have no equivalent).
+	// For flag-based adapters the FlagName override changes which CLI
+	// flag carries the prompt. Both claudeAdapter and kimiAdapter
+	// support this. stdin-based adapters ignore FlagName entirely.
 	if o.override.FlagName != "" {
 		if c, ok := o.inner.(*claudeAdapter); ok {
 			tmp := *c
+			tmp.flag = o.override.FlagName
+			return tmp.BuildArgs(baseArgs, prompt)
+		}
+		if k, ok := o.inner.(*kimiAdapter); ok {
+			tmp := *k
 			tmp.flag = o.override.FlagName
 			return tmp.BuildArgs(baseArgs, prompt)
 		}
