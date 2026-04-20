@@ -85,6 +85,7 @@ func validateProcInput(input ProcInput) error {
 		validateStringLen("script_name", input.ScriptName, maxIDLength),
 		validateStringLen("stream", input.Stream, maxIDLength),
 		validateStringLen("grep", input.Grep, maxGrepPattern),
+		validateStringLen("what", input.What, maxIDLength),
 		validatePort("port", input.Port),
 		validatePositiveLimit("tail", input.Tail, maxLimit),
 		validatePositiveLimit("head", input.Head, maxLimit),
