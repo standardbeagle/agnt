@@ -7,7 +7,28 @@
 
   var utils = window.__devtool_utils;
 
-  // Issue ID counter for unique IDs
+  /**
+   * Generate a stable 8-char hex finding ID from type, selector, and message.
+   * FNV-1a 32-bit hash — same inputs always produce same output across runs.
+   */
+  function computeFindingID(type, selector, message) {
+    var input = type + '\x00' + (selector || '') + '\x00' + (message || '');
+    var h = 0x811c9dc5;
+    for (var i = 0; i < input.length; i++) {
+      h = h ^ input.charCodeAt(i);
+      h = (h + (h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24)) >>> 0;
+    }
+    return ('00000000' + h.toString(16)).slice(-8);
+  }
+
+  function registerFinding(id, selector) {
+    if (!window.__devtool) { window.__devtool = {}; }
+    if (!window.__devtool.audit) { window.__devtool.audit = {}; }
+    if (!window.__devtool.audit.findingSelectors) { window.__devtool.audit.findingSelectors = {}; }
+    window.__devtool.audit.findingSelectors[id] = selector || '';
+  }
+
+  // Legacy: issue ID counter kept for backward-compat with any callers that don't use the id field.
   var issueIdCounter = 0;
   function generateIssueId(type) {
     issueIdCounter++;
@@ -345,14 +366,18 @@
       var level = parseInt(h.tagName.charAt(1));
 
       if (prevLevel > 0 && level > prevLevel + 1) {
+        var hSel = utils.generateSelector(h);
+        var hMsg = 'Heading level skipped: h' + prevLevel + ' to h' + level;
+        var hID = computeFindingID('heading-skip', hSel, hMsg);
+        registerFinding(hID, hSel);
         issues.push({
-          id: generateIssueId('heading-skip'),
+          id: hID,
           type: 'heading-skip',
           severity: 'warning',
           impact: 5,
-          selector: utils.generateSelector(h),
+          selector: hSel,
           element: truncateHtml(h),
-          message: 'Heading level skipped: h' + prevLevel + ' to h' + level,
+          message: hMsg,
           fix: 'Change to h' + (prevLevel + 1) + ' or add intermediate headings',
           wcag: '1.3.1'
         });
@@ -364,7 +389,7 @@
     var h1s = document.querySelectorAll('h1');
     if (h1s.length === 0) {
       issues.push({
-        id: generateIssueId('missing-h1'),
+        id: computeFindingID('missing-h1', 'body', 'Page has no h1 heading'),
         type: 'missing-h1',
         severity: 'error',
         impact: 7,
@@ -374,14 +399,18 @@
         wcag: '1.3.1'
       });
     } else if (h1s.length > 1) {
+      var h1MultiSel = utils.generateSelector(h1s[1]);
+      var h1MultiMsg = 'Page has ' + h1s.length + ' h1 headings (should have one)';
+      var h1MultiID = computeFindingID('multiple-h1', h1MultiSel, h1MultiMsg);
+      registerFinding(h1MultiID, h1MultiSel);
       issues.push({
-        id: generateIssueId('multiple-h1'),
+        id: h1MultiID,
         type: 'multiple-h1',
         severity: 'warning',
         impact: 3,
-        selector: utils.generateSelector(h1s[1]),
+        selector: h1MultiSel,
         element: truncateHtml(h1s[1]),
-        message: 'Page has ' + h1s.length + ' h1 headings (should have one)',
+        message: h1MultiMsg,
         fix: 'Keep only one h1 as the main page heading',
         wcag: '1.3.1'
       });
@@ -402,14 +431,18 @@
 
       for (var j = 0; j < badPhrases.length; j++) {
         if (text === badPhrases[j]) {
+          var ltSel = utils.generateSelector(link);
+          var ltMsg = 'Link text "' + text + '" is not descriptive';
+          var ltID = computeFindingID('non-descriptive-link', ltSel, ltMsg);
+          registerFinding(ltID, ltSel);
           issues.push({
-            id: generateIssueId('link-text'),
+            id: ltID,
             type: 'non-descriptive-link',
             severity: 'warning',
             impact: 4,
-            selector: utils.generateSelector(link),
+            selector: ltSel,
             element: truncateHtml(link),
-            message: 'Link text "' + text + '" is not descriptive',
+            message: ltMsg,
             fix: 'Use descriptive text that indicates the link destination',
             wcag: '2.4.4'
           });
@@ -429,13 +462,14 @@
     if (!skipLink) {
       var firstLink = document.querySelector('a[href]');
       if (firstLink && !firstLink.href.includes('#')) {
+        var skipMsg = 'No skip link to main content found';
         issues.push({
-          id: generateIssueId('skip-link'),
+          id: computeFindingID('missing-skip-link', 'body', skipMsg),
           type: 'missing-skip-link',
           severity: 'warning',
           impact: 5,
           selector: 'body',
-          message: 'No skip link to main content found',
+          message: skipMsg,
           fix: 'Add a skip link as the first focusable element: <a href="#main">Skip to main content</a>',
           wcag: '2.4.1'
         });
@@ -470,14 +504,18 @@
         for (var j = 0; j < required.length; j++) {
           var attr = required[j];
           if (!el.hasAttribute(attr)) {
+            var ariaSel = utils.generateSelector(el);
+            var ariaMsg = 'Element with role="' + role + '" missing required ' + attr;
+            var ariaID = computeFindingID('aria-missing-required', ariaSel, ariaMsg);
+            registerFinding(ariaID, ariaSel);
             issues.push({
-              id: generateIssueId('aria-missing'),
+              id: ariaID,
               type: 'aria-missing-required',
               severity: 'error',
               impact: 7,
-              selector: utils.generateSelector(el),
+              selector: ariaSel,
               element: truncateHtml(el),
-              message: 'Element with role="' + role + '" missing required ' + attr,
+              message: ariaMsg,
               fix: 'Add ' + attr + ' attribute with appropriate value',
               wcag: '4.1.2'
             });
@@ -491,14 +529,18 @@
     for (var k = 0; k < hiddenFocusable.length; k++) {
       var el = hiddenFocusable[k];
       if (!el.disabled && el.tabIndex >= 0) {
+        var ahfSel = utils.generateSelector(el);
+        var ahfMsg = 'Focusable element inside aria-hidden container';
+        var ahfID = computeFindingID('aria-hidden-focusable', ahfSel, ahfMsg);
+        registerFinding(ahfID, ahfSel);
         issues.push({
-          id: generateIssueId('aria-hidden-focus'),
+          id: ahfID,
           type: 'aria-hidden-focusable',
           severity: 'error',
           impact: 8,
-          selector: utils.generateSelector(el),
+          selector: ahfSel,
           element: truncateHtml(el),
-          message: 'Focusable element inside aria-hidden container',
+          message: ahfMsg,
           fix: 'Either remove aria-hidden from container or add tabindex="-1" to this element',
           wcag: '4.1.2'
         });
@@ -524,13 +566,17 @@
       var hasClose = modal.querySelector('[aria-label*="close"], [aria-label*="dismiss"], .close-button, .btn-close');
 
       if (focusable.length > 0 && !hasClose) {
+        var ktSel = utils.generateSelector(modal);
+        var ktMsg = 'Dialog may trap keyboard focus (no close button found)';
+        var ktID = computeFindingID('potential-keyboard-trap', ktSel, ktMsg);
+        registerFinding(ktID, ktSel);
         issues.push({
-          id: generateIssueId('keyboard-trap'),
+          id: ktID,
           type: 'potential-keyboard-trap',
           severity: 'warning',
           impact: 8,
-          selector: utils.generateSelector(modal),
-          message: 'Dialog may trap keyboard focus (no close button found)',
+          selector: ktSel,
+          message: ktMsg,
           fix: 'Ensure dialog has a close button and Escape key handler',
           wcag: '2.1.2'
         });
@@ -565,14 +611,18 @@
       var required = isLargeText ? 3 : 4.5;
 
       if (contrast.ratio < required) {
+        var ccSel = utils.generateSelector(el);
+        var ccMsg = 'Insufficient color contrast: ' + contrast.ratio.toFixed(2) + ':1 (requires ' + required + ':1)';
+        var ccID = computeFindingID('color-contrast', ccSel, ccMsg);
+        registerFinding(ccID, ccSel);
         issues.push({
-          id: generateIssueId('contrast'),
+          id: ccID,
           type: 'color-contrast',
           severity: 'error',
           impact: 7,
-          selector: utils.generateSelector(el),
+          selector: ccSel,
           element: truncateHtml(el),
-          message: 'Insufficient color contrast: ' + contrast.ratio.toFixed(2) + ':1 (requires ' + required + ':1)',
+          message: ccMsg,
           fix: 'Increase contrast between text (' + color + ') and background (' + bgColor + ')',
           wcag: '1.4.3',
           contrast: contrast.ratio,
@@ -603,14 +653,18 @@
       // Skip agnt/devtool UI elements
       if (utils.isDevtoolElement && utils.isDevtoolElement(img)) continue;
       if (!img.alt && !img.getAttribute('role')) {
+        var imgSel = utils.generateSelector(img);
+        var imgMsg = 'Image missing alt attribute';
+        var imgID = computeFindingID('missing-alt', imgSel, imgMsg);
+        registerFinding(imgID, imgSel);
         fixable.push({
-          id: generateIssueId('alt'),
+          id: imgID,
           type: 'missing-alt',
           severity: 'error',
           impact: 9,
-          selector: utils.generateSelector(img),
+          selector: imgSel,
           element: truncateHtml(img),
-          message: 'Image missing alt attribute',
+          message: imgMsg,
           fix: 'Add alt="[description of image]" attribute',
           wcag: '1.1.1'
         });
@@ -633,14 +687,18 @@
                      input.closest('label');
 
       if (!hasLabel) {
+        var inputSel = utils.generateSelector(input);
+        var inputMsg = 'Form input missing label';
+        var inputID = computeFindingID('missing-label', inputSel, inputMsg);
+        registerFinding(inputID, inputSel);
         fixable.push({
-          id: generateIssueId('label'),
+          id: inputID,
           type: 'missing-label',
           severity: 'error',
           impact: 8,
-          selector: utils.generateSelector(input),
+          selector: inputSel,
           element: truncateHtml(input),
-          message: 'Form input missing label',
+          message: inputMsg,
           fix: 'Add a <label> element or aria-label attribute',
           wcag: '1.3.1'
         });
@@ -656,14 +714,18 @@
       if (utils.isDevtoolElement && utils.isDevtoolElement(btn)) continue;
       var name = getAccessibleName(btn);
       if (!name) {
+        var btnSel = utils.generateSelector(btn);
+        var btnMsg = 'Button missing accessible name';
+        var btnID = computeFindingID('missing-button-name', btnSel, btnMsg);
+        registerFinding(btnID, btnSel);
         fixable.push({
-          id: generateIssueId('button'),
+          id: btnID,
           type: 'missing-button-name',
           severity: 'error',
           impact: 8,
-          selector: utils.generateSelector(btn),
+          selector: btnSel,
           element: truncateHtml(btn),
-          message: 'Button missing accessible name',
+          message: btnMsg,
           fix: 'Add text content, aria-label, or title attribute',
           wcag: '4.1.2'
         });
@@ -680,14 +742,18 @@
       var linkText = (link.textContent || '').trim();
       var linkName = getAccessibleName(link);
       if (!linkName && !linkText) {
+        var elSel = utils.generateSelector(link);
+        var elMsg = 'Link has no text content';
+        var elID = computeFindingID('empty-link', elSel, elMsg);
+        registerFinding(elID, elSel);
         fixable.push({
-          id: generateIssueId('link'),
+          id: elID,
           type: 'empty-link',
           severity: 'error',
           impact: 7,
-          selector: utils.generateSelector(link),
+          selector: elSel,
           element: truncateHtml(link),
-          message: 'Link has no text content',
+          message: elMsg,
           fix: 'Add descriptive text or aria-label',
           wcag: '2.4.4'
         });
@@ -720,20 +786,22 @@
 
     // Add informational items
     var focusableCount = document.querySelectorAll('a[href], button, input, select, textarea, [tabindex]:not([tabindex="-1"])').length;
+    var focusableMsg = focusableCount + ' focusable elements found';
     informational.push({
-      id: generateIssueId('info'),
+      id: computeFindingID('focusable-count', 'document', focusableMsg),
       type: 'focusable-count',
       severity: 'info',
-      message: focusableCount + ' focusable elements found',
+      message: focusableMsg,
       context: { count: focusableCount }
     });
 
     var landmarkCount = document.querySelectorAll('header, nav, main, aside, footer, [role="banner"], [role="navigation"], [role="main"], [role="complementary"], [role="contentinfo"]').length;
+    var landmarkMsg = landmarkCount + ' landmark regions found';
     informational.push({
-      id: generateIssueId('info'),
+      id: computeFindingID('landmark-count', 'document', landmarkMsg),
       type: 'landmark-count',
       severity: 'info',
-      message: landmarkCount + ' landmark regions found',
+      message: landmarkMsg,
       context: { count: landmarkCount }
     });
 
@@ -1037,15 +1105,18 @@
         violation.nodes.forEach(function(node) {
           var severity = violation.impact === 'critical' || violation.impact === 'serious' ? 'error' : 'warning';
           var impactScore = impactPenalty[violation.impact] || 5;
-
+          var axeSel = node.target.join(', ');
+          var axeMsg = violation.help;
+          var axeID = computeFindingID(violation.id, axeSel, axeMsg);
+          registerFinding(axeID, axeSel);
           fixable.push({
-            id: generateIssueId(violation.id),
+            id: axeID,
             type: violation.id,
             severity: severity,
             impact: impactScore,
-            selector: node.target.join(', '),
-            element: truncateHtml(null) || (node.html || '').substring(0, 100),
-            message: violation.help,
+            selector: axeSel,
+            element: (node.html || '').substring(0, 100),
+            message: axeMsg,
             fix: getFixInstruction(violation.id, node),
             wcag: wcagReferences[violation.id] || '',
             helpUrl: violation.helpUrl
@@ -1055,11 +1126,12 @@
 
       // Add incomplete items as informational
       results.incomplete.forEach(function(incomplete) {
+        var incompleteMsg = incomplete.help + ' (needs manual review)';
         informational.push({
-          id: generateIssueId(incomplete.id + '-incomplete'),
+          id: computeFindingID(incomplete.id + '-needs-review', 'document', incompleteMsg),
           type: incomplete.id + '-needs-review',
           severity: 'info',
-          message: incomplete.help + ' (needs manual review)',
+          message: incompleteMsg,
           context: {
             nodeCount: incomplete.nodes.length,
             description: incomplete.description
@@ -1069,11 +1141,12 @@
 
       // Add pass summary as informational
       if (results.passes.length > 0) {
+        var passMsg = results.passes.length + ' accessibility checks passed';
         informational.push({
-          id: generateIssueId('passes'),
+          id: computeFindingID('checks-passed', 'document', passMsg),
           type: 'checks-passed',
           severity: 'info',
-          message: results.passes.length + ' accessibility checks passed',
+          message: passMsg,
           context: { passedRules: results.passes.map(function(p) { return p.id; }) }
         });
       }
@@ -1187,14 +1260,18 @@
 
       if (hiddenOnFocus) {
         hiddenOnFocusCount++;
+        var fhSel = utils.generateSelector(el);
+        var fhMsg = 'Element is hidden when focused';
+        var fhID = computeFindingID('hidden-on-focus', fhSel, fhMsg);
+        registerFinding(fhID, fhSel);
         fixable.push({
-          id: generateIssueId('focus-hidden'),
+          id: fhID,
           type: 'hidden-on-focus',
           severity: 'error',
           impact: 9,
-          selector: utils.generateSelector(el),
+          selector: fhSel,
           element: truncateHtml(el),
-          message: 'Element is hidden when focused',
+          message: fhMsg,
           fix: 'Remove display:none, visibility:hidden, or opacity:0 from :focus styles',
           wcag: '2.4.7'
         });
@@ -1204,14 +1281,18 @@
       var baseOutline = window.getComputedStyle(el).outline;
       if (!hasFocusStyle && (baseOutline === 'none' || baseOutline === '0px none rgb(0, 0, 0)')) {
         noFocusIndicatorCount++;
+        var fiSel = utils.generateSelector(el);
+        var fiMsg = 'Element may lack visible focus indicator';
+        var fiID = computeFindingID('no-focus-indicator', fiSel, fiMsg);
+        registerFinding(fiID, fiSel);
         fixable.push({
-          id: generateIssueId('focus-indicator'),
+          id: fiID,
           type: 'no-focus-indicator',
           severity: 'warning',
           impact: 6,
-          selector: utils.generateSelector(el),
+          selector: fiSel,
           element: truncateHtml(el),
-          message: 'Element may lack visible focus indicator',
+          message: fiMsg,
           fix: 'Add :focus or :focus-visible styles with visible outline or border',
           wcag: '2.4.7'
         });
@@ -1234,19 +1315,21 @@
     }
 
     if (!hasLightMode && !hasDarkMode) {
+      var noSchemeMsg = 'No color scheme media queries detected (prefers-color-scheme)';
       informational.push({
-        id: generateIssueId('color-scheme'),
+        id: computeFindingID('no-color-scheme', 'stylesheets', noSchemeMsg),
         type: 'no-color-scheme',
         severity: 'info',
-        message: 'No color scheme media queries detected (prefers-color-scheme)',
+        message: noSchemeMsg,
         context: { recommendation: 'Consider adding dark mode support for user preference' }
       });
     } else {
+      var schemeMsg = 'Color scheme support: ' + (hasLightMode ? 'light ' : '') + (hasDarkMode ? 'dark' : '');
       informational.push({
-        id: generateIssueId('color-scheme'),
+        id: computeFindingID('color-scheme-support', 'stylesheets', schemeMsg),
         type: 'color-scheme-support',
         severity: 'info',
-        message: 'Color scheme support: ' + (hasLightMode ? 'light ' : '') + (hasDarkMode ? 'dark' : ''),
+        message: schemeMsg,
         context: { light: hasLightMode, dark: hasDarkMode }
       });
     }
@@ -1468,11 +1551,12 @@
     // Flag cross-origin stylesheets as informational
     for (var i = 0; i < index.crossOriginSheets.length; i++) {
       var sheet = index.crossOriginSheets[i];
+      var cssAccessMsg = 'Cannot analyze cross-origin stylesheet: ' + sheet.href;
       informational.push({
-        id: generateIssueId('css-access'),
+        id: computeFindingID('cross-origin-stylesheet', sheet.href || 'external', cssAccessMsg),
         type: 'cross-origin-stylesheet',
         severity: 'info',
-        message: 'Cannot analyze cross-origin stylesheet: ' + sheet.href,
+        message: cssAccessMsg,
         context: { href: sheet.href }
       });
     }
@@ -1519,14 +1603,17 @@
       var requiredRatio = isLargeText ? largeThreshold : normalThreshold;
 
       if (baseContrast.ratio < requiredRatio) {
+        var baseMsg = 'Insufficient contrast in default state: ' + baseContrast.ratio.toFixed(2) + ':1';
+        var baseID = computeFindingID('color-contrast', selector, baseMsg);
+        registerFinding(baseID, selector);
         fixable.push({
-          id: generateIssueId('contrast'),
+          id: baseID,
           type: 'color-contrast',
           severity: 'error',
           impact: 8,
           selector: selector,
           element: truncateHtml(el),
-          message: 'Insufficient contrast in default state: ' + baseContrast.ratio.toFixed(2) + ':1',
+          message: baseMsg,
           fix: 'Increase contrast between ' + baseColor + ' and ' + baseBg + ' to at least ' + requiredRatio + ':1',
           wcag: '1.4.3',
           contrast: baseContrast.ratio,
@@ -1546,14 +1633,17 @@
             focusBg !== 'rgba(0, 0, 0, 0)' && focusBg !== 'transparent') {
           var focusContrast = getContrast(focusColor, focusBg);
           if (focusContrast.ratio < requiredRatio) {
+            var focusMsg = 'Insufficient contrast in focus state: ' + focusContrast.ratio.toFixed(2) + ':1';
+            var focusID = computeFindingID('color-contrast-focus', selector, focusMsg);
+            registerFinding(focusID, selector);
             fixable.push({
-              id: generateIssueId('contrast-focus'),
+              id: focusID,
               type: 'color-contrast-focus',
               severity: 'error',
               impact: 7,
               selector: selector,
               element: truncateHtml(el),
-              message: 'Insufficient contrast in focus state: ' + focusContrast.ratio.toFixed(2) + ':1',
+              message: focusMsg,
               fix: 'Increase focus state contrast to at least ' + requiredRatio + ':1',
               wcag: '1.4.3'
             });
@@ -1563,13 +1653,16 @@
         if (focusOutline && focusBg && focusBg !== 'rgba(0, 0, 0, 0)') {
           var outlineContrast = getContrast(focusOutline, focusBg);
           if (outlineContrast.ratio < 3) {
+            var outlineMsg = 'Focus outline contrast too low: ' + outlineContrast.ratio.toFixed(2) + ':1 (min 3:1)';
+            var outlineID = computeFindingID('focus-outline-contrast', selector, outlineMsg);
+            registerFinding(outlineID, selector);
             fixable.push({
-              id: generateIssueId('focus-outline'),
+              id: outlineID,
               type: 'focus-outline-contrast',
               severity: 'error',
               impact: 7,
               selector: selector,
-              message: 'Focus outline contrast too low: ' + outlineContrast.ratio.toFixed(2) + ':1 (min 3:1)',
+              message: outlineMsg,
               fix: 'Use a focus outline color with at least 3:1 contrast against background',
               wcag: '2.4.7'
             });
@@ -1588,11 +1681,12 @@
         });
 
         if (inactiveQueries.length > 0 && fixable.length < 5) { // Only add a few
+          var untestedMsg = 'Element has ' + inactiveQueries.length + ' untested responsive style(s)';
           informational.push({
-            id: generateIssueId('untested'),
+            id: computeFindingID('untested-media-query', selector, untestedMsg),
             type: 'untested-media-query',
             severity: 'info',
-            message: 'Element has ' + inactiveQueries.length + ' untested responsive style(s)',
+            message: untestedMsg,
             context: {
               selector: selector,
               queries: inactiveQueries.slice(0, 3) // Limit for token efficiency
@@ -1609,11 +1703,12 @@
       });
 
       if (untested.length > 0) {
+        var vpMsg = 'Re-run audit at these viewport widths for full coverage: ' + untested.slice(0, 5).join(', ') + 'px';
         informational.push({
-          id: generateIssueId('recommendation'),
+          id: computeFindingID('viewport-testing-needed', 'document', vpMsg),
           type: 'viewport-testing-needed',
           severity: 'info',
-          message: 'Re-run audit at these viewport widths for full coverage: ' + untested.slice(0, 5).join(', ') + 'px',
+          message: vpMsg,
           context: { breakpoints: untested }
         });
       }
@@ -1622,11 +1717,12 @@
     if (index.discoveredColorSchemes.length > 0) {
       var untestedSchemes = index.discoveredColorSchemes.filter(function(s) { return s !== currentScheme; });
       if (untestedSchemes.length > 0) {
+        var schemeTestMsg = 'Re-run audit in ' + untestedSchemes.join(', ') + ' mode for full coverage';
         informational.push({
-          id: generateIssueId('recommendation'),
+          id: computeFindingID('color-scheme-testing-needed', 'document', schemeTestMsg),
           type: 'color-scheme-testing-needed',
           severity: 'info',
-          message: 'Re-run audit in ' + untestedSchemes.join(', ') + ' mode for full coverage',
+          message: schemeTestMsg,
           context: { currentScheme: currentScheme, untestedSchemes: untestedSchemes }
         });
       }

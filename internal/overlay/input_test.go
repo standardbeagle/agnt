@@ -512,6 +512,20 @@ func TestParseWin32Delete(t *testing.T) {
 	}
 }
 
+func TestParseWin32BackspaceTranslatesToDEL(t *testing.T) {
+	// VK_BACK (0x08) with uc=0x08 (\b) must be translated to \x7f (DEL).
+	// Windows Terminal sends \b for Backspace in win32-input-mode, but
+	// readline/terminal apps expect \x7f. Without this translation the child
+	// process may interpret \b as Ctrl+H and trigger word-delete instead of
+	// single-character delete.
+	seq := buildWin32Seq(0x08, 14, 0x08, 1, 0, 1) // VK_BACK, sc=14, uc=0x08
+	got, _ := parseWin32InputModeInternal(seq)
+	want := []byte{0x7f}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("expected \\x7f (DEL), got %v", got)
+	}
+}
+
 func TestParseWin32KeyUpIgnored(t *testing.T) {
 	// Key-up events (kd=0) should produce no output
 	seq := buildWin32Seq(0x26, 0, 0, 0, 0, 1)

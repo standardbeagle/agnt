@@ -5,6 +5,27 @@
 
   var utils = window.__devtool_utils;
 
+  /**
+   * Generate a stable 8-char hex finding ID from type, selector, and message.
+   * FNV-1a 32-bit hash — same inputs always produce same output across runs.
+   */
+  function computeFindingID(type, selector, message) {
+    var input = type + '\x00' + (selector || '') + '\x00' + (message || '');
+    var h = 0x811c9dc5;
+    for (var i = 0; i < input.length; i++) {
+      h = h ^ input.charCodeAt(i);
+      h = (h + (h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24)) >>> 0;
+    }
+    return ('00000000' + h.toString(16)).slice(-8);
+  }
+
+  function registerFinding(id, selector) {
+    if (!window.__devtool) { window.__devtool = {}; }
+    if (!window.__devtool.audit) { window.__devtool.audit = {}; }
+    if (!window.__devtool.audit.findingSelectors) { window.__devtool.audit.findingSelectors = {}; }
+    window.__devtool.audit.findingSelectors[id] = selector || '';
+  }
+
   // Options:
   //   detailLevel: 'summary' | 'compact' (default) | 'full'
   //   maxIssues: number (default: 20)
@@ -62,32 +83,35 @@
 
     if (!title) {
       score -= 10;
+      var titleMissingMsg = 'Add a descriptive page title';
       fixable.push({
-        id: 'title-missing-1',
+        id: computeFindingID('missing-title', 'head > title', titleMissingMsg),
         type: 'missing-title',
         severity: 'error',
         impact: 10,
-        fix: 'Add a descriptive page title'
+        fix: titleMissingMsg
       });
-      actions.push('Add a descriptive page title');
+      actions.push(titleMissingMsg);
     } else if (titleLength < 30) {
       score -= 3;
+      var titleShortMsg = 'Title is ' + titleLength + ' chars (optimal: 50-60)';
       informational.push({
-        id: 'title-short-1',
+        id: computeFindingID('title-length', 'head > title', titleShortMsg),
         type: 'title-length',
         severity: 'info',
-        message: 'Title is ' + titleLength + ' chars (optimal: 50-60)',
+        message: titleShortMsg,
         current: titleLength,
         optimal: '50-60'
       });
     } else if (titleLength > 60) {
       score -= 2;
       meta.title.issue = 'too long';
+      var titleLongMsg = 'Title is ' + titleLength + ' chars (optimal: 50-60)';
       informational.push({
-        id: 'title-long-1',
+        id: computeFindingID('title-length', 'head > title', titleLongMsg),
         type: 'title-length',
         severity: 'info',
-        message: 'Title is ' + titleLength + ' chars (optimal: 50-60)',
+        message: titleLongMsg,
         current: titleLength,
         optimal: '50-60'
       });
@@ -108,22 +132,24 @@
       if (descLength < 120) {
         score -= 2;
         meta.description.issue = 'too short';
+        var descShortMsg = 'Meta description is ' + descLength + ' chars (optimal: 150-160)';
         informational.push({
-          id: 'desc-short-1',
+          id: computeFindingID('meta-description-length', 'meta[name="description"]', descShortMsg),
           type: 'meta-description-length',
           severity: 'info',
-          message: 'Meta description is ' + descLength + ' chars (optimal: 150-160)',
+          message: descShortMsg,
           current: descLength,
           optimal: '150-160'
         });
       } else if (descLength > 160) {
         score -= 2;
         meta.description.issue = 'too long';
+        var descLongMsg = 'Meta description is ' + descLength + ' chars (optimal: 150-160)';
         informational.push({
-          id: 'desc-long-1',
+          id: computeFindingID('meta-description-length', 'meta[name="description"]', descLongMsg),
           type: 'meta-description-length',
           severity: 'info',
-          message: 'Meta description is ' + descLength + ' chars (optimal: 150-160)',
+          message: descLongMsg,
           current: descLength,
           optimal: '150-160'
         });
@@ -132,14 +158,15 @@
     } else {
       score -= 5;
       meta.description = { present: false };
+      var descMissingMsg = 'Add meta description (150-160 chars)';
       fixable.push({
-        id: 'desc-missing-1',
+        id: computeFindingID('missing-description', 'meta[name="description"]', descMissingMsg),
         type: 'missing-description',
         severity: 'warning',
         impact: 5,
-        fix: 'Add meta description (150-160 chars)'
+        fix: descMissingMsg
       });
-      actions.push('Add meta description (150-160 chars)');
+      actions.push(descMissingMsg);
     }
 
     // Canonical URL
@@ -154,7 +181,7 @@
       };
       if (!selfReferencing) {
         informational.push({
-          id: 'canonical-external-1',
+          id: computeFindingID('canonical-external', 'link[rel="canonical"]', 'Canonical URL points to different page'),
           type: 'canonical-external',
           severity: 'info',
           message: 'Canonical URL points to different page',
@@ -165,14 +192,15 @@
     } else {
       score -= 3;
       meta.canonical = { present: false };
+      var canonicalMissingMsg = 'Add canonical link tag';
       fixable.push({
-        id: 'canonical-missing-1',
+        id: computeFindingID('missing-canonical', 'link[rel="canonical"]', canonicalMissingMsg),
         type: 'missing-canonical',
         severity: 'warning',
         impact: 3,
-        fix: 'Add canonical link tag'
+        fix: canonicalMissingMsg
       });
-      actions.push('Add canonical link tag');
+      actions.push(canonicalMissingMsg);
     }
 
     // Robots meta
@@ -181,7 +209,7 @@
       meta.robots = { present: true, value: robots };
       if (robots.indexOf('noindex') !== -1) {
         informational.push({
-          id: 'robots-noindex-1',
+          id: computeFindingID('robots-noindex', 'meta[name="robots"]', 'Page is set to noindex'),
           type: 'robots-noindex',
           severity: 'info',
           message: 'Page is set to noindex'
@@ -198,12 +226,13 @@
     } else {
       score -= 8;
       meta.viewport = { present: false };
+      var viewportMsg = 'Add viewport meta tag: <meta name="viewport" content="width=device-width, initial-scale=1">';
       fixable.push({
-        id: 'viewport-missing-1',
+        id: computeFindingID('missing-viewport', 'meta[name="viewport"]', viewportMsg),
         type: 'missing-viewport',
         severity: 'error',
         impact: 8,
-        fix: 'Add viewport meta tag: <meta name="viewport" content="width=device-width, initial-scale=1">'
+        fix: viewportMsg
       });
       actions.push('Add viewport meta tag for mobile optimization');
     }
@@ -243,13 +272,14 @@
     if (ogMissing.length > 0) {
       var ogImpact = Math.min(ogMissing.length * 2, 8);
       score -= ogImpact;
+      var ogMsg = 'Add Open Graph meta tags: ' + ogMissing.join(', ');
       fixable.push({
-        id: 'og-missing-1',
+        id: computeFindingID('missing-og-tags', 'meta[property]', ogMsg),
         type: 'missing-og-tags',
         severity: 'warning',
         impact: ogImpact,
         missing: ogMissing,
-        fix: 'Add Open Graph meta tags: ' + ogMissing.join(', ')
+        fix: ogMsg
       });
       actions.push('Add Open Graph meta tags for social sharing (' + ogMissing.join(', ') + ')');
     }
@@ -277,13 +307,14 @@
     if (twitterMissing.length > 0) {
       var twitterImpact = Math.min(twitterMissing.length * 2, 6);
       score -= twitterImpact;
+      var twitterMsg = 'Add Twitter Card meta tags: ' + twitterMissing.join(', ');
       fixable.push({
-        id: 'twitter-missing-1',
+        id: computeFindingID('missing-twitter-tags', 'meta[name^="twitter:"]', twitterMsg),
         type: 'missing-twitter-tags',
         severity: 'warning',
         impact: twitterImpact,
         missing: twitterMissing,
-        fix: 'Add Twitter Card meta tags: ' + twitterMissing.join(', ')
+        fix: twitterMsg
       });
       actions.push('Add Twitter Card meta tags (' + twitterMissing.join(', ') + ')');
     }
@@ -312,23 +343,25 @@
           }
         } catch (e) {
           structuredData.valid = false;
+          var sdInvalidMsg = 'Fix malformed JSON-LD structured data';
           fixable.push({
-            id: 'structured-data-invalid-1',
+            id: computeFindingID('invalid-structured-data', 'script[type="application/ld+json"]', sdInvalidMsg),
             type: 'invalid-structured-data',
             severity: 'error',
             impact: 5,
-            fix: 'Fix malformed JSON-LD structured data'
+            fix: sdInvalidMsg
           });
-          actions.push('Fix malformed JSON-LD structured data');
+          actions.push(sdInvalidMsg);
           score -= 5;
         }
       }
     } else {
+      var sdMissingMsg = 'No JSON-LD structured data found (recommended for rich results)';
       informational.push({
-        id: 'structured-data-missing-1',
+        id: computeFindingID('missing-structured-data', 'script[type="application/ld+json"]', sdMissingMsg),
         type: 'missing-structured-data',
         severity: 'info',
-        message: 'No JSON-LD structured data found (recommended for rich results)'
+        message: sdMissingMsg
       });
     }
 
@@ -356,35 +389,38 @@
     var h1Count = document.querySelectorAll('h1').length;
     if (h1Count === 0) {
       score -= 5;
+      var h1MissingMsg = 'Add H1 heading to page';
       fixable.push({
-        id: 'h1-missing-1',
+        id: computeFindingID('missing-h1', 'h1', h1MissingMsg),
         type: 'missing-h1',
         severity: 'warning',
         impact: 5,
-        fix: 'Add H1 heading to page'
+        fix: h1MissingMsg
       });
-      actions.push('Add H1 heading to page');
+      actions.push(h1MissingMsg);
     } else if (h1Count > 1) {
       score -= 2;
+      var h1MultiMsg = 'Multiple H1 headings found (' + h1Count + ')';
       informational.push({
-        id: 'h1-multiple-1',
+        id: computeFindingID('multiple-h1', 'h1', h1MultiMsg),
         type: 'multiple-h1',
         severity: 'info',
-        message: 'Multiple H1 headings found (' + h1Count + ')',
+        message: h1MultiMsg,
         count: h1Count
       });
     }
 
     if (!headingValid) {
       score -= 3;
+      var headingMsg = 'Fix heading hierarchy (no skipped levels)';
       fixable.push({
-        id: 'heading-hierarchy-1',
+        id: computeFindingID('heading-hierarchy', 'h1,h2,h3,h4,h5,h6', headingMsg),
         type: 'heading-hierarchy',
         severity: 'warning',
         impact: 3,
-        fix: 'Fix heading hierarchy (no skipped levels)'
+        fix: headingMsg
       });
-      actions.push('Fix heading hierarchy (no skipped levels)');
+      actions.push(headingMsg);
     }
 
     // Alt text coverage
@@ -396,14 +432,18 @@
     if (missingAlt > 0) {
       var altImpact = Math.min(missingAlt * 2, 10);
       score -= altImpact;
+      var altSel = 'img:not([alt])';
+      var altMsg = 'Add descriptive alt text to ' + missingAlt + ' image' + (missingAlt > 1 ? 's' : '');
+      var altID = computeFindingID('missing-alt', altSel, altMsg);
+      registerFinding(altID, altSel);
       fixable.push({
-        id: 'alt-missing-1',
+        id: altID,
         type: 'missing-alt',
         severity: 'warning',
         impact: altImpact,
-        selector: 'img:not([alt])',
+        selector: altSel,
         count: missingAlt,
-        fix: 'Add descriptive alt text to ' + missingAlt + ' image' + (missingAlt > 1 ? 's' : '')
+        fix: altMsg
       });
       actions.push('Add alt text to ' + missingAlt + ' image' + (missingAlt > 1 ? 's' : ''));
     }
@@ -428,15 +468,20 @@
     if (genericLinks.length > 0) {
       var linkImpact = Math.min(genericLinks.length, 5);
       score -= linkImpact;
+      var linkMsg = 'Improve generic link text (' + genericLinks.length + ' instance' + (genericLinks.length > 1 ? 's' : '') + ')';
+      var linkSel = 'a[href]';
+      var linkID = computeFindingID('generic-link-text', linkSel, linkMsg);
+      registerFinding(linkID, linkSel);
       fixable.push({
-        id: 'generic-links-1',
+        id: linkID,
         type: 'generic-link-text',
         severity: 'warning',
         impact: linkImpact,
+        selector: linkSel,
         count: genericLinks.length,
-        fix: 'Improve generic link text (' + genericLinks.length + ' instance' + (genericLinks.length > 1 ? 's' : '') + ')'
+        fix: linkMsg
       });
-      actions.push('Improve generic link text (' + genericLinks.length + ' instance' + (genericLinks.length > 1 ? 's' : '') + ')');
+      actions.push(linkMsg);
     }
 
     // Content-to-code ratio (rough estimate)
@@ -447,11 +492,12 @@
 
     if (contentRatio < 10 && textLength > 100) {
       score -= 3;
+      var ratioMsg = 'Low content-to-code ratio (' + contentRatio + '%)';
       informational.push({
-        id: 'content-ratio-low-1',
+        id: computeFindingID('low-content-ratio', 'body', ratioMsg),
         type: 'low-content-ratio',
         severity: 'info',
-        message: 'Low content-to-code ratio (' + contentRatio + '%)',
+        message: ratioMsg,
         ratio: contentRatio
       });
     }
@@ -480,14 +526,15 @@
     // Language attribute
     if (!document.documentElement.lang) {
       score -= 4;
+      var langMsg = 'Add lang attribute to <html> element';
       fixable.push({
-        id: 'lang-missing-1',
+        id: computeFindingID('missing-lang', 'html', langMsg),
         type: 'missing-lang',
         severity: 'warning',
         impact: 4,
-        fix: 'Add lang attribute to <html> element'
+        fix: langMsg
       });
-      actions.push('Add lang attribute to <html> element');
+      actions.push(langMsg);
     }
 
     // Crawlable links
@@ -498,16 +545,20 @@
     if (totalUncrawlable > 0) {
       var crawlImpact = Math.min(totalUncrawlable, 5);
       score -= crawlImpact;
+      var crawlSel = 'a[href^="javascript:"], a[href="#"]';
+      var crawlMsg = 'Replace ' + totalUncrawlable + ' non-crawlable link' + (totalUncrawlable > 1 ? 's' : '') + ' with proper URLs';
+      var crawlID = computeFindingID('uncrawlable-links', crawlSel, crawlMsg);
+      registerFinding(crawlID, crawlSel);
       fixable.push({
-        id: 'uncrawlable-links-1',
+        id: crawlID,
         type: 'uncrawlable-links',
         severity: 'warning',
         impact: crawlImpact,
-        selector: 'a[href^="javascript:"], a[href="#"]',
+        selector: crawlSel,
         count: totalUncrawlable,
-        fix: 'Replace ' + totalUncrawlable + ' non-crawlable link' + (totalUncrawlable > 1 ? 's' : '') + ' with proper URLs'
+        fix: crawlMsg
       });
-      actions.push('Replace ' + totalUncrawlable + ' non-crawlable link' + (totalUncrawlable > 1 ? 's' : '') + ' with proper URLs');
+      actions.push(crawlMsg);
     }
 
     // Image optimization hints
@@ -516,11 +567,12 @@
     var lazyPercentage = images.length > 0 ? Math.round((lazyImages.length / images.length) * 100) : 0;
 
     if (images.length > 5 && lazyPercentage < 50) {
+      var lazyMsg = 'Only ' + lazyPercentage + '% of images use lazy loading';
       informational.push({
-        id: 'lazy-loading-low-1',
+        id: computeFindingID('low-lazy-loading', 'img', lazyMsg),
         type: 'low-lazy-loading',
         severity: 'info',
-        message: 'Only ' + lazyPercentage + '% of images use lazy loading',
+        message: lazyMsg,
         percentage: lazyPercentage
       });
     }

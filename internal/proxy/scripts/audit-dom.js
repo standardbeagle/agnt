@@ -5,6 +5,27 @@
 
   var utils = window.__devtool_utils;
 
+  /**
+   * Generate a stable 8-char hex finding ID from type, selector, and message.
+   * FNV-1a 32-bit hash — same inputs always produce same output across runs.
+   */
+  function computeFindingID(type, selector, message) {
+    var input = type + '\x00' + (selector || '') + '\x00' + (message || '');
+    var h = 0x811c9dc5;
+    for (var i = 0; i < input.length; i++) {
+      h = h ^ input.charCodeAt(i);
+      h = (h + (h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24)) >>> 0;
+    }
+    return ('00000000' + h.toString(16)).slice(-8);
+  }
+
+  function registerFinding(id, selector) {
+    if (!window.__devtool) { window.__devtool = {}; }
+    if (!window.__devtool.audit) { window.__devtool.audit = {}; }
+    if (!window.__devtool.audit.findingSelectors) { window.__devtool.audit.findingSelectors = {}; }
+    window.__devtool.audit.findingSelectors[id] = selector || '';
+  }
+
   // Options:
   //   detailLevel: 'summary' | 'compact' (default) | 'full'
   //   raw: boolean - if true, returns verbose detailed format (default: false, returns AI-optimized format)
@@ -116,7 +137,6 @@
     var fixable = [];
     var informational = [];
     var hotspots = [];
-    var issueId = 0;
 
     // 1. Duplicate IDs
     var ids = {};
@@ -141,12 +161,17 @@
           var context = parent ? ' (' + getSelector(parent) + ')' : '';
           return getSelector(el) + context;
         });
+        var dupMsg = 'Duplicate ID "' + dupId + '" found ' + ids[dupId].length + ' times';
+        var dupSel = '#' + dupId;
+        var dupID = computeFindingID('duplicate-id', dupSel, dupMsg);
+        registerFinding(dupID, dupSel);
         fixable.push({
-          id: 'dup-id-' + (++issueId),
+          id: dupID,
           type: 'duplicate-id',
           severity: 'error',
           duplicateId: dupId,
           count: ids[dupId].length,
+          selector: dupSel,
           selectors: selectors,
           impact: 8,
           fix: 'Ensure all IDs are unique - rename duplicates'
@@ -158,16 +183,21 @@
     for (var k = 0; k < elementData.length; k++) {
       var data = elementData[k];
       if (data.childCount > 10) {
+        var childSel = getSelectorPath(data.element);
+        var childFix = data.childCount > 50
+          ? 'Consider pagination or virtualization'
+          : 'Consider componentization or grouping';
+        var childMsg = data.childCount + ' direct children';
+        var childID = computeFindingID('excessive-children', childSel, childMsg);
+        registerFinding(childID, childSel);
         fixable.push({
-          id: 'large-children-' + (++issueId),
+          id: childID,
           type: 'excessive-children',
           severity: data.childCount > 50 ? 'error' : 'warning',
-          selector: getSelectorPath(data.element),
+          selector: childSel,
           childCount: data.childCount,
           impact: Math.min(10, Math.floor(data.childCount / 10)),
-          fix: data.childCount > 50
-            ? 'Consider pagination or virtualization'
-            : 'Consider componentization or grouping'
+          fix: childFix
         });
       }
     }
@@ -176,11 +206,15 @@
     for (var m = 0; m < elementData.length; m++) {
       var deepData = elementData[m];
       if (deepData.depth > 15) {
+        var deepSel = getSelectorPath(deepData.element);
+        var deepMsg = deepData.depth + ' levels deep';
+        var deepID = computeFindingID('excessive-depth', deepSel, deepMsg);
+        registerFinding(deepID, deepSel);
         fixable.push({
-          id: 'deep-nest-' + (++issueId),
+          id: deepID,
           type: 'excessive-depth',
           severity: deepData.depth > 20 ? 'error' : 'warning',
-          selector: getSelectorPath(deepData.element),
+          selector: deepSel,
           depth: deepData.depth,
           impact: Math.min(10, Math.floor(deepData.depth / 3)),
           fix: 'Flatten nesting or extract to component'
@@ -192,11 +226,15 @@
     for (var n = 0; n < elementData.length; n++) {
       var attrData = elementData[n];
       if (attrData.attributeCount > 10) {
+        var attrSel = getSelectorPath(attrData.element);
+        var attrMsg = attrData.attributeCount + ' attributes';
+        var attrID = computeFindingID('excessive-attributes', attrSel, attrMsg);
+        registerFinding(attrID, attrSel);
         fixable.push({
-          id: 'excess-attrs-' + (++issueId),
+          id: attrID,
           type: 'excessive-attributes',
           severity: 'warning',
-          selector: getSelectorPath(attrData.element),
+          selector: attrSel,
           attributeCount: attrData.attributeCount,
           impact: Math.min(7, Math.floor(attrData.attributeCount / 2)),
           fix: 'Simplify element or use CSS classes instead of inline attributes'
@@ -212,11 +250,15 @@
       if (utils.isDevtoolElement && utils.isDevtoolElement(list)) continue;
       var itemCount = list.querySelectorAll(':scope > li').length;
       if (itemCount > 50) {
+        var listSel = getSelectorPath(list);
+        var listMsg = itemCount + ' list items';
+        var listID = computeFindingID('large-list', listSel, listMsg);
+        registerFinding(listID, listSel);
         fixable.push({
-          id: 'large-list-' + (++issueId),
+          id: listID,
           type: 'large-list',
           severity: itemCount > 200 ? 'error' : 'warning',
-          selector: getSelectorPath(list),
+          selector: listSel,
           itemCount: itemCount,
           impact: Math.min(9, Math.floor(itemCount / 25)),
           fix: 'Consider virtualization (e.g., react-window) or pagination'
@@ -233,11 +275,15 @@
       var rows = table.querySelectorAll('tr');
       var cells = table.querySelectorAll('td, th');
       if (rows.length > 100) {
+        var tableSel = getSelectorPath(table);
+        var tableMsg = rows.length + ' table rows';
+        var tableID = computeFindingID('large-table', tableSel, tableMsg);
+        registerFinding(tableID, tableSel);
         fixable.push({
-          id: 'large-table-' + (++issueId),
+          id: tableID,
           type: 'large-table',
           severity: rows.length > 500 ? 'error' : 'warning',
-          selector: getSelectorPath(table),
+          selector: tableSel,
           rows: rows.length,
           cells: cells.length,
           impact: Math.min(9, Math.floor(rows.length / 50)),
@@ -254,11 +300,15 @@
       if (utils.isDevtoolElement && utils.isDevtoolElement(form)) continue;
       var inputs = form.querySelectorAll('input, select, textarea');
       if (inputs.length > 20) {
+        var formSel = getSelectorPath(form);
+        var formMsg = inputs.length + ' form inputs';
+        var formID = computeFindingID('large-form', formSel, formMsg);
+        registerFinding(formID, formSel);
         fixable.push({
-          id: 'large-form-' + (++issueId),
+          id: formID,
           type: 'large-form',
           severity: 'warning',
-          selector: getSelectorPath(form),
+          selector: formSel,
           inputCount: inputs.length,
           impact: Math.min(7, Math.floor(inputs.length / 5)),
           fix: 'Consider splitting into multi-step form or accordion sections'
@@ -281,11 +331,15 @@
       if (handlerEl.onsubmit) { handlerCount++; handlerTypes.push('onsubmit'); }
 
       if (handlerCount > 2) {
+        var handlerSel = getSelectorPath(handlerEl);
+        var handlerMsg = handlerTypes.join(',') + ' inline handlers';
+        var handlerID = computeFindingID('excessive-handlers', handlerSel, handlerMsg);
+        registerFinding(handlerID, handlerSel);
         fixable.push({
-          id: 'excess-handlers-' + (++issueId),
+          id: handlerID,
           type: 'excessive-handlers',
           severity: 'warning',
-          selector: getSelectorPath(handlerEl),
+          selector: handlerSel,
           handlerCount: handlerCount,
           handlers: handlerTypes,
           impact: 5,
@@ -327,11 +381,12 @@
 
     // 10. Informational: Total element count
     if (elements.length > 1500) {
+      var elemMsg = elements.length + ' elements exceeds recommended 1500 for optimal performance';
       informational.push({
-        id: 'dom-count-' + (++issueId),
+        id: computeFindingID('element-count', 'document', elemMsg),
         type: 'element-count',
         severity: elements.length > 3000 ? 'warning' : 'info',
-        message: elements.length + ' elements exceeds recommended 1500 for optimal performance',
+        message: elemMsg,
         current: elements.length,
         recommended: 1500
       });
@@ -339,11 +394,12 @@
 
     // 11. Informational: Max depth
     if (maxDepth > 15) {
+      var depthMsg = 'Maximum nesting depth of ' + maxDepth + ' exceeds recommended 15';
       informational.push({
-        id: 'max-depth-' + (++issueId),
+        id: computeFindingID('max-depth', 'document', depthMsg),
         type: 'max-depth',
         severity: maxDepth > 20 ? 'warning' : 'info',
-        message: 'Maximum nesting depth of ' + maxDepth + ' exceeds recommended 15',
+        message: depthMsg,
         current: maxDepth,
         recommended: 15
       });

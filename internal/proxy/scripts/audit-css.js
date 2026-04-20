@@ -5,6 +5,27 @@
 
   var utils = window.__devtool_utils;
 
+  /**
+   * Generate a stable 8-char hex finding ID from type, selector, and message.
+   * FNV-1a 32-bit hash — same inputs always produce same output across runs.
+   */
+  function computeFindingID(type, selector, message) {
+    var input = type + '\x00' + (selector || '') + '\x00' + (message || '');
+    var h = 0x811c9dc5;
+    for (var i = 0; i < input.length; i++) {
+      h = h ^ input.charCodeAt(i);
+      h = (h + (h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24)) >>> 0;
+    }
+    return ('00000000' + h.toString(16)).slice(-8);
+  }
+
+  function registerFinding(id, selector) {
+    if (!window.__devtool) { window.__devtool = {}; }
+    if (!window.__devtool.audit) { window.__devtool.audit = {}; }
+    if (!window.__devtool.audit.findingSelectors) { window.__devtool.audit.findingSelectors = {}; }
+    window.__devtool.audit.findingSelectors[id] = selector || '';
+  }
+
   // Options:
   //   detailLevel: 'summary' | 'compact' (default) | 'full'
   //   maxIssues: number (default: 20)
@@ -187,7 +208,6 @@
     }
 
     // Identify patterns that should be extracted to classes (3+ occurrences)
-    var patternId = 0;
     for (var pattern in stylePatterns) {
       if (!stylePatterns.hasOwnProperty(pattern)) continue;
       var count = stylePatterns[pattern];
@@ -207,6 +227,10 @@
         }
 
         var suggestedClass = suggestClassName(pattern);
+        var patternSel = '[style*="' + pattern.substring(0, 30) + '"]';
+        var patternMsg = 'Extract to .' + suggestedClass + ' utility class';
+        var patternID = computeFindingID('inline-style-pattern', patternSel, patternMsg);
+        registerFinding(patternID, patternSel);
 
         patterns.push({
           pattern: pattern,
@@ -216,14 +240,14 @@
         });
 
         fixable.push({
-          id: 'inline-pattern-' + (++patternId),
+          id: patternID,
           type: 'inline-style-pattern',
           severity: 'warning',
-          selector: '[style*="' + pattern.substring(0, 30) + '"]',
+          selector: patternSel,
           count: count,
           pattern: pattern,
           impact: Math.min(10, Math.floor(count / 2)),
-          fix: 'Extract to .' + suggestedClass + ' utility class'
+          fix: patternMsg
         });
       }
     }
@@ -244,12 +268,13 @@
     }
 
     if (metrics.importantCount > 0) {
+      var importantMsg = metrics.importantCount + ' !important declarations found - review for necessity';
       informational.push({
-        id: 'important-count-1',
+        id: computeFindingID('important-declarations', 'stylesheets', importantMsg),
         type: 'important-declarations',
         severity: 'info',
         count: metrics.importantCount,
-        message: metrics.importantCount + ' !important declarations found - review for necessity'
+        message: importantMsg
       });
     }
 
@@ -276,20 +301,21 @@
       }
     }
 
-    var colorId = 0;
     for (var color in colorPatterns) {
       if (!colorPatterns.hasOwnProperty(color)) continue;
       var count = colorPatterns[color];
 
       if (count >= 3) {
+        var colorFix = 'Replace with CSS variable --color-' + (color.charAt(0) === '#' ? 'hex-' + color.substring(1, 4) : 'named');
+        var colorID = computeFindingID('hardcoded-color', color, colorFix);
         fixable.push({
-          id: 'hardcoded-color-' + (++colorId),
+          id: colorID,
           type: 'hardcoded-color',
           severity: 'info',
           pattern: color,
           count: count,
           impact: Math.min(5, Math.floor(count / 3)),
-          fix: 'Replace with CSS variable --color-' + (color.startsWith('#') ? 'hex-' + color.substring(1, 4) : 'named')
+          fix: colorFix
         });
       }
     }
@@ -297,7 +323,7 @@
     // --- Analysis: Z-index inflation ---
 
     var allElements = document.querySelectorAll('*');
-    var zIndexId = 0;
+    var zIndexCount = 0;
     for (var i = 0; i < allElements.length; i++) {
       var elem = allElements[i];
       // Skip agnt/devtool UI elements
@@ -316,8 +342,11 @@
             }
           }
 
+          var zMsg = 'z-index ' + zValue + ' exceeds 100';
+          var zID = computeFindingID('z-index-inflation', selector, zMsg);
+          registerFinding(zID, selector);
           fixable.push({
-            id: 'z-index-high-' + (++zIndexId),
+            id: zID,
             type: 'z-index-inflation',
             severity: zValue > 1000 ? 'warning' : 'info',
             selector: selector,
@@ -327,14 +356,15 @@
           });
 
           // Limit to prevent overflow
-          if (zIndexId >= 10) break;
+          zIndexCount++;
+          if (zIndexCount >= 10) break;
         }
       }
     }
 
     // --- Analysis: Layout issues ---
 
-    var layoutIssueId = 0;
+    var layoutIssueCount = 0;
     for (var i = 0; i < inlineStyles.length; i++) {
       var elem = inlineStyles[i];
       // Skip agnt/devtool UI elements
@@ -355,8 +385,11 @@
           }
         }
 
+        var fixedMsg = 'fixed dimensions width:' + (props.width || 'auto') + ' height:' + (props.height || 'auto');
+        var fixedID = computeFindingID('fixed-dimensions', selector, fixedMsg);
+        registerFinding(fixedID, selector);
         fixable.push({
-          id: 'fixed-size-' + (++layoutIssueId),
+          id: fixedID,
           type: 'fixed-dimensions',
           severity: 'info',
           selector: selector,
@@ -366,7 +399,8 @@
           fix: 'Use relative units (%, rem, em) or max-width/max-height for responsiveness'
         });
 
-        if (layoutIssueId >= 5) break;
+        layoutIssueCount++;
+        if (layoutIssueCount >= 5) break;
       }
     }
 
@@ -386,7 +420,7 @@
     else if (metrics.importantCount > 5) score -= 5;
 
     // Deduct for z-index issues
-    score -= Math.min(10, zIndexId * 2);
+    score -= Math.min(10, zIndexCount * 2);
 
     // Deduct for hardcoded sizes
     score -= Math.min(10, Math.floor(metrics.hardcodedSizes / 5));
@@ -427,8 +461,8 @@
     }
 
     // Z-index issues
-    if (zIndexId > 0) {
-      actions.push('Address z-index inflation issues (' + zIndexId + ' elements with z-index >100)');
+    if (zIndexCount > 0) {
+      actions.push('Address z-index inflation issues (' + zIndexCount + ' elements with z-index >100)');
     }
 
     // --- Stats ---
@@ -470,7 +504,7 @@
       // Collect z-index values for AI to design layer system
       var zIndexData = [];
       for (var zi = 0; zi < fixable.length; zi++) {
-        if (fixable[zi].type === 'z-index-inflation') {
+        if (fixable[zi].type === 'z-index-inflation' && fixable[zi].value !== undefined) {
           zIndexData.push({
             selector: fixable[zi].selector,
             value: fixable[zi].value
