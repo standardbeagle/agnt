@@ -384,13 +384,17 @@ func (d *Daemon) startScriptWithRetry(
 
 	proc := result.Process
 
-	// Monitor for early failure (first 3 seconds)
-	// Use first expected port for EADDRINUSE detection
+	// Monitor for early failure (first N seconds, configurable via DaemonConfig).
+	// Use first expected port for EADDRINUSE detection.
 	expectedPort := 0
 	if len(expectedPorts) > 0 {
 		expectedPort = expectedPorts[0]
 	}
-	startupErr := d.monitorStartupFailure(ctx, proc, expectedPort, 3*time.Second)
+	monitorTimeout := d.config.StartupMonitorTimeout
+	if monitorTimeout <= 0 {
+		monitorTimeout = 3 * time.Second
+	}
+	startupErr := d.monitorStartupFailure(ctx, proc, expectedPort, monitorTimeout)
 	if startupErr == nil {
 		d.watchProcessExit(proc)
 		return proc, nil
@@ -476,7 +480,7 @@ func (d *Daemon) startScriptWithRetry(
 	proc = result.Process
 
 	// Monitor the retry
-	retryErr := d.monitorStartupFailure(ctx, proc, expectedPort, 3*time.Second)
+	retryErr := d.monitorStartupFailure(ctx, proc, expectedPort, monitorTimeout)
 	if retryErr != nil {
 		retryErr.Retried = true
 		return nil, retryErr

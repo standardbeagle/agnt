@@ -212,7 +212,13 @@ func TestShellResolve_ProfilePATH(t *testing.T) {
 
 func TestShellResolve_E2E_Binary(t *testing.T) {
 	// Full E2E: agnt run --no-overlay <cmd> with custom HOME/SHELL.
-	// Requires TTY — skips gracefully.
+	// Requires TTY — skips gracefully when not available.
+	if f, err := os.Open("/dev/tty"); err != nil {
+		t.Skip("test requires TTY - skipping in non-interactive environment")
+	} else {
+		f.Close()
+	}
+
 	agntPath := findAgntBinary(t)
 
 	binDir := t.TempDir()
@@ -245,6 +251,12 @@ func TestShellResolve_E2E_Binary(t *testing.T) {
 	case <-done:
 	case <-time.After(10 * time.Second):
 		cmd.Process.Kill()
+		<-done // drain output after kill
+		outStr := string(output)
+		if strings.Contains(outStr, "failed to set raw mode") ||
+			strings.Contains(outStr, "inappropriate ioctl") {
+			t.Skip("test requires TTY - skipping in non-interactive environment")
+		}
 		t.Fatal("command timed out")
 	}
 
