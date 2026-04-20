@@ -1396,9 +1396,19 @@ func (s *win32ParseState) parseWin32Sequence(seqData []byte) {
 		return
 	}
 
-	// If there's a unicode character, emit it directly
+	// If there's a unicode character, emit it directly.
+	// Special case: VK_BACK (0x08) with uc=0x08 (\b). Windows Terminal sends
+	// \b for Backspace in win32-input-mode, but POSIX terminals and readline
+	// expect \x7f (DEL) for Backspace. Translate here so the child process
+	// receives the standard Backspace sequence regardless of the host terminal's
+	// win32-input-mode encoding.
 	if uc > 0 {
-		s.result = append(s.result, byte(uc))
+		b := byte(uc)
+		if vk == vkBack && b == 0x08 {
+			b = 0x7f
+			debugLog("seq=%s -> VK_BACK translated \\x08 -> \\x7f", seq)
+		}
+		s.result = append(s.result, b)
 		debugLog("seq=%s -> byte %d (0x%02x)", seq, uc, uc)
 		return
 	}

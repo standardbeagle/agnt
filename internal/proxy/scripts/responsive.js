@@ -29,7 +29,17 @@
   // Debounce window in ms - return cached result if within this window
   var DEBOUNCE_WINDOW = 500;
 
-  // Map from finding id to selector for highlight lookups
+  // Map from finding id to selector for highlight lookups.
+  // Lazily references the shared registry on window.__devtool.audit so findings
+  // from other audit modules (a11y, quality, css, dom) are also highlightable.
+  function getSharedRegistry() {
+    if (!window.__devtool) { window.__devtool = {}; }
+    if (!window.__devtool.audit) { window.__devtool.audit = {}; }
+    if (!window.__devtool.audit.findingSelectors) { window.__devtool.audit.findingSelectors = {}; }
+    return window.__devtool.audit.findingSelectors;
+  }
+
+  // Legacy alias kept for backward-compat within this module's closures.
   var findingSelectors = {};
 
   /**
@@ -993,12 +1003,13 @@
   /**
    * Highlight the element matching a finding by its ID.
    * Injects a CSS outline on the element for 3 seconds, then removes it.
-   * The id must have been produced by a previous audit() call in the same page session.
+   * Checks both this module's local registry and the shared window.__devtool.audit.findingSelectors
+   * so findings from other audit modules (a11y, quality, css, dom) are also highlightable.
    * @param {string} id - 8-char hex finding ID from an audit issue
    * @returns {boolean} true if the element was found and highlighted, false otherwise
    */
   function highlight(id) {
-    var selector = findingSelectors[id];
+    var selector = findingSelectors[id] || getSharedRegistry()[id];
     if (!selector) {
       return false;
     }
