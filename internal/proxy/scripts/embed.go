@@ -45,6 +45,9 @@ var (
 	//go:embed audit-utils.js
 	auditUtilsJS string
 
+	//go:embed audit-report.js
+	auditReportJS string
+
 	//go:embed audit-dom.js
 	auditDomJS string
 
@@ -166,6 +169,7 @@ var moduleOrder = []moduleEntry{
 	{"capture", []string{"utils"}},
 	{"accessibility", []string{"utils"}},
 	{"audit-utils", nil},
+	{"audit-report", nil},
 	{"audit-dom", []string{"utils"}},
 	{"audit-css", []string{"utils"}},
 	{"audit-security", []string{"utils", "audit-utils"}},
@@ -191,7 +195,7 @@ var moduleOrder = []moduleEntry{
 	{"api", []string{
 		"core", "utils", "overlay", "inspection", "tree", "visual",
 		"layout", "interactive", "capture", "accessibility",
-		"audit-quality", "interaction", "mutation",
+		"audit-quality", "audit-report", "interaction", "mutation",
 		"voice", "indicator", "sketch", "design",
 		"diagnostics", "session", "store", "content",
 		"wireframe", "responsive", "style-editor",
@@ -215,6 +219,7 @@ var moduleScript = map[string]string{
 	"capture":            captureJS,
 	"accessibility":      accessibilityJS,
 	"audit-utils":        auditUtilsJS,
+	"audit-report":       auditReportJS,
 	"audit-dom":          auditDomJS,
 	"audit-css":          auditCssJS,
 	"audit-security":     auditSecurityJS,

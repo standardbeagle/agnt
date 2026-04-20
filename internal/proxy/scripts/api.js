@@ -15,6 +15,7 @@
   var capture = window.__devtool_capture;
   var accessibility = window.__devtool_accessibility;
   var audit = window.__devtool_audit;
+  var auditReport = window.__devtool_audit_report;
   var interactions = window.__devtool_interactions;
   var mutations = window.__devtool_mutations;
   var voice = window.__devtool_voice;
@@ -146,6 +147,7 @@
     auditPageQuality: audit.auditPageQuality,
     auditPerformance: audit.auditPerformance,
     auditAll: audit.auditAll,
+    auditReport: auditReport,
 
     // ========================================================================
     // INTERACTION TRACKING (NEW)
