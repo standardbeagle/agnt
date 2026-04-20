@@ -857,15 +857,19 @@ func buildAgntSystemPrompt(socketPath string) string {
 		if processes, ok := procs["processes"].([]interface{}); ok && len(processes) > 0 {
 			if !hasRuntime {
 				sb.WriteString("\n## Current Runtime State\n")
+				sb.WriteString("These processes and proxies were auto-started and are already running.\n")
+				sb.WriteString("Do NOT start them again. Use proc/proxy tools to inspect them.\n")
 				hasRuntime = true
 			}
-			sb.WriteString("\n**Running processes:**\n")
+			sb.WriteString("\n**Running processes** (already started — do not restart unless crashed):\n")
 			for _, p := range processes {
 				if pm, ok := p.(map[string]interface{}); ok {
 					id := pm["id"]
 					state := pm["state"]
 					cmd := pm["command"]
-					sb.WriteString(fmt.Sprintf("- %s: `%s` (state: %s)\n", id, cmd, state))
+					sb.WriteString(fmt.Sprintf("- **%s**: `%s` (state: %s)\n", id, cmd, state))
+					sb.WriteString(fmt.Sprintf("  - View output: `proc {action: \"output\", id: \"%s\"}`\n", id))
+					sb.WriteString(fmt.Sprintf("  - Check errors: `get_errors {process_id: \"%s\"}`\n", id))
 				}
 			}
 		}
@@ -878,15 +882,19 @@ func buildAgntSystemPrompt(socketPath string) string {
 		if proxyList, ok := proxies["proxies"].([]interface{}); ok && len(proxyList) > 0 {
 			if !hasRuntime {
 				sb.WriteString("\n## Current Runtime State\n")
+				sb.WriteString("These processes and proxies were auto-started and are already running.\n")
+				sb.WriteString("Do NOT start them again. Use proc/proxy tools to inspect them.\n")
 				hasRuntime = true
 			}
-			sb.WriteString("\n**Running proxies:**\n")
+			sb.WriteString("\n**Running proxies** (already started — browser traffic is being captured):\n")
 			for _, p := range proxyList {
 				if pm, ok := p.(map[string]interface{}); ok {
 					id := pm["id"]
 					target := pm["target_url"]
 					listen := pm["listen_addr"]
-					sb.WriteString(fmt.Sprintf("- %s: %s -> %s\n", id, listen, target))
+					sb.WriteString(fmt.Sprintf("- **%s**: %s → %s\n", id, listen, target))
+					sb.WriteString(fmt.Sprintf("  - Query logs: `proxylog {action: \"query\", proxy_id: \"%s\"}`\n", id))
+					sb.WriteString(fmt.Sprintf("  - Check errors: `get_errors {proxy_id: \"%s\"}`\n", id))
 				}
 			}
 		}

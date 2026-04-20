@@ -114,6 +114,19 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	ps.wsConns.Store(connID, conn)
 	debug.Log("proxy", "WebSocket client connected: proxy=%s connID=%s remote=%s", ps.ID, connID, r.RemoteAddr)
 
+	// Warn the browser if TLS cert verification was bypassed for this proxy.
+	if ps.tlsCertSkipped.Load() {
+		if warn, err := json.Marshal(map[string]interface{}{
+			"type":     "toast",
+			"toast":    "warning",
+			"title":    "Self-Signed Certificate",
+			"message":  "This proxy is bypassing TLS certificate verification. The backend is using a self-signed or invalid certificate.",
+			"duration": 8000,
+		}); err == nil {
+			_ = conn.WriteMessage(websocket.TextMessage, warn)
+		}
+	}
+
 	defer func() {
 		ps.wsConns.Delete(connID)
 		debug.Log("proxy", "WebSocket client disconnected: proxy=%s connID=%s", ps.ID, connID)

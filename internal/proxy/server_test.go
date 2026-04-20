@@ -67,7 +67,8 @@ func TestNewProxyServer_SkipTLSVerifyFalseVerifiesCerts(t *testing.T) {
 	}
 }
 
-// extractHTTPTransport unwraps the ChaosTransport to get the underlying *http.Transport.
+// extractHTTPTransport unwraps the ChaosTransport (and optional
+// TLSFallbackTransport) to get the underlying *http.Transport.
 func extractHTTPTransport(t *testing.T, ps *ProxyServer) *http.Transport {
 	t.Helper()
 
@@ -75,6 +76,11 @@ func extractHTTPTransport(t *testing.T, ps *ProxyServer) *http.Transport {
 	require.True(t, ok, "expected ChaosTransport wrapper, got %T", ps.proxy.Transport)
 
 	underlying := chaosTransport.underlying
+	// For HTTPS targets, a TLSFallbackTransport may sit between Chaos and
+	// the raw *http.Transport — unwrap it too.
+	if fb, ok := underlying.(*TLSFallbackTransport); ok {
+		underlying = fb.secure
+	}
 	httpTransport, ok := underlying.(*http.Transport)
 	require.True(t, ok, "expected *http.Transport underneath ChaosTransport, got %T", underlying)
 
