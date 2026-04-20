@@ -901,6 +901,62 @@ func TestConvertStartupLogEntry(t *testing.T) {
 	})
 }
 
+// TestFindingIDStable verifies that findingID returns the same value for
+// identical inputs across two calls (deterministic, no randomness).
+func TestFindingIDStable(t *testing.T) {
+	t.Run("same inputs produce same id", func(t *testing.T) {
+		id1 := findingID("browser:js", "TypeError", "Cannot read 'map'", "src/app.tsx:10:5")
+		id2 := findingID("browser:js", "TypeError", "Cannot read 'map'", "src/app.tsx:10:5")
+		assert.Equal(t, id1, id2)
+		assert.Len(t, id1, 8)
+	})
+
+	t.Run("different inputs produce different ids", func(t *testing.T) {
+		id1 := findingID("browser:js", "TypeError", "msg A", "")
+		id2 := findingID("browser:js", "TypeError", "msg B", "")
+		assert.NotEqual(t, id1, id2)
+	})
+
+	t.Run("id is lowercase hex", func(t *testing.T) {
+		id := findingID("proxy:http", "500 Internal Server Error", "POST /api/users", "")
+		assert.Regexp(t, "^[0-9a-f]{8}$", id)
+	})
+
+	t.Run("converter populates stable id", func(t *testing.T) {
+		fe := &proxy.FrontendError{
+			Timestamp: time.Now(),
+			Message:   "TypeError: Cannot read property 'map' of undefined",
+			Stack:     "TypeError: Cannot read property 'map' of undefined\n    at App (src/App.tsx:10:5)",
+		}
+
+		results1 := convertJSErrorDirect("dev", fe)
+		results2 := convertJSErrorDirect("dev", fe)
+
+		require.Len(t, results1, 1)
+		require.Len(t, results2, 1)
+		assert.NotEmpty(t, results1[0].ID)
+		assert.Equal(t, results1[0].ID, results2[0].ID)
+		assert.Len(t, results1[0].ID, 8)
+	})
+
+	t.Run("http error converter populates stable id", func(t *testing.T) {
+		h := &proxy.HTTPLogEntry{
+			Timestamp:  time.Now(),
+			Method:     "POST",
+			URL:        "/api/users",
+			StatusCode: 500,
+		}
+
+		results1 := convertHTTPErrorDirect("dev", h)
+		results2 := convertHTTPErrorDirect("dev", h)
+
+		require.Len(t, results1, 1)
+		require.Len(t, results2, 1)
+		assert.NotEmpty(t, results1[0].ID)
+		assert.Equal(t, results1[0].ID, results2[0].ID)
+	})
+}
+
 // TestAlertMapToUnifiedError_ProcessLifecycle verifies that a daemon
 // AlertEntry with category "process_lifecycle" converts into a unified
 // error that agents can read — the exit-code summary from the

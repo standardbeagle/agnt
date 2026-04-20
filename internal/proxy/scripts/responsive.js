@@ -29,6 +29,28 @@
   // Debounce window in ms - return cached result if within this window
   var DEBOUNCE_WINDOW = 500;
 
+  // Map from finding id to selector for highlight lookups
+  var findingSelectors = {};
+
+  /**
+   * Generate a stable 8-char hex finding ID from type, selector, and message.
+   * Uses a simple two-pass hash (FNV-1a 32-bit) producing 8 lowercase hex chars.
+   * The same inputs always produce the same output across runs.
+   * @param {string} type - Issue type (layout/overflow/a11y)
+   * @param {string} selector - CSS selector for the element
+   * @param {string} message - Issue message
+   * @returns {string} 8-char lowercase hex string
+   */
+  function computeFindingID(type, selector, message) {
+    var input = type + '\x00' + selector + '\x00' + message;
+    var h = 0x811c9dc5;
+    for (var i = 0; i < input.length; i++) {
+      h = h ^ input.charCodeAt(i);
+      h = (h + (h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24)) >>> 0;
+    }
+    return ('00000000' + h.toString(16)).slice(-8);
+  }
+
   /**
    * Create a hidden iframe container for viewport testing
    */
@@ -219,11 +241,15 @@
 
       // Collapsed content
       if (rect.height < 1 && el.textContent && el.textContent.trim().length > 0) {
+        var collapsedMsg = 'collapsed content, element has text but zero height';
+        var collapsedID = computeFindingID('layout', selector, collapsedMsg);
+        findingSelectors[collapsedID] = selector;
         issues.push({
+          id: collapsedID,
           type: 'layout',
           severity: 'critical',
           selector: selector,
-          message: 'collapsed content, element has text but zero height',
+          message: collapsedMsg,
           viewportWidth: viewportWidth
         });
         continue; // Skip other checks for collapsed elements
@@ -233,11 +259,15 @@
       if (isMobile && style.position === 'fixed') {
         var coverage = rect.height / win.innerHeight;
         if (coverage > 0.25) {
+          var fixedMsg = 'fixed element covers ' + Math.round(coverage * 100) + '% of viewport';
+          var fixedID = computeFindingID('layout', selector, fixedMsg);
+          findingSelectors[fixedID] = selector;
           issues.push({
+            id: fixedID,
             type: 'layout',
             severity: coverage > 0.4 ? 'warning' : 'info',
             selector: selector,
-            message: 'fixed element covers ' + Math.round(coverage * 100) + '% of viewport',
+            message: fixedMsg,
             viewportWidth: viewportWidth,
             details: {
               coverage: Math.round(coverage * 100) + '%',
@@ -257,11 +287,15 @@
         parseFloat(style.marginLeft) + parseFloat(style.marginRight);
 
       if (totalSqueeze > rect.width * 0.3 && rect.width < 200) {
+        var squeezeMsg = 'margins/padding squeeze content to ' + Math.round(rect.width) + 'px';
+        var squeezeID = computeFindingID('layout', selector, squeezeMsg);
+        findingSelectors[squeezeID] = selector;
         issues.push({
+          id: squeezeID,
           type: 'layout',
           severity: 'warning',
           selector: selector,
-          message: 'margins/padding squeeze content to ' + Math.round(rect.width) + 'px',
+          message: squeezeMsg,
           viewportWidth: viewportWidth,
           details: {
             contentWidth: Math.round(rect.width),
@@ -298,11 +332,15 @@
       // Horizontal overflow
       if (rect.right > viewportWidth + 5) {
         if (style.overflowX !== 'auto' && style.overflowX !== 'scroll') {
+          var hScrollMsg = 'forces horizontal scroll +' + Math.round(rect.right - viewportWidth) + 'px';
+          var hScrollID = computeFindingID('overflow', selector, hScrollMsg);
+          findingSelectors[hScrollID] = selector;
           issues.push({
+            id: hScrollID,
             type: 'overflow',
             severity: 'critical',
             selector: selector,
-            message: 'forces horizontal scroll +' + Math.round(rect.right - viewportWidth) + 'px',
+            message: hScrollMsg,
             viewportWidth: viewportWidth,
             details: {
               overflow: Math.round(rect.right - viewportWidth),
@@ -316,11 +354,15 @@
       // Content clipped by overflow:hidden
       if (style.overflow === 'hidden' || style.overflowX === 'hidden') {
         if (el.scrollWidth > el.clientWidth + 10) {
+          var clippedMsg = 'content clipped by overflow:hidden';
+          var clippedID = computeFindingID('overflow', selector, clippedMsg);
+          findingSelectors[clippedID] = selector;
           issues.push({
+            id: clippedID,
             type: 'overflow',
             severity: 'warning',
             selector: selector,
-            message: 'content clipped by overflow:hidden',
+            message: clippedMsg,
             viewportWidth: viewportWidth,
             details: {
               scrollWidth: el.scrollWidth,
@@ -334,11 +376,15 @@
       // Truncated text without tooltip
       if (style.textOverflow === 'ellipsis' || style.textOverflow === 'clip') {
         if (el.scrollWidth > el.clientWidth && !el.title && !el.getAttribute('aria-label')) {
+          var truncMsg = 'truncated text without title/tooltip';
+          var truncID = computeFindingID('overflow', selector, truncMsg);
+          findingSelectors[truncID] = selector;
           issues.push({
+            id: truncID,
             type: 'overflow',
             severity: 'info',
             selector: selector,
-            message: 'truncated text without title/tooltip',
+            message: truncMsg,
             viewportWidth: viewportWidth
           });
         }
@@ -347,11 +393,15 @@
       // Images hidden/squeezed by container
       if (el.tagName === 'IMG' && (rect.width < 10 || rect.height < 10)) {
         if (el.naturalWidth * el.naturalHeight > 1000) {
+          var imgMsg = 'image squeezed or hidden by container';
+          var imgID = computeFindingID('overflow', selector, imgMsg);
+          findingSelectors[imgID] = selector;
           issues.push({
+            id: imgID,
             type: 'overflow',
             severity: 'warning',
             selector: selector,
-            message: 'image squeezed or hidden by container',
+            message: imgMsg,
             viewportWidth: viewportWidth,
             details: {
               displayedWidth: Math.round(rect.width),
@@ -398,11 +448,16 @@
         var isCritical = issue.severity === 'error' || issue.severity === 'critical';
 
         if (isTouchTarget || isFontIssue || isCritical) {
+          var mobileMsg = issue.message;
+          var mobileSel = issue.selector || '';
+          var mobileID = computeFindingID('a11y', mobileSel, mobileMsg);
+          findingSelectors[mobileID] = mobileSel;
           issues.push({
+            id: mobileID,
             type: 'a11y',
             severity: issue.severity === 'error' ? 'critical' : issue.severity,
-            selector: issue.selector,
-            message: issue.message,
+            selector: mobileSel,
+            message: mobileMsg,
             viewportWidth: viewportWidth,
             wcag: issue.wcag || '',
             source: 'auditAccessibility'
@@ -416,11 +471,16 @@
         );
 
         if (!isMobileOnly) {
+          var desktopMsg = issue.message;
+          var desktopSel = issue.selector || '';
+          var desktopID = computeFindingID('a11y', desktopSel, desktopMsg);
+          findingSelectors[desktopID] = desktopSel;
           issues.push({
+            id: desktopID,
             type: 'a11y',
             severity: issue.severity === 'error' ? 'critical' : issue.severity,
-            selector: issue.selector,
-            message: issue.message,
+            selector: desktopSel,
+            message: desktopMsg,
             viewportWidth: viewportWidth,
             wcag: issue.wcag || '',
             source: 'auditAccessibility'
@@ -478,11 +538,15 @@
       if (isInteractive && rect.width > 0 && rect.height > 0) {
         var minSize = 44; // Apple HIG minimum
         if (rect.width < minSize || rect.height < minSize) {
+          var touchMsg = 'touch target smaller than 44x44px minimum';
+          var touchID = computeFindingID('a11y', selector, touchMsg);
+          findingSelectors[touchID] = selector;
           issues.push({
+            id: touchID,
             type: 'a11y',
             severity: 'warning',
             selector: selector,
-            message: 'touch target smaller than 44x44px minimum',
+            message: touchMsg,
             viewportWidth: viewportWidth,
             details: {
               width: Math.round(rect.width),
@@ -498,11 +562,15 @@
       if (tagName === 'input' || tagName === 'select' || tagName === 'textarea') {
         var fontSize = parseFloat(style.fontSize);
         if (fontSize < 16) {
+          var zoomMsg = 'font-size ' + fontSize + 'px triggers iOS zoom (min 16px)';
+          var zoomID = computeFindingID('a11y', selector, zoomMsg);
+          findingSelectors[zoomID] = selector;
           issues.push({
+            id: zoomID,
             type: 'a11y',
             severity: 'warning',
             selector: selector,
-            message: 'font-size ' + fontSize + 'px triggers iOS zoom (min 16px)',
+            message: zoomMsg,
             viewportWidth: viewportWidth,
             details: {
               fontSize: fontSize,
@@ -517,11 +585,15 @@
       if (rect.width > 0 && rect.height > 0) {
         var textFontSize = parseFloat(style.fontSize);
         if (textFontSize < 12) {
+          var readMsg = 'font-size ' + textFontSize + 'px may be hard to read on mobile';
+          var readID = computeFindingID('a11y', selector, readMsg);
+          findingSelectors[readID] = selector;
           issues.push({
+            id: readID,
             type: 'a11y',
             severity: 'info',
             selector: selector,
-            message: 'font-size ' + textFontSize + 'px may be hard to read on mobile',
+            message: readMsg,
             viewportWidth: viewportWidth,
             details: {
               fontSize: textFontSize,
@@ -860,8 +932,9 @@
           // Icons: ! = warning/critical, o = info
           // Design spec uses ⚠ and ○, but ASCII ensures terminal compatibility
           var icon = issue.severity === 'critical' || issue.severity === 'warning' ? '!' : 'o';
-          // Single line format: icon [type] selector - message
-          lines.push('  ' + icon + ' [' + issue.type + '] ' + issue.selector + ' - ' + issue.message);
+          // Single line format: icon [type] selector - message #id
+          var idSuffix = issue.id ? ' #' + issue.id : '';
+          lines.push('  ' + icon + ' [' + issue.type + '] ' + issue.selector + ' - ' + issue.message + idSuffix);
         });
 
         if (viewport.issues.length > 10) {
@@ -917,6 +990,42 @@
     };
   }
 
+  /**
+   * Highlight the element matching a finding by its ID.
+   * Injects a CSS outline on the element for 3 seconds, then removes it.
+   * The id must have been produced by a previous audit() call in the same page session.
+   * @param {string} id - 8-char hex finding ID from an audit issue
+   * @returns {boolean} true if the element was found and highlighted, false otherwise
+   */
+  function highlight(id) {
+    var selector = findingSelectors[id];
+    if (!selector) {
+      return false;
+    }
+
+    var el = document.querySelector(selector);
+    if (!el) {
+      return false;
+    }
+
+    var styleTag = document.getElementById('__devtool_highlight_style');
+    if (!styleTag) {
+      styleTag = document.createElement('style');
+      styleTag.id = '__devtool_highlight_style';
+      document.head.appendChild(styleTag);
+    }
+
+    var className = '__devtool_highlight_' + id;
+    styleTag.textContent += '\n.' + className + ' { outline: 3px solid #f50 !important; outline-offset: 2px !important; }';
+    el.classList.add(className);
+
+    setTimeout(function() {
+      el.classList.remove(className);
+    }, 3000);
+
+    return true;
+  }
+
   // Export module
   window.__devtool_responsive = {
     audit: audit,
@@ -927,4 +1036,13 @@
     runResponsiveA11yCheck: runResponsiveA11yCheck,
     DEFAULT_VIEWPORTS: DEFAULT_VIEWPORTS
   };
+
+  // Register highlight under window.__devtool.audit namespace
+  if (!window.__devtool) {
+    window.__devtool = {};
+  }
+  if (!window.__devtool.audit) {
+    window.__devtool.audit = {};
+  }
+  window.__devtool.audit.highlight = highlight;
 })();
