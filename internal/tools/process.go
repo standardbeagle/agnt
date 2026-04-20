@@ -54,8 +54,8 @@ type RunOutput struct {
 
 // ProcInput defines input for the proc tool.
 type ProcInput struct {
-	Action    string `json:"action" jsonschema:"Action: status, output, stop, restart, list, cleanup_port, autorestart, scripts, script_output, script_history"`
-	ProcessID string `json:"process_id,omitempty" jsonschema:"Process ID (required for status/output/stop/restart/autorestart)"`
+	Action    string `json:"action" jsonschema:"Action: status, output, find, stop, restart, list, cleanup_port, autorestart, scripts, script_output, script_history"`
+	ProcessID string `json:"process_id,omitempty" jsonschema:"Process ID (required for status/output/stop/restart/autorestart/find)"`
 	// Script actions
 	ScriptName string `json:"script_name,omitempty" jsonschema:"Script name (required for script_output/script_history)"`
 	// Output filters
@@ -64,6 +64,8 @@ type ProcInput struct {
 	Head   int    `json:"head,omitempty" jsonschema:"First N lines only"`
 	Grep   string `json:"grep,omitempty" jsonschema:"Filter lines matching regex pattern"`
 	GrepV  bool   `json:"grep_v,omitempty" jsonschema:"Invert grep (exclude matching lines)"`
+	// Find options
+	What string `json:"what,omitempty" jsonschema:"For find: intent to search for (build-warnings, build-errors, test-failures, compile-errors, type-errors)"`
 	// Stop options
 	Force bool `json:"force,omitempty" jsonschema:"For stop: force kill immediately"`
 	// Cleanup options
@@ -84,6 +86,12 @@ type ProcOutput struct {
 	Summary   string `json:"summary,omitempty"`
 	ExitCode  int    `json:"exit_code,omitempty"`
 	Runtime   string `json:"runtime,omitempty"`
+	// Role classification — what kind of process this is and what it produces.
+	// Role values: "build-watch", "dev-server", "test-runner", "script", "unknown"
+	// Produces values: "build-output", "test-results", "logs", "hot-reload"
+	Role       string   `json:"role,omitempty"`
+	Produces   []string `json:"produces,omitempty"`
+	OutputHint string   `json:"output_hint,omitempty"` // advisory: how to query this process output
 	// Last known death record — populated when the process has exited
 	// (cleanly or via crash/signal) within the retention window. Lets the
 	// agent tell "never started" from "started and died at T".
@@ -118,6 +126,10 @@ type ProcEntry struct {
 	Runtime     string `json:"runtime"`
 	ProjectPath string `json:"project_path,omitempty"`
 	ScriptName  string `json:"script_name,omitempty"`
+	// Role classification — what kind of process this is and what it produces.
+	Role       string   `json:"role,omitempty"`
+	Produces   []string `json:"produces,omitempty"`
+	OutputHint string   `json:"output_hint,omitempty"`
 	// Last known death record — see ProcOutput for field semantics.
 	LastExitAt     string `json:"last_exit_at,omitempty"`
 	LastExitCode   *int   `json:"last_exit_code,omitempty"`
@@ -154,11 +166,20 @@ Examples:
 		Description: `Manage running processes.
 
 Actions:
-  list: List all running processes (use global: true for all directories)
-  status: Get process status and info
+  list: List all running processes with role/produces classification
+  status: Get process status, role, and what it produces
   output: Get process output (tail/grep supported)
+  find: Intent-based search — extract build-warnings, build-errors, test-failures, etc.
   stop: Gracefully stop a process (use force: true for immediate kill)
   cleanup_port: Kill any process using a specific port
+
+Build output discoverability:
+  Running watch processes (dotnet watch, vite, webpack, tsc --watch) are queryable logs.
+  Use proc {action:"find"} to extract structured output without knowing grep patterns:
+    proc {action: "find", process_id: "backend", what: "build-warnings"}
+    proc {action: "find", process_id: "frontend", what: "type-errors"}
+  Use proc {action: "status"} to see the process role and what it produces.
+  The "produces" field tells you what kind of output is available.
 
 Restarting dev servers: Always use stop action, never pkill or external commands.
   proc {action: "stop", process_id: "dev"}
@@ -166,13 +187,163 @@ Restarting dev servers: Always use stop action, never pkill or external commands
 
 Examples:
   proc {action: "list"}
-  proc {action: "status", process_id: "test"}
+  proc {action: "status", process_id: "backend"}
   proc {action: "output", process_id: "test", tail: 20}
   proc {action: "output", process_id: "test", grep: "FAIL"}
+  proc {action: "find", process_id: "backend", what: "build-warnings"}
+  proc {action: "find", process_id: "frontend", what: "compile-errors"}
   proc {action: "stop", process_id: "test"}
-  proc {action: "stop", process_id: "test", force: true}
   proc {action: "cleanup_port", port: 3000}`,
 	}, makeProcHandler(pm))
+}
+
+// ProcessRole describes the role of a running process.
+type ProcessRole struct {
+	Role       string   // "build-watch", "dev-server", "test-runner", "script", "unknown"
+	Produces   []string // "build-output", "test-results", "logs", "hot-reload"
+	OutputHint string   // advisory message for querying output
+}
+
+// classifyProcess inspects a command string to determine process role and output characteristics.
+// This enables intent-based querying and build-output discoverability.
+func classifyProcess(command string) ProcessRole {
+	cmd := strings.ToLower(command)
+
+	// dotnet watch — emits build output on every file change
+	if matchesAny(cmd, "dotnet watch", "dotnet-watch") {
+		return ProcessRole{
+			Role:       "build-watch",
+			Produces:   []string{"build-output", "logs"},
+			OutputHint: `proc {action:"find", process_id:"<id>", what:"build-warnings"} or proc {action:"output", grep:"warning|error"}`,
+		}
+	}
+
+	// TypeScript compiler watch
+	if matchesAny(cmd, "tsc --watch", "tsc -w ", "tsc -w\"", "typescript") && strings.Contains(cmd, "watch") {
+		return ProcessRole{
+			Role:       "build-watch",
+			Produces:   []string{"build-output", "type-errors"},
+			OutputHint: `proc {action:"find", process_id:"<id>", what:"type-errors"} or proc {action:"output", grep:"error TS"}`,
+		}
+	}
+
+	// Webpack watch / webpack-dev-server
+	if matchesAny(cmd, "webpack", "webpack-dev-server", "webpack serve") {
+		if strings.Contains(cmd, "watch") || strings.Contains(cmd, "serve") || strings.Contains(cmd, "dev-server") {
+			return ProcessRole{
+				Role:       "build-watch",
+				Produces:   []string{"build-output", "hot-reload", "logs"},
+				OutputHint: `proc {action:"find", process_id:"<id>", what:"build-errors"} or proc {action:"output", grep:"ERROR|WARNING"}`,
+			}
+		}
+		return ProcessRole{
+			Role:       "script",
+			Produces:   []string{"build-output"},
+			OutputHint: `proc {action:"output", process_id:"<id>"}`,
+		}
+	}
+
+	// Vite dev server
+	if matchesAny(cmd, "vite", "vite dev", "vite serve") {
+		return ProcessRole{
+			Role:       "dev-server",
+			Produces:   []string{"build-output", "hot-reload", "logs"},
+			OutputHint: `proc {action:"find", process_id:"<id>", what:"build-errors"} or proc {action:"output", grep:"error|warn"}`,
+		}
+	}
+
+	// Go test watch (via gotestsum --watch or similar)
+	if matchesAny(cmd, "gotestsum", "go test") && strings.Contains(cmd, "watch") {
+		return ProcessRole{
+			Role:       "test-runner",
+			Produces:   []string{"test-results", "logs"},
+			OutputHint: `proc {action:"find", process_id:"<id>", what:"test-failures"} or proc {action:"output", grep:"FAIL|PASS"}`,
+		}
+	}
+
+	// Cargo watch (Rust)
+	if matchesAny(cmd, "cargo watch", "cargo-watch") {
+		return ProcessRole{
+			Role:       "build-watch",
+			Produces:   []string{"build-output", "logs"},
+			OutputHint: `proc {action:"find", process_id:"<id>", what:"build-errors"} or proc {action:"output", grep:"error|warning"}`,
+		}
+	}
+
+	// Generic dev server patterns
+	if matchesAny(cmd, "next dev", "nuxt dev", "remix dev", "astro dev", "svelte-kit dev") {
+		return ProcessRole{
+			Role:       "dev-server",
+			Produces:   []string{"build-output", "hot-reload", "logs"},
+			OutputHint: `proc {action:"find", process_id:"<id>", what:"build-errors"} or proc {action:"output", grep:"error|warn"}`,
+		}
+	}
+
+	// Generic watch patterns
+	if strings.Contains(cmd, " watch") || strings.Contains(cmd, "--watch") || strings.Contains(cmd, "-w ") {
+		return ProcessRole{
+			Role:       "build-watch",
+			Produces:   []string{"build-output", "logs"},
+			OutputHint: `proc {action:"find", process_id:"<id>", what:"build-warnings"} or proc {action:"output", grep:"warning|error"}`,
+		}
+	}
+
+	return ProcessRole{
+		Role:       "unknown",
+		Produces:   []string{"logs"},
+		OutputHint: `proc {action:"output", process_id:"<id>"}`,
+	}
+}
+
+// matchesAny returns true if s contains any of the given substrings.
+func matchesAny(s string, substrings ...string) bool {
+	for _, sub := range substrings {
+		if strings.Contains(s, sub) {
+			return true
+		}
+	}
+	return false
+}
+
+// buildWhatPattern returns a grep pattern for a given intent string.
+// Intent values: "build-warnings", "build-errors", "test-failures", "compile-errors", "type-errors"
+func buildWhatPattern(what, command string) (string, error) {
+	cmd := strings.ToLower(command)
+	isDotnet := matchesAny(cmd, "dotnet", "msbuild")
+	isTypeScript := matchesAny(cmd, "tsc", "typescript")
+	isRust := matchesAny(cmd, "cargo", "rustc")
+
+	switch what {
+	case "build-warnings":
+		if isDotnet {
+			return `(?i)\bwarning\b`, nil
+		}
+		return `(?i)\bwarn(ing)?\b`, nil
+
+	case "build-errors", "compile-errors":
+		if isDotnet {
+			return `(?i)\berror\b`, nil
+		}
+		if isRust {
+			return `^error(\[`, nil
+		}
+		return `(?i)\berror\b`, nil
+
+	case "type-errors":
+		if isTypeScript {
+			return `error TS\d+`, nil
+		}
+		if isDotnet {
+			return `(?i)\berror\b`, nil
+		}
+		return `(?i)type.?error|TS\d+`, nil
+
+	case "test-failures":
+		return `(?i)\b(FAIL|FAILED|FAILURE|✗|✕|× )\b`, nil
+
+	default:
+		return "", fmt.Errorf("unknown what %q: use build-warnings, build-errors, compile-errors, type-errors, test-failures", what)
+	}
 }
 
 func makeRunHandler(pm *process.ProcessManager) func(context.Context, *mcp.CallToolRequest, RunInput) (*mcp.CallToolResult, RunOutput, error) {
@@ -309,6 +480,8 @@ func makeProcHandler(pm *process.ProcessManager) func(context.Context, *mcp.Call
 			return handleStatus(pm, input)
 		case "output":
 			return handleOutput(pm, input)
+		case "find":
+			return handleFind(pm, input)
 		case "stop":
 			return handleStop(ctx, pm, input)
 		case "list":
@@ -318,7 +491,7 @@ func makeProcHandler(pm *process.ProcessManager) func(context.Context, *mcp.Call
 		case "scripts", "script_output", "script_history":
 			return errorResult("script actions require daemon mode"), ProcOutput{}, nil
 		default:
-			return errorResult(fmt.Sprintf("unknown action %q. Use: status, output, stop, list, cleanup_port", input.Action)), ProcOutput{}, nil
+			return errorResult(fmt.Sprintf("unknown action %q. Use: status, output, find, stop, list, cleanup_port", input.Action)), ProcOutput{}, nil
 		}
 	}
 }
@@ -333,12 +506,18 @@ func handleStatus(pm *process.ProcessManager, input ProcInput) (*mcp.CallToolRes
 		return errorResult(fmt.Sprintf("process not found: %s", input.ProcessID)), ProcOutput{}, nil
 	}
 
+	role := classifyProcess(proc.Command + " " + strings.Join(proc.Args, " "))
+	hint := strings.ReplaceAll(role.OutputHint, "<id>", proc.ID)
+
 	return nil, ProcOutput{
-		ProcessID: proc.ID,
-		State:     proc.State().String(),
-		Summary:   proc.Summary(),
-		ExitCode:  proc.ExitCode(),
-		Runtime:   formatDuration(proc.Runtime()),
+		ProcessID:  proc.ID,
+		State:      proc.State().String(),
+		Summary:    proc.Summary(),
+		ExitCode:   proc.ExitCode(),
+		Runtime:    formatDuration(proc.Runtime()),
+		Role:       role.Role,
+		Produces:   role.Produces,
+		OutputHint: hint,
 	}, nil
 }
 
@@ -422,6 +601,52 @@ func handleOutput(pm *process.ProcessManager, input ProcInput) (*mcp.CallToolRes
 	}, nil
 }
 
+func handleFind(pm *process.ProcessManager, input ProcInput) (*mcp.CallToolResult, ProcOutput, error) {
+	if input.ProcessID == "" {
+		return errorResult("process_id required for find"), ProcOutput{}, nil
+	}
+	if input.What == "" {
+		return errorResult("what required for find (build-warnings, build-errors, compile-errors, type-errors, test-failures)"), ProcOutput{}, nil
+	}
+
+	proc, err := pm.Get(input.ProcessID)
+	if err != nil {
+		return errorResult(fmt.Sprintf("process not found: %s", input.ProcessID)), ProcOutput{}, nil
+	}
+
+	cmdFull := proc.Command + " " + strings.Join(proc.Args, " ")
+	pattern, err := buildWhatPattern(input.What, cmdFull)
+	if err != nil {
+		return errorResult(err.Error()), ProcOutput{}, nil
+	}
+
+	data, truncated := proc.CombinedOutput()
+	lines := strings.Split(string(data), "\n")
+
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return errorResult(fmt.Sprintf("internal: bad pattern for %q: %v", input.What, err)), ProcOutput{}, nil
+	}
+
+	var matched []string
+	for _, line := range lines {
+		if re.MatchString(line) {
+			matched = append(matched, line)
+		}
+	}
+
+	output := strings.Join(matched, "\n")
+	lineCount := len(matched)
+
+	return nil, ProcOutput{
+		ProcessID: proc.ID,
+		Output:    output,
+		Lines:     lineCount,
+		Truncated: truncated,
+		Message:   fmt.Sprintf("found %d lines matching %q in process %s", lineCount, input.What, input.ProcessID),
+	}, nil
+}
+
 func handleStop(ctx context.Context, pm *process.ProcessManager, input ProcInput) (*mcp.CallToolResult, ProcOutput, error) {
 	if input.ProcessID == "" {
 		return errorResult("process_id required for stop"), ProcOutput{}, nil
@@ -453,12 +678,17 @@ func handleList(pm *process.ProcessManager) (*mcp.CallToolResult, ProcOutput, er
 
 	entries := make([]ProcEntry, len(procs))
 	for i, p := range procs {
+		role := classifyProcess(p.Command + " " + strings.Join(p.Args, " "))
+		hint := strings.ReplaceAll(role.OutputHint, "<id>", p.ID)
 		entries[i] = ProcEntry{
-			ID:      p.ID,
-			Command: p.Command,
-			State:   p.State().String(),
-			Summary: p.Summary(),
-			Runtime: formatDuration(p.Runtime()),
+			ID:         p.ID,
+			Command:    p.Command,
+			State:      p.State().String(),
+			Summary:    p.Summary(),
+			Runtime:    formatDuration(p.Runtime()),
+			Role:       role.Role,
+			Produces:   role.Produces,
+			OutputHint: hint,
 		}
 	}
 

@@ -2,20 +2,18 @@ package tools
 
 import (
 	"context"
-
 	"fmt"
-
-	"github.com/modelcontextprotocol/go-sdk/mcp"
-	"github.com/standardbeagle/agnt/internal/daemon"
-
-	"os"
-	"path/filepath"
+	"regexp"
 	"strings"
 
+	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/standardbeagle/agnt/internal/config"
+	"github.com/standardbeagle/agnt/internal/daemon"
 	"github.com/standardbeagle/agnt/internal/project"
 	"github.com/standardbeagle/agnt/internal/protocol"
 
+	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -149,6 +147,8 @@ func (dt *DaemonTools) makeProcHandler() func(context.Context, *mcp.CallToolRequ
 			return dt.handleProcStatus(input)
 		case "output":
 			return dt.handleProcOutput(input)
+		case "find":
+			return dt.handleProcFind(input)
 		case "stop":
 			return dt.handleProcStop(input)
 		case "restart":
@@ -166,7 +166,7 @@ func (dt *DaemonTools) makeProcHandler() func(context.Context, *mcp.CallToolRequ
 		case "script_history":
 			return dt.handleScriptHistory(input)
 		default:
-			return errorResult(fmt.Sprintf("unknown action %q. Use: status, output, stop, restart, list, cleanup_port, autorestart, scripts, script_output, script_history", input.Action)), ProcOutput{}, nil
+			return errorResult(fmt.Sprintf("unknown action %q. Use: status, output, find, stop, restart, list, cleanup_port, autorestart, scripts, script_output, script_history", input.Action)), ProcOutput{}, nil
 		}
 	}
 }
@@ -194,6 +194,17 @@ func (dt *DaemonTools) handleProcStatus(input ProcInput) (*mcp.CallToolResult, P
 		out.ProcessID = getString(result, "id")
 	}
 	populateLastExitFields(&out, result)
+
+	// Classify the process role from its command string.
+	cmdFull := getString(result, "command")
+	if cmdFull != "" {
+		procID := out.ProcessID
+		role := classifyProcess(cmdFull)
+		out.Role = role.Role
+		out.Produces = role.Produces
+		out.OutputHint = strings.ReplaceAll(role.OutputHint, "<id>", procID)
+	}
+
 	return nil, out, nil
 }
 
@@ -231,6 +242,77 @@ func (dt *DaemonTools) handleProcOutput(input ProcInput) (*mcp.CallToolResult, P
 	return nil, ProcOutput{
 		ProcessID: input.ProcessID,
 		Output:    output,
+	}, nil
+}
+
+func (dt *DaemonTools) handleProcFind(input ProcInput) (*mcp.CallToolResult, ProcOutput, error) {
+	if input.ProcessID == "" {
+		return errorResult("process_id required for find"), ProcOutput{}, nil
+	}
+	if input.What == "" {
+		return errorResult("what required for find (build-warnings, build-errors, compile-errors, type-errors, test-failures)"), ProcOutput{}, nil
+	}
+
+	// First get the process command so we can pick the right pattern.
+	statusResult, err := dt.client.ProcStatus(input.ProcessID)
+	if err != nil {
+		return formatDaemonError(err, "proc"), ProcOutput{}, nil
+	}
+	cmdFull := getString(statusResult, "command")
+
+	pattern, patErr := buildWhatPattern(input.What, cmdFull)
+	if patErr != nil {
+		return errorResult(patErr.Error()), ProcOutput{}, nil
+	}
+
+	filter := protocol.OutputFilter{
+		Stream: "combined",
+		Grep:   pattern,
+		Tail:   input.Tail,
+	}
+
+	output, err := dt.client.ProcOutput(input.ProcessID, filter)
+	if err != nil {
+		// Fall back to script_output if the process isn't directly tracked.
+		projectPath := getProjectPath()
+		if projectPath != "" {
+			scriptResult, scriptErr := dt.client.ScriptOutput(input.ProcessID, projectPath, input.Tail)
+			if scriptErr == nil {
+				lines := getStringSlice(scriptResult, "lines")
+				re, reErr := regexp.Compile(pattern)
+				if reErr != nil {
+					return errorResult(fmt.Sprintf("internal: bad pattern for %q: %v", input.What, reErr)), ProcOutput{}, nil
+				}
+				var matched []string
+				for _, line := range lines {
+					if re.MatchString(line) {
+						matched = append(matched, line)
+					}
+				}
+				return nil, ProcOutput{
+					ProcessID: input.ProcessID,
+					Output:    strings.Join(matched, "\n"),
+					Lines:     len(matched),
+					Message:   fmt.Sprintf("found %d lines matching %q in process %s (via script_output)", len(matched), input.What, input.ProcessID),
+				}, nil
+			}
+		}
+		return formatDaemonError(err, "proc"), ProcOutput{}, nil
+	}
+
+	lines := strings.Split(output, "\n")
+	lineCount := 0
+	for _, l := range lines {
+		if l != "" {
+			lineCount++
+		}
+	}
+
+	return nil, ProcOutput{
+		ProcessID: input.ProcessID,
+		Output:    output,
+		Lines:     lineCount,
+		Message:   fmt.Sprintf("found %d lines matching %q in process %s", lineCount, input.What, input.ProcessID),
 	}, nil
 }
 
@@ -332,9 +414,10 @@ func (dt *DaemonTools) handleProcList(input ProcInput) (*mcp.CallToolResult, Pro
 		for _, p := range processes {
 			if pm, ok := p.(map[string]interface{}); ok {
 				id := getString(pm, "id")
+				cmdFull := getString(pm, "command")
 				entry := ProcEntry{
 					ID:          id,
-					Command:     getString(pm, "command"),
+					Command:     cmdFull,
 					State:       getString(pm, "state"),
 					Summary:     getString(pm, "summary"),
 					Runtime:     getString(pm, "runtime"),
@@ -344,6 +427,15 @@ func (dt *DaemonTools) handleProcList(input ProcInput) (*mcp.CallToolResult, Pro
 				if idx := strings.Index(id, ":"); idx >= 0 {
 					entry.ScriptName = id[idx+1:]
 				}
+
+				// Classify process role for build output discoverability.
+				if cmdFull != "" {
+					role := classifyProcess(cmdFull)
+					entry.Role = role.Role
+					entry.Produces = role.Produces
+					entry.OutputHint = strings.ReplaceAll(role.OutputHint, "<id>", id)
+				}
+
 				populateLastExitFieldsEntry(&entry, pm)
 				output.Processes = append(output.Processes, entry)
 			}
