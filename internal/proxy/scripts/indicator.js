@@ -93,7 +93,9 @@
     lastAuditResults: null, // Cache audit results
     inspectBtn: null, // Inspect toolbar button (for active state tracking)
     microToast: null, // Micro toast element (compact pill near bug)
-    microToastTimeout: null // Auto-hide timer for micro toast
+    microToastTimeout: null, // Auto-hide timer for micro toast
+    expandedErrorKeys: {},   // Stable keys of expanded error items
+    expandedNetworkKeys: {}  // Stable keys of expanded network items
   };
 
   // ============================================
@@ -578,12 +580,16 @@
         item.appendChild(meta);
         item.appendChild(detail);
 
-        var expanded = false;
+        var errorKey = (error.message || '') + '|' + (error.source || '') + '|' + (error.lineno || 0) + '|' + (error.colno || 0);
+        var expanded = !!state.expandedErrorKeys[errorKey];
+        detail.style.display = expanded ? 'block' : 'none';
+
         item.onclick = function() {
           expanded = !expanded;
+          state.expandedErrorKeys[errorKey] = expanded;
           detail.style.display = expanded ? 'block' : 'none';
         };
-        item.onmouseenter = function() { item.style.background = expanded ? 'transparent' : TOKENS.colors.surfaceAlt; };
+        item.onmouseenter = function() { item.style.background = detail.style.display === 'block' ? 'transparent' : TOKENS.colors.surfaceAlt; };
         item.onmouseleave = function() { item.style.background = 'transparent'; };
 
         return item;
@@ -667,12 +673,16 @@
         item.appendChild(meta);
         item.appendChild(detail);
 
-        var expanded = false;
+        var networkKey = (call.method || '') + '|' + (call.url || '') + '|' + (call.timestamp || 0);
+        var expanded = !!state.expandedNetworkKeys[networkKey];
+        detail.style.display = expanded ? 'block' : 'none';
+
         item.onclick = function() {
           expanded = !expanded;
+          state.expandedNetworkKeys[networkKey] = expanded;
           detail.style.display = expanded ? 'block' : 'none';
         };
-        item.onmouseenter = function() { item.style.background = expanded ? 'transparent' : TOKENS.colors.surfaceAlt; };
+        item.onmouseenter = function() { item.style.background = detail.style.display === 'block' ? 'transparent' : TOKENS.colors.surfaceAlt; };
         item.onmouseleave = function() { item.style.background = 'transparent'; };
 
         return item;
