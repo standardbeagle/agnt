@@ -142,6 +142,12 @@ type DaemonConfig struct {
 	// to cancel the cleanup. Set to 0 for immediate cleanup (tests).
 	// Default: 5s
 	CleanupGracePeriod time.Duration
+
+	// StartupMonitorTimeout is how long monitorStartupFailure watches a newly
+	// started process for early exit before declaring it healthy. Set to a
+	// short value in tests to avoid the 3s × N-scripts wall-clock cost.
+	// Default: 3s
+	StartupMonitorTimeout time.Duration
 }
 
 // DefaultDaemonConfig returns sensible defaults.
@@ -156,6 +162,7 @@ func DefaultDaemonConfig() DaemonConfig {
 		EnableUpdateCheck:      true,
 		UpdateCheckInterval:    24 * time.Hour,
 		CleanupGracePeriod:     5 * time.Second,
+		StartupMonitorTimeout:  3 * time.Second,
 	}
 }
 

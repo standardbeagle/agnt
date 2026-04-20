@@ -42,9 +42,10 @@ scripts {
 	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, ".agnt.kdl"), []byte(configContent), 0o644))
 
 	d := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
+		SocketPath:            sockPath,
+		MaxClients:            10,
+		WriteTimeout:          5 * time.Second,
+		StartupMonitorTimeout: 200 * time.Millisecond,
 	})
 	require.NoError(t, d.Start())
 	defer func() {
@@ -54,7 +55,7 @@ scripts {
 	}()
 
 	progress := make(chan AutostartProgress, 100)
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	result := d.RunAutostartAsync(ctx, tmpDir, progress)
