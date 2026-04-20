@@ -15,7 +15,7 @@ import (
 
 func TestDefaultAlertPatterns(t *testing.T) {
 	patterns := DefaultAlertPatterns()
-	assert.True(t, len(patterns) >= 18, "should have at least 18 default patterns, got %d", len(patterns))
+	assert.True(t, len(patterns) >= 21, "should have at least 21 default patterns, got %d", len(patterns))
 
 	// Verify all patterns have required fields
 	ids := map[string]bool{}
@@ -41,6 +41,10 @@ func TestAlertPatternMatching(t *testing.T) {
 		{"dotnet ENC error", "error ENC1008: Something went wrong", "dotnet-enc-error", AlertSeverityError},
 		{"dotnet ENC warning", "warning ENC0042: Minor issue", "dotnet-enc-warning", AlertSeverityWarning},
 		{"dotnet build failed", "Build FAILED.", "dotnet-build-error", AlertSeverityError},
+		{"dotnet-watch error emoji", "dotnet watch ❌  : error NU1301: Unable to load the service index", "dotnet-watch-error", AlertSeverityError},
+		{"dotnet-watch warning emoji", "dotnet watch ⚠  : warning NU1903: Package 'Foo' has a known critical vulnerability", "dotnet-watch-warning", AlertSeverityWarning},
+		{"dotnet-watch restore failed", "dotnet watch 🔨   Failed to restore /app/MyApp.csproj", "dotnet-watch-restore-failed", AlertSeverityError},
+		{"dotnet-watch normal progress", "dotnet watch 🔨   1 of 3 projects are up-to-date for restore.", "", ""},
 
 		// Webpack patterns
 		{"webpack error", "ERROR in ./src/index.js", "webpack-error", AlertSeverityError},
