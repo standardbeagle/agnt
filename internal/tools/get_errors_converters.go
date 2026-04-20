@@ -1,6 +1,8 @@
 package tools
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -9,6 +11,19 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/proxy"
 )
+
+// findingID generates a stable 8-char hex ID for a finding.
+// It hashes the concatenation of the provided parts with sha256 and
+// returns the first 4 bytes encoded as lowercase hex (8 chars).
+// The same inputs always produce the same output, making IDs stable
+// across runs and suitable for highlight lookups.
+func findingID(parts ...string) string {
+	h := sha256.New()
+	for _, p := range parts {
+		h.Write([]byte(p))
+	}
+	return hex.EncodeToString(h.Sum(nil)[:4])
+}
 
 // alertMapToUnifiedError converts a raw daemon AlertEntry JSON map into a
 // unifiedError. Kept separate from collectProcessAlerts so it can be
@@ -58,7 +73,7 @@ func alertMapToUnifiedError(am map[string]interface{}) *unifiedError {
 		message = description
 	}
 
-	return &unifiedError{
+	ue := &unifiedError{
 		Source:   source,
 		Severity: level,
 		Category: category,
@@ -66,6 +81,8 @@ func alertMapToUnifiedError(am map[string]interface{}) *unifiedError {
 		LastSeen: ts,
 		Count:    1,
 	}
+	ue.ID = findingID(ue.Source, ue.Category, ue.Message, ue.Location)
+	return ue
 }
 
 // convertStartupLogEntry converts a startup log entry map to a unified error.
@@ -100,7 +117,7 @@ func convertStartupLogEntry(em map[string]interface{}) *unifiedError {
 
 	ts := getTime(em, "timestamp")
 
-	return &unifiedError{
+	ue := &unifiedError{
 		Source:   source,
 		Severity: severity,
 		Category: category,
@@ -108,6 +125,8 @@ func convertStartupLogEntry(em map[string]interface{}) *unifiedError {
 		LastSeen: ts,
 		Count:    1,
 	}
+	ue.ID = findingID(ue.Source, ue.Category, ue.Message, ue.Location)
+	return ue
 }
 
 // convertProxyEntry converts a proxy log entry (map form from IPC) to zero or
@@ -249,7 +268,7 @@ func convertJSErrorDirect(proxyID string, fe *proxy.FrontendError) []unifiedErro
 		location = fmt.Sprintf("%s:%d:%d", fe.Source, fe.LineNo, fe.ColNo)
 	}
 
-	return []unifiedError{{
+	ue := unifiedError{
 		Source:   "browser:js",
 		Severity: "error",
 		Category: category,
@@ -258,7 +277,9 @@ func convertJSErrorDirect(proxyID string, fe *proxy.FrontendError) []unifiedErro
 		Page:     fe.URL,
 		LastSeen: fe.Timestamp,
 		Count:    1,
-	}}
+	}
+	ue.ID = findingID(ue.Source, ue.Category, ue.Message, ue.Location)
+	return []unifiedError{ue}
 }
 
 // convertHTTPErrorDirect converts an HTTPLogEntry struct to a unified error.
@@ -291,14 +312,16 @@ func convertHTTPErrorDirect(proxyID string, h *proxy.HTTPLogEntry) []unifiedErro
 		level = "warning"
 	}
 
-	return []unifiedError{{
+	ue := unifiedError{
 		Source:   "proxy:http",
 		Severity: level,
 		Category: category,
 		Message:  message,
 		LastSeen: h.Timestamp,
 		Count:    1,
-	}}
+	}
+	ue.ID = findingID(ue.Source, ue.Category, ue.Message, ue.Location)
+	return []unifiedError{ue}
 }
 
 // convertDiagnosticErrorDirect converts a ProxyDiagnostic struct to a unified error.
@@ -317,14 +340,16 @@ func convertDiagnosticErrorDirect(proxyID string, d *proxy.ProxyDiagnostic) []un
 		category = strings.ToUpper(strings.ReplaceAll(d.Event, "_", " "))
 	}
 
-	return []unifiedError{{
+	ue := unifiedError{
 		Source:   "proxy:diagnostic",
 		Severity: level,
 		Category: category,
 		Message:  d.Message,
 		LastSeen: d.Timestamp,
 		Count:    1,
-	}}
+	}
+	ue.ID = findingID(ue.Source, ue.Category, ue.Message, ue.Location)
+	return []unifiedError{ue}
 }
 
 // convertCustomErrorDirect converts a CustomLog struct to a unified error.
@@ -342,7 +367,7 @@ func convertCustomErrorDirect(proxyID string, c *proxy.CustomLog) []unifiedError
 		unifiedLevel = "warning"
 	}
 
-	return []unifiedError{{
+	ue := unifiedError{
 		Source:   "browser:custom",
 		Severity: unifiedLevel,
 		Category: "CUSTOM ERROR",
@@ -350,7 +375,9 @@ func convertCustomErrorDirect(proxyID string, c *proxy.CustomLog) []unifiedError
 		Page:     c.URL,
 		LastSeen: c.Timestamp,
 		Count:    1,
-	}}
+	}
+	ue.ID = findingID(ue.Source, ue.Category, ue.Message, ue.Location)
+	return []unifiedError{ue}
 }
 
 // deduplicateErrors merges errors with the same key, incrementing counts and keeping latest timestamp.
@@ -424,7 +451,11 @@ func formatSingleError(b *strings.Builder, e unifiedError) {
 		countStr = "1x, "
 	}
 
-	fmt.Fprintf(b, "[%s] %s (%s%s)\n", e.Source, e.Category, countStr, ago)
+	idStr := ""
+	if e.ID != "" {
+		idStr = fmt.Sprintf(" #%s", e.ID)
+	}
+	fmt.Fprintf(b, "[%s] %s (%s%s)%s\n", e.Source, e.Category, countStr, ago, idStr)
 	fmt.Fprintf(b, "  %s\n", truncate(e.Message, 200))
 
 	if e.Location != "" {

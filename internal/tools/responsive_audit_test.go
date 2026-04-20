@@ -553,3 +553,28 @@ func TestResponsiveAuditToolDescription(t *testing.T) {
 	assert.Contains(t, responsiveAuditToolDescription, "a11y")
 	assert.Contains(t, responsiveAuditToolDescription, "viewport")
 }
+
+// TestFindingIDStableFromConverters verifies that the findingID helper used
+// by get_errors converters is stable: same inputs → same 8-char hex ID.
+// The responsive_audit tool uses JS-side IDs; Go-side stability is covered
+// by get_errors_test.go. This test confirms the shared helper is available
+// and consistent from this package.
+func TestFindingIDConsistency(t *testing.T) {
+	t.Run("identical calls return same id", func(t *testing.T) {
+		id1 := findingID("layout", ".header", "collapsed content, element has text but zero height")
+		id2 := findingID("layout", ".header", "collapsed content, element has text but zero height")
+		assert.Equal(t, id1, id2)
+		assert.Len(t, id1, 8)
+	})
+
+	t.Run("distinct findings get distinct ids", func(t *testing.T) {
+		id1 := findingID("layout", ".header", "collapsed content, element has text but zero height")
+		id2 := findingID("overflow", ".sidebar", "forces horizontal scroll +25px")
+		assert.NotEqual(t, id1, id2)
+	})
+
+	t.Run("id is lowercase hex", func(t *testing.T) {
+		id := findingID("a11y", "button.submit", "touch target smaller than 44x44px minimum")
+		assert.Regexp(t, "^[0-9a-f]{8}$", id)
+	})
+}

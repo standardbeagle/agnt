@@ -32,6 +32,7 @@ type GetErrorsOutput struct {
 
 // unifiedError is the internal representation for deduplication and sorting.
 type unifiedError struct {
+	ID       string    `json:"id"`       // stable 8-char hex: sha256(source+category+message+location)[:4 bytes]
 	Source   string    `json:"source"`   // "process:<id>" or "browser:js" or "proxy:http" or "proxy:diagnostic"
 	Severity string    `json:"severity"` // "error" or "warning"
 	Category string    `json:"category"` // e.g. "TypeError", "COMPILE ERROR", "500 Internal Server Error"
