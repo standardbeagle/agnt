@@ -105,6 +105,11 @@ type ProxyServer struct {
 	// with the ReadinessSentinel body instead of forwarding. See
 	// readiness.go for the full contract.
 	readiness *readinessGate
+
+	// tlsCertSkipped is set when the TLS fallback transport detects a
+	// self-signed or otherwise invalid cert and retries without verification.
+	// New WebSocket clients receive a warning toast when this flag is set.
+	tlsCertSkipped atomic.Bool
 }
 
 // ProxyConfig holds configuration for creating a proxy server.
@@ -258,20 +263,20 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 
 	if config.SkipTLSVerify {
 		debug.Warn("proxy", "TLS certificate verification disabled for proxy %s — connections to %s will not verify server certificates", config.ID, config.TargetURL)
-		// Clone the default transport and disable TLS verification
+		// Explicit skip: clone and disable immediately, no fallback needed.
 		if defaultTransport, ok := baseTransport.(*http.Transport); ok {
 			clonedTransport := defaultTransport.Clone()
 			if clonedTransport.TLSClientConfig == nil {
-				clonedTransport.TLSClientConfig = &tls.Config{}
+				clonedTransport.TLSClientConfig = &tls.Config{} //nolint:gosec
 			}
-			clonedTransport.TLSClientConfig.InsecureSkipVerify = true
+			clonedTransport.TLSClientConfig.InsecureSkipVerify = true //nolint:gosec
 			baseTransport = clonedTransport
 		} else {
-			// Fallback: create a new transport with TLS skip
 			baseTransport = &http.Transport{
-				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
 			}
 		}
+		ps.tlsCertSkipped.Store(true)
 	}
 
 	// Configure custom dialer to prefer IPv4 for localhost connections.
@@ -312,6 +317,27 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 		transport.IdleConnTimeout = 10 * time.Second // Evict stale connections faster
 		transport.MaxIdleConnsPerHost = 6            // Limit pooled connections per backend
 		ps.baseTransport = transport
+	}
+
+	// For HTTPS targets without an explicit SkipTLSVerify, wrap the transport
+	// in a TLSFallbackTransport that retries cert errors without verification,
+	// logs a warning, and sets tlsCertSkipped so new WS clients receive a toast.
+	if !config.SkipTLSVerify && targetURL.Scheme == "https" {
+		if baseT, ok := baseTransport.(*http.Transport); ok {
+			baseTransport = NewTLSFallbackTransport(baseT, func(certErr error) {
+				debug.Warn("proxy", "TLS cert error for proxy %s (%s): %v — retrying without verification", config.ID, config.TargetURL, certErr)
+				ps.tlsCertSkipped.Store(true)
+				ps.logger.LogCustom(CustomLog{
+					Level:   "warn",
+					Message: "TLS certificate verification failed and was bypassed. The backend is using a self-signed or invalid certificate. Traffic is still being proxied.",
+					Data: map[string]interface{}{
+						"proxy_id":   config.ID,
+						"target":     config.TargetURL,
+						"cert_error": certErr.Error(),
+					},
+				})
+			})
+		}
 	}
 
 	// Wrap the transport with chaos transport for failure injection
