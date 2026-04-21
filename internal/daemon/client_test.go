@@ -3,7 +3,6 @@
 package daemon
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -24,31 +23,7 @@ func TestClient_ConnectToNonExistentDaemon(t *testing.T) {
 }
 
 func TestClient_PingPong(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	// Start a daemon
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
-
-	// Connect client
-	client := NewClient(WithSocketPath(sockPath))
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer client.Close()
+	client := newBootedClient(t)
 
 	// Ping
 	if err := client.Ping(); err != nil {
@@ -57,31 +32,8 @@ func TestClient_PingPong(t *testing.T) {
 }
 
 func TestClient_Info(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	// Start a daemon
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
-
-	// Connect client
-	client := NewClient(WithSocketPath(sockPath))
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer client.Close()
+	daemon, client, _ := newBootedDaemonWithClient(t)
+	sockPath := daemon.config.SocketPath
 
 	// Get info
 	info, err := client.Info()
@@ -98,31 +50,7 @@ func TestClient_Info(t *testing.T) {
 }
 
 func TestClient_Detect(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	// Start a daemon
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
-
-	// Connect client
-	client := NewClient(WithSocketPath(sockPath))
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer client.Close()
+	client := newBootedClient(t)
 
 	// Detect project (this project is a Go project)
 	result, err := client.Detect(".")
@@ -155,24 +83,7 @@ func TestClient_NotConnected(t *testing.T) {
 }
 
 func TestClient_MultipleConnections(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	// Start a daemon
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
+	_, sockPath := newBootedDaemon(t)
 
 	// Create multiple clients
 	clients := make([]*Client, 5)
@@ -196,7 +107,6 @@ func TestClient_MultipleConnections(t *testing.T) {
 // disconnects, only resources for that session's project path are cleaned up.
 func TestSessionBasedCleanup(t *testing.T) {
 	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	// Create two project directories (must exist for process working directory)
 	project1 := filepath.Join(tmpDir, "project1")
@@ -209,21 +119,12 @@ func TestSessionBasedCleanup(t *testing.T) {
 	}
 
 	// Start daemon with zero grace period so cleanup is immediate
-	daemon := New(DaemonConfig{
+	sockPath := shortSockPath(t)
+	daemon := newBootedDaemonWithConfig(t, DaemonConfig{
 		SocketPath:         sockPath,
-		MaxClients:         10,
-		WriteTimeout:       5 * time.Second,
 		CleanupGracePeriod: 1, // immediate deferred cleanup
 	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
+	_ = daemon
 
 	// Client 1 - will register a session and start a process
 	client1 := NewClient(WithSocketPath(sockPath))
@@ -332,30 +233,7 @@ func TestSessionBasedCleanup(t *testing.T) {
 
 func TestClient_SessionSchedule(t *testing.T) {
 	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	// Start a daemon
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
-
-	// Connect client
-	client := NewClient(WithSocketPath(sockPath))
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer client.Close()
+	client := newBootedClient(t)
 
 	// Register a session first
 	projectPath := filepath.Join(tmpDir, "project")
@@ -386,30 +264,7 @@ func TestClient_SessionSchedule(t *testing.T) {
 
 func TestClient_SessionCancel(t *testing.T) {
 	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	// Start a daemon
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
-
-	// Connect client
-	client := NewClient(WithSocketPath(sockPath))
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer client.Close()
+	client := newBootedClient(t)
 
 	// Register a session first
 	projectPath := filepath.Join(tmpDir, "project")
@@ -453,30 +308,7 @@ func TestClient_SessionCancel(t *testing.T) {
 
 func TestClient_SessionAttach(t *testing.T) {
 	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	// Start a daemon
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
-
-	// Connect client
-	client := NewClient(WithSocketPath(sockPath))
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer client.Close()
+	client := newBootedClient(t)
 
 	// Register a session in a nested directory
 	projectPath := filepath.Join(tmpDir, "project", "src")
@@ -517,31 +349,7 @@ func TestClient_SessionAttach(t *testing.T) {
 }
 
 func TestClient_TunnelStart(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	// Start a daemon
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
-
-	// Connect client
-	client := NewClient(WithSocketPath(sockPath))
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer client.Close()
+	client := newBootedClient(t)
 
 	// Try to start a tunnel (will fail if cloudflared not installed, but should exercise the code)
 	_, err := client.TunnelStart(protocol.TunnelStartConfig{

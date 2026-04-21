@@ -3,12 +3,10 @@
 package daemon
 
 import (
-	"context"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -16,24 +14,7 @@ import (
 )
 
 func TestClient_CurrentPage_EndToEnd(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	// Start a daemon
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
+	_, client, _ := newBootedDaemonWithClient(t)
 
 	// Create a backend server
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -42,13 +23,6 @@ func TestClient_CurrentPage_EndToEnd(t *testing.T) {
 		w.Write([]byte("<html><head></head><body>Test Page</body></html>"))
 	}))
 	defer backend.Close()
-
-	// Connect client
-	client := NewClient(WithSocketPath(sockPath))
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer client.Close()
 
 	// Start a proxy
 	result, err := client.ProxyStart("test-proxy", backend.URL, 0, 100, ".")
