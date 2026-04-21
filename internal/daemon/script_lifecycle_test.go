@@ -20,7 +20,6 @@ import (
 // processes are started. Scripts should exist as soon as the config is loaded.
 func TestScriptLifecycle_ConfigCreatesIdleScripts(t *testing.T) {
 	tmpDir := t.TempDir()
-	sockPath := shortSockPath(t)
 
 	// Write a config with 3 scripts, only 1 has autostart
 	configContent := `
@@ -49,19 +48,7 @@ scripts {
 		t.Fatalf("Failed to create lib dir: %v", err)
 	}
 
-	d := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-	if err := d.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		d.Stop(ctx)
-	}()
+	d, _ := newBootedDaemon(t)
 
 	// RunAutostart should create ScriptEntries for ALL scripts in config
 	ctx := context.Background()
@@ -94,7 +81,6 @@ scripts {
 // state and its output is still accessible.
 func TestScriptLifecycle_ProcessExitPreservesScript(t *testing.T) {
 	tmpDir := t.TempDir()
-	sockPath := shortSockPath(t)
 
 	// Script that exits immediately with a message
 	configContent := `
@@ -110,19 +96,7 @@ scripts {
 		t.Fatalf("Failed to write config: %v", err)
 	}
 
-	d := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-	if err := d.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		d.Stop(ctx)
-	}()
+	d, _ := newBootedDaemon(t)
 
 	ctx := context.Background()
 	d.RunAutostart(ctx, tmpDir)
@@ -160,7 +134,6 @@ scripts {
 // has its error message recorded and accessible.
 func TestScriptLifecycle_FailedScriptHasError(t *testing.T) {
 	tmpDir := t.TempDir()
-	sockPath := shortSockPath(t)
 
 	configContent := `
 scripts {
@@ -174,19 +147,7 @@ scripts {
 		t.Fatalf("Failed to write config: %v", err)
 	}
 
-	d := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-	if err := d.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		d.Stop(ctx)
-	}()
+	d, _ := newBootedDaemon(t)
 
 	ctx := context.Background()
 	d.RunAutostart(ctx, tmpDir)
@@ -214,21 +175,8 @@ scripts {
 // automatically, so the code path is uniform.
 func TestScriptLifecycle_StandaloneRunCreatesScript(t *testing.T) {
 	tmpDir := t.TempDir()
-	sockPath := shortSockPath(t)
 
-	d := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-	if err := d.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		d.Stop(ctx)
-	}()
+	d, _ := newBootedDaemon(t)
 
 	// Start a process directly via StartScript (not autostart)
 	// Use sh -c with a long sleep so process survives startup monitoring
@@ -261,7 +209,6 @@ func TestScriptLifecycle_StandaloneRunCreatesScript(t *testing.T) {
 // protocol returns all scripts including ones whose processes have exited.
 func TestScriptLifecycle_ScriptListViaProtocol(t *testing.T) {
 	tmpDir := t.TempDir()
-	sockPath := shortSockPath(t)
 
 	configContent := `
 scripts {
@@ -276,19 +223,7 @@ scripts {
 		t.Fatalf("Failed to write config: %v", err)
 	}
 
-	d := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-	if err := d.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		d.Stop(ctx)
-	}()
+	d, _ := newBootedDaemon(t)
 
 	ctx := context.Background()
 	d.RunAutostart(ctx, tmpDir)
@@ -332,7 +267,6 @@ scripts {
 // without autostart=true are still registered in the ScriptRegistry as idle.
 func TestScriptLifecycle_NonAutostartScriptsRegistered(t *testing.T) {
 	tmpDir := t.TempDir()
-	sockPath := shortSockPath(t)
 
 	configContent := `
 scripts {
@@ -346,19 +280,7 @@ scripts {
 		t.Fatalf("Failed to write config: %v", err)
 	}
 
-	d := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-	if err := d.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		d.Stop(ctx)
-	}()
+	d, _ := newBootedDaemon(t)
 
 	ctx := context.Background()
 	d.RunAutostart(ctx, tmpDir)
@@ -378,7 +300,6 @@ scripts {
 // declared in .agnt.kdl are used for pre-flight orphan cleanup.
 func TestScriptLifecycle_ConfigPortsUsedForCleanup(t *testing.T) {
 	tmpDir := t.TempDir()
-	sockPath := shortSockPath(t)
 
 	// Script declares port 9876 explicitly
 	configContent := `
@@ -395,19 +316,7 @@ scripts {
 		t.Fatalf("Failed to write config: %v", err)
 	}
 
-	d := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-	if err := d.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		d.Stop(ctx)
-	}()
+	d, _ := newBootedDaemon(t)
 
 	// Verify getExpectedPortsForScript returns the declared port
 	agntConfig, err := config.LoadAgntConfig(tmpDir)
@@ -441,7 +350,6 @@ scripts {
 // declared in config are all returned.
 func TestScriptLifecycle_MultiplePortsFromConfig(t *testing.T) {
 	tmpDir := t.TempDir()
-	sockPath := shortSockPath(t)
 
 	configContent := `
 scripts {
@@ -457,19 +365,7 @@ scripts {
 		t.Fatalf("Failed to write config: %v", err)
 	}
 
-	d := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-	if err := d.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		d.Stop(ctx)
-	}()
+	d, _ := newBootedDaemon(t)
 
 	agntConfig, err := config.LoadAgntConfig(tmpDir)
 	if err != nil {

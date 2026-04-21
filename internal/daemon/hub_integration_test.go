@@ -17,29 +17,7 @@ import (
 
 // TestHubIntegration_CommandDispatch verifies that commands are dispatched through Hub.
 func TestHubIntegration_CommandDispatch(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
-
-	client := NewClient(WithSocketPath(sockPath))
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer client.Close()
+	client := newBootedClient(t)
 
 	// Test DETECT command through Hub
 	t.Run("DETECT", func(t *testing.T) {
@@ -125,29 +103,7 @@ func TestHubIntegration_CommandDispatch(t *testing.T) {
 
 // TestHubIntegration_ProxyWorkflow tests proxy creation and management through Hub.
 func TestHubIntegration_ProxyWorkflow(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
-
-	client := NewClient(WithSocketPath(sockPath))
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer client.Close()
+	client := newBootedClient(t)
 
 	// Start a proxy
 	proxyID := "test-hub-proxy"
@@ -231,29 +187,7 @@ func TestHubIntegration_ProxyWorkflow(t *testing.T) {
 
 // TestHubIntegration_TunnelCommands tests tunnel commands (error paths since no tunnel running).
 func TestHubIntegration_TunnelCommands(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
-
-	client := NewClient(WithSocketPath(sockPath))
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer client.Close()
+	client := newBootedClient(t)
 
 	// List tunnels (should be empty)
 	t.Run("LIST", func(t *testing.T) {
@@ -285,29 +219,7 @@ func TestHubIntegration_TunnelCommands(t *testing.T) {
 
 // TestHubIntegration_ChaosCommands tests chaos engineering commands.
 func TestHubIntegration_ChaosCommands(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
-
-	client := NewClient(WithSocketPath(sockPath))
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer client.Close()
+	client := newBootedClient(t)
 
 	// Start a proxy for chaos testing
 	proxyID := "chaos-test-proxy"
@@ -400,29 +312,7 @@ func TestHubIntegration_ChaosCommands(t *testing.T) {
 
 // TestHubIntegration_OverlayCommands tests overlay commands.
 func TestHubIntegration_OverlayCommands(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
-
-	client := NewClient(WithSocketPath(sockPath))
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer client.Close()
+	client := newBootedClient(t)
 
 	// Test OVERLAY GET (initially empty)
 	t.Run("GET", func(t *testing.T) {
@@ -476,29 +366,7 @@ func TestHubIntegration_OverlayCommands(t *testing.T) {
 
 // TestHubIntegration_ProcessWorkflow tests process commands through Hub.
 func TestHubIntegration_ProcessWorkflow(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
-
-	client := NewClient(WithSocketPath(sockPath))
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer client.Close()
+	client := newBootedClient(t)
 
 	// Run a quick process
 	t.Run("RUN", func(t *testing.T) {
@@ -554,29 +422,7 @@ func TestHubIntegration_ProcessWorkflow(t *testing.T) {
 
 // TestHubIntegration_SessionCommands tests session commands through Hub.
 func TestHubIntegration_SessionCommands(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
-
-	client := NewClient(WithSocketPath(sockPath))
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer client.Close()
+	_, client, tmpDir := newBootedDaemonWithClient(t)
 
 	// Register a test session (SESSION REGISTER <code> <overlay_path>)
 	t.Run("REGISTER", func(t *testing.T) {
@@ -618,29 +464,7 @@ func TestHubIntegration_SessionCommands(t *testing.T) {
 
 // TestHubIntegration_CurrentPageCommands tests current page commands through Hub.
 func TestHubIntegration_CurrentPageCommands(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
-
-	client := NewClient(WithSocketPath(sockPath))
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer client.Close()
+	client := newBootedClient(t)
 
 	// List (no proxy)
 	t.Run("LIST_NoProxy", func(t *testing.T) {
@@ -758,29 +582,7 @@ func TestHubIntegration_SessionScopedProxyLookup(t *testing.T) {
 
 // TestHubIntegration_ProcErrorPaths tests error paths for PROC commands.
 func TestHubIntegration_ProcErrorPaths(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
-
-	client := NewClient(WithSocketPath(sockPath))
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer client.Close()
+	client := newBootedClient(t)
 
 	// STATUS for nonexistent process
 	t.Run("STATUS_NotFound", func(t *testing.T) {
@@ -823,29 +625,7 @@ func TestHubIntegration_ProcErrorPaths(t *testing.T) {
 
 // TestHubIntegration_ProxyErrorPaths tests error paths for PROXY commands.
 func TestHubIntegration_ProxyErrorPaths(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
-
-	client := NewClient(WithSocketPath(sockPath))
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer client.Close()
+	client := newBootedClient(t)
 
 	// STATUS for nonexistent proxy
 	t.Run("STATUS_NotFound", func(t *testing.T) {
@@ -889,29 +669,7 @@ func TestHubIntegration_ProxyErrorPaths(t *testing.T) {
 
 // TestHubIntegration_ProxyLogCommands tests proxylog commands through Hub.
 func TestHubIntegration_ProxyLogCommands(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
-
-	client := NewClient(WithSocketPath(sockPath))
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer client.Close()
+	client := newBootedClient(t)
 
 	// Start a proxy first
 	_, err := client.ProxyStart("test-proxy", "http://127.0.0.1:18080", 0, 0, "")
@@ -960,29 +718,7 @@ func TestHubIntegration_ProxyLogCommands(t *testing.T) {
 
 // TestHubIntegration_DaemonInfo tests daemon info commands.
 func TestHubIntegration_DaemonInfo(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
-
-	client := NewClient(WithSocketPath(sockPath))
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer client.Close()
+	client := newBootedClient(t)
 
 	// Get daemon info
 	t.Run("Info", func(t *testing.T) {
@@ -1029,29 +765,8 @@ func TestFormatDuration(t *testing.T) {
 
 // TestHubIntegration_ClientMethods tests various client methods for coverage.
 func TestHubIntegration_ClientMethods(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
-
-	client := NewClient(WithSocketPath(sockPath))
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer client.Close()
+	_, client, tmpDir := newBootedDaemonWithClient(t)
+	sockPath := filepath.Join(tmpDir, "s.sock")
 
 	// Test IsConnected
 	t.Run("IsConnected", func(t *testing.T) {
@@ -1136,29 +851,7 @@ func TestHubIntegration_ClientMethods(t *testing.T) {
 
 // TestHubIntegration_TunnelClientMethods tests tunnel-related client methods.
 func TestHubIntegration_TunnelClientMethods(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
-
-	client := NewClient(WithSocketPath(sockPath))
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer client.Close()
+	client := newBootedClient(t)
 
 	// Test TunnelList
 	t.Run("TunnelList", func(t *testing.T) {
@@ -1192,23 +885,7 @@ func TestHubIntegration_TunnelClientMethods(t *testing.T) {
 
 // TestHubIntegration_ChaosClientMethods tests chaos-related client methods.
 func TestHubIntegration_ChaosClientMethods(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
+	_, sockPath := newBootedDaemon(t)
 
 	// Start a proxy first (chaos operations require a proxy)
 	client := NewClient(WithSocketPath(sockPath))
@@ -1287,29 +964,7 @@ func TestHubIntegration_ChaosClientMethods(t *testing.T) {
 
 // TestHubIntegration_SessionClientMethods tests session-related client methods.
 func TestHubIntegration_SessionClientMethods(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
-
-	client := NewClient(WithSocketPath(sockPath))
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer client.Close()
+	_, client, tmpDir := newBootedDaemonWithClient(t)
 
 	// Register a session first
 	result, err := client.SessionRegister("test-session", tmpDir, tmpDir, "test-cmd", []string{})
@@ -1380,29 +1035,7 @@ func TestHubIntegration_SessionClientMethods(t *testing.T) {
 
 // TestHubIntegration_ProxyClientMethods tests proxy-related client methods.
 func TestHubIntegration_ProxyClientMethods(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
-
-	client := NewClient(WithSocketPath(sockPath))
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer client.Close()
+	client := newBootedClient(t)
 
 	// Start a proxy
 	_, err := client.ProxyStart("proxy-test", "http://127.0.0.1:19998", 0, 0, "")
@@ -1445,23 +1078,7 @@ func TestHubIntegration_ProxyClientMethods(t *testing.T) {
 
 // TestHubIntegration_NewClientWithPath tests NewClientWithPath.
 func TestNewClientWithPath(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
+	_, sockPath := newBootedDaemon(t)
 
 	// Test NewClientWithPath
 	client := NewClientWithPath(sockPath)
@@ -1483,23 +1100,7 @@ func TestNewClientWithPath(t *testing.T) {
 
 // TestDaemon_Accessors tests the daemon accessor methods.
 func TestDaemon_Accessors(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
+	daemon, _ := newBootedDaemon(t)
 
 	// Test ProcessManager accessor
 	pm := daemon.ProcessManager()
@@ -1560,23 +1161,7 @@ func TestDaemon_Accessors(t *testing.T) {
 
 // TestDaemonInfo tests the Info method.
 func TestDaemon_Info(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
+	daemon, _ := newBootedDaemon(t)
 
 	info := daemon.Info()
 	if info.SocketPath == "" {
@@ -1631,29 +1216,7 @@ func TestDaemon_Wait(t *testing.T) {
 
 // TestHubIntegration_ChaosExtendedCommands tests extended chaos commands (PRESET, SET, ADD-RULE, REMOVE-RULE).
 func TestHubIntegration_ChaosExtendedCommands(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
-
-	client := NewClient(WithSocketPath(sockPath))
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer client.Close()
+	client := newBootedClient(t)
 
 	// Start a proxy for chaos testing
 	proxyID := "chaos-ext-test"
@@ -1768,29 +1331,7 @@ func TestHubIntegration_ChaosExtendedCommands(t *testing.T) {
 
 // TestHubIntegration_SessionExtendedCommands tests extended session commands (SEND, SCHEDULE, CANCEL, ATTACH).
 func TestHubIntegration_SessionExtendedCommands(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
-
-	client := NewClient(WithSocketPath(sockPath))
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer client.Close()
+	_, client, tmpDir := newBootedDaemonWithClient(t)
 
 	// Register a session first
 	result, err := client.SessionRegister("ext-test-session", tmpDir, tmpDir, "test-cmd", []string{})
@@ -1948,29 +1489,7 @@ func TestHubIntegration_SessionExtendedCommands(t *testing.T) {
 
 // TestHubIntegration_CurrentPageSummary tests CURRENTPAGE SUMMARY command.
 func TestHubIntegration_CurrentPageSummary(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
-
-	client := NewClient(WithSocketPath(sockPath))
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer client.Close()
+	client := newBootedClient(t)
 
 	// Start a proxy
 	proxyID := "page-summary-test"
@@ -2024,29 +1543,7 @@ func TestHubIntegration_CurrentPageSummary(t *testing.T) {
 
 // TestHubIntegration_ProxyLogSummary tests PROXYLOG SUMMARY command.
 func TestHubIntegration_ProxyLogSummary(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
-
-	client := NewClient(WithSocketPath(sockPath))
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer client.Close()
+	client := newBootedClient(t)
 
 	// Start a proxy
 	proxyID := "log-summary-test"
@@ -2080,29 +1577,7 @@ func TestHubIntegration_ProxyLogSummary(t *testing.T) {
 
 // TestHubIntegration_TunnelValidation tests TUNNEL validation paths.
 func TestHubIntegration_TunnelValidation(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
-
-	client := NewClient(WithSocketPath(sockPath))
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer client.Close()
+	client := newBootedClient(t)
 
 	// Test TUNNEL START (will fail without cloudflared, but exercises error path)
 	t.Run("START_MissingBinary", func(t *testing.T) {
@@ -2326,23 +1801,7 @@ func TestDaemon_RestoreProxies(t *testing.T) {
 
 // TestDaemon_CleanupOrphans tests the orphan cleanup functionality.
 func TestDaemon_CleanupOrphans(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
+	newBootedDaemon(t) // booting triggers cleanupOrphans
 
 	// cleanupOrphans is called during Start, so just verify daemon started successfully
 	// The function is exercised but we can't easily verify orphan cleanup without
@@ -2352,29 +1811,7 @@ func TestDaemon_CleanupOrphans(t *testing.T) {
 
 // TestHubIntegration_ProxyExecErrorPaths tests PROXY EXEC error paths.
 func TestHubIntegration_ProxyExecErrorPaths(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
-
-	client := NewClient(WithSocketPath(sockPath))
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer client.Close()
+	client := newBootedClient(t)
 
 	// Start a proxy first
 	_, err := client.ProxyStart("exec-test", "http://localhost:18082", 0, 100, ".")
@@ -2428,29 +1865,7 @@ func TestHubIntegration_ProxyExecErrorPaths(t *testing.T) {
 
 // TestHubIntegration_SessionScheduleAndCancel tests session scheduling and cancellation.
 func TestHubIntegration_SessionScheduleAndCancel(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
-
-	client := NewClient(WithSocketPath(sockPath))
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer client.Close()
+	_, client, tmpDir := newBootedDaemonWithClient(t)
 
 	// Register a session
 	_, err := client.SessionRegister("schedule-test", tmpDir, tmpDir, "test-cmd", []string{})
@@ -2705,29 +2120,7 @@ func TestHubIntegration_FallbackPortCheck_URLDetectedWinsRace(t *testing.T) {
 
 // TestHubIntegration_CleanupSessionResources tests session resource cleanup.
 func TestHubIntegration_CleanupSessionResources(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
-
-	client := NewClient(WithSocketPath(sockPath))
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer client.Close()
+	_, client, tmpDir := newBootedDaemonWithClient(t)
 
 	// Register a session
 	_, err := client.SessionRegister("cleanup-test", tmpDir, tmpDir, "test-cmd", []string{})
@@ -2836,29 +2229,7 @@ func TestDaemon_RestoreProxies_ErrorPaths(t *testing.T) {
 
 // TestHubIntegration_ProcOutput_ErrorPaths tests error paths in hubHandleProcOutput.
 func TestHubIntegration_ProcOutput_ErrorPaths(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
-
-	client := NewClient(WithSocketPath(sockPath))
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer client.Close()
+	client := newBootedClient(t)
 
 	// Test OUTPUT with various filter options
 	t.Run("OUTPUT_WithFilters", func(t *testing.T) {
@@ -2900,23 +2271,7 @@ func TestHubIntegration_ProcOutput_ErrorPaths(t *testing.T) {
 
 // TestDaemon_Info_AllFields tests that all info fields are populated.
 func TestDaemon_Info_AllFields(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
+	daemon, _ := newBootedDaemon(t)
 
 	info := daemon.Info()
 
@@ -2933,29 +2288,7 @@ func TestDaemon_Info_AllFields(t *testing.T) {
 
 // TestHubIntegration_TunnelErrorPaths tests tunnel error paths.
 func TestHubIntegration_TunnelErrorPaths(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
-
-	client := NewClient(WithSocketPath(sockPath))
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer client.Close()
+	client := newBootedClient(t)
 
 	t.Run("StatusNotFound", func(t *testing.T) {
 		// Try to get status of non-existent tunnel
@@ -2988,29 +2321,7 @@ func TestHubIntegration_TunnelErrorPaths(t *testing.T) {
 
 // TestHubIntegration_SessionErrorPaths tests session handler error paths.
 func TestHubIntegration_SessionErrorPaths(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
-
-	client := NewClient(WithSocketPath(sockPath))
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer client.Close()
+	client := newBootedClient(t)
 
 	t.Run("SendToNonExistentSession", func(t *testing.T) {
 		// Try SEND to non-existent session
@@ -3039,29 +2350,7 @@ func TestHubIntegration_SessionErrorPaths(t *testing.T) {
 
 // TestHubIntegration_ProxyHandlerErrors tests proxy handler error paths.
 func TestHubIntegration_ProxyHandlerErrors(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
-
-	client := NewClient(WithSocketPath(sockPath))
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer client.Close()
+	client := newBootedClient(t)
 
 	t.Run("ExecNonExistentProxy", func(t *testing.T) {
 		// Try EXEC on non-existent proxy
@@ -3195,29 +2484,7 @@ func TestHubIntegration_SessionOverlayScoping(t *testing.T) {
 // TestHubIntegration_ProxyLogQueryResponseKeys verifies that PROXYLOG QUERY returns
 // "entries", "count", and "total_available" keys (not "logs").
 func TestHubIntegration_ProxyLogQueryResponseKeys(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
-
-	client := NewClient(WithSocketPath(sockPath))
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer client.Close()
+	client := newBootedClient(t)
 
 	// Start a proxy so we have something to query
 	proxyID := "test-proxylog-keys"
