@@ -116,6 +116,10 @@ func killStoredDescendants(pids []int) {
 // process-group membership.
 //
 // On non-Linux systems, falls back to `pgrep -P PID` recursion.
+func snapshotDescendantsOf(pid int) []int {
+	return findAllDescendants(pid)
+}
+
 func findAllDescendants(pid int) []int {
 	if descendants, ok := findAllDescendantsProc(pid); ok {
 		return descendants
