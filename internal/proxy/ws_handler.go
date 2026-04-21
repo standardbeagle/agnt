@@ -1,7 +1,9 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -20,13 +22,25 @@ func (ps *ProxyServer) errorHandler(w http.ResponseWriter, r *http.Request, err 
 
 	errStr := err.Error()
 
+	// Distinguish downstream (client) cancellation from upstream transport failure.
+	// A client disconnect (tab close, navigation, AbortController) surfaces here as
+	// context.Canceled / context.DeadlineExceeded. Flushing the transport pool on
+	// those would kill healthy shared HTTPS connections and force every concurrent
+	// request to redo TLS — which on slow upstreams (e.g. haam-dev ~2-3s handshake)
+	// cascades into 502s. Only flush on genuine upstream transport errors.
+	isClientCanceled := errors.Is(err, context.Canceled) ||
+		errors.Is(err, context.DeadlineExceeded) ||
+		(r.Context().Err() != nil && strings.Contains(errStr, "context canceled"))
+
 	// Check if this is a transient connection error (common during development)
 	// These happen when dev servers restart, connections timeout, etc.
 	isTransient := isTransientConnectionError(errStr)
 
-	// Flush stale connections on transient errors so the browser's immediate
+	// Flush stale connections on transient upstream errors so the browser's immediate
 	// reconnect (especially WebSocket/HMR) gets a fresh connection to the backend.
-	if isTransient || strings.Contains(errStr, "context canceled") {
+	// Never flush on client-side cancellation — that nukes the pool for innocent
+	// concurrent requests and causes cascading 502s.
+	if isTransient && !isClientCanceled {
 		ps.FlushConnections()
 	}
 
@@ -44,7 +58,14 @@ func (ps *ProxyServer) errorHandler(w http.ResponseWriter, r *http.Request, err 
 	var diagEvent string
 	var diagLevel ProxyDiagnosticLevel
 
-	if strings.Contains(errStr, "context canceled") {
+	if isClientCanceled {
+		// The downstream client went away (tab close, navigation, AbortController).
+		// This is not a proxy or upstream failure — don't alarm the user and don't
+		// touch the connection pool.
+		userMsg = "Client canceled the request before the response completed."
+		diagEvent = "client_canceled"
+		diagLevel = DiagnosticWarning
+	} else if strings.Contains(errStr, "context canceled") {
 		userMsg = fmt.Sprintf("Proxy Error: Request canceled. The proxy may be shutting down, or the target server (%s) is unavailable.", ps.TargetURL.String())
 		diagEvent = "context_canceled"
 		diagLevel = DiagnosticWarning
