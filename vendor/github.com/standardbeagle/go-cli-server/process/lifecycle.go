@@ -208,7 +208,7 @@ func (pm *ProcessManager) snapshotDescendants(proc *ManagedProcess) {
 		return
 	}
 	pid := proc.cmd.Process.Pid
-	descendants := findAllDescendants(pid)
+	descendants := snapshotDescendantsOf(pid)
 	proc.SetDescendants(descendants)
 
 	// Mirror the snapshot into the persistent tracker if available so that
