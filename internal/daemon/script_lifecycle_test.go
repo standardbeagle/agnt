@@ -165,7 +165,13 @@ scripts {
 		// without writing output.)
 		cmd, args := "sh", []string{"-c", "sleep 30"}
 		if runtime.GOOS == "windows" {
-			cmd, args = "cmd", []string{"/c", "timeout", "/t", "30", "/nobreak", ">", "nul"}
+			// ping -n N waits ~(N-1) seconds between pings, so 30
+			// keeps the process alive ~29s without needing a shell
+			// redirect (exec.Command does not go through a shell, so
+			// '> nul' would be a literal arg — that's why the earlier
+			// 'timeout /t 30 /nobreak > nul' attempt failed with exit
+			// code 1 on both windows-2022 and windows-latest).
+			cmd, args = "ping", []string{"-n", "30", "127.0.0.1"}
 		}
 
 		_, err := d.StartScript(context.Background(), StartScriptConfig{
