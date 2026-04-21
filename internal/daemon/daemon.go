@@ -213,6 +213,16 @@ type Daemon struct {
 	proxyToScript map[string]string   // proxyID -> scriptID (reverse index for suppression lookup)
 	scriptProxyMu sync.RWMutex
 
+	// proxyEntries is the admin-surface shim for explicit proxies — proxies
+	// started without a linked script (MCP tool path or standalone-proxy
+	// autostart). The vendored script.Registry only tracks process-kind
+	// entries, so without this shim explicit proxies never appear in
+	// SCRIPT LIST and therefore never get a status-bar indicator. Entries
+	// are keyed by (projectPath, proxyName) and merged into
+	// hubHandleScriptList's response with kind="proxy". Cleanup of these
+	// entries is T5 scope.
+	proxyEntries *proxyEntryStore
+
 	// healthTracker observes process state edges to drive proxy error
 	// stream suppression during rebuild/restart windows. See
 	// internal/daemon/health_tracker.go for the suppression contract.
@@ -315,6 +325,7 @@ func New(config DaemonConfig) *Daemon {
 		proxyEvents:       make(chan ProxyEvent, 10), // Buffer 10 events
 		scriptProxies:     make(map[string][]string),
 		proxyToScript:     make(map[string]string),
+		proxyEntries:      newProxyEntryStore(),
 		ctx:               ctx,
 		cancel:            cancel,
 	}

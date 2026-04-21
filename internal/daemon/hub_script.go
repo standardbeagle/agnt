@@ -64,12 +64,17 @@ func (d *Daemon) resolveScriptProjectPath(conn *hubpkg.Connection, cmd *hubproto
 // scriptEntryToSummary converts a script.Entry to a JSON-friendly summary map.
 // If alertStore is non-nil, includes a has_alerts field based on recent alerts
 // for this script's process ID.
+//
+// The `kind` field is always ScriptKindProcess for entries returned from the
+// vendored script.Registry. Proxy-kind entries go through
+// proxyEntryToSummary and are merged into SCRIPT LIST in hubHandleScriptList.
 
 func scriptEntryToSummary(entry *script.Entry, alertStore *ProcessAlertStore) map[string]interface{} {
 	cmd, args := entry.ResolvedCommand()
 
 	summary := map[string]interface{}{
 		"name":        entry.Name,
+		"kind":        string(ScriptKindProcess),
 		"state":       entry.State().String(),
 		"process_id":  entry.ProcessID,
 		"start_count": entry.StartCount(),
@@ -117,18 +122,50 @@ func (d *Daemon) hubHandleScriptList(conn *hubpkg.Connection, cmd *hubproto.Comm
 		return conn.WriteErr(hubproto.ErrMissingParam, "directory required (via JSON data or session)")
 	}
 
-	entries := d.scriptRegistry.List(projectPath)
-
-	scripts := make([]map[string]interface{}, 0, len(entries))
-	for _, entry := range entries {
-		scripts = append(scripts, scriptEntryToSummary(entry, d.alertStore))
-	}
+	scripts := d.buildScriptListSummaries(projectPath)
 
 	data, _ := json.Marshal(map[string]interface{}{
 		"scripts": scripts,
 		"count":   len(scripts),
 	})
 	return conn.WriteJSON(data)
+}
+
+// buildScriptListSummaries merges process-kind (script.Entry) and
+// proxy-kind (proxyScriptEntry) admin entries for the given project
+// path into the SCRIPT LIST JSON shape. Extracted from
+// hubHandleScriptList so tests can assert the merge contract without
+// spinning up a full hub connection.
+//
+// Collision rule: if a script.Entry and a proxyScriptEntry share a
+// name, the script.Entry wins. registerExplicitProxyEntry already
+// enforces this on the write path, but the defensive fence here makes
+// a name collision introduced by a future refactor render correctly
+// (one row, not two) instead of producing a phantom status-bar
+// indicator.
+func (d *Daemon) buildScriptListSummaries(projectPath string) []map[string]interface{} {
+	entries := d.scriptRegistry.List(projectPath)
+
+	var proxyEntries []*proxyScriptEntry
+	if d.proxyEntries != nil {
+		proxyEntries = d.proxyEntries.List(projectPath)
+	}
+
+	scripts := make([]map[string]interface{}, 0, len(entries)+len(proxyEntries))
+	scriptNames := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		scripts = append(scripts, scriptEntryToSummary(entry, d.alertStore))
+		scriptNames[entry.Name] = struct{}{}
+	}
+	for _, pe := range proxyEntries {
+		if _, clash := scriptNames[pe.name]; clash {
+			continue
+		}
+		if summary := proxyEntryToSummary(pe); summary != nil {
+			scripts = append(scripts, summary)
+		}
+	}
+	return scripts
 }
 
 // hubHandleScriptGet handles SCRIPT GET <name>.
