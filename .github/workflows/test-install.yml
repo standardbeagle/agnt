@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Version to test (leave empty for latest)'
+        description: 'Version to test without leading v (e.g. 0.12.50). Leave empty for latest.'
         required: false
         type: string
 
@@ -25,7 +25,8 @@ jobs:
           go-version: '1.24'
 
       - name: Install via go install
-        run: go install github.com/standardbeagle/agnt/cmd/agnt@${{ inputs.version && format('v{0}', inputs.version) || 'latest' }}
+        # Normalize input: accept either '0.12.50' or 'v0.12.50'. Empty → @latest.
+        run: go install github.com/standardbeagle/agnt/cmd/agnt@${{ inputs.version && (startsWith(inputs.version, 'v') && inputs.version || format('v{0}', inputs.version)) || 'latest' }}
 
       - name: Verify version
         shell: bash
@@ -60,7 +61,8 @@ jobs:
           node-version: '20'
 
       - name: Install via npm
-        run: npm install -g @standardbeagle/agnt${{ inputs.version && format('@{0}', inputs.version) || '' }}
+        # npm tags have no leading 'v'. Accept either input form.
+        run: npm install -g @standardbeagle/agnt${{ inputs.version && format('@{0}', startsWith(inputs.version, 'v') && replace(inputs.version, 'v', '') || inputs.version) || '' }}
 
       - name: Debug npm paths
         shell: bash
