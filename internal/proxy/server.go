@@ -314,7 +314,7 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 	// backend detection via TCP connect timeout instead.
 	if transport, ok := baseTransport.(*http.Transport); ok {
 		transport.ResponseHeaderTimeout = 0          // No limit - slow APIs are valid
-		transport.IdleConnTimeout = 10 * time.Second // Evict stale connections faster
+		transport.IdleConnTimeout = 60 * time.Second // Amortize TLS handshake on HTTPS upstreams (was 10s — too aggressive, forced reconnects during bursts)
 		transport.MaxIdleConnsPerHost = 6            // Limit pooled connections per backend
 		ps.baseTransport = transport
 	}
