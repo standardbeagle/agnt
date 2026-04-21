@@ -1,4 +1,4 @@
-.PHONY: build release test test-unit test-integration test-browser test-e2e test-isolated clean clean-zombies install install-local install-windows run lint test-webapp mockagent generate generate-check
+.PHONY: build release test test-unit test-integration test-browser test-e2e test-isolated clean clean-zombies install install-local install-windows run lint test-webapp mockagent generate generate-check vendor
 
 # Binary names
 BINARY := devtool-mcp
@@ -27,7 +27,12 @@ generate-check:
 	go run ./scripts/gen-apidocs.go \
 		-scripts internal/proxy/scripts \
 		-out internal/tools/apidocs_gen.go \
-		-check
+	-check
+
+# Vendor dependencies and apply local patches (e.g., Notify method on vendored MCP SDK)
+vendor:
+	go mod vendor
+	@bash scripts/patch-vendor-notify.sh
 
 # Build both binaries (agnt is the source, devtool-mcp is a copy for MCP compatibility)
 # Version is defined in cmd/agnt/main.go and managed by scripts/release.sh

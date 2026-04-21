@@ -307,7 +307,7 @@ github.com/mattn/go-runewidth
 ## explicit; go 1.19
 github.com/microcosm-cc/bluemonday
 github.com/microcosm-cc/bluemonday/css
-# github.com/modelcontextprotocol/go-sdk v1.5.0 => github.com/standardbeagle/go-sdk v1.5.0-agnt.1
+# github.com/modelcontextprotocol/go-sdk v1.5.0
 ## explicit; go 1.25.0
 github.com/modelcontextprotocol/go-sdk/auth
 github.com/modelcontextprotocol/go-sdk/internal/json
@@ -686,4 +686,3 @@ gopkg.in/dnaeon/go-vcr.v3/recorder
 # gopkg.in/yaml.v3 v3.0.1
 ## explicit
 gopkg.in/yaml.v3
-# github.com/modelcontextprotocol/go-sdk => github.com/standardbeagle/go-sdk v1.5.0-agnt.1
