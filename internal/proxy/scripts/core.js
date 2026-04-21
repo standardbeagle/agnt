@@ -226,6 +226,7 @@
             console.log('[DevTool] Metrics connection established');
             reconnectAttempts = 0;
             sendPageLoad();
+            connectedCallbacks.forEach(function(cb) { try { cb(); } catch(e) {} });
           } catch (e) {
             reportInternalError('onopen_handler_failed', e);
           }
@@ -339,6 +340,10 @@
         reportInternalError('handleServerMessage_failed', e);
       }
     }
+
+    // Register a callback for WebSocket connection events
+    var connectedCallbacks = [];
+    function onConnected(cb) { connectedCallbacks.push(cb); }
 
     // Register a message handler
     function onMessage(handler) {
@@ -1040,6 +1045,7 @@
           send: send,
           sendBinary: sendBinary,
           onMessage: onMessage,
+          onConnected: onConnected,
           ws: function() { return ws; },
           isConnected: function() {
             try {
