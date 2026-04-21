@@ -353,11 +353,13 @@ func (s *DuplicateScanner) notify(result *CleanupResult) {
 }
 
 // pathMatches returns true if procCwd is within or equal to projectPath.
-// Both are normalized (lowercased on Windows) before comparison.
+// Both sides are normalized (absolute path, lowercased on Windows) before
+// comparison so callers don't have to pre-normalize their inputs.
 func pathMatches(projectPath, procCwd string) bool {
 	if procCwd == "" || projectPath == "" {
 		return false
 	}
+	projectPath = normalizePath(projectPath)
 	procCwd = normalizePath(procCwd)
 	// Exact match or procCwd is a subdirectory
 	if procCwd == projectPath {
