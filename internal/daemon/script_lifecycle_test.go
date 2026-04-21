@@ -20,7 +20,7 @@ import (
 // processes are started. Scripts should exist as soon as the config is loaded.
 func TestScriptLifecycle_ConfigCreatesIdleScripts(t *testing.T) {
 	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
+	sockPath := shortSockPath(t)
 
 	// Write a config with 3 scripts, only 1 has autostart
 	configContent := `
@@ -94,7 +94,7 @@ scripts {
 // state and its output is still accessible.
 func TestScriptLifecycle_ProcessExitPreservesScript(t *testing.T) {
 	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
+	sockPath := shortSockPath(t)
 
 	// Script that exits immediately with a message
 	configContent := `
@@ -160,7 +160,7 @@ scripts {
 // has its error message recorded and accessible.
 func TestScriptLifecycle_FailedScriptHasError(t *testing.T) {
 	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
+	sockPath := shortSockPath(t)
 
 	configContent := `
 scripts {
@@ -214,7 +214,7 @@ scripts {
 // automatically, so the code path is uniform.
 func TestScriptLifecycle_StandaloneRunCreatesScript(t *testing.T) {
 	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
+	sockPath := shortSockPath(t)
 
 	d := New(DaemonConfig{
 		SocketPath:   sockPath,
@@ -261,7 +261,7 @@ func TestScriptLifecycle_StandaloneRunCreatesScript(t *testing.T) {
 // protocol returns all scripts including ones whose processes have exited.
 func TestScriptLifecycle_ScriptListViaProtocol(t *testing.T) {
 	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
+	sockPath := shortSockPath(t)
 
 	configContent := `
 scripts {
@@ -332,7 +332,7 @@ scripts {
 // without autostart=true are still registered in the ScriptRegistry as idle.
 func TestScriptLifecycle_NonAutostartScriptsRegistered(t *testing.T) {
 	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
+	sockPath := shortSockPath(t)
 
 	configContent := `
 scripts {
@@ -378,7 +378,7 @@ scripts {
 // declared in .agnt.kdl are used for pre-flight orphan cleanup.
 func TestScriptLifecycle_ConfigPortsUsedForCleanup(t *testing.T) {
 	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
+	sockPath := shortSockPath(t)
 
 	// Script declares port 9876 explicitly
 	configContent := `
@@ -441,7 +441,7 @@ scripts {
 // declared in config are all returned.
 func TestScriptLifecycle_MultiplePortsFromConfig(t *testing.T) {
 	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
+	sockPath := shortSockPath(t)
 
 	configContent := `
 scripts {
