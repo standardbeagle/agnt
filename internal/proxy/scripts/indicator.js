@@ -1943,7 +1943,7 @@
     var dot = document.createElement('div');
     dot.id = '__devtool-status';
     dot.style.cssText = STYLES.statusDot;
-    dot.style.backgroundColor = core.isConnected() ? TOKENS.colors.success : TOKENS.colors.error;
+    dot.style.backgroundColor = core.isConnected() ? TOKENS.colors.success : TOKENS.colors.secondary;
     bug.appendChild(dot);
 
     // Entrance animation, then idle breathing
@@ -4498,12 +4498,16 @@
 
   // Status polling and message handling
   function setupStatusPolling() {
-    setInterval(function() {
+    var updateDot = function() {
       var dot = getInMount('__devtool-status');
       if (dot) {
-        dot.style.backgroundColor = core.isConnected() ? TOKENS.colors.success : TOKENS.colors.error;
+        dot.style.backgroundColor = core.isConnected() ? TOKENS.colors.success : TOKENS.colors.secondary;
       }
-      // Update inspect button active state
+    };
+    core.onConnected(updateDot);
+    setInterval(updateDot, 200);
+    // Update inspect button active state
+    setInterval(function() {
       if (state.inspectBtn) {
         var active = window.__devtool_style_editor && window.__devtool_style_editor.isOpen();
         if (active) {
