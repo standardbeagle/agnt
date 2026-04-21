@@ -70,6 +70,7 @@ func makeTestOverlay(w *recordingWriter) *Overlay {
 // --- Tests investigating the Enter byte sequence ---
 
 func TestEnterBehavior_ByteSequence(t *testing.T) {
+	t.Parallel()
 	// FINDING: Enter must be just \r (CR, 0x0D) — NOT \r\n.
 	// Ink (Node.js) in raw mode checks `input === '\r'` for the Return key.
 	// Through a PTY in raw mode, bytes pass through unchanged, so "\r\n"
@@ -101,6 +102,7 @@ func TestEnterBehavior_ByteSequence(t *testing.T) {
 }
 
 func TestEnterBehavior_BuildKeySequence(t *testing.T) {
+	t.Parallel()
 	// The key API must also use bare \r for Enter.
 	w := &recordingWriter{}
 	o := makeTestOverlay(w)
@@ -115,6 +117,7 @@ func TestEnterBehavior_BuildKeySequence(t *testing.T) {
 // --- Tests investigating Enter retry timing ---
 
 func TestEnterBehavior_ImmediateActivity_SingleEnter(t *testing.T) {
+	t.Parallel()
 	// If the agent responds quickly (activity detected after echo-settle),
 	// only 1 Enter is sent.
 	w := &recordingWriter{}
@@ -148,6 +151,7 @@ func TestEnterBehavior_ImmediateActivity_SingleEnter(t *testing.T) {
 }
 
 func TestEnterBehavior_NoActivity_MaxRetries(t *testing.T) {
+	t.Parallel()
 	// If the agent never responds, 4 Enters are sent (1 initial + 3 retries).
 	// Total wall time: ~1.1s + 1.5s + 2s + 3s = ~7.6s
 	w := &recordingWriter{}
@@ -177,6 +181,7 @@ func TestEnterBehavior_NoActivity_MaxRetries(t *testing.T) {
 }
 
 func TestEnterBehavior_RetryTiming(t *testing.T) {
+	t.Parallel()
 	// Exact delays between Enter retries:
 	// [immediate] → 1.1s pause → [retry1] → 1.5s → [retry2] → 2s → [retry3] → 3s
 	w := &recordingWriter{}
@@ -215,6 +220,7 @@ func TestEnterBehavior_RetryTiming(t *testing.T) {
 }
 
 func TestEnterBehavior_ActivityStopsRetries(t *testing.T) {
+	t.Parallel()
 	// Activity arriving after the 2nd Enter stops further retries.
 	w := &recordingWriter{}
 	o := makeTestOverlay(w)
@@ -243,6 +249,7 @@ func TestEnterBehavior_ActivityStopsRetries(t *testing.T) {
 // --- Tests investigating echo drain behavior ---
 
 func TestEnterBehavior_EchoDrain(t *testing.T) {
+	t.Parallel()
 	// Activity signals during the 1.1s echo-settle window are drained.
 	// This prevents text echo from being mistaken for agent output.
 	w := &recordingWriter{}
@@ -276,6 +283,7 @@ func TestEnterBehavior_EchoDrain(t *testing.T) {
 // --- Tests investigating instant vs typed mode ---
 
 func TestEnterBehavior_InstantMode_WritesFullText(t *testing.T) {
+	t.Parallel()
 	// In instant mode, text arrives as a single write.
 	w := &recordingWriter{}
 	o := makeTestOverlay(w)
@@ -298,6 +306,7 @@ func TestEnterBehavior_InstantMode_WritesFullText(t *testing.T) {
 }
 
 func TestEnterBehavior_TypedMode_CharByChar(t *testing.T) {
+	t.Parallel()
 	// In typed mode, each character arrives separately with ~10ms delays.
 	w := &recordingWriter{}
 	o := makeTestOverlay(w)
@@ -332,6 +341,7 @@ func TestEnterBehavior_TypedMode_CharByChar(t *testing.T) {
 }
 
 func TestEnterBehavior_TypedMode_PreEnterSettle(t *testing.T) {
+	t.Parallel()
 	// In typed mode, there's a 100ms settle delay before the first Enter.
 	// This is for Ink terminals to process all chars.
 	w := &recordingWriter{}
@@ -369,6 +379,7 @@ func TestEnterBehavior_TypedMode_PreEnterSettle(t *testing.T) {
 // --- Tests investigating the ActivityMonitor → activityCh feedback loop ---
 
 func TestEnterBehavior_ActivityMonitorFeedback(t *testing.T) {
+	t.Parallel()
 	// The ActivityMonitor correctly signals the Overlay's activityCh when
 	// output bytes arrive. Full chain:
 	//   PTY output → ActivityMonitor.Write() → OnStateChange → NotifyActivity()
@@ -414,6 +425,7 @@ func TestEnterBehavior_ActivityMonitorFeedback(t *testing.T) {
 }
 
 func TestEnterBehavior_MinActiveBytes_Threshold(t *testing.T) {
+	t.Parallel()
 	// Small output bursts (<MinActiveBytes) should NOT trigger activity.
 	// This prevents the Enter echo from being mistaken for agent output.
 	var outputBuf bytes.Buffer
@@ -451,6 +463,7 @@ func TestEnterBehavior_MinActiveBytes_Threshold(t *testing.T) {
 // --- Tests investigating text+enter ordering ---
 
 func TestEnterBehavior_TextBeforeEnter(t *testing.T) {
+	t.Parallel()
 	// Text is always written BEFORE Enter — if Enter arrived first,
 	// the agent would process an empty message.
 	w := &recordingWriter{}
@@ -476,6 +489,7 @@ func TestEnterBehavior_TextBeforeEnter(t *testing.T) {
 }
 
 func TestEnterBehavior_NoEnter_NoNewline(t *testing.T) {
+	t.Parallel()
 	// When Enter=false, no \r should be sent at all.
 	w := &recordingWriter{}
 	o := makeTestOverlay(w)
@@ -489,6 +503,7 @@ func TestEnterBehavior_NoEnter_NoNewline(t *testing.T) {
 }
 
 func TestEnterBehavior_EmptyText_WithEnter(t *testing.T) {
+	t.Parallel()
 	// Empty text + Enter sends just the Enter byte(s).
 	w := &recordingWriter{}
 	o := makeTestOverlay(w)
@@ -516,6 +531,7 @@ func TestEnterBehavior_EmptyText_WithEnter(t *testing.T) {
 // --- Test investigating the activityCh buffering ---
 
 func TestEnterBehavior_ActivityChBuffered(t *testing.T) {
+	t.Parallel()
 	// activityCh is buffered (cap 1). Multiple signals before consumption
 	// don't block. Only one signal is retained.
 	w := &recordingWriter{}
@@ -544,6 +560,7 @@ func TestEnterBehavior_ActivityChBuffered(t *testing.T) {
 // --- PTY byte verification tests ---
 
 func TestEnterBehavior_NotCRLF(t *testing.T) {
+	t.Parallel()
 	// CRITICAL: Verify that Enter is \r NOT \r\n.
 	// \r\n through a PTY in raw mode arrives as the 2-byte string "\r\n"
 	// at the child process. Ink checks `input === '\r'` which fails for
