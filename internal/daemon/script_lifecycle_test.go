@@ -58,7 +58,7 @@ scripts {
 	time.Sleep(1 * time.Second)
 
 	// ALL 3 scripts should exist in the registry
-	scripts := d.ScriptRegistry().List(tmpDir)
+	scripts := d.ScriptRegistry().List(normalizePath(tmpDir))
 	if len(scripts) != 3 {
 		names := make([]string, len(scripts))
 		for i, s := range scripts {
@@ -105,7 +105,7 @@ scripts {
 	time.Sleep(2 * time.Second)
 
 	// Script should still exist even though process exited
-	entry, ok := d.ScriptRegistry().Get("quick", tmpDir)
+	entry, ok := d.ScriptRegistry().Get("quick", normalizePath(tmpDir))
 	if !ok {
 		t.Fatal("ScriptEntry should persist after process exit")
 	}
@@ -155,7 +155,7 @@ scripts {
 	// Wait for process to fail
 	time.Sleep(2 * time.Second)
 
-	entry, ok := d.ScriptRegistry().Get("broken", tmpDir)
+	entry, ok := d.ScriptRegistry().Get("broken", normalizePath(tmpDir))
 	if !ok {
 		t.Fatal("ScriptEntry should persist after failure")
 	}
@@ -182,7 +182,7 @@ func TestScriptLifecycle_StandaloneRunCreatesScript(t *testing.T) {
 	// Use sh -c with a long sleep so process survives startup monitoring
 	ctx := context.Background()
 	_, err := d.StartScript(ctx, StartScriptConfig{
-		ProcessID:   makeProcessID(tmpDir, "manual"),
+		ProcessID:   makeProcessID(normalizePath(tmpDir), "manual"),
 		ProjectPath: tmpDir,
 		WorkingDir:  tmpDir,
 		Command:     "sh",
@@ -195,7 +195,7 @@ func TestScriptLifecycle_StandaloneRunCreatesScript(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 
 	// A ScriptEntry should have been created automatically
-	entry, ok := d.ScriptRegistry().Get("manual", tmpDir)
+	entry, ok := d.ScriptRegistry().Get("manual", normalizePath(tmpDir))
 	if !ok {
 		t.Fatal("StartScript should auto-create a ScriptEntry for standalone processes")
 	}
@@ -235,7 +235,7 @@ scripts {
 	procs := d.hub.ProcessManager().List()
 	procAlive := false
 	for _, p := range procs {
-		if p.ID == makeProcessID(tmpDir, "ephemeral") {
+		if p.ID == makeProcessID(normalizePath(tmpDir), "ephemeral") {
 			if p.State() == 2 { // StateRunning
 				procAlive = true
 			}
@@ -246,7 +246,7 @@ scripts {
 	}
 
 	// But script should still be in registry
-	scripts := d.ScriptRegistry().List(tmpDir)
+	scripts := d.ScriptRegistry().List(normalizePath(tmpDir))
 	if len(scripts) == 0 {
 		t.Fatal("SCRIPT LIST should return scripts even after process exits")
 	}
@@ -286,7 +286,7 @@ scripts {
 	d.RunAutostart(ctx, tmpDir)
 
 	// Non-autostart script should still be registered as idle
-	entry, ok := d.ScriptRegistry().Get("manual-only", tmpDir)
+	entry, ok := d.ScriptRegistry().Get("manual-only", normalizePath(tmpDir))
 	if !ok {
 		t.Fatal("Non-autostart scripts should be registered in ScriptRegistry as idle")
 	}
