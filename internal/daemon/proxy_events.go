@@ -39,11 +39,15 @@ func buildProxyServerConfig(id, targetURL, projectPath string, cfg *config.Proxy
 		maxLog        int
 		bind          string
 		skipTLSVerify bool
+		allowExternal bool
+		publicURL     string
 	)
 	if cfg != nil {
 		maxLog = cfg.MaxLogSize
 		bind = cfg.Bind
 		skipTLSVerify = cfg.SkipTLSVerify
+		allowExternal = cfg.AllowExternal
+		publicURL = cfg.PublicURL
 	}
 	return proxy.ProxyConfig{
 		ID:               id,
@@ -55,6 +59,8 @@ func buildProxyServerConfig(id, targetURL, projectPath string, cfg *config.Proxy
 		Path:             projectPath,
 		BindAddress:      bind,
 		SkipTLSVerify:    skipTLSVerify,
+		AllowExternal:    allowExternal,
+		PublicURL:        publicURL,
 	}
 }
 
@@ -309,6 +315,23 @@ func (d *Daemon) handleExplicitStart(event ProxyEvent) {
 		debug.Log("daemon", "Set global overlay endpoint for explicit proxy %s: %s", event.ProxyID, overlayEndpoint)
 	} else {
 		debug.Log("daemon", "No overlay endpoint found for explicit proxy %s (no path, no global endpoint) — proxy→agent messages will not work", event.ProxyID)
+	}
+
+	// Surface the missing overlay wire-up as a visible startup warning so
+	// the AI agent sees it via get_errors — browser→agent messages (panel
+	// input, sketch JSON, design-mode state) silently fail to reach the
+	// agent without an overlay endpoint. Moved from hubHandleProxyStart in
+	// T3 so every ExplicitStart path (MCP tool, autostart, future fallback)
+	// emits the same warning.
+	if !server.HasOverlayEndpoint() {
+		d.startupErrorStore.Add(&StartupLogEntry{
+			ProcessID:  event.ProxyID,
+			ScriptName: event.ProxyID,
+			Level:      "warning",
+			EventType:  "proxy_no_overlay",
+			Message:    fmt.Sprintf("proxy %s has no overlay endpoint — browser messages will not reach agent", event.ProxyID),
+			Timestamp:  time.Now(),
+		})
 	}
 
 	// Register wait-for dependencies for explicit proxies too.

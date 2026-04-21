@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
-
 	"github.com/standardbeagle/agnt/internal/proxy"
 	hubpkg "github.com/standardbeagle/go-cli-server/hub"
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
@@ -28,7 +28,22 @@ func (d *Daemon) hubHandleProxy(ctx context.Context, conn *hubpkg.Connection, cm
 
 // hubHandleProxyStart handles PROXY START command.
 // PROXY START <id> <target_url> <port> [max_log_size]
-
+//
+// Thin wrapper over handleExplicitStart — the MCP tool path and the
+// autostart event path share the same wire-up sequence (Create +
+// wireProxyLogger + SetOverlayEndpoint + stateMgr.AddProxy +
+// proxyEntryStore.Register + registerProxyDependencies). Before T3 the
+// two paths had drifted: autostart did dependency gating + admin
+// registry, the tool did state persistence. Delegating here is the
+// single-source-of-truth move; the tool handler's only remaining job
+// is parsing MCP args, normalizing the path, and shaping the JSON
+// response.
+//
+// Proxy ID policy: the tool takes the user-supplied id verbatim (no
+// makeProcessID rewrite). Autostart uses makeProcessID(projectPath,
+// name) to project-scope collisions. This divergence is intentional
+// for backward compat — tests and external callers pass raw IDs to
+// the tool. Future work can unify, but T3 leaves it alone.
 func (d *Daemon) hubHandleProxyStart(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
 	if len(cmd.Args) < 3 {
 		return conn.WriteErr(hubproto.ErrInvalidArgs, "PROXY START requires: <id> <target_url> <port>")
@@ -46,7 +61,7 @@ func (d *Daemon) hubHandleProxyStart(ctx context.Context, conn *hubpkg.Connectio
 		maxLogSize, _ = strconv.Atoi(cmd.Args[3])
 	}
 
-	// Parse extended config from JSON data (optional)
+	// Parse extended config from JSON data (optional).
 	path := "."
 	bindAddress := ""
 	allowExternal := false
@@ -68,68 +83,44 @@ func (d *Daemon) hubHandleProxyStart(ctx context.Context, conn *hubpkg.Connectio
 		skipTLSVerify = ext.SkipTLSVerify
 	}
 
-	// Create proxy config
-	proxyConfig := proxy.ProxyConfig{
-		ID:            proxyID,
-		TargetURL:     targetURL,
+	normalizedPath := normalizePath(path)
+
+	// Build a config.ProxyConfig that handleExplicitStart → buildProxyServerConfig
+	// will translate into a proxy.ProxyConfig. The port MCP arg is the
+	// proxy's listen port (not the target port); URL is the full target.
+	proxyConfig := &config.ProxyConfig{
+		URL:           targetURL,
 		ListenPort:    port,
 		MaxLogSize:    maxLogSize,
-		AutoRestart:   true,
-		Path:          normalizePath(path),
-		BindAddress:   bindAddress,
+		Bind:          bindAddress,
 		AllowExternal: allowExternal,
 		PublicURL:     publicURL,
 		SkipTLSVerify: skipTLSVerify,
 	}
 
-	proxyServer, err := d.proxym.Create(ctx, proxyConfig)
+	// handleExplicitStart is synchronous — on return the proxy is fully
+	// wired (or a startup_error entry explains the failure). Respect
+	// ctx by bailing early if the caller already cancelled.
+	select {
+	case <-ctx.Done():
+		return conn.WriteErr(hubproto.ErrInternal, ctx.Err().Error())
+	default:
+	}
+
+	d.handleExplicitStart(ProxyEvent{
+		Type:    ExplicitStart,
+		ProxyID: proxyID,
+		Config:  proxyConfig,
+		Path:    normalizedPath,
+	})
+
+	// If proxym.Get fails, handleExplicitStart's Create() path hit an
+	// error — the proxy_creation_failed entry in startupErrorStore
+	// carries the detail; surface a terse message here so the MCP caller
+	// doesn't see a silent failure.
+	proxyServer, err := d.proxym.Get(proxyID)
 	if err != nil {
-		return conn.WriteErr(hubproto.ErrInternal, err.Error())
-	}
-
-	d.wireProxyLogger(proxyServer)
-
-	// Find session for this project to get session-specific overlay endpoint
-	if path != "" {
-		normalizedPath := normalizePath(path)
-		if session, ok := d.sessionRegistry.FindByDirectory(normalizedPath); ok && session.OverlayPath != "" {
-			proxyServer.SetOverlayEndpoint(session.OverlayPath)
-			debug.Log("daemon", "Set session-specific overlay endpoint for proxy %s: %s", proxyID, session.OverlayPath)
-		} else if endpoint := d.OverlayEndpoint(); endpoint != "" {
-			// Fallback to global overlay endpoint if no session found
-			proxyServer.SetOverlayEndpoint(endpoint)
-			debug.Log("daemon", "Set global overlay endpoint for proxy %s: %s", proxyID, endpoint)
-		} else {
-			debug.Log("daemon", "No overlay endpoint found for proxy %s (path=%q, normalized=%q) — proxy→agent messages will not work", proxyID, path, normalizedPath)
-		}
-	} else if endpoint := d.OverlayEndpoint(); endpoint != "" {
-		// Fallback to global overlay endpoint if no path specified
-		proxyServer.SetOverlayEndpoint(endpoint)
-		debug.Log("daemon", "Set global overlay endpoint for proxy %s: %s", proxyID, endpoint)
-	} else {
-		debug.Log("daemon", "No overlay endpoint found for proxy %s (no path, no global endpoint) — proxy→agent messages will not work", proxyID)
-	}
-
-	if !proxyServer.HasOverlayEndpoint() {
-		d.startupErrorStore.Add(&StartupLogEntry{
-			ProcessID:  proxyID,
-			ScriptName: proxyID,
-			Level:      "warning",
-			EventType:  "proxy_no_overlay",
-			Message:    fmt.Sprintf("proxy %s has no overlay endpoint — browser messages will not reach agent", proxyID),
-			Timestamp:  time.Now(),
-		})
-	}
-
-	// Persist proxy config
-	if d.stateMgr != nil {
-		d.stateMgr.AddProxy(PersistentProxyConfig{
-			ID:         proxyID,
-			TargetURL:  targetURL,
-			Port:       port,
-			MaxLogSize: maxLogSize,
-			Path:       path,
-		})
+		return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("proxy %s was not created: %v", proxyID, err))
 	}
 
 	resp := map[string]interface{}{

@@ -339,6 +339,23 @@ type ProxyConfig struct {
 	// TLS config used when dialing the upstream URL.
 	SkipTLSVerify bool `kdl:"skip-tls-verify"`
 
+	// AllowExternal permits binding to non-localhost addresses
+	// (0.0.0.0, ::). Required opt-in when Bind is set to a
+	// non-localhost value; otherwise proxym.Create rejects the
+	// bind to prevent accidental network exposure. Only surfaced
+	// via the MCP tool path (PROXY START JSON extension); .agnt.kdl
+	// autostart proxies must set `allow-external` explicitly for
+	// the same gate to open.
+	AllowExternal bool `kdl:"allow-external"`
+
+	// PublicURL is the externally-visible URL for tunnel services
+	// (e.g. "https://abc123.trycloudflare.com"). Informs the URL
+	// rewriter so Location headers and absolute links are
+	// rewritten to the public host instead of the bound listen
+	// addr. Mirrors proxy.ProxyConfig.PublicURL; surfaced via MCP
+	// tool JSON (`public_url`) and KDL (`public-url`).
+	PublicURL string `kdl:"public-url"`
+
 	// Websocket enables WebSocket proxying
 	Websocket bool `kdl:"websocket"`
 
