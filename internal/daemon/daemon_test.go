@@ -14,24 +14,7 @@ import (
 )
 
 func TestDaemon_ScriptProxyTracking(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	// Create daemon
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
+	daemon, _ := newBootedDaemon(t)
 
 	// Test trackScriptProxy
 	daemon.trackScriptProxy("script-1", "proxy-1")
@@ -69,31 +52,7 @@ func TestDaemon_ScriptProxyTracking(t *testing.T) {
 }
 
 func TestDaemon_StopAllResources(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	// Create daemon
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
-
-	// Connect a client and start some resources
-	client := NewClient(WithSocketPath(sockPath))
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer client.Close()
+	daemon, client, tmpDir := newBootedDaemonWithClient(t)
 
 	// Start a proxy
 	_, err := client.ProxyStart("stop-all-proxy", "http://localhost:18887", 0, 100, tmpDir)
@@ -122,23 +81,8 @@ func TestDaemon_StopAllResources(t *testing.T) {
 }
 
 func TestDaemon_HandleExplicitStart(t *testing.T) {
+	daemon, _ := newBootedDaemon(t)
 	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
 
 	// Test with nil config (should return early)
 	daemon.handleExplicitStart(ProxyEvent{
@@ -217,23 +161,8 @@ func TestDaemon_HandleExplicitStart(t *testing.T) {
 }
 
 func TestDaemon_HandleScriptStopped(t *testing.T) {
+	daemon, _ := newBootedDaemon(t)
 	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
 
 	// Create a proxy and track it
 	daemon.handleExplicitStart(ProxyEvent{
@@ -274,23 +203,7 @@ func TestDaemon_HandleScriptStopped(t *testing.T) {
 }
 
 func TestDaemon_HandleScriptStopped_NoProxies(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
+	daemon, _ := newBootedDaemon(t)
 
 	// Handle script stopped for script with no proxies
 	daemon.handleScriptStopped(ProxyEvent{
@@ -301,23 +214,8 @@ func TestDaemon_HandleScriptStopped_NoProxies(t *testing.T) {
 }
 
 func TestDaemon_HandleURLDetected(t *testing.T) {
+	daemon, _ := newBootedDaemon(t)
 	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
 
 	// Test with invalid script ID format (no colon)
 	daemon.handleURLDetected(ProxyEvent{
@@ -358,23 +256,8 @@ proxies {
 }
 
 func TestDaemon_HandleURLDetected_ProxyLimit(t *testing.T) {
+	daemon, _ := newBootedDaemon(t)
 	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
 
 	// Track 5 proxies for a script (limit)
 	for i := 0; i < 5; i++ {
@@ -406,23 +289,8 @@ proxies {
 }
 
 func TestDaemon_HandleURLDetected_WithProxyCreation(t *testing.T) {
+	daemon, _ := newBootedDaemon(t)
 	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
 
 	// Create a config with a proxy that should be created when URL is detected
 	configPath := filepath.Join(tmpDir, "agnt.kdl")
@@ -458,7 +326,6 @@ proxies {
 
 func TestDaemon_RunAutostart_WithScripts(t *testing.T) {
 	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	// Create a config with autostart scripts
 	configPath := filepath.Join(tmpDir, "agnt.kdl")
@@ -475,20 +342,7 @@ scripts {
 		t.Fatalf("Failed to write config file: %v", err)
 	}
 
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
+	daemon, sockPath := newBootedDaemon(t)
 
 	// Run autostart - this should try to start the script
 	ctx := context.Background()
@@ -511,7 +365,6 @@ scripts {
 
 func TestDaemon_RunAutostart_WithProxies(t *testing.T) {
 	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	// Create a config with autostart proxies
 	configPath := filepath.Join(tmpDir, "agnt.kdl")
@@ -527,20 +380,7 @@ proxies {
 		t.Fatalf("Failed to write config file: %v", err)
 	}
 
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
+	daemon, sockPath := newBootedDaemon(t)
 
 	// Run autostart
 	ctx := context.Background()
@@ -566,23 +406,8 @@ proxies {
 }
 
 func TestDaemon_HandleProxyEvents_ViaHandlers(t *testing.T) {
+	daemon, _ := newBootedDaemon(t)
 	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
 
 	// Create config for proxy
 	configPath := filepath.Join(tmpDir, "agnt.kdl")
@@ -629,11 +454,8 @@ proxies {
 }
 
 func TestDaemon_ScriptRegistryInitialized(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
 	d := New(DaemonConfig{
-		SocketPath:   sockPath,
+		SocketPath:   shortSockPath(t),
 		MaxClients:   10,
 		WriteTimeout: 5 * time.Second,
 	})
@@ -645,7 +467,6 @@ func TestDaemon_ScriptRegistryInitialized(t *testing.T) {
 
 func TestDaemon_AutostartRegistersInScriptRegistry(t *testing.T) {
 	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	configPath := filepath.Join(tmpDir, ".agnt.kdl")
 	configContent := `
@@ -661,20 +482,7 @@ scripts {
 		t.Fatalf("Failed to write config file: %v", err)
 	}
 
-	d := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := d.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		d.Stop(ctx)
-	}()
+	d, _ := newBootedDaemon(t)
 
 	ctx := context.Background()
 	d.RunAutostart(ctx, tmpDir)
@@ -716,22 +524,8 @@ scripts {
 
 func TestDaemon_AutostartSkipsRunningScript(t *testing.T) {
 	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
 
-	d := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := d.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		d.Stop(ctx)
-	}()
+	d, _ := newBootedDaemon(t)
 
 	// Pre-register a script as Running in the registry
 	cfg := &config.ScriptConfig{Command: "echo", Args: []string{"hello"}}
@@ -836,23 +630,7 @@ func TestScriptRegistry_PruneStaleEntries(t *testing.T) {
 func TestReconcileScriptStates_DeadPIDTransitioned(t *testing.T) {
 	// When a script entry says Running but the OS PID is dead,
 	// reconcileScriptStates must transition it to Stopped and emit ScriptStopped.
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	d := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := d.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		d.Stop(ctx)
-	}()
+	d, _ := newBootedDaemon(t)
 
 	projectPath := "/home/user/project"
 
@@ -887,22 +665,8 @@ func TestReconcileScriptStates_DeadPIDTransitioned(t *testing.T) {
 func TestReconcileScriptStates_LiveProcessUnchanged(t *testing.T) {
 	// A script whose managed process is actually alive should remain Running.
 	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
 
-	d := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := d.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		d.Stop(ctx)
-	}()
+	d, _ := newBootedDaemon(t)
 
 	ctx := context.Background()
 
@@ -946,23 +710,7 @@ func TestReconcileScriptStates_LiveProcessUnchanged(t *testing.T) {
 
 func TestReconcileScriptStates_IgnoresStoppedScripts(t *testing.T) {
 	// Scripts already in Stopped/Failed/Idle states should not be touched.
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	d := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := d.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		d.Stop(ctx)
-	}()
+	d, _ := newBootedDaemon(t)
 
 	projectPath := "/home/user/project"
 
@@ -997,24 +745,9 @@ func TestCleanupSessionResources_ClearsScriptRegistry(t *testing.T) {
 	// The real bug: CleanupSessionResources must remove script entries from
 	// the registry when the last session disconnects. Otherwise, the next
 	// session sees stale entries and renders extra status bar indicators.
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
 	projectPath := "/home/user/project"
 
-	d := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := d.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		d.Stop(ctx)
-	}()
+	d, _ := newBootedDaemon(t)
 
 	// Simulate session registering 3 scripts
 	sessionCode := "session-1"

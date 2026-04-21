@@ -3,12 +3,10 @@
 package daemon
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -20,24 +18,7 @@ import (
 // TestActivityBroadcast_EndToEnd tests the complete activity broadcast pipeline:
 // ActivityMonitor -> Client.BroadcastActivity -> Daemon -> Proxy -> WebSocket -> Browser
 func TestActivityBroadcast_EndToEnd(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	// Start daemon
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
+	_, client, _ := newBootedDaemonWithClient(t)
 
 	// Create a test HTTP server that we'll proxy to
 	targetServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -45,13 +26,6 @@ func TestActivityBroadcast_EndToEnd(t *testing.T) {
 		w.Write([]byte("Hello from target"))
 	}))
 	defer targetServer.Close()
-
-	// Connect client
-	client := NewClient(WithSocketPath(sockPath))
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer client.Close()
 
 	// Create a proxy
 	proxyResult, err := client.ProxyStart("test-proxy", targetServer.URL, 0, 0, "")
@@ -152,37 +126,13 @@ func TestActivityBroadcast_EndToEnd(t *testing.T) {
 
 // TestOutputPreviewBroadcast_EndToEnd tests the output preview broadcast pipeline.
 func TestOutputPreviewBroadcast_EndToEnd(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	// Start daemon
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
+	_, client, _ := newBootedDaemonWithClient(t)
 
 	// Create a test HTTP server
 	targetServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer targetServer.Close()
-
-	// Connect client
-	client := NewClient(WithSocketPath(sockPath))
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer client.Close()
 
 	// Create a proxy
 	proxyResult, err := client.ProxyStart("test-proxy", targetServer.URL, 0, 0, "")
@@ -256,29 +206,7 @@ func TestOutputPreviewBroadcast_EndToEnd(t *testing.T) {
 
 // TestActivityBroadcast_NoProxies verifies that broadcasting with no proxies doesn't error.
 func TestActivityBroadcast_NoProxies(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
-
-	client := NewClient(WithSocketPath(sockPath))
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer client.Close()
+	client := newBootedClient(t)
 
 	// Should not error even with no proxies
 	if err := client.BroadcastActivity(true); err != nil {
@@ -292,23 +220,7 @@ func TestActivityBroadcast_NoProxies(t *testing.T) {
 
 // TestActivityBroadcast_MultipleProxies tests broadcasting to multiple proxies.
 func TestActivityBroadcast_MultipleProxies(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
+	_, client, _ := newBootedDaemonWithClient(t)
 
 	// Create target servers
 	targetServer1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -320,12 +232,6 @@ func TestActivityBroadcast_MultipleProxies(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer targetServer2.Close()
-
-	client := NewClient(WithSocketPath(sockPath))
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer client.Close()
 
 	// Create two proxies
 	proxy1Result, err := client.ProxyStart("proxy1", targetServer1.URL, 0, 0, "")
@@ -403,23 +309,7 @@ func TestActivityBroadcast_MultipleProxies(t *testing.T) {
 
 // TestActivityBroadcast_SpecificProxy tests broadcasting to a specific proxy only.
 func TestActivityBroadcast_SpecificProxy(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
+	_, client, _ := newBootedDaemonWithClient(t)
 
 	targetServer1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -430,12 +320,6 @@ func TestActivityBroadcast_SpecificProxy(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer targetServer2.Close()
-
-	client := NewClient(WithSocketPath(sockPath))
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer client.Close()
 
 	// Create two proxies
 	proxy1Result, _ := client.ProxyStart("target-proxy", targetServer1.URL, 0, 0, "")
@@ -510,34 +394,12 @@ func TestActivityBroadcast_SpecificProxy(t *testing.T) {
 
 // TestActivityBroadcast_RapidFire tests that rapid activity updates are handled correctly.
 func TestActivityBroadcast_RapidFire(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	daemon := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
+	_, client, _ := newBootedDaemonWithClient(t)
 
 	targetServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer targetServer.Close()
-
-	client := NewClient(WithSocketPath(sockPath))
-	if err := client.Connect(); err != nil {
-		t.Fatalf("Failed to connect: %v", err)
-	}
-	defer client.Close()
 
 	proxyResult, _ := client.ProxyStart("test-proxy", targetServer.URL, 0, 0, "")
 	listenAddr := proxyResult["listen_addr"].(string)
