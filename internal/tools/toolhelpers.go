@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/standardbeagle/agnt/internal/debug"
+	"github.com/standardbeagle/go-sdk/mcp"
 
 	"os"
 	"path/filepath"

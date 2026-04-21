@@ -15,7 +15,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/modelcontextprotocol/go-sdk/oauthex"
+	"github.com/standardbeagle/go-sdk/oauthex"
 	"golang.org/x/oauth2"
 )
 

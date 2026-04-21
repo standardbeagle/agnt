@@ -5,8 +5,8 @@ import (
 
 	"fmt"
 
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/go-sdk/mcp"
 
 	"github.com/standardbeagle/agnt/internal/protocol"
 )

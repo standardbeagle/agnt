@@ -1,8 +1,8 @@
 package tools
 
 import (
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/standardbeagle/agnt/internal/config"
+	"github.com/standardbeagle/go-sdk/mcp"
 )
 
 // ChannelCapabilityName is the experimental capability key used to declare

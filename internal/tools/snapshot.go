@@ -7,7 +7,7 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/snapshot"
 
-	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/standardbeagle/go-sdk/mcp"
 )
 
 // SnapshotInput defines input for the snapshot tool

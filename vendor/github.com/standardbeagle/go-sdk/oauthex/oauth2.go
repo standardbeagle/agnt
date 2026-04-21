@@ -15,8 +15,8 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/modelcontextprotocol/go-sdk/internal/json"
-	"github.com/modelcontextprotocol/go-sdk/internal/util"
+	"github.com/standardbeagle/go-sdk/internal/json"
+	"github.com/standardbeagle/go-sdk/internal/util"
 )
 
 type httpStatusError struct {

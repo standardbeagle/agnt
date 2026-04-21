@@ -6,7 +6,7 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/project"
 
-	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/standardbeagle/go-sdk/mcp"
 )
 
 // DetectInput defines input for the detect tool.

@@ -307,17 +307,6 @@ github.com/mattn/go-runewidth
 ## explicit; go 1.19
 github.com/microcosm-cc/bluemonday
 github.com/microcosm-cc/bluemonday/css
-# github.com/modelcontextprotocol/go-sdk v1.5.0
-## explicit; go 1.25.0
-github.com/modelcontextprotocol/go-sdk/auth
-github.com/modelcontextprotocol/go-sdk/internal/json
-github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2
-github.com/modelcontextprotocol/go-sdk/internal/mcpgodebug
-github.com/modelcontextprotocol/go-sdk/internal/util
-github.com/modelcontextprotocol/go-sdk/internal/xcontext
-github.com/modelcontextprotocol/go-sdk/jsonrpc
-github.com/modelcontextprotocol/go-sdk/mcp
-github.com/modelcontextprotocol/go-sdk/oauthex
 # github.com/muesli/reflow v0.3.0
 ## explicit; go 1.13
 github.com/muesli/reflow/ansi
@@ -379,6 +368,17 @@ github.com/standardbeagle/go-cli-server/process
 github.com/standardbeagle/go-cli-server/protocol
 github.com/standardbeagle/go-cli-server/script
 github.com/standardbeagle/go-cli-server/socket
+# github.com/standardbeagle/go-sdk v1.5.0-agnt.2
+## explicit; go 1.25.0
+github.com/standardbeagle/go-sdk/auth
+github.com/standardbeagle/go-sdk/internal/json
+github.com/standardbeagle/go-sdk/internal/jsonrpc2
+github.com/standardbeagle/go-sdk/internal/mcpgodebug
+github.com/standardbeagle/go-sdk/internal/util
+github.com/standardbeagle/go-sdk/internal/xcontext
+github.com/standardbeagle/go-sdk/jsonrpc
+github.com/standardbeagle/go-sdk/mcp
+github.com/standardbeagle/go-sdk/oauthex
 # github.com/stretchr/testify v1.10.0
 ## explicit; go 1.17
 github.com/stretchr/testify/assert

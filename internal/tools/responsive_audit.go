@@ -8,7 +8,7 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/proxy"
 
-	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/standardbeagle/go-sdk/mcp"
 )
 
 // ResponsiveAuditInput defines input for the responsive_audit tool.

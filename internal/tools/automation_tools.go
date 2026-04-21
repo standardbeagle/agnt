@@ -6,7 +6,7 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/protocol"
 
-	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/standardbeagle/go-sdk/mcp"
 )
 
 // AutomationInput represents input for the automation tool.

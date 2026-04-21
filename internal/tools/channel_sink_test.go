@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/proxy"
+	"github.com/standardbeagle/go-sdk/jsonrpc"
+	"github.com/standardbeagle/go-sdk/mcp"
 )
 
 // capturedNotification records a single Notify call for test assertions.

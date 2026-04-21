@@ -42,7 +42,6 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
-          make vendor
           VERSION=${GITHUB_REF#refs/tags/v}
           LDFLAGS="-s -w -X main.appVersion=${VERSION}"
           EXT=""

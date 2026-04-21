@@ -11,7 +11,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/project"
 	"github.com/standardbeagle/go-cli-server/process"
 
-	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/standardbeagle/go-sdk/mcp"
 )
 
 // RunMode specifies how the run tool executes and returns results.

@@ -4,8 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/standardbeagle/agnt/internal/protocol"
+	"github.com/standardbeagle/go-sdk/mcp"
 )
 
 // ChannelReplyInput is the input for the channel_reply tool.

@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/daemon"
 	"github.com/standardbeagle/agnt/internal/tools"
+	"github.com/standardbeagle/go-sdk/jsonrpc"
+	"github.com/standardbeagle/go-sdk/mcp"
 )
 
 // TestChannelDisabled_DefaultCapabilities verifies that when channel is

@@ -13,11 +13,11 @@ require (
 	github.com/google/jsonschema-go v0.4.2
 	github.com/gorilla/websocket v1.5.3
 	github.com/klauspost/compress v1.18.3
-	github.com/modelcontextprotocol/go-sdk v1.5.0
 	github.com/sblinch/kdl-go v0.0.0-20250930225324-bf4099d4614a
 	github.com/spf13/cobra v1.10.2
 	github.com/standardbeagle/claude-go v1.3.0
 	github.com/standardbeagle/go-cli-server v0.3.8
+	github.com/standardbeagle/go-sdk v1.5.0-agnt.2
 	github.com/stretchr/testify v1.10.0
 	github.com/tmc/langchaingo v0.1.14
 	golang.org/x/sync v0.16.0
