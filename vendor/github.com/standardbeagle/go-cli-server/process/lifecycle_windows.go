@@ -204,8 +204,7 @@ func getProcessGroupID(pid int) int {
 	return pid
 }
 
-// snapshotDescendantsOf returns nil on Windows — Job Objects handle
-// descendant cleanup, so explicit descendant tracking is unnecessary.
+// snapshotDescendantsOf returns nil on Windows — Job Objects handle cleanup.
 func snapshotDescendantsOf(pid int) []int { return nil }
 
 // cleanupProcessTree forcefully terminates a process and its job-object tree.

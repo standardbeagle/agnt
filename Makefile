@@ -29,9 +29,10 @@ generate-check:
 		-out internal/tools/apidocs_gen.go \
 	-check
 
-# Vendor dependencies
+# Vendor dependencies and apply local patches
 vendor:
 	go mod vendor
+	@bash scripts/patch-vendor.sh
 
 # Build both binaries (agnt is the source, devtool-mcp is a copy for MCP compatibility)
 # Version is defined in cmd/agnt/main.go and managed by scripts/release.sh
