@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -158,12 +159,21 @@ scripts {
 	t.Run("StandaloneRunCreatesScript", func(t *testing.T) {
 		tmpDir := t.TempDir()
 
+		// Pick a shell that exists on the host. Windows Go runners don't
+		// have sh on PATH; use cmd.exe + a long-running ping equivalent.
+		// (timeout.exe /T N > nul keeps the process alive for ~N seconds
+		// without writing output.)
+		cmd, args := "sh", []string{"-c", "sleep 30"}
+		if runtime.GOOS == "windows" {
+			cmd, args = "cmd", []string{"/c", "timeout", "/t", "30", "/nobreak", ">", "nul"}
+		}
+
 		_, err := d.StartScript(context.Background(), StartScriptConfig{
 			ProcessID:   makeProcessID(normalizePath(tmpDir), "manual"),
 			ProjectPath: tmpDir,
 			WorkingDir:  tmpDir,
-			Command:     "sh",
-			Args:        []string{"-c", "sleep 30"},
+			Command:     cmd,
+			Args:        args,
 		})
 		if err != nil {
 			t.Fatalf("StartScript failed: %v", err)
