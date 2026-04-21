@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
-	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/standardbeagle/go-sdk/jsonrpc"
+	"github.com/standardbeagle/go-sdk/mcp"
 )
 
 // TestServerSessionNotify_CustomMethod verifies that the forked SDK's

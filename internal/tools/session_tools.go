@@ -8,7 +8,7 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/protocol"
 
-	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/standardbeagle/go-sdk/mcp"
 )
 
 // SessionInput defines input for the session tool.

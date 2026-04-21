@@ -6,7 +6,7 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/daemon"
 
-	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/standardbeagle/go-sdk/mcp"
 )
 
 // DaemonInput defines input for the daemon management tool.

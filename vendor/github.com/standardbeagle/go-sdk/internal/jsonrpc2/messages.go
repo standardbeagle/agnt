@@ -10,9 +10,9 @@ import (
 	"errors"
 	"fmt"
 
-	internaljson "github.com/modelcontextprotocol/go-sdk/internal/json"
+	internaljson "github.com/standardbeagle/go-sdk/internal/json"
 
-	"github.com/modelcontextprotocol/go-sdk/internal/mcpgodebug"
+	"github.com/standardbeagle/go-sdk/internal/mcpgodebug"
 )
 
 // ID is a Request identifier, which is defined by the spec to be a string, integer, or null.

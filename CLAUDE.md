@@ -589,7 +589,7 @@ alerts {
 
 ### Channel Mode (Beta — Claude Code only)
 
-> **Beta / Experimental**: Channel mode depends on a forked `modelcontextprotocol/go-sdk` and the `--dangerously-load-development-channels` flag in Claude Code. The protocol, schema, and tool shapes may change before stabilization.
+> **Beta / Experimental**: Channel mode uses `github.com/standardbeagle/go-sdk` (a fork of `modelcontextprotocol/go-sdk` that adds `ServerSession.Notify`) and the `--dangerously-load-development-channels` flag in Claude Code. The protocol, schema, and tool shapes may change before stabilization.
 
 Push-based event forwarding via the MCP `claude/channel` protocol. When enabled, the daemon streams browser errors, diagnostics, and user interactions directly into Claude's context as `<channel>` events -- no PTY wrapper or `agnt run` required.
 
@@ -671,13 +671,7 @@ channel_reply {content: "Which layout?", title: "Choose", severity: "warning", p
 
 **Forked go-sdk**:
 
-Channel mode uses `ServerSession.Notify(ctx, method, params)` which is not yet in the upstream `modelcontextprotocol/go-sdk`. The `go.mod` replace directive points at a fork:
-
-```
-replace github.com/modelcontextprotocol/go-sdk => github.com/standardbeagle/go-sdk v1.5.0-agnt.1
-```
-
-Remove the directive when the upstream PR is merged and released.
+Channel mode uses `ServerSession.Notify(ctx, method, params)` from `github.com/standardbeagle/go-sdk` (a fork of `modelcontextprotocol/go-sdk`). The fork adds this method which is pending upstream PR #898. When upstream merges and releases, swap imports back to `modelcontextprotocol/go-sdk` and bump the version.
 
 ## Testing
 
@@ -782,4 +776,4 @@ All other daemon tests run natively under `make test`. They call `daemon.Start()
 
 ## Forked Dependencies
 
-- **`github.com/modelcontextprotocol/go-sdk`** -> `github.com/standardbeagle/go-sdk v1.5.0-agnt.1`: Adds `ServerSession.Notify(ctx, method, params)` for custom notification methods. Remove when upstream PR is merged and released.
+- **`github.com/standardbeagle/go-sdk`** (v1.5.0-agnt.2): Fork of `modelcontextprotocol/go-sdk` that adds `ServerSession.Notify(ctx, method, params)` for custom notification methods. Used directly (no `replace` directive) so `go install` works. When upstream merges PR #898, swap imports back and bump version.

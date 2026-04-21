@@ -18,8 +18,8 @@ import (
 	"github.com/standardbeagle/agnt/internal/tools"
 	"github.com/standardbeagle/go-cli-server/process"
 
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/spf13/cobra"
+	"github.com/standardbeagle/go-sdk/mcp"
 )
 
 var serveCmd = &cobra.Command{

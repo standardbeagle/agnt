@@ -15,7 +15,7 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/modelcontextprotocol/go-sdk/internal/util"
+	"github.com/standardbeagle/go-sdk/internal/util"
 )
 
 // ProtectedResourceMetadata is the metadata for an OAuth 2.0 protected resource,

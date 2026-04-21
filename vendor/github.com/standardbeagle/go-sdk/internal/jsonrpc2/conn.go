@@ -13,7 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/modelcontextprotocol/go-sdk/internal/json"
+	"github.com/standardbeagle/go-sdk/internal/json"
 )
 
 // Binder builds a connection configuration.

@@ -6,7 +6,7 @@
 // for use by mcp transport authors.
 package jsonrpc
 
-import "github.com/modelcontextprotocol/go-sdk/internal/jsonrpc2"
+import "github.com/standardbeagle/go-sdk/internal/jsonrpc2"
 
 type (
 	// ID is a JSON-RPC request ID.

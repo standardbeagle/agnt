@@ -7,8 +7,8 @@ import (
 
 	"strings"
 
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/standardbeagle/agnt/internal/protocol"
+	"github.com/standardbeagle/go-sdk/mcp"
 )
 
 // makeCurrentPageHandler creates a handler for the currentpage tool.

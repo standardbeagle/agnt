@@ -15,8 +15,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/modelcontextprotocol/go-sdk/internal/util"
-	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
+	"github.com/standardbeagle/go-sdk/internal/util"
+	"github.com/standardbeagle/go-sdk/jsonrpc"
 	"github.com/yosida95/uritemplate/v3"
 )
 
