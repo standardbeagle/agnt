@@ -280,6 +280,15 @@ func (d *Daemon) handleExplicitStart(event ProxyEvent) {
 		})
 	}
 
+	// Register an admin-surface entry so the overlay status bar and
+	// SCRIPT LIST can render an indicator for this explicit proxy.
+	// Script-linked proxies are skipped inside registerExplicitProxyEntry
+	// (the script.Entry registered by autostartScript owns that row), so
+	// this is safe to call unconditionally. event.Path may be empty for
+	// degenerate events — registerExplicitProxyEntry is a no-op in that
+	// case. T5 owns the cleanup side of this registration.
+	d.registerExplicitProxyEntry(event.Path, event.ProxyID, server.ListenAddr)
+
 	d.wireProxyLogger(server)
 
 	// Find session for this project to get session-specific overlay endpoint

@@ -1,12 +1,3 @@
 {
-  "claims": {
-    "PGvyT5fDGA6W": {
-      "runner_instance_id": "beagle-ab2-2506836",
-      "runner_email": "claude@anthropic.com",
-      "claimed_at": "2026-04-21T13:40:00-07:00",
-      "agent_id": "beagle-ab2-2506836",
-      "parent_loop_id": "KwXvtxrviI05",
-      "purpose": "T2 register script-registry entry for explicit proxies"
-    }
-  }
+  "claims": {}
 }

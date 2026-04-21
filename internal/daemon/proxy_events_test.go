@@ -1159,3 +1159,115 @@ func TestAutostartProxy_NoListenPort_NoPreflightError(t *testing.T) {
 		t.Errorf("expected 0 proxy_listen_port_conflict entries for zero listen-port, got %d", n)
 	}
 }
+
+// TestHandleExplicitStart_RegistersScriptEntry verifies that an
+// ExplicitStart event adds a proxy-kind entry to the admin surface so
+// the overlay status bar and SCRIPT LIST can render an indicator for
+// the proxy. Without this shim explicit proxies are invisible to the
+// admin surface — they only appear in PROXY LIST, which the status bar
+// does not consume. Iteration-2 / T2 regression guard.
+func TestHandleExplicitStart_RegistersScriptEntry(t *testing.T) {
+	daemon, tmpDir := newFallbackTestDaemon(t)
+
+	proxyID := makeProcessID(tmpDir, "standalone")
+	daemon.handleExplicitStart(ProxyEvent{
+		Type:    ExplicitStart,
+		ProxyID: proxyID,
+		Config:  &config.ProxyConfig{URL: "http://127.0.0.1:65010"},
+		Path:    tmpDir,
+	})
+
+	if _, err := daemon.proxym.Get(proxyID); err != nil {
+		t.Fatalf("precondition: expected proxy %q to exist in ProxyManager: %v", proxyID, err)
+	}
+
+	entries := daemon.proxyEntries.List(tmpDir)
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 proxy entry for %s, got %d", tmpDir, len(entries))
+	}
+	entry := entries[0]
+	if entry.Name() != "standalone" {
+		t.Errorf("entry.Name: got %q, want %q", entry.Name(), "standalone")
+	}
+	if entry.ProxyID() != proxyID {
+		t.Errorf("entry.ProxyID: got %q, want %q", entry.ProxyID(), proxyID)
+	}
+	if entry.ProjectPath() != tmpDir {
+		t.Errorf("entry.ProjectPath: got %q, want %q", entry.ProjectPath(), tmpDir)
+	}
+
+	summary := proxyEntryToSummary(entry)
+	if summary["kind"] != string(ScriptKindProxy) {
+		t.Errorf("summary.kind: got %v, want %q", summary["kind"], ScriptKindProxy)
+	}
+	if summary["name"] != "standalone" {
+		t.Errorf("summary.name: got %v, want %q", summary["name"], "standalone")
+	}
+	if summary["process_id"] != proxyID {
+		t.Errorf("summary.process_id: got %v, want %q", summary["process_id"], proxyID)
+	}
+}
+
+// TestHandleExplicitStart_ScriptLinkedProxy_DoesNotDuplicate verifies
+// that registering a script.Entry under the same name as a later
+// ExplicitStart call prevents a duplicate proxy-kind row. Covers the
+// autostartScript-then-URLDetected ordering case when a refactor
+// routes URL-detected proxies through the explicit path.
+func TestHandleExplicitStart_ScriptLinkedProxy_DoesNotDuplicate(t *testing.T) {
+	daemon, tmpDir := newFallbackTestDaemon(t)
+
+	// Pretend autostartScript registered a process-kind entry first.
+	if _, err := daemon.scriptRegistry.Register("linked", tmpDir, scriptConfigToEntry(&config.ScriptConfig{Run: "true"})); err != nil {
+		t.Fatalf("scriptRegistry.Register: %v", err)
+	}
+
+	proxyID := makeProcessID(tmpDir, "linked")
+	daemon.handleExplicitStart(ProxyEvent{
+		Type:    ExplicitStart,
+		ProxyID: proxyID,
+		Config:  &config.ProxyConfig{URL: "http://127.0.0.1:65011"},
+		Path:    tmpDir,
+	})
+
+	// The proxy is created in the runtime, but no parallel proxy-kind
+	// admin entry is added — the script.Entry owns the admin row.
+	if _, err := daemon.proxym.Get(proxyID); err != nil {
+		t.Fatalf("expected proxy to exist: %v", err)
+	}
+	if entries := daemon.proxyEntries.List(tmpDir); len(entries) != 0 {
+		t.Errorf("expected 0 proxy-kind entries when script.Entry exists, got %d", len(entries))
+	}
+}
+
+// TestHandleExplicitStart_RegisterIsIdempotent verifies that two
+// successive ExplicitStart events with the same proxy ID do not create
+// two proxy-kind admin entries. The second Register is short-circuited
+// by proxym.Get returning success, but guard the shim anyway — a
+// future refactor that allows re-registration upstream must not
+// accidentally create a duplicate admin row.
+func TestHandleExplicitStart_RegisterIsIdempotent(t *testing.T) {
+	daemon, tmpDir := newFallbackTestDaemon(t)
+
+	// First call goes through the full handler and registers the entry.
+	proxyID := makeProcessID(tmpDir, "dup")
+	daemon.handleExplicitStart(ProxyEvent{
+		Type:    ExplicitStart,
+		ProxyID: proxyID,
+		Config:  &config.ProxyConfig{URL: "http://127.0.0.1:65012"},
+		Path:    tmpDir,
+	})
+
+	// Direct shim calls with the same ID must be no-ops. The first
+	// handler call above already registered the entry, so both of
+	// these return false and don't add a second row.
+	if got := daemon.registerExplicitProxyEntry(tmpDir, proxyID, ""); got {
+		t.Errorf("second register should be a no-op, got registered=true")
+	}
+	if got := daemon.registerExplicitProxyEntry(tmpDir, proxyID, ""); got {
+		t.Errorf("third register should be a no-op, got registered=true")
+	}
+
+	if entries := daemon.proxyEntries.List(tmpDir); len(entries) != 1 {
+		t.Errorf("expected exactly 1 proxy-kind entry after duplicate registers, got %d", len(entries))
+	}
+}
