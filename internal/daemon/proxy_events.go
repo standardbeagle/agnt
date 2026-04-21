@@ -265,6 +265,21 @@ func (d *Daemon) handleExplicitStart(event ProxyEvent) {
 		return
 	}
 
+	// Persist proxy config so autostart-driven proxies survive a daemon
+	// restart. Mirrors the MCP tool path in hubHandleProxyStart, and is
+	// idempotent by ID (AddProxy updates existing entries) so a later
+	// refactor that routes the tool path through handleExplicitStart won't
+	// introduce a duplicate-write concern.
+	if d.stateMgr != nil {
+		d.stateMgr.AddProxy(PersistentProxyConfig{
+			ID:         server.ID,
+			TargetURL:  server.TargetURL.String(),
+			Port:       proxyServerConfig.ListenPort,
+			MaxLogSize: proxyServerConfig.MaxLogSize,
+			Path:       event.Path,
+		})
+	}
+
 	d.wireProxyLogger(server)
 
 	// Find session for this project to get session-specific overlay endpoint

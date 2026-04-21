@@ -1038,6 +1038,107 @@ func TestAutostartProxy_ListenPortConflict_EmitsStartupError(t *testing.T) {
 	}
 }
 
+// TestHandleExplicitStart_PersistsToStateManager verifies that a successful
+// ExplicitStart event persists the created proxy into the StateManager so
+// autostart-driven proxies survive a daemon restart — matching the
+// persistence behavior already implemented in the MCP tool path
+// (`hubHandleProxyStart`). Before this was fixed the autostart path created
+// the proxy in the runtime ProxyManager but never called stateMgr.AddProxy,
+// so a daemon restart lost all config-driven proxies.
+func TestHandleExplicitStart_PersistsToStateManager(t *testing.T) {
+	tmpDir := shortTempDir(t)
+	sockPath := shortSockPath(t)
+	statePath := filepath.Join(tmpDir, "daemon-state.json")
+
+	daemon := New(DaemonConfig{
+		SocketPath:             sockPath,
+		MaxClients:             10,
+		WriteTimeout:           5 * time.Second,
+		EnableStatePersistence: true,
+		StatePath:              statePath,
+	})
+	if err := daemon.Start(); err != nil {
+		t.Fatalf("Failed to start daemon: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		daemon.Stop(ctx)
+	})
+
+	if daemon.stateMgr == nil {
+		t.Fatalf("Expected stateMgr to be initialized when EnableStatePersistence=true")
+	}
+
+	// Sanity check — no persisted proxies before the call.
+	if _, ok := daemon.stateMgr.GetProxy("precondition"); ok {
+		t.Fatalf("precondition: unexpected proxy in state")
+	}
+
+	proxyID := makeProcessID(tmpDir, "standalone")
+	proxyCfg := &config.ProxyConfig{
+		URL:        "http://127.0.0.1:65001",
+		MaxLogSize: 321,
+	}
+
+	daemon.handleExplicitStart(ProxyEvent{
+		Type:    ExplicitStart,
+		ProxyID: proxyID,
+		Config:  proxyCfg,
+		Path:    tmpDir,
+	})
+
+	// The proxy must exist in the runtime manager.
+	if _, err := daemon.proxym.Get(proxyID); err != nil {
+		t.Fatalf("Expected proxy %q to exist in ProxyManager: %v", proxyID, err)
+	}
+
+	// And it must be persisted to the StateManager.
+	persisted, ok := daemon.stateMgr.GetProxy(proxyID)
+	if !ok {
+		t.Fatalf("Expected proxy %q to be persisted to StateManager, but it was not", proxyID)
+	}
+	if persisted.ID != proxyID {
+		t.Errorf("persisted.ID: got %q, want %q", persisted.ID, proxyID)
+	}
+	if persisted.TargetURL != "http://127.0.0.1:65001" {
+		t.Errorf("persisted.TargetURL: got %q, want %q", persisted.TargetURL, "http://127.0.0.1:65001")
+	}
+	if persisted.Path != tmpDir {
+		t.Errorf("persisted.Path: got %q, want %q", persisted.Path, tmpDir)
+	}
+	if persisted.MaxLogSize != 321 {
+		t.Errorf("persisted.MaxLogSize: got %d, want %d", persisted.MaxLogSize, 321)
+	}
+}
+
+// TestHandleExplicitStart_NoStateManager_DoesNotPanic verifies the handler
+// tolerates daemons that were built without state persistence — the
+// stateMgr nil-guard must prevent a panic and the runtime proxy creation
+// still succeeds. Protects the minimal-daemon test paths that don't enable
+// persistence.
+func TestHandleExplicitStart_NoStateManager_DoesNotPanic(t *testing.T) {
+	daemon, tmpDir := newFallbackTestDaemon(t)
+
+	// newFallbackTestDaemon does not enable state persistence.
+	if daemon.stateMgr != nil {
+		t.Fatalf("precondition: expected stateMgr to be nil for this test harness")
+	}
+
+	proxyID := makeProcessID(tmpDir, "no-state")
+	daemon.handleExplicitStart(ProxyEvent{
+		Type:    ExplicitStart,
+		ProxyID: proxyID,
+		Config:  &config.ProxyConfig{URL: "http://127.0.0.1:65002"},
+		Path:    tmpDir,
+	})
+
+	// Runtime proxy creation must still succeed.
+	if _, err := daemon.proxym.Get(proxyID); err != nil {
+		t.Fatalf("Expected proxy %q to exist even without stateMgr: %v", proxyID, err)
+	}
+}
+
 // TestAutostartProxy_NoListenPort_NoPreflightError verifies that
 // proxies without `listen-port` (or with zero) skip the preflight
 // entirely — no spurious conflict entries in the hash-based
