@@ -108,7 +108,7 @@ func (rs *ReadySignaler) StartPortProbe(processID string, port int, ctx context.
 		conn, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
 		if err == nil {
 			conn.Close()
-			rs.SignalReady(processID)
+			rs.signalFromProbe(processID, probeCtx)
 			return
 		}
 
@@ -122,12 +122,34 @@ func (rs *ReadySignaler) StartPortProbe(processID string, port int, ctx context.
 				conn, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
 				if err == nil {
 					conn.Close()
-					rs.SignalReady(processID)
+					rs.signalFromProbe(processID, probeCtx)
 					return
 				}
 			}
 		}
 	}()
+}
+
+// signalFromProbe closes the existing signal channel for processID only if
+// the probe has not been cancelled. Unlike SignalReady, it never resurrects
+// a channel that Cleanup already removed — that would defeat Cleanup's
+// guarantee that no further probe signal can make WaitReady return success.
+// Runs under rs.mu so Cleanup can't race with this observation.
+func (rs *ReadySignaler) signalFromProbe(processID string, probeCtx context.Context) {
+	rs.mu.Lock()
+	defer rs.mu.Unlock()
+	if probeCtx.Err() != nil {
+		return
+	}
+	ch, ok := rs.signals[processID]
+	if !ok {
+		return
+	}
+	select {
+	case <-ch:
+	default:
+		close(ch)
+	}
 }
 
 // Cleanup removes the signal channel and stops any running port probe for
