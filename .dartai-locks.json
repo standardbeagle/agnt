@@ -1,12 +1,12 @@
 {
   "claims": {
-    "SZiCwApAdgHL": {
-      "runner_instance_id": "beagle-ab2-2506836",
+    "3Ndsa3b7teJI": {
+      "runner_instance_id": "beagle-ab2-2841902",
       "runner_email": "claude@anthropic.com",
-      "claimed_at": "2026-04-21T14:50:00-07:00",
-      "agent_id": "beagle-ab2-2506836",
+      "claimed_at": "2026-04-21T17:00:30-07:00",
+      "agent_id": "beagle-ab2-2841902",
       "parent_loop_id": "KwXvtxrviI05",
-      "purpose": "T5 cleanup path parity for explicit proxies"
+      "purpose": "T6 fix proxy list stats uptime/total_requests"
     }
   }
 }
