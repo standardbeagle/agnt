@@ -60,10 +60,13 @@ func (w *recordingWriter) countEnters() int {
 }
 
 // makeTestOverlay creates an Overlay with a recording writer for testing.
+// Fast delays are injected so tests complete in <0.5s instead of ~7.6s.
 func makeTestOverlay(w *recordingWriter) *Overlay {
 	return &Overlay{
-		ptmx:       w,
-		activityCh: make(chan struct{}, 1),
+		ptmx:             w,
+		activityCh:       make(chan struct{}, 1),
+		enterSettle:      50 * time.Millisecond,
+		enterRetryDelays: [3]time.Duration{50 * time.Millisecond, 75 * time.Millisecond, 100 * time.Millisecond},
 	}
 }
 
@@ -85,8 +88,8 @@ func TestEnterBehavior_ByteSequence(t *testing.T) {
 		close(done)
 	}()
 
-	// Signal after echo-settle drain (1.1s)
-	time.Sleep(1200 * time.Millisecond)
+	// Signal after echo-settle drain (50ms settle + 25ms into retry1 window)
+	time.Sleep(75 * time.Millisecond)
 	o.NotifyActivity()
 	<-done
 
@@ -129,8 +132,8 @@ func TestEnterBehavior_ImmediateActivity_SingleEnter(t *testing.T) {
 		close(done)
 	}()
 
-	// Signal activity after the 1.1s echo-settle + drain window
-	time.Sleep(1200 * time.Millisecond)
+	// Signal activity after the echo-settle + drain window (50ms settle + 25ms into retry1)
+	time.Sleep(75 * time.Millisecond)
 	o.NotifyActivity()
 
 	select {
@@ -153,7 +156,7 @@ func TestEnterBehavior_ImmediateActivity_SingleEnter(t *testing.T) {
 func TestEnterBehavior_NoActivity_MaxRetries(t *testing.T) {
 	t.Parallel()
 	// If the agent never responds, 4 Enters are sent (1 initial + 3 retries).
-	// Total wall time: ~1.1s + 1.5s + 2s + 3s = ~7.6s
+	// Total wall time with fast delays: ~50ms settle + 50ms + 75ms + 100ms = ~275ms
 	w := &recordingWriter{}
 	o := makeTestOverlay(w)
 
@@ -166,7 +169,7 @@ func TestEnterBehavior_NoActivity_MaxRetries(t *testing.T) {
 
 	select {
 	case <-done:
-	case <-time.After(12 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("typeText did not return after max retries")
 	}
 	elapsed := time.Since(start)
@@ -175,15 +178,15 @@ func TestEnterBehavior_NoActivity_MaxRetries(t *testing.T) {
 	assert.Equal(t, 4, enters,
 		"with no activity, should send exactly 4 Enters (1 + 3 retries)")
 
-	// Total time should be approximately 7.6s (1.1 + 1.5 + 2.0 + 3.0)
-	assert.InDelta(t, 7.6, elapsed.Seconds(), 1.0,
-		"total elapsed should be ~7.6s, got %v", elapsed)
+	// Total time should be approximately 0.275s (50ms settle + 50ms + 75ms + 100ms)
+	assert.InDelta(t, 0.275, elapsed.Seconds(), 0.1,
+		"total elapsed should be ~0.275s, got %v", elapsed)
 }
 
 func TestEnterBehavior_RetryTiming(t *testing.T) {
 	t.Parallel()
-	// Exact delays between Enter retries:
-	// [immediate] → 1.1s pause → [retry1] → 1.5s → [retry2] → 2s → [retry3] → 3s
+	// Exact delays between Enter retries (fast test delays):
+	// [immediate] → 50ms settle → [retry1] → 50ms → [retry2] → 75ms → [retry3] → 100ms
 	w := &recordingWriter{}
 	o := makeTestOverlay(w)
 
@@ -207,16 +210,16 @@ func TestEnterBehavior_RetryTiming(t *testing.T) {
 	require.Equal(t, 4, len(enterTimes), "expected 4 Enter writes")
 
 	// Gaps between consecutive enters
-	gap1 := enterTimes[1].Sub(enterTimes[0]) // echo settle + first retry: ~2.6s
-	gap2 := enterTimes[2].Sub(enterTimes[1]) // second retry delay: ~2s
-	gap3 := enterTimes[3].Sub(enterTimes[2]) // third retry delay: ~3s
+	gap1 := enterTimes[1].Sub(enterTimes[0]) // settle(50ms) + retry1(50ms) = ~100ms
+	gap2 := enterTimes[2].Sub(enterTimes[1]) // retry2 delay: ~75ms
+	gap3 := enterTimes[3].Sub(enterTimes[2]) // retry3 delay: ~100ms
 
-	assert.InDelta(t, 2.6, gap1.Seconds(), 0.5,
-		"gap between enter 1→2 should be ~2.6s (1.1s settle + 1.5s retry)")
-	assert.InDelta(t, 2.0, gap2.Seconds(), 0.5,
-		"gap between enter 2→3 should be ~2.0s")
-	assert.InDelta(t, 3.0, gap3.Seconds(), 0.5,
-		"gap between enter 3→4 should be ~3.0s")
+	assert.InDelta(t, 0.1, gap1.Seconds(), 0.07,
+		"gap between enter 1→2 should be ~100ms (50ms settle + 50ms retry)")
+	assert.InDelta(t, 0.075, gap2.Seconds(), 0.06,
+		"gap between enter 2→3 should be ~75ms")
+	assert.InDelta(t, 0.1, gap3.Seconds(), 0.08,
+		"gap between enter 3→4 should be ~100ms")
 }
 
 func TestEnterBehavior_ActivityStopsRetries(t *testing.T) {
@@ -231,8 +234,9 @@ func TestEnterBehavior_ActivityStopsRetries(t *testing.T) {
 		close(done)
 	}()
 
-	// Wait past echo settle (1.1s) + first retry delay (1.5s), then signal.
-	time.Sleep(3000 * time.Millisecond)
+	// Wait past echo settle (50ms) + first retry delay (50ms) + some margin,
+	// then signal. At ~130ms: retry1 has fired (2nd Enter), retry2 hasn't yet.
+	time.Sleep(130 * time.Millisecond)
 	o.NotifyActivity()
 
 	select {
@@ -261,12 +265,14 @@ func TestEnterBehavior_EchoDrain(t *testing.T) {
 		close(done)
 	}()
 
-	// Simulate echo activity during the 1.1s settle window
-	time.Sleep(200 * time.Millisecond)
+	// Simulate echo activity during the 50ms settle window
+	time.Sleep(20 * time.Millisecond)
 	o.NotifyActivity() // This should be drained
 
-	// Now signal real activity after the settle window
-	time.Sleep(1500 * time.Millisecond) // Past the 1.1s settle
+	// Now signal real activity after the settle window, clearly within the first
+	// retry window (settle=50ms, retry1=50ms → window is 50ms–100ms from start).
+	// Sleep an additional 60ms (total ~80ms from start = ~30ms into retry1).
+	time.Sleep(60 * time.Millisecond)
 	o.NotifyActivity()
 
 	select {
@@ -293,7 +299,7 @@ func TestEnterBehavior_InstantMode_WritesFullText(t *testing.T) {
 		o.typeText(TypeMessage{Text: "hello world", Enter: true, Instant: true})
 		close(done)
 	}()
-	time.Sleep(1200 * time.Millisecond)
+	time.Sleep(75 * time.Millisecond)
 	o.NotifyActivity()
 	<-done
 
@@ -317,7 +323,7 @@ func TestEnterBehavior_TypedMode_CharByChar(t *testing.T) {
 		o.typeText(TypeMessage{Text: "abc", Enter: true, Instant: false})
 		close(done)
 	}()
-	time.Sleep(1300 * time.Millisecond) // 10ms*3 chars + 100ms settle + 1.1s drain
+	time.Sleep(250 * time.Millisecond) // 10ms*3 chars + 100ms settle + 50ms drain
 	o.NotifyActivity()
 	<-done
 	elapsed := time.Since(start)
@@ -352,7 +358,7 @@ func TestEnterBehavior_TypedMode_PreEnterSettle(t *testing.T) {
 		o.typeText(TypeMessage{Text: "x", Enter: true, Instant: false})
 		close(done)
 	}()
-	time.Sleep(1300 * time.Millisecond) // 10ms char + 100ms settle + 1.1s drain
+	time.Sleep(250 * time.Millisecond) // 10ms char + 100ms settle + 50ms drain
 	o.NotifyActivity()
 	<-done
 
@@ -408,8 +414,8 @@ func TestEnterBehavior_ActivityMonitorFeedback(t *testing.T) {
 		close(done)
 	}()
 
-	// Simulate agent output arriving after the echo-settle window
-	time.Sleep(1300 * time.Millisecond)
+	// Simulate agent output arriving after the echo-settle window (50ms settle + 25ms into retry1)
+	time.Sleep(75 * time.Millisecond)
 	am.Write([]byte("Claude is thinking and producing output here...\n"))
 
 	select {
@@ -474,7 +480,7 @@ func TestEnterBehavior_TextBeforeEnter(t *testing.T) {
 		o.typeText(TypeMessage{Text: "my prompt text", Enter: true, Instant: true})
 		close(done)
 	}()
-	time.Sleep(1200 * time.Millisecond)
+	time.Sleep(75 * time.Millisecond)
 	o.NotifyActivity()
 	<-done
 
@@ -513,7 +519,7 @@ func TestEnterBehavior_EmptyText_WithEnter(t *testing.T) {
 		o.typeText(TypeMessage{Text: "", Enter: true, Instant: true})
 		close(done)
 	}()
-	time.Sleep(1200 * time.Millisecond)
+	time.Sleep(75 * time.Millisecond)
 	o.NotifyActivity()
 	<-done
 
@@ -574,7 +580,7 @@ func TestEnterBehavior_NotCRLF(t *testing.T) {
 		o.typeText(TypeMessage{Text: "test", Enter: true, Instant: true})
 		close(done)
 	}()
-	time.Sleep(1200 * time.Millisecond)
+	time.Sleep(75 * time.Millisecond)
 	o.NotifyActivity()
 	<-done
 
