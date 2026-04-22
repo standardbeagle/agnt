@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
 
 	hubpkg "github.com/standardbeagle/go-cli-server/hub"
@@ -16,7 +17,7 @@ import (
 )
 
 func (d *Daemon) hubHandleProc(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	valid := []string{"STATUS", "OUTPUT", "STOP", "RESTART", "LIST", "CLEANUP-PORT", "AUTORESTART"}
+	valid := []string{"RUN", "STATUS", "OUTPUT", "STOP", "RESTART", "LIST", "CLEANUP-PORT", "AUTORESTART"}
 	return newCommandRouter("PROC").
 		withDefault(func(_ context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
 			return writeStructuredErr(conn, "daemon", &hubproto.StructuredError{
@@ -28,6 +29,7 @@ func (d *Daemon) hubHandleProc(ctx context.Context, conn *hubpkg.Connection, cmd
 			})
 		}).
 		dispatch(ctx, conn, cmd, map[string]handlerFn{
+			"RUN":          d.hubHandleProcRun,
 			"STATUS":       d.hubHandleProcStatus,
 			"OUTPUT":       d.hubHandleProcOutput,
 			"STOP":         d.hubHandleProcStop,
@@ -538,6 +540,118 @@ func (d *Daemon) hubHandleProcAutoRestart(ctx context.Context, conn *hubpkg.Conn
 	default:
 		return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("unknown autorestart action %q, valid: enable, disable, status", action))
 	}
+}
+
+// procRunPayload shapes the JSON body for PROC RUN. Fields mirror
+// config.ScriptConfig — the handler builds a *config.ScriptConfig from
+// this payload and delegates to StartScriptExplicit. Keeping the wire
+// shape separate from config.ScriptConfig so KDL-only fields (e.g.
+// AutostartFlag) don't leak into the MCP contract.
+type procRunPayload struct {
+	Run         string            `json:"run,omitempty"`
+	Command     string            `json:"command,omitempty"`
+	Args        []string          `json:"args,omitempty"`
+	Cwd         string            `json:"cwd,omitempty"`
+	Env         map[string]string `json:"env,omitempty"`
+	URLMatchers []string          `json:"url_matchers,omitempty"`
+	AutoRestart bool              `json:"auto_restart,omitempty"`
+	ProjectPath string            `json:"project_path,omitempty"`
+}
+
+// hubHandleProcRun handles PROC RUN <name>.
+//
+// Thin wrapper over StartScriptExplicit — the MCP PROC RUN path and the
+// autostart path share the same per-script wire-up (scriptConfigs cache,
+// scriptRegistry.Register, command resolution, StartScript + state
+// transitions). Before T4 the only MCP tool path that started processes
+// was the top-level RUN verb, which bypassed the script registry and
+// left MCP-started processes invisible to the overlay admin screen
+// (SCRIPT LIST shows registry entries). PROC RUN fills that gap: the
+// new process appears as a process-kind entry in SCRIPT LIST exactly
+// like an autostart script.
+//
+// Project path resolution: prefer the JSON payload's ProjectPath; fall
+// back to the connection's session ProjectPath. If neither is set the
+// handler errors — StartScriptExplicit requires a non-empty projectPath
+// to key scriptConfigs / scriptRegistry entries.
+func (d *Daemon) hubHandleProcRun(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	if len(cmd.Args) < 1 {
+		return conn.WriteErr(hubproto.ErrMissingParam, "PROC RUN requires: <name>")
+	}
+
+	name := cmd.Args[0]
+	if name == "" {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, "PROC RUN: name must not be empty")
+	}
+
+	payload, err := unmarshalCommand[procRunPayload](cmd)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("invalid PROC RUN payload: %v", err))
+	}
+
+	if payload.Run == "" && payload.Command == "" {
+		return conn.WriteErr(hubproto.ErrMissingParam, "PROC RUN requires `run` or `command` in payload")
+	}
+
+	// Resolve project path: explicit override > session binding.
+	projectPath := payload.ProjectPath
+	if projectPath == "" {
+		if session, ok := d.sessionRegistry.Get(conn.SessionCode()); ok {
+			projectPath = session.ProjectPath
+		}
+	}
+	if projectPath == "" {
+		return conn.WriteErr(hubproto.ErrMissingParam, "PROC RUN: project_path required (or attach session with ProjectPath)")
+	}
+	projectPath = normalizePath(projectPath)
+
+	scriptCfg := &config.ScriptConfig{
+		Run:         payload.Run,
+		Command:     payload.Command,
+		Args:        payload.Args,
+		Cwd:         payload.Cwd,
+		Env:         payload.Env,
+		URLMatchers: payload.URLMatchers,
+		AutoRestart: payload.AutoRestart,
+	}
+
+	// Respect caller cancellation before we touch the registry.
+	select {
+	case <-ctx.Done():
+		return conn.WriteErr(hubproto.ErrInternal, ctx.Err().Error())
+	default:
+	}
+
+	// StartScriptExplicit is synchronous; on return the process is
+	// registered and either running or a startup_error entry carries
+	// the detail. proxyConfigs=nil — MCP ad-hoc processes have no
+	// linked proxy config; port resolution falls back to command-line
+	// / PORT env scanning in getExpectedPortsForScript.
+	if err := d.StartScriptExplicit(ctx, name, scriptCfg, projectPath, nil); err != nil {
+		debug.Warn("daemon", "PROC RUN %q failed: %v", name, err)
+		return conn.WriteErr(hubproto.ErrInternal, err.Error())
+	}
+
+	processID := makeProcessID(projectPath, name)
+
+	resp := map[string]interface{}{
+		"name":         name,
+		"process_id":   processID,
+		"project_path": projectPath,
+	}
+
+	// Surface PID when the ProcessManager knows about the new process.
+	// StartScriptExplicit delegates to StartScript which registers into
+	// ProcessManager synchronously, so the lookup should succeed for a
+	// successfully started process. A miss is not fatal — the caller
+	// already has process_id and can poll PROC STATUS.
+	if proc, getErr := d.hub.ProcessManager().Get(processID); getErr == nil {
+		resp["pid"] = proc.PID()
+		resp["state"] = proc.State().String()
+	}
+
+	data, _ := json.Marshal(resp)
+	return conn.WriteJSON(data)
 }
 
 // hubHandleProxyRestart handles PROXY RESTART <id>.

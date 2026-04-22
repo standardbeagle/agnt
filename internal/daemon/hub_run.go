@@ -27,10 +27,15 @@ func (d *Daemon) registerAgntCommands() {
 		Handler:     d.hubHandleRun,
 	})
 
-	// PROC command - override Hub's to add URL tracking and project filtering
+	// PROC command - override Hub's to add URL tracking and project filtering.
+	// PROC RUN is the MCP-facing admin-aware process start; unlike the
+	// top-level RUN verb (which creates ad-hoc ProcessManager entries
+	// invisible to SCRIPT LIST), PROC RUN routes through
+	// StartScriptExplicit so the new process becomes a process-kind
+	// admin registry entry alongside autostart scripts.
 	d.hub.RegisterCommand(hubpkg.CommandDefinition{
 		Verb:        "PROC",
-		SubVerbs:    []string{"STATUS", "OUTPUT", "STOP", "RESTART", "LIST", "CLEANUP-PORT", "AUTORESTART"},
+		SubVerbs:    []string{"RUN", "STATUS", "OUTPUT", "STOP", "RESTART", "LIST", "CLEANUP-PORT", "AUTORESTART"},
 		Description: "Manage running processes",
 		Handler:     d.hubHandleProc,
 	})

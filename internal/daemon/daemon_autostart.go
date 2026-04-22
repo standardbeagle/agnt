@@ -651,7 +651,31 @@ func (d *Daemon) scheduleFallbackPortChecks(ctx context.Context, cfg *config.Agn
 	}
 }
 
+// autostartScript starts a single script during RunAutostart. Thin wrapper
+// around StartScriptExplicit — the autostart layer (registerAndStartScripts →
+// startAutostartScripts → runLayer → startOneScript) owns layer sequencing,
+// dependency waits, and failure bookkeeping; the per-script work (scriptConfigs
+// cache, scriptRegistry.Register, resolveShell, StartScript, state transitions)
+// lives in StartScriptExplicit. Before T4 both paths duplicated that logic.
+// Keeping autostartScript as the named entrypoint so existing call sites stay
+// readable; the body is now a one-liner delegate.
 func (d *Daemon) autostartScript(ctx context.Context, name string, scriptCfg *config.ScriptConfig, projectPath string, proxyConfigs map[string]*config.ProxyConfig) error {
+	return d.StartScriptExplicit(ctx, name, scriptCfg, projectPath, proxyConfigs)
+}
+
+// StartScriptExplicit starts a single script by config. Canonical entrypoint
+// shared by the autostart path (via autostartScript) and the MCP PROC RUN hub
+// handler. Owns: scriptConfigs cache, scriptRegistry.Register, command
+// resolution (Run / Command / package-manager detection), state transitions,
+// expectedPorts resolution, and the StartScript call. On failure, sets
+// ScriptEntry.State = StateFailed, records LastError, increments FailCount,
+// and returns a formatted error that includes the resolved command, working
+// directory, and (when available) the trailing process output.
+//
+// proxyConfigs is used only for port resolution via getExpectedPortsForScript.
+// Callers that don't have a proxyConfigs map (MCP ad-hoc processes) pass nil;
+// the helper tolerates nil and falls back to command-line / PORT env scanning.
+func (d *Daemon) StartScriptExplicit(ctx context.Context, name string, scriptCfg *config.ScriptConfig, projectPath string, proxyConfigs map[string]*config.ProxyConfig) error {
 
 	// Make process ID unique per project to avoid collisions between sessions
 	processID := makeProcessID(projectPath, name)
@@ -667,7 +691,7 @@ func (d *Daemon) autostartScript(ctx context.Context, name string, scriptCfg *co
 
 	// Check ScriptRegistry state: if already running/starting, skip
 	if state := entry.State(); state == script.StateRunning || state == script.StateStarting {
-		debug.Log("daemon", "autostartScript: script %s already %s, skipping", name, state)
+		debug.Log("daemon", "StartScriptExplicit: script %s already %s, skipping", name, state)
 		return nil
 	}
 
