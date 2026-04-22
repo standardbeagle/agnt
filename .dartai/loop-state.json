@@ -4,14 +4,14 @@
   "spawns": 1,
   "started_at": "2026-04-21T12:40:00-07:00",
   "last_iteration_at": "2026-04-21T18:10:00-07:00",
-  "last_subagent": "beagle-ab2-2841902",
+  "last_subagent": "beagle-ab2-2931659",
   "loop_task_id": "KwXvtxrviI05",
   "dartboard": "Personal/agnt",
-  "runner_instance_id": "beagle-ab2-2841902",
+  "runner_instance_id": "beagle-ab2-2931659",
   "runner_email": "claude@anthropic.com",
   "runner_dart_id": null,
-  "agent_id": "beagle-ab2-2841902",
-  "resumed_at": "2026-04-21T17:00:00-07:00",
+  "agent_id": "beagle-ab2-2931659",
+  "resumed_at": "2026-04-22T03:30:35Z",
   "tasks": [
     {
       "task_id": "3SOUIDZJSwXA",
@@ -77,5 +77,6 @@
       "fix_task_created": false,
       "fix_task_id": null
     }
-  ]
+  ],
+  "interrupted_at": "2026-04-22T03:23:40.072Z"
 }
