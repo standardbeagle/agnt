@@ -10,6 +10,7 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/go-cli-server/script"
+	"github.com/stretchr/testify/require"
 )
 
 // TestScriptLifecycle covers the full script lifecycle in one shared daemon
@@ -55,22 +56,26 @@ scripts {
 		}
 
 		d.RunAutostart(context.Background(), tmpDir)
-		time.Sleep(1 * time.Second)
 
-		scripts := d.ScriptRegistry().List(normalizePath(tmpDir))
-		if len(scripts) != 3 {
-			names := make([]string, len(scripts))
-			for i, s := range scripts {
-				names[i] = s.Name + ":" + s.State().String()
+		var scripts []*script.Entry
+		require.Eventually(t, func() bool {
+			scripts = d.ScriptRegistry().List(normalizePath(tmpDir))
+			if len(scripts) != 3 {
+				return false
 			}
-			t.Fatalf("Expected 3 scripts, got %d: %v", len(scripts), names)
-		}
+			for _, s := range scripts {
+				if s.State() == script.StateIdle || s.State() == script.StateStarting {
+					return false
+				}
+			}
+			return true
+		}, 10*time.Second, 20*time.Millisecond, "scripts did not all reach non-idle/non-starting")
 
+		require.Len(t, scripts, 3, "exactly 3 scripts should be registered")
 		for _, s := range scripts {
 			state := s.State()
-			if state == script.StateIdle {
-				t.Errorf("Script %s should not be idle after autostart (state=%s)", s.Name, state)
-			}
+			require.NotEqual(t, script.StateIdle, state, "script %s should not be idle after autostart", s.Name)
+			require.NotEmpty(t, s.Name, "script entry must have a non-empty name")
 		}
 	})
 
@@ -94,29 +99,31 @@ scripts {
 		}
 
 		d.RunAutostart(context.Background(), tmpDir)
-		time.Sleep(2 * time.Second)
 
-		entry, ok := d.ScriptRegistry().Get("quick", normalizePath(tmpDir))
-		if !ok {
-			t.Fatal("ScriptEntry should persist after process exit")
-		}
+		var entry *script.Entry
+		require.Eventually(t, func() bool {
+			e, ok := d.ScriptRegistry().Get("quick", normalizePath(tmpDir))
+			if !ok {
+				return false
+			}
+			s := e.State()
+			if s != script.StateStopped && s != script.StateFailed {
+				return false
+			}
+			for _, line := range e.OutputLines() {
+				if line == "goodbye" {
+					entry = e
+					return true
+				}
+			}
+			return false
+		}, 10*time.Second, 20*time.Millisecond, "process did not exit with expected output within 10s")
 
 		state := entry.State()
-		if state != script.StateStopped && state != script.StateFailed {
-			t.Errorf("Expected stopped or failed after exit, got %s", state)
-		}
-
-		lines := entry.OutputLines()
-		found := false
-		for _, line := range lines {
-			if line == "goodbye" {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("Expected 'goodbye' in output, got: %v", lines)
-		}
+		require.True(t, state == script.StateStopped || state == script.StateFailed,
+			"expected stopped or failed, got %s", state)
+		require.Equal(t, "quick", entry.Name, "entry name must match script name")
+		require.GreaterOrEqual(t, entry.StartCount(), int64(1), "start count should be at least 1")
 	})
 
 	// FailedScriptHasError: a script that exits non-zero should reach
@@ -137,20 +144,20 @@ scripts {
 		}
 
 		d.RunAutostart(context.Background(), tmpDir)
-		time.Sleep(2 * time.Second)
 
-		entry, ok := d.ScriptRegistry().Get("broken", normalizePath(tmpDir))
-		if !ok {
-			t.Fatal("ScriptEntry should persist after failure")
-		}
+		var entry *script.Entry
+		require.Eventually(t, func() bool {
+			e, ok := d.ScriptRegistry().Get("broken", normalizePath(tmpDir))
+			if !ok {
+				return false
+			}
+			entry = e
+			return e.State() == script.StateFailed && e.FailCount() >= 1
+		}, 10*time.Second, 20*time.Millisecond, "script did not reach StateFailed with FailCount>=1 within 10s")
 
-		if state := entry.State(); state != script.StateFailed {
-			t.Errorf("Expected StateFailed, got %s", state)
-		}
-
-		if entry.FailCount() < 1 {
-			t.Error("FailCount should be at least 1")
-		}
+		require.Equal(t, script.StateFailed, entry.State(), "expected StateFailed after non-zero exit")
+		require.GreaterOrEqual(t, entry.FailCount(), int64(1), "FailCount should be at least 1")
+		require.Equal(t, "broken", entry.Name, "entry name must match script name")
 	})
 
 	// StandaloneRunCreatesScript: starting a process directly via
@@ -195,16 +202,19 @@ scripts {
 			_ = d.ProcessManager().Stop(stopCtx, processID)
 		})
 
-		time.Sleep(500 * time.Millisecond)
+		var entry *script.Entry
+		require.Eventually(t, func() bool {
+			e, ok := d.ScriptRegistry().Get("manual", normalizePath(tmpDir))
+			if !ok {
+				return false
+			}
+			entry = e
+			return true
+		}, 5*time.Second, 10*time.Millisecond, "StartScript did not create registry entry within 5s")
 
-		entry, ok := d.ScriptRegistry().Get("manual", normalizePath(tmpDir))
-		if !ok {
-			t.Fatal("StartScript should auto-create a ScriptEntry for standalone processes")
-		}
-
-		if entry.Name != "manual" {
-			t.Errorf("Expected name 'manual', got %q", entry.Name)
-		}
+		require.Equal(t, "manual", entry.Name, "entry name must be 'manual'")
+		require.NotEmpty(t, entry.ProcessID, "entry must have a non-empty ProcessID")
+		require.NotEqual(t, script.StateIdle, entry.State(), "standalone started script should not be idle")
 	})
 
 	// ScriptListViaProtocol: registry survives the underlying process
@@ -227,7 +237,16 @@ scripts {
 		}
 
 		d.RunAutostart(context.Background(), tmpDir)
-		time.Sleep(2 * time.Second)
+
+		// Wait for the ephemeral script to appear in the registry and reach a terminal state.
+		require.Eventually(t, func() bool {
+			e, ok := d.ScriptRegistry().Get("ephemeral", normalizePath(tmpDir))
+			if !ok {
+				return false
+			}
+			s := e.State()
+			return s == script.StateStopped || s == script.StateFailed
+		}, 10*time.Second, 20*time.Millisecond, "ephemeral script did not reach terminal state within 10s")
 
 		procs := d.hub.ProcessManager().List()
 		procAlive := false
