@@ -41,6 +41,13 @@ type Overlay struct {
 	autoForward        *config.AutoForwardConfig
 	lastForwardNs      atomic.Int64 // Unix nano of last forwarded error
 	autoForwardEnabled atomic.Bool  // Runtime toggle (config + indicator override)
+
+	// enterSettle is the echo-settle window duration in sendEntersUntilActivity.
+	// Zero means use the production default (1100ms).
+	enterSettle time.Duration
+	// enterRetryDelays are the three retry delays in sendEntersUntilActivity.
+	// Zero elements mean use production defaults (1500ms, 2000ms, 3000ms).
+	enterRetryDelays [3]time.Duration
 }
 
 // OverlayMessage represents a message from devtool-mcp.
@@ -574,7 +581,11 @@ func (o *Overlay) sendEntersUntilActivity() {
 	// Wait for the text + first Enter echo to settle through the PTY
 	// and ActivityMonitor before watching for real agent responses.
 	// 1.1s covers the typical agent acknowledgement latency.
-	time.Sleep(1100 * time.Millisecond)
+	settle := o.enterSettle
+	if settle == 0 {
+		settle = 1100 * time.Millisecond
+	}
+	time.Sleep(settle)
 
 	// Drain all echo-triggered activity signals
 	for {
@@ -588,10 +599,13 @@ func (o *Overlay) sendEntersUntilActivity() {
 drained:
 
 	// Retry with increasing delays: 1.5s, 2s, 3s
-	retryDelays := [3]time.Duration{
-		1500 * time.Millisecond,
-		2000 * time.Millisecond,
-		3000 * time.Millisecond,
+	retryDelays := o.enterRetryDelays
+	if retryDelays[0] == 0 {
+		retryDelays = [3]time.Duration{
+			1500 * time.Millisecond,
+			2000 * time.Millisecond,
+			3000 * time.Millisecond,
+		}
 	}
 
 	for _, delay := range retryDelays {
