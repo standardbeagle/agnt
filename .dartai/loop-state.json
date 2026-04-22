@@ -1,9 +1,9 @@
 {
   "status": "running",
-  "iterations": 9,
+  "iterations": 10,
   "spawns": 1,
   "started_at": "2026-04-21T12:40:00-07:00",
-  "last_iteration_at": "2026-04-22T10:15:00Z",
+  "last_iteration_at": "2026-04-22T11:00:00Z",
   "last_subagent": "beagle-ab2-2931659",
   "loop_task_id": "KwXvtxrviI05",
   "dartboard": "Personal/agnt",
@@ -140,7 +140,23 @@
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
+    },
+    {
+      "task_id": "jE1MHtZWhEuC",
+      "iteration": 10,
+      "status": "completed",
+      "started_at": "2026-04-22T10:50:00Z",
+      "completed_at": "2026-04-22T11:00:00Z",
+      "phase_completed": "phase-9",
+      "failed_phase": null,
+      "files_changed": 1,
+      "tests_added": 0,
+      "plan_adjustments": 1,
+      "completion_summary": "Replaced 5 time.Sleep calls in TestScriptLifecycle with require.Eventually polled at 10-20ms intervals. ConfigCreatesIdleScripts polls until 3 scripts exist and none are idle/starting. ProcessExitPreservesScript polls until terminal state and 'goodbye' in output. FailedScriptHasError polls until StateFailed and FailCount>=1. StandaloneRunCreatesScript polls until registry entry exists. ScriptListViaProtocol polls until ephemeral reaches terminal state. Added enriched assertions (StartCount, Name, ProcessID checks) after each Eventually. Wall-clock: 11s -> 3.7s per run (66% reduction). All 8 subtests pass x3 -race.",
+      "failure_reason": null,
+      "fix_task_created": false,
+      "fix_task_id": null
     }
   ],
-  "last_completed_iteration": 9
+  "last_completed_iteration": 10
 }
