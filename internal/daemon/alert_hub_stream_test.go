@@ -18,8 +18,8 @@ func TestStreamFilter_MatchesTypeFilter(t *testing.T) {
 		},
 	}
 
-	assert.True(t, sf.matches(proxy.LogEntry{Type: proxy.LogTypeError}, "proxy1"))
-	assert.False(t, sf.matches(proxy.LogEntry{Type: proxy.LogTypeHTTP}, "proxy1"))
+	assert.True(t, sf.matches(proxy.LogEntry{Type: proxy.LogTypeError}, "proxy1", ""))
+	assert.False(t, sf.matches(proxy.LogEntry{Type: proxy.LogTypeHTTP}, "proxy1", ""))
 }
 
 func TestStreamFilter_MatchesProxyIDFilter(t *testing.T) {
@@ -27,8 +27,8 @@ func TestStreamFilter_MatchesProxyIDFilter(t *testing.T) {
 		proxyID: "target-proxy",
 	}
 
-	assert.True(t, sf.matches(proxy.LogEntry{Type: proxy.LogTypeError}, "target-proxy"))
-	assert.False(t, sf.matches(proxy.LogEntry{Type: proxy.LogTypeError}, "other-proxy"))
+	assert.True(t, sf.matches(proxy.LogEntry{Type: proxy.LogTypeError}, "target-proxy", ""))
+	assert.False(t, sf.matches(proxy.LogEntry{Type: proxy.LogTypeError}, "other-proxy", ""))
 }
 
 func TestStreamFilter_MatchesSeverityFilter(t *testing.T) {
@@ -40,31 +40,31 @@ func TestStreamFilter_MatchesSeverityFilter(t *testing.T) {
 	assert.True(t, sf.matches(proxy.LogEntry{
 		Type:  proxy.LogTypeError,
 		Error: &proxy.FrontendError{Message: "test"},
-	}, "proxy1"))
+	}, "proxy1", ""))
 
 	// HTTP 500 matches error severity
 	assert.True(t, sf.matches(proxy.LogEntry{
 		Type: proxy.LogTypeHTTP,
 		HTTP: &proxy.HTTPLogEntry{StatusCode: 500},
-	}, "proxy1"))
+	}, "proxy1", ""))
 
 	// HTTP 200 does not match error severity
 	assert.False(t, sf.matches(proxy.LogEntry{
 		Type: proxy.LogTypeHTTP,
 		HTTP: &proxy.HTTPLogEntry{StatusCode: 200},
-	}, "proxy1"))
+	}, "proxy1", ""))
 
 	// Custom log with error level
 	assert.True(t, sf.matches(proxy.LogEntry{
 		Type:   proxy.LogTypeCustom,
 		Custom: &proxy.CustomLog{Level: "error"},
-	}, "proxy1"))
+	}, "proxy1", ""))
 
 	// Custom log with info level does not match error severity
 	assert.False(t, sf.matches(proxy.LogEntry{
 		Type:   proxy.LogTypeCustom,
 		Custom: &proxy.CustomLog{Level: "info"},
-	}, "proxy1"))
+	}, "proxy1", ""))
 }
 
 func TestStreamFilter_MatchesCombinedFilters(t *testing.T) {
@@ -73,16 +73,64 @@ func TestStreamFilter_MatchesCombinedFilters(t *testing.T) {
 		proxyID: "target-proxy",
 	}
 
-	assert.True(t, sf.matches(proxy.LogEntry{Type: proxy.LogTypeError}, "target-proxy"))
-	assert.False(t, sf.matches(proxy.LogEntry{Type: proxy.LogTypeError}, "other-proxy"))
-	assert.False(t, sf.matches(proxy.LogEntry{Type: proxy.LogTypeHTTP}, "target-proxy"))
+	assert.True(t, sf.matches(proxy.LogEntry{Type: proxy.LogTypeError}, "target-proxy", ""))
+	assert.False(t, sf.matches(proxy.LogEntry{Type: proxy.LogTypeError}, "other-proxy", ""))
+	assert.False(t, sf.matches(proxy.LogEntry{Type: proxy.LogTypeHTTP}, "target-proxy", ""))
 }
 
 func TestStreamFilter_EmptyFilterMatchesAll(t *testing.T) {
 	sf := streamFilter{}
 
-	assert.True(t, sf.matches(proxy.LogEntry{Type: proxy.LogTypeError}, "any-proxy"))
-	assert.True(t, sf.matches(proxy.LogEntry{Type: proxy.LogTypeHTTP}, "any-proxy"))
+	assert.True(t, sf.matches(proxy.LogEntry{Type: proxy.LogTypeError}, "any-proxy", ""))
+	assert.True(t, sf.matches(proxy.LogEntry{Type: proxy.LogTypeHTTP}, "any-proxy", ""))
+}
+
+func TestStreamFilter_ProjectPathFilter(t *testing.T) {
+	sf := streamFilter{projectPath: "/project/a"}
+
+	// Proxy belonging to /project/a passes
+	assert.True(t, sf.matches(proxy.LogEntry{Type: proxy.LogTypeError}, "proxy-a", "/project/a"))
+	// Proxy belonging to /project/b is dropped
+	assert.False(t, sf.matches(proxy.LogEntry{Type: proxy.LogTypeError}, "proxy-b", "/project/b"))
+	// Unregistered proxy (empty proxyPath) passes through to avoid silently dropping hook events
+	assert.True(t, sf.matches(proxy.LogEntry{Type: proxy.LogTypeError}, "", ""))
+}
+
+func TestAlertHub_RegisterProxyPath_ScopesStreamEvents(t *testing.T) {
+	hub := NewAlertHub()
+
+	hub.RegisterProxyPath("proxy-a", "/project/a")
+	hub.RegisterProxyPath("proxy-b", "/project/b")
+
+	// Subscribe to events only from /project/a
+	sink := hub.AddStreamSink(streamFilter{projectPath: "/project/a"})
+	defer hub.RemoveStreamSink(sink)
+
+	entry := proxy.LogEntry{Type: proxy.LogTypeError, Error: &proxy.FrontendError{Message: "err"}}
+
+	// Event from proxy-a should arrive
+	hub.BroadcastLogEntry(entry, "proxy-a")
+	// Event from proxy-b should be filtered out
+	hub.BroadcastLogEntry(entry, "proxy-b")
+
+	// Drain what arrived
+	var received []string
+	timeout := time.After(50 * time.Millisecond)
+drain:
+	for {
+		select {
+		case e, ok := <-sink.Ch:
+			if !ok {
+				break drain
+			}
+			_ = e
+			received = append(received, "got")
+		case <-timeout:
+			break drain
+		}
+	}
+
+	assert.Len(t, received, 1, "only proxy-a event should pass the project path filter")
 }
 
 func TestAlertHub_AddRemoveStreamSink(t *testing.T) {
@@ -481,7 +529,7 @@ func TestStreamFilter_MatchesProcessIDFilter(t *testing.T) {
 			ProcessID: "dev-server",
 			Line:      "listening on :3000",
 		},
-	}, ""))
+	}, "", ""))
 
 	// Non-matching process ID
 	assert.False(t, sf.matches(proxy.LogEntry{
@@ -490,11 +538,11 @@ func TestStreamFilter_MatchesProcessIDFilter(t *testing.T) {
 			ProcessID: "test-runner",
 			Line:      "test passed",
 		},
-	}, ""))
+	}, "", ""))
 
 	// Non-process entries pass through when processID filter is set
 	// (processID filter only applies to LogTypeProcessOutput)
-	assert.True(t, sf.matches(proxy.LogEntry{Type: proxy.LogTypeError}, ""))
+	assert.True(t, sf.matches(proxy.LogEntry{Type: proxy.LogTypeError}, "", ""))
 }
 
 func TestStreamFilter_MatchesGrepFilter(t *testing.T) {
@@ -509,7 +557,7 @@ func TestStreamFilter_MatchesGrepFilter(t *testing.T) {
 			ProcessID: "dev",
 			Line:      "error: connection refused",
 		},
-	}, ""))
+	}, "", ""))
 
 	// Line does not contain grep string
 	assert.False(t, sf.matches(proxy.LogEntry{
@@ -518,10 +566,10 @@ func TestStreamFilter_MatchesGrepFilter(t *testing.T) {
 			ProcessID: "dev",
 			Line:      "listening on :3000",
 		},
-	}, ""))
+	}, "", ""))
 
 	// Non-process entries are not affected by grep filter
-	assert.True(t, sf.matches(proxy.LogEntry{Type: proxy.LogTypeError}, ""))
+	assert.True(t, sf.matches(proxy.LogEntry{Type: proxy.LogTypeError}, "", ""))
 }
 
 func TestStreamFilter_MatchesGrepStreamFilter(t *testing.T) {
@@ -537,7 +585,7 @@ func TestStreamFilter_MatchesGrepStreamFilter(t *testing.T) {
 			Stream:    "stdout",
 			Line:      "hello",
 		},
-	}, ""))
+	}, "", ""))
 
 	// Non-matching stream
 	assert.False(t, sf.matches(proxy.LogEntry{
@@ -547,7 +595,7 @@ func TestStreamFilter_MatchesGrepStreamFilter(t *testing.T) {
 			Stream:    "stderr",
 			Line:      "hello",
 		},
-	}, ""))
+	}, "", ""))
 }
 
 func TestStreamFilter_MatchesProcessCombinedFilter(t *testing.T) {
@@ -564,7 +612,7 @@ func TestStreamFilter_MatchesProcessCombinedFilter(t *testing.T) {
 			ProcessID: "dev",
 			Line:      "error: something broke",
 		},
-	}, ""))
+	}, "", ""))
 
 	// Wrong process ID
 	assert.False(t, sf.matches(proxy.LogEntry{
@@ -573,7 +621,7 @@ func TestStreamFilter_MatchesProcessCombinedFilter(t *testing.T) {
 			ProcessID: "test",
 			Line:      "error: something broke",
 		},
-	}, ""))
+	}, "", ""))
 
 	// Grep not matching
 	assert.False(t, sf.matches(proxy.LogEntry{
@@ -582,10 +630,10 @@ func TestStreamFilter_MatchesProcessCombinedFilter(t *testing.T) {
 			ProcessID: "dev",
 			Line:      "all good",
 		},
-	}, ""))
+	}, "", ""))
 
 	// Wrong type
-	assert.False(t, sf.matches(proxy.LogEntry{Type: proxy.LogTypeError}, ""))
+	assert.False(t, sf.matches(proxy.LogEntry{Type: proxy.LogTypeError}, "", ""))
 }
 
 func TestAlertHub_BroadcastProcessOutput_DeliversToMatchingSink(t *testing.T) {

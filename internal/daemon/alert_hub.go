@@ -9,6 +9,25 @@ import (
 	"github.com/standardbeagle/agnt/internal/proxy"
 )
 
+// proxyPathRegistry maps proxyID → project path for stream event routing.
+// Populated by RegisterProxyPath when a proxy is wired to the alert hub;
+// entries are never removed because proxyIDs are unique and stopped proxies
+// cannot generate new events.
+type proxyPathRegistry struct {
+	m sync.Map // map[string]string
+}
+
+func (r *proxyPathRegistry) set(proxyID, path string) {
+	r.m.Store(proxyID, path)
+}
+
+func (r *proxyPathRegistry) get(proxyID string) string {
+	if v, ok := r.m.Load(proxyID); ok {
+		return v.(string)
+	}
+	return ""
+}
+
 // MCPAlertSink delivers alert messages via MCP session notifications.
 type MCPAlertSink interface {
 	SendAlert(level string, message string) error
@@ -38,20 +57,26 @@ type StreamSink struct {
 
 // streamFilter holds criteria for filtering events sent to a StreamSink.
 type streamFilter struct {
-	types      map[proxy.LogEntryType]bool
-	proxyID    string
-	processID  string // Filter to specific process output
-	severity   string // "error", "warning", "info" — matches against error/custom/diagnostic levels
-	grep       string // Substring match on process output lines
-	grepStream string // "stdout", "stderr", or "" for both
+	types       map[proxy.LogEntryType]bool
+	proxyID     string
+	projectPath string // Filter to proxies whose Path matches this project directory
+	processID   string // Filter to specific process output
+	severity    string // "error", "warning", "info" — matches against error/custom/diagnostic levels
+	grep        string // Substring match on process output lines
+	grepStream  string // "stdout", "stderr", or "" for both
 }
 
 // matches returns true if the log entry passes the filter.
-func (f *streamFilter) matches(entry proxy.LogEntry, proxyID string) bool {
+// proxyPath is the project directory of the proxy that generated the entry;
+// an empty string means the entry is not tied to a specific proxy (e.g. hook events).
+func (f *streamFilter) matches(entry proxy.LogEntry, proxyID, proxyPath string) bool {
 	if len(f.types) > 0 && !f.types[entry.Type] {
 		return false
 	}
 	if f.proxyID != "" && proxyID != f.proxyID {
+		return false
+	}
+	if f.projectPath != "" && proxyPath != "" && proxyPath != f.projectPath {
 		return false
 	}
 	if f.processID != "" && entry.Type == proxy.LogTypeProcessOutput {
@@ -114,6 +139,7 @@ type AlertHub struct {
 	hookSinks   []HookEventSink
 	pushConfig  *config.PushConfig
 	mu          sync.RWMutex
+	proxyPaths  proxyPathRegistry // proxyID → project path for stream routing
 }
 
 // NewAlertHub creates a new AlertHub.
@@ -182,6 +208,17 @@ func (h *AlertHub) RemoveStreamSink(sink *StreamSink) {
 	}
 }
 
+// RegisterProxyPath records the project directory for a proxy so that
+// project-scoped stream filters (projectPath != "") can exclude events
+// from proxies belonging to other projects. Call once from wireProxyLogger.
+// Entries are never removed because proxyIDs are unique and a stopped proxy
+// cannot generate new LogEntry events.
+func (h *AlertHub) RegisterProxyPath(proxyID, projectPath string) {
+	if proxyID != "" {
+		h.proxyPaths.set(proxyID, projectPath)
+	}
+}
+
 // BroadcastLogEntry sends a log entry to all matching stream sinks.
 // Called from the TrafficLogger callback when a new entry is logged.
 func (h *AlertHub) BroadcastLogEntry(entry proxy.LogEntry, proxyID string) {
@@ -190,8 +227,10 @@ func (h *AlertHub) BroadcastLogEntry(entry proxy.LogEntry, proxyID string) {
 	copy(sinks, h.streamSinks)
 	h.mu.RUnlock()
 
+	proxyPath := h.proxyPaths.get(proxyID)
+
 	for _, sink := range sinks {
-		if sink.filter.matches(entry, proxyID) {
+		if sink.filter.matches(entry, proxyID, proxyPath) {
 			select {
 			case sink.Ch <- entry:
 			default:
@@ -259,7 +298,7 @@ func (h *AlertHub) BroadcastProcessOutput(entry proxy.LogEntry) {
 	h.mu.RUnlock()
 
 	for _, sink := range sinks {
-		if sink.filter.matches(entry, "") {
+		if sink.filter.matches(entry, "", "") {
 			select {
 			case sink.Ch <- entry:
 			default:

@@ -194,7 +194,9 @@ func (dt *DaemonTools) RunAutostart(projectDir string) (map[string]interface{}, 
 // StartChannelSink starts a goroutine that subscribes to daemon StreamEvents
 // and forwards matching entries as MCP channel notifications. Returns a cancel
 // function to stop the sink. No-op and returns nil if channel is not enabled.
-func (dt *DaemonTools) StartChannelSink(server *mcp.Server, cfg *config.ChannelConfig) context.CancelFunc {
+// projectPath scopes the subscription to proxies for that project directory;
+// pass "" to receive events from all proxies (legacy behavior).
+func (dt *DaemonTools) StartChannelSink(server *mcp.Server, cfg *config.ChannelConfig, projectPath string) context.CancelFunc {
 	if cfg == nil || !cfg.IsEnabled() {
 		return func() {}
 	}
@@ -210,8 +212,12 @@ func (dt *DaemonTools) StartChannelSink(server *mcp.Server, cfg *config.ChannelC
 
 	sink := NewChannelSink(cfg, notify)
 
-	// Build filter from config: include only event types the channel cares about.
-	filter := protocol.StreamEventFilter{}
+	// Build filter from config: include only event types the channel cares about,
+	// and scope to the current project's proxies so two simultaneous MCP clients
+	// don't cross-contaminate each other's event streams.
+	filter := protocol.StreamEventFilter{
+		ProjectPath: projectPath,
+	}
 	if events := cfg.GetEvents(); len(events) > 0 {
 		filter.Types = events
 	}

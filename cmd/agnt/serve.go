@@ -188,11 +188,19 @@ Available tools:
 	_ = alertSink // Available for daemon alert hub integration
 	dt.SetAlertSink(alertSink)
 
+	// Resolve working directory once — used for both channel sink scoping and
+	// session registration so both operate on the same project path.
+	cwd, cwdErr := os.Getwd()
+	if cwdErr != nil {
+		cwd = "."
+	}
+
 	// When channel mode is active, subscribe a ChannelSink to the daemon's
 	// event stream. Events that pass severity/type filtering and deduplication
 	// are forwarded as notifications/claude/channel notifications to all
-	// connected MCP sessions.
-	channelCancel := dt.StartChannelSink(server, agntCfg.Channel)
+	// connected MCP sessions. Project path scopes the subscription so two
+	// simultaneous MCP clients don't receive each other's proxy events.
+	channelCancel := dt.StartChannelSink(server, agntCfg.Channel, cwd)
 	defer channelCancel()
 
 	// When channel mode is active, register a daemon session so the MCP
@@ -200,11 +208,7 @@ Available tools:
 	// there is no PTY child (no pgid containment needed). Cleanup
 	// (unregister + heartbeat stop) runs when the handle is closed.
 	var channelSession *tools.ChannelSessionHandle
-	if cwd, err := os.Getwd(); err == nil {
-		channelSession = dt.RegisterChannelSession(ctx, agntCfg.Channel, cwd)
-	} else {
-		channelSession = dt.RegisterChannelSession(ctx, agntCfg.Channel, ".")
-	}
+	channelSession = dt.RegisterChannelSession(ctx, agntCfg.Channel, cwd)
 	defer channelSession.Close()
 
 	// Handle context cancellation
