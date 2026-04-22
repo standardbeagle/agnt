@@ -141,16 +141,10 @@ func TestRunAutostartAsync_SimpleScripts(t *testing.T) {
 		assert.Len(t, result.Scripts, 1, "exactly 1 script should start")
 		assert.Empty(t, result.Errors, "RunAutostart should surface no errors for a healthy script")
 	})
-}
 
-// ---------------------------------------------------------------------------
-// Standalone: 3-script chain — ordering invariants
-// ---------------------------------------------------------------------------
-
-func TestRunAutostartAsync_ProgressEventsInOrder(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	configContent := `
+	t.Run("progress_events_in_order", func(t *testing.T) {
+		dir := t.TempDir()
+		writeConfig(t, dir, `
 scripts {
     a {
         run "sleep 60"
@@ -167,71 +161,68 @@ scripts {
         depends-on "b" timeout=5
     }
 }
-`
-	writeConfig(t, tmpDir, configContent)
+`)
+		progress := make(chan AutostartProgress, 200)
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
 
-	d := newDaemon(t, tmpDir)
+		result := d.RunAutostartAsync(ctx, dir, progress)
+		close(progress)
+		events := drainProgress(progress)
 
-	progress := make(chan AutostartProgress, 200)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+		require.NotNil(t, result, "result must not be nil")
+		assert.Empty(t, result.Errors, "expected no errors, got: %v", result.Errors)
+		assert.Len(t, result.Scripts, 3, "expected 3 scripts started")
 
-	result := d.RunAutostartAsync(ctx, tmpDir, progress)
-	close(progress)
-	events := drainProgress(progress)
+		// All expected phase types must appear.
+		assert.True(t, hasPhase(events, PhaseScriptStarting), "missing PhaseScriptStarting")
+		assert.True(t, hasPhase(events, PhaseScriptStarted), "missing PhaseScriptStarted")
+		assert.True(t, hasPhase(events, PhaseLayerComplete), "missing PhaseLayerComplete")
+		assert.True(t, hasPhase(events, PhaseDependencyWaitStart), "missing PhaseDependencyWaitStart")
+		assert.True(t, hasPhase(events, PhaseDependencyReady), "missing PhaseDependencyReady")
 
-	require.NotNil(t, result, "result must not be nil")
-	assert.Empty(t, result.Errors, "expected no errors, got: %v", result.Errors)
-	assert.Len(t, result.Scripts, 3, "expected 3 scripts started")
+		// With a 3-script chain there are >=2 layer-complete events.
+		assert.GreaterOrEqual(t, countPhase(events, PhaseLayerComplete), 2,
+			"3-script chain should produce >=2 PhaseLayerComplete events")
 
-	// All expected phase types must appear.
-	assert.True(t, hasPhase(events, PhaseScriptStarting), "missing PhaseScriptStarting")
-	assert.True(t, hasPhase(events, PhaseScriptStarted), "missing PhaseScriptStarted")
-	assert.True(t, hasPhase(events, PhaseLayerComplete), "missing PhaseLayerComplete")
-	assert.True(t, hasPhase(events, PhaseDependencyWaitStart), "missing PhaseDependencyWaitStart")
-	assert.True(t, hasPhase(events, PhaseDependencyReady), "missing PhaseDependencyReady")
-
-	// With a 3-script chain there are ≥2 layer-complete events.
-	assert.GreaterOrEqual(t, countPhase(events, PhaseLayerComplete), 2,
-		"3-script chain should produce ≥2 PhaseLayerComplete events")
-
-	// Each of the 3 scripts must appear in PhaseScriptStarting.
-	startingScripts := map[string]bool{}
-	for _, ev := range events {
-		if ev.Phase == PhaseScriptStarting {
-			startingScripts[ev.Script] = true
+		// Each of the 3 scripts must appear in PhaseScriptStarting.
+		startingScripts := map[string]bool{}
+		for _, ev := range events {
+			if ev.Phase == PhaseScriptStarting {
+				startingScripts[ev.Script] = true
+			}
 		}
-	}
-	assert.True(t, startingScripts["a"], "script 'a' should have a PhaseScriptStarting event")
-	assert.True(t, startingScripts["b"], "script 'b' should have a PhaseScriptStarting event")
-	assert.True(t, startingScripts["c"], "script 'c' should have a PhaseScriptStarting event")
+		assert.True(t, startingScripts["a"], "script 'a' should have a PhaseScriptStarting event")
+		assert.True(t, startingScripts["b"], "script 'b' should have a PhaseScriptStarting event")
+		assert.True(t, startingScripts["c"], "script 'c' should have a PhaseScriptStarting event")
 
-	// Ordering: for each dep pair (b→a, c→b), PhaseScriptStarting for the
-	// dependent must appear AFTER PhaseLayerComplete for its layer.
-	var lastLayer0Complete, lastLayer1Complete int
-	var firstLayer1Start, firstLayer2Start = -1, -1
-	for i, ev := range events {
-		if ev.Phase == PhaseLayerComplete && ev.Layer == 0 {
-			lastLayer0Complete = i
+		// Ordering: layer 1 starts must follow layer 0 completion; layer 2 starts
+		// must follow layer 1 completion.
+		var lastLayer0Complete, lastLayer1Complete int
+		var firstLayer1Start, firstLayer2Start = -1, -1
+		for i, ev := range events {
+			if ev.Phase == PhaseLayerComplete && ev.Layer == 0 {
+				lastLayer0Complete = i
+			}
+			if ev.Phase == PhaseLayerComplete && ev.Layer == 1 {
+				lastLayer1Complete = i
+			}
+			if ev.Phase == PhaseScriptStarting && ev.Layer == 1 && firstLayer1Start == -1 {
+				firstLayer1Start = i
+			}
+			if ev.Phase == PhaseScriptStarting && ev.Layer == 2 && firstLayer2Start == -1 {
+				firstLayer2Start = i
+			}
 		}
-		if ev.Phase == PhaseLayerComplete && ev.Layer == 1 {
-			lastLayer1Complete = i
+		if firstLayer1Start >= 0 {
+			assert.Greater(t, firstLayer1Start, lastLayer0Complete,
+				"layer 1 start must follow layer 0 completion")
 		}
-		if ev.Phase == PhaseScriptStarting && ev.Layer == 1 && firstLayer1Start == -1 {
-			firstLayer1Start = i
+		if firstLayer2Start >= 0 {
+			assert.Greater(t, firstLayer2Start, lastLayer1Complete,
+				"layer 2 start must follow layer 1 completion")
 		}
-		if ev.Phase == PhaseScriptStarting && ev.Layer == 2 && firstLayer2Start == -1 {
-			firstLayer2Start = i
-		}
-	}
-	if firstLayer1Start >= 0 {
-		assert.Greater(t, firstLayer1Start, lastLayer0Complete,
-			"layer 1 start must follow layer 0 completion")
-	}
-	if firstLayer2Start >= 0 {
-		assert.Greater(t, firstLayer2Start, lastLayer1Complete,
-			"layer 2 start must follow layer 1 completion")
-	}
+	})
 }
 
 // ---------------------------------------------------------------------------
