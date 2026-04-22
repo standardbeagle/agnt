@@ -159,31 +159,41 @@ scripts {
 	t.Run("StandaloneRunCreatesScript", func(t *testing.T) {
 		tmpDir := t.TempDir()
 
-		// Pick a shell that exists on the host. Windows Go runners don't
-		// have sh on PATH; use cmd.exe + a long-running ping equivalent.
-		// (timeout.exe /T N > nul keeps the process alive for ~N seconds
-		// without writing output.)
+		// Pick a long-running command that exists on the host. sh isn't
+		// on PATH on Windows Go runners; use ping -n 30 to keep the
+		// process alive ~29s. Avoid cmd.exe + shell redirect tricks —
+		// exec.Command doesn't go through a shell, so '> nul' would be
+		// a literal arg and the whole thing would fail with exit 1.
 		cmd, args := "sh", []string{"-c", "sleep 30"}
 		if runtime.GOOS == "windows" {
-			// ping -n N waits ~(N-1) seconds between pings, so 30
-			// keeps the process alive ~29s without needing a shell
-			// redirect (exec.Command does not go through a shell, so
-			// '> nul' would be a literal arg — that's why the earlier
-			// 'timeout /t 30 /nobreak > nul' attempt failed with exit
-			// code 1 on both windows-2022 and windows-latest).
 			cmd, args = "ping", []string{"-n", "30", "127.0.0.1"}
 		}
 
+		// Use a stable WorkingDir (os.TempDir root) instead of the
+		// t.TempDir() that will be cleaned up at test end. On Windows,
+		// the spawned process holds its cwd open until it exits, and
+		// t.Cleanup's RemoveAll on a cwd-held dir fails with 'file in
+		// use by another process'. Keeping ProjectPath = tmpDir keeps
+		// registry lookups keyed by the test's unique projectPath.
+		workingDir := os.TempDir()
+		processID := makeProcessID(normalizePath(tmpDir), "manual")
 		_, err := d.StartScript(context.Background(), StartScriptConfig{
-			ProcessID:   makeProcessID(normalizePath(tmpDir), "manual"),
+			ProcessID:   processID,
 			ProjectPath: tmpDir,
-			WorkingDir:  tmpDir,
+			WorkingDir:  workingDir,
 			Command:     cmd,
 			Args:        args,
 		})
 		if err != nil {
 			t.Fatalf("StartScript failed: %v", err)
 		}
+		// Stop the process before the test exits so the daemon's
+		// deferred Stop doesn't collide with subtest cleanup.
+		t.Cleanup(func() {
+			stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			_ = d.ProcessManager().Stop(stopCtx, processID)
+		})
 
 		time.Sleep(500 * time.Millisecond)
 
