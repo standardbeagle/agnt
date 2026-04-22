@@ -1,3 +1,12 @@
 {
-  "claims": {}
+  "claims": {
+    "5PcRyp83vdLy": {
+      "runner_instance_id": "beagle-ab2-2931659",
+      "runner_email": "claude@anthropic.com",
+      "claimed_at": "2026-04-22T03:50:00Z",
+      "agent_id": "beagle-ab2-2931659",
+      "parent_loop_id": "KwXvtxrviI05",
+      "purpose": "Refactor flaky tests: isolation, ports, timing — applies iter-5 findings"
+    }
+  }
 }
