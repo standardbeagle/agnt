@@ -341,6 +341,25 @@ func (d *Daemon) handleExplicitStart(event ProxyEvent) {
 	// scripts just like the script-linked path.
 	d.registerProxyDependencies(server, event.ProxyID, event.Config, event.Path)
 
+	// Populate the script→proxy reverse index when the explicit proxy
+	// declares a linked script. This mirrors the URL-detected path's
+	// trackScriptProxy call so handleScriptStopped tears down the proxy
+	// symmetrically when the linked script exits. Without this, explicit
+	// proxies with `script = "<name>"` kept running even after their
+	// backing script died — the proxy would serve 502s until the next
+	// session-disconnect sweep reached it.
+	//
+	// Resolution: the config carries a bare script name; we look up the
+	// script.Entry by (name, projectPath) to obtain the fully-qualified
+	// process ID (`{projectHash}:{name}`) used as the scriptProxies key.
+	// Unknown names are skipped — ScriptStopped wouldn't fire for them
+	// anyway, so the reverse-index entry would be dead weight.
+	if event.Config.Script != "" && event.Path != "" && d.scriptRegistry != nil {
+		if entry, ok := d.scriptRegistry.Get(event.Config.Script, event.Path); ok {
+			d.trackScriptProxy(entry.ProcessID, event.ProxyID)
+		}
+	}
+
 	debug.Log("daemon", "Created explicit proxy %s targeting %s", event.ProxyID, targetURL)
 }
 

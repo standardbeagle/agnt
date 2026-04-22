@@ -348,6 +348,25 @@ func (d *Daemon) doCleanup(sessionCode string) {
 			d.scriptRegistry.Remove(entry.Name, projectPath)
 			d.scriptConfigs.Delete(entry.ProcessID)
 		}
+
+		// Clear proxy-kind admin entries registered by handleExplicitStart.
+		// StopByProjectPath already stopped the underlying proxies and removed
+		// them from stateMgr above — this sweep drops the admin-surface
+		// projection so SCRIPT LIST on the next session doesn't render a
+		// phantom indicator for a proxy that no longer exists.
+		//
+		// Also drops any script→proxy reverse-index entries populated by
+		// handleExplicitStart for script-linked explicit proxies, so
+		// clearScriptProxies doesn't leak a stale mapping across sessions.
+		if d.proxyEntries != nil {
+			for _, pe := range d.proxyEntries.List(projectPath) {
+				d.proxyEntries.Remove(pe.ProjectPath(), pe.Name())
+				if scriptID := d.linkedScriptForProxy(pe.ProxyID()); scriptID != "" {
+					d.clearScriptProxies(scriptID)
+				}
+			}
+		}
+
 		debug.Log("daemon", "cleared script registry for project %s (last session)", projectPath)
 
 		// Clear session log — next session starts fresh

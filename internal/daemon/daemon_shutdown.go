@@ -59,6 +59,15 @@ func (d *Daemon) restoreProxies() {
 			proxyServer.SetOverlayEndpoint(overlayEndpoint)
 		}
 
+		// Register a proxy-kind admin entry so the restored proxy appears in
+		// SCRIPT LIST (and therefore the overlay status bar) just like a
+		// freshly-started one. Without this, a daemon restart silently drops
+		// the proxy from the admin surface even though proxym has it running
+		// again — T5 closes the gap between the start path
+		// (handleExplicitStart → registerExplicitProxyEntry) and the restart
+		// path.
+		d.registerExplicitProxyEntry(pc.Path, pc.ID, proxyServer.ListenAddr)
+
 		// Removed startup log: restored proxy %s -> %s on port %d
 	}
 }
