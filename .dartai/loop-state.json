@@ -1,9 +1,9 @@
 {
   "status": "running",
-  "iterations": 10,
+  "iterations": 11,
   "spawns": 1,
   "started_at": "2026-04-21T12:40:00-07:00",
-  "last_iteration_at": "2026-04-22T11:00:00Z",
+  "last_iteration_at": "2026-04-22T13:00:00Z",
   "last_subagent": "beagle-ab2-2931659",
   "loop_task_id": "KwXvtxrviI05",
   "dartboard": "Personal/agnt",
@@ -156,7 +156,23 @@
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
+    },
+    {
+      "task_id": "twa7UB2cVBJN",
+      "iteration": 11,
+      "status": "completed",
+      "started_at": "2026-04-22T12:30:00Z",
+      "completed_at": "2026-04-22T13:00:00Z",
+      "phase_completed": "phase-9",
+      "failed_phase": null,
+      "files_changed": 6,
+      "tests_added": 0,
+      "plan_adjustments": 0,
+      "completion_summary": "Added RetryInterval to AlertScannerConfig (defaults 2s), interval field + WithInterval() to StartupSplash, and IdleCheckInterval to ActivityMonitorConfig (defaults 500ms). Tests inject 50ms/10ms fast intervals and reduce sleeps to 200ms/50ms. TestAlertScannerActivityDeferral: 3.2s -> 0.4s. TestStartupSplashMessageRotation: 3.0s -> 0.2s. TestActivityMonitorStateTransitions/DoneMessage/DoneMessageDisabled: 0.7s each -> <0.1s via require.Eventually.",
+      "failure_reason": null,
+      "fix_task_created": false,
+      "fix_task_id": null
     }
   ],
-  "last_completed_iteration": 10
+  "last_completed_iteration": 11
 }
