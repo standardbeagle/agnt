@@ -177,6 +177,28 @@ func (c *Client) Run(config interface{}) (map[string]interface{}, error) {
 	return c.conn.Request(protocol.VerbRunJSON).WithJSON(config).JSON()
 }
 
+// ProcRunConfig holds the JSON payload for PROC RUN. Mirrors the
+// procRunPayload struct in hub_proc.go — kept in sync with the wire
+// contract (extra / renamed fields require updating both sides).
+type ProcRunConfig struct {
+	Run         string            `json:"run,omitempty"`
+	Command     string            `json:"command,omitempty"`
+	Args        []string          `json:"args,omitempty"`
+	Cwd         string            `json:"cwd,omitempty"`
+	Env         map[string]string `json:"env,omitempty"`
+	URLMatchers []string          `json:"url_matchers,omitempty"`
+	AutoRestart bool              `json:"auto_restart,omitempty"`
+	ProjectPath string            `json:"project_path,omitempty"`
+}
+
+// ProcRun starts an admin-aware process via PROC RUN. Unlike the top-level
+// RUN verb (Client.Run), PROC RUN routes through the daemon's
+// StartScriptExplicit so the new process becomes a process-kind admin
+// registry entry visible in SCRIPT LIST and the overlay admin screen.
+func (c *Client) ProcRun(name string, cfg ProcRunConfig) (map[string]interface{}, error) {
+	return c.conn.Request(protocol.VerbProc, "RUN", name).WithJSON(cfg).JSON()
+}
+
 // ProcStatus gets the status of a process.
 func (c *Client) ProcStatus(processID string) (map[string]interface{}, error) {
 	return c.conn.Request(protocol.VerbProc, protocol.SubVerbStatus, processID).JSON()

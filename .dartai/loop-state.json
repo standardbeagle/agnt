@@ -1,9 +1,9 @@
 {
   "status": "running",
-  "iterations": 13,
+  "iterations": 14,
   "spawns": 1,
   "started_at": "2026-04-21T12:40:00-07:00",
-  "last_iteration_at": "2026-04-22T21:45:00Z",
+  "last_iteration_at": "2026-04-22T22:15:00Z",
   "last_subagent": "beagle-ab2-227822",
   "loop_task_id": "KwXvtxrviI05",
   "dartboard": "Personal/agnt",
@@ -204,7 +204,23 @@
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
+    },
+    {
+      "task_id": "hi4XsoDC0OHt",
+      "iteration": 14,
+      "status": "completed",
+      "started_at": "2026-04-22T21:46:00Z",
+      "completed_at": "2026-04-22T22:15:00Z",
+      "phase_completed": "phase-9",
+      "failed_phase": null,
+      "files_changed": 5,
+      "tests_added": 5,
+      "plan_adjustments": 1,
+      "completion_summary": "T4 MCP proc run + shared process-start func. Extracted daemon-layer StartScriptExplicit(ctx, name, scriptCfg, projectPath, proxyConfigs) from autostartScript in daemon_autostart.go; autostartScript becomes a one-liner delegate. Added PROC RUN sub-verb to hub_proc.go: hubHandleProcRun parses <name> + JSON payload (run/command/args/cwd/env/url_matchers/auto_restart/project_path), builds config.ScriptConfig, resolves projectPath (payload override > session binding > error), and calls StartScriptExplicit with proxyConfigs=nil. Registered RUN in hub_run.go's PROC SubVerbs list. Added Client.ProcRun(name, ProcRunConfig) + wire-contract struct in client.go. MCP tools layer untouched per task 'skip step 4' note — ad-hoc top-level RUN verb stays for back-compat; MCP migration is a future task. Plan adjustment: kept autostartScript as a thin wrapper instead of renaming its call sites (T3 precedent: two paths share wire-up but keep distinct entrypoints for readability). Tests: TestStartScriptExplicit_RegistersAndStarts (unit — scriptConfigs + scriptRegistry + ProcessManager), TestStartScriptExplicit_SkipsIfAlreadyRunning (idempotent fast path), TestHubHandleProcRun with 4 subtests (CreatesProcessKindRow end-to-end SCRIPT LIST merge, MissingName, MissingCommand, MissingProjectPath). All 5 tests pass. Autostart parity: TestRunAutostart/TestDepsIntegration/TestScriptLifecycle/TestCleanupSessionResources/TestHubHandleProxyStart/TestSCRIPTLIST all green. Full daemon suite pass -race in 75-120s. Parent bug 2zonEmazkoHT (explicit proxy/proc start bypasses admin screen wiring) — T4 completes the process-side of the refactor; all six subtasks (T1-T5 + T6) now done.",
+      "failure_reason": null,
+      "fix_task_created": false,
+      "fix_task_id": null
     }
   ],
-  "last_completed_iteration": 13
+  "last_completed_iteration": 14
 }
