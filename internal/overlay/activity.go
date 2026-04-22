@@ -23,16 +23,17 @@ const (
 // It handles animated output (like Ink spinners) by detecting carriage returns
 // and debouncing rapid updates to prevent scroll spam.
 type ActivityMonitor struct {
-	writer          io.Writer
-	idleTimeout     time.Duration
-	onStateChange   func(ActivityState)
-	onOutputPreview func(lines []string) // Called with recent output lines
-	state           atomic.Int32         // 0 = idle, 1 = active
-	lastActivity    atomic.Int64         // Unix nano timestamp of last write
-	stopCh          chan struct{}
-	wg              sync.WaitGroup
-	minActiveBytes  int // Minimum bytes to trigger active state
-	activityCounter atomic.Int64
+	writer            io.Writer
+	idleTimeout       time.Duration
+	idleCheckInterval time.Duration
+	onStateChange     func(ActivityState)
+	onOutputPreview   func(lines []string) // Called with recent output lines
+	state             atomic.Int32         // 0 = idle, 1 = active
+	lastActivity      atomic.Int64         // Unix nano timestamp of last write
+	stopCh            chan struct{}
+	wg                sync.WaitGroup
+	minActiveBytes    int // Minimum bytes to trigger active state
+	activityCounter   atomic.Int64
 
 	// Output preview state
 	previewMu       sync.Mutex
@@ -108,6 +109,10 @@ type ActivityMonitorConfig struct {
 	// OnFirstActivity is called once when the monitor first transitions to active state.
 	// Used by StartupSplash to clear splash text when child output begins.
 	OnFirstActivity func()
+
+	// IdleCheckInterval is how often to check for idle state transitions.
+	// Zero means use the default (500ms).
+	IdleCheckInterval time.Duration
 }
 
 // DefaultActivityMonitorConfig returns the default configuration.
@@ -144,9 +149,15 @@ func NewActivityMonitor(w io.Writer, cfg ActivityMonitorConfig) *ActivityMonitor
 		cfg.DoneMessage = "✓ Done"
 	}
 
+	idleCheckInterval := cfg.IdleCheckInterval
+	if idleCheckInterval == 0 {
+		idleCheckInterval = 500 * time.Millisecond
+	}
+
 	am := &ActivityMonitor{
 		writer:            w,
 		idleTimeout:       cfg.IdleTimeout,
+		idleCheckInterval: idleCheckInterval,
 		onStateChange:     cfg.OnStateChange,
 		onOutputPreview:   cfg.OnOutputPreview,
 		minActiveBytes:    cfg.MinActiveBytes,
@@ -456,7 +467,7 @@ func (am *ActivityMonitor) setState(newState ActivityState) {
 func (am *ActivityMonitor) checkIdle() {
 	defer am.wg.Done()
 
-	ticker := time.NewTicker(500 * time.Millisecond)
+	ticker := time.NewTicker(am.idleCheckInterval)
 	defer ticker.Stop()
 
 	for {

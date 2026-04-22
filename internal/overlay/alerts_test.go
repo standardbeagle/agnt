@@ -275,7 +275,8 @@ func TestAlertScannerActivityDeferral(t *testing.T) {
 	active.Store(true)
 
 	scanner := NewAlertScanner(AlertScannerConfig{
-		BatchWindow: 50 * time.Millisecond,
+		BatchWindow:   50 * time.Millisecond,
+		RetryInterval: 50 * time.Millisecond,
 		ActivityState: func() ActivityState {
 			if active.Load() {
 				return ActivityActive
@@ -301,7 +302,7 @@ func TestAlertScannerActivityDeferral(t *testing.T) {
 
 	// Transition to idle - flush should happen on next retry
 	active.Store(false)
-	time.Sleep(3 * time.Second)
+	time.Sleep(200 * time.Millisecond)
 
 	mu.Lock()
 	defer mu.Unlock()

@@ -37,6 +37,9 @@ type StartupSplash struct {
 	// messages is the slice of rotating content strings.
 	messages []string
 
+	// interval overrides the message rotation interval when non-zero.
+	interval time.Duration
+
 	// state tracks whether the splash is active (0=inactive, 1=active).
 	active atomic.Int32
 
@@ -66,6 +69,12 @@ func (s *StartupSplash) SetMessages(msgs []string) {
 	if len(msgs) > 0 {
 		s.messages = msgs
 	}
+}
+
+// WithInterval overrides the message rotation interval. Used in tests.
+func (s *StartupSplash) WithInterval(d time.Duration) *StartupSplash {
+	s.interval = d
+	return s
 }
 
 // Start begins the splash display. The splash renders immediately and
@@ -121,7 +130,11 @@ func (s *StartupSplash) run() {
 	timeout := time.NewTimer(splashTimeout)
 	defer timeout.Stop()
 
-	ticker := time.NewTicker(splashInterval)
+	interval := s.interval
+	if interval == 0 {
+		interval = splashInterval
+	}
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	// Show first message immediately

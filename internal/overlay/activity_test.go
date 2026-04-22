@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // safeWriter is a thread-safe wrapper around bytes.Buffer for concurrent tests.
@@ -34,8 +36,9 @@ func TestActivityMonitorStateTransitions(t *testing.T) {
 	var mu sync.Mutex
 
 	cfg := ActivityMonitorConfig{
-		IdleTimeout:    100 * time.Millisecond, // Short timeout for tests
-		MinActiveBytes: 5,
+		IdleTimeout:       100 * time.Millisecond, // Short timeout for tests
+		IdleCheckInterval: 10 * time.Millisecond,
+		MinActiveBytes:    5,
 		OnStateChange: func(state ActivityState) {
 			mu.Lock()
 			stateChanges = append(stateChanges, state)
@@ -65,8 +68,8 @@ func TestActivityMonitorStateTransitions(t *testing.T) {
 		t.Errorf("state after large write = %v, want ActivityActive", am.State())
 	}
 
-	// Wait for idle timeout (idle check runs every 500ms)
-	time.Sleep(700 * time.Millisecond)
+	// Wait for idle timeout (idle check now runs every 10ms)
+	require.Eventually(t, func() bool { return am.State() == ActivityIdle }, 500*time.Millisecond, 5*time.Millisecond)
 	if am.State() != ActivityIdle {
 		t.Errorf("state after timeout = %v, want ActivityIdle", am.State())
 	}
@@ -542,6 +545,7 @@ func TestActivityMonitorDoneMessage(t *testing.T) {
 
 	cfg := ActivityMonitorConfig{
 		IdleTimeout:       100 * time.Millisecond,
+		IdleCheckInterval: 10 * time.Millisecond,
 		MinActiveBytes:    1,
 		PreviewMaxLines:   5,
 		PreviewDebounce:   10 * time.Millisecond,
@@ -562,8 +566,12 @@ func TestActivityMonitorDoneMessage(t *testing.T) {
 	// Write some output
 	am.Write([]byte("Working on task\n"))
 
-	// Wait for idle timeout (idle check runs every 500ms)
-	time.Sleep(700 * time.Millisecond)
+	// Wait for idle timeout (idle check now runs every 10ms)
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(previewLines) >= 2
+	}, 500*time.Millisecond, 5*time.Millisecond)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -587,11 +595,12 @@ func TestActivityMonitorDoneMessageDisabled(t *testing.T) {
 	var mu sync.Mutex
 
 	cfg := ActivityMonitorConfig{
-		IdleTimeout:     100 * time.Millisecond,
-		MinActiveBytes:  1,
-		PreviewMaxLines: 5,
-		PreviewDebounce: 10 * time.Millisecond,
-		ShowDoneMessage: false, // Disabled
+		IdleTimeout:       100 * time.Millisecond,
+		IdleCheckInterval: 10 * time.Millisecond,
+		MinActiveBytes:    1,
+		PreviewMaxLines:   5,
+		PreviewDebounce:   10 * time.Millisecond,
+		ShowDoneMessage:   false, // Disabled
 		OnOutputPreview: func(lines []string) {
 			mu.Lock()
 			previewLines = make([]string, len(lines))
@@ -606,8 +615,9 @@ func TestActivityMonitorDoneMessageDisabled(t *testing.T) {
 	// Write some output
 	am.Write([]byte("Working\n"))
 
-	// Wait for idle timeout
-	time.Sleep(700 * time.Millisecond)
+	// Wait for idle (idle check now runs every 10ms), then a bit more for preview callback
+	require.Eventually(t, func() bool { return am.State() == ActivityIdle }, 500*time.Millisecond, 5*time.Millisecond)
+	time.Sleep(30 * time.Millisecond) // Allow preview callback to fire
 
 	mu.Lock()
 	defer mu.Unlock()
