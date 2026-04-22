@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -231,4 +232,162 @@ func TestCleanupSessionResources_NoAutostartHandle_NoPanic(t *testing.T) {
 		d.CleanupSessionResources("session-A")
 	})
 	assert.Nil(t, d.autostartManager.Get(tmpDir))
+}
+
+// TestCleanupSessionResources_ExplicitProxy_LastSession covers the T5
+// acceptance contract for the "last session disconnects" branch.
+//
+// Setup: session A is the sole observer of a project. Session A starts
+// an explicit proxy via handleExplicitStart (the same path autostart
+// and the MCP tool now share after T3). The proxy is wired into
+// proxym + stateMgr + proxyEntries in that single call.
+//
+// Expected on cleanup: the proxy is stopped, its admin entry is gone
+// from proxyEntries, and its persisted config is removed from stateMgr
+// so the next daemon restart does not silently re-create a dead proxy.
+func TestCleanupSessionResources_ExplicitProxy_LastSession(t *testing.T) {
+	d := newCleanupTestDaemon(t, 10*time.Millisecond)
+
+	tmpDir := t.TempDir()
+	registerSession(t, d, "session-A", tmpDir)
+
+	proxyID := makeProcessID(tmpDir, "web")
+	d.handleExplicitStart(ProxyEvent{
+		Type:    ExplicitStart,
+		ProxyID: proxyID,
+		Config:  &config.ProxyConfig{URL: "http://127.0.0.1:65040"},
+		Path:    tmpDir,
+	})
+
+	// Preconditions: proxy exists on every surface.
+	require.Len(t, d.proxyEntries.List(tmpDir), 1,
+		"precondition: explicit proxy must register a proxy-kind admin entry")
+	_, getErr := d.proxym.Get(proxyID)
+	require.NoError(t, getErr, "precondition: proxy must exist in proxym")
+	if d.stateMgr != nil {
+		_, ok := d.stateMgr.GetProxy(proxyID)
+		require.True(t, ok, "precondition: proxy must be persisted to stateMgr")
+	}
+
+	d.CleanupSessionResources("session-A")
+
+	// Postconditions: proxy is stopped, admin entry is cleared, stateMgr
+	// no longer remembers the proxy.
+	assert.Empty(t, d.proxyEntries.List(tmpDir),
+		"proxy-kind admin entries must be cleared after last session leaves")
+	_, getErr = d.proxym.Get(proxyID)
+	assert.Error(t, getErr, "proxy must be stopped in proxym after cleanup")
+	if d.stateMgr != nil {
+		_, ok := d.stateMgr.GetProxy(proxyID)
+		assert.False(t, ok, "stateMgr must not leak a stopped proxy across restart")
+	}
+}
+
+// TestCleanupSessionResources_ExplicitProxy_OtherSessionRemains covers
+// the T5 acceptance contract for the "non-last session leaves" branch.
+//
+// Setup: sessions A and B both observe the same project. Session A
+// starts the explicit proxy. When session A disconnects, session B is
+// still an observer — the proxy must stay running and visible in
+// SCRIPT LIST so session B's overlay still renders its indicator.
+//
+// This tightly mirrors the existing script-registry multi-session
+// semantics: process-kind entries transfer ownership, proxy-kind
+// entries stay up for as long as any session observes the project.
+func TestCleanupSessionResources_ExplicitProxy_OtherSessionRemains(t *testing.T) {
+	d := newCleanupTestDaemon(t, 10*time.Millisecond)
+
+	tmpDir := t.TempDir()
+	registerSession(t, d, "session-A", tmpDir)
+	registerSession(t, d, "session-B", tmpDir)
+
+	proxyID := makeProcessID(tmpDir, "api")
+	d.handleExplicitStart(ProxyEvent{
+		Type:    ExplicitStart,
+		ProxyID: proxyID,
+		Config:  &config.ProxyConfig{URL: "http://127.0.0.1:65041"},
+		Path:    tmpDir,
+	})
+
+	require.Len(t, d.proxyEntries.List(tmpDir), 1, "precondition: admin entry registered")
+
+	d.CleanupSessionResources("session-A")
+
+	// Session B still observes this project: proxy must still be up.
+	assert.Len(t, d.proxyEntries.List(tmpDir), 1,
+		"proxy-kind admin entry must persist while another session observes")
+	_, getErr := d.proxym.Get(proxyID)
+	assert.NoError(t, getErr, "proxy must remain running while other sessions remain")
+
+	// SCRIPT LIST (admin surface) must still include the proxy row so
+	// session B's overlay renders the indicator.
+	summaries := d.buildScriptListSummaries(tmpDir)
+	var sawProxy bool
+	for _, s := range summaries {
+		if s["kind"] == string(ScriptKindProxy) && s["process_id"] == proxyID {
+			sawProxy = true
+			break
+		}
+	}
+	assert.True(t, sawProxy,
+		"SCRIPT LIST must still surface the proxy-kind row for session B")
+}
+
+// TestRestoreProxies_RegistersAdminEntry covers the T5 daemon-restart
+// acceptance contract. An explicit proxy survives a daemon restart via
+// the stateMgr persistence path wired up in T1 (handleExplicitStart →
+// stateMgr.AddProxy). On the next boot, restoreProxies re-creates the
+// proxy in proxym — T5 adds the parallel registration in proxyEntries
+// so the restored proxy appears in SCRIPT LIST (and therefore in the
+// overlay status bar) just like it did pre-restart.
+//
+// Without this, a restart silently drops the proxy from the admin
+// surface even though proxym has it running again — the indicator
+// disappears for the developer even though the proxy is healthy.
+func TestRestoreProxies_RegistersAdminEntry(t *testing.T) {
+	stateDir := t.TempDir()
+	sockPath := filepath.Join(stateDir, "d.sock")
+	d := New(DaemonConfig{
+		SocketPath:             sockPath,
+		MaxClients:             10,
+		WriteTimeout:           5 * time.Second,
+		CleanupGracePeriod:     10 * time.Millisecond,
+		EnableStatePersistence: true,
+		StatePath:              filepath.Join(stateDir, "state.json"),
+	})
+	require.NoError(t, d.Start())
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = d.Stop(ctx)
+	})
+	require.NotNil(t, d.stateMgr, "test requires a configured stateMgr")
+
+	tmpDir := t.TempDir()
+	proxyID := makeProcessID(tmpDir, "persisted")
+
+	// Simulate a pre-restart persisted state entry.
+	d.stateMgr.AddProxy(PersistentProxyConfig{
+		ID:         proxyID,
+		TargetURL:  "http://127.0.0.1:65042",
+		Port:       0,
+		MaxLogSize: 100,
+		Path:       tmpDir,
+	})
+
+	// Sanity: no admin entry yet — restoreProxies owns creating it.
+	require.Empty(t, d.proxyEntries.List(tmpDir),
+		"precondition: no admin entry before restore")
+
+	d.restoreProxies()
+
+	// Proxy re-created in proxym.
+	_, getErr := d.proxym.Get(proxyID)
+	require.NoError(t, getErr, "restored proxy must exist in proxym")
+
+	// Admin entry registered so SCRIPT LIST surfaces it post-restart.
+	entries := d.proxyEntries.List(tmpDir)
+	require.Len(t, entries, 1, "restoreProxies must register a proxy-kind admin entry")
+	assert.Equal(t, proxyID, entries[0].ProxyID(),
+		"admin entry must map back to the restored proxy ID")
 }

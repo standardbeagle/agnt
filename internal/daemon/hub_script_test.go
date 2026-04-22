@@ -86,21 +86,22 @@ func TestSCRIPTLIST_EmptyProject_NoPanic(t *testing.T) {
 	}
 }
 
-// TestCleanupSessionResources_ClearsExplicitProxyEntry asserts the
-// CURRENT cleanup behavior for proxy-kind admin entries. As of T2,
-// CleanupSessionResources does NOT clear proxyEntries — that plumbing
-// is T5 scope. The test pins this as a regression guard so a later
-// accidental change to CleanupSessionResources doesn't silently start
-// (or stop) clearing these entries outside the T5 design.
-//
-// When T5 lands, flip the want to 0 and update the assertion comment.
+// TestCleanupSessionResources_ClearsExplicitProxyEntry pins the T5
+// cleanup contract for proxy-kind admin entries: when the last session
+// for a project disconnects, every proxyScriptEntry registered under
+// that project must be removed from the daemon-level proxyEntryStore.
+// Otherwise the overlay status bar on the next session renders a
+// phantom indicator for a proxy that no longer exists — the same
+// stale-indicator class of bug the script-registry cleanup in
+// daemon_test.go:TestCleanupSessionResources_ClearsScriptRegistry
+// already guards against, but for the proxy-kind surface added in T2.
 func TestCleanupSessionResources_ClearsExplicitProxyEntry(t *testing.T) {
 	daemon, tmpDir := newFallbackTestDaemon(t)
 
 	// Register a session owning this project so doCleanup takes the
 	// "last session" branch.
 	session := &Session{
-		Code:        "t2-cleanup",
+		Code:        "t5-cleanup",
 		ProjectPath: tmpDir,
 		StartedAt:   time.Now(),
 		LastSeen:    time.Now(),
@@ -122,16 +123,11 @@ func TestCleanupSessionResources_ClearsExplicitProxyEntry(t *testing.T) {
 		t.Fatalf("precondition: expected 1 proxy-kind entry, got %d", got)
 	}
 
-	// Run cleanup. T5 will wire proxyEntries.Remove into this path;
-	// right now the entry leaks on purpose (out of T2 scope).
+	// Run cleanup. T5 wires proxyEntries.Remove into this path — the
+	// admin entry must be gone after the last session disconnects.
 	daemon.CleanupSessionResources(session.Code)
 
-	remaining := len(daemon.proxyEntries.List(tmpDir))
-	// CURRENT behavior (T2): cleanup does not touch proxyEntries, so the
-	// entry leaks with count = 1. T5 must flip this assertion to
-	// `remaining != 0` and add proxyEntries.Remove to doCleanup.
-	const want = 1
-	if remaining != want {
-		t.Errorf("proxy-kind entries after cleanup: got %d, want %d (T5: flip to 0)", remaining, want)
+	if remaining := len(daemon.proxyEntries.List(tmpDir)); remaining != 0 {
+		t.Errorf("proxy-kind entries after cleanup: got %d, want 0", remaining)
 	}
 }

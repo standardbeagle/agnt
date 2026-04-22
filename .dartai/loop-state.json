@@ -1,10 +1,10 @@
 {
   "status": "running",
-  "iterations": 12,
+  "iterations": 13,
   "spawns": 1,
   "started_at": "2026-04-21T12:40:00-07:00",
-  "last_iteration_at": "2026-04-22T20:45:00Z",
-  "last_subagent": "beagle-ab2-2841902",
+  "last_iteration_at": "2026-04-22T21:45:00Z",
+  "last_subagent": "beagle-ab2-227822",
   "loop_task_id": "KwXvtxrviI05",
   "dartboard": "Personal/agnt",
   "runner_instance_id": "beagle-ab2-227822",
@@ -188,7 +188,23 @@
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
+    },
+    {
+      "task_id": "SZiCwApAdgHL",
+      "iteration": 13,
+      "status": "completed",
+      "started_at": "2026-04-22T21:30:00Z",
+      "completed_at": "2026-04-22T21:45:00Z",
+      "phase_completed": "phase-9",
+      "failed_phase": null,
+      "files_changed": 5,
+      "tests_added": 3,
+      "plan_adjustments": 1,
+      "completion_summary": "T5 cleanup path parity for explicit proxies. CleanupSessionResources now sweeps d.proxyEntries on the last-session branch (Remove + clearScriptProxies for the reverse index); handleExplicitStart populates trackScriptProxy when event.Config.Script resolves against the script registry so ScriptStopped tears down symmetrically; restoreProxies calls registerExplicitProxyEntry so a daemon restart re-surfaces persisted explicit proxies in SCRIPT LIST. Flipped TestCleanupSessionResources_ClearsExplicitProxyEntry T2 placeholder (want 1 → want 0); added 3 acceptance tests covering last-session stop+clear+state-remove, multi-session observer persistence, and restart-time admin-entry registration. Plan adjustment: script.Entry from vendored go-cli-server has no Kind field — proxy-kind entries live in the daemon-owned proxyEntryStore, so 'switch on entry.Kind' became 'iterate both stores on the last-session branch'. Existing d.proxym.StopByProjectPath + stateMgr.RemoveProxy on line 262 already covered the proxym + stateMgr legs; the new code is purely the proxyEntries sweep. All daemon tests pass -race x1 in 124s.",
+      "failure_reason": null,
+      "fix_task_created": false,
+      "fix_task_id": null
     }
   ],
-  "last_completed_iteration": 12
+  "last_completed_iteration": 13
 }
