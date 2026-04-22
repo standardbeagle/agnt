@@ -62,11 +62,16 @@ type StartScriptResult struct {
 // This is the canonical way to start processes in the daemon.
 // Both autostartScript and hub handlers should use this.
 func (d *Daemon) StartScript(ctx context.Context, cfg StartScriptConfig) (*StartScriptResult, error) {
-	// Default ProjectPath to WorkingDir if not set
+	// Default ProjectPath to WorkingDir if not set, and normalize so the
+	// scriptRegistry key matches what RunAutostart / SCRIPT LIST / cleanup
+	// paths use. Without this, callers that pass a raw cwd (e.g. Windows
+	// mixed-case 'C:\Users\RUNNER~1\...') stash the entry under one key and
+	// subsequent lookups with the normalized form miss it.
 	projectPath := cfg.ProjectPath
 	if projectPath == "" {
 		projectPath = cfg.WorkingDir
 	}
+	projectPath = normalizePath(projectPath)
 
 	// Ensure a ScriptEntry exists (idempotent). For standalone processes not
 	// from .agnt.kdl, this creates the entry so the code path is uniform.
