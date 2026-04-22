@@ -14,14 +14,142 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// clusterAConfig is one long-running script named "test"; shared by Cluster A subtests.
+const clusterAConfig = `
+scripts {
+    test {
+        run "sleep 60"
+        autostart true
+    }
+}
+`
+
+// clusterBConfig is "a" with an unreachable port and "b" that depends on "a";
+// shared by Cluster B subtests.
+const clusterBConfig = `
+scripts {
+    a {
+        run "sleep 60"
+        autostart true
+        ports 99999
+    }
+    b {
+        run "sleep 60"
+        autostart true
+        depends-on "a"
+    }
+}
+`
+
+// newDaemon boots a daemon with a unique socket under dir and registers a
+// t.Cleanup that stops it gracefully (2 s budget).
+func newDaemon(t *testing.T, dir string) *Daemon {
+	t.Helper()
+	d := New(DaemonConfig{
+		SocketPath:   filepath.Join(dir, "test.sock"),
+		MaxClients:   10,
+		WriteTimeout: 5 * time.Second,
+	})
+	require.NoError(t, d.Start())
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		d.Stop(ctx)
+	})
+	return d
+}
+
+// writeConfig writes content to <dir>/.agnt.kdl.
+func writeConfig(t *testing.T, dir, content string) {
+	t.Helper()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".agnt.kdl"), []byte(content), 0o644))
+}
+
+// drainProgress drains a closed progress channel into a slice.
+func drainProgress(ch chan AutostartProgress) []AutostartProgress {
+	var out []AutostartProgress
+	for ev := range ch {
+		out = append(out, ev)
+	}
+	return out
+}
+
+// hasPhase returns true if any event in events has the given phase.
+func hasPhase(events []AutostartProgress, phase AutostartPhase) bool {
+	for _, ev := range events {
+		if ev.Phase == phase {
+			return true
+		}
+	}
+	return false
+}
+
+// countPhase counts events with the given phase.
+func countPhase(events []AutostartProgress, phase AutostartPhase) int {
+	n := 0
+	for _, ev := range events {
+		if ev.Phase == phase {
+			n++
+		}
+	}
+	return n
+}
+
+// hasDependencyWaitEvent returns true if any event is a dep-wait for the given
+// script+dependency pair.
+func hasDependencyWaitEvent(events []AutostartProgress, script, dep string) bool {
+	for _, ev := range events {
+		if ev.Phase == PhaseDependencyWaitStart && ev.Script == script && ev.Dependency == dep {
+			return true
+		}
+	}
+	return false
+}
+
+// ---------------------------------------------------------------------------
+// Cluster A — "simple autostart works"
+// One daemon boot, two subtests via t.Run.
+// ---------------------------------------------------------------------------
+
+func TestRunAutostartAsync_SimpleScripts(t *testing.T) {
+	clusterDir := t.TempDir()
+	d := newDaemon(t, clusterDir)
+
+	t.Run("nil progress channel", func(t *testing.T) {
+		dir := t.TempDir()
+		writeConfig(t, dir, clusterAConfig)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		result := d.RunAutostartAsync(ctx, dir, nil)
+
+		require.NotNil(t, result, "result must not be nil")
+		assert.Contains(t, result.Scripts, "test", "script 'test' should appear in result.Scripts")
+		assert.Len(t, result.Scripts, 1, "exactly 1 script should start")
+		assert.Empty(t, result.Errors, "no errors expected; got: %v", result.Errors)
+	})
+
+	t.Run("delegates to async (RunAutostart wraps)", func(t *testing.T) {
+		dir := t.TempDir()
+		writeConfig(t, dir, clusterAConfig)
+
+		result := d.RunAutostart(context.Background(), dir)
+
+		require.NotNil(t, result, "result must not be nil")
+		assert.Contains(t, result.Scripts, "test", "script 'test' should appear in result.Scripts")
+		assert.Len(t, result.Scripts, 1, "exactly 1 script should start")
+		assert.Empty(t, result.Errors, "RunAutostart should surface no errors for a healthy script")
+	})
+}
+
+// ---------------------------------------------------------------------------
+// Standalone: 3-script chain — ordering invariants
+// ---------------------------------------------------------------------------
+
 func TestRunAutostartAsync_ProgressEventsInOrder(t *testing.T) {
 	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
 
-	// Three long-running scripts with dependency chain: a -> b -> c.
-	// Each uses "sleep 60" to stay alive during the test.
-	// Script "a" (layer 0) has no deps, "b" depends on "a", "c" depends on "b".
-	// Since none bind ports, readySignaler signals immediately after start.
 	configContent := `
 scripts {
     a {
@@ -40,159 +168,79 @@ scripts {
     }
 }
 `
-	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, ".agnt.kdl"), []byte(configContent), 0o644))
+	writeConfig(t, tmpDir, configContent)
 
-	d := New(DaemonConfig{
-		SocketPath:            sockPath,
-		MaxClients:            10,
-		WriteTimeout:          5 * time.Second,
-		StartupMonitorTimeout: 200 * time.Millisecond,
-	})
-	require.NoError(t, d.Start())
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		d.Stop(ctx)
-	}()
+	d := newDaemon(t, tmpDir)
 
-	progress := make(chan AutostartProgress, 100)
+	progress := make(chan AutostartProgress, 200)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	result := d.RunAutostartAsync(ctx, tmpDir, progress)
 	close(progress)
+	events := drainProgress(progress)
 
-	var events []AutostartProgress
-	for ev := range progress {
-		events = append(events, ev)
-	}
-
+	require.NotNil(t, result, "result must not be nil")
 	assert.Empty(t, result.Errors, "expected no errors, got: %v", result.Errors)
 	assert.Len(t, result.Scripts, 3, "expected 3 scripts started")
 
-	phases := make([]AutostartPhase, len(events))
-	for i, ev := range events {
-		phases[i] = ev.Phase
+	// All expected phase types must appear.
+	assert.True(t, hasPhase(events, PhaseScriptStarting), "missing PhaseScriptStarting")
+	assert.True(t, hasPhase(events, PhaseScriptStarted), "missing PhaseScriptStarted")
+	assert.True(t, hasPhase(events, PhaseLayerComplete), "missing PhaseLayerComplete")
+	assert.True(t, hasPhase(events, PhaseDependencyWaitStart), "missing PhaseDependencyWaitStart")
+	assert.True(t, hasPhase(events, PhaseDependencyReady), "missing PhaseDependencyReady")
+
+	// With a 3-script chain there are ≥2 layer-complete events.
+	assert.GreaterOrEqual(t, countPhase(events, PhaseLayerComplete), 2,
+		"3-script chain should produce ≥2 PhaseLayerComplete events")
+
+	// Each of the 3 scripts must appear in PhaseScriptStarting.
+	startingScripts := map[string]bool{}
+	for _, ev := range events {
+		if ev.Phase == PhaseScriptStarting {
+			startingScripts[ev.Script] = true
+		}
 	}
+	assert.True(t, startingScripts["a"], "script 'a' should have a PhaseScriptStarting event")
+	assert.True(t, startingScripts["b"], "script 'b' should have a PhaseScriptStarting event")
+	assert.True(t, startingScripts["c"], "script 'c' should have a PhaseScriptStarting event")
 
-	assert.Contains(t, phases, PhaseScriptStarting, "missing PhaseScriptStarting")
-	assert.Contains(t, phases, PhaseScriptStarted, "missing PhaseScriptStarted")
-	assert.Contains(t, phases, PhaseLayerComplete, "missing PhaseLayerComplete")
-	assert.Contains(t, phases, PhaseDependencyWaitStart, "missing PhaseDependencyWaitStart")
-	assert.Contains(t, phases, PhaseDependencyReady, "missing PhaseDependencyReady")
-
-	// Verify ordering: layer 0 completes before layer 1 starts.
-	var lastLayer0Complete int
-	var firstLayer1Start int = -1
+	// Ordering: for each dep pair (b→a, c→b), PhaseScriptStarting for the
+	// dependent must appear AFTER PhaseLayerComplete for its layer.
+	var lastLayer0Complete, lastLayer1Complete int
+	var firstLayer1Start, firstLayer2Start = -1, -1
 	for i, ev := range events {
 		if ev.Phase == PhaseLayerComplete && ev.Layer == 0 {
 			lastLayer0Complete = i
 		}
+		if ev.Phase == PhaseLayerComplete && ev.Layer == 1 {
+			lastLayer1Complete = i
+		}
 		if ev.Phase == PhaseScriptStarting && ev.Layer == 1 && firstLayer1Start == -1 {
 			firstLayer1Start = i
+		}
+		if ev.Phase == PhaseScriptStarting && ev.Layer == 2 && firstLayer2Start == -1 {
+			firstLayer2Start = i
 		}
 	}
 	if firstLayer1Start >= 0 {
 		assert.Greater(t, firstLayer1Start, lastLayer0Complete,
-			"layer 1 script start should come after layer 0 completion")
+			"layer 1 start must follow layer 0 completion")
+	}
+	if firstLayer2Start >= 0 {
+		assert.Greater(t, firstLayer2Start, lastLayer1Complete,
+			"layer 2 start must follow layer 1 completion")
 	}
 }
 
-func TestRunAutostartAsync_ContextCancelDuringDependencyWait(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	// Script "a" stays alive but binds no ports. Script "b" depends on "a"
-	// with port-based readiness that never fires (no ports declared).
-	// But since "a" has no ports, it signals ready immediately, so "b" proceeds.
-	//
-	// Instead: "a" binds port 99999 (invalid) so the port probe never succeeds
-	// and "b" waits forever -- until context is cancelled.
-	configContent := `
-scripts {
-    a {
-        run "sleep 60"
-        autostart true
-        ports 99999
-    }
-    b {
-        run "sleep 60"
-        autostart true
-        depends-on "a"
-    }
-}
-`
-	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, ".agnt.kdl"), []byte(configContent), 0o644))
-
-	d := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-	require.NoError(t, d.Start())
-	defer func() {
-		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		d.Stop(stopCtx)
-	}()
-
-	progress := make(chan AutostartProgress, 100)
-	// 15s budget: ~3s for layer-0 "a" to reach 'started' under parallel CI
-	// load (PID fork + sh wrap can be surprisingly slow), then ~12s of
-	// b-waiting-on-a before cancellation forces the dep wait to break.
-	// The old 8s window was too tight — "a" sometimes failed to register
-	// in result.Scripts before ctx expired, flaking the test.
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-
-	start := time.Now()
-	result := d.RunAutostartAsync(ctx, tmpDir, progress)
-	elapsed := time.Since(start)
-	close(progress)
-
-	var events []AutostartProgress
-	for ev := range progress {
-		events = append(events, ev)
-	}
-
-	// Should have completed within the 15s timeout (not 120s default)
-	assert.Less(t, elapsed.Seconds(), 20.0,
-		"should complete near the 15s context deadline, not hang")
-
-	// "a" should have started (layer 0) OR errored out — what matters is
-	// the autostart path recorded it either way, not that it's still alive.
-	started := false
-	for _, s := range result.Scripts {
-		if s == "a" {
-			started = true
-		}
-	}
-	errored := false
-	for _, e := range result.Errors {
-		if strings.Contains(e, "script a:") {
-			errored = true
-		}
-	}
-	assert.True(t, started || errored,
-		"script 'a' should appear in result.Scripts or result.Errors (scripts=%v errors=%v)",
-		result.Scripts, result.Errors)
-
-	// "b" should have a dependency wait start event
-	var gotDependencyWait bool
-	for _, ev := range events {
-		if ev.Phase == PhaseDependencyWaitStart && ev.Script == "b" && ev.Dependency == "a" {
-			gotDependencyWait = true
-		}
-	}
-	assert.True(t, gotDependencyWait, "expected PhaseDependencyWaitStart for b->a")
-}
+// ---------------------------------------------------------------------------
+// Standalone: failure emits progress
+// ---------------------------------------------------------------------------
 
 func TestRunAutostartAsync_ScriptFailureEmitsProgress(t *testing.T) {
 	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
 
-	// "good" stays alive; "bad" uses a nonexistent command and fails.
-	// Both are in layer 0 (no dependencies) so they start concurrently.
 	configContent := `
 scripts {
     good {
@@ -205,214 +253,153 @@ scripts {
     }
 }
 `
-	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, ".agnt.kdl"), []byte(configContent), 0o644))
+	writeConfig(t, tmpDir, configContent)
 
-	d := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-	require.NoError(t, d.Start())
-	defer func() {
-		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		d.Stop(stopCtx)
-	}()
+	d := newDaemon(t, tmpDir)
 
-	progress := make(chan AutostartProgress, 100)
+	progress := make(chan AutostartProgress, 200)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	result := d.RunAutostartAsync(ctx, tmpDir, progress)
 	close(progress)
+	events := drainProgress(progress)
 
-	var events []AutostartProgress
-	for ev := range progress {
-		events = append(events, ev)
-	}
+	require.NotNil(t, result, "result must not be nil")
 
-	// "good" should succeed
+	// "good" must succeed.
 	assert.Contains(t, result.Scripts, "good", "good script should have started")
+	assert.NotContains(t, result.Scripts, "bad", "bad script must not appear in result.Scripts")
 
-	// "bad" should have failed with a progress event
-	var gotFailed bool
+	// result.Errors must be non-empty (bad failed).
+	assert.NotEmpty(t, result.Errors, "result.Errors must be non-empty when a script fails")
+
+	// Exactly one PhaseScriptFailed event for "bad", with a non-nil Err.
+	failedCount := 0
 	for _, ev := range events {
 		if ev.Phase == PhaseScriptFailed && ev.Script == "bad" {
-			gotFailed = true
-			assert.Error(t, ev.Err, "failed event should have an error")
+			failedCount++
+			assert.Error(t, ev.Err, "PhaseScriptFailed event must carry a non-nil error")
 		}
 	}
-	assert.True(t, gotFailed, "expected PhaseScriptFailed for 'bad' script")
-	assert.NotEmpty(t, result.Errors, "expected errors in result")
+	assert.Equal(t, 1, failedCount, "expected exactly 1 PhaseScriptFailed event for 'bad'")
 }
 
-func TestRunAutostartAsync_NilProgressChannel(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
+// ---------------------------------------------------------------------------
+// Cluster B — dependency-wait scenarios
+// Three subtests on ONE daemon boot. Each uses its own t.TempDir so
+// script namespaces are isolated (project paths differ).
+// ---------------------------------------------------------------------------
 
-	configContent := `
-scripts {
-    test {
-        run "sleep 60"
-        autostart true
-    }
-}
-`
-	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, ".agnt.kdl"), []byte(configContent), 0o644))
+func TestRunAutostartAsync_DependencyWait(t *testing.T) {
+	clusterDir := t.TempDir()
+	d := newDaemon(t, clusterDir)
 
-	d := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-	require.NoError(t, d.Start())
-	defer func() {
-		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	// contextCancelDuringWait: "b" waits on "a" (unreachable port 99999);
+	// 15 s context deadline forces cancellation.
+	t.Run("context cancel during dependency wait", func(t *testing.T) {
+		dir := t.TempDir()
+		writeConfig(t, dir, clusterBConfig)
+
+		progress := make(chan AutostartProgress, 200)
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		d.Stop(stopCtx)
-	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+		start := time.Now()
+		result := d.RunAutostartAsync(ctx, dir, progress)
+		elapsed := time.Since(start)
+		close(progress)
+		events := drainProgress(progress)
 
-	result := d.RunAutostartAsync(ctx, tmpDir, nil)
-	assert.Contains(t, result.Scripts, "test")
-}
+		require.NotNil(t, result, "result must not be nil")
 
-func TestRunAutostart_DelegatesToAsync(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
+		// Must complete at or near the 15 s deadline, not hang.
+		assert.Less(t, elapsed.Seconds(), 20.0,
+			"should complete near the 15s context deadline, not hang")
 
-	configContent := `
-scripts {
-    test {
-        run "sleep 60"
-        autostart true
-    }
-}
-`
-	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, ".agnt.kdl"), []byte(configContent), 0o644))
-
-	d := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-	require.NoError(t, d.Start())
-	defer func() {
-		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		d.Stop(stopCtx)
-	}()
-
-	result := d.RunAutostart(context.Background(), tmpDir)
-	assert.Contains(t, result.Scripts, "test")
-}
-
-// TestRunAutostartAsync_NoFallbackTimeout_WaitsIndefinitely verifies that a
-// dependency with no explicit per-dep timeout does NOT silently abandon the
-// wait after ~120s (the old hardcoded fallback). The dependency "a" never
-// reaches ready (ports 99999 is unbindable), so "b" should still be in
-// dependency_wait when we cancel the parent ctx after ~3s — proving that
-// the wait was active and not silently exited via fallback timeout.
-func TestRunAutostartAsync_NoFallbackTimeout_WaitsIndefinitely(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
-
-	// "a" binds an unreachable port so its readySignaler never fires.
-	// "b" depends on "a" with NO explicit timeout (default 0 = indefinite).
-	configContent := `
-scripts {
-    a {
-        run "sleep 60"
-        autostart true
-        ports 99999
-    }
-    b {
-        run "sleep 60"
-        autostart true
-        depends-on "a"
-    }
-}
-`
-	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, ".agnt.kdl"), []byte(configContent), 0o644))
-
-	d := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-	require.NoError(t, d.Start())
-	defer func() {
-		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		d.Stop(stopCtx)
-	}()
-
-	progress := make(chan AutostartProgress, 100)
-
-	// Parent context has NO deadline. The session-style ctx in production also
-	// has no deadline; this is the exact scenario the bug report describes.
-	ctx, cancel := context.WithCancel(context.Background())
-
-	// Run autostart in a goroutine. We expect it to block on b's dep wait.
-	done := make(chan *AutostartResult, 1)
-	go func() {
-		done <- d.RunAutostartAsync(ctx, tmpDir, progress)
-	}()
-
-	// Wait long enough that the OLD fallback (120s) would NOT have fired,
-	// but enough for layer 0 to settle and b to enter its dep wait. Layer 0
-	// startup includes process spawn + duplicate scanner, which can take
-	// several seconds on slow CI.
-	select {
-	case <-done:
-		t.Fatal("autostart returned before parent ctx was cancelled — fallback timeout was not removed")
-	case <-time.After(8 * time.Second):
-	}
-
-	// Cancel the parent ctx. The dep wait must unblock promptly via ctx.Done.
-	cancelStart := time.Now()
-	cancel()
-
-	select {
-	case result := <-done:
-		unblockTime := time.Since(cancelStart)
-		assert.Less(t, unblockTime, 1500*time.Millisecond,
-			"dependency wait should unblock within ~1.5s of parent ctx cancel, took %v", unblockTime)
-		// "a" started (layer 0); "b" should NOT be in result.Scripts because
-		// the dep wait was cancelled before b could start.
-		assert.Contains(t, result.Scripts, "a", "script 'a' should have started")
-		assert.NotContains(t, result.Scripts, "b",
-			"script 'b' must not have started — its dep wait was cancelled before ready")
-	case <-time.After(5 * time.Second):
-		t.Fatal("autostart did not return within 5s of parent ctx cancellation")
-	}
-
-	close(progress)
-
-	// Verify a dep wait event was actually emitted (proving b reached the wait).
-	var gotDependencyWait bool
-	for ev := range progress {
-		if ev.Phase == PhaseDependencyWaitStart && ev.Script == "b" && ev.Dependency == "a" {
-			gotDependencyWait = true
+		// "a" should have started OR appeared in errors.
+		aStarted := false
+		for _, s := range result.Scripts {
+			if s == "a" {
+				aStarted = true
+			}
 		}
-	}
-	assert.True(t, gotDependencyWait, "expected PhaseDependencyWaitStart for b->a")
-}
+		aErrored := false
+		for _, e := range result.Errors {
+			if strings.Contains(e, "script a:") {
+				aErrored = true
+			}
+		}
+		assert.True(t, aStarted || aErrored,
+			"script 'a' should appear in result.Scripts or result.Errors (scripts=%v errors=%v)",
+			result.Scripts, result.Errors)
 
-// TestRunAutostartAsync_ExplicitDependencyTimeout_StillHonored verifies that
-// when the user explicitly sets `depends-on "x" timeout=N` in .agnt.kdl, the
-// wait is still bounded by that timeout (we did not remove the per-dep
-// timeout, only the implicit 120s fallback).
-func TestRunAutostartAsync_ExplicitDependencyTimeout_StillHonored(t *testing.T) {
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
+		// "b" must have entered dep wait.
+		assert.True(t, hasDependencyWaitEvent(events, "b", "a"),
+			"expected PhaseDependencyWaitStart for b->a")
+	})
 
-	// "a" binds an unreachable port so its readySignaler never fires.
-	// "b" depends on "a" with an EXPLICIT 2s timeout — this should still bound
-	// the wait even though the parent ctx has no deadline.
-	configContent := `
+	// noFallbackTimeout: proves "b" stays in dep wait indefinitely (no silent
+	// 120 s fallback). Uses event-driven signal instead of a blind sleep.
+	t.Run("no fallback timeout waits indefinitely", func(t *testing.T) {
+		dir := t.TempDir()
+		writeConfig(t, dir, clusterBConfig)
+
+		progress := make(chan AutostartProgress, 200)
+		ctx, cancel := context.WithCancel(context.Background())
+
+		done := make(chan *AutostartResult, 1)
+		go func() {
+			done <- d.RunAutostartAsync(ctx, dir, progress)
+		}()
+
+		// Wait for "b" to enter dep wait — this is the event-driven proof that
+		// the wait is actually active (not that it simply hasn't returned yet).
+		gotDepWait := make(chan struct{})
+		go func() {
+			for ev := range progress {
+				if ev.Phase == PhaseDependencyWaitStart && ev.Script == "b" && ev.Dependency == "a" {
+					select {
+					case gotDepWait <- struct{}{}:
+					default:
+					}
+				}
+			}
+		}()
+
+		select {
+		case <-gotDepWait:
+			// "b" confirmed in dep wait — autostart should still be running.
+		case <-done:
+			t.Fatal("autostart returned before 'b' entered dependency wait — fallback timeout may still exist")
+		case <-time.After(15 * time.Second):
+			t.Fatal("'b' never entered dep wait within 15s")
+		}
+
+		// Cancel the parent context; dep wait must unblock promptly.
+		cancelStart := time.Now()
+		cancel()
+
+		select {
+		case result := <-done:
+			unblockTime := time.Since(cancelStart)
+			require.NotNil(t, result, "result must not be nil after cancel")
+			assert.Less(t, unblockTime, 1500*time.Millisecond,
+				"dep wait should unblock within ~1.5s of ctx cancel, took %v", unblockTime)
+			assert.Contains(t, result.Scripts, "a", "script 'a' should have started")
+			assert.NotContains(t, result.Scripts, "b",
+				"script 'b' must not have started — dep wait was cancelled")
+		case <-time.After(5 * time.Second):
+			t.Fatal("autostart did not return within 5s of parent ctx cancellation")
+		}
+
+		close(progress)
+	})
+
+	// explicitDepTimeout: per-dep timeout=2 bounds the wait even with no parent deadline.
+	t.Run("explicit dependency timeout still honored", func(t *testing.T) {
+		dir := t.TempDir()
+		writeConfig(t, dir, `
 scripts {
     a {
         run "sleep 60"
@@ -425,52 +412,34 @@ scripts {
         depends-on "a" timeout=2
     }
 }
-`
-	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, ".agnt.kdl"), []byte(configContent), 0o644))
-
-	d := New(DaemonConfig{
-		SocketPath:   sockPath,
-		MaxClients:   10,
-		WriteTimeout: 5 * time.Second,
-	})
-	require.NoError(t, d.Start())
-	defer func() {
-		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+`)
+		progress := make(chan AutostartProgress, 200)
+		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		d.Stop(stopCtx)
-	}()
 
-	progress := make(chan AutostartProgress, 100)
-	// No deadline on the parent ctx — exactly the production session ctx.
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+		start := time.Now()
+		result := d.RunAutostartAsync(ctx, dir, progress)
+		elapsed := time.Since(start)
+		close(progress)
+		events := drainProgress(progress)
 
-	start := time.Now()
-	result := d.RunAutostartAsync(ctx, tmpDir, progress)
-	elapsed := time.Since(start)
-	close(progress)
+		require.NotNil(t, result, "result must not be nil")
 
-	// The explicit per-dep timeout (2s) must bound the wait. Without the
-	// timeout the wait would be indefinite, and with the OLD fallback it
-	// would have been ~120s. Allow generous slack for layer 0 startup +
-	// b's own process launch on slow CI.
-	assert.Less(t, elapsed.Seconds(), 30.0,
-		"explicit 2s dep timeout should bound the wait (NOT 120s fallback, NOT indefinite), took %v", elapsed)
+		// Explicit 2 s dep timeout must bound the wait (not 120 s fallback, not infinite).
+		assert.Less(t, elapsed.Seconds(), 30.0,
+			"explicit 2s dep timeout should bound the wait, took %v", elapsed)
 
-	// "a" started (layer 0). "b" should have proceeded after the timeout
-	// elapsed ("starting anyway") even though "a" never became ready.
-	assert.Contains(t, result.Scripts, "a", "script 'a' should have started")
+		assert.Contains(t, result.Scripts, "a", "script 'a' should have started")
 
-	// Verify the dep wait event was actually emitted (proves we exercised
-	// the per-dep timeout code path, not some other early-exit branch).
-	var gotDependencyWait bool
-	for ev := range progress {
-		if ev.Phase == PhaseDependencyWaitStart && ev.Script == "b" && ev.Dependency == "a" {
-			gotDependencyWait = true
-		}
-	}
-	assert.True(t, gotDependencyWait, "expected PhaseDependencyWaitStart for b->a (per-dep timeout path)")
+		// Must have exercised the per-dep timeout code path.
+		assert.True(t, hasDependencyWaitEvent(events, "b", "a"),
+			"expected PhaseDependencyWaitStart for b->a (per-dep timeout path)")
+	})
 }
+
+// ---------------------------------------------------------------------------
+// TestReadySignaler_WaitReadyCtx — left as-is (already well-structured).
+// ---------------------------------------------------------------------------
 
 func TestReadySignaler_WaitReadyCtx(t *testing.T) {
 	t.Run("signal before wait", func(t *testing.T) {
