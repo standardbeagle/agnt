@@ -1,9 +1,9 @@
 {
   "status": "running",
-  "iterations": 8,
+  "iterations": 9,
   "spawns": 1,
   "started_at": "2026-04-21T12:40:00-07:00",
-  "last_iteration_at": "2026-04-22T09:30:00Z",
+  "last_iteration_at": "2026-04-22T10:15:00Z",
   "last_subagent": "beagle-ab2-2931659",
   "loop_task_id": "KwXvtxrviI05",
   "dartboard": "Personal/agnt",
@@ -124,7 +124,23 @@
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
+    },
+    {
+      "task_id": "o9JEnZt3e8L5",
+      "iteration": 9,
+      "status": "completed",
+      "started_at": "2026-04-22T10:00:00Z",
+      "completed_at": "2026-04-22T10:15:00Z",
+      "phase_completed": "consolidation-complete",
+      "failed_phase": null,
+      "files_changed": 2,
+      "tests_added": 0,
+      "plan_adjustments": 2,
+      "completion_summary": "Added enterSettle and enterRetryDelays fields to Overlay struct so tests can inject fast delays. Updated makeTestOverlay to use 50ms settle and [50ms, 75ms, 100ms] retries. Updated all timing-sensitive sleeps in enter_behavior_test.go: fixed race conditions where 100ms sleeps coincided exactly with retry1 timer fire (100ms = 50ms settle + 50ms retry); changed to 75ms (mid-window). TestEnterBehavior suite: 9s -> 0.28s per run (97% reduction). All 17 tests pass x3 with -race.",
+      "failure_reason": null,
+      "fix_task_created": false,
+      "fix_task_id": null
     }
   ],
-  "last_completed_iteration": 8
+  "last_completed_iteration": 9
 }
