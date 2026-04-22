@@ -355,7 +355,7 @@ func (d *Daemon) broadcastNotificationToast(ev HookEvent) {
 		notif.Type = "info"
 	}
 
-	d.toastAllProxies(notif.Type, notif.Title, notif.Message, notif.Duration)
+	d.toastProjectProxies(ev.ProjectPath, notif.Type, notif.Title, notif.Message, notif.Duration)
 }
 
 // broadcastStopToast decodes a Stop hook event and sends a success toast
@@ -393,7 +393,7 @@ func (d *Daemon) broadcastStopToast(ev HookEvent) {
 	// fall through to the info color in the frontend palette (see
 	// internal/proxy/scripts/toast.js). "success" is the right semantics
 	// for a successful Stop.
-	d.toastAllProxies("success", "Claude Finished", message, 0)
+	d.toastProjectProxies(ev.ProjectPath, "success", "Claude Finished", message, 0)
 }
 
 // broadcastStopFailureToast decodes a StopFailure hook event and sends an
@@ -426,19 +426,24 @@ func (d *Daemon) broadcastStopFailureToast(ev HookEvent) {
 		message = message[:297] + "..."
 	}
 
-	d.toastAllProxies("error", "Claude Error", message, 0)
+	d.toastProjectProxies(ev.ProjectPath, "error", "Claude Error", message, 0)
 }
 
-// toastAllProxies sends a BroadcastToast to every active proxy. Per-proxy
-// errors are swallowed at debug level so one wedged WS client does not
+// toastProjectProxies sends a BroadcastToast to proxies for a specific project.
+// When projectPath is empty (e.g. legacy agnt notify without --project-path), all
+// proxies receive the toast to preserve backward compatibility.
+// Per-proxy errors are swallowed at debug level so one wedged WS client does not
 // block the others.
-func (d *Daemon) toastAllProxies(toastType, title, message string, duration int) {
+func (d *Daemon) toastProjectProxies(projectPath, toastType, title, message string, duration int) {
 	proxies := d.proxym.List()
 	if len(proxies) == 0 {
 		return
 	}
 	for _, p := range proxies {
 		if p == nil {
+			continue
+		}
+		if projectPath != "" && p.Path != projectPath {
 			continue
 		}
 		if _, err := p.BroadcastToast(toastType, title, message, duration); err != nil {

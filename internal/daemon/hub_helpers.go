@@ -247,6 +247,7 @@ func (d *Daemon) wireProxyLogger(server *proxy.ProxyServer) {
 		return
 	}
 	proxyID := server.ID
+	d.alertHub.RegisterProxyPath(proxyID, server.Path)
 	server.Logger().SetOnLogEntry(func(entry proxy.LogEntry) {
 		if !d.proxyBroadcastGate(proxyID, entry) {
 			return
