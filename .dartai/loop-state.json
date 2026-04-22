@@ -7,11 +7,11 @@
   "last_subagent": "beagle-ab2-2841902",
   "loop_task_id": "KwXvtxrviI05",
   "dartboard": "Personal/agnt",
-  "runner_instance_id": "beagle-ab2-2841902",
+  "runner_instance_id": "beagle-ab2-227822",
   "runner_email": "claude@anthropic.com",
   "runner_dart_id": null,
-  "agent_id": "beagle-ab2-2841902",
-  "resumed_at": "2026-04-22T03:30:35Z",
+  "agent_id": "beagle-ab2-227822",
+  "resumed_at": "2026-04-22T21:30:00Z",
   "tasks": [
     {
       "task_id": "3SOUIDZJSwXA",
