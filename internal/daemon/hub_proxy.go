@@ -181,11 +181,14 @@ func (d *Daemon) hubHandleProxyStatus(conn *hubpkg.Connection, cmd *hubproto.Com
 
 	stats := p.Stats()
 	resp := map[string]interface{}{
-		"id":          p.ID,
-		"listen_addr": p.ListenAddr,
-		"target_url":  p.TargetURL.String(),
-		"status":      proxyRuntimeStatus(stats),
-		"stats":       stats,
+		"id":             p.ID,
+		"listen_addr":    p.ListenAddr,
+		"target_url":     p.TargetURL.String(),
+		"status":         proxyRuntimeStatus(stats),
+		"uptime":         formatProxyUptime(stats.Uptime),
+		"total_requests": stats.TotalRequests,
+		"log_stats":      stats.LoggerStats,
+		"stats":          stats,
 	}
 	if !stats.ReadyForForwarding {
 		resp["waiting_for"] = stats.WaitingFor
@@ -208,6 +211,19 @@ func proxyRuntimeStatus(stats proxy.ProxyStats) string {
 		return "waiting_for_dependencies"
 	}
 	return "running"
+}
+
+// formatProxyUptime renders a proxy uptime as the time.Duration string
+// representation (e.g. "3m12s", "226ms"). The MCP tool layer reads this
+// field via getString(result, "uptime") and Go's default time.Duration
+// JSON marshaller emits a nanosecond integer — so the handler must
+// pre-format before WriteJSON. Returns "" when Duration is non-positive
+// (proxy never started, or Stats() called before Start()).
+func formatProxyUptime(d time.Duration) string {
+	if d <= 0 {
+		return ""
+	}
+	return d.String()
 }
 
 // hubHandleProxyList handles PROXY LIST command.
@@ -242,12 +258,14 @@ func (d *Daemon) hubHandleProxyList(conn *hubpkg.Connection, cmd *hubproto.Comma
 
 		stats := p.Stats()
 		entry := map[string]interface{}{
-			"id":          p.ID,
-			"listen_addr": p.ListenAddr,
-			"target_url":  p.TargetURL.String(),
-			"status":      proxyRuntimeStatus(stats),
-			"running":     stats.Running,
-			"path":        p.Path,
+			"id":             p.ID,
+			"listen_addr":    p.ListenAddr,
+			"target_url":     p.TargetURL.String(),
+			"status":         proxyRuntimeStatus(stats),
+			"running":        stats.Running,
+			"path":           p.Path,
+			"uptime":         formatProxyUptime(stats.Uptime),
+			"total_requests": stats.TotalRequests,
 		}
 		if !stats.ReadyForForwarding {
 			entry["waiting_for"] = stats.WaitingFor
