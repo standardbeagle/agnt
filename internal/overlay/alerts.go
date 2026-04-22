@@ -119,6 +119,10 @@ type AlertScannerConfig struct {
 
 	// OnAlert is called when a batch of alerts is ready for delivery.
 	OnAlert func(*AlertBatch)
+
+	// RetryInterval is how often the scanner retries delivering deferred alerts.
+	// Zero means use the default (2s).
+	RetryInterval time.Duration
 }
 
 // matchBufSize is the fixed capacity of the ring buffer for recent matches.
@@ -170,6 +174,11 @@ func NewAlertScanner(cfg AlertScannerConfig) *AlertScanner {
 		disabledIDs[id] = true
 	}
 
+	retryInterval := cfg.RetryInterval
+	if retryInterval == 0 {
+		retryInterval = 2 * time.Second
+	}
+
 	s := &AlertScanner{
 		patterns:      append(DefaultAlertPatterns(), cfg.Patterns...),
 		disabledIDs:   disabledIDs,
@@ -180,7 +189,7 @@ func NewAlertScanner(cfg AlertScannerConfig) *AlertScanner {
 		dedupe:        make(map[string]time.Time),
 		stopCh:        make(chan struct{}),
 		maxRetries:    5,
-		retryInterval: 2 * time.Second,
+		retryInterval: retryInterval,
 	}
 	s.enabled.Store(true)
 

@@ -134,10 +134,11 @@ func TestStartupSplashMessageRotation(t *testing.T) {
 	buf := &splashSafeWriter{}
 	splash := NewStartupSplash(buf, 80, 24)
 	splash.SetMessages([]string{"msg-a", "msg-b"})
+	splash.WithInterval(50 * time.Millisecond)
 
 	splash.Start()
 	// Wait for at least one rotation cycle
-	time.Sleep(3 * time.Second)
+	time.Sleep(200 * time.Millisecond)
 
 	// Stop before reading to avoid race on buffer
 	splash.Stop()
