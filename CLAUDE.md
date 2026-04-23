@@ -688,7 +688,9 @@ Files tagged `procisolation`:
 - `internal/daemon/daemon_orphan_pgid_test.go` — calls `startupOrphanPGIDScan` directly
 - `internal/platform/orphanpgid_unix_test.go` — calls `ScanOrphanedPGIDs` + `KillSessionPGID` directly
 
-All other daemon tests run natively under `make test`. They call `daemon.Start()` dozens of times, but the scan inside `Start()` is gated by `AGNT_DISABLE_ORPHAN_SCAN=1`, set in the daemon package's `TestMain`. The env var is a **test-only fence** — it must never be documented as a user-facing config knob, and the isolated target explicitly clears it so the scan actually runs under its namespace.
+All other daemon tests run natively under `make test`. They call `daemon.Start()` dozens of times, but the scan inside `Start()` is gated by `DaemonConfig.OrphanScanEnabled`, which defaults to `false` (zero value). Any test using a literal `DaemonConfig{}` gets the safe default automatically — no explicit opt-out required. Production explicitly sets `OrphanScanEnabled: true` in `cmd/agnt/daemon.go`. This field is an internal test-safety knob — it must never be documented as a user-facing config knob or exposed in `.agnt.kdl`. The isolated target's procisolation tests set `d.config.OrphanScanEnabled = true` on the returned daemon so the scan actually runs under their namespace.
+
+The field replaces the legacy `AGNT_DISABLE_ORPHAN_SCAN` env var fence; the env var has been deleted from the runtime code.
 
 **Coverage areas**:
 - `internal/process/ringbuf_test.go`: Thread safety, overflow

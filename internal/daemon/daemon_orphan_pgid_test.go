@@ -2,11 +2,11 @@
 
 // This file is tagged `procisolation` because every test it contains calls
 // startupOrphanPGIDScan directly. That function walks host /proc and issues
-// real kill(2) syscalls against any pgid whose leader is dead. The daemon
-// test package's TestMain sets AGNT_DISABLE_ORPHAN_SCAN=1 so the other tests
-// in this package cannot accidentally trigger the scan via daemon.Start();
-// each test below must clear that env var via t.Setenv to actually exercise
-// the scan. Run via:
+// real kill(2) syscalls against any pgid whose leader is dead. The shared
+// newCleanupTestDaemon helper leaves DaemonConfig.OrphanScanEnabled at its
+// zero value (false) so the rest of the test suite cannot trigger the scan
+// via daemon.Start(); each test below flips that field to true on the
+// returned daemon to actually exercise the scan. Run via:
 //
 //     make test-isolated
 //
@@ -134,7 +134,9 @@ func prctlSetChildSubreaper(t *testing.T) {
 // recovery dead in the water for the case we DO care about (this
 // daemon's own crashed sessions).
 func TestStartupOrphanPGIDScan_ReapsOwnedSession(t *testing.T) {
-	t.Setenv("AGNT_DISABLE_ORPHAN_SCAN", "")
+	// The shared helper leaves OrphanScanEnabled=false; procisolation tests
+	// re-enable the scan on the live daemon so this test actually exercises
+	// the /proc walk path. Safe here because we run in a PID namespace.
 
 	projectDir := t.TempDir()
 	// Become the subreaper BEFORE chdir + fixture spawn so the sleep
@@ -143,6 +145,10 @@ func TestStartupOrphanPGIDScan_ReapsOwnedSession(t *testing.T) {
 	chdirToProject(t, projectDir)
 
 	d := newCleanupTestDaemon(t, 10*time.Millisecond)
+	// Re-open the scan gate that newCleanupTestDaemon closed. Safe here
+	// because this file is `procisolation`-tagged and only runs inside a
+	// PID namespace (see `make test-isolated`).
+	d.config.OrphanScanEnabled = true
 
 	pgid, cleanup := spawnOrphanPGIDFixture(t)
 	defer cleanup()
@@ -196,9 +202,15 @@ func TestStartupOrphanPGIDScan_ReapsOwnedSession(t *testing.T) {
 // an empty known-projects set cannot reach any host pgid regardless of
 // whether its leader is dead.
 func TestStartupOrphanPGIDScan_SkipsUnownedSession(t *testing.T) {
-	t.Setenv("AGNT_DISABLE_ORPHAN_SCAN", "")
+	// The shared helper leaves OrphanScanEnabled=false; procisolation tests
+	// re-enable the scan on the live daemon so this test actually exercises
+	// the /proc walk path. Safe here because we run in a PID namespace.
 
 	d := newCleanupTestDaemon(t, 10*time.Millisecond)
+	// Re-open the scan gate that newCleanupTestDaemon closed. Safe here
+	// because this file is `procisolation`-tagged and only runs inside a
+	// PID namespace (see `make test-isolated`).
+	d.config.OrphanScanEnabled = true
 
 	pgid, cleanup := spawnOrphanPGIDFixture(t)
 	defer cleanup()
@@ -254,8 +266,14 @@ func TestStartupOrphanPGIDScan_SkipsUnownedSession(t *testing.T) {
 // the scan from running. The orphan is left intact and the decision is
 // recorded in the startup error store (not silent).
 func TestStartupOrphanPGIDScan_ConfigGateDisables(t *testing.T) {
-	t.Setenv("AGNT_DISABLE_ORPHAN_SCAN", "")
+	// The shared helper leaves OrphanScanEnabled=false; procisolation tests
+	// re-enable the scan on the live daemon so this test actually exercises
+	// the /proc walk path. Safe here because we run in a PID namespace.
 	d := newCleanupTestDaemon(t, 10*time.Millisecond)
+	// Re-open the scan gate that newCleanupTestDaemon closed. Safe here
+	// because this file is `procisolation`-tagged and only runs inside a
+	// PID namespace (see `make test-isolated`).
+	d.config.OrphanScanEnabled = true
 	projectDir := t.TempDir()
 
 	// Write a minimal .agnt.kdl with the scan disabled.
@@ -310,8 +328,14 @@ func TestStartupOrphanPGIDScan_ConfigGateDisables(t *testing.T) {
 // do" case: the scan runs, finds nothing, and logs an info entry so the
 // decision is visible to operators.
 func TestStartupOrphanPGIDScan_NoOrphans(t *testing.T) {
-	t.Setenv("AGNT_DISABLE_ORPHAN_SCAN", "")
+	// The shared helper leaves OrphanScanEnabled=false; procisolation tests
+	// re-enable the scan on the live daemon so this test actually exercises
+	// the /proc walk path. Safe here because we run in a PID namespace.
 	d := newCleanupTestDaemon(t, 10*time.Millisecond)
+	// Re-open the scan gate that newCleanupTestDaemon closed. Safe here
+	// because this file is `procisolation`-tagged and only runs inside a
+	// PID namespace (see `make test-isolated`).
+	d.config.OrphanScanEnabled = true
 
 	// No fixture -- just ensure the scan runs cleanly and emits an info
 	// log when there is nothing to reap. Other tests running in parallel

@@ -403,7 +403,6 @@ func TestRegisterChannelSession_DisabledReturnsNil(t *testing.T) {
 // is cleared. This test starts a real daemon so the resilient client can
 // connect.
 func TestRegisterChannelSession_SetsSessionCode(t *testing.T) {
-	t.Setenv("AGNT_DISABLE_ORPHAN_SCAN", "1")
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
@@ -411,6 +410,7 @@ func TestRegisterChannelSession_SetsSessionCode(t *testing.T) {
 		SocketPath:   sockPath,
 		MaxClients:   10,
 		WriteTimeout: 5 * time.Second,
+		// OrphanScanEnabled left zero (false) — test-safe default per iter 15.
 	})
 	if err := d.Start(); err != nil {
 		t.Fatalf("daemon start: %v", err)
@@ -457,7 +457,6 @@ func TestRegisterChannelSession_SetsSessionCode(t *testing.T) {
 // TestRegisterChannelSession_CloseIdempotent verifies that calling Close
 // multiple times on the handle is safe.
 func TestRegisterChannelSession_CloseIdempotent(t *testing.T) {
-	t.Setenv("AGNT_DISABLE_ORPHAN_SCAN", "1")
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
@@ -465,6 +464,7 @@ func TestRegisterChannelSession_CloseIdempotent(t *testing.T) {
 		SocketPath:   sockPath,
 		MaxClients:   10,
 		WriteTimeout: 5 * time.Second,
+		// OrphanScanEnabled left zero (false) — test-safe default per iter 15.
 	})
 	if err := d.Start(); err != nil {
 		t.Fatalf("daemon start: %v", err)

@@ -28,18 +28,17 @@ func TestMain(m *testing.M) {
 		runPortHolder(port)
 		return
 	}
-	// Disable the startup orphan-pgid scan for the entire daemon test
-	// package. The scan issues real kill(2) syscalls against any pgid on
-	// the host whose leader is dead — safe in production, catastrophic in
-	// a suite that calls daemon.Start() across dozens of tests. Tests that
-	// specifically exercise the scan live in daemon_orphan_pgid_test.go
-	// under the `procisolation` build tag and clear this env var per-test
-	// via t.Setenv, so they only actually run the scan when invoked via
-	// `make test-isolated` inside a PID namespace.
+	// Note: there is NO global test-only fence for startupOrphanPGIDScan
+	// here. The scan is gated via DaemonConfig.OrphanScanEnabled, which
+	// defaults to false (zero value = scan disabled). Any test that uses
+	// a literal DaemonConfig{} gets the safe default automatically. Only
+	// the procisolation suite (daemon_orphan_pgid_test.go) explicitly
+	// enables the scan, and only inside a PID namespace via
+	// `make test-isolated`. Production sets OrphanScanEnabled=true in
+	// cmd/agnt/daemon.go.
 	//
-	// This is a test-only fence. See startupOrphanPGIDScan in
-	// daemon_orphan_pgid.go for the corresponding read site.
-	_ = os.Setenv("AGNT_DISABLE_ORPHAN_SCAN", "1")
+	// See iter 15 (task 6btkGG5QUGTL) for the migration from the legacy
+	// AGNT_DISABLE_ORPHAN_SCAN env var fence.
 	os.Exit(m.Run())
 }
 

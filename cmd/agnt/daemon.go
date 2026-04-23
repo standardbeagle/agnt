@@ -101,8 +101,9 @@ func runDaemonStart(cmd *cobra.Command, args []string) {
 			GracefulTimeout:   5 * time.Second,
 			HealthCheckPeriod: 10 * time.Second,
 		},
-		MaxClients:   100,
-		WriteTimeout: 30 * time.Second,
+		MaxClients:        100,
+		WriteTimeout:      30 * time.Second,
+		OrphanScanEnabled: true, // production: walk /proc on startup. Tests default to false.
 	}
 
 	d := daemon.New(config)
