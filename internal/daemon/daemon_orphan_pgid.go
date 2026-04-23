@@ -43,17 +43,24 @@ const startupOrphanPGIDGrace = 2 * time.Second
 func (d *Daemon) startupOrphanPGIDScan(projectPath string) int {
 	log := d.startupErrorStore
 
-	// Test safety escape hatch. The daemon test package's TestMain sets
-	// AGNT_DISABLE_ORPHAN_SCAN=1 before running the suite so that the dozens
-	// of integration tests that call daemon.Start() do not issue real kill(2)
-	// syscalls against unrelated host pgids. Tests that specifically exercise
-	// the scan unset this env var via t.Setenv and are build-tagged
-	// `procisolation` so they only run inside a PID namespace via
-	// `make test-isolated`. In production the env var is never set.
+	// Test-safety fence: DaemonConfig.OrphanScanEnabled defaults to false
+	// (zero value), so any test that constructs a daemon with a literal
+	// DaemonConfig{} skips the scan automatically. Production opts in by
+	// setting OrphanScanEnabled=true in cmd/agnt/daemon.go. Tests that
+	// specifically exercise the scan (procisolation build tag) flip
+	// d.config.OrphanScanEnabled = true before calling Start.
 	//
-	// This env var is NOT a config option and must not be documented as one
-	// for end users — it is a test-only fence.
-	if os.Getenv("AGNT_DISABLE_ORPHAN_SCAN") != "" {
+	// This field is internal — it must not be documented as a user-facing
+	// config knob. See iter 15 (task 6btkGG5QUGTL) for the migration from
+	// the legacy AGNT_DISABLE_ORPHAN_SCAN env var fence.
+	if !d.config.OrphanScanEnabled {
+		log.Add(&StartupLogEntry{
+			Level:     "info",
+			EventType: "startup_orphan_pgid_skipped_by_config",
+			Message:   "orphan-pgid scan skipped: DaemonConfig.OrphanScanEnabled=false",
+			Timestamp: time.Now(),
+		})
+		debug.Log("daemon", "startup orphan-pgid scan: disabled by DaemonConfig (zero-value default)")
 		return 0
 	}
 

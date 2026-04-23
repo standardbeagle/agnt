@@ -148,6 +148,21 @@ type DaemonConfig struct {
 	// short value in tests to avoid the 3s × N-scripts wall-clock cost.
 	// Default: 3s
 	StartupMonitorTimeout time.Duration
+
+	// OrphanScanEnabled gates startupOrphanPGIDScan. Default zero-value
+	// (false) is the test-safe default: tests must NEVER walk host /proc
+	// or issue real kill(2) syscalls against pgids owned by other host
+	// processes under the same uid.
+	//
+	// Production sets this to true explicitly in cmd/agnt/daemon.go.
+	// One production site vs 40+ test constructors made positive naming +
+	// explicit-production the better trade than negative naming +
+	// explicit-tests.
+	//
+	// Replaces the legacy AGNT_DISABLE_ORPHAN_SCAN env var fence; see iter 15
+	// (task 6btkGG5QUGTL) for the migration. Never expose this field to end
+	// users — it is an internal test-safety knob, not a product feature.
+	OrphanScanEnabled bool
 }
 
 // DefaultDaemonConfig returns sensible defaults.

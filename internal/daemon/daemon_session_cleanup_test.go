@@ -16,6 +16,12 @@ import (
 
 // newCleanupTestDaemon constructs a started daemon configured with a tight
 // cleanup grace period so deferred-cleanup tests don't drag.
+//
+// OrphanScanEnabled is left at its zero value (false): the regular daemon
+// test suite must never issue real kill(2) syscalls against host pgids.
+// Tests that need the scan to run (daemon_orphan_pgid_test.go under the
+// `procisolation` build tag) construct their own daemon with
+// OrphanScanEnabled: true.
 func newCleanupTestDaemon(t *testing.T, grace time.Duration) *Daemon {
 	t.Helper()
 	tmpDir := t.TempDir()
@@ -26,6 +32,7 @@ func newCleanupTestDaemon(t *testing.T, grace time.Duration) *Daemon {
 		MaxClients:         10,
 		WriteTimeout:       5 * time.Second,
 		CleanupGracePeriod: grace,
+		// OrphanScanEnabled left zero — test-safe default per iter 15.
 	})
 
 	require.NoError(t, d.Start())
