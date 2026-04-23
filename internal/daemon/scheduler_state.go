@@ -28,6 +28,12 @@ type schedulerWriteReq struct {
 	projectPath string
 }
 
+// schedulerPersister is the seam between the write-behind channel mechanism
+// and the actual durable write. Production wires this to writeFileAtomic
+// (tmp + rename). Tests wire it to stub implementations that count calls,
+// sleep, error, or panic without touching the real filesystem.
+type schedulerPersister func(path string, data []byte) error
+
 // SchedulerStateManager handles persisting scheduled tasks per-project.
 // State is cached in memory per-project. Reads are served from cache.
 // Mutations update cache under lock, then enqueue async disk writes
@@ -49,6 +55,10 @@ type SchedulerStateManager struct {
 	stopped       chan struct{}
 	closeOnce     sync.Once
 	saveInterval  time.Duration
+
+	// persister is the durable-write callback invoked by doWriteAll for each
+	// project whose cache is dirty. Swappable for test isolation.
+	persister schedulerPersister
 }
 
 // NewSchedulerStateManager creates a new scheduler state manager.
@@ -59,6 +69,17 @@ func NewSchedulerStateManager() *SchedulerStateManager {
 // NewSchedulerStateManagerWithInterval creates a scheduler state manager
 // with a custom debounce interval.
 func NewSchedulerStateManagerWithInterval(interval time.Duration) *SchedulerStateManager {
+	return newSchedulerStateManager(interval, writeFileAtomic)
+}
+
+// newSchedulerStateManager constructs a manager with an explicit persister.
+// Internal seam for tests that isolate the channel/flusher mechanism from
+// real disk I/O. Production uses the exported constructors which wire
+// writeFileAtomic.
+func newSchedulerStateManager(interval time.Duration, persister schedulerPersister) *SchedulerStateManager {
+	if persister == nil {
+		persister = writeFileAtomic
+	}
 	m := &SchedulerStateManager{
 		cache:         make(map[string]*PersistedTaskState),
 		pendingWrites: make(map[string]struct{}),
@@ -67,9 +88,27 @@ func NewSchedulerStateManagerWithInterval(interval time.Duration) *SchedulerStat
 		stopCh:        make(chan struct{}),
 		stopped:       make(chan struct{}),
 		saveInterval:  interval,
+		persister:     persister,
 	}
 	go m.writeLoop()
 	return m
+}
+
+// writeFileAtomic is the production persister: mkdir + tmp write + rename.
+func writeFileAtomic(path string, data []byte) error {
+	stateDir := filepath.Dir(path)
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
+		return fmt.Errorf("failed to create state directory: %w", err)
+	}
+	tmpPath := path + ".tmp"
+	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write state file: %w", err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		os.Remove(tmpPath)
+		return fmt.Errorf("failed to rename state file: %w", err)
+	}
+	return nil
 }
 
 // getStatePath returns the path to the state file for a project.
@@ -277,6 +316,15 @@ func (m *SchedulerStateManager) ClearProject(projectPath string) error {
 }
 
 // Flush ensures all pending writes are persisted to disk immediately.
+//
+// Race note: there is a transient window between close(stopCh) and
+// close(stopped) during which writeLoop is running its final drain+write but
+// no longer receiving on flushCh. A naive `select { case flushCh <- done:
+// case <-stopped: }` can block forever if the scheduler picks the flushCh
+// send branch at exactly the wrong moment. We cover this by also watching
+// stopCh — once stopCh is closed we do a direct synchronous write instead
+// of queueing, which is correct because writeLoop's final doWriteAll is
+// protected by the same mutex.
 func (m *SchedulerStateManager) Flush() error {
 	done := make(chan error, 1)
 	select {
@@ -284,6 +332,13 @@ func (m *SchedulerStateManager) Flush() error {
 		return <-done
 	case <-m.stopped:
 		// Writer already stopped — do direct write
+		return m.doWriteAll()
+	case <-m.stopCh:
+		// Stop requested but writer hasn't fully exited yet. Wait for stopped
+		// and then do a direct write (the final flush inside writeLoop is
+		// already running or about to run; this second call will just see an
+		// empty pendingWrites map and return nil).
+		<-m.stopped
 		return m.doWriteAll()
 	}
 }
@@ -299,8 +354,26 @@ func (m *SchedulerStateManager) Close() error {
 }
 
 // writeLoop is the background goroutine that coalesces and writes state.
+//
+// Shutdown invariant: m.stopped MUST be closed exactly once, regardless of
+// how writeLoop exits (normal stop, panic, nil-channel misuse). Close() and
+// Flush() both block on <-m.stopped as a liveness signal; if writeLoop dies
+// without closing stopped, Close() hangs forever and the goroutine is
+// reported as a leak.
+//
+// doWriteAll has its own recover() so persister panics do not kill the loop.
+// The outer recover here is defence-in-depth for any other panic path
+// (e.g., future channel-close bugs introduced by edits to this function).
 func (m *SchedulerStateManager) writeLoop() {
 	defer close(m.stopped)
+	defer func() {
+		if r := recover(); r != nil {
+			// Swallow — we cannot propagate, and we cannot let the defer chain
+			// fail to close(m.stopped). debug.Log would be ideal here but we
+			// intentionally keep the dependency surface of this package small.
+			_ = r
+		}
+	}()
 
 	for {
 		select {
@@ -338,8 +411,21 @@ func (m *SchedulerStateManager) drainWriteCh() {
 	}
 }
 
-// doWriteAll writes all pending project states to disk.
-func (m *SchedulerStateManager) doWriteAll() error {
+// doWriteAll writes all pending project states via the configured persister.
+//
+// Panic recovery contract: if the persister panics (or json.MarshalIndent
+// panics on a pathological cache entry), doWriteAll must NOT propagate the
+// panic out of writeLoop. A propagated panic tears down the writer goroutine
+// without closing m.stopped, which in turn makes Close() block forever and
+// leaks the goroutine. We recover, convert the panic into an error return,
+// and let the writer drain the next tick.
+func (m *SchedulerStateManager) doWriteAll() (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("scheduler persister panic: %v", r)
+		}
+	}()
+
 	// Snapshot pending writes and their state under lock
 	m.mu.Lock()
 	pending := m.pendingWrites
@@ -363,32 +449,24 @@ func (m *SchedulerStateManager) doWriteAll() error {
 		copy(tasks, state.Tasks)
 		clone.Tasks = tasks
 
-		data, err := json.MarshalIndent(&clone, "", "  ")
-		if err != nil {
+		data, merr := json.MarshalIndent(&clone, "", "  ")
+		if merr != nil {
 			m.mu.Unlock()
-			return fmt.Errorf("failed to marshal state for %s: %w", projectPath, err)
+			return fmt.Errorf("failed to marshal state for %s: %w", projectPath, merr)
 		}
 		jobs = append(jobs, writeJob{path: m.getStatePath(projectPath), data: data})
 	}
 	m.mu.Unlock()
 
-	// Write all files without holding the lock
+	// Write all files without holding the lock, via the pluggable persister.
+	// Each job is isolated: if one persister call returns an error we return
+	// that error but do NOT abort remaining jobs — the next flush tick will
+	// retry pending projects that were re-dirtied while we were writing.
+	var firstErr error
 	for _, job := range jobs {
-		stateDir := filepath.Dir(job.path)
-		if err := os.MkdirAll(stateDir, 0755); err != nil {
-			return fmt.Errorf("failed to create state directory: %w", err)
-		}
-
-		tmpPath := job.path + ".tmp"
-		if err := os.WriteFile(tmpPath, job.data, 0644); err != nil {
-			return fmt.Errorf("failed to write state file: %w", err)
-		}
-
-		if err := os.Rename(tmpPath, job.path); err != nil {
-			os.Remove(tmpPath)
-			return fmt.Errorf("failed to rename state file: %w", err)
+		if perr := m.persister(job.path, job.data); perr != nil && firstErr == nil {
+			firstErr = perr
 		}
 	}
-
-	return nil
+	return firstErr
 }
