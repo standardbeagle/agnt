@@ -56,7 +56,7 @@ func TestStartupPortCleanup_PortFree(t *testing.T) {
 	// Persist a proxy config with a port
 	d.stateMgr.AddProxy(PersistentProxyConfig{
 		ID:   "test-proxy",
-		Port: 59999, // unlikely to be in use
+		Port: ephemeralPort(t), // free at time of call
 	})
 
 	// Port is free — nothing to kill

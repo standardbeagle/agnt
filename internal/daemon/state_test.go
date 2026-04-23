@@ -484,7 +484,7 @@ func TestStateManager_FlushOnClose(t *testing.T) {
 	sm.SetOverlayEndpoint("http://flush-test")
 	sm.AddProxy(PersistentProxyConfig{
 		ID:        "flush-proxy",
-		TargetURL: "http://localhost:9999",
+		TargetURL: ephemeralTargetURL(t),
 	})
 
 	// Close should flush pending writes

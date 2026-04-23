@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -36,10 +37,11 @@ func TestDepsIntegration(t *testing.T) {
 	// the URL is detected.
 	t.Run("client_starts_after_server_url", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		writeConfig(t, tmpDir, `
+		serverPort := ephemeralPort(t)
+		writeConfig(t, tmpDir, fmt.Sprintf(`
 scripts {
     server {
-        run "sleep 1 && echo Listening on http://localhost:9999 && sleep 60"
+        run "sleep 1 && echo Listening on http://localhost:%d && sleep 60"
         autostart true
     }
     client {
@@ -48,7 +50,7 @@ scripts {
         depends-on "server" timeout=10
     }
 }
-`)
+`, serverPort))
 
 		client := NewClient(WithSocketPath(sockPath))
 		require.NoError(t, client.Connect())

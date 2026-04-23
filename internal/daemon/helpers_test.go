@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"context"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -118,4 +120,25 @@ func newBootedClient(t *testing.T) *Client {
 	t.Helper()
 	_, c, _ := newBootedDaemonWithClient(t)
 	return c
+}
+
+// ephemeralPort returns a port number that was free at the time of the call.
+// Briefly binds to :0, reads the allocated port, then releases the listener.
+// Use for proxy target URLs where no real listener is needed, not for ports
+// you intend to bind yourself (small TOCTOU window).
+func ephemeralPort(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	port := ln.Addr().(*net.TCPAddr).Port
+	ln.Close()
+	return port
+}
+
+// ephemeralTargetURL returns a unique "http://127.0.0.1:<port>" URL for use
+// as a proxy target in tests. Each call returns a distinct URL, preventing
+// hash-based proxy listen port collisions under -count>1 / -p parallel runs.
+func ephemeralTargetURL(t *testing.T) string {
+	t.Helper()
+	return fmt.Sprintf("http://127.0.0.1:%d", ephemeralPort(t))
 }

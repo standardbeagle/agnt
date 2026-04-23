@@ -33,7 +33,7 @@ func TestRebindProxyOverlays_BindsUnboundProxy(t *testing.T) {
 	// Create a proxy with no overlay endpoint.
 	ps, err := pm.Create(context.Background(), proxy.ProxyConfig{
 		ID:         "test-proxy",
-		TargetURL:  "http://localhost:9999",
+		TargetURL:  ephemeralTargetURL(t),
 		ListenPort: -1,
 		Path:       tmpDir,
 	})
@@ -64,7 +64,7 @@ func TestRebindProxyOverlays_SkipsAlreadyBound(t *testing.T) {
 
 	ps, err := pm.Create(context.Background(), proxy.ProxyConfig{
 		ID:         "bound-proxy",
-		TargetURL:  "http://localhost:9998",
+		TargetURL:  ephemeralTargetURL(t),
 		ListenPort: -1,
 		Path:       tmpDir,
 	})
@@ -101,7 +101,7 @@ func TestRebindProxyOverlays_SkipsDifferentPath(t *testing.T) {
 
 	ps, err := pm.Create(context.Background(), proxy.ProxyConfig{
 		ID:         "other-proxy",
-		TargetURL:  "http://localhost:9997",
+		TargetURL:  ephemeralTargetURL(t),
 		ListenPort: -1,
 		Path:       otherDir,
 	})

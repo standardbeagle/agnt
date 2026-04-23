@@ -132,7 +132,7 @@ func TestKillPortBlockers_NonExistentPID(t *testing.T) {
 	defer pm.Shutdown(context.Background())
 
 	conflicts := []PortConflict{{
-		ScriptName: "test", Port: 9999, PIDs: []int{999999999},
+		ScriptName: "test", Port: ephemeralPort(t), PIDs: []int{1 << 29}, // non-existent PID
 	}}
 	results := killPortBlockers(context.Background(), pm, conflicts)
 	require.Len(t, results, 1)

@@ -840,7 +840,7 @@ func TestHubIntegration_ClientMethods(t *testing.T) {
 
 	// Test ProcCleanupPort
 	t.Run("ProcCleanupPort", func(t *testing.T) {
-		result, err := client.ProcCleanupPort(9999)
+		result, err := client.ProcCleanupPort(ephemeralPort(t))
 		if err != nil {
 			t.Logf("ProcCleanupPort error (expected): %v", err)
 		} else {
@@ -895,7 +895,7 @@ func TestHubIntegration_ChaosClientMethods(t *testing.T) {
 	defer client.Close()
 
 	// Start a proxy
-	_, err := client.ProxyStart("chaos-test", "http://127.0.0.1:19999", 0, 0, "")
+	_, err := client.ProxyStart("chaos-test", ephemeralTargetURL(t), 0, 0, "")
 	if err != nil {
 		t.Fatalf("Failed to start proxy: %v", err)
 	}
@@ -1038,7 +1038,7 @@ func TestHubIntegration_ProxyClientMethods(t *testing.T) {
 	client := newBootedClient(t)
 
 	// Start a proxy
-	_, err := client.ProxyStart("proxy-test", "http://127.0.0.1:19998", 0, 0, "")
+	_, err := client.ProxyStart("proxy-test", ephemeralTargetURL(t), 0, 0, "")
 	if err != nil {
 		t.Fatalf("Failed to start proxy: %v", err)
 	}
@@ -1220,7 +1220,7 @@ func TestHubIntegration_ChaosExtendedCommands(t *testing.T) {
 
 	// Start a proxy for chaos testing
 	proxyID := "chaos-ext-test"
-	_, err := client.ProxyStart(proxyID, "http://127.0.0.1:19997", 0, 0, "")
+	_, err := client.ProxyStart(proxyID, ephemeralTargetURL(t), 0, 0, "")
 	if err != nil {
 		t.Fatalf("ProxyStart failed: %v", err)
 	}
@@ -1493,7 +1493,7 @@ func TestHubIntegration_CurrentPageSummary(t *testing.T) {
 
 	// Start a proxy
 	proxyID := "page-summary-test"
-	_, err := client.ProxyStart(proxyID, "http://127.0.0.1:19996", 0, 0, "")
+	_, err := client.ProxyStart(proxyID, ephemeralTargetURL(t), 0, 0, "")
 	if err != nil {
 		t.Fatalf("ProxyStart failed: %v", err)
 	}
@@ -1547,7 +1547,7 @@ func TestHubIntegration_ProxyLogSummary(t *testing.T) {
 
 	// Start a proxy
 	proxyID := "log-summary-test"
-	_, err := client.ProxyStart(proxyID, "http://127.0.0.1:19995", 0, 0, "")
+	_, err := client.ProxyStart(proxyID, ephemeralTargetURL(t), 0, 0, "")
 	if err != nil {
 		t.Fatalf("ProxyStart failed: %v", err)
 	}
@@ -2488,7 +2488,7 @@ func TestHubIntegration_ProxyLogQueryResponseKeys(t *testing.T) {
 
 	// Start a proxy so we have something to query
 	proxyID := "test-proxylog-keys"
-	_, err := client.ProxyStart(proxyID, "http://localhost:9999", 0, 100, ".")
+	_, err := client.ProxyStart(proxyID, ephemeralTargetURL(t), 0, 100, ".")
 	if err != nil {
 		t.Fatalf("ProxyStart failed: %v", err)
 	}

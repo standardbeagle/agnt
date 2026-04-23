@@ -25,6 +25,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// fakeCrashedDaemonPID is a sentinel PID used to simulate a crashed daemon.
+// It must be a valid-looking but non-existent PID so crash recovery fires.
+const fakeCrashedDaemonPID = 88881
+
 // e2eEnv holds the shared state for an e2e test run.
 type e2eEnv struct {
 	BinaryPath string // path to built agnt binary
@@ -1637,7 +1641,7 @@ func createRecoveryDaemon(t *testing.T, stateHome, projectDir string, crashedTra
 	// Overwrite the stored daemon PID to a non-existent PID so that the
 	// recovery daemon's CleanupOrphans detects a different daemon PID and
 	// enters crash recovery mode.
-	require.NoError(t, crashedTracker.SetDaemonPID(99999))
+	require.NoError(t, crashedTracker.SetDaemonPID(fakeCrashedDaemonPID))
 
 	sockPath := filepath.Join(projectDir, "recovery.sock")
 
@@ -2423,9 +2427,9 @@ func TestE2E_PIDTracker_PreservedFileAfterStop(t *testing.T) {
 	var trackingRecovery process.PIDTracking
 	require.NoError(t, json.Unmarshal(dataRecovery, &trackingRecovery))
 	assert.Empty(t, trackingRecovery.Processes, "processes must remain empty after recovery")
-	// createRecoveryDaemon sets stored PID to 99999 to trigger crash detection;
-	// recovery daemon then sets it back to os.Getpid(). Verify it's not 99999.
-	assert.NotEqual(t, 99999, trackingRecovery.DaemonPID,
+	// createRecoveryDaemon sets stored PID to fakeCrashedDaemonPID to trigger crash
+	// detection; recovery daemon then sets it back to os.Getpid().
+	assert.NotEqual(t, fakeCrashedDaemonPID, trackingRecovery.DaemonPID,
 		"recovery daemon must update PID from simulated crash value")
 	assert.Equal(t, os.Getpid(), trackingRecovery.DaemonPID,
 		"recovery daemon PID must be current process PID")
