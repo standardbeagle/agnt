@@ -1,9 +1,9 @@
 {
   "status": "running",
-  "iterations": 15,
+  "iterations": 16,
   "spawns": 2,
   "started_at": "2026-04-21T12:40:00-07:00",
-  "last_iteration_at": "2026-04-23T05:08:00Z",
+  "last_iteration_at": "2026-04-23T07:25:00Z",
   "last_subagent": "beagle-ab2-227822",
   "loop_task_id": "KwXvtxrviI05",
   "dartboard": "Personal/agnt",
@@ -232,11 +232,27 @@
       "files_changed": 5,
       "tests_added": 9,
       "plan_adjustments": 0,
-      "completion_summary": "G1 AutostartManager mechanism stress harness. 9 isolated tests in autostart_manager_stress_test.go: HighThroughput, ConcurrentGetOrCreate_SameKey, SlowDrain, CancelMidFlight, RemoveDuringRun, StartFnPanic, ProgressBufferOverflow, LateJoinerSeesHistory, ManyHandlesShutdown. Production fix: AutostartManager.run() worker now recovers panics from startFn and surfaces them in AutostartResult.Errors with full stack — single misbehaving script no longer tears down daemon. Validates fix: integration test TestSessionRegister_ProgressSnapshotIncludesHistory (which was flaking iter 15 [A] commits) now passes 10x consecutive (-race -count=10) deterministically. Vendor: added go.uber.org/goleak v1.3.0; go mod vendor refreshed go-cli-server upstream cleanup of snapshotDescendantsOf wrapper. Pre-commit hook: bumped 120s -> 300s timeout, throttled to -p 2 to avoid scheduler-starvation flakes. Commit 46e2781.",
+      "completion_summary": "G1 AutostartManager mechanism stress harness. 9 isolated tests. Production fix: panic recovery in run(). Commit 46e2781.",
+      "failure_reason": null,
+      "fix_task_created": false,
+      "fix_task_id": null
+    },
+    {
+      "task_id": "6btkGG5QUGTL",
+      "iteration": 16,
+      "status": "completed",
+      "started_at": "2026-04-22T23:05:00Z",
+      "completed_at": "2026-04-23T07:25:00Z",
+      "phase_completed": "phase-9",
+      "failed_phase": null,
+      "files_changed": 9,
+      "tests_added": 2,
+      "plan_adjustments": 1,
+      "completion_summary": "[A] OrphanScanEnabled inversion. Added OrphanScanEnabled bool to DaemonConfig (default false = test-safe). Production opts in via cmd/agnt/daemon.go. 40+ existing test constructors get safe default with no changes. Env var AGNT_DISABLE_ORPHAN_SCAN deleted from all runtime read sites. CLAUDE.md + daemon-architecture docs rewritten. Plan adjustment: original subagent used inverted OrphanScanDisabled default-false (tests must opt-out explicitly) which broke 40+ test constructors; re-inverted to OrphanScanEnabled default-false (production opts in) so production is 1-line edit and tests need no change. Pre-commit hook throttled to -p 1 to avoid cross-package scheduler starvation surfacing as daemon-test flakes. Commit 5bc50b0.",
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
     }
   ],
-  "last_completed_iteration": 15
+  "last_completed_iteration": 16
 }
