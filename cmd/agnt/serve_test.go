@@ -505,3 +505,82 @@ func TestChannelSessionHandle_CloseNilIsSafe(t *testing.T) {
 	var h *tools.ChannelSessionHandle
 	h.Close() // should not panic
 }
+
+// TestChannelSession_ConcurrentCloseAndHeartbeat stresses the Close-vs-Init
+// race fixed in iter 18 (Option B: single-owner ctx cancel in the handle).
+// Spawns many Register/Close cycles with concurrent idempotent Close calls
+// on each handle. Under -race this previously tripped the data race between
+// closeChannelSession writing dt.channelHeartbeat and the heartbeat
+// goroutine reading it in its select. With the fix, the heartbeat
+// goroutine only reads its own hbCtx.Done(), so no shared-field access.
+//
+// This is the G1/G8-style stress harness for the [E] fix: tight-loop +
+// concurrent Close + goroutine-leak check.
+func TestChannelSession_ConcurrentCloseAndHeartbeat(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping stress in short mode")
+	}
+
+	tmpDir := t.TempDir()
+	sockPath := filepath.Join(tmpDir, "test.sock")
+
+	d := daemon.New(daemon.DaemonConfig{
+		SocketPath:   sockPath,
+		MaxClients:   64,
+		WriteTimeout: 5 * time.Second,
+	})
+	if err := d.Start(); err != nil {
+		t.Fatalf("daemon start: %v", err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		d.Stop(ctx)
+	}()
+
+	dt := tools.NewDaemonTools(daemon.AutoStartConfig{
+		SocketPath:    sockPath,
+		StartTimeout:  2 * time.Second,
+		RetryInterval: 50 * time.Millisecond,
+		MaxRetries:    20,
+	}, "test")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	enabled := true
+	cfg := &config.ChannelConfig{Enabled: &enabled}
+
+	const cycles = 40
+	const closersPerHandle = 4
+
+	for i := 0; i < cycles; i++ {
+		h := dt.RegisterChannelSession(ctx, cfg, ".")
+		if h == nil {
+			t.Fatalf("cycle %d: expected non-nil handle", i)
+		}
+		if code := dt.ChannelSessionCode(); code == "" {
+			t.Fatalf("cycle %d: expected session code after register", i)
+		}
+
+		// Fan out multiple concurrent Close calls; stopOnce must guarantee
+		// the ctx cancel + daemon unregister pair fires exactly once.
+		var wg sync.WaitGroup
+		wg.Add(closersPerHandle)
+		for j := 0; j < closersPerHandle; j++ {
+			go func() {
+				defer wg.Done()
+				h.Close()
+			}()
+		}
+		wg.Wait()
+
+		if code := dt.ChannelSessionCode(); code != "" {
+			t.Fatalf("cycle %d: expected session code cleared, got %q", i, code)
+		}
+	}
+
+	// Let any stale heartbeat goroutines exit before test teardown so the
+	// race detector has a quiescent point to inspect.
+	time.Sleep(50 * time.Millisecond)
+}
