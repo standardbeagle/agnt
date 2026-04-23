@@ -1,4 +1,4 @@
-.PHONY: build release test test-unit test-integration test-browser test-e2e test-isolated clean clean-zombies install install-local install-windows run lint test-webapp mockagent generate generate-check vendor
+.PHONY: build release test test-unit test-integration test-browser test-e2e test-isolated test-flake clean clean-zombies install install-local install-windows run lint test-webapp mockagent generate generate-check vendor
 
 # Binary names
 BINARY := devtool-mcp
@@ -91,6 +91,10 @@ test-isolated:
 		env -u AGNT_DISABLE_ORPHAN_SCAN \
 		go test -tags procisolation -count=1 -v \
 		./internal/daemon/... ./internal/platform/...
+
+# Hunt flakes via parallel stress run (50-count, 4-way parallel, shuffled)
+test-flake: ## Hunt flakes via parallel stress run
+	go test -race -count=50 -p 4 -shuffle=on ./internal/daemon/ ./cmd/agnt/
 
 # Run unit tests only (excludes integration tests)
 test-unit:
@@ -206,6 +210,7 @@ help:
 	@echo "  release          - Build production release with optimizations and version info"
 	@echo "  test             - Run all tests (excludes procisolation tag)"
 	@echo "  test-isolated    - Run procisolation tests inside unshare PID namespace (Linux)"
+	@echo "  test-flake       - Hunt flakes via parallel stress run (50-count, shuffled)"
 	@echo "  test-unit        - Run unit tests only"
 	@echo "  test-integration - Run integration tests (requires dependencies)"
 	@echo "  test-browser     - Run browser automation tests (requires Chrome)"

@@ -162,6 +162,12 @@ func NewChaosEngine(logger *TrafficLogger) *ChaosEngine {
 	return ce
 }
 
+// Stop stops the chaos engine and drains its background goroutines.
+// Must be called when the owning ProxyServer shuts down.
+func (ce *ChaosEngine) Stop() {
+	ce.reorderQueue.Stop()
+}
+
 // Enable enables chaos injection
 func (ce *ChaosEngine) Enable() {
 	ce.enabled.Store(true)

@@ -495,6 +495,11 @@ func (ps *ProxyServer) Start(ctx context.Context) error {
 
 // runServer runs the HTTP server with automatic restart on crash
 func (ps *ProxyServer) runServer(ctx context.Context, listener net.Listener) {
+	// Stop the chaos engine's background goroutines when the server exits.
+	// ChaosEngine.reorderQueue uses its own context, so it must be stopped
+	// explicitly rather than relying on the proxy's context cancellation.
+	defer ps.StopChaos()
+
 	// Signal that server is ready to accept connections
 	// This must be done inside runServer to ensure the goroutine has started
 	// and the server is about to call Serve(), which is the point where it
@@ -630,6 +635,13 @@ func (ps *ProxyServer) advanceBackoff() {
 // resetBackoff clears the backoff duration, called after stable operation.
 func (ps *ProxyServer) resetBackoff() {
 	ps.backoffDuration.Store(0)
+}
+
+// StopChaos stops the chaos engine's background goroutines. Called by
+// runServer's defer for started servers. Tests that create a ProxyServer
+// without calling Start must call this directly in their cleanup.
+func (ps *ProxyServer) StopChaos() {
+	ps.chaosEngine.Stop()
 }
 
 // restartDelay returns the current backoff duration with +-25% jitter.

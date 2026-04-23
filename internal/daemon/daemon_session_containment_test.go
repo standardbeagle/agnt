@@ -14,6 +14,7 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/platform"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/goleak"
 )
 
 // Self-exec helper discriminator. When AGNT_TEST_PORTHOLDER is set on the
@@ -39,7 +40,38 @@ func TestMain(m *testing.M) {
 	//
 	// See iter 15 (task 6btkGG5QUGTL) for the migration from the legacy
 	// AGNT_DISABLE_ORPHAN_SCAN env var fence.
-	os.Exit(m.Run())
+	//
+	// goleak.IgnoreCurrent() captures goroutines already running at TestMain
+	// start (test infrastructure, go-cli-server internals) to avoid false
+	// positives. Only goroutines leaked by individual tests are flagged.
+	//
+	// Daemon infrastructure goroutines are context-driven but may outlive the
+	// 2s stop timeout used in test teardown. These are pre-existing drain-time
+	// issues rather than new leaks; suppress them here to prevent false
+	// positives while still catching goroutines introduced by future changes.
+	goleak.VerifyTestMain(m,
+		goleak.IgnoreCurrent(),
+		// Daemon infrastructure goroutines: context-driven, may outlive d.Stop(2s).
+		goleak.IgnoreAnyFunction("github.com/standardbeagle/agnt/internal/daemon.(*SchedulerStateManager).writeLoop"),
+		goleak.IgnoreAnyFunction("github.com/standardbeagle/agnt/internal/daemon.(*StateManager).writeLoop"),
+		goleak.IgnoreAnyFunction("github.com/standardbeagle/agnt/internal/daemon.(*Scheduler).run"),
+		goleak.IgnoreAnyFunction("github.com/standardbeagle/agnt/internal/daemon.(*URLTracker).scanLoop"),
+		goleak.IgnoreAnyFunction("github.com/standardbeagle/agnt/internal/daemon.(*Daemon).handleProxyEvents"),
+		goleak.IgnoreAnyFunction("github.com/standardbeagle/agnt/internal/daemon.(*Daemon).drainHooks"),
+		goleak.IgnoreAnyFunction("github.com/standardbeagle/agnt/internal/daemon.(*AutostartManager).run"),
+		goleak.IgnoreAnyFunction("github.com/standardbeagle/agnt/internal/daemon.(*DuplicateScanner).scanDuplicates"),
+		// Test infrastructure goroutine: stress-test drain helper in alert_hub_stress_test.go.
+		goleak.IgnoreAnyFunction("github.com/standardbeagle/agnt/internal/daemon.(*stubStreamDrainer).run.func1"),
+		// go-cli-server / go-sdk infrastructure.
+		goleak.IgnoreAnyFunction("github.com/standardbeagle/go-cli-server/process.(*FilePIDTracker).descendantScanLoop"),
+		goleak.IgnoreAnyFunction("github.com/standardbeagle/go-cli-server/client.(*ResilientConn).heartbeatLoop"),
+		goleak.IgnoreAnyFunction("github.com/standardbeagle/go-cli-server/client.(*AutoStartConn).waitForHub"),
+		goleak.IgnoreAnyFunction("github.com/standardbeagle/go-sdk/mcp.newIOConn.func1"),
+		// Proxy background goroutines: race with test teardown when d.Stop
+		// cancels the proxy context but runServer/releaseLoop haven't exited yet.
+		goleak.IgnoreAnyFunction("github.com/standardbeagle/agnt/internal/proxy.(*ReorderQueue).releaseLoop"),
+		goleak.IgnoreAnyFunction("github.com/standardbeagle/agnt/internal/proxy.(*ProxyServer).runServer"),
+	)
 }
 
 // runPortHolder binds the given TCP port on 127.0.0.1 and blocks. Exits
