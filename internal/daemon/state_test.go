@@ -11,6 +11,54 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// TestNewDaemon_StatePathExplicit verifies that when DaemonConfig.StatePath is
+// set, the daemon's state manager writes to exactly that path (AC#1).
+func TestNewDaemon_StatePathExplicit(t *testing.T) {
+	stateDir := t.TempDir()
+	statePath := filepath.Join(stateDir, "explicit-state.json")
+
+	d := New(DaemonConfig{
+		EnableStatePersistence: true,
+		StatePath:              statePath,
+	})
+	require.NotNil(t, d.stateMgr, "stateMgr must be non-nil when EnableStatePersistence=true")
+
+	d.stateMgr.SetOverlayEndpoint("http://explicit-test")
+	require.NoError(t, d.stateMgr.Flush())
+
+	_, err := os.Stat(statePath)
+	require.NoError(t, err, "state file must exist at the explicit StatePath")
+
+	data, err := os.ReadFile(statePath)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "http://explicit-test")
+}
+
+// TestNewDaemon_StatePathFallsBackToXDGStateHome verifies that when
+// DaemonConfig.StatePath is empty, the daemon resolves the path once at
+// construction time from XDG_STATE_HOME — not on every access (AC#2).
+func TestNewDaemon_StatePathFallsBackToXDGStateHome(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	d := New(DaemonConfig{
+		EnableStatePersistence: true,
+		// StatePath intentionally empty — should fall back to XDG_STATE_HOME
+	})
+	require.NotNil(t, d.stateMgr, "stateMgr must be non-nil when EnableStatePersistence=true")
+
+	d.stateMgr.SetOverlayEndpoint("http://xdg-test")
+	require.NoError(t, d.stateMgr.Flush())
+
+	expectedPath := filepath.Join(stateHome, "devtool-mcp", "state.json")
+	_, err := os.Stat(expectedPath)
+	require.NoError(t, err, "state file must exist under XDG_STATE_HOME when StatePath is empty")
+
+	data, err := os.ReadFile(expectedPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "http://xdg-test")
+}
+
 func TestDefaultStateManagerConfig(t *testing.T) {
 	config := DefaultStateManagerConfig()
 	if config.StatePath == "" {
@@ -33,13 +81,9 @@ func TestDefaultStatePath(t *testing.T) {
 }
 
 func TestDefaultStatePath_WithXDGStateHome(t *testing.T) {
-	// Save original value
-	orig := os.Getenv("XDG_STATE_HOME")
-	defer os.Setenv("XDG_STATE_HOME", orig)
-
-	// Set custom XDG_STATE_HOME
+	// Use t.Setenv so the mutation is test-scoped and safe under parallel runs.
 	tmpDir := t.TempDir()
-	os.Setenv("XDG_STATE_HOME", tmpDir)
+	t.Setenv("XDG_STATE_HOME", tmpDir)
 
 	path := DefaultStatePath()
 	expected := filepath.Join(tmpDir, "devtool-mcp", "state.json")

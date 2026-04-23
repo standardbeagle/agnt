@@ -25,15 +25,7 @@ func createTestScript(t *testing.T, binDir, name, marker string) {
 // setEnv sets an environment variable and restores it on cleanup.
 func setEnv(t *testing.T, key, value string) {
 	t.Helper()
-	old, hadOld := os.LookupEnv(key)
-	os.Setenv(key, value)
-	t.Cleanup(func() {
-		if hadOld {
-			os.Setenv(key, old)
-		} else {
-			os.Unsetenv(key)
-		}
-	})
+	t.Setenv(key, value)
 }
 
 // unsetEnv unsets an environment variable and restores it on cleanup.
@@ -44,6 +36,8 @@ func unsetEnv(t *testing.T, key string) {
 	t.Cleanup(func() {
 		if hadOld {
 			os.Setenv(key, old)
+		} else {
+			os.Unsetenv(key)
 		}
 	})
 }
