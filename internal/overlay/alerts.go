@@ -151,6 +151,14 @@ type AlertScanner struct {
 	maxRetries    int
 	retryInterval time.Duration
 
+	// clockNow returns the current time. Defaults to time.Now.
+	// Tests may substitute a stub to control dedup window checks.
+	clockNow func() time.Time
+
+	// afterFunc schedules f to run after d. Defaults to time.AfterFunc.
+	// Tests may substitute a stub to control batch/retry timer firing.
+	afterFunc func(d time.Duration, f func()) *time.Timer
+
 	// Ring buffer for recent matches (pre-dedup, all matches retained).
 	matchBuf     [matchBufSize]*AlertMatch
 	matchBufHead int // next write position
@@ -190,6 +198,8 @@ func NewAlertScanner(cfg AlertScannerConfig) *AlertScanner {
 		stopCh:        make(chan struct{}),
 		maxRetries:    5,
 		retryInterval: retryInterval,
+		clockNow:      time.Now,
+		afterFunc:     time.AfterFunc,
 	}
 	s.enabled.Store(true)
 
@@ -216,7 +226,7 @@ func (s *AlertScanner) ProcessLine(line string, scriptID string) {
 			matched = &AlertMatch{
 				Pattern:   p,
 				Line:      strings.TrimSpace(line),
-				Timestamp: time.Now(),
+				Timestamp: s.clockNow(),
 				ScriptID:  scriptID,
 			}
 			break // One pattern match per line is sufficient
@@ -239,17 +249,17 @@ func (s *AlertScanner) addMatch(m *AlertMatch) {
 
 	// Deduplicate
 	if lastSeen, ok := s.dedupe[fp]; ok {
-		if time.Since(lastSeen) < s.dedupeWindow {
+		if s.clockNow().Sub(lastSeen) < s.dedupeWindow {
 			return
 		}
 	}
-	s.dedupe[fp] = time.Now()
+	s.dedupe[fp] = s.clockNow()
 
 	s.pending = append(s.pending, m)
 
 	// Start batch timer if not already running
 	if s.batchTimer == nil {
-		s.batchTimer = time.AfterFunc(s.batchWindow, func() {
+		s.batchTimer = s.afterFunc(s.batchWindow, func() {
 			s.flush()
 		})
 	}
@@ -266,7 +276,7 @@ func (s *AlertScanner) flush() {
 	// If AI is active, defer the flush (up to maxRetries)
 	if s.actState != nil && s.actState() == ActivityActive && s.flushRetries < s.maxRetries {
 		s.flushRetries++
-		s.batchTimer = time.AfterFunc(s.retryInterval, func() {
+		s.batchTimer = s.afterFunc(s.retryInterval, func() {
 			s.flush()
 		})
 		s.mu.Unlock()
@@ -317,7 +327,7 @@ func (s *AlertScanner) pruneDedup() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	now := time.Now()
+	now := s.clockNow()
 	for fp, ts := range s.dedupe {
 		if now.Sub(ts) > s.dedupeWindow {
 			delete(s.dedupe, fp)
