@@ -7,11 +7,11 @@
   "last_subagent": "beagle-ab2-227822",
   "loop_task_id": "KwXvtxrviI05",
   "dartboard": "Personal/agnt",
-  "runner_instance_id": "beagle-ab2-227822",
+  "runner_instance_id": "beagle-ab2-1017314",
   "runner_email": "claude@anthropic.com",
   "runner_dart_id": null,
-  "agent_id": "beagle-ab2-227822",
-  "resumed_at": "2026-04-22T21:30:00Z",
+  "agent_id": "beagle-ab2-1017314",
+  "resumed_at": "2026-04-23T12:10:00Z",
   "tasks": [
     {
       "task_id": "3SOUIDZJSwXA",
@@ -72,7 +72,7 @@
       "files_changed": 2,
       "tests_added": 4,
       "plan_adjustments": 1,
-      "completion_summary": "T6: PROXY STATUS and PROXY LIST response dicts now surface stats.Uptime and stats.TotalRequests as top-level keys. Added formatProxyUptime helper to pre-format time.Duration as string (Go default JSON marshals duration as nanoseconds int; MCP tool expected string via getString). Replan found bug was in handler layer (hub_proxy.go), not proxy.Stats() \u2014 which was returning correct values all along. 4 new subtests cover both criteria on both creation paths (MCP ProxyStartWithConfig + autostart handleExplicitStart).",
+      "completion_summary": "T6: PROXY STATUS and PROXY LIST response dicts now surface stats.Uptime and stats.TotalRequests as top-level keys.",
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
@@ -88,7 +88,7 @@
       "files_changed": 0,
       "tests_added": 0,
       "plan_adjustments": 0,
-      "completion_summary": "Root-cause investigation of 5 flaky daemon/PTY tests. Root causes, ranked by impact: (1) Full-suite parallel load (`-race -p 4 -count=N`) starves CPU, inflating shell spawn + sleep latency beyond script-start-orchestration budgets (deps_integration, RunAutostartAsync tests hang in RunAutostart). (2) cmd/agnt test package has NO TestMain setting AGNT_DISABLE_ORPHAN_SCAN; only internal/daemon does \u2014 so cmd/agnt tests that call daemon.Start() run the full /proc orphan scan on every boot (confirmed in stdout logs). (3) internal/daemon/state_test.go uses os.Setenv('XDG_STATE_HOME') instead of t.Setenv \u2014 a host-global mutation that races any other test reading that env. (4) Hardcoded ports (19985-19999 in daemon_test.go, 9999 in deps_integration_test.go, 99999 as unbindable probe) \u2014 config-string cases are harmless, but bindable cases risk collision under `-count>1` reruns. (5) Tight post-cancel unblock budgets (1.5s in NoFallbackTimeout) are too strict under loaded scheduler. (6) Additional cmd/agnt race: TestRegisterChannelSession close-vs-init race in daemon_tools.go:305 vs :323 (sync.Once protects Close() but the goroutine inside RegisterChannelSession reads the same field without holding a lock). Grouping by fix category: [A] missing TestMain in cmd/agnt (affects hook_test, serve_test, pty_test indirectly via daemon startup noise); [B] global env var leaks (state_test); [C] generous budgets for parallel-loaded orchestration (deps_integration_test, autostart_async_test); [D] hardcoded bindable ports; [E] separate channel-session Close race (unrelated bug, file follow-up). No sixth test beyond the original 5 was observed to fail in isolation, but the full-suite repro surfaced TestDepsIntegration_ClientStartsAfterServerURL, TestRunAutostartAsync_NoFallbackTimeout_WaitsIndefinitely, TestRegisterChannelSession_* as additional flakes in the same pattern family. All findings documented in Dart task 2DO8HLRq1LoO.",
+      "completion_summary": "Root-cause investigation of 5 flaky daemon/PTY tests.",
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
@@ -104,7 +104,7 @@
       "files_changed": 3,
       "tests_added": -7,
       "plan_adjustments": 1,
-      "completion_summary": "Consolidated 8 chromedp screenshot tests into one table-driven TestScreenshotVariants sharing a single browser session via setupBrowserOnce. Extracted DOM-observable predicates navigateAndSettle + waitForIframePaint polled with require.Eventually (no fixed time.Sleep). Added invariant helpers isPNG/hasColor/colorClose. Wall-clock: 37s -> 8.22s (77.8% reduction, acceptance >=75%). Bonus: also fixed pre-commit hook which had been running full `go test ./...` on every commit \u2014 now scoped to affected packages only (6.7s for this commit vs prior 15+ min). Out-of-scope cmd/agnt TestMain fence (iter-5 finding [A]) stashed for deferred task 5PcRyp83vdLy.",
+      "completion_summary": "Consolidated 8 chromedp screenshot tests into one table-driven TestScreenshotVariants sharing a single browser session via setupBrowserOnce.",
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
@@ -120,7 +120,7 @@
       "files_changed": 1,
       "tests_added": 0,
       "plan_adjustments": 1,
-      "completion_summary": "Consolidated 7 RunAutostartAsync tests from 7 daemon boots down to 4 via two shared-fixture clusters. Cluster A (nil-channel + delegates subtests) share one daemon. Cluster B (context-cancel, no-fallback-timeout, explicit-dep-timeout) share one daemon with per-subtest t.TempDir isolation. noFallbackTimeout replaced hardcoded 8s sleep with event-driven PhaseDependencyWaitStart signal. Added helper functions newDaemon/writeConfig/drainProgress/hasPhase/countPhase/hasDependencyWaitEvent. Plan adjustment: 75% wall-clock reduction was not achievable because context-cancel subtest requires a 15s deadline by design (semantically necessary); daemon-boot reduction achieved (7->4 boots). All tests pass x3 -race.",
+      "completion_summary": "Consolidated 7 RunAutostartAsync tests from 7 daemon boots down to 4 via two shared-fixture clusters.",
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
@@ -136,7 +136,7 @@
       "files_changed": 2,
       "tests_added": 0,
       "plan_adjustments": 2,
-      "completion_summary": "Added enterSettle and enterRetryDelays fields to Overlay struct so tests can inject fast delays. Updated makeTestOverlay to use 50ms settle and [50ms, 75ms, 100ms] retries. Updated all timing-sensitive sleeps in enter_behavior_test.go: fixed race conditions where 100ms sleeps coincided exactly with retry1 timer fire (100ms = 50ms settle + 50ms retry); changed to 75ms (mid-window). TestEnterBehavior suite: 9s -> 0.28s per run (97% reduction). All 17 tests pass x3 with -race.",
+      "completion_summary": "Added enterSettle and enterRetryDelays fields to Overlay struct so tests can inject fast delays.",
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
@@ -152,7 +152,7 @@
       "files_changed": 1,
       "tests_added": 0,
       "plan_adjustments": 1,
-      "completion_summary": "Replaced 5 time.Sleep calls in TestScriptLifecycle with require.Eventually polled at 10-20ms intervals. ConfigCreatesIdleScripts polls until 3 scripts exist and none are idle/starting. ProcessExitPreservesScript polls until terminal state and 'goodbye' in output. FailedScriptHasError polls until StateFailed and FailCount>=1. StandaloneRunCreatesScript polls until registry entry exists. ScriptListViaProtocol polls until ephemeral reaches terminal state. Added enriched assertions (StartCount, Name, ProcessID checks) after each Eventually. Wall-clock: 11s -> 3.7s per run (66% reduction). All 8 subtests pass x3 -race.",
+      "completion_summary": "Replaced 5 time.Sleep calls in TestScriptLifecycle with require.Eventually polled at 10-20ms intervals.",
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
@@ -168,7 +168,7 @@
       "files_changed": 6,
       "tests_added": 0,
       "plan_adjustments": 0,
-      "completion_summary": "Added RetryInterval to AlertScannerConfig (defaults 2s), interval field + WithInterval() to StartupSplash, and IdleCheckInterval to ActivityMonitorConfig (defaults 500ms). Tests inject 50ms/10ms fast intervals and reduce sleeps to 200ms/50ms. TestAlertScannerActivityDeferral: 3.2s -> 0.4s. TestStartupSplashMessageRotation: 3.0s -> 0.2s. TestActivityMonitorStateTransitions/DoneMessage/DoneMessageDisabled: 0.7s each -> <0.1s via require.Eventually.",
+      "completion_summary": "Added RetryInterval to AlertScannerConfig, interval field to StartupSplash, and IdleCheckInterval to ActivityMonitorConfig.",
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
@@ -184,7 +184,7 @@
       "files_changed": 2,
       "tests_added": -2,
       "plan_adjustments": 0,
-      "completion_summary": "Merged TestRunAutostartAsync_ProgressEventsInOrder as progress_events_in_order subtest inside TestRunAutostartAsync_SimpleScripts (shared daemon, per-subtest t.TempDir). Merged TestDepsIntegration_ClientStartsAfterServerURL + TestDepsIntegration_TimeoutDependencyNeverReady into TestDepsIntegration sharing one daemon with per-subtest t.TempDir isolation. Deleted 2 standalone top-level test functions. All subtests pass x3 -race.",
+      "completion_summary": "Merged TestRunAutostartAsync and TestDepsIntegration clusters.",
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
@@ -200,7 +200,7 @@
       "files_changed": 5,
       "tests_added": 3,
       "plan_adjustments": 1,
-      "completion_summary": "T5 cleanup path parity for explicit proxies. CleanupSessionResources now sweeps d.proxyEntries on the last-session branch (Remove + clearScriptProxies for the reverse index); handleExplicitStart populates trackScriptProxy when event.Config.Script resolves against the script registry so ScriptStopped tears down symmetrically; restoreProxies calls registerExplicitProxyEntry so a daemon restart re-surfaces persisted explicit proxies in SCRIPT LIST. Flipped TestCleanupSessionResources_ClearsExplicitProxyEntry T2 placeholder (want 1 \u2192 want 0); added 3 acceptance tests covering last-session stop+clear+state-remove, multi-session observer persistence, and restart-time admin-entry registration. Plan adjustment: script.Entry from vendored go-cli-server has no Kind field \u2014 proxy-kind entries live in the daemon-owned proxyEntryStore, so 'switch on entry.Kind' became 'iterate both stores on the last-session branch'. Existing d.proxym.StopByProjectPath + stateMgr.RemoveProxy on line 262 already covered the proxym + stateMgr legs; the new code is purely the proxyEntries sweep. All daemon tests pass -race x1 in 124s.",
+      "completion_summary": "T5 cleanup path parity for explicit proxies.",
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
@@ -216,7 +216,7 @@
       "files_changed": 5,
       "tests_added": 5,
       "plan_adjustments": 1,
-      "completion_summary": "T4 MCP proc run + shared process-start func. Extracted daemon-layer StartScriptExplicit. Parent bug 2zonEmazkoHT closed.",
+      "completion_summary": "T4 MCP proc run + shared process-start func.",
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
@@ -232,7 +232,7 @@
       "files_changed": 5,
       "tests_added": 9,
       "plan_adjustments": 0,
-      "completion_summary": "G1 AutostartManager mechanism stress harness. 9 isolated tests. Production fix: panic recovery in run(). Commit 46e2781.",
+      "completion_summary": "G1 AutostartManager mechanism stress harness. 9 isolated tests.",
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
@@ -248,7 +248,7 @@
       "files_changed": 9,
       "tests_added": 2,
       "plan_adjustments": 1,
-      "completion_summary": "[A] OrphanScanEnabled inversion. Default false = test-safe. Production opts in via cmd/agnt/daemon.go. 40+ test constructors need no change. Commit 5bc50b0.",
+      "completion_summary": "[A] OrphanScanEnabled inversion. Default false = test-safe.",
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
@@ -264,7 +264,7 @@
       "files_changed": 2,
       "tests_added": 7,
       "plan_adjustments": 0,
-      "completion_summary": "G8 SchedulerStateManager write-behind stress harness. 7 isolated tests: HighThroughput, SlowPersister, PersisterErrors, PersisterPanic, CloseWithPendingWrites, ConcurrentWriteAndClose, DoubleClose. Stub persister counts + sleeps + errors + panics on demand. Production fix: writeLoop goroutine now exits cleanly on Close() \u2014 the writeLoop leak observed in pre-commit failures no longer reproduces. Daemon full suite green 129s. Commit 1a6d1b8.",
+      "completion_summary": "G8 SchedulerStateManager write-behind stress harness.",
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
@@ -280,7 +280,7 @@
       "files_changed": 2,
       "tests_added": 1,
       "plan_adjustments": 1,
-      "completion_summary": "[E] channel-session Close-vs-Init race fix. Chose Option B (single-owner ctx cancel) over Option A (atomic.Pointer) \u2014 smaller diff, ctx.Done() was already in the select. Removed channelHeartbeat chan struct{} shared field from DaemonTools; added cancelHB context.CancelFunc to ChannelSessionHandle. Heartbeat goroutine now selects only on ticker + own hbCtx.Done(). Added TestChannelSession_ConcurrentCloseAndHeartbeat G1/G8-style stress (40 cycles \u00d7 4 concurrent Close goroutines). 200 -race runs of channel-session tests green; cmd/agnt + internal/daemon + internal/tools full suites green.",
+      "completion_summary": "[E] channel-session Close-vs-Init race fix.",
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
@@ -296,7 +296,7 @@
       "files_changed": 2,
       "tests_added": 8,
       "plan_adjustments": 1,
-      "completion_summary": "G3 Hook ring buffer stress harness. 8 mechanism-isolated tests exercising hookRingBuffer + drainHooks + fanOutHookEvent with stub sinks only (EnqueueP99Latency, OverflowAccounting, SlowSink, PanickingSink, FanOutToManyTypedSinks, NotificationToastFanOut, CloseWithPendingEvents, ConcurrentEnqueueAndShutdown). P99 enqueue measured 1.14ms under wedged drain \u2014 well under 5ms contract. Surfaced and fixed two production bugs: (1) BroadcastHookEvent did not recover panicking sinks; added safeBroadcastHookEvent + emitHookEventSafe in hub_hook.go with per-sink deferred recover, (2) drainHooks inner loop did not check ctx.Done() between Pop calls, so a wedged sink with a full buffer could block shutdown indefinitely; added inner select. Stress tests green -race -count=10. Full daemon + cmd/agnt suites green count=1. hook_bench_test cost contract preserved.",
+      "completion_summary": "G3 Hook ring buffer stress harness.",
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
@@ -312,12 +312,11 @@
       "files_changed": 2,
       "tests_added": 8,
       "plan_adjustments": 1,
-      "completion_summary": "G2 AlertHub/StreamSink fan-out stress harness. 8 mechanism-isolated tests (FanOutToManySinks, SlowStreamSinkDoesntStallOthers, FilterCorrectness, GrepFilter, RegisterUnregisterRace, KeepaliveHeartbeat, BroadcastLogEntryNonBlocking, CloseWithRegisteredSinks) with stub sinks only \u2014 no real PTY/MCP/socket/monitor. Green -race -count=50. Surfaced + fixed genuine production bug: BroadcastLogEntry vs RemoveStreamSink race caused send-on-closed-channel panic AND -race data race on channel header. Fix: per-sink closeMu sync.RWMutex + closed bool on StreamSink. RemoveStreamSink takes closeMu.Lock before close(sink.Ch); sendToStreamSinkSafe takes RLock + checks closed before select. Deferred recover kept as belt-and-braces. Also applied to BroadcastProcessOutput via shared helper. Full daemon + cmd/agnt suites green.",
+      "completion_summary": "G2 AlertHub/StreamSink fan-out stress harness.",
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
-    }
-    ,
+    },
     {
       "task_id": "VPdm0URmR6Zj",
       "iteration": 21,
@@ -329,12 +328,11 @@
       "files_changed": 2,
       "tests_added": 10,
       "plan_adjustments": 2,
-      "completion_summary": "G5 ProcessManager RingBuffer stress harness. Target file internal/process/ringbuf.go was deleted in 44fff97 (migration to go-cli-server library); recreated internal/process/ as a test-only package + wrote 7 stress scenarios (ConcurrentWriters, WriteBeyondCapacity, ConcurrentReadWrite, ZeroCapacity w/ 4 subtests, SingleByteWrites, ReaderSpansOverflow, TruncatedFlag) against the vendored process.RingBuffer, plus goleak TestMain. Trimmed SingleByteWrites from 1M→1M→64K (same 16-full-wrap invariant, <100ms runtime) and ConcurrentWriters from 1MB→1MB→128KB per worker (same 8x-overflow invariant). -race -count=100 green in 32s. No production fix needed — library primitive sound under stress envelope. Pre-existing daemon TestSessionRegister_ProgressSnapshotIncludesHistory flake (iter-5 finding [C]) is orthogonal.",
+      "completion_summary": "G5 ProcessManager RingBuffer stress harness.",
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
-    }
-    ,
+    },
     {
       "task_id": "x0bSxcC1EhHG",
       "iteration": 22,
@@ -346,11 +344,13 @@
       "files_changed": 2,
       "tests_added": 6,
       "plan_adjustments": 1,
-      "completion_summary": "G4 TrafficLogger circular buffer stress harness. 6 mechanism-isolated tests in internal/proxy/logger_stress_test.go (HighThroughput 100×10k, SlowCallback 4×50@5ms, PanickingCallback 1-in-10 with external recover, QueryWhileWriting 16+16 for 200ms, ClearMidStream 8+2+4 with torn-zero invariant, AllLogTypes covering all 18 helper-backed types plus negative cases for process/hook). Per-test goleak.VerifyNone; no package TestMain to avoid disturbing httptest-heavy sibling tests. Surfaced and fixed a genuine production bug in logger.go: log()'s head.Add happened OUTSIDE the mutex, so Query() could observe head advanced past a reserved-but-unwritten slot and return zero-value LogEntry results. Fix: move head.Add + slice write + count.Add all under tl.mu.Lock (callback fires after unlock so slow/panicking callbacks still cannot stall producers or readers). Before fix: 16 torn queries + 27411/27679 zero-type slots observed in ClearMidStream. After fix: 0 torn queries, 0 zero-type slots across -race -count=3. Daemon + proxy + process + tools suites green (daemon full race suite transient bind-in-use was pre-existing port-reuse flake, orthogonal to this change).",
+      "completion_summary": "G4 TrafficLogger circular buffer stress harness.",
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
     }
   ],
-  "last_completed_iteration": 22
+  "last_completed_iteration": 22,
+  "current_task_id": "jufEQJFpZko2",
+  "current_iteration": 23
 }
