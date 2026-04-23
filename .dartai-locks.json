@@ -1,1 +1,1 @@
-{"claims": {}}
+{"claims": {"e7bKuwF0w7Ci": {"runner_instance_id": "beagle-ab2-142825", "runner_email": "claude@anthropic.com", "claimed_at": "2026-04-23T23:02:30Z", "agent_id": "beagle-ab2-142825", "parent_loop_id": "KwXvtxrviI05", "purpose": "Flaky-tests [F] daemon.NewForTest split from daemon.Start"}}}
