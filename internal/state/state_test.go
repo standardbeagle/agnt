@@ -29,13 +29,9 @@ func TestDefaultStatePath(t *testing.T) {
 }
 
 func TestDefaultStatePath_WithXDGStateHome(t *testing.T) {
-	// Save original value
-	orig := os.Getenv("XDG_STATE_HOME")
-	defer os.Setenv("XDG_STATE_HOME", orig)
-
-	// Set custom XDG_STATE_HOME
+	// Use t.Setenv so the mutation is test-scoped and safe under parallel runs.
 	tmpDir := t.TempDir()
-	os.Setenv("XDG_STATE_HOME", tmpDir)
+	t.Setenv("XDG_STATE_HOME", tmpDir)
 
 	path := DefaultStatePath()
 	expected := filepath.Join(tmpDir, "devtool-mcp", "state.json")
