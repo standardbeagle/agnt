@@ -857,7 +857,7 @@ func TestResilientClient_AdditionalMethods(t *testing.T) {
 
 	// Test ProcCleanupPort
 	t.Run("ProcCleanupPort", func(t *testing.T) {
-		_, err := rc.ProcCleanupPort(9999)
+		_, err := rc.ProcCleanupPort(ephemeralPort(t))
 		// May fail if no process on that port, but exercises the code
 		if err != nil {
 			t.Logf("ProcCleanupPort error (may be expected): %v", err)

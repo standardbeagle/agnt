@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -102,7 +103,7 @@ func TestDaemon_HandleExplicitStart(t *testing.T) {
 	daemon.handleExplicitStart(ProxyEvent{
 		Type:    ExplicitStart,
 		ProxyID: "explicit-url-proxy",
-		Config:  &config.ProxyConfig{URL: "http://localhost:19997"},
+		Config:  &config.ProxyConfig{URL: ephemeralTargetURL(t)},
 		Path:    tmpDir,
 	})
 
@@ -116,7 +117,7 @@ func TestDaemon_HandleExplicitStart(t *testing.T) {
 	daemon.handleExplicitStart(ProxyEvent{
 		Type:    ExplicitStart,
 		ProxyID: "explicit-port-proxy",
-		Config:  &config.ProxyConfig{Port: 19998},
+		Config:  &config.ProxyConfig{Port: ephemeralPort(t)},
 		Path:    tmpDir,
 	})
 
@@ -129,7 +130,7 @@ func TestDaemon_HandleExplicitStart(t *testing.T) {
 	daemon.handleExplicitStart(ProxyEvent{
 		Type:    ExplicitStart,
 		ProxyID: "explicit-target-proxy",
-		Config:  &config.ProxyConfig{Target: "http://localhost:19996"},
+		Config:  &config.ProxyConfig{Target: ephemeralTargetURL(t)},
 		Path:    tmpDir,
 	})
 
@@ -155,7 +156,7 @@ func TestDaemon_HandleExplicitStart(t *testing.T) {
 	daemon.handleExplicitStart(ProxyEvent{
 		Type:    ExplicitStart,
 		ProxyID: "explicit-url-proxy", // Already exists
-		Config:  &config.ProxyConfig{URL: "http://localhost:19999"},
+		Config:  &config.ProxyConfig{URL: ephemeralTargetURL(t)},
 		Path:    tmpDir,
 	})
 }
@@ -168,7 +169,7 @@ func TestDaemon_HandleScriptStopped(t *testing.T) {
 	daemon.handleExplicitStart(ProxyEvent{
 		Type:    ExplicitStart,
 		ProxyID: "script-linked-proxy",
-		Config:  &config.ProxyConfig{URL: "http://localhost:19994"},
+		Config:  &config.ProxyConfig{URL: ephemeralTargetURL(t)},
 		Path:    tmpDir,
 	})
 	time.Sleep(100 * time.Millisecond)
@@ -368,14 +369,14 @@ func TestDaemon_RunAutostart_WithProxies(t *testing.T) {
 
 	// Create a config with autostart proxies
 	configPath := filepath.Join(tmpDir, "agnt.kdl")
-	configContent := `
+	configContent := fmt.Sprintf(`
 proxies {
     api {
-        url "http://localhost:19990"
+        url "http://localhost:%d"
         autostart true
     }
 }
-`
+`, ephemeralPort(t))
 	if err := writeFile(configPath, configContent); err != nil {
 		t.Fatalf("Failed to write config file: %v", err)
 	}
@@ -427,7 +428,7 @@ proxies {
 		daemon.handleExplicitStart(ProxyEvent{
 			Type:    ExplicitStart,
 			ProxyID: "handler-test-proxy",
-			Config:  &config.ProxyConfig{URL: "http://localhost:19985"},
+			Config:  &config.ProxyConfig{URL: ephemeralTargetURL(t)},
 			Path:    tmpDir,
 		})
 		time.Sleep(100 * time.Millisecond)
@@ -437,7 +438,7 @@ proxies {
 		daemon.handleURLDetected(ProxyEvent{
 			Type:     URLDetected,
 			ScriptID: tmpDir + ":dev",
-			URL:      "http://localhost:19986",
+			URL:      ephemeralTargetURL(t),
 		})
 		time.Sleep(100 * time.Millisecond)
 	})

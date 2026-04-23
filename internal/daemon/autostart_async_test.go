@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,14 +25,18 @@ scripts {
 }
 `
 
-// clusterBConfig is "a" with an unreachable port and "b" that depends on "a";
-// shared by Cluster B subtests.
-const clusterBConfig = `
+// clusterBConfig builds the shared Cluster B config with a per-call ephemeral
+// port for script "a". The port is intentionally one no process will bind to
+// (the script just sleeps), so URL detection never fires and the dependency
+// wait is driven by timeout/context cancellation paths.
+func clusterBConfig(t *testing.T) string {
+	t.Helper()
+	return fmt.Sprintf(`
 scripts {
     a {
         run "sleep 60"
         autostart true
-        ports 99999
+        ports %d
     }
     b {
         run "sleep 60"
@@ -39,7 +44,8 @@ scripts {
         depends-on "a"
     }
 }
-`
+`, ephemeralPort(t))
+}
 
 // newDaemon boots a daemon with a unique socket under dir and registers a
 // t.Cleanup that stops it gracefully (2 s budget).
@@ -286,11 +292,11 @@ func TestRunAutostartAsync_DependencyWait(t *testing.T) {
 	clusterDir := t.TempDir()
 	d := newDaemon(t, clusterDir)
 
-	// contextCancelDuringWait: "b" waits on "a" (unreachable port 99999);
+	// contextCancelDuringWait: "b" waits on "a" (ephemeral unreachable port);
 	// 15 s context deadline forces cancellation.
 	t.Run("context cancel during dependency wait", func(t *testing.T) {
 		dir := t.TempDir()
-		writeConfig(t, dir, clusterBConfig)
+		writeConfig(t, dir, clusterBConfig(t))
 
 		progress := make(chan AutostartProgress, 200)
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -334,7 +340,7 @@ func TestRunAutostartAsync_DependencyWait(t *testing.T) {
 	// 120 s fallback). Uses event-driven signal instead of a blind sleep.
 	t.Run("no fallback timeout waits indefinitely", func(t *testing.T) {
 		dir := t.TempDir()
-		writeConfig(t, dir, clusterBConfig)
+		writeConfig(t, dir, clusterBConfig(t))
 
 		progress := make(chan AutostartProgress, 200)
 		ctx, cancel := context.WithCancel(context.Background())
@@ -390,12 +396,12 @@ func TestRunAutostartAsync_DependencyWait(t *testing.T) {
 	// explicitDepTimeout: per-dep timeout=2 bounds the wait even with no parent deadline.
 	t.Run("explicit dependency timeout still honored", func(t *testing.T) {
 		dir := t.TempDir()
-		writeConfig(t, dir, `
+		writeConfig(t, dir, fmt.Sprintf(`
 scripts {
     a {
         run "sleep 60"
         autostart true
-        ports 99999
+        ports %d
     }
     b {
         run "sleep 60"
@@ -403,7 +409,7 @@ scripts {
         depends-on "a" timeout=2
     }
 }
-`)
+`, ephemeralPort(t)))
 		progress := make(chan AutostartProgress, 200)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
