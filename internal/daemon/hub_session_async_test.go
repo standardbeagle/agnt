@@ -222,6 +222,8 @@ scripts {
 	handle := d.autostartManager.Get(tmpDir)
 	require.NotNil(t, handle, "autostart handle should be registered after first session")
 
+	// 5s is sufficient: makeAutostartStartFn emits PhaseInitiated immediately
+	// before any scanning so the first progress event arrives in microseconds.
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if len(handle.Progress()) > 0 {

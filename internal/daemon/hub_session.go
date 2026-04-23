@@ -263,6 +263,10 @@ func (d *Daemon) claimProjectScripts(session *Session) {
 // that its own normalization stays consistent with legacy callers.
 func (d *Daemon) makeAutostartStartFn(normalizedPath, metadataPath string) AutostartStartFunc {
 	return func(ctx context.Context, progress chan<- AutostartProgress) *AutostartResult {
+		// Emit immediately so late-joiner observers can detect that autostart
+		// has begun, even before the dup scan and config load.
+		emitProgress(progress, normalizedPath, AutostartProgress{Phase: PhaseInitiated})
+
 		// Duplicate scan runs synchronously BEFORE autostart so that orphaned
 		// processes are killed and ports freed before new ones start.
 		if d.dupScanner != nil && normalizedPath != "" {

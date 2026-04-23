@@ -348,9 +348,23 @@
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
+    },
+    {
+      "task_id": "jufEQJFpZko2",
+      "iteration": 23,
+      "status": "completed",
+      "started_at": "2026-04-23T12:10:00Z",
+      "completed_at": "2026-04-23T13:15:00Z",
+      "phase_completed": "phase-9",
+      "failed_phase": null,
+      "files_changed": 6,
+      "tests_added": 7,
+      "plan_adjustments": 3,
+      "completion_summary": "G6 hub dispatcher stress harness: dispatch() panic recovery, autostart/shutdown race fix, PhaseInitiated event, RegisterUnregisterRace deadlock fix. All 7 router tests green under -race -count=10.",
+      "failure_reason": null,
+      "fix_task_created": false,
+      "fix_task_id": null
     }
   ],
-  "last_completed_iteration": 22,
-  "current_task_id": "jufEQJFpZko2",
-  "current_iteration": 23
+  "last_completed_iteration": 23
 }
