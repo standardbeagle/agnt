@@ -168,5 +168,8 @@ func newTestProxyServer(t *testing.T, targetURL string) *proxy.ProxyServer {
 		MaxLogSize: 50,
 	})
 	require.NoError(t, err)
+	// Stop chaos engine background goroutines — server.runServer defer does
+	// this for started servers, but this test helper never calls Start.
+	t.Cleanup(func() { ps.StopChaos() })
 	return ps
 }

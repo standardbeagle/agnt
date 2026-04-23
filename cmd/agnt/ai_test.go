@@ -97,6 +97,7 @@ func TestAiClaude_PromptFromFlag(t *testing.T) {
 	// Kill the process after a short time - we just want to verify it accepted the flags
 	time.Sleep(100 * time.Millisecond)
 	cmd.Process.Kill()
+	_ = cmd.Wait() // reap watchCtx goroutine
 }
 
 // TestAiClaude_PromptFromStdin verifies stdin prompt works.
@@ -126,6 +127,7 @@ func TestAiClaude_PromptFromStdin(t *testing.T) {
 	// Kill after verifying it started
 	time.Sleep(100 * time.Millisecond)
 	cmd.Process.Kill()
+	_ = cmd.Wait() // reap watchCtx goroutine
 }
 
 // TestAiClaude_PositionalPrompt verifies positional argument prompt works.
@@ -153,6 +155,7 @@ func TestAiClaude_PositionalPrompt(t *testing.T) {
 	// Kill after verifying it started
 	time.Sleep(100 * time.Millisecond)
 	cmd.Process.Kill()
+	_ = cmd.Wait() // reap watchCtx goroutine
 }
 
 // TestAiClaude_ModelFlag verifies --model flag is accepted.
