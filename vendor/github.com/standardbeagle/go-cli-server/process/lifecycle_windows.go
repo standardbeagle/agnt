@@ -204,9 +204,6 @@ func getProcessGroupID(pid int) int {
 	return pid
 }
 
-// snapshotDescendantsOf returns nil on Windows — Job Objects handle cleanup.
-func snapshotDescendantsOf(pid int) []int { return nil }
-
 // cleanupProcessTree forcefully terminates a process and its job-object tree.
 // On Windows, signalProcessGroup already terminates the full job object, so this
 // is the SIGKILL escalation fallback for stragglers. Uses the job registry when
