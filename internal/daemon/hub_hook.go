@@ -237,7 +237,20 @@ func (d *Daemon) drainHooks(ctx context.Context) {
 		// notify channel. This is important under burst load: N pushes
 		// may produce only one notify signal, so after a single wake
 		// we need to keep popping until empty.
+		//
+		// The inner ctx.Done() check is load-bearing: if a downstream
+		// sink is slow or wedged, fanOutHookEvent takes real wall time
+		// per event, and without the check here a full buffer of
+		// pending events would have to drain completely before we
+		// observe shutdown. The drain contract is fire-and-forget —
+		// remaining events at shutdown are discarded on purpose, so
+		// breaking out mid-drain on ctx cancel is safe and correct.
 		for {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+			}
 			ev, ok := d.hookRing.Pop()
 			if !ok {
 				break
@@ -311,7 +324,50 @@ func (d *Daemon) fanOutHookEvent(ev HookEvent) {
 
 	// 4. Typed HookEventSink fan-out (existing phase 1 path, kept for
 	//    tests and future typed subscribers like the overlay panel).
-	d.alertHub.BroadcastHookEvent(ev)
+	//    Wrapped in safeBroadcastHookEvent so a single contract-violating
+	//    sink that panics cannot tear down the drain goroutine. The
+	//    existing BroadcastHookEvent keeps its non-recovering semantics
+	//    for callers that explicitly want panics to propagate.
+	d.safeBroadcastHookEvent(ev)
+}
+
+// safeBroadcastHookEvent is a panic-isolating wrapper around per-sink
+// EmitHookEvent calls. It snapshots the registered sinks under the hub's
+// read lock (same contract as BroadcastHookEvent) and invokes each sink
+// inside a deferred recover. A panicking sink is logged at debug level
+// and the next sink still receives the event.
+//
+// Why this lives on the drain path and not inside BroadcastHookEvent:
+// the Claude Code hook ring is explicitly fire-and-forget and must
+// survive any broken sink implementation, but other potential callers of
+// BroadcastHookEvent may legitimately want panics to surface as real
+// errors. Keeping recover localized to the drain path preserves both
+// semantics without forcing every caller to opt into panic isolation.
+func (d *Daemon) safeBroadcastHookEvent(ev HookEvent) {
+	if d.alertHub == nil {
+		return
+	}
+	d.alertHub.mu.RLock()
+	sinks := make([]HookEventSink, len(d.alertHub.hookSinks))
+	copy(sinks, d.alertHub.hookSinks)
+	d.alertHub.mu.RUnlock()
+
+	for _, sink := range sinks {
+		emitHookEventSafe(sink, ev)
+	}
+}
+
+// emitHookEventSafe invokes a single HookEventSink's EmitHookEvent with a
+// deferred recover. Isolated into its own function so the defer runs on
+// each call rather than only once for the entire sink slice — without
+// this, a panic in sink N would skip sinks N+1..end.
+func emitHookEventSafe(sink HookEventSink, ev HookEvent) {
+	defer func() {
+		if r := recover(); r != nil {
+			debug.Log("hook-hub", "HookEventSink panic recovered: %v", r)
+		}
+	}()
+	sink.EmitHookEvent(ev)
 }
 
 // broadcastNotificationToast decodes a notification hook event payload
