@@ -30,9 +30,18 @@ type DaemonTools struct {
 	noAutoAttach    bool       // If true, skip auto-attach on connect
 	attachAttempted bool       // Whether we've attempted auto-attach
 
-	// Channel session management (agnt mcp in channel mode)
-	channelSessionCode string        // Session code for the channel session (empty if not registered)
-	channelHeartbeat   chan struct{} // Closed to stop heartbeat goroutine
+	// Channel session management (agnt mcp in channel mode).
+	//
+	// Iter 18 race fix (Option B, single-owner ctx): the heartbeat goroutine
+	// no longer reads a shared stop channel from DaemonTools. Instead,
+	// RegisterChannelSession creates a child context and stores its
+	// CancelFunc on the returned ChannelSessionHandle. The goroutine selects
+	// only on its ticker and its own hbCtx.Done(); Close() cancels that ctx
+	// from inside stopOnce.Do so the signal happens exactly once with no
+	// shared-field read. channelSessionCode remains here because it is a
+	// process-scoped identifier read by ChannelSessionCode(); that access
+	// continues to go through sessionMu.
+	channelSessionCode string // Session code for the channel session (empty if not registered)
 
 	// Alert delivery via MCP notifications
 	alertSink daemon.MCPAlertSink
@@ -250,18 +259,26 @@ func (dt *DaemonTools) StartChannelSink(server *mcp.Server, cfg *config.ChannelC
 
 // ChannelSessionHandle manages the lifecycle of a daemon session registered
 // by agnt mcp in channel mode. Call Close to unregister the session and stop
-// the heartbeat.
+// the heartbeat. The handle owns the heartbeat goroutine's cancel function
+// so Close() signals the goroutine via context cancellation — no shared
+// stop-channel field on DaemonTools, no Close-vs-Init race.
 type ChannelSessionHandle struct {
 	dt       *DaemonTools
+	cancelHB context.CancelFunc // Cancels the heartbeat goroutine's context.
 	stopOnce sync.Once
 }
 
-// Close unregisters the channel session from the daemon and stops the heartbeat.
+// Close unregisters the channel session from the daemon and stops the
+// heartbeat goroutine. stopOnce guarantees the ctx cancel + daemon
+// unregister pair fire exactly once, even under concurrent Close calls.
 func (h *ChannelSessionHandle) Close() {
 	if h == nil || h.dt == nil {
 		return
 	}
 	h.stopOnce.Do(func() {
+		if h.cancelHB != nil {
+			h.cancelHB()
+		}
 		h.dt.closeChannelSession()
 	})
 }
@@ -295,8 +312,12 @@ func (dt *DaemonTools) RegisterChannelSession(ctx context.Context, cfg *config.C
 
 	dt.sessionMu.Lock()
 	dt.channelSessionCode = sessionCode
-	dt.channelHeartbeat = make(chan struct{})
 	dt.sessionMu.Unlock()
+
+	// Child context owned by the returned handle. Close() cancels it;
+	// the goroutine selects only on ticker + hbCtx.Done() so there is no
+	// shared-state read from DaemonTools inside the hot loop.
+	hbCtx, cancelHB := context.WithCancel(ctx)
 
 	// Start heartbeat goroutine.
 	go func() {
@@ -308,34 +329,27 @@ func (dt *DaemonTools) RegisterChannelSession(ctx context.Context, cfg *config.C
 				if dt.client != nil && dt.client.IsConnected() {
 					_ = dt.client.SessionHeartbeat(sessionCode)
 				}
-			case <-dt.channelHeartbeat:
-				return
-			case <-ctx.Done():
+			case <-hbCtx.Done():
 				return
 			}
 		}
 	}()
 
-	return &ChannelSessionHandle{dt: dt}
+	return &ChannelSessionHandle{dt: dt, cancelHB: cancelHB}
 }
 
-// closeChannelSession unregisters the channel session from the daemon and
-// stops the heartbeat goroutine.
+// closeChannelSession unregisters the channel session from the daemon.
+// The heartbeat goroutine is stopped by ChannelSessionHandle.Close via
+// context cancellation before this runs, so there is no stop channel to
+// touch here.
 func (dt *DaemonTools) closeChannelSession() {
 	dt.sessionMu.Lock()
 	code := dt.channelSessionCode
-	hb := dt.channelHeartbeat
 	dt.channelSessionCode = ""
-	dt.channelHeartbeat = nil
 	dt.sessionMu.Unlock()
 
 	if code == "" {
 		return
-	}
-
-	// Stop heartbeat.
-	if hb != nil {
-		close(hb)
 	}
 
 	// Unregister from daemon so CleanupSessionResources fires.
