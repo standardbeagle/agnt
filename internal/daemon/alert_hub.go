@@ -50,9 +50,22 @@ type HookEventSink interface {
 
 // StreamSink receives filtered proxy log events via a channel.
 // The consumer reads from Ch until it is closed (on unregister or daemon shutdown).
+//
+// closeMu serializes Ch close against in-flight BroadcastLogEntry sends.
+// Producers take closeMu.RLock for the duration of a single send attempt;
+// RemoveStreamSink takes closeMu.Lock before closing Ch. This eliminates
+// the "send on closed channel" panic AND the concurrent write-read-on-
+// hchan race that -race reports. The lock is strictly bounded (the hold
+// interval is a single non-blocking select), so contention is negligible.
+//
+// closed is set to true under closeMu.Lock before Ch is closed. Producers
+// check closed before the select so a late sender (slice snapshot already
+// taken) exits cheaply without hitting the closed channel.
 type StreamSink struct {
-	Ch     chan proxy.LogEntry
-	filter streamFilter
+	Ch      chan proxy.LogEntry
+	filter  streamFilter
+	closeMu sync.RWMutex
+	closed  bool
 }
 
 // streamFilter holds criteria for filtering events sent to a StreamSink.
@@ -196,13 +209,29 @@ func (h *AlertHub) AddStreamSink(filter streamFilter) *StreamSink {
 }
 
 // RemoveStreamSink unregisters a stream sink and closes its channel.
+//
+// The close path is serialized against in-flight sends via sink.closeMu:
+// we take the per-sink write lock before setting closed=true and calling
+// close(sink.Ch). Concurrent BroadcastLogEntry goroutines that already
+// snapshotted the hub's streamSinks slice will block briefly on
+// sink.closeMu.RLock() in sendToStreamSinkSafe, observe closed==true, and
+// return without attempting to send. This eliminates both the send-on-
+// closed-channel panic and the concurrent write/read race on the channel
+// header.
+//
+// Idempotent: a second call to RemoveStreamSink on the same sink is a
+// no-op (the sink is no longer in the slice, so the close path is not
+// re-entered).
 func (h *AlertHub) RemoveStreamSink(sink *StreamSink) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for i, s := range h.streamSinks {
 		if s == sink {
 			h.streamSinks = append(h.streamSinks[:i], h.streamSinks[i+1:]...)
+			sink.closeMu.Lock()
+			sink.closed = true
 			close(sink.Ch)
+			sink.closeMu.Unlock()
 			return
 		}
 	}
@@ -221,6 +250,13 @@ func (h *AlertHub) RegisterProxyPath(proxyID, projectPath string) {
 
 // BroadcastLogEntry sends a log entry to all matching stream sinks.
 // Called from the TrafficLogger callback when a new entry is logged.
+//
+// The send into sink.Ch is wrapped by sendToStreamSinkSafe so that a
+// sink removed between the RLock snapshot and the send does not panic
+// with send-on-closed-channel. RemoveStreamSink closes sink.Ch under
+// the write lock; a BroadcastLogEntry goroutine that already snapshotted
+// the slice before the remove will hold a dangling pointer and would
+// otherwise crash the daemon on the next send.
 func (h *AlertHub) BroadcastLogEntry(entry proxy.LogEntry, proxyID string) {
 	h.mu.RLock()
 	sinks := make([]*StreamSink, len(h.streamSinks))
@@ -231,11 +267,45 @@ func (h *AlertHub) BroadcastLogEntry(entry proxy.LogEntry, proxyID string) {
 
 	for _, sink := range sinks {
 		if sink.filter.matches(entry, proxyID, proxyPath) {
-			select {
-			case sink.Ch <- entry:
-			default:
-				debug.Warn("alert-hub", "stream sink channel full, dropping event type=%s proxy=%s", entry.Type, proxyID)
-			}
+			sendToStreamSinkSafe(sink, entry, proxyID)
+		}
+	}
+}
+
+// sendToStreamSinkSafe performs the non-blocking channel-send-with-default
+// on a StreamSink's Ch, serialized against concurrent close via sink.closeMu.
+//
+// The primary correctness guarantee: RemoveStreamSink takes closeMu.Lock
+// before closing Ch, so a producer that holds closeMu.RLock here cannot
+// observe a closed Ch mid-send. The closed flag covers the case where
+// the sink was removed between the hub's RLock slice-snapshot and this
+// call — we check closed first and exit without touching Ch.
+//
+// A deferred recover is kept as a belt-and-braces guard in case the
+// invariant above is ever violated by a future refactor; it logs and
+// swallows, never propagates.
+//
+// Isolated into its own function so the recover defer runs once per sink
+// rather than once per BroadcastLogEntry call — a panic on sink N would
+// otherwise skip sinks N+1..end.
+func sendToStreamSinkSafe(sink *StreamSink, entry proxy.LogEntry, proxyID string) {
+	defer func() {
+		if r := recover(); r != nil {
+			debug.Log("alert-hub", "stream sink send recovered (sink closed during broadcast): %v", r)
+		}
+	}()
+	sink.closeMu.RLock()
+	defer sink.closeMu.RUnlock()
+	if sink.closed {
+		return
+	}
+	select {
+	case sink.Ch <- entry:
+	default:
+		if entry.Type == proxy.LogTypeProcessOutput && entry.ProcessOutput != nil {
+			debug.Warn("alert-hub", "stream sink channel full, dropping process output proc=%s", entry.ProcessOutput.ProcessID)
+		} else {
+			debug.Warn("alert-hub", "stream sink channel full, dropping event type=%s proxy=%s", entry.Type, proxyID)
 		}
 	}
 }
@@ -291,6 +361,9 @@ func (h *AlertHub) BroadcastHookEvent(ev HookEvent) {
 // BroadcastProcessOutput sends a process output line to all matching stream sinks.
 // This reuses the same sink mechanism as BroadcastLogEntry so process events
 // flow through the unified STREAM-EVENTS channel alongside proxy events.
+//
+// Uses sendToStreamSinkSafe for the same close-during-broadcast protection
+// documented on BroadcastLogEntry.
 func (h *AlertHub) BroadcastProcessOutput(entry proxy.LogEntry) {
 	h.mu.RLock()
 	sinks := make([]*StreamSink, len(h.streamSinks))
@@ -299,13 +372,7 @@ func (h *AlertHub) BroadcastProcessOutput(entry proxy.LogEntry) {
 
 	for _, sink := range sinks {
 		if sink.filter.matches(entry, "", "") {
-			select {
-			case sink.Ch <- entry:
-			default:
-				if entry.ProcessOutput != nil {
-					debug.Warn("alert-hub", "stream sink channel full, dropping process output proc=%s", entry.ProcessOutput.ProcessID)
-				}
-			}
+			sendToStreamSinkSafe(sink, entry, "")
 		}
 	}
 }
