@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"context"
+	"fmt"
+	"runtime/debug"
 	"sync"
 	"time"
 )
@@ -257,6 +259,20 @@ func (m *AutostartManager) run(ctx context.Context, h *AutostartHandle, startFn 
 	go func() {
 		defer workerWg.Done()
 		defer close(progress)
+		// Recover panics so a single misbehaving startFn cannot tear down
+		// the daemon process. The recovered value is surfaced as an error
+		// in the AutostartResult so observers see PhaseDone followed by a
+		// populated Result with the panic message.
+		defer func() {
+			if r := recover(); r != nil {
+				stack := debug.Stack()
+				result = &AutostartResult{
+					Errors: []string{
+						fmt.Sprintf("autostart panic: %v\n%s", r, stack),
+					},
+				}
+			}
+		}()
 		result = startFn(ctx, progress)
 	}()
 
