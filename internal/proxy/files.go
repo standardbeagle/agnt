@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gorilla/websocket"
 	"github.com/standardbeagle/agnt/internal/debug"
 )
 
@@ -148,15 +147,7 @@ func (ps *ProxyServer) ExecuteJavaScript(code string) (string, <-chan *Execution
 	}
 
 	// Send to all connected clients
-	sentCount := 0
-	ps.wsConns.Range(func(key, value interface{}) bool {
-		conn := value.(*websocket.Conn)
-		err := conn.WriteMessage(websocket.TextMessage, messageBytes)
-		if err == nil {
-			sentCount++
-		}
-		return true
-	})
+	sentCount := ps.broadcastRaw(messageBytes)
 
 	if sentCount == 0 {
 		debug.Log("proxy", "ExecuteJavaScript: no connected clients for proxy %s", ps.ID)

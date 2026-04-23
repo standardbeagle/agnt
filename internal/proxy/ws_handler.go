@@ -123,16 +123,22 @@ func (ps *ProxyServer) errorHandler(w http.ResponseWriter, r *http.Request, err 
 func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	debug.Log("proxy", "WebSocket connection attempt from %s to proxy %s", r.RemoteAddr, ps.ID)
 
-	conn, err := ps.wsUpgrader.Upgrade(w, r, nil)
+	rawConn, err := ps.wsUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		debug.Log("proxy", "WebSocket upgrade failed for proxy %s: %v", ps.ID, err)
 		return
 	}
-	defer conn.Close()
+	defer rawConn.Close()
+
+	// Wrap rawConn in async writer so broadcasts never block on slow clients.
+	// asyncConn is stored in wsConns for broadcast use only; rawConn is used
+	// for all per-connection reads and direct writes from this goroutine.
+	asyncConn := newAsyncWSWriter(rawConn, websocket.TextMessage)
+	defer asyncConn.Close()
 
 	// Store connection for sending messages
 	connID := fmt.Sprintf("conn-%d", time.Now().UnixNano())
-	ps.wsConns.Store(connID, conn)
+	ps.wsConns.Store(connID, asyncConn)
 	debug.Log("proxy", "WebSocket client connected: proxy=%s connID=%s remote=%s", ps.ID, connID, r.RemoteAddr)
 
 	// Warn the browser if TLS cert verification was bypassed for this proxy.
@@ -144,7 +150,7 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			"message":  "This proxy is bypassing TLS certificate verification. The backend is using a self-signed or invalid certificate.",
 			"duration": 8000,
 		}); err == nil {
-			_ = conn.WriteMessage(websocket.TextMessage, warn)
+			_ = rawConn.WriteMessage(websocket.TextMessage, warn)
 		}
 	}
 
@@ -167,7 +173,7 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	// Read messages from frontend
 	for {
-		messageType, rawMessage, err := conn.ReadMessage()
+		messageType, rawMessage, err := rawConn.ReadMessage()
 		if err != nil {
 			break
 		}
@@ -190,7 +196,7 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 					} else {
 						sessionCaptures[captureID] = filePath
 						debug.Log("proxy", "Saved binary screenshot: id=%s path=%s", captureID, filePath)
-						if wErr := conn.WriteJSON(map[string]interface{}{
+						if wErr := rawConn.WriteJSON(map[string]interface{}{
 							"type":      "capture_ack",
 							"id":        captureID,
 							"file_path": filePath,
@@ -539,11 +545,11 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 		case "session_request":
 			// Handle session API requests from browser
-			go ps.handleSessionRequest(conn, msg.Data)
+			go ps.handleSessionRequest(rawConn, msg.Data)
 
 		case "store_request":
 			// Handle store API requests from browser
-			go ps.handleStoreRequest(conn, msg.Data)
+			go ps.handleStoreRequest(rawConn, msg.Data)
 
 		case "voice_start":
 			// Start voice transcription session
@@ -557,9 +563,9 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				config.Model = model
 			}
 
-			session, err := NewVoiceSession(connID, conn, config)
+			session, err := NewVoiceSession(connID, rawConn, config)
 			if err != nil {
-				if wErr := conn.WriteJSON(map[string]interface{}{
+				if wErr := rawConn.WriteJSON(map[string]interface{}{
 					"type":  "voice_error",
 					"error": err.Error(),
 				}); wErr != nil {
@@ -585,7 +591,7 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			if session, ok := ps.voiceSessions.LoadAndDelete(connID); ok {
 				session.(*VoiceSession).Close()
 
-				if wErr := conn.WriteJSON(map[string]interface{}{
+				if wErr := rawConn.WriteJSON(map[string]interface{}{
 					"type":    "voice_stopped",
 					"message": "Transcription session ended",
 				}); wErr != nil {

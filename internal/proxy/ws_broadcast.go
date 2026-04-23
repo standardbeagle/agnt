@@ -9,6 +9,24 @@ import (
 	"github.com/standardbeagle/agnt/internal/debug"
 )
 
+// broadcastRaw sends data to every registered wsWriter. Failed sends are
+// silently ignored (best-effort broadcast); the broken connection will be
+// removed when its handler goroutine detects the next read error.
+func (ps *ProxyServer) broadcastRaw(data []byte) int {
+	sent := 0
+	ps.wsConns.Range(func(_, value interface{}) bool {
+		conn := connFromMap(value)
+		if conn == nil {
+			return true
+		}
+		if conn.WriteMessage(websocket.TextMessage, data) == nil {
+			sent++
+		}
+		return true
+	})
+	return sent
+}
+
 // ProxyDiagnosticLevel indicates the severity of a diagnostic event.
 type ProxyDiagnosticLevel string
 
@@ -47,17 +65,7 @@ func (ps *ProxyServer) BroadcastActivityState(active bool) int {
 		return 0
 	}
 
-	sentCount := 0
-	ps.wsConns.Range(func(key, value interface{}) bool {
-		conn := value.(*websocket.Conn)
-		err := conn.WriteMessage(websocket.TextMessage, messageBytes)
-		if err == nil {
-			sentCount++
-		}
-		return true
-	})
-
-	return sentCount
+	return ps.broadcastRaw(messageBytes)
 }
 
 // BroadcastToast sends a toast notification to all connected browser clients.
@@ -94,23 +102,8 @@ func (ps *ProxyServer) BroadcastToast(toastType, title, message string, duration
 		return 0, fmt.Errorf("failed to marshal toast: %w", err)
 	}
 
-	// Send to all connected clients
-	sentCount := 0
-	failCount := 0
-	ps.wsConns.Range(func(key, value interface{}) bool {
-		conn := value.(*websocket.Conn)
-		err := conn.WriteMessage(websocket.TextMessage, messageBytes)
-		if err == nil {
-			sentCount++
-			debug.Log("proxy", "BroadcastToast: sent to client %v", key)
-		} else {
-			failCount++
-			debug.Log("proxy", "BroadcastToast: failed to send to client %v: %v", key, err)
-		}
-		return true
-	})
-
-	debug.Log("proxy", "BroadcastToast: sent=%d failed=%d total=%d", sentCount, failCount, connCount)
+	sentCount := ps.broadcastRaw(messageBytes)
+	debug.Log("proxy", "BroadcastToast: sent=%d total=%d", sentCount, connCount)
 
 	// Return success even with no clients - caller can check sent_count
 	// This makes toast a "best effort" operation that doesn't fail builds/workflows
@@ -132,17 +125,7 @@ func (ps *ProxyServer) BroadcastOutputPreview(lines []string) int {
 		return 0
 	}
 
-	sentCount := 0
-	ps.wsConns.Range(func(key, value interface{}) bool {
-		conn := value.(*websocket.Conn)
-		err := conn.WriteMessage(websocket.TextMessage, messageBytes)
-		if err == nil {
-			sentCount++
-		}
-		return true
-	})
-
-	return sentCount
+	return ps.broadcastRaw(messageBytes)
 }
 
 // BroadcastProxyDiagnostic sends a diagnostic event to all connected browser clients.
@@ -167,16 +150,7 @@ func (ps *ProxyServer) BroadcastProxyDiagnostic(diag *ProxyDiagnostic) int {
 		return 0
 	}
 
-	sentCount := 0
-	ps.wsConns.Range(func(key, value interface{}) bool {
-		conn := value.(*websocket.Conn)
-		err := conn.WriteMessage(websocket.TextMessage, messageBytes)
-		if err == nil {
-			sentCount++
-		}
-		return true
-	})
-
+	sentCount := ps.broadcastRaw(messageBytes)
 	debug.Log("proxy", "BroadcastProxyDiagnostic: sent to %d clients: %s - %s", sentCount, diag.Event, diag.Message)
 	return sentCount
 }
