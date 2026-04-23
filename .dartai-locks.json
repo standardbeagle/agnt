@@ -1,1 +1,1 @@
-{"claims": {}}
+{"claims": {"UNEDVSGA9Yut": {"runner_instance_id": "beagle-ab2-1017314", "runner_email": "claude@anthropic.com", "claimed_at": "2026-04-23T13:50:00Z", "agent_id": "beagle-ab2-1017314", "parent_loop_id": "KwXvtxrviI05", "purpose": "Flaky-tests harness: flake-hunt.sh + goleak TestMains"}}}
