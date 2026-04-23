@@ -12,8 +12,12 @@ import (
 type AutostartPhase int
 
 const (
+	// PhaseInitiated is emitted immediately when the autostart run begins,
+	// before any scanning or config loading. Allows late-joiner tests and
+	// observers to distinguish "not started yet" from "in progress".
+	PhaseInitiated AutostartPhase = iota
 	// PhaseScriptStarting is emitted when a script's launch goroutine begins.
-	PhaseScriptStarting AutostartPhase = iota
+	PhaseScriptStarting
 	// PhaseDependencyWaitStart is emitted when a script begins waiting for
 	// a declared dependency to become ready.
 	PhaseDependencyWaitStart
@@ -226,6 +230,17 @@ func (m *AutostartManager) Get(projectPath string) *AutostartHandle {
 	return v.(*AutostartHandle)
 }
 
+// CancelAll cancels every in-flight autostart handle. Called by Daemon.Stop
+// to unblock goroutines that are waiting inside RunAutostartAsync before the
+// ProcessManager shuts down, preventing a data race between the autostart
+// goroutine's ProcessManager.Start call and ProcessManager.Shutdown.
+func (m *AutostartManager) CancelAll() {
+	m.handles.Range(func(_, value any) bool {
+		value.(*AutostartHandle).Cancel()
+		return true
+	})
+}
+
 // Remove deletes the handle for projectPath from the registry. The handle
 // itself is not cancelled; call Cancel separately if that is desired. This
 // is intended for session-cleanup paths that want the next session to start
@@ -334,6 +349,8 @@ func (m *AutostartManager) run(ctx context.Context, h *AutostartHandle, startFn 
 // per-script scripts map on the handle.
 func phaseName(p AutostartPhase) string {
 	switch p {
+	case PhaseInitiated:
+		return "initiated"
 	case PhaseScriptStarting:
 		return "starting"
 	case PhaseDependencyWaitStart:

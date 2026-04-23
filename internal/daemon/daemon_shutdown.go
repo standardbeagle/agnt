@@ -216,6 +216,15 @@ func (d *Daemon) Stop(ctx context.Context) error {
 	// Signal all goroutines to stop
 	d.cancel()
 
+	// Cancel all in-flight autostart runs before shutting down the Hub's
+	// ProcessManager. Without this, an autostart goroutine in the middle of
+	// ProcessManager.Start races with ProcessManager.Shutdown and triggers
+	// the race detector. Autostart goroutines check ctx.Done() at each
+	// iteration of the runLayer wait loop, so they will exit shortly after.
+	if d.autostartManager != nil {
+		d.autostartManager.CancelAll()
+	}
+
 	// Stop Hub (handles listener, clients, connections, and ProcessManager)
 	if err := d.hub.Stop(ctx); err != nil {
 		debug.Log("daemon", "error stopping hub: %v", err)

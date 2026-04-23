@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"context"
+	"fmt"
+	runtimedebug "runtime/debug"
 	"sort"
 
 	"github.com/standardbeagle/agnt/internal/debug"
@@ -46,13 +48,31 @@ func (r *commandRouter) withDefault(handler handlerFn) *commandRouter {
 
 // dispatch looks up the handler for cmd.SubVerb and executes it. If no handler
 // is registered, it returns a structured error with a sorted list of valid actions.
+//
+// Panic isolation: if a handler panics, dispatch recovers, logs the stack, and
+// writes an ErrInternal structured error to the client. This prevents a misbehaving
+// handler from killing the connection's goroutine with no error envelope visible to
+// the caller. Matches the per-sink panic policy in hub_hook.go.
 func (r *commandRouter) dispatch(
 	ctx context.Context,
 	conn *hubpkg.Connection,
 	cmd *hubproto.Command,
 	handlers map[string]handlerFn,
-) error {
+) (retErr error) {
 	debug.Log("daemon", "%s %s: args=%v", r.command, cmd.SubVerb, cmd.Args)
+
+	defer func() {
+		if rec := recover(); rec != nil {
+			stack := runtimedebug.Stack()
+			debug.Log("daemon", "%s %s: handler panic: %v\n%s", r.command, cmd.SubVerb, rec, stack)
+			retErr = writeStructuredErr(conn, "daemon", &hubproto.StructuredError{
+				Code:    hubproto.ErrInternal,
+				Message: fmt.Sprintf("handler panic: %v", rec),
+				Command: r.command,
+			})
+		}
+	}()
+
 	if handler, ok := handlers[cmd.SubVerb]; ok {
 		return handler(ctx, conn, cmd)
 	}
