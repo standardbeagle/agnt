@@ -597,15 +597,20 @@ func (tl *TrafficLogger) LogDiagnostic(entry ProxyDiagnostic) {
 }
 
 // log adds an entry to the circular buffer.
+//
+// Consistency contract: the slice write, head advance, and count bump
+// all happen under tl.mu — a concurrent Query holding the RLock either
+// sees a slot's previous value (not yet overwritten) or its fully-
+// written new value, never a half-filled LogEntry. The callback fires
+// AFTER the lock is released so a slow/panicking callback cannot stall
+// producers or readers.
 func (tl *TrafficLogger) log(entry LogEntry) {
+	tl.mu.Lock()
 	pos := tl.head.Add(1) - 1
 	idx := int(pos % int64(tl.maxSize))
-
-	tl.mu.Lock()
 	tl.entries[idx] = entry
-	tl.mu.Unlock()
-
 	tl.count.Add(1)
+	tl.mu.Unlock()
 
 	// Fire callback if set (non-blocking, used for streaming events).
 	if cb := tl.onLogEntry.Load(); cb != nil {
