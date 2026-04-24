@@ -998,6 +998,17 @@ func (rc *ResilientClient) AlertQuery(filter protocol.AlertQueryFilter) (map[str
 	return result, err
 }
 
+// IncidentQuery queries the incident inbox for the current session.
+func (rc *ResilientClient) IncidentQuery(filter protocol.IncidentQueryFilter) (*protocol.IncidentQueryResult, error) {
+	var result *protocol.IncidentQueryResult
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.IncidentQuery(filter)
+		return e
+	})
+	return result, err
+}
+
 // AlertClear clears all alerts from the daemon.
 func (rc *ResilientClient) AlertClear() error {
 	return rc.WithClient(func(c *Client) error {
