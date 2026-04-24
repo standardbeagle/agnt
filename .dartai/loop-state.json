@@ -1,5 +1,5 @@
 {
-  "status": "interrupted",
+  "status": "running",
   "iterations": 28,
   "spawns": 3,
   "started_at": "2026-04-21T12:40:00-07:00",
@@ -7,11 +7,11 @@
   "last_subagent": "beagle-ab2-142825",
   "loop_task_id": "KwXvtxrviI05",
   "dartboard": "Personal/agnt",
-  "runner_instance_id": "beagle-ab2-142825",
+  "runner_instance_id": "beagle-ab2-873045",
   "runner_email": "claude@anthropic.com",
   "runner_dart_id": null,
-  "agent_id": "beagle-ab2-142825",
-  "resumed_at": "2026-04-23T23:01:54Z",
+  "agent_id": "beagle-ab2-873045",
+  "resumed_at": "2026-04-24T00:00:00Z",
   "tasks": [
     {
       "task_id": "3SOUIDZJSwXA",
@@ -447,5 +447,8 @@
     }
   ],
   "last_completed_iteration": 28,
-  "interrupted_at": "2026-04-24T04:25:36.455Z"
+  "bookkeeping_cleanup": {
+    "e7bKuwF0w7Ci": "marked Done (git: 4428d57)",
+    "S4IsCTqXkAfI": "marked Done (git: fdd72bc)"
+  }
 }
