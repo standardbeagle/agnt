@@ -353,6 +353,10 @@ func New(config DaemonConfig) *Daemon {
 	// Wire incident.Bus into AlertHub for dual-path migration (L9).
 	d.alertHub.SetIncidentBus(incBus)
 
+	// Wire proxy manager into AlertHub so crash alerts are broadcast to
+	// connected browser overlays as toast notifications.
+	d.alertHub.SetProxyBroadcaster(newProxyManagerBroadcaster(d.proxym))
+
 	// HealthTracker is initialised after the struct so it can capture `d`
 	// in its lookup closures. Its emitDiagnostic routes back through the
 	// AlertHub directly so suppression markers always bypass the gate.

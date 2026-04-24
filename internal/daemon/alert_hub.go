@@ -155,16 +155,27 @@ func entryHasSeverity(entry proxy.LogEntry, severity string) bool {
 	}
 }
 
+// ProxyBroadcaster broadcasts alert toasts to all active browser overlay
+// connections. Implemented by proxyManagerBroadcaster which wraps
+// *proxy.ProxyManager. Test code can use a stub without starting a real proxy.
+type ProxyBroadcaster interface {
+	// BroadcastAlertToast sends a toast to all connected browser clients.
+	// toastType matches the toast severity ("error", "warning").
+	// Implementations must be non-blocking; errors are swallowed at debug level.
+	BroadcastAlertToast(toastType, title, message string)
+}
+
 // AlertHub routes formatted alert messages to available delivery mechanisms:
 // PTY overlay (stdin injection), MCP session notifications, and stream sinks.
 type AlertHub struct {
-	overlaySink OverlayAlertSink
-	mcpSinks    []MCPAlertSink
-	streamSinks []*StreamSink
-	hookSinks   []HookEventSink
-	pushConfig  *config.PushConfig
-	mu          sync.RWMutex
-	proxyPaths  proxyPathRegistry // proxyID → project path for stream routing
+	overlaySink      OverlayAlertSink
+	mcpSinks         []MCPAlertSink
+	streamSinks      []*StreamSink
+	hookSinks        []HookEventSink
+	pushConfig       *config.PushConfig
+	proxyBroadcaster ProxyBroadcaster
+	mu               sync.RWMutex
+	proxyPaths       proxyPathRegistry // proxyID → project path for stream routing
 
 	// Incident pipeline dual-path fields (Phase A migration).
 	// incidentPipeline gates the old MCPAlertSink/OverlayAlertSink fan-out
@@ -185,6 +196,14 @@ type AlertHub struct {
 // NewAlertHub creates a new AlertHub.
 func NewAlertHub() *AlertHub {
 	return &AlertHub{}
+}
+
+// SetProxyBroadcaster registers a broadcaster for sending alert toasts to
+// connected browser overlays. A nil value disables proxy broadcasts.
+func (h *AlertHub) SetProxyBroadcaster(pb ProxyBroadcaster) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.proxyBroadcaster = pb
 }
 
 // SetPushConfig sets the push channel configuration.
@@ -466,6 +485,7 @@ func (h *AlertHub) Deliver(severity string, formatted string) {
 	copy(mcpSinks, h.mcpSinks)
 	pushCfg := h.pushConfig
 	pipeline := h.incidentPipeline
+	pb := h.proxyBroadcaster
 	h.mu.RUnlock()
 
 	// When the incident pipeline is active, suppress the old sinks.
@@ -490,6 +510,42 @@ func (h *AlertHub) Deliver(severity string, formatted string) {
 			if err := sink.SendAlert(severity, formatted); err != nil {
 				debug.Error("alerts", "MCP delivery failed: %v", err)
 			}
+		}
+	}
+
+	// Broadcast warning/error alerts to connected browser overlays as toasts.
+	// Info-level alerts are intentionally excluded — they are noise on the overlay.
+	if pb != nil && (severity == "error" || severity == "warning") {
+		title := "Process Error"
+		pb.BroadcastAlertToast(severity, title, formatted)
+	}
+}
+
+// proxyManagerBroadcaster adapts *proxy.ProxyManager to the ProxyBroadcaster
+// interface so AlertHub does not need to depend on the ProxyManager concrete type.
+// BroadcastAlertToast fans out to all active proxies; per-proxy errors are
+// swallowed at debug level so one stalled WebSocket client cannot block others.
+type proxyManagerBroadcaster struct {
+	pm *proxy.ProxyManager
+}
+
+// newProxyManagerBroadcaster creates a ProxyBroadcaster backed by pm.
+// Passing a nil pm is valid — BroadcastAlertToast becomes a no-op.
+func newProxyManagerBroadcaster(pm *proxy.ProxyManager) *proxyManagerBroadcaster {
+	return &proxyManagerBroadcaster{pm: pm}
+}
+
+// BroadcastAlertToast sends a toast notification to all proxies managed by pm.
+func (b *proxyManagerBroadcaster) BroadcastAlertToast(toastType, title, message string) {
+	if b.pm == nil {
+		return
+	}
+	for _, p := range b.pm.List() {
+		if p == nil {
+			continue
+		}
+		if _, err := p.BroadcastToast(toastType, title, message, 0); err != nil {
+			debug.Log("alert-hub", "BroadcastAlertToast failed for proxy %s: %v", p.ID, err)
 		}
 	}
 }
