@@ -3,6 +3,7 @@ package agentadapter
 import (
 	"bytes"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -285,8 +286,8 @@ func TestKimiAdapter_BuildArgsAppendsAgentFile(t *testing.T) {
 	if flagIdx+1 >= len(got) || got[flagIdx+1] == "" {
 		t.Fatalf("--agent-file has no path argument: %v", got)
 	}
-	// Clean up temp file.
-	os.Remove(got[flagIdx+1]) //nolint:errcheck
+	// Clean up temp dir.
+	os.RemoveAll(filepath.Dir(got[flagIdx+1])) //nolint:errcheck
 }
 
 func TestKimiAdapter_EmptyPromptNoAgentFile(t *testing.T) {
@@ -333,7 +334,7 @@ func TestKimiAdapter_TransportSSEAddsFlag(t *testing.T) {
 	// Clean up temp file.
 	for i, arg := range got {
 		if arg == "--agent-file" && i+1 < len(got) {
-			os.Remove(got[i+1]) //nolint:errcheck
+			os.RemoveAll(filepath.Dir(got[i+1])) //nolint:errcheck
 		}
 	}
 }
@@ -353,7 +354,7 @@ func TestKimiAdapter_TransportStreamableAddsFlag(t *testing.T) {
 	}
 	for i, arg := range got {
 		if arg == "--agent-file" && i+1 < len(got) {
-			os.Remove(got[i+1]) //nolint:errcheck
+			os.RemoveAll(filepath.Dir(got[i+1])) //nolint:errcheck
 		}
 	}
 }
@@ -368,7 +369,7 @@ func TestKimiAdapter_TransportCommandNoFlag(t *testing.T) {
 	}
 	for i, arg := range got {
 		if arg == "--agent-file" && i+1 < len(got) {
-			os.Remove(got[i+1]) //nolint:errcheck
+			os.RemoveAll(filepath.Dir(got[i+1])) //nolint:errcheck
 		}
 	}
 }
@@ -414,7 +415,7 @@ func TestKimiAdapter_OverrideFlagName(t *testing.T) {
 	if flagIdx+1 >= len(got) {
 		t.Fatalf("no path after override flag: %v", got)
 	}
-	os.Remove(got[flagIdx+1]) //nolint:errcheck
+	os.RemoveAll(filepath.Dir(got[flagIdx+1])) //nolint:errcheck
 
 	// Default flag must NOT appear.
 	for _, arg := range got {
@@ -439,19 +440,28 @@ func TestKimiAdapter_DisableInjection(t *testing.T) {
 	}
 }
 
-func TestWritePromptFile(t *testing.T) {
-	path, err := writePromptFile("test content")
+func TestWriteKimiAgentSpec(t *testing.T) {
+	specPath, err := writeKimiAgentSpec("test content")
 	if err != nil {
-		t.Fatalf("writePromptFile() error = %v", err)
+		t.Fatalf("writeKimiAgentSpec() error = %v", err)
 	}
-	defer os.Remove(path)
+	defer os.RemoveAll(filepath.Dir(specPath))
 
-	data, err := os.ReadFile(path)
+	spec, err := os.ReadFile(specPath)
 	if err != nil {
-		t.Fatalf("ReadFile error = %v", err)
+		t.Fatalf("ReadFile agent.yaml error = %v", err)
+	}
+	if !strings.Contains(string(spec), "system_prompt_path: ./prompt.md") {
+		t.Errorf("agent.yaml missing system_prompt_path: %s", spec)
+	}
+
+	promptPath := filepath.Join(filepath.Dir(specPath), "prompt.md")
+	data, err := os.ReadFile(promptPath)
+	if err != nil {
+		t.Fatalf("ReadFile prompt.md error = %v", err)
 	}
 	if string(data) != "test content" {
-		t.Errorf("file content = %q, want %q", string(data), "test content")
+		t.Errorf("prompt.md content = %q, want %q", string(data), "test content")
 	}
 }
 

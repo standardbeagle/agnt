@@ -2,6 +2,7 @@ package agentadapter
 
 import (
 	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -99,7 +100,7 @@ func (k *kimiAdapter) BuildArgs(baseArgs []string, prompt string) []string {
 		flag = kimiAgentFileFlag
 	}
 
-	path, err := writePromptFile(prompt)
+	path, err := writeKimiAgentSpec(prompt)
 	if err != nil {
 		// Fall back to no injection rather than crashing the run path.
 		return out
@@ -114,18 +115,28 @@ func (k *kimiAdapter) InitialStdin(_ string) []byte { return nil }
 // StdinDelay returns 0 — kimi is flag-based; no stdin delay needed.
 func (k *kimiAdapter) StdinDelay() time.Duration { return 0 }
 
-// writePromptFile writes prompt to a temp file and returns its path.
-// The file is named agnt-kimi-prompt-*.txt; callers do not need to
-// remove it explicitly since they typically live in os.TempDir().
-func writePromptFile(prompt string) (string, error) {
-	f, err := os.CreateTemp("", "agnt-kimi-prompt-*.txt")
+// writeKimiAgentSpec writes the agnt prompt and a kimi-cli agent spec YAML
+// to a temp directory and returns the path to the YAML spec file.
+//
+// kimi-cli's --agent-file flag expects a YAML agent spec (not plain text).
+// The spec extends kimi's built-in "default" agent (preserving all default
+// tools and subagents) and overrides system_prompt_path with the agnt prompt.
+// Callers own the temp directory; the OS cleans it up on exit since it lives
+// in os.TempDir().
+func writeKimiAgentSpec(prompt string) (string, error) {
+	dir, err := os.MkdirTemp("", "agnt-kimi-*")
 	if err != nil {
 		return "", err
 	}
-	defer f.Close()
-	if _, err := f.WriteString(prompt); err != nil {
-		os.Remove(f.Name()) //nolint:errcheck
+	if err := os.WriteFile(filepath.Join(dir, "prompt.md"), []byte(prompt), 0600); err != nil {
+		os.RemoveAll(dir) //nolint:errcheck
 		return "", err
 	}
-	return f.Name(), nil
+	const specContent = "version: 1\nagent:\n  extend: default\n  name: agnt\n  system_prompt_path: ./prompt.md\n"
+	specPath := filepath.Join(dir, "agent.yaml")
+	if err := os.WriteFile(specPath, []byte(specContent), 0600); err != nil {
+		os.RemoveAll(dir) //nolint:errcheck
+		return "", err
+	}
+	return specPath, nil
 }
