@@ -204,6 +204,15 @@ func getProcessGroupID(pid int) int {
 	return pid
 }
 
+// findAllDescendants returns descendant PIDs. On Windows, Job Objects own
+// the process tree and cascade-kill automatically via TerminateJobObject,
+// so descendant enumeration is unnecessary — returns nil. Callers that
+// snapshot descendants for the SIGKILL escalation path still work: the
+// Job Object handles the escalation implicitly.
+func findAllDescendants(pid int) []int {
+	return nil
+}
+
 // cleanupProcessTree forcefully terminates a process and its job-object tree.
 // On Windows, signalProcessGroup already terminates the full job object, so this
 // is the SIGKILL escalation fallback for stragglers. Uses the job registry when
