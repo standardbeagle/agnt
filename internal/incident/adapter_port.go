@@ -19,7 +19,7 @@ func FromPortConflict(port, pid int, processName string) IncidentEvent {
 		SeverityWarning,
 		"port_conflict",
 		msg,
-		Context{PID: pid},
+		Context{PID: pid, Port: port},
 		nil,
 	)
 }
