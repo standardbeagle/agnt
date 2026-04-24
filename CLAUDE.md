@@ -705,6 +705,12 @@ The field replaces the legacy `AGNT_DISABLE_ORPHAN_SCAN` env var fence; the env 
 - `internal/daemon/daemon_orphan_pgid_test.go`: Orphan pgid scan (procisolation)
 - `internal/platform/orphanpgid_unix_test.go`: Orphan pgid primitives (procisolation)
 
+**Pre-commit hook** (`.git/hooks/pre-commit`):
+- Runs `gofmt`, `go vet ./...`, then `go test -count=1 -race -p 1` on staged packages
+- **Adaptive flake detection**: if the first race pass completes in <10s, runs 2 more passes (`-count=2`) — total 3 runs catches transient PID-reuse races, timing flakes, scheduler jitter
+- Slow packages (`internal/daemon` at ~90s) get only the single race pass; 3× would be ~270s
+- Tests that start real OS processes (`sleep`, `echo`, agnt binary) must NOT use `t.Parallel()` — Go's `exec.CommandContext` PID-reuse race under high concurrency kills unrelated processes. Comment `// No t.Parallel(): starts real sleep process; PID-reuse kills it under high concurrency.` documents this pattern.
+
 ## Important Constraints
 
 ### MCP Protocol
