@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"context"
 	"fmt"
 	"net"
 	"os"
@@ -77,6 +76,14 @@ func newBootedDaemon(t *testing.T) (*Daemon, string) {
 // newBootedDaemonWithConfig is like newBootedDaemon but lets the caller override
 // fields. SocketPath is auto-filled via shortSockPath if empty so tests
 // don't have to remember the Windows sockaddr_un length trap.
+//
+// Routes through NewForTest so the heavy production-only startup steps
+// (cleanupOrphans, startupPortCleanup, startupOrphanPGIDScan, restoreProxies,
+// updateChecker) are skipped. Those steps walk /proc and issue kill(2) on
+// scan-discovered PIDs; running them from N parallel tests causes host-global
+// contention that surfaces as hang/timeout flakes in tests unrelated to the
+// startup ops themselves. Tests that specifically need one of those ops must
+// call the method directly (e.g. d.cleanupOrphans()).
 func newBootedDaemonWithConfig(t *testing.T, cfg DaemonConfig) *Daemon {
 	t.Helper()
 	if cfg.SocketPath == "" {
@@ -88,14 +95,7 @@ func newBootedDaemonWithConfig(t *testing.T, cfg DaemonConfig) *Daemon {
 	if cfg.WriteTimeout == 0 {
 		cfg.WriteTimeout = 5 * time.Second
 	}
-	d := New(cfg)
-	require.NoError(t, d.Start())
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = d.Stop(ctx)
-	})
-	return d
+	return NewForTest(t, cfg)
 }
 
 // newBootedDaemonWithClient boots a daemon and a connected Client. Used by

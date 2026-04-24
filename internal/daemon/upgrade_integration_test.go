@@ -96,7 +96,7 @@ func TestDaemonUpgrade_FullCycle(t *testing.T) {
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	// Start daemon
-	daemon := New(DaemonConfig{
+	_ = NewForTest(t, DaemonConfig{
 		SocketPath: sockPath,
 		ProcessConfig: process.ManagerConfig{
 			DefaultTimeout:    0,
@@ -107,10 +107,6 @@ func TestDaemonUpgrade_FullCycle(t *testing.T) {
 		MaxClients:   10,
 		WriteTimeout: 5 * time.Second,
 	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
 
 	defer func() { cleanupTestDaemon(t, sockPath) }()
 
@@ -200,7 +196,7 @@ func TestUpgradeLock_ConcurrentAttempts(t *testing.T) {
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	// Start daemon
-	daemon := New(DaemonConfig{
+	_ = NewForTest(t, DaemonConfig{
 		SocketPath: sockPath,
 		ProcessConfig: process.ManagerConfig{
 			DefaultTimeout:    0,
@@ -211,10 +207,6 @@ func TestUpgradeLock_ConcurrentAttempts(t *testing.T) {
 		MaxClients:   10,
 		WriteTimeout: 5 * time.Second,
 	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
 	defer func() { cleanupTestDaemon(t, sockPath) }()
 
 	require.Eventually(t, func() bool { return IsRunning(sockPath) },
@@ -339,7 +331,7 @@ func TestUpgradeVersionCheck(t *testing.T) {
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	// Start daemon
-	daemon := New(DaemonConfig{
+	_ = NewForTest(t, DaemonConfig{
 		SocketPath: sockPath,
 		ProcessConfig: process.ManagerConfig{
 			DefaultTimeout:    0,
@@ -350,10 +342,6 @@ func TestUpgradeVersionCheck(t *testing.T) {
 		MaxClients:   10,
 		WriteTimeout: 5 * time.Second,
 	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
 	defer func() { cleanupTestDaemon(t, sockPath) }()
 
 	require.Eventually(t, func() bool { return IsRunning(sockPath) },

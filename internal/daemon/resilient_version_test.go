@@ -207,7 +207,7 @@ func TestResilientClient_VersionCheckAfterReconnect(t *testing.T) {
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	// Start daemon
-	daemon := New(DaemonConfig{
+	daemon := NewForTest(t, DaemonConfig{
 		SocketPath: sockPath,
 		ProcessConfig: process.ManagerConfig{
 			DefaultTimeout:    0,
@@ -218,10 +218,6 @@ func TestResilientClient_VersionCheckAfterReconnect(t *testing.T) {
 		MaxClients:   10,
 		WriteTimeout: 5 * time.Second,
 	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
 
 	require.Eventually(t, func() bool { return IsRunning(sockPath) },
 		5*time.Second, 20*time.Millisecond, "daemon not running after start")

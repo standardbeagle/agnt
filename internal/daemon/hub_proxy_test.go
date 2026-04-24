@@ -3,7 +3,6 @@
 package daemon
 
 import (
-	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -30,20 +29,16 @@ func newHubProxyTestDaemon(t *testing.T) (*Daemon, *Client, *httptest.Server, st
 	sockPath := shortSockPath(t)
 	statePath := filepath.Join(tmpDir, "daemon-state.json")
 
-	daemon := New(DaemonConfig{
+	// NewForTest skips cleanupOrphans/startupPortCleanup/startupOrphanPGIDScan/
+	// restoreProxies — none of which these proxy-subsystem tests exercise. The
+	// skip makes parallel execution safe; Start() walks /proc and issues kill(2)
+	// on scan-discovered PIDs, so N parallel daemons race on host-global state.
+	daemon := NewForTest(t, DaemonConfig{
 		SocketPath:             sockPath,
 		MaxClients:             10,
 		WriteTimeout:           5 * time.Second,
 		EnableStatePersistence: true,
 		StatePath:              statePath,
-	})
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
 	})
 
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -229,7 +224,7 @@ func TestHubHandleProxyStats(t *testing.T) {
 	// must be non-zero for a serving proxy.
 	fireRequests := func(t *testing.T, listenAddr string, n int) {
 		t.Helper()
-		clientHTTP := &http.Client{Timeout: 2 * time.Second}
+		clientHTTP := &http.Client{Timeout: 10 * time.Second}
 		for i := 0; i < n; i++ {
 			resp, err := clientHTTP.Get("http://" + listenAddr + "/")
 			if err != nil {
