@@ -1,0 +1,130 @@
+package incident
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"time"
+
+	"github.com/google/uuid"
+)
+
+// Source identifies where the incident originated.
+type Source string
+
+const (
+	SourceBrowserJS     Source = "browser_js"
+	SourceHTTP5xx       Source = "http_5xx"
+	SourceHTTP4xx       Source = "http_4xx"
+	SourceTransportErr  Source = "transport_err"
+	SourceProxyDiag     Source = "proxy_diag"
+	SourceProcessAlert  Source = "process_alert"
+	SourceProcessOutput Source = "process_output"
+	SourceProcessCrash  Source = "process_crash"
+	SourceBuildFail     Source = "build_fail"
+	SourcePortConflict  Source = "port_conflict"
+	SourceShutdown      Source = "shutdown"
+	SourceHookStopFail  Source = "hook_stop_failure"
+)
+
+// Severity orders incidents by urgency.
+type Severity string
+
+const (
+	SeverityCritical Severity = "critical"
+	SeverityError    Severity = "error"
+	SeverityWarning  Severity = "warning"
+	SeverityInfo     Severity = "info"
+)
+
+// Context carries identifiers for the resources involved in the incident.
+type Context struct {
+	ProcessID   string
+	ProxyID     string
+	SessionID   string
+	ProjectPath string
+	URL         string
+	PID         int
+	PGID        int
+}
+
+// Remediation hints which MCP tool and skill should address this incident.
+// Populated by the L7 routing table; zero value means "no hint".
+type Remediation struct {
+	PrimaryTool  string
+	PrimaryArgs  map[string]any
+	FallbackTool string
+	SkillHint    string
+}
+
+// BlobRef points to a payload stored in a BlobStore.
+type BlobRef struct {
+	Hash string // sha256 hex of raw payload
+	Size int
+	MIME string // "text/plain", "application/json", "text/html"
+}
+
+// IncidentEvent is the canonical envelope for all 11 signal sources.
+// ID is a time-ordered UUID v7 string — monotonic, sortable, cursor-friendly.
+// Summary is capped at 200 bytes; oversized payloads live in BlobStore via PayloadRef.
+type IncidentEvent struct {
+	ID          string
+	Fingerprint string // sha256(source|category|canonical_msg|location)[:16]
+	ReceivedAt  time.Time
+	Source      Source
+	Severity    Severity
+	Category    string // finer-grained, e.g. "TypeError", "ECONNREFUSED"
+	Summary     string // ≤200 bytes, single line
+	PayloadRef  *BlobRef
+	Ctx         Context
+	Remediation Remediation
+}
+
+const maxSummaryBytes = 200
+
+// NewIncidentEvent builds an IncidentEvent from the raw message and optional
+// full payload. If payload is non-nil and longer than 1KB it is stored in
+// store (if non-nil) and referenced via PayloadRef; otherwise it is
+// truncated into Summary.
+func NewIncidentEvent(src Source, sev Severity, category, msg string, ctx Context, store *BlobStore) IncidentEvent {
+	canonical := Canonicalize(msg)
+	fp := computeFingerprint(string(src), category, canonical, ctx.URL)
+
+	summary := msg
+	if len(summary) > maxSummaryBytes {
+		summary = summary[:maxSummaryBytes]
+	}
+
+	ev := IncidentEvent{
+		ID:          newID(),
+		Fingerprint: fp,
+		ReceivedAt:  time.Now(),
+		Source:      src,
+		Severity:    sev,
+		Category:    category,
+		Summary:     summary,
+		Ctx:         ctx,
+	}
+
+	if store != nil && len(msg) > 1024 {
+		ref, err := store.Write([]byte(msg), "text/plain")
+		if err == nil {
+			ev.PayloadRef = &ref
+		}
+	}
+
+	return ev
+}
+
+func newID() string {
+	id, err := uuid.NewV7()
+	if err != nil {
+		// Fall back to random UUID on entropy exhaustion (should not happen).
+		return uuid.NewString()
+	}
+	return id.String()
+}
+
+func computeFingerprint(source, category, canonMsg, location string) string {
+	h := sha256.Sum256([]byte(source + "|" + category + "|" + canonMsg + "|" + location))
+	return hex.EncodeToString(h[:])[:16]
+}
