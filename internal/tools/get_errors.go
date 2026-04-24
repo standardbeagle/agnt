@@ -48,6 +48,23 @@ func (e *unifiedError) dedupKey() string {
 	return e.Source + "|" + e.Category + "|" + e.Message + "|" + e.Location
 }
 
+// incidentPipelineConfig is a thin wrapper around the incident-pipeline flag
+// used by the tools layer. It mirrors config.AlertsConfig.IncidentPipeline but
+// is defined here so the tools package has no direct dependency on config
+// (config is daemon-internal).
+type incidentPipelineConfig struct {
+	enabled bool
+}
+
+// IncidentPipelineEnabled reports whether the incident pipeline is active.
+// Returns false when the receiver is nil (default off).
+func (c *incidentPipelineConfig) IncidentPipelineEnabled() bool {
+	if c == nil {
+		return false
+	}
+	return c.enabled
+}
+
 // getErrorsBackend holds either a daemon client or a direct proxy manager,
 // enabling a single registration path for both daemon and legacy modes.
 type getErrorsBackend struct {

@@ -433,6 +433,14 @@ type AlertsConfig struct {
 	// Preset names a predefined push channel configuration (e.g., "claude-code", "universal").
 	// When set, it expands into a PushConfig. An explicit Push block takes precedence.
 	Preset string `kdl:"preset"`
+
+	// IncidentPipeline enables the new incident pipeline (Phase A dual-path rollout).
+	// When false (default): existing AlertHub MCPAlertSink/OverlayAlertSink path is
+	// active; incident.Bus runs in parallel for observability only (no pings sent).
+	// When true: MCPAlertSink + OverlayAlertSink are suppressed; incident.Bus Pinger
+	// emits instead. StreamSink is unaffected in both modes.
+	// KDL: alerts { incident-pipeline true }
+	IncidentPipeline bool `kdl:"incident-pipeline"`
 }
 
 // AutoForwardConfig configures automatic error forwarding to the AI agent.
@@ -582,6 +590,15 @@ func (c *AlertsConfig) IsEnabled() bool {
 		return true
 	}
 	return *c.Enabled
+}
+
+// IncidentPipelineEnabled returns whether the incident pipeline is active.
+// Defaults to false when AlertsConfig is nil or the field is unset.
+func (c *AlertsConfig) IncidentPipelineEnabled() bool {
+	if c == nil {
+		return false
+	}
+	return c.IncidentPipeline
 }
 
 // AIConfig configures AI agent behavior for run and ai commands.
