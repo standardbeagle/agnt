@@ -61,7 +61,7 @@ func longRunningCmd() string {
 // (e.g. forgets the scriptConfigs.Store), this test fires before the
 // hub-level one does.
 func TestStartScriptExplicit_RegistersAndStarts(t *testing.T) {
-	t.Parallel()
+	// No t.Parallel(): starts real sleep process; PID-reuse kills it under high concurrency.
 	daemon, _, tmpDir := newHubProcTestDaemon(t)
 
 	name := "explicit-api"
@@ -121,7 +121,7 @@ func TestStartScriptExplicit_RegistersAndStarts(t *testing.T) {
 // still alive" case; PROC RUN needs it too so AI agents can safely
 // re-issue the command.
 func TestStartScriptExplicit_SkipsIfAlreadyRunning(t *testing.T) {
-	t.Parallel()
+	// No t.Parallel(): starts real sleep process; PID-reuse kills it under high concurrency.
 	daemon, _, tmpDir := newHubProcTestDaemon(t)
 
 	name := "idempotent"
@@ -178,7 +178,7 @@ func TestStartScriptExplicit_SkipsIfAlreadyRunning(t *testing.T) {
 // Subtests share one daemon + one client; each uses a unique `name`
 // so script registry keys stay disjoint.
 func TestHubHandleProcRun(t *testing.T) {
-	t.Parallel()
+	// No t.Parallel(): starts real sleep process; PID-reuse kills it under high concurrency.
 	daemon, client, tmpDir := newHubProcTestDaemon(t)
 
 	// CreatesProcessKindRow: SCRIPT LIST merges process- and proxy-kind
