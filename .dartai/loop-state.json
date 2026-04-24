@@ -1,10 +1,11 @@
 {
-  "status": "running",
-  "iterations": 33,
+  "status": "complete",
+  "iterations": 34,
   "spawns": 3,
   "started_at": "2026-04-21T12:40:00-07:00",
-  "last_iteration_at": "2026-04-24T17:08:00Z",
-  "last_completed_iteration": 33,
+  "last_iteration_at": "2026-04-24T17:25:00Z",
+  "completed_at": "2026-04-24T17:30:00Z",
+  "last_completed_iteration": 34,
   "last_subagent": "claude-sonnet-4-6",
   "loop_task_id": "KwXvtxrviI05",
   "dartboard": "Personal/agnt",
@@ -41,7 +42,7 @@
       "files_changed": 4,
       "tests_added": 6,
       "plan_adjustments": 1,
-      "completion_summary": "T2: registered proxy-kind admin entries for explicit proxies via a new daemon-level proxyEntryStore; SCRIPT LIST now merges process-kind and proxy-kind rows so the overlay status bar renders indicators for standalone proxies.",
+      "completion_summary": "T2: registered proxy-kind admin entries for explicit proxies; SCRIPT LIST merges process-kind and proxy-kind rows.",
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
@@ -57,7 +58,7 @@
       "files_changed": 4,
       "tests_added": 5,
       "plan_adjustments": 1,
-      "completion_summary": "T3: hubHandleProxyStart collapsed into a thin wrapper over handleExplicitStart; MCP tool proxies now get dependency gating (registerProxyDependencies) and admin-surface entries (proxyEntryStore), and the proxy_no_overlay warning moved to handleExplicitStart so every explicit start path surfaces it uniformly.",
+      "completion_summary": "T3: hubHandleProxyStart collapsed into a thin wrapper over handleExplicitStart.",
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
@@ -73,7 +74,7 @@
       "files_changed": 2,
       "tests_added": 4,
       "plan_adjustments": 1,
-      "completion_summary": "T6: PROXY STATUS and PROXY LIST response dicts now surface stats.Uptime and stats.TotalRequests as top-level keys.",
+      "completion_summary": "T6: PROXY STATUS and PROXY LIST now surface stats.Uptime and stats.TotalRequests.",
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
@@ -105,7 +106,7 @@
       "files_changed": 3,
       "tests_added": -7,
       "plan_adjustments": 1,
-      "completion_summary": "Consolidated 8 chromedp screenshot tests into one table-driven TestScreenshotVariants sharing a single browser session via setupBrowserOnce.",
+      "completion_summary": "Consolidated 8 chromedp screenshot tests into one table-driven TestScreenshotVariants.",
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
@@ -121,7 +122,7 @@
       "files_changed": 1,
       "tests_added": 0,
       "plan_adjustments": 1,
-      "completion_summary": "Consolidated 7 RunAutostartAsync tests from 7 daemon boots down to 4 via two shared-fixture clusters.",
+      "completion_summary": "Consolidated 7 RunAutostartAsync tests from 7 daemon boots down to 4.",
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
@@ -137,7 +138,7 @@
       "files_changed": 2,
       "tests_added": 0,
       "plan_adjustments": 2,
-      "completion_summary": "Added enterSettle and enterRetryDelays fields to Overlay struct so tests can inject fast delays.",
+      "completion_summary": "Added enterSettle and enterRetryDelays fields to Overlay struct.",
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
@@ -153,7 +154,7 @@
       "files_changed": 1,
       "tests_added": 0,
       "plan_adjustments": 1,
-      "completion_summary": "Replaced 5 time.Sleep calls in TestScriptLifecycle with require.Eventually polled at 10-20ms intervals.",
+      "completion_summary": "Replaced 5 time.Sleep calls in TestScriptLifecycle with require.Eventually.",
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
@@ -169,7 +170,7 @@
       "files_changed": 6,
       "tests_added": 0,
       "plan_adjustments": 0,
-      "completion_summary": "Added RetryInterval to AlertScannerConfig, interval field to StartupSplash, and IdleCheckInterval to ActivityMonitorConfig.",
+      "completion_summary": "Added RetryInterval to AlertScannerConfig, interval field to StartupSplash, IdleCheckInterval to ActivityMonitorConfig.",
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
@@ -233,7 +234,7 @@
       "files_changed": 5,
       "tests_added": 9,
       "plan_adjustments": 0,
-      "completion_summary": "G1 AutostartManager mechanism stress harness. 9 isolated tests.",
+      "completion_summary": "G1 AutostartManager mechanism stress harness.",
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
@@ -361,7 +362,7 @@
       "files_changed": 6,
       "tests_added": 7,
       "plan_adjustments": 3,
-      "completion_summary": "G6 hub dispatcher stress harness: dispatch() panic recovery, autostart/shutdown race fix, PhaseInitiated event, RegisterUnregisterRace deadlock fix. All 7 router tests green under -race -count=10.",
+      "completion_summary": "G6 hub dispatcher stress harness: dispatch() panic recovery, autostart/shutdown race fix.",
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
@@ -377,7 +378,7 @@
       "files_changed": 3,
       "tests_added": 2,
       "plan_adjustments": 0,
-      "completion_summary": "Replaced os.Setenv with t.Setenv in state_test.go (daemon+state packages). Added TestNewDaemon_StatePathExplicit and TestNewDaemon_StatePathFallsBackToXDGStateHome. Simplified setEnv helper in shell_resolve_test.go.",
+      "completion_summary": "Replaced os.Setenv with t.Setenv in state_test.go.",
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
@@ -393,7 +394,7 @@
       "files_changed": 5,
       "tests_added": 6,
       "plan_adjustments": 1,
-      "completion_summary": "G7 WebSocket fan-out stress harness: wsWriter interface + asyncWSWriter (buffered channel drain goroutine) fixes slow-subscriber blocking. 6 stress tests green under -race -count=10.",
+      "completion_summary": "G7 WebSocket fan-out stress harness.",
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
@@ -409,7 +410,7 @@
       "files_changed": 2,
       "tests_added": 6,
       "plan_adjustments": 0,
-      "completion_summary": "G9 AlertScanner deferred-activity stress harness: clockNow/afterFunc injection into AlertScanner + 6 isolated stress tests (pattern flood, retry interval, batch window grouping, deferral-to-idle lifecycle, concurrent flood, stop-with-pending). All green under -race -count=10.",
+      "completion_summary": "G9 AlertScanner deferred-activity stress harness.",
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
@@ -425,7 +426,7 @@
       "files_changed": 8,
       "tests_added": 2,
       "plan_adjustments": 4,
-      "completion_summary": "Flake-hunt harness: scripts/flake-hunt.sh, make test-flake, goleak VerifyTestMain in daemon + cmd/agnt packages. Fixed real goroutine leaks: ChaosEngine.reorderQueue.Stop() wired into ProxyServer.runServer defer, cmd.Wait() added after Kill in ai_test.go. Pre-existing drain-time goroutines suppressed with IgnoreAnyFunction.",
+      "completion_summary": "Flake-hunt harness + goleak VerifyTestMain. Fixed ChaosEngine reorderQueue.Stop leak.",
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
@@ -441,7 +442,7 @@
       "files_changed": 13,
       "tests_added": 0,
       "plan_adjustments": 0,
-      "completion_summary": "Flaky-tests [D]: internal/daemontest/factory.go (ephemeralPort + daemontest.New(t, opts...)) added; 13 daemon test files migrated from hardcoded ports 19985-19999/9999 to dynamic allocation. Work landed as dfcd2a4 before iter-27 interrupt; resume pass finalized Dart bookkeeping, released stale self-claim, closed duplicate SV8O0oWGBXv1.",
+      "completion_summary": "daemontest.New(t, opts...) + dynamic port allocation for 13 daemon test files.",
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
@@ -457,7 +458,7 @@
       "files_changed": 5,
       "tests_added": 18,
       "plan_adjustments": 2,
-      "completion_summary": "L8: MPSCBus (4096-slot MPSC channel, non-blocking Fire <1us, every-100th-drop meta:bus_overflow synthesis) + BlobStore.WriteAsync (sha256 sync, content write async via atomic-pointer-gated drain goroutine). Race-detector clean. 18 new tests including 2 stress tests.",
+      "completion_summary": "L8: MPSCBus + BlobStore.WriteAsync.",
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
@@ -473,7 +474,7 @@
       "files_changed": 8,
       "tests_added": 5,
       "plan_adjustments": 1,
-      "completion_summary": "L9: dual-path migration flag alerts.incident-pipeline (default false). AlertHub.Deliver() gated on flag, incident.Bus wired in daemon bootstrap with Close() in shutdown, incidentPipelineConfig shim in tools layer, drift metrics via atomic OldPathCount/NewPathCount. goleak suppress for os/exec I/O goroutines from spawnPortHolderInSession.",
+      "completion_summary": "L9: dual-path migration flag AlertHub.Deliver() gated on incidentPipeline.",
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
@@ -489,7 +490,7 @@
       "files_changed": 4,
       "tests_added": 52,
       "plan_adjustments": 3,
-      "completion_summary": "L10: stress+burst+property+bench test matrix. 4 files: stress_test.go (11 burst+adversarial scenarios), bench_test.go (13 benchmarks), property_test.go (8 property sweeps), soak_test.go (gated soak). All 123 tests pass under -race. Key plan adjustments: inbox count conservation invariant corrected (triangular accumulation via dedup pipeline), concurrent session test reframed from leakage to symmetry, webpack test uses inbound-drain probe instead of subscribe totalCount to avoid data race.",
+      "completion_summary": "L10: stress+burst+property+bench test matrix for incident pipeline.",
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
@@ -505,12 +506,11 @@
       "files_changed": 3,
       "tests_added": 0,
       "plan_adjustments": 0,
-      "completion_summary": "L11: docs. CLAUDE.md: get_incidents in MCP table, Incident Pipeline architecture section, updated StreamEvents Hub, get_incidents tool section, config keys. daemon-architecture.md: Incident Pipeline section with 8 numbered contracts, source-of-truth table rows, file ownership. CHANGELOG.md: Phase A unreleased entry. MEMORY.md + architecture_incident_pipeline.md updated.",
+      "completion_summary": "L11: docs for incident pipeline.",
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
-    }
-  ],
+    },
     {
       "task_id": "8vq8ZNOj81KL",
       "iteration": 33,
@@ -522,14 +522,26 @@
       "files_changed": 2,
       "tests_added": 35,
       "plan_adjustments": 3,
-      "completion_summary": "Extended AlertScanner with 32 new patterns across 7 ecosystems (dotnet CLI, Node.js/npm/yarn, Python, Go, Rust/cargo, Java/Maven/Gradle, Ruby). TDD: RED tests written first, GREEN patterns added. All 55 patterns pass -race.",
+      "completion_summary": "Extended AlertScanner with 32 new patterns across 7 ecosystems.",
+      "failure_reason": null,
+      "fix_task_created": false,
+      "fix_task_id": null
+    },
+    {
+      "task_id": "jQCxfgK8bn6o",
+      "iteration": 34,
+      "status": "completed",
+      "started_at": "2026-04-24T17:10:00Z",
+      "completed_at": "2026-04-24T17:25:00Z",
+      "phase_completed": "phase-9",
+      "failed_phase": null,
+      "files_changed": 3,
+      "tests_added": 4,
+      "plan_adjustments": 0,
+      "completion_summary": "Wire AlertScanner alerts to browser overlay via ProxyBroadcaster interface. AlertHub.Deliver() now calls BroadcastAlertToast for warning/error severity; proxyManagerBroadcaster adapts proxy.ProxyManager. Info-level excluded. All tests pass -race.",
       "failure_reason": null,
       "fix_task_created": false,
       "fix_task_id": null
     }
-  ],
-  "bookkeeping_cleanup": {
-    "e7bKuwF0w7Ci": "marked Done (git: 4428d57)",
-    "S4IsCTqXkAfI": "marked Done (git: fdd72bc)"
-  }
+  ]
 }
