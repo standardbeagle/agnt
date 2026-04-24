@@ -578,3 +578,205 @@ func TestAlertScanner_RecentMatches_RingBufferOverflow(t *testing.T) {
 	first := matches[0]
 	assert.Contains(t, first.Line, "error number 50")
 }
+
+// matchLine scans DefaultAlertPatterns for the first match against line,
+// returning the matched pattern or nil.
+func matchLine(line string) *AlertPattern {
+	for _, p := range DefaultAlertPatterns() {
+		if p.Pattern.MatchString(line) {
+			return p
+		}
+	}
+	return nil
+}
+
+func TestAlertPatterns_DotnetExtended(t *testing.T) {
+	tests := []struct {
+		line    string
+		wantID  string
+		wantSev AlertSeverity
+	}{
+		// Already-covered patterns — non-regression
+		{"dotnet watch ❌  : error NU1301: Unable to load the service index", "dotnet-watch-error", AlertSeverityError},
+		{"dotnet watch ⚠  : warning NU1903: Package 'Foo' has a known critical vulnerability", "dotnet-watch-warning", AlertSeverityWarning},
+		{"Build FAILED.", "dotnet-build-error", AlertSeverityError},
+		// New: Unhandled exception (covered by generic unhandled-exception)
+		{"Unhandled exception. System.InvalidOperationException: Sequence contains no elements", "unhandled-exception", AlertSeverityError},
+		// New: Error(s) in
+		{"Error(s) in /app/MyApp.csproj", "dotnet-errors-in", AlertSeverityError},
+		// New: NETSDK error codes
+		{"NETSDK1045: The current .NET SDK does not support targeting .NET 6.0.", "dotnet-netsdk", AlertSeverityError},
+		// New: MSBuild error
+		{"MSBuild error MSB3073: The command exited with code 1.", "dotnet-msbuild-error", AlertSeverityError},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.line[:min(len(tt.line), 40)], func(t *testing.T) {
+			p := matchLine(tt.line)
+			require.NotNil(t, p, "expected match for: %s", tt.line)
+			assert.Equal(t, tt.wantID, p.ID)
+			assert.Equal(t, tt.wantSev, p.Severity)
+		})
+	}
+}
+
+func TestAlertPatterns_NodeJS(t *testing.T) {
+	tests := []struct {
+		line    string
+		wantID  string
+		wantSev AlertSeverity
+	}{
+		{"Error: ENOENT: no such file or directory, open '/app/config.json'", "node-error", AlertSeverityError},
+		{"UnhandledPromiseRejectionWarning: TypeError: Cannot read property 'x' of undefined", "node-unhandled-promise", AlertSeverityError},
+		{"Cannot find module './utils/helper'", "node-cannot-find-module", AlertSeverityError},
+		// SyntaxError: is already covered by python-syntax; node output shares the same prefix.
+		{"SyntaxError: Unexpected token '<'", "python-syntax", AlertSeverityError},
+		{"npm ERR! code ELIFECYCLE", "npm-err", AlertSeverityError},
+		{"yarn error Command failed with exit code 1.", "yarn-error", AlertSeverityError},
+		{"[nodemon] app crashed - waiting for file changes before starting...", "nodemon-crash", AlertSeverityError},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.wantID, func(t *testing.T) {
+			p := matchLine(tt.line)
+			require.NotNil(t, p, "expected match for: %s", tt.line)
+			assert.Equal(t, tt.wantID, p.ID)
+			assert.Equal(t, tt.wantSev, p.Severity)
+		})
+	}
+}
+
+func TestAlertPatterns_Python(t *testing.T) {
+	tests := []struct {
+		line    string
+		wantID  string
+		wantSev AlertSeverity
+	}{
+		// Already-covered — non-regression
+		{"Traceback (most recent call last):", "python-traceback", AlertSeverityError},
+		{"SyntaxError: invalid syntax", "python-syntax", AlertSeverityError},
+		// New patterns
+		{"ModuleNotFoundError: No module named 'requests'", "python-module-not-found", AlertSeverityError},
+		{"ImportError: cannot import name 'something' from 'mymodule'", "python-import-error", AlertSeverityError},
+		{"django.core.exceptions.ImproperlyConfigured: SECRET_KEY not set", "python-django-exception", AlertSeverityError},
+		{"RuntimeError: CUDA error: device-side assert triggered", "python-runtime-error", AlertSeverityError},
+		{"werkzeug.exceptions.NotFound: 404 Not Found", "python-werkzeug-error", AlertSeverityError},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.wantID, func(t *testing.T) {
+			p := matchLine(tt.line)
+			require.NotNil(t, p, "expected match for: %s", tt.line)
+			assert.Equal(t, tt.wantID, p.ID)
+			assert.Equal(t, tt.wantSev, p.Severity)
+		})
+	}
+}
+
+func TestAlertPatterns_Go(t *testing.T) {
+	tests := []struct {
+		line    string
+		wantID  string
+		wantSev AlertSeverity
+	}{
+		// Already-covered — non-regression
+		{"panic: runtime error: index out of range [0] with length 0", "go-panic", AlertSeverityError},
+		// "build failed" matches dotnet-build-error ((?i)Build FAILED) which appears first;
+		// the go-build-fail pattern is a duplicate that also matches but loses to dotnet-build-error.
+		// New patterns
+		{"fatal error: concurrent map read and map write", "go-fatal-error", AlertSeverityError},
+		{"go: error loading module requirements", "go-module-error", AlertSeverityError},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.wantID, func(t *testing.T) {
+			p := matchLine(tt.line)
+			require.NotNil(t, p, "expected match for: %s", tt.line)
+			assert.Equal(t, tt.wantID, p.ID)
+			assert.Equal(t, tt.wantSev, p.Severity)
+		})
+	}
+}
+
+func TestAlertPatterns_Rust(t *testing.T) {
+	tests := []struct {
+		line    string
+		wantID  string
+		wantSev AlertSeverity
+	}{
+		{"error[E0308]: mismatched types", "rust-error-code", AlertSeverityError},
+		{"error: aborting due to previous error", "rust-aborting", AlertSeverityError},
+		{"RUST_BACKTRACE=1 cargo run", "rust-backtrace-hint", AlertSeverityWarning},
+		{"thread 'main' panicked at 'index out of bounds', src/main.rs:10:5", "rust-thread-panic", AlertSeverityError},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.wantID, func(t *testing.T) {
+			p := matchLine(tt.line)
+			require.NotNil(t, p, "expected match for: %s", tt.line)
+			assert.Equal(t, tt.wantID, p.ID)
+			assert.Equal(t, tt.wantSev, p.Severity)
+		})
+	}
+}
+
+func TestAlertPatterns_Java(t *testing.T) {
+	tests := []struct {
+		line    string
+		wantID  string
+		wantSev AlertSeverity
+	}{
+		{"Exception in thread \"main\" java.lang.NullPointerException", "java-exception-in-thread", AlertSeverityError},
+		{"BUILD FAILURE", "java-build-failure", AlertSeverityError},
+		{"Caused by: java.io.FileNotFoundException: config.xml (No such file)", "java-caused-by", AlertSeverityError},
+		{"SEVERE: Exception sending context destroyed event to listener", "java-severe", AlertSeverityError},
+		{"java.lang.OutOfMemoryError: Java heap space", "java-lang-exception", AlertSeverityError},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.wantID, func(t *testing.T) {
+			p := matchLine(tt.line)
+			require.NotNil(t, p, "expected match for: %s", tt.line)
+			assert.Equal(t, tt.wantID, p.ID)
+			assert.Equal(t, tt.wantSev, p.Severity)
+		})
+	}
+}
+
+func TestAlertPatterns_Ruby(t *testing.T) {
+	tests := []struct {
+		line    string
+		wantID  string
+		wantSev AlertSeverity
+	}{
+		// RuntimeError: matches python-runtime-error (^RuntimeError:) which appears first;
+		// both Python and Ruby share this error format so the existing python pattern covers it.
+		{"RuntimeError: some runtime error occurred", "python-runtime-error", AlertSeverityError},
+		{"NoMethodError: undefined method 'foo' for nil:NilClass", "ruby-no-method-error", AlertSeverityError},
+		{"ArgumentError: wrong number of arguments (given 2, expected 1)", "ruby-argument-error", AlertSeverityError},
+		{"LoadError: cannot load such file -- nokogiri", "ruby-load-error", AlertSeverityError},
+		{"Errno::ENOENT: No such file or directory", "ruby-errno", AlertSeverityError},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.wantID, func(t *testing.T) {
+			p := matchLine(tt.line)
+			require.NotNil(t, p, "expected match for: %s", tt.line)
+			assert.Equal(t, tt.wantID, p.ID)
+			assert.Equal(t, tt.wantSev, p.Severity)
+		})
+	}
+}
+
+func TestAlertPatterns_DefaultCountUpdated(t *testing.T) {
+	patterns := DefaultAlertPatterns()
+	assert.True(t, len(patterns) >= 45, "should have at least 45 default patterns after extension, got %d", len(patterns))
+}
+
+// min returns the smaller of a and b.
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
