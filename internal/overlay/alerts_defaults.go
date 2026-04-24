@@ -56,6 +56,27 @@ func DefaultAlertPatterns() []*AlertPattern {
 			Category:    "dotnet",
 			Description: "dotnet watch restore/build failure",
 		},
+		{
+			ID:          "dotnet-msbuild-error",
+			Pattern:     regexp.MustCompile(`(?i)MSBuild error`),
+			Severity:    AlertSeverityError,
+			Category:    "dotnet",
+			Description: "MSBuild error",
+		},
+		{
+			ID:          "dotnet-errors-in",
+			Pattern:     regexp.MustCompile(`Error\(s\) in `),
+			Severity:    AlertSeverityError,
+			Category:    "dotnet",
+			Description: ".NET project error list header",
+		},
+		{
+			ID:          "dotnet-netsdk",
+			Pattern:     regexp.MustCompile(`NETSDK\d+:`),
+			Severity:    AlertSeverityError,
+			Category:    "dotnet",
+			Description: ".NET SDK error code",
+		},
 
 		// Webpack
 		{
@@ -165,6 +186,202 @@ func DefaultAlertPatterns() []*AlertPattern {
 			Severity:    AlertSeverityError,
 			Category:    "generic",
 			Description: "Out of memory",
+		},
+
+		// Node.js / npm / yarn
+		{
+			ID:          "node-error",
+			Pattern:     regexp.MustCompile(`^Error:`),
+			Severity:    AlertSeverityError,
+			Category:    "node",
+			Description: "Node.js Error: prefix",
+		},
+		{
+			ID:          "node-unhandled-promise",
+			Pattern:     regexp.MustCompile(`UnhandledPromiseRejection`),
+			Severity:    AlertSeverityError,
+			Category:    "node",
+			Description: "Node.js unhandled promise rejection",
+		},
+		{
+			ID:          "node-cannot-find-module",
+			Pattern:     regexp.MustCompile(`Cannot find module`),
+			Severity:    AlertSeverityError,
+			Category:    "node",
+			Description: "Node.js module not found",
+		},
+		{
+			ID:          "npm-err",
+			Pattern:     regexp.MustCompile(`npm ERR!`),
+			Severity:    AlertSeverityError,
+			Category:    "node",
+			Description: "npm error",
+		},
+		{
+			ID:          "yarn-error",
+			Pattern:     regexp.MustCompile(`(?i)yarn error`),
+			Severity:    AlertSeverityError,
+			Category:    "node",
+			Description: "yarn error",
+		},
+		{
+			ID:          "nodemon-crash",
+			Pattern:     regexp.MustCompile(`\[nodemon\] app crashed`),
+			Severity:    AlertSeverityError,
+			Category:    "node",
+			Description: "nodemon app crash",
+		},
+
+		// Python extended
+		{
+			ID:          "python-module-not-found",
+			Pattern:     regexp.MustCompile(`ModuleNotFoundError:`),
+			Severity:    AlertSeverityError,
+			Category:    "python",
+			Description: "Python module not found",
+		},
+		{
+			ID:          "python-import-error",
+			Pattern:     regexp.MustCompile(`^ImportError:`),
+			Severity:    AlertSeverityError,
+			Category:    "python",
+			Description: "Python import error",
+		},
+		{
+			ID:          "python-django-exception",
+			Pattern:     regexp.MustCompile(`django\.core\.exceptions`),
+			Severity:    AlertSeverityError,
+			Category:    "python",
+			Description: "Django core exception",
+		},
+		{
+			ID:          "python-runtime-error",
+			Pattern:     regexp.MustCompile(`^RuntimeError:`),
+			Severity:    AlertSeverityError,
+			Category:    "python",
+			Description: "Python RuntimeError",
+		},
+		{
+			ID:          "python-werkzeug-error",
+			Pattern:     regexp.MustCompile(`werkzeug\.`),
+			Severity:    AlertSeverityError,
+			Category:    "python",
+			Description: "Werkzeug exception",
+		},
+
+		// Go extended
+		{
+			ID:          "go-fatal-error",
+			Pattern:     regexp.MustCompile(`^fatal error:`),
+			Severity:    AlertSeverityError,
+			Category:    "go",
+			Description: "Go fatal error",
+		},
+		{
+			ID:          "go-module-error",
+			Pattern:     regexp.MustCompile(`^go: error`),
+			Severity:    AlertSeverityError,
+			Category:    "go",
+			Description: "Go module/toolchain error",
+		},
+
+		// Rust / cargo
+		{
+			ID:          "rust-error-code",
+			Pattern:     regexp.MustCompile(`^error\[E\d+\]`),
+			Severity:    AlertSeverityError,
+			Category:    "rust",
+			Description: "Rust compiler error with error code",
+		},
+		{
+			ID:          "rust-aborting",
+			Pattern:     regexp.MustCompile(`^error: aborting`),
+			Severity:    AlertSeverityError,
+			Category:    "rust",
+			Description: "Rust compilation aborting",
+		},
+		{
+			ID:          "rust-backtrace-hint",
+			Pattern:     regexp.MustCompile(`RUST_BACKTRACE`),
+			Severity:    AlertSeverityWarning,
+			Category:    "rust",
+			Description: "Rust backtrace environment hint",
+		},
+		{
+			ID:          "rust-thread-panic",
+			Pattern:     regexp.MustCompile(`thread '.*' panicked`),
+			Severity:    AlertSeverityError,
+			Category:    "rust",
+			Description: "Rust thread panic",
+		},
+
+		// Java / Maven / Gradle
+		{
+			ID:          "java-exception-in-thread",
+			Pattern:     regexp.MustCompile(`Exception in thread`),
+			Severity:    AlertSeverityError,
+			Category:    "java",
+			Description: "Java exception in thread",
+		},
+		{
+			ID:          "java-build-failure",
+			Pattern:     regexp.MustCompile(`^BUILD FAILURE`),
+			Severity:    AlertSeverityError,
+			Category:    "java",
+			Description: "Maven/Gradle build failure",
+		},
+		{
+			ID:          "java-caused-by",
+			Pattern:     regexp.MustCompile(`^Caused by:`),
+			Severity:    AlertSeverityError,
+			Category:    "java",
+			Description: "Java exception cause chain",
+		},
+		{
+			ID:          "java-severe",
+			Pattern:     regexp.MustCompile(`^SEVERE:`),
+			Severity:    AlertSeverityError,
+			Category:    "java",
+			Description: "Java SEVERE log level",
+		},
+		{
+			ID:          "java-lang-exception",
+			Pattern:     regexp.MustCompile(`java\.lang\.\w+(?:Error|Exception)`),
+			Severity:    AlertSeverityError,
+			Category:    "java",
+			Description: "java.lang exception or error class",
+		},
+
+		// Ruby / Rails
+		// Note: RuntimeError: is covered by python-runtime-error (^RuntimeError:) which
+		// matches both Python and Ruby output sharing the same format.
+		{
+			ID:          "ruby-no-method-error",
+			Pattern:     regexp.MustCompile(`^NoMethodError`),
+			Severity:    AlertSeverityError,
+			Category:    "ruby",
+			Description: "Ruby NoMethodError",
+		},
+		{
+			ID:          "ruby-argument-error",
+			Pattern:     regexp.MustCompile(`^ArgumentError`),
+			Severity:    AlertSeverityError,
+			Category:    "ruby",
+			Description: "Ruby ArgumentError",
+		},
+		{
+			ID:          "ruby-load-error",
+			Pattern:     regexp.MustCompile(`^LoadError`),
+			Severity:    AlertSeverityError,
+			Category:    "ruby",
+			Description: "Ruby LoadError",
+		},
+		{
+			ID:          "ruby-errno",
+			Pattern:     regexp.MustCompile(`^Errno::`),
+			Severity:    AlertSeverityError,
+			Category:    "ruby",
+			Description: "Ruby Errno system call error",
 		},
 
 		// Rebuild signals — info-severity matches that the OutageClassifier
