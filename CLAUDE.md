@@ -144,10 +144,60 @@ Three delivery sinks for alert/event routing:
 - Presets: `claude-code` (MCP only), `universal` (all channels)
 - Default (no config): all channels enabled
 
+**Incident pipeline path** (when `alerts.incident-pipeline true`):
+- `OverlayAlertSink`, `MCPAlertSink`, and `StreamSink` are replaced by the
+  Pinger (`internal/incident/pinger.go`) which subscribes to `Inbox.Subscribe()`
+  and fans compact pings to the same three delivery targets. The `get_incidents`
+  MCP tool is the authoritative pull surface; `get_errors` becomes a shim.
+
 **STREAM-EVENTS** (`internal/daemon/hub_stream.go`):
 - Daemon-side handler registers a `StreamSink` with type/proxy/process/severity/grep filters
 - 30s keepalive heartbeat, chunked JSON output
 - `BroadcastLogEntry()` and `BroadcastProcessOutput()` push filtered events to all matching sinks
+
+### Incident Pipeline (`internal/incident/`)
+
+Nine-layer pipeline that normalises all signal sources into a priority inbox and
+pushes compact pings to the AI agent. Opt-in in Phase A via
+`alerts { incident-pipeline true }` in `.agnt.kdl` (default `false`).
+
+```
+Signal sources → Bus → Dedup/Coalesce/FlowControl → Inbox → Pinger → MCP/channel/PTY
+```
+
+**Layers**:
+
+1. **Envelope** (`envelope.go`): `IncidentEvent` + `BlobRef`. Content-addressed
+   `BlobStore` (16MB/session LRU) stores large payloads; the envelope carries only
+   the ref.
+2. **Adapters** (`adapters.go`): 11 signal sources (`browser_js`, `http_5xx`,
+   `http_4xx`, `transport_err`, `proxy_diag`, `process_alert`, `process_output`,
+   `process_crash`, `build_fail`, `port_conflict`, `shutdown`,
+   `hook_stop_failure`) map raw events to `IncidentEvent`.
+3. **Dedup / Coalesce / FlowControl** (`dedup.go`): Fingerprint-based merge,
+   batch-window coalescing, per-severity rate limiting.
+4. **Inbox** (`inbox.go`): Four priority bands (`critical` / `error` / `warning` /
+   `info`, 100 entries each). Cursor-based pull via `Inbox.Pull(cursor, limit)`.
+   `Inbox.Subscribe()` notifies Pinger of new arrivals.
+5. **Pinger** (`pinger.go`): Subscribes to `Inbox.Subscribe()`, emits one compact
+   ping per batch to all active delivery sinks (MCP `Log()`, channel push, PTY
+   stdin injection).
+6. **`get_incidents` tool** (`get_incidents.go`): MCP pull tool. Cursor-based,
+   returns incidents with `remediation_hint` and `next_tools` fields. Supersedes
+   `get_errors` when pipeline is enabled.
+7. **Remediation routing** (`routing.go`): Source → primary/fallback tool + skill
+   hint lookup table used to populate `remediation_hint`.
+8. **Bus** (`bus.go`): MPSC channel (4096 cap, drop-newest on overflow). One
+   dispatch goroutine fans events into per-session `sessionPipeline`.
+9. **Migration flag**: `alerts.incident-pipeline` bool. `false` (default) →
+   legacy `AlertHub` path. `true` → Pinger path.
+
+**Key invariants**: Cross-session isolation (each session gets its own
+`sessionPipeline`); blob store is best-effort (no persistence across daemon
+restart); inbox is a cache (source of truth is the originating subsystem).
+
+**Key files**: `internal/incident/` package. Deeper invariants:
+`.claude/rules/daemon-architecture.md` § Incident Pipeline.
 
 ### Startup Splash
 
@@ -189,7 +239,8 @@ Three delivery sinks for alert/event routing:
 | `proxylog` | Query proxy logs (query, clear, stats) |
 | `tunnel` | Tunnel management (cloudflare/ngrok) |
 | `currentpage` | Page session tracking |
-| `get_errors` | Unified error view across processes and proxies |
+| `get_errors` | Unified error view across processes and proxies (legacy; superseded by `get_incidents`) |
+| `get_incidents` | Incident inbox pull — cursor-based, priority-ordered, with remediation hints |
 | `responsive_audit` | Responsive design audits across viewport sizes |
 | `snapshot` | Visual regression testing (baseline/compare screenshots) |
 | `daemon` | Daemon management |
@@ -201,51 +252,46 @@ Three delivery sinks for alert/event routing:
 - Return `(*mcp.CallToolResult, OutputStruct, error)`
 - Errors as `CallToolResult{IsError: true}` (NOT Go errors)
 
-### get_errors Tool
+### get_incidents Tool
 
-Unified error aggregation across all active processes and proxies. Collects, deduplicates, and formats errors from multiple sources into a single view.
-
-**Error Sources**:
-- **Process output** (daemon mode only): Compile errors, panics, exceptions detected by AlertScanner pattern matching
-- **Browser JS errors**: Runtime exceptions captured by injected JS (`window.onerror`)
-- **HTTP errors**: 4xx/5xx responses from proxied requests (4xx = warning, 5xx = error)
-- **Proxy diagnostics**: Transport errors, connection failures
-- **Custom logs**: Application-level `__devtool.log()` calls with error/warn level
+Cursor-based incident inbox pull. When the incident pipeline is enabled
+(`alerts.incident-pipeline true`), this is the authoritative tool for fetching
+errors and warnings from all signal sources. Returns incidents in priority order
+(critical → error → warning → info) with remediation hints and suggested next
+tools.
 
 **Parameters**:
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `process_id` | string | all | Filter to specific process |
-| `proxy_id` | string | all active | Filter to specific proxy |
-| `since` | string | none | Recency filter (RFC3339 or duration like `5m`, `1h`, `30s`) |
-| `include_warnings` | bool | true | Include warnings alongside errors |
-| `limit` | int | 25 | Max errors returned |
+| `cursor` | string | beginning | Opaque cursor from previous response for incremental pull |
+| `limit` | int | 25 | Max incidents returned |
+| `severity` | string | `warning` | Minimum severity: `info`, `warning`, `error`, `critical` |
+| `source` | string | all | Filter by signal source (e.g. `browser_js`, `http_5xx`) |
 | `raw` | bool | false | Return full JSON instead of compact text |
-
-**Built-in Intelligence**:
-- Deduplicates identical errors by source+category+message+location (shows count)
-- Reduces stack traces to first application code frame (skips node_modules, runtime, webpack)
-- Filters noise: static asset 404s, redirects (301/302/304), HMR/WebSocket 404s
-- Extracts error messages from JSON/HTML response bodies
-- Sorts by severity (errors first) then recency
 
 **Compact Output Format**:
 ```
-=== Errors (2) ===
+=== Incidents (3) ===
 
-[browser:js] TypeError (3x, latest 5s ago)
+[critical] process_crash — agnt-dev (2x, latest 3s ago)
+  panic: runtime error: index out of range
+  → internal/proxy/server.go:142
+  remediation: proc {action:"output", process_id:"agnt-dev"} → get_incidents
+  next_tools: proc, get_incidents
+
+[error] browser_js — TypeError (1x, 8s ago)
   Cannot read property 'map' of undefined
   → src/components/List.tsx:42:15
-  page: http://localhost:3000/dashboard
 
-[proxy:http] 500 Internal Server Error (1x, 12s ago)
-  POST /api/users → "database connection timeout"
-
-=== Warnings (1) ===
-
-[proxy:http] 404 Not Found (1x, 30s ago)
-  GET /api/old-endpoint
+[warning] http_4xx — GET /api/old-endpoint (1x, 30s ago)
 ```
+
+**Key Files**: `internal/incident/get_incidents.go`, `internal/incident/routing.go`
+
+### get_errors Tool (Legacy)
+
+Superseded by `get_incidents` when `alerts.incident-pipeline true`. Retained for
+backwards compatibility and for daemon-less (legacy) mode.
 
 **Dual Mode**:
 - **Daemon mode**: Full functionality — process alerts via daemon IPC + proxy errors
@@ -578,6 +624,15 @@ alerts {
     }
     // Or use a preset:
     preset "claude-code"   // MCP only, no PTY injection
+
+    // Incident pipeline (opt-in, Phase A):
+    incident-pipeline false  // true = route through internal/incident/ instead of AlertHub
+    blob-budget 16777216     // per-session BlobStore cap in bytes (default 16MB)
+    ping {
+        mcp-notifications true   // Pinger → MCP session.Log() pings
+        pty-injection false      // Pinger → PTY stdin injection
+        channel true             // Pinger → channel push (requires channel.enabled true)
+    }
 }
 ```
 
@@ -586,6 +641,15 @@ alerts {
 | `claude-code` | enabled | disabled |
 | `universal` | enabled | enabled |
 | (none) | enabled | enabled |
+
+**Incident pipeline keys** (only active when `incident-pipeline true`):
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `incident-pipeline` | bool | `false` | Route alerts through incident pipeline |
+| `blob-budget` | int | `16777216` | Per-session BlobStore cap (bytes) |
+| `ping.mcp-notifications` | bool | `true` | Pinger → MCP notifications |
+| `ping.pty-injection` | bool | `false` | Pinger → PTY stdin |
+| `ping.channel` | bool | `true` | Pinger → channel push |
 
 ### Channel Mode (Beta — Claude Code only)
 

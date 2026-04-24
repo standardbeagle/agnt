@@ -1,5 +1,22 @@
 # Changelog - agnt
 
+## [Unreleased]
+
+### Added
+- **Incident pipeline opt-in** (`alerts.incident-pipeline` in `.agnt.kdl`): New
+  alert path in `internal/incident/` that normalises signals from 11 sources
+  (browser JS, HTTP 5xx/4xx, process crashes, build failures, port conflicts,
+  hook stop-failures, etc.) into a deduped, coalesced, priority-ordered inbox
+  with four severity bands.
+  - `get_incidents` MCP tool: cursor-based pull with `remediation_hint` and
+    `next_tools` fields. Supersedes `get_errors` when the pipeline is enabled.
+  - `get_errors` is retained as a legacy shim; it continues to work unchanged
+    when `alerts.incident-pipeline false` (the default).
+  - Feature flag is all-or-nothing per session; daemon restart required to
+    toggle. Phase A default is `false` (opt-in only).
+
+---
+
 ## [0.8.0] - 2026-01-11
 
 ### Added

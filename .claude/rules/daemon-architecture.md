@@ -6,7 +6,7 @@ Four distinct participants interact with the daemon. Every feature must consider
 
 1. **Developer** — configures `.agnt.kdl`, runs `agnt run` or opens a Claude Code session, expects dev servers and proxies to "just work." Needs a "doctor" command for manual verification and cleanup.
 
-2. **AI Agent** — calls MCP tools (`proc`, `proxy`, `proxylog`, `get_errors`), makes decisions based on state. Requires verified-accurate state — stale or contradictory data causes the agent to take wrong actions, which is worse than no data.
+2. **AI Agent** — calls MCP tools (`proc`, `proxy`, `proxylog`, `get_errors`, `get_incidents`), makes decisions based on state. Requires verified-accurate state — stale or contradictory data causes the agent to take wrong actions, which is worse than no data.
 
 3. **Daemon** — long-running background process that outlives any session. Orchestrates lifecycles, manages the event system, serves as the state cache.
 
@@ -24,6 +24,9 @@ Daemon in-memory state is a **cache**, never the authority. The canonical source
 | Script config / expected state | `.agnt.kdl` on disk | Parse and compare |
 | URL associations | URLTracker cache | Verified against actual port binding |
 | Script registry entries | Session lifecycle | Rebuilt from config on each session connect |
+| Incident inbox contents | Originating subsystem | Inbox is a cache — re-fetch from source on reconciliation |
+| Blob store payloads | In-memory LRU only | Best-effort; evicted on session end or cap overflow |
+| Bus in-flight events | Transient channel only | Drop-newest on overflow; no replay |
 
 **The rule**: Any mismatch between daemon cache and source of truth = daemon updates its cache to match reality and emits an event. The daemon never asserts its cache is correct over OS truth.
 
@@ -62,6 +65,74 @@ No subsystem may silently skip an expected action. If config declares a proxy, p
 ## Config Authority
 
 If `.agnt.kdl` declares expected state (a proxy with `fallback-port`, a script with `depends-on`), the system must honor it. Config fields that are parsed but not acted on are bugs.
+
+## Incident Pipeline
+
+The incident pipeline (`internal/incident/`) is an opt-in alert path (Phase A,
+gated by `alerts.incident-pipeline true`) that replaces direct `AlertHub` sink
+dispatch with a normalised, deduped, priority-ordered inbox.
+
+### Source of Truth
+
+| State | Source of truth | Notes |
+|-------|----------------|-------|
+| Inbox entries | Originating subsystem | Inbox is a cache; an entry present in the inbox does not mean the event is still active |
+| Bus in-flight events | Transient MPSC channel | Drop-newest on overflow (`bus.go`, 4096-cap). No replay path. |
+| Blob store payloads | In-memory LRU per session | Best-effort: evicted when session ends or 16MB cap is reached. Never persisted to disk. |
+| Dedup fingerprints | Deduplicator in-process state | Cleared on session teardown; cross-session dedup does not apply |
+
+### Numbered Contracts
+
+1. **Cross-session isolation.** Each session that connects with the pipeline
+   enabled gets its own `sessionPipeline` instance. Events from session A never
+   appear in session B's inbox, even for the same project.
+
+2. **Drop-newest on bus overflow.** The MPSC bus drops the incoming event (not
+   the oldest) when the 4096-slot channel is full. This keeps latency bounded
+   at the cost of losing the most recent event under extreme load. Overflow
+   count is surfaced via `bus.OverflowCount()`.
+
+3. **Dedup scope is per-session, not per-project.** A fingerprint collision
+   in session A does not suppress the same event in session B. The
+   Deduplicator state is owned by the `sessionPipeline` and is torn down with
+   it.
+
+4. **Coalescer batch window is non-configurable at runtime.** The coalesce
+   window (default 200ms) is set at `sessionPipeline` construction time from
+   config. Live reconfiguration is not supported; a daemon restart is required
+   to change it.
+
+5. **Inbox capacity is hard-capped per band.** Each of the four priority bands
+   (critical / error / warning / info) holds at most 100 entries. Oldest
+   entries are evicted to make room for new arrivals. The AI agent must poll
+   with the returned cursor to drain the inbox before it wraps.
+
+6. **Blob store is best-effort.** A `BlobRef` in an envelope may resolve to
+   `nil` if the blob was evicted before the agent pulled the incident. Callers
+   must handle absent blobs gracefully; they are not errors.
+
+7. **Pinger never blocks delivery.** The Pinger sends compact pings to MCP,
+   channel, and PTY sinks using non-blocking channel sends. A slow consumer
+   does not delay other consumers or block the Inbox drain loop.
+
+8. **Migration flag is all-or-nothing per session.** If `alerts.incident-pipeline`
+   is `false` when a session connects, that session uses the legacy `AlertHub`
+   path for its entire lifetime, even if the config file is changed mid-session.
+   The pipeline path and the legacy path are mutually exclusive for a given
+   session.
+
+### File Ownership
+
+| Component | File |
+|-----------|------|
+| `IncidentEvent`, `BlobRef`, `BlobStore` | `internal/incident/envelope.go` |
+| Signal source adapters (11 sources) | `internal/incident/adapters.go` |
+| `Deduplicator`, `Coalescer`, `FlowController` | `internal/incident/dedup.go` |
+| `Inbox` (4 bands, cursor pull, subscribe) | `internal/incident/inbox.go` |
+| `Pinger` (subscribe → fan-out pings) | `internal/incident/pinger.go` |
+| `get_incidents` MCP tool | `internal/incident/get_incidents.go` |
+| Remediation routing table | `internal/incident/routing.go` |
+| MPSC bus + `sessionPipeline` | `internal/incident/bus.go` |
 
 ## Session Containment
 
