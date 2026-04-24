@@ -166,6 +166,7 @@ Available tools:
 	tools.RegisterBrowserTool(server, dt)
 	tools.RegisterAutomationTool(server, dt)
 	tools.RegisterResponsiveAuditTool(server, dt, nil)
+	tools.RegisterGetIncidentsTool(server, dt)
 
 	// Register channel_reply tool when channel mode is enabled and reply-tool is on.
 	if agntCfg.Channel != nil && agntCfg.Channel.IsEnabled() && agntCfg.Channel.ReplyToolEnabled() {

@@ -697,6 +697,23 @@ func (c *Client) AlertQuery(filter protocol.AlertQueryFilter) (map[string]interf
 	return c.conn.Request(protocol.VerbAlerts, protocol.SubVerbQuery).WithJSON(filter).JSON()
 }
 
+// IncidentQuery queries the incident inbox for the current session.
+func (c *Client) IncidentQuery(filter protocol.IncidentQueryFilter) (*protocol.IncidentQueryResult, error) {
+	raw, err := c.conn.Request(protocol.VerbIncidents, protocol.SubVerbQuery).WithJSON(filter).JSON()
+	if err != nil {
+		return nil, err
+	}
+	b, err := json.Marshal(raw)
+	if err != nil {
+		return nil, err
+	}
+	var result protocol.IncidentQueryResult
+	if err := json.Unmarshal(b, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
 // AlertClear clears all alerts from the daemon.
 func (c *Client) AlertClear() error {
 	return c.conn.Request(protocol.VerbAlerts, protocol.SubVerbClear).OK()

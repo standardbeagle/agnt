@@ -22,6 +22,7 @@ const (
 	VerbAutostart    = "AUTOSTART"     // Resolve port conflicts and resume autostart
 	VerbStreamEvents = "STREAM-EVENTS" // Long-lived event stream
 	VerbHook         = "HOOK"          // Claude Code hook dispatcher enqueue
+	VerbIncidents    = "INCIDENTS"     // Incident inbox query + mark-read
 )
 
 // Agnt-specific sub-verbs (beyond those in go-cli-server).
@@ -351,4 +352,71 @@ type HookPayload struct {
 type AutostartRunConfig struct {
 	ProjectPath    string `json:"project_path"`
 	NonInteractive bool   `json:"non_interactive"`
+}
+
+// IncidentQueryFilter is the request payload for INCIDENTS QUERY.
+type IncidentQueryFilter struct {
+	Severities   []string `json:"severities,omitempty"`   // critical/error/warning/info; empty = all
+	Since        string   `json:"since,omitempty"`        // RFC3339 timestamp for lower bound
+	Fingerprints []string `json:"fingerprints,omitempty"` // limit to specific fps
+	Sources      []string `json:"sources,omitempty"`      // filter by Source enum values
+	ProxyID      string   `json:"proxy_id,omitempty"`
+	ProcessID    string   `json:"process_id,omitempty"`
+	Detail       string   `json:"detail,omitempty"` // "summary" (default) | "full"
+	MarkRead     bool     `json:"mark_read,omitempty"`
+	Limit        int      `json:"limit,omitempty"` // 0 → 20; max 100
+}
+
+// IncidentQueryResult is the response payload for INCIDENTS QUERY.
+type IncidentQueryResult struct {
+	Incidents  []IncidentRecord `json:"incidents"`
+	InboxStats InboxStatsRecord `json:"inbox_stats"`
+	Cursor     string           `json:"cursor,omitempty"` // RFC3339 of last-seen for resumable pulls
+	Truncated  bool             `json:"truncated"`
+}
+
+// IncidentRecord is the wire shape for a single incident in a query result.
+type IncidentRecord struct {
+	ID          string              `json:"id"`
+	Fingerprint string              `json:"fingerprint"`
+	FirstSeen   string              `json:"first_seen"` // RFC3339
+	LastSeen    string              `json:"last_seen"`  // RFC3339
+	Count       int                 `json:"count"`
+	Severity    string              `json:"severity"`
+	Source      string              `json:"source"`
+	Category    string              `json:"category,omitempty"`
+	Summary     string              `json:"summary,omitempty"`
+	Payload     *string             `json:"payload,omitempty"` // set when detail="full"
+	Context     IncidentContext     `json:"context,omitempty"`
+	Remediation IncidentRemediation `json:"remediation,omitempty"`
+	Read        bool                `json:"read"`
+}
+
+// IncidentContext is the wire shape for incident context fields.
+type IncidentContext struct {
+	ProcessID   string `json:"process_id,omitempty"`
+	ProxyID     string `json:"proxy_id,omitempty"`
+	SessionID   string `json:"session_id,omitempty"`
+	ProjectPath string `json:"project_path,omitempty"`
+	URL         string `json:"url,omitempty"`
+	PID         int    `json:"pid,omitempty"`
+	Port        int    `json:"port,omitempty"`
+}
+
+// IncidentRemediation is the wire shape for remediation hints.
+type IncidentRemediation struct {
+	PrimaryTool  string         `json:"primary_tool,omitempty"`
+	PrimaryArgs  map[string]any `json:"primary_args,omitempty"`
+	FallbackTool string         `json:"fallback_tool,omitempty"`
+	SkillHint    string         `json:"skill_hint,omitempty"`
+}
+
+// InboxStatsRecord is the wire shape for inbox health summary.
+type InboxStatsRecord struct {
+	Critical int   `json:"critical"`
+	Error    int   `json:"error"`
+	Warning  int   `json:"warning"`
+	Info     int   `json:"info"`
+	Dropped  int64 `json:"dropped"`
+	New      int   `json:"new"` // unread entries
 }

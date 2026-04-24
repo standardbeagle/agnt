@@ -65,7 +65,7 @@ func (dt *DaemonTools) makeGetErrorsHandler() func(context.Context, *mcp.CallToo
 func RegisterGetErrorsTool(server *mcp.Server, dt *DaemonTools, pm *proxy.ProxyManager) {
 	backend := &getErrorsBackend{DualBackend[DaemonTools, proxy.ProxyManager]{Daemon: dt, Legacy: pm}}
 
-	desc := `Get all current errors across proxies.
+	desc := `[DEPRECATED: use get_incidents instead] Get all current errors across proxies.
 
 Collects errors from: browser JavaScript errors, HTTP 4xx/5xx responses,
 proxy transport errors, and custom error logs.`
