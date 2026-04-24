@@ -268,20 +268,11 @@ func TestProxyEvent_HandleURLDetected_ProxyLimit(t *testing.T) {
 	tmpDir := shortTempDir(t)
 	sockPath := shortSockPath(t)
 
-	daemon := New(DaemonConfig{
+	daemon := NewForTest(t, DaemonConfig{
 		SocketPath:   sockPath,
 		MaxClients:   10,
 		WriteTimeout: 5 * time.Second,
 	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
 
 	// Create config with proxy linked to script
 	configPath := filepath.Join(tmpDir, "agnt.kdl")
@@ -324,20 +315,11 @@ func TestProxyEvent_HandleURLDetected_ParseError(t *testing.T) {
 	t.Parallel()
 	sockPath := shortSockPath(t)
 
-	daemon := New(DaemonConfig{
+	daemon := NewForTest(t, DaemonConfig{
 		SocketPath:   sockPath,
 		MaxClients:   10,
 		WriteTimeout: 5 * time.Second,
 	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
 
 	// Send event with invalid script ID (no colon separator)
 	daemon.handleURLDetected(ProxyEvent{
@@ -355,20 +337,11 @@ func TestProxyEvent_HandleURLDetected_NoMatchingProxyConfig(t *testing.T) {
 	tmpDir := shortTempDir(t)
 	sockPath := shortSockPath(t)
 
-	daemon := New(DaemonConfig{
+	daemon := NewForTest(t, DaemonConfig{
 		SocketPath:   sockPath,
 		MaxClients:   10,
 		WriteTimeout: 5 * time.Second,
 	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
 
 	// Create config with proxy for different script
 	configPath := filepath.Join(tmpDir, "agnt.kdl")
@@ -404,20 +377,11 @@ func TestProxyEvent_HandleURLDetected_DuplicateProxy(t *testing.T) {
 	tmpDir := shortTempDir(t)
 	sockPath := shortSockPath(t)
 
-	daemon := New(DaemonConfig{
+	daemon := NewForTest(t, DaemonConfig{
 		SocketPath:   sockPath,
 		MaxClients:   10,
 		WriteTimeout: 5 * time.Second,
 	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
 
 	// Create config
 	configPath := filepath.Join(tmpDir, "agnt.kdl")
@@ -471,18 +435,10 @@ func newFallbackTestDaemon(t *testing.T) (*Daemon, string) {
 	tmpDir := shortTempDir(t)
 	sockPath := shortSockPath(t)
 
-	daemon := New(DaemonConfig{
+	daemon := NewForTest(t, DaemonConfig{
 		SocketPath:   sockPath,
 		MaxClients:   10,
 		WriteTimeout: 5 * time.Second,
-	})
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
 	})
 	return daemon, tmpDir
 }
@@ -1070,20 +1026,12 @@ func TestHandleExplicitStart_PersistsToStateManager(t *testing.T) {
 	sockPath := shortSockPath(t)
 	statePath := filepath.Join(tmpDir, "daemon-state.json")
 
-	daemon := New(DaemonConfig{
+	daemon := NewForTest(t, DaemonConfig{
 		SocketPath:             sockPath,
 		MaxClients:             10,
 		WriteTimeout:           5 * time.Second,
 		EnableStatePersistence: true,
 		StatePath:              statePath,
-	})
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
 	})
 
 	if daemon.stateMgr == nil {

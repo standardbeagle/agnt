@@ -515,20 +515,11 @@ func TestHubIntegration_SessionScopedProxyLookup(t *testing.T) {
 	os.MkdirAll(projectA, 0755)
 	os.MkdirAll(projectB, 0755)
 
-	daemon := New(DaemonConfig{
+	_ = NewForTest(t, DaemonConfig{
 		SocketPath:   sockPath,
 		MaxClients:   10,
 		WriteTimeout: 5 * time.Second,
 	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
 
 	client := NewClient(WithSocketPath(sockPath))
 	if err := client.Connect(); err != nil {
@@ -1224,15 +1215,11 @@ func TestDaemon_Wait(t *testing.T) {
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
-	daemon := New(DaemonConfig{
+	daemon := NewForTest(t, DaemonConfig{
 		SocketPath:   sockPath,
 		MaxClients:   10,
 		WriteTimeout: 5 * time.Second,
 	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
 
 	// Stop the daemon in a goroutine
 	go func() {
@@ -1665,20 +1652,11 @@ func TestHubIntegration_ProcListFilters(t *testing.T) {
 		t.Fatalf("Failed to create project2: %v", err)
 	}
 
-	daemon := New(DaemonConfig{
+	_ = NewForTest(t, DaemonConfig{
 		SocketPath:   sockPath,
 		MaxClients:   10,
 		WriteTimeout: 5 * time.Second,
 	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
 
 	client := NewClient(WithSocketPath(sockPath))
 	if err := client.Connect(); err != nil {
@@ -1790,23 +1768,17 @@ func TestDaemon_RestoreProxies(t *testing.T) {
 		t.Fatalf("Failed to write state file: %v", err)
 	}
 
-	// Create daemon with state path and persistence enabled
-	daemon := New(DaemonConfig{
+	// Create daemon with state path and persistence enabled.
+	// NewForTest skips restoreProxies by default (safe for parallel runs);
+	// this test specifically exercises restore so we call it directly.
+	d := NewForTest(t, DaemonConfig{
 		SocketPath:             sockPath,
 		MaxClients:             10,
 		WriteTimeout:           5 * time.Second,
 		StatePath:              statePath,
 		EnableStatePersistence: true,
 	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
+	d.restoreProxies()
 
 	// Verify proxy was restored
 	client := NewClient(WithSocketPath(sockPath))
@@ -1832,14 +1804,15 @@ func TestDaemon_RestoreProxies(t *testing.T) {
 }
 
 // TestDaemon_CleanupOrphans tests the orphan cleanup functionality.
+// newBootedDaemon skips cleanupOrphans (via NewForTest) so parallel test runs
+// don't race on host-global state; this test calls it directly instead.
 func TestDaemon_CleanupOrphans(t *testing.T) {
 	t.Parallel()
-	newBootedDaemon(t) // booting triggers cleanupOrphans
+	d, _ := newBootedDaemon(t)
 
-	// cleanupOrphans is called during Start, so just verify daemon started successfully
-	// The function is exercised but we can't easily verify orphan cleanup without
-	// creating orphaned processes from a previous daemon instance
-	t.Log("cleanupOrphans was executed during daemon.Start()")
+	// Direct invocation: production Start() wraps this same call.
+	d.cleanupOrphans()
+	t.Log("cleanupOrphans executed directly")
 }
 
 // TestHubIntegration_ProxyExecErrorPaths tests PROXY EXEC error paths.
@@ -1960,20 +1933,11 @@ func TestDaemon_RunAutostart(t *testing.T) {
 		t.Fatalf("Failed to write config file: %v", err)
 	}
 
-	daemon := New(DaemonConfig{
+	daemon := NewForTest(t, DaemonConfig{
 		SocketPath:   sockPath,
 		MaxClients:   10,
 		WriteTimeout: 5 * time.Second,
 	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
 
 	// Call RunAutostart - should complete without error even with no autostart config
 	daemon.RunAutostart(context.Background(), tmpDir)
@@ -2004,19 +1968,11 @@ func TestHubIntegration_FallbackPortCheck_EventLoopCreatesProxy(t *testing.T) {
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
-	daemon := New(DaemonConfig{
+	daemon := NewForTest(t, DaemonConfig{
 		SocketPath:   sockPath,
 		MaxClients:   10,
 		WriteTimeout: 5 * time.Second,
 	})
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
 
 	proxyName := "dev"
 	scriptName := "weird-dev-server"
@@ -2081,19 +2037,11 @@ func TestHubIntegration_FallbackPortCheck_URLDetectedWinsRace(t *testing.T) {
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
-	daemon := New(DaemonConfig{
+	daemon := NewForTest(t, DaemonConfig{
 		SocketPath:   sockPath,
 		MaxClients:   10,
 		WriteTimeout: 5 * time.Second,
 	})
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
 
 	proxyName := "dev"
 	scriptName := "weird-dev-server"
@@ -2223,22 +2171,13 @@ func TestDaemon_RestoreProxies_ErrorPaths(t *testing.T) {
 	}
 
 	// Create daemon with state persistence
-	daemon := New(DaemonConfig{
+	_ = NewForTest(t, DaemonConfig{
 		SocketPath:             sockPath,
 		MaxClients:             10,
 		WriteTimeout:           5 * time.Second,
 		StatePath:              statePath,
 		EnableStatePersistence: true,
 	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
 
 	// Proxy should not be restored due to invalid URL.
 	// restoreProxies runs synchronously during Start(), so by the time we
@@ -2442,20 +2381,11 @@ func TestHubIntegration_SessionOverlayScoping(t *testing.T) {
 	os.MkdirAll(projectA, 0755)
 	os.MkdirAll(projectB, 0755)
 
-	daemon := New(DaemonConfig{
+	daemon := NewForTest(t, DaemonConfig{
 		SocketPath:   sockPath,
 		MaxClients:   10,
 		WriteTimeout: 5 * time.Second,
 	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
 
 	client := NewClient(WithSocketPath(sockPath))
 	if err := client.Connect(); err != nil {

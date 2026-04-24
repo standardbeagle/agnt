@@ -3,7 +3,6 @@
 package daemon
 
 import (
-	"context"
 	"path/filepath"
 	"testing"
 	"time"
@@ -143,20 +142,11 @@ func TestResilientClient_WrapperMethods(t *testing.T) {
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	// Start a daemon
-	daemon := New(DaemonConfig{
+	_ = NewForTest(t, DaemonConfig{
 		SocketPath:   sockPath,
 		MaxClients:   10,
 		WriteTimeout: 5 * time.Second,
 	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
 
 	// Create a resilient client
 	config := ResilientClientConfig{
@@ -340,20 +330,11 @@ func TestResilientClient_ProxyExtendedMethods(t *testing.T) {
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
-	daemon := New(DaemonConfig{
+	_ = NewForTest(t, DaemonConfig{
 		SocketPath:   sockPath,
 		MaxClients:   10,
 		WriteTimeout: 5 * time.Second,
 	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
 
 	config := ResilientClientConfig{
 		AutoStartConfig: AutoStartConfig{
@@ -474,20 +455,11 @@ func TestResilientClient_SessionMethods(t *testing.T) {
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
-	daemon := New(DaemonConfig{
+	_ = NewForTest(t, DaemonConfig{
 		SocketPath:   sockPath,
 		MaxClients:   10,
 		WriteTimeout: 5 * time.Second,
 	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
 
 	config := ResilientClientConfig{
 		AutoStartConfig: AutoStartConfig{
@@ -591,20 +563,11 @@ func TestResilientClient_TunnelMethods(t *testing.T) {
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
-	daemon := New(DaemonConfig{
+	_ = NewForTest(t, DaemonConfig{
 		SocketPath:   sockPath,
 		MaxClients:   10,
 		WriteTimeout: 5 * time.Second,
 	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
 
 	config := ResilientClientConfig{
 		AutoStartConfig: AutoStartConfig{
@@ -654,20 +617,11 @@ func TestResilientClient_ChaosMethods(t *testing.T) {
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
-	daemon := New(DaemonConfig{
+	_ = NewForTest(t, DaemonConfig{
 		SocketPath:   sockPath,
 		MaxClients:   10,
 		WriteTimeout: 5 * time.Second,
 	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
 
 	config := ResilientClientConfig{
 		AutoStartConfig: AutoStartConfig{
@@ -807,20 +761,11 @@ func TestResilientClient_AdditionalMethods(t *testing.T) {
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
-	daemon := New(DaemonConfig{
+	_ = NewForTest(t, DaemonConfig{
 		SocketPath:   sockPath,
 		MaxClients:   10,
 		WriteTimeout: 5 * time.Second,
 	})
-
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("Failed to start daemon: %v", err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
-	}()
 
 	config := ResilientClientConfig{
 		AutoStartConfig: AutoStartConfig{

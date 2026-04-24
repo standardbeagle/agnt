@@ -18,18 +18,10 @@ func newHubProcTestDaemon(t *testing.T) (*Daemon, *Client, string) {
 	tmpDir := shortTempDir(t)
 	sockPath := shortSockPath(t)
 
-	daemon := New(DaemonConfig{
+	daemon := NewForTest(t, DaemonConfig{
 		SocketPath:   sockPath,
 		MaxClients:   10,
 		WriteTimeout: 5 * time.Second,
-	})
-	if err := daemon.Start(); err != nil {
-		t.Fatalf("daemon.Start: %v", err)
-	}
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		daemon.Stop(ctx)
 	})
 
 	client := NewClient(WithSocketPath(sockPath))

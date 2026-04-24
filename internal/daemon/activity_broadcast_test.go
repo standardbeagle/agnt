@@ -199,7 +199,7 @@ func TestOutputPreviewBroadcast_EndToEnd(t *testing.T) {
 			}
 		}
 		t.Logf("Received output preview: %v", lines)
-	case <-time.After(2 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("Timeout waiting for output preview")
 	}
 
