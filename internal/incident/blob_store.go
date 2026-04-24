@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"sync"
+	"sync/atomic"
 )
 
 // ErrBlobEvicted is returned by Read when the requested blob was evicted.
@@ -33,6 +34,14 @@ type writeResult struct {
 	err error
 }
 
+// asyncWriteReq is used by WriteAsync. The hash is pre-computed by the caller
+// so the drain goroutine only needs to store the bytes.
+type asyncWriteReq struct {
+	hash    string
+	content []byte
+	mime    string
+}
+
 // BlobStore is a bytes-bounded content-addressed in-memory store with LRU
 // eviction. Write computes the sha256 hash, deduplicates identical payloads,
 // and evicts the least-recently-used blob when the budget is exceeded.
@@ -40,6 +49,10 @@ type writeResult struct {
 // Writes are dispatched via a bounded channel (256 entries) to a background
 // goroutine so callers never block on lock contention. Close drains the queue
 // and stops the goroutine.
+//
+// WriteAsync returns a BlobRef immediately (hash computed synchronously) and
+// defers the actual storage. If the async queue is full the content may never
+// land — readers fall back to IncidentEvent.Summary in that case.
 type BlobStore struct {
 	maxBytes  int64
 	mu        sync.Mutex
@@ -47,13 +60,28 @@ type BlobStore struct {
 	lruList   *list.List
 	usedBytes int64
 	writeCh   chan writeReq
+	asyncCh   chan asyncWriteReq // for WriteAsync; separate so sync writes can't starve
 	done      chan struct{}
 	wg        sync.WaitGroup
+
+	// drainGate is used by tests only (via pauseDrain/resumeDrain). When non-nil
+	// the drain goroutine waits on the pointed-to channel before each operation.
+	drainGate atomic.Pointer[chan struct{}]
 }
 
 // NewBlobStore creates a BlobStore limited to maxBytes of payload storage.
 // Pass 0 for the default (16MB).
 func NewBlobStore(maxBytes int64) *BlobStore {
+	return newBlobStoreInternal(maxBytes, writeQueueCap)
+}
+
+// newBlobStoreWithQueueCap creates a BlobStore with a custom async queue
+// capacity. Used by tests to exercise overflow paths.
+func newBlobStoreWithQueueCap(asyncCap int) *BlobStore {
+	return newBlobStoreInternal(defaultBudgetBytes, asyncCap)
+}
+
+func newBlobStoreInternal(maxBytes int64, asyncCap int) *BlobStore {
 	if maxBytes <= 0 {
 		maxBytes = defaultBudgetBytes
 	}
@@ -62,6 +90,7 @@ func NewBlobStore(maxBytes int64) *BlobStore {
 		entries:  make(map[string]*blobEntry),
 		lruList:  list.New(),
 		writeCh:  make(chan writeReq, writeQueueCap),
+		asyncCh:  make(chan asyncWriteReq, asyncCap),
 		done:     make(chan struct{}),
 	}
 	bs.wg.Add(1)
@@ -86,6 +115,39 @@ func (bs *BlobStore) Write(content []byte, mime string) (BlobRef, error) {
 	}
 	res := <-req.result
 	return res.ref, res.err
+}
+
+// WriteAsync computes the sha256 hash synchronously and returns a BlobRef
+// immediately, then enqueues the actual content write to a background goroutine.
+// If the async queue is full the ref is still returned but the content may
+// never land — readers should fall back to IncidentEvent.Summary in that case.
+func (bs *BlobStore) WriteAsync(content []byte, mime string) BlobRef {
+	sum := sha256.Sum256(content)
+	hash := hex.EncodeToString(sum[:])
+	ref := BlobRef{Hash: hash, Size: len(content), MIME: mime}
+
+	req := asyncWriteReq{hash: hash, content: content, mime: mime}
+	select {
+	case bs.asyncCh <- req:
+	default:
+		// Queue full: ref returned without content being stored.
+	}
+	return ref
+}
+
+// pauseDrain blocks the drain goroutine from processing writes. Used only by
+// tests to control timing of WriteAsync. Must be paired with resumeDrain.
+func (bs *BlobStore) pauseDrain() {
+	ch := make(chan struct{})
+	bs.drainGate.Store(&ch)
+}
+
+// resumeDrain unblocks the drain goroutine. Paired with pauseDrain.
+func (bs *BlobStore) resumeDrain() {
+	ptr := bs.drainGate.Swap(nil)
+	if ptr != nil {
+		close(*ptr)
+	}
 }
 
 // Read retrieves the payload for hash. Returns ErrBlobEvicted if the blob was
@@ -118,22 +180,68 @@ func (bs *BlobStore) Stats() (used, max int64, count int) {
 func (bs *BlobStore) drain() {
 	defer bs.wg.Done()
 	for {
+		// Honor the test-only drain gate.
+		if ptr := bs.drainGate.Load(); ptr != nil {
+			select {
+			case <-*ptr:
+			case <-bs.done:
+				bs.drainRemaining()
+				return
+			}
+		}
+
 		select {
 		case req := <-bs.writeCh:
 			ref, err := bs.writeSync(req.content, req.mime)
 			req.result <- writeResult{ref: ref, err: err}
+		case req := <-bs.asyncCh:
+			bs.writeAsyncSync(req)
 		case <-bs.done:
-			// Drain remaining writes before exit
-			for {
-				select {
-				case req := <-bs.writeCh:
-					ref, err := bs.writeSync(req.content, req.mime)
-					req.result <- writeResult{ref: ref, err: err}
-				default:
-					return
-				}
-			}
+			bs.drainRemaining()
+			return
 		}
+	}
+}
+
+func (bs *BlobStore) drainRemaining() {
+	for {
+		select {
+		case req := <-bs.writeCh:
+			ref, err := bs.writeSync(req.content, req.mime)
+			req.result <- writeResult{ref: ref, err: err}
+		case req := <-bs.asyncCh:
+			bs.writeAsyncSync(req)
+		default:
+			return
+		}
+	}
+}
+
+// writeAsyncSync stores a pre-hashed async write request. Deduplicates by hash.
+func (bs *BlobStore) writeAsyncSync(req asyncWriteReq) {
+	bs.mu.Lock()
+	defer bs.mu.Unlock()
+
+	if existing, ok := bs.entries[req.hash]; ok {
+		bs.lruList.MoveToFront(existing.elem)
+		return
+	}
+
+	ref := BlobRef{Hash: req.hash, Size: len(req.content), MIME: req.mime}
+	entry := &blobEntry{ref: ref, content: req.content}
+	entry.elem = bs.lruList.PushFront(entry)
+	bs.entries[req.hash] = entry
+	bs.usedBytes += int64(len(req.content))
+
+	for bs.usedBytes > bs.maxBytes {
+		back := bs.lruList.Back()
+		if back == nil {
+			break
+		}
+		evict := back.Value.(*blobEntry)
+		bs.lruList.Remove(back)
+		delete(bs.entries, evict.ref.Hash)
+		bs.usedBytes -= int64(len(evict.content))
 	}
 }
 
