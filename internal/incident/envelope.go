@@ -45,15 +45,17 @@ type Context struct {
 	URL         string
 	PID         int
 	PGID        int
+	Port        int
 }
 
 // Remediation hints which MCP tool and skill should address this incident.
 // Populated by the L7 routing table; zero value means "no hint".
 type Remediation struct {
-	PrimaryTool  string
-	PrimaryArgs  map[string]any
-	FallbackTool string
-	SkillHint    string
+	PrimaryTool  string         `json:"primary_tool,omitempty"`
+	PrimaryArgs  map[string]any `json:"primary_args,omitempty"`
+	FallbackTool string         `json:"fallback_tool,omitempty"`
+	FallbackArgs map[string]any `json:"fallback_args,omitempty"`
+	SkillHint    string         `json:"skill_hint,omitempty"`
 }
 
 // BlobRef points to a payload stored in a BlobStore.
