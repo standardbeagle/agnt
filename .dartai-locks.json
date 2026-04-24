@@ -1,1 +1,1 @@
-{"claims": {}}
+{"claims": {"LndQUObr3EsQ": {"runner_instance_id": "beagle-ab2-873045", "runner_email": "claude@anthropic.com", "claimed_at": "2026-04-24T08:34:00Z", "agent_id": "beagle-ab2-873045", "parent_loop_id": "KwXvtxrviI05", "purpose": "L8 Stream wiring incident.Bus MPSC + decoupled blob writer"}}}
