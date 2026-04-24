@@ -53,6 +53,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/chromedp"
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
+	"github.com/standardbeagle/agnt/internal/incident"
 	"github.com/standardbeagle/agnt/internal/proxy"
 	"github.com/standardbeagle/agnt/internal/store"
 	"github.com/standardbeagle/agnt/internal/tunnel"
@@ -203,6 +204,7 @@ type Daemon struct {
 	processExitInfo   *processExitInfoStore // In-memory death records (proc status + get_errors)
 	startupErrorStore *StartupLogStore      // Ring buffer for startup events
 	alertHub          *AlertHub             // Routes alerts to overlay/MCP/stream sinks
+	incidentBus       *incident.MPSCBus     // Incident pipeline event bus (L8+)
 	hookRing          *hookRingBuffer       // Claude Code hook event ring buffer (phase 1 scope)
 	scriptRegistry    *script.Registry      // Per-script state that persists across process restarts
 	scriptConfigs     sync.Map              // processID -> *config.ScriptConfig (agnt-specific config)
@@ -319,6 +321,8 @@ func New(config DaemonConfig) *Daemon {
 
 	h := hub.New(hubConfig)
 
+	incBus := incident.NewMPSCBus(nil)
+
 	d := &Daemon{
 		config:            config,
 		hub:               h,
@@ -331,6 +335,7 @@ func New(config DaemonConfig) *Daemon {
 		processExitInfo:   newProcessExitInfoStore(defaultExitInfoRetention),
 		startupErrorStore: NewStartupLogStore(100),
 		alertHub:          NewAlertHub(),
+		incidentBus:       incBus,
 		hookRing:          newHookRingBuffer(hookRingCapacity),
 		scriptRegistry:    script.NewRegistry(),
 		sessionRegistry:   sessionRegistry,
@@ -344,6 +349,9 @@ func New(config DaemonConfig) *Daemon {
 		ctx:               ctx,
 		cancel:            cancel,
 	}
+
+	// Wire incident.Bus into AlertHub for dual-path migration (L9).
+	d.alertHub.SetIncidentBus(incBus)
 
 	// HealthTracker is initialised after the struct so it can capture `d`
 	// in its lookup closures. Its emitDiagnostic routes back through the
@@ -686,6 +694,11 @@ func (d *Daemon) AlertStore() *ProcessAlertStore {
 // AlertHub returns the alert hub for event routing.
 func (d *Daemon) AlertHub() *AlertHub {
 	return d.alertHub
+}
+
+// IncidentBus returns the incident event bus.
+func (d *Daemon) IncidentBus() *incident.MPSCBus {
+	return d.incidentBus
 }
 
 // StartupLogStore returns the startup log store.

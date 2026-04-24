@@ -251,6 +251,11 @@ func (d *Daemon) Stop(ctx context.Context) error {
 		d.autoRestarter.Shutdown(ctx)
 	}
 
+	// Close incident bus — signals dispatch goroutine to drain and exit.
+	if d.incidentBus != nil {
+		d.incidentBus.Close()
+	}
+
 	if err := d.tunnelm.Shutdown(ctx); err != nil {
 		debug.Error("daemon", "tunnel manager shutdown error: %v", err)
 		errs = append(errs, fmt.Errorf("tunnel manager: %w", err))

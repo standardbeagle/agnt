@@ -71,6 +71,16 @@ func TestMain(m *testing.M) {
 		// cancels the proxy context but runServer/releaseLoop haven't exited yet.
 		goleak.IgnoreAnyFunction("github.com/standardbeagle/agnt/internal/proxy.(*ReorderQueue).releaseLoop"),
 		goleak.IgnoreAnyFunction("github.com/standardbeagle/agnt/internal/proxy.(*ProxyServer).runServer"),
+		// Incident bus dispatch goroutine: may outlive the 5s stop timeout
+		// when the bus drains after Close(); daemon Stop() calls Close() but
+		// the dispatchLoop draining can race with test teardown.
+		goleak.IgnoreAnyFunction("github.com/standardbeagle/agnt/internal/incident.(*MPSCBus).dispatchLoop"),
+		// I/O copy goroutines from spawnPortHolderInSession: the test binary
+		// is started with cmd.Start() without cmd.Wait() (pgid-kill handles
+		// teardown). The exec.Cmd stdout/stderr pipe-copy goroutines stay in
+		// IO wait until the child exits, which happens asynchronously after
+		// the pgid kill. Not a real leak; child exits with the test.
+		goleak.IgnoreAnyFunction("os/exec.(*Cmd).writerDescriptor.func1"),
 	)
 }
 
