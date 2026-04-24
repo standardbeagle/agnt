@@ -104,8 +104,33 @@ jobs:
             agnt serve --help
           fi
 
+  wait-pypi:
+    name: Wait for PyPI propagation
+    runs-on: ubuntu-latest
+    if: inputs.version != ''
+    steps:
+      - name: Poll PyPI JSON API for version
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          # PyPI CDN can lag several minutes after upload. uv/pip resolvers
+          # treat "version not found" as fatal, so gate Python installs until
+          # the JSON API reports the expected version. 5min cap; polls every 15s.
+          for i in $(seq 1 20); do
+            if curl -fsSL "https://pypi.org/pypi/agnt/${VERSION}/json" >/dev/null 2>&1; then
+              echo "✓ PyPI reports agnt==${VERSION} available"
+              exit 0
+            fi
+            echo "  attempt $i/20: agnt==${VERSION} not yet on PyPI, waiting 15s..."
+            sleep 15
+          done
+          echo "✗ Timeout waiting for PyPI to propagate agnt==${VERSION}"
+          exit 1
+
   test-pip:
     name: pip (${{ matrix.os }})
+    needs: [wait-pypi]
+    if: always() && (needs.wait-pypi.result == 'success' || inputs.version == '')
     strategy:
       fail-fast: false
       matrix:
@@ -153,6 +178,8 @@ jobs:
 
   test-uv:
     name: uv (${{ matrix.os }})
+    needs: [wait-pypi]
+    if: always() && (needs.wait-pypi.result == 'success' || inputs.version == '')
     strategy:
       fail-fast: false
       matrix:
@@ -245,6 +272,8 @@ jobs:
 
   test-uvx:
     name: uvx (${{ matrix.os }})
+    needs: [wait-pypi]
+    if: always() && (needs.wait-pypi.result == 'success' || inputs.version == '')
     strategy:
       fail-fast: false
       matrix:
@@ -326,6 +355,8 @@ jobs:
 
   test-docker:
     name: Docker (${{ matrix.image }})
+    needs: [wait-pypi]
+    if: always() && (needs.wait-pypi.result == 'success' || inputs.version == '')
     strategy:
       fail-fast: false
       matrix:

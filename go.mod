@@ -11,12 +11,13 @@ require (
 	github.com/chromedp/chromedp v0.14.2
 	github.com/creack/pty v1.1.24
 	github.com/google/jsonschema-go v0.4.2
+	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/klauspost/compress v1.18.3
 	github.com/sblinch/kdl-go v0.0.0-20250930225324-bf4099d4614a
 	github.com/spf13/cobra v1.10.2
 	github.com/standardbeagle/claude-go v1.3.0
-	github.com/standardbeagle/go-cli-server v0.3.8
+	github.com/standardbeagle/go-cli-server v0.3.9
 	github.com/standardbeagle/go-sdk v1.5.0-agnt.2
 	github.com/stretchr/testify v1.10.0
 	github.com/tmc/langchaingo v0.1.14
@@ -58,7 +59,6 @@ require (
 	github.com/gobwas/ws v1.4.0 // indirect
 	github.com/google/generative-ai-go v0.15.1 // indirect
 	github.com/google/s2a-go v0.1.9 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/googleapis/enterprise-certificate-proxy v0.3.4 // indirect
 	github.com/googleapis/gax-go/v2 v2.14.1 // indirect
 	github.com/gorilla/css v1.0.1 // indirect

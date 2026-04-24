@@ -26,7 +26,7 @@ const (
 	EnvClaudeBigModel       = "CLAUDE_CODE_BIG_MODEL"
 
 	// MinMax Configuration
-	EnvMinMaxAPIKey    = "MINMAX_API_KEY"
+	EnvMinMaxAPIKey = "MINMAX_API_KEY"
 	EnvMinMaxAuthToken = "ANTHROPIC_AUTH_TOKEN"
 
 	// GLM Configuration
@@ -83,8 +83,8 @@ const (
 	APIProviderAnthropic APIProvider = "anthropic"
 	APIProviderBedrock   APIProvider = "bedrock"
 	APIProviderVertex    APIProvider = "vertex"
-	APIProviderGLM       APIProvider = "glm"    // ChatGLM / Zhipu AI
-	APIProviderMinMax    APIProvider = "minmax" // MiniMax
+	APIProviderGLM       APIProvider = "glm"       // ChatGLM / Zhipu AI
+	APIProviderMinMax    APIProvider = "minmax"    // MiniMax
 )
 
 // ModelTier represents different model quality/speed tiers.
@@ -506,9 +506,9 @@ const (
 	ModelHaiku  = "haiku"
 
 	// GLM (ChatGLM/Zhipu AI) models
-	ModelGLM4     = "glm-4"
+	ModelGLM4   = "glm-4"
 	ModelGLM4Plus = "glm-4-plus"
-	ModelGLM3_5   = "glm-3-5-turbo"
+	ModelGLM3_5 = "glm-3-5-turbo"
 
 	// MinMax models
 	ModelMinMaxABAB6_5Chat = "minimax-abab6.5-chat"

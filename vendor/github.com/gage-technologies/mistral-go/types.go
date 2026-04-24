@@ -5,10 +5,10 @@ const (
 	ModelMistralMediumLatest = "mistral-medium-latest"
 	ModelMistralSmallLatest  = "mistral-small-latest"
 	ModelCodestralLatest     = "codestral-latest"
-
-	ModelOpenMixtral8x7b  = "open-mixtral-8x7b"
-	ModelOpenMixtral8x22b = "open-mixtral-8x22b"
-	ModelOpenMistral7b    = "open-mistral-7b"
+	
+	ModelOpenMixtral8x7b     = "open-mixtral-8x7b"
+	ModelOpenMixtral8x22b    = "open-mixtral-8x22b"
+	ModelOpenMistral7b       = "open-mistral-7b"
 
 	ModelMistralLarge2402  = "mistral-large-2402"
 	ModelMistralMedium2312 = "mistral-medium-2312"
