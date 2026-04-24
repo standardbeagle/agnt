@@ -349,9 +349,9 @@ func sendToStreamSinkSafe(sink *StreamSink, entry proxy.LogEntry, proxyID string
 	case sink.Ch <- entry:
 	default:
 		if entry.Type == proxy.LogTypeProcessOutput && entry.ProcessOutput != nil {
-			debug.Warn("alert-hub", "stream sink channel full, dropping process output proc=%s", entry.ProcessOutput.ProcessID)
+			debug.Trace("alert-hub", "stream sink channel full, dropping process output proc=%s", entry.ProcessOutput.ProcessID)
 		} else {
-			debug.Warn("alert-hub", "stream sink channel full, dropping event type=%s proxy=%s", entry.Type, proxyID)
+			debug.Trace("alert-hub", "stream sink channel full, dropping event type=%s proxy=%s", entry.Type, proxyID)
 		}
 	}
 }
