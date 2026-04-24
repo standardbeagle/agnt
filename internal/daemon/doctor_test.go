@@ -10,6 +10,7 @@ import (
 )
 
 func TestRunDoctor_AllChecksRun(t *testing.T) {
+	t.Parallel()
 	report := runDoctorWithChecks(context.Background(), []doctorCheck{
 		{name: "check_a", fn: func(ctx context.Context) CheckResult {
 			return CheckResult{Name: "check_a", Status: StatusOK, Message: "all good"}
@@ -24,6 +25,7 @@ func TestRunDoctor_AllChecksRun(t *testing.T) {
 }
 
 func TestRunDoctor_OverallStatus_WorstWins(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		statuses []string
@@ -54,6 +56,7 @@ func TestRunDoctor_OverallStatus_WorstWins(t *testing.T) {
 }
 
 func TestRunDoctor_TimeoutEnforced(t *testing.T) {
+	t.Parallel()
 	slow := doctorCheck{
 		name: "slow_check",
 		fn: func(ctx context.Context) CheckResult {
@@ -76,18 +79,21 @@ func TestRunDoctor_TimeoutEnforced(t *testing.T) {
 }
 
 func TestRunDoctor_EmptyChecks(t *testing.T) {
+	t.Parallel()
 	report := runDoctorWithChecks(context.Background(), nil)
 	assert.Equal(t, StatusOK, report.Status)
 	assert.Empty(t, report.Checks)
 }
 
 func TestCheckSessionHealth_NoSessions(t *testing.T) {
+	t.Parallel()
 	reg := NewSessionRegistry(60 * time.Second)
 	result := checkSessionHealth(context.Background(), reg)
 	assert.Equal(t, StatusOK, result.Status)
 }
 
 func TestCheckSessionHealth_StaleSession(t *testing.T) {
+	t.Parallel()
 	reg := NewSessionRegistry(60 * time.Second)
 	session := &Session{
 		Code:      "test-1",
@@ -103,6 +109,7 @@ func TestCheckSessionHealth_StaleSession(t *testing.T) {
 }
 
 func TestCheckSessionHealth_ActiveSession(t *testing.T) {
+	t.Parallel()
 	reg := NewSessionRegistry(60 * time.Second)
 	session := &Session{
 		Code:      "test-2",
@@ -117,12 +124,14 @@ func TestCheckSessionHealth_ActiveSession(t *testing.T) {
 }
 
 func TestCheckStartupErrors_NoErrors(t *testing.T) {
+	t.Parallel()
 	store := NewStartupLogStore(100)
 	result := checkStartupErrors(context.Background(), store)
 	assert.Equal(t, StatusOK, result.Status)
 }
 
 func TestCheckStartupErrors_RecentErrors(t *testing.T) {
+	t.Parallel()
 	store := NewStartupLogStore(100)
 	store.Add(&StartupLogEntry{
 		ProcessID: "proc-1",
@@ -145,17 +154,20 @@ func TestCheckStartupErrors_RecentErrors(t *testing.T) {
 }
 
 func TestCheckConfigHealth_NoConfig(t *testing.T) {
+	t.Parallel()
 	result := checkConfigHealth(context.Background(), "/nonexistent/path/that/does/not/exist")
 	assert.Equal(t, StatusOK, result.Status)
 }
 
 func TestCheckDaemonHealth(t *testing.T) {
+	t.Parallel()
 	result := checkDaemonHealthStatic("0.12.20", 5*time.Minute, 3)
 	assert.Equal(t, StatusOK, result.Status)
 	assert.Contains(t, result.Message, "0.12.20")
 }
 
 func TestWorstStatus(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, StatusOK, worstStatus(StatusOK, StatusOK))
 	assert.Equal(t, StatusWarning, worstStatus(StatusOK, StatusWarning))
 	assert.Equal(t, StatusError, worstStatus(StatusWarning, StatusError))

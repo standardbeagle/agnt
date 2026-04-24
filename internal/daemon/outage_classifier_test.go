@@ -37,6 +37,7 @@ func driveTransition(tracker *HealthTracker, proc *goprocess.ManagedProcess, pro
 }
 
 func TestClassify_Healthy(t *testing.T) {
+	t.Parallel()
 	classifier, tracker, table, _, clock := newTestClassifier(t)
 
 	proc := newFakeProcess(t, "proc-1", goprocess.StateRunning)
@@ -52,6 +53,7 @@ func TestClassify_Healthy(t *testing.T) {
 }
 
 func TestClassify_ShortRebuild(t *testing.T) {
+	t.Parallel()
 	classifier, tracker, table, _, clock := newTestClassifier(t)
 
 	proc := newFakeProcess(t, "proc-1", goprocess.StateRunning)
@@ -72,6 +74,7 @@ func TestClassify_ShortRebuild(t *testing.T) {
 }
 
 func TestClassify_LongRebuild(t *testing.T) {
+	t.Parallel()
 	classifier, tracker, table, _, clock := newTestClassifier(t)
 
 	proc := newFakeProcess(t, "proc-1", goprocess.StateRunning)
@@ -89,6 +92,7 @@ func TestClassify_LongRebuild(t *testing.T) {
 }
 
 func TestClassify_ExpiredRebuild(t *testing.T) {
+	t.Parallel()
 	classifier, tracker, table, _, clock := newTestClassifier(t)
 
 	proc := newFakeProcess(t, "proc-1", goprocess.StateRunning)
@@ -106,6 +110,7 @@ func TestClassify_ExpiredRebuild(t *testing.T) {
 }
 
 func TestClassify_Crash_DirectFailed(t *testing.T) {
+	t.Parallel()
 	classifier, tracker, table, _, _ := newTestClassifier(t)
 
 	proc := newFakeProcess(t, "proc-1", goprocess.StateRunning)
@@ -124,6 +129,7 @@ func TestClassify_Crash_DirectFailed(t *testing.T) {
 }
 
 func TestClassify_Crash_NonZeroExit(t *testing.T) {
+	t.Parallel()
 	classifier, tracker, table, _, _ := newTestClassifier(t)
 
 	// Construct a Stopping process with a non-zero exit code recorded
@@ -158,6 +164,7 @@ func TestClassify_Crash_NonZeroExit(t *testing.T) {
 }
 
 func TestClassify_Crash_RateLimit(t *testing.T) {
+	t.Parallel()
 	classifier, tracker, table, _, clock := newTestClassifier(t)
 
 	proc := newFakeProcess(t, "proc-1", goprocess.StateRunning)
@@ -183,6 +190,7 @@ func TestClassify_Crash_RateLimit(t *testing.T) {
 }
 
 func TestSuppressionMode_MapsCorrectly(t *testing.T) {
+	t.Parallel()
 	classifier, tracker, table, _, clock := newTestClassifier(t)
 	t.Cleanup(func() { classifier.Forget("proc-1") })
 
@@ -216,6 +224,7 @@ func TestSuppressionMode_MapsCorrectly(t *testing.T) {
 }
 
 func TestClassify_RebuildSignalEvidence(t *testing.T) {
+	t.Parallel()
 	// Without daemon-initiated, but with a rebuild-pattern signal
 	// observed within RebuildSignalGrace, the classifier should still
 	// classify as Rebuild.
@@ -239,6 +248,7 @@ func TestClassify_RebuildSignalEvidence(t *testing.T) {
 }
 
 func TestClassify_RebuildSignalStaleIsCrash(t *testing.T) {
+	t.Parallel()
 	// Same as above, but the rebuild signal is older than
 	// RebuildSignalGrace. The classifier must treat the outage as a
 	// Crash because there's no fresh rebuild evidence.
@@ -259,6 +269,7 @@ func TestClassify_RebuildSignalStaleIsCrash(t *testing.T) {
 }
 
 func TestClassify_DaemonInitiatedFlagClearsOnRecovery(t *testing.T) {
+	t.Parallel()
 	// Set the daemon-initiated flag, complete a rebuild, and then have
 	// the process die unexpectedly. The stale flag must NOT bleed into
 	// the second outage — that one is a real crash.
@@ -286,6 +297,7 @@ func TestClassify_DaemonInitiatedFlagClearsOnRecovery(t *testing.T) {
 }
 
 func TestClassify_UnlinkedProxyReturnsHealthy(t *testing.T) {
+	t.Parallel()
 	// SuppressionMode for an empty processID returns ModeOff
 	// unconditionally (matches gate's "unlinked proxy never suppress"
 	// contract).
@@ -296,6 +308,7 @@ func TestClassify_UnlinkedProxyReturnsHealthy(t *testing.T) {
 }
 
 func TestClassify_NilClassifierIsHealthy(t *testing.T) {
+	t.Parallel()
 	var c *OutageClassifier
 	assert.Equal(t, OutageHealthy, c.Classify("proc-1"))
 	assert.Equal(t, ModeOff, c.SuppressionMode("proc-1"))
@@ -304,6 +317,7 @@ func TestClassify_NilClassifierIsHealthy(t *testing.T) {
 }
 
 func TestClassify_NoOutageMarkerReturnsRebuild(t *testing.T) {
+	t.Parallel()
 	// A process observed in Starting from the very start (never reaches
 	// Running) has no outageStartedAt marker. The classifier should
 	// default to Rebuild — initial startup, suppress proxy noise.
@@ -317,6 +331,7 @@ func TestClassify_NoOutageMarkerReturnsRebuild(t *testing.T) {
 }
 
 func TestNoteOutageOnset_RingBufferBound(t *testing.T) {
+	t.Parallel()
 	// The crash-rate ring is bounded to crashHistorySize. Adding more
 	// entries than that must not blow memory or break the rate check.
 	classifier, _, _, _, clock := newTestClassifier(t)
@@ -331,6 +346,7 @@ func TestNoteOutageOnset_RingBufferBound(t *testing.T) {
 }
 
 func TestForget_StopsLongRebuildTimer(t *testing.T) {
+	t.Parallel()
 	// After Forget, the per-process timer must be stopped so we don't
 	// leak goroutines on rapid script churn.
 	classifier, _, _, _, _ := newTestClassifier(t)

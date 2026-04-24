@@ -22,6 +22,7 @@ import (
 // Daemon via New() but deliberately skip Start() — the gate is evaluated
 // before any of the fields that Start() populates are touched.
 func TestOrphanScan_ConfigDisabledByDefault(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
@@ -71,6 +72,7 @@ func TestOrphanScan_ConfigDisabledByDefault(t *testing.T) {
 // behavioral test for the scan itself lives under the procisolation
 // build tag (daemon_orphan_pgid_test.go).
 func TestOrphanScan_ConfigEnabledOptIn(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "test.sock")
 

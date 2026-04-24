@@ -15,6 +15,7 @@ import (
 )
 
 func TestMakeProxyIDFromURL(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		projectPath string
@@ -81,6 +82,7 @@ func TestMakeProxyIDFromURL(t *testing.T) {
 }
 
 func TestMakeProxyIDFromURL_Uniqueness(t *testing.T) {
+	t.Parallel()
 	// Verify that different project paths produce different IDs
 	id1 := makeProxyIDFromURL("/home/user/myapp", "dev", "http://localhost:3000")
 	id2 := makeProxyIDFromURL("/home/work/myapp", "dev", "http://localhost:3000")
@@ -99,6 +101,7 @@ func TestMakeProxyIDFromURL_Uniqueness(t *testing.T) {
 }
 
 func TestMakeProcessID(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		projectPath string
@@ -152,6 +155,7 @@ func TestMakeProcessID(t *testing.T) {
 }
 
 func TestMakeProcessID_Uniqueness(t *testing.T) {
+	t.Parallel()
 	// Verify that different project paths produce different IDs
 	id1 := makeProcessID("/home/user/myapp", "dev")
 	id2 := makeProcessID("/home/work/myapp", "dev")
@@ -168,6 +172,7 @@ func TestMakeProcessID_Uniqueness(t *testing.T) {
 }
 
 func TestMapKeys(t *testing.T) {
+	t.Parallel()
 	t.Run("empty map", func(t *testing.T) {
 		m := map[string]*config.ScriptConfig{}
 		keys := mapKeys(m)
@@ -213,6 +218,7 @@ func TestMapKeys(t *testing.T) {
 }
 
 func TestMapKeysProxy(t *testing.T) {
+	t.Parallel()
 	t.Run("empty map", func(t *testing.T) {
 		m := map[string]*config.ProxyConfig{}
 		keys := mapKeysProxy(m)
@@ -258,6 +264,7 @@ func TestMapKeysProxy(t *testing.T) {
 }
 
 func TestProxyEvent_HandleURLDetected_ProxyLimit(t *testing.T) {
+	t.Parallel()
 	tmpDir := shortTempDir(t)
 	sockPath := shortSockPath(t)
 
@@ -314,6 +321,7 @@ proxies {
 }
 
 func TestProxyEvent_HandleURLDetected_ParseError(t *testing.T) {
+	t.Parallel()
 	sockPath := shortSockPath(t)
 
 	daemon := New(DaemonConfig{
@@ -343,6 +351,7 @@ func TestProxyEvent_HandleURLDetected_ParseError(t *testing.T) {
 }
 
 func TestProxyEvent_HandleURLDetected_NoMatchingProxyConfig(t *testing.T) {
+	t.Parallel()
 	tmpDir := shortTempDir(t)
 	sockPath := shortSockPath(t)
 
@@ -391,6 +400,7 @@ proxies {
 }
 
 func TestProxyEvent_HandleURLDetected_DuplicateProxy(t *testing.T) {
+	t.Parallel()
 	tmpDir := shortTempDir(t)
 	sockPath := shortSockPath(t)
 
@@ -494,6 +504,7 @@ func countStartupEntriesByEvent(daemon *Daemon, eventType string) int {
 // FallbackPortCheck event with no pre-existing proxy creates a proxy targeting
 // localhost:<fallback-port> and records a startup_proxy_fallback_used entry.
 func TestProxyEvent_HandleFallbackPortCheck_CreatesProxy(t *testing.T) {
+	t.Parallel()
 	daemon, tmpDir := newFallbackTestDaemon(t)
 
 	proxyName := "dev"
@@ -555,6 +566,7 @@ func TestProxyEvent_HandleFallbackPortCheck_CreatesProxy(t *testing.T) {
 // detection won the race) does NOT create a duplicate proxy and records a
 // startup_proxy_fallback_skipped_already_running entry instead.
 func TestProxyEvent_HandleFallbackPortCheck_SkipsWhenProxyExists(t *testing.T) {
+	t.Parallel()
 	daemon, tmpDir := newFallbackTestDaemon(t)
 
 	proxyName := "dev"
@@ -612,6 +624,7 @@ func TestProxyEvent_HandleFallbackPortCheck_SkipsWhenProxyExists(t *testing.T) {
 // that a second FallbackPortCheck for the same proxy name is a no-op (the
 // fallback-id proxy already exists from the first check).
 func TestProxyEvent_HandleFallbackPortCheck_SkipsWhenFallbackIDExists(t *testing.T) {
+	t.Parallel()
 	daemon, tmpDir := newFallbackTestDaemon(t)
 
 	proxyName := "dev"
@@ -652,6 +665,7 @@ func TestProxyEvent_HandleFallbackPortCheck_SkipsWhenFallbackIDExists(t *testing
 // missing required fields are not silently dropped — they emit a
 // startup_proxy_fallback_failed entry.
 func TestProxyEvent_HandleFallbackPortCheck_InvalidEvent(t *testing.T) {
+	t.Parallel()
 	daemon, tmpDir := newFallbackTestDaemon(t)
 
 	cases := []struct {
@@ -715,6 +729,7 @@ func TestProxyEvent_HandleFallbackPortCheck_InvalidEvent(t *testing.T) {
 // proxy name does NOT skip. The skip must be scoped to the specific proxy
 // name, not to "any proxy tracked under this script".
 func TestProxyEvent_HandleFallbackPortCheck_SiblingProxyDoesNotSkip(t *testing.T) {
+	t.Parallel()
 	daemon, tmpDir := newFallbackTestDaemon(t)
 
 	scriptName := "web"
@@ -763,6 +778,7 @@ func TestProxyEvent_HandleFallbackPortCheck_SiblingProxyDoesNotSkip(t *testing.T
 // TestProxyEvent_HandleFallbackPortCheck_CustomHost verifies that the Host
 // field on the proxy config is honored when building the target URL.
 func TestProxyEvent_HandleFallbackPortCheck_CustomHost(t *testing.T) {
+	t.Parallel()
 	daemon, tmpDir := newFallbackTestDaemon(t)
 
 	proxyCfg := &config.ProxyConfig{
@@ -794,6 +810,7 @@ func TestProxyEvent_HandleFallbackPortCheck_CustomHost(t *testing.T) {
 // buildProxyServerConfig; exercising it directly is cheaper than
 // spinning up three handler tests that all assert the same thing.
 func TestBuildProxyServerConfig(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name           string
 		cfg            *config.ProxyConfig
@@ -906,6 +923,7 @@ func TestBuildProxyServerConfig(t *testing.T) {
 // port requested by net.Listen("tcp", "127.0.0.1:0") so the test never
 // collides with a real dev server on the host.
 func TestHandleExplicitStart_ListenPortAndTLSVerify(t *testing.T) {
+	t.Parallel()
 	// Reserve a free ephemeral port for the test. We close the
 	// listener immediately; there's a tiny race window before the
 	// proxy binds to the same port, but it's acceptable for a unit
@@ -978,6 +996,7 @@ func reserveFreePort(t *testing.T) int {
 // doesn't have to correlate a terse runtime bind error back to the
 // declared config.
 func TestAutostartProxy_ListenPortConflict_EmitsStartupError(t *testing.T) {
+	t.Parallel()
 	daemon, tmpDir := newFallbackTestDaemon(t)
 
 	// Hold a port we'll hand to autostartProxy as the declared
@@ -1046,6 +1065,7 @@ func TestAutostartProxy_ListenPortConflict_EmitsStartupError(t *testing.T) {
 // the proxy in the runtime ProxyManager but never called stateMgr.AddProxy,
 // so a daemon restart lost all config-driven proxies.
 func TestHandleExplicitStart_PersistsToStateManager(t *testing.T) {
+	t.Parallel()
 	tmpDir := shortTempDir(t)
 	sockPath := shortSockPath(t)
 	statePath := filepath.Join(tmpDir, "daemon-state.json")
@@ -1118,6 +1138,7 @@ func TestHandleExplicitStart_PersistsToStateManager(t *testing.T) {
 // still succeeds. Protects the minimal-daemon test paths that don't enable
 // persistence.
 func TestHandleExplicitStart_NoStateManager_DoesNotPanic(t *testing.T) {
+	t.Parallel()
 	daemon, tmpDir := newFallbackTestDaemon(t)
 
 	// newFallbackTestDaemon does not enable state persistence.
@@ -1144,6 +1165,7 @@ func TestHandleExplicitStart_NoStateManager_DoesNotPanic(t *testing.T) {
 // entirely — no spurious conflict entries in the hash-based
 // allocator path. Regression guard for the pre-flight gate.
 func TestAutostartProxy_NoListenPort_NoPreflightError(t *testing.T) {
+	t.Parallel()
 	daemon, tmpDir := newFallbackTestDaemon(t)
 
 	proxyCfg := &config.ProxyConfig{
@@ -1167,6 +1189,7 @@ func TestAutostartProxy_NoListenPort_NoPreflightError(t *testing.T) {
 // admin surface — they only appear in PROXY LIST, which the status bar
 // does not consume. Iteration-2 / T2 regression guard.
 func TestHandleExplicitStart_RegistersScriptEntry(t *testing.T) {
+	t.Parallel()
 	daemon, tmpDir := newFallbackTestDaemon(t)
 
 	proxyID := makeProcessID(tmpDir, "standalone")
@@ -1214,6 +1237,7 @@ func TestHandleExplicitStart_RegistersScriptEntry(t *testing.T) {
 // autostartScript-then-URLDetected ordering case when a refactor
 // routes URL-detected proxies through the explicit path.
 func TestHandleExplicitStart_ScriptLinkedProxy_DoesNotDuplicate(t *testing.T) {
+	t.Parallel()
 	daemon, tmpDir := newFallbackTestDaemon(t)
 
 	// Pretend autostartScript registered a process-kind entry first.
@@ -1246,6 +1270,7 @@ func TestHandleExplicitStart_ScriptLinkedProxy_DoesNotDuplicate(t *testing.T) {
 // future refactor that allows re-registration upstream must not
 // accidentally create a duplicate admin row.
 func TestHandleExplicitStart_RegisterIsIdempotent(t *testing.T) {
+	t.Parallel()
 	daemon, tmpDir := newFallbackTestDaemon(t)
 
 	// First call goes through the full handler and registers the entry.

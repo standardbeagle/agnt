@@ -14,6 +14,7 @@ import (
 // TestNewDaemon_StatePathExplicit verifies that when DaemonConfig.StatePath is
 // set, the daemon's state manager writes to exactly that path (AC#1).
 func TestNewDaemon_StatePathExplicit(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	statePath := filepath.Join(stateDir, "explicit-state.json")
 
@@ -38,6 +39,7 @@ func TestNewDaemon_StatePathExplicit(t *testing.T) {
 // DaemonConfig.StatePath is empty, the daemon resolves the path once at
 // construction time from XDG_STATE_HOME — not on every access (AC#2).
 func TestNewDaemon_StatePathFallsBackToXDGStateHome(t *testing.T) {
+	// t.Setenv is incompatible with t.Parallel()
 	stateHome := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", stateHome)
 
@@ -60,6 +62,7 @@ func TestNewDaemon_StatePathFallsBackToXDGStateHome(t *testing.T) {
 }
 
 func TestDefaultStateManagerConfig(t *testing.T) {
+	t.Parallel()
 	config := DefaultStateManagerConfig()
 	if config.StatePath == "" {
 		t.Error("Expected non-empty state path")
@@ -73,6 +76,7 @@ func TestDefaultStateManagerConfig(t *testing.T) {
 }
 
 func TestDefaultStatePath(t *testing.T) {
+	t.Parallel()
 	path := DefaultStatePath()
 	if path == "" {
 		t.Error("Expected non-empty default state path")
@@ -81,7 +85,7 @@ func TestDefaultStatePath(t *testing.T) {
 }
 
 func TestDefaultStatePath_WithXDGStateHome(t *testing.T) {
-	// Use t.Setenv so the mutation is test-scoped and safe under parallel runs.
+	// t.Setenv is incompatible with t.Parallel()
 	tmpDir := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", tmpDir)
 
@@ -93,6 +97,7 @@ func TestDefaultStatePath_WithXDGStateHome(t *testing.T) {
 }
 
 func TestNewStateManager(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	statePath := filepath.Join(tmpDir, "test-state.json")
 
@@ -110,6 +115,7 @@ func TestNewStateManager(t *testing.T) {
 }
 
 func TestNewStateManager_WithDefaults(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	statePath := filepath.Join(tmpDir, "test-state.json")
 
@@ -127,6 +133,7 @@ func TestNewStateManager_WithDefaults(t *testing.T) {
 }
 
 func TestStateManager_LoadSave(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	statePath := filepath.Join(tmpDir, "test-state.json")
 
@@ -158,6 +165,7 @@ func TestStateManager_LoadSave(t *testing.T) {
 }
 
 func TestStateManager_LoadNonExistent(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	statePath := filepath.Join(tmpDir, "nonexistent", "test-state.json")
 
@@ -177,6 +185,7 @@ func TestStateManager_LoadNonExistent(t *testing.T) {
 }
 
 func TestStateManager_OverlayEndpoint(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	statePath := filepath.Join(tmpDir, "test-state.json")
 
@@ -199,6 +208,7 @@ func TestStateManager_OverlayEndpoint(t *testing.T) {
 }
 
 func TestStateManager_ProxyOperations(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	statePath := filepath.Join(tmpDir, "test-state.json")
 
@@ -243,6 +253,7 @@ func TestStateManager_ProxyOperations(t *testing.T) {
 }
 
 func TestStateManager_Clear(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	statePath := filepath.Join(tmpDir, "test-state.json")
 
@@ -271,6 +282,7 @@ func TestStateManager_Clear(t *testing.T) {
 }
 
 func TestStateManager_SaveDebounced(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	statePath := filepath.Join(tmpDir, "test-state.json")
 
@@ -289,15 +301,14 @@ func TestStateManager_SaveDebounced(t *testing.T) {
 	sm.SaveDebounced()
 
 	// Wait for debounce to complete
-	time.Sleep(100 * time.Millisecond)
-
-	// File should exist
-	if _, err := os.Stat(statePath); os.IsNotExist(err) {
-		t.Error("State file should exist after debounced save")
-	}
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(statePath)
+		return !os.IsNotExist(err)
+	}, 2*time.Second, 10*time.Millisecond, "State file should exist after debounced save")
 }
 
 func TestStateManager_Flush(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	statePath := filepath.Join(tmpDir, "test-state.json")
 
@@ -324,6 +335,7 @@ func TestStateManager_Flush(t *testing.T) {
 }
 
 func TestStateManager_State(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	statePath := filepath.Join(tmpDir, "test-state.json")
 
@@ -344,6 +356,7 @@ func TestStateManager_State(t *testing.T) {
 }
 
 func TestStateManager_LoadInvalidJSON(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	statePath := filepath.Join(tmpDir, "test-state.json")
 
@@ -369,6 +382,7 @@ func TestStateManager_LoadInvalidJSON(t *testing.T) {
 }
 
 func TestStateManager_PersistAcrossRestart(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	statePath := filepath.Join(tmpDir, "test-state.json")
 
@@ -410,6 +424,7 @@ func TestStateManager_PersistAcrossRestart(t *testing.T) {
 // New tests for write-behind channel behavior
 
 func TestStateManager_ConcurrentSaveLoadNoDeadlock(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	statePath := filepath.Join(tmpDir, "concurrent-state.json")
 
@@ -471,6 +486,7 @@ func TestStateManager_ConcurrentSaveLoadNoDeadlock(t *testing.T) {
 }
 
 func TestStateManager_FlushOnClose(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	statePath := filepath.Join(tmpDir, "flush-close-state.json")
 
@@ -498,6 +514,7 @@ func TestStateManager_FlushOnClose(t *testing.T) {
 }
 
 func TestStateManager_DebouncedSavesCoalesce(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	statePath := filepath.Join(tmpDir, "coalesce-state.json")
 
@@ -514,15 +531,18 @@ func TestStateManager_DebouncedSavesCoalesce(t *testing.T) {
 	}
 
 	// Wait for debounce
-	time.Sleep(200 * time.Millisecond)
+	require.Eventually(t, func() bool {
+		data, err := os.ReadFile(statePath)
+		return err == nil && len(data) > 0
+	}, 2*time.Second, 10*time.Millisecond, "State file should be written after debounce")
 
-	// Verify file exists with final state
 	data, err := os.ReadFile(statePath)
 	require.NoError(t, err)
 	assert.Contains(t, string(data), "http://test")
 }
 
 func TestStateManager_CloseIdempotent(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	statePath := filepath.Join(tmpDir, "close-idem.json")
 
@@ -536,6 +556,7 @@ func TestStateManager_CloseIdempotent(t *testing.T) {
 }
 
 func TestStateManager_FlushAfterClose(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	statePath := filepath.Join(tmpDir, "flush-after-close.json")
 

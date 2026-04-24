@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/standardbeagle/go-cli-server/process"
+	"github.com/stretchr/testify/require"
 )
 
 // cleanupTestDaemon aggressively cleans up a test daemon process.
@@ -114,12 +115,8 @@ func TestDaemonUpgrade_FullCycle(t *testing.T) {
 	defer func() { cleanupTestDaemon(t, sockPath) }()
 
 	// Wait for daemon to be ready
-	time.Sleep(500 * time.Millisecond)
-
-	// Verify daemon is running
-	if !IsRunning(sockPath) {
-		t.Fatal("Daemon not running after start")
-	}
+	require.Eventually(t, func() bool { return IsRunning(sockPath) },
+		5*time.Second, 20*time.Millisecond, "daemon not running after start")
 
 	// Get daemon info
 	client := NewClient(WithSocketPath(sockPath))
@@ -183,11 +180,10 @@ func TestDaemonUpgrade_FullCycle(t *testing.T) {
 			binaryVersion, info2.Version)
 	}
 
-	// Uptime should be less (daemon was restarted)
-	if info2.Uptime >= initialUptime {
-		t.Errorf("Daemon was not restarted: uptime %v >= initial %v",
-			info2.Uptime, initialUptime)
-	}
+	// Version change already proves restart; uptime comparison is racy
+	// (initial daemon may be measured at very low uptime, new daemon may exceed it
+	// depending on upgrade duration). Log for observability only.
+	t.Logf("Uptime after upgrade: %v (initial was %v)", info2.Uptime, initialUptime)
 	// Cleanup is handled by defer
 }
 
@@ -221,7 +217,8 @@ func TestUpgradeLock_ConcurrentAttempts(t *testing.T) {
 	}
 	defer func() { cleanupTestDaemon(t, sockPath) }()
 
-	time.Sleep(500 * time.Millisecond)
+	require.Eventually(t, func() bool { return IsRunning(sockPath) },
+		5*time.Second, 20*time.Millisecond, "daemon not running after start")
 
 	// Create two upgraders
 	upgrader1 := NewDaemonUpgrader(UpgradeConfig{
@@ -359,7 +356,8 @@ func TestUpgradeVersionCheck(t *testing.T) {
 	}
 	defer func() { cleanupTestDaemon(t, sockPath) }()
 
-	time.Sleep(500 * time.Millisecond)
+	require.Eventually(t, func() bool { return IsRunning(sockPath) },
+		5*time.Second, 20*time.Millisecond, "daemon not running after start")
 
 	// Create upgrader WITHOUT force flag
 	upgrader := NewDaemonUpgrader(UpgradeConfig{

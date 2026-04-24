@@ -17,6 +17,7 @@ import (
 )
 
 func TestStartupPortCleanup_NoPersistedProxies(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	sockPath := tmpDir + "/test.sock"
 	statePath := tmpDir + "/state.json"
@@ -38,6 +39,7 @@ func TestStartupPortCleanup_NoPersistedProxies(t *testing.T) {
 }
 
 func TestStartupPortCleanup_PortFree(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	sockPath := tmpDir + "/test.sock"
 	statePath := tmpDir + "/state.json"
@@ -65,6 +67,7 @@ func TestStartupPortCleanup_PortFree(t *testing.T) {
 }
 
 func TestStartupPortCleanup_KillsOrphan(t *testing.T) {
+	t.Parallel()
 	if os.Getuid() == 0 {
 		t.Skip("don't run as root")
 	}
@@ -127,6 +130,7 @@ func TestStartupPortCleanup_KillsOrphan(t *testing.T) {
 }
 
 func TestStartupPortCleanup_SkipsManagedPIDs(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	sockPath := tmpDir + "/test.sock"
 	statePath := tmpDir + "/state.json"
@@ -165,6 +169,7 @@ func TestStartupPortCleanup_SkipsManagedPIDs(t *testing.T) {
 }
 
 func TestStartupPortCleanup_MultipleProxies(t *testing.T) {
+	t.Parallel()
 	if os.Getuid() == 0 {
 		t.Skip("don't run as root")
 	}
@@ -232,6 +237,7 @@ func TestStartupPortCleanup_MultipleProxies(t *testing.T) {
 }
 
 func TestCollectPersistedPorts(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	sockPath := tmpDir + "/test.sock"
 	statePath := tmpDir + "/state.json"

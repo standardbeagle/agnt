@@ -118,3 +118,36 @@ Each of these leaves a port or resource held after session shutdown, but that is
 ### Cross-Platform Note
 
 The session pgid primitives are Unix-only (`//go:build !windows`). On Windows, Job Objects already provide equivalent cascade-kill semantics for the PTY child tree, and `SessionPGID` is always 0 — `killSessionPGID` is a no-op guarded by `pgid <= 1`. The startup orphan scan is Linux-only (`//go:build linux`) because it walks `/proc`; on non-Linux Unix, `ScanOrphanPGIDs` returns an empty slice.
+
+## Test startup contract
+
+Tests almost never want the heavyweight production startup — walking `/proc`, issuing `kill(2)` to whatever PID currently owns a port, replaying persisted proxy state, or spinning up the 24-hour update-check ticker. Running any of those inside a unit test either slows the suite (hundreds of ms per construction × thousands of daemon instances) or, worse, reaps unrelated host processes owned by the same uid.
+
+The daemon solves this with a two-entry-point split. Both entry points share the same `bootstrap()` helper, so the test path cannot drift from production:
+
+| Step | `Start()` (production) | `NewForTest(t, cfg)` |
+|------|------------------------|----------------------|
+| `setupDebugLogging` — rotated log file at `GetLogPath()` | runs | **skipped** |
+| `bootstrap()` — `registerCommands` + `SetSessionCleanup` + `hub.Start` + `scheduler.Start` + `urlTracker.Start` + `handleProxyEvents` goroutine + `drainHooks` goroutine | runs | runs |
+| `cleanupOrphans` — walks `FilePIDTracker`, kills stale PIDs | runs | **skipped** |
+| `startupPortCleanup` — `FindPIDsByPort` + `KillProcessByPort` for every persisted proxy port | runs | **skipped** |
+| `startupOrphanPGIDScan("")` — `/proc` walk for orphan pgids | runs (gated by `OrphanScanEnabled`) | **skipped** (belt-and-braces; `OrphanScanEnabled` already defaults to false) |
+| `restoreProxies` — replay persisted `ProxyConfig`s into fresh `proxym` | runs | **skipped** |
+| `updateChecker.Start` — 24h GitHub poll goroutine | runs (gated by `EnableUpdateCheck`) | **skipped** |
+| `t.Cleanup(Stop)` registration | n/a | **registered** — 5s timeout |
+
+### What the split guarantees
+
+- **Production `Start()` is byte-for-byte unchanged** — the original sequence is preserved via the shared `bootstrap()` helper. Reviewers who "fix" an apparent omission in `NewForTest` by pulling a production-only step back in will trip the `TestNewForTest_StartsUnder100ms` assertion (100ms budget, ~20ms observed on a laptop).
+- **No build tag is needed.** The `*testing.T` parameter is the fence — production code cannot construct a `*testing.T`, so `NewForTest` is unreachable from any non-test caller. Compilation cost of pulling in the `testing` package is negligible for the `agnt` binary.
+- **`daemontest.New` routes through `NewForTest`**, so every test that adopted the factory (iter 28, commit `dfcd2a4`) automatically gets the fast startup path. Tests that specifically exercise `cleanupOrphans`, `startupPortCleanup`, `restoreProxies`, or `startupOrphanPGIDScan` continue to call those methods directly — none of them are private to `Start()`.
+
+### File ownership
+
+| Primitive | File |
+|-----------|------|
+| `bootstrap()` (shared wiring) | `internal/daemon/daemon.go` |
+| `Start()` (production path — bootstrap + heavy ops) | `internal/daemon/daemon.go` |
+| `NewForTest(t, cfg)` (test entry point) | `internal/daemon/test_helpers.go` |
+| `daemontest.New` (ephemeral socket + opts + cleanup) | `internal/daemontest/factory.go` |
+| Timing + hub-accept assertions | `internal/daemon/test_helpers_test.go` |

@@ -17,6 +17,7 @@ import (
 // to GetOrCreate for the same project path result in startFn being called
 // exactly once and all callers receiving the same handle.
 func TestAutostartManager_GetOrCreate_ExactlyOnce(t *testing.T) {
+	t.Parallel()
 	mgr := NewAutostartManager()
 	tmpDir := t.TempDir()
 
@@ -62,6 +63,7 @@ func TestAutostartManager_GetOrCreate_ExactlyOnce(t *testing.T) {
 // handle terminates the worker, closes the done channel, and the context
 // passed to startFn is cancelled.
 func TestAutostartManager_Cancel_RunningHandle(t *testing.T) {
+	t.Parallel()
 	mgr := NewAutostartManager()
 	tmpDir := t.TempDir()
 
@@ -100,6 +102,7 @@ func TestAutostartManager_Cancel_RunningHandle(t *testing.T) {
 // TestAutostartManager_Cancel_CompletedHandle verifies that cancelling an
 // already-completed handle is a safe no-op.
 func TestAutostartManager_Cancel_CompletedHandle(t *testing.T) {
+	t.Parallel()
 	mgr := NewAutostartManager()
 	tmpDir := t.TempDir()
 
@@ -126,6 +129,7 @@ func TestAutostartManager_Cancel_CompletedHandle(t *testing.T) {
 // TestAutostartManager_ProgressAccumulation verifies that progress events
 // emitted through the channel are accumulated and retrievable from the handle.
 func TestAutostartManager_ProgressAccumulation(t *testing.T) {
+	t.Parallel()
 	mgr := NewAutostartManager()
 	tmpDir := t.TempDir()
 
@@ -159,6 +163,7 @@ func TestAutostartManager_ProgressAccumulation(t *testing.T) {
 // TestAutostartManager_DifferentPaths verifies that different project paths
 // get independent handles and startFn runs once per path.
 func TestAutostartManager_DifferentPaths(t *testing.T) {
+	t.Parallel()
 	mgr := NewAutostartManager()
 	path1 := t.TempDir()
 	path2 := t.TempDir()
@@ -182,6 +187,7 @@ func TestAutostartManager_DifferentPaths(t *testing.T) {
 // TestAutostartManager_LateJoinerSnapshot verifies that calling Progress()
 // after the handle is done returns the complete history.
 func TestAutostartManager_LateJoinerSnapshot(t *testing.T) {
+	t.Parallel()
 	mgr := NewAutostartManager()
 	tmpDir := t.TempDir()
 
@@ -220,6 +226,7 @@ func TestAutostartManager_LateJoinerSnapshot(t *testing.T) {
 // TestAutostartManager_PathNormalization verifies that different path
 // representations pointing to the same directory share a single handle.
 func TestAutostartManager_PathNormalization(t *testing.T) {
+	t.Parallel()
 	mgr := NewAutostartManager()
 	tmpDir := t.TempDir()
 
@@ -258,6 +265,7 @@ func TestAutostartManager_PathNormalization(t *testing.T) {
 // synthetic PhaseDone, in order, with stamped ProjectPath and non-zero
 // Timestamp.
 func TestAutostartManager_BroadcastReceivesAllPhases(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	expectedPath := normalizePath(tmpDir)
 
@@ -304,6 +312,7 @@ func TestAutostartManager_BroadcastReceivesAllPhases(t *testing.T) {
 // progress events propagate through the broadcast callback with the original
 // error attached, so subscribers can route them as diagnostic errors.
 func TestAutostartManager_BroadcastFailureEvent(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 
 	var (
@@ -343,6 +352,7 @@ func TestAutostartManager_BroadcastFailureEvent(t *testing.T) {
 // ordering contract: when a subscriber receives PhaseDone via broadcast,
 // handle.Result() is already populated.
 func TestAutostartManager_BroadcastResultVisibleOnPhaseDone(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 
 	resultObserved := make(chan *AutostartResult, 1)
@@ -391,6 +401,7 @@ func TestAutostartManager_BroadcastResultVisibleOnPhaseDone(t *testing.T) {
 // TestAutostartManager_NilBroadcastIsSafe verifies that the manager works
 // without a broadcast callback (the legacy NewAutostartManager constructor).
 func TestAutostartManager_NilBroadcastIsSafe(t *testing.T) {
+	t.Parallel()
 	mgr := NewAutostartManager()
 	tmpDir := t.TempDir()
 
@@ -409,6 +420,7 @@ func TestAutostartManager_NilBroadcastIsSafe(t *testing.T) {
 // record-then-broadcast ordering: at the moment broadcast fires for an
 // event, that event is already visible in handle.Progress().
 func TestAutostartManager_BroadcastRecordingOrder(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 
 	var mgrPtr atomic.Pointer[AutostartManager]
@@ -469,6 +481,7 @@ func (e errBootSentinel) Error() string { return string(e) }
 // AlertHub.BroadcastLogEntry → StreamSink. This is the contract that
 // `agnt monitor --types diagnostic` and the MCP `watch` tool depend on.
 func TestAutostartManager_BroadcastIntegratesWithAlertHub(t *testing.T) {
+	t.Parallel()
 	hub := NewAlertHub()
 	d := &Daemon{alertHub: hub}
 
@@ -533,6 +546,7 @@ loop:
 // TestAutostartManager_ProgressQuery verifies that AutostartManager.Progress
 // returns the history for a known path and nil for unknown paths.
 func TestAutostartManager_ProgressQuery(t *testing.T) {
+	t.Parallel()
 	mgr := NewAutostartManager()
 	tmpDir := t.TempDir()
 

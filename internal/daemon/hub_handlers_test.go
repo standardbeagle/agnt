@@ -11,10 +11,12 @@ import (
 )
 
 func TestParseTimeString_Empty(t *testing.T) {
+	t.Parallel()
 	assert.Nil(t, parseTimeString(""))
 }
 
 func TestParseTimeString_RFC3339(t *testing.T) {
+	t.Parallel()
 	ts := "2025-01-15T10:30:00Z"
 	result := parseTimeString(ts)
 	require.NotNil(t, result)
@@ -24,6 +26,7 @@ func TestParseTimeString_RFC3339(t *testing.T) {
 }
 
 func TestParseTimeString_Duration(t *testing.T) {
+	t.Parallel()
 	before := time.Now()
 	result := parseTimeString("5m")
 	after := time.Now()
@@ -35,6 +38,7 @@ func TestParseTimeString_Duration(t *testing.T) {
 }
 
 func TestParseTimeString_DurationHours(t *testing.T) {
+	t.Parallel()
 	before := time.Now()
 	result := parseTimeString("1h")
 	require.NotNil(t, result)
@@ -42,11 +46,13 @@ func TestParseTimeString_DurationHours(t *testing.T) {
 }
 
 func TestParseTimeString_Invalid(t *testing.T) {
+	t.Parallel()
 	assert.Nil(t, parseTimeString("not-a-time"))
 	assert.Nil(t, parseTimeString("yesterday"))
 }
 
 func TestConvertLogQueryFilter_Empty(t *testing.T) {
+	t.Parallel()
 	filter := convertLogQueryFilter(nil)
 	assert.Nil(t, filter.Since)
 	assert.Nil(t, filter.Until)
@@ -55,6 +61,7 @@ func TestConvertLogQueryFilter_Empty(t *testing.T) {
 }
 
 func TestConvertLogQueryFilter_WithDurationSince(t *testing.T) {
+	t.Parallel()
 	pf := protocol.LogQueryFilter{
 		Since: "5m",
 		Limit: 25,
@@ -69,6 +76,7 @@ func TestConvertLogQueryFilter_WithDurationSince(t *testing.T) {
 }
 
 func TestConvertLogQueryFilter_WithRFC3339Since(t *testing.T) {
+	t.Parallel()
 	pf := protocol.LogQueryFilter{
 		Since: "2025-06-01T12:00:00Z",
 	}
@@ -81,6 +89,7 @@ func TestConvertLogQueryFilter_WithRFC3339Since(t *testing.T) {
 }
 
 func TestConvertLogQueryFilter_WithUntil(t *testing.T) {
+	t.Parallel()
 	pf := protocol.LogQueryFilter{
 		Until: "30s",
 	}
@@ -93,6 +102,7 @@ func TestConvertLogQueryFilter_WithUntil(t *testing.T) {
 }
 
 func TestConvertLogQueryFilter_WithBothSinceAndUntil(t *testing.T) {
+	t.Parallel()
 	pf := protocol.LogQueryFilter{
 		Since: "1h",
 		Until: "5m",
@@ -106,6 +116,7 @@ func TestConvertLogQueryFilter_WithBothSinceAndUntil(t *testing.T) {
 }
 
 func TestConvertLogQueryFilter_WithTypes(t *testing.T) {
+	t.Parallel()
 	pf := protocol.LogQueryFilter{
 		Types: []string{"http", "error"},
 	}
@@ -118,6 +129,7 @@ func TestConvertLogQueryFilter_WithTypes(t *testing.T) {
 }
 
 func TestConvertLogQueryFilter_AllFields(t *testing.T) {
+	t.Parallel()
 	pf := protocol.LogQueryFilter{
 		Types:       []string{"http"},
 		Methods:     []string{"GET", "POST"},

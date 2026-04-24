@@ -14,6 +14,7 @@ import (
 )
 
 func TestClient_CurrentPage_EndToEnd(t *testing.T) {
+	t.Parallel()
 	_, client, _ := newBootedDaemonWithClient(t)
 
 	// Create a backend server

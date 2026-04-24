@@ -7,17 +7,18 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/stretchr/testify/require"
 )
 
 // TestActivityBroadcast_EndToEnd tests the complete activity broadcast pipeline:
 // ActivityMonitor -> Client.BroadcastActivity -> Daemon -> Proxy -> WebSocket -> Browser
 func TestActivityBroadcast_EndToEnd(t *testing.T) {
+	t.Parallel()
 	_, client, _ := newBootedDaemonWithClient(t)
 
 	// Create a test HTTP server that we'll proxy to
@@ -39,15 +40,17 @@ func TestActivityBroadcast_EndToEnd(t *testing.T) {
 	}
 	t.Logf("Proxy listening on: %s", listenAddr)
 
-	// Give proxy a moment to start
-	time.Sleep(100 * time.Millisecond)
-
-	// Connect WebSocket client to the proxy
+	// Retry WS dial until proxy is accepting connections.
 	wsURL := fmt.Sprintf("ws://%s/__devtool_metrics", listenAddr)
-	wsConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
-	if err != nil {
-		t.Fatalf("Failed to connect WebSocket: %v", err)
-	}
+	var wsConn *websocket.Conn
+	require.Eventually(t, func() bool {
+		conn, _, dialErr := websocket.DefaultDialer.Dial(wsURL, nil)
+		if dialErr != nil {
+			return false
+		}
+		wsConn = conn
+		return true
+	}, 5*time.Second, 10*time.Millisecond, "failed to connect WebSocket to proxy")
 	defer wsConn.Close()
 
 	// Channel to receive activity messages
@@ -78,9 +81,6 @@ func TestActivityBroadcast_EndToEnd(t *testing.T) {
 			}
 		}
 	}()
-
-	// Give WebSocket a moment to be fully registered
-	time.Sleep(50 * time.Millisecond)
 
 	// Broadcast activity state (active)
 	if err := client.BroadcastActivity(true); err != nil {
@@ -126,6 +126,7 @@ func TestActivityBroadcast_EndToEnd(t *testing.T) {
 
 // TestOutputPreviewBroadcast_EndToEnd tests the output preview broadcast pipeline.
 func TestOutputPreviewBroadcast_EndToEnd(t *testing.T) {
+	t.Parallel()
 	_, client, _ := newBootedDaemonWithClient(t)
 
 	// Create a test HTTP server
@@ -141,14 +142,17 @@ func TestOutputPreviewBroadcast_EndToEnd(t *testing.T) {
 	}
 
 	listenAddr := proxyResult["listen_addr"].(string)
-	time.Sleep(100 * time.Millisecond)
 
-	// Connect WebSocket
 	wsURL := fmt.Sprintf("ws://%s/__devtool_metrics", listenAddr)
-	wsConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
-	if err != nil {
-		t.Fatalf("Failed to connect WebSocket: %v", err)
-	}
+	var wsConn *websocket.Conn
+	require.Eventually(t, func() bool {
+		conn, _, dialErr := websocket.DefaultDialer.Dial(wsURL, nil)
+		if dialErr != nil {
+			return false
+		}
+		wsConn = conn
+		return true
+	}, 5*time.Second, 10*time.Millisecond, "failed to connect WebSocket to proxy")
 	defer wsConn.Close()
 
 	// Channel to receive output preview
@@ -177,8 +181,6 @@ func TestOutputPreviewBroadcast_EndToEnd(t *testing.T) {
 		}
 	}()
 
-	time.Sleep(50 * time.Millisecond)
-
 	// Broadcast output preview
 	testLines := []string{"Building project...", "Compiling main.go", "Done!"}
 	if err := client.BroadcastOutputPreview(testLines); err != nil {
@@ -206,6 +208,7 @@ func TestOutputPreviewBroadcast_EndToEnd(t *testing.T) {
 
 // TestActivityBroadcast_NoProxies verifies that broadcasting with no proxies doesn't error.
 func TestActivityBroadcast_NoProxies(t *testing.T) {
+	t.Parallel()
 	client := newBootedClient(t)
 
 	// Should not error even with no proxies
@@ -220,6 +223,7 @@ func TestActivityBroadcast_NoProxies(t *testing.T) {
 
 // TestActivityBroadcast_MultipleProxies tests broadcasting to multiple proxies.
 func TestActivityBroadcast_MultipleProxies(t *testing.T) {
+	t.Parallel()
 	_, client, _ := newBootedDaemonWithClient(t)
 
 	// Create target servers
@@ -246,61 +250,63 @@ func TestActivityBroadcast_MultipleProxies(t *testing.T) {
 	}
 	listenAddr2 := proxy2Result["listen_addr"].(string)
 
-	time.Sleep(100 * time.Millisecond)
-
-	// Connect WebSockets to both proxies
-	var receivedCount atomic.Int32
-	var wg sync.WaitGroup
-
-	connectAndListen := func(addr string) {
+	// Connect WebSockets to both proxies (retry until proxy is accepting).
+	dialWS := func(addr string) *websocket.Conn {
 		wsURL := fmt.Sprintf("ws://%s/__devtool_metrics", addr)
-		wsConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
-		if err != nil {
-			t.Errorf("Failed to connect WebSocket to %s: %v", addr, err)
-			return
-		}
-		defer wsConn.Close()
+		var conn *websocket.Conn
+		require.Eventually(t, func() bool {
+			c, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+			if err != nil {
+				return false
+			}
+			conn = c
+			return true
+		}, 5*time.Second, 10*time.Millisecond, "WebSocket dial to %s failed", addr)
+		return conn
+	}
 
-		wg.Add(1)
+	ws1 := dialWS(listenAddr1)
+	defer ws1.Close()
+	ws2 := dialWS(listenAddr2)
+	defer ws2.Close()
+
+	received1 := make(chan struct{}, 10)
+	received2 := make(chan struct{}, 10)
+
+	listenWS := func(conn *websocket.Conn, ch chan struct{}) {
 		go func() {
-			defer wg.Done()
 			for {
-				_, message, err := wsConn.ReadMessage()
+				_, message, err := conn.ReadMessage()
 				if err != nil {
 					return
 				}
-
 				var msg struct {
 					Type string `json:"type"`
 				}
 				if json.Unmarshal(message, &msg) == nil && msg.Type == "activity" {
-					receivedCount.Add(1)
+					ch <- struct{}{}
 				}
 			}
 		}()
-
-		// Keep connection alive until test ends
-		time.Sleep(500 * time.Millisecond)
 	}
-
-	go connectAndListen(listenAddr1)
-	go connectAndListen(listenAddr2)
-
-	time.Sleep(100 * time.Millisecond)
+	listenWS(ws1, received1)
+	listenWS(ws2, received2)
 
 	// Broadcast to all proxies
 	if err := client.BroadcastActivity(true); err != nil {
 		t.Fatalf("BroadcastActivity failed: %v", err)
 	}
 
-	// Wait for messages
-	time.Sleep(200 * time.Millisecond)
-
-	count := receivedCount.Load()
-	if count < 2 {
-		t.Errorf("Expected at least 2 activity messages (one per proxy), got %d", count)
-	} else {
-		t.Logf("Received %d activity messages across proxies", count)
+	// Each proxy's WS must receive the message.
+	select {
+	case <-received1:
+	case <-time.After(2 * time.Second):
+		t.Error("proxy1 did not receive activity message")
+	}
+	select {
+	case <-received2:
+	case <-time.After(2 * time.Second):
+		t.Error("proxy2 did not receive activity message")
 	}
 
 	client.ProxyStop("proxy1")
@@ -309,6 +315,7 @@ func TestActivityBroadcast_MultipleProxies(t *testing.T) {
 
 // TestActivityBroadcast_SpecificProxy tests broadcasting to a specific proxy only.
 func TestActivityBroadcast_SpecificProxy(t *testing.T) {
+	t.Parallel()
 	_, client, _ := newBootedDaemonWithClient(t)
 
 	targetServer1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -328,13 +335,23 @@ func TestActivityBroadcast_SpecificProxy(t *testing.T) {
 	proxy2Result, _ := client.ProxyStart("other-proxy", targetServer2.URL, 0, 0, "")
 	listenAddr2 := proxy2Result["listen_addr"].(string)
 
-	time.Sleep(100 * time.Millisecond)
+	dialWS := func(addr string) *websocket.Conn {
+		wsURL := fmt.Sprintf("ws://%s/__devtool_metrics", addr)
+		var conn *websocket.Conn
+		require.Eventually(t, func() bool {
+			c, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+			if err != nil {
+				return false
+			}
+			conn = c
+			return true
+		}, 5*time.Second, 10*time.Millisecond, "WebSocket dial to %s failed", addr)
+		return conn
+	}
 
 	var proxy1Received, proxy2Received atomic.Int32
 
-	// Connect to proxy 1
-	ws1URL := fmt.Sprintf("ws://%s/__devtool_metrics", listenAddr1)
-	ws1, _, _ := websocket.DefaultDialer.Dial(ws1URL, nil)
+	ws1 := dialWS(listenAddr1)
 	defer ws1.Close()
 
 	go func() {
@@ -352,9 +369,7 @@ func TestActivityBroadcast_SpecificProxy(t *testing.T) {
 		}
 	}()
 
-	// Connect to proxy 2
-	ws2URL := fmt.Sprintf("ws://%s/__devtool_metrics", listenAddr2)
-	ws2, _, _ := websocket.DefaultDialer.Dial(ws2URL, nil)
+	ws2 := dialWS(listenAddr2)
 	defer ws2.Close()
 
 	go func() {
@@ -372,14 +387,14 @@ func TestActivityBroadcast_SpecificProxy(t *testing.T) {
 		}
 	}()
 
-	time.Sleep(100 * time.Millisecond)
-
 	// Broadcast to specific proxy only
 	if err := client.BroadcastActivity(true, "target-proxy"); err != nil {
 		t.Fatalf("BroadcastActivity failed: %v", err)
 	}
 
-	time.Sleep(200 * time.Millisecond)
+	require.Eventually(t, func() bool {
+		return proxy1Received.Load() >= 1
+	}, 2*time.Second, 10*time.Millisecond, "target-proxy should have received activity message")
 
 	if proxy1Received.Load() != 1 {
 		t.Errorf("target-proxy should have received 1 message, got %d", proxy1Received.Load())
@@ -394,6 +409,7 @@ func TestActivityBroadcast_SpecificProxy(t *testing.T) {
 
 // TestActivityBroadcast_RapidFire tests that rapid activity updates are handled correctly.
 func TestActivityBroadcast_RapidFire(t *testing.T) {
+	t.Parallel()
 	_, client, _ := newBootedDaemonWithClient(t)
 
 	targetServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -404,14 +420,17 @@ func TestActivityBroadcast_RapidFire(t *testing.T) {
 	proxyResult, _ := client.ProxyStart("test-proxy", targetServer.URL, 0, 0, "")
 	listenAddr := proxyResult["listen_addr"].(string)
 
-	time.Sleep(100 * time.Millisecond)
-
-	// Connect WebSocket
+	// Connect WebSocket (retry until proxy accepts connections)
 	wsURL := fmt.Sprintf("ws://%s/__devtool_metrics", listenAddr)
-	wsConn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
-	if err != nil {
-		t.Fatalf("Failed to connect WebSocket: %v", err)
-	}
+	var wsConn *websocket.Conn
+	require.Eventually(t, func() bool {
+		conn, _, dialErr := websocket.DefaultDialer.Dial(wsURL, nil)
+		if dialErr != nil {
+			return false
+		}
+		wsConn = conn
+		return true
+	}, 5*time.Second, 10*time.Millisecond, "failed to connect WebSocket to proxy")
 	defer wsConn.Close()
 
 	var receivedCount atomic.Int32
@@ -430,8 +449,6 @@ func TestActivityBroadcast_RapidFire(t *testing.T) {
 		}
 	}()
 
-	time.Sleep(50 * time.Millisecond)
-
 	// Send rapid activity updates
 	for i := 0; i < 100; i++ {
 		if err := client.BroadcastActivity(i%2 == 0); err != nil {
@@ -439,15 +456,12 @@ func TestActivityBroadcast_RapidFire(t *testing.T) {
 		}
 	}
 
-	// Wait for messages
-	time.Sleep(500 * time.Millisecond)
+	// Wait for at least 50 messages to arrive
+	require.Eventually(t, func() bool {
+		return receivedCount.Load() >= 50
+	}, 5*time.Second, 10*time.Millisecond, "expected at least 50 activity messages")
 
-	count := receivedCount.Load()
-	if count < 50 {
-		t.Errorf("Expected at least 50 activity messages, got %d", count)
-	} else {
-		t.Logf("Received %d activity messages from rapid fire", count)
-	}
+	t.Logf("Received %d activity messages from rapid fire", receivedCount.Load())
 
 	client.ProxyStop("test-proxy")
 }

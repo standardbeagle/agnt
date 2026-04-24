@@ -24,6 +24,7 @@ import (
 // FIFO drop-oldest semantics: the buffer keeps the newest `capacity` events,
 // in push order, and bumps OverflowCount by exactly K.
 func TestHookRingBuffer_OrderingAndOverflow(t *testing.T) {
+	t.Parallel()
 	const capacity = 4
 	const overflow = 3
 	const total = capacity + overflow
@@ -55,6 +56,7 @@ func TestHookRingBuffer_OrderingAndOverflow(t *testing.T) {
 // TestHookRingBuffer_EmptyPop asserts Pop on an empty buffer returns the
 // zero value and ok=false, with no side effects.
 func TestHookRingBuffer_EmptyPop(t *testing.T) {
+	t.Parallel()
 	r := newHookRingBuffer(4)
 
 	ev, ok := r.Pop()
@@ -68,6 +70,7 @@ func TestHookRingBuffer_EmptyPop(t *testing.T) {
 // events and asserts the buffer remains consistent. Designed to be clean
 // under `go test -race`.
 func TestHookRingBuffer_ConcurrentWrites(t *testing.T) {
+	t.Parallel()
 	const goroutines = 100
 	const perGoroutine = 10
 	const total = goroutines * perGoroutine
@@ -98,6 +101,7 @@ func TestHookRingBuffer_ConcurrentWrites(t *testing.T) {
 // TestHookRingBuffer_ZeroCapacityPanics guards against silent 0-capacity
 // footguns. Zero capacity has no sane semantics and must panic early.
 func TestHookRingBuffer_ZeroCapacityPanics(t *testing.T) {
+	t.Parallel()
 	assert.Panics(t, func() {
 		_ = newHookRingBuffer(0)
 	}, "capacity 0 must panic")
@@ -123,6 +127,7 @@ func enqueueHookTestDaemon(t *testing.T) *Daemon {
 // HookPayload goes in, the buffer length goes from 0 to 1, and the result
 // reports ok with a non-empty ack message.
 func TestEnqueueHookFromBytes_Success(t *testing.T) {
+	t.Parallel()
 	d := enqueueHookTestDaemon(t)
 
 	payload := protocol.HookPayload{
@@ -159,6 +164,7 @@ func TestEnqueueHookFromBytes_Success(t *testing.T) {
 // TestEnqueueHookFromBytes_EmptyData asserts empty wire data is rejected
 // with ErrInvalidArgs and nothing enters the buffer.
 func TestEnqueueHookFromBytes_EmptyData(t *testing.T) {
+	t.Parallel()
 	d := enqueueHookTestDaemon(t)
 
 	res := d.enqueueHookFromBytes(nil)
@@ -175,6 +181,7 @@ func TestEnqueueHookFromBytes_EmptyData(t *testing.T) {
 // TestEnqueueHookFromBytes_InvalidJSON asserts malformed JSON is rejected
 // with ErrInvalidArgs.
 func TestEnqueueHookFromBytes_InvalidJSON(t *testing.T) {
+	t.Parallel()
 	d := enqueueHookTestDaemon(t)
 
 	res := d.enqueueHookFromBytes([]byte("not json"))
@@ -187,6 +194,7 @@ func TestEnqueueHookFromBytes_InvalidJSON(t *testing.T) {
 // TestEnqueueHookFromBytes_MissingEvent asserts a payload without an
 // `event` field is rejected.
 func TestEnqueueHookFromBytes_MissingEvent(t *testing.T) {
+	t.Parallel()
 	d := enqueueHookTestDaemon(t)
 
 	// Valid JSON, but no event.
@@ -202,6 +210,7 @@ func TestEnqueueHookFromBytes_MissingEvent(t *testing.T) {
 // because New() wires it in, but the guard is load-bearing defense in
 // depth).
 func TestEnqueueHookFromBytes_NilRing(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{} // deliberately missing hookRing
 
 	payload := protocol.HookPayload{Event: "Stop"}
@@ -265,6 +274,7 @@ func drainHooksTestDaemon(t *testing.T) *Daemon {
 // receives all N events in push order. Uses a channel (not sleep) for
 // synchronization so the test is deterministic under -race.
 func TestDrainHooks_FansOutToAlertHub(t *testing.T) {
+	t.Parallel()
 	const n = 20
 	d := drainHooksTestDaemon(t)
 
@@ -312,6 +322,7 @@ func TestDrainHooks_FansOutToAlertHub(t *testing.T) {
 // ring buffer or alertHub is missing, without spinning or panicking.
 // This covers the defensive nil checks at the top of the function.
 func TestDrainHooks_NilGuard(t *testing.T) {
+	t.Parallel()
 	// Missing alertHub
 	d1 := &Daemon{hookRing: newHookRingBuffer(4)}
 	done1 := make(chan struct{})
@@ -343,6 +354,7 @@ func TestDrainHooks_NilGuard(t *testing.T) {
 // BroadcastHookEvent fans out to every registered sink, and that
 // RemoveHookSink stops further deliveries to a specific sink.
 func TestAlertHub_BroadcastHookEvent_MultiSink(t *testing.T) {
+	t.Parallel()
 	hub := NewAlertHub()
 
 	sink1 := &countingHookSink{}
@@ -367,6 +379,7 @@ func TestAlertHub_BroadcastHookEvent_MultiSink(t *testing.T) {
 // TestAlertHub_AddHookSink_NilNoOp asserts passing a nil sink is a no-op
 // rather than a crash or an accidentally-registered nil entry.
 func TestAlertHub_AddHookSink_NilNoOp(t *testing.T) {
+	t.Parallel()
 	hub := NewAlertHub()
 	hub.AddHookSink(nil)
 	// Broadcast must not panic with zero registered sinks.
@@ -413,6 +426,7 @@ func drainFanoutTestDaemon(t *testing.T) *Daemon {
 // bytes intact. This is the wiring that makes `agnt monitor --types hook`
 // work end-to-end.
 func TestDrainHooks_SyntheticLogEntryReachesStreamSink(t *testing.T) {
+	t.Parallel()
 	d := drainFanoutTestDaemon(t)
 
 	// Subscribe a stream sink with a type filter for "hook" only, so
@@ -455,6 +469,7 @@ func TestDrainHooks_SyntheticLogEntryReachesStreamSink(t *testing.T) {
 // timestamp. This is the heartbeat plumbing that lets the daemon treat
 // hook traffic as proof-of-life for the agnt run session.
 func TestDrainHooks_SessionHeartbeatBumpsLastSeen(t *testing.T) {
+	t.Parallel()
 	d := drainFanoutTestDaemon(t)
 
 	// Register a session with an obviously-stale LastSeen.
@@ -490,6 +505,7 @@ func TestDrainHooks_SessionHeartbeatBumpsLastSeen(t *testing.T) {
 // silent no-op — not every hook source ties back to a known agnt run
 // session, so missing-lookup must not panic or surface as an error.
 func TestDrainHooks_SessionHeartbeatUnknownSessionNoOp(t *testing.T) {
+	t.Parallel()
 	d := drainFanoutTestDaemon(t)
 
 	// No sessions registered. fanOutHookEvent should still complete
@@ -520,6 +536,7 @@ func TestDrainHooks_SessionHeartbeatUnknownSessionNoOp(t *testing.T) {
 // `agnt notify` after phase 3 collapses notify into a pure HookSend
 // alias.
 func TestDrainHooks_NotificationEventBroadcastsToast(t *testing.T) {
+	t.Parallel()
 	d := drainFanoutTestDaemon(t)
 
 	// Spin up a real backend + create two proxies through the manager.
@@ -587,6 +604,7 @@ func TestDrainHooks_NotificationEventBroadcastsToast(t *testing.T) {
 // then verify the LogEntry path still fired. The contract is:
 // notification → toast loop, everything else → skip.
 func TestDrainHooks_NonNotificationDoesNotTriggerToast(t *testing.T) {
+	t.Parallel()
 	d := drainFanoutTestDaemon(t)
 
 	// Zero proxies registered. broadcastNotificationToast would be a
@@ -619,6 +637,7 @@ func TestDrainHooks_NonNotificationDoesNotTriggerToast(t *testing.T) {
 // panic and does not stall the drain. Drain must survive any payload
 // because hook events come from external scripts we don't control.
 func TestDrainHooks_MalformedNotificationPayload(t *testing.T) {
+	t.Parallel()
 	d := drainFanoutTestDaemon(t)
 
 	// Even with a real proxy registered, malformed JSON must short-
@@ -650,6 +669,7 @@ func TestDrainHooks_MalformedNotificationPayload(t *testing.T) {
 // PROXY TOAST validation in hub_proxy.go where empty message is a
 // hard error.
 func TestDrainHooks_NotificationMissingMessageSkipsToast(t *testing.T) {
+	t.Parallel()
 	d := drainFanoutTestDaemon(t)
 
 	ev := HookEvent{
@@ -666,6 +686,7 @@ func TestDrainHooks_NotificationMissingMessageSkipsToast(t *testing.T) {
 // HookEventSink, and the session heartbeat all fire. This guards against
 // future refactors that bypass fanOutHookEvent from drainHooks.
 func TestDrainHooks_DrainGoroutineDeliversAllConsumers(t *testing.T) {
+	t.Parallel()
 	d := drainFanoutTestDaemon(t)
 
 	// Register a session for the heartbeat path.
@@ -736,6 +757,7 @@ func TestDrainHooks_DrainGoroutineDeliversAllConsumers(t *testing.T) {
 // valid Claude Code Stop payload triggers BroadcastToast on every registered
 // proxy, showing the last_assistant_message.
 func TestDrainHooks_StopEventBroadcastsToast(t *testing.T) {
+	t.Parallel()
 	d := drainFanoutTestDaemon(t)
 
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -781,6 +803,7 @@ func TestDrainHooks_StopEventBroadcastsToast(t *testing.T) {
 // TestDrainHooks_StopHookActiveSkipsToast asserts that when stop_hook_active
 // is true (Claude re-activating due to a previous stop hook), no toast is sent.
 func TestDrainHooks_StopHookActiveSkipsToast(t *testing.T) {
+	t.Parallel()
 	d := drainFanoutTestDaemon(t)
 
 	ev := HookEvent{
@@ -796,6 +819,7 @@ func TestDrainHooks_StopHookActiveSkipsToast(t *testing.T) {
 // TestDrainHooks_StopEmptyMessageDefaultsToCompleted asserts that a stop event
 // with no last_assistant_message defaults to "completed".
 func TestDrainHooks_StopEmptyMessageDefaultsToCompleted(t *testing.T) {
+	t.Parallel()
 	d := drainFanoutTestDaemon(t)
 
 	ev := HookEvent{
@@ -810,6 +834,7 @@ func TestDrainHooks_StopEmptyMessageDefaultsToCompleted(t *testing.T) {
 // TestDrainHooks_StopMalformedPayload asserts a stop event with garbage
 // payload does not panic.
 func TestDrainHooks_StopMalformedPayload(t *testing.T) {
+	t.Parallel()
 	d := drainFanoutTestDaemon(t)
 
 	ev := HookEvent{
@@ -824,6 +849,7 @@ func TestDrainHooks_StopMalformedPayload(t *testing.T) {
 // TestDrainHooks_StopFailureBroadcastsErrorToast asserts that a "stop-failure"
 // event decodes error fields and broadcasts an error toast.
 func TestDrainHooks_StopFailureBroadcastsErrorToast(t *testing.T) {
+	t.Parallel()
 	d := drainFanoutTestDaemon(t)
 
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -870,6 +896,7 @@ func TestDrainHooks_StopFailureBroadcastsErrorToast(t *testing.T) {
 // TestDrainHooks_StopFailureMalformedPayload asserts a stop-failure event with
 // garbage payload does not panic.
 func TestDrainHooks_StopFailureMalformedPayload(t *testing.T) {
+	t.Parallel()
 	d := drainFanoutTestDaemon(t)
 
 	ev := HookEvent{
@@ -885,6 +912,7 @@ func TestDrainHooks_StopFailureMalformedPayload(t *testing.T) {
 // error_details is empty but last_assistant_message exists, the message falls
 // back to the last assistant message.
 func TestDrainHooks_StopFailureEmptyErrorDetailsFallsBack(t *testing.T) {
+	t.Parallel()
 	d := drainFanoutTestDaemon(t)
 
 	ev := HookEvent{
@@ -904,6 +932,7 @@ func TestDrainHooks_StopFailureEmptyErrorDetailsFallsBack(t *testing.T) {
 // from other projects. This is the primary cross-contamination fix for running
 // two simultaneous MCP-driven proxy servers.
 func TestToastProjectProxies_ScopesByProjectPath(t *testing.T) {
+	t.Parallel()
 	d := drainFanoutTestDaemon(t)
 
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -943,6 +972,7 @@ func TestToastProjectProxies_ScopesByProjectPath(t *testing.T) {
 // project path is set (legacy agnt notify without --project-path), every proxy
 // receives the toast.
 func TestToastProjectProxies_EmptyProjectPathToastsAll(t *testing.T) {
+	t.Parallel()
 	d := drainFanoutTestDaemon(t)
 
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -971,6 +1001,7 @@ func TestToastProjectProxies_EmptyProjectPathToastsAll(t *testing.T) {
 // notification/stop/stop-failure still pass through fanOutHookEvent without
 // touching the toast path.
 func TestDrainHooks_NonToastEventsUnchanged(t *testing.T) {
+	t.Parallel()
 	d := drainFanoutTestDaemon(t)
 
 	sink := d.alertHub.AddStreamSink(streamFilter{

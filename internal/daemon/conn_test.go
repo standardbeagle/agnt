@@ -13,6 +13,7 @@ import (
 // Note: encoding/json is still used for mock server responses
 
 func TestNewConn(t *testing.T) {
+	t.Parallel()
 	conn := NewConn("/tmp/test.sock")
 	if conn == nil {
 		t.Fatal("NewConn returned nil")
@@ -23,6 +24,7 @@ func TestNewConn(t *testing.T) {
 }
 
 func TestNewConn_DefaultSocketPath(t *testing.T) {
+	t.Parallel()
 	conn := NewConn("")
 	if conn == nil {
 		t.Fatal("NewConn returned nil")
@@ -33,6 +35,7 @@ func TestNewConn_DefaultSocketPath(t *testing.T) {
 }
 
 func TestConn_SetTimeout(t *testing.T) {
+	t.Parallel()
 	conn := NewConn("/tmp/test.sock")
 	// SetTimeout should not panic
 	conn.SetTimeout(5 * time.Second)
@@ -40,6 +43,7 @@ func TestConn_SetTimeout(t *testing.T) {
 }
 
 func TestConn_IsConnected_NotConnected(t *testing.T) {
+	t.Parallel()
 	conn := NewConn("/tmp/nonexistent.sock")
 	if conn.IsConnected() {
 		t.Error("IsConnected should return false for new connection")
@@ -47,6 +51,7 @@ func TestConn_IsConnected_NotConnected(t *testing.T) {
 }
 
 func TestConn_Close_NotConnected(t *testing.T) {
+	t.Parallel()
 	conn := NewConn("/tmp/test.sock")
 	err := conn.Close()
 	if err != nil {
@@ -55,6 +60,7 @@ func TestConn_Close_NotConnected(t *testing.T) {
 }
 
 func TestConn_Close_Twice(t *testing.T) {
+	t.Parallel()
 	conn := NewConn("/tmp/test.sock")
 	conn.Close()
 	err := conn.Close()
@@ -64,6 +70,7 @@ func TestConn_Close_Twice(t *testing.T) {
 }
 
 func TestConn_Disconnect_NotConnected(t *testing.T) {
+	t.Parallel()
 	conn := NewConn("/tmp/test.sock")
 	err := conn.Disconnect()
 	if err != nil {
@@ -72,6 +79,7 @@ func TestConn_Disconnect_NotConnected(t *testing.T) {
 }
 
 func TestConn_EnsureConnected_Closed(t *testing.T) {
+	t.Parallel()
 	conn := NewConn("/tmp/test.sock")
 	conn.Close()
 	err := conn.EnsureConnected()
@@ -81,6 +89,7 @@ func TestConn_EnsureConnected_Closed(t *testing.T) {
 }
 
 func TestConn_Request_BuildsCorrectly(t *testing.T) {
+	t.Parallel()
 	conn := NewConn("/tmp/test.sock")
 	rb := conn.Request("PROC", "LIST")
 	if rb == nil {
@@ -94,6 +103,7 @@ func TestConn_Request_BuildsCorrectly(t *testing.T) {
 }
 
 func TestRequestBuilder_WithArgs(t *testing.T) {
+	t.Parallel()
 	conn := NewConn("/tmp/test.sock")
 	// Verify chaining doesn't panic and returns non-nil builder
 	rb := conn.Request("PROC", "OUTPUT", "test-id").WithArgs("tail=50", "stream=stderr")
@@ -104,6 +114,7 @@ func TestRequestBuilder_WithArgs(t *testing.T) {
 }
 
 func TestRequestBuilder_WithData(t *testing.T) {
+	t.Parallel()
 	conn := NewConn("/tmp/test.sock")
 	data := []byte("test data")
 	// Verify chaining doesn't panic and returns non-nil builder
@@ -115,6 +126,7 @@ func TestRequestBuilder_WithData(t *testing.T) {
 }
 
 func TestRequestBuilder_WithJSON(t *testing.T) {
+	t.Parallel()
 	conn := NewConn("/tmp/test.sock")
 	filter := map[string]bool{"global": true}
 	// Verify chaining doesn't panic and returns non-nil builder
@@ -126,6 +138,7 @@ func TestRequestBuilder_WithJSON(t *testing.T) {
 }
 
 func TestRequestBuilder_WithJSON_InvalidType(t *testing.T) {
+	t.Parallel()
 	conn := NewConn("/tmp/test.sock")
 	// channels cannot be marshaled to JSON
 	ch := make(chan int)
@@ -196,6 +209,7 @@ func (s *mockDaemonServer) Close() {
 }
 
 func TestConn_Ping(t *testing.T) {
+	t.Parallel()
 	server := newMockDaemonServer(t, func(conn net.Conn) {
 		defer conn.Close()
 		parser := protocol.NewParser(conn)
@@ -223,6 +237,7 @@ func TestConn_Ping(t *testing.T) {
 }
 
 func TestConn_Request_OK(t *testing.T) {
+	t.Parallel()
 	server := newMockDaemonServer(t, func(conn net.Conn) {
 		defer conn.Close()
 		parser := protocol.NewParser(conn)
@@ -246,6 +261,7 @@ func TestConn_Request_OK(t *testing.T) {
 }
 
 func TestConn_Request_OK_Error(t *testing.T) {
+	t.Parallel()
 	server := newMockDaemonServer(t, func(conn net.Conn) {
 		defer conn.Close()
 		parser := protocol.NewParser(conn)
@@ -269,6 +285,7 @@ func TestConn_Request_OK_Error(t *testing.T) {
 }
 
 func TestConn_Request_JSON(t *testing.T) {
+	t.Parallel()
 	server := newMockDaemonServer(t, func(conn net.Conn) {
 		defer conn.Close()
 		parser := protocol.NewParser(conn)
@@ -303,6 +320,7 @@ func TestConn_Request_JSON(t *testing.T) {
 }
 
 func TestConn_Request_JSONInto(t *testing.T) {
+	t.Parallel()
 	server := newMockDaemonServer(t, func(conn net.Conn) {
 		defer conn.Close()
 		parser := protocol.NewParser(conn)
@@ -335,6 +353,7 @@ func TestConn_Request_JSONInto(t *testing.T) {
 }
 
 func TestConn_Request_Bytes(t *testing.T) {
+	t.Parallel()
 	server := newMockDaemonServer(t, func(conn net.Conn) {
 		defer conn.Close()
 		parser := protocol.NewParser(conn)
@@ -364,6 +383,7 @@ func TestConn_Request_Bytes(t *testing.T) {
 }
 
 func TestConn_Request_Chunked(t *testing.T) {
+	t.Parallel()
 	server := newMockDaemonServer(t, func(conn net.Conn) {
 		defer conn.Close()
 		parser := protocol.NewParser(conn)
@@ -395,6 +415,7 @@ func TestConn_Request_Chunked(t *testing.T) {
 }
 
 func TestConn_Request_String(t *testing.T) {
+	t.Parallel()
 	server := newMockDaemonServer(t, func(conn net.Conn) {
 		defer conn.Close()
 		parser := protocol.NewParser(conn)
@@ -422,6 +443,7 @@ func TestConn_Request_String(t *testing.T) {
 }
 
 func TestConn_Sequential_Requests(t *testing.T) {
+	t.Parallel()
 	// Test that multiple sequential requests work on same connection
 	// (Conn serializes concurrent requests internally, so we test sequential behavior)
 	requestCount := 0
@@ -468,6 +490,7 @@ func TestConn_Sequential_Requests(t *testing.T) {
 }
 
 func TestConn_AutoReconnect(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	socketPath := filepath.Join(tmpDir, "test.sock")
 
@@ -536,6 +559,7 @@ func TestConn_AutoReconnect(t *testing.T) {
 }
 
 func TestConn_EnsureConnected_Success(t *testing.T) {
+	t.Parallel()
 	server := newMockDaemonServer(t, func(conn net.Conn) {
 		// Just accept and hold connection
 		buf := make([]byte, 1)
@@ -557,6 +581,7 @@ func TestConn_EnsureConnected_Success(t *testing.T) {
 }
 
 func TestConn_EnsureConnected_Failure(t *testing.T) {
+	t.Parallel()
 	conn := NewConn("/tmp/nonexistent-socket-12345.sock")
 	err := conn.EnsureConnected()
 	if err == nil {
@@ -565,6 +590,7 @@ func TestConn_EnsureConnected_Failure(t *testing.T) {
 }
 
 func TestConn_Disconnect_ThenReconnect(t *testing.T) {
+	t.Parallel()
 	server := newMockDaemonServer(t, func(conn net.Conn) {
 		defer conn.Close()
 		parser := protocol.NewParser(conn)

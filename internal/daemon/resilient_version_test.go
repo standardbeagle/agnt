@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/standardbeagle/go-cli-server/process"
+	"github.com/stretchr/testify/require"
 )
 
 // TestResilientClient_VersionValidation tests version checking on connect
@@ -36,7 +37,8 @@ func TestResilientClient_VersionValidation(t *testing.T) {
 		if err := d.Start(); err != nil {
 			t.Fatalf("Failed to start daemon: %v", err)
 		}
-		time.Sleep(100 * time.Millisecond)
+		require.Eventually(t, func() bool { return IsRunning(sockPath) },
+			3*time.Second, 10*time.Millisecond, "daemon should be running after start")
 		return d
 	}
 
@@ -45,7 +47,8 @@ func TestResilientClient_VersionValidation(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		d.Stop(ctx)
-		time.Sleep(100 * time.Millisecond)
+		require.Eventually(t, func() bool { return !IsRunning(sockPath) },
+			3*time.Second, 10*time.Millisecond, "daemon should stop")
 	}
 
 	// Start initial daemon to get version
@@ -220,7 +223,8 @@ func TestResilientClient_VersionCheckAfterReconnect(t *testing.T) {
 		t.Fatalf("Failed to start daemon: %v", err)
 	}
 
-	time.Sleep(500 * time.Millisecond)
+	require.Eventually(t, func() bool { return IsRunning(sockPath) },
+		5*time.Second, 20*time.Millisecond, "daemon not running after start")
 
 	// Get daemon version
 	basicClient := NewClient(WithSocketPath(sockPath))
@@ -270,7 +274,8 @@ func TestResilientClient_VersionCheckAfterReconnect(t *testing.T) {
 	}
 	cancel()
 
-	time.Sleep(time.Second)
+	require.Eventually(t, func() bool { return !IsRunning(sockPath) },
+		5*time.Second, 20*time.Millisecond, "daemon should stop after Stop()")
 
 	// Verify daemon is stopped
 	if IsRunning(sockPath) {

@@ -11,6 +11,7 @@ import (
 )
 
 func TestRebindProxyOverlays_NoOverlayPath(t *testing.T) {
+	t.Parallel()
 	pm := proxy.NewProxyManager()
 	d := &Daemon{proxym: pm}
 
@@ -25,6 +26,7 @@ func TestRebindProxyOverlays_NoOverlayPath(t *testing.T) {
 }
 
 func TestRebindProxyOverlays_BindsUnboundProxy(t *testing.T) {
+	t.Parallel()
 	pm := proxy.NewProxyManager()
 	d := &Daemon{proxym: pm}
 
@@ -57,6 +59,7 @@ func TestRebindProxyOverlays_BindsUnboundProxy(t *testing.T) {
 }
 
 func TestRebindProxyOverlays_SkipsAlreadyBound(t *testing.T) {
+	t.Parallel()
 	pm := proxy.NewProxyManager()
 	d := &Daemon{proxym: pm}
 
@@ -93,6 +96,7 @@ func TestRebindProxyOverlays_SkipsAlreadyBound(t *testing.T) {
 }
 
 func TestRebindProxyOverlays_SkipsDifferentPath(t *testing.T) {
+	t.Parallel()
 	pm := proxy.NewProxyManager()
 	d := &Daemon{proxym: pm}
 

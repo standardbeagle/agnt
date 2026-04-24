@@ -13,6 +13,7 @@ import (
 // vocabulary to decide whether 503s from the proxy represent gate
 // responses or genuine upstream errors.
 func TestProxyRuntimeStatus(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		stats proxy.ProxyStats

@@ -19,6 +19,7 @@ import (
 )
 
 func TestDetectPortConflicts_NoConflicts(t *testing.T) {
+	t.Parallel()
 	scripts := map[string]*config.ScriptConfig{
 		"api": {Ports: []int{19876}, Autostart: true},
 	}
@@ -27,6 +28,7 @@ func TestDetectPortConflicts_NoConflicts(t *testing.T) {
 }
 
 func TestDetectPortConflicts_WithBlocker(t *testing.T) {
+	t.Parallel()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	defer ln.Close()
@@ -43,6 +45,7 @@ func TestDetectPortConflicts_WithBlocker(t *testing.T) {
 }
 
 func TestDetectPortConflicts_ManagedPIDSkipped(t *testing.T) {
+	t.Parallel()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	defer ln.Close()
@@ -57,6 +60,7 @@ func TestDetectPortConflicts_ManagedPIDSkipped(t *testing.T) {
 }
 
 func TestDetectPortConflicts_NoPorts(t *testing.T) {
+	t.Parallel()
 	scripts := map[string]*config.ScriptConfig{
 		"lib": {Autostart: true},
 	}
@@ -65,6 +69,7 @@ func TestDetectPortConflicts_NoPorts(t *testing.T) {
 }
 
 func TestDetectPortConflicts_MultiplePortsMultipleScripts(t *testing.T) {
+	t.Parallel()
 	ln1, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	defer ln1.Close()
@@ -81,6 +86,7 @@ func TestDetectPortConflicts_MultiplePortsMultipleScripts(t *testing.T) {
 }
 
 func TestKillPortBlockers_FreesPort(t *testing.T) {
+	t.Parallel()
 	if os.Getuid() == 0 {
 		t.Skip("don't run as root")
 	}
@@ -128,6 +134,7 @@ func TestKillPortBlockers_FreesPort(t *testing.T) {
 }
 
 func TestKillPortBlockers_NonExistentPID(t *testing.T) {
+	t.Parallel()
 	pm := goprocess.NewProcessManager(goprocess.DefaultManagerConfig())
 	defer pm.Shutdown(context.Background())
 

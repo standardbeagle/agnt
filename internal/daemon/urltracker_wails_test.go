@@ -8,6 +8,7 @@ import (
 
 // TestWailsConfigURLMatchersLoading tests that URL matchers from config are parsed correctly
 func TestWailsConfigURLMatchersLoading(t *testing.T) {
+	t.Parallel()
 	// This is the exact config from beagle-term/.agnt.kdl
 	kdlConfig := `
 project {
@@ -86,6 +87,7 @@ App ready.
 }
 
 func TestWailsURLMatching(t *testing.T) {
+	t.Parallel()
 	// Simulated Wails dev output with both Vite and Wails URLs
 	output := []byte(`
   VITE v5.2.0  ready in 300 ms
@@ -117,6 +119,7 @@ App ready.
 }
 
 func TestMatchesURLPatternWails(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		line    string
 		pattern string

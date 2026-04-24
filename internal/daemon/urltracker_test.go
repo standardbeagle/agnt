@@ -5,6 +5,7 @@ import (
 )
 
 func TestParseDevServerURLs(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		input    string
@@ -113,6 +114,7 @@ func TestParseDevServerURLs(t *testing.T) {
 }
 
 func TestParseDevServerURLs_ANSIStripping(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		input    string
@@ -159,6 +161,7 @@ func TestParseDevServerURLs_ANSIStripping(t *testing.T) {
 }
 
 func TestParseDevServerURLsWithMatchers_ANSIStripping(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		input    []byte
@@ -210,6 +213,7 @@ func TestParseDevServerURLsWithMatchers_ANSIStripping(t *testing.T) {
 }
 
 func TestShouldIgnoreURL(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		url      string
 		expected bool
@@ -235,6 +239,7 @@ func TestShouldIgnoreURL(t *testing.T) {
 }
 
 func TestMatchesURLPattern(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		line     string
@@ -296,6 +301,7 @@ func TestMatchesURLPattern(t *testing.T) {
 }
 
 func TestParseURLsFromBytes(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		input    []byte
@@ -340,6 +346,7 @@ func TestParseURLsFromBytes(t *testing.T) {
 }
 
 func TestURLTracker_SetURLMatchers(t *testing.T) {
+	t.Parallel()
 	config := DefaultURLTrackerConfig()
 	tracker := NewURLTracker(nil, config)
 
@@ -368,6 +375,7 @@ func TestURLTracker_SetURLMatchers(t *testing.T) {
 }
 
 func TestURLTracker_ClearProcess(t *testing.T) {
+	t.Parallel()
 	config := DefaultURLTrackerConfig()
 	tracker := NewURLTracker(nil, config)
 
@@ -400,6 +408,7 @@ func TestURLTracker_ClearProcess(t *testing.T) {
 }
 
 func TestURLTracker_GetURLs(t *testing.T) {
+	t.Parallel()
 	config := DefaultURLTrackerConfig()
 	tracker := NewURLTracker(nil, config)
 
@@ -429,6 +438,7 @@ func TestURLTracker_GetURLs(t *testing.T) {
 }
 
 func TestParseDevServerURLsWithMatchers(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		input    []byte
@@ -484,6 +494,7 @@ func TestParseDevServerURLsWithMatchers(t *testing.T) {
 // same ID to have its output re-scanned for URLs.
 // This is a regression test for URL re-detection on process restart.
 func TestURLTracker_ClearProcess_EnablesRescanning(t *testing.T) {
+	t.Parallel()
 	config := DefaultURLTrackerConfig()
 	tracker := NewURLTracker(nil, config)
 

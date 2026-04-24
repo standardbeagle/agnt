@@ -15,6 +15,7 @@ import (
 // "agnt run ..." AND cwd inside a known project directory is classified
 // as owned by this daemon and eligible for reaping.
 func TestPgidOwnershipCheck_Owned_AgntRunAncestor(t *testing.T) {
+	t.Parallel()
 	projectA := "/home/user/projects/webapp"
 	walkFn := func(pid int) []platform.AncestorInfo {
 		return []platform.AncestorInfo{
@@ -45,6 +46,7 @@ func TestPgidOwnershipCheck_Owned_AgntRunAncestor(t *testing.T) {
 // whose cmdline begins with the daemon binary path is considered an agnt
 // ancestor.
 func TestPgidOwnershipCheck_Owned_DaemonBinary(t *testing.T) {
+	t.Parallel()
 	projectA := "/srv/projects/api"
 	daemonBin := "/opt/agnt/bin/agnt"
 	walkFn := func(pid int) []platform.AncestorInfo {
@@ -63,6 +65,7 @@ func TestPgidOwnershipCheck_Owned_DaemonBinary(t *testing.T) {
 // run" ancestor, but its cwd is a project the scanning daemon does NOT
 // know about. Must classify as unowned (skip reaping).
 func TestPgidOwnershipCheck_Unowned_CwdMismatch(t *testing.T) {
+	t.Parallel()
 	myProject := "/home/user/projects/myapp"
 	otherProject := "/home/user/projects/not-my-app"
 	walkFn := func(pid int) []platform.AncestorInfo {
@@ -88,6 +91,7 @@ func TestPgidOwnershipCheck_Unowned_CwdMismatch(t *testing.T) {
 // ancestors have matching cwd but none has an agnt-looking cmdline — e.g.
 // a random "sh -c sleep 30 &" leaked pgid. Must classify as unowned.
 func TestPgidOwnershipCheck_Unowned_CmdlineMismatch(t *testing.T) {
+	t.Parallel()
 	proj := "/home/user/projects/foo"
 	walkFn := func(pid int) []platform.AncestorInfo {
 		return []platform.AncestorInfo{
@@ -106,6 +110,7 @@ func TestPgidOwnershipCheck_Unowned_CmdlineMismatch(t *testing.T) {
 // so the known-projects set is empty. The gate must refuse to reap
 // anything — this is the conservative fix for the cross-daemon bug.
 func TestPgidOwnershipCheck_Unowned_EmptyKnownProjects(t *testing.T) {
+	t.Parallel()
 	walkFn := func(pid int) []platform.AncestorInfo {
 		return []platform.AncestorInfo{
 			{PID: 1001, PPID: 1, Cmdline: "agnt run claude", Cwd: "/anywhere"},
@@ -121,6 +126,7 @@ func TestPgidOwnershipCheck_Unowned_EmptyKnownProjects(t *testing.T) {
 // where ScanOrphanedPGIDs returned zero live members. The gate must not
 // classify it as owned (there is nothing to walk).
 func TestPgidOwnershipCheck_Unowned_EmptyMembers(t *testing.T) {
+	t.Parallel()
 	walkFn := func(pid int) []platform.AncestorInfo {
 		// Should never be called, but return something clearly matching
 		// to prove the gate is bailing BEFORE walking.
@@ -138,6 +144,7 @@ func TestPgidOwnershipCheck_Unowned_EmptyMembers(t *testing.T) {
 // An ancestor whose cwd is a descendant of a known project (e.g. a
 // subdirectory like "packages/frontend") must count as a cwd match.
 func TestPgidOwnershipCheck_Owned_CwdSubdir(t *testing.T) {
+	t.Parallel()
 	proj := "/home/user/projects/monorepo"
 	sub := filepath.Join(proj, "packages", "frontend")
 	walkFn := func(pid int) []platform.AncestorInfo {
@@ -156,6 +163,7 @@ func TestPgidOwnershipCheck_Owned_CwdSubdir(t *testing.T) {
 // does NOT get matched. filepath.Rel-based subdir detection must be
 // path-aware, not plain string prefix.
 func TestPgidOwnershipCheck_Unowned_CwdSiblingPath(t *testing.T) {
+	t.Parallel()
 	walkFn := func(pid int) []platform.AncestorInfo {
 		return []platform.AncestorInfo{
 			{PID: 1001, PPID: 1, Cmdline: "agnt run claude", Cwd: "/home/user/projects/foobar"},
@@ -176,6 +184,7 @@ func TestPgidOwnershipCheck_Unowned_CwdSiblingPath(t *testing.T) {
 // where the cmdline match and cwd match come from DIFFERENT ancestors in
 // the chain. The gate is AND across the whole chain, not per-ancestor.
 func TestPgidOwnershipCheck_OwnershipSplitAcrossAncestors(t *testing.T) {
+	t.Parallel()
 	proj := "/home/user/projects/app"
 	walkFn := func(pid int) []platform.AncestorInfo {
 		return []platform.AncestorInfo{
@@ -195,6 +204,7 @@ func TestPgidOwnershipCheck_OwnershipSplitAcrossAncestors(t *testing.T) {
 // member case: if ANY live member's ancestor chain satisfies both
 // predicates, the pgid is owned. Members are independent walks.
 func TestPgidOwnershipCheck_MultipleMembers_AnyMatch(t *testing.T) {
+	t.Parallel()
 	proj := "/home/user/projects/app"
 	walkFn := func(pid int) []platform.AncestorInfo {
 		switch pid {
@@ -221,6 +231,7 @@ func TestPgidOwnershipCheck_MultipleMembers_AnyMatch(t *testing.T) {
 // that assembles the daemon's known project set from projectPath +
 // session registry. Must dedupe and drop empty entries.
 func TestKnownProjectPaths_DedupesAndIgnoresEmpty(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{
 		sessionRegistry: NewSessionRegistry(60 * time.Second),
 	}
