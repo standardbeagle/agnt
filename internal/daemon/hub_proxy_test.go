@@ -14,6 +14,7 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/protocol"
+	"github.com/stretchr/testify/require"
 )
 
 // newHubProxyTestDaemon spins up a daemon with state persistence enabled and
@@ -67,6 +68,7 @@ func newHubProxyTestDaemon(t *testing.T) (*Daemon, *Client, *httptest.Server, st
 // disjoint — no cross-contamination. Keeps every assertion from the original
 // 5 standalone tests; shares one daemon boot instead of 5.
 func TestHubHandleProxyStart(t *testing.T) {
+	t.Parallel()
 	daemon, client, backend, tmpDir := newHubProxyTestDaemon(t)
 
 	// RegistersAdminEntry: PROXY START via the MCP tool path must register
@@ -193,20 +195,15 @@ func TestHubHandleProxyStart(t *testing.T) {
 			t.Fatalf("ProxyStart failed: %v", err)
 		}
 
-		// Give the handler a moment to finish synchronous work.
-		time.Sleep(50 * time.Millisecond)
-
-		entries := daemon.startupErrorStore.Query(StartupLogFilter{})
-		var found bool
-		for _, e := range entries {
-			if e.EventType == "proxy_no_overlay" && e.ProcessID == proxyID {
-				found = true
-				break
+		require.Eventually(t, func() bool {
+			entries := daemon.startupErrorStore.Query(StartupLogFilter{})
+			for _, e := range entries {
+				if e.EventType == "proxy_no_overlay" && e.ProcessID == proxyID {
+					return true
+				}
 			}
-		}
-		if !found {
-			t.Errorf("expected proxy_no_overlay entry for %q in startupErrorStore", proxyID)
-		}
+			return false
+		}, 2*time.Second, 10*time.Millisecond, "expected proxy_no_overlay entry for %q in startupErrorStore", proxyID)
 	})
 }
 
@@ -222,6 +219,7 @@ func TestHubHandleProxyStart(t *testing.T) {
 // and the autostart-driven explicit-start event (daemon.handleExplicitStart
 // called directly, which is what autostartProxy queues via proxyEvents).
 func TestHubHandleProxyStats(t *testing.T) {
+	t.Parallel()
 	daemon, client, backend, tmpDir := newHubProxyTestDaemon(t)
 
 	// fireRequests hits the proxy listen-addr N times and drains the body.

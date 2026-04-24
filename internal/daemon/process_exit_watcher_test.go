@@ -14,6 +14,7 @@ import (
 // TestExitInfoStore_BasicStoreAndGet verifies the in-memory ExitInfo store
 // round-trips a lifecycle record.
 func TestExitInfoStore_BasicStoreAndGet(t *testing.T) {
+	t.Parallel()
 	store := newProcessExitInfoStore(10 * time.Minute)
 
 	now := time.Now()
@@ -39,6 +40,7 @@ func TestExitInfoStore_BasicStoreAndGet(t *testing.T) {
 // TestExitInfoStore_Eviction verifies records older than the retention window
 // are evicted on Get.
 func TestExitInfoStore_Eviction(t *testing.T) {
+	t.Parallel()
 	store := newProcessExitInfoStore(10 * time.Minute)
 
 	// Manually insert a stale record
@@ -68,6 +70,7 @@ func TestExitInfoStore_Eviction(t *testing.T) {
 // processID replaces the prior record. This matches the "10 min or until next
 // start" retention contract in the task description.
 func TestExitInfoStore_SetOverwritesOnRestart(t *testing.T) {
+	t.Parallel()
 	store := newProcessExitInfoStore(10 * time.Minute)
 
 	store.Set(&ProcessExitInfo{ProcessID: "p1", ExitCode: 1, Reason: "crash", EndedAt: time.Now()})
@@ -82,6 +85,7 @@ func TestExitInfoStore_SetOverwritesOnRestart(t *testing.T) {
 // TestExitInfoStore_Clear removes entries on explicit Clear — used on process
 // start to reset the death record for the next run.
 func TestExitInfoStore_Clear(t *testing.T) {
+	t.Parallel()
 	store := newProcessExitInfoStore(10 * time.Minute)
 
 	store.Set(&ProcessExitInfo{ProcessID: "p1", ExitCode: 1, Reason: "crash", EndedAt: time.Now()})
@@ -99,6 +103,7 @@ func TestExitInfoStore_Clear(t *testing.T) {
 //
 // The reason distinguishes "user asked us to stop" from "process died on its own".
 func TestClassifyExitReason(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		exitCode int
@@ -121,6 +126,7 @@ func TestClassifyExitReason(t *testing.T) {
 // TestBuildLifecycleAlert verifies that an exit info converts into a
 // process:lifecycle AlertEntry with the right dedup-friendly shape.
 func TestBuildLifecycleAlert(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	info := &ProcessExitInfo{
 		ProcessID:  "vite:dev",
@@ -151,6 +157,7 @@ func TestBuildLifecycleAlert(t *testing.T) {
 // TestBuildLifecycleAlert_CleanStopIsInfo verifies clean shutdowns emit at
 // info severity so they don't pollute the error list.
 func TestBuildLifecycleAlert_CleanStopIsInfo(t *testing.T) {
+	t.Parallel()
 	info := &ProcessExitInfo{
 		ProcessID: "cleanup",
 		ExitCode:  0,
@@ -168,6 +175,7 @@ func TestBuildLifecycleAlert_CleanStopIsInfo(t *testing.T) {
 // populated after the process exits. This is the end-to-end contract
 // test for the diagnostic gap — a dead process MUST be visible.
 func TestWatchProcessExit_EndToEnd(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("integration test uses /bin/sh")
 	}
@@ -241,6 +249,7 @@ func TestWatchProcessExit_EndToEnd(t *testing.T) {
 // death record so proc status reflects the new, running instance
 // instead of the dead one.
 func TestWatchProcessExit_NewWatcherClearsStaleInfo(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("integration test uses /bin/sh")
 	}
@@ -310,6 +319,7 @@ func TestWatchProcessExit_NewWatcherClearsStaleInfo(t *testing.T) {
 // This is the harder race — exercised by forcing the Set path to run
 // after a new instance exists under the same ID.
 func TestWatchProcessExit_RaceGuard_LateWatcher(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("integration test uses /bin/sh")
 	}
@@ -365,6 +375,7 @@ func TestWatchProcessExit_RaceGuard_LateWatcher(t *testing.T) {
 // TestExitInfoToResponse verifies the hub_proc serializer adds the
 // last_exit_* keys expected by the tools layer.
 func TestExitInfoToResponse(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	info := &ProcessExitInfo{
 		ProcessID:  "vite:dev",
@@ -401,6 +412,7 @@ func TestExitInfoToResponse(t *testing.T) {
 // not emit the last_stderr_tail key (keeps the response compact when
 // there's nothing useful to show).
 func TestExitInfoToResponse_NoStderrTail(t *testing.T) {
+	t.Parallel()
 	info := &ProcessExitInfo{
 		ProcessID: "p1",
 		ExitCode:  0,
@@ -417,6 +429,7 @@ func TestExitInfoToResponse_NoStderrTail(t *testing.T) {
 // NOT push a lifecycle alert (so get_errors isn't polluted with noise
 // from every user-initiated stop).
 func TestWatchProcessExit_CleanExit(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("integration test uses /bin/sh")
 	}

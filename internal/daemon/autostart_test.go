@@ -12,6 +12,7 @@ import (
 )
 
 func TestAutoStartDaemon(t *testing.T) {
+	t.Parallel()
 	// Use a unique socket for this test (platform-appropriate path)
 	tmpDir := t.TempDir()
 	socketPath := filepath.Join(tmpDir, "test-autostart.sock")
@@ -88,6 +89,7 @@ func TestAutoStartDaemon(t *testing.T) {
 }
 
 func TestDefaultAutoStartConfig(t *testing.T) {
+	t.Parallel()
 	config := DefaultAutoStartConfig()
 
 	if config.SocketPath == "" {
@@ -105,6 +107,7 @@ func TestDefaultAutoStartConfig(t *testing.T) {
 }
 
 func TestAutoStartConfig_toLibraryConfig(t *testing.T) {
+	t.Parallel()
 	config := AutoStartConfig{
 		SocketPath:    "/tmp/test.sock",
 		DaemonPath:    "/usr/bin/daemon",
@@ -136,6 +139,7 @@ func TestAutoStartConfig_toLibraryConfig(t *testing.T) {
 }
 
 func TestNewAutoStartClient(t *testing.T) {
+	t.Parallel()
 	config := AutoStartConfig{
 		SocketPath:    "/tmp/test-newclient.sock",
 		DaemonPath:    "/usr/bin/daemon",

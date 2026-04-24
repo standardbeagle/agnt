@@ -18,6 +18,7 @@ import (
 // much longer to complete. This is the core contract of the async-registration
 // refactor.
 func TestSessionRegister_AsyncReturnsImmediately(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
@@ -79,6 +80,7 @@ scripts {
 // for the same project back-to-back, the first sees status=starting (or
 // done, if the run is trivial) and the second sees status=joined.
 func TestSessionRegister_JoinAsObserver(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
@@ -138,6 +140,7 @@ scripts {
 // .agnt.kdl (or no autostart-eligible scripts) return status=done
 // synchronously because the run finishes before WriteJSON returns.
 func TestSessionRegister_EmptyConfigReturnsDone(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
@@ -177,6 +180,7 @@ func TestSessionRegister_EmptyConfigReturnsDone(t *testing.T) {
 // joiner calling SESSION REGISTER receives the progress history accumulated
 // so far.
 func TestSessionRegister_ProgressSnapshotIncludesHistory(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
@@ -251,6 +255,7 @@ scripts {
 // the refactor, AutostartManager is keyed by project path, so distinct
 // projects are independent.
 func TestSessionRegister_NoGlobalSerialization(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	sockPath := filepath.Join(root, "test.sock")
 

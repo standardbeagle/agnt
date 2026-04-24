@@ -23,6 +23,7 @@ import (
 // child), registers it on a fresh daemon as a session, triggers
 // CleanupSessionResources, and asserts the pgid has zero surviving members.
 func TestCleanupSessionResources_KillsSessionPGID(t *testing.T) {
+	t.Parallel()
 	d := newCleanupTestDaemon(t, 10*time.Millisecond)
 	tmpDir := t.TempDir()
 
@@ -88,6 +89,7 @@ func TestCleanupSessionResources_KillsSessionPGID(t *testing.T) {
 // catches it before the integration test above (which depends on the
 // field being honored by the daemon).
 func TestSessionRegister_CarriesSessionPGID(t *testing.T) {
+	t.Parallel()
 	d := newCleanupTestDaemon(t, 10*time.Millisecond)
 	tmpDir := t.TempDir()
 
@@ -112,6 +114,7 @@ func TestSessionRegister_CarriesSessionPGID(t *testing.T) {
 // SessionPGID == 0 (e.g. a Windows client, or one registered before
 // the field existed) does not panic, error, or affect other processes.
 func TestCleanupSessionResources_NoPGIDIsNoOp(t *testing.T) {
+	t.Parallel()
 	d := newCleanupTestDaemon(t, 10*time.Millisecond)
 	tmpDir := t.TempDir()
 
@@ -141,6 +144,7 @@ func TestCleanupSessionResources_NoPGIDIsNoOp(t *testing.T) {
 // end-to-end kill behavior is exercised by the Windows-tagged
 // integration test in internal/platform/sessionjob_windows_test.go.
 func TestSessionRegister_CarriesSessionJobHandle(t *testing.T) {
+	t.Parallel()
 	d := newCleanupTestDaemon(t, 10*time.Millisecond)
 	tmpDir := t.TempDir()
 
@@ -169,6 +173,7 @@ func TestSessionRegister_CarriesSessionJobHandle(t *testing.T) {
 // default state for every non-Windows session and must remain a
 // no-op.
 func TestCleanupSessionResources_NoJobHandleIsNoOp(t *testing.T) {
+	t.Parallel()
 	d := newCleanupTestDaemon(t, 10*time.Millisecond)
 	tmpDir := t.TempDir()
 
@@ -195,6 +200,7 @@ func TestCleanupSessionResources_NoJobHandleIsNoOp(t *testing.T) {
 // This guards against accidentally calling Windows-specific APIs
 // from Unix code paths.
 func TestCleanupSessionResources_StaleJobHandleIsNoOpOnUnix(t *testing.T) {
+	t.Parallel()
 	d := newCleanupTestDaemon(t, 10*time.Millisecond)
 	tmpDir := t.TempDir()
 

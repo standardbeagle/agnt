@@ -9,6 +9,7 @@ import (
 )
 
 func TestSessionRegistry_Register(t *testing.T) {
+	t.Parallel()
 	registry := NewSessionRegistry(60 * time.Second)
 
 	// Register a session
@@ -42,6 +43,7 @@ func TestSessionRegistry_Register(t *testing.T) {
 }
 
 func TestSessionRegistry_Register_Duplicate(t *testing.T) {
+	t.Parallel()
 	registry := NewSessionRegistry(60 * time.Second)
 
 	session := &Session{
@@ -70,6 +72,7 @@ func TestSessionRegistry_Register_Duplicate(t *testing.T) {
 }
 
 func TestSessionRegistry_Register_EmptyCode(t *testing.T) {
+	t.Parallel()
 	registry := NewSessionRegistry(60 * time.Second)
 
 	session := &Session{
@@ -84,6 +87,7 @@ func TestSessionRegistry_Register_EmptyCode(t *testing.T) {
 }
 
 func TestSessionRegistry_Unregister(t *testing.T) {
+	t.Parallel()
 	registry := NewSessionRegistry(60 * time.Second)
 
 	session := &Session{
@@ -112,6 +116,7 @@ func TestSessionRegistry_Unregister(t *testing.T) {
 }
 
 func TestSessionRegistry_Unregister_NotFound(t *testing.T) {
+	t.Parallel()
 	registry := NewSessionRegistry(60 * time.Second)
 
 	err := registry.Unregister("nonexistent")
@@ -121,6 +126,7 @@ func TestSessionRegistry_Unregister_NotFound(t *testing.T) {
 }
 
 func TestSessionRegistry_Heartbeat(t *testing.T) {
+	t.Parallel()
 	registry := NewSessionRegistry(60 * time.Second)
 
 	initialTime := time.Now().Add(-time.Minute)
@@ -152,6 +158,7 @@ func TestSessionRegistry_Heartbeat(t *testing.T) {
 }
 
 func TestSessionRegistry_Heartbeat_NotFound(t *testing.T) {
+	t.Parallel()
 	registry := NewSessionRegistry(60 * time.Second)
 
 	err := registry.Heartbeat("nonexistent")
@@ -161,6 +168,7 @@ func TestSessionRegistry_Heartbeat_NotFound(t *testing.T) {
 }
 
 func TestSessionRegistry_List(t *testing.T) {
+	t.Parallel()
 	registry := NewSessionRegistry(60 * time.Second)
 
 	// Register multiple sessions
@@ -182,6 +190,7 @@ func TestSessionRegistry_List(t *testing.T) {
 }
 
 func TestSessionRegistry_ListByProject(t *testing.T) {
+	t.Parallel()
 	registry := NewSessionRegistry(60 * time.Second)
 
 	// Register sessions in different projects
@@ -231,6 +240,7 @@ func TestSessionRegistry_ListByProject(t *testing.T) {
 }
 
 func TestSessionRegistry_ActiveCount(t *testing.T) {
+	t.Parallel()
 	registry := NewSessionRegistry(60 * time.Second)
 
 	if registry.ActiveCount() != 0 {
@@ -257,6 +267,7 @@ func TestSessionRegistry_ActiveCount(t *testing.T) {
 }
 
 func TestGenerateSessionCode(t *testing.T) {
+	t.Parallel()
 	registry := NewSessionRegistry(60 * time.Second)
 
 	// Generate first code
@@ -288,6 +299,7 @@ func TestGenerateSessionCode(t *testing.T) {
 }
 
 func TestSessionRegistry_Info(t *testing.T) {
+	t.Parallel()
 	registry := NewSessionRegistry(60 * time.Second)
 
 	// Add some sessions
@@ -309,6 +321,7 @@ func TestSessionRegistry_Info(t *testing.T) {
 }
 
 func TestSession_GetStatus(t *testing.T) {
+	t.Parallel()
 	session := &Session{
 		Code:   "test-1",
 		Status: SessionStatusActive,
@@ -325,6 +338,7 @@ func TestSession_GetStatus(t *testing.T) {
 }
 
 func TestSession_IsActive(t *testing.T) {
+	t.Parallel()
 	session := &Session{
 		Code:   "test-1",
 		Status: SessionStatusActive,
@@ -341,6 +355,7 @@ func TestSession_IsActive(t *testing.T) {
 }
 
 func TestSession_UpdateLastSeen(t *testing.T) {
+	t.Parallel()
 	oldTime := time.Now().Add(-time.Hour)
 	session := &Session{
 		Code:     "test-1",
@@ -359,6 +374,7 @@ func TestSession_UpdateLastSeen(t *testing.T) {
 }
 
 func TestSession_ToJSON(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	session := &Session{
 		Code:        "test-1",
@@ -384,6 +400,7 @@ func TestSession_ToJSON(t *testing.T) {
 }
 
 func TestSessionRegistry_FindByDirectory(t *testing.T) {
+	t.Parallel()
 	registry := NewSessionRegistry(60 * time.Second)
 
 	// Register session for /home/user/project
@@ -462,6 +479,7 @@ func TestSessionRegistry_FindByDirectory(t *testing.T) {
 }
 
 func TestSessionRegistry_FindByDirectory_MostSpecificMatch(t *testing.T) {
+	t.Parallel()
 	registry := NewSessionRegistry(60 * time.Second)
 
 	// Register sessions at different depths
@@ -504,6 +522,7 @@ func TestSessionRegistry_FindByDirectory_MostSpecificMatch(t *testing.T) {
 }
 
 func TestSessionRegistry_FindByDirectory_OnlyActiveSession(t *testing.T) {
+	t.Parallel()
 	registry := NewSessionRegistry(60 * time.Second)
 
 	// Register an inactive session
@@ -525,6 +544,7 @@ func TestSessionRegistry_FindByDirectory_OnlyActiveSession(t *testing.T) {
 }
 
 func TestSessionRegistry_ListActive(t *testing.T) {
+	t.Parallel()
 	registry := NewSessionRegistry(60 * time.Second)
 
 	// Register active and disconnected sessions
@@ -558,6 +578,7 @@ func TestSessionRegistry_ListActive(t *testing.T) {
 }
 
 func TestSessionRegistry_TotalRegistered(t *testing.T) {
+	t.Parallel()
 	registry := NewSessionRegistry(60 * time.Second)
 
 	if registry.TotalRegistered() != 0 {
@@ -578,6 +599,7 @@ func TestSessionRegistry_TotalRegistered(t *testing.T) {
 }
 
 func TestSessionRegistry_TotalUnregistered(t *testing.T) {
+	t.Parallel()
 	registry := NewSessionRegistry(60 * time.Second)
 
 	if registry.TotalUnregistered() != 0 {
@@ -599,6 +621,7 @@ func TestSessionRegistry_TotalUnregistered(t *testing.T) {
 }
 
 func TestSessionRegistry_CheckHeartbeats(t *testing.T) {
+	t.Parallel()
 	registry := NewSessionRegistry(100 * time.Millisecond) // Very short timeout
 
 	staleSession := &Session{
@@ -636,6 +659,7 @@ func TestSessionRegistry_CheckHeartbeats(t *testing.T) {
 }
 
 func TestSession_MarshalJSON(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	session := &Session{
 		Code:        "test-marshal-1",
@@ -679,6 +703,7 @@ func TestSession_MarshalJSON(t *testing.T) {
 // that different paths get distinct handles. This replaces the per-project
 // mutex tests that were superseded by AutostartManager.GetOrCreate.
 func TestDaemon_AutostartManager_SharedPerProject(t *testing.T) {
+	t.Parallel()
 	d := New(DaemonConfig{
 		SocketPath:   filepath.Join(t.TempDir(), "test.sock"),
 		MaxClients:   10,

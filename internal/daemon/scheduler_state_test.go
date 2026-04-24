@@ -12,6 +12,7 @@ import (
 )
 
 func TestSchedulerStateManager_SaveTask(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 
 	sm := NewSchedulerStateManagerWithInterval(10 * time.Millisecond)
@@ -39,6 +40,7 @@ func TestSchedulerStateManager_SaveTask(t *testing.T) {
 }
 
 func TestSchedulerStateManager_SaveTaskEmptyPath(t *testing.T) {
+	t.Parallel()
 	sm := NewSchedulerStateManagerWithInterval(10 * time.Millisecond)
 	defer sm.Close()
 
@@ -54,6 +56,7 @@ func TestSchedulerStateManager_SaveTaskEmptyPath(t *testing.T) {
 }
 
 func TestSchedulerStateManager_LoadTasks(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	sm := NewSchedulerStateManagerWithInterval(10 * time.Millisecond)
 	defer sm.Close()
@@ -90,6 +93,7 @@ func TestSchedulerStateManager_LoadTasks(t *testing.T) {
 }
 
 func TestSchedulerStateManager_RemoveTask(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	sm := NewSchedulerStateManagerWithInterval(10 * time.Millisecond)
 	defer sm.Close()
@@ -120,6 +124,7 @@ func TestSchedulerStateManager_RemoveTask(t *testing.T) {
 }
 
 func TestSchedulerStateManager_RemoveTaskEmptyPath(t *testing.T) {
+	t.Parallel()
 	sm := NewSchedulerStateManagerWithInterval(10 * time.Millisecond)
 	defer sm.Close()
 
@@ -130,6 +135,7 @@ func TestSchedulerStateManager_RemoveTaskEmptyPath(t *testing.T) {
 }
 
 func TestSchedulerStateManager_RemoveTaskNonExistent(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	sm := NewSchedulerStateManagerWithInterval(10 * time.Millisecond)
 	defer sm.Close()
@@ -142,6 +148,7 @@ func TestSchedulerStateManager_RemoveTaskNonExistent(t *testing.T) {
 }
 
 func TestSchedulerStateManager_ScanForProjects(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	sm := NewSchedulerStateManagerWithInterval(10 * time.Millisecond)
 	defer sm.Close()
@@ -172,6 +179,7 @@ func TestSchedulerStateManager_ScanForProjects(t *testing.T) {
 }
 
 func TestSchedulerStateManager_RegisterProject(t *testing.T) {
+	t.Parallel()
 	sm := NewSchedulerStateManagerWithInterval(10 * time.Millisecond)
 	defer sm.Close()
 
@@ -193,6 +201,7 @@ func TestSchedulerStateManager_RegisterProject(t *testing.T) {
 }
 
 func TestSchedulerStateManager_ListProjectsWithTasks(t *testing.T) {
+	t.Parallel()
 	sm := NewSchedulerStateManagerWithInterval(10 * time.Millisecond)
 	defer sm.Close()
 
@@ -213,6 +222,7 @@ func TestSchedulerStateManager_ListProjectsWithTasks(t *testing.T) {
 }
 
 func TestSchedulerStateManager_ClearProject(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	sm := NewSchedulerStateManagerWithInterval(10 * time.Millisecond)
 	defer sm.Close()
@@ -249,6 +259,7 @@ func TestSchedulerStateManager_ClearProject(t *testing.T) {
 }
 
 func TestSchedulerStateManager_LoadAllTasks(t *testing.T) {
+	t.Parallel()
 	tmpDir1 := t.TempDir()
 	tmpDir2 := t.TempDir()
 	sm := NewSchedulerStateManagerWithInterval(10 * time.Millisecond)
@@ -279,6 +290,7 @@ func TestSchedulerStateManager_LoadAllTasks(t *testing.T) {
 }
 
 func TestSchedulerStateManager_UpdateExistingTask(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	sm := NewSchedulerStateManagerWithInterval(10 * time.Millisecond)
 	defer sm.Close()
@@ -316,6 +328,7 @@ func TestSchedulerStateManager_UpdateExistingTask(t *testing.T) {
 }
 
 func TestSchedulerStateManager_ClearNonExistentProject(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	sm := NewSchedulerStateManagerWithInterval(10 * time.Millisecond)
 	defer sm.Close()
@@ -328,6 +341,7 @@ func TestSchedulerStateManager_ClearNonExistentProject(t *testing.T) {
 }
 
 func TestSchedulerStateManager_RemoveLastTask(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	sm := NewSchedulerStateManagerWithInterval(10 * time.Millisecond)
 	defer sm.Close()
@@ -364,6 +378,7 @@ func TestSchedulerStateManager_RemoveLastTask(t *testing.T) {
 // New tests for write-behind channel behavior
 
 func TestSchedulerState_ConcurrentSaveLoadNoDeadlock(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	sm := NewSchedulerStateManagerWithInterval(10 * time.Millisecond)
 	defer sm.Close()
@@ -415,6 +430,7 @@ func TestSchedulerState_ConcurrentSaveLoadNoDeadlock(t *testing.T) {
 }
 
 func TestSchedulerState_FlushOnClose(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	sm := NewSchedulerStateManagerWithInterval(10 * time.Second) // Very long debounce
 
@@ -435,6 +451,7 @@ func TestSchedulerState_FlushOnClose(t *testing.T) {
 }
 
 func TestSchedulerState_DebouncedSavesCoalesce(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	sm := NewSchedulerStateManagerWithInterval(100 * time.Millisecond)
 	defer sm.Close()
@@ -449,16 +466,20 @@ func TestSchedulerState_DebouncedSavesCoalesce(t *testing.T) {
 	}
 
 	// Wait for debounce
-	time.Sleep(200 * time.Millisecond)
+	statePath := filepath.Join(tmpDir, SchedulerStateDir, SchedulerStateFile)
+	require.Eventually(t, func() bool {
+		data, err := os.ReadFile(statePath)
+		return err == nil && len(data) > 0
+	}, 2*time.Second, 10*time.Millisecond, "state file should be written after debounce")
 
 	// Verify file exists with task
-	statePath := filepath.Join(tmpDir, SchedulerStateDir, SchedulerStateFile)
 	data, err := os.ReadFile(statePath)
 	require.NoError(t, err)
 	assert.Contains(t, string(data), "coalesce-task")
 }
 
 func TestSchedulerState_PersistAcrossRestart(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 
 	// First manager: save task and close
@@ -482,6 +503,7 @@ func TestSchedulerState_PersistAcrossRestart(t *testing.T) {
 }
 
 func TestSchedulerState_CloseIdempotent(t *testing.T) {
+	t.Parallel()
 	sm := NewSchedulerStateManagerWithInterval(10 * time.Millisecond)
 	require.NoError(t, sm.Close())
 	require.NoError(t, sm.Close())

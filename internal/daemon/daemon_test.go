@@ -12,9 +12,11 @@ import (
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/go-cli-server/script"
+	"github.com/stretchr/testify/require"
 )
 
 func TestDaemon_ScriptProxyTracking(t *testing.T) {
+	t.Parallel()
 	daemon, _ := newBootedDaemon(t)
 
 	// Test trackScriptProxy
@@ -53,6 +55,7 @@ func TestDaemon_ScriptProxyTracking(t *testing.T) {
 }
 
 func TestDaemon_StopAllResources(t *testing.T) {
+	t.Parallel()
 	daemon, client, tmpDir := newBootedDaemonWithClient(t)
 
 	// Start a proxy
@@ -66,22 +69,24 @@ func TestDaemon_StopAllResources(t *testing.T) {
 	daemon.StopAllResources(ctx)
 
 	// Verify proxy is stopped
-	time.Sleep(100 * time.Millisecond)
-	proxies, err := client.ProxyList(protocol.DirectoryFilter{Directory: tmpDir})
-	if err != nil {
-		t.Fatalf("ProxyList failed: %v", err)
-	}
-
-	proxyList, _ := proxies["proxies"].([]interface{})
-	for _, p := range proxyList {
-		proxy := p.(map[string]interface{})
-		if proxy["id"] == "stop-all-proxy" {
-			t.Error("stop-all-proxy should have been stopped")
+	require.Eventually(t, func() bool {
+		result, err := client.ProxyList(protocol.DirectoryFilter{Directory: tmpDir})
+		if err != nil {
+			return false
 		}
-	}
+		proxyList, _ := result["proxies"].([]interface{})
+		for _, p := range proxyList {
+			proxy := p.(map[string]interface{})
+			if proxy["id"] == "stop-all-proxy" {
+				return false
+			}
+		}
+		return true
+	}, 3*time.Second, 10*time.Millisecond, "stop-all-proxy should have been stopped")
 }
 
 func TestDaemon_HandleExplicitStart(t *testing.T) {
+	t.Parallel()
 	daemon, _ := newBootedDaemon(t)
 	tmpDir := t.TempDir()
 
@@ -108,10 +113,10 @@ func TestDaemon_HandleExplicitStart(t *testing.T) {
 	})
 
 	// Verify proxy was created
-	time.Sleep(100 * time.Millisecond)
-	if _, err := daemon.proxym.Get("explicit-url-proxy"); err != nil {
-		t.Error("Expected proxy to be created with URL config")
-	}
+	require.Eventually(t, func() bool {
+		_, err := daemon.proxym.Get("explicit-url-proxy")
+		return err == nil
+	}, 2*time.Second, 10*time.Millisecond, "Expected proxy to be created with URL config")
 
 	// Test with port config
 	daemon.handleExplicitStart(ProxyEvent{
@@ -121,10 +126,10 @@ func TestDaemon_HandleExplicitStart(t *testing.T) {
 		Path:    tmpDir,
 	})
 
-	time.Sleep(100 * time.Millisecond)
-	if _, err := daemon.proxym.Get("explicit-port-proxy"); err != nil {
-		t.Error("Expected proxy to be created with port config")
-	}
+	require.Eventually(t, func() bool {
+		_, err := daemon.proxym.Get("explicit-port-proxy")
+		return err == nil
+	}, 2*time.Second, 10*time.Millisecond, "Expected proxy to be created with port config")
 
 	// Test with Target (legacy) config
 	daemon.handleExplicitStart(ProxyEvent{
@@ -134,10 +139,10 @@ func TestDaemon_HandleExplicitStart(t *testing.T) {
 		Path:    tmpDir,
 	})
 
-	time.Sleep(100 * time.Millisecond)
-	if _, err := daemon.proxym.Get("explicit-target-proxy"); err != nil {
-		t.Error("Expected proxy to be created with Target config")
-	}
+	require.Eventually(t, func() bool {
+		_, err := daemon.proxym.Get("explicit-target-proxy")
+		return err == nil
+	}, 2*time.Second, 10*time.Millisecond, "Expected proxy to be created with Target config")
 
 	// Test with no target (should return early)
 	daemon.handleExplicitStart(ProxyEvent{
@@ -147,10 +152,11 @@ func TestDaemon_HandleExplicitStart(t *testing.T) {
 		Path:    tmpDir,
 	})
 
-	time.Sleep(50 * time.Millisecond)
-	if _, err := daemon.proxym.Get("no-target-proxy"); err == nil {
-		t.Error("Expected proxy NOT to be created with no target")
-	}
+	// Verify no proxy created (give handler a moment to do nothing)
+	require.Never(t, func() bool {
+		_, err := daemon.proxym.Get("no-target-proxy")
+		return err == nil
+	}, 100*time.Millisecond, 10*time.Millisecond, "Expected proxy NOT to be created with no target")
 
 	// Test duplicate proxy (should skip)
 	daemon.handleExplicitStart(ProxyEvent{
@@ -162,6 +168,7 @@ func TestDaemon_HandleExplicitStart(t *testing.T) {
 }
 
 func TestDaemon_HandleScriptStopped(t *testing.T) {
+	t.Parallel()
 	daemon, _ := newBootedDaemon(t)
 	tmpDir := t.TempDir()
 
@@ -172,15 +179,13 @@ func TestDaemon_HandleScriptStopped(t *testing.T) {
 		Config:  &config.ProxyConfig{URL: ephemeralTargetURL(t)},
 		Path:    tmpDir,
 	})
-	time.Sleep(100 * time.Millisecond)
+	require.Eventually(t, func() bool {
+		_, err := daemon.proxym.Get("script-linked-proxy")
+		return err == nil
+	}, 2*time.Second, 10*time.Millisecond, "Expected proxy to exist before script stopped")
 
 	// Track it as linked to a script
 	daemon.trackScriptProxy("test-script:dev", "script-linked-proxy")
-
-	// Verify proxy exists
-	if _, err := daemon.proxym.Get("script-linked-proxy"); err != nil {
-		t.Fatal("Expected proxy to exist before script stopped")
-	}
 
 	// Handle script stopped
 	daemon.handleScriptStopped(ProxyEvent{
@@ -188,13 +193,11 @@ func TestDaemon_HandleScriptStopped(t *testing.T) {
 		ScriptID: "test-script:dev",
 	})
 
-	// Give time for cleanup
-	time.Sleep(200 * time.Millisecond)
-
 	// Verify proxy was stopped
-	if _, err := daemon.proxym.Get("script-linked-proxy"); err == nil {
-		t.Error("Expected proxy to be stopped after script stopped")
-	}
+	require.Eventually(t, func() bool {
+		_, err := daemon.proxym.Get("script-linked-proxy")
+		return err != nil
+	}, 3*time.Second, 10*time.Millisecond, "Expected proxy to be stopped after script stopped")
 
 	// Verify script proxies were cleared
 	proxies := daemon.getProxiesForScript("test-script:dev")
@@ -204,6 +207,7 @@ func TestDaemon_HandleScriptStopped(t *testing.T) {
 }
 
 func TestDaemon_HandleScriptStopped_NoProxies(t *testing.T) {
+	t.Parallel()
 	daemon, _ := newBootedDaemon(t)
 
 	// Handle script stopped for script with no proxies
@@ -215,6 +219,7 @@ func TestDaemon_HandleScriptStopped_NoProxies(t *testing.T) {
 }
 
 func TestDaemon_HandleURLDetected(t *testing.T) {
+	t.Parallel()
 	daemon, _ := newBootedDaemon(t)
 	tmpDir := t.TempDir()
 
@@ -252,11 +257,10 @@ proxies {
 		URL:      "http://localhost:3002",
 	})
 
-	// Wait a bit for async processing
-	time.Sleep(100 * time.Millisecond)
 }
 
 func TestDaemon_HandleURLDetected_ProxyLimit(t *testing.T) {
+	t.Parallel()
 	daemon, _ := newBootedDaemon(t)
 	tmpDir := t.TempDir()
 
@@ -285,11 +289,10 @@ proxies {
 		URL:      "http://localhost:3003",
 	})
 
-	// Should not create proxy due to limit
-	time.Sleep(50 * time.Millisecond)
 }
 
 func TestDaemon_HandleURLDetected_WithProxyCreation(t *testing.T) {
+	t.Parallel()
 	daemon, _ := newBootedDaemon(t)
 	tmpDir := t.TempDir()
 
@@ -313,10 +316,7 @@ proxies {
 		URL:      "http://localhost:3004",
 	})
 
-	// Give time for proxy creation
-	time.Sleep(200 * time.Millisecond)
-
-	// Verify proxy was tracked
+	// Not a hard assertion — proxy creation may depend on config parsing
 	proxies := daemon.getProxiesForScript(tmpDir + ":dev")
 	if len(proxies) == 0 {
 		t.Log("No proxies tracked for script (may be expected if config parsing failed)")
@@ -326,6 +326,7 @@ proxies {
 }
 
 func TestDaemon_RunAutostart_WithScripts(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 
 	// Create a config with autostart scripts
@@ -349,9 +350,6 @@ scripts {
 	ctx := context.Background()
 	daemon.RunAutostart(ctx, tmpDir)
 
-	// Give time for script to start
-	time.Sleep(200 * time.Millisecond)
-
 	// Verify daemon is still running
 	client := NewClient(WithSocketPath(sockPath))
 	if err := client.Connect(); err != nil {
@@ -365,6 +363,7 @@ scripts {
 }
 
 func TestDaemon_RunAutostart_WithProxies(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 
 	// Create a config with autostart proxies
@@ -387,9 +386,6 @@ proxies {
 	ctx := context.Background()
 	daemon.RunAutostart(ctx, tmpDir)
 
-	// Give time for proxy to start
-	time.Sleep(200 * time.Millisecond)
-
 	// Verify proxy was created
 	client := NewClient(WithSocketPath(sockPath))
 	if err := client.Connect(); err != nil {
@@ -397,16 +393,18 @@ proxies {
 	}
 	defer client.Close()
 
+	// Give time for proxy to start (not a hard assertion — may be 0 depending on timing)
+	time.Sleep(200 * time.Millisecond)
 	result, err := client.ProxyList(protocol.DirectoryFilter{Global: true})
 	if err != nil {
 		t.Fatalf("ProxyList failed: %v", err)
 	}
-
 	proxies, _ := result["proxies"].([]interface{})
 	t.Logf("Proxies after autostart: %d", len(proxies))
 }
 
 func TestDaemon_HandleProxyEvents_ViaHandlers(t *testing.T) {
+	t.Parallel()
 	daemon, _ := newBootedDaemon(t)
 	tmpDir := t.TempDir()
 
@@ -431,7 +429,10 @@ proxies {
 			Config:  &config.ProxyConfig{URL: ephemeralTargetURL(t)},
 			Path:    tmpDir,
 		})
-		time.Sleep(100 * time.Millisecond)
+		require.Eventually(t, func() bool {
+			_, err := daemon.proxym.Get("handler-test-proxy")
+			return err == nil
+		}, 2*time.Second, 10*time.Millisecond, "handler-test-proxy should be created")
 	})
 
 	t.Run("URLDetected", func(t *testing.T) {
@@ -440,7 +441,7 @@ proxies {
 			ScriptID: tmpDir + ":dev",
 			URL:      ephemeralTargetURL(t),
 		})
-		time.Sleep(100 * time.Millisecond)
+		// async processing, no direct assertion
 	})
 
 	t.Run("ScriptStopped", func(t *testing.T) {
@@ -450,11 +451,11 @@ proxies {
 			Type:     ScriptStopped,
 			ScriptID: tmpDir + ":handler-test",
 		})
-		time.Sleep(100 * time.Millisecond)
 	})
 }
 
 func TestDaemon_ScriptRegistryInitialized(t *testing.T) {
+	t.Parallel()
 	d := New(DaemonConfig{
 		SocketPath:   shortSockPath(t),
 		MaxClients:   10,
@@ -467,6 +468,7 @@ func TestDaemon_ScriptRegistryInitialized(t *testing.T) {
 }
 
 func TestDaemon_AutostartRegistersInScriptRegistry(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 
 	configPath := filepath.Join(tmpDir, ".agnt.kdl")
@@ -488,14 +490,12 @@ scripts {
 	ctx := context.Background()
 	d.RunAutostart(ctx, tmpDir)
 
-	// Give time for script to start
-	time.Sleep(500 * time.Millisecond)
-
 	// Verify ScriptEntry was registered
-	entry, ok := d.ScriptRegistry().Get("test", tmpDir)
-	if !ok {
-		t.Fatal("ScriptEntry should exist after autostart")
-	}
+	require.Eventually(t, func() bool {
+		_, ok := d.ScriptRegistry().Get("test", tmpDir)
+		return ok
+	}, 5*time.Second, 20*time.Millisecond, "ScriptEntry should exist after autostart")
+	entry, _ := d.ScriptRegistry().Get("test", tmpDir)
 
 	if entry.Name != "test" {
 		t.Errorf("Expected name 'test', got %q", entry.Name)
@@ -524,6 +524,7 @@ scripts {
 }
 
 func TestDaemon_AutostartSkipsRunningScript(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 
 	d, _ := newBootedDaemon(t)
@@ -550,6 +551,7 @@ func TestDaemon_AutostartSkipsRunningScript(t *testing.T) {
 }
 
 func TestDaemon_ScriptRegistryLastError(t *testing.T) {
+	t.Parallel()
 	reg := script.NewRegistry()
 	cfg := &script.Config{Run: "npm start"}
 
@@ -569,6 +571,7 @@ func TestDaemon_ScriptRegistryLastError(t *testing.T) {
 }
 
 func TestScriptRegistry_GetByProcessID(t *testing.T) {
+	t.Parallel()
 	reg := script.NewRegistry()
 	cfg := &script.Config{Run: "npm start"}
 
@@ -592,6 +595,7 @@ func TestScriptRegistry_GetByProcessID(t *testing.T) {
 }
 
 func TestScriptRegistry_PruneStaleEntries(t *testing.T) {
+	t.Parallel()
 	// Simulates the scenario: session 1 registers 3 scripts, session 2 has only 1.
 	// After registerAndStartScripts, stale entries should be removed.
 	reg := script.NewRegistry()
@@ -629,6 +633,7 @@ func TestScriptRegistry_PruneStaleEntries(t *testing.T) {
 }
 
 func TestReconcileScriptStates_DeadPIDTransitioned(t *testing.T) {
+	t.Parallel()
 	// When a script entry says Running but the OS PID is dead,
 	// reconcileScriptStates must transition it to Stopped and emit ScriptStopped.
 	d, _ := newBootedDaemon(t)
@@ -664,6 +669,7 @@ func TestReconcileScriptStates_DeadPIDTransitioned(t *testing.T) {
 }
 
 func TestReconcileScriptStates_LiveProcessUnchanged(t *testing.T) {
+	// No t.Parallel(): starts real sleep process; PID-reuse kills it under high concurrency.
 	// A script whose managed process is actually alive should remain Running.
 	tmpDir := t.TempDir()
 
@@ -683,16 +689,15 @@ func TestReconcileScriptStates_LiveProcessUnchanged(t *testing.T) {
 		t.Fatalf("StartScript failed: %v", err)
 	}
 
-	time.Sleep(500 * time.Millisecond)
-
 	// Verify it's in the registry as running
-	entry, ok := d.scriptRegistry.Get("alive", tmpDir)
-	if !ok {
-		t.Fatal("Script 'alive' should exist after StartScript")
-	}
-	if state := entry.State(); state != script.StateRunning {
-		t.Fatalf("Expected StateRunning, got %s", state)
-	}
+	require.Eventually(t, func() bool {
+		entry, ok := d.scriptRegistry.Get("alive", tmpDir)
+		if !ok {
+			return false
+		}
+		return entry.State() == script.StateRunning
+	}, 5*time.Second, 20*time.Millisecond, "Script 'alive' should reach StateRunning")
+	entry, _ := d.scriptRegistry.Get("alive", tmpDir)
 
 	// Run reconciliation — process is alive, nothing should change
 	reconciled := d.reconcileScriptStates(tmpDir)
@@ -710,6 +715,7 @@ func TestReconcileScriptStates_LiveProcessUnchanged(t *testing.T) {
 }
 
 func TestReconcileScriptStates_IgnoresStoppedScripts(t *testing.T) {
+	t.Parallel()
 	// Scripts already in Stopped/Failed/Idle states should not be touched.
 	d, _ := newBootedDaemon(t)
 
@@ -743,6 +749,7 @@ func TestReconcileScriptStates_IgnoresStoppedScripts(t *testing.T) {
 }
 
 func TestCleanupSessionResources_ClearsScriptRegistry(t *testing.T) {
+	t.Parallel()
 	// The real bug: CleanupSessionResources must remove script entries from
 	// the registry when the last session disconnects. Otherwise, the next
 	// session sees stale entries and renders extra status bar indicators.

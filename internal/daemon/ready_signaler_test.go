@@ -12,6 +12,7 @@ import (
 )
 
 func TestReadySignaler_SignalBeforeWait(t *testing.T) {
+	t.Parallel()
 	rs := NewReadySignaler()
 	rs.SignalReady("proc1")
 
@@ -20,6 +21,7 @@ func TestReadySignaler_SignalBeforeWait(t *testing.T) {
 }
 
 func TestReadySignaler_WaitThenSignal(t *testing.T) {
+	t.Parallel()
 	rs := NewReadySignaler()
 
 	done := make(chan error, 1)
@@ -40,6 +42,7 @@ func TestReadySignaler_WaitThenSignal(t *testing.T) {
 }
 
 func TestReadySignaler_Timeout(t *testing.T) {
+	t.Parallel()
 	rs := NewReadySignaler()
 
 	start := time.Now()
@@ -52,6 +55,7 @@ func TestReadySignaler_Timeout(t *testing.T) {
 }
 
 func TestReadySignaler_IdempotentSignal(t *testing.T) {
+	t.Parallel()
 	rs := NewReadySignaler()
 	rs.GetOrCreate("proc1")
 
@@ -65,6 +69,7 @@ func TestReadySignaler_IdempotentSignal(t *testing.T) {
 }
 
 func TestReadySignaler_GetOrCreateReturnsSameChannel(t *testing.T) {
+	t.Parallel()
 	rs := NewReadySignaler()
 	ch1 := rs.GetOrCreate("proc1")
 	ch2 := rs.GetOrCreate("proc1")
@@ -72,6 +77,7 @@ func TestReadySignaler_GetOrCreateReturnsSameChannel(t *testing.T) {
 }
 
 func TestReadySignaler_PortProbeSuccess(t *testing.T) {
+	t.Parallel()
 	// Start a TCP listener.
 	ln, err := net.Listen("tcp", "localhost:0")
 	require.NoError(t, err)
@@ -88,6 +94,7 @@ func TestReadySignaler_PortProbeSuccess(t *testing.T) {
 }
 
 func TestReadySignaler_PortProbeCancel(t *testing.T) {
+	t.Parallel()
 	// Use a port that nothing is listening on.
 	ln, err := net.Listen("tcp", "localhost:0")
 	require.NoError(t, err)
@@ -109,6 +116,7 @@ func TestReadySignaler_PortProbeCancel(t *testing.T) {
 }
 
 func TestReadySignaler_Cleanup(t *testing.T) {
+	t.Parallel()
 	rs := NewReadySignaler()
 	ch1 := rs.GetOrCreate("proc1")
 	rs.Cleanup("proc1")
@@ -120,6 +128,7 @@ func TestReadySignaler_Cleanup(t *testing.T) {
 }
 
 func TestReadySignaler_CleanupStopsProbe(t *testing.T) {
+	t.Parallel()
 	// Use a port that nothing is listening on.
 	ln, err := net.Listen("tcp", "localhost:0")
 	require.NoError(t, err)
@@ -144,12 +153,14 @@ func TestReadySignaler_CleanupStopsProbe(t *testing.T) {
 }
 
 func TestReadySignaler_CleanupNonexistent(t *testing.T) {
+	t.Parallel()
 	rs := NewReadySignaler()
 	// Should not panic.
 	rs.Cleanup("nonexistent")
 }
 
 func TestReadySignaler_PortProbeImmediateDetection(t *testing.T) {
+	t.Parallel()
 	// Start a TCP listener BEFORE starting the probe.
 	ln, err := net.Listen("tcp", "localhost:0")
 	require.NoError(t, err)
@@ -172,6 +183,7 @@ func TestReadySignaler_PortProbeImmediateDetection(t *testing.T) {
 }
 
 func TestReadySignaler_PortProbeReplacesExisting(t *testing.T) {
+	t.Parallel()
 	// Start a listener.
 	ln, err := net.Listen("tcp", "localhost:0")
 	require.NoError(t, err)

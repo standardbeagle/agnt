@@ -78,6 +78,7 @@ func registerSession(t *testing.T, d *Daemon, code, projectPath string) {
 // running autostart context is cancelled when the last session for a project
 // is cleaned up.
 func TestCleanupSessionResources_CancelsAutostart_LastSession(t *testing.T) {
+	t.Parallel()
 	d := newCleanupTestDaemon(t, 10*time.Millisecond)
 
 	tmpDir := t.TempDir()
@@ -112,6 +113,7 @@ func TestCleanupSessionResources_CancelsAutostart_LastSession(t *testing.T) {
 // TestCleanupSessionResources_KeepsAutostart_OtherSessionsRemain verifies
 // that disconnecting a non-last session does NOT cancel the autostart run.
 func TestCleanupSessionResources_KeepsAutostart_OtherSessionsRemain(t *testing.T) {
+	t.Parallel()
 	d := newCleanupTestDaemon(t, 10*time.Millisecond)
 
 	tmpDir := t.TempDir()
@@ -152,6 +154,7 @@ func TestCleanupSessionResources_KeepsAutostart_OtherSessionsRemain(t *testing.T
 // the multi-session shutdown path: with two sessions, autostart survives the
 // first disconnect and is cancelled when the second leaves.
 func TestCleanupSessionResources_CancelsAutostart_AllSessionsLeave(t *testing.T) {
+	t.Parallel()
 	d := newCleanupTestDaemon(t, 10*time.Millisecond)
 
 	tmpDir := t.TempDir()
@@ -182,6 +185,7 @@ func TestCleanupSessionResources_CancelsAutostart_AllSessionsLeave(t *testing.T)
 // a re-registration during the grace period cancels the deferred cleanup,
 // and the autostart context is NOT cancelled.
 func TestCleanupSessionResourcesDeferred_ReconnectWithdrawsCancel(t *testing.T) {
+	t.Parallel()
 	const grace = 200 * time.Millisecond
 	d := newCleanupTestDaemon(t, grace)
 
@@ -229,6 +233,7 @@ func TestCleanupSessionResourcesDeferred_ReconnectWithdrawsCancel(t *testing.T) 
 // cleanup path is robust when no autostart handle was ever created for the
 // project (e.g., empty .agnt.kdl, programmatic registration, tests).
 func TestCleanupSessionResources_NoAutostartHandle_NoPanic(t *testing.T) {
+	t.Parallel()
 	d := newCleanupTestDaemon(t, 10*time.Millisecond)
 
 	tmpDir := t.TempDir()
@@ -253,6 +258,7 @@ func TestCleanupSessionResources_NoAutostartHandle_NoPanic(t *testing.T) {
 // from proxyEntries, and its persisted config is removed from stateMgr
 // so the next daemon restart does not silently re-create a dead proxy.
 func TestCleanupSessionResources_ExplicitProxy_LastSession(t *testing.T) {
+	t.Parallel()
 	d := newCleanupTestDaemon(t, 10*time.Millisecond)
 
 	tmpDir := t.TempDir()
@@ -302,6 +308,7 @@ func TestCleanupSessionResources_ExplicitProxy_LastSession(t *testing.T) {
 // semantics: process-kind entries transfer ownership, proxy-kind
 // entries stay up for as long as any session observes the project.
 func TestCleanupSessionResources_ExplicitProxy_OtherSessionRemains(t *testing.T) {
+	t.Parallel()
 	d := newCleanupTestDaemon(t, 10*time.Millisecond)
 
 	tmpDir := t.TempDir()
@@ -352,6 +359,7 @@ func TestCleanupSessionResources_ExplicitProxy_OtherSessionRemains(t *testing.T)
 // surface even though proxym has it running again — the indicator
 // disappears for the developer even though the proxy is healthy.
 func TestRestoreProxies_RegistersAdminEntry(t *testing.T) {
+	t.Parallel()
 	stateDir := t.TempDir()
 	sockPath := filepath.Join(stateDir, "d.sock")
 	d := New(DaemonConfig{

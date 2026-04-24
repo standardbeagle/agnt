@@ -501,19 +501,19 @@ func (d *Daemon) registerCommands() {
 	d.registerAgntCommands()
 }
 
-// Start starts the daemon and begins accepting connections.
-func (d *Daemon) Start() error {
-	d.shutdownMu.Lock()
-	if d.shutdown {
-		d.shutdownMu.Unlock()
-		debug.Log("daemon", "Start() called but daemon already shutdown")
-		return errors.New("daemon already shutdown")
-	}
-	d.shutdownMu.Unlock()
-
-	// Setup file-based logging for debugging (captures output even when daemon runs detached)
-	setupDebugLogging()
-
+// bootstrap performs the minimum wiring shared by Start() and NewForTest():
+// registers commands, wires hub session cleanup, starts the hub socket,
+// and kicks off the scheduler, URL tracker, proxy event loop, and hook
+// drain goroutine. It deliberately excludes orphan scans, port cleanup,
+// proxy restoration, and the update checker — those belong to the
+// production Start() path only.
+//
+// The split exists so tests can spin up a live daemon in <100ms without
+// walking /proc, touching persisted state, or issuing kill(2) syscalls.
+// Production byte-for-byte behavior lives in Start(); bootstrap() is
+// called from both paths to keep them in sync. See the "Test startup
+// contract" section of .claude/rules/daemon-architecture.md.
+func (d *Daemon) bootstrap() error {
 	// Register agnt-specific commands with Hub before starting
 	d.registerCommands()
 
@@ -529,28 +529,6 @@ func (d *Daemon) Start() error {
 		return fmt.Errorf("failed to start hub: %w", err)
 	}
 	d.started = time.Now()
-
-	// Clean up orphaned processes from previous crash.
-	// Note: port-based cleanup happens lazily in preflightPortCleanup when
-	// scripts are started via StartScript/RunAutostart, not at daemon startup.
-	d.cleanupOrphans()
-
-	// Clean up orphaned port bindings from persisted proxy state.
-	// This handles the race where orphaned processes were killed above but
-	// child/zombie processes still hold the ports.
-	d.startupPortCleanup(d.ctx)
-
-	// Scan /proc for orphaned POSIX process groups whose leader PID is
-	// dead but whose members are still running. These are leftovers from
-	// a daemon crash mid-session: the session-pgid tracker from Slice A
-	// was in memory, so it could not fire. No project path is known yet
-	// at daemon startup -- the scan runs with default config (enabled).
-	// Per-project overrides via session.orphan-pgid-scan still apply if
-	// the daemon is later reinvoked with a projectPath.
-	d.startupOrphanPGIDScan("")
-
-	// Restore proxies from persisted state
-	d.restoreProxies()
 
 	// Start the scheduler for scheduled message delivery
 	if err := d.scheduler.Start(d.ctx); err != nil {
@@ -573,6 +551,49 @@ func (d *Daemon) Start() error {
 		defer d.wg.Done()
 		d.drainHooks(d.ctx)
 	}()
+
+	return nil
+}
+
+// Start starts the daemon and begins accepting connections.
+func (d *Daemon) Start() error {
+	d.shutdownMu.Lock()
+	if d.shutdown {
+		d.shutdownMu.Unlock()
+		debug.Log("daemon", "Start() called but daemon already shutdown")
+		return errors.New("daemon already shutdown")
+	}
+	d.shutdownMu.Unlock()
+
+	// Setup file-based logging for debugging (captures output even when daemon runs detached)
+	setupDebugLogging()
+
+	// Shared wiring: commands, hub, scheduler, URL tracker, proxy events, hook drain.
+	if err := d.bootstrap(); err != nil {
+		return err
+	}
+
+	// Clean up orphaned processes from previous crash.
+	// Note: port-based cleanup happens lazily in preflightPortCleanup when
+	// scripts are started via StartScript/RunAutostart, not at daemon startup.
+	d.cleanupOrphans()
+
+	// Clean up orphaned port bindings from persisted proxy state.
+	// This handles the race where orphaned processes were killed above but
+	// child/zombie processes still hold the ports.
+	d.startupPortCleanup(d.ctx)
+
+	// Scan /proc for orphaned POSIX process groups whose leader PID is
+	// dead but whose members are still running. These are leftovers from
+	// a daemon crash mid-session: the session-pgid tracker from Slice A
+	// was in memory, so it could not fire. No project path is known yet
+	// at daemon startup -- the scan runs with default config (enabled).
+	// Per-project overrides via session.orphan-pgid-scan still apply if
+	// the daemon is later reinvoked with a projectPath.
+	d.startupOrphanPGIDScan("")
+
+	// Restore proxies from persisted state
+	d.restoreProxies()
 
 	// Start update checker if enabled
 	if d.updateChecker != nil {

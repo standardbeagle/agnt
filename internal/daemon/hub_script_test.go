@@ -18,6 +18,7 @@ import (
 // path would require a real socket connection; the merge logic is
 // the testable unit.
 func TestSCRIPTLIST_IncludesExplicitProxies(t *testing.T) {
+	t.Parallel()
 	daemon, tmpDir := newFallbackTestDaemon(t)
 
 	// Register a process-kind script first.
@@ -78,6 +79,7 @@ func TestSCRIPTLIST_IncludesExplicitProxies(t *testing.T) {
 // so the admin surface renders "no scripts" cleanly rather than
 // crashing.
 func TestSCRIPTLIST_EmptyProject_NoPanic(t *testing.T) {
+	t.Parallel()
 	daemon, tmpDir := newFallbackTestDaemon(t)
 
 	summaries := daemon.buildScriptListSummaries(tmpDir)
@@ -96,6 +98,7 @@ func TestSCRIPTLIST_EmptyProject_NoPanic(t *testing.T) {
 // daemon_test.go:TestCleanupSessionResources_ClearsScriptRegistry
 // already guards against, but for the proxy-kind surface added in T2.
 func TestCleanupSessionResources_ClearsExplicitProxyEntry(t *testing.T) {
+	t.Parallel()
 	daemon, tmpDir := newFallbackTestDaemon(t)
 
 	// Register a session owning this project so doCleanup takes the

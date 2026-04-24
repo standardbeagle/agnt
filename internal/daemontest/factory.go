@@ -2,7 +2,6 @@
 package daemontest
 
 import (
-	"context"
 	"fmt"
 	"net"
 	"os"
@@ -27,6 +26,12 @@ func WithStatePersistence() Option {
 // New boots a Daemon with an ephemeral socket path and registers a
 // t.Cleanup that stops it. The daemon uses default test-safe settings:
 // OrphanScanEnabled=false, StatePath=t.TempDir(), 5s WriteTimeout.
+//
+// Construction is routed through daemon.NewForTest so the heavy
+// production-only startup steps (orphan scans, port preflight,
+// proxy restoration, update checker) are skipped. See the
+// "Test startup contract" section of .claude/rules/daemon-architecture.md
+// for what's included vs. excluded and why.
 func New(t *testing.T, opts ...Option) *daemon.Daemon {
 	t.Helper()
 	cfg := daemon.DaemonConfig{
@@ -39,14 +44,7 @@ func New(t *testing.T, opts ...Option) *daemon.Daemon {
 	for _, o := range opts {
 		o(&cfg)
 	}
-	d := daemon.New(cfg)
-	require.NoError(t, d.Start())
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = d.Stop(ctx)
-	})
-	return d
+	return daemon.NewForTest(t, cfg)
 }
 
 // EphemeralPort returns a port number that was free at the time of the call.

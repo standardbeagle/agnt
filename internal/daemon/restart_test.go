@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/protocol"
+	"github.com/stretchr/testify/require"
 )
 
 // waitForProcessState polls until the process reaches the expected state or times out.
@@ -60,6 +61,7 @@ func restartProcessWithRetry(t *testing.T, client *Client, processID string) map
 
 // TestRestartIntegration_ProcRestart tests single process restart.
 func TestRestartIntegration_ProcRestart(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
@@ -134,6 +136,7 @@ func TestRestartIntegration_ProcRestart(t *testing.T) {
 
 // TestRestartIntegration_ProcRestart_NonExistent tests restarting a non-existent process.
 func TestRestartIntegration_ProcRestart_NonExistent(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
@@ -167,6 +170,7 @@ func TestRestartIntegration_ProcRestart_NonExistent(t *testing.T) {
 
 // TestRestartIntegration_ProxyRestart tests single proxy restart.
 func TestRestartIntegration_ProxyRestart(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
@@ -205,8 +209,11 @@ func TestRestartIntegration_ProxyRestart(t *testing.T) {
 	}
 	t.Logf("Proxy start result: %v", result)
 
-	// Wait for proxy to start
-	time.Sleep(100 * time.Millisecond)
+	// Wait for proxy to be reachable
+	require.Eventually(t, func() bool {
+		_, err := client.ProxyStatus("test-proxy")
+		return err == nil
+	}, 3*time.Second, 10*time.Millisecond, "proxy should be running before restart")
 
 	// Get initial status
 	status1, err := client.ProxyStatus("test-proxy")
@@ -230,10 +237,11 @@ func TestRestartIntegration_ProxyRestart(t *testing.T) {
 		t.Errorf("Expected success true, got %v", restartResult["success"])
 	}
 
-	// Wait for restart
-	time.Sleep(200 * time.Millisecond)
-
-	// Verify proxy is still running
+	// Verify proxy is still running after restart
+	require.Eventually(t, func() bool {
+		_, err := client.ProxyStatus("test-proxy")
+		return err == nil
+	}, 3*time.Second, 10*time.Millisecond, "proxy should be running after restart")
 	status2, err := client.ProxyStatus("test-proxy")
 	if err != nil {
 		t.Fatalf("Failed to get proxy status after restart: %v", err)
@@ -246,6 +254,7 @@ func TestRestartIntegration_ProxyRestart(t *testing.T) {
 
 // TestRestartIntegration_ProxyRestart_NonExistent tests restarting a non-existent proxy.
 func TestRestartIntegration_ProxyRestart_NonExistent(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
@@ -279,6 +288,7 @@ func TestRestartIntegration_ProxyRestart_NonExistent(t *testing.T) {
 
 // TestRestartIntegration_StopAll tests stopping all processes and proxies.
 func TestRestartIntegration_StopAll(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
@@ -333,19 +343,22 @@ func TestRestartIntegration_StopAll(t *testing.T) {
 		}
 	}
 
-	// Wait for everything to start
-	time.Sleep(200 * time.Millisecond)
-
 	// Verify resources are running
-	procList, _ := client.ProcList(protocol.DirectoryFilter{Global: true})
-	if procList["count"].(float64) < 2 {
-		t.Errorf("Expected at least 2 processes, got %v", procList["count"])
-	}
+	require.Eventually(t, func() bool {
+		procList, err := client.ProcList(protocol.DirectoryFilter{Global: true})
+		if err != nil {
+			return false
+		}
+		return procList["count"].(float64) >= 2
+	}, 5*time.Second, 20*time.Millisecond, "expected at least 2 processes to start")
 
-	proxyList, _ := client.ProxyList(protocol.DirectoryFilter{Global: true})
-	if proxyList["count"].(float64) < 2 {
-		t.Errorf("Expected at least 2 proxies, got %v", proxyList["count"])
-	}
+	require.Eventually(t, func() bool {
+		proxyList, err := client.ProxyList(protocol.DirectoryFilter{Global: true})
+		if err != nil {
+			return false
+		}
+		return proxyList["count"].(float64) >= 2
+	}, 5*time.Second, 20*time.Millisecond, "expected at least 2 proxies to start")
 
 	// Helper to safely get int from result
 	getIntVal := func(m map[string]interface{}, key string) int {
@@ -372,9 +385,6 @@ func TestRestartIntegration_StopAll(t *testing.T) {
 		t.Errorf("Expected at least 2 proxies stopped, got %d", proxiesStopped)
 	}
 
-	// Wait for cleanup
-	time.Sleep(200 * time.Millisecond)
-
 	// Verify all are stopped
 	procListAfter, _ := client.ProcList(protocol.DirectoryFilter{Global: true})
 	proxyListAfter, _ := client.ProxyList(protocol.DirectoryFilter{Global: true})
@@ -384,6 +394,7 @@ func TestRestartIntegration_StopAll(t *testing.T) {
 
 // TestRestartIntegration_RestartAll tests restarting all processes and proxies.
 func TestRestartIntegration_RestartAll(t *testing.T) {
+	// No t.Parallel(): starts real sleep process; PID-reuse kills it under high concurrency.
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
@@ -435,7 +446,19 @@ func TestRestartIntegration_RestartAll(t *testing.T) {
 	}
 
 	// Wait for everything to start
-	time.Sleep(200 * time.Millisecond)
+	require.Eventually(t, func() bool {
+		s, err := client.ProcStatus("restart-proc")
+		if err != nil {
+			return false
+		}
+		state, _ := s["state"].(string)
+		return state == "running"
+	}, 5*time.Second, 20*time.Millisecond, "restart-proc should reach running state")
+
+	require.Eventually(t, func() bool {
+		_, err := client.ProxyStatus("restart-proxy")
+		return err == nil
+	}, 3*time.Second, 10*time.Millisecond, "restart-proxy should be running")
 
 	// Helper to safely get int from result
 	getIntVal := func(m map[string]interface{}, key string) int {
@@ -483,9 +506,6 @@ func TestRestartIntegration_RestartAll(t *testing.T) {
 		t.Errorf("Expected 0 proxy failures, got %d", proxiesFailed)
 	}
 
-	// Wait for restart
-	time.Sleep(300 * time.Millisecond)
-
 	// Verify resources are running again
 	status, err := client.ProcStatus("restart-proc")
 	if err != nil {
@@ -508,6 +528,7 @@ func TestRestartIntegration_RestartAll(t *testing.T) {
 
 // TestRestartIntegration_StopAll_Empty tests stop all with no resources.
 func TestRestartIntegration_StopAll_Empty(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
@@ -560,6 +581,7 @@ func TestRestartIntegration_StopAll_Empty(t *testing.T) {
 
 // TestRestartIntegration_RestartAll_Empty tests restart all with no resources.
 func TestRestartIntegration_RestartAll_Empty(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "test.sock")
 

@@ -13,6 +13,7 @@ import (
 )
 
 func TestDefaultSocketPath(t *testing.T) {
+	t.Parallel()
 	path := DefaultSocketPath()
 	if path == "" {
 		t.Error("DefaultSocketPath() returned empty string")
@@ -68,6 +69,7 @@ func containsString(s, substr string) bool {
 }
 
 func TestSocketManager_Listen(t *testing.T) {
+	t.Parallel()
 	// Use temp directory for test socket
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "test.sock")
@@ -142,6 +144,7 @@ func TestSocketManager_Listen(t *testing.T) {
 }
 
 func TestSocketManager_CleanupStale(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "stale.sock")
 
@@ -173,6 +176,7 @@ func TestSocketManager_CleanupStale(t *testing.T) {
 }
 
 func TestConnect(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "connect.sock")
 
@@ -211,6 +215,7 @@ func TestConnect(t *testing.T) {
 }
 
 func TestIsRunning(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "running.sock")
 
@@ -260,6 +265,7 @@ func TestIsRunning(t *testing.T) {
 }
 
 func TestSocketPermissions(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "perms.sock")
 
@@ -290,6 +296,7 @@ func TestSocketPermissions(t *testing.T) {
 }
 
 func TestSocketManager_Path(t *testing.T) {
+	t.Parallel()
 	config := SocketConfig{Path: "/custom/path.sock"}
 	sm := NewSocketManager(config)
 
@@ -299,6 +306,7 @@ func TestSocketManager_Path(t *testing.T) {
 }
 
 func TestNewSocketManager_Defaults(t *testing.T) {
+	t.Parallel()
 	// Test with empty config
 	sm := NewSocketManager(SocketConfig{})
 

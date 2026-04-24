@@ -20,6 +20,7 @@ import (
 // proxy without a `wait-for` declaration is left in the default
 // open state — no waiter goroutines, gate open, no extra state.
 func TestRegisterProxyDependencies_NoWaitForIsNoOp(t *testing.T) {
+	t.Parallel()
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -39,6 +40,7 @@ func TestRegisterProxyDependencies_NoWaitForIsNoOp(t *testing.T) {
 // that registering a proxy with two deps closes the gate and that
 // firing both ready signals opens it exactly once.
 func TestRegisterProxyDependencies_GatesUntilAllDepsReady(t *testing.T) {
+	t.Parallel()
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -104,6 +106,7 @@ func TestRegisterProxyDependencies_GatesUntilAllDepsReady(t *testing.T) {
 // waiter exits cleanly when its dep eventually fires (no panic, no
 // stuck goroutine).
 func TestRegisterProxyDependencies_SurvivesProxyTeardown(t *testing.T) {
+	t.Parallel()
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))

@@ -7,6 +7,7 @@ import (
 )
 
 func TestExtractPortFromCommand(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		command  string
@@ -33,6 +34,7 @@ func TestExtractPortFromCommand(t *testing.T) {
 }
 
 func TestExtractPortFromPackageJsonScript(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		script   string
@@ -58,6 +60,7 @@ func TestExtractPortFromPackageJsonScript(t *testing.T) {
 }
 
 func TestDetectEADDRINUSE(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		output   string
@@ -106,6 +109,7 @@ func TestDetectEADDRINUSE(t *testing.T) {
 }
 
 func TestLastLines(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, "", lastLines("", 5))
 	assert.Equal(t, "", lastLines("   \n  \n  ", 5))
 	assert.Equal(t, "hello", lastLines("hello", 5))

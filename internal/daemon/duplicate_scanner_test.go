@@ -11,6 +11,7 @@ import (
 )
 
 func TestPathMatches(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		projectPath string
@@ -35,6 +36,7 @@ func TestPathMatches(t *testing.T) {
 }
 
 func TestDevServerCommandsList(t *testing.T) {
+	t.Parallel()
 	// Verify all required dev server commands are in the map
 	required := []string{
 		"node", "npm", "npx", "vite", "next", "webpack", "ts-node", "nodemon", "turbo",
@@ -53,6 +55,7 @@ func TestDevServerCommandsList(t *testing.T) {
 }
 
 func TestDuplicateScannerNotify(t *testing.T) {
+	t.Parallel()
 	// Test that the notification message is formatted correctly
 	scanner := &DuplicateScanner{}
 
@@ -77,6 +80,7 @@ func TestDuplicateScannerNotify(t *testing.T) {
 }
 
 func TestDuplicateScannerNotifyEmpty(t *testing.T) {
+	t.Parallel()
 	scanner := &DuplicateScanner{}
 	called := false
 	scanner.OnNotify = func(msg string) {
@@ -88,6 +92,7 @@ func TestDuplicateScannerNotifyEmpty(t *testing.T) {
 }
 
 func TestFindDuplicates_GroupsByCommand(t *testing.T) {
+	t.Parallel()
 	scanner := &DuplicateScanner{}
 	procs := []platform.ProcInfo{
 		{PID: 100, Command: "node", Cwd: "/home/user/project"},
@@ -105,6 +110,7 @@ func TestFindDuplicates_GroupsByCommand(t *testing.T) {
 }
 
 func TestFindDuplicates_SkipsManagedOnlyGroups(t *testing.T) {
+	t.Parallel()
 	scanner := &DuplicateScanner{}
 	procs := []platform.ProcInfo{
 		{PID: 100, Command: "node", Cwd: "/home/user/project"},
@@ -118,6 +124,7 @@ func TestFindDuplicates_SkipsManagedOnlyGroups(t *testing.T) {
 }
 
 func TestFindDuplicates_SortsByPIDAscending(t *testing.T) {
+	t.Parallel()
 	scanner := &DuplicateScanner{}
 	procs := []platform.ProcInfo{
 		{PID: 500, Command: "node", Cwd: "/home/user/project"},
@@ -136,6 +143,7 @@ func TestFindDuplicates_SortsByPIDAscending(t *testing.T) {
 }
 
 func TestKillDuplicates_KeepsOldestUnmanaged(t *testing.T) {
+	t.Parallel()
 	scanner := &DuplicateScanner{}
 	group := DuplicateGroup{
 		Command: "node",
@@ -162,6 +170,7 @@ func TestKillDuplicates_KeepsOldestUnmanaged(t *testing.T) {
 }
 
 func TestKillDuplicates_NeverKillsManaged(t *testing.T) {
+	t.Parallel()
 	scanner := &DuplicateScanner{}
 	group := DuplicateGroup{
 		Command: "node",
@@ -185,6 +194,7 @@ func TestKillDuplicates_NeverKillsManaged(t *testing.T) {
 }
 
 func TestKillDuplicates_IsLockFree(t *testing.T) {
+	t.Parallel()
 	// Verify killDuplicates can run while another goroutine holds the lock.
 	// This confirms the scan/kill split works — kills don't need the mutex.
 	scanner := &DuplicateScanner{}
@@ -224,11 +234,13 @@ func TestKillDuplicates_IsLockFree(t *testing.T) {
 }
 
 func TestLastScanAt_ZeroBeforeFirstScan(t *testing.T) {
+	t.Parallel()
 	scanner := &DuplicateScanner{}
 	assert.True(t, scanner.LastScanAt().IsZero(), "lastScanAt should be zero before any scan")
 }
 
 func TestConcurrentLastScanAt_NoRace(t *testing.T) {
+	t.Parallel()
 	// Verify concurrent reads of LastScanAt don't race with writes.
 	scanner := &DuplicateScanner{}
 
@@ -252,6 +264,7 @@ func TestConcurrentLastScanAt_NoRace(t *testing.T) {
 }
 
 func TestFindDuplicates_FiltersNonDevCommands(t *testing.T) {
+	t.Parallel()
 	scanner := &DuplicateScanner{}
 	procs := []platform.ProcInfo{
 		{PID: 100, Command: "bash", Cwd: "/home/user/project"},
@@ -264,6 +277,7 @@ func TestFindDuplicates_FiltersNonDevCommands(t *testing.T) {
 }
 
 func TestFindDuplicates_FiltersByProjectPath(t *testing.T) {
+	t.Parallel()
 	scanner := &DuplicateScanner{}
 	procs := []platform.ProcInfo{
 		{PID: 100, Command: "node", Cwd: "/home/user/project-a"},

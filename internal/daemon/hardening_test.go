@@ -15,6 +15,7 @@ import (
 // --- Race Condition Tests ---
 
 func TestAlertStore_ConcurrentAddAndQuery(t *testing.T) {
+	t.Parallel()
 	store := NewProcessAlertStore(50)
 	var wg sync.WaitGroup
 
@@ -60,6 +61,7 @@ func TestAlertStore_ConcurrentAddAndQuery(t *testing.T) {
 }
 
 func TestAlertStore_ConcurrentAddAndClear(t *testing.T) {
+	t.Parallel()
 	store := NewProcessAlertStore(100)
 	var wg sync.WaitGroup
 
@@ -98,6 +100,7 @@ func TestAlertStore_ConcurrentAddAndClear(t *testing.T) {
 }
 
 func TestSessionRegistry_ConcurrentRegisterUnregister(t *testing.T) {
+	t.Parallel()
 	reg := NewSessionRegistry(60 * time.Second)
 	var wg sync.WaitGroup
 
@@ -149,6 +152,7 @@ func TestSessionRegistry_ConcurrentRegisterUnregister(t *testing.T) {
 }
 
 func TestSessionRegistry_ConcurrentCheckHeartbeats(t *testing.T) {
+	t.Parallel()
 	reg := NewSessionRegistry(50 * time.Millisecond)
 	var wg sync.WaitGroup
 
@@ -195,6 +199,7 @@ func TestSessionRegistry_ConcurrentCheckHeartbeats(t *testing.T) {
 }
 
 func TestSessionRegistry_ConcurrentFindByDirectory(t *testing.T) {
+	t.Parallel()
 	reg := NewSessionRegistry(60 * time.Second)
 
 	// Register sessions at different directory depths
@@ -224,6 +229,7 @@ func TestSessionRegistry_ConcurrentFindByDirectory(t *testing.T) {
 }
 
 func TestSessionRegistry_ConcurrentGenerateSessionCode(t *testing.T) {
+	t.Parallel()
 	reg := NewSessionRegistry(60 * time.Second)
 	var wg sync.WaitGroup
 	codes := make([]string, 20)
@@ -245,6 +251,7 @@ func TestSessionRegistry_ConcurrentGenerateSessionCode(t *testing.T) {
 }
 
 func TestStateManager_ConcurrentReadWrite(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	statePath := filepath.Join(tmpDir, "race-state.json")
 
@@ -300,6 +307,7 @@ func TestStateManager_ConcurrentReadWrite(t *testing.T) {
 }
 
 func TestStateManager_ConcurrentSaveLoad(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	statePath := filepath.Join(tmpDir, "save-load-race.json")
 
@@ -352,6 +360,7 @@ func TestStateManager_ConcurrentSaveLoad(t *testing.T) {
 }
 
 func TestStateManager_ConcurrentAddRemoveProxy(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	statePath := filepath.Join(tmpDir, "add-remove-race.json")
 
@@ -413,6 +422,7 @@ func TestStateManager_ConcurrentAddRemoveProxy(t *testing.T) {
 // --- Path Traversal Tests ---
 
 func TestStateManager_PathTraversal_StatePath(t *testing.T) {
+	t.Parallel()
 	// Verify state files cannot escape their intended directory via path traversal
 	tmpDir := t.TempDir()
 
@@ -453,6 +463,7 @@ func TestStateManager_PathTraversal_StatePath(t *testing.T) {
 }
 
 func TestStateManager_PathTraversal_ProxyID(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	statePath := filepath.Join(tmpDir, "state.json")
 
@@ -499,6 +510,7 @@ func TestStateManager_PathTraversal_ProxyID(t *testing.T) {
 }
 
 func TestDefaultSocketPath_NoTraversal(t *testing.T) {
+	t.Parallel()
 	// Socket path should be under a controlled directory
 	path := DefaultSocketPath()
 	assert.NotEmpty(t, path)

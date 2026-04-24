@@ -8,6 +8,7 @@ import (
 )
 
 func TestNormalizePath_Empty(t *testing.T) {
+	t.Parallel()
 	result := normalizePath("")
 	if result != "." {
 		t.Errorf("normalizePath(\"\") = %q, want \".\"", result)
@@ -15,6 +16,7 @@ func TestNormalizePath_Empty(t *testing.T) {
 }
 
 func TestNormalizePath_Dot(t *testing.T) {
+	t.Parallel()
 	result := normalizePath(".")
 	if result != "." {
 		t.Errorf("normalizePath(\".\") = %q, want \".\"", result)
@@ -22,6 +24,7 @@ func TestNormalizePath_Dot(t *testing.T) {
 }
 
 func TestNormalizePath_AbsolutePath(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 
 	result := normalizePath(tmpDir)
@@ -38,6 +41,7 @@ func TestNormalizePath_AbsolutePath(t *testing.T) {
 }
 
 func TestNormalizePath_RelativePath(t *testing.T) {
+	t.Parallel()
 	result := normalizePath("./relative/path")
 
 	// Should be converted to absolute path
@@ -53,6 +57,7 @@ func TestNormalizePath_RelativePath(t *testing.T) {
 }
 
 func TestNormalizePath_PathWithSpaces(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	pathWithSpaces := filepath.Join(tmpDir, "path with spaces")
 
@@ -70,6 +75,7 @@ func TestNormalizePath_PathWithSpaces(t *testing.T) {
 }
 
 func TestNormalizePath_PathWithSpecialChars(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	specialPath := filepath.Join(tmpDir, "path-with_special.chars@123")
 
@@ -89,6 +95,7 @@ func TestNormalizePath_PathWithSpecialChars(t *testing.T) {
 // TestNormalizePath_WindowsCaseInsensitive verifies that on Windows,
 // paths are normalized to lowercase for case-insensitive comparison.
 func TestNormalizePath_WindowsCaseInsensitive(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS != "windows" {
 		t.Skip("Case normalization test only runs on Windows")
 	}
@@ -110,6 +117,7 @@ func TestNormalizePath_WindowsCaseInsensitive(t *testing.T) {
 
 // TestNormalizePath_WindowsUNCPath verifies that UNC paths are handled correctly.
 func TestNormalizePath_WindowsUNCPath(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS != "windows" {
 		t.Skip("UNC path test only runs on Windows")
 	}
@@ -130,6 +138,7 @@ func TestNormalizePath_WindowsUNCPath(t *testing.T) {
 
 // TestNormalizePath_Comparison tests that paths normalized the same way can be compared.
 func TestNormalizePath_Comparison(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 
 	// Normalize the same path twice

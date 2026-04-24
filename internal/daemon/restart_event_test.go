@@ -10,6 +10,7 @@ import (
 )
 
 func TestRestartEvent_AddAndRetrieve(t *testing.T) {
+	t.Parallel()
 	state := &processRestartState{
 		config: DefaultAutoRestartConfig(),
 	}
@@ -30,6 +31,7 @@ func TestRestartEvent_AddAndRetrieve(t *testing.T) {
 }
 
 func TestRestartEvent_MaxEventsRetained(t *testing.T) {
+	t.Parallel()
 	state := &processRestartState{
 		config: DefaultAutoRestartConfig(),
 	}
@@ -48,6 +50,7 @@ func TestRestartEvent_MaxEventsRetained(t *testing.T) {
 }
 
 func TestRestartEvent_EmptyReturnsNil(t *testing.T) {
+	t.Parallel()
 	state := &processRestartState{
 		config: DefaultAutoRestartConfig(),
 	}
@@ -57,6 +60,7 @@ func TestRestartEvent_EmptyReturnsNil(t *testing.T) {
 }
 
 func TestRestartEvent_ReturnsCopy(t *testing.T) {
+	t.Parallel()
 	state := &processRestartState{
 		config: DefaultAutoRestartConfig(),
 	}
@@ -70,11 +74,13 @@ func TestRestartEvent_ReturnsCopy(t *testing.T) {
 }
 
 func TestFormatRestartDelimiter_Empty(t *testing.T) {
+	t.Parallel()
 	assert.Equal(t, "", FormatRestartDelimiter(nil))
 	assert.Equal(t, "", FormatRestartDelimiter([]RestartEvent{}))
 }
 
 func TestFormatRestartDelimiter_SingleEvent(t *testing.T) {
+	t.Parallel()
 	ts := time.Date(2026, 3, 14, 14, 23, 5, 0, time.UTC)
 	events := []RestartEvent{{
 		Timestamp:  ts,
@@ -96,6 +102,7 @@ func TestFormatRestartDelimiter_SingleEvent(t *testing.T) {
 }
 
 func TestFormatRestartDelimiter_MultipleEvents(t *testing.T) {
+	t.Parallel()
 	events := []RestartEvent{
 		{Timestamp: time.Now(), ExitCode: 1, Runtime: 5 * time.Second, LastOutput: "crash one"},
 		{Timestamp: time.Now(), ExitCode: 137, Runtime: 10 * time.Second, LastOutput: "crash two"},
@@ -111,6 +118,7 @@ func TestFormatRestartDelimiter_MultipleEvents(t *testing.T) {
 }
 
 func TestFormatRestartDelimiter_NoLastOutput(t *testing.T) {
+	t.Parallel()
 	events := []RestartEvent{{
 		Timestamp: time.Now(),
 		ExitCode:  0,
@@ -126,6 +134,7 @@ func TestFormatRestartDelimiter_NoLastOutput(t *testing.T) {
 }
 
 func TestFormatRestartRuntime(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		d    time.Duration
 		want string
@@ -145,6 +154,7 @@ func TestFormatRestartRuntime(t *testing.T) {
 }
 
 func TestProcessAutoRestarter_GetRestartEvents(t *testing.T) {
+	t.Parallel()
 	// Test that GetRestartEvents returns nil for unregistered process
 	r := &ProcessAutoRestarter{
 		processes: make(map[string]*processRestartState),

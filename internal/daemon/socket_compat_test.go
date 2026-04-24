@@ -6,6 +6,7 @@ import (
 )
 
 func TestDefaultSocketConfig(t *testing.T) {
+	t.Parallel()
 	config := DefaultSocketConfig()
 
 	if config.Path == "" {
@@ -18,6 +19,7 @@ func TestDefaultSocketConfig(t *testing.T) {
 }
 
 func TestDefaultSocketPath_SocketCompat(t *testing.T) {
+	t.Parallel()
 	path := DefaultSocketPath()
 	if path == "" {
 		t.Error("Expected non-empty socket path")
@@ -26,6 +28,7 @@ func TestDefaultSocketPath_SocketCompat(t *testing.T) {
 }
 
 func TestNewSocketManager(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	sockPath := tmpDir + "/test.sock"
 
@@ -46,6 +49,7 @@ func TestNewSocketManager(t *testing.T) {
 }
 
 func TestNewSocketManager_DefaultPath(t *testing.T) {
+	t.Parallel()
 	// Test with empty path uses default
 	config := SocketConfig{
 		Path: "",
@@ -64,6 +68,7 @@ func TestNewSocketManager_DefaultPath(t *testing.T) {
 }
 
 func TestSocketManager_ListenAndClose(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	sockPath := tmpDir + "/listen-test.sock"
 

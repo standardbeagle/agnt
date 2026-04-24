@@ -6,6 +6,7 @@ import (
 )
 
 func TestDefaultUpgradeConfig(t *testing.T) {
+	t.Parallel()
 	config := DefaultUpgradeConfig()
 
 	if config.SocketPath == "" {
@@ -30,6 +31,7 @@ func TestDefaultUpgradeConfig(t *testing.T) {
 }
 
 func TestNewDaemonUpgrader(t *testing.T) {
+	t.Parallel()
 	config := UpgradeConfig{
 		SocketPath:      "/tmp/test-upgrade.sock",
 		Timeout:         10 * time.Second,
@@ -43,6 +45,7 @@ func TestNewDaemonUpgrader(t *testing.T) {
 }
 
 func TestNewDaemonUpgrader_Defaults(t *testing.T) {
+	t.Parallel()
 	// Test that empty config gets defaults filled in
 	config := UpgradeConfig{}
 

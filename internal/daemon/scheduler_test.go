@@ -38,6 +38,7 @@ func setupSchedulerTest(t *testing.T) (*Scheduler, *SessionRegistry, func()) {
 }
 
 func TestScheduler_Schedule(t *testing.T) {
+	t.Parallel()
 	scheduler, _, cleanup := setupSchedulerTest(t)
 	defer cleanup()
 
@@ -64,6 +65,7 @@ func TestScheduler_Schedule(t *testing.T) {
 }
 
 func TestScheduler_Schedule_EmptySessionCode(t *testing.T) {
+	t.Parallel()
 	scheduler, _, cleanup := setupSchedulerTest(t)
 	defer cleanup()
 
@@ -74,6 +76,7 @@ func TestScheduler_Schedule_EmptySessionCode(t *testing.T) {
 }
 
 func TestScheduler_Schedule_EmptyMessage(t *testing.T) {
+	t.Parallel()
 	scheduler, _, cleanup := setupSchedulerTest(t)
 	defer cleanup()
 
@@ -84,6 +87,7 @@ func TestScheduler_Schedule_EmptyMessage(t *testing.T) {
 }
 
 func TestScheduler_Schedule_NegativeDuration(t *testing.T) {
+	t.Parallel()
 	scheduler, _, cleanup := setupSchedulerTest(t)
 	defer cleanup()
 
@@ -94,6 +98,7 @@ func TestScheduler_Schedule_NegativeDuration(t *testing.T) {
 }
 
 func TestScheduler_Schedule_SessionNotFound(t *testing.T) {
+	t.Parallel()
 	scheduler, _, cleanup := setupSchedulerTest(t)
 	defer cleanup()
 
@@ -104,6 +109,7 @@ func TestScheduler_Schedule_SessionNotFound(t *testing.T) {
 }
 
 func TestScheduler_GetTask(t *testing.T) {
+	t.Parallel()
 	scheduler, _, cleanup := setupSchedulerTest(t)
 	defer cleanup()
 
@@ -119,6 +125,7 @@ func TestScheduler_GetTask(t *testing.T) {
 }
 
 func TestScheduler_GetTask_NotFound(t *testing.T) {
+	t.Parallel()
 	scheduler, _, cleanup := setupSchedulerTest(t)
 	defer cleanup()
 
@@ -129,6 +136,7 @@ func TestScheduler_GetTask_NotFound(t *testing.T) {
 }
 
 func TestScheduler_Cancel(t *testing.T) {
+	t.Parallel()
 	scheduler, _, cleanup := setupSchedulerTest(t)
 	defer cleanup()
 
@@ -147,6 +155,7 @@ func TestScheduler_Cancel(t *testing.T) {
 }
 
 func TestScheduler_Cancel_NotFound(t *testing.T) {
+	t.Parallel()
 	scheduler, _, cleanup := setupSchedulerTest(t)
 	defer cleanup()
 
@@ -157,6 +166,7 @@ func TestScheduler_Cancel_NotFound(t *testing.T) {
 }
 
 func TestScheduler_ListTasks(t *testing.T) {
+	t.Parallel()
 	scheduler, _, cleanup := setupSchedulerTest(t)
 	defer cleanup()
 
@@ -172,6 +182,7 @@ func TestScheduler_ListTasks(t *testing.T) {
 }
 
 func TestScheduler_ListTasksByProject(t *testing.T) {
+	t.Parallel()
 	registry := NewSessionRegistry(60 * time.Second)
 	config := DefaultSchedulerConfig()
 	scheduler := NewScheduler(config, registry, nil)
@@ -218,6 +229,7 @@ func TestScheduler_ListTasksByProject(t *testing.T) {
 }
 
 func TestScheduler_ListPendingTasks(t *testing.T) {
+	t.Parallel()
 	scheduler, _, cleanup := setupSchedulerTest(t)
 	defer cleanup()
 
@@ -235,6 +247,7 @@ func TestScheduler_ListPendingTasks(t *testing.T) {
 }
 
 func TestScheduler_Info(t *testing.T) {
+	t.Parallel()
 	scheduler, _, cleanup := setupSchedulerTest(t)
 	defer cleanup()
 
@@ -255,6 +268,7 @@ func TestScheduler_Info(t *testing.T) {
 }
 
 func TestScheduler_StartStop(t *testing.T) {
+	t.Parallel()
 	scheduler, _, cleanup := setupSchedulerTest(t)
 	defer cleanup()
 
@@ -280,6 +294,7 @@ func TestScheduler_StartStop(t *testing.T) {
 }
 
 func TestScheduledTask_ToJSON(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	task := NewScheduledTask("task-1", "test-session", "Test message", "/project",
 		now.Add(5*time.Minute), now, TaskStatusPending)
@@ -297,6 +312,7 @@ func TestScheduledTask_ToJSON(t *testing.T) {
 }
 
 func TestDefaultSchedulerConfig(t *testing.T) {
+	t.Parallel()
 	config := DefaultSchedulerConfig()
 
 	if config.TickInterval != 1*time.Second {
@@ -311,6 +327,7 @@ func TestDefaultSchedulerConfig(t *testing.T) {
 }
 
 func TestNewScheduler_WithEmptyConfig(t *testing.T) {
+	t.Parallel()
 	registry := NewSessionRegistry(60 * time.Second)
 
 	// Create scheduler with empty config - should use defaults
@@ -325,6 +342,7 @@ func TestNewScheduler_WithEmptyConfig(t *testing.T) {
 }
 
 func TestScheduler_Start_AlreadyStarted(t *testing.T) {
+	t.Parallel()
 	registry := NewSessionRegistry(60 * time.Second)
 	scheduler := NewScheduler(DefaultSchedulerConfig(), registry, nil)
 
@@ -345,6 +363,7 @@ func TestScheduler_Start_AlreadyStarted(t *testing.T) {
 }
 
 func TestScheduler_DeliveryConcurrencyBound(t *testing.T) {
+	t.Parallel()
 	registry := NewSessionRegistry(60 * time.Second)
 	config := SchedulerConfig{
 		TickInterval:            50 * time.Millisecond,
@@ -394,8 +413,9 @@ func TestScheduler_DeliveryConcurrencyBound(t *testing.T) {
 	// The semaphore should prevent more than MaxConcurrentDeliveries goroutines.
 	// Delivery will fail (no real overlay socket), causing tasks to be removed
 	// from the map (MaxRetries=1). After processing, tasks are gone.
-	// Wait for delivery attempts to drain the task map.
-	time.Sleep(800 * time.Millisecond)
+	require.Eventually(t, func() bool {
+		return scheduler.totalFailed.Load() > 0
+	}, 5*time.Second, 10*time.Millisecond, "expected delivery attempts, got 0")
 
 	// Verify tasks were processed by checking the failure counter.
 	// Failed tasks get removed from the map but increment totalFailed.
@@ -409,6 +429,7 @@ func TestScheduler_DeliveryConcurrencyBound(t *testing.T) {
 }
 
 func TestScheduler_CtxCancellationStopsLoop(t *testing.T) {
+	t.Parallel()
 	registry := NewSessionRegistry(60 * time.Second)
 	config := SchedulerConfig{
 		TickInterval:            10 * time.Millisecond,
@@ -444,6 +465,7 @@ func TestScheduler_CtxCancellationStopsLoop(t *testing.T) {
 }
 
 func TestScheduler_CheckDueTasksRespectsCtxCancel(t *testing.T) {
+	t.Parallel()
 	registry := NewSessionRegistry(60 * time.Second)
 	config := SchedulerConfig{
 		TickInterval:            time.Hour, // won't auto-tick
@@ -503,6 +525,7 @@ func TestScheduler_CheckDueTasksRespectsCtxCancel(t *testing.T) {
 }
 
 func TestScheduler_DefaultMaxConcurrentDeliveries(t *testing.T) {
+	t.Parallel()
 	config := DefaultSchedulerConfig()
 	if config.MaxConcurrentDeliveries != 10 {
 		t.Errorf("DefaultSchedulerConfig().MaxConcurrentDeliveries = %d, want 10",
@@ -511,6 +534,7 @@ func TestScheduler_DefaultMaxConcurrentDeliveries(t *testing.T) {
 }
 
 func TestScheduler_ZeroConcurrencyUsesDefault(t *testing.T) {
+	t.Parallel()
 	registry := NewSessionRegistry(60 * time.Second)
 	config := SchedulerConfig{
 		TickInterval:            time.Second,
@@ -524,6 +548,7 @@ func TestScheduler_ZeroConcurrencyUsesDefault(t *testing.T) {
 }
 
 func TestScheduler_SemaphoreNotNil(t *testing.T) {
+	t.Parallel()
 	registry := NewSessionRegistry(60 * time.Second)
 	scheduler := NewScheduler(DefaultSchedulerConfig(), registry, nil)
 	if scheduler.deliverySem == nil {
@@ -532,6 +557,7 @@ func TestScheduler_SemaphoreNotNil(t *testing.T) {
 }
 
 func TestScheduler_ConcurrencyBoundRespected(t *testing.T) {
+	t.Parallel()
 	// This test verifies the semaphore actually limits concurrency.
 	// We set MaxConcurrentDeliveries=2, create tasks, and verify all get processed.
 	// The key proof: if the semaphore blocked permanently, not all tasks would complete.
@@ -580,10 +606,15 @@ func TestScheduler_ConcurrencyBoundRespected(t *testing.T) {
 	}
 	defer scheduler.Stop(context.Background())
 
-	// Wait for delivery attempts to complete.
-	// With concurrency=2 and 1-second delivery timeout, all 10 tasks need
-	// at most 5 rounds of 2 (but delivery fails fast on connection refused).
-	time.Sleep(1500 * time.Millisecond)
+	// Wait for all tasks to be attempted (delivery fails fast on connection refused).
+	require.Eventually(t, func() bool {
+		var remaining atomic.Int64
+		scheduler.tasks.Range(func(_, _ interface{}) bool {
+			remaining.Add(1)
+			return true
+		})
+		return scheduler.totalFailed.Load()+remaining.Load() >= int64(taskCount)
+	}, 5*time.Second, 10*time.Millisecond, "not all tasks processed")
 
 	// Verify all tasks were processed via the failure counter.
 	// Failed tasks get removed from the map but increment totalFailed.
@@ -606,6 +637,7 @@ func TestScheduler_ConcurrencyBoundRespected(t *testing.T) {
 // --- Race condition tests ---
 
 func TestScheduler_NoDuplicateDelivery(t *testing.T) {
+	t.Parallel()
 	// Verifies that a pending task is only claimed once even when
 	// checkDueTasks is called concurrently from multiple goroutines.
 	registry := NewSessionRegistry(60 * time.Second)
@@ -652,7 +684,9 @@ func TestScheduler_NoDuplicateDelivery(t *testing.T) {
 	wg.Wait()
 
 	// Wait for delivery goroutines to complete
-	time.Sleep(500 * time.Millisecond)
+	require.Eventually(t, func() bool {
+		return scheduler.totalFailed.Load() >= 1
+	}, 5*time.Second, 10*time.Millisecond, "task was not attempted")
 
 	// The task should have been attempted exactly once (MaxRetries=1 -> fails once -> removed)
 	failed := scheduler.totalFailed.Load()
@@ -660,6 +694,7 @@ func TestScheduler_NoDuplicateDelivery(t *testing.T) {
 }
 
 func TestScheduler_CancelRaceWithDelivery(t *testing.T) {
+	t.Parallel()
 	// Verifies that Cancel and deliverTask don't both succeed on the same task.
 	// One must win the CAS, the other must lose.
 	registry := NewSessionRegistry(60 * time.Second)
@@ -735,6 +770,7 @@ func TestScheduler_CancelRaceWithDelivery(t *testing.T) {
 }
 
 func TestScheduler_ConcurrentCancelSameTask(t *testing.T) {
+	t.Parallel()
 	// Verifies that concurrent Cancel calls on the same task only succeed once.
 	scheduler, _, cleanup := setupSchedulerTest(t)
 	defer cleanup()
@@ -759,6 +795,7 @@ func TestScheduler_ConcurrentCancelSameTask(t *testing.T) {
 }
 
 func TestScheduler_StatusAccessorsSafe(t *testing.T) {
+	t.Parallel()
 	// Verifies that status accessors are safe under concurrent access.
 	task := NewScheduledTask("test", "session", "msg", "/project",
 		time.Now(), time.Now(), TaskStatusPending)
@@ -798,6 +835,7 @@ func TestScheduler_StatusAccessorsSafe(t *testing.T) {
 }
 
 func TestScheduler_CompareAndSwapStatus(t *testing.T) {
+	t.Parallel()
 	task := NewScheduledTask("test", "session", "msg", "/project",
 		time.Now(), time.Now(), TaskStatusPending)
 
@@ -814,6 +852,7 @@ func TestScheduler_CompareAndSwapStatus(t *testing.T) {
 }
 
 func TestScheduler_DeliveringStatusPreventsDuplicateClaim(t *testing.T) {
+	t.Parallel()
 	// Verifies that once a task is claimed (Pending -> Delivering),
 	// subsequent claims fail.
 	task := NewScheduledTask("test", "session", "msg", "/project",
@@ -836,6 +875,7 @@ func TestScheduler_DeliveringStatusPreventsDuplicateClaim(t *testing.T) {
 }
 
 func TestScheduler_JSONRoundTrip(t *testing.T) {
+	t.Parallel()
 	// Verifies that JSON serialization/deserialization preserves all fields
 	// including atomic status, attempts, and lastError.
 	now := time.Now().Truncate(time.Second) // Truncate for JSON round-trip
@@ -860,6 +900,7 @@ func TestScheduler_JSONRoundTrip(t *testing.T) {
 }
 
 func TestScheduler_HandleDeliveryFailureRetriesToPending(t *testing.T) {
+	t.Parallel()
 	// Verifies that a failed delivery with retries remaining reverts to pending.
 	registry := NewSessionRegistry(60 * time.Second)
 	config := SchedulerConfig{
@@ -903,6 +944,7 @@ func TestScheduler_HandleDeliveryFailureRetriesToPending(t *testing.T) {
 }
 
 func TestScheduler_NewScheduledTask(t *testing.T) {
+	t.Parallel()
 	now := time.Now()
 	task := NewScheduledTask("id-1", "session", "msg", "/project",
 		now.Add(time.Hour), now, TaskStatusPending)
@@ -917,6 +959,7 @@ func TestScheduler_NewScheduledTask(t *testing.T) {
 }
 
 func TestScheduler_StopRespectsContextDeadline(t *testing.T) {
+	t.Parallel()
 	// Verifies that Stop returns promptly when the provided context expires,
 	// even if goroutines haven't finished yet.
 	registry := NewSessionRegistry(60 * time.Second)

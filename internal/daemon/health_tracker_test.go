@@ -139,6 +139,7 @@ func newTestTracker(t *testing.T) (*HealthTracker, *procTable, *trackerSpy, *fak
 }
 
 func TestSuppressionWindow_StartingStopping(t *testing.T) {
+	t.Parallel()
 	tracker, table, _, _ := newTestTracker(t)
 
 	starting := newFakeProcess(t, "proc-1", goprocess.StateStarting)
@@ -155,6 +156,7 @@ func TestSuppressionWindow_StartingStopping(t *testing.T) {
 }
 
 func TestSuppressionWindow_HealthyWithGrace(t *testing.T) {
+	t.Parallel()
 	tracker, table, _, clock := newTestTracker(t)
 
 	proc := newFakeProcess(t, "proc-1", goprocess.StateStarting)
@@ -181,6 +183,7 @@ func TestSuppressionWindow_HealthyWithGrace(t *testing.T) {
 }
 
 func TestSuppressionWindow_HealthyPastGrace(t *testing.T) {
+	t.Parallel()
 	tracker, table, _, clock := newTestTracker(t)
 
 	proc := newFakeProcess(t, "proc-1", goprocess.StateRunning)
@@ -195,6 +198,7 @@ func TestSuppressionWindow_HealthyPastGrace(t *testing.T) {
 }
 
 func TestSuppressionWindow_Unlinked(t *testing.T) {
+	t.Parallel()
 	tracker, table, _, _ := newTestTracker(t)
 
 	// Even if there's a process in a suppress state, an unlinked proxy
@@ -206,6 +210,7 @@ func TestSuppressionWindow_Unlinked(t *testing.T) {
 }
 
 func TestSuppressionWindow_Dead(t *testing.T) {
+	t.Parallel()
 	tracker, table, _, _ := newTestTracker(t)
 
 	// StateStopped represents the "Dead" state per .claude/rules.
@@ -217,6 +222,7 @@ func TestSuppressionWindow_Dead(t *testing.T) {
 }
 
 func TestSuppressionWindow_MissingProcess(t *testing.T) {
+	t.Parallel()
 	tracker, _, _, _ := newTestTracker(t)
 
 	// Process was removed between trackProxy and the next log entry.
@@ -225,6 +231,7 @@ func TestSuppressionWindow_MissingProcess(t *testing.T) {
 }
 
 func TestSuppressionWindow_RestartCycle(t *testing.T) {
+	t.Parallel()
 	// Adversarial scenario: Healthy → Stopping → Healthy → Stopping
 	// within 6 seconds. The grace timer from the first Healthy must NOT
 	// interfere with the second Stopping's suppression.
@@ -256,6 +263,7 @@ func TestSuppressionWindow_RestartCycle(t *testing.T) {
 }
 
 func TestDiagnosticMarkers_FireOnceOnTransition(t *testing.T) {
+	t.Parallel()
 	tracker, table, spy, clock := newTestTracker(t)
 
 	proc := newFakeProcess(t, "proc-1", goprocess.StateRunning)
@@ -293,6 +301,7 @@ func TestDiagnosticMarkers_FireOnceOnTransition(t *testing.T) {
 }
 
 func TestDiagnosticMarkers_DirectStoppedSkipsGrace(t *testing.T) {
+	t.Parallel()
 	// When a process goes Failed → Stopped (dead, no recovery), the
 	// close marker must fire immediately — there's no grace window for
 	// "dead", because errors should resume flowing right away.
@@ -313,6 +322,7 @@ func TestDiagnosticMarkers_DirectStoppedSkipsGrace(t *testing.T) {
 }
 
 func TestForget_DropsState(t *testing.T) {
+	t.Parallel()
 	tracker, table, _, _ := newTestTracker(t)
 
 	proc := newFakeProcess(t, "proc-1", goprocess.StateStarting)
@@ -330,6 +340,7 @@ func TestForget_DropsState(t *testing.T) {
 }
 
 func TestNilTracker_NeverSuppresses(t *testing.T) {
+	t.Parallel()
 	// Defensive: a nil tracker (e.g. in a test daemon without the field
 	// initialised) must not panic and must return false.
 	var tracker *HealthTracker
@@ -361,6 +372,7 @@ func newGateDaemon(t *testing.T, table *procTable) (*Daemon, *trackerSpy, *fakeC
 }
 
 func TestBroadcastGate_Suppressed(t *testing.T) {
+	t.Parallel()
 	table := newProcTable()
 	d, _, _ := newGateDaemon(t, table)
 
@@ -379,6 +391,7 @@ func TestBroadcastGate_Suppressed(t *testing.T) {
 }
 
 func TestBroadcastGate_PassesThroughWhenHealthy(t *testing.T) {
+	t.Parallel()
 	table := newProcTable()
 	d, _, clock := newGateDaemon(t, table)
 
@@ -398,6 +411,7 @@ func TestBroadcastGate_PassesThroughWhenHealthy(t *testing.T) {
 }
 
 func TestBroadcastGate_DiagnosticAlwaysPasses(t *testing.T) {
+	t.Parallel()
 	table := newProcTable()
 	d, _, _ := newGateDaemon(t, table)
 
@@ -421,6 +435,7 @@ func TestBroadcastGate_DiagnosticAlwaysPasses(t *testing.T) {
 }
 
 func TestBroadcastGate_UnlinkedProxyAlwaysPasses(t *testing.T) {
+	t.Parallel()
 	table := newProcTable()
 	d, _, _ := newGateDaemon(t, table)
 

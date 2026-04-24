@@ -13,10 +13,12 @@ import (
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/proxy"
+	"github.com/stretchr/testify/require"
 )
 
 // TestHubIntegration_CommandDispatch verifies that commands are dispatched through Hub.
 func TestHubIntegration_CommandDispatch(t *testing.T) {
+	t.Parallel()
 	client := newBootedClient(t)
 
 	// Test DETECT command through Hub
@@ -103,6 +105,7 @@ func TestHubIntegration_CommandDispatch(t *testing.T) {
 
 // TestHubIntegration_ProxyWorkflow tests proxy creation and management through Hub.
 func TestHubIntegration_ProxyWorkflow(t *testing.T) {
+	t.Parallel()
 	client := newBootedClient(t)
 
 	// Start a proxy
@@ -187,6 +190,7 @@ func TestHubIntegration_ProxyWorkflow(t *testing.T) {
 
 // TestHubIntegration_TunnelCommands tests tunnel commands (error paths since no tunnel running).
 func TestHubIntegration_TunnelCommands(t *testing.T) {
+	t.Parallel()
 	client := newBootedClient(t)
 
 	// List tunnels (should be empty)
@@ -219,6 +223,7 @@ func TestHubIntegration_TunnelCommands(t *testing.T) {
 
 // TestHubIntegration_ChaosCommands tests chaos engineering commands.
 func TestHubIntegration_ChaosCommands(t *testing.T) {
+	t.Parallel()
 	client := newBootedClient(t)
 
 	// Start a proxy for chaos testing
@@ -312,6 +317,7 @@ func TestHubIntegration_ChaosCommands(t *testing.T) {
 
 // TestHubIntegration_OverlayCommands tests overlay commands.
 func TestHubIntegration_OverlayCommands(t *testing.T) {
+	t.Parallel()
 	client := newBootedClient(t)
 
 	// Test OVERLAY GET (initially empty)
@@ -366,6 +372,7 @@ func TestHubIntegration_OverlayCommands(t *testing.T) {
 
 // TestHubIntegration_ProcessWorkflow tests process commands through Hub.
 func TestHubIntegration_ProcessWorkflow(t *testing.T) {
+	t.Parallel()
 	client := newBootedClient(t)
 
 	// Run a quick process
@@ -385,7 +392,14 @@ func TestHubIntegration_ProcessWorkflow(t *testing.T) {
 	})
 
 	// Wait for process to finish
-	time.Sleep(500 * time.Millisecond)
+	require.Eventually(t, func() bool {
+		result, err := client.ProcStatus("test-echo")
+		if err != nil {
+			return false
+		}
+		state, _ := result["state"].(string)
+		return state != "" && state != "running" && state != "starting"
+	}, 5*time.Second, 10*time.Millisecond, "echo process did not finish")
 
 	// Get process status
 	t.Run("STATUS", func(t *testing.T) {
@@ -422,6 +436,7 @@ func TestHubIntegration_ProcessWorkflow(t *testing.T) {
 
 // TestHubIntegration_SessionCommands tests session commands through Hub.
 func TestHubIntegration_SessionCommands(t *testing.T) {
+	t.Parallel()
 	_, client, tmpDir := newBootedDaemonWithClient(t)
 
 	// Register a test session (SESSION REGISTER <code> <overlay_path>)
@@ -464,6 +479,7 @@ func TestHubIntegration_SessionCommands(t *testing.T) {
 
 // TestHubIntegration_CurrentPageCommands tests current page commands through Hub.
 func TestHubIntegration_CurrentPageCommands(t *testing.T) {
+	t.Parallel()
 	client := newBootedClient(t)
 
 	// List (no proxy)
@@ -489,6 +505,7 @@ func TestHubIntegration_CurrentPageCommands(t *testing.T) {
 // When multiple proxies match a fuzzy ID but only one is in the current session's path,
 // the lookup should succeed without ambiguity.
 func TestHubIntegration_SessionScopedProxyLookup(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
@@ -582,6 +599,7 @@ func TestHubIntegration_SessionScopedProxyLookup(t *testing.T) {
 
 // TestHubIntegration_ProcErrorPaths tests error paths for PROC commands.
 func TestHubIntegration_ProcErrorPaths(t *testing.T) {
+	t.Parallel()
 	client := newBootedClient(t)
 
 	// STATUS for nonexistent process
@@ -625,6 +643,7 @@ func TestHubIntegration_ProcErrorPaths(t *testing.T) {
 
 // TestHubIntegration_ProxyErrorPaths tests error paths for PROXY commands.
 func TestHubIntegration_ProxyErrorPaths(t *testing.T) {
+	t.Parallel()
 	client := newBootedClient(t)
 
 	// STATUS for nonexistent proxy
@@ -669,6 +688,7 @@ func TestHubIntegration_ProxyErrorPaths(t *testing.T) {
 
 // TestHubIntegration_ProxyLogCommands tests proxylog commands through Hub.
 func TestHubIntegration_ProxyLogCommands(t *testing.T) {
+	t.Parallel()
 	client := newBootedClient(t)
 
 	// Start a proxy first
@@ -718,6 +738,7 @@ func TestHubIntegration_ProxyLogCommands(t *testing.T) {
 
 // TestHubIntegration_DaemonInfo tests daemon info commands.
 func TestHubIntegration_DaemonInfo(t *testing.T) {
+	t.Parallel()
 	client := newBootedClient(t)
 
 	// Get daemon info
@@ -744,6 +765,7 @@ func TestHubIntegration_DaemonInfo(t *testing.T) {
 
 // TestHubIntegration_FormatDuration tests formatDuration helper.
 func TestFormatDuration(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		duration time.Duration
 		expected string
@@ -765,6 +787,7 @@ func TestFormatDuration(t *testing.T) {
 
 // TestHubIntegration_ClientMethods tests various client methods for coverage.
 func TestHubIntegration_ClientMethods(t *testing.T) {
+	t.Parallel()
 	_, client, tmpDir := newBootedDaemonWithClient(t)
 	sockPath := filepath.Join(tmpDir, "s.sock")
 
@@ -851,6 +874,7 @@ func TestHubIntegration_ClientMethods(t *testing.T) {
 
 // TestHubIntegration_TunnelClientMethods tests tunnel-related client methods.
 func TestHubIntegration_TunnelClientMethods(t *testing.T) {
+	t.Parallel()
 	client := newBootedClient(t)
 
 	// Test TunnelList
@@ -885,6 +909,7 @@ func TestHubIntegration_TunnelClientMethods(t *testing.T) {
 
 // TestHubIntegration_ChaosClientMethods tests chaos-related client methods.
 func TestHubIntegration_ChaosClientMethods(t *testing.T) {
+	t.Parallel()
 	_, sockPath := newBootedDaemon(t)
 
 	// Start a proxy first (chaos operations require a proxy)
@@ -964,6 +989,7 @@ func TestHubIntegration_ChaosClientMethods(t *testing.T) {
 
 // TestHubIntegration_SessionClientMethods tests session-related client methods.
 func TestHubIntegration_SessionClientMethods(t *testing.T) {
+	t.Parallel()
 	_, client, tmpDir := newBootedDaemonWithClient(t)
 
 	// Register a session first
@@ -1035,6 +1061,7 @@ func TestHubIntegration_SessionClientMethods(t *testing.T) {
 
 // TestHubIntegration_ProxyClientMethods tests proxy-related client methods.
 func TestHubIntegration_ProxyClientMethods(t *testing.T) {
+	t.Parallel()
 	client := newBootedClient(t)
 
 	// Start a proxy
@@ -1078,6 +1105,7 @@ func TestHubIntegration_ProxyClientMethods(t *testing.T) {
 
 // TestHubIntegration_NewClientWithPath tests NewClientWithPath.
 func TestNewClientWithPath(t *testing.T) {
+	t.Parallel()
 	_, sockPath := newBootedDaemon(t)
 
 	// Test NewClientWithPath
@@ -1100,6 +1128,7 @@ func TestNewClientWithPath(t *testing.T) {
 
 // TestDaemon_Accessors tests the daemon accessor methods.
 func TestDaemon_Accessors(t *testing.T) {
+	t.Parallel()
 	daemon, _ := newBootedDaemon(t)
 
 	// Test ProcessManager accessor
@@ -1161,6 +1190,7 @@ func TestDaemon_Accessors(t *testing.T) {
 
 // TestDaemonInfo tests the Info method.
 func TestDaemon_Info(t *testing.T) {
+	t.Parallel()
 	daemon, _ := newBootedDaemon(t)
 
 	info := daemon.Info()
@@ -1174,6 +1204,7 @@ func TestDaemon_Info(t *testing.T) {
 
 // TestDefaultDaemonConfig tests the default config.
 func TestDefaultDaemonConfig(t *testing.T) {
+	t.Parallel()
 	config := DefaultDaemonConfig()
 
 	if config.SocketPath == "" {
@@ -1189,6 +1220,7 @@ func TestDefaultDaemonConfig(t *testing.T) {
 
 // TestDaemon_Wait tests the Wait method.
 func TestDaemon_Wait(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
@@ -1216,6 +1248,7 @@ func TestDaemon_Wait(t *testing.T) {
 
 // TestHubIntegration_ChaosExtendedCommands tests extended chaos commands (PRESET, SET, ADD-RULE, REMOVE-RULE).
 func TestHubIntegration_ChaosExtendedCommands(t *testing.T) {
+	t.Parallel()
 	client := newBootedClient(t)
 
 	// Start a proxy for chaos testing
@@ -1331,6 +1364,7 @@ func TestHubIntegration_ChaosExtendedCommands(t *testing.T) {
 
 // TestHubIntegration_SessionExtendedCommands tests extended session commands (SEND, SCHEDULE, CANCEL, ATTACH).
 func TestHubIntegration_SessionExtendedCommands(t *testing.T) {
+	t.Parallel()
 	_, client, tmpDir := newBootedDaemonWithClient(t)
 
 	// Register a session first
@@ -1489,6 +1523,7 @@ func TestHubIntegration_SessionExtendedCommands(t *testing.T) {
 
 // TestHubIntegration_CurrentPageSummary tests CURRENTPAGE SUMMARY command.
 func TestHubIntegration_CurrentPageSummary(t *testing.T) {
+	t.Parallel()
 	client := newBootedClient(t)
 
 	// Start a proxy
@@ -1543,6 +1578,7 @@ func TestHubIntegration_CurrentPageSummary(t *testing.T) {
 
 // TestHubIntegration_ProxyLogSummary tests PROXYLOG SUMMARY command.
 func TestHubIntegration_ProxyLogSummary(t *testing.T) {
+	t.Parallel()
 	client := newBootedClient(t)
 
 	// Start a proxy
@@ -1577,6 +1613,7 @@ func TestHubIntegration_ProxyLogSummary(t *testing.T) {
 
 // TestHubIntegration_TunnelValidation tests TUNNEL validation paths.
 func TestHubIntegration_TunnelValidation(t *testing.T) {
+	t.Parallel()
 	client := newBootedClient(t)
 
 	// Test TUNNEL START (will fail without cloudflared, but exercises error path)
@@ -1614,6 +1651,7 @@ func TestHubIntegration_TunnelValidation(t *testing.T) {
 
 // TestHubIntegration_ProcListFilters tests PROC LIST with different filters.
 func TestHubIntegration_ProcListFilters(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
@@ -1727,6 +1765,7 @@ func TestHubIntegration_ProcListFilters(t *testing.T) {
 
 // TestDaemon_RestoreProxies tests proxy restoration from state.
 func TestDaemon_RestoreProxies(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "test.sock")
 	statePath := filepath.Join(tmpDir, "state.json")
@@ -1769,9 +1808,6 @@ func TestDaemon_RestoreProxies(t *testing.T) {
 		daemon.Stop(ctx)
 	}()
 
-	// Give time for proxy restoration
-	time.Sleep(100 * time.Millisecond)
-
 	// Verify proxy was restored
 	client := NewClient(WithSocketPath(sockPath))
 	if err := client.Connect(); err != nil {
@@ -1779,28 +1815,25 @@ func TestDaemon_RestoreProxies(t *testing.T) {
 	}
 	defer client.Close()
 
-	// Check proxy list
-	result, err := client.ProxyList(protocol.DirectoryFilter{Global: true})
-	if err != nil {
-		t.Fatalf("ProxyList failed: %v", err)
-	}
-
-	proxies, _ := result["proxies"].([]interface{})
-	found := false
-	for _, p := range proxies {
-		proxy := p.(map[string]interface{})
-		if proxy["id"] == "restored-proxy" {
-			found = true
-			break
+	require.Eventually(t, func() bool {
+		result, err := client.ProxyList(protocol.DirectoryFilter{Global: true})
+		if err != nil {
+			return false
 		}
-	}
-	if !found {
-		t.Error("Expected restored-proxy to be restored from state")
-	}
+		proxies, _ := result["proxies"].([]interface{})
+		for _, p := range proxies {
+			px := p.(map[string]interface{})
+			if px["id"] == "restored-proxy" {
+				return true
+			}
+		}
+		return false
+	}, 5*time.Second, 20*time.Millisecond, "restored-proxy not found in proxy list")
 }
 
 // TestDaemon_CleanupOrphans tests the orphan cleanup functionality.
 func TestDaemon_CleanupOrphans(t *testing.T) {
+	t.Parallel()
 	newBootedDaemon(t) // booting triggers cleanupOrphans
 
 	// cleanupOrphans is called during Start, so just verify daemon started successfully
@@ -1811,6 +1844,7 @@ func TestDaemon_CleanupOrphans(t *testing.T) {
 
 // TestHubIntegration_ProxyExecErrorPaths tests PROXY EXEC error paths.
 func TestHubIntegration_ProxyExecErrorPaths(t *testing.T) {
+	t.Parallel()
 	client := newBootedClient(t)
 
 	// Start a proxy first
@@ -1865,6 +1899,7 @@ func TestHubIntegration_ProxyExecErrorPaths(t *testing.T) {
 
 // TestHubIntegration_SessionScheduleAndCancel tests session scheduling and cancellation.
 func TestHubIntegration_SessionScheduleAndCancel(t *testing.T) {
+	t.Parallel()
 	_, client, tmpDir := newBootedDaemonWithClient(t)
 
 	// Register a session
@@ -1912,6 +1947,7 @@ func TestHubIntegration_SessionScheduleAndCancel(t *testing.T) {
 
 // TestHubIntegration_RunAutostart tests RunAutostart functionality.
 func TestDaemon_RunAutostart(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
@@ -1964,6 +2000,7 @@ func TestDaemon_RunAutostart(t *testing.T) {
 // We drive the handler via the channel directly rather than waiting on the
 // real 30s timer, per the task's test-seam constraint.
 func TestHubIntegration_FallbackPortCheck_EventLoopCreatesProxy(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
@@ -2040,6 +2077,7 @@ func TestHubIntegration_FallbackPortCheck_EventLoopCreatesProxy(t *testing.T) {
 // already created a proxy does NOT duplicate the proxy and emits a
 // startup_proxy_fallback_skipped_already_running entry instead.
 func TestHubIntegration_FallbackPortCheck_URLDetectedWinsRace(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
@@ -2120,6 +2158,7 @@ func TestHubIntegration_FallbackPortCheck_URLDetectedWinsRace(t *testing.T) {
 
 // TestHubIntegration_CleanupSessionResources tests session resource cleanup.
 func TestHubIntegration_CleanupSessionResources(t *testing.T) {
+	t.Parallel()
 	_, client, tmpDir := newBootedDaemonWithClient(t)
 
 	// Register a session
@@ -2152,9 +2191,6 @@ func TestHubIntegration_CleanupSessionResources(t *testing.T) {
 		t.Fatalf("SessionUnregister failed: %v", err)
 	}
 
-	// Give time for cleanup
-	time.Sleep(200 * time.Millisecond)
-
 	// Note: CleanupSessionResources only cleans up resources created by autostart
 	// Manually created resources are not automatically cleaned up on session unregister
 	// This test just verifies the code path doesn't panic
@@ -2162,6 +2198,7 @@ func TestHubIntegration_CleanupSessionResources(t *testing.T) {
 
 // TestDaemon_RestoreProxies_ErrorPaths tests error scenarios in proxy restoration.
 func TestDaemon_RestoreProxies_ErrorPaths(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "test.sock")
 	statePath := filepath.Join(tmpDir, "state.json")
@@ -2203,10 +2240,9 @@ func TestDaemon_RestoreProxies_ErrorPaths(t *testing.T) {
 		daemon.Stop(ctx)
 	}()
 
-	// Give time for restore attempt
-	time.Sleep(100 * time.Millisecond)
-
-	// Proxy should not be restored due to invalid URL
+	// Proxy should not be restored due to invalid URL.
+	// restoreProxies runs synchronously during Start(), so by the time we
+	// connect the restoration attempt is already done.
 	client := NewClient(WithSocketPath(sockPath))
 	if err := client.Connect(); err != nil {
 		t.Fatalf("Failed to connect: %v", err)
@@ -2217,11 +2253,10 @@ func TestDaemon_RestoreProxies_ErrorPaths(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProxyList failed: %v", err)
 	}
-
 	proxies, _ := result["proxies"].([]interface{})
 	for _, p := range proxies {
-		proxy := p.(map[string]interface{})
-		if proxy["id"] == "bad-proxy" {
+		px := p.(map[string]interface{})
+		if px["id"] == "bad-proxy" {
 			t.Error("Expected bad-proxy to NOT be restored")
 		}
 	}
@@ -2229,6 +2264,7 @@ func TestDaemon_RestoreProxies_ErrorPaths(t *testing.T) {
 
 // TestHubIntegration_ProcOutput_ErrorPaths tests error paths in hubHandleProcOutput.
 func TestHubIntegration_ProcOutput_ErrorPaths(t *testing.T) {
+	t.Parallel()
 	client := newBootedClient(t)
 
 	// Test OUTPUT with various filter options
@@ -2244,7 +2280,14 @@ func TestHubIntegration_ProcOutput_ErrorPaths(t *testing.T) {
 			t.Fatalf("Run failed: %v", err)
 		}
 
-		time.Sleep(200 * time.Millisecond)
+		require.Eventually(t, func() bool {
+			result, err := client.ProcStatus("filter-test")
+			if err != nil {
+				return false
+			}
+			state, _ := result["state"].(string)
+			return state != "" && state != "running" && state != "starting"
+		}, 5*time.Second, 10*time.Millisecond, "filter-test process did not finish")
 
 		// Test with tail filter
 		output, err := client.ProcOutput("filter-test", protocol.OutputFilter{Tail: 2})
@@ -2271,6 +2314,7 @@ func TestHubIntegration_ProcOutput_ErrorPaths(t *testing.T) {
 
 // TestDaemon_Info_AllFields tests that all info fields are populated.
 func TestDaemon_Info_AllFields(t *testing.T) {
+	t.Parallel()
 	daemon, _ := newBootedDaemon(t)
 
 	info := daemon.Info()
@@ -2288,6 +2332,7 @@ func TestDaemon_Info_AllFields(t *testing.T) {
 
 // TestHubIntegration_TunnelErrorPaths tests tunnel error paths.
 func TestHubIntegration_TunnelErrorPaths(t *testing.T) {
+	t.Parallel()
 	client := newBootedClient(t)
 
 	t.Run("StatusNotFound", func(t *testing.T) {
@@ -2321,6 +2366,7 @@ func TestHubIntegration_TunnelErrorPaths(t *testing.T) {
 
 // TestHubIntegration_SessionErrorPaths tests session handler error paths.
 func TestHubIntegration_SessionErrorPaths(t *testing.T) {
+	t.Parallel()
 	client := newBootedClient(t)
 
 	t.Run("SendToNonExistentSession", func(t *testing.T) {
@@ -2350,6 +2396,7 @@ func TestHubIntegration_SessionErrorPaths(t *testing.T) {
 
 // TestHubIntegration_ProxyHandlerErrors tests proxy handler error paths.
 func TestHubIntegration_ProxyHandlerErrors(t *testing.T) {
+	t.Parallel()
 	client := newBootedClient(t)
 
 	t.Run("ExecNonExistentProxy", func(t *testing.T) {
@@ -2386,6 +2433,7 @@ func TestHubIntegration_ProxyHandlerErrors(t *testing.T) {
 }
 
 func TestHubIntegration_SessionOverlayScoping(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
@@ -2484,6 +2532,7 @@ func TestHubIntegration_SessionOverlayScoping(t *testing.T) {
 // TestHubIntegration_ProxyLogQueryResponseKeys verifies that PROXYLOG QUERY returns
 // "entries", "count", and "total_available" keys (not "logs").
 func TestHubIntegration_ProxyLogQueryResponseKeys(t *testing.T) {
+	t.Parallel()
 	client := newBootedClient(t)
 
 	// Start a proxy so we have something to query

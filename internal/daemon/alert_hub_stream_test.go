@@ -12,6 +12,7 @@ import (
 )
 
 func TestStreamFilter_MatchesTypeFilter(t *testing.T) {
+	t.Parallel()
 	sf := streamFilter{
 		types: map[proxy.LogEntryType]bool{
 			proxy.LogTypeError: true,
@@ -23,6 +24,7 @@ func TestStreamFilter_MatchesTypeFilter(t *testing.T) {
 }
 
 func TestStreamFilter_MatchesProxyIDFilter(t *testing.T) {
+	t.Parallel()
 	sf := streamFilter{
 		proxyID: "target-proxy",
 	}
@@ -32,6 +34,7 @@ func TestStreamFilter_MatchesProxyIDFilter(t *testing.T) {
 }
 
 func TestStreamFilter_MatchesSeverityFilter(t *testing.T) {
+	t.Parallel()
 	sf := streamFilter{
 		severity: "error",
 	}
@@ -68,6 +71,7 @@ func TestStreamFilter_MatchesSeverityFilter(t *testing.T) {
 }
 
 func TestStreamFilter_MatchesCombinedFilters(t *testing.T) {
+	t.Parallel()
 	sf := streamFilter{
 		types:   map[proxy.LogEntryType]bool{proxy.LogTypeError: true},
 		proxyID: "target-proxy",
@@ -79,6 +83,7 @@ func TestStreamFilter_MatchesCombinedFilters(t *testing.T) {
 }
 
 func TestStreamFilter_EmptyFilterMatchesAll(t *testing.T) {
+	t.Parallel()
 	sf := streamFilter{}
 
 	assert.True(t, sf.matches(proxy.LogEntry{Type: proxy.LogTypeError}, "any-proxy", ""))
@@ -86,6 +91,7 @@ func TestStreamFilter_EmptyFilterMatchesAll(t *testing.T) {
 }
 
 func TestStreamFilter_ProjectPathFilter(t *testing.T) {
+	t.Parallel()
 	sf := streamFilter{projectPath: "/project/a"}
 
 	// Proxy belonging to /project/a passes
@@ -97,6 +103,7 @@ func TestStreamFilter_ProjectPathFilter(t *testing.T) {
 }
 
 func TestAlertHub_RegisterProxyPath_ScopesStreamEvents(t *testing.T) {
+	t.Parallel()
 	hub := NewAlertHub()
 
 	hub.RegisterProxyPath("proxy-a", "/project/a")
@@ -134,6 +141,7 @@ drain:
 }
 
 func TestAlertHub_AddRemoveStreamSink(t *testing.T) {
+	t.Parallel()
 	hub := NewAlertHub()
 
 	sink := hub.AddStreamSink(streamFilter{})
@@ -148,6 +156,7 @@ func TestAlertHub_AddRemoveStreamSink(t *testing.T) {
 }
 
 func TestAlertHub_BroadcastLogEntry_DeliversToMatchingSink(t *testing.T) {
+	t.Parallel()
 	hub := NewAlertHub()
 
 	sink := hub.AddStreamSink(streamFilter{
@@ -173,6 +182,7 @@ func TestAlertHub_BroadcastLogEntry_DeliversToMatchingSink(t *testing.T) {
 }
 
 func TestAlertHub_BroadcastLogEntry_FiltersNonMatching(t *testing.T) {
+	t.Parallel()
 	hub := NewAlertHub()
 
 	sink := hub.AddStreamSink(streamFilter{
@@ -196,6 +206,7 @@ func TestAlertHub_BroadcastLogEntry_FiltersNonMatching(t *testing.T) {
 }
 
 func TestAlertHub_BroadcastLogEntry_DropsOnFullChannel(t *testing.T) {
+	t.Parallel()
 	hub := NewAlertHub()
 
 	sink := hub.AddStreamSink(streamFilter{})
@@ -209,6 +220,7 @@ func TestAlertHub_BroadcastLogEntry_DropsOnFullChannel(t *testing.T) {
 }
 
 func TestAlertHub_BroadcastLogEntry_MultipleSinks(t *testing.T) {
+	t.Parallel()
 	hub := NewAlertHub()
 
 	sink1 := hub.AddStreamSink(streamFilter{
@@ -240,6 +252,7 @@ func TestAlertHub_BroadcastLogEntry_MultipleSinks(t *testing.T) {
 }
 
 func TestAlertHub_BroadcastLogEntry_ConcurrentSinks(t *testing.T) {
+	t.Parallel()
 	hub := NewAlertHub()
 	var wg sync.WaitGroup
 
@@ -282,6 +295,7 @@ func TestAlertHub_BroadcastLogEntry_ConcurrentSinks(t *testing.T) {
 }
 
 func TestBuildStreamFilter(t *testing.T) {
+	t.Parallel()
 	f := protocolStreamEventFilter{
 		Types:    []string{"error", "http"},
 		ProxyID:  "test-proxy",
@@ -320,6 +334,7 @@ func buildStreamFilterFromStrings(types []string, proxyID, severity string) stre
 }
 
 func TestEntryHasSeverity(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		entry    proxy.LogEntry
@@ -402,6 +417,7 @@ func (m *mockMCPSink) SendAlert(level string, message string) error {
 }
 
 func TestAlertHub_Deliver_NoPushConfig(t *testing.T) {
+	t.Parallel()
 	hub := NewAlertHub()
 	overlay := &mockOverlaySink{enabled: true}
 	mcp := &mockMCPSink{}
@@ -417,6 +433,7 @@ func TestAlertHub_Deliver_NoPushConfig(t *testing.T) {
 }
 
 func TestAlertHub_Deliver_BothChannelsEnabled(t *testing.T) {
+	t.Parallel()
 	hub := NewAlertHub()
 	tr := true
 	hub.SetPushConfig(&config.PushConfig{
@@ -435,6 +452,7 @@ func TestAlertHub_Deliver_BothChannelsEnabled(t *testing.T) {
 }
 
 func TestAlertHub_Deliver_PTYDisabled(t *testing.T) {
+	t.Parallel()
 	hub := NewAlertHub()
 	f := false
 	tr := true
@@ -454,6 +472,7 @@ func TestAlertHub_Deliver_PTYDisabled(t *testing.T) {
 }
 
 func TestAlertHub_Deliver_MCPDisabled(t *testing.T) {
+	t.Parallel()
 	hub := NewAlertHub()
 	f := false
 	tr := true
@@ -473,6 +492,7 @@ func TestAlertHub_Deliver_MCPDisabled(t *testing.T) {
 }
 
 func TestAlertHub_Deliver_BothDisabled(t *testing.T) {
+	t.Parallel()
 	hub := NewAlertHub()
 	f := false
 	hub.SetPushConfig(&config.PushConfig{
@@ -491,6 +511,7 @@ func TestAlertHub_Deliver_BothDisabled(t *testing.T) {
 }
 
 func TestAlertHub_Deliver_EmptyMessage(t *testing.T) {
+	t.Parallel()
 	hub := NewAlertHub()
 	overlay := &mockOverlaySink{enabled: true}
 	mcp := &mockMCPSink{}
@@ -504,6 +525,7 @@ func TestAlertHub_Deliver_EmptyMessage(t *testing.T) {
 }
 
 func TestAlertHub_Deliver_ClaudeCodePreset(t *testing.T) {
+	t.Parallel()
 	hub := NewAlertHub()
 	hub.SetPushConfig(config.PresetPushConfig("claude-code"))
 	overlay := &mockOverlaySink{enabled: true}
@@ -518,6 +540,7 @@ func TestAlertHub_Deliver_ClaudeCodePreset(t *testing.T) {
 }
 
 func TestStreamFilter_MatchesProcessIDFilter(t *testing.T) {
+	t.Parallel()
 	sf := streamFilter{
 		processID: "dev-server",
 	}
@@ -546,6 +569,7 @@ func TestStreamFilter_MatchesProcessIDFilter(t *testing.T) {
 }
 
 func TestStreamFilter_MatchesGrepFilter(t *testing.T) {
+	t.Parallel()
 	sf := streamFilter{
 		grep: "error",
 	}
@@ -573,6 +597,7 @@ func TestStreamFilter_MatchesGrepFilter(t *testing.T) {
 }
 
 func TestStreamFilter_MatchesGrepStreamFilter(t *testing.T) {
+	t.Parallel()
 	sf := streamFilter{
 		grepStream: "stdout",
 	}
@@ -599,6 +624,7 @@ func TestStreamFilter_MatchesGrepStreamFilter(t *testing.T) {
 }
 
 func TestStreamFilter_MatchesProcessCombinedFilter(t *testing.T) {
+	t.Parallel()
 	sf := streamFilter{
 		processID: "dev",
 		grep:      "error",
@@ -637,6 +663,7 @@ func TestStreamFilter_MatchesProcessCombinedFilter(t *testing.T) {
 }
 
 func TestAlertHub_BroadcastProcessOutput_DeliversToMatchingSink(t *testing.T) {
+	t.Parallel()
 	hub := NewAlertHub()
 
 	sink := hub.AddStreamSink(streamFilter{
@@ -668,6 +695,7 @@ func TestAlertHub_BroadcastProcessOutput_DeliversToMatchingSink(t *testing.T) {
 }
 
 func TestAlertHub_BroadcastProcessOutput_FiltersNonMatching(t *testing.T) {
+	t.Parallel()
 	hub := NewAlertHub()
 
 	sink := hub.AddStreamSink(streamFilter{
@@ -693,6 +721,7 @@ func TestAlertHub_BroadcastProcessOutput_FiltersNonMatching(t *testing.T) {
 }
 
 func TestAlertHub_BroadcastProcessOutput_WithGrepFilter(t *testing.T) {
+	t.Parallel()
 	hub := NewAlertHub()
 
 	sink := hub.AddStreamSink(streamFilter{

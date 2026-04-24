@@ -12,6 +12,7 @@ import (
 )
 
 func TestClient_ConnectToNonExistentDaemon(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
@@ -23,6 +24,7 @@ func TestClient_ConnectToNonExistentDaemon(t *testing.T) {
 }
 
 func TestClient_PingPong(t *testing.T) {
+	t.Parallel()
 	client := newBootedClient(t)
 
 	// Ping
@@ -32,6 +34,7 @@ func TestClient_PingPong(t *testing.T) {
 }
 
 func TestClient_Info(t *testing.T) {
+	t.Parallel()
 	daemon, client, _ := newBootedDaemonWithClient(t)
 	sockPath := daemon.config.SocketPath
 
@@ -50,6 +53,7 @@ func TestClient_Info(t *testing.T) {
 }
 
 func TestClient_Detect(t *testing.T) {
+	t.Parallel()
 	client := newBootedClient(t)
 
 	// Detect project (this project is a Go project)
@@ -69,6 +73,7 @@ func TestClient_Detect(t *testing.T) {
 }
 
 func TestClient_NotConnected(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "nonexistent.sock")
 
@@ -83,6 +88,7 @@ func TestClient_NotConnected(t *testing.T) {
 }
 
 func TestClient_MultipleConnections(t *testing.T) {
+	t.Parallel()
 	_, sockPath := newBootedDaemon(t)
 
 	// Create multiple clients
@@ -106,6 +112,7 @@ func TestClient_MultipleConnections(t *testing.T) {
 // TestSessionBasedCleanup verifies that when a client that registered a session
 // disconnects, only resources for that session's project path are cleaned up.
 func TestSessionBasedCleanup(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 
 	// Create two project directories (must exist for process working directory)
@@ -232,6 +239,7 @@ func TestSessionBasedCleanup(t *testing.T) {
 }
 
 func TestClient_SessionSchedule(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	client := newBootedClient(t)
 
@@ -263,6 +271,7 @@ func TestClient_SessionSchedule(t *testing.T) {
 }
 
 func TestClient_SessionCancel(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	client := newBootedClient(t)
 
@@ -307,6 +316,7 @@ func TestClient_SessionCancel(t *testing.T) {
 }
 
 func TestClient_SessionAttach(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	client := newBootedClient(t)
 
@@ -349,6 +359,7 @@ func TestClient_SessionAttach(t *testing.T) {
 }
 
 func TestClient_TunnelStart(t *testing.T) {
+	t.Parallel()
 	client := newBootedClient(t)
 
 	// Try to start a tunnel (will fail if cloudflared not installed, but should exercise the code)
