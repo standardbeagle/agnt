@@ -290,9 +290,9 @@ func (v *VCRServer) requestMatcher(r *http.Request, i cassette.Request) bool {
 
 // VCRTestHelper provides convenient test setup for VCR-based tests.
 type VCRTestHelper struct {
-	vcr      *VCRServer
-	origEnv  map[string]string
-	envVars  []string
+	vcr     *VCRServer
+	origEnv map[string]string
+	envVars []string
 }
 
 // NewVCRTestHelper creates a test helper that manages VCR and environment.

@@ -100,7 +100,7 @@ type SubprocessTransportConfig struct {
 	// Address for "unix" or "tcp" transport
 	Address string `json:"address,omitempty"`
 	// Command for "stdio" transport
-	Command string `json:"command,omitempty"`
+	Command string   `json:"command,omitempty"`
 	Args    []string `json:"args,omitempty"`
 	Env     []string `json:"env,omitempty"`
 	// Timeout for connection/command operations
