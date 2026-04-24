@@ -23,8 +23,8 @@ type MistralAPIError struct {
 func NewMistralAPIError(message string, httpStatus int, headers map[string][]string) *MistralAPIError {
 	return &MistralAPIError{
 		MistralError: MistralError{Message: message},
-		HTTPStatus:       httpStatus,
-		Headers:          headers,
+		HTTPStatus:   httpStatus,
+		Headers:      headers,
 	}
 }
 
