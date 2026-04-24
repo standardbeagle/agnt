@@ -1,1 +1,1 @@
-{"claims": {"jQCxfgK8bn6o": {"runner_instance_id": "beagle-ab2-873045", "runner_email": "claude@anthropic.com", "claimed_at": "2026-04-24T10:08:00Z", "agent_id": "beagle-ab2-873045", "parent_loop_id": "KwXvtxrviI05", "purpose": "Auto-report backend crash errors from process stdout to user"}}}
+{"claims": {}}
