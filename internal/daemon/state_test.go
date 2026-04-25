@@ -530,11 +530,12 @@ func TestStateManager_DebouncedSavesCoalesce(t *testing.T) {
 		sm.SetOverlayEndpoint("http://test")
 	}
 
-	// Wait for debounce
+	// Wait for debounce. Budget is generous because the race detector adds
+	// 5-10x timer overhead, turning 100ms into ~500ms-1s.
 	require.Eventually(t, func() bool {
 		data, err := os.ReadFile(statePath)
 		return err == nil && len(data) > 0
-	}, 2*time.Second, 10*time.Millisecond, "State file should be written after debounce")
+	}, 5*time.Second, 10*time.Millisecond, "State file should be written after debounce")
 
 	data, err := os.ReadFile(statePath)
 	require.NoError(t, err)

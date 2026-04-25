@@ -297,15 +297,16 @@ func TestActivityBroadcast_MultipleProxies(t *testing.T) {
 		t.Fatalf("BroadcastActivity failed: %v", err)
 	}
 
-	// Each proxy's WS must receive the message.
+	// Each proxy's WS must receive the message. Budget is 5s because the
+	// race detector adds significant scheduling latency under parallel load.
 	select {
 	case <-received1:
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Error("proxy1 did not receive activity message")
 	}
 	select {
 	case <-received2:
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Error("proxy2 did not receive activity message")
 	}
 
