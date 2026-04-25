@@ -601,6 +601,19 @@ func TestFormatHTTPErrorText_301Filtered(t *testing.T) {
 	}
 }
 
+func TestFormatHTTPErrorText_ClientCanceled502Filtered(t *testing.T) {
+	event := makeEvent("http_error", "proxy-1", map[string]interface{}{
+		"method":        "GET",
+		"url":           "/api/auth/me",
+		"status_code":   502,
+		"response_body": "Client canceled the request before the response completed.",
+	})
+	result := formatHTTPErrorText(event)
+	if result != "" {
+		t.Errorf("expected empty for client-canceled 502, got %q", result)
+	}
+}
+
 func TestFormatHTTPErrorText_HTMLBody(t *testing.T) {
 	event := makeEvent("http_error", "proxy-1", map[string]interface{}{
 		"method":        "GET",
@@ -634,28 +647,31 @@ func TestFormatProxyEventText_HTTPErrorDispatches(t *testing.T) {
 
 func TestIsHTTPNoise(t *testing.T) {
 	tests := []struct {
-		name       string
-		statusCode int
-		method     string
-		url        string
-		expect     bool
+		name         string
+		statusCode   int
+		method       string
+		url          string
+		responseBody string
+		expect       bool
 	}{
-		{"redirect 301", 301, "GET", "/old", true},
-		{"redirect 302", 302, "GET", "/old", true},
-		{"not modified 304", 304, "GET", "/page", true},
-		{"static JS 404", 404, "GET", "/app.js", true},
-		{"static CSS 404", 404, "GET", "/style.css", true},
-		{"static map 404", 404, "GET", "/app.js.map", true},
-		{"HMR at 404", 404, "GET", "/@vite/client", true},
-		{"webpack 404", 404, "GET", "/__webpack/hmr", true},
-		{"API 404", 404, "GET", "/api/users", false},
-		{"500 error", 500, "POST", "/api/data", false},
-		{"400 error", 400, "POST", "/api/submit", false},
+		{"redirect 301", 301, "GET", "/old", "", true},
+		{"redirect 302", 302, "GET", "/old", "", true},
+		{"not modified 304", 304, "GET", "/page", "", true},
+		{"static JS 404", 404, "GET", "/app.js", "", true},
+		{"static CSS 404", 404, "GET", "/style.css", "", true},
+		{"static map 404", 404, "GET", "/app.js.map", "", true},
+		{"HMR at 404", 404, "GET", "/@vite/client", "", true},
+		{"webpack 404", 404, "GET", "/__webpack/hmr", "", true},
+		{"API 404", 404, "GET", "/api/users", "", false},
+		{"500 error", 500, "POST", "/api/data", "", false},
+		{"400 error", 400, "POST", "/api/submit", "", false},
+		{"client canceled 502", 502, "GET", "/api/auth/me", "Client canceled the request before the response completed.", true},
+		{"real 502", 502, "GET", "/api/auth/me", "upstream connect error", false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := isHTTPNoise(tt.statusCode, tt.method, tt.url)
+			result := isHTTPNoise(tt.statusCode, tt.method, tt.url, tt.responseBody)
 			if result != tt.expect {
 				t.Errorf("isHTTPNoise(%d, %s, %s) = %v, want %v", tt.statusCode, tt.method, tt.url, result, tt.expect)
 			}
