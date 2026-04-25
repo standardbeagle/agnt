@@ -38,8 +38,13 @@ func DefaultSocketConfig() SocketConfig {
 }
 
 // DefaultSocketPath returns the default socket path for agnt.
+// Deliberately ignores XDG_RUNTIME_DIR: agnt daemon is a long-running
+// background service that outlives login sessions. XDG_RUNTIME_DIR is
+// cleaned up by pam_systemd on logout, which would silently delete our
+// socket mid-session. The /tmp/<name>-<uid> form persists across sessions
+// and is deterministic regardless of shell environment.
 func DefaultSocketPath() string {
-	return socket.DefaultSocketPath(SocketName)
+	return fmt.Sprintf("/tmp/%s-%d.sock", SocketName, os.Getuid())
 }
 
 // SocketManager handles socket lifecycle.

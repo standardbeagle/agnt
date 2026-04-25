@@ -156,10 +156,9 @@ install: build
 
 # Build and install to ~/.local/bin (all binaries)
 install-local: build
-	@# Stop all running daemon instances regardless of socket path.
-	@# DefaultSocketPath uses XDG_RUNTIME_DIR when set, /tmp fallback otherwise;
-	@# different shell environments can spawn daemons on different sockets, so
-	@# a soft stop of the default socket alone leaves orphaned daemons alive.
+	@# Stop running daemon. pkill sweep catches any stale instances that
+	@# didn't respond to the graceful stop (e.g. old binaries on /run/user/1000
+	@# from before the socket path was fixed to always use /tmp).
 	@~/.local/bin/$(AGENT_BINARY) daemon stop 2>/dev/null || true
 	@pkill -TERM -f '[a]gnt-daemon daemon start' 2>/dev/null || true
 	@sleep 0.3
