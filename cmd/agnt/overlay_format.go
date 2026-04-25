@@ -632,8 +632,9 @@ func formatHTTPErrorText(event ProxyEvent) string {
 		return ""
 	}
 
-	/// Skip common noise: static asset 404s, HMR/WebSocket 404s, redirects
-	if isHTTPNoise(data.StatusCode, data.Method, data.URL) {
+	// Skip common noise: static asset 404s, HMR/WebSocket 404s, redirects,
+	// and client-initiated cancellations (browser navigated away mid-request).
+	if isHTTPNoise(data.StatusCode, data.Method, data.URL, data.ResponseBody) {
 		return ""
 	}
 
@@ -659,9 +660,14 @@ func formatHTTPErrorText(event ProxyEvent) string {
 }
 
 // isHTTPNoise filters out common non-actionable HTTP errors.
-func isHTTPNoise(statusCode int, method, url string) bool {
+func isHTTPNoise(statusCode int, method, url, responseBody string) bool {
 	// Redirects are not errors
 	if statusCode == 301 || statusCode == 302 || statusCode == 304 {
+		return true
+	}
+	// Client canceled: browser navigated away before response completed.
+	// Go's ReverseProxy emits 502 with this message on context.Canceled.
+	if statusCode == 502 && strings.Contains(responseBody, "canceled") {
 		return true
 	}
 	// Static asset 404s are noise
