@@ -383,6 +383,7 @@ func (d *Daemon) hubHandleProcRestart(ctx context.Context, conn *hubpkg.Connecti
 	command := proc.Command
 	args := proc.Args
 	projectPath := proc.ProjectPath
+	workingDir := proc.WorkingDir
 
 	// Check if process is in a restartable state
 	state := proc.State().String()
@@ -430,8 +431,7 @@ func (d *Daemon) hubHandleProcRestart(ctx context.Context, conn *hubpkg.Connecti
 	d.hub.ProcessManager().RemoveByPath(processID, projectPath)
 
 	// Start with EADDRINUSE recovery (pre-flight cleanup + startup monitoring)
-	// Use projectPath as workingDir since we don't have separate WorkingDir stored
-	newProc, startupErr := d.startScriptWithRetry(ctx, processID, projectPath, projectPath, command, args, nil, []int{expectedPort})
+	newProc, startupErr := d.startScriptWithRetry(ctx, processID, projectPath, workingDir, command, args, nil, []int{expectedPort})
 	if startupErr != nil {
 		return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("failed to restart: %v", startupErr))
 	}

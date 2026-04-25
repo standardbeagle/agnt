@@ -50,6 +50,7 @@ func (d *Daemon) hubHandleRestartAll(ctx context.Context, conn *hubpkg.Connectio
 		Command     string
 		Args        []string
 		ProjectPath string
+		WorkingDir  string
 	}
 	type proxyManifest struct {
 		ID            string
@@ -71,6 +72,7 @@ func (d *Daemon) hubHandleRestartAll(ctx context.Context, conn *hubpkg.Connectio
 				Command:     p.Command,
 				Args:        p.Args,
 				ProjectPath: p.ProjectPath,
+				WorkingDir:  p.WorkingDir,
 			})
 			// Mark this stop as daemon-initiated so the OutageClassifier
 			// biases the imminent outage toward Rebuild rather than Crash.
@@ -104,8 +106,7 @@ func (d *Daemon) hubHandleRestartAll(ctx context.Context, conn *hubpkg.Connectio
 
 	for _, pm := range procsToRestart {
 		// Use startScriptWithRetry for EADDRINUSE recovery
-		// Use ProjectPath as WorkingDir since we don't have separate WorkingDir stored
-		_, startupErr := d.startScriptWithRetry(ctx, pm.ID, pm.ProjectPath, pm.ProjectPath, pm.Command, pm.Args, nil, nil)
+		_, startupErr := d.startScriptWithRetry(ctx, pm.ID, pm.ProjectPath, pm.WorkingDir, pm.Command, pm.Args, nil, nil)
 		if startupErr != nil {
 			debug.Error("daemon", "Failed to restart process %s: %v", pm.ID, startupErr)
 			d.startupErrorStore.Add(&StartupLogEntry{
