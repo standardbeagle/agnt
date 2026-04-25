@@ -36,8 +36,10 @@ func DefaultSocketConfig() SocketConfig {
 }
 
 // DefaultSocketPath returns the default socket path for agnt.
+// Always uses /tmp — XDG_RUNTIME_DIR is intentionally ignored because
+// pam_systemd cleans it on logout, which would silently delete the socket.
 func DefaultSocketPath() string {
-	return socket.DefaultSocketPath(SocketName)
+	return fmt.Sprintf("/tmp/%s-%d.sock", SocketName, os.Getuid())
 }
 
 // SocketManager handles socket lifecycle.

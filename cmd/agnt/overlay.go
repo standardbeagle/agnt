@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/user"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -81,23 +82,25 @@ type ToastMessage struct {
 }
 
 // DefaultOverlaySocketPath returns the default socket path for the overlay.
+// Uses /tmp (or os.TempDir on Windows) unconditionally — XDG_RUNTIME_DIR is
+// intentionally ignored for the same reason as the daemon socket: pam_systemd
+// cleans it up on logout, which would delete the socket mid-session.
+// Windows uses UID-equivalent USERNAME to avoid per-user collisions.
 func DefaultOverlaySocketPath() string {
-	// Windows: use Unix domain socket in temp directory (supported since Windows 10 1803)
-	// Note: Named pipes (\\.\pipe\...) require different APIs, so we use Unix sockets
 	if os.PathSeparator == '\\' {
 		username := os.Getenv("USERNAME")
 		if username == "" {
-			username = "default"
+			u, err := user.Current()
+			if err == nil {
+				username = u.Username
+			}
 		}
-		// Use temp directory for Unix socket on Windows
+		if username == "" {
+			username = fmt.Sprintf("%d", os.Getuid())
+		}
 		return filepath.Join(os.TempDir(), fmt.Sprintf("devtool-overlay-%s.sock", username))
 	}
-
-	// Unix: use XDG_RUNTIME_DIR if available, otherwise /tmp
-	if runtimeDir := os.Getenv("XDG_RUNTIME_DIR"); runtimeDir != "" {
-		return filepath.Join(runtimeDir, "devtool-overlay.sock")
-	}
-	return filepath.Join(os.TempDir(), fmt.Sprintf("devtool-overlay-%d.sock", os.Getuid()))
+	return fmt.Sprintf("/tmp/devtool-overlay-%d.sock", os.Getuid())
 }
 
 func newOverlay(socketPath string, ptmx PtyWriter) *Overlay {

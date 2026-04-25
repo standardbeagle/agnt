@@ -7,6 +7,8 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -234,8 +236,13 @@ func (u *DaemonUpgrader) cleanupStaleFiles() {
 		u.log("Warning: failed to remove socket file: %v", err)
 	}
 
-	// Remove PID file (platform-specific location)
+	// Remove PID file. On Windows the library places it at
+	// os.TempDir()/<name>.pid (not socket+".pid"), so derive it the same way.
 	pidFile := u.config.SocketPath + ".pid"
+	if runtime.GOOS == "windows" {
+		pidFile = filepath.Join(filepath.Dir(u.config.SocketPath),
+			strings.TrimSuffix(filepath.Base(u.config.SocketPath), ".sock")+".pid")
+	}
 	if err := os.Remove(pidFile); err != nil && !os.IsNotExist(err) {
 		u.log("Warning: failed to remove PID file: %v", err)
 	}
