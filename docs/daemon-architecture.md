@@ -83,8 +83,7 @@ type Daemon struct {
 6. Handle graceful shutdown on SIGTERM/SIGINT
 
 **Socket Location:**
-- Linux: `$XDG_RUNTIME_DIR/devtool-mcp.sock` or `/tmp/devtool-mcp-$UID.sock`
-- macOS: `/tmp/devtool-mcp-$UID.sock`
+- Linux/macOS: `/tmp/devtool-mcp-$UID.sock` (XDG_RUNTIME_DIR intentionally ignored — it's cleaned up by pam_systemd on logout)
 - Windows: `\\.\pipe\devtool-mcp-$USERNAME`
 
 ### 2. MCP Client (`devtool-mcp` default mode)

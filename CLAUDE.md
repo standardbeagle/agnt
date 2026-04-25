@@ -396,7 +396,7 @@ Returns a shell command string for streaming daemon events via the `agnt monitor
 | `proxy_id` | string | none | Filter to specific proxy |
 | `process_id` | string | none | Filter to specific process (required for `process` target) |
 
-**Output**: Returns a `command` string (e.g., `agnt monitor --socket /run/user/... --types error,diagnostic --format compact`) and a human-readable `description`.
+**Output**: Returns a `command` string (e.g., `agnt monitor --socket /tmp/devtool-mcp-1000.sock --types error,diagnostic --format compact`) and a human-readable `description`.
 
 **Key Files**: `internal/tools/watch.go`, `internal/tools/watch_test.go`
 
