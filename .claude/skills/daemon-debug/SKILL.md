@@ -17,10 +17,10 @@ Work through these in order. Each step either finds the problem or rules out a c
 agnt daemon status
 
 # What processes does the daemon know about?
-printf 'PROC LIST\n;;\n' | socat - UNIX-CONNECT:/run/user/$(id -u)/devtool-mcp.sock
+printf 'PROC LIST\n;;\n' | socat - UNIX-CONNECT:/tmp/devtool-mcp-$(id -u).sock
 
 # What proxies exist?
-printf 'PROXY LIST\n;;\n' | socat - UNIX-CONNECT:/run/user/$(id -u)/devtool-mcp.sock
+printf 'PROXY LIST\n;;\n' | socat - UNIX-CONNECT:/tmp/devtool-mcp-$(id -u).sock
 ```
 
 Decode base64 JSON responses. Check:
@@ -115,7 +115,7 @@ Missing entries indicate the step was silently skipped.
 **Diagnosis**:
 ```bash
 # Check script registry vs config
-printf 'SCRIPT LIST\n;;\n' | socat - UNIX-CONNECT:/run/user/$(id -u)/devtool-mcp.sock
+printf 'SCRIPT LIST\n;;\n' | socat - UNIX-CONNECT:/tmp/devtool-mcp-$(id -u).sock
 # Compare count against scripts in .agnt.kdl
 ```
 
