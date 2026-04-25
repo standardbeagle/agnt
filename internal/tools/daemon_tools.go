@@ -390,10 +390,9 @@ prevent loops: max 5 restarts/minute). Use no_auto_restart: true to disable.
   run {script_name: "dev"}                    # Auto-restarts by default
   run {script_name: "test", no_auto_restart: true}  # Disable for one-time tasks
 
-Restarting: To restart a dev server, use proc stop first, then run again:
-  proc {action: "stop", process_id: "dev"}
-  run {script_name: "dev"}
-Never use pkill or external commands - always use proc stop for clean shutdown.
+Restarting: Use proc restart (preferred) or stop then run again:
+  proc {action: "restart", process_id: "dev"}
+Never use pkill or external commands - always use proc stop/restart for clean shutdown.
 
 Examples:
   run {script_name: "test"}
@@ -412,18 +411,15 @@ Actions:
   status: Get process status and info
   output: Get process output (tail/grep supported, falls back to script output history)
   stop: Gracefully stop a process (use force: true for immediate kill)
-  restart: Restart a running process (stop then start with same config)
+  restart: Restart a running process (stop then start with same config). For .agnt.kdl autostart scripts, process_id = script name.
   cleanup_port: Kill any process using a specific port
   autorestart: Enable/disable automatic restart when process exits
   scripts: List all registered scripts with state and start/fail counts
   script_output: Get script output history across restarts
   script_history: Get script state transition history
 
-Restarting dev servers: Use restart action or stop then run again.
+Restarting dev servers:
   proc {action: "restart", process_id: "dev"}
-  # Or manually:
-  proc {action: "stop", process_id: "dev"}
-  run {script_name: "dev"}
 Never use pkill or external commands - always use proc stop/restart for clean shutdown.
 
 Auto-restart: Background processes automatically restart on crash by default (rate-limited
