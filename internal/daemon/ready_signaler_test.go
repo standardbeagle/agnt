@@ -95,20 +95,22 @@ func TestReadySignaler_PortProbeSuccess(t *testing.T) {
 
 func TestReadySignaler_PortProbeCancel(t *testing.T) {
 	t.Parallel()
-	// Use a port that nothing is listening on.
+	// Keep the listener open so the port is definitely reachable.
+	// Cancel the context BEFORE starting the probe so signalFromProbe's
+	// probeCtx.Err() check blocks the signal regardless of dial timing.
+	// (Using a closed port and cancelling mid-flight was racy: net.DialTimeout
+	// ignores context, so if the OS reused the ephemeral port before the 100ms
+	// cancel the probe would fire and the test would spuriously pass.)
 	ln, err := net.Listen("tcp", "localhost:0")
 	require.NoError(t, err)
+	defer ln.Close()
 	port := ln.Addr().(*net.TCPAddr).Port
-	ln.Close() // Close immediately so port is NOT listening.
 
 	rs := NewReadySignaler()
 	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel before probe starts — probe must not signal.
 
 	rs.StartPortProbe("proc1", port, ctx)
-
-	// Cancel after a short time.
-	time.Sleep(100 * time.Millisecond)
-	cancel()
 
 	// WaitReady should timeout since probe was cancelled before success.
 	err = rs.WaitReady("proc1", 200*time.Millisecond)

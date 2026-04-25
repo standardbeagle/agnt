@@ -19,22 +19,15 @@ func TestDefaultSocketPath(t *testing.T) {
 		t.Error("DefaultSocketPath() returned empty string")
 	}
 
-	// Should contain uid for uniqueness
 	uid := os.Getuid()
 
-	// If XDG_RUNTIME_DIR is set, path should be there
-	if xdg := os.Getenv("XDG_RUNTIME_DIR"); xdg != "" {
-		if !filepath.HasPrefix(path, xdg) {
-			t.Errorf("Expected path to start with XDG_RUNTIME_DIR (%s), got %s", xdg, path)
-		}
-	} else {
-		// Otherwise should be in /tmp with uid
-		if !filepath.HasPrefix(path, "/tmp/") {
-			t.Errorf("Expected path to start with /tmp/, got %s", path)
-		}
-		if !containsUID(path, uid) {
-			t.Errorf("Expected path to contain UID %d, got %s", uid, path)
-		}
+	// Always /tmp regardless of XDG_RUNTIME_DIR: agnt daemon outlives sessions
+	// and XDG_RUNTIME_DIR is cleaned up by pam_systemd on logout.
+	if !filepath.HasPrefix(path, "/tmp/") {
+		t.Errorf("Expected path to start with /tmp/, got %s", path)
+	}
+	if !containsUID(path, uid) {
+		t.Errorf("Expected path to contain UID %d, got %s", uid, path)
 	}
 
 	t.Logf("DefaultSocketPath: %s", path)
