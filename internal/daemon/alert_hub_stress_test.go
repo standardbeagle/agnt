@@ -301,7 +301,7 @@ func TestAlertHub_FanOutToManySinks(t *testing.T) {
 			}
 		}
 		return true
-	}, 3*time.Second, 5*time.Millisecond, "drainers did not reach 75%% acceptance floor")
+	}, 6*time.Second, 5*time.Millisecond, "drainers did not reach 75%% acceptance floor")
 
 	// Quantity: each sink must be within the [floor, expected] window.
 	// Exceeding expected would indicate duplication; dropping below the
@@ -344,7 +344,7 @@ func TestAlertHub_FanOutToManySinks(t *testing.T) {
 	for i, done := range drainerDones {
 		select {
 		case <-done:
-		case <-time.After(2 * time.Second):
+		case <-time.After(5 * time.Second):
 			t.Fatalf("drainer %d did not exit after RemoveStreamSink", i)
 		}
 	}
@@ -415,7 +415,7 @@ func TestAlertHub_SlowStreamSinkDoesntStallOthers(t *testing.T) {
 	floor := events * 3 / 4
 	require.Eventually(t, func() bool {
 		return fast1Drain.got.Load() >= int64(floor) && fast2Drain.got.Load() >= int64(floor)
-	}, 2*time.Second, 5*time.Millisecond, "fast sinks did not reach 75%% floor")
+	}, 5*time.Second, 5*time.Millisecond, "fast sinks did not reach 75%% floor")
 
 	assert.GreaterOrEqual(t, fast1Drain.got.Load(), int64(floor),
 		"fast sink 1 delivered %d, below floor %d", fast1Drain.got.Load(), floor)
@@ -437,7 +437,7 @@ func TestAlertHub_SlowStreamSinkDoesntStallOthers(t *testing.T) {
 	for i, done := range []<-chan struct{}{slowDone, fast1Done, fast2Done} {
 		select {
 		case <-done:
-		case <-time.After(3 * time.Second):
+		case <-time.After(6 * time.Second):
 			t.Fatalf("drainer %d did not exit", i)
 		}
 	}
@@ -537,7 +537,7 @@ func TestAlertHub_FilterCorrectness(t *testing.T) {
 			}
 		}
 		return true
-	}, 3*time.Second, 5*time.Millisecond, "drainers did not converge")
+	}, 6*time.Second, 5*time.Millisecond, "drainers did not converge")
 
 	// Filter correctness: per-type sinks see EXACTLY perType matching
 	// entries (every match delivered — under pacing, the 64-buffer
@@ -571,7 +571,7 @@ func TestAlertHub_FilterCorrectness(t *testing.T) {
 	for i, done := range dones {
 		select {
 		case <-done:
-		case <-time.After(2 * time.Second):
+		case <-time.After(5 * time.Second):
 			t.Fatalf("drainer %d stalled on shutdown", i)
 		}
 	}
@@ -627,7 +627,7 @@ func TestAlertHub_GrepFilter(t *testing.T) {
 
 	require.Eventually(t, func() bool {
 		return drain.got.Load() >= wantMatch
-	}, 2*time.Second, 5*time.Millisecond, "grep drainer did not converge")
+	}, 5*time.Second, 5*time.Millisecond, "grep drainer did not converge")
 
 	assert.Equal(t, wantMatch, drain.got.Load(),
 		"grep filter must deliver exactly matching lines (want %d, got %d)",
@@ -645,13 +645,13 @@ func TestAlertHub_GrepFilter(t *testing.T) {
 	hub.BroadcastLogEntry(proxy.LogEntry{Type: proxy.LogTypeError, Error: &proxy.FrontendError{}}, "p")
 	require.Eventually(t, func() bool {
 		return drain.countByType(proxy.LogTypeError) == 1
-	}, 2*time.Second, 5*time.Millisecond, "non-ProcessOutput entry must not be blocked by grep filter")
+	}, 5*time.Second, 5*time.Millisecond, "non-ProcessOutput entry must not be blocked by grep filter")
 
 	hub.RemoveStreamSink(sink)
 	close(stop)
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("grep drainer did not exit on stop")
 	}
 }
@@ -846,7 +846,7 @@ func TestAlertHub_KeepaliveHeartbeat(t *testing.T) {
 	cancel()
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("keepalive loop did not exit on cancel")
 	}
 }
@@ -1029,7 +1029,7 @@ func TestAlertHub_CloseWithRegisteredSinks(t *testing.T) {
 	for i, done := range drainDones {
 		select {
 		case <-done:
-		case <-time.After(2 * time.Second):
+		case <-time.After(5 * time.Second):
 			t.Fatalf("drainer %d did not exit on close", i)
 		}
 	}

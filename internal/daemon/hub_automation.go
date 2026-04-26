@@ -376,7 +376,3 @@ func (d *Daemon) hubHandleAutomationEvaluate(ctx context.Context, conn *hubpkg.C
 	data, _ := json.Marshal(resp)
 	return conn.WriteJSON(data)
 }
-
-// ALERTS Command Handlers
-
-// hubHandleAlerts handles the ALERTS command and its sub-verbs.
