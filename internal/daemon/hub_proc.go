@@ -137,7 +137,7 @@ func (d *Daemon) hubHandleProcOutput(ctx context.Context, conn *hubpkg.Connectio
 		output, truncated = proc.CombinedOutput()
 	}
 	if truncated {
-		debug.Warn("process %q output was truncated (stream=%s)", processID, filter.Stream)
+		debug.Warn("daemon", "process %q output was truncated (stream=%s)", processID, filter.Stream)
 	}
 
 	// Prepend restart event delimiters if this process was auto-restarted
