@@ -150,6 +150,14 @@ func (d *Daemon) registerAgntCommands() {
 		Handler:     d.hubHandleAlerts,
 	})
 
+	// INCIDENTS command
+	d.hub.RegisterCommand(hubpkg.CommandDefinition{
+		Verb:        protocol.VerbIncidents,
+		SubVerbs:    []string{protocol.SubVerbQuery},
+		Description: "Query the per-session incident inbox",
+		Handler:     d.hubHandleIncidents,
+	})
+
 	// SCRIPT command
 	d.hub.RegisterCommand(hubpkg.CommandDefinition{
 		Verb:        "SCRIPT",
