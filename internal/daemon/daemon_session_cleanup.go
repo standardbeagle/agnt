@@ -396,5 +396,9 @@ func (d *Daemon) doCleanup(sessionCode string) {
 		debug.Log("daemon", "error unregistering session %s: %v", sessionCode, err)
 	}
 
+	if d.incidentBus != nil {
+		d.incidentBus.RemoveSession(sessionCode)
+	}
+
 	debug.Log("daemon", "session %s cleanup complete", sessionCode)
 }

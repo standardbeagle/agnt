@@ -205,6 +205,26 @@ func (b *MPSCBus) Close() {
 	})
 }
 
+// QuerySession queries the incident inbox for the given session.
+// Returns nil entries and empty stats if no pipeline exists for the session.
+func (b *MPSCBus) QuerySession(sessionID string, filter QueryFilter) ([]InboxEntry, Stats) {
+	pl := b.getSessionPipeline(sessionID)
+	if pl == nil {
+		return nil, Stats{}
+	}
+	return pl.inbox.Query(filter)
+}
+
+// MarkReadSession marks entries as read in the given session's inbox.
+// No-op if the session has no pipeline.
+func (b *MPSCBus) MarkReadSession(sessionID string, fingerprints []string, advanceCursor bool) {
+	pl := b.getSessionPipeline(sessionID)
+	if pl == nil {
+		return
+	}
+	pl.inbox.MarkRead(fingerprints, advanceCursor)
+}
+
 // getSessionPipeline returns the pipeline for sessionID, or nil.
 // Used by tests and for diagnostic inspection.
 func (b *MPSCBus) getSessionPipeline(sessionID string) *sessionPipeline {
