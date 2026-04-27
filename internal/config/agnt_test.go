@@ -1222,31 +1222,6 @@ func TestAlertsConfigIsEnabled(t *testing.T) {
 	assert.False(t, cfg.IsEnabled())
 }
 
-func TestParseScriptHealthPatterns(t *testing.T) {
-	input := `scripts {
-    dev {
-        run "npm run dev"
-        error-pattern "ERROR|FAIL"
-        healthy-pattern "ready in|compiled"
-    }
-    api {
-        run "go run ."
-    }
-}`
-	cfg, err := ParseAgntConfig(input)
-	require.NoError(t, err)
-
-	dev := cfg.Scripts["dev"]
-	require.NotNil(t, dev)
-	assert.Equal(t, "ERROR|FAIL", dev.ErrorPattern)
-	assert.Equal(t, "ready in|compiled", dev.HealthyPattern)
-
-	api := cfg.Scripts["api"]
-	require.NotNil(t, api)
-	assert.Empty(t, api.ErrorPattern)
-	assert.Empty(t, api.HealthyPattern)
-}
-
 func TestDefaultHealthPatterns(t *testing.T) {
 	patterns := DefaultHealthPatterns()
 	assert.NotEmpty(t, patterns.Error, "error pattern should not be empty")

@@ -245,12 +245,6 @@ type ScriptConfig struct {
 	// Ports lists the ports this script uses. Used for pre-flight orphan cleanup
 	// and EADDRINUSE recovery. Multiple ports supported (e.g., API + WebSocket).
 	Ports []int `kdl:"ports"`
-	// ErrorPattern is a regex that flags the process as unhealthy when matched.
-	// If empty, DefaultHealthPatterns() are used based on common frameworks.
-	ErrorPattern string `kdl:"error-pattern"`
-	// HealthyPattern is a regex that clears the unhealthy flag when matched.
-	// If empty, DefaultHealthPatterns() are used based on common frameworks.
-	HealthyPattern string `kdl:"healthy-pattern"`
 	// AutoRestart enables automatic restart when the process exits.
 	// Default: false — user restarts manually from the overlay.
 	AutoRestart bool `kdl:"auto-restart"`

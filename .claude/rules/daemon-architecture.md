@@ -133,6 +133,7 @@ dispatch with a normalised, deduped, priority-ordered inbox.
 | `get_incidents` MCP tool | `internal/incident/get_incidents.go` |
 | Remediation routing table | `internal/incident/routing.go` |
 | MPSC bus + `sessionPipeline` | `internal/incident/bus.go` |
+| `INCIDENTS QUERY` hub handler, session lifecycle wiring | `internal/daemon/hub_incidents.go` |
 
 ## Session Containment
 
