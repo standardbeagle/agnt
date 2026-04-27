@@ -189,8 +189,13 @@ Signal sources → Bus → Dedup/Coalesce/FlowControl → Inbox → Pinger → M
    hint lookup table used to populate `remediation_hint`.
 8. **Bus** (`bus.go`): MPSC channel (4096 cap, drop-newest on overflow). One
    dispatch goroutine fans events into per-session `sessionPipeline`.
-9. **Migration flag**: `alerts.incident-pipeline` bool. `false` (default) →
-   legacy `AlertHub` path. `true` → Pinger path.
+9. **INCIDENTS hub handler** (`hub_incidents.go`): Daemon-side `INCIDENTS QUERY`
+   handler. Wired to `VerbIncidents` in `hub_run.go`. Session pipelines are
+   created on `SESSION REGISTER` / `SESSION ATTACH` and torn down in `doCleanup`.
+   Works regardless of `incident-pipeline` flag — inbox is always created;
+   events only populate it when the flag is `true` or via direct bus Publish.
+10. **Migration flag**: `alerts.incident-pipeline` bool. `false` (default) →
+    legacy `AlertHub` path for event delivery. `true` → Pinger path + bus ingestion.
 
 **Key invariants**: Cross-session isolation (each session gets its own
 `sessionPipeline`); blob store is best-effort (no persistence across daemon

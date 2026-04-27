@@ -205,6 +205,11 @@ func (b *MPSCBus) Close() {
 	})
 }
 
+// HasSession reports whether a pipeline exists for the given session.
+func (b *MPSCBus) HasSession(sessionID string) bool {
+	return b.getSessionPipeline(sessionID) != nil
+}
+
 // QuerySession queries the incident inbox for the given session.
 // Returns nil entries and empty stats if no pipeline exists for the session.
 func (b *MPSCBus) QuerySession(sessionID string, filter QueryFilter) ([]InboxEntry, Stats) {
