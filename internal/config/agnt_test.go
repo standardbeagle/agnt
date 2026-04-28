@@ -612,6 +612,35 @@ func TestGetAutostartMethods(t *testing.T) {
 	assert.Contains(t, autostartProxies, "manual")
 }
 
+func TestScriptLifecycleHooks_Parse(t *testing.T) {
+	kdl := `
+scripts {
+    backend {
+        command "pwsh"
+        hooks {
+            on-start  "scripts/on-start.ps1"
+            on-stop   "scripts/on-stop.ps1"
+            on-crash  "scripts/on-crash.ps1"
+            on-restart "scripts/on-restart.ps1"
+        }
+    }
+}`
+	cfg, err := ParseAgntConfig(kdl)
+	require.NoError(t, err)
+	h := cfg.Scripts["backend"].Hooks
+	require.NotNil(t, h)
+	assert.Equal(t, "scripts/on-start.ps1", h.OnStart)
+	assert.Equal(t, "scripts/on-stop.ps1", h.OnStop)
+	assert.Equal(t, "scripts/on-crash.ps1", h.OnCrash)
+	assert.Equal(t, "scripts/on-restart.ps1", h.OnRestart)
+}
+
+func TestScriptLifecycleHooks_Nil_WhenAbsent(t *testing.T) {
+	cfg, err := ParseAgntConfig("scripts {\n    backend {\n        command \"node\"\n    }\n}")
+	require.NoError(t, err)
+	assert.Nil(t, cfg.Scripts["backend"].Hooks)
+}
+
 func TestGetAutostartProxiesExplicitTarget(t *testing.T) {
 	cfg := &AgntConfig{
 		Scripts: map[string]*ScriptConfig{},
