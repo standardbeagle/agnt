@@ -106,7 +106,7 @@ func (d *Daemon) hubHandleRestartAll(ctx context.Context, conn *hubpkg.Connectio
 
 	for _, pm := range procsToRestart {
 		// Use startScriptWithRetry for EADDRINUSE recovery
-		_, startupErr := d.startScriptWithRetry(ctx, pm.ID, pm.ProjectPath, pm.WorkingDir, pm.Command, pm.Args, nil, nil)
+		_, startupErr := d.startScriptWithRetry(ctx, pm.ID, pm.ProjectPath, pm.WorkingDir, pm.Command, pm.Args, nil, nil, false)
 		if startupErr != nil {
 			debug.Error("daemon", "Failed to restart process %s: %v", pm.ID, startupErr)
 			d.startupErrorStore.Add(&StartupLogEntry{

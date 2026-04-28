@@ -278,11 +278,15 @@ func (d *Daemon) watchProcessExit(proc *goprocess.ManagedProcess) {
 				if entry, ok := d.scriptRegistry.GetByProcessID(proc.ID); ok {
 					scriptName = entry.Name
 				}
-				if info.Reason == "stopped" && scriptCfg.Hooks.OnStop != "" {
+				// "stopped" = clean exit (code 0); "signal" = killed by SIGTERM/SIGKILL
+				// (user or daemon-initiated Stop); "crash" = unexpected non-zero exit.
+				// Both "stopped" and "signal" trigger on-stop; only "crash" triggers on-crash.
+				isIntentionalStop := info.Reason == "stopped" || info.Reason == "signal"
+				if isIntentionalStop && scriptCfg.Hooks.OnStop != "" {
 					if err := RunLifecycleHook(scriptCfg.Hooks.OnStop, scriptName, "stop", scriptCfg, info.ExitCode); err != nil {
 						debug.Warn("daemon", "on-stop hook for %s: %v", scriptName, err)
 					}
-				} else if info.Reason != "stopped" && scriptCfg.Hooks.OnCrash != "" {
+				} else if !isIntentionalStop && scriptCfg.Hooks.OnCrash != "" {
 					if err := RunLifecycleHook(scriptCfg.Hooks.OnCrash, scriptName, "crash", scriptCfg, info.ExitCode); err != nil {
 						debug.Warn("daemon", "on-crash hook for %s: %v", scriptName, err)
 					}

@@ -88,8 +88,10 @@ func (d *Daemon) StartScript(ctx context.Context, cfg StartScriptConfig) (*Start
 		debug.Log("daemon", "Pre-set URL matchers for %s: %v", cfg.ProcessID, cfg.URLMatchers)
 	}
 
-	// Start with automatic EADDRINUSE recovery
-	proc, startupErr := d.startScriptWithRetry(ctx, cfg.ProcessID, projectPath, cfg.WorkingDir, cfg.Command, cfg.Args, cfg.Env, cfg.ExpectedPorts)
+	// Start with automatic EADDRINUSE recovery.
+	// Pass autoRestart so that non-EADDRINUSE early exits are treated as the
+	// first crash cycle rather than fatal startup failures.
+	proc, startupErr := d.startScriptWithRetry(ctx, cfg.ProcessID, projectPath, cfg.WorkingDir, cfg.Command, cfg.Args, cfg.Env, cfg.ExpectedPorts, cfg.AutoRestart)
 	if startupErr != nil {
 		// Clean up pre-set matchers on failure
 		d.urlTracker.SetURLMatchers(cfg.ProcessID, nil)
@@ -109,7 +111,10 @@ func (d *Daemon) StartScript(ctx context.Context, cfg StartScriptConfig) (*Start
 		return nil, startupErr
 	}
 
-	// Register for auto-restart if enabled
+	// Register for auto-restart if enabled. When the process exits quickly
+	// (e.g. `exit 1`), startScriptWithRetry returns the already-failed proc.
+	// monitorProcess finds it via Get, receives from the already-closed
+	// proc.Done(), and proceeds with restart logic immediately.
 	if cfg.AutoRestart && d.autoRestarter != nil {
 		restartConfig := DefaultAutoRestartConfig()
 		restartConfig.Enabled = true
@@ -323,6 +328,7 @@ func (d *Daemon) startScriptWithRetry(
 	args []string,
 	env []string,
 	expectedPorts []int,
+	autoRestart bool,
 ) (*process.ManagedProcess, *StartupError) {
 
 	// Pre-flight cleanup: kill orphans on all expected ports
@@ -407,6 +413,14 @@ func (d *Daemon) startScriptWithRetry(
 
 	// Startup failed - check if it's EADDRINUSE
 	if startupErr.ErrorType != "EADDRINUSE" {
+		// When auto-restart is enabled, a quick exit (e.g. `exit 1`) is the
+		// first crash cycle — not a fatal failure. Return the failed proc so
+		// StartScript can register it with the auto-restarter. The auto-restarter
+		// calls proc.Done() (already closed) and immediately schedules the restart.
+		if autoRestart {
+			debug.Log("daemon", "auto-restart: treating quick exit of %s as first crash cycle", processID)
+			return proc, nil
+		}
 		return nil, startupErr
 	}
 
