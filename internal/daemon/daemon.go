@@ -67,6 +67,15 @@ import (
 // Can be overridden at build time with: -ldflags "-X github.com/standardbeagle/agnt/internal/daemon.Version=x.y.z"
 var Version = "0.13.3"
 
+// asScriptConfig casts the value stored in scriptConfigs (a sync.Map of any)
+// back to *config.ScriptConfig. Returns nil if the value is absent or the
+// wrong type. This helper exists so closures inside New() can reference the
+// config package without hitting the "config" parameter shadowing.
+func asScriptConfig(v any) *config.ScriptConfig {
+	sc, _ := v.(*config.ScriptConfig)
+	return sc
+}
+
 // BuildTime is the build timestamp (RFC3339 format).
 // Set at build time with: -ldflags "-X github.com/standardbeagle/agnt/internal/daemon.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 var BuildTime = ""
@@ -371,6 +380,24 @@ func New(config DaemonConfig) *Daemon {
 			d.alertHub.BroadcastLogEntry(entry, proxyID)
 		},
 	)
+
+	// Wire on-start lifecycle hooks: fire whenever a process transitions
+	// into Running for the first time or after a restart.
+	d.healthTracker.onProcessRunning = func(processID string) {
+		cfgVal, ok := d.scriptConfigs.Load(processID)
+		if !ok {
+			return
+		}
+		scriptCfg := asScriptConfig(cfgVal)
+		if scriptCfg == nil || scriptCfg.Hooks == nil || scriptCfg.Hooks.OnStart == "" {
+			return
+		}
+		scriptName := processID
+		if entry, ok := d.scriptRegistry.GetByProcessID(processID); ok {
+			scriptName = entry.Name
+		}
+		runLifecycleHookAsync(scriptCfg.Hooks.OnStart, scriptName, "start", scriptCfg, 0)
+	}
 
 	// OutageClassifier extends HealthTracker with rebuild/crash
 	// classification. It needs the same process lookup, an emitter for

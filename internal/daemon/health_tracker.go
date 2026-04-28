@@ -123,6 +123,11 @@ type HealthTracker struct {
 	// edge, inside the slow-path mutex. The classifier sets this to
 	// reset per-outage one-shot markers (e.g. "expired warning").
 	onReturnToHealthy func(processID string)
+
+	// onProcessRunning fires on every any-state → Running transition.
+	// Separate from onReturnToHealthy so daemon and OutageClassifier register independently.
+	// Used to fire on-start lifecycle hooks.
+	onProcessRunning func(processID string)
 }
 
 // NewHealthTracker constructs a HealthTracker with production lookups.
@@ -273,6 +278,12 @@ func (h *HealthTracker) observe(proxyID, processID string, currentState goproces
 		func() {
 			defer func() { _ = recover() }()
 			h.onReturnToHealthy(processID)
+		}()
+	}
+	if returnedToHealthy && h.onProcessRunning != nil {
+		func() {
+			defer func() { _ = recover() }()
+			h.onProcessRunning(processID)
 		}()
 	}
 
