@@ -33,11 +33,8 @@ func (pm *ProcessManager) Start(ctx context.Context, proc *ManagedProcess) error
 	proc.cmd = exec.CommandContext(proc.ctx, proc.Command, proc.Args...)
 	proc.cmd.Dir = proc.WorkingDir // Use WorkingDir for actual cwd (may differ from ProjectPath)
 
-	if len(proc.Env) > 0 {
-		proc.cmd.Env = proc.Env
-	} else {
-		proc.cmd.Env = os.Environ()
-	}
+	// Always inherit the parent environment; config Env entries override.
+	proc.cmd.Env = append(os.Environ(), proc.Env...)
 
 	// Set platform-specific process attributes
 	setProcAttr(proc.cmd)
