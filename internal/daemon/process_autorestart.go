@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/go-cli-server/script"
 	"golang.org/x/sync/semaphore"
@@ -379,6 +380,19 @@ func (r *ProcessAutoRestarter) monitorProcess(processID string) {
 		if scriptEntry, ok := r.daemon.scriptRegistry.GetByProcessID(processID); ok {
 			scriptEntry.SetState(script.StateRestarting)
 			scriptEntry.AddRestartMarker()
+		}
+
+		// Fire on-restart hook before re-launching (blocks up to 5s).
+		if cfgVal, ok := r.daemon.scriptConfigs.Load(processID); ok {
+			if scriptCfg, ok := cfgVal.(*config.ScriptConfig); ok && scriptCfg.Hooks != nil && scriptCfg.Hooks.OnRestart != "" {
+				restartScriptName := processID
+				if entry, ok := r.daemon.scriptRegistry.GetByProcessID(processID); ok {
+					restartScriptName = entry.Name
+				}
+				if err := RunLifecycleHook(scriptCfg.Hooks.OnRestart, restartScriptName, "restart", scriptCfg, exitCode); err != nil {
+					debug.Warn("daemon", "on-restart hook for %s: %v", restartScriptName, err)
+				}
+			}
 		}
 
 		// Capture restart event from the dying process before removing it
