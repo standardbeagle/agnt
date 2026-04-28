@@ -431,7 +431,7 @@ func (d *Daemon) hubHandleProcRestart(ctx context.Context, conn *hubpkg.Connecti
 	d.hub.ProcessManager().RemoveByPath(processID, projectPath)
 
 	// Start with EADDRINUSE recovery (pre-flight cleanup + startup monitoring)
-	newProc, startupErr := d.startScriptWithRetry(ctx, processID, projectPath, workingDir, command, args, nil, []int{expectedPort})
+	newProc, startupErr := d.startScriptWithRetry(ctx, processID, projectPath, workingDir, command, args, nil, []int{expectedPort}, false)
 	if startupErr != nil {
 		return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("failed to restart: %v", startupErr))
 	}

@@ -802,7 +802,11 @@ func (d *Daemon) StartScriptExplicit(ctx context.Context, name string, scriptCfg
 		return fmt.Errorf("%s", msg)
 	}
 
-	// Success: ProcessManager lifecycle sets StateRunning automatically
+	// Success: ProcessManager lifecycle sets StateRunning automatically.
+	// Fire on-start lifecycle hook if configured.
+	if scriptCfg.Hooks != nil && scriptCfg.Hooks.OnStart != "" {
+		runLifecycleHookAsync(scriptCfg.Hooks.OnStart, name, "start", scriptCfg, 0)
+	}
 	return nil
 }
 
