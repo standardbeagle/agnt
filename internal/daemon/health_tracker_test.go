@@ -434,32 +434,6 @@ func TestBroadcastGate_DiagnosticAlwaysPasses(t *testing.T) {
 		"diagnostic entries must always pass the gate")
 }
 
-func TestHealthTracker_OnProcessRunning_FiresOnTransition(t *testing.T) {
-	var fired []string
-	tracker := NewHealthTracker(
-		func(id string) (*goprocess.ManagedProcess, error) { return nil, nil },
-		func(proxy.LogEntry, string) {},
-	)
-	tracker.onProcessRunning = func(processID string) {
-		fired = append(fired, processID)
-	}
-
-	// Starting → Running should fire
-	tracker.observe("proxy1", "proc1", goprocess.StateStarting)
-	tracker.observe("proxy1", "proc1", goprocess.StateRunning)
-	assert.Equal(t, []string{"proc1"}, fired)
-
-	// Running → Running (steady state) must NOT fire again
-	tracker.observe("proxy1", "proc1", goprocess.StateRunning)
-	assert.Equal(t, []string{"proc1"}, fired)
-
-	// Running → Stopped → Starting → Running (restart) must fire again
-	tracker.observe("proxy1", "proc1", goprocess.StateStopped)
-	tracker.observe("proxy1", "proc1", goprocess.StateStarting)
-	tracker.observe("proxy1", "proc1", goprocess.StateRunning)
-	assert.Equal(t, []string{"proc1", "proc1"}, fired)
-}
-
 func TestBroadcastGate_UnlinkedProxyAlwaysPasses(t *testing.T) {
 	t.Parallel()
 	table := newProcTable()

@@ -381,24 +381,6 @@ func New(config DaemonConfig) *Daemon {
 		},
 	)
 
-	// Wire on-start lifecycle hooks: fire whenever a process transitions
-	// into Running for the first time or after a restart.
-	d.healthTracker.onProcessRunning = func(processID string) {
-		cfgVal, ok := d.scriptConfigs.Load(processID)
-		if !ok {
-			return
-		}
-		scriptCfg := asScriptConfig(cfgVal)
-		if scriptCfg == nil || scriptCfg.Hooks == nil || scriptCfg.Hooks.OnStart == "" {
-			return
-		}
-		scriptName := processID
-		if entry, ok := d.scriptRegistry.GetByProcessID(processID); ok {
-			scriptName = entry.Name
-		}
-		runLifecycleHookAsync(scriptCfg.Hooks.OnStart, scriptName, "start", scriptCfg, 0)
-	}
-
 	// OutageClassifier extends HealthTracker with rebuild/crash
 	// classification. It needs the same process lookup, an emitter for
 	// long-rebuild heartbeats and the expired-rebuild warning, and a
