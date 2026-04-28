@@ -248,6 +248,23 @@ type ScriptConfig struct {
 	// AutoRestart enables automatic restart when the process exits.
 	// Default: false — user restarts manually from the overlay.
 	AutoRestart bool `kdl:"auto-restart"`
+	// Hooks defines optional shell commands run at process lifecycle transitions.
+	Hooks *ScriptLifecycleHooks `kdl:"hooks"`
+}
+
+// ScriptLifecycleHooks defines shell commands run at process lifecycle transitions.
+// Each field is a shell command string executed via the platform shell (same as ScriptConfig.Run).
+// Hooks run with a 5-second timeout and inherit the script's effective environment.
+// Injected env vars: AGNT_EVENT, AGNT_SCRIPT_ID, AGNT_EXIT_CODE (stop/crash only).
+type ScriptLifecycleHooks struct {
+	// OnStart fires after the process transitions to Running state.
+	OnStart string `kdl:"on-start"`
+	// OnStop fires after a clean process exit (user-initiated or expected).
+	OnStop string `kdl:"on-stop"`
+	// OnCrash fires after an unexpected exit (non-zero code, not user-initiated).
+	OnCrash string `kdl:"on-crash"`
+	// OnRestart fires before each auto-restart attempt.
+	OnRestart string `kdl:"on-restart"`
 }
 
 // ResolveShell returns the shell command and arguments for executing a "run" command.
