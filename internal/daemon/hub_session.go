@@ -377,8 +377,15 @@ func (d *Daemon) hubHandleSessionUnregister(conn *hubpkg.Connection, cmd *hubpro
 
 	code := cmd.Args[0]
 
-	// Clean up session resources (processes, proxies) before unregistering
-	d.CleanupSessionResources(code)
+	// Cancel any pending deferred cleanup synchronously (just cancels a timer — safe).
+	d.cancelPendingCleanup(code)
+	// Run cleanup in background; client can disconnect immediately.
+	// d.wg ensures daemon shutdown waits for in-flight cleanups.
+	d.wg.Add(1)
+	go func() {
+		defer d.wg.Done()
+		d.doCleanup(code)
+	}()
 
 	return conn.WriteOK(fmt.Sprintf("session %s unregistered", code))
 }
