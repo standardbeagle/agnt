@@ -601,6 +601,11 @@ type AIConfig struct {
 	Skill string `kdl:"skill"`
 	// Env are environment variables to set for AI commands
 	Env map[string]string `kdl:"env"`
+	// Context is a brief project description injected at the top of the system
+	// prompt, before the agnt tools list. Use it to tell the AI what the project
+	// is, which ports/URLs to use, and any other startup context.
+	// Example: "React + FastAPI app. Dev server: port 3000, API: port 8080."
+	Context string `kdl:"context"`
 	// SystemPrompt is a full system prompt that replaces the default
 	SystemPrompt string `kdl:"system-prompt"`
 	// AppendSystemPrompt is appended to the default system prompt
@@ -817,6 +822,13 @@ func (c *AgntConfig) BuildSystemPrompt() string {
 	}
 
 	var sb strings.Builder
+
+	// Project context appears first so it frames everything that follows.
+	if c.AI != nil && c.AI.Context != "" {
+		sb.WriteString("## Project Context\n\n")
+		sb.WriteString(c.AI.Context)
+		sb.WriteString("\n\n")
+	}
 
 	// Base agnt description
 	sb.WriteString(`You have access to agnt, a tool that gives AI coding agents browser superpowers.

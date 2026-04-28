@@ -836,10 +836,13 @@ func buildAgntSystemPrompt(socketPath string) string {
 		basePrompt = basePrompt + "\n" + agntprompt.BuildCheatSheet(tools.DevToolAPIFunctions)
 	}
 
-	// Try to connect to daemon to add runtime state
+	// Try to connect to a running daemon to add runtime state.
+	// Use the lightweight non-auto-start client: if the daemon is already
+	// running (e.g. a previous session left processes alive) we get their
+	// state. If not, the config-based prompt is sufficient — startDaemonSession
+	// will start the daemon and trigger autostart after the PTY launches.
 	client := daemon.NewClient(daemon.WithSocketPath(socketPath))
 	if err := client.Connect(); err != nil {
-		// Daemon not running, return config-based prompt only
 		return basePrompt
 	}
 	defer client.Close()
@@ -847,54 +850,51 @@ func buildAgntSystemPrompt(socketPath string) string {
 	var sb strings.Builder
 	sb.WriteString(basePrompt)
 
-	// Add current runtime state
+	// Add current runtime state: processes/proxies already running.
+	// Scoped to cwd so we don't list another project's services.
 	var hasRuntime bool
 
-	// Get running processes
-	procFilter := protocol.DirectoryFilter{Global: true}
+	procFilter := protocol.DirectoryFilter{Directory: cwd}
 	procs, err := client.ProcList(procFilter)
 	if err == nil {
 		if processes, ok := procs["processes"].([]interface{}); ok && len(processes) > 0 {
 			if !hasRuntime {
 				sb.WriteString("\n## Current Runtime State\n")
-				sb.WriteString("These processes and proxies were auto-started and are already running.\n")
-				sb.WriteString("Do NOT start them again. Use proc/proxy tools to inspect them.\n")
+				sb.WriteString("These processes and proxies are already running — do NOT start them again.\n")
 				hasRuntime = true
 			}
-			sb.WriteString("\n**Running processes** (already started — do not restart unless crashed):\n")
+			sb.WriteString("\n**Running processes**:\n")
 			for _, p := range processes {
 				if pm, ok := p.(map[string]interface{}); ok {
 					id := pm["id"]
 					state := pm["state"]
 					cmd := pm["command"]
 					sb.WriteString(fmt.Sprintf("- **%s**: `%s` (state: %s)\n", id, cmd, state))
-					sb.WriteString(fmt.Sprintf("  - View output: `proc {action: \"output\", id: \"%s\"}`\n", id))
-					sb.WriteString(fmt.Sprintf("  - Check errors: `get_errors {process_id: \"%s\"}`\n", id))
+					sb.WriteString(fmt.Sprintf("  - Output: `proc {action: \"output\", id: \"%s\"}`\n", id))
+					sb.WriteString(fmt.Sprintf("  - Errors: `get_errors {process_id: \"%s\"}`\n", id))
 				}
 			}
 		}
 	}
 
-	// Get running proxies
-	proxyFilter := protocol.DirectoryFilter{Global: true}
+	proxyFilter := protocol.DirectoryFilter{Directory: cwd}
 	proxies, err := client.ProxyList(proxyFilter)
 	if err == nil {
 		if proxyList, ok := proxies["proxies"].([]interface{}); ok && len(proxyList) > 0 {
 			if !hasRuntime {
 				sb.WriteString("\n## Current Runtime State\n")
-				sb.WriteString("These processes and proxies were auto-started and are already running.\n")
-				sb.WriteString("Do NOT start them again. Use proc/proxy tools to inspect them.\n")
+				sb.WriteString("These processes and proxies are already running — do NOT start them again.\n")
 				hasRuntime = true
 			}
-			sb.WriteString("\n**Running proxies** (already started — browser traffic is being captured):\n")
+			sb.WriteString("\n**Running proxies** (browser traffic being captured):\n")
 			for _, p := range proxyList {
 				if pm, ok := p.(map[string]interface{}); ok {
 					id := pm["id"]
 					target := pm["target_url"]
 					listen := pm["listen_addr"]
 					sb.WriteString(fmt.Sprintf("- **%s**: %s → %s\n", id, listen, target))
-					sb.WriteString(fmt.Sprintf("  - Query logs: `proxylog {action: \"query\", proxy_id: \"%s\"}`\n", id))
-					sb.WriteString(fmt.Sprintf("  - Check errors: `get_errors {proxy_id: \"%s\"}`\n", id))
+					sb.WriteString(fmt.Sprintf("  - Logs: `proxylog {action: \"query\", proxy_id: \"%s\"}`\n", id))
+					sb.WriteString(fmt.Sprintf("  - Errors: `get_errors {proxy_id: \"%s\"}`\n", id))
 				}
 			}
 		}

@@ -181,6 +181,31 @@ hooks {
 // pre-tool-use / post-tool-use lines stream in real time.
 
 // ============================================================================
+// AI SECTION
+// Configure the system prompt injected into the AI agent at startup.
+// All fields are optional; omit the block to use defaults.
+// ============================================================================
+// ai {
+//     // context: Brief project description placed at the TOP of the system
+//     // prompt, before the agnt tools list. Use it to tell the AI what the
+//     // project is, which dev URLs/ports to expect, and any startup notes.
+//     // This is the recommended way to give the AI project-specific context.
+//     context "React + FastAPI app. Dev server: http://localhost:3000 (proxy). API: http://localhost:8080."
+//
+//     // append-system-prompt: Arbitrary text appended to the END of the
+//     // default system prompt. Good for coding conventions, team norms, etc.
+//     append-system-prompt "Always run tests before committing. Use conventional commits."
+//
+//     // system-prompt: Full override — replaces the entire default prompt.
+//     // Use only if you need complete control; you lose agnt tool guidance.
+//     // system-prompt "You are a helpful assistant..."
+//
+//     // helpers-cheat-sheet: Set to false to omit the __devtool.* cheat sheet
+//     // (saves ~40 prompt lines when the agent is already primed via context).
+//     // helpers-cheat-sheet false
+// }
+
+// ============================================================================
 // TOAST SECTION
 // Customize toast notification appearance
 // ============================================================================
