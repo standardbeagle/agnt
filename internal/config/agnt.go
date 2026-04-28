@@ -1050,6 +1050,18 @@ scripts {
     //     url-matchers "Listening on {url}"
     //     autostart true
     // }
+
+    // Example: with lifecycle hooks
+    // svc {
+    //     run "npm run dev"
+    //     autostart true
+    //     hooks {
+    //         on-start  "scripts/on-start.sh"    // fires when process reaches Running
+    //         on-stop   "scripts/cleanup.sh"     // fires on clean exit or SIGTERM (blocks up to 5s)
+    //         on-crash  "scripts/on-crash.sh"    // fires on unexpected non-zero exit
+    //         on-restart "scripts/on-restart.sh" // fires before each auto-restart
+    //     }
+    // }
 }
 
 // Reverse proxies for browser debugging
