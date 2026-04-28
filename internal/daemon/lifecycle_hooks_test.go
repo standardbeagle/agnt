@@ -134,6 +134,37 @@ func TestLifecycleHooks_EnvVarsInjected(t *testing.T) {
 	}, 3*time.Second, 50*time.Millisecond, "env vars not injected into on-start hook")
 }
 
+func TestLifecycleHooks_OnCrash(t *testing.T) {
+	// No t.Parallel(): starts real processes.
+	if runtime.GOOS == "windows" {
+		t.Skip("covered by hook_runner_test.go")
+	}
+
+	dir := t.TempDir()
+	flagFile := filepath.Join(dir, "on-crash-fired")
+
+	// Process exits non-zero (crash); no auto-restart so it only fires once.
+	writeConfig(t, dir, `scripts {
+    svc {
+        run "exit 42"
+        autostart true
+        hooks {
+            on-crash "touch `+flagFile+`"
+        }
+    }
+}`)
+
+	d := newDaemon(t, dir)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	d.RunAutostart(ctx, dir)
+
+	require.Eventually(t, func() bool {
+		_, err := os.Stat(flagFile)
+		return err == nil
+	}, 10*time.Second, 50*time.Millisecond, "on-crash hook did not fire after non-zero exit")
+}
+
 func TestLifecycleHooks_OnRestart(t *testing.T) {
 	// No t.Parallel(): starts real processes.
 	if runtime.GOOS == "windows" {
