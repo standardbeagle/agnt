@@ -36,6 +36,7 @@ import (
 
 	goprocess "github.com/standardbeagle/go-cli-server/process"
 
+	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
 )
 
@@ -268,6 +269,25 @@ func (d *Daemon) watchProcessExit(proc *goprocess.ManagedProcess) {
 		// Clear() and its own watcher will publish eventually; skip.
 		if current, err := d.hub.ProcessManager().Get(proc.ID); err == nil && current != proc {
 			return
+		}
+
+		// Fire on-stop or on-crash lifecycle hook if configured.
+		if cfgVal, ok := d.scriptConfigs.Load(proc.ID); ok {
+			if scriptCfg, ok := cfgVal.(*config.ScriptConfig); ok && scriptCfg.Hooks != nil {
+				scriptName := proc.ID
+				if entry, ok := d.scriptRegistry.GetByProcessID(proc.ID); ok {
+					scriptName = entry.Name
+				}
+				if info.Reason == "stopped" && scriptCfg.Hooks.OnStop != "" {
+					if err := RunLifecycleHook(scriptCfg.Hooks.OnStop, scriptName, "stop", scriptCfg, info.ExitCode); err != nil {
+						debug.Warn("daemon", "on-stop hook for %s: %v", scriptName, err)
+					}
+				} else if info.Reason != "stopped" && scriptCfg.Hooks.OnCrash != "" {
+					if err := RunLifecycleHook(scriptCfg.Hooks.OnCrash, scriptName, "crash", scriptCfg, info.ExitCode); err != nil {
+						debug.Warn("daemon", "on-crash hook for %s: %v", scriptName, err)
+					}
+				}
+			}
 		}
 
 		d.processExitInfo.Set(info)
