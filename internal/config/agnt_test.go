@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -857,14 +858,23 @@ func TestParseAIConfig(t *testing.T) {
 			expected: &AIConfig{AppendSystemPrompt: "Focus on security."},
 		},
 		{
+			name: "ai with context",
+			input: `ai {
+    context "React + FastAPI app. Dev: port 3000, API: port 8080."
+}`,
+			expected: &AIConfig{Context: "React + FastAPI app. Dev: port 3000, API: port 8080."},
+		},
+		{
 			name: "ai with all options",
 			input: `ai {
     skill "code-review"
     system-prompt ""
+    context "Node.js monorepo."
     append-system-prompt "This is a Node.js project."
 }`,
 			expected: &AIConfig{
 				Skill:              "code-review",
+				Context:            "Node.js monorepo.",
 				AppendSystemPrompt: "This is a Node.js project.",
 			},
 		},
@@ -884,6 +894,9 @@ func TestParseAIConfig(t *testing.T) {
 				}
 				if tt.expected.SystemPrompt != "" {
 					assert.Equal(t, tt.expected.SystemPrompt, cfg.AI.SystemPrompt)
+				}
+				if tt.expected.Context != "" {
+					assert.Equal(t, tt.expected.Context, cfg.AI.Context)
 				}
 				if tt.expected.AppendSystemPrompt != "" {
 					assert.Equal(t, tt.expected.AppendSystemPrompt, cfg.AI.AppendSystemPrompt)
@@ -961,6 +974,21 @@ func TestBuildSystemPrompt(t *testing.T) {
 
 		prompt := cfg.BuildSystemPrompt()
 		assert.Contains(t, prompt, "linked to script 'dev-script'")
+	})
+
+	t.Run("context appears before agnt tools", func(t *testing.T) {
+		cfg := DefaultAgntConfig()
+		cfg.AI = &AIConfig{
+			Context: "React + FastAPI app. Dev: port 3000, API: port 8080.",
+		}
+
+		prompt := cfg.BuildSystemPrompt()
+		assert.Contains(t, prompt, "Project Context")
+		assert.Contains(t, prompt, "React + FastAPI app.")
+		// Context section must precede the agnt Tools section.
+		contextIdx := strings.Index(prompt, "Project Context")
+		toolsIdx := strings.Index(prompt, "agnt Tools")
+		assert.Less(t, contextIdx, toolsIdx, "context should appear before agnt Tools")
 	})
 
 	t.Run("append system prompt", func(t *testing.T) {

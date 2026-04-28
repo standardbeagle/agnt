@@ -742,67 +742,85 @@ func cleanupTerminal(height int) {
 // so both the unix and windows entrypoints share the same implementation.
 
 // buildAgntSystemPrompt queries the daemon for running services and builds
-// a system prompt to inject into Claude with context about agnt.
+// a system prompt to inject into the AI agent with context about agnt and
+// auto-started services. Mirrors the Unix implementation in run.go.
 func buildAgntSystemPrompt(socketPath string) string {
 	if socketPath == "" {
 		socketPath = daemon.DefaultSocketPath()
 	}
 
-	// Cheat sheet is opt-outable via ai.helpers-cheat-sheet in .agnt.kdl.
-	// Loaded up-front so it participates in both the daemon-connected and
-	// fallback prompt paths below.
-	var cheatSheet string
-	if cwd, err := os.Getwd(); err == nil {
-		if cfg, err := config.LoadAgntConfig(cwd); err == nil && cfg.AI.CheatSheetEnabled() {
-			cheatSheet = "\n" + agntprompt.BuildCheatSheet(tools.DevToolAPIFunctions)
-		}
+	cwd, _ := os.Getwd()
+	agntConfig, err := config.LoadAgntConfig(cwd)
+	if err != nil {
+		debug.Log("run", "unexpected config load error in buildAgntSystemPrompt: %v", err)
+		agntConfig = config.DefaultAgntConfig()
+	}
+
+	if agntConfig.AI != nil && agntConfig.AI.SystemPrompt != "" {
+		return agntConfig.AI.SystemPrompt
+	}
+
+	basePrompt := agntConfig.BuildSystemPrompt()
+	if agntConfig.AI.CheatSheetEnabled() {
+		basePrompt = basePrompt + "\n" + agntprompt.BuildCheatSheet(tools.DevToolAPIFunctions)
 	}
 
 	client := daemon.NewClient(daemon.WithSocketPath(socketPath))
 	if err := client.Connect(); err != nil {
-		return "You are running inside agnt, a tool that gives AI coding agents browser superpowers. The agnt MCP tools (proxy, proc, proxylog, etc.) are available for browser debugging, screenshots, and dev server management." + cheatSheet
+		return basePrompt
 	}
 	defer client.Close()
 
 	var sb strings.Builder
-	sb.WriteString("You are running inside agnt, a tool that gives AI coding agents browser superpowers.\n\n")
+	sb.WriteString(basePrompt)
 
-	procFilter := protocol.DirectoryFilter{Global: true}
+	var hasRuntime bool
+
+	procFilter := protocol.DirectoryFilter{Directory: cwd}
 	procs, err := client.ProcList(procFilter)
 	if err == nil {
 		if processes, ok := procs["processes"].([]interface{}); ok && len(processes) > 0 {
-			sb.WriteString("**Running processes (auto-started by agnt):**\n")
+			if !hasRuntime {
+				sb.WriteString("\n## Current Runtime State\n")
+				sb.WriteString("These processes and proxies are already running — do NOT start them again.\n")
+				hasRuntime = true
+			}
+			sb.WriteString("\n**Running processes**:\n")
 			for _, p := range processes {
 				if pm, ok := p.(map[string]interface{}); ok {
 					id := pm["id"]
 					state := pm["state"]
 					cmd := pm["command"]
-					sb.WriteString(fmt.Sprintf("- %s: %s (state: %s)\n", id, cmd, state))
+					sb.WriteString(fmt.Sprintf("- **%s**: `%s` (state: %s)\n", id, cmd, state))
+					sb.WriteString(fmt.Sprintf("  - Output: `proc {action: \"output\", id: \"%s\"}`\n", id))
+					sb.WriteString(fmt.Sprintf("  - Errors: `get_errors {process_id: \"%s\"}`\n", id))
 				}
 			}
-			sb.WriteString("\n")
 		}
 	}
 
-	proxyFilter := protocol.DirectoryFilter{Global: true}
+	proxyFilter := protocol.DirectoryFilter{Directory: cwd}
 	proxies, err := client.ProxyList(proxyFilter)
 	if err == nil {
 		if proxyList, ok := proxies["proxies"].([]interface{}); ok && len(proxyList) > 0 {
-			sb.WriteString("**Running proxies (auto-started by agnt):**\n")
+			if !hasRuntime {
+				sb.WriteString("\n## Current Runtime State\n")
+				sb.WriteString("These processes and proxies are already running — do NOT start them again.\n")
+				hasRuntime = true
+			}
+			sb.WriteString("\n**Running proxies** (browser traffic being captured):\n")
 			for _, p := range proxyList {
 				if pm, ok := p.(map[string]interface{}); ok {
 					id := pm["id"]
 					target := pm["target_url"]
 					listen := pm["listen_addr"]
-					sb.WriteString(fmt.Sprintf("- %s: %s -> %s\n", id, listen, target))
+					sb.WriteString(fmt.Sprintf("- **%s**: %s → %s\n", id, listen, target))
+					sb.WriteString(fmt.Sprintf("  - Logs: `proxylog {action: \"query\", proxy_id: \"%s\"}`\n", id))
+					sb.WriteString(fmt.Sprintf("  - Errors: `get_errors {proxy_id: \"%s\"}`\n", id))
 				}
 			}
-			sb.WriteString("\n")
 		}
 	}
-
-	sb.WriteString("Use agnt MCP tools (proxy, proc, proxylog, currentpage) for browser debugging, screenshots, JavaScript execution, and dev server management. Do NOT try to start processes or proxies that are already running.")
-	sb.WriteString(cheatSheet)
 
 	return sb.String()
 }
