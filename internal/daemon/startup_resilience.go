@@ -421,6 +421,9 @@ func (d *Daemon) startScriptWithRetry(
 			debug.Log("daemon", "auto-restart: treating quick exit of %s as first crash cycle", processID)
 			return proc, nil
 		}
+		// Process crashed during startup — still fire on-crash hook. proc.Done()
+		// is already closed so the goroutine proceeds immediately.
+		d.watchProcessExit(proc)
 		return nil, startupErr
 	}
 
