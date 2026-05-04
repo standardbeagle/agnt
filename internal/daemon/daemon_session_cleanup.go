@@ -349,6 +349,16 @@ func (d *Daemon) doCleanup(sessionCode string) {
 			d.scriptConfigs.Delete(entry.ProcessID)
 		}
 
+		// Drop any PROC RUN pending entries for this project. The
+		// dependent goroutines exit on the next ctx.Done() / dep wait
+		// failure; the tracker entry is the only durable artefact and
+		// would otherwise leak into the next session's PROC LIST.
+		if d.pendingProcs != nil {
+			for _, pending := range d.pendingProcs.ListByProject(projectPath) {
+				d.pendingProcs.Remove(pending.ProcessID)
+			}
+		}
+
 		// Clear proxy-kind admin entries registered by handleExplicitStart.
 		// StopByProjectPath already stopped the underlying proxies and removed
 		// them from stateMgr above — this sweep drops the admin-surface

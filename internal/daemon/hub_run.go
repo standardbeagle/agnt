@@ -35,7 +35,7 @@ func (d *Daemon) registerAgntCommands() {
 	// admin registry entry alongside autostart scripts.
 	d.hub.RegisterCommand(hubpkg.CommandDefinition{
 		Verb:        "PROC",
-		SubVerbs:    []string{"RUN", "STATUS", "OUTPUT", "STOP", "RESTART", "LIST", "CLEANUP-PORT", "AUTORESTART"},
+		SubVerbs:    []string{"RUN", "RUN-GROUP", "STATUS", "OUTPUT", "STOP", "RESTART", "LIST", "CLEANUP-PORT", "AUTORESTART"},
 		Description: "Manage running processes",
 		Handler:     d.hubHandleProc,
 	})

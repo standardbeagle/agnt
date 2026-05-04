@@ -11,6 +11,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/browser"
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
+	"github.com/standardbeagle/agnt/internal/platform"
 	"github.com/standardbeagle/agnt/internal/proxy"
 )
 
@@ -137,46 +138,76 @@ func (d *Daemon) startupPortCleanup(ctx context.Context) int {
 	cleaned := 0
 
 	for _, port := range ports {
-		pids := config.FindPIDsByPort(ctx, port)
-		var unmanaged []int
-		for _, pid := range pids {
+		linuxPIDs, windowsPIDs := config.FindPIDsByPortTagged(ctx, port)
+		// Linux PIDs go through the managed-PID filter and self-exclusion
+		// gate; Windows PIDs (sourced from netstat.exe on WSL) are never
+		// in our managed set or our process tree, so they bypass both.
+		var unmanagedLinux []int
+		for _, pid := range linuxPIDs {
 			if pid == selfPID || managedPIDs[pid] {
 				continue
 			}
-			unmanaged = append(unmanaged, pid)
+			unmanagedLinux = append(unmanagedLinux, pid)
 		}
-		if len(unmanaged) == 0 {
+		if len(unmanagedLinux) == 0 && len(windowsPIDs) == 0 {
 			continue
 		}
 
-		procName := config.ProcessNameByPID(unmanaged[0])
-		debug.Info("daemon", "startup port cleanup: port %d held by %s (PIDs: %v), killing", port, procName, unmanaged)
+		all := append(append([]int{}, unmanagedLinux...), windowsPIDs...)
+		procName := config.ProcessNameByPID(all[0])
+		debug.Info("daemon", "startup port cleanup: port %d held by %s (PIDs: %v), killing", port, procName, all)
 		d.startupErrorStore.Add(&StartupLogEntry{
 			ProcessID: "",
 			Level:     "info",
 			EventType: "startup_port_cleanup",
-			Message:   fmt.Sprintf("port %d held by %s (PIDs: %v), killing", port, procName, unmanaged),
+			Message:   fmt.Sprintf("port %d held by %s (PIDs: %v), killing", port, procName, all),
 			Port:      port,
 			Timestamp: time.Now(),
 		})
 
-		if killed, err := d.hub.ProcessManager().KillProcessByPort(ctx, port); err != nil {
-			debug.Warn("daemon", "startup port cleanup: failed to kill process on port %d: %v", port, err)
+		var killErrs []string
+
+		// Linux PIDs: ProcessManager re-discovers them via the vendored
+		// Linux-only port lookup, so this is a no-op for Windows-only
+		// holders. Skip when there's nothing on the Linux side to avoid
+		// the redundant scan.
+		if len(unmanagedLinux) > 0 {
+			if killed, err := d.hub.ProcessManager().KillProcessByPort(ctx, port); err != nil {
+				killErrs = append(killErrs, fmt.Sprintf("linux kill: %v", err))
+			} else {
+				debug.Log("daemon", "startup port cleanup: killed %d process(es) on port %d", len(killed), port)
+			}
+		}
+
+		// Windows PIDs: per-PID taskkill.exe via WSL interop. Each
+		// failure is surfaced as a warning event AND captured in the
+		// startupErrorStore so the AI agent sees it.
+		for _, pid := range windowsPIDs {
+			if err := platform.KillWindowsPID(pid); err != nil {
+				msg := fmt.Sprintf("startup port cleanup: failed to kill Windows-side pid %d on port %d: %v", pid, port, err)
+				killErrs = append(killErrs, fmt.Sprintf("windows pid %d: %v", pid, err))
+				debug.Warn("daemon", "%s", msg)
+				if d.alertHub != nil {
+					d.alertHub.Deliver("warning", msg)
+				}
+			}
+		}
+
+		if len(killErrs) > 0 {
 			d.startupErrorStore.Add(&StartupLogEntry{
 				ProcessID: "",
 				Level:     "warning",
 				EventType: "startup_port_cleanup_failed",
-				Message:   fmt.Sprintf("failed to kill process on port %d: %v", port, err),
+				Message:   fmt.Sprintf("failed to kill process on port %d: %s", port, joinErrs(killErrs)),
 				Port:      port,
 				Timestamp: time.Now(),
 			})
-		} else {
-			debug.Log("daemon", "startup port cleanup: killed %d process(es) on port %d", len(killed), port)
-			if waitPortFree(port, 2*time.Second) {
-				cleaned++
-			} else {
-				debug.Warn("daemon", "startup port cleanup: port %d still in use after kill", port)
-			}
+		}
+
+		if waitPortFree(port, 2*time.Second) {
+			cleaned++
+		} else if len(killErrs) == 0 {
+			debug.Warn("daemon", "startup port cleanup: port %d still in use after kill", port)
 		}
 	}
 

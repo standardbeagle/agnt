@@ -1,0 +1,33 @@
+name: Cross-Compile Check
+
+# Catches the class of bug fixed by the run.go/run_windows.go drift —
+# missing platform stubs, divergent signatures, build-constraint typos —
+# before they reach main. Manual review caught the original drift; CI
+# catches the next one.
+#
+# Runs on ubuntu-latest because cross-compilation is a Go toolchain feature
+# that needs no target-platform runner. CGO_ENABLED=0 (set in the Makefile
+# target) is what makes pure-Go cross-compilation work for the pty deps.
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  cross-compile:
+    name: Cross-compile windows/amd64 + darwin/arm64
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.2'
+
+      - name: Verify cross-compile (windows/amd64, darwin/arm64)
+        run: make cross-compile-check

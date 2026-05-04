@@ -1,0 +1,115 @@
+//go:build unix
+
+package main
+
+import (
+	"context"
+	"os"
+	"os/exec"
+	"os/signal"
+	"syscall"
+
+	"github.com/creack/pty"
+	"golang.org/x/term"
+
+	"github.com/standardbeagle/agnt/internal/debug"
+)
+
+// watchResize blocks on SIGWINCH and forwards new dimensions to the
+// platform-agnostic resize handler. Unix uses signal-driven resize
+// (SIGWINCH); the Windows variant in run_windows.go polls because
+// Windows has no SIGWINCH equivalent.
+func watchResize(ctx context.Context, done <-chan struct{}, handle *ptyHandle, rt *pipelineRuntime) {
+	sizeCh := make(chan os.Signal, 1)
+	signal.Notify(sizeCh, syscall.SIGWINCH)
+	defer signal.Stop(sizeCh)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-done:
+			return
+		case <-sizeCh:
+			w, h, err := term.GetSize(int(os.Stdin.Fd()))
+			if err != nil {
+				continue
+			}
+			ch := h
+			if rt.termOverlay != nil && rt.termOverlay.ShowIndicator() && h > 1 {
+				ch = h - 1
+			}
+			if err := handle.Resize(w, ch); err != nil {
+				debug.Warn("run", "error resizing pty: %s", err)
+			}
+			if rt.termOverlay != nil {
+				rt.termOverlay.SetSize(w, h)
+			}
+			if rt.outputFilter != nil {
+				rt.outputFilter.SetSize(w, h)
+			}
+		}
+	}
+}
+
+// handleSIGCHLD implements Ctrl+Z support: when the child stops itself
+// we must restore the terminal to cooked mode, stop ourselves so the
+// shell can take over, and on resume restore raw mode + continue the
+// child. Fundamentally Unix-only — Windows has no SIGCHLD/SIGSTOP.
+func handleSIGCHLD(ctx context.Context, done <-chan struct{}, c *exec.Cmd, ptmx *os.File, oldState *term.State, rt *pipelineRuntime, width, height *int) {
+	sigchldCh := make(chan os.Signal, 1)
+	signal.Notify(sigchldCh, syscall.SIGCHLD)
+	defer signal.Stop(sigchldCh)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-done:
+			return
+		case <-sigchldCh:
+			if c.Process == nil {
+				continue
+			}
+			var ws syscall.WaitStatus
+			pid, err := syscall.Wait4(c.Process.Pid, &ws, syscall.WUNTRACED|syscall.WNOHANG, nil)
+			if err != nil || pid <= 0 {
+				continue
+			}
+			if !ws.Stopped() {
+				continue
+			}
+
+			// Restore terminal to cooked mode so shell can use it.
+			_ = term.Restore(int(os.Stdin.Fd()), oldState)
+
+			// Stop ourselves — the shell will resume us on `fg`.
+			_ = syscall.Kill(syscall.Getpid(), syscall.SIGSTOP)
+
+			// We've been resumed (user ran 'fg').
+			_, _ = term.MakeRaw(int(os.Stdin.Fd()))
+
+			if w, h, err := term.GetSize(int(os.Stdin.Fd())); err == nil {
+				*width, *height = w, h
+				ch := h
+				if rt.termOverlay != nil && rt.termOverlay.ShowIndicator() && h > 1 {
+					ch = h - 1
+				}
+				_ = pty.Setsize(ptmx, &pty.Winsize{Rows: uint16(ch), Cols: uint16(w)})
+				if rt.termOverlay != nil {
+					rt.termOverlay.SetSize(w, h)
+				}
+				if rt.outputFilter != nil {
+					rt.outputFilter.SetSize(w, h)
+				}
+			}
+			_ = syscall.Kill(c.Process.Pid, syscall.SIGCONT)
+			if rt.termOverlay != nil && showIndicator {
+				if rt.outputFilter != nil {
+					rt.outputFilter.EnforceScrollRegion()
+				}
+				rt.termOverlay.Redraw()
+			}
+		}
+	}
+}

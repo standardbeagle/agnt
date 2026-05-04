@@ -232,6 +232,17 @@
 
     // Send initial state to agent
     sendDesignState();
+
+    // Dispatch palette-show event so the floating context palette (palette.js)
+    // can attach to this element. Decoupled from palette internals — any
+    // module that wants to drive the palette can dispatch the same event.
+    try {
+      document.dispatchEvent(new CustomEvent('devtool:palette-show', {
+        detail: { element: element, source: 'design' }
+      }));
+    } catch (e) {
+      // CustomEvent constructor unsupported in some legacy IE — degrade silently.
+    }
   }
 
   // Generate XPath for element

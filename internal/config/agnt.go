@@ -11,6 +11,7 @@ import (
 	kdl "github.com/sblinch/kdl-go"
 
 	"github.com/standardbeagle/agnt/internal/debug"
+	"github.com/standardbeagle/agnt/internal/platform"
 )
 
 // AgntConfigFileName is the name of the agnt configuration file.
@@ -268,7 +269,14 @@ type ScriptLifecycleHooks struct {
 }
 
 // ResolveShell returns the shell command and arguments for executing a "run" command.
-// Priority: explicit Shell/ShellArgs config > platform default.
+// Priority: explicit Shell/ShellArgs config > WSL Windows-path detection > platform default.
+//
+// The WSL Windows-path branch fixes the silent-failure case where the script
+// lives on the Windows filesystem (cwd is /mnt/c/... or run is a .cmd / .bat /
+// powershell-only command) but the daemon is running under WSL Linux. Without
+// this branch the daemon hands the script to `sh -c`, sh fails to interpret
+// Windows path separators or .cmd/.bat semantics, and the failure surfaces as
+// a confusing "command not found" deep in the script.
 func (s *ScriptConfig) ResolveShell() (shell string, shellArgs []string) {
 	if s.Shell != "" {
 		shell = s.Shell
@@ -289,6 +297,15 @@ func (s *ScriptConfig) ResolveShell() (shell string, shellArgs []string) {
 			}
 		}
 		return shell, shellArgs
+	}
+
+	// WSL with a Windows-path script — pick cmd.exe so .cmd/.bat and
+	// Windows path separators work. Check Cwd first (most reliable
+	// signal: a script rooted in /mnt/c/... is almost certainly Windows
+	// software), then the run command itself (catches `C:\tools\foo.cmd`
+	// style absolute invocations even when Cwd is Linux-side).
+	if platform.ShouldUseWindowsShell(s.Cwd) || platform.ShouldUseWindowsShell(s.Run) {
+		return "cmd.exe", []string{"/c", s.Run}
 	}
 
 	// Platform default
@@ -849,6 +866,29 @@ func (c *AgntConfig) BuildSystemPrompt() string {
 
 	// Base agnt description
 	sb.WriteString(`You have access to agnt, a tool that gives AI coding agents browser superpowers.
+
+## CRITICAL: Use proc for dev servers and long-lived builds
+
+**Never run dev servers or long-lived builds via the Bash tool.** Use the agnt ` + "`proc`" + ` MCP tool so the daemon can stream output, capture errors, and surface logs to the browser.
+
+Bad (blocks the agent loop, no live output, no agnt integration):
+
+` + "```plain" + `
+Bash: npm run dev
+Bash: go run ./cmd/server
+Bash: cargo watch -x run
+Bash: make build
+` + "```" + `
+
+Good (returns immediately, output streamed and captured):
+
+` + "```plain" + `
+proc {action: "run", id: "dev", command: "npm run dev"}
+proc {action: "output", id: "dev"}     // pull recent output lines
+watch {target: "process", process_id: "dev"}  // get a streaming monitor command for live tailing
+` + "```" + `
+
+Pattern: ` + "`proc run`" + ` to start, ` + "`proc output`" + ` to inspect, ` + "`watch`" + ` to follow live, ` + "`proc stop`" + ` to terminate. The ` + "`agnt hook check-bash`" + ` interceptor will block raw ` + "`npm run`" + `/` + "`yarn`" + `/` + "`go run`" + `/etc. via the PreToolUse hook when wired into ` + "`~/.claude/settings.json`" + `.
 
 ## agnt Tools
 

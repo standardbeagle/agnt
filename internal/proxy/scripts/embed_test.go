@@ -49,6 +49,7 @@ func TestModuleDependencyOrder(t *testing.T) {
 		"interaction": interactionJS, "mutation": mutationJS,
 		"toast": toastJS, "voice": voiceJS,
 		"sketch": sketchJS, "design": designJS,
+		"palette":      paletteJS,
 		"style-editor": styleEditorJS, "indicator": indicatorJS,
 		"snapshot-helper": snapshotHelperJS, "diagnostics": diagnosticsJS,
 		"session": sessionJS, "store": storeJS,

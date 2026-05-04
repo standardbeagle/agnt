@@ -185,7 +185,7 @@ func (d *Daemon) RunAutostartAsync(
 			}
 
 		case "auto-kill":
-			killResults := killPortBlockers(ctx, d.hub.ProcessManager(), conflicts)
+			killResults := killPortBlockers(ctx, d.hub.ProcessManager(), d.alertHub, conflicts)
 			for _, kr := range killResults {
 				if kr.Killed {
 					result.PortsCleared = append(result.PortsCleared, kr.PortConflict)

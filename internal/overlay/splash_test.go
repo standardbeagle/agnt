@@ -242,3 +242,28 @@ func TestProcessStateIconAnimationFrameCycling(t *testing.T) {
 		t.Log("restarting frames 0 and 1 happen to be the same")
 	}
 }
+
+// TestDefaultSplashIncludesProcFirstTips locks in the proc-first rotation
+// entries that the Dart task acceptance criterion calls for. The splash is
+// the developer's idle-time read; if it never mentions proc, the agent's
+// human partner never learns the contract either.
+func TestDefaultSplashIncludesProcFirstTips(t *testing.T) {
+	joined := strings.Join(defaultSplashMessages, "\n")
+	wantSubstrings := []string{
+		"proc run",    // start path
+		"proc output", // inspect path
+		"watch",       // live tail path
+	}
+	for _, want := range wantSubstrings {
+		if !strings.Contains(joined, want) {
+			t.Errorf("default splash messages should mention %q (proc-first guidance); got:\n%s",
+				want, joined)
+		}
+	}
+	// Belt-and-braces: at least one tip should explicitly warn against
+	// `npm run dev` in plain Bash so the contract is unambiguous.
+	if !strings.Contains(joined, "npm run dev") {
+		t.Errorf("at least one splash tip should call out `npm run dev` as the anti-pattern; got:\n%s",
+			joined)
+	}
+}

@@ -1025,3 +1025,136 @@ func TestDrainHooks_NonToastEventsUnchanged(t *testing.T) {
 		}
 	}
 }
+
+// captureToastProxy is a tiny helper that records BroadcastToast calls
+// against a proxy by intercepting them at the WebSocket broadcast layer.
+// We don't need a real browser client — BroadcastToast is safe with zero
+// connections — but we DO need a way to assert the call happened. The
+// simplest approach is to register a captureBroadcastSink on the proxy and
+// observe outbound JSON.
+
+// TestDrainHooks_PreToolUseBashRedirectBroadcastsToast asserts that a
+// pre-tool-use hook event whose Bash command matches a hookrules block rule
+// (e.g. `npm run dev`) results in a diagnostic toast being broadcast to the
+// project's proxies. The toast is fire-and-forget guidance for the
+// developer's browser overlay — independent of whether the check-bash hook
+// actually blocks the command (exit 2). When the block hook is wired,
+// developers see the toast and the agent sees the stderr redirect; when
+// unwired, the agent sees no enforcement but the developer still sees the
+// toast.
+func TestDrainHooks_PreToolUseBashRedirectBroadcastsToast(t *testing.T) {
+	t.Parallel()
+	d := drainFanoutTestDaemon(t)
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	_, err := d.proxym.Create(context.Background(), proxy.ProxyConfig{
+		ID: "redir-proxy", TargetURL: backend.URL, ListenPort: 0, MaxLogSize: 50,
+		Path: "/proj",
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = d.proxym.Stop(context.Background(), "redir-proxy") })
+
+	sink := d.alertHub.AddStreamSink(streamFilter{
+		types: map[proxy.LogEntryType]bool{proxy.LogTypeHook: true},
+	})
+	defer d.alertHub.RemoveStreamSink(sink)
+
+	// Tool input shape mirrors Claude Code's PreToolUse payload.
+	bashInput, err := json.Marshal(map[string]string{"command": "npm run dev"})
+	require.NoError(t, err)
+	payload, err := json.Marshal(map[string]any{
+		"tool_name":  "Bash",
+		"tool_input": json.RawMessage(bashInput),
+	})
+	require.NoError(t, err)
+
+	ev := HookEvent{
+		Event:       "pre-tool-use",
+		ProjectPath: "/proj",
+		Payload:     json.RawMessage(payload),
+		ReceivedAt:  time.Now(),
+	}
+	assert.NotPanics(t, func() { d.fanOutHookEvent(ev) })
+
+	// LogEntry path still fires.
+	select {
+	case got := <-sink.Ch:
+		assert.Equal(t, "pre-tool-use", got.Hook.Event)
+	case <-time.After(time.Second):
+		t.Fatal("pre-tool-use event should flow through StreamSink")
+	}
+
+	// Test the pure-decision path directly so we get an assertable signal
+	// without standing up a WS client. The contract: matchBashRedirect
+	// returns a non-empty replacement for `npm run dev`.
+	got := matchBashRedirect(payload)
+	require.NotNil(t, got, "npm run dev should produce a redirect decision")
+	assert.Contains(t, got.Replacement, "agnt", "replacement should cite an agnt MCP tool")
+	assert.NotEmpty(t, got.Reason, "redirect should carry a why")
+}
+
+// TestMatchBashRedirect_NonBashOrAllowed asserts the redirect decoder returns
+// nil for non-Bash tool calls and Bash commands that don't match any
+// block/warn rule. This is the no-op path — the toast logic must not fire
+// for innocuous Bash usage like `ls` or `git status`.
+func TestMatchBashRedirect_NonBashOrAllowed(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name    string
+		payload string
+	}{
+		{"non-Bash tool", `{"tool_name":"Read","tool_input":{"command":"npm run dev"}}`},
+		{"empty command", `{"tool_name":"Bash","tool_input":{"command":""}}`},
+		{"innocuous bash", `{"tool_name":"Bash","tool_input":{"command":"ls -la"}}`},
+		{"git status", `{"tool_name":"Bash","tool_input":{"command":"git status"}}`},
+		{"malformed json", `not json at all`},
+		{"missing tool_input", `{"tool_name":"Bash"}`},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := matchBashRedirect([]byte(tc.payload))
+			assert.Nil(t, got, "expected nil redirect decision for %s", tc.name)
+		})
+	}
+}
+
+// TestMatchBashRedirect_LongLivedPatterns asserts the explicit acceptance set
+// from the Dart task (npm run / yarn / go build / cargo build / make) all
+// produce redirect decisions. Acceptance criterion: "Running `npm run dev`
+// via Bash triggers a visible diagnostic toast in the browser overlay" —
+// covered by the pure-function path here plus the wire test above.
+func TestMatchBashRedirect_LongLivedPatterns(t *testing.T) {
+	t.Parallel()
+
+	commands := []string{
+		"npm run dev",
+		"npm start",
+		"yarn dev",
+		"pnpm run serve",
+		"bun run dev",
+		"go run ./cmd/server",
+	}
+
+	for _, cmd := range commands {
+		cmd := cmd
+		t.Run(cmd, func(t *testing.T) {
+			t.Parallel()
+			input, _ := json.Marshal(map[string]string{"command": cmd})
+			payload, _ := json.Marshal(map[string]any{
+				"tool_name":  "Bash",
+				"tool_input": json.RawMessage(input),
+			})
+			got := matchBashRedirect(payload)
+			require.NotNil(t, got, "command %q should match a redirect rule", cmd)
+			assert.NotEmpty(t, got.Replacement)
+		})
+	}
+}

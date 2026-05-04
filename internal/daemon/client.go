@@ -189,6 +189,12 @@ type ProcRunConfig struct {
 	URLMatchers []string          `json:"url_matchers,omitempty"`
 	AutoRestart bool              `json:"auto_restart,omitempty"`
 	ProjectPath string            `json:"project_path,omitempty"`
+	// DependsOn lists script names this process must wait for before
+	// launching. Empty means start immediately.
+	DependsOn []string `json:"depends_on,omitempty"`
+	// DependsOnTimeout is the per-process upper bound on the dep wait
+	// in seconds. Zero (or omitted) → 30s default.
+	DependsOnTimeout int `json:"depends_on_timeout,omitempty"`
 }
 
 // ProcRun starts an admin-aware process via PROC RUN. Unlike the top-level
@@ -197,6 +203,24 @@ type ProcRunConfig struct {
 // registry entry visible in SCRIPT LIST and the overlay admin screen.
 func (c *Client) ProcRun(name string, cfg ProcRunConfig) (map[string]interface{}, error) {
 	return c.conn.Request(protocol.VerbProc, "RUN", name).WithJSON(cfg).JSON()
+}
+
+// ProcRunGroupConfig holds the JSON payload for PROC RUN-GROUP. Mirrors
+// the procRunGroupPayload struct in hub_proc.go.
+type ProcRunGroupConfig struct {
+	ProjectPath      string         `json:"project_path,omitempty"`
+	DependsOnTimeout int            `json:"depends_on_timeout,omitempty"`
+	Processes        []GroupProcess `json:"processes"`
+}
+
+// ProcRunGroup launches a multi-process startup group via PROC RUN-GROUP.
+// Cycle detection runs before any process launches; on cycle detection
+// the request returns ErrInvalidArgs with the cycle description. Per-
+// process kickoff results are returned in declaration order; agents poll
+// PROC STATUS to observe individual processes transitioning from
+// "pending" → "starting" → "running".
+func (c *Client) ProcRunGroup(cfg ProcRunGroupConfig) (map[string]interface{}, error) {
+	return c.conn.Request(protocol.VerbProc, protocol.SubVerbRunGroup).WithJSON(cfg).JSON()
 }
 
 // ProcStatus gets the status of a process.

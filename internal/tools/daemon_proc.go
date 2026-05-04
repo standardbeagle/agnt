@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/daemon"
@@ -165,8 +166,16 @@ func (dt *DaemonTools) makeProcHandler() func(context.Context, *mcp.CallToolRequ
 			return dt.handleScriptOutput(input)
 		case "script_history":
 			return dt.handleScriptHistory(input)
+		case "snapshot":
+			return dt.handleProcSnapshot(input)
+		case "run":
+			return dt.handleProcRun(input)
+		case "run_group":
+			return dt.handleProcRunGroup(input)
+		case "wait":
+			return dt.handleProcWait(input)
 		default:
-			return errorResult(fmt.Sprintf("unknown action %q. Use: status, output, find, stop, restart, list, cleanup_port, autorestart, scripts, script_output, script_history", input.Action)), ProcOutput{}, nil
+			return errorResult(fmt.Sprintf("unknown action %q. Use: status, output, find, stop, restart, list, cleanup_port, autorestart, scripts, script_output, script_history, snapshot, run, run_group, wait", input.Action)), ProcOutput{}, nil
 		}
 	}
 }
@@ -193,6 +202,18 @@ func (dt *DaemonTools) handleProcStatus(input ProcInput) (*mcp.CallToolResult, P
 	if out.ProcessID == "" {
 		out.ProcessID = getString(result, "id")
 	}
+	// Surface waiting_for for pending processes (or briefly-still-pending
+	// ManagedProcess entries that haven't cleared their tracker entry).
+	if waitingFor, ok := result["waiting_for"].([]interface{}); ok {
+		for _, w := range waitingFor {
+			if s, ok := w.(string); ok {
+				out.WaitingFor = append(out.WaitingFor, s)
+			}
+		}
+	}
+	if reason := getString(result, "failure_reason"); reason != "" {
+		out.FailureReason = reason
+	}
 	populateLastExitFields(&out, result)
 
 	// Classify the process role from its command string.
@@ -209,8 +230,14 @@ func (dt *DaemonTools) handleProcStatus(input ProcInput) (*mcp.CallToolResult, P
 }
 
 func (dt *DaemonTools) handleProcOutput(input ProcInput) (*mcp.CallToolResult, ProcOutput, error) {
+	// Multi-stream path: process_ids array beats the singular process_id.
+	// Empty arrays still fall through to the single-stream path (so a
+	// caller passing process_ids=[] gets the same error as no IDs at all).
+	if len(input.ProcessIDs) > 0 {
+		return dt.handleProcOutputMulti(input)
+	}
 	if input.ProcessID == "" {
-		return errorResult("process_id required for output"), ProcOutput{}, nil
+		return errorResult("process_id (or process_ids) required for output"), ProcOutput{}, nil
 	}
 
 	filter := protocol.OutputFilter{
@@ -229,19 +256,127 @@ func (dt *DaemonTools) handleProcOutput(input ProcInput) (*mcp.CallToolResult, P
 			scriptResult, scriptErr := dt.client.ScriptOutput(input.ProcessID, projectPath, input.Tail)
 			if scriptErr == nil {
 				lines := getStringSlice(scriptResult, "lines")
-				return nil, ProcOutput{
+				out := ProcOutput{
 					ProcessID: input.ProcessID,
 					Output:    strings.Join(lines, "\n"),
 					Lines:     len(lines),
-				}, nil
+				}
+				// Single-stream extract: scan the fetched lines and surface
+				// signals at the top level (no MultiStream populated).
+				if len(input.Extract) > 0 {
+					sig := extractSignals(lines, input.Extract)
+					out.Signals = &sig
+					out.Output = appendSingleStreamBuildErrors(out.Output, sig.BuildErrors)
+				}
+				return nil, out, nil
 			}
 		}
 		return formatDaemonError(err, "proc"), ProcOutput{}, nil
 	}
 
-	return nil, ProcOutput{
+	out := ProcOutput{
 		ProcessID: input.ProcessID,
 		Output:    output,
+	}
+	if len(input.Extract) > 0 {
+		sig := extractSignals(strings.Split(output, "\n"), input.Extract)
+		out.Signals = &sig
+		out.Output = appendSingleStreamBuildErrors(out.Output, sig.BuildErrors)
+	}
+	return nil, out, nil
+}
+
+// handleProcOutputMulti fans out a per-process ProcOutput call for each
+// ID in ProcessIDs and assembles the interleaved/NDJSON response.
+//
+// Failures are non-fatal per process — a missing process_id surfaces as
+// "[id] (error: …)" in the compact output, not a tool-level error. This
+// matches the snapshot tool's degraded-but-useful posture: one bad ID
+// shouldn't blackhole the whole multi-stream pull.
+//
+// All fetches run in parallel — N goroutines, N being typically 2-3.
+// The same per-process filter applies to every stream (stream/tail/head/
+// grep/grepv). A future enhancement could let each ID carry its own
+// filter, but the spec doesn't require it.
+func (dt *DaemonTools) handleProcOutputMulti(input ProcInput) (*mcp.CallToolResult, ProcOutput, error) {
+	filter := protocol.OutputFilter{
+		Stream: input.Stream,
+		Tail:   input.Tail,
+		Head:   input.Head,
+		Grep:   input.Grep,
+		GrepV:  input.GrepV,
+	}
+
+	// Pre-allocate the streams slice in input order so the agent gets
+	// stable positional output across calls (parallel goroutines write
+	// into their own index, no slice-append race).
+	streams := make([]processStream, len(input.ProcessIDs))
+	var wg sync.WaitGroup
+	for i, id := range input.ProcessIDs {
+		i, id := i, id // loop-var capture
+		streams[i].ProcessID = id
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			output, err := dt.client.ProcOutput(id, filter)
+			if err != nil {
+				streams[i].Err = err.Error()
+				return
+			}
+			// Split into lines; drop trailing empty from final newline.
+			lines := strings.Split(output, "\n")
+			if len(lines) > 0 && lines[len(lines)-1] == "" {
+				lines = lines[:len(lines)-1]
+			}
+			streams[i].Lines = lines
+		}()
+	}
+	wg.Wait()
+
+	out := assembleMultiStreamOutput(streams, input.Extract, input.Raw)
+	return nil, out, nil
+}
+
+// handleProcWait handles proc {action:"wait", process_id, signal(s),
+// timeout, poll_ms}. Polls the daemon's ProcOutput until any of the
+// requested signals appears in the output or the timeout elapses.
+//
+// Per the spec, timeout is NOT an error — the agent gets a structured
+// result with timeout=true and decides what to do. Tool-level errors
+// only fire on validation (missing process_id, no signal requested) or
+// catastrophic IPC failure that prevents even the first poll.
+func (dt *DaemonTools) handleProcWait(input ProcInput) (*mcp.CallToolResult, ProcOutput, error) {
+	if input.ProcessID == "" {
+		return errorResult("process_id required for wait"), ProcOutput{}, nil
+	}
+	wanted := input.Signals
+	if len(wanted) == 0 && input.Signal != "" {
+		wanted = []string{input.Signal}
+	}
+	if len(wanted) == 0 {
+		return errorResult("signal (or signals) required for wait"), ProcOutput{}, nil
+	}
+
+	// We always pull from the tail of the buffer — long-running processes
+	// can have huge logs, scanning everything every poll is wasteful. 200
+	// lines is enough to catch the canonical ready/error markers without
+	// blowing past the 256KB output buffer.
+	filter := protocol.OutputFilter{
+		Stream: "combined",
+		Tail:   200,
+	}
+	fetch := func() ([]string, error) {
+		out, err := dt.client.ProcOutput(input.ProcessID, filter)
+		if err != nil {
+			return nil, err
+		}
+		return strings.Split(out, "\n"), nil
+	}
+
+	res := waitForSignal(fetch, wanted, input.TimeoutMs, input.PollMs)
+	return nil, ProcOutput{
+		ProcessID: input.ProcessID,
+		Wait:      &res,
 	}, nil
 }
 
@@ -436,6 +571,15 @@ func (dt *DaemonTools) handleProcList(input ProcInput) (*mcp.CallToolResult, Pro
 					entry.OutputHint = strings.ReplaceAll(role.OutputHint, "<id>", id)
 				}
 
+				// Surface waiting_for for processes still gated on deps.
+				if waitingFor, ok := pm["waiting_for"].([]interface{}); ok {
+					for _, w := range waitingFor {
+						if s, ok := w.(string); ok {
+							entry.WaitingFor = append(entry.WaitingFor, s)
+						}
+					}
+				}
+
 				populateLastExitFieldsEntry(&entry, pm)
 				output.Processes = append(output.Processes, entry)
 			}
@@ -474,6 +618,138 @@ func (dt *DaemonTools) handleProcCleanupPort(input ProcInput) (*mcp.CallToolResu
 	}
 
 	return nil, output, nil
+}
+
+// handleProcRun handles proc {action:"run", id:..., command:..., depends_on:[...]}.
+// Routes through PROC RUN on the daemon so the new process appears in
+// SCRIPT LIST and the overlay admin screen, with optional dependency
+// gating via the daemon-side pending tracker.
+func (dt *DaemonTools) handleProcRun(input ProcInput) (*mcp.CallToolResult, ProcOutput, error) {
+	id := input.ID
+	if id == "" {
+		id = input.ScriptName
+	}
+	if id == "" {
+		return errorResult("proc run: id required (or pass script_name)"), ProcOutput{}, nil
+	}
+	if input.Run == "" && input.Command == "" {
+		return errorResult("proc run: requires `run` or `command`"), ProcOutput{}, nil
+	}
+
+	projectPath := input.Path
+	if projectPath == "" {
+		projectPath = getProjectPath()
+	}
+	absPath, err := filepath.Abs(projectPath)
+	if err != nil {
+		return errorResult(fmt.Sprintf("proc run: failed to resolve path: %v", err)), ProcOutput{}, nil
+	}
+
+	cfg := daemon.ProcRunConfig{
+		Run:              input.Run,
+		Command:          input.Command,
+		Args:             input.Args,
+		Cwd:              input.Cwd,
+		Env:              input.Env,
+		URLMatchers:      input.URLMatchers,
+		AutoRestart:      input.AutoRestart,
+		ProjectPath:      absPath,
+		DependsOn:        input.DependsOn,
+		DependsOnTimeout: input.DependsOnTimeout,
+	}
+
+	result, err := dt.client.ProcRun(id, cfg)
+	if err != nil {
+		return formatDaemonError(err, "proc"), ProcOutput{}, nil
+	}
+
+	out := ProcOutput{
+		ProcessID: getString(result, "process_id"),
+		State:     getString(result, "state"),
+	}
+	if waitingFor, ok := result["waiting_for"].([]interface{}); ok {
+		for _, w := range waitingFor {
+			if s, ok := w.(string); ok {
+				out.WaitingFor = append(out.WaitingFor, s)
+			}
+		}
+	}
+	return nil, out, nil
+}
+
+// handleProcRunGroup handles proc {action:"run_group", processes:[...]}.
+// Routes through PROC RUN-GROUP on the daemon. Cycle detection runs
+// before any process launches; if the dep graph has a cycle the call
+// returns an error and no process is started.
+func (dt *DaemonTools) handleProcRunGroup(input ProcInput) (*mcp.CallToolResult, ProcOutput, error) {
+	if len(input.Processes) == 0 {
+		return errorResult("proc run_group: processes list cannot be empty"), ProcOutput{}, nil
+	}
+
+	projectPath := input.Path
+	if projectPath == "" {
+		projectPath = getProjectPath()
+	}
+	absPath, err := filepath.Abs(projectPath)
+	if err != nil {
+		return errorResult(fmt.Sprintf("proc run_group: failed to resolve path: %v", err)), ProcOutput{}, nil
+	}
+
+	groupProcs := make([]daemon.GroupProcess, 0, len(input.Processes))
+	for i, gp := range input.Processes {
+		if gp.ID == "" {
+			return errorResult(fmt.Sprintf("proc run_group: process[%d] missing id", i)), ProcOutput{}, nil
+		}
+		if gp.Run == "" && gp.Command == "" {
+			return errorResult(fmt.Sprintf("proc run_group: process %q requires `run` or `command`", gp.ID)), ProcOutput{}, nil
+		}
+		groupProcs = append(groupProcs, daemon.GroupProcess{
+			Name:        gp.ID,
+			Run:         gp.Run,
+			Command:     gp.Command,
+			Args:        gp.Args,
+			Cwd:         gp.Cwd,
+			Env:         gp.Env,
+			URLMatchers: gp.URLMatchers,
+			AutoRestart: gp.AutoRestart,
+			DependsOn:   gp.DependsOn,
+		})
+	}
+
+	cfg := daemon.ProcRunGroupConfig{
+		ProjectPath:      absPath,
+		DependsOnTimeout: input.DependsOnTimeout,
+		Processes:        groupProcs,
+	}
+
+	result, err := dt.client.ProcRunGroup(cfg)
+	if err != nil {
+		return formatDaemonError(err, "proc"), ProcOutput{}, nil
+	}
+
+	out := ProcOutput{
+		Count: getInt(result, "count"),
+	}
+	if procs, ok := result["processes"].([]interface{}); ok {
+		for _, p := range procs {
+			if pm, ok := p.(map[string]interface{}); ok {
+				gpr := GroupProcessResult{
+					ProcessID: getString(pm, "process_id"),
+					State:     getString(pm, "state"),
+					Error:     getString(pm, "error"),
+				}
+				if waitingFor, ok := pm["waiting_for"].([]interface{}); ok {
+					for _, w := range waitingFor {
+						if s, ok := w.(string); ok {
+							gpr.WaitingFor = append(gpr.WaitingFor, s)
+						}
+					}
+				}
+				out.GroupResults = append(out.GroupResults, gpr)
+			}
+		}
+	}
+	return nil, out, nil
 }
 
 func (dt *DaemonTools) handleScriptList(input ProcInput) (*mcp.CallToolResult, ProcOutput, error) {

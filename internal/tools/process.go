@@ -36,6 +36,34 @@ type RunInput struct {
 	ID            string   `json:"id,omitempty" jsonschema:"Process ID (auto-generated if empty)"`
 	Mode          RunMode  `json:"mode,omitempty" jsonschema:"Execution mode: background (default), foreground, foreground-raw"`
 	NoAutoRestart bool     `json:"no_auto_restart,omitempty" jsonschema:"Disable automatic restart (auto-restart is enabled by default for background processes)"`
+	// Dependency-ordered start: hold the process in pending state until
+	// each named dependency reaches a ready signal (URL detected or port
+	// bound). On dependency timeout the process transitions to failed
+	// with reason "dependency_timeout:<name>". Default per-dep timeout
+	// is 30s; override via DependsOnTimeout (seconds).
+	DependsOn        []string `json:"depends_on,omitempty" jsonschema:"Process IDs this process must wait on before launching"`
+	DependsOnTimeout int      `json:"depends_on_timeout,omitempty" jsonschema:"Per-process dep-wait timeout in seconds (default 30, negative for unbounded)"`
+}
+
+// GroupProcessInput defines a single process inside a run_group action.
+type GroupProcessInput struct {
+	ID          string            `json:"id" jsonschema:"Process ID (required, unique within the group)"`
+	Run         string            `json:"run,omitempty" jsonschema:"Shell command string (mutually exclusive with command)"`
+	Command     string            `json:"command,omitempty" jsonschema:"Executable (mutually exclusive with run)"`
+	Args        []string          `json:"args,omitempty" jsonschema:"Args appended to command"`
+	Cwd         string            `json:"cwd,omitempty" jsonschema:"Working directory (defaults to project path)"`
+	Env         map[string]string `json:"env,omitempty" jsonschema:"Extra env vars merged into the process environment"`
+	URLMatchers []string          `json:"url_matchers,omitempty" jsonschema:"Custom URL detection patterns"`
+	AutoRestart bool              `json:"auto_restart,omitempty" jsonschema:"Restart automatically on crash"`
+	DependsOn   []string          `json:"depends_on,omitempty" jsonschema:"Process IDs this process must wait on before launching"`
+}
+
+// GroupProcessResult is the per-process outcome reported by a run_group.
+type GroupProcessResult struct {
+	ProcessID  string   `json:"process_id"`
+	State      string   `json:"state"` // "starting", "pending", "failed"
+	WaitingFor []string `json:"waiting_for,omitempty"`
+	Error      string   `json:"error,omitempty"`
 }
 
 // RunOutput defines output for run.
@@ -54,8 +82,21 @@ type RunOutput struct {
 
 // ProcInput defines input for the proc tool.
 type ProcInput struct {
-	Action    string `json:"action" jsonschema:"Action: status, output, find, stop, restart, list, cleanup_port, autorestart, scripts, script_output, script_history"`
-	ProcessID string `json:"process_id,omitempty" jsonschema:"Process ID (required for status/output/stop/restart/autorestart/find)"`
+	Action    string `json:"action" jsonschema:"Action: status, output, find, stop, restart, list, cleanup_port, autorestart, scripts, script_output, script_history, run, run_group, snapshot, wait"`
+	ProcessID string `json:"process_id,omitempty" jsonschema:"Process ID (required for status/output/stop/restart/autorestart/find/wait)"`
+	// Multi-stream output: when set on action="output", the handler fans
+	// out a per-process fetch and returns interleaved (or NDJSON) lines
+	// tagged with process_id. Wins over the singular ProcessID.
+	ProcessIDs []string `json:"process_ids,omitempty" jsonschema:"For output: list of process IDs to pull from in one call (interleaved output)"`
+	// Extract: signal names to scan for in the output ("url","error",
+	// "warning","ready","port"). Returned in MultiStream[*].Signals.
+	Extract []string `json:"extract,omitempty" jsonschema:"For output: signal names to extract (url, error, warning, ready, port)"`
+	// Wait action: signal name(s) to wait on. `Signal` is a single name
+	// for back-compat; `Signals` is the multi-name "first wins" form.
+	Signal    string   `json:"signal,omitempty" jsonschema:"For wait: signal name to wait on (ready, error, warning, url, port)"`
+	Signals   []string `json:"signals,omitempty" jsonschema:"For wait: signal names to wait on — first match wins"`
+	TimeoutMs int      `json:"timeout,omitempty" jsonschema:"For wait: max ms to wait (default 30000)"`
+	PollMs    int      `json:"poll_ms,omitempty" jsonschema:"For wait: poll interval in ms (default 200)"`
 	// Script actions
 	ScriptName string `json:"script_name,omitempty" jsonschema:"Script name (required for script_output/script_history)"`
 	// Output filters
@@ -76,6 +117,25 @@ type ProcInput struct {
 	AutoRestartEnable bool `json:"auto_restart_enable,omitempty" jsonschema:"For autorestart: enable (true) or disable (false)"`
 	MaxRestarts       int  `json:"max_restarts,omitempty" jsonschema:"For autorestart: max restarts per minute (default: 5, 0=unlimited)"`
 	OnlyOnError       bool `json:"only_on_error,omitempty" jsonschema:"For autorestart: only restart on non-zero exit code"`
+	// Snapshot options
+	Raw bool `json:"raw,omitempty" jsonschema:"For snapshot: return structured JSON only, skip the compact text rendering"`
+
+	// run / run_group action fields. The `run` action launches a single
+	// admin-aware process (visible in SCRIPT LIST) with optional
+	// dependency gating; `run_group` launches multiple processes with
+	// declared deps in topologically sorted order.
+	ID               string              `json:"id,omitempty" jsonschema:"For run: process ID (required for run; defaults to script_name when omitted)"`
+	Run              string              `json:"run,omitempty" jsonschema:"For run: shell command string (mutually exclusive with command)"`
+	Command          string              `json:"command,omitempty" jsonschema:"For run: executable (mutually exclusive with run)"`
+	Args             []string            `json:"args,omitempty" jsonschema:"For run: command args"`
+	Cwd              string              `json:"cwd,omitempty" jsonschema:"For run: working directory"`
+	Env              map[string]string   `json:"env,omitempty" jsonschema:"For run: env vars merged into the process"`
+	URLMatchers      []string            `json:"url_matchers,omitempty" jsonschema:"For run: custom URL detection patterns"`
+	AutoRestart      bool                `json:"auto_restart,omitempty" jsonschema:"For run: restart on crash"`
+	Path             string              `json:"path,omitempty" jsonschema:"For run/run_group: project directory (defaults to cwd)"`
+	DependsOn        []string            `json:"depends_on,omitempty" jsonschema:"For run: process IDs this process must wait on before launching"`
+	DependsOnTimeout int                 `json:"depends_on_timeout,omitempty" jsonschema:"For run/run_group: dep-wait timeout in seconds (default 30, negative for unbounded)"`
+	Processes        []GroupProcessInput `json:"processes,omitempty" jsonschema:"For run_group: list of processes to launch with topo-sorted dep ordering"`
 }
 
 // ProcOutput defines output for proc.
@@ -115,6 +175,24 @@ type ProcOutput struct {
 	// For cleanup_port
 	KilledPIDs []int  `json:"killed_pids,omitempty"`
 	Message    string `json:"message,omitempty"`
+	// For snapshot — unified dev-environment status. Populated only by
+	// proc {action: "snapshot"}; nil for every other action.
+	Snapshot *SnapshotData `json:"snapshot,omitempty"`
+	// For multi-stream `proc output` (when process_ids is set) — per-process
+	// rows with extracted signals. Each row holds the line slice for that
+	// process and an optional signals payload (when `extract` was requested).
+	// nil for the single-process variant of `proc output`.
+	MultiStream []processStream `json:"multi_stream,omitempty"`
+	// For single-stream `proc output` with extract — top-level signals
+	// scanned from the fetched output. nil when extract not requested.
+	Signals *SignalSet `json:"signals,omitempty"`
+	// For `proc wait` — populated when action="wait". nil otherwise.
+	Wait *WaitResult `json:"wait,omitempty"`
+	// For run / run_group: dependency-gated launch state. WaitingFor lists
+	// the unresolved dep names while the process is in pending state.
+	WaitingFor    []string             `json:"waiting_for,omitempty"`
+	GroupResults  []GroupProcessResult `json:"group_results,omitempty"`
+	FailureReason string               `json:"failure_reason,omitempty"` // e.g. "dependency_timeout:db"
 }
 
 // ProcEntry is a process in the list.
@@ -136,6 +214,8 @@ type ProcEntry struct {
 	LastExitReason string `json:"last_exit_reason,omitempty"`
 	LastUptime     string `json:"last_uptime,omitempty"`
 	LastStderrTail string `json:"last_stderr_tail,omitempty"`
+	// WaitingFor is populated for processes still gated on declared deps.
+	WaitingFor []string `json:"waiting_for,omitempty"`
 }
 
 // RegisterProcessTools adds process-related MCP tools to the server.
@@ -488,10 +568,10 @@ func makeProcHandler(pm *process.ProcessManager) func(context.Context, *mcp.Call
 			return handleList(pm)
 		case "cleanup_port":
 			return handleCleanupPort(ctx, pm, input)
-		case "scripts", "script_output", "script_history":
-			return errorResult("script actions require daemon mode"), ProcOutput{}, nil
+		case "snapshot", "scripts", "script_output", "script_history", "run", "run_group", "wait":
+			return errorResult(fmt.Sprintf("%s action requires daemon mode", input.Action)), ProcOutput{}, nil
 		default:
-			return errorResult(fmt.Sprintf("unknown action %q. Use: status, output, find, stop, list, cleanup_port", input.Action)), ProcOutput{}, nil
+			return errorResult(fmt.Sprintf("unknown action %q. Use: status, output, find, stop, list, cleanup_port, snapshot, run, run_group, wait", input.Action)), ProcOutput{}, nil
 		}
 	}
 }

@@ -15,6 +15,8 @@ var defaultSplashMessages = []string{
 	"Waiting for output...",
 	"Tip: Press Ctrl+Y to open the overlay menu",
 	"Tip: agnt auto-starts scripts and proxies from .agnt.kdl",
+	"Tip: Use proc run for dev servers — never npm run dev in plain Bash",
+	"Tip: proc output / watch tail live process logs without blocking",
 	"Tip: Use get_errors to see all errors across processes and proxies",
 	"Tip: Use proxy exec to run JavaScript in the browser",
 	"Tip: Use responsive_audit to check mobile layout issues",

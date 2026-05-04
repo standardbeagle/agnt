@@ -1042,6 +1042,45 @@ func TestBuildSystemPrompt(t *testing.T) {
 		assert.Equal(t, "Full override.", prompt)
 		assert.NotContains(t, prompt, "This should be ignored.")
 	})
+
+	// Acceptance criterion: "New Claude Code session shows proc-first
+	// guidance in injected system prompt." The default-built prompt must
+	// contain the prominent rule block AND a concrete before/after example
+	// pair so the agent has unambiguous guidance about reaching for proc
+	// instead of running long-lived commands via Bash.
+	t.Run("default prompt includes prominent proc-first guidance", func(t *testing.T) {
+		cfg := DefaultAgntConfig()
+		prompt := cfg.BuildSystemPrompt()
+
+		// Header is the most important hook: agents scan for ALL CAPS /
+		// "CRITICAL" markers when deciding what is load-bearing.
+		assert.Contains(t, prompt, "CRITICAL: Use proc",
+			"prompt must call out the proc-first rule prominently")
+
+		// Concrete commands the agent must NOT use raw.
+		assert.Contains(t, prompt, "npm run dev",
+			"prompt must show npm run dev as the bad example")
+		assert.Contains(t, prompt, "go run ",
+			"prompt must show go run as a bad example")
+
+		// Concrete tool calls the agent SHOULD use instead.
+		assert.Contains(t, prompt, `proc {action: "run"`,
+			"prompt must show proc run as the good example")
+		assert.Contains(t, prompt, `proc {action: "output"`,
+			"prompt must show proc output for inspecting streamed lines")
+		assert.Contains(t, prompt, `watch {target: "process"`,
+			"prompt must mention watch for live tailing")
+
+		// Proc-first block must come before the generic agnt Tools section
+		// so the agent reads the rule before the tool catalog. This is the
+		// "prominence" half of the acceptance criterion.
+		procIdx := strings.Index(prompt, "CRITICAL: Use proc")
+		toolsIdx := strings.Index(prompt, "## agnt Tools")
+		assert.Greater(t, procIdx, -1, "proc-first block missing")
+		assert.Greater(t, toolsIdx, -1, "agnt Tools header missing")
+		assert.Less(t, procIdx, toolsIdx,
+			"proc-first guidance must appear before the generic Tools list")
+	})
 }
 
 func TestParseAgntConfigErrors(t *testing.T) {

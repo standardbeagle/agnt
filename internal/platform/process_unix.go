@@ -39,6 +39,43 @@ func IsWSL() bool {
 	return wslResult
 }
 
+// ShouldUseWindowsShell reports whether path should be executed via the
+// Windows shell (cmd.exe) rather than the Unix shell (sh). Returns true
+// only on WSL when path looks Windows-shaped: a /mnt/<drive>/... DrvFs
+// mount or a string containing a backslash (e.g. C:\foo or relative
+// scripts\build.cmd that the user copied in from a Windows context).
+//
+// On native Windows this returns true unconditionally — see the stub in
+// process_windows.go. On non-WSL Unix it always returns false: there is
+// no cmd.exe to dispatch to.
+//
+// The empty-path case returns false: callers (config.ScriptConfig.ResolveShell)
+// pass either Cwd or a run-command path, and an empty Cwd must fall through
+// to the platform default rather than forcing cmd.exe.
+func ShouldUseWindowsShell(path string) bool {
+	if !IsWSL() {
+		return false
+	}
+	if path == "" {
+		return false
+	}
+	// Backslash never appears in legitimate Linux paths and is the most
+	// reliable Windows-path tell. Catches `C:\Users\foo`, relative
+	// `scripts\build.cmd`, and UNC paths like `\\wsl$\...`.
+	if strings.ContainsRune(path, '\\') {
+		return true
+	}
+	// /mnt/<drive>/... is the WSL DrvFs mountpoint pattern. Drive
+	// letters are always lowercase ASCII in the canonical form.
+	if strings.HasPrefix(path, "/mnt/") && len(path) >= 7 {
+		c := path[5]
+		if c >= 'a' && c <= 'z' && path[6] == '/' {
+			return true
+		}
+	}
+	return false
+}
+
 // Scan returns all running processes by reading /proc on Linux.
 func Scan() ([]ProcInfo, error) {
 	return scanProc()

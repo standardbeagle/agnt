@@ -1,4 +1,12 @@
-//go:build !windows
+//go:build linux
+
+// Linux orphan-pgid scanner. Walks /proc to enumerate processes, classify
+// orphan pgids (leader dead, members live), and surface ancestor metadata
+// for the daemon-startup ownership gate.
+//
+// macOS uses sysctl KERN_PROC_ALL — see orphanpgid_darwin.go.
+// Other Unixes (FreeBSD, OpenBSD, etc.) get stubs in orphanpgid_other.go.
+// Windows uses Job Objects — see orphanpgid_windows.go.
 
 package platform
 
@@ -11,33 +19,9 @@ import (
 	"syscall"
 )
 
-// OrphanPGID describes a POSIX process group whose session leader PID is
-// no longer alive but whose members are still running, owned by the caller's
-// euid, and not members of any of the exclude sets the caller provided.
-//
-// Found by ScanOrphanedPGIDs. Consumed by daemon startup cleanup to reap
-// sessions that leaked across a daemon restart (see Slice B of task
-// O9QzO07vM8JB).
-type OrphanPGID struct {
-	PGID    int   // process group ID (= original session leader PID)
-	Members []int // live member PIDs currently in this pgid
-}
-
-// AncestorInfo captures the per-process fields consulted by daemon-startup
-// ownership gates when deciding whether an orphan pgid is plausibly owned
-// by this daemon. Populated from /proc/<pid>/{cmdline,cwd,stat}.
-//
-// PID is the ancestor's PID. Cmdline is the NUL-joined /proc/<pid>/cmdline
-// rewritten as a single space-delimited string for substring matching.
-// Cwd is the resolved /proc/<pid>/cwd symlink. Any field may be the empty
-// string if the source /proc entry was unreadable (races where the process
-// disappeared mid-walk are tolerated).
-type AncestorInfo struct {
-	PID     int
-	PPID    int
-	Cmdline string
-	Cwd     string
-}
+// (OrphanPGID and AncestorInfo are defined in orphanpgid_classify.go so
+// they exist on every non-windows platform — darwin and other-unix stubs
+// reference the same types.)
 
 // ScanOrphanedPGIDs enumerates /proc and returns every pgid that qualifies
 // as orphaned for the purpose of daemon-startup cleanup. A pgid is orphaned

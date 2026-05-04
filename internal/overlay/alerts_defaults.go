@@ -4,6 +4,27 @@ import "regexp"
 
 // DefaultAlertPatterns returns the built-in set of alert patterns for common
 // dev server frameworks and languages.
+//
+// Coordination note: this pattern bank classifies lines for *toast surfacing*
+// in the browser overlay. It produces a single boolean ("this line is an
+// error") plus a category, severity, and short description — the toast UI
+// is the consumer.
+//
+// A separate parser bank lives in internal/tools/build_error_parsers.go.
+// That bank produces *structured fields* (file, line, col, code, rule, test,
+// message) for the `proc output` MCP tool's compact error rendering, and
+// runs only when an agent passes `extract: ["error"|"warning"]`. The two
+// banks are intentionally not shared:
+//   - This bank is framework-specific and broad ("ENC errors", "Build FAILED");
+//     toast users want every distinct flavour categorised.
+//   - The parser bank is format-specific and narrow ("tsc paren form",
+//     "rust error[Eddd] -> location"); agents want zero noise so each
+//     parser must produce a token-efficient single line.
+//
+// Adding a new framework? Decide which surface it serves first. If the
+// toast UI needs to react to a new flavour of warning, add it here. If
+// an agent needs structured location/code fields for `proc output`, add
+// it to the parser bank instead.
 func DefaultAlertPatterns() []*AlertPattern {
 	return []*AlertPattern{
 		// .NET / dotnet watch

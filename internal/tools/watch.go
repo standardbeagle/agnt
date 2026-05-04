@@ -14,7 +14,12 @@ import (
 type WatchInput struct {
 	Target    string `json:"target,omitempty" jsonschema:"What to watch: errors, interactions, process, or all (default: all)"`
 	ProxyID   string `json:"proxy_id,omitempty" jsonschema:"Proxy ID to filter (used with errors and interactions targets)"`
-	ProcessID string `json:"process_id,omitempty" jsonschema:"Process ID to filter (required for process target)"`
+	ProcessID string `json:"process_id,omitempty" jsonschema:"Process ID to filter (required for process target unless process_ids is set)"`
+	// Multi-target arrays. When set, these win over the singular variants
+	// and are passed to `agnt monitor` as comma-joined --process / --proxy
+	// values so a single monitor invocation covers the whole set.
+	ProxyIDs   []string `json:"proxy_ids,omitempty" jsonschema:"Multiple proxy IDs to filter — emitted as comma-joined --proxy"`
+	ProcessIDs []string `json:"process_ids,omitempty" jsonschema:"Multiple process IDs to filter — emitted as comma-joined --process"`
 }
 
 // WatchOutput is the output for the watch tool.
@@ -79,8 +84,8 @@ func buildWatchCommand(dt *DaemonTools, input WatchInput) (string, string, error
 		return "", "", fmt.Errorf("invalid target %q: must be one of errors, interactions, process, all", target)
 	}
 
-	if config.needsProcess && input.ProcessID == "" {
-		return "", "", fmt.Errorf("process_id is required for process target")
+	if config.needsProcess && input.ProcessID == "" && len(input.ProcessIDs) == 0 {
+		return "", "", fmt.Errorf("process_id (or process_ids) is required for process target")
 	}
 
 	binaryPath, err := resolveAgntBinary()
@@ -96,11 +101,20 @@ func buildWatchCommand(dt *DaemonTools, input WatchInput) (string, string, error
 		args = append(args, "--types", config.types)
 	}
 
-	if input.ProxyID != "" {
+	// Multi-target arrays win over the singular variants. The singular
+	// remains the back-compat path for callers that only ever watch one
+	// process/proxy, and is silently dropped when arrays are present.
+	switch {
+	case len(input.ProxyIDs) > 0:
+		args = append(args, "--proxy", strings.Join(input.ProxyIDs, ","))
+	case input.ProxyID != "":
 		args = append(args, "--proxy", input.ProxyID)
 	}
 
-	if input.ProcessID != "" {
+	switch {
+	case len(input.ProcessIDs) > 0:
+		args = append(args, "--process", strings.Join(input.ProcessIDs, ","))
+	case input.ProcessID != "":
 		args = append(args, "--process", input.ProcessID)
 	}
 

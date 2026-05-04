@@ -3,11 +3,13 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/debug"
+	"github.com/standardbeagle/agnt/internal/hookrules"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/proxy"
 	hubpkg "github.com/standardbeagle/go-cli-server/hub"
@@ -305,13 +307,20 @@ func (d *Daemon) fanOutHookEvent(ev HookEvent) {
 	}
 	d.alertHub.BroadcastLogEntry(logEntry, "")
 
-	// 3. Toast fan-out for notification, stop, and stop-failure events.
+	// 3. Toast fan-out for notification, stop, stop-failure, and
+	//    pre-tool-use (Bash redirect) events.
 	//    - notification: user-facing notification from the agent (back-compat
 	//      for `agnt notify` and the Notification hook)
 	//    - stop: agent finished responding successfully
 	//    - stop-failure: turn ended due to an API error (Claude Code's
 	//      StopFailure event; name follows the lowercase-hyphenated
 	//      convention shared with pre-tool-use, subagent-stop, etc.)
+	//    - pre-tool-use: when the Bash command matches a hookrules
+	//      block/warn rule (npm run dev, go run, etc.), surface a
+	//      diagnostic toast to the developer's browser overlay even when
+	//      the check-bash interceptor blocks the command client-side.
+	//      This gives the developer visibility into what the agent
+	//      *tried* to run and what it should use instead.
 	//    All other events skip the toast path.
 	switch ev.Event {
 	case "notification":
@@ -320,6 +329,8 @@ func (d *Daemon) fanOutHookEvent(ev HookEvent) {
 		d.broadcastStopToast(ev)
 	case "stop-failure":
 		d.broadcastStopFailureToast(ev)
+	case "pre-tool-use":
+		d.broadcastBashRedirectToast(ev)
 	}
 
 	// 4. Typed HookEventSink fan-out (existing phase 1 path, kept for
@@ -483,6 +494,124 @@ func (d *Daemon) broadcastStopFailureToast(ev HookEvent) {
 	}
 
 	d.toastProjectProxies(ev.ProjectPath, "error", "Claude Error", message, 0)
+}
+
+// preToolUseToastPayload mirrors the Claude Code PreToolUse JSON shape we
+// care about: tool_name + tool_input.command for Bash. Other tools and
+// other input fields are ignored — the toast path is Bash-only.
+type preToolUseToastPayload struct {
+	ToolName  string          `json:"tool_name"`
+	ToolInput json.RawMessage `json:"tool_input"`
+}
+
+type preToolUseBashInput struct {
+	Command string `json:"command"`
+}
+
+// matchBashRedirect decodes a pre-tool-use payload, checks whether it is a
+// Bash invocation matching a hookrules block/warn rule, and returns the
+// matched decision. Returns nil for non-Bash tools, malformed payloads,
+// empty commands, commands carrying the inline bypass marker, or commands
+// that do not match any rule.
+//
+// This is the pure-function entry point so unit tests can drive every
+// branch without standing up a Daemon fixture or proxy manager. The
+// caller (broadcastBashRedirectToast) handles the side effect of emitting
+// the toast.
+//
+// The decision uses the BUILTIN rule set rather than a project-scoped
+// LoadForProject call. Builtin rules cover the long-lived patterns
+// enumerated in the task acceptance (npm run / yarn / go run / make /
+// cargo) and avoid a config file read on the drain hot path. Per-project
+// override rules will still fire via the check-bash CLI interceptor; the
+// toast layer is a developer-visibility nudge that should be cheap and
+// independent of project config.
+func matchBashRedirect(payload []byte) *hookrules.Decision {
+	if len(payload) == 0 {
+		return nil
+	}
+	var p preToolUseToastPayload
+	if err := json.Unmarshal(payload, &p); err != nil {
+		return nil
+	}
+	if !strings.EqualFold(p.ToolName, "Bash") || len(p.ToolInput) == 0 {
+		return nil
+	}
+	var input preToolUseBashInput
+	if err := json.Unmarshal(p.ToolInput, &input); err != nil {
+		return nil
+	}
+	if input.Command == "" {
+		return nil
+	}
+	if hookrules.CommandHasBypassMarker(input.Command) {
+		return nil
+	}
+
+	rs := hookrules.BuiltinRuleSet()
+	decision := rs.MatchBash(input.Command)
+	if decision.Action == hookrules.ActionAllow {
+		return nil
+	}
+	// Copy out so callers can mutate fields (e.g. truncate Replacement
+	// for display) without poisoning the shared rule pointer.
+	out := decision
+	return &out
+}
+
+// broadcastBashRedirectToast routes a pre-tool-use hook event through
+// matchBashRedirect; on a match it emits a diagnostic toast to every
+// proxy belonging to the event's project. Behavior is fire-and-forget:
+// non-matching events are silent no-ops, decode errors are swallowed at
+// debug level, and per-proxy BroadcastToast errors do not stop the loop.
+func (d *Daemon) broadcastBashRedirectToast(ev HookEvent) {
+	if d.proxym == nil {
+		return
+	}
+
+	decision := matchBashRedirect(ev.Payload)
+	if decision == nil {
+		return
+	}
+
+	// Toast type maps the rule action to the frontend toast palette
+	// (info / warning / error). Block rules surface as "warning" because
+	// they are advisory in the browser overlay context (the developer
+	// did not run the command — the agent did, and the check-bash hook
+	// already exited 2 with a stderr nudge to the model). "error" would
+	// imply something broke in the page; "info" would be too quiet.
+	toastType := "warning"
+	if decision.Action == hookrules.ActionSoftWarn {
+		toastType = "info"
+	}
+
+	title := "Use proc for long-lived processes"
+	message := buildBashRedirectMessage(decision)
+	d.toastProjectProxies(ev.ProjectPath, toastType, title, message, 0)
+}
+
+// buildBashRedirectMessage assembles the toast body. Kept compact because
+// browser toasts have limited screen real estate; long replacements are
+// truncated. Adds the canonical "use proc" hint when a replacement is
+// not present so the message is always actionable.
+func buildBashRedirectMessage(d *hookrules.Decision) string {
+	var sb strings.Builder
+	if d.Replacement != "" {
+		sb.WriteString("Use ")
+		sb.WriteString(d.Replacement)
+	} else {
+		sb.WriteString("Use proc run + proc output instead of plain Bash for long-lived processes")
+	}
+	if d.Reason != "" {
+		sb.WriteString(" — ")
+		sb.WriteString(d.Reason)
+	}
+	const maxLen = 300
+	out := sb.String()
+	if len(out) > maxLen {
+		out = out[:maxLen-3] + "..."
+	}
+	return out
 }
 
 // toastProjectProxies sends a BroadcastToast to proxies for a specific project.

@@ -1,4 +1,4 @@
-//go:build !windows && procisolation
+//go:build linux && procisolation
 
 // Tagged `procisolation` because the tests here exercise the system-global
 // primitives ScanOrphanedPGIDs + KillSessionPGID directly against host /proc.
