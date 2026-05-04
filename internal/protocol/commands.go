@@ -49,6 +49,7 @@ const (
 	SubVerbURL           = "URL"         // Report detected URL from agnt run session
 	SubVerbGetAll        = "GET-ALL"     // Get all entries in a scope
 	SubVerbDelete        = "DELETE"      // Delete an entry from a scope
+	SubVerbRunGroup      = "RUN-GROUP"   // Launch a multi-process startup group with depends_on ordering
 	SubVerbProcess       = "PROCESS"     // Process a single automation task
 	SubVerbBatch         = "BATCH"       // Process multiple automation tasks
 	SubVerbRestart       = "RESTART"     // Restart a process or proxy

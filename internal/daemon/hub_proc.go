@@ -17,7 +17,7 @@ import (
 )
 
 func (d *Daemon) hubHandleProc(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	valid := []string{"RUN", "STATUS", "OUTPUT", "STOP", "RESTART", "LIST", "CLEANUP-PORT", "AUTORESTART"}
+	valid := []string{"RUN", "RUN-GROUP", "STATUS", "OUTPUT", "STOP", "RESTART", "LIST", "CLEANUP-PORT", "AUTORESTART"}
 	return newCommandRouter("PROC").
 		withDefault(func(_ context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
 			return writeStructuredErr(conn, "daemon", &hubproto.StructuredError{
@@ -30,6 +30,7 @@ func (d *Daemon) hubHandleProc(ctx context.Context, conn *hubpkg.Connection, cmd
 		}).
 		dispatch(ctx, conn, cmd, map[string]handlerFn{
 			"RUN":          d.hubHandleProcRun,
+			"RUN-GROUP":    d.hubHandleProcRunGroup,
 			"STATUS":       d.hubHandleProcStatus,
 			"OUTPUT":       d.hubHandleProcOutput,
 			"STOP":         d.hubHandleProcStop,
@@ -59,6 +60,15 @@ func (d *Daemon) hubHandleProcStatus(ctx context.Context, conn *hubpkg.Connectio
 	processID := cmd.Args[0]
 	proc, err := d.hub.ProcessManager().Get(processID)
 	if err != nil {
+		// ProcessManager miss might mean the process is still pending
+		// on dependencies — check the pending tracker before returning
+		// NotFound. A pending process has a registry entry but no
+		// ManagedProcess yet (StartScriptExplicit hasn't run).
+		if pending, ok := d.pendingProcs.Get(processID); ok {
+			resp := pendingStatusResponse(pending)
+			data, _ := json.Marshal(resp)
+			return conn.WriteJSON(data)
+		}
 		return conn.WriteErr(hubproto.ErrNotFound, fmt.Sprintf("process %q not found", processID))
 	}
 
@@ -71,6 +81,14 @@ func (d *Daemon) hubHandleProcStatus(ctx context.Context, conn *hubpkg.Connectio
 		"runtime":      formatDuration(proc.Runtime()),
 		"runtime_ms":   proc.Runtime().Milliseconds(),
 		"project_path": proc.ProjectPath,
+	}
+
+	// Surface in-flight `waiting_for` if the process has been deferred
+	// pending dep resolution. This handles the brief window where the
+	// pending entry hasn't been removed yet (between dep-ready and
+	// StartScriptExplicit's ProcessManager.Register call).
+	if pending, ok := d.pendingProcs.Get(processID); ok && len(pending.WaitingFor) > 0 {
+		resp["waiting_for"] = pending.WaitingFor
 	}
 
 	if pid := proc.PID(); pid > 0 {
@@ -105,6 +123,35 @@ func (d *Daemon) hubHandleProcStatus(ctx context.Context, conn *hubpkg.Connectio
 
 	data, _ := json.Marshal(resp)
 	return conn.WriteJSON(data)
+}
+
+// pendingStatusResponse formats a PROC STATUS response for a process
+// that is still waiting on dependencies (no ManagedProcess yet). The
+// response shape mirrors the ManagedProcess response so clients can
+// consume both paths uniformly.
+//
+// State is "pending" while waiting; "failed" once a dep timed out and
+// the entry hasn't been GC'd yet. waiting_for lists the unresolved deps
+// in alphabetical order.
+func pendingStatusResponse(p PendingProcess) map[string]interface{} {
+	state := "pending"
+	if p.State == PendingFailed {
+		state = "failed"
+	}
+	resp := map[string]interface{}{
+		"id":           p.ProcessID,
+		"command":      p.Command,
+		"state":        state,
+		"summary":      "waiting for dependencies",
+		"project_path": p.ProjectPath,
+	}
+	if len(p.WaitingFor) > 0 {
+		resp["waiting_for"] = p.WaitingFor
+	}
+	if p.FailureReason != "" {
+		resp["failure_reason"] = p.FailureReason
+	}
+	return resp
 }
 
 // hubHandleProcOutput handles PROC OUTPUT <id> [filter].
@@ -280,9 +327,14 @@ func (d *Daemon) hubHandleProcList(ctx context.Context, conn *hubpkg.Connection,
 		filteredProcs = filtered
 	}
 
-	entries := make([]map[string]interface{}, len(filteredProcs))
+	entries := make([]map[string]interface{}, 0, len(filteredProcs))
 	var warnings []string
-	for i, p := range filteredProcs {
+	// seenProcessIDs tracks which IDs are present as ManagedProcess entries
+	// so we don't duplicate a pending entry for the same ID once it has
+	// transitioned out of pending.
+	seenProcessIDs := make(map[string]bool, len(filteredProcs))
+	for _, p := range filteredProcs {
+		seenProcessIDs[p.ID] = true
 		entry := map[string]interface{}{
 			"id":           p.ID,
 			"command":      p.Command,
@@ -291,6 +343,12 @@ func (d *Daemon) hubHandleProcList(ctx context.Context, conn *hubpkg.Connection,
 			"runtime":      formatDuration(p.Runtime()),
 			"runtime_ms":   p.Runtime().Milliseconds(),
 			"project_path": p.ProjectPath,
+		}
+		// Surface in-flight waiting_for if the process is briefly still
+		// in the pending tracker (between dep-ready and ProcessManager
+		// registration).
+		if pending, ok := d.pendingProcs.Get(p.ID); ok && len(pending.WaitingFor) > 0 {
+			entry["waiting_for"] = pending.WaitingFor
 		}
 		// Add URLs from URL tracker
 		if urls := d.urlTracker.GetURLs(p.ID); len(urls) > 0 {
@@ -314,11 +372,26 @@ func (d *Daemon) hubHandleProcList(ctx context.Context, conn *hubpkg.Connection,
 			}
 			warnings = append(warnings, warning)
 		}
-		entries[i] = entry
+		entries = append(entries, entry)
+	}
+
+	// Merge in pending processes that don't yet have a ManagedProcess
+	// entry. This is the "depends_on gate is still closed" case — the
+	// agent needs to see them in PROC LIST so `waiting_for` is visible
+	// before any process actually launches.
+	var pendingFilter string
+	if !dirFilter.Global && projectPath != "" {
+		pendingFilter = normalizePath(projectPath)
+	}
+	for _, pending := range d.pendingProcs.ListByProject(pendingFilter) {
+		if seenProcessIDs[pending.ProcessID] {
+			continue // already represented by a ManagedProcess entry
+		}
+		entries = append(entries, pendingStatusResponse(pending))
 	}
 
 	resp := map[string]interface{}{
-		"count":           len(filteredProcs),
+		"count":           len(entries),
 		"processes":       entries,
 		"global":          dirFilter.Global,
 		"total_in_daemon": len(procs),
@@ -556,6 +629,27 @@ type procRunPayload struct {
 	URLMatchers []string          `json:"url_matchers,omitempty"`
 	AutoRestart bool              `json:"auto_restart,omitempty"`
 	ProjectPath string            `json:"project_path,omitempty"`
+	// DependsOn lists script names the process must wait for before
+	// launching. Each name is resolved to a daemon process ID via
+	// makeProcessID(projectPath, name). Empty (or omitted) means the
+	// process starts immediately.
+	DependsOn []string `json:"depends_on,omitempty"`
+	// DependsOnTimeout is the per-process upper bound on the dep wait
+	// in seconds. Zero (or omitted) means use DefaultDependsOnTimeout
+	// (30s). Negative means wait indefinitely (parent ctx only).
+	DependsOnTimeout int `json:"depends_on_timeout,omitempty"`
+}
+
+// procRunGroupPayload shapes the JSON body for PROC RUN-GROUP. Each
+// entry corresponds to a single process; cycle detection runs on the
+// `depends_on` graph BEFORE any process is launched.
+type procRunGroupPayload struct {
+	ProjectPath string `json:"project_path,omitempty"`
+	// DependsOnTimeout applies to every process in the group as the
+	// per-process default when a process doesn't override it. Zero
+	// means use DefaultDependsOnTimeout.
+	DependsOnTimeout int            `json:"depends_on_timeout,omitempty"`
+	Processes        []GroupProcess `json:"processes"`
 }
 
 // hubHandleProcRun handles PROC RUN <name>.
@@ -622,34 +716,128 @@ func (d *Daemon) hubHandleProcRun(ctx context.Context, conn *hubpkg.Connection, 
 	default:
 	}
 
-	// StartScriptExplicit is synchronous; on return the process is
-	// registered and either running or a startup_error entry carries
-	// the detail. proxyConfigs=nil — MCP ad-hoc processes have no
-	// linked proxy config; port resolution falls back to command-line
-	// / PORT env scanning in getExpectedPortsForScript.
-	if err := d.StartScriptExplicit(ctx, name, scriptCfg, projectPath, nil); err != nil {
-		debug.Warn("daemon", "PROC RUN %q failed: %v", name, err)
-		return conn.WriteErr(hubproto.ErrInternal, err.Error())
+	// Translate the wire-level int seconds into time.Duration.
+	// 0 → DefaultDependsOnTimeout, negative → unbounded.
+	var depTimeout time.Duration
+	switch {
+	case payload.DependsOnTimeout < 0:
+		depTimeout = -1 * time.Second // any negative → unbounded path
+	case payload.DependsOnTimeout > 0:
+		depTimeout = time.Duration(payload.DependsOnTimeout) * time.Second
+	default:
+		depTimeout = 0 // sentinel for "use default"
 	}
 
-	processID := makeProcessID(projectPath, name)
+	// StartProcessWithDeps handles both fast-path (no deps, synchronous)
+	// and dep-gated (async wait + StartScriptExplicit) cases. proxyConfigs
+	// is implicitly nil — MCP ad-hoc processes have no linked proxy config;
+	// port resolution falls back to command-line / PORT env scanning in
+	// getExpectedPortsForScript.
+	result := d.StartProcessWithDeps(ctx, name, scriptCfg, projectPath, payload.DependsOn, depTimeout)
+	if result.Err != nil {
+		debug.Warn("daemon", "PROC RUN %q failed: %v", name, result.Err)
+		return conn.WriteErr(hubproto.ErrInternal, result.Err.Error())
+	}
+
+	processID := result.ProcessID
 
 	resp := map[string]interface{}{
 		"name":         name,
 		"process_id":   processID,
 		"project_path": projectPath,
+		"state":        result.State,
+	}
+	if len(result.WaitingFor) > 0 {
+		resp["waiting_for"] = result.WaitingFor
 	}
 
 	// Surface PID when the ProcessManager knows about the new process.
-	// StartScriptExplicit delegates to StartScript which registers into
-	// ProcessManager synchronously, so the lookup should succeed for a
-	// successfully started process. A miss is not fatal — the caller
-	// already has process_id and can poll PROC STATUS.
-	if proc, getErr := d.hub.ProcessManager().Get(processID); getErr == nil {
-		resp["pid"] = proc.PID()
-		resp["state"] = proc.State().String()
+	// For pending processes the ProcessManager entry doesn't exist yet
+	// (start happens after deps resolve); the caller can poll PROC STATUS
+	// once `waiting_for` empties.
+	if result.State == "starting" {
+		if proc, getErr := d.hub.ProcessManager().Get(processID); getErr == nil {
+			resp["pid"] = proc.PID()
+			// Override the "starting" hint from result.State with the
+			// authoritative ProcessManager state once we have it.
+			resp["state"] = proc.State().String()
+		}
 	}
 
+	data, _ := json.Marshal(resp)
+	return conn.WriteJSON(data)
+}
+
+// hubHandleProcRunGroup handles PROC RUN-GROUP.
+//
+// Cycle detection runs BEFORE any process is launched. On detection
+// the call returns ErrInvalidArgs with the cycle description; no
+// process is started. Per-process kickoff results are returned in
+// declaration order; agents poll PROC STATUS to observe individual
+// processes transitioning from "pending" → "starting" → "running".
+//
+// Project path resolution mirrors PROC RUN: explicit payload override
+// > session binding. Empty project path is fatal.
+func (d *Daemon) hubHandleProcRunGroup(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	payload, err := unmarshalCommand[procRunGroupPayload](cmd)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("invalid PROC RUN-GROUP payload: %v", err))
+	}
+
+	if len(payload.Processes) == 0 {
+		return conn.WriteErr(hubproto.ErrMissingParam, "PROC RUN-GROUP: processes list cannot be empty")
+	}
+
+	projectPath := payload.ProjectPath
+	if projectPath == "" {
+		if session, ok := d.sessionRegistry.Get(conn.SessionCode()); ok {
+			projectPath = session.ProjectPath
+		}
+	}
+	if projectPath == "" {
+		return conn.WriteErr(hubproto.ErrMissingParam, "PROC RUN-GROUP: project_path required (or attach session with ProjectPath)")
+	}
+	projectPath = normalizePath(projectPath)
+
+	// Translate per-group default timeout (int seconds) to Duration.
+	var depTimeout time.Duration
+	switch {
+	case payload.DependsOnTimeout < 0:
+		depTimeout = -1 * time.Second
+	case payload.DependsOnTimeout > 0:
+		depTimeout = time.Duration(payload.DependsOnTimeout) * time.Second
+	default:
+		depTimeout = 0
+	}
+
+	groupResult := d.StartProcessGroup(ctx, projectPath, payload.Processes, depTimeout)
+	if groupResult.Err != nil {
+		// Cycle detection / validation failures land here. Use
+		// ErrInvalidArgs so clients distinguish "your config is wrong"
+		// from "internal failure".
+		return conn.WriteErr(hubproto.ErrInvalidArgs, groupResult.Err.Error())
+	}
+
+	procs := make([]map[string]interface{}, 0, len(groupResult.Processes))
+	for _, r := range groupResult.Processes {
+		entry := map[string]interface{}{
+			"process_id": r.ProcessID,
+			"state":      r.State,
+		}
+		if len(r.WaitingFor) > 0 {
+			entry["waiting_for"] = r.WaitingFor
+		}
+		if r.Err != nil {
+			entry["error"] = r.Err.Error()
+		}
+		procs = append(procs, entry)
+	}
+
+	resp := map[string]interface{}{
+		"project_path": projectPath,
+		"count":        len(procs),
+		"processes":    procs,
+	}
 	data, _ := json.Marshal(resp)
 	return conn.WriteJSON(data)
 }

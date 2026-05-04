@@ -274,6 +274,32 @@ func (rc *ResilientClient) Run(config interface{}) (map[string]interface{}, erro
 	return result, err
 }
 
+// ProcRun starts an admin-aware process via PROC RUN. Optionally gates
+// on declared dependencies before launching. See Client.ProcRun for the
+// full contract.
+func (rc *ResilientClient) ProcRun(name string, cfg ProcRunConfig) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.ProcRun(name, cfg)
+		return e
+	})
+	return result, err
+}
+
+// ProcRunGroup launches a multi-process startup group via PROC RUN-GROUP.
+// Performs cycle detection before any process launches. See
+// Client.ProcRunGroup for the full contract.
+func (rc *ResilientClient) ProcRunGroup(cfg ProcRunGroupConfig) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.ProcRunGroup(cfg)
+		return e
+	})
+	return result, err
+}
+
 // ProcStatus gets the status of a process.
 func (rc *ResilientClient) ProcStatus(processID string) (map[string]interface{}, error) {
 	var result map[string]interface{}

@@ -86,13 +86,34 @@ func validateProcInput(input ProcInput) error {
 		validateStringLen("stream", input.Stream, maxIDLength),
 		validateStringLen("grep", input.Grep, maxGrepPattern),
 		validateStringLen("what", input.What, maxIDLength),
+		validateStringLen("signal", input.Signal, maxIDLength),
 		validatePort("port", input.Port),
 		validatePositiveLimit("tail", input.Tail, maxLimit),
 		validatePositiveLimit("head", input.Head, maxLimit),
 		validatePositiveLimit("max_restarts", input.MaxRestarts, maxLimit),
+		validatePositiveLimit("timeout", input.TimeoutMs, maxTimeoutMs),
+		validatePositiveLimit("poll_ms", input.PollMs, maxTimeoutMs),
+		validateArrayLen("process_ids", input.ProcessIDs, maxArrayElements),
+		validateArrayLen("extract", input.Extract, maxArrayElements),
+		validateArrayLen("signals", input.Signals, maxArrayElements),
 	}
 	for _, err := range checks {
 		if err != nil {
+			return err
+		}
+	}
+	for i, id := range input.ProcessIDs {
+		if err := validateStringLen(fmt.Sprintf("process_ids[%d]", i), id, maxIDLength); err != nil {
+			return err
+		}
+	}
+	for i, ex := range input.Extract {
+		if err := validateStringLen(fmt.Sprintf("extract[%d]", i), ex, maxIDLength); err != nil {
+			return err
+		}
+	}
+	for i, sg := range input.Signals {
+		if err := validateStringLen(fmt.Sprintf("signals[%d]", i), sg, maxIDLength); err != nil {
 			return err
 		}
 	}

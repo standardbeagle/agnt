@@ -87,6 +87,9 @@ var (
 	//go:embed design.js
 	designJS string
 
+	//go:embed palette.js
+	paletteJS string
+
 	//go:embed style-editor.js
 	styleEditorJS string
 
@@ -181,6 +184,7 @@ var moduleOrder = []moduleEntry{
 	{"voice", []string{"core"}},
 	{"sketch", []string{"core", "voice"}},
 	{"design", []string{"core", "utils"}},
+	{"palette", []string{"core", "utils"}},
 	{"style-editor", []string{"core", "utils"}},
 	{"indicator", []string{"core", "utils", "sketch", "design", "style-editor", "toast", "framework-detector", "api-tracker", "shadow-root"}},
 	{"snapshot-helper", []string{"core"}},
@@ -196,7 +200,7 @@ var moduleOrder = []moduleEntry{
 		"core", "utils", "overlay", "inspection", "tree", "visual",
 		"layout", "interactive", "capture", "accessibility",
 		"audit-quality", "audit-report", "interaction", "mutation",
-		"voice", "indicator", "sketch", "design",
+		"voice", "indicator", "sketch", "design", "palette",
 		"diagnostics", "session", "store", "content",
 		"wireframe", "responsive", "style-editor",
 		"text-fragility", "responsive-risk", "snapshot-helper", "toast",
@@ -231,6 +235,7 @@ var moduleScript = map[string]string{
 	"voice":              voiceJS,
 	"sketch":             sketchJS,
 	"design":             designJS,
+	"palette":            paletteJS,
 	"style-editor":       styleEditorJS,
 	"indicator":          indicatorJS,
 	"snapshot-helper":    snapshotHelperJS,

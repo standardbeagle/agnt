@@ -2355,6 +2355,44 @@
     startTabUpdates();
   }
 
+  // Returns true when a non-empty text selection has at least one endpoint
+  // inside the tab content area. The 1s tab refresh writes to reactive stores
+  // that VanJS uses to swap whole DOM subtrees inside __devtool-tab-content;
+  // a swap mid-selection wipes the user's selection before mouseup fires,
+  // making copy/paste from the panel impossible. Skip the data refresh
+  // (which is what triggers the swap) while a selection is active. Badge
+  // updates outside the content area still run. Selection lookup goes
+  // through document first; when the panel lives inside a shadow root and
+  // the browser implements ShadowRoot.getSelection (Chromium), we also
+  // consult that path so selections fully inside the shadow tree are seen.
+  function selectionWithinTabContent() {
+    var content = getInMount('__devtool-tab-content');
+    if (!content) return false;
+    var selections = [];
+    try {
+      var docSel = document.getSelection && document.getSelection();
+      if (docSel) selections.push(docSel);
+    } catch (_) { /* getSelection unavailable */ }
+    if (isShadowMount()) {
+      try {
+        var root = mountRoot();
+        if (root && typeof root.getSelection === 'function') {
+          var shadowSel = root.getSelection();
+          if (shadowSel) selections.push(shadowSel);
+        }
+      } catch (_) { /* ShadowRoot.getSelection unavailable in this engine */ }
+    }
+    for (var i = 0; i < selections.length; i++) {
+      var sel = selections[i];
+      if (!sel || sel.isCollapsed) continue;
+      var anchor = sel.anchorNode;
+      var focus = sel.focusNode;
+      if (anchor && content.contains(anchor)) return true;
+      if (focus && content.contains(focus)) return true;
+    }
+    return false;
+  }
+
   function startTabUpdates() {
     // Clear existing interval
     if (state.tabUpdateInterval) {
@@ -2373,6 +2411,11 @@
       }
 
       updateTabBadges();
+      // Skip the reactive-store refresh while the user is selecting text in
+      // the tab content. Without this gate VanJS swaps DOM nodes under the
+      // selection and the browser collapses the range before mouseup, so
+      // copy fails. Badges above are out-of-content and safe to update.
+      if (selectionWithinTabContent()) return;
       updateActiveTabContent();
     }, 1000);
   }

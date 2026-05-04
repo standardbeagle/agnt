@@ -8,19 +8,37 @@ import (
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/config"
+	"github.com/standardbeagle/agnt/internal/platform"
 	goprocess "github.com/standardbeagle/go-cli-server/process"
 )
 
 // PortConflict describes an unmanaged process blocking a declared port.
+//
+// PIDs is the union of LinuxPIDs + WindowsPIDs. The split exists so the
+// kill path can route Linux-side PIDs through ProcessManager (syscall.Kill
+// + process-group escalation) and Windows-side PIDs through
+// platform.KillWindowsPID (taskkill.exe interop). On non-WSL hosts
+// WindowsPIDs is always nil.
 type PortConflict struct {
 	ScriptName  string `json:"script_name"`
 	Port        int    `json:"port"`
 	PIDs        []int  `json:"pids"`
 	ProcessName string `json:"process_name,omitempty"`
+
+	// LinuxPIDs are sourced from /proc/net/tcp (Linux) or lsof (macOS).
+	// Killable via syscall.Kill / ProcessManager.KillProcessByPort.
+	LinuxPIDs []int `json:"linux_pids,omitempty"`
+
+	// WindowsPIDs are sourced from netstat.exe via WSL interop. They live
+	// in the Windows kernel namespace and are unreachable from syscall.Kill;
+	// they require platform.KillWindowsPID (taskkill.exe).
+	WindowsPIDs []int `json:"windows_pids,omitempty"`
 }
 
 // detectPortConflicts scans all declared ports from autostart scripts and
-// returns conflicts where unmanaged processes hold those ports.
+// returns conflicts where unmanaged processes hold those ports. Each
+// conflict's PIDs are partitioned into LinuxPIDs and WindowsPIDs so the
+// kill path can route them to the correct termination primitive.
 func detectPortConflicts(ctx context.Context, scripts map[string]*config.ScriptConfig, managedPIDs map[int]bool) []PortConflict {
 	var conflicts []PortConflict
 
@@ -33,30 +51,52 @@ func detectPortConflicts(ctx context.Context, scripts map[string]*config.ScriptC
 	for _, name := range names {
 		sc := scripts[name]
 		for _, port := range sc.Ports {
-			pids := config.FindPIDsByPort(ctx, port)
-			if len(pids) == 0 {
+			linuxPIDs, windowsPIDs := config.FindPIDsByPortTagged(ctx, port)
+			if len(linuxPIDs) == 0 && len(windowsPIDs) == 0 {
 				continue
 			}
-			var unmanaged []int
-			for _, pid := range pids {
-				if managedPIDs != nil && managedPIDs[pid] {
-					continue
-				}
-				unmanaged = append(unmanaged, pid)
-			}
-			if len(unmanaged) == 0 {
+			unmanagedLinux := filterUnmanaged(linuxPIDs, managedPIDs)
+			// Windows-side PIDs are never in our managed set (we only
+			// register Linux PIDs with the ProcessManager), so the
+			// "managed" filter does not apply to them.
+			if len(unmanagedLinux) == 0 && len(windowsPIDs) == 0 {
 				continue
 			}
-			procName := config.ProcessNameByPID(unmanaged[0])
+			all := make([]int, 0, len(unmanagedLinux)+len(windowsPIDs))
+			all = append(all, unmanagedLinux...)
+			all = append(all, windowsPIDs...)
+			procName := config.ProcessNameByPID(all[0])
 			conflicts = append(conflicts, PortConflict{
 				ScriptName:  name,
 				Port:        port,
-				PIDs:        unmanaged,
+				PIDs:        all,
 				ProcessName: procName,
+				LinuxPIDs:   unmanagedLinux,
+				WindowsPIDs: windowsPIDs,
 			})
 		}
 	}
 	return conflicts
+}
+
+// filterUnmanaged drops any PIDs the ProcessManager already owns. Returns
+// nil rather than an empty slice when nothing remains, matching the
+// existing detect path's nil-vs-empty semantics.
+func filterUnmanaged(pids []int, managedPIDs map[int]bool) []int {
+	if len(pids) == 0 {
+		return nil
+	}
+	if managedPIDs == nil {
+		return pids
+	}
+	var out []int
+	for _, pid := range pids {
+		if managedPIDs[pid] {
+			continue
+		}
+		out = append(out, pid)
+	}
+	return out
 }
 
 // KillResult reports what happened for each conflict.
@@ -66,29 +106,92 @@ type KillResult struct {
 	Error  string `json:"error,omitempty"`
 }
 
-// killPortBlockers kills processes blocking declared ports using the
-// ProcessManager's full escalation path (process groups + descendants).
+// killPortBlockers kills processes blocking declared ports.
+//
+// Linux-side PIDs go through the ProcessManager's full escalation path
+// (process groups + descendants). Windows-side PIDs (sourced from the
+// netstat.exe fallback on WSL) go through platform.KillWindowsPID, which
+// shells to taskkill.exe /F /PID — required because Windows PIDs live in
+// a different kernel namespace and syscall.Kill returns ESRCH for them.
+//
+// Per-PID kill failures on the Windows path are surfaced as warning-severity
+// alerts via alertHub (when non-nil), satisfying the Silent Failure
+// Prohibition rule. A nil alertHub is allowed for tests and for callers
+// that prefer to inspect the returned KillResult.Error directly.
+//
 // Verifies each port is free after kill.
-func killPortBlockers(ctx context.Context, pm *goprocess.ProcessManager, conflicts []PortConflict) []KillResult {
+func killPortBlockers(ctx context.Context, pm *goprocess.ProcessManager, alertHub *AlertHub, conflicts []PortConflict) []KillResult {
 	results := make([]KillResult, len(conflicts))
 
 	for i, c := range conflicts {
 		results[i].PortConflict = c
 
-		_, err := pm.KillProcessByPort(ctx, c.Port)
-		if err != nil {
-			results[i].Error = fmt.Sprintf("kill failed for port %d: %v", c.Port, err)
-			continue
+		var errs []string
+
+		// Back-compat: callers that built PortConflict directly (legacy
+		// shape) populate PIDs without splitting into Linux/Windows.
+		// Treat the unsplit case as "all PIDs are Linux-side" so the
+		// existing behavior is preserved for non-WSL conflicts. New
+		// callers from detectPortConflicts populate LinuxPIDs and
+		// WindowsPIDs explicitly.
+		linuxPresent := len(c.LinuxPIDs) > 0 || (len(c.LinuxPIDs) == 0 && len(c.WindowsPIDs) == 0 && len(c.PIDs) > 0)
+
+		// Linux PIDs: ProcessManager handles them via syscall.Kill +
+		// process-group escalation. KillProcessByPort re-discovers PIDs
+		// via the vendored Linux-only FindPIDsByPort, so this is a no-op
+		// for Windows-only conflicts. Skip when there are no Linux PIDs
+		// to avoid the redundant scan.
+		if linuxPresent {
+			if _, err := pm.KillProcessByPort(ctx, c.Port); err != nil {
+				errs = append(errs, fmt.Sprintf("linux kill failed: %v", err))
+			}
+		}
+
+		// Windows PIDs: per-PID taskkill.exe interop. Surface each
+		// failure as a visible warning event AND record it in the
+		// KillResult so the autostart-prompt path can show the user
+		// what went wrong. Empty WindowsPIDs slice is the no-op case.
+		for _, pid := range c.WindowsPIDs {
+			if err := platform.KillWindowsPID(pid); err != nil {
+				msg := fmt.Sprintf("port %d: failed to kill Windows-side pid %d: %v", c.Port, pid, err)
+				errs = append(errs, msg)
+				if alertHub != nil {
+					alertHub.Deliver("warning", msg)
+				}
+			}
 		}
 
 		if waitPortFree(c.Port, 2*time.Second) {
 			results[i].Killed = true
+			// Even when the port is free, surface kill errors so the
+			// caller can see partial failures (e.g. one of three PIDs
+			// died on its own while another was access-denied).
+			if len(errs) > 0 {
+				results[i].Error = joinErrs(errs)
+			}
 		} else {
-			results[i].Error = fmt.Sprintf("port %d still in use after kill", c.Port)
+			if len(errs) == 0 {
+				errs = append(errs, fmt.Sprintf("port %d still in use after kill", c.Port))
+			}
+			results[i].Error = joinErrs(errs)
 		}
 	}
 
 	return results
+}
+
+// joinErrs concatenates kill errors with a "; " separator for the
+// human-readable KillResult.Error field. Single-element slices return
+// the message as-is.
+func joinErrs(errs []string) string {
+	if len(errs) == 1 {
+		return errs[0]
+	}
+	out := errs[0]
+	for _, e := range errs[1:] {
+		out += "; " + e
+	}
+	return out
 }
 
 // waitPortFree polls until port is free or timeout expires.

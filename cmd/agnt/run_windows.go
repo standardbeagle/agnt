@@ -8,233 +8,40 @@ import (
 	"io"
 	"log"
 	"os"
-	"os/exec"
 	"os/signal"
-	"path/filepath"
-	"regexp"
-	"strings"
-	"sync"
 	"syscall"
 	"time"
 
 	"github.com/aymanbagabas/go-pty"
-	"github.com/spf13/cobra"
-	"github.com/standardbeagle/agnt/internal/agntprompt"
-	"github.com/standardbeagle/agnt/internal/aichannel"
+
 	"github.com/standardbeagle/agnt/internal/config"
-	"github.com/standardbeagle/agnt/internal/daemon"
-	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/overlay"
-	"github.com/standardbeagle/agnt/internal/pathutil"
-	"github.com/standardbeagle/agnt/internal/platform"
-	"github.com/standardbeagle/agnt/internal/protocol"
-	"github.com/standardbeagle/agnt/internal/tools"
-	"golang.org/x/sys/windows"
-	"golang.org/x/term"
 )
 
-var runCmd = &cobra.Command{
-	Use:   "run <command> [args...]",
-	Short: "Run an AI coding tool with overlay features",
-	Long: `Run any AI coding tool (Claude, Gemini, Copilot, etc.) with overlay features.
-
-The command is executed in a pseudo-terminal (ConPTY on Windows) that allows:
-- Capturing and forwarding all input/output
-- Injecting synthetic input from external sources (like devtool proxy events)
-- Terminal resize handling
-- Session management for programmatic message injection and scheduling
-
-Flags:
-  --session <code>      Session code for identifying this run (auto-generated if not set)
-  --overlay-socket      Custom socket path for overlay server
-  --hotkey <key>        Hotkey for overlay menu (default: CTRL+Y)
-  --no-indicator        Disable the indicator bar
-  --no-overlay          Disable terminal overlay entirely
-  --no-autostart        Skip auto-starting scripts and proxies from .agnt.kdl
-
-Examples:
-  agnt run claude --dangerously-skip-permissions
-  agnt run claude --session dev
-  agnt run claude
-  agnt run claude --no-autostart    # Skip .agnt.kdl autostart
-  agnt run gemini
-  agnt run copilot
-  agnt run opencode
-
-Overlay Features:
-- CTRL+Y: Toggle overlay menu to view processes, proxies, and actions
-- Status bar: Shows running services and proxy URLs for browser access
-- Auto-start: Loads .agnt.kdl to auto-start configured dev scripts and proxies
-
-The overlay listens on port 19191 for WebSocket connections from devtool-mcp
-to receive events that can be injected as user input. Sessions can receive
-scheduled messages via MCP tools, CLI commands, or the devtools API.`,
-	DisableFlagParsing: true,
-	Args:               cobra.MinimumNArgs(1),
-	Run:                runCommand,
-}
-
-var (
-	overlaySocketPath string
-	overlayHotkey     byte = 0x19 // Ctrl+Y
-	showIndicator     bool = true
-	useTermOverlay    bool = true
-	sessionCode       string
-	skipAutostart     bool = false
-)
-
-func init() {
-	// We use DisableFlagParsing so flags are parsed manually
-	// to allow passing all flags to the wrapped command
-}
-
-func runCommand(cmd *cobra.Command, args []string) {
-
-	// Handle help flag manually since we disabled flag parsing
-	for _, arg := range args {
-		if arg == "-h" || arg == "--help" || arg == "help" {
-			cmd.Help()
-			return
-		}
-	}
-
-	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "Error: command is required")
-		cmd.Help()
-		os.Exit(1)
-	}
-
-	// Parse our own flags from args
-	overlaySocketPath = "" // will use default
-	commandArgs := args
-
-	// Look for our flags
-	i := 0
-	for i < len(args) {
-		switch args[i] {
-		case "--overlay-socket":
-			if i+1 < len(args) {
-				overlaySocketPath = args[i+1]
-				commandArgs = append(args[:i], args[i+2:]...)
-				continue
-			}
-		case "--hotkey":
-			if i+1 < len(args) {
-				if hk := parseHotkey(args[i+1]); hk != 0 {
-					overlayHotkey = hk
-				}
-				commandArgs = append(args[:i], args[i+2:]...)
-				continue
-			}
-		case "--session":
-			if i+1 < len(args) {
-				sessionCode = args[i+1]
-				commandArgs = append(args[:i], args[i+2:]...)
-				continue
-			}
-		case "--no-indicator":
-			showIndicator = false
-			commandArgs = append(args[:i], args[i+1:]...)
-			continue
-		case "--no-overlay":
-			useTermOverlay = false
-			commandArgs = append(args[:i], args[i+1:]...)
-			continue
-		case "--no-autostart":
-			skipAutostart = true
-			commandArgs = append(args[:i], args[i+1:]...)
-			continue
-		case "--debug", "-d":
-			// Handle global debug flag (since DisableFlagParsing prevents cobra from parsing it)
-			debug.Enable()
-			if debug.GetLogFilePath() == "" {
-				// In PTY context, stderr corrupts terminal output — force file logging
-				if err := debug.SetLogFile("agnt-run.log"); err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: failed to set debug log file: %v\n", err)
-				}
-			}
-			commandArgs = append(args[:i], args[i+1:]...)
-			continue
-		case "--debug-log":
-			// Handle global debug-log flag
-			if i+1 < len(args) {
-				debug.Enable()
-				if err := debug.SetLogFile(args[i+1]); err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: failed to set debug log file: %v\n", err)
-				}
-				commandArgs = append(args[:i], args[i+2:]...)
-				continue
-			}
-		}
-		i++
-	}
-
-	if len(commandArgs) == 0 {
-		fmt.Fprintln(os.Stderr, "Error: command is required")
-		os.Exit(1)
-	}
-
-	// If debug was enabled (via env var or flag) but no log file was set,
-	// force file-only logging. In PTY context, stderr output corrupts the terminal.
-	if debug.IsEnabled() && debug.GetLogFilePath() == "" {
-		if err := debug.SetLogFile("agnt-run.log"); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to set debug log file: %v\n", err)
-		}
-	}
-
+// runPlatformPTY is the Windows entry point dispatched from runCommand
+// (defined in pty_common.go). It owns the ConPTY backend, Job Object
+// lifecycle, console-mode save/restore, and the win32-input-mode quirks
+// that genuinely differ from the Unix path. The polling resize loop
+// lives in signals_windows.go; command resolution and BrowserHelper are
+// in resolve_windows.go and browser_helper_windows.go.
+func runPlatformPTY(commandArgs []string, _socketPath string, _sessionCode string) error {
 	ctx, cancel := signal.NotifyContext(context.Background(),
 		os.Interrupt,
 		syscall.SIGTERM,
 	)
 	defer cancel()
 
-	if err := runWithConPTY(ctx, commandArgs, overlaySocketPath, sessionCode); err != nil {
-		log.Fatalf("Error: %v", err)
-	}
-}
-
-// spinner displays a loading animation and returns a stop function.
-func spinner(message string) func() {
-	frames := []string{"|", "/", "-", "\\"}
-	done := make(chan struct{})
-	var wg sync.WaitGroup
-	wg.Add(1)
-
-	go func() {
-		defer wg.Done()
-		i := 0
-		ticker := time.NewTicker(100 * time.Millisecond)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-done:
-				return
-			case <-ticker.C:
-				fmt.Printf("\r%s %s", frames[i%len(frames)], message)
-				i++
-			}
-		}
-	}()
-
-	return func() {
-		close(done)
-		wg.Wait()
-	}
+	return runWithConPTY(ctx, commandArgs, overlaySocketPath, sessionCode)
 }
 
 // runWithConPTY runs a command in a ConPTY with overlay support.
 func runWithConPTY(ctx context.Context, args []string, socketPath string, sessionCode string) error {
-	// Find the command
 	command := args[0]
 	cmdArgs := args[1:]
 
-	// Auto-generate session code if not provided
 	if sessionCode == "" {
 		sessionCode = generateSessionCode(command)
 	}
-
-	// Get project path for session registration and MCP directory filtering
 	projectPath, _ := os.Getwd()
 
 	// Validate .agnt.kdl config early — before any PTY/terminal setup.
@@ -245,9 +52,6 @@ func runWithConPTY(ctx context.Context, args []string, socketPath string, sessio
 		}
 	}
 
-	// Resolve an agent adapter for this command (Claude, Gemini, etc.).
-	// See run.go for the rationale — the windows entrypoint uses the
-	// same abstraction so the two stay in lockstep.
 	adapter := resolveAgentAdapter(command, projectPath)
 	var adapterPrompt string
 	if adapter != nil {
@@ -255,86 +59,47 @@ func runWithConPTY(ctx context.Context, args []string, socketPath string, sessio
 		cmdArgs = adapter.BuildArgs(cmdArgs, adapterPrompt)
 	}
 
-	// Get initial terminal size BEFORE any mode changes
-	// Uses multiple fallback methods for VS Code and other embedded terminals
+	// Get initial terminal size BEFORE any mode changes — VS Code and
+	// other embedded terminals may not report size correctly on stdin.
 	width, height := getTerminalSize()
-
-	// Reserve bottom row for indicator bar if enabled
 	childHeight := height
 	if useTermOverlay && showIndicator && height > 1 {
 		childHeight = height - 1
 	}
 
-	// Save stdout console mode BEFORE any changes so we can restore on exit.
-	// This must happen before MakeRaw since ConPTY creation can alter modes.
-	stdoutHandle, err := windows.GetStdHandle(windows.STD_OUTPUT_HANDLE)
-	var savedStdoutMode uint32
-	hasStdoutMode := false
-	if err == nil {
-		if err := windows.GetConsoleMode(stdoutHandle, &savedStdoutMode); err == nil {
-			hasStdoutMode = true
-		}
-	}
-
-	// Set stdin in raw mode BEFORE creating ConPTY
-	// This ensures ConPTY doesn't inherit/interfere with console mode
-	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
+	// Save+enter raw console mode (lives in resolve_windows.go because
+	// it's pure Windows console plumbing). Restore() must run before
+	// any other deferred restore that touches stdout.
+	consoleState, err := enterConsoleRawMode()
 	if err != nil {
-		return fmt.Errorf("failed to set raw mode: %w", err)
+		return err
 	}
-	defer func() {
-		// Disable win32-input-mode BEFORE restoring console modes.
-		// This must happen while VT processing is still enabled.
-		fmt.Fprint(os.Stdout, "\x1b[?9001l")
+	defer consoleState.Restore()
 
-		_ = term.Restore(int(os.Stdin.Fd()), oldState)
-
-		// Restore stdout console mode to what it was before we started.
-		// This prevents leftover VT processing mode from causing the
-		// terminal to display raw escape sequences after exit.
-		if hasStdoutMode {
-			_ = windows.SetConsoleMode(stdoutHandle, savedStdoutMode)
-		}
-	}()
-
-	// Enable Virtual Terminal Processing on stdout
-	if hasStdoutMode {
-		newMode := savedStdoutMode | 0x0004 // ENABLE_VIRTUAL_TERMINAL_PROCESSING
-		_ = windows.SetConsoleMode(stdoutHandle, newMode)
-	}
-
-	// Show startup animation (after raw mode so spinner works)
 	stopSpinner := spinner(fmt.Sprintf("Starting %s...", command))
 
-	// Create PTY using aymanbagabas/go-pty (cross-platform PTY with ConPTY support)
 	ptmx, err := pty.New()
 	if err != nil {
 		stopSpinner()
 		return fmt.Errorf("failed to create PTY: %w", err)
 	}
 	defer ptmx.Close()
-
-	// Set initial size
 	if err := ptmx.Resize(width, childHeight); err != nil {
 		log.Printf("warning: failed to set initial PTY size: %v", err)
 	}
 
-	// Resolve the command using multi-step fallback
 	resolvedPath, shellWrap, err := resolveCommand(command)
 	if err != nil {
 		stopSpinner()
 		return err
 	}
 
-	// Create and start the command attached to the PTY
 	var cmd *pty.Cmd
 	if shellWrap {
-		psArgs := buildPowerShellWrapArgs(command, cmdArgs)
-		cmd = ptmx.Command(resolvedPath, psArgs...)
+		cmd = ptmx.Command(resolvedPath, buildPowerShellWrapArgs(command, cmdArgs)...)
 	} else {
 		cmd = ptmx.Command(resolvedPath, cmdArgs...)
 	}
-	// Pass project path to child process so MCP server can filter by correct directory
 	cmd.Env = append(os.Environ(), "AGNT_PROJECT_PATH="+projectPath)
 	if err := cmd.Start(); err != nil {
 		stopSpinner()
@@ -343,788 +108,75 @@ func runWithConPTY(ctx context.Context, args []string, socketPath string, sessio
 	stopSpinner()
 
 	// Create a Job Object so all child processes are killed when agnt
-	// exits. Without this, grandchild processes (dev servers, npm,
-	// etc.) survive. The handle is also reported to the daemon as
-	// SessionJobHandle so explicit `SESSION UNREGISTER` cleanup can
-	// call TerminateJobObject immediately rather than waiting for the
-	// agnt process exit to fire JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.
-	//
-	// Uses platform.CreateSessionJobObject / AssignPIDToSessionJob so
-	// the Unix pgid path and Windows job-object path share a single
-	// cross-platform API surface (see internal/platform/sessionjob_*).
-	var sessionJobHandle uint64
-	jobHandle, err := platform.CreateSessionJobObject()
-	if err != nil {
-		// Surface the failure both to the debug log file AND to
-		// stderr so the user sees it before the PTY takes over the
-		// terminal — silent-failure prohibition (see
-		// .claude/rules/daemon-architecture.md). Without the job
-		// object, grandchild dev servers can survive `agnt run`
-		// termination, which is the exact bug Slice C exists to
-		// prevent.
-		debug.Warn("job", "failed to create session job object: %v", err)
-		fmt.Fprintf(os.Stderr, "warning: failed to create session job object: %v (child processes may survive agnt exit)\n", err)
-	} else {
-		defer windows.CloseHandle(jobHandle)
-		if err := platform.AssignPIDToSessionJob(jobHandle, cmd.Process.Pid); err != nil {
-			debug.Warn("job", "failed to assign PTY child to session job: %v", err)
-			fmt.Fprintf(os.Stderr, "warning: failed to assign PTY child to session job: %v\n", err)
-		} else {
-			// Only publish the handle to the daemon if assignment
-			// succeeded. An empty job (created but no process
-			// assigned) has no containment value — reporting it
-			// would cause the daemon to call TerminateJobObject on
-			// a job with nothing in it, which succeeds trivially
-			// and misleadingly.
-			sessionJobHandle = uint64(jobHandle)
-		}
+	// exits — see setupSessionJob for the full rationale.
+	sessionJobHandle, jobCloser := setupSessionJob(cmd.Process.Pid)
+	if jobCloser != nil {
+		defer jobCloser()
 	}
 
-	// Disable win32-input-mode - ConPTY requests this by default which causes
-	// Windows Terminal to send extended key event sequences instead of raw bytes.
-	// We need standard VT input for our InputRouter to work correctly.
-	// See: https://github.com/microsoft/terminal/blob/main/doc/specs/%234999%20-%20Improved%20keyboard%20handling%20in%20Conpty.md
+	// Disable win32-input-mode — ConPTY requests this by default which
+	// causes Windows Terminal to send extended key event sequences instead
+	// of raw bytes. We need standard VT input for our InputRouter to
+	// work correctly. See:
+	// https://github.com/microsoft/terminal/blob/main/doc/specs/%234999%20-%20Improved%20keyboard%20handling%20in%20Conpty.md
 	fmt.Fprint(os.Stdout, "\x1b[?9001l")
-
-	// Clear screen before child starts outputting
 	fmt.Fprint(os.Stdout, "\x1b[2J\x1b[H")
 
-	// Create session-specific overlay socket path to isolate each session
-	overlaySocketPath := ""
-	if defaultPath := DefaultOverlaySocketPath(); defaultPath != "" {
-		dir := filepath.Dir(defaultPath)
-		safeCode := pathutil.SafePathComponent(sessionCode)
-		overlaySocketPath = filepath.Join(dir, fmt.Sprintf("devtool-overlay-%s.sock", safeCode))
-	}
-
-	// Create network overlay for receiving external events (from browser)
-	netOverlay := newOverlay(overlaySocketPath, ptmx)
-	if err := netOverlay.Start(ctx); err != nil {
-		debug.Warn("overlay", "socket failed to start: %v (proxy→agent messages will not work)", err)
-	}
-	defer netOverlay.Stop()
-
-	// Register overlay endpoint with daemon so proxies forward events to us
-	// Use ResilientClient for automatic reconnection with overlay re-registration
-	daemonSocketPath, _ := rootCmd.Flags().GetString("socket")
-	daemonHandle := startDaemonSession(ctx, daemonSessionConfig{
-		SessionCode:      sessionCode,
-		OverlayEndpoint:  netOverlay.SocketPath(),
-		ProjectPath:      projectPath,
-		Command:          command,
-		CmdArgs:          cmdArgs,
-		SocketPath:       daemonSocketPath,
-		SkipAutostart:    skipAutostart,
-		SessionJobHandle: sessionJobHandle,
-	})
-	defer daemonHandle.Close()
-
-	// Create terminal overlay (indicator bar and menus)
-	var termOverlay *overlay.Overlay
-	var inputRouter *overlay.InputRouter
-	var statusFetcher *overlay.StatusFetcher
-	var outputFilter *overlay.ProtectedWriter
-	var outputGate *overlay.OutputGate
-
-	if useTermOverlay {
-		cfg := overlay.DefaultConfig()
-		cfg.ShowIndicator = showIndicator
-		cfg.Hotkey = overlayHotkey
-		cfg.Version = appVersion
-		cfg.OnAction = func(action overlay.Action) error {
-			switch action {
-			case overlay.ActionRefreshStatus:
-				if statusFetcher != nil {
-					statusFetcher.Refresh()
-				}
-			}
-			return nil
-		}
-
-		outputGate = overlay.NewOutputGate(os.Stdout)
-		termOverlay = overlay.New(ptmx, width, height, cfg)
-		termOverlay.SetGate(outputGate)
-		inputRouter = overlay.NewInputRouter(ptmx, termOverlay, overlayHotkey)
-
-		// Create shared daemon connection for all components
-		socketPath, _ := rootCmd.Flags().GetString("socket")
-		daemonConn := daemon.NewConn(socketPath)
-		defer daemonConn.Close()
-
-		// Set up daemon communication using shared connection
-		daemonClient := newDaemonClientAdapter(daemonConn)
-		bashRunner := overlay.NewDaemonBashRunner(daemonClient)
-		inputRouter.SetBashRunner(bashRunner)
-		outputFetcher := overlay.NewDaemonOutputFetcher(daemonClient)
-		inputRouter.SetOutputFetcher(outputFetcher)
-		daemonConnector := newDaemonConnector(daemonConn)
-		inputRouter.SetDaemonConnector(daemonConnector)
-		scriptController := overlay.NewDaemonScriptController(daemonClient)
-		inputRouter.SetScriptController(scriptController)
-
-		// Set up summarizer using shared connection
-		if agent := detectAIAgent(); agent != "" {
-			summarizer := overlay.NewSummarizer(daemonClient, overlay.SummarizerConfig{
-				Agent:       aichannel.AgentType(agent),
-				Timeout:     2 * time.Minute,
-				ProjectPath: projectPath,
-			})
-			inputRouter.SetSummarizer(summarizer)
-		}
-
-		// Create output filter to protect indicator bar.
-		// The child PTY is already sized to rows-1, so the child cannot
-		// reach our status bar row. Scroll region enforcement is the safety net.
-		if showIndicator {
-			filterCfg := overlay.FilterConfig{
-				ProtectBottomRows: 1,
-				RedrawInterval:    200 * time.Millisecond,
-				OnRedraw: func() {
-					if termOverlay != nil {
-						termOverlay.Redraw()
-					}
-				},
-			}
-			outputFilter = overlay.NewProtectedWriter(outputGate, width, height, filterCfg)
-			termOverlay.SetAltScreenChecker(outputFilter.InAltScreen)
-		}
-
-		// On Windows there is no SIGWINCH, so after a menu closes (gate unfreezes)
-		// we re-enforce the scroll region. The caller (hideMenu / closeProcessViewer)
-		// handles redrawing the indicator after Unfreeze returns, so we must NOT
-		// call termOverlay.Redraw() here — hideMenu holds overlay.mu when it calls
-		// gate.Unfreeze(), and Redraw() also locks overlay.mu, causing a deadlock.
-		outputGate.SetCallbacks(nil, func() {
-			if outputFilter != nil {
-				outputFilter.EnforceScrollRegion()
-			}
-		})
-
-		// Start status fetcher using shared connection
-		statusFetcher = overlay.NewStatusFetcher(daemonClient, termOverlay, 2*time.Second)
-		statusFetcher.Start(ctx)
-		defer statusFetcher.Stop()
-
-		inputRouter.SetStatusFetcher(statusFetcher)
-	}
-
-	done := make(chan struct{})
-	var wg sync.WaitGroup
-
-	// Draw initial indicator bar after delay
-	if termOverlay != nil && showIndicator {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			select {
-			case <-ctx.Done():
-				return
-			case <-done:
-				return
-			case <-time.After(50 * time.Millisecond):
-				if outputFilter != nil {
-					outputFilter.EnforceScrollRegion()
-				}
-				termOverlay.Redraw()
-			}
-		}()
-	}
-
-	// Display autostart results in the overlay status bar. Errors fall back to
-	// the output gate since they need multiple lines.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		var autostartOut io.Writer = os.Stdout
-		if outputGate != nil {
-			autostartOut = outputGate
-		}
-		displayAutostartResults(daemonHandle, termOverlay, autostartOut, 10*time.Second)
-	}()
-
-	// Handle terminal resize (polling on Windows since no SIGWINCH)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		lastWidth, lastHeight := width, height
-		ticker := time.NewTicker(500 * time.Millisecond)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-done:
-				return
-			case <-ticker.C:
-				w, h := getTerminalSize()
-				if w == lastWidth && h == lastHeight {
-					continue
-				}
-				lastWidth, lastHeight = w, h
-
-				// Reserve bottom row for indicator
-				ch := h
-				if termOverlay != nil && termOverlay.ShowIndicator() && h > 1 {
-					ch = h - 1
-				}
-				if err := ptmx.Resize(w, ch); err != nil {
-					log.Printf("error resizing PTY: %s", err)
-				}
-				if termOverlay != nil {
-					termOverlay.SetSize(w, h)
-				}
-				if outputFilter != nil {
-					outputFilter.SetSize(w, h)
-				}
-			}
-		}
-	}()
-
-	// For stdin-based adapters, inject the initial context message.
-	// See run.go for details on the two-phase injection model.
-	if adapter != nil {
-		if stdin := adapter.InitialStdin(adapterPrompt); len(stdin) > 0 {
-			time.Sleep(adapter.StdinDelay())
-			_, _ = ptmx.Write(stdin)
-		}
-	}
-
-	// Handle stdin - use explicit console input reader on Windows
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		if inputRouter != nil {
-			inputRouter.Run()
-		} else {
-			// Direct copy from console to PTY
-			buf := make([]byte, 256)
-			for {
-				n, err := os.Stdin.Read(buf)
-				if err != nil {
-					return
-				}
-				if n > 0 {
-					ptmx.Write(buf[:n])
-				}
-			}
-		}
-	}()
-
-	// Copy PTY output to stdout
-	var activityMonitor *overlay.ActivityMonitor
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		var outputDest io.Writer = os.Stdout
-		if outputFilter != nil {
-			outputDest = outputFilter
-		} else if outputGate != nil {
-			outputDest = outputGate
-		}
-
-		// Wrap with BrowserHelper to detect and open auth URLs
-		// This helps when Claude tries to open browser for OAuth but ConPTY blocks it
-		browserHelper := NewBrowserHelper(outputDest)
-
-		// Activity monitor
-		activityCfg := overlay.DefaultActivityMonitorConfig()
-		activityCfg.OnStateChange = func(state overlay.ActivityState) {
-			daemonHandle.BroadcastActivity(state == overlay.ActivityActive)
-			// Notify network overlay so typeText can detect when message was accepted
-			if state == overlay.ActivityActive && netOverlay != nil {
-				netOverlay.NotifyActivity()
-			}
-		}
-		// Set up alert scanner for process output monitoring
-		alertScanner := setupAlertScanner(projectPath, sessionCode, netOverlay, daemonHandle, func() overlay.ActivityState {
-			if activityMonitor != nil {
-				return activityMonitor.State()
-			}
-			return overlay.ActivityIdle
-		})
-		if alertScanner != nil {
-			defer alertScanner.Stop()
-			activityCfg.OnOutputLine = func(line string) {
-				alertScanner.ProcessLine(line, sessionCode)
-			}
-		}
-
-		activityMonitor = overlay.NewActivityMonitor(browserHelper, activityCfg)
-
-		_, _ = io.Copy(activityMonitor, ptmx)
-		close(done)
-	}()
-
-	// Monitor process exit separately - close PTY when process exits
-	// This ensures io.Copy returns even if PTY stays open on Windows
 	processExited := make(chan struct{})
+	handle := &ptyHandle{
+		Backend:          ptmx,
+		Width:            width,
+		Height:           height,
+		SessionJobHandle: sessionJobHandle,
+		EnableSplash:     false, // ConPTY clears the screen on first paint
+		Resize:           ptmx.Resize,
+		Interrupt: func() {
+			if cmd.Process != nil {
+				_ = cmd.Process.Kill()
+			}
+		},
+		// On Windows there is no SIGWINCH; after a menu closes (gate
+		// unfreezes) the gate-unfreeze callback re-enforces the scroll
+		// region. We must NOT call termOverlay.Redraw() here because
+		// hideMenu / closeProcessViewer hold overlay.mu when they call
+		// gate.Unfreeze, and Redraw also locks overlay.mu — would deadlock.
+		PreRedraw: nil,
+		// BrowserHelper auto-opens OAuth URLs that ConPTY can't surface
+		// (Claude etc. try to open a browser via platform-default
+		// browser, which fails inside ConPTY).
+		WrapOutput: func(dest io.Writer) io.Writer { return NewBrowserHelper(dest) },
+	}
+
+	rt := runOverlayPipeline(ctx, handle, command, cmdArgs, adapter, adapterPrompt, projectPath)
+
+	// Monitor process exit separately — close PTY when process exits so
+	// io.Copy in the shared pipeline returns even if PTY stays open.
 	go func() {
 		_ = cmd.Wait()
 		close(processExited)
-		// Close PTY to unblock io.Copy if it's still running
 		ptmx.Close()
 	}()
 
-	// Wait for context cancellation, PTY close, or process exit
 	select {
 	case <-ctx.Done():
-		// Send interrupt to the process
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-		}
-	case <-done:
-		// PTY closed (process probably exited)
+	case <-rt.Done():
 	case <-processExited:
-		// Process exited but PTY might still be open
 	}
+	rt.Stop()
 
-	// Stop components
-	if inputRouter != nil {
-		inputRouter.Stop()
-	}
-	if outputFilter != nil {
-		outputFilter.Stop()
-	}
-	if activityMonitor != nil {
-		activityMonitor.Stop()
-	}
-
-	// Give process a moment to fully exit, force kill if needed
+	// Give process a moment to fully exit, force kill if needed.
 	select {
 	case <-processExited:
-		// Already exited
 	case <-time.After(2 * time.Second):
-		// Force kill if taking too long
 		if cmd.Process != nil {
 			_ = cmd.Process.Kill()
 		}
 	}
 
-	// Clean up terminal state before returning
-	// This prevents garbage output when Ctrl+C is pressed
 	cleanupTerminal(height)
-
 	return nil
 }
 
-// cleanupTerminal resets the terminal state to prevent display corruption on exit.
-// This is especially important on Windows where ConPTY can leave the terminal in
-// a bad state when the child process is killed.
-func cleanupTerminal(height int) {
-	// Disable extended keyboard/input modes that the child process may have enabled
-	// These cause garbage output (semicolons, escape sequences) if left enabled
-	fmt.Fprint(os.Stdout, "\x1b[?9001l") // Disable win32-input-mode (extended key reporting)
-	fmt.Fprint(os.Stdout, "\x1b[?1004l") // Disable focus event reporting ([I and [O sequences)
-	fmt.Fprint(os.Stdout, "\x1b[?2004l") // Disable bracketed paste mode
-	fmt.Fprint(os.Stdout, "\x1b[?1l")    // Disable application cursor keys (DECCKM)
-	fmt.Fprint(os.Stdout, "\x1b[?25h")   // Show cursor (might have been hidden)
-
-	// Reset scroll region to full screen (removes protected area)
-	fmt.Fprint(os.Stdout, "\x1b[r")
-
-	// Reset all text attributes
-	fmt.Fprint(os.Stdout, "\x1b[0m")
-
-	// Move to the bottom row and clear it (remove status bar remnants)
-	fmt.Fprintf(os.Stdout, "\x1b[%d;1H\x1b[2K", height)
-
-	// Move cursor to a reasonable position (bottom-left)
-	fmt.Fprintf(os.Stdout, "\x1b[%d;1H", height)
-}
-
-// createJobObject / assignProcessToJob were moved to
-// internal/platform/sessionjob_windows.go so the same API surface is
-// usable from daemon cleanup code without import cycles. See
-// platform.CreateSessionJobObject and platform.AssignPIDToSessionJob.
-
-// resolveAgentAdapter + adapterOverridesFromConfig live in adapter_resolve.go
-// so both the unix and windows entrypoints share the same implementation.
-
-// buildAgntSystemPrompt queries the daemon for running services and builds
-// a system prompt to inject into the AI agent with context about agnt and
-// auto-started services. Mirrors the Unix implementation in run.go.
-func buildAgntSystemPrompt(socketPath string) string {
-	if socketPath == "" {
-		socketPath = daemon.DefaultSocketPath()
-	}
-
-	cwd, _ := os.Getwd()
-	agntConfig, err := config.LoadAgntConfig(cwd)
-	if err != nil {
-		debug.Log("run", "unexpected config load error in buildAgntSystemPrompt: %v", err)
-		agntConfig = config.DefaultAgntConfig()
-	}
-
-	if agntConfig.AI != nil && agntConfig.AI.SystemPrompt != "" {
-		return agntConfig.AI.SystemPrompt
-	}
-
-	basePrompt := agntConfig.BuildSystemPrompt()
-	if agntConfig.AI.CheatSheetEnabled() {
-		basePrompt = basePrompt + "\n" + agntprompt.BuildCheatSheet(tools.DevToolAPIFunctions)
-	}
-
-	client := daemon.NewClient(daemon.WithSocketPath(socketPath))
-	if err := client.Connect(); err != nil {
-		return basePrompt
-	}
-	defer client.Close()
-
-	var sb strings.Builder
-	sb.WriteString(basePrompt)
-
-	var hasRuntime bool
-
-	procFilter := protocol.DirectoryFilter{Directory: cwd}
-	procs, err := client.ProcList(procFilter)
-	if err == nil {
-		if processes, ok := procs["processes"].([]interface{}); ok && len(processes) > 0 {
-			if !hasRuntime {
-				sb.WriteString("\n## Current Runtime State\n")
-				sb.WriteString("These processes and proxies are already running — do NOT start them again.\n")
-				hasRuntime = true
-			}
-			sb.WriteString("\n**Running processes**:\n")
-			for _, p := range processes {
-				if pm, ok := p.(map[string]interface{}); ok {
-					id := pm["id"]
-					state := pm["state"]
-					cmd := pm["command"]
-					sb.WriteString(fmt.Sprintf("- **%s**: `%s` (state: %s)\n", id, cmd, state))
-					sb.WriteString(fmt.Sprintf("  - Output: `proc {action: \"output\", id: \"%s\"}`\n", id))
-					sb.WriteString(fmt.Sprintf("  - Errors: `get_errors {process_id: \"%s\"}`\n", id))
-				}
-			}
-		}
-	}
-
-	proxyFilter := protocol.DirectoryFilter{Directory: cwd}
-	proxies, err := client.ProxyList(proxyFilter)
-	if err == nil {
-		if proxyList, ok := proxies["proxies"].([]interface{}); ok && len(proxyList) > 0 {
-			if !hasRuntime {
-				sb.WriteString("\n## Current Runtime State\n")
-				sb.WriteString("These processes and proxies are already running — do NOT start them again.\n")
-				hasRuntime = true
-			}
-			sb.WriteString("\n**Running proxies** (browser traffic being captured):\n")
-			for _, p := range proxyList {
-				if pm, ok := p.(map[string]interface{}); ok {
-					id := pm["id"]
-					target := pm["target_url"]
-					listen := pm["listen_addr"]
-					sb.WriteString(fmt.Sprintf("- **%s**: %s → %s\n", id, listen, target))
-					sb.WriteString(fmt.Sprintf("  - Logs: `proxylog {action: \"query\", proxy_id: \"%s\"}`\n", id))
-					sb.WriteString(fmt.Sprintf("  - Errors: `get_errors {proxy_id: \"%s\"}`\n", id))
-				}
-			}
-		}
-	}
-
-	return sb.String()
-}
-
-// detectAIAgent detects the first available AI agent in PATH.
-func detectAIAgent() string {
-	agents := aichannel.DetectAvailableAgents()
-	if len(agents) > 0 {
-		return string(agents[0])
-	}
-	return ""
-}
-
-// getTerminalSize tries multiple methods to get terminal size.
-// VS Code and other embedded terminals may not report size correctly on stdin.
-func getTerminalSize() (width, height int) {
-	// Method 1: Try stdin
-	if w, h, err := term.GetSize(int(os.Stdin.Fd())); err == nil && w > 0 && h > 0 {
-		return w, h
-	}
-	// Method 2: Try stdout
-	if w, h, err := term.GetSize(int(os.Stdout.Fd())); err == nil && w > 0 && h > 0 {
-		return w, h
-	}
-	// Method 3: Windows Console API
-	if w, h, err := getConsoleSize(); err == nil && w > 0 && h > 0 {
-		return w, h
-	}
-	// Fallback
-	return 80, 24
-}
-
-// getConsoleSize gets the current console size on Windows.
-func getConsoleSize() (width, height int, err error) {
-	handle, err := windows.GetStdHandle(windows.STD_OUTPUT_HANDLE)
-	if err != nil {
-		return 80, 24, err
-	}
-
-	var info windows.ConsoleScreenBufferInfo
-	err = windows.GetConsoleScreenBufferInfo(handle, &info)
-	if err != nil {
-		return 80, 24, err
-	}
-
-	width = int(info.Window.Right - info.Window.Left + 1)
-	height = int(info.Window.Bottom - info.Window.Top + 1)
-	return width, height, nil
-}
-
-// BrowserHelper wraps an io.Writer and detects URLs in the output,
-// automatically opening them in the default browser. This helps with
-// OAuth flows where the child process tries to open a browser but
-// the ConPTY environment may prevent it from working correctly.
-type BrowserHelper struct {
-	dest       io.Writer
-	buffer     []byte
-	urlPattern *regexp.Regexp
-	opened     map[string]bool // Track URLs we've already opened
-	mu         sync.Mutex
-}
-
-// NewBrowserHelper creates a new BrowserHelper that wraps the given writer.
-func NewBrowserHelper(dest io.Writer) *BrowserHelper {
-	return &BrowserHelper{
-		dest: dest,
-		// Match URLs that look like OAuth/auth URLs
-		urlPattern: regexp.MustCompile(`https?://[^\s\x00-\x1f"'<>|\x7f]+`),
-		opened:     make(map[string]bool),
-	}
-}
-
-// Write implements io.Writer, scanning for URLs and opening them.
-func (b *BrowserHelper) Write(p []byte) (n int, err error) {
-	// Always write through to destination first
-	n, err = b.dest.Write(p)
-
-	// Scan for URLs in the output
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
-	// Append to buffer for URL detection (keep last 4KB)
-	b.buffer = append(b.buffer, p...)
-	if len(b.buffer) > 4096 {
-		b.buffer = b.buffer[len(b.buffer)-4096:]
-	}
-
-	// Find URLs
-	matches := b.urlPattern.FindAll(b.buffer, -1)
-	for _, match := range matches {
-		url := string(match)
-		// Clean up URL (remove trailing punctuation that might have been captured)
-		url = strings.TrimRight(url, ".,;:!?)]}>\"'")
-
-		// Only open auth-related URLs we haven't opened yet
-		if !b.opened[url] && isAuthURL(url) {
-			b.opened[url] = true
-			go openBrowser(url)
-		}
-	}
-
-	return n, err
-}
-
-// isAuthURL checks if a URL looks like an authentication/OAuth URL.
-func isAuthURL(url string) bool {
-	authPatterns := []string{
-		"oauth",
-		"auth",
-		"login",
-		"signin",
-		"sign-in",
-		"callback",
-		"authorize",
-		"console.anthropic.com",
-		"accounts.google.com",
-		"github.com/login",
-		"login.microsoftonline.com",
-	}
-	urlLower := strings.ToLower(url)
-	for _, pattern := range authPatterns {
-		if strings.Contains(urlLower, pattern) {
-			return true
-		}
-	}
-	return false
-}
-
-// openBrowser opens a URL in the default browser on Windows.
-func openBrowser(url string) {
-	// Use cmd /c start to open URL in default browser
-	cmd := exec.Command("cmd", "/c", "start", "", url)
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		HideWindow: true,
-	}
-	_ = cmd.Run()
-}
-
-// parseHotkey parses a hotkey string like "ctrl+l", "ctrl+g", "l", "p" into a byte.
-// Returns 0 if invalid.
-func parseHotkey(s string) byte {
-	s = strings.ToLower(strings.TrimSpace(s))
-
-	// Handle "ctrl+X" format
-	if strings.HasPrefix(s, "ctrl+") {
-		letter := strings.TrimPrefix(s, "ctrl+")
-		if len(letter) == 1 && letter[0] >= 'a' && letter[0] <= 'z' {
-			// Ctrl+A = 0x01, Ctrl+B = 0x02, etc.
-			return letter[0] - 'a' + 1
-		}
-		return 0
-	}
-
-	// Handle "^X" format (e.g., "^L")
-	if strings.HasPrefix(s, "^") {
-		letter := strings.TrimPrefix(s, "^")
-		if len(letter) == 1 && letter[0] >= 'a' && letter[0] <= 'z' {
-			return letter[0] - 'a' + 1
-		}
-		return 0
-	}
-
-	// Handle single letter (assume ctrl+letter)
-	if len(s) == 1 && s[0] >= 'a' && s[0] <= 'z' {
-		return s[0] - 'a' + 1
-	}
-
-	// Handle hex format like "0x0c"
-	if strings.HasPrefix(s, "0x") {
-		var b byte
-		if _, err := fmt.Sscanf(s, "0x%x", &b); err == nil {
-			return b
-		}
-	}
-
-	return 0
-}
-
-// generateSessionCode generates a unique session code based on the command name.
-// Format: <command>-<sequence> (e.g., "claude-1", "gemini-2")
-func generateSessionCode(command string) string {
-	// Extract base command name (handle paths like C:\Program Files\claude.exe)
-	base := command
-	if idx := strings.LastIndex(command, "/"); idx >= 0 {
-		base = command[idx+1:]
-	}
-	if idx := strings.LastIndex(base, "\\"); idx >= 0 {
-		base = base[idx+1:]
-	}
-	// Remove .exe extension on Windows
-	if strings.HasSuffix(base, ".exe") {
-		base = strings.TrimSuffix(base, ".exe")
-	}
-
-	// Connect to daemon to get a unique sequence number
-	socketPath, _ := rootCmd.Flags().GetString("socket")
-	if socketPath == "" {
-		socketPath = daemon.DefaultSocketPath()
-	}
-
-	client := daemon.NewClient(daemon.WithSocketPath(socketPath))
-	if err := client.Connect(); err == nil {
-		defer client.Close()
-		// Use the daemon's session registry to generate a unique code
-		code, err := client.SessionGenerateCode(base)
-		if err == nil {
-			return code
-		}
-	}
-
-	// Fallback: use timestamp-based code if daemon unavailable
-	return fmt.Sprintf("%s-%d", base, time.Now().UnixNano()%10000)
-}
-
-// resolveCommand resolves a command using multi-step fallback:
-//  1. exec.LookPath — direct PATH lookup (fast path)
-//  2. PowerShell Get-Command — finds commands PowerShell knows about
-//  3. cmd.exe where — finds commands in PATH extensions (.cmd, .bat, etc.)
-//  4. PowerShell shell wrap — runs the command inside PowerShell (like Unix bash -ic)
-func resolveCommand(command string) (path string, shellWrap bool, err error) {
-	// Step 1: Direct PATH lookup
-	if p, err := exec.LookPath(command); err == nil {
-		return p, false, nil
-	}
-
-	// Step 2: PowerShell Get-Command resolution
-	if p := resolveViaPowerShell(command); p != "" {
-		return p, false, nil
-	}
-
-	// Step 3: cmd.exe where fallback
-	if p := resolveViaWhere(command); p != "" {
-		return p, false, nil
-	}
-
-	// Step 4: Shell wrap in PowerShell (like Unix bash -ic)
-	psPath, err := exec.LookPath("powershell.exe")
-	if err != nil {
-		return "", false, fmt.Errorf("command not found: %s (powershell.exe also not available for fallback)", command)
-	}
-	return psPath, true, nil
-}
-
-// resolveViaPowerShell uses PowerShell's Get-Command to find a command's path.
-// Returns empty string if resolution fails.
-func resolveViaPowerShell(command string) string {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
-	// Use -NoProfile to skip profile loading for speed
-	cmd := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-Command",
-		fmt.Sprintf("(Get-Command %s -ErrorAction SilentlyContinue).Source", psQuote(command)))
-	out, err := cmd.Output()
-	if err != nil {
-		return ""
-	}
-	result := strings.TrimSpace(string(out))
-	if result == "" {
-		return ""
-	}
-	return result
-}
-
-// resolveViaWhere uses cmd.exe's where command to find executables.
-// Returns empty string if resolution fails.
-func resolveViaWhere(command string) string {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, "cmd.exe", "/c", "where", command)
-	out, err := cmd.Output()
-	if err != nil {
-		return ""
-	}
-	// where may return multiple lines; take the first
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	if len(lines) > 0 {
-		result := strings.TrimSpace(lines[0])
-		if result != "" {
-			return result
-		}
-	}
-	return ""
-}
-
-// buildPowerShellWrapArgs builds arguments for running a command inside PowerShell.
-// PowerShell loads $PROFILE automatically, so commands available in the user's
-// PowerShell session (aliases, functions, PATH additions) will be found.
-func buildPowerShellWrapArgs(command string, args []string) []string {
-	var parts []string
-	parts = append(parts, psQuote(command))
-	for _, arg := range args {
-		parts = append(parts, psQuote(arg))
-	}
-	cmdStr := strings.Join(parts, " ")
-	return []string{"-NoLogo", "-Command", "& { " + cmdStr + " }"}
-}
-
-// psQuote quotes a string for safe use in PowerShell commands.
-// Uses single quotes and doubles embedded single quotes.
-func psQuote(s string) string {
-	if !strings.ContainsAny(s, " \t\n'\"\\$`(){}[]<>&|;,@#") {
-		return s
-	}
-	// PowerShell single-quote escaping: double the single quotes
-	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
-}
+// Compile-time interface check — the ConPTY backend (aymanbagabas/go-pty
+// Pty) must satisfy the interface the shared overlay pipeline expects.
+var _ overlay.PtyReadWriter = (pty.Pty)(nil)

@@ -12,6 +12,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/daemon"
 	"github.com/standardbeagle/agnt/internal/debug"
+	"github.com/standardbeagle/agnt/internal/project"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/proxy"
 
@@ -372,7 +373,14 @@ func RegisterDaemonTools(server *mcp.Server, dt *DaemonTools) {
 	addLenientTool(server, &mcp.Tool{
 		Name: "detect",
 		Description: `Detect project type and available scripts.
-Example: detect {path: "."} → {type: "go", scripts: ["test", "build", "lint"]}`,
+Returns ready-to-paste proc run / proc wait invocations and likely_signals
+heuristics for each script, so agents can chain detect → proc run → proc wait
+without hand-constructing commands.
+
+Examples:
+  detect {}
+  detect {path: "."}
+  detect {raw: true}   // skip compact text, return JSON only`,
 	}, dt.makeDetectHandler())
 
 	// Process tools
@@ -417,6 +425,16 @@ Actions:
   scripts: List all registered scripts with state and start/fail counts
   script_output: Get script output history across restarts
   script_history: Get script state transition history
+  snapshot: Unified dev-environment status (processes + proxies + recent errors + URLs + suggested next actions) in a single call. Use raw:true for structured JSON.
+  run: Start a single admin-aware process; visible in proc list and SCRIPT LIST. Optionally gate on depends_on:[...] (default 30s timeout). Process state is "pending" while waiting; "starting" once deps clear; "failed" on dependency_timeout.
+  run_group: Start a multi-process stack in one call. Cycle detection runs before any process launches; on cycle the call returns an error and no process is started. Each process may declare depends_on referencing other processes in the group; topo order is enforced via the readiness signaler.
+  wait: Block until a named signal appears in a process's output. Polls (default 200ms, override with poll_ms) until match or timeout (default 30000ms). Returns {signal, matched_line, elapsed_ms} on hit, {timeout: true} on timeout — never errors. Pass signals:[...] to wait for whichever comes first.
+
+Multi-stream output and signals:
+  proc {action:"output", process_ids:["build","server","test"]}
+  Pulls output from N processes in one call. Each line tagged "[id]" in compact output, NDJSON in raw mode.
+  Add extract:["url","error","warning","ready","port"] to scan for structured signals — surfaced per-process under multi_stream[*].signals (or top-level signals when single process_id is used).
+  Coordinates with proc snapshot: snapshot uses the get_errors classification pipeline (framework-aware), extract scans raw line buffers (regex, framework-agnostic).
 
 Restarting dev servers:
   proc {action: "restart", process_id: "dev"}
@@ -439,7 +457,18 @@ Examples:
   proc {action: "autorestart", process_id: "dev", auto_restart_enable: false}
   proc {action: "scripts"}
   proc {action: "script_output", script_name: "dev", tail: 50}
-  proc {action: "script_history", script_name: "dev"}`,
+  proc {action: "script_history", script_name: "dev"}
+  proc {action: "snapshot"}                  # Compact dev environment summary
+  proc {action: "snapshot", raw: true}       # Full JSON of processes, proxies, errors, urls, suggested_next
+  proc {action: "output", process_ids: ["build","server"], extract: ["error","ready"]}  # Multi-stream + signals
+  proc {action: "wait", process_id: "server", signal: "ready", timeout: 30000}          # Block until ready
+  proc {action: "wait", process_id: "build", signals: ["ready", "error"], timeout: 60000}  # First wins
+  proc {action: "run", id: "api", run: "go run ./cmd/api", depends_on: ["db"]}
+  proc {action: "run_group", processes: [
+    {id: "db",  run: "docker compose up db"},
+    {id: "api", run: "go run ./cmd/api", depends_on: ["db"]},
+    {id: "web", run: "npm run dev", depends_on: ["api"]}
+  ]}`,
 	}, dt.makeProcHandler())
 
 	// Proxy tools
@@ -611,10 +640,17 @@ Examples:
 }
 
 // makeDetectHandler creates a handler for the detect tool.
+//
+// Daemon mode uses a hybrid path: the daemon roundtrip confirms project type
+// and package manager (so the daemon's view stays authoritative for any
+// daemon-side state), but the script enrichment (CommandDef → DetectScript
+// with proc_run / proc_wait / likely_signals) is built locally from the same
+// `project.Detect` call. This avoids a protocol bump while keeping the
+// daemon-mode output identical to the legacy-mode output.
 func (dt *DaemonTools) makeDetectHandler() func(context.Context, *mcp.CallToolRequest, DetectInput) (*mcp.CallToolResult, DetectOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input DetectInput) (*mcp.CallToolResult, DetectOutput, error) {
-		// Create empty output with initialized Scripts to avoid null in JSON schema validation
-		emptyOutput := DetectOutput{Scripts: []string{}}
+		// Empty output with non-nil Scripts to avoid null in JSON schema validation.
+		emptyOutput := DetectOutput{Scripts: []DetectScript{}, ScriptNames: []string{}}
 
 		if err := validateDetectInput(input); err != nil {
 			return errorResult(validationError("detect", err)), emptyOutput, nil
@@ -624,8 +660,8 @@ func (dt *DaemonTools) makeDetectHandler() func(context.Context, *mcp.CallToolRe
 			return errorResult(err.Error()), emptyOutput, nil
 		}
 
-		// Resolve path to absolute to ensure daemon uses correct directory
-		// Use session project path (from AGNT_PROJECT_PATH) when path is not specified
+		// Resolve path to absolute to ensure daemon uses correct directory.
+		// Use session project path (from AGNT_PROJECT_PATH) when path is not specified.
 		path := input.Path
 		if path == "" {
 			path = getProjectPath()
@@ -635,30 +671,43 @@ func (dt *DaemonTools) makeDetectHandler() func(context.Context, *mcp.CallToolRe
 			return errorResult(fmt.Sprintf("failed to resolve path: %v", err)), emptyOutput, nil
 		}
 
-		result, err := dt.client.Detect(absPath)
-		if err != nil {
+		// Daemon roundtrip — keeps the daemon authoritative for type/package_manager
+		// and lets it surface any daemon-side errors (permission, missing path, ...).
+		if _, err := dt.client.Detect(absPath); err != nil {
 			return formatDaemonError(err, "detect"), emptyOutput, nil
 		}
 
-		// Convert to output type
+		// Re-detect locally to get the full CommandDef list for enrichment.
+		// `project.Detect` is a pure filesystem read — same call the daemon
+		// just made — so this stays consistent without a protocol bump.
+		proj, err := project.Detect(absPath)
+		if err != nil {
+			return errorResult(fmt.Sprintf("failed to detect: %v", err)), emptyOutput, nil
+		}
+
+		scripts := buildDetectScripts(proj.Commands)
+		scriptNames := make([]string, len(proj.Commands))
+		for i, cmd := range proj.Commands {
+			scriptNames[i] = cmd.Name
+		}
+
 		output := DetectOutput{
-			Type:    getString(result, "type"),
-			Scripts: []string{}, // Initialize to empty slice to avoid null in JSON
+			Type:           string(proj.Type),
+			Name:           proj.Name,
+			Framework:      proj.Metadata["framework"],
+			Scripts:        scripts,
+			ScriptNames:    scriptNames,
+			PackageManager: proj.PackageManager,
+			Metadata:       proj.Metadata,
 		}
 
-		if scripts, ok := result["scripts"].([]interface{}); ok {
-			for _, s := range scripts {
-				if str, ok := s.(string); ok {
-					output.Scripts = append(output.Scripts, str)
-				}
-			}
+		if input.Raw {
+			return nil, output, nil
 		}
 
-		if pm, ok := result["package_manager"].(string); ok {
-			output.PackageManager = pm
-		}
-
-		return nil, output, nil
+		summary := formatDetectCompact(output)
+		output.Summary = summary
+		return mcpText(summary), output, nil
 	}
 }
 

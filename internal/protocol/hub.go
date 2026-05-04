@@ -173,5 +173,6 @@ func init() {
 		SubVerbURL,
 		SubVerbGetAll,
 		SubVerbDelete,
+		SubVerbRunGroup,
 	)
 }

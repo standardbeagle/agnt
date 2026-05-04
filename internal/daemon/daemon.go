@@ -233,6 +233,13 @@ type Daemon struct {
 	// Readiness coordination for dependency-ordered autostart
 	readySignaler *ReadySignaler
 
+	// pendingProcs tracks PROC RUN / PROC RUN-GROUP processes that are
+	// waiting on declared `depends_on` dependencies before launching. The
+	// tracker is the single surface that PROC STATUS / PROC LIST consult
+	// to populate the `waiting_for` field while a process is gated. See
+	// internal/daemon/proc_pending.go for the lifecycle contract.
+	pendingProcs *PendingProcessTracker
+
 	// Proxy event system
 	proxyEvents   chan ProxyEvent
 	scriptProxies map[string][]string // scriptID -> []proxyID
@@ -423,6 +430,9 @@ func New(config DaemonConfig) *Daemon {
 
 	// Initialize ready signaler for dependency-ordered autostart
 	d.readySignaler = NewReadySignaler()
+
+	// Initialize pending-process tracker for PROC RUN dep-gated launches.
+	d.pendingProcs = NewPendingProcessTracker()
 
 	// Create URLTracker with callbacks to emit proxy events
 	// Access ProcessManager through Hub

@@ -1,4 +1,4 @@
-.PHONY: build release test test-unit test-integration test-browser test-e2e test-isolated test-flake clean clean-zombies install install-local install-windows run lint test-webapp mockagent generate generate-check vendor
+.PHONY: build release test test-unit test-integration test-browser test-e2e test-isolated test-flake clean clean-zombies install install-local install-windows run lint test-webapp mockagent generate generate-check vendor cross-compile cross-compile-check
 
 # Binary names
 BINARY := devtool-mcp
@@ -184,6 +184,42 @@ install-windows:
 	@rm -f $(AGENT_BINARY).exe
 	@echo "Installed Windows binaries to $(WINDOWS_BIN)"
 
+# Cross-compile sanity check: build for windows/amd64 and darwin/arm64.
+#
+# Catches the class of bug fixed by the run.go/run_windows.go drift —
+# missing platform stubs, divergent signatures, build-constraint typos.
+# Exists because manual review caught that drift; CI must catch the next.
+#
+# CGO_ENABLED=0 is mandatory: the pty deps (creack/pty, aymanbagabas/go-pty)
+# resolve to platform-specific pure-Go files when CGO is off, which is what
+# enables cross-compilation without a target-platform C toolchain.
+#
+# Builds the entire module (./...), not just ./cmd/agnt/..., to surface
+# drift in internal packages with platform-tagged files (the original
+# breakage was in internal/process/run_windows.go).
+cross-compile:
+	@echo "==> Cross-compiling for windows/amd64..."
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o agnt-windows-amd64.exe ./cmd/agnt/
+	@file agnt-windows-amd64.exe | grep -q 'PE32+ executable' || (echo "FAIL: agnt-windows-amd64.exe is not a PE32+ binary"; exit 1)
+	@echo "==> Cross-compiling for darwin/arm64..."
+	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o agnt-darwin-arm64 ./cmd/agnt/
+	@file agnt-darwin-arm64 | grep -q 'Mach-O 64-bit.*arm64' || (echo "FAIL: agnt-darwin-arm64 is not a Mach-O arm64 binary"; exit 1)
+	@echo "==> Building full module for windows/amd64 (catches internal-package drift)..."
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build ./...
+	@echo "==> Building full module for darwin/arm64 (catches internal-package drift)..."
+	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build ./...
+	@rm -f agnt-windows-amd64.exe agnt-darwin-arm64
+	@echo "Cross-compile check passed (windows/amd64, darwin/arm64)"
+
+# Check-only variant for CI: same as cross-compile but without producing
+# named binaries. Faster — `go build` with no -o discards output.
+cross-compile-check:
+	@echo "==> Checking windows/amd64 build..."
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build ./...
+	@echo "==> Checking darwin/arm64 build..."
+	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build ./...
+	@echo "Cross-compile check passed"
+
 # Run the server (for development)
 run: build
 	./$(AGENT_BINARY) serve
@@ -227,6 +263,8 @@ help:
 	@echo "  install          - Install all binaries to GOPATH/bin"
 	@echo "  install-local    - Build and install all binaries to ~/.local/bin"
 	@echo "  install-windows  - Cross-compile and install Windows binaries"
+	@echo "  cross-compile      - Verify windows/amd64 + darwin/arm64 builds (with file-type assertion)"
+	@echo "  cross-compile-check - CI-friendly cross-compile check (no binary output)"
 	@echo "  run              - Build and run the MCP server"
 	@echo "  fmt              - Format code"
 	@echo "  vet              - Vet code"

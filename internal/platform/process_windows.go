@@ -76,3 +76,12 @@ func ScanWindows() ([]ProcInfo, error) {
 func IsWSL() bool {
 	return false
 }
+
+// ShouldUseWindowsShell always returns true on native Windows. Path is
+// ignored — the platform shell is cmd.exe regardless of whether the
+// script lives on the C: drive, a UNC share, or anywhere else. The
+// signature matches the unix variant so callers can stay
+// platform-agnostic.
+func ShouldUseWindowsShell(_ string) bool {
+	return true
+}

@@ -52,7 +52,35 @@ Three triggers for reconciliation:
 | Proxy health probe | TCP connect / HTTP GET | Same | Same |
 | Rogue process identification | `ss -tlnp` gives PID | `netstat -ano` + `tasklist` | Both paths depending on which OS owns the port |
 
-The existing `platform.IsWSL()` / `ShouldUseWindowsShell()` pattern in `internal/platform/wsl.go` is the model. New OS-level operations must follow this pattern. Never use `runtime.GOOS` directly for platform checks in WSL-aware code.
+The existing `platform.IsWSL()` helper in `internal/platform/process_unix.go` (memoized `/proc/version` check for `microsoft`/`wsl`) is the canonical WSL detection. New OS-level operations must consult it before using `runtime.GOOS == "linux"` to gate Linux-only behavior — WSL is GOOS=linux but routinely needs to reach Windows-side processes via `tasklist.exe` / `netstat.exe` / `taskkill.exe` interop.
+
+A `ShouldUseWindowsShell(path)` helper does **not** yet exist and is referenced aspirationally in `.claude/rules/config-contracts.md` and the `cmd.exe` row of the table above; it is tracked under the `wsl-followup` Dart tag (parent `5YgALr79bfhf`). Until it lands, `ScriptConfig.ResolveShell()` uses `cmd.exe` only when `runtime.GOOS == "windows"` — WSL with a Windows-path script silently picks `sh -c` and fails. See `.claude/rules/wsl-audit.md` for the full audit.
+
+### WSL Awareness — what's wired vs deferred
+
+| Site | Status | File |
+|------|--------|------|
+| `platform.IsWSL()` detection | Wired | `internal/platform/process_unix.go:25` |
+| `platform.ScanWindows()` (`tasklist.exe`) | Wired | `internal/platform/process_unix.go:141` |
+| Duplicate scanner appends Windows procs | Wired | `internal/daemon/duplicate_scanner.go:174` |
+| `FindPIDsByPort` falls back to `netstat.exe` | Wired (audit landed 2026-05-02) | `internal/config/portdetect_unix.go` |
+| `ShouldUseWindowsShell(path)` helper | **Not yet** — `wsl-followup` sub-task | `internal/platform/` |
+| `ResolveShell` picks `cmd.exe` for Windows-path scripts on WSL | **Not yet** — depends on helper above | `internal/config/agnt.go:272` |
+| Doctor command attributes Windows-side port owners by name | Partial — PID surfaces, name is blank | `internal/daemon/doctor.go` |
+| `taskkill.exe` to kill Windows-side rogue processes | **Not yet** — `wsl-followup` sub-task | `internal/platform/` |
+
+### Accepted WSL escape hatches
+
+These behaviors are intentional. They look like WSL bugs but aren't:
+
+| Behavior | Why we accept it |
+|----------|-----------------|
+| `pidAlive` cannot probe Windows PIDs from WSL | We never register Windows PIDs in our process manager — they only show up via `ScanWindows()` and are read-only for us |
+| `directChildren` returns nil for Windows-side parent PIDs | We don't track Windows process trees; descendant cleanup is for our managed processes |
+| `normalizePath` is case-sensitive for `/mnt/c/...` paths in WSL | `/mnt/c/Users/Foo` and `/mnt/c/Users/foo` resolve to the same NTFS file but Linux treats them as distinct paths. Forcing lowercase would collapse two distinct sessions registered under different casings |
+| `cleanupStaleFiles` PID file uses Linux layout under WSL | The daemon socket path is owned by the caller; running the daemon under WSL means Linux paths end-to-end |
+| Browser launcher doesn't have a WSL branch | `BROWSER` env var is the WSL-friendly contract; we don't bridge `open` ↔ `cmd.exe /c start` |
+| `chromedp` session URL picker is darwin-only | Chrome process discovery is only meaningful when we launch chrome ourselves; WSL users typically point at chrome on the host |
 
 ## Silent Failure Prohibition
 
@@ -189,7 +217,15 @@ Each of these leaves a port or resource held after session shutdown, but that is
 
 ### Cross-Platform Note
 
-The session pgid primitives are Unix-only (`//go:build !windows`). On Windows, Job Objects already provide equivalent cascade-kill semantics for the PTY child tree, and `SessionPGID` is always 0 — `killSessionPGID` is a no-op guarded by `pgid <= 1`. The startup orphan scan is Linux-only (`//go:build linux`) because it walks `/proc`; on non-Linux Unix, `ScanOrphanPGIDs` returns an empty slice.
+The session pgid primitives are Unix-only (`//go:build !windows`). On Windows, Job Objects already provide equivalent cascade-kill semantics for the PTY child tree, and `SessionPGID` is always 0 — `killSessionPGID` is a no-op guarded by `pgid <= 1`. The startup orphan scan has three implementations selected by build tag:
+
+| Platform | File | Mechanism |
+|----------|------|-----------|
+| Linux | `internal/platform/orphanpgid_unix.go` (`//go:build linux`) | `/proc` walk via `Scan()` + `readPGID` from `/proc/<pid>/stat` |
+| macOS | `internal/platform/orphanpgid_darwin.go` (`//go:build darwin`) | `sysctl` `KERN_PROC_ALL` via `unix.SysctlKinfoProcSlice` — atomic snapshot with pid/pgid/ppid/uid in one syscall |
+| Other Unix (FreeBSD, OpenBSD, etc.) | `internal/platform/orphanpgid_other.go` (`//go:build !windows && !linux && !darwin`) | Stubs return nil — no orphan detection but no false reaping either |
+
+The pure orphan-classification logic is shared via `internal/platform/orphanpgid_classify.go` (`//go:build !windows`) and exhaustively tested in `orphanpgid_classify_test.go` so the darwin code path can be verified on Linux CI without a macOS host. macOS-side verification beyond cross-compile (`GOOS=darwin go build ./...`) requires a real darwin runtime to exercise the sysctl source; the procisolation-tagged test file (`orphanpgid_unix_test.go`) is `//go:build linux && procisolation` because it exercises host-global `/proc` and `kill(2)` directly and depends on Linux PID namespaces (`unshare`) for safe execution.
 
 ## Test startup contract
 

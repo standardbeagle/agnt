@@ -1506,6 +1506,138 @@
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // Shared design-state sync (panel side)
+  //
+  // Mirror of the palette's outbound dispatch path. When the user edits an
+  // inline style here, we emit a 'devtool:design-state' CustomEvent so the
+  // mini palette (palette.js) can update its scrubber/swatch in place. We
+  // also subscribe so palette-originated edits flow back into our row
+  // controls without re-rendering the whole panel.
+  //
+  // Loop guard: detail.source === 'panel' for our dispatches; the listener
+  // ignores 'panel' events. applyingRemoteDesignState additionally
+  // suppresses the outbound dispatch from applyInlineStyleEdit when the
+  // edit itself originates from an inbound event — both guards are
+  // needed because applyInlineStyleEdit also runs from internal panel
+  // controls that we cannot easily tell apart from remote application.
+  // ---------------------------------------------------------------------------
+  // Wire-protocol literals ('devtool:design-state', 'panel') are inline at
+  // dispatch/subscribe sites so grep across modules turns up both ends of
+  // the contract. The mini palette uses 'palette' as its source tag.
+  var applyingRemoteDesignState = false;
+  var designStateListener = null;
+
+  function dispatchDesignStateEdit(property, value) {
+    if (applyingRemoteDesignState) return;
+    try {
+      document.dispatchEvent(new CustomEvent('devtool:design-state', {
+        detail: {
+          source: 'panel',
+          kind: 'edit',
+          selector: state.selector || null,
+          change: { property: property, value: value }
+        }
+      }));
+    } catch (e) {
+      // Legacy IE without CustomEvent constructor — degrade silently.
+    }
+  }
+
+  function dispatchDesignStateDeselect() {
+    if (applyingRemoteDesignState) return;
+    try {
+      document.dispatchEvent(new CustomEvent('devtool:design-state', {
+        detail: { source: 'panel', kind: 'deselect' }
+      }));
+    } catch (e) { /* ignore */ }
+  }
+
+  // Refresh the visible value of a property row after a remote edit.
+  // Addresses the row's control container by dataset (set in buildPropertyRow)
+  // so the lookup survives re-renders that change inline style strings.
+  // If the property is not currently rendered (e.g. category collapsed),
+  // the next open of that section will read the live value naturally.
+  function refreshRowForProperty(property) {
+    if (!state.panel || !state.selectedElement) return;
+    // Property names are CSS-safe (lowercase letters + hyphens) so direct
+    // attribute-selector interpolation is safe. We restrict to property
+    // names matching /^[a-z-]+$/ to defend against accidental injection.
+    if (!/^[a-z-]+$/.test(property)) return;
+    var controlContainer = state.panel.querySelector(
+      '[data-property-control="' + property + '"]'
+    );
+    if (!controlContainer) return;
+    // Re-render with the new value pulled live from the element. The
+    // control rebuild path mirrors Reset's behaviour so we know it
+    // produces a control consistent with the rest of the panel.
+    var liveValue = getComputedStyle(state.selectedElement).getPropertyValue(property);
+    controlContainer.innerHTML = '';
+    var freshControl = renderControl(property, liveValue, function(newValue) {
+      applyInlineStyleEdit(property, newValue);
+    });
+    controlContainer.appendChild(freshControl);
+  }
+
+  function attachDesignStateListener() {
+    if (designStateListener) return;
+    designStateListener = function(e) {
+      if (!e || !e.detail) return;
+      // Loop guard: ignore our own emits. Literal 'panel' source duplicated
+      // here so grep across modules surfaces both producer and consumer.
+      if (e.detail.source === 'panel') return;
+      if (!state.isOpen) return;
+
+      if (e.detail.kind === 'deselect') {
+        // Palette closed (Escape, click-outside, delete) — close the panel
+        // in sync. applyingRemoteDesignState suppresses our deselect
+        // re-broadcast so the round-trip terminates.
+        applyingRemoteDesignState = true;
+        try { close(); } finally { applyingRemoteDesignState = false; }
+        return;
+      }
+
+      if (e.detail.kind === 'select' && e.detail.element) {
+        // Palette mounted on a new element — re-target the panel without
+        // closing/reopening so the user's panel position is preserved.
+        // applyingRemoteDesignState suppresses our own re-broadcast.
+        applyingRemoteDesignState = true;
+        try {
+          state.selectedElement = e.detail.element;
+          state.selector = e.detail.selector || (getUtils() && getUtils().generateSelector
+            ? getUtils().generateSelector(e.detail.element) : null);
+          state.changes = [];
+          state.originalValues = {};
+          // Re-render panel content for the new element. hidePanel +
+          // showPanel rebuilds sections from scratch, which is the
+          // simplest correct behaviour and matches what open() does.
+          if (state.panel) {
+            hidePanel();
+            showPanel(e.detail.element, state.selector);
+          }
+        } finally {
+          applyingRemoteDesignState = false;
+        }
+        return;
+      }
+
+      if (e.detail.kind === 'edit' && e.detail.change && state.selectedElement) {
+        // Mirror the palette's edit into the panel: write the inline
+        // style + re-render the matching row's control. We bypass
+        // applyInlineStyleEdit's outbound dispatch via the guard so the
+        // event doesn't ricochet back to the palette.
+        applyingRemoteDesignState = true;
+        try {
+          applyInlineStyleEdit(e.detail.change.property, e.detail.change.value);
+          refreshRowForProperty(e.detail.change.property);
+        } finally {
+          applyingRemoteDesignState = false;
+        }
+      }
+    };
+    document.addEventListener('devtool:design-state', designStateListener);
+  }
+
   // Apply an inline style edit on the selected element and track in state.changes.
   function applyInlineStyleEdit(property, newValue) {
     var element = state.selectedElement;
@@ -1544,6 +1676,12 @@
     if (state.boxModelContainer && state.boxModelContainer.refresh) {
       state.boxModelContainer.refresh();
     }
+
+    // Notify the mini palette so it can mirror this change. The
+    // applyingRemoteDesignState guard skips the dispatch when this edit is
+    // itself the result of a palette-originated event we're applying.
+    // See the design-state listener below for the shared sync wiring.
+    dispatchDesignStateEdit(property, newValue);
   }
 
   // Check whether an inline style property has been edited.
@@ -1654,6 +1792,11 @@
         // Build a property row with blue dot, name, control, and optional !important icon.
         function buildPropertyRow(entry) {
           var row = document.createElement('div');
+          // Tag the row + control container with the property name so the
+          // shared design-state listener can address them by attribute
+          // selector (refreshRowForProperty) without relying on inline
+          // style-string matching, which is brittle across re-renders.
+          row.dataset.propertyRow = entry.property;
           row.style.cssText = [
             'display: flex',
             'align-items: center',
@@ -1689,6 +1832,52 @@
           nameEl.textContent = entry.property;
           row.appendChild(nameEl);
 
+          // WYSIWYG scrubber: for numeric rows, turn the property-name label
+          // into a drag/wheel handle so users can adjust the value without
+          // typing. Detection mirrors detectControlType so we only attach
+          // the affordance to rows that have a meaningful numeric value.
+          // Commit flows through applyInlineStyleEdit (the same write path
+          // the per-row controls use), so the design-state event dispatches
+          // and the mini palette mirrors the change in real time.
+          var scrubDetected = detectControlType(entry.property, entry.value);
+          if (scrubDetected.type === 'numeric') {
+            // Step heuristic: opacity / line-height want 0.01 per pixel of
+            // drag for fine-grained control; integer-valued properties get
+            // 1 per pixel which feels natural for px / % / rem ranges
+            // typical of the panel.
+            var scrubStep = (scrubDetected.config && scrubDetected.config.range && scrubDetected.config.range.step < 1) ? 0.01 : 1;
+            attachScrubber(nameEl, {
+              readValue: function() {
+                // Read from the live element rather than the cached entry
+                // value so the scrubber composes with mid-session edits
+                // (palette changes, undo, the per-row reset button).
+                if (!state.selectedElement) return entry.value;
+                return getComputedStyle(state.selectedElement).getPropertyValue(entry.property).trim();
+              },
+              onScrub: function(newValue) {
+                applyInlineStyleEdit(entry.property, newValue);
+                dot.style.display = 'inline-block';
+                resetBtn.style.display = 'inline-block';
+                section.updateChanged(countCategoryChanges(entries));
+                // Reflect the new value in the per-row control without a
+                // full row rebuild — keeps the scrub feel snappy.
+                refreshRowForProperty(entry.property);
+              },
+              onCommit: function(newValue) {
+                applyInlineStyleEdit(entry.property, newValue);
+                refreshRowForProperty(entry.property);
+              },
+              onRevert: function(originalValue) {
+                applyInlineStyleEdit(entry.property, originalValue);
+                refreshRowForProperty(entry.property);
+              },
+              step: scrubStep
+            });
+            // Tooltip hint so the affordance is discoverable on hover for
+            // users who don't know the ew-resize cursor convention.
+            nameEl.title = 'Drag or scroll to scrub ' + entry.property + ' (Shift = ×10, Esc = revert)';
+          }
+
           // Warning icon for !important properties
           if (importantProps[entry.property]) {
             var warnIcon = document.createElement('span');
@@ -1705,6 +1894,7 @@
 
           // Value control
           var controlContainer = document.createElement('div');
+          controlContainer.dataset.propertyControl = entry.property;
           controlContainer.style.cssText = [
             'flex: 1',
             'min-width: 0',
@@ -2362,6 +2552,245 @@
     var result = pxValue / (UNIT_PX_FACTORS[toUnit] || 1);
     // Round to avoid floating point noise
     return Math.round(result * 100) / 100;
+  }
+
+  // ---------------------------------------------------------------------------
+  // attachScrubber(target, opts) -- WYSIWYG drag/wheel scrubber.
+  //
+  // Wires the standard "scrub by drag or wheel" UX onto a target element so
+  // numeric CSS properties can be edited directly from the inspect panel
+  // without typing into the number input. Modeled on the affordance used by
+  // Chrome devtools' Styles pane, Photoshop, and Figma: hover shows
+  // ew-resize cursor, horizontal drag adjusts value by px-of-drag * step,
+  // wheel adjusts by ±step per tick (×10 with shift), Escape mid-scrub
+  // reverts to the pre-scrub value.
+  //
+  // opts:
+  //   readValue()           — return the current value string (e.g. '16px',
+  //                           '1.5rem', '0.8'). Re-read on each scrub start
+  //                           so external mutations stay in sync.
+  //   onScrub(newValueStr)  — called continuously during drag/wheel to apply
+  //                           the live preview. Should route through
+  //                           applyInlineStyleEdit so design-state mirrors.
+  //   onCommit(newValueStr) — called on pointerup / wheel idle / blur with
+  //                           the final value. Often the same callback as
+  //                           onScrub; kept distinct so callers can debounce
+  //                           heavy commit work (state.changes ledger update,
+  //                           updateAttachButton, etc.).
+  //   onRevert(originalStr) — called on Escape; receives the value captured
+  //                           at scrub start so the caller can restore both
+  //                           DOM and panel state.
+  //   step (optional)       — units of value mutated per pixel of drag /
+  //                           per wheel tick. Default 1. Pass 0.01 for
+  //                           opacity-style fine-grained controls.
+  //
+  // The scrubber preserves the trailing unit verbatim by parsing with
+  // NUMERIC_VALUE_RE — dragging '1.5rem' yields '1.6rem', never '1.6px'.
+  // Unitless values (raw numbers) round-trip without a unit suffix.
+  //
+  // Returns a teardown function that removes the listeners (used when the
+  // panel rebuilds rows so we don't accumulate handlers on detached nodes).
+  // ---------------------------------------------------------------------------
+  function attachScrubber(target, opts) {
+    if (!target || !opts) return function() {};
+    var readValue = opts.readValue || function() { return '0'; };
+    var onScrub = opts.onScrub || function() {};
+    var onCommit = opts.onCommit || onScrub;
+    var onRevert = opts.onRevert || function() {};
+    var stepBase = typeof opts.step === 'number' && opts.step > 0 ? opts.step : 1;
+
+    // Make the target obviously interactive: ew-resize is the
+    // industry-standard scrub cursor (Chrome devtools, Figma, Photoshop).
+    // We append rather than replace so existing cursor declarations on the
+    // element are overridden but related styles are preserved.
+    try {
+      target.style.cursor = 'ew-resize';
+      target.style.userSelect = 'none';
+      // Pointer events default to allowing native drag-select on text; the
+      // scrubber needs the pointer events but not the selection, so
+      // suppress selection explicitly.
+      target.style.webkitUserSelect = 'none';
+    } catch (e) { /* style setter may throw in unusual hosts; ignore */ }
+
+    // Parse a CSS numeric value into {num, unit}. Falls back to {num: 0,
+    // unit: ''} for unparseable input. Reuses NUMERIC_VALUE_RE so the
+    // unit set tracked here stays in lockstep with detectControlType.
+    function parseNumeric(str) {
+      var s = String(str || '').trim();
+      if (!NUMERIC_VALUE_RE.test(s)) return { num: 0, unit: '' };
+      var m = s.match(/^(-?\d+\.?\d*)(px|rem|em|%|vw|vh)?$/);
+      if (!m) return { num: 0, unit: '' };
+      return { num: parseFloat(m[1]), unit: m[2] || '' };
+    }
+
+    function formatNumeric(num, unit) {
+      // Round to 2 decimals to avoid floating-point noise; matches the
+      // precision used by NumericSlider's formatOutput.
+      var rounded = Math.round(num * 100) / 100;
+      return unit ? rounded + unit : String(rounded);
+    }
+
+    // Per-scrub session state. Captured on pointerdown / first wheel and
+    // cleared on pointerup / Escape so concurrent scrubs can't interleave.
+    var session = null;
+    var keydownAttached = false;
+    var wheelIdleTimer = null;
+
+    function startSession() {
+      var initial = parseNumeric(readValue());
+      session = {
+        startNum: initial.num,
+        currentNum: initial.num,
+        unit: initial.unit,
+        originalStr: formatNumeric(initial.num, initial.unit)
+      };
+      attachKeydown();
+    }
+
+    function endSession(commit) {
+      if (!session) return;
+      var finalStr = formatNumeric(session.currentNum, session.unit);
+      var s = session;
+      session = null;
+      detachKeydown();
+      if (commit) {
+        onCommit(finalStr);
+      } else {
+        onRevert(s.originalStr);
+      }
+    }
+
+    // Pointer drag: track horizontal delta. requestPointerLock would be
+    // even smoother (infinite drag distance) but adds permission UX
+    // friction; the simple delta-from-start model matches the rest of
+    // the panel's interaction style.
+    var dragStartX = 0;
+    var pointerCaptured = false;
+
+    function onPointerDown(e) {
+      // Left button only; ignore right-click context menu, middle-click
+      // paste, and synthetic events without buttons (some test harnesses).
+      if (e.button !== 0) return;
+      // If a wheel-idle session is still pending, commit it before the
+      // drag begins — the wheel ticks were intentional edits, so they
+      // should be preserved. Then start a fresh drag session whose
+      // baseline reads the post-wheel value.
+      if (session) {
+        if (wheelIdleTimer) {
+          clearTimeout(wheelIdleTimer);
+          wheelIdleTimer = null;
+        }
+        endSession(true);
+      }
+      startSession();
+      dragStartX = e.clientX;
+      pointerCaptured = false;
+      try {
+        // Pointer capture lets us keep receiving move events even if the
+        // pointer leaves the target's bounding box mid-drag.
+        if (target.setPointerCapture && typeof e.pointerId === 'number') {
+          target.setPointerCapture(e.pointerId);
+          pointerCaptured = true;
+        }
+      } catch (err) { /* setPointerCapture throws on stale pointers */ }
+      // preventDefault suppresses native text-selection drag behaviour
+      // that would otherwise hijack the drag gesture on the label.
+      if (e.preventDefault) e.preventDefault();
+    }
+
+    function onPointerMove(e) {
+      if (!session) return;
+      var dx = e.clientX - dragStartX;
+      // Shift accelerates by 10×, matching Chrome devtools and Figma.
+      var step = stepBase * (e.shiftKey ? 10 : 1);
+      session.currentNum = session.startNum + dx * step;
+      onScrub(formatNumeric(session.currentNum, session.unit));
+    }
+
+    function onPointerUp(e) {
+      if (!session) return;
+      try {
+        if (pointerCaptured && target.releasePointerCapture && typeof e.pointerId === 'number') {
+          target.releasePointerCapture(e.pointerId);
+        }
+      } catch (err) { /* releasePointerCapture can throw if capture lost */ }
+      pointerCaptured = false;
+      endSession(true);
+    }
+
+    // Wheel: each tick is one step (or 10 with shift). passive: false is
+    // mandatory because we need preventDefault() to suppress page scroll
+    // — without it the page jumps every time the user scrubs over a
+    // property and the scrubber feels broken. The wheelIdleTimer treats
+    // a pause as commit so the design-state mirror gets a final value.
+    function onWheel(e) {
+      if (!session) startSession();
+      // deltaY > 0 means scrolling down; convention matches Chrome
+      // devtools where down decrements. Inverted on macOS natural
+      // scroll? No — we use the raw direction; users with natural
+      // scroll get the inverted feel they already expect from other
+      // scrubbers (Figma, Photoshop) on macOS.
+      var direction = e.deltaY > 0 ? -1 : 1;
+      var step = stepBase * (e.shiftKey ? 10 : 1);
+      session.currentNum = session.currentNum + direction * step;
+      onScrub(formatNumeric(session.currentNum, session.unit));
+      if (e.preventDefault) e.preventDefault();
+      // Reset the idle timer on every tick; commit ~250ms after the
+      // last tick so a continuous spin batches into one logical edit.
+      if (wheelIdleTimer) clearTimeout(wheelIdleTimer);
+      wheelIdleTimer = setTimeout(function() {
+        wheelIdleTimer = null;
+        endSession(true);
+      }, 250);
+    }
+
+    // Escape revert: bound on document during an active session so the
+    // user doesn't need to focus the scrub handle first. Detached on
+    // session end to keep the global keydown surface lean.
+    function onKeyDown(e) {
+      if (!session) return;
+      if (e.key === 'Escape') {
+        if (wheelIdleTimer) {
+          clearTimeout(wheelIdleTimer);
+          wheelIdleTimer = null;
+        }
+        endSession(false);
+        if (e.preventDefault) e.preventDefault();
+      }
+    }
+
+    function attachKeydown() {
+      if (keydownAttached) return;
+      document.addEventListener('keydown', onKeyDown, true);
+      keydownAttached = true;
+    }
+
+    function detachKeydown() {
+      if (!keydownAttached) return;
+      document.removeEventListener('keydown', onKeyDown, true);
+      keydownAttached = false;
+    }
+
+    target.addEventListener('pointerdown', onPointerDown);
+    target.addEventListener('pointermove', onPointerMove);
+    target.addEventListener('pointerup', onPointerUp);
+    target.addEventListener('pointercancel', onPointerUp);
+    // passive: false required so onWheel can preventDefault page scroll.
+    target.addEventListener('wheel', onWheel, { passive: false });
+
+    return function teardown() {
+      target.removeEventListener('pointerdown', onPointerDown);
+      target.removeEventListener('pointermove', onPointerMove);
+      target.removeEventListener('pointerup', onPointerUp);
+      target.removeEventListener('pointercancel', onPointerUp);
+      target.removeEventListener('wheel', onWheel);
+      detachKeydown();
+      if (wheelIdleTimer) {
+        clearTimeout(wheelIdleTimer);
+        wheelIdleTimer = null;
+      }
+      if (session) session = null;
+    };
   }
 
   // NumericSlider(property, value, unit, onChange) -- Reusable numeric slider control.
@@ -3767,6 +4196,7 @@
   // Close the style editor and clean up
   function close() {
     if (!state.isOpen) return;
+    var hadSelection = !!state.selectedElement;
     state.isOpen = false;
     state.selectedElement = null;
     state.selector = null;
@@ -3775,6 +4205,13 @@
     state.changes = [];
     state.originalValues = {};
     state.pinned = false;
+
+    // Notify the mini palette so it can hide in sync. Only dispatch when
+    // we actually had a selection — close() can also fire from a no-op
+    // toggle path, and a stray deselect would race the palette listener.
+    if (hadSelection) {
+      dispatchDesignStateDeselect();
+    }
 
     if (state.selecting) {
       state.selecting = false;
@@ -3977,4 +4414,9 @@
     captureContextHTML: captureContextHTML,
     sendReactPropsToAgent: sendReactPropsToAgent
   };
+
+  // Attach the cross-surface design-state listener at module load. Idempotent
+  // by guard inside attachDesignStateListener — double-loads of the bundle
+  // (e.g. hot-reload) won't double-subscribe.
+  attachDesignStateListener();
 })();

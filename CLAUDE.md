@@ -794,7 +794,7 @@ The field replaces the legacy `AGNT_DISABLE_ORPHAN_SCAN` env var fence; the env 
 - Graceful shutdown: 5s SIGTERM → SIGKILL (normal)
 - Aggressive shutdown: Immediate SIGKILL when deadline <3s
 - Health checks: 10s period
-- **Session pgid containment**: The PTY child's pgid is the session container. `CleanupSessionResources` kills the entire pgid (SIGTERM, 2s grace, SIGKILL) before touching managed processes — catches `npm run dev &` and other non-interactive-bash backgrounded jobs. Startup scans `/proc` for orphaned pgids from daemon crashes. Accepted escape hatches: `setsid &`, double-fork daemons, `systemd-run`, container runtimes. Full invariant and file ownership: `.claude/rules/daemon-architecture.md` § Session Containment.
+- **Session pgid containment**: The PTY child's pgid is the session container. `CleanupSessionResources` kills the entire pgid (SIGTERM, 2s grace, SIGKILL) before touching managed processes — catches `npm run dev &` and other non-interactive-bash backgrounded jobs. Startup scans for orphaned pgids from daemon crashes (Linux: `/proc` walk; macOS: `sysctl KERN_PROC_ALL`; other Unix: stub no-op). Accepted escape hatches: `setsid &`, double-fork daemons, `systemd-run`, container runtimes. Full invariant and file ownership: `.claude/rules/daemon-architecture.md` § Session Containment.
 
 ### Reverse Proxy
 - Default port: Hash-based (stable, 10000-60000 range)

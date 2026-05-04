@@ -170,7 +170,14 @@ func checkPortConflicts(ctx context.Context, projectPath string, pm *goprocess.P
 		return CheckResult{Name: name, Status: StatusOK, Message: "no config to check"}
 	}
 
-	var conflicts []map[string]interface{}
+	type rawConflict struct {
+		script string
+		port   int
+		pids   []int
+	}
+	var raws []rawConflict
+	var allPIDs []int
+	pidSeen := make(map[int]struct{})
 	for scriptName, sc := range cfg.Scripts {
 		for _, port := range sc.Ports {
 			pids := config.FindPIDsByPort(ctx, port)
@@ -184,14 +191,42 @@ func checkPortConflicts(ctx context.Context, projectPath string, pm *goprocess.P
 					break
 				}
 			}
-			if !managed {
-				conflicts = append(conflicts, map[string]interface{}{
-					"script": scriptName,
-					"port":   port,
-					"pids":   pids,
-				})
+			if managed {
+				continue
+			}
+			raws = append(raws, rawConflict{script: scriptName, port: port, pids: pids})
+			for _, pid := range pids {
+				if _, dup := pidSeen[pid]; !dup {
+					pidSeen[pid] = struct{}{}
+					allPIDs = append(allPIDs, pid)
+				}
 			}
 		}
+	}
+
+	// Resolve all rogue PIDs in a single batch — on WSL this coalesces
+	// to one tasklist.exe call regardless of how many Windows-side PIDs
+	// are holding our declared ports. Linux PIDs resolve via /proc with
+	// no shell-out cost.
+	names := config.ProcessNamesByPIDs(ctx, allPIDs)
+
+	var conflicts []map[string]interface{}
+	for _, raw := range raws {
+		pidNames := make([]string, 0, len(raw.pids))
+		for _, pid := range raw.pids {
+			if n := names[pid]; n != "" {
+				pidNames = append(pidNames, n)
+			}
+		}
+		entry := map[string]interface{}{
+			"script": raw.script,
+			"port":   raw.port,
+			"pids":   raw.pids,
+		}
+		if len(pidNames) > 0 {
+			entry["process_names"] = pidNames
+		}
+		conflicts = append(conflicts, entry)
 	}
 
 	if len(conflicts) == 0 {

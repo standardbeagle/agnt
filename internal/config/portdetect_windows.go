@@ -53,6 +53,14 @@ func ProcessNameByPID(pid int) string {
 	return ""
 }
 
+// FindPIDsByPortTagged is the kill-routing-aware variant of FindPIDsByPort.
+// On native Windows there is no Linux/Windows split — all PIDs are
+// Windows-side by definition — so the linux slice is always nil and every
+// PID is returned in the windows slice.
+func FindPIDsByPortTagged(ctx context.Context, port int) (linuxPIDs, windowsPIDs []int) {
+	return nil, FindPIDsByPort(ctx, port)
+}
+
 // FindPIDsByPort returns PIDs of processes listening on the given TCP port.
 // Uses netstat -ano on Windows.
 func FindPIDsByPort(ctx context.Context, port int) []int {
