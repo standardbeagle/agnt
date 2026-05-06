@@ -864,8 +864,13 @@ func (c *AgntConfig) BuildSystemPrompt() string {
 		sb.WriteString("\n\n")
 	}
 
-	// Base agnt description
-	sb.WriteString(`You have access to agnt, a tool that gives AI coding agents browser superpowers.
+	// Base agnt description.
+	// Preamble + CRITICAL proc-first block locked by tests (npm run dev / go run /
+	// proc run / proc output / watch examples must remain verbatim).
+	// Tool catalog + workflow sections compressed for token economy.
+	sb.WriteString(`agnt MCP server = browser superpowers for AI coding agents. Tools below live on the ` + "`agnt`" + ` MCP server. Call as MCP tools directly. NOT shell. NOT ` + "`agnt <tool>`" + ` CLI.
+
+If ` + "`agnt`" + ` tools are missing from your MCP list: check ` + "`slop-mcp`" + ` — agnt may be registered there. Use ` + "`slop-mcp`" + ` ` + "`execute_tool {mcp_name:\"agnt\", tool_name:\"...\", parameters:{...}}`" + ` as fallback. Reconnect via ` + "`manage_mcps {action:\"reconnect\", name:\"agnt\"}`" + ` if cached/disconnected.
 
 ## CRITICAL: Use proc for dev servers and long-lived builds
 
@@ -889,34 +894,29 @@ watch {target: "process", process_id: "dev"}  // get a streaming monitor command
 ` + "```" + `
 
 Pattern: ` + "`proc run`" + ` to start, ` + "`proc output`" + ` to inspect, ` + "`watch`" + ` to follow live, ` + "`proc stop`" + ` to terminate. The ` + "`agnt hook check-bash`" + ` interceptor will block raw ` + "`npm run`" + `/` + "`yarn`" + `/` + "`go run`" + `/etc. via the PreToolUse hook when wired into ` + "`~/.claude/settings.json`" + `.
-
-## agnt Tools
-
-- **get_errors**: Unified error view across processes and proxies (JS errors, HTTP errors, process failures)
-- **proxy**: Reverse proxy with JS injection — start/stop, capture traffic, execute JS, take screenshots
-- **proc**: Process management — start/stop/restart scripts, view output, auto-restart on crash
-- **proxylog**: Query captured HTTP traffic — filter by type (error, xhr, console), search bodies
-- **responsive_audit**: Responsive design audit across viewport sizes (mobile, tablet, desktop)
-- **automation**: Headless Chrome via chromedp — screenshots at multiple viewports, navigate, evaluate JS
-- **currentpage**: Track the active browser page/URL for context
-
-## Debugging Workflow
-
-When something isn't working:
-1. get_errors {} — check for JS errors, HTTP errors, process failures
-2. currentpage {} — see what page/URL the user is viewing
-3. proc {action: "output", id: "..."} — check process output for crashes/errors
-4. proxylog {action: "query", types: ["error"]} — check HTTP/API errors
-5. proxy {action: "exec", ...} — run diagnostic JS in the browser
-6. Take a screenshot if visual issue suspected
-
-## Common Patterns
-
-- "Page is blank" — get_errors, then proc output for build errors
-- "API returns 500" — proxylog query for the specific endpoint
-- "Style looks wrong" — responsive_audit or screenshot
-- "Process crashed" — proc output, then restart
 `)
+	sb.WriteString("\n## agnt Tools\n\n")
+	sb.WriteString("- **get_errors** — unified JS/HTTP/process errors\n")
+	sb.WriteString("- **proxy** — reverse proxy + JS injection. actions: `list`/`start`/`stop`/`exec`/`screenshot`\n")
+	sb.WriteString("- **proc** — process mgmt. actions: `list`/`output`/`stop`/`run`\n")
+	sb.WriteString("- **proxylog** — HTTP traffic query. filter by type/body\n")
+	sb.WriteString("- **responsive_audit** — viewport audit (mobile/tablet/desktop)\n")
+	sb.WriteString("- **automation** — chromedp headless. screenshot/navigate/evaluate\n")
+	sb.WriteString("- **currentpage** — active page/URL\n")
+	sb.WriteString("\n## Debugging Workflow\n\n")
+	sb.WriteString("Broken thing → call MCP tools, this order:\n\n")
+	sb.WriteString("1. `get_errors {}` — first always\n")
+	sb.WriteString("2. `currentpage {}` — what user sees\n")
+	sb.WriteString("3. `proc {action:\"output\", id:\"...\"}` — crash/build output\n")
+	sb.WriteString("4. `proxylog {action:\"query\", types:[\"error\"]}` — HTTP/API fail\n")
+	sb.WriteString("5. `proxy {action:\"exec\", id:\"...\", code:\"...\"}` — diagnostic JS in browser\n")
+	sb.WriteString("6. screenshot if visual\n")
+	sb.WriteString("\n## Common Patterns\n\n")
+	sb.WriteString("- \"page blank\" → get_errors → proc output\n")
+	sb.WriteString("- \"API 500\" → proxylog query endpoint\n")
+	sb.WriteString("- \"style wrong\" → responsive_audit + screenshot\n")
+	sb.WriteString("- \"click dead\" → proxy exec → inspect `pointer-events`, overlays, z-index\n")
+	sb.WriteString("- \"crashed\" → proc output → restart\n")
 
 	// Add configured scripts
 	if len(c.Scripts) > 0 {
@@ -960,12 +960,12 @@ When something isn't working:
 	}
 
 	sb.WriteString("\n## Process Management\n\n")
-	sb.WriteString("- proc {action: \"list\"} — see all processes and their states\n")
-	sb.WriteString("- proc {action: \"output\", id: \"...\"} — see recent output lines\n")
-	sb.WriteString("- proc {action: \"stop\", id: \"...\"} then run {script: \"...\"} — restart\n")
-	sb.WriteString("- proxy {action: \"list\"} — see all proxies and their states\n")
-	sb.WriteString("- proxy {action: \"exec\", ...} — run JS in the browser\n")
-	sb.WriteString("- Do NOT start processes or proxies that are already running\n")
+	sb.WriteString("- `proc {action:\"list\"}` — all processes + states\n")
+	sb.WriteString("- `proc {action:\"output\", id:\"...\"}` — recent lines\n")
+	sb.WriteString("- `proc {action:\"stop\", id:\"...\"}` then `proc {action:\"run\", script:\"...\"}` — restart\n")
+	sb.WriteString("- `proxy {action:\"list\"}` — all proxies + states\n")
+	sb.WriteString("- `proxy {action:\"exec\", id:\"...\", code:\"...\"}` — JS in browser\n")
+	sb.WriteString("- DO NOT start already-running process/proxy\n")
 
 	// Append custom prompt if set
 	if c.AI != nil && c.AI.AppendSystemPrompt != "" {
