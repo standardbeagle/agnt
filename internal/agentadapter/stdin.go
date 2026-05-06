@@ -48,7 +48,7 @@ func (s *stdinAdapter) InitialStdin(prompt string) []byte {
 	// The trailing newline is required — the message must look like a
 	// completed line for the agent to treat it as submitted input.
 	msg := fmt.Sprintf(
-		"Note: Running under agnt with MCP tools (proxy, proc, proxylog, currentpage) for browser debugging and dev server management. %s\n",
+		"Note: running under agnt. MCP tools on `agnt` server: get_errors, proxy, proc, proxylog, responsive_audit, automation, currentpage. Call directly as MCP tools — NOT shell, NOT CLI. Missing? check `slop-mcp` (`execute_tool {mcp_name:\"agnt\", ...}`, reconnect via `manage_mcps`). %s\n",
 		prompt,
 	)
 	return []byte(msg)

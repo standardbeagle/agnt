@@ -23,43 +23,43 @@ func getHints() []hintRule {
 		}{
 			{
 				pattern: `getBoundingClientRect\(`,
-				message: "Consider __devtool.getPosition instead of getBoundingClientRect()",
+				message: "use __devtool.getPosition — replaces getBoundingClientRect()",
 			},
 			{
 				pattern: `getComputedStyle\(`,
-				message: "Consider __devtool.getComputed instead of getComputedStyle()",
+				message: "use __devtool.getComputed — replaces getComputedStyle()",
 			},
 			{
 				pattern: `querySelectorAll[^)]*\)\.length`,
-				message: "Consider __devtool.auditDOMComplexity instead of querySelectorAll(...).length",
+				message: "use __devtool.auditDOMComplexity — replaces querySelectorAll(...).length",
 			},
 			{
 				pattern: `tabindex`,
-				message: "Consider __devtool.getTabOrder instead of manual tabindex walk",
+				message: "use __devtool.getTabOrder — skip manual tabindex walk",
 			},
 			{
 				pattern: `addEventListener\(['"]click`,
-				message: "Consider __devtool.interactions.getHistory instead of addEventListener(\"click\", ...)",
+				message: "use __devtool.interactions.getHistory — replaces addEventListener(\"click\")",
 			},
 			{
 				pattern: `new MutationObserver\(`,
-				message: "Consider __devtool.mutations.getHistory instead of new MutationObserver()",
+				message: "use __devtool.mutations.getHistory — replaces new MutationObserver()",
 			},
 			{
 				pattern: `0\.2126`,
-				message: "Consider __devtool.getContrast instead of manual luminance/contrast ratio math",
+				message: "use __devtool.getContrast — skip manual luminance math",
 			},
 			{
 				pattern: `\.innerHTML`,
-				message: "Consider __devtool.captureDOM instead of .innerHTML serialization",
+				message: "use __devtool.captureDOM — replaces .innerHTML serialization",
 			},
 			{
 				pattern: `\.value\b`,
-				message: "Consider __devtool.captureState instead of gathering form values via .value in a loop",
+				message: "use __devtool.captureState — replaces .value gather loop",
 			},
 			{
 				pattern: `performance\.getEntries`,
-				message: "Consider __devtool.captureNetwork instead of performance.getEntries()",
+				message: "use __devtool.captureNetwork — replaces performance.getEntries()",
 			},
 		}
 

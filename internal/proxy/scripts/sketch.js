@@ -13,7 +13,10 @@
     canvas: null,
     ctx: null,
     toolbar: null,
-    backgroundImage: null, // Captured page screenshot
+    backgroundImage: null, // Captured page screenshot (only when backgroundMode === 'capture')
+    backgroundMode: 'none', // 'none' | 'capture' | 'solid' — default transparent so live page shows through
+    backgroundOpacity: 0.4, // Overlay/solid alpha (0..1)
+    invertBackground: false, // Invert captured page colors (dark-mode-like)
 
     // Drawing state
     tool: 'select',
@@ -337,31 +340,42 @@
   // Initialize sketch mode
   function init() {
     if (sketchState.container) return;
+    // Default mode is 'none' — canvas stays transparent so the live page shows
+    // through. User can opt into capture/solid via the Background sidebar.
+    initSketchUI();
+  }
 
-    // Capture page background first (before adding overlay)
-    if (typeof html2canvas !== 'undefined') {
-      console.log('[DevTool] Capturing page background...');
-      html2canvas(document.body, {
-        scale: 1,
-        useCORS: true,
-        allowTaint: true,
-        logging: false,
-        width: window.innerWidth,
-        height: window.innerHeight,
-        x: window.scrollX,
-        y: window.scrollY
-      }).then(function(bgCanvas) {
-        sketchState.backgroundImage = bgCanvas;
-        console.log('[DevTool] Background captured');
-        initSketchUI();
-      }).catch(function(err) {
-        console.warn('[DevTool] Background capture failed:', err);
-        initSketchUI();
-      });
-    } else {
-      console.warn('[DevTool] html2canvas not available, no background capture');
-      initSketchUI();
+  // Capture current page into sketchState.backgroundImage. Called on demand from
+  // the Background sidebar when the user picks 'capture' or hits "Recapture".
+  function capturePageBackground(onDone) {
+    if (typeof html2canvas === 'undefined') {
+      console.warn('[DevTool] html2canvas not available');
+      if (onDone) onDone(false);
+      return;
     }
+    // Hide the sketch overlay during capture so it doesn't snapshot itself.
+    var container = sketchState.container;
+    var prevDisplay = container ? container.style.display : '';
+    if (container) container.style.display = 'none';
+    html2canvas(document.body, {
+      scale: 1,
+      useCORS: true,
+      allowTaint: true,
+      logging: false,
+      width: window.innerWidth,
+      height: window.innerHeight,
+      x: window.scrollX,
+      y: window.scrollY
+    }).then(function(bgCanvas) {
+      sketchState.backgroundImage = bgCanvas;
+      if (container) container.style.display = prevDisplay;
+      render();
+      if (onDone) onDone(true);
+    }).catch(function(err) {
+      console.warn('[DevTool] Background capture failed:', err);
+      if (container) container.style.display = prevDisplay;
+      if (onDone) onDone(false);
+    });
   }
 
   function initSketchUI() {
@@ -599,6 +613,99 @@
     fontGroup.appendChild(fontSizeInput);
 
     sidebar.appendChild(fontGroup);
+
+    // Background controls -------------------------------------------------
+    var bgGroup = document.createElement('div');
+    bgGroup.style.marginTop = '12px';
+    bgGroup.style.paddingTop = '12px';
+    bgGroup.style.borderTop = '1px solid #eee';
+
+    var bgLabel = document.createElement('label');
+    bgLabel.style.cssText = STYLES.label;
+    bgLabel.textContent = 'Background';
+    bgGroup.appendChild(bgLabel);
+
+    var bgModeSelect = document.createElement('select');
+    bgModeSelect.style.cssText = STYLES.inputField;
+    [
+      ['none', 'Transparent (live page)'],
+      ['capture', 'Captured snapshot'],
+      ['solid', 'Solid wash']
+    ].forEach(function(opt) {
+      var o = document.createElement('option');
+      o.value = opt[0];
+      o.textContent = opt[1];
+      if (opt[0] === sketchState.backgroundMode) o.selected = true;
+      bgModeSelect.appendChild(o);
+    });
+    bgModeSelect.onchange = function(e) {
+      sketchState.backgroundMode = e.target.value;
+      if (sketchState.backgroundMode === 'capture' && !sketchState.backgroundImage) {
+        capturePageBackground();
+      } else {
+        render();
+      }
+    };
+    bgGroup.appendChild(bgModeSelect);
+
+    var bgOpacityLabel = document.createElement('label');
+    bgOpacityLabel.style.cssText = STYLES.label;
+    bgOpacityLabel.style.marginTop = '8px';
+    bgOpacityLabel.textContent = 'Opacity';
+    bgGroup.appendChild(bgOpacityLabel);
+
+    var bgOpacity = document.createElement('input');
+    bgOpacity.type = 'range';
+    bgOpacity.min = 0;
+    bgOpacity.max = 1;
+    bgOpacity.step = 0.05;
+    bgOpacity.value = sketchState.backgroundOpacity;
+    bgOpacity.style.width = '100%';
+    bgOpacity.oninput = function(e) {
+      sketchState.backgroundOpacity = parseFloat(e.target.value);
+      render();
+    };
+    bgGroup.appendChild(bgOpacity);
+
+    var invertRow = document.createElement('label');
+    invertRow.style.display = 'flex';
+    invertRow.style.alignItems = 'center';
+    invertRow.style.gap = '6px';
+    invertRow.style.marginTop = '8px';
+    invertRow.style.fontSize = '12px';
+    invertRow.style.color = '#444';
+
+    var invertCheck = document.createElement('input');
+    invertCheck.type = 'checkbox';
+    invertCheck.checked = sketchState.invertBackground;
+    invertCheck.onchange = function(e) {
+      sketchState.invertBackground = !!e.target.checked;
+      render();
+    };
+    invertRow.appendChild(invertCheck);
+    invertRow.appendChild(document.createTextNode('Invert colors'));
+    bgGroup.appendChild(invertRow);
+
+    var recaptureBtn = document.createElement('button');
+    recaptureBtn.style.cssText = STYLES.actionButton + ';' + STYLES.secondaryAction +
+      ';margin-top:8px;width:100%;font-size:12px;padding:6px 10px';
+    recaptureBtn.textContent = 'Recapture page';
+    recaptureBtn.onclick = function() {
+      recaptureBtn.disabled = true;
+      recaptureBtn.textContent = 'Capturing...';
+      capturePageBackground(function(ok) {
+        recaptureBtn.disabled = false;
+        recaptureBtn.textContent = ok ? 'Recapture page' : 'Capture failed';
+        if (ok && sketchState.backgroundMode !== 'capture') {
+          sketchState.backgroundMode = 'capture';
+          bgModeSelect.value = 'capture';
+          render();
+        }
+      });
+    };
+    bgGroup.appendChild(recaptureBtn);
+
+    sidebar.appendChild(bgGroup);
 
     container.appendChild(sidebar);
   }
@@ -1377,15 +1484,31 @@
     // Clear canvas
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // Draw background image if available, otherwise white fallback
-    if (sketchState.backgroundImage) {
-      ctx.drawImage(sketchState.backgroundImage, 0, 0, canvas.width, canvas.height);
-      // Semi-transparent overlay so sketch elements are visible
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.4)';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-    } else {
-      // Fallback to semi-transparent white
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
+    // Background paint depends on mode:
+    //   'none'    — leave canvas transparent; the real page shows through.
+    //   'capture' — draw the captured screenshot (optionally inverted) and wash
+    //               with white at backgroundOpacity so sketch ink stays legible.
+    //   'solid'   — paint white at backgroundOpacity for a clean fade.
+    var op = sketchState.backgroundOpacity;
+    if (sketchState.backgroundMode === 'capture' && sketchState.backgroundImage) {
+      if (sketchState.invertBackground) {
+        ctx.save();
+        ctx.filter = 'invert(1) hue-rotate(180deg)';
+        ctx.drawImage(sketchState.backgroundImage, 0, 0, canvas.width, canvas.height);
+        ctx.restore();
+      } else {
+        ctx.drawImage(sketchState.backgroundImage, 0, 0, canvas.width, canvas.height);
+      }
+      if (op > 0) {
+        ctx.fillStyle = sketchState.invertBackground
+          ? 'rgba(0, 0, 0, ' + op + ')'
+          : 'rgba(255, 255, 255, ' + op + ')';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+      }
+    } else if (sketchState.backgroundMode === 'solid') {
+      ctx.fillStyle = sketchState.invertBackground
+        ? 'rgba(0, 0, 0, ' + op + ')'
+        : 'rgba(255, 255, 255, ' + op + ')';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
     }
 
