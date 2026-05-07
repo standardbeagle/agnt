@@ -780,3 +780,102 @@ func min(a, b int) int {
 	}
 	return b
 }
+
+// TestAlertScanner_Inject_SharesPendingPipeline verifies that injected
+// matches share the same dedup/batch/activity-defer queue as regex-matched
+// matches — the canonical-queue invariant from the messaging-queue skill.
+func TestAlertScanner_Inject_SharesPendingPipeline(t *testing.T) {
+	var batches []*AlertBatch
+	var mu sync.Mutex
+
+	scanner := NewAlertScanner(AlertScannerConfig{
+		BatchWindow:  30 * time.Millisecond,
+		DedupeWindow: 5 * time.Second,
+		OnAlert: func(b *AlertBatch) {
+			mu.Lock()
+			batches = append(batches, b)
+			mu.Unlock()
+		},
+	})
+	defer scanner.Stop()
+
+	pat := &AlertPattern{
+		ID:       "browser-js-error",
+		Severity: AlertSeverityError,
+		Category: "browser",
+	}
+	for i := 0; i < 5; i++ {
+		scanner.Inject(&AlertMatch{
+			Pattern:      pat,
+			Line:         "TypeError: foo is undefined",
+			Timestamp:    time.Now(),
+			ScriptID:     "browser:dev",
+			Source:       AlertSourceBrowser,
+			RenderedText: "[browser-js error]\n  TypeError: foo is undefined\n",
+		})
+	}
+
+	time.Sleep(120 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, batches, 1, "five identical injects should dedup to one batch")
+	require.Len(t, batches[0].Matches, 1, "dedup should collapse to one match")
+	assert.Equal(t, AlertSourceBrowser, batches[0].Matches[0].Source)
+}
+
+func TestAlertScanner_Inject_RespectsActivityDefer(t *testing.T) {
+	var batches int32
+	state := atomic.Int32{}
+	state.Store(int32(ActivityActive))
+
+	scanner := NewAlertScanner(AlertScannerConfig{
+		BatchWindow:   20 * time.Millisecond,
+		DedupeWindow:  5 * time.Second,
+		RetryInterval: 30 * time.Millisecond,
+		ActivityState: func() ActivityState {
+			return ActivityState(state.Load())
+		},
+		OnAlert: func(*AlertBatch) {
+			atomic.AddInt32(&batches, 1)
+		},
+	})
+	defer scanner.Stop()
+
+	scanner.Inject(&AlertMatch{
+		Pattern:   &AlertPattern{ID: "browser-js-error", Severity: AlertSeverityError},
+		Line:      "Uncaught ReferenceError",
+		Timestamp: time.Now(),
+		ScriptID:  "browser:dev",
+		Source:    AlertSourceBrowser,
+	})
+
+	// Active → flush should defer; nothing delivered yet.
+	time.Sleep(60 * time.Millisecond)
+	assert.Equal(t, int32(0), atomic.LoadInt32(&batches), "active state must defer")
+
+	// Go idle; deferred flush must deliver.
+	state.Store(int32(ActivityIdle))
+	time.Sleep(150 * time.Millisecond)
+	assert.GreaterOrEqual(t, atomic.LoadInt32(&batches), int32(1), "idle must release deferred batch")
+}
+
+func TestAlertBatch_Format_RenderedTextOverridesDefault(t *testing.T) {
+	batch := &AlertBatch{
+		ScriptID: "browser:dev",
+		Matches: []*AlertMatch{
+			{
+				Pattern:      &AlertPattern{ID: "browser-js-error", Severity: AlertSeverityError},
+				Line:         "TypeError: x is undefined",
+				Source:       AlertSourceBrowser,
+				RenderedText: "[browser-js error]\n  TypeError: x is undefined\n",
+			},
+		},
+	}
+	out := batch.Format()
+	// When RenderedText is set, the script-alert wrapper must NOT appear —
+	// otherwise we leak the process-output framing into browser/http events.
+	assert.NotContains(t, out, "Script ")
+	assert.Contains(t, out, "[browser-js error]")
+	assert.Contains(t, out, "TypeError: x is undefined")
+}

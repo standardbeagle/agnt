@@ -13,6 +13,7 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
+	"github.com/standardbeagle/agnt/internal/incident"
 
 	"github.com/standardbeagle/agnt/internal/project"
 	"github.com/standardbeagle/agnt/internal/proxy"
@@ -242,6 +243,13 @@ func (d *Daemon) hubHandleDetect(ctx context.Context, conn *hubpkg.Connection, c
 // 5s grace window after returning to Running), the gate drops the
 // broadcast to the alert hub. See proxyBroadcastGate for the gate logic
 // and internal/daemon/health_tracker.go for the full state matrix.
+//
+// Transport-signal contract: in addition to process-state suppression,
+// the gate watches for transport-error bursts (refused/EOF/dial timeout)
+// and HTTP 2xx/3xx recoveries. A burst flips the proxy into synthetic
+// outage and held entries collect in the HoldBuffer. A recovery signal
+// drains the buffer — cascade entries are dropped, real errors emitted.
+// See internal/daemon/hold_buffer.go and the OutageHold config block.
 func (d *Daemon) wireProxyLogger(server *proxy.ProxyServer) {
 	if d.alertHub == nil {
 		return
@@ -249,64 +257,212 @@ func (d *Daemon) wireProxyLogger(server *proxy.ProxyServer) {
 	proxyID := server.ID
 	d.alertHub.RegisterProxyPath(proxyID, server.Path)
 	server.Logger().SetOnLogEntry(func(entry proxy.LogEntry) {
-		if !d.proxyBroadcastGate(proxyID, entry) {
-			return
+		// Feed transport signals to the tracker before gating so the
+		// classifier sees recovery signals immediately.
+		d.feedTransportSignals(proxyID, entry)
+
+		decision := d.proxyBroadcastDecision(proxyID, entry)
+		switch decision {
+		case gateAccept:
+			d.fireGatedFanOut(entry, proxyID, 1)
+		case gateHold:
+			if d.holdBuffer == nil {
+				return
+			}
+			fp := FingerprintForEntry(entry)
+			cascade := d.classifyCascade(entry)
+			d.holdBuffer.Hold(entry, proxyID, fp, cascade)
+		case gateDrop:
+			// Drop without emission — used for diagnostic suppression
+			// markers we never want to re-emit.
 		}
-		d.alertHub.BroadcastLogEntry(entry, proxyID)
 	})
 }
 
-// proxyBroadcastGate returns true if entry should be forwarded to the
-// alert hub for proxyID, false if it should be suppressed. Diagnostic
-// entries always pass through (they're how the daemon communicates the
-// suppression state itself to the agent). Extracted from wireProxyLogger
-// so it can be unit-tested without spinning up a real ProxyServer.
-//
-// The gate consults the OutageClassifier for tri-state suppression:
-//
-//	ModeOff             — broadcast normally
-//	ModeFull            — drop everything except diagnostics
-//	ModeDiagnosticOnly  — drop error-class entries, forward warnings
-//
-// HealthTracker.IsInSuppressionWindow remains the upstream signal: the
-// classifier reads its bookkeeping (lastObservedState, lastHealthyAt,
-// outageStartedAt) which is populated as a side-effect of the call.
-// We invoke it once for its side-effects and then read SuppressionMode.
-func (d *Daemon) proxyBroadcastGate(proxyID string, entry proxy.LogEntry) bool {
-	if entry.Type == proxy.LogTypeDiagnostic {
-		return true
+// feedTransportSignals inspects the entry for transport-error or
+// recovery signals and updates the HealthTracker accordingly. Diagnostic
+// entries categorised "transport" trigger an err record; HTTP responses
+// with status <500 (non-error) trigger a recovery signal (proof the
+// upstream is reachable).
+func (d *Daemon) feedTransportSignals(proxyID string, entry proxy.LogEntry) {
+	if d.healthTracker == nil {
+		return
 	}
-	linkedProcessID := d.linkedScriptForProxy(proxyID)
-	if linkedProcessID == "" {
-		// Unlinked proxies never suppress. Match the legacy behaviour.
-		return true
+	now := time.Now()
+	switch entry.Type {
+	case proxy.LogTypeDiagnostic:
+		if entry.Diagnostic == nil {
+			return
+		}
+		if entry.Diagnostic.Category == "transport" || isTransportEvent(entry.Diagnostic.Event) {
+			d.healthTracker.RecordTransportError(proxyID, now)
+		}
+	case proxy.LogTypeHTTP:
+		if entry.HTTP == nil {
+			return
+		}
+		// Anything below 500 is "upstream answered" — counts as recovery.
+		// 5xx is server-error, not connection failure, so it doesn't
+		// signal connection health either way.
+		if entry.HTTP.StatusCode > 0 && entry.HTTP.StatusCode < 500 {
+			d.healthTracker.RecordRecoverySignal(proxyID, now)
+		}
 	}
-	// Drive the tracker bookkeeping. The boolean result is no longer
-	// the gate decision, but the call is required: it triggers edge
-	// detection, populates outageStartedAt, and emits open markers.
-	_ = d.healthTracker.IsInSuppressionWindow(proxyID, linkedProcessID)
+}
 
-	mode := d.outageClassifier.SuppressionMode(linkedProcessID)
-	switch mode {
-	case ModeFull:
-		return false
-	case ModeDiagnosticOnly:
-		// The TrafficLogger only distinguishes error / non-error log
-		// types today. We forward anything that isn't the canonical
-		// "error" class so warning-level customs and HTTP 4xx-as-info
-		// can still surface.
-		if isErrorClassEntry(entry) {
+// classifyCascade reports whether the entry should be treated as a
+// transport-cascade message that the buffer drops on recovery. Transport
+// diagnostics and matching browser-JS errors qualify; HTTP entries do
+// not (5xx that arrives during outage is upstream signal worth keeping).
+func (d *Daemon) classifyCascade(entry proxy.LogEntry) bool {
+	switch entry.Type {
+	case proxy.LogTypeDiagnostic:
+		return true
+	case proxy.LogTypeError:
+		if entry.Error == nil || d.holdBuffer == nil {
 			return false
 		}
+		return d.holdBuffer.MatchesJSCascade(entry.Error.Message + " " + entry.Error.Stack)
+	default:
+		return false
+	}
+}
+
+// fireGatedFanOut delivers an entry to all consumers after the gate
+// (or hold-buffer emit) has approved it: AlertHub stream sinks AND the
+// incident bus. Used both for the immediate-pass path and as the
+// HoldBuffer emit callback. mergedCount > 1 indicates the entry coalesced
+// during the hold window; today the count is informational only — sinks
+// see the original entry — but a future pass can synthesise a count
+// prefix on the summary.
+func (d *Daemon) fireGatedFanOut(entry proxy.LogEntry, proxyID string, _ int) {
+	if d.alertHub != nil {
+		d.alertHub.BroadcastLogEntry(entry, proxyID)
+	}
+	d.fireToIncidentBus(entry, proxyID)
+}
+
+// fireHoldEmit is the HoldBuffer emit callback. Same fan-out as direct
+// gate-accept but with the merged-count signal preserved for telemetry.
+func (d *Daemon) fireHoldEmit(entry proxy.LogEntry, proxyID string, mergedCount int) {
+	d.fireGatedFanOut(entry, proxyID, mergedCount)
+}
+
+// fireToIncidentBus runs the right adapter for entry's type and publishes
+// the result on the daemon's incident bus. This is the first production
+// wire of the incident adapter layer (see Phase A migration in
+// alert_hub.go). For sessions without a registered pipeline the bus is a
+// no-op, so this remains safe to call unconditionally.
+func (d *Daemon) fireToIncidentBus(entry proxy.LogEntry, proxyID string) {
+	if d.incidentBus == nil {
+		return
+	}
+	switch entry.Type {
+	case proxy.LogTypeDiagnostic:
+		if entry.Diagnostic == nil {
+			return
+		}
+		if ev, ok := incident.FromProxyDiagnostic(*entry.Diagnostic, proxyID); ok {
+			d.incidentBus.Publish(ev)
+		}
+	case proxy.LogTypeHTTP:
+		if entry.HTTP == nil {
+			return
+		}
+		if ev, ok := incident.FromHTTPEntry(*entry.HTTP, proxyID); ok {
+			d.incidentBus.Publish(ev)
+		}
+	case proxy.LogTypeError:
+		if entry.Error == nil {
+			return
+		}
+		ev := incident.FromFrontendError(*entry.Error, proxyID)
+		d.incidentBus.Publish(ev)
+	}
+}
+
+// isTransportEvent mirrors the transport-event classification used by
+// internal/incident/adapter_diag.go so the gate and adapter agree.
+func isTransportEvent(event string) bool {
+	switch strings.ToLower(event) {
+	case "refused", "timeout", "error", "dial", "tls", "io_error", "net_error":
 		return true
+	}
+	return false
+}
+
+// gateDecision is the tri-state output of the broadcast gate.
+type gateDecision int
+
+const (
+	// gateAccept allows the entry to flow to all consumers immediately.
+	gateAccept gateDecision = iota
+	// gateHold queues the entry into the HoldBuffer; emission is
+	// deferred until the hold window expires or the proxy recovers.
+	gateHold
+	// gateDrop discards the entry without emission. Used only for
+	// diagnostic suppression markers that have already been delivered
+	// once and should not be re-emitted.
+	gateDrop
+)
+
+// proxyBroadcastGate is preserved as a thin wrapper over
+// proxyBroadcastDecision for legacy callers. true == accept, false ==
+// drop-or-hold (the wrapper collapses both into "do not call
+// BroadcastLogEntry directly"). New code should use the tri-state
+// proxyBroadcastDecision.
+func (d *Daemon) proxyBroadcastGate(proxyID string, entry proxy.LogEntry) bool {
+	return d.proxyBroadcastDecision(proxyID, entry) == gateAccept
+}
+
+// proxyBroadcastDecision returns the gate decision for entry on proxyID:
+// accept (forward immediately), hold (queue into HoldBuffer), or drop
+// (discard).
+//
+// Diagnostic entries always accept — they are how the daemon
+// communicates suppression state to the agent.
+//
+// For non-diagnostic entries:
+//   - The HealthTracker is invoked for its side-effect (edge detection,
+//     marker emission) regardless of the result.
+//   - The OutageClassifier's tri-state SuppressionMode now considers BOTH
+//     the linked process state (existing behaviour) AND the proxy's
+//     synthetic transport-outage flag (new behaviour). When the proxy is
+//     in transport outage but the process is healthy, ModeFull applies.
+//   - ModeFull → hold. ModeDiagnosticOnly → hold for error-class entries,
+//     accept for the rest. ModeOff → accept.
+//
+// The hold buffer (NewHoldBuffer) drives final disposition: held entries
+// either replay on window expiry or drop on recovery.
+func (d *Daemon) proxyBroadcastDecision(proxyID string, entry proxy.LogEntry) gateDecision {
+	if entry.Type == proxy.LogTypeDiagnostic {
+		return gateAccept
+	}
+	linkedProcessID := d.linkedScriptForProxy(proxyID)
+	if linkedProcessID != "" {
+		// Drive process-edge detection bookkeeping for the classifier.
+		_ = d.healthTracker.IsInSuppressionWindow(proxyID, linkedProcessID)
+	}
+
+	mode := d.outageClassifier.SuppressionModeProxy(proxyID, linkedProcessID)
+	switch mode {
+	case ModeFull:
+		return gateHold
+	case ModeDiagnosticOnly:
+		if isErrorClassEntry(entry) {
+			return gateHold
+		}
+		return gateAccept
 	case ModeOff:
 		fallthrough
 	default:
 		// Just past the grace window — emit the close marker now
 		// (idempotent) so the agent sees suppression end at the same
 		// instant errors actually start flowing again.
-		d.healthTracker.MaybeCloseGraceWindow(proxyID, linkedProcessID)
-		return true
+		if linkedProcessID != "" {
+			d.healthTracker.MaybeCloseGraceWindow(proxyID, linkedProcessID)
+		}
+		return gateAccept
 	}
 }
 

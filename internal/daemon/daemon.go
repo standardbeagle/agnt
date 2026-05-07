@@ -267,6 +267,12 @@ type Daemon struct {
 	// internal/daemon/outage_classifier.go for the rules.
 	outageClassifier *OutageClassifier
 
+	// holdBuffer holds transport / browser-JS errors during synthetic
+	// transport outage and replays them on window expiry, dropping
+	// transport-cascade noise that arrived during a successful recovery.
+	// See internal/daemon/hold_buffer.go for semantics.
+	holdBuffer *HoldBuffer
+
 	// Update checker
 	updateChecker *updater.UpdateChecker
 
@@ -387,6 +393,22 @@ func New(config DaemonConfig) *Daemon {
 			d.alertHub.BroadcastLogEntry(entry, proxyID)
 		},
 	)
+
+	// HoldBuffer suppresses transport-cascade noise during synthetic
+	// transport outages. The emit callback fans replays through both the
+	// AlertHub (legacy stream sinks) and the incident bus (get_incidents).
+	// Construction uses default config until the per-project AgntConfig is
+	// loaded; ApplyAlertsConfig replaces it on session connect.
+	d.holdBuffer = NewHoldBuffer(nil, d.fireHoldEmit)
+	d.healthTracker.SetTransportConfig(DefaultTransportConfig)
+
+	// Wire transport-recovery callback so HealthTracker exits to the buffer
+	// flush path on every recovery signal.
+	d.healthTracker.SetOnTransportRecovery(func(proxyID string) {
+		if d.holdBuffer != nil {
+			d.holdBuffer.OnRecovery(proxyID)
+		}
+	})
 
 	// OutageClassifier extends HealthTracker with rebuild/crash
 	// classification. It needs the same process lookup, an emitter for
@@ -722,6 +744,35 @@ func (d *Daemon) AlertHub() *AlertHub {
 // IncidentBus returns the incident event bus.
 func (d *Daemon) IncidentBus() *incident.MPSCBus {
 	return d.incidentBus
+}
+
+// ApplyAlertsConfig pushes the alerts block from a project's AgntConfig
+// into the daemon's runtime alert subsystems: the HoldBuffer's per-proxy
+// hold window and cascade patterns, and the HealthTracker's transport
+// outage thresholds. Safe to call multiple times — the latest values win.
+// A nil cfg restores defaults.
+func (d *Daemon) ApplyAlertsConfig(cfg *config.AlertsConfig) {
+	if d == nil {
+		return
+	}
+
+	var holdCfg *config.OutageHoldConfig
+	if cfg != nil {
+		holdCfg = cfg.OutageHold
+	}
+
+	if d.holdBuffer != nil {
+		d.holdBuffer.Stop()
+	}
+	d.holdBuffer = NewHoldBuffer(holdCfg, d.fireHoldEmit)
+
+	if d.healthTracker != nil {
+		d.healthTracker.SetTransportConfig(TransportConfig{
+			Threshold:        holdCfg.GetTransportErrThreshold(),
+			Window:           holdCfg.GetTransportErrWindow(),
+			RecoveryDebounce: holdCfg.GetRecoveryDebounce(),
+		})
+	}
 }
 
 // StartupLogStore returns the startup log store.

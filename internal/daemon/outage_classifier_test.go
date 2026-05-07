@@ -360,3 +360,81 @@ func TestForget_StopsLongRebuildTimer(t *testing.T) {
 	_, stillThere := classifier.lookup("proc-1")
 	assert.False(t, stillThere, "Forget must drop the per-process state")
 }
+
+func TestClassifyProxy_TransportOutageOnHealthyProcess(t *testing.T) {
+	t.Parallel()
+	classifier, tracker, table, _, clock := newTestClassifier(t)
+	tracker.SetTransportConfig(TransportConfig{Threshold: 1, Window: time.Second, RecoveryDebounce: 0})
+
+	proc := newFakeProcess(t, "proc-1", goprocess.StateRunning)
+	table.put("proc-1", proc)
+
+	// Bring the tracker into Healthy steady state.
+	_ = tracker.IsInSuppressionWindow("proxy-1", "proc-1")
+	clock.Advance(SuppressionGracePeriod + time.Second)
+	require.Equal(t, OutageHealthy, classifier.Classify("proc-1"))
+
+	// Process is Running healthy but proxy hits a transport burst.
+	tracker.RecordTransportError("proxy-1", clock.Now())
+	require.True(t, tracker.IsProxyInTransportOutage("proxy-1"))
+
+	assert.Equal(t, OutageRebuild, classifier.ClassifyProxy("proxy-1", "proc-1"),
+		"transport outage on healthy process must classify as Rebuild")
+	assert.Equal(t, ModeFull, classifier.SuppressionModeProxy("proxy-1", "proc-1"))
+}
+
+func TestClassifyProxy_ProcessOutageWinsOverTransport(t *testing.T) {
+	t.Parallel()
+	classifier, tracker, table, _, clock := newTestClassifier(t)
+	tracker.SetTransportConfig(TransportConfig{Threshold: 1, Window: time.Second, RecoveryDebounce: 0})
+
+	proc := newFakeProcess(t, "proc-1", goprocess.StateRunning)
+	table.put("proc-1", proc)
+
+	// Bring the tracker into Healthy steady state.
+	_ = tracker.IsInSuppressionWindow("proxy-1", "proc-1")
+	clock.Advance(SuppressionGracePeriod + time.Second)
+
+	// Process crashes (no daemon-initiated flag) — direct Running → Stopped.
+	proc.SetState(goprocess.StateStopped)
+	_ = tracker.IsInSuppressionWindow("proxy-1", "proc-1")
+
+	// Concurrent transport outage on the proxy.
+	tracker.RecordTransportError("proxy-1", clock.Now())
+
+	// Process Crash classification should win — agent must see errors.
+	assert.Equal(t, OutageCrash, classifier.ClassifyProxy("proxy-1", "proc-1"),
+		"process crash must dominate over transport outage")
+}
+
+func TestClassifyProxy_NoLinkedProcess_TransportOnly(t *testing.T) {
+	t.Parallel()
+	classifier, tracker, _, _, clock := newTestClassifier(t)
+	tracker.SetTransportConfig(TransportConfig{Threshold: 1, Window: time.Second, RecoveryDebounce: 0})
+
+	// No process registered. Pure transport outage.
+	tracker.RecordTransportError("proxy-X", clock.Now())
+
+	assert.Equal(t, OutageRebuild, classifier.ClassifyProxy("proxy-X", ""),
+		"unlinked proxy in transport outage classifies as Rebuild")
+}
+
+func TestMaxOutageType(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		a, b, want OutageType
+	}{
+		{OutageHealthy, OutageRebuild, OutageRebuild},
+		{OutageRebuild, OutageHealthy, OutageRebuild},
+		{OutageRebuild, OutageLongRebuild, OutageLongRebuild},
+		{OutageLongRebuild, OutageExpiredRebuild, OutageExpiredRebuild},
+		{OutageExpiredRebuild, OutageCrash, OutageCrash},
+		{OutageHealthy, OutageCrash, OutageCrash},
+		{OutageCrash, OutageRebuild, OutageCrash},
+		{OutageHealthy, OutageHealthy, OutageHealthy},
+	}
+	for _, tc := range cases {
+		assert.Equal(t, tc.want, maxOutageType(tc.a, tc.b),
+			"maxOutageType(%v, %v)", tc.a, tc.b)
+	}
+}

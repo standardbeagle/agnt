@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1935,4 +1936,67 @@ func TestAlertsConfig_GetPushConfig(t *testing.T) {
 		assert.True(t, pc.MCPNotificationsEnabled())
 		assert.False(t, pc.PTYInjectionEnabled())
 	})
+}
+
+func TestParseOutageHoldConfig(t *testing.T) {
+	t.Run("full block parses every field", func(t *testing.T) {
+		input := `alerts {
+    outage-hold {
+        enabled true
+        window-ms 4000
+        transport-err-threshold 2
+        transport-err-window-ms 1500
+        recovery-debounce-ms 250
+        js-cascade-patterns "Failed to fetch" "WebSocket"
+    }
+}`
+		cfg, err := ParseAgntConfig(input)
+		require.NoError(t, err)
+		require.NotNil(t, cfg.Alerts)
+		require.NotNil(t, cfg.Alerts.OutageHold)
+
+		oh := cfg.Alerts.OutageHold
+		require.NotNil(t, oh.Enabled)
+		assert.True(t, *oh.Enabled)
+		assert.Equal(t, 4000, oh.WindowMs)
+		assert.Equal(t, 2, oh.TransportErrThreshold)
+		assert.Equal(t, 1500, oh.TransportErrWindowMs)
+		assert.Equal(t, 250, oh.RecoveryDebounceMs)
+		assert.Equal(t, []string{"Failed to fetch", "WebSocket"}, oh.JSCascadePatterns)
+	})
+
+	t.Run("missing block leaves nil", func(t *testing.T) {
+		cfg, err := ParseAgntConfig("alerts {\n    enabled true\n}")
+		require.NoError(t, err)
+		require.NotNil(t, cfg.Alerts)
+		assert.Nil(t, cfg.Alerts.OutageHold)
+	})
+}
+
+func TestOutageHoldConfig_Defaults(t *testing.T) {
+	var nilCfg *OutageHoldConfig
+	assert.True(t, nilCfg.IsEnabled(), "nil config defaults to enabled")
+	assert.Equal(t, 3*time.Second, nilCfg.GetWindow())
+	assert.Equal(t, 1, nilCfg.GetTransportErrThreshold())
+	assert.Equal(t, time.Second, nilCfg.GetTransportErrWindow())
+	assert.Equal(t, 500*time.Millisecond, nilCfg.GetRecoveryDebounce())
+	assert.Equal(t, DefaultJSCascadePatterns, nilCfg.GetJSCascadePatterns())
+
+	disabled := false
+	cfg := &OutageHoldConfig{Enabled: &disabled}
+	assert.False(t, cfg.IsEnabled())
+
+	cfg2 := &OutageHoldConfig{
+		WindowMs:              0,  // zero falls back to default
+		TransportErrThreshold: -1, // negative falls back to default
+	}
+	assert.Equal(t, 3*time.Second, cfg2.GetWindow())
+	assert.Equal(t, 1, cfg2.GetTransportErrThreshold())
+
+	cfg3 := &OutageHoldConfig{
+		WindowMs:          1234,
+		JSCascadePatterns: []string{"only-this"},
+	}
+	assert.Equal(t, 1234*time.Millisecond, cfg3.GetWindow())
+	assert.Equal(t, []string{"only-this"}, cfg3.GetJSCascadePatterns())
 }

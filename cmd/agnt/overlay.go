@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -40,8 +41,18 @@ type Overlay struct {
 
 	// Auto-forward state for browser/proxy errors
 	autoForward        *config.AutoForwardConfig
-	lastForwardNs      atomic.Int64 // Unix nano of last forwarded error
-	autoForwardEnabled atomic.Bool  // Runtime toggle (config + indicator override)
+	autoForwardEnabled atomic.Bool // Runtime toggle (config + indicator override)
+
+	// alertScanner is the canonical PTY-injection queue (dedup, batch,
+	// activity-defer). Browser-JS and HTTP errors flow through Inject so
+	// they share the queue with regex-matched process alerts. See
+	// .claude/skills/messaging-queue for the single-queue invariant.
+	alertScanner *overlay.AlertScanner
+
+	// jsCascadePatterns is the lowercased substring set used to drop
+	// transport-layer noise (vite/webpack HMR reconnect spam) from the
+	// auto-forward path. Loaded from .agnt.kdl alerts.outage-hold.
+	jsCascadePatterns []string
 
 	// enterSettle is the echo-settle window duration in sendEntersUntilActivity.
 	// Zero means use the production default (1100ms).
@@ -347,15 +358,17 @@ func (o *Overlay) processProxyEvent(event ProxyEvent) {
 	o.Broadcast("proxy_event", event)
 }
 
-// processAutoForwardEvent handles browser_error and http_error events with
-// debounce and source filtering. Only injects into the PTY if auto-forward
-// is enabled, the source is in the forward list, and debounce has elapsed.
+// processAutoForwardEvent routes browser_error and http_error events
+// through the canonical AlertScanner queue (dedup, batch, activity-defer).
+// Replaces the previous global-debounce + direct typeText path which
+// bypassed every gate and caused the "vite reconnect spam" bug. See
+// .claude/skills/messaging-queue for the single-queue invariant.
 func (o *Overlay) processAutoForwardEvent(event ProxyEvent) {
 	if !o.autoForwardEnabled.Load() {
 		return
 	}
 
-	// Check source filter
+	// Source filter (browser vs http).
 	source := "browser"
 	if event.Type == "http_error" {
 		source = "http"
@@ -364,7 +377,7 @@ func (o *Overlay) processAutoForwardEvent(event ProxyEvent) {
 		return
 	}
 
-	// Check severity filter for HTTP errors (4xx = warning, 5xx = error)
+	// Severity filter for HTTP errors (4xx = warning, 5xx = error).
 	if event.Type == "http_error" && o.autoForward != nil {
 		minSev := o.autoForward.GetSeverity()
 		var data struct {
@@ -372,43 +385,115 @@ func (o *Overlay) processAutoForwardEvent(event ProxyEvent) {
 		}
 		if json.Unmarshal(event.Data, &data) == nil {
 			if minSev == "error" && data.StatusCode < 500 {
-				return // Skip warnings when severity threshold is "error"
+				return
 			}
 		}
 	}
 
-	// Check debounce
-	debounceSec := 10
-	if o.autoForward != nil {
-		debounceSec = o.autoForward.GetDebounceSeconds()
-	}
-	debounceNs := int64(debounceSec) * int64(time.Second)
-	now := time.Now().UnixNano()
-	last := o.lastForwardNs.Load()
-	if now-last < debounceNs {
-		return // Debounced
-	}
-
-	// Format and inject
-	text := formatProxyEventText(event, o.auditSummarizer)
-	if text == "" {
+	canonical := canonicalAutoForwardMessage(event)
+	if canonical == "" {
 		return
 	}
 
-	// Update last forward time (CAS loop for concurrency safety)
-	for {
-		last := o.lastForwardNs.Load()
-		if now-last >= debounceNs {
-			if o.lastForwardNs.CompareAndSwap(last, now) {
-				break
-			}
-			continue
-		}
-		return // Another goroutine forwarded during our window
+	// Cascade-pattern check: drop transport-layer noise (vite/webpack
+	// reconnect spam) before it reaches the queue.
+	if o.matchesJSCascade(canonical) {
+		debug.Log("overlay", "auto-forward dropped cascade match: type=%s msg=%q", event.Type, canonical)
+		return
 	}
 
-	debug.Log("overlay", "auto-forwarding %s to PTY (%d chars, debounce=%ds)", event.Type, len(text), debounceSec)
-	o.typeText(TypeMessage{Text: text, Enter: true, Instant: true})
+	rendered := formatProxyEventText(event, o.auditSummarizer)
+	if rendered == "" {
+		return
+	}
+
+	// Fall back to direct injection only if the scanner isn't wired
+	// (defensive — production wires it in pty_common.go after
+	// setupAlertScanner). Without the scanner there is no queue, so
+	// direct injection is the lesser evil over silent loss.
+	if o.alertScanner == nil {
+		debug.Log("overlay", "auto-forward fallback (no scanner): type=%s", event.Type)
+		o.typeText(TypeMessage{Text: rendered, Enter: true, Instant: true})
+		return
+	}
+
+	matchSource := overlay.AlertSourceBrowser
+	patternID := "browser-js-error"
+	if event.Type == "http_error" {
+		matchSource = overlay.AlertSourceHTTP
+		patternID = "http-error"
+	}
+
+	o.alertScanner.Inject(&overlay.AlertMatch{
+		Pattern: &overlay.AlertPattern{
+			ID:       patternID,
+			Severity: overlay.AlertSeverityError,
+			Category: source,
+		},
+		Line:         canonical,
+		ScriptID:     "proxy:" + event.ProxyID,
+		Source:       matchSource,
+		RenderedText: rendered,
+	})
+}
+
+// canonicalAutoForwardMessage extracts a stable dedup key from an auto-
+// forward proxy event. For browser errors that's the JS error message;
+// for HTTP errors it's "METHOD URL → status".
+func canonicalAutoForwardMessage(event ProxyEvent) string {
+	switch event.Type {
+	case "browser_error":
+		var d struct {
+			Message string `json:"message"`
+		}
+		if err := json.Unmarshal(event.Data, &d); err != nil {
+			return ""
+		}
+		return d.Message
+	case "http_error":
+		var d struct {
+			Method     string `json:"method"`
+			URL        string `json:"url"`
+			StatusCode int    `json:"status_code"`
+		}
+		if err := json.Unmarshal(event.Data, &d); err != nil {
+			return ""
+		}
+		return fmt.Sprintf("%s %s -> %d", d.Method, d.URL, d.StatusCode)
+	}
+	return ""
+}
+
+// matchesJSCascade reports whether canonical contains any configured
+// cascade pattern. Patterns are pre-lowercased; matching is case-
+// insensitive substring.
+func (o *Overlay) matchesJSCascade(canonical string) bool {
+	if len(o.jsCascadePatterns) == 0 {
+		return false
+	}
+	lower := strings.ToLower(canonical)
+	for _, p := range o.jsCascadePatterns {
+		if p != "" && strings.Contains(lower, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// SetAlertScanner wires the canonical queue. Must be called once after
+// setupAlertScanner returns. Cascade patterns are lifted from the same
+// config so the auto-forward gate uses the same definition as the
+// daemon-side hold buffer.
+func (o *Overlay) SetAlertScanner(scanner *overlay.AlertScanner, cascadePatterns []string) {
+	o.alertScanner = scanner
+	if len(cascadePatterns) == 0 {
+		cascadePatterns = config.DefaultJSCascadePatterns
+	}
+	lowered := make([]string, len(cascadePatterns))
+	for i, p := range cascadePatterns {
+		lowered[i] = strings.ToLower(p)
+	}
+	o.jsCascadePatterns = lowered
 }
 
 // SetAutoForwardConfig configures the auto-forward filter from .agnt.kdl alerts config.

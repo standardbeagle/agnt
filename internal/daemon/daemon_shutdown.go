@@ -287,6 +287,11 @@ func (d *Daemon) Stop(ctx context.Context) error {
 		d.incidentBus.Close()
 	}
 
+	// Stop the hold buffer goroutine. Pending entries are dropped.
+	if d.holdBuffer != nil {
+		d.holdBuffer.Stop()
+	}
+
 	if err := d.tunnelm.Shutdown(ctx); err != nil {
 		debug.Error("daemon", "tunnel manager shutdown error: %v", err)
 		errs = append(errs, fmt.Errorf("tunnel manager: %w", err))
