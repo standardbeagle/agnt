@@ -53,6 +53,18 @@ func ProcessNameByPID(pid int) string {
 	return ""
 }
 
+// ProcessNamesByPIDs returns a map of PID → process name for all given PIDs.
+// On Windows, ProcessNameByPID always returns "" (not yet implemented).
+func ProcessNamesByPIDs(ctx context.Context, pids []int) map[int]string {
+	out := make(map[int]string, len(pids))
+	for _, pid := range pids {
+		if name := ProcessNameByPID(pid); name != "" {
+			out[pid] = name
+		}
+	}
+	return out
+}
+
 // FindPIDsByPortTagged is the kill-routing-aware variant of FindPIDsByPort.
 // On native Windows there is no Linux/Windows split — all PIDs are
 // Windows-side by definition — so the linux slice is always nil and every
