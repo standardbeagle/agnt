@@ -373,6 +373,7 @@ func (d *Daemon) startScriptWithRetry(
 				Timestamp: time.Now(),
 			},
 		})
+		d.alertScanner.ProcessLine(line, processID)
 	}
 
 	// Start the process

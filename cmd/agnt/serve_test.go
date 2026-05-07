@@ -280,9 +280,10 @@ func TestChannelAutostartHandler_EnabledInvokesRunAutostart(t *testing.T) {
 	}
 }
 
-// TestChannelAutostartHandler_HandlerIsNilOnDisabledServer verifies that when
-// channel mode is disabled, the server's InitializedHandler is nil and no
-// autostart call is made during handshake.
+// TestChannelAutostartHandler_HandlerIsNilOnDisabled verifies that
+// channelAutostartHandler returns nil when channel mode is disabled.
+// Note: serve.go now uses mcpAutostartHandler (always non-nil); this helper
+// is kept for channel-specific callers that want nil-on-disabled semantics.
 func TestChannelAutostartHandler_HandlerIsNilOnDisabled(t *testing.T) {
 	var called bool
 	noop := func(dir string) (map[string]interface{}, error) {
@@ -300,6 +301,70 @@ func TestChannelAutostartHandler_HandlerIsNilOnDisabled(t *testing.T) {
 	}
 	if called {
 		t.Error("runAutostart should not have been called")
+	}
+}
+
+// TestMCPAutostartHandler_AlwaysReturnsHandler verifies that mcpAutostartHandler
+// always returns a non-nil handler regardless of channel config.
+func TestMCPAutostartHandler_AlwaysReturnsHandler(t *testing.T) {
+	noop := func(dir string) (map[string]interface{}, error) { return nil, nil }
+	handler := mcpAutostartHandler(noop)
+	if handler == nil {
+		t.Error("expected non-nil handler from mcpAutostartHandler")
+	}
+}
+
+// TestMCPAutostartHandler_InvokesRunAutostart verifies that the handler returned
+// by mcpAutostartHandler calls runAutostart with the working directory when the
+// MCP initialize/initialized handshake completes.
+func TestMCPAutostartHandler_InvokesRunAutostart(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	ct, st := mcp.NewInMemoryTransports()
+
+	var mu sync.Mutex
+	var capturedDir string
+	autostartCalled := make(chan struct{}, 1)
+
+	mockRunAutostart := func(dir string) (map[string]interface{}, error) {
+		mu.Lock()
+		capturedDir = dir
+		mu.Unlock()
+		select {
+		case autostartCalled <- struct{}{}:
+		default:
+		}
+		return map[string]interface{}{"scripts": []string{"dev"}}, nil
+	}
+
+	opts := defaultDaemonServerOptions()
+	opts.InitializedHandler = mcpAutostartHandler(mockRunAutostart)
+
+	server := mcp.NewServer(
+		&mcp.Implementation{Name: "test-server", Version: "0.0.0"},
+		opts,
+	)
+	ss, err := server.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	defer ss.Close()
+
+	performInitHandshake(t, ctx, ct)
+
+	select {
+	case <-autostartCalled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("runAutostart was not called within timeout")
+	}
+
+	mu.Lock()
+	dir := capturedDir
+	mu.Unlock()
+
+	if dir == "" {
+		t.Error("expected runAutostart to be called with a non-empty directory")
 	}
 }
 
