@@ -54,6 +54,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/incident"
+	"github.com/standardbeagle/agnt/internal/overlay"
 	"github.com/standardbeagle/agnt/internal/proxy"
 	"github.com/standardbeagle/agnt/internal/store"
 	"github.com/standardbeagle/agnt/internal/tunnel"
@@ -210,6 +211,7 @@ type Daemon struct {
 	automator         *automation.Processor
 	autoRestarter     *ProcessAutoRestarter // Process auto-restart manager
 	alertStore        *ProcessAlertStore    // Ring buffer store for process output alerts
+	alertScanner      *overlay.AlertScanner // Scans daemon-managed process output for errors
 	processExitInfo   *processExitInfoStore // In-memory death records (proc status + get_errors)
 	startupErrorStore *StartupLogStore      // Ring buffer for startup events
 	alertHub          *AlertHub             // Routes alerts to overlay/MCP/stream sinks
@@ -434,6 +436,38 @@ func New(config DaemonConfig) *Daemon {
 			return proxies[0]
 		},
 	)
+
+	// alertScanner scans daemon-managed process output (proc run) for error
+	// patterns and routes matches into alertStore + alertHub — the same
+	// surfaces get_errors and agnt monitor query. OnAlert fires after the
+	// scanner's batch window (default 3s) to avoid per-line churn.
+	d.alertScanner = overlay.NewAlertScanner(overlay.AlertScannerConfig{
+		OnAlert: func(batch *overlay.AlertBatch) {
+			ts := time.Now()
+			for _, m := range batch.Matches {
+				mts := m.Timestamp
+				if mts.IsZero() {
+					mts = ts
+				}
+				d.alertStore.Add(&AlertEntry{
+					PatternID:   m.Pattern.ID,
+					Severity:    string(m.Pattern.Severity),
+					Category:    m.Pattern.Category,
+					Description: m.Pattern.Description,
+					Line:        m.Line,
+					ScriptID:    m.ScriptID,
+					Timestamp:   mts,
+				})
+				if m.Pattern.Category == "rebuild" && m.ScriptID != "" {
+					d.healthTracker.RecordRebuildSignal(m.ScriptID)
+				}
+			}
+			formatted := batch.Format()
+			if formatted != "" {
+				d.alertHub.Deliver(string(batch.MaxSeverity()), formatted)
+			}
+		},
+	})
 
 	// Autostart manager fans every progress event out to the alert hub so
 	// that monitor/MCP watch subscribers see real-time autostart phases.

@@ -1318,11 +1318,9 @@ func runOverlayPipeline(
 			activityCfg.OnFirstActivity = rt.startupSplash.OnFirstActivity()
 		}
 
-		// Wire the alert scanner into OnOutputLine. ActivityMonitor
-		// owns the scanner instance; storing it on the runtime so
-		// Stop() can call alertScanner.Stop() — the original Unix
-		// path used a deferred Stop here, but moving it to the
-		// runtime keeps cleanup ordering deterministic.
+		// alertScanner routes browser/HTTP proxy events through the
+		// canonical dedup/batch/activity-defer queue. Stored on the
+		// runtime so Stop() can call alertScanner.Stop() deterministically.
 		rt.alertScanner = setupAlertScanner(projectPath, sessionCode, rt.netOverlay, rt.daemonHandle, func() overlay.ActivityState {
 			if rt.activityMonitor != nil {
 				return rt.activityMonitor.State()
@@ -1330,12 +1328,9 @@ func runOverlayPipeline(
 			return overlay.ActivityIdle
 		})
 		if rt.alertScanner != nil {
-			activityCfg.OnOutputLine = func(line string) {
-				rt.alertScanner.ProcessLine(line, sessionCode)
-			}
 			// Wire the canonical queue into the auto-forward path so
 			// browser/HTTP errors share dedup, batch, and activity-defer
-			// with regex-matched process alerts.
+			// with process alerts from the daemon scanner.
 			if rt.netOverlay != nil {
 				cascade := config.DefaultJSCascadePatterns
 				if agntCfg, err := config.LoadAgntConfig(projectPath); err == nil &&

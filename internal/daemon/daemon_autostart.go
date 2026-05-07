@@ -62,10 +62,10 @@ func (d *Daemon) RunAutostart(ctx context.Context, projectPath string) *Autostar
 }
 
 // RunAutostartNonInteractive runs autostart for a non-interactive caller (the
-// MCP InitializedHandler in channel mode). It is identical to RunAutostart
-// except that the "prompt" port-conflict policy falls back to "skip" because
-// there is no stdin for the interactive prompt. A warning is logged for each
-// conflict that is skipped.
+// MCP InitializedHandler). It is identical to RunAutostart except that the
+// "prompt" port-conflict policy falls back to "skip" because there is no stdin
+// for the interactive prompt. A warning is logged for each conflict that is
+// skipped.
 func (d *Daemon) RunAutostartNonInteractive(ctx context.Context, projectPath string) *AutostartResult {
 	if projectPath == "" {
 		return &AutostartResult{}

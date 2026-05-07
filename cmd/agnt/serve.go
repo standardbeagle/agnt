@@ -146,10 +146,10 @@ Available tools:
 	}
 	serverOpts = tools.ChannelServerOptions(serverOpts, agntCfg.Channel)
 
-	// When channel mode is active, trigger project autostart on MCP
-	// initialized. In channel mode there is no PTY session to drive autostart
-	// through SESSION REGISTER, so the InitializedHandler kicks it off instead.
-	serverOpts.InitializedHandler = channelAutostartHandler(agntCfg.Channel, dt.RunAutostart)
+	// Always trigger autostart on MCP initialized. In agnt run mode,
+	// SESSION REGISTER drives autostart; StartScriptExplicit skips scripts
+	// already in Running/Starting state, so both paths are safe to coexist.
+	serverOpts.InitializedHandler = mcpAutostartHandler(dt.RunAutostart)
 
 	server := mcp.NewServer(
 		&mcp.Implementation{
@@ -323,13 +323,10 @@ func runLegacyServer() {
 // runAutostartFunc is the signature for triggering a non-interactive autostart.
 type runAutostartFunc func(projectDir string) (map[string]interface{}, error)
 
-// channelAutostartHandler returns an InitializedHandler that triggers project
-// autostart when channel mode is enabled, or nil when disabled. The handler
-// calls the provided runAutostart function with the current working directory.
-func channelAutostartHandler(cfg *config.ChannelConfig, runAutostart runAutostartFunc) func(context.Context, *mcp.InitializedRequest) {
-	if cfg == nil || !cfg.IsEnabled() {
-		return nil
-	}
+// mcpAutostartHandler returns an InitializedHandler that triggers project
+// autostart for the current working directory. Safe to run alongside agnt run:
+// AutostartManager.GetOrCreate ensures at-most-one autostart per project.
+func mcpAutostartHandler(runAutostart runAutostartFunc) func(context.Context, *mcp.InitializedRequest) {
 	return func(ctx context.Context, req *mcp.InitializedRequest) {
 		cwd, err := os.Getwd()
 		if err != nil {
@@ -347,4 +344,13 @@ func channelAutostartHandler(cfg *config.ChannelConfig, runAutostart runAutostar
 			fmt.Fprintf(os.Stderr, "[agnt] autostart completed: scripts=%v\n", scripts)
 		}
 	}
+}
+
+// channelAutostartHandler is kept for tests that reference it by name.
+// New code should call mcpAutostartHandler directly.
+func channelAutostartHandler(cfg *config.ChannelConfig, runAutostart runAutostartFunc) func(context.Context, *mcp.InitializedRequest) {
+	if cfg == nil || !cfg.IsEnabled() {
+		return nil
+	}
+	return mcpAutostartHandler(runAutostart)
 }

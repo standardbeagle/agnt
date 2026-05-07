@@ -89,11 +89,13 @@ func TestDedup_WindowExpiry_TreatsAsNew(t *testing.T) {
 
 func TestDedup_SlidingWindow_ExtendedByActivity(t *testing.T) {
 	t.Parallel()
-	d := NewDeduplicator(100 * time.Millisecond)
+	// Use 500ms window with 100ms sleep (5:1 ratio) so CI scheduler jitter
+	// under -race load cannot push the sleep past the window expiry.
+	d := NewDeduplicator(500 * time.Millisecond)
 	d.Ingest("sess", makeEv("fp-slide"))
 	// Each Ingest extends the window, so these should all merge.
 	for i := 0; i < 3; i++ {
-		time.Sleep(60 * time.Millisecond) // 60ms < 100ms window; window resets each time
+		time.Sleep(100 * time.Millisecond) // 100ms << 500ms window; window resets each time
 		merged, _ := d.Ingest("sess", makeEv("fp-slide"))
 		if !merged {
 			t.Errorf("iteration %d: expected merged (window should be extended)", i)
