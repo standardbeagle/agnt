@@ -146,7 +146,7 @@ func runWithPTY(ctx context.Context, args []string, socketPath string, sessionCo
 		},
 	}
 
-	rt := runOverlayPipeline(ctx, handle, command, cmdArgs, adapter, adapterPrompt, projectPath)
+	rt := runOverlayPipeline(ctx, handle, command, cmdArgs, adapter, adapterPrompt, projectPath, sessionCode)
 
 	// Ctrl+Z support — handleSIGCHLD lives in signals_unix.go because
 	// SIGCHLD/SIGSTOP/SIGCONT are fundamentally Unix-only.
