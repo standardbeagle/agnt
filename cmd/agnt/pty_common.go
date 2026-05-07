@@ -1194,7 +1194,9 @@ func runOverlayPipeline(
 	adapter agentadapter.Adapter,
 	adapterPrompt string,
 	projectPath string,
+	sessionCodeArg string,
 ) *pipelineRuntime {
+	sessionCode := sessionCodeArg
 	rt := &pipelineRuntime{
 		done: make(chan struct{}),
 		wg:   &sync.WaitGroup{},

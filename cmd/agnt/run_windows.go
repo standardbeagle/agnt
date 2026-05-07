@@ -147,7 +147,7 @@ func runWithConPTY(ctx context.Context, args []string, socketPath string, sessio
 		WrapOutput: func(dest io.Writer) io.Writer { return NewBrowserHelper(dest) },
 	}
 
-	rt := runOverlayPipeline(ctx, handle, command, cmdArgs, adapter, adapterPrompt, projectPath)
+	rt := runOverlayPipeline(ctx, handle, command, cmdArgs, adapter, adapterPrompt, projectPath, sessionCode)
 
 	// Monitor process exit separately — close PTY when process exits so
 	// io.Copy in the shared pipeline returns even if PTY stays open.
