@@ -65,7 +65,7 @@ import (
 
 // Version is the daemon version.
 // Can be overridden at build time with: -ldflags "-X github.com/standardbeagle/agnt/internal/daemon.Version=x.y.z"
-var Version = "0.13.6"
+var Version = "0.13.7"
 
 // asScriptConfig casts the value stored in scriptConfigs (a sync.Map of any)
 // back to *config.ScriptConfig. Returns nil if the value is absent or the
