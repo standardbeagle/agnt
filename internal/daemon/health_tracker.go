@@ -94,6 +94,48 @@ type processHealthState struct {
 	lastRebuildSignalAt atomic.Pointer[time.Time]
 }
 
+// TransportConfig configures the per-proxy transport-signal outage detector.
+// Values mirror the OutageHoldConfig getters; see internal/config/agnt.go.
+type TransportConfig struct {
+	Threshold        int           // err count to trigger outage
+	Window           time.Duration // sliding window for the threshold
+	RecoveryDebounce time.Duration // ignore recovery signals within this window after outage entry
+}
+
+// DefaultTransportConfig is what HealthTracker uses when no transport
+// config has been set. Mirrors the OutageHoldConfig defaults.
+var DefaultTransportConfig = TransportConfig{
+	Threshold:        1,
+	Window:           time.Second,
+	RecoveryDebounce: 500 * time.Millisecond,
+}
+
+// transportErrRing bounds per-proxy transport-error timestamp memory.
+// One slot per err in the sliding window plus a small buffer.
+const transportErrRingSize = 16
+
+// proxyTransportState is the per-proxy side table that tracks
+// transport-error bursts and recovery signals. Hot path is a single
+// atomic load on inOutage; the slow path takes a per-proxy mutex.
+type proxyTransportState struct {
+	mu sync.Mutex
+
+	// errTimestamps is a bounded ring of recent transport-error timestamps.
+	// New entries are appended and old entries are dropped when the ring is
+	// full or when they fall outside the threshold window.
+	errTimestamps []time.Time
+
+	// outageStartedAt is the wall-clock time the proxy entered transport
+	// outage, or the zero value while healthy. Used for the recovery
+	// debounce window.
+	outageStartedAt time.Time
+
+	// inOutage reflects whether the proxy is currently in synthetic
+	// transport outage. Atomic so the suppression hot path can read it
+	// without taking the mutex.
+	inOutage atomic.Bool
+}
+
 // HealthTracker observes process state for the purpose of gating proxy
 // error broadcasts. It is owned by the Daemon and populated lazily.
 type HealthTracker struct {
@@ -101,6 +143,15 @@ type HealthTracker struct {
 	// because the map is overwhelmingly read-only on the hot path; entries
 	// are only created on first observation of a process.
 	states sync.Map
+
+	// transportStates maps proxyID → *proxyTransportState. Populated lazily
+	// on the first transport signal for a given proxy.
+	transportStates sync.Map
+
+	// transportConfig is the threshold / window / debounce for the
+	// transport-signal outage detector. Set via SetTransportConfig; reads
+	// are atomic via the pointer.
+	transportConfig atomic.Pointer[TransportConfig]
 
 	// procLookup resolves a processID to a *ManagedProcess. In production
 	// this is bound to d.hub.ProcessManager().Get; tests can supply a stub.
@@ -123,6 +174,11 @@ type HealthTracker struct {
 	// edge, inside the slow-path mutex. The classifier sets this to
 	// reset per-outage one-shot markers (e.g. "expired warning").
 	onReturnToHealthy func(processID string)
+
+	// onTransportRecovery is fired when a proxy exits transport outage
+	// via a recovery signal (HTTP 2xx/3xx, WS open). HoldBuffer subscribes
+	// to flush held entries. May be nil.
+	onTransportRecovery func(proxyID string)
 }
 
 // NewHealthTracker constructs a HealthTracker with production lookups.
@@ -512,6 +568,145 @@ func (h *HealthTracker) emit(proxyID, message string, level proxy.ProxyDiagnosti
 		},
 	}
 	h.emitDiagnostic(entry, proxyID)
+}
+
+// SetTransportConfig replaces the transport-signal config. Safe to call at
+// any point; readers see the new config on subsequent transport signals.
+func (h *HealthTracker) SetTransportConfig(cfg TransportConfig) {
+	if h == nil {
+		return
+	}
+	h.transportConfig.Store(&cfg)
+}
+
+// SetOnTransportRecovery registers a callback fired when a proxy exits
+// synthetic transport outage. The callback runs synchronously inside the
+// per-proxy mutex; it must be non-blocking. Pass nil to clear.
+func (h *HealthTracker) SetOnTransportRecovery(fn func(proxyID string)) {
+	if h == nil {
+		return
+	}
+	h.onTransportRecovery = fn
+}
+
+// transportCfg returns the active transport config or the default.
+func (h *HealthTracker) transportCfg() TransportConfig {
+	if h == nil {
+		return DefaultTransportConfig
+	}
+	if cfg := h.transportConfig.Load(); cfg != nil {
+		return *cfg
+	}
+	return DefaultTransportConfig
+}
+
+// RecordTransportError records a transport-layer error timestamp for proxyID
+// and flips the proxy into synthetic outage if the err count within the
+// configured window meets the threshold. Hot path is a single map load and
+// a per-proxy mutex hold bounded by transportErrRingSize.
+func (h *HealthTracker) RecordTransportError(proxyID string, ts time.Time) {
+	if h == nil || proxyID == "" {
+		return
+	}
+	st := h.getOrCreateTransport(proxyID)
+	cfg := h.transportCfg()
+
+	st.mu.Lock()
+	defer st.mu.Unlock()
+
+	cutoff := ts.Add(-cfg.Window)
+	keep := st.errTimestamps[:0]
+	for _, t := range st.errTimestamps {
+		if t.After(cutoff) {
+			keep = append(keep, t)
+		}
+	}
+	if len(keep) >= transportErrRingSize {
+		keep = keep[1:]
+	}
+	st.errTimestamps = append(keep, ts)
+
+	if !st.inOutage.Load() && len(st.errTimestamps) >= cfg.Threshold {
+		st.outageStartedAt = ts
+		st.inOutage.Store(true)
+	}
+}
+
+// RecordRecoverySignal records a successful upstream interaction (HTTP
+// 2xx/3xx, WS open) for proxyID. If the proxy is in synthetic outage and
+// the recovery debounce has elapsed since outage entry, the proxy exits
+// outage and onTransportRecovery fires. Calls outside outage are cheap
+// no-ops.
+func (h *HealthTracker) RecordRecoverySignal(proxyID string, ts time.Time) {
+	if h == nil || proxyID == "" {
+		return
+	}
+	st, ok := h.lookupTransport(proxyID)
+	if !ok || !st.inOutage.Load() {
+		return
+	}
+
+	cfg := h.transportCfg()
+
+	st.mu.Lock()
+	if !st.inOutage.Load() {
+		st.mu.Unlock()
+		return
+	}
+	if !st.outageStartedAt.IsZero() && ts.Sub(st.outageStartedAt) < cfg.RecoveryDebounce {
+		st.mu.Unlock()
+		return
+	}
+	st.inOutage.Store(false)
+	st.outageStartedAt = time.Time{}
+	st.errTimestamps = st.errTimestamps[:0]
+	st.mu.Unlock()
+
+	if h.onTransportRecovery != nil {
+		func() {
+			defer func() { _ = recover() }()
+			h.onTransportRecovery(proxyID)
+		}()
+	}
+}
+
+// IsProxyInTransportOutage reports whether the proxy is currently in
+// synthetic transport outage. Lock-free single atomic load.
+func (h *HealthTracker) IsProxyInTransportOutage(proxyID string) bool {
+	if h == nil || proxyID == "" {
+		return false
+	}
+	st, ok := h.lookupTransport(proxyID)
+	if !ok {
+		return false
+	}
+	return st.inOutage.Load()
+}
+
+// ForgetProxy drops transport-tracking state for proxyID. Called when a
+// proxy is fully cleaned up.
+func (h *HealthTracker) ForgetProxy(proxyID string) {
+	if h == nil || proxyID == "" {
+		return
+	}
+	h.transportStates.Delete(proxyID)
+}
+
+func (h *HealthTracker) getOrCreateTransport(proxyID string) *proxyTransportState {
+	if existing, ok := h.transportStates.Load(proxyID); ok {
+		return existing.(*proxyTransportState)
+	}
+	fresh := &proxyTransportState{errTimestamps: make([]time.Time, 0, transportErrRingSize)}
+	actual, _ := h.transportStates.LoadOrStore(proxyID, fresh)
+	return actual.(*proxyTransportState)
+}
+
+func (h *HealthTracker) lookupTransport(proxyID string) (*proxyTransportState, bool) {
+	v, ok := h.transportStates.Load(proxyID)
+	if !ok {
+		return nil, false
+	}
+	return v.(*proxyTransportState), true
 }
 
 func isSuppressState(s goprocess.ProcessState) bool {

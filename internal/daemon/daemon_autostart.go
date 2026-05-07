@@ -143,6 +143,10 @@ func (d *Daemon) RunAutostartAsync(
 	}
 	log.Info("", "", "config_loaded", fmt.Sprintf("%d scripts, %d proxies from %s", len(agntConfig.Scripts), len(agntConfig.Proxies), projectPath))
 
+	// Apply alerts subsystem config (hold buffer, transport thresholds).
+	// Safe to run on every autostart; latest values win.
+	d.ApplyAlertsConfig(agntConfig.Alerts)
+
 	// Step 3: Port pre-flight check
 	autostartScripts := agntConfig.GetAutostartScripts()
 	managedPIDs := d.collectManagedPIDs()

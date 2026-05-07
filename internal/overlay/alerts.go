@@ -29,12 +29,36 @@ type AlertPattern struct {
 	Description string
 }
 
+// AlertSource tags where a match originated. Default zero value
+// (AlertSourceProcess) covers regex-matched process output. Non-default
+// sources route through the same dedup/batch/activity-defer queue but
+// carry pre-rendered text in RenderedText so OnAlert can frame them
+// without the process-alert wrapper.
+type AlertSource string
+
+const (
+	// AlertSourceProcess is the default — match came from process stdout/stderr.
+	AlertSourceProcess AlertSource = ""
+	// AlertSourceBrowser is a browser-JS error injected from a proxy.
+	AlertSourceBrowser AlertSource = "browser"
+	// AlertSourceHTTP is an HTTP 4xx/5xx response injected from a proxy.
+	AlertSourceHTTP AlertSource = "http"
+)
+
 // AlertMatch represents a single matched alert from process output.
 type AlertMatch struct {
 	Pattern   *AlertPattern
 	Line      string
 	Timestamp time.Time
 	ScriptID  string
+	// Source tags origin for OnAlert dispatch. Empty = process-output.
+	Source AlertSource
+	// RenderedText, when set, is the pre-formatted PTY-ready text for
+	// this match. Used by non-process sources whose framing differs from
+	// the canonical "[agnt process alert] Script %q detected issues"
+	// wrapper. AlertBatch.Format honors RenderedText when every match in
+	// a batch carries it, otherwise falls back to the default wrapper.
+	RenderedText string
 }
 
 // AlertBatch is a collection of alert matches to be delivered together.
@@ -62,6 +86,29 @@ func (b *AlertBatch) MaxSeverity() AlertSeverity {
 func (b *AlertBatch) Format() string {
 	if len(b.Matches) == 0 {
 		return ""
+	}
+
+	// Pre-rendered fast path: when every match in the batch carries
+	// RenderedText, emit those joined directly. Used by non-process
+	// sources (browser-JS errors, HTTP errors) whose framing is
+	// determined upstream and would be wrong under the
+	// "Script %q detected issues" wrapper.
+	allRendered := true
+	for _, m := range b.Matches {
+		if m.RenderedText == "" {
+			allRendered = false
+			break
+		}
+	}
+	if allRendered {
+		var sb strings.Builder
+		for _, m := range b.Matches {
+			sb.WriteString(m.RenderedText)
+			if !strings.HasSuffix(m.RenderedText, "\n") {
+				sb.WriteByte('\n')
+			}
+		}
+		return sb.String()
 	}
 
 	var sb strings.Builder
@@ -238,6 +285,32 @@ func (s *AlertScanner) ProcessLine(line string, scriptID string) {
 		s.recordMatch(matched)
 		s.addMatch(matched)
 	}
+}
+
+// Inject adds a pre-classified match to the scanner without regex
+// matching, sharing the same dedup / batch / activity-defer pipeline as
+// regex-matched alerts. Used by non-process sources (browser-JS errors,
+// HTTP errors) so every PTY-bound alert flows through one queue. The
+// canonical-queue invariant (see .claude/skills/messaging-queue) requires
+// callers to use this entry point rather than writing directly to the
+// PTY.
+//
+// Callers that classify by canonical message (rather than regex pattern)
+// must still set Pattern.ID + Pattern.Severity so dedup keying and
+// severity ordering work. Source distinguishes presentation; RenderedText
+// is the pre-formatted text for the non-process render path.
+func (s *AlertScanner) Inject(m *AlertMatch) {
+	if m == nil || !s.enabled.Load() || s.stopped.Load() {
+		return
+	}
+	if m.Pattern == nil {
+		return
+	}
+	if m.Timestamp.IsZero() {
+		m.Timestamp = s.clockNow()
+	}
+	s.recordMatch(m)
+	s.addMatch(m)
 }
 
 // addMatch adds a match to the pending batch, applying deduplication.

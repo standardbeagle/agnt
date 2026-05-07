@@ -1333,6 +1333,17 @@ func runOverlayPipeline(
 			activityCfg.OnOutputLine = func(line string) {
 				rt.alertScanner.ProcessLine(line, sessionCode)
 			}
+			// Wire the canonical queue into the auto-forward path so
+			// browser/HTTP errors share dedup, batch, and activity-defer
+			// with regex-matched process alerts.
+			if rt.netOverlay != nil {
+				cascade := config.DefaultJSCascadePatterns
+				if agntCfg, err := config.LoadAgntConfig(projectPath); err == nil &&
+					agntCfg != nil && agntCfg.Alerts != nil && agntCfg.Alerts.OutageHold != nil {
+					cascade = agntCfg.Alerts.OutageHold.GetJSCascadePatterns()
+				}
+				rt.netOverlay.SetAlertScanner(rt.alertScanner, cascade)
+			}
 		}
 
 		rt.activityMonitor = overlay.NewActivityMonitor(outputDest, activityCfg)

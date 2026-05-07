@@ -867,10 +867,13 @@ func TestAlertHub_BroadcastLogEntryNonBlocking(t *testing.T) {
 	hub := NewAlertHub()
 	sink := hub.AddStreamSink(streamFilter{})
 
-	// Fill the sink's channel to capacity (64 per AddStreamSink). No
-	// drainer — we deliberately leave the channel jammed.
+	// Fill the sink's channel to capacity. No drainer — we deliberately
+	// leave the channel jammed. Capacity is whatever AddStreamSink
+	// configured; the test reads it dynamically so a future bump of the
+	// default doesn't invalidate the test's contract (channel-send-with-
+	// default behavior).
 	capFill := cap(sink.Ch)
-	assert.Equal(t, 64, capFill, "sink channel capacity must remain 64 for this test's assumptions")
+	assert.Greater(t, capFill, 0, "sink channel must be buffered")
 	for i := 0; i < capFill; i++ {
 		sink.Ch <- proxy.LogEntry{Type: proxy.LogTypeCustom, Custom: &proxy.CustomLog{Level: "info"}}
 	}

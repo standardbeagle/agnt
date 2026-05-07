@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	kdl "github.com/sblinch/kdl-go"
 
@@ -469,6 +470,121 @@ type AlertsConfig struct {
 	// emits instead. StreamSink is unaffected in both modes.
 	// KDL: alerts { incident-pipeline true }
 	IncidentPipeline bool `kdl:"incident-pipeline"`
+
+	// OutageHold configures the transport-signal-driven outage gate that holds
+	// transport / browser-JS errors during dev-server restarts that the
+	// process-state classifier cannot detect (e.g. dotnet watch keeps the
+	// supervisor process Running while the embedded HTTP/WS server bounces).
+	OutageHold *OutageHoldConfig `kdl:"outage-hold"`
+}
+
+// OutageHoldConfig configures the per-proxy hold-buffer that suppresses
+// transport-cascade noise during dev-server restarts.
+//
+// Default behaviour (when nil or unset): hold buffer is enabled with a 3s
+// window and the standard JS cascade pattern set. Set Enabled=false to
+// fall back to the legacy drop-during-process-state-suppression behaviour.
+type OutageHoldConfig struct {
+	// Enabled controls whether the hold buffer is active. Default: true.
+	Enabled *bool `kdl:"enabled"`
+
+	// WindowMs is how long a held event waits before being force-emitted
+	// when no recovery signal arrives. Default: 3000.
+	WindowMs int `kdl:"window-ms"`
+
+	// TransportErrThreshold is how many transport errors must occur within
+	// TransportErrWindowMs before the proxy enters synthetic outage. Default: 1.
+	TransportErrThreshold int `kdl:"transport-err-threshold"`
+
+	// TransportErrWindowMs is the sliding window for the threshold check.
+	// Default: 1000.
+	TransportErrWindowMs int `kdl:"transport-err-window-ms"`
+
+	// RecoveryDebounceMs is the minimum time after entering outage before
+	// recovery signals are honoured. Guards against single-request races
+	// where a 2xx arrives interleaved with a refused connection. Default: 500.
+	RecoveryDebounceMs int `kdl:"recovery-debounce-ms"`
+
+	// JSCascadePatterns is the case-insensitive substring list used to
+	// classify a browser-JS error as transport-cascade. Cascade entries are
+	// dropped on recovery; non-cascade entries are emitted. Default: the
+	// standard set covering "Failed to fetch", "NetworkError", "WebSocket",
+	// "ERR_CONNECTION_REFUSED", "ERR_NETWORK_CHANGED",
+	// "ERR_INTERNET_DISCONNECTED", "net::ERR_", "Load failed".
+	JSCascadePatterns []string `kdl:"js-cascade-patterns"`
+}
+
+// DefaultJSCascadePatterns is the substring set that flags a browser-JS
+// error as a transport-layer cascade rather than a genuine app error.
+var DefaultJSCascadePatterns = []string{
+	"Failed to fetch",
+	"NetworkError",
+	"WebSocket",
+	"ERR_CONNECTION_REFUSED",
+	"ERR_NETWORK_CHANGED",
+	"ERR_INTERNET_DISCONNECTED",
+	"net::ERR_",
+	"Load failed",
+	// Vite HMR client reconnect noise
+	"send was called before connect",
+	"@vite/client",
+	"ViteHotContext",
+	"failed to connect to websocket",
+	// Webpack / generic HMR reconnect noise
+	"[HMR]",
+	"Disconnected. Attempting to reconnect",
+}
+
+// IsEnabled returns whether the hold buffer is active. Defaults to true.
+func (c *OutageHoldConfig) IsEnabled() bool {
+	if c == nil || c.Enabled == nil {
+		return true
+	}
+	return *c.Enabled
+}
+
+// GetWindow returns the hold-window duration. Defaults to 3s.
+func (c *OutageHoldConfig) GetWindow() time.Duration {
+	if c == nil || c.WindowMs <= 0 {
+		return 3 * time.Second
+	}
+	return time.Duration(c.WindowMs) * time.Millisecond
+}
+
+// GetTransportErrThreshold returns the err count required to enter outage.
+// Defaults to 1.
+func (c *OutageHoldConfig) GetTransportErrThreshold() int {
+	if c == nil || c.TransportErrThreshold <= 0 {
+		return 1
+	}
+	return c.TransportErrThreshold
+}
+
+// GetTransportErrWindow returns the sliding-window duration for the
+// threshold check. Defaults to 1s.
+func (c *OutageHoldConfig) GetTransportErrWindow() time.Duration {
+	if c == nil || c.TransportErrWindowMs <= 0 {
+		return time.Second
+	}
+	return time.Duration(c.TransportErrWindowMs) * time.Millisecond
+}
+
+// GetRecoveryDebounce returns the recovery-signal debounce window.
+// Defaults to 500ms.
+func (c *OutageHoldConfig) GetRecoveryDebounce() time.Duration {
+	if c == nil || c.RecoveryDebounceMs <= 0 {
+		return 500 * time.Millisecond
+	}
+	return time.Duration(c.RecoveryDebounceMs) * time.Millisecond
+}
+
+// GetJSCascadePatterns returns the configured cascade patterns or the
+// default set if none are configured.
+func (c *OutageHoldConfig) GetJSCascadePatterns() []string {
+	if c == nil || len(c.JSCascadePatterns) == 0 {
+		return DefaultJSCascadePatterns
+	}
+	return c.JSCascadePatterns
 }
 
 // AutoForwardConfig configures automatic error forwarding to the AI agent.

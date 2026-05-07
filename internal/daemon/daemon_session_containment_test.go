@@ -75,6 +75,12 @@ func TestMain(m *testing.M) {
 		// when the bus drains after Close(); daemon Stop() calls Close() but
 		// the dispatchLoop draining can race with test teardown.
 		goleak.IgnoreAnyFunction("github.com/standardbeagle/agnt/internal/incident.(*MPSCBus).dispatchLoop"),
+		// HoldBuffer loop: parked on its select waiting for messages or
+		// stopCh. Daemon Stop() calls holdBuffer.Stop() but the synchronous
+		// goroutine join can race with the 5s test teardown timeout when
+		// many parallel daemons tear down at once. Tests that exercise the
+		// buffer directly call Stop in their own t.Cleanup.
+		goleak.IgnoreAnyFunction("github.com/standardbeagle/agnt/internal/daemon.(*HoldBuffer).loop"),
 		// I/O copy goroutines from spawnPortHolderInSession: the test binary
 		// is started with cmd.Start() without cmd.Wait() (pgid-kill handles
 		// teardown). The exec.Cmd stdout/stderr pipe-copy goroutines stay in

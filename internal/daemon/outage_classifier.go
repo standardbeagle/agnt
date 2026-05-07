@@ -339,6 +339,95 @@ func (c *OutageClassifier) Classify(processID string) OutageType {
 	return OutageCrash
 }
 
+// ClassifyProxy returns the OutageType for proxyID, taking the worse of:
+//   - the linkedProcessID's process-state outage (existing Classify)
+//   - the proxy's transport-signal outage (new HealthTracker bookkeeping)
+//
+// When the proxy is in synthetic transport outage but the process is
+// healthy, the result is OutageRebuild. When the process is in a worse
+// state (LongRebuild/ExpiredRebuild/Crash), the worse classification
+// wins. linkedProcessID may be empty for unlinked proxies; in that case
+// only the transport signal contributes.
+func (c *OutageClassifier) ClassifyProxy(proxyID, linkedProcessID string) OutageType {
+	if c == nil {
+		return OutageHealthy
+	}
+	procOutage := OutageHealthy
+	if linkedProcessID != "" {
+		procOutage = c.Classify(linkedProcessID)
+	}
+	if c.tracker != nil && c.tracker.IsProxyInTransportOutage(proxyID) {
+		return maxOutageType(procOutage, OutageRebuild)
+	}
+	return procOutage
+}
+
+// SuppressionModeProxy returns the gate decision for a proxy, considering
+// both its linked process's state and any synthetic transport outage. The
+// hot path is one ClassifyProxy plus a switch — same shape as SuppressionMode.
+func (c *OutageClassifier) SuppressionModeProxy(proxyID, linkedProcessID string) SuppressionMode {
+	if c == nil || proxyID == "" {
+		return ModeOff
+	}
+	switch c.ClassifyProxy(proxyID, linkedProcessID) {
+	case OutageRebuild:
+		return ModeFull
+	case OutageLongRebuild:
+		if linkedProcessID != "" {
+			c.startLongRebuildHeartbeat(linkedProcessID)
+		}
+		return ModeDiagnosticOnly
+	case OutageExpiredRebuild:
+		if linkedProcessID != "" {
+			c.emitExpiredRebuildOnce(linkedProcessID)
+			c.stopLongRebuildHeartbeat(linkedProcessID)
+		}
+		return ModeOff
+	case OutageHealthy, OutageCrash:
+		fallthrough
+	default:
+		if linkedProcessID != "" {
+			c.stopLongRebuildHeartbeat(linkedProcessID)
+		}
+		return ModeOff
+	}
+}
+
+// maxOutageType returns the more-severe of two outage types, ordered by
+// suppression urgency: Healthy < Rebuild < LongRebuild < ExpiredRebuild
+// < Crash. Crash is "most severe" in the sense the gate should NOT
+// suppress (errors are real); Rebuild/LongRebuild are most severe for
+// suppression intent.
+//
+// For ClassifyProxy purposes we want the worse-for-the-process result —
+// if the process is crashed, that wins. If the process is healthy and
+// the transport is in outage, transport outage wins.
+func maxOutageType(a, b OutageType) OutageType {
+	if a == OutageCrash || b == OutageCrash {
+		return OutageCrash
+	}
+	if rank(a) >= rank(b) {
+		return a
+	}
+	return b
+}
+
+func rank(o OutageType) int {
+	switch o {
+	case OutageHealthy:
+		return 0
+	case OutageRebuild:
+		return 1
+	case OutageLongRebuild:
+		return 2
+	case OutageExpiredRebuild:
+		return 3
+	case OutageCrash:
+		return 4
+	}
+	return 0
+}
+
 // SuppressionMode maps Classify(processID) → tri-state mode. O(1) on the
 // hot path: one Classify call plus a switch.
 func (c *OutageClassifier) SuppressionMode(processID string) SuppressionMode {

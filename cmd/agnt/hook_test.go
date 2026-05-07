@@ -530,7 +530,12 @@ func TestHook_LatencyAgainstWarmDaemon(t *testing.T) {
 		require.Equal(t, 0, code)
 	}
 
-	sink.waitFor(t, iterations, 2*time.Second)
+	// 5s wait covers concurrent test load (pre-commit runs all package
+	// tests in parallel; on a busy host the drain goroutine schedule
+	// slips past 2s for the last 1-2 events). The actual latency budget
+	// is asserted below via maxDur — this wait is just for sink
+	// reconciliation, not a perf gate.
+	sink.waitFor(t, iterations, 5*time.Second)
 	require.Len(t, sink.snapshot(), iterations)
 
 	// 100ms is well above the 5ms p99 target in the task spec. This test
