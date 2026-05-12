@@ -256,6 +256,8 @@ func validateSnapshotInput(input SnapshotInput) error {
 		validateStringLen("action", input.Action, maxIDLength),
 		validateStringLen("name", input.Name, maxIDLength),
 		validateStringLen("baseline", input.Baseline, maxIDLength),
+		validateStringLen("proxy_id", input.ProxyID, maxIDLength),
+		validateStringLen("selector", input.Selector, maxStringField),
 		validateArrayLen("pages", input.Pages, maxArrayElements),
 	}
 	for _, err := range checks {

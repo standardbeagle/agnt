@@ -83,7 +83,7 @@ type RunOutput struct {
 // ProcInput defines input for the proc tool.
 type ProcInput struct {
 	Action    string `json:"action" jsonschema:"Action: status, output, find, stop, restart, list, cleanup_port, autorestart, scripts, script_output, script_history, run, run_group, snapshot, wait"`
-	ProcessID string `json:"process_id,omitempty" jsonschema:"Process ID (required for status/output/stop/restart/autorestart/find/wait)"`
+	ProcessID string `json:"process_id,omitempty" jsonschema:"Process ID (preferred; required for status/output/stop/restart/autorestart/find/wait)"`
 	// Multi-stream output: when set on action="output", the handler fans
 	// out a per-process fetch and returns interleaved (or NDJSON) lines
 	// tagged with process_id. Wins over the singular ProcessID.
@@ -124,7 +124,7 @@ type ProcInput struct {
 	// admin-aware process (visible in SCRIPT LIST) with optional
 	// dependency gating; `run_group` launches multiple processes with
 	// declared deps in topologically sorted order.
-	ID               string              `json:"id,omitempty" jsonschema:"For run: process ID (required for run; defaults to script_name when omitted)"`
+	ID               string              `json:"id,omitempty" jsonschema:"For run: process ID (required for run; defaults to script_name when omitted). For other actions: alias for process_id."`
 	Run              string              `json:"run,omitempty" jsonschema:"For run: shell command string (mutually exclusive with command)"`
 	Command          string              `json:"command,omitempty" jsonschema:"For run: executable (mutually exclusive with run)"`
 	Args             []string            `json:"args,omitempty" jsonschema:"For run: command args"`
@@ -551,6 +551,7 @@ func makeRunHandler(pm *process.ProcessManager) func(context.Context, *mcp.CallT
 
 func makeProcHandler(pm *process.ProcessManager) func(context.Context, *mcp.CallToolRequest, ProcInput) (*mcp.CallToolResult, ProcOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input ProcInput) (*mcp.CallToolResult, ProcOutput, error) {
+		input.ProcessID = pickProcessID(input.ID, input.ProcessID)
 		if err := validateProcInput(input); err != nil {
 			return errorResult(validationError("proc", err)), ProcOutput{}, nil
 		}

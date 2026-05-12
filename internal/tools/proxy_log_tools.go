@@ -14,7 +14,8 @@ import (
 
 // ProxyLogInput defines input for the proxylog tool.
 type ProxyLogInput struct {
-	ProxyID          string   `json:"proxy_id" jsonschema:"Proxy ID to query logs from"`
+	ProxyID          string   `json:"proxy_id,omitempty" jsonschema:"Proxy ID to query logs from (preferred)"`
+	ID               string   `json:"id,omitempty" jsonschema:"Alias for proxy_id"`
 	Action           string   `json:"action,omitempty" jsonschema:"Action: query (default), summary, clear, stats"`
 	Types            []string `json:"types,omitempty" jsonschema:"Log types to filter: http, error, performance, custom, screenshot, execution, response, interaction, mutation, diagnostic"`
 	Methods          []string `json:"methods,omitempty" jsonschema:"HTTP methods to filter (e.g., GET, POST)"`
@@ -174,12 +175,13 @@ type CompactError struct {
 
 func makeProxyLogHandler(pm *proxy.ProxyManager) func(context.Context, *mcp.CallToolRequest, ProxyLogInput) (*mcp.CallToolResult, ProxyLogOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input ProxyLogInput) (*mcp.CallToolResult, ProxyLogOutput, error) {
+		input.ProxyID = pickProxyID(input.ID, input.ProxyID)
 		if err := validateProxyLogInput(input); err != nil {
 			return errorResult(validationError("proxylog", err)), ProxyLogOutput{}, nil
 		}
 
 		if input.ProxyID == "" {
-			return errorResult("proxy_id required"), ProxyLogOutput{}, nil
+			return errorResult("proxy_id required (or `id` alias)"), ProxyLogOutput{}, nil
 		}
 
 		proxyServer, err := pm.Get(input.ProxyID)

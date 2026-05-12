@@ -13,7 +13,8 @@ import (
 
 // ResponsiveAuditInput defines input for the responsive_audit tool.
 type ResponsiveAuditInput struct {
-	ProxyID   string          `json:"proxy_id" jsonschema:"Proxy ID to run audit on"`
+	ProxyID   string          `json:"proxy_id,omitempty" jsonschema:"Proxy ID to run audit on (preferred)"`
+	ID        string          `json:"id,omitempty" jsonschema:"Alias for proxy_id"`
 	Viewports []ViewportInput `json:"viewports,omitempty" jsonschema:"Custom viewports to test (default: mobile/tablet/desktop)"`
 	Checks    []string        `json:"checks,omitempty" jsonschema:"Checks to run: layout, overflow, a11y (default: all)"`
 	Timeout   int             `json:"timeout,omitempty" jsonschema:"Load timeout per viewport in ms (default: 10000)"`
@@ -85,12 +86,13 @@ func RegisterResponsiveAuditTool(server *mcp.Server, dt *DaemonTools, pm *proxy.
 // makeHandler creates a handler that dispatches to daemon or legacy path.
 func (b *responsiveAuditBackend) makeHandler() func(context.Context, *mcp.CallToolRequest, ResponsiveAuditInput) (*mcp.CallToolResult, ResponsiveAuditOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input ResponsiveAuditInput) (*mcp.CallToolResult, ResponsiveAuditOutput, error) {
+		input.ProxyID = pickProxyID(input.ID, input.ProxyID)
 		if err := validateResponsiveAuditInput(input); err != nil {
 			return errorResult(err.Error()), ResponsiveAuditOutput{}, nil
 		}
 
 		if input.ProxyID == "" {
-			return errorResult("proxy_id required"), ResponsiveAuditOutput{}, nil
+			return errorResult("proxy_id required (or `id` alias)"), ResponsiveAuditOutput{}, nil
 		}
 
 		type auditResult struct {

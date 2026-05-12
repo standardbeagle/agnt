@@ -135,6 +135,7 @@ func (dt *DaemonTools) makeRunHandler() func(context.Context, *mcp.CallToolReque
 // makeProcHandler creates a handler for the proc tool.
 func (dt *DaemonTools) makeProcHandler() func(context.Context, *mcp.CallToolRequest, ProcInput) (*mcp.CallToolResult, ProcOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input ProcInput) (*mcp.CallToolResult, ProcOutput, error) {
+		input.ProcessID = pickProcessID(input.ID, input.ProcessID)
 		if err := validateProcInput(input); err != nil {
 			return errorResult(validationError("proc", err)), ProcOutput{}, nil
 		}

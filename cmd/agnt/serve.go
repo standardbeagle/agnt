@@ -178,7 +178,7 @@ Available tools:
 	if err != nil {
 		log.Printf("Warning: Failed to initialize snapshot manager: %v", err)
 	} else {
-		tools.RegisterSnapshotTools(server, snapshotManager)
+		tools.RegisterSnapshotTools(server, snapshotManager, dt)
 	}
 
 	// Set up MCP alert sink for process output alerts.
@@ -284,7 +284,7 @@ func runLegacyServer() {
 	if err != nil {
 		log.Printf("Warning: Failed to initialize snapshot manager: %v", err)
 	} else {
-		tools.RegisterSnapshotTools(server, snapshotManager)
+		tools.RegisterSnapshotTools(server, snapshotManager, nil)
 	}
 
 	// Handle shutdown in background

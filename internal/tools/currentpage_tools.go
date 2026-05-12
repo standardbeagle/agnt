@@ -12,7 +12,8 @@ import (
 
 // CurrentPageInput defines input for the currentpage tool.
 type CurrentPageInput struct {
-	ProxyID   string   `json:"proxy_id" jsonschema:"Proxy ID to query pages from"`
+	ProxyID   string   `json:"proxy_id,omitempty" jsonschema:"Proxy ID to query pages from (preferred)"`
+	ID        string   `json:"id,omitempty" jsonschema:"Alias for proxy_id"`
 	Action    string   `json:"action,omitempty" jsonschema:"Action: list, get, summary, clear (default: list)"`
 	SessionID string   `json:"session_id,omitempty" jsonschema:"Specific session ID (required for get/summary action)"`
 	Detail    []string `json:"detail,omitempty" jsonschema:"For summary: sections to include full detail for (interactions, mutations, errors, resources)"`
@@ -114,12 +115,13 @@ type PageSessionOutput struct {
 // makeCurrentPageHandler creates the handler for the currentpage tool.
 func makeCurrentPageHandler(pm *proxy.ProxyManager) func(context.Context, *mcp.CallToolRequest, CurrentPageInput) (*mcp.CallToolResult, CurrentPageOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input CurrentPageInput) (*mcp.CallToolResult, CurrentPageOutput, error) {
+		input.ProxyID = pickProxyID(input.ID, input.ProxyID)
 		if err := validateCurrentPageInput(input); err != nil {
 			return errorResult(validationError("currentpage", err)), CurrentPageOutput{}, nil
 		}
 
 		if input.ProxyID == "" {
-			return errorResult("proxy_id required"), CurrentPageOutput{}, nil
+			return errorResult("proxy_id required (or `id` alias)"), CurrentPageOutput{}, nil
 		}
 
 		proxyServer, err := pm.Get(input.ProxyID)

@@ -3,6 +3,15 @@
 ## [Unreleased]
 
 ### Added
+- **`id` parameter alias** across single-reference MCP tools. `currentpage`,
+  `proxylog`, `responsive_audit`, `channel_reply`, `snapshot`, and `proc` now
+  accept `id` as an alias for their canonical `proxy_id` / `process_id`
+  parameter. Canonical name wins when both are set. Skill docs updated to
+  guide toward the preferred form.
+- **`snapshot {action:"screenshot"}`** captures the current page of a running
+  proxy via `__devtool.screenshot()` in one call. Accepts `proxy_id` (or `id`
+  alias), optional `name`, `selector`, and `full_page`. File path is returned
+  in the next `proxylog {types:["screenshot"]}` entry. Daemon mode only.
 - **Incident pipeline opt-in** (`alerts.incident-pipeline` in `.agnt.kdl`): New
   alert path in `internal/incident/` that normalises signals from 11 sources
   (browser JS, HTTP 5xx/4xx, process crashes, build failures, port conflicts,
