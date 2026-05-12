@@ -11,7 +11,8 @@ import (
 // ChannelReplyInput is the input for the channel_reply tool.
 type ChannelReplyInput struct {
 	Content  string `json:"content" jsonschema:"required,Message body to send to the developer (markdown OK)"`
-	ProxyID  string `json:"proxy_id,omitempty" jsonschema:"Target a specific proxy; omit to fan out to all active proxies"`
+	ProxyID  string `json:"proxy_id,omitempty" jsonschema:"Target a specific proxy (preferred); omit to fan out to all active proxies"`
+	ID       string `json:"id,omitempty" jsonschema:"Alias for proxy_id"`
 	Severity string `json:"severity,omitempty" jsonschema:"enum=info,enum=warning,enum=error,Toast styling (default: info)"`
 	Title    string `json:"title,omitempty" jsonschema:"Toast title"`
 }
@@ -40,6 +41,7 @@ Examples:
 // makeChannelReplyHandler creates a handler for the channel_reply tool.
 func (dt *DaemonTools) makeChannelReplyHandler() func(context.Context, *mcp.CallToolRequest, ChannelReplyInput) (*mcp.CallToolResult, ChannelReplyOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input ChannelReplyInput) (*mcp.CallToolResult, ChannelReplyOutput, error) {
+		input.ProxyID = pickProxyID(input.ID, input.ProxyID)
 		if input.Content == "" {
 			return errorResult("content is required"), ChannelReplyOutput{}, nil
 		}

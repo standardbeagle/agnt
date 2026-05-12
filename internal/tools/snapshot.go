@@ -12,11 +12,16 @@ import (
 
 // SnapshotInput defines input for the snapshot tool
 type SnapshotInput struct {
-	Action        string                 `json:"action" jsonschema:"Action: baseline, compare, list, delete, get"`
-	Name          string                 `json:"name,omitempty" jsonschema:"Baseline name (required for baseline/compare/delete/get)"`
+	Action        string                 `json:"action" jsonschema:"Action: baseline, compare, list, delete, get, screenshot"`
+	Name          string                 `json:"name,omitempty" jsonschema:"Baseline or screenshot name (required for baseline/compare/delete/get; optional for screenshot)"`
 	Baseline      string                 `json:"baseline,omitempty" jsonschema:"Baseline name to compare against (for compare action)"`
 	Pages         []snapshot.PageCapture `json:"pages,omitempty" jsonschema:"Pages to capture (array of {url viewport screenshot_data})"`
 	DiffThreshold float64                `json:"diff_threshold,omitempty" jsonschema:"Diff sensitivity threshold 0.0-1.0 (default: 0.01)"`
+	// screenshot action — captures the current page of a running proxy
+	ProxyID  string `json:"proxy_id,omitempty" jsonschema:"For screenshot: proxy ID whose current page to capture (preferred)"`
+	ID       string `json:"id,omitempty" jsonschema:"Alias for proxy_id (for screenshot action)"`
+	Selector string `json:"selector,omitempty" jsonschema:"For screenshot: CSS selector to capture (default: full viewport)"`
+	FullPage bool   `json:"full_page,omitempty" jsonschema:"For screenshot: capture full scrollable page (default: viewport only)"`
 }
 
 // SnapshotOutput defines output for the snapshot tool
@@ -26,11 +31,12 @@ type SnapshotOutput struct {
 	Data    string `json:"data,omitempty"`
 }
 
-// RegisterSnapshotTools registers snapshot-related MCP tools
-func RegisterSnapshotTools(server *mcp.Server, manager *snapshot.Manager) {
-	// Closure to capture manager
+// RegisterSnapshotTools registers snapshot-related MCP tools. When dt is
+// non-nil, the screenshot action is enabled and routed through the daemon's
+// proxy exec path.
+func RegisterSnapshotTools(server *mcp.Server, manager *snapshot.Manager, dt *DaemonTools) {
 	handler := func(ctx context.Context, req *mcp.CallToolRequest, input SnapshotInput) (*mcp.CallToolResult, SnapshotOutput, error) {
-		return handleSnapshot(manager, ctx, req, input)
+		return handleSnapshot(manager, dt, ctx, req, input)
 	}
 
 	addLenientTool(server, &mcp.Tool{
@@ -38,11 +44,17 @@ func RegisterSnapshotTools(server *mcp.Server, manager *snapshot.Manager) {
 		Description: `Capture and compare visual snapshots for regression testing.
 
 Actions:
+- screenshot: Capture the current page of a running proxy (writes PNG; returns path)
 - baseline: Create a new baseline from screenshots
 - compare: Compare current screenshots to a baseline
 - list: List all available baselines
 - delete: Delete a baseline
 - get: Get details of a specific baseline
+
+Example screenshot:
+  snapshot {action: "screenshot", proxy_id: "dev"}
+  snapshot {action: "screenshot", proxy_id: "dev", name: "homepage", full_page: true}
+  snapshot {action: "screenshot", proxy_id: "dev", selector: ".header"}
 
 Example baseline:
   snapshot {action: "baseline", name: "before-refactor", pages: [{url: "/", viewport: {width: 1920, height: 1080}, screenshot_data: "base64..."}]}
@@ -52,7 +64,8 @@ Example compare:
 	}, handler)
 }
 
-func handleSnapshot(manager *snapshot.Manager, ctx context.Context, req *mcp.CallToolRequest, input SnapshotInput) (*mcp.CallToolResult, SnapshotOutput, error) {
+func handleSnapshot(manager *snapshot.Manager, dt *DaemonTools, ctx context.Context, req *mcp.CallToolRequest, input SnapshotInput) (*mcp.CallToolResult, SnapshotOutput, error) {
+	input.ProxyID = pickProxyID(input.ID, input.ProxyID)
 	if err := validateSnapshotInput(input); err != nil {
 		return errorResult(validationError("snapshot", err)), SnapshotOutput{}, nil
 	}
@@ -68,8 +81,10 @@ func handleSnapshot(manager *snapshot.Manager, ctx context.Context, req *mcp.Cal
 		return handleSnapshotDelete(manager, input)
 	case "get":
 		return handleSnapshotGet(manager, input)
+	case "screenshot":
+		return handleSnapshotScreenshot(dt, input)
 	default:
-		return errorResult(fmt.Sprintf("Unknown action: %s. Valid actions: baseline, compare, list, delete, get", input.Action)), SnapshotOutput{}, nil
+		return errorResult(fmt.Sprintf("Unknown action: %s. Valid actions: screenshot, baseline, compare, list, delete, get", input.Action)), SnapshotOutput{}, nil
 	}
 }
 
@@ -214,6 +229,52 @@ func handleSnapshotGet(manager *snapshot.Manager, input SnapshotInput) (*mcp.Cal
 		Success: true,
 		Message: string(data),
 		Data:    dataJSON,
+	}, nil
+}
+
+// handleSnapshotScreenshot triggers a screenshot via the proxy's __devtool API.
+// The browser overlay writes the PNG to the audit storage; the file path is
+// returned in the next proxylog screenshot entry. This handler executes the
+// JS, then polls proxylog briefly for the saved path.
+func handleSnapshotScreenshot(dt *DaemonTools, input SnapshotInput) (*mcp.CallToolResult, SnapshotOutput, error) {
+	if dt == nil {
+		return errorResult("screenshot action requires daemon mode"), SnapshotOutput{}, nil
+	}
+	if input.ProxyID == "" {
+		return errorResult("proxy_id required (or `id` alias)"), SnapshotOutput{}, nil
+	}
+	if err := dt.ensureConnected(); err != nil {
+		return errorResult(err.Error()), SnapshotOutput{}, nil
+	}
+
+	name := input.Name
+	if name == "" {
+		name = "screenshot"
+	}
+
+	// Build __devtool.screenshot(opts) invocation. Browser overlay drops the
+	// PNG into audit storage and logs a `screenshot` entry with file_path.
+	opts := map[string]interface{}{"name": name}
+	if input.FullPage {
+		opts["fullPage"] = true
+	}
+	if input.Selector != "" {
+		opts["selector"] = input.Selector
+	}
+	optsJSON, _ := json.Marshal(opts)
+	code := fmt.Sprintf("await __devtool.screenshot(%s)", optsJSON)
+
+	if _, err := dt.client.ProxyExec(input.ProxyID, code); err != nil {
+		return errorResult(fmt.Sprintf("proxy exec failed: %v", err)), SnapshotOutput{}, nil
+	}
+
+	message := fmt.Sprintf("✓ Screenshot triggered on proxy %q (name=%q). "+
+		"Retrieve file path with: proxylog {proxy_id: %q, types: [\"screenshot\"], limit: 1}",
+		input.ProxyID, name, input.ProxyID)
+
+	return nil, SnapshotOutput{
+		Success: true,
+		Message: message,
 	}, nil
 }
 

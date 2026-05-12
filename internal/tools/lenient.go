@@ -7,6 +7,24 @@ import (
 	"github.com/standardbeagle/go-sdk/mcp"
 )
 
+// pickProxyID returns the canonical proxy_id when set, otherwise falls back to
+// the `id` alias. Use in handlers to accept both forms transparently. When both
+// are set, the canonical proxy_id wins.
+func pickProxyID(id, proxyID string) string {
+	if proxyID != "" {
+		return proxyID
+	}
+	return id
+}
+
+// pickProcessID is the process_id counterpart to pickProxyID.
+func pickProcessID(id, processID string) string {
+	if processID != "" {
+		return processID
+	}
+	return id
+}
+
 // addLenientTool registers an MCP tool that ignores unknown properties in input.
 //
 // The MCP SDK's jsonschema inference sets additionalProperties: false on structs,
