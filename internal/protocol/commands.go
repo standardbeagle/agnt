@@ -304,7 +304,8 @@ type AlertReportPayload struct {
 	Description string `json:"description"` // Pattern description
 	Line        string `json:"line"`        // Matched output line
 	ScriptID    string `json:"script_id"`   // Process that produced the line
-	Timestamp   string `json:"timestamp"`   // RFC3339
+	ProjectPath string `json:"project_path,omitempty"`
+	Timestamp   string `json:"timestamp"` // RFC3339
 }
 
 // AlertQueryFilter filters for ALERTS QUERY.

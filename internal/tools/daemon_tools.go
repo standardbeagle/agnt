@@ -637,6 +637,9 @@ Examples:
 
 	// Store tool - register via separate function for organization
 	RegisterStoreTool(server, dt)
+
+	// External error queue tool
+	RegisterErrorQueueTool(server, dt)
 }
 
 // makeDetectHandler creates a handler for the detect tool.

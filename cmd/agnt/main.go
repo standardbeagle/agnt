@@ -14,7 +14,7 @@ import (
 const appName = "agnt"
 
 // appVersion can be overridden at build time with -ldflags="-X main.appVersion=x.y.z"
-var appVersion = "0.13.8"
+var appVersion = "0.13.9"
 
 var rootCmd = &cobra.Command{
 	Use:   appName,
@@ -60,6 +60,8 @@ func init() {
 	rootCmd.AddCommand(sessionCmd)
 	rootCmd.AddCommand(aiCmd)
 	rootCmd.AddCommand(monitorCmd)
+	rootCmd.AddCommand(errorsCmd)
+	rootCmd.AddCommand(ciCmd)
 
 	// Custom version output that includes daemon version
 	rootCmd.SetVersionTemplate(getVersionString())
