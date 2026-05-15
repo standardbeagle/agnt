@@ -128,7 +128,7 @@ function Kill-Daemon {
     $processes = Get-Process -Name "agnt*" -ErrorAction SilentlyContinue
     foreach ($proc in $processes) {
         Write-Info "Killing daemon process: $($proc.Id)"
-        Stop-Process -Id $proc.Id -Force
+        Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
     }
     Start-Sleep -Milliseconds 500
 }
@@ -147,13 +147,13 @@ function Cleanup {
 
     # Remove socket file
     if (Test-Path $SocketPath) {
-        Remove-Item $SocketPath -Force
+        Remove-Item $SocketPath -Force -ErrorAction SilentlyContinue
     }
 
     # Remove upgrade lock file
     $lockFile = "$SocketPath.upgrade.lock"
     if (Test-Path $lockFile) {
-        Remove-Item $lockFile -Force
+        Remove-Item $lockFile -Force -ErrorAction SilentlyContinue
     }
 
     Start-Sleep -Seconds 1

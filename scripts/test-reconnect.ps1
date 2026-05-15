@@ -127,7 +127,7 @@ function Kill-Daemon {
     $processes = Get-Process -Name "agnt*" -ErrorAction SilentlyContinue
     foreach ($proc in $processes) {
         Write-Info "Killing daemon process: $($proc.Id)"
-        Stop-Process -Id $proc.Id -Force
+        Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
     }
 
     # Wait for processes to be gone
@@ -148,7 +148,7 @@ function Cleanup {
 
     # Remove socket file
     if (Test-Path $SocketPath) {
-        Remove-Item $SocketPath -Force
+        Remove-Item $SocketPath -Force -ErrorAction SilentlyContinue
     }
 
     Start-Sleep -Seconds 1
