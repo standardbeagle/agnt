@@ -103,7 +103,8 @@ func isAddressInUse(err error) bool {
 	}
 	// Check for "bind: address already in use" error
 	return strings.Contains(err.Error(), "address already in use") ||
-		strings.Contains(err.Error(), "bind") && strings.Contains(err.Error(), "in use")
+		strings.Contains(err.Error(), "bind") && strings.Contains(err.Error(), "in use") ||
+		strings.Contains(err.Error(), "Only one usage of each socket address")
 }
 
 // isTransientConnectionError checks if an error is a transient connection error
