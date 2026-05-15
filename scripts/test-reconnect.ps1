@@ -25,6 +25,23 @@ function Write-Info($message) {
     Write-Host "[INFO] $message" -ForegroundColor Yellow
 }
 
+function Convert-AgntJson($output) {
+    $text = ($output | Out-String).Trim()
+    $jsonStart = $text.IndexOf('{')
+    if ($jsonStart -lt 0) {
+        throw "agnt command did not produce JSON: $text"
+    }
+    return $text.Substring($jsonStart) | ConvertFrom-Json
+}
+
+function Invoke-AgntInfoJson {
+    $output = & $AgntPath daemon info --socket $SocketPath 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "daemon info failed: $($output | Out-String)"
+    }
+    return Convert-AgntJson $output
+}
+
 # Helper: Wait for daemon to be ready
 function Wait-DaemonReady {
     param([int]$TimeoutSeconds = 5)
@@ -137,7 +154,7 @@ function Test-KillDaemonReconnect {
         Write-Success "Daemon started"
 
         # Get daemon info to verify connection
-        $info = & $AgntPath daemon info --socket $SocketPath 2>&1 | ConvertFrom-Json
+        $info = Invoke-AgntInfoJson
         Write-Success "Connected to daemon v$($info.version)"
 
         # Kill the daemon process (simulate crash)
@@ -151,11 +168,7 @@ function Test-KillDaemonReconnect {
 
         # Try to use client - should auto-start daemon
         Write-Info "Attempting to use client (should trigger auto-start)..."
-        $info2 = & $AgntPath daemon info --socket $SocketPath 2>&1 | ConvertFrom-Json
-
-        if ($LASTEXITCODE -ne 0) {
-            throw "Client failed to reconnect after daemon kill"
-        }
+        $info2 = Invoke-AgntInfoJson
 
         Write-Success "Client auto-started daemon and reconnected"
         Write-Success "New daemon v$($info2.version) running"
@@ -181,7 +194,7 @@ function Test-GracefulRestart {
         Write-Success "Daemon started"
 
         # Get initial info
-        $info = & $AgntPath daemon info --socket $SocketPath 2>&1 | ConvertFrom-Json
+        $info = Invoke-AgntInfoJson
         Write-Success "Connected to daemon v$($info.version), uptime: $($info.uptime)"
 
         # Graceful stop
@@ -195,11 +208,7 @@ function Test-GracefulRestart {
 
         # Client should auto-start new daemon
         Write-Info "Attempting to use client (should trigger auto-start)..."
-        $info2 = & $AgntPath daemon info --socket $SocketPath 2>&1 | ConvertFrom-Json
-
-        if ($LASTEXITCODE -ne 0) {
-            throw "Client failed to auto-start daemon"
-        }
+        $info2 = Invoke-AgntInfoJson
 
         Write-Success "Client auto-started daemon"
         Write-Success "New daemon v$($info2.version) running"
@@ -225,7 +234,7 @@ function Test-SocketDeletion {
         Write-Success "Daemon started"
 
         # Verify connection
-        $info = & $AgntPath daemon info --socket $SocketPath 2>&1 | ConvertFrom-Json
+        $info = Invoke-AgntInfoJson
         Write-Success "Connected to daemon v$($info.version)"
 
         # Delete socket file while daemon running
@@ -237,11 +246,7 @@ function Test-SocketDeletion {
 
         # Try to use client - should fail and auto-restart daemon
         Write-Info "Attempting to use client after socket deletion..."
-        $info2 = & $AgntPath daemon info --socket $SocketPath 2>&1 | ConvertFrom-Json
-
-        if ($LASTEXITCODE -ne 0) {
-            throw "Client failed to recover after socket deletion"
-        }
+        $info2 = Invoke-AgntInfoJson
 
         Write-Success "Client detected stale daemon and auto-started new one"
         Write-Success "New daemon v$($info2.version) running"
@@ -272,11 +277,9 @@ function Test-RapidReconnections {
             $daemonJob = Start-TestDaemon
 
             # Use client
-            $info = & $AgntPath daemon info --socket $SocketPath 2>&1 | ConvertFrom-Json
-            if ($LASTEXITCODE -eq 0) {
-                Write-Success "Connected on iteration $i"
-                $successCount++
-            }
+            $info = Invoke-AgntInfoJson
+            Write-Success "Connected on iteration $i"
+            $successCount++
 
             # Stop daemon
             Stop-TestDaemon $daemonJob
@@ -325,11 +328,7 @@ function Test-ClientOperationsDuringRestart {
 
         # Try to query process list - should auto-start daemon
         Write-Info "Querying process list (should trigger auto-start)..."
-        $result = & $AgntPath daemon info --socket $SocketPath 2>&1 | ConvertFrom-Json
-
-        if ($LASTEXITCODE -ne 0) {
-            throw "Client failed to reconnect"
-        }
+        $result = Invoke-AgntInfoJson
 
         Write-Success "Client reconnected and daemon auto-started"
         Write-Success "Daemon v$($result.version) running"
