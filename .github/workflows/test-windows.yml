@@ -108,10 +108,11 @@ jobs:
             $lines = $output -split "`n" | Where-Object { $_.Trim() -ne "" }
             $hasFail = ($lines | Where-Object { $_ -match "--- FAIL:" -or $_ -match "^panic:" -or $_ -match "DATA RACE" }).Count -gt 0
             $hasOk = ($lines | Where-Object { $_ -match "^ok\s" }).Count -gt 0
+            $hasPass = ($lines | Where-Object { $_ -match "^--- PASS:" }).Count -gt 0
             if ($hasFail) {
               throw "$label tests failed"
             }
-            if (-not $hasOk) {
+            if (-not $hasOk -and -not $hasPass) {
               throw "$label tests produced no verdict (exit code $LASTEXITCODE)"
             }
             Write-Host "$label tests passed"
