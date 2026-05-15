@@ -189,10 +189,20 @@ jobs:
           Write-Host "Daemon started successfully"
 
           # Get daemon info
-          $info = .\agnt.exe daemon info --socket $socketPath 2>&1 | ConvertFrom-Json
-          Write-Host "Daemon version: $($info.version)"
-          Write-Host "Daemon uptime: $($info.uptime)"
-          Write-Host "Clients connected: $($info.client_count)"
+          $infoText = .\agnt.exe daemon info --socket $socketPath 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0) {
+            throw "daemon info failed: $infoText"
+          }
+          if ($infoText -notmatch "Daemon v(?<version>\S+)") {
+            throw "daemon info did not include version: $infoText"
+          }
+          $daemonVersion = $Matches.version
+          $daemonUptime = "unknown"
+          if ($infoText -match "(?m)^Uptime:\s*(?<uptime>.+)$") {
+            $daemonUptime = $Matches.uptime.Trim()
+          }
+          Write-Host "Daemon version: $daemonVersion"
+          Write-Host "Daemon uptime: $daemonUptime"
 
           # Get binary version
           $binaryVersion = .\agnt.exe --version 2>&1
