@@ -106,7 +106,7 @@ jobs:
             $output = go test -v -race $pkg 2>&1 | Out-String
             Write-Host $output
             $lines = $output -split "`n" | Where-Object { $_.Trim() -ne "" }
-            $hasFail = ($lines | Where-Object { $_ -match "^FAIL\s" -or $_ -match "--- FAIL:" }).Count -gt 0
+            $hasFail = ($lines | Where-Object { $_ -match "--- FAIL:" -or $_ -match "^panic:" -or $_ -match "DATA RACE" }).Count -gt 0
             $hasOk = ($lines | Where-Object { $_ -match "^ok\s" }).Count -gt 0
             if ($hasFail) {
               throw "$label tests failed"
