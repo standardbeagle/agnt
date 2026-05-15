@@ -47,6 +47,7 @@ func (d *Daemon) hubHandleAlertsReport(conn *hubpkg.Connection, cmd *hubproto.Co
 		Description: payload.Description,
 		Line:        payload.Line,
 		ScriptID:    payload.ScriptID,
+		ProjectPath: payload.ProjectPath,
 		Timestamp:   ts,
 	})
 
