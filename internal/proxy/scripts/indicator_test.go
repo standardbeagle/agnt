@@ -75,7 +75,7 @@ func TestTabRefreshGatedOnTextSelection(t *testing.T) {
 	// Locate the function body's closing brace by scanning for the first
 	// "\n  }\n" pattern after startTabUpdates — matches the indent style
 	// used throughout indicator.js.
-	rest := indicatorJS[startIdx:]
+	rest := strings.ReplaceAll(indicatorJS[startIdx:], "\r\n", "\n")
 	endIdx := strings.Index(rest, "\n  }\n")
 	if endIdx < 0 {
 		t.Fatal("could not locate end of startTabUpdates function body")

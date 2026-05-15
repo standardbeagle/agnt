@@ -145,7 +145,7 @@ func TestShadowRootBootstrapOrder(t *testing.T) {
 		t.Fatalf("shadow-root.js missing host.style.cssText assignment; test cannot guard against pointer-events regression")
 	}
 	// Find the end of the statement (semicolon after the closing quote).
-	rest := shadowRootJS[cssTextIdx:]
+	rest := strings.ReplaceAll(shadowRootJS[cssTextIdx:], "\r\n", "\n")
 	stmtEnd := strings.Index(rest, ";\n")
 	if stmtEnd < 0 {
 		t.Fatalf("shadow-root.js host.style.cssText assignment not terminated with ;\\n; cannot parse")
