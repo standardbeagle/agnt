@@ -32,7 +32,7 @@ func TestRunLifecycleHook_SetsEnvVars(t *testing.T) {
 
 	var cmd string
 	if runtime.GOOS == "windows" {
-		cmd = `$env:AGNT_EVENT + '|' + $env:AGNT_SCRIPT_ID | Out-File -LiteralPath ` + psSingleQuote(tmp.Name()) + ` -NoNewline`
+		cmd = `$env:AGNT_EVENT + '|' + $env:AGNT_SCRIPT_ID | Set-Content -LiteralPath ` + psSingleQuote(tmp.Name()) + ` -NoNewline -Encoding ASCII`
 	} else {
 		cmd = `printf '%s|%s' "$AGNT_EVENT" "$AGNT_SCRIPT_ID" > ` + tmp.Name()
 	}
@@ -69,7 +69,7 @@ func TestRunLifecycleHook_ExitCodeEnvVar(t *testing.T) {
 
 	var cmd string
 	if runtime.GOOS == "windows" {
-		cmd = `$env:AGNT_EXIT_CODE | Out-File -LiteralPath ` + psSingleQuote(tmp.Name()) + ` -NoNewline`
+		cmd = `$env:AGNT_EXIT_CODE | Set-Content -LiteralPath ` + psSingleQuote(tmp.Name()) + ` -NoNewline -Encoding ASCII`
 	} else {
 		cmd = `printf '%s' "$AGNT_EXIT_CODE" > ` + tmp.Name()
 	}
@@ -89,7 +89,7 @@ func TestRunLifecycleHook_InheritsScriptEnv(t *testing.T) {
 
 	var cmd string
 	if runtime.GOOS == "windows" {
-		cmd = `$env:MY_CUSTOM_VAR | Out-File -LiteralPath ` + psSingleQuote(tmp.Name()) + ` -NoNewline`
+		cmd = `$env:MY_CUSTOM_VAR | Set-Content -LiteralPath ` + psSingleQuote(tmp.Name()) + ` -NoNewline -Encoding ASCII`
 	} else {
 		cmd = `printf '%s' "$MY_CUSTOM_VAR" > ` + tmp.Name()
 	}
