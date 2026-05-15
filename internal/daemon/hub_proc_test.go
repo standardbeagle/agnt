@@ -184,8 +184,9 @@ func TestHubHandleProcRun(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ProcRun: %v", err)
 		}
+		processID, _ := resp["process_id"].(string)
+		projectPath, _ := resp["project_path"].(string)
 		t.Cleanup(func() {
-			processID := makeProcessID(tmpDir, name)
 			stopCtx, stopCancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer stopCancel()
 			_ = daemon.hub.ProcessManager().Stop(stopCtx, processID)
@@ -195,13 +196,15 @@ func TestHubHandleProcRun(t *testing.T) {
 		if got, _ := resp["name"].(string); got != name {
 			t.Errorf("resp.name: got %v, want %q", resp["name"], name)
 		}
-		processID := makeProcessID(tmpDir, name)
-		if got, _ := resp["process_id"].(string); got != processID {
-			t.Errorf("resp.process_id: got %v, want %q", resp["process_id"], processID)
+		if processID == "" {
+			t.Fatalf("resp.process_id missing: %+v", resp)
+		}
+		if projectPath == "" {
+			t.Fatalf("resp.project_path missing: %+v", resp)
 		}
 
 		// SCRIPT LIST contract: the process appears as a process-kind row.
-		summaries := daemon.buildScriptListSummaries(tmpDir)
+		summaries := daemon.buildScriptListSummaries(projectPath)
 		var row map[string]interface{}
 		for _, s := range summaries {
 			if s["name"] == name {

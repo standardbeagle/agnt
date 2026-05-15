@@ -12,6 +12,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func hookTestScriptConfig(env map[string]string) *config.ScriptConfig {
+	scriptCfg := &config.ScriptConfig{Env: env}
+	if runtime.GOOS == "windows" {
+		scriptCfg.Shell = "powershell.exe"
+	}
+	return scriptCfg
+}
+
+func psSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+}
+
 func TestRunLifecycleHook_SetsEnvVars(t *testing.T) {
 	// No t.Parallel(): starts real sleep process; PID-reuse kills it under high concurrency.
 	tmp, err := os.CreateTemp(t.TempDir(), "hook-env-*.txt")
@@ -20,12 +32,12 @@ func TestRunLifecycleHook_SetsEnvVars(t *testing.T) {
 
 	var cmd string
 	if runtime.GOOS == "windows" {
-		cmd = `pwsh -Command "$env:AGNT_EVENT + '|' + $env:AGNT_SCRIPT_ID | Out-File -FilePath '` + tmp.Name() + `' -NoNewline"`
+		cmd = `$env:AGNT_EVENT + '|' + $env:AGNT_SCRIPT_ID | Out-File -LiteralPath ` + psSingleQuote(tmp.Name()) + ` -NoNewline`
 	} else {
 		cmd = `printf '%s|%s' "$AGNT_EVENT" "$AGNT_SCRIPT_ID" > ` + tmp.Name()
 	}
 
-	err = RunLifecycleHook(cmd, "mybackend", "start", &config.ScriptConfig{}, 0)
+	err = RunLifecycleHook(cmd, "mybackend", "start", hookTestScriptConfig(nil), 0)
 	require.NoError(t, err)
 
 	data, _ := os.ReadFile(tmp.Name())
@@ -42,7 +54,7 @@ func TestRunLifecycleHook_RespectsTimeout(t *testing.T) {
 		cmd = "sleep 60"
 	}
 	start := time.Now()
-	err := RunLifecycleHook(cmd, "backend", "stop", &config.ScriptConfig{}, 0)
+	err := RunLifecycleHook(cmd, "backend", "stop", hookTestScriptConfig(nil), 0)
 	elapsed := time.Since(start)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "timeout")
@@ -57,12 +69,12 @@ func TestRunLifecycleHook_ExitCodeEnvVar(t *testing.T) {
 
 	var cmd string
 	if runtime.GOOS == "windows" {
-		cmd = `pwsh -Command "$env:AGNT_EXIT_CODE | Out-File -FilePath '` + tmp.Name() + `' -NoNewline"`
+		cmd = `$env:AGNT_EXIT_CODE | Out-File -LiteralPath ` + psSingleQuote(tmp.Name()) + ` -NoNewline`
 	} else {
 		cmd = `printf '%s' "$AGNT_EXIT_CODE" > ` + tmp.Name()
 	}
 
-	err = RunLifecycleHook(cmd, "svc", "crash", &config.ScriptConfig{}, 137)
+	err = RunLifecycleHook(cmd, "svc", "crash", hookTestScriptConfig(nil), 137)
 	require.NoError(t, err)
 
 	data, _ := os.ReadFile(tmp.Name())
@@ -77,14 +89,12 @@ func TestRunLifecycleHook_InheritsScriptEnv(t *testing.T) {
 
 	var cmd string
 	if runtime.GOOS == "windows" {
-		cmd = `pwsh -Command "$env:MY_CUSTOM_VAR | Out-File -FilePath '` + tmp.Name() + `' -NoNewline"`
+		cmd = `$env:MY_CUSTOM_VAR | Out-File -LiteralPath ` + psSingleQuote(tmp.Name()) + ` -NoNewline`
 	} else {
 		cmd = `printf '%s' "$MY_CUSTOM_VAR" > ` + tmp.Name()
 	}
 
-	scriptCfg := &config.ScriptConfig{
-		Env: map[string]string{"MY_CUSTOM_VAR": "hello-from-script"},
-	}
+	scriptCfg := hookTestScriptConfig(map[string]string{"MY_CUSTOM_VAR": "hello-from-script"})
 	err = RunLifecycleHook(cmd, "svc", "start", scriptCfg, 0)
 	require.NoError(t, err)
 
