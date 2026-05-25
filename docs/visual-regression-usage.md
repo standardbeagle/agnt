@@ -240,7 +240,7 @@ Different rendering? Fix inconsistencies
 
 ## Next Steps
 
-See `VISUAL_REGRESSION_SPEC.md` for:
+See `visual-regression-spec.md` for:
 - Phase 2: Claude vision integration for intelligent diff analysis
 - Phase 3: Multiple viewports, ignore regions, git integration
 - Phase 4: CI/CD runners, headless browser, performance regression detection

@@ -284,5 +284,5 @@ await mcp.callTool('snapshot', {
 ## Next Steps
 
 - See `docs/visual-regression-usage.md` for complete usage guide
-- See `VISUAL_REGRESSION_SPEC.md` for technical specification
+- See `docs/visual-regression-spec.md` for technical specification
 - Future: CI/CD integration, multiple viewports, Claude vision analysis
