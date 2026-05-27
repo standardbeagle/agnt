@@ -92,6 +92,50 @@ func TestTunnelState(t *testing.T) {
 	}
 }
 
+func TestTailscaleURLPattern(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{
+			input:    "Available within your tailnet: https://machine.tailnet.ts.net/",
+			expected: "https://machine.tailnet.ts.net/",
+		},
+		{
+			input:    "https://my-host.example-tnet.ts.net",
+			expected: "https://my-host.example-tnet.ts.net",
+		},
+		{
+			input:    "  https://host.tail-net.ts.net/path?x=1 (proxy http://127.0.0.1:8080)",
+			expected: "https://host.tail-net.ts.net/path?x=1",
+		},
+		{
+			input:    "no url here",
+			expected: "",
+		},
+		{
+			input:    "https://example.com is not tailscale",
+			expected: "",
+		},
+		{
+			// Funnel URLs share the ts.net suffix; pattern still matches.
+			// This is intentional — we don't try to distinguish serve vs
+			// funnel from the URL alone.
+			input:    "https://funneled.tnet.ts.net",
+			expected: "https://funneled.tnet.ts.net",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			match := tailscaleURLPattern.FindString(tt.input)
+			if match != tt.expected {
+				t.Errorf("got %q, want %q", match, tt.expected)
+			}
+		})
+	}
+}
+
 func TestNewTunnel(t *testing.T) {
 	config := Config{
 		Provider:  ProviderCloudflare,

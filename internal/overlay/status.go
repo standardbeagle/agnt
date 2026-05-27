@@ -2,11 +2,9 @@ package overlay
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
-	"os/exec"
 	"runtime"
 	"sort"
 	"strings"
@@ -14,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/platform"
 	"github.com/standardbeagle/agnt/internal/protocol"
 )
 
@@ -65,29 +64,10 @@ func getTailscaleDNS() string {
 }
 
 // detectTailscaleDNS runs tailscale status to get the DNS name.
+// Delegates to platform.TailscaleDNSName so the same detection is reusable
+// from packages (e.g. internal/tunnel) that cannot import overlay.
 func detectTailscaleDNS() string {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, "tailscale", "status", "--json")
-	output, err := cmd.Output()
-	if err != nil {
-		return ""
-	}
-
-	// Parse JSON to get DNSName
-	var status struct {
-		Self struct {
-			DNSName string `json:"DNSName"`
-		} `json:"Self"`
-	}
-	if err := json.Unmarshal(output, &status); err != nil {
-		return ""
-	}
-
-	// Remove trailing dot if present
-	dnsName := strings.TrimSuffix(status.Self.DNSName, ".")
-	return dnsName
+	return platform.TailscaleDNSName(context.Background())
 }
 
 // StatusFetcher fetches status from the daemon periodically.

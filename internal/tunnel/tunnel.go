@@ -11,6 +11,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/standardbeagle/agnt/internal/platform"
 )
 
 // Provider represents a tunnel service provider.
@@ -21,6 +23,10 @@ const (
 	ProviderCloudflare Provider = "cloudflare"
 	// ProviderNgrok uses ngrok for tunneling.
 	ProviderNgrok Provider = "ngrok"
+	// ProviderTailscale uses `tailscale serve` for tailnet-private HTTPS at
+	// the node's MagicDNS name (https://<machine>.<tailnet>.ts.net).
+	// NOT public: use cloudflare/ngrok for that.
+	ProviderTailscale Provider = "tailscale"
 )
 
 // State represents the tunnel state.
@@ -118,6 +124,8 @@ func (t *Tunnel) Start(ctx context.Context) error {
 		return t.startCloudflare(ctx)
 	case ProviderNgrok:
 		return t.startNgrok(ctx)
+	case ProviderTailscale:
+		return t.startTailscale(ctx)
 	default:
 		t.setState(StateFailed)
 		return fmt.Errorf("unsupported tunnel provider: %s", t.config.Provider)
@@ -372,6 +380,107 @@ func (t *Tunnel) parseNgrokOutput(r io.Reader) {
 	for scanner.Scan() {
 		line := scanner.Text()
 		if match := ngrokURLPattern.FindString(line); match != "" {
+			t.setPublicURL(match)
+			t.setState(StateConnected)
+		}
+	}
+}
+
+// tailscale serve output patterns
+var (
+	// Matches tailnet MagicDNS URLs like https://machine.tailnet.ts.net.
+	// MagicDNS labels are DNS-safe (lowercase letters, digits, hyphens);
+	// the trailing path is consumed up to first whitespace.
+	tailscaleURLPattern = regexp.MustCompile(`https://[a-z0-9-]+\.[a-z0-9.-]+\.ts\.net\S*`)
+)
+
+// tailscaleDNSFallbackDelay is the grace period after process start before
+// we synthesise the MagicDNS URL when serve hasn't printed one. Var (not
+// const) so tests can shorten it.
+var tailscaleDNSFallbackDelay = 750 * time.Millisecond
+
+func (t *Tunnel) startTailscale(ctx context.Context) error {
+	binary := t.config.BinaryPath
+	if binary == "" {
+		binary = "tailscale"
+	}
+
+	if _, err := exec.LookPath(binary); err != nil {
+		t.setState(StateFailed)
+		t.setError(fmt.Errorf("tailscale not found in PATH: %w", err))
+		close(t.done)
+		return t.err
+	}
+
+	// Foreground `tailscale serve <port>` — blocks until killed and
+	// tears down the serve mapping on exit. Do NOT pass --bg; that
+	// would detach from the lifecycle and leave the serve config
+	// behind on Stop().
+	t.cmd = exec.CommandContext(ctx, binary, "serve", fmt.Sprintf("%d", t.config.LocalPort))
+
+	stdout, err := t.cmd.StdoutPipe()
+	if err != nil {
+		t.setState(StateFailed)
+		t.setError(fmt.Errorf("failed to create stdout pipe: %w", err))
+		close(t.done)
+		return t.err
+	}
+	stderr, err := t.cmd.StderrPipe()
+	if err != nil {
+		t.setState(StateFailed)
+		t.setError(fmt.Errorf("failed to create stderr pipe: %w", err))
+		close(t.done)
+		return t.err
+	}
+
+	if err := t.cmd.Start(); err != nil {
+		t.setState(StateFailed)
+		t.setError(fmt.Errorf("failed to start tailscale serve: %w", err))
+		close(t.done)
+		return t.err
+	}
+
+	// Parse both pipes — serve's URL output stream is not version-stable.
+	go t.parseTailscaleOutput(stdout)
+	go t.parseTailscaleOutput(stderr)
+
+	// MagicDNS fallback: if serve hasn't printed a parseable URL within
+	// the grace window, query `tailscale status --json` for Self.DNSName
+	// and synthesise the URL. Belt-and-suspenders so WaitForURL resolves
+	// even if a future tailscale release changes serve's stdout format.
+	go func() {
+		select {
+		case <-time.After(tailscaleDNSFallbackDelay):
+		case <-t.done:
+			return
+		}
+		if t.PublicURL() != "" {
+			return
+		}
+		if name := platform.TailscaleDNSName(ctx); name != "" {
+			t.setPublicURL("https://" + name)
+			t.setState(StateConnected)
+		}
+	}()
+
+	go func() {
+		defer close(t.done)
+		if err := t.cmd.Wait(); err != nil {
+			if ctx.Err() == nil { // Not cancelled
+				t.setError(fmt.Errorf("tailscale serve exited: %w", err))
+				t.setState(StateFailed)
+			}
+		}
+	}()
+
+	return nil
+}
+
+func (t *Tunnel) parseTailscaleOutput(r io.Reader) {
+	scanner := bufio.NewScanner(r)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if match := tailscaleURLPattern.FindString(line); match != "" {
 			t.setPublicURL(match)
 			t.setState(StateConnected)
 		}
