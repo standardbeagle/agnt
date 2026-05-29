@@ -454,7 +454,7 @@ func parseTasklistCSV(data []byte) map[int]string {
 		if line == "" {
 			continue
 		}
-		fields := splitTasklistCSVLine(line)
+		fields := platform.SplitTasklistCSVLine(line)
 		if len(fields) < 2 {
 			continue
 		}
@@ -466,30 +466,6 @@ func parseTasklistCSV(data []byte) map[int]string {
 		out[pid] = name
 	}
 	return out
-}
-
-// splitTasklistCSVLine splits one tasklist.exe CSV row, respecting
-// quoted fields (the memory column embeds commas like "45,000 K").
-// Strips surrounding double quotes from each field. Returns nil
-// for unparseable input.
-func splitTasklistCSVLine(line string) []string {
-	var fields []string
-	var buf strings.Builder
-	inQuote := false
-	for i := 0; i < len(line); i++ {
-		c := line[i]
-		switch {
-		case c == '"':
-			inQuote = !inQuote
-		case c == ',' && !inQuote:
-			fields = append(fields, buf.String())
-			buf.Reset()
-		default:
-			buf.WriteByte(c)
-		}
-	}
-	fields = append(fields, buf.String())
-	return fields
 }
 
 // findPIDsByPortLsof uses lsof to find PIDs on macOS.

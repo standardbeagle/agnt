@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
-	"time"
 )
 
 func TestGitHubRelease_GetVersion(t *testing.T) {
@@ -134,51 +134,90 @@ func TestGitHubRelease_IsNewer(t *testing.T) {
 }
 
 func TestGitHubChecker_CheckLatestRelease(t *testing.T) {
-	// Create mock server
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Check request headers
-		if r.Header.Get("User-Agent") != "agnt-updater" {
-			t.Errorf("Expected User-Agent header 'agnt-updater', got '%s'", r.Header.Get("User-Agent"))
+	t.Run("happy path decodes release and sends headers", func(t *testing.T) {
+		var gotPath, gotUA, gotAccept string
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			gotPath = r.URL.Path
+			gotUA = r.Header.Get("User-Agent")
+			gotAccept = r.Header.Get("Accept")
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(GitHubRelease{
+				TagName: "v0.6.6",
+				Name:    "Release 0.6.6",
+				HTMLURL: "https://github.com/standardbeagle/agnt/releases/tag/v0.6.6",
+				Body:    "Test release",
+			})
+		}))
+		defer server.Close()
+
+		checker := NewGitHubChecker("standardbeagle/agnt")
+		checker.baseURL = server.URL
+
+		rel, err := checker.CheckLatestRelease()
+		if err != nil {
+			t.Fatalf("CheckLatestRelease() error = %v", err)
 		}
-
-		// Return mock release
-		release := GitHubRelease{
-			TagName:     "v0.6.6",
-			Name:        "Release 0.6.6",
-			Draft:       false,
-			Prerelease:  false,
-			PublishedAt: time.Now(),
-			HTMLURL:     "https://github.com/standardbeagle/agnt/releases/tag/v0.6.6",
-			Body:        "Test release",
+		if rel.TagName != "v0.6.6" {
+			t.Errorf("TagName = %q, want v0.6.6", rel.TagName)
 		}
+		if rel.Body != "Test release" {
+			t.Errorf("Body = %q, want 'Test release'", rel.Body)
+		}
+		if gotPath != "/repos/standardbeagle/agnt/releases/latest" {
+			t.Errorf("request path = %q", gotPath)
+		}
+		if gotUA != "agnt-updater" {
+			t.Errorf("User-Agent = %q, want agnt-updater", gotUA)
+		}
+		if gotAccept != "application/vnd.github+json" {
+			t.Errorf("Accept = %q", gotAccept)
+		}
+	})
 
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(release)
-	}))
-	defer server.Close()
+	t.Run("non-200 returns error with status and body", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte("not found"))
+		}))
+		defer server.Close()
 
-	// Create checker with mock server URL
-	checker := NewGitHubChecker("standardbeagle/agnt")
-	// Override the API URL for testing
-	originalURL := GitHubAPIURL
-	defer func() {
-		// Can't actually restore this as it's a const, but this documents intent
-		_ = originalURL
-	}()
+		checker := NewGitHubChecker("x/y")
+		checker.baseURL = server.URL
+		_, err := checker.CheckLatestRelease()
+		if err == nil {
+			t.Fatal("expected error on 404")
+		}
+		if !strings.Contains(err.Error(), "404") || !strings.Contains(err.Error(), "not found") {
+			t.Errorf("error should mention status and body: %v", err)
+		}
+	})
 
-	// We can't easily test the real GitHub API without network access,
-	// so we'll just verify the checker is created correctly
-	if checker.repo != "standardbeagle/agnt" {
-		t.Errorf("Expected repo 'standardbeagle/agnt', got '%s'", checker.repo)
-	}
+	t.Run("malformed JSON returns decode error", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = w.Write([]byte("{not json"))
+		}))
+		defer server.Close()
 
-	if checker.httpClient == nil {
-		t.Error("Expected http client to be initialized")
-	}
+		checker := NewGitHubChecker("x/y")
+		checker.baseURL = server.URL
+		_, err := checker.CheckLatestRelease()
+		if err == nil || !strings.Contains(err.Error(), "decode") {
+			t.Fatalf("expected decode error, got %v", err)
+		}
+	})
 
-	if checker.httpClient.Timeout != 10*time.Second {
-		t.Errorf("Expected timeout 10s, got %v", checker.httpClient.Timeout)
-	}
+	t.Run("unreachable server returns fetch error", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+		url := server.URL
+		server.Close() // close immediately so the address refuses connections
+
+		checker := NewGitHubChecker("x/y")
+		checker.baseURL = url
+		_, err := checker.CheckLatestRelease()
+		if err == nil || !strings.Contains(err.Error(), "fetch") {
+			t.Fatalf("expected fetch error, got %v", err)
+		}
+	})
 }
 
 func TestNewGitHubChecker(t *testing.T) {

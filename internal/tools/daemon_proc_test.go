@@ -186,6 +186,18 @@ func TestBuildWhatPattern(t *testing.T) {
 		assert.True(t, re.MatchString("ERROR in ./src/index.ts"), "must match webpack error")
 	})
 
+	t.Run("build-errors rust compiles and matches coded and uncoded", func(t *testing.T) {
+		for _, what := range []string{"build-errors", "compile-errors"} {
+			pattern, err := buildWhatPattern(what, "cargo watch -x run")
+			require.NoError(t, err)
+			re, reErr := regexp.Compile(pattern)
+			require.NoError(t, reErr, "rust %s pattern must compile (regression: unbalanced group)", what)
+			assert.True(t, re.MatchString("error[E0382]: borrow of moved value"), "must match coded rust error")
+			assert.True(t, re.MatchString("error: cannot find value `x` in this scope"), "must match uncoded rust error")
+			assert.False(t, re.MatchString("warning: unused variable"), "must not match warnings")
+		}
+	})
+
 	t.Run("type-errors tsc", func(t *testing.T) {
 		pattern, err := buildWhatPattern("type-errors", "tsc --watch")
 		require.NoError(t, err)
