@@ -20,7 +20,10 @@ type Processor struct {
 	prompts     *PromptRegistry
 	config      ProcessorConfig
 	stats       ProcessorStats
-	closed      atomic.Bool
+	// totalDuration accumulates processing time across all tasks so Stats
+	// can derive AverageDuration. Guarded by mu like the rest of stats.
+	totalDuration time.Duration
+	closed        atomic.Bool
 }
 
 // ProcessorConfig configures the automation processor.
@@ -139,13 +142,13 @@ func (p *Processor) Process(ctx context.Context, task Task) (*Result, error) {
 	// Run the query
 	messages, err := claude.Query(ctx, userPrompt, opts)
 	if err != nil {
-		atomic.AddInt64(&p.stats.TasksProcessed, 1)
-		atomic.AddInt64(&p.stats.TasksFailed, 1)
-		return &Result{
+		failed := &Result{
 			Type:     task.Type,
 			Error:    err,
 			Duration: time.Since(startTime),
-		}, nil
+		}
+		p.recordResult(failed, false)
+		return failed, nil
 	}
 
 	// Parse the result from messages
@@ -180,11 +183,26 @@ func (p *Processor) Process(ctx context.Context, task Task) (*Result, error) {
 		}
 	}
 
-	// Update stats
-	atomic.AddInt64(&p.stats.TasksProcessed, 1)
-	atomic.AddInt64(&p.stats.TasksSucceeded, 1)
+	p.recordResult(result, true)
 
 	return result, nil
+}
+
+// recordResult folds one finished task into the processor stats under mu.
+// All stats reads (Stats) and writes (here) go through mu so the counters,
+// token/cost totals, and duration accumulator never race.
+func (p *Processor) recordResult(result *Result, ok bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.stats.TasksProcessed++
+	if ok {
+		p.stats.TasksSucceeded++
+	} else {
+		p.stats.TasksFailed++
+	}
+	p.stats.TotalTokens += int64(result.Tokens)
+	p.stats.TotalCostUSD += result.Cost
+	p.totalDuration += result.Duration
 }
 
 // ProcessBatch runs multiple tasks concurrently.
@@ -228,11 +246,16 @@ func (p *Processor) ProcessBatch(ctx context.Context, tasks []Task) ([]*Result, 
 	return results, nil
 }
 
-// Stats returns the processor statistics.
+// Stats returns the processor statistics. AverageDuration is derived from
+// the accumulated total duration over the number of processed tasks.
 func (p *Processor) Stats() ProcessorStats {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.stats
+	s := p.stats
+	if s.TasksProcessed > 0 {
+		s.AverageDuration = p.totalDuration / time.Duration(s.TasksProcessed)
+	}
+	return s
 }
 
 // Close shuts down the processor.

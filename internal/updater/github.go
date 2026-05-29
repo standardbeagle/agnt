@@ -31,6 +31,7 @@ type GitHubRelease struct {
 // GitHubChecker checks for updates from GitHub releases
 type GitHubChecker struct {
 	repo       string
+	baseURL    string
 	httpClient *http.Client
 }
 
@@ -41,7 +42,8 @@ func NewGitHubChecker(repo string) *GitHubChecker {
 	}
 
 	return &GitHubChecker{
-		repo: repo,
+		repo:    repo,
+		baseURL: GitHubAPIURL,
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
@@ -50,7 +52,11 @@ func NewGitHubChecker(repo string) *GitHubChecker {
 
 // CheckLatestRelease fetches the latest release from GitHub
 func (g *GitHubChecker) CheckLatestRelease() (*GitHubRelease, error) {
-	url := fmt.Sprintf("%s/repos/%s/releases/latest", GitHubAPIURL, g.repo)
+	base := g.baseURL
+	if base == "" {
+		base = GitHubAPIURL
+	}
+	url := fmt.Sprintf("%s/repos/%s/releases/latest", base, g.repo)
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {

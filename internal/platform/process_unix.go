@@ -16,9 +16,8 @@ import (
 )
 
 var (
-	wslChecked bool
-	wslResult  bool
-	wslMu      sync.Once
+	wslResult bool
+	wslMu     sync.Once
 )
 
 // IsWSL returns true when running under Windows Subsystem for Linux.
@@ -34,7 +33,6 @@ func IsWSL() bool {
 		}
 		v := strings.ToLower(string(data))
 		wslResult = strings.Contains(v, "microsoft") || strings.Contains(v, "wsl")
-		wslChecked = true
 	})
 	return wslResult
 }
@@ -201,13 +199,12 @@ func scanWSLWindows() ([]ProcInfo, error) {
 		if line == "" {
 			continue
 		}
-		fields := strings.Split(line, ",")
+		fields := SplitTasklistCSVLine(line)
 		if len(fields) < 2 {
 			continue
 		}
-		name := strings.Trim(fields[0], `"`)
-		pidStr := strings.Trim(fields[1], `"`)
-		pid, err := strconv.Atoi(pidStr)
+		name := fields[0]
+		pid, err := strconv.Atoi(fields[1])
 		if err != nil {
 			continue
 		}
@@ -218,4 +215,27 @@ func scanWSLWindows() ([]ProcInfo, error) {
 		})
 	}
 	return procs, nil
+}
+
+// SplitTasklistCSVLine splits one tasklist.exe CSV row, respecting quoted
+// fields (the memory column embeds commas like "45,000 K"). Surrounding
+// double quotes are stripped from each field.
+func SplitTasklistCSVLine(line string) []string {
+	var fields []string
+	var buf strings.Builder
+	inQuote := false
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		switch {
+		case c == '"':
+			inQuote = !inQuote
+		case c == ',' && !inQuote:
+			fields = append(fields, buf.String())
+			buf.Reset()
+		default:
+			buf.WriteByte(c)
+		}
+	}
+	fields = append(fields, buf.String())
+	return fields
 }

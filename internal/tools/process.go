@@ -405,7 +405,9 @@ func buildWhatPattern(what, command string) (string, error) {
 			return `(?i)\berror\b`, nil
 		}
 		if isRust {
-			return `^error(\[`, nil
+			// Rust emits both `error[E0382]: ...` (coded) and `error: ...`
+			// (uncoded). Match the leading `error` followed by `[` or `:`.
+			return `^error(\[|:)`, nil
 		}
 		return `(?i)\berror\b`, nil
 
