@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 )
@@ -146,14 +145,8 @@ func readPGID(pid int) int {
 	if err != nil {
 		return 0
 	}
-	// Find the last ')' to safely skip comm, since comm is the only
-	// field allowed to contain whitespace.
-	idx := strings.LastIndex(string(data), ")")
-	if idx < 0 || idx+1 >= len(data) {
-		return 0
-	}
-	fields := strings.Fields(string(data[idx+1:]))
-	// After comm we have: state, ppid, pgrp — so pgrp is index 2.
+	// After comm we have: state(0), ppid(1), pgrp(2).
+	fields := parseStatFieldsAfterComm(data)
 	if len(fields) < 3 {
 		return 0
 	}

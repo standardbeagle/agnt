@@ -38,27 +38,11 @@ func detectPortsForPIDProc(pid int) []int {
 			continue
 		}
 		for _, line := range strings.Split(string(data), "\n")[1:] {
-			fields := strings.Fields(line)
-			if len(fields) < 10 {
+			inode, port, ok := parseProcNetTCPLine(line)
+			if !ok {
 				continue
 			}
-			// fields[3] = state (0A = LISTEN)
-			if fields[3] != "0A" {
-				continue
-			}
-			localAddr := fields[1]
-			idx := strings.LastIndex(localAddr, ":")
-			if idx == -1 {
-				continue
-			}
-			portBytes, err := hex.DecodeString(localAddr[idx+1:])
-			if err != nil || len(portBytes) != 2 {
-				continue
-			}
-			port := int(portBytes[0])<<8 | int(portBytes[1])
-			if port > 0 && port < 65536 {
-				inodePorts[fields[9]] = port
-			}
+			inodePorts[inode] = port
 		}
 	}
 	if len(inodePorts) == 0 {
@@ -91,6 +75,52 @@ func detectPortsForPIDProc(pid int) []int {
 		}
 	}
 	return ports
+}
+
+// parseProcNetTCPLine parses a single /proc/net/tcp{,6} data row (the header
+// line must be stripped by the caller) and returns the listening socket's
+// inode and local port. ok is false for any non-listening, malformed, or
+// out-of-range row.
+//
+// The /proc/net/tcp columns are:
+//
+//		sl  local_address rem_address st ... inode
+//		 0       1             2       3 ...   9
+//
+//	  - local_address is "HEXIP:HEXPORT" where HEXPORT is a big-endian 2-byte
+//	    hex value (e.g. ":1F90" => 8080). IPv6 (/proc/net/tcp6) uses a longer
+//	    hex IP but the same ":HEXPORT" suffix.
+//	  - st (field 3) is the connection state; "0A" is TCP_LISTEN. Any other
+//	    state (established, time-wait, etc.) is skipped.
+//	  - inode is field 9; it is the key that /proc/<pid>/fd socket links
+//	    resolve back to.
+//
+// Rows with fewer than 10 fields, a non-0A state, a missing ':' in the
+// local address, an unparseable/oddly-sized hex port, or a port outside
+// (0, 65536) are rejected with ok=false.
+func parseProcNetTCPLine(line string) (inode string, port int, ok bool) {
+	fields := strings.Fields(line)
+	if len(fields) < 10 {
+		return "", 0, false
+	}
+	// fields[3] = state (0A = LISTEN)
+	if fields[3] != "0A" {
+		return "", 0, false
+	}
+	localAddr := fields[1]
+	idx := strings.LastIndex(localAddr, ":")
+	if idx == -1 {
+		return "", 0, false
+	}
+	portBytes, err := hex.DecodeString(localAddr[idx+1:])
+	if err != nil || len(portBytes) != 2 {
+		return "", 0, false
+	}
+	p := int(portBytes[0])<<8 | int(portBytes[1])
+	if p <= 0 || p >= 65536 {
+		return "", 0, false
+	}
+	return fields[9], p, true
 }
 
 // detectPortsForPIDLsof uses lsof to find listening ports for a process.
@@ -182,12 +212,35 @@ func findPIDsByPortNetstatExe(ctx context.Context, port int) []int {
 	if err != nil {
 		return nil
 	}
+	return parseNetstatExePIDs(output, port)
+}
+
+// parseNetstatExePIDs is the pure parser behind findPIDsByPortNetstatExe.
+// It extracts the PIDs of LISTENING TCP sockets bound to the target port
+// from `netstat.exe -ano` output. Typical rows:
+//
+//	TCP    0.0.0.0:80     0.0.0.0:0    LISTENING    1234
+//	TCP    [::]:80        [::]:0       LISTENING    1234
+//
+// Rules:
+//   - Only rows whose first field is "TCP" and that contain "LISTENING"
+//     are considered (UDP rows have no state column; ESTABLISHED/TIME_WAIT
+//     rows are not bind owners we care about).
+//   - The local-address field (fields[1]) must end in ":<port>" exactly.
+//     The exact-suffix check guards the :80-vs-:8080 false positive — ":80"
+//     is not a suffix of "0.0.0.0:8080".
+//   - The PID is the last field (fields[4]); rows with <5 fields or a
+//     non-numeric/zero PID are skipped.
+//   - PIDs are de-duplicated (a process may hold both the IPv4 and IPv6
+//     wildcard socket for the same port, producing two rows).
+//
+// Returns nil when no row matches.
+func parseNetstatExePIDs(output []byte, port int) []int {
 	var pids []int
 	seen := make(map[int]struct{})
 	portSuffix := fmt.Sprintf(":%d", port)
 	for _, line := range strings.Split(string(output), "\n") {
 		line = strings.TrimSpace(line)
-		// netstat.exe output: "  TCP    0.0.0.0:80    0.0.0.0:0    LISTENING    1234"
 		if !strings.HasPrefix(line, "TCP") || !strings.Contains(line, "LISTENING") {
 			continue
 		}
@@ -218,22 +271,12 @@ func findPIDsByPortProc(port int) []int {
 			continue
 		}
 		for _, line := range strings.Split(string(data), "\n")[1:] {
-			fields := strings.Fields(line)
-			if len(fields) < 10 || fields[3] != "0A" {
+			inode, listenPort, ok := parseProcNetTCPLine(line)
+			if !ok {
 				continue
 			}
-			localAddr := fields[1]
-			idx := strings.LastIndex(localAddr, ":")
-			if idx == -1 {
-				continue
-			}
-			portBytes, err := hex.DecodeString(localAddr[idx+1:])
-			if err != nil || len(portBytes) != 2 {
-				continue
-			}
-			listenPort := int(portBytes[0])<<8 | int(portBytes[1])
 			if listenPort == port {
-				inodes[fields[9]] = struct{}{}
+				inodes[inode] = struct{}{}
 			}
 		}
 	}

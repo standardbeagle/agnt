@@ -128,16 +128,12 @@ func readProcInfo(pid int) *ProcInfo {
 		Cmdline: strings.ReplaceAll(string(cmdlineData), "\x00", " "),
 	}
 
-	// Read PPID from /proc/<pid>/stat (field 4, 1-indexed)
+	// Read PPID from /proc/<pid>/stat. After comm: state(0) ppid(1) ...
 	if statData, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid)); err == nil {
-		// Format: pid (comm) state ppid ...
-		// Find closing paren to handle comm with spaces/parens
-		if idx := strings.LastIndex(string(statData), ")"); idx >= 0 {
-			fields := strings.Fields(string(statData[idx+1:]))
-			if len(fields) >= 2 {
-				if ppid, err := strconv.Atoi(fields[1]); err == nil {
-					info.PPID = ppid
-				}
+		fields := parseStatFieldsAfterComm(statData)
+		if len(fields) >= 2 {
+			if ppid, err := strconv.Atoi(fields[1]); err == nil {
+				info.PPID = ppid
 			}
 		}
 	}

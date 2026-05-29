@@ -191,11 +191,7 @@ func readProcPPID(pid int) int {
 	if err != nil {
 		return 0
 	}
-	idx := strings.LastIndex(string(data), ")")
-	if idx < 0 || idx+1 >= len(data) {
-		return 0
-	}
-	fields := strings.Fields(string(data[idx+1:]))
+	fields := parseStatFieldsAfterComm(data)
 	if len(fields) < 2 {
 		return 0
 	}
