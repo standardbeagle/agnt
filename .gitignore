@@ -75,3 +75,6 @@ __pycache__/
 .venv/
 .mcpregistry_*
 .worktrees/
+
+# worktrack loop state (per-clone; carries lease_holder email)
+.worktrack/
