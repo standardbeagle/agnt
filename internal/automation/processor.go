@@ -13,6 +13,11 @@ import (
 	claude "github.com/standardbeagle/claude-go"
 )
 
+// queryFunc is the signature of claude.Query. Process calls it through the
+// Processor's queryFn field so tests can inject a fake without spawning a real
+// subprocess.
+type queryFunc func(ctx context.Context, prompt string, opts *claude.AgentOptions) ([]claude.MessageType, error)
+
 // Processor handles agent-based automation tasks.
 type Processor struct {
 	mu          sync.RWMutex
@@ -20,6 +25,9 @@ type Processor struct {
 	prompts     *PromptRegistry
 	config      ProcessorConfig
 	stats       ProcessorStats
+	// queryFn is the seam to the underlying agent query. Defaults to
+	// claude.Query in New; overridden in tests with a fake.
+	queryFn queryFunc
 	// totalDuration accumulates processing time across all tasks so Stats
 	// can derive AverageDuration. Guarded by mu like the rest of stats.
 	totalDuration time.Duration
@@ -102,6 +110,7 @@ func New(cfg ProcessorConfig) (*Processor, error) {
 		defaultOpts: opts,
 		prompts:     DefaultPromptRegistry(),
 		config:      cfg,
+		queryFn:     claude.Query,
 	}, nil
 }
 
@@ -140,7 +149,7 @@ func (p *Processor) Process(ctx context.Context, task Task) (*Result, error) {
 	}
 
 	// Run the query
-	messages, err := claude.Query(ctx, userPrompt, opts)
+	messages, err := p.queryFn(ctx, userPrompt, opts)
 	if err != nil {
 		failed := &Result{
 			Type:     task.Type,

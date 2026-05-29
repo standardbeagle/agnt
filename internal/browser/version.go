@@ -45,8 +45,22 @@ func CheckVersionAt(path string) *VersionInfo {
 		}
 	}
 
+	info = parseVersionOutput(string(out))
+	info.Path = path
+	return info
+}
+
+// parseVersionOutput parses the raw output of `chrome --version` into a
+// VersionInfo. It accepts "Google Chrome 146.0.7680.164", "Chromium
+// 120.0.6099.0", or a bare "146.0.7680.164": the version number is taken from
+// the last whitespace-separated field, the major version is the integer before
+// the first dot, and IsOutdated is set when the major is below MinMajorVersion.
+// Empty or garbage input yields a zero-value VersionInfo (no panic).
+func parseVersionOutput(raw string) *VersionInfo {
+	info := &VersionInfo{}
+
 	// Parse "Google Chrome 146.0.7680.164" or "Chromium 120.0.6099.0" or just "146.0.7680.164"
-	version := strings.TrimSpace(string(out))
+	version := strings.TrimSpace(raw)
 	parts := strings.Fields(version)
 	if len(parts) == 0 {
 		return info

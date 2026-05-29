@@ -224,20 +224,37 @@ func (m *Manager) StopByProjectPath(ctx context.Context, projectPath string) ([]
 		close(done)
 	}()
 
+	var ctxErr error
 	select {
 	case <-done:
 	case <-ctx.Done():
-		if len(errs) > 0 {
-			errs = append(errs, ctx.Err())
-		} else {
-			return stoppedIDs, ctx.Err()
-		}
+		ctxErr = ctx.Err()
+		// All per-tunnel Stop calls share this same ctx, so cancellation
+		// unblocks every in-flight goroutine. Wait for them to finish before
+		// reading errs/stoppedIDs — otherwise we'd race their writes.
+		<-done
 	}
 
-	if len(errs) > 0 {
-		return stoppedIDs, errors.Join(errs...)
+	// All writer goroutines have returned (done is closed), so these reads are
+	// race-free without the mutexes; we keep them for clarity and to make the
+	// invariant explicit.
+	errMu.Lock()
+	allErrs := errs
+	errMu.Unlock()
+	stoppedMu.Lock()
+	ids := stoppedIDs
+	stoppedMu.Unlock()
+
+	if ctxErr != nil {
+		if len(allErrs) > 0 {
+			return ids, errors.Join(append(allErrs, ctxErr)...)
+		}
+		return ids, ctxErr
 	}
-	return stoppedIDs, nil
+	if len(allErrs) > 0 {
+		return ids, errors.Join(allErrs...)
+	}
+	return ids, nil
 }
 
 // ActiveCount returns the number of active tunnels.
