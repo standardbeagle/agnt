@@ -19,12 +19,18 @@ type UpdateInfo struct {
 	CheckError     string    `json:"check_error,omitempty"`
 }
 
+// releaseFetcher is the minimal seam UpdateChecker depends on for fetching the
+// latest release. *GitHubChecker satisfies it; tests substitute a fake.
+type releaseFetcher interface {
+	CheckLatestRelease() (*GitHubRelease, error)
+}
+
 // UpdateChecker periodically checks for updates
 type UpdateChecker struct {
 	mu             sync.RWMutex
 	currentVersion string
 	checkInterval  time.Duration
-	githubChecker  *GitHubChecker
+	githubChecker  releaseFetcher
 	updateInfo     UpdateInfo
 	ctx            context.Context
 	cancel         context.CancelFunc
