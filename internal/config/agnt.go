@@ -52,6 +52,40 @@ type AgntConfig struct {
 	// interceptors. Parsed here so the hookrules package can pull a
 	// single AgntConfig via LoadAgntConfig rather than re-parsing KDL.
 	HookRules *HookRulesConfig `kdl:"hook-rules"`
+
+	// Setup configures the first-run auto-setup flow for `agnt run`.
+	Setup *SetupConfig `kdl:"setup"`
+}
+
+// SetupConfig controls the first-run setup nudge for `agnt run`.
+//
+// When `agnt run <agent>` is invoked in a project with no `.agnt.kdl`, the
+// run command drives a one-time setup phase. If the user declines (no config
+// is written), a timestamped marker is recorded and the nudge is suppressed
+// until the re-nudge TTL elapses. Every field stays optional so a project
+// with no `setup {}` block still gets sensible defaults.
+//
+//	setup {
+//	    renudge-ttl-days 7
+//	}
+type SetupConfig struct {
+	// RenudgeTTLDays is the number of days to suppress the setup nudge
+	// after a negative outcome. Defaults to 7 when unset or non-positive.
+	RenudgeTTLDays *int `kdl:"renudge-ttl-days"`
+}
+
+// DefaultRenudgeTTLDays is the fallback re-nudge window when no `setup`
+// block (or a non-positive value) is configured.
+const DefaultRenudgeTTLDays = 7
+
+// RenudgeTTL returns the re-nudge suppression window. Defaults to 7 days when
+// the SetupConfig block is absent or the value is unset/non-positive.
+func (c *SetupConfig) RenudgeTTL() time.Duration {
+	days := DefaultRenudgeTTLDays
+	if c != nil && c.RenudgeTTLDays != nil && *c.RenudgeTTLDays > 0 {
+		days = *c.RenudgeTTLDays
+	}
+	return time.Duration(days) * 24 * time.Hour
 }
 
 // HookRulesConfig is the KDL override block for hook interception rules.
