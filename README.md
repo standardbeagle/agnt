@@ -105,6 +105,55 @@ agnt run aider
 
 This adds a terminal overlay menu (Ctrl+P) and enables the browser-to-terminal message bridge.
 
+### First-Run Setup (auto-configures a new project)
+
+The first time you run `agnt run claude` in a project that has no `.agnt.kdl`,
+agnt drives a one-time **setup run** before your coding session:
+
+```bash
+cd my-new-project        # no .agnt.kdl yet
+agnt run claude
+```
+
+What happens:
+
+1. **Setup phase** — Claude launches in setup mode and configures the project:
+   it detects the stack (Go / Node / Python / …), registers your dev-server
+   script(s) and a reverse proxy, and writes a `.agnt.kdl`. If the
+   `agnt:setup-project` skill isn't installed, Claude tells you the exact
+   install step (`/plugin marketplace add standardbeagle/agnt` then
+   `/plugin install agnt`).
+2. **Relaunch** — when setup exits, agnt relaunches Claude into a normal coding
+   session with autostart enabled, replaying your original arguments. Your dev
+   servers and proxy come up automatically.
+
+```bash
+# Pass a task through — it's replayed verbatim into the relaunched session:
+agnt run claude -- "add a /healthz endpoint"
+```
+
+If you decline setup (no `.agnt.kdl` gets written), agnt records a timestamped
+marker and won't nudge again until the re-nudge window elapses (default 7 days,
+configurable via `setup { renudge-ttl-days 7 }` in `.agnt.kdl`). A successful
+setup is remembered permanently.
+
+Setup also works for other agents — each gets install instructions tailored to
+its own skill/command mechanism (see
+[docs/agent-support-matrix.md](docs/agent-support-matrix.md)).
+
+### `agnt init` — configure without launching a session
+
+Prefer to set the project up on its own? `agnt init` runs only the setup phase
+(no relaunch) and exits once `.agnt.kdl` is written:
+
+```bash
+agnt init            # configure with claude
+agnt init gemini     # configure with a different agent
+```
+
+A successful `agnt init` records the permanent marker too, so a later
+`agnt run` skips straight to the coding session.
+
 ### Channel Mode (Beta — Claude Code only)
 
 > **Beta / Experimental**: Channel mode requires a forked MCP SDK and a development flag in Claude Code. Behavior and schema may change.
