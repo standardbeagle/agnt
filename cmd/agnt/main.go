@@ -14,7 +14,7 @@ import (
 const appName = "agnt"
 
 // appVersion can be overridden at build time with -ldflags="-X main.appVersion=x.y.z"
-var appVersion = "0.13.11"
+var appVersion = "0.13.12"
 
 var rootCmd = &cobra.Command{
 	Use:   appName,
