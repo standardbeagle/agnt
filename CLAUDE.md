@@ -17,7 +17,7 @@ Project guidance for Claude Code when working with this repository.
 - `agnt-daemon`: Copy for daemon auto-start (workaround for fork prevention in sandboxed environments)
 - `devtool-mcp`: Legacy alias (backwards compatibility)
 
-**CLI Subcommands**: `mcp` (MCP server), `run` (PTY wrapper), `init` (setup-only, no relaunch), `monitor` (event stream), `ai` (interactive AI), `setup-project`
+**CLI Subcommands**: `mcp` (MCP server), `run` (PTY wrapper), `init` (setup-only, no relaunch), `skills` (install agnt skills via `npx skills` + register MCP), `monitor` (event stream), `ai` (interactive AI), `setup-project`
 
 **Core Architecture Decisions**:
 

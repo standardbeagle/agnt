@@ -3,6 +3,12 @@
 ## [Unreleased]
 
 ### Added
+- **`agnt skills` command** — one-shot install of the agnt agent skills +
+  agnt MCP registration. Uses Vercel's open skills CLI
+  (`npx -y skills add standardbeagle-tools/agnt --all -a claude-code`) then
+  registers the MCP server (`claude mcp add agnt -s user -- agnt mcp` for Claude
+  Code; prints the MCP config for other agents). `--agent` / `--source`
+  override the target agent and skills source. Requires Node.js (`npx`).
 - **First-run setup flow** for `agnt run`. When `agnt run claude` is invoked in
   a project with no `.agnt.kdl`, agnt drives a one-time setup run (the agent
   configures the project via the `agnt:setup-project` skill) then relaunches
