@@ -8,6 +8,12 @@ import (
 	"time"
 )
 
+// reapSessionPGID is a no-op on Windows: the setup child's process tree is
+// owned by a Job Object that cascade-kills it when runConPTYChild's jobCloser
+// runs, so there is no separate process group to reap before phase 2. The pgid
+// argument is always 0 here.
+func reapSessionPGID(_ int) {}
+
 // watchResize polls the host terminal size on a 500ms cadence and forwards
 // new dimensions to the platform-agnostic handler. Windows has no SIGWINCH
 // equivalent — see the SIGWINCH-driven Unix variant in signals_unix.go.

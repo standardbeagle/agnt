@@ -8,12 +8,28 @@ import (
 	"os/exec"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/creack/pty"
 	"golang.org/x/term"
 
 	"github.com/standardbeagle/agnt/internal/debug"
 )
+
+// reapSessionPGID terminates the setup child's process group before the coding
+// phase spawns, so backgrounded jobs (npm run dev &, etc.) can't hold ports the
+// coding child needs. SIGTERM, a brief grace window, then SIGKILL to survivors.
+// A non-positive pgid is a no-op (the child had no usable group). The setup
+// child has its own session/pgid via creack/pty's Setsid, so the negative-PID
+// signal never reaches agnt itself.
+func reapSessionPGID(pgid int) {
+	if pgid <= 1 {
+		return
+	}
+	_ = syscall.Kill(-pgid, syscall.SIGTERM)
+	time.Sleep(300 * time.Millisecond)
+	_ = syscall.Kill(-pgid, syscall.SIGKILL)
+}
 
 // watchResize blocks on SIGWINCH and forwards new dimensions to the
 // platform-agnostic resize handler. Unix uses signal-driven resize

@@ -34,14 +34,12 @@ func runPlatformPTY(commandArgs []string, _socketPath string, _sessionCode strin
 	return runWithConPTY(ctx, commandArgs, overlaySocketPath, sessionCode)
 }
 
-// runWithConPTY runs a command in a ConPTY with overlay support.
+// runWithConPTY is the windows run orchestrator. It validates config, resolves
+// the adapter, and drives the optional first-run two-phase setup→relaunch flow
+// (Claude only — Slice A/B scope) around the normal single coding-phase launch.
+// The per-phase ConPTY work lives in runConPTYChild.
 func runWithConPTY(ctx context.Context, args []string, socketPath string, sessionCode string) error {
 	command := args[0]
-	cmdArgs := args[1:]
-
-	if sessionCode == "" {
-		sessionCode = generateSessionCode(command)
-	}
 	projectPath, _ := os.Getwd()
 
 	// Validate .agnt.kdl config early — before any PTY/terminal setup.
@@ -53,11 +51,29 @@ func runWithConPTY(ctx context.Context, args []string, socketPath string, sessio
 	}
 
 	adapter := resolveAgentAdapter(command, projectPath)
-	var adapterPrompt string
-	if adapter != nil {
-		adapterPrompt = buildAgntSystemPrompt(socketPath)
-		cmdArgs = adapter.BuildArgs(cmdArgs, adapterPrompt)
+	return firstRunOrCoding(projectPath, adapter, args,
+		func(setupPhase bool, a []string) (int, error) {
+			return runConPTYChild(ctx, a, socketPath, sessionCode, setupPhase)
+		}, reapSessionPGID)
+}
+
+// runConPTYChild runs one ConPTY phase to completion. setupPhase selects the
+// setup-mode system prompt and suppresses autostart (the project has no config
+// yet); the coding phase uses the normal prompt with autostart enabled. The
+// returned pgid is always 0 on Windows (Job Objects, not POSIX groups).
+func runConPTYChild(ctx context.Context, args []string, socketPath string, sessionCode string, setupPhase bool) (int, error) {
+	command := args[0]
+	cmdArgs := args[1:]
+
+	if sessionCode == "" {
+		sessionCode = generateSessionCode(command)
 	}
+	projectPath, _ := os.Getwd()
+
+	defer suppressAutostartDuringSetup(setupPhase)()
+
+	adapter := resolveAgentAdapter(command, projectPath)
+	cmdArgs, adapterPrompt := phaseCmdArgsAndPrompt(adapter, cmdArgs, setupPhase, socketPath)
 
 	// Get initial terminal size BEFORE any mode changes — VS Code and
 	// other embedded terminals may not report size correctly on stdin.
@@ -72,7 +88,7 @@ func runWithConPTY(ctx context.Context, args []string, socketPath string, sessio
 	// any other deferred restore that touches stdout.
 	consoleState, err := enterConsoleRawMode()
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer consoleState.Restore()
 
@@ -81,7 +97,7 @@ func runWithConPTY(ctx context.Context, args []string, socketPath string, sessio
 	ptmx, err := pty.New()
 	if err != nil {
 		stopSpinner()
-		return fmt.Errorf("failed to create PTY: %w", err)
+		return 0, fmt.Errorf("failed to create PTY: %w", err)
 	}
 	defer ptmx.Close()
 	if err := ptmx.Resize(width, childHeight); err != nil {
@@ -91,7 +107,7 @@ func runWithConPTY(ctx context.Context, args []string, socketPath string, sessio
 	resolvedPath, shellWrap, err := resolveCommand(command)
 	if err != nil {
 		stopSpinner()
-		return err
+		return 0, err
 	}
 
 	var cmd *pty.Cmd
@@ -103,7 +119,7 @@ func runWithConPTY(ctx context.Context, args []string, socketPath string, sessio
 	cmd.Env = append(os.Environ(), "AGNT_PROJECT_PATH="+projectPath)
 	if err := cmd.Start(); err != nil {
 		stopSpinner()
-		return fmt.Errorf("failed to start process: %w", err)
+		return 0, fmt.Errorf("failed to start process: %w", err)
 	}
 	stopSpinner()
 
@@ -174,7 +190,7 @@ func runWithConPTY(ctx context.Context, args []string, socketPath string, sessio
 	}
 
 	cleanupTerminal(height)
-	return nil
+	return 0, nil
 }
 
 // Compile-time interface check — the ConPTY backend (aymanbagabas/go-pty

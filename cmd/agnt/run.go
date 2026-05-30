@@ -39,14 +39,12 @@ func runPlatformPTY(commandArgs []string, _socketPath string, _sessionCode strin
 	return runWithPTY(ctx, commandArgs, overlaySocketPath, sessionCode)
 }
 
-// runWithPTY runs a command in a creack/pty PTY with overlay support.
+// runWithPTY is the unix run orchestrator. It validates config, resolves the
+// adapter, and drives the optional first-run two-phase setup→relaunch flow
+// (Claude only — Slice A/B scope) around the normal single coding-phase
+// launch. The per-phase PTY work lives in runPTYChild.
 func runWithPTY(ctx context.Context, args []string, socketPath string, sessionCode string) error {
 	command := args[0]
-	cmdArgs := args[1:]
-
-	if sessionCode == "" {
-		sessionCode = generateSessionCode(command)
-	}
 	projectPath, _ := os.Getwd()
 
 	// Validate .agnt.kdl config early — before any PTY/terminal setup.
@@ -58,11 +56,29 @@ func runWithPTY(ctx context.Context, args []string, socketPath string, sessionCo
 	}
 
 	adapter := resolveAgentAdapter(command, projectPath)
-	var adapterPrompt string
-	if adapter != nil {
-		adapterPrompt = buildAgntSystemPrompt(socketPath)
-		cmdArgs = adapter.BuildArgs(cmdArgs, adapterPrompt)
+	return firstRunOrCoding(projectPath, adapter, args,
+		func(setupPhase bool, a []string) (int, error) {
+			return runPTYChild(ctx, a, socketPath, sessionCode, setupPhase)
+		}, reapSessionPGID)
+}
+
+// runPTYChild runs one PTY phase to completion and returns the child's pgid
+// for post-exit reaping. setupPhase selects the setup-mode system prompt and
+// suppresses autostart (the project has no config yet); the coding phase uses
+// the normal prompt with autostart enabled.
+func runPTYChild(ctx context.Context, args []string, socketPath string, sessionCode string, setupPhase bool) (int, error) {
+	command := args[0]
+	cmdArgs := args[1:]
+
+	if sessionCode == "" {
+		sessionCode = generateSessionCode(command)
 	}
+	projectPath, _ := os.Getwd()
+
+	defer suppressAutostartDuringSetup(setupPhase)()
+
+	adapter := resolveAgentAdapter(command, projectPath)
+	cmdArgs, adapterPrompt := phaseCmdArgsAndPrompt(adapter, cmdArgs, setupPhase, socketPath)
 
 	stopSpinner := spinner(fmt.Sprintf("Starting %s...", command))
 	c := commandWithArgs(command, cmdArgs...)
@@ -71,7 +87,7 @@ func runWithPTY(ctx context.Context, args []string, socketPath string, sessionCo
 	ptmx, err := pty.Start(c)
 	stopSpinner()
 	if err != nil {
-		return fmt.Errorf("failed to start pty: %w", err)
+		return 0, fmt.Errorf("failed to start pty: %w", err)
 	}
 	defer func() { _ = ptmx.Close() }()
 
@@ -111,7 +127,7 @@ func runWithPTY(ctx context.Context, args []string, socketPath string, sessionCo
 
 	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
 	if err != nil {
-		return fmt.Errorf("failed to set raw mode: %w", err)
+		return 0, fmt.Errorf("failed to set raw mode: %w", err)
 	}
 	defer func() { _ = term.Restore(int(os.Stdin.Fd()), oldState) }()
 
@@ -156,7 +172,7 @@ func runWithPTY(ctx context.Context, args []string, socketPath string, sessionCo
 	rt.Stop()
 	_ = c.Wait()
 	cleanupTerminal(height)
-	return nil
+	return sessionPGID, nil
 }
 
 // Compile-time interface check — *os.File is the creack/pty backend, and

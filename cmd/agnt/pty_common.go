@@ -962,6 +962,64 @@ func cleanupTerminal(height int) {
 // context about agnt and auto-started services. Loads configuration from
 // .agnt.kdl to include configured scripts/proxies and any custom system
 // prompt overrides.
+// phaseCmdArgsAndPrompt selects the system prompt for a run phase and returns
+// the adapter-built cmdArgs alongside the prompt (the prompt is also handed to
+// runOverlayPipeline for stdin-delivery adapters). The setup phase uses the
+// setup-mode prompt; the coding phase uses the normal agnt prompt. With a nil
+// adapter both are passthrough/empty. Shared by both platform children to keep
+// run.go / run_windows.go under their line budget (TestRunFilesUnderBudget).
+func phaseCmdArgsAndPrompt(adapter agentadapter.Adapter, cmdArgs []string, setupPhase bool, socketPath string) ([]string, string) {
+	if adapter == nil {
+		return cmdArgs, ""
+	}
+	var prompt string
+	if setupPhase {
+		prompt = buildSetupSystemPrompt(adapter.Name())
+	} else {
+		prompt = buildAgntSystemPrompt(socketPath)
+	}
+	return adapter.BuildArgs(cmdArgs, prompt), prompt
+}
+
+// suppressAutostartDuringSetup forces skipAutostart on for the setup phase and
+// returns a restore func; the coding phase gets a no-op. Phases run
+// sequentially, so this package-global mutation is race-free. (Setup has no
+// config yet so autostart is moot — this is belt-and-braces.) Call as:
+// defer suppressAutostartDuringSetup(setupPhase)().
+func suppressAutostartDuringSetup(setupPhase bool) func() {
+	if !setupPhase {
+		return func() {}
+	}
+	prev := skipAutostart
+	skipAutostart = true
+	return func() { skipAutostart = prev }
+}
+
+// firstRunOrCoding is the shared run-orchestration wiring for both platform
+// entrypoints. For the Claude adapter it drives the optional first-run
+// two-phase setup→relaunch flow (Slice A/B); for every other agent it is a
+// single coding-phase launch. Only the launch + reap callbacks — which own
+// the platform-specific PTY backend — differ between Unix and Windows, so they
+// are injected here rather than duplicating the firstRunDeps construction in
+// run.go and run_windows.go (enforced by TestRunFilesUnderBudget).
+func firstRunOrCoding(projectPath string, adapter agentadapter.Adapter, args []string,
+	launch func(setupPhase bool, args []string) (int, error), reap func(int)) error {
+	if adapter != nil && adapter.Name() == "claude" {
+		return runFirstRunFlow(firstRunDeps{
+			now:         time.Now(),
+			ttl:         renudgeTTLForProject(projectPath),
+			hasConfig:   func() bool { return config.FindAgntConfigFile(projectPath) != "" },
+			readMarker:  func() (*firstRunMarker, error) { return readFirstRunMarker(firstRunStatePath(projectPath)) },
+			writeMarker: func(m firstRunMarker) error { return writeFirstRunMarker(firstRunStatePath(projectPath), m) },
+			args:        args,
+			launch:      launch,
+			reap:        reap,
+		})
+	}
+	_, err := launch(false, args)
+	return err
+}
+
 func buildAgntSystemPrompt(socketPath string) string {
 	if socketPath == "" {
 		socketPath = daemon.DefaultSocketPath()
