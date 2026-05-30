@@ -57,6 +57,7 @@ func init() {
 	rootCmd.AddCommand(serveCmd)
 	rootCmd.AddCommand(runCmd)
 	rootCmd.AddCommand(initCmd)
+	rootCmd.AddCommand(skillsCmd)
 	rootCmd.AddCommand(daemonCmd)
 	rootCmd.AddCommand(sessionCmd)
 	rootCmd.AddCommand(aiCmd)

@@ -93,6 +93,19 @@ Or install as a Claude Code plugin:
 /plugin install agnt@agnt
 ```
 
+**One-shot: `agnt skills`** — install the agnt agent skills and register the
+MCP server in a single command. It uses [Vercel's open skills CLI](https://github.com/vercel-labs/skills)
+to fetch the skills, then wires up MCP:
+
+```bash
+agnt skills                 # install for Claude Code + register the MCP server
+agnt skills --agent cursor  # install the skills for a different agent
+```
+
+Under the hood it runs `npx -y skills add standardbeagle-tools/agnt --all -a
+claude-code`, then `claude mcp add agnt -s user -- agnt mcp` (for other agents
+it prints the MCP config to add). Requires Node.js (`npx`) on PATH.
+
 ### As PTY Wrapper (Enhanced Terminal)
 
 Wrap your AI tool for overlay features:
