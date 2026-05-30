@@ -3,6 +3,21 @@
 ## [Unreleased]
 
 ### Added
+- **First-run setup flow** for `agnt run`. When `agnt run claude` is invoked in
+  a project with no `.agnt.kdl`, agnt drives a one-time setup run (the agent
+  configures the project via the `agnt:setup-project` skill) then relaunches
+  the coding agent with autostart enabled, replaying the original arguments.
+  - Per-project first-run marker under XDG state; positive outcome is permanent,
+    a declined setup re-nudges after a configurable TTL
+    (`setup { renudge-ttl-days 7 }`, default 7 days).
+  - Per-agent install guidance from a support matrix
+    ([docs/agent-support-matrix.md](docs/agent-support-matrix.md)): each agent
+    is classified marketplace-install / skill-file / none with the correct
+    install text.
+- **`agnt init` command** — runs only the setup phase (configure the project,
+  write `.agnt.kdl`) without relaunching into a coding session. `agnt init`
+  defaults to claude; `agnt init <agent>` uses another agent. A successful init
+  records the permanent marker so a later `agnt run` skips the setup nudge.
 - **`id` parameter alias** across single-reference MCP tools. `currentpage`,
   `proxylog`, `responsive_audit`, `channel_reply`, `snapshot`, and `proc` now
   accept `id` as an alias for their canonical `proxy_id` / `process_id`

@@ -257,3 +257,38 @@ func TestRunFirstRunFlow(t *testing.T) {
 		assert.Equal(t, bare, rec.launchArg[1])
 	})
 }
+
+// TestFirstRunOrCodingSetupOnly covers the `agnt init` path: a single setup
+// phase, no relaunch, and a permanent marker written only when setup produced a
+// config. No t.Parallel(): mutates the setupOnlyMode package global.
+func TestFirstRunOrCodingSetupOnly(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	dir := t.TempDir()
+
+	setupOnlyMode = true
+	t.Cleanup(func() { setupOnlyMode = false })
+
+	var phases []bool
+	launch := func(setupPhase bool, _ []string) (int, error) {
+		phases = append(phases, setupPhase)
+		return 0, nil
+	}
+	noReap := func(int) {}
+
+	// No config produced → one setup phase, no relaunch, no marker.
+	require.NoError(t, firstRunOrCoding(dir, nil, []string{"claude"}, launch, noReap))
+	assert.Equal(t, []bool{true}, phases, "init runs exactly one setup phase")
+	m, err := readFirstRunMarker(firstRunStatePath(dir))
+	require.NoError(t, err)
+	assert.Nil(t, m, "no config written → no marker")
+
+	// Setup wrote a config → permanent marker recorded.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".agnt.kdl"), []byte("project { }\n"), 0o644))
+	phases = nil
+	require.NoError(t, firstRunOrCoding(dir, nil, []string{"claude"}, launch, noReap))
+	assert.Equal(t, []bool{true}, phases, "still a single setup phase, never a relaunch")
+	m2, err := readFirstRunMarker(firstRunStatePath(dir))
+	require.NoError(t, err)
+	require.NotNil(t, m2)
+	assert.True(t, m2.Permanent, "successful init writes a permanent marker")
+}

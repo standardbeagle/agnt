@@ -12,6 +12,7 @@ Current, maintained references for specific subsystems:
 | Doc | Topic |
 |-----|-------|
 | [agent-adapters.md](agent-adapters.md) | System-prompt injection per AI tool (Claude Code, Gemini, Aider, …) |
+| [agent-support-matrix.md](agent-support-matrix.md) | First-run setup skill delivery per agent (marketplace / skill-file / none) |
 | [hook-rules.md](hook-rules.md) | `agnt hook` dispatcher events and drain fan-out |
 | [orphan-cleanup.md](orphan-cleanup.md) | Orphaned process / pgid cleanup behavior |
 | [url-matching.md](url-matching.md) | Dev-server URL tracking and matching |

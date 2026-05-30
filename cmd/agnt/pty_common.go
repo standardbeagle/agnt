@@ -699,6 +699,9 @@ var (
 	useTermOverlay    bool = true
 	sessionCode       string
 	skipAutostart     bool = false
+	// setupOnlyMode is set by `agnt init` to run a single setup phase
+	// (configure the project, no relaunch) regardless of the first-run gate.
+	setupOnlyMode bool = false
 )
 
 func init() {
@@ -1004,6 +1007,17 @@ func suppressAutostartDuringSetup(setupPhase bool) func() {
 // run.go and run_windows.go (enforced by TestRunFilesUnderBudget).
 func firstRunOrCoding(projectPath string, adapter agentadapter.Adapter, args []string,
 	launch func(setupPhase bool, args []string) (int, error), reap func(int)) error {
+	// `agnt init`: run one setup phase for any agent, no relaunch. On success
+	// record a permanent marker so a later `agnt run` skips the setup nudge.
+	if setupOnlyMode {
+		if _, err := launch(true, args); err != nil {
+			return err
+		}
+		if config.FindAgntConfigFile(projectPath) != "" {
+			_ = writeFirstRunMarker(firstRunStatePath(projectPath), setupOutcomeMarker(true, time.Now()))
+		}
+		return nil
+	}
 	if adapter != nil && adapter.Name() == "claude" {
 		return runFirstRunFlow(firstRunDeps{
 			now:         time.Now(),
