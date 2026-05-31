@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/tunnel"
 	hubpkg "github.com/standardbeagle/go-cli-server/hub"
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
@@ -145,19 +146,23 @@ func (d *Daemon) hubHandleTunnelList(conn *hubpkg.Connection, cmd *hubproto.Comm
 	// Parse filter from command data
 	dirFilter, _ := unmarshalCommand[hubproto.DirectoryFilter](cmd)
 
+	// Route through the mandatory session-scope chokepoint (see
+	// resolveProjectScope). A non-global query with no resolvable project
+	// fails loud rather than listing every project's tunnels.
+	projectPath, global, err := d.resolveProjectScope(protocol.DirectoryFilter{
+		Global:      dirFilter.Global,
+		SessionCode: dirFilter.SessionCode,
+		Directory:   dirFilter.Directory,
+	}, conn.SessionCode())
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
+	}
+
 	var infos []tunnel.TunnelInfo
-	if dirFilter.Global {
-		// Global: list all tunnels
+	if global {
 		infos = d.tunnelm.List()
 	} else {
-		// Session-scoped: filter by project path
-		projectPath := d.getSessionProjectPath(conn)
-		if projectPath != "" {
-			infos = d.tunnelm.ListByPath(projectPath)
-		} else {
-			// No session, return all (fallback for non-session connections)
-			infos = d.tunnelm.List()
-		}
+		infos = d.tunnelm.ListByPath(projectPath)
 	}
 
 	entries := make([]map[string]interface{}, len(infos))

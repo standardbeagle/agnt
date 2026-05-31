@@ -309,11 +309,21 @@ type AlertReportPayload struct {
 }
 
 // AlertQueryFilter filters for ALERTS QUERY.
+//
+// Scoping fields (Global / SessionCode / Directory) feed the session-scope
+// chokepoint on the daemon side: by default the query is scoped to the
+// caller's project; Global bypasses the scope (cross-project); SessionCode /
+// Directory let an MCP client that is not session-bound on its daemon
+// connection name the project explicitly (mirrors DirectoryFilter).
 type AlertQueryFilter struct {
 	Since     string `json:"since,omitempty"`      // RFC3339 or duration like "5m"
 	ProcessID string `json:"process_id,omitempty"` // Filter to specific process
 	Severity  string `json:"severity,omitempty"`   // Filter by severity
 	Limit     int    `json:"limit,omitempty"`      // Max results (0 = all)
+
+	Global      bool   `json:"global,omitempty"`       // Bypass session scope (cross-project)
+	SessionCode string `json:"session_code,omitempty"` // Explicit session to scope to
+	Directory   string `json:"directory,omitempty"`    // Explicit project directory to scope to
 }
 
 // StreamEventFilter filters events for STREAM-EVENTS command.

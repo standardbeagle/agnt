@@ -9,6 +9,7 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
+	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/proxy"
 	hubpkg "github.com/standardbeagle/go-cli-server/hub"
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
@@ -232,17 +233,16 @@ func (d *Daemon) hubHandleProxyList(conn *hubpkg.Connection, cmd *hubproto.Comma
 	// Parse filter from command data
 	dirFilter, _ := unmarshalCommand[hubproto.DirectoryFilter](cmd)
 
-	// Resolve filter path from session code or directory
-	filterPath := ""
-	if !dirFilter.Global {
-		if dirFilter.SessionCode != "" {
-			// Look up session to get project path
-			if session, ok := d.sessionRegistry.Get(dirFilter.SessionCode); ok {
-				filterPath = normalizePath(session.ProjectPath)
-			}
-		} else if dirFilter.Directory != "" {
-			filterPath = normalizePath(dirFilter.Directory)
-		}
+	// Route through the mandatory session-scope chokepoint (see
+	// resolveProjectScope). A non-global query with no resolvable project
+	// fails loud rather than listing every project's proxies.
+	filterPath, global, err := d.resolveProjectScope(protocol.DirectoryFilter{
+		Global:      dirFilter.Global,
+		SessionCode: dirFilter.SessionCode,
+		Directory:   dirFilter.Directory,
+	}, conn.SessionCode())
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
 	}
 
 	proxies := d.proxym.List()
@@ -252,7 +252,7 @@ func (d *Daemon) hubHandleProxyList(conn *hubpkg.Connection, cmd *hubproto.Comma
 		proxyPath := normalizePath(p.Path)
 
 		// Filter by path if not global and we have a filter path
-		if !dirFilter.Global && filterPath != "" && filterPath != "." && proxyPath != filterPath {
+		if !global && filterPath != "" && filterPath != "." && proxyPath != filterPath {
 			continue
 		}
 

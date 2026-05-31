@@ -252,6 +252,13 @@ restart); inbox is a cache (source of truth is the originating subsystem).
 | `watch` | Get monitor command for streaming events (errors, interactions, process, all) |
 | `channel_reply` | Send messages to developer's browser overlay (channel mode beta) |
 
+**Session scoping & the `global` flag**: query/list tools are scoped to the
+caller's session project by default (the daemon-side session-scope chokepoint —
+see `.claude/rules/daemon-architecture.md` § Tool session-scoping). Every gated
+tool (`get_errors`, `proc`, `proxy`, `tunnel`, `session`, `daemon` startup_log)
+takes the same `global: true` input to return cross-project results. `get_incidents`
+(per-session isolated) and `watch` (monitor stream) intentionally omit it.
+
 **Handler pattern**:
 - Input/Output structs with JSON schema tags
 - Return `(*mcp.CallToolResult, OutputStruct, error)`

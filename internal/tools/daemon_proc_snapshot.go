@@ -152,21 +152,21 @@ func (dt *DaemonTools) handleProcSnapshot(input ProcInput) (*mcp.CallToolResult,
 		// store returns nil, nil and we move on. Only a structured
 		// CallToolResult signals "this should reach the user".
 		all := make([]unifiedError, 0)
-		es, te := dt.collectProcessAlerts("", "")
+		es, te := dt.collectProcessAlerts("", "", input.Global)
 		if te != nil {
 			errs.toolErr = te
 			return
 		}
 		all = append(all, es...)
 
-		es, te = dt.collectStartupErrors("", "")
+		es, te = dt.collectStartupErrors("", "", input.Global)
 		if te != nil {
 			errs.toolErr = te
 			return
 		}
 		all = append(all, es...)
 
-		es, te = dt.collectProxyErrors("", "")
+		es, te = dt.collectProxyErrors("", "", input.Global)
 		if te != nil {
 			errs.toolErr = te
 			return

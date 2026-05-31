@@ -21,6 +21,7 @@ type GetErrorsInput struct {
 	IncludeWarnings *bool  `json:"include_warnings,omitempty" jsonschema:"Include warnings (default: true)"`
 	Limit           int    `json:"limit,omitempty" jsonschema:"Max errors to return (default: 25)"`
 	Raw             bool   `json:"raw,omitempty" jsonschema:"Return full JSON with all fields"`
+	Global          bool   `json:"global,omitempty" jsonschema:"Bypass session scoping: include errors from all projects instead of only the current one (default: false)"`
 }
 
 // GetErrorsOutput is the output for the get_errors tool.
@@ -167,21 +168,21 @@ func (b *getErrorsBackend) collectDaemonErrors(input GetErrorsInput) ([]unifiedE
 	allErrors := make([]unifiedError, 0)
 
 	// 1. Collect process alerts
-	processErrors, procErr := dt.collectProcessAlerts(input.ProcessID, input.Since)
+	processErrors, procErr := dt.collectProcessAlerts(input.ProcessID, input.Since, input.Global)
 	if procErr != nil {
 		return nil, procErr
 	}
 	allErrors = append(allErrors, processErrors...)
 
 	// 2. Collect startup errors
-	startupErrors, startupErr := dt.collectStartupErrors(input.ProcessID, input.Since)
+	startupErrors, startupErr := dt.collectStartupErrors(input.ProcessID, input.Since, input.Global)
 	if startupErr != nil {
 		return nil, startupErr
 	}
 	allErrors = append(allErrors, startupErrors...)
 
 	// 3. Collect proxy errors
-	proxyErrors, proxyErr := dt.collectProxyErrors(input.ProxyID, input.Since)
+	proxyErrors, proxyErr := dt.collectProxyErrors(input.ProxyID, input.Since, input.Global)
 	if proxyErr != nil {
 		return nil, proxyErr
 	}
@@ -296,10 +297,22 @@ func formatErrorsOutput(allErrors []unifiedError, includeWarnings bool, limit in
 }
 
 // collectProcessAlerts queries the daemon alert store and converts to unified errors.
-func (dt *DaemonTools) collectProcessAlerts(processID, since string) ([]unifiedError, *mcp.CallToolResult) {
+// Scope: global bypasses the session-scope chokepoint (cross-project); otherwise
+// the query is scoped to the caller's session/project so other projects' alerts
+// don't leak in. The MCP daemon connection is not session-bound, so the project
+// is named explicitly via SessionCode/Directory (mirrors collectProxyErrors).
+func (dt *DaemonTools) collectProcessAlerts(processID, since string, global bool) ([]unifiedError, *mcp.CallToolResult) {
 	filter := protocol.AlertQueryFilter{
 		ProcessID: processID,
 		Since:     since,
+		Global:    global,
+	}
+	if !global {
+		if sessionCode := dt.SessionCode(); sessionCode != "" {
+			filter.SessionCode = sessionCode
+		} else if p := getProjectPath(); p != "" {
+			filter.Directory = p
+		}
 	}
 
 	result, err := dt.client.AlertQuery(filter)
@@ -328,8 +341,19 @@ func (dt *DaemonTools) collectProcessAlerts(processID, since string) ([]unifiedE
 }
 
 // collectStartupErrors queries the daemon startup log for error-level entries.
-func (dt *DaemonTools) collectStartupErrors(processID, since string) ([]unifiedError, *mcp.CallToolResult) {
-	result, err := dt.client.StartupLog(50)
+// Scope mirrors collectProcessAlerts: global bypasses the session-scope
+// chokepoint (cross-project); otherwise the query is scoped to the caller's
+// session/project so other projects' startup events don't leak in.
+func (dt *DaemonTools) collectStartupErrors(processID, since string, global bool) ([]unifiedError, *mcp.CallToolResult) {
+	dirFilter := protocol.DirectoryFilter{Global: global}
+	if !global {
+		if sessionCode := dt.SessionCode(); sessionCode != "" {
+			dirFilter.SessionCode = sessionCode
+		} else if p := getProjectPath(); p != "" {
+			dirFilter.Directory = p
+		}
+	}
+	result, err := dt.client.StartupLog(50, dirFilter)
 	if err != nil {
 		// Non-fatal: daemon might not support startup log
 		return nil, nil
@@ -372,13 +396,19 @@ func (dt *DaemonTools) collectStartupErrors(processID, since string) ([]unifiedE
 }
 
 // collectProxyErrors lists proxies and queries their logs for errors.
-func (dt *DaemonTools) collectProxyErrors(proxyID, since string) ([]unifiedError, *mcp.CallToolResult) {
+// global bypasses the session-scope chokepoint (cross-project); otherwise the
+// proxy list is scoped to the caller's session/project so other projects'
+// proxy errors don't leak in — consistent with collectProcessAlerts /
+// collectStartupErrors so a single get_errors {global:true} is uniform.
+func (dt *DaemonTools) collectProxyErrors(proxyID, since string, global bool) ([]unifiedError, *mcp.CallToolResult) {
 	// Build directory filter for proxy list
-	dirFilter := protocol.DirectoryFilter{}
-	if sessionCode := dt.SessionCode(); sessionCode != "" {
-		dirFilter.SessionCode = sessionCode
-	} else if p := getProjectPath(); p != "" {
-		dirFilter.Directory = p
+	dirFilter := protocol.DirectoryFilter{Global: global}
+	if !global {
+		if sessionCode := dt.SessionCode(); sessionCode != "" {
+			dirFilter.SessionCode = sessionCode
+		} else if p := getProjectPath(); p != "" {
+			dirFilter.Directory = p
+		}
 	}
 
 	var proxyIDs []string

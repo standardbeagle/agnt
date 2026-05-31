@@ -67,10 +67,25 @@ func (d *Daemon) hubHandleAlertsReport(conn *hubpkg.Connection, cmd *hubproto.Co
 func (d *Daemon) hubHandleAlertsQuery(conn *hubpkg.Connection, cmd *hubproto.Command) error {
 	protoFilter, _ := unmarshalCommand[protocol.AlertQueryFilter](cmd)
 
+	// Route through the mandatory session-scope chokepoint. A non-global
+	// query that can't resolve a project is rejected fail-loud (mirrors
+	// INCIDENTS QUERY) rather than leaking every project's alerts.
+	projectPath, global, err := d.resolveProjectScope(protocol.DirectoryFilter{
+		Global:      protoFilter.Global,
+		SessionCode: protoFilter.SessionCode,
+		Directory:   protoFilter.Directory,
+	}, conn.SessionCode())
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
+	}
+
 	filter := AlertStoreFilter{
 		ProcessID: protoFilter.ProcessID,
 		Severity:  protoFilter.Severity,
 		Limit:     protoFilter.Limit,
+	}
+	if !global {
+		filter.ProjectPath = projectPath
 	}
 
 	filter.Since = parseSinceFilter(protoFilter.Since)
@@ -114,25 +129,42 @@ func (d *Daemon) hubHandleStartupLog(conn *hubpkg.Connection, cmd *hubproto.Comm
 		Limit: 50,
 	}
 
-	if f, err := unmarshalCommand[struct {
-		Since     string `json:"since,omitempty"`
-		ProcessID string `json:"process_id,omitempty"`
-		Level     string `json:"level,omitempty"`
-		Limit     int    `json:"limit,omitempty"`
-	}](cmd); err == nil {
-		if f.ProcessID != "" {
-			filter.ProcessID = f.ProcessID
-		}
-		if f.Level != "" {
-			filter.Level = f.Level
-		}
-		if f.Limit > 0 {
-			filter.Limit = f.Limit
-		}
-		filter.Since = parseSinceFilter(f.Since)
-		if filter.Since.IsZero() {
-			filter.Since = time.Now().Add(-30 * time.Minute)
-		}
+	f, _ := unmarshalCommand[struct {
+		Since       string `json:"since,omitempty"`
+		ProcessID   string `json:"process_id,omitempty"`
+		Level       string `json:"level,omitempty"`
+		Limit       int    `json:"limit,omitempty"`
+		Global      bool   `json:"global,omitempty"`
+		SessionCode string `json:"session_code,omitempty"`
+		Directory   string `json:"directory,omitempty"`
+	}](cmd)
+	if f.ProcessID != "" {
+		filter.ProcessID = f.ProcessID
+	}
+	if f.Level != "" {
+		filter.Level = f.Level
+	}
+	if f.Limit > 0 {
+		filter.Limit = f.Limit
+	}
+	filter.Since = parseSinceFilter(f.Since)
+	if filter.Since.IsZero() {
+		filter.Since = time.Now().Add(-30 * time.Minute)
+	}
+
+	// Route through the mandatory session-scope chokepoint so STARTUP-LOG
+	// cannot surface another project's startup events. Non-global queries
+	// that can't resolve a project fail loud (mirrors ALERTS QUERY).
+	projectPath, global, err := d.resolveProjectScope(protocol.DirectoryFilter{
+		Global:      f.Global,
+		SessionCode: f.SessionCode,
+		Directory:   f.Directory,
+	}, conn.SessionCode())
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
+	}
+	if !global {
+		filter.ProjectPath = projectPath
 	}
 
 	entries := d.startupErrorStore.Query(filter)
