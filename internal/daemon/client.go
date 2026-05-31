@@ -743,10 +743,23 @@ func (c *Client) AlertClear() error {
 	return c.conn.Request(protocol.VerbAlerts, protocol.SubVerbClear).OK()
 }
 
-// StartupLog queries the startup log from the daemon.
-func (c *Client) StartupLog(limit int) (map[string]interface{}, error) {
+// StartupLog queries the startup log from the daemon. The dirFilter carries
+// the session-scope fields (Global / SessionCode / Directory) the daemon's
+// STARTUP-LOG handler routes through resolveProjectScope; a non-global call
+// with no resolvable project is rejected fail-loud daemon-side.
+func (c *Client) StartupLog(limit int, dirFilter protocol.DirectoryFilter) (map[string]interface{}, error) {
+	payload := map[string]interface{}{"limit": limit}
+	if dirFilter.Global {
+		payload["global"] = true
+	}
+	if dirFilter.SessionCode != "" {
+		payload["session_code"] = dirFilter.SessionCode
+	}
+	if dirFilter.Directory != "" {
+		payload["directory"] = dirFilter.Directory
+	}
 	return c.conn.Request(protocol.VerbAlerts, protocol.SubVerbStartupLog).
-		WithJSON(map[string]interface{}{"limit": limit}).JSON()
+		WithJSON(payload).JSON()
 }
 
 // Doctor runs health checks and returns a diagnostic report.

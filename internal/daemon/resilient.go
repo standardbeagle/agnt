@@ -1043,11 +1043,11 @@ func (rc *ResilientClient) AlertClear() error {
 }
 
 // StartupLog queries the startup log from the daemon.
-func (rc *ResilientClient) StartupLog(limit int) (map[string]interface{}, error) {
+func (rc *ResilientClient) StartupLog(limit int, dirFilter protocol.DirectoryFilter) (map[string]interface{}, error) {
 	var result map[string]interface{}
 	err := rc.WithClient(func(c *Client) error {
 		var e error
-		result, e = c.StartupLog(limit)
+		result, e = c.StartupLog(limit, dirFilter)
 		return e
 	})
 	return result, err

@@ -94,6 +94,116 @@ No subsystem may silently skip an expected action. If config declares a proxy, p
 
 If `.agnt.kdl` declares expected state (a proxy with `fallback-port`, a script with `depends-on`), the system must honor it. Config fields that are parsed but not acted on are bugs.
 
+## Tool session-scoping
+
+This is the **canonical classification** of every hub query/list verb (and the
+MCP tools that drive it) against the session-scope chokepoint. Project scoping
+is a *structural* property, not a per-handler convention: there is exactly one
+resolution point, `resolveProjectScope` (`internal/daemon/hub_helpers.go`), and
+every non-debug list/query routes through it. Adding a new query/list verb
+without classifying it here — and wiring it to the gate if it is non-debug — is
+a bug.
+
+### The gate contract (`resolveProjectScope`)
+
+Given a per-call `DirectoryFilter{Global, SessionCode, Directory}` and the
+connection's bound session code, resolution is, in order:
+
+1. `Global == true` → `("", true, nil)`: no project filter (cross-project).
+2. explicit `SessionCode` → that session's project path (error if unknown).
+3. explicit `Directory` → the normalized directory.
+4. otherwise the connection's bound session's project path.
+5. none of the above → `("", false, errNoSessionScope)`: **fail loud**.
+
+A non-global call that cannot resolve a project is rejected with
+`invalid_args: no session attached …` rather than silently leaking every
+project's data. The per-call `global` flag always wins. The MCP daemon
+connection is not session-bound, so MCP tools name the project explicitly via
+`SessionCode` (preferred) or `Directory` (fallback) — see
+`collectProcessAlerts` / `handleProcList` for the canonical client pattern.
+
+### Uniform `global` override on MCP tools (C6)
+
+Every gated MCP tool exposes the **same** override: a `global bool` input
+(`json:"global,omitempty"`, default `false`, documented in its jsonschema).
+`global:true` returns cross-project results; the default scopes to the caller's
+session/project. The MCP daemon connection is not session-bound, so each tool,
+when non-global, names the project explicitly on the wire (`SessionCode`
+preferred, `Directory` fallback) — see `handleProcList` / `handleProxyList` /
+`handleTunnelList` / `collectProcessAlerts` / `collectProxyErrors` /
+`collectStartupErrors` / `handleDaemonStartupLog`. A reflection contract test
+(`internal/tools/global_scope_uniform_test.go`,
+`TestGatedMCPTools_ExposeGlobalFlagUniformly`) pins that `get_errors`, `proc`,
+`proxy`, `tunnel`, `session`, and `daemon` (startup_log) all carry the field.
+
+Two tools intentionally do **not** take a cross-project `global` and are
+excluded from that contract test:
+
+- **`get_incidents`** — the incident inbox is per-session *hard-isolated* (the
+  "Cross-session isolation" numbered contract below). That is a stronger
+  guarantee than project scoping; a cross-session global would violate it.
+- **`watch`** — emits an `agnt monitor` command string. Monitor stream scoping
+  is a separate STREAM-EVENTS concern, not a result-returning query, so a
+  `global` flag would be a no-op (and silent no-ops are forbidden).
+
+### Gated (must route through `resolveProjectScope`)
+
+Default project-scoped, `global`-overridable, session-less non-global rejected.
+
+| Verb | MCP tool | Filter field | Notes |
+|------|----------|--------------|-------|
+| `ALERTS QUERY` | `get_errors` (process alerts) | `AlertStoreFilter.ProjectPath` | C4 |
+| `ALERTS STARTUP-LOG` | `get_errors` (startup errors), `daemon startup_log` | `StartupLogFilter.ProjectPath` (matched via the `basename-hash:` ProcessID prefix — entries are not stamped at ingest) | C5 |
+| `PROC LIST` | `proc {action:"list"}` | `ProjectPath` compare on each process | C5 (migrated off inline logic) |
+| `PROXY LIST` | `proxy {action:"list"}` | `ProjectPath` compare on each proxy | C5 (migrated off inline logic) |
+| `TUNNEL LIST` | `tunnel {action:"list"}` | `tunnelm.ListByPath` | C5 (migrated off `getSessionProjectPath` fallback-to-all) |
+| `SESSION LIST` | `session {action:"list"}` | `sessionRegistry.List(path, global)` | C5 |
+| `SESSION TASKS` | `session {action:"tasks"}` | `scheduler.ListTasks(path, global)` | C5 |
+| `INCIDENTS QUERY` | `get_incidents` | per-session inbox partition | pre-existing model the gate converges toward |
+
+### ID-scoped (single resource addressed by explicit id)
+
+These take a resource id, not a project filter. The id **lookup** resolves
+through `getSessionScoped` (`internal/daemon/hub_helpers.go`), which restricts
+fuzzy matching to the connection's session project so you cannot address another
+project's resource by id; an exact id always works. No `global` flag — the id is
+the scope.
+
+| Verb(s) | Resolver |
+|---------|----------|
+| `PROC STATUS` / `OUTPUT` / `STOP` / `RESTART` | id → `ProcessManager` |
+| `PROXY STATUS` / `STOP` / `RESTART` / `TOAST` | `getSessionScoped(…, GetWithPathFilter)` |
+| `PROXYLOG QUERY` / `SUMMARY` / `CLEAR` / `STATS` | `getSessionScoped(…, GetWithPathFilter)` |
+| `CURRENTPAGE LIST` / `GET` / `SUMMARY` / `CLEAR` | `getSessionScoped(…, GetWithPathFilter)` |
+| `TUNNEL STOP` / `STATUS` | `getSessionScoped(…, GetWithPathFilter)` |
+
+### Debug-exempt (by design)
+
+The agent supplies an explicit `proxy_id` it already holds; these are
+interactive browser-debug surfaces, not cross-project discovery. They are
+**not** project-filtered, but the `proxy_id` **lookup** still resolves through
+`getSessionScoped`, so a debug call cannot reach another project's proxy by id.
+
+| Tool | Verb |
+|------|------|
+| `proxy {action:"exec"}` | `PROXY EXEC` |
+| `responsive_audit` | `PROXY EXEC` (script injection) |
+| `snapshot` | `PROXY EXEC` |
+| `screenshot` | `PROXY EXEC` |
+| sketch / design modes | `PROXY EXEC` / panel |
+| `channel_reply` | `PROXY TOAST` |
+
+### Why STARTUP-LOG is prefix-matched, not ingest-tagged
+
+`StartupLogEntry` has 59 ingest sites across the daemon; stamping a project
+path at each would be invasive and error-prone. Instead the entry's
+`ProcessID` (`makeProcessID(projectPath, name)` →
+`basename-hash:name`) deterministically encodes the project, so a scoped query
+filters by the `basename-hash:` prefix (`makeProcessID(projectPath, "")`).
+Consequence: daemon-wide events with a bare (non-project) `ProcessID` —
+shutdown/scan records — are visible only to a `global` query, never to a scoped
+one. This is the intended trade-off.
+
 ## Incident Pipeline
 
 The incident pipeline (`internal/incident/`) is an opt-in alert path (Phase A,

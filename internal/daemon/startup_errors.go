@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"strings"
 	"sync"
 	"time"
 )
@@ -86,12 +87,30 @@ type StartupLogFilter struct {
 	ProcessID string
 	Level     string // "info", "warning", "error", or "" for all
 	Limit     int
+
+	// ProjectPath scopes results to a single project. Startup log entries
+	// are not stamped with a project path at ingest, but their ProcessID
+	// is built by makeProcessID(projectPath, name) which deterministically
+	// encodes the project as a "basename-hash:" prefix. When set, only
+	// entries whose ProcessID carries that prefix are returned. Entries
+	// with a bare (non-project) ProcessID — daemon-wide shutdown/scan
+	// events — are therefore visible only to a global (unscoped) query.
+	// Empty means no project scoping (the global/legacy behaviour).
+	ProjectPath string
 }
 
 // Query returns matching entries ordered oldest to newest.
 func (s *StartupLogStore) Query(filter StartupLogFilter) []*StartupLogEntry {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+
+	// Derive the deterministic "basename-hash:" ProcessID prefix for the
+	// scoped project once, outside the loop. makeProcessID with an empty
+	// name yields exactly that prefix.
+	var projectPrefix string
+	if filter.ProjectPath != "" {
+		projectPrefix = makeProcessID(filter.ProjectPath, "")
+	}
 
 	var result []*StartupLogEntry
 	for i := 0; i < s.len; i++ {
@@ -103,6 +122,9 @@ func (s *StartupLogStore) Query(filter StartupLogFilter) []*StartupLogEntry {
 			continue
 		}
 		if filter.ProcessID != "" && entry.ProcessID != filter.ProcessID {
+			continue
+		}
+		if projectPrefix != "" && !strings.HasPrefix(entry.ProcessID, projectPrefix) {
 			continue
 		}
 		if filter.Level != "" && entry.Level != filter.Level {

@@ -10,6 +10,7 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
+	"github.com/standardbeagle/agnt/internal/protocol"
 
 	hubpkg "github.com/standardbeagle/go-cli-server/hub"
 	goprocess "github.com/standardbeagle/go-cli-server/process"
@@ -291,32 +292,26 @@ func (d *Daemon) hubHandleProcList(ctx context.Context, conn *hubpkg.Connection,
 		return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("invalid filter JSON: %v", err))
 	}
 
-	// Resolve the project path for filtering
-	var projectPath string
-	var sessionCode string
+	// Route through the mandatory session-scope chokepoint: one gate for
+	// every non-debug list/query (see resolveProjectScope). A non-global
+	// query with no resolvable project fails loud rather than leaking all
+	// projects' processes.
+	projectPath, global, err := d.resolveProjectScope(protocol.DirectoryFilter{
+		Global:      dirFilter.Global,
+		SessionCode: dirFilter.SessionCode,
+		Directory:   dirFilter.Directory,
+	}, conn.SessionCode())
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
+	}
+	sessionCode := dirFilter.SessionCode
+	if sessionCode == "" {
+		sessionCode = conn.SessionCode()
+	}
 	filteredProcs := procs
 
-	if dirFilter.Global {
-		// No filtering - return all processes
-	} else if dirFilter.SessionCode != "" {
-		sessionCode = dirFilter.SessionCode
-		session, ok := d.sessionRegistry.Get(sessionCode)
-		if !ok {
-			return conn.WriteErr(hubproto.ErrNotFound, fmt.Sprintf("session %q not found", sessionCode))
-		}
-		projectPath = session.ProjectPath
-	} else if dirFilter.Directory != "" {
-		projectPath = dirFilter.Directory
-	} else if connSession := conn.SessionCode(); connSession != "" {
-		sessionCode = connSession
-		session, ok := d.sessionRegistry.Get(sessionCode)
-		if ok {
-			projectPath = session.ProjectPath
-		}
-	}
-
 	// Filter processes by project path
-	if !dirFilter.Global && projectPath != "" {
+	if !global && projectPath != "" {
 		normalizedDir := normalizePath(projectPath)
 		var filtered []*goprocess.ManagedProcess
 		for _, p := range procs {
@@ -380,7 +375,7 @@ func (d *Daemon) hubHandleProcList(ctx context.Context, conn *hubpkg.Connection,
 	// agent needs to see them in PROC LIST so `waiting_for` is visible
 	// before any process actually launches.
 	var pendingFilter string
-	if !dirFilter.Global && projectPath != "" {
+	if !global && projectPath != "" {
 		pendingFilter = normalizePath(projectPath)
 	}
 	for _, pending := range d.pendingProcs.ListByProject(pendingFilter) {
@@ -393,7 +388,7 @@ func (d *Daemon) hubHandleProcList(ctx context.Context, conn *hubpkg.Connection,
 	resp := map[string]interface{}{
 		"count":           len(entries),
 		"processes":       entries,
-		"global":          dirFilter.Global,
+		"global":          global,
 		"total_in_daemon": len(procs),
 	}
 	if projectPath != "" {

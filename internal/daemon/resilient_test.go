@@ -584,9 +584,9 @@ func TestResilientClient_TunnelMethods(t *testing.T) {
 	}
 	defer rc.Close()
 
-	// Test TunnelList
+	// Test TunnelList (global: session-less client, scope chokepoint).
 	t.Run("TunnelList", func(t *testing.T) {
-		result, err := rc.TunnelList(protocol.DirectoryFilter{})
+		result, err := rc.TunnelList(protocol.DirectoryFilter{Global: true})
 		if err != nil {
 			t.Fatalf("TunnelList failed: %v", err)
 		}

@@ -193,9 +193,11 @@ func TestHubIntegration_TunnelCommands(t *testing.T) {
 	t.Parallel()
 	client := newBootedClient(t)
 
-	// List tunnels (should be empty)
+	// List tunnels (should be empty). A session-less client must opt into the
+	// global override now that TUNNEL LIST routes through the session-scope
+	// chokepoint — an unscoped non-global call is rejected fail-loud.
 	t.Run("LIST", func(t *testing.T) {
-		result, err := client.conn.Request("TUNNEL", "LIST").JSON()
+		result, err := client.conn.Request("TUNNEL", "LIST").WithJSON(map[string]interface{}{"global": true}).JSON()
 		if err != nil {
 			t.Fatalf("Tunnel LIST failed: %v", err)
 		}
@@ -868,9 +870,9 @@ func TestHubIntegration_TunnelClientMethods(t *testing.T) {
 	t.Parallel()
 	client := newBootedClient(t)
 
-	// Test TunnelList
+	// Test TunnelList (global: session-less client, scope chokepoint).
 	t.Run("TunnelList", func(t *testing.T) {
-		result, err := client.TunnelList(protocol.DirectoryFilter{})
+		result, err := client.TunnelList(protocol.DirectoryFilter{Global: true})
 		if err != nil {
 			t.Fatalf("TunnelList failed: %v", err)
 		}
@@ -1727,16 +1729,47 @@ func TestHubIntegration_ProcListFilters(t *testing.T) {
 		}
 	})
 
-	// Test LIST with no filter (should filter by current directory)
-	t.Run("LIST_NoFilter", func(t *testing.T) {
-		result, err := client.conn.Request("PROC", "LIST").JSON()
-		if err != nil {
-			t.Fatalf("Proc LIST failed: %v", err)
+	// PROC LIST now routes through the session-scope chokepoint. A
+	// session-less client that supplies neither a directory nor global:true
+	// can't resolve a project, so the call is rejected fail-loud rather than
+	// silently listing every project's processes.
+	t.Run("LIST_NoFilter_RejectsSessionless", func(t *testing.T) {
+		_, err := client.conn.Request("PROC", "LIST").JSON()
+		if err == nil {
+			t.Fatal("expected PROC LIST to reject a session-less non-global call")
 		}
-		// Just verify it returns without error
-		_, ok := result["processes"].([]interface{})
+		if !strings.Contains(err.Error(), "no session attached") {
+			t.Errorf("expected no-session-scope error, got: %v", err)
+		}
+	})
+
+	// The same call with an explicit directory resolves AND scopes: it must
+	// include the directory's own process and exclude the other project's.
+	t.Run("LIST_NoFilter_DirectoryResolves", func(t *testing.T) {
+		result, err := client.conn.Request("PROC", "LIST").WithJSON(map[string]interface{}{
+			"directory": project1,
+		}).JSON()
+		if err != nil {
+			t.Fatalf("Proc LIST with directory failed: %v", err)
+		}
+		procs, ok := result["processes"].([]interface{})
 		if !ok {
-			t.Error("Expected processes array in result")
+			t.Fatal("Expected processes array in result")
+		}
+		var sawProj1, sawProj2 bool
+		for _, p := range procs {
+			switch p.(map[string]interface{})["id"] {
+			case "proc-proj1":
+				sawProj1 = true
+			case "proc-proj2":
+				sawProj2 = true
+			}
+		}
+		if !sawProj1 {
+			t.Error("expected proc-proj1 in directory-scoped result")
+		}
+		if sawProj2 {
+			t.Error("proc-proj2 (foreign project) leaked into directory-scoped result")
 		}
 	})
 }
@@ -2291,8 +2324,10 @@ func TestHubIntegration_TunnelErrorPaths(t *testing.T) {
 	})
 
 	t.Run("List", func(t *testing.T) {
-		// List should work even with no tunnels
-		result, err := client.TunnelList(protocol.DirectoryFilter{})
+		// List should work even with no tunnels. Session-less client opts
+		// into the global override (TUNNEL LIST is gated by the scope
+		// chokepoint).
+		result, err := client.TunnelList(protocol.DirectoryFilter{Global: true})
 		if err != nil {
 			t.Errorf("TunnelList failed: %v", err)
 		}

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/debug"
+	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/proxy"
 
 	hubpkg "github.com/standardbeagle/go-cli-server/hub"
@@ -412,11 +413,24 @@ func (d *Daemon) hubHandleSessionHeartbeat(conn *hubpkg.Connection, cmd *hubprot
 
 func (d *Daemon) hubHandleSessionList(conn *hubpkg.Connection, cmd *hubproto.Command) error {
 	filter, _ := unmarshalCommand[struct {
-		Directory string `json:"directory"`
-		Global    bool   `json:"global"`
+		Directory   string `json:"directory"`
+		Global      bool   `json:"global"`
+		SessionCode string `json:"session_code"`
 	}](cmd)
 
-	sessions := d.sessionRegistry.List(normalizePath(filter.Directory), filter.Global)
+	// Route through the mandatory session-scope chokepoint (see
+	// resolveProjectScope). A non-global query with no resolvable project
+	// fails loud rather than listing every project's sessions.
+	projectPath, global, err := d.resolveProjectScope(protocol.DirectoryFilter{
+		Global:      filter.Global,
+		SessionCode: filter.SessionCode,
+		Directory:   filter.Directory,
+	}, conn.SessionCode())
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
+	}
+
+	sessions := d.sessionRegistry.List(projectPath, global)
 
 	// Convert to response format
 	sessionList := make([]map[string]interface{}, 0, len(sessions))
@@ -427,8 +441,8 @@ func (d *Daemon) hubHandleSessionList(conn *hubpkg.Connection, cmd *hubproto.Com
 	resp := map[string]interface{}{
 		"sessions":  sessionList,
 		"count":     len(sessionList),
-		"directory": filter.Directory,
-		"global":    filter.Global,
+		"directory": projectPath,
+		"global":    global,
 	}
 
 	data, _ := json.Marshal(resp)
@@ -559,11 +573,24 @@ func (d *Daemon) hubHandleSessionCancel(conn *hubpkg.Connection, cmd *hubproto.C
 
 func (d *Daemon) hubHandleSessionTasks(conn *hubpkg.Connection, cmd *hubproto.Command) error {
 	filter, _ := unmarshalCommand[struct {
-		Directory string `json:"directory"`
-		Global    bool   `json:"global"`
+		Directory   string `json:"directory"`
+		Global      bool   `json:"global"`
+		SessionCode string `json:"session_code"`
 	}](cmd)
 
-	tasks := d.scheduler.ListTasks(normalizePath(filter.Directory), filter.Global)
+	// Route through the mandatory session-scope chokepoint (see
+	// resolveProjectScope). A non-global query with no resolvable project
+	// fails loud rather than listing every project's scheduled tasks.
+	projectPath, global, err := d.resolveProjectScope(protocol.DirectoryFilter{
+		Global:      filter.Global,
+		SessionCode: filter.SessionCode,
+		Directory:   filter.Directory,
+	}, conn.SessionCode())
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
+	}
+
+	tasks := d.scheduler.ListTasks(projectPath, global)
 
 	// Convert to response format
 	taskList := make([]map[string]interface{}, 0, len(tasks))
@@ -574,8 +601,8 @@ func (d *Daemon) hubHandleSessionTasks(conn *hubpkg.Connection, cmd *hubproto.Co
 	resp := map[string]interface{}{
 		"tasks":     taskList,
 		"count":     len(taskList),
-		"directory": filter.Directory,
-		"global":    filter.Global,
+		"directory": projectPath,
+		"global":    global,
 	}
 
 	data, _ := json.Marshal(resp)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/protocol"
 
 	"github.com/standardbeagle/go-sdk/mcp"
 )
@@ -12,6 +13,7 @@ import (
 // DaemonInput defines input for the daemon management tool.
 type DaemonInput struct {
 	Action string `json:"action" jsonschema:"Action: status, info, start, stop, restart, stop_all, restart_all, startup_log, doctor"`
+	Global bool   `json:"global,omitempty" jsonschema:"For startup_log: include startup events from all projects instead of just the current one (default: false)"`
 }
 
 // DaemonOutput defines output for daemon management.
@@ -105,7 +107,7 @@ func makeDaemonHandler(dt *DaemonTools) func(context.Context, *mcp.CallToolReque
 		case "restart_all":
 			return handleDaemonRestartAll(dt)
 		case "startup_log":
-			return handleDaemonStartupLog(dt)
+			return handleDaemonStartupLog(dt, input.Global)
 		case "doctor":
 			return handleDaemonDoctor(dt)
 		default:
@@ -356,12 +358,25 @@ func handleDaemonDoctor(dt *DaemonTools) (*mcp.CallToolResult, DaemonOutput, err
 	}, DaemonOutput{Success: status != "error", Message: text}, nil
 }
 
-func handleDaemonStartupLog(dt *DaemonTools) (*mcp.CallToolResult, DaemonOutput, error) {
+func handleDaemonStartupLog(dt *DaemonTools, global bool) (*mcp.CallToolResult, DaemonOutput, error) {
 	if err := dt.ensureConnected(); err != nil {
 		return errorResult(fmt.Sprintf("daemon not running: %v", err)), DaemonOutput{}, nil
 	}
 
-	result, err := dt.client.StartupLog(50)
+	// Scope through the session-scope chokepoint: the MCP daemon connection
+	// is not session-bound, so a non-global call names the project explicitly
+	// (mirrors collectProcessAlerts). global:true bypasses the scope; a
+	// non-global contextless call is rejected daemon-side rather than leaking
+	// every project's startup events.
+	dirFilter := protocol.DirectoryFilter{Global: global}
+	if !global {
+		if sessionCode := dt.SessionCode(); sessionCode != "" {
+			dirFilter.SessionCode = sessionCode
+		} else if p := getProjectPath(); p != "" {
+			dirFilter.Directory = p
+		}
+	}
+	result, err := dt.client.StartupLog(50, dirFilter)
 	if err != nil {
 		return errorResult(fmt.Sprintf("failed to query startup log: %v", err)), DaemonOutput{}, nil
 	}

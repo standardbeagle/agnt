@@ -198,8 +198,19 @@ func (dt *DaemonTools) handleTunnelStatus(input TunnelInput) (*mcp.CallToolResul
 }
 
 func (dt *DaemonTools) handleTunnelList(input TunnelInput) (*mcp.CallToolResult, TunnelOutput, error) {
+	// The MCP daemon connection is not session-bound, so a non-global list
+	// must name the project explicitly (SessionCode preferred, Directory
+	// fallback) or the session-scope chokepoint rejects it. Mirrors
+	// handleProxyList / handleProcList.
 	dirFilter := protocol.DirectoryFilter{
 		Global: input.Global,
+	}
+	if !input.Global {
+		if sessionCode := dt.SessionCode(); sessionCode != "" {
+			dirFilter.SessionCode = sessionCode
+		} else if projectPath := getProjectPath(); projectPath != "" {
+			dirFilter.Directory = projectPath
+		}
 	}
 
 	result, err := dt.client.TunnelList(dirFilter)

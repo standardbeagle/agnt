@@ -117,12 +117,13 @@ func TestSessionScope_GetErrorsLeaksAcrossProjects(t *testing.T) {
 	}
 }
 
-// TestSessionScope_UnscopedConnectionSeesAllProjects pins the override
-// contract (the "global" escape hatch from the epic's Definition of Done
-// item 2). A connection with NO bound session — the analog of an explicit
-// global override — must see every project's alerts, while a session-bound
-// connection must be scoped. The scoped half is RED until the gate exists.
-func TestSessionScope_UnscopedConnectionSeesAllProjects(t *testing.T) {
+// TestSessionScope_GlobalOverrideAndSessionlessRejected pins the override
+// contract (epic Definition of Done item 2). An explicit global:true query
+// returns every project's alerts. A non-global query on a session-less
+// connection is rejected fail-loud (mirrors INCIDENTS QUERY "no session
+// attached") — session-less is NOT an implicit global. A session-bound
+// connection is scoped to its own project but may still opt into global.
+func TestSessionScope_GlobalOverrideAndSessionlessRejected(t *testing.T) {
 	// No t.Parallel(): shares the daemon's global alert ring buffer.
 	_, sockPath := newBootedDaemon(t)
 
@@ -135,22 +136,30 @@ func TestSessionScope_UnscopedConnectionSeesAllProjects(t *testing.T) {
 	reportAlert(t, reporter, projA, "err-A", "error")
 	reportAlert(t, reporter, projB, "err-B", "error")
 
-	// Unscoped (no SESSION REGISTER) — models the global override.
-	global := NewClient(WithSocketPath(sockPath))
-	require.NoError(t, global.Connect())
-	t.Cleanup(func() { _ = global.Close() })
-	rawGlobal, err := global.AlertQuery(protocol.AlertQueryFilter{})
-	require.NoError(t, err)
-	globalAlerts := decodeAlerts(t, rawGlobal)
-	require.Len(t, globalAlerts, 2, "unscoped/global connection must see all projects")
+	// Session-less + non-global → rejected fail-loud (no implicit global).
+	anon := NewClient(WithSocketPath(sockPath))
+	require.NoError(t, anon.Connect())
+	t.Cleanup(func() { _ = anon.Close() })
+	_, err := anon.AlertQuery(protocol.AlertQueryFilter{})
+	require.Error(t, err, "session-less non-global query must be rejected, not leak all projects")
 
-	// Scoped — must be filtered to projB only. RED until the gate lands.
+	// Explicit global override → sees all projects, even session-less.
+	rawGlobal, err := anon.AlertQuery(protocol.AlertQueryFilter{Global: true})
+	require.NoError(t, err)
+	require.Len(t, decodeAlerts(t, rawGlobal), 2, "global override must see all projects")
+
+	// Session-bound connection is scoped to its own project by default...
 	clientB := registerSessionClient(t, sockPath, "sess-b", projB)
 	rawB, err := clientB.AlertQuery(protocol.AlertQueryFilter{})
 	require.NoError(t, err)
 	scoped := decodeAlerts(t, rawB)
 	require.Len(t, scoped, 1, "session-bound connection must be scoped to its own project")
 	assert.Equal(t, projB, scoped[0].ProjectPath)
+
+	// ...but may opt into the global override on demand.
+	rawBGlobal, err := clientB.AlertQuery(protocol.AlertQueryFilter{Global: true})
+	require.NoError(t, err)
+	assert.Len(t, decodeAlerts(t, rawBGlobal), 2, "a session may opt into the global override")
 }
 
 // TestSessionScope_NonDebugQueryVerbsRejectCrossProject is the
@@ -203,6 +212,48 @@ func TestSessionScope_NonDebugQueryVerbsRejectCrossProject(t *testing.T) {
 			}
 			assert.Len(t, got, tc.ownCount,
 				"scoped query must return exactly the owner's alerts, got %d", len(got))
+		})
+	}
+}
+
+// TestSessionScope_AllGatedVerbsUniformContract proves the chokepoint is
+// STRUCTURAL, not a per-handler convention: every enumerated non-debug
+// list/query verb routes through the single resolveProjectScope gate, so
+// they all share one contract — a session-less non-global call is rejected
+// fail-loud, and an explicit global:true override is honored. This is the
+// cross-verb generalization of the ALERTS QUERY tests above; adding a new
+// gated verb without wiring it to the gate makes its row here go RED.
+func TestSessionScope_AllGatedVerbsUniformContract(t *testing.T) {
+	// No t.Parallel(): boots a daemon and shares its registries.
+	_, sockPath := newBootedDaemon(t)
+
+	anon := NewClient(WithSocketPath(sockPath))
+	require.NoError(t, anon.Connect())
+	t.Cleanup(func() { _ = anon.Close() })
+
+	verbs := []struct {
+		name string
+		call func(global bool) error
+	}{
+		{"ALERTS_QUERY", func(g bool) error { _, e := anon.AlertQuery(protocol.AlertQueryFilter{Global: g}); return e }},
+		{"PROC_LIST", func(g bool) error { _, e := anon.ProcList(protocol.DirectoryFilter{Global: g}); return e }},
+		{"PROXY_LIST", func(g bool) error { _, e := anon.ProxyList(protocol.DirectoryFilter{Global: g}); return e }},
+		{"TUNNEL_LIST", func(g bool) error { _, e := anon.TunnelList(protocol.DirectoryFilter{Global: g}); return e }},
+		{"SESSION_LIST", func(g bool) error { _, e := anon.SessionList(protocol.DirectoryFilter{Global: g}); return e }},
+		{"SESSION_TASKS", func(g bool) error { _, e := anon.SessionTasks(protocol.DirectoryFilter{Global: g}); return e }},
+		{"ALERTS_STARTUP_LOG", func(g bool) error { _, e := anon.StartupLog(50, protocol.DirectoryFilter{Global: g}); return e }},
+	}
+
+	for _, v := range verbs {
+		t.Run(v.name, func(t *testing.T) {
+			// Session-less + non-global → rejected fail-loud.
+			err := v.call(false)
+			require.Error(t, err, "%s must reject a session-less non-global call", v.name)
+			assert.Contains(t, err.Error(), "no session attached",
+				"%s rejection should carry the canonical scope error", v.name)
+
+			// Explicit global override → accepted (no project required).
+			require.NoError(t, v.call(true), "%s must honor the global override", v.name)
 		})
 	}
 }
