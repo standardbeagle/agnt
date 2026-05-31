@@ -449,6 +449,21 @@ func New(config DaemonConfig) *Daemon {
 				if mts.IsZero() {
 					mts = ts
 				}
+				// Stamp the owning project path at ingest so the
+				// session-scope chokepoint can filter alerts by project.
+				// The scanner only fires for daemon-managed processes, so
+				// the script ID resolves to a managed process whose
+				// ProjectPath is the source of truth. Fail loud (not silent
+				// empty) when it can't be resolved.
+				projectPath := ""
+				if m.ScriptID != "" {
+					if proc, err := d.hub.ProcessManager().Get(m.ScriptID); err == nil {
+						projectPath = proc.ProjectPath
+					}
+					if projectPath == "" {
+						debug.Warn("daemon", "alert ingest: unresolved project path for script %q; storing alert unscoped", m.ScriptID)
+					}
+				}
 				d.alertStore.Add(&AlertEntry{
 					PatternID:   m.Pattern.ID,
 					Severity:    string(m.Pattern.Severity),
@@ -456,6 +471,7 @@ func New(config DaemonConfig) *Daemon {
 					Description: m.Pattern.Description,
 					Line:        m.Line,
 					ScriptID:    m.ScriptID,
+					ProjectPath: projectPath,
 					Timestamp:   mts,
 				})
 				if m.Pattern.Category == "rebuild" && m.ScriptID != "" {

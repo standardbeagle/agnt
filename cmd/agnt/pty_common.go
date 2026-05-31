@@ -517,6 +517,7 @@ func setupAlertScanner(projectPath, sessionCode string, netOverlay *Overlay, dae
 						Description: m.Pattern.Description,
 						Line:        m.Line,
 						ScriptID:    m.ScriptID,
+						ProjectPath: projectPath,
 						Timestamp:   m.Timestamp.Format(time.RFC3339),
 					})
 				}

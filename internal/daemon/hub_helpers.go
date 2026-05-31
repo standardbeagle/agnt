@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"regexp"
@@ -14,6 +15,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/incident"
+	"github.com/standardbeagle/agnt/internal/protocol"
 
 	"github.com/standardbeagle/agnt/internal/project"
 	"github.com/standardbeagle/agnt/internal/proxy"
@@ -89,6 +91,48 @@ func (d *Daemon) getSessionProjectPath(conn *hubpkg.Connection) string {
 		}
 	}
 	return ""
+}
+
+// errNoSessionScope is returned by resolveProjectScope when a non-global
+// query arrives on a connection with no resolvable session. It mirrors the
+// INCIDENTS QUERY "no session attached" contract: scope is mandatory, so an
+// unscopable non-global call fails loud rather than silently leaking every
+// project's data.
+var errNoSessionScope = errors.New("no session attached — call SESSION ATTACH first or pass global:true")
+
+// resolveProjectScope is the session-scope chokepoint. It is the single
+// resolution point every non-debug list/query handler routes through (wired
+// in C4/C5). Given a per-call DirectoryFilter and the connection's bound
+// session code, it returns the project path the handler must filter by:
+//
+//   - global == true  → ("", true, nil): no project filter (cross-project).
+//   - explicit SessionCode → that session's project path (error if unknown).
+//   - explicit Directory   → the normalized directory.
+//   - otherwise the connection's bound session's project path.
+//   - none of the above   → ("", false, errNoSessionScope): fail loud.
+//
+// Per-call global always wins. Resolution order mirrors the existing
+// proc/proxy LIST handlers so behavior is uniform across the surface.
+func (d *Daemon) resolveProjectScope(filter protocol.DirectoryFilter, connSessionCode string) (projectPath string, global bool, err error) {
+	if filter.Global {
+		return "", true, nil
+	}
+	if filter.SessionCode != "" {
+		session, ok := d.sessionRegistry.Get(filter.SessionCode)
+		if !ok {
+			return "", false, fmt.Errorf("session %q not found", filter.SessionCode)
+		}
+		return normalizePath(session.ProjectPath), false, nil
+	}
+	if filter.Directory != "" {
+		return normalizePath(filter.Directory), false, nil
+	}
+	if connSessionCode != "" {
+		if session, ok := d.sessionRegistry.Get(connSessionCode); ok {
+			return normalizePath(session.ProjectPath), false, nil
+		}
+	}
+	return "", false, errNoSessionScope
 }
 
 // RogueProcessInfo contains information about a detected rogue process.
