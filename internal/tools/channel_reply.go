@@ -13,7 +13,7 @@ type ChannelReplyInput struct {
 	Content  string `json:"content" jsonschema:"required,Message body to send to the developer (markdown OK)"`
 	ProxyID  string `json:"proxy_id,omitempty" jsonschema:"Target a specific proxy (preferred); omit to fan out to all active proxies"`
 	ID       string `json:"id,omitempty" jsonschema:"Alias for proxy_id"`
-	Severity string `json:"severity,omitempty" jsonschema:"enum=info,enum=warning,enum=error,Toast styling (default: info)"`
+	Severity string `json:"severity,omitempty" jsonschema:"Toast styling: one of info, warning, error (default: info)"`
 	Title    string `json:"title,omitempty" jsonschema:"Toast title"`
 }
 
