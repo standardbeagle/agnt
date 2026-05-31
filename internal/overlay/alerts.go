@@ -175,6 +175,33 @@ type AlertScannerConfig struct {
 // matchBufSize is the fixed capacity of the ring buffer for recent matches.
 const matchBufSize = 200
 
+// recentLineBufSize is how many recent non-empty lines we retain per scanner
+// to attach preceding context ("cause line") to an unparsed catch-all match.
+const recentLineBufSize = 3
+
+// unparsedPatternID is the synthetic pattern ID stamped on catch-all matches
+// for error-looking lines that no real pattern classified. Surfacing them
+// (rather than dropping them) guarantees no genuine error is silently lost;
+// downstream consumers key on Category=="unparsed" to render them distinctly.
+const unparsedPatternID = "unparsed"
+
+// unparsedErrorRe is a deliberately conservative whole-word heuristic for
+// "this stderr line looks like an error" used only as a last resort after the
+// real pattern bank declines a line. Word boundaries keep it from firing on
+// substrings ("errorless", "refusenik") and the term set is limited to high-
+// signal failure vocabulary so ordinary log chatter is not promoted to an
+// alert. Existing dedup + batch caps bound any residual flooding.
+var unparsedErrorRe = regexp.MustCompile(`(?i)\b(error|errors|failed|failure|exception|fatal|panic|denied|refused|not valid|invalid|unauthorized)\b`)
+
+// unparsedPattern is the synthetic AlertPattern carried by catch-all matches.
+var unparsedPattern = &AlertPattern{
+	ID:          unparsedPatternID,
+	Pattern:     unparsedErrorRe,
+	Severity:    AlertSeverityError,
+	Category:    "unparsed",
+	Description: "Unclassified error-looking output (no specific pattern matched)",
+}
+
 // AlertScanner matches process output lines against known error/warning patterns,
 // deduplicates, batches, and delivers alerts through a callback.
 type AlertScanner struct {
@@ -211,6 +238,15 @@ type AlertScanner struct {
 	matchBufHead int // next write position
 	matchBufLen  int // number of entries (max matchBufSize)
 	matchBufMu   sync.RWMutex
+
+	// recentLines is a small per-scanner ring of the most recent non-empty
+	// lines seen, used to attach a preceding context line to an unparsed
+	// catch-all match (e.g. the Prisma invocation anchor that precedes the
+	// auth-failure signal). Guarded by lineMu.
+	recentLines    [recentLineBufSize]string
+	recentLineHead int
+	recentLineLen  int
+	lineMu         sync.Mutex
 }
 
 // NewAlertScanner creates and starts a new AlertScanner with the given config.
@@ -284,7 +320,63 @@ func (s *AlertScanner) ProcessLine(line string, scriptID string) {
 	if matched != nil {
 		s.recordMatch(matched)
 		s.addMatch(matched)
+		s.pushRecentLine(strings.TrimSpace(line))
+		return
 	}
+
+	// Catch-all: a line that no real pattern classified but that looks like
+	// an error must still surface, marked unparsed, so nothing is silently
+	// dropped. Keep the heuristic conservative; rely on dedup + batch caps to
+	// bound flooding. Operators who want the safety net off can disable it
+	// like any other pattern via DisablePattern(unparsedPatternID).
+	s.patternMu.RLock()
+	catchAllDisabled := s.disabledIDs[unparsedPatternID]
+	s.patternMu.RUnlock()
+
+	trimmed := strings.TrimSpace(line)
+	if !catchAllDisabled && unparsedErrorRe.MatchString(trimmed) {
+		um := &AlertMatch{
+			Pattern:   unparsedPattern,
+			Line:      s.withRecentContext(trimmed),
+			Timestamp: s.clockNow(),
+			ScriptID:  scriptID,
+		}
+		s.recordMatch(um)
+		s.addMatch(um)
+	}
+
+	s.pushRecentLine(trimmed)
+}
+
+// pushRecentLine records a non-empty line in the per-scanner recent-line ring.
+func (s *AlertScanner) pushRecentLine(line string) {
+	if line == "" {
+		return
+	}
+	s.lineMu.Lock()
+	s.recentLines[s.recentLineHead] = line
+	s.recentLineHead = (s.recentLineHead + 1) % recentLineBufSize
+	if s.recentLineLen < recentLineBufSize {
+		s.recentLineLen++
+	}
+	s.lineMu.Unlock()
+}
+
+// withRecentContext prefixes the signal line with the single most recent
+// non-blank, non-duplicate preceding line as a compact "cause" hint. Kept to
+// one line to stay token-efficient — no raw multi-line dumps.
+func (s *AlertScanner) withRecentContext(signal string) string {
+	s.lineMu.Lock()
+	defer s.lineMu.Unlock()
+	if s.recentLineLen == 0 {
+		return signal
+	}
+	// Most recent line is one slot behind head.
+	prev := s.recentLines[(s.recentLineHead-1+recentLineBufSize)%recentLineBufSize]
+	if prev == "" || prev == signal {
+		return signal
+	}
+	return prev + " | " + signal
 }
 
 // Inject adds a pre-classified match to the scanner without regex
