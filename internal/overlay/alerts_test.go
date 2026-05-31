@@ -182,6 +182,36 @@ func TestAlertScannerDedupeExpiry(t *testing.T) {
 }
 
 func TestAlertScannerDisabledPattern(t *testing.T) {
+	// Disabling go-panic alone no longer fully silences "panic: runtime error":
+	// the line is error-looking, so the unparsed catch-all (G2) resurfaces it
+	// rather than silently dropping a real error. To assert true silence we
+	// must disable both the specific pattern AND the catch-all safety net.
+	var received []*AlertBatch
+	var mu sync.Mutex
+
+	scanner := NewAlertScanner(AlertScannerConfig{
+		BatchWindow: 50 * time.Millisecond,
+		DisabledIDs: []string{"go-panic", unparsedPatternID},
+		OnAlert: func(batch *AlertBatch) {
+			mu.Lock()
+			received = append(received, batch)
+			mu.Unlock()
+		},
+	})
+	defer scanner.Stop()
+
+	scanner.ProcessLine("panic: runtime error", "dev")
+	time.Sleep(200 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Len(t, received, 0, "disabling both the pattern and the catch-all should yield silence")
+}
+
+// TestAlertScannerDisabledPatternCatchAll proves the complement: disabling a
+// specific pattern (but NOT the catch-all) still surfaces the error-looking
+// line as unparsed, so disabling one pattern never silently drops a real error.
+func TestAlertScannerDisabledPatternCatchAll(t *testing.T) {
 	var received []*AlertBatch
 	var mu sync.Mutex
 
@@ -201,7 +231,17 @@ func TestAlertScannerDisabledPattern(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	assert.Len(t, received, 0, "disabled pattern should not match")
+	var catchAll *AlertMatch
+	for _, b := range received {
+		for _, m := range b.Matches {
+			if m.Pattern != nil && m.Pattern.ID == unparsedPatternID {
+				catchAll = m
+			}
+		}
+	}
+	require.NotNil(t, catchAll, "disabling only go-panic must leave the catch-all to resurface the error as unparsed")
+	assert.Equal(t, "unparsed", catchAll.Pattern.Category)
+	assert.Equal(t, AlertSeverityError, catchAll.Pattern.Severity)
 }
 
 func TestAlertScannerCustomPattern(t *testing.T) {
@@ -902,19 +942,49 @@ var prismaAuthBlock = []string{
 
 const prismaAuthSignal = "Authentication failed against database server, the provided database credentials for 'ai_user' are not valid."
 
-// TestG1_RED_DBAuthErrorHasNoPattern: the default pattern bank classifies the
-// Prisma DB-auth signal line. RED today — no DB/ORM/Prisma anchors exist, so a
-// genuine credential failure is unclassifiable.
-func TestG1_RED_DBAuthErrorHasNoPattern(t *testing.T) {
-	var matched *AlertPattern
-	for _, p := range DefaultAlertPatterns() {
-		if p.Pattern.MatchString(prismaAuthSignal) {
-			matched = p
-			break
+// TestG1_DBAuthErrorSurfaced: a genuine Prisma DB-auth credential failure must
+// SURFACE through the scanner so get_errors never reports a false "all clear".
+//
+// G2 calibration decision (option a, per the task handoff): this test asserts
+// BEHAVIOR (the error is surfaced, not dropped), not MECHANISM (a specific
+// pattern-bank anchor classifies it). The default pattern bank has no DB/ORM
+// anchor — adding one is G3's structured-parser job. G2 guarantees the line is
+// not silently lost via the unparsed catch-all, which is exactly the
+// "get_errors surfaces it" acceptance wording. When G3 lands a Prisma anchor,
+// the surfaced match's category upgrades from "unparsed" to a DB category, but
+// the behavioral guarantee this test pins stays true.
+func TestG1_DBAuthErrorSurfaced(t *testing.T) {
+	var received []*AlertBatch
+	var mu sync.Mutex
+	scanner := NewAlertScanner(AlertScannerConfig{
+		BatchWindow:  50 * time.Millisecond,
+		DedupeWindow: 60 * time.Second,
+		OnAlert: func(b *AlertBatch) {
+			mu.Lock()
+			received = append(received, b)
+			mu.Unlock()
+		},
+	})
+	defer scanner.Stop()
+
+	scanner.ProcessLine(prismaAuthSignal, "api")
+	time.Sleep(200 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	var matched *AlertMatch
+	for _, b := range received {
+		for _, m := range b.Matches {
+			if strings.Contains(m.Line, "Authentication failed against database server") {
+				matched = m
+			}
 		}
 	}
 	require.NotNil(t, matched,
-		"RED: no default pattern classifies the Prisma DB-auth error %q — real DB failures are invisible to get_errors", prismaAuthSignal)
+		"the Prisma DB-auth error %q must surface (it is a real credential failure) — get_errors must not report all-clear", prismaAuthSignal)
+	require.NotNil(t, matched.Pattern, "surfaced match must carry a pattern for severity/dedup keying")
+	assert.Equal(t, AlertSeverityError, matched.Pattern.Severity,
+		"a DB-auth failure must surface at error severity")
 }
 
 // TestG1_RED_MultiLineDBErrorSurfaces: feeding the full multi-line Prisma block
