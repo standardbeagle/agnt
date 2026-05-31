@@ -879,3 +879,107 @@ func TestAlertBatch_Format_RenderedTextOverridesDefault(t *testing.T) {
 	assert.Contains(t, out, "[browser-js error]")
 	assert.Contains(t, out, "TypeError: x is undefined")
 }
+
+// --- [G1] RED: real errors that match no AlertScanner pattern are invisible ---
+//
+// These tests are RED on purpose (get_errors epic, child G1). They prove the
+// confirmed gap: the pattern bank has ZERO database/ORM patterns and the
+// scanner is line-by-line with no unclassified catch-all, so a real Prisma
+// auth failure is silently dropped — get_errors then reports a false "all
+// clear" on the actual broken session. G2 (unparsed catch-all) + G3
+// (structured DB/ORM parsers) turn these GREEN.
+
+// prismaAuthBlock is a representative multi-line Prisma client error: the
+// signal line ("Authentication failed…") is separated from the invocation
+// anchor lines, exactly the multi-line shape the line-by-line scanner loses.
+var prismaAuthBlock = []string{
+	"prisma:error",
+	"Invalid `prisma.user.findUnique()` invocation in",
+	"/app/src/db.ts:42:18",
+	"",
+	"Authentication failed against database server, the provided database credentials for 'ai_user' are not valid.",
+}
+
+const prismaAuthSignal = "Authentication failed against database server, the provided database credentials for 'ai_user' are not valid."
+
+// TestG1_RED_DBAuthErrorHasNoPattern: the default pattern bank classifies the
+// Prisma DB-auth signal line. RED today — no DB/ORM/Prisma anchors exist, so a
+// genuine credential failure is unclassifiable.
+func TestG1_RED_DBAuthErrorHasNoPattern(t *testing.T) {
+	var matched *AlertPattern
+	for _, p := range DefaultAlertPatterns() {
+		if p.Pattern.MatchString(prismaAuthSignal) {
+			matched = p
+			break
+		}
+	}
+	require.NotNil(t, matched,
+		"RED: no default pattern classifies the Prisma DB-auth error %q — real DB failures are invisible to get_errors", prismaAuthSignal)
+}
+
+// TestG1_RED_MultiLineDBErrorSurfaces: feeding the full multi-line Prisma block
+// through the scanner must surface at least one alert that carries the auth
+// signal. RED today — no line matches a pattern and there is no multi-line
+// correlation, so the whole block is dropped.
+func TestG1_RED_MultiLineDBErrorSurfaces(t *testing.T) {
+	var received []*AlertBatch
+	var mu sync.Mutex
+	scanner := NewAlertScanner(AlertScannerConfig{
+		BatchWindow:  50 * time.Millisecond,
+		DedupeWindow: 60 * time.Second,
+		OnAlert: func(b *AlertBatch) {
+			mu.Lock()
+			received = append(received, b)
+			mu.Unlock()
+		},
+	})
+	defer scanner.Stop()
+
+	for _, line := range prismaAuthBlock {
+		scanner.ProcessLine(line, "api")
+	}
+	time.Sleep(200 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	var sawSignal bool
+	for _, b := range received {
+		for _, m := range b.Matches {
+			if strings.Contains(m.Line, "Authentication failed against database server") {
+				sawSignal = true
+			}
+		}
+	}
+	require.True(t, sawSignal,
+		"RED: the multi-line Prisma block produced no alert carrying the auth signal — multi-line DB errors are dropped")
+}
+
+// TestG1_RED_UnclassifiedStderrSurfacedAsUnparsed: an error-looking line that
+// matches no pattern must still surface (marked as unparsed) so nothing is
+// silently dropped. RED today — ProcessLine drops every unmatched line.
+func TestG1_RED_UnclassifiedStderrSurfacedAsUnparsed(t *testing.T) {
+	var received []*AlertBatch
+	var mu sync.Mutex
+	scanner := NewAlertScanner(AlertScannerConfig{
+		BatchWindow:  50 * time.Millisecond,
+		DedupeWindow: 60 * time.Second,
+		OnAlert: func(b *AlertBatch) {
+			mu.Lock()
+			received = append(received, b)
+			mu.Unlock()
+		},
+	})
+	defer scanner.Stop()
+
+	scanner.ProcessLine(prismaAuthSignal, "api")
+	time.Sleep(200 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+	var total int
+	for _, b := range received {
+		total += len(b.Matches)
+	}
+	require.Greater(t, total, 0,
+		"RED: an unclassified error-looking stderr line produced no alert — there is no unparsed catch-all, so real errors are silently dropped")
+}
