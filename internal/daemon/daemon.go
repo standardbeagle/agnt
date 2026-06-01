@@ -235,6 +235,13 @@ type Daemon struct {
 	// Readiness coordination for dependency-ordered autostart
 	readySignaler *ReadySignaler
 
+	// readinessWatchdogGrace bounds how long a proxy may sit gated on its
+	// `wait-for` dependencies before the daemon surfaces a warning (Silent
+	// Failure Prohibition). Set once at construction; tests override it on
+	// their own instance to keep the watchdog deterministic. Zero falls back
+	// to defaultReadinessWatchdogGrace.
+	readinessWatchdogGrace time.Duration
+
 	// pendingProcs tracks PROC RUN / PROC RUN-GROUP processes that are
 	// waiting on declared `depends_on` dependencies before launching. The
 	// tracker is the single surface that PROC STATUS / PROC LIST consult
@@ -273,7 +280,14 @@ type Daemon struct {
 	// transport outage and replays them on window expiry, dropping
 	// transport-cascade noise that arrived during a successful recovery.
 	// See internal/daemon/hold_buffer.go for semantics.
-	holdBuffer *HoldBuffer
+	//
+	// atomic.Pointer because ApplyAlertsConfig swaps the buffer (on every
+	// session connect, from an async autostart worker) while hub-handler
+	// goroutines read it on every proxy log entry and Stop reads it on
+	// shutdown — an unsynchronised field swap was a data race. All
+	// HoldBuffer methods are nil/closed-safe, so Load → call is lock-free
+	// and correct even against a concurrent Swap+Stop.
+	holdBuffer atomic.Pointer[HoldBuffer]
 
 	// Update checker
 	updateChecker *updater.UpdateChecker
@@ -401,14 +415,14 @@ func New(config DaemonConfig) *Daemon {
 	// AlertHub (legacy stream sinks) and the incident bus (get_incidents).
 	// Construction uses default config until the per-project AgntConfig is
 	// loaded; ApplyAlertsConfig replaces it on session connect.
-	d.holdBuffer = NewHoldBuffer(nil, d.fireHoldEmit)
+	d.holdBuffer.Store(NewHoldBuffer(nil, d.fireHoldEmit))
 	d.healthTracker.SetTransportConfig(DefaultTransportConfig)
 
 	// Wire transport-recovery callback so HealthTracker exits to the buffer
 	// flush path on every recovery signal.
 	d.healthTracker.SetOnTransportRecovery(func(proxyID string) {
-		if d.holdBuffer != nil {
-			d.holdBuffer.OnRecovery(proxyID)
+		if hb := d.holdBuffer.Load(); hb != nil {
+			hb.OnRecovery(proxyID)
 		}
 	})
 
@@ -502,6 +516,7 @@ func New(config DaemonConfig) *Daemon {
 
 	// Initialize ready signaler for dependency-ordered autostart
 	d.readySignaler = NewReadySignaler()
+	d.readinessWatchdogGrace = defaultReadinessWatchdogGrace
 
 	// Initialize pending-process tracker for PROC RUN dep-gated launches.
 	d.pendingProcs = NewPendingProcessTracker()
@@ -811,10 +826,11 @@ func (d *Daemon) ApplyAlertsConfig(cfg *config.AlertsConfig) {
 		holdCfg = cfg.OutageHold
 	}
 
-	if d.holdBuffer != nil {
-		d.holdBuffer.Stop()
+	// Swap atomically, then stop the old buffer. Concurrent readers either
+	// see the old buffer (its methods are closed-safe) or the new one.
+	if old := d.holdBuffer.Swap(NewHoldBuffer(holdCfg, d.fireHoldEmit)); old != nil {
+		old.Stop()
 	}
-	d.holdBuffer = NewHoldBuffer(holdCfg, d.fireHoldEmit)
 
 	if d.healthTracker != nil {
 		d.healthTracker.SetTransportConfig(TransportConfig{

@@ -293,8 +293,8 @@ func (d *Daemon) Stop(ctx context.Context) error {
 	}
 
 	// Stop the hold buffer goroutine. Pending entries are dropped.
-	if d.holdBuffer != nil {
-		d.holdBuffer.Stop()
+	if hb := d.holdBuffer.Load(); hb != nil {
+		hb.Stop()
 	}
 
 	if err := d.tunnelm.Shutdown(ctx); err != nil {

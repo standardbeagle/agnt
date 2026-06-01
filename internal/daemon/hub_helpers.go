@@ -310,12 +310,13 @@ func (d *Daemon) wireProxyLogger(server *proxy.ProxyServer) {
 		case gateAccept:
 			d.fireGatedFanOut(entry, proxyID, 1)
 		case gateHold:
-			if d.holdBuffer == nil {
+			hb := d.holdBuffer.Load()
+			if hb == nil {
 				return
 			}
 			fp := FingerprintForEntry(entry)
 			cascade := d.classifyCascade(entry)
-			d.holdBuffer.Hold(entry, proxyID, fp, cascade)
+			hb.Hold(entry, proxyID, fp, cascade)
 		case gateDrop:
 			// Drop without emission — used for diagnostic suppression
 			// markers we never want to re-emit.
@@ -363,10 +364,11 @@ func (d *Daemon) classifyCascade(entry proxy.LogEntry) bool {
 	case proxy.LogTypeDiagnostic:
 		return true
 	case proxy.LogTypeError:
-		if entry.Error == nil || d.holdBuffer == nil {
+		hb := d.holdBuffer.Load()
+		if entry.Error == nil || hb == nil {
 			return false
 		}
-		return d.holdBuffer.MatchesJSCascade(entry.Error.Message + " " + entry.Error.Stack)
+		return hb.MatchesJSCascade(entry.Error.Message + " " + entry.Error.Stack)
 	default:
 		return false
 	}

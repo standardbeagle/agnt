@@ -521,6 +521,16 @@ func (d *Daemon) handleFallbackPortCheck(event ProxyEvent) {
 func (d *Daemon) handleScriptStopped(event ProxyEvent) {
 	debug.Log("daemon", "Script stopped: %s, cleaning up proxies", event.ScriptID)
 
+	// Free the script's readiness state (signal channel + any running port
+	// probe). This is the teardown counterpart to setupReadinessSignal: ready
+	// state lives for the process's lifetime, not just the autostart window, so
+	// a late-registering proxy gate can still observe it (see
+	// daemon_autostart.go startAutostartScripts NOTE). When the process truly
+	// stops, the fact is cleared — a restart re-arms a fresh signal.
+	if d.readySignaler != nil {
+		d.readySignaler.Cleanup(event.ScriptID)
+	}
+
 	// Get all proxies for this script
 	d.scriptProxyMu.RLock()
 	proxyIDs := d.scriptProxies[event.ScriptID]
