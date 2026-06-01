@@ -275,7 +275,7 @@ not fragile message wording. Each traced against §1 examples.
 | Prisma validation class | `PrismaClientValidationError` | class-name line |
 | Prisma init class | `PrismaClientInitializationError` | class-name line |
 | Prisma invocation banner | `` Invalid `prisma\.[\w$]+\.[\w$]+\(\) ` invocation `` → see note | banner line |
-| Prisma P-code (object tail) | `` `?code`?:\s*'?P\d{4}'? `` | `code: 'P2002'` and `{"code":"P2002"...}` |
+| Prisma P-code (object tail) | `` [{,"\s]code["']?:\s*["']?P\d{4} `` | `code: 'P2002'` and `{"code":"P2002"...}` (matches both single-quote and JSON double-quote forms) |
 | Prisma P-code (Error: prefix) | `^Error: P\d{4}\b` | `Error: P3006`, `Error: P1001: ...` |
 | Prisma unreachable DB | `Can't reach database server at` | P1001 / P3006 body |
 | Prisma auth failed | `Authentication failed against database server` | P1000 |
@@ -287,9 +287,9 @@ not fragile message wording. Each traced against §1 examples.
 | Drizzle wrapper | `^DrizzleQueryError:` | first line |
 | Drizzle failed-query body | `Failed query:` | SQL body line |
 | pg error first line | `^error:\s` | lowercase `error: ` (pg-specific) |
-| pg SQLSTATE | `` `?code`?:\s*'?[0-9A-Z]{5}'? `` | `code: '42P01'` |
+| pg SQLSTATE | `` [{,"\s]code["']?:\s*["']?[0-9A-Z]{5} `` | `code: '42P01'` |
 | mysql2 ER first line | `^Error: ER_[A-Z0-9_]+:` | `Error: ER_DUP_ENTRY: ...` |
-| mysql2 code field | `` `?code`?:\s*'?ER_[A-Z0-9_]+'? `` | `code: 'ER_DUP_ENTRY'` |
+| mysql2 code field | `` [{,"\s]code["']?:\s*["']?ER_[A-Z0-9_]+ `` | `code: 'ER_DUP_ENTRY'` |
 
 Notes / RE2-safety:
 - The Prisma invocation-banner anchor contains a backtick and parens. As a Go
@@ -303,8 +303,10 @@ Notes / RE2-safety:
 - `^Sequelize[A-Z]\w+(?:Error):` matches `SequelizeDatabaseError:`,
   `SequelizeUniqueConstraintError:`, `SequelizeConnectionRefusedError:`,
   `SequelizeValidationError:` etc. (`\w` covers the CamelCase tail). RE2-safe.
-- All `code:` field anchors tolerate both JSON (`"code":"P2002"`) and
-  util.inspect (`code: 'P2002'`) renderings via optional backtick/quote groups.
+- All `code:` field anchors use the leading char-class form `[{,"\s]code["']?:\s*["']?`
+  so they match BOTH JSON (`{"code":"P2002"`) and util.inspect (`code: 'P2002'`)
+  renderings. (Earlier `` `?code`?: `` form was fixed — it silently missed the JSON
+  double-quote tail.) This matches the §4.B `prisma_codeRe` char class exactly.
 
 ---
 
