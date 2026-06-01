@@ -324,6 +324,41 @@ func (s *AlertScanner) ProcessLine(line string, scriptID string) {
 		return
 	}
 
+	trimmed := strings.TrimSpace(line)
+
+	// Structured parsers ([G3]): fold a recognized multi-line/noisy error block
+	// (Prisma client error, raw DB-auth failure) into a single compact
+	// {kind, message, file:line} line BEFORE the catch-all, so the agent gets
+	// structure instead of a dump. Runs only on lines the pattern bank did not
+	// classify. The cause line reaches back into the recent-line ring for the
+	// preceding banner/call-site.
+	if se, ok := runStructuredParsers(trimmed, s.recentSnapshot()); ok {
+		sp := &AlertPattern{
+			ID:          "structured-" + se.Kind,
+			Severity:    se.Severity,
+			Category:    se.Category,
+			Description: "structured " + se.Kind + " error",
+		}
+		m := &AlertMatch{
+			Pattern:   sp,
+			Line:      se.Compact(),
+			Timestamp: s.clockNow(),
+			ScriptID:  scriptID,
+		}
+		s.recordMatch(m)
+		s.addMatch(m)
+		s.pushRecentLine(trimmed)
+		return
+	}
+
+	// Structural prefix lines (Prisma block header/invocation banner) are folded
+	// by the structured parser at the cause line — don't surface them as
+	// standalone unparsed noise. They remain in the recent ring for that fold.
+	if isStructuralPrefix(trimmed) {
+		s.pushRecentLine(trimmed)
+		return
+	}
+
 	// Catch-all: a line that no real pattern classified but that looks like
 	// an error must still surface, marked unparsed, so nothing is silently
 	// dropped. Keep the heuristic conservative; rely on dedup + batch caps to
@@ -333,7 +368,6 @@ func (s *AlertScanner) ProcessLine(line string, scriptID string) {
 	catchAllDisabled := s.disabledIDs[unparsedPatternID]
 	s.patternMu.RUnlock()
 
-	trimmed := strings.TrimSpace(line)
 	if !catchAllDisabled && unparsedErrorRe.MatchString(trimmed) {
 		um := &AlertMatch{
 			Pattern:   unparsedPattern,
@@ -360,6 +394,23 @@ func (s *AlertScanner) pushRecentLine(line string) {
 		s.recentLineLen++
 	}
 	s.lineMu.Unlock()
+}
+
+// recentSnapshot returns the buffered recent non-empty lines, oldest→newest,
+// for structured parsers that need to reach back for a preceding banner or
+// call-site line.
+func (s *AlertScanner) recentSnapshot() []string {
+	s.lineMu.Lock()
+	defer s.lineMu.Unlock()
+	if s.recentLineLen == 0 {
+		return nil
+	}
+	out := make([]string, 0, s.recentLineLen)
+	start := (s.recentLineHead - s.recentLineLen + recentLineBufSize) % recentLineBufSize
+	for i := 0; i < s.recentLineLen; i++ {
+		out = append(out, s.recentLines[(start+i)%recentLineBufSize])
+	}
+	return out
 }
 
 // withRecentContext prefixes the signal line with the single most recent
