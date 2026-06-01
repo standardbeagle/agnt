@@ -365,9 +365,15 @@ func (d *Daemon) startAutostartScripts(ctx context.Context, cfg *config.AgntConf
 		})
 	}
 
-	for name := range autostartScripts {
-		d.readySignaler.Cleanup(makeProcessID(projectPath, name))
-	}
+	// NOTE: Ready signals are intentionally NOT cleaned up here. A proxy's
+	// readiness gate (internal/proxy/readiness.go) is wired up asynchronously
+	// via the proxyEvents path — it can register its wait-for waiters AFTER
+	// autostart returns. Wiping ready state at autostart completion destroyed
+	// the "dependency is ready" fact before the late-arriving gate could
+	// observe it, leaving the proxy stuck serving 503 agnt_proxy_not_ready
+	// forever. Ready-signal lifecycle is tied to process lifecycle instead:
+	// handleScriptStopped calls readySignaler.Cleanup when a script actually
+	// stops. See TestProxyWaitFor_ReadyPersistsPastAutostart.
 	return failedScripts
 }
 
@@ -448,7 +454,7 @@ func (d *Daemon) startOneScript(
 		if state == script.StateRunning || state == script.StateStarting {
 			log.Info(processID, name, "already_running",
 				fmt.Sprintf("%s already %s, skipping", name, state.String()))
-			d.setupReadinessSignal(ctx, processID, name, scriptCfg, proxyConfigs, projectPath)
+			d.setupReadinessSignal(processID, name, scriptCfg, proxyConfigs, projectPath)
 			resultMu.Lock()
 			result.Scripts = append(result.Scripts, name)
 			resultMu.Unlock()
@@ -490,14 +496,23 @@ func (d *Daemon) startOneScript(
 	result.Scripts = append(result.Scripts, name)
 	resultMu.Unlock()
 
-	d.setupReadinessSignal(ctx, processID, name, scriptCfg, proxyConfigs, projectPath)
+	d.setupReadinessSignal(processID, name, scriptCfg, proxyConfigs, projectPath)
 }
 
 // setupReadinessSignal configures the ready signaler for a script. If the
 // script has expected ports, a TCP port probe is started; otherwise the
 // signaler is marked ready immediately so dependents are unblocked.
+//
+// The probe runs on the daemon context (d.ctx), NOT the per-autostart context.
+// The autostart context is cancelled the moment autostart returns
+// (autostart_manager.go run() → h.cancel()), but a proxy gate may wait on a
+// backend that only binds its port after autostart completes — e.g. a backend
+// nothing else depends-on, so autostart never blocks on it. Binding the probe
+// to the autostart context killed it before the port came up, leaving the gate
+// stuck forever. The probe is torn down explicitly when the process stops
+// (handleScriptStopped → readySignaler.Cleanup) or when the daemon shuts down.
+// See TestProxyWaitFor_PortProbeSurvivesAutostart.
 func (d *Daemon) setupReadinessSignal(
-	ctx context.Context,
 	processID, name string,
 	scriptCfg *config.ScriptConfig,
 	proxyConfigs map[string]*config.ProxyConfig,
@@ -506,7 +521,7 @@ func (d *Daemon) setupReadinessSignal(
 	probePorts := d.getExpectedPortsForScript(name, scriptCfg, proxyConfigs,
 		resolveWorkingDir(projectPath, scriptCfg.Cwd), "", nil)
 	if len(probePorts) > 0 {
-		d.readySignaler.StartPortProbe(processID, probePorts[0], ctx)
+		d.readySignaler.StartPortProbe(processID, probePorts[0], d.ctx)
 		return
 	}
 	d.readySignaler.SignalReady(processID)

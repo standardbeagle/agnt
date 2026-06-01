@@ -29,12 +29,24 @@ package daemon
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/proxy"
 )
+
+// defaultReadinessWatchdogGrace bounds how long a proxy may sit gated before
+// the daemon surfaces a warning. A genuinely slow backend (e.g. dotnet cold
+// start) is "Starting", not failed, so the gate legitimately waits — but a gate
+// still closed after this window usually means a `wait-for` dependency is not
+// an autostart script, or never binds its declared port, and so will never
+// signal ready. The Silent Failure Prohibition (.claude/rules/daemon-architecture.md)
+// requires that be surfaced rather than hang mute behind an endless 503
+// agnt_proxy_not_ready. Set on the Daemon at construction; tests override the
+// per-instance field. Must not be shortened in production.
+const defaultReadinessWatchdogGrace = 30 * time.Second
 
 // registerProxyDependencies resolves the proxy config's WaitFor list
 // into process IDs (rooted at projectPath), primes the proxy server's
@@ -73,6 +85,68 @@ func (d *Daemon) registerProxyDependencies(
 	// from closed to open and emits a proxy_ready diagnostic.
 	for _, depID := range depIDs {
 		go d.waitForProxyDependency(proxyID, depID)
+	}
+
+	// Watchdog: surface a warning if the gate is still closed after the grace
+	// window. Satisfies the Silent Failure Prohibition — a proxy gated forever
+	// on a dependency that will never signal (not autostart, never binds its
+	// port) must not hang mute.
+	go d.watchProxyReadiness(proxyID)
+}
+
+// watchProxyReadiness emits a one-shot warning if proxyID is still gated after
+// proxyReadinessWatchdogGrace. Returns silently if the proxy opened normally,
+// was torn down, or the daemon shut down within the window.
+func (d *Daemon) watchProxyReadiness(proxyID string) {
+	grace := d.readinessWatchdogGrace
+	if grace <= 0 {
+		grace = defaultReadinessWatchdogGrace
+	}
+
+	select {
+	case <-d.ctx.Done():
+		return
+	case <-time.After(grace):
+	}
+
+	server, err := d.proxym.Get(proxyID)
+	if err != nil {
+		return // proxy gone — nothing to warn about
+	}
+	if server.IsReadyForForwarding() {
+		return // opened normally within the grace window
+	}
+
+	pending := server.PendingDependencies()
+	msg := fmt.Sprintf(
+		"proxy %s still gated after %s, waiting on: %s — verify these scripts are autostart and bind their declared ports; the proxy returns 503 until every dependency signals ready",
+		proxyID, grace, strings.Join(pending, ", "))
+
+	if d.startupErrorStore != nil {
+		d.startupErrorStore.Add(&StartupLogEntry{
+			ProcessID: proxyID,
+			Level:     "warning",
+			EventType: "proxy_readiness_stalled",
+			Message:   msg,
+			Timestamp: time.Now(),
+		})
+	}
+
+	if d.alertHub != nil {
+		entry := proxy.LogEntry{
+			Type: proxy.LogTypeDiagnostic,
+			Diagnostic: &proxy.ProxyDiagnostic{
+				Level:     proxy.DiagnosticWarning,
+				Category:  "readiness",
+				Event:     "proxy_readiness_stalled",
+				Message:   msg,
+				Timestamp: time.Now(),
+			},
+		}
+		// Recover from any panic in the hub — this runs on a background
+		// watchdog goroutine and must never take down the daemon.
+		defer func() { _ = recover() }()
+		d.alertHub.BroadcastLogEntry(entry, proxyID)
 	}
 }
 
