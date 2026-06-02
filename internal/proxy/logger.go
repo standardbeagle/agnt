@@ -45,6 +45,10 @@ const (
 	LogTypeDesignRequest LogEntryType = "design_request"
 	// LogTypeDesignChat represents a chat message about the selected element.
 	LogTypeDesignChat LogEntryType = "design_chat"
+	// LogTypeResponsiveRequest represents a handoff from responsive mode requesting agent fixes for layout shifts at a width.
+	LogTypeResponsiveRequest LogEntryType = "responsive_request"
+	// LogTypeResponsiveState represents the responsive mode panel state (current width + shift count).
+	LogTypeResponsiveState LogEntryType = "responsive_state"
 	// LogTypeDiagnostic represents a server-side diagnostic event (proxy errors, connection issues, etc.).
 	LogTypeDiagnostic LogEntryType = "diagnostic"
 	// LogTypeProcessOutput represents a line of process stdout/stderr output.
@@ -388,6 +392,26 @@ type DesignChat struct {
 	URL          string                `json:"url"`
 }
 
+// ResponsiveRequest represents a handoff from responsive mode asking the agent to
+// fix the layout shifts detected at a particular viewport width.
+type ResponsiveRequest struct {
+	ID        string                   `json:"id"`
+	Timestamp time.Time                `json:"timestamp"`
+	URL       string                   `json:"url"`
+	Width     int                      `json:"width"`
+	Shifts    []map[string]interface{} `json:"shifts,omitempty"`    // layout-shift findings (id/type/severity/selector/message/width/isNew)
+	Selectors []map[string]interface{} `json:"selectors,omitempty"` // flat {id, selector} list for quick targeting
+}
+
+// ResponsiveState represents the responsive mode panel state at a settled width.
+type ResponsiveState struct {
+	ID         string    `json:"id"`
+	Timestamp  time.Time `json:"timestamp"`
+	URL        string    `json:"url"`
+	Width      int       `json:"width"`
+	ShiftCount int       `json:"shift_count"`
+}
+
 // ProcessOutputEvent represents a line of output from a managed process.
 type ProcessOutputEvent struct {
 	ProcessID string    `json:"process_id"`
@@ -432,6 +456,8 @@ type LogEntry struct {
 	DesignState       *DesignState        `json:"design_state,omitempty"`
 	DesignRequest     *DesignRequest      `json:"design_request,omitempty"`
 	DesignChat        *DesignChat         `json:"design_chat,omitempty"`
+	ResponsiveRequest *ResponsiveRequest  `json:"responsive_request,omitempty"`
+	ResponsiveState   *ResponsiveState    `json:"responsive_state,omitempty"`
 	Diagnostic        *ProxyDiagnostic    `json:"diagnostic,omitempty"`
 	ProcessOutput     *ProcessOutputEvent `json:"process,omitempty"`
 	Hook              *HookLogEntry       `json:"hook,omitempty"`
@@ -591,6 +617,22 @@ func (tl *TrafficLogger) LogDesignChat(entry DesignChat) {
 	tl.log(LogEntry{
 		Type:       LogTypeDesignChat,
 		DesignChat: &entry,
+	})
+}
+
+// LogResponsiveRequest adds a responsive mode handoff request entry.
+func (tl *TrafficLogger) LogResponsiveRequest(entry ResponsiveRequest) {
+	tl.log(LogEntry{
+		Type:              LogTypeResponsiveRequest,
+		ResponsiveRequest: &entry,
+	})
+}
+
+// LogResponsiveState adds a responsive mode state entry.
+func (tl *TrafficLogger) LogResponsiveState(entry ResponsiveState) {
+	tl.log(LogEntry{
+		Type:            LogTypeResponsiveState,
+		ResponsiveState: &entry,
 	})
 }
 
@@ -791,6 +833,14 @@ func (f LogFilter) Matches(entry LogEntry) bool {
 	case LogTypeDesignChat:
 		if entry.DesignChat != nil {
 			timestamp = entry.DesignChat.Timestamp
+		}
+	case LogTypeResponsiveRequest:
+		if entry.ResponsiveRequest != nil {
+			timestamp = entry.ResponsiveRequest.Timestamp
+		}
+	case LogTypeResponsiveState:
+		if entry.ResponsiveState != nil {
+			timestamp = entry.ResponsiveState.Timestamp
 		}
 	case LogTypeDiagnostic:
 		if entry.Diagnostic != nil {

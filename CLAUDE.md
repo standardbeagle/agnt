@@ -95,7 +95,7 @@ State transitions atomic via `CompareAndSwapState()`. Child cleanup: process gro
 
 Four-part system: (1) HTTP proxy forwards/logs/modifies, (2) JS injection (error tracking, `__devtool` API), (3) WebSocket server receives metrics, (4) JS execution (`proxy exec` for browser control).
 
-**TrafficLogger** (`internal/proxy/logger.go`): circular buffer (1000 entries); 14 log types (HTTP, Error, Performance, Custom, Screenshot, Execution, Response, Interaction, Mutation, PanelMessage, Sketch, DesignState, DesignRequest, DesignChat); thread-safe `sync.RWMutex`; `onLogEntry` callback feeds StreamEvents hub.
+**TrafficLogger** (`internal/proxy/logger.go`): circular buffer (1000 entries); 16 log types (HTTP, Error, Performance, Custom, Screenshot, Execution, Response, Interaction, Mutation, PanelMessage, Sketch, DesignState, DesignRequest, DesignChat, ResponsiveRequest, ResponsiveState); thread-safe `sync.RWMutex`; `onLogEntry` callback feeds StreamEvents hub.
 
 ### StreamEvents Hub
 
@@ -134,6 +134,8 @@ PTY overlay components — command palette (`:`/`/` filterable, **not** a shell 
 | `get_errors` | Unified error view (legacy; superseded by `get_incidents`) |
 | `get_incidents` | Incident inbox pull — cursor-based, priority-ordered, remediation hints |
 | `responsive_audit` | Responsive design audits across viewport sizes |
+| `api_audit` | API efficiency audit (waterfall, N+1, duplicate, chatty-load) over the fetch/XHR buffer |
+| `loading_audit` | Loading-UX audit (spinner cascade + concurrent fragmentation) over the spinner timeline |
 | `snapshot` | Visual regression testing (baseline/compare screenshots) |
 | `daemon` | Daemon management |
 | `watch` | Get `agnt monitor` command for streaming events |

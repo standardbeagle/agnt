@@ -17,6 +17,8 @@ func TestAuditFindingIDsPresent(t *testing.T) {
 		{"audit-dom", auditDomJS, "audit-dom.js"},
 		{"audit-css", auditCssJS, "audit-css.js"},
 		{"audit-quality", auditQualityJS, "audit-quality.js"},
+		{"audit-api", auditApiJS, "audit-api.js"},
+		{"audit-loading", auditLoadingJS, "audit-loading.js"},
 	}
 
 	for _, tc := range tests {

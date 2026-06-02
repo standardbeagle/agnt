@@ -124,6 +124,26 @@ func (n *OverlayNotifier) NotifyDesignChat(proxyID string, chat *DesignChat) err
 	})
 }
 
+// NotifyResponsiveRequest sends a responsive mode handoff request to the overlay.
+func (n *OverlayNotifier) NotifyResponsiveRequest(proxyID string, request *ResponsiveRequest) error {
+	return n.send(OverlayEvent{
+		Type:      "responsive_request",
+		ProxyID:   proxyID,
+		Timestamp: time.Now(),
+		Data:      request,
+	})
+}
+
+// NotifyResponsiveState sends responsive mode panel state to the overlay.
+func (n *OverlayNotifier) NotifyResponsiveState(proxyID string, state *ResponsiveState) error {
+	return n.send(OverlayEvent{
+		Type:      "responsive_state",
+		ProxyID:   proxyID,
+		Timestamp: time.Now(),
+		Data:      state,
+	})
+}
+
 // NotifyInteraction sends an interaction event to the overlay.
 func (n *OverlayNotifier) NotifyInteraction(proxyID string, interaction *InteractionEvent) error {
 	return n.send(OverlayEvent{

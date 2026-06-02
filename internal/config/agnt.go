@@ -176,6 +176,7 @@ var validSeverities = map[string]struct{}{
 // validEventTypes is the set of accepted event type strings for ChannelConfig.
 var validEventTypes = map[string]struct{}{
 	"error": {}, "diagnostic": {}, "interaction": {}, "http": {}, "custom": {}, "panel_message": {},
+	"responsive_request": {},
 }
 
 // ChannelConfig configures the MCP push-based channel for event forwarding.

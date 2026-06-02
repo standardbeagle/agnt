@@ -736,6 +736,16 @@
     var securityResult = window.__devtool_audit_security.auditSecurity(auditOpts);
     var seoResult = auditPageQuality(auditOpts);
     var performanceResult = window.__devtool_audit_performance.auditPerformance(auditOpts);
+    // API efficiency audit (7th). Synchronous — reads the api-tracker buffer.
+    // Guarded: degrades to null if the module isn't loaded.
+    var apiResult = (window.__devtool_audit_api && window.__devtool_audit_api.auditAPIEfficiency)
+      ? window.__devtool_audit_api.auditAPIEfficiency(auditOpts)
+      : null;
+    // Loading (spinner) audit (8th). Synchronous — reads the spinner timeline.
+    // Guarded: degrades to null if the module isn't loaded.
+    var loadingResult = (window.__devtool_audit_loading && window.__devtool_audit_loading.auditLoading)
+      ? window.__devtool_audit_loading.auditLoading(auditOpts)
+      : null;
 
     // === AI-OPTIMIZED AGGREGATION (DEFAULT) ===
     // Returns combined grouped data from all audits for AI to generate contextual summaries
@@ -759,6 +769,14 @@
           performance: performanceResult.score
         };
 
+        if (apiResult) {
+          scores.api = apiResult.score;
+        }
+
+        if (loadingResult) {
+          scores.loading = loadingResult.score;
+        }
+
         if (accessibilityResult) {
           scores.accessibility = accessibilityResult.score;
         }
@@ -769,7 +787,7 @@
         });
 
         // Calculate overall weighted score
-        var weights = { security: 1.5, accessibility: 1.3, performance: 1.2, seo: 1.0, dom: 0.8, css: 0.7 };
+        var weights = { security: 1.5, accessibility: 1.3, performance: 1.2, api: 1.1, loading: 1.1, seo: 1.0, dom: 0.8, css: 0.7 };
         var totalWeight = 0;
         var weightedSum = 0;
         for (var auditName in scores) {
@@ -794,7 +812,7 @@
         // Collect all automation hints
         var allLookFor = [];
         var allSuggestionsNeeded = [];
-        [domResult, cssResult, securityResult, seoResult, performanceResult, accessibilityResult]
+        [domResult, cssResult, securityResult, seoResult, performanceResult, apiResult, loadingResult, accessibilityResult]
           .filter(function(r) { return r && r.automationHints; })
           .forEach(function(r) {
             if (r.automationHints.lookFor) {
@@ -818,6 +836,8 @@
             security: securityResult,
             seo: seoResult,
             performance: performanceResult,
+            api: apiResult,
+            loading: loadingResult,
             accessibility: accessibilityResult
           },
           automationHints: {
@@ -872,6 +892,22 @@
         }
       };
 
+      if (apiResult) {
+        audits.api = {
+          score: apiResult.score,
+          grade: apiResult.grade,
+          findings: apiResult.findings ? apiResult.findings.length : 0
+        };
+      }
+
+      if (loadingResult) {
+        audits.loading = {
+          score: loadingResult.score,
+          grade: loadingResult.grade,
+          findings: loadingResult.findings ? loadingResult.findings.length : 0
+        };
+      }
+
       if (accessibilityResult) {
         audits.accessibility = {
           score: accessibilityResult.score,
@@ -886,6 +922,8 @@
         security: 1.5,    // Security is critical
         accessibility: 1.3,
         performance: 1.2,
+        api: 1.1,
+        loading: 1.1,
         seo: 1.0,
         dom: 0.8,
         css: 0.7
@@ -934,6 +972,12 @@
       addIssues(securityResult.fixable, 'security');
       addIssues(seoResult.fixable, 'seo');
       addIssues(performanceResult.fixable, 'performance');
+      if (apiResult) {
+        addIssues(apiResult.fixable || apiResult.findings, 'api');
+      }
+      if (loadingResult) {
+        addIssues(loadingResult.fixable || loadingResult.findings, 'loading');
+      }
       if (accessibilityResult && accessibilityResult.fixable) {
         addIssues(accessibilityResult.fixable, 'accessibility');
       }
@@ -1050,6 +1094,12 @@
           seo: seoResult,
           performance: performanceResult
         };
+        if (apiResult) {
+          response.fullResults.api = apiResult;
+        }
+        if (loadingResult) {
+          response.fullResults.loading = loadingResult;
+        }
         if (accessibilityResult) {
           response.fullResults.accessibility = accessibilityResult;
         }

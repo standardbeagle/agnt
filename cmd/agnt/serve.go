@@ -149,6 +149,8 @@ Available tools:
 	tools.RegisterBrowserTool(server, dt)
 	tools.RegisterAutomationTool(server, dt)
 	tools.RegisterResponsiveAuditTool(server, dt, nil)
+	tools.RegisterAPIAuditTool(server, dt, nil)
+	tools.RegisterLoadingAuditTool(server, dt, nil)
 	tools.RegisterGetIncidentsTool(server, dt)
 
 	// Register channel_reply tool when channel mode is enabled and reply-tool is on.
@@ -259,6 +261,8 @@ func runLegacyServer() {
 	tools.RegisterProxyTools(server, proxym)
 	tools.RegisterGetErrorsTool(server, nil, proxym)
 	tools.RegisterResponsiveAuditTool(server, nil, proxym)
+	tools.RegisterAPIAuditTool(server, nil, proxym)
+	tools.RegisterLoadingAuditTool(server, nil, proxym)
 
 	// Register snapshot tools (visual regression testing)
 	snapshotManager, err := snapshot.NewManager("", 0.01)

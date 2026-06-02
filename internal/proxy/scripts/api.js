@@ -208,6 +208,18 @@
     },
 
     // ========================================================================
+    // RESPONSIVE MODE (interactive live-iframe workbench)
+    // ========================================================================
+
+    responsive: {
+      open: function() { return responsive.open ? responsive.open() : { error: 'Responsive mode not loaded' }; },
+      close: function() { return responsive.close ? responsive.close() : { error: 'Responsive mode not loaded' }; },
+      toggle: function() { return responsive.toggle ? responsive.toggle() : { error: 'Responsive mode not loaded' }; },
+      setWidth: function(w) { return responsive.setWidth ? responsive.setWidth(w) : { error: 'Responsive mode not loaded' }; },
+      getState: function() { return responsive.getState ? responsive.getState() : { error: 'Responsive mode not loaded' }; }
+    },
+
+    // ========================================================================
     // VOICE TRANSCRIPTION
     // ========================================================================
 
