@@ -63,6 +63,12 @@ var (
 	//go:embed audit-quality.js
 	auditQualityJS string
 
+	//go:embed audit-api.js
+	auditApiJS string
+
+	//go:embed audit-loading.js
+	auditLoadingJS string
+
 	//go:embed interaction.js
 	interactionJS string
 
@@ -123,6 +129,9 @@ var (
 	//go:embed responsive.js
 	responsiveJS string
 
+	//go:embed responsive-mode.js
+	responsiveModeJS string
+
 	//go:embed api.js
 	apiJS string
 
@@ -177,6 +186,14 @@ var moduleOrder = []moduleEntry{
 	{"audit-css", []string{"utils"}},
 	{"audit-security", []string{"utils", "audit-utils"}},
 	{"audit-performance", []string{"utils", "audit-utils"}},
+	// audit-api reads the recorded fetch/XHR buffer exposed by api-tracker, so
+	// it must load after api-tracker (and utils for the shared conventions).
+	{"audit-api", []string{"utils", "api-tracker"}},
+	// audit-loading reads the spinner timeline exposed by mutation.js at call
+	// time (window.__devtool_spinners), so there is no hard load-order
+	// dependency on mutation — utils is required only for the shared
+	// finding-id / grade conventions.
+	{"audit-loading", []string{"utils"}},
 	{"audit-quality", []string{"utils", "audit-dom", "audit-css", "audit-security", "audit-performance"}},
 	{"interaction", []string{"utils", "core"}},
 	{"mutation", []string{"utils", "core"}},
@@ -196,13 +213,16 @@ var moduleOrder = []moduleEntry{
 	{"responsive-risk", []string{"utils"}},
 	{"wireframe", []string{"utils"}},
 	{"responsive", []string{"utils"}},
+	// responsive-mode augments the window.__devtool_responsive object created by
+	// responsive.js with the interactive panel API, so it must load after it.
+	{"responsive-mode", []string{"responsive"}},
 	{"api", []string{
 		"core", "utils", "overlay", "inspection", "tree", "visual",
 		"layout", "interactive", "capture", "accessibility",
-		"audit-quality", "audit-report", "interaction", "mutation",
+		"audit-quality", "audit-api", "audit-loading", "audit-report", "interaction", "mutation",
 		"voice", "indicator", "sketch", "design", "palette",
 		"diagnostics", "session", "store", "content",
-		"wireframe", "responsive", "style-editor",
+		"wireframe", "responsive", "responsive-mode", "style-editor",
 		"text-fragility", "responsive-risk", "snapshot-helper", "toast",
 	}},
 }
@@ -229,6 +249,8 @@ var moduleScript = map[string]string{
 	"audit-security":     auditSecurityJS,
 	"audit-performance":  auditPerformanceJS,
 	"audit-quality":      auditQualityJS,
+	"audit-api":          auditApiJS,
+	"audit-loading":      auditLoadingJS,
 	"interaction":        interactionJS,
 	"mutation":           mutationJS,
 	"toast":              toastJS,
@@ -247,6 +269,7 @@ var moduleScript = map[string]string{
 	"responsive-risk":    responsiveRiskJS,
 	"wireframe":          wireframeJS,
 	"responsive":         responsiveJS,
+	"responsive-mode":    responsiveModeJS,
 	"api":                apiJS,
 }
 

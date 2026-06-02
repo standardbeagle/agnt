@@ -31,7 +31,7 @@ channel {
 | Field | KDL key | Type | Default | Description |
 |-------|---------|------|---------|-------------|
 | Enabled | `enabled` | bool | `false` | Activate channel event forwarding |
-| Events | `events` | string list | (all) | Allowlist of event types: `error`, `diagnostic`, `interaction`, `http`, `custom`, `panel_message` |
+| Events | `events` | string list | (all) | Allowlist of event types: `error`, `diagnostic`, `interaction`, `http`, `custom`, `panel_message`, `responsive_request` |
 | Severity | `severity` | string | `"warning"` | Minimum severity: `trace`, `debug`, `info`, `warning`, `error` |
 | DedupeWindow | `dedupe-window` | int | `2000` | Per-event dedup window in ms; `0` disables |
 | ReplyTool | `reply-tool` | bool | `true` | Register the `channel_reply` MCP tool |
@@ -58,7 +58,7 @@ TypeError: Cannot read property 'map' of undefined
 | Meta key | Description |
 |----------|-------------|
 | `source` | Always `"agnt"` |
-| `type` | Event type: `error`, `diagnostic`, `interaction`, `process`, `panel_message`, `sketch`, `design` |
+| `type` | Event type: `error`, `diagnostic`, `interaction`, `process`, `panel_message`, `sketch`, `design`, `responsive_request` |
 | `proxy` | Agnt proxy ID (stable per dev server) |
 | `severity` | `trace`, `debug`, `info`, `warning`, `error` |
 

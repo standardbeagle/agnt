@@ -17,6 +17,8 @@ only the summary table + handler pattern; this is the detailed reference.
 | `get_errors` | Unified error view across processes and proxies (legacy; superseded by `get_incidents`) |
 | `get_incidents` | Incident inbox pull — cursor-based, priority-ordered, with remediation hints |
 | `responsive_audit` | Responsive design audits across viewport sizes |
+| `api_audit` | API efficiency audit (waterfall, N+1, duplicate, chatty-load) over the fetch/XHR buffer |
+| `loading_audit` | Loading-UX audit (spinner cascade + concurrent fragmentation) over the spinner timeline |
 | `snapshot` | Visual regression testing (baseline/compare screenshots) |
 | `daemon` | Daemon management |
 | `watch` | Get monitor command for streaming events (errors, interactions, process, all) |
@@ -149,6 +151,46 @@ PATTERNS: 1 mobile-only, 0 tablet-only, 1 cross-viewport
 
 **Key Files**: `internal/tools/responsive_audit.go`, `internal/tools/responsive_audit_test.go`, `internal/proxy/scripts/responsive.js`
 
+## api_audit Tool
+
+7th scored audit. Reads the always-on `api-tracker.js` fetch/XHR buffer (`window.__devtool_api.getCalls()`) — no new recorder. Temporal: needs a fresh page load to populate; empty buffer → "reload page then re-run".
+
+**Four detectors**:
+- **waterfall / serial-chain** — B starts ≈ A ends; sums wasted time vs parallel-possible
+- **N+1** — URL→template normalization; ≥5 calls sharing one `{id}` template
+- **redundant / duplicate** — identical method+url within 2s
+- **chatty-load** — call count in the first-3s load window
+
+**Data limitation (fail-honest)**: the call buffer has no response-size field, so over-fetch by payload size is not measurable — the audit emits an explicit `over-fetch-unavailable` info note instead of fabricating a size. A future content-length capture in `api-tracker.js` would unlock real payload-bloat detection.
+
+**Parameters**:
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `proxy_id` | string | required | Proxy ID to run audit on |
+| `raw` | bool | false | Return full JSON instead of compact text |
+
+**Output**: audit-module shape (`score`/`grade`/`summary`/`findings`/`findingSelectors`); score = 100 minus weighted findings → grade A–F.
+
+**Key Files**: `internal/proxy/scripts/audit-api.js` (`window.__devtool_audit_api.auditAPIEfficiency`), `internal/tools/api_audit.go`
+
+## loading_audit Tool
+
+8th scored audit. Reads a spinner timeline recorded by a self-contained observer in `mutation.js` (`window.__devtool_spinners.getTimeline()`). Detects loading indicators via `aria-busy`, `role=progressbar|status`, `<progress>`, class/id/aria match `spin|load|skeleton|shimmer|pending|placeholder`, and spin-like `animationName`; correlates each spinner's active window with overlapping api-tracker calls. Temporal: empty timeline → 100/A + "reload page".
+
+**Two detectors**:
+- **spinner-cascade** — B appears after A disappears (gap ≤400ms), B in A's region (ancestorPath overlap), A had a resolved API → serial chain depth ≥2; reports serial span vs parallel-possible
+- **spinner-fragmentation** — ≥3 spinners active simultaneously under one common ancestor → "consolidate to one master loader"
+
+**Parameters**:
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `proxy_id` | string | required | Proxy ID to run audit on |
+| `raw` | bool | false | Return full JSON instead of compact text |
+
+**Output**: same audit-module shape; score = 100 minus cascade (depth-weighted, +critical) and fragmentation deductions → grade.
+
+**Key Files**: `internal/proxy/scripts/audit-loading.js` (`window.__devtool_audit_loading.auditLoading`), `internal/proxy/scripts/mutation.js` (spinner recorder), `internal/tools/loading_audit.go`
+
 ## watch Tool
 
 Returns shell command string for streaming daemon events via `agnt monitor` CLI. Bridges MCP clients (which know daemon socket path) to Monitor tool.
@@ -185,12 +227,28 @@ Returns shell command string for streaming daemon events via `agnt monitor` CLI.
 - `indicator.show/hide/toggle/togglePanel()`
 - `sketch.open/close/toggle/save/toJSON/fromJSON()`
 - `design.start/stop/selectElement/next/previous/addAlternative/chat()`
+- `responsive.open/close/toggle/setWidth/getState()` — responsive mode (4th indicator mode)
 
 **Diagnostics** (categories):
 - Element Inspection (9): getElementInfo, getPosition, getComputed, etc.
 - Layout Diagnostics (3): findOverflows, findStackingContexts, findOffscreen
 - Accessibility (5): getA11yInfo, auditAccessibility (3 modes), getContrast, etc.
 - Quality Auditing (10+): auditDOMComplexity, auditPageQuality, auditCSS, etc.
+
+**Scored audits (8)**: `auditAll` aggregates eight scored audits into a weighted overall grade — DOM, CSS, performance, security, SEO, accessibility, **API efficiency** (`__devtool_audit_api.auditAPIEfficiency`), and **loading/spinner** (`__devtool_audit_loading.auditLoading`). Weights: security 1.5, accessibility 1.3, performance 1.2, api 1.1, loading 1.1, seo 1.0, dom 0.8, css 0.7. Both new audits are guarded — `auditAll` degrades cleanly when a module is absent. The API + loading audits are temporal: they read the fetch/XHR buffer and spinner timeline, so they need a fresh page load to populate.
+
+### Responsive Mode
+
+Interactive responsive workbench (4th indicator mode beside sketch/design):
+1. Opens a drawer hosting a live `<iframe src=location.href>` of the current page
+2. Width control — slider, numeric input (320–1920), preset chips (375/768/1440), edge drag handle; every control funnels through one `applyWidth()` so human-driven and agent-driven (`setWidth`) changes share one source of truth
+3. Programmatic layout-shift detection (debounced 250ms) reuses `responsive.js` detectors against the iframe at the current width; findings new at the current width are flagged `isNew` and overlaid as severity-colored boxes on the frame; returned via `getState().shifts/selectors`
+4. `[Send to agent]` emits a `responsive_request` event `{width, shifts[], selectors[]}` → proxylog + overlay notifier + channel sink; agent fixes then re-verifies via `setWidth(w)`
+5. `[Auto-sweep]` runs the headless multi-viewport `responsive.js` audit and lists all findings
+
+**Event types**: `responsive_request` (channel-forwarded handoff), `responsive_state` (`{width, shiftCount}` on open/settle; proxylog/overlay only, intentionally NOT channel-forwarded to avoid per-settle spam).
+
+**Key Files**: `internal/proxy/scripts/responsive-mode.js`, `indicator.js`, `api.js`
 
 **Audit Output Modes**:
 - **Default** (AI-optimized): Grouped issues by type, limited examples, token-efficient

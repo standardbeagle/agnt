@@ -575,6 +575,405 @@
       reportError('initialization_failed', e);
     }
 
+    // ===================================================================
+    // SPINNER / LOADING-INDICATOR OBSERVER (worktrack C1)
+    // -------------------------------------------------------------------
+    // Self-contained, dedicated observer that tracks when loading
+    // indicators (spinners, skeletons, progress bars) appear and
+    // disappear in the DOM, building a timeline with timestamps. A later
+    // slice (C2 audit-loading.js) reads window.__devtool_spinners to
+    // detect serial "cascades" and concurrent "fragmentation". Each
+    // spinner's active interval is correlated with pending API calls
+    // from window.__devtool_api at disappear time.
+    //
+    // ISOLATION: this block keeps its OWN state (spinnerTimeline,
+    // spinnerActive WeakMap, spinnerObserver) and does NOT feed into the
+    // general mutation batch pipeline (handleMutations/sendBatch/
+    // window.__devtool_mutations). It only reuses the stateless helpers
+    // shouldIgnore / safeGenerateSelector / reportError.
+    // ===================================================================
+
+    var spinnerConfig = {
+      maxTimeline: 500,          // cap recorded events (drop oldest)
+      maxPendingAPI: 10,         // cap correlated api calls per record
+      maxScanNodes: 300,         // cap querySelectorAll fan-out per added node
+      nameRegex: /(spin|load|skeleton|shimmer|pending|placeholder)/,
+      animRegex: /(spin|rotate|load|shimmer|pulse)/i
+    };
+
+    var hasWeakMap = typeof WeakMap !== 'undefined';
+    var spinnerTimeline = [];                                  // completed + active records
+    var spinnerActive = hasWeakMap ? new WeakMap() : null;     // element -> record
+    var spinnerObserver = null;
+    var spinnerCounter = 0;                                    // monotonic id disambiguator
+
+    // Heuristic: is this element a loading indicator?
+    function isSpinner(el) {
+      try {
+        if (!el || el.nodeType !== 1) return false;
+
+        // aria-busy
+        try {
+          if (el.getAttribute && el.getAttribute('aria-busy') === 'true') return true;
+        } catch (e) { /* ignore */ }
+
+        // role
+        try {
+          var role = el.getAttribute ? el.getAttribute('role') : null;
+          if (role === 'progressbar' || role === 'status') return true;
+        } catch (e) { /* ignore */ }
+
+        // <progress>
+        try {
+          if (el.tagName && el.tagName.toLowerCase() === 'progress') return true;
+        } catch (e) { /* ignore */ }
+
+        // class / id / aria-label name match
+        try {
+          var cls = (el.className && typeof el.className === 'string') ? el.className : '';
+          var id = el.id || '';
+          var label = (el.getAttribute && el.getAttribute('aria-label')) || '';
+          var hay = (cls + ' ' + id + ' ' + label).toLowerCase();
+          if (hay && spinnerConfig.nameRegex.test(hay)) return true;
+        } catch (e) { /* ignore */ }
+
+        // CSS animation name (best-effort, names only — no keyframe parsing)
+        try {
+          if (typeof getComputedStyle === 'function') {
+            var animName = getComputedStyle(el).animationName;
+            if (animName && animName !== 'none' && spinnerConfig.animRegex.test(animName)) {
+              return true;
+            }
+          }
+        } catch (e) { /* ignore */ }
+
+        return false;
+      } catch (e) {
+        reportError('isSpinner_failed', e);
+        return false;
+      }
+    }
+
+    // Build a cheap ancestor path (up to ~4 levels) of tag#id.class tokens.
+    function spinnerAncestorPath(el) {
+      var path = [];
+      try {
+        var cur = el ? el.parentElement : null;
+        var levels = 0;
+        while (cur && levels < 4) {
+          try {
+            var token = cur.tagName ? cur.tagName.toLowerCase() : 'node';
+            if (cur.id) {
+              token += '#' + cur.id;
+            } else if (cur.className && typeof cur.className === 'string') {
+              var first = cur.className.split(/\s+/)[0];
+              if (first) token += '.' + first;
+            }
+            path.push(token);
+          } catch (e) { /* ignore one level */ }
+          cur = cur.parentElement;
+          levels++;
+        }
+      } catch (e) {
+        reportError('spinnerAncestorPath_failed', e);
+      }
+      return path;
+    }
+
+    // Correlate a finished spinner window with pending api-tracker calls.
+    function spinnerPendingAPI(appearedAt, disappearedAt) {
+      var out = [];
+      try {
+        if (!window.__devtool_api || typeof window.__devtool_api.getCalls !== 'function') {
+          return out;
+        }
+        var calls = window.__devtool_api.getCalls();
+        if (!calls || !calls.length) return out;
+
+        var end = (typeof disappearedAt === 'number') ? disappearedAt : Date.now();
+        for (var i = 0; i < calls.length; i++) {
+          try {
+            var c = calls[i];
+            if (!c || typeof c.timestamp !== 'number') continue;
+            var cStart = c.timestamp;
+            var cEnd = cStart + (typeof c.duration === 'number' ? c.duration : 0);
+            // overlap test: [cStart,cEnd] intersects [appearedAt,end]
+            if (cEnd >= appearedAt && cStart <= end) {
+              out.push({
+                url: c.url,
+                method: c.method,
+                status: c.status,
+                duration: c.duration,
+                timestamp: c.timestamp
+              });
+              if (out.length >= spinnerConfig.maxPendingAPI) break;
+            }
+          } catch (e) { /* skip one call */ }
+        }
+      } catch (e) {
+        reportError('spinnerPendingAPI_failed', e);
+      }
+      return out;
+    }
+
+    function spinnerTrimTimeline() {
+      try {
+        if (spinnerTimeline.length > spinnerConfig.maxTimeline) {
+          spinnerTimeline = spinnerTimeline.slice(-spinnerConfig.maxTimeline);
+        }
+      } catch (e) {
+        reportError('spinnerTrimTimeline_failed', e);
+      }
+    }
+
+    // Record an element that just became a spinner (added or attr-toggled).
+    function spinnerAppear(el) {
+      try {
+        if (!el || el.nodeType !== 1) return;
+        if (shouldIgnore(el)) return;
+        if (spinnerActive && spinnerActive.has(el)) return; // already active
+
+        var now = Date.now();
+        spinnerCounter++;
+        var sel = safeGenerateSelector(el);
+        var record = {
+          id: (sel || 'spinner') + '#' + spinnerCounter,
+          selector: sel,
+          ancestorPath: spinnerAncestorPath(el),
+          appearedAt: now,
+          disappearedAt: null,
+          pendingAPI: null
+        };
+
+        if (spinnerActive) {
+          spinnerActive.set(el, record);
+        }
+        spinnerTimeline.push(record);
+        spinnerTrimTimeline();
+      } catch (e) {
+        reportError('spinnerAppear_failed', e);
+      }
+    }
+
+    // Finalize an element that stopped being a spinner (removed or toggled off).
+    function spinnerDisappear(el) {
+      try {
+        if (!el || el.nodeType !== 1) return;
+        if (!spinnerActive) return;
+        var record = spinnerActive.get(el);
+        if (!record) return;
+
+        record.disappearedAt = Date.now();
+        record.pendingAPI = spinnerPendingAPI(record.appearedAt, record.disappearedAt);
+        spinnerActive['delete'](el);
+      } catch (e) {
+        reportError('spinnerDisappear_failed', e);
+      }
+    }
+
+    // Walk an added subtree (self + descendants) for spinners, capped.
+    function spinnerScanAdded(node) {
+      try {
+        if (!node || node.nodeType !== 1) return;
+        if (shouldIgnore(node)) return;
+
+        if (isSpinner(node)) spinnerAppear(node);
+
+        if (typeof node.querySelectorAll === 'function') {
+          var kids = node.querySelectorAll('*');
+          var limit = Math.min(kids.length, spinnerConfig.maxScanNodes);
+          for (var i = 0; i < limit; i++) {
+            try {
+              var kid = kids[i];
+              if (shouldIgnore(kid)) continue;
+              if (isSpinner(kid)) spinnerAppear(kid);
+            } catch (e) { /* skip one kid */ }
+          }
+        }
+      } catch (e) {
+        reportError('spinnerScanAdded_failed', e);
+      }
+    }
+
+    // Walk a removed subtree (self + descendants) to finalize active spinners.
+    function spinnerScanRemoved(node) {
+      try {
+        if (!node || node.nodeType !== 1) return;
+
+        if (spinnerActive && spinnerActive.has(node)) spinnerDisappear(node);
+
+        if (typeof node.querySelectorAll === 'function') {
+          var kids = node.querySelectorAll('*');
+          var limit = Math.min(kids.length, spinnerConfig.maxScanNodes);
+          for (var i = 0; i < limit; i++) {
+            try {
+              var kid = kids[i];
+              if (spinnerActive && spinnerActive.has(kid)) spinnerDisappear(kid);
+            } catch (e) { /* skip one kid */ }
+          }
+        }
+      } catch (e) {
+        reportError('spinnerScanRemoved_failed', e);
+      }
+    }
+
+    // Dedicated spinner mutation handler (separate from handleMutations).
+    function handleSpinnerMutations(mutationsList) {
+      if (!mutationsList || !mutationsList.length) return;
+      try {
+        for (var i = 0; i < mutationsList.length; i++) {
+          try {
+            var mutation = mutationsList[i];
+            if (!mutation) continue;
+
+            if (mutation.type === 'childList') {
+              var added = nodeListToArray(mutation.addedNodes);
+              for (var a = 0; a < added.length; a++) {
+                spinnerScanAdded(added[a]);
+              }
+              var removed = nodeListToArray(mutation.removedNodes);
+              for (var r = 0; r < removed.length; r++) {
+                spinnerScanRemoved(removed[r]);
+              }
+            } else if (mutation.type === 'attributes') {
+              // class / aria-busy / role toggle -> appear or disappear
+              var t = mutation.target;
+              if (!t || t.nodeType !== 1) continue;
+              if (shouldIgnore(t)) continue;
+              var nowSpinner = isSpinner(t);
+              var wasActive = spinnerActive && spinnerActive.has(t);
+              if (nowSpinner && !wasActive) {
+                spinnerAppear(t);
+              } else if (!nowSpinner && wasActive) {
+                spinnerDisappear(t);
+              }
+            }
+          } catch (e) {
+            reportError('spinner_mutation_processing_failed', e);
+          }
+        }
+      } catch (e) {
+        reportError('handleSpinnerMutations_failed', e);
+      }
+    }
+
+    function startSpinnerObserver() {
+      try {
+        if (spinnerObserver) return;
+        if (!hasMutationObserver || !document.body) return;
+        if (!hasWeakMap) {
+          // Without WeakMap we cannot reliably pair appear/disappear; bail loudly.
+          reportError('spinner_observer_requires_weakmap',
+            new Error('WeakMap unavailable - spinner tracking disabled'));
+          return;
+        }
+
+        spinnerObserver = new MutationObserver(function(list) {
+          try {
+            handleSpinnerMutations(list);
+          } catch (e) {
+            reportError('spinner_observer_callback_failed', e);
+          }
+        });
+
+        spinnerObserver.observe(document.body, {
+          childList: true,
+          subtree: true,
+          attributes: true,
+          attributeFilter: ['class', 'aria-busy', 'role']
+        });
+
+        // Seed: scan existing DOM for spinners already present at start.
+        try {
+          spinnerScanAdded(document.body);
+        } catch (e) {
+          reportError('spinner_initial_scan_failed', e);
+        }
+      } catch (e) {
+        reportError('startSpinnerObserver_failed', e);
+        spinnerObserver = null;
+      }
+    }
+
+    function stopSpinnerObserver() {
+      try {
+        if (spinnerObserver && typeof spinnerObserver.disconnect === 'function') {
+          spinnerObserver.disconnect();
+        }
+        spinnerObserver = null;
+      } catch (e) {
+        reportError('stopSpinnerObserver_failed', e);
+      }
+    }
+
+    // Auto-start the spinner observer alongside the main observer.
+    try {
+      if (document.body) {
+        startSpinnerObserver();
+      } else if (typeof document.addEventListener === 'function') {
+        document.addEventListener('DOMContentLoaded', function() {
+          try {
+            startSpinnerObserver();
+          } catch (e) {
+            reportError('spinner_domcontentloaded_failed', e);
+          }
+        });
+      }
+    } catch (e) {
+      reportError('spinner_initialization_failed', e);
+    }
+
+    // Export spinner timeline API.
+    try {
+      if (!window.__devtool_spinners) {
+        window.__devtool_spinners = {
+          // Most-recent-friendly ordering: newest events first.
+          getTimeline: function() {
+            try {
+              return spinnerTimeline.slice().reverse();
+            } catch (e) {
+              reportError('spinner_getTimeline_failed', e);
+              return [];
+            }
+          },
+
+          start: function() {
+            try {
+              startSpinnerObserver();
+            } catch (e) {
+              reportError('spinner_start_failed', e);
+            }
+          },
+
+          stop: function() {
+            try {
+              stopSpinnerObserver();
+            } catch (e) {
+              reportError('spinner_stop_failed', e);
+            }
+          },
+
+          clear: function() {
+            try {
+              spinnerTimeline = [];
+              if (hasWeakMap) {
+                spinnerActive = new WeakMap();
+              }
+              spinnerCounter = 0;
+            } catch (e) {
+              reportError('spinner_clear_failed', e);
+            }
+          },
+
+          isActive: function() {
+            return !!spinnerObserver;
+          }
+        };
+      }
+    } catch (e) {
+      console.error('[DevTool][Mutation] Failed to export spinner API:', e);
+    }
+
     // Export mutations API with input validation
     try {
       if (!window.__devtool_mutations) {

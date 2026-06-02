@@ -235,6 +235,21 @@ func extractChannelFields(entry proxy.LogEntry) (string, map[string]string) {
 		meta["severity"] = "info"
 		return fmt.Sprintf("%s on %s", entry.Interaction.EventType, entry.Interaction.Target.Selector), meta
 
+	case proxy.LogTypeResponsiveRequest:
+		// Responsive-mode handoff: the developer dialed into a width and pushed
+		// the current layout-shift findings to the agent. Forward as a channel
+		// event so the agent can pick it up and fix, then re-verify via
+		// __devtool.responsive.setWidth.
+		if entry.ResponsiveRequest == nil {
+			return "", nil
+		}
+		meta["severity"] = "info"
+		if entry.ResponsiveRequest.URL != "" {
+			meta["page"] = entry.ResponsiveRequest.URL
+		}
+		return fmt.Sprintf("Responsive handoff at %dpx: %d layout shift(s)",
+			entry.ResponsiveRequest.Width, len(entry.ResponsiveRequest.Shifts)), meta
+
 	default:
 		return "", nil
 	}

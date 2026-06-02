@@ -465,6 +465,45 @@ func parseDesignChat(data map[string]interface{}, id string, timestamp time.Time
 	return chat
 }
 
+func parseResponsiveRequest(data map[string]interface{}, id string, timestamp time.Time, url string) ResponsiveRequest {
+	request := ResponsiveRequest{
+		ID:        id,
+		Timestamp: timestamp,
+		URL:       url,
+		Width:     getIntField(data, "width"),
+	}
+
+	// Parse shift findings (id/type/severity/selector/message/width/isNew).
+	if shifts, ok := data["shifts"].([]interface{}); ok {
+		for _, item := range shifts {
+			if shiftData, ok := item.(map[string]interface{}); ok {
+				request.Shifts = append(request.Shifts, shiftData)
+			}
+		}
+	}
+
+	// Parse flat selector list ({id, selector}).
+	if selectors, ok := data["selectors"].([]interface{}); ok {
+		for _, item := range selectors {
+			if selData, ok := item.(map[string]interface{}); ok {
+				request.Selectors = append(request.Selectors, selData)
+			}
+		}
+	}
+
+	return request
+}
+
+func parseResponsiveState(data map[string]interface{}, id string, timestamp time.Time, url string) ResponsiveState {
+	return ResponsiveState{
+		ID:         id,
+		Timestamp:  timestamp,
+		URL:        url,
+		Width:      getIntField(data, "width"),
+		ShiftCount: getIntField(data, "shiftCount"),
+	}
+}
+
 func parseDesignElementMetadata(data map[string]interface{}) DesignElementMetadata {
 	metadata := DesignElementMetadata{
 		Tag:  getStringField(data, "tag"),

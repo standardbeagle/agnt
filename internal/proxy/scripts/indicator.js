@@ -1678,7 +1678,8 @@
     check: '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>',
     audit: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>',
     styleEdit: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.9 0 1.7-.1 2.5-.3"/><path d="M12 2c2.2 0 4 4.5 4 10"/><path d="M12 2c-2.2 0-4 4.5-4 10s1.8 10 4 10"/><path d="M2 12h10"/><path d="M20 14l-4 4 1.5 1.5a2.12 2.12 0 0 0 3 0 2.12 2.12 0 0 0 0-3L20 14z"/></svg>',
-    inspect: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 22l1-6.5 5.5 5.5L2 22z"/><path d="M8.5 15.5L18 6a2.83 2.83 0 1 0-4-4L4.5 11.5"/><circle cx="18" cy="4" r="1" fill="currentColor" stroke="none"/></svg>'
+    inspect: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 22l1-6.5 5.5 5.5L2 22z"/><path d="M8.5 15.5L18 6a2.83 2.83 0 1 0-4-4L4.5 11.5"/><circle cx="18" cy="4" r="1" fill="currentColor" stroke="none"/></svg>',
+    responsive: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="14" height="11" rx="1"/><path d="M2 18h14"/><rect x="17" y="9" width="5" height="11" rx="1"/></svg>'
   };
 
   // Initialize
@@ -2644,6 +2645,8 @@
     var designBtn = createToolBtn('Design', ICONS.design, startDesignMode);
     state.inspectBtn = createToolBtn('Inspect', ICONS.inspect, startInspectMode);
     state.inspectBtn.title = 'Live style editor \u2014 inspect and edit CSS';
+    var responsiveBtn = createToolBtn('Responsive', ICONS.responsive, startResponsiveMode);
+    responsiveBtn.title = 'Responsive mode \u2014 live iframe at controllable width';
     // Override hover handlers to preserve active state
     state.inspectBtn.onmouseleave = function() {
       var active = window.__devtool_style_editor && window.__devtool_style_editor.isOpen();
@@ -2660,6 +2663,7 @@
     actionsContainer.appendChild(sketchBtn);
     actionsContainer.appendChild(designBtn);
     actionsContainer.appendChild(state.inspectBtn);
+    actionsContainer.appendChild(responsiveBtn);
     actionsContainer.appendChild(auditDropdown);
     toolbar.appendChild(actionsContainer);
 
@@ -4400,6 +4404,17 @@
       window.__devtool_style_editor.open();
     } else {
       console.error('[Indicator] Style editor module not loaded');
+    }
+  }
+
+  // Responsive mode - open the live-iframe responsive workbench
+  function startResponsiveMode() {
+    togglePanel(false);
+    if (window.__devtool_responsive && window.__devtool_responsive.toggle) {
+      window.__devtool_responsive.toggle();
+    } else {
+      console.error('[Indicator] Responsive mode module not loaded');
+      togglePanel(true);
     }
   }
 

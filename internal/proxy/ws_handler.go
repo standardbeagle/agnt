@@ -543,6 +543,26 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				_ = ps.overlayNotifier.NotifyDesignChat(ps.ID, &designChat)
 			}
 
+		case "responsive_request":
+			// Handle handoff from responsive mode requesting agent fixes
+			responsiveRequest := parseResponsiveRequest(msg.Data, id, timestamp, msg.URL)
+			ps.logger.LogResponsiveRequest(responsiveRequest)
+
+			// Forward to overlay if configured
+			if ps.overlayNotifier.IsEnabled() {
+				_ = ps.overlayNotifier.NotifyResponsiveRequest(ps.ID, &responsiveRequest)
+			}
+
+		case "responsive_state":
+			// Handle responsive mode panel state (current width + shift count)
+			responsiveState := parseResponsiveState(msg.Data, id, timestamp, msg.URL)
+			ps.logger.LogResponsiveState(responsiveState)
+
+			// Forward to overlay if configured
+			if ps.overlayNotifier.IsEnabled() {
+				_ = ps.overlayNotifier.NotifyResponsiveState(ps.ID, &responsiveState)
+			}
+
 		case "session_request":
 			// Handle session API requests from browser
 			go ps.handleSessionRequest(rawConn, msg.Data)
