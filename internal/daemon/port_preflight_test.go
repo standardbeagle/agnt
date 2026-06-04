@@ -3,15 +3,17 @@
 package daemon
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
-	"time"
 
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/platform"
@@ -19,6 +21,36 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// startEphemeralPortBlocker starts a python subprocess that binds an
+// OS-assigned 127.0.0.1 port, prints it on stdout, and holds it for 60s.
+// Returns the child PID and the port it actually bound; a t.Cleanup kills the
+// child. Unlike reserve-then-rebind (net.Listen :0 → read port → Close → let
+// something else bind the same number), the child owns the port from the
+// moment it binds, so there is no TOCTOU window for another parallel test's
+// ephemeral :0 allocation to steal it. This is the root-cause fix for the
+// suite's intermittent "bind: address already in use" flakes.
+func startEphemeralPortBlocker(t *testing.T) (pid int, port int) {
+	t.Helper()
+	cmd := exec.Command("python3", "-u", "-c",
+		"import socket,time\n"+
+			"s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)\n"+
+			"s.bind(('127.0.0.1',0)); s.listen(1)\n"+
+			"print(s.getsockname()[1], flush=True)\n"+
+			"time.sleep(60)")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	stdout, err := cmd.StdoutPipe()
+	require.NoError(t, err)
+	require.NoError(t, cmd.Start())
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+
+	line, err := bufio.NewReader(stdout).ReadString('\n')
+	require.NoError(t, err, "blocker must report its bound port")
+	port, err = strconv.Atoi(strings.TrimSpace(line))
+	require.NoError(t, err, "blocker port line %q", line)
+	require.Greater(t, port, 0)
+	return cmd.Process.Pid, port
+}
 
 func TestDetectPortConflicts_NoConflicts(t *testing.T) {
 	t.Parallel()
@@ -93,33 +125,16 @@ func TestKillPortBlockers_FreesPort(t *testing.T) {
 		t.Skip("don't run as root")
 	}
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	port := ln.Addr().(*net.TCPAddr).Port
-	ln.Close()
-
-	// Start a subprocess that listens on the port
-	cmd := exec.Command("python3", "-c",
-		fmt.Sprintf(`import socket,time; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); s.bind(('127.0.0.1',%d)); s.listen(1); time.sleep(60)`, port))
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	require.NoError(t, cmd.Start())
-	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
-
-	// Wait for port to be bound
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 100*time.Millisecond); err == nil {
-			conn.Close()
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	// The blocker self-assigns its port (binds :0 and reports it back), so it
+	// owns the port from the moment it binds — no reserve-then-rebind TOCTOU for
+	// another parallel test's ephemeral allocation to steal.
+	blockerPID, port := startEphemeralPortBlocker(t)
 
 	pm := goprocess.NewProcessManager(goprocess.DefaultManagerConfig())
 	defer pm.Shutdown(context.Background())
 
 	conflicts := []PortConflict{{
-		ScriptName: "test", Port: port, PIDs: []int{cmd.Process.Pid},
+		ScriptName: "test", Port: port, PIDs: []int{blockerPID},
 	}}
 
 	results := killPortBlockers(context.Background(), pm, nil, conflicts)

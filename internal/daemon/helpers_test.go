@@ -6,11 +6,43 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 )
+
+// testPortCounter drives allocTestPort. Started below the base so the first
+// allocation lands at the base.
+var testPortCounter atomic.Int32
+
+// allocTestPort returns a process-unique TCP port in the 20000–31999 range —
+// deliberately BELOW the Linux ephemeral range (ip_local_port_range starts at
+// 32768), so the kernel never hands one of these to a net.Listen("127.0.0.1:0")
+// elsewhere in the suite. Each call returns a distinct number (atomic counter),
+// so two parallel tests never receive the same port, and the value is verified
+// bindable before return.
+//
+// This replaces the reserve-:0-then-close-then-rebind pattern, whose TOCTOU
+// window let a parallel test's ephemeral allocation steal the just-freed port —
+// the root cause of the suite's intermittent "bind: address already in use"
+// flakes. Because the returned port is both unique and outside the ephemeral
+// range, neither cross-test reuse nor :0 handoff can collide with it.
+func allocTestPort(t *testing.T) int {
+	t.Helper()
+	for attempt := 0; attempt < 8000; attempt++ {
+		p := 20000 + int(testPortCounter.Add(1))%12000
+		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", p))
+		if err != nil {
+			continue // held by something (or a prior wrap still bound); try next
+		}
+		_ = ln.Close()
+		return p
+	}
+	t.Fatal("allocTestPort: no free port found in 20000-31999")
+	return 0
+}
 
 func writeFile(path, content string) error {
 	return os.WriteFile(path, []byte(content), 0644)

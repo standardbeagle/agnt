@@ -118,13 +118,12 @@ func runPortHolder(port string) {
 // pickFreePort asks the kernel for an ephemeral port, closes the listener,
 // and returns the port number. Classic racy pattern, but the window is
 // small and the subsequent bind happens within milliseconds.
+// pickFreePort returns a port the test's portholder fixture will bind. Routed
+// through allocTestPort so the returned port is process-unique and outside the
+// ephemeral range — no reserve→rebind TOCTOU against other parallel tests.
 func pickFreePort(t *testing.T) int {
 	t.Helper()
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	port := l.Addr().(*net.TCPAddr).Port
-	require.NoError(t, l.Close())
-	return port
+	return allocTestPort(t)
 }
 
 // spawnPortHolderInSession starts the test binary in portholder mode,
