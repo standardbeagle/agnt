@@ -385,7 +385,11 @@ func TestEnterBehavior_TypedMode_PreEnterSettle(t *testing.T) {
 // --- Tests investigating the ActivityMonitor → activityCh feedback loop ---
 
 func TestEnterBehavior_ActivityMonitorFeedback(t *testing.T) {
-	t.Parallel()
+	// No t.Parallel(): this is the only Enter test that drives the real async
+	// ActivityMonitor chain (am.Write → OnStateChange → NotifyActivity →
+	// activityCh). That chain must beat retry1 (fires at settle+retryDelays[0]
+	// = 100ms). Running concurrently with sibling parallel tests under -race
+	// starves the chain past 100ms, firing a spurious 2nd Enter.
 	// The ActivityMonitor correctly signals the Overlay's activityCh when
 	// output bytes arrive. Full chain:
 	//   PTY output → ActivityMonitor.Write() → OnStateChange → NotifyActivity()
@@ -414,8 +418,10 @@ func TestEnterBehavior_ActivityMonitorFeedback(t *testing.T) {
 		close(done)
 	}()
 
-	// Simulate agent output arriving after the echo-settle window (50ms settle + 25ms into retry1)
-	time.Sleep(75 * time.Millisecond)
+	// Simulate agent output arriving after the echo-settle window. Write at
+	// 60ms (10ms into retry1's 50ms window) so the async ActivityMonitor chain
+	// has a ~40ms margin to reach activityCh before retry1 fires at 100ms.
+	time.Sleep(60 * time.Millisecond)
 	am.Write([]byte("Claude is thinking and producing output here...\n"))
 
 	select {
