@@ -71,6 +71,7 @@ type BlobRef struct {
 type IncidentEvent struct {
 	ID          string
 	Fingerprint string // sha256(source|category|canonical_msg|location)[:16]
+	Type        MessageType
 	ReceivedAt  time.Time
 	Source      Source
 	Severity    Severity
@@ -99,6 +100,7 @@ func NewIncidentEvent(src Source, sev Severity, category, msg string, ctx Contex
 	ev := IncidentEvent{
 		ID:          newID(),
 		Fingerprint: fp,
+		Type:        MessageError,
 		ReceivedAt:  time.Now(),
 		Source:      src,
 		Severity:    sev,
