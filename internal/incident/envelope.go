@@ -132,3 +132,12 @@ func computeFingerprint(source, category, canonMsg, location string) string {
 	h := sha256.Sum256([]byte(source + "|" + category + "|" + canonMsg + "|" + location))
 	return hex.EncodeToString(h[:])[:16]
 }
+
+// computeStormFingerprint produces a URL-independent fingerprint so that a flood
+// of same-class errors from one proxy (e.g. a down dependency returning 5xx on
+// many endpoints) collapses into a single inbox entry. proxyID is folded in so
+// two proxies' floods stay distinct.
+func computeStormFingerprint(source, statusClass, proxyID string) string {
+	h := sha256.Sum256([]byte("storm|" + source + "|" + statusClass + "|" + proxyID))
+	return hex.EncodeToString(h[:])[:16]
+}
