@@ -324,6 +324,14 @@ type Daemon struct {
 	shutdown   bool
 }
 
+// isShuttingDown reports whether Stop has begun. Used by ApplyAlertsConfig to
+// avoid leaking a hold-buffer goroutine when it races daemon shutdown.
+func (d *Daemon) isShuttingDown() bool {
+	d.shutdownMu.Lock()
+	defer d.shutdownMu.Unlock()
+	return d.shutdown
+}
+
 // New creates a new daemon instance.
 func New(config DaemonConfig) *Daemon {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -828,8 +836,20 @@ func (d *Daemon) ApplyAlertsConfig(cfg *config.AlertsConfig) {
 
 	// Swap atomically, then stop the old buffer. Concurrent readers either
 	// see the old buffer (its methods are closed-safe) or the new one.
-	if old := d.holdBuffer.Swap(NewHoldBuffer(holdCfg, d.fireHoldEmit)); old != nil {
+	newHB := NewHoldBuffer(holdCfg, d.fireHoldEmit)
+	if old := d.holdBuffer.Swap(newHB); old != nil {
 		old.Stop()
+	}
+	// Shutdown race: if Stop() ran concurrently it may have already torn down
+	// the hold buffer (it swaps to nil under d.shutdown). In that case the
+	// buffer just installed would never be stopped and its goroutine would
+	// leak. Re-check and reclaim our own buffer. CompareAndSwap ensures we only
+	// stop it if it is still the installed one (if Stop already claimed it via
+	// Swap(nil), the CAS fails and Stop owns the teardown).
+	if d.isShuttingDown() {
+		if d.holdBuffer.CompareAndSwap(newHB, nil) {
+			newHB.Stop()
+		}
 	}
 
 	if d.healthTracker != nil {

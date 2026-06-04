@@ -292,8 +292,12 @@ func (d *Daemon) Stop(ctx context.Context) error {
 		d.alertScanner.Stop()
 	}
 
-	// Stop the hold buffer goroutine. Pending entries are dropped.
-	if hb := d.holdBuffer.Load(); hb != nil {
+	// Stop the hold buffer goroutine. Pending entries are dropped. Swap to nil
+	// (not Load) so a hold buffer installed by a racing ApplyAlertsConfig before
+	// this point is still claimed and stopped here; one installed after this
+	// point is handled by ApplyAlertsConfig's own post-swap shutdown check. This
+	// closes the shutdown race that otherwise leaked the buffer's goroutine.
+	if hb := d.holdBuffer.Swap(nil); hb != nil {
 		hb.Stop()
 	}
 
