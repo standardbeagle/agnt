@@ -76,8 +76,8 @@ func TestFromHTTPEntry_5xxIsError(t *testing.T) {
 	if ev.Severity != SeverityError {
 		t.Errorf("Severity: got %q, want error", ev.Severity)
 	}
-	if ev.Category != "500" {
-		t.Errorf("Category: got %q, want 500", ev.Category)
+	if ev.Category != "5xx" {
+		t.Errorf("Category: got %q, want 5xx (storm status-class)", ev.Category)
 	}
 }
 
