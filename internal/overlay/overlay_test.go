@@ -2,11 +2,64 @@ package overlay
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 )
+
+// TestDraw_AllVisibleScreensIncludeStatusBar verifies the global status bar is
+// drawn on every visible screen through the central draw() dispatch: the bare
+// indicator and the panel view. The panel keybind footer is moved one row up so
+// the protected bottom row is reserved for the status bar.
+func TestDraw_AllVisibleScreensIncludeStatusBar(t *testing.T) {
+	const w, h = 80, 24
+
+	t.Run("indicator", func(t *testing.T) {
+		var buf bytes.Buffer
+		o := New(nil, w, h, DefaultConfig()) // ShowIndicator defaults true -> StateIndicator
+		o.renderer = NewRenderer(&buf, w, h)
+		o.statusMu.Lock()
+		o.status = Status{DaemonConnected: ConnectionConnected}
+		o.statusMu.Unlock()
+		o.Redraw()
+
+		out := buf.String()
+		assert.Contains(t, out, "Ctrl+→", "indicator screen must show the status bar")
+		assert.Contains(t, out, fmt.Sprintf("\x1b[%d;1H", h), "status bar targets the bottom row")
+	})
+
+	t.Run("panel", func(t *testing.T) {
+		var buf bytes.Buffer
+		o := New(nil, w, h, DefaultConfig())
+		o.renderer = NewRenderer(&buf, w, h)
+		o.panelMode = true
+		o.panelItems = []PanelItem{{Type: "overview", Label: "overview"}}
+		o.panelIndex = 0
+		o.state.Store(int32(StateMenu))
+		o.statusMu.Lock()
+		o.status = Status{DaemonConnected: ConnectionConnected}
+		o.statusMu.Unlock()
+		o.Redraw()
+
+		out := buf.String()
+		assert.Contains(t, out, "Ctrl+→", "panel screen must show the status bar")
+		assert.Contains(t, out, "Esc Exit", "panel keybind footer must remain")
+		assert.Contains(t, out, fmt.Sprintf("\x1b[%d;1H", h), "status bar targets the bottom row")
+		assert.Contains(t, out, fmt.Sprintf("\x1b[%d;1H", h-1), "panel footer sits one row above the status bar")
+	})
+
+	t.Run("hidden draws nothing", func(t *testing.T) {
+		var buf bytes.Buffer
+		cfg := DefaultConfig()
+		cfg.ShowIndicator = false
+		o := New(nil, w, h, cfg) // StateHidden
+		o.renderer = NewRenderer(&buf, w, h)
+		o.Redraw()
+		assert.Empty(t, buf.String(), "hidden overlay must not draw the status bar")
+	})
+}
 
 func TestNewOverlay(t *testing.T) {
 	cfg := DefaultConfig()
@@ -62,24 +115,6 @@ func TestOverlayStates(t *testing.T) {
 	o.Hide()
 	if o.State() != StateHidden {
 		t.Errorf("expected StateHidden after Hide, got %v", o.State())
-	}
-}
-
-func TestOverlayToggle(t *testing.T) {
-	cfg := DefaultConfig()
-	cfg.ShowIndicator = false
-	o := New(nil, 80, 24, cfg)
-
-	// Toggle from hidden should show menu
-	o.Toggle()
-	if o.State() != StateMenu {
-		t.Errorf("expected StateMenu after Toggle, got %v", o.State())
-	}
-
-	// Toggle again should hide
-	o.Toggle()
-	if o.State() != StateHidden {
-		t.Errorf("expected StateHidden after second Toggle, got %v", o.State())
 	}
 }
 
@@ -380,10 +415,6 @@ func TestEscapeSequenceReaderIsPending(t *testing.T) {
 
 func TestDefaultConfig(t *testing.T) {
 	cfg := DefaultConfig()
-
-	if cfg.Hotkey != 0x19 { // Ctrl+Y
-		t.Errorf("expected hotkey 0x19, got 0x%02x", cfg.Hotkey)
-	}
 
 	if !cfg.ShowIndicator {
 		t.Error("expected ShowIndicator to be true by default")

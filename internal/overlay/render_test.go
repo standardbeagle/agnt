@@ -142,26 +142,6 @@ func TestClearScreen_ProducesOutput(t *testing.T) {
 	assert.Contains(t, output, ResetScroll)
 }
 
-func TestDrawMenu_ProducesOutput(t *testing.T) {
-	var buf bytes.Buffer
-	r := NewRenderer(&buf, 80, 24)
-
-	menu := Menu{
-		Title: "Test Menu",
-		Items: []MenuItem{
-			{Label: "Item 1", Shortcut: '1'},
-			{Label: "Item 2", Shortcut: '2'},
-		},
-	}
-
-	r.DrawMenu(menu, 0)
-
-	output := buf.String()
-	assert.NotEmpty(t, output)
-	assert.Contains(t, output, "Test Menu")
-	assert.Contains(t, output, "Item 1")
-}
-
 func TestDrawInput_ProducesOutput(t *testing.T) {
 	var buf bytes.Buffer
 	r := NewRenderer(&buf, 80, 24)
@@ -279,10 +259,7 @@ func TestConcurrentDrawMethods(t *testing.T) {
 			{Name: "dev", State: "running", Command: "npm run dev"},
 		},
 	}
-	menu := Menu{
-		Title: "Test",
-		Items: []MenuItem{{Label: "A", Shortcut: 'a'}},
-	}
+	panels := []PanelItem{{Type: "overview", Label: "overview"}}
 
 	var wg sync.WaitGroup
 	const iterations = 50
@@ -299,7 +276,7 @@ func TestConcurrentDrawMethods(t *testing.T) {
 
 	draw(func() { r.DrawIndicator(status) })
 	draw(func() { r.ClearIndicator() })
-	draw(func() { r.DrawMenu(menu, 0) })
+	draw(func() { r.DrawPanelView(panels, 0, status, 0, false, "") })
 	draw(func() { r.DrawInput("test:", "val") })
 	draw(func() { r.DrawStatusBarMessage("msg") })
 	draw(func() { r.ClearStatusBarMessage() })

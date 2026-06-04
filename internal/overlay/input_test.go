@@ -238,7 +238,7 @@ func TestCtrlArrowInterceptedFromIndicator(t *testing.T) {
 	ov.state.Store(int32(StateIndicator))
 
 	pr, pw := io.Pipe()
-	router := NewInputRouter(rec, ov, 0x19)
+	router := NewInputRouter(rec, ov)
 	router.input = pr
 
 	go router.Run()
@@ -269,7 +269,7 @@ func newTestRouter(t *testing.T) (*InputRouter, *io.PipeWriter, *writeRecorder) 
 	ov.state.Store(int32(StateHidden)) // ensure overlay is not capturing input
 
 	pr, pw := io.Pipe()
-	router := NewInputRouter(rec, ov, 0x01) // Ctrl-A as hotkey (unlikely in test data)
+	router := NewInputRouter(rec, ov)
 	router.input = pr
 	return router, pw, rec
 }
@@ -631,7 +631,7 @@ func newPanelTestRouter(t *testing.T) (*InputRouter, *Overlay, *mockOutputFetche
 	cfg.ShowIndicator = false
 	ov := New(rec, 80, 24, cfg)
 
-	router := NewInputRouter(rec, ov, 0x19)
+	router := NewInputRouter(rec, ov)
 	fetcher := &mockOutputFetcher{output: "line1\nline2"}
 	router.SetOutputFetcher(fetcher)
 
@@ -885,7 +885,7 @@ func TestEagerRefreshSkippedWithoutFetcher(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.ShowIndicator = false
 	ov := New(rec, 80, 24, cfg)
-	router := NewInputRouter(rec, ov, 0x19)
+	router := NewInputRouter(rec, ov)
 	// No output fetcher set
 
 	gate := NewOutputGate(&writeRecorder{})

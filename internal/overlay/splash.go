@@ -13,7 +13,7 @@ import (
 // Content rotates every splashInterval. Keep lines short for readability.
 var defaultSplashMessages = []string{
 	"Waiting for output...",
-	"Tip: Press Ctrl+Y to open the overlay menu",
+	"Tip: Press Ctrl+←/→ to browse process, proxy, and log panels",
 	"Tip: agnt auto-starts scripts and proxies from .agnt.kdl",
 	"Tip: Use proc run for dev servers — never npm run dev in plain Bash",
 	"Tip: proc output / watch tail live process logs without blocking",
