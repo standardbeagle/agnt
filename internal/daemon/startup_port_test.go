@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
-	"syscall"
 	"testing"
 	"time"
 
@@ -88,28 +86,9 @@ func TestStartupPortCleanup_KillsOrphan(t *testing.T) {
 		d.Stop(ctx)
 	}()
 
-	// Find a free port
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	port := ln.Addr().(*net.TCPAddr).Port
-	ln.Close()
-
-	// Start a subprocess that holds the port
-	cmd := exec.Command("python3", "-c",
-		fmt.Sprintf(`import socket,time; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); s.bind(('127.0.0.1',%d)); s.listen(1); time.sleep(60)`, port))
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	require.NoError(t, cmd.Start())
-	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
-
-	// Wait for port to be bound
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 100*time.Millisecond); err == nil {
-			conn.Close()
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	// The blocker self-assigns its port (binds :0 and reports it back), so it
+	// owns the port from bind — no reserve-then-rebind TOCTOU window.
+	_, port := startEphemeralPortBlocker(t)
 
 	// Persist a proxy that uses this port
 	d.stateMgr.AddProxy(PersistentProxyConfig{
@@ -190,42 +169,9 @@ func TestStartupPortCleanup_MultipleProxies(t *testing.T) {
 		d.Stop(ctx)
 	}()
 
-	// Find two free ports
-	ln1, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	port1 := ln1.Addr().(*net.TCPAddr).Port
-	ln1.Close()
-
-	ln2, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	port2 := ln2.Addr().(*net.TCPAddr).Port
-	ln2.Close()
-
-	// Start subprocesses on both ports
-	startSubprocess := func(port int) *exec.Cmd {
-		cmd := exec.Command("python3", "-c",
-			fmt.Sprintf(`import socket,time; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); s.bind(('127.0.0.1',%d)); s.listen(1); time.sleep(60)`, port))
-		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-		require.NoError(t, cmd.Start())
-		return cmd
-	}
-
-	cmd1 := startSubprocess(port1)
-	defer func() { _ = cmd1.Process.Kill(); _ = cmd1.Wait() }()
-	cmd2 := startSubprocess(port2)
-	defer func() { _ = cmd2.Process.Kill(); _ = cmd2.Wait() }()
-
-	// Wait for both ports to be bound
-	for _, port := range []int{port1, port2} {
-		deadline := time.Now().Add(5 * time.Second)
-		for time.Now().Before(deadline) {
-			if conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 100*time.Millisecond); err == nil {
-				conn.Close()
-				break
-			}
-			time.Sleep(50 * time.Millisecond)
-		}
-	}
+	// Two self-assigning blockers — each owns its port from bind, no TOCTOU.
+	_, port1 := startEphemeralPortBlocker(t)
+	_, port2 := startEphemeralPortBlocker(t)
 
 	// Persist two proxies
 	d.stateMgr.AddProxy(PersistentProxyConfig{ID: "proxy-1", Port: port1})

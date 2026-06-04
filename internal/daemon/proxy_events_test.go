@@ -933,14 +933,13 @@ func TestHandleExplicitStart_ListenPortAndTLSVerify(t *testing.T) {
 // reserveFreePort asks the kernel for an unused TCP port and
 // returns it. The listener is closed before returning; callers must
 // accept the small race window.
+// reserveFreePort returns a free port for the strict-listen-port proxy test.
+// Routed through allocTestPort so the port is process-unique and outside the
+// ephemeral range — the daemon can bind it without a parallel test's :0
+// allocation having stolen it first.
 func reserveFreePort(t *testing.T) int {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("reserveFreePort: %v", err)
-	}
-	defer ln.Close()
-	return ln.Addr().(*net.TCPAddr).Port
+	return allocTestPort(t)
 }
 
 // TestAutostartProxy_ListenPortConflict_EmitsStartupError verifies
