@@ -228,14 +228,23 @@ func TestWatchProcessExit_EndToEnd(t *testing.T) {
 	assert.True(t, info.Uptime > 0, "uptime must be > 0")
 	assert.Contains(t, info.StderrTail, "fatal: bang", "stderr tail must include the panic line")
 
-	// Lifecycle alert should be queryable.
-	alerts := d.alertStore.Query(AlertStoreFilter{ProcessID: "test-exit-watch"})
+	// Lifecycle alert should be queryable. watchProcessExit publishes
+	// processExitInfo (polled above) BEFORE it Adds the lifecycle alert, so the
+	// alert can trail the info we just observed — poll for it rather than
+	// asserting it the instant the info appears.
 	var found *AlertEntry
-	for _, a := range alerts {
-		if a.Category == CategoryProcessLifecycle {
-			found = a
+	alertDeadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(alertDeadline) {
+		for _, a := range d.alertStore.Query(AlertStoreFilter{ProcessID: "test-exit-watch"}) {
+			if a.Category == CategoryProcessLifecycle {
+				found = a
+				break
+			}
+		}
+		if found != nil {
 			break
 		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	require.NotNil(t, found, "alertStore should contain a process_lifecycle entry")
 	assert.Equal(t, "error", found.Severity)
