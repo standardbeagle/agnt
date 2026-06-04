@@ -84,7 +84,6 @@ const panelRefreshInterval = 750 * time.Millisecond
 type InputRouter struct {
 	ptmx             PtyReadWriter
 	overlay          *Overlay
-	hotkey           byte
 	input            io.Reader // defaults to os.Stdin
 	running          atomic.Bool
 	done             chan struct{}
@@ -108,11 +107,10 @@ type InputRouter struct {
 }
 
 // NewInputRouter creates a new InputRouter.
-func NewInputRouter(ptmx PtyReadWriter, overlay *Overlay, hotkey byte) *InputRouter {
+func NewInputRouter(ptmx PtyReadWriter, overlay *Overlay) *InputRouter {
 	return &InputRouter{
 		ptmx:      ptmx,
 		overlay:   overlay,
-		hotkey:    hotkey,
 		done:      make(chan struct{}),
 		escReader: NewEscapeSequenceReader(),
 	}
@@ -231,9 +229,6 @@ func (r *InputRouter) Run() error {
 				if r.escReader.IsPending() {
 					escTimer = time.NewTimer(escTimeout)
 				}
-			} else if b == r.hotkey {
-				// Hotkey pressed - toggle overlay
-				r.overlay.Toggle()
 			} else {
 				// Pass through to PTY - batch with any pending bytes to keep
 				// multi-byte escape sequences (e.g. arrow keys \x1b[A) intact.
@@ -250,14 +245,7 @@ func (r *InputRouter) Run() error {
 				for drain {
 					select {
 					case nb := <-inputCh:
-						if nb == r.hotkey {
-							r.ptmx.Write(buf)
-							buf = nil
-							r.overlay.Toggle()
-							drain = false
-						} else {
-							buf = append(buf, nb)
-						}
+						buf = append(buf, nb)
 					default:
 						drain = false
 					}

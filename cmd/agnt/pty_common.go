@@ -666,7 +666,6 @@ that allows:
 Flags:
   --session <code>      Session code for identifying this run (auto-generated if not set)
   --overlay-socket      Custom socket path for overlay server
-  --hotkey <key>        Hotkey for overlay menu (default: CTRL+Y)
   --no-indicator        Disable the indicator bar
   --no-overlay          Disable terminal overlay entirely
   --no-autostart        Skip auto-starting scripts and proxies from .agnt.kdl
@@ -681,7 +680,7 @@ Examples:
   agnt run opencode
 
 Overlay Features:
-- CTRL+Y: Toggle overlay menu to view processes, proxies, and actions
+- CTRL+←/→: Browse process, proxy, and log panels
 - Status bar: Shows running services and proxy URLs for browser access
 - Auto-start: Loads .agnt.kdl to auto-start configured dev scripts and proxies
 
@@ -695,7 +694,6 @@ scheduled messages via MCP tools, CLI commands, or the devtools API.`,
 
 var (
 	overlaySocketPath string
-	overlayHotkey     byte = 0x19 // Ctrl+Y
 	showIndicator     bool = true
 	useTermOverlay    bool = true
 	sessionCode       string
@@ -739,14 +737,6 @@ func runCommand(cmd *cobra.Command, args []string) {
 		case "--overlay-socket":
 			if i+1 < len(args) {
 				overlaySocketPath = args[i+1]
-				commandArgs = append(args[:i], args[i+2:]...)
-				continue
-			}
-		case "--hotkey":
-			if i+1 < len(args) {
-				if hk := parseHotkey(args[i+1]); hk != 0 {
-					overlayHotkey = hk
-				}
 				commandArgs = append(args[:i], args[i+2:]...)
 				continue
 			}
@@ -843,46 +833,6 @@ func spinner(message string) func() {
 		close(done)
 		wg.Wait()
 	}
-}
-
-// parseHotkey parses a hotkey string like "ctrl+l", "ctrl+g", "l", "p" into a byte.
-// Returns 0 if invalid.
-func parseHotkey(s string) byte {
-	s = strings.ToLower(strings.TrimSpace(s))
-
-	// Handle "ctrl+X" format
-	if strings.HasPrefix(s, "ctrl+") {
-		letter := strings.TrimPrefix(s, "ctrl+")
-		if len(letter) == 1 && letter[0] >= 'a' && letter[0] <= 'z' {
-			// Ctrl+A = 0x01, Ctrl+B = 0x02, etc.
-			return letter[0] - 'a' + 1
-		}
-		return 0
-	}
-
-	// Handle "^X" format (e.g., "^L")
-	if strings.HasPrefix(s, "^") {
-		letter := strings.TrimPrefix(s, "^")
-		if len(letter) == 1 && letter[0] >= 'a' && letter[0] <= 'z' {
-			return letter[0] - 'a' + 1
-		}
-		return 0
-	}
-
-	// Handle single letter (assume ctrl+letter)
-	if len(s) == 1 && s[0] >= 'a' && s[0] <= 'z' {
-		return s[0] - 'a' + 1
-	}
-
-	// Handle hex format like "0x0c"
-	if strings.HasPrefix(s, "0x") {
-		var b byte
-		if _, err := fmt.Sscanf(s, "0x%x", &b); err == nil {
-			return b
-		}
-	}
-
-	return 0
 }
 
 // detectAIAgent detects the first available AI agent in PATH.
@@ -1453,7 +1403,6 @@ func runOverlayPipeline(
 func setupTerminalOverlay(ctx context.Context, handle *ptyHandle, rt *pipelineRuntime) {
 	cfg := overlay.DefaultConfig()
 	cfg.ShowIndicator = showIndicator
-	cfg.Hotkey = overlayHotkey
 	cfg.Version = appVersion
 	cfg.OnAction = func(action overlay.Action) error {
 		switch action {
@@ -1470,7 +1419,7 @@ func setupTerminalOverlay(ctx context.Context, handle *ptyHandle, rt *pipelineRu
 	rt.outputGate = overlay.NewOutputGate(os.Stdout)
 	rt.termOverlay = overlay.New(handle.Backend, handle.Width, handle.Height, cfg)
 	rt.termOverlay.SetGate(rt.outputGate)
-	rt.inputRouter = overlay.NewInputRouter(handle.Backend, rt.termOverlay, overlayHotkey)
+	rt.inputRouter = overlay.NewInputRouter(handle.Backend, rt.termOverlay)
 
 	// Shared daemon connection for all overlay components.
 	socketPath, _ := rootCmd.Flags().GetString("socket")

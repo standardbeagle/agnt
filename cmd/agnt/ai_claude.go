@@ -286,8 +286,8 @@ func applyAgntSystemPrompt(opts *claude.AgentOptions) {
 // and browser events.
 //
 // When the terminal overlay is enabled (default), the REPL runs in raw mode with
-// the same overlay infrastructure as `agnt run`: status bar, Ctrl+Y menu, and
-// process viewer. The LineEditor handles input in raw mode.
+// the same overlay infrastructure as `agnt run`: status bar, Ctrl+←/→ panel
+// browsing, and process viewer. The LineEditor handles input in raw mode.
 func runAiClaudeInteractive(ctx context.Context) error {
 	opts := buildClaudeOptions()
 	interactive := !claudeRawOutput
@@ -555,7 +555,7 @@ func runAiClaudeOverlay(ctx context.Context, opts *claude.AgentOptions, daemonHa
 	termOverlay.SetGate(outputGate)
 
 	// InputRouter: routes stdin between overlay and line editor
-	inputRouter := overlay.NewInputRouter(replAdapter, termOverlay, cfg.Hotkey)
+	inputRouter := overlay.NewInputRouter(replAdapter, termOverlay)
 
 	// OutputGate callbacks for menu open/close
 	outputGate.SetCallbacks(nil, func() {
@@ -635,7 +635,7 @@ func runAiClaudeOverlay(ctx context.Context, opts *claude.AgentOptions, daemonHa
 
 	// Welcome message through raw mode writer (above cursor)
 	fmt.Fprintln(rawWriter, "agnt ai claude - interactive mode")
-	fmt.Fprintln(rawWriter, "Type /exit or /quit to exit, Ctrl+D for EOF. Ctrl+Y for dashboard.")
+	fmt.Fprintln(rawWriter, "Type /exit or /quit to exit, Ctrl+D for EOF. Ctrl+←/→ for panels.")
 	if opts.SystemPrompt != "" {
 		fmt.Fprintln(rawWriter, "[agnt context injected]")
 	}

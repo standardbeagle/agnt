@@ -249,9 +249,6 @@ type Overlay struct {
 
 // Config holds overlay configuration.
 type Config struct {
-	// Hotkey to toggle overlay (default: Ctrl+L = 0x0C)
-	Hotkey byte
-
 	// Whether to show indicator bar by default
 	ShowIndicator bool
 
@@ -272,7 +269,6 @@ type Config struct {
 // DefaultConfig returns the default overlay configuration.
 func DefaultConfig() Config {
 	return Config{
-		Hotkey:                0x19, // Ctrl+Y
 		ShowIndicator:         true,
 		StatusRefreshInterval: 2 * time.Second,
 	}
@@ -411,20 +407,6 @@ func (o *Overlay) GetStatus() Status {
 	o.statusMu.RLock()
 	defer o.statusMu.RUnlock()
 	return o.status
-}
-
-// Toggle toggles the overlay menu visibility.
-func (o *Overlay) Toggle() {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-
-	state := o.State()
-	switch state {
-	case StateHidden, StateIndicator:
-		o.showMenu()
-	case StateMenu, StateInput:
-		o.hideMenu()
-	}
 }
 
 // Show shows the overlay menu.
@@ -738,34 +720,35 @@ func (o *Overlay) stopTransitionSpinnerLocked() {
 }
 
 func (o *Overlay) draw() {
+	state := o.State()
+	if state == StateHidden {
+		return
+	}
+
 	o.statusMu.RLock()
 	status := o.status
 	o.statusMu.RUnlock()
 
-	switch o.State() {
-	case StateIndicator:
-		o.renderer.DrawIndicator(status)
+	// Mode-specific content occupies the region above the bottom status row.
+	// Each screen leaves the bottom row free for the global status bar, which
+	// is drawn once below.
+	switch state {
 	case StateMenu:
 		if o.panelMode && len(o.panelItems) > 0 {
-			// Panel view: full-screen panel with tab bar
 			idx := o.panelIndex
 			if idx >= len(o.panelItems) {
 				idx = len(o.panelItems) - 1
 			}
 			o.renderer.DrawPanelView(o.panelItems, idx, status, o.overviewSelectedIdx, o.commandInput, o.commandBuffer)
-		} else if len(o.menuStack) > 0 {
-			o.renderer.DrawIndicator(status)
-			// Use DrawDashboard for the main menu (comprehensive view)
-			if len(o.menuStack) == 1 {
-				o.renderer.DrawDashboard(o.menuStack[0], o.selectedIndex, status)
-			} else {
-				o.renderer.DrawMenu(o.menuStack[len(o.menuStack)-1], o.selectedIndex)
-			}
 		}
 	case StateInput:
-		o.renderer.DrawIndicator(status)
 		o.renderer.DrawInput(o.inputPrompt, o.inputBuffer)
 	}
+
+	// The status bar is the single global element shared by every visible
+	// screen. Drawing it last, in one place, guarantees consistent presence on
+	// the protected bottom row across all states (indicator and panel views).
+	o.renderer.DrawIndicator(status)
 }
 
 // Redraw forces a redraw of the overlay.
