@@ -333,9 +333,12 @@ func (b *MPSCBus) ingestToSession(pl *sessionPipeline, ev *IncidentEvent) {
 		Fingerprint: ev.Fingerprint,
 		FirstSeenAt: de.First.ReceivedAt,
 		LastSeenAt:  de.Last.ReceivedAt,
-		Count:       de.Count,
-		Sample:      &de.Last,
-		Severity:    ev.Severity,
+		// One occurrence per delivered event. Inbox.Ingest merges additively
+		// (existing.Count += entry.Count), so passing the dedup's cumulative
+		// de.Count here would compound into a triangular sum.
+		Count:    1,
+		Sample:   &de.Last,
+		Severity: ev.Severity,
 	}
 	if merged {
 		entry.FirstSeenAt = de.First.ReceivedAt
