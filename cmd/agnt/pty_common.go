@@ -1425,7 +1425,6 @@ func setupTerminalOverlay(ctx context.Context, handle *ptyHandle, rt *pipelineRu
 	socketPath, _ := rootCmd.Flags().GetString("socket")
 	rt.daemonConn = daemon.NewConn(socketPath)
 	daemonClient := newDaemonClientAdapter(rt.daemonConn)
-	rt.inputRouter.SetBashRunner(overlay.NewDaemonBashRunner(daemonClient))
 	rt.inputRouter.SetOutputFetcher(overlay.NewDaemonOutputFetcher(daemonClient))
 	rt.inputRouter.SetDaemonConnector(newDaemonConnector(rt.daemonConn))
 	rt.inputRouter.SetScriptController(overlay.NewDaemonScriptController(daemonClient))

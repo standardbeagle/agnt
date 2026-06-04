@@ -101,40 +101,20 @@ func TestOverlayStates(t *testing.T) {
 		t.Error("overlay should not be active when hidden")
 	}
 
-	// Show should switch to menu
-	o.Show()
+	// Entering the panel browser switches to the menu (panel) state.
+	o.showPanelDirect()
 	if o.State() != StateMenu {
-		t.Errorf("expected StateMenu after Show, got %v", o.State())
+		t.Errorf("expected StateMenu after showPanelDirect, got %v", o.State())
 	}
 
 	if !o.IsActive() {
-		t.Error("overlay should be active when menu is shown")
+		t.Error("overlay should be active when the panel view is shown")
 	}
 
-	// Hide should switch back to hidden
-	o.Hide()
+	// hideMenu should switch back to hidden.
+	o.hideMenu()
 	if o.State() != StateHidden {
-		t.Errorf("expected StateHidden after Hide, got %v", o.State())
-	}
-}
-
-func TestOverlayToggleIndicator(t *testing.T) {
-	cfg := DefaultConfig()
-	cfg.ShowIndicator = true
-	o := New(nil, 80, 24, cfg)
-
-	if !o.ShowIndicator() {
-		t.Error("expected indicator to be shown initially")
-	}
-
-	o.ToggleIndicator()
-	if o.ShowIndicator() {
-		t.Error("expected indicator to be hidden after toggle")
-	}
-
-	o.ToggleIndicator()
-	if !o.ShowIndicator() {
-		t.Error("expected indicator to be shown after second toggle")
+		t.Errorf("expected StateHidden after hideMenu, got %v", o.State())
 	}
 }
 
@@ -229,38 +209,6 @@ func TestRendererPadCenter(t *testing.T) {
 	expected := "    hi    "
 	if result != expected {
 		t.Errorf("expected %q, got %q", expected, result)
-	}
-}
-
-func TestMainMenu(t *testing.T) {
-	menu := MainMenu()
-
-	if menu.Title != "agnt" {
-		t.Errorf("expected title 'agnt', got %q", menu.Title)
-	}
-
-	if len(menu.Items) == 0 {
-		t.Error("expected menu items, got none")
-	}
-
-	// Check that some expected items exist
-	foundBash := false
-	foundClose := false
-	for _, item := range menu.Items {
-		if item.Action == ActionBashCommand {
-			foundBash = true
-		}
-		if item.Action == ActionClose {
-			foundClose = true
-		}
-	}
-
-	if !foundBash {
-		t.Error("expected ActionBashCommand in menu")
-	}
-
-	if !foundClose {
-		t.Error("expected ActionClose in menu")
 	}
 }
 
@@ -483,11 +431,11 @@ func TestTransitionSpinnerStartsOnHideMenu(t *testing.T) {
 	o.SetGate(gate)
 
 	// Open the overlay to enter menu state
-	o.Show()
+	o.showPanelDirect()
 	assert.Equal(t, StateMenu, o.State())
 
 	// Close the overlay (triggers transition spinner)
-	o.Hide()
+	o.hideMenu()
 	assert.Equal(t, StateIndicator, o.State())
 
 	// Spinner should be running
@@ -508,8 +456,8 @@ func TestTransitionSpinnerStopsOnUpdateStatus(t *testing.T) {
 	o.SetGate(gate)
 
 	// Open and close to start the spinner
-	o.Show()
-	o.Hide()
+	o.showPanelDirect()
+	o.hideMenu()
 
 	o.mu.Lock()
 	assert.NotNil(t, o.transitionStop, "spinner should be running")
@@ -532,21 +480,21 @@ func TestTransitionSpinnerStopsOnShowMenu(t *testing.T) {
 	o.SetGate(gate)
 
 	// Start spinner
-	o.Show()
-	o.Hide()
+	o.showPanelDirect()
+	o.hideMenu()
 
 	o.mu.Lock()
 	assert.NotNil(t, o.transitionStop, "spinner should be running")
 	o.mu.Unlock()
 
 	// Re-opening should stop the spinner
-	o.Show()
+	o.showPanelDirect()
 
 	o.mu.Lock()
 	assert.Nil(t, o.transitionStop, "spinner should be stopped after Show")
 	o.mu.Unlock()
 
-	o.Hide()
+	o.hideMenu()
 }
 
 func TestTransitionSpinnerNotStartedWhenBarHidden(t *testing.T) {
@@ -557,8 +505,8 @@ func TestTransitionSpinnerNotStartedWhenBarHidden(t *testing.T) {
 	gate := NewOutputGate(&buf)
 	o.SetGate(gate)
 
-	o.Show()
-	o.Hide()
+	o.showPanelDirect()
+	o.hideMenu()
 
 	o.mu.Lock()
 	assert.Nil(t, o.transitionStop, "spinner should not start when bar is hidden")

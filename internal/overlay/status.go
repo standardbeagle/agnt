@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -604,59 +603,6 @@ func (f *StatusFetcher) linkProcessesAndProxies(processes []ProcessInfo, proxies
 			}
 		}
 	}
-}
-
-// DaemonBashRunner implements BashRunner using a shared daemon connection.
-type DaemonBashRunner struct {
-	conn    DaemonClient
-	counter atomic.Int64
-}
-
-// NewDaemonBashRunner creates a new DaemonBashRunner using a shared connection.
-func NewDaemonBashRunner(conn DaemonClient) *DaemonBashRunner {
-	return &DaemonBashRunner{
-		conn: conn,
-	}
-}
-
-// platformShell returns the shell command and args for running a command string
-// on the current platform.
-func platformShell(command string) (string, []string) {
-	if runtime.GOOS == "windows" {
-		return "cmd.exe", []string{"/c", command}
-	}
-	return "sh", []string{"-c", command}
-}
-
-// RunBashCommand runs a bash command via the daemon and returns the process ID.
-func (r *DaemonBashRunner) RunBashCommand(command string) (string, error) {
-	// Generate unique process ID
-	count := r.counter.Add(1)
-	processID := fmt.Sprintf("bash-%d-%d", time.Now().Unix(), count)
-
-	// Get current working directory
-	cwd, err := os.Getwd()
-	if err != nil {
-		cwd = "."
-	}
-
-	// Run the command via the daemon using request shell
-	shell, shellArgs := platformShell(command)
-	runConfig := protocol.RunConfig{
-		ID:      processID,
-		Path:    cwd,
-		Mode:    "background",
-		Raw:     true,
-		Command: shell,
-		Args:    shellArgs,
-	}
-
-	_, err = r.conn.RequestJSON(protocol.VerbRunJSON, runConfig)
-	if err != nil {
-		return "", fmt.Errorf("failed to run command: %w", err)
-	}
-
-	return processID, nil
 }
 
 // DaemonOutputFetcher implements ProcessOutputFetcher using a shared daemon connection.
