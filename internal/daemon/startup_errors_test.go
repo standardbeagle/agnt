@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -156,6 +157,57 @@ func TestStartupLogStore_Recent(t *testing.T) {
 	assert.Equal(t, "r2", got[1].ProcessID)
 
 	assert.Len(t, s.Recent(time.Minute, 1), 1, "limit applied to recent window")
+}
+
+// TestStartupLogger_StampsProjectScope proves the prefactor's core guarantee:
+// every entry recorded through the project-bound logger carries the project's
+// "basename-hash:" ProcessID prefix, so it survives a project-scoped query —
+// including project-level events recorded with an empty name. The control
+// (a raw store entry with an empty ProcessID, the old footgun) is invisible to
+// the scoped query and only reachable globally.
+func TestStartupLogger_StampsProjectScope(t *testing.T) {
+	projectPath := "/home/u/proj"
+	store := NewStartupLogStore(100)
+	log := &startupLogger{store: store, projectPath: projectPath}
+
+	log.Error("", "config_error", "bad kdl")                            // project-level, no name
+	log.Error("api", "start_failed", "boom")                            // named script
+	log.ErrorPort("web", "proxy_listen_port_conflict", "port busy", 80) // named proxy + port
+
+	// Control: the pre-fix footgun — a project-relevant event recorded with an
+	// empty ProcessID. It must NOT appear in a scoped query.
+	store.Error("", "ghost", "legacy_unstamped", "invisible to scope")
+
+	prefix := makeProcessID(projectPath, "")
+	scoped := store.Query(StartupLogFilter{ProjectPath: projectPath})
+	require.Len(t, scoped, 3, "every logger entry is project-scoped; the unstamped control is excluded")
+
+	var sawPort bool
+	for _, e := range scoped {
+		assert.True(t, strings.HasPrefix(e.ProcessID, prefix),
+			"entry %q must carry the project prefix %q", e.ProcessID, prefix)
+		assert.NotEqual(t, "legacy_unstamped", e.EventType,
+			"unstamped raw entry leaked into the scoped query")
+		if e.EventType == "proxy_listen_port_conflict" {
+			assert.Equal(t, 80, e.Port, "ErrorPort preserves the conflicting port")
+			assert.Equal(t, "web", e.ScriptName, "name is stamped onto ScriptName")
+			sawPort = true
+		}
+	}
+	assert.True(t, sawPort, "port-bearing entry present in scoped view")
+
+	// The unstamped control is still reachable via an unscoped (global) query.
+	assert.Len(t, store.Query(StartupLogFilter{}), 4, "global query sees all four entries")
+}
+
+// TestStartupLogger_NilSafe verifies the logger tolerates a nil receiver / nil
+// store (the scheduleFallbackPortChecks path used to guard the store for nil).
+func TestStartupLogger_NilSafe(t *testing.T) {
+	var nilLogger *startupLogger
+	assert.NotPanics(t, func() { nilLogger.Error("x", "e", "m") })
+
+	emptyLogger := &startupLogger{store: nil, projectPath: "/p"}
+	assert.NotPanics(t, func() { emptyLogger.Info("x", "e", "m") })
 }
 
 func TestStartupLogStore_Concurrent(t *testing.T) {

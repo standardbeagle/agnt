@@ -125,7 +125,6 @@ func parseSinceFilter(s string) time.Time {
 
 func (d *Daemon) hubHandleStartupLog(conn *hubpkg.Connection, cmd *hubproto.Command) error {
 	filter := StartupLogFilter{
-		Since: time.Now().Add(-30 * time.Minute),
 		Limit: 50,
 	}
 
@@ -147,10 +146,12 @@ func (d *Daemon) hubHandleStartupLog(conn *hubpkg.Connection, cmd *hubproto.Comm
 	if f.Limit > 0 {
 		filter.Limit = f.Limit
 	}
+	// No wall-clock default Since. Autostart is a one-shot at session start, so
+	// a 30-minute window left the log "always empty" once the session had been
+	// running a while. The store is a capacity-bounded ring (100 entries), so an
+	// unbounded-in-time query is safe and returns the whole ring up to Limit.
+	// An explicit `since` still narrows the window.
 	filter.Since = parseSinceFilter(f.Since)
-	if filter.Since.IsZero() {
-		filter.Since = time.Now().Add(-30 * time.Minute)
-	}
 
 	// Route through the mandatory session-scope chokepoint so STARTUP-LOG
 	// cannot surface another project's startup events. Non-global queries
