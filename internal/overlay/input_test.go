@@ -828,7 +828,7 @@ func TestEagerRefreshOnUnfreeze(t *testing.T) {
 
 	// Open and close the overlay to trigger hideMenu -> before-unfreeze callback
 	ov.mu.Lock()
-	ov.activateOverlay(true)
+	ov.showPanelDirect()
 	ov.panelMode = true
 	ov.panelIndex = 1
 	ov.mu.Unlock()
@@ -865,7 +865,7 @@ func TestEagerRefreshSkippedWhenNoProcessPanel(t *testing.T) {
 
 	// Set active panel to overview (not a process panel)
 	ov.mu.Lock()
-	ov.activateOverlay(true)
+	ov.showPanelDirect()
 	ov.panelMode = true
 	ov.panelIndex = 0 // overview
 	ov.mu.Unlock()
@@ -897,7 +897,7 @@ func TestEagerRefreshSkippedWithoutFetcher(t *testing.T) {
 	}
 
 	ov.mu.Lock()
-	ov.activateOverlay(true)
+	ov.showPanelDirect()
 	ov.panelMode = true
 	ov.panelIndex = 1
 	ov.mu.Unlock()

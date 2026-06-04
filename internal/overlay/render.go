@@ -777,7 +777,7 @@ func (r *Renderer) ExitAltScreen() {
 
 // DrawPanelView draws a full-screen panel view with a niri-style tab bar at top.
 // Panels are arranged horizontally like niri columns: Ctrl+Left/Right to navigate.
-func (r *Renderer) DrawPanelView(panels []PanelItem, activeIndex int, status Status, overviewSelectedIdx int, commandInput bool, commandBuffer string) {
+func (r *Renderer) DrawPanelView(panels []PanelItem, activeIndex int, status Status, overviewSelectedIdx int, commandInput bool, commandBuffer string, actions OverviewActions) {
 	r.mu.Lock()
 	r.beginBuffer()
 
@@ -815,11 +815,13 @@ func (r *Renderer) DrawPanelView(panels []PanelItem, activeIndex int, status Sta
 
 	// Draw the content panel
 	title := active.Label
-	if active.Type != "overview" && active.Type != "log" {
-		title = active.Type + ": " + active.ID
-	}
-	if active.Type == "log" {
+	switch active.Type {
+	case "overview", "summary":
+		// title is the label ("overview" / "summary")
+	case "log":
 		title = "session log"
+	default:
+		title = active.Type + ": " + active.ID
 	}
 	r.drawNiriPanel(contentStartRow, panelCol, panelWidth, panelHeight, title, grad)
 
@@ -829,12 +831,12 @@ func (r *Renderer) DrawPanelView(panels []PanelItem, activeIndex int, status Sta
 
 	switch active.Type {
 	case "overview":
-		r.drawOverviewContent(contentRow, panelCol+2, contentWidth, panelHeight-2, status, overviewSelectedIdx, commandInput, commandBuffer)
+		r.drawOverviewContent(contentRow, panelCol+2, contentWidth, panelHeight-2, status, overviewSelectedIdx, commandInput, commandBuffer, actions)
 	case "process":
 		r.drawProcessPanelContent(contentRow, panelCol+2, contentWidth, panelHeight-2, active, status)
 	case "proxy":
 		r.drawProxyPanelContent(contentRow, panelCol+2, contentWidth, panelHeight-2, active, status)
-	case "log":
+	case "log", "summary":
 		r.drawScrollableContent(contentRow, panelCol+2, contentWidth, panelHeight-2, active)
 	}
 
@@ -845,8 +847,22 @@ func (r *Renderer) DrawPanelView(panels []PanelItem, activeIndex int, status Sta
 	r.moveTo(footerRow, 1)
 	r.write(BgBrightBlack + FgWhite)
 	var hint string
-	if active.Type == "overview" && len(status.Scripts) > 0 {
-		hint = fmt.Sprintf(" ↑↓ Select  Enter Open  a Start  s Stop  r Restart  : Run cmd  Esc Exit  (%d/%d) ", activeIndex+1, len(panels))
+	if active.Type == "overview" {
+		// Build the overview hint contextually: script actions only when a
+		// script is selected, summarize only when configured, reconnect only
+		// when disconnected.
+		parts := []string{}
+		if len(status.Scripts) > 0 {
+			parts = append(parts, "↑↓ Select", "Enter Open", "a/s/r Script", ": Cmd")
+		}
+		if actions.SummarizeEnabled {
+			parts = append(parts, "m Summarize")
+		}
+		if status.DaemonConnected != ConnectionConnected {
+			parts = append(parts, "c Reconnect")
+		}
+		parts = append(parts, "Ctrl+→ Panels", "Esc Exit")
+		hint = fmt.Sprintf(" %s  (%d/%d) ", strings.Join(parts, "  "), activeIndex+1, len(panels))
 	} else {
 		hint = fmt.Sprintf(" Tab Navigate  ↑↓ Scroll  1-9 Jump  x Close stopped  Esc Exit  (%d/%d) ", activeIndex+1, len(panels))
 	}
@@ -923,23 +939,50 @@ func (r *Renderer) drawPanelTabBar(panels []PanelItem, activeIndex int) {
 	}
 }
 
+// overviewSpinner returns the braille spinner frame for the given tick index.
+func overviewSpinner(frame int) string {
+	frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+	if frame < 0 {
+		frame = -frame
+	}
+	return frames[frame%len(frames)]
+}
+
 // drawOverviewContent draws the overview panel content (system summary).
 // selectedIdx is the highlighted script row index (0-based, -1 for no selection).
-func (r *Renderer) drawOverviewContent(startRow, col, width, maxRows int, status Status, selectedIdx int, commandInput bool, commandBuffer string) {
+func (r *Renderer) drawOverviewContent(startRow, col, width, maxRows int, status Status, selectedIdx int, commandInput bool, commandBuffer string, actions OverviewActions) {
 	row := startRow
+	spinner := overviewSpinner(actions.SpinnerFrame)
 
-	// Connection status
+	// Connection status (with contextual reconnect affordance / state)
 	r.moveTo(row, col)
-	if status.DaemonConnected == ConnectionConnected {
+	switch {
+	case status.DaemonConnected == ConnectionConnected:
 		pingStr := ""
 		if status.DaemonPingMs > 0 {
 			pingStr = fmt.Sprintf(" %s(%dms)%s", FgBrightBlack, status.DaemonPingMs, Reset)
 		}
 		r.write(fmt.Sprintf("%s%s%s connected%s", FgGreen, IconConnected, Reset, pingStr))
-	} else {
-		r.write(fmt.Sprintf("%s%s%s disconnected", FgYellow, IconDisconnected, Reset))
+		row++
+	case actions.Connecting:
+		r.write(fmt.Sprintf("%s%s%s connecting…", FgYellow, spinner, Reset))
+		row++
+	default:
+		r.write(fmt.Sprintf("%s%s%s disconnected %s· press %sc%s%s to reconnect%s",
+			FgYellow, IconDisconnected, Reset,
+			FgBrightBlack, FgCyan+Bold, Reset, FgBrightBlack, Reset))
+		row++
+		if actions.ConnectErr != "" && row < startRow+maxRows {
+			r.moveTo(row, col)
+			msg := actions.ConnectErr
+			if len(msg) > width-3 {
+				msg = msg[:width-4] + "…"
+			}
+			r.write(fmt.Sprintf("%s%s %s%s", FgRed, IconWarning, msg, Reset))
+			row++
+		}
 	}
-	row += 2
+	row++ // blank separator
 
 	// Scripts summary (persistent state from ScriptRegistry)
 	if len(status.Scripts) > 0 && row < startRow+maxRows {
@@ -1053,6 +1096,28 @@ func (r *Renderer) drawOverviewContent(startRow, col, width, maxRows int, status
 				FgBrightBlack, formatShortTimeAgo(e.Timestamp), Reset))
 			row++
 		}
+	}
+
+	// Global actions line (summarize state + command affordance)
+	if row < startRow+maxRows-1 {
+		row++
+		r.moveTo(row, col)
+		r.write(Bold + "actions" + Reset + "  ")
+		switch {
+		case actions.Summarizing:
+			r.write(fmt.Sprintf("%s%s%s summarizing…", FgCyan, spinner, Reset))
+		case actions.SummaryErr != "":
+			msg := actions.SummaryErr
+			if len(msg) > width-22 {
+				msg = msg[:width-23] + "…"
+			}
+			r.write(fmt.Sprintf("%s%s summarize failed: %s%s", FgRed, IconWarning, msg, Reset))
+		default:
+			if actions.SummarizeEnabled {
+				r.write(fmt.Sprintf("%sm%s summarize", FgCyan+Bold, Reset))
+			}
+		}
+		row++
 	}
 
 	// Command input (bottom of overview)
@@ -1387,72 +1452,6 @@ func formatShortTimeAgo(t time.Time) string {
 	return fmt.Sprintf("%dh", int(d.Hours()))
 }
 
-// DrawInput draws a text input dialog.
-func (r *Renderer) DrawInput(prompt, value string) {
-	r.mu.Lock()
-	r.beginBuffer()
-
-	inputWidth := max(len(prompt)+4, 40)
-	inputWidth = min(inputWidth, r.width-4)
-	inputHeight := 5
-
-	startRow := (r.height-inputHeight)/2 - 1
-	if startRow < 1 {
-		startRow = 1
-	}
-	startCol := (r.width - inputWidth) / 2
-	if startCol < 1 {
-		startCol = 1
-	}
-
-	// Track the region for later clearing (only on first draw, not updates)
-	if r.currentInputRegion == nil {
-		r.currentInputRegion = &ScreenRegion{
-			Row:    startRow,
-			Col:    startCol,
-			Width:  inputWidth,
-			Height: inputHeight,
-		}
-		r.overlayStack.Push(RegionInput, *r.currentInputRegion)
-	}
-
-	r.write(CursorSave + CursorHide)
-
-	// Draw box
-	r.drawBox(startRow, startCol, inputWidth, inputHeight, prompt)
-
-	// Draw input field
-	inputRow := startRow + 2
-	r.moveTo(inputRow, startCol+2)
-	r.write(FgCyan + "> " + Reset)
-
-	// Draw value with cursor
-	displayValue := value
-	maxValueLen := inputWidth - 6 // Account for "> " and padding
-	if len(displayValue) > maxValueLen {
-		displayValue = displayValue[len(displayValue)-maxValueLen:]
-	}
-	r.write(displayValue)
-	r.write(BgWhite + " " + Reset) // Cursor
-	r.write(strings.Repeat(" ", maxValueLen-len(displayValue)))
-
-	// Draw footer hint
-	footerRow := startRow + inputHeight - 1
-	r.moveTo(footerRow, startCol+1)
-	r.write(FgBrightBlack)
-	hint := " Enter Submit  Esc Cancel "
-	hint = r.padCenter(hint, inputWidth-2)
-	r.write(hint)
-	r.write(Reset)
-
-	r.write(CursorRestore + CursorShow)
-
-	buf := r.buf
-	r.buf = nil
-	r.mu.Unlock()
-	r.flushBuffer(buf)
-}
-
 // ClearMenu clears all overlay regions (menu and input dialogs).
 // This restores the screen by clearing the tracked regions.
 func (r *Renderer) ClearMenu() {
@@ -1480,19 +1479,6 @@ func (r *Renderer) ResetMenuRegions() {
 	// Reset tracked regions
 	r.currentMenuRegion = nil
 	r.currentInputRegion = nil
-}
-
-// ClearCurrentMenu clears the current menu from screen and resets the region.
-// Use this before transitioning to a different menu type (e.g., Dashboard to submenu).
-func (r *Renderer) ClearCurrentMenu() {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	// Pop and clear the current menu from the overlay stack
-	r.overlayStack.Pop()
-
-	// Reset the tracked region so the next draw creates a fresh one
-	r.currentMenuRegion = nil
 }
 
 // drawBox draws a box with a title.

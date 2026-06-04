@@ -142,17 +142,6 @@ func TestClearScreen_ProducesOutput(t *testing.T) {
 	assert.Contains(t, output, ResetScroll)
 }
 
-func TestDrawInput_ProducesOutput(t *testing.T) {
-	var buf bytes.Buffer
-	r := NewRenderer(&buf, 80, 24)
-
-	r.DrawInput("Enter value:", "hello")
-
-	output := buf.String()
-	assert.NotEmpty(t, output)
-	assert.Contains(t, output, "hello")
-}
-
 func TestDrawStatusBarMessage_ProducesOutput(t *testing.T) {
 	var buf bytes.Buffer
 	r := NewRenderer(&buf, 80, 24)
@@ -276,8 +265,7 @@ func TestConcurrentDrawMethods(t *testing.T) {
 
 	draw(func() { r.DrawIndicator(status) })
 	draw(func() { r.ClearIndicator() })
-	draw(func() { r.DrawPanelView(panels, 0, status, 0, false, "") })
-	draw(func() { r.DrawInput("test:", "val") })
+	draw(func() { r.DrawPanelView(panels, 0, status, 0, false, "", OverviewActions{}) })
 	draw(func() { r.DrawStatusBarMessage("msg") })
 	draw(func() { r.ClearStatusBarMessage() })
 	draw(func() { r.SetSize(80, 24) })

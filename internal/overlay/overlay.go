@@ -25,8 +25,7 @@ type State int
 const (
 	StateHidden        State = iota // No overlay visible, full PTY passthrough
 	StateIndicator                  // Status bar visible at bottom
-	StateMenu                       // Popup menu active
-	StateInput                      // Text input mode
+	StateMenu                       // Panel browser active
 	StateProcessViewer              // Process output viewer (temporary, while key held)
 )
 
@@ -194,25 +193,17 @@ type Overlay struct {
 	height int
 
 	// Display state
-	state       atomic.Int32 // State enum
-	showBar     atomic.Bool  // Whether indicator bar is visible
-	menuStack   []Menu
-	inputBuffer string
-	inputPrompt string
-	inputAction func(string) error
+	state   atomic.Int32 // State enum
+	showBar atomic.Bool  // Whether indicator bar is visible
 
 	// Status data
 	status   Status
 	statusMu sync.RWMutex
 
-	// Menu selection
-	selectedIndex int
-
 	// Panel navigation (niri-style horizontal panels)
-	panelIndex       int         // Current panel index (0 = overview)
-	panelItems       []PanelItem // Available panels built from status
-	panelMode        bool        // Whether in panel view (vs overview/menu)
-	directPanelEntry bool        // Entered panel mode directly (Ctrl+Arrow from indicator)
+	panelIndex int         // Current panel index (0 = overview)
+	panelItems []PanelItem // Available panels built from status
+	panelMode  bool        // Whether in panel view (vs indicator)
 
 	// Overview panel: interactive script selection
 	overviewSelectedIdx int // Selected script row in overview (0-based)
@@ -220,6 +211,15 @@ type Overlay struct {
 	// Command input mode (bottom of overview)
 	commandInput  bool   // Whether command input is active
 	commandBuffer string // Current command text being typed
+
+	// Overview global actions (summarize / reconnect)
+	summarizing      atomic.Bool  // AI summarize in flight (drives spinner + re-entrancy guard)
+	connecting       atomic.Bool  // daemon reconnect in flight (spinner + re-entrancy guard)
+	spinnerTick      atomic.Int64 // bumped by the action spinner ticker to advance frames
+	summarizeEnabled bool         // whether a summarizer is configured (gates the 'm' action; under mu)
+	summaryText      string       // latest AI summary (source for the summary panel; under mu)
+	summaryErr       string       // last summarize error, shown on the actions line (under mu)
+	connectErr       string       // last reconnect error, shown on the connection line (under mu)
 
 	// Rendering
 	renderer *Renderer
@@ -357,7 +357,7 @@ func (o *Overlay) State() State {
 // IsActive returns true if the overlay is capturing input.
 func (o *Overlay) IsActive() bool {
 	state := o.State()
-	return state == StateMenu || state == StateInput
+	return state == StateMenu
 }
 
 // ShowIndicator returns whether the indicator bar is visible.
@@ -409,85 +409,27 @@ func (o *Overlay) GetStatus() Status {
 	return o.status
 }
 
-// Show shows the overlay menu.
-func (o *Overlay) Show() {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	o.showMenu()
-}
-
-// Hide hides the overlay.
-func (o *Overlay) Hide() {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	o.hideMenu()
-}
-
-// ToggleIndicator toggles the indicator bar visibility.
-func (o *Overlay) ToggleIndicator() {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-
-	if o.showBar.Load() {
-		o.showBar.Store(false)
-		o.state.Store(int32(StateHidden))
-		o.renderer.ClearIndicator()
-	} else {
-		o.showBar.Store(true)
-		o.state.Store(int32(StateIndicator))
-		o.draw()
-	}
-}
-
-func (o *Overlay) showMenu() {
-	o.stopTransitionSpinnerLocked()
-	o.activateOverlay(true)
-	// Go directly to the overview panel
-	o.panelMode = true
-	o.panelIndex = 0
-	o.draw()
-}
-
 // showPanelDirect prepares the overlay to enter panel mode directly from the
-// indicator state (bypassing the menu overview). The caller should follow up
-// with handlePanelNav to navigate to the target panel.
+// indicator state. The caller should follow up with handlePanelNav to navigate
+// to the target panel.
 // Must be called with mu held.
 func (o *Overlay) showPanelDirect() {
-	o.activateOverlay(true)
-}
+	o.stopTransitionSpinnerLocked()
 
-// activateOverlay is the shared setup for opening the overlay.
-// When directPanel is true, the overlay enters panel mode directly (no draw);
-// when false, the normal menu overview is shown.
-// Must be called with mu held.
-func (o *Overlay) activateOverlay(directPanel bool) {
-	// Freeze PTY output so it doesn't corrupt the menu
+	// Freeze PTY output so it doesn't corrupt the panel view.
 	if o.gate != nil {
 		o.gate.Freeze()
 	}
 
 	// Use alt screen when child is on main screen (terminal restores content on exit).
 	// When child is in alt screen (fullscreen app), draw directly — SIGWINCH will
-	// trigger the child to redraw when the menu closes.
+	// trigger the child to redraw when the panel view closes.
 	o.usingAltScreen = !o.isChildInAltScreen()
 	if o.usingAltScreen {
 		o.renderer.EnterAltScreen()
 	}
 
 	o.state.Store(int32(StateMenu))
-
-	// Check daemon connection status and show appropriate menu
-	o.statusMu.RLock()
-	connected := o.status.DaemonConnected == ConnectionConnected
-	o.statusMu.RUnlock()
-
-	if connected {
-		o.menuStack = []Menu{MainMenu()}
-	} else {
-		o.menuStack = []Menu{DisconnectedMenu()}
-	}
-	o.selectedIndex = 0
-	o.directPanelEntry = directPanel
 	o.panelMode = false
 	o.panelIndex = 0
 	o.buildPanelItems()
@@ -504,6 +446,25 @@ func (o *Overlay) buildPanelItems() {
 	// Ensure overview exists at index 0
 	if len(o.panelItems) == 0 || o.panelItems[0].Type != "overview" {
 		o.panelItems = append([]PanelItem{{Type: "overview", Label: "overview"}}, o.panelItems...)
+	}
+
+	// Ensure the summary panel sits at index 1 once a summary exists. Inserted
+	// before the existing-panel index is built so later panels index correctly.
+	if o.summaryText != "" {
+		sumIdx := -1
+		for i, p := range o.panelItems {
+			if p.Type == "summary" {
+				sumIdx = i
+				break
+			}
+		}
+		if sumIdx == -1 {
+			o.panelItems = append(o.panelItems, PanelItem{})
+			copy(o.panelItems[2:], o.panelItems[1:])
+			o.panelItems[1] = PanelItem{Type: "summary", ID: "__summary", Label: "summary"}
+			sumIdx = 1
+		}
+		o.panelItems[sumIdx].SetContent(o.summaryText)
 	}
 
 	// Index existing panels
@@ -626,12 +587,9 @@ func (o *Overlay) hideMenu() {
 		}
 	}
 
-	o.menuStack = nil
-	o.inputBuffer = ""
 	o.panelMode = false
 	o.panelIndex = 0
 	// panelItems are intentionally NOT cleared — they persist across open/close
-	o.directPanelEntry = false
 
 	if o.showBar.Load() {
 		o.state.Store(int32(StateIndicator))
@@ -732,17 +690,12 @@ func (o *Overlay) draw() {
 	// Mode-specific content occupies the region above the bottom status row.
 	// Each screen leaves the bottom row free for the global status bar, which
 	// is drawn once below.
-	switch state {
-	case StateMenu:
-		if o.panelMode && len(o.panelItems) > 0 {
-			idx := o.panelIndex
-			if idx >= len(o.panelItems) {
-				idx = len(o.panelItems) - 1
-			}
-			o.renderer.DrawPanelView(o.panelItems, idx, status, o.overviewSelectedIdx, o.commandInput, o.commandBuffer)
+	if state == StateMenu && o.panelMode && len(o.panelItems) > 0 {
+		idx := o.panelIndex
+		if idx >= len(o.panelItems) {
+			idx = len(o.panelItems) - 1
 		}
-	case StateInput:
-		o.renderer.DrawInput(o.inputPrompt, o.inputBuffer)
+		o.renderer.DrawPanelView(o.panelItems, idx, status, o.overviewSelectedIdx, o.commandInput, o.commandBuffer, o.overviewActionsLocked())
 	}
 
 	// The status bar is the single global element shared by every visible
@@ -756,6 +709,38 @@ func (o *Overlay) Redraw() {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.draw()
+}
+
+// OverviewActions carries the transient global-action state rendered on the
+// overview panel's connection and actions lines.
+type OverviewActions struct {
+	SummarizeEnabled bool   // a summarizer is configured (show the 'm' action)
+	Summarizing      bool   // summarize in flight (spinner on the actions line)
+	SummaryErr       string // last summarize error
+	Connecting       bool   // reconnect in flight (spinner on the connection line)
+	ConnectErr       string // last reconnect error
+	SpinnerFrame     int    // current spinner frame index
+}
+
+// overviewActionsLocked snapshots the overview action state. Must be called
+// with mu held (draw path).
+func (o *Overlay) overviewActionsLocked() OverviewActions {
+	return OverviewActions{
+		SummarizeEnabled: o.summarizeEnabled,
+		Summarizing:      o.summarizing.Load(),
+		SummaryErr:       o.summaryErr,
+		Connecting:       o.connecting.Load(),
+		ConnectErr:       o.connectErr,
+		SpinnerFrame:     int(o.spinnerTick.Load()),
+	}
+}
+
+// SetSummarizeEnabled records whether a summarizer is configured. Gates the
+// overview 'm' action affordance.
+func (o *Overlay) SetSummarizeEnabled(enabled bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.summarizeEnabled = enabled
 }
 
 // DrawStatusBarMessage draws a message on the status bar.

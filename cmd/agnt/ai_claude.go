@@ -571,8 +571,6 @@ func runAiClaudeOverlay(ctx context.Context, opts *claude.AgentOptions, daemonHa
 	defer daemonConn.Close()
 
 	daemonClient := newDaemonClientAdapter(daemonConn)
-	bashRunner := overlay.NewDaemonBashRunner(daemonClient)
-	inputRouter.SetBashRunner(bashRunner)
 	outputFetcher := overlay.NewDaemonOutputFetcher(daemonClient)
 	inputRouter.SetOutputFetcher(outputFetcher)
 	daemonConnector := newDaemonConnector(daemonConn)

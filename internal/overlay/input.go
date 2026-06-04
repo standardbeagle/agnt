@@ -35,11 +35,6 @@ type DaemonClient interface {
 	RequestOK(verb string, payload interface{}, args ...string) error
 }
 
-// BashRunner is an interface for running bash commands via the daemon.
-type BashRunner interface {
-	RunBashCommand(command string) (processID string, err error)
-}
-
 // ProcessOutputFetcher is an interface for fetching process output from the daemon.
 type ProcessOutputFetcher interface {
 	// GetProcessOutput fetches the last N lines of output for a process.
@@ -88,7 +83,6 @@ type InputRouter struct {
 	running          atomic.Bool
 	done             chan struct{}
 	escReader        *EscapeSequenceReader
-	bashRunner       BashRunner
 	outputFetcher    ProcessOutputFetcher
 	daemonConnector  DaemonConnector
 	scriptController ScriptController
@@ -101,9 +95,6 @@ type InputRouter struct {
 
 	// Panel refresh ticker for live-tailing process output
 	panelRefreshStop chan struct{} // closed to stop the refresh goroutine
-
-	// Last error from daemon connection attempt
-	lastDaemonError string
 }
 
 // NewInputRouter creates a new InputRouter.
@@ -119,11 +110,6 @@ func NewInputRouter(ptmx PtyReadWriter, overlay *Overlay) *InputRouter {
 // SetScriptController sets the script controller for stopping/restarting scripts.
 func (r *InputRouter) SetScriptController(ctrl ScriptController) {
 	r.scriptController = ctrl
-}
-
-// SetBashRunner sets the bash runner for executing bash commands via the daemon.
-func (r *InputRouter) SetBashRunner(runner BashRunner) {
-	r.bashRunner = runner
 }
 
 // SetOutputFetcher sets the output fetcher for viewing process output.
@@ -149,14 +135,11 @@ func (r *InputRouter) SetStatusFetcher(fetcher *StatusFetcher) {
 	r.statusFetcher = fetcher
 }
 
-// SetSummarizer sets the summarizer for generating AI summaries.
+// SetSummarizer sets the summarizer for generating AI summaries and enables the
+// overview 'm' action affordance.
 func (r *InputRouter) SetSummarizer(summarizer StatusSummarizer) {
 	r.summarizer = summarizer
-}
-
-// GetLastDaemonError returns the last error from daemon connection attempt.
-func (r *InputRouter) GetLastDaemonError() string {
-	return r.lastDaemonError
+	r.overlay.SetSummarizeEnabled(summarizer != nil)
 }
 
 // Run starts routing input from stdin to either the overlay or PTY.
@@ -277,32 +260,23 @@ func (r *InputRouter) Stop() {
 func (r *InputRouter) handleOverlayInput(b byte) {
 	state := r.overlay.State()
 
-	switch state {
-	case StateMenu:
+	if state == StateMenu {
 		// Use escape sequence reader to handle arrow keys properly
 		key, complete := r.escReader.Feed(b)
 		if complete && key != "" {
 			r.handleMenuKey(key)
 		}
-	case StateInput:
-		r.handleTextInput(b)
 	}
 }
 
-// handleMenuKey handles parsed key input in menu mode.
+// handleMenuKey handles parsed key input in panel-browser mode.
 func (r *InputRouter) handleMenuKey(key string) {
 	r.overlay.mu.Lock()
 	defer r.overlay.mu.Unlock()
 
-	if len(r.overlay.menuStack) == 0 {
-		return
-	}
-
-	menu := r.overlay.menuStack[len(r.overlay.menuStack)-1]
-
 	// Handle "Escape+X" keys (when Escape is followed quickly by another key)
 	if strings.HasPrefix(key, "Escape+") {
-		// Just treat as Escape - close the menu
+		// Treat as Escape - close the panel view
 		r.stopPanelRefresh()
 		r.overlay.hideMenu()
 		return
@@ -310,11 +284,7 @@ func (r *InputRouter) handleMenuKey(key string) {
 
 	switch key {
 	case "Escape":
-		if r.overlay.panelMode {
-			r.exitPanelMode()
-			return
-		}
-		r.overlay.hideMenu()
+		r.exitPanelMode()
 		return
 
 	case "Ctrl+Right", "\t": // Ctrl+Right or Tab: next panel
@@ -326,145 +296,105 @@ func (r *InputRouter) handleMenuKey(key string) {
 		return
 
 	case "\r", "\n": // Enter
-		if r.overlay.panelMode {
-			if r.isOverviewWithScripts() {
-				r.overviewEnter()
-				return
-			}
-			return // No-op in other panel views
-		}
-		if r.overlay.selectedIndex >= 0 && r.overlay.selectedIndex < len(menu.Items) {
-			item := menu.Items[r.overlay.selectedIndex]
-			r.executeMenuItem(item)
+		if r.isOverviewWithScripts() {
+			r.overviewEnter()
 		}
 		return
 
 	case "Up", "k": // Up arrow or vim style
-		if r.overlay.panelMode {
-			if r.isOverviewWithScripts() {
-				if r.overlay.overviewSelectedIdx > 0 {
-					r.overlay.overviewSelectedIdx--
-					r.overlay.draw()
-				}
-				return
-			}
-			// Scroll up in panel content
-			if r.overlay.panelIndex >= 0 && r.overlay.panelIndex < len(r.overlay.panelItems) {
-				panel := &r.overlay.panelItems[r.overlay.panelIndex]
-				if panel.ScrollOffset < panel.ContentLines()-1 {
-					panel.ScrollOffset++
-					r.overlay.draw()
-				}
+		if r.isOverviewWithScripts() {
+			if r.overlay.overviewSelectedIdx > 0 {
+				r.overlay.overviewSelectedIdx--
+				r.overlay.draw()
 			}
 			return
 		}
-		if r.overlay.selectedIndex > 0 {
-			r.overlay.selectedIndex--
-			r.overlay.draw()
+		// Scroll up in panel content
+		if r.overlay.panelIndex >= 0 && r.overlay.panelIndex < len(r.overlay.panelItems) {
+			panel := &r.overlay.panelItems[r.overlay.panelIndex]
+			if panel.ScrollOffset < panel.ContentLines()-1 {
+				panel.ScrollOffset++
+				r.overlay.draw()
+			}
 		}
 		return
 
 	case "Down", "j": // Down arrow or vim style
-		if r.overlay.panelMode {
-			if r.isOverviewWithScripts() {
-				r.overlay.statusMu.RLock()
-				scriptCount := len(r.overlay.status.Scripts)
-				r.overlay.statusMu.RUnlock()
-				if r.overlay.overviewSelectedIdx < scriptCount-1 {
-					r.overlay.overviewSelectedIdx++
-					r.overlay.draw()
-				}
-				return
-			}
-			// Scroll down in panel content (toward bottom)
-			if r.overlay.panelIndex >= 0 && r.overlay.panelIndex < len(r.overlay.panelItems) {
-				panel := &r.overlay.panelItems[r.overlay.panelIndex]
-				if panel.ScrollOffset > 0 {
-					panel.ScrollOffset--
-					r.overlay.draw()
-				}
+		if r.isOverviewWithScripts() {
+			r.overlay.statusMu.RLock()
+			scriptCount := len(r.overlay.status.Scripts)
+			r.overlay.statusMu.RUnlock()
+			if r.overlay.overviewSelectedIdx < scriptCount-1 {
+				r.overlay.overviewSelectedIdx++
+				r.overlay.draw()
 			}
 			return
 		}
-		if r.overlay.selectedIndex < len(menu.Items)-1 {
-			r.overlay.selectedIndex++
-			r.overlay.draw()
+		// Scroll down in panel content (toward bottom)
+		if r.overlay.panelIndex >= 0 && r.overlay.panelIndex < len(r.overlay.panelItems) {
+			panel := &r.overlay.panelItems[r.overlay.panelIndex]
+			if panel.ScrollOffset > 0 {
+				panel.ScrollOffset--
+				r.overlay.draw()
+			}
 		}
 		return
 
-	case "Right": // Plain right arrow enters panel mode on first panel
-		if !r.overlay.panelMode && len(r.overlay.panelItems) > 1 {
-			r.handlePanelNav(1)
-			return
-		}
-
-	case "Left": // Plain left arrow in panel mode goes back
-		if r.overlay.panelMode {
-			r.handlePanelNav(-1)
-			return
-		}
+	case "Left": // Plain left arrow goes back a panel
+		r.handlePanelNav(-1)
+		return
 
 	case "q": // Quick close
-		if r.overlay.panelMode {
-			r.exitPanelMode()
-			return
-		}
-		r.overlay.hideMenu()
+		r.exitPanelMode()
 		return
 
 	case "x": // Close current panel (only if process has stopped)
-		if r.overlay.panelMode {
-			r.closeCurrentPanel()
-			return
-		}
-	}
-
-	// Check for 1-9 to view process output
-	// In panel mode: jump to the Nth process panel
-	// In menu mode: open the legacy process viewer
-	if len(key) == 1 && key[0] >= '1' && key[0] <= '9' {
-		processNum := int(key[0] - '0')
-
-		// Try to jump to the process panel directly
-		if len(r.overlay.panelItems) > 0 {
-			procIdx := 0
-			for i, p := range r.overlay.panelItems {
-				if p.Type == "process" {
-					procIdx++
-					if procIdx == processNum {
-						// Navigate directly to this panel
-						r.overlay.panelIndex = i
-						r.overlay.panelMode = true
-
-						panel := &r.overlay.panelItems[i]
-						if panel.Type == "process" && r.outputFetcher != nil {
-							r.fetchScriptOutput(panel)
-							r.startPanelRefresh(panel.ID)
-						}
-
-						r.overlay.renderer.ClearScreen()
-						r.overlay.draw()
-						return
-					}
-				}
-			}
-		}
-
-		// Fallback: legacy process viewer
-		r.overlay.hideMenu()
-		r.overlay.mu.Unlock()
-		r.showProcessViewer(processNum)
-		r.overlay.mu.Lock()
+		r.closeCurrentPanel()
 		return
 	}
 
-	// Overview panel: intercept 's' (stop) and 'r' (restart) for selected script
+	// 1-9: jump to the Nth process panel
+	if len(key) == 1 && key[0] >= '1' && key[0] <= '9' {
+		processNum := int(key[0] - '0')
+		procIdx := 0
+		for i, p := range r.overlay.panelItems {
+			if p.Type == "process" {
+				procIdx++
+				if procIdx == processNum {
+					r.overlay.panelIndex = i
+					panel := &r.overlay.panelItems[i]
+					if r.outputFetcher != nil {
+						r.fetchScriptOutput(panel)
+						r.startPanelRefresh(panel.ID)
+					}
+					r.overlay.renderer.ClearScreen()
+					r.overlay.draw()
+					return
+				}
+			}
+		}
+		return
+	}
+
 	// Command input mode: all keys go to the command buffer
 	if r.overlay.commandInput {
 		r.handleCommandInput(key)
 		return
 	}
 
+	// Overview panel global actions (work with or without scripts)
+	if r.isOverviewPanel() && len(key) == 1 {
+		switch key[0] {
+		case 'm', 'M':
+			r.startSummarize()
+			return
+		case 'c', 'C':
+			r.startReconnect()
+			return
+		}
+	}
+
+	// Overview panel script actions (require a selected script)
 	if r.isOverviewWithScripts() && len(key) == 1 {
 		switch key[0] {
 		case 's', 'S':
@@ -481,18 +411,6 @@ func (r *InputRouter) handleMenuKey(key string) {
 			r.overlay.commandBuffer = ""
 			r.overlay.draw()
 			return
-		}
-	}
-
-	// Check for shortcut keys (single character keys)
-	if len(key) == 1 {
-		b := key[0]
-		for i, item := range menu.Items {
-			if item.Shortcut != 0 && (byte(item.Shortcut) == b || byte(item.Shortcut)|0x20 == b|0x20) {
-				r.overlay.selectedIndex = i
-				r.executeMenuItem(item)
-				return
-			}
 		}
 	}
 }
@@ -605,6 +523,130 @@ func (r *InputRouter) overviewStartScript() {
 	_ = r.scriptController.StartScript(name)
 	r.overlay.mu.Lock()
 	r.overlay.draw()
+}
+
+// isOverviewPanel reports whether the overview panel is focused. Unlike
+// isOverviewWithScripts it does not require any scripts, so global actions
+// (summarize / reconnect) work on an empty project.
+// Must be called with overlay.mu held.
+func (r *InputRouter) isOverviewPanel() bool {
+	if !r.overlay.panelMode || r.overlay.panelIndex != 0 {
+		return false
+	}
+	return len(r.overlay.panelItems) > 0 && r.overlay.panelItems[0].Type == "overview"
+}
+
+// startSummarize kicks off an async AI status summarize. The result is shown in
+// a dedicated scrollable summary panel (not injected into the PTY).
+// Must be called with overlay.mu held.
+func (r *InputRouter) startSummarize() {
+	if r.summarizer == nil || r.overlay.summarizing.Load() {
+		return
+	}
+	if !r.summarizer.IsAvailable() {
+		r.overlay.summaryErr = "AI agent not available in PATH"
+		r.overlay.draw()
+		return
+	}
+	r.overlay.summaryErr = ""
+	r.overlay.summarizing.Store(true)
+	r.overlay.draw()
+	r.startActionSpinner(&r.overlay.summarizing)
+	go r.runSummarize()
+}
+
+// runSummarize performs the summarize call off the overlay lock and publishes
+// the result to the summary panel.
+func (r *InputRouter) runSummarize() {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	result, err := r.summarizer.Summarize(ctx)
+	cancel()
+
+	r.overlay.mu.Lock()
+	defer r.overlay.mu.Unlock()
+	r.overlay.summarizing.Store(false)
+
+	if err != nil {
+		r.overlay.summaryErr = err.Error()
+		r.overlay.draw()
+		return
+	}
+	if result == nil || result.Summary == "" {
+		r.overlay.summaryErr = "summarizer returned no content"
+		r.overlay.draw()
+		return
+	}
+
+	r.overlay.summaryText = result.Summary
+	r.overlay.buildPanelItems()
+	for i, p := range r.overlay.panelItems {
+		if p.Type == "summary" {
+			r.overlay.panelIndex = i
+			r.overlay.panelMode = true
+			break
+		}
+	}
+	r.overlay.renderer.ClearScreen()
+	r.overlay.draw()
+}
+
+// startReconnect kicks off an async daemon reconnect. No-op when already
+// connected or a reconnect is in flight.
+// Must be called with overlay.mu held.
+func (r *InputRouter) startReconnect() {
+	if r.daemonConnector == nil || r.overlay.connecting.Load() {
+		return
+	}
+	r.overlay.statusMu.RLock()
+	connected := r.overlay.status.DaemonConnected == ConnectionConnected
+	r.overlay.statusMu.RUnlock()
+	if connected {
+		return
+	}
+	r.overlay.connectErr = ""
+	r.overlay.connecting.Store(true)
+	r.overlay.draw()
+	r.startActionSpinner(&r.overlay.connecting)
+	go r.runReconnect()
+}
+
+// runReconnect performs the connect off the overlay lock and refreshes status
+// on success.
+func (r *InputRouter) runReconnect() {
+	err := r.daemonConnector.Connect()
+
+	r.overlay.mu.Lock()
+	r.overlay.connecting.Store(false)
+	if err != nil {
+		r.overlay.connectErr = err.Error()
+		r.overlay.draw()
+		r.overlay.mu.Unlock()
+		return
+	}
+	r.overlay.mu.Unlock()
+
+	// Refresh daemon-backed status so the connection line and panels update.
+	if r.statusFetcher != nil {
+		r.statusFetcher.Refresh()
+	}
+	r.overlay.Redraw()
+}
+
+// startActionSpinner advances the overview spinner frame and redraws while the
+// given action flag is set. Exits when the flag clears.
+func (r *InputRouter) startActionSpinner(active *atomic.Bool) {
+	go func() {
+		ticker := time.NewTicker(100 * time.Millisecond)
+		defer ticker.Stop()
+		for active.Load() {
+			<-ticker.C
+			if !active.Load() {
+				return
+			}
+			r.overlay.spinnerTick.Add(1)
+			r.overlay.Redraw()
+		}
+	}()
 }
 
 // handleCommandInput processes keystrokes while the command input is active.
@@ -868,245 +910,6 @@ func (r *InputRouter) enterPanelBrowse(delta int) {
 	r.overlay.panelIndex = 0
 	r.overlay.renderer.ClearScreen()
 	r.overlay.draw()
-}
-
-// handleTextInput handles input in text input mode.
-func (r *InputRouter) handleTextInput(b byte) {
-	r.overlay.mu.Lock()
-	defer r.overlay.mu.Unlock()
-
-	switch b {
-	case 0x1b: // Escape - cancel
-		r.overlay.inputBuffer = ""
-		r.overlay.hideMenu()
-		return
-
-	case 0x0d, 0x0a: // Enter - submit
-		if r.overlay.inputAction != nil && r.overlay.inputBuffer != "" {
-			action := r.overlay.inputAction
-			value := r.overlay.inputBuffer
-			r.overlay.inputBuffer = ""
-			r.overlay.hideMenu()
-
-			// Execute action outside of lock
-			r.overlay.mu.Unlock()
-			action(value)
-			r.overlay.mu.Lock()
-		}
-		return
-
-	case 0x7f, 0x08: // Backspace
-		if len(r.overlay.inputBuffer) > 0 {
-			r.overlay.inputBuffer = r.overlay.inputBuffer[:len(r.overlay.inputBuffer)-1]
-			r.overlay.draw()
-		}
-		return
-
-	case 0x15: // Ctrl+U - clear line
-		r.overlay.inputBuffer = ""
-		r.overlay.draw()
-		return
-
-	case 0x17: // Ctrl+W - delete word
-		// Simple word deletion
-		buf := r.overlay.inputBuffer
-		for len(buf) > 0 && buf[len(buf)-1] == ' ' {
-			buf = buf[:len(buf)-1]
-		}
-		for len(buf) > 0 && buf[len(buf)-1] != ' ' {
-			buf = buf[:len(buf)-1]
-		}
-		r.overlay.inputBuffer = buf
-		r.overlay.draw()
-		return
-	}
-
-	// Regular character input
-	if b >= 0x20 && b < 0x7f {
-		r.overlay.inputBuffer += string(b)
-		r.overlay.draw()
-	}
-}
-
-// executeMenuItem executes the selected menu item.
-func (r *InputRouter) executeMenuItem(item MenuItem) {
-	// Handle sub-menu navigation
-	if item.SubMenu != nil {
-		// Clear the parent menu before showing submenu
-		r.overlay.renderer.ClearCurrentMenu()
-		r.overlay.menuStack = append(r.overlay.menuStack, *item.SubMenu)
-		r.overlay.selectedIndex = 0
-		r.overlay.draw()
-		return
-	}
-
-	// Handle actions
-	switch item.Action {
-	case ActionClose:
-		if len(r.overlay.menuStack) > 1 {
-			// Pop sub-menu
-			r.overlay.menuStack = r.overlay.menuStack[:len(r.overlay.menuStack)-1]
-			r.overlay.selectedIndex = 0
-			r.overlay.draw()
-		} else {
-			// Close overlay
-			r.overlay.hideMenu()
-		}
-
-	case ActionBashCommand:
-		r.overlay.state.Store(int32(StateInput))
-		r.overlay.inputPrompt = "Bash Command"
-		r.overlay.inputBuffer = ""
-		r.overlay.inputAction = func(cmd string) error {
-			if r.bashRunner != nil {
-				// Run the command via the daemon (tracked and logged)
-				_, err := r.bashRunner.RunBashCommand(cmd)
-				if err != nil {
-					return err
-				}
-			} else {
-				// Fallback: Type the command into the PTY
-				io.WriteString(r.ptmx, cmd+"\n")
-			}
-			return nil
-		}
-		r.overlay.draw()
-
-	case ActionToggleIndicator:
-		r.overlay.hideMenu()
-		// Toggle is handled after hide
-		r.overlay.mu.Unlock()
-		r.overlay.ToggleIndicator()
-		r.overlay.mu.Lock()
-
-	case ActionRefreshStatus:
-		// Trigger status refresh callback
-		if r.overlay.onAction != nil {
-			r.overlay.mu.Unlock()
-			r.overlay.onAction(ActionRefreshStatus)
-			r.overlay.mu.Lock()
-		}
-		r.overlay.draw()
-
-	case ActionShowProcesses:
-		// Clear current menu before showing process list
-		r.overlay.renderer.ClearCurrentMenu()
-		status := r.overlay.GetStatus()
-		menu := ProcessListMenu(status.Processes)
-		r.overlay.menuStack = append(r.overlay.menuStack, menu)
-		r.overlay.selectedIndex = 0
-		r.overlay.draw()
-
-	case ActionShowProxies:
-		// Clear current menu before showing proxy list
-		r.overlay.renderer.ClearCurrentMenu()
-		status := r.overlay.GetStatus()
-		menu := ProxyListMenu(status.Proxies)
-		r.overlay.menuStack = append(r.overlay.menuStack, menu)
-		r.overlay.selectedIndex = 0
-		r.overlay.draw()
-
-	case ActionConnectDaemon:
-		r.lastDaemonError = ""
-		if r.daemonConnector != nil {
-			// Release lock during potentially slow operation
-			r.overlay.mu.Unlock()
-			err := r.daemonConnector.Connect()
-			r.overlay.mu.Lock()
-
-			if err != nil {
-				r.lastDaemonError = err.Error()
-				// Show error menu
-				errorMenu := ErrorMenu("Connection Failed", err.Error())
-				r.overlay.menuStack = append(r.overlay.menuStack, errorMenu)
-				r.overlay.selectedIndex = 0
-				r.overlay.draw()
-			} else {
-				// Connection successful - refresh status and switch to main menu
-				r.overlay.mu.Unlock()
-				if r.statusFetcher != nil {
-					r.statusFetcher.Refresh()
-				}
-				r.overlay.mu.Lock()
-				r.overlay.menuStack = []Menu{MainMenu()}
-				r.overlay.selectedIndex = 0
-				r.overlay.draw()
-			}
-		}
-
-	case ActionSummarize:
-		r.overlay.hideMenu()
-		if r.summarizer == nil {
-			// No summarizer configured - show error
-			r.overlay.mu.Unlock()
-			io.WriteString(r.ptmx, "\r\n[agnt] No AI summarizer configured\r\n")
-			r.overlay.mu.Lock()
-			return
-		}
-		if !r.summarizer.IsAvailable() {
-			// AI agent not available
-			r.overlay.mu.Unlock()
-			io.WriteString(r.ptmx, "\r\n[agnt] AI agent not available in PATH\r\n")
-			r.overlay.mu.Lock()
-			return
-		}
-
-		// Release lock during AI call (can take time)
-		r.overlay.mu.Unlock()
-
-		// Start spinner in status bar
-		spinnerDone := make(chan struct{})
-		go func() {
-			frames := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
-			i := 0
-			// Initial message on status bar
-			r.overlay.DrawStatusBarMessage(fmt.Sprintf("%s Summarizing system status...", frames[0]))
-			ticker := time.NewTicker(100 * time.Millisecond)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-spinnerDone:
-					return
-				case <-ticker.C:
-					i = (i + 1) % len(frames)
-					// Update spinner on status bar (in place)
-					r.overlay.DrawStatusBarMessage(fmt.Sprintf("%s Summarizing system status...", frames[i]))
-				}
-			}
-		}()
-
-		// Call summarizer with 2 minute timeout
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		result, err := r.summarizer.Summarize(ctx)
-		cancel()
-
-		// Stop spinner and restore status bar
-		close(spinnerDone)
-		// Small delay to ensure spinner cleanup completes
-		time.Sleep(50 * time.Millisecond)
-		// Restore the normal status bar indicator
-		r.overlay.RedrawIndicator()
-
-		if err != nil {
-			io.WriteString(r.ptmx, "\r\n[agnt] Summary failed: "+err.Error()+"\r\n")
-		} else {
-			// Inject summary into PTY
-			io.WriteString(r.ptmx, "\r\n--- Status Summary ---\r\n")
-			io.WriteString(r.ptmx, result.Summary)
-			io.WriteString(r.ptmx, "\r\n--- End Summary ---\r\n")
-		}
-		r.overlay.mu.Lock()
-
-	default:
-		// Trigger action callback
-		if r.overlay.onAction != nil {
-			action := item.Action
-			r.overlay.hideMenu()
-			r.overlay.mu.Unlock()
-			r.overlay.onAction(action)
-			r.overlay.mu.Lock()
-		}
-	}
 }
 
 // DebugWin32Input enables logging of win32-input-mode parsing
