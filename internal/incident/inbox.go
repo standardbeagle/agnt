@@ -15,17 +15,23 @@ const (
 	numBands            = 4
 	staleReadAge        = 5 * time.Minute
 	subChanBuf          = 16
+	maxSampleURLs       = 10  // distinct sample URLs surfaced on a storm entry
+	maxDistinctURLs     = 128 // hard cap so a flood cannot grow the set unbounded
 )
 
 // InboxEntry is a deduplicated, severity-banded record of an incident fingerprint.
 type InboxEntry struct {
-	Fingerprint string         `json:"fingerprint"`
-	FirstSeenAt time.Time      `json:"first_seen_at"`
-	LastSeenAt  time.Time      `json:"last_seen_at"`
-	Count       int            `json:"count"`
-	Sample      *IncidentEvent `json:"sample,omitempty"`
-	Severity    Severity       `json:"severity"`
-	Read        bool           `json:"read"`
+	Fingerprint  string         `json:"fingerprint"`
+	FirstSeenAt  time.Time      `json:"first_seen_at"`
+	LastSeenAt   time.Time      `json:"last_seen_at"`
+	Count        int            `json:"count"`
+	Sample       *IncidentEvent `json:"sample,omitempty"`
+	SampleURLs   []string       `json:"sample_urls,omitempty"`   // up to maxSampleURLs distinct
+	DistinctURLs int            `json:"distinct_urls,omitempty"` // distinct URLs seen, capped
+	Severity     Severity       `json:"severity"`
+	Read         bool           `json:"read"`
+
+	urlSeen map[string]struct{} // unexported: distinct-URL set, capped at maxDistinctURLs
 }
 
 // InboxDelta is delivered to Subscribe subscribers on each Ingest.
@@ -113,6 +119,30 @@ func bandIndex(sev Severity) int {
 	}
 }
 
+// addSampleURL records url against entry for storm rendering. It keeps up to
+// maxSampleURLs distinct sample strings and counts distinct URLs up to
+// maxDistinctURLs so memory stays bounded under a flood. Empty urls are ignored.
+// Callers must hold the owning band's lock (or own the entry pre-insert).
+func addSampleURL(entry *InboxEntry, url string) {
+	if url == "" {
+		return
+	}
+	if entry.urlSeen == nil {
+		entry.urlSeen = make(map[string]struct{})
+	}
+	if _, ok := entry.urlSeen[url]; ok {
+		return
+	}
+	if len(entry.urlSeen) >= maxDistinctURLs {
+		return
+	}
+	entry.urlSeen[url] = struct{}{}
+	entry.DistinctURLs = len(entry.urlSeen)
+	if len(entry.SampleURLs) < maxSampleURLs {
+		entry.SampleURLs = append(entry.SampleURLs, url)
+	}
+}
+
 // Ingest adds or merges an InboxEntry into the appropriate severity band.
 // If the fingerprint already exists in any band, Count is incremented and
 // LastSeenAt updated; severity escalation moves the entry to a higher band.
@@ -131,6 +161,9 @@ func (inbox *Inbox) Ingest(entry *InboxEntry) InboxDelta {
 
 		existing := slot.entry
 		existing.Count += entry.Count
+		if entry.Sample != nil {
+			addSampleURL(existing, entry.Sample.Ctx.URL)
+		}
 		if entry.LastSeenAt.After(existing.LastSeenAt) {
 			existing.LastSeenAt = entry.LastSeenAt
 			existing.Sample = entry.Sample
@@ -154,6 +187,9 @@ func (inbox *Inbox) Ingest(entry *InboxEntry) InboxDelta {
 	}
 
 	// First occurrence of this fingerprint.
+	if entry.Sample != nil {
+		addSampleURL(entry, entry.Sample.Ctx.URL)
+	}
 	inbox.insertIntoBand(inbox.bands[newIdx], entry)
 	delta := InboxDelta{Entry: entry, IsNew: true}
 	inbox.broadcast(delta)
