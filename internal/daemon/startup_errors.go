@@ -81,6 +81,70 @@ func (s *StartupLogStore) Error(processID, scriptName, eventType, message string
 	})
 }
 
+// startupLogger binds a StartupLogStore to a single project path so every
+// entry it records is automatically stamped with that project's ProcessID
+// prefix (makeProcessID(projectPath, scriptName)).
+//
+// Project scoping of the startup log is a structural property of this type:
+// the default startup_log / get_errors query is project-scoped and filters
+// by the "basename-hash:" ProcessID prefix (see StartupLogFilter.ProjectPath).
+// The raw store helpers take a free-form ProcessID, which made it easy to
+// record a project event with an empty ProcessID — those entries silently
+// failed the prefix match and were invisible to every non-global query. The
+// logger removes that footgun: callers pass only the script/proxy name (or ""
+// for a project-level event) and the project stamp is applied unconditionally.
+// makeProcessID(projectPath, "") yields exactly the scoped prefix, so even
+// nameless project-level events remain visible to a scoped query.
+//
+// Genuinely daemon-wide events (shutdown, orphan scans) that must remain
+// global-only deliberately bypass this logger and call the store directly with
+// no project path.
+type startupLogger struct {
+	store       *StartupLogStore
+	projectPath string
+}
+
+// startupLog returns a project-bound logger over the daemon's startup log store.
+func (d *Daemon) startupLog(projectPath string) *startupLogger {
+	return &startupLogger{store: d.startupErrorStore, projectPath: projectPath}
+}
+
+func (l *startupLogger) record(level, name, eventType, message string, port int) {
+	if l == nil || l.store == nil {
+		return
+	}
+	l.store.Add(&StartupLogEntry{
+		ProcessID:  makeProcessID(l.projectPath, name),
+		ScriptName: name,
+		Level:      level,
+		EventType:  eventType,
+		Message:    message,
+		Port:       port,
+		Timestamp:  time.Now(),
+	})
+}
+
+// Info, Warn, Error record a project-stamped entry. name is the script/proxy
+// name, or "" for a project-level event (still scoped via the project prefix).
+func (l *startupLogger) Info(name, eventType, message string) {
+	l.record("info", name, eventType, message, 0)
+}
+func (l *startupLogger) Warn(name, eventType, message string) {
+	l.record("warning", name, eventType, message, 0)
+}
+func (l *startupLogger) Error(name, eventType, message string) {
+	l.record("error", name, eventType, message, 0)
+}
+
+// WarnPort and ErrorPort record a port-bearing entry (port conflicts,
+// listen-port clashes) so the offending port survives into the log.
+func (l *startupLogger) WarnPort(name, eventType, message string, port int) {
+	l.record("warning", name, eventType, message, port)
+}
+func (l *startupLogger) ErrorPort(name, eventType, message string, port int) {
+	l.record("error", name, eventType, message, port)
+}
+
 // StartupLogFilter controls which entries are returned by Query.
 type StartupLogFilter struct {
 	Since     time.Time

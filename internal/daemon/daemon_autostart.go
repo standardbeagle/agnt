@@ -86,8 +86,7 @@ func (d *Daemon) RunAutostartNonInteractive(ctx context.Context, projectPath str
 		d.nonInteractiveConfigOverride.Store(projectPath, agntConfig)
 		defer d.nonInteractiveConfigOverride.Delete(projectPath)
 
-		log := d.startupErrorStore
-		log.Info("", "", "autostart_non_interactive",
+		d.startupLog(projectPath).Info("", "autostart_non_interactive",
 			fmt.Sprintf("port-conflict policy overridden from prompt to skip (non-interactive) for %s", projectPath))
 	}
 
@@ -110,20 +109,23 @@ func (d *Daemon) RunAutostartAsync(
 	progress chan<- AutostartProgress,
 ) *AutostartResult {
 	result := &AutostartResult{}
-	log := d.startupErrorStore // short alias
 
 	// Step 1: Validate input
 	if projectPath == "" {
-		log.Error("", "", "autostart", "projectPath is empty")
+		d.startupLog("").Error("", "autostart", "projectPath is empty")
 		return result
 	}
 
 	// Normalize path so script registry keys match lookup queries.
 	// On Windows, normalizePath lowercases the path for case-insensitive
 	// matching, which prevents mismatches between Register and List.
+	// Bind the logger AFTER normalization so every entry's ProcessID prefix
+	// matches what the project-scoped startup_log query derives.
 	projectPath = normalizePath(projectPath)
 
-	log.Info("", "", "autostart", fmt.Sprintf("starting autostart for %s", projectPath))
+	log := d.startupLog(projectPath)
+
+	log.Info("", "autostart", fmt.Sprintf("starting autostart for %s", projectPath))
 
 	// Step 2: Load .agnt.kdl (or use non-interactive override if present).
 	var agntConfig *config.AgntConfig
@@ -133,15 +135,15 @@ func (d *Daemon) RunAutostartAsync(
 		var err error
 		agntConfig, err = config.LoadAgntConfig(projectPath)
 		if err != nil {
-			log.Error("", "", "config_error", fmt.Sprintf("failed to load .agnt.kdl from %s: %v", projectPath, err))
+			log.Error("", "config_error", fmt.Sprintf("failed to load .agnt.kdl from %s: %v", projectPath, err))
 			return result
 		}
 	}
 	if agntConfig == nil {
-		log.Info("", "", "no_config", fmt.Sprintf("no .agnt.kdl in %s", projectPath))
+		log.Info("", "no_config", fmt.Sprintf("no .agnt.kdl in %s", projectPath))
 		return result
 	}
-	log.Info("", "", "config_loaded", fmt.Sprintf("%d scripts, %d proxies from %s", len(agntConfig.Scripts), len(agntConfig.Proxies), projectPath))
+	log.Info("", "config_loaded", fmt.Sprintf("%d scripts, %d proxies from %s", len(agntConfig.Scripts), len(agntConfig.Proxies), projectPath))
 
 	// Apply alerts subsystem config (hold buffer, transport thresholds).
 	// Safe to run on every autostart; latest values win.
@@ -156,36 +158,22 @@ func (d *Daemon) RunAutostartAsync(
 		policy := agntConfig.EffectivePortConflictPolicy()
 
 		for _, c := range conflicts {
-			log.Add(&StartupLogEntry{
-				ProcessID:  makeProcessID(projectPath, c.ScriptName),
-				ScriptName: c.ScriptName,
-				Level:      "warning",
-				EventType:  "port_conflict_detected",
-				Message:    fmt.Sprintf("port %d blocked by %s (PIDs: %v)", c.Port, c.ProcessName, c.PIDs),
-				Port:       c.Port,
-				Timestamp:  time.Now(),
-			})
+			log.WarnPort(c.ScriptName, "port_conflict_detected",
+				fmt.Sprintf("port %d blocked by %s (PIDs: %v)", c.Port, c.ProcessName, c.PIDs), c.Port)
 		}
 
 		switch policy {
 		case "fail":
 			msg := fmt.Sprintf("port conflicts detected, aborting (port-conflict: fail): %d conflict(s)", len(conflicts))
-			log.Error("", "", "port_conflict_abort", msg)
+			log.Error("", "port_conflict_abort", msg)
 			result.Errors = append(result.Errors, msg)
 			result.PortConflicts = conflicts
 			return result
 
 		case "skip":
 			for _, c := range conflicts {
-				log.Add(&StartupLogEntry{
-					ProcessID:  makeProcessID(projectPath, c.ScriptName),
-					ScriptName: c.ScriptName,
-					Level:      "warning",
-					EventType:  "port_conflict_skipped",
-					Message:    fmt.Sprintf("port %d conflict skipped (policy: skip)", c.Port),
-					Port:       c.Port,
-					Timestamp:  time.Now(),
-				})
+				log.WarnPort(c.ScriptName, "port_conflict_skipped",
+					fmt.Sprintf("port %d conflict skipped (policy: skip)", c.Port), c.Port)
 			}
 
 		case "auto-kill":
@@ -193,12 +181,10 @@ func (d *Daemon) RunAutostartAsync(
 			for _, kr := range killResults {
 				if kr.Killed {
 					result.PortsCleared = append(result.PortsCleared, kr.PortConflict)
-					log.Info(makeProcessID(projectPath, kr.ScriptName), kr.ScriptName,
-						"port_conflict_killed",
+					log.Info(kr.ScriptName, "port_conflict_killed",
 						fmt.Sprintf("cleared port %d (was: %s PIDs %v)", kr.Port, kr.ProcessName, kr.PIDs))
 				} else {
-					log.Error(makeProcessID(projectPath, kr.ScriptName), kr.ScriptName,
-						"port_conflict_failed", kr.Error)
+					log.Error(kr.ScriptName, "port_conflict_failed", kr.Error)
 					result.Errors = append(result.Errors, kr.Error)
 				}
 			}
@@ -274,13 +260,13 @@ func (d *Daemon) collectManagedPIDs() map[int]bool {
 // starts autostart scripts in dependency order, then starts proxies.
 // Shared by RunAutostartAsync and resumeAutostart.
 func (d *Daemon) registerAndStartScripts(ctx context.Context, cfg *config.AgntConfig, projectPath string, result *AutostartResult, progress chan<- AutostartProgress) {
-	log := d.startupErrorStore
+	log := d.startupLog(projectPath)
 
 	for name, scriptCfg := range cfg.Scripts {
 		processID := makeProcessID(projectPath, name)
 		d.scriptConfigs.Store(processID, scriptCfg)
 		if _, err := d.scriptRegistry.Register(name, projectPath, scriptConfigToEntry(scriptCfg)); err != nil {
-			log.Error(processID, name, "register_failed", fmt.Sprintf("failed to register script: %v", err))
+			log.Error(name, "register_failed", fmt.Sprintf("failed to register script: %v", err))
 		}
 	}
 
@@ -293,7 +279,7 @@ func (d *Daemon) registerAndStartScripts(ctx context.Context, cfg *config.AgntCo
 			if d.autoRestarter != nil {
 				d.autoRestarter.Unregister(entry.ProcessID)
 			}
-			log.Info(entry.ProcessID, entry.Name, "pruned_stale_script",
+			log.Info(entry.Name, "pruned_stale_script",
 				fmt.Sprintf("removed script %q (no longer in config)", entry.Name))
 		}
 	}
@@ -306,7 +292,7 @@ func (d *Daemon) registerAndStartScripts(ctx context.Context, cfg *config.AgntCo
 		if existing, err := d.hub.ProcessManager().Get(processID); err == nil {
 			state := existing.State()
 			if state != process.StateRunning && state != process.StateStarting {
-				log.Info(processID, name, "stale_cleanup",
+				log.Info(name, "stale_cleanup",
 					fmt.Sprintf("removing stale process (state=%s)", state))
 				d.hub.ProcessManager().RemoveByPath(processID, projectPath)
 			}
@@ -338,7 +324,7 @@ func (d *Daemon) resumeAutostart(ctx context.Context, projectPath string) *Autos
 // Pure layer orchestration: topo sort + per-layer waitgroup + context
 // cancellation select. Per-script work lives in startOneScript.
 func (d *Daemon) startAutostartScripts(ctx context.Context, cfg *config.AgntConfig, projectPath string, result *AutostartResult, progress chan<- AutostartProgress) map[string]bool {
-	log := d.startupErrorStore
+	log := d.startupLog(projectPath)
 	autostartScripts := cfg.GetAutostartScripts()
 	proxyConfigs := cfg.Proxies
 	failedScripts := make(map[string]bool)
@@ -349,7 +335,7 @@ func (d *Daemon) startAutostartScripts(ctx context.Context, cfg *config.AgntConf
 
 	layers, sortErr := config.TopologicalSort(autostartScripts)
 	if sortErr != nil {
-		log.Error("", "", "dependency_sort", fmt.Sprintf("topological sort failed: %v", sortErr))
+		log.Error("", "dependency_sort", fmt.Sprintf("topological sort failed: %v", sortErr))
 		result.Errors = append(result.Errors, fmt.Sprintf("dependency sort: %v", sortErr))
 		return failedScripts
 	}
@@ -443,7 +429,7 @@ func (d *Daemon) startOneScript(
 	failedScripts map[string]bool,
 	progress chan<- AutostartProgress,
 ) {
-	log := d.startupErrorStore
+	log := d.startupLog(projectPath)
 	processID := makeProcessID(projectPath, name)
 
 	// Idempotent fast path: if the script is already running (e.g. a previous
@@ -452,7 +438,7 @@ func (d *Daemon) startOneScript(
 	if entry, ok := d.scriptRegistry.Get(name, projectPath); ok {
 		state := entry.State()
 		if state == script.StateRunning || state == script.StateStarting {
-			log.Info(processID, name, "already_running",
+			log.Info(name, "already_running",
 				fmt.Sprintf("%s already %s, skipping", name, state.String()))
 			d.setupReadinessSignal(processID, name, scriptCfg, proxyConfigs, projectPath)
 			resultMu.Lock()
@@ -472,9 +458,9 @@ func (d *Daemon) startOneScript(
 		return
 	}
 
-	log.Info(processID, name, "starting", fmt.Sprintf("starting %s (layer %d)", name, layerIdx))
+	log.Info(name, "starting", fmt.Sprintf("starting %s (layer %d)", name, layerIdx))
 	if err := d.autostartScript(ctx, name, scriptCfg, projectPath, proxyConfigs); err != nil {
-		log.Error(processID, name, "start_failed", err.Error())
+		log.Error(name, "start_failed", err.Error())
 		emitProgress(progress, projectPath, AutostartProgress{
 			Phase: PhaseScriptFailed, Script: name, Layer: layerIdx, Err: err,
 		})
@@ -488,7 +474,7 @@ func (d *Daemon) startOneScript(
 		return
 	}
 
-	log.Info(processID, name, "started", fmt.Sprintf("%s started", name))
+	log.Info(name, "started", fmt.Sprintf("%s started", name))
 	emitProgress(progress, projectPath, AutostartProgress{
 		Phase: PhaseScriptStarted, Script: name, Layer: layerIdx,
 	})
@@ -539,12 +525,11 @@ func (d *Daemon) waitForDependenciesCtx(ctx context.Context, name string, script
 	if layerIdx == 0 {
 		return
 	}
-	processID := makeProcessID(projectPath, name)
 	for _, dep := range scriptCfg.DependsOn {
 		if ctx.Err() != nil {
 			return
 		}
-		d.waitForSingleDependency(ctx, name, processID, dep, projectPath, layerIdx, progress)
+		d.waitForSingleDependency(ctx, name, dep, projectPath, layerIdx, progress)
 	}
 }
 
@@ -553,8 +538,9 @@ func (d *Daemon) waitForDependenciesCtx(ctx context.Context, name string, script
 // `timeout=N` in .agnt.kdl, in which case it is wrapped in a context with
 // that deadline. Separated from the loop so the optional timeout context can
 // be cancelled per iteration via defer.
-func (d *Daemon) waitForSingleDependency(ctx context.Context, name, processID string, dep config.ScriptDependency, projectPath string, layerIdx int, progress chan<- AutostartProgress) {
+func (d *Daemon) waitForSingleDependency(ctx context.Context, name string, dep config.ScriptDependency, projectPath string, layerIdx int, progress chan<- AutostartProgress) {
 	depProcessID := makeProcessID(projectPath, dep.Name)
+	log := d.startupLog(projectPath)
 
 	emitProgress(progress, projectPath, AutostartProgress{
 		Phase: PhaseDependencyWaitStart, Script: name, Dependency: dep.Name, Layer: layerIdx,
@@ -568,22 +554,13 @@ func (d *Daemon) waitForSingleDependency(ctx context.Context, name, processID st
 	}
 
 	if err := d.readySignaler.WaitReadyCtx(depProcessID, waitCtx); err != nil {
-		d.startupErrorStore.Add(&StartupLogEntry{
-			ProcessID: processID, ScriptName: name,
-			Level: "warning", EventType: "dependency_wait",
-			Message:   fmt.Sprintf("cancelled waiting for %s: %v (starting anyway)", dep.Name, err),
-			Timestamp: time.Now(),
-		})
+		log.Warn(name, "dependency_wait",
+			fmt.Sprintf("cancelled waiting for %s: %v (starting anyway)", dep.Name, err))
 	} else {
 		emitProgress(progress, projectPath, AutostartProgress{
 			Phase: PhaseDependencyReady, Script: name, Dependency: dep.Name, Layer: layerIdx,
 		})
-		d.startupErrorStore.Add(&StartupLogEntry{
-			ProcessID: processID, ScriptName: name,
-			Level: "info", EventType: "dependency_ready",
-			Message:   fmt.Sprintf("dependency %s is ready", dep.Name),
-			Timestamp: time.Now(),
-		})
+		log.Info(name, "dependency_ready", fmt.Sprintf("dependency %s is ready", dep.Name))
 	}
 }
 
@@ -591,23 +568,23 @@ func (d *Daemon) waitForSingleDependency(ctx context.Context, name, processID st
 // For script-linked proxies with fallback-port, schedules a delayed check to create
 // the proxy if URL detection doesn't fire in time.
 func (d *Daemon) startAutostartProxies(ctx context.Context, cfg *config.AgntConfig, projectPath string, failedScripts map[string]bool, result *AutostartResult) {
-	log := d.startupErrorStore
+	log := d.startupLog(projectPath)
 
 	for proxyName, proxyConfig := range cfg.Proxies {
 		if proxyConfig.Script != "" && failedScripts[proxyConfig.Script] {
 			msg := fmt.Sprintf("proxy %q skipped: depends on failed script %q", proxyName, proxyConfig.Script)
-			log.Error("", proxyName, "proxy_skipped", msg)
+			log.Error(proxyName, "proxy_skipped", msg)
 			result.Errors = append(result.Errors, msg)
 		}
 	}
 
 	for name, proxyConfig := range cfg.GetAutostartProxies() {
-		log.Info("", name, "proxy_starting", fmt.Sprintf("starting proxy %s", name))
+		log.Info(name, "proxy_starting", fmt.Sprintf("starting proxy %s", name))
 		if err := d.autostartProxy(ctx, name, proxyConfig, projectPath); err != nil {
-			log.Error("", name, "proxy_failed", err.Error())
+			log.Error(name, "proxy_failed", err.Error())
 			result.Errors = append(result.Errors, fmt.Sprintf("proxy %s: %v", name, err))
 		} else {
-			log.Info("", name, "proxy_started", fmt.Sprintf("proxy %s started", name))
+			log.Info(name, "proxy_started", fmt.Sprintf("proxy %s started", name))
 			result.Proxies = append(result.Proxies, name)
 		}
 	}
@@ -656,15 +633,8 @@ func (d *Daemon) scheduleFallbackPortChecks(ctx context.Context, cfg *config.Agn
 				debug.Log("daemon", "Scheduled fallback-port check for proxy %s (script %s)", name, pc.Script)
 			default:
 				debug.Warn("daemon", "Proxy event channel full, cannot schedule fallback check for proxy %s", name)
-				if d.startupErrorStore != nil {
-					d.startupErrorStore.Add(&StartupLogEntry{
-						ScriptName: name,
-						Level:      "warning",
-						EventType:  "proxy_event_dropped",
-						Message:    fmt.Sprintf("proxy event channel full: fallback-port check for proxy %s could not be scheduled", name),
-						Timestamp:  time.Now(),
-					})
-				}
+				d.startupLog(projectPath).Warn(name, "proxy_event_dropped",
+					fmt.Sprintf("proxy event channel full: fallback-port check for proxy %s could not be scheduled", name))
 			}
 		}()
 	}
@@ -734,13 +704,8 @@ func (d *Daemon) StartScriptExplicit(ctx context.Context, name string, scriptCfg
 		proj, err := project.Detect(workingDir)
 		if err != nil {
 			debug.Error("daemon", "project detection failed for %s: %v", workingDir, err)
-			d.startupErrorStore.Add(&StartupLogEntry{
-				ProcessID: "",
-				Level:     "error",
-				EventType: "autostart_failed",
-				Message:   fmt.Sprintf("project detection failed for %s: %v", workingDir, err),
-				Timestamp: time.Now(),
-			})
+			d.startupLog(projectPath).Error(name, "autostart_failed",
+				fmt.Sprintf("project detection failed for %s: %v", workingDir, err))
 			entry.SetState(script.StateFailed)
 			entry.SetLastError(fmt.Sprintf("project detection failed: %v", err))
 			entry.IncrementFailCount()
@@ -768,13 +733,8 @@ func (d *Daemon) StartScriptExplicit(ctx context.Context, name string, scriptCfg
 			args = []string{"-m", name}
 		default:
 			debug.Error("daemon", "cannot run script %q: unknown project type %s", name, proj.Type)
-			d.startupErrorStore.Add(&StartupLogEntry{
-				ProcessID: "",
-				Level:     "error",
-				EventType: "autostart_failed",
-				Message:   fmt.Sprintf("cannot run script %q: unknown project type %s", name, proj.Type),
-				Timestamp: time.Now(),
-			})
+			d.startupLog(projectPath).Error(name, "autostart_failed",
+				fmt.Sprintf("cannot run script %q: unknown project type %s", name, proj.Type))
 			entry.SetState(script.StateFailed)
 			entry.SetLastError(fmt.Sprintf("unknown project type: %s", proj.Type))
 			entry.IncrementFailCount()
@@ -841,13 +801,7 @@ func (d *Daemon) autostartProxy(ctx context.Context, name string, proxyConfig *c
 			msg += fmt.Sprintf(" (fallback-port %d if detection fails)", proxyConfig.FallbackPort)
 		}
 		debug.Log("daemon", "%s", msg)
-		d.startupErrorStore.Add(&StartupLogEntry{
-			ProcessID: "",
-			Level:     "info",
-			EventType: "proxy_deferred",
-			Message:   msg,
-			Timestamp: time.Now(),
-		})
+		d.startupLog(projectPath).Info(name, "proxy_deferred", msg)
 		return nil
 	}
 
@@ -896,14 +850,7 @@ func (d *Daemon) autostartProxy(ctx context.Context, name string, proxyConfig *c
 			}
 			msg := fmt.Sprintf("proxy %s: explicit listen-port %d is in use%s — proxy will fail to start; free the port or change listen-port", name, proxyConfig.ListenPort, ownerHint)
 			debug.Warn("daemon", "%s", msg)
-			d.startupErrorStore.Add(&StartupLogEntry{
-				ProcessID: "",
-				Level:     "error",
-				EventType: "proxy_listen_port_conflict",
-				Message:   msg,
-				Port:      proxyConfig.ListenPort,
-				Timestamp: time.Now(),
-			})
+			d.startupLog(projectPath).ErrorPort(name, "proxy_listen_port_conflict", msg, proxyConfig.ListenPort)
 			// Fall through to enqueue the ExplicitStart event anyway —
 			// the strict-listen-port path in proxy.Start() will emit a
 			// matching proxy_creation_failed entry with the actual bind
@@ -925,13 +872,8 @@ func (d *Daemon) autostartProxy(ctx context.Context, name string, proxyConfig *c
 		debug.Log("daemon", "Queued explicit proxy %s for auto-start", name)
 	default:
 		debug.Warn("daemon", "Proxy event channel full, cannot queue proxy %s for auto-start", name)
-		d.startupErrorStore.Add(&StartupLogEntry{
-			ProcessID: "",
-			Level:     "warning",
-			EventType: "proxy_creation_failed",
-			Message:   fmt.Sprintf("proxy event channel full, cannot queue proxy %s for auto-start", name),
-			Timestamp: time.Now(),
-		})
+		d.startupLog(projectPath).Warn(name, "proxy_creation_failed",
+			fmt.Sprintf("proxy event channel full, cannot queue proxy %s for auto-start", name))
 	}
 
 	return nil
