@@ -2044,14 +2044,25 @@ func TestHubIntegration_FallbackPortCheck_EventLoopCreatesProxy(t *testing.T) {
 	}
 
 	// A startup_proxy_fallback_used entry must be recorded in the store —
-	// this is the "visible telemetry" contract from the task.
-	entries := daemon.startupErrorStore.Query(StartupLogFilter{})
+	// this is the "visible telemetry" contract from the task. The proxy becomes
+	// Gettable (the poll above) several steps BEFORE handleFallbackPortCheck
+	// writes this log entry, so poll for the entry itself rather than asserting
+	// it the instant the proxy appears (otherwise we race the log Add).
+	logDeadline := time.Now().Add(2 * time.Second)
 	found := false
-	for _, e := range entries {
-		if e.EventType == "startup_proxy_fallback_used" && e.ScriptName == proxyName {
-			found = true
+	var entries []*StartupLogEntry
+	for time.Now().Before(logDeadline) {
+		entries = daemon.startupErrorStore.Query(StartupLogFilter{})
+		for _, e := range entries {
+			if e.EventType == "startup_proxy_fallback_used" && e.ScriptName == proxyName {
+				found = true
+				break
+			}
+		}
+		if found {
 			break
 		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	if !found {
 		t.Errorf("Expected startup_proxy_fallback_used entry for proxy %q, got %d entries", proxyName, len(entries))
