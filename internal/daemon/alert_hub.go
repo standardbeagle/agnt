@@ -8,19 +8,8 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
-	"github.com/standardbeagle/agnt/internal/incident"
 	"github.com/standardbeagle/agnt/internal/proxy"
 )
-
-// DriftMetricsSnapshot holds a point-in-time snapshot of the dual-path event
-// counters. OldPathCount counts Deliver() calls that reached legacy sinks;
-// NewPathCount counts events acknowledged via IncrNewPath() (called by the
-// incident adapter layer). The two counts converge over time when both paths
-// are active. A growing delta indicates a bug in adapter wiring.
-type DriftMetricsSnapshot struct {
-	OldPathCount int64
-	NewPathCount int64
-}
 
 // proxyPathRegistry maps proxyID → project path for stream event routing.
 // Populated by RegisterProxyPath when a proxy is wired to the alert hub;
@@ -180,21 +169,6 @@ type AlertHub struct {
 	proxyBroadcaster ProxyBroadcaster
 	mu               sync.RWMutex
 	proxyPaths       proxyPathRegistry // proxyID → project path for stream routing
-
-	// Incident pipeline dual-path fields (Phase A migration).
-	// incidentPipeline gates the old MCPAlertSink/OverlayAlertSink fan-out
-	// in Deliver(). When true, those sinks are skipped; when false (default)
-	// the old path is active and the incident.Bus runs in observability mode.
-	// Access is protected by the same mu as the other AlertHub fields.
-	incidentPipeline bool
-	incidentBus      incident.Bus
-
-	// Drift metrics — atomics for lock-free reads by the metrics subsystem.
-	// oldPathCount increments on each Deliver() call regardless of the flag
-	// (i.e. when old sinks fire). newPathCount is bumped by IncrNewPath
-	// which is called by the incident adapter after successful Bus publication.
-	oldPathCount atomic.Int64
-	newPathCount atomic.Int64
 }
 
 // NewAlertHub creates a new AlertHub.
@@ -447,52 +421,10 @@ func containsSubstring(s, substr string) bool {
 	return strings.Contains(s, substr)
 }
 
-// SetIncidentPipeline sets the incident pipeline flag. When true, Deliver
-// suppresses MCPAlertSink and OverlayAlertSink fan-out; StreamSink is
-// unaffected. Default is false (old behaviour, dual-path observability mode).
-func (h *AlertHub) SetIncidentPipeline(enabled bool) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.incidentPipeline = enabled
-}
-
-// SetIncidentBus wires the incident.Bus for dual-path mode. When the bus is
-// non-nil and incidentPipeline is false, both paths run in parallel.
-// When incidentPipeline is true, only the bus path is active for Deliver.
-// A nil bus is valid (NopBus semantics — old path is unaffected).
-func (h *AlertHub) SetIncidentBus(bus incident.Bus) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.incidentBus = bus
-}
-
-// IncrNewPath increments the new-path event counter. Called by the incident
-// adapter layer after it successfully publishes an event to the incident.Bus.
-// Enables drift detection by comparing with OldPathCount.
-func (h *AlertHub) IncrNewPath() {
-	h.newPathCount.Add(1)
-}
-
-// DriftMetrics returns a snapshot of the dual-path event counters.
-// OldPathCount reflects Deliver() calls that reached legacy sinks (flag=false
-// only). NewPathCount reflects IncrNewPath() calls from the incident adapter.
-func (h *AlertHub) DriftMetrics() *DriftMetricsSnapshot {
-	return &DriftMetricsSnapshot{
-		OldPathCount: h.oldPathCount.Load(),
-		NewPathCount: h.newPathCount.Load(),
-	}
-}
-
-// Deliver sends a pre-formatted alert message to all available sinks.
-// Checks the push config to determine which channels are enabled.
-//
-// When incidentPipeline is true (Phase A: flag-enabled mode), both
-// MCPAlertSink and OverlayAlertSink fan-out are suppressed; delivery is
-// handled by the incident.Bus Pinger instead. StreamSink is NOT gated here —
-// it receives events via BroadcastLogEntry regardless of the flag.
-//
-// When incidentPipeline is false (default), the old path fires and
-// oldPathCount is incremented for drift monitoring.
+// Deliver sends a pre-formatted alert message to the available delivery
+// mechanisms (PTY overlay, MCP notifications, and browser toasts), gated by the
+// push config. StreamSink is NOT driven here — it receives events via
+// BroadcastLogEntry.
 func (h *AlertHub) Deliver(severity string, formatted string) {
 	if formatted == "" {
 		return
@@ -503,18 +435,8 @@ func (h *AlertHub) Deliver(severity string, formatted string) {
 	mcpSinks := make([]MCPAlertSink, len(h.mcpSinks))
 	copy(mcpSinks, h.mcpSinks)
 	pushCfg := h.pushConfig
-	pipeline := h.incidentPipeline
 	pb := h.proxyBroadcaster
 	h.mu.RUnlock()
-
-	// When the incident pipeline is active, suppress the old sinks.
-	// The new Pinger (wired via incident.Bus sessions) handles delivery.
-	if pipeline {
-		return
-	}
-
-	// Old path: PTY overlay + MCP notifications.
-	h.oldPathCount.Add(1)
 
 	// Try overlay (PTY stdin injection)
 	if pushCfg.PTYInjectionEnabled() && overlaySink != nil && overlaySink.IsEnabled() {

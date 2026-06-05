@@ -396,9 +396,6 @@ func New(config DaemonConfig) *Daemon {
 		cancel:            cancel,
 	}
 
-	// Wire incident.Bus into AlertHub for dual-path migration (L9).
-	d.alertHub.SetIncidentBus(incBus)
-
 	// Wire proxy manager into AlertHub so crash alerts are broadcast to
 	// connected browser overlays as toast notifications.
 	d.alertHub.SetProxyBroadcaster(newProxyManagerBroadcaster(d.proxym))

@@ -497,13 +497,12 @@ type AlertsConfig struct {
 	// When set, it expands into a PushConfig. An explicit Push block takes precedence.
 	Preset string `kdl:"preset"`
 
-	// IncidentPipeline enables the new incident pipeline (Phase A dual-path rollout).
-	// When false (default): existing AlertHub MCPAlertSink/OverlayAlertSink path is
-	// active; incident.Bus runs in parallel for observability only (no pings sent).
-	// When true: MCPAlertSink + OverlayAlertSink are suppressed; incident.Bus Pinger
-	// emits instead. StreamSink is unaffected in both modes.
-	// KDL: alerts { incident-pipeline true }
-	IncidentPipeline bool `kdl:"incident-pipeline"`
+	// DeprecatedIncidentPipeline is accepted but ignored. The incident pipeline
+	// is now the unconditional delivery path, so this flag no longer gates
+	// anything. Retained only so existing .agnt.kdl files carrying
+	// `alerts { incident-pipeline ... }` still parse; setting it logs a
+	// deprecation notice at load (see ParseAgntConfig).
+	DeprecatedIncidentPipeline bool `kdl:"incident-pipeline"`
 
 	// OutageHold configures the transport-signal-driven outage gate that holds
 	// transport / browser-JS errors during dev-server restarts that the
@@ -770,15 +769,6 @@ func (c *AlertsConfig) IsEnabled() bool {
 	return *c.Enabled
 }
 
-// IncidentPipelineEnabled returns whether the incident pipeline is active.
-// Defaults to false when AlertsConfig is nil or the field is unset.
-func (c *AlertsConfig) IncidentPipelineEnabled() bool {
-	if c == nil {
-		return false
-	}
-	return c.IncidentPipeline
-}
-
 // AIConfig configures AI agent behavior for run and ai commands.
 type AIConfig struct {
 	// Skill is a skill/persona name to use (e.g., "code-review", "debugging")
@@ -936,6 +926,12 @@ func ParseAgntConfig(data string) (*AgntConfig, error) {
 	// Validate channel config fields if present.
 	if err := validateChannelConfig(cfg.Channel); err != nil {
 		return nil, err
+	}
+
+	// Deprecation notice: the incident pipeline is now unconditional; the
+	// `incident-pipeline` flag is accepted for back-compat but does nothing.
+	if cfg.Alerts != nil && cfg.Alerts.DeprecatedIncidentPipeline {
+		debug.Log("config", "WARNING: alerts.incident-pipeline is deprecated and ignored — the incident pipeline is always active")
 	}
 
 	debug.Log("config", "ParseAgntConfig: parsed %d scripts, %d proxies", len(cfg.Scripts), len(cfg.Proxies))
