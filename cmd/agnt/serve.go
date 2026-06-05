@@ -189,6 +189,12 @@ Available tools:
 	_ = alertSink // Available for daemon alert hub integration
 	dt.SetAlertSink(alertSink)
 
+	// Subscribe an always-on incident-digest sink so the unified inbox's
+	// periodic digest reaches the agent via MCP Log notifications, independent
+	// of channel mode. Rides the STREAM-EVENTS transport.
+	digestCancel := dt.StartIncidentDigestSink(server)
+	defer digestCancel()
+
 	// Resolve working directory once — used for both channel sink scoping and
 	// session registration so both operate on the same project path.
 	cwd, cwdErr := os.Getwd()

@@ -258,6 +258,58 @@ func (dt *DaemonTools) StartChannelSink(server *mcp.Server, cfg *config.ChannelC
 	return cancel
 }
 
+// StartIncidentDigestSink subscribes a always-on goroutine to the daemon event
+// stream filtered to incident_digest entries and forwards each as an MCP Log
+// notification to all connected sessions. Unlike the channel sink, this is not
+// gated on channel mode: it is the universal push path that surfaces the unified
+// inbox's periodic digest to the agent. Returns a cancel function to stop it.
+func (dt *DaemonTools) StartIncidentDigestSink(server *mcp.Server) context.CancelFunc {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// Type-only filter (no severity) so the digest is never dropped by the
+	// stream's severity gate. The digest broadcasts with an empty proxyID, so
+	// project-scope filtering is bypassed daemon-side.
+	filter := protocol.StreamEventFilter{
+		Types: []string{string(proxy.LogTypeIncidentDigest)},
+	}
+
+	go func() {
+		for {
+			if ctx.Err() != nil {
+				return
+			}
+			client := daemon.NewClient(daemon.WithSocketPath(dt.config.SocketPath))
+			err := client.StreamEvents(ctx, filter, func(entry proxy.LogEntry) error {
+				if entry.Type != proxy.LogTypeIncidentDigest || entry.Custom == nil {
+					return nil
+				}
+				level := entry.Custom.Level
+				if level == "" {
+					level = "info"
+				}
+				for session := range server.Sessions() {
+					_ = session.Log(ctx, &mcp.LoggingMessageParams{
+						Level:  mcp.LoggingLevel(level),
+						Logger: "agnt-incidents",
+						Data:   entry.Custom.Message,
+					})
+				}
+				return nil
+			})
+			if err != nil {
+				debug.Log("incident-digest-sink", "stream ended: %v", err)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(2 * time.Second):
+			}
+		}
+	}()
+
+	return cancel
+}
+
 // ChannelSessionHandle manages the lifecycle of a daemon session registered
 // by agnt mcp in channel mode. Call Close to unregister the session and stop
 // the heartbeat. The handle owns the heartbeat goroutine's cancel function
