@@ -252,6 +252,13 @@ func highestLevel(s PingStats) string {
 	}
 }
 
+// CompactDigestText renders the one-line digest summary for cross-process
+// transport (daemon → STREAM-EVENTS → consumer). Exported wrapper over the
+// internal compact formatter.
+func CompactDigestText(p PingPayload) string {
+	return compactText(p)
+}
+
 func compactText(p PingPayload) string {
 	return fmt.Sprintf("[agnt] incidents: crit=%d err=%d warn=%d info=%d (new=%d). pull: get_incidents",
 		p.Summary.Critical, p.Summary.Error, p.Summary.Warning, p.Summary.Info, p.Summary.New)
