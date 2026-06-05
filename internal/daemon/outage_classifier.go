@@ -4,7 +4,7 @@
 // outage as either Healthy, Rebuild, LongRebuild, ExpiredRebuild, or
 // Crash. The classification drives a tri-state SuppressionMode that the
 // proxyBroadcastGate consults to decide whether to forward a proxy log
-// entry to the AlertHub.
+// entry to the EventHub.
 //
 // Classification rules (see also the Dart task description):
 //
@@ -189,7 +189,7 @@ type OutageClassifier struct {
 	procLookup func(processID string) (*goprocess.ManagedProcess, error)
 
 	// emitDiagnostic routes long-rebuild heartbeats and the
-	// expired-rebuild warning to the AlertHub. May be nil for tests
+	// expired-rebuild warning to the EventHub. May be nil for tests
 	// that don't care about emission.
 	emitDiagnostic func(entry proxy.LogEntry, proxyID string)
 

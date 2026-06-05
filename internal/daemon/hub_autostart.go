@@ -48,7 +48,7 @@ func (d *Daemon) hubHandleAutostartClearPorts(ctx context.Context, conn *hubpkg.
 	// Kill blockers using ProcessManager's full escalation path.
 	// Use context.Background() since kill+resume may outlive the IPC request.
 	log := d.startupErrorStore
-	killResults := killPortBlockers(context.Background(), d.hub.ProcessManager(), d.alertHub, pending.conflicts)
+	killResults := killPortBlockers(context.Background(), d.hub.ProcessManager(), d.eventHub, pending.conflicts)
 	var cleared []PortConflict
 	for _, kr := range killResults {
 		if kr.Killed {

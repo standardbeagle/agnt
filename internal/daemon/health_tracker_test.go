@@ -351,7 +351,7 @@ func TestNilTracker_NeverSuppresses(t *testing.T) {
 
 // newGateDaemon builds a minimal Daemon struct around the supplied
 // process table so we can exercise proxyBroadcastGate without spinning
-// up the full hub. The fields touched by the gate are: alertHub (nil
+// up the full hub. The fields touched by the gate are: eventHub (nil
 // here — gate never calls into it), healthTracker, outageClassifier,
 // scriptProxyMu, and proxyToScript. Everything else stays zero-valued.
 func newGateDaemon(t *testing.T, table *procTable) (*Daemon, *trackerSpy, *fakeClock) {

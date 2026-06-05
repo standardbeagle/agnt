@@ -11,7 +11,7 @@ import (
 // agnt run) that subscribe to the daemon event stream render the digest to the
 // agent. The compact digest text rides in Custom.Message; level is the severity.
 func (d *Daemon) broadcastIncidentDigest(level string, payload incident.PingPayload) {
-	if d.alertHub == nil {
+	if d.eventHub == nil {
 		return
 	}
 	entry := proxy.LogEntry{
@@ -21,7 +21,7 @@ func (d *Daemon) broadcastIncidentDigest(level string, payload incident.PingPayl
 			Message: incident.CompactDigestText(payload),
 		},
 	}
-	d.alertHub.BroadcastLogEntry(entry, "")
+	d.eventHub.BroadcastLogEntry(entry, "")
 }
 
 // addIncidentSession registers a session pipeline on the incident bus, wired so

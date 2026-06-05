@@ -132,7 +132,7 @@ func (d *Daemon) watchProxyReadiness(proxyID string) {
 		})
 	}
 
-	if d.alertHub != nil {
+	if d.eventHub != nil {
 		entry := proxy.LogEntry{
 			Type: proxy.LogTypeDiagnostic,
 			Diagnostic: &proxy.ProxyDiagnostic{
@@ -146,7 +146,7 @@ func (d *Daemon) watchProxyReadiness(proxyID string) {
 		// Recover from any panic in the hub — this runs on a background
 		// watchdog goroutine and must never take down the daemon.
 		defer func() { _ = recover() }()
-		d.alertHub.BroadcastLogEntry(entry, proxyID)
+		d.eventHub.BroadcastLogEntry(entry, proxyID)
 	}
 }
 
@@ -196,7 +196,7 @@ func (d *Daemon) waitForProxyDependency(proxyID, depID string) {
 // ready. The event is informational — the gate state change is
 // already reflected in proxy status / proxy list output.
 func (d *Daemon) emitProxyReady(proxyID string) {
-	if d.alertHub == nil {
+	if d.eventHub == nil {
 		return
 	}
 	entry := proxy.LogEntry{
@@ -212,5 +212,5 @@ func (d *Daemon) emitProxyReady(proxyID string) {
 	// Recover from any panic in the hub — this runs on a ready-signal
 	// goroutine and must never take down the daemon.
 	defer func() { _ = recover() }()
-	d.alertHub.BroadcastLogEntry(entry, proxyID)
+	d.eventHub.BroadcastLogEntry(entry, proxyID)
 }

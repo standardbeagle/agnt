@@ -295,11 +295,11 @@ func (d *Daemon) hubHandleDetect(ctx context.Context, conn *hubpkg.Connection, c
 // drains the buffer — cascade entries are dropped, real errors emitted.
 // See internal/daemon/hold_buffer.go and the OutageHold config block.
 func (d *Daemon) wireProxyLogger(server *proxy.ProxyServer) {
-	if d.alertHub == nil {
+	if d.eventHub == nil {
 		return
 	}
 	proxyID := server.ID
-	d.alertHub.RegisterProxyPath(proxyID, server.Path)
+	d.eventHub.RegisterProxyPath(proxyID, server.Path)
 	server.Logger().SetOnLogEntry(func(entry proxy.LogEntry) {
 		// Feed transport signals to the tracker before gating so the
 		// classifier sees recovery signals immediately.
@@ -375,15 +375,15 @@ func (d *Daemon) classifyCascade(entry proxy.LogEntry) bool {
 }
 
 // fireGatedFanOut delivers an entry to all consumers after the gate
-// (or hold-buffer emit) has approved it: AlertHub stream sinks AND the
+// (or hold-buffer emit) has approved it: EventHub stream sinks AND the
 // incident bus. Used both for the immediate-pass path and as the
 // HoldBuffer emit callback. mergedCount > 1 indicates the entry coalesced
 // during the hold window; today the count is informational only — sinks
 // see the original entry — but a future pass can synthesise a count
 // prefix on the summary.
 func (d *Daemon) fireGatedFanOut(entry proxy.LogEntry, proxyID string, _ int) {
-	if d.alertHub != nil {
-		d.alertHub.BroadcastLogEntry(entry, proxyID)
+	if d.eventHub != nil {
+		d.eventHub.BroadcastLogEntry(entry, proxyID)
 	}
 	d.fireToIncidentBus(entry, proxyID)
 }

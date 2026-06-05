@@ -1,8 +1,8 @@
 package daemon
 
-// Mechanism-isolation stress harness for AlertHub + StreamSink (G2).
+// Mechanism-isolation stress harness for EventHub + StreamSink (G2).
 //
-// Scope: this file exercises AlertHub registration, BroadcastLogEntry /
+// Scope: this file exercises EventHub registration, BroadcastLogEntry /
 // BroadcastProcessOutput fan-out, per-sink streamFilter evaluation,
 // channel-send-with-default backpressure, StreamSink unregister + close,
 // and MCP+Overlay Deliver routing — all with STUB sinks only. It NEVER
@@ -13,7 +13,7 @@ package daemon
 //
 // Mental model (read alert_hub.go end-to-end before editing):
 //
-//   * AlertHub keeps three sink registries under a single sync.RWMutex:
+//   * EventHub keeps three sink registries under a single sync.RWMutex:
 //       - overlaySink (single) — PTY stdin injection stand-in
 //       - mcpSinks []MCPAlertSink — MCP session.Log() stand-ins
 //       - streamSinks []*StreamSink — channel-buffered consumers with
@@ -160,7 +160,7 @@ func processOutputEntry(processID, stream, line string) proxy.LogEntry {
 // could cause misses), filter evaluation short-circuits, per-sink state
 // bleed through a shared pointer.
 // =====================================================================
-func TestAlertHub_FanOutToManySinks(t *testing.T) {
+func TestEventHub_FanOutToManySinks(t *testing.T) {
 	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
 
 	// Event count is deliberately moderate: the test exercises fan-out
@@ -177,7 +177,7 @@ func TestAlertHub_FanOutToManySinks(t *testing.T) {
 		foreignProxy = "proxy-other"
 	)
 
-	hub := NewAlertHub()
+	hub := NewEventHub()
 
 	// Register 50 type-filter sinks (want LogTypeError only) and 50
 	// proxy-filter sinks (want proxyID == targetProxy only).
@@ -324,12 +324,12 @@ func TestAlertHub_FanOutToManySinks(t *testing.T) {
 // overlay paths in Deliver are synchronous and would block a Deliver call
 // (not a BroadcastLogEntry call). Separately verified in test #8.
 // =====================================================================
-func TestAlertHub_SlowStreamSinkDoesntStallOthers(t *testing.T) {
+func TestEventHub_SlowStreamSinkDoesntStallOthers(t *testing.T) {
 	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
 
 	const events = 500
 
-	hub := NewAlertHub()
+	hub := NewEventHub()
 
 	slowSink := hub.AddStreamSink(streamFilter{})
 	fastSink1 := hub.AddStreamSink(streamFilter{})
@@ -415,7 +415,7 @@ func TestAlertHub_SlowStreamSinkDoesntStallOthers(t *testing.T) {
 // off-by-one in the types map lookup, shared-mutable-state bugs in
 // streamFilter.
 // =====================================================================
-func TestAlertHub_FilterCorrectness(t *testing.T) {
+func TestEventHub_FilterCorrectness(t *testing.T) {
 	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
 
 	// 5 distinct types produced in a deterministic mix.
@@ -428,7 +428,7 @@ func TestAlertHub_FilterCorrectness(t *testing.T) {
 	}
 	const perType = 200
 
-	hub := NewAlertHub()
+	hub := NewEventHub()
 
 	// One sink per type + one "accept all" sink.
 	drainers := make(map[proxy.LogEntryType]*stubStreamDrainer, len(types))
@@ -550,7 +550,7 @@ func TestAlertHub_FilterCorrectness(t *testing.T) {
 // silently switch to prefix/suffix/regex or short-circuit the ProcessOutput
 // pointer check.
 // =====================================================================
-func TestAlertHub_GrepFilter(t *testing.T) {
+func TestEventHub_GrepFilter(t *testing.T) {
 	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
 
 	// Scale chosen so the matching subset comfortably fits multiple buffer
@@ -560,7 +560,7 @@ func TestAlertHub_GrepFilter(t *testing.T) {
 	// many times. 2000 events with 1000 matches is plenty.
 	const events = 2000
 
-	hub := NewAlertHub()
+	hub := NewEventHub()
 	sink := hub.AddStreamSink(streamFilter{
 		grep: "ERROR",
 	})
@@ -631,10 +631,10 @@ func TestAlertHub_GrepFilter(t *testing.T) {
 // RLock (and RemoveStreamSink cannot run while any BroadcastLogEntry
 // holds the RLock).
 // =====================================================================
-func TestAlertHub_RegisterUnregisterRace(t *testing.T) {
+func TestEventHub_RegisterUnregisterRace(t *testing.T) {
 	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
 
-	hub := NewAlertHub()
+	hub := NewEventHub()
 
 	const (
 		registrars = 20
@@ -738,7 +738,7 @@ func TestAlertHub_RegisterUnregisterRace(t *testing.T) {
 // (producing a busy loop) or remove the Reset on real event (producing
 // redundant keepalives right after a real event).
 // =====================================================================
-func TestAlertHub_KeepaliveHeartbeat(t *testing.T) {
+func TestEventHub_KeepaliveHeartbeat(t *testing.T) {
 	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
 
 	// Contract: streamKeepaliveInterval must be positive and reasonable.
@@ -824,10 +824,10 @@ func TestAlertHub_KeepaliveHeartbeat(t *testing.T) {
 // send (or grows a default-case goroutine) would reveal itself here by
 // either hanging the test or silently queueing the event.
 // =====================================================================
-func TestAlertHub_BroadcastLogEntryNonBlocking(t *testing.T) {
+func TestEventHub_BroadcastLogEntryNonBlocking(t *testing.T) {
 	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
 
-	hub := NewAlertHub()
+	hub := NewEventHub()
 	sink := hub.AddStreamSink(streamFilter{})
 
 	// Fill the sink's channel to capacity. No drainer — we deliberately
@@ -880,10 +880,10 @@ func TestAlertHub_BroadcastLogEntryNonBlocking(t *testing.T) {
 // Catches: close-on-already-closed-channel (RemoveStreamSink idempotency),
 // drainer goroutine leaks (goleak).
 // =====================================================================
-func TestAlertHub_CloseWithRegisteredSinks(t *testing.T) {
+func TestEventHub_CloseWithRegisteredSinks(t *testing.T) {
 	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
 
-	hub := NewAlertHub()
+	hub := NewEventHub()
 
 	// 50 stream sinks with accept-all filter.
 	const streams = 50

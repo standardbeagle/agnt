@@ -101,9 +101,9 @@ func TestStreamFilter_ProjectPathFilter(t *testing.T) {
 	assert.True(t, sf.matches(proxy.LogEntry{Type: proxy.LogTypeError}, "", ""))
 }
 
-func TestAlertHub_RegisterProxyPath_ScopesStreamEvents(t *testing.T) {
+func TestEventHub_RegisterProxyPath_ScopesStreamEvents(t *testing.T) {
 	t.Parallel()
-	hub := NewAlertHub()
+	hub := NewEventHub()
 
 	hub.RegisterProxyPath("proxy-a", "/project/a")
 	hub.RegisterProxyPath("proxy-b", "/project/b")
@@ -139,9 +139,9 @@ drain:
 	assert.Len(t, received, 1, "only proxy-a event should pass the project path filter")
 }
 
-func TestAlertHub_AddRemoveStreamSink(t *testing.T) {
+func TestEventHub_AddRemoveStreamSink(t *testing.T) {
 	t.Parallel()
-	hub := NewAlertHub()
+	hub := NewEventHub()
 
 	sink := hub.AddStreamSink(streamFilter{})
 	require.NotNil(t, sink)
@@ -154,9 +154,9 @@ func TestAlertHub_AddRemoveStreamSink(t *testing.T) {
 	assert.False(t, ok, "channel should be closed after removal")
 }
 
-func TestAlertHub_BroadcastLogEntry_DeliversToMatchingSink(t *testing.T) {
+func TestEventHub_BroadcastLogEntry_DeliversToMatchingSink(t *testing.T) {
 	t.Parallel()
-	hub := NewAlertHub()
+	hub := NewEventHub()
 
 	sink := hub.AddStreamSink(streamFilter{
 		types: map[proxy.LogEntryType]bool{proxy.LogTypeError: true},
@@ -180,9 +180,9 @@ func TestAlertHub_BroadcastLogEntry_DeliversToMatchingSink(t *testing.T) {
 	}
 }
 
-func TestAlertHub_BroadcastLogEntry_FiltersNonMatching(t *testing.T) {
+func TestEventHub_BroadcastLogEntry_FiltersNonMatching(t *testing.T) {
 	t.Parallel()
-	hub := NewAlertHub()
+	hub := NewEventHub()
 
 	sink := hub.AddStreamSink(streamFilter{
 		types: map[proxy.LogEntryType]bool{proxy.LogTypeError: true},
@@ -204,9 +204,9 @@ func TestAlertHub_BroadcastLogEntry_FiltersNonMatching(t *testing.T) {
 	}
 }
 
-func TestAlertHub_BroadcastLogEntry_DropsOnFullChannel(t *testing.T) {
+func TestEventHub_BroadcastLogEntry_DropsOnFullChannel(t *testing.T) {
 	t.Parallel()
-	hub := NewAlertHub()
+	hub := NewEventHub()
 
 	sink := hub.AddStreamSink(streamFilter{})
 	defer hub.RemoveStreamSink(sink)
@@ -218,9 +218,9 @@ func TestAlertHub_BroadcastLogEntry_DropsOnFullChannel(t *testing.T) {
 	// No panic = events were dropped gracefully on full channel
 }
 
-func TestAlertHub_BroadcastLogEntry_MultipleSinks(t *testing.T) {
+func TestEventHub_BroadcastLogEntry_MultipleSinks(t *testing.T) {
 	t.Parallel()
-	hub := NewAlertHub()
+	hub := NewEventHub()
 
 	sink1 := hub.AddStreamSink(streamFilter{
 		types: map[proxy.LogEntryType]bool{proxy.LogTypeError: true},
@@ -250,9 +250,9 @@ func TestAlertHub_BroadcastLogEntry_MultipleSinks(t *testing.T) {
 	}
 }
 
-func TestAlertHub_BroadcastLogEntry_ConcurrentSinks(t *testing.T) {
+func TestEventHub_BroadcastLogEntry_ConcurrentSinks(t *testing.T) {
 	t.Parallel()
-	hub := NewAlertHub()
+	hub := NewEventHub()
 	var wg sync.WaitGroup
 
 	const numSinks = 10
@@ -514,9 +514,9 @@ func TestStreamFilter_MatchesProcessCombinedFilter(t *testing.T) {
 	assert.False(t, sf.matches(proxy.LogEntry{Type: proxy.LogTypeError}, "", ""))
 }
 
-func TestAlertHub_BroadcastProcessOutput_DeliversToMatchingSink(t *testing.T) {
+func TestEventHub_BroadcastProcessOutput_DeliversToMatchingSink(t *testing.T) {
 	t.Parallel()
-	hub := NewAlertHub()
+	hub := NewEventHub()
 
 	sink := hub.AddStreamSink(streamFilter{
 		processID: "dev-server",
@@ -546,9 +546,9 @@ func TestAlertHub_BroadcastProcessOutput_DeliversToMatchingSink(t *testing.T) {
 	}
 }
 
-func TestAlertHub_BroadcastProcessOutput_FiltersNonMatching(t *testing.T) {
+func TestEventHub_BroadcastProcessOutput_FiltersNonMatching(t *testing.T) {
 	t.Parallel()
-	hub := NewAlertHub()
+	hub := NewEventHub()
 
 	sink := hub.AddStreamSink(streamFilter{
 		processID: "dev-server",
@@ -572,9 +572,9 @@ func TestAlertHub_BroadcastProcessOutput_FiltersNonMatching(t *testing.T) {
 	}
 }
 
-func TestAlertHub_BroadcastProcessOutput_WithGrepFilter(t *testing.T) {
+func TestEventHub_BroadcastProcessOutput_WithGrepFilter(t *testing.T) {
 	t.Parallel()
-	hub := NewAlertHub()
+	hub := NewEventHub()
 
 	sink := hub.AddStreamSink(streamFilter{
 		grep: "ERROR",

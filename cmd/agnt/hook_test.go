@@ -57,7 +57,7 @@ func readDropLogLines(t *testing.T, path string) []string {
 }
 
 // startTestHookDaemon starts a real in-process daemon on a tempdir socket
-// and wires a captureHookSink to its AlertHub. Tests that need the
+// and wires a captureHookSink to its EventHub. Tests that need the
 // daemon-side round trip assert against the sink's recorded events.
 // Returns the socket path, the sink, and a cleanup function.
 func startTestHookDaemon(t *testing.T) (sockPath string, sink *captureHookSinkCLI) {
@@ -88,7 +88,7 @@ func startTestHookDaemonTB(tb testing.TB) (sockPath string, sink *captureHookSin
 	})
 
 	sink = newCaptureHookSinkCLI()
-	d.AlertHub().AddHookSink(sink)
+	d.EventHub().AddHookSink(sink)
 	return sockPath, sink
 }
 

@@ -41,7 +41,7 @@ import (
 
 // HoldEmitFn is the callback invoked when the buffer decides to release
 // a held entry. The implementation is responsible for fanning the entry
-// to all consumers (AlertHub stream sinks, incident bus adapters, etc).
+// to all consumers (EventHub stream sinks, incident bus adapters, etc).
 type HoldEmitFn func(entry proxy.LogEntry, proxyID string, mergedCount int)
 
 // holdEntry is the internal record kept per (proxyID, fingerprint).

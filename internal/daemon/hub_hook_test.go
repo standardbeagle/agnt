@@ -260,26 +260,26 @@ func (s *captureHookSink) snapshot() []HookEvent {
 }
 
 // drainHooksTestDaemon wires just enough of Daemon for drainHooks to
-// operate: a hookRing and an alertHub. No socket, no Hub.
+// operate: a hookRing and an eventHub. No socket, no Hub.
 func drainHooksTestDaemon(t *testing.T) *Daemon {
 	t.Helper()
 	return &Daemon{
 		hookRing: newHookRingBuffer(hookRingCapacity),
-		alertHub: NewAlertHub(),
+		eventHub: NewEventHub(),
 	}
 }
 
-// TestDrainHooks_FansOutToAlertHub pushes N events through the ring
+// TestDrainHooks_FansOutToEventHub pushes N events through the ring
 // buffer, starts the drain goroutine, and asserts the captureHookSink
 // receives all N events in push order. Uses a channel (not sleep) for
 // synchronization so the test is deterministic under -race.
-func TestDrainHooks_FansOutToAlertHub(t *testing.T) {
+func TestDrainHooks_FansOutToEventHub(t *testing.T) {
 	t.Parallel()
 	const n = 20
 	d := drainHooksTestDaemon(t)
 
 	sink := newCaptureHookSink(n)
-	d.alertHub.AddHookSink(sink)
+	d.eventHub.AddHookSink(sink)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -319,11 +319,11 @@ func TestDrainHooks_FansOutToAlertHub(t *testing.T) {
 }
 
 // TestDrainHooks_NilGuard asserts drainHooks returns immediately if the
-// ring buffer or alertHub is missing, without spinning or panicking.
+// ring buffer or eventHub is missing, without spinning or panicking.
 // This covers the defensive nil checks at the top of the function.
 func TestDrainHooks_NilGuard(t *testing.T) {
 	t.Parallel()
-	// Missing alertHub
+	// Missing eventHub
 	d1 := &Daemon{hookRing: newHookRingBuffer(4)}
 	done1 := make(chan struct{})
 	go func() {
@@ -333,11 +333,11 @@ func TestDrainHooks_NilGuard(t *testing.T) {
 	select {
 	case <-done1:
 	case <-time.After(500 * time.Millisecond):
-		t.Fatal("drainHooks with nil alertHub did not return")
+		t.Fatal("drainHooks with nil eventHub did not return")
 	}
 
 	// Missing hookRing
-	d2 := &Daemon{alertHub: NewAlertHub()}
+	d2 := &Daemon{eventHub: NewEventHub()}
 	done2 := make(chan struct{})
 	go func() {
 		d2.drainHooks(context.Background())
@@ -350,12 +350,12 @@ func TestDrainHooks_NilGuard(t *testing.T) {
 	}
 }
 
-// TestAlertHub_BroadcastHookEvent_MultiSink asserts that
+// TestEventHub_BroadcastHookEvent_MultiSink asserts that
 // BroadcastHookEvent fans out to every registered sink, and that
 // RemoveHookSink stops further deliveries to a specific sink.
-func TestAlertHub_BroadcastHookEvent_MultiSink(t *testing.T) {
+func TestEventHub_BroadcastHookEvent_MultiSink(t *testing.T) {
 	t.Parallel()
-	hub := NewAlertHub()
+	hub := NewEventHub()
 
 	sink1 := &countingHookSink{}
 	sink2 := &countingHookSink{}
@@ -376,11 +376,11 @@ func TestAlertHub_BroadcastHookEvent_MultiSink(t *testing.T) {
 	assert.Equal(t, int64(3), sink2.count.Load())
 }
 
-// TestAlertHub_AddHookSink_NilNoOp asserts passing a nil sink is a no-op
+// TestEventHub_AddHookSink_NilNoOp asserts passing a nil sink is a no-op
 // rather than a crash or an accidentally-registered nil entry.
-func TestAlertHub_AddHookSink_NilNoOp(t *testing.T) {
+func TestEventHub_AddHookSink_NilNoOp(t *testing.T) {
 	t.Parallel()
-	hub := NewAlertHub()
+	hub := NewEventHub()
 	hub.AddHookSink(nil)
 	// Broadcast must not panic with zero registered sinks.
 	hub.BroadcastHookEvent(HookEvent{Event: "x"})
@@ -405,16 +405,16 @@ func (s *countingHookSink) EmitHookEvent(ev HookEvent) { s.count.Add(1) }
 // Each test drives fanOutHookEvent directly rather than spinning up the
 // drain goroutine, because the per-event ordering contract is what we
 // care about and the drain loop itself is already covered by
-// TestDrainHooks_FansOutToAlertHub.
+// TestDrainHooks_FansOutToEventHub.
 
 // drainFanoutTestDaemon wires a Daemon fixture rich enough to exercise
-// fanOutHookEvent: hookRing, alertHub, sessionRegistry, and an empty
+// fanOutHookEvent: hookRing, eventHub, sessionRegistry, and an empty
 // proxy manager. Tests that need a real proxy add it via Create.
 func drainFanoutTestDaemon(t *testing.T) *Daemon {
 	t.Helper()
 	return &Daemon{
 		hookRing:        newHookRingBuffer(hookRingCapacity),
-		alertHub:        NewAlertHub(),
+		eventHub:        NewEventHub(),
 		sessionRegistry: NewSessionRegistry(60 * time.Second),
 		proxym:          proxy.NewProxyManager(),
 	}
@@ -422,7 +422,7 @@ func drainFanoutTestDaemon(t *testing.T) *Daemon {
 
 // TestDrainHooks_SyntheticLogEntryReachesStreamSink asserts that a hook
 // event drained through fanOutHookEvent is published as a LogEntry of
-// type "hook" on the AlertHub StreamSink channel, with the payload
+// type "hook" on the EventHub StreamSink channel, with the payload
 // bytes intact. This is the wiring that makes `agnt monitor --types hook`
 // work end-to-end.
 func TestDrainHooks_SyntheticLogEntryReachesStreamSink(t *testing.T) {
@@ -434,8 +434,8 @@ func TestDrainHooks_SyntheticLogEntryReachesStreamSink(t *testing.T) {
 	filter := streamFilter{
 		types: map[proxy.LogEntryType]bool{proxy.LogTypeHook: true},
 	}
-	sink := d.alertHub.AddStreamSink(filter)
-	defer d.alertHub.RemoveStreamSink(sink)
+	sink := d.eventHub.AddStreamSink(filter)
+	defer d.eventHub.RemoveStreamSink(sink)
 
 	rawPayload := json.RawMessage(`{"tool":"Bash","args":["ls"]}`)
 	ev := HookEvent{
@@ -510,10 +510,10 @@ func TestDrainHooks_SessionHeartbeatUnknownSessionNoOp(t *testing.T) {
 
 	// No sessions registered. fanOutHookEvent should still complete
 	// cleanly and other downstream consumers should fire normally.
-	sink := d.alertHub.AddStreamSink(streamFilter{
+	sink := d.eventHub.AddStreamSink(streamFilter{
 		types: map[proxy.LogEntryType]bool{proxy.LogTypeHook: true},
 	})
-	defer d.alertHub.RemoveStreamSink(sink)
+	defer d.eventHub.RemoveStreamSink(sink)
 
 	ev := HookEvent{
 		Event:      "pre-tool-use",
@@ -563,10 +563,10 @@ func TestDrainHooks_NotificationEventBroadcastsToast(t *testing.T) {
 	// Subscribe a stream sink so we can assert the LogEntry path also
 	// fires for a notification event (notification flows through
 	// the SAME synthetic LogEntry channel as every other hook event).
-	sink := d.alertHub.AddStreamSink(streamFilter{
+	sink := d.eventHub.AddStreamSink(streamFilter{
 		types: map[proxy.LogEntryType]bool{proxy.LogTypeHook: true},
 	})
-	defer d.alertHub.RemoveStreamSink(sink)
+	defer d.eventHub.RemoveStreamSink(sink)
 
 	body := json.RawMessage(`{"type":"warning","title":"Heads up","message":"Build failed","duration":5000}`)
 	ev := HookEvent{
@@ -612,10 +612,10 @@ func TestDrainHooks_NonNotificationDoesNotTriggerToast(t *testing.T) {
 	// fanOutHookEvent does NOT take the notification branch for a
 	// pre-tool-use event. We assert the LogEntry path fires (proving
 	// drain ran) and that no panic occurred.
-	sink := d.alertHub.AddStreamSink(streamFilter{
+	sink := d.eventHub.AddStreamSink(streamFilter{
 		types: map[proxy.LogEntryType]bool{proxy.LogTypeHook: true},
 	})
-	defer d.alertHub.RemoveStreamSink(sink)
+	defer d.eventHub.RemoveStreamSink(sink)
 
 	ev := HookEvent{
 		Event:      "pre-tool-use",
@@ -699,14 +699,14 @@ func TestDrainHooks_DrainGoroutineDeliversAllConsumers(t *testing.T) {
 	}))
 
 	// Subscribe the StreamSink path.
-	sink := d.alertHub.AddStreamSink(streamFilter{
+	sink := d.eventHub.AddStreamSink(streamFilter{
 		types: map[proxy.LogEntryType]bool{proxy.LogTypeHook: true},
 	})
-	defer d.alertHub.RemoveStreamSink(sink)
+	defer d.eventHub.RemoveStreamSink(sink)
 
 	// Subscribe the typed HookEventSink path.
 	typedSink := newCaptureHookSink(1)
-	d.alertHub.AddHookSink(typedSink)
+	d.eventHub.AddHookSink(typedSink)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -775,10 +775,10 @@ func TestDrainHooks_StopEventBroadcastsToast(t *testing.T) {
 	t.Cleanup(func() { _ = d.proxym.Stop(context.Background(), "stop-proxy") })
 
 	// Subscribe stream sink to prove LogEntry also fires.
-	sink := d.alertHub.AddStreamSink(streamFilter{
+	sink := d.eventHub.AddStreamSink(streamFilter{
 		types: map[proxy.LogEntryType]bool{proxy.LogTypeHook: true},
 	})
-	defer d.alertHub.RemoveStreamSink(sink)
+	defer d.eventHub.RemoveStreamSink(sink)
 
 	ev := HookEvent{
 		Event:      "stop",
@@ -866,10 +866,10 @@ func TestDrainHooks_StopFailureBroadcastsErrorToast(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = d.proxym.Stop(context.Background(), "fail-proxy") })
 
-	sink := d.alertHub.AddStreamSink(streamFilter{
+	sink := d.eventHub.AddStreamSink(streamFilter{
 		types: map[proxy.LogEntryType]bool{proxy.LogTypeHook: true},
 	})
-	defer d.alertHub.RemoveStreamSink(sink)
+	defer d.eventHub.RemoveStreamSink(sink)
 
 	ev := HookEvent{
 		Event: "stop-failure",
@@ -1004,10 +1004,10 @@ func TestDrainHooks_NonToastEventsUnchanged(t *testing.T) {
 	t.Parallel()
 	d := drainFanoutTestDaemon(t)
 
-	sink := d.alertHub.AddStreamSink(streamFilter{
+	sink := d.eventHub.AddStreamSink(streamFilter{
 		types: map[proxy.LogEntryType]bool{proxy.LogTypeHook: true},
 	})
-	defer d.alertHub.RemoveStreamSink(sink)
+	defer d.eventHub.RemoveStreamSink(sink)
 
 	for _, event := range []string{"pre-tool-use", "post-tool-use", "user-prompt-submit", "subagent-stop"} {
 		ev := HookEvent{
@@ -1058,10 +1058,10 @@ func TestDrainHooks_PreToolUseBashRedirectBroadcastsToast(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = d.proxym.Stop(context.Background(), "redir-proxy") })
 
-	sink := d.alertHub.AddStreamSink(streamFilter{
+	sink := d.eventHub.AddStreamSink(streamFilter{
 		types: map[proxy.LogEntryType]bool{proxy.LogTypeHook: true},
 	})
-	defer d.alertHub.RemoveStreamSink(sink)
+	defer d.eventHub.RemoveStreamSink(sink)
 
 	// Tool input shape mirrors Claude Code's PreToolUse payload.
 	bashInput, err := json.Marshal(map[string]string{"command": "npm run dev"})

@@ -15,8 +15,8 @@ import (
 // STREAM-EVENTS subscribers (the cross-process transport for the unified inbox).
 func TestBroadcastIncidentDigest_ReachesStreamSink(t *testing.T) {
 	d := NewForTest(t, DaemonConfig{})
-	sink := d.alertHub.AddStreamSink(streamFilter{})
-	defer d.alertHub.RemoveStreamSink(sink)
+	sink := d.eventHub.AddStreamSink(streamFilter{})
+	defer d.eventHub.RemoveStreamSink(sink)
 
 	payload := incident.PingPayload{
 		Type:    "agnt.incident_ping",
@@ -44,8 +44,8 @@ func TestIncidentDigest_EndToEnd_StormToStream(t *testing.T) {
 	d := NewForTest(t, DaemonConfig{})
 	require.NotNil(t, d.incidentBus, "incident bus must exist")
 
-	sink := d.alertHub.AddStreamSink(streamFilter{})
-	defer d.alertHub.RemoveStreamSink(sink)
+	sink := d.eventHub.AddStreamSink(streamFilter{})
+	defer d.eventHub.RemoveStreamSink(sink)
 
 	d.addIncidentSession("sess-e2e")
 

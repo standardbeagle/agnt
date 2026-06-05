@@ -142,7 +142,7 @@ func TestRegisterProxyDependencies_SurvivesProxyTeardown(t *testing.T) {
 }
 
 // newTestDaemon creates a minimal Daemon with only the fields the
-// wait-for code path needs: proxym, readySignaler, alertHub, and a
+// wait-for code path needs: proxym, readySignaler, eventHub, and a
 // live ctx. It avoids the full New() path so tests don't need a
 // socket, Hub, or filesystem.
 func newTestDaemon(t *testing.T) *Daemon {
@@ -152,7 +152,7 @@ func newTestDaemon(t *testing.T) *Daemon {
 	d := &Daemon{
 		proxym:        proxy.NewProxyManager(),
 		readySignaler: NewReadySignaler(),
-		alertHub:      NewAlertHub(),
+		eventHub:      NewEventHub(),
 		ctx:           ctx,
 		cancel:        cancel,
 	}

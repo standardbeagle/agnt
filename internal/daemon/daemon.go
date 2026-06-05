@@ -214,7 +214,7 @@ type Daemon struct {
 	alertScanner      *overlay.AlertScanner // Scans daemon-managed process output for errors
 	processExitInfo   *processExitInfoStore // In-memory death records (proc status + get_errors)
 	startupErrorStore *StartupLogStore      // Ring buffer for startup events
-	alertHub          *AlertHub             // Routes alerts to overlay/MCP/stream sinks
+	eventHub          *EventHub             // Routes alerts to overlay/MCP/stream sinks
 	incidentBus       *incident.MPSCBus     // Incident pipeline event bus (L8+)
 	hookRing          *hookRingBuffer       // Claude Code hook event ring buffer (phase 1 scope)
 	scriptRegistry    *script.Registry      // Per-script state that persists across process restarts
@@ -380,7 +380,7 @@ func New(config DaemonConfig) *Daemon {
 		alertStore:        NewProcessAlertStore(500),
 		processExitInfo:   newProcessExitInfoStore(defaultExitInfoRetention),
 		startupErrorStore: NewStartupLogStore(100),
-		alertHub:          NewAlertHub(),
+		eventHub:          NewEventHub(),
 		incidentBus:       incBus,
 		hookRing:          newHookRingBuffer(hookRingCapacity),
 		scriptRegistry:    script.NewRegistry(),
@@ -396,28 +396,28 @@ func New(config DaemonConfig) *Daemon {
 		cancel:            cancel,
 	}
 
-	// Wire proxy manager into AlertHub so crash alerts are broadcast to
+	// Wire proxy manager into EventHub so crash alerts are broadcast to
 	// connected browser overlays as toast notifications.
-	d.alertHub.SetProxyBroadcaster(newProxyManagerBroadcaster(d.proxym))
+	d.eventHub.SetProxyBroadcaster(newProxyManagerBroadcaster(d.proxym))
 
 	// HealthTracker is initialised after the struct so it can capture `d`
 	// in its lookup closures. Its emitDiagnostic routes back through the
-	// AlertHub directly so suppression markers always bypass the gate.
+	// EventHub directly so suppression markers always bypass the gate.
 	d.healthTracker = NewHealthTracker(
 		func(processID string) (*process.ManagedProcess, error) {
 			return d.hub.ProcessManager().Get(processID)
 		},
 		func(entry proxy.LogEntry, proxyID string) {
-			if d.alertHub == nil {
+			if d.eventHub == nil {
 				return
 			}
-			d.alertHub.BroadcastLogEntry(entry, proxyID)
+			d.eventHub.BroadcastLogEntry(entry, proxyID)
 		},
 	)
 
 	// HoldBuffer suppresses transport-cascade noise during synthetic
 	// transport outages. The emit callback fans replays through both the
-	// AlertHub (legacy stream sinks) and the incident bus (get_incidents).
+	// EventHub (legacy stream sinks) and the incident bus (get_incidents).
 	// Construction uses default config until the per-project AgntConfig is
 	// loaded; ApplyAlertsConfig replaces it on session connect.
 	d.holdBuffer.Store(NewHoldBuffer(nil, d.fireHoldEmit))
@@ -442,10 +442,10 @@ func New(config DaemonConfig) *Daemon {
 			return d.hub.ProcessManager().Get(processID)
 		},
 		func(entry proxy.LogEntry, proxyID string) {
-			if d.alertHub == nil {
+			if d.eventHub == nil {
 				return
 			}
-			d.alertHub.BroadcastLogEntry(entry, proxyID)
+			d.eventHub.BroadcastLogEntry(entry, proxyID)
 		},
 		func(processID string) string {
 			proxies := d.getProxiesForScript(processID)
@@ -457,7 +457,7 @@ func New(config DaemonConfig) *Daemon {
 	)
 
 	// alertScanner scans daemon-managed process output (proc run) for error
-	// patterns and routes matches into alertStore + alertHub — the same
+	// patterns and routes matches into alertStore + eventHub — the same
 	// surfaces get_errors and agnt monitor query. OnAlert fires after the
 	// scanner's batch window (default 3s) to avoid per-line churn.
 	d.alertScanner = overlay.NewAlertScanner(overlay.AlertScannerConfig{
@@ -499,14 +499,14 @@ func New(config DaemonConfig) *Daemon {
 			}
 			formatted := batch.Format()
 			if formatted != "" {
-				d.alertHub.Deliver(string(batch.MaxSeverity()), formatted)
+				d.eventHub.Deliver(string(batch.MaxSeverity()), formatted)
 			}
 		},
 	})
 
 	// Autostart manager fans every progress event out to the alert hub so
 	// that monitor/MCP watch subscribers see real-time autostart phases.
-	// The closure captures `d` lazily; alertHub is set on the line above
+	// The closure captures `d` lazily; eventHub is set on the line above
 	// via the struct literal so it is safe to dereference inside the
 	// callback.
 	d.autostartManager = NewAutostartManagerWithBroadcast(func(projectPath string, ev AutostartProgress) {
@@ -667,7 +667,7 @@ func (d *Daemon) bootstrap() error {
 
 	// Start the hook event drain goroutine. It pops events from the
 	// hookRing (pushed by the HOOK verb handler on each `agnt hook`
-	// RPC) and fans them out through the alertHub to any registered
+	// RPC) and fans them out through the eventHub to any registered
 	// HookEventSinks. Exits when d.ctx is cancelled.
 	d.wg.Add(1)
 	go func() {
@@ -806,9 +806,9 @@ func (d *Daemon) AlertStore() *ProcessAlertStore {
 	return d.alertStore
 }
 
-// AlertHub returns the alert hub for event routing.
-func (d *Daemon) AlertHub() *AlertHub {
-	return d.alertHub
+// EventHub returns the alert hub for event routing.
+func (d *Daemon) EventHub() *EventHub {
+	return d.eventHub
 }
 
 // IncidentBus returns the incident event bus.

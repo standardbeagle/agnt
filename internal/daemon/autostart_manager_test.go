@@ -476,14 +476,14 @@ type errBootSentinel string
 
 func (e errBootSentinel) Error() string { return string(e) }
 
-// TestAutostartManager_BroadcastIntegratesWithAlertHub verifies the full
+// TestAutostartManager_BroadcastIntegratesWithEventHub verifies the full
 // chain: AutostartManager broadcast → daemon broadcastAutostartProgress →
-// AlertHub.BroadcastLogEntry → StreamSink. This is the contract that
+// EventHub.BroadcastLogEntry → StreamSink. This is the contract that
 // `agnt monitor --types diagnostic` and the MCP `watch` tool depend on.
-func TestAutostartManager_BroadcastIntegratesWithAlertHub(t *testing.T) {
+func TestAutostartManager_BroadcastIntegratesWithEventHub(t *testing.T) {
 	t.Parallel()
-	hub := NewAlertHub()
-	d := &Daemon{alertHub: hub}
+	hub := NewEventHub()
+	d := &Daemon{eventHub: hub}
 
 	// Subscribe to diagnostic events only — this mirrors what
 	// `agnt monitor --types diagnostic` registers.

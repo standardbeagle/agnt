@@ -23,12 +23,12 @@ func (s *stubProxyBroadcaster) BroadcastAlertToast(toastType, title, message str
 	s.lastMessage.Store(message)
 }
 
-// TestAlertHub_Deliver_BroadcastsToProxy verifies that an error-severity
+// TestEventHub_Deliver_BroadcastsToProxy verifies that an error-severity
 // Deliver call reaches the registered ProxyBroadcaster.
-func TestAlertHub_Deliver_BroadcastsToProxy(t *testing.T) {
+func TestEventHub_Deliver_BroadcastsToProxy(t *testing.T) {
 	t.Parallel()
 
-	hub := NewAlertHub()
+	hub := NewEventHub()
 	pb := &stubProxyBroadcaster{}
 	hub.SetProxyBroadcaster(pb)
 
@@ -40,24 +40,24 @@ func TestAlertHub_Deliver_BroadcastsToProxy(t *testing.T) {
 	assert.Contains(t, pb.lastMessage.Load().(string), "panic: runtime error")
 }
 
-// TestAlertHub_Deliver_NoProxyBroadcast_WhenNoProxy verifies that Deliver
+// TestEventHub_Deliver_NoProxyBroadcast_WhenNoProxy verifies that Deliver
 // does not panic when no ProxyBroadcaster is registered (nil case).
-func TestAlertHub_Deliver_NoProxyBroadcast_WhenNoProxy(t *testing.T) {
+func TestEventHub_Deliver_NoProxyBroadcast_WhenNoProxy(t *testing.T) {
 	t.Parallel()
 
-	hub := NewAlertHub()
+	hub := NewEventHub()
 	// No proxy broadcaster set — must not panic.
 	assert.NotPanics(t, func() {
 		hub.Deliver("error", "panic: nil pointer dereference")
 	})
 }
 
-// TestAlertHub_Deliver_SkipsInfo_ForProxyBroadcast verifies that info-level
+// TestEventHub_Deliver_SkipsInfo_ForProxyBroadcast verifies that info-level
 // alerts do NOT reach the ProxyBroadcaster.
-func TestAlertHub_Deliver_SkipsInfo_ForProxyBroadcast(t *testing.T) {
+func TestEventHub_Deliver_SkipsInfo_ForProxyBroadcast(t *testing.T) {
 	t.Parallel()
 
-	hub := NewAlertHub()
+	hub := NewEventHub()
 	pb := &stubProxyBroadcaster{}
 	hub.SetProxyBroadcaster(pb)
 
@@ -66,12 +66,12 @@ func TestAlertHub_Deliver_SkipsInfo_ForProxyBroadcast(t *testing.T) {
 	assert.Equal(t, int32(0), pb.calls.Load(), "info-level alert must NOT reach ProxyBroadcaster")
 }
 
-// TestAlertHub_Deliver_BroadcastsWarning verifies that warning-severity
+// TestEventHub_Deliver_BroadcastsWarning verifies that warning-severity
 // alerts also reach the ProxyBroadcaster (>= warning threshold).
-func TestAlertHub_Deliver_BroadcastsWarning(t *testing.T) {
+func TestEventHub_Deliver_BroadcastsWarning(t *testing.T) {
 	t.Parallel()
 
-	hub := NewAlertHub()
+	hub := NewEventHub()
 	pb := &stubProxyBroadcaster{}
 	hub.SetProxyBroadcaster(pb)
 
