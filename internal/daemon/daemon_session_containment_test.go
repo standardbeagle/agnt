@@ -60,7 +60,7 @@ func TestMain(m *testing.M) {
 		goleak.IgnoreAnyFunction("github.com/standardbeagle/agnt/internal/daemon.(*Daemon).drainHooks"),
 		goleak.IgnoreAnyFunction("github.com/standardbeagle/agnt/internal/daemon.(*AutostartManager).run"),
 		goleak.IgnoreAnyFunction("github.com/standardbeagle/agnt/internal/daemon.(*DuplicateScanner).scanDuplicates"),
-		// Test infrastructure goroutine: stress-test drain helper in alert_hub_stress_test.go.
+		// Test infrastructure goroutine: stress-test drain helper in event_hub_stress_test.go.
 		goleak.IgnoreAnyFunction("github.com/standardbeagle/agnt/internal/daemon.(*stubStreamDrainer).run.func1"),
 		// go-cli-server / go-sdk infrastructure.
 		goleak.IgnoreAnyFunction("github.com/standardbeagle/go-cli-server/process.(*FilePIDTracker).descendantScanLoop"),
