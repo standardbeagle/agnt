@@ -293,7 +293,7 @@ func (d *Daemon) makeAutostartStartFn(normalizedPath, metadataPath string) Autos
 // alert hub as a diagnostic-style log entry so stream subscribers see it.
 // Silently no-ops when the hub is unavailable.
 func (d *Daemon) broadcastAutostartProgress(projectPath string, ev AutostartProgress) {
-	if d.alertHub == nil {
+	if d.eventHub == nil {
 		return
 	}
 	msg := fmt.Sprintf("autostart phase=%s script=%s layer=%d", phaseName(ev.Phase), ev.Script, ev.Layer)
@@ -310,7 +310,7 @@ func (d *Daemon) broadcastAutostartProgress(projectPath string, ev AutostartProg
 			Timestamp: ev.Timestamp,
 		},
 	}
-	d.alertHub.BroadcastLogEntry(entry, projectPath)
+	d.eventHub.BroadcastLogEntry(entry, projectPath)
 }
 
 // diagnosticLevelForPhase maps an autostart phase to a diagnostic level used

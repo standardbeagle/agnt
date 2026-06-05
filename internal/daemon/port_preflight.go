@@ -115,12 +115,12 @@ type KillResult struct {
 // a different kernel namespace and syscall.Kill returns ESRCH for them.
 //
 // Per-PID kill failures on the Windows path are surfaced as warning-severity
-// alerts via alertHub (when non-nil), satisfying the Silent Failure
-// Prohibition rule. A nil alertHub is allowed for tests and for callers
+// alerts via eventHub (when non-nil), satisfying the Silent Failure
+// Prohibition rule. A nil eventHub is allowed for tests and for callers
 // that prefer to inspect the returned KillResult.Error directly.
 //
 // Verifies each port is free after kill.
-func killPortBlockers(ctx context.Context, pm *goprocess.ProcessManager, alertHub *AlertHub, conflicts []PortConflict) []KillResult {
+func killPortBlockers(ctx context.Context, pm *goprocess.ProcessManager, eventHub *EventHub, conflicts []PortConflict) []KillResult {
 	results := make([]KillResult, len(conflicts))
 
 	for i, c := range conflicts {
@@ -155,8 +155,8 @@ func killPortBlockers(ctx context.Context, pm *goprocess.ProcessManager, alertHu
 			if err := platform.KillWindowsPID(pid); err != nil {
 				msg := fmt.Sprintf("port %d: failed to kill Windows-side pid %d: %v", c.Port, pid, err)
 				errs = append(errs, msg)
-				if alertHub != nil {
-					alertHub.Deliver("warning", msg)
+				if eventHub != nil {
+					eventHub.Deliver("warning", msg)
 				}
 			}
 		}

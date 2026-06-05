@@ -5,7 +5,7 @@
 // the proxy "error stream suppression window": when a proxy's linked process
 // is in a transient/unhealthy state (Starting/Stopping/Failed) or is within
 // a 5s grace period after returning to Running, the daemon suppresses the
-// proxy → AlertHub broadcast path so the AI agent does not see the
+// proxy → EventHub broadcast path so the AI agent does not see the
 // rebuild-burst noise. Entries are still written to the TrafficLogger ring
 // buffer, so `proxylog query` continues to surface them on demand.
 //
@@ -158,7 +158,7 @@ type HealthTracker struct {
 	procLookup func(processID string) (*goprocess.ManagedProcess, error)
 
 	// emitDiagnostic is called when the suppression window opens or closes.
-	// In production this routes to the AlertHub diagnostic path. Tests can
+	// In production this routes to the EventHub diagnostic path. Tests can
 	// supply a spy. May be nil — emission is a best-effort signal.
 	emitDiagnostic func(entry proxy.LogEntry, proxyID string)
 

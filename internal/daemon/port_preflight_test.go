@@ -182,7 +182,7 @@ func TestKillPortBlockers_WindowsPID_RoutesToTaskkill(t *testing.T) {
 	defer pm.Shutdown(context.Background())
 
 	port := ephemeralPort(t)
-	hub := NewAlertHub()
+	hub := NewEventHub()
 	conflicts := []PortConflict{{
 		ScriptName:  "test",
 		Port:        port,
@@ -200,7 +200,7 @@ func TestKillPortBlockers_WindowsPID_RoutesToTaskkill(t *testing.T) {
 
 // capturingBroadcaster records BroadcastAlertToast calls verbatim so tests can
 // assert the Silent Failure Prohibition contract: a kill failure must surface as
-// a warning toast (the AlertHub delivery surface) rather than being swallowed.
+// a warning toast (the EventHub delivery surface) rather than being swallowed.
 type capturingBroadcaster struct {
 	mu    sync.Mutex
 	calls []capturedAlert
@@ -228,7 +228,7 @@ func (s *capturingBroadcaster) snapshot() []capturedAlert {
 // TestKillPortBlockers_WindowsPIDFailure_SurfacesWarning asserts the
 // Silent Failure Prohibition contract: when platform.KillWindowsPID
 // fails (here: because we're not on WSL OR because the PID is bogus),
-// the failure must reach AlertHub.Deliver and surface as a warning toast
+// the failure must reach EventHub.Deliver and surface as a warning toast
 // so it is not silently swallowed. Runs everywhere because KillWindowsPID
 // always errors when IsWSL() is false (covered by killwindowspid_unix_test.go),
 // and on WSL hosts without taskkill.exe the LookPath failure also errors.
@@ -237,7 +237,7 @@ func TestKillPortBlockers_WindowsPIDFailure_SurfacesWarning(t *testing.T) {
 	pm := goprocess.NewProcessManager(goprocess.DefaultManagerConfig())
 	defer pm.Shutdown(context.Background())
 
-	hub := NewAlertHub()
+	hub := NewEventHub()
 	bc := &capturingBroadcaster{}
 	hub.SetProxyBroadcaster(bc)
 
@@ -253,7 +253,7 @@ func TestKillPortBlockers_WindowsPIDFailure_SurfacesWarning(t *testing.T) {
 	assert.NotEmpty(t, results[0].Error, "kill failure must populate KillResult.Error")
 
 	calls := bc.snapshot()
-	require.NotEmpty(t, calls, "AlertHub must surface at least one toast for the failure")
+	require.NotEmpty(t, calls, "EventHub must surface at least one toast for the failure")
 	assert.Equal(t, "warning", calls[0].level, "kill failure must be warning-severity")
 	assert.Contains(t, calls[0].message, "Windows-side", "alert must identify the source")
 }

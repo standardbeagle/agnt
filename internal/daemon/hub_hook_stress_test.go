@@ -124,7 +124,7 @@ func (s *stressStreamSink) run(ch <-chan proxy.LogEntry, stop <-chan struct{}) <
 func hookStressDaemon(capacity int) *Daemon {
 	return &Daemon{
 		hookRing: newHookRingBuffer(capacity),
-		alertHub: NewAlertHub(),
+		eventHub: NewEventHub(),
 	}
 }
 
@@ -176,7 +176,7 @@ func TestHookRing_EnqueueP99Latency(t *testing.T) {
 
 	d := hookStressDaemon(hookRingCapacity)
 	slowSink := &stubBlockingHookSink{sleep: time.Millisecond}
-	d.alertHub.AddHookSink(slowSink)
+	d.eventHub.AddHookSink(slowSink)
 
 	cancel, done := startStressDrain(t, d)
 
@@ -254,7 +254,7 @@ func TestHookRing_OverflowAccounting(t *testing.T) {
 	// producers. Producers will flood the ring faster than drain can empty
 	// it, driving overflow.
 	slowSink := &stubBlockingHookSink{sleep: 20 * time.Millisecond}
-	d.alertHub.AddHookSink(slowSink)
+	d.eventHub.AddHookSink(slowSink)
 
 	cancel, done := startStressDrain(t, d)
 
@@ -350,7 +350,7 @@ func TestHookRing_SlowSink(t *testing.T) {
 	slow := &stubBlockingHookSink{sleep: 2 * time.Millisecond} // 50 events * 2ms = 100ms — fast enough for CI.
 
 	for _, s := range []*stubBlockingHookSink{fast1, fast2, fast3, slow} {
-		d.alertHub.AddHookSink(s)
+		d.eventHub.AddHookSink(s)
 	}
 
 	cancel, done := startStressDrain(t, d)
@@ -391,7 +391,7 @@ func TestHookRing_SlowSink(t *testing.T) {
 // contract should NOT take down the drain goroutine. Today, BroadcastHookEvent
 // does NOT recover panics — this test will fail and surface that bug. Fix
 // target: add defer recover() around sink.EmitHookEvent in
-// alertHub.BroadcastHookEvent, OR wrap in fanOutHookEvent.
+// eventHub.BroadcastHookEvent, OR wrap in fanOutHookEvent.
 // =====================================================================
 func TestHookRing_PanickingSink(t *testing.T) {
 	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
@@ -401,8 +401,8 @@ func TestHookRing_PanickingSink(t *testing.T) {
 	d := hookStressDaemon(hookRingCapacity)
 	panicker := &stubBlockingHookSink{panicEvery: 10}
 	bystander := &stubBlockingHookSink{}
-	d.alertHub.AddHookSink(panicker)
-	d.alertHub.AddHookSink(bystander)
+	d.eventHub.AddHookSink(panicker)
+	d.eventHub.AddHookSink(bystander)
 
 	cancel, done := startStressDrain(t, d)
 
@@ -455,7 +455,7 @@ func TestHookRing_FanOutToManyTypedSinks(t *testing.T) {
 	allSinks := make([]*stubBlockingHookSink, sinks)
 	for i := range allSinks {
 		allSinks[i] = &stubBlockingHookSink{}
-		d.alertHub.AddHookSink(allSinks[i])
+		d.eventHub.AddHookSink(allSinks[i])
 	}
 
 	cancel, done := startStressDrain(t, d)
@@ -496,7 +496,7 @@ func TestHookRing_FanOutToManyTypedSinks(t *testing.T) {
 	// receiving events; the remaining sinks must see the new events on top
 	// of the old count.
 	for i := 0; i < sinks; i += 2 {
-		d.alertHub.RemoveHookSink(allSinks[i])
+		d.eventHub.RemoveHookSink(allSinks[i])
 	}
 
 	const moreEvents = 200
@@ -562,22 +562,22 @@ func TestHookRing_NotificationToastFanOut(t *testing.T) {
 
 	// proxym is nil — broadcastNotificationToast short-circuits and the
 	// notification branch becomes a pure no-op at the toast layer.
-	// alertHub is present so StreamSink + HookEventSink fan-out both run.
+	// eventHub is present so StreamSink + HookEventSink fan-out both run.
 	d := hookStressDaemon(hookRingCapacity)
 
 	// Typed sink is the lossless proof-of-delivery channel: it counts
 	// every call to EmitHookEvent, so we can assert end-to-end drain
 	// completeness independent of StreamSink backpressure.
 	typedSink := &stubBlockingHookSink{}
-	d.alertHub.AddHookSink(typedSink)
+	d.eventHub.AddHookSink(typedSink)
 
 	// StreamSink is the lossy path — events are channel-send-with-default
 	// via BroadcastLogEntry, so drops are allowed under burst. We only
 	// assert "no more events delivered than pushed" (no duplication).
-	streamSink := d.alertHub.AddStreamSink(streamFilter{
+	streamSink := d.eventHub.AddStreamSink(streamFilter{
 		types: map[proxy.LogEntryType]bool{proxy.LogTypeHook: true},
 	})
-	defer d.alertHub.RemoveStreamSink(streamSink)
+	defer d.eventHub.RemoveStreamSink(streamSink)
 
 	drainer := newStressStreamSink()
 	stopDrainer := make(chan struct{})
@@ -667,7 +667,7 @@ func TestHookRing_CloseWithPendingEvents(t *testing.T) {
 	// verify drain-on-shutdown behavior, not overflow.
 	d := hookStressDaemon(hookRingCapacity * 16)
 	slowSink := &stubBlockingHookSink{sleep: 200 * time.Microsecond}
-	d.alertHub.AddHookSink(slowSink)
+	d.eventHub.AddHookSink(slowSink)
 
 	cancel, done := startStressDrain(t, d)
 
@@ -718,7 +718,7 @@ func TestHookRing_ConcurrentEnqueueAndShutdown(t *testing.T) {
 	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
 
 	d := hookStressDaemon(hookRingCapacity)
-	d.alertHub.AddHookSink(&stubBlockingHookSink{})
+	d.eventHub.AddHookSink(&stubBlockingHookSink{})
 
 	cancel, done := startStressDrain(t, d)
 

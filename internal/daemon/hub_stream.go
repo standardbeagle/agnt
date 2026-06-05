@@ -28,8 +28,8 @@ func (d *Daemon) hubHandleStreamEvents(ctx context.Context, conn *hubpkg.Connect
 	sf := buildStreamFilter(filter)
 
 	// Register stream sink
-	sink := d.alertHub.AddStreamSink(sf)
-	defer d.alertHub.RemoveStreamSink(sink)
+	sink := d.eventHub.AddStreamSink(sf)
+	defer d.eventHub.RemoveStreamSink(sink)
 
 	// Send initial OK so client knows stream is active
 	if err := conn.WriteOK("streaming"); err != nil {

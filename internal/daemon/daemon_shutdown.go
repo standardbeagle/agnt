@@ -187,8 +187,8 @@ func (d *Daemon) startupPortCleanup(ctx context.Context) int {
 				msg := fmt.Sprintf("startup port cleanup: failed to kill Windows-side pid %d on port %d: %v", pid, port, err)
 				killErrs = append(killErrs, fmt.Sprintf("windows pid %d: %v", pid, err))
 				debug.Warn("daemon", "%s", msg)
-				if d.alertHub != nil {
-					d.alertHub.Deliver("warning", msg)
+				if d.eventHub != nil {
+					d.eventHub.Deliver("warning", msg)
 				}
 			}
 		}

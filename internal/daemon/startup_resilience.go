@@ -364,7 +364,7 @@ func (d *Daemon) startScriptWithRetry(
 		if scriptEntry != nil {
 			scriptEntry.AppendOutput(line)
 		}
-		d.alertHub.BroadcastProcessOutput(proxy.LogEntry{
+		d.eventHub.BroadcastProcessOutput(proxy.LogEntry{
 			Type: proxy.LogTypeProcessOutput,
 			ProcessOutput: &proxy.ProcessOutputEvent{
 				ProcessID: processID,

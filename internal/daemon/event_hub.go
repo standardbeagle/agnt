@@ -46,7 +46,7 @@ type HookEventSink interface {
 // Hot path is two atomic loads and two atomic adds; slow path (close) spins
 // until refs drains. This is ~4× faster than the prior RWMutex pair under
 // high fan-out (100+ sinks × thousands of events) and eliminates the
-// per-sink RLock contention that caused TestAlertHub_FanOutToManySinks to
+// per-sink RLock contention that caused TestEventHub_FanOutToManySinks to
 // flake under concurrent test load. See sendToStreamSinkSafe for the
 // send-side dance and RemoveStreamSink for the close-side wait.
 //
@@ -146,10 +146,10 @@ type ProxyBroadcaster interface {
 	BroadcastAlertToast(toastType, title, message string)
 }
 
-// AlertHub fans events to stream sinks (agnt monitor), hook sinks (agnt hook),
+// EventHub fans events to stream sinks (agnt monitor), hook sinks (agnt hook),
 // and browser toasts (via ProxyBroadcaster). Agent-bound alert/incident delivery
 // runs through the incident pipeline, not here.
-type AlertHub struct {
+type EventHub struct {
 	streamSinks      []*StreamSink
 	hookSinks        []HookEventSink
 	proxyBroadcaster ProxyBroadcaster
@@ -157,14 +157,14 @@ type AlertHub struct {
 	proxyPaths       proxyPathRegistry // proxyID → project path for stream routing
 }
 
-// NewAlertHub creates a new AlertHub.
-func NewAlertHub() *AlertHub {
-	return &AlertHub{}
+// NewEventHub creates a new EventHub.
+func NewEventHub() *EventHub {
+	return &EventHub{}
 }
 
 // SetProxyBroadcaster registers a broadcaster for sending alert toasts to
 // connected browser overlays. A nil value disables proxy broadcasts.
-func (h *AlertHub) SetProxyBroadcaster(pb ProxyBroadcaster) {
+func (h *EventHub) SetProxyBroadcaster(pb ProxyBroadcaster) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.proxyBroadcaster = pb
@@ -172,7 +172,7 @@ func (h *AlertHub) SetProxyBroadcaster(pb ProxyBroadcaster) {
 
 // AddStreamSink registers a stream sink and returns it.
 // The caller reads from sink.Ch until it is closed.
-func (h *AlertHub) AddStreamSink(filter streamFilter) *StreamSink {
+func (h *EventHub) AddStreamSink(filter streamFilter) *StreamSink {
 	sink := &StreamSink{
 		// 256 cap — enough headroom that a 100-sink fan-out under burst
 		// load (32 events/100µs in stress tests) fits without overflow
@@ -200,7 +200,7 @@ func (h *AlertHub) AddStreamSink(filter streamFilter) *StreamSink {
 // Idempotent: a second call to RemoveStreamSink on the same sink is a
 // no-op (the sink is no longer in the slice, so the close path is not
 // re-entered).
-func (h *AlertHub) RemoveStreamSink(sink *StreamSink) {
+func (h *EventHub) RemoveStreamSink(sink *StreamSink) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for i, s := range h.streamSinks {
@@ -225,7 +225,7 @@ func (h *AlertHub) RemoveStreamSink(sink *StreamSink) {
 // from proxies belonging to other projects. Call once from wireProxyLogger.
 // Entries are never removed because proxyIDs are unique and a stopped proxy
 // cannot generate new LogEntry events.
-func (h *AlertHub) RegisterProxyPath(proxyID, projectPath string) {
+func (h *EventHub) RegisterProxyPath(proxyID, projectPath string) {
 	if proxyID != "" {
 		h.proxyPaths.set(proxyID, projectPath)
 	}
@@ -240,7 +240,7 @@ func (h *AlertHub) RegisterProxyPath(proxyID, projectPath string) {
 // the write lock; a BroadcastLogEntry goroutine that already snapshotted
 // the slice before the remove will hold a dangling pointer and would
 // otherwise crash the daemon on the next send.
-func (h *AlertHub) BroadcastLogEntry(entry proxy.LogEntry, proxyID string) {
+func (h *EventHub) BroadcastLogEntry(entry proxy.LogEntry, proxyID string) {
 	h.mu.RLock()
 	sinks := make([]*StreamSink, len(h.streamSinks))
 	copy(sinks, h.streamSinks)
@@ -278,7 +278,7 @@ func (h *AlertHub) BroadcastLogEntry(entry proxy.LogEntry, proxyID string) {
 func sendToStreamSinkSafe(sink *StreamSink, entry proxy.LogEntry, proxyID string) {
 	defer func() {
 		if r := recover(); r != nil {
-			debug.Log("alert-hub", "stream sink send recovered (sink closed during broadcast): %v", r)
+			debug.Log("event-hub", "stream sink send recovered (sink closed during broadcast): %v", r)
 		}
 	}()
 	if sink.closed.Load() {
@@ -293,9 +293,9 @@ func sendToStreamSinkSafe(sink *StreamSink, entry proxy.LogEntry, proxyID string
 	case sink.Ch <- entry:
 	default:
 		if entry.Type == proxy.LogTypeProcessOutput && entry.ProcessOutput != nil {
-			debug.Trace("alert-hub", "stream sink channel full, dropping process output proc=%s", entry.ProcessOutput.ProcessID)
+			debug.Trace("event-hub", "stream sink channel full, dropping process output proc=%s", entry.ProcessOutput.ProcessID)
 		} else {
-			debug.Trace("alert-hub", "stream sink channel full, dropping event type=%s proxy=%s", entry.Type, proxyID)
+			debug.Trace("event-hub", "stream sink channel full, dropping event type=%s proxy=%s", entry.Type, proxyID)
 		}
 	}
 }
@@ -304,7 +304,7 @@ func sendToStreamSinkSafe(sink *StreamSink, entry proxy.LogEntry, proxyID string
 // goroutine is running — registration takes the write lock, broadcast
 // takes the read lock, so the sink starts seeing events on the next push
 // after this call returns.
-func (h *AlertHub) AddHookSink(sink HookEventSink) {
+func (h *EventHub) AddHookSink(sink HookEventSink) {
 	if sink == nil {
 		return
 	}
@@ -316,7 +316,7 @@ func (h *AlertHub) AddHookSink(sink HookEventSink) {
 // RemoveHookSink unregisters a hook event sink. No-op if the sink was
 // never registered. Matching is by interface identity (pointer equality
 // for pointer receivers).
-func (h *AlertHub) RemoveHookSink(sink HookEventSink) {
+func (h *EventHub) RemoveHookSink(sink HookEventSink) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for i, s := range h.hookSinks {
@@ -337,7 +337,7 @@ func (h *AlertHub) RemoveHookSink(sink HookEventSink) {
 // contracted to be non-blocking; if that contract is violated the drain
 // goroutine stalls and ring buffer overflow kicks in — which is the
 // right failure mode (surfaced via hookRing.OverflowCount).
-func (h *AlertHub) BroadcastHookEvent(ev HookEvent) {
+func (h *EventHub) BroadcastHookEvent(ev HookEvent) {
 	h.mu.RLock()
 	sinks := make([]HookEventSink, len(h.hookSinks))
 	copy(sinks, h.hookSinks)
@@ -354,7 +354,7 @@ func (h *AlertHub) BroadcastHookEvent(ev HookEvent) {
 //
 // Uses sendToStreamSinkSafe for the same close-during-broadcast protection
 // documented on BroadcastLogEntry.
-func (h *AlertHub) BroadcastProcessOutput(entry proxy.LogEntry) {
+func (h *EventHub) BroadcastProcessOutput(entry proxy.LogEntry) {
 	h.mu.RLock()
 	sinks := make([]*StreamSink, len(h.streamSinks))
 	copy(sinks, h.streamSinks)
@@ -377,7 +377,7 @@ func containsSubstring(s, substr string) bool {
 // pipeline; this is the browser-toast surface only. Info-level alerts are
 // excluded — they are noise on the overlay. StreamSink is driven separately via
 // BroadcastLogEntry.
-func (h *AlertHub) Deliver(severity string, formatted string) {
+func (h *EventHub) Deliver(severity string, formatted string) {
 	if formatted == "" {
 		return
 	}
@@ -392,7 +392,7 @@ func (h *AlertHub) Deliver(severity string, formatted string) {
 }
 
 // proxyManagerBroadcaster adapts *proxy.ProxyManager to the ProxyBroadcaster
-// interface so AlertHub does not need to depend on the ProxyManager concrete type.
+// interface so EventHub does not need to depend on the ProxyManager concrete type.
 // BroadcastAlertToast fans out to all active proxies; per-proxy errors are
 // swallowed at debug level so one stalled WebSocket client cannot block others.
 type proxyManagerBroadcaster struct {
@@ -415,7 +415,7 @@ func (b *proxyManagerBroadcaster) BroadcastAlertToast(toastType, title, message 
 			continue
 		}
 		if _, err := p.BroadcastToast(toastType, title, message, 0); err != nil {
-			debug.Log("alert-hub", "BroadcastAlertToast failed for proxy %s: %v", p.ID, err)
+			debug.Log("event-hub", "BroadcastAlertToast failed for proxy %s: %v", p.ID, err)
 		}
 	}
 }

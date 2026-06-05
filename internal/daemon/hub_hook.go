@@ -230,7 +230,7 @@ func (d *Daemon) hubHandleHook(ctx context.Context, conn *hubpkg.Connection, cmd
 // shutdown are discarded, which is safe because hook events are
 // fire-and-forget by contract (see hookRingCapacity comment).
 func (d *Daemon) drainHooks(ctx context.Context) {
-	if d.hookRing == nil || d.alertHub == nil {
+	if d.hookRing == nil || d.eventHub == nil {
 		return
 	}
 
@@ -305,7 +305,7 @@ func (d *Daemon) fanOutHookEvent(ev HookEvent) {
 			ReceivedAt:  ev.ReceivedAt,
 		},
 	}
-	d.alertHub.BroadcastLogEntry(logEntry, "")
+	d.eventHub.BroadcastLogEntry(logEntry, "")
 
 	// 3. Toast fan-out for notification, stop, stop-failure, and
 	//    pre-tool-use (Bash redirect) events.
@@ -355,13 +355,13 @@ func (d *Daemon) fanOutHookEvent(ev HookEvent) {
 // errors. Keeping recover localized to the drain path preserves both
 // semantics without forcing every caller to opt into panic isolation.
 func (d *Daemon) safeBroadcastHookEvent(ev HookEvent) {
-	if d.alertHub == nil {
+	if d.eventHub == nil {
 		return
 	}
-	d.alertHub.mu.RLock()
-	sinks := make([]HookEventSink, len(d.alertHub.hookSinks))
-	copy(sinks, d.alertHub.hookSinks)
-	d.alertHub.mu.RUnlock()
+	d.eventHub.mu.RLock()
+	sinks := make([]HookEventSink, len(d.eventHub.hookSinks))
+	copy(sinks, d.eventHub.hookSinks)
+	d.eventHub.mu.RUnlock()
 
 	for _, sink := range sinks {
 		emitHookEventSafe(sink, ev)
