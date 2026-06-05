@@ -397,7 +397,7 @@ func (d *Daemon) fireHoldEmit(entry proxy.LogEntry, proxyID string, mergedCount 
 // fireToIncidentBus runs the right adapter for entry's type and publishes
 // the result on the daemon's incident bus. This is the first production
 // wire of the incident adapter layer (see Phase A migration in
-// alert_hub.go). For sessions without a registered pipeline the bus is a
+// event_hub.go). For sessions without a registered pipeline the bus is a
 // no-op, so this remains safe to call unconditionally.
 func (d *Daemon) fireToIncidentBus(entry proxy.LogEntry, proxyID string) {
 	if d.incidentBus == nil {

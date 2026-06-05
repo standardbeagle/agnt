@@ -4,18 +4,16 @@ package daemon
 //
 // Scope: this file exercises EventHub registration, BroadcastLogEntry /
 // BroadcastProcessOutput fan-out, per-sink streamFilter evaluation,
-// channel-send-with-default backpressure, StreamSink unregister + close,
-// and MCP+Overlay Deliver routing — all with STUB sinks only. It NEVER
-// opens a real PTY, a real MCP session.Log(), a real socket, or the
-// Monitor CLI. The system under test is the fan-out machinery in
-// alert_hub.go (plus the keepalive loop in hub_stream.go, exercised
+// channel-send-with-default backpressure, and StreamSink unregister + close
+// — all with STUB sinks only. It NEVER opens a real PTY, a real MCP
+// session.Log(), a real socket, or the Monitor CLI. The system under test is
+// the fan-out machinery in
+// event_hub.go (plus the keepalive loop in hub_stream.go, exercised
 // with a synthetic ticker).
 //
-// Mental model (read alert_hub.go end-to-end before editing):
+// Mental model (read event_hub.go end-to-end before editing):
 //
-//   * EventHub keeps three sink registries under a single sync.RWMutex:
-//       - overlaySink (single) — PTY stdin injection stand-in
-//       - mcpSinks []MCPAlertSink — MCP session.Log() stand-ins
+//   * EventHub keeps its sink registries under a single sync.RWMutex:
 //       - streamSinks []*StreamSink — channel-buffered consumers with
 //         per-sink streamFilter
 //     The hook sink registry lives on the same hub but is exercised by
@@ -39,8 +37,9 @@ package daemon
 //     under the write lock, so a send-into-closed panic is impossible as
 //     long as RemoveStreamSink is the only closer.
 //
-//   * Deliver fans a pre-formatted string to overlay + MCP sinks per
-//     pushCfg gating. Hook sinks are out of scope for Deliver.
+//   * Deliver fans warning/error toasts to the browser overlay via the
+//     ProxyBroadcaster. Agent-bound delivery runs through the incident
+//     pipeline, not here. Hook sinks are out of scope for Deliver.
 //
 // Every test runs under -race and verifies goroutine cleanup with
 // goleak.VerifyNone(t, goleak.IgnoreCurrent()) so background goroutines
@@ -546,7 +545,7 @@ func TestEventHub_FilterCorrectness(t *testing.T) {
 //     lines reach the sink.
 //
 // The streamFilter.grep is a substring match via strings.Contains (see
-// containsSubstring in alert_hub.go). Catches regressions that would
+// containsSubstring in event_hub.go). Catches regressions that would
 // silently switch to prefix/suffix/regex or short-circuit the ProcessOutput
 // pointer check.
 // =====================================================================
