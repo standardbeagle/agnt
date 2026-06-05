@@ -55,7 +55,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/proxy"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -110,42 +109,6 @@ func (d *stubStreamDrainer) countByType(t proxy.LogEntryType) int64 {
 		return v.(*atomic.Int64).Load()
 	}
 	return 0
-}
-
-// stubMCPSink is a minimal MCPAlertSink that records SendAlert calls.
-// The optional err is returned on every call to exercise the error path
-// in Deliver.
-type stubMCPSink struct {
-	received atomic.Int64
-	err      error
-}
-
-func (s *stubMCPSink) SendAlert(_ string, _ string) error {
-	s.received.Add(1)
-	return s.err
-}
-
-// stubOverlaySink is a minimal OverlayAlertSink that records TypeAlert
-// calls and exposes IsEnabled() as a live atomic so tests can flip it.
-type stubOverlaySink struct {
-	typed   atomic.Int64
-	enabled atomic.Bool
-	err     error
-}
-
-func newStubOverlaySink(enabled bool) *stubOverlaySink {
-	s := &stubOverlaySink{}
-	s.enabled.Store(enabled)
-	return s
-}
-
-func (s *stubOverlaySink) TypeAlert(_ string) error {
-	s.typed.Add(1)
-	return s.err
-}
-
-func (s *stubOverlaySink) IsEnabled() bool {
-	return s.enabled.Load()
 }
 
 // httpErrorEntry returns a synthetic HTTP 500 LogEntry that matches the
@@ -910,35 +873,17 @@ func TestAlertHub_BroadcastLogEntryNonBlocking(t *testing.T) {
 }
 
 // =====================================================================
-//  8. CloseWithRegisteredSinks — 50 stream sinks + 1 overlay + 5 MCP
-//     sinks. Shut down the hub by removing every stream sink and
-//     broadcasting a final Deliver. All channel consumers must observe
-//     the close; Deliver must still route to overlay and MCP sinks
-//     without panicking.
+//  8. CloseWithRegisteredSinks — 50 stream sinks. Shut down the hub by
+//     removing every stream sink; all channel consumers must observe the
+//     close without panicking and every drainer goroutine must exit.
 //
 // Catches: close-on-already-closed-channel (RemoveStreamSink idempotency),
-// nil sink in Deliver, pushCfg nil deref (nil pushCfg means all channels
-// enabled).
+// drainer goroutine leaks (goleak).
 // =====================================================================
 func TestAlertHub_CloseWithRegisteredSinks(t *testing.T) {
 	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
 
 	hub := NewAlertHub()
-
-	// Overlay sink — enabled.
-	overlay := newStubOverlaySink(true)
-	hub.SetOverlaySink(overlay)
-
-	// 5 MCP sinks, one with an err to exercise the error path.
-	mcpSinks := make([]*stubMCPSink, 5)
-	for i := range mcpSinks {
-		m := &stubMCPSink{}
-		if i == 2 {
-			m.err = fmt.Errorf("synth mcp err")
-		}
-		mcpSinks[i] = m
-		hub.AddMCPSink(m)
-	}
 
 	// 50 stream sinks with accept-all filter.
 	const streams = 50
@@ -956,65 +901,6 @@ func TestAlertHub_CloseWithRegisteredSinks(t *testing.T) {
 	for i := 0; i < 100; i++ {
 		hub.BroadcastLogEntry(customEntry("info", fmt.Sprintf("evt-%d", i)), "p")
 	}
-
-	// Deliver() with nil pushCfg (universal default — all channels enabled).
-	hub.Deliver("error", "hello overlay and mcp")
-	assert.Equal(t, int64(1), overlay.typed.Load(), "overlay must receive Deliver call with nil pushCfg")
-	for i, m := range mcpSinks {
-		assert.Equal(t, int64(1), m.received.Load(), "mcp sink %d must receive Deliver", i)
-	}
-
-	// Apply a push config that disables PTY injection (Claude Code preset
-	// shape). Deliver again — overlay must be skipped, MCP must still fire.
-	hub.SetPushConfig(config.PresetPushConfig("claude-code"))
-	hub.Deliver("error", "second delivery")
-	assert.Equal(t, int64(1), overlay.typed.Load(),
-		"overlay must NOT fire when pushCfg disables PTY injection (got %d)", overlay.typed.Load())
-	for i, m := range mcpSinks {
-		assert.Equal(t, int64(2), m.received.Load(), "mcp sink %d must receive both deliveries (got %d)", i, m.received.Load())
-	}
-
-	// Now disable MCP too — Deliver becomes a no-op.
-	falseVal := false
-	trueVal := true
-	hub.SetPushConfig(&config.PushConfig{MCPNotifications: &falseVal, PTYInjection: &falseVal})
-	hub.Deliver("error", "no-op delivery")
-	assert.Equal(t, int64(1), overlay.typed.Load(), "overlay still disabled")
-	for i, m := range mcpSinks {
-		assert.Equal(t, int64(2), m.received.Load(), "mcp sink %d must not advance (got %d)", i, m.received.Load())
-	}
-
-	// Re-enable both. Confirm routes come back.
-	hub.SetPushConfig(&config.PushConfig{MCPNotifications: &trueVal, PTYInjection: &trueVal})
-	// Temporarily disable the overlay sink via IsEnabled() — Deliver
-	// must skip disabled overlays even when pushCfg allows PTY.
-	overlay.enabled.Store(false)
-	hub.Deliver("error", "overlay disabled")
-	assert.Equal(t, int64(1), overlay.typed.Load(), "disabled overlay must not receive TypeAlert")
-	for i, m := range mcpSinks {
-		assert.Equal(t, int64(3), m.received.Load(), "mcp sink %d must receive (got %d)", i, m.received.Load())
-	}
-	overlay.enabled.Store(true)
-	hub.Deliver("error", "fully re-enabled")
-	assert.Equal(t, int64(2), overlay.typed.Load(), "re-enabled overlay must resume receiving")
-
-	// Remove an MCP sink mid-flight. Counter trajectory up to this point:
-	//   Deliver #1 (nil cfg, both on)           → overlay=1, mcp=1
-	//   Deliver #2 (claude-code: pty off)       → overlay=1, mcp=2
-	//   Deliver #3 (both off)                   → overlay=1, mcp=2
-	//   Deliver #4 (both on, overlay disabled)  → overlay=1, mcp=3
-	//   Deliver #5 (both on, overlay re-enabled)→ overlay=2, mcp=4
-	// So before the remove, every MCP sink is at 4. After the remove,
-	// mcpSinks[0] stays at 4 (no more Deliver calls route to it) and
-	// the remaining sinks advance to 5.
-	hub.RemoveMCPSink(mcpSinks[0])
-	hub.Deliver("error", "one mcp removed")
-	assert.Equal(t, int64(4), mcpSinks[0].received.Load(), "removed MCP sink must not advance past pre-remove count")
-	for i := 1; i < len(mcpSinks); i++ {
-		assert.Equal(t, int64(5), mcpSinks[i].received.Load(), "remaining mcp sink %d must advance (got %d)", i, mcpSinks[i].received.Load())
-	}
-	// Overlay also advanced in Deliver #6.
-	assert.Equal(t, int64(3), overlay.typed.Load(), "overlay should have advanced on Deliver #6 (got %d)", overlay.typed.Load())
 
 	// Close every stream sink. Each RemoveStreamSink closes the channel
 	// and the drainer goroutine exits naturally. Also exercises:
@@ -1035,15 +921,5 @@ func TestAlertHub_CloseWithRegisteredSinks(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			t.Fatalf("drainer %d did not exit on close", i)
 		}
-	}
-
-	// Empty overlay sink removal. After SetOverlaySink(nil), Deliver
-	// must skip the overlay branch entirely (nil check in Deliver), so
-	// the overlay counter stays at 3 even as MCP sinks advance.
-	hub.SetOverlaySink(nil)
-	hub.Deliver("error", "no overlay")
-	assert.Equal(t, int64(3), overlay.typed.Load(), "nil overlay sink must not be called (got %d)", overlay.typed.Load())
-	for i := 1; i < len(mcpSinks); i++ {
-		assert.Equal(t, int64(6), mcpSinks[i].received.Load(), "mcp sink %d must advance on Deliver #7 (got %d)", i, mcpSinks[i].received.Load())
 	}
 }

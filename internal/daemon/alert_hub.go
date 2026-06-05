@@ -6,7 +6,6 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/proxy"
 )
@@ -28,17 +27,6 @@ func (r *proxyPathRegistry) get(proxyID string) string {
 		return v.(string)
 	}
 	return ""
-}
-
-// MCPAlertSink delivers alert messages via MCP session notifications.
-type MCPAlertSink interface {
-	SendAlert(level string, message string) error
-}
-
-// OverlayAlertSink delivers alert messages via PTY stdin injection.
-type OverlayAlertSink interface {
-	TypeAlert(text string) error
-	IsEnabled() bool
 }
 
 // HookEventSink receives Claude Code hook events drained from the daemon
@@ -158,14 +146,12 @@ type ProxyBroadcaster interface {
 	BroadcastAlertToast(toastType, title, message string)
 }
 
-// AlertHub routes formatted alert messages to available delivery mechanisms:
-// PTY overlay (stdin injection), MCP session notifications, and stream sinks.
+// AlertHub fans events to stream sinks (agnt monitor), hook sinks (agnt hook),
+// and browser toasts (via ProxyBroadcaster). Agent-bound alert/incident delivery
+// runs through the incident pipeline, not here.
 type AlertHub struct {
-	overlaySink      OverlayAlertSink
-	mcpSinks         []MCPAlertSink
 	streamSinks      []*StreamSink
 	hookSinks        []HookEventSink
-	pushConfig       *config.PushConfig
 	proxyBroadcaster ProxyBroadcaster
 	mu               sync.RWMutex
 	proxyPaths       proxyPathRegistry // proxyID → project path for stream routing
@@ -182,41 +168,6 @@ func (h *AlertHub) SetProxyBroadcaster(pb ProxyBroadcaster) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.proxyBroadcaster = pb
-}
-
-// SetPushConfig sets the push channel configuration.
-// When set, Deliver checks each channel before dispatching.
-// A nil config means all channels are enabled (universal default).
-func (h *AlertHub) SetPushConfig(pc *config.PushConfig) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.pushConfig = pc
-}
-
-// SetOverlaySink sets the overlay (PTY stdin) delivery sink.
-func (h *AlertHub) SetOverlaySink(sink OverlayAlertSink) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.overlaySink = sink
-}
-
-// AddMCPSink registers an MCP session for alert delivery.
-func (h *AlertHub) AddMCPSink(sink MCPAlertSink) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	h.mcpSinks = append(h.mcpSinks, sink)
-}
-
-// RemoveMCPSink unregisters an MCP session sink.
-func (h *AlertHub) RemoveMCPSink(sink MCPAlertSink) {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	for i, s := range h.mcpSinks {
-		if s == sink {
-			h.mcpSinks = append(h.mcpSinks[:i], h.mcpSinks[i+1:]...)
-			return
-		}
-	}
 }
 
 // AddStreamSink registers a stream sink and returns it.
@@ -421,9 +372,10 @@ func containsSubstring(s, substr string) bool {
 	return strings.Contains(s, substr)
 }
 
-// Deliver sends a pre-formatted alert message to the available delivery
-// mechanisms (PTY overlay, MCP notifications, and browser toasts), gated by the
-// push config. StreamSink is NOT driven here — it receives events via
+// Deliver broadcasts a warning/error alert to connected browser overlays as a
+// toast. Agent-bound delivery of the same alert flows through the incident
+// pipeline; this is the browser-toast surface only. Info-level alerts are
+// excluded — they are noise on the overlay. StreamSink is driven separately via
 // BroadcastLogEntry.
 func (h *AlertHub) Deliver(severity string, formatted string) {
 	if formatted == "" {
@@ -431,34 +383,11 @@ func (h *AlertHub) Deliver(severity string, formatted string) {
 	}
 
 	h.mu.RLock()
-	overlaySink := h.overlaySink
-	mcpSinks := make([]MCPAlertSink, len(h.mcpSinks))
-	copy(mcpSinks, h.mcpSinks)
-	pushCfg := h.pushConfig
 	pb := h.proxyBroadcaster
 	h.mu.RUnlock()
 
-	// Try overlay (PTY stdin injection)
-	if pushCfg.PTYInjectionEnabled() && overlaySink != nil && overlaySink.IsEnabled() {
-		if err := overlaySink.TypeAlert(formatted); err != nil {
-			debug.Error("alerts", "overlay delivery failed: %v", err)
-		}
-	}
-
-	// Also deliver via MCP session notifications
-	if pushCfg.MCPNotificationsEnabled() {
-		for _, sink := range mcpSinks {
-			if err := sink.SendAlert(severity, formatted); err != nil {
-				debug.Error("alerts", "MCP delivery failed: %v", err)
-			}
-		}
-	}
-
-	// Broadcast warning/error alerts to connected browser overlays as toasts.
-	// Info-level alerts are intentionally excluded — they are noise on the overlay.
 	if pb != nil && (severity == "error" || severity == "warning") {
-		title := "Process Error"
-		pb.BroadcastAlertToast(severity, title, formatted)
+		pb.BroadcastAlertToast(severity, "Process Error", formatted)
 	}
 }
 

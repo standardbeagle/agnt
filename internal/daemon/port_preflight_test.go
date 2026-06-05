@@ -198,11 +198,10 @@ func TestKillPortBlockers_WindowsPID_RoutesToTaskkill(t *testing.T) {
 	assert.Contains(t, results[0].Error, "windows pid", "error must identify the Windows PID branch")
 }
 
-// capturingMCPSink records SendAlert calls verbatim so tests can assert on
-// the level + message pair. Distinct from the counter-only stubMCPSink in
-// alert_hub_stress_test.go because here we need to verify the Silent
-// Failure Prohibition contract requires the warning text reaches the sink.
-type capturingMCPSink struct {
+// capturingBroadcaster records BroadcastAlertToast calls verbatim so tests can
+// assert the Silent Failure Prohibition contract: a kill failure must surface as
+// a warning toast (the AlertHub delivery surface) rather than being swallowed.
+type capturingBroadcaster struct {
 	mu    sync.Mutex
 	calls []capturedAlert
 }
@@ -212,14 +211,13 @@ type capturedAlert struct {
 	message string
 }
 
-func (s *capturingMCPSink) SendAlert(level, message string) error {
+func (s *capturingBroadcaster) BroadcastAlertToast(toastType, _ string, message string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.calls = append(s.calls, capturedAlert{level, message})
-	return nil
+	s.calls = append(s.calls, capturedAlert{toastType, message})
 }
 
-func (s *capturingMCPSink) snapshot() []capturedAlert {
+func (s *capturingBroadcaster) snapshot() []capturedAlert {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]capturedAlert, len(s.calls))
@@ -230,18 +228,18 @@ func (s *capturingMCPSink) snapshot() []capturedAlert {
 // TestKillPortBlockers_WindowsPIDFailure_SurfacesWarning asserts the
 // Silent Failure Prohibition contract: when platform.KillWindowsPID
 // fails (here: because we're not on WSL OR because the PID is bogus),
-// the failure must reach AlertHub.Deliver as a warning so the AI agent
-// sees it. Runs everywhere because KillWindowsPID always errors when
-// IsWSL() is false (covered by killwindowspid_unix_test.go), and on
-// WSL hosts without taskkill.exe the LookPath failure also errors.
+// the failure must reach AlertHub.Deliver and surface as a warning toast
+// so it is not silently swallowed. Runs everywhere because KillWindowsPID
+// always errors when IsWSL() is false (covered by killwindowspid_unix_test.go),
+// and on WSL hosts without taskkill.exe the LookPath failure also errors.
 func TestKillPortBlockers_WindowsPIDFailure_SurfacesWarning(t *testing.T) {
 	t.Parallel()
 	pm := goprocess.NewProcessManager(goprocess.DefaultManagerConfig())
 	defer pm.Shutdown(context.Background())
 
 	hub := NewAlertHub()
-	sink := &capturingMCPSink{}
-	hub.AddMCPSink(sink)
+	bc := &capturingBroadcaster{}
+	hub.SetProxyBroadcaster(bc)
 
 	port := ephemeralPort(t)
 	conflicts := []PortConflict{{
@@ -254,8 +252,8 @@ func TestKillPortBlockers_WindowsPIDFailure_SurfacesWarning(t *testing.T) {
 	require.Len(t, results, 1)
 	assert.NotEmpty(t, results[0].Error, "kill failure must populate KillResult.Error")
 
-	calls := sink.snapshot()
-	require.NotEmpty(t, calls, "AlertHub must receive at least one Deliver call for the failure")
+	calls := bc.snapshot()
+	require.NotEmpty(t, calls, "AlertHub must surface at least one toast for the failure")
 	assert.Equal(t, "warning", calls[0].level, "kill failure must be warning-severity")
 	assert.Contains(t, calls[0].message, "Windows-side", "alert must identify the source")
 }
