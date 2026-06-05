@@ -54,6 +54,12 @@ const (
 	// raw hook JSON plus daemon-side provenance so StreamSink subscribers
 	// can filter and display it via `agnt monitor --types hook`.
 	LogTypeHook LogEntryType = "hook"
+	// LogTypeIncidentDigest carries a periodic incident-inbox digest as a
+	// synthetic stream entry. It is the cross-process transport for the
+	// unified agent-inbound queue: the daemon broadcasts it over STREAM-EVENTS
+	// and consumer processes (agnt mcp, agnt run) render it to the agent. The
+	// compact digest text rides in Custom.Message; Custom.Level is the severity.
+	LogTypeIncidentDigest LogEntryType = "incident_digest"
 )
 
 // HTTPLogEntry represents a logged HTTP request/response pair.

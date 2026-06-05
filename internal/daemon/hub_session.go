@@ -197,9 +197,7 @@ func (d *Daemon) hubHandleSessionRegister(conn *hubpkg.Connection, cmd *hubproto
 
 	d.logSessionTargetStarting(session)
 	conn.SetSessionCode(session.Code)
-	if d.incidentBus != nil {
-		d.incidentBus.AddSession(session.Code, nil, nil, nil)
-	}
+	d.addIncidentSession(session.Code)
 
 	// Rebind overlay endpoints for existing proxies that may have been
 	// created before this session registered.
@@ -645,9 +643,7 @@ func (d *Daemon) hubHandleSessionAttach(conn *hubpkg.Connection, cmd *hubproto.C
 
 	// Associate this connection with the session
 	conn.SetSessionCode(session.Code)
-	if d.incidentBus != nil {
-		d.incidentBus.AddSession(session.Code, nil, nil, nil)
-	}
+	d.addIncidentSession(session.Code)
 
 	resp := map[string]interface{}{
 		"attached":     true,
