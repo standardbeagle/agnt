@@ -568,12 +568,19 @@ func (c *OutageClassifier) fireLongRebuildHeartbeat(processID string) {
 		proxyID, formatDuration(elapsed),
 	), proxy.DiagnosticInfo, "rebuild_ongoing")
 
-	// Reschedule. Use a fresh timer so concurrent stops can swap it out
-	// cleanly via CompareAndSwap.
+	// Reschedule. Bail if the timer was already torn down (Swap(nil)) by a
+	// concurrent stop/forget: using the current value as the CAS-expected would
+	// also match nil and re-arm a timer AFTER teardown. Capture the live timer
+	// and CAS against it — if a stop races in between, the CAS fails and we
+	// stop the fresh timer instead of leaking it.
+	cur := st.longRebuildTimer.Load()
+	if cur == nil {
+		return
+	}
 	next := time.AfterFunc(LongRebuildHeartbeat, func() {
 		c.fireLongRebuildHeartbeat(processID)
 	})
-	if !st.longRebuildTimer.CompareAndSwap(st.longRebuildTimer.Load(), next) {
+	if !st.longRebuildTimer.CompareAndSwap(cur, next) {
 		next.Stop()
 	}
 }
