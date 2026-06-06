@@ -219,11 +219,15 @@ panel navigation (the original bug where Enter selected a script instead of
 running the typed command).
 
 Commands: `start/stop/restart <script>`, `kill-port <port>`, `kill-orphans`,
+`restart-proxy <id>`, `stop-proxy <id>`, `stop-tunnel <id>`, `toggle-ports`,
 `summarize`, `reconnect`, `run <shell…>`. Dispatch is
-`InputRouter.dispatchPaletteCommand` — summarize/reconnect run with the overlay
-lock held; controller calls release it. `ScriptController` gained `KillPort` and
-`CleanOrphans` (`internal/overlay/status.go`); `kill-port` reuses
-`PROC CLEANUP-PORT`, `kill-orphans` issues `PORTS CLEAN-ORPHANS`.
+`InputRouter.dispatchPaletteCommand` — summarize/reconnect/toggle-ports run with
+the overlay lock held; controller calls release it. `ScriptController` gained
+`KillPort`, `CleanOrphans`, `RestartProxy`, `StopProxy`, `StopTunnel`
+(`internal/overlay/status.go`); `kill-port` reuses `PROC CLEANUP-PORT`,
+`kill-orphans` issues `PORTS CLEAN-ORPHANS`, proxy/tunnel commands issue
+`PROXY RESTART/STOP` and `TUNNEL STOP`. Tunnel start is omitted (needs multi-arg
+config; use the MCP tunnel tool).
 
 ### Ports & Orphans Panel
 
