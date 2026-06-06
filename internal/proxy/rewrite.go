@@ -83,9 +83,9 @@ func (ps *ProxyServer) modifyResponse(resp *http.Response) error {
 	// Rewrite absolute URLs in HTML content pointing to target back to proxy
 	modifiedBody := ps.rewriteURLsInBody(bodyBytes)
 
-	// Inject instrumentation
-	modifiedBody = InjectInstrumentation(modifiedBody, port)
-	modifiedBody = InjectProxyMeta(modifiedBody, ps.ID)
+	// Inject instrumentation + proxy-id meta in a single full-body copy.
+	_ = port // wsPort is deprecated/unused; kept for signature compatibility
+	modifiedBody = InjectInstrumentationAndMeta(modifiedBody, ps.ID)
 
 	// Update response with uncompressed modified content
 	resp.Body = io.NopCloser(bytes.NewReader(modifiedBody))

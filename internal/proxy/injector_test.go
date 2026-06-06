@@ -279,6 +279,28 @@ func TestInjectProxyMeta(t *testing.T) {
 	}
 }
 
+func TestInjectInstrumentationAndMeta(t *testing.T) {
+	html := []byte(`<html><head><title>t</title></head><body><p>hi</p></body></html>`)
+	result := InjectInstrumentationAndMeta(html, "my-app")
+	s := string(result)
+
+	if !strings.Contains(s, `window.__devtool_proxy_id="my-app"`) {
+		t.Errorf("missing proxy id: %s", s)
+	}
+	if !strings.Contains(s, "<script>") {
+		t.Error("missing instrumentation script")
+	}
+	// proxy-id meta must follow a </script> (the instrumentation script's close)
+	idx := strings.LastIndex(s, "window.__devtool_proxy_id")
+	if idx == -1 || strings.LastIndex(s[:idx], "</script>") == -1 {
+		t.Error("proxy meta should appear after a </script>")
+	}
+	// original content preserved
+	if !strings.Contains(s, "<title>t</title>") || !strings.Contains(s, "<p>hi</p>") {
+		t.Error("original content not preserved")
+	}
+}
+
 func TestInjectProxyMeta_SpecialChars(t *testing.T) {
 	body := []byte(`<head><script>x=1;</script></head>`)
 	result := InjectProxyMeta(body, `foo"bar`)

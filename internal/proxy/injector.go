@@ -24,78 +24,81 @@ func instrumentationScript() string {
 	return cachedScript
 }
 
+// instrumentationInsertOffset returns the byte offset where the instrumentation
+// script should be inserted (before </head>, else after <head>/<body>/<html>),
+// and whether a structural insertion point was found. When false, callers
+// prepend to the body.
+func instrumentationInsertOffset(body []byte) (int, bool) {
+	if idx := bytes.Index(body, []byte("</head>")); idx != -1 {
+		return idx, true
+	}
+	if idx := bytes.Index(body, []byte("<head>")); idx != -1 {
+		return idx + len("<head>"), true
+	}
+	if idx := bytes.Index(body, []byte("<body")); idx != -1 {
+		if endIdx := bytes.Index(body[idx:], []byte(">")); endIdx != -1 {
+			return idx + endIdx + 1, true
+		}
+	}
+	if idx := bytes.Index(body, []byte("<html")); idx != -1 {
+		if endIdx := bytes.Index(body[idx:], []byte(">")); endIdx != -1 {
+			return idx + endIdx + 1, true
+		}
+	}
+	return 0, false
+}
+
+// spliceInto returns body with the given fragments inserted at offset at, in a
+// single allocation sized for the full result.
+func spliceInto(body []byte, at int, fragments ...[]byte) []byte {
+	total := len(body)
+	for _, f := range fragments {
+		total += len(f)
+	}
+	result := make([]byte, 0, total)
+	result = append(result, body[:at]...)
+	for _, f := range fragments {
+		result = append(result, f...)
+	}
+	result = append(result, body[at:]...)
+	return result
+}
+
 // InjectInstrumentation adds monitoring JavaScript to HTML responses.
 // The wsPort parameter is deprecated and unused (kept for backward compatibility).
 // The script now uses relative URLs via window.location.host.
 func InjectInstrumentation(body []byte, wsPort int) []byte {
-	script := instrumentationScript()
-
-	// Try to inject before </head>
-	if idx := bytes.Index(body, []byte("</head>")); idx != -1 {
-		result := make([]byte, 0, len(body)+len(script))
-		result = append(result, body[:idx]...)
-		result = append(result, []byte(script)...)
-		result = append(result, body[idx:]...)
-		return result
+	script := []byte(instrumentationScript())
+	if at, ok := instrumentationInsertOffset(body); ok {
+		return spliceInto(body, at, script)
 	}
+	return spliceInto(body, 0, script) // last resort: prepend
+}
 
-	// Try to inject after <head>
-	if idx := bytes.Index(body, []byte("<head>")); idx != -1 {
-		insertAt := idx + 6
-		result := make([]byte, 0, len(body)+len(script))
-		result = append(result, body[:insertAt]...)
-		result = append(result, []byte(script)...)
-		result = append(result, body[insertAt:]...)
-		return result
+// InjectInstrumentationAndMeta injects the instrumentation script and the
+// proxy-id meta tag in a SINGLE allocation. This is the hot proxy-response path:
+// calling InjectInstrumentation followed by InjectProxyMeta copied the full
+// response body twice (costly for large HTML). The meta tag is placed
+// immediately after the instrumentation script, so window.__devtool_proxy_id is
+// set before any page scripts run.
+func InjectInstrumentationAndMeta(body []byte, proxyID string) []byte {
+	script := []byte(instrumentationScript())
+	meta := []byte(fmt.Sprintf("<script>window.__devtool_proxy_id=%q;</script>", proxyID))
+	if at, ok := instrumentationInsertOffset(body); ok {
+		return spliceInto(body, at, script, meta)
 	}
-
-	// Try to inject after <body>
-	if idx := bytes.Index(body, []byte("<body")); idx != -1 {
-		// Find the end of the body tag
-		endIdx := bytes.Index(body[idx:], []byte(">"))
-		if endIdx != -1 {
-			insertAt := idx + endIdx + 1
-			result := make([]byte, 0, len(body)+len(script))
-			result = append(result, body[:insertAt]...)
-			result = append(result, []byte(script)...)
-			result = append(result, body[insertAt:]...)
-			return result
-		}
-	}
-
-	// Try to inject after <html>
-	if idx := bytes.Index(body, []byte("<html")); idx != -1 {
-		endIdx := bytes.Index(body[idx:], []byte(">"))
-		if endIdx != -1 {
-			insertAt := idx + endIdx + 1
-			result := make([]byte, 0, len(body)+len(script))
-			result = append(result, body[:insertAt]...)
-			result = append(result, []byte(script)...)
-			result = append(result, body[insertAt:]...)
-			return result
-		}
-	}
-
-	// Last resort: prepend to body
-	result := make([]byte, 0, len(body)+len(script))
-	result = append(result, []byte(script)...)
-	result = append(result, body...)
-	return result
+	return spliceInto(body, 0, script, meta)
 }
 
 // InjectProxyMeta inserts a small script tag setting window.__devtool_proxy_id
-// after the last </script> in the body. This is called after InjectInstrumentation
-// so the instrumentation script's closing tag is the insertion point.
+// after the last </script> in the body. Retained for direct callers/tests; the
+// proxy response path uses InjectInstrumentationAndMeta to avoid a second
+// full-body copy.
 func InjectProxyMeta(body []byte, proxyID string) []byte {
 	meta := []byte(fmt.Sprintf("<script>window.__devtool_proxy_id=%q;</script>", proxyID))
 	marker := []byte("</script>")
 	if idx := bytes.LastIndex(body, marker); idx != -1 {
-		insertAt := idx + len(marker)
-		result := make([]byte, 0, len(body)+len(meta))
-		result = append(result, body[:insertAt]...)
-		result = append(result, meta...)
-		result = append(result, body[insertAt:]...)
-		return result
+		return spliceInto(body, idx+len(marker), meta)
 	}
 	return body
 }
