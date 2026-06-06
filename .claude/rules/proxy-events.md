@@ -9,21 +9,21 @@ paths:
 
 ## Event Types
 
-Four event types flow through the `proxyEvents` channel:
+Four event types flow through `proxyEvents` channel:
 
 | Event | Trigger | Handler | Result |
 |-------|---------|---------|--------|
-| `URLDetected` | URLTracker finds a URL in process output | `handleURLDetected` | Create proxy targeting detected URL |
+| `URLDetected` | URLTracker finds URL in process output | `handleURLDetected` | Create proxy targeting detected URL |
 | `ExplicitStart` | `autostartProxy` for non-script-linked proxies | `handleExplicitStart` | Create proxy with explicit target |
-| `ScriptStopped` | Process exits or is cleaned up | `handleScriptStopped` | Stop all proxies linked to that script |
+| `ScriptStopped` | Process exits or cleaned up | `handleScriptStopped` | Stop all proxies linked to that script |
 | `FallbackPortCheck` | `scheduleFallbackPortChecks` 30s after autostart | `handleFallbackPortCheck` | Create proxy targeting `localhost:<fallback-port>` if URL detection never fired |
 
 ## Event Channel Contract
 
-The `proxyEvents` channel is buffered (10 events). If the channel is full, events are **dropped with a warning log**. This is a known failure mode:
-- High-volume URL detection (multiple scripts starting simultaneously) can fill the buffer
-- Dropped events mean proxies silently don't get created
-- The health check reconciliation must detect missing proxies as a safety net
+`proxyEvents` channel buffered (10 events). Channel full → events **dropped with warning log**. Known failure mode:
+- High-volume URL detection (many scripts start at once) fills buffer
+- Dropped events = proxies silently not created
+- Health check reconciliation must detect missing proxies as safety net
 
 ## URL Detection Flow
 
@@ -42,13 +42,13 @@ Process output → URLTracker.scanProcess()
 
 ### Script Name Extraction
 
-Process IDs have format `{project-hash}:{scriptName}`. The event handler splits on `:` to extract the script name, then matches against `proxyConfig.Script`. This coupling means:
-- Process IDs MUST maintain the `prefix:name` format
-- The script name in the process ID MUST match the key in `.agnt.kdl` `scripts {}` block
+Process IDs have format `{project-hash}:{scriptName}`. Handler splits on `:` to extract script name, then matches against `proxyConfig.Script`. Coupling means:
+- Process IDs MUST keep `prefix:name` format
+- Script name in process ID MUST match key in `.agnt.kdl` `scripts {}` block
 
 ## Fallback Flow (FallbackPortCheck)
 
-When URL detection fails for a script-linked proxy that declares `fallback-port`:
+URL detection fails for script-linked proxy that declares `fallback-port`:
 
 ```
 autostart → scheduleFallbackPortChecks spawns one goroutine per
@@ -64,26 +64,20 @@ autostart → scheduleFallbackPortChecks spawns one goroutine per
         → on failure: startup_proxy_fallback_failed (warning)
 ```
 
-The fallback handler uses the same proxy-id scheme as the explicit-start
-path (`makeProcessID(projectPath, proxyName)`) so idempotency checks align
-and so a subsequent URL-detection event (which uses `makeProxyIDFromURL`) can
-still create its own distinct entry if it fires late.
+Fallback handler uses same proxy-id scheme as explicit-start path (`makeProcessID(projectPath, proxyName)`) so idempotency checks align, and so late URL-detection event (uses `makeProxyIDFromURL`) can still create own distinct entry.
 
-Both success and failure entries flow through `startupErrorStore`, so the
-outcome surfaces in `get_errors` and the overlay — never silent.
+Both success and failure entries flow through `startupErrorStore` — outcome surfaces in `get_errors` and overlay, never silent.
 
-The 30s timer constant must not be shortened for production; tests exercise
-`handleFallbackPortCheck` directly or deliver `FallbackPortCheck` events to
-the channel, bypassing the timer.
+30s timer constant must not shorten for production. Tests exercise `handleFallbackPortCheck` directly or deliver `FallbackPortCheck` events to channel, bypassing timer.
 
 ## Silent Failure Points (Known)
 
-These are places where the current code silently fails — each must be addressed:
+Places where current code silently fails — each must be addressed:
 
 1. **`autostartProxy` line 1511**: Script-linked proxies skipped with `debug.Log` only — no session log entry
-2. **`handleURLDetected`**: If config reload fails, warning goes to debug log only
+2. **`handleURLDetected`**: Config reload fails → warning to debug log only
 3. **Event channel full**: Warning to debug log, event dropped, proxy never created
-4. **URL matcher mismatch**: No feedback that the pattern didn't match any output — proxy just never appears
+4. **URL matcher mismatch**: No feedback pattern matched no output — proxy just never appears
 
 ## Proxy ID Formats
 
@@ -91,4 +85,4 @@ Two formats depending on creation path:
 - Event-driven: `{project-hash}:{proxyName}-{host}-{port}` (via `makeProxyIDFromURL`)
 - Explicit: `{project-hash}:{proxyName}` (via `makeProcessID`)
 
-This inconsistency can cause lookups to fail if code assumes one format. Be aware when querying proxies by ID.
+Inconsistency can break lookups if code assumes one format. Beware when querying proxies by ID.

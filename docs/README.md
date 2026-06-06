@@ -11,9 +11,14 @@ Current, maintained references for specific subsystems:
 
 | Doc | Topic |
 |-----|-------|
+| [mcp-tools.md](mcp-tools.md) | MCP tool catalog, per-tool params, output formats, `__devtool` API, `agnt monitor` |
+| [configuration.md](configuration.md) | `.agnt.kdl` config: port-conflict, autostart ordering, alert push, incident keys, URL tracking |
+| [channel-mode.md](channel-mode.md) | Channel Mode beta (push events via MCP `claude/channel`) |
+| [overlay-internals.md](overlay-internals.md) | PTY overlay UI: command palette, ports/orphans panel, splash, output protection |
 | [agent-adapters.md](agent-adapters.md) | System-prompt injection per AI tool (Claude Code, Gemini, Aider, …) |
 | [agent-support-matrix.md](agent-support-matrix.md) | First-run setup skill delivery per agent (marketplace / skill-file / none) |
-| [hook-rules.md](hook-rules.md) | `agnt hook` dispatcher events and drain fan-out |
+| [hook-dispatcher.md](hook-dispatcher.md) | `agnt hook` telemetry forwarder — events, drain fan-out, sample settings |
+| [hook-rules.md](hook-rules.md) | `agnt hook check-bash`/`check-prompt` Bash-interceptor rules |
 | [orphan-cleanup.md](orphan-cleanup.md) | Orphaned process / pgid cleanup behavior |
 | [url-matching.md](url-matching.md) | Dev-server URL tracking and matching |
 | [javascript-error-handling-standards.md](javascript-error-handling-standards.md) | Injected JS error-capture conventions |
