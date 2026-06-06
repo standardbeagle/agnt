@@ -133,6 +133,14 @@ func TestProcessReadiness_PortProbeCancel(t *testing.T) {
 	port := ln.Addr().(*net.TCPAddr).Port
 	ln.Close() // Not listening.
 
+	// Guard against ephemeral-port reuse: on a busy host the just-freed port can
+	// already be held by an unrelated listener, in which case the probe would
+	// legitimately connect and this "refused probe" scenario can't be exercised.
+	if c, e := net.DialTimeout("tcp", fmt.Sprintf("localhost:%d", port), 100*time.Millisecond); e == nil {
+		c.Close()
+		t.Skipf("port %d was reused by another listener; cannot test the refused-probe path", port)
+	}
+
 	pr := NewProcessReadiness()
 	ctx, cancel := context.WithCancel(context.Background())
 	pr.StartPortProbe("proc1", port, ctx)
