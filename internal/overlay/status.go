@@ -214,45 +214,14 @@ func (f *StatusFetcher) fetchScripts() ([]ScriptInfo, error) {
 		return nil, err
 	}
 
-	scriptsRaw, ok := result["scripts"].([]interface{})
-	if !ok {
-		return nil, nil
+	var wrap struct {
+		Scripts []scriptDTO `json:"scripts"`
 	}
+	decodeResult(result, &wrap)
 
-	scripts := make([]ScriptInfo, 0, len(scriptsRaw))
-	for _, s := range scriptsRaw {
-		sm, ok := s.(map[string]interface{})
-		if !ok {
-			continue
-		}
-
-		info := ScriptInfo{}
-		if name, ok := sm["name"].(string); ok {
-			info.Name = name
-		}
-		if pid, ok := sm["process_id"].(string); ok {
-			info.ProcessID = pid
-		}
-		if state, ok := sm["state"].(string); ok {
-			info.State = state
-		}
-		if cmd, ok := sm["command"].(string); ok {
-			info.Command = cmd
-		}
-		if sc, ok := sm["start_count"].(float64); ok {
-			info.StartCount = int64(sc)
-		}
-		if fc, ok := sm["fail_count"].(float64); ok {
-			info.FailCount = int64(fc)
-		}
-		if le, ok := sm["last_error"].(string); ok {
-			info.LastError = le
-		}
-		if ha, ok := sm["has_alerts"].(bool); ok {
-			info.HasAlerts = ha
-		}
-
-		scripts = append(scripts, info)
+	scripts := make([]ScriptInfo, 0, len(wrap.Scripts))
+	for _, d := range wrap.Scripts {
+		scripts = append(scripts, d.toInfo())
 	}
 
 	// Sort by name for stable ordering
@@ -272,56 +241,20 @@ func (f *StatusFetcher) fetchPorts() ([]PortInfo, []OrphanInfo, error) {
 		return nil, nil, err
 	}
 
-	var ports []PortInfo
-	if raw, ok := result["ports"].([]interface{}); ok {
-		ports = make([]PortInfo, 0, len(raw))
-		for _, p := range raw {
-			pm, ok := p.(map[string]interface{})
-			if !ok {
-				continue
-			}
-			info := PortInfo{}
-			if v, ok := pm["port"].(float64); ok {
-				info.Port = int(v)
-			}
-			if v, ok := pm["pid"].(float64); ok {
-				info.PID = int(v)
-			}
-			if v, ok := pm["name"].(string); ok {
-				info.Name = v
-			}
-			if v, ok := pm["windows"].(bool); ok {
-				info.Windows = v
-			}
-			if v, ok := pm["status"].(string); ok {
-				info.Status = v
-			}
-			if v, ok := pm["system"].(bool); ok {
-				info.System = v
-			}
-			ports = append(ports, info)
-		}
+	var wrap struct {
+		Ports   []portDTO   `json:"ports"`
+		Orphans []orphanDTO `json:"orphans"`
 	}
+	decodeResult(result, &wrap)
 
-	var orphans []OrphanInfo
-	if raw, ok := result["orphans"].([]interface{}); ok {
-		orphans = make([]OrphanInfo, 0, len(raw))
-		for _, o := range raw {
-			om, ok := o.(map[string]interface{})
-			if !ok {
-				continue
-			}
-			info := OrphanInfo{}
-			if v, ok := om["pgid"].(float64); ok {
-				info.PGID = int(v)
-			}
-			if v, ok := om["count"].(float64); ok {
-				info.Count = int(v)
-			}
-			orphans = append(orphans, info)
-		}
+	ports := make([]PortInfo, 0, len(wrap.Ports))
+	for _, d := range wrap.Ports {
+		ports = append(ports, d.toInfo())
 	}
-
+	orphans := make([]OrphanInfo, 0, len(wrap.Orphans))
+	for _, d := range wrap.Orphans {
+		orphans = append(orphans, d.toInfo())
+	}
 	return ports, orphans, nil
 }
 
@@ -332,41 +265,14 @@ func (f *StatusFetcher) fetchProcesses() ([]ProcessInfo, error) {
 		return nil, err
 	}
 
-	// Parse the result
-	processesRaw, ok := result["processes"].([]interface{})
-	if !ok {
-		return nil, nil
+	var wrap struct {
+		Processes []processDTO `json:"processes"`
 	}
+	decodeResult(result, &wrap)
 
-	processes := make([]ProcessInfo, 0, len(processesRaw))
-	for _, p := range processesRaw {
-		pm, ok := p.(map[string]interface{})
-		if !ok {
-			continue
-		}
-
-		info := ProcessInfo{}
-		if id, ok := pm["id"].(string); ok {
-			info.ID = id
-		}
-		if cmd, ok := pm["command"].(string); ok {
-			info.Command = cmd
-		}
-		if state, ok := pm["state"].(string); ok {
-			info.State = state
-		}
-		if runtime, ok := pm["runtime_ms"].(float64); ok {
-			info.Runtime = time.Duration(runtime) * time.Millisecond
-		}
-		// Get URLs from server (persisted by URL tracker)
-		if urls, ok := pm["urls"].([]interface{}); ok {
-			for _, u := range urls {
-				if urlStr, ok := u.(string); ok {
-					info.URLs = append(info.URLs, urlStr)
-				}
-			}
-		}
-		processes = append(processes, info)
+	processes := make([]ProcessInfo, 0, len(wrap.Processes))
+	for _, d := range wrap.Processes {
+		processes = append(processes, d.toInfo())
 	}
 
 	// Sort by ID for stable ordering
@@ -384,72 +290,21 @@ func (f *StatusFetcher) fetchProxies() ([]ProxyInfo, error) {
 		return nil, err
 	}
 
-	// Parse the result
-	proxiesRaw, ok := result["proxies"].([]interface{})
-	if !ok {
-		return nil, nil
+	var wrap struct {
+		Proxies []proxyDTO `json:"proxies"`
 	}
+	decodeResult(result, &wrap)
 
-	proxies := make([]ProxyInfo, 0, len(proxiesRaw))
-	for _, p := range proxiesRaw {
-		pm, ok := p.(map[string]interface{})
-		if !ok {
-			continue
-		}
-
-		info := ProxyInfo{}
-		if id, ok := pm["id"].(string); ok {
-			info.ID = id
-		}
-		if target, ok := pm["target_url"].(string); ok {
-			info.TargetURL = target
-		}
-		if listen, ok := pm["listen_addr"].(string); ok {
-			info.ListenAddr = listen
-		}
-
-		// Readiness-gate state: the daemon emits "status":
-		// "waiting_for_dependencies" for gated proxies and a
-		// "waiting_for" array with the pending script names.
-		if state, ok := pm["status"].(string); ok {
-			info.State = state
-		}
-		if waitingRaw, ok := pm["waiting_for"].([]interface{}); ok {
-			for _, v := range waitingRaw {
-				if s, ok := v.(string); ok {
-					info.WaitingOn = append(info.WaitingOn, s)
-				}
-			}
-		}
-
-		// Check stats for error count
-		if stats, ok := pm["stats"].(map[string]interface{}); ok {
-			if errCount, ok := stats["error_count"].(float64); ok {
-				info.ErrorCount = int(errCount)
-				info.HasErrors = info.ErrorCount > 0
-			}
-		}
-
-		// Check for tunnel info
-		if tunnelURL, ok := pm["tunnel_url"].(string); ok {
-			info.TunnelURL = tunnelURL
-		}
-		if tunnelRunning, ok := pm["tunnel_running"].(bool); ok {
-			info.TunnelRunning = tunnelRunning
-		}
-
-		// Add Tailscale URL if Tailscale is available
-		if tailscaleDNS := getTailscaleDNS(); tailscaleDNS != "" && info.ListenAddr != "" {
-			// Extract port from listen address
-			port := ""
+	tailscaleDNS := getTailscaleDNS()
+	proxies := make([]ProxyInfo, 0, len(wrap.Proxies))
+	for _, d := range wrap.Proxies {
+		info := d.toInfo()
+		// Add Tailscale URL if Tailscale is available (overlay-side derived).
+		if tailscaleDNS != "" && info.ListenAddr != "" {
 			if idx := strings.LastIndex(info.ListenAddr, ":"); idx != -1 {
-				port = info.ListenAddr[idx:] // includes the colon
-			}
-			if port != "" {
-				info.TailscaleURL = "http://" + tailscaleDNS + port
+				info.TailscaleURL = "http://" + tailscaleDNS + info.ListenAddr[idx:]
 			}
 		}
-
 		proxies = append(proxies, info)
 	}
 
@@ -480,36 +335,19 @@ func (f *StatusFetcher) fetchRecentErrors(proxies []ProxyInfo) ([]ErrorInfo, err
 			continue
 		}
 
-		entriesRaw, ok := result["entries"].([]interface{})
-		if !ok {
-			continue
+		var wrap struct {
+			Entries []proxyLogEntryDTO `json:"entries"`
 		}
+		decodeResult(result, &wrap)
 
-		for _, e := range entriesRaw {
-			entry, ok := e.(map[string]interface{})
-			if !ok {
+		for _, e := range wrap.Entries {
+			if e.Type != "error" {
 				continue
 			}
-
-			entryType, _ := entry["type"].(string)
-			if entryType != "error" {
-				continue
-			}
-
-			var timestamp time.Time
-			if ts, ok := entry["timestamp"].(string); ok {
-				timestamp, _ = time.Parse(time.RFC3339, ts)
-			}
-
-			var message string
-			if errData, ok := entry["error"].(map[string]interface{}); ok {
-				message, _ = errData["message"].(string)
-			}
-
 			errors = append(errors, ErrorInfo{
 				Source:    "proxy:" + proxy.ID,
-				Message:   message,
-				Timestamp: timestamp,
+				Message:   e.Error.Message,
+				Timestamp: parseRFC3339(e.Timestamp),
 			})
 		}
 	}
@@ -530,33 +368,14 @@ func (f *StatusFetcher) fetchStartupLog() ([]StartupLogEntry, error) {
 		return nil, err
 	}
 
-	entriesRaw, ok := result["entries"].([]interface{})
-	if !ok {
-		return nil, nil
+	var wrap struct {
+		Entries []startupLogDTO `json:"entries"`
 	}
+	decodeResult(result, &wrap)
 
-	var entries []StartupLogEntry
-	for _, e := range entriesRaw {
-		entry, ok := e.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		var ts time.Time
-		if tsStr, ok := entry["timestamp"].(string); ok {
-			ts, _ = time.Parse(time.RFC3339, tsStr)
-		}
-		scriptName, _ := entry["script_name"].(string)
-		level, _ := entry["level"].(string)
-		eventType, _ := entry["event_type"].(string)
-		message, _ := entry["message"].(string)
-
-		entries = append(entries, StartupLogEntry{
-			ScriptName: scriptName,
-			Level:      level,
-			EventType:  eventType,
-			Message:    message,
-			Timestamp:  ts,
-		})
+	entries := make([]StartupLogEntry, 0, len(wrap.Entries))
+	for _, d := range wrap.Entries {
+		entries = append(entries, d.toInfo())
 	}
 	return entries, nil
 }
@@ -571,40 +390,13 @@ func (f *StatusFetcher) fetchBrowserSessions(proxies []ProxyInfo) ([]BrowserSess
 			continue
 		}
 
-		pagesRaw, ok := result["sessions"].([]interface{})
-		if !ok {
-			continue
+		var wrap struct {
+			Sessions []browserSessionDTO `json:"sessions"`
 		}
+		decodeResult(result, &wrap)
 
-		for _, p := range pagesRaw {
-			pm, ok := p.(map[string]interface{})
-			if !ok {
-				continue
-			}
-
-			session := BrowserSession{
-				ProxyID: proxy.ID,
-			}
-
-			if id, ok := pm["session_id"].(string); ok {
-				session.SessionID = id
-			}
-			if url, ok := pm["url"].(string); ok {
-				session.URL = url
-			}
-			if count, ok := pm["interaction_count"].(float64); ok {
-				session.Interactions = int(count)
-			}
-			if count, ok := pm["mutation_count"].(float64); ok {
-				session.Mutations = int(count)
-			}
-			if ts, ok := pm["last_activity"].(string); ok {
-				if t, err := time.Parse(time.RFC3339, ts); err == nil {
-					session.LastActivity = t
-				}
-			}
-
-			sessions = append(sessions, session)
+		for _, d := range wrap.Sessions {
+			sessions = append(sessions, d.toSession(proxy.ID))
 		}
 	}
 
