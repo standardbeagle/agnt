@@ -38,6 +38,9 @@ const sidebars: SidebarsConfig = {
         'api/proxylog',
         'api/currentpage',
         'api/get_errors',
+        'api/responsive_audit',
+        'api/api_audit',
+        'api/loading_audit',
         'api/tunnel',
         'api/daemon',
       ],
@@ -71,6 +74,7 @@ const sidebars: SidebarsConfig = {
           items: [
             'api/frontend/layout-robustness',
             'api/frontend/quality-auditing',
+            'api/frontend/responsive-mode',
           ],
         },
         {

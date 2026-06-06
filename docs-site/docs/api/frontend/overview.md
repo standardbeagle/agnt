@@ -75,7 +75,8 @@ Works in all modern browsers without transpilation. No external dependencies.
 | [Accessibility](/api/frontend/accessibility) | 5 | A11y inspection and auditing |
 | [Composite](/api/frontend/composite) | 3 | High-level analysis |
 | [Layout Robustness](/api/frontend/layout-robustness) | 7 | Text fragility, responsive risks, performance |
-| [Quality Auditing](/api/frontend/quality-auditing) | 10 | Frame rate, jank, Core Web Vitals, memory |
+| [Quality Auditing](/api/frontend/quality-auditing) | 10 | Frame rate, jank, Core Web Vitals, memory, `auditAll` (8 scored audits) |
+| [Responsive Mode](/api/frontend/responsive-mode) | 5 | Interactive width-driving workbench with live shift detection |
 | [CSS Evaluation](/api/frontend/css-evaluation) | 7 | Architecture, containment, Tailwind, consistency |
 | [Security & Validation](/api/frontend/security-validation) | 12 | CSP, XSS, frameworks, forms, SRI |
 

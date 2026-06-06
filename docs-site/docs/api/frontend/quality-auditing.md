@@ -563,6 +563,33 @@ window.__devtool.auditPageQuality().then(audit => {
 
 ---
 
+### auditAll
+
+Aggregate **eight scored audits** into a single weighted overall grade. Where `auditPageQuality` focuses on runtime performance signals, `auditAll` rolls up the full audit suite.
+
+```javascript
+window.__devtool.auditAll()
+```
+
+**The eight audits and their weights:**
+
+| Audit | Weight | Source |
+|-------|--------|--------|
+| Security | 1.5 | `auditSecurity` |
+| Accessibility | 1.3 | `auditAccessibility` |
+| Performance | 1.2 | `auditPageQuality` |
+| API efficiency | 1.1 | `__devtool_audit_api.auditAPIEfficiency` ([api_audit](/api/api_audit)) |
+| Loading / spinner | 1.1 | `__devtool_audit_loading.auditLoading` ([loading_audit](/api/loading_audit)) |
+| SEO | 1.0 | `auditSEO` |
+| DOM | 0.8 | `auditDOMComplexity` |
+| CSS | 0.7 | `auditCSS` |
+
+Each audit is guarded — `auditAll` degrades cleanly when a module is absent rather than failing.
+
+**Temporal audits:** the API-efficiency and loading audits read the fetch/XHR buffer and the spinner timeline respectively. Both are populated by browsing, so they need a **fresh page load** to produce meaningful results. Run them via the dedicated [api_audit](/api/api_audit) / [loading_audit](/api/loading_audit) MCP tools when you want them in isolation.
+
+---
+
 ## Common Patterns
 
 ### Performance Regression Testing
