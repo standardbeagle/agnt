@@ -204,6 +204,59 @@ restart); inbox is a cache (source of truth is the originating subsystem).
 **Key files**: `internal/incident/` package. Deeper invariants:
 `.claude/rules/daemon-architecture.md` § Incident Pipeline.
 
+### Overview Command Palette
+
+The overview panel's command input (`:` or `/`) is a **filterable command
+palette**, not a blind shell box. Type to filter `paletteCommands`
+(`internal/overlay/command_palette.go`); ↑/↓ move the highlight; Enter runs the
+highlighted command with any trailing token as its argument; Tab completes the
+name; Esc cancels.
+
+**Routing invariant**: `handleMenuKey` (`internal/overlay/input.go`) routes ALL
+keys to `handleCommandInput` *first* when `commandInput` is active. This must
+stay above the global menu switch — otherwise Enter/↑/↓/q/x/1-9 are stolen by
+panel navigation (the original bug where Enter selected a script instead of
+running the typed command).
+
+Commands: `start/stop/restart <script>`, `kill-port <port>`, `kill-orphans`,
+`summarize`, `reconnect`, `run <shell…>`. Dispatch is
+`InputRouter.dispatchPaletteCommand` — summarize/reconnect run with the overlay
+lock held; controller calls release it. `ScriptController` gained `KillPort` and
+`CleanOrphans` (`internal/overlay/status.go`); `kill-port` reuses
+`PROC CLEANUP-PORT`, `kill-orphans` issues `PORTS CLEAN-ORPHANS`.
+
+### Ports & Orphans Panel
+
+The overview panel renders a **ports** section (port-whisperer style) and an
+**orphans** section (orphaned process groups: leader dead, members alive).
+
+Ports are tagged `managed`/`unmanaged`/`conflict` and classified `system` vs
+dev. **System/infra ports are hidden by default** (port-whisperer parity):
+`portIsSystem` (`internal/daemon/hub_ports.go`) flags OS daemons
+(`systemProcNames` denylist), privileged `<1024` ports, unattributable sockets,
+and WSL Windows-side listeners. managed/conflict are never hidden; databases and
+docker are never system. The header shows `N system hidden · :toggle-ports`; the
+`toggle-ports` palette command flips `Overlay.showAllPorts`.
+
+**Perf**: `ListListeningPorts` is cached daemon-side (`portsCache`, 4s TTL) since
+the overview polls it on the 2s status tick, and it does **not** shell to
+`netstat.exe` on WSL — that ran every tick and stalled the WSL VM. Windows-side
+listeners are host noise hidden by default; declared-port conflict detection
+still reaches Windows owners via `FindPIDsByPort`'s on-demand fallback.
+
+Data flow is daemon→IPC→overlay (overlay cannot import daemon):
+- `config.ListListeningPorts(ctx)` (`internal/config/portdetect_unix.go`,
+  `_windows.go`) — one `/proc/net/tcp{,6}` + `/proc/*/fd` walk for every LISTEN
+  port and owner; macOS via `lsof`; WSL folds in `netstat.exe`/`tasklist.exe`
+  Windows-side listeners for ports with no Linux owner.
+- `PORTS` verb (`protocol.VerbPorts`, handler `internal/daemon/hub_ports.go`):
+  `QUERY` returns ports (classified via `collectManagedPIDs` + declared ports
+  from `.agnt.kdl`) + orphans (`platform.ScanOrphanedPGIDs`); `CLEAN-ORPHANS`
+  reaps via `platform.KillSessionPGID`. Routed through `resolveProjectScope`.
+- `StatusFetcher.fetchPorts` (`internal/overlay/status.go`) →
+  `Status.Ports`/`Status.Orphans` → `drawOverviewContent`
+  (`internal/overlay/render.go`).
+
 ### Startup Splash
 
 **StartupSplash** (`internal/overlay/splash.go`):

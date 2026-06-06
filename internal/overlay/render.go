@@ -777,7 +777,7 @@ func (r *Renderer) ExitAltScreen() {
 
 // DrawPanelView draws a full-screen panel view with a niri-style tab bar at top.
 // Panels are arranged horizontally like niri columns: Ctrl+Left/Right to navigate.
-func (r *Renderer) DrawPanelView(panels []PanelItem, activeIndex int, status Status, overviewSelectedIdx int, commandInput bool, commandBuffer string, actions OverviewActions) {
+func (r *Renderer) DrawPanelView(panels []PanelItem, activeIndex int, status Status, overviewSelectedIdx int, commandInput bool, commandBuffer string, commandSelectedIdx int, showAllPorts bool, actions OverviewActions) {
 	r.mu.Lock()
 	r.beginBuffer()
 
@@ -831,7 +831,7 @@ func (r *Renderer) DrawPanelView(panels []PanelItem, activeIndex int, status Sta
 
 	switch active.Type {
 	case "overview":
-		r.drawOverviewContent(contentRow, panelCol+2, contentWidth, panelHeight-2, status, overviewSelectedIdx, commandInput, commandBuffer, actions)
+		r.drawOverviewContent(contentRow, panelCol+2, contentWidth, panelHeight-2, status, overviewSelectedIdx, commandInput, commandBuffer, commandSelectedIdx, showAllPorts, actions)
 	case "process":
 		r.drawProcessPanelContent(contentRow, panelCol+2, contentWidth, panelHeight-2, active, status)
 	case "proxy":
@@ -950,7 +950,7 @@ func overviewSpinner(frame int) string {
 
 // drawOverviewContent draws the overview panel content (system summary).
 // selectedIdx is the highlighted script row index (0-based, -1 for no selection).
-func (r *Renderer) drawOverviewContent(startRow, col, width, maxRows int, status Status, selectedIdx int, commandInput bool, commandBuffer string, actions OverviewActions) {
+func (r *Renderer) drawOverviewContent(startRow, col, width, maxRows int, status Status, selectedIdx int, commandInput bool, commandBuffer string, commandSelectedIdx int, showAllPorts bool, actions OverviewActions) {
 	row := startRow
 	spinner := overviewSpinner(actions.SpinnerFrame)
 
@@ -1070,6 +1070,93 @@ func (r *Renderer) drawOverviewContent(startRow, col, width, maxRows int, status
 		row++
 	}
 
+	// Ports inventory (port-whisperer style: dev ports shown, system hidden).
+	visiblePorts := make([]PortInfo, 0, len(status.Ports))
+	hiddenPorts := 0
+	for _, p := range status.Ports {
+		if p.System && !showAllPorts {
+			hiddenPorts++
+			continue
+		}
+		visiblePorts = append(visiblePorts, p)
+	}
+	if (len(visiblePorts) > 0 || hiddenPorts > 0) && row < startRow+maxRows {
+		r.moveTo(row, col)
+		hdr := Bold + "ports" + Reset
+		if hiddenPorts > 0 {
+			hdr += fmt.Sprintf("  %s%d system hidden · :toggle-ports%s", FgBrightBlack, hiddenPorts, Reset)
+		}
+		r.write(hdr)
+		row++
+		for i, p := range visiblePorts {
+			if row >= startRow+maxRows || i >= 8 {
+				break
+			}
+			r.moveTo(row, col+1)
+
+			var icon, iconColor, tag, tagColor string
+			switch p.Status {
+			case "managed":
+				icon, iconColor = "●", FgGreen
+				tag, tagColor = "managed", FgGreen
+			case "conflict":
+				icon, iconColor = "!", FgRed
+				tag, tagColor = "CONFLICT", FgRed+Bold
+			default:
+				icon, iconColor = "●", FgYellow
+				tag, tagColor = "unmanaged", FgBrightBlack
+			}
+
+			owner := p.Name
+			if owner == "" {
+				if p.PID > 0 {
+					owner = fmt.Sprintf("pid %d", p.PID)
+				} else {
+					owner = "unknown"
+				}
+			}
+			if p.Windows {
+				owner += " (win)"
+			}
+			if len(owner) > 18 {
+				owner = owner[:17] + "…"
+			}
+
+			r.write(fmt.Sprintf("%s%s%s %s%-6d%s %s%-18s%s %s%s%s",
+				iconColor, icon, Reset,
+				FgWhite+Bold, p.Port, Reset,
+				FgWhite, owner, Reset,
+				tagColor, tag, Reset))
+			row++
+		}
+		if len(visiblePorts) > 8 && row < startRow+maxRows {
+			r.moveTo(row, col+1)
+			r.write(fmt.Sprintf("%s… %d more%s", FgBrightBlack, len(visiblePorts)-8, Reset))
+			row++
+		}
+		row++
+	}
+
+	// Orphaned process groups (leader dead, members alive)
+	if len(status.Orphans) > 0 && row < startRow+maxRows {
+		r.moveTo(row, col)
+		r.write(fmt.Sprintf("%sorphans%s  %spress %s:%s%s kill-orphans%s",
+			Bold, Reset, FgBrightBlack, FgCyan+Bold, Reset, FgBrightBlack, Reset))
+		row++
+		for i, o := range status.Orphans {
+			if row >= startRow+maxRows || i >= 5 {
+				break
+			}
+			r.moveTo(row, col+1)
+			r.write(fmt.Sprintf("%s⚠%s pgid %s%d%s  %s%d procs (leader dead)%s",
+				FgYellow, Reset,
+				FgWhite+Bold, o.PGID, Reset,
+				FgBrightBlack, o.Count, Reset))
+			row++
+		}
+		row++
+	}
+
 	// Recent errors
 	recentErrors := 0
 	cutoff := time.Now().Add(-5 * time.Minute)
@@ -1120,20 +1207,52 @@ func (r *Renderer) drawOverviewContent(startRow, col, width, maxRows int, status
 		row++
 	}
 
-	// Command input (bottom of overview)
-	if row < startRow+maxRows-1 {
-		row++
-		r.moveTo(row, col)
-		if commandInput {
-			r.write(Bold + "run command" + Reset)
+	// Command palette (bottom of overview)
+	if commandInput {
+		if row < startRow+maxRows-1 {
 			row++
 			r.moveTo(row, col)
-			r.write(fmt.Sprintf("%s>%s %s", FgCyan+Bold, Reset, commandBuffer))
-			// Cursor position indicator
-			r.write(FgBrightBlack + "█" + Reset)
-		} else {
-			r.write(FgBrightBlack + "Press " + Reset + FgCyan + Bold + ":" + Reset + FgBrightBlack + " to run a command" + Reset)
+			r.write(Bold + "run command" + Reset + FgBrightBlack + "  (type to filter, ↑↓ select, ⏎ run, esc cancel)" + Reset)
+			row++
+			r.moveTo(row, col)
+			r.write(fmt.Sprintf("%s>%s %s%s█%s", FgCyan+Bold, Reset, commandBuffer, FgBrightBlack, Reset))
+			row++
+
+			matches, _, _ := filterPaletteCommands(commandBuffer)
+			if len(matches) == 0 && row < startRow+maxRows {
+				r.moveTo(row, col+1)
+				r.write(FgBrightBlack + "no matching command" + Reset)
+				row++
+			}
+			for i, c := range matches {
+				if row >= startRow+maxRows {
+					break
+				}
+				r.moveTo(row, col+1)
+				selected := i == commandSelectedIdx
+				marker := "  "
+				if selected {
+					marker = FgCyan + Bold + "▸ " + Reset
+				}
+				name := c.Name
+				if c.Arg != "" {
+					name += " " + c.Arg
+				}
+				nameCol := FgWhite
+				if selected {
+					nameCol = FgCyan + Bold
+				}
+				line := fmt.Sprintf("%s%s%-22s%s%s%s", marker, nameCol, name, Reset, FgBrightBlack, c.Desc)
+				if len(line) > 0 {
+					r.write(line + Reset)
+				}
+				row++
+			}
 		}
+	} else if row < startRow+maxRows-1 {
+		row++
+		r.moveTo(row, col)
+		r.write(FgBrightBlack + "Press " + Reset + FgCyan + Bold + ":" + Reset + FgBrightBlack + " to run a command" + Reset)
 	}
 }
 

@@ -160,6 +160,7 @@ Default project-scoped, `global`-overridable, session-less non-global rejected.
 | `SESSION LIST` | `session {action:"list"}` | `sessionRegistry.List(path, global)` | C5 |
 | `SESSION TASKS` | `session {action:"tasks"}` | `scheduler.ListTasks(path, global)` | C5 |
 | `INCIDENTS QUERY` | `get_incidents` | per-session inbox partition | pre-existing model the gate converges toward |
+| `PORTS QUERY` | overview ports panel (`fetchPorts`) | `resolveProjectScope` → declared-port set | classifies owners as managed/unmanaged/conflict; orphans are uid-scoped, not project-scoped |
 
 ### ID-scoped (single resource addressed by explicit id)
 

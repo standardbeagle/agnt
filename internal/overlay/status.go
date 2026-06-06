@@ -185,6 +185,13 @@ func (f *StatusFetcher) fetchStatus() {
 		status.BrowserSessions = sessions
 	}
 
+	// Fetch listening ports + orphaned process groups
+	ports, orphans, err := f.fetchPorts()
+	if err == nil {
+		status.Ports = ports
+		status.Orphans = orphans
+	}
+
 	// Fetch recent errors from proxy logs
 	recentErrors, err := f.fetchRecentErrors()
 	if err == nil {
@@ -253,6 +260,68 @@ func (f *StatusFetcher) fetchScripts() ([]ScriptInfo, error) {
 	})
 
 	return scripts, nil
+}
+
+// fetchPorts queries the daemon's PORTS inventory: every listening TCP port
+// with a managed/unmanaged/conflict classification, plus orphaned process
+// groups. Both slices are nil on error.
+func (f *StatusFetcher) fetchPorts() ([]PortInfo, []OrphanInfo, error) {
+	result, err := f.conn.RequestJSON(protocol.VerbPorts, protocol.DirectoryFilter{Directory: f.projectPath}, protocol.SubVerbQuery)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var ports []PortInfo
+	if raw, ok := result["ports"].([]interface{}); ok {
+		ports = make([]PortInfo, 0, len(raw))
+		for _, p := range raw {
+			pm, ok := p.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			info := PortInfo{}
+			if v, ok := pm["port"].(float64); ok {
+				info.Port = int(v)
+			}
+			if v, ok := pm["pid"].(float64); ok {
+				info.PID = int(v)
+			}
+			if v, ok := pm["name"].(string); ok {
+				info.Name = v
+			}
+			if v, ok := pm["windows"].(bool); ok {
+				info.Windows = v
+			}
+			if v, ok := pm["status"].(string); ok {
+				info.Status = v
+			}
+			if v, ok := pm["system"].(bool); ok {
+				info.System = v
+			}
+			ports = append(ports, info)
+		}
+	}
+
+	var orphans []OrphanInfo
+	if raw, ok := result["orphans"].([]interface{}); ok {
+		orphans = make([]OrphanInfo, 0, len(raw))
+		for _, o := range raw {
+			om, ok := o.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			info := OrphanInfo{}
+			if v, ok := om["pgid"].(float64); ok {
+				info.PGID = int(v)
+			}
+			if v, ok := om["count"].(float64); ok {
+				info.Count = int(v)
+			}
+			orphans = append(orphans, info)
+		}
+	}
+
+	return ports, orphans, nil
 }
 
 func (f *StatusFetcher) fetchProcesses() ([]ProcessInfo, error) {
@@ -453,7 +522,14 @@ func (f *StatusFetcher) fetchRecentErrors() ([]ErrorInfo, error) {
 }
 
 func (f *StatusFetcher) fetchStartupLog() ([]StartupLogEntry, error) {
-	result, err := f.conn.RequestJSON(protocol.VerbAlerts, map[string]interface{}{"limit": 100}, protocol.SubVerbStartupLog)
+	// Pass directory so the project-scope gate (resolveProjectScope) can scope
+	// the query. Without it, a non-session-bound overlay connection fails the
+	// scope check and the log panel comes back empty — every other fetcher
+	// (scripts/processes/proxies/ports) already passes directory for this reason.
+	result, err := f.conn.RequestJSON(protocol.VerbAlerts, map[string]interface{}{
+		"limit":     100,
+		"directory": f.projectPath,
+	}, protocol.SubVerbStartupLog)
 	if err != nil {
 		return nil, err
 	}
@@ -702,5 +778,19 @@ func (c *DaemonScriptController) RunCommand(command string) error {
 		"mode":      "background",
 		"directory": c.projectPath,
 	}, "", "")
+	return err
+}
+
+// KillPort kills whatever process is listening on the given TCP port. Reuses
+// the existing PROC CLEANUP-PORT handler (process-group SIGTERM→SIGKILL, with
+// WSL taskkill.exe routing for Windows-side owners).
+func (c *DaemonScriptController) KillPort(port int) error {
+	_, err := c.conn.RequestJSON(protocol.VerbProc, map[string]interface{}{"directory": c.projectPath}, protocol.SubVerbCleanupPort, fmt.Sprintf("%d", port))
+	return err
+}
+
+// CleanOrphans reaps orphaned process groups (leader dead, members alive).
+func (c *DaemonScriptController) CleanOrphans() error {
+	_, err := c.conn.RequestJSON(protocol.VerbPorts, map[string]interface{}{"directory": c.projectPath}, protocol.SubVerbCleanOrphans)
 	return err
 }

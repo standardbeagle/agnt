@@ -6,6 +6,7 @@ import (
 	"io"
 	"iter"
 	"os"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -62,6 +63,10 @@ type ScriptController interface {
 	StartScript(name string) error
 	// RunCommand runs an ad-hoc shell command as a background process.
 	RunCommand(command string) error
+	// KillPort kills whatever process is listening on the given TCP port.
+	KillPort(port int) error
+	// CleanOrphans reaps orphaned process groups (leader dead, members alive).
+	CleanOrphans() error
 }
 
 // StatusSummarizer is an interface for summarizing system status.
@@ -274,6 +279,15 @@ func (r *InputRouter) handleMenuKey(key string) {
 	r.overlay.mu.Lock()
 	defer r.overlay.mu.Unlock()
 
+	// Command palette captures ALL keys while active. This must run before the
+	// global menu switch below: otherwise Enter/Up/Down/q/x/1-9 are stolen by
+	// panel navigation (the original bug — Enter selected a script instead of
+	// running the typed command).
+	if r.overlay.commandInput {
+		r.handleCommandInput(key)
+		return
+	}
+
 	// Handle "Escape+X" keys (when Escape is followed quickly by another key)
 	if strings.HasPrefix(key, "Escape+") {
 		// Treat as Escape - close the panel view
@@ -376,12 +390,6 @@ func (r *InputRouter) handleMenuKey(key string) {
 		return
 	}
 
-	// Command input mode: all keys go to the command buffer
-	if r.overlay.commandInput {
-		r.handleCommandInput(key)
-		return
-	}
-
 	// Overview panel global actions (work with or without scripts)
 	if r.isOverviewPanel() && len(key) == 1 {
 		switch key[0] {
@@ -390,6 +398,12 @@ func (r *InputRouter) handleMenuKey(key string) {
 			return
 		case 'c', 'C':
 			r.startReconnect()
+			return
+		case ':', '/':
+			r.overlay.commandInput = true
+			r.overlay.commandBuffer = ""
+			r.overlay.commandSelectedIdx = 0
+			r.overlay.draw()
 			return
 		}
 	}
@@ -405,11 +419,6 @@ func (r *InputRouter) handleMenuKey(key string) {
 			return
 		case 'a', 'A':
 			r.overviewStartScript()
-			return
-		case ':', '/':
-			r.overlay.commandInput = true
-			r.overlay.commandBuffer = ""
-			r.overlay.draw()
 			return
 		}
 	}
@@ -649,32 +658,121 @@ func (r *InputRouter) startActionSpinner(active *atomic.Bool) {
 	}()
 }
 
-// handleCommandInput processes keystrokes while the command input is active.
+// handleCommandInput processes keystrokes while the command palette is active.
+// Typing filters the command list; Up/Down move the highlight; Enter runs the
+// highlighted command with whatever argument follows it in the buffer; Tab
+// completes the highlighted command name. Must be called with overlay.mu held.
 func (r *InputRouter) handleCommandInput(key string) {
+	o := r.overlay
 	switch {
 	case key == "Escape" || (len(key) == 1 && key[0] == 27):
-		r.overlay.commandInput = false
-		r.overlay.commandBuffer = ""
-		r.overlay.draw()
-	case key == "Enter" || (len(key) == 1 && key[0] == 13):
-		cmd := r.overlay.commandBuffer
-		r.overlay.commandInput = false
-		r.overlay.commandBuffer = ""
-		if cmd != "" && r.scriptController != nil {
-			r.overlay.mu.Unlock()
-			_ = r.scriptController.RunCommand(cmd)
-			r.overlay.mu.Lock()
+		o.commandInput = false
+		o.commandBuffer = ""
+		o.commandSelectedIdx = 0
+		o.draw()
+
+	case key == "Up":
+		if o.commandSelectedIdx > 0 {
+			o.commandSelectedIdx--
+			o.draw()
 		}
-		r.overlay.draw()
+
+	case key == "Down":
+		matches, _, _ := filterPaletteCommands(o.commandBuffer)
+		if o.commandSelectedIdx < len(matches)-1 {
+			o.commandSelectedIdx++
+			o.draw()
+		}
+
+	case key == "\t": // Tab completes the highlighted command name
+		matches, _, _ := filterPaletteCommands(o.commandBuffer)
+		if o.commandSelectedIdx < len(matches) {
+			o.commandBuffer = matches[o.commandSelectedIdx].Name + " "
+			o.commandSelectedIdx = 0
+			o.draw()
+		}
+
+	case key == "Enter" || (len(key) == 1 && (key[0] == 13 || key[0] == 10)):
+		matches, _, args := filterPaletteCommands(o.commandBuffer)
+		var chosen *PaletteCommand
+		if o.commandSelectedIdx >= 0 && o.commandSelectedIdx < len(matches) {
+			c := matches[o.commandSelectedIdx]
+			chosen = &c
+		}
+		o.commandInput = false
+		o.commandBuffer = ""
+		o.commandSelectedIdx = 0
+		if chosen != nil {
+			r.dispatchPaletteCommand(*chosen, args)
+		}
+		o.draw()
+
 	case key == "Backspace" || (len(key) == 1 && key[0] == 127):
-		if len(r.overlay.commandBuffer) > 0 {
-			r.overlay.commandBuffer = r.overlay.commandBuffer[:len(r.overlay.commandBuffer)-1]
-			r.overlay.draw()
+		if len(o.commandBuffer) > 0 {
+			o.commandBuffer = o.commandBuffer[:len(o.commandBuffer)-1]
+			o.commandSelectedIdx = 0
+			o.draw()
 		}
+
 	case len(key) == 1 && key[0] >= 32 && key[0] < 127: // Printable ASCII
-		r.overlay.commandBuffer += key
-		r.overlay.draw()
+		o.commandBuffer += key
+		o.commandSelectedIdx = 0
+		o.draw()
 	}
+}
+
+// dispatchPaletteCommand executes the chosen palette command. Must be called
+// with overlay.mu held; it releases the lock only around daemon controller
+// calls (which do network I/O) and re-acquires it before returning, matching
+// the locking discipline of the surrounding menu handler.
+func (r *InputRouter) dispatchPaletteCommand(c PaletteCommand, args string) {
+	// Summarize/reconnect mutate overlay state directly and expect the lock
+	// to be held, so handle them without releasing it.
+	switch c.Name {
+	case "summarize":
+		r.startSummarize()
+		return
+	case "reconnect":
+		r.startReconnect()
+		return
+	case "toggle-ports":
+		r.overlay.showAllPorts = !r.overlay.showAllPorts
+		return
+	}
+
+	if r.scriptController == nil {
+		return
+	}
+
+	r.overlay.mu.Unlock()
+	switch c.Name {
+	case "start":
+		if args != "" {
+			_ = r.scriptController.StartScript(args)
+		}
+	case "stop":
+		if args != "" {
+			_ = r.scriptController.StopScript(args)
+		}
+	case "restart":
+		if args != "" {
+			_ = r.scriptController.RestartScript(args)
+		}
+	case "kill-port":
+		if p, err := strconv.Atoi(strings.TrimSpace(args)); err == nil && p > 0 {
+			_ = r.scriptController.KillPort(p)
+		}
+	case "kill-orphans":
+		_ = r.scriptController.CleanOrphans()
+	case "run":
+		if args != "" {
+			_ = r.scriptController.RunCommand(args)
+		}
+	}
+	if r.statusFetcher != nil {
+		r.statusFetcher.Refresh()
+	}
+	r.overlay.mu.Lock()
 }
 
 // fetchScriptOutput fetches script output and replaces the panel's content buffer.

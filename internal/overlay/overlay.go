@@ -116,6 +116,23 @@ type StartupLogEntry struct {
 	Timestamp  time.Time
 }
 
+// PortInfo is one listening TCP port and its owner for the overview ports
+// section. Status is "managed", "unmanaged", or "conflict".
+type PortInfo struct {
+	Port    int
+	PID     int
+	Name    string
+	Windows bool
+	Status  string
+	System  bool // OS/infra daemon — hidden from overview unless showAllPorts
+}
+
+// OrphanInfo is one orphaned process group (leader dead, members alive).
+type OrphanInfo struct {
+	PGID  int
+	Count int
+}
+
 // Status holds the current system status for display.
 type Status struct {
 	DaemonConnected ConnectionStatus
@@ -123,6 +140,8 @@ type Status struct {
 	Processes       []ProcessInfo
 	Scripts         []ScriptInfo
 	Proxies         []ProxyInfo
+	Ports           []PortInfo
+	Orphans         []OrphanInfo
 	BrowserSessions []BrowserSession
 	RecentErrors    []ErrorInfo
 	StartupLog      []StartupLogEntry
@@ -209,8 +228,12 @@ type Overlay struct {
 	overviewSelectedIdx int // Selected script row in overview (0-based)
 
 	// Command input mode (bottom of overview)
-	commandInput  bool   // Whether command input is active
-	commandBuffer string // Current command text being typed
+	commandInput       bool   // Whether command input is active
+	commandBuffer      string // Current command text being typed
+	commandSelectedIdx int    // Highlighted row in the filtered command palette
+
+	// Ports section: hide system/infra ports by default (toggle-ports flips it)
+	showAllPorts bool
 
 	// Overview global actions (summarize / reconnect)
 	summarizing      atomic.Bool  // AI summarize in flight (drives spinner + re-entrancy guard)
@@ -695,7 +718,7 @@ func (o *Overlay) draw() {
 		if idx >= len(o.panelItems) {
 			idx = len(o.panelItems) - 1
 		}
-		o.renderer.DrawPanelView(o.panelItems, idx, status, o.overviewSelectedIdx, o.commandInput, o.commandBuffer, o.overviewActionsLocked())
+		o.renderer.DrawPanelView(o.panelItems, idx, status, o.overviewSelectedIdx, o.commandInput, o.commandBuffer, o.commandSelectedIdx, o.showAllPorts, o.overviewActionsLocked())
 	}
 
 	// The status bar is the single global element shared by every visible

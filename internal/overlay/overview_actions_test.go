@@ -68,7 +68,7 @@ func TestDrawOverview_ActionsAndConnectionStates(t *testing.T) {
 	render := func(status Status, a OverviewActions) string {
 		var buf bytes.Buffer
 		r := NewRenderer(&buf, 80, 24)
-		r.DrawPanelView(panels, 0, status, 0, false, "", a)
+		r.DrawPanelView(panels, 0, status, 0, false, "", 0, false, a)
 		return buf.String()
 	}
 

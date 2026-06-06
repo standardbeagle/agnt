@@ -265,7 +265,7 @@ func TestConcurrentDrawMethods(t *testing.T) {
 
 	draw(func() { r.DrawIndicator(status) })
 	draw(func() { r.ClearIndicator() })
-	draw(func() { r.DrawPanelView(panels, 0, status, 0, false, "", OverviewActions{}) })
+	draw(func() { r.DrawPanelView(panels, 0, status, 0, false, "", 0, false, OverviewActions{}) })
 	draw(func() { r.DrawStatusBarMessage("msg") })
 	draw(func() { r.ClearStatusBarMessage() })
 	draw(func() { r.SetSize(80, 24) })
