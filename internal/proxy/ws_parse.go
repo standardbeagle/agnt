@@ -318,32 +318,6 @@ func parseSketchEntry(data map[string]interface{}, id string, timestamp time.Tim
 	return entry
 }
 
-// parseScreenshotCapture parses a screenshot capture from panel JSON data.
-func parseScreenshotCapture(data map[string]interface{}, timestamp time.Time, url string) ScreenshotCapture {
-	capture := ScreenshotCapture{
-		ID:        getStringField(data, "id"),
-		Timestamp: timestamp,
-		URL:       url,
-	}
-
-	// Parse nested data field
-	if nested, ok := data["data"].(map[string]interface{}); ok {
-		capture.Summary = getStringField(nested, "summary")
-
-		// Parse area with image data
-		if area, ok := nested["area"].(map[string]interface{}); ok {
-			capture.Area.X = getIntField(area, "x")
-			capture.Area.Y = getIntField(area, "y")
-			capture.Area.Width = getIntField(area, "width")
-			capture.Area.Height = getIntField(area, "height")
-			// Get image data if present
-			capture.ImageData = getStringField(area, "data")
-		}
-	}
-
-	return capture
-}
-
 // parseElementCapture parses an element capture from panel JSON data.
 func parseElementCapture(data map[string]interface{}, timestamp time.Time, url string) ElementCapture {
 	capture := ElementCapture{

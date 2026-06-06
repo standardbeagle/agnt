@@ -39,12 +39,6 @@ func unmarshalCommand[T any](cmd *hubproto.Command) (T, error) {
 	return v, nil
 }
 
-func writeErr(conn *hubpkg.Connection, code hubproto.ErrorCode, component, format string, args ...interface{}) error {
-	msg := fmt.Sprintf(format, args...)
-	debug.Log(component, "error: %s (code=%v)", msg, code)
-	return conn.WriteErr(code, msg)
-}
-
 // writeStructuredErr writes a structured error response and logs it for debugging.
 
 func writeStructuredErr(conn *hubpkg.Connection, component string, err *hubproto.StructuredError) error {

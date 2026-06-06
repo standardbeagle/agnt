@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/config"
@@ -42,7 +41,7 @@ func (d *Daemon) cachedPortsData(ctx context.Context) ([]config.PortOwner, map[i
 	}
 	portsCache.owners = config.ListListeningPorts(ctx)
 	portsCache.managed = d.collectManagedPIDs()
-	portsCache.orphans = platform.ScanOrphanedPGIDs(syscall.Getuid(), d.orphanScanExcludes())
+	portsCache.orphans = d.scanOrphans()
 	portsCache.at = time.Now()
 	return portsCache.owners, portsCache.managed, portsCache.orphans
 }
@@ -165,22 +164,10 @@ func (d *Daemon) hubHandlePortsQuery(ctx context.Context, conn *hubpkg.Connectio
 }
 
 // hubHandlePortsCleanOrphans reaps every orphaned process group owned by the
-// caller's uid (leader dead, members alive) using the same kill primitive as
-// the startup orphan scan.
+// caller's uid (leader dead, members alive). The reap is platform-specific
+// (Unix pgid kill; no-op on Windows, where Job Objects own cascade-kill).
 func (d *Daemon) hubHandlePortsCleanOrphans(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	excludes := d.orphanScanExcludes()
-	orphans := platform.ScanOrphanedPGIDs(syscall.Getuid(), excludes)
-
-	selfPID := syscall.Getpid()
-	reaped := make([]int, 0, len(orphans))
-	failed := make([]map[string]interface{}, 0)
-	for _, orph := range orphans {
-		if err := platform.KillSessionPGID(orph.PGID, selfPID, startupOrphanPGIDGrace, false); err != nil {
-			failed = append(failed, map[string]interface{}{"pgid": orph.PGID, "error": err.Error()})
-			continue
-		}
-		reaped = append(reaped, orph.PGID)
-	}
+	reaped, failed := d.reapOrphans()
 
 	data, _ := json.Marshal(map[string]interface{}{
 		"reaped_count": len(reaped),
@@ -214,15 +201,4 @@ func (d *Daemon) declaredPorts(projectPath string) map[int]bool {
 		}
 	}
 	return out
-}
-
-// orphanScanExcludes returns the pgid set the orphan scan must never reap:
-// the daemon's own process group (defensive — the daemon should not be a
-// session leader of an orphan, but exclude it regardless).
-func (d *Daemon) orphanScanExcludes() map[int]bool {
-	excludes := make(map[int]bool)
-	if pgid, err := syscall.Getpgid(syscall.Getpid()); err == nil && pgid > 1 {
-		excludes[pgid] = true
-	}
-	return excludes
 }

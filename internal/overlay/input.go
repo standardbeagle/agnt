@@ -1511,43 +1511,6 @@ func (r *EscapeSequenceReader) IsPending() bool {
 	return r.state != 0
 }
 
-// showProcessViewer shows the output of the Nth script as a full-screen overlay.
-func (r *InputRouter) showProcessViewer(n int) {
-	if r.outputFetcher == nil {
-		return
-	}
-
-	// Get the script list from overlay status
-	status := r.overlay.GetStatus()
-	if n < 1 || n > len(status.Scripts) {
-		return
-	}
-
-	script := status.Scripts[n-1]
-
-	// Fetch the script output
-	output, err := r.outputFetcher.GetScriptOutput(script.Name, 100)
-	if err != nil {
-		output = "Error fetching output: " + err.Error()
-	}
-
-	r.viewerActive = true
-
-	// Freeze gate to prevent PTY output from corrupting the viewer
-	if r.overlay.gate != nil {
-		r.overlay.gate.Freeze()
-	}
-
-	// Use alt screen when child is on main screen (restores content on close).
-	// When child is in alt screen (fullscreen app), draw directly.
-	r.viewerUsingAltScreen = !r.overlay.isChildInAltScreen()
-	if r.viewerUsingAltScreen {
-		r.overlay.renderer.EnterAltScreen()
-	}
-
-	r.overlay.renderer.DrawProcessOutput(script.Name, script.Command, script.State, output)
-}
-
 // closeProcessViewer closes the process viewer.
 func (r *InputRouter) closeProcessViewer() {
 	if !r.viewerActive {

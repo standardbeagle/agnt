@@ -50,5 +50,9 @@ func TestMain(m *testing.M) {
 		// exec.Cmd stdout/stderr pipe copiers: alive until process exits and
 		// pipes drain. Tests that kill processes may race with these goroutines.
 		goleak.IgnoreAnyFunction("os/exec.(*Cmd).Start.func2"),
+		// exec.CommandContext watchCtx goroutine: stdlib-managed, exits with the
+		// subprocess/ctx. WSL Windows-interop execs (tasklist.exe, 3s timeout)
+		// can leave it mid-shutdown at teardown under -race. Not a real leak.
+		goleak.IgnoreAnyFunction("os/exec.(*Cmd).watchCtx"),
 	)
 }

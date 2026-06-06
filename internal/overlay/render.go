@@ -267,24 +267,6 @@ func aggregateProcessURLs(processes []ProcessInfo) []aggregatedURL {
 	return result
 }
 
-// proxyDisplayInfo contains formatted proxy information for display.
-type proxyDisplayInfo struct {
-	LocalURL     string
-	TailscaleURL string
-	TunnelURL    string
-	HasErrors    bool
-}
-
-// formatProxyDisplay formats proxy URLs for display.
-func formatProxyDisplay(proxy ProxyInfo) proxyDisplayInfo {
-	return proxyDisplayInfo{
-		LocalURL:     "http://" + NormalizeListenAddr(proxy.ListenAddr),
-		TailscaleURL: proxy.TailscaleURL,
-		TunnelURL:    proxy.TunnelURL,
-		HasErrors:    proxy.HasErrors,
-	}
-}
-
 // Renderer handles drawing to the terminal.
 type Renderer struct {
 	out          io.Writer
@@ -1545,20 +1527,6 @@ func (r *Renderer) drawProxyPanelContent(startRow, col, width, maxRows int, pane
 	}
 }
 
-// formatShortDuration formats a duration compactly for panel display.
-func formatShortDuration(d time.Duration) string {
-	if d < time.Second {
-		return fmt.Sprintf("%dms", d.Milliseconds())
-	}
-	if d < time.Minute {
-		return fmt.Sprintf("%.0fs", d.Seconds())
-	}
-	if d < time.Hour {
-		return fmt.Sprintf("%.0fm", d.Minutes())
-	}
-	return fmt.Sprintf("%.1fh", d.Hours())
-}
-
 // formatShortTimeAgo formats a timestamp as a short relative time string.
 func formatShortTimeAgo(t time.Time) string {
 	d := time.Since(t)
@@ -1600,41 +1568,6 @@ func (r *Renderer) ResetMenuRegions() {
 	r.currentInputRegion = nil
 }
 
-// drawBox draws a box with a title.
-func (r *Renderer) drawBox(row, col, width, height int, title string) {
-	// Top border
-	r.moveTo(row, col)
-	r.write(FgCyan)
-	r.write(BoxTopLeft)
-	if title != "" {
-		titlePart := " " + title + " "
-		remaining := width - 2 - len(titlePart)
-		leftPad := remaining / 2
-		rightPad := remaining - leftPad
-		r.write(strings.Repeat(BoxHorizontal, leftPad))
-		r.write(Reset + Bold + title + Reset + FgCyan)
-		r.write(strings.Repeat(BoxHorizontal, rightPad+2)) // +2 for spaces around title
-	} else {
-		r.write(strings.Repeat(BoxHorizontal, width-2))
-	}
-	r.write(BoxTopRight)
-
-	// Side borders
-	for i := 1; i < height-1; i++ {
-		r.moveTo(row+i, col)
-		r.write(BoxVertical)
-		r.write(Reset + strings.Repeat(" ", width-2) + FgCyan)
-		r.write(BoxVertical)
-	}
-
-	// Bottom border
-	r.moveTo(row+height-1, col)
-	r.write(BoxBottomLeft)
-	r.write(strings.Repeat(BoxHorizontal, width-2))
-	r.write(BoxBottomRight)
-	r.write(Reset)
-}
-
 // niriGradient defines a two-color gradient for niri-style panel borders.
 // Uses 256-color ANSI for broad terminal compatibility.
 type niriGradient struct {
@@ -1655,10 +1588,6 @@ var (
 	gradientProxy = niriGradient{
 		fromFg: "\x1b[38;5;114m", // Pale green
 		toFg:   "\x1b[38;5;72m",  // Cadet blue
-	}
-	gradientBrowser = niriGradient{
-		fromFg: "\x1b[38;5;183m", // Plum
-		toFg:   "\x1b[38;5;141m", // Medium purple
 	}
 	gradientMenu = niriGradient{
 		fromFg: "\x1b[38;5;252m", // Light grey

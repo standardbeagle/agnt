@@ -518,7 +518,7 @@ func (d *Daemon) startScriptWithRetry(
 		ProcessID: processID,
 		Level:     "info",
 		EventType: "eaddrinuse_recovered",
-		Message:   fmt.Sprintf("successfully recovered from EADDRINUSE"),
+		Message:   "successfully recovered from EADDRINUSE",
 		Timestamp: time.Now(),
 	})
 	d.watchProcessExit(proc)
