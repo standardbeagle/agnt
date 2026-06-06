@@ -44,6 +44,8 @@ proxy {action: "exec", id: "app", code: "window.__devtool.inspect('#header')"}
 | [State Capture](#state-capture) | `captureDOM`, `captureStyles`, `captureState`, `captureNetwork` |
 | [Accessibility](#accessibility) | `getA11yInfo`, `getContrast`, `getTabOrder`, `getScreenReaderText`, `auditAccessibility` |
 | [Composite](#composite-functions) | `inspect`, `diagnoseLayout`, `showLayout` |
+| [Scored Audits](/api/frontend/quality-auditing) | `auditAll` aggregates 8 scored audits — DOM, CSS, performance, security, SEO, accessibility, [API efficiency](/api/api_audit), [loading](/api/loading_audit) |
+| [Responsive Mode](/api/frontend/responsive-mode) | `responsive.open`, `responsive.close`, `responsive.toggle`, `responsive.setWidth`, `responsive.getState` |
 
 ## Element Inspection
 

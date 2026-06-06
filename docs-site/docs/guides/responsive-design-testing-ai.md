@@ -183,6 +183,43 @@ proxy {action: "exec", id: "app", code: "window.__devtool.findOverflows()"}
 
 This is useful for confirming that a fix actually resolved the overflow, or for quickly identifying what is causing the horizontal scrollbar a user reported.
 
+## Sweeping Every Viewport at Once
+
+The functions above run against the current viewport. To check the whole breakpoint range in one call, use the [`responsive_audit`](/api/responsive_audit) tool — it loads the page in hidden iframes at each target size and reports every layout, overflow, and accessibility issue per viewport, plus which issues are mobile-only vs cross-viewport:
+
+```json
+responsive_audit {proxy_id: "app"}
+responsive_audit {proxy_id: "app", checks: ["layout", "overflow"]}
+responsive_audit {proxy_id: "app", viewports: [{name: "xs", width: 320, height: 568}]}
+```
+
+```
+=== Responsive Audit: 3 viewports ===
+
+MOBILE (375px) - 2 issues
+  ! [layout] .header - collapsed content, element has text but zero height
+  o [overflow] .sidebar - truncated text without title/tooltip
+
+DESKTOP (1440px) - 1 issues
+  ! [layout] .fixed-nav - fixed element covers 45% of viewport
+
+SUMMARY: 3 issues (1 critical, 2 minor)
+PATTERNS: 1 mobile-only, 0 tablet-only, 1 cross-viewport
+```
+
+## Dialing Into a Break Interactively
+
+When you want to *find* the exact width where a layout breaks — not just confirm a known break — open [Responsive Mode](/api/frontend/responsive-mode), the interactive workbench. It hosts a live iframe of the page at a width you control with a slider, numeric input, preset chips, or an edge drag handle. As you change width, the same detectors run against the framed page and overlay severity-colored boxes on the elements that break at that width.
+
+The human dials into the break and clicks **Send to agent**, which hands off `{width, shifts, selectors}`. The agent fixes the CSS, then drives the width back to verify:
+
+```json
+proxy {action: "exec", id: "app", code: "window.__devtool.responsive.setWidth(414)"}
+proxy {action: "exec", id: "app", code: "window.__devtool.responsive.getState()"}
+```
+
+`getState()` returns the current width and the remaining `shifts` — an empty `shifts` array confirms the fix. **Auto-sweep** in the panel runs the full `responsive_audit` to check for regressions at the standard viewports.
+
 ## Testing with Real Devices
 
 Simulated viewport widths do not catch everything. Real phones have different font rendering, default zoom levels, and touch behavior. agnt's tunnel integration exposes your proxied dev server to real devices:
