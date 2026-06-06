@@ -254,6 +254,9 @@ Instead of dumping 100 lines of nested React errors into the context, agnt conso
 | `proxy` | Reverse proxy: start, stop, exec, status |
 | `proxylog` | Query logs: http, error, screenshot, sketch, panel_message |
 | `currentpage` | View active page sessions with grouped resources |
+| `responsive_audit` | Responsive audit across viewport sizes (layout/overflow/a11y) |
+| `api_audit` | API-efficiency audit: waterfall, N+1, duplicate, chatty-load |
+| `loading_audit` | Loading-UX audit: spinner cascade + concurrent fragmentation |
 | `tunnel` | Tunnel management: cloudflare/ngrok for mobile testing |
 | `daemon` | Manage background daemon service |
 | `channel_reply` | Send messages to developer's browser overlay (channel mode only) |
@@ -295,6 +298,19 @@ __devtool.selectElement()                    // Interactive picker
 __devtool.sketch.open()    // Enter sketch mode
 __devtool.sketch.save()    // Save and send to agent
 __devtool.sketch.toJSON()  // Export sketch data
+```
+
+**Responsive Mode**
+```javascript
+__devtool.responsive.open()       // Open the interactive width workbench
+__devtool.responsive.setWidth(414) // Drive the frame to a width (320–1920)
+__devtool.responsive.getState()    // Read current width + detected layout shifts
+```
+
+**Scored Audits**
+```javascript
+__devtool.auditAll()  // 8 weighted audits: dom, css, perf, security, seo,
+                      // a11y, API efficiency, loading/spinner → overall grade
 ```
 
 ## Configuration

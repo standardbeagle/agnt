@@ -143,6 +143,36 @@ proxylog {proxy_id: "perf", action: "stats"}
   }
 ```
 
+### Audit API Efficiency
+
+Where `proxylog` gives raw per-request timing, [`api_audit`](/api/api_audit) scores the *pattern* of requests — serial waterfalls, N+1 fan-out, duplicate calls, and chatty page loads — over the recorded fetch/XHR buffer. Reload the page to populate the buffer, then:
+
+```json
+api_audit {proxy_id: "perf"}
+→ === API Efficiency Audit: C (72) ===
+   API efficiency is moderate. (38 calls analyzed). 3 issues to address
+
+   n-plus-one (1)
+     [warning] /api/users/{id} — 12× /api/users/{id} → batch
+   waterfall (2)
+     [critical] /api/profile — 4 calls run serially, ~820ms wasted vs parallel
+```
+
+The audit pinpoints *which* requests to parallelize or batch — not just which are slow individually.
+
+### Audit Loading UX
+
+A page can feel slow even when the network is fast if loaders fire one after another. [`loading_audit`](/api/loading_audit) scores the spinner timeline for **cascades** (serial loader chains) and **fragmentation** (many small spinners where one master loader would do):
+
+```json
+loading_audit {proxy_id: "perf"}
+→ === Loading UX Audit: B (84) ===
+   spinner-cascade (1)
+     [warning] .profile-card — 3 loaders fire serially (avatar → bio → stats), ~640ms span
+```
+
+Both audits are also rolled into the `auditAll` overall grade — see [Quality & Performance Auditing](/api/frontend/quality-auditing).
+
 ## Build Performance
 
 ### Monitor Build Times
