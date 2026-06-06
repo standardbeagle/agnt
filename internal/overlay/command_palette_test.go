@@ -43,9 +43,9 @@ func TestFilterPaletteCommands(t *testing.T) {
 			wantAtLe01: true,
 		},
 		{
-			name:       "restart with script name",
+			name:       "restart prefix matches restart and restart-proxy",
 			buffer:     "restart dev",
-			wantNames:  []string{"restart"},
+			wantNames:  []string{"restart", "restart-proxy"},
 			wantQuery:  "restart",
 			wantArgs:   "dev",
 			wantAtLe01: true,
@@ -61,7 +61,7 @@ func TestFilterPaletteCommands(t *testing.T) {
 		{
 			name:      "leading spaces trimmed",
 			buffer:    "   stop  dev ",
-			wantNames: []string{"stop"},
+			wantNames: []string{"stop", "stop-proxy", "stop-tunnel"},
 			wantQuery: "stop",
 			wantArgs:  "dev",
 		},
