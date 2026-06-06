@@ -753,7 +753,6 @@ func handleProxyLogQueryCompact(entries []proxy.LogEntry, pag *Pagination) (*mcp
 			if data == "" {
 				data = fmt.Sprintf("%s event", entry.Type)
 			}
-			data = fmt.Sprintf("%s event", entry.Type)
 		}
 
 		output[i] = LogEntryOutput{

@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/debug"
 	"golang.org/x/sync/semaphore"
 )
 
@@ -488,7 +489,9 @@ func (s *Scheduler) createOverlayClient(socketPath string) *http.Client {
 // persistTask saves the task state to persistent storage.
 func (s *Scheduler) persistTask(task *ScheduledTask) {
 	if s.stateMgr != nil {
-		s.stateMgr.SaveTask(task)
+		if err := s.stateMgr.SaveTask(task); err != nil {
+			debug.Warn("scheduler", "failed to persist task %q (will not survive restart): %v", task.ID, err)
+		}
 	}
 }
 
@@ -496,7 +499,9 @@ func (s *Scheduler) persistTask(task *ScheduledTask) {
 func (s *Scheduler) removeTaskFromStorage(task *ScheduledTask) {
 	s.tasks.Delete(task.ID)
 	if s.stateMgr != nil {
-		s.stateMgr.RemoveTask(task.ID, task.ProjectPath)
+		if err := s.stateMgr.RemoveTask(task.ID, task.ProjectPath); err != nil {
+			debug.Warn("scheduler", "failed to remove task %q from storage: %v", task.ID, err)
+		}
 	}
 }
 

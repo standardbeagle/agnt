@@ -177,6 +177,11 @@ var eaddrinusePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\[Errno 10048\].*:(\d+)`), // Windows
 }
 
+// bareColonPortPattern matches any ":<port>" token; used as a fallback when an
+// eaddrinuse pattern matched but captured no port. Package-level so it is
+// compiled once, not on every extractPortFromError call.
+var bareColonPortPattern = regexp.MustCompile(`:(\d{2,5})\b`)
+
 // extractPortFromCommand extracts a port number from a command and its arguments.
 func extractPortFromCommand(command string, args []string) int {
 	// Build full command line for pattern matching
@@ -245,8 +250,7 @@ func detectEADDRINUSE(output string) int {
 		// Pattern matched but no port captured - try to find port separately
 		if pattern.MatchString(output) {
 			// Look for any port number in the error line
-			portMatch := regexp.MustCompile(`:(\d{2,5})\b`)
-			if matches := portMatch.FindStringSubmatch(output); len(matches) > 1 {
+			if matches := bareColonPortPattern.FindStringSubmatch(output); len(matches) > 1 {
 				if port, err := strconv.Atoi(matches[1]); err == nil && port > 0 && port < 65536 {
 					return port
 				}

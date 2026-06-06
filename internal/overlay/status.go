@@ -192,8 +192,9 @@ func (f *StatusFetcher) fetchStatus() {
 		status.Orphans = orphans
 	}
 
-	// Fetch recent errors from proxy logs
-	recentErrors, err := f.fetchRecentErrors()
+	// Fetch recent errors from proxy logs (reuse already-fetched proxies — no
+	// extra PROXY LIST round-trip / tailscale recompute on the 2s tick)
+	recentErrors, err := f.fetchRecentErrors(status.Proxies)
 	if err == nil {
 		status.RecentErrors = recentErrors
 	}
@@ -460,14 +461,9 @@ func (f *StatusFetcher) fetchProxies() ([]ProxyInfo, error) {
 	return proxies, nil
 }
 
-func (f *StatusFetcher) fetchRecentErrors() ([]ErrorInfo, error) {
-	// Query proxy logs for errors in the last 5 minutes
-	// We'll query each proxy's error logs
-	proxies, err := f.fetchProxies()
-	if err != nil {
-		return nil, err
-	}
-
+func (f *StatusFetcher) fetchRecentErrors(proxies []ProxyInfo) ([]ErrorInfo, error) {
+	// Query proxy logs for errors in the last 5 minutes, reusing the proxy
+	// list already fetched this tick rather than issuing another PROXY LIST.
 	var errors []ErrorInfo
 	cutoff := time.Now().Add(-5 * time.Minute)
 

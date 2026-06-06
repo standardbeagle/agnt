@@ -3,6 +3,7 @@
 package platform
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -183,7 +184,12 @@ func scanWSLWindows() ([]ProcInfo, error) {
 		return nil, nil // tasklist.exe not available
 	}
 
-	cmd := exec.Command(exe, "/fo", "CSV", "/nh")
+	// Hard timeout: WSL→Windows interop (tasklist.exe) can wedge on a stalled
+	// VM/9P mount. Without a deadline this hangs the duplicate-scan goroutine
+	// (runs at startup + every 30s) forever. 3s matches the netstat.exe budget.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, exe, "/fo", "CSV", "/nh")
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("tasklist.exe: %w", err)
