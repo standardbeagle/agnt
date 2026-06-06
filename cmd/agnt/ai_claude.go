@@ -844,12 +844,6 @@ func runClaudeQueryWith(ctx context.Context, prompt string, opts *claude.AgentOp
 	return streamJSON(ctx, iter)
 }
 
-// streamInteractive renders messages as human-readable output.
-// The initialSpin parameter allows passing a pre-started spinner for immediate feedback.
-func streamInteractive(ctx context.Context, iter *claude.QueryIterator, initialSpin *stderrSpinner) (string, error) {
-	return streamInteractiveWith(ctx, iter, initialSpin, os.Stdout, os.Stderr)
-}
-
 // streamInteractiveWith renders messages using the provided writers.
 func streamInteractiveWith(ctx context.Context, iter *claude.QueryIterator, initialSpin *stderrSpinner, stdout, stderr io.Writer) (string, error) {
 	msgCh := iter.Messages()
@@ -931,12 +925,6 @@ func streamJSON(ctx context.Context, iter *claude.QueryIterator) (string, error)
 			}
 		}
 	}
-}
-
-// renderMessage renders a single message in interactive mode (convenience wrapper).
-func renderMessage(msg claude.MessageType, spin **stderrSpinner) string {
-	var textPrinted bool
-	return renderMessageTo(msg, spin, os.Stdout, os.Stderr, &textPrinted)
 }
 
 // renderMessageTo renders a message using the provided writers.

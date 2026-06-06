@@ -68,15 +68,6 @@ import (
 // Can be overridden at build time with: -ldflags "-X github.com/standardbeagle/agnt/internal/daemon.Version=x.y.z"
 var Version = "0.13.16"
 
-// asScriptConfig casts the value stored in scriptConfigs (a sync.Map of any)
-// back to *config.ScriptConfig. Returns nil if the value is absent or the
-// wrong type. This helper exists so closures inside New() can reference the
-// config package without hitting the "config" parameter shadowing.
-func asScriptConfig(v any) *config.ScriptConfig {
-	sc, _ := v.(*config.ScriptConfig)
-	return sc
-}
-
 // BuildTime is the build timestamp (RFC3339 format).
 // Set at build time with: -ldflags "-X github.com/standardbeagle/agnt/internal/daemon.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 var BuildTime = ""

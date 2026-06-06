@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/standardbeagle/agnt/internal/browser"
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/platform"
@@ -70,20 +69,6 @@ func (d *Daemon) restoreProxies() {
 		d.registerExplicitProxyEntry(pc.Path, pc.ID, proxyServer.ListenAddr)
 
 		// Removed startup log: restored proxy %s -> %s on port %d
-	}
-}
-
-func (d *Daemon) checkBrowserVersion() {
-	info := browser.CheckVersion()
-	if warning := browser.FormatWarning(info); warning != "" {
-		debug.Log("daemon", "browser check: %s", warning)
-		d.startupErrorStore.Add(&StartupLogEntry{
-			Level: "warning", EventType: "browser_check",
-			Message:   warning,
-			Timestamp: time.Now(),
-		})
-	} else if info != nil {
-		debug.Log("daemon", "browser: Chrome %s at %s", info.FullVersion, info.Path)
 	}
 }
 

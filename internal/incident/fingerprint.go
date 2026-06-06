@@ -8,8 +8,6 @@ import (
 var (
 	// ISO8601 timestamps, e.g. 2024-01-15T10:30:00Z or 2024-01-15 10:30:00.123
 	reISO8601 = regexp.MustCompile(`\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:[.,]\d+)?(?:Z|[+-]\d{2}:?\d{2})?`)
-	// Unix epoch milliseconds / seconds (10-13 contiguous digits not part of a larger number)
-	reUnixEpoch = regexp.MustCompile(`(?:^|[^0-9])(\d{10,13})(?:[^0-9]|$)`)
 	// UUID v4/v7 patterns
 	reUUID = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
 	// Memory addresses

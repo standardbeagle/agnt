@@ -23,11 +23,6 @@ type PersistedTaskState struct {
 	UpdatedAt string           `json:"updated_at"`
 }
 
-// schedulerWriteReq is a request to write a project's state to disk.
-type schedulerWriteReq struct {
-	projectPath string
-}
-
 // schedulerPersister is the seam between the write-behind channel mechanism
 // and the actual durable write. Production wires this to writeFileAtomic
 // (tmp + rename). Tests wire it to stub implementations that count calls,

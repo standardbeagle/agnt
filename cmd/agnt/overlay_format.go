@@ -122,7 +122,7 @@ func processAuditAttachment(data json.RawMessage, userMessage string, summarizer
 	}
 	if err := json.Unmarshal(data, &auditData); err != nil {
 		debug.Warn("overlay", "failed to parse audit data: %v", err)
-		return fmt.Sprintf("**Audit**: (parse error)")
+		return "**Audit**: (parse error)"
 	}
 
 	if summarizer != nil && summarizer.IsAvailable() {
