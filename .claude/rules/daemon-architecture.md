@@ -54,20 +54,23 @@ Three reconciliation triggers:
 
 Existing `platform.IsWSL()` helper in `internal/platform/process_unix.go` (memoized `/proc/version` check for `microsoft`/`wsl`) is canonical WSL detection. New OS-level operations must consult it before using `runtime.GOOS == "linux"` to gate Linux-only behavior — WSL is GOOS=linux but routinely needs Windows-side processes via `tasklist.exe` / `netstat.exe` / `taskkill.exe` interop.
 
-`ShouldUseWindowsShell(path)` helper does **not** yet exist — referenced aspirationally in `.claude/rules/config-contracts.md` and `cmd.exe` row above; tracked under `wsl-followup` Dart tag (parent `5YgALr79bfhf`). Until it lands, `ScriptConfig.ResolveShell()` uses `cmd.exe` only when `runtime.GOOS == "windows"` — WSL with Windows-path script silently picks `sh -c` and fails. See `.claude/rules/wsl-audit.md` for full audit.
+The `ShouldUseWindowsShell(path)` helper now exists (`internal/platform/process_unix.go:53`; Windows stub in `process_windows.go:85`). `ScriptConfig.ResolveShell()` (`internal/config/agnt.go:315`) consults it first: a WSL session with a Windows-path `run` or `cwd` resolves to `cmd.exe /c` so `.cmd`/`.bat` scripts run instead of silently picking `sh -c` and failing. Two `wsl-followup` sub-tasks (parent `5YgALr79bfhf`) remain deferred — `detectPortsForPID` has no `netstat.exe` branch and `internal/overlay/status.go:platformShell` still gates on raw `runtime.GOOS`. See `.claude/rules/wsl-audit.md` for the full audit.
 
 ### WSL Awareness — what's wired vs deferred
 
 | Site | Status | File |
 |------|--------|------|
-| `platform.IsWSL()` detection | Wired | `internal/platform/process_unix.go:25` |
-| `platform.ScanWindows()` (`tasklist.exe`) | Wired | `internal/platform/process_unix.go:141` |
-| Duplicate scanner appends Windows procs | Wired | `internal/daemon/duplicate_scanner.go:174` |
+| `platform.IsWSL()` detection | Wired | `internal/platform/process_unix.go:24` |
+| `platform.ScanWindows()` (`tasklist.exe`) | Wired | `internal/platform/process_unix.go:172` |
+| Duplicate scanner appends Windows procs | Wired | `internal/daemon/duplicate_scanner.go:175` |
 | `FindPIDsByPort` falls back to `netstat.exe` | Wired (audit landed 2026-05-02) | `internal/config/portdetect_unix.go` |
-| `ShouldUseWindowsShell(path)` helper | **Not yet** — `wsl-followup` sub-task | `internal/platform/` |
-| `ResolveShell` picks `cmd.exe` for Windows-path scripts on WSL | **Not yet** — depends on helper above | `internal/config/agnt.go:272` |
-| Doctor command attributes Windows-side port owners by name | Partial — PID surfaces, name is blank | `internal/daemon/doctor.go` |
-| `taskkill.exe` to kill Windows-side rogue processes | **Not yet** — `wsl-followup` sub-task | `internal/platform/` |
+| `ShouldUseWindowsShell(path)` helper | Wired | `internal/platform/process_unix.go:53` |
+| `ResolveShell` picks `cmd.exe` for Windows-path scripts on WSL | Wired | `internal/config/agnt.go:315` |
+| `ProcessNameByPID` / `ProcessNamesByPIDs` fall back to `tasklist.exe` | Wired | `internal/config/portdetect_unix.go:336,387` |
+| Doctor command attributes Windows-side port owners by name | Wired (batched `tasklist.exe`) | `internal/daemon/doctor.go:209` |
+| `taskkill.exe` to kill Windows-side rogue processes | Wired (`KillWindowsPID`; called by port preflight + shutdown) | `internal/platform/killwindowspid_unix.go:36` |
+| `detectPortsForPID` falls back to `netstat.exe` | **Not yet** — `wsl-followup` sub-task | `internal/config/portdetect_unix.go` |
+| `platformShell` uses `ShouldUseWindowsShell` | **Not yet** — `wsl-followup` sub-task | `internal/overlay/status.go:624` |
 
 ### Accepted WSL escape hatches
 
