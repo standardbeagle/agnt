@@ -2,19 +2,19 @@
 
 ## Personas
 
-Four distinct participants interact with the daemon. Every feature must consider all four:
+Four participants interact with daemon. Every feature must consider all four:
 
-1. **Developer** — configures `.agnt.kdl`, runs `agnt run` or opens a Claude Code session, expects dev servers and proxies to "just work." Needs a "doctor" command for manual verification and cleanup.
+1. **Developer** — configures `.agnt.kdl`, runs `agnt run` or opens Claude Code session, expects dev servers and proxies to "just work." Needs "doctor" command for manual verification and cleanup.
 
-2. **AI Agent** — calls MCP tools (`proc`, `proxy`, `proxylog`, `get_errors`, `get_incidents`), makes decisions based on state. Requires verified-accurate state — stale or contradictory data causes the agent to take wrong actions, which is worse than no data.
+2. **AI Agent** — calls MCP tools (`proc`, `proxy`, `proxylog`, `get_errors`, `get_incidents`), decides based on state. Needs verified-accurate state — stale or contradictory data makes agent take wrong actions, worse than no data.
 
-3. **Daemon** — long-running background process that outlives any session. Orchestrates lifecycles, manages the event system, serves as the state cache.
+3. **Daemon** — long-running background process outliving any session. Orchestrates lifecycles, manages event system, serves as state cache.
 
-4. **Managed processes/proxies** — active participants, not passive resources. They emit errors, need restarts, can go rogue (zombie PIDs, orphaned ports). Their state must be verified against OS truth, not assumed from daemon memory.
+4. **Managed processes/proxies** — active participants, not passive resources. Emit errors, need restarts, can go rogue (zombie PIDs, orphaned ports). State must be verified against OS truth, not assumed from daemon memory.
 
 ## Data Ownership — Source of Truth
 
-Daemon in-memory state is a **cache**, never the authority. The canonical source of truth for each piece of state:
+Daemon in-memory state is **cache**, never authority. Canonical source of truth per state:
 
 | State | Source of truth | Verification method |
 |-------|----------------|-------------------|
@@ -28,16 +28,16 @@ Daemon in-memory state is a **cache**, never the authority. The canonical source
 | Blob store payloads | In-memory LRU only | Best-effort; evicted on session end or cap overflow |
 | Bus in-flight events | Transient channel only | Drop-newest on overflow; no replay |
 
-**The rule**: Any mismatch between daemon cache and source of truth = daemon updates its cache to match reality and emits an event. The daemon never asserts its cache is correct over OS truth.
+**Rule**: Any mismatch between daemon cache and source of truth = daemon updates cache to match reality and emits event. Daemon never asserts cache correct over OS truth.
 
-**Script registry is ephemeral**: The script registry is rebuilt from `.agnt.kdl` on each session connect. When the last session for a project disconnects, `CleanupSessionResources` removes all registry entries. The next session starts fresh from current config. Never persist or carry over registry state across sessions.
+**Script registry ephemeral**: Rebuilt from `.agnt.kdl` on each session connect. When last session for project disconnects, `CleanupSessionResources` removes all registry entries. Next session starts fresh from current config. Never persist or carry registry state across sessions.
 
 ## Reconciliation Model
 
-Three triggers for reconciliation:
+Three reconciliation triggers:
 
-1. **On session connect** — daemon runs full health check before responding to first query. The AI agent must receive verified-accurate state.
-2. **Periodic** — every 30s (configurable), daemon runs health check and emits events for any state changes. Never kills processes — only updates state and surfaces issues.
+1. **On session connect** — daemon runs full health check before responding to first query. AI agent must get verified-accurate state.
+2. **Periodic** — every 30s (configurable), daemon runs health check, emits events for state changes. Never kills processes — only updates state and surfaces issues.
 3. **Doctor command** — developer-initiated full reconciliation via MCP tool and overlay panel. Returns structured report with offered actions.
 
 ## Cross-Platform Mandate
@@ -52,9 +52,9 @@ Three triggers for reconciliation:
 | Proxy health probe | TCP connect / HTTP GET | Same | Same |
 | Rogue process identification | `ss -tlnp` gives PID | `netstat -ano` + `tasklist` | Both paths depending on which OS owns the port |
 
-The existing `platform.IsWSL()` helper in `internal/platform/process_unix.go` (memoized `/proc/version` check for `microsoft`/`wsl`) is the canonical WSL detection. New OS-level operations must consult it before using `runtime.GOOS == "linux"` to gate Linux-only behavior — WSL is GOOS=linux but routinely needs to reach Windows-side processes via `tasklist.exe` / `netstat.exe` / `taskkill.exe` interop.
+Existing `platform.IsWSL()` helper in `internal/platform/process_unix.go` (memoized `/proc/version` check for `microsoft`/`wsl`) is canonical WSL detection. New OS-level operations must consult it before using `runtime.GOOS == "linux"` to gate Linux-only behavior — WSL is GOOS=linux but routinely needs Windows-side processes via `tasklist.exe` / `netstat.exe` / `taskkill.exe` interop.
 
-A `ShouldUseWindowsShell(path)` helper does **not** yet exist and is referenced aspirationally in `.claude/rules/config-contracts.md` and the `cmd.exe` row of the table above; it is tracked under the `wsl-followup` Dart tag (parent `5YgALr79bfhf`). Until it lands, `ScriptConfig.ResolveShell()` uses `cmd.exe` only when `runtime.GOOS == "windows"` — WSL with a Windows-path script silently picks `sh -c` and fails. See `.claude/rules/wsl-audit.md` for the full audit.
+`ShouldUseWindowsShell(path)` helper does **not** yet exist — referenced aspirationally in `.claude/rules/config-contracts.md` and `cmd.exe` row above; tracked under `wsl-followup` Dart tag (parent `5YgALr79bfhf`). Until it lands, `ScriptConfig.ResolveShell()` uses `cmd.exe` only when `runtime.GOOS == "windows"` — WSL with Windows-path script silently picks `sh -c` and fails. See `.claude/rules/wsl-audit.md` for full audit.
 
 ### WSL Awareness — what's wired vs deferred
 
@@ -71,80 +71,53 @@ A `ShouldUseWindowsShell(path)` helper does **not** yet exist and is referenced 
 
 ### Accepted WSL escape hatches
 
-These behaviors are intentional. They look like WSL bugs but aren't:
+Intentional behaviors. Look like WSL bugs but aren't:
 
 | Behavior | Why we accept it |
 |----------|-----------------|
-| `pidAlive` cannot probe Windows PIDs from WSL | We never register Windows PIDs in our process manager — they only show up via `ScanWindows()` and are read-only for us |
+| `pidAlive` cannot probe Windows PIDs from WSL | We never register Windows PIDs in our process manager — show up only via `ScanWindows()`, read-only for us |
 | `directChildren` returns nil for Windows-side parent PIDs | We don't track Windows process trees; descendant cleanup is for our managed processes |
-| `normalizePath` is case-sensitive for `/mnt/c/...` paths in WSL | `/mnt/c/Users/Foo` and `/mnt/c/Users/foo` resolve to the same NTFS file but Linux treats them as distinct paths. Forcing lowercase would collapse two distinct sessions registered under different casings |
-| `cleanupStaleFiles` PID file uses Linux layout under WSL | The daemon socket path is owned by the caller; running the daemon under WSL means Linux paths end-to-end |
-| Browser launcher doesn't have a WSL branch | `BROWSER` env var is the WSL-friendly contract; we don't bridge `open` ↔ `cmd.exe /c start` |
-| `chromedp` session URL picker is darwin-only | Chrome process discovery is only meaningful when we launch chrome ourselves; WSL users typically point at chrome on the host |
+| `normalizePath` is case-sensitive for `/mnt/c/...` paths in WSL | `/mnt/c/Users/Foo` and `/mnt/c/Users/foo` resolve to same NTFS file but Linux treats as distinct paths. Forcing lowercase would collapse two distinct sessions registered under different casings |
+| `cleanupStaleFiles` PID file uses Linux layout under WSL | Daemon socket path owned by caller; running daemon under WSL means Linux paths end-to-end |
+| Browser launcher doesn't have WSL branch | `BROWSER` env var is WSL-friendly contract; we don't bridge `open` ↔ `cmd.exe /c start` |
+| `chromedp` session URL picker is darwin-only | Chrome process discovery only meaningful when we launch chrome ourselves; WSL users typically point at chrome on host |
 
 ## Silent Failure Prohibition
 
-No subsystem may silently skip an expected action. If config declares a proxy, process, or dependency, the system must either:
+No subsystem may silently skip expected action. If config declares proxy, process, or dependency, system must either:
 1. Successfully create/start it, OR
-2. Emit a visible error/warning event that reaches the AI agent and session log
+2. Emit visible error/warning event reaching AI agent and session log
 
-`debug.Log` is not sufficient for failures — it only goes to the debug file. Failures must propagate through the event system or session log.
+`debug.Log` not sufficient for failures — only goes to debug file. Failures must propagate through event system or session log.
 
 ## Config Authority
 
-If `.agnt.kdl` declares expected state (a proxy with `fallback-port`, a script with `depends-on`), the system must honor it. Config fields that are parsed but not acted on are bugs.
+If `.agnt.kdl` declares expected state (proxy with `fallback-port`, script with `depends-on`), system must honor it. Config fields parsed but not acted on are bugs.
 
 ## Tool session-scoping
 
-This is the **canonical classification** of every hub query/list verb (and the
-MCP tools that drive it) against the session-scope chokepoint. Project scoping
-is a *structural* property, not a per-handler convention: there is exactly one
-resolution point, `resolveProjectScope` (`internal/daemon/hub_helpers.go`), and
-every non-debug list/query routes through it. Adding a new query/list verb
-without classifying it here — and wiring it to the gate if it is non-debug — is
-a bug.
+**Canonical classification** of every hub query/list verb (and MCP tools driving it) against session-scope chokepoint. Project scoping is *structural* property, not per-handler convention: exactly one resolution point, `resolveProjectScope` (`internal/daemon/hub_helpers.go`), and every non-debug list/query routes through it. Adding new query/list verb without classifying it here — and wiring to gate if non-debug — is a bug.
 
 ### The gate contract (`resolveProjectScope`)
 
-Given a per-call `DirectoryFilter{Global, SessionCode, Directory}` and the
-connection's bound session code, resolution is, in order:
+Given per-call `DirectoryFilter{Global, SessionCode, Directory}` and connection's bound session code, resolution order:
 
 1. `Global == true` → `("", true, nil)`: no project filter (cross-project).
 2. explicit `SessionCode` → that session's project path (error if unknown).
-3. explicit `Directory` → the normalized directory.
-4. otherwise the connection's bound session's project path.
-5. none of the above → `("", false, errNoSessionScope)`: **fail loud**.
+3. explicit `Directory` → normalized directory.
+4. otherwise connection's bound session's project path.
+5. none of above → `("", false, errNoSessionScope)`: **fail loud**.
 
-A non-global call that cannot resolve a project is rejected with
-`invalid_args: no session attached …` rather than silently leaking every
-project's data. The per-call `global` flag always wins. The MCP daemon
-connection is not session-bound, so MCP tools name the project explicitly via
-`SessionCode` (preferred) or `Directory` (fallback) — see
-`collectProcessAlerts` / `handleProcList` for the canonical client pattern.
+Non-global call that cannot resolve a project is rejected with `invalid_args: no session attached …` rather than silently leaking every project's data. Per-call `global` flag always wins. MCP daemon connection not session-bound, so MCP tools name project explicitly via `SessionCode` (preferred) or `Directory` (fallback) — see `collectProcessAlerts` / `handleProcList` for canonical client pattern.
 
 ### Uniform `global` override on MCP tools (C6)
 
-Every gated MCP tool exposes the **same** override: a `global bool` input
-(`json:"global,omitempty"`, default `false`, documented in its jsonschema).
-`global:true` returns cross-project results; the default scopes to the caller's
-session/project. The MCP daemon connection is not session-bound, so each tool,
-when non-global, names the project explicitly on the wire (`SessionCode`
-preferred, `Directory` fallback) — see `handleProcList` / `handleProxyList` /
-`handleTunnelList` / `collectProcessAlerts` / `collectProxyErrors` /
-`collectStartupErrors` / `handleDaemonStartupLog`. A reflection contract test
-(`internal/tools/global_scope_uniform_test.go`,
-`TestGatedMCPTools_ExposeGlobalFlagUniformly`) pins that `get_errors`, `proc`,
-`proxy`, `tunnel`, `session`, and `daemon` (startup_log) all carry the field.
+Every gated MCP tool exposes **same** override: `global bool` input (`json:"global,omitempty"`, default `false`, documented in jsonschema). `global:true` returns cross-project results; default scopes to caller's session/project. MCP daemon connection not session-bound, so each tool, when non-global, names project explicitly on wire (`SessionCode` preferred, `Directory` fallback) — see `handleProcList` / `handleProxyList` / `handleTunnelList` / `collectProcessAlerts` / `collectProxyErrors` / `collectStartupErrors` / `handleDaemonStartupLog`. Reflection contract test (`internal/tools/global_scope_uniform_test.go`, `TestGatedMCPTools_ExposeGlobalFlagUniformly`) pins that `get_errors`, `proc`, `proxy`, `tunnel`, `session`, and `daemon` (startup_log) all carry the field.
 
-Two tools intentionally do **not** take a cross-project `global` and are
-excluded from that contract test:
+Two tools intentionally do **not** take cross-project `global`, excluded from contract test:
 
-- **`get_incidents`** — the incident inbox is per-session *hard-isolated* (the
-  "Cross-session isolation" numbered contract below). That is a stronger
-  guarantee than project scoping; a cross-session global would violate it.
-- **`watch`** — emits an `agnt monitor` command string. Monitor stream scoping
-  is a separate STREAM-EVENTS concern, not a result-returning query, so a
-  `global` flag would be a no-op (and silent no-ops are forbidden).
+- **`get_incidents`** — incident inbox per-session *hard-isolated* ("Cross-session isolation" numbered contract below). Stronger guarantee than project scoping; cross-session global would violate it.
+- **`watch`** — emits `agnt monitor` command string. Monitor stream scoping is separate STREAM-EVENTS concern, not result-returning query, so `global` flag would be no-op (silent no-ops forbidden).
 
 ### Gated (must route through `resolveProjectScope`)
 
@@ -153,22 +126,18 @@ Default project-scoped, `global`-overridable, session-less non-global rejected.
 | Verb | MCP tool | Filter field | Notes |
 |------|----------|--------------|-------|
 | `ALERTS QUERY` | `get_errors` (process alerts) | `AlertStoreFilter.ProjectPath` | C4 |
-| `ALERTS STARTUP-LOG` | `get_errors` (startup errors), `daemon startup_log` | `StartupLogFilter.ProjectPath` (matched via the `basename-hash:` ProcessID prefix — entries are not stamped at ingest) | C5 |
+| `ALERTS STARTUP-LOG` | `get_errors` (startup errors), `daemon startup_log` | `StartupLogFilter.ProjectPath` (matched via `basename-hash:` ProcessID prefix — entries not stamped at ingest) | C5 |
 | `PROC LIST` | `proc {action:"list"}` | `ProjectPath` compare on each process | C5 (migrated off inline logic) |
 | `PROXY LIST` | `proxy {action:"list"}` | `ProjectPath` compare on each proxy | C5 (migrated off inline logic) |
 | `TUNNEL LIST` | `tunnel {action:"list"}` | `tunnelm.ListByPath` | C5 (migrated off `getSessionProjectPath` fallback-to-all) |
 | `SESSION LIST` | `session {action:"list"}` | `sessionRegistry.List(path, global)` | C5 |
 | `SESSION TASKS` | `session {action:"tasks"}` | `scheduler.ListTasks(path, global)` | C5 |
-| `INCIDENTS QUERY` | `get_incidents` | per-session inbox partition | pre-existing model the gate converges toward |
-| `PORTS QUERY` | overview ports panel (`fetchPorts`) | `resolveProjectScope` → declared-port set | classifies owners as managed/unmanaged/conflict; orphans are uid-scoped, not project-scoped |
+| `INCIDENTS QUERY` | `get_incidents` | per-session inbox partition | pre-existing model gate converges toward |
+| `PORTS QUERY` | overview ports panel (`fetchPorts`) | `resolveProjectScope` → declared-port set | classifies owners as managed/unmanaged/conflict; orphans uid-scoped, not project-scoped |
 
 ### ID-scoped (single resource addressed by explicit id)
 
-These take a resource id, not a project filter. The id **lookup** resolves
-through `getSessionScoped` (`internal/daemon/hub_helpers.go`), which restricts
-fuzzy matching to the connection's session project so you cannot address another
-project's resource by id; an exact id always works. No `global` flag — the id is
-the scope.
+Take resource id, not project filter. Id **lookup** resolves through `getSessionScoped` (`internal/daemon/hub_helpers.go`), restricting fuzzy matching to connection's session project so you cannot address another project's resource by id; exact id always works. No `global` flag — id is the scope.
 
 | Verb(s) | Resolver |
 |---------|----------|
@@ -180,10 +149,7 @@ the scope.
 
 ### Debug-exempt (by design)
 
-The agent supplies an explicit `proxy_id` it already holds; these are
-interactive browser-debug surfaces, not cross-project discovery. They are
-**not** project-filtered, but the `proxy_id` **lookup** still resolves through
-`getSessionScoped`, so a debug call cannot reach another project's proxy by id.
+Agent supplies explicit `proxy_id` it already holds; these interactive browser-debug surfaces, not cross-project discovery. **Not** project-filtered, but `proxy_id` **lookup** still resolves through `getSessionScoped`, so debug call cannot reach another project's proxy by id.
 
 | Tool | Verb |
 |------|------|
@@ -196,69 +162,38 @@ interactive browser-debug surfaces, not cross-project discovery. They are
 
 ### Why STARTUP-LOG is prefix-matched, not ingest-tagged
 
-`StartupLogEntry` has 59 ingest sites across the daemon; stamping a project
-path at each would be invasive and error-prone. Instead the entry's
-`ProcessID` (`makeProcessID(projectPath, name)` →
-`basename-hash:name`) deterministically encodes the project, so a scoped query
-filters by the `basename-hash:` prefix (`makeProcessID(projectPath, "")`).
-Consequence: daemon-wide events with a bare (non-project) `ProcessID` —
-shutdown/scan records — are visible only to a `global` query, never to a scoped
-one. This is the intended trade-off.
+`StartupLogEntry` has 59 ingest sites across daemon; stamping project path at each would be invasive and error-prone. Instead entry's `ProcessID` (`makeProcessID(projectPath, name)` → `basename-hash:name`) deterministically encodes project, so scoped query filters by `basename-hash:` prefix (`makeProcessID(projectPath, "")`). Consequence: daemon-wide events with bare (non-project) `ProcessID` — shutdown/scan records — visible only to `global` query, never to scoped one. Intended trade-off.
 
 ## Incident Pipeline
 
-The incident pipeline (`internal/incident/`) is an opt-in alert path (Phase A,
-gated by `alerts.incident-pipeline true`) that replaces direct `AlertHub` sink
-dispatch with a normalised, deduped, priority-ordered inbox.
+Incident pipeline (`internal/incident/`) is opt-in alert path (Phase A, gated by `alerts.incident-pipeline true`) replacing direct `AlertHub` sink dispatch with normalised, deduped, priority-ordered inbox.
 
 ### Source of Truth
 
 | State | Source of truth | Notes |
 |-------|----------------|-------|
-| Inbox entries | Originating subsystem | Inbox is a cache; an entry present in the inbox does not mean the event is still active |
+| Inbox entries | Originating subsystem | Inbox is a cache; entry present does not mean event still active |
 | Bus in-flight events | Transient MPSC channel | Drop-newest on overflow (`bus.go`, 4096-cap). No replay path. |
-| Blob store payloads | In-memory LRU per session | Best-effort: evicted when session ends or 16MB cap is reached. Never persisted to disk. |
+| Blob store payloads | In-memory LRU per session | Best-effort: evicted when session ends or 16MB cap reached. Never persisted to disk. |
 | Dedup fingerprints | Deduplicator in-process state | Cleared on session teardown; cross-session dedup does not apply |
 
 ### Numbered Contracts
 
-1. **Cross-session isolation.** Each session that connects with the pipeline
-   enabled gets its own `sessionPipeline` instance. Events from session A never
-   appear in session B's inbox, even for the same project.
+1. **Cross-session isolation.** Each session connecting with pipeline enabled gets own `sessionPipeline` instance. Events from session A never appear in session B's inbox, even for same project.
 
-2. **Drop-newest on bus overflow.** The MPSC bus drops the incoming event (not
-   the oldest) when the 4096-slot channel is full. This keeps latency bounded
-   at the cost of losing the most recent event under extreme load. Overflow
-   count is surfaced via `bus.OverflowCount()`.
+2. **Drop-newest on bus overflow.** MPSC bus drops incoming event (not oldest) when 4096-slot channel full. Keeps latency bounded at cost of losing most recent event under extreme load. Overflow count surfaced via `bus.OverflowCount()`.
 
-3. **Dedup scope is per-session, not per-project.** A fingerprint collision
-   in session A does not suppress the same event in session B. The
-   Deduplicator state is owned by the `sessionPipeline` and is torn down with
-   it.
+3. **Dedup scope per-session, not per-project.** Fingerprint collision in session A does not suppress same event in session B. Deduplicator state owned by `sessionPipeline`, torn down with it.
 
-4. **Coalescer batch window is non-configurable at runtime.** The coalesce
-   window (default 200ms) is set at `sessionPipeline` construction time from
-   config. Live reconfiguration is not supported; a daemon restart is required
-   to change it.
+4. **Coalescer batch window non-configurable at runtime.** Coalesce window (default 200ms) set at `sessionPipeline` construction time from config. Live reconfiguration not supported; daemon restart required to change.
 
-5. **Inbox capacity is hard-capped per band.** Each of the four priority bands
-   (critical / error / warning / info) holds at most 100 entries. Oldest
-   entries are evicted to make room for new arrivals. The AI agent must poll
-   with the returned cursor to drain the inbox before it wraps.
+5. **Inbox capacity hard-capped per band.** Each of four priority bands (critical / error / warning / info) holds at most 100 entries. Oldest entries evicted to make room for new arrivals. AI agent must poll with returned cursor to drain inbox before it wraps.
 
-6. **Blob store is best-effort.** A `BlobRef` in an envelope may resolve to
-   `nil` if the blob was evicted before the agent pulled the incident. Callers
-   must handle absent blobs gracefully; they are not errors.
+6. **Blob store best-effort.** `BlobRef` in envelope may resolve to `nil` if blob evicted before agent pulled incident. Callers must handle absent blobs gracefully; not errors.
 
-7. **Pinger never blocks delivery.** The Pinger sends compact pings to MCP,
-   channel, and PTY sinks using non-blocking channel sends. A slow consumer
-   does not delay other consumers or block the Inbox drain loop.
+7. **Pinger never blocks delivery.** Pinger sends compact pings to MCP, channel, and PTY sinks using non-blocking channel sends. Slow consumer does not delay other consumers or block Inbox drain loop.
 
-8. **Migration flag is all-or-nothing per session.** If `alerts.incident-pipeline`
-   is `false` when a session connects, that session uses the legacy `AlertHub`
-   path for its entire lifetime, even if the config file is changed mid-session.
-   The pipeline path and the legacy path are mutually exclusive for a given
-   session.
+8. **Migration flag all-or-nothing per session.** If `alerts.incident-pipeline` is `false` when session connects, that session uses legacy `AlertHub` path for entire lifetime, even if config file changed mid-session. Pipeline path and legacy path mutually exclusive for given session.
 
 ### File Ownership
 
@@ -276,17 +211,17 @@ dispatch with a normalised, deduped, priority-ordered inbox.
 
 ## Session Containment
 
-A session owns more than the processes it explicitly registered with `proc run`. The AI agent behind an `agnt run` session routinely spawns background work through non-interactive bash — `npm run dev &`, `cargo watch &`, `python manage.py runserver &` — and non-interactive bash does not enable job control. That means those jobs inherit the PTY child's process group instead of getting one of their own, and the daemon has no explicit handle on them. Without containment, session B cannot claim ports that session A's backgrounded jobs are still holding.
+Session owns more than processes explicitly registered with `proc run`. AI agent behind `agnt run` session routinely spawns background work through non-interactive bash — `npm run dev &`, `cargo watch &`, `python manage.py runserver &` — and non-interactive bash does not enable job control. So those jobs inherit PTY child's process group instead of getting own, and daemon has no explicit handle on them. Without containment, session B cannot claim ports session A's backgrounded jobs still hold.
 
 ### The Session pgid Invariant
 
-The PTY child started by `agnt run` is given its own POSIX session via `setsid` (creack/pty does this). Its PID doubles as the session pgid, and every descendant process — interactive shells, tool invocations, and backgrounded jobs spawned via `sh -c 'cmd &'` — inherits that pgid unless the descendant explicitly escapes it (see below).
+PTY child started by `agnt run` gets own POSIX session via `setsid` (creack/pty does this). Its PID doubles as session pgid, and every descendant process — interactive shells, tool invocations, backgrounded jobs spawned via `sh -c 'cmd &'` — inherits that pgid unless descendant explicitly escapes (see below).
 
-The daemon holds this invariant through three primitives:
+Daemon holds this invariant through three primitives:
 
-1. **Wire-through at registration.** The `agnt run` client captures the PTY child PID and passes it to the daemon as `SessionPGID` during `SessionRegister`. The field survives the client → protocol → hub handler → registry round trip.
-2. **Kill on cleanup.** `CleanupSessionResources` → `doCleanup` calls `killSessionPGID` **before** touching managed processes. Sends SIGTERM to the group, waits a 2s grace window, escalates to SIGKILL on any survivors. Self-exclusion protects the daemon's own PID if it ever (defensively) shares the group.
-3. **Startup orphan scan.** On `Start()`, the daemon walks `/proc` looking for pgids whose leader is dead but whose members are still alive — the "daemon crashed mid-session" case — and reaps them via the same kill primitive. UID-filtered, gated on the `session.orphan-pgid-scan` config (default on).
+1. **Wire-through at registration.** `agnt run` client captures PTY child PID, passes to daemon as `SessionPGID` during `SessionRegister`. Field survives client → protocol → hub handler → registry round trip.
+2. **Kill on cleanup.** `CleanupSessionResources` → `doCleanup` calls `killSessionPGID` **before** touching managed processes. Sends SIGTERM to group, waits 2s grace window, escalates to SIGKILL on any survivors. Self-exclusion protects daemon's own PID if it ever (defensively) shares group.
+3. **Startup orphan scan.** On `Start()`, daemon walks `/proc` looking for pgids whose leader is dead but members still alive — "daemon crashed mid-session" case — and reaps via same kill primitive. UID-filtered, gated on `session.orphan-pgid-scan` config (default on).
 
 ### What Is Caught
 
@@ -294,24 +229,24 @@ The daemon holds this invariant through three primitives:
 |----------|---------|--------------------|
 | `npm run dev &` in non-interactive bash | yes | session pgid kill on cleanup |
 | `nohup cmd &` (SIGHUP blocked) | yes | pgid kill uses SIGTERM/SIGKILL, not SIGHUP |
-| `disown %1` after backgrounding | yes | `disown` affects the shell's job table, not the pgid |
+| `disown %1` after backgrounding | yes | `disown` affects shell's job table, not pgid |
 | Managed `proc run` scripts | yes | ProcessManager path; redundant with pgid kill |
 | Leaked pgid after daemon crash | yes | startup orphan `/proc` scan |
-| Grandchildren of backgrounded jobs | yes | they inherit the pgid transitively |
+| Grandchildren of backgrounded jobs | yes | they inherit pgid transitively |
 
 ### Accepted Escape Hatches
 
-These **intentionally** escape the session pgid. They represent a conscious "I want to survive session shutdown" decision and the daemon must not try to track them:
+These **intentionally** escape session pgid. Represent conscious "I want to survive session shutdown" decision and daemon must not try to track them:
 
 | Escape | Why it escapes | Operator responsibility |
 |--------|----------------|------------------------|
-| `setsid cmd &` | Creates a new session + pgid at exec time | User explicitly asked for a detached process; they own cleanup |
-| Double-fork daemon (fork → setsid → fork → exit) | Classic Unix daemonization | Same — this is the explicit "become a daemon" pattern |
-| `systemd-run --scope`, `systemd-run --user` | Hands the process to systemd's cgroup | systemd owns the lifetime |
-| Container runtimes (`docker run -d`, `podman run -d`) | Container PID1 is the runtime, not the session | Runtime owns cleanup |
-| Processes that re-exec into a different uid | `/proc` scan filters by uid | Outside our blast radius |
+| `setsid cmd &` | Creates new session + pgid at exec time | User explicitly asked for detached process; they own cleanup |
+| Double-fork daemon (fork → setsid → fork → exit) | Classic Unix daemonization | Same — explicit "become a daemon" pattern |
+| `systemd-run --scope`, `systemd-run --user` | Hands process to systemd's cgroup | systemd owns lifetime |
+| Container runtimes (`docker run -d`, `podman run -d`) | Container PID1 is runtime, not session | Runtime owns cleanup |
+| Processes that re-exec into different uid | `/proc` scan filters by uid | Outside our blast radius |
 
-Each of these leaves a port or resource held after session shutdown, but that is the operator's explicit choice. The repro test `TestSessionContainment_SetsidEscapes` asserts that `setsid` escapes the containment — a regression to it would accidentally reap detached processes, which is worse than leaking them.
+Each leaves port or resource held after session shutdown, but that's operator's explicit choice. Repro test `TestSessionContainment_SetsidEscapes` asserts `setsid` escapes containment — regression would accidentally reap detached processes, worse than leaking them.
 
 ### File Ownership
 
@@ -328,7 +263,7 @@ Each of these leaves a port or resource held after session shutdown, but that is
 
 ### Cross-Platform Note
 
-The session pgid primitives are Unix-only (`//go:build !windows`). On Windows, Job Objects already provide equivalent cascade-kill semantics for the PTY child tree, and `SessionPGID` is always 0 — `killSessionPGID` is a no-op guarded by `pgid <= 1`. The startup orphan scan has three implementations selected by build tag:
+Session pgid primitives Unix-only (`//go:build !windows`). On Windows, Job Objects already provide equivalent cascade-kill semantics for PTY child tree, and `SessionPGID` is always 0 — `killSessionPGID` is no-op guarded by `pgid <= 1`. Startup orphan scan has three implementations selected by build tag:
 
 | Platform | File | Mechanism |
 |----------|------|-----------|
@@ -336,13 +271,13 @@ The session pgid primitives are Unix-only (`//go:build !windows`). On Windows, J
 | macOS | `internal/platform/orphanpgid_darwin.go` (`//go:build darwin`) | `sysctl` `KERN_PROC_ALL` via `unix.SysctlKinfoProcSlice` — atomic snapshot with pid/pgid/ppid/uid in one syscall |
 | Other Unix (FreeBSD, OpenBSD, etc.) | `internal/platform/orphanpgid_other.go` (`//go:build !windows && !linux && !darwin`) | Stubs return nil — no orphan detection but no false reaping either |
 
-The pure orphan-classification logic is shared via `internal/platform/orphanpgid_classify.go` (`//go:build !windows`) and exhaustively tested in `orphanpgid_classify_test.go` so the darwin code path can be verified on Linux CI without a macOS host. macOS-side verification beyond cross-compile (`GOOS=darwin go build ./...`) requires a real darwin runtime to exercise the sysctl source; the procisolation-tagged test file (`orphanpgid_unix_test.go`) is `//go:build linux && procisolation` because it exercises host-global `/proc` and `kill(2)` directly and depends on Linux PID namespaces (`unshare`) for safe execution.
+Pure orphan-classification logic shared via `internal/platform/orphanpgid_classify.go` (`//go:build !windows`) and exhaustively tested in `orphanpgid_classify_test.go` so darwin code path verifiable on Linux CI without macOS host. macOS-side verification beyond cross-compile (`GOOS=darwin go build ./...`) requires real darwin runtime to exercise sysctl source; procisolation-tagged test file (`orphanpgid_unix_test.go`) is `//go:build linux && procisolation` because it exercises host-global `/proc` and `kill(2)` directly and depends on Linux PID namespaces (`unshare`) for safe execution.
 
 ## Test startup contract
 
-Tests almost never want the heavyweight production startup — walking `/proc`, issuing `kill(2)` to whatever PID currently owns a port, replaying persisted proxy state, or spinning up the 24-hour update-check ticker. Running any of those inside a unit test either slows the suite (hundreds of ms per construction × thousands of daemon instances) or, worse, reaps unrelated host processes owned by the same uid.
+Tests almost never want heavyweight production startup — walking `/proc`, issuing `kill(2)` to whatever PID currently owns a port, replaying persisted proxy state, or spinning up 24-hour update-check ticker. Running any inside unit test either slows suite (hundreds of ms per construction × thousands of daemon instances) or, worse, reaps unrelated host processes owned by same uid.
 
-The daemon solves this with a two-entry-point split. Both entry points share the same `bootstrap()` helper, so the test path cannot drift from production:
+Daemon solves with two-entry-point split. Both entry points share same `bootstrap()` helper, so test path cannot drift from production:
 
 | Step | `Start()` (production) | `NewForTest(t, cfg)` |
 |------|------------------------|----------------------|
@@ -357,9 +292,9 @@ The daemon solves this with a two-entry-point split. Both entry points share the
 
 ### What the split guarantees
 
-- **Production `Start()` is byte-for-byte unchanged** — the original sequence is preserved via the shared `bootstrap()` helper. Reviewers who "fix" an apparent omission in `NewForTest` by pulling a production-only step back in will trip the `TestNewForTest_StartsUnder100ms` assertion (100ms budget, ~20ms observed on a laptop).
-- **No build tag is needed.** The `*testing.T` parameter is the fence — production code cannot construct a `*testing.T`, so `NewForTest` is unreachable from any non-test caller. Compilation cost of pulling in the `testing` package is negligible for the `agnt` binary.
-- **`daemontest.New` routes through `NewForTest`**, so every test that adopted the factory (iter 28, commit `dfcd2a4`) automatically gets the fast startup path. Tests that specifically exercise `cleanupOrphans`, `startupPortCleanup`, `restoreProxies`, or `startupOrphanPGIDScan` continue to call those methods directly — none of them are private to `Start()`.
+- **Production `Start()` byte-for-byte unchanged** — original sequence preserved via shared `bootstrap()` helper. Reviewers who "fix" apparent omission in `NewForTest` by pulling production-only step back in trip `TestNewForTest_StartsUnder100ms` assertion (100ms budget, ~20ms observed on laptop).
+- **No build tag needed.** `*testing.T` parameter is fence — production code cannot construct `*testing.T`, so `NewForTest` unreachable from any non-test caller. Compilation cost of pulling in `testing` package negligible for `agnt` binary.
+- **`daemontest.New` routes through `NewForTest`**, so every test adopting factory (iter 28, commit `dfcd2a4`) automatically gets fast startup path. Tests specifically exercising `cleanupOrphans`, `startupPortCleanup`, `restoreProxies`, or `startupOrphanPGIDScan` continue calling those methods directly — none private to `Start()`.
 
 ### File ownership
 

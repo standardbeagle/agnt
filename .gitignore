@@ -78,3 +78,6 @@ __pycache__/
 
 # worktrack loop state (per-clone; carries lease_holder email)
 .worktrack/
+
+# caveman:compress local backups
+*.original.md
