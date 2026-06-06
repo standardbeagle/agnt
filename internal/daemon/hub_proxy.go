@@ -11,6 +11,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/proxy"
+	"github.com/standardbeagle/agnt/internal/tunnel"
 	hubpkg "github.com/standardbeagle/go-cli-server/hub"
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
 )
@@ -247,6 +248,14 @@ func (d *Daemon) hubHandleProxyList(conn *hubpkg.Connection, cmd *hubproto.Comma
 
 	proxies := d.proxym.List()
 
+	// Index tunnels by ID (tunnel ID is conventionally the proxy ID) so the
+	// proxy UI can surface the public tunnel URL — PROXY LIST previously
+	// omitted this, so the overlay's tunnel line never lit up.
+	tunnelsByID := make(map[string]tunnel.TunnelInfo)
+	for _, t := range d.tunnelm.List() {
+		tunnelsByID[t.ID] = t
+	}
+
 	var result []map[string]interface{}
 	for _, p := range proxies {
 		proxyPath := normalizePath(p.Path)
@@ -269,6 +278,10 @@ func (d *Daemon) hubHandleProxyList(conn *hubpkg.Connection, cmd *hubproto.Comma
 		}
 		if !stats.ReadyForForwarding {
 			entry["waiting_for"] = stats.WaitingFor
+		}
+		if t, ok := tunnelsByID[p.ID]; ok {
+			entry["tunnel_url"] = t.PublicURL
+			entry["tunnel_running"] = t.State == "connected"
 		}
 		result = append(result, entry)
 	}

@@ -85,6 +85,8 @@ type proxyDTO struct {
 	WaitingFor    []string `json:"waiting_for"`
 	TunnelURL     string   `json:"tunnel_url"`
 	TunnelRunning bool     `json:"tunnel_running"`
+	Uptime        string   `json:"uptime"`
+	TotalRequests int64    `json:"total_requests"`
 	Stats         struct {
 		ErrorCount int `json:"error_count"`
 	} `json:"stats"`
@@ -101,6 +103,8 @@ func (d proxyDTO) toInfo() ProxyInfo {
 		HasErrors:     d.Stats.ErrorCount > 0,
 		TunnelURL:     d.TunnelURL,
 		TunnelRunning: d.TunnelRunning,
+		Uptime:        d.Uptime,
+		TotalRequests: d.TotalRequests,
 	}
 }
 

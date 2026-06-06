@@ -5,11 +5,33 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 )
+
+// proxyListenConflict returns the proxy's listen port (as a string) when the
+// ports inventory classifies that port as a conflict (held by an unmanaged
+// process), otherwise "". Ties the ports panel's classification to the proxy UI.
+func proxyListenConflict(proxy *ProxyInfo, ports []PortInfo) string {
+	idx := strings.LastIndex(proxy.ListenAddr, ":")
+	if idx == -1 {
+		return ""
+	}
+	portStr := proxy.ListenAddr[idx+1:]
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return ""
+	}
+	for _, pi := range ports {
+		if pi.Port == port && pi.Status == "conflict" {
+			return portStr
+		}
+	}
+	return ""
+}
 
 // ANSI escape sequences.
 const (
@@ -1491,6 +1513,34 @@ func (r *Renderer) drawProxyPanelContent(startRow, col, width, maxRows int, pane
 	if proxy.HasErrors {
 		r.moveTo(row, col)
 		r.write(fmt.Sprintf("%s%s %d errors%s", FgRed, IconWarning, proxy.ErrorCount, Reset))
+		row++
+	}
+
+	// Gate state: which dependencies the proxy is still waiting on
+	if proxy.State == "waiting_for_dependencies" && len(proxy.WaitingOn) > 0 {
+		r.moveTo(row, col)
+		r.write(fmt.Sprintf("%s%s waiting on: %s%s", FgYellow, IconWarning, strings.Join(proxy.WaitingOn, ", "), Reset))
+		row++
+	}
+
+	// Port conflict: the proxy's listen port is held by an unmanaged process
+	if cport := proxyListenConflict(proxy, status.Ports); cport != "" {
+		r.moveTo(row, col)
+		r.write(fmt.Sprintf("%s%s port %s conflict — held by another process%s", FgRed+Bold, IconWarning, cport, Reset))
+		row++
+	}
+
+	// Traffic stats: cumulative requests + uptime
+	if proxy.TotalRequests > 0 || proxy.Uptime != "" {
+		var parts []string
+		if proxy.TotalRequests > 0 {
+			parts = append(parts, fmt.Sprintf("%d reqs", proxy.TotalRequests))
+		}
+		if proxy.Uptime != "" {
+			parts = append(parts, "up "+proxy.Uptime)
+		}
+		r.moveTo(row, col)
+		r.write(FgBrightBlack + strings.Join(parts, " · ") + Reset)
 		row++
 	}
 
