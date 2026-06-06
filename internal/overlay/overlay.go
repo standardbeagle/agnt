@@ -75,6 +75,11 @@ type ProxyInfo struct {
 	// WaitingOn holds the sorted list of pending `wait-for` script
 	// names. Populated only when State is "waiting_for_dependencies".
 	WaitingOn []string
+
+	// Uptime is the daemon-formatted proxy uptime (e.g. "14m"); empty if not running.
+	Uptime string
+	// TotalRequests is the cumulative request count the proxy has forwarded.
+	TotalRequests int64
 }
 
 // ErrorInfo holds recent error information.
