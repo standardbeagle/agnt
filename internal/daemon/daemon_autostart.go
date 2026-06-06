@@ -782,6 +782,12 @@ func (d *Daemon) StartScriptExplicit(ctx context.Context, name string, scriptCfg
 	}
 
 	// Success: ProcessManager lifecycle sets StateRunning automatically.
+	cmdStr := command
+	if len(args) > 0 {
+		cmdStr = fmt.Sprintf("%s %s", command, strings.Join(args, " "))
+	}
+	d.startupLog(projectPath).Info(name, "script_started", fmt.Sprintf("started %q: %s", name, cmdStr))
+
 	// Fire on-start lifecycle hook if configured.
 	if scriptCfg.Hooks != nil && scriptCfg.Hooks.OnStart != "" {
 		runLifecycleHookAsync(scriptCfg.Hooks.OnStart, name, "start", scriptCfg, 0)
@@ -870,6 +876,7 @@ func (d *Daemon) autostartProxy(ctx context.Context, name string, proxyConfig *c
 		Path:    projectPath,
 	}:
 		debug.Log("daemon", "Queued explicit proxy %s for auto-start", name)
+		d.startupLog(projectPath).Info(name, "proxy_starting", fmt.Sprintf("starting proxy %q → %s", name, targetURL))
 	default:
 		debug.Warn("daemon", "Proxy event channel full, cannot queue proxy %s for auto-start", name)
 		d.startupLog(projectPath).Warn(name, "proxy_creation_failed",

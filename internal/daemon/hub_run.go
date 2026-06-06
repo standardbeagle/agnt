@@ -158,6 +158,14 @@ func (d *Daemon) registerAgntCommands() {
 		Handler:     d.hubHandleIncidents,
 	})
 
+	// PORTS command - listening-port inventory + orphan pgid management
+	d.hub.RegisterCommand(hubpkg.CommandDefinition{
+		Verb:        protocol.VerbPorts,
+		SubVerbs:    []string{protocol.SubVerbQuery, protocol.SubVerbCleanOrphans},
+		Description: "List listening ports and manage orphaned process groups",
+		Handler:     d.hubHandlePorts,
+	})
+
 	// SCRIPT command
 	d.hub.RegisterCommand(hubpkg.CommandDefinition{
 		Verb:        "SCRIPT",

@@ -23,6 +23,7 @@ const (
 	VerbStreamEvents = "STREAM-EVENTS" // Long-lived event stream
 	VerbHook         = "HOOK"          // Claude Code hook dispatcher enqueue
 	VerbIncidents    = "INCIDENTS"     // Incident inbox query + mark-read
+	VerbPorts        = "PORTS"         // Listening-port inventory + orphan pgid management
 )
 
 // Agnt-specific sub-verbs (beyond those in go-cli-server).
@@ -46,21 +47,22 @@ const (
 	SubVerbTasks         = "TASKS"
 	SubVerbFind          = "FIND"
 	SubVerbAttach        = "ATTACH"
-	SubVerbURL           = "URL"         // Report detected URL from agnt run session
-	SubVerbGetAll        = "GET-ALL"     // Get all entries in a scope
-	SubVerbDelete        = "DELETE"      // Delete an entry from a scope
-	SubVerbRunGroup      = "RUN-GROUP"   // Launch a multi-process startup group with depends_on ordering
-	SubVerbProcess       = "PROCESS"     // Process a single automation task
-	SubVerbBatch         = "BATCH"       // Process multiple automation tasks
-	SubVerbRestart       = "RESTART"     // Restart a process or proxy
-	SubVerbScreenshot    = "SCREENSHOT"  // Take screenshot in automation session
-	SubVerbNavigate      = "NAVIGATE"    // Navigate to URL in automation session
-	SubVerbEvaluate      = "EVALUATE"    // Evaluate JavaScript in automation session
-	SubVerbReport        = "REPORT"      // Report alert matches from agnt run
-	SubVerbStartupLog    = "STARTUP-LOG" // Query startup log (successes and failures)
-	SubVerbClearPorts    = "CLEAR-PORTS" // Kill port blockers and resume autostart
-	SubVerbContinue      = "CONTINUE"    // Resume autostart without killing blockers
-	SubVerbAutostartRun  = "RUN"         // Run autostart from MCP InitializedHandler (non-interactive)
+	SubVerbURL           = "URL"           // Report detected URL from agnt run session
+	SubVerbGetAll        = "GET-ALL"       // Get all entries in a scope
+	SubVerbDelete        = "DELETE"        // Delete an entry from a scope
+	SubVerbRunGroup      = "RUN-GROUP"     // Launch a multi-process startup group with depends_on ordering
+	SubVerbProcess       = "PROCESS"       // Process a single automation task
+	SubVerbBatch         = "BATCH"         // Process multiple automation tasks
+	SubVerbRestart       = "RESTART"       // Restart a process or proxy
+	SubVerbScreenshot    = "SCREENSHOT"    // Take screenshot in automation session
+	SubVerbNavigate      = "NAVIGATE"      // Navigate to URL in automation session
+	SubVerbEvaluate      = "EVALUATE"      // Evaluate JavaScript in automation session
+	SubVerbReport        = "REPORT"        // Report alert matches from agnt run
+	SubVerbStartupLog    = "STARTUP-LOG"   // Query startup log (successes and failures)
+	SubVerbClearPorts    = "CLEAR-PORTS"   // Kill port blockers and resume autostart
+	SubVerbContinue      = "CONTINUE"      // Resume autostart without killing blockers
+	SubVerbAutostartRun  = "RUN"           // Run autostart from MCP InitializedHandler (non-interactive)
+	SubVerbCleanOrphans  = "CLEAN-ORPHANS" // Reap orphaned process groups (PORTS verb)
 )
 
 // ProxyStartConfig represents configuration for a PROXY START command.

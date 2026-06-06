@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -509,6 +510,182 @@ func parseTasklistCSV(data []byte) map[int]string {
 		out[pid] = name
 	}
 	return out
+}
+
+// PortOwner is a single listening TCP port and the process that owns it.
+// PID/Name are zero/empty when the owner could not be resolved (e.g. a socket
+// owned by another uid whose /proc/<pid>/fd we cannot read). Windows is true
+// for owners surfaced from the WSL netstat.exe fallback.
+type PortOwner struct {
+	Port    int    `json:"port"`
+	PID     int    `json:"pid"`
+	Name    string `json:"name"`
+	Windows bool   `json:"windows"`
+}
+
+// ListListeningPorts enumerates every TCP port in the LISTEN state along with
+// its owning process. On Linux it reads /proc/net/tcp{,6} once for the port set
+// and walks /proc/*/fd once to attribute owners; on macOS it shells to lsof.
+// Under WSL it additionally folds in Windows-side listeners (netstat.exe) for
+// ports not already owned by a Linux process — the same visibility contract as
+// FindPIDsByPort. Returns ports sorted ascending. Best-effort: returns whatever
+// it can read, nil on total failure.
+func ListListeningPorts(ctx context.Context) []PortOwner {
+	if runtime.GOOS == "linux" {
+		return listListeningPortsProc(ctx)
+	}
+	return listListeningPortsLsof(ctx)
+}
+
+// listListeningPortsProc is the Linux implementation of ListListeningPorts.
+func listListeningPortsProc(ctx context.Context) []PortOwner {
+	// inode -> port for every LISTEN socket.
+	inodePort := make(map[string]int)
+	for _, path := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(data), "\n")[1:] {
+			inode, port, ok := parseProcNetTCPLine(line)
+			if !ok {
+				continue
+			}
+			inodePort[inode] = port
+		}
+	}
+
+	// Single /proc/*/fd walk to map ports to owning PIDs.
+	portPID := make(map[int]int)
+	if len(inodePort) > 0 {
+		entries, err := os.ReadDir("/proc")
+		if err == nil {
+			for _, entry := range entries {
+				if !entry.IsDir() {
+					continue
+				}
+				pid, err := strconv.Atoi(entry.Name())
+				if err != nil {
+					continue
+				}
+				fdDir := filepath.Join("/proc", entry.Name(), "fd")
+				fds, err := os.ReadDir(fdDir)
+				if err != nil {
+					continue
+				}
+				for _, fd := range fds {
+					link, err := os.Readlink(filepath.Join(fdDir, fd.Name()))
+					if err != nil || !strings.HasPrefix(link, "socket:[") {
+						continue
+					}
+					inode := link[8 : len(link)-1]
+					if port, ok := inodePort[inode]; ok {
+						if _, seen := portPID[port]; !seen {
+							portPID[port] = pid
+						}
+					}
+				}
+			}
+		}
+	}
+
+	seenPort := make(map[int]bool, len(inodePort))
+	var out []PortOwner
+	for _, port := range inodePort {
+		if seenPort[port] {
+			continue
+		}
+		seenPort[port] = true
+		po := PortOwner{Port: port}
+		if pid, ok := portPID[port]; ok {
+			po.PID = pid
+			po.Name = procNameLinux(pid)
+		}
+		out = append(out, po)
+	}
+
+	// NOTE: WSL Windows-side enumeration (netstat.exe) is deliberately NOT done
+	// here. ListListeningPorts is polled on the overview's 2s status tick, and
+	// shelling to netstat.exe + tasklist.exe every tick stalled the WSL VM
+	// (~100-150ms each). Windows-side listeners are host noise the overview
+	// hides by default anyway; conflict detection on declared ports still
+	// reaches Windows owners via FindPIDsByPort's on-demand fallback.
+	sortPortOwners(out)
+	return out
+}
+
+// parseNetstatExeAllListeners parses `netstat.exe -ano` output into one
+// PortOwner per LISTENING TCP port (deduped across the IPv4/IPv6 rows a single
+// process holds). Malformed rows are dropped.
+func parseNetstatExeAllListeners(output []byte) []PortOwner {
+	var out []PortOwner
+	seen := make(map[int]bool)
+	for _, line := range strings.Split(string(output), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "TCP") || !strings.Contains(line, "LISTENING") {
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 5 {
+			continue
+		}
+		idx := strings.LastIndex(fields[1], ":")
+		if idx < 0 {
+			continue
+		}
+		port, err := strconv.Atoi(fields[1][idx+1:])
+		if err != nil || port <= 0 || port > 65535 {
+			continue
+		}
+		pid, err := strconv.Atoi(fields[4])
+		if err != nil || pid <= 0 {
+			continue
+		}
+		if seen[port] {
+			continue
+		}
+		seen[port] = true
+		out = append(out, PortOwner{Port: port, PID: pid, Windows: true})
+	}
+	return out
+}
+
+// listListeningPortsLsof is the macOS implementation of ListListeningPorts.
+func listListeningPortsLsof(ctx context.Context) []PortOwner {
+	output, err := exec.CommandContext(ctx, "lsof", "-nP", "-iTCP", "-sTCP:LISTEN").Output()
+	if err != nil {
+		return nil
+	}
+	portRe := regexp.MustCompile(`:(\d+)\s+\(LISTEN\)`)
+	seen := make(map[int]bool)
+	var out []PortOwner
+	for _, line := range strings.Split(string(output), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		m := portRe.FindStringSubmatch(line)
+		if len(m) < 2 {
+			continue
+		}
+		port, err := strconv.Atoi(m[1])
+		if err != nil || port <= 0 || seen[port] {
+			continue
+		}
+		pid, err := strconv.Atoi(fields[1])
+		if err != nil {
+			continue
+		}
+		seen[port] = true
+		out = append(out, PortOwner{Port: port, PID: pid, Name: fields[0]})
+	}
+	sortPortOwners(out)
+	return out
+}
+
+// sortPortOwners orders owners by ascending port for stable display.
+func sortPortOwners(owners []PortOwner) {
+	sort.Slice(owners, func(i, j int) bool { return owners[i].Port < owners[j].Port })
 }
 
 // findPIDsByPortLsof uses lsof to find PIDs on macOS.
