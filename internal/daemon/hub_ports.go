@@ -20,22 +20,31 @@ import (
 // The /proc/*/fd walk is non-trivial on a busy host; a short TTL keeps rapid
 // PORTS QUERY calls cheap without making the inventory noticeably stale.
 var portsCache struct {
-	mu     sync.Mutex
-	at     time.Time
-	owners []config.PortOwner
+	mu      sync.Mutex
+	at      time.Time
+	owners  []config.PortOwner
+	managed map[int]bool
+	orphans []platform.OrphanPGID
 }
 
 const portsCacheTTL = 4 * time.Second
 
-func cachedListeningPorts(ctx context.Context) []config.PortOwner {
+// cachedPortsData returns the listening-port inventory, managed-PID set, and
+// orphan process groups, refreshed together under one 4s TTL. All three derive
+// from full host scans (config.ListListeningPorts /proc walk, collectManagedPIDs
+// platform.Scan + parent-chain walk, ScanOrphanedPGIDs /proc walk) that the
+// overview's 2s status tick would otherwise pay on every PORTS QUERY.
+func (d *Daemon) cachedPortsData(ctx context.Context) ([]config.PortOwner, map[int]bool, []platform.OrphanPGID) {
 	portsCache.mu.Lock()
 	defer portsCache.mu.Unlock()
 	if !portsCache.at.IsZero() && time.Since(portsCache.at) < portsCacheTTL {
-		return portsCache.owners
+		return portsCache.owners, portsCache.managed, portsCache.orphans
 	}
 	portsCache.owners = config.ListListeningPorts(ctx)
+	portsCache.managed = d.collectManagedPIDs()
+	portsCache.orphans = platform.ScanOrphanedPGIDs(syscall.Getuid(), d.orphanScanExcludes())
 	portsCache.at = time.Now()
-	return portsCache.owners
+	return portsCache.owners, portsCache.managed, portsCache.orphans
 }
 
 // systemProcNames are OS/infra daemons whose listening ports are noise in a
@@ -117,8 +126,7 @@ func (d *Daemon) hubHandlePortsQuery(ctx context.Context, conn *hubpkg.Connectio
 		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
 	}
 
-	owners := cachedListeningPorts(ctx)
-	managed := d.collectManagedPIDs()
+	owners, managed, orphanPGIDs := d.cachedPortsData(ctx)
 	declared := d.declaredPorts(projectPath)
 
 	ports := make([]map[string]interface{}, 0, len(owners))
@@ -141,7 +149,7 @@ func (d *Daemon) hubHandlePortsQuery(ctx context.Context, conn *hubpkg.Connectio
 	}
 
 	orphans := make([]map[string]interface{}, 0)
-	for _, orph := range platform.ScanOrphanedPGIDs(syscall.Getuid(), d.orphanScanExcludes()) {
+	for _, orph := range orphanPGIDs {
 		orphans = append(orphans, map[string]interface{}{
 			"pgid":    orph.PGID,
 			"members": orph.Members,

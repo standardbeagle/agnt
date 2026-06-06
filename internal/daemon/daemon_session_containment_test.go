@@ -87,6 +87,12 @@ func TestMain(m *testing.M) {
 		// IO wait until the child exits, which happens asynchronously after
 		// the pgid kill. Not a real leak; child exits with the test.
 		goleak.IgnoreAnyFunction("os/exec.(*Cmd).writerDescriptor.func1"),
+		// exec.CommandContext spawns a watchCtx goroutine that lives until the
+		// subprocess exits or ctx is cancelled. WSL Windows-interop execs
+		// (tasklist.exe/netstat.exe, 3s timeout) can leave it mid-shutdown at
+		// package teardown under -race. Stdlib-managed, exits with the cmd —
+		// not a real leak; same class as writerDescriptor above.
+		goleak.IgnoreAnyFunction("os/exec.(*Cmd).watchCtx"),
 	)
 }
 

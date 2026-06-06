@@ -150,6 +150,14 @@ func (d *Daemon) handleURLDetected(event ProxyEvent) {
 			matched, err := regexp.MatchString(proxyConfig.URLPattern, event.URL)
 			if err != nil {
 				debug.Warn("daemon", "Invalid url-pattern regex for proxy %s: %v", proxyName, err)
+				d.startupErrorStore.Add(&StartupLogEntry{
+					ProcessID:  makeProcessID(projectPath, proxyName),
+					ScriptName: proxyName,
+					Level:      "warning",
+					EventType:  "proxy_url_pattern_invalid",
+					Message:    fmt.Sprintf("invalid url-pattern %q for proxy %s: %v — proxy not created", proxyConfig.URLPattern, proxyName, err),
+					Timestamp:  time.Now(),
+				})
 				continue
 			}
 			if !matched {
