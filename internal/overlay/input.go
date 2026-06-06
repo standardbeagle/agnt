@@ -67,6 +67,12 @@ type ScriptController interface {
 	KillPort(port int) error
 	// CleanOrphans reaps orphaned process groups (leader dead, members alive).
 	CleanOrphans() error
+	// RestartProxy restarts a reverse proxy by ID.
+	RestartProxy(id string) error
+	// StopProxy stops a reverse proxy by ID.
+	StopProxy(id string) error
+	// StopTunnel stops a tunnel by ID.
+	StopTunnel(id string) error
 }
 
 // StatusSummarizer is an interface for summarizing system status.
@@ -764,6 +770,18 @@ func (r *InputRouter) dispatchPaletteCommand(c PaletteCommand, args string) {
 		}
 	case "kill-orphans":
 		_ = r.scriptController.CleanOrphans()
+	case "restart-proxy":
+		if args != "" {
+			_ = r.scriptController.RestartProxy(args)
+		}
+	case "stop-proxy":
+		if args != "" {
+			_ = r.scriptController.StopProxy(args)
+		}
+	case "stop-tunnel":
+		if args != "" {
+			_ = r.scriptController.StopTunnel(args)
+		}
 	case "run":
 		if args != "" {
 			_ = r.scriptController.RunCommand(args)

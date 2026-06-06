@@ -582,3 +582,21 @@ func (c *DaemonScriptController) CleanOrphans() error {
 	_, err := c.conn.RequestJSON(protocol.VerbPorts, map[string]interface{}{"directory": c.projectPath}, protocol.SubVerbCleanOrphans)
 	return err
 }
+
+// RestartProxy restarts a reverse proxy by ID.
+func (c *DaemonScriptController) RestartProxy(id string) error {
+	_, err := c.conn.RequestJSON(protocol.VerbProxy, map[string]interface{}{"directory": c.projectPath}, protocol.SubVerbRestart, id)
+	return err
+}
+
+// StopProxy stops a reverse proxy by ID.
+func (c *DaemonScriptController) StopProxy(id string) error {
+	_, err := c.conn.RequestJSON(protocol.VerbProxy, map[string]interface{}{"directory": c.projectPath}, protocol.SubVerbStop, id)
+	return err
+}
+
+// StopTunnel stops a tunnel by ID.
+func (c *DaemonScriptController) StopTunnel(id string) error {
+	_, err := c.conn.RequestJSON(protocol.VerbTunnel, map[string]interface{}{"directory": c.projectPath}, protocol.SubVerbStop, id)
+	return err
+}
