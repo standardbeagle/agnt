@@ -1,5 +1,37 @@
 # Audit System Overhaul Tasks
 
+> ## Implementation Status — 2026-06-01
+>
+> **Tasks 1–8 (browser audit scripts + indicator UI): shipped.** The
+> per-audit scripts live split out under `internal/proxy/scripts/`
+> (`audit-css.js`, `audit-dom.js`, `audit-performance.js`,
+> `audit-quality.js`, `audit-security.js`, `accessibility.js`) and emit
+> the action-oriented schema (`summary` / `score` / `grade` / `fixable` /
+> `informational` / `actions` / `critical` / `hotspots` /
+> `coreWebVitals`). Stable finding IDs landed (`audit_ids_test.go`). The
+> unified `auditAll` (Task 7) is in `audit-quality.js:723`, exported via
+> `api.js`. `formatAuditSummary` (Task 8) is wired in `indicator.js`.
+>
+> **Task 9 (automation layer): partial.** Shipped: `internal/automation/`
+> with `processor.go` (`Process` / `ProcessBatch` / `Stats` / `Close`),
+> `tasks.go` (5 task types), `prompts.go`; the `AUTOMATE` protocol verb
+> with `PROCESS` + `BATCH` sub-verbs (`internal/daemon/hub_automate.go`,
+> wired at `hub_run.go:142`); per-task `MaxBudgetUSD` in `ProcessorConfig`
+> and cost rollup in `ProcessorStats.TotalCostUSD`; unit tests.
+>
+> **Task 9 outstanding:**
+> - **MCP tool exposure** (`internal/tools/automate.go`) — ABSENT. Agents
+>   cannot call `AUTOMATE` over MCP; only the daemon-internal verb exists.
+> - **Daily `BudgetTracker`** (daily-limit / `RemainingBudget`) — ABSENT.
+>   Only a per-task ceiling is enforced; no cross-task daily cap.
+> - **KDL config** (`automation { … }` block) — ABSENT.
+> - **Worker `Pool` type** — intentionally dropped; `ProcessBatch` covers
+>   concurrent processing, so `pool.go` is not needed. (Plan's Pool
+>   section below is superseded.)
+>
+> The checkboxes throughout this doc reflect the original plan, not
+> current state — use this header as the authority.
+
 ## Problem Statement
 
 When AI agents run audits through the agnt UI, they:

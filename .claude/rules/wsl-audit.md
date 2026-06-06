@@ -22,26 +22,30 @@ Existing `IsWSL()` callers (pre-audit baseline): 2.
 - `internal/daemon/duplicate_scanner.go:174` — appends `ScanWindows()` results to native scan
 - `internal/platform/process_unix.go:142` (`ScanWindows` self-guard)
 
-`ShouldUseWindowsShell()` referenced in `CLAUDE.md` and
-`.claude/rules/config-contracts.md` does not exist in codebase. Both
-docs aspirational at time of writing.
+> **Update 2026-06-01:** `ShouldUseWindowsShell()` — referenced
+> aspirationally by `.claude/rules/config-contracts.md` and
+> `daemon-architecture.md` when this audit was first written — now exists
+> at `internal/platform/process_unix.go:53` (Windows stub in
+> `process_windows.go:85`) and is consumed by `ResolveShell`. See the
+> "Fixes landed since the audit" section below; the verdicts in the
+> classification table reflect post-fix reality.
 
 ## Classification
 
 | Site | File | OS-level decision | WSL-aware? | Verdict |
 |------|------|-------------------|-----------|---------|
 | `FindPIDsByPort` | `internal/config/portdetect_unix.go:117` | `/proc/net/tcp{,6}` for port→inode mapping | NO — Linux ports only | **FIXED inline** — adds `netstat.exe` fallback when `IsWSL()` and Linux scan returns 0 PIDs |
-| `detectPortsForPID` | `internal/config/portdetect_unix.go:21` | `/proc/<pid>/fd` socket inode walk | NO — only sees Linux PIDs | Sub-task filed (low priority — callers always pass PID we already manage, Linux-side by construction) |
-| `ProcessNameByPID` | `internal/config/portdetect_unix.go:200` | `/proc/<pid>/comm` | NO — silently returns "" for Windows PIDs | Sub-task filed (medium priority — `doctor.go` shows blank rogue process names on WSL) |
-| `directChildren` | `internal/daemon/doctor.go:521` | `/proc/<pid>/task/<pid>/children` | NO — Linux PIDs only | Accepted limitation: descendant tracking only meaningful for our managed processes, always Linux-side |
+| `detectPortsForPID` | `internal/config/portdetect_unix.go:21` | `/proc/<pid>/fd` socket inode walk | NO — only sees Linux PIDs | Sub-task filed (low priority — callers always pass a PID we already manage, which is Linux-side by construction) |
+| `ProcessNameByPID` / `ProcessNamesByPIDs` | `internal/config/portdetect_unix.go:336,387` | `/proc/<pid>/comm` | YES | **FIXED** — falls back to a batched `tasklist.exe` resolve for `/proc` misses on WSL (`tasklistResolve`); `ProcessNamesByPIDs` coalesces a whole PID set into one `tasklist.exe` call |
+| `directChildren` | `internal/daemon/doctor.go:521` | `/proc/<pid>/task/<pid>/children` | NO — Linux PIDs only | Accepted limitation: descendant tracking is only meaningful for our managed processes which are always Linux-side |
 | `findDuplicates` | `internal/daemon/duplicate_scanner.go:174` | `platform.Scan()` + `platform.ScanWindows()` | YES — already correct | Reference impl |
-| `pidAlive` | `internal/daemon/doctor_unix.go:8` | `kill(pid, 0)` | Partial — works for Linux PIDs only; cannot probe Windows PIDs from WSL | Accepted limitation: `pidAlive` called on PIDs we registered (Linux side). Windows PID never reaches this path |
-| `ScriptConfig.ResolveShell` | `internal/config/agnt.go:272` | Picks `cmd.exe` on `runtime.GOOS == "windows"`, else `sh` | NO — WSL with Windows-path script (`C:\Users\...\foo.cmd`) gets `sh -c` and silently fails | **Sub-task filed** (high priority — affects mixed-fs WSL projects) |
-| `platformShell` | `internal/overlay/status.go:644` | Same as `ResolveShell` | NO | Sub-task filed (low priority — overlay shell launches always developer-initiated, easier to work around) |
-| `cleanupStaleFiles` | `internal/daemon/upgrade.go:242` | Windows PID file path layout | NO — but socket path set by caller, so WSL using Windows-path socket = user's choice | Accepted limitation |
-| `normalizePath` (3 sites) | `hub_helpers.go:63`, `session.go:332`, `client.go` | Lowercase paths on Windows for case-insensitive compare | Partial — WSL with Windows-path projects (`/mnt/c/Users/...`) still uses case-sensitive comparison | Accepted limitation: `/mnt/c/...` = WSL canonical form, Linux paths case-sensitive even on NTFS via 9P |
-| `ResolveShell` `runtime.GOOS == "windows"` default | `internal/config/agnt.go:295` | Same gap as above | NO | Covered by ResolveShell sub-task |
-| `internal/browser/browser.go:164` | `internal/browser/browser.go` | Picks browser launcher; `darwin` uses `open` | N/A — WSL doesn't ship `open`; user expected to set `BROWSER` | Not applicable |
+| `pidAlive` | `internal/daemon/doctor_unix.go:8` | `kill(pid, 0)` | Partial — works for Linux PIDs only; cannot probe Windows PIDs from WSL | Accepted limitation: `pidAlive` is called on PIDs we registered ourselves (Linux side). A Windows PID never reaches this path |
+| `ScriptConfig.ResolveShell` | `internal/config/agnt.go:315` | Picks `cmd.exe` when `ShouldUseWindowsShell(cwd\|\|run)`, then on `runtime.GOOS == "windows"`, else `sh` | YES | **FIXED** — consults `platform.ShouldUseWindowsShell` first, so a WSL session with a Windows-path `run`/`cwd` gets `cmd.exe /c` |
+| `platformShell` | `internal/overlay/status.go:624` | Same as `ResolveShell` | NO | Sub-task open (low priority — overlay shell launches are always developer-initiated, easier to work around) |
+| `cleanupStaleFiles` | `internal/daemon/upgrade.go:242` | Windows PID file path layout | NO — but socket path is set by caller, so WSL using a Windows-path socket is the user's choice | Accepted limitation |
+| `normalizePath` (3 sites) | `hub_helpers.go:63`, `session.go:332`, `client.go` | Lowercase paths on Windows for case-insensitive compare | Partial — WSL with Windows-path projects (`/mnt/c/Users/...`) still uses case-sensitive comparison | Accepted limitation: `/mnt/c/...` is the WSL canonical form, and Linux paths are case-sensitive even when they live on NTFS via 9P |
+| `ResolveShell` `runtime.GOOS == "windows"` default | `internal/config/agnt.go:347` | Final fallback after the `ShouldUseWindowsShell` check | YES | **FIXED** — see `ResolveShell` row above |
+| `internal/browser/browser.go:164` | `internal/browser/browser.go` | Picks browser launcher; `darwin` uses `open` | N/A — WSL doesn't ship `open`; user is expected to set `BROWSER` | Not applicable |
 | `internal/chromedp/session.go:323` | Chrome devtools URL | `darwin` uses `osascript` | N/A | Not applicable |
 | `internal/daemon/upgrade.go:242` | PID file path layout | Windows-only branch | N/A — WSL uses Linux socket layout | Not applicable |
 | `cmd/agnt/upgrade.go:136,253` | self-upgrade binary swap | Windows-only branch | N/A — WSL uses Linux self-upgrade path | Not applicable |
@@ -50,46 +54,49 @@ docs aspirational at time of writing.
 | `internal/daemon/daemon_autostart.go:869` | Calls `FindPIDsByPort` | Inherits | YES — covered by inline fix | Covered by inline fix |
 | `internal/daemon/daemon_shutdown.go:140` | Calls `FindPIDsByPort` | Inherits | YES — covered by inline fix | Covered by inline fix |
 | `internal/daemon/hub_helpers.go:118` | Calls `FindPIDsByPort` | Inherits | YES — covered by inline fix | Covered by inline fix |
-| `internal/daemon/doctor.go:176` | Calls `FindPIDsByPort` to attribute port owners | Inherits — but display still says "Linux PID" | Partial — gets PID from netstat.exe but rogue-process display path doesn't know to call `tasklist.exe` for name | Sub-task filed (inline fix delivers PID; display path = follow-up) |
+| `internal/daemon/doctor.go:209` | Calls `FindPIDsByPort` to attribute port owners, then `ProcessNamesByPIDs` for names | Inherits the netstat.exe PID + tasklist.exe name | YES | **FIXED** — port-conflict report now batches all rogue PIDs through `config.ProcessNamesByPIDs`, surfacing Windows-side process names via `tasklist.exe` |
 
-## Inline fix landed this iteration
+## Fixes landed since the audit
 
-**File:** `internal/config/portdetect_unix.go`
+The first iteration delivered the `FindPIDsByPort` → `netstat.exe -ano`
+fallback (fires only when `platform.IsWSL()` and the `/proc/net/tcp{,6}`
+scan returned zero PIDs). Subsequent iterations closed four more of the
+filed sub-tasks. Net WSL surface as of 2026-06-01:
 
-`FindPIDsByPort` now falls back to `netstat.exe -ano` when:
-1. `platform.IsWSL()` returns true, AND
-2. `/proc/net/tcp{,6}` scan returned zero PIDs
+| Capability | File | Mechanism |
+|------------|------|-----------|
+| Port→PID for Windows-side listeners | `internal/config/portdetect_unix.go` | `FindPIDsByPort` falls back to `netstat.exe -ano` when the `/proc` scan is empty |
+| PID→name for Windows-side PIDs | `internal/config/portdetect_unix.go:336,387` | `ProcessNameByPID` / `ProcessNamesByPIDs` fall back to a batched `tasklist.exe` resolve for `/proc` misses |
+| Kill Windows-side rogue processes | `internal/platform/killwindowspid_unix.go:36` | `KillWindowsPID` shells to `taskkill.exe /PID /T /F`; called by port preflight + shutdown cleanup |
+| Windows-path script shell selection | `internal/config/agnt.go:315` | `ResolveShell` consults `platform.ShouldUseWindowsShell(cwd\|\|run)` and returns `cmd.exe /c` |
+| Doctor port-conflict names | `internal/daemon/doctor.go:209` | Batches all rogue PIDs through `config.ProcessNamesByPIDs` so the report shows Windows process names |
 
-Minimum viable WSL-awareness expansion delivering acceptance
-criterion: daemon-side port preflight, autostart cleanup,
-shutdown cleanup, and doctor command can now see Windows-side process
-holding the port they want to claim. Still can't kill it (needs
-`taskkill.exe` follow-up — sub-task filed), but visibility
-gap closed and detection no longer silently no-ops.
+Why the `netstat.exe` fallback is gated rather than always-also-scan: the
+Linux-side path is hot (every autostart, preflight, shutdown) and
+`netstat.exe` shells out, parses CSV, and blocks for ~50-150 ms. Running
+it on every port lookup would dominate startup latency for the 99% case
+where the owner is a Linux process. Falling back only when the Linux scan
+is empty preserves the fast path and surfaces Windows-side owners exactly
+when our default scan saw nothing. `tasklist.exe` resolution follows the
+same discipline — one batched call per `/proc`-miss set, not per PID.
 
-Why fallback rather than always-also-scan: Linux-side path hot
-(every autostart, preflight, shutdown) and `netstat.exe`
-shells out, parses CSV, blocks ~50-150 ms. Running it on every
-port lookup would dominate startup latency for 99% case where
-port owner = Linux process. Falling back only when Linux scan
-empty preserves fast path and surfaces Windows-side owners exactly
-when needed: when default scan saw nothing.
+## Sub-tasks still open (parent: 5YgALr79bfhf, tag: `wsl-followup`)
 
-## Sub-tasks filed (parent: 5YgALr79bfhf, tag: `wsl-followup`)
+Closed by the iterations above: `ResolveShell` cmd.exe selection
+(+`ShouldUseWindowsShell` helper), doctor rogue-process names,
+`ProcessNameByPID` tasklist fallback, and `taskkill.exe` kill support.
 
-1. `ResolveShell()` should pick `cmd.exe /c` for Windows-path scripts on
-   WSL — needs `ShouldUseWindowsShell(path)` helper that
-   `.claude/rules/config-contracts.md` already references but doesn't
-   exist
-2. Doctor command rogue-process display should call `tasklist.exe` for
-   names when PID came from `netstat.exe` on WSL
-3. `detectPortsForPID` should also use `netstat.exe` when input PID
-   unknown to `/proc` and on WSL — currently silently returns
-   nil for any Windows-side PID
-4. `ProcessNameByPID` should fall back to `tasklist.exe` lookup for
-   Windows-side PIDs on WSL — currently silently returns "" for them
-5. `internal/overlay/status.go::platformShell` should use same
-   `ShouldUseWindowsShell(path)` helper
+Remaining (both low priority):
+
+1. `detectPortsForPID` should also use `netstat.exe` when the input PID
+   is unknown to `/proc` and we're on WSL — currently routes only through
+   `detectPortsForPIDProc` (Linux) / `detectPortsForPIDLsof` and returns
+   nil for any Windows-side PID. Low priority: callers always pass a PID
+   we already manage, which is Linux-side by construction.
+2. `internal/overlay/status.go:platformShell` should use the same
+   `ShouldUseWindowsShell(path)` helper instead of gating on raw
+   `runtime.GOOS == "windows"`. Low priority: overlay shell launches are
+   developer-initiated and easy to work around.
 
 ## Accepted escape hatches
 
