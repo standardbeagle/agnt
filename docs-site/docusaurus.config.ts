@@ -22,14 +22,12 @@ const config: Config = {
   deploymentBranch: 'gh-pages',
 
   onBrokenLinks: 'throw',
-  onBrokenMarkdownLinks: 'warn',
+  markdown: {
+    hooks: {
+      onBrokenMarkdownLinks: 'warn',
+    },
+  },
 
-  metadata: [
-    {name: 'keywords', content: 'MCP server, browser debugging, AI coding agent, Claude Code, Cursor, Windsurf, frontend debugging, error tracking, DOM inspection, screenshots'},
-    {name: 'og:type', content: 'website'},
-    {name: 'og:image', content: 'https://standardbeagle.github.io/agnt/img/docusaurus-social-card.jpg'},
-    {name: 'twitter:card', content: 'summary_large_image'},
-  ],
   headTags: [
     {
       tagName: 'script',
@@ -79,6 +77,12 @@ const config: Config = {
   ],
 
   themeConfig: {
+    metadata: [
+      {name: 'keywords', content: 'MCP server, browser debugging, AI coding agent, Claude Code, Cursor, Windsurf, frontend debugging, error tracking, DOM inspection, screenshots'},
+      {name: 'og:type', content: 'website'},
+      {name: 'og:image', content: 'https://standardbeagle.github.io/agnt/img/docusaurus-social-card.jpg'},
+      {name: 'twitter:card', content: 'summary_large_image'},
+    ],
     colorMode: {
       defaultMode: 'dark',
       respectPrefersColorScheme: true,
