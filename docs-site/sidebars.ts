@@ -78,6 +78,16 @@ const sidebars: SidebarsConfig = {
           items: [
             'api/frontend/layout-robustness',
             'api/frontend/quality-auditing',
+          ],
+        },
+        {
+          type: 'category',
+          label: 'Interactive Modes',
+          collapsed: true,
+          items: [
+            'api/frontend/indicator',
+            'api/frontend/sketch-mode',
+            'api/frontend/design-mode',
             'api/frontend/responsive-mode',
           ],
         },
