@@ -338,3 +338,30 @@ func TestEnterExitAltScreen_ProducesOutput(t *testing.T) {
 	output = buf.String()
 	assert.Contains(t, output, ExitAltScreen)
 }
+
+func TestDrawOverview_NoticeBanner(t *testing.T) {
+	panels := []PanelItem{{Type: "overview", Label: "overview"}}
+	render := func(status Status) string {
+		var buf bytes.Buffer
+		r := NewRenderer(&buf, 80, 24)
+		r.DrawPanelView(panels, 0, status, 0, false, "", 0, false, OverviewActions{})
+		return buf.String()
+	}
+
+	withNotice := Status{
+		DaemonConnected: ConnectionConnected,
+		Notices: []NoticeInfo{{
+			ID: "proxy:space-f4a4:dev", Domain: "proxy", Severity: "error",
+			Resource: "dev", Summary: `proxy "dev" not created`,
+			Detail:      "binding to 0.0.0.0 exposes the proxy to the network",
+			Remediation: "Add allow-external true to the proxy block in .agnt.kdl",
+		}},
+	}
+	out := render(withNotice)
+	assert.Contains(t, out, `proxy "dev" not created`, "banner shows the summary")
+	assert.Contains(t, out, "allow-external", "banner shows the remediation")
+	assert.Contains(t, out, "dismiss", "banner shows the dismiss hint")
+
+	clean := render(Status{DaemonConnected: ConnectionConnected})
+	assert.NotContains(t, clean, "dismiss", "no banner when there are no notices")
+}

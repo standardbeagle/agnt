@@ -152,6 +152,31 @@ func (d startupLogDTO) toInfo() StartupLogEntry {
 	}
 }
 
+// noticeDTO is the wire shape of a daemon Notice (ALERTS STARTUP-LOG response).
+type noticeDTO struct {
+	ID          string `json:"id"`
+	Domain      string `json:"domain"`
+	Severity    string `json:"severity"`
+	Resource    string `json:"resource"`
+	Summary     string `json:"summary"`
+	Detail      string `json:"detail"`
+	Remediation string `json:"remediation"`
+	EventType   string `json:"event_type"`
+}
+
+func (d noticeDTO) toInfo() NoticeInfo {
+	return NoticeInfo{
+		ID:          d.ID,
+		Domain:      d.Domain,
+		Severity:    d.Severity,
+		Resource:    d.Resource,
+		Summary:     d.Summary,
+		Detail:      d.Detail,
+		Remediation: d.Remediation,
+		EventType:   d.EventType,
+	}
+}
+
 // --- Browser sessions (CURRENTPAGE LIST) ---
 
 type browserSessionDTO struct {

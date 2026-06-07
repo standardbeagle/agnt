@@ -952,11 +952,81 @@ func overviewSpinner(frame int) string {
 	return frames[frame%len(frames)]
 }
 
+// noticeTruncate clamps s to max display columns with an ellipsis.
+func noticeTruncate(s string, max int) string {
+	if max < 1 {
+		return ""
+	}
+	if len(s) <= max {
+		return s
+	}
+	if max < 2 {
+		return s[:max]
+	}
+	return s[:max-1] + "…"
+}
+
+// drawNoticeBanner renders the dismissable silent-failure notices at the top of
+// the overview. Returns the next free row. Renders nothing (and consumes no
+// rows) when there are no notices. The [n] index matches the :dismiss <n>
+// argument, which operates on this same visible order.
+func (r *Renderer) drawNoticeBanner(row, col, width, rowLimit int, notices []NoticeInfo) int {
+	if len(notices) == 0 || row >= rowLimit {
+		return row
+	}
+	const maxVisible = 3
+
+	word := "issue"
+	if len(notices) != 1 {
+		word = "issues"
+	}
+	r.moveTo(row, col)
+	r.write(fmt.Sprintf("%s%s %d %s%s %s· :dismiss <n> · :dismiss-all%s",
+		FgRed, IconWarning, len(notices), word, Reset, FgBrightBlack, Reset))
+	row++
+
+	shown := 0
+	for i, n := range notices {
+		if row >= rowLimit || shown >= maxVisible {
+			break
+		}
+		sevColor := FgRed
+		if n.Severity == "warning" {
+			sevColor = FgYellow
+		}
+		r.moveTo(row, col)
+		r.write(fmt.Sprintf(" %s[%d]%s %s%s%s",
+			FgBrightBlack, i+1, Reset, sevColor, noticeTruncate(n.Summary, width-6), Reset))
+		row++
+
+		hint := n.Remediation
+		if hint == "" {
+			hint = n.Detail
+		}
+		if hint != "" && row < rowLimit {
+			r.moveTo(row, col)
+			r.write(fmt.Sprintf("     %s↳ %s%s", FgBrightBlack, noticeTruncate(hint, width-8), Reset))
+			row++
+		}
+		shown++
+	}
+	if remaining := len(notices) - shown; remaining > 0 && row < rowLimit {
+		r.moveTo(row, col)
+		r.write(fmt.Sprintf("     %s+%d more · :dismiss-all%s", FgBrightBlack, remaining, Reset))
+		row++
+	}
+	row++ // blank separator before connection status
+	return row
+}
+
 // drawOverviewContent draws the overview panel content (system summary).
 // selectedIdx is the highlighted script row index (0-based, -1 for no selection).
 func (r *Renderer) drawOverviewContent(startRow, col, width, maxRows int, status Status, selectedIdx int, commandInput bool, commandBuffer string, commandSelectedIdx int, showAllPorts bool, actions OverviewActions) {
 	row := startRow
 	spinner := overviewSpinner(actions.SpinnerFrame)
+
+	// Silent-failure notice banner (dismissable) — most prominent, at the top.
+	row = r.drawNoticeBanner(row, col, width, startRow+maxRows, status.Notices)
 
 	// Connection status (with contextual reconnect affordance / state)
 	r.moveTo(row, col)

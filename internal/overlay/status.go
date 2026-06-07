@@ -199,10 +199,11 @@ func (f *StatusFetcher) fetchStatus() {
 		status.RecentErrors = recentErrors
 	}
 
-	// Fetch startup log for the log panel
-	startupLog, err := f.fetchStartupLog()
+	// Fetch startup log for the log panel + derived silent-failure notices
+	startupLog, notices, err := f.fetchStartupLog()
 	if err == nil {
 		status.StartupLog = startupLog
+		status.Notices = notices
 	}
 
 	f.overlay.UpdateStatus(status)
@@ -355,7 +356,7 @@ func (f *StatusFetcher) fetchRecentErrors(proxies []ProxyInfo) ([]ErrorInfo, err
 	return errors, nil
 }
 
-func (f *StatusFetcher) fetchStartupLog() ([]StartupLogEntry, error) {
+func (f *StatusFetcher) fetchStartupLog() ([]StartupLogEntry, []NoticeInfo, error) {
 	// Pass directory so the project-scope gate (resolveProjectScope) can scope
 	// the query. Without it, a non-session-bound overlay connection fails the
 	// scope check and the log panel comes back empty — every other fetcher
@@ -365,11 +366,12 @@ func (f *StatusFetcher) fetchStartupLog() ([]StartupLogEntry, error) {
 		"directory": f.projectPath,
 	}, protocol.SubVerbStartupLog)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	var wrap struct {
 		Entries []startupLogDTO `json:"entries"`
+		Notices []noticeDTO     `json:"notices"`
 	}
 	decodeResult(result, &wrap)
 
@@ -377,7 +379,11 @@ func (f *StatusFetcher) fetchStartupLog() ([]StartupLogEntry, error) {
 	for _, d := range wrap.Entries {
 		entries = append(entries, d.toInfo())
 	}
-	return entries, nil
+	notices := make([]NoticeInfo, 0, len(wrap.Notices))
+	for _, d := range wrap.Notices {
+		notices = append(notices, d.toInfo())
+	}
+	return entries, notices, nil
 }
 
 func (f *StatusFetcher) fetchBrowserSessions(proxies []ProxyInfo) ([]BrowserSession, error) {
