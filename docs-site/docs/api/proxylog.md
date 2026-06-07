@@ -50,6 +50,26 @@ Search logs with filters.
 | `until` | string | No | End time (RFC3339) |
 | `limit` | integer | No | Maximum results (default: 100) |
 
+### Log Types
+
+The `types` filter accepts any of the recorded log types:
+
+| Type | Source |
+|------|--------|
+| `http` | Proxied HTTP request/response pairs |
+| `error` | Frontend JavaScript errors |
+| `performance` | Frontend performance metrics |
+| `custom` | `__devtool.log()` application messages |
+| `screenshot` | Screenshot captures |
+| `interaction` | User interactions (clicks, keyboard) |
+| `mutation` | DOM mutation events |
+| `panel_message` | Messages from the [floating indicator](/api/frontend/indicator) panel |
+| `sketch` | [Sketch mode](/api/frontend/sketch-mode) saves |
+| `design_state` / `design_request` / `design_chat` | [Design mode](/api/frontend/design-mode) events |
+| `responsive_request` / `responsive_state` | [Responsive mode](/api/frontend/responsive-mode) handoff + panel state |
+
+Omit `types` to return all of them.
+
 ### HTTP Log Queries
 
 ```json
