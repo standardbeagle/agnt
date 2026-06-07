@@ -2,6 +2,8 @@
 sidebar_position: 13
 ---
 
+import useBaseUrl from '@docusaurus/useBaseUrl';
+
 # Responsive Mode
 
 An interactive responsive workbench — the fourth indicator mode, beside sketch and design. It drives a live iframe of the current page at a controllable width, detects layout shifts programmatically as you change the width, and hands a break off to the AI agent for a fix that the agent can then re-verify by driving the same width back.
@@ -9,7 +11,7 @@ An interactive responsive workbench — the fourth indicator mode, beside sketch
 Where [`responsive_audit`](/api/responsive_audit) is a headless one-shot across fixed viewports, Responsive Mode is a human + agent loop: dial into the exact width where layout breaks, see the broken elements highlighted, ship them to the agent, watch the fix land.
 
 <video autoPlay loop muted playsInline controls width="100%" aria-label="Responsive mode — a width slider, numeric input, Mobile/Tablet/Desktop presets, Auto-sweep and Send-to-agent buttons across the top, with a live iframe of the page rendered at 414px and layout-shift findings overlaid as severity-colored boxes that update as the width changes.">
-  <source src="/img/responsive-mode.webm" type="video/webm" />
+  <source src={useBaseUrl('/img/responsive-mode.webm')} type="video/webm" />
 </video>
 
 ## Opening It

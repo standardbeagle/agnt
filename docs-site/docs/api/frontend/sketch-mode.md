@@ -2,12 +2,14 @@
 sidebar_position: 15
 ---
 
+import useBaseUrl from '@docusaurus/useBaseUrl';
+
 # Sketch Mode
 
 An Excalidraw-like wireframing overlay injected into the page. The developer draws shapes and UI primitives directly on top of the live page, then sends the sketch to the AI agent as a build instruction — "make it look like this."
 
 <video autoPlay loop muted playsInline controls width="100%" aria-label="Sketch mode active over a dashboard — top toolbar with shape tools, a left properties panel for stroke/fill/opacity, an Undo/Redo/Clear/Done bar, and shapes being drawn onto the live page.">
-  <source src="/img/sketch-mode.webm" type="video/webm" />
+  <source src={useBaseUrl('/img/sketch-mode.webm')} type="video/webm" />
 </video>
 
 ## API
