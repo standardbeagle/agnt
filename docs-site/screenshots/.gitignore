@@ -1,0 +1,4 @@
+# Generated artifacts — regenerate with genbundle + capture.mjs
+bundle.html
+.serve/
+videos/
