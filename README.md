@@ -254,11 +254,14 @@ Instead of dumping 100 lines of nested React errors into the context, agnt conso
 | `proxy` | Reverse proxy: start, stop, exec, status |
 | `proxylog` | Query logs: http, error, screenshot, sketch, panel_message |
 | `currentpage` | View active page sessions with grouped resources |
+| `get_incidents` | Incident inbox pull when incident pipeline enabled |
 | `responsive_audit` | Responsive audit across viewport sizes (layout/overflow/a11y) |
 | `api_audit` | API-efficiency audit: waterfall, N+1, duplicate, chatty-load |
 | `loading_audit` | Loading-UX audit: spinner cascade + concurrent fragmentation |
+| `snapshot` | Visual regression: baseline/compare screenshots |
 | `tunnel` | Tunnel management: cloudflare/ngrok for mobile testing |
 | `daemon` | Manage background daemon service |
+| `watch` | Stream daemon events via `agnt monitor` |
 | `channel_reply` | Send messages to developer's browser overlay (channel mode only) |
 
 ## Browser API (50+ Functions)
