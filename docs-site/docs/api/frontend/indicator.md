@@ -8,7 +8,9 @@ A draggable on-page widget injected by the proxy. It shows connection status, ho
 
 The indicator is **visible by default** and remembers its position across reloads.
 
-![The floating indicator with its message panel open — tabs for Overview/Errors/Network/Perf, a message box, and quick-action chips for Screenshot, Element, Sketch, Design, Inspect, Responsive, and Audit.](/img/indicator.png)
+<video autoPlay loop muted playsInline controls width="100%" aria-label="The floating indicator with its message panel open — tabs for Overview/Errors/Network/Perf, a message box, and quick-action chips for Screenshot, Element, Sketch, Design, Inspect, Responsive, and Audit.">
+  <source src="/img/indicator.webm" type="video/webm" />
+</video>
 
 ## API
 

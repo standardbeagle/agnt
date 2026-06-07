@@ -8,11 +8,9 @@ An interactive responsive workbench — the fourth indicator mode, beside sketch
 
 Where [`responsive_audit`](/api/responsive_audit) is a headless one-shot across fixed viewports, Responsive Mode is a human + agent loop: dial into the exact width where layout breaks, see the broken elements highlighted, ship them to the agent, watch the fix land.
 
-![Responsive mode — a width slider, numeric input (414px), Mobile/Tablet/Desktop presets, Auto-sweep and Send-to-agent buttons across the top, with a live iframe of the page rendered at 414px and layout-shift findings overlaid as severity-colored boxes.](/img/responsive-mode.png)
-
-Driving the width and watching shifts update live:
-
-![Changing the frame width in responsive mode.](/img/responsive-mode.gif)
+<video autoPlay loop muted playsInline controls width="100%" aria-label="Responsive mode — a width slider, numeric input, Mobile/Tablet/Desktop presets, Auto-sweep and Send-to-agent buttons across the top, with a live iframe of the page rendered at 414px and layout-shift findings overlaid as severity-colored boxes that update as the width changes.">
+  <source src="/img/responsive-mode.webm" type="video/webm" />
+</video>
 
 ## Opening It
 
