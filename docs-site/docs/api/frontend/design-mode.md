@@ -6,6 +6,8 @@ sidebar_position: 16
 
 AI-assisted UI iteration on an existing element. The developer picks an element on the live page; the agent generates several design alternatives; the developer navigates them and refines via chat. Where [Sketch Mode](/api/frontend/sketch-mode) draws from scratch, design mode reworks what's already there.
 
+![Design mode active — a prompt at the bottom reads "Click an element to start design iteration · ESC to cancel".](/img/design-mode.png)
+
 ## API
 
 ```javascript

@@ -6,6 +6,12 @@ sidebar_position: 15
 
 An Excalidraw-like wireframing overlay injected into the page. The developer draws shapes and UI primitives directly on top of the live page, then sends the sketch to the AI agent as a build instruction — "make it look like this."
 
+![Sketch mode active over a dashboard — top toolbar with shape tools (rectangle, ellipse, arrow, pen, text, eraser), a left properties panel for stroke/fill/opacity, and an Undo/Redo/Clear/Done bar.](/img/sketch-mode.png)
+
+Drawing in sketch mode:
+
+![Drawing shapes onto the live page in sketch mode.](/img/sketch-mode.gif)
+
 ## API
 
 ```javascript

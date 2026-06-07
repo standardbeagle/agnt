@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Acme Dashboard — agnt demo</title>
+<style>
+  :root { --bg:#0f1117; --panel:#171a23; --line:#262b38; --txt:#e6e9ef; --mut:#9aa3b2; --acc:#4f8cff; --acc2:#22c55e; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:15px/1.5 -apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--txt); }
+  header { display:flex; align-items:center; justify-content:space-between; padding:14px 24px; border-bottom:1px solid var(--line); background:var(--panel); }
+  .brand { font-weight:700; font-size:18px; letter-spacing:.2px; }
+  .brand span { color:var(--acc); }
+  nav a { color:var(--mut); text-decoration:none; margin-left:20px; font-size:14px; }
+  nav a:hover { color:var(--txt); }
+  .layout { display:grid; grid-template-columns:220px 1fr; gap:0; }
+  aside { border-right:1px solid var(--line); padding:18px 14px; min-height:calc(100vh - 57px); }
+  aside .item { display:block; padding:9px 12px; border-radius:8px; color:var(--mut); text-decoration:none; margin-bottom:4px; font-size:14px; }
+  aside .item.active, aside .item:hover { background:#1f2430; color:var(--txt); }
+  main { padding:24px 28px; }
+  h1 { margin:0 0 4px; font-size:22px; }
+  .sub { color:var(--mut); margin:0 0 22px; }
+  .cards { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; margin-bottom:24px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:18px; }
+  .card .label { color:var(--mut); font-size:13px; }
+  .card .num { font-size:28px; font-weight:700; margin-top:6px; }
+  .card .delta { font-size:13px; margin-top:6px; }
+  .up { color:var(--acc2); }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:20px; margin-bottom:22px; }
+  .panel h2 { margin:0 0 14px; font-size:16px; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:10px 8px; border-bottom:1px solid var(--line); font-size:14px; }
+  th { color:var(--mut); font-weight:600; }
+  .badge { padding:2px 9px; border-radius:99px; font-size:12px; }
+  .ok { background:rgba(34,197,94,.15); color:var(--acc2); }
+  .warn { background:rgba(245,158,11,.15); color:#f59e0b; }
+  form { display:grid; grid-template-columns:1fr 1fr; gap:14px; max-width:560px; }
+  label { display:block; font-size:13px; color:var(--mut); margin-bottom:6px; }
+  input, select { width:100%; padding:9px 11px; background:#0d0f15; border:1px solid var(--line); border-radius:8px; color:var(--txt); }
+  .actions { grid-column:1/3; display:flex; gap:10px; }
+  button.primary { background:var(--acc); color:#fff; border:0; padding:10px 18px; border-radius:8px; font-weight:600; cursor:pointer; }
+  button.ghost { background:transparent; color:var(--mut); border:1px solid var(--line); padding:10px 18px; border-radius:8px; cursor:pointer; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">Acme<span>·</span>Dashboard</div>
+  <nav>
+    <a href="#">Overview</a>
+    <a href="#">Reports</a>
+    <a href="#">Team</a>
+    <a href="#">Settings</a>
+  </nav>
+</header>
+<div class="layout">
+  <aside>
+    <a class="item active" href="#">Dashboard</a>
+    <a class="item" href="#">Customers</a>
+    <a class="item" href="#">Invoices</a>
+    <a class="item" href="#">Products</a>
+    <a class="item" href="#">Analytics</a>
+  </aside>
+  <main>
+    <h1>Good morning, Riley</h1>
+    <p class="sub">Here's what's happening across your workspace today.</p>
+
+    <div class="cards">
+      <div class="card"><div class="label">Revenue</div><div class="num">$48,250</div><div class="delta up">▲ 12.4% vs last week</div></div>
+      <div class="card"><div class="label">Active users</div><div class="num">3,182</div><div class="delta up">▲ 4.1%</div></div>
+      <div class="card"><div class="label">Open tickets</div><div class="num">27</div><div class="delta">▼ 6 today</div></div>
+    </div>
+
+    <div class="panel">
+      <h2>Recent invoices</h2>
+      <table>
+        <thead><tr><th>Customer</th><th>Amount</th><th>Status</th><th>Due</th></tr></thead>
+        <tbody>
+          <tr><td>Globex Corp</td><td>$4,200</td><td><span class="badge ok">Paid</span></td><td>Jun 2</td></tr>
+          <tr><td>Initech</td><td>$1,750</td><td><span class="badge warn">Pending</span></td><td>Jun 9</td></tr>
+          <tr><td>Soylent LLC</td><td>$9,980</td><td><span class="badge ok">Paid</span></td><td>Jun 11</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="panel">
+      <h2>Add customer</h2>
+      <form>
+        <div><label>Company name</label><input placeholder="Acme Inc."></div>
+        <div><label>Plan</label><select><option>Starter</option><option>Pro</option><option>Enterprise</option></select></div>
+        <div><label>Contact email</label><input placeholder="ops@acme.com"></div>
+        <div><label>Seats</label><input placeholder="25"></div>
+        <div class="actions">
+          <button class="primary" type="button">Create customer</button>
+          <button class="ghost" type="button">Cancel</button>
+        </div>
+      </form>
+    </div>
+  </main>
+</div>
+<!--AGNT_BUNDLE-->
+</body>
+</html>
