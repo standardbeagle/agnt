@@ -224,11 +224,15 @@ The proxy injects 50+ diagnostic functions into every page, accessible via `wind
 | `proxy` | Reverse proxy with instrumentation |
 | `proxylog` | Query traffic, errors, screenshots |
 | `currentpage` | View active page sessions |
+| `get_incidents` | Incident inbox pull (when incident pipeline enabled) |
 | `responsive_audit` | Responsive audit across viewport sizes |
 | `api_audit` | API-efficiency audit (waterfall, N+1, duplicate, chatty-load) |
 | `loading_audit` | Loading-UX audit (spinner cascade + fragmentation) |
+| `snapshot` | Visual regression: baseline/compare screenshots |
 | `tunnel` | Mobile testing via Cloudflare/ngrok |
 | `daemon` | Daemon management |
+| `watch` | Stream daemon events via `agnt monitor` |
+| `channel_reply` | Reply to the browser overlay (channel mode) |
 
 ---
 
