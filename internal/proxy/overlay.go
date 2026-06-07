@@ -124,6 +124,16 @@ func (n *OverlayNotifier) NotifyDesignChat(proxyID string, chat *DesignChat) err
 	})
 }
 
+// NotifyDesignEdit sends a committed design geometry edit to the overlay.
+func (n *OverlayNotifier) NotifyDesignEdit(proxyID string, edit *DesignEdit) error {
+	return n.send(OverlayEvent{
+		Type:      "design_edit",
+		ProxyID:   proxyID,
+		Timestamp: time.Now(),
+		Data:      edit,
+	})
+}
+
 // NotifyResponsiveRequest sends a responsive mode handoff request to the overlay.
 func (n *OverlayNotifier) NotifyResponsiveRequest(proxyID string, request *ResponsiveRequest) error {
 	return n.send(OverlayEvent{

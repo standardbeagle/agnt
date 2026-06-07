@@ -563,3 +563,53 @@ func TestTrafficLogger_SetOnLogEntry_Replaces(t *testing.T) {
 		t.Errorf("Second callback: expected 1 call, got %d", count2)
 	}
 }
+
+func TestTrafficLogger_LogDesignEdit(t *testing.T) {
+	logger := NewTrafficLogger(10)
+
+	ts := time.Date(2026, 6, 7, 9, 0, 0, 0, time.UTC)
+	entry := DesignEdit{
+		ID:             "edit-1",
+		Timestamp:      ts,
+		Selector:       ".hero",
+		XPath:          "//*[@id=\"hero\"]",
+		OID:            "oid-1",
+		Deltas:         map[string]string{"width": "320px"},
+		ComputedBefore: map[string]string{"width": "300px"},
+		ComputedAfter:  map[string]string{"width": "320px"},
+		Metadata:       DesignElementMetadata{Tag: "section", ID: "hero"},
+		URL:            "http://localhost:3000/",
+	}
+
+	logger.LogDesignEdit(entry)
+
+	// Retrievable by type.
+	results := logger.Query(LogFilter{Types: []LogEntryType{LogTypeDesignEdit}})
+	if len(results) != 1 {
+		t.Fatalf("expected 1 design_edit entry, got %d", len(results))
+	}
+	got := results[0]
+	if got.Type != LogTypeDesignEdit {
+		t.Errorf("expected type %q, got %q", LogTypeDesignEdit, got.Type)
+	}
+	if got.DesignEdit == nil {
+		t.Fatal("DesignEdit payload is nil")
+	}
+	if got.DesignEdit.Selector != ".hero" {
+		t.Errorf("expected selector .hero, got %q", got.DesignEdit.Selector)
+	}
+	if got.DesignEdit.Deltas["width"] != "320px" {
+		t.Errorf("expected delta width 320px, got %q", got.DesignEdit.Deltas["width"])
+	}
+
+	// Timestamp extraction routes through the design_edit case (Since filter
+	// must include the entry when the window opens before its timestamp).
+	since := ts.Add(-time.Minute)
+	if n := len(logger.Query(LogFilter{Types: []LogEntryType{LogTypeDesignEdit}, Since: &since})); n != 1 {
+		t.Errorf("expected design_edit within Since window, got %d", n)
+	}
+	after := ts.Add(time.Minute)
+	if n := len(logger.Query(LogFilter{Types: []LogEntryType{LogTypeDesignEdit}, Since: &after})); n != 0 {
+		t.Errorf("expected design_edit excluded by later Since, got %d", n)
+	}
+}

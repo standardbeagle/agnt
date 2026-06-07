@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -733,6 +734,11 @@ func handleProxyLogQueryCompact(entries []proxy.LogEntry, pag *Pagination) (*mcp
 				timestamp = entry.DesignChat.Timestamp
 				data = fmt.Sprintf("Design chat: %s", entry.DesignChat.Message)
 			}
+		case proxy.LogTypeDesignEdit:
+			if entry.DesignEdit != nil {
+				timestamp = entry.DesignEdit.Timestamp
+				data = fmt.Sprintf("Design edit: %s %s", entry.DesignEdit.Selector, formatDeltaPairs(entry.DesignEdit.Deltas))
+			}
 		default:
 			// For other types, use JSON serialization
 			if b, err := json.Marshal(entry); err == nil {
@@ -766,6 +772,24 @@ func handleProxyLogQueryCompact(entries []proxy.LogEntry, pag *Pagination) (*mcp
 		Entries:    output,
 		Pagination: pag,
 	}, nil
+}
+
+// formatDeltaPairs renders a property→value delta map as a compact, stably
+// ordered "prop=value" list for log summaries.
+func formatDeltaPairs(deltas map[string]string) string {
+	if len(deltas) == 0 {
+		return "(no delta)"
+	}
+	keys := make([]string, 0, len(deltas))
+	for k := range deltas {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	pairs := make([]string, len(keys))
+	for i, k := range keys {
+		pairs[i] = k + "=" + deltas[k]
+	}
+	return strings.Join(pairs, " ")
 }
 
 func handleProxyLogClear(proxyServer *proxy.ProxyServer, input ProxyLogInput) (*mcp.CallToolResult, ProxyLogOutput, error) {

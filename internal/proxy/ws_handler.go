@@ -543,6 +543,16 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				_ = ps.overlayNotifier.NotifyDesignChat(ps.ID, &designChat)
 			}
 
+		case "design_edit":
+			// Handle a committed direct-manipulation geometry edit
+			designEdit := parseDesignEdit(msg.Data, id, timestamp, msg.URL)
+			ps.logger.LogDesignEdit(designEdit)
+
+			// Forward to overlay if configured
+			if ps.overlayNotifier.IsEnabled() {
+				_ = ps.overlayNotifier.NotifyDesignEdit(ps.ID, &designEdit)
+			}
+
 		case "responsive_request":
 			// Handle handoff from responsive mode requesting agent fixes
 			responsiveRequest := parseResponsiveRequest(msg.Data, id, timestamp, msg.URL)

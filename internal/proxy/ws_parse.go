@@ -431,6 +431,42 @@ func parseDesignRequest(data map[string]interface{}, id string, timestamp time.T
 	return request
 }
 
+// getStringMapField extracts a JSON object of string→string values. Non-string
+// values are skipped. Returns nil when the key is absent or not an object.
+func getStringMapField(data map[string]interface{}, key string) map[string]string {
+	raw, ok := data[key].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	out := make(map[string]string, len(raw))
+	for k, v := range raw {
+		if s, ok := v.(string); ok {
+			out[k] = s
+		}
+	}
+	return out
+}
+
+func parseDesignEdit(data map[string]interface{}, id string, timestamp time.Time, url string) DesignEdit {
+	edit := DesignEdit{
+		ID:             id,
+		Timestamp:      timestamp,
+		URL:            url,
+		Selector:       getStringField(data, "selector"),
+		XPath:          getStringField(data, "xpath"),
+		OID:            getStringField(data, "oid"),
+		Deltas:         getStringMapField(data, "deltas"),
+		ComputedBefore: getStringMapField(data, "computedBefore"),
+		ComputedAfter:  getStringMapField(data, "computedAfter"),
+	}
+
+	if metaData, ok := data["metadata"].(map[string]interface{}); ok {
+		edit.Metadata = parseDesignElementMetadata(metaData)
+	}
+
+	return edit
+}
+
 func parseDesignChat(data map[string]interface{}, id string, timestamp time.Time, url string) DesignChat {
 	chat := DesignChat{
 		ID:           id,

@@ -471,6 +471,55 @@ func TestParseDesignChat_Full(t *testing.T) {
 	assert.Equal(t, "Fix styling", chat.ChatHistory[0].Message)
 }
 
+// ── parseDesignEdit ─────────────────────────────────────────────────────────
+
+func TestParseDesignEdit_Full(t *testing.T) {
+	data := map[string]interface{}{
+		"selector": ".hero",
+		"xpath":    "//*[@id=\"hero\"]",
+		"oid":      "oid-7",
+		"deltas": map[string]interface{}{
+			"width":  "320px",
+			"height": "200px",
+		},
+		"computedBefore": map[string]interface{}{
+			"width":  "300px",
+			"height": "180px",
+		},
+		"computedAfter": map[string]interface{}{
+			"width":  "320px",
+			"height": "200px",
+		},
+		"metadata": map[string]interface{}{
+			"tag": "section",
+			"id":  "hero",
+		},
+	}
+
+	edit := parseDesignEdit(data, "metric-16", testTS, testURL)
+
+	assert.Equal(t, "metric-16", edit.ID)
+	assert.Equal(t, testTS, edit.Timestamp)
+	assert.Equal(t, testURL, edit.URL)
+	assert.Equal(t, ".hero", edit.Selector)
+	assert.Equal(t, "//*[@id=\"hero\"]", edit.XPath)
+	assert.Equal(t, "oid-7", edit.OID)
+	assert.Equal(t, "320px", edit.Deltas["width"])
+	assert.Equal(t, "200px", edit.Deltas["height"])
+	assert.Equal(t, "300px", edit.ComputedBefore["width"])
+	assert.Equal(t, "200px", edit.ComputedAfter["height"])
+	assert.Equal(t, "section", edit.Metadata.Tag)
+	assert.Equal(t, "hero", edit.Metadata.ID)
+}
+
+func TestParseDesignEdit_MissingMaps(t *testing.T) {
+	edit := parseDesignEdit(map[string]interface{}{"selector": ".x"}, "metric-17", testTS, testURL)
+	assert.Equal(t, ".x", edit.Selector)
+	assert.Nil(t, edit.Deltas)
+	assert.Nil(t, edit.ComputedBefore)
+	assert.Nil(t, edit.ComputedAfter)
+}
+
 // ── getStringField / getIntField helpers ────────────────────────────────────
 
 func TestGetStringField_Present(t *testing.T) {
