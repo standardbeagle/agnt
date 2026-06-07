@@ -121,6 +121,20 @@ type StartupLogEntry struct {
 	Timestamp  time.Time
 }
 
+// NoticeInfo is one surfaced silent-failure for the overview notice banner: a
+// config-declared resource (proxy, script, port) that failed to start and has
+// not since recovered. Mirror of the daemon's Notice (JSON-bridged).
+type NoticeInfo struct {
+	ID          string // "<domain>:<process_id>", stable per resource+domain
+	Domain      string // "proxy" | "script" | "port"
+	Severity    string // "error" | "warning"
+	Resource    string // short name, e.g. "dev"
+	Summary     string // one-line headline
+	Detail      string // full message
+	Remediation string // actionable hint, may be empty
+	EventType   string // originating event_type
+}
+
 // PortInfo is one listening TCP port and its owner for the overview ports
 // section. Status is "managed", "unmanaged", or "conflict".
 type PortInfo struct {
@@ -150,6 +164,7 @@ type Status struct {
 	BrowserSessions []BrowserSession
 	RecentErrors    []ErrorInfo
 	StartupLog      []StartupLogEntry
+	Notices         []NoticeInfo
 	LastUpdate      time.Time
 }
 
@@ -239,6 +254,9 @@ type Overlay struct {
 
 	// Ports section: hide system/infra ports by default (toggle-ports flips it)
 	showAllPorts bool
+
+	// Overview notice banner: session-only dismissals of silent-failure notices
+	notices noticeDismissals
 
 	// Overview global actions (summarize / reconnect)
 	summarizing      atomic.Bool  // AI summarize in flight (drives spinner + re-entrancy guard)
@@ -714,6 +732,10 @@ func (o *Overlay) draw() {
 	o.statusMu.RLock()
 	status := o.status
 	o.statusMu.RUnlock()
+
+	// Apply session dismissals (and prune resolved ones) before rendering the
+	// overview notice banner.
+	status.Notices = o.notices.filter(status.Notices)
 
 	// Mode-specific content occupies the region above the bottom status row.
 	// Each screen leaves the bottom row free for the global status bar, which

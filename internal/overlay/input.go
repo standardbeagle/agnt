@@ -744,6 +744,14 @@ func (r *InputRouter) dispatchPaletteCommand(c PaletteCommand, args string) {
 	case "toggle-ports":
 		r.overlay.showAllPorts = !r.overlay.showAllPorts
 		return
+	case "dismiss":
+		if n, err := strconv.Atoi(strings.TrimSpace(args)); err == nil {
+			r.overlay.DismissNoticeByIndex(n)
+		}
+		return
+	case "dismiss-all":
+		r.overlay.DismissAllNotices()
+		return
 	}
 
 	if r.scriptController == nil {

@@ -24,6 +24,8 @@ var paletteCommands = []PaletteCommand{
 	{Name: "stop-proxy", Arg: "<id>", Desc: "stop a reverse proxy"},
 	{Name: "stop-tunnel", Arg: "<id>", Desc: "stop a tunnel"},
 	{Name: "toggle-ports", Desc: "show/hide system & infra ports"},
+	{Name: "dismiss", Arg: "<n>", Desc: "dismiss a notice by number"},
+	{Name: "dismiss-all", Desc: "dismiss all notices"},
 	{Name: "summarize", Desc: "AI summary of system state"},
 	{Name: "reconnect", Desc: "reconnect to the daemon"},
 	{Name: "run", Arg: "<shell…>", Desc: "run an ad-hoc shell command"},

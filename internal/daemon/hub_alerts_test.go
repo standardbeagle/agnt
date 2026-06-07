@@ -107,3 +107,39 @@ func TestStartupLog_NoDefaultTimeWindow(t *testing.T) {
 	}
 	assert.True(t, found, "startup_log with no `since` must return aged entries (no 30m wall-clock default)")
 }
+
+// TestStartupLog_IncludesNotices proves the startup-log response carries a
+// computed `notices` array: an active proxy-creation failure (no resolving
+// success) surfaces as a notice with a stable domain-scoped ID. This is the
+// daemon half of the dismissable silent-failure banner.
+func TestStartupLog_IncludesNotices(t *testing.T) {
+	// No t.Parallel(): shares the daemon startup log store.
+	daemon, sockPath := newBootedDaemon(t)
+
+	projectPath := normalizePath(t.TempDir())
+	pid := makeProcessID(projectPath, "dev")
+	daemon.startupErrorStore.Add(&StartupLogEntry{
+		ProcessID: pid, ScriptName: "", Level: "error",
+		EventType: "proxy_creation_failed",
+		Message:   "binding to 0.0.0.0 exposes the proxy to the network; set allow_external: true to confirm",
+		Timestamp: time.Now(),
+	})
+
+	c := NewClient(WithSocketPath(sockPath))
+	require.NoError(t, c.Connect())
+	t.Cleanup(func() { _ = c.Close() })
+
+	raw, err := c.StartupLog(50, protocol.DirectoryFilter{Global: true})
+	require.NoError(t, err)
+
+	notices, ok := raw["notices"].([]interface{})
+	require.True(t, ok, "response must carry a notices array")
+	require.NotEmpty(t, notices, "active proxy failure must produce a notice")
+
+	first, ok := notices[0].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, "proxy:"+pid, first["id"])
+	assert.Equal(t, "proxy", first["domain"])
+	assert.Equal(t, "error", first["severity"])
+	assert.Contains(t, first["remediation"], "allow-external")
+}

@@ -173,6 +173,7 @@ func (d *Daemon) hubHandleStartupLog(conn *hubpkg.Connection, cmd *hubproto.Comm
 	data, _ := json.Marshal(map[string]interface{}{
 		"entries": entries,
 		"count":   len(entries),
+		"notices": buildNotices(entries),
 	})
 	return conn.WriteJSON(data)
 }
