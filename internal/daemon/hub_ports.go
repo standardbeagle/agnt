@@ -13,6 +13,7 @@ import (
 
 	hubpkg "github.com/standardbeagle/go-cli-server/hub"
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
+	scriptpkg "github.com/standardbeagle/go-cli-server/script"
 )
 
 // portsCache memoizes ListListeningPorts across the overview's 2s status tick.
@@ -126,17 +127,13 @@ func (d *Daemon) hubHandlePortsQuery(ctx context.Context, conn *hubpkg.Connectio
 	}
 
 	owners, managed, orphanPGIDs := d.cachedPortsData(ctx)
-	declared := d.declaredPorts(projectPath)
+	declared := d.declaredPortUses(projectPath)
 
 	ports := make([]map[string]interface{}, 0, len(owners))
 	for _, o := range owners {
-		status := "unmanaged"
-		switch {
-		case o.PID > 0 && managed[o.PID]:
-			status = "managed"
-		case declared[o.Port]:
-			status = "conflict"
-		}
+		status := classifyPortStatus(o, managed, declared[o.Port], func(scriptName string) bool {
+			return d.scriptAppearsActive(projectPath, scriptName)
+		})
 		ports = append(ports, map[string]interface{}{
 			"port":    o.Port,
 			"pid":     o.PID,
@@ -177,10 +174,51 @@ func (d *Daemon) hubHandlePortsCleanOrphans(ctx context.Context, conn *hubpkg.Co
 	return conn.WriteJSON(data)
 }
 
-// declaredPorts returns the set of ports declared in the project's .agnt.kdl
-// (script ports + proxy fallback ports). Empty set on any load failure.
-func (d *Daemon) declaredPorts(projectPath string) map[int]bool {
-	out := make(map[int]bool)
+type declaredPortUseKind string
+
+const (
+	declaredPortScript        declaredPortUseKind = "script"
+	declaredPortProxyFallback declaredPortUseKind = "proxy_fallback"
+)
+
+type declaredPortUse struct {
+	Kind       declaredPortUseKind
+	ScriptName string
+	ProxyName  string
+}
+
+// classifyPortStatus classifies one listening port for the overview.
+//
+// A proxy fallback port is a target/backend port, not a port agnt needs to bind,
+// so it is never a conflict by itself. On native Windows and WSL interop,
+// descendant ownership is often unavailable: the managed shell is known, but the
+// child dev server owns the socket as a Windows PID. If the declaring script is
+// active, treat that Windows listener as effectively managed to avoid false
+// conflict rows for healthy dev servers.
+func classifyPortStatus(o config.PortOwner, managed map[int]bool, uses []declaredPortUse, scriptActive func(string) bool) string {
+	if o.PID > 0 && managed[o.PID] {
+		return "managed"
+	}
+	hasScriptDeclaration := false
+	for _, use := range uses {
+		if use.Kind != declaredPortScript {
+			continue
+		}
+		hasScriptDeclaration = true
+		if o.Windows && scriptActive != nil && scriptActive(use.ScriptName) {
+			return "managed"
+		}
+	}
+	if hasScriptDeclaration {
+		return "conflict"
+	}
+	return "unmanaged"
+}
+
+// declaredPortUses returns ports declared in the project's .agnt.kdl, preserving
+// why each port was declared. Empty set on any load failure.
+func (d *Daemon) declaredPortUses(projectPath string) map[int][]declaredPortUse {
+	out := make(map[int][]declaredPortUse)
 	if projectPath == "" {
 		return out
 	}
@@ -188,17 +226,37 @@ func (d *Daemon) declaredPorts(projectPath string) map[int]bool {
 	if err != nil || cfg == nil {
 		return out
 	}
-	for _, sc := range cfg.Scripts {
+	for scriptName, sc := range cfg.Scripts {
 		for _, p := range sc.Ports {
 			if p > 0 {
-				out[p] = true
+				out[p] = append(out[p], declaredPortUse{Kind: declaredPortScript, ScriptName: scriptName})
 			}
 		}
 	}
-	for _, pc := range cfg.Proxies {
+	for proxyName, pc := range cfg.Proxies {
 		if pc.FallbackPort > 0 {
-			out[pc.FallbackPort] = true
+			out[pc.FallbackPort] = append(out[pc.FallbackPort], declaredPortUse{
+				Kind:       declaredPortProxyFallback,
+				ScriptName: pc.Script,
+				ProxyName:  proxyName,
+			})
 		}
 	}
 	return out
+}
+
+func (d *Daemon) scriptAppearsActive(projectPath, scriptName string) bool {
+	if d == nil || d.scriptRegistry == nil || projectPath == "" || scriptName == "" {
+		return false
+	}
+	entry, ok := d.scriptRegistry.Get(scriptName, projectPath)
+	if !ok || entry == nil {
+		return false
+	}
+	switch entry.State() {
+	case scriptpkg.StateStarting, scriptpkg.StateRunning, scriptpkg.StateRestarting:
+		return true
+	default:
+		return false
+	}
 }

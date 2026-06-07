@@ -32,3 +32,54 @@ func TestPortIsSystem(t *testing.T) {
 		})
 	}
 }
+
+func TestClassifyPortStatus_ProxyFallbackIsNotConflict(t *testing.T) {
+	owner := config.PortOwner{Port: 5273, PID: 47220, Windows: true}
+	uses := []declaredPortUse{{
+		Kind:       declaredPortProxyFallback,
+		ScriptName: "frontend",
+		ProxyName:  "frontend-proxy",
+	}}
+
+	got := classifyPortStatus(owner, nil, uses, func(string) bool { return false })
+
+	if got != "unmanaged" {
+		t.Fatalf("fallback target port status = %q, want unmanaged", got)
+	}
+}
+
+func TestClassifyPortStatus_WindowsListenerForActiveScriptIsManaged(t *testing.T) {
+	owner := config.PortOwner{Port: 5273, PID: 47220, Windows: true}
+	uses := []declaredPortUse{{Kind: declaredPortScript, ScriptName: "frontend"}}
+
+	got := classifyPortStatus(owner, nil, uses, func(name string) bool {
+		return name == "frontend"
+	})
+
+	if got != "managed" {
+		t.Fatalf("active Windows script port status = %q, want managed", got)
+	}
+}
+
+func TestClassifyPortStatus_WindowsListenerForInactiveScriptIsConflict(t *testing.T) {
+	owner := config.PortOwner{Port: 5273, PID: 47220, Windows: true}
+	uses := []declaredPortUse{{Kind: declaredPortScript, ScriptName: "frontend"}}
+
+	got := classifyPortStatus(owner, nil, uses, func(string) bool { return false })
+
+	if got != "conflict" {
+		t.Fatalf("inactive Windows script port status = %q, want conflict", got)
+	}
+}
+
+func TestClassifyPortStatus_ManagedPIDWins(t *testing.T) {
+	owner := config.PortOwner{Port: 5273, PID: 47220, Windows: true}
+	managed := map[int]bool{47220: true}
+	uses := []declaredPortUse{{Kind: declaredPortScript, ScriptName: "frontend"}}
+
+	got := classifyPortStatus(owner, managed, uses, func(string) bool { return false })
+
+	if got != "managed" {
+		t.Fatalf("managed PID status = %q, want managed", got)
+	}
+}

@@ -129,6 +129,11 @@ func TestBuildNotices_Severity(t *testing.T) {
 		"failed":                        "error",
 		"start_failed":                  "error",
 		"port_conflict":                 "warning",
+		"port_conflict_detected":        "warning",
+		"port_conflict_skipped":         "warning",
+		"port_conflict_abort":           "error",
+		"port_conflict_failed":          "error",
+		"proxy_listen_port_conflict":    "error",
 	}
 	for ev, wantSev := range cases {
 		entries := []*StartupLogEntry{entry("p-0000:x", "x", wantSev, ev, "msg", at(1))}
@@ -152,7 +157,7 @@ func TestBuildNotices_Remediation(t *testing.T) {
 	assert.Contains(t, skipped[0].Remediation, "upstream")
 
 	portConflict := buildNotices([]*StartupLogEntry{
-		{ProcessID: "p:db", ScriptName: "db", Level: "warning", EventType: "port_conflict", Message: "port busy", Port: 5432, Timestamp: at(1)},
+		{ProcessID: "p:db", ScriptName: "db", Level: "warning", EventType: "port_conflict_detected", Message: "port busy", Port: 5432, Timestamp: at(1)},
 	})
 	require.Len(t, portConflict, 1)
 	assert.Contains(t, portConflict[0].Remediation, "kill-port")
@@ -162,6 +167,15 @@ func TestBuildNotices_Remediation(t *testing.T) {
 	})
 	require.Len(t, generic, 1)
 	assert.Empty(t, generic[0].Remediation, "no hint for generic failures; detail carries the message")
+}
+
+func TestBuildNotices_PortConflictKilledResolves(t *testing.T) {
+	entries := []*StartupLogEntry{
+		{ProcessID: "p:db", ScriptName: "db", Level: "warning", EventType: "port_conflict_detected", Message: "port busy", Port: 5432, Timestamp: at(1)},
+		{ProcessID: "p:db", ScriptName: "db", Level: "info", EventType: "port_conflict_killed", Message: "port cleared", Port: 5432, Timestamp: at(2)},
+	}
+
+	assert.Empty(t, buildNotices(entries))
 }
 
 func TestBuildNotices_UnknownEventTypeIgnored(t *testing.T) {
