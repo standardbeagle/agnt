@@ -49,9 +49,15 @@ var noticeClassification = map[string]noticeRole{
 	// script resolvers
 	"started":        {domain: "script", failure: false},
 	"script_started": {domain: "script", failure: false},
-	// port failures (no resolver event today; cleared when the entry ages out
-	// of the ring or the conflict no longer re-fires).
-	"port_conflict": {domain: "port", failure: true, severity: "warning"},
+	// port failures
+	"port_conflict":              {domain: "port", failure: true, severity: "warning"},
+	"port_conflict_detected":     {domain: "port", failure: true, severity: "warning"},
+	"port_conflict_skipped":      {domain: "port", failure: true, severity: "warning"},
+	"port_conflict_abort":        {domain: "port", failure: true, severity: "error"},
+	"port_conflict_failed":       {domain: "port", failure: true, severity: "error"},
+	"proxy_listen_port_conflict": {domain: "port", failure: true, severity: "error"},
+	// port resolvers
+	"port_conflict_killed": {domain: "port", failure: false},
 }
 
 // resourceKey identifies a resource within a domain. Proxy and script events
@@ -163,7 +169,7 @@ func noticeRemediation(e *StartupLogEntry) string {
 	switch e.EventType {
 	case "proxy_skipped":
 		return "Fix the upstream script that failed, then restart"
-	case "port_conflict":
+	case "port_conflict", "port_conflict_detected", "port_conflict_skipped", "port_conflict_abort", "port_conflict_failed", "proxy_listen_port_conflict":
 		if e.Port > 0 {
 			return fmt.Sprintf("Free the port or run :kill-port %d", e.Port)
 		}
