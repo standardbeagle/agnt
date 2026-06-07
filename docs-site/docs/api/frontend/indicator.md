@@ -2,6 +2,8 @@
 sidebar_position: 14
 ---
 
+import useBaseUrl from '@docusaurus/useBaseUrl';
+
 # Floating Indicator
 
 A draggable on-page widget injected by the proxy. It shows connection status, hosts a text input for the developer to message the AI agent, and is the launch point for screenshot capture, element selection, and the sketch / design / responsive modes.
@@ -9,7 +11,7 @@ A draggable on-page widget injected by the proxy. It shows connection status, ho
 The indicator is **visible by default** and remembers its position across reloads.
 
 <video autoPlay loop muted playsInline controls width="100%" aria-label="The floating indicator with its message panel open — tabs for Overview/Errors/Network/Perf, a message box, and quick-action chips for Screenshot, Element, Sketch, Design, Inspect, Responsive, and Audit.">
-  <source src="/img/indicator.webm" type="video/webm" />
+  <source src={useBaseUrl('/img/indicator.webm')} type="video/webm" />
 </video>
 
 ## API

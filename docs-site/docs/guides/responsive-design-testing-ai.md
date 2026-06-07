@@ -5,6 +5,8 @@ keywords: [responsive design testing, mobile layout debugging, viewport testing,
 sidebar_label: "Responsive Design Testing"
 ---
 
+import useBaseUrl from '@docusaurus/useBaseUrl';
+
 # How to Debug Responsive Design with AI Coding Agents
 
 Responsive design testing is one of the most tedious parts of frontend development. A layout that looks perfect on your 1440px monitor can break completely at 768px -- a sidebar that was comfortably beside the main content now overflows horizontally, creating an invisible scrollbar that users on tablets will hit immediately. You would never notice this at your desk. The bug exists only at that specific viewport width, hiding between the breakpoints you thought to check.
@@ -210,6 +212,10 @@ PATTERNS: 1 mobile-only, 0 tablet-only, 1 cross-viewport
 ## Dialing Into a Break Interactively
 
 When you want to *find* the exact width where a layout breaks — not just confirm a known break — open [Responsive Mode](/api/frontend/responsive-mode), the interactive workbench. It hosts a live iframe of the page at a width you control with a slider, numeric input, preset chips, or an edge drag handle. As you change width, the same detectors run against the framed page and overlay severity-colored boxes on the elements that break at that width.
+
+<video autoPlay loop muted playsInline controls width="100%" aria-label="Responsive mode driving a live iframe to 414px, with layout-shift findings overlaid as severity-colored boxes that update as the width changes.">
+  <source src={useBaseUrl('/img/responsive-mode.webm')} type="video/webm" />
+</video>
 
 The human dials into the break and clicks **Send to agent**, which hands off `{width, shifts, selectors}`. The agent fixes the CSS, then drives the width back to verify:
 
