@@ -2,15 +2,13 @@
 sidebar_position: 16
 ---
 
-import useBaseUrl from '@docusaurus/useBaseUrl';
+import ModeVideo from '@site/src/components/ModeVideo';
 
 # Design Mode
 
 AI-assisted UI iteration on an existing element. The developer picks an element on the live page; the agent generates several design alternatives; the developer navigates them and refines via chat. Where [Sketch Mode](/api/frontend/sketch-mode) draws from scratch, design mode reworks what's already there.
 
-<video autoPlay loop muted playsInline controls width="100%" aria-label="Design mode active — a prompt at the bottom reads Click an element to start design iteration, ESC to cancel.">
-  <source src={useBaseUrl('/img/design-mode.webm')} type="video/webm" />
-</video>
+<ModeVideo src="/img/design-mode.webm" poster="/img/design-mode-poster.webp" label="Design mode active — a prompt at the bottom reads Click an element to start design iteration, ESC to cancel." />
 
 ## API
 

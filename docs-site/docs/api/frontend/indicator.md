@@ -2,7 +2,7 @@
 sidebar_position: 14
 ---
 
-import useBaseUrl from '@docusaurus/useBaseUrl';
+import ModeVideo from '@site/src/components/ModeVideo';
 
 # Floating Indicator
 
@@ -10,9 +10,7 @@ A draggable on-page widget injected by the proxy. It shows connection status, ho
 
 The indicator is **visible by default** and remembers its position across reloads.
 
-<video autoPlay loop muted playsInline controls width="100%" aria-label="The floating indicator with its message panel open — tabs for Overview/Errors/Network/Perf, a message box, and quick-action chips for Screenshot, Element, Sketch, Design, Inspect, Responsive, and Audit.">
-  <source src={useBaseUrl('/img/indicator.webm')} type="video/webm" />
-</video>
+<ModeVideo src="/img/indicator.webm" poster="/img/indicator-poster.webp" label="The floating indicator with its message panel open — tabs for Overview/Errors/Network/Perf, a message box, and quick-action chips for Screenshot, Element, Sketch, Design, Inspect, Responsive, and Audit." />
 
 ## API
 

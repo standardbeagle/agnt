@@ -2,7 +2,7 @@
 sidebar_position: 13
 ---
 
-import useBaseUrl from '@docusaurus/useBaseUrl';
+import ModeVideo from '@site/src/components/ModeVideo';
 
 # Responsive Mode
 
@@ -10,9 +10,7 @@ An interactive responsive workbench — the fourth indicator mode, beside sketch
 
 Where [`responsive_audit`](/api/responsive_audit) is a headless one-shot across fixed viewports, Responsive Mode is a human + agent loop: dial into the exact width where layout breaks, see the broken elements highlighted, ship them to the agent, watch the fix land.
 
-<video autoPlay loop muted playsInline controls width="100%" aria-label="Responsive mode — a width slider, numeric input, Mobile/Tablet/Desktop presets, Auto-sweep and Send-to-agent buttons across the top, with a live iframe of the page rendered at 414px and layout-shift findings overlaid as severity-colored boxes that update as the width changes.">
-  <source src={useBaseUrl('/img/responsive-mode.webm')} type="video/webm" />
-</video>
+<ModeVideo src="/img/responsive-mode.webm" poster="/img/responsive-mode-poster.webp" label="Responsive mode — a width slider, numeric input, Mobile/Tablet/Desktop presets, Auto-sweep and Send-to-agent buttons across the top, with a live iframe of the page rendered at 414px and layout-shift findings overlaid as severity-colored boxes that update as the width changes." />
 
 ## Opening It
 
