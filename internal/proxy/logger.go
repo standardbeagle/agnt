@@ -45,6 +45,11 @@ const (
 	LogTypeDesignRequest LogEntryType = "design_request"
 	// LogTypeDesignChat represents a chat message about the selected element.
 	LogTypeDesignChat LogEntryType = "design_chat"
+	// LogTypeDesignEdit represents a direct-manipulation geometry edit committed
+	// on an existing element via the design-mode transform handles. Carries the
+	// CSS selector plus the computed before→after delta for the agent to write
+	// as a real source diff.
+	LogTypeDesignEdit LogEntryType = "design_edit"
 	// LogTypeResponsiveRequest represents a handoff from responsive mode requesting agent fixes for layout shifts at a width.
 	LogTypeResponsiveRequest LogEntryType = "responsive_request"
 	// LogTypeResponsiveState represents the responsive mode panel state (current width + shift count).
@@ -377,6 +382,23 @@ type DesignRequest struct {
 	URL               string                `json:"url"`
 }
 
+// DesignEdit represents a direct-manipulation geometry edit committed on an
+// existing element through the design-mode transform handles. The payload
+// contract is selector + computed delta (plus OID so the agent can locate an
+// element whose selector is weak); the browser never resolves source files.
+type DesignEdit struct {
+	ID             string                `json:"id"`
+	Timestamp      time.Time             `json:"timestamp"`
+	Selector       string                `json:"selector"`
+	XPath          string                `json:"xpath"`
+	OID            string                `json:"oid"`             // data-devtool-oid value
+	Deltas         map[string]string     `json:"deltas"`          // property → final value
+	ComputedBefore map[string]string     `json:"computed_before"` // measured before the drag
+	ComputedAfter  map[string]string     `json:"computed_after"`  // measured after the drag
+	Metadata       DesignElementMetadata `json:"metadata"`
+	URL            string                `json:"url"`
+}
+
 // DesignChat represents a chat message about the selected element.
 type DesignChat struct {
 	ID           string                `json:"id"`
@@ -456,6 +478,7 @@ type LogEntry struct {
 	DesignState       *DesignState        `json:"design_state,omitempty"`
 	DesignRequest     *DesignRequest      `json:"design_request,omitempty"`
 	DesignChat        *DesignChat         `json:"design_chat,omitempty"`
+	DesignEdit        *DesignEdit         `json:"design_edit,omitempty"`
 	ResponsiveRequest *ResponsiveRequest  `json:"responsive_request,omitempty"`
 	ResponsiveState   *ResponsiveState    `json:"responsive_state,omitempty"`
 	Diagnostic        *ProxyDiagnostic    `json:"diagnostic,omitempty"`
@@ -617,6 +640,14 @@ func (tl *TrafficLogger) LogDesignChat(entry DesignChat) {
 	tl.log(LogEntry{
 		Type:       LogTypeDesignChat,
 		DesignChat: &entry,
+	})
+}
+
+// LogDesignEdit adds a design geometry-edit entry.
+func (tl *TrafficLogger) LogDesignEdit(entry DesignEdit) {
+	tl.log(LogEntry{
+		Type:       LogTypeDesignEdit,
+		DesignEdit: &entry,
 	})
 }
 
@@ -833,6 +864,10 @@ func (f LogFilter) Matches(entry LogEntry) bool {
 	case LogTypeDesignChat:
 		if entry.DesignChat != nil {
 			timestamp = entry.DesignChat.Timestamp
+		}
+	case LogTypeDesignEdit:
+		if entry.DesignEdit != nil {
+			timestamp = entry.DesignEdit.Timestamp
 		}
 	case LogTypeResponsiveRequest:
 		if entry.ResponsiveRequest != nil {

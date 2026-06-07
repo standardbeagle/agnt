@@ -95,6 +95,36 @@ func TestFormatProxyEventText_DesignChatDispatches(t *testing.T) {
 	assertContains(t, result, "Refinement")
 }
 
+func TestFormatProxyEventText_DesignEditDispatches(t *testing.T) {
+	event := makeEvent("design_edit", "proxy-1", map[string]interface{}{
+		"selector":        ".hero",
+		"xpath":           "//*[@id=\"hero\"]",
+		"oid":             "oid-3",
+		"deltas":          map[string]string{"width": "320px", "height": "200px"},
+		"computed_before": map[string]string{"width": "300px", "height": "180px"},
+		"computed_after":  map[string]string{"width": "320px", "height": "200px"},
+		"metadata":        map[string]interface{}{"tag": "section", "id": "hero"},
+	})
+	result := formatProxyEventText(event, nil)
+	assertContains(t, result, ".hero")
+	assertContains(t, result, "Geometry Edit")
+	assertContains(t, result, "width: 320px")
+	assertContains(t, result, "300px → 320px")
+	assertContains(t, result, "oid-3")
+}
+
+func TestFormatDesignEditText_FallsBackToXPathAndDefaults(t *testing.T) {
+	// No selector, no oid, empty deltas → falls back to xpath, "(none)", "(no delta)".
+	event := makeEvent("design_edit", "proxy-2", map[string]interface{}{
+		"xpath":    "/html/body/div[2]",
+		"metadata": map[string]interface{}{"tag": "div"},
+	})
+	result := formatDesignEditText(event)
+	assertContains(t, result, "/html/body/div[2]")
+	assertContains(t, result, "(none)")
+	assertContains(t, result, "(no delta)")
+}
+
 // ── formatPanelMessageBody ───────────────────────────────────────────────────
 
 func TestFormatPanelMessageBody_BasicMessage(t *testing.T) {

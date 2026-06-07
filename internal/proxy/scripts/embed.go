@@ -99,6 +99,12 @@ var (
 	//go:embed style-editor.js
 	styleEditorJS string
 
+	//go:embed override-store.js
+	overrideStoreJS string
+
+	//go:embed transform.js
+	transformJS string
+
 	//go:embed voice.js
 	voiceJS string
 
@@ -203,6 +209,12 @@ var moduleOrder = []moduleEntry{
 	{"design", []string{"core", "utils"}},
 	{"palette", []string{"core", "utils"}},
 	{"style-editor", []string{"core", "utils"}},
+	// override-store injects the delta stylesheet; transform renders the
+	// geometry handles, listens for design.js's palette-show, snaps drags, and
+	// emits design_edit. transform depends on the store + core + utils, and
+	// loads after design so the selection signal source is present.
+	{"override-store", nil},
+	{"transform", []string{"core", "utils", "override-store", "overlay", "design"}},
 	{"indicator", []string{"core", "utils", "sketch", "design", "style-editor", "toast", "framework-detector", "api-tracker", "shadow-root"}},
 	{"snapshot-helper", []string{"core"}},
 	{"diagnostics", []string{"utils", "core"}},
@@ -259,6 +271,8 @@ var moduleScript = map[string]string{
 	"design":             designJS,
 	"palette":            paletteJS,
 	"style-editor":       styleEditorJS,
+	"override-store":     overrideStoreJS,
+	"transform":          transformJS,
 	"indicator":          indicatorJS,
 	"snapshot-helper":    snapshotHelperJS,
 	"diagnostics":        diagnosticsJS,

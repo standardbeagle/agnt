@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -25,6 +26,8 @@ func formatProxyEventText(event ProxyEvent, summarizer *overlay.AuditSummarizer)
 		return formatDesignRequestText(event)
 	case "design_chat":
 		return formatDesignChatText(event)
+	case "design_edit":
+		return formatDesignEditText(event)
 	case "browser_error":
 		return formatBrowserErrorText(event)
 	case "http_error":
@@ -552,6 +555,86 @@ If you need more context:
 proxy {action: "exec", id: "%s", code: "__devtool_design.addAlternative('<refined HTML>')"}`,
 		data.Message, data.Selector, currentHTML,
 		event.ProxyID, event.ProxyID, event.ProxyID, event.ProxyID, event.ProxyID)
+}
+
+// formatDesignEditText formats a design_edit event (a committed
+// direct-manipulation geometry edit) into a code-change request for the AI
+// agent. The contract is selector + computed before→after delta; the agent
+// owns source-finding and writes the real CSS/JSX diff.
+func formatDesignEditText(event ProxyEvent) string {
+	var data struct {
+		Selector       string            `json:"selector"`
+		XPath          string            `json:"xpath"`
+		OID            string            `json:"oid"`
+		Deltas         map[string]string `json:"deltas"`
+		ComputedBefore map[string]string `json:"computed_before"`
+		ComputedAfter  map[string]string `json:"computed_after"`
+		URL            string            `json:"url"`
+		Metadata       struct {
+			Tag string `json:"tag"`
+			ID  string `json:"id"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal(event.Data, &data); err != nil {
+		debug.Warn("overlay", "failed to parse design_edit: %v", err)
+		return ""
+	}
+
+	target := data.Selector
+	if target == "" {
+		target = data.XPath
+	}
+
+	return fmt.Sprintf(`[📐 Design Mode: Geometry Edit Committed]
+
+**Element:** %s (%s)
+**OID:** %s
+
+**Requested change (apply to the real source):**
+%s
+
+**Before → After (computed):**
+- width: %s → %s
+- height: %s → %s
+
+Write the corresponding CSS/JSX source change for this element. Use the
+selector to locate it; the OID is a fallback locator carried in the page
+(data-devtool-oid="%s") when the selector is weak. Do not rely on the live
+override stylesheet — it is a non-destructive preview only.
+
+Locate the source if needed:
+- Screenshot current state: proxy {action: "exec", id: "%s", code: "__devtool.screenshot('geometry-edit')"}
+- Recent edits: proxylog {proxy_id: "%s", types: ["design_edit"], limit: 10}`,
+		target, data.Metadata.Tag, valueOr(data.OID, "(none)"),
+		formatDeltaLines(data.Deltas),
+		valueOr(data.ComputedBefore["width"], "?"), valueOr(data.ComputedAfter["width"], "?"),
+		valueOr(data.ComputedBefore["height"], "?"), valueOr(data.ComputedAfter["height"], "?"),
+		data.OID, event.ProxyID, event.ProxyID)
+}
+
+// formatDeltaLines renders a property→value delta map as stably ordered
+// "- prop: value" bullet lines.
+func formatDeltaLines(deltas map[string]string) string {
+	if len(deltas) == 0 {
+		return "- (no delta)"
+	}
+	keys := make([]string, 0, len(deltas))
+	for k := range deltas {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	lines := make([]string, len(keys))
+	for i, k := range keys {
+		lines[i] = fmt.Sprintf("- %s: %s", k, deltas[k])
+	}
+	return strings.Join(lines, "\n")
+}
+
+func valueOr(s, fallback string) string {
+	if s == "" {
+		return fallback
+	}
+	return s
 }
 
 // formatBrowserErrorText formats a browser_error event into compact text for PTY injection.
