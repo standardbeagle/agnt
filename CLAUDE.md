@@ -16,7 +16,7 @@ only — detailed references live in `docs/` and `.claude/rules/` (see
 - `agnt-daemon`: Copy for daemon auto-start (work around fork prevention in sandbox)
 - `devtool-mcp`: Legacy alias (backwards compat)
 
-**CLI Subcommands**: `mcp` (MCP server), `run` (PTY wrapper), `init` (setup-only, no relaunch), `skills` (install agnt skills via `npx skills` + register MCP), `monitor` (event stream), `ai` (interactive AI), `hook` (telemetry forwarder), `setup-project`
+**CLI Subcommands**: `mcp` (MCP server), `run` (PTY wrapper), `init` (setup-only, no relaunch), `skills` (install agnt skills via `npx skills` + register MCP), `monitor` (event stream), `ai` (interactive AI), `hook` (telemetry forwarder), `setup-project`, `activate`/`license` (Pro license activation + management — offline lk validation, see `internal/license/`)
 
 **Core Architecture Decisions**:
 
