@@ -15,6 +15,7 @@ require (
 	github.com/google/jsonschema-go v0.4.2
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
+	github.com/hyperboloide/lk v0.0.0-20251220053519-b291812e3216
 	github.com/klauspost/compress v1.18.3
 	github.com/sblinch/kdl-go v0.0.0-20250930225324-bf4099d4614a
 	github.com/spf13/cobra v1.10.2
