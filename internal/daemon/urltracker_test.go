@@ -383,7 +383,8 @@ func TestURLTracker_ClearProcess(t *testing.T) {
 	tracker.mu.Lock()
 	tracker.urls["proc-1"] = []string{"http://localhost:3000"}
 	tracker.seenURLs["proc-1"] = map[string]bool{"http://localhost:3000": true}
-	tracker.scannedBytes["proc-1"] = 1000
+	tracker.scannedStdout["proc-1"] = 1000
+	tracker.scannedStderr["proc-1"] = 500
 	tracker.mu.Unlock()
 
 	// Clear the process
@@ -393,7 +394,9 @@ func TestURLTracker_ClearProcess(t *testing.T) {
 	tracker.mu.RLock()
 	_, urlsExist := tracker.urls["proc-1"]
 	_, seenExist := tracker.seenURLs["proc-1"]
-	_, scannedExist := tracker.scannedBytes["proc-1"]
+	_, stdoutExist := tracker.scannedStdout["proc-1"]
+	_, stderrExist := tracker.scannedStderr["proc-1"]
+	scannedExist := stdoutExist || stderrExist
 	tracker.mu.RUnlock()
 
 	if urlsExist {
@@ -490,7 +493,7 @@ func TestParseDevServerURLsWithMatchers(t *testing.T) {
 }
 
 // TestURLTracker_ClearProcess_EnablesRescanning verifies that ClearProcess
-// resets the scannedBytes counter, allowing a restarted process with the
+// resets the per-stream scanned offsets, allowing a restarted process with the
 // same ID to have its output re-scanned for URLs.
 // This is a regression test for URL re-detection on process restart.
 func TestURLTracker_ClearProcess_EnablesRescanning(t *testing.T) {
@@ -500,31 +503,83 @@ func TestURLTracker_ClearProcess_EnablesRescanning(t *testing.T) {
 
 	// Simulate a process that has been fully scanned (maxScanBytes reached)
 	tracker.mu.Lock()
-	tracker.scannedBytes["proc-1"] = maxScanBytes // 8KB - scan limit reached
+	tracker.scannedStdout["proc-1"] = maxScanBytes // 8KB - scan limit reached
+	tracker.scannedStderr["proc-1"] = maxScanBytes
 	tracker.urls["proc-1"] = []string{"http://localhost:3000"}
 	tracker.seenURLs["proc-1"] = map[string]bool{"http://localhost:3000": true}
 	tracker.mu.Unlock()
 
 	// Verify the process appears fully scanned
 	tracker.mu.RLock()
-	scannedBefore := tracker.scannedBytes["proc-1"]
+	scannedBefore := tracker.scannedStdout["proc-1"]
 	tracker.mu.RUnlock()
 	if scannedBefore != maxScanBytes {
-		t.Fatalf("Expected scannedBytes to be %d, got %d", maxScanBytes, scannedBefore)
+		t.Fatalf("Expected scannedStdout to be %d, got %d", maxScanBytes, scannedBefore)
 	}
 
 	// Clear the process (simulates what happens during restart)
 	tracker.ClearProcess("proc-1")
 
-	// Verify scannedBytes is cleared
+	// Verify scanned offsets are cleared
 	tracker.mu.RLock()
-	scannedAfter, exists := tracker.scannedBytes["proc-1"]
+	stdoutAfter, stdoutExists := tracker.scannedStdout["proc-1"]
+	_, stderrExists := tracker.scannedStderr["proc-1"]
 	tracker.mu.RUnlock()
 
-	if exists {
-		t.Errorf("scannedBytes should not exist after ClearProcess, but got %d", scannedAfter)
+	if stdoutExists || stderrExists {
+		t.Errorf("scanned offsets should not exist after ClearProcess, but got stdout=%d", stdoutAfter)
 	}
 
-	// The key behavior: with scannedBytes cleared, a new process with the
+	// The key behavior: with scanned offsets cleared, a new process with the
 	// same ID will be scanned from byte 0 again, detecting new URLs
+}
+
+// TestScanStreamForURLs_StdoutURLSurvivesStderrAdvance is the regression test
+// for the stdout/stderr offset-coupling bug. A URL printed to stdout must be
+// detected even when stderr produced output in an earlier scan. This is the
+// exact bifrost / Vite 8 scenario: the "Local:" URL line is on stdout while
+// deprecation warnings stream to stderr. The previous single-offset-over-
+// CombinedOutput model advanced its cursor past the stderr bytes and then
+// skipped the stdout URL (which lived at a lower combined offset), so no
+// proxy was ever created.
+func TestScanStreamForURLs_StdoutURLSurvivesStderrAdvance(t *testing.T) {
+	t.Parallel()
+	matchers := []string{"Local:\\s+{url}"}
+	// 626-ish bytes of Vite 8 deprecation noise on stderr, no URL.
+	stderrNoise := []byte("6:34:41 AM [vite] warning: `optimizeDeps.esbuildOptions` option was specified " +
+		"by \"vite:react-swc\" plugin. This option is deprecated, please use " +
+		"`optimizeDeps.rolldownOptions` instead.\n`esbuild` option is set to false.\n")
+	stdoutURL := []byte("\n  VITE v8.0.16  ready in 3422 ms\n\n  Local:   http://localhost:5173/\n")
+
+	// Scan 1: only stderr has flushed; the stdout URL line is not present yet.
+	outURLs, outOff := scanStreamForURLs(nil, 0, matchers)
+	errURLs, errOff := scanStreamForURLs(stderrNoise, 0, matchers)
+	if len(outURLs) != 0 || len(errURLs) != 0 {
+		t.Fatalf("scan 1 should find no URLs, got stdout=%v stderr=%v", outURLs, errURLs)
+	}
+	if outOff != 0 {
+		t.Fatalf("stdout offset should stay 0 with no stdout, got %d", outOff)
+	}
+	if errOff != len(stderrNoise) {
+		t.Fatalf("stderr offset should advance to %d, got %d", len(stderrNoise), errOff)
+	}
+
+	// Scan 2: stdout now carries the URL; stderr is unchanged. With per-stream
+	// offsets the stdout URL is found despite stderr having advanced. A single
+	// combined cursor (== errOff) would have skipped it.
+	outURLs2, outOff2 := scanStreamForURLs(stdoutURL, outOff, matchers)
+	_, _ = scanStreamForURLs(stderrNoise, errOff, matchers)
+
+	found := false
+	for _, u := range outURLs2 {
+		if u == "http://localhost:5173" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("stdout URL not detected after stderr advanced; got %v", outURLs2)
+	}
+	if outOff2 != len(stdoutURL) {
+		t.Fatalf("stdout offset should advance to %d, got %d", len(stdoutURL), outOff2)
+	}
 }

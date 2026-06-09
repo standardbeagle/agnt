@@ -24,9 +24,18 @@ type URLTracker struct {
 	// seenURLs tracks which URLs we've already recorded per process
 	seenURLs map[string]map[string]bool
 
-	// scannedBytes tracks how much output we've scanned per process
-	// We only look at the first 8KB of output (startup phase)
-	scannedBytes map[string]int
+	// scannedStdout / scannedStderr track how much of each output stream we
+	// have scanned per process. The two streams MUST be tracked separately:
+	// a single offset into CombinedOutput() (= stdout ++ stderr) is incoherent
+	// because the concatenation is not append-only — when stdout grows, its new
+	// bytes are inserted before the stderr region, at offsets below a combined
+	// cursor that stderr had already advanced, so a URL printed to stdout (e.g.
+	// Vite's "Local: http://localhost:5173/" while deprecation warnings stream
+	// to stderr) would sit below the cursor and never be scanned. See
+	// scanStreamForURLs. We only look at the first 8KB of each stream (startup
+	// phase).
+	scannedStdout map[string]int
+	scannedStderr map[string]int
 
 	// urlMatchers stores URL matcher patterns per process ID
 	// e.g., ["Local:\\s*{url}", "Network:\\s*{url}"]
@@ -66,12 +75,13 @@ func NewURLTracker(pm *process.ProcessManager, config URLTrackerConfig) *URLTrac
 	}
 
 	return &URLTracker{
-		pm:           pm,
-		urls:         make(map[string][]string),
-		seenURLs:     make(map[string]map[string]bool),
-		scannedBytes: make(map[string]int),
-		urlMatchers:  make(map[string][]string),
-		scanInterval: config.ScanInterval,
+		pm:            pm,
+		urls:          make(map[string][]string),
+		seenURLs:      make(map[string]map[string]bool),
+		scannedStdout: make(map[string]int),
+		scannedStderr: make(map[string]int),
+		urlMatchers:   make(map[string][]string),
+		scanInterval:  config.ScanInterval,
 	}
 }
 
@@ -114,7 +124,8 @@ func (t *URLTracker) ClearProcess(processID string) {
 
 	delete(t.urls, processID)
 	delete(t.seenURLs, processID)
-	delete(t.scannedBytes, processID)
+	delete(t.scannedStdout, processID)
+	delete(t.scannedStderr, processID)
 }
 
 // scanLoop periodically scans process output for URLs.
@@ -152,15 +163,31 @@ func (t *URLTracker) scanAllProcesses() {
 	t.cleanupRemovedProcesses(procs)
 }
 
+// scanStreamForURLs scans the unscanned tail of a single output stream for
+// dev-server URLs. It returns any URLs found in buf[scanned:scanEnd] (scanEnd
+// capped at maxScanBytes) and the new scanned offset for that stream.
+//
+// Tracking each stream against its own offset is the fix for a real bug: the
+// previous implementation kept a single offset into CombinedOutput()
+// (= stdout ++ stderr). That concatenation is not append-only — growth in
+// stdout shifts new bytes in before the already-counted stderr region — so a
+// URL on stdout could fall below the combined cursor and never be scanned
+// (e.g. Vite 8: "Local: http://localhost:5173/" on stdout, deprecation
+// warnings on stderr). Scanning each stream independently removes the coupling.
+func scanStreamForURLs(buf []byte, scanned int, matchers []string) (urls []string, newScanned int) {
+	scanEnd := len(buf)
+	if scanEnd > maxScanBytes {
+		scanEnd = maxScanBytes
+	}
+	if scanned >= scanEnd {
+		return nil, scanned
+	}
+	return parseDevServerURLsWithMatchers(buf[scanned:scanEnd], matchers), scanEnd
+}
+
 // scanProcess scans a single process for dev server URLs.
 func (t *URLTracker) scanProcess(p *process.ManagedProcess) {
 	t.mu.Lock()
-
-	// Check if we've already scanned enough of this process
-	if t.scannedBytes[p.ID] >= maxScanBytes {
-		t.mu.Unlock()
-		return
-	}
 
 	// Check if we already have enough URLs
 	if len(t.urls[p.ID]) >= maxURLsPerProcess {
@@ -168,9 +195,17 @@ func (t *URLTracker) scanProcess(p *process.ManagedProcess) {
 		return
 	}
 
-	// Call first-seen callback on first scan (for loading config)
-	// This must happen BEFORE we scan, so matchers are available
-	isFirstScan := t.scannedBytes[p.ID] == 0
+	// Check if we've already scanned enough of both streams
+	stdoutScanned := t.scannedStdout[p.ID]
+	stderrScanned := t.scannedStderr[p.ID]
+	if stdoutScanned >= maxScanBytes && stderrScanned >= maxScanBytes {
+		t.mu.Unlock()
+		return
+	}
+
+	// Call first-seen callback on first scan (for loading config).
+	// This must happen BEFORE we scan, so matchers are available.
+	isFirstScan := stdoutScanned == 0 && stderrScanned == 0
 
 	t.mu.Unlock()
 
@@ -179,36 +214,25 @@ func (t *URLTracker) scanProcess(p *process.ManagedProcess) {
 		t.onProcessFirstSeen(p.ID)
 	}
 
-	// Get combined output
-	output, _ := p.CombinedOutput()
-	if len(output) == 0 {
+	// Read stdout and stderr separately — never CombinedOutput(), whose
+	// concatenation breaks a single byte cursor (see scanStreamForURLs).
+	stdout, _ := p.Stdout()
+	stderr, _ := p.Stderr()
+	if len(stdout) == 0 && len(stderr) == 0 {
 		return
 	}
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	// Only scan up to maxScanBytes
-	scanEnd := len(output)
-	if scanEnd > maxScanBytes {
-		scanEnd = maxScanBytes
-	}
-
-	// Only scan new bytes since last time
-	scanStart := t.scannedBytes[p.ID]
-	if scanStart >= scanEnd {
-		return
-	}
-
-	// Update scanned position
-	t.scannedBytes[p.ID] = scanEnd
-
-	// Get URL matchers for this process (if any)
 	matchers := t.urlMatchers[p.ID]
 
-	// Parse dev server URLs from the new portion using matchers
-	urls := parseDevServerURLsWithMatchers(output[scanStart:scanEnd], matchers)
-	if len(urls) == 0 {
+	stdoutURLs, newStdout := scanStreamForURLs(stdout, t.scannedStdout[p.ID], matchers)
+	stderrURLs, newStderr := scanStreamForURLs(stderr, t.scannedStderr[p.ID], matchers)
+	t.scannedStdout[p.ID] = newStdout
+	t.scannedStderr[p.ID] = newStderr
+
+	if len(stdoutURLs) == 0 && len(stderrURLs) == 0 {
 		return
 	}
 
@@ -217,11 +241,12 @@ func (t *URLTracker) scanProcess(p *process.ManagedProcess) {
 		t.seenURLs[p.ID] = make(map[string]bool)
 	}
 
-	// Add new URLs and track which ones are new for callback notification
+	// Add new URLs and track which ones are new for callback notification.
+	// seenURLs dedup naturally collapses a URL printed to both streams.
 	var newURLs []string
 	processID := p.ID // Save processID for callback after unlock
 
-	for _, url := range urls {
+	for _, url := range append(stdoutURLs, stderrURLs...) {
 		if t.seenURLs[p.ID][url] {
 			continue // Already seen
 		}
@@ -265,7 +290,8 @@ func (t *URLTracker) cleanupRemovedProcesses(currentProcs []*process.ManagedProc
 		if !currentIDs[id] {
 			delete(t.urls, id)
 			delete(t.seenURLs, id)
-			delete(t.scannedBytes, id)
+			delete(t.scannedStdout, id)
+			delete(t.scannedStderr, id)
 			delete(t.urlMatchers, id)
 			stoppedProcesses = append(stoppedProcesses, id)
 		}

@@ -597,7 +597,16 @@ func (d *Daemon) startAutostartProxies(ctx context.Context, cfg *config.AgntConf
 
 // scheduleFallbackPortChecks schedules delayed FallbackPortCheck events for
 // script-linked proxies that have a fallback-port configured.
-func (d *Daemon) scheduleFallbackPortChecks(ctx context.Context, cfg *config.AgntConfig, projectPath string, failedScripts map[string]bool) {
+//
+// The delay timer is bound to the daemon context (d.ctx), NOT the autostart
+// context passed in: the autostart context is cancelled the instant autostart
+// returns (autostart_manager.go run() → h.cancel()), which happens in seconds
+// for a fast-starting project — long before the fallback delay elapses. Binding
+// the wait to the autostart context killed the goroutine immediately, so the
+// fallback proxy was never created when URL detection also failed. This mirrors
+// the port-probe fix in setupReadinessSignal. The autostart context is
+// intentionally ignored here.
+func (d *Daemon) scheduleFallbackPortChecks(_ context.Context, cfg *config.AgntConfig, projectPath string, failedScripts map[string]bool) {
 	for proxyName, proxyConfig := range cfg.Proxies {
 		if proxyConfig.Script == "" {
 			continue // Not script-linked
@@ -615,11 +624,12 @@ func (d *Daemon) scheduleFallbackPortChecks(ctx context.Context, cfg *config.Agn
 		scriptID := makeProcessID(projectPath, pc.Script)
 
 		go func() {
-			// Wait for URL detection to have a chance
+			// Wait for URL detection to have a chance. Bound to the daemon
+			// context so the timer survives autostart returning (see doc above).
 			select {
-			case <-ctx.Done():
+			case <-d.ctx.Done():
 				return
-			case <-time.After(30 * time.Second):
+			case <-time.After(d.fallbackCheckDelay):
 			}
 
 			select {

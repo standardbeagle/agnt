@@ -898,11 +898,27 @@ func (r *InputRouter) refreshPanelContent(panelID string) {
 		return
 	}
 
+	// Auto-scroll only when the user is pinned to the bottom. When the user has
+	// scrolled up (ScrollOffset > 0), keep the same lines in view as new output
+	// appends at the bottom: ScrollOffset is measured from the bottom, so the
+	// render window (endLine = len(lines) - ScrollOffset) would otherwise slide
+	// downward by the number of appended lines, yanking the view toward the
+	// bottom. Push the offset up by that delta to anchor the visible region.
+	//
+	// Exact below the maxPanelLines (2000) cap; once the tail window saturates
+	// the appended-line count reads as 0 and the view can still drift — full
+	// anchoring there would need stable per-line identity, out of scope here.
 	wasAtBottom := panel.ScrollOffset == 0
 	if panel.Content != output {
+		prevLines := panel.ContentLines()
 		panel.SetContent(output)
 		if wasAtBottom {
 			panel.ScrollOffset = 0
+		} else if added := panel.ContentLines() - prevLines; added > 0 {
+			panel.ScrollOffset += added
+			if maxOff := panel.ContentLines() - 1; maxOff >= 0 && panel.ScrollOffset > maxOff {
+				panel.ScrollOffset = maxOff
+			}
 		}
 	}
 

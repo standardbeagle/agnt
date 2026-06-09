@@ -727,8 +727,44 @@ func TestPanelRefreshRespectsScrollOffset(t *testing.T) {
 
 	// Content should be updated
 	assert.Equal(t, "new content with more lines", content)
-	// ScrollOffset should be preserved since user was not at bottom
+	// ScrollOffset should be preserved since user was not at bottom (and no
+	// lines were appended — both contents are a single line).
 	assert.Equal(t, 5, offset)
+
+	router.stopPanelRefresh()
+}
+
+// TestPanelRefreshAnchorsViewWhenScrolledUp verifies that when the user has
+// scrolled up and new lines append at the bottom, the from-bottom ScrollOffset
+// grows by the number of appended lines so the visible region stays anchored to
+// the same content (rather than the window sliding toward the bottom — the
+// "auto-scrolls even when not at the bottom" bug).
+func TestPanelRefreshAnchorsViewWhenScrolledUp(t *testing.T) {
+	router, ov, fetcher := newPanelTestRouter(t)
+
+	// 3-line content, user scrolled up 2 lines from the bottom.
+	ov.mu.Lock()
+	ov.panelItems[1].SetContent("line1\nline2\nline3")
+	ov.panelItems[1].ScrollOffset = 2
+	ov.mu.Unlock()
+
+	// Two new lines appended at the bottom (now 5 lines).
+	fetcher.setOutput("line1\nline2\nline3\nline4\nline5")
+
+	router.overlay.mu.Lock()
+	router.startPanelRefresh("dev")
+	router.overlay.mu.Unlock()
+
+	time.Sleep(panelRefreshInterval + 200*time.Millisecond)
+
+	ov.mu.Lock()
+	offset := ov.panelItems[1].ScrollOffset
+	content := ov.panelItems[1].Content
+	ov.mu.Unlock()
+
+	assert.Equal(t, "line1\nline2\nline3\nline4\nline5", content)
+	// 2 lines appended → offset must rise 2 (2→4) to keep line1..line3 in view.
+	assert.Equal(t, 4, offset, "offset should grow by appended-line count to anchor the view")
 
 	router.stopPanelRefresh()
 }
