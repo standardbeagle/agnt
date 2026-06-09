@@ -241,10 +241,16 @@ type Daemon struct {
 	pendingProcs *PendingProcessTracker
 
 	// Proxy event system
-	proxyEvents   chan ProxyEvent
-	scriptProxies map[string][]string // scriptID -> []proxyID
-	proxyToScript map[string]string   // proxyID -> scriptID (reverse index for suppression lookup)
-	scriptProxyMu sync.RWMutex
+	proxyEvents chan ProxyEvent
+	// fallbackCheckDelay is how long scheduleFallbackPortChecks waits after
+	// autostart before emitting a FallbackPortCheck for a script-linked proxy
+	// whose URL detection never fired. Production is always 30s (set in New);
+	// this is an internal test seam so tests can exercise the scheduling path
+	// without a 30s wait. Never expose in .agnt.kdl.
+	fallbackCheckDelay time.Duration
+	scriptProxies      map[string][]string // scriptID -> []proxyID
+	proxyToScript      map[string]string   // proxyID -> scriptID (reverse index for suppression lookup)
+	scriptProxyMu      sync.RWMutex
 
 	// proxyEntries is the admin-surface shim for explicit proxies — proxies
 	// started without a linked script (MCP tool path or standalone-proxy
@@ -361,30 +367,31 @@ func New(config DaemonConfig) *Daemon {
 	incBus := incident.NewMPSCBus(nil)
 
 	d := &Daemon{
-		config:            config,
-		hub:               h,
-		proxym:            proxy.NewProxyManager(),
-		tunnelm:           tunnel.NewManager(),
-		browserm:          browser.NewManager(),
-		sessionm:          chromedp.NewSessionManager(),
-		storem:            store.NewStoreManager(),
-		alertStore:        NewProcessAlertStore(500),
-		processExitInfo:   newProcessExitInfoStore(defaultExitInfoRetention),
-		startupErrorStore: NewStartupLogStore(100),
-		eventHub:          NewEventHub(),
-		incidentBus:       incBus,
-		hookRing:          newHookRingBuffer(hookRingCapacity),
-		scriptRegistry:    script.NewRegistry(),
-		sessionRegistry:   sessionRegistry,
-		scheduler:         scheduler,
-		schedulerStateMgr: schedulerStateMgr,
-		pidTracker:        pidTracker,
-		proxyEvents:       make(chan ProxyEvent, 10), // Buffer 10 events
-		scriptProxies:     make(map[string][]string),
-		proxyToScript:     make(map[string]string),
-		proxyEntries:      newProxyEntryStore(),
-		ctx:               ctx,
-		cancel:            cancel,
+		config:             config,
+		hub:                h,
+		proxym:             proxy.NewProxyManager(),
+		tunnelm:            tunnel.NewManager(),
+		browserm:           browser.NewManager(),
+		sessionm:           chromedp.NewSessionManager(),
+		storem:             store.NewStoreManager(),
+		alertStore:         NewProcessAlertStore(500),
+		processExitInfo:    newProcessExitInfoStore(defaultExitInfoRetention),
+		startupErrorStore:  NewStartupLogStore(100),
+		eventHub:           NewEventHub(),
+		incidentBus:        incBus,
+		hookRing:           newHookRingBuffer(hookRingCapacity),
+		scriptRegistry:     script.NewRegistry(),
+		sessionRegistry:    sessionRegistry,
+		scheduler:          scheduler,
+		schedulerStateMgr:  schedulerStateMgr,
+		pidTracker:         pidTracker,
+		proxyEvents:        make(chan ProxyEvent, 10), // Buffer 10 events
+		fallbackCheckDelay: 30 * time.Second,
+		scriptProxies:      make(map[string][]string),
+		proxyToScript:      make(map[string]string),
+		proxyEntries:       newProxyEntryStore(),
+		ctx:                ctx,
+		cancel:             cancel,
 	}
 
 	// Wire proxy manager into EventHub so crash alerts are broadcast to
@@ -454,39 +461,8 @@ func New(config DaemonConfig) *Daemon {
 	d.alertScanner = overlay.NewAlertScanner(overlay.AlertScannerConfig{
 		OnAlert: func(batch *overlay.AlertBatch) {
 			ts := time.Now()
-			for _, m := range batch.Matches {
-				mts := m.Timestamp
-				if mts.IsZero() {
-					mts = ts
-				}
-				// Stamp the owning project path at ingest so the
-				// session-scope chokepoint can filter alerts by project.
-				// The scanner only fires for daemon-managed processes, so
-				// the script ID resolves to a managed process whose
-				// ProjectPath is the source of truth. Fail loud (not silent
-				// empty) when it can't be resolved.
-				projectPath := ""
-				if m.ScriptID != "" {
-					if proc, err := d.hub.ProcessManager().Get(m.ScriptID); err == nil {
-						projectPath = proc.ProjectPath
-					}
-					if projectPath == "" {
-						debug.Warn("daemon", "alert ingest: unresolved project path for script %q; storing alert unscoped", m.ScriptID)
-					}
-				}
-				d.alertStore.Add(&AlertEntry{
-					PatternID:   m.Pattern.ID,
-					Severity:    string(m.Pattern.Severity),
-					Category:    m.Pattern.Category,
-					Description: m.Pattern.Description,
-					Line:        m.Line,
-					ScriptID:    m.ScriptID,
-					ProjectPath: projectPath,
-					Timestamp:   mts,
-				})
-				if m.Pattern.Category == "rebuild" && m.ScriptID != "" {
-					d.healthTracker.RecordRebuildSignal(m.ScriptID)
-				}
+			for i := range batch.Matches {
+				d.ingestProcessAlert(batch.Matches[i], ts)
 			}
 			formatted := batch.Format()
 			if formatted != "" {
@@ -790,6 +766,52 @@ func (d *Daemon) SessionManager() *chromedp.SessionManager {
 // AutoRestarter returns the process auto-restart manager.
 func (d *Daemon) AutoRestarter() *ProcessAutoRestarter {
 	return d.autoRestarter
+}
+
+// ingestProcessAlert routes a single AlertScanner match to every agent-facing
+// surface: the legacy alertStore (get_errors) AND the incident bus
+// (get_incidents). Before this, process alerts reached only alertStore + the
+// browser toast (EventHub.Deliver), so a session running with the incident
+// pipeline enabled saw process errors pop as toasts but never in its inbox.
+// fallbackTS is used when the match carries no timestamp.
+func (d *Daemon) ingestProcessAlert(m *overlay.AlertMatch, fallbackTS time.Time) {
+	mts := m.Timestamp
+	if mts.IsZero() {
+		mts = fallbackTS
+	}
+	// Stamp the owning project path at ingest so the session-scope chokepoint
+	// can filter alerts by project. The scanner only fires for daemon-managed
+	// processes, so the script ID resolves to a managed process whose
+	// ProjectPath is the source of truth. Fail loud (not silent empty) when it
+	// can't be resolved.
+	projectPath := ""
+	if m.ScriptID != "" {
+		if proc, err := d.hub.ProcessManager().Get(m.ScriptID); err == nil {
+			projectPath = proc.ProjectPath
+		}
+		if projectPath == "" {
+			debug.Warn("daemon", "alert ingest: unresolved project path for script %q; storing alert unscoped", m.ScriptID)
+		}
+	}
+	d.alertStore.Add(&AlertEntry{
+		PatternID:   m.Pattern.ID,
+		Severity:    string(m.Pattern.Severity),
+		Category:    m.Pattern.Category,
+		Description: m.Pattern.Description,
+		Line:        m.Line,
+		ScriptID:    m.ScriptID,
+		ProjectPath: projectPath,
+		Timestamp:   mts,
+	})
+	if m.Pattern.Category == "rebuild" && m.ScriptID != "" {
+		d.healthTracker.RecordRebuildSignal(m.ScriptID)
+	}
+	// Mirror into the incident pipeline. The bus is a no-op when no session has
+	// the pipeline enabled, so this is safe to call unconditionally — it matches
+	// the dual-write pattern fireToIncidentBus already uses for proxy signals.
+	if d.incidentBus != nil {
+		d.incidentBus.Publish(incident.FromAlertMatch(m, m.ScriptID))
+	}
 }
 
 // AlertStore returns the process alert store.

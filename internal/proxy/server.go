@@ -327,12 +327,22 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 			baseTransport = NewTLSFallbackTransport(baseT, func(certErr error) {
 				debug.Warn("proxy", "TLS cert error for proxy %s (%s): %v — retrying without verification", config.ID, config.TargetURL, certErr)
 				ps.tlsCertSkipped.Store(true)
-				ps.logger.LogCustom(CustomLog{
-					Level:   "warn",
-					Message: "TLS certificate verification failed and was bypassed. The backend is using a self-signed or invalid certificate. Traffic is still being proxied.",
-					Data: map[string]interface{}{
+				// Emit a warning-level diagnostic rather than a level="warn"
+				// custom log: diagnostics route through the daemon broadcast
+				// gate into the incident pipeline (FromProxyDiagnostic), so the
+				// AI agent sees the bypass. A custom-warn is invisible to the
+				// agent's error surfaces (only level="error" customs count).
+				// Event is deliberately NOT a transport event ("cert_bypass")
+				// so it does not trip transport-outage suppression.
+				ps.logger.LogDiagnostic(ProxyDiagnostic{
+					Timestamp: time.Now(),
+					Level:     DiagnosticWarning,
+					Category:  "proxy",
+					Event:     "cert_bypass",
+					Message:   "TLS certificate verification failed and was bypassed. The backend is using a self-signed or invalid certificate. Traffic is still being proxied.",
+					Target:    config.TargetURL,
+					Data: map[string]any{
 						"proxy_id":   config.ID,
-						"target":     config.TargetURL,
 						"cert_error": certErr.Error(),
 					},
 				})

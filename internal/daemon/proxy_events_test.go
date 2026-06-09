@@ -1243,3 +1243,78 @@ func TestHandleExplicitStart_RegisterIsIdempotent(t *testing.T) {
 		t.Errorf("expected exactly 1 proxy-kind entry after duplicate registers, got %d", len(entries))
 	}
 }
+
+// TestScheduleFallbackPortChecks_SurvivesAutostartContextCancel is the
+// regression test for the fallback-port goroutine being bound to the autostart
+// context. The autostart context is cancelled the instant autostart returns
+// (seconds), well before the fallback delay — so a goroutine that selected on
+// it died immediately and the FallbackPortCheck event was never emitted, and
+// a script-linked proxy whose URL detection also failed was never created.
+//
+// A hand-built Daemon is used (not the full Start/bootstrap path) so the
+// daemon's own handleProxyEvents goroutine is not running to consume the event
+// before this test can observe it.
+func TestScheduleFallbackPortChecks_SurvivesAutostartContextCancel(t *testing.T) {
+	t.Parallel()
+
+	d := &Daemon{
+		ctx:                context.Background(),
+		proxyEvents:        make(chan ProxyEvent, 4),
+		fallbackCheckDelay: 10 * time.Millisecond,
+	}
+
+	cfg := &config.AgntConfig{
+		Proxies: map[string]*config.ProxyConfig{
+			"dev": {Script: "frontend", FallbackPort: 5173},
+		},
+	}
+
+	// Autostart context already cancelled — mimics autostart having returned.
+	autostartCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	d.scheduleFallbackPortChecks(autostartCtx, cfg, "/tmp/proj", nil)
+
+	select {
+	case ev := <-d.proxyEvents:
+		if ev.Type != FallbackPortCheck {
+			t.Fatalf("expected FallbackPortCheck, got %v", ev.Type)
+		}
+		if ev.ProxyName != "dev" {
+			t.Fatalf("expected proxy name %q, got %q", "dev", ev.ProxyName)
+		}
+		if ev.Config == nil || ev.Config.FallbackPort != 5173 {
+			t.Fatalf("expected fallback-port 5173 in event config, got %+v", ev.Config)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("FallbackPortCheck never emitted — autostart ctx cancellation killed the fallback goroutine")
+	}
+}
+
+// TestProxyEvent_HandleScriptStopped_IgnoresAlreadyStoppedProxy verifies that
+// when a script-linked proxy was already removed from the manager (e.g. by
+// CleanupSessionResources during a session restart) but is still in the
+// scriptProxies index, the ScriptStopped handler treats the "proxy not found"
+// stop result as idempotent success — no proxy_stop_failed warning is surfaced
+// to the agent. Regression for the bifrost restart warning:
+//
+//	⚠ [proxy_stop_failed] failed to stop proxy ...:dev:localhost-5173
+//	  on script stop: proxy not found
+func TestProxyEvent_HandleScriptStopped_IgnoresAlreadyStoppedProxy(t *testing.T) {
+	t.Parallel()
+	daemon, tmpDir := newFallbackTestDaemon(t)
+
+	scriptID := makeProcessID(tmpDir, "dev-frontend")
+	// A proxy id that is NOT registered in the manager (already torn down).
+	ghostID := makeProcessID(tmpDir, "dev") + ":localhost-5173"
+	daemon.trackScriptProxy(scriptID, ghostID)
+
+	daemon.handleScriptStopped(ProxyEvent{Type: ScriptStopped, ScriptID: scriptID})
+
+	if n := countStartupEntriesByEvent(daemon, "proxy_stop_failed"); n != 0 {
+		t.Fatalf("expected 0 proxy_stop_failed entries for an already-stopped proxy, got %d", n)
+	}
+	if tracked := daemon.getProxiesForScript(scriptID); len(tracked) != 0 {
+		t.Errorf("expected script proxy tracking cleared after stop, got %v", tracked)
+	}
+}

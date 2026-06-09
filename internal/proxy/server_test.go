@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"errors"
 	"net"
 	"net/http"
 	"testing"
@@ -85,6 +86,58 @@ func extractHTTPTransport(t *testing.T, ps *ProxyServer) *http.Transport {
 	require.True(t, ok, "expected *http.Transport underneath ChaosTransport, got %T", underlying)
 
 	return httpTransport
+}
+
+// TestNewProxyServer_TLSBypassEmitsAgentVisibleDiagnostic pins that a TLS
+// certificate bypass surfaces as a warning-level diagnostic (which the
+// incident pipeline forwards to the AI agent), not a level="warn" custom log
+// that the agent's error/incident surfaces silently ignore. Regression guard
+// for the "errors that popup in the proxy toast aren't sent to the coding
+// agent" report.
+func TestNewProxyServer_TLSBypassEmitsAgentVisibleDiagnostic(t *testing.T) {
+	config := ProxyConfig{
+		ID:         "tls-bypass-diag",
+		TargetURL:  "https://localhost:9999",
+		ListenPort: 0,
+		MaxLogSize: 100,
+		// SkipTLSVerify defaults false → TLSFallbackTransport is wired.
+	}
+
+	ps, err := NewProxyServer(config)
+	require.NoError(t, err)
+
+	chaos, ok := ps.proxy.Transport.(*ChaosTransport)
+	require.True(t, ok, "expected ChaosTransport wrapper, got %T", ps.proxy.Transport)
+	fb, ok := chaos.underlying.(*TLSFallbackTransport)
+	require.True(t, ok, "HTTPS target should wire a TLSFallbackTransport")
+	require.NotNil(t, fb.onSkipped, "fallback transport must carry an onSkipped callback")
+
+	// Simulate the cert-verification fallback firing once.
+	fb.onSkipped(errors.New("x509: certificate signed by unknown authority"))
+
+	// Must be a warning-level diagnostic — the designed agent-facing channel.
+	diags := ps.logger.Query(LogFilter{Types: []LogEntryType{LogTypeDiagnostic}})
+	var found *ProxyDiagnostic
+	for i := range diags {
+		if diags[i].Diagnostic != nil && diags[i].Diagnostic.Event == "cert_bypass" {
+			found = diags[i].Diagnostic
+			break
+		}
+	}
+	require.NotNil(t, found, "TLS bypass should log a cert_bypass diagnostic")
+	assert.Equal(t, DiagnosticWarning, found.Level,
+		"cert bypass must be warning level so FromProxyDiagnostic forwards it")
+	assert.NotEqual(t, "transport", found.Category,
+		"cert_bypass must not be transport category — would falsely trip outage suppression")
+
+	// Must NOT regress to the old invisible level=warn custom log.
+	customs := ps.logger.Query(LogFilter{Types: []LogEntryType{LogTypeCustom}})
+	for _, e := range customs {
+		if e.Custom != nil {
+			assert.NotContains(t, e.Custom.Message, "verification failed and was bypassed",
+				"TLS bypass must no longer be recorded as an agent-invisible custom-warn log")
+		}
+	}
 }
 
 func TestNewProxyServer_DefaultBindAddressIsLocalhost(t *testing.T) {

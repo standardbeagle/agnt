@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"errors"
 	"fmt"
 	"net/url"
 	"regexp"
@@ -552,16 +553,28 @@ func (d *Daemon) handleScriptStopped(event ProxyEvent) {
 	// Stop each proxy
 	for _, proxyID := range proxyIDs {
 		debug.Log("daemon", "Stopping proxy %s (script: %s)", proxyID, event.ScriptID)
-		if err := d.proxym.Stop(d.ctx, proxyID); err != nil {
-			debug.Warn("daemon", "Failed to stop proxy %s: %v", proxyID, err)
-			d.startupErrorStore.Add(&StartupLogEntry{
-				ProcessID: event.ScriptID,
-				Level:     "warning",
-				EventType: "proxy_stop_failed",
-				Message:   fmt.Sprintf("failed to stop proxy %s on script stop: %v", proxyID, err),
-				Timestamp: time.Now(),
-			})
+		err := d.proxym.Stop(d.ctx, proxyID)
+		if err == nil {
+			continue
 		}
+		// Already gone is success for a teardown intent, not a failure. The
+		// proxy can be removed by another path before this event runs — e.g.
+		// CleanupSessionResources stops all project proxies on session restart,
+		// then the script-stop event arrives with the proxy still in the
+		// scriptProxies index. Surfacing "proxy not found" as a warning to the
+		// agent is noise; treat idempotent teardown as done.
+		if errors.Is(err, proxy.ErrProxyNotFound) {
+			debug.Log("daemon", "Proxy %s already stopped (script: %s)", proxyID, event.ScriptID)
+			continue
+		}
+		debug.Warn("daemon", "Failed to stop proxy %s: %v", proxyID, err)
+		d.startupErrorStore.Add(&StartupLogEntry{
+			ProcessID: event.ScriptID,
+			Level:     "warning",
+			EventType: "proxy_stop_failed",
+			Message:   fmt.Sprintf("failed to stop proxy %s on script stop: %v", proxyID, err),
+			Timestamp: time.Now(),
+		})
 	}
 
 	// Clear tracking
