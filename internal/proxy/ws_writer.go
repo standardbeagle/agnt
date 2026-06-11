@@ -24,38 +24,44 @@ type wsWriter interface {
 	Close() error
 }
 
-// asyncWSWriter wraps a wsWriter and serialises writes through a bounded
-// channel so that a slow or blocked subscriber never stalls the broadcast
-// loop. Each instance owns one goroutine that drains the channel.
+// asyncWSWriter funnels every outbound write through a single drain goroutine,
+// so the underlying conn never sees concurrent WriteMessage calls (gorilla
+// forbids concurrent writers) — by construction, with no write mutex.
 //
-// Design constraints:
-//   - Channel size 64: enough headroom for a burst of broadcast messages
-//     without consuming significant memory per subscriber.
-//   - If the channel is full the message is dropped (slow-subscriber
-//     isolation). The drop is counted via droppedMsgs.
-//   - Close() is idempotent and signals the drain goroutine to exit.
-//   - WriteMessage returns an error only when the underlying conn has
-//     already been closed; the drain goroutine propagates that by closing
-//     the channel and setting the closed flag.
+// Two lanes feed the drain goroutine:
+//   - broadcast (WriteMessage): bounded, non-blocking, drop-on-full. A slow or
+//     blocked subscriber never stalls the broadcast loop; drops are counted.
+//   - control (WriteSync/WriteJSON): bounded, blocking, never drops. Carries
+//     control-plane request/replies (session, store, voice, capture_ack) that
+//     must be delivered; the caller waits for the write result.
+//
+// The drain goroutine prefers the control lane when both are ready, so a
+// broadcast burst cannot starve a pending reply.
 type asyncWSWriter struct {
 	conn    wsWriter
 	ch      chan []byte
+	control chan wsControlFrame
 	msgType int
 
-	// writeMu serialises every WriteMessage on the underlying conn — the drain
-	// goroutine AND the synchronous control-plane writers (WriteJSON / WriteSync)
-	// — so gorilla never sees a concurrent write. gorilla/websocket forbids
-	// concurrent writers; without this, broadcast drains race the session/store/
-	// voice/capture-ack writers and corrupt the frame stream.
-	writeMu sync.Mutex
-
+	done    chan struct{} // closed by Close; unblocks senders and the drain loop
 	once    sync.Once
 	closed  atomic.Bool
 	dropped atomic.Int64
 	wg      sync.WaitGroup
 }
 
-const asyncWSWriterBufSize = 64
+// wsControlFrame is a control-lane write plus the channel the drain goroutine
+// reports the write result on. errCh is buffered so the drain never blocks on
+// a caller that has already given up.
+type wsControlFrame struct {
+	data  []byte
+	errCh chan error
+}
+
+const (
+	asyncWSWriterBufSize     = 64
+	asyncWSWriterControlSize = 16
+)
 
 // newAsyncWSWriter creates an asyncWSWriter and starts its drain goroutine.
 // msgType is the WebSocket message type (e.g. websocket.TextMessage) used
@@ -64,41 +70,83 @@ func newAsyncWSWriter(conn wsWriter, msgType int) *asyncWSWriter {
 	w := &asyncWSWriter{
 		conn:    conn,
 		ch:      make(chan []byte, asyncWSWriterBufSize),
+		control: make(chan wsControlFrame, asyncWSWriterControlSize),
 		msgType: msgType,
+		done:    make(chan struct{}),
 	}
 	w.wg.Add(1)
 	go w.drain()
 	return w
 }
 
-// drain is the single writer goroutine. It serialises all outbound writes so
-// the underlying conn never receives concurrent WriteMessage calls.
+// drain is the single writer goroutine — the only caller of conn.WriteMessage.
 func (w *asyncWSWriter) drain() {
 	defer w.wg.Done()
-	for msg := range w.ch {
-		w.writeMu.Lock()
-		err := w.conn.WriteMessage(w.msgType, msg)
-		w.writeMu.Unlock()
-		if err != nil {
-			// Connection gone — mark closed and discard the rest.
-			w.closed.Store(true)
-			// Drain residual messages without blocking.
-			for range w.ch {
-				w.dropped.Add(1)
-			}
+	for {
+		// Control lane has priority: serve any pending control frame before
+		// taking the next broadcast message.
+		select {
+		case f := <-w.control:
+			w.writeControl(f)
+			continue
+		default:
+		}
+
+		select {
+		case f := <-w.control:
+			w.writeControl(f)
+		case msg := <-w.ch:
+			w.writeBroadcast(msg)
+		case <-w.done:
+			w.flushResidual()
 			return
 		}
 	}
 }
 
-// WriteJSON marshals v and writes it synchronously, serialised against the
-// drain goroutine via writeMu. Unlike the async broadcast path it never drops:
-// control-plane request/replies (session, store, voice, capture_ack) must be
-// delivered. Returns an error if the conn is already closed or the write fails.
-func (w *asyncWSWriter) WriteJSON(v interface{}) error {
+func (w *asyncWSWriter) writeControl(f wsControlFrame) {
 	if w.closed.Load() {
-		return errConnClosed
+		f.errCh <- errConnClosed
+		return
 	}
+	err := w.conn.WriteMessage(w.msgType, f.data)
+	if err != nil {
+		w.closed.Store(true)
+	}
+	f.errCh <- err
+}
+
+func (w *asyncWSWriter) writeBroadcast(msg []byte) {
+	if w.closed.Load() {
+		w.dropped.Add(1)
+		return
+	}
+	if err := w.conn.WriteMessage(w.msgType, msg); err != nil {
+		// Connection gone — subsequent frames are discarded (broadcast) or
+		// failed (control) until Close.
+		w.closed.Store(true)
+	}
+}
+
+// flushResidual empties both lanes after shutdown so no control caller is
+// left waiting on a result.
+func (w *asyncWSWriter) flushResidual() {
+	for {
+		select {
+		case f := <-w.control:
+			f.errCh <- errConnClosed
+		case <-w.ch:
+			w.dropped.Add(1)
+		default:
+			return
+		}
+	}
+}
+
+// WriteJSON marshals v and writes it via the control lane: delivered in order,
+// never dropped, result reported to the caller. Returns an error if the conn
+// is already closed or the write fails.
+func (w *asyncWSWriter) WriteJSON(v interface{}) error {
 	data, err := json.Marshal(v)
 	if err != nil {
 		return err
@@ -106,19 +154,29 @@ func (w *asyncWSWriter) WriteJSON(v interface{}) error {
 	return w.WriteSync(data)
 }
 
-// WriteSync writes pre-marshalled bytes synchronously, serialised against the
-// drain goroutine. Used for control-plane frames already in wire form.
+// WriteSync writes pre-marshalled bytes via the control lane and waits for the
+// write result. Used for control-plane frames already in wire form.
 func (w *asyncWSWriter) WriteSync(data []byte) error {
 	if w.closed.Load() {
 		return errConnClosed
 	}
-	w.writeMu.Lock()
-	defer w.writeMu.Unlock()
-	return w.conn.WriteMessage(w.msgType, data)
+	f := wsControlFrame{data: data, errCh: make(chan error, 1)}
+	select {
+	case w.control <- f:
+	case <-w.done:
+		return errConnClosed
+	}
+	select {
+	case err := <-f.errCh:
+		return err
+	case <-w.done:
+		return errConnClosed
+	}
 }
 
-// WriteMessage satisfies wsWriter. It enqueues msg for asynchronous delivery.
-// Returns an error only when the conn is already known-closed.
+// WriteMessage satisfies wsWriter. It enqueues msg on the broadcast lane for
+// asynchronous delivery. Returns an error only when the conn is already
+// known-closed.
 func (w *asyncWSWriter) WriteMessage(_ int, data []byte) error {
 	if w.closed.Load() {
 		return errConnClosed
@@ -132,18 +190,19 @@ func (w *asyncWSWriter) WriteMessage(_ int, data []byte) error {
 	return nil
 }
 
-// Close signals the drain goroutine to stop and waits for it to exit.
-// Safe to call multiple times.
+// Close stops the drain goroutine, fails any in-flight control writes, and
+// closes the underlying conn. Safe to call multiple times.
 func (w *asyncWSWriter) Close() error {
 	w.once.Do(func() {
-		close(w.ch)
+		w.closed.Store(true)
+		close(w.done)
 		w.wg.Wait()
 	})
 	return w.conn.Close()
 }
 
-// errConnClosed is returned by WriteMessage when the underlying connection has
-// already been closed or the drain goroutine detected a write failure.
+// errConnClosed is returned by the write methods when the underlying
+// connection has already been closed or a previous write failed.
 var errConnClosed = connClosedError("connection closed")
 
 type connClosedError string

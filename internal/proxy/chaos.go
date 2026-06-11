@@ -1,7 +1,7 @@
 package proxy
 
 import (
-	"math/rand"
+	mrand "math/rand/v2"
 	"net/http"
 	"regexp"
 	"sync"
@@ -123,12 +123,11 @@ type ChaosEngine struct {
 	config *ChaosConfig
 	rules  []*chaosRuleState
 
-	// rng is NOT concurrency-safe (math/rand.Rand). It is guarded by its own
-	// mutex — not ce.mu — because it is used on the hot per-request path
-	// (GetLatencyDelay/GetHTTPError/MatchingRules) where ce.mu is only RLocked
-	// and concurrent readers would still race the rng's internal state.
-	rngMu sync.Mutex
-	rng   *rand.Rand
+	// rng is lock-free: unseeded draws use math/rand/v2's concurrency-safe
+	// process-global PRNG; seeded (deterministic) draws use an atomic-counter
+	// SplitMix64 stream. Used on the hot per-request path where ce.mu is only
+	// RLocked, so it must tolerate concurrent draws without a mutex.
+	rng chaosRand
 
 	// Reorder queue for out-of-order responses
 	reorderQueue *ReorderQueue
@@ -161,7 +160,6 @@ type chaosStatsAtomic struct {
 // NewChaosEngine creates a new chaos engine
 func NewChaosEngine(logger *TrafficLogger) *ChaosEngine {
 	ce := &ChaosEngine{
-		rng:    rand.New(rand.NewSource(time.Now().UnixNano())),
 		logger: logger,
 	}
 	ce.reorderQueue = NewReorderQueue(ce)
@@ -232,26 +230,62 @@ func (ce *ChaosEngine) SetConfig(config *ChaosConfig) error {
 
 	// Seed RNG if specified
 	if config.Seed != 0 {
-		ce.rngMu.Lock()
-		ce.rng = rand.New(rand.NewSource(config.Seed))
-		ce.rngMu.Unlock()
+		ce.rng.Reseed(config.Seed)
 	}
 
 	return nil
 }
 
-// rngIntn returns ce.rng.Intn(n) under the rng mutex. n must be > 0.
-func (ce *ChaosEngine) rngIntn(n int) int {
-	ce.rngMu.Lock()
-	defer ce.rngMu.Unlock()
-	return ce.rng.Intn(n)
+// chaosRand is a lock-free random source. With no seed set, draws delegate to
+// math/rand/v2's process-global PRNG (safe for concurrent use, no visible
+// locking). With a seed set, draws come from a SplitMix64 counter stream:
+// draw n is mix(seed + n*gamma), so concurrent goroutines share one atomic
+// counter and never share mutable generator state.
+//
+// Seeded determinism is per-draw-count, not per-draw-order: concurrent
+// requests interleave their counter increments nondeterministically — exactly
+// as they interleaved mutex acquisition before. Serial use (tests) is fully
+// reproducible.
+type chaosRand struct {
+	seed atomic.Int64 // 0 = unseeded → process-global PRNG
+	seq  atomic.Uint64
 }
 
-// rngFloat64 returns ce.rng.Float64() under the rng mutex.
-func (ce *ChaosEngine) rngFloat64() float64 {
-	ce.rngMu.Lock()
-	defer ce.rngMu.Unlock()
-	return ce.rng.Float64()
+// splitmix64Gamma is the SplitMix64 state increment ("golden gamma").
+const splitmix64Gamma = 0x9E3779B97F4A7C15
+
+// splitmix64Mix is the SplitMix64 output mixing function.
+func splitmix64Mix(x uint64) uint64 {
+	x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9
+	x = (x ^ (x >> 27)) * 0x94D049BB133111EB
+	return x ^ (x >> 31)
+}
+
+// Reseed switches the source to a deterministic stream starting from seed.
+func (r *chaosRand) Reseed(seed int64) {
+	r.seq.Store(0)
+	r.seed.Store(seed)
+}
+
+func (r *chaosRand) next(seed int64) uint64 {
+	return splitmix64Mix(uint64(seed) + r.seq.Add(1)*splitmix64Gamma)
+}
+
+// Float64 returns a uniform value in [0, 1).
+func (r *chaosRand) Float64() float64 {
+	if s := r.seed.Load(); s != 0 {
+		return float64(r.next(s)>>11) / (1 << 53)
+	}
+	return mrand.Float64()
+}
+
+// Intn returns a uniform value in [0, n). n must be > 0. The seeded path uses
+// a plain modulo — the bias (< 2⁻⁵² for chaos-sized n) is irrelevant here.
+func (r *chaosRand) Intn(n int) int {
+	if s := r.seed.Load(); s != 0 {
+		return int(r.next(s) % uint64(n))
+	}
+	return mrand.IntN(n)
 }
 
 // GetConfig returns the current configuration
@@ -385,7 +419,7 @@ func (ce *ChaosEngine) MatchingRules(req *http.Request) []*ChaosRule {
 
 	// Check global odds
 	if ce.config != nil && ce.config.GlobalOdds > 0 && ce.config.GlobalOdds < 1.0 {
-		if ce.rngFloat64() > ce.config.GlobalOdds {
+		if ce.rng.Float64() > ce.config.GlobalOdds {
 			return nil
 		}
 	}
@@ -399,7 +433,7 @@ func (ce *ChaosEngine) MatchingRules(req *http.Request) []*ChaosRule {
 		rule := state.rule
 		if ce.ruleMatches(rule, req) {
 			// Check probability
-			if rule.Probability < 1.0 && ce.rngFloat64() > rule.Probability {
+			if rule.Probability < 1.0 && ce.rng.Float64() > rule.Probability {
 				continue
 			}
 
@@ -456,11 +490,11 @@ func (ce *ChaosEngine) GetLatencyDelay(rules []*ChaosRule) time.Duration {
 			maxMs = minMs + 1
 		}
 
-		delay := minMs + ce.rngIntn(maxMs-minMs)
+		delay := minMs + ce.rng.Intn(maxMs-minMs)
 
 		// Add jitter
 		if rule.JitterMs > 0 {
-			jitter := ce.rngIntn(rule.JitterMs*2) - rule.JitterMs
+			jitter := ce.rng.Intn(rule.JitterMs*2) - rule.JitterMs
 			delay += jitter
 			if delay < 0 {
 				delay = 0
@@ -488,7 +522,7 @@ func (ce *ChaosEngine) GetHTTPError(rules []*ChaosRule) (int, string) {
 			continue
 		}
 
-		code := rule.ErrorCodes[ce.rngIntn(len(rule.ErrorCodes))]
+		code := rule.ErrorCodes[ce.rng.Intn(len(rule.ErrorCodes))]
 		ce.stats.errorsInjected.Add(1)
 		return code, rule.ErrorMessage
 	}
