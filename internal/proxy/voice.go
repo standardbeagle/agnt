@@ -15,7 +15,7 @@ import (
 // VoiceSession manages a single voice transcription session between browser and Deepgram.
 type VoiceSession struct {
 	id            string
-	browserConn   *websocket.Conn
+	browserConn   wsJSONWriter
 	deepgramConn  *websocket.Conn
 	mu            sync.Mutex
 	closed        bool
@@ -85,7 +85,7 @@ func getDeepgramAPIKey() string {
 }
 
 // NewVoiceSession creates a new voice session and connects to Deepgram.
-func NewVoiceSession(id string, browserConn *websocket.Conn, config DeepgramConfig) (*VoiceSession, error) {
+func NewVoiceSession(id string, browserConn wsJSONWriter, config DeepgramConfig) (*VoiceSession, error) {
 	apiKey := getDeepgramAPIKey()
 	if apiKey == "" {
 		return nil, fmt.Errorf("DEEPGRAM_API_KEY environment variable not set")

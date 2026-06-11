@@ -202,6 +202,48 @@ func TestInbox_Query_NewestFirst(t *testing.T) {
 	}
 }
 
+// TestInbox_Query_CursorDrain_NoSkip pins the drain contract that the
+// get_incidents tool advertises: pulling pages of `Limit`, advancing
+// `Since` to each page's newest entry (the daemon handler's cursor =
+// records[0].LastSeen), must eventually surface EVERY entry with no skips.
+//
+// Regression for the cursor-skip bug: when the inbox truncated to the
+// newest `Limit` and the caller advanced the cursor past them, every
+// entry older than the limit was skipped permanently. Returning the
+// oldest unseen page instead lets the cursor sweep forward gap-free.
+func TestInbox_Query_CursorDrain_NoSkip(t *testing.T) {
+	t.Parallel()
+	inbox := NewInbox("sess")
+
+	const total = 12 // > Limit, spans more than two pages
+	for i := 0; i < total; i++ {
+		e := makeEntry(fmt.Sprintf("fp-%d", i), SeverityError)
+		e.LastSeenAt = time.Now().Add(time.Duration(i) * time.Millisecond)
+		inbox.Ingest(e)
+	}
+
+	seen := make(map[string]bool, total)
+	var since time.Time
+	for pulls := 0; pulls < total+5; pulls++ { // bounded to catch non-progress
+		f := QueryFilter{Limit: 5}
+		f.Since = since // zero on first pull = no lower bound
+		page, _ := inbox.Query(f)
+		if len(page) == 0 {
+			break
+		}
+		for _, e := range page {
+			seen[e.Fingerprint] = true
+		}
+		// Cursor = newest entry of the page (page is newest-first → index 0),
+		// mirroring buildIncidentQueryResult's cursor selection.
+		since = page[0].LastSeenAt
+	}
+
+	if len(seen) != total {
+		t.Fatalf("cursor drain skipped entries: saw %d of %d", len(seen), total)
+	}
+}
+
 // ── stats ─────────────────────────────────────────────────────────────────────
 
 func TestInbox_Stats_ReflectsState(t *testing.T) {

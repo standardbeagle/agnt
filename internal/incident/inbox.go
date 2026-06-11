@@ -239,8 +239,15 @@ func (inbox *Inbox) Query(filter QueryFilter) ([]InboxEntry, Stats) {
 	sort.Slice(results, func(i, j int) bool {
 		return results[i].LastSeenAt.After(results[j].LastSeenAt)
 	})
+	// When truncating, keep the OLDEST `Limit` matched entries (the tail of the
+	// newest-first slice), not the newest. With a forward-only `Since` cursor,
+	// returning the newest page and advancing the cursor past it permanently
+	// skips the older unread tail. Returning the oldest unseen page and letting
+	// the caller advance the cursor to that page's newest entry lets successive
+	// `since=cursor` pulls sweep the whole inbox with no gaps. Entries inside the
+	// page stay newest-first for display.
 	if filter.Limit > 0 && len(results) > filter.Limit {
-		results = results[:filter.Limit]
+		results = results[len(results)-filter.Limit:]
 	}
 	return results, inbox.Stats()
 }
