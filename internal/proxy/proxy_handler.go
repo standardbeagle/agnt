@@ -22,6 +22,9 @@ func (ps *ProxyServer) Stop(ctx context.Context) error {
 
 	if !ps.running.Load() {
 		debug.Log("proxy", "Stop: proxy %s not running", ps.ID)
+		// Still release the page-tracker actor: a proxy that failed to start
+		// or was already stopped must not leak its owner goroutine.
+		ps.pageTracker.Stop()
 		return fmt.Errorf("proxy server not running")
 	}
 
@@ -36,6 +39,10 @@ func (ps *ProxyServer) Stop(ctx context.Context) error {
 
 	err := ps.httpServer.Shutdown(ctx)
 	ps.running.Store(false)
+
+	// Stop the page-tracker actor goroutine after the HTTP server has drained
+	// (no more TrackHTTPRequest senders).
+	ps.pageTracker.Stop()
 	return err
 }
 

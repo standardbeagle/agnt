@@ -55,24 +55,32 @@ type PageSession struct {
 }
 
 // PageTracker tracks page sessions and groups requests by page.
+//
+// Concurrency model: actor. One owner goroutine (run) has exclusive access to
+// the state fields below — no mutex, no sync.Map. Public methods send closures
+// over the ops channel; track methods are fire-and-forget with backpressure
+// (blocking send, lossless), query methods wait for a reply. The single FIFO
+// channel gives each caller read-your-writes ordering: a query enqueued after
+// a track op observes its effect. Stop terminates the owner goroutine; after
+// Stop, track ops are no-ops and queries return zero values.
 type PageTracker struct {
-	// mu guards in-place mutation and reads of the *PageSession structs (slice
-	// appends, field writes) as well as the maps below. sync.Map protects the
-	// map itself, NOT the pointed-to structs, which are mutated concurrently
-	// from the HTTP request path (TrackHTTPRequest) and the WebSocket read loop
-	// (TrackError/Interaction/Mutation). Public methods lock; the private
-	// helpers they call assume the lock is held.
-	mu                   sync.Mutex
-	sessions             sync.Map // map[string]*PageSession (keyed by session ID)
-	urlToSession         sync.Map // map[string]string (URL to session ID)
-	browserSessionToPage sync.Map // map[string]string (browser session ID to page session ID)
-	sessionSeq           atomic.Int64
+	ops  chan func()
+	done chan struct{}
+
+	stopped atomic.Bool
+	stopWg  sync.WaitGroup
+
+	// Owned exclusively by the run goroutine — never touch from outside ops.
+	sessions             map[string]*PageSession
+	urlToSession         map[string]string
+	browserSessionToPage map[string]string
+	sessionSeq           int64
 	maxSessions          int
 	sessionTimeout       time.Duration
 }
 
-// copyPageSession returns a snapshot of s safe to read without holding pt.mu.
-// The five in-place-appended slices are cloned; DocumentRequest/Performance are
+// copyPageSession returns a snapshot of s safe to hand out of the actor. The
+// five in-place-appended slices are cloned; DocumentRequest/Performance are
 // replaced wholesale on update (never mutated in place) so sharing them is safe.
 func copyPageSession(s *PageSession) *PageSession {
 	cp := *s
@@ -84,7 +92,8 @@ func copyPageSession(s *PageSession) *PageSession {
 	return &cp
 }
 
-// NewPageTracker creates a new page tracker.
+// NewPageTracker creates a new page tracker and starts its owner goroutine.
+// Call Stop when the tracker is no longer needed.
 func NewPageTracker(maxSessions int, sessionTimeout time.Duration) *PageTracker {
 	if maxSessions <= 0 {
 		maxSessions = 100
@@ -93,30 +102,100 @@ func NewPageTracker(maxSessions int, sessionTimeout time.Duration) *PageTracker 
 		sessionTimeout = 5 * time.Minute
 	}
 
-	return &PageTracker{
-		maxSessions:    maxSessions,
-		sessionTimeout: sessionTimeout,
+	pt := &PageTracker{
+		ops:                  make(chan func(), 256),
+		done:                 make(chan struct{}),
+		sessions:             make(map[string]*PageSession),
+		urlToSession:         make(map[string]string),
+		browserSessionToPage: make(map[string]string),
+		maxSessions:          maxSessions,
+		sessionTimeout:       sessionTimeout,
+	}
+	pt.stopWg.Add(1)
+	go pt.run()
+	return pt
+}
+
+// run is the owner goroutine — the only code that touches tracker state.
+func (pt *PageTracker) run() {
+	defer pt.stopWg.Done()
+	for {
+		select {
+		case op := <-pt.ops:
+			op()
+		case <-pt.done:
+			return
+		}
+	}
+}
+
+// Stop terminates the owner goroutine. Idempotent. Pending and subsequent
+// track ops are discarded; subsequent queries return zero values.
+func (pt *PageTracker) Stop() {
+	if pt.stopped.CompareAndSwap(false, true) {
+		close(pt.done)
+		pt.stopWg.Wait()
+	}
+}
+
+// send enqueues a state-mutating op. Blocking (lossless backpressure — the
+// owner goroutine only does map and slice work, so the queue drains fast).
+// After Stop the op is dropped.
+func (pt *PageTracker) send(op func()) {
+	if pt.stopped.Load() {
+		return
+	}
+	select {
+	case pt.ops <- op:
+	case <-pt.done:
+	}
+}
+
+// query runs fn inside the owner goroutine and returns its result. After Stop
+// it returns the zero value.
+func ptQuery[T any](pt *PageTracker, fn func() T) T {
+	var zero T
+	if pt.stopped.Load() {
+		return zero
+	}
+	reply := make(chan T, 1)
+	select {
+	case pt.ops <- func() { reply <- fn() }:
+	case <-pt.done:
+		return zero
+	}
+	select {
+	case r := <-reply:
+		return r
+	case <-pt.done:
+		return zero
 	}
 }
 
 // ResolveSession finds a session by browser session ID with URL fallback.
 // Returns empty string if no session found.
 func (pt *PageTracker) ResolveSession(browserSessionID, url string) string {
+	return ptQuery(pt, func() string {
+		return pt.resolveSession(browserSessionID, url)
+	})
+}
+
+// resolveSession is the actor-internal form of ResolveSession.
+func (pt *PageTracker) resolveSession(browserSessionID, url string) string {
 	if sessionID := pt.findSessionByBrowserSession(browserSessionID); sessionID != "" {
 		return sessionID
 	}
 	return pt.findSessionByURL(url)
 }
 
-// updateSessionWithBrowserID updates the session's browser mapping if not set,
-// updates the last activity timestamp, and stores the session.
+// updateSessionWithBrowserID updates the session's browser mapping if not set
+// and updates the last activity timestamp.
 func (pt *PageTracker) updateSessionWithBrowserID(sessionID string, session *PageSession, browserSessionID string) {
 	if session.BrowserSession == "" && browserSessionID != "" {
 		session.BrowserSession = browserSessionID
-		pt.browserSessionToPage.Store(browserSessionID, sessionID)
+		pt.browserSessionToPage[browserSessionID] = sessionID
 	}
 	session.LastActivity = time.Now()
-	pt.sessions.Store(sessionID, session)
 }
 
 // TrackHTTPRequest processes an HTTP request and associates it with a page session.
@@ -127,114 +206,76 @@ func (pt *PageTracker) TrackHTTPRequest(entry HTTPLogEntry) {
 	// Determine if this is a document (HTML) request
 	isDocument := isDocumentRequest(entry)
 
-	pt.mu.Lock()
-	defer pt.mu.Unlock()
+	pt.send(func() {
+		if isDocument {
+			// Create or update page session for this browser tab
+			pt.createOrUpdatePageSession(entry, browserSessionID)
+		} else {
+			// Associate resource with existing page session
+			pt.addResourceToSession(entry)
+		}
+	})
+}
 
-	if isDocument {
-		// Create or update page session for this browser tab
-		pt.createOrUpdatePageSession(entry, browserSessionID)
-	} else {
-		// Associate resource with existing page session
-		pt.addResourceToSession(entry)
-	}
+// trackOnSession resolves the session for (browserSessionID, url) inside the
+// actor and applies mutate to it. Shared shape of the four Track* methods.
+func (pt *PageTracker) trackOnSession(browserSessionID, url string, mutate func(*PageSession)) {
+	pt.send(func() {
+		sessionID := pt.resolveSession(browserSessionID, url)
+		if sessionID == "" {
+			return
+		}
+		session, ok := pt.sessions[sessionID]
+		if !ok {
+			return
+		}
+		mutate(session)
+		pt.updateSessionWithBrowserID(sessionID, session, browserSessionID)
+	})
 }
 
 // TrackError associates a frontend error with a page session.
 // browserSessionID is the unique ID from the browser tab's sessionStorage.
 func (pt *PageTracker) TrackError(err FrontendError, browserSessionID string) {
-	pt.mu.Lock()
-	defer pt.mu.Unlock()
-
-	sessionID := pt.ResolveSession(browserSessionID, err.URL)
-	if sessionID == "" {
-		return
-	}
-
-	val, ok := pt.sessions.Load(sessionID)
-	if !ok {
-		return
-	}
-
-	session := val.(*PageSession)
-	session.Errors = append(session.Errors, err)
-	pt.updateSessionWithBrowserID(sessionID, session, browserSessionID)
+	pt.trackOnSession(browserSessionID, err.URL, func(session *PageSession) {
+		session.Errors = append(session.Errors, err)
+	})
 }
 
 // TrackPerformance associates performance metrics with a page session.
 // browserSessionID is the unique ID from the browser tab's sessionStorage.
 func (pt *PageTracker) TrackPerformance(perf PerformanceMetric, browserSessionID string) {
-	pt.mu.Lock()
-	defer pt.mu.Unlock()
-
-	sessionID := pt.ResolveSession(browserSessionID, perf.URL)
-	if sessionID == "" {
-		return
-	}
-
-	val, ok := pt.sessions.Load(sessionID)
-	if !ok {
-		return
-	}
-
-	session := val.(*PageSession)
-	session.Performance = &perf
-	pt.updateSessionWithBrowserID(sessionID, session, browserSessionID)
+	pt.trackOnSession(browserSessionID, perf.URL, func(session *PageSession) {
+		session.Performance = &perf
+	})
 }
 
 // TrackInteraction associates a user interaction event with a page session.
 // browserSessionID is the unique ID from the browser tab's sessionStorage.
 func (pt *PageTracker) TrackInteraction(interaction InteractionEvent, browserSessionID string) {
-	pt.mu.Lock()
-	defer pt.mu.Unlock()
-
-	sessionID := pt.ResolveSession(browserSessionID, interaction.URL)
-	if sessionID == "" {
-		return
-	}
-
-	val, ok := pt.sessions.Load(sessionID)
-	if !ok {
-		return
-	}
-
-	session := val.(*PageSession)
-	session.InteractionCount++
-	session.Interactions = appendBounded(session.Interactions, interaction, MaxInteractionsPerSession)
-	pt.updateSessionWithBrowserID(sessionID, session, browserSessionID)
+	pt.trackOnSession(browserSessionID, interaction.URL, func(session *PageSession) {
+		session.InteractionCount++
+		session.Interactions = appendBounded(session.Interactions, interaction, MaxInteractionsPerSession)
+	})
 }
 
 // TrackMutation associates a DOM mutation event with a page session.
 // browserSessionID is the unique ID from the browser tab's sessionStorage.
 func (pt *PageTracker) TrackMutation(mutation MutationEvent, browserSessionID string) {
-	pt.mu.Lock()
-	defer pt.mu.Unlock()
-
-	sessionID := pt.ResolveSession(browserSessionID, mutation.URL)
-	if sessionID == "" {
-		return
-	}
-
-	val, ok := pt.sessions.Load(sessionID)
-	if !ok {
-		return
-	}
-
-	session := val.(*PageSession)
-	session.MutationCount++
-	session.Mutations = appendBounded(session.Mutations, mutation, MaxMutationsPerSession)
-	pt.updateSessionWithBrowserID(sessionID, session, browserSessionID)
+	pt.trackOnSession(browserSessionID, mutation.URL, func(session *PageSession) {
+		session.MutationCount++
+		session.Mutations = appendBounded(session.Mutations, mutation, MaxMutationsPerSession)
+	})
 }
 
-// activeSessionsLocked returns live *PageSession pointers for sessions within
-// the timeout, updating their Active flag. Caller must hold pt.mu, and must not
-// leak the returned pointers outside the lock (they are mutated concurrently).
-func (pt *PageTracker) activeSessionsLocked() []*PageSession {
+// activeSessions returns live *PageSession pointers for sessions within the
+// timeout, updating their Active flag. Actor-internal; the pointers must not
+// leave the owner goroutine — hand out copies.
+func (pt *PageTracker) activeSessions() []*PageSession {
 	var sessions []*PageSession
 	now := time.Now()
 
-	pt.sessions.Range(func(key, value any) bool {
-		session := value.(*PageSession)
-
+	for _, session := range pt.sessions {
 		// Check if session is still active (within timeout)
 		if now.Sub(session.LastActivity) < pt.sessionTimeout {
 			session.Active = true
@@ -242,25 +283,22 @@ func (pt *PageTracker) activeSessionsLocked() []*PageSession {
 		} else {
 			session.Active = false
 		}
-
-		return true
-	})
+	}
 
 	return sessions
 }
 
 // GetActiveSessions returns snapshot copies of all currently active page
-// sessions, safe to read without holding pt.mu.
+// sessions, safe to read concurrently with tracking.
 func (pt *PageTracker) GetActiveSessions() []*PageSession {
-	pt.mu.Lock()
-	defer pt.mu.Unlock()
-
-	live := pt.activeSessionsLocked()
-	out := make([]*PageSession, len(live))
-	for i, s := range live {
-		out[i] = copyPageSession(s)
-	}
-	return out
+	return ptQuery(pt, func() []*PageSession {
+		live := pt.activeSessions()
+		out := make([]*PageSession, len(live))
+		for i, s := range live {
+			out[i] = copyPageSession(s)
+		}
+		return out
+	})
 }
 
 // PageSessionSummary is a lightweight representation of a page session for list views.
@@ -284,58 +322,53 @@ type PageSessionSummary struct {
 // GetActiveSessionSummaries returns lightweight summaries of active sessions.
 // Use this for list views to avoid sending massive arrays of interactions/mutations.
 func (pt *PageTracker) GetActiveSessionSummaries() []PageSessionSummary {
-	pt.mu.Lock()
-	defer pt.mu.Unlock()
+	return ptQuery(pt, func() []PageSessionSummary {
+		sessions := pt.activeSessions()
+		summaries := make([]PageSessionSummary, len(sessions))
 
-	sessions := pt.activeSessionsLocked()
-	summaries := make([]PageSessionSummary, len(sessions))
+		for i, session := range sessions {
+			summaries[i] = PageSessionSummary{
+				ID:               session.ID,
+				URL:              session.URL,
+				PageTitle:        session.PageTitle,
+				StartTime:        session.StartTime,
+				LastActivity:     session.LastActivity,
+				Active:           session.Active,
+				ResourceCount:    len(session.Resources),
+				ErrorCount:       len(session.Errors),
+				HasPerformance:   session.Performance != nil,
+				InteractionCount: session.InteractionCount,
+				MutationCount:    session.MutationCount,
+			}
 
-	for i, session := range sessions {
-		summaries[i] = PageSessionSummary{
-			ID:               session.ID,
-			URL:              session.URL,
-			PageTitle:        session.PageTitle,
-			StartTime:        session.StartTime,
-			LastActivity:     session.LastActivity,
-			Active:           session.Active,
-			ResourceCount:    len(session.Resources),
-			ErrorCount:       len(session.Errors),
-			HasPerformance:   session.Performance != nil,
-			InteractionCount: session.InteractionCount,
-			MutationCount:    session.MutationCount,
+			if session.Performance != nil {
+				summaries[i].LoadTimeMs = session.Performance.LoadEventEnd
+			}
 		}
 
-		if session.Performance != nil {
-			summaries[i].LoadTimeMs = session.Performance.LoadEventEnd
-		}
-	}
-
-	return summaries
+		return summaries
+	})
 }
 
-// GetSession returns a specific page session by ID.
+// GetSession returns a snapshot of a specific page session by ID.
 func (pt *PageTracker) GetSession(sessionID string) (*PageSession, bool) {
-	pt.mu.Lock()
-	defer pt.mu.Unlock()
-
-	val, ok := pt.sessions.Load(sessionID)
-	if !ok {
-		return nil, false
-	}
-	// Return a snapshot — the caller reads it (e.g. JSON marshal) while request
-	// and WS goroutines may still append to the live session's slices.
-	return copyPageSession(val.(*PageSession)), true
+	session := ptQuery(pt, func() *PageSession {
+		if s, ok := pt.sessions[sessionID]; ok {
+			return copyPageSession(s)
+		}
+		return nil
+	})
+	return session, session != nil
 }
 
 // Clear removes all page sessions.
 func (pt *PageTracker) Clear() {
-	pt.mu.Lock()
-	defer pt.mu.Unlock()
-
-	pt.sessions = sync.Map{}
-	pt.urlToSession = sync.Map{}
-	pt.browserSessionToPage = sync.Map{}
-	pt.sessionSeq.Store(0)
+	pt.send(func() {
+		pt.sessions = make(map[string]*PageSession)
+		pt.urlToSession = make(map[string]string)
+		pt.browserSessionToPage = make(map[string]string)
+		pt.sessionSeq = 0
+	})
 }
 
 // createOrUpdatePageSession creates a new page session or updates an existing one for the same browser tab.
@@ -346,9 +379,7 @@ func (pt *PageTracker) createOrUpdatePageSession(entry HTTPLogEntry, browserSess
 	if browserSessionID != "" {
 		existingSessionID := pt.findSessionByBrowserSession(browserSessionID)
 		if existingSessionID != "" {
-			val, ok := pt.sessions.Load(existingSessionID)
-			if ok {
-				session := val.(*PageSession)
+			if session, ok := pt.sessions[existingSessionID]; ok {
 				// Update existing session with new navigation
 				session.URL = entry.URL
 				session.LastActivity = now
@@ -356,8 +387,7 @@ func (pt *PageTracker) createOrUpdatePageSession(entry HTTPLogEntry, browserSess
 				session.Navigations = append(session.Navigations, entry)
 				// Clear resources for new page (they belong to old navigation)
 				session.Resources = make([]HTTPLogEntry, 0)
-				pt.sessions.Store(existingSessionID, session)
-				pt.urlToSession.Store(normalizeURL(entry.URL), existingSessionID)
+				pt.urlToSession[normalizeURL(entry.URL)] = existingSessionID
 				return
 			}
 		}
@@ -380,12 +410,12 @@ func (pt *PageTracker) createOrUpdatePageSession(entry HTTPLogEntry, browserSess
 		Mutations:       make([]MutationEvent, 0),
 	}
 
-	pt.sessions.Store(sessionID, session)
-	pt.urlToSession.Store(normalizeURL(entry.URL), sessionID)
+	pt.sessions[sessionID] = session
+	pt.urlToSession[normalizeURL(entry.URL)] = sessionID
 
 	// Register browser session mapping
 	if browserSessionID != "" {
-		pt.browserSessionToPage.Store(browserSessionID, sessionID)
+		pt.browserSessionToPage[browserSessionID] = sessionID
 	}
 
 	// Cleanup old sessions if we exceed max
@@ -400,15 +430,13 @@ func (pt *PageTracker) addResourceToSession(entry HTTPLogEntry) {
 		return
 	}
 
-	val, ok := pt.sessions.Load(sessionID)
+	session, ok := pt.sessions[sessionID]
 	if !ok {
 		return
 	}
 
-	session := val.(*PageSession)
 	session.Resources = append(session.Resources, entry)
 	session.LastActivity = time.Now()
-	pt.sessions.Store(sessionID, session)
 }
 
 // findSessionForResource finds the appropriate page session for a resource request.
@@ -435,21 +463,12 @@ func (pt *PageTracker) findSessionByBrowserSession(browserSessionID string) stri
 	if browserSessionID == "" {
 		return ""
 	}
-	val, ok := pt.browserSessionToPage.Load(browserSessionID)
-	if ok {
-		return val.(string)
-	}
-	return ""
+	return pt.browserSessionToPage[browserSessionID]
 }
 
 // findSessionByURL finds a session ID for a given URL.
 func (pt *PageTracker) findSessionByURL(urlStr string) string {
-	normalized := normalizeURL(urlStr)
-	val, ok := pt.urlToSession.Load(normalized)
-	if ok {
-		return val.(string)
-	}
-	return ""
+	return pt.urlToSession[normalizeURL(urlStr)]
 }
 
 // findMostRecentSession finds the most recent active session with matching origin.
@@ -462,32 +481,21 @@ func (pt *PageTracker) findMostRecentSession(urlStr string) string {
 	var mostRecent *PageSession
 	var mostRecentID string
 
-	pt.sessions.Range(func(key, value any) bool {
-		session := value.(*PageSession)
-		sessionOrigin := getOrigin(session.URL)
-
-		if sessionOrigin == targetOrigin && session.Active {
+	for id, session := range pt.sessions {
+		if getOrigin(session.URL) == targetOrigin && session.Active {
 			if mostRecent == nil || session.LastActivity.After(mostRecent.LastActivity) {
 				mostRecent = session
-				mostRecentID = key.(string)
+				mostRecentID = id
 			}
 		}
-		return true
-	})
+	}
 
 	return mostRecentID
 }
 
 // cleanupOldSessions removes sessions that exceed the max count.
 func (pt *PageTracker) cleanupOldSessions() {
-	// Count active sessions
-	count := 0
-	pt.sessions.Range(func(key, value any) bool {
-		count++
-		return true
-	})
-
-	if count <= pt.maxSessions {
+	if len(pt.sessions) <= pt.maxSessions {
 		return
 	}
 
@@ -497,18 +505,13 @@ func (pt *PageTracker) cleanupOldSessions() {
 		time time.Time
 	}
 
-	var allSessions []sessionWithTime
-	pt.sessions.Range(func(key, value any) bool {
-		session := value.(*PageSession)
-		allSessions = append(allSessions, sessionWithTime{
-			id:   key.(string),
-			time: session.StartTime,
-		})
-		return true
-	})
+	allSessions := make([]sessionWithTime, 0, len(pt.sessions))
+	for id, session := range pt.sessions {
+		allSessions = append(allSessions, sessionWithTime{id: id, time: session.StartTime})
+	}
 
 	// Sort by start time and remove oldest
-	toRemove := count - pt.maxSessions
+	toRemove := len(pt.sessions) - pt.maxSessions
 	for i := 0; i < toRemove && i < len(allSessions); i++ {
 		// Find oldest
 		oldest := i
@@ -517,21 +520,23 @@ func (pt *PageTracker) cleanupOldSessions() {
 				oldest = j
 			}
 		}
+		allSessions[i], allSessions[oldest] = allSessions[oldest], allSessions[i]
 
-		// Clean up the URL mapping BEFORE deleting the session — loading after
-		// the delete always misses, leaking the urlToSession entry forever.
-		if val, ok := pt.sessions.Load(allSessions[oldest].id); ok {
-			session := val.(*PageSession)
-			pt.urlToSession.Delete(normalizeURL(session.URL))
+		victim := allSessions[i].id
+		if session, ok := pt.sessions[victim]; ok {
+			delete(pt.urlToSession, normalizeURL(session.URL))
+			if session.BrowserSession != "" {
+				delete(pt.browserSessionToPage, session.BrowserSession)
+			}
 		}
-		pt.sessions.Delete(allSessions[oldest].id)
+		delete(pt.sessions, victim)
 	}
 }
 
 // generateSessionID generates a unique session ID.
 func (pt *PageTracker) generateSessionID() string {
-	seq := pt.sessionSeq.Add(1)
-	return "page-" + itoa(int(seq))
+	pt.sessionSeq++
+	return "page-" + itoa(int(pt.sessionSeq))
 }
 
 // Helper functions

@@ -53,11 +53,26 @@ func (pm *ProxyManager) Create(ctx context.Context, config ProxyConfig) (*ProxyS
 
 	// Start proxy
 	if err := proxy.Start(ctx); err != nil {
+		// Release resources owned by the constructed-but-never-started server
+		// (page-tracker actor goroutine, reorder queue).
+		proxy.pageTracker.Stop()
+		proxy.chaosEngine.Stop()
 		return nil, err
 	}
 
 	// Store in registry
 	pm.proxies.Store(config.ID, proxy)
+
+	// Re-check after the store: if Shutdown set the flag between our entry
+	// check and the Store, its registry sweep may already have run and missed
+	// this proxy — tear it down ourselves. If the flag is still false here, the
+	// store happened before the sweep and Shutdown will stop it normally.
+	if pm.shuttingDown.Load() {
+		pm.proxies.Delete(config.ID)
+		_ = proxy.Stop(ctx)
+		return nil, errors.New("proxy manager is shutting down")
+	}
+
 	pm.activeCount.Add(1)
 	pm.totalStarted.Add(1)
 
@@ -320,6 +335,10 @@ func (pm *ProxyManager) Shutdown(ctx context.Context) error {
 			proxy := value.(*ProxyServer)
 			if proxy.IsRunning() {
 				toStop = append(toStop, key.(string))
+			} else {
+				// Crashed or never-started proxies skip the Stop path but still
+				// own a page-tracker actor goroutine — release it here.
+				proxy.pageTracker.Stop()
 			}
 			return true
 		})
