@@ -1,11 +1,20 @@
 package proxy
 
 import (
+	"encoding/json"
 	"sync"
 	"sync/atomic"
 
 	"github.com/gorilla/websocket"
 )
+
+// wsJSONWriter is the write side a control-plane handler (session/store/voice)
+// needs. Both *asyncWSWriter and *websocket.Conn satisfy it, so handlers and
+// VoiceSession can accept the serialising async writer in production while
+// tests may still pass a bare conn.
+type wsJSONWriter interface {
+	WriteJSON(v interface{}) error
+}
 
 // wsWriter is the minimal interface the proxy uses to push messages to a
 // WebSocket client. The concrete implementation is *websocket.Conn, but tests
@@ -32,6 +41,13 @@ type asyncWSWriter struct {
 	conn    wsWriter
 	ch      chan []byte
 	msgType int
+
+	// writeMu serialises every WriteMessage on the underlying conn — the drain
+	// goroutine AND the synchronous control-plane writers (WriteJSON / WriteSync)
+	// — so gorilla never sees a concurrent write. gorilla/websocket forbids
+	// concurrent writers; without this, broadcast drains race the session/store/
+	// voice/capture-ack writers and corrupt the frame stream.
+	writeMu sync.Mutex
 
 	once    sync.Once
 	closed  atomic.Bool
@@ -60,7 +76,10 @@ func newAsyncWSWriter(conn wsWriter, msgType int) *asyncWSWriter {
 func (w *asyncWSWriter) drain() {
 	defer w.wg.Done()
 	for msg := range w.ch {
-		if err := w.conn.WriteMessage(w.msgType, msg); err != nil {
+		w.writeMu.Lock()
+		err := w.conn.WriteMessage(w.msgType, msg)
+		w.writeMu.Unlock()
+		if err != nil {
 			// Connection gone — mark closed and discard the rest.
 			w.closed.Store(true)
 			// Drain residual messages without blocking.
@@ -70,6 +89,32 @@ func (w *asyncWSWriter) drain() {
 			return
 		}
 	}
+}
+
+// WriteJSON marshals v and writes it synchronously, serialised against the
+// drain goroutine via writeMu. Unlike the async broadcast path it never drops:
+// control-plane request/replies (session, store, voice, capture_ack) must be
+// delivered. Returns an error if the conn is already closed or the write fails.
+func (w *asyncWSWriter) WriteJSON(v interface{}) error {
+	if w.closed.Load() {
+		return errConnClosed
+	}
+	data, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	return w.WriteSync(data)
+}
+
+// WriteSync writes pre-marshalled bytes synchronously, serialised against the
+// drain goroutine. Used for control-plane frames already in wire form.
+func (w *asyncWSWriter) WriteSync(data []byte) error {
+	if w.closed.Load() {
+		return errConnClosed
+	}
+	w.writeMu.Lock()
+	defer w.writeMu.Unlock()
+	return w.conn.WriteMessage(w.msgType, data)
 }
 
 // WriteMessage satisfies wsWriter. It enqueues msg for asynchronous delivery.

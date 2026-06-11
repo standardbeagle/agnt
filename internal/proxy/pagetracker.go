@@ -56,12 +56,32 @@ type PageSession struct {
 
 // PageTracker tracks page sessions and groups requests by page.
 type PageTracker struct {
+	// mu guards in-place mutation and reads of the *PageSession structs (slice
+	// appends, field writes) as well as the maps below. sync.Map protects the
+	// map itself, NOT the pointed-to structs, which are mutated concurrently
+	// from the HTTP request path (TrackHTTPRequest) and the WebSocket read loop
+	// (TrackError/Interaction/Mutation). Public methods lock; the private
+	// helpers they call assume the lock is held.
+	mu                   sync.Mutex
 	sessions             sync.Map // map[string]*PageSession (keyed by session ID)
 	urlToSession         sync.Map // map[string]string (URL to session ID)
 	browserSessionToPage sync.Map // map[string]string (browser session ID to page session ID)
 	sessionSeq           atomic.Int64
 	maxSessions          int
 	sessionTimeout       time.Duration
+}
+
+// copyPageSession returns a snapshot of s safe to read without holding pt.mu.
+// The five in-place-appended slices are cloned; DocumentRequest/Performance are
+// replaced wholesale on update (never mutated in place) so sharing them is safe.
+func copyPageSession(s *PageSession) *PageSession {
+	cp := *s
+	cp.Navigations = append([]HTTPLogEntry(nil), s.Navigations...)
+	cp.Resources = append([]HTTPLogEntry(nil), s.Resources...)
+	cp.Errors = append([]FrontendError(nil), s.Errors...)
+	cp.Interactions = append([]InteractionEvent(nil), s.Interactions...)
+	cp.Mutations = append([]MutationEvent(nil), s.Mutations...)
+	return &cp
 }
 
 // NewPageTracker creates a new page tracker.
@@ -107,6 +127,9 @@ func (pt *PageTracker) TrackHTTPRequest(entry HTTPLogEntry) {
 	// Determine if this is a document (HTML) request
 	isDocument := isDocumentRequest(entry)
 
+	pt.mu.Lock()
+	defer pt.mu.Unlock()
+
 	if isDocument {
 		// Create or update page session for this browser tab
 		pt.createOrUpdatePageSession(entry, browserSessionID)
@@ -119,6 +142,9 @@ func (pt *PageTracker) TrackHTTPRequest(entry HTTPLogEntry) {
 // TrackError associates a frontend error with a page session.
 // browserSessionID is the unique ID from the browser tab's sessionStorage.
 func (pt *PageTracker) TrackError(err FrontendError, browserSessionID string) {
+	pt.mu.Lock()
+	defer pt.mu.Unlock()
+
 	sessionID := pt.ResolveSession(browserSessionID, err.URL)
 	if sessionID == "" {
 		return
@@ -137,6 +163,9 @@ func (pt *PageTracker) TrackError(err FrontendError, browserSessionID string) {
 // TrackPerformance associates performance metrics with a page session.
 // browserSessionID is the unique ID from the browser tab's sessionStorage.
 func (pt *PageTracker) TrackPerformance(perf PerformanceMetric, browserSessionID string) {
+	pt.mu.Lock()
+	defer pt.mu.Unlock()
+
 	sessionID := pt.ResolveSession(browserSessionID, perf.URL)
 	if sessionID == "" {
 		return
@@ -155,6 +184,9 @@ func (pt *PageTracker) TrackPerformance(perf PerformanceMetric, browserSessionID
 // TrackInteraction associates a user interaction event with a page session.
 // browserSessionID is the unique ID from the browser tab's sessionStorage.
 func (pt *PageTracker) TrackInteraction(interaction InteractionEvent, browserSessionID string) {
+	pt.mu.Lock()
+	defer pt.mu.Unlock()
+
 	sessionID := pt.ResolveSession(browserSessionID, interaction.URL)
 	if sessionID == "" {
 		return
@@ -174,6 +206,9 @@ func (pt *PageTracker) TrackInteraction(interaction InteractionEvent, browserSes
 // TrackMutation associates a DOM mutation event with a page session.
 // browserSessionID is the unique ID from the browser tab's sessionStorage.
 func (pt *PageTracker) TrackMutation(mutation MutationEvent, browserSessionID string) {
+	pt.mu.Lock()
+	defer pt.mu.Unlock()
+
 	sessionID := pt.ResolveSession(browserSessionID, mutation.URL)
 	if sessionID == "" {
 		return
@@ -190,8 +225,10 @@ func (pt *PageTracker) TrackMutation(mutation MutationEvent, browserSessionID st
 	pt.updateSessionWithBrowserID(sessionID, session, browserSessionID)
 }
 
-// GetActiveSessions returns all currently active page sessions.
-func (pt *PageTracker) GetActiveSessions() []*PageSession {
+// activeSessionsLocked returns live *PageSession pointers for sessions within
+// the timeout, updating their Active flag. Caller must hold pt.mu, and must not
+// leak the returned pointers outside the lock (they are mutated concurrently).
+func (pt *PageTracker) activeSessionsLocked() []*PageSession {
 	var sessions []*PageSession
 	now := time.Now()
 
@@ -210,6 +247,20 @@ func (pt *PageTracker) GetActiveSessions() []*PageSession {
 	})
 
 	return sessions
+}
+
+// GetActiveSessions returns snapshot copies of all currently active page
+// sessions, safe to read without holding pt.mu.
+func (pt *PageTracker) GetActiveSessions() []*PageSession {
+	pt.mu.Lock()
+	defer pt.mu.Unlock()
+
+	live := pt.activeSessionsLocked()
+	out := make([]*PageSession, len(live))
+	for i, s := range live {
+		out[i] = copyPageSession(s)
+	}
+	return out
 }
 
 // PageSessionSummary is a lightweight representation of a page session for list views.
@@ -233,7 +284,10 @@ type PageSessionSummary struct {
 // GetActiveSessionSummaries returns lightweight summaries of active sessions.
 // Use this for list views to avoid sending massive arrays of interactions/mutations.
 func (pt *PageTracker) GetActiveSessionSummaries() []PageSessionSummary {
-	sessions := pt.GetActiveSessions()
+	pt.mu.Lock()
+	defer pt.mu.Unlock()
+
+	sessions := pt.activeSessionsLocked()
 	summaries := make([]PageSessionSummary, len(sessions))
 
 	for i, session := range sessions {
@@ -261,15 +315,23 @@ func (pt *PageTracker) GetActiveSessionSummaries() []PageSessionSummary {
 
 // GetSession returns a specific page session by ID.
 func (pt *PageTracker) GetSession(sessionID string) (*PageSession, bool) {
+	pt.mu.Lock()
+	defer pt.mu.Unlock()
+
 	val, ok := pt.sessions.Load(sessionID)
 	if !ok {
 		return nil, false
 	}
-	return val.(*PageSession), true
+	// Return a snapshot — the caller reads it (e.g. JSON marshal) while request
+	// and WS goroutines may still append to the live session's slices.
+	return copyPageSession(val.(*PageSession)), true
 }
 
 // Clear removes all page sessions.
 func (pt *PageTracker) Clear() {
+	pt.mu.Lock()
+	defer pt.mu.Unlock()
+
 	pt.sessions = sync.Map{}
 	pt.urlToSession = sync.Map{}
 	pt.browserSessionToPage = sync.Map{}
@@ -456,14 +518,13 @@ func (pt *PageTracker) cleanupOldSessions() {
 			}
 		}
 
-		// Remove oldest session
-		pt.sessions.Delete(allSessions[oldest].id)
-
-		// Also clean up URL mapping
+		// Clean up the URL mapping BEFORE deleting the session — loading after
+		// the delete always misses, leaking the urlToSession entry forever.
 		if val, ok := pt.sessions.Load(allSessions[oldest].id); ok {
 			session := val.(*PageSession)
 			pt.urlToSession.Delete(normalizeURL(session.URL))
 		}
+		pt.sessions.Delete(allSessions[oldest].id)
 	}
 }
 

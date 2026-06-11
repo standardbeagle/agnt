@@ -3,14 +3,13 @@ package proxy
 import (
 	"fmt"
 
-	"github.com/gorilla/websocket"
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/protocol"
 )
 
 // handleSessionRequest processes session API requests from the browser.
 // It creates a daemon client, executes the session operation, and sends the response back.
-func (ps *ProxyServer) handleSessionRequest(conn *websocket.Conn, data map[string]interface{}) {
+func (ps *ProxyServer) handleSessionRequest(conn wsJSONWriter, data map[string]interface{}) {
 	requestID := getStringField(data, "request_id")
 	action := getStringField(data, "action")
 	params := getMapField(data, "params")
@@ -147,7 +146,7 @@ func (ps *ProxyServer) handleSessionRequest(conn *websocket.Conn, data map[strin
 
 // handleStoreRequest processes store API requests from the browser.
 // It creates a daemon client, executes the store operation, and sends the response back.
-func (ps *ProxyServer) handleStoreRequest(conn *websocket.Conn, data map[string]interface{}) {
+func (ps *ProxyServer) handleStoreRequest(conn wsJSONWriter, data map[string]interface{}) {
 	requestID := getStringField(data, "request_id")
 	action := getStringField(data, "action")
 	params := getMapField(data, "params")

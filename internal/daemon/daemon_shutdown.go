@@ -232,6 +232,15 @@ func (d *Daemon) Stop(ctx context.Context) error {
 	// Signal all goroutines to stop
 	d.cancel()
 
+	// Stop all deferred session-cleanup timers BEFORE tearing down the hub,
+	// ProcessManager, and proxy manager that their doCleanup callbacks touch.
+	// These AfterFunc timers (grace window, default 5s) are not tracked by
+	// d.wg; a connection that dropped seconds before Stop() would otherwise
+	// fire its timer after the managers are gone, running doCleanup against a
+	// stopped hub. The shutdown flag is already set, so any timer that fired in
+	// the gap between that and here also short-circuits (see AfterFunc guard).
+	d.drainPendingCleanups()
+
 	// Cancel all in-flight autostart runs before shutting down the Hub's
 	// ProcessManager. Without this, an autostart goroutine in the middle of
 	// ProcessManager.Start races with ProcessManager.Shutdown and triggers

@@ -31,6 +31,13 @@ func (d *Daemon) addIncidentSession(sessionCode string) {
 	if d.incidentBus == nil {
 		return
 	}
+	// Idempotent: a pipeline already exists for a re-register or a second
+	// connection attaching to the same session. AddSession tears the old
+	// pipeline down (wiping unread incidents), so skip it — the mcpNotify
+	// closure is session-independent, nothing to refresh.
+	if d.incidentBus.HasSession(sessionCode) {
+		return
+	}
 	mcpNotify := func(level string, payload incident.PingPayload) error {
 		d.broadcastIncidentDigest(level, payload)
 		return nil

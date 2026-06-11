@@ -145,9 +145,11 @@ func (pe *PingEmitter) handleDelta(delta InboxDelta) {
 	}
 
 	if sev == SeverityCritical {
-		// Cancel any pending coalesced ping and emit now.
+		// Cancel any pending coalesced ping and emit now. Stop() clears the
+		// slot map but leaves the Coalescer reusable, so we do NOT reassign
+		// pe.coalesce — reassigning it raced Stop()/ForceFlushCoalesce on the
+		// teardown and activity-idle goroutines.
 		pe.coalesce.Stop()
-		pe.coalesce = NewCoalescer(pe.config.Delays, func(_ IncidentEvent) { pe.emit() })
 		pe.emit()
 		return
 	}

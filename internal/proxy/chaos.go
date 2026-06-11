@@ -122,7 +122,13 @@ type ChaosEngine struct {
 	mu     sync.RWMutex
 	config *ChaosConfig
 	rules  []*chaosRuleState
-	rng    *rand.Rand
+
+	// rng is NOT concurrency-safe (math/rand.Rand). It is guarded by its own
+	// mutex — not ce.mu — because it is used on the hot per-request path
+	// (GetLatencyDelay/GetHTTPError/MatchingRules) where ce.mu is only RLocked
+	// and concurrent readers would still race the rng's internal state.
+	rngMu sync.Mutex
+	rng   *rand.Rand
 
 	// Reorder queue for out-of-order responses
 	reorderQueue *ReorderQueue
@@ -226,10 +232,26 @@ func (ce *ChaosEngine) SetConfig(config *ChaosConfig) error {
 
 	// Seed RNG if specified
 	if config.Seed != 0 {
+		ce.rngMu.Lock()
 		ce.rng = rand.New(rand.NewSource(config.Seed))
+		ce.rngMu.Unlock()
 	}
 
 	return nil
+}
+
+// rngIntn returns ce.rng.Intn(n) under the rng mutex. n must be > 0.
+func (ce *ChaosEngine) rngIntn(n int) int {
+	ce.rngMu.Lock()
+	defer ce.rngMu.Unlock()
+	return ce.rng.Intn(n)
+}
+
+// rngFloat64 returns ce.rng.Float64() under the rng mutex.
+func (ce *ChaosEngine) rngFloat64() float64 {
+	ce.rngMu.Lock()
+	defer ce.rngMu.Unlock()
+	return ce.rng.Float64()
 }
 
 // GetConfig returns the current configuration
@@ -363,7 +385,7 @@ func (ce *ChaosEngine) MatchingRules(req *http.Request) []*ChaosRule {
 
 	// Check global odds
 	if ce.config != nil && ce.config.GlobalOdds > 0 && ce.config.GlobalOdds < 1.0 {
-		if ce.rng.Float64() > ce.config.GlobalOdds {
+		if ce.rngFloat64() > ce.config.GlobalOdds {
 			return nil
 		}
 	}
@@ -377,7 +399,7 @@ func (ce *ChaosEngine) MatchingRules(req *http.Request) []*ChaosRule {
 		rule := state.rule
 		if ce.ruleMatches(rule, req) {
 			// Check probability
-			if rule.Probability < 1.0 && ce.rng.Float64() > rule.Probability {
+			if rule.Probability < 1.0 && ce.rngFloat64() > rule.Probability {
 				continue
 			}
 
@@ -434,11 +456,11 @@ func (ce *ChaosEngine) GetLatencyDelay(rules []*ChaosRule) time.Duration {
 			maxMs = minMs + 1
 		}
 
-		delay := minMs + ce.rng.Intn(maxMs-minMs)
+		delay := minMs + ce.rngIntn(maxMs-minMs)
 
 		// Add jitter
 		if rule.JitterMs > 0 {
-			jitter := ce.rng.Intn(rule.JitterMs*2) - rule.JitterMs
+			jitter := ce.rngIntn(rule.JitterMs*2) - rule.JitterMs
 			delay += jitter
 			if delay < 0 {
 				delay = 0
@@ -466,7 +488,7 @@ func (ce *ChaosEngine) GetHTTPError(rules []*ChaosRule) (int, string) {
 			continue
 		}
 
-		code := rule.ErrorCodes[ce.rng.Intn(len(rule.ErrorCodes))]
+		code := rule.ErrorCodes[ce.rngIntn(len(rule.ErrorCodes))]
 		ce.stats.errorsInjected.Add(1)
 		return code, rule.ErrorMessage
 	}

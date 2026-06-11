@@ -111,6 +111,20 @@ func (d *Daemon) cancelPendingCleanup(sessionCode string) {
 	}
 }
 
+// drainPendingCleanups stops every scheduled deferred-cleanup timer and clears
+// the map. Called once during Stop() before the managers those timers' callbacks
+// touch are torn down. A timer that already fired (Stop returns false) is
+// additionally short-circuited by the isShuttingDown() guard in its callback.
+func (d *Daemon) drainPendingCleanups() {
+	d.pendingCleanups.Range(func(key, val any) bool {
+		if t, ok := val.(*time.Timer); ok {
+			t.Stop()
+		}
+		d.pendingCleanups.Delete(key)
+		return true
+	})
+}
+
 // CleanupSessionResources performs immediate session resource cleanup.
 // Used for explicit UNREGISTER and direct calls. For connection drops, use
 // CleanupSessionResourcesDeferred instead.
@@ -153,6 +167,13 @@ func (d *Daemon) CleanupSessionResourcesDeferred(sessionCode string) {
 	// cancelPendingCleanup will cancel this timer and processes stay alive.
 	timer := time.AfterFunc(grace, func() {
 		d.pendingCleanups.Delete(sessionCode)
+
+		// If the daemon began shutting down between this timer firing and now,
+		// the managers doCleanup touches may already be torn down. Skip — Stop()
+		// reaps resources itself.
+		if d.isShuttingDown() {
+			return
+		}
 
 		if s, ok := d.sessionRegistry.Get(sessionCode); ok {
 			if time.Since(s.LastSeen) < grace {

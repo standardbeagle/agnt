@@ -39,15 +39,19 @@ func (d *Daemon) hubHandleIncidentsQuery(conn *hubpkg.Connection, cmd *hubproto.
 	qf := incidentQueryFilterToInternal(filter)
 	entries, stats := d.incidentBus.QuerySession(sessionCode, qf)
 
-	if filter.MarkRead && len(entries) > 0 {
-		fps := make([]string, len(entries))
-		for i, e := range entries {
-			fps[i] = e.Fingerprint
+	result := buildIncidentQueryResult(entries, stats, filter)
+
+	// Mark read only the records actually returned (after secondary filtering),
+	// so entries filtered out of the response are not silently marked read and
+	// the cursor advances to exactly the page the caller saw.
+	if filter.MarkRead && len(result.Incidents) > 0 {
+		fps := make([]string, len(result.Incidents))
+		for i, r := range result.Incidents {
+			fps[i] = r.Fingerprint
 		}
 		d.incidentBus.MarkReadSession(sessionCode, fps, true)
 	}
 
-	result := buildIncidentQueryResult(entries, stats, filter)
 	data, _ := json.Marshal(result)
 	return conn.WriteJSON(data)
 }
@@ -80,9 +84,12 @@ func buildIncidentQueryResult(entries []incident.InboxEntry, stats incident.Stat
 		records = append(records, incidentEntryToRecord(e, filter.Detail))
 	}
 
+	// Records are newest-first; cursor = newest entry in the returned page. The
+	// inbox returns the oldest unseen page when truncating, so advancing the
+	// caller's `since` to this page's newest entry sweeps forward gap-free.
 	var cursor string
 	if len(records) > 0 {
-		cursor = records[len(records)-1].LastSeen
+		cursor = records[0].LastSeen
 	}
 
 	return protocol.IncidentQueryResult{
