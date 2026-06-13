@@ -147,6 +147,7 @@
     chaos: van.state({
       loaded: false,
       enabled: false,
+      swallowDetect: false,
       globalOdds: 0,
       rules: [],
       stats: null
@@ -190,6 +191,7 @@
     var next = {
       loaded: true,
       enabled: snap.enabled === true,
+      swallowDetect: snap.swallow_detect === true,
       globalOdds: snap.global_odds || 0,
       rules: snap.rules || [],
       stats: snap.stats || null
@@ -1091,6 +1093,27 @@
           })
         ));
       }
+
+      // Swallowed-error detection toggle. When on, an injected error fault
+      // that produces no app-side error within the window is raised as an
+      // agent incident — surfacing apps that silently eat failures.
+      children.push(tags.label({
+        style: 'display: flex; align-items: center; gap: ' + TOKENS.spacing.sm + '; margin-top: ' + TOKENS.spacing.md + '; cursor: pointer;',
+        title: 'Raise an incident when the app swallows an injected fault (no error shown)'
+      },
+        tags.div({style: 'flex: 1; min-width: 0;'},
+          tags.div({style: 'font-size: 12px; font-weight: 600; color: ' + TOKENS.colors.text + ';'}, 'Detect swallowed errors'),
+          tags.div({style: 'font-size: 10px; color: ' + TOKENS.colors.textMuted + ';'}, 'Flag faults the app silently eats')
+        ),
+        tags.input({
+          type: 'checkbox',
+          checked: chaos.swallowDetect === true,
+          style: 'cursor: pointer; accent-color: ' + TOKENS.colors.chaos + ';',
+          onchange: function(e) {
+            chaosRequest('set_swallow_detect', {enabled: e.target.checked});
+          }
+        })
+      ));
 
       // Stats
       if (chaos.stats) {
@@ -1996,20 +2019,51 @@
   function init() {
     if (state.container) return;
     loadPrefs();
+    // Nested (iframe) instance — e.g. the live frame inside responsive mode,
+    // which loads this same proxied page and therefore re-injects this script.
+    // The page's own global key hooks live inside the frame and cannot reach
+    // the parent, so the parent owns the chrome. Run bridge-only: render no UI
+    // and skip status polling. The hotkey handler (registered at script-eval
+    // time, see bottom) forwards our global hotkeys up to the parent's
+    // indicator. The headless modules (__devtool_responsive/core/audit) stay
+    // loaded for responsive-mode to read.
+    if (isNestedFrame()) {
+      return;
+    }
     createUI();
     setupStatusPolling();
-    setupGlobalShortcuts();
   }
 
-  // Global keyboard shortcuts
-  function setupGlobalShortcuts() {
-    document.addEventListener('keydown', function(e) {
-      // Ctrl+Y (or Cmd+Y on Mac) - toggle indicator panel
-      if (e.key === 'y' && (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey) {
-        e.preventDefault();
+  // True when this script runs inside a frame rather than the top window.
+  // Same-origin here (proxy serves both), so window.top is always reachable;
+  // the try/catch is belt-and-braces against a future cross-origin embed.
+  function isNestedFrame() {
+    try { return window.top !== window.self; } catch (e) { return true; }
+  }
+
+  // Call a method on the top frame's indicator. Same-origin direct call;
+  // swallow if the parent is gone or (defensively) cross-origin.
+  function callParentIndicator(method) {
+    try {
+      var parentIndicator = window.parent && window.parent.__devtool_indicator;
+      if (parentIndicator && typeof parentIndicator[method] === 'function') {
+        parentIndicator[method]();
+      }
+    } catch (e) { /* parent unreachable — nothing to forward to */ }
+  }
+
+  // Single global-hotkey handler for both top and nested instances.
+  // Nested → forward to the parent's indicator; top → act locally.
+  function handleGlobalHotkey(e) {
+    // Ctrl+Y (or Cmd+Y on Mac) - toggle indicator panel
+    if (e.key === 'y' && (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey) {
+      e.preventDefault();
+      if (isNestedFrame()) {
+        callParentIndicator('togglePanel');
+      } else {
         togglePanel();
       }
-    });
+    }
   }
 
   function createUI() {
@@ -4896,6 +4950,9 @@
 
   // Panel toggle
   function togglePanel(show) {
+    // Guard against a hotkey arriving before createUI() built the panel
+    // (the handler is registered at script-eval time, ahead of DOM ready).
+    if (!state.panel) return;
     var shouldShow = show !== undefined ? show : !state.isExpanded;
     state.isExpanded = shouldShow;
 
@@ -5213,6 +5270,14 @@
     state.bug = null;
     state.panel = null;
   }
+
+  // Register the global hotkey handler immediately at script-eval time, on
+  // window + capture. Injection lands before </head>, so this runs and
+  // registers BEFORE any page inline script in <body>. A hostile page hook
+  // (window-capture + stopImmediatePropagation, the original failure mode)
+  // registers later, so ours fires first and cannot be suppressed. Deferring
+  // this to init()/DOMContentLoaded would lose the registration-order race.
+  window.addEventListener('keydown', handleGlobalHotkey, true);
 
   // Init on ready
   if (document.readyState === 'loading') {
