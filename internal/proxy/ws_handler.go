@@ -583,6 +583,12 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			// Handle store API requests from browser (serialised via asyncConn).
 			go ps.handleStoreRequest(asyncConn, msg.Data)
 
+		case "chaos_request":
+			// Handle chaos control requests from the indicator panel
+			// (serialised via asyncConn). Acts directly on this proxy's
+			// chaos engine — no daemon round trip.
+			go ps.handleChaosRequest(asyncConn, msg.Data)
+
 		case "voice_start":
 			// Start voice transcription session
 			config := DefaultDeepgramConfig()

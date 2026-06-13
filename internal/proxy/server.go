@@ -251,6 +251,10 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 		readiness: newReadinessGate(),
 	}
 
+	// Push chaos state to connected browser clients whenever any control
+	// surface (MCP, hub, browser panel) mutates the engine.
+	ps.chaosEngine.SetOnChange(func() { ps.BroadcastChaosState() })
+
 	// Create reverse proxy with custom Director for proper Host handling
 	ps.proxy = httputil.NewSingleHostReverseProxy(targetURL)
 
