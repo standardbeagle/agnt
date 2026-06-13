@@ -141,8 +141,82 @@
     interactions: van.state([]),
 
     // History tab data (chronological event log)
-    history: van.state([])
+    history: van.state([]),
+
+    // Chaos tab data (live engine state pushed from the proxy)
+    chaos: van.state({
+      loaded: false,
+      enabled: false,
+      globalOdds: 0,
+      rules: [],
+      stats: null
+    }),
+    chaosPresets: van.state([])
   };
+
+  // ============================================
+  // Chaos control client
+  // Request/response over the metrics WebSocket: chaos_request out,
+  // chaos_response back (keyed by request_id), chaos_state pushed on any
+  // engine mutation regardless of which surface (panel, MCP, hub) made it.
+  // ============================================
+  var chaosPending = {}; // request_id -> callback(result, error)
+
+  function chaosRequest(action, params, callback) {
+    if (!core || !core.send) {
+      if (callback) callback(null, 'not connected');
+      return;
+    }
+    var requestID = generateId();
+    if (callback) {
+      chaosPending[requestID] = callback;
+      // Drop stale callbacks so the map cannot grow unbounded
+      setTimeout(function() { delete chaosPending[requestID]; }, 10000);
+    }
+    var sent = core.send('chaos_request', {
+      request_id: requestID,
+      action: action,
+      params: params || {}
+    });
+    if (!sent && callback) {
+      delete chaosPending[requestID];
+      callback(null, 'not connected');
+    }
+  }
+
+  function applyChaosSnapshot(snap) {
+    if (!snap) return;
+    var prev = store.chaos.val;
+    var next = {
+      loaded: true,
+      enabled: snap.enabled === true,
+      globalOdds: snap.global_odds || 0,
+      rules: snap.rules || [],
+      stats: snap.stats || null
+    };
+    store.chaos.val = next;
+    setChaosIndicator(next.enabled);
+    if (prev.loaded && prev.enabled !== next.enabled) {
+      if (next.enabled) {
+        showMicroToast('⛈ Chaos ON', TOKENS.colors.chaos);
+        logHistoryEvent('system', 'Chaos mode enabled', '');
+      } else {
+        showMicroToast('☀ Chaos off', TOKENS.colors.success);
+        logHistoryEvent('system', 'Chaos mode disabled', '');
+      }
+    }
+  }
+
+  function refreshChaosData() {
+    chaosRequest('status', {}, function(result) {
+      if (result) applyChaosSnapshot(result);
+    });
+    if (store.chaosPresets.val.length === 0) {
+      chaosRequest('list_presets', {}, function(result) {
+        if (result && result.presets) store.chaosPresets.val = result.presets;
+      });
+    }
+  }
 
   // ============================================
   // Data Refresh Functions
@@ -870,6 +944,189 @@
     };
   }
 
+  // Chaos Tab Component
+  function ChaosTabComponent() {
+    var chaosTypeIcons = {
+      latency: '⏱', bandwidth: '🐌', packet_loss: '📉',
+      disconnect: '🔌', slow_close: '🚶', slow_drip: '💧',
+      timeout: '⏳', stale: '🥶', out_of_order: '🔀',
+      http_error: '💥', rate_limit: '🛑', bit_flip: '🎲',
+      truncate: '✂', corrupt_json: '🦠', chunked_abort: '⛔',
+      partial_body: '🪦', header_bomb: '💣'
+    };
+
+    function ruleDetail(rule) {
+      var parts = [];
+      if (rule.probability && rule.probability < 1) parts.push(Math.round(rule.probability * 100) + '% odds');
+      if (rule.min_latency_ms || rule.max_latency_ms) parts.push((rule.min_latency_ms || 0) + '–' + (rule.max_latency_ms || 0) + 'ms');
+      if (rule.error_codes && rule.error_codes.length) parts.push('HTTP ' + rule.error_codes.join('/'));
+      if (rule.bytes_per_ms) parts.push(rule.bytes_per_ms + 'B/ms');
+      if (rule.truncate_percent) parts.push('keep ' + Math.round(rule.truncate_percent * 100) + '%');
+      if (rule.url_pattern) parts.push(rule.url_pattern);
+      return parts.join(' · ');
+    }
+
+    return function() {
+      var chaos = store.chaos.val;
+      var presets = store.chaosPresets.val;
+
+      if (!chaos.loaded) {
+        return tags.div({style: STYLES.emptyState}, 'Connecting to chaos engine…');
+      }
+
+      var children = [];
+
+      // Master toggle card
+      var statusColor = chaos.enabled ? TOKENS.colors.chaos : TOKENS.colors.textMuted;
+      var toggleTrack = tags.div({
+        style: [
+          'width: 44px', 'height: 24px', 'border-radius: 12px', 'position: relative',
+          'cursor: pointer', 'transition: background 0.25s ease', 'flex-shrink: 0',
+          'background: ' + (chaos.enabled ? TOKENS.colors.chaos : TOKENS.colors.border)
+        ].join(';'),
+        onclick: function() { chaosRequest(chaos.enabled ? 'disable' : 'enable', {}); }
+      }, tags.div({
+        style: [
+          'position: absolute', 'top: 2px', 'width: 20px', 'height: 20px',
+          'border-radius: 50%', 'background: #fff', 'transition: left 0.25s ease',
+          'box-shadow: 0 1px 3px rgba(0,0,0,0.3)',
+          'left: ' + (chaos.enabled ? '22px' : '2px')
+        ].join(';')
+      }));
+
+      children.push(tags.div({
+        style: STYLES.healthCard + '; display: flex; align-items: center; gap: ' + TOKENS.spacing.md + ';' +
+          (chaos.enabled ? ' border: 1px solid ' + TOKENS.colors.chaos + '; box-shadow: 0 0 12px rgba(168,85,247,0.25);' : '')
+      },
+        tags.div({style: 'font-size: 22px; flex-shrink: 0;'}, chaos.enabled ? '⛈' : '☀'),
+        tags.div({style: 'flex: 1; min-width: 0;'},
+          tags.div({style: 'font-weight: 600; font-size: 14px; color: ' + TOKENS.colors.text + ';'}, 'Chaos Engineering'),
+          tags.div({style: 'font-size: 11px; color: ' + statusColor + ';'},
+            chaos.enabled
+              ? 'Injecting failures into proxied traffic'
+              : 'Off — traffic passes through untouched')
+        ),
+        toggleTrack
+      ));
+
+      // Presets
+      children.push(tags.div({style: STYLES.healthLabel + '; margin-top: ' + TOKENS.spacing.md + ';'}, 'Presets'));
+      if (presets.length === 0) {
+        children.push(tags.div({style: 'font-size: 12px; color: ' + TOKENS.colors.textMuted + ';'}, 'Loading presets…'));
+      } else {
+        children.push(tags.div({style: 'display: flex; flex-wrap: wrap; gap: ' + TOKENS.spacing.xs + ';'},
+          presets.map(function(preset) {
+            return tags.button({
+              style: [
+                'padding: 4px 10px', 'border-radius: ' + TOKENS.radius.full,
+                'border: 1px solid ' + TOKENS.colors.border, 'background: ' + TOKENS.colors.surfaceAlt,
+                'color: ' + TOKENS.colors.text, 'font-size: 11px', 'cursor: pointer',
+                'transition: all 0.15s ease'
+              ].join(';'),
+              title: 'Apply preset: ' + (preset.rules || []).join(', '),
+              onclick: function() {
+                chaosRequest('preset', {name: preset.name}, function(result, err) {
+                  if (err) showMicroToast('✘ ' + err, TOKENS.colors.error);
+                  else showMicroToast('⛈ ' + preset.name, TOKENS.colors.chaos);
+                });
+              },
+              onmouseenter: function(e) {
+                e.target.style.borderColor = TOKENS.colors.chaos;
+                e.target.style.color = TOKENS.colors.chaos;
+              },
+              onmouseleave: function(e) {
+                e.target.style.borderColor = TOKENS.colors.border;
+                e.target.style.color = TOKENS.colors.text;
+              }
+            }, preset.name);
+          })
+        ));
+      }
+
+      // Active rules
+      children.push(tags.div({
+        style: 'display: flex; align-items: center; justify-content: space-between; margin-top: ' + TOKENS.spacing.md + ';'
+      },
+        tags.div({style: STYLES.healthLabel}, 'Rules (' + chaos.rules.length + ')'),
+        chaos.rules.length > 0 ? tags.button({
+          style: 'background: none; border: none; color: ' + TOKENS.colors.error + '; font-size: 11px; cursor: pointer;',
+          onclick: function() { chaosRequest('clear', {}); }
+        }, 'Clear all') : null
+      ));
+
+      if (chaos.rules.length === 0) {
+        children.push(tags.div({style: 'font-size: 12px; color: ' + TOKENS.colors.textMuted + '; padding: ' + TOKENS.spacing.sm + ' 0;'},
+          'No rules configured. Pick a preset above to get started.'));
+      } else {
+        children.push(tags.div({style: 'display: flex; flex-direction: column; gap: ' + TOKENS.spacing.xs + ';'},
+          chaos.rules.map(function(rule) {
+            var icon = chaosTypeIcons[rule.type] || '⚙';
+            var detail = ruleDetail(rule);
+            return tags.div({
+              style: STYLES.healthCard + '; display: flex; align-items: center; gap: ' + TOKENS.spacing.sm + ';' +
+                (rule.enabled ? '' : ' opacity: 0.5;')
+            },
+              tags.span({style: 'font-size: 16px; flex-shrink: 0;'}, icon),
+              tags.div({style: 'flex: 1; min-width: 0;'},
+                tags.div({style: 'font-size: 12px; font-weight: 600; color: ' + TOKENS.colors.text + '; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;'},
+                  rule.name || rule.id),
+                tags.div({style: 'font-size: 10px; color: ' + TOKENS.colors.textMuted + '; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;'},
+                  rule.type + (detail ? ' · ' + detail : '') + (rule.applied ? ' · hit ' + rule.applied + '×' : ''))
+              ),
+              tags.input({
+                type: 'checkbox',
+                checked: rule.enabled,
+                title: rule.enabled ? 'Disable rule' : 'Enable rule',
+                style: 'cursor: pointer; accent-color: ' + TOKENS.colors.chaos + ';',
+                onchange: function(e) {
+                  chaosRequest('toggle_rule', {rule_id: rule.id, enabled: e.target.checked});
+                }
+              }),
+              tags.button({
+                style: 'background: none; border: none; color: ' + TOKENS.colors.textMuted + '; cursor: pointer; font-size: 14px; padding: 2px;',
+                title: 'Remove rule',
+                onclick: function() { chaosRequest('remove_rule', {rule_id: rule.id}); }
+              }, '×')
+            );
+          })
+        ));
+      }
+
+      // Stats
+      if (chaos.stats) {
+        var s = chaos.stats;
+        children.push(tags.div({
+          style: 'display: flex; align-items: center; justify-content: space-between; margin-top: ' + TOKENS.spacing.md + ';'
+        },
+          tags.div({style: STYLES.healthLabel}, 'Impact'),
+          tags.button({
+            style: 'background: none; border: none; color: ' + TOKENS.colors.textMuted + '; font-size: 11px; cursor: pointer;',
+            onclick: function() { chaosRequest('reset_stats', {}); }
+          }, 'Reset')
+        ));
+        var affectedPct = s.total_requests > 0 ? Math.round((s.affected_count / s.total_requests) * 100) : 0;
+        var statCells = [
+          ['Requests', String(s.total_requests || 0), TOKENS.colors.text],
+          ['Affected', (s.affected_count || 0) + ' (' + affectedPct + '%)', s.affected_count > 0 ? TOKENS.colors.chaos : TOKENS.colors.text],
+          ['Errors injected', String(s.errors_injected || 0), s.errors_injected > 0 ? TOKENS.colors.error : TOKENS.colors.text],
+          ['Latency added', (s.latency_injected_ms || 0) + 'ms', TOKENS.colors.text],
+          ['Drops', String(s.drops_injected || 0), TOKENS.colors.text],
+          ['Truncated', String(s.truncated_count || 0), TOKENS.colors.text]
+        ];
+        children.push(tags.div({style: 'display: grid; grid-template-columns: 1fr 1fr 1fr; gap: ' + TOKENS.spacing.xs + ';'},
+          statCells.map(function(cell) {
+            return tags.div({style: STYLES.healthCard + '; padding: 6px 8px;'},
+              tags.div({style: 'font-size: 9px; text-transform: uppercase; letter-spacing: 0.5px; color: ' + TOKENS.colors.textMuted + ';'}, cell[0]),
+              tags.div({style: 'font-size: 13px; font-weight: 600; color: ' + cell[2] + ';'}, cell[1])
+            );
+          })
+        ));
+      }
+
+      return tags.div({}, children);
+    };
+  }
+
   // Design tokens - consistent visual language
   var TOKENS = {
     colors: {
@@ -879,6 +1136,8 @@
       success: '#22c55e',
       error: '#ef4444',
       active: '#f59e0b',       // Amber - for activity state
+      chaos: '#a855f7',        // Purple - for chaos mode
+      chaosDeep: '#7c3aed',    // Violet - chaos accents
       surface: '#ffffff',
       surfaceAlt: '#f8fafc',
       border: '#e2e8f0',
@@ -953,6 +1212,52 @@
       'border: 2px solid ' + TOKENS.colors.active,
       'opacity: 0',
       'pointer-events: none'
+    ].join(';'),
+
+    // Activity ripples - expanding rings emitted while AI is working
+    activityRipple: [
+      'position: absolute',
+      'top: 0',
+      'left: 0',
+      'right: 0',
+      'bottom: 0',
+      'border-radius: ' + TOKENS.radius.full,
+      'border: 2px solid ' + TOKENS.colors.active,
+      'opacity: 0',
+      'pointer-events: none'
+    ].join(';'),
+
+    // Chaos ring - rotating dashed storm ring when chaos mode is enabled
+    chaosRing: [
+      'position: absolute',
+      'top: -7px',
+      'left: -7px',
+      'right: -7px',
+      'bottom: -7px',
+      'border-radius: ' + TOKENS.radius.full,
+      'border: 2px dashed ' + TOKENS.colors.chaos,
+      'opacity: 0',
+      'pointer-events: none',
+      'transition: opacity 0.3s ease'
+    ].join(';'),
+
+    // Chaos badge - small storm marker pinned bottom-right of the bug
+    chaosBadge: [
+      'position: absolute',
+      'bottom: -2px',
+      'right: -2px',
+      'width: 18px',
+      'height: 18px',
+      'border-radius: ' + TOKENS.radius.full,
+      'background: ' + TOKENS.colors.chaos,
+      'border: 2px solid ' + TOKENS.colors.surface,
+      'display: none',
+      'align-items: center',
+      'justify-content: center',
+      'font-size: 10px',
+      'line-height: 1',
+      'pointer-events: none',
+      'box-shadow: 0 0 8px rgba(168,85,247,0.6)'
     ].join(';'),
 
     // Output preview - floating next to the bug when AI is outputting
@@ -1508,6 +1813,11 @@
       'color: white'
     ].join(';'),
 
+    tabBadgePurple: [
+      'background: ' + TOKENS.colors.chaos,
+      'color: white'
+    ].join(';'),
+
     tabContent: [
       'padding: ' + TOKENS.spacing.lg,
       'max-height: 400px',
@@ -1899,6 +2209,14 @@
       if (k >= 0) recentTotal += buckets[k];
     }
     state.sparkline.style.opacity = recentTotal > 0 ? '1' : '0.3';
+
+    // Emit a one-shot ripple on the bug when fresh API traffic shows up
+    // (only while the sustained activity animation isn't already running).
+    var freshTotal = 0;
+    for (var m = buckets.length - 2; m < buckets.length; m++) {
+      if (m >= 0) freshTotal += buckets[m];
+    }
+    if (freshTotal > 0) fireTrafficPing();
   }
 
   // Log an event to the history store
@@ -1936,6 +2254,29 @@
     ring.id = '__devtool-activity-ring';
     ring.style.cssText = STYLES.activityRing;
     bug.appendChild(ring);
+
+    // Activity ripples — two staggered expanding rings, animated only while
+    // the AI is active (classes toggled in setActivityState)
+    for (var ri = 1; ri <= 2; ri++) {
+      var ripple = document.createElement('div');
+      ripple.id = '__devtool-ripple-' + ri;
+      ripple.className = '__devtool-ripple';
+      ripple.style.cssText = STYLES.activityRipple;
+      bug.appendChild(ripple);
+    }
+
+    // Chaos storm ring + badge (visible only while chaos mode is enabled)
+    var chaosRing = document.createElement('div');
+    chaosRing.id = '__devtool-chaos-ring';
+    chaosRing.style.cssText = STYLES.chaosRing;
+    bug.appendChild(chaosRing);
+
+    var chaosBadge = document.createElement('div');
+    chaosBadge.id = '__devtool-chaos-badge';
+    chaosBadge.style.cssText = STYLES.chaosBadge;
+    chaosBadge.textContent = '⛈';
+    chaosBadge.title = 'Chaos mode active — failures are being injected';
+    bug.appendChild(chaosBadge);
 
     // Inject CSS animation for pulse effect
     injectActivityAnimation();
@@ -2035,6 +2376,78 @@
       // bug bug does not keep a compositor layer around when not pulsing.
       '  will-change: transform;',
       '  animation: __devtool-active-pulse 2s ease-in-out infinite !important;',
+      '}',
+      // Activity ripples - sonar-style expanding rings emitted while active
+      '@keyframes __devtool-ripple-out {',
+      '  0% { transform: scale(1); opacity: 0.55; }',
+      '  100% { transform: scale(2.1); opacity: 0; }',
+      '}',
+      '.__devtool-ripple-active-1 {',
+      '  will-change: transform, opacity;',
+      '  animation: __devtool-ripple-out 1.8s cubic-bezier(0.25, 0.6, 0.4, 1) infinite;',
+      '}',
+      '.__devtool-ripple-active-2 {',
+      '  will-change: transform, opacity;',
+      '  animation: __devtool-ripple-out 1.8s cubic-bezier(0.25, 0.6, 0.4, 1) 0.9s infinite;',
+      '}',
+      // One-shot traffic ping - a quick ripple when proxied requests flow
+      '@keyframes __devtool-traffic-ping {',
+      '  0% { transform: scale(1); opacity: 0.5; border-color: ' + TOKENS.colors.primary + '; }',
+      '  100% { transform: scale(1.9); opacity: 0; border-color: ' + TOKENS.colors.primary + '; }',
+      '}',
+      '.__devtool-traffic-ping {',
+      '  animation: __devtool-traffic-ping 0.7s ease-out 1;',
+      '}',
+      // Chaos storm ring - counter-rotating dashed ring with electric flicker
+      '@keyframes __devtool-chaos-spin {',
+      '  0% { transform: rotate(0deg); }',
+      '  100% { transform: rotate(-360deg); }',
+      '}',
+      '@keyframes __devtool-chaos-flicker {',
+      '  0%, 100% { box-shadow: 0 0 12px rgba(168,85,247,0.45); border-color: ' + TOKENS.colors.chaos + '; }',
+      '  30% { box-shadow: 0 0 22px rgba(124,58,237,0.7); border-color: ' + TOKENS.colors.chaosDeep + '; }',
+      '  55% { box-shadow: 0 0 14px rgba(236,72,153,0.5); border-color: #ec4899; }',
+      '  80% { box-shadow: 0 0 26px rgba(168,85,247,0.65); border-color: ' + TOKENS.colors.chaos + '; }',
+      '}',
+      '.__devtool-chaos-active {',
+      '  will-change: transform;',
+      '  animation: __devtool-chaos-spin 6s linear infinite, __devtool-chaos-flicker 2.2s ease-in-out infinite;',
+      '}',
+      // Chaos badge wobble - the storm marker sways like weather
+      '@keyframes __devtool-chaos-wobble {',
+      '  0%, 100% { transform: rotate(-8deg) scale(1); }',
+      '  50% { transform: rotate(8deg) scale(1.12); }',
+      '}',
+      '.__devtool-chaos-badge-on {',
+      '  animation: __devtool-chaos-wobble 1.6s ease-in-out infinite;',
+      '}',
+      // Disconnected - bug desaturates and dims, dot blinks urgently
+      '.__devtool-disconnected {',
+      '  filter: grayscale(0.75) brightness(0.85);',
+      '  transition: filter 0.4s ease;',
+      '}',
+      '@keyframes __devtool-dot-blink {',
+      '  0%, 100% { opacity: 1; transform: scale(1); }',
+      '  50% { opacity: 0.25; transform: scale(0.82); }',
+      '}',
+      '.__devtool-dot-lost {',
+      '  animation: __devtool-dot-blink 0.9s ease-in-out infinite;',
+      '}',
+      // Reconnected - one-shot green shockwave + dot pop
+      '@keyframes __devtool-reconnect-flash {',
+      '  0% { box-shadow: 0 10px 40px rgba(0,0,0,0.15), 0 0 0 0 rgba(34,197,94,0.65); }',
+      '  100% { box-shadow: 0 10px 40px rgba(0,0,0,0.15), 0 0 0 22px rgba(34,197,94,0); }',
+      '}',
+      '.__devtool-reconnect-flash {',
+      '  animation: __devtool-reconnect-flash 0.8s ease-out 1;',
+      '}',
+      '@keyframes __devtool-dot-pop {',
+      '  0% { transform: scale(1); }',
+      '  45% { transform: scale(1.65); }',
+      '  100% { transform: scale(1); }',
+      '}',
+      '.__devtool-dot-pop {',
+      '  animation: __devtool-dot-pop 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) 1;',
       '}'
     ].join('\\n');
     // Append to the shadow root (if active) so the keyframes/classes apply
@@ -2048,6 +2461,8 @@
     state.isActive = isActive;
     var ring = getInMount('__devtool-activity-ring');
     var bug = state.bug;
+    var ripple1 = getInMount('__devtool-ripple-1');
+    var ripple2 = getInMount('__devtool-ripple-2');
 
     if (isActive) {
       if (bug) {
@@ -2058,6 +2473,8 @@
         ring.classList.add('__devtool-active');
         ring.style.opacity = '1';
       }
+      if (ripple1) ripple1.classList.add('__devtool-ripple-active-1');
+      if (ripple2) ripple2.classList.add('__devtool-ripple-active-2');
     } else {
       if (bug) {
         bug.classList.remove('__devtool-bug-active');
@@ -2067,8 +2484,48 @@
         ring.classList.remove('__devtool-active');
         ring.style.opacity = '0';
       }
+      if (ripple1) ripple1.classList.remove('__devtool-ripple-active-1');
+      if (ripple2) ripple2.classList.remove('__devtool-ripple-active-2');
       hideOutputPreview();
     }
+  }
+
+  // Toggle the chaos-mode visuals on the bug: counter-rotating dashed storm
+  // ring with electric flicker plus a wobbling storm badge. Driven by
+  // chaos_state pushes, so MCP/hub changes light it up too.
+  function setChaosIndicator(enabled) {
+    var ring = getInMount('__devtool-chaos-ring');
+    var badge = getInMount('__devtool-chaos-badge');
+
+    if (ring) {
+      if (enabled) {
+        ring.classList.add('__devtool-chaos-active');
+        ring.style.opacity = '1';
+      } else {
+        ring.classList.remove('__devtool-chaos-active');
+        ring.style.opacity = '0';
+      }
+    }
+    if (badge) {
+      badge.style.display = enabled ? 'flex' : 'none';
+      if (enabled) badge.classList.add('__devtool-chaos-badge-on');
+      else badge.classList.remove('__devtool-chaos-badge-on');
+    }
+  }
+
+  // One-shot traffic ping: quick indigo ripple when proxied requests flow.
+  // Reuses ripple-1 only when the sustained activity animation isn't running.
+  var trafficPingArmed = true;
+  function fireTrafficPing() {
+    if (state.isActive || !trafficPingArmed) return;
+    var ripple = getInMount('__devtool-ripple-1');
+    if (!ripple) return;
+    trafficPingArmed = false;
+    ripple.classList.add('__devtool-traffic-ping');
+    setTimeout(function() {
+      ripple.classList.remove('__devtool-traffic-ping');
+      trafficPingArmed = true;
+    }, 750);
   }
 
   // Inject container query styles for responsive tabs
@@ -2251,7 +2708,8 @@
       { id: 'network', label: 'Network', short: 'Net', title: 'Network requests' },
       { id: 'performance', label: 'Perf', short: 'Perf', title: 'Performance metrics' },
       { id: 'interactions', label: 'Interact', short: 'Intx', title: 'User interactions' },
-      { id: 'history', label: 'History', short: 'Hist', title: 'Event history' }
+      { id: 'history', label: 'History', short: 'Hist', title: 'Event history' },
+      { id: 'chaos', label: 'Chaos', short: '⛈', title: 'Chaos engineering — failure injection' }
     ];
 
     tabs.forEach(function(tabInfo) {
@@ -2298,7 +2756,7 @@
     }
 
     // Update tab bar highlighting
-    var tabs = ['compose', 'overview', 'errors', 'network', 'performance', 'interactions', 'history'];
+    var tabs = ['compose', 'overview', 'errors', 'network', 'performance', 'interactions', 'history', 'chaos'];
     tabs.forEach(function(id) {
       var tab = getInMount('__devtool-tab-' + id);
       if (tab) {
@@ -2340,6 +2798,10 @@
         break;
       case 'history':
         van.add(content, HistoryTabComponent());
+        break;
+      case 'chaos':
+        refreshChaosData();
+        van.add(content, ChaosTabComponent());
         break;
       case 'compose':
         renderComposeTab(content);
@@ -2446,6 +2908,13 @@
       updateTabBadge(historyTab, recentEvents > 0 ? recentEvents : null, recentEvents > 0 ? null : null);
     }
 
+    // Update chaos tab badge (purple dot while chaos is enabled)
+    var chaosTab = getInMount('__devtool-tab-chaos');
+    if (chaosTab) {
+      var chaosOn = store.chaos.val.enabled;
+      updateTabBadge(chaosTab, chaosOn ? '●' : null, chaosOn ? 'purple' : null);
+    }
+
     // Update performance tab badge
     var perfTab = getInMount('__devtool-tab-performance');
     if (perfTab && window.__devtool_mutations) {
@@ -2477,6 +2946,8 @@
       badge.style.cssText += ';' + STYLES.tabBadgeYellow;
     } else if (color === 'green') {
       badge.style.cssText += ';' + STYLES.tabBadgeGreen;
+    } else if (color === 'purple') {
+      badge.style.cssText += ';' + STYLES.tabBadgePurple;
     }
 
     badge.textContent = content;
@@ -2507,6 +2978,11 @@
       case 'history':
         // Force re-render to update relative timestamps
         store.history.val = store.history.val.slice();
+        break;
+      case 'chaos':
+        // Pull fresh stats while the tab is open; pushed chaos_state covers
+        // config changes but stats counters only move with traffic.
+        refreshChaosData();
         break;
       // other tabs have no data to refresh
     }
@@ -4558,11 +5034,51 @@
   function setupStatusPolling() {
     var updateDot = function() {
       var dot = getInMount('__devtool-status');
+      var bug = state.bug;
+      var connected = core.isConnected();
+
       if (dot) {
-        dot.style.backgroundColor = core.isConnected() ? TOKENS.colors.success : TOKENS.colors.secondary;
+        dot.style.backgroundColor = connected ? TOKENS.colors.success : TOKENS.colors.error;
+      }
+
+      // Transition handling: desaturate the bug + blink the dot while the
+      // metrics socket is down; fire a one-shot green shockwave + dot pop
+      // when it comes back.
+      if (connected !== lastConnected) {
+        if (connected) {
+          if (bug) {
+            bug.classList.remove('__devtool-disconnected');
+            bug.classList.add('__devtool-reconnect-flash');
+            setTimeout(function() { bug.classList.remove('__devtool-reconnect-flash'); }, 850);
+          }
+          if (dot) {
+            dot.classList.remove('__devtool-dot-lost');
+            dot.classList.add('__devtool-dot-pop');
+            setTimeout(function() { dot.classList.remove('__devtool-dot-pop'); }, 550);
+          }
+          // Only toast on a true reconnect, not the initial connect
+          if (lastConnected === false) {
+            showMicroToast('● Reconnected', TOKENS.colors.success);
+            logHistoryEvent('system', 'Proxy reconnected', '');
+          }
+        } else {
+          if (bug) bug.classList.add('__devtool-disconnected');
+          if (dot) dot.classList.add('__devtool-dot-lost');
+          if (lastConnected === true) {
+            showMicroToast('● Connection lost', TOKENS.colors.error);
+            logHistoryEvent('error', 'Proxy connection lost', '');
+          }
+        }
+        lastConnected = connected;
       }
     };
+    var lastConnected = null; // null = unknown until first poll
     core.onConnected(updateDot);
+    core.onConnected(function() {
+      // Sync chaos state on (re)connect so the bug indicator is correct
+      // even if the panel was never opened.
+      refreshChaosData();
+    });
     setInterval(updateDot, 200);
     // Update inspect button active state
     setInterval(function() {
@@ -4626,6 +5142,15 @@
       var color = level === 'error' ? TOKENS.colors.error : TOKENS.colors.active;
       showMicroToast((level === 'error' ? '\u2718 ' : '\u26a0 ') + diagMsg.substring(0, 30), color);
       logHistoryEvent(level === 'error' ? 'error' : 'system', diagMsg, '');
+    } else if (message.type === 'chaos_response') {
+      var cb = chaosPending[message.request_id];
+      if (cb) {
+        delete chaosPending[message.request_id];
+        cb(message.result || null, message.error || null);
+      }
+    } else if (message.type === 'chaos_state') {
+      // Pushed by the proxy on any chaos mutation (panel, MCP, or hub)
+      applyChaosSnapshot(message.payload || message);
     } else if (message.type === 'capture_ack' && message.id && message.file_path) {
       // Server confirmed screenshot saved
       store.attachments.val = store.attachments.val.map(function(a) {

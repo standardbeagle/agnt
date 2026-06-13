@@ -137,6 +137,12 @@ type ChaosEngine struct {
 
 	// Optional logger for chaos testing mode
 	logger *TrafficLogger
+
+	// onChange is invoked (asynchronously) after any mutation to enabled
+	// state, config, rules, or stats reset. Used by ProxyServer to push
+	// chaos_state updates to connected browser clients regardless of which
+	// control surface (MCP, hub, browser panel) made the change.
+	onChange atomic.Pointer[func()]
 }
 
 // chaosRuleState holds a rule with atomic enabled state
@@ -172,14 +178,30 @@ func (ce *ChaosEngine) Stop() {
 	ce.reorderQueue.Stop()
 }
 
+// SetOnChange registers a callback fired after any chaos mutation.
+func (ce *ChaosEngine) SetOnChange(fn func()) {
+	ce.onChange.Store(&fn)
+}
+
+// notifyChange fires the onChange callback in a fresh goroutine. Async so
+// callers may invoke it while holding ce.mu without deadlocking callbacks
+// that read engine state.
+func (ce *ChaosEngine) notifyChange() {
+	if fn := ce.onChange.Load(); fn != nil && *fn != nil {
+		go (*fn)()
+	}
+}
+
 // Enable enables chaos injection
 func (ce *ChaosEngine) Enable() {
 	ce.enabled.Store(true)
+	ce.notifyChange()
 }
 
 // Disable disables chaos injection
 func (ce *ChaosEngine) Disable() {
 	ce.enabled.Store(false)
+	ce.notifyChange()
 }
 
 // IsEnabled returns whether chaos is enabled
@@ -233,6 +255,7 @@ func (ce *ChaosEngine) SetConfig(config *ChaosConfig) error {
 		ce.rng.Reseed(config.Seed)
 	}
 
+	ce.notifyChange()
 	return nil
 }
 
@@ -295,6 +318,53 @@ func (ce *ChaosEngine) GetConfig() *ChaosConfig {
 	return ce.config
 }
 
+// ChaosRuleSnapshot is a point-in-time view of a rule with its live enabled
+// state and applied count. Rules added via AddRule never sync back into
+// config.Rules, and per-rule toggles live in chaosRuleState — so UI surfaces
+// must read this snapshot, not GetConfig.
+type ChaosRuleSnapshot struct {
+	*ChaosRule
+	Enabled bool  `json:"enabled"`
+	Applied int64 `json:"applied"`
+}
+
+// ChaosSnapshot is the full live state of the engine for UI consumption.
+type ChaosSnapshot struct {
+	Enabled    bool                 `json:"enabled"`
+	GlobalOdds float64              `json:"global_odds,omitempty"`
+	Seed       int64                `json:"seed,omitempty"`
+	Rules      []*ChaosRuleSnapshot `json:"rules"`
+	Stats      ChaosStats           `json:"stats"`
+}
+
+// Snapshot returns the live engine state: master enabled flag, config-level
+// knobs, and every rule with its current enabled state and applied count.
+func (ce *ChaosEngine) Snapshot() *ChaosSnapshot {
+	snap := &ChaosSnapshot{
+		Enabled: ce.enabled.Load(),
+	}
+
+	ce.mu.RLock()
+	if ce.config != nil {
+		snap.GlobalOdds = ce.config.GlobalOdds
+		snap.Seed = ce.config.Seed
+	}
+	snap.Rules = make([]*ChaosRuleSnapshot, 0, len(ce.rules))
+	for _, r := range ce.rules {
+		rc := copyRule(r.rule)
+		rc.Enabled = r.enabled.Load()
+		snap.Rules = append(snap.Rules, &ChaosRuleSnapshot{
+			ChaosRule: rc,
+			Enabled:   rc.Enabled,
+			Applied:   r.applied.Load(),
+		})
+	}
+	ce.mu.RUnlock()
+
+	snap.Stats = ce.GetStats()
+	return snap
+}
+
 // Clear clears all chaos rules
 func (ce *ChaosEngine) Clear() {
 	ce.mu.Lock()
@@ -306,6 +376,8 @@ func (ce *ChaosEngine) Clear() {
 
 	// Reset stats
 	ce.stats = chaosStatsAtomic{}
+
+	ce.notifyChange()
 }
 
 // AddRule adds a single rule
@@ -329,6 +401,7 @@ func (ce *ChaosEngine) AddRule(rule *ChaosRule) error {
 	state.enabled.Store(rule.Enabled)
 	ce.rules = append(ce.rules, state)
 
+	ce.notifyChange()
 	return nil
 }
 
@@ -340,6 +413,7 @@ func (ce *ChaosEngine) RemoveRule(ruleID string) bool {
 	for i, r := range ce.rules {
 		if r.rule.ID == ruleID {
 			ce.rules = append(ce.rules[:i], ce.rules[i+1:]...)
+			ce.notifyChange()
 			return true
 		}
 	}
@@ -354,6 +428,7 @@ func (ce *ChaosEngine) EnableRule(ruleID string) bool {
 	for _, r := range ce.rules {
 		if r.rule.ID == ruleID {
 			r.enabled.Store(true)
+			ce.notifyChange()
 			return true
 		}
 	}
@@ -368,6 +443,7 @@ func (ce *ChaosEngine) DisableRule(ruleID string) bool {
 	for _, r := range ce.rules {
 		if r.rule.ID == ruleID {
 			r.enabled.Store(false)
+			ce.notifyChange()
 			return true
 		}
 	}
@@ -404,6 +480,8 @@ func (ce *ChaosEngine) ResetStats() {
 		r.applied.Store(0)
 	}
 	ce.mu.RUnlock()
+
+	ce.notifyChange()
 }
 
 // MatchingRules returns all rules that match the request
