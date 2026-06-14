@@ -88,12 +88,19 @@ func (s *stubWSConn) count() int {
 
 // slowWSConn is a wsWriter that sleeps for delay on every write.
 type slowWSConn struct {
-	delay atomic.Int64 // nanoseconds
+	delay atomic.Int64  // nanoseconds
+	gate  chan struct{} // if non-nil, WriteMessage blocks until it is closed
 	mu    sync.Mutex
 	msgs  [][]byte
 }
 
 func (s *slowWSConn) WriteMessage(_ int, data []byte) error {
+	// A gate (when set) blocks the writer deterministically until the test
+	// releases it — used to fill the async writer's channel without relying on
+	// a sleep racing the producer (which flaked under -race instrumentation).
+	if s.gate != nil {
+		<-s.gate
+	}
 	d := time.Duration(s.delay.Load())
 	if d > 0 {
 		time.Sleep(d)
@@ -415,10 +422,14 @@ func TestProxyWS_LargeMessagePayload(t *testing.T) {
 
 	ps := newFanoutTestProxy()
 
-	slow := &slowWSConn{}
-	slow.delay.Store(int64(10 * time.Millisecond)) // slow enough to not drain during the burst
+	// Gate the slow writer so it blocks on the first message: the async
+	// writer's channel then fills deterministically and the remaining
+	// broadcasts must be dropped, regardless of producer/consumer scheduling
+	// (the old 10ms-sleep approach raced the producer and flaked under -race).
+	slow := &slowWSConn{gate: make(chan struct{})}
 	asyncSlow := newAsyncWSWriter(slow, websocket.TextMessage)
 	defer asyncSlow.Close()
+	defer close(slow.gate) // release the writer so Close drains and no goroutine leaks
 	registerStub(ps, "slow", asyncSlow)
 
 	// Also register a fast stub to confirm it gets all messages.

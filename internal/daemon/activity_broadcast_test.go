@@ -15,11 +15,38 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// attachProjectSession registers and attaches a session for projectDir so the
+// connection is session-scoped. OVERLAY ACTIVITY / OUTPUT-PREVIEW with no
+// explicit proxy IDs scope to the connection's session project; without an
+// attached session they fail loud (never fan out across every project), so
+// these end-to-end tests must establish one and create their proxies under the
+// same project path.
+func attachProjectSession(t *testing.T, c *Client, projectDir string) {
+	t.Helper()
+	if _, err := c.SessionRegister("sess-"+sanitizeSessionCode(projectDir), projectDir, projectDir, "test-cmd", nil); err != nil {
+		t.Fatalf("SessionRegister failed: %v", err)
+	}
+	if _, err := c.SessionAttach(projectDir); err != nil {
+		t.Fatalf("SessionAttach failed: %v", err)
+	}
+}
+
+func sanitizeSessionCode(dir string) string {
+	out := make([]rune, 0, len(dir))
+	for _, r := range dir {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			out = append(out, r)
+		}
+	}
+	return string(out)
+}
+
 // TestActivityBroadcast_EndToEnd tests the complete activity broadcast pipeline:
 // ActivityMonitor -> Client.BroadcastActivity -> Daemon -> Proxy -> WebSocket -> Browser
 func TestActivityBroadcast_EndToEnd(t *testing.T) {
 	t.Parallel()
-	_, client, _ := newBootedDaemonWithClient(t)
+	_, client, projectDir := newBootedDaemonWithClient(t)
+	attachProjectSession(t, client, projectDir)
 
 	// Create a test HTTP server that we'll proxy to
 	targetServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -28,8 +55,8 @@ func TestActivityBroadcast_EndToEnd(t *testing.T) {
 	}))
 	defer targetServer.Close()
 
-	// Create a proxy
-	proxyResult, err := client.ProxyStart("test-proxy", targetServer.URL, 0, 0, "")
+	// Create a proxy under this session's project
+	proxyResult, err := client.ProxyStart("test-proxy", targetServer.URL, 0, 0, projectDir)
 	if err != nil {
 		t.Fatalf("Failed to start proxy: %v", err)
 	}
@@ -127,7 +154,8 @@ func TestActivityBroadcast_EndToEnd(t *testing.T) {
 // TestOutputPreviewBroadcast_EndToEnd tests the output preview broadcast pipeline.
 func TestOutputPreviewBroadcast_EndToEnd(t *testing.T) {
 	t.Parallel()
-	_, client, _ := newBootedDaemonWithClient(t)
+	_, client, projectDir := newBootedDaemonWithClient(t)
+	attachProjectSession(t, client, projectDir)
 
 	// Create a test HTTP server
 	targetServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -135,8 +163,8 @@ func TestOutputPreviewBroadcast_EndToEnd(t *testing.T) {
 	}))
 	defer targetServer.Close()
 
-	// Create a proxy
-	proxyResult, err := client.ProxyStart("test-proxy", targetServer.URL, 0, 0, "")
+	// Create a proxy under this session's project
+	proxyResult, err := client.ProxyStart("test-proxy", targetServer.URL, 0, 0, projectDir)
 	if err != nil {
 		t.Fatalf("Failed to start proxy: %v", err)
 	}
@@ -209,7 +237,8 @@ func TestOutputPreviewBroadcast_EndToEnd(t *testing.T) {
 // TestActivityBroadcast_NoProxies verifies that broadcasting with no proxies doesn't error.
 func TestActivityBroadcast_NoProxies(t *testing.T) {
 	t.Parallel()
-	client := newBootedClient(t)
+	_, client, projectDir := newBootedDaemonWithClient(t)
+	attachProjectSession(t, client, projectDir)
 
 	// Should not error even with no proxies
 	if err := client.BroadcastActivity(true); err != nil {
@@ -224,7 +253,8 @@ func TestActivityBroadcast_NoProxies(t *testing.T) {
 // TestActivityBroadcast_MultipleProxies tests broadcasting to multiple proxies.
 func TestActivityBroadcast_MultipleProxies(t *testing.T) {
 	t.Parallel()
-	_, client, _ := newBootedDaemonWithClient(t)
+	_, client, projectDir := newBootedDaemonWithClient(t)
+	attachProjectSession(t, client, projectDir)
 
 	// Create target servers
 	targetServer1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -237,14 +267,14 @@ func TestActivityBroadcast_MultipleProxies(t *testing.T) {
 	}))
 	defer targetServer2.Close()
 
-	// Create two proxies
-	proxy1Result, err := client.ProxyStart("proxy1", targetServer1.URL, 0, 0, "")
+	// Create two proxies under this session's project
+	proxy1Result, err := client.ProxyStart("proxy1", targetServer1.URL, 0, 0, projectDir)
 	if err != nil {
 		t.Fatalf("Failed to start proxy1: %v", err)
 	}
 	listenAddr1 := proxy1Result["listen_addr"].(string)
 
-	proxy2Result, err := client.ProxyStart("proxy2", targetServer2.URL, 0, 0, "")
+	proxy2Result, err := client.ProxyStart("proxy2", targetServer2.URL, 0, 0, projectDir)
 	if err != nil {
 		t.Fatalf("Failed to start proxy2: %v", err)
 	}
@@ -411,14 +441,15 @@ func TestActivityBroadcast_SpecificProxy(t *testing.T) {
 // TestActivityBroadcast_RapidFire tests that rapid activity updates are handled correctly.
 func TestActivityBroadcast_RapidFire(t *testing.T) {
 	t.Parallel()
-	_, client, _ := newBootedDaemonWithClient(t)
+	_, client, projectDir := newBootedDaemonWithClient(t)
+	attachProjectSession(t, client, projectDir)
 
 	targetServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer targetServer.Close()
 
-	proxyResult, _ := client.ProxyStart("test-proxy", targetServer.URL, 0, 0, "")
+	proxyResult, _ := client.ProxyStart("test-proxy", targetServer.URL, 0, 0, projectDir)
 	listenAddr := proxyResult["listen_addr"].(string)
 
 	// Connect WebSocket (retry until proxy accepts connections)

@@ -8,6 +8,7 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/proxy"
+	"github.com/standardbeagle/agnt/internal/scope"
 )
 
 // proxyPathRegistry maps proxyID → project path for stream event routing.
@@ -410,7 +411,11 @@ func (b *proxyManagerBroadcaster) BroadcastAlertToast(toastType, title, message 
 	if b.pm == nil {
 		return
 	}
-	for _, p := range b.pm.List() {
+	// Alert toasts are browser-facing and intentionally fan out to every
+	// connected overlay regardless of project — they are not agent-bound
+	// delivery. Unscoped is audited so this stays a known, deliberate
+	// cross-project surface rather than a silent one.
+	for _, p := range b.pm.ListScoped(scope.Unscoped("alert toast fan-out to all browser overlays")) {
 		if p == nil {
 			continue
 		}

@@ -76,9 +76,9 @@ func (d *Daemon) hubHandleBrowserStart(ctx context.Context, conn *hubpkg.Connect
 
 			d.wireProxyLogger(proxyServer)
 
-			// Configure overlay endpoint
-			if overlayEndpoint := d.OverlayEndpoint(); overlayEndpoint != "" {
-				proxyServer.SetOverlayEndpoint(overlayEndpoint)
+			// Bind to this project's session overlay, not a global default.
+			if ep := d.overlayEndpointForProject(projectPath); ep != "" {
+				proxyServer.SetOverlayEndpoint(ep)
 			}
 
 			proxyStarted = true

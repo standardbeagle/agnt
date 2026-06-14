@@ -16,6 +16,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/incident"
 	"github.com/standardbeagle/agnt/internal/protocol"
+	"github.com/standardbeagle/agnt/internal/scope"
 
 	"github.com/standardbeagle/agnt/internal/project"
 	"github.com/standardbeagle/agnt/internal/proxy"
@@ -127,6 +128,23 @@ func (d *Daemon) resolveProjectScope(filter protocol.DirectoryFilter, connSessio
 		}
 	}
 	return "", false, errNoSessionScope
+}
+
+// resolveScope is the scoped-token form of resolveProjectScope. It is the
+// single bridge between the legacy (path, global) resolution chain and the
+// scope.Scope token consumed by delivery paths (proxy lookups, overlay
+// broadcasts). A session-less, non-global call fails loud exactly as
+// resolveProjectScope does, so callers cannot accidentally fall through to a
+// global. An explicit global flag becomes an audited Unscoped scope.
+func (d *Daemon) resolveScope(filter protocol.DirectoryFilter, connSessionCode string) (scope.Scope, error) {
+	path, global, err := d.resolveProjectScope(filter, connSessionCode)
+	if err != nil {
+		return scope.Scope{}, err
+	}
+	if global {
+		return scope.Unscoped("explicit global flag on hub query"), nil
+	}
+	return scope.Project(path), nil
 }
 
 // RogueProcessInfo contains information about a detected rogue process.
@@ -397,6 +415,25 @@ func (d *Daemon) fireToIncidentBus(entry proxy.LogEntry, proxyID string) {
 	if d.incidentBus == nil {
 		return
 	}
+
+	// Feed the swallowed-error heuristic before any suppression: a watched
+	// injected fault must be recorded as pending even though it is kept out of
+	// the inbox, and an app-side error clears recent pending faults. A fault is
+	// "watched" only when the proxy's runtime swallow-detect panel toggle was
+	// on at injection (stamped ChaosSwallowWatch); otherwise nothing is
+	// recorded and the lazy sweeper never starts.
+	if d.swallowDetector != nil {
+		switch entry.Type {
+		case proxy.LogTypeHTTP:
+			if entry.HTTP != nil && entry.HTTP.ChaosSwallowWatch && entry.HTTP.StatusCode >= 400 {
+				d.swallowDetector.RecordFault(proxyID, entry.HTTP.URL, entry.HTTP.StatusCode, time.Now())
+				d.startSwallowSweeperOnce()
+			}
+		case proxy.LogTypeError:
+			d.swallowDetector.RecordAppError(proxyID, time.Now())
+		}
+	}
+
 	switch entry.Type {
 	case proxy.LogTypeDiagnostic:
 		if entry.Diagnostic == nil {
@@ -407,6 +444,13 @@ func (d *Daemon) fireToIncidentBus(entry proxy.LogEntry, proxyID string) {
 		}
 	case proxy.LogTypeHTTP:
 		if entry.HTTP == nil {
+			return
+		}
+		// Chaos-injected faults are synthetic: they stay in the traffic log
+		// (proxylog query surfaces them) and feed the swallow detector above,
+		// but never enter the agent incident inbox — an injected 500 is not a
+		// real backend error to chase.
+		if entry.HTTP.Chaos {
 			return
 		}
 		if ev, ok := incident.FromHTTPEntry(*entry.HTTP, proxyID); ok {

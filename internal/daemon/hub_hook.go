@@ -12,6 +12,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/hookrules"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/proxy"
+	"github.com/standardbeagle/agnt/internal/scope"
 	hubpkg "github.com/standardbeagle/go-cli-server/hub"
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
 )
@@ -620,15 +621,18 @@ func buildBashRedirectMessage(d *hookrules.Decision) string {
 // Per-proxy errors are swallowed at debug level so one wedged WS client does not
 // block the others.
 func (d *Daemon) toastProjectProxies(projectPath, toastType, title, message string, duration int) {
-	proxies := d.proxym.List()
+	// Scope to the project; an empty projectPath (legacy agnt notify without
+	// --project-path) falls back to every overlay, audited via Unscoped.
+	sc := scope.Project(projectPath)
+	if projectPath == "" {
+		sc = scope.Unscoped("legacy notify without --project-path")
+	}
+	proxies := d.proxym.ListScoped(sc)
 	if len(proxies) == 0 {
 		return
 	}
 	for _, p := range proxies {
 		if p == nil {
-			continue
-		}
-		if projectPath != "" && p.Path != projectPath {
 			continue
 		}
 		if _, err := p.BroadcastToast(toastType, title, message, duration); err != nil {

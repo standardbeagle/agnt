@@ -13,6 +13,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/proxy"
+	"github.com/standardbeagle/agnt/internal/scope"
 	"github.com/stretchr/testify/require"
 )
 
@@ -360,8 +361,22 @@ func TestHubIntegration_OverlayCommands(t *testing.T) {
 		}
 	})
 
-	// Test OVERLAY ACTIVITY - broadcasts activity state to connected browsers
+	// Test OVERLAY ACTIVITY - broadcasts activity state to this session's
+	// project proxies. With no explicit proxy IDs, the command is scoped to
+	// the connection's session, so it requires an attached session (fail loud
+	// otherwise — never fan activity across every project).
 	t.Run("ACTIVITY", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		if _, err := client.conn.Request("SESSION", "REGISTER", "overlay-activity-session", tmpDir).WithJSON(map[string]interface{}{
+			"project_path": tmpDir,
+			"command":      "test-cmd",
+		}).JSON(); err != nil {
+			t.Fatalf("SESSION REGISTER failed: %v", err)
+		}
+		if _, err := client.conn.Request("SESSION", "ATTACH", tmpDir).JSON(); err != nil {
+			t.Fatalf("SESSION ATTACH failed: %v", err)
+		}
+
 		result, err := client.conn.Request("OVERLAY", "ACTIVITY", "true").JSON()
 		if err != nil {
 			t.Fatalf("Overlay ACTIVITY failed: %v", err)
@@ -826,8 +841,16 @@ func TestHubIntegration_ClientMethods(t *testing.T) {
 		}
 	})
 
-	// Test BroadcastActivity - broadcasts activity state to connected browsers
+	// Test BroadcastActivity - broadcasts activity state to this session's
+	// project proxies. Requires an attached session (no explicit proxy IDs →
+	// session-scoped, fail loud without one).
 	t.Run("BroadcastActivity", func(t *testing.T) {
+		if _, err := client.SessionRegister("clientmethods-session", tmpDir, tmpDir, "test-cmd", nil); err != nil {
+			t.Fatalf("SessionRegister failed: %v", err)
+		}
+		if _, err := client.SessionAttach(tmpDir); err != nil {
+			t.Fatalf("SessionAttach failed: %v", err)
+		}
 		err := client.BroadcastActivity(true)
 		if err != nil {
 			t.Fatalf("BroadcastActivity failed: %v", err)
@@ -2463,7 +2486,7 @@ func TestHubIntegration_SessionOverlayScoping(t *testing.T) {
 	}
 
 	// Verify: proxy A should have the overlay endpoint, proxy B should not
-	proxies := daemon.ProxyManager().List()
+	proxies := daemon.ProxyManager().ListScoped(scope.Unscoped("test"))
 	for _, p := range proxies {
 		endpoint := p.OverlayNotifier().GetEndpoint()
 		if p.ID == proxyA {
@@ -2491,7 +2514,7 @@ func TestHubIntegration_SessionOverlayScoping(t *testing.T) {
 	}
 
 	// Verify: proxy A still has overlay A, proxy B now has overlay B
-	for _, p := range daemon.ProxyManager().List() {
+	for _, p := range daemon.ProxyManager().ListScoped(scope.Unscoped("test")) {
 		endpoint := p.OverlayNotifier().GetEndpoint()
 		if p.ID == proxyA {
 			if endpoint != overlayA {

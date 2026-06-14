@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/standardbeagle/agnt/internal/scope"
 )
 
 func TestProxyManager_Create(t *testing.T) {
@@ -275,7 +277,7 @@ func TestProxyManager_List(t *testing.T) {
 	ctx := context.Background()
 
 	// Initially empty
-	if len(pm.List()) != 0 {
+	if len(pm.ListScoped(scope.Unscoped("test"))) != 0 {
 		t.Error("Expected empty list initially")
 	}
 
@@ -299,7 +301,7 @@ func TestProxyManager_List(t *testing.T) {
 		pm.Stop(ctx, "c")
 	}()
 
-	proxies := pm.List()
+	proxies := pm.ListScoped(scope.Unscoped("test"))
 	if len(proxies) != 3 {
 		t.Errorf("Expected 3 proxies, got %d", len(proxies))
 	}
@@ -413,7 +415,7 @@ func TestProxyManager_Shutdown(t *testing.T) {
 	}
 
 	// Verify all proxies are stopped
-	proxies := pm.List()
+	proxies := pm.ListScoped(scope.Unscoped("test"))
 	for _, p := range proxies {
 		if p.IsRunning() {
 			t.Errorf("Proxy %s should be stopped after shutdown", p.ID)

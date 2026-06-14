@@ -211,16 +211,16 @@ func (d *Daemon) handleURLDetected(event ProxyEvent) {
 
 		d.wireProxyLogger(server)
 
-		// Find session for this project to get session-specific overlay endpoint
-		if session, ok := d.sessionRegistry.FindByDirectory(projectPath); ok && session.OverlayPath != "" {
-			server.SetOverlayEndpoint(session.OverlayPath)
-			debug.Log("daemon", "Set session-specific overlay endpoint for proxy %s: %s", proxyID, session.OverlayPath)
-		} else if overlayEndpoint := d.OverlayEndpoint(); overlayEndpoint != "" {
-			// Fallback to global overlay endpoint if no session found
-			server.SetOverlayEndpoint(overlayEndpoint)
-			debug.Log("daemon", "Set global overlay endpoint for proxy %s: %s", proxyID, overlayEndpoint)
+		// Bind to the overlay of the session that owns this project. Fail
+		// closed if no session is registered yet — rebindProxyOverlays wires
+		// it up when the session connects. Never fall back to a global
+		// endpoint, which would route this project's browser messages to
+		// whichever session set it last (cross-project leak).
+		if ep := d.overlayEndpointForProject(projectPath); ep != "" {
+			server.SetOverlayEndpoint(ep)
+			debug.Log("daemon", "Set session overlay endpoint for proxy %s: %s", proxyID, ep)
 		} else {
-			debug.Log("daemon", "No overlay endpoint found for URL-detected proxy %s (path=%q) — proxy→agent messages will not work", proxyID, projectPath)
+			debug.Log("daemon", "No session overlay for proxy %s (path=%q) yet — will late-bind on session connect", proxyID, projectPath)
 		}
 
 		// Track script -> proxy association
@@ -306,24 +306,18 @@ func (d *Daemon) handleExplicitStart(event ProxyEvent) {
 
 	d.wireProxyLogger(server)
 
-	// Find session for this project to get session-specific overlay endpoint
+	// Bind to the owning session's overlay (fail closed; late-bind on connect).
+	// A path-less explicit proxy cannot be attributed to a project, so it gets
+	// no overlay binding rather than a leaky global default.
 	if event.Path != "" {
-		if session, ok := d.sessionRegistry.FindByDirectory(event.Path); ok && session.OverlayPath != "" {
-			server.SetOverlayEndpoint(session.OverlayPath)
-			debug.Log("daemon", "Set session-specific overlay endpoint for explicit proxy %s: %s", event.ProxyID, session.OverlayPath)
-		} else if overlayEndpoint := d.OverlayEndpoint(); overlayEndpoint != "" {
-			// Fallback to global overlay endpoint if no session found
-			server.SetOverlayEndpoint(overlayEndpoint)
-			debug.Log("daemon", "Set global overlay endpoint for explicit proxy %s: %s", event.ProxyID, overlayEndpoint)
+		if ep := d.overlayEndpointForProject(event.Path); ep != "" {
+			server.SetOverlayEndpoint(ep)
+			debug.Log("daemon", "Set session overlay endpoint for explicit proxy %s: %s", event.ProxyID, ep)
 		} else {
-			debug.Log("daemon", "No overlay endpoint found for explicit proxy %s (path=%q) — proxy→agent messages will not work", event.ProxyID, event.Path)
+			debug.Log("daemon", "No session overlay for explicit proxy %s (path=%q) yet — will late-bind on session connect", event.ProxyID, event.Path)
 		}
-	} else if overlayEndpoint := d.OverlayEndpoint(); overlayEndpoint != "" {
-		// Fallback to global overlay endpoint if no path specified
-		server.SetOverlayEndpoint(overlayEndpoint)
-		debug.Log("daemon", "Set global overlay endpoint for explicit proxy %s: %s", event.ProxyID, overlayEndpoint)
 	} else {
-		debug.Log("daemon", "No overlay endpoint found for explicit proxy %s (no path, no global endpoint) — proxy→agent messages will not work", event.ProxyID)
+		debug.Log("daemon", "Explicit proxy %s has no project path — no overlay binding (proxy→agent messages unavailable)", event.ProxyID)
 	}
 
 	// Surface the missing overlay wire-up as a visible startup warning so
@@ -492,15 +486,12 @@ func (d *Daemon) handleFallbackPortCheck(event ProxyEvent) {
 
 	d.wireProxyLogger(server)
 
-	// Overlay endpoint: prefer the session bound to this project path.
-	if session, ok := d.sessionRegistry.FindByDirectory(event.Path); ok && session.OverlayPath != "" {
-		server.SetOverlayEndpoint(session.OverlayPath)
-		debug.Log("daemon", "Set session-specific overlay endpoint for fallback proxy %s: %s", fallbackProxyID, session.OverlayPath)
-	} else if overlayEndpoint := d.OverlayEndpoint(); overlayEndpoint != "" {
-		server.SetOverlayEndpoint(overlayEndpoint)
-		debug.Log("daemon", "Set global overlay endpoint for fallback proxy %s: %s", fallbackProxyID, overlayEndpoint)
+	// Overlay endpoint: bind to the owning session, fail closed otherwise.
+	if ep := d.overlayEndpointForProject(event.Path); ep != "" {
+		server.SetOverlayEndpoint(ep)
+		debug.Log("daemon", "Set session overlay endpoint for fallback proxy %s: %s", fallbackProxyID, ep)
 	} else {
-		debug.Log("daemon", "No overlay endpoint found for fallback proxy %s — proxy→agent messages will not work", fallbackProxyID)
+		debug.Log("daemon", "No session overlay for fallback proxy %s (path=%q) yet — will late-bind on session connect", fallbackProxyID, event.Path)
 	}
 
 	// Track script → proxy so ScriptStopped tears this proxy down. Mirrors

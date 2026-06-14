@@ -26,8 +26,6 @@ func (d *Daemon) restoreProxies() {
 
 	// Removed startup log: restoring %d proxies from state
 
-	overlayEndpoint := d.OverlayEndpoint()
-
 	for _, pc := range proxies {
 		config := proxy.ProxyConfig{
 			ID:          pc.ID,
@@ -48,15 +46,10 @@ func (d *Daemon) restoreProxies() {
 
 		d.wireProxyLogger(proxyServer)
 
-		// Configure overlay endpoint: prefer session-scoped, fall back to global
-		if pc.Path != "" {
-			if session, ok := d.sessionRegistry.FindByDirectory(pc.Path); ok && session.OverlayPath != "" {
-				proxyServer.SetOverlayEndpoint(session.OverlayPath)
-			} else if overlayEndpoint != "" {
-				proxyServer.SetOverlayEndpoint(overlayEndpoint)
-			}
-		} else if overlayEndpoint != "" {
-			proxyServer.SetOverlayEndpoint(overlayEndpoint)
+		// Bind to the owning session's overlay; fail closed (late-bind on
+		// session connect) rather than leaking to a global default.
+		if ep := d.overlayEndpointForProject(pc.Path); ep != "" {
+			proxyServer.SetOverlayEndpoint(ep)
 		}
 
 		// Register a proxy-kind admin entry so the restored proxy appears in

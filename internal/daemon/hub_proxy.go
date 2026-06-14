@@ -237,7 +237,7 @@ func (d *Daemon) hubHandleProxyList(conn *hubpkg.Connection, cmd *hubproto.Comma
 	// Route through the mandatory session-scope chokepoint (see
 	// resolveProjectScope). A non-global query with no resolvable project
 	// fails loud rather than listing every project's proxies.
-	filterPath, global, err := d.resolveProjectScope(protocol.DirectoryFilter{
+	sc, err := d.resolveScope(protocol.DirectoryFilter{
 		Global:      dirFilter.Global,
 		SessionCode: dirFilter.SessionCode,
 		Directory:   dirFilter.Directory,
@@ -246,7 +246,7 @@ func (d *Daemon) hubHandleProxyList(conn *hubpkg.Connection, cmd *hubproto.Comma
 		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
 	}
 
-	proxies := d.proxym.List()
+	proxies := d.proxym.ListScoped(sc)
 
 	// Index tunnels by ID (tunnel ID is conventionally the proxy ID) so the
 	// proxy UI can surface the public tunnel URL — PROXY LIST previously
@@ -258,13 +258,6 @@ func (d *Daemon) hubHandleProxyList(conn *hubpkg.Connection, cmd *hubproto.Comma
 
 	var result []map[string]interface{}
 	for _, p := range proxies {
-		proxyPath := normalizePath(p.Path)
-
-		// Filter by path if not global and we have a filter path
-		if !global && filterPath != "" && filterPath != "." && proxyPath != filterPath {
-			continue
-		}
-
 		stats := p.Stats()
 		entry := map[string]interface{}{
 			"id":             p.ID,

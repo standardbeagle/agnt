@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/scope"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -196,7 +197,7 @@ func TestProxyManager_ShutdownUnderLoad(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 			for j := 0; j < 50; j++ {
-				_ = pm.List()
+				_ = pm.ListScoped(scope.Unscoped("test"))
 				_, _ = pm.Get(proxyIDs[id%len(proxyIDs)])
 			}
 		}(i)
@@ -329,7 +330,7 @@ func TestProxyManager_StopAllUnderLoad(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < 30; j++ {
-				_ = pm.List()
+				_ = pm.ListScoped(scope.Unscoped("test"))
 				_ = pm.ActiveCount()
 				_ = pm.TotalStarted()
 			}
@@ -433,7 +434,7 @@ func TestProxyManager_ConcurrentCreateAndList(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < 20; j++ {
-				_ = pm.List()
+				_ = pm.ListScoped(scope.Unscoped("test"))
 				_ = pm.ActiveCount()
 			}
 		}()
@@ -442,7 +443,7 @@ func TestProxyManager_ConcurrentCreateAndList(t *testing.T) {
 	wg.Wait()
 
 	// Cleanup
-	for _, p := range pm.List() {
+	for _, p := range pm.ListScoped(scope.Unscoped("test")) {
 		pm.Stop(ctx, p.ID)
 	}
 }

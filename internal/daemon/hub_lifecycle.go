@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/debug"
+	"github.com/standardbeagle/agnt/internal/scope"
 
 	"github.com/standardbeagle/agnt/internal/proxy"
 	hubpkg "github.com/standardbeagle/go-cli-server/hub"
@@ -17,7 +18,7 @@ func (d *Daemon) hubHandleStopAll(ctx context.Context, conn *hubpkg.Connection, 
 	debug.Log("daemon", "STOP-ALL: args=%v", cmd.Args)
 	// Count resources before stopping
 	procsBefore := len(d.hub.ProcessManager().List())
-	proxiesBefore := len(d.proxym.List())
+	proxiesBefore := len(d.proxym.ListScoped(scope.Unscoped("STOP-ALL: count every proxy")))
 	tunnelsBefore := d.tunnelm.ActiveCount()
 
 	// Stop all resources
@@ -42,7 +43,7 @@ func (d *Daemon) hubHandleRestartAll(ctx context.Context, conn *hubpkg.Connectio
 	debug.Log("daemon", "RESTART-ALL: args=%v", cmd.Args)
 	// Capture running resources before stop
 	runningProcs := d.hub.ProcessManager().List()
-	runningProxies := d.proxym.List()
+	runningProxies := d.proxym.ListScoped(scope.Unscoped("RESTART-ALL: restart every proxy"))
 
 	// Build restart manifests from running resources
 	type procManifest struct {

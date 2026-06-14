@@ -52,44 +52,57 @@ func startEphemeralPortBlocker(t *testing.T) (pid int, port int) {
 	return cmd.Process.Pid, port
 }
 
+// linuxProbe returns a portProbe that reports the given Linux-side PIDs for any
+// port that has an entry, and no PIDs otherwise. It replaces the real /proc +
+// netstat.exe scan in unit tests so conflict classification is deterministic —
+// the real scan intermittently misses our own listener on WSL and falls back to
+// netstat.exe, which returned a foreign Windows PID and flaked these tests.
+func linuxProbe(byPort map[int][]int) portProbe {
+	return func(_ context.Context, port int) (linuxPIDs, windowsPIDs []int) {
+		return byPort[port], nil
+	}
+}
+
+// emptyProbe reports no PID on any port.
+func emptyProbe() portProbe {
+	return func(_ context.Context, _ int) (linuxPIDs, windowsPIDs []int) { return nil, nil }
+}
+
 func TestDetectPortConflicts_NoConflicts(t *testing.T) {
 	t.Parallel()
 	scripts := map[string]*config.ScriptConfig{
 		"api": {Ports: []int{19876}, Autostart: true},
 	}
-	conflicts := detectPortConflicts(context.Background(), scripts, nil)
+	conflicts := detectPortConflicts(context.Background(), scripts, nil, emptyProbe())
 	assert.Empty(t, conflicts)
 }
 
-func TestDetectPortConflicts_WithBlocker(t *testing.T) {
+func TestDetectPortConflicts_UnmanagedPIDReported(t *testing.T) {
 	t.Parallel()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	defer ln.Close()
-	port := ln.Addr().(*net.TCPAddr).Port
-
+	const port = 19876
+	const ownerPID = 4242
 	scripts := map[string]*config.ScriptConfig{
 		"api": {Ports: []int{port}, Autostart: true},
 	}
-	conflicts := detectPortConflicts(context.Background(), scripts, nil)
+	conflicts := detectPortConflicts(context.Background(), scripts, nil,
+		linuxProbe(map[int][]int{port: {ownerPID}}))
 	require.Len(t, conflicts, 1)
 	assert.Equal(t, "api", conflicts[0].ScriptName)
 	assert.Equal(t, port, conflicts[0].Port)
-	assert.Contains(t, conflicts[0].PIDs, os.Getpid())
+	assert.Contains(t, conflicts[0].PIDs, ownerPID)
+	assert.Equal(t, []int{ownerPID}, conflicts[0].LinuxPIDs)
 }
 
 func TestDetectPortConflicts_ManagedPIDSkipped(t *testing.T) {
 	t.Parallel()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	defer ln.Close()
-	port := ln.Addr().(*net.TCPAddr).Port
-
-	managedPIDs := map[int]bool{os.Getpid(): true}
+	const port = 19876
+	const managedPID = 4242
+	managedPIDs := map[int]bool{managedPID: true}
 	scripts := map[string]*config.ScriptConfig{
 		"api": {Ports: []int{port}, Autostart: true},
 	}
-	conflicts := detectPortConflicts(context.Background(), scripts, managedPIDs)
+	conflicts := detectPortConflicts(context.Background(), scripts, managedPIDs,
+		linuxProbe(map[int][]int{port: {managedPID}}))
 	assert.Empty(t, conflicts, "should skip managed PIDs")
 }
 
@@ -98,24 +111,18 @@ func TestDetectPortConflicts_NoPorts(t *testing.T) {
 	scripts := map[string]*config.ScriptConfig{
 		"lib": {Autostart: true},
 	}
-	conflicts := detectPortConflicts(context.Background(), scripts, nil)
+	conflicts := detectPortConflicts(context.Background(), scripts, nil, emptyProbe())
 	assert.Empty(t, conflicts)
 }
 
 func TestDetectPortConflicts_MultiplePortsMultipleScripts(t *testing.T) {
 	t.Parallel()
-	ln1, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	defer ln1.Close()
-	ln2, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-	defer ln2.Close()
-
 	scripts := map[string]*config.ScriptConfig{
-		"api":      {Ports: []int{ln1.Addr().(*net.TCPAddr).Port}, Autostart: true},
-		"frontend": {Ports: []int{ln2.Addr().(*net.TCPAddr).Port}, Autostart: true},
+		"api":      {Ports: []int{19801}, Autostart: true},
+		"frontend": {Ports: []int{19802}, Autostart: true},
 	}
-	conflicts := detectPortConflicts(context.Background(), scripts, nil)
+	conflicts := detectPortConflicts(context.Background(), scripts, nil,
+		linuxProbe(map[int][]int{19801: {5001}, 19802: {5002}}))
 	assert.Len(t, conflicts, 2)
 }
 

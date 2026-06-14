@@ -84,6 +84,19 @@ type HTTPLogEntry struct {
 	ResponseBody    string            `json:"response_body,omitempty"`
 	Duration        time.Duration     `json:"duration"`
 	Error           string            `json:"error,omitempty"`
+	// Chaos marks a response the chaos engine synthesised (injected error
+	// status / corruption) rather than one the backend actually produced.
+	// Synthetic faults stay in the traffic log (proxylog query still surfaces
+	// them) but are suppressed from the agent incident inbox so an injected
+	// 500 is not mistaken for a real backend error. The swallow detector also
+	// keys off this flag.
+	Chaos bool `json:"chaos,omitempty"`
+	// ChaosSwallowWatch is set when this injected fault should be watched by
+	// the swallowed-error heuristic — i.e. chaos injected it AND the proxy's
+	// runtime swallow-detect toggle (browser panel) was on. The daemon records
+	// it as a pending fault; if no app-side error follows in the window it is
+	// raised as a swallowed-error incident.
+	ChaosSwallowWatch bool `json:"chaos_swallow_watch,omitempty"`
 }
 
 // FrontendError represents a JavaScript error from the frontend.

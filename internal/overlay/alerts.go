@@ -335,7 +335,7 @@ func (s *AlertScanner) ProcessLine(line string, scriptID string) {
 	if se, ok := runStructuredParsers(trimmed, s.recentSnapshot()); ok {
 		sp := &AlertPattern{
 			ID:          "structured-" + se.Kind,
-			Severity:    se.Severity,
+			Severity:    AlertSeverity(se.Severity),
 			Category:    se.Category,
 			Description: "structured " + se.Kind + " error",
 		}

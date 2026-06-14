@@ -442,6 +442,7 @@ func (ps *ProxyServer) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/__devtool_metrics", ps.handleWebSocket)
 	mux.HandleFunc("/__devtool_axe", handleAxeCore)
+	mux.HandleFunc("/__devtool/", handleInstrumentationAsset)
 	mux.HandleFunc("/", ps.handleProxy)
 
 	// Try to bind to requested port first

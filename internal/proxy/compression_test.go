@@ -65,12 +65,14 @@ func TestModifyResponse_GzipCompression(t *testing.T) {
 		t.Errorf("modified body doesn't contain original content")
 	}
 
-	// Verify instrumentation was injected
+	// Verify instrumentation was injected. The bundle is served externally now,
+	// so the decompressed body carries the external <script src> asset tag
+	// rather than the inlined bundle code.
 	if !strings.Contains(bodyStr, "__devtool") {
 		t.Errorf("instrumentation script was not injected")
 	}
-	if !strings.Contains(bodyStr, "WebSocket") {
-		t.Errorf("WebSocket code was not injected")
+	if !strings.Contains(bodyStr, instrumentationAssetPrefix) {
+		t.Errorf("external instrumentation asset tag was not injected")
 	}
 }
 

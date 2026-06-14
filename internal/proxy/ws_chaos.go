@@ -144,6 +144,10 @@ func (ps *ProxyServer) handleChaosRequest(conn wsJSONWriter, data map[string]int
 		engine.ResetStats()
 		sendResponse(engine.Snapshot(), "")
 
+	case "set_swallow_detect":
+		engine.SetSwallowDetect(getBoolField(params, "enabled"))
+		sendResponse(engine.Snapshot(), "")
+
 	case "list_presets":
 		names := ListPresets()
 		sort.Strings(names)

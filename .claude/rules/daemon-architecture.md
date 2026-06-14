@@ -97,6 +97,23 @@ No subsystem may silently skip expected action. If config declares proxy, proces
 
 If `.agnt.kdl` declares expected state (proxy with `fallback-port`, script with `depends-on`), system must honor it. Config fields parsed but not acted on are bugs.
 
+## Scope token (`internal/scope`)
+
+Cross-session delivery is gated by a `scope.Scope` value so that **global is the loud exception, session-scoping the default**. The zero `Scope` is invalid and matches nothing — callers must construct one explicitly, so "forgot to scope" cannot silently compile into a global.
+
+| Constructor | Meaning | Audit |
+|-------------|---------|-------|
+| `scope.Project(path)` | matches one project (path normalized via `scope.NormalizePath`) | none |
+| `scope.Unscoped(reason)` | matches every project | logs `UNSCOPED scope created reason=… caller=file:line` at construction |
+
+Key APIs and rules:
+
+- **`ProxyManager.ListScoped(scope)`** replaced the old unscoped `List()`. Removing `List()` is deliberate compile-time enforcement: every proxy enumeration must pass a scope.
+- **`resolveScope(filter, connSessionCode)`** (`hub_helpers.go`) is the token form of `resolveProjectScope` — the single bridge from the legacy `(path, global)` chain to a `Scope`. A non-global call with no resolvable session fails loud; an explicit `global:true` becomes an audited `Unscoped`.
+- **`overlayEndpointForProject(path)`** resolves a proxy's overlay socket from the session that owns its project, returning `""` (fail closed) when none is registered — the proxy is late-bound by `rebindProxyOverlays` when its session connects. There is **no** global overlay fallback.
+- **`Daemon.SetOverlayEndpoint`** no longer pushes one endpoint onto every proxy. That daemon-wide blast was the cross-project leak (a message from project A's browser reaching project B's agent). Per-proxy binding is project-scoped only.
+- **Allowlist test**: `internal/scope/audit_test.go` (`TestUnscopedCallSites`) pins the exact set of production `Unscoped(...)` call sites; a new one fails CI until reviewed and added.
+
 ## Tool session-scoping
 
 **Canonical classification** of every hub query/list verb (and MCP tools driving it) against session-scope chokepoint. Project scoping is *structural* property, not per-handler convention: exactly one resolution point, `resolveProjectScope` (`internal/daemon/hub_helpers.go`), and every non-debug list/query routes through it. Adding new query/list verb without classifying it here — and wiring to gate if non-debug — is a bug.

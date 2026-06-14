@@ -194,8 +194,22 @@ func TestSessionRegistry_ConcurrentCheckHeartbeats(t *testing.T) {
 
 	wg.Wait()
 
-	// Registry should be in a valid state
-	assert.GreaterOrEqual(t, reg.ActiveCount(), int64(0))
+	// ActiveCount is derived from per-session Status, so it can never drift
+	// negative the way the old hand-maintained counter did (Heartbeat revives
+	// Disconnected→Active without re-incrementing, and Unregister decremented
+	// regardless of status — together they drove the counter to -10). Assert
+	// the real invariant: the reported count equals an independent recount of
+	// active sessions, and stays within [0, registered].
+	got := reg.ActiveCount()
+	var manual int64
+	for i := 0; i < 10; i++ {
+		if s, ok := reg.Get(fmt.Sprintf("hb-%d", i)); ok && s.IsActive() {
+			manual++
+		}
+	}
+	assert.Equal(t, manual, got, "ActiveCount must equal an independent recount of active sessions")
+	assert.GreaterOrEqual(t, got, int64(0))
+	assert.LessOrEqual(t, got, int64(10), "active count cannot exceed registered sessions")
 }
 
 func TestSessionRegistry_ConcurrentFindByDirectory(t *testing.T) {
