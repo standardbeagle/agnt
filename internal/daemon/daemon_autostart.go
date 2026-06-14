@@ -152,7 +152,7 @@ func (d *Daemon) RunAutostartAsync(
 	// Step 3: Port pre-flight check
 	autostartScripts := agntConfig.GetAutostartScripts()
 	managedPIDs := d.collectManagedPIDs()
-	conflicts := detectPortConflicts(ctx, autostartScripts, managedPIDs)
+	conflicts := detectPortConflicts(ctx, autostartScripts, managedPIDs, config.FindPIDsByPortTagged)
 
 	if len(conflicts) > 0 {
 		policy := agntConfig.EffectivePortConflictPolicy()

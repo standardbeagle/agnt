@@ -12,6 +12,7 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/proxy"
+	"github.com/standardbeagle/agnt/internal/scope"
 	goprocess "github.com/standardbeagle/go-cli-server/process"
 	"github.com/standardbeagle/go-cli-server/script"
 )
@@ -321,19 +322,14 @@ func checkProxyHealth(ctx context.Context, pm *proxy.ProxyManager, projectPath s
 		return CheckResult{Name: name, Status: StatusOK, Message: "no proxy manager"}
 	}
 
-	proxies := pm.List()
-	if len(proxies) == 0 {
-		return CheckResult{Name: name, Status: StatusOK, Message: "no proxies active"}
+	// Scope to the project under inspection. An empty projectPath means a
+	// daemon-wide doctor run (audited via Unscoped); otherwise only this
+	// project's proxies are checked.
+	sc := scope.Project(projectPath)
+	if projectPath == "" {
+		sc = scope.Unscoped("doctor: health check across all projects")
 	}
-
-	// Filter to project path if provided
-	var filtered []*proxy.ProxyServer
-	for _, p := range proxies {
-		if projectPath == "" || p.Path == projectPath {
-			filtered = append(filtered, p)
-		}
-	}
-
+	filtered := pm.ListScoped(sc)
 	if len(filtered) == 0 {
 		return CheckResult{Name: name, Status: StatusOK, Message: "no proxies for this project"}
 	}

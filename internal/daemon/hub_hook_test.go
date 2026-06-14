@@ -13,6 +13,7 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/proxy"
+	"github.com/standardbeagle/agnt/internal/scope"
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -594,7 +595,7 @@ func TestDrainHooks_NotificationEventBroadcastsToast(t *testing.T) {
 	// no browser attached. The behavioral guarantee we care about is
 	// that every proxy was iterated, not that any toast was actually
 	// delivered to a non-existent client.
-	assert.Len(t, d.proxym.List(), 2, "both proxies should still be registered after broadcast")
+	assert.Len(t, d.proxym.ListScoped(scope.Unscoped("test")), 2, "both proxies should still be registered after broadcast")
 }
 
 // TestDrainHooks_NonNotificationDoesNotIterateProxies asserts that a
@@ -797,7 +798,7 @@ func TestDrainHooks_StopEventBroadcastsToast(t *testing.T) {
 	}
 
 	// Proxy still alive (BroadcastToast is safe with zero WS clients).
-	assert.Len(t, d.proxym.List(), 1)
+	assert.Len(t, d.proxym.ListScoped(scope.Unscoped("test")), 1)
 }
 
 // TestDrainHooks_StopHookActiveSkipsToast asserts that when stop_hook_active
@@ -890,7 +891,7 @@ func TestDrainHooks_StopFailureBroadcastsErrorToast(t *testing.T) {
 		t.Fatal("stop-failure event should flow through StreamSink")
 	}
 
-	assert.Len(t, d.proxym.List(), 1)
+	assert.Len(t, d.proxym.ListScoped(scope.Unscoped("test")), 1)
 }
 
 // TestDrainHooks_StopFailureMalformedPayload asserts a stop-failure event with
@@ -965,7 +966,7 @@ func TestToastProjectProxies_ScopesByProjectPath(t *testing.T) {
 
 	// Both proxies exist — the scoped toast should not affect proxy-b's existence
 	// (we can only verify no panic; BroadcastToast with 0 WS clients is a no-op).
-	assert.Len(t, d.proxym.List(), 2)
+	assert.Len(t, d.proxym.ListScoped(scope.Unscoped("test")), 2)
 }
 
 // TestToastProjectProxies_EmptyProjectPathToastsAll verifies that when no
@@ -994,7 +995,7 @@ func TestToastProjectProxies_EmptyProjectPathToastsAll(t *testing.T) {
 		Payload: json.RawMessage(`{"stop_hook_active":false,"last_assistant_message":"done"}`),
 	}
 	assert.NotPanics(t, func() { d.fanOutHookEvent(ev) })
-	assert.Len(t, d.proxym.List(), 2)
+	assert.Len(t, d.proxym.ListScoped(scope.Unscoped("test")), 2)
 }
 
 // TestDrainHooks_NonToastEventsUnchanged asserts that events other than

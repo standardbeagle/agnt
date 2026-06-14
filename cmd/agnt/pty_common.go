@@ -629,12 +629,12 @@ func init() {
 // platform-specific PTY entry point (runPlatformPTY, defined in run.go /
 // run_windows.go).
 func runCommand(cmd *cobra.Command, args []string) {
-	// Handle help flag manually since we disabled flag parsing
-	for _, arg := range args {
-		if arg == "-h" || arg == "--help" || arg == "help" {
-			cmd.Help()
-			return
-		}
+	// Handle help manually since DisableFlagParsing prevents cobra from doing
+	// it. Only leading agnt-run help should be consumed here; child help such
+	// as `agnt run claude --help` must pass through to the wrapped command.
+	if runHelpRequested(args) {
+		cmd.Help()
+		return
 	}
 
 	if len(args) == 0 {
@@ -643,61 +643,12 @@ func runCommand(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	// Parse our own flags from args
+	// Parse our own flags from args.
 	overlaySocketPath = "" // will use default
-	commandArgs := args
-
-	// Look for our flags (including global flags since DisableFlagParsing is true)
-	i := 0
-	for i < len(args) {
-		switch args[i] {
-		case "--overlay-socket":
-			if i+1 < len(args) {
-				overlaySocketPath = args[i+1]
-				commandArgs = append(args[:i], args[i+2:]...)
-				continue
-			}
-		case "--session":
-			if i+1 < len(args) {
-				sessionCode = args[i+1]
-				commandArgs = append(args[:i], args[i+2:]...)
-				continue
-			}
-		case "--no-indicator":
-			showIndicator = false
-			commandArgs = append(args[:i], args[i+1:]...)
-			continue
-		case "--no-overlay":
-			useTermOverlay = false
-			commandArgs = append(args[:i], args[i+1:]...)
-			continue
-		case "--no-autostart":
-			skipAutostart = true
-			commandArgs = append(args[:i], args[i+1:]...)
-			continue
-		case "--debug", "-d":
-			// Handle global debug flag (since DisableFlagParsing prevents cobra from parsing it)
-			debug.Enable()
-			if debug.GetLogFilePath() == "" {
-				// In PTY context, stderr corrupts terminal output — force file logging
-				if err := debug.SetLogFile("agnt-run.log"); err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: failed to set debug log file: %v\n", err)
-				}
-			}
-			commandArgs = append(args[:i], args[i+1:]...)
-			continue
-		case "--debug-log":
-			// Handle global debug-log flag
-			if i+1 < len(args) {
-				debug.Enable()
-				if err := debug.SetLogFile(args[i+1]); err != nil {
-					fmt.Fprintf(os.Stderr, "Warning: failed to set debug log file: %v\n", err)
-				}
-				commandArgs = append(args[:i], args[i+2:]...)
-				continue
-			}
-		}
-		i++
+	commandArgs, err := parseRunCommandArgs(args)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
 	}
 
 	if len(commandArgs) == 0 {
@@ -716,6 +667,74 @@ func runCommand(cmd *cobra.Command, args []string) {
 	if err := runPlatformPTY(commandArgs, overlaySocketPath, sessionCode); err != nil {
 		log.Fatalf("Error: %v", err)
 	}
+}
+
+func runHelpRequested(args []string) bool {
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-h", "--help", "help":
+			return true
+		case "--overlay-socket", "--session", "--debug-log":
+			if i+1 >= len(args) {
+				return false
+			}
+			i++
+		case "--no-indicator", "--no-overlay", "--no-autostart", "--debug", "-d":
+			// Keep scanning leading agnt-run/global flags.
+		default:
+			// The first non-agnt flag is the wrapped command. From this point
+			// onward, arguments belong to that command.
+			return false
+		}
+	}
+	return false
+}
+
+func parseRunCommandArgs(args []string) ([]string, error) {
+	commandArgs := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--overlay-socket":
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("%s requires a value", args[i])
+			}
+			overlaySocketPath = args[i+1]
+			i++
+		case "--session":
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("%s requires a value", args[i])
+			}
+			sessionCode = args[i+1]
+			i++
+		case "--no-indicator":
+			showIndicator = false
+		case "--no-overlay":
+			useTermOverlay = false
+		case "--no-autostart":
+			skipAutostart = true
+		case "--debug", "-d":
+			// Handle global debug flag (since DisableFlagParsing prevents cobra from parsing it).
+			debug.Enable()
+			if debug.GetLogFilePath() == "" {
+				// In PTY context, stderr corrupts terminal output; force file logging.
+				if err := debug.SetLogFile("agnt-run.log"); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to set debug log file: %v\n", err)
+				}
+			}
+		case "--debug-log":
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("%s requires a value", args[i])
+			}
+			debug.Enable()
+			if err := debug.SetLogFile(args[i+1]); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to set debug log file: %v\n", err)
+			}
+			i++
+		default:
+			commandArgs = append(commandArgs, args[i])
+		}
+	}
+	return commandArgs, nil
 }
 
 // spinner displays a loading animation and returns a stop function.

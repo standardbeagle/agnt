@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/scope"
 	"github.com/standardbeagle/go-cli-server/process"
 	"github.com/standardbeagle/go-cli-server/script"
 	"github.com/stretchr/testify/assert"
@@ -2984,7 +2985,7 @@ func waitForProxy(t *testing.T, d *Daemon, nameSubstr string, timeout time.Durat
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		for _, p := range d.ProxyManager().List() {
+		for _, p := range d.ProxyManager().ListScoped(scope.Unscoped("test")) {
 			if strings.Contains(p.ID, nameSubstr) {
 				return p.ListenAddr
 			}
@@ -3040,7 +3041,7 @@ proxies {
 	// Verify proxy is in ProxyManager list and targets the correct upstream.
 	// The fake-pnpm-watch socat doesn't speak HTTP, so we verify routing by
 	// checking the proxy's target URL rather than making an HTTP round-trip.
-	proxies := env.Daemon.ProxyManager().List()
+	proxies := env.Daemon.ProxyManager().ListScoped(scope.Unscoped("test"))
 	var foundProxy bool
 	for _, p := range proxies {
 		if strings.Contains(p.ID, "dev") {
@@ -3075,7 +3076,7 @@ proxies {
 	verifyStoppedDataStructures(t, pid, port)
 
 	// Proxy should also be cleaned up (no proxies remaining)
-	assert.Empty(t, env.Daemon.ProxyManager().List(), "all proxies should be cleaned up after stop")
+	assert.Empty(t, env.Daemon.ProxyManager().ListScoped(scope.Unscoped("test")), "all proxies should be cleaned up after stop")
 }
 
 // TestE2E_AutostartWithProxy_FailedScriptSkipsProxy verifies that when a
@@ -3131,7 +3132,7 @@ proxies {
 	time.Sleep(1 * time.Second)
 
 	// No proxy should exist in ProxyManager
-	proxies := env.Daemon.ProxyManager().List()
+	proxies := env.Daemon.ProxyManager().ListScoped(scope.Unscoped("test"))
 	for _, p := range proxies {
 		assert.False(t, strings.Contains(p.ID, "broken"),
 			"proxy linked to failed script should not exist, found: %s", p.ID)
@@ -3199,7 +3200,7 @@ func TestE2E_AutostartWithProxy_IndependentProxy(t *testing.T) {
 	defer cancel()
 	env.Daemon.Stop(stopCtx)
 
-	assert.Empty(t, env.Daemon.ProxyManager().List(), "all proxies should be cleaned up after stop")
+	assert.Empty(t, env.Daemon.ProxyManager().ListScoped(scope.Unscoped("test")), "all proxies should be cleaned up after stop")
 }
 
 // assertPortFree polls until a port is free or fails the test.

@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/standardbeagle/agnt/internal/scope"
 	"golang.org/x/sync/semaphore"
 )
 
@@ -163,11 +164,18 @@ func (pm *ProxyManager) Stop(ctx context.Context, id string) error {
 	return nil
 }
 
-// List returns all managed proxy servers.
-func (pm *ProxyManager) List() []*ProxyServer {
+// ListScoped returns the managed proxy servers visible to the given scope.
+// A project scope returns only that project's proxies; an unscoped scope
+// returns all of them. The zero scope returns nothing — callers must build a
+// scope explicitly, which keeps cross-project access deliberate rather than
+// the silent default. This replaces the old unscoped List().
+func (pm *ProxyManager) ListScoped(s scope.Scope) []*ProxyServer {
 	var result []*ProxyServer
 	pm.proxies.Range(func(key, value any) bool {
-		result = append(result, value.(*ProxyServer))
+		p := value.(*ProxyServer)
+		if s.Match(p.Path) {
+			result = append(result, p)
+		}
 		return true
 	})
 	return result

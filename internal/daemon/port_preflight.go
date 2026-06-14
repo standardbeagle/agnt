@@ -35,11 +35,19 @@ type PortConflict struct {
 	WindowsPIDs []int `json:"windows_pids,omitempty"`
 }
 
+// portProbe resolves which PIDs hold a given port, tagged by OS side. It is
+// injected so the conflict-classification logic can be unit-tested without
+// depending on the real (and, on WSL, intermittent) /proc + netstat.exe scan —
+// the source of the TestDetectPortConflicts_* flakes. Production passes
+// config.FindPIDsByPortTagged.
+type portProbe func(ctx context.Context, port int) (linuxPIDs, windowsPIDs []int)
+
 // detectPortConflicts scans all declared ports from autostart scripts and
 // returns conflicts where unmanaged processes hold those ports. Each
 // conflict's PIDs are partitioned into LinuxPIDs and WindowsPIDs so the
-// kill path can route them to the correct termination primitive.
-func detectPortConflicts(ctx context.Context, scripts map[string]*config.ScriptConfig, managedPIDs map[int]bool) []PortConflict {
+// kill path can route them to the correct termination primitive. The probe
+// is injected (see portProbe).
+func detectPortConflicts(ctx context.Context, scripts map[string]*config.ScriptConfig, managedPIDs map[int]bool, probe portProbe) []PortConflict {
 	var conflicts []PortConflict
 
 	names := make([]string, 0, len(scripts))
@@ -51,7 +59,7 @@ func detectPortConflicts(ctx context.Context, scripts map[string]*config.ScriptC
 	for _, name := range names {
 		sc := scripts[name]
 		for _, port := range sc.Ports {
-			linuxPIDs, windowsPIDs := config.FindPIDsByPortTagged(ctx, port)
+			linuxPIDs, windowsPIDs := probe(ctx, port)
 			if len(linuxPIDs) == 0 && len(windowsPIDs) == 0 {
 				continue
 			}

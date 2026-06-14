@@ -2,6 +2,8 @@ package proxy
 
 import (
 	"bytes"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -44,12 +46,12 @@ func TestInjectInstrumentation_BeforeHeadClose(t *testing.T) {
 	result := InjectInstrumentation(html, 8080)
 
 	// Should inject before </head>
-	if !bytes.Contains(result, []byte("<script>")) {
+	if !bytes.Contains(result, []byte("<script")) {
 		t.Error("Script not injected")
 	}
 
 	// Script should appear before </head>
-	scriptIdx := bytes.Index(result, []byte("<script>"))
+	scriptIdx := bytes.Index(result, []byte("<script"))
 	headCloseIdx := bytes.Index(result, []byte("</head>"))
 
 	if scriptIdx == -1 {
@@ -75,13 +77,13 @@ func TestInjectInstrumentation_AfterHeadOpen(t *testing.T) {
 	result := InjectInstrumentation(html, 8080)
 
 	// Should inject after <head>
-	if !bytes.Contains(result, []byte("<script>")) {
+	if !bytes.Contains(result, []byte("<script")) {
 		t.Error("Script not injected")
 	}
 
 	// Script should appear after <head>
 	headOpenIdx := bytes.Index(result, []byte("<head>"))
-	scriptIdx := bytes.Index(result, []byte("<script>"))
+	scriptIdx := bytes.Index(result, []byte("<script"))
 
 	if headOpenIdx == -1 {
 		t.Error("<head> tag not found")
@@ -105,13 +107,13 @@ func TestInjectInstrumentation_AfterBody(t *testing.T) {
 	result := InjectInstrumentation(html, 8080)
 
 	// Should inject after <body>
-	if !bytes.Contains(result, []byte("<script>")) {
+	if !bytes.Contains(result, []byte("<script")) {
 		t.Error("Script not injected")
 	}
 
 	// Script should appear after <body>
 	bodyOpenIdx := bytes.Index(result, []byte("<body>"))
-	scriptIdx := bytes.Index(result, []byte("<script>"))
+	scriptIdx := bytes.Index(result, []byte("<script"))
 
 	if bodyOpenIdx == -1 {
 		t.Error("<body> tag not found")
@@ -135,7 +137,7 @@ func TestInjectInstrumentation_BodyWithAttributes(t *testing.T) {
 	result := InjectInstrumentation(html, 8080)
 
 	// Should inject after <body ...>
-	if !bytes.Contains(result, []byte("<script>")) {
+	if !bytes.Contains(result, []byte("<script")) {
 		t.Error("Script not injected")
 	}
 
@@ -151,7 +153,7 @@ func TestInjectInstrumentation_MinimalHTML(t *testing.T) {
 	result := InjectInstrumentation(html, 8080)
 
 	// Should inject somewhere
-	if !bytes.Contains(result, []byte("<script>")) {
+	if !bytes.Contains(result, []byte("<script")) {
 		t.Error("Script not injected")
 	}
 }
@@ -162,7 +164,7 @@ func TestInjectInstrumentation_NoHTML(t *testing.T) {
 	result := InjectInstrumentation(html, 8080)
 
 	// Should prepend script as last resort
-	if !bytes.Contains(result, []byte("<script>")) {
+	if !bytes.Contains(result, []byte("<script")) {
 		t.Error("Script not injected")
 	}
 
@@ -181,7 +183,7 @@ func TestInjectInstrumentation_NoHTML(t *testing.T) {
 	}
 }
 
-func TestInjectInstrumentation_ScriptContent(t *testing.T) {
+func TestInjectInstrumentation_EmitsExternalAssetTag(t *testing.T) {
 	html := []byte(`<!DOCTYPE html>
 <html>
 <head></head>
@@ -189,23 +191,34 @@ func TestInjectInstrumentation_ScriptContent(t *testing.T) {
 </html>`)
 
 	result := InjectInstrumentation(html, 8080)
-
 	resultStr := string(result)
 
-	// Check for key instrumentation features
+	// The bundle is no longer inlined; the injected body carries a small
+	// external <script src> tag pointing at the content-addressed asset path.
+	if !strings.Contains(resultStr, `<script src="`+instrumentationAssetPath()+`">`) {
+		t.Errorf("expected external instrumentation asset tag, got: %s", resultStr)
+	}
+	// The ~1.3MB bundle must NOT be inlined into the response body.
+	if len(result) > len(html)+512 {
+		t.Errorf("injected body unexpectedly large (%d bytes) — bundle should be external, not inlined", len(result))
+	}
+}
+
+func TestInstrumentationBundle_ContainsFeatures(t *testing.T) {
+	// The instrumentation features now live in the externally-served bundle.
+	bundle := string(instrumentationScriptBytes())
 	expectedFeatures := []string{
 		"WebSocket",
 		"error",
 		"performance",
 		"window.addEventListener",
 		"unhandledrejection",
-		"window.location.host", // Should use relative URL with current host
+		"window.location.host", // relative URL with current host (port-independent)
 		"__devtool_metrics",
 	}
-
 	for _, feature := range expectedFeatures {
-		if !strings.Contains(resultStr, feature) {
-			t.Errorf("Injected script missing feature: %s", feature)
+		if !strings.Contains(bundle, feature) {
+			t.Errorf("instrumentation bundle missing feature: %s", feature)
 		}
 	}
 }
@@ -242,22 +255,20 @@ func TestInjectInstrumentation_PreservesOriginalContent(t *testing.T) {
 	}
 }
 
-func TestInjectInstrumentation_DifferentPorts(t *testing.T) {
+func TestInjectInstrumentation_PortIndependent(t *testing.T) {
 	html := []byte(`<!DOCTYPE html><html><head></head></html>`)
 
-	ports := []int{8080, 3000, 9000}
-
-	for _, port := range ports {
-		result := InjectInstrumentation(html, port)
-		resultStr := string(result)
-
-		// With the new relative URL approach, the script should use window.location.host
-		// which automatically includes the current port, making the port parameter obsolete
-		expectedPattern := "window.location.host + '/__devtool_metrics'"
-
-		if !strings.Contains(resultStr, expectedPattern) {
-			t.Errorf("Script should use window.location.host for WebSocket URL (port-independent)")
+	// The injected tag references a same-origin relative asset path, so it is
+	// identical regardless of the (now-obsolete) port argument; the bundle
+	// itself uses window.location.host for the metrics WebSocket.
+	want := InjectInstrumentation(html, 8080)
+	for _, port := range []int{3000, 9000} {
+		if got := InjectInstrumentation(html, port); !bytes.Equal(got, want) {
+			t.Errorf("injection should be port-independent; port %d differed", port)
 		}
+	}
+	if !strings.Contains(string(want), `<script src="`+instrumentationAssetPath()+`">`) {
+		t.Error("expected external instrumentation asset tag")
 	}
 }
 
@@ -284,16 +295,22 @@ func TestInjectInstrumentationAndMeta(t *testing.T) {
 	result := InjectInstrumentationAndMeta(html, "my-app")
 	s := string(result)
 
+	// proxy-id is set inline (varies per proxy, cannot be a shared asset).
 	if !strings.Contains(s, `window.__devtool_proxy_id="my-app"`) {
 		t.Errorf("missing proxy id: %s", s)
 	}
-	if !strings.Contains(s, "<script>") {
-		t.Error("missing instrumentation script")
+	// bundle is loaded via the external content-addressed asset tag.
+	assetTag := `<script src="` + instrumentationAssetPath() + `">`
+	if !strings.Contains(s, assetTag) {
+		t.Errorf("missing external instrumentation asset tag: %s", s)
 	}
-	// proxy-id meta must follow a </script> (the instrumentation script's close)
-	idx := strings.LastIndex(s, "window.__devtool_proxy_id")
-	if idx == -1 || strings.LastIndex(s[:idx], "</script>") == -1 {
-		t.Error("proxy meta should appear after a </script>")
+	// proxy-id must be set BEFORE the bundle loads (document order).
+	if idIdx, tagIdx := strings.Index(s, "window.__devtool_proxy_id"), strings.Index(s, assetTag); idIdx == -1 || idIdx > tagIdx {
+		t.Error("proxy id must be set before the instrumentation bundle tag")
+	}
+	// body must not be bloated by an inlined bundle.
+	if len(result) > len(html)+512 {
+		t.Errorf("injected body too large (%d) — bundle should be external", len(result))
 	}
 	// original content preserved
 	if !strings.Contains(s, "<title>t</title>") || !strings.Contains(s, "<p>hi</p>") {
@@ -309,6 +326,34 @@ func TestInjectProxyMeta_SpecialChars(t *testing.T) {
 	// fmt %q escapes quotes, so the ID should be safely quoted
 	if !strings.Contains(resultStr, `window.__devtool_proxy_id="foo\"bar"`) {
 		t.Errorf("Expected escaped proxy ID, got: %s", resultStr)
+	}
+}
+
+func TestHandleInstrumentationAsset(t *testing.T) {
+	// Serves the bundle immutably for the content-addressed path.
+	req := httptest.NewRequest(http.MethodGet, instrumentationAssetPath(), nil)
+	rec := httptest.NewRecorder()
+	handleInstrumentationAsset(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/javascript") {
+		t.Errorf("content-type = %q, want application/javascript", ct)
+	}
+	if cc := rec.Header().Get("Cache-Control"); !strings.Contains(cc, "immutable") {
+		t.Errorf("cache-control = %q, want immutable", cc)
+	}
+	if !bytes.Equal(rec.Body.Bytes(), instrumentationScriptBytes()) {
+		t.Error("served body does not match the instrumentation bundle")
+	}
+
+	// Unrelated path under the subtree 404s rather than leaking the bundle.
+	req2 := httptest.NewRequest(http.MethodGet, "/__devtool/other.txt", nil)
+	rec2 := httptest.NewRecorder()
+	handleInstrumentationAsset(rec2, req2)
+	if rec2.Code != http.StatusNotFound {
+		t.Errorf("non-asset path status = %d, want 404", rec2.Code)
 	}
 }
 

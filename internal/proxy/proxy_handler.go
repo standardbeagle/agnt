@@ -421,15 +421,17 @@ func (ps *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 
 		// Log the chaos-injected error
 		ps.logger.LogHTTP(HTTPLogEntry{
-			ID:             reqID,
-			Timestamp:      startTime,
-			Method:         r.Method,
-			URL:            r.URL.String(),
-			RequestHeaders: reqHeaders,
-			RequestBody:    reqBody,
-			StatusCode:     errorCode,
-			ResponseBody:   errorMsg,
-			Duration:       time.Since(startTime),
+			ID:                reqID,
+			Timestamp:         startTime,
+			Method:            r.Method,
+			URL:               r.URL.String(),
+			RequestHeaders:    reqHeaders,
+			RequestBody:       reqBody,
+			StatusCode:        errorCode,
+			ResponseBody:      errorMsg,
+			Duration:          time.Since(startTime),
+			Chaos:             true,
+			ChaosSwallowWatch: ps.chaosEngine.SwallowDetectEnabled(),
 		})
 		return
 	}

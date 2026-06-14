@@ -1,6 +1,47 @@
 # Unified Output Classifier — Design
 
-Status: proposed · 2026-06-09 · author: session work
+Status: **implemented (data-level unification)** · 2026-06-09 · author: session work
+
+## What shipped (vs. this design)
+
+Implemented the **single-source-of-truth** core: a new `internal/classify`
+package owns the entire rule set — the 54 broad line rules
+(`DefaultLineRules`), the Prisma/DB structured parsers (`RunStructuredLine`,
+`IsStructuralPrefix`), and the 9 located build parsers (`ParseBuildErrors`,
+`BuildError`). Both consumers now source rules from it:
+
+- `internal/overlay/alerts_defaults.go` adapts `classify.DefaultLineRules()` →
+  `AlertPattern`; `internal/overlay/structured_parsers.go` is a thin bridge
+  (`StructuredError = classify.StructuredError`, wrappers).
+- `internal/tools/build_error_parsers.go` aliases `BuildError =
+  classify.BuildError` and delegates `parseBuildErrors` →
+  `classify.ParseBuildErrors`; only the agent-facing `formatBuildErrorCompact`
+  renderer stays tools-local.
+
+The duplicated rule **definitions** are gone — the divergence root the
+`alerts_defaults.go` comment warned about. Both consumers' public shapes
+(`AlertPattern`, `AlertMatch`, `BuildError`) and behaviour are unchanged; all
+existing overlay/tools tests pass and `classify` gets its own direct tests.
+
+**Two deliberate deviations from the original plan below:**
+
+1. **No `ClassifyLine`/`ClassifyBlock` unified-orchestration entrypoints.** The
+   per-surface orchestration (overlay `ProcessLine`'s dedup/batch/recent-ring
+   sequence; tools' extract rendering) was left in place. Routing both through a
+   single function would have meant either dead code or a risky rewrite of two
+   well-tested pipelines for no behavioural gain once the rule data is shared. A
+   follow-up can consolidate orchestration if desired.
+
+2. **ASP.NET log-level precedence dropped.** The original plan had explicit
+   `warn:`/`info:` levels override the keyword heuristic. Per maintainer
+   direction, the GraphQL-validation lines *should* surface as **error** (they
+   are real client/schema mismatches), so the catch-all keeps its error
+   severity and no downgrade was added.
+
+---
+
+## Original design (for reference)
+
 
 ## Problem
 

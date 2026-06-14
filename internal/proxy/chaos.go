@@ -119,6 +119,12 @@ type ChaosEngine struct {
 	enabled     atomic.Bool
 	loggingMode atomic.Int32
 
+	// swallowDetect toggles the daemon-side swallowed-error heuristic for this
+	// proxy. Controlled at runtime from the browser chaos panel (not config):
+	// when on, injected error faults that produce no app-side error are raised
+	// as incidents. Read at the injection site to stamp the fault entry.
+	swallowDetect atomic.Bool
+
 	mu     sync.RWMutex
 	config *ChaosConfig
 	rules  []*chaosRuleState
@@ -163,6 +169,21 @@ type chaosStatsAtomic struct {
 	reorderedCount  atomic.Int64
 }
 
+// reset zeroes every counter with atomic stores. It must NOT be done by
+// whole-struct assignment (`s = chaosStatsAtomic{}`): the hot request path
+// (MatchingRules) and GetStats touch these fields with atomic Add/Load while
+// holding only an RLock or no lock at all, so overwriting the struct memory
+// races with those atomic accesses. Per-field Store keeps every access atomic.
+func (s *chaosStatsAtomic) reset() {
+	s.totalRequests.Store(0)
+	s.affectedCount.Store(0)
+	s.latencyInjected.Store(0)
+	s.errorsInjected.Store(0)
+	s.dropsInjected.Store(0)
+	s.truncatedCount.Store(0)
+	s.reorderedCount.Store(0)
+}
+
 // NewChaosEngine creates a new chaos engine
 func NewChaosEngine(logger *TrafficLogger) *ChaosEngine {
 	ce := &ChaosEngine{
@@ -176,6 +197,18 @@ func NewChaosEngine(logger *TrafficLogger) *ChaosEngine {
 // Must be called when the owning ProxyServer shuts down.
 func (ce *ChaosEngine) Stop() {
 	ce.reorderQueue.Stop()
+}
+
+// SetSwallowDetect toggles the swallowed-error heuristic for this proxy and
+// notifies listeners so the panel reflects the new state.
+func (ce *ChaosEngine) SetSwallowDetect(on bool) {
+	ce.swallowDetect.Store(on)
+	ce.notifyChange()
+}
+
+// SwallowDetectEnabled reports whether swallowed-error detection is active.
+func (ce *ChaosEngine) SwallowDetectEnabled() bool {
+	return ce.swallowDetect.Load()
 }
 
 // SetOnChange registers a callback fired after any chaos mutation.
@@ -335,13 +368,17 @@ type ChaosSnapshot struct {
 	Seed       int64                `json:"seed,omitempty"`
 	Rules      []*ChaosRuleSnapshot `json:"rules"`
 	Stats      ChaosStats           `json:"stats"`
+	// SwallowDetect mirrors the runtime swallowed-error toggle so the panel
+	// renders the switch in the right position.
+	SwallowDetect bool `json:"swallow_detect"`
 }
 
 // Snapshot returns the live engine state: master enabled flag, config-level
 // knobs, and every rule with its current enabled state and applied count.
 func (ce *ChaosEngine) Snapshot() *ChaosSnapshot {
 	snap := &ChaosSnapshot{
-		Enabled: ce.enabled.Load(),
+		Enabled:       ce.enabled.Load(),
+		SwallowDetect: ce.swallowDetect.Load(),
 	}
 
 	ce.mu.RLock()
@@ -374,8 +411,9 @@ func (ce *ChaosEngine) Clear() {
 	ce.rules = nil
 	ce.enabled.Store(false)
 
-	// Reset stats
-	ce.stats = chaosStatsAtomic{}
+	// Reset stats with atomic stores, not struct overwrite (races with the
+	// lock-free hot path / GetStats).
+	ce.stats.reset()
 
 	ce.notifyChange()
 }
@@ -473,7 +511,7 @@ func (ce *ChaosEngine) GetStats() ChaosStats {
 
 // ResetStats resets all statistics
 func (ce *ChaosEngine) ResetStats() {
-	ce.stats = chaosStatsAtomic{}
+	ce.stats.reset()
 
 	ce.mu.RLock()
 	for _, r := range ce.rules {

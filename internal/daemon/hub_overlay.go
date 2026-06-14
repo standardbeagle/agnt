@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 
 	"github.com/standardbeagle/agnt/internal/debug"
+	"github.com/standardbeagle/agnt/internal/protocol"
 
 	"github.com/standardbeagle/agnt/internal/proxy"
 	hubpkg "github.com/standardbeagle/go-cli-server/hub"
@@ -85,8 +86,14 @@ func (d *Daemon) hubHandleOverlayActivity(conn *hubpkg.Connection, cmd *hubproto
 			proxiesToBroadcast = append(proxiesToBroadcast, p)
 		}
 	} else {
-		// Broadcast to all proxies
-		proxiesToBroadcast = d.proxym.List()
+		// No explicit proxy IDs: broadcast to this session's project proxies
+		// only. Fail loud if the connection has no session — never silently
+		// fan activity out across every project.
+		sc, err := d.resolveScope(protocol.DirectoryFilter{}, conn.SessionCode())
+		if err != nil {
+			return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
+		}
+		proxiesToBroadcast = d.proxym.ListScoped(sc)
 	}
 
 	// Broadcast activity state to each proxy
@@ -132,7 +139,11 @@ func (d *Daemon) hubHandleOverlayOutputPreview(conn *hubpkg.Connection, cmd *hub
 			proxiesToBroadcast = append(proxiesToBroadcast, p)
 		}
 	} else {
-		proxiesToBroadcast = d.proxym.List()
+		sc, err := d.resolveScope(protocol.DirectoryFilter{}, conn.SessionCode())
+		if err != nil {
+			return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
+		}
+		proxiesToBroadcast = d.proxym.ListScoped(sc)
 	}
 
 	// Broadcast to each proxy

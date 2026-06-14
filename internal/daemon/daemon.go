@@ -208,8 +208,16 @@ type Daemon struct {
 	eventHub          *EventHub             // Routes alerts to overlay/MCP/stream sinks
 	incidentBus       *incident.MPSCBus     // Incident pipeline event bus (L8+)
 	hookRing          *hookRingBuffer       // Claude Code hook event ring buffer (phase 1 scope)
-	scriptRegistry    *script.Registry      // Per-script state that persists across process restarts
-	scriptConfigs     sync.Map              // processID -> *config.ScriptConfig (agnt-specific config)
+
+	// swallowDetector runs the chaos "swallowed error" heuristic. It is always
+	// allocated (cheap) but only fed when a fault entry is stamped
+	// ChaosSwallowWatch — i.e. the proxy's runtime swallow-detect panel toggle
+	// was on. The sweeper goroutine starts lazily on the first watched fault,
+	// so projects that never enable it pay nothing.
+	swallowDetector       *incident.SwallowDetector
+	swallowSweeperStarted atomic.Bool
+	scriptRegistry        *script.Registry // Per-script state that persists across process restarts
+	scriptConfigs         sync.Map         // processID -> *config.ScriptConfig (agnt-specific config)
 
 	// Session and scheduling (agnt-specific extensions)
 	sessionRegistry   *SessionRegistry
@@ -379,6 +387,7 @@ func New(config DaemonConfig) *Daemon {
 		startupErrorStore:  NewStartupLogStore(100),
 		eventHub:           NewEventHub(),
 		incidentBus:        incBus,
+		swallowDetector:    incident.NewSwallowDetector(2 * time.Second),
 		hookRing:           newHookRingBuffer(hookRingCapacity),
 		scriptRegistry:     script.NewRegistry(),
 		sessionRegistry:    sessionRegistry,
@@ -871,6 +880,35 @@ func (d *Daemon) ApplyAlertsConfig(cfg *config.AlertsConfig) {
 	}
 }
 
+// startSwallowSweeperOnce launches the single sweeper goroutine that drains the
+// swallow detector and publishes any swallowed-error incidents. It is started
+// lazily on the first ChaosSwallowWatch fault (so a daemon whose proxies never
+// turn the panel toggle on pays nothing) and exits on context cancel.
+func (d *Daemon) startSwallowSweeperOnce() {
+	if !d.swallowSweeperStarted.CompareAndSwap(false, true) {
+		return
+	}
+	d.wg.Add(1)
+	go func() {
+		defer d.wg.Done()
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-d.ctx.Done():
+				return
+			case <-ticker.C:
+				if d.swallowDetector == nil || d.incidentBus == nil {
+					continue
+				}
+				for _, ev := range d.swallowDetector.Sweep(time.Now()) {
+					d.incidentBus.Publish(ev)
+				}
+			}
+		}
+	}()
+}
+
 // StartupLogStore returns the startup log store.
 func (d *Daemon) StartupLogStore() *StartupLogStore {
 	return d.startupErrorStore
@@ -896,9 +934,17 @@ func (d *Daemon) GetSession(code string) (*Session, bool) {
 	return d.sessionRegistry.Get(code)
 }
 
-// SetOverlayEndpoint sets the overlay endpoint URL and updates all existing proxies.
-// The endpoint should be the full URL, e.g., "http://127.0.0.1:19191".
-// Pass an empty string to disable overlay forwarding.
+// SetOverlayEndpoint records the daemon-wide default overlay endpoint in
+// persistent state. It deliberately does NOT push the endpoint onto existing
+// proxies: overlay binding is per-project and owned by rebindProxyOverlays,
+// which matches a proxy to the session that owns its project path. The old
+// behavior — blasting one endpoint onto every proxy across all projects — was
+// the cause of cross-project message leaks (a message from project A's browser
+// reaching project B's agent), so it has been removed.
+//
+// Per-proxy binding goes through ProxyServer.SetOverlayEndpoint via
+// rebindProxyOverlays / overlayEndpointForProject; this method only persists
+// the default for OVERLAY GET and state restore.
 func (d *Daemon) SetOverlayEndpoint(endpoint string) {
 	if endpoint == "" {
 		d.overlayEndpoint.Store(nil)
@@ -909,11 +955,6 @@ func (d *Daemon) SetOverlayEndpoint(endpoint string) {
 	// Persist to state
 	if d.stateMgr != nil {
 		d.stateMgr.SetOverlayEndpoint(endpoint)
-	}
-
-	// Update all existing proxies
-	for _, p := range d.proxym.List() {
-		p.SetOverlayEndpoint(endpoint)
 	}
 }
 

@@ -9,6 +9,7 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/proxy"
+	"github.com/standardbeagle/agnt/internal/scope"
 
 	"github.com/standardbeagle/go-sdk/mcp"
 )
@@ -192,7 +193,7 @@ func (b *getErrorsBackend) collectLegacyErrors(input GetErrorsInput) ([]unifiedE
 		}
 		proxies = []*proxy.ProxyServer{ps}
 	} else {
-		proxies = pm.List()
+		proxies = pm.ListScoped(scope.Unscoped("legacy non-daemon error scan"))
 	}
 
 	// Collect errors from all proxies

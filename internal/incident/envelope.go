@@ -24,6 +24,7 @@ const (
 	SourcePortConflict  Source = "port_conflict"
 	SourceShutdown      Source = "shutdown"
 	SourceHookStopFail  Source = "hook_stop_failure"
+	SourceChaosSwallow  Source = "chaos_swallowed_error"
 )
 
 // Severity orders incidents by urgency.

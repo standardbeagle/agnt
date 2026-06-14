@@ -84,6 +84,21 @@ func (s *Session) GetStatus() SessionStatus {
 	return s.Status
 }
 
+// markDisconnectedIfStale transitions an active session to disconnected when
+// its last heartbeat predates cutoff, and reports whether it made that
+// transition. The check and the write happen under one lock so the session
+// owns its own state-machine invariant — the registry no longer reaches in to
+// mutate Status/LastSeen directly.
+func (s *Session) markDisconnectedIfStale(cutoff time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.Status == SessionStatusActive && s.LastSeen.Before(cutoff) {
+		s.Status = SessionStatusDisconnected
+		return true
+	}
+	return false
+}
+
 // IsActive returns true if the session is currently active.
 func (s *Session) IsActive() bool {
 	return s.GetStatus() == SessionStatusActive
@@ -111,10 +126,15 @@ func (s *Session) ToJSON() map[string]interface{} {
 type SessionRegistry struct {
 	sessions sync.Map // map[string]*Session
 
-	// Statistics (atomics for lock-free access)
+	// Statistics (atomics for lock-free access). These are monotonic
+	// lifetime counters. The number of *currently active* sessions is NOT
+	// stored here — it is derived on demand by ActiveCount() from each
+	// session's authoritative Status. A standalone active counter drifts:
+	// CheckHeartbeats decrements on Active→Disconnected, but Heartbeat
+	// revives Disconnected→Active and Unregister deletes regardless of
+	// status, so the increments and decrements never stayed balanced.
 	totalRegistered   atomic.Int64
 	totalUnregistered atomic.Int64
-	activeCount       atomic.Int64
 
 	// Heartbeat timeout configuration
 	heartbeatTimeout time.Duration
@@ -142,7 +162,6 @@ func (r *SessionRegistry) Register(session *Session) error {
 	}
 
 	r.totalRegistered.Add(1)
-	r.activeCount.Add(1)
 	return nil
 }
 
@@ -153,7 +172,6 @@ func (r *SessionRegistry) Unregister(code string) error {
 	}
 
 	r.totalUnregistered.Add(1)
-	r.activeCount.Add(-1)
 	return nil
 }
 
@@ -208,21 +226,25 @@ func (r *SessionRegistry) ListActive(projectPath string, global bool) []*Session
 // CheckHeartbeats marks sessions as disconnected if they haven't sent a heartbeat recently.
 func (r *SessionRegistry) CheckHeartbeats() {
 	cutoff := time.Now().Add(-r.heartbeatTimeout)
-	r.sessions.Range(func(key, value interface{}) bool {
-		session := value.(*Session)
-		session.mu.Lock()
-		if session.Status == SessionStatusActive && session.LastSeen.Before(cutoff) {
-			session.Status = SessionStatusDisconnected
-			r.activeCount.Add(-1)
-		}
-		session.mu.Unlock()
+	r.sessions.Range(func(_, value interface{}) bool {
+		value.(*Session).markDisconnectedIfStale(cutoff)
 		return true
 	})
 }
 
-// ActiveCount returns the number of active sessions.
+// ActiveCount returns the number of currently active sessions, derived from
+// each session's authoritative Status. Deriving (rather than maintaining a
+// counter) makes the count impossible to drift across the
+// Active↔Disconnected revive cycle and the delete-on-any-status Unregister.
 func (r *SessionRegistry) ActiveCount() int64 {
-	return r.activeCount.Load()
+	var n int64
+	r.sessions.Range(func(_, value interface{}) bool {
+		if value.(*Session).IsActive() {
+			n++
+		}
+		return true
+	})
+	return n
 }
 
 // TotalRegistered returns the total number of sessions registered.
@@ -268,7 +290,7 @@ type SessionInfo struct {
 // Info returns statistics about the session registry.
 func (r *SessionRegistry) Info() SessionInfo {
 	return SessionInfo{
-		ActiveCount:       r.activeCount.Load(),
+		ActiveCount:       r.ActiveCount(),
 		TotalRegistered:   r.totalRegistered.Load(),
 		TotalUnregistered: r.totalUnregistered.Load(),
 	}

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/proxy"
+	"github.com/standardbeagle/agnt/internal/scope"
 
 	"github.com/standardbeagle/go-sdk/mcp"
 )
@@ -436,7 +437,9 @@ func runtimeStateFromStats(stats proxy.ProxyStats) string {
 }
 
 func handleProxyList(pm *proxy.ProxyManager) (*mcp.CallToolResult, ProxyOutput, error) {
-	proxies := pm.List()
+	// Legacy non-daemon mode has no session registry — a single in-process
+	// manager serves the one caller, so an audited unscoped list is correct.
+	proxies := pm.ListScoped(scope.Unscoped("legacy non-daemon proxy list"))
 
 	entries := make([]ProxyEntry, len(proxies))
 	for i, p := range proxies {

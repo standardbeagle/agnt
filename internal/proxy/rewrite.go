@@ -65,8 +65,16 @@ func (ps *ProxyServer) modifyResponse(resp *http.Response) error {
 		return nil
 	}
 
-	// Read decompressed response body
-	bodyBytes, err := io.ReadAll(bodyReader)
+	// Read the body. For identity (non-decompressed) responses the origin's
+	// Content-Length is the exact size, so presize the buffer to a single
+	// allocation and avoid io.ReadAll's grow-by-doubling memmove storm (the
+	// dominant cost on large HTML bodies). For decompressed streams the
+	// decompressed size is unknown, so fall back to io.ReadAll.
+	var sizeHint int64 = -1
+	if bodyReader == resp.Body {
+		sizeHint = resp.ContentLength
+	}
+	bodyBytes, err := readAllSized(bodyReader, sizeHint)
 	if err != nil {
 		return err
 	}
@@ -96,6 +104,20 @@ func (ps *ProxyServer) modifyResponse(resp *http.Response) error {
 	resp.Header.Del("Content-Encoding")
 
 	return nil
+}
+
+// readAllSized reads all of r into a single buffer. When sizeHint > 0 it
+// presizes the buffer to that exact size plus a small read margin, so a body
+// whose length is known up front (identity Content-Length) is read in one
+// allocation with no grow-by-doubling reallocations. A non-positive hint
+// (unknown length — chunked or decompressed) falls back to io.ReadAll.
+func readAllSized(r io.Reader, sizeHint int64) ([]byte, error) {
+	if sizeHint <= 0 {
+		return io.ReadAll(r)
+	}
+	buf := bytes.NewBuffer(make([]byte, 0, sizeHint+bytes.MinRead))
+	_, err := buf.ReadFrom(r)
+	return buf.Bytes(), err
 }
 
 // rewriteLocationHeader rewrites Location headers to point to the proxy instead of the target.
@@ -246,17 +268,31 @@ func (ps *ProxyServer) rewriteURLsInBody(body []byte) []byte {
 	targetHTTPS := "https://" + targetHost
 	proxyURL := proxyScheme + "://" + proxyHost
 
-	// Replace URLs (simple byte replacement for performance)
-	result := bytes.ReplaceAll(body, []byte(targetHTTPS), []byte(proxyURL))
-	result = bytes.ReplaceAll(result, []byte(targetHTTP), []byte(proxyURL))
-
 	// Also handle URLs with escaped slashes (common in JSON)
 	targetHTTPEscaped := strings.ReplaceAll(targetHTTP, "/", "\\/")
 	targetHTTPSEscaped := strings.ReplaceAll(targetHTTPS, "/", "\\/")
 	proxyURLEscaped := strings.ReplaceAll(proxyURL, "/", "\\/")
 
-	result = bytes.ReplaceAll(result, []byte(targetHTTPSEscaped), []byte(proxyURLEscaped))
-	result = bytes.ReplaceAll(result, []byte(targetHTTPEscaped), []byte(proxyURLEscaped))
+	// Replace URLs (simple byte replacement for performance). bytes.ReplaceAll
+	// allocates a full-body copy even when there is no match, so each pattern
+	// is guarded by a cheap Contains scan: a body with no absolute target URLs
+	// (the common case for dev servers serving relative paths) passes through
+	// with zero copies instead of four.
+	result := replaceIfPresent(body, targetHTTPS, proxyURL)
+	result = replaceIfPresent(result, targetHTTP, proxyURL)
+	result = replaceIfPresent(result, targetHTTPSEscaped, proxyURLEscaped)
+	result = replaceIfPresent(result, targetHTTPEscaped, proxyURLEscaped)
 
 	return result
+}
+
+// replaceIfPresent replaces all occurrences of old with new in body, but only
+// allocates a new buffer when old is actually present. When old is absent it
+// returns body unchanged (bytes.ReplaceAll would otherwise copy the whole
+// buffer regardless). old/new are strings to avoid caller-side []byte churn.
+func replaceIfPresent(body []byte, old, new string) []byte {
+	if old == "" || !bytes.Contains(body, []byte(old)) {
+		return body
+	}
+	return bytes.ReplaceAll(body, []byte(old), []byte(new))
 }
