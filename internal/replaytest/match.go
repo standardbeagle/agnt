@@ -75,54 +75,14 @@ func NewMatcher(recs []Recording) *Matcher {
 }
 
 // Match returns the next recording for the request, or ok=false on a miss.
-// It first tries the exact templated key, then progressively strips trailing
-// ":id" segments so a recording keyed on "/api/items" matches a live request
-// to "/api/items/99".
+// It does a single exact templated-key lookup against the queue map. Recordings
+// store already-templated paths, so a live request templates to the same key.
 func (m *Matcher) Match(method, rawURL, bodySig string) (Recording, bool) {
 	k := buildKey(method, rawURL, bodySig)
 	if q := m.queues[k]; len(q) > 0 {
 		r := q[0]
 		m.queues[k] = q[1:]
 		return r, true
-	}
-
-	// Decompose the URL so we can rebuild candidate keys with shorter paths.
-	methodUpper := strings.ToUpper(method)
-	rawPath := rawURL
-	query := ""
-	if i := strings.IndexByte(rawURL, '?'); i >= 0 {
-		rawPath, query = rawURL[:i], rawURL[i+1:]
-	}
-	segs := strings.Split(TemplatePath(rawPath), "/")
-
-	var keys []string
-	if query != "" {
-		if vals, err := url.ParseQuery(query); err == nil {
-			for qk := range vals {
-				if qk == "_" {
-					continue
-				}
-				keys = append(keys, qk)
-			}
-		}
-	}
-	sort.Strings(keys)
-	suffix := ""
-	if len(keys) > 0 {
-		suffix += " ?" + strings.Join(keys, ",")
-	}
-	if bodySig != "" {
-		suffix += " #" + bodySig
-	}
-
-	for len(segs) > 1 && segs[len(segs)-1] == ":id" {
-		segs = segs[:len(segs)-1]
-		candidate := methodUpper + " " + strings.Join(segs, "/") + suffix
-		if q := m.queues[candidate]; len(q) > 0 {
-			r := q[0]
-			m.queues[candidate] = q[1:]
-			return r, true
-		}
 	}
 	return Recording{}, false
 }

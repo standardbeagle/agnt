@@ -15,7 +15,7 @@ func TestMatcherKeyAndQueue(t *testing.T) {
 	}
 	m := NewMatcher(recs)
 
-	r1, ok := m.Match("GET", "/api/items/99?date=2026-06-15&_=1", "")
+	r1, ok := m.Match("GET", "/api/items?date=2026-06-15&_=1", "")
 	require.True(t, ok)
 	assert.Equal(t, "b0", r1.BodyRef)
 	r2, ok := m.Match("GET", "/api/items?date=x", "")
