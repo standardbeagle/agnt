@@ -158,7 +158,7 @@ Available tools:
 	// validates the installed license once at load.
 	licMgr := license.NewManager()
 	_ = licMgr.Load()
-	tools.RegisterReplaytestTool(server, licMgr)
+	tools.RegisterReplaytestTool(server, licMgr, dt.ReplaytestLogClient)
 
 	// Register channel_reply tool when channel mode is enabled and reply-tool is on.
 	if agntCfg.Channel != nil && agntCfg.Channel.IsEnabled() && agntCfg.Channel.ReplyToolEnabled() {
@@ -282,7 +282,7 @@ func runLegacyServer() {
 	// Register the replaytest tool (Pro: advanced_testing).
 	licMgr := license.NewManager()
 	_ = licMgr.Load()
-	tools.RegisterReplaytestTool(server, licMgr)
+	tools.RegisterReplaytestTool(server, licMgr, nil)
 
 	// Handle shutdown in background
 	go func() {

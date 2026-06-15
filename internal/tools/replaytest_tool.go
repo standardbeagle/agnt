@@ -5,12 +5,34 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/standardbeagle/agnt/internal/aichannel"
 	"github.com/standardbeagle/agnt/internal/license"
+	"github.com/standardbeagle/agnt/internal/protocol"
+	"github.com/standardbeagle/agnt/internal/proxy"
 	"github.com/standardbeagle/agnt/internal/replaytest"
 	"github.com/standardbeagle/go-sdk/mcp"
 )
+
+// replaytestLogClient is the minimal daemon-client surface record/stop need:
+// a full-fidelity proxy log pull (response bodies intact) and a proxy status
+// lookup (to derive the scenario BaseURL). *daemon.Client satisfies it; tests
+// inject a fake.
+type replaytestLogClient interface {
+	ProxyLogQueryFull(proxyID string, filter protocol.LogQueryFilter) ([]proxy.LogEntry, error)
+	ProxyStatus(id string) (map[string]interface{}, error)
+}
+
+// recordingSession is the in-process state of an active replaytest recording.
+// It survives between the `record` and `stop` tool calls because the handler is
+// registered once per MCP process and persists across calls.
+type recordingSession struct {
+	ProxyID   string
+	Directory string
+	Start     time.Time
+}
 
 // ReplaytestInput drives the replaytest MCP tool. Action selects the operation;
 // the remaining fields supply per-action parameters.
@@ -45,10 +67,21 @@ type ReplaytestOutput struct {
 // actions consult the license manager before doing any work.
 type replaytestHandler struct {
 	lic *license.Manager
+	// clientFn lazily resolves a connected daemon client for record/stop. It is
+	// nil in the legacy (non-daemon) MCP path, in which case stop reports that
+	// it requires daemon mode rather than panicking.
+	clientFn func() (replaytestLogClient, error)
+
+	mu       sync.Mutex
+	sessions map[string]recordingSession
 }
 
-func newReplaytestHandler(lic *license.Manager) *replaytestHandler {
-	return &replaytestHandler{lic: lic}
+func newReplaytestHandler(lic *license.Manager, clientFn func() (replaytestLogClient, error)) *replaytestHandler {
+	return &replaytestHandler{
+		lic:      lic,
+		clientFn: clientFn,
+		sessions: make(map[string]recordingSession),
+	}
 }
 
 var replaytestGatedActions = map[string]bool{
@@ -322,25 +355,87 @@ func extractJSONArray(s string) string {
 	return s[start : end+1]
 }
 
-// handleRecord and handleStop are scoped out: full wiring needs full-fidelity
-// proxy.LogEntry data (response bodies + headers) from the daemon's
-// TrafficLogger. The proxy lives in the daemon process; this MCP tool is a
-// separate process and the existing PROXYLOG QUERY protocol verb returns
-// compacted entries (string summaries) that drop the response bodies
-// AssembleScenario requires. Pulling them would need a new daemon protocol verb
-// returning []proxy.LogEntry, which is out of scope for this task.
+// handleRecord opens a recording window for a scenario: it stamps the start
+// time and remembers which proxy to pull traffic from. The actual scenario is
+// assembled on stop, from the full-fidelity proxy log captured since this
+// moment. Recording state lives in-process and survives until stop.
 func (h *replaytestHandler) handleRecord(in ReplaytestInput) (*mcp.CallToolResult, ReplaytestOutput, error) {
+	if in.Name == "" {
+		out := ReplaytestOutput{Message: "provide a scenario name to record", Success: false}
+		return replaytestOK(out.Message), out, nil
+	}
+	if in.ProxyID == "" {
+		out := ReplaytestOutput{Message: "provide a proxy_id to record traffic from", Success: false}
+		return replaytestOK(out.Message), out, nil
+	}
+
+	h.mu.Lock()
+	h.sessions[in.Name] = recordingSession{
+		ProxyID:   in.ProxyID,
+		Directory: in.Directory,
+		Start:     time.Now().UTC(),
+	}
+	h.mu.Unlock()
+
 	out := ReplaytestOutput{
-		Message: "record is scoped out: it needs full-fidelity proxy traffic (response bodies + headers) from the daemon's TrafficLogger, but the PROXYLOG QUERY protocol verb returns compacted entries that drop response bodies. Wiring requires a new daemon protocol verb returning []proxy.LogEntry over the wire. Until then, assemble scenarios from a process with direct ProxyManager access (replaytest.AssembleScenario + Store.SaveScenario).",
-		Success: false,
+		Message: fmt.Sprintf("recording %s against proxy %s", in.Name, in.ProxyID),
+		Success: true,
 	}
 	return replaytestOK(out.Message), out, nil
 }
 
+// handleStop closes the recording window: it pulls the full-fidelity proxy log
+// captured since record, assembles a scenario (interactions → steps, HTTP →
+// recordings with response bodies preserved), and persists it.
 func (h *replaytestHandler) handleStop(in ReplaytestInput) (*mcp.CallToolResult, ReplaytestOutput, error) {
+	if in.Name == "" {
+		out := ReplaytestOutput{Message: "provide a scenario name to stop", Success: false}
+		return replaytestOK(out.Message), out, nil
+	}
+
+	h.mu.Lock()
+	sess, ok := h.sessions[in.Name]
+	h.mu.Unlock()
+	if !ok {
+		return errorResult("no active recording for " + in.Name), ReplaytestOutput{}, nil
+	}
+
+	if h.clientFn == nil {
+		return errorResult("record/stop require daemon mode — the legacy MCP path has no daemon client to pull proxy traffic from"), ReplaytestOutput{}, nil
+	}
+	client, err := h.clientFn()
+	if err != nil {
+		return errorResult("failed to reach daemon: " + err.Error()), ReplaytestOutput{}, nil
+	}
+
+	filter := protocol.LogQueryFilter{Since: sess.Start.Format(time.RFC3339)}
+	entries, err := client.ProxyLogQueryFull(sess.ProxyID, filter)
+	if err != nil {
+		return errorResult("failed to pull proxy traffic: " + err.Error()), ReplaytestOutput{}, nil
+	}
+
+	// Derive the scenario BaseURL from the proxy's target (best-effort: replay
+	// needs an origin, but an empty one is not fatal to assembly).
+	baseURL := ""
+	if status, serr := client.ProxyStatus(sess.ProxyID); serr == nil {
+		if u, ok := status["target_url"].(string); ok {
+			baseURL = u
+		}
+	}
+
+	sc := replaytest.AssembleScenario(in.Name, baseURL, entries)
+	store := replaytest.NewStore(sess.Directory)
+	if err := store.SaveScenario(sc); err != nil {
+		return errorResult("failed to save scenario: " + err.Error()), ReplaytestOutput{}, nil
+	}
+
+	h.mu.Lock()
+	delete(h.sessions, in.Name)
+	h.mu.Unlock()
+
 	out := ReplaytestOutput{
-		Message: "stop is scoped out for the same reason as record: assembling a scenario from the captured window needs full-fidelity proxy.LogEntry data (response bodies + headers) that the cross-process PROXYLOG QUERY verb does not carry. A new daemon protocol verb returning []proxy.LogEntry is required to wire record/stop end-to-end.",
-		Success: false,
+		Message: fmt.Sprintf("stopped recording %s: saved scenario with %d step(s) and %d recording(s)", sc.Name, len(sc.Steps), len(sc.Recordings)),
+		Success: true,
 	}
 	return replaytestOK(out.Message), out, nil
 }
@@ -354,8 +449,8 @@ func replaytestOK(msg string) *mcp.CallToolResult {
 // RegisterReplaytestTool registers the replaytest MCP tool. The license manager
 // gates the record/stop/refine/replay/explore actions on the advanced_testing
 // capability; list/show are free.
-func RegisterReplaytestTool(server *mcp.Server, lic *license.Manager) {
-	h := newReplaytestHandler(lic)
+func RegisterReplaytestTool(server *mcp.Server, lic *license.Manager, clientFn func() (replaytestLogClient, error)) {
+	h := newReplaytestHandler(lic, clientFn)
 	addLenientTool(server, &mcp.Tool{
 		Name: "replaytest",
 		Description: `Record, refine, and replay deterministic browser replay-tests (Pro: advanced_testing).
@@ -370,8 +465,11 @@ Actions:
            browser-debugger subagents.
   refine:  Use an LLM to mask volatile auto-captured assertions. Requires
            ANTHROPIC_API_KEY or CLAUDE_KEY in the daemon environment.
-  record/stop: Capture a scenario from proxy traffic (currently scoped out — see
-           the action's response for the daemon plumbing it needs).
+  record:  Open a recording window against a proxy (record + proxy_id). Captures
+           traffic from this moment until stop.
+  stop:    Close the recording window (stop + name): pulls the full-fidelity
+           proxy log captured since record, assembles a scenario with response
+           bodies preserved, and saves it. Requires daemon mode.
 
 Examples:
   replaytest {action: "list"}
