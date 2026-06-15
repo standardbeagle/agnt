@@ -296,10 +296,24 @@ func (r *SessionRegistry) Info() SessionInfo {
 	}
 }
 
+// sessionMoreRecent reports whether session a should be preferred over b on a
+// depth tie: the most recently started session wins, with the unique Code as a
+// final deterministic tiebreak when StartedAt is identical. StartedAt and Code
+// are set once at registration and effectively immutable, so reading them
+// without the session lock is safe (matching FindByDirectory's unlocked read of
+// ProjectPath).
+func sessionMoreRecent(a, b *Session) bool {
+	return a.StartedAt.After(b.StartedAt) || (a.StartedAt.Equal(b.StartedAt) && a.Code > b.Code)
+}
+
 // FindByDirectory finds an active session whose project path matches the given directory
 // or any of its parent directories. Returns the most specific (deepest) match.
 // This enables auto-attach behavior where MCP clients in subdirectories can find
 // sessions started in parent directories.
+//
+// On equal-depth ties (same project path), the most recently started session
+// wins (Code breaks exact ties), making selection deterministic rather than
+// dependent on undefined sync.Map.Range order.
 func (r *SessionRegistry) FindByDirectory(directory string) (*Session, bool) {
 	if directory == "" {
 		return nil, false
@@ -329,7 +343,7 @@ func (r *SessionRegistry) FindByDirectory(directory string) (*Session, bool) {
 		if isPathPrefixOf(sessionPath, normalizedDir) {
 			// Calculate depth (number of path components) to find the most specific match
 			depth := strings.Count(sessionPath, string(filepath.Separator))
-			if depth > bestMatchDepth {
+			if depth > bestMatchDepth || (depth == bestMatchDepth && bestMatch != nil && sessionMoreRecent(session, bestMatch)) {
 				bestMatch = session
 				bestMatchDepth = depth
 			}
