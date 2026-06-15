@@ -34,3 +34,16 @@ func TestScenarioRoundTrip(t *testing.T) {
 	assert.Equal(t, `{"ok":true}`, got.Blobs["blob:0"])
 	assert.Equal(t, []string{"date"}, got.Recordings[0].Match.QueryKeys)
 }
+
+func TestTemplatePath(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"/api/items/42", "/api/items/:id"},
+		{"/api/items/42/notes/7", "/api/items/:id/notes/:id"},
+		{"/api/users/abc123def456ghi", "/api/users/:id"},
+		{"/api/items", "/api/items"},
+		{"/api/v2/items", "/api/v2/items"},
+	}
+	for _, c := range cases {
+		assert.Equal(t, c.want, TemplatePath(c.in), "input %q", c.in)
+	}
+}
