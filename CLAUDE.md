@@ -137,6 +137,7 @@ PTY overlay components — command palette (`:`/`/` filterable, **not** a shell 
 | `api_audit` | API efficiency audit (waterfall, N+1, duplicate, chatty-load) over the fetch/XHR buffer |
 | `loading_audit` | Loading-UX audit (spinner cascade + concurrent fragmentation) over the spinner timeline |
 | `snapshot` | Visual regression testing (baseline/compare screenshots) |
+| `replaytest` | Record→worker-mock→replay front-end testing; fuzz + subagent breadth (Pro: advanced_testing) |
 | `daemon` | Daemon management |
 | `watch` | Get `agnt monitor` command for streaming events |
 | `channel_reply` | Send messages to developer's browser overlay (channel mode beta) |
