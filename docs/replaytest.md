@@ -24,8 +24,8 @@ free.
 |--------|---------|--------|-------------|
 | `list` | free | works | List scenarios in `.agnt/replaytests/`. |
 | `show` | free | works | Show a scenario / its last report. |
-| `record` | advanced_testing | **PENDING** | Capture proxy traffic into a scenario — not yet wired (see Limitations). |
-| `stop` | advanced_testing | **PENDING** | Finalize a recording into a scenario — not yet wired (see Limitations). |
+| `record` | advanced_testing | works | Start capturing API traffic + interactions against a running proxy (requires daemon mode). Args: name, proxy_id. |
+| `stop` | advanced_testing | works | Finalize the recording into `.agnt/replaytests/<name>.json`. |
 | `refine` | advanced_testing | works (needs key) | LLM-assisted scenario cleanup. Requires `ANTHROPIC_API_KEY` or `CLAUDE_KEY` at runtime. |
 | `replay` | advanced_testing | works | Drives headless Chrome, mocks the network in-page from the recorded responses, asserts via DOM signature. |
 | `explore` | advanced_testing | works | Returns a seed partition for the calling agent to fan out browser-debugger subagents. |
@@ -53,22 +53,21 @@ them:
 
 ## Current status / limitations
 
-`record` and `stop` are **not yet wired**. Assembling a scenario from captured
-traffic needs full-fidelity `[]proxy.LogEntry` data — response bodies and
-headers — but the cross-process `PROXYLOG QUERY` protocol verb returns compacted
-entries that drop response bodies. Closing the gap requires a **new daemon
-protocol verb that returns full-fidelity `[]proxy.LogEntry` over the wire**;
-this is tracked as a follow-up task.
+`record` and `stop` are functional via a full-fidelity daemon log pull
+(`client.ProxyLogQueryFull`). They require daemon mode — the legacy non-daemon
+server returns a clear "requires daemon mode" message if invoked without one.
 
-Until then, scenarios must be **hand-authored** (or produced by a future record
-path / a process with direct `ProxyManager` access via
-`replaytest.AssembleScenario` + `Store.SaveScenario`). `replay`, `explore`, and
-`refine` are functional today.
+One minor remaining item: orphaned blobs from coalesced duplicate recordings are
+retained in the scenario JSON. This is harmless; a future GC pass could prune
+them.
+
+`refine` still requires `ANTHROPIC_API_KEY` or `CLAUDE_KEY` at runtime.
+`explore` returns a seed partition for the caller to fan out browser-debugger
+subagents. `replay` drives headless Chrome.
 
 ## Dogfood note
 
-Once `record` lands, the intended end-to-end flow against any proxied app
-(food-track is the first target) is:
+The end-to-end flow against any proxied app now works:
 
 ```
 start proxy → record → drive the app → stop → refine → replay across presets → explore
