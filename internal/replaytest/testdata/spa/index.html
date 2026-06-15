@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Replay SPA Fixture</title>
+</head>
+<body>
+  <h1></h1>
+  <script>
+    fetch('/api/items')
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        document.querySelector('h1').textContent =
+          (d.items && d.items[0] && d.items[0].name) || '';
+      })
+      .catch(function () {
+        document.querySelector('h1').textContent = 'error';
+      });
+  </script>
+</body>
+</html>
