@@ -333,6 +333,23 @@ func (c *Client) ProxyLogQuery(proxyID string, filter protocol.LogQueryFilter) (
 	return c.conn.Request(protocol.VerbProxyLog, protocol.SubVerbQuery, proxyID).WithJSON(filter).JSON()
 }
 
+// ProxyLogQueryFull queries proxy logs and decodes the response into typed,
+// full-fidelity []proxy.LogEntry. It sends the SAME wire request as
+// ProxyLogQuery (VerbProxyLog/SubVerbQuery/proxyID/filter), but unmarshals the
+// daemon's `{"entries":[...]}` envelope directly into proxy.LogEntry values
+// instead of the lossy map form used by ProxyLogQuery. This preserves
+// ResponseBody / ResponseHeaders that the tool-side compaction path drops —
+// the fields replaytest scenario assembly requires.
+func (c *Client) ProxyLogQueryFull(proxyID string, filter protocol.LogQueryFilter) ([]proxy.LogEntry, error) {
+	var resp struct {
+		Entries []proxy.LogEntry `json:"entries"`
+	}
+	if err := c.conn.Request(protocol.VerbProxyLog, protocol.SubVerbQuery, proxyID).WithJSON(filter).JSONInto(&resp); err != nil {
+		return nil, err
+	}
+	return resp.Entries, nil
+}
+
 // ProxyLogClear clears proxy logs.
 func (c *Client) ProxyLogClear(proxyID string) error {
 	return c.conn.Request(protocol.VerbProxyLog, protocol.SubVerbClear, proxyID).OK()
