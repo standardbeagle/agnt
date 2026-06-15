@@ -1,6 +1,10 @@
 package replaytest
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"regexp"
+	"strings"
+)
 
 type StepKind string
 
@@ -57,6 +61,22 @@ type Scenario struct {
 	Steps      []Step            `json:"steps"`
 	Recordings []Recording       `json:"recordings"`
 	Blobs      map[string]string `json:"blobs"`
+}
+
+// idSegment matches a path segment that looks like a volatile identifier:
+// pure digits, or a long (>=12 char) opaque token (hex/uuid-like).
+var idSegment = regexp.MustCompile(`^([0-9]+|[0-9a-zA-Z-]{12,})$`)
+
+// TemplatePath replaces identifier-looking path segments with ":id" so that
+// recordings match across differing ids at replay time.
+func TemplatePath(path string) string {
+	segs := strings.Split(path, "/")
+	for i, seg := range segs {
+		if idSegment.MatchString(seg) {
+			segs[i] = ":id"
+		}
+	}
+	return strings.Join(segs, "/")
 }
 
 func (s *Scenario) MarshalJSON() ([]byte, error) {
