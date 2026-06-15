@@ -40,6 +40,16 @@ type Manager struct {
 // before relying on its state.
 func NewManager() *Manager { return &Manager{} }
 
+// NewManagerForTest returns a Manager preloaded with the given Status, bypassing
+// disk load and signature validation. It exists so external-package tests can
+// build a Manager that grants (or denies) a capability deterministically. For
+// tests only — production code must use NewManager + Load.
+func NewManagerForTest(s Status) *Manager {
+	m := &Manager{}
+	m.set(s)
+	return m
+}
+
 // Load reads, verifies, and evaluates the stored license, caching the result.
 // A missing license is not an error — it yields StateMissing. A present but
 // unverifiable blob yields StateInvalid (also not an error: the agent should
