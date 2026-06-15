@@ -13,6 +13,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/debug"
 
 	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/license"
 	"github.com/standardbeagle/agnt/internal/proxy"
 	"github.com/standardbeagle/agnt/internal/snapshot"
 	"github.com/standardbeagle/agnt/internal/tools"
@@ -153,6 +154,12 @@ Available tools:
 	tools.RegisterLoadingAuditTool(server, dt, nil)
 	tools.RegisterGetIncidentsTool(server, dt)
 
+	// Register the replaytest tool (Pro: advanced_testing). The license manager
+	// validates the installed license once at load.
+	licMgr := license.NewManager()
+	_ = licMgr.Load()
+	tools.RegisterReplaytestTool(server, licMgr)
+
 	// Register channel_reply tool when channel mode is enabled and reply-tool is on.
 	if agntCfg.Channel != nil && agntCfg.Channel.IsEnabled() && agntCfg.Channel.ReplyToolEnabled() {
 		tools.RegisterChannelReplyTool(server, dt)
@@ -271,6 +278,11 @@ func runLegacyServer() {
 	} else {
 		tools.RegisterSnapshotTools(server, snapshotManager, nil)
 	}
+
+	// Register the replaytest tool (Pro: advanced_testing).
+	licMgr := license.NewManager()
+	_ = licMgr.Load()
+	tools.RegisterReplaytestTool(server, licMgr)
 
 	// Handle shutdown in background
 	go func() {
