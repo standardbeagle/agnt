@@ -49,13 +49,13 @@ func (d *Daemon) hubHandleAutostartClearPorts(ctx context.Context, conn *hubpkg.
 	// Use context.Background() since kill+resume may outlive the IPC request.
 	log := d.startupErrorStore
 	killResults := killPortBlockers(context.Background(), d.hub.ProcessManager(), d.eventHub, pending.conflicts)
+	// Surface both sides of the kill: the killer's port-reclaim and a notice to
+	// any other project whose proxy just lost its backend.
+	d.reportPortKills(projectPath, killResults)
 	var cleared []PortConflict
 	for _, kr := range killResults {
 		if kr.Killed {
 			cleared = append(cleared, kr.PortConflict)
-			log.Info(makeProcessID(projectPath, kr.ScriptName), kr.ScriptName,
-				"port_conflict_killed",
-				fmt.Sprintf("cleared port %d (was: %s PIDs %v)", kr.Port, kr.ProcessName, kr.PIDs))
 		} else {
 			log.Error(makeProcessID(projectPath, kr.ScriptName), kr.ScriptName,
 				"port_conflict_failed", kr.Error)

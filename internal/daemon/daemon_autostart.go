@@ -178,11 +178,12 @@ func (d *Daemon) RunAutostartAsync(
 
 		case "auto-kill":
 			killResults := killPortBlockers(ctx, d.hub.ProcessManager(), d.eventHub, conflicts)
+			// Surface both sides of the kill: the killer's port-reclaim and a
+			// notice to any other project whose proxy just lost its backend.
+			d.reportPortKills(projectPath, killResults)
 			for _, kr := range killResults {
 				if kr.Killed {
 					result.PortsCleared = append(result.PortsCleared, kr.PortConflict)
-					log.Info(kr.ScriptName, "port_conflict_killed",
-						fmt.Sprintf("cleared port %d (was: %s PIDs %v)", kr.Port, kr.ProcessName, kr.PIDs))
 				} else {
 					log.Error(kr.ScriptName, "port_conflict_failed", kr.Error)
 					result.Errors = append(result.Errors, kr.Error)
