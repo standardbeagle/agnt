@@ -16,7 +16,7 @@ jobs:
       matrix:
         # windows-2019 retired by GitHub Actions — jobs stay queued forever on that runner
         os: [windows-2022, windows-latest]
-        go-version: ['1.24.2']
+        go-version: ['1.25']
 
     steps:
       - name: Checkout code

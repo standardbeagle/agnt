@@ -27,7 +27,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.24.2'
+          go-version: '1.25'
 
       - name: Verify cross-compile (windows/amd64, darwin/arm64)
         run: make cross-compile-check
