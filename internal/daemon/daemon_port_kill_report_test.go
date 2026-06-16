@@ -1,3 +1,8 @@
+//go:build unix
+
+// newTestDaemon (the shared daemon test harness) is unix-tagged, so this test
+// is too. The reportPortKills logic under test is OS-agnostic; exercising it on
+// unix is sufficient coverage.
 package daemon
 
 import (
