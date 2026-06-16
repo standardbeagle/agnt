@@ -22,7 +22,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.24'
+          go-version: '1.25'
 
       - name: Install via go install
         # Normalize input: accept either '0.12.50' or 'v0.12.50'. Empty → @latest.
