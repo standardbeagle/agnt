@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -329,6 +330,20 @@ func TestInjectProxyMeta_SpecialChars(t *testing.T) {
 	}
 }
 
+// TestInstrumentationAsset_NoHTMLWrapper guards the external-asset refactor:
+// the bundle is served via <script src> as application/javascript, so it must
+// not carry the legacy inline <script>…</script> HTML wrapper, which is a
+// parse error in an external JS file and aborts the whole bundle.
+func TestInstrumentationAsset_NoHTMLWrapper(t *testing.T) {
+	b := instrumentationScriptBytes()
+	if bytes.Contains(b, []byte("<script>")) || bytes.Contains(b, []byte("</script>")) {
+		t.Fatal("served instrumentation asset still contains <script> HTML wrapper")
+	}
+	if len(b) == 0 {
+		t.Fatal("instrumentation asset is empty")
+	}
+}
+
 func TestHandleInstrumentationAsset(t *testing.T) {
 	// Serves the bundle immutably for the content-addressed path.
 	req := httptest.NewRequest(http.MethodGet, instrumentationAssetPath(), nil)
@@ -346,6 +361,28 @@ func TestHandleInstrumentationAsset(t *testing.T) {
 	}
 	if !bytes.Equal(rec.Body.Bytes(), instrumentationScriptBytes()) {
 		t.Error("served body does not match the instrumentation bundle")
+	}
+	// An explicit Content-Length delimits the response so it is not sent
+	// chunked. Chunked framing of this large blocking <head> asset has stalled
+	// in some browsers, head-of-line-blocking every request behind it on the
+	// same HTTP/1.1 connection.
+	wantLen := strconv.Itoa(len(instrumentationScriptBytes()))
+	if cl := rec.Header().Get("Content-Length"); cl != wantLen {
+		t.Errorf("content-length = %q, want %q", cl, wantLen)
+	}
+
+	// HEAD returns the headers (incl. Content-Length) but no body.
+	reqHead := httptest.NewRequest(http.MethodHead, instrumentationAssetPath(), nil)
+	recHead := httptest.NewRecorder()
+	handleInstrumentationAsset(recHead, reqHead)
+	if recHead.Code != http.StatusOK {
+		t.Fatalf("HEAD status = %d, want 200", recHead.Code)
+	}
+	if recHead.Body.Len() != 0 {
+		t.Errorf("HEAD body len = %d, want 0", recHead.Body.Len())
+	}
+	if cl := recHead.Header().Get("Content-Length"); cl != wantLen {
+		t.Errorf("HEAD content-length = %q, want %q", cl, wantLen)
 	}
 
 	// Unrelated path under the subtree 404s rather than leaking the bundle.

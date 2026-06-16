@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -34,11 +35,26 @@ var (
 
 func loadCachedScript() {
 	cachedScriptOnce.Do(func() {
-		cachedScript = scripts.GetCombinedScript()
+		// GetCombinedScript wraps the bundle in <script>…</script> for the
+		// legacy inline-injection form. The bundle is now served as an external
+		// <script src> asset, where those HTML tags are invalid JavaScript and
+		// abort parsing of the whole bundle. Strip the wrapper for the served
+		// asset bytes.
+		cachedScript = stripScriptWrapper(scripts.GetCombinedScript())
 		cachedScriptBytes = []byte(cachedScript)
 		sum := sha256.Sum256(cachedScriptBytes)
 		cachedScriptPath = instrumentationAssetPrefix + hex.EncodeToString(sum[:8]) + ".js"
 	})
+}
+
+// stripScriptWrapper removes a single leading <script> and trailing </script>
+// (with surrounding whitespace) so the bundle is valid when served as an
+// external JavaScript asset.
+func stripScriptWrapper(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.TrimPrefix(s, "<script>")
+	s = strings.TrimSuffix(strings.TrimSpace(s), "</script>")
+	return strings.TrimSpace(s)
 }
 
 // instrumentationAssetPath returns the content-addressed URL path the bundle is
@@ -57,9 +73,23 @@ func handleInstrumentationAsset(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	body := instrumentationScriptBytes()
 	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
 	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-	_, _ = w.Write(instrumentationScriptBytes())
+	// Set an explicit Content-Length so the response is delimited rather than
+	// chunked. The bundle is a fixed cached slice, so the length is known up
+	// front. Chunked framing of this ~1.3MB blocking <head> asset has been seen
+	// to stall in some browsers — the connection is held open waiting for a
+	// terminator the client never observes, head-of-line-blocking every request
+	// pipelined behind it on the same HTTP/1.1 connection (e.g. main.tsx). A
+	// fixed Content-Length frees the connection deterministically and prevents a
+	// truncated transfer from being cached as complete under the immutable
+	// Cache-Control above.
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	if r.Method == http.MethodHead {
+		return
+	}
+	_, _ = w.Write(body)
 }
 
 // instrumentationScript returns JavaScript code for error and performance monitoring.
