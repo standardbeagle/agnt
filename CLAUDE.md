@@ -8,7 +8,7 @@ only — detailed references live in `docs/` and `.claude/rules/` (see
 
 **agnt** - Browser superpowers for AI coding agents. Bridge AI agent and browser for real-time debug, UI wireframe, visual feedback.
 
-- **Version**: 0.13.19 · **Language**: Go 1.24.2 · **Protocol**: MCP over stdio
+- **Version**: 0.13.20
 - **Repository**: https://github.com/standardbeagle/agnt
 
 **Binaries**:
