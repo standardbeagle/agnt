@@ -19,14 +19,15 @@ import (
 // global access rare, visible, and intentional. Test files are exempt — tests
 // may scope however they need.
 var allowedUnscoped = map[string]string{
-	"internal/daemon/doctor.go:doctor: health check across all projects":       "doctor run with no project filter audits every proxy",
-	"internal/daemon/hub_helpers.go:explicit global flag on hub query":         "user passed global:true on a gated query (documented C6 override)",
-	"internal/daemon/hub_lifecycle.go:STOP-ALL: count every proxy":             "STOP-ALL is an admin-wide lifecycle command",
-	"internal/daemon/hub_lifecycle.go:RESTART-ALL: restart every proxy":        "RESTART-ALL is an admin-wide lifecycle command",
-	"internal/daemon/hub_hook.go:legacy notify without --project-path":         "backward-compat: legacy agnt notify with no project path",
-	"internal/daemon/event_hub.go:alert toast fan-out to all browser overlays": "alert toasts are browser-facing, not agent-bound delivery",
-	"internal/tools/proxy_tools.go:legacy non-daemon proxy list":               "legacy non-daemon mode has no session registry",
-	"internal/tools/get_errors.go:legacy non-daemon error scan":                "legacy non-daemon mode has no session registry",
+	"internal/daemon/doctor.go:doctor: health check across all projects":                                              "doctor run with no project filter audits every proxy",
+	"internal/daemon/daemon_port_kill_report.go:port-kill attribution: find proxies whose backend was just reclaimed": "port conflicts are inherently cross-project; attribution must scan every project's proxies to notify the victim",
+	"internal/daemon/hub_helpers.go:explicit global flag on hub query":                                                "user passed global:true on a gated query (documented C6 override)",
+	"internal/daemon/hub_lifecycle.go:STOP-ALL: count every proxy":                                                    "STOP-ALL is an admin-wide lifecycle command",
+	"internal/daemon/hub_lifecycle.go:RESTART-ALL: restart every proxy":                                               "RESTART-ALL is an admin-wide lifecycle command",
+	"internal/daemon/hub_hook.go:legacy notify without --project-path":                                                "backward-compat: legacy agnt notify with no project path",
+	"internal/daemon/event_hub.go:alert toast fan-out to all browser overlays":                                        "alert toasts are browser-facing, not agent-bound delivery",
+	"internal/tools/proxy_tools.go:legacy non-daemon proxy list":                                                      "legacy non-daemon mode has no session registry",
+	"internal/tools/get_errors.go:legacy non-daemon error scan":                                                       "legacy non-daemon mode has no session registry",
 }
 
 var unscopedCallRe = regexp.MustCompile(`scope\.Unscoped\(\s*"([^"]*)"`)
