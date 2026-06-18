@@ -428,36 +428,33 @@ func (r *Renderer) DrawIndicator(status Status) {
 	// Running proxies — collect URLs for display
 	aggregatedURLs := aggregateProcessURLs(status.Processes)
 	errorProxyCount := 0
-	var proxyURL string
-	var tunnelURL string
+
+	// Build URL display: one URL per proxy (tunnel preferred over listen addr)
+	// + process URLs. Each proxy gets its own slot so multiple proxies don't
+	// overwrite each other in the status bar.
+	proxyCount := len(status.Proxies)
+	var urlParts []string
+
+	seenProxyURLs := make(map[string]struct{}, proxyCount)
 	for _, p := range status.Proxies {
 		if p.HasErrors {
 			errorProxyCount++
 		}
-		if proxyURL == "" && p.ListenAddr != "" {
-			proxyURL = "http://" + NormalizeListenAddr(p.ListenAddr)
-		}
-		if tunnelURL == "" && p.TunnelURL != "" {
-			tunnelURL = p.TunnelURL
-		}
-	}
-
-	// Build URL display: proxy URL (or tunnel) + process URLs
-	proxyCount := len(status.Proxies)
-	var urlParts []string
-
-	if proxyCount > 0 {
-		displayURL := tunnelURL
-		if displayURL == "" {
-			displayURL = proxyURL
-		}
+		displayURL := p.TunnelURL
 		urlColor := FgBrightCyan
-		if tunnelURL != "" {
-			urlColor = FgBrightMagenta
-		}
 		if displayURL != "" {
-			urlParts = append(urlParts, fmt.Sprintf("%s%s%s", urlColor+Underline, displayURL, Reset))
+			urlColor = FgBrightMagenta
+		} else if p.ListenAddr != "" {
+			displayURL = "http://" + NormalizeListenAddr(p.ListenAddr)
 		}
+		if displayURL == "" {
+			continue
+		}
+		if _, dup := seenProxyURLs[displayURL]; dup {
+			continue
+		}
+		seenProxyURLs[displayURL] = struct{}{}
+		urlParts = append(urlParts, fmt.Sprintf("%s%s%s", urlColor+Underline, displayURL, Reset))
 	}
 
 	for _, au := range aggregatedURLs {
