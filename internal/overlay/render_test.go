@@ -325,6 +325,28 @@ func TestDrawIndicator_ContainsExpectedContent(t *testing.T) {
 		"should contain proxy icon")
 }
 
+func TestDrawIndicator_MultipleProxyURLs(t *testing.T) {
+	var buf bytes.Buffer
+	r := NewRenderer(&buf, 200, 24)
+
+	status := Status{
+		DaemonConnected: ConnectionConnected,
+		Proxies: []ProxyInfo{
+			{ID: "a", ListenAddr: "127.0.0.1:54321"},
+			{ID: "b", ListenAddr: "127.0.0.1:54322"},
+			{ID: "c", TunnelURL: "https://haam2.sbdev.io"},
+		},
+	}
+
+	r.DrawIndicator(status)
+	output := buf.String()
+
+	// Each proxy must get its own slot — no single-slot overwrite.
+	assert.Contains(t, output, "54321", "first proxy listen port should render")
+	assert.Contains(t, output, "54322", "second proxy listen port should render")
+	assert.Contains(t, output, "haam2.sbdev.io", "tunnel-backed proxy should render")
+}
+
 func TestEnterExitAltScreen_ProducesOutput(t *testing.T) {
 	var buf bytes.Buffer
 	r := NewRenderer(&buf, 80, 24)
