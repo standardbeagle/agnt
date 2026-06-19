@@ -319,8 +319,15 @@ func (c *Client) ProxyList(dirFilter protocol.DirectoryFilter) (map[string]inter
 }
 
 // ProxyExec executes JavaScript in connected browsers.
-func (c *Client) ProxyExec(id, code string) (map[string]interface{}, error) {
-	return c.conn.Request(protocol.VerbProxy, protocol.SubVerbExec, id).WithData([]byte(code)).JSON()
+func (c *Client) ProxyExec(id, code string, frameID ...string) (map[string]interface{}, error) {
+	// Optional frame id is passed as an extra positional arg (always-wrap model
+	// — docs/responsive-canonical-target.md §5.3); omitted when empty so the
+	// daemon defaults to the active content frame.
+	args := []string{protocol.SubVerbExec, id}
+	if len(frameID) > 0 && frameID[0] != "" {
+		args = append(args, frameID[0])
+	}
+	return c.conn.Request(protocol.VerbProxy, args...).WithData([]byte(code)).JSON()
 }
 
 // ProxyToast sends a toast notification to connected browsers.

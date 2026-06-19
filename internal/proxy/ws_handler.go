@@ -215,6 +215,7 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			Data      map[string]interface{} `json:"data"`
 			URL       string                 `json:"url"`
 			SessionID string                 `json:"session_id"`
+			FrameID   string                 `json:"frame_id"`
 		}
 
 		if err := json.Unmarshal(rawMessage, &msg); err != nil {
@@ -226,6 +227,11 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		timestamp := time.Now()
 
 		switch msg.Type {
+		case "frame_active":
+			// A content frame reports it became the active interaction target.
+			// MCP exec / audits default to it (always-wrap model).
+			ps.SetActiveFrame(msg.FrameID)
+
 		case "error":
 			errEntry := FrontendError{
 				ID:        id,
@@ -238,8 +244,8 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				Stack:     getStringField(msg.Data, "stack"),
 				URL:       msg.URL,
 			}
-			ps.logger.LogError(errEntry)
-			ps.pageTracker.TrackError(errEntry, msg.SessionID)
+			ps.logger.LogError(errEntry, msg.FrameID)
+			ps.pageTracker.TrackError(errEntry, msg.SessionID, msg.FrameID)
 
 			// Auto-forward browser errors to overlay for PTY injection
 			if ps.overlayNotifier.IsEnabled() {
@@ -272,8 +278,8 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
-			ps.logger.LogPerformance(metric)
-			ps.pageTracker.TrackPerformance(metric, msg.SessionID)
+			ps.logger.LogPerformance(metric, msg.FrameID)
+			ps.pageTracker.TrackPerformance(metric, msg.SessionID, msg.FrameID)
 
 		case "custom_log":
 			ps.logger.LogCustom(CustomLog{
@@ -283,7 +289,7 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				Message:   getStringField(msg.Data, "message"),
 				Data:      msg.Data,
 				URL:       msg.URL,
-			})
+			}, msg.FrameID)
 
 		case "screenshot":
 			// Save screenshot to temp file
@@ -373,8 +379,8 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			for _, eventData := range events {
 				if em, ok := eventData.(map[string]interface{}); ok {
 					interaction := parseInteractionEvent(em, id, timestamp, msg.URL)
-					ps.logger.LogInteraction(interaction)
-					ps.pageTracker.TrackInteraction(interaction, msg.SessionID)
+					ps.logger.LogInteraction(interaction, msg.FrameID)
+					ps.pageTracker.TrackInteraction(interaction, msg.SessionID, msg.FrameID)
 				}
 			}
 
@@ -384,8 +390,8 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			for _, eventData := range events {
 				if em, ok := eventData.(map[string]interface{}); ok {
 					mutation := parseMutationEvent(em, id, timestamp, msg.URL)
-					ps.logger.LogMutation(mutation)
-					ps.pageTracker.TrackMutation(mutation, msg.SessionID)
+					ps.logger.LogMutation(mutation, msg.FrameID)
+					ps.pageTracker.TrackMutation(mutation, msg.SessionID, msg.FrameID)
 				}
 			}
 

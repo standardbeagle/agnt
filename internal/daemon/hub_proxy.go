@@ -306,7 +306,13 @@ func (d *Daemon) hubHandleProxyExec(conn *hubpkg.Connection, cmd *hubproto.Comma
 	}
 
 	code := string(cmd.Data)
-	execID, resultChan, err := p.ExecuteJavaScript(code)
+	// Optional target content frame (always-wrap model). cmd.Args[0] is the
+	// proxy id; cmd.Args[1], when present, is the frame id.
+	frameID := ""
+	if len(cmd.Args) >= 2 {
+		frameID = cmd.Args[1]
+	}
+	execID, resultChan, err := p.ExecuteJavaScript(code, frameID)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrInternal, err.Error())
 	}

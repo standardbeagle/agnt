@@ -163,7 +163,8 @@
               timestamp: Date.now()
             },
             url: safeGetUrl(),
-            session_id: getOrCreateSessionId()
+            session_id: getOrCreateSessionId(),
+            frame_id: window.__devtool_frame_id || ''
           }));
         }
       } catch (e) {
@@ -290,9 +291,17 @@
       if (!message || typeof message !== 'object') return;
 
       try {
-        // Handle execution requests
+        // Handle execution requests. Under the always-wrap model an exec may be
+        // addressed to a specific content frame (message.frame_id); run only
+        // when untargeted (legacy / all content frames) or addressed to this
+        // frame, so a multi-frame page does not produce duplicate replies.
+        // See docs/responsive-canonical-target.md §5.3.
         if (message.type === 'execute' && message.code) {
-          executeJavaScript(message.id, message.code);
+          var targetFrame = message.frame_id || '';
+          var myFrame = window.__devtool_frame_id || '';
+          if (targetFrame === '' || targetFrame === myFrame) {
+            executeJavaScript(message.id, message.code);
+          }
         }
 
         // Handle proxy diagnostics from server
@@ -467,7 +476,11 @@
           type: type,
           data: data,
           url: safeGetUrl(),
-          session_id: getOrCreateSessionId()
+          session_id: getOrCreateSessionId(),
+          // Attribute telemetry to the emitting content frame (always-wrap
+          // model). Empty for unframed/legacy pages. See
+          // docs/responsive-canonical-target.md §5.2.
+          frame_id: window.__devtool_frame_id || ''
         });
 
         return safeWebSocketSend(ws, message);
@@ -1028,11 +1041,22 @@
     // Replace connect with diagnostics version
     connect = connectWithDiagnostics;
 
-    // Initialize
+    // Initialize — but only when this frame is the canonical telemetry context.
+    // Under the always-wrap model (docs/responsive-canonical-target.md §5) the
+    // chrome shell and any passive foreign frames must NOT open a telemetry
+    // WebSocket or install error tracking; exactly one telemetry context exists
+    // per page, in the content frame. The role is resolved by frames.js (loads
+    // first) into window.__devtool_frame_role; absent (legacy/standalone) we
+    // default to running so non-wrapped pages keep full instrumentation.
     try {
-      setupErrorTrackingWithBuffer();
-      addDiagnostic('core', 'initializing', { version: window.__devtool_version || 'unknown' });
-      connect();
+      var __frameRole = window.__devtool_frame_role;
+      if (!__frameRole || __frameRole === 'content') {
+        setupErrorTrackingWithBuffer();
+        addDiagnostic('core', 'initializing', { version: window.__devtool_version || 'unknown' });
+        connect();
+      } else {
+        addDiagnostic('core', 'telemetry_suppressed', { role: __frameRole });
+      }
     } catch (e) {
       addDiagnostic('core', 'init_failed', { error: e.toString() });
       reportInternalError('initialization_failed', e);

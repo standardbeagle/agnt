@@ -103,10 +103,28 @@
       'overflow: auto'
     ].join('; ');
 
-    // Use same origin to inherit injected scripts
-    iframe.src = window.location.href;
+    // Same origin to inherit injected scripts — but carry the content-frame
+    // marker so the proxy serves the page UNWRAPPED rather than as another
+    // chrome shell (always-wrap model — docs/responsive-canonical-target.md
+    // §4/§7). Without the marker this would load shell-in-shell.
+    iframe.src = markedContentSrc();
 
     return iframe;
+  }
+
+  // markedContentSrc returns the current page URL with the content-frame marker
+  // appended so an off-screen sweep iframe loads the page unwrapped.
+  function markedContentSrc() {
+    var param = (window.__devtool && window.__devtool.FRAME_PARAM) || '__devtool_frame';
+    var rid = 'sweep-' + Date.now();
+    try {
+      var u = new URL(window.location.href);
+      u.searchParams.set(param, rid);
+      return u.toString();
+    } catch (e) {
+      var base = window.location.href.split('#')[0];
+      return base + (base.indexOf('?') >= 0 ? '&' : '?') + param + '=' + rid;
+    }
   }
 
   /**

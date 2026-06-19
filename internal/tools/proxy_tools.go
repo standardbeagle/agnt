@@ -24,6 +24,7 @@ type ProxyInput struct {
 	PublicURL     string `json:"public_url,omitempty" jsonschema:"Public URL for tunnel services (e.g. 'https://abc123.trycloudflare.com'). Used for URL rewriting when behind a tunnel."`
 	SkipTLSVerify bool   `json:"skip_tls_verify,omitempty" jsonschema:"Skip TLS certificate verification (default: false, certs are verified). Set to true for self-signed/expired certs in dev environments."`
 	Code          string `json:"code,omitempty" jsonschema:"JavaScript code to execute (required for exec)"`
+	FrameID       string `json:"frame_id,omitempty" jsonschema:"For exec: target a specific content frame by id (default: the active content frame). Rarely needed — omit to hit the frame the developer is interacting with."`
 	Global        bool   `json:"global,omitempty" jsonschema:"For list: include proxies from all directories (default: false)"`
 	Help          bool   `json:"help,omitempty" jsonschema:"For exec: show __devtool API overview instead of executing code"`
 	Describe      string `json:"describe,omitempty" jsonschema:"For exec: show detailed docs for a specific function (e.g. 'screenshot', 'interactions.getLastClick')"`
@@ -522,7 +523,7 @@ func handleProxyExec(pm *proxy.ProxyManager, input ProxyInput) (*mcp.CallToolRes
 		return errorResult(fmt.Sprintf("proxy not found: %s", input.ID)), ProxyOutput{}, nil
 	}
 
-	execID, resultChan, err := proxyServer.ExecuteJavaScript(input.Code)
+	execID, resultChan, err := proxyServer.ExecuteJavaScript(input.Code, input.FrameID)
 	if err != nil {
 		return errorResult(fmt.Sprintf("failed to execute: %v", err)), ProxyOutput{}, nil
 	}

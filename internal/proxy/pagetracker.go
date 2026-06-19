@@ -74,6 +74,7 @@ type PageTracker struct {
 	sessions             map[string]*PageSession
 	urlToSession         map[string]string
 	browserSessionToPage map[string]string
+	frameToSession       map[string]string // content frame id -> session id (always-wrap model)
 	sessionSeq           int64
 	maxSessions          int
 	sessionTimeout       time.Duration
@@ -108,6 +109,7 @@ func NewPageTracker(maxSessions int, sessionTimeout time.Duration) *PageTracker 
 		sessions:             make(map[string]*PageSession),
 		urlToSession:         make(map[string]string),
 		browserSessionToPage: make(map[string]string),
+		frameToSession:       make(map[string]string),
 		maxSessions:          maxSessions,
 		sessionTimeout:       sessionTimeout,
 	}
@@ -173,15 +175,23 @@ func ptQuery[T any](pt *PageTracker, fn func() T) T {
 }
 
 // ResolveSession finds a session by browser session ID with URL fallback.
+// An optional content-frame id is preferred when present (always-wrap model).
 // Returns empty string if no session found.
-func (pt *PageTracker) ResolveSession(browserSessionID, url string) string {
+func (pt *PageTracker) ResolveSession(browserSessionID, url string, frameID ...string) string {
+	fid := firstFrameID(frameID)
 	return ptQuery(pt, func() string {
-		return pt.resolveSession(browserSessionID, url)
+		return pt.resolveSession(browserSessionID, url, fid)
 	})
 }
 
-// resolveSession is the actor-internal form of ResolveSession.
-func (pt *PageTracker) resolveSession(browserSessionID, url string) string {
+// resolveSession is the actor-internal form of ResolveSession. Resolution order:
+// content frame id (when known) → browser session id → URL.
+func (pt *PageTracker) resolveSession(browserSessionID, url string, frameID ...string) string {
+	if fid := firstFrameID(frameID); fid != "" {
+		if sessionID := pt.frameToSession[fid]; sessionID != "" {
+			return sessionID
+		}
+	}
 	if sessionID := pt.findSessionByBrowserSession(browserSessionID); sessionID != "" {
 		return sessionID
 	}
@@ -219,9 +229,10 @@ func (pt *PageTracker) TrackHTTPRequest(entry HTTPLogEntry) {
 
 // trackOnSession resolves the session for (browserSessionID, url) inside the
 // actor and applies mutate to it. Shared shape of the four Track* methods.
-func (pt *PageTracker) trackOnSession(browserSessionID, url string, mutate func(*PageSession)) {
+func (pt *PageTracker) trackOnSession(browserSessionID, url string, mutate func(*PageSession), frameID ...string) {
+	fid := firstFrameID(frameID)
 	pt.send(func() {
-		sessionID := pt.resolveSession(browserSessionID, url)
+		sessionID := pt.resolveSession(browserSessionID, url, fid)
 		if sessionID == "" {
 			return
 		}
@@ -236,36 +247,36 @@ func (pt *PageTracker) trackOnSession(browserSessionID, url string, mutate func(
 
 // TrackError associates a frontend error with a page session.
 // browserSessionID is the unique ID from the browser tab's sessionStorage.
-func (pt *PageTracker) TrackError(err FrontendError, browserSessionID string) {
+func (pt *PageTracker) TrackError(err FrontendError, browserSessionID string, frameID ...string) {
 	pt.trackOnSession(browserSessionID, err.URL, func(session *PageSession) {
 		session.Errors = append(session.Errors, err)
-	})
+	}, frameID...)
 }
 
 // TrackPerformance associates performance metrics with a page session.
 // browserSessionID is the unique ID from the browser tab's sessionStorage.
-func (pt *PageTracker) TrackPerformance(perf PerformanceMetric, browserSessionID string) {
+func (pt *PageTracker) TrackPerformance(perf PerformanceMetric, browserSessionID string, frameID ...string) {
 	pt.trackOnSession(browserSessionID, perf.URL, func(session *PageSession) {
 		session.Performance = &perf
-	})
+	}, frameID...)
 }
 
 // TrackInteraction associates a user interaction event with a page session.
 // browserSessionID is the unique ID from the browser tab's sessionStorage.
-func (pt *PageTracker) TrackInteraction(interaction InteractionEvent, browserSessionID string) {
+func (pt *PageTracker) TrackInteraction(interaction InteractionEvent, browserSessionID string, frameID ...string) {
 	pt.trackOnSession(browserSessionID, interaction.URL, func(session *PageSession) {
 		session.InteractionCount++
 		session.Interactions = appendBounded(session.Interactions, interaction, MaxInteractionsPerSession)
-	})
+	}, frameID...)
 }
 
 // TrackMutation associates a DOM mutation event with a page session.
 // browserSessionID is the unique ID from the browser tab's sessionStorage.
-func (pt *PageTracker) TrackMutation(mutation MutationEvent, browserSessionID string) {
+func (pt *PageTracker) TrackMutation(mutation MutationEvent, browserSessionID string, frameID ...string) {
 	pt.trackOnSession(browserSessionID, mutation.URL, func(session *PageSession) {
 		session.MutationCount++
 		session.Mutations = appendBounded(session.Mutations, mutation, MaxMutationsPerSession)
-	})
+	}, frameID...)
 }
 
 // activeSessions returns live *PageSession pointers for sessions within the
@@ -367,6 +378,7 @@ func (pt *PageTracker) Clear() {
 		pt.sessions = make(map[string]*PageSession)
 		pt.urlToSession = make(map[string]string)
 		pt.browserSessionToPage = make(map[string]string)
+		pt.frameToSession = make(map[string]string)
 		pt.sessionSeq = 0
 	})
 }
@@ -375,21 +387,44 @@ func (pt *PageTracker) Clear() {
 func (pt *PageTracker) createOrUpdatePageSession(entry HTTPLogEntry, browserSessionID string) {
 	now := time.Now()
 
+	// Always-wrap model: the shell's top-level request and the content frame's
+	// marked request are the same page. Store the marker-stripped URL and key
+	// urlToSession on the normalized (marker-free) URL so the two coalesce into
+	// one session; record the content frame id when present.
+	cleanURL := stripFrameMarker(entry.URL)
+	frameID := frameIDFromURL(entry.URL)
+	normURL := normalizeURL(entry.URL)
+
+	updateExisting := func(sessionID string, session *PageSession) {
+		session.URL = cleanURL
+		session.LastActivity = now
+		session.DocumentRequest = &entry
+		session.Navigations = append(session.Navigations, entry)
+		session.Resources = make([]HTTPLogEntry, 0)
+		pt.urlToSession[normURL] = sessionID
+		if frameID != "" {
+			pt.frameToSession[frameID] = sessionID
+		}
+	}
+
 	// If we have a browser session ID, try to find existing session for this tab
 	if browserSessionID != "" {
 		existingSessionID := pt.findSessionByBrowserSession(browserSessionID)
 		if existingSessionID != "" {
 			if session, ok := pt.sessions[existingSessionID]; ok {
-				// Update existing session with new navigation
-				session.URL = entry.URL
-				session.LastActivity = now
-				session.DocumentRequest = &entry
-				session.Navigations = append(session.Navigations, entry)
-				// Clear resources for new page (they belong to old navigation)
-				session.Resources = make([]HTTPLogEntry, 0)
-				pt.urlToSession[normalizeURL(entry.URL)] = existingSessionID
+				updateExisting(existingSessionID, session)
 				return
 			}
+		}
+	}
+
+	// Coalesce shell + content-frame document requests for the same page: if a
+	// session already exists for this normalized URL, update it rather than
+	// creating a duplicate.
+	if existingSessionID := pt.urlToSession[normURL]; existingSessionID != "" {
+		if session, ok := pt.sessions[existingSessionID]; ok {
+			updateExisting(existingSessionID, session)
+			return
 		}
 	}
 
@@ -397,7 +432,7 @@ func (pt *PageTracker) createOrUpdatePageSession(entry HTTPLogEntry, browserSess
 	sessionID := pt.generateSessionID()
 	session := &PageSession{
 		ID:              sessionID,
-		URL:             entry.URL,
+		URL:             cleanURL,
 		BrowserSession:  browserSessionID,
 		StartTime:       now,
 		LastActivity:    now,
@@ -411,7 +446,10 @@ func (pt *PageTracker) createOrUpdatePageSession(entry HTTPLogEntry, browserSess
 	}
 
 	pt.sessions[sessionID] = session
-	pt.urlToSession[normalizeURL(entry.URL)] = sessionID
+	pt.urlToSession[normURL] = sessionID
+	if frameID != "" {
+		pt.frameToSession[frameID] = sessionID
+	}
 
 	// Register browser session mapping
 	if browserSessionID != "" {
@@ -529,6 +567,12 @@ func (pt *PageTracker) cleanupOldSessions() {
 				delete(pt.browserSessionToPage, session.BrowserSession)
 			}
 		}
+		// Drop any frame mappings pointing at the evicted session.
+		for fid, sid := range pt.frameToSession {
+			if sid == victim {
+				delete(pt.frameToSession, fid)
+			}
+		}
 		delete(pt.sessions, victim)
 	}
 }
@@ -642,11 +686,53 @@ func hasResourceExtension(urlStr string) bool {
 }
 
 // normalizeURL normalizes a URL for comparison.
+// stripFrameMarkerQuery removes the content-frame marker (frameMarkerParam,
+// defined in injector.go) from a raw query string, preserving order of the rest.
+func stripFrameMarkerQuery(rawQuery string) string {
+	if rawQuery == "" || !strings.Contains(rawQuery, frameMarkerParam) {
+		return rawQuery
+	}
+	values, err := url.ParseQuery(rawQuery)
+	if err != nil {
+		return rawQuery
+	}
+	if _, ok := values[frameMarkerParam]; !ok {
+		return rawQuery
+	}
+	delete(values, frameMarkerParam)
+	return values.Encode()
+}
+
+// frameIDFromURL extracts the content-frame id from a URL's marker, or "".
+func frameIDFromURL(urlStr string) string {
+	parsed, err := url.Parse(urlStr)
+	if err != nil {
+		return ""
+	}
+	return parsed.Query().Get(frameMarkerParam)
+}
+
+// stripFrameMarker returns urlStr with the content-frame marker removed.
+func stripFrameMarker(urlStr string) string {
+	parsed, err := url.Parse(urlStr)
+	if err != nil {
+		return urlStr
+	}
+	parsed.RawQuery = stripFrameMarkerQuery(parsed.RawQuery)
+	return parsed.String()
+}
+
 func normalizeURL(urlStr string) string {
 	parsed, err := url.Parse(urlStr)
 	if err != nil {
 		return urlStr
 	}
+
+	// Drop the internal content-frame marker so the shell's top-level request
+	// and the content frame's marked request map to the same page session, and
+	// content-frame telemetry resolves to the real page (always-wrap model —
+	// docs/responsive-canonical-target.md §6.3).
+	parsed.RawQuery = stripFrameMarkerQuery(parsed.RawQuery)
 
 	// Remove fragment
 	parsed.Fragment = ""

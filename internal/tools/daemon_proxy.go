@@ -292,7 +292,7 @@ func (dt *DaemonTools) handleProxyExec(input ProxyInput) (*mcp.CallToolResult, P
 		execHints = ScanForHints(input.Code)
 	}
 
-	result, err := dt.client.ProxyExec(input.ID, input.Code)
+	result, err := dt.client.ProxyExec(input.ID, input.Code, input.FrameID)
 	if err != nil {
 		return formatDaemonError(err, "proxy"), ProxyOutput{}, nil
 	}

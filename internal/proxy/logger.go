@@ -473,7 +473,12 @@ type HookLogEntry struct {
 
 // LogEntry is a union type for all log entry types.
 type LogEntry struct {
-	Type              LogEntryType        `json:"type"`
+	Type LogEntryType `json:"type"`
+	// FrameID attributes a browser-sourced entry to the content frame that
+	// emitted it (the always-wrap model — docs/responsive-canonical-target.md
+	// §5.2). Empty for server-sourced entries (HTTP) and for unframed/legacy
+	// pages. Carried once on the envelope rather than on each typed payload.
+	FrameID           string              `json:"frame_id,omitempty"`
 	HTTP              *HTTPLogEntry       `json:"http,omitempty"`
 	Error             *FrontendError      `json:"error,omitempty"`
 	Performance       *PerformanceMetric  `json:"performance,omitempty"`
@@ -528,27 +533,41 @@ func (tl *TrafficLogger) LogHTTP(entry HTTPLogEntry) {
 	})
 }
 
-// LogError adds a frontend error log entry.
-func (tl *TrafficLogger) LogError(entry FrontendError) {
+// firstFrameID returns the first frame id from an optional variadic, or "".
+// Lets browser-telemetry Log* methods accept a frame id without breaking the
+// many existing (frame-less) callers and tests.
+func firstFrameID(frameID []string) string {
+	if len(frameID) > 0 {
+		return frameID[0]
+	}
+	return ""
+}
+
+// LogError adds a frontend error log entry. Optional frameID attributes it to
+// the emitting content frame.
+func (tl *TrafficLogger) LogError(entry FrontendError, frameID ...string) {
 	tl.log(LogEntry{
-		Type:  LogTypeError,
-		Error: &entry,
+		Type:    LogTypeError,
+		FrameID: firstFrameID(frameID),
+		Error:   &entry,
 	})
 }
 
 // LogPerformance adds a frontend performance log entry.
-func (tl *TrafficLogger) LogPerformance(entry PerformanceMetric) {
+func (tl *TrafficLogger) LogPerformance(entry PerformanceMetric, frameID ...string) {
 	tl.log(LogEntry{
 		Type:        LogTypePerformance,
+		FrameID:     firstFrameID(frameID),
 		Performance: &entry,
 	})
 }
 
 // LogCustom adds a custom log message.
-func (tl *TrafficLogger) LogCustom(entry CustomLog) {
+func (tl *TrafficLogger) LogCustom(entry CustomLog, frameID ...string) {
 	tl.log(LogEntry{
-		Type:   LogTypeCustom,
-		Custom: &entry,
+		Type:    LogTypeCustom,
+		FrameID: firstFrameID(frameID),
+		Custom:  &entry,
 	})
 }
 
@@ -577,17 +596,19 @@ func (tl *TrafficLogger) LogResponse(entry ExecutionResponse) {
 }
 
 // LogInteraction adds a user interaction event.
-func (tl *TrafficLogger) LogInteraction(entry InteractionEvent) {
+func (tl *TrafficLogger) LogInteraction(entry InteractionEvent, frameID ...string) {
 	tl.log(LogEntry{
 		Type:        LogTypeInteraction,
+		FrameID:     firstFrameID(frameID),
 		Interaction: &entry,
 	})
 }
 
 // LogMutation adds a DOM mutation event.
-func (tl *TrafficLogger) LogMutation(entry MutationEvent) {
+func (tl *TrafficLogger) LogMutation(entry MutationEvent, frameID ...string) {
 	tl.log(LogEntry{
 		Type:     LogTypeMutation,
+		FrameID:  firstFrameID(frameID),
 		Mutation: &entry,
 	})
 }
@@ -789,6 +810,7 @@ type LogFilter struct {
 	MutationTypes    []string       `json:"mutation_types,omitempty"`    // added, removed, attributes
 	DiagnosticLevels []string       `json:"diagnostic_levels,omitempty"` // info, warning, error
 	ErrorsOnly       bool           `json:"errors_only,omitempty"`       // Filter to errors from all sources
+	Frames           []string       `json:"frames,omitempty"`            // Filter to entries from these content frame ids
 }
 
 // Matches returns true if the entry matches the filter.
@@ -798,6 +820,20 @@ func (f LogFilter) Matches(entry LogEntry) bool {
 		match := false
 		for _, t := range f.Types {
 			if entry.Type == t {
+				match = true
+				break
+			}
+		}
+		if !match {
+			return false
+		}
+	}
+
+	// Frame filter — restrict to entries emitted by the named content frames.
+	if len(f.Frames) > 0 {
+		match := false
+		for _, fid := range f.Frames {
+			if entry.FrameID == fid {
 				match = true
 				break
 			}

@@ -12,6 +12,9 @@ var (
 	//go:embed core.js
 	coreJS string
 
+	//go:embed frames.js
+	framesJS string
+
 	//go:embed shadow-root.js
 	shadowRootJS string
 
@@ -170,6 +173,13 @@ type moduleEntry struct {
 // hardcoded sequence so that the dependency declarations are authoritative
 // and verified at build time by TestModuleDependencyOrder.
 var moduleOrder = []moduleEntry{
+	// frames.js establishes the per-frame role (chrome|content|passive) + the
+	// shell-side frame registry / active-target pointer / URL-bar nav-sync. It
+	// MUST load FIRST — before core's WS/error-tracking init and before
+	// interaction's listener attach — so those modules can gate their runtime on
+	// window.__devtool_frame_role. It has no dependencies (creates its own
+	// window.__devtool namespace defensively).
+	{"frames", nil},
 	{"core", nil},
 	// shadow-root.js MUST be loaded before any module that mounts UI so that
 	// window.__devtoolGetMountRoot() is available when indicator/overlay init.
@@ -229,7 +239,7 @@ var moduleOrder = []moduleEntry{
 	// responsive.js with the interactive panel API, so it must load after it.
 	{"responsive-mode", []string{"responsive"}},
 	{"api", []string{
-		"core", "utils", "overlay", "inspection", "tree", "visual",
+		"core", "frames", "utils", "overlay", "inspection", "tree", "visual",
 		"layout", "interactive", "capture", "accessibility",
 		"audit-quality", "audit-api", "audit-loading", "audit-report", "interaction", "mutation",
 		"voice", "indicator", "sketch", "design", "palette",
@@ -242,6 +252,7 @@ var moduleOrder = []moduleEntry{
 // moduleScript maps module names to their embedded JS variables.
 var moduleScript = map[string]string{
 	"core":               coreJS,
+	"frames":             framesJS,
 	"shadow-root":        shadowRootJS,
 	"framework-detector": frameworkDetectorJS,
 	"api-tracker":        apiTrackerJS,
