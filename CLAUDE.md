@@ -8,7 +8,7 @@ only — detailed references live in `docs/` and `.claude/rules/` (see
 
 **agnt** - Browser superpowers for AI coding agents. Bridge AI agent and browser for real-time debug, UI wireframe, visual feedback.
 
-- **Version**: 0.13.21
+- **Version**: 0.13.22
 - **Repository**: https://github.com/standardbeagle/agnt
 
 **Binaries**:
