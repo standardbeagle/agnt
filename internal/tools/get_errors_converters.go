@@ -133,15 +133,18 @@ func convertStartupLogEntry(em map[string]interface{}) *unifiedError {
 // more unified errors by extracting typed structs and delegating to the Direct
 // variants, which contain the single source of truth for conversion logic.
 func convertProxyEntry(proxyID, entryType string, em map[string]interface{}) []unifiedError {
+	// frame_id lives on the entry envelope (not the typed payload) — see
+	// proxy.LogEntry. Carried through for browser-sourced entries.
+	frameID := getString(em, "frame_id")
 	switch entryType {
 	case "error":
-		return convertJSErrorDirect(proxyID, extractFrontendError(em))
+		return convertJSErrorDirect(proxyID, extractFrontendError(em), frameID)
 	case "http":
 		return convertHTTPErrorDirect(proxyID, extractHTTPLogEntry(em))
 	case "diagnostic":
 		return convertDiagnosticErrorDirect(proxyID, extractProxyDiagnostic(em))
 	case "custom":
-		return convertCustomErrorDirect(proxyID, extractCustomLog(em))
+		return convertCustomErrorDirect(proxyID, extractCustomLog(em), frameID)
 	}
 	return nil
 }
@@ -236,19 +239,20 @@ func parseSince(since string) *time.Time {
 func convertProxyEntryDirect(proxyID string, entry proxy.LogEntry) []unifiedError {
 	switch entry.Type {
 	case proxy.LogTypeError:
-		return convertJSErrorDirect(proxyID, entry.Error)
+		return convertJSErrorDirect(proxyID, entry.Error, entry.FrameID)
 	case proxy.LogTypeHTTP:
 		return convertHTTPErrorDirect(proxyID, entry.HTTP)
 	case proxy.LogTypeDiagnostic:
 		return convertDiagnosticErrorDirect(proxyID, entry.Diagnostic)
 	case proxy.LogTypeCustom:
-		return convertCustomErrorDirect(proxyID, entry.Custom)
+		return convertCustomErrorDirect(proxyID, entry.Custom, entry.FrameID)
 	}
 	return nil
 }
 
 // convertJSErrorDirect converts a FrontendError struct to a unified error.
-func convertJSErrorDirect(proxyID string, fe *proxy.FrontendError) []unifiedError {
+// frameID attributes it to the emitting content frame (always-wrap model).
+func convertJSErrorDirect(proxyID string, fe *proxy.FrontendError, frameID string) []unifiedError {
 	if fe == nil || fe.Message == "" {
 		return nil
 	}
@@ -275,6 +279,7 @@ func convertJSErrorDirect(proxyID string, fe *proxy.FrontendError) []unifiedErro
 		Message:  message,
 		Location: location,
 		Page:     fe.URL,
+		FrameID:  frameID,
 		LastSeen: fe.Timestamp,
 		Count:    1,
 	}
@@ -353,7 +358,8 @@ func convertDiagnosticErrorDirect(proxyID string, d *proxy.ProxyDiagnostic) []un
 }
 
 // convertCustomErrorDirect converts a CustomLog struct to a unified error.
-func convertCustomErrorDirect(proxyID string, c *proxy.CustomLog) []unifiedError {
+// frameID attributes it to the emitting content frame (always-wrap model).
+func convertCustomErrorDirect(proxyID string, c *proxy.CustomLog, frameID string) []unifiedError {
 	if c == nil {
 		return nil
 	}
@@ -373,6 +379,7 @@ func convertCustomErrorDirect(proxyID string, c *proxy.CustomLog) []unifiedError
 		Category: "CUSTOM ERROR",
 		Message:  c.Message,
 		Page:     c.URL,
+		FrameID:  frameID,
 		LastSeen: c.Timestamp,
 		Count:    1,
 	}

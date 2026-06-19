@@ -66,6 +66,12 @@ type ProxyServer struct {
 	// Pending executions for async results
 	pendingExecs sync.Map // map[string]chan *ExecutionResult
 
+	// activeFrameID is the content frame the page last reported as active (the
+	// always-wrap model — docs/responsive-canonical-target.md §5.3). MCP exec /
+	// audits default to it. Empty until a content frame reports in; a single
+	// content frame reports on load so this is set in the common case.
+	activeFrameID atomic.Pointer[string]
+
 	// Base transport for connection pool management (CloseIdleConnections on backend restart)
 	baseTransport *http.Transport
 

@@ -531,7 +531,7 @@ func TestConvertJSErrorDirect(t *testing.T) {
 			URL:       "http://localhost:3000/dashboard",
 		}
 
-		results := convertJSErrorDirect("dev", fe)
+		results := convertJSErrorDirect("dev", fe, "")
 		assert.Len(t, results, 1)
 		assert.Equal(t, "browser:js", results[0].Source)
 		assert.Equal(t, "error", results[0].Severity)
@@ -548,19 +548,19 @@ func TestConvertJSErrorDirect(t *testing.T) {
 			Stack:     "ReferenceError: foo is not defined\n    at App (src/App.tsx:10:5)\n    at node_modules/react/index.js:1:1",
 		}
 
-		results := convertJSErrorDirect("dev", fe)
+		results := convertJSErrorDirect("dev", fe, "")
 		assert.Len(t, results, 1)
 		assert.Equal(t, "src/App.tsx:10:5", results[0].Location)
 	})
 
 	t.Run("nil error", func(t *testing.T) {
-		results := convertJSErrorDirect("dev", nil)
+		results := convertJSErrorDirect("dev", nil, "")
 		assert.Empty(t, results)
 	})
 
 	t.Run("empty message", func(t *testing.T) {
 		fe := &proxy.FrontendError{Timestamp: time.Now()}
-		results := convertJSErrorDirect("dev", fe)
+		results := convertJSErrorDirect("dev", fe, "")
 		assert.Empty(t, results)
 	})
 }
@@ -697,7 +697,7 @@ func TestConvertCustomErrorDirect(t *testing.T) {
 			URL:       "http://localhost:3000/page",
 		}
 
-		results := convertCustomErrorDirect("dev", c)
+		results := convertCustomErrorDirect("dev", c, "")
 		assert.Len(t, results, 1)
 		assert.Equal(t, "browser:custom", results[0].Source)
 		assert.Equal(t, "error", results[0].Severity)
@@ -712,7 +712,7 @@ func TestConvertCustomErrorDirect(t *testing.T) {
 			Message:   "deprecated API call",
 		}
 
-		results := convertCustomErrorDirect("dev", c)
+		results := convertCustomErrorDirect("dev", c, "")
 		assert.Len(t, results, 1)
 		assert.Equal(t, "warning", results[0].Severity)
 	})
@@ -724,12 +724,12 @@ func TestConvertCustomErrorDirect(t *testing.T) {
 			Message:   "page loaded",
 		}
 
-		results := convertCustomErrorDirect("dev", c)
+		results := convertCustomErrorDirect("dev", c, "")
 		assert.Empty(t, results)
 	})
 
 	t.Run("nil custom", func(t *testing.T) {
-		results := convertCustomErrorDirect("dev", nil)
+		results := convertCustomErrorDirect("dev", nil, "")
 		assert.Empty(t, results)
 	})
 }
@@ -929,8 +929,8 @@ func TestFindingIDStable(t *testing.T) {
 			Stack:     "TypeError: Cannot read property 'map' of undefined\n    at App (src/App.tsx:10:5)",
 		}
 
-		results1 := convertJSErrorDirect("dev", fe)
-		results2 := convertJSErrorDirect("dev", fe)
+		results1 := convertJSErrorDirect("dev", fe, "")
+		results2 := convertJSErrorDirect("dev", fe, "")
 
 		require.Len(t, results1, 1)
 		require.Len(t, results2, 1)

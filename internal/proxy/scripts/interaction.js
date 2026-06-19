@@ -540,9 +540,18 @@
       reportError('setInterval_failed', e);
     }
 
-    // Initialize
+    // Initialize — attach interaction listeners only in the canonical content
+    // frame. Under the always-wrap model the chrome shell and passive foreign
+    // frames must not capture interactions (the user interacts with the content
+    // frame); this keeps exactly one interaction-listener set per page. Role is
+    // resolved by frames.js into window.__devtool_frame_role; absent defaults to
+    // attaching so non-wrapped pages keep full tracking. See
+    // docs/responsive-canonical-target.md §5.
     try {
-      attachListeners();
+      var __frameRole = window.__devtool_frame_role;
+      if (!__frameRole || __frameRole === 'content') {
+        attachListeners();
+      }
     } catch (e) {
       reportError('initialization_failed', e);
     }

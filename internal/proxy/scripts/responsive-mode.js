@@ -23,6 +23,23 @@
   var PANEL_ID = '__devtool_responsive_panel';
   var FRAME_ID = '__devtool_responsive_frame';
 
+  // responsiveContentSrc builds the URL for the device-preview iframe: the
+  // current page with the content-frame marker appended, so the proxy serves it
+  // UNWRAPPED (not as another chrome shell) and frames.js registers it as a
+  // distinct content frame. A unique id per open keeps it addressable.
+  function responsiveContentSrc() {
+    var param = (window.__devtool && window.__devtool.FRAME_PARAM) || '__devtool_frame';
+    var rid = 'resp-' + Date.now();
+    try {
+      var u = new URL(window.location.href);
+      u.searchParams.set(param, rid);
+      return u.toString();
+    } catch (e) {
+      var base = window.location.href.split('#')[0];
+      return base + (base.indexOf('?') >= 0 ? '&' : '?') + param + '=' + rid;
+    }
+  }
+
   var PRESETS = [
     { name: 'Mobile', width: 375 },
     { name: 'Tablet', width: 768 },
@@ -206,8 +223,11 @@
 
   function onDragMove(e) {
     if (!state.dragging || !state.iframe) { return; }
+    // Frame is centered, so the handle drag is center-anchored: each edge moves
+    // symmetrically. Width = twice the pointer's distance from the frame center.
     var rect = state.iframe.getBoundingClientRect();
-    applyWidth(e.clientX - rect.left);
+    var centerX = rect.left + rect.width / 2;
+    applyWidth((e.clientX - centerX) * 2);
   }
 
   function onDragEnd() {
@@ -219,14 +239,17 @@
   function buildPanel() {
     var panel = document.createElement('div');
     panel.id = PANEL_ID;
+    // Full-viewport opaque shell: covers the real page entirely so the framed
+    // viewport reads as the site shrinking in place, not a panel layered over a
+    // still-visible full-width copy.
     panel.style.cssText = [
       'position: fixed',
       'top: 0',
       'right: 0',
       'bottom: 0',
-      'width: min(70vw, 1100px)',
+      'left: 0',
+      'width: 100%',
       'background: #1b1d22',
-      'box-shadow: -4px 0 24px rgba(0,0,0,0.4)',
       'z-index: 2147483600',
       'display: flex',
       'flex-direction: column',
@@ -297,7 +320,7 @@
       'overflow: auto',
       'background: #0f1115',
       'display: flex',
-      'justify-content: flex-start',
+      'justify-content: center',
       'align-items: stretch',
       'padding: 16px',
       'gap: 0'
@@ -316,7 +339,13 @@
 
     var iframe = document.createElement('iframe');
     iframe.id = FRAME_ID;
-    iframe.src = window.location.href;
+    // Always-wrap model (docs/responsive-canonical-target.md §4/§7): the proxy
+    // wraps a top-level navigation in a chrome shell, so loading
+    // window.location.href verbatim would load ANOTHER shell (shell-in-shell).
+    // Carry the content-frame marker so the proxy serves the page UNWRAPPED
+    // here; the preview then registers as its own content frame (frames.js) and
+    // becomes the active interaction target while responsive mode is open.
+    iframe.src = responsiveContentSrc();
     iframe.style.cssText = [
       'width: 100%',
       'height: 100%',

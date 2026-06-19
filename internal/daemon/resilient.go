@@ -378,11 +378,11 @@ func (rc *ResilientClient) ProxyStatus(id string) (map[string]interface{}, error
 }
 
 // ProxyExec executes JavaScript in connected browsers.
-func (rc *ResilientClient) ProxyExec(id, code string) (map[string]interface{}, error) {
+func (rc *ResilientClient) ProxyExec(id, code string, frameID ...string) (map[string]interface{}, error) {
 	var result map[string]interface{}
 	err := rc.WithClient(func(c *Client) error {
 		var e error
-		result, e = c.ProxyExec(id, code)
+		result, e = c.ProxyExec(id, code, frameID...)
 		return e
 	})
 	return result, err

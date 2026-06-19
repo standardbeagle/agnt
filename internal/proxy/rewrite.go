@@ -90,10 +90,43 @@ func (ps *ProxyServer) modifyResponse(resp *http.Response) error {
 
 	// Rewrite absolute URLs in HTML content pointing to target back to proxy
 	modifiedBody := ps.rewriteURLsInBody(bodyBytes)
-
-	// Inject instrumentation + proxy-id meta in a single full-body copy.
 	_ = port // wsPort is deprecated/unused; kept for signature compatibility
-	modifiedBody = InjectInstrumentationAndMeta(modifiedBody, ps.ID)
+
+	// Always-wrap model: a genuine top-level navigation (a real request, no
+	// frame marker, a full HTML document) is replaced by an outer chrome shell
+	// whose body is a content <iframe>; the real page is fetched when that
+	// iframe loads (its request carries the frame marker) and served in content
+	// role. Everything else — content-frame requests, HTML fragments, and
+	// direct unit-test calls with no top-level request — is injected in place.
+	// See docs/responsive-canonical-target.md §4.
+	topLevel := resp.Request != nil &&
+		!isContentFrameRequest(resp.Request) &&
+		isTopLevelNavigation(resp.Request) &&
+		isFullHTMLDocument(modifiedBody)
+	if topLevel {
+		reqURI := resp.Request.URL.RequestURI()
+		fid := frameIDForPath(resp.Request.URL.Path)
+		modifiedBody = BuildShellDocument(ps.ID, fid, contentFrameSrc(reqURI, fid))
+	} else {
+		// Stamp the content role only when this is genuinely our content frame
+		// (the request carries the frame marker minted in the shell). A
+		// markerless response — a foreign app-embedded iframe, an HTML fragment,
+		// or a direct unit-test call — gets the bundle with no role marker, so
+		// scripts/frames.js resolves the role: a top frame is canonical content
+		// (unwrapped fallback), a nested frame is passive.
+		markerID := ""
+		if resp.Request != nil && resp.Request.URL != nil {
+			markerID = resp.Request.URL.Query().Get(frameMarkerParam)
+		}
+		if markerID != "" {
+			modifiedBody = InjectContentRuntime(modifiedBody, ps.ID, markerID)
+		} else {
+			modifiedBody = InjectInstrumentationAndMeta(modifiedBody, ps.ID)
+		}
+		// The content is framed by our own same-origin shell, so strip any
+		// frame-deny headers that would otherwise refuse the embed.
+		stripFrameDenyHeaders(resp)
+	}
 
 	// Update response with uncompressed modified content
 	resp.Body = io.NopCloser(bytes.NewReader(modifiedBody))
@@ -118,6 +151,44 @@ func readAllSized(r io.Reader, sizeHint int64) ([]byte, error) {
 	buf := bytes.NewBuffer(make([]byte, 0, sizeHint+bytes.MinRead))
 	_, err := buf.ReadFrom(r)
 	return buf.Bytes(), err
+}
+
+// stripFrameDenyHeaders removes framing-prohibition headers from a proxied
+// content response so our own same-origin chrome shell can embed it. X-Frame-
+// Options is dropped wholesale; only the frame-ancestors directive is removed
+// from CSP (other directives are preserved). Pragmatic, narrowly-scoped to the
+// proxied content the proxy itself serves — see
+// docs/responsive-canonical-target.md §4.3.
+func stripFrameDenyHeaders(resp *http.Response) {
+	resp.Header.Del("X-Frame-Options")
+	csp := resp.Header.Get("Content-Security-Policy")
+	if csp == "" {
+		return
+	}
+	if stripped := stripFrameAncestors(csp); stripped != csp {
+		if stripped == "" {
+			resp.Header.Del("Content-Security-Policy")
+		} else {
+			resp.Header.Set("Content-Security-Policy", stripped)
+		}
+	}
+}
+
+// stripFrameAncestors removes the frame-ancestors directive (if present) from a
+// CSP header value, returning the remaining directives joined by "; ".
+func stripFrameAncestors(csp string) string {
+	parts := strings.Split(csp, ";")
+	kept := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(p)), "frame-ancestors") {
+			continue
+		}
+		if strings.TrimSpace(p) == "" {
+			continue
+		}
+		kept = append(kept, strings.TrimSpace(p))
+	}
+	return strings.Join(kept, "; ")
 }
 
 // rewriteLocationHeader rewrites Location headers to point to the proxy instead of the target.

@@ -237,10 +237,38 @@ Returns shell command string for streaming daemon events via `agnt monitor` CLI.
 
 **Scored audits (8)**: `auditAll` aggregates eight scored audits into a weighted overall grade — DOM, CSS, performance, security, SEO, accessibility, **API efficiency** (`__devtool_audit_api.auditAPIEfficiency`), and **loading/spinner** (`__devtool_audit_loading.auditLoading`). Weights: security 1.5, accessibility 1.3, performance 1.2, api 1.1, loading 1.1, seo 1.0, dom 0.8, css 0.7. Both new audits are guarded — `auditAll` degrades cleanly when a module is absent. The API + loading audits are temporal: they read the fetch/XHR buffer and spinner timeline, so they need a fresh page load to populate.
 
+### Always-Wrap & Content Frames
+
+The proxy wraps every top-level HTML navigation in an outer **chrome shell** whose
+body is a single content `<iframe>`; the real page loads inside that frame. Proxy
+UI (indicator/panels/overlays) lives in the shell; page telemetry + the live
+`window.__devtool` runtime live in the **content frame**. This isolates proxy
+chrome from page content and gives a stable interaction target. Full design:
+**`docs/responsive-canonical-target.md`**.
+
+- **Roles** (resolved per frame into `window.__devtool_frame_role`): `chrome`
+  (outer shell — UI only, no telemetry WS), `content` (the wrapped page — full
+  runtime, tagged with a `frame_id`), `passive` (foreign embeds — silent).
+- **Wrap gating**: only genuine top-level navigations are wrapped. A nested
+  browsing context (`Sec-Fetch-Dest: iframe/frame/embed/object`) and any request
+  carrying the `__devtool_frame` marker are served unwrapped, so an app's own
+  iframes are never shell-wrapped.
+- **Frame registry**: the shell tracks live content frames + an active-target
+  pointer (the last-interacted frame). `proxy exec` and the visual/audit tools
+  (`responsive_audit`, `snapshot`, `screenshot`, `api_audit`, `loading_audit`)
+  default to the **active content frame**; `proxy {action:"exec", frame_id:"…"}`
+  targets a specific frame.
+- **Telemetry** (error/fetch/xhr/interaction/mutation) is tagged with the
+  emitting `frame_id`; `get_errors` dedup and `proxylog`'s `LogFilter.Frames`
+  are frame-aware so the same error in two frames is not collapsed.
+
 ### Responsive Mode
 
 Interactive responsive workbench (4th indicator mode beside sketch/design):
-1. Opens a drawer hosting a live `<iframe src=location.href>` of the current page
+1. Opens a drawer hosting a live device-preview `<iframe>` of the current page.
+   Under always-wrap the preview is sourced from the page URL **with the
+   `__devtool_frame` marker** (not `location.href` verbatim, which would load
+   another shell) so it loads unwrapped and registers as its own content frame.
 2. Width control — slider, numeric input (320–1920), preset chips (375/768/1440), edge drag handle; every control funnels through one `applyWidth()` so human-driven and agent-driven (`setWidth`) changes share one source of truth
 3. Programmatic layout-shift detection (debounced 250ms) reuses `responsive.js` detectors against the iframe at the current width; findings new at the current width are flagged `isNew` and overlaid as severity-colored boxes on the frame; returned via `getState().shifts/selectors`
 4. `[Send to agent]` emits a `responsive_request` event `{width, shifts[], selectors[]}` → proxylog + overlay notifier + channel sink; agent fixes then re-verifies via `setWidth(w)`

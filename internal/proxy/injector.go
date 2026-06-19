@@ -198,3 +198,111 @@ func ShouldInject(contentType string) bool {
 	contentType = strings.ToLower(contentType)
 	return strings.Contains(contentType, "text/html")
 }
+
+// frameMarkerParam is the query parameter the proxy stamps on the content-frame
+// request URL so a wrapped content frame is distinguishable from a top-level
+// navigation. Its presence on a request means "this is the content frame; serve
+// the real page (injected in content role), do not re-wrap." The matching
+// browser-side constant lives in scripts/frames.js (FRAME_PARAM).
+const frameMarkerParam = "__devtool_frame"
+
+// contentFrameID is the DOM id of the single content <iframe> the chrome shell
+// embeds. scripts/frames.js + scripts/responsive-mode.js (Slice 7) address it.
+const contentFrameID = "__devtool_content_frame"
+
+// isContentFrameRequest reports whether r is a request for the inner content
+// frame (carries the frame marker). A nil request, or a request without the
+// marker, is treated as a top-level navigation.
+func isContentFrameRequest(r *http.Request) bool {
+	if r == nil || r.URL == nil {
+		return false
+	}
+	return r.URL.Query().Has(frameMarkerParam)
+}
+
+// isTopLevelNavigation reports whether r is a top-level document navigation
+// rather than a nested browsing context (an app-embedded iframe/frame/object).
+// Only top-level navigations are wrapped in the chrome shell; an app's own
+// iframe must render its content, not our shell. Modern browsers send
+// Sec-Fetch-Dest; an empty value (legacy browsers / non-browser clients)
+// defaults to top-level so the wrap still applies.
+func isTopLevelNavigation(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	switch r.Header.Get("Sec-Fetch-Dest") {
+	case "iframe", "frame", "embed", "object":
+		return false
+	default:
+		return true
+	}
+}
+
+// isFullHTMLDocument reports whether body looks like a complete HTML document
+// rather than an HTML fragment (htmx/turbo partial responses). Only full
+// documents are wrapped in the chrome shell; fragments are injected in place so
+// partial-render flows keep working.
+func isFullHTMLDocument(body []byte) bool {
+	head := body
+	if len(head) > 1024 {
+		head = head[:1024]
+	}
+	lower := bytes.ToLower(head)
+	return bytes.Contains(lower, []byte("<!doctype html")) ||
+		bytes.Contains(lower, []byte("<html")) ||
+		bytes.Contains(lower, []byte("<head"))
+}
+
+// frameIDForPath derives a stable, opaque frame id from the request path. The id
+// only needs to be unique among the live content frames of one shell; the path
+// is stable for a given page, so a short hash avoids minting random ids
+// server-side while staying deterministic for tests.
+func frameIDForPath(path string) string {
+	sum := sha256.Sum256([]byte(path))
+	return hex.EncodeToString(sum[:6])
+}
+
+// contentFrameSrc appends the frame marker to the requested URI so the inner
+// frame's request is recognisable as the content frame on its way back through
+// the proxy.
+func contentFrameSrc(reqURI, frameID string) string {
+	sep := "?"
+	if strings.Contains(reqURI, "?") {
+		sep = "&"
+	}
+	return reqURI + sep + frameMarkerParam + "=" + frameID
+}
+
+// BuildShellDocument returns the outer chrome-shell HTML for a top-level
+// navigation. The shell carries the proxy-id, the chrome role marker, and the
+// instrumentation bundle, and embeds a single full-viewport content <iframe>
+// whose src is the originally-requested resource with the frame marker appended
+// — so the proxy serves the real page there, injected in content role. The
+// proxy UI runtime (indicator/panels) therefore lives in the shell, isolated
+// from page content. Role gating of the runtime lands in Slice 3; this slice
+// only establishes the wrap + the browser-side role/registry primitive.
+func BuildShellDocument(proxyID, frameID, contentSrc string) []byte {
+	var b strings.Builder
+	b.WriteString("<!DOCTYPE html><html><head><meta charset=\"utf-8\">")
+	b.WriteString(fmt.Sprintf("<script>window.__devtool_proxy_id=%q;window.__devtool_role=\"chrome\";window.__devtool_frame_id=%q;</script>", proxyID, frameID))
+	b.WriteString(fmt.Sprintf("<script src=%q></script>", instrumentationAssetPath()))
+	b.WriteString("<style>html,body{margin:0;padding:0;height:100%;width:100%;overflow:hidden}#" + contentFrameID + "{position:fixed;inset:0;border:0;width:100%;height:100%;display:block}</style>")
+	b.WriteString("</head><body>")
+	b.WriteString(fmt.Sprintf("<iframe id=%q src=%q></iframe>", contentFrameID, contentSrc))
+	b.WriteString("</body></html>")
+	return []byte(b.String())
+}
+
+// InjectContentRuntime injects the proxy-id, the content role marker, and the
+// bundle tag into a content-frame (or unwrapped-fallback / fragment) HTML
+// response. Mirrors InjectInstrumentationAndMeta but additionally declares
+// window.__devtool_role="content" + the frame id so scripts/frames.js resolves
+// the frame's role without re-deriving it from the URL.
+func InjectContentRuntime(body []byte, proxyID, frameID string) []byte {
+	tag := []byte(fmt.Sprintf(`<script>window.__devtool_proxy_id=%q;window.__devtool_role="content";window.__devtool_frame_id=%q;</script><script src=%q></script>`,
+		proxyID, frameID, instrumentationAssetPath()))
+	if at, ok := instrumentationInsertOffset(body); ok {
+		return spliceInto(body, at, tag)
+	}
+	return spliceInto(body, 0, tag)
+}

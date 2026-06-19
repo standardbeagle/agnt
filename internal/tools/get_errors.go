@@ -41,13 +41,16 @@ type unifiedError struct {
 	Message  string    `json:"message"`
 	Location string    `json:"location,omitempty"` // file:line:col
 	Page     string    `json:"page,omitempty"`     // page URL
+	FrameID  string    `json:"frame_id,omitempty"` // emitting content frame (always-wrap model)
 	Count    int       `json:"count"`
 	LastSeen time.Time `json:"last_seen"`
 }
 
-// deduplication key for a unified error.
+// deduplication key for a unified error. FrameID is included so the same error
+// raised in two distinct content frames is not collapsed into one (each frame
+// is a distinct context — docs/responsive-canonical-target.md §5.2/§6.2).
 func (e *unifiedError) dedupKey() string {
-	return e.Source + "|" + e.Category + "|" + e.Message + "|" + e.Location
+	return e.Source + "|" + e.Category + "|" + e.Message + "|" + e.Location + "|" + e.FrameID
 }
 
 // getErrorsBackend holds either a daemon client or a direct proxy manager,

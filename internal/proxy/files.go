@@ -123,10 +123,35 @@ func (ps *ProxyServer) saveLargeResult(execID string, result string) (string, er
 	return filePath, nil
 }
 
-// ExecuteJavaScript sends JavaScript code to all connected clients for execution.
-// Returns the execution ID and a channel that will receive the result.
-func (ps *ProxyServer) ExecuteJavaScript(code string) (string, <-chan *ExecutionResult, error) {
-	debug.Log("proxy", "ExecuteJavaScript: proxy=%s code_len=%d", ps.ID, len(code))
+// SetActiveFrame records the content frame the page reported as active. Empty
+// frameID is ignored (a report must name a frame).
+func (ps *ProxyServer) SetActiveFrame(frameID string) {
+	if frameID == "" {
+		return
+	}
+	ps.activeFrameID.Store(&frameID)
+}
+
+// ActiveFrame returns the last content frame reported active, or "" if none.
+func (ps *ProxyServer) ActiveFrame() string {
+	if p := ps.activeFrameID.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
+
+// ExecuteJavaScript sends JavaScript code to connected clients for execution.
+// Returns the execution ID and a channel that will receive the result. An
+// optional frameID targets a specific content frame; when empty it defaults to
+// the active content frame (always-wrap model — docs/responsive-canonical-
+// target.md §5.3). When both are empty the exec is untargeted and every
+// connected (content) frame runs it (legacy behaviour).
+func (ps *ProxyServer) ExecuteJavaScript(code string, frameID ...string) (string, <-chan *ExecutionResult, error) {
+	target := firstFrameID(frameID)
+	if target == "" {
+		target = ps.ActiveFrame()
+	}
+	debug.Log("proxy", "ExecuteJavaScript: proxy=%s code_len=%d frame=%q", ps.ID, len(code), target)
 	execID := fmt.Sprintf("exec-%d", time.Now().UnixNano())
 
 	// Create result channel for this execution
@@ -134,9 +159,10 @@ func (ps *ProxyServer) ExecuteJavaScript(code string) (string, <-chan *Execution
 	ps.pendingExecs.Store(execID, resultChan)
 
 	message := map[string]interface{}{
-		"type": "execute",
-		"id":   execID,
-		"code": code,
+		"type":     "execute",
+		"id":       execID,
+		"code":     code,
+		"frame_id": target,
 	}
 
 	messageBytes, err := json.Marshal(message)
