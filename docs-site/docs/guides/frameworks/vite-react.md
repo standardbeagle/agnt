@@ -11,11 +11,14 @@ Vite and React together create a fast development experience, but debugging frag
 
 ## Quick Setup
 
-Install agnt from the Claude Code marketplace:
+Install the `agnt` binary and register it as an MCP server:
 
 ```bash
-claude mcp add agnt --plugin agnt@agnt-marketplace
+npm install -g @standardbeagle/agnt
+claude mcp add agnt -s user -- agnt mcp
 ```
+
+> Prefer the Claude Code plugin (skills + slash commands)? Run `/plugin marketplace add standardbeagle/standardbeagle-tools` then `/plugin install agnt@standardbeagle-tools`.
 
 Then create an `.agnt.kdl` file in your Vite + React project root:
 
@@ -134,16 +137,16 @@ agnt injects the `window.__devtool` API into every page served through the proxy
 
 ```json
 // Inspect a specific component's rendered DOM
-proxy {action: "exec", proxy_id: "app", js: "window.__devtool.inspect('.user-profile')"}
+proxy {action: "exec", id: "app", code: "window.__devtool.inspect('.user-profile')"}
 
 // Check for layout overflows in a component container
-proxy {action: "exec", proxy_id: "app", js: "window.__devtool.findOverflows('.dashboard-grid')"}
+proxy {action: "exec", id: "app", code: "window.__devtool.findOverflows('.dashboard-grid')"}
 
 // Audit accessibility on a form component
-proxy {action: "exec", proxy_id: "app", js: "window.__devtool.auditAccessibility({root: '.login-form'})"}
+proxy {action: "exec", id: "app", code: "window.__devtool.auditAccessibility({root: '.login-form'})"}
 
 // Find elements rendered off-screen (common with conditional rendering bugs)
-proxy {action: "exec", proxy_id: "app", js: "window.__devtool.findOffscreen()"}
+proxy {action: "exec", id: "app", code: "window.__devtool.findOffscreen()"}
 ```
 
 ## Vite + React-Specific Tips
@@ -193,8 +196,8 @@ AI: There are three related errors. The root cause is a missing
     boundary caught the render failure and showed a blank
     fallback. Let me check where DashboardChart moved to...
 
-AI: [proxy {action: "exec", proxy_id: "app",
-     js: "window.__devtool.inspect('.dashboard-container')"}]
+AI: [proxy {action: "exec", id: "app",
+     code: "window.__devtool.inspect('.dashboard-container')"}]
   → Element exists but contains only the error boundary fallback div
 
 AI: Found it — DashboardChart.tsx was renamed to Chart.tsx in the

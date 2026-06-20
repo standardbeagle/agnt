@@ -20,13 +20,23 @@ The daemon auto-starts when needed, so manual management is rarely required.
 
 ```json
 {
-  "action": "status" | "info" | "start" | "stop" | "restart"
+  "action": "status" | "info" | "start" | "stop" | "restart" | "stop_all" | "restart_all" | "startup_log" | "doctor"
 }
 ```
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `action` | string | Yes | Action to perform |
+| `global` | bool | No | For `startup_log`: include startup events from all projects (default: current project only) |
+
+Additional actions:
+
+| Action | Description |
+|--------|-------------|
+| `stop_all` | Stop all managed processes and proxies (daemon keeps running) |
+| `restart_all` | Restart all managed processes and proxies |
+| `startup_log` | Return recent startup events (scoped to the current project unless `global: true`) |
+| `doctor` | Run health checks and return a diagnostic report |
 
 ## Actions
 

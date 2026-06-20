@@ -11,11 +11,14 @@ Django and Flask applications present debugging challenges distinct from JavaScr
 
 ## Quick Setup
 
-Install agnt from the Claude Code marketplace:
+Install the `agnt` binary and register it as an MCP server:
 
 ```bash
-claude mcp add agnt --plugin agnt@agnt-marketplace
+npm install -g @standardbeagle/agnt
+claude mcp add agnt -s user -- agnt mcp
 ```
+
+> Prefer the Claude Code plugin (skills + slash commands)? Run `/plugin marketplace add standardbeagle/standardbeagle-tools` then `/plugin install agnt@standardbeagle-tools`.
 
 ### Django Configuration
 

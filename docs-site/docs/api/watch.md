@@ -29,7 +29,7 @@ watch {target: "process", process_id: "app"}
 | Target | Streams | Required params |
 |--------|---------|-----------------|
 | `errors` | Error and diagnostic events | optional `proxy_id` |
-| `interactions` | User interactions — panel messages, clicks, sketch, design | optional `proxy_id` |
+| `interactions` | User interactions — panel messages, clicks, sketch | optional `proxy_id` |
 | `process` | A process's output stream (follow mode) | `process_id` |
 | `all` | All daemon events (default) | none |
 

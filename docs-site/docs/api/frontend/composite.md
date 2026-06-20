@@ -146,64 +146,43 @@ if (!diagnosis.healthy) {
 }
 ```
 
-## showLayout
+## getLayout
 
-Visual debugging overlay showing layout structure.
+Inspect the resolved layout properties of a single element — display mode, position, and flex/grid configuration.
 
 ```javascript
-window.__devtool.showLayout(config)
+window.__devtool.getLayout(selector)
 ```
 
 **Parameters:**
-- `config` (object, optional): Display configuration
-
-**Config Options:**
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `showMargins` | boolean | `true` | Show margin areas (orange) |
-| `showPadding` | boolean | `true` | Show padding areas (green) |
-| `showBorders` | boolean | `true` | Show border areas (blue) |
-| `showGrid` | boolean | `false` | Show grid lines |
-| `showFlexbox` | boolean | `false` | Highlight flex containers |
-| `selector` | string | `'*'` | Limit to specific elements |
+- `selector` (string): CSS selector
 
 **Returns:**
 ```javascript
 {
-  overlayId: "layout-overlay-1",
-  elementsHighlighted: 45,
-  legend: {
-    margin: "orange",
-    padding: "green",
-    border: "blue"
+  display: "inline-flex",
+  position: "relative",
+  flexbox: {
+    direction: "row",
+    alignItems: "center",
+    justifyContent: "center"
   }
 }
 ```
 
 **Example:**
-
-Show all box models:
 ```javascript
-window.__devtool.showLayout()
+// Inspect one element's layout
+window.__devtool.getLayout('.card')
+
+// Find page-wide layout problems instead
+window.__devtool.diagnoseLayout()
 ```
 
-Show only for specific container:
+To visualize an element on the page, use `highlight` and clean up with `clearAllOverlays`:
 ```javascript
-window.__devtool.showLayout({selector: '.card'})
-```
-
-Show grid/flex structure:
-```javascript
-window.__devtool.showLayout({
-  showMargins: false,
-  showPadding: false,
-  showGrid: true,
-  showFlexbox: true
-})
-```
-
-Clean up:
-```javascript
+window.__devtool.highlight('.card', {color: 'blue', duration: 0})
+// ...
 window.__devtool.clearAllOverlays()
 ```
 
@@ -223,7 +202,7 @@ if (layout.overflows.some(o => o.selector.includes('broken'))) {
 }
 
 // 3. Visualize
-window.__devtool.showLayout({selector: '.broken-component'})
+window.__devtool.highlight('.broken-component', {color: 'red', duration: 0})
 window.__devtool.screenshot('debug')
 ```
 
@@ -318,7 +297,7 @@ async function interactiveDebug() {
   const check = await window.__devtool.ask('What would you like to check?', [
     'Layout issues',
     'Accessibility',
-    'Show box model',
+    'Element layout',
     'Measure to another element'
   ])
 
@@ -334,8 +313,8 @@ async function interactiveDebug() {
       console.log('A11y:', a11y, 'Contrast:', contrast)
       break
 
-    case 'Show box model':
-      window.__devtool.showLayout({selector: selected.selector})
+    case 'Element layout':
+      console.log(window.__devtool.getLayout(selected.selector))
       break
 
     case 'Measure to another element':
@@ -355,7 +334,7 @@ interactiveDebug()
 
 - `inspect` calls 8+ primitives - use when you need comprehensive data
 - `diagnoseLayout` scans entire page - can be slow on complex pages
-- `showLayout` adds overlays to DOM - clean up when done
+- `highlight` adds overlays to DOM - clean up with `clearAllOverlays` when done
 - Consider using specific primitives when you know what you need
 
 ## See Also

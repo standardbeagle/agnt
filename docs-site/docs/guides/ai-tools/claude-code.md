@@ -15,13 +15,16 @@ With agnt installed, Claude Code can start your dev server, open a debugging pro
 
 There are three ways to connect agnt to Claude Code. Pick whichever fits your workflow.
 
-### Marketplace (Recommended)
+### Plugin (Recommended)
 
-One command installs the binary and registers the MCP server:
+Install the agnt plugin — skills, slash commands, and the registered MCP server — from the marketplace:
 
 ```bash
-claude mcp add agnt --plugin agnt@agnt-marketplace
+/plugin marketplace add standardbeagle/standardbeagle-tools
+/plugin install agnt@standardbeagle-tools
 ```
+
+The plugin needs the `agnt` binary on your PATH (`npm install -g @standardbeagle/agnt`, or pip/go).
 
 ### Manual CLI
 

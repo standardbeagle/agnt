@@ -124,11 +124,13 @@ Configuring an MCP server takes a single command. Here is how to add [agnt](http
 ### Claude Code CLI
 
 ```bash
-# Install from marketplace (recommended)
-claude mcp add agnt --plugin agnt@agnt-marketplace
-
-# Or register manually after installing the binary
+# Install the binary, then register it as an MCP server
+npm install -g @standardbeagle/agnt
 claude mcp add agnt -s user -- agnt mcp
+
+# Or install the Claude Code plugin (skills + slash commands)
+# /plugin marketplace add standardbeagle/standardbeagle-tools
+# /plugin install agnt@standardbeagle-tools
 ```
 
 ### Claude Desktop (JSON config)

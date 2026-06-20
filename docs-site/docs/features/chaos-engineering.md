@@ -19,12 +19,25 @@ agnt lets you simulate all of these with a single command.
 ## Quick Start
 
 ```bash
-# Start proxy with chaos preset
+# Start proxy, then apply a chaos preset
 proxy {action: "start", id: "app", target_url: "http://localhost:3000"}
-proxy {action: "chaos", id: "app", preset: "flaky-api"}
+proxy {action: "chaos", id: "app", chaos_operation: "preset", chaos_preset: "flaky-api"}
 ```
 
 Your app now experiences random 500 errors, timeouts, and variable latency. Watch what breaks.
+
+All chaos commands route through `proxy {action: "chaos"}` with a `chaos_operation` field that selects what to do. Valid operations: `enable`, `disable`, `status`, `set`, `preset`, `add_rule`, `remove_rule`, `list_rules`, `stats`, `clear`.
+
+| Operation | Required field | Purpose |
+|-----------|----------------|---------|
+| `preset` | `chaos_preset` | Apply a named bundle of rules |
+| `set` | `chaos_config` | Replace the full rule set (with optional seed) |
+| `add_rule` | `chaos_rule` | Add a single rule |
+| `remove_rule` | `chaos_rule_id` | Remove one rule by id |
+| `enable` / `disable` | — | Toggle chaos on/off without losing rules |
+| `status` / `stats` | — | Inspect current state and injection counts |
+| `list_rules` | — | List active rules |
+| `clear` | — | Remove all rules |
 
 ## Built-in Presets
 
@@ -47,51 +60,56 @@ Your app now experiences random 500 errors, timeouts, and variable latency. Watc
 
 **Test mobile network conditions:**
 ```bash
-proxy {action: "chaos", id: "app", preset: "mobile-3g"}
+proxy {action: "chaos", id: "app", chaos_operation: "preset", chaos_preset: "mobile-3g"}
 # Your app now has 200-2000ms latency and 2% packet loss
 ```
 
 **Expose race conditions:**
 ```bash
-proxy {action: "chaos", id: "app", preset: "race-condition"}
+proxy {action: "chaos", id: "app", chaos_operation: "preset", chaos_preset: "race-condition"}
 # API responses arrive out of order - does your state get corrupted?
 ```
 
 **Test stale browser tabs:**
 ```bash
-proxy {action: "chaos", id: "app", preset: "stale-tab"}
+proxy {action: "chaos", id: "app", chaos_operation: "preset", chaos_preset: "stale-tab"}
 # Simulates a tab that's been open for hours - test token refresh
 ```
 
 ## Custom Chaos Rules
 
-For fine-grained control, define custom rules:
+For fine-grained control, use `chaos_operation: "set"` with a `chaos_config` that
+holds the full rule set. `set` replaces all existing rules:
 
 ```bash
 proxy {
   action: "chaos",
   id: "app",
-  rules: [
-    {
-      "id": "api-latency",
-      "name": "Slow API calls",
-      "type": "latency",
-      "enabled": true,
-      "url_pattern": "/api/.*",
-      "min_latency_ms": 500,
-      "max_latency_ms": 3000,
-      "probability": 0.5
-    },
-    {
-      "id": "checkout-errors",
-      "name": "Checkout failures",
-      "type": "http_error",
-      "enabled": true,
-      "url_pattern": "/api/checkout",
-      "error_codes": [500, 503],
-      "probability": 0.1
-    }
-  ]
+  chaos_operation: "set",
+  chaos_config: {
+    "enabled": true,
+    "rules": [
+      {
+        "id": "api-latency",
+        "name": "Slow API calls",
+        "type": "latency",
+        "enabled": true,
+        "url_pattern": "/api/.*",
+        "min_latency_ms": 500,
+        "max_latency_ms": 3000,
+        "probability": 0.5
+      },
+      {
+        "id": "checkout-errors",
+        "name": "Checkout failures",
+        "type": "http_error",
+        "enabled": true,
+        "url_pattern": "/api/checkout",
+        "error_codes": [500, 503],
+        "probability": 0.1
+      }
+    ]
+  }
 }
 ```
 
@@ -189,7 +207,7 @@ proxy {
 ### Check Status
 
 ```bash
-proxy {action: "chaos", id: "app", status: true}
+proxy {action: "chaos", id: "app", chaos_operation: "status"}
 ```
 
 Returns:
@@ -207,23 +225,48 @@ Returns:
 }
 ```
 
-### Disable Chaos
+For the injection counters on their own, use `chaos_operation: "stats"`.
+
+### Enable / Disable Chaos
+
+Toggle chaos off without discarding your configured rules, then back on later:
 
 ```bash
-proxy {action: "chaos", id: "app", enabled: false}
+proxy {action: "chaos", id: "app", chaos_operation: "disable"}
+proxy {action: "chaos", id: "app", chaos_operation: "enable"}
 ```
 
 ### Clear All Rules
 
 ```bash
-proxy {action: "chaos", id: "app", clear: true}
+proxy {action: "chaos", id: "app", chaos_operation: "clear"}
 ```
 
-### Enable/Disable Specific Rules
+### Add or Remove Individual Rules
+
+Add one rule with `add_rule` (the rest of the configuration stays intact):
 
 ```bash
-proxy {action: "chaos", id: "app", enable_rule: "api-latency"}
-proxy {action: "chaos", id: "app", disable_rule: "checkout-errors"}
+proxy {
+  action: "chaos",
+  id: "app",
+  chaos_operation: "add_rule",
+  chaos_rule: {
+    "id": "api-latency",
+    "type": "latency",
+    "enabled": true,
+    "url_pattern": "/api/.*",
+    "min_latency_ms": 500,
+    "max_latency_ms": 3000,
+    "probability": 0.5
+  }
+}
+```
+
+Remove one rule by its id:
+
+```bash
+proxy {action: "chaos", id: "app", chaos_operation: "remove_rule", chaos_rule_id: "api-latency"}
 ```
 
 ## Real-World Testing Scenarios
@@ -235,12 +278,18 @@ proxy {action: "chaos", id: "app", disable_rule: "checkout-errors"}
 proxy {
   action: "chaos",
   id: "app",
-  rules: [{
-    "type": "latency",
-    "min_latency_ms": 2000,
-    "max_latency_ms": 5000,
-    "probability": 1.0
-  }]
+  chaos_operation: "set",
+  chaos_config: {
+    "enabled": true,
+    "rules": [{
+      "id": "slow-everything",
+      "type": "latency",
+      "enabled": true,
+      "min_latency_ms": 2000,
+      "max_latency_ms": 5000,
+      "probability": 1.0
+    }]
+  }
 }
 ```
 Now verify: Do your loading spinners appear? Is the UI responsive during loads?
@@ -252,11 +301,17 @@ Now verify: Do your loading spinners appear? Is the UI responsive during loads?
 proxy {
   action: "chaos",
   id: "app",
-  rules: [{
-    "type": "http_error",
-    "error_codes": [500, 502, 503],
-    "probability": 0.5
-  }]
+  chaos_operation: "set",
+  chaos_config: {
+    "enabled": true,
+    "rules": [{
+      "id": "server-errors",
+      "type": "http_error",
+      "enabled": true,
+      "error_codes": [500, 502, 503],
+      "probability": 0.5
+    }]
+  }
 }
 ```
 Now verify: Do error messages appear? Can users retry? Does state stay consistent?
@@ -265,7 +320,7 @@ Now verify: Do error messages appear? Can users retry? Does state stay consisten
 
 ```bash
 # Responses arrive in random order
-proxy {action: "chaos", id: "app", preset: "race-condition"}
+proxy {action: "chaos", id: "app", chaos_operation: "preset", chaos_preset: "race-condition"}
 ```
 Now verify: If user types in search and gets responses out of order, does the UI show stale results?
 
@@ -276,10 +331,16 @@ Now verify: If user types in search and gets responses out of order, does the UI
 proxy {
   action: "chaos",
   id: "app",
-  rules: [{
-    "type": "packet_loss",
-    "probability": 1.0
-  }]
+  chaos_operation: "set",
+  chaos_config: {
+    "enabled": true,
+    "rules": [{
+      "id": "offline",
+      "type": "packet_loss",
+      "enabled": true,
+      "probability": 1.0
+    }]
+  }
 }
 ```
 Now verify: Does offline detection trigger? Are there helpful error messages?
@@ -291,26 +352,36 @@ Now verify: Does offline detection trigger? Are there helpful error messages?
 proxy {
   action: "chaos",
   id: "app",
-  rules: [{
-    "type": "http_error",
-    "url_pattern": "/api/.*",
-    "error_codes": [401],
-    "probability": 1.0
-  }]
+  chaos_operation: "set",
+  chaos_config: {
+    "enabled": true,
+    "rules": [{
+      "id": "expire-tokens",
+      "type": "http_error",
+      "enabled": true,
+      "url_pattern": "/api/.*",
+      "error_codes": [401],
+      "probability": 1.0
+    }]
+  }
 }
 ```
 Now verify: Does the app redirect to login? Is state preserved for after re-auth?
 
 ## Reproducible Chaos
 
-For consistent test runs, set a random seed:
+For consistent test runs, set a random seed inside `chaos_config`:
 
 ```bash
 proxy {
   action: "chaos",
   id: "app",
-  seed: 12345,
-  rules: [...]
+  chaos_operation: "set",
+  chaos_config: {
+    "enabled": true,
+    "seed": 12345,
+    "rules": [ /* ... */ ]
+  }
 }
 ```
 
@@ -327,23 +398,25 @@ Same seed = same sequence of chaos decisions.
 
 ### Automated E2E Tests
 
-```javascript
-// In Playwright/Cypress test
-beforeEach(async () => {
-  // Enable chaos via agnt API
-  await fetch('http://localhost:45849/__chaos', {
-    method: 'POST',
-    body: JSON.stringify({ preset: 'flaky-api' })
-  });
-});
+Apply chaos through the agnt MCP tool before driving your E2E suite, then assert
+that your error and retry UI behaves:
 
+```bash
+# Before the test run, enable a flaky-API preset on the proxy
+proxy {action: "chaos", id: "app", chaos_operation: "preset", chaos_preset: "flaky-api"}
+```
+
+```javascript
+// In Playwright/Cypress, point the browser at the proxy URL and assert resilience
 test('handles API errors gracefully', async ({ page }) => {
   await page.goto('/dashboard');
-  // Error states should be visible due to chaos
+  // Error states should be visible due to injected chaos
   await expect(page.locator('.error-message')).toBeVisible();
   await expect(page.locator('.retry-button')).toBeEnabled();
 });
 ```
+
+When the run finishes, clear chaos with `proxy {action: "chaos", id: "app", chaos_operation: "clear"}`.
 
 ## Best Practices
 

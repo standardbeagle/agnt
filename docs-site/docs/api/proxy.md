@@ -4,7 +4,7 @@ sidebar_position: 4
 
 # proxy
 
-Manage reverse proxies with traffic logging and frontend instrumentation.
+Manage reverse proxies with traffic logging and frontend instrumentation. The proxy sits between the browser and your dev server so the agent can capture frontend errors, inspect the live DOM, run JavaScript in the page, and inject chaos — without touching application code.
 
 ## Synopsis
 
@@ -18,8 +18,9 @@ proxy {action: "<action>", ...params}
 |--------|-------------|
 | `start` | Create and start a reverse proxy |
 | `stop` | Stop a running proxy |
+| `restart` | Restart a running proxy (preserves config) |
 | `status` | Get proxy status and statistics |
-| `list` | List all running proxies |
+| `list` | List all running proxies (accepts `global: true` for all directories) |
 | `exec` | Execute JavaScript in connected browsers |
 | `chaos` | Configure chaos engineering (network failures, latency) |
 | `toast` | Display toast notifications in the browser |
@@ -44,7 +45,14 @@ Parameters:
 | `port` | integer | No | hash-based | Listen port. Only specify if you need a specific port. |
 | `max_log_size` | integer | No | 1000 | Maximum log entries |
 | `bind_address` | string | No | `127.0.0.1` | Bind address: `127.0.0.1` (localhost only) or `0.0.0.0` (all interfaces for tunnel/mobile testing) |
+| `allow_external` | boolean | No | false | Required to bind to a non-localhost address (`0.0.0.0` or `::`). Acknowledges network exposure risk. |
+| `skip_tls_verify` | boolean | No | false | Skip TLS certificate verification (for self-signed/expired certs in dev). |
 | `public_url` | string | No | - | Public URL for tunnel services (e.g., `https://abc123.trycloudflare.com`). Used for URL rewriting. |
+| `tunnel` | string | No | - | Tunnel provider to launch alongside the proxy: `ngrok`, `cloudflared`, `tailscale`, or `custom`. |
+| `tunnel_args` | string[] | No | - | Additional arguments for the tunnel command. |
+| `tunnel_token` | string | No | - | Authentication token for the tunnel (e.g., ngrok authtoken). |
+| `tunnel_region` | string | No | - | Tunnel region. |
+| `tunnel_command` | string | No | - | Custom tunnel command (when `tunnel: "custom"`). Use `{{PORT}}` as placeholder. |
 
 Response:
 ```json
@@ -94,6 +102,23 @@ Response:
 {
   "id": "app",
   "message": "Proxy stopped"
+}
+```
+
+## restart
+
+Restart a running proxy, preserving its configuration (target URL, port, bind address, tunnel).
+
+```json
+proxy {action: "restart", id: "app"}
+```
+
+Response:
+```json
+{
+  "id": "app",
+  "success": true,
+  "message": "Proxy restarted"
 }
 ```
 
@@ -212,20 +237,33 @@ proxy {action: "exec", id: "app", code: "window.__devtool.ask('OK?', ['Yes', 'No
 Configure chaos engineering to simulate network failures, latency, and API errors.
 
 ```json
-proxy {action: "chaos", id: "app", preset: "flaky-api"}
+proxy {action: "chaos", id: "app", chaos_operation: "preset", chaos_preset: "flaky-api"}
 ```
 
 Parameters:
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `id` | string | Yes | Proxy ID |
-| `preset` | string | No | Built-in preset name |
-| `rules` | array | No | Custom chaos rules |
-| `enabled` | boolean | No | Enable/disable chaos |
-| `clear` | boolean | No | Clear all rules |
-| `status` | boolean | No | Get chaos status |
-| `enable_rule` | string | No | Enable specific rule by ID |
-| `disable_rule` | string | No | Disable specific rule by ID |
+| `chaos_operation` | string | Yes | One of `enable`, `disable`, `status`, `set`, `preset`, `add_rule`, `remove_rule`, `list_rules`, `stats`, `clear` |
+| `chaos_preset` | string | For `preset` | Built-in preset name (see below) |
+| `chaos_rules` | array | - | Legacy field; for `set`, pass rules inside `chaos_config.rules` |
+| `chaos_rule` | object | For `add_rule` | A single rule to add |
+| `chaos_rule_id` | string | For `remove_rule` | ID of the rule to remove |
+| `chaos_config` | object | For `set` | Full chaos configuration (`enabled`, `rules`, `global_odds`, `seed`, `logging_mode`) |
+
+### Operations
+
+| `chaos_operation` | Effect |
+|-------------------|--------|
+| `enable` / `disable` | Turn chaos on or off for the proxy |
+| `preset` | Apply a built-in preset (`chaos_preset`) |
+| `set` | Replace the full rule set — pass rules inside `chaos_config` |
+| `add_rule` | Add a single rule (`chaos_rule`) |
+| `remove_rule` | Remove a rule by id (`chaos_rule_id`) |
+| `list_rules` | List the active rules |
+| `status` | Get current chaos state |
+| `stats` | Get injection statistics |
+| `clear` | Remove all rules |
 
 ### Built-in Presets
 
@@ -244,34 +282,38 @@ Parameters:
 
 ```json
 // Apply preset
-proxy {action: "chaos", id: "app", preset: "mobile-3g"}
+proxy {action: "chaos", id: "app", chaos_operation: "preset", chaos_preset: "mobile-3g"}
 
-// Custom rules
+// Custom rules (set replaces the full rule set; rules go inside chaos_config)
 proxy {
   action: "chaos",
   id: "app",
-  rules: [
-    {
-      "id": "api-latency",
-      "type": "latency",
-      "enabled": true,
-      "url_pattern": "/api/.*",
-      "min_latency_ms": 500,
-      "max_latency_ms": 2000,
-      "probability": 0.3
-    }
-  ]
+  chaos_operation: "set",
+  chaos_config: {
+    "enabled": true,
+    "rules": [
+      {
+        "id": "api-latency",
+        "type": "latency",
+        "enabled": true,
+        "url_pattern": "/api/.*",
+        "min_latency_ms": 500,
+        "max_latency_ms": 2000,
+        "probability": 0.3
+      }
+    ]
+  }
 }
 
 // Check status
-proxy {action: "chaos", id: "app", status: true}
+proxy {action: "chaos", id: "app", chaos_operation: "status"}
 → {enabled: true, preset: "flaky-api", stats: {affected_count: 38, errors_injected: 7}}
 
 // Disable chaos
-proxy {action: "chaos", id: "app", enabled: false}
+proxy {action: "chaos", id: "app", chaos_operation: "disable"}
 
 // Clear all rules
-proxy {action: "chaos", id: "app", clear: true}
+proxy {action: "chaos", id: "app", chaos_operation: "clear"}
 ```
 
 See [Chaos Engineering](/features/chaos-engineering) for complete documentation.
@@ -281,14 +323,14 @@ See [Chaos Engineering](/features/chaos-engineering) for complete documentation.
 Display toast notifications in connected browsers.
 
 ```json
-proxy {action: "toast", id: "app", message: "Build complete!"}
+proxy {action: "toast", id: "app", toast_message: "Build complete!"}
 ```
 
 Parameters:
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `id` | string | Yes | Proxy ID |
-| `message` | string | Yes | Notification message |
+| `toast_message` | string | Yes | Notification message |
 | `toast_type` | string | No | `success`, `error`, `warning`, `info` (default: `info`) |
 | `toast_title` | string | No | Optional title |
 | `toast_duration` | integer | No | Duration in milliseconds (default: 5000) |
@@ -297,16 +339,16 @@ Parameters:
 
 ```json
 // Simple notification
-proxy {action: "toast", id: "app", message: "Saved!"}
+proxy {action: "toast", id: "app", toast_message: "Saved!"}
 
 // Success with title
-proxy {action: "toast", id: "app", message: "All tests passed", toast_type: "success", toast_title: "Tests"}
+proxy {action: "toast", id: "app", toast_message: "All tests passed", toast_type: "success", toast_title: "Tests"}
 
 // Error that stays longer
-proxy {action: "toast", id: "app", message: "Build failed", toast_type: "error", toast_duration: 10000}
+proxy {action: "toast", id: "app", toast_message: "Build failed", toast_type: "error", toast_duration: 10000}
 
 // Warning
-proxy {action: "toast", id: "app", message: "Slow response detected", toast_type: "warning"}
+proxy {action: "toast", id: "app", toast_message: "Slow response detected", toast_type: "warning"}
 ```
 
 ## Features

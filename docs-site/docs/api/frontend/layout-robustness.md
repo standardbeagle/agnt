@@ -207,15 +207,15 @@ console.log(`${smallTargets.length} elements have small touch targets`)
 
 ---
 
-## capturePerformanceMetrics
+## auditPerformance
 
-Capture comprehensive performance metrics including CLS, long tasks, and resource timing.
+Capture comprehensive performance metrics including Core Web Vitals, CLS, long tasks, and resource timing. See [Quality Auditing](/api/frontend/quality-auditing#auditperformance) for the full report shape.
 
 ```javascript
-window.__devtool.capturePerformanceMetrics()
+window.__devtool.auditPerformance()
 ```
 
-**Returns:**
+**Returns:** Promise
 ```javascript
 {
   cls: {
@@ -269,7 +269,7 @@ window.__devtool.capturePerformanceMetrics()
 
 **Example:**
 ```javascript
-const perf = window.__devtool.capturePerformanceMetrics()
+const perf = await window.__devtool.auditPerformance()
 
 console.log(`Page weight: ${(perf.totals.pageWeight / 1024 / 1024).toFixed(2)} MB`)
 console.log(`Load time: ${perf.totals.loadTime}ms`)

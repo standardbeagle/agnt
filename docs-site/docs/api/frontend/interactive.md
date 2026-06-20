@@ -242,13 +242,13 @@ const info = window.__devtool.inspect(selected.selector)
 
 // Ask what to do
 const action = await window.__devtool.ask('What would you like to do?', [
-  'Show layout',
+  'Diagnose layout',
   'Check accessibility',
   'Measure from here'
 ])
 
-if (action.answer === 'Show layout') {
-  window.__devtool.showLayout()
+if (action.answer === 'Diagnose layout') {
+  console.log(window.__devtool.diagnoseLayout())
 } else if (action.answer === 'Check accessibility') {
   const a11y = window.__devtool.getA11yInfo(selected.selector)
   console.log(a11y)

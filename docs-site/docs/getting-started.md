@@ -4,51 +4,66 @@ sidebar_position: 2
 
 # Getting Started
 
-This guide will help you install, configure, and start using agnt with your AI coding assistant.
+agnt gives your AI coding agent eyes into the browser. This guide gets you from install to your first instrumented debugging session.
 
 ## Prerequisites
 
-- **Go 1.24.2** or later (for building from source)
 - An MCP-compatible AI assistant (Claude Code, Cursor, etc.)
+- **Go 1.25.0** or later (only if building from source)
 
 ## Installation
 
-### Claude Code Marketplace (Recommended)
+### Binary (Recommended)
 
-The easiest way to install agnt is through the Claude Code marketplace:
+Install the `agnt` binary with your preferred package manager:
 
 ```bash
-# Install from marketplace (automatically configures MCP)
-claude mcp add agnt --plugin agnt@agnt-marketplace
+# npm
+npm install -g @standardbeagle/agnt
+
+# pip
+pip install agnt
+
+# Go
+go install github.com/standardbeagle/agnt/cmd/agnt@latest
 ```
 
-This single command downloads the latest agnt binary and registers it as an MCP server.
-
-### From Go
+Then register it as an MCP server for any agent:
 
 ```bash
-go install github.com/standardbeagle/agnt/cmd/agnt@latest
+claude mcp add agnt -s user -- agnt mcp
+```
+
+### Claude Code Plugin
+
+To install the agnt plugin (skills + slash commands) from the marketplace:
+
+```bash
+/plugin marketplace add standardbeagle/standardbeagle-tools
+/plugin install agnt@standardbeagle-tools
+```
+
+### One-Shot Skills Install
+
+`agnt skills` installs the agnt skills and registers the MCP server in one step:
+
+```bash
+agnt skills
 ```
 
 ### From Source
 
 ```bash
-# Clone the repository
 git clone https://github.com/standardbeagle/agnt.git
 cd agnt
-
-# Build the binary
-make build
-
-# Or install to $GOPATH/bin
-make install
+make install-local   # installs to ~/.local/bin
 ```
 
 ### Verify Installation
 
 ```bash
 agnt --version
-# agnt version 0.7.10
+# agnt version 0.13.22
 ```
 
 ## Configuration
@@ -116,7 +131,7 @@ toast {
 }
 ```
 
-Run `/setup-project` in Claude Code to interactively generate this configuration.
+Run `/agnt:setup-project` in Claude Code to interactively generate this configuration.
 
 **Script Options:**
 - `run` - Shell command (e.g., `"npm run dev"`)

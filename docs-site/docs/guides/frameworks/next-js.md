@@ -11,11 +11,14 @@ Next.js applications present a unique debugging challenge. Errors can originate 
 
 ## Quick Setup
 
-Install agnt from the Claude Code marketplace:
+Install the `agnt` binary and register it as an MCP server:
 
 ```bash
-claude mcp add agnt --plugin agnt@agnt-marketplace
+npm install -g @standardbeagle/agnt
+claude mcp add agnt -s user -- agnt mcp
 ```
+
+> Prefer the Claude Code plugin (skills + slash commands)? Run `/plugin marketplace add standardbeagle/standardbeagle-tools` then `/plugin install agnt@standardbeagle-tools`.
 
 Then create an `.agnt.kdl` file in your Next.js project root:
 

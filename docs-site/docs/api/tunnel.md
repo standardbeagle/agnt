@@ -55,7 +55,7 @@ Parameters:
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `id` | string | Yes | - | Unique tunnel identifier |
-| `provider` | string | Yes | - | Tunnel provider: `cloudflare` or `ngrok` |
+| `provider` | string | Yes | - | Tunnel provider: `cloudflare`, `ngrok`, or `tailscale` |
 | `local_port` | integer | Yes | - | Local port to tunnel |
 | `local_host` | string | No | `localhost` | Local host to tunnel |
 | `binary_path` | string | No | (from PATH) | Path to tunnel binary |

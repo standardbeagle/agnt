@@ -36,12 +36,13 @@ This is where MCP servers provide the most dramatic improvement for web develope
 [agnt](https://github.com/standardbeagle/agnt) provides browser debugging through a reverse proxy with JavaScript injection. It captures screenshots, inspects DOM elements with computed styles, tracks JavaScript errors in real time, logs network traffic, runs accessibility audits, and executes arbitrary JavaScript in the browser context. It also includes a floating indicator for sending messages from the browser to your AI agent, a sketch mode for wireframing, and a design mode for AI-assisted UI iteration.
 
 ```bash
-# Claude Code marketplace
-claude mcp add agnt --plugin agnt@agnt-marketplace
-
-# Manual install
-go install github.com/standardbeagle/agnt/cmd/agnt@latest
+# Install the binary, then register it as an MCP server
+npm install -g @standardbeagle/agnt
 claude mcp add agnt -s user -- agnt mcp
+
+# Or install the Claude Code plugin (skills + slash commands)
+# /plugin marketplace add standardbeagle/standardbeagle-tools
+# /plugin install agnt@standardbeagle-tools
 ```
 
 **Strengths:** Deep browser integration through proxy architecture (not just screenshots), real-time error capture, works with any web framework, comprehensive diagnostic API with ~50 primitives. **Limitations:** Requires routing your dev server traffic through the proxy. Adds a layer between your browser and backend that, while lightweight, is a moving part.
@@ -51,7 +52,7 @@ claude mcp add agnt -s user -- agnt mcp
 The [Playwright MCP server](https://github.com/microsoft/playwright-mcp) from Microsoft uses Playwright for browser automation. It can navigate pages, fill forms, click elements, and extract content. It operates more like an E2E testing tool than a debugging tool -- good for scripted interactions, page navigation, and content extraction.
 
 ```bash
-npx @anthropic-ai/create-mcp -t @anthropic-ai/mcp-playwright
+claude mcp add playwright -- npx @playwright/mcp@latest
 ```
 
 **Strengths:** Full browser automation, handles SPAs and dynamic content, supports multiple browser engines. **Limitations:** Heavier than a proxy-based approach, oriented toward automation rather than live debugging of an already-running dev server.

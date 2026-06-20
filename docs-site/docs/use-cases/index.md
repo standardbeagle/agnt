@@ -63,11 +63,9 @@ proxy {action: "exec", id: "app", code: "window.__devtool.screenshot('modal-issu
 
 // Analyze stacking
 proxy {action: "exec", id: "app", code: `
-  const modal = document.querySelector('.modal');
-  const header = document.querySelector('header');
   return {
-    modal: window.__devtool.getStackingContext(modal),
-    header: window.__devtool.getStackingContext(header)
+    modal: window.__devtool.getStacking('.modal'),
+    header: window.__devtool.getStacking('header')
   };
 `}
 → AI sees: modal has z-index: 100 but header creates new stacking context with z-index: 1000
@@ -88,10 +86,10 @@ proxy {action: "exec", id: "app", code: "window.__devtool.checkResponsiveRisk()"
 
 // 2. Find elements that might not fit on mobile
 proxy {action: "exec", id: "app", code: `
-  window.__devtool.findElements({
-    selector: '*',
-    filter: el => el.offsetWidth > 375  // iPhone SE width
-  })
+  [...document.querySelectorAll('*')]
+    .filter(el => el.offsetWidth > 375)  // iPhone SE width
+    .map(el => el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') +
+      (el.className && typeof el.className === 'string' ? '.' + el.className.trim().split(/\\s+/).join('.') : ''))
 `}
 
 // 3. Check touch target sizes (mobile usability)
@@ -100,7 +98,7 @@ proxy {action: "exec", id: "app", code: `
     const rect = el.getBoundingClientRect();
     return rect.width < 44 || rect.height < 44;  // Apple HIG minimum
   }).map(el => ({
-    selector: window.__devtool.getSelector(el),
+    selector: el.tagName.toLowerCase() + (el.id ? '#' + el.id : ''),
     size: { width: el.offsetWidth, height: el.offsetHeight }
   }))
 `}
@@ -375,7 +373,7 @@ Most frontend bugs happen under conditions developers never test: slow networks,
 
 ```json
 // Simulate 3G mobile network
-proxy {action: "chaos", id: "app", preset: "mobile-3g"}
+proxy {action: "chaos", id: "app", chaos_operation: "preset", chaos_preset: "mobile-3g"}
 
 // Now use the app - do loading states appear? Is the UI responsive during loads?
 
@@ -387,7 +385,7 @@ proxylog {proxy_id: "app", types: ["error"]}
 
 ```json
 // Random 500 errors, timeouts, variable latency
-proxy {action: "chaos", id: "app", preset: "flaky-api"}
+proxy {action: "chaos", id: "app", chaos_operation: "preset", chaos_preset: "flaky-api"}
 
 // Verify: Do error messages appear? Can users retry? Is state consistent?
 ```
@@ -396,7 +394,7 @@ proxy {action: "chaos", id: "app", preset: "flaky-api"}
 
 ```json
 // Responses arrive in random order
-proxy {action: "chaos", id: "app", preset: "race-condition"}
+proxy {action: "chaos", id: "app", chaos_operation: "preset", chaos_preset: "race-condition"}
 
 // Type in a search box rapidly - does the UI show stale results?
 // Click a button twice - does the handler guard against double-submit?
@@ -409,12 +407,18 @@ proxy {action: "chaos", id: "app", preset: "race-condition"}
 proxy {
   action: "chaos",
   id: "app",
-  rules: [{
-    "type": "http_error",
-    "url_pattern": "/api/.*",
-    "error_codes": [401],
-    "probability": 1.0
-  }]
+  chaos_operation: "set",
+  chaos_config: {
+    "enabled": true,
+    "rules": [{
+      "id": "expire-tokens",
+      "type": "http_error",
+      "enabled": true,
+      "url_pattern": "/api/.*",
+      "error_codes": [401],
+      "probability": 1.0
+    }]
+  }
 }
 
 // Does the app redirect to login? Is state preserved for after re-auth?
@@ -427,16 +431,21 @@ proxy {
 proxy {
   action: "chaos",
   id: "app",
-  rules: [
-    {
-      "id": "slow-checkout",
-      "type": "latency",
-      "url_pattern": "/api/checkout",
-      "min_latency_ms": 3000,
-      "max_latency_ms": 8000,
-      "probability": 1.0
-    }
-  ]
+  chaos_operation: "set",
+  chaos_config: {
+    "enabled": true,
+    "rules": [
+      {
+        "id": "slow-checkout",
+        "type": "latency",
+        "enabled": true,
+        "url_pattern": "/api/checkout",
+        "min_latency_ms": 3000,
+        "max_latency_ms": 8000,
+        "probability": 1.0
+      }
+    ]
+  }
 }
 ```
 

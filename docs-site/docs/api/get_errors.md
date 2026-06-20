@@ -6,6 +6,10 @@ sidebar_position: 6
 
 Unified error aggregation across all active processes and proxies. Collects, deduplicates, and formats errors from multiple sources into a single view.
 
+:::note Legacy tool
+When the incident pipeline is enabled (`alerts.incident-pipeline true`), [`get_incidents`](/api/get_incidents) is the authoritative inbox and `get_errors` becomes a shim over it. Prefer `get_incidents` for new workflows.
+:::
+
 ## Synopsis
 
 ```json
