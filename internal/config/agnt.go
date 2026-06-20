@@ -798,6 +798,13 @@ type AIConfig struct {
 	// omit the cheat sheet — useful when the agent is already primed
 	// via skill/prompt overrides and the extra ~40 lines are noise.
 	HelpersCheatSheet *bool `kdl:"helpers-cheat-sheet"`
+	// PersistContext controls whether `agnt run` writes the agnt steering
+	// block into the agent's always-loaded context file (AGENTS.md, GEMINI.md,
+	// …) for non-Claude agents. Those agents only get a one-shot stdin nudge,
+	// so the file makes the guidance persist every turn. nil (the default)
+	// means "enabled"; set to an explicit false to opt out (e.g. you manage
+	// AGENTS.md yourself).
+	PersistContext *bool `kdl:"persist-context"`
 }
 
 // CheatSheetEnabled reports whether the helpers cheat sheet should be
@@ -807,6 +814,16 @@ func (c *AIConfig) CheatSheetEnabled() bool {
 		return true
 	}
 	return *c.HelpersCheatSheet
+}
+
+// PersistContextEnabled reports whether `agnt run` should write the agnt
+// steering block into the agent's always-loaded context file. Defaults to true
+// (nil AIConfig or unset field).
+func (c *AIConfig) PersistContextEnabled() bool {
+	if c == nil || c.PersistContext == nil {
+		return true
+	}
+	return *c.PersistContext
 }
 
 // AIAdapterConfig overrides the built-in behavior of a single
@@ -1042,28 +1059,31 @@ watch {target: "process", process_id: "dev"}  // get a streaming monitor command
 
 Pattern: ` + "`proc run`" + ` to start, ` + "`proc output`" + ` to inspect, ` + "`watch`" + ` to follow live, ` + "`proc stop`" + ` to terminate. The ` + "`agnt hook check-bash`" + ` interceptor will block raw ` + "`npm run`" + `/` + "`yarn`" + `/` + "`go run`" + `/etc. via the PreToolUse hook when wired into ` + "`~/.claude/settings.json`" + `.
 `)
-	sb.WriteString("\n## agnt Tools\n\n")
-	sb.WriteString("- **get_errors** — unified JS/HTTP/process errors\n")
-	sb.WriteString("- **proxy** — reverse proxy + JS injection. actions: `list`/`start`/`stop`/`exec`/`screenshot`\n")
-	sb.WriteString("- **proc** — process mgmt. actions: `list`/`output`/`stop`/`run`\n")
-	sb.WriteString("- **proxylog** — HTTP traffic query. filter by type/body\n")
-	sb.WriteString("- **responsive_audit** — viewport audit (mobile/tablet/desktop)\n")
-	sb.WriteString("- **automation** — chromedp headless. screenshot/navigate/evaluate\n")
-	sb.WriteString("- **currentpage** — active page/URL\n")
+	// agnt Tools: trigger → tool → skill. The line is the always-loaded index;
+	// the `/agnt:*` skills carry the depth and activate on demand. Keep tool
+	// names + section headers intact (pinned by TestBuildSystemPrompt).
+	sb.WriteString("\n## agnt Tools (trigger → tool → skill for depth)\n\n")
+	sb.WriteString("- errors anywhere → `get_errors {}` (legacy) / `get_incidents {}` (authoritative, pipeline on) · skill: `/agnt:check-errors`, `/agnt:error-monitor`\n")
+	sb.WriteString("- dev server / process → `proc` (run/output/stop/list) · skill: `/agnt:process-proxy`\n")
+	sb.WriteString("- what user sees now → `currentpage {}` · skill: `/agnt:current-page`\n")
+	sb.WriteString("- reverse proxy + browser JS → `proxy` (start/list/exec/screenshot) · skill: `/agnt:dev-proxy`, `/agnt:browser-debug`\n")
+	sb.WriteString("- HTTP traffic → `proxylog` (filter type/body) · skill: `/agnt:review-api`\n")
+	sb.WriteString("- viewport audit → `responsive_audit` (mobile/tablet/desktop) · skill: `/agnt:responsive-check`\n")
+	sb.WriteString("- headless drive → `automation` (screenshot/navigate/evaluate)\n")
 	sb.WriteString("\n## Debugging Workflow\n\n")
-	sb.WriteString("Broken thing → call MCP tools, this order:\n\n")
-	sb.WriteString("1. `get_errors {}` — first always\n")
+	sb.WriteString("Broken thing → MCP tools, this order:\n\n")
+	sb.WriteString("1. `get_incidents {}` / `get_errors {}` — first always\n")
 	sb.WriteString("2. `currentpage {}` — what user sees\n")
 	sb.WriteString("3. `proc {action:\"output\", id:\"...\"}` — crash/build output\n")
 	sb.WriteString("4. `proxylog {action:\"query\", types:[\"error\"]}` — HTTP/API fail\n")
-	sb.WriteString("5. `proxy {action:\"exec\", id:\"...\", code:\"...\"}` — diagnostic JS in browser\n")
+	sb.WriteString("5. `proxy {action:\"exec\", id:\"...\", code:\"...\"}` — diagnostic JS\n")
 	sb.WriteString("6. screenshot if visual\n")
 	sb.WriteString("\n## Common Patterns\n\n")
-	sb.WriteString("- \"page blank\" → get_errors → proc output\n")
-	sb.WriteString("- \"API 500\" → proxylog query endpoint\n")
-	sb.WriteString("- \"style wrong\" → responsive_audit + screenshot\n")
-	sb.WriteString("- \"click dead\" → proxy exec → inspect `pointer-events`, overlays, z-index\n")
-	sb.WriteString("- \"crashed\" → proc output → restart\n")
+	sb.WriteString("- page blank → get_errors → proc output\n")
+	sb.WriteString("- API 500 → proxylog query endpoint\n")
+	sb.WriteString("- style wrong → responsive_audit + screenshot\n")
+	sb.WriteString("- click dead → proxy exec → pointer-events / overlays / z-index\n")
+	sb.WriteString("- crashed → proc output → restart\n")
 
 	// Add configured scripts
 	if len(c.Scripts) > 0 {
