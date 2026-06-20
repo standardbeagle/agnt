@@ -5,6 +5,8 @@ slug: /
 
 # agnt
 
+**Browser superpowers for AI coding agents.**
+
 ## Stop Describing Bugs. Let Your AI See Them.
 
 Every time you tell Claude "the button looks weird" or "there's an error somewhere," you're spending tokens on descriptions your AI could just *see*.
@@ -50,7 +52,7 @@ Built-in chaos engineering lets you simulate:
 - **Connection drops** - mid-response disconnects
 
 ```bash
-proxy {action: "chaos", id: "app", preset: "flaky-api"}
+proxy {action: "chaos", id: "app", chaos_operation: "preset", chaos_preset: "flaky-api"}
 # Your app now experiences random failures - watch what breaks
 ```
 

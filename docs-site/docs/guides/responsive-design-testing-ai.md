@@ -286,5 +286,5 @@ The entire diagnosis and fix took seconds. Finding this manually would have requ
 ## See Also
 
 - [Mobile Device Testing](/use-cases/mobile-testing) -- tunnel setup, BrowserStack integration, and real device workflows
-- [Layout Robustness API](/api/frontend/layout-robustness) -- full reference for `checkResponsiveRisk()`, `checkTextFragility()`, and `capturePerformanceMetrics()`
+- [Layout Robustness API](/api/frontend/layout-robustness) -- full reference for `checkResponsiveRisk()`, `checkTextFragility()`, and `auditPerformance()`
 - [Layout Diagnostics API](/api/frontend/layout-diagnostics) -- reference for `findOverflows()`, `findOffscreen()`, and `findStackingContexts()`

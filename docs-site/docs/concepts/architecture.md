@@ -4,7 +4,7 @@ sidebar_position: 1
 
 # Architecture
 
-agnt follows a clean three-layer architecture designed for performance, reliability, and extensibility.
+agnt follows a five-layer architecture designed for performance, reliability, and extensibility.
 
 ## System Overview
 
@@ -19,10 +19,18 @@ agnt follows a clean three-layer architecture designed for performance, reliabil
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                      agnt                             │
+│                      agnt                                    │
 │  ┌─────────────────────────────────────────────────────────┐│
 │  │                    MCP Tools Layer                       ││
 │  │  detect │ run │ proc │ proxy │ proxylog │ currentpage   ││
+│  └─────────────────────────────────────────────────────────┘│
+│  ┌─────────────────────────────────────────────────────────┐│
+│  │                       Daemon Layer                       ││
+│  │   background service │ persistent state │ socket IPC     ││
+│  └─────────────────────────────────────────────────────────┘│
+│  ┌─────────────────────────────────────────────────────────┐│
+│  │                      Protocol Layer                      ││
+│  │            text-based IPC commands/responses             ││
 │  └─────────────────────────────────────────────────────────┘│
 │  ┌─────────────────────────────────────────────────────────┐│
 │  │                  Business Logic Layer                    ││
@@ -39,6 +47,10 @@ agnt follows a clean three-layer architecture designed for performance, reliabil
               ▼               ▼               ▼
          OS Processes    HTTP Traffic    Dev Server
 ```
+
+The daemon is a long-running background service that outlives any single
+client session — processes and proxies survive client disconnects. Clients
+(the MCP server, `agnt run`) talk to it over a text-based socket protocol.
 
 ## Layer Responsibilities
 
@@ -67,6 +79,23 @@ func handleDetect(input DetectInput) (*mcp.CallToolResult, DetectOutput, error) 
     return formatResult(info, err)
 }
 ```
+
+### Daemon Layer
+
+Location: `internal/daemon/`
+
+A persistent background service that outlives client sessions. It owns process
+and proxy lifecycles, caches state, runs the event/alert system, and serves
+clients over socket IPC. Its in-memory state is a cache — the OS is always the
+source of truth, reconciled on session connect and periodically.
+
+### Protocol Layer
+
+Location: `internal/protocol/`
+
+A text-based IPC protocol of commands and responses. Because `agnt run` and
+`agnt mcp` are separate processes, they communicate with the daemon through
+this protocol rather than in-process calls.
 
 ### Business Logic Layer
 
@@ -185,10 +214,11 @@ run {script_name: "dev"}
 Browser Request
       │
       ▼
-┌─────────────┐
-│   Proxy     │──────────────────────┐
-│  (port 8080)│                      │
-└─────┬───────┘                      │
+┌──────────────┐
+│   Proxy      │─────────────────────┐
+│ (hash port,  │                     │
+│  10000-60000)│                     │
+└─────┬────────┘                      │
       │                              ▼
       │ (forward)             TrafficLogger
       │                       (capture req/res)
@@ -252,7 +282,7 @@ WebSocket: Performance ───────────────────
 
 ## Configuration
 
-Currently hardcoded in `cmd/agnt/main.go`:
+Daemon-level defaults are hardcoded in `cmd/agnt/main.go`:
 
 ```go
 ManagerConfig{
@@ -263,7 +293,9 @@ ManagerConfig{
 }
 ```
 
-Future: KDL-based configuration file support.
+Per-project behavior — scripts, proxies, hooks, alerts — is configured through
+the `.agnt.kdl` file in your project root. See the
+[.agnt.kdl Configuration](/agnt-kdl) reference for the full schema.
 
 ## Error Handling
 

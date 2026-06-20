@@ -43,7 +43,7 @@ proxy {action: "exec", id: "app", code: "window.__devtool.inspect('#header')"}
 | [Interactive](#interactive) | `selectElement`, `measureBetween`, `waitForElement`, `ask` |
 | [State Capture](#state-capture) | `captureDOM`, `captureStyles`, `captureState`, `captureNetwork` |
 | [Accessibility](#accessibility) | `getA11yInfo`, `getContrast`, `getTabOrder`, `getScreenReaderText`, `auditAccessibility` |
-| [Composite](#composite-functions) | `inspect`, `diagnoseLayout`, `showLayout` |
+| [Composite](#composite-functions) | `inspect`, `diagnoseLayout`, `getLayout` |
 | [Scored Audits](/api/frontend/quality-auditing) | `auditAll` aggregates 8 scored audits — DOM, CSS, performance, security, SEO, accessibility, [API efficiency](/api/api_audit), [loading](/api/loading_audit) |
 | [Responsive Mode](/api/frontend/responsive-mode) | `responsive.open`, `responsive.close`, `responsive.toggle`, `responsive.setWidth`, `responsive.getState` |
 
@@ -622,20 +622,16 @@ window.__devtool.diagnoseLayout()
   }
 ```
 
-### showLayout
+### diagnoseLayout
 
-Visual debugging overlay:
+Structured layout diagnosis for an element — box model, positioning, overflow, and stacking context in one call:
 
 ```javascript
-window.__devtool.showLayout({
-  showMargins: true,
-  showPadding: true,
-  showGrid: true
-})
-→ {overlayId: "layout-1"}
+window.__devtool.diagnoseLayout('.card')
+→ { box: {...}, position: "relative", overflow: "hidden", stacking: {...} }
 ```
 
-Displays colored overlays showing margins (orange), padding (green), and grid lines.
+For a visible overlay on the page, use `highlight(selector)`; clear overlays with `clearAllOverlays()`.
 
 ## Screenshots
 

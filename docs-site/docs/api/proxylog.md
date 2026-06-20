@@ -255,13 +255,9 @@ Response:
 ```json
 {
   "total_entries": 1542,
-  "by_type": {
-    "http": 1489,
-    "error": 8,
-    "performance": 45
-  },
-  "dropped": 542,
-  "max_entries": 1000
+  "available_entries": 1000,
+  "max_size": 1000,
+  "dropped": 542
 }
 ```
 

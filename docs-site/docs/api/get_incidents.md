@@ -12,19 +12,25 @@ When the incident pipeline is **off** (the default), use [get_errors](/api/get_e
 
 ```json
 get_incidents {}
-get_incidents {severity: "error", limit: 10}
-get_incidents {cursor: "<opaque-cursor>"}
-get_incidents {source: "browser_js", raw: true}
+get_incidents {severity: ["error", "critical"], limit: 10}
+get_incidents {since: "<cursor-from-prior-pull>"}
+get_incidents {sources: ["browser_js"], raw: true}
+get_incidents {since: "5m", detail: "full"}
 ```
 
 ## Parameters
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
-| `cursor` | string | No | beginning | Opaque cursor from a previous response for incremental pull |
-| `limit` | int | No | 25 | Max incidents returned |
-| `severity` | string | No | `warning` | Minimum severity: `info`, `warning`, `error`, `critical` |
-| `source` | string | No | all | Filter by signal source (e.g. `browser_js`, `http_5xx`, `process_crash`) |
+| `severity` | string[] | No | all | Filter by band: `critical`, `error`, `warning`, `info` |
+| `since` | string | No | beginning | Cursor from a prior pull (RFC3339 timestamp) **or** a duration like `5m` |
+| `sources` | string[] | No | all | Filter by signal source: `browser_js`, `http_5xx`, `http_4xx`, `transport_err`, `proxy_diag`, `process_alert`, `process_crash`, `build_fail`, `port_conflict`, `shutdown`, `hook_stop_failure` |
+| `fingerprints` | string[] | No | - | Retrieve specific incidents by fingerprint |
+| `proxy_id` | string | No | - | Filter to a specific proxy |
+| `process_id` | string | No | - | Filter to a specific process |
+| `detail` | string | No | `summary` | `summary` or `full` (hydrates the full payload from the blob store) |
+| `mark_read` | bool | No | false | Advance the cursor and mark returned incidents as read |
+| `limit` | int | No | 20 | Max incidents returned (max 100) |
 | `raw` | bool | No | false | Return full JSON instead of compact text |
 
 ## Priority Ordering
@@ -53,13 +59,15 @@ Each incident carries occurrence count, recency, a first-frame location, and —
 
 ## Cursor Pull
 
-The response includes a cursor. Pass it back on the next call to fetch only incidents newer than the last pull:
+The response includes a cursor. Pass it back as `since` on the next call to fetch only incidents newer than the last pull:
 
 ```json
-get_incidents {limit: 25}
+get_incidents {limit: 20}
 // ... process, note the cursor in the response ...
-get_incidents {cursor: "<that-cursor>"}
+get_incidents {since: "<that-cursor>"}
 ```
+
+Add `mark_read: true` to advance the cursor server-side and mark the returned incidents as read in one call.
 
 ## Session Isolation
 

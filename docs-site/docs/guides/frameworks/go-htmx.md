@@ -11,11 +11,14 @@ Go web applications built with Templ and HTMX have a debugging profile unlike Ja
 
 ## Quick Setup
 
-Install agnt from the Claude Code marketplace:
+Install the `agnt` binary and register it as an MCP server:
 
 ```bash
-claude mcp add agnt --plugin agnt@agnt-marketplace
+npm install -g @standardbeagle/agnt
+claude mcp add agnt -s user -- agnt mcp
 ```
+
+> Prefer the Claude Code plugin (skills + slash commands)? Run `/plugin marketplace add standardbeagle/standardbeagle-tools` then `/plugin install agnt@standardbeagle-tools`.
 
 Create `.agnt.kdl` in your project root. This example uses [air](https://github.com/air-verse/air) for live reloading:
 

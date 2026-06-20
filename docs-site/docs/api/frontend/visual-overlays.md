@@ -276,4 +276,4 @@ Overlays are positioned absolutely and follow the element:
 ## See Also
 
 - [Layout Diagnostics](/api/frontend/layout-diagnostics) - Find elements to highlight
-- [Composite Functions](/api/frontend/composite) - showLayout creates overlays
+- [Composite Functions](/api/frontend/composite) - inspect, diagnoseLayout, getLayout

@@ -20,6 +20,16 @@ proc {action: "<action>", ...params}
 | `status` | Get status of a specific process |
 | `output` | Get process output with filtering |
 | `stop` | Stop a running process |
+| `restart` | Restart a process |
+| `run` | Start a configured script |
+| `run_group` | Start a group of scripts (respecting `depends_on`) |
+| `wait` | Wait for a process to reach a ready signal |
+| `find` | Find a process by name or port |
+| `autorestart` | Toggle auto-restart for a process |
+| `scripts` | List scripts declared in `.agnt.kdl` |
+| `script_output` | Get output for a script run |
+| `script_history` | Get run history for a script |
+| `snapshot` | Capture a point-in-time process snapshot |
 | `cleanup_port` | Kill processes using a specific port |
 
 ## list

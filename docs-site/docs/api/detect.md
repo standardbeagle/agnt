@@ -23,10 +23,21 @@ detect {path: "<directory>"}
 ```typescript
 interface DetectResponse {
   type: "go" | "node" | "python" | "unknown";
+  name: string;              // Project name from manifest
+  framework?: string;        // Detected framework (e.g. next, vite, django)
   package_manager?: string;  // npm, pnpm, yarn, bun, pip, poetry, etc.
-  name?: string;             // Project name from manifest
-  version?: string;          // Project version
-  scripts: string[];         // Available script names
+  scripts: DetectScript[];   // Full script descriptors
+  script_names: string[];    // Convenience list of script names
+  metadata?: Record<string, string>;
+  summary?: string;          // Human-readable detection summary
+}
+
+interface DetectScript {
+  name: string;
+  command: string;
+  proc_run: string;          // Suggested `run` command for proc/run
+  proc_wait: string;         // Readiness wait hint
+  likely_signals: string[];  // URL/error signals this script tends to emit
 }
 ```
 
@@ -44,8 +55,17 @@ Response:
   "type": "node",
   "package_manager": "pnpm",
   "name": "my-react-app",
-  "version": "1.0.0",
-  "scripts": ["dev", "build", "test", "lint", "typecheck"]
+  "framework": "vite",
+  "script_names": ["dev", "build", "test", "lint", "typecheck"],
+  "scripts": [
+    {
+      "name": "dev",
+      "command": "vite",
+      "proc_run": "pnpm run dev",
+      "proc_wait": "Local:\\s+{url}",
+      "likely_signals": ["url", "http_error"]
+    }
+  ]
 }
 ```
 
@@ -66,7 +86,7 @@ Response:
 {
   "type": "go",
   "name": "github.com/user/myproject",
-  "scripts": ["build", "test", "lint", "vet", "fmt"]
+  "script_names": ["build", "test", "lint", "vet", "fmt"]
 }
 ```
 
@@ -81,7 +101,7 @@ Response:
 {
   "type": "python",
   "name": "my-python-app",
-  "scripts": ["test", "lint", "format", "type-check"]
+  "script_names": ["test", "lint", "format", "type-check"]
 }
 ```
 

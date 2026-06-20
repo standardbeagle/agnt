@@ -155,26 +155,6 @@ detect {path: "./scripts"}
 → {type: "python", scripts: ["lint", "format"]}
 ```
 
-### CI/CD Integration
-
-Use detection to run the right commands without hardcoding:
-
-```yaml
-# GitHub Actions example
-- name: Detect Project
-  run: |
-    PROJECT_TYPE=$(agnt detect --path . | jq -r '.type')
-    echo "PROJECT_TYPE=$PROJECT_TYPE" >> $GITHUB_ENV
-
-- name: Run Tests
-  run: |
-    if [ "$PROJECT_TYPE" = "node" ]; then
-      pnpm test
-    elif [ "$PROJECT_TYPE" = "go" ]; then
-      go test ./...
-    fi
-```
-
 ### IDE Integration
 
 AI assistants can use detection to provide context-aware suggestions:
