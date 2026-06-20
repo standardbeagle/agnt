@@ -792,6 +792,10 @@
 
     // Performance tracking
     function sendPageLoad() {
+      // The chrome shell opens a control WebSocket for the indicator + panel
+      // but is not a telemetry context — it must not report its own page load
+      // or performance (the content frame owns that).
+      if (window.__devtool_frame_role === 'chrome') { return; }
       try {
         if (document.readyState === 'complete') {
           capturePerformance();
@@ -1041,18 +1045,31 @@
     // Replace connect with diagnostics version
     connect = connectWithDiagnostics;
 
-    // Initialize — but only when this frame is the canonical telemetry context.
-    // Under the always-wrap model (docs/responsive-canonical-target.md §5) the
-    // chrome shell and any passive foreign frames must NOT open a telemetry
-    // WebSocket or install error tracking; exactly one telemetry context exists
-    // per page, in the content frame. The role is resolved by frames.js (loads
-    // first) into window.__devtool_frame_role; absent (legacy/standalone) we
-    // default to running so non-wrapped pages keep full instrumentation.
+    // Initialize. Two concerns gate separately under the always-wrap model
+    // (docs/responsive-canonical-target.md §5):
+    //
+    //   * Error/mutation INSTRUMENTATION is the canonical telemetry context —
+    //     exactly one per page, in the content frame. The chrome shell and any
+    //     passive foreign frames must NOT install error tracking (double
+    //     reporting).
+    //   * The control TRANSPORT (this WebSocket) is what drives the indicator
+    //     status dot (core.isConnected) and the panel send button
+    //     (core.send('panel_message', …)). Those UI surfaces live in the chrome
+    //     shell (see injector.go: proxy UI runtime lives in the shell), so the
+    //     shell needs its own WebSocket even though it reports no telemetry.
+    //
+    // Role is resolved by frames.js (loads first) into
+    // window.__devtool_frame_role; absent (legacy/standalone) we default to the
+    // content path so non-wrapped pages keep full instrumentation.
     try {
       var __frameRole = window.__devtool_frame_role;
-      if (!__frameRole || __frameRole === 'content') {
+      var __isContent = (!__frameRole || __frameRole === 'content');
+      var __wantsTransport = __isContent || __frameRole === 'chrome';
+      if (__isContent) {
         setupErrorTrackingWithBuffer();
-        addDiagnostic('core', 'initializing', { version: window.__devtool_version || 'unknown' });
+      }
+      if (__wantsTransport) {
+        addDiagnostic('core', 'initializing', { version: window.__devtool_version || 'unknown', role: __frameRole || 'standalone' });
         connect();
       } else {
         addDiagnostic('core', 'telemetry_suppressed', { role: __frameRole });
