@@ -203,7 +203,7 @@ func TestBundleRoleGating(t *testing.T) {
 	bundle := scripts.GetCombinedScript()
 	for _, want := range []string{
 		"window.__devtool_frame_role", // stable role global (frames.js)
-		"telemetry_suppressed",        // core gates WS/error tracking
+		"telemetry_suppressed",        // passive foreign frames get no transport
 	} {
 		if !strings.Contains(bundle, want) {
 			t.Errorf("bundle missing role-gating marker %q", want)
@@ -213,6 +213,36 @@ func TestBundleRoleGating(t *testing.T) {
 	// set before core's init reads it.
 	if i, j := strings.Index(bundle, "window.__devtool_frame_role ="), strings.Index(bundle, "telemetry_suppressed"); i == -1 || j == -1 || i > j {
 		t.Errorf("frames.js must set the role global before core reads it (frames=%d core=%d)", i, j)
+	}
+}
+
+// TestShellOpensControlTransport: the chrome shell hosts the indicator status
+// dot (core.isConnected) and the panel send button (core.send) — so it MUST
+// open the control WebSocket even though it installs no telemetry hooks.
+// Regression guard for the always-wrap bug where the shell fell into the
+// telemetry-suppressed branch, leaving the dot red and send a no-op while only
+// the content frame connected.
+func TestShellOpensControlTransport(t *testing.T) {
+	bundle := scripts.GetCombinedScript()
+
+	// The transport must be opened for the chrome role, not only content.
+	if !strings.Contains(bundle, "__frameRole === 'chrome'") {
+		t.Errorf("core init must consider the chrome role for the control transport")
+	}
+	if !strings.Contains(bundle, "__wantsTransport") {
+		t.Errorf("core init must compute a transport gate distinct from the instrumentation gate")
+	}
+
+	// Instrumentation (error/mutation tracking) stays content-only: it must be
+	// guarded by the content-only predicate, never by the transport predicate.
+	errIdx := strings.Index(bundle, "setupErrorTrackingWithBuffer();")
+	contentIdx := strings.Index(bundle, "var __isContent =")
+	transportIdx := strings.Index(bundle, "var __wantsTransport =")
+	if errIdx == -1 || contentIdx == -1 || transportIdx == -1 {
+		t.Fatalf("core init markers missing (err=%d content=%d transport=%d)", errIdx, contentIdx, transportIdx)
+	}
+	if contentIdx > transportIdx {
+		t.Errorf("content gate must be declared before transport gate")
 	}
 }
 

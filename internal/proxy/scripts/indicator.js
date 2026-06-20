@@ -3179,7 +3179,8 @@
     responsiveBtn.title = 'Responsive mode \u2014 live iframe at controllable width';
     // Override hover handlers to preserve active state
     state.inspectBtn.onmouseleave = function() {
-      var active = window.__devtool_style_editor && window.__devtool_style_editor.isOpen();
+      var sw = targetWindow();
+      var active = sw.__devtool_style_editor && sw.__devtool_style_editor.isOpen();
       if (!active) {
         state.inspectBtn.style.background = 'transparent';
         state.inspectBtn.style.borderColor = TOKENS.colors.border;
@@ -3242,6 +3243,27 @@
     return btn;
   }
 
+  // Page-operating surfaces (audits, element picker, sketch/design overlays)
+  // must run against the real page DOM. Under the always-wrap frame model the
+  // page lives in the content <iframe> while this indicator runs in the chrome
+  // shell — so `document` here is the shell, and elementFromPoint/querySelector
+  // would only ever see the iframe element. targetWindow() returns the window
+  // whose `document` IS the page: the active content frame when we are the
+  // shell, else our own window (unwrapped page / legacy standalone). Same-origin
+  // (the proxy serves both frames) so reaching the content frame's globals and
+  // calling them synchronously is safe; on any cross-origin / not-ready failure
+  // we fall back to self.
+  function targetWindow() {
+    try {
+      if (window.__devtool_frame_role === 'chrome' &&
+          window.__devtool_frames && typeof window.__devtool_frames.active === 'function') {
+        var a = window.__devtool_frames.active();
+        if (a && a.win) { return a.win; }
+      }
+    } catch (e) { /* cross-origin / shell registry not ready — fall back to self */ }
+    return window;
+  }
+
   // Audit actions configuration
   var AUDIT_ACTIONS = [
     // Quality Audits
@@ -3251,8 +3273,9 @@
       description: 'Comprehensive quality audit with grade (A-F)',
       async: true,
       fn: function() {
-        if (window.__devtool && window.__devtool.auditPageQuality) {
-          return window.__devtool.auditPageQuality();
+        var w = targetWindow();
+        if (w.__devtool && w.__devtool.auditPageQuality) {
+          return w.__devtool.auditPageQuality();
         }
         return Promise.resolve({ error: 'Page quality audit not available' });
       }
@@ -3262,8 +3285,9 @@
       label: 'Accessibility',
       description: 'Check for a11y issues (WCAG)',
       fn: function() {
-        if (window.__devtool_accessibility) {
-          return window.__devtool_accessibility.auditAccessibility();
+        var w = targetWindow();
+        if (w.__devtool_accessibility) {
+          return w.__devtool_accessibility.auditAccessibility();
         }
         return { error: 'Accessibility module not loaded' };
       }
@@ -3273,8 +3297,9 @@
       label: 'Security',
       description: 'Mixed content, XSS risks, noopener',
       fn: function() {
-        if (window.__devtool_audit) {
-          return window.__devtool_audit.auditSecurity();
+        var w = targetWindow();
+        if (w.__devtool_audit) {
+          return w.__devtool_audit.auditSecurity();
         }
         return { error: 'Audit module not loaded' };
       }
@@ -3284,8 +3309,9 @@
       label: 'SEO / Meta',
       description: 'Meta tags, headings, structure',
       fn: function() {
-        if (window.__devtool_audit) {
-          return window.__devtool_audit.auditPageQuality();
+        var w = targetWindow();
+        if (w.__devtool_audit) {
+          return w.__devtool_audit.auditPageQuality();
         }
         return { error: 'Audit module not loaded' };
       }
@@ -3296,8 +3322,9 @@
       label: 'Layout Issues',
       description: 'Overflows, z-index, offscreen elements',
       fn: function() {
-        if (window.__devtool && window.__devtool.diagnoseLayout) {
-          return window.__devtool.diagnoseLayout();
+        var w = targetWindow();
+        if (w.__devtool && w.__devtool.diagnoseLayout) {
+          return w.__devtool.diagnoseLayout();
         }
         return { error: 'Layout diagnostics not available' };
       }
@@ -3307,8 +3334,9 @@
       label: 'Text Fragility',
       description: 'Truncation, overflow, font issues',
       fn: function() {
-        if (window.__devtool && window.__devtool.checkTextFragility) {
-          return window.__devtool.checkTextFragility();
+        var w = targetWindow();
+        if (w.__devtool && w.__devtool.checkTextFragility) {
+          return w.__devtool.checkTextFragility();
         }
         return { error: 'Text fragility check not available' };
       }
@@ -3318,8 +3346,9 @@
       label: 'Responsive Risk',
       description: 'Elements that may break at different sizes',
       fn: function() {
-        if (window.__devtool && window.__devtool.checkResponsiveRisk) {
-          return window.__devtool.checkResponsiveRisk();
+        var w = targetWindow();
+        if (w.__devtool && w.__devtool.checkResponsiveRisk) {
+          return w.__devtool.checkResponsiveRisk();
         }
         return { error: 'Responsive risk check not available' };
       }
@@ -3330,8 +3359,9 @@
       label: 'Last Click Context',
       description: 'What the user just clicked + mouse trail',
       fn: function() {
-        if (window.__devtool_interactions) {
-          return window.__devtool_interactions.getLastClickContext();
+        var w = targetWindow();
+        if (w.__devtool_interactions) {
+          return w.__devtool_interactions.getLastClickContext();
         }
         return { error: 'Interaction tracking not available' };
       }
@@ -3341,11 +3371,12 @@
       label: 'Recent DOM Changes',
       description: 'What changed in the DOM recently',
       fn: function() {
-        if (window.__devtool_mutations) {
+        var w = targetWindow();
+        if (w.__devtool_mutations) {
           return {
-            added: window.__devtool_mutations.getAdded(Date.now() - 30000),
-            removed: window.__devtool_mutations.getRemoved(Date.now() - 30000),
-            modified: window.__devtool_mutations.getModified(Date.now() - 30000)
+            added: w.__devtool_mutations.getAdded(Date.now() - 30000),
+            removed: w.__devtool_mutations.getRemoved(Date.now() - 30000),
+            modified: w.__devtool_mutations.getModified(Date.now() - 30000)
           };
         }
         return { error: 'Mutation tracking not available' };
@@ -3357,8 +3388,9 @@
       label: 'Browser State',
       description: 'localStorage, sessionStorage, cookies',
       fn: function() {
-        if (window.__devtool_capture) {
-          return window.__devtool_capture.captureState(['localStorage', 'sessionStorage', 'cookies']);
+        var w = targetWindow();
+        if (w.__devtool_capture) {
+          return w.__devtool_capture.captureState(['localStorage', 'sessionStorage', 'cookies']);
         }
         return { error: 'State capture not available' };
       }
@@ -3368,8 +3400,9 @@
       label: 'Network/Resources',
       description: 'Resource timing and loading data',
       fn: function() {
-        if (window.__devtool_capture) {
-          return window.__devtool_capture.captureNetwork();
+        var w = targetWindow();
+        if (w.__devtool_capture) {
+          return w.__devtool_capture.captureNetwork();
         }
         return { error: 'Network capture not available' };
       }
@@ -3380,8 +3413,9 @@
       label: 'DOM Complexity',
       description: 'Node count, depth, performance impact',
       fn: function() {
-        if (window.__devtool_audit) {
-          return window.__devtool_audit.auditDOMComplexity();
+        var w = targetWindow();
+        if (w.__devtool_audit) {
+          return w.__devtool_audit.auditDOMComplexity();
         }
         return { error: 'Audit module not loaded' };
       }
@@ -3391,8 +3425,9 @@
       label: 'CSS Quality',
       description: 'Inline styles, !important usage',
       fn: function() {
-        if (window.__devtool_audit) {
-          return window.__devtool_audit.auditCSS();
+        var w = targetWindow();
+        if (w.__devtool_audit) {
+          return w.__devtool_audit.auditCSS();
         }
         return { error: 'Audit module not loaded' };
       }
@@ -3403,8 +3438,9 @@
       description: 'Resource timing, render-blocking, layout thrash',
       async: true,
       fn: function() {
-        if (window.__devtool_audit) {
-          return window.__devtool_audit.auditPerformance();
+        var w = targetWindow();
+        if (w.__devtool_audit) {
+          return w.__devtool_audit.auditPerformance();
         }
         return { error: 'Audit module not loaded' };
       }
@@ -4752,6 +4788,21 @@
   function startElementMode() {
     togglePanel(false);
 
+    // The picker overlay lives in the shell (it must float above everything,
+    // including the content iframe). But hit-testing must resolve REAL page
+    // elements, not the iframe box. Under the always-wrap model the content
+    // frame is fullscreen (inset:0), so shell viewport coords map 1:1 onto the
+    // content frame — we read elementFromPoint / getComputedStyle from the
+    // content window while drawing the highlight in the shell at the same
+    // coords. pageWin falls back to self for the unwrapped/legacy page.
+    var pageWin = targetWindow();
+    var pageDoc = pageWin.document;
+    // Realm-correct utils: generateSelector does `el instanceof HTMLElement`,
+    // and a content-frame element is NOT an instance of the SHELL realm's
+    // HTMLElement — so the shell copy would return ''. Use the content frame's
+    // own utils (falls back to the shell copy for the unwrapped page).
+    var pageUtils = pageWin.__devtool_utils || utils;
+
     var overlay = document.createElement('div');
     overlay.style.cssText = STYLES.overlay;
 
@@ -4785,7 +4836,7 @@
       if (!move) return;
 
       overlay.style.pointerEvents = 'none';
-      var el = document.elementFromPoint(move.x, move.y);
+      var el = pageDoc.elementFromPoint(move.x, move.y);
       overlay.style.pointerEvents = 'auto';
 
       if (!el || el === state.container || state.container.contains(el)) {
@@ -4804,7 +4855,7 @@
       highlight.style.width = rect.width + 'px';
       highlight.style.height = rect.height + 'px';
 
-      var selector = utils.generateSelector(el);
+      var selector = pageUtils.generateSelector(el);
       tooltip.textContent = selector;
       tooltip.style.display = 'block';
       tooltip.style.left = Math.min(rect.left, window.innerWidth - 200) + 'px';
@@ -4823,10 +4874,10 @@
       cleanup();
 
       if (hovered) {
-        var selector = utils.generateSelector(hovered);
+        var selector = pageUtils.generateSelector(hovered);
         var tag = hovered.tagName.toLowerCase();
         var text = (hovered.textContent || '').trim().substring(0, 100);
-        var computed = window.getComputedStyle(hovered);
+        var computed = pageWin.getComputedStyle(hovered);
 
         var meta = {
           label: selector.length > 30 ? tag + (hovered.id ? '#' + hovered.id : '') : selector,
@@ -4899,9 +4950,15 @@
   // Sketch mode - opens sketch, on save adds as attachment
   function openSketch() {
     togglePanel(false);
-    if (window.__devtool_sketch) {
+    // Run sketch in the content frame so its overlay draws over the real page,
+    // not over the shell (where it would float above an opaque iframe). The
+    // onSave closure stays a shell function — it captures addAttachment/
+    // togglePanel here and runs them in the shell when the content frame fires
+    // it (same-origin cross-frame call).
+    var w = targetWindow();
+    if (w.__devtool_sketch) {
       // Set callback for when sketch is saved
-      window.__devtool_sketch.onSave = function(sketchData) {
+      w.__devtool_sketch.onSave = function(sketchData) {
         // Use reactive addAttachment - DOM updates automatically
         addAttachment('sketch', {
           label: sketchData.elementCount + ' elements',
@@ -4913,25 +4970,29 @@
         togglePanel(true);
       };
 
-      window.__devtool_sketch.toggle();
+      w.__devtool_sketch.toggle();
     }
   }
 
   // Design mode - start design iteration for an element
   function startDesignMode() {
     togglePanel(false);
-    if (window.__devtool_design) {
-      window.__devtool_design.start();
+    var w = targetWindow();
+    if (w.__devtool_design) {
+      w.__devtool_design.start();
     } else {
       console.error('[Indicator] Design module not loaded');
       togglePanel(true);
     }
   }
 
-  // Inspect mode - open style editor for hover-to-select
+  // Inspect mode - open style editor for hover-to-select. Runs in the content
+  // frame so elementFromPoint resolves real page elements instead of the
+  // content iframe (the always-wrap shell symptom).
   function startInspectMode() {
-    if (window.__devtool_style_editor) {
-      window.__devtool_style_editor.open();
+    var w = targetWindow();
+    if (w.__devtool_style_editor) {
+      w.__devtool_style_editor.open();
     } else {
       console.error('[Indicator] Style editor module not loaded');
     }
@@ -5140,7 +5201,8 @@
     // Update inspect button active state
     setInterval(function() {
       if (state.inspectBtn) {
-        var active = window.__devtool_style_editor && window.__devtool_style_editor.isOpen();
+        var sw = targetWindow();
+        var active = sw.__devtool_style_editor && sw.__devtool_style_editor.isOpen();
         if (active) {
           state.inspectBtn.style.background = TOKENS.colors.surface;
           state.inspectBtn.style.borderColor = TOKENS.colors.primary;
