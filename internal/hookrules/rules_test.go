@@ -158,3 +158,43 @@ func TestMatchBashLatency(t *testing.T) {
 	perOp := elapsed / time.Duration(iters)
 	assert.Less(t, perOp, time.Millisecond, "match should be <1ms per op, got %v", perOp)
 }
+
+func TestInAgntRunSession(t *testing.T) {
+	if InAgntRunSession(nil) {
+		t.Error("nil getenv should report no session")
+	}
+	if InAgntRunSession(func(string) string { return "" }) {
+		t.Error("unset AGNT_RUN should report no session")
+	}
+	if !InAgntRunSession(func(k string) string {
+		if k == AgntRunEnv {
+			return "1"
+		}
+		return ""
+	}) {
+		t.Error("AGNT_RUN=1 should report an active session")
+	}
+}
+
+func TestMatchBash_IgnoresQuotedLiterals(t *testing.T) {
+	rs := BuiltinRuleSet()
+	allowed := []string{
+		`grep -n "npm run dev" logs.txt`,
+		`echo "remember this later"`,
+		`rg "go run ./cmd" --files-with-matches`,
+	}
+	for _, c := range allowed {
+		if d := rs.MatchBash(c); d.Action != ActionAllow {
+			t.Errorf("quoted literal should be allowed, got %q for: %s", d.Action, c)
+		}
+	}
+	blocked := []string{
+		`npm` + ` run ` + `dev`,
+		`cd app && npm` + ` run ` + `dev`,
+	}
+	for _, c := range blocked {
+		if d := rs.MatchBash(c); d.Action != ActionBlock {
+			t.Errorf("real dev-server command should block, got %q for: %s", d.Action, c)
+		}
+	}
+}

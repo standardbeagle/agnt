@@ -108,12 +108,18 @@ func (rs *RuleSet) MatchBash(command string) Decision {
 	if rs == nil || command == "" {
 		return Decision{Action: ActionAllow}
 	}
+	// Match against a quote-scrubbed copy so a tool name that only appears
+	// inside a quoted string literal — e.g. `grep "npm run dev" logs`,
+	// `echo "go run done"` — does not trip a dev-server rule. Only commands
+	// the shell would actually execute as tokens (outside quotes) should
+	// match. The original command is still cited in the decision message.
+	scrubbed := scrubQuoted(command)
 	for i := range rs.BashRules {
 		r := &rs.BashRules[i]
 		if r.Pattern == nil {
 			continue
 		}
-		if r.Pattern.MatchString(command) {
+		if r.Pattern.MatchString(scrubbed) {
 			return Decision{
 				Action:      r.Action,
 				Rule:        r,
@@ -123,6 +129,30 @@ func (rs *RuleSet) MatchBash(command string) Decision {
 		}
 	}
 	return Decision{Action: ActionAllow}
+}
+
+// scrubQuoted replaces the contents of single- and double-quoted spans with
+// spaces, preserving overall length and the positions of unquoted tokens so
+// the anchored Bash patterns still see real command structure. Unterminated
+// quotes scrub to end-of-string (a partial command line is treated
+// conservatively as quoted). Backslash-escaping inside quotes is not modeled —
+// the goal is false-positive reduction on inspection commands, not a full shell
+// parser.
+func scrubQuoted(s string) string {
+	b := []byte(s)
+	var quote byte // 0 = none, '\'' or '"' when inside a quoted span
+	for i := 0; i < len(b); i++ {
+		c := b[i]
+		switch {
+		case quote == 0 && (c == '\'' || c == '"'):
+			quote = c
+		case quote != 0 && c == quote:
+			quote = 0
+		case quote != 0:
+			b[i] = ' ' // blank out quoted content
+		}
+	}
+	return string(b)
 }
 
 // MatchPrompt returns the list of prompt rule reminders that match the
@@ -197,6 +227,23 @@ const BypassMarker = "# agnt-allow"
 // must be fast.
 func CommandHasBypassMarker(cmd string) bool {
 	return strings.Contains(cmd, BypassMarker)
+}
+
+// AgntRunEnv is the environment variable `agnt run` stamps into the wrapped
+// child process so downstream tooling can detect "I am inside an agnt run
+// session". The hook interceptor uses it to decide whether a hard block
+// (exit 2) is appropriate: inside a session the wrapped agent has proc/proxy
+// wired and gets the stdin-injected guidance, so a block cleanly redirects it.
+// Outside a session (e.g. a plain Claude Code session that merely happens to
+// sit in a project with a `.agnt.kdl`) a block would surface as a spurious
+// error, so blocks are downgraded to a non-error soft-warn instead.
+const AgntRunEnv = "AGNT_RUN"
+
+// InAgntRunSession reports whether the current process is running inside an
+// `agnt run` PTY session, detected via the AgntRunEnv flag. getenv is injected
+// so callers (and tests) control the lookup.
+func InAgntRunSession(getenv func(string) string) bool {
+	return getenv != nil && getenv(AgntRunEnv) != ""
 }
 
 // bashSpec is the uncompiled form of a Bash rule. Split out so both the
