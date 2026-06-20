@@ -867,6 +867,14 @@ func phaseCmdArgsAndPrompt(adapter agentadapter.Adapter, cmdArgs []string, setup
 		prompt = buildSetupSystemPrompt(adapter.Name())
 	} else {
 		prompt = buildAgntSystemPrompt(socketPath)
+		// Persist the steering block into the agent's always-loaded context
+		// file (AGENTS.md, GEMINI.md, …) so non-Claude agents keep the agnt
+		// tool guidance every turn rather than from the one-shot stdin nudge.
+		// No-op for Claude and when disabled in config. cwd is the project dir
+		// under `agnt run`. Best-effort: never blocks launch.
+		if cwd, err := os.Getwd(); err == nil {
+			writePersistentContext(adapter.Name(), cwd, prompt)
+		}
 	}
 	return adapter.BuildArgs(cmdArgs, prompt), prompt
 }
