@@ -20,17 +20,39 @@ func makePreToolUse(t *testing.T, toolName, command string) []byte {
 	return p
 }
 
+// agntRunEnv returns a getenv stub that reports an active `agnt run` session,
+// so block rules exercise the exit-2 path.
+func agntRunEnv(k string) string {
+	if k == "AGNT_RUN" {
+		return "1"
+	}
+	return ""
+}
+
 // TestCheckBashBlocks verifies the exit-2 + stderr redirect path for
-// `npm run dev` — the flagship acceptance case from the task.
+// `npm run dev` — the flagship acceptance case. A hard block requires an
+// active `agnt run` session (AGNT_RUN set), so the stub reports one.
 func TestCheckBashBlocks(t *testing.T) {
 	payload := makePreToolUse(t, "Bash", "npm run dev")
 	var stderr bytes.Buffer
-	code := runCheckBashImpl(bytes.NewReader(payload), &stderr, "", func(string) string { return "" })
+	code := runCheckBashImpl(bytes.NewReader(payload), &stderr, "", agntRunEnv)
 	assert.Equal(t, 2, code)
 	out := stderr.String()
 	assert.Contains(t, out, "agnt.run")
 	assert.Contains(t, out, "npm run dev")
 	assert.Contains(t, out, "bypass")
+}
+
+// TestCheckBashBlockDowngradesOutsideSession verifies the judicious-exit
+// contract: outside an `agnt run` session, a would-be block does NOT return an
+// error (exit 2) — it downgrades to a non-error soft-warn (exit 0) so the
+// command still runs while the agent learns the agnt-native alternative.
+func TestCheckBashBlockDowngradesOutsideSession(t *testing.T) {
+	payload := makePreToolUse(t, "Bash", "npm run dev")
+	var stderr bytes.Buffer
+	code := runCheckBashImpl(bytes.NewReader(payload), &stderr, "", func(string) string { return "" })
+	assert.Equal(t, 0, code, "block must not return exit 2 outside an agnt run session")
+	assert.Contains(t, stderr.String(), "npm run dev", "still nudges via soft-warn")
 }
 
 // TestCheckBashBypassEnv confirms AGNT_HOOK_BYPASS=1 short-circuits.
@@ -73,7 +95,7 @@ func TestCheckBashScopeGuardActiveWithConfig(t *testing.T) {
 	require.NoError(t, writeTempFile(tmp+"/.agnt.kdl", ""))
 	payload := makePreToolUse(t, "Bash", "npm run dev")
 	var stderr bytes.Buffer
-	code := runCheckBashImpl(bytes.NewReader(payload), &stderr, tmp, func(string) string { return "" })
+	code := runCheckBashImpl(bytes.NewReader(payload), &stderr, tmp, agntRunEnv)
 	assert.Equal(t, 2, code)
 }
 

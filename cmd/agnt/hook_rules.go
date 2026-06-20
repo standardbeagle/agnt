@@ -214,8 +214,23 @@ func runCheckBashImpl(stdin io.Reader, stderr io.Writer, projectPath string, get
 	}
 
 	decision := rs.MatchBash(input.Command)
+
+	// Judicious exit codes: a hard block (exit 2) is only justified inside an
+	// `agnt run` session, where the wrapped agent has proc/proxy wired and the
+	// stdin-injected guidance primes it to act on the redirect. Outside a
+	// session — e.g. a plain Claude Code session that merely sits in a project
+	// containing a `.agnt.kdl` — returning an error on a Bash call the user
+	// deliberately ran (or that merely contains a matching substring) is
+	// hostile. There we downgrade the block to a non-error nudge so the command
+	// still runs while the agent learns the agnt-native alternative exists.
+	inSession := hookrules.InAgntRunSession(getenv)
+
 	switch decision.Action {
 	case hookrules.ActionBlock:
+		if !inSession {
+			fmt.Fprintln(stderr, formatWarnMessage(decision, input.Command))
+			return 0
+		}
 		fmt.Fprintln(stderr, formatBlockMessage(decision, input.Command))
 		return 2
 	case hookrules.ActionSoftWarn:

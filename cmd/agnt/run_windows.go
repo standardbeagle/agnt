@@ -15,6 +15,7 @@ import (
 	"github.com/aymanbagabas/go-pty"
 
 	"github.com/standardbeagle/agnt/internal/config"
+	"github.com/standardbeagle/agnt/internal/hookrules"
 	"github.com/standardbeagle/agnt/internal/overlay"
 )
 
@@ -116,7 +117,7 @@ func runConPTYChild(ctx context.Context, args []string, socketPath string, sessi
 	} else {
 		cmd = ptmx.Command(resolvedPath, cmdArgs...)
 	}
-	cmd.Env = append(os.Environ(), "AGNT_PROJECT_PATH="+projectPath)
+	cmd.Env = append(os.Environ(), "AGNT_PROJECT_PATH="+projectPath, hookrules.AgntRunEnv+"=1")
 	if err := cmd.Start(); err != nil {
 		stopSpinner()
 		return 0, fmt.Errorf("failed to start process: %w", err)

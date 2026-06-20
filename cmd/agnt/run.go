@@ -14,6 +14,7 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
+	"github.com/standardbeagle/agnt/internal/hookrules"
 	"github.com/standardbeagle/agnt/internal/overlay"
 )
 
@@ -82,7 +83,7 @@ func runPTYChild(ctx context.Context, args []string, socketPath string, sessionC
 
 	stopSpinner := spinner(fmt.Sprintf("Starting %s...", command))
 	c := commandWithArgs(command, cmdArgs...)
-	c.Env = append(os.Environ(), "AGNT_PROJECT_PATH="+projectPath)
+	c.Env = append(os.Environ(), "AGNT_PROJECT_PATH="+projectPath, hookrules.AgntRunEnv+"=1")
 
 	ptmx, err := pty.Start(c)
 	stopSpinner()
