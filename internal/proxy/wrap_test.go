@@ -74,6 +74,33 @@ func TestModifyResponse_TopLevelWrapsInShell(t *testing.T) {
 	}
 }
 
+// TestShellAndContentFrameIDsDistinct: the chrome shell and its content frame
+// must carry DISTINCT frame ids so they are separately addressable as
+// outer/inner — an identical id would make every content-targeted exec also run
+// in the shell. The shell id is the "chrome-"-prefixed content id.
+func TestShellAndContentFrameIDsDistinct(t *testing.T) {
+	ps := &ProxyServer{ListenAddr: ":8080", ID: "px1"}
+	req := httptest.NewRequest(http.MethodGet, "/dashboard?q=1", nil)
+	resp := htmlResp(sampleDoc, req)
+	if err := ps.modifyResponse(resp); err != nil {
+		t.Fatalf("modifyResponse: %v", err)
+	}
+	body := readBody(t, resp)
+
+	fid := frameIDForPath("/dashboard")
+	wantShell := `window.__devtool_frame_id="` + shellFrameID(fid) + `"`
+	if !strings.Contains(body, wantShell) {
+		t.Errorf("shell must use the chrome-prefixed frame id %q\n%s", shellFrameID(fid), body)
+	}
+	// The content iframe src carries the bare content fid as the marker.
+	if !strings.Contains(body, frameMarkerParam+"="+fid) {
+		t.Errorf("content iframe marker must be the bare content fid %q", fid)
+	}
+	if shellFrameID(fid) == fid {
+		t.Fatalf("shell id must differ from content id")
+	}
+}
+
 // TestModifyResponse_ContentFrameInjectsInPlace: a request carrying the frame
 // marker is served unwrapped — page content preserved + content runtime injected.
 func TestModifyResponse_ContentFrameInjectsInPlace(t *testing.T) {

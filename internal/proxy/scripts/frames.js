@@ -113,6 +113,30 @@
         window.history.replaceState(window.history.state, '', shown);
       } catch (e) { /* swallow — URL sync is best-effort */ }
     };
+
+    // Resize the live content frame from the shell (observed from outside): the
+    // agent sets a viewport size and the page reflows in place — no reload, no
+    // second iframe. w<=0 resets to the shell's full-bleed layout. Returns the
+    // applied size so the caller can confirm and then run audits against the
+    // (now resized) content frame.
+    window.__devtool_resize_content = function(w, h) {
+      var f = document.getElementById('__devtool_content_frame');
+      if (!f) { return { ok: false, error: 'no content frame' }; }
+      if (!w || w <= 0) {
+        f.style.cssText = ''; // CSS rule (#__devtool_content_frame) re-applies full-bleed
+        return { ok: true, reset: true, width: window.innerWidth, height: window.innerHeight };
+      }
+      f.style.position = 'fixed';
+      f.style.inset = 'auto';
+      f.style.top = '0';
+      f.style.left = '50%';
+      f.style.transform = 'translateX(-50%)';
+      f.style.width = w + 'px';
+      f.style.height = (h && h > 0) ? (h + 'px') : '100%';
+      f.style.border = '1px solid #3a3f47';
+      f.style.background = '#ffffff';
+      return { ok: true, width: w, height: (h && h > 0) ? h : window.innerHeight };
+    };
   }
 
   // ---- Content side: register with the shell (same-origin direct reach) ----

@@ -140,6 +140,22 @@ func (ps *ProxyServer) ActiveFrame() string {
 	return ""
 }
 
+// resolveExecTarget maps a caller-supplied frame selector onto the wire token
+// the browser exec gate understands. The outer chrome shell is addressed by the
+// "@chrome" role token (so the caller need not know the per-page shell id);
+// "inner"/"active"/"" collapse to the active content frame; an explicit frame id
+// passes through unchanged.
+func (ps *ProxyServer) resolveExecTarget(target string) string {
+	switch target {
+	case "@chrome", "outer", "shell", "chrome":
+		return "@chrome"
+	case "inner", "active", "content", "":
+		return ps.ActiveFrame()
+	default:
+		return target
+	}
+}
+
 // ExecuteJavaScript sends JavaScript code to connected clients for execution.
 // Returns the execution ID and a channel that will receive the result. An
 // optional frameID targets a specific content frame; when empty it defaults to
@@ -147,10 +163,7 @@ func (ps *ProxyServer) ActiveFrame() string {
 // target.md §5.3). When both are empty the exec is untargeted and every
 // connected (content) frame runs it (legacy behaviour).
 func (ps *ProxyServer) ExecuteJavaScript(code string, frameID ...string) (string, <-chan *ExecutionResult, error) {
-	target := firstFrameID(frameID)
-	if target == "" {
-		target = ps.ActiveFrame()
-	}
+	target := ps.resolveExecTarget(firstFrameID(frameID))
 	debug.Log("proxy", "ExecuteJavaScript: proxy=%s code_len=%d frame=%q", ps.ID, len(code), target)
 	execID := fmt.Sprintf("exec-%d", time.Now().UnixNano())
 

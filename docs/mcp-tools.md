@@ -258,6 +258,19 @@ chrome from page content and gives a stable interaction target. Full design:
   (`responsive_audit`, `snapshot`, `screenshot`, `api_audit`, `loading_audit`)
   default to the **active content frame**; `proxy {action:"exec", frame_id:"…"}`
   targets a specific frame.
+- **Outer vs inner exec target**: the shell and its content frame carry distinct
+  ids (`chrome-<fid>` vs `<fid>`), so a REPL can be aimed at either.
+  `proxy {action:"exec", target:"outer", code:"…"}` runs against the **chrome
+  shell** (the proxy UI runtime / host) via the `@chrome` role token;
+  `target:"inner"` (default) scripts the page content frame.
+- **Drive the page from outside** (always-wrap makes these reload-free):
+  - `proxy {action:"navigate", direction:"back|forward|reload"}` or
+    `{direction:"goto", target_url:"…"}` — drives the page content frame; the
+    navigation is deferred a microtask so the exec reply returns before unload.
+  - `proxy {action:"resize", width:375[, height:…]}` — resizes the live content
+    frame in place from the shell (no reload, page state preserved; `width:0`
+    resets). Resize, then run `api_audit`/`loading_audit`/`responsive_audit`
+    (they target the inner frame) to measure the page at that viewport.
 - **Telemetry** (error/fetch/xhr/interaction/mutation) is tagged with the
   emitting `frame_id`; `get_errors` dedup and `proxylog`'s `LogFilter.Frames`
   are frame-aware so the same error in two frames is not collapsed.

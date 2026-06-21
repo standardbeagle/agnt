@@ -35,12 +35,16 @@ func (dt *DaemonTools) makeProxyHandler() func(context.Context, *mcp.CallToolReq
 			return dt.handleProxyList(input)
 		case "exec":
 			return dt.handleProxyExec(input)
+		case "navigate":
+			return dt.handleProxyNavigate(input)
+		case "resize":
+			return dt.handleProxyResize(input)
 		case "toast":
 			return dt.handleProxyToast(input)
 		case "chaos":
 			return dt.handleProxyChaos(input)
 		default:
-			return errorResult(fmt.Sprintf("unknown action %q. Use: start, stop, restart, status, list, exec, toast, chaos", input.Action)), ProxyOutput{}, nil
+			return errorResult(fmt.Sprintf("unknown action %q. Use: start, stop, restart, status, list, exec, navigate, resize, toast, chaos", input.Action)), ProxyOutput{}, nil
 		}
 	}
 }
@@ -292,7 +296,7 @@ func (dt *DaemonTools) handleProxyExec(input ProxyInput) (*mcp.CallToolResult, P
 		execHints = ScanForHints(input.Code)
 	}
 
-	result, err := dt.client.ProxyExec(input.ID, input.Code, input.FrameID)
+	result, err := dt.client.ProxyExec(input.ID, input.Code, resolveExecTarget(input.Target, input.FrameID))
 	if err != nil {
 		return formatDaemonError(err, "proxy"), ProxyOutput{}, nil
 	}
@@ -333,6 +337,36 @@ Use the Read tool to view the full result.`, filePath, duration),
 		ExecHints:   execHints,
 		Message:     fmt.Sprintf("JavaScript executed successfully.\nResult: %s\nDuration: %s", resultVal, duration),
 	}, nil
+}
+
+// handleProxyNavigate drives the active content frame (back/forward/reload/goto).
+func (dt *DaemonTools) handleProxyNavigate(input ProxyInput) (*mcp.CallToolResult, ProxyOutput, error) {
+	if input.ID == "" {
+		return errorResult("id required for navigate"), ProxyOutput{}, nil
+	}
+	code, err := buildNavigateJS(input.Direction, input.TargetURL)
+	if err != nil {
+		return errorResult(err.Error()), ProxyOutput{}, nil
+	}
+	if _, err := dt.client.ProxyExec(input.ID, code, resolveExecTarget(input.Target, "")); err != nil {
+		return formatDaemonError(err, "proxy"), ProxyOutput{}, nil
+	}
+	return nil, ProxyOutput{Success: true, Message: fmt.Sprintf("navigate %s dispatched", input.Direction)}, nil
+}
+
+// handleProxyResize resizes the live content frame from the outer chrome shell.
+func (dt *DaemonTools) handleProxyResize(input ProxyInput) (*mcp.CallToolResult, ProxyOutput, error) {
+	if input.ID == "" {
+		return errorResult("id required for resize"), ProxyOutput{}, nil
+	}
+	result, err := dt.client.ProxyExec(input.ID, buildResizeJS(input.Width, input.Height), "@chrome")
+	if err != nil {
+		return formatDaemonError(err, "proxy"), ProxyOutput{}, nil
+	}
+	if !getBool(result, "success") {
+		return errorResult(fmt.Sprintf("resize failed: %s", getString(result, "error"))), ProxyOutput{}, nil
+	}
+	return nil, ProxyOutput{Success: true, Message: getString(result, "result")}, nil
 }
 
 func (dt *DaemonTools) handleProxyToast(input ProxyInput) (*mcp.CallToolResult, ProxyOutput, error) {

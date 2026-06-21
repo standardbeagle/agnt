@@ -262,6 +262,16 @@ func frameIDForPath(path string) string {
 	return hex.EncodeToString(sum[:6])
 }
 
+// shellFrameID derives the chrome shell's own frame id from the content frame id.
+// The shell and its content frame must carry DISTINCT ids: they share a WebSocket
+// and both run the exec handler, so an identical id would make every
+// content-targeted exec also run in the shell (duplicate replies) and would make
+// "outer" vs "inner" unaddressable. The "chrome-" prefix keeps the id readable
+// and guarantees it never collides with a content frame's path hash.
+func shellFrameID(contentFrameID string) string {
+	return "chrome-" + contentFrameID
+}
+
 // contentFrameSrc appends the frame marker to the requested URI so the inner
 // frame's request is recognisable as the content frame on its way back through
 // the proxy.
