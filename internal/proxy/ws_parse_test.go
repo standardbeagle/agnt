@@ -402,6 +402,40 @@ func TestParseDesignState_Full(t *testing.T) {
 	assert.Equal(t, "Card content", state.Metadata.Text)
 	assert.Equal(t, []string{"premium-card", "featured"}, state.Metadata.Classes)
 	assert.Equal(t, testURL, state.URL)
+	assert.Nil(t, state.Scheme, "no scheme key → nil (legacy client round-trip)")
+}
+
+func TestParseDesignState_WithScheme(t *testing.T) {
+	data := map[string]interface{}{
+		"selector": ".card",
+		"scheme": map[string]interface{}{
+			"palette":      []interface{}{"#0a0a0a", "rgb(255,90,0)", 42, ""},
+			"fontFamilies": []interface{}{"Inter, sans-serif"},
+			"fontSizes":    []interface{}{"14px", "20px"},
+			"spacing":      []interface{}{"8px", "16px"},
+			"radius":       []interface{}{"6px"},
+			"cssVars": map[string]interface{}{
+				"--accent": "#ff5a00",
+				"--bad":    7, // non-string dropped
+			},
+		},
+	}
+
+	state := parseDesignState(data, "m-1", testTS, testURL)
+
+	if assert.NotNil(t, state.Scheme) {
+		assert.Equal(t, []string{"#0a0a0a", "rgb(255,90,0)"}, state.Scheme.Palette, "non-string/empty dropped")
+		assert.Equal(t, []string{"Inter, sans-serif"}, state.Scheme.FontFamilies)
+		assert.Equal(t, []string{"14px", "20px"}, state.Scheme.FontSizes)
+		assert.Equal(t, map[string]string{"--accent": "#ff5a00"}, state.Scheme.CSSVars)
+		assert.Empty(t, state.Scheme.Shadows)
+	}
+}
+
+func TestParseDesignScheme_EmptyObjectIsNil(t *testing.T) {
+	assert.Nil(t, parseDesignScheme(map[string]interface{}{}))
+	assert.Nil(t, parseDesignScheme(map[string]interface{}{"scheme": map[string]interface{}{}}))
+	assert.Nil(t, parseDesignScheme(map[string]interface{}{"scheme": "notanobject"}))
 }
 
 // ── parseDesignRequest ──────────────────────────────────────────────────────

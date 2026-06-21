@@ -676,6 +676,25 @@ func handleProxyLogQueryCompact(entries []proxy.LogEntry, pag *Pagination) (*mcp
 					entry.Sketch.FilePath)
 			}
 
+		case proxy.LogTypeWalkthrough:
+			if entry.Walkthrough != nil {
+				timestamp = entry.Walkthrough.Timestamp
+				w := entry.Walkthrough
+				data = fmt.Sprintf("walkthrough %s: %s", w.Event, w.ScriptID)
+				if w.Total > 0 {
+					data += fmt.Sprintf(" step %d/%d", w.StepIndex+1, w.Total)
+				}
+				if w.StepTitle != "" {
+					data += fmt.Sprintf(" — %s", w.StepTitle)
+				}
+				if w.How != "" {
+					data += fmt.Sprintf(" (via %s)", w.How)
+				}
+				if w.Message != "" {
+					data += "\n  " + w.Message
+				}
+			}
+
 		case proxy.LogTypeDiagnostic:
 			if entry.Diagnostic != nil {
 				timestamp = entry.Diagnostic.Timestamp

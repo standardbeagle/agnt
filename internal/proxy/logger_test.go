@@ -613,3 +613,34 @@ func TestTrafficLogger_LogDesignEdit(t *testing.T) {
 		t.Errorf("expected design_edit excluded by later Since, got %d", n)
 	}
 }
+
+func TestTrafficLogger_LogWalkthrough(t *testing.T) {
+	logger := NewTrafficLogger(10)
+
+	logger.LogWalkthrough(WalkthroughEntry{
+		ID:        "wt-1",
+		Timestamp: time.Now(),
+		Event:     "step",
+		ScriptID:  "demo",
+		StepIndex: 2,
+		Total:     5,
+		StepTitle: "Confirm",
+		How:       "click",
+		Mode:      "auto",
+	})
+
+	results := logger.Query(LogFilter{Types: []LogEntryType{LogTypeWalkthrough}})
+	if len(results) != 1 {
+		t.Fatalf("expected 1 walkthrough entry, got %d", len(results))
+	}
+	got := results[0]
+	if got.Type != LogTypeWalkthrough {
+		t.Errorf("type = %s, want %s", got.Type, LogTypeWalkthrough)
+	}
+	if got.Walkthrough == nil {
+		t.Fatal("Walkthrough payload nil")
+	}
+	if got.Walkthrough.ScriptID != "demo" || got.Walkthrough.Event != "step" || got.Walkthrough.StepIndex != 2 {
+		t.Errorf("unexpected payload: %+v", got.Walkthrough)
+	}
+}

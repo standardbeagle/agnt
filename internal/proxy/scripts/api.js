@@ -22,6 +22,7 @@
   var indicator = window.__devtool_indicator;
   var sketch = window.__devtool_sketch;
   var design = window.__devtool_design;
+  var walkthrough = window.__devtool_walkthrough;
   var diagnostics = window.__devtool_diagnostics;
   var session = window.__devtool_session;
   var store = window.__devtool_store;
@@ -205,6 +206,22 @@
       applyAlternative: design.applyAlternative,
       chat: design.chat,
       getState: design.getState
+    },
+
+    // ========================================================================
+    // WALKTHROUGH (live demo: scrolling step list + element highlight)
+    // ========================================================================
+
+    walkthrough: {
+      load: function(s) { var w = window.__devtool_walkthrough; return w ? w.load(s) : { error: 'Walkthrough not loaded' }; },
+      start: function(s, o) { var w = window.__devtool_walkthrough; return w ? w.start(s, o) : { error: 'Walkthrough not loaded' }; },
+      stop: function() { var w = window.__devtool_walkthrough; return w ? w.stop() : { error: 'Walkthrough not loaded' }; },
+      next: function() { var w = window.__devtool_walkthrough; return w ? w.next() : { error: 'Walkthrough not loaded' }; },
+      prev: function() { var w = window.__devtool_walkthrough; return w ? w.prev() : { error: 'Walkthrough not loaded' }; },
+      play: function() { var w = window.__devtool_walkthrough; return w ? w.play() : { error: 'Walkthrough not loaded' }; },
+      pause: function() { var w = window.__devtool_walkthrough; return w ? w.pause() : { error: 'Walkthrough not loaded' }; },
+      status: function() { var w = window.__devtool_walkthrough; return w ? w.status() : { error: 'Walkthrough not loaded' }; },
+      list: function() { var w = window.__devtool_walkthrough; return w ? w.list() : { error: 'Walkthrough not loaded' }; }
     },
 
     // ========================================================================

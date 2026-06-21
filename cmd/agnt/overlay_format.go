@@ -378,6 +378,7 @@ func formatDesignStateText(event ProxyEvent) string {
 			Classes []string `json:"classes"`
 			Text    string   `json:"text"`
 		} `json:"metadata"`
+		Scheme *designScheme `json:"scheme"`
 	}
 	if err := json.Unmarshal(event.Data, &data); err != nil {
 		debug.Warn("overlay", "failed to parse design_state: %v", err)
@@ -385,11 +386,81 @@ func formatDesignStateText(event ProxyEvent) string {
 	}
 
 	return formatDesignStateMessage(data.Selector, data.Metadata.Tag, data.Metadata.ID,
-		data.Metadata.Classes, data.Metadata.Text, event.ProxyID)
+		data.Metadata.Classes, data.Metadata.Text, event.ProxyID, data.Scheme)
 }
 
+// designScheme mirrors proxy.DesignScheme for prompt rendering (snake_case as
+// carried over the overlay socket from the marshaled DesignState).
+type designScheme struct {
+	Palette      []string          `json:"palette"`
+	FontFamilies []string          `json:"font_families"`
+	FontSizes    []string          `json:"font_sizes"`
+	FontWeights  []string          `json:"font_weights"`
+	Spacing      []string          `json:"spacing"`
+	Radius       []string          `json:"radius"`
+	Shadows      []string          `json:"shadows"`
+	CSSVars      map[string]string `json:"css_vars"`
+}
+
+// formatSchemeBlock renders the extracted design tokens as a compact markdown
+// block. Returns "" when the scheme is nil/empty so callers can fall back to the
+// legacy prompt.
+func formatSchemeBlock(s *designScheme) string {
+	if s == nil {
+		return ""
+	}
+	var b strings.Builder
+	row := func(label string, vals []string) {
+		if len(vals) > 0 {
+			b.WriteString(fmt.Sprintf("- %s: %s\n", label, strings.Join(vals, ", ")))
+		}
+	}
+	row("Palette", s.Palette)
+	row("Font families", s.FontFamilies)
+	row("Font sizes", s.FontSizes)
+	row("Font weights", s.FontWeights)
+	row("Spacing steps", s.Spacing)
+	row("Radius", s.Radius)
+	row("Shadows", s.Shadows)
+	if len(s.CSSVars) > 0 {
+		vars := make([]string, 0, len(s.CSSVars))
+		for k, v := range s.CSSVars {
+			vars = append(vars, fmt.Sprintf("%s: %s", k, v))
+		}
+		sort.Strings(vars)
+		b.WriteString(fmt.Sprintf("- CSS variables: %s\n", strings.Join(vars, "; ")))
+	}
+	if b.Len() == 0 {
+		return ""
+	}
+	return "\n**App design scheme (extracted live — keep variations within these tokens):**\n" + b.String()
+}
+
+// proxyExec renders the MCP `proxy` exec tool call the agent issues to run code
+// in the page. Single source of truth for the exec invocation shape.
+func proxyExec(proxyID, code string) string {
+	return fmt.Sprintf("proxy {action: \"exec\", id: %q, code: %q}", proxyID, code)
+}
+
+// addAltExec renders the exec snippet that pushes one labeled alternative back
+// to the browser. Centralizes the addAlternative(html, {label, note}) contract
+// so the draft/variation labels stay in lockstep with design.js.
+func addAltExec(proxyID, label, note string) string {
+	code := fmt.Sprintf("__devtool_design.addAlternative('<html>', {label:'%s', note:'%s'})", label, note)
+	return proxyExec(proxyID, code)
+}
+
+// designOnSchemeRules is the constraint block every generated variation must
+// satisfy. Shared by the initial and continuation prompts so the rules stay in
+// one place.
+const designOnSchemeRules = `Each variation MUST:
+- Stay within the app's design scheme above (reuse its palette, type ladder, spacing, radius, CSS vars — do NOT invent off-brand colors/fonts)
+- Follow the design language in design.md and modern principles (hierarchy, whitespace, contrast)
+- Be accessible (WCAG AA)
+- Have a unique direction noted in the 'note' field`
+
 // formatDesignStateMessage formats the design state message for UX design sessions.
-func formatDesignStateMessage(selector, tag, id string, classes []string, textContent, proxyID string) string {
+func formatDesignStateMessage(selector, tag, id string, classes []string, textContent, proxyID string, scheme *designScheme) string {
 	text := fmt.Sprintf(`[🎨 Design Mode: Premium UX Design Session]
 
 **Element Selected for Redesign:**
@@ -412,30 +483,57 @@ func formatDesignStateMessage(selector, tag, id string, classes []string, textCo
 		text += fmt.Sprintf("\n- Content: %q", textPreview)
 	}
 
+	text += formatSchemeBlock(scheme)
+
 	text += fmt.Sprintf(`
 
-**Your Mission:** Act as a world-class UX designer creating premium, million-dollar designs.
+**Your Mission:** Act as a world-class UX designer. Deliver a fast first look, then polished on-scheme variations.
 
-**Before designing, gather context using these diagnostic tools:**
-1. Take a screenshot: proxy {action: "exec", id: "%s", code: "__devtool.screenshot('design-context')"}
-2. Check user interactions: proxylog {proxy_id: "%s", types: ["interaction"], limit: 20}
-3. Review any errors: proxylog {proxy_id: "%s", types: ["error"]}
-4. See page performance: proxylog {proxy_id: "%s", types: ["performance"]}
-5. Inspect element details: proxy {action: "exec", id: "%s", code: "__devtool.inspect('%s')"}
-6. Check accessibility: proxy {action: "exec", id: "%s", code: "__devtool.auditAccessibility()"}
+**Gather context first (cheap, do in parallel):**
+1. Screenshot: %s
+2. Inspect element: %s
+3. Accessibility: %s
 
-**Design Requirements:**
-Create 3-5 distinct, premium alternatives that:
-- Follow modern design principles (visual hierarchy, whitespace, contrast)
-- Are accessible (WCAG AA compliant)
-- Feel polished and professional
-- Each have a unique design direction (e.g., minimal, bold, playful, premium, corporate)
+**STEP 0 — Ensure DESIGN.md (do this FIRST, then announce it):**
+Check the project root for DESIGN.md. If MISSING, create it NOW in the google-labs-code format
+(https://github.com/google-labs-code/design.md) — YAML frontmatter design tokens + ordered '##'
+sections — derived from the App design scheme above:
+- colors      ← palette
+- typography  ← font families / sizes / weights
+- rounded     ← radius
+- spacing     ← spacing steps
+- components  ← infer from the selected element + its sibling context
+Then post one line so the developer sees it: "Created DESIGN.md — captured the app's design system".
+If DESIGN.md ALREADY EXISTS, read it and treat it as the AUTHORITATIVE design system: every variation
+must conform to it (it overrides the extracted scheme on any conflict).
 
-**To add each alternative:**
-proxy {action: "exec", id: "%s", code: "__devtool_design.addAlternative('<your complete HTML>')"}
+**Generation strategy — fast draft first, then concurrent variations:**
 
-Start by taking a screenshot to understand the visual context, then create your designs.`,
-		proxyID, proxyID, proxyID, proxyID, proxyID, selector, proxyID, proxyID)
+STEP 1 — Fast draft (do this immediately, before anything else):
+Dispatch ONE low-effort subagent to produce a single quick restyle. It must call addAlternative
+with a draft label so the user sees something instantly:
+  %s
+
+STEP 2 — On-scheme variations (dispatch CONCURRENTLY in a single message — one subagent each):
+Create 3-4 distinct, polished alternatives. Each subagent independently authors ONE variation and
+calls addAlternative as soon as it is done (they stream in as they finish):
+  %s
+Or push the whole set in one call (preferred — avoids racing a recompile):
+  proxy {action: "exec", id: %q, code: "__devtool_design.addAlternatives([{html:'<html>', label:'variation', note:'<direction>'}])"}
+
+Previews are NON-INVASIVE: they render in an isolated side-by-side / overlay panel, never written
+into the app's live DOM — so produce complete standalone HTML for the element's content.
+
+%s
+
+Run STEP 1 and STEP 2 so the draft lands first and the variations arrive concurrently right after.`,
+		proxyExec(proxyID, "__devtool.screenshot('design-context')"),
+		proxyExec(proxyID, "__devtool.inspect('"+selector+"')"),
+		proxyExec(proxyID, "__devtool.auditAccessibility()"),
+		addAltExec(proxyID, "draft", "Fast draft"),
+		addAltExec(proxyID, "variation", "<direction>"),
+		proxyID,
+		designOnSchemeRules)
 
 	return text
 }
@@ -460,6 +558,7 @@ func formatDesignRequestText(event ProxyEvent) string {
 			Message string `json:"message"`
 			Role    string `json:"role"`
 		} `json:"chat_history"`
+		Scheme *designScheme `json:"scheme"`
 	}
 	if err := json.Unmarshal(event.Data, &data); err != nil {
 		debug.Warn("overlay", "failed to parse design_request: %v", err)
@@ -467,14 +566,14 @@ func formatDesignRequestText(event ProxyEvent) string {
 	}
 
 	return formatDesignRequestMessage(data.Selector, data.AlternativesCount,
-		data.ChatHistory, data.CurrentHTML, event.ProxyID)
+		data.ChatHistory, data.CurrentHTML, event.ProxyID, data.Scheme)
 }
 
 // formatDesignRequestMessage formats the design request message for continuation.
 func formatDesignRequestMessage(selector string, altCount int, chatHistory []struct {
 	Message string `json:"message"`
 	Role    string `json:"role"`
-}, currentHTML, proxyID string) string {
+}, currentHTML, proxyID string, scheme *designScheme) string {
 	text := fmt.Sprintf(`[🎨 Design Mode: More Premium Alternatives Requested]
 
 **Element:** %s
@@ -498,20 +597,22 @@ func formatDesignRequestMessage(selector string, altCount int, chatHistory []str
 	}
 	text += fmt.Sprintf("**Current design:**\n%s\n", html)
 
+	text += formatSchemeBlock(scheme)
+
 	text += fmt.Sprintf(`
-**Continue as a world-class UX designer.** Create 2-3 MORE fresh alternatives that:
-- Are distinctly different from the %d existing options
-- Push creative boundaries while staying functional
-- Consider the user's feedback above (if any)
 
-**Quick diagnostics if needed:**
-- Screenshot: proxy {action: "exec", id: "%s", code: "__devtool.screenshot('design-iteration')"}
-- Recent clicks: proxylog {proxy_id: "%s", types: ["interaction"], limit: 10}
-- Custom logs: proxylog {proxy_id: "%s", types: ["custom"]}
+**Continue as a world-class UX designer.** Dispatch 2-3 subagents CONCURRENTLY, each authoring ONE
+fresh alternative that is distinctly different from the %d existing options and considers the
+feedback above. Each calls addAlternative as soon as it finishes:
+  %s
 
-**Add each new alternative:**
-proxy {action: "exec", id: "%s", code: "__devtool_design.addAlternative('<your fresh HTML>')"}`,
-		altCount, proxyID, proxyID, proxyID, proxyID)
+%s
+
+**Quick diagnostics if needed:** %s`,
+		altCount,
+		addAltExec(proxyID, "variation", "<direction>"),
+		designOnSchemeRules,
+		proxyExec(proxyID, "__devtool.screenshot('design-iteration')"))
 
 	return text
 }

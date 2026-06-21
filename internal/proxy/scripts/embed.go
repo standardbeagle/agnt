@@ -96,6 +96,9 @@ var (
 	//go:embed design.js
 	designJS string
 
+	//go:embed walkthrough.js
+	walkthroughJS string
+
 	//go:embed palette.js
 	paletteJS string
 
@@ -217,6 +220,10 @@ var moduleOrder = []moduleEntry{
 	{"voice", []string{"core"}},
 	{"sketch", []string{"core", "voice"}},
 	{"design", []string{"core", "utils"}},
+	// walkthrough hosts the live-demo panel in the chrome shell and reaches the
+	// active content frame via the shell frame registry. Needs core (transport)
+	// + frames (role + registry); loads after design, before indicator/api.
+	{"walkthrough", []string{"core", "frames"}},
 	{"palette", []string{"core", "utils"}},
 	{"style-editor", []string{"core", "utils"}},
 	// override-store injects the delta stylesheet; transform renders the
@@ -242,7 +249,7 @@ var moduleOrder = []moduleEntry{
 		"core", "frames", "utils", "overlay", "inspection", "tree", "visual",
 		"layout", "interactive", "capture", "accessibility",
 		"audit-quality", "audit-api", "audit-loading", "audit-report", "interaction", "mutation",
-		"voice", "indicator", "sketch", "design", "palette",
+		"voice", "indicator", "sketch", "design", "walkthrough", "palette",
 		"diagnostics", "session", "store", "content",
 		"wireframe", "responsive", "responsive-mode", "style-editor",
 		"text-fragility", "responsive-risk", "snapshot-helper", "toast",
@@ -280,6 +287,7 @@ var moduleScript = map[string]string{
 	"voice":              voiceJS,
 	"sketch":             sketchJS,
 	"design":             designJS,
+	"walkthrough":        walkthroughJS,
 	"palette":            paletteJS,
 	"style-editor":       styleEditorJS,
 	"override-store":     overrideStoreJS,

@@ -476,6 +476,26 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			// Update audit folder summary after saving new files
 			_ = UpdateAuditSummary()
 
+		case "walkthrough_event":
+			// Handle a walkthrough (live-demo) lifecycle event from the
+			// chrome-frame panel. Lets the agent narrate live / react.
+			wt := WalkthroughEntry{
+				ID:        id,
+				Timestamp: timestamp,
+				URL:       msg.URL,
+				Event:     getStringField(msg.Data, "event"),
+				ScriptID:  getStringField(msg.Data, "scriptId"),
+				Title:     getStringField(msg.Data, "title"),
+				StepIndex: getIntField(msg.Data, "stepIndex"),
+				Total:     getIntField(msg.Data, "total"),
+				StepTitle: getStringField(msg.Data, "stepTitle"),
+				Advance:   getStringField(msg.Data, "advance"),
+				How:       getStringField(msg.Data, "how"),
+				Mode:      getStringField(msg.Data, "mode"),
+				Message:   getStringField(msg.Data, "message"),
+			}
+			ps.logger.LogWalkthrough(wt)
+
 		case "sketch":
 			// Handle sketch/wireframe from sketch mode
 			sketchEntry := parseSketchEntry(msg.Data, id, timestamp, msg.URL)
