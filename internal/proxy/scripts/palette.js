@@ -590,24 +590,39 @@
       state.dragOffsetY = e.clientY - rect.top;
       handle.style.cursor = 'grabbing';
 
+      // Cache size once at drag start; reading offsetWidth/offsetHeight on every
+      // mousemove forces a synchronous layout after each style write (thrash).
+      var w = state.paletteEl.offsetWidth || PALETTE_WIDTH;
+      var h = state.paletteEl.offsetHeight || PALETTE_HEIGHT_GUESS;
+      // Coalesce moves into one style write per frame to avoid jitter.
+      var rafId = 0;
+      var pendingPos = null;
+
+      function applyPendingPos() {
+        rafId = 0;
+        if (!pendingPos) return;
+        state.paletteEl.style.left = pendingPos.x + 'px';
+        state.paletteEl.style.top = pendingPos.y + 'px';
+        state.userMoved = true;
+        state.userPos = pendingPos;
+      }
+
       function onMove(ev) {
         if (!state.dragging) return;
         var x = ev.clientX - state.dragOffsetX;
         var y = ev.clientY - state.dragOffsetY;
-        // Clamp to viewport.
-        var w = state.paletteEl.offsetWidth || PALETTE_WIDTH;
-        var h = state.paletteEl.offsetHeight || PALETTE_HEIGHT_GUESS;
         x = Math.max(0, Math.min(x, window.innerWidth - w));
         y = Math.max(0, Math.min(y, window.innerHeight - h));
-        state.paletteEl.style.left = x + 'px';
-        state.paletteEl.style.top = y + 'px';
-        state.userMoved = true;
-        state.userPos = { x: x, y: y };
+        pendingPos = { x: x, y: y };
+        if (rafId) return;
+        rafId = requestAnimationFrame(applyPendingPos);
       }
 
       function onUp() {
         state.dragging = false;
         handle.style.cursor = 'grab';
+        if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+        if (pendingPos) applyPendingPos();
         document.removeEventListener('mousemove', onMove);
         document.removeEventListener('mouseup', onUp);
       }
