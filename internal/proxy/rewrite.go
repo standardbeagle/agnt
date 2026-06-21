@@ -106,7 +106,10 @@ func (ps *ProxyServer) modifyResponse(resp *http.Response) error {
 	if topLevel {
 		reqURI := resp.Request.URL.RequestURI()
 		fid := frameIDForPath(resp.Request.URL.Path)
-		modifiedBody = BuildShellDocument(ps.ID, fid, contentFrameSrc(reqURI, fid))
+		// Shell id is distinct from the content frame id (shellFrameID) so the two
+		// frames — which share a WS and both run the exec handler — are separately
+		// addressable as "outer" (chrome) vs "inner" (content).
+		modifiedBody = BuildShellDocument(ps.ID, shellFrameID(fid), contentFrameSrc(reqURI, fid))
 	} else {
 		// Stamp the content role only when this is genuinely our content frame
 		// (the request carries the frame marker minted in the shell). A

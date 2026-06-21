@@ -299,7 +299,14 @@
         if (message.type === 'execute' && message.code) {
           var targetFrame = message.frame_id || '';
           var myFrame = window.__devtool_frame_id || '';
-          if (targetFrame === '' || targetFrame === myFrame) {
+          // '@chrome' is a role token addressing the outer shell regardless of its
+          // id, so the agent can run a REPL in the outer frame ("outer" target)
+          // without knowing the per-page shell id.
+          var myRole = window.__devtool_frame_role || window.__devtool_role || '';
+          var match = targetFrame === '' ||
+            targetFrame === myFrame ||
+            (targetFrame === '@chrome' && myRole === 'chrome');
+          if (match) {
             executeJavaScript(message.id, message.code);
           }
         }

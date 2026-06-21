@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/proxy"
@@ -12,9 +13,71 @@ import (
 	"github.com/standardbeagle/go-sdk/mcp"
 )
 
+// resolveExecTarget maps the high-level Target/frame_id selector onto the wire
+// token understood by ProxyServer.ExecuteJavaScript / core.js. "outer" addresses
+// the chrome shell ("@chrome"); "inner" (or empty) lets the server pick the
+// active content frame; an explicit frame_id is passed through. Target wins over
+// frame_id when both are set.
+func resolveExecTarget(target, frameID string) string {
+	switch strings.ToLower(strings.TrimSpace(target)) {
+	case "outer", "shell", "chrome":
+		return "@chrome"
+	case "inner", "active", "content":
+		return ""
+	case "":
+		return frameID
+	default:
+		return target
+	}
+}
+
+// jsStringLiteral renders s as a safe JavaScript string literal (quotes + escapes
+// via JSON, which is a valid JS expression).
+func jsStringLiteral(s string) string {
+	b, err := json.Marshal(s)
+	if err != nil {
+		return "\"\""
+	}
+	return string(b)
+}
+
+// buildNavigateJS produces the JS that drives a page navigation from inside the
+// content frame. The actual navigation is deferred to a microtask so the exec
+// reply is sent BEFORE the page (and its WebSocket) goes away — otherwise a
+// reload/goto would drop the socket before the result returned and the call would
+// look like a timeout.
+func buildNavigateJS(direction, url string) (string, error) {
+	var nav string
+	switch strings.ToLower(strings.TrimSpace(direction)) {
+	case "back":
+		nav = "history.back();"
+	case "forward":
+		nav = "history.forward();"
+	case "reload", "refresh":
+		nav = "location.reload();"
+	case "goto", "":
+		if strings.TrimSpace(url) == "" {
+			return "", fmt.Errorf("navigate goto requires target_url")
+		}
+		nav = "location.assign(" + jsStringLiteral(url) + ");"
+	default:
+		return "", fmt.Errorf("unknown direction %q (use back, forward, reload, goto)", direction)
+	}
+	return "(function(){var h=location.href;setTimeout(function(){" + nav +
+		"},0);return {navigating:true,from:h};})()", nil
+}
+
+// buildResizeJS produces the JS (run in the outer shell) that resizes the live
+// content frame in place via the shell helper installed by frames.js.
+func buildResizeJS(width, height int) string {
+	return fmt.Sprintf("(function(){return window.__devtool_resize_content?"+
+		"window.__devtool_resize_content(%d,%d):"+
+		"{ok:false,error:'resize requires the chrome shell (always-wrap)'};})()", width, height)
+}
+
 // ProxyInput defines input for the proxy tool.
 type ProxyInput struct {
-	Action        string `json:"action" jsonschema:"Action: start, stop, status, list, exec, toast, chaos"`
+	Action        string `json:"action" jsonschema:"Action: start, stop, status, list, exec, navigate, resize, toast, chaos"`
 	ID            string `json:"id,omitempty" jsonschema:"Proxy ID (required for start/stop/status/exec/toast/chaos)"`
 	TargetURL     string `json:"target_url,omitempty" jsonschema:"Target URL to proxy (required for start)"`
 	Port          int    `json:"port,omitempty" jsonschema:"Listen port (default: stable hash of target URL). Only specify if you need a specific port."`
@@ -25,6 +88,10 @@ type ProxyInput struct {
 	SkipTLSVerify bool   `json:"skip_tls_verify,omitempty" jsonschema:"Skip TLS certificate verification (default: false, certs are verified). Set to true for self-signed/expired certs in dev environments."`
 	Code          string `json:"code,omitempty" jsonschema:"JavaScript code to execute (required for exec)"`
 	FrameID       string `json:"frame_id,omitempty" jsonschema:"For exec: target a specific content frame by id (default: the active content frame). Rarely needed — omit to hit the frame the developer is interacting with."`
+	Target        string `json:"target,omitempty" jsonschema:"For exec/navigate: which frame in the always-wrap model. 'inner' (default) = the active page content frame; 'outer' = the chrome shell that hosts the page (the proxy UI runtime). Use 'outer' to run a REPL against the shell, 'inner' to script the page."`
+	Direction     string `json:"direction,omitempty" jsonschema:"For navigate: 'back', 'forward', 'reload', or 'goto' (with target_url). Drives the page content frame."`
+	Width         int    `json:"width,omitempty" jsonschema:"For resize: content-frame viewport width in px (0 resets to full width). Resize is observed from the outer shell; the page reflows in place with no reload, then audits can measure the resized viewport."`
+	Height        int    `json:"height,omitempty" jsonschema:"For resize: content-frame viewport height in px (0 = full height)."`
 	Global        bool   `json:"global,omitempty" jsonschema:"For list: include proxies from all directories (default: false)"`
 	Help          bool   `json:"help,omitempty" jsonschema:"For exec: show __devtool API overview instead of executing code"`
 	Describe      string `json:"describe,omitempty" jsonschema:"For exec: show detailed docs for a specific function (e.g. 'screenshot', 'interactions.getLastClick')"`
@@ -330,9 +397,61 @@ func makeProxyHandler(pm *proxy.ProxyManager) func(context.Context, *mcp.CallToo
 			return handleProxyList(pm)
 		case "exec":
 			return handleProxyExec(pm, input)
+		case "navigate":
+			return handleProxyNavigate(pm, input)
+		case "resize":
+			return handleProxyResize(pm, input)
 		default:
-			return errorResult(fmt.Sprintf("unknown action %q. Use: start, stop, status, list, exec", input.Action)), ProxyOutput{}, nil
+			return errorResult(fmt.Sprintf("unknown action %q. Use: start, stop, status, list, exec, navigate, resize", input.Action)), ProxyOutput{}, nil
 		}
+	}
+}
+
+// handleProxyNavigate drives the active content frame: back/forward/reload/goto.
+func handleProxyNavigate(pm *proxy.ProxyManager, input ProxyInput) (*mcp.CallToolResult, ProxyOutput, error) {
+	if input.ID == "" {
+		return errorResult("id required for navigate"), ProxyOutput{}, nil
+	}
+	code, err := buildNavigateJS(input.Direction, input.TargetURL)
+	if err != nil {
+		return errorResult(err.Error()), ProxyOutput{}, nil
+	}
+	proxyServer, err := pm.Get(input.ID)
+	if err != nil {
+		return errorResult(fmt.Sprintf("proxy not found: %s", input.ID)), ProxyOutput{}, nil
+	}
+	// Navigate runs in the page content frame (default target). Target may still
+	// override (e.g. "outer" to reload the shell itself).
+	if _, _, err := proxyServer.ExecuteJavaScript(code, resolveExecTarget(input.Target, "")); err != nil {
+		return errorResult(fmt.Sprintf("failed to navigate: %v", err)), ProxyOutput{}, nil
+	}
+	return nil, ProxyOutput{Success: true, Message: fmt.Sprintf("navigate %s dispatched", input.Direction)}, nil
+}
+
+// handleProxyResize resizes the live content frame from the outer shell.
+func handleProxyResize(pm *proxy.ProxyManager, input ProxyInput) (*mcp.CallToolResult, ProxyOutput, error) {
+	if input.ID == "" {
+		return errorResult("id required for resize"), ProxyOutput{}, nil
+	}
+	proxyServer, err := pm.Get(input.ID)
+	if err != nil {
+		return errorResult(fmt.Sprintf("proxy not found: %s", input.ID)), ProxyOutput{}, nil
+	}
+	execID, resultChan, err := proxyServer.ExecuteJavaScript(buildResizeJS(input.Width, input.Height), "@chrome")
+	if err != nil {
+		return errorResult(fmt.Sprintf("failed to resize: %v", err)), ProxyOutput{}, nil
+	}
+	select {
+	case result := <-resultChan:
+		if result == nil {
+			return errorResult("resize channel closed without result"), ProxyOutput{}, nil
+		}
+		if result.Error != "" {
+			return errorResult(fmt.Sprintf("resize failed: %s", result.Error)), ProxyOutput{}, nil
+		}
+		return nil, ProxyOutput{Success: true, ExecutionID: execID, Message: result.Result}, nil
+	case <-time.After(10 * time.Second):
+		return errorResult("resize timed out (is the page wrapped in the chrome shell?)"), ProxyOutput{}, nil
 	}
 }
 
@@ -523,7 +642,7 @@ func handleProxyExec(pm *proxy.ProxyManager, input ProxyInput) (*mcp.CallToolRes
 		return errorResult(fmt.Sprintf("proxy not found: %s", input.ID)), ProxyOutput{}, nil
 	}
 
-	execID, resultChan, err := proxyServer.ExecuteJavaScript(input.Code, input.FrameID)
+	execID, resultChan, err := proxyServer.ExecuteJavaScript(input.Code, resolveExecTarget(input.Target, input.FrameID))
 	if err != nil {
 		return errorResult(fmt.Sprintf("failed to execute: %v", err)), ProxyOutput{}, nil
 	}

@@ -17,9 +17,20 @@ Proxy lifecycle:
   proxy {action: "list"}
 
 Additional actions:
-  restart: Stop then start with same config
-  toast:   Send notification to connected browsers
-  chaos:   Inject controlled errors for resilience testing
+  restart:  Stop then start with same config
+  navigate: Drive the page — proxy {action:"navigate", id:"dev", direction:"back|forward|reload"} or {direction:"goto", target_url:"..."}
+  resize:   Resize the page viewport from outside (no reload) — proxy {action:"resize", id:"dev", width:375} (width:0 resets)
+  toast:    Send notification to connected browsers
+  chaos:    Inject controlled errors for resilience testing
+
+Always-wrap frame model (the page runs inside a content iframe hosted by a chrome shell):
+  - exec defaults to the INNER page content frame (the frame the developer is interacting with).
+  - target:"outer" runs the REPL against the OUTER chrome shell (the proxy UI runtime / host) instead:
+      proxy {action:"exec", id:"dev", target:"outer", code:"location.href"}
+  - target:"inner" (default) scripts the page content frame.
+  - resize/navigate observe and drive the page from the shell: resize the viewport, then run
+    api_audit / loading_audit / responsive_audit (they target the inner frame) to measure the
+    page at that size — all without a page reload.
 
 Port selection:
   - Default: stable port derived from target URL hash (range 10000-60000)
