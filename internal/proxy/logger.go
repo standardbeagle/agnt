@@ -50,6 +50,11 @@ const (
 	// CSS selector plus the computed before→after delta for the agent to write
 	// as a real source diff.
 	LogTypeDesignEdit LogEntryType = "design_edit"
+	// LogTypeWalkthrough represents a live-demo walkthrough lifecycle event
+	// (start, step advance, manual nav, finish, stop) emitted by the chrome-frame
+	// walkthrough panel. Lets the agent narrate live and react to where the user
+	// is in the demo.
+	LogTypeWalkthrough LogEntryType = "walkthrough"
 	// LogTypeResponsiveRequest represents a handoff from responsive mode requesting agent fixes for layout shifts at a width.
 	LogTypeResponsiveRequest LogEntryType = "responsive_request"
 	// LogTypeResponsiveState represents the responsive mode panel state (current width + shift count).
@@ -361,6 +366,21 @@ type DesignElementMetadata struct {
 	} `json:"rect,omitempty"`
 }
 
+// DesignScheme captures design tokens extracted live from the proxied target
+// app so generated alternatives stay on-scheme (matching the app's palette,
+// typography, spacing, and declared CSS variables). All fields are best-effort
+// and omitted when extraction yields nothing.
+type DesignScheme struct {
+	Palette      []string          `json:"palette,omitempty"`       // frequency-ranked colors (hex/rgb)
+	FontFamilies []string          `json:"font_families,omitempty"` // distinct font-family stacks
+	FontSizes    []string          `json:"font_sizes,omitempty"`    // observed font-size ladder
+	FontWeights  []string          `json:"font_weights,omitempty"`  // observed font weights
+	Spacing      []string          `json:"spacing,omitempty"`       // observed margin/padding/gap steps
+	Radius       []string          `json:"radius,omitempty"`        // observed border-radius values
+	Shadows      []string          `json:"shadows,omitempty"`       // observed box-shadow samples
+	CSSVars      map[string]string `json:"css_vars,omitempty"`      // declared --* custom properties
+}
+
 // DesignChatMessage represents a chat message in the design iteration history.
 type DesignChatMessage struct {
 	Timestamp int64  `json:"timestamp"`
@@ -377,6 +397,7 @@ type DesignState struct {
 	OriginalHTML string                `json:"original_html"`
 	ContextHTML  string                `json:"context_html"` // Parent element with siblings for context
 	Metadata     DesignElementMetadata `json:"metadata"`
+	Scheme       *DesignScheme         `json:"scheme,omitempty"` // live-extracted design tokens of the proxied app
 	URL          string                `json:"url"`
 }
 
@@ -392,6 +413,7 @@ type DesignRequest struct {
 	Metadata          DesignElementMetadata `json:"metadata"`
 	AlternativesCount int                   `json:"alternatives_count"` // How many alternatives already exist
 	ChatHistory       []DesignChatMessage   `json:"chat_history,omitempty"`
+	Scheme            *DesignScheme         `json:"scheme,omitempty"` // live-extracted design tokens of the proxied app
 	URL               string                `json:"url"`
 }
 
@@ -425,6 +447,25 @@ type DesignChat struct {
 	Metadata     DesignElementMetadata `json:"metadata"`
 	ChatHistory  []DesignChatMessage   `json:"chat_history,omitempty"`
 	URL          string                `json:"url"`
+}
+
+// WalkthroughEntry represents a walkthrough (live-demo) lifecycle event emitted
+// from the chrome-frame panel. Event is one of: start, step, manual, warning,
+// play, pause, finish, stop. Fields are populated as relevant to the event.
+type WalkthroughEntry struct {
+	ID        string    `json:"id"`
+	Timestamp time.Time `json:"timestamp"`
+	URL       string    `json:"url"`
+	Event     string    `json:"event"`
+	ScriptID  string    `json:"script_id,omitempty"`
+	Title     string    `json:"title,omitempty"`
+	StepIndex int       `json:"step_index"`
+	Total     int       `json:"total,omitempty"`
+	StepTitle string    `json:"step_title,omitempty"`
+	Advance   string    `json:"advance,omitempty"` // auto | click-target | wait
+	How       string    `json:"how,omitempty"`     // timer | click | wait | manual | start | goto
+	Mode      string    `json:"mode,omitempty"`    // auto | manual
+	Message   string    `json:"message,omitempty"`
 }
 
 // ResponsiveRequest represents a handoff from responsive mode asking the agent to
@@ -497,6 +538,7 @@ type LogEntry struct {
 	DesignRequest     *DesignRequest      `json:"design_request,omitempty"`
 	DesignChat        *DesignChat         `json:"design_chat,omitempty"`
 	DesignEdit        *DesignEdit         `json:"design_edit,omitempty"`
+	Walkthrough       *WalkthroughEntry   `json:"walkthrough,omitempty"`
 	ResponsiveRequest *ResponsiveRequest  `json:"responsive_request,omitempty"`
 	ResponsiveState   *ResponsiveState    `json:"responsive_state,omitempty"`
 	Diagnostic        *ProxyDiagnostic    `json:"diagnostic,omitempty"`
@@ -682,6 +724,14 @@ func (tl *TrafficLogger) LogDesignEdit(entry DesignEdit) {
 	tl.log(LogEntry{
 		Type:       LogTypeDesignEdit,
 		DesignEdit: &entry,
+	})
+}
+
+// LogWalkthrough adds a walkthrough (live-demo) lifecycle entry.
+func (tl *TrafficLogger) LogWalkthrough(entry WalkthroughEntry) {
+	tl.log(LogEntry{
+		Type:        LogTypeWalkthrough,
+		Walkthrough: &entry,
 	})
 }
 
@@ -917,6 +967,10 @@ func (f LogFilter) Matches(entry LogEntry) bool {
 	case LogTypeDesignEdit:
 		if entry.DesignEdit != nil {
 			timestamp = entry.DesignEdit.Timestamp
+		}
+	case LogTypeWalkthrough:
+		if entry.Walkthrough != nil {
+			timestamp = entry.Walkthrough.Timestamp
 		}
 	case LogTypeResponsiveRequest:
 		if entry.ResponsiveRequest != nil {

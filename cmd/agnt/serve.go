@@ -173,6 +173,9 @@ Available tools:
 		tools.RegisterSnapshotTools(server, snapshotManager, dt)
 	}
 
+	// Register walkthrough tool (live-demo step list; daemon mode only).
+	tools.RegisterWalkthroughTool(server, dt)
+
 	// Subscribe an always-on incident-digest sink so the unified inbox's
 	// periodic digest reaches the agent via MCP Log notifications, independent
 	// of channel mode. Rides the STREAM-EVENTS transport.

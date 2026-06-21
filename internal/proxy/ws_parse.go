@@ -394,7 +394,36 @@ func parseDesignState(data map[string]interface{}, id string, timestamp time.Tim
 		state.Metadata = parseDesignElementMetadata(metaData)
 	}
 
+	state.Scheme = parseDesignScheme(data)
+
 	return state
+}
+
+// parseDesignScheme extracts the optional live design-token scheme from a design
+// payload. Returns nil when the "scheme" key is absent or empty so legacy
+// clients (which never send it) round-trip unchanged.
+func parseDesignScheme(data map[string]interface{}) *DesignScheme {
+	raw, ok := data["scheme"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	scheme := &DesignScheme{
+		Palette:      getStringSliceField(raw, "palette"),
+		FontFamilies: getStringSliceField(raw, "fontFamilies"),
+		FontSizes:    getStringSliceField(raw, "fontSizes"),
+		FontWeights:  getStringSliceField(raw, "fontWeights"),
+		Spacing:      getStringSliceField(raw, "spacing"),
+		Radius:       getStringSliceField(raw, "radius"),
+		Shadows:      getStringSliceField(raw, "shadows"),
+		CSSVars:      getStringMapField(raw, "cssVars"),
+	}
+	if len(scheme.Palette) == 0 && len(scheme.FontFamilies) == 0 &&
+		len(scheme.FontSizes) == 0 && len(scheme.FontWeights) == 0 &&
+		len(scheme.Spacing) == 0 && len(scheme.Radius) == 0 &&
+		len(scheme.Shadows) == 0 && len(scheme.CSSVars) == 0 {
+		return nil
+	}
+	return scheme
 }
 
 func parseDesignRequest(data map[string]interface{}, id string, timestamp time.Time, url string) DesignRequest {
@@ -428,7 +457,28 @@ func parseDesignRequest(data map[string]interface{}, id string, timestamp time.T
 		}
 	}
 
+	request.Scheme = parseDesignScheme(data)
+
 	return request
+}
+
+// getStringSliceField extracts a JSON array of strings. Non-string elements are
+// skipped. Returns nil when the key is absent or not an array.
+func getStringSliceField(data map[string]interface{}, key string) []string {
+	raw, ok := data[key].([]interface{})
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(raw))
+	for _, v := range raw {
+		if s, ok := v.(string); ok && s != "" {
+			out = append(out, s)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // getStringMapField extracts a JSON object of string→string values. Non-string

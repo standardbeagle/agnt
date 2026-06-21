@@ -387,7 +387,7 @@ func TestFormatSketchText_InvalidJSON(t *testing.T) {
 // ── formatDesignStateMessage ─────────────────────────────────────────────────
 
 func TestFormatDesignStateMessage_Full(t *testing.T) {
-	result := formatDesignStateMessage(".hero-btn", "button", "hero", []string{"btn", "primary"}, "Click me", "proxy-abc")
+	result := formatDesignStateMessage(".hero-btn", "button", "hero", []string{"btn", "primary"}, "Click me", "proxy-abc", nil)
 
 	assertContains(t, result, "Design Mode")
 	assertContains(t, result, "Selector: .hero-btn")
@@ -399,11 +399,51 @@ func TestFormatDesignStateMessage_Full(t *testing.T) {
 	assertContains(t, result, `proxy-abc`)
 	assertContains(t, result, `__devtool.screenshot`)
 	assertContains(t, result, `__devtool_design.addAlternative`)
+	// Fast-draft-first + concurrent-variation instructions are always present.
+	assertContains(t, result, "Fast draft")
+	assertContains(t, result, "label:'draft'")
+	assertContains(t, result, "CONCURRENTLY")
+	// STEP 0 ensures a per-project DESIGN.md in the google-labs-code format.
+	assertContains(t, result, "DESIGN.md")
+	assertContains(t, result, "google-labs-code")
+}
+
+func TestFormatDesignStateMessage_NilSchemeOmitsSchemeBlock(t *testing.T) {
+	result := formatDesignStateMessage(".el", "div", "", nil, "", "p1", nil)
+	assertNotContains(t, result, "extracted live")
+}
+
+func TestFormatDesignStateMessage_SchemeBlockRendered(t *testing.T) {
+	scheme := &designScheme{
+		Palette:      []string{"#0a0a0a", "rgb(255,90,0)"},
+		FontFamilies: []string{"Inter, sans-serif"},
+		FontSizes:    []string{"14px", "20px"},
+		Spacing:      []string{"8px", "16px"},
+		Radius:       []string{"6px"},
+		CSSVars:      map[string]string{"--accent": "#ff5a00"},
+	}
+	result := formatDesignStateMessage(".card", "div", "", nil, "", "p1", scheme)
+
+	assertContains(t, result, "App design scheme")
+	assertContains(t, result, "#0a0a0a")
+	assertContains(t, result, "rgb(255,90,0)")
+	assertContains(t, result, "Inter, sans-serif")
+	assertContains(t, result, "--accent: #ff5a00")
+	assertContains(t, result, "label:'variation'")
+}
+
+func TestFormatSchemeBlock_EmptySchemeReturnsBlank(t *testing.T) {
+	if got := formatSchemeBlock(&designScheme{}); got != "" {
+		t.Errorf("expected blank block for empty scheme, got %q", got)
+	}
+	if got := formatSchemeBlock(nil); got != "" {
+		t.Errorf("expected blank block for nil scheme, got %q", got)
+	}
 }
 
 func TestFormatDesignStateMessage_LongTextTruncated(t *testing.T) {
 	longText := strings.Repeat("x", 100)
-	result := formatDesignStateMessage(".el", "div", "", nil, longText, "p1")
+	result := formatDesignStateMessage(".el", "div", "", nil, longText, "p1", nil)
 
 	// Text should be truncated at 50 chars + "..."
 	assertContains(t, result, "...")
@@ -413,7 +453,7 @@ func TestFormatDesignStateMessage_LongTextTruncated(t *testing.T) {
 }
 
 func TestFormatDesignStateMessage_NoTextContent(t *testing.T) {
-	result := formatDesignStateMessage(".icon", "span", "", nil, "", "p1")
+	result := formatDesignStateMessage(".icon", "span", "", nil, "", "p1", nil)
 
 	// No "Content:" line when text is empty
 	assertNotContains(t, result, "Content:")
@@ -430,7 +470,7 @@ func TestFormatDesignRequestMessage_WithHistory(t *testing.T) {
 		{Message: "Done", Role: "assistant"},
 		{Message: "Now add shadow", Role: "user"},
 	}
-	result := formatDesignRequestMessage(".card", 2, history, "<div>old</div>", "proxy-xyz")
+	result := formatDesignRequestMessage(".card", 2, history, "<div>old</div>", "proxy-xyz", nil)
 
 	assertContains(t, result, "More Premium Alternatives")
 	assertContains(t, result, "**Element:** .card")
@@ -445,13 +485,23 @@ func TestFormatDesignRequestMessage_WithHistory(t *testing.T) {
 
 func TestFormatDesignRequestMessage_CurrentHTMLTruncated(t *testing.T) {
 	longHTML := "<div>" + strings.Repeat("x", 600) + "</div>"
-	result := formatDesignRequestMessage(".el", 0, nil, longHTML, "p1")
+	result := formatDesignRequestMessage(".el", 0, nil, longHTML, "p1", nil)
 
 	// HTML should be truncated at 500 chars
 	assertContains(t, result, "...")
 	if strings.Contains(result, longHTML) {
 		t.Error("long HTML should be truncated")
 	}
+}
+
+func TestFormatDesignRequestMessage_SchemeAndConcurrency(t *testing.T) {
+	scheme := &designScheme{Palette: []string{"#123456"}, FontFamilies: []string{"Inter"}}
+	result := formatDesignRequestMessage(".el", 3, nil, "<div/>", "p9", scheme)
+
+	assertContains(t, result, "App design scheme")
+	assertContains(t, result, "#123456")
+	assertContains(t, result, "CONCURRENTLY")
+	assertContains(t, result, "label:'variation'")
 }
 
 // ── formatDesignChatText ─────────────────────────────────────────────────────
