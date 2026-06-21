@@ -62,8 +62,31 @@
     dragging: false,
     shifts: [],          // layout-shift findings at the current width (A3)
     prevShiftIds: {},     // finding ids seen at the previous width (for isNew marking)
-    shiftTimer: null
+    shiftTimer: null,
+    // Adopt-in-place (always-wrap model): when opened inside a chrome shell we
+    // resize the shell's live content frame rather than loading a second iframe,
+    // so no reload happens and page state is preserved. These hold the adopted
+    // frame, its original inline style (restored on close), the resize listener
+    // bookkeeping, and the root-mounted overlay/handle layers.
+    adopted: false,
+    contentFrame: null,
+    savedFrameCss: null,
+    loadHandler: null,
+    host: null,
+    handleEl: null
   };
+
+  var Z_FRAME = 2147483601;
+  var Z_OVERLAY = 2147483602;
+  var Z_HANDLE = 2147483603;
+
+  // getContentFrame returns the shell's live content iframe when responsive mode
+  // is opened in the chrome shell (always-wrap model), else null (fallback to a
+  // self-hosted preview iframe).
+  function getContentFrame() {
+    if (window.__devtool_frame_role !== 'chrome') { return null; }
+    return document.getElementById('__devtool_content_frame') || null;
+  }
 
   function getCore() { return window.__devtool_core; }
 
@@ -212,26 +235,113 @@
       'align-self: stretch'
     ].join('; ');
 
+    attachResizeDrag(handle);
+    return handle;
+  }
+
+  // attachResizeDrag wires the center-anchored edge-resize gesture onto a handle.
+  function attachResizeDrag(handle) {
     handle.addEventListener('mousedown', function(e) {
       e.preventDefault();
       state.dragging = true;
+      // Cache the frame center once; the frame is centered and its position does
+      // not change during the drag, so re-reading it per mousemove only thrashes
+      // layout and makes the drag jittery.
+      var rect = state.iframe ? state.iframe.getBoundingClientRect() : null;
+      state.dragCenterX = rect ? rect.left + rect.width / 2 : 0;
       document.addEventListener('mousemove', onDragMove, true);
       document.addEventListener('mouseup', onDragEnd, true);
     });
-    return handle;
+  }
+
+  // mountAdoptLayers creates the overlay (shift boxes) and the resize handle as
+  // root-mounted fixed layers stacked above the adopted content frame. The frame
+  // sits outside the panel's stacking context, so these can't live inside the
+  // panel — they're positioned to the frame box by layoutAdoptedFrame().
+  function mountAdoptLayers() {
+    var root = getMountRoot();
+
+    var overlay = document.createElement('div');
+    overlay.style.cssText = [
+      'position: fixed',
+      'pointer-events: none',
+      'overflow: hidden',
+      'z-index: ' + Z_OVERLAY
+    ].join('; ');
+    root.appendChild(overlay);
+    state.overlayLayer = overlay;
+
+    var handle = document.createElement('div');
+    handle.title = 'Drag to resize width';
+    handle.style.cssText = [
+      'position: fixed',
+      'width: 8px',
+      'cursor: ew-resize',
+      'background: #3a3f47',
+      'border-radius: 2px',
+      'z-index: ' + Z_HANDLE
+    ].join('; ');
+    attachResizeDrag(handle);
+    root.appendChild(handle);
+    state.handleEl = handle;
+  }
+
+  // layoutAdoptedFrame positions the live content frame (and the overlay + drag
+  // handle) over the panel's host region: a centered box of the current width,
+  // spanning the host's height. Called on open, on width change, and on resize.
+  function layoutAdoptedFrame() {
+    if (!state.adopted || !state.contentFrame || !state.host) { return; }
+    var hr = state.host.getBoundingClientRect();
+    var w = Math.min(state.width, Math.max(0, Math.round(hr.width)));
+    var left = Math.round(hr.left + (hr.width - w) / 2);
+    var top = Math.round(hr.top);
+    var h = Math.round(hr.height);
+
+    var cf = state.contentFrame.style;
+    cf.position = 'fixed';
+    cf.inset = 'auto';
+    cf.left = left + 'px';
+    cf.top = top + 'px';
+    cf.right = 'auto';
+    cf.bottom = 'auto';
+    cf.width = w + 'px';
+    cf.height = h + 'px';
+    cf.border = '1px solid #3a3f47';
+    cf.background = '#ffffff';
+    cf.zIndex = String(Z_FRAME);
+
+    if (state.overlayLayer) {
+      var ol = state.overlayLayer.style;
+      ol.left = left + 'px';
+      ol.top = top + 'px';
+      ol.width = w + 'px';
+      ol.height = h + 'px';
+    }
+    if (state.handleEl) {
+      var hs = state.handleEl.style;
+      hs.left = (left + w) + 'px';
+      hs.top = top + 'px';
+      hs.height = h + 'px';
+    }
   }
 
   function onDragMove(e) {
     if (!state.dragging || !state.iframe) { return; }
     // Frame is centered, so the handle drag is center-anchored: each edge moves
     // symmetrically. Width = twice the pointer's distance from the frame center.
-    var rect = state.iframe.getBoundingClientRect();
-    var centerX = rect.left + rect.width / 2;
-    applyWidth((e.clientX - centerX) * 2);
+    if (state.dragPendingX === e.clientX) { return; }
+    state.dragPendingX = e.clientX;
+    if (state.dragRaf) { return; }
+    state.dragRaf = requestAnimationFrame(function() {
+      state.dragRaf = 0;
+      if (!state.dragging) { return; }
+      applyWidth((state.dragPendingX - state.dragCenterX) * 2);
+    });
   }
 
   function onDragEnd() {
     state.dragging = false;
+    if (state.dragRaf) { cancelAnimationFrame(state.dragRaf); state.dragRaf = 0; }
     document.removeEventListener('mousemove', onDragMove, true);
     document.removeEventListener('mouseup', onDragEnd, true);
   }
@@ -326,56 +436,63 @@
       'gap: 0'
     ].join('; ');
 
-    // frameWrap holds the iframe + the shift-flag overlay layer at the same
-    // box, so element rects from inside the iframe map directly to overlay
-    // coordinates.
-    var frameWrap = document.createElement('div');
-    frameWrap.style.cssText = [
-      'position: relative',
-      'width: ' + state.width + 'px',
-      'height: 100%',
-      'flex: 0 0 auto'
-    ].join('; ');
+    // Adopt-in-place mode: the live shell content frame IS the preview. The host
+    // is just a backdrop defining the geometry; the frame + overlay + handle are
+    // root-mounted fixed layers positioned by layoutAdoptedFrame(). No second
+    // iframe, so no reload and the page keeps its state.
+    if (state.adopted) {
+      state.host = host;
+    } else {
+      // Fallback (opened outside a chrome shell): self-host a preview iframe.
+      // frameWrap holds the iframe + the shift-flag overlay layer at the same
+      // box, so element rects from inside the iframe map directly to overlay
+      // coordinates.
+      var frameWrap = document.createElement('div');
+      frameWrap.style.cssText = [
+        'position: relative',
+        'width: ' + state.width + 'px',
+        'height: 100%',
+        'flex: 0 0 auto'
+      ].join('; ');
 
-    var iframe = document.createElement('iframe');
-    iframe.id = FRAME_ID;
-    // Always-wrap model (docs/responsive-canonical-target.md §4/§7): the proxy
-    // wraps a top-level navigation in a chrome shell, so loading
-    // window.location.href verbatim would load ANOTHER shell (shell-in-shell).
-    // Carry the content-frame marker so the proxy serves the page UNWRAPPED
-    // here; the preview then registers as its own content frame (frames.js) and
-    // becomes the active interaction target while responsive mode is open.
-    iframe.src = responsiveContentSrc();
-    iframe.style.cssText = [
-      'width: 100%',
-      'height: 100%',
-      'border: 1px solid #3a3f47',
-      'background: #ffffff',
-      'display: block'
-    ].join('; ');
-    // Detect shifts once the framed page settles, and again after any in-frame
-    // navigation reloads it.
-    iframe.addEventListener('load', scheduleCapture);
+      var iframe = document.createElement('iframe');
+      iframe.id = FRAME_ID;
+      // Carry the content-frame marker so the proxy serves the page UNWRAPPED
+      // here (no shell-in-shell); the preview registers as its own content frame.
+      iframe.src = responsiveContentSrc();
+      iframe.style.cssText = [
+        'width: 100%',
+        'height: 100%',
+        'border: 1px solid #3a3f47',
+        'background: #ffffff',
+        'display: block'
+      ].join('; ');
+      // Detect shifts once the framed page settles, and again after any in-frame
+      // navigation reloads it.
+      iframe.addEventListener('load', scheduleCapture);
 
-    var overlayLayer = document.createElement('div');
-    overlayLayer.style.cssText = [
-      'position: absolute',
-      'top: 0',
-      'left: 0',
-      'right: 0',
-      'bottom: 0',
-      'pointer-events: none',
-      'overflow: hidden',
-      'z-index: 1'
-    ].join('; ');
+      var overlayLayer = document.createElement('div');
+      overlayLayer.style.cssText = [
+        'position: absolute',
+        'top: 0',
+        'left: 0',
+        'right: 0',
+        'bottom: 0',
+        'pointer-events: none',
+        'overflow: hidden',
+        'z-index: 1'
+      ].join('; ');
 
-    frameWrap.appendChild(iframe);
-    frameWrap.appendChild(overlayLayer);
+      frameWrap.appendChild(iframe);
+      frameWrap.appendChild(overlayLayer);
 
-    var handle = buildDragHandle();
+      host.appendChild(frameWrap);
+      host.appendChild(buildDragHandle());
 
-    host.appendChild(frameWrap);
-    host.appendChild(handle);
+      state.iframe = iframe;
+      state.frameWrap = frameWrap;
+      state.overlayLayer = overlayLayer;
+    }
 
     // Auto-sweep results drawer: hidden until a sweep runs. Sweep findings span
     // multiple viewports, so they list here rather than overlay the single live
@@ -399,9 +516,6 @@
     panel.appendChild(resultsPane);
 
     state.widthLabel = widthLabel;
-    state.iframe = iframe;
-    state.frameWrap = frameWrap;
-    state.overlayLayer = overlayLayer;
     state.resultsPane = resultsPane;
 
     // Escape closes while the panel is focused/hovered.
@@ -563,6 +677,7 @@
     if (!state.resultsPane) { return; }
     state.resultsPane.textContent = '⚠ ' + msg;
     state.resultsPane.style.display = 'block';
+    layoutAdoptedFrame(); // drawer changed host height; re-fit the adopted frame
   }
 
   var SWEEP_SEVERITY_COLOR = {
@@ -575,6 +690,8 @@
     if (!state.resultsPane) { return; }
     state.resultsPane.innerHTML = '';
     state.resultsPane.style.display = 'block';
+
+    layoutAdoptedFrame(); // drawer now visible; re-fit the adopted frame
 
     var viewports = (result && result.viewports) || {};
     var names = Object.keys(viewports);
@@ -624,7 +741,8 @@
   // here, so all surfaces stay in sync regardless of who drove the change.
   function applyWidth(w) {
     state.width = clampWidth(w);
-    if (state.frameWrap) { state.frameWrap.style.width = state.width + 'px'; }
+    if (state.adopted) { layoutAdoptedFrame(); }
+    else if (state.frameWrap) { state.frameWrap.style.width = state.width + 'px'; }
     if (state.widthLabel) { state.widthLabel.textContent = state.width + 'px'; }
     if (state.slider && state.slider.value !== String(state.width)) {
       state.slider.value = String(state.width);
@@ -638,9 +756,24 @@
 
   function open() {
     if (state.open) { return getState(); }
+    var cf = getContentFrame();
+    state.adopted = !!cf;
+    state.contentFrame = cf;
     state.panel = buildPanel();
     getMountRoot().appendChild(state.panel);
     state.open = true;
+    if (state.adopted) {
+      // Adopt the live content frame: resize it in place, no reload. Save its
+      // inline style so close() restores the shell's full-bleed layout.
+      state.savedFrameCss = cf.getAttribute('style') || '';
+      state.iframe = cf;
+      mountAdoptLayers();
+      layoutAdoptedFrame();
+      state.loadHandler = function() { scheduleCapture(); };
+      cf.addEventListener('load', state.loadHandler);
+      window.addEventListener('resize', layoutAdoptedFrame, true);
+      scheduleCapture();
+    }
     emitState();
     return getState();
   }
@@ -648,10 +781,31 @@
   function close() {
     onDragEnd();
     if (state.shiftTimer) { clearTimeout(state.shiftTimer); state.shiftTimer = null; }
+    if (state.adopted && state.contentFrame) {
+      // Restore the live content frame to the shell's full-bleed layout. The
+      // frame was never reparented, so no reload occurs on close.
+      if (state.loadHandler) {
+        try { state.contentFrame.removeEventListener('load', state.loadHandler); } catch (e) { /* gone */ }
+      }
+      state.contentFrame.setAttribute('style', state.savedFrameCss || '');
+      window.removeEventListener('resize', layoutAdoptedFrame, true);
+      if (state.overlayLayer && state.overlayLayer.parentNode) {
+        state.overlayLayer.parentNode.removeChild(state.overlayLayer);
+      }
+      if (state.handleEl && state.handleEl.parentNode) {
+        state.handleEl.parentNode.removeChild(state.handleEl);
+      }
+    }
     if (state.panel && state.panel.parentNode) {
       state.panel.parentNode.removeChild(state.panel);
     }
     state.panel = null;
+    state.adopted = false;
+    state.contentFrame = null;
+    state.savedFrameCss = null;
+    state.loadHandler = null;
+    state.host = null;
+    state.handleEl = null;
     state.iframe = null;
     state.widthLabel = null;
     state.slider = null;

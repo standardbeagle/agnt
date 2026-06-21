@@ -48,6 +48,10 @@
     dragging: null     // active drag descriptor or null
   };
 
+  // Active pointer capture {el, pointerId}, released on drag teardown so the
+  // handle does not retain the pointer after the drag ends.
+  var capture = null;
+
   // ── Snap engine (pure core) ────────────────────────────────────────────────
 
   // snapValue returns the nearest candidate to raw within threshold, else raw.
@@ -296,6 +300,7 @@
     };
 
     try { handleEl.setPointerCapture(ev.pointerId); } catch (e) { /* non-fatal */ }
+    capture = { el: handleEl, pointerId: ev.pointerId };
     document.addEventListener('pointermove', onDragMove, true);
     document.addEventListener('pointerup', onDragEnd, true);
   }
@@ -339,6 +344,10 @@
   function teardownDragListeners() {
     document.removeEventListener('pointermove', onDragMove, true);
     document.removeEventListener('pointerup', onDragEnd, true);
+    if (capture) {
+      try { capture.el.releasePointerCapture(capture.pointerId); } catch (e) { /* pointer may be lost */ }
+      capture = null;
+    }
   }
 
   // computeProps turns a raw drag delta into snapped override properties.
