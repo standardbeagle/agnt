@@ -75,9 +75,9 @@ sed -i "s/^version = \".*\"/version = \"$NEW_VERSION\"/" python/agnt/pyproject.t
 echo "Updating python/agnt/src/agnt/__init__.py..."
 sed -i "s/__version__ = \".*\"/__version__ = \"$NEW_VERSION\"/" python/agnt/src/agnt/__init__.py
 
-# Update CLAUDE.md
-echo "Updating CLAUDE.md..."
-sed -i "s/\*\*Version\*\*: .*/\*\*Version\*\*: $NEW_VERSION/" CLAUDE.md
+# Update AGENTS.md
+echo "Updating AGENTS.md..."
+sed -i "s/\*\*Version\*\*: .*/\*\*Version\*\*: $NEW_VERSION/" AGENTS.md
 
 # Update root package.json
 echo "Updating package.json..."
@@ -101,7 +101,7 @@ grep 'var Version = ' internal/daemon/daemon.go
 grep '"version"' npm/agnt/package.json
 grep '^version = ' python/agnt/pyproject.toml
 grep '__version__ = ' python/agnt/src/agnt/__init__.py
-grep '\*\*Version\*\*:' CLAUDE.md
+grep '\*\*Version\*\*:' AGENTS.md
 grep '"version"' package.json | head -1
 grep '"version"' npm/devtool-mcp/package.json | head -1
 grep '^version = ' python/pyproject.toml
@@ -109,7 +109,7 @@ grep '^version = ' python/pyproject.toml
 # Commit and tag
 echo ""
 echo "Creating commit and tag..."
-git add cmd/agnt/main.go internal/daemon/daemon.go npm/agnt/package.json python/agnt/pyproject.toml python/agnt/src/agnt/__init__.py CLAUDE.md package.json npm/devtool-mcp/package.json python/pyproject.toml
+git add cmd/agnt/main.go internal/daemon/daemon.go npm/agnt/package.json python/agnt/pyproject.toml python/agnt/src/agnt/__init__.py AGENTS.md package.json npm/devtool-mcp/package.json python/pyproject.toml
 git commit -m "chore: bump version to $NEW_VERSION
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
