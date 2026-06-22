@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/gorilla/websocket"
 
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/proxy"
@@ -969,10 +972,12 @@ func TestToastProjectProxies_ScopesByProjectPath(t *testing.T) {
 	assert.Len(t, d.proxym.ListScoped(scope.Unscoped("test")), 2)
 }
 
-// TestToastProjectProxies_EmptyProjectPathToastsAll verifies that when no
-// project path is set (legacy agnt notify without --project-path), every proxy
-// receives the toast.
-func TestToastProjectProxies_EmptyProjectPathToastsAll(t *testing.T) {
+// TestToastProjectProxies_EmptyProjectPathDropsToast verifies the fail-closed
+// contract: a hook event with no project_path (an unattributed event — e.g. a
+// global ~/.claude/settings.json Stop hook firing from a non-agnt session that
+// shares the single per-user daemon) must NOT fan a toast across every overlay.
+// Regression guard for cross-session toast leakage.
+func TestToastProjectProxies_EmptyProjectPathDropsToast(t *testing.T) {
 	t.Parallel()
 	d := drainFanoutTestDaemon(t)
 
@@ -981,21 +986,56 @@ func TestToastProjectProxies_EmptyProjectPathToastsAll(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	for _, id := range []string{"proxy-one", "proxy-two"} {
-		_, err := d.proxym.Create(context.Background(), proxy.ProxyConfig{
-			ID: id, TargetURL: backend.URL, ListenPort: 0, MaxLogSize: 50,
-		})
-		require.NoError(t, err)
-		t.Cleanup(func() { _ = d.proxym.Stop(context.Background(), id) })
-	}
+	ps, err := d.proxym.Create(context.Background(), proxy.ProxyConfig{
+		ID: "proxy-unrelated", TargetURL: backend.URL, ListenPort: 0, MaxLogSize: 50,
+		Path: "/some/other/project",
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = d.proxym.Stop(context.Background(), "proxy-unrelated") })
 
-	// No ProjectPath → legacy broadcast to all proxies.
+	// Connect a browser WS client so toast delivery is observable.
+	wsURL := fmt.Sprintf("ws://%s/__devtool_metrics", ps.ListenAddr)
+	var wsConn *websocket.Conn
+	require.Eventually(t, func() bool {
+		conn, _, dialErr := websocket.DefaultDialer.Dial(wsURL, nil)
+		if dialErr != nil {
+			return false
+		}
+		wsConn = conn
+		return true
+	}, 5*time.Second, 10*time.Millisecond, "failed to connect WebSocket to proxy")
+	defer wsConn.Close()
+
+	toastSeen := make(chan string, 4)
+	go func() {
+		for {
+			_, message, readErr := wsConn.ReadMessage()
+			if readErr != nil {
+				return
+			}
+			var msg struct {
+				Type string `json:"type"`
+			}
+			if json.Unmarshal(message, &msg) == nil && msg.Type == "toast" {
+				toastSeen <- string(message)
+			}
+		}
+	}()
+
+	// Empty ProjectPath → must be dropped, not broadcast to this overlay.
 	ev := HookEvent{
 		Event:   "stop",
 		Payload: json.RawMessage(`{"stop_hook_active":false,"last_assistant_message":"done"}`),
 	}
 	assert.NotPanics(t, func() { d.fanOutHookEvent(ev) })
-	assert.Len(t, d.proxym.ListScoped(scope.Unscoped("test")), 2)
+
+	select {
+	case leaked := <-toastSeen:
+		t.Fatalf("unattributed hook leaked a toast to an unrelated overlay: %s", leaked)
+	case <-time.After(300 * time.Millisecond):
+		// No toast — fail-closed contract holds.
+	}
+	assert.Len(t, d.proxym.ListScoped(scope.Unscoped("test")), 1)
 }
 
 // TestDrainHooks_NonToastEventsUnchanged asserts that events other than

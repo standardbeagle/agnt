@@ -86,3 +86,19 @@ func TestBuildWalkthroughExec_LoadEmbedsScript(t *testing.T) {
 		t.Errorf("load did not embed script: %q", code)
 	}
 }
+
+// Agents pass script as a JSON object, not a serialized string. The `any`
+// field must accept a decoded map and re-marshal it into the exec snippet.
+func TestBuildWalkthroughExec_AcceptsObjectScript(t *testing.T) {
+	script := map[string]any{
+		"id":    "obj",
+		"steps": []any{map[string]any{"title": "a", "advance": map[string]any{"type": "auto"}}},
+	}
+	code, err := buildWalkthroughExec(WalkthroughInput{Action: "load", Script: script})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(code, `w.load(`) || !strings.Contains(code, `"id":"obj"`) {
+		t.Errorf("object script not embedded: %q", code)
+	}
+}

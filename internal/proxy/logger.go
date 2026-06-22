@@ -415,6 +415,7 @@ type DesignRequest struct {
 	ChatHistory       []DesignChatMessage   `json:"chat_history,omitempty"`
 	Scheme            *DesignScheme         `json:"scheme,omitempty"` // live-extracted design tokens of the proxied app
 	URL               string                `json:"url"`
+	ScreenshotPath    string                `json:"screenshot_path,omitempty"` // saved PNG of the live segment (dataURL stripped after save)
 }
 
 // DesignEdit represents a direct-manipulation geometry edit committed on an
@@ -436,17 +437,18 @@ type DesignEdit struct {
 
 // DesignChat represents a chat message about the selected element.
 type DesignChat struct {
-	ID           string                `json:"id"`
-	Timestamp    time.Time             `json:"timestamp"`
-	Message      string                `json:"message"` // User's chat message
-	Selector     string                `json:"selector"`
-	XPath        string                `json:"xpath"`
-	CurrentHTML  string                `json:"current_html"`
-	OriginalHTML string                `json:"original_html"`
-	ContextHTML  string                `json:"context_html"`
-	Metadata     DesignElementMetadata `json:"metadata"`
-	ChatHistory  []DesignChatMessage   `json:"chat_history,omitempty"`
-	URL          string                `json:"url"`
+	ID             string                `json:"id"`
+	Timestamp      time.Time             `json:"timestamp"`
+	Message        string                `json:"message"` // User's chat message
+	Selector       string                `json:"selector"`
+	XPath          string                `json:"xpath"`
+	CurrentHTML    string                `json:"current_html"`
+	OriginalHTML   string                `json:"original_html"`
+	ContextHTML    string                `json:"context_html"`
+	Metadata       DesignElementMetadata `json:"metadata"`
+	ChatHistory    []DesignChatMessage   `json:"chat_history,omitempty"`
+	URL            string                `json:"url"`
+	ScreenshotPath string                `json:"screenshot_path,omitempty"` // saved PNG of the live segment
 }
 
 // WalkthroughEntry represents a walkthrough (live-demo) lifecycle event emitted

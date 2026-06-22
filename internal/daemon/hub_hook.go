@@ -616,18 +616,23 @@ func buildBashRedirectMessage(d *hookrules.Decision) string {
 }
 
 // toastProjectProxies sends a BroadcastToast to proxies for a specific project.
-// When projectPath is empty (e.g. legacy agnt notify without --project-path), all
-// proxies receive the toast to preserve backward compatibility.
+//
+// Empty projectPath fails CLOSED: the toast is dropped, not fanned to every
+// overlay. The single per-user daemon receives hook events from EVERY Claude
+// session (the global ~/.claude/settings.json hooks fire for non-agnt sessions
+// too), so an unattributed event Unscoped-broadcast would land a stray toast in
+// an unrelated project's overlay. Per the scope-token rule, global is the loud
+// exception — an unattributed hook gets no overlay, not all of them. Callers
+// that want a toast must attribute the project via `--project-path $PWD`.
+//
 // Per-proxy errors are swallowed at debug level so one wedged WS client does not
 // block the others.
 func (d *Daemon) toastProjectProxies(projectPath, toastType, title, message string, duration int) {
-	// Scope to the project; an empty projectPath (legacy agnt notify without
-	// --project-path) falls back to every overlay, audited via Unscoped.
-	sc := scope.Project(projectPath)
 	if projectPath == "" {
-		sc = scope.Unscoped("legacy notify without --project-path")
+		debug.Log("hook-hub", "toast dropped: hook event has no project_path (title=%q) — refusing to fan across all overlays", title)
+		return
 	}
-	proxies := d.proxym.ListScoped(sc)
+	proxies := d.proxym.ListScoped(scope.Project(projectPath))
 	if len(proxies) == 0 {
 		return
 	}

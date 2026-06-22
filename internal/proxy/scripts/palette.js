@@ -100,8 +100,6 @@
         break;
       case 'image':
         base = [
-          { id: 'width', label: 'w', kind: 'scrubber', prop: 'width', unit: 'px', min: 0, max: 2000, step: 1 },
-          { id: 'height', label: 'h', kind: 'scrubber', prop: 'height', unit: 'px', min: 0, max: 2000, step: 1 },
           { id: 'object-fit', label: 'fit', kind: 'select', prop: 'objectFit', options: ['fill', 'contain', 'cover', 'none', 'scale-down'] }
         ];
         break;
@@ -116,8 +114,6 @@
       case 'block':
       default:
         base = [
-          { id: 'width', label: 'w', kind: 'scrubber', prop: 'width', unit: 'px', min: 0, max: 2000, step: 1 },
-          { id: 'height', label: 'h', kind: 'scrubber', prop: 'height', unit: 'px', min: 0, max: 2000, step: 1 },
           { id: 'padding', label: 'p', kind: 'scrubber', prop: 'padding', unit: 'px', min: 0, max: 64, step: 1 },
           { id: 'background-color', label: 'bg', kind: 'swatch', prop: 'backgroundColor' }
         ];
@@ -623,10 +619,12 @@
         handle.style.cursor = 'grab';
         if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
         if (pendingPos) applyPendingPos();
+        try { window.__devtool_core.endDragShield(); } catch (e) { /* optional */ }
         document.removeEventListener('mousemove', onMove);
         document.removeEventListener('mouseup', onUp);
       }
 
+      try { window.__devtool_core.beginDragShield(); } catch (e) { /* optional */ }
       document.addEventListener('mousemove', onMove);
       document.addEventListener('mouseup', onUp);
     });

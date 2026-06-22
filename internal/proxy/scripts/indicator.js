@@ -1232,7 +1232,11 @@
       'right: -4px',
       'bottom: -4px',
       'border-radius: ' + TOKENS.radius.full,
-      'border: 2px solid ' + TOKENS.colors.active,
+      // Arc spinner: transparent sides make the rotation visible (a uniform
+      // circular border looks identical at every angle and reads as static).
+      'border: 3px solid transparent',
+      'border-top-color: ' + TOKENS.colors.active,
+      'border-right-color: ' + TOKENS.colors.active,
       'opacity: 0',
       'pointer-events: none'
     ].join(';'),
@@ -2400,19 +2404,20 @@
       '  animation: __devtool-breathe 3s ease-in-out infinite;',
       '}',
       // Orbital ring - rotating glow
+      // Spinning arc + throb. The arc (transparent border sides) makes the
+      // rotation visible; the scale throb pulses the radius so the ring both
+      // spins and breathes, clearly signalling "agent working".
       '@keyframes __devtool-orbit {',
-      '  0% { transform: rotate(0deg) scale(1); box-shadow: 4px 0 10px rgba(245,158,11,0.5), -4px 0 10px rgba(99,102,241,0.3); }',
-      '  25% { transform: rotate(90deg) scale(1.06); box-shadow: 0 4px 12px rgba(245,158,11,0.6), 0 -4px 10px rgba(99,102,241,0.4); }',
-      '  50% { transform: rotate(180deg) scale(1.1); box-shadow: -4px 0 14px rgba(245,158,11,0.7), 4px 0 10px rgba(99,102,241,0.5); }',
-      '  75% { transform: rotate(270deg) scale(1.06); box-shadow: 0 -4px 12px rgba(245,158,11,0.6), 0 4px 10px rgba(99,102,241,0.4); }',
-      '  100% { transform: rotate(360deg) scale(1); box-shadow: 4px 0 10px rgba(245,158,11,0.5), -4px 0 10px rgba(99,102,241,0.3); }',
+      '  0% { transform: rotate(0deg) scale(1); }',
+      '  50% { transform: rotate(180deg) scale(1.14); }',
+      '  100% { transform: rotate(360deg) scale(1); }',
       '}',
       '.__devtool-active {',
       // Toggled via setActivityState(true/false) in indicator.js; will-change
       // is scoped to the class and removed when the class is removed, so GPU
       // memory is reclaimed when the activity ring is idle.
       '  will-change: transform;',
-      '  animation: __devtool-orbit 2.5s linear infinite;',
+      '  animation: __devtool-orbit 1s linear infinite;',
       '}',
       // Bug active pulse - scale + shadow throb
       '@keyframes __devtool-active-pulse {',
@@ -2503,7 +2508,7 @@
       '.__devtool-dot-pop {',
       '  animation: __devtool-dot-pop 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) 1;',
       '}'
-    ].join('\\n');
+    ].join('\n');
     // Append to the shadow root (if active) so the keyframes/classes apply
     // to the indicator UI inside the shadow boundary. Falls back to
     // document.head when the UI mounts on document.body.
@@ -5126,6 +5131,7 @@
     function onUp() {
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
+      try { core.endDragShield(); } catch (e) { /* optional */ }
       if (rafId) {
         cancelAnimationFrame(rafId);
         rafId = 0;
@@ -5144,6 +5150,7 @@
       }
     }
 
+    try { core.beginDragShield(); } catch (e) { /* optional */ }
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
   }

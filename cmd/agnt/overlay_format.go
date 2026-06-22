@@ -453,11 +453,7 @@ func addAltExec(proxyID, label, note string) string {
 // designOnSchemeRules is the constraint block every generated variation must
 // satisfy. Shared by the initial and continuation prompts so the rules stay in
 // one place.
-const designOnSchemeRules = `Each variation MUST:
-- Stay within the app's design scheme above (reuse its palette, type ladder, spacing, radius, CSS vars — do NOT invent off-brand colors/fonts)
-- Follow the design language in design.md and modern principles (hierarchy, whitespace, contrast)
-- Be accessible (WCAG AA)
-- Have a unique direction noted in the 'note' field`
+const designOnSchemeRules = `Each variation: follow design.md; note its unique direction in the 'note' field.`
 
 // formatDesignStateMessage formats the design state message for UX design sessions.
 func formatDesignStateMessage(selector, tag, id string, classes []string, textContent, proxyID string, scheme *designScheme) string {
@@ -558,15 +554,26 @@ func formatDesignRequestText(event ProxyEvent) string {
 			Message string `json:"message"`
 			Role    string `json:"role"`
 		} `json:"chat_history"`
-		Scheme *designScheme `json:"scheme"`
+		Scheme         *designScheme `json:"scheme"`
+		ScreenshotPath string        `json:"screenshot_path"`
 	}
 	if err := json.Unmarshal(event.Data, &data); err != nil {
 		debug.Warn("overlay", "failed to parse design_request: %v", err)
 		return ""
 	}
 
-	return formatDesignRequestMessage(data.Selector, data.AlternativesCount,
+	text := formatDesignRequestMessage(data.Selector, data.AlternativesCount,
 		data.ChatHistory, data.CurrentHTML, event.ProxyID, data.Scheme)
+	return text + screenshotBlock(data.ScreenshotPath)
+}
+
+// screenshotBlock appends an agent-readable pointer to the saved segment PNG.
+// PTY stdin can't inline images, so the agent reads the file from disk.
+func screenshotBlock(path string) string {
+	if path == "" {
+		return ""
+	}
+	return fmt.Sprintf("\n\n**Screenshot of the live segment (read it):** %s\n", path)
 }
 
 // formatDesignRequestMessage formats the design request message for continuation.
@@ -620,11 +627,12 @@ feedback above. Each calls addAlternative as soon as it finishes:
 // formatDesignChatText formats a design_chat event into text for the AI agent.
 func formatDesignChatText(event ProxyEvent) string {
 	var data struct {
-		Message      string `json:"message"`
-		Selector     string `json:"selector"`
-		CurrentHTML  string `json:"current_html"`
-		OriginalHTML string `json:"original_html"`
-		URL          string `json:"url"`
+		Message        string `json:"message"`
+		Selector       string `json:"selector"`
+		CurrentHTML    string `json:"current_html"`
+		OriginalHTML   string `json:"original_html"`
+		URL            string `json:"url"`
+		ScreenshotPath string `json:"screenshot_path"`
 	}
 	if err := json.Unmarshal(event.Data, &data); err != nil {
 		debug.Warn("overlay", "failed to parse design_chat: %v", err)
@@ -643,7 +651,7 @@ func formatDesignChatText(event ProxyEvent) string {
 **Element:** %s
 **Current design:**
 %s
-
+%s
 **As a premium UX designer, refine the design based on this feedback.**
 
 If you need more context:
@@ -654,7 +662,7 @@ If you need more context:
 
 **Apply the refined design:**
 proxy {action: "exec", id: "%s", code: "__devtool_design.addAlternative('<refined HTML>')"}`,
-		data.Message, data.Selector, currentHTML,
+		data.Message, data.Selector, currentHTML, screenshotBlock(data.ScreenshotPath),
 		event.ProxyID, event.ProxyID, event.ProxyID, event.ProxyID, event.ProxyID)
 }
 
