@@ -10,11 +10,30 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	claude "github.com/standardbeagle/claude-go"
 )
+
+// startVerifyKill starts an `agnt ai claude` command in its own process group,
+// gives it a moment to accept its flags / emit early stderr, then SIGKILLs the
+// WHOLE group. `ai claude` spawns a real `claude` CLI grandchild; a bare
+// cmd.Process.Kill() reaps only agnt and leaves that claude orphaned, hanging
+// on a stdin that never closes (~300MB held for hours under the pre-commit
+// `go test ./cmd/agnt`). Killing the group (-pgid) reaps the grandchild too.
+// Any stderr the caller wants to assert on must be wired before the call.
+func startVerifyKill(t *testing.T, cmd *exec.Cmd) {
+	t.Helper()
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("Failed to start command: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	_ = cmd.Wait()
+}
 
 // TestAiClaude_RequiresPrompt verifies that agnt ai claude fails without a prompt.
 func TestAiClaude_RequiresPrompt(t *testing.T) {
@@ -87,17 +106,9 @@ func TestAiClaude_PromptFromFlag(t *testing.T) {
 		"--raw",
 	)
 
-	// If Claude is available, this will start running
-	// We just want to verify the command starts without immediate error
-	err := cmd.Start()
-	if err != nil {
-		t.Fatalf("Failed to start command: %v", err)
-	}
-
-	// Kill the process after a short time - we just want to verify it accepted the flags
-	time.Sleep(100 * time.Millisecond)
-	cmd.Process.Kill()
-	_ = cmd.Wait() // reap watchCtx goroutine
+	// Verify the command starts and accepts its flags, then reap the whole
+	// group (agnt + the real claude it spawns).
+	startVerifyKill(t, cmd)
 }
 
 // TestAiClaude_PromptFromStdin verifies stdin prompt works.
@@ -119,15 +130,7 @@ func TestAiClaude_PromptFromStdin(t *testing.T) {
 	// Provide prompt via stdin
 	cmd.Stdin = strings.NewReader("echo hello")
 
-	err := cmd.Start()
-	if err != nil {
-		t.Fatalf("Failed to start command: %v", err)
-	}
-
-	// Kill after verifying it started
-	time.Sleep(100 * time.Millisecond)
-	cmd.Process.Kill()
-	_ = cmd.Wait() // reap watchCtx goroutine
+	startVerifyKill(t, cmd)
 }
 
 // TestAiClaude_PositionalPrompt verifies positional argument prompt works.
@@ -147,15 +150,7 @@ func TestAiClaude_PositionalPrompt(t *testing.T) {
 		"--raw",
 	)
 
-	err := cmd.Start()
-	if err != nil {
-		t.Fatalf("Failed to start command: %v", err)
-	}
-
-	// Kill after verifying it started
-	time.Sleep(100 * time.Millisecond)
-	cmd.Process.Kill()
-	_ = cmd.Wait() // reap watchCtx goroutine
+	startVerifyKill(t, cmd)
 }
 
 // TestAiClaude_ModelFlag verifies --model flag is accepted.
@@ -490,13 +485,7 @@ func TestAiClaude_MultilinePrompt(t *testing.T) {
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
-	err := cmd.Start()
-	if err != nil {
-		t.Fatalf("Failed to start command: %v", err)
-	}
-
-	// Wait for process to exit (context timeout or natural exit)
-	_ = cmd.Wait()
+	startVerifyKill(t, cmd)
 
 	// Should not have complained about invalid prompt
 	if strings.Contains(stderr.String(), "prompt is required") {

@@ -24,11 +24,28 @@
     if (window.__devtool_role === 'chrome') { return 'chrome'; }
     if (window.__devtool_role === 'content') { return 'content'; }
     if (hasFrameMarker()) { return 'content'; }
-    // No marker: a top frame with no marker is an unwrapped page (canonical
+    // No marker: the app may have stripped it (redirect / router URL-normalize)
+    // on an in-frame navigation. We still own this frame iff we ARE the shell's
+    // content <iframe> — a same-origin direct signal that survives marker loss:
+    // window.frameElement is the embedding element (null/throws cross-origin),
+    // and our shell stamps it with id=__devtool_content_frame.
+    if (isShellContentFrame()) { return 'content'; }
+    // Otherwise: a top frame with no marker is an unwrapped page (canonical
     // content); a nested unmarked frame we did not stamp is a foreign embed.
     var isTop;
     try { isTop = window.top === window.self; } catch (e) { isTop = false; }
     return isTop ? 'content' : 'passive';
+  }
+
+  // isShellContentFrame reports whether this window is the chrome shell's own
+  // content <iframe> (id=__devtool_content_frame). Same-origin only: frameElement
+  // is null cross-origin and a foreign embed has a different/absent id. Durable
+  // across in-frame navigations that drop the URL marker.
+  function isShellContentFrame() {
+    try {
+      var fe = window.frameElement; // throws or null when cross-origin
+      return !!fe && fe.id === '__devtool_content_frame';
+    } catch (e) { return false; }
   }
 
   function hasFrameMarker() {
@@ -154,6 +171,26 @@
     window.addEventListener('hashchange', syncUp);
     wrapHistory('pushState');
     wrapHistory('replaceState');
+
+    // Navigation API (Chromium): fires for pushState/replaceState/navigate/
+    // traverse at the browser level, regardless of who owns history.pushState.
+    // This catches (a) routers that use navigation.navigate() instead of the
+    // History API and (b) routers that re-patch history.pushState AFTER us,
+    // which would otherwise drop our wrapper's syncUp call. Guarded — absent in
+    // Firefox/Safari, where the history wrap + popstate path remains the cover.
+    if (window.navigation && typeof window.navigation.addEventListener === 'function') {
+      try { window.navigation.addEventListener('currententrychange', syncUp); }
+      catch (e) { /* unsupported event — history wrap still covers it */ }
+    }
+
+    // Re-patch defense for browsers without the Navigation API: a router that
+    // wraps history.pushState after frames.js runs would clobber our wrapper.
+    // Re-assert the wrap a few times after load so our syncUp survives. Cheap,
+    // idempotent (wrapHistory no-ops when already ours), and bounded.
+    ensureHistoryWrapped();
+    window.addEventListener('load', ensureHistoryWrapped);
+    [0, 300, 1000, 3000].forEach(function(ms) { setTimeout(ensureHistoryWrapped, ms); });
+
     window.addEventListener('pagehide', function() {
       try { shell.__devtool_frames.deregister(id); } catch (e) { /* shell gone */ }
     });
@@ -190,6 +227,15 @@
         shell.__devtool_sync_url(window.location.href);
       }
     } catch (e) { /* cross-origin / shell gone */ }
+  }
+
+  // Re-assert our history wrap. Idempotent: wrapHistory no-ops when the current
+  // method is already ours. If a router replaced our wrapper with the native
+  // method, this re-wraps it; if the router wrapped OUR wrapper (ours still in
+  // the chain), syncUp still fires and wrapHistory leaves it alone.
+  function ensureHistoryWrapped() {
+    wrapHistory('pushState');
+    wrapHistory('replaceState');
   }
 
   // Patch history.pushState/replaceState so SPA route changes inside the content
