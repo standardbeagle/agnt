@@ -552,6 +552,13 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		case "design_request":
 			// Handle request for new design alternatives
 			designRequest := parseDesignRequest(msg.Data, id, timestamp, msg.URL)
+			// Persist the live-segment screenshot (if any) so the agent message can
+			// reference an on-disk PNG instead of a giant inline data URL.
+			if shot := getStringField(msg.Data, "screenshot"); strings.HasPrefix(shot, "data:") {
+				if p, err := ps.saveScreenshot("design-"+designRequest.Selector, shot); err == nil {
+					designRequest.ScreenshotPath = p
+				}
+			}
 			ps.logger.LogDesignRequest(designRequest)
 
 			// Forward to overlay if configured
@@ -562,6 +569,11 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		case "design_chat":
 			// Handle chat message about selected element
 			designChat := parseDesignChat(msg.Data, id, timestamp, msg.URL)
+			if shot := getStringField(msg.Data, "screenshot"); strings.HasPrefix(shot, "data:") {
+				if p, err := ps.saveScreenshot("design-"+designChat.Selector, shot); err == nil {
+					designChat.ScreenshotPath = p
+				}
+			}
 			ps.logger.LogDesignChat(designChat)
 
 			// Forward to overlay if configured

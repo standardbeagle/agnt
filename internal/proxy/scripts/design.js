@@ -264,16 +264,11 @@
     // Send initial state to agent
     sendDesignState();
 
-    // Dispatch palette-show event so the floating context palette (palette.js)
-    // can attach to this element. Decoupled from palette internals — any
-    // module that wants to drive the palette can dispatch the same event.
-    try {
-      document.dispatchEvent(new CustomEvent('devtool:palette-show', {
-        detail: { element: element, source: 'design' }
-      }));
-    } catch (e) {
-      // CustomEvent constructor unsupported in some legacy IE — degrade silently.
-    }
+    // Design mode is chat-only iteration: the AI preview panel drives the
+    // redesign. The inline quick-style palette (p/bg/op/disp bar) belongs to
+    // Inspect mode, not Design — so we deliberately do not fire the palette
+    // selection event here. Inspect mode reaches the palette via
+    // style-editor.open() instead.
   }
 
   // Generate XPath for element
@@ -390,13 +385,59 @@
     return n + '  [' + b + ']';
   }
 
-  // renderFragment renders arbitrary alternative HTML into an isolated node. Safe
-  // because it lives in the shadow root, not the app's tree.
-  function renderFragment(html) {
-    var d = document.createElement('div');
-    d.className = 'render';
-    d.innerHTML = html || '';
-    return d;
+  // collectPageCSS clones the page's stylesheet <link>s and inline <style>s into
+  // a string suitable for an <iframe srcdoc> <head>, so the redesign preview
+  // renders with the real site CSS instead of bare unstyled HTML. <base> makes
+  // relative url()/href resolve against the page origin.
+  function collectPageCSS() {
+    var parts = ['<base href="' + location.origin + location.pathname + '">'];
+    try {
+      var links = document.querySelectorAll('link[rel~="stylesheet"][href]');
+      for (var i = 0; i < links.length; i++) {
+        parts.push('<link rel="stylesheet" href="' + links[i].href + '">');
+      }
+      var styles = document.querySelectorAll('style');
+      for (var j = 0; j < styles.length; j++) {
+        // Skip our own injected panels/overlays.
+        if (styles[j].closest && styles[j].closest('#__devtool-design-panel')) continue;
+        parts.push('<style>' + styles[j].textContent + '</style>');
+      }
+    } catch (e) { /* best-effort */ }
+    return parts.join('\n');
+  }
+
+  // renderInFrame renders alternative HTML inside an <iframe srcdoc> that carries
+  // the page's stylesheets — true isolation from React/HMR AND the site's look.
+  function renderInFrame(html, heightPx) {
+    var f = document.createElement('iframe');
+    f.className = 'frender';
+    f.setAttribute('sandbox', 'allow-same-origin');
+    f.style.cssText = 'width:100%;border:0;display:block;background:#fff;' +
+      (heightPx ? 'height:' + heightPx + 'px;' : 'height:100%;');
+    f.srcdoc = '<!doctype html><html><head><meta charset="utf-8">' +
+      collectPageCSS() +
+      '<style>html,body{margin:0;padding:0;background:#fff}</style>' +
+      '</head><body>' + (html || '') + '</body></html>';
+    return f;
+  }
+
+  // captureSegment rasterises the live selected element (with its real CSS) to a
+  // PNG data URL via html2canvas, so the agent message can carry a screenshot of
+  // exactly what the user is redesigning. Fully guarded; yields null on failure.
+  function captureSegment(cb) {
+    var t = resolveTarget();
+    if (!t || typeof window.html2canvas !== 'function') { cb(null); return; }
+    try {
+      var r = t.getBoundingClientRect();
+      window.html2canvas(t, {
+        allowTaint: true, useCORS: true, logging: false,
+        backgroundColor: null,
+        width: Math.ceil(r.width), height: Math.ceil(r.height),
+        scale: Math.min(2, window.devicePixelRatio || 1)
+      }).then(function (canvas) {
+        try { cb(canvas.toDataURL('image/png')); } catch (e) { cb(null); }
+      }).catch(function () { cb(null); });
+    } catch (e) { cb(null); }
   }
 
   function ensurePanel() {
@@ -411,10 +452,14 @@
     var style = document.createElement('style');
     style.textContent = [
       ':host{all:initial}',
-      '.dock{position:fixed;right:16px;bottom:16px;width:min(720px,46vw);max-height:78vh;background:#fff;border:1px solid #e2e8f0;border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,.18);display:flex;flex-direction:column;overflow:hidden;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}',
-      '.bar{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid #eef2f7}',
-      '.idx{font-size:12px;color:#64748b;min-width:140px}',
+      '.dock{position:fixed;right:16px;bottom:16px;width:min(720px,46vw);max-height:78vh;background:#fff;border:1px solid #e2e8f0;border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,.18);display:flex;flex-direction:column;overflow:hidden;container-type:inline-size;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}',
+      '.bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid #eef2f7}',
+      '.idx{font-size:12px;color:#64748b;flex:0 1 auto;min-width:48px;max-width:150px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
       '.spacer{flex:1}',
+      // Container-responsive: when the dock is narrow the chat input drops to
+      // its own full-width row so the nav buttons + close (✕) always stay
+      // visible instead of overflowing and being clipped by dock overflow.
+      '@container (max-width:520px){.in{flex:1 1 100%;order:10}.spacer{display:none}}',
       '.btn{padding:6px 10px;background:#6366f1;color:#fff;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer}',
       '.btn:hover{background:#4f46e5}',
       '.btn.ghost{background:#f1f5f9;color:#334155}',
@@ -424,7 +469,8 @@
       '.col{flex:1;min-width:0;padding:12px;overflow:auto}',
       '.col+.col{border-left:1px solid #eef2f7}',
       '.cap{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#94a3b8;margin:0 0 8px}',
-      '.render{font-size:14px;color:#0f172a}'
+      '.render{font-size:14px;color:#0f172a}',
+      '.frender{width:100%;border:0;display:block;background:#fff;border-radius:0 0 12px 12px}'
     ].join('');
     root.appendChild(style);
 
@@ -464,10 +510,14 @@
     olRoot.appendChild(olBox);
     document.body.appendChild(olHost);
 
-    state.panel = { host: host, root: root, idx: idx, body: body, sideBtn: sideBtn, overBtn: overBtn, olHost: olHost, olBox: olBox };
+    state.panel = { host: host, root: root, dock: dock, idx: idx, body: body, sideBtn: sideBtn, overBtn: overBtn, olHost: olHost, olBox: olBox };
 
-    // Overlay mode must follow the target as the page scrolls/reflows.
-    state.reposition = function () { if (state.previewMode === 'overlay') positionOverlay(); };
+    // Overlay mode follows the target; side mode docks beside the target. Both
+    // must track the target as the page scrolls/reflows.
+    state.reposition = function () {
+      if (state.previewMode === 'overlay') positionOverlay();
+      else positionSide();
+    };
     window.addEventListener('scroll', state.reposition, true);
     window.addEventListener('resize', state.reposition, true);
     return state.panel;
@@ -485,31 +535,78 @@
     if (!p) return;
     var i = state.currentIndex;
     p.idx.textContent = badgeFor(i);
+    p.idx.title = badgeFor(i);
     p.sideBtn.className = 'btn ghost' + (state.previewMode === 'side' ? ' on' : '');
     p.overBtn.className = 'btn ghost' + (state.previewMode === 'overlay' ? ' on' : '');
     var altHTML = state.alternatives[i] != null ? state.alternatives[i] : '';
 
     if (state.previewMode === 'overlay') {
+      // Restore the default docked corner — side mode moves the dock inline.
+      if (p.dock) {
+        p.dock.style.left = ''; p.dock.style.top = '';
+        p.dock.style.right = '16px'; p.dock.style.bottom = '16px';
+        p.dock.style.width = 'min(720px,46vw)';
+      }
+      p.body.style.padding = ''; p.body.style.overflow = 'auto';
       p.body.innerHTML = '';
       var oc = document.createElement('div'); oc.className = 'col';
       var ocap = document.createElement('p'); ocap.className = 'cap';
       ocap.textContent = 'Overlay on target — switch to Side-by-side to compare';
       oc.appendChild(ocap); p.body.appendChild(oc);
+      // Render the redesign in an iframe carrying the page stylesheets so the
+      // overlay matches the site's look (was a bare unstyled fragment). Sized to
+      // the target so the superimposed preview lines up with what it covers.
+      var ot = resolveTarget();
+      var oh = ot ? Math.max(80, Math.round(ot.getBoundingClientRect().height)) : 0;
       p.olBox.innerHTML = '';
-      p.olBox.appendChild(renderFragment(altHTML));
+      p.olBox.appendChild(renderInFrame(altHTML, oh || null));
       p.olBox.style.display = 'block';
       positionOverlay();
     } else {
+      // Side-by-side = redesign panel docked next to the REAL on-page element.
+      // The original keeps its real site CSS in place; we never copy it into the
+      // panel. The redesign renders in an iframe carrying the page stylesheets so
+      // it matches the site's look, and the panel is sized to the segment.
       p.olBox.style.display = 'none';
       p.body.innerHTML = '';
-      var origCol = document.createElement('div'); origCol.className = 'col';
-      var oCap = document.createElement('p'); oCap.className = 'cap'; oCap.textContent = 'Original';
-      origCol.appendChild(oCap); origCol.appendChild(renderFragment(state.originalHTML));
-      var newCol = document.createElement('div'); newCol.className = 'col';
-      var nCap = document.createElement('p'); nCap.className = 'cap'; nCap.textContent = badgeFor(i);
-      newCol.appendChild(nCap); newCol.appendChild(renderFragment(altHTML));
-      p.body.appendChild(origCol); p.body.appendChild(newCol);
+      p.body.style.padding = '0';
+      p.body.style.overflow = 'hidden';
+      var t = resolveTarget();
+      var h = t ? Math.max(120, Math.round(t.getBoundingClientRect().height)) : 0;
+      p.body.appendChild(renderInFrame(altHTML, h || null));
+      positionSide();
     }
+  }
+
+  // positionSide docks the redesign panel beside the live target element, sized
+  // to the target's dimensions. Prefers the right gutter; falls back below the
+  // element, then to a fixed bottom-right corner when no target resolves.
+  function positionSide() {
+    var p = state.panel;
+    if (!p || !p.dock) return;
+    var dock = p.dock;
+    var t = resolveTarget();
+    if (!t) {
+      dock.style.left = ''; dock.style.top = '';
+      dock.style.right = '16px'; dock.style.bottom = '16px';
+      dock.style.width = 'min(720px,46vw)';
+      return;
+    }
+    var r = t.getBoundingClientRect();
+    var vw = window.innerWidth, vh = window.innerHeight, gap = 12;
+    var w = Math.min(Math.max(280, r.width), vw - 16);
+    dock.style.right = ''; dock.style.bottom = '';
+    if (vw - r.right >= w + gap) {
+      dock.style.left = (r.right + gap) + 'px';
+      dock.style.top = Math.max(8, Math.min(r.top, vh - 140)) + 'px';
+    } else if (r.left >= w + gap) {
+      dock.style.left = (r.left - gap - w) + 'px';
+      dock.style.top = Math.max(8, Math.min(r.top, vh - 140)) + 'px';
+    } else {
+      dock.style.left = Math.max(8, Math.min(r.left, vw - w - 8)) + 'px';
+      dock.style.top = (r.bottom + gap) + 'px';
+    }
+    dock.style.width = w + 'px';
   }
 
   function positionOverlay() {
@@ -633,27 +730,34 @@
     return { success: true, added: added, total: state.alternatives.length };
   }
 
-  // Request new alternatives from agent
-  function requestAlternatives() {
+  // Request new alternatives from agent. Captures a screenshot of the live
+  // segment first (async, best-effort) and includes it so the agent sees what it
+  // is redesigning. A passed-in shot is reused to avoid a double capture when
+  // chat() already grabbed one.
+  function requestAlternatives(shot) {
     var core = getCore();
     if (!core || !core.send) {
       console.error('[Design] Core not available');
       return;
     }
-
-    console.log('[Design] Requesting alternatives for:', state.selector);
-    core.send('design_request', {
-      timestamp: Date.now(),
-      selector: state.selector,
-      xpath: state.xpath,
-      currentHTML: state.alternatives[state.currentIndex],
-      originalHTML: state.originalHTML,
-      contextHTML: state.contextHTML,
-      metadata: state.metadata,
-      alternativesCount: state.alternatives.length,
-      chatHistory: state.chatHistory,
-      scheme: state.scheme || undefined
-    });
+    var emit = function (screenshot) {
+      console.log('[Design] Requesting alternatives for:', state.selector);
+      core.send('design_request', {
+        timestamp: Date.now(),
+        selector: state.selector,
+        xpath: state.xpath,
+        currentHTML: state.alternatives[state.currentIndex],
+        originalHTML: state.originalHTML,
+        contextHTML: state.contextHTML,
+        metadata: state.metadata,
+        alternativesCount: state.alternatives.length,
+        chatHistory: state.chatHistory,
+        scheme: state.scheme || undefined,
+        screenshot: screenshot || undefined
+      });
+    };
+    if (shot !== undefined) { emit(shot); return; }
+    captureSegment(emit);
   }
 
   // Extract a compact design-token scheme from the live DOM so generated
@@ -796,21 +900,25 @@
       role: 'user'
     });
 
-    core.send('design_chat', {
-      timestamp: Date.now(),
-      message: message,
-      selector: state.selector,
-      xpath: state.xpath,
-      currentHTML: state.alternatives[state.currentIndex],
-      originalHTML: state.originalHTML,
-      contextHTML: state.contextHTML,
-      metadata: state.metadata,
-      chatHistory: state.chatHistory,
-      url: window.location.href
-    });
+    // One screenshot for both the chat note and the follow-on request.
+    captureSegment(function (shot) {
+      core.send('design_chat', {
+        timestamp: Date.now(),
+        message: message,
+        selector: state.selector,
+        xpath: state.xpath,
+        currentHTML: state.alternatives[state.currentIndex],
+        originalHTML: state.originalHTML,
+        contextHTML: state.contextHTML,
+        metadata: state.metadata,
+        chatHistory: state.chatHistory,
+        url: window.location.href,
+        screenshot: shot || undefined
+      });
 
-    // Request alternatives based on chat
-    requestAlternatives();
+      // Request alternatives based on chat (reuse the same screenshot).
+      requestAlternatives(shot);
+    });
   }
 
   // Get current state

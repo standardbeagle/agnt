@@ -1088,8 +1088,43 @@
 
     // Export for other modules - with existence checks
     try {
+      // Drag shield: while an overlay element is being dragged in the outer
+      // document, a pointer that crosses an <iframe> (e.g. the always-wrap
+      // content frame) is captured by the iframe and the outer document stops
+      // receiving mousemove — the drag "halts" even with the button held.
+      // Disabling pointer-events on all iframes for the duration of the drag
+      // keeps the events flowing to the outer document. Ref-counted so nested
+      // or concurrent drags don't restore early.
+      var dragShieldDepth = 0;
+      var dragShieldSaved = [];
+      function beginDragShield() {
+        dragShieldDepth++;
+        if (dragShieldDepth > 1) return;
+        dragShieldSaved = [];
+        try {
+          var frames = document.getElementsByTagName('iframe');
+          for (var i = 0; i < frames.length; i++) {
+            dragShieldSaved.push([frames[i], frames[i].style.pointerEvents]);
+            frames[i].style.pointerEvents = 'none';
+          }
+        } catch (e) { /* defensive */ }
+      }
+      function endDragShield() {
+        if (dragShieldDepth === 0) return;
+        dragShieldDepth--;
+        if (dragShieldDepth > 0) return;
+        try {
+          for (var i = 0; i < dragShieldSaved.length; i++) {
+            dragShieldSaved[i][0].style.pointerEvents = dragShieldSaved[i][1] || '';
+          }
+        } catch (e) { /* defensive */ }
+        dragShieldSaved = [];
+      }
+
       if (!window.__devtool_core) {
         window.__devtool_core = {
+          beginDragShield: beginDragShield,
+          endDragShield: endDragShield,
           send: send,
           sendBinary: sendBinary,
           onMessage: onMessage,

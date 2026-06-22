@@ -249,6 +249,7 @@
       // layout and makes the drag jittery.
       var rect = state.iframe ? state.iframe.getBoundingClientRect() : null;
       state.dragCenterX = rect ? rect.left + rect.width / 2 : 0;
+      try { window.__devtool_core.beginDragShield(); } catch (e) { /* optional */ }
       document.addEventListener('mousemove', onDragMove, true);
       document.addEventListener('mouseup', onDragEnd, true);
     });
@@ -344,6 +345,7 @@
     if (state.dragRaf) { cancelAnimationFrame(state.dragRaf); state.dragRaf = 0; }
     document.removeEventListener('mousemove', onDragMove, true);
     document.removeEventListener('mouseup', onDragEnd, true);
+    try { window.__devtool_core.endDragShield(); } catch (e) { /* optional */ }
   }
 
   function buildPanel() {

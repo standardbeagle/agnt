@@ -22,9 +22,9 @@ type WalkthroughInput struct {
 	// {id, title, steps:[{title, body, target?, advance:{type,...}}]}.
 	// advance.type is one of: auto ({ms}), click-target (needs target), or
 	// wait ({when: url-contains|element-present|element-visible, value}).
-	Script   json.RawMessage `json:"script,omitempty" jsonschema:"Walkthrough script object (load/start): {id,title,steps:[{title,body,target?,advance:{type,ms?,when?,value?}}]}"`
-	ScriptID string          `json:"script_id,omitempty" jsonschema:"For start: id of an already-loaded script to run"`
-	Mode     string          `json:"mode,omitempty" jsonschema:"For start: auto (auto-play, default) or manual (user steps with next/prev)"`
+	Script   any    `json:"script,omitempty" jsonschema:"Walkthrough script object (load/start): {id,title,steps:[{title,body,target?,advance:{type,ms?,when?,value?}}]}"`
+	ScriptID string `json:"script_id,omitempty" jsonschema:"For start: id of an already-loaded script to run"`
+	Mode     string `json:"mode,omitempty" jsonschema:"For start: auto (auto-play, default) or manual (user steps with next/prev)"`
 }
 
 // WalkthroughOutput defines output for the walkthrough tool.
@@ -112,12 +112,23 @@ func buildWalkthroughExec(input WalkthroughInput) (string, error) {
 		return fmt.Sprintf("(function(){var w=%s; if(!w){return JSON.stringify({error:'walkthrough not available'});} return JSON.stringify(%s);})()", wt, call)
 	}
 
+	// Script arrives as a decoded object (any); re-marshal to a JSON literal for
+	// the exec snippet. Empty when omitted.
+	var scriptJSON []byte
+	if input.Script != nil {
+		b, err := json.Marshal(input.Script)
+		if err != nil {
+			return "", fmt.Errorf("invalid script: %w", err)
+		}
+		scriptJSON = b
+	}
+
 	switch input.Action {
 	case "load":
-		if len(input.Script) == 0 {
+		if len(scriptJSON) == 0 {
 			return "", fmt.Errorf("script required for load")
 		}
-		return guard(fmt.Sprintf("w.load(%s)", string(input.Script))), nil
+		return guard(fmt.Sprintf("w.load(%s)", string(scriptJSON))), nil
 	case "start":
 		mode := "auto"
 		if input.Mode == "manual" {
@@ -126,8 +137,8 @@ func buildWalkthroughExec(input WalkthroughInput) (string, error) {
 			return "", fmt.Errorf("invalid mode %q: must be auto or manual", input.Mode)
 		}
 		opts := fmt.Sprintf("{mode:%q}", mode)
-		if len(input.Script) > 0 {
-			return guard(fmt.Sprintf("w.start(%s, %s)", string(input.Script), opts)), nil
+		if len(scriptJSON) > 0 {
+			return guard(fmt.Sprintf("w.start(%s, %s)", string(scriptJSON), opts)), nil
 		}
 		if input.ScriptID != "" {
 			b, _ := json.Marshal(input.ScriptID)

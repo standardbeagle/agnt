@@ -73,27 +73,28 @@ func TestPaletteModuleOrder(t *testing.T) {
 	}
 }
 
-// TestPaletteSelectionFeedFromDesign verifies the design.js → palette
-// integration: design.selectElement() must dispatch a custom DOM event that
-// the palette listens for. This is the load-bearing decoupling — without
-// the event the palette never appears after a design selection. Two halves:
+// TestPaletteSelectionFeedFromInspect verifies the style-editor.js → palette
+// integration: Inspect mode (style_editor.open) must dispatch a custom DOM
+// event that the palette listens for. This is the load-bearing decoupling —
+// without the event the inline quick-style palette (p/bg/op/disp bar) never
+// appears alongside the inspect panel. Two halves:
 //
-//  1. design.js dispatches 'devtool:palette-show' with detail.element pointing
-//     at the selected element.
+//  1. style-editor.js dispatches 'devtool:palette-show' with detail.element
+//     pointing at the selected element.
 //  2. palette.js subscribes via document.addEventListener for the same event
 //     name and reads detail.element.
 //
-// If either half changes the event name without updating the other, the
-// palette silently stops appearing after design selection.
-func TestPaletteSelectionFeedFromDesign(t *testing.T) {
-	if !strings.Contains(designJS, "devtool:palette-show") {
-		t.Error("design.js must dispatch 'devtool:palette-show' event after selectElement so the palette can attach")
+// Design mode is chat-only and must NOT drive the palette — clicking the
+// Design button shows the AI preview panel, not the quick-style bar.
+func TestPaletteSelectionFeedFromInspect(t *testing.T) {
+	if !strings.Contains(styleEditorJS, "new CustomEvent('devtool:palette-show'") {
+		t.Error("style-editor.js must dispatch 'devtool:palette-show' event on open so the palette can attach in Inspect mode")
 	}
-	if !strings.Contains(designJS, "new CustomEvent('devtool:palette-show'") {
-		t.Error("design.js dispatch must use CustomEvent constructor with 'devtool:palette-show' name")
+	if !strings.Contains(styleEditorJS, "detail: { element: element") {
+		t.Error("style-editor.js CustomEvent detail must include element reference so palette can read it")
 	}
-	if !strings.Contains(designJS, "detail: { element: element") {
-		t.Error("design.js CustomEvent detail must include element reference so palette can read it")
+	if strings.Contains(designJS, "devtool:palette-show") {
+		t.Error("design.js must NOT dispatch 'devtool:palette-show' — Design mode is chat-only; the quick-style palette belongs to Inspect mode")
 	}
 	if !strings.Contains(paletteJS, "document.addEventListener('devtool:palette-show'") {
 		t.Error("palette.js must subscribe to 'devtool:palette-show' event on document")
@@ -110,10 +111,13 @@ func TestPaletteSelectionFeedFromDesign(t *testing.T) {
 // Spec table (from task description):
 //
 //	text/heading → font-size, font-weight, font-style (italic), color, line-height
-//	image        → width, height, object-fit
+//	image        → object-fit
 //	button/input → padding, border-radius, background-color, color
-//	block        → width, height, padding, background-color
+//	block        → padding, background-color
 //	any (always) → opacity, display, delete
+//
+// Width/height size scrubbers were removed: they overlapped the design panel
+// and duplicated the transform.js resize handles.
 func TestPaletteContextAwareControlBanks(t *testing.T) {
 	cases := []struct {
 		typeName string
@@ -123,9 +127,9 @@ func TestPaletteContextAwareControlBanks(t *testing.T) {
 		// the unique 'id:' tags assigned to each control so the test is not
 		// fooled by labels appearing in unrelated contexts.
 		{"text", []string{"'font-size'", "'font-weight-bold'", "'font-style-italic'", "'color'", "'line-height'"}},
-		{"image", []string{"'width'", "'height'", "'object-fit'"}},
+		{"image", []string{"'object-fit'"}},
 		{"button", []string{"'padding'", "'border-radius'", "'background-color'", "'color'"}},
-		{"block", []string{"'width'", "'height'", "'padding'", "'background-color'"}},
+		{"block", []string{"'padding'", "'background-color'"}},
 	}
 	for _, tc := range cases {
 		// Each control id must appear inside controlsForType (the source

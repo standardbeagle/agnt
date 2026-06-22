@@ -618,6 +618,7 @@
       function onUp() {
         document.removeEventListener('mousemove', onMove);
         document.removeEventListener('mouseup', onUp);
+        try { window.__devtool_core.endDragShield(); } catch (e) { /* optional */ }
         titleBar.style.cursor = 'grab';
 
         if (dragged && state.panelPosition) {
@@ -625,6 +626,7 @@
         }
       }
 
+      try { window.__devtool_core.beginDragShield(); } catch (e) { /* optional */ }
       document.addEventListener('mousemove', onMove);
       document.addEventListener('mouseup', onUp);
     });
@@ -4182,6 +4184,7 @@
       state.xpath = generateXPath(element);
       state.beforeScreenshotId = captureElementScreenshot(element);
       showPanel(element, state.selector);
+      dispatchPaletteShow(element);
     } else {
       startSelection(function(el, selector, xpath, screenshotId) {
         state.selectedElement = el;
@@ -4189,7 +4192,23 @@
         state.xpath = xpath;
         state.beforeScreenshotId = screenshotId;
         showPanel(el, selector);
+        dispatchPaletteShow(el);
       });
+    }
+  }
+
+  // Inspect mode pairs the full panel with the inline quick-style palette
+  // (palette.js — the p/bg/op/disp bar). They sync via 'devtool:design-state'
+  // (see the design-state listener above). Design mode does NOT drive the
+  // palette; only Inspect does, via this dispatch.
+  function dispatchPaletteShow(element) {
+    if (!element) return;
+    try {
+      document.dispatchEvent(new CustomEvent('devtool:palette-show', {
+        detail: { element: element, source: 'style-editor' }
+      }));
+    } catch (e) {
+      // CustomEvent constructor unsupported in some legacy IE — degrade silently.
     }
   }
 
