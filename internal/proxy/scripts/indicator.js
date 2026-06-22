@@ -375,7 +375,7 @@
           type: type,
           label: data.label,
           summary: data.summary,
-          data: { area: data.area },
+          data: { area: data.area, thumbnail: data.thumbnail },
           timestamp: Date.now()
         };
         store.attachments.val = store.attachments.val.concat([attachment]);
@@ -4305,6 +4305,14 @@
     popup.style.cssText = STYLES.attachmentPreview;
 
     if (attachment.type === 'screenshot') {
+      // Shrunk-down thumbnail captured at screenshot time, if available.
+      var thumb = attachment.data && attachment.data.thumbnail;
+      if (thumb) {
+        var img = document.createElement('img');
+        img.src = thumb;
+        img.style.cssText = STYLES.attachmentPreviewImage;
+        popup.appendChild(img);
+      }
       var info = document.createElement('div');
       info.style.cssText = STYLES.attachmentPreviewElement;
       var area = attachment.data && attachment.data.area;
@@ -4312,7 +4320,7 @@
       if (attachment.filePath) {
         info.textContent = (dims ? dims + '\n' : '') + attachment.filePath;
       } else {
-        info.textContent = (dims || 'Screenshot') + '\nSaving\u2026';
+        info.textContent = (dims || 'Screenshot') + (thumb ? '' : '\nSaving\u2026');
       }
       popup.appendChild(info);
     } else if (attachment.type === 'element' && attachment.data) {
@@ -4595,36 +4603,68 @@
 
   // Capture screenshot area using html2canvas.
   // Calls back with an ArrayBuffer of raw PNG bytes (no base64 encoding).
+  //
+  // (x, y) are SHELL viewport coords. Under the always-wrap model the indicator
+  // runs in the chrome shell, but the real page lives in the content iframe —
+  // html2canvas(document.body) on the shell renders the (blank) chrome, not the
+  // page. So we render the CONTENT frame's document instead. The content frame
+  // is fullscreen (inset:0), so shell viewport coords map 1:1 onto it; we add
+  // the content frame's scroll offset to convert viewport coords to the
+  // document-space x/y html2canvas expects. Cross-origin / unwrapped pages fall
+  // back to self via targetWindow().
   function captureArea(x, y, w, h, callback) {
-    if (typeof html2canvas === 'undefined') {
+    var pageWin = targetWindow();
+    var pageDoc = (pageWin && pageWin.document) ? pageWin.document : document;
+    var h2c = (pageWin && pageWin.html2canvas) || (typeof html2canvas !== 'undefined' ? html2canvas : undefined);
+    if (typeof h2c === 'undefined') {
       console.error('[DevTool] html2canvas not loaded for screenshot capture');
       callback(null);
       return;
     }
 
-    html2canvas(document.body, {
+    var sx = (pageWin && pageWin.scrollX) || 0;
+    var sy = (pageWin && pageWin.scrollY) || 0;
+
+    h2c(pageDoc.body, {
       allowTaint: true,
       useCORS: true,
       logging: false,
-      x: x,
-      y: y,
+      x: x + sx,
+      y: y + sy,
       width: w,
       height: h,
       scrollX: 0,
       scrollY: 0,
-      windowWidth: document.documentElement.scrollWidth,
-      windowHeight: document.documentElement.scrollHeight
+      windowWidth: pageDoc.documentElement.scrollWidth,
+      windowHeight: pageDoc.documentElement.scrollHeight
     }).then(function(canvas) {
+      // Downscaled dataURL kept in-memory for the chip hover-preview thumbnail
+      // (the raw PNG buffer is streamed out and dropped, so it can't be reused).
+      var thumb = null;
+      try { thumb = makeThumbnail(canvas, 300); } catch (e) { thumb = null; }
       canvas.toBlob(function(blob) {
-        if (!blob) { callback(null); return; }
+        if (!blob) { callback(null, thumb); return; }
         blob.arrayBuffer().then(function(buf) {
-          callback(buf);
-        }).catch(function() { callback(null); });
+          callback(buf, thumb);
+        }).catch(function() { callback(null, thumb); });
       }, 'image/png');
     }).catch(function(err) {
       console.error('[DevTool] Screenshot capture failed:', err);
       callback(null);
     });
+  }
+
+  // Downscale a canvas to a max width and return a PNG dataURL for the hover
+  // thumbnail. Height scales proportionally; small captures are not upscaled.
+  function makeThumbnail(canvas, maxW) {
+    var scale = (canvas.width > maxW) ? (maxW / canvas.width) : 1;
+    var tw = Math.max(1, Math.round(canvas.width * scale));
+    var th = Math.max(1, Math.round(canvas.height * scale));
+    var tc = document.createElement('canvas');
+    tc.width = tw;
+    tc.height = th;
+    tc.getContext('2d').drawImage(canvas, 0, 0, tw, th);
+    return tc.toDataURL('image/png');
   }
 
   // Send raw PNG bytes as a binary WebSocket frame.
@@ -4751,15 +4791,14 @@
       if (w > 20 && h > 20) {
         // Hide indicator before capture to avoid including it in screenshot
         hideIndicatorForCapture();
-        var absX = x + window.scrollX;
-        var absY = y + window.scrollY;
-        captureArea(absX, absY, w, h, function(imageBuffer) {
+        captureArea(x, y, w, h, function(imageBuffer, thumbnail) {
           restoreIndicator();
           addAttachment('screenshot', {
             label: w + '\u00d7' + h + ' area',
             summary: 'Screenshot area at (' + x + ',' + y + ') size ' + w + 'x' + h,
-            area: { x: absX, y: absY, width: w, height: h },
-            imageBuffer: imageBuffer
+            area: { x: x, y: y, width: w, height: h },
+            imageBuffer: imageBuffer,
+            thumbnail: thumbnail
           });
           togglePanel(true);
         });
