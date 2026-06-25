@@ -41,6 +41,35 @@ func sanitizeSessionCode(dir string) string {
 	return string(out)
 }
 
+// awaitBroadcast re-sends a broadcast each tick until recv yields a value
+// satisfying want, then returns it. A one-shot broadcast can race the
+// server-side WebSocket registration — the dial returns on HTTP upgrade, before
+// the proxy handler stores the conn in its registry, so a broadcast fired
+// immediately after dialing is silently dropped. The broadcasts here are
+// idempotent (they set state / re-send lines), so re-sending until the message
+// is observed closes that race without a fixed sleep. Fails the test on the
+// 20s deadline (generous: the race detector adds scheduling latency under load).
+func awaitBroadcast[T any](t *testing.T, send func() error, recv <-chan T, want func(T) bool, what string) T {
+	t.Helper()
+	require.NoError(t, send())
+	deadline := time.After(20 * time.Second)
+	tick := time.NewTicker(100 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case v := <-recv:
+			if want(v) {
+				return v
+			}
+		case <-tick.C:
+			_ = send()
+		case <-deadline:
+			t.Fatalf("timeout waiting for %s", what)
+			return *new(T)
+		}
+	}
+}
+
 // TestActivityBroadcast_EndToEnd tests the complete activity broadcast pipeline:
 // ActivityMonitor -> Client.BroadcastActivity -> Daemon -> Proxy -> WebSocket -> Browser
 func TestActivityBroadcast_EndToEnd(t *testing.T) {
@@ -109,41 +138,14 @@ func TestActivityBroadcast_EndToEnd(t *testing.T) {
 		}
 	}()
 
-	// Broadcast activity state (active)
-	if err := client.BroadcastActivity(true); err != nil {
-		t.Fatalf("BroadcastActivity(true) failed: %v", err)
-	}
-
-	// Wait for activity message
-	select {
-	case active := <-activityReceived:
-		if !active {
-			t.Errorf("Expected active=true, got active=false")
-		}
-		t.Log("Received activity=true message")
-	case err := <-wsErrors:
-		t.Fatalf("WebSocket error: %v", err)
-	case <-time.After(2 * time.Second):
-		t.Fatal("Timeout waiting for activity message")
-	}
-
-	// Broadcast activity state (idle)
-	if err := client.BroadcastActivity(false); err != nil {
-		t.Fatalf("BroadcastActivity(false) failed: %v", err)
-	}
-
-	// Wait for idle message
-	select {
-	case active := <-activityReceived:
-		if active {
-			t.Errorf("Expected active=false, got active=true")
-		}
-		t.Log("Received activity=false message")
-	case err := <-wsErrors:
-		t.Fatalf("WebSocket error: %v", err)
-	case <-time.After(2 * time.Second):
-		t.Fatal("Timeout waiting for idle message")
-	}
+	// Active, then idle — re-broadcasting until the WS observes each state, so a
+	// broadcast that beats the server-side WS registration is not lost. The
+	// idle phase consumes any leftover active messages until it reads false.
+	// (A WS read error stops the reader goroutine, so it surfaces as a timeout.)
+	awaitBroadcast(t, func() error { return client.BroadcastActivity(true) },
+		activityReceived, func(a bool) bool { return a }, "activity=true")
+	awaitBroadcast(t, func() error { return client.BroadcastActivity(false) },
+		activityReceived, func(a bool) bool { return !a }, "activity=false")
 
 	// Cleanup
 	if err := client.ProxyStop("test-proxy"); err != nil {
@@ -209,26 +211,14 @@ func TestOutputPreviewBroadcast_EndToEnd(t *testing.T) {
 		}
 	}()
 
-	// Broadcast output preview
+	// Re-broadcast until the preview arrives (closes the WS-registration race).
 	testLines := []string{"Building project...", "Compiling main.go", "Done!"}
-	if err := client.BroadcastOutputPreview(testLines); err != nil {
-		t.Fatalf("BroadcastOutputPreview failed: %v", err)
-	}
-
-	// Wait for preview message
-	select {
-	case lines := <-previewReceived:
-		if len(lines) != len(testLines) {
-			t.Errorf("Expected %d lines, got %d", len(testLines), len(lines))
+	lines := awaitBroadcast(t, func() error { return client.BroadcastOutputPreview(testLines) },
+		previewReceived, func(l []string) bool { return len(l) == len(testLines) }, "output preview")
+	for i, line := range lines {
+		if line != testLines[i] {
+			t.Errorf("Line %d: expected %q, got %q", i, testLines[i], line)
 		}
-		for i, line := range lines {
-			if line != testLines[i] {
-				t.Errorf("Line %d: expected %q, got %q", i, testLines[i], line)
-			}
-		}
-		t.Logf("Received output preview: %v", lines)
-	case <-time.After(10 * time.Second):
-		t.Fatal("Timeout waiting for output preview")
 	}
 
 	client.ProxyStop("test-proxy")
@@ -322,22 +312,25 @@ func TestActivityBroadcast_MultipleProxies(t *testing.T) {
 	listenWS(ws1, received1)
 	listenWS(ws2, received2)
 
-	// Broadcast to all proxies
-	if err := client.BroadcastActivity(true); err != nil {
-		t.Fatalf("BroadcastActivity failed: %v", err)
-	}
-
-	// Each proxy's WS must receive the message. Budget is 5s because the
-	// race detector adds significant scheduling latency under parallel load.
-	select {
-	case <-received1:
-	case <-time.After(5 * time.Second):
-		t.Error("proxy1 did not receive activity message")
-	}
-	select {
-	case <-received2:
-	case <-time.After(5 * time.Second):
-		t.Error("proxy2 did not receive activity message")
+	// Both proxies' WS must receive the broadcast. Re-broadcast each tick until
+	// both have — a single broadcast can beat one proxy's server-side WS
+	// registration, and that proxy would otherwise never see it.
+	require.NoError(t, client.BroadcastActivity(true))
+	got1, got2 := false, false
+	deadline := time.After(20 * time.Second)
+	tick := time.NewTicker(100 * time.Millisecond)
+	defer tick.Stop()
+	for !(got1 && got2) {
+		select {
+		case <-received1:
+			got1 = true
+		case <-received2:
+			got2 = true
+		case <-tick.C:
+			_ = client.BroadcastActivity(true)
+		case <-deadline:
+			t.Fatalf("activity not received by both proxies (proxy1=%v proxy2=%v)", got1, got2)
+		}
 	}
 
 	client.ProxyStop("proxy1")
