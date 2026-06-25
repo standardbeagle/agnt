@@ -1,13 +1,15 @@
 package agentadapter
 
 import (
-	"fmt"
 	"time"
 )
 
-// stdinAdapter covers every non-Claude AI coding agent. It injects a
-// brief note (plus the agnt system prompt body) as the agent's first
-// user message, written to the child's stdin after StdinDelay.
+// stdinAdapter covers every non-Claude AI coding agent. It injects a brief
+// one-line note as the agent's first user message, written to the child's
+// stdin after StdinDelay. The FULL agnt guidance is NOT injected here — it is
+// persisted to the agent's always-loaded context file (AGENTS.md, GEMINI.md, …)
+// by writePersistentContext, so the stdin nudge stays a short pointer instead
+// of dumping the whole cheat-sheet into the conversation.
 type stdinAdapter struct {
 	name    string
 	aliases []string
@@ -45,13 +47,12 @@ func (s *stdinAdapter) InitialStdin(prompt string) []byte {
 	if prompt == "" {
 		return nil
 	}
-	// The trailing newline is required — the message must look like a
-	// completed line for the agent to treat it as submitted input.
-	msg := fmt.Sprintf(
-		"Note: running under agnt. MCP tools on `agnt` server: get_errors, proxy, proc, proxylog, responsive_audit, automation, currentpage. Call directly as MCP tools — NOT shell, NOT CLI. Missing? check `slop-mcp` (`execute_tool {mcp_name:\"agnt\", ...}`, reconnect via `manage_mcps`). %s\n",
-		prompt,
-	)
-	return []byte(msg)
+	// Keep this to ONE short line: it lands as the agent's first user message,
+	// so dumping the full prompt here is noise. The prompt argument only gates
+	// whether to inject at all (empty = injection disabled); its body is
+	// delivered via the persistent context file, not stdin. The trailing
+	// newline submits the line as input.
+	return []byte("Running under agnt: use the `agnt` MCP server tools instead of shell — run dev servers and long builds with `proc` (not Bash), and use proxy/get_errors/currentpage for browser debugging. Full guidance is in your project context file (AGENTS.md).\n")
 }
 
 func (s *stdinAdapter) StdinDelay() time.Duration { return s.delay }

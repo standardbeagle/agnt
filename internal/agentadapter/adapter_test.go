@@ -87,6 +87,41 @@ func TestDefaultRegistry_UnknownCommandReturnsNil(t *testing.T) {
 	}
 }
 
+func TestUniversal_UnknownCommandGetsStdinInjection(t *testing.T) {
+	// Verb-driven behavior: any command launched under `agnt run` still gets
+	// the agnt prompt, even one the registry does not recognize. The fallback
+	// is stdin-based (BuildArgs unchanged, InitialStdin carries the prompt).
+	a := Universal("/usr/local/bin/myagent")
+	if a == nil {
+		t.Fatal("Universal must never return nil")
+	}
+	if a.Name() != "myagent" {
+		t.Errorf("Name = %q, want derived base name %q", a.Name(), "myagent")
+	}
+
+	base := []string{"--flag"}
+	got := a.BuildArgs(base, "PROMPT")
+	if !equalStrings(got, []string{"--flag"}) {
+		t.Errorf("BuildArgs = %v, want unchanged (stdin-based)", got)
+	}
+
+	// A non-empty prompt triggers a short stdin nudge (the full guidance goes
+	// to the context file, not stdin); an empty prompt injects nothing.
+	if stdin := a.InitialStdin("PROMPT"); len(stdin) == 0 {
+		t.Error("InitialStdin must emit an agnt nudge for an unknown command")
+	}
+	if stdin := a.InitialStdin(""); stdin != nil {
+		t.Errorf("InitialStdin(\"\") = %v, want nil", stdin)
+	}
+}
+
+func TestUniversal_EmptyCommandStillUsable(t *testing.T) {
+	a := Universal("")
+	if a == nil || a.Name() == "" {
+		t.Fatalf("Universal(\"\") must yield a usable adapter, got %v", a)
+	}
+}
+
 func TestClaudeAdapter_BuildArgsAppendsFlag(t *testing.T) {
 	r := DefaultRegistry()
 	a := r.Lookup("claude")
@@ -132,21 +167,30 @@ func TestStdinAdapter_BuildArgsUnchanged(t *testing.T) {
 	}
 }
 
-func TestStdinAdapter_InitialStdinContainsPromptAndNote(t *testing.T) {
+func TestStdinAdapter_InitialStdinIsShortNudge(t *testing.T) {
 	r := DefaultRegistry()
 	a := r.Lookup("gemini")
-	got := a.InitialStdin("PROMPT_BODY")
+	got := a.InitialStdin("THE_FULL_PROMPT_BODY")
 	if len(got) == 0 {
 		t.Fatal("expected non-empty stdin")
 	}
-	if !bytes.Contains(got, []byte("PROMPT_BODY")) {
-		t.Errorf("stdin missing prompt body: %s", got)
+	// The nudge must NOT dump the full prompt into the conversation — that body
+	// is delivered via the context file. It carries the agnt directive instead.
+	if bytes.Contains(got, []byte("THE_FULL_PROMPT_BODY")) {
+		t.Errorf("stdin must not embed the full prompt body: %s", got)
 	}
 	if !bytes.Contains(got, []byte("agnt")) {
 		t.Errorf("stdin missing agnt note: %s", got)
 	}
+	if !bytes.Contains(got, []byte("proc")) {
+		t.Errorf("stdin should carry the key directive (proc for dev servers): %s", got)
+	}
+	// One line: a single trailing newline, none in the middle.
 	if !bytes.HasSuffix(got, []byte("\n")) {
 		t.Errorf("stdin should end with newline: %q", got)
+	}
+	if bytes.Count(got, []byte("\n")) != 1 {
+		t.Errorf("stdin nudge must be a single line, got %d newlines: %s", bytes.Count(got, []byte("\n")), got)
 	}
 }
 
