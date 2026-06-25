@@ -526,17 +526,53 @@ func TestFindAgntConfigFile(t *testing.T) {
 	err = os.WriteFile(configPath, []byte(configContent), 0644)
 	require.NoError(t, err)
 
-	// Find from subdirectory should walk up and find it
+	// cwd-only: a subdirectory without its own config does NOT inherit the
+	// parent's config (walk-up was removed — config scope is the cwd only).
 	found := FindAgntConfigFile(subDir)
-	assert.Equal(t, configPath, found)
+	assert.Equal(t, "", found, "must not walk up to parent .agnt.kdl")
 
-	// Find from root should find it directly
+	// The directory that actually holds the config finds it directly.
 	found = FindAgntConfigFile(tmpDir)
 	assert.Equal(t, configPath, found)
 
-	// Find from non-existent directory should return empty
+	// Non-existent directory returns empty.
 	found = FindAgntConfigFile("/nonexistent/path")
 	assert.Equal(t, "", found)
+}
+
+func TestResolveConfigPath(t *testing.T) {
+	tmpDir := t.TempDir()
+	cwdConfig := filepath.Join(tmpDir, AgntConfigFileName)
+	require.NoError(t, os.WriteFile(cwdConfig, []byte("scripts {}"), 0644))
+
+	overrideDir := t.TempDir()
+	overrideConfig := filepath.Join(overrideDir, "custom.kdl")
+	require.NoError(t, os.WriteFile(overrideConfig, []byte("scripts {}"), 0644))
+
+	// No override: resolves to <dir>/.agnt.kdl when present.
+	got, err := ResolveConfigPath(tmpDir, "")
+	require.NoError(t, err)
+	assert.Equal(t, cwdConfig, got)
+
+	// No override, no cwd config: empty, no error.
+	emptyDir := t.TempDir()
+	got, err = ResolveConfigPath(emptyDir, "")
+	require.NoError(t, err)
+	assert.Equal(t, "", got)
+
+	// Override present: used verbatim (absolute), regardless of cwd config.
+	got, err = ResolveConfigPath(tmpDir, overrideConfig)
+	require.NoError(t, err)
+	assert.Equal(t, overrideConfig, got)
+
+	// Override that points at the cwd config from a different dir still works.
+	got, err = ResolveConfigPath(emptyDir, overrideConfig)
+	require.NoError(t, err)
+	assert.Equal(t, overrideConfig, got)
+
+	// Missing override is a loud error — the user named a file they expect.
+	_, err = ResolveConfigPath(tmpDir, filepath.Join(overrideDir, "nope.kdl"))
+	require.Error(t, err)
 }
 
 func TestHasExplicitTarget(t *testing.T) {

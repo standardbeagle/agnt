@@ -20,13 +20,20 @@ import (
 // helper, so keeping it in one place avoids drift between platforms.
 func resolveAgentAdapter(command, projectPath string) agentadapter.Adapter {
 	registry := agentadapter.DefaultRegistry()
-	cfg, err := config.LoadAgntConfig(projectPath)
+	cfg, err := loadResolvedConfig(projectPath)
 	if err != nil {
 		debug.Log("run", "adapter override load failed: %v", err)
 	} else if cfg != nil && cfg.AI != nil && len(cfg.AI.Adapters) > 0 {
 		registry.SetOverrides(adapterOverridesFromConfig(cfg.AI.Adapters))
 	}
-	return registry.Lookup(command)
+	// Verb-driven: any command launched under `agnt run` gets agnt prompt
+	// injection. An unrecognized command falls back to the universal
+	// stdin-based adapter rather than returning nil (which would silently
+	// inject nothing).
+	if adapter := registry.Lookup(command); adapter != nil {
+		return adapter
+	}
+	return agentadapter.Universal(command)
 }
 
 // adapterOverridesFromConfig converts the KDL-parsed `ai.adapters` map

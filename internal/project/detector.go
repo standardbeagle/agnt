@@ -18,6 +18,8 @@ const (
 	ProjectNode ProjectType = "node"
 	// ProjectPython is a Python project (pyproject.toml, setup.py, requirements.txt).
 	ProjectPython ProjectType = "python"
+	// ProjectDotnet is a .NET project (.csproj / .sln / .fsproj).
+	ProjectDotnet ProjectType = "dotnet"
 	// ProjectUnknown is an unrecognized project type.
 	ProjectUnknown ProjectType = "unknown"
 )
@@ -63,6 +65,12 @@ func Detect(path string) (*Project, error) {
 		return proj, nil
 	}
 	if proj := detectPython(absPath); proj != nil {
+		return proj, nil
+	}
+	// dotnet is checked last: a .NET solution may carry a stray package.json
+	// for frontend tooling, in which case the Node detector (which is more
+	// specific about dev servers) should win.
+	if proj := detectDotnet(absPath); proj != nil {
 		return proj, nil
 	}
 
@@ -291,6 +299,57 @@ func detectPython(path string) *Project {
 	}
 
 	return proj
+}
+
+// detectDotnet checks for a .NET project: a solution (.sln) or any project
+// file (.csproj / .fsproj / .vbproj) in the directory.
+func detectDotnet(path string) *Project {
+	sln := firstFileWithExt(path, ".sln")
+	proj := firstFileWithExt(path, ".csproj")
+	if proj == "" {
+		proj = firstFileWithExt(path, ".fsproj")
+	}
+	if proj == "" {
+		proj = firstFileWithExt(path, ".vbproj")
+	}
+	if sln == "" && proj == "" {
+		return nil
+	}
+
+	name := proj
+	if sln != "" {
+		name = sln
+	}
+	p := &Project{
+		Path:     path,
+		Type:     ProjectDotnet,
+		Name:     strings.TrimSuffix(filepath.Base(name), filepath.Ext(name)),
+		Commands: DefaultDotnetCommands(),
+		Metadata: make(map[string]string),
+	}
+	if sln != "" {
+		p.Metadata["solution"] = filepath.Base(sln)
+	}
+	return p
+}
+
+// firstFileWithExt returns the first file in dir with the given extension
+// (e.g. ".csproj"), or "" if none. Non-recursive — project markers live at the
+// directory root.
+func firstFileWithExt(dir, ext string) string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if strings.EqualFold(filepath.Ext(e.Name()), ext) {
+			return filepath.Join(dir, e.Name())
+		}
+	}
+	return ""
 }
 
 // parsePythonProjectName tries to extract the project name.

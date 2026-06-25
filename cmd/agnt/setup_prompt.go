@@ -22,11 +22,15 @@ func buildSetupSystemPrompt(adapterName string) string {
 		display = "the coding agent"
 	}
 
-	header := fmt.Sprintf(`# agnt first-run setup
+	header := fmt.Sprintf(`# agnt first-run setup — this is your task right now
 
-This project has no `+"`.agnt.kdl`"+` config yet, so %s is starting in a
-one-time SETUP MODE. Configure agnt for this project, then hand back to a
-normal coding session.`, display)
+This project has no `+"`.agnt.kdl`"+` and agnt could not auto-detect a standard
+layout (a simple package.json / dotnet / Go / Python project would have been
+configured automatically), so %s is in one-time SETUP MODE.
+
+Configuring agnt for this project IS the task — do it now. Do NOT ask the user
+what to work on; do NOT wait for further instructions. Detect the project,
+write `+"`.agnt.kdl`"+`, then confirm what you configured.`, display)
 
 	confirm := "\n\n## Confirm the outcome\n\n" +
 		"When setup finishes, a `.agnt.kdl` should exist at the project root.\n" +

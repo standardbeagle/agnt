@@ -105,6 +105,20 @@ func (r *Registry) Lookup(command string) Adapter {
 	return nil
 }
 
+// Universal returns a stdin-based adapter for an unrecognized command, so any
+// tool launched under `agnt run` still receives the agnt prompt (via stdin
+// after the default delay) rather than silently getting nothing. The verb, not
+// the agent identity, decides that injection happens; this is the fallback when
+// [Registry.Lookup] finds no registered match. The adapter's name is derived
+// from the command's base name for logging.
+func Universal(command string) Adapter {
+	base := baseNameOf(command)
+	if base == "" {
+		base = "agent"
+	}
+	return newStdinAdapter(base, []string{base})
+}
+
 // baseNameOf strips directory prefixes and, on Windows, the .exe suffix
 // from a command string. Returned name is lowercased.
 func baseNameOf(command string) string {
