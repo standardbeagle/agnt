@@ -459,18 +459,20 @@ func (d *Daemon) hubHandleProxyRestart(ctx context.Context, conn *hubpkg.Connect
 		waitPortFree(boundPort, 2*time.Second)
 	}
 
-	// Create new proxy on the SAME port. StrictListenPort makes a bind
-	// conflict a hard error instead of silently drifting to a random port —
-	// preserving the port is the whole point of a restart.
+	// Recreate on the SAME port (best-effort). Preserving the port is the
+	// point of a restart, but it must NOT be strict: if the port cannot be
+	// reclaimed in time (the OS is slow to release it, or something else
+	// grabbed it during the restart window), drifting to a fresh port is far
+	// better than hard-failing the restart and leaving the proxy down. Start()
+	// falls back to auto-assign when boundPort is in use.
 	newProxy, err := d.proxym.Create(ctx, proxy.ProxyConfig{
-		ID:               proxyID,
-		TargetURL:        targetURL,
-		ListenPort:       boundPort,
-		StrictListenPort: boundPort > 0,
-		MaxLogSize:       maxLogSize,
-		Path:             projectPath,
-		BindAddress:      bindAddress,
-		AllowExternal:    allowExternal,
+		ID:            proxyID,
+		TargetURL:     targetURL,
+		ListenPort:    boundPort,
+		MaxLogSize:    maxLogSize,
+		Path:          projectPath,
+		BindAddress:   bindAddress,
+		AllowExternal: allowExternal,
 	})
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("failed to restart proxy: %v", err))
