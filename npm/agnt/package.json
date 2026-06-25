@@ -1,6 +1,6 @@
 {
   "name": "@standardbeagle/agnt",
-  "version": "0.13.25",
+  "version": "0.13.26",
   "description": "MCP server for AI coding agents - process management, reverse proxy with traffic logging, browser instrumentation, and sketch mode",
   "main": "dist/index.js",
   "bin": {
