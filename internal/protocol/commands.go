@@ -62,6 +62,7 @@ const (
 	SubVerbClearPorts    = "CLEAR-PORTS"   // Kill port blockers and resume autostart
 	SubVerbContinue      = "CONTINUE"      // Resume autostart without killing blockers
 	SubVerbAutostartRun  = "RUN"           // Run autostart from MCP InitializedHandler (non-interactive)
+	SubVerbReconcile     = "RECONCILE"     // Live-apply .agnt.kdl changes to running scripts/proxies
 	SubVerbCleanOrphans  = "CLEAN-ORPHANS" // Reap orphaned process groups (PORTS verb)
 )
 

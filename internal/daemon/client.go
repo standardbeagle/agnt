@@ -833,6 +833,13 @@ func (c *Client) AutostartRun(projectPath string) (map[string]interface{}, error
 	return c.conn.Request(protocol.VerbAutostart, protocol.SubVerbAutostartRun).WithJSON(cfg).JSON()
 }
 
+// AutostartReconcile live-applies the current .agnt.kdl to a project's running
+// scripts (start added, stop removed, restart changed) without a daemon or
+// session restart. Returns the reconcile plan the daemon executed.
+func (c *Client) AutostartReconcile(projectPath string) (map[string]interface{}, error) {
+	return c.conn.Request(protocol.VerbAutostart, protocol.SubVerbReconcile, projectPath).JSON()
+}
+
 // HookSend enqueues a Claude Code hook event in the daemon's ring buffer and
 // returns as fast as possible. The protocol is fire-and-ack: the daemon's
 // verb handler pushes the event into an in-memory ring buffer and replies OK
