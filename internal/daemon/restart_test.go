@@ -150,8 +150,12 @@ func TestRestartIntegration_ProcRestart_NonExistent(t *testing.T) {
 }
 
 // TestRestartIntegration_ProxyRestart tests single proxy restart.
+//
+// NOT parallel: it asserts the proxy keeps its exact listen port across a
+// restart, which requires the port it frees not to be grabbed by a concurrent
+// test. Running serially (no t.Parallel) guarantees that — and matches the
+// rule that real-OS-process/port tests must not race each other.
 func TestRestartIntegration_ProxyRestart(t *testing.T) {
-	t.Parallel()
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
