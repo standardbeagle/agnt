@@ -56,12 +56,14 @@ func TestBuildAgntSystemPrompt_OmitsCheatSheetWhenDisabled(t *testing.T) {
 	}
 }
 
-// TestBuildAgntSystemPrompt_AdapterAgnosticContent verifies the cheat
-// sheet delivered to the Claude --append-system-prompt flag is
-// character-identical to what a stdin-injected adapter receives. The
-// single-source-of-truth invariant is that prompt assembly happens in
-// buildAgntSystemPrompt, and adapters are dumb passthroughs.
-func TestBuildAgntSystemPrompt_AdapterAgnosticContent(t *testing.T) {
+// TestPromptDelivery_CheatSheetViaFlagAndContextFile verifies prompt assembly
+// stays single-source (buildAgntSystemPrompt) while delivery does NOT dump the
+// full cheat sheet into the conversation: Claude gets it via the
+// --append-system-prompt flag (invisible), and a stdin agent gets a SHORT
+// nudge plus the full cheat sheet persisted to its context file (GEMINI.md).
+// This is the cleanup of the old behavior where the whole cheat sheet was
+// injected as the agent's first user message.
+func TestPromptDelivery_CheatSheetViaFlagAndContextFile(t *testing.T) {
 	dir := t.TempDir()
 	chdir(t, dir)
 
@@ -69,20 +71,18 @@ func TestBuildAgntSystemPrompt_AdapterAgnosticContent(t *testing.T) {
 	if prompt == "" {
 		t.Fatal("empty prompt")
 	}
+	const needle = "## Browser debugging helpers"
 
 	reg := agentadapter.DefaultRegistry()
 	claude := reg.Lookup("claude")
-	if claude == nil || claude.Name() != "claude" {
-		t.Fatalf("claude adapter not resolved: %v", claude)
-	}
 	gemini := reg.Lookup("gemini")
-	if gemini == nil || gemini.Name() != "gemini" {
-		t.Fatalf("gemini adapter not resolved: %v", gemini)
+	if claude == nil || gemini == nil {
+		t.Fatalf("adapters not resolved: claude=%v gemini=%v", claude, gemini)
 	}
 
-	// Claude injects via argv flag.
+	// Claude: full cheat sheet via the --append-system-prompt flag (invisible
+	// to the conversation).
 	claudeArgs := claude.BuildArgs([]string{"claude"}, prompt)
-	// Locate the --append-system-prompt argv payload and pull the next token.
 	var claudePayload string
 	for i := 0; i < len(claudeArgs)-1; i++ {
 		if claudeArgs[i] == "--append-system-prompt" {
@@ -90,40 +90,35 @@ func TestBuildAgntSystemPrompt_AdapterAgnosticContent(t *testing.T) {
 			break
 		}
 	}
-	if claudePayload == "" {
-		t.Fatalf("claude adapter did not emit --append-system-prompt in %v", claudeArgs)
-	}
-
-	// Gemini injects via initial stdin.
-	geminiPayload := string(gemini.InitialStdin(prompt))
-	if geminiPayload == "" {
-		t.Fatalf("gemini adapter did not emit stdin payload")
-	}
-
-	// The cheat sheet content must be byte-identical in both payloads.
-	const needle = "## Browser debugging helpers"
 	if !strings.Contains(claudePayload, needle) {
-		t.Errorf("claude payload missing cheat sheet")
-	}
-	if !strings.Contains(geminiPayload, needle) {
-		t.Errorf("gemini payload missing cheat sheet")
+		t.Errorf("claude flag payload missing cheat sheet; got:\n%s", claudePayload)
 	}
 
-	// Extract the tail starting at the cheat-sheet header from each
-	// payload. The stdin adapter appends a trailing "\n" to make the
-	// message look like a submitted line to the agent — normalize that
-	// away before comparing. The cheat-sheet body itself must match
-	// byte-for-byte; adapter-specific wrapping is fine, drift in the
-	// cheat-sheet body is not.
-	ci := strings.Index(claudePayload, needle)
-	gi := strings.Index(geminiPayload, needle)
-	claudeTail := strings.TrimRight(claudePayload[ci:], "\n")
-	geminiTail := strings.TrimRight(geminiPayload[gi:], "\n")
-	if claudeTail != geminiTail {
-		t.Errorf("cheat sheet content differs between adapters:\nclaude:\n%s\ngemini:\n%s", claudeTail, geminiTail)
+	// Stdin agent: the nudge is a SHORT pointer and must NOT dump the cheat
+	// sheet as a user message.
+	geminiStdin := string(gemini.InitialStdin(prompt))
+	if geminiStdin == "" {
+		t.Fatal("gemini adapter emitted no stdin nudge")
 	}
-	if !strings.Contains(claudeTail, "auditAccessibility(") {
-		t.Errorf("cheat sheet tail missing auditAccessibility; got:\n%s", claudeTail)
+	if strings.Contains(geminiStdin, needle) {
+		t.Errorf("stdin nudge must not dump the cheat sheet:\n%s", geminiStdin)
+	}
+	if !strings.Contains(geminiStdin, "agnt") {
+		t.Errorf("stdin nudge should still mention agnt:\n%s", geminiStdin)
+	}
+
+	// The full cheat sheet reaches the stdin agent via its always-loaded
+	// context file, not stdin.
+	writePersistentContext(gemini.Name(), dir, prompt)
+	ctxFile, err := os.ReadFile(filepath.Join(dir, "GEMINI.md"))
+	if err != nil {
+		t.Fatalf("context file not written: %v", err)
+	}
+	if !strings.Contains(string(ctxFile), needle) {
+		t.Errorf("context file missing cheat sheet:\n%s", ctxFile)
+	}
+	if !strings.Contains(string(ctxFile), "auditAccessibility(") {
+		t.Errorf("context file missing promoted helper; got:\n%s", ctxFile)
 	}
 }
 
