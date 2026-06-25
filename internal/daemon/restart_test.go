@@ -220,6 +220,14 @@ func TestRestartIntegration_ProxyRestart(t *testing.T) {
 	}
 	t.Logf("Proxy status after restart: %v", status2)
 
+	// The port must be preserved across the restart — clients addressing the
+	// proxy by its original port must not break. (Regression: the handler used
+	// to recreate with ListenPort:0, drifting to a fresh auto-assignment.)
+	addr1, _ := status1["listen_addr"].(string)
+	addr2, _ := status2["listen_addr"].(string)
+	require.NotEmpty(t, addr1, "initial status must report a listen_addr")
+	require.Equal(t, addr1, addr2, "restart must preserve the proxy's listen address (port)")
+
 	// Clean up
 	_ = client.ProxyStop("test-proxy")
 }
