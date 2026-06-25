@@ -880,28 +880,43 @@ func LoadAgntConfig(dir string) (*AgntConfig, error) {
 	return LoadAgntConfigFile(configPath)
 }
 
-// FindAgntConfigFile searches for .agnt.kdl starting from dir and walking up.
+// FindAgntConfigFile returns the path to .agnt.kdl in dir, or "" if absent.
+//
+// Config scope is the cwd of execution only — it deliberately does NOT walk up
+// the directory tree. Walk-up caused a new project nested under an already-
+// configured directory to be treated as configured, silently skipping setup.
+// Use ResolveConfigPath with an explicit override to point at a file elsewhere.
 func FindAgntConfigFile(dir string) string {
 	absDir, err := filepath.Abs(dir)
 	if err != nil {
 		return ""
 	}
-
-	for {
-		configPath := filepath.Join(absDir, AgntConfigFileName)
-		if _, err := os.Stat(configPath); err == nil {
-			return configPath
-		}
-
-		parent := filepath.Dir(absDir)
-		if parent == absDir {
-			// Reached root
-			break
-		}
-		absDir = parent
+	configPath := filepath.Join(absDir, AgntConfigFileName)
+	if _, err := os.Stat(configPath); err == nil {
+		return configPath
 	}
-
 	return ""
+}
+
+// ResolveConfigPath resolves which .agnt.kdl applies for dir, honoring an
+// explicit override (e.g. the --config CLI flag).
+//
+//   - override == "": returns <dir>/.agnt.kdl if it exists, else "" (no error).
+//   - override != "": returns its absolute path. A missing override is a loud
+//     error — the user named a file they expect to use, so failing silently
+//     back to the cwd config would mask the mistake.
+func ResolveConfigPath(dir, override string) (string, error) {
+	if override == "" {
+		return FindAgntConfigFile(dir), nil
+	}
+	abs, err := filepath.Abs(override)
+	if err != nil {
+		return "", fmt.Errorf("resolve config path %q: %w", override, err)
+	}
+	if _, err := os.Stat(abs); err != nil {
+		return "", fmt.Errorf("config file %q: %w", override, err)
+	}
+	return abs, nil
 }
 
 // LoadAgntConfigFile loads configuration from a specific file.

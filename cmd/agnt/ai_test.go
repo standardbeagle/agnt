@@ -434,7 +434,7 @@ func TestBuildClaudeOptions(t *testing.T) {
 		claudeNoAgntPrompt = true
 
 		opts := buildClaudeOptions()
-		applyAgntSystemPrompt(opts)
+		applyAgntSystemPrompt(opts, false)
 
 		if opts.SystemPrompt != "Custom instructions" {
 			t.Errorf("SystemPrompt = %q, want 'Custom instructions'", opts.SystemPrompt)

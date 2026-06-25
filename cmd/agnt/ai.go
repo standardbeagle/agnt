@@ -40,6 +40,7 @@ func init() {
 	aiCmd.PersistentFlags().Float64Var(&aiMaxBudget, "max-budget", 0, "Maximum budget in USD (0 = unlimited)")
 	aiCmd.PersistentFlags().StringVar(&aiSystemPrompt, "system-prompt", "", "Additional system prompt to append")
 	aiCmd.PersistentFlags().BoolVar(&aiVerbose, "verbose", false, "Enable verbose output")
+	aiCmd.PersistentFlags().StringVar(&configOverride, "config", "", "Path to .agnt.kdl (default: <cwd>/.agnt.kdl, no walk-up)")
 
 	// Add subcommands
 	aiCmd.AddCommand(aiClaudeCmd)

@@ -168,8 +168,10 @@ func runAiClaude(cmd *cobra.Command, args []string) {
 		printDaemonStatus(daemonHandle)
 	}
 
-	// Apply system prompt after daemon registration for runtime-aware context
-	applyAgntSystemPrompt(opts)
+	// Apply system prompt after daemon registration for runtime-aware context.
+	// One-shot mode never enters setup — an explicit `-p` task must not be
+	// hijacked into project configuration.
+	applyAgntSystemPrompt(opts, false)
 
 	// Run the query (one-shot is never interactive)
 	if _, err := runClaudeQuery(ctx, prompt, opts, false, nil); err != nil {
@@ -260,13 +262,45 @@ func buildClaudeOptions() *claude.AgentOptions {
 	return opts
 }
 
+// aiSetupSystemPrompt returns the first-run setup system prompt when the gate
+// fires for projectPath, and records a nudge marker so it is not re-injected
+// within the re-nudge TTL. It returns "" when a config already applies or the
+// nudge is still suppressed — in which case the normal coding prompt is used.
+//
+// This is the `ai`-verb analogue of the PTY setup phase: same gate, but no
+// relaunch. The interactive session simply opens in setup mode; once the agent
+// writes `.agnt.kdl`, a live reconcile (piece D) applies it without a restart.
+// Writing the marker here is an intentional side effect that mirrors the PTY
+// flow's negative-outcome (timestamped) marker.
+func aiSetupSystemPrompt(projectPath string) string {
+	if hasResolvedConfig(projectPath) {
+		return ""
+	}
+	marker, _ := readFirstRunMarker(firstRunStatePath(projectPath))
+	if decideSetupGate(false, marker, time.Now(), renudgeTTLForProject(projectPath)) != enterSetup {
+		return ""
+	}
+	_ = writeFirstRunMarker(firstRunStatePath(projectPath), setupOutcomeMarker(false, time.Now()))
+	return buildSetupSystemPrompt("claude")
+}
+
 // applyAgntSystemPrompt builds and sets the system prompt on the given options.
-// Called after daemon registration so the prompt includes runtime state (running processes/proxies).
-func applyAgntSystemPrompt(opts *claude.AgentOptions) {
+// Called after daemon registration so the prompt includes runtime state (running
+// processes/proxies). When allowSetup is true (the interactive REPL — never a
+// one-shot `-p` task, which must not be hijacked into setup mode) and the
+// first-run gate fires, the setup prompt replaces the coding prompt.
+func applyAgntSystemPrompt(opts *claude.AgentOptions, allowSetup bool) {
 	var systemPrompt string
 	if !claudeNoAgntPrompt {
-		socketPath, _ := rootCmd.Flags().GetString("socket")
-		systemPrompt = buildAgntSystemPrompt(socketPath)
+		if allowSetup {
+			if cwd, err := os.Getwd(); err == nil {
+				systemPrompt = aiSetupSystemPrompt(cwd)
+			}
+		}
+		if systemPrompt == "" {
+			socketPath, _ := rootCmd.Flags().GetString("socket")
+			systemPrompt = buildAgntSystemPrompt(socketPath)
+		}
 	}
 	if aiSystemPrompt != "" {
 		if systemPrompt != "" {
@@ -338,8 +372,10 @@ func runAiClaudeInteractive(ctx context.Context) error {
 		daemonHandle.WaitRegistered(5 * time.Second)
 	}
 
-	// Build system prompt AFTER daemon registration so it includes runtime state
-	applyAgntSystemPrompt(opts)
+	// Build system prompt AFTER daemon registration so it includes runtime
+	// state. The interactive REPL is verb-driven: a project with no config
+	// opens in first-run setup mode (allowSetup=true).
+	applyAgntSystemPrompt(opts, true)
 
 	if useOverlay {
 		return runAiClaudeOverlay(ctx, opts, daemonHandle, msgCh)

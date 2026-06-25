@@ -586,6 +586,7 @@ Flags:
   --no-indicator        Disable the indicator bar
   --no-overlay          Disable terminal overlay entirely
   --no-autostart        Skip auto-starting scripts and proxies from .agnt.kdl
+  --config <path>       Use a specific .agnt.kdl (default: <cwd>/.agnt.kdl, no walk-up)
 
 Examples:
   agnt run claude --dangerously-skip-permissions
@@ -618,7 +619,55 @@ var (
 	// setupOnlyMode is set by `agnt init` to run a single setup phase
 	// (configure the project, no relaunch) regardless of the first-run gate.
 	setupOnlyMode bool = false
+	// configOverride is the value of the --config flag. Empty means "use
+	// <cwd>/.agnt.kdl"; a non-empty value points the config resolution at a
+	// specific file (see config.ResolveConfigPath). Config scope is otherwise
+	// the cwd of execution only — there is no walk-up.
+	configOverride string
 )
+
+// validateResolvedConfig resolves the config path for projectPath (honoring
+// the --config override) and parses it early, before any PTY/terminal setup.
+// A missing --config file or a parse error is fatal — the user has a config
+// they expect to work. A bare cwd with no config is fine (returns nil). Shared
+// by the Unix and Windows run orchestrators so the validation cannot drift.
+func validateResolvedConfig(projectPath string) error {
+	configPath, err := config.ResolveConfigPath(projectPath, configOverride)
+	if err != nil {
+		return err
+	}
+	if configPath == "" {
+		return nil
+	}
+	if _, err := config.LoadAgntConfigFile(configPath); err != nil {
+		return fmt.Errorf("%s: %w", configPath, err)
+	}
+	return nil
+}
+
+// loadResolvedConfig loads the config that applies for projectPath, honoring
+// the --config override. With no config file present it returns
+// DefaultAgntConfig (never nil), matching config.LoadAgntConfig semantics. A
+// missing --config file or a parse error is surfaced to the caller.
+func loadResolvedConfig(projectPath string) (*config.AgntConfig, error) {
+	p, err := config.ResolveConfigPath(projectPath, configOverride)
+	if err != nil {
+		return nil, err
+	}
+	if p == "" {
+		return config.DefaultAgntConfig(), nil
+	}
+	return config.LoadAgntConfigFile(p)
+}
+
+// hasResolvedConfig reports whether a config file applies for projectPath,
+// honoring the --config override. A missing --config file resolves to an error
+// here (treated as "no config" for the gate); runWithPTY surfaces that error
+// loudly during validation so the user is not left guessing.
+func hasResolvedConfig(projectPath string) bool {
+	p, err := config.ResolveConfigPath(projectPath, configOverride)
+	return err == nil && p != ""
+}
 
 func init() {
 	// We use DisableFlagParsing so flags are parsed manually
@@ -674,7 +723,7 @@ func runHelpRequested(args []string) bool {
 		switch args[i] {
 		case "-h", "--help", "help":
 			return true
-		case "--overlay-socket", "--session", "--debug-log":
+		case "--overlay-socket", "--session", "--debug-log", "--config":
 			if i+1 >= len(args) {
 				return false
 			}
@@ -705,6 +754,12 @@ func parseRunCommandArgs(args []string) ([]string, error) {
 				return nil, fmt.Errorf("%s requires a value", args[i])
 			}
 			sessionCode = args[i+1]
+			i++
+		case "--config":
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("%s requires a value", args[i])
+			}
+			configOverride = args[i+1]
 			i++
 		case "--no-indicator":
 			showIndicator = false
@@ -894,39 +949,58 @@ func suppressAutostartDuringSetup(setupPhase bool) func() {
 }
 
 // firstRunOrCoding is the shared run-orchestration wiring for both platform
-// entrypoints. For the Claude adapter it drives the optional first-run
-// two-phase setup→relaunch flow (Slice A/B); for every other agent it is a
-// single coding-phase launch. Only the launch + reap callbacks — which own
-// the platform-specific PTY backend — differ between Unix and Windows, so they
-// are injected here rather than duplicating the firstRunDeps construction in
-// run.go and run_windows.go (enforced by TestRunFilesUnderBudget).
-func firstRunOrCoding(projectPath string, adapter agentadapter.Adapter, args []string,
+// entrypoints. It drives the optional first-run two-phase setup→relaunch flow
+// for ANY agent (the gate is verb-driven, not Claude-specific). Only the launch
+// + reap callbacks — which own the platform-specific PTY backend — differ
+// between Unix and Windows, so they are injected here rather than duplicating
+// the firstRunDeps construction in run.go and run_windows.go (enforced by
+// TestRunFilesUnderBudget).
+func firstRunOrCoding(projectPath string, args []string,
 	launch func(setupPhase bool, args []string) (int, error), reap func(int)) error {
+	// Deterministic auto-config first: a simple project (package.json web app,
+	// dotnet site, Go/Python repo) gets a generated .agnt.kdl with no LLM
+	// round-trip. After this writes, the gate below sees a config and goes
+	// straight to the coding launch — the LLM is only involved for projects
+	// agnt cannot confidently configure on its own.
+	autoConfigured := false
+	if !hasResolvedConfig(projectPath) && configOverride == "" {
+		if tryAutoConfig(projectPath) {
+			autoConfigured = true
+			_ = writeFirstRunMarker(firstRunStatePath(projectPath), setupOutcomeMarker(true, time.Now()))
+		}
+	}
+
 	// `agnt init`: run one setup phase for any agent, no relaunch. On success
 	// record a permanent marker so a later `agnt run` skips the setup nudge.
 	if setupOnlyMode {
+		// If auto-config just wrote the config, the project is configured with
+		// no LLM round-trip — nothing left for init to do. (A pre-existing
+		// config still runs setup: an explicit `agnt init` means reconfigure.)
+		if autoConfigured {
+			return nil
+		}
 		if _, err := launch(true, args); err != nil {
 			return err
 		}
-		if config.FindAgntConfigFile(projectPath) != "" {
+		if hasResolvedConfig(projectPath) {
 			_ = writeFirstRunMarker(firstRunStatePath(projectPath), setupOutcomeMarker(true, time.Now()))
 		}
 		return nil
 	}
-	if adapter != nil && adapter.Name() == "claude" {
-		return runFirstRunFlow(firstRunDeps{
-			now:         time.Now(),
-			ttl:         renudgeTTLForProject(projectPath),
-			hasConfig:   func() bool { return config.FindAgntConfigFile(projectPath) != "" },
-			readMarker:  func() (*firstRunMarker, error) { return readFirstRunMarker(firstRunStatePath(projectPath)) },
-			writeMarker: func(m firstRunMarker) error { return writeFirstRunMarker(firstRunStatePath(projectPath), m) },
-			args:        args,
-			launch:      launch,
-			reap:        reap,
-		})
-	}
-	_, err := launch(false, args)
-	return err
+	// Verb-driven: the first-run gate fires for any agent, not just Claude. The
+	// gate (config presence + marker/TTL) decides whether to run setup; the
+	// adapter only dictates HOW the setup prompt is injected (flag vs stdin),
+	// resolved per-phase inside the launch callback.
+	return runFirstRunFlow(firstRunDeps{
+		now:         time.Now(),
+		ttl:         renudgeTTLForProject(projectPath),
+		hasConfig:   func() bool { return hasResolvedConfig(projectPath) },
+		readMarker:  func() (*firstRunMarker, error) { return readFirstRunMarker(firstRunStatePath(projectPath)) },
+		writeMarker: func(m firstRunMarker) error { return writeFirstRunMarker(firstRunStatePath(projectPath), m) },
+		args:        args,
+		launch:      launch,
+		reap:        reap,
+	})
 }
 
 func buildAgntSystemPrompt(socketPath string) string {

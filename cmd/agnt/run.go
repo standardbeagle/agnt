@@ -12,7 +12,6 @@ import (
 	"github.com/creack/pty"
 	"golang.org/x/term"
 
-	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/hookrules"
 	"github.com/standardbeagle/agnt/internal/overlay"
@@ -45,19 +44,15 @@ func runPlatformPTY(commandArgs []string, _socketPath string, _sessionCode strin
 // (Claude only — Slice A/B scope) around the normal single coding-phase
 // launch. The per-phase PTY work lives in runPTYChild.
 func runWithPTY(ctx context.Context, args []string, socketPath string, sessionCode string) error {
-	command := args[0]
 	projectPath, _ := os.Getwd()
 
-	// Validate .agnt.kdl config early — before any PTY/terminal setup.
-	// Parse errors are fatal: the user has a config they expect to work.
-	if configPath := config.FindAgntConfigFile(projectPath); configPath != "" {
-		if _, err := config.LoadAgntConfigFile(configPath); err != nil {
-			return fmt.Errorf("%s: %w", configPath, err)
-		}
+	if err := validateResolvedConfig(projectPath); err != nil {
+		return err
 	}
 
-	adapter := resolveAgentAdapter(command, projectPath)
-	return firstRunOrCoding(projectPath, adapter, args,
+	// The per-phase adapter is resolved inside runPTYChild; the gate itself is
+	// verb-driven and agent-agnostic.
+	return firstRunOrCoding(projectPath, args,
 		func(setupPhase bool, a []string) (int, error) {
 			return runPTYChild(ctx, a, socketPath, sessionCode, setupPhase)
 		}, reapSessionPGID)

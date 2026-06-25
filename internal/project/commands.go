@@ -235,6 +235,40 @@ func DefaultPythonCommands() []CommandDef {
 	}
 }
 
+// DefaultDotnetCommands returns the default commands for a .NET project.
+func DefaultDotnetCommands() []CommandDef {
+	return []CommandDef{
+		{
+			Name:        "dev",
+			Description: "Start the app with hot reload",
+			Command:     "dotnet",
+			Args:        []string{"watch", "run"},
+			Persistent:  true,
+		},
+		{
+			Name:        "test",
+			Description: "Run dotnet tests",
+			Command:     "dotnet",
+			Args:        []string{"test"},
+			Timeout:     600,
+		},
+		{
+			Name:        "build",
+			Description: "Build the project",
+			Command:     "dotnet",
+			Args:        []string{"build"},
+			Timeout:     600,
+		},
+		{
+			Name:        "format",
+			Description: "Format the code",
+			Command:     "dotnet",
+			Args:        []string{"format"},
+			Timeout:     120,
+		},
+	}
+}
+
 // DefaultWailsCommands returns the default commands for a Wails (Go desktop) project.
 func DefaultWailsCommands() []CommandDef {
 	return []CommandDef{

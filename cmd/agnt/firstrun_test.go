@@ -276,7 +276,7 @@ func TestFirstRunOrCodingSetupOnly(t *testing.T) {
 	noReap := func(int) {}
 
 	// No config produced → one setup phase, no relaunch, no marker.
-	require.NoError(t, firstRunOrCoding(dir, nil, []string{"claude"}, launch, noReap))
+	require.NoError(t, firstRunOrCoding(dir, []string{"claude"}, launch, noReap))
 	assert.Equal(t, []bool{true}, phases, "init runs exactly one setup phase")
 	m, err := readFirstRunMarker(firstRunStatePath(dir))
 	require.NoError(t, err)
@@ -285,10 +285,63 @@ func TestFirstRunOrCodingSetupOnly(t *testing.T) {
 	// Setup wrote a config → permanent marker recorded.
 	require.NoError(t, os.WriteFile(filepath.Join(dir, ".agnt.kdl"), []byte("project { }\n"), 0o644))
 	phases = nil
-	require.NoError(t, firstRunOrCoding(dir, nil, []string{"claude"}, launch, noReap))
+	require.NoError(t, firstRunOrCoding(dir, []string{"claude"}, launch, noReap))
 	assert.Equal(t, []bool{true}, phases, "still a single setup phase, never a relaunch")
 	m2, err := readFirstRunMarker(firstRunStatePath(dir))
 	require.NoError(t, err)
 	require.NotNil(t, m2)
 	assert.True(t, m2.Permanent, "successful init writes a permanent marker")
+}
+
+// TestFirstRunOrCodingVerbDriven asserts the gate is verb-driven: setup fires
+// for any agent (here a non-Claude command), not just Claude, when the project
+// has no config and no marker. Before the verb-driven change this path went
+// straight to a coding launch for everything but Claude.
+func TestFirstRunOrCodingVerbDriven(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	dir := t.TempDir()
+	// setupOnlyMode defaults to false (normal `agnt run`).
+
+	var phases []bool
+	launch := func(setupPhase bool, _ []string) (int, error) {
+		phases = append(phases, setupPhase)
+		return 0, nil
+	}
+	noReap := func(int) {}
+
+	// Non-Claude agent, no config, no marker → setup phase fires.
+	require.NoError(t, firstRunOrCoding(dir, []string{"gemini"}, launch, noReap))
+	require.NotEmpty(t, phases)
+	assert.True(t, phases[0], "setup fires for any agent, not just claude")
+
+	// With a config already present, the gate skips setup → a single coding
+	// launch, regardless of agent.
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".agnt.kdl"), []byte("project { }\n"), 0o644))
+	phases = nil
+	require.NoError(t, firstRunOrCoding(dir, []string{"copilot"}, launch, noReap))
+	assert.Equal(t, []bool{false}, phases, "configured project → coding launch, no setup")
+}
+
+// TestFirstRunOrCoding_AutoConfigSkipsSetup verifies the deterministic path:
+// a simple project (package.json with a dev script) is auto-configured in Go,
+// so the run goes straight to coding with NO LLM setup phase.
+func TestFirstRunOrCoding_AutoConfigSkipsSetup(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "package.json"),
+		[]byte(`{"name":"web","scripts":{"dev":"vite","test":"vitest","lint":"eslint"}}`), 0o644))
+
+	var phases []bool
+	launch := func(setupPhase bool, _ []string) (int, error) {
+		phases = append(phases, setupPhase)
+		return 0, nil
+	}
+	require.NoError(t, firstRunOrCoding(dir, []string{"claude"}, launch, func(int) {}))
+
+	// Auto-config wrote a real .agnt.kdl deterministically...
+	data, err := os.ReadFile(filepath.Join(dir, ".agnt.kdl"))
+	require.NoError(t, err, "auto-config must write .agnt.kdl")
+	assert.Contains(t, string(data), "npm run dev", "generated dev script")
+	// ...and the run went straight to coding — no LLM setup phase.
+	assert.Equal(t, []bool{false}, phases, "auto-configured project skips LLM setup")
 }
