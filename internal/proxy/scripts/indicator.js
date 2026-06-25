@@ -2016,7 +2016,8 @@
     audit: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>',
     styleEdit: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.9 0 1.7-.1 2.5-.3"/><path d="M12 2c2.2 0 4 4.5 4 10"/><path d="M12 2c-2.2 0-4 4.5-4 10s1.8 10 4 10"/><path d="M2 12h10"/><path d="M20 14l-4 4 1.5 1.5a2.12 2.12 0 0 0 3 0 2.12 2.12 0 0 0 0-3L20 14z"/></svg>',
     inspect: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 22l1-6.5 5.5 5.5L2 22z"/><path d="M8.5 15.5L18 6a2.83 2.83 0 1 0-4-4L4.5 11.5"/><circle cx="18" cy="4" r="1" fill="currentColor" stroke="none"/></svg>',
-    responsive: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="14" height="11" rx="1"/><path d="M2 18h14"/><rect x="17" y="9" width="5" height="11" rx="1"/></svg>'
+    responsive: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="14" height="11" rx="1"/><path d="M2 18h14"/><rect x="17" y="9" width="5" height="11" rx="1"/></svg>',
+    refresh: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>'
   };
 
   // Initialize
@@ -3174,6 +3175,8 @@
     actionsContainer.style.cssText = STYLES.toolbarActions;
 
     // Tool buttons (Gestalt: Similarity - all secondary actions look alike)
+    var refreshBtn = createToolBtn('Refresh', ICONS.refresh, refreshContent);
+    refreshBtn.title = 'Reload the app (content frame) without dropping the agnt connection';
     var screenshotBtn = createToolBtn('Screenshot', ICONS.screenshot, startScreenshotMode);
     var elementBtn = createToolBtn('Element', ICONS.element, startElementMode);
     var sketchBtn = createToolBtn('Sketch', ICONS.sketch, openSketch);
@@ -3194,6 +3197,7 @@
     };
     var auditDropdown = createActionsDropdown();
 
+    actionsContainer.appendChild(refreshBtn);
     actionsContainer.appendChild(screenshotBtn);
     actionsContainer.appendChild(elementBtn);
     actionsContainer.appendChild(sketchBtn);
@@ -3267,6 +3271,22 @@
       }
     } catch (e) { /* cross-origin / shell registry not ready — fall back to self */ }
     return window;
+  }
+
+  // refreshContent reloads the app the developer is looking at (the content
+  // frame) without tearing down the chrome shell that hosts the indicator,
+  // panel, and control WebSocket — so the agnt connection survives the reload.
+  // In the shell this delegates to __devtool_reload_content (frames.js); in an
+  // unwrapped/standalone page there is no separate shell, so we reload self.
+  function refreshContent() {
+    try {
+      if (typeof window.__devtool_reload_content === 'function') {
+        window.__devtool_reload_content();
+        return;
+      }
+      var w = targetWindow();
+      if (w && w.location) { w.location.reload(); }
+    } catch (e) { /* best-effort — a failed refresh must not break the toolbar */ }
   }
 
   // Audit actions configuration

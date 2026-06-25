@@ -154,6 +154,29 @@
       f.style.background = '#ffffff';
       return { ok: true, width: w, height: (h && h > 0) ? h : window.innerHeight };
     };
+
+    // Reload the live content frame from the shell WITHOUT tearing down the
+    // shell. The shell document owns the indicator, panel, and control
+    // WebSocket; only the inner app reloads, so top-frame communication
+    // survives. Prefers same-origin location.reload() (preserves the exact
+    // content URL including its __devtool_frame marker, so telemetry/exec
+    // routing keeps working); falls back to re-assigning src.
+    window.__devtool_reload_content = function() {
+      var f = document.getElementById('__devtool_content_frame');
+      if (!f) { return { ok: false, error: 'no content frame' }; }
+      try {
+        if (f.contentWindow && f.contentWindow.location) {
+          f.contentWindow.location.reload();
+          return { ok: true, method: 'location.reload' };
+        }
+      } catch (e) { /* cross-origin / not-ready — fall back to src */ }
+      try {
+        f.src = f.src;
+        return { ok: true, method: 'src' };
+      } catch (e2) {
+        return { ok: false, error: String(e2) };
+      }
+    };
   }
 
   // ---- Content side: register with the shell (same-origin direct reach) ----
