@@ -12,7 +12,7 @@ import (
 )
 
 func (d *Daemon) hubHandleAutostart(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	valid := []string{protocol.SubVerbClearPorts, protocol.SubVerbContinue, protocol.SubVerbAutostartRun}
+	valid := []string{protocol.SubVerbClearPorts, protocol.SubVerbContinue, protocol.SubVerbAutostartRun, protocol.SubVerbReconcile}
 	return newCommandRouter("AUTOSTART").
 		withDefault(func(_ context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
 			return writeStructuredErr(conn, "daemon", &hubproto.StructuredError{
@@ -27,7 +27,30 @@ func (d *Daemon) hubHandleAutostart(ctx context.Context, conn *hubpkg.Connection
 			protocol.SubVerbClearPorts:   d.hubHandleAutostartClearPorts,
 			protocol.SubVerbContinue:     d.hubHandleAutostartContinue,
 			protocol.SubVerbAutostartRun: d.hubHandleAutostartRun,
+			protocol.SubVerbReconcile:    d.hubHandleAutostartReconcile,
 		})
+}
+
+// hubHandleAutostartReconcile handles AUTOSTART RECONCILE <projectPath>. It
+// live-applies the current `.agnt.kdl` to the project's running scripts —
+// starting added scripts, stopping removed ones, restarting changed ones —
+// without a daemon or session restart. This is what lets first-run setup (and
+// hand edits) take effect in place rather than via a relaunch.
+func (d *Daemon) hubHandleAutostartReconcile(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	if len(cmd.Args) < 1 {
+		return conn.WriteErr(hubproto.ErrMissingParam, "project path required")
+	}
+	plan, err := d.ReconcileProjectConfig(ctx, cmd.Args[0])
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("reconcile failed: %v", err))
+	}
+	data, _ := json.Marshal(map[string]interface{}{
+		"start_scripts":   plan.StartScripts,
+		"stop_scripts":    plan.StopScripts,
+		"restart_scripts": plan.RestartScripts,
+		"success":         true,
+	})
+	return conn.WriteJSON(data)
 }
 
 // hubHandleAutostartClearPorts handles AUTOSTART CLEAR-PORTS <projectPath>.
