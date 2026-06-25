@@ -40,6 +40,23 @@ func (ps *ProxyServer) Stop(ctx context.Context) error {
 	err := ps.httpServer.Shutdown(ctx)
 	ps.running.Store(false)
 
+	// Close active WebSocket connections and drop them from the registry so a
+	// restart on the same port does not inherit stale conns (broadcasts to a
+	// dead conn, or a slow drain goroutine outliving the server).
+	ps.wsConns.Range(func(key, value any) bool {
+		if c, ok := connFromMap(value).(interface{ Close() error }); ok {
+			_ = c.Close()
+		}
+		ps.wsConns.Delete(key)
+		return true
+	})
+
+	// Release idle backend connections so the pool does not keep half-open
+	// sockets to a backend that may itself be restarting.
+	if ps.baseTransport != nil {
+		ps.baseTransport.CloseIdleConnections()
+	}
+
 	// Stop the page-tracker actor goroutine after the HTTP server has drained
 	// (no more TrackHTTPRequest senders).
 	ps.pageTracker.Stop()

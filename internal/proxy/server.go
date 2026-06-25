@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -512,6 +513,23 @@ func (ps *ProxyServer) Start(ctx context.Context) error {
 	}
 
 	return nil
+}
+
+// BoundPort returns the TCP port the proxy is actually listening on, parsed
+// from ListenAddr (which Start updates to the real bound address, including
+// the OS-assigned port when ListenPort was 0). Returns 0 if the address has no
+// parseable port. Callers restarting a proxy use this to rebind the same port
+// rather than letting it drift to a fresh auto-assignment.
+func (ps *ProxyServer) BoundPort() int {
+	_, portStr, err := net.SplitHostPort(ps.ListenAddr)
+	if err != nil {
+		return 0
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		return 0
+	}
+	return port
 }
 
 // runServer runs the HTTP server with automatic restart on crash

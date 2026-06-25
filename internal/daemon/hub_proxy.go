@@ -425,12 +425,15 @@ func (d *Daemon) hubHandleProxyRestart(ctx context.Context, conn *hubpkg.Connect
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
 
-	// Capture config before stopping
+	// Capture config before stopping. The bound port is preserved across the
+	// restart: clients (browsers, stored URLs, CORS origins) expect the proxy
+	// to come back on the SAME port, not drift to a fresh auto-assignment.
 	targetURL := p.TargetURL.String()
 	maxLogSize := int(p.Logger().Stats().MaxSize)
 	projectPath := p.Path
 	bindAddress := p.BindAddress
 	allowExternal := p.AllowExternal
+	boundPort := p.BoundPort()
 
 	// Stop the proxy
 	if err := d.proxym.Stop(ctx, proxyID); err != nil {
@@ -449,18 +452,25 @@ func (d *Daemon) hubHandleProxyRestart(ctx context.Context, conn *hubpkg.Connect
 		d.stateMgr.RemoveProxy(proxyID)
 	}
 
-	// Wait for cleanup
-	time.Sleep(100 * time.Millisecond)
+	// Wait for the old listener to release the port before rebinding it,
+	// rather than guessing with a fixed sleep. Stop() closes the listener
+	// synchronously, so this returns almost immediately in the common case.
+	if boundPort > 0 {
+		waitPortFree(boundPort, 2*time.Second)
+	}
 
-	// Create new proxy with same config
+	// Create new proxy on the SAME port. StrictListenPort makes a bind
+	// conflict a hard error instead of silently drifting to a random port —
+	// preserving the port is the whole point of a restart.
 	newProxy, err := d.proxym.Create(ctx, proxy.ProxyConfig{
-		ID:            proxyID,
-		TargetURL:     targetURL,
-		ListenPort:    0, // Auto-assign port
-		MaxLogSize:    maxLogSize,
-		Path:          projectPath,
-		BindAddress:   bindAddress,
-		AllowExternal: allowExternal,
+		ID:               proxyID,
+		TargetURL:        targetURL,
+		ListenPort:       boundPort,
+		StrictListenPort: boundPort > 0,
+		MaxLogSize:       maxLogSize,
+		Path:             projectPath,
+		BindAddress:      bindAddress,
+		AllowExternal:    allowExternal,
 	})
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("failed to restart proxy: %v", err))
@@ -468,12 +478,12 @@ func (d *Daemon) hubHandleProxyRestart(ctx context.Context, conn *hubpkg.Connect
 
 	d.wireProxyLogger(newProxy)
 
-	// Persist the new proxy state
+	// Persist the new proxy state on its preserved port.
 	if d.stateMgr != nil {
 		d.stateMgr.AddProxy(PersistentProxyConfig{
 			ID:         proxyID,
 			TargetURL:  targetURL,
-			Port:       0, // Auto-assigned
+			Port:       boundPort,
 			MaxLogSize: maxLogSize,
 			Path:       projectPath,
 		})
