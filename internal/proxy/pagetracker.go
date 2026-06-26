@@ -258,6 +258,11 @@ func (pt *PageTracker) TrackError(err FrontendError, browserSessionID string, fr
 func (pt *PageTracker) TrackPerformance(perf PerformanceMetric, browserSessionID string, frameID ...string) {
 	pt.trackOnSession(browserSessionID, perf.URL, func(session *PageSession) {
 		session.Performance = &perf
+		// The browser sends document.title on the performance sample; promote it
+		// to the session so list/get/summary all surface the page title.
+		if perf.PageTitle != "" {
+			session.PageTitle = perf.PageTitle
+		}
 	}, frameID...)
 }
 

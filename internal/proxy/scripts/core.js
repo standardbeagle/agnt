@@ -852,6 +852,20 @@
             timestamp: Date.now()
           };
 
+          // Page context: document title + page/viewport dimensions. The
+          // backend promotes page_title onto the session and surfaces the
+          // dimensions in the currentpage summary.
+          try {
+            metrics.page_title = document.title || '';
+            var docEl = document.documentElement || {};
+            metrics.viewport_width = window.innerWidth || docEl.clientWidth || 0;
+            metrics.viewport_height = window.innerHeight || docEl.clientHeight || 0;
+            metrics.page_width = docEl.scrollWidth || 0;
+            metrics.page_height = docEl.scrollHeight || 0;
+          } catch (e) {
+            // Defensive: never let page-context capture break perf reporting.
+          }
+
           // Paint timing (if available)
           try {
             if (perf.getEntriesByType) {

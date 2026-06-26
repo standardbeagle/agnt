@@ -231,6 +231,16 @@ func parseMutationEvent(data map[string]interface{}, id string, timestamp time.T
 		}
 	}
 
+	// Parse the correlated triggering interaction, if the browser found one.
+	if tb, ok := data["triggered_by"].(map[string]interface{}); ok {
+		event.TriggeredBy = &MutationTrigger{
+			Type:      getStringField(tb, "type"),
+			Timestamp: getInt64Field(tb, "timestamp"),
+			Latency:   getInt64Field(tb, "latency"),
+			Target:    getStringField(tb, "target"),
+		}
+	}
+
 	return event
 }
 

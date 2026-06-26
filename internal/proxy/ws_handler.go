@@ -262,6 +262,11 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				DOMContentLoaded:     getInt64Field(msg.Data, "dom_content_loaded"),
 				FirstPaint:           getInt64Field(msg.Data, "first_paint"),
 				FirstContentfulPaint: getInt64Field(msg.Data, "first_contentful_paint"),
+				PageTitle:            getStringField(msg.Data, "page_title"),
+				PageWidth:            int(getInt64Field(msg.Data, "page_width")),
+				PageHeight:           int(getInt64Field(msg.Data, "page_height")),
+				ViewportWidth:        int(getInt64Field(msg.Data, "viewport_width")),
+				ViewportHeight:       int(getInt64Field(msg.Data, "viewport_height")),
 				Custom:               msg.Data,
 			}
 

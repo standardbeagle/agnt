@@ -180,6 +180,37 @@ func TestParseMutationEvent_NodeRemoved(t *testing.T) {
 	assert.Empty(t, event.Added)
 }
 
+func TestParseMutationEvent_TriggeredBy(t *testing.T) {
+	data := map[string]interface{}{
+		"mutation_type": "added",
+		"target":        map[string]interface{}{"selector": "#list", "tag": "ul"},
+		"triggered_by": map[string]interface{}{
+			"type":      "click",
+			"timestamp": float64(1718000000000),
+			"latency":   float64(42),
+			"target":    "button.add",
+		},
+	}
+
+	event := parseMutationEvent(data, "metric-8", testTS, testURL)
+
+	require.NotNil(t, event.TriggeredBy, "triggered_by must be parsed (cause→effect correlation)")
+	assert.Equal(t, "click", event.TriggeredBy.Type)
+	assert.Equal(t, int64(1718000000000), event.TriggeredBy.Timestamp)
+	assert.Equal(t, int64(42), event.TriggeredBy.Latency)
+	assert.Equal(t, "button.add", event.TriggeredBy.Target)
+}
+
+func TestParseMutationEvent_NoTriggeredBy(t *testing.T) {
+	// Absent triggered_by leaves the field nil (not an error).
+	data := map[string]interface{}{
+		"mutation_type": "added",
+		"target":        map[string]interface{}{"selector": "#x", "tag": "div"},
+	}
+	event := parseMutationEvent(data, "metric-9", testTS, testURL)
+	assert.Nil(t, event.TriggeredBy)
+}
+
 // ── parsePanelMessage ───────────────────────────────────────────────────────
 
 func TestParsePanelMessage_TextOnly(t *testing.T) {
