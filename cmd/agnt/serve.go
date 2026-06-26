@@ -140,9 +140,9 @@ Available tools:
 	tools.RegisterTunnelTool(server, dt)
 	tools.RegisterBrowserTool(server, dt)
 	tools.RegisterAutomationTool(server, dt)
-	tools.RegisterResponsiveAuditTool(server, dt, nil)
-	tools.RegisterAPIAuditTool(server, dt, nil)
-	tools.RegisterLoadingAuditTool(server, dt, nil)
+	tools.RegisterResponsiveAuditTool(server, dt)
+	tools.RegisterAPIAuditTool(server, dt)
+	tools.RegisterLoadingAuditTool(server, dt)
 	tools.RegisterGetIncidentsTool(server, dt)
 
 	// Register the replaytest tool (Pro: advanced_testing). The license manager

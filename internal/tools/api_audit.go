@@ -6,9 +6,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"time"
-
-	"github.com/standardbeagle/agnt/internal/proxy"
 
 	"github.com/standardbeagle/go-sdk/mcp"
 )
@@ -26,7 +23,7 @@ type APIAuditOutput struct {
 	Raw     any    `json:"raw,omitempty"`
 }
 
-// apiAuditToolDescription is shared between legacy and daemon mode registrations.
+// apiAuditToolDescription describes the api_audit tool.
 const apiAuditToolDescription = `Run an API-efficiency audit over the recorded fetch/XHR call buffer.
 
 Analyzes the in-page fetch/XHR call buffer (window.__devtool_api) and flags:
@@ -48,23 +45,21 @@ Output:
   - Default: Compact text summary optimized for AI consumption
   - With raw: true: Full JSON with every finding and selector`
 
-// apiAuditBackend holds either a daemon client or a direct proxy manager,
-// enabling a single registration path for both daemon and legacy modes.
+// apiAuditBackend holds the daemon client for the api_audit tool.
 type apiAuditBackend struct {
-	DualBackend[DaemonTools, proxy.ProxyManager]
+	daemon *DaemonTools
 }
 
 // RegisterAPIAuditTool registers the api_audit tool.
-// Exactly one of dt or pm must be non-nil.
-func RegisterAPIAuditTool(server *mcp.Server, dt *DaemonTools, pm *proxy.ProxyManager) {
-	backend := &apiAuditBackend{DualBackend[DaemonTools, proxy.ProxyManager]{Daemon: dt, Legacy: pm}}
+func RegisterAPIAuditTool(server *mcp.Server, dt *DaemonTools) {
+	backend := &apiAuditBackend{daemon: dt}
 	addLenientTool(server, &mcp.Tool{
 		Name:        "api_audit",
 		Description: apiAuditToolDescription,
 	}, backend.makeHandler())
 }
 
-// makeHandler creates a handler that dispatches to daemon or legacy path.
+// makeHandler creates a handler that runs the audit via the daemon.
 func (b *apiAuditBackend) makeHandler() func(context.Context, *mcp.CallToolRequest, APIAuditInput) (*mcp.CallToolResult, APIAuditOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input APIAuditInput) (*mcp.CallToolResult, APIAuditOutput, error) {
 		input.ProxyID = pickProxyID(input.ID, input.ProxyID)
@@ -72,29 +67,10 @@ func (b *apiAuditBackend) makeHandler() func(context.Context, *mcp.CallToolReque
 			return errorResult("proxy_id required (or `id` alias)"), APIAuditOutput{}, nil
 		}
 
-		type auditResult struct {
-			toolResult *mcp.CallToolResult
-			output     APIAuditOutput
-			err        error
+		if err := b.daemon.ensureConnected(); err != nil {
+			return errorResult(err.Error()), APIAuditOutput{}, nil
 		}
-		res, _ := DispatchResult(b.DualBackend,
-			func(dt *DaemonTools) (auditResult, error) {
-				if err := dt.ensureConnected(); err != nil {
-					return auditResult{toolResult: errorResult(err.Error())}, nil
-				}
-				r, o, e := dt.executeAPIAuditDaemon(input)
-				return auditResult{toolResult: r, output: o, err: e}, nil
-			},
-			func(pm *proxy.ProxyManager) (auditResult, error) {
-				proxyServer, err := pm.Get(input.ProxyID)
-				if err != nil {
-					return auditResult{toolResult: errorResult(fmt.Sprintf("proxy not found: %s", input.ProxyID))}, nil
-				}
-				r, o, e := executeAPIAuditLegacy(proxyServer, input)
-				return auditResult{toolResult: r, output: o, err: e}, nil
-			},
-		)
-		return res.toolResult, res.output, res.err
+		return b.daemon.executeAPIAuditDaemon(input)
 	}
 }
 
@@ -128,40 +104,6 @@ func (dt *DaemonTools) executeAPIAuditDaemon(input APIAuditInput) (*mcp.CallTool
 	}
 
 	return parseAPIAuditResult(resultStr, input.Raw)
-}
-
-// executeAPIAuditLegacy runs the API audit in legacy (no-daemon) mode.
-func executeAPIAuditLegacy(proxyServer *proxy.ProxyServer, input APIAuditInput) (*mcp.CallToolResult, APIAuditOutput, error) {
-	code := buildAPIAuditCode(input.Raw)
-
-	execID, resultChan, err := proxyServer.ExecuteJavaScript(code)
-	if err != nil {
-		return errorResult(fmt.Sprintf("failed to execute audit: %v", err)), APIAuditOutput{}, nil
-	}
-
-	timeout := time.Duration(30) * time.Second
-	select {
-	case result := <-resultChan:
-		if result == nil {
-			return errorResult("execution channel closed without result"), APIAuditOutput{}, nil
-		}
-		if result.Error != "" {
-			return errorResult(fmt.Sprintf("audit failed: %s", result.Error)), APIAuditOutput{}, nil
-		}
-
-		proxyServer.Logger().LogExecution(proxy.ExecutionResult{
-			ID:        execID,
-			Code:      "api_audit",
-			Result:    result.Result,
-			Duration:  result.Duration,
-			Timestamp: result.Timestamp,
-		})
-
-		return parseAPIAuditResult(result.Result, input.Raw)
-
-	case <-time.After(timeout):
-		return errorResult(fmt.Sprintf("audit timed out after %v", timeout)), APIAuditOutput{}, nil
-	}
 }
 
 // parseAPIAuditResult decodes the JSON returned by auditAPIEfficiency and
