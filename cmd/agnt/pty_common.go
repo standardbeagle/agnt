@@ -1340,6 +1340,11 @@ func runOverlayPipeline(
 		}
 	}()
 
+	// outputPulse fires on every chunk the child writes. The initial-stdin
+	// injector uses it to detect "the agent rendered and went quiet" — a far
+	// better ready-for-input signal than a fixed delay from launch.
+	outputPulse := make(chan struct{}, 1)
+
 	// PTY → activity monitor → filter → gate → stdout.
 	// Activity monitor detects when the agent is working and surfaces
 	// state to the daemon (which forwards to the browser indicator).
@@ -1394,18 +1399,19 @@ func runOverlayPipeline(
 		}
 
 		rt.activityMonitor = overlay.NewActivityMonitor(outputDest, activityCfg)
-		_, _ = io.Copy(rt.activityMonitor, handle.Backend)
+		_, _ = io.Copy(io.MultiWriter(newActivityPulse(outputPulse), rt.activityMonitor), handle.Backend)
 		close(rt.done)
 	}()
 
 	// For stdin-based adapters (everything except Claude by default),
-	// inject the initial context message as if the user typed it.
+	// inject the initial context message as if the user typed it — but only
+	// once the agent is actually reading stdin. Injecting on a fixed delay
+	// races slow agent startup: the PTY is still in cooked mode, so the line
+	// discipline echoes the bytes to stdout and the agent's stdin gets flushed
+	// on init — the message lands on the terminal, never in the agent.
 	if adapter != nil {
 		if stdin := adapter.InitialStdin(adapterPrompt); len(stdin) > 0 {
-			go func() {
-				time.Sleep(adapter.StdinDelay())
-				_, _ = handle.Backend.Write(stdin)
-			}()
+			go injectInitialStdin(ctx, handle.Backend, stdin, outputPulse, adapter.StdinDelay())
 		}
 	}
 
@@ -1421,6 +1427,88 @@ func runOverlayPipeline(
 	}()
 
 	return rt
+}
+
+// maxStdinReadyWait bounds how long injectInitialStdin waits for the agent
+// to become ready before injecting anyway. A silent agent (no startup banner)
+// gives no readiness signal, so the message is delivered best-effort after
+// this ceiling rather than never. Var (not const) so tests can shorten it.
+var maxStdinReadyWait = 8 * time.Second
+
+// activityPulse is an io.Writer that pulses a channel on every non-empty
+// write. Teed into the child-output copy so the stdin injector can observe
+// when the agent is producing output and when it has gone quiet. The send is
+// non-blocking with a 1-slot buffer: callers only need "did output happen
+// since I last looked," not every chunk.
+type activityPulse struct{ ch chan<- struct{} }
+
+func newActivityPulse(ch chan<- struct{}) *activityPulse { return &activityPulse{ch: ch} }
+
+func (a *activityPulse) Write(p []byte) (int, error) {
+	if len(p) > 0 {
+		select {
+		case a.ch <- struct{}{}:
+		default:
+		}
+	}
+	return len(p), nil
+}
+
+// injectInitialStdin writes the agent's initial context message to its stdin
+// once the agent is ready to read it. Readiness = the agent has produced
+// output (it is alive and past exec) and then gone quiet for `settle` (it
+// finished its initial render and is waiting for input). This is the
+// deterministic alternative to a fixed delay from launch, which fires while
+// the agent is still starting and loses the message to cooked-mode echo +
+// stdin flush. A silent agent that never outputs is handled by the
+// maxStdinReadyWait ceiling.
+func injectInitialStdin(ctx context.Context, w io.Writer, data []byte, pulse <-chan struct{}, settle time.Duration) {
+	if settle <= 0 {
+		settle = agentadapter.DefaultStdinDelay
+	}
+	deadline := time.NewTimer(maxStdinReadyWait)
+	defer deadline.Stop()
+
+	// Wait for the first sign of life (or the ceiling, or cancel).
+	select {
+	case <-pulse:
+	case <-deadline.C:
+		writeIfLive(ctx, w, data)
+		return
+	case <-ctx.Done():
+		return
+	}
+
+	// Wait for output to settle: each new chunk restarts the quiet window, so
+	// we inject only after the agent stops rendering. The overall deadline
+	// still bounds a chatty agent that never pauses.
+	quiet := time.NewTimer(settle)
+	defer quiet.Stop()
+	for {
+		select {
+		case <-pulse:
+			if !quiet.Stop() {
+				<-quiet.C
+			}
+			quiet.Reset(settle)
+		case <-quiet.C:
+			writeIfLive(ctx, w, data)
+			return
+		case <-deadline.C:
+			writeIfLive(ctx, w, data)
+			return
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// writeIfLive writes data unless the context is already cancelled.
+func writeIfLive(ctx context.Context, w io.Writer, data []byte) {
+	if ctx.Err() != nil {
+		return
+	}
+	_, _ = w.Write(data)
 }
 
 // setupTerminalOverlay constructs the overlay components (gate, filter,
