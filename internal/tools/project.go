@@ -1,7 +1,6 @@
 package tools
 
 import (
-	"context"
 	"fmt"
 	"sort"
 	"strings"
@@ -10,6 +9,41 @@ import (
 
 	"github.com/standardbeagle/go-sdk/mcp"
 )
+
+// detectAndFormat runs project detection for path and renders the detect tool
+// output (structured DetectOutput plus the optional compact summary). It is the
+// single enrichment+formatting path shared by the daemon detect handler and the
+// detect unit tests, so detection output lives in exactly one place.
+func detectAndFormat(path string, raw bool) (*mcp.CallToolResult, DetectOutput, error) {
+	proj, err := project.Detect(path)
+	if err != nil {
+		return errorResult(fmt.Sprintf("failed to detect: %v", err)), DetectOutput{}, nil
+	}
+
+	scripts := buildDetectScripts(proj.Commands)
+	scriptNames := make([]string, len(proj.Commands))
+	for i, cmd := range proj.Commands {
+		scriptNames[i] = cmd.Name
+	}
+
+	output := DetectOutput{
+		Type:           string(proj.Type),
+		Name:           proj.Name,
+		Framework:      proj.Metadata["framework"],
+		Scripts:        scripts,
+		ScriptNames:    scriptNames,
+		PackageManager: proj.PackageManager,
+		Metadata:       proj.Metadata,
+	}
+
+	if raw {
+		return nil, output, nil
+	}
+
+	summary := formatDetectCompact(output)
+	output.Summary = summary
+	return mcpText(summary), output, nil
+}
 
 // DetectInput defines input for the detect tool.
 type DetectInput struct {
@@ -41,63 +75,6 @@ type DetectOutput struct {
 	PackageManager string            `json:"package_manager,omitempty"`
 	Metadata       map[string]string `json:"metadata,omitempty"`
 	Summary        string            `json:"summary,omitempty"`
-}
-
-// RegisterProjectTools adds project-related MCP tools to the server.
-func RegisterProjectTools(server *mcp.Server) {
-	addLenientTool(server, &mcp.Tool{
-		Name: "detect",
-		Description: `Detect project type and available scripts.
-Returns ready-to-paste proc run / proc wait invocations and likely_signals
-heuristics for each script, so agents can chain detect → proc run → proc wait
-without hand-constructing commands.
-
-Examples:
-  detect {}
-  detect {path: "."}
-  detect {raw: true}   // skip compact text, return JSON only`,
-	}, handleDetect)
-}
-
-func handleDetect(ctx context.Context, req *mcp.CallToolRequest, input DetectInput) (*mcp.CallToolResult, DetectOutput, error) {
-	if err := validateDetectInput(input); err != nil {
-		return errorResult(validationError("detect", err)), DetectOutput{}, nil
-	}
-
-	path := input.Path
-	if path == "" {
-		path = "."
-	}
-
-	proj, err := project.Detect(path)
-	if err != nil {
-		return errorResult(fmt.Sprintf("failed to detect: %v", err)), DetectOutput{}, nil
-	}
-
-	scripts := buildDetectScripts(proj.Commands)
-	scriptNames := make([]string, len(proj.Commands))
-	for i, cmd := range proj.Commands {
-		scriptNames[i] = cmd.Name
-	}
-
-	output := DetectOutput{
-		Type:           string(proj.Type),
-		Name:           proj.Name,
-		Framework:      proj.Metadata["framework"],
-		Scripts:        scripts,
-		ScriptNames:    scriptNames,
-		PackageManager: proj.PackageManager,
-		Metadata:       proj.Metadata,
-	}
-
-	if input.Raw {
-		// Structured-only mode: callers want JSON, no compact text.
-		return nil, output, nil
-	}
-
-	summary := formatDetectCompact(output)
-	output.Summary = summary
-	return mcpText(summary), output, nil
 }
 
 // buildDetectScripts converts project.CommandDef entries into DetectScript

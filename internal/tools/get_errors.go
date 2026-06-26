@@ -65,43 +65,6 @@ func (dt *DaemonTools) makeGetErrorsHandler() func(context.Context, *mcp.CallToo
 	return backend.makeHandler()
 }
 
-// RegisterGetErrorsTool registers the get_errors tool.
-// Exactly one of dt or pm must be non-nil.
-func RegisterGetErrorsTool(server *mcp.Server, dt *DaemonTools, pm *proxy.ProxyManager) {
-	backend := &getErrorsBackend{DualBackend[DaemonTools, proxy.ProxyManager]{Daemon: dt, Legacy: pm}}
-
-	desc := `[DEPRECATED: use get_incidents instead] Get all current errors across proxies.
-
-Collects errors from: browser JavaScript errors, HTTP 4xx/5xx responses,
-proxy transport errors, and custom error logs.`
-
-	if backend.Daemon == nil {
-		desc += `
-
-Note: Running in legacy mode - process output alerts are not available.`
-	}
-
-	desc += `
-
-Default behavior:
-  - Deduplicates identical errors (shows count)
-  - Reduces stack traces to first application code frame
-  - Filters out noise (static asset 404s, redirects)
-  - Sorts by severity (errors first) then recency
-
-Examples:
-  get_errors {}
-  get_errors {proxy_id: "dev"}
-  get_errors {since: "5m"}
-  get_errors {include_warnings: false}
-  get_errors {raw: true, limit: 50}`
-
-	addLenientTool(server, &mcp.Tool{
-		Name:        "get_errors",
-		Description: desc,
-	}, backend.makeHandler())
-}
-
 // makeHandler creates a handler that dispatches to daemon or legacy path.
 func (b *getErrorsBackend) makeHandler() func(context.Context, *mcp.CallToolRequest, GetErrorsInput) (*mcp.CallToolResult, GetErrorsOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input GetErrorsInput) (*mcp.CallToolResult, GetErrorsOutput, error) {

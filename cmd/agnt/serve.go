@@ -14,10 +14,8 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/daemon"
 	"github.com/standardbeagle/agnt/internal/license"
-	"github.com/standardbeagle/agnt/internal/proxy"
 	"github.com/standardbeagle/agnt/internal/snapshot"
 	"github.com/standardbeagle/agnt/internal/tools"
-	"github.com/standardbeagle/go-cli-server/process"
 
 	"github.com/spf13/cobra"
 	"github.com/standardbeagle/go-sdk/mcp"
@@ -28,8 +26,7 @@ var serveCmd = &cobra.Command{
 	Short: "Run as shared server",
 	Long: `Run as a shared server that syncronizes processes and proxies across clients.
 
-By default, uses a background daemon for persistent state.
-Use --legacy for direct process management (state lost on exit).`,
+Uses a background daemon for persistent state across connections.`,
 	Run: runServe,
 }
 
@@ -44,12 +41,10 @@ Uses a background daemon for persistent state across connections.`,
 }
 
 var (
-	serveLegacy bool
 	mcpNoAttach bool
 )
 
 func init() {
-	serveCmd.Flags().BoolVar(&serveLegacy, "legacy", false, "Run in legacy mode (no daemon)")
 	mcpCmd.Flags().BoolVar(&mcpNoAttach, "no-attach", false, "Don't auto-attach to existing session (operate globally)")
 }
 
@@ -59,11 +54,7 @@ func runServe(cmd *cobra.Command, args []string) {
 		socketPath = daemon.DefaultSocketPath()
 	}
 
-	if serveLegacy {
-		runLegacyServer()
-	} else {
-		runDaemonClient(socketPath)
-	}
+	runDaemonClient(socketPath)
 }
 
 func runMCP(cmd *cobra.Command, args []string) {
@@ -222,102 +213,6 @@ Available tools:
 	}
 
 	debug.Log("mcp", "MCP client shutdown complete")
-}
-
-// runLegacyServer runs in the original mode without a daemon.
-func runLegacyServer() {
-	// Create root context with signal cancellation
-	ctx, cancel := signal.NotifyContext(context.Background(),
-		syscall.SIGINT,
-		syscall.SIGTERM,
-	)
-	defer cancel()
-
-	// Initialize process manager with default config
-	pm := process.NewProcessManager(process.ManagerConfig{
-		DefaultTimeout:    0,
-		MaxOutputBuffer:   process.DefaultBufferSize,
-		GracefulTimeout:   5 * time.Second,
-		HealthCheckPeriod: 10 * time.Second,
-	})
-
-	// Initialize proxy manager
-	proxym := proxy.NewProxyManager()
-
-	// Create MCP server
-	legacyOpts := &mcp.ServerOptions{
-		HasTools:     true,
-		Instructions: "Development tool server for project detection, process management, and reverse proxy with traffic logging. Running in legacy mode - state will be lost when server stops.",
-	}
-
-	// Load .agnt.kdl and apply channel capability when enabled.
-	agntCfg, cfgErr := config.LoadAgntConfig(".")
-	if cfgErr != nil {
-		agntCfg = config.DefaultAgntConfig()
-	}
-	legacyOpts = tools.ChannelServerOptions(legacyOpts, agntCfg.Channel)
-
-	server := mcp.NewServer(
-		&mcp.Implementation{
-			Name:    appName,
-			Version: appVersion,
-		},
-		legacyOpts,
-	)
-
-	// Register legacy tools (direct process management)
-	tools.RegisterProcessTools(server, pm)
-	tools.RegisterProjectTools(server)
-	tools.RegisterProxyTools(server, proxym)
-	tools.RegisterGetErrorsTool(server, nil, proxym)
-	tools.RegisterResponsiveAuditTool(server, nil, proxym)
-	tools.RegisterAPIAuditTool(server, nil, proxym)
-	tools.RegisterLoadingAuditTool(server, nil, proxym)
-
-	// Register snapshot tools (visual regression testing)
-	snapshotManager, err := snapshot.NewManager("", 0.01)
-	if err != nil {
-		log.Printf("Warning: Failed to initialize snapshot manager: %v", err)
-	} else {
-		tools.RegisterSnapshotTools(server, snapshotManager, nil)
-	}
-
-	// Register the replaytest tool (Pro: advanced_testing).
-	licMgr := license.NewManager()
-	_ = licMgr.Load()
-	tools.RegisterReplaytestTool(server, licMgr)
-
-	// Handle shutdown in background
-	go func() {
-		<-ctx.Done()
-		debug.Log("mcp", "Shutdown signal received, stopping all processes and proxies")
-
-		shutdownCtx, shutdownCancel := context.WithTimeout(
-			context.Background(),
-			2*time.Second,
-		)
-		defer shutdownCancel()
-
-		if err := pm.Shutdown(shutdownCtx); err != nil {
-			debug.Error("mcp", "Process manager shutdown error: %v", err)
-		}
-
-		if err := proxym.Shutdown(shutdownCtx); err != nil {
-			debug.Error("mcp", "Proxy manager shutdown error: %v", err)
-		}
-	}()
-
-	// Run server over stdio
-	log.SetOutput(os.Stderr)
-	debug.Log("mcp", "Starting %s v%s (legacy mode)", appName, appVersion)
-
-	if err := server.Run(ctx, &mcp.StdioTransport{}); err != nil {
-		if ctx.Err() == nil {
-			log.Fatalf("Server error: %v", err)
-		}
-	}
-
-	debug.Log("mcp", "Server shutdown complete")
 }
 
 // runAutostartFunc is the signature for triggering a non-interactive autostart.

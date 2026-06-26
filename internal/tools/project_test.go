@@ -1,7 +1,6 @@
 package tools
 
 import (
-	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -34,7 +33,7 @@ func TestHandleDetect_NextJS(t *testing.T) {
 		t.Fatalf("write package.json: %v", err)
 	}
 
-	result, output, err := handleDetect(context.Background(), &mcp.CallToolRequest{}, DetectInput{Path: dir})
+	result, output, err := detectAndFormat(dir, false)
 	if err != nil {
 		t.Fatalf("handleDetect returned error: %v", err)
 	}
@@ -120,8 +119,7 @@ func TestHandleDetect_RawMode(t *testing.T) {
 		t.Fatalf("write package.json: %v", err)
 	}
 
-	result, output, err := handleDetect(context.Background(), &mcp.CallToolRequest{},
-		DetectInput{Path: dir, Raw: true})
+	result, output, err := detectAndFormat(dir, true)
 	if err != nil {
 		t.Fatalf("handleDetect returned error: %v", err)
 	}
@@ -152,8 +150,7 @@ func TestHandleDetect_ProcWaitTimeouts(t *testing.T) {
 		t.Fatalf("write package.json: %v", err)
 	}
 
-	_, output, err := handleDetect(context.Background(), &mcp.CallToolRequest{},
-		DetectInput{Path: dir, Raw: true})
+	_, output, err := detectAndFormat(dir, true)
 	if err != nil {
 		t.Fatalf("handleDetect: %v", err)
 	}
@@ -189,7 +186,7 @@ func TestHandleDetect_GoProject(t *testing.T) {
 		t.Fatalf("write go.mod: %v", err)
 	}
 
-	_, output, err := handleDetect(context.Background(), &mcp.CallToolRequest{}, DetectInput{Path: dir})
+	_, output, err := detectAndFormat(dir, false)
 	if err != nil {
 		t.Fatalf("handleDetect: %v", err)
 	}
@@ -215,7 +212,7 @@ func TestHandleDetect_GoProject(t *testing.T) {
 // emit a malformed compact block for unknown directories.
 func TestHandleDetect_UnknownProject(t *testing.T) {
 	dir := t.TempDir() // empty
-	_, output, err := handleDetect(context.Background(), &mcp.CallToolRequest{}, DetectInput{Path: dir})
+	_, output, err := detectAndFormat(dir, false)
 	if err != nil {
 		t.Fatalf("handleDetect: %v", err)
 	}
@@ -232,8 +229,7 @@ func TestHandleDetect_UnknownProject(t *testing.T) {
 
 // TestHandleDetect_BadPath covers validation errors.
 func TestHandleDetect_BadPath(t *testing.T) {
-	result, _, err := handleDetect(context.Background(), &mcp.CallToolRequest{},
-		DetectInput{Path: "/this/path/does/not/exist/" + strings.Repeat("x", 10)})
+	result, _, err := detectAndFormat("/this/path/does/not/exist/"+strings.Repeat("x", 10), false)
 	if err != nil {
 		t.Fatalf("handler should not return Go error, got %v", err)
 	}

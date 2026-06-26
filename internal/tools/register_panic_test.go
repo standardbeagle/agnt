@@ -38,12 +38,11 @@ func TestRegisterMCPTools_NoSchemaPanic(t *testing.T) {
 		{"get_incidents", func(s *mcp.Server) { RegisterGetIncidentsTool(s, dt) }},
 		{"channel_reply", func(s *mcp.Server) { RegisterChannelReplyTool(s, dt) }},
 		{"error_queue", func(s *mcp.Server) { RegisterErrorQueueTool(s, dt) }},
-		{"get_errors", func(s *mcp.Server) { RegisterGetErrorsTool(s, dt, nil) }},
-		{"project", func(s *mcp.Server) { RegisterProjectTools(s) }},
 		{"store", func(s *mcp.Server) { RegisterStoreTool(s, dt) }},
 		{"session", func(s *mcp.Server) { RegisterSessionTool(s, dt) }},
-		{"process", func(s *mcp.Server) { RegisterProcessTools(s, nil) }},
-		{"proxy", func(s *mcp.Server) { RegisterProxyTools(s, nil) }},
+		// get_errors, detect, proc, run, proxy, proxylog and currentpage are
+		// registered by RegisterDaemonTools (the "daemon" case above), so their
+		// schemas are already exercised by this guard.
 	}
 
 	for _, r := range regs {
