@@ -38,7 +38,12 @@ func DefaultSocketConfig() SocketConfig {
 }
 
 // DefaultSocketPath returns the default socket path for agnt.
+// AGNT_SOCKET, when set, overrides the default (see the unix variant for the
+// rationale — isolated/test daemons, second-daemon escape hatch).
 func DefaultSocketPath() string {
+	if p := os.Getenv("AGNT_SOCKET"); p != "" {
+		return p
+	}
 	return socket.DefaultSocketPath(SocketName)
 }
 
