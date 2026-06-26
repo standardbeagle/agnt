@@ -1,7 +1,6 @@
 package tools
 
 import (
-	"encoding/json"
 	"fmt"
 
 	"strings"
@@ -832,23 +831,6 @@ func convertToCompactLogEntry(data map[string]interface{}) CompactLogEntry {
 	}
 
 	return compact
-}
-
-// logEntryMapToOutput converts a deserialized LogEntry JSON map into a LogEntryOutput.
-// LogEntry serializes as {"type":"execution","execution":{...}} where the sub-field key
-// matches the type value. This extracts the typed sub-field as Data and its timestamp.
-func logEntryMapToOutput(em map[string]interface{}) LogEntryOutput {
-	entryType := getString(em, "type")
-	entry := LogEntryOutput{Type: entryType}
-
-	if sub, ok := em[entryType].(map[string]interface{}); ok {
-		entry.Timestamp = getTime(sub, "timestamp")
-		if b, err := json.Marshal(sub); err == nil {
-			entry.Data = string(b)
-		}
-	}
-
-	return entry
 }
 
 func convertToPageSessionOutput(m map[string]interface{}) PageSessionOutput {

@@ -100,6 +100,11 @@ type LogQueryFilter struct {
 	Since       string   `json:"since,omitempty"`
 	Until       string   `json:"until,omitempty"`
 	Limit       int      `json:"limit,omitempty"`
+	// ErrorsOnly filters to error-class entries (HTTP 4xx/5xx, JS errors,
+	// error-level diagnostics) across all sources.
+	ErrorsOnly bool `json:"errors_only,omitempty"`
+	// DiagnosticLevels filters diagnostic entries by level (info, warning, error).
+	DiagnosticLevels []string `json:"diagnostic_levels,omitempty"`
 }
 
 // ToastConfig represents configuration for a PROXY TOAST command.

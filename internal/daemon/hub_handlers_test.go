@@ -60,6 +60,23 @@ func TestConvertLogQueryFilter_Empty(t *testing.T) {
 	assert.Equal(t, 0, filter.Limit)
 }
 
+func TestConvertLogQueryFilter_CarriesErrorsOnlyAndDiagnosticLevels(t *testing.T) {
+	t.Parallel()
+	// These two fields are the daemon's parity bridge for the legacy proxylog
+	// query: proxy.LogFilter already applies them, but they must survive the
+	// protocol → proxy.LogFilter conversion or daemon callers silently lose
+	// the errors-only / diagnostic-level filtering legacy mode offered.
+	pf := protocol.LogQueryFilter{
+		ErrorsOnly:       true,
+		DiagnosticLevels: []string{"error", "warning"},
+	}
+	data, _ := json.Marshal(pf)
+	filter := convertLogQueryFilter(data)
+
+	assert.True(t, filter.ErrorsOnly)
+	assert.Equal(t, []string{"error", "warning"}, filter.DiagnosticLevels)
+}
+
 func TestConvertLogQueryFilter_WithDurationSince(t *testing.T) {
 	t.Parallel()
 	pf := protocol.LogQueryFilter{

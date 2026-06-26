@@ -605,54 +605,49 @@ func (dt *DaemonTools) makeProxyLogHandler() func(context.Context, *mcp.CallTool
 
 func (dt *DaemonTools) handleProxyLogQuery(input ProxyLogInput) (*mcp.CallToolResult, ProxyLogOutput, error) {
 	filter := protocol.LogQueryFilter{
-		Types:       input.Types,
-		Methods:     input.Methods,
-		URLPattern:  input.URLPattern,
-		StatusCodes: input.StatusCodes,
-		Since:       input.Since,
-		Until:       input.Until,
-		Limit:       input.Limit,
+		Types:            input.Types,
+		Methods:          input.Methods,
+		URLPattern:       input.URLPattern,
+		StatusCodes:      input.StatusCodes,
+		Since:            input.Since,
+		Until:            input.Until,
+		Limit:            input.Limit,
+		ErrorsOnly:       input.ErrorsOnly,
+		DiagnosticLevels: input.DiagnosticLevels,
 	}
 
-	result, err := dt.client.ProxyLogQuery(input.ProxyID, filter)
+	entries, totalAvailable, err := dt.client.ProxyLogQueryFull(input.ProxyID, filter)
 	if err != nil {
 		return formatDaemonError(err, "proxylog"), ProxyLogOutput{}, nil
 	}
 
-	count := getInt(result, "count")
-	totalAvailable := getInt(result, "total_available")
 	limit := input.Limit
 	if limit == 0 {
 		limit = 100
 	}
-	pag := NewPagination(count, totalAvailable, limit, input.hasFilters())
+	pag := NewPagination(len(entries), int(totalAvailable), limit, input.hasFilters())
 
-	output := ProxyLogOutput{
-		Pagination: &pag,
+	// Honor `raw`: full JSON dumps when requested, terse one-line compact
+	// rendering by default (the token-efficient view). Both formatters are
+	// shared with — and identical to — the rendering MCP callers expect.
+	if input.Raw {
+		return handleProxyLogQueryRaw(entries, &pag)
 	}
-
-	if entries, ok := result["entries"].([]interface{}); ok {
-		for _, e := range entries {
-			if em, ok := e.(map[string]interface{}); ok {
-				entry := logEntryMapToOutput(em)
-				output.Entries = append(output.Entries, entry)
-			}
-		}
-	}
-
-	return nil, output, nil
+	return handleProxyLogQueryCompact(entries, &pag)
 }
 
 func (dt *DaemonTools) handleProxyLogSummary(input ProxyLogInput) (*mcp.CallToolResult, ProxyLogOutput, error) {
 
 	filter := protocol.LogQueryFilter{
-		Types:       input.Types,
-		Methods:     input.Methods,
-		URLPattern:  input.URLPattern,
-		StatusCodes: input.StatusCodes,
-		Since:       input.Since,
-		Until:       input.Until,
-		Limit:       0,
+		Types:            input.Types,
+		Methods:          input.Methods,
+		URLPattern:       input.URLPattern,
+		StatusCodes:      input.StatusCodes,
+		Since:            input.Since,
+		Until:            input.Until,
+		Limit:            0,
+		ErrorsOnly:       input.ErrorsOnly,
+		DiagnosticLevels: input.DiagnosticLevels,
 	}
 
 	result, err := dt.client.ProxyLogQuery(input.ProxyID, filter)

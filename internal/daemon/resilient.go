@@ -8,6 +8,7 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/protocol"
+	"github.com/standardbeagle/agnt/internal/proxy"
 )
 
 var (
@@ -408,6 +409,19 @@ func (rc *ResilientClient) ProxyLogQuery(proxyID string, filter protocol.LogQuer
 		return e
 	})
 	return result, err
+}
+
+// ProxyLogQueryFull queries proxy logs and decodes typed entries plus the total
+// available count, for handlers that reuse the shared compact/raw formatters.
+func (rc *ResilientClient) ProxyLogQueryFull(proxyID string, filter protocol.LogQueryFilter) ([]proxy.LogEntry, int64, error) {
+	var entries []proxy.LogEntry
+	var total int64
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		entries, total, e = c.ProxyLogQueryFull(proxyID, filter)
+		return e
+	})
+	return entries, total, err
 }
 
 // ProxyLogClear clears proxy logs.
