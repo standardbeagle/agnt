@@ -11,7 +11,19 @@ import (
 )
 
 // resetTailscaleCache resets all tailscale DNS cache state for test isolation.
+//
+// It first DRAINS any refresh goroutine still in flight from a previous test.
+// getTailscaleDNS spawns a background goroutine that does a delayed
+// Store(tailscaleDNSPtr/Time); if a prior test returned before that goroutine
+// finished (some tests only close their unblock channel without waiting), the
+// late Store would repopulate the globals we clear here and pollute this test —
+// the cause of TestGetTailscaleDNS_EmptyDetectResult flaking under load. Prior
+// tests always unblock their detect func in a defer, so the busy flag clears
+// promptly and this cannot hang; the bound is a belt-and-braces backstop.
 func resetTailscaleCache() {
+	for i := 0; i < 2000 && tailscaleDNSBusy.Load(); i++ {
+		time.Sleep(time.Millisecond)
+	}
 	tailscaleDNSPtr.Store(nil)
 	tailscaleDNSTime.Store(0)
 	tailscaleDNSBusy.Store(false)
