@@ -46,32 +46,26 @@ Output:
   - Default: Compact text summary optimized for AI consumption
   - With raw: true: Full JSON with every finding and selector`
 
-// loadingAuditBackend holds the daemon client for the loading_audit tool.
-type loadingAuditBackend struct {
-	daemon *DaemonTools
-}
-
 // RegisterLoadingAuditTool registers the loading_audit tool.
 func RegisterLoadingAuditTool(server *mcp.Server, dt *DaemonTools) {
-	backend := &loadingAuditBackend{daemon: dt}
 	addLenientTool(server, &mcp.Tool{
 		Name:        "loading_audit",
 		Description: loadingAuditToolDescription,
-	}, backend.makeHandler())
+	}, dt.makeLoadingAuditHandler())
 }
 
-// makeHandler creates a handler that runs the audit via the daemon.
-func (b *loadingAuditBackend) makeHandler() func(context.Context, *mcp.CallToolRequest, LoadingAuditInput) (*mcp.CallToolResult, LoadingAuditOutput, error) {
+// makeLoadingAuditHandler runs the loading_audit tool via the daemon.
+func (dt *DaemonTools) makeLoadingAuditHandler() func(context.Context, *mcp.CallToolRequest, LoadingAuditInput) (*mcp.CallToolResult, LoadingAuditOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input LoadingAuditInput) (*mcp.CallToolResult, LoadingAuditOutput, error) {
 		input.ProxyID = pickProxyID(input.ID, input.ProxyID)
 		if input.ProxyID == "" {
 			return errorResult("proxy_id required (or `id` alias)"), LoadingAuditOutput{}, nil
 		}
 
-		if err := b.daemon.ensureConnected(); err != nil {
+		if err := dt.ensureConnected(); err != nil {
 			return errorResult(err.Error()), LoadingAuditOutput{}, nil
 		}
-		return b.daemon.executeLoadingAuditDaemon(input)
+		return dt.executeLoadingAuditDaemon(input)
 	}
 }
 

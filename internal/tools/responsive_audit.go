@@ -64,22 +64,16 @@ var validCheckTypes = map[string]bool{
 	"a11y":     true,
 }
 
-// responsiveAuditBackend holds the daemon client for the responsive_audit tool.
-type responsiveAuditBackend struct {
-	daemon *DaemonTools
-}
-
 // RegisterResponsiveAuditTool registers the responsive_audit tool.
 func RegisterResponsiveAuditTool(server *mcp.Server, dt *DaemonTools) {
-	backend := &responsiveAuditBackend{daemon: dt}
 	addLenientTool(server, &mcp.Tool{
 		Name:        "responsive_audit",
 		Description: responsiveAuditToolDescription,
-	}, backend.makeHandler())
+	}, dt.makeResponsiveAuditHandler())
 }
 
-// makeHandler creates a handler that runs the audit via the daemon.
-func (b *responsiveAuditBackend) makeHandler() func(context.Context, *mcp.CallToolRequest, ResponsiveAuditInput) (*mcp.CallToolResult, ResponsiveAuditOutput, error) {
+// makeResponsiveAuditHandler runs the responsive_audit tool via the daemon.
+func (dt *DaemonTools) makeResponsiveAuditHandler() func(context.Context, *mcp.CallToolRequest, ResponsiveAuditInput) (*mcp.CallToolResult, ResponsiveAuditOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input ResponsiveAuditInput) (*mcp.CallToolResult, ResponsiveAuditOutput, error) {
 		input.ProxyID = pickProxyID(input.ID, input.ProxyID)
 		if err := validateResponsiveAuditInput(input); err != nil {
@@ -90,10 +84,10 @@ func (b *responsiveAuditBackend) makeHandler() func(context.Context, *mcp.CallTo
 			return errorResult("proxy_id required (or `id` alias)"), ResponsiveAuditOutput{}, nil
 		}
 
-		if err := b.daemon.ensureConnected(); err != nil {
+		if err := dt.ensureConnected(); err != nil {
 			return errorResult(err.Error()), ResponsiveAuditOutput{}, nil
 		}
-		return b.daemon.executeResponsiveAuditDaemon(input)
+		return dt.executeResponsiveAuditDaemon(input)
 	}
 }
 

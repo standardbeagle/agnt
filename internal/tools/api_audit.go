@@ -45,32 +45,26 @@ Output:
   - Default: Compact text summary optimized for AI consumption
   - With raw: true: Full JSON with every finding and selector`
 
-// apiAuditBackend holds the daemon client for the api_audit tool.
-type apiAuditBackend struct {
-	daemon *DaemonTools
-}
-
 // RegisterAPIAuditTool registers the api_audit tool.
 func RegisterAPIAuditTool(server *mcp.Server, dt *DaemonTools) {
-	backend := &apiAuditBackend{daemon: dt}
 	addLenientTool(server, &mcp.Tool{
 		Name:        "api_audit",
 		Description: apiAuditToolDescription,
-	}, backend.makeHandler())
+	}, dt.makeAPIAuditHandler())
 }
 
-// makeHandler creates a handler that runs the audit via the daemon.
-func (b *apiAuditBackend) makeHandler() func(context.Context, *mcp.CallToolRequest, APIAuditInput) (*mcp.CallToolResult, APIAuditOutput, error) {
+// makeAPIAuditHandler runs the api_audit tool via the daemon.
+func (dt *DaemonTools) makeAPIAuditHandler() func(context.Context, *mcp.CallToolRequest, APIAuditInput) (*mcp.CallToolResult, APIAuditOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input APIAuditInput) (*mcp.CallToolResult, APIAuditOutput, error) {
 		input.ProxyID = pickProxyID(input.ID, input.ProxyID)
 		if input.ProxyID == "" {
 			return errorResult("proxy_id required (or `id` alias)"), APIAuditOutput{}, nil
 		}
 
-		if err := b.daemon.ensureConnected(); err != nil {
+		if err := dt.ensureConnected(); err != nil {
 			return errorResult(err.Error()), APIAuditOutput{}, nil
 		}
-		return b.daemon.executeAPIAuditDaemon(input)
+		return dt.executeAPIAuditDaemon(input)
 	}
 }
 
