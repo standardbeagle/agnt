@@ -235,21 +235,6 @@ func parseSince(since string) *time.Time {
 	return nil
 }
 
-// convertProxyEntryDirect converts a proxy.LogEntry directly to unified errors.
-func convertProxyEntryDirect(proxyID string, entry proxy.LogEntry) []unifiedError {
-	switch entry.Type {
-	case proxy.LogTypeError:
-		return convertJSErrorDirect(proxyID, entry.Error, entry.FrameID)
-	case proxy.LogTypeHTTP:
-		return convertHTTPErrorDirect(proxyID, entry.HTTP)
-	case proxy.LogTypeDiagnostic:
-		return convertDiagnosticErrorDirect(proxyID, entry.Diagnostic)
-	case proxy.LogTypeCustom:
-		return convertCustomErrorDirect(proxyID, entry.Custom, entry.FrameID)
-	}
-	return nil
-}
-
 // convertJSErrorDirect converts a FrontendError struct to a unified error.
 // frameID attributes it to the emitting content frame (always-wrap model).
 func convertJSErrorDirect(proxyID string, fe *proxy.FrontendError, frameID string) []unifiedError {

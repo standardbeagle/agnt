@@ -7,6 +7,24 @@ import (
 	"github.com/standardbeagle/agnt/internal/proxy"
 )
 
+// convertProxyEntryDirect dispatches a typed proxy.LogEntry to the per-type
+// converters. Production only ever sees the map form (convertProxyEntry), so
+// this typed-dispatch convenience lives in the test package where it exercises
+// the same per-type conversion source of truth.
+func convertProxyEntryDirect(proxyID string, entry proxy.LogEntry) []unifiedError {
+	switch entry.Type {
+	case proxy.LogTypeError:
+		return convertJSErrorDirect(proxyID, entry.Error, entry.FrameID)
+	case proxy.LogTypeHTTP:
+		return convertHTTPErrorDirect(proxyID, entry.HTTP)
+	case proxy.LogTypeDiagnostic:
+		return convertDiagnosticErrorDirect(proxyID, entry.Diagnostic)
+	case proxy.LogTypeCustom:
+		return convertCustomErrorDirect(proxyID, entry.Custom, entry.FrameID)
+	}
+	return nil
+}
+
 // TestDedup_DistinctFramesNotCollapsed: the same JS error raised in two distinct
 // content frames must remain two findings; raised twice in one frame collapses
 // to one with count 2. FrameID is part of the dedup key
