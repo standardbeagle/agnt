@@ -340,6 +340,31 @@ func (c *Client) ProxyLogQuery(proxyID string, filter protocol.LogQueryFilter) (
 	return c.conn.Request(protocol.VerbProxyLog, protocol.SubVerbQuery, proxyID).WithJSON(filter).JSON()
 }
 
+// ProxyLogQueryFull queries proxy logs and decodes the entries back into typed
+// proxy.LogEntry values (the hub marshals full entries over the wire). It also
+// returns the total available count for pagination. This lets MCP handlers
+// reuse the shared compact/raw formatters instead of re-deriving fields from
+// untyped maps.
+func (c *Client) ProxyLogQueryFull(proxyID string, filter protocol.LogQueryFilter) ([]proxy.LogEntry, int64, error) {
+	result, err := c.ProxyLogQuery(proxyID, filter)
+	if err != nil {
+		return nil, 0, err
+	}
+	var total int64
+	if t, ok := result["total_available"].(float64); ok {
+		total = int64(t)
+	}
+	raw, err := json.Marshal(result["entries"])
+	if err != nil {
+		return nil, total, err
+	}
+	var entries []proxy.LogEntry
+	if err := json.Unmarshal(raw, &entries); err != nil {
+		return nil, total, err
+	}
+	return entries, total, nil
+}
+
 // ProxyLogClear clears proxy logs.
 func (c *Client) ProxyLogClear(proxyID string) error {
 	return c.conn.Request(protocol.VerbProxyLog, protocol.SubVerbClear, proxyID).OK()

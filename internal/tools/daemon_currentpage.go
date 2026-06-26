@@ -110,6 +110,15 @@ func (dt *DaemonTools) handleCurrentPageGet(input CurrentPageInput) (*mcp.CallTo
 	}
 
 	session := convertToPageSessionOutput(result)
+	// Honor `raw`: the daemon always returns the full session (arrays and all),
+	// but the default compact view exposes only counts to avoid token bloat.
+	// Drop the detail arrays unless the caller explicitly asked for them.
+	if !input.Raw {
+		session.Resources = nil
+		session.Errors = nil
+		session.Interactions = nil
+		session.Mutations = nil
+	}
 	return nil, CurrentPageOutput{
 		Session: &session,
 	}, nil

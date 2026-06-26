@@ -60,12 +60,14 @@ func convertLogQueryFilter(data []byte) proxy.LogFilter {
 	_ = json.Unmarshal(data, &pf)
 
 	filter := proxy.LogFilter{
-		Methods:     pf.Methods,
-		URLPattern:  pf.URLPattern,
-		StatusCodes: pf.StatusCodes,
-		Limit:       pf.Limit,
-		Since:       parseTimeString(pf.Since),
-		Until:       parseTimeString(pf.Until),
+		Methods:          pf.Methods,
+		URLPattern:       pf.URLPattern,
+		StatusCodes:      pf.StatusCodes,
+		Limit:            pf.Limit,
+		Since:            parseTimeString(pf.Since),
+		Until:            parseTimeString(pf.Until),
+		ErrorsOnly:       pf.ErrorsOnly,
+		DiagnosticLevels: pf.DiagnosticLevels,
 	}
 
 	for _, t := range pf.Types {
