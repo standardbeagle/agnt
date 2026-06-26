@@ -891,6 +891,20 @@ func TestDefaultAgntConfig(t *testing.T) {
 	assert.Equal(t, 3, cfg.Toast.MaxVisible)
 }
 
+func TestParseAIConfig_AdapterAliases(t *testing.T) {
+	cfg, err := ParseAgntConfig(`ai {
+    adapters {
+        claude {
+            aliases "cdsp" "cc"
+        }
+    }
+}`)
+	require.NoError(t, err)
+	require.NotNil(t, cfg.AI)
+	require.Contains(t, cfg.AI.Adapters, "claude")
+	assert.Equal(t, []string{"cdsp", "cc"}, cfg.AI.Adapters["claude"].Aliases)
+}
+
 func TestParseAIConfig(t *testing.T) {
 	tests := []struct {
 		name     string

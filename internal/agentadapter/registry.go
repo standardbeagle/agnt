@@ -4,6 +4,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"github.com/standardbeagle/agnt/internal/debug"
 )
 
 // Override captures per-agent configuration overrides, typically sourced
@@ -24,6 +26,12 @@ type Override struct {
 	// StdinDelay overrides the delay before injecting stdin. Zero means
 	// "use the adapter default". Ignored by flag-based adapters.
 	StdinDelay time.Duration
+
+	// Aliases are extra command base names that resolve to this adapter.
+	// They let a project map an opaque wrapper / shell-alias target (e.g.
+	// "cdsp") onto a known agent ("claude") so it gets the right injection
+	// mechanism instead of falling through to the universal stdin adapter.
+	Aliases []string
 }
 
 // Registry holds a set of [Adapter] instances and resolves a command
@@ -35,12 +43,16 @@ type Override struct {
 type Registry struct {
 	adapters  []Adapter
 	overrides map[string]Override
+	// aliases maps a command base name to the canonical adapter name it
+	// should resolve to (from Override.Aliases). Consulted first in Lookup so
+	// an explicit project mapping wins over the built-in Matches logic.
+	aliases map[string]string
 }
 
 // NewRegistry creates an empty registry with no adapters registered.
 // Prefer [DefaultRegistry] for normal usage.
 func NewRegistry() *Registry {
-	return &Registry{overrides: make(map[string]Override)}
+	return &Registry{overrides: make(map[string]Override), aliases: make(map[string]string)}
 }
 
 // DefaultRegistry returns a registry pre-populated with all agents the
@@ -80,20 +92,49 @@ func (r *Registry) Register(a Adapter) {
 func (r *Registry) SetOverrides(overrides map[string]Override) {
 	if overrides == nil {
 		r.overrides = make(map[string]Override)
+		r.aliases = make(map[string]string)
 		return
 	}
-	// Copy so callers can't mutate after the fact.
+	// Copy so callers can't mutate after the fact, and rebuild the alias index
+	// (command base name → adapter name) from each override's Aliases.
 	cp := make(map[string]Override, len(overrides))
+	al := make(map[string]string)
 	for k, v := range overrides {
-		cp[strings.ToLower(k)] = v
+		name := strings.ToLower(k)
+		cp[name] = v
+		for _, alias := range v.Aliases {
+			if base := baseNameOf(alias); base != "" {
+				if prev, dup := al[base]; dup {
+					debug.Log("agentadapter", "alias %q redeclared by %q: was %q, last wins", base, name, prev)
+				}
+				al[base] = name
+			}
+		}
 	}
 	r.overrides = cp
+	r.aliases = al
 }
 
 // Lookup finds the first adapter whose Matches returns true for the
 // given command. Returns nil when no adapter matches. The returned
 // adapter reflects any configured overrides for that agent.
 func (r *Registry) Lookup(command string) Adapter {
+	// An explicit project alias (config `ai.adapters.<name>.aliases`) wins over
+	// the built-in name/PATH matching: it maps an opaque wrapper command onto a
+	// known adapter so it gets the right injection mechanism.
+	if name, ok := r.aliases[baseNameOf(command)]; ok {
+		for _, a := range r.adapters {
+			if a.Name() == name {
+				if ov, ok := r.overrides[name]; ok {
+					return withOverride(a, ov)
+				}
+				return a
+			}
+		}
+		// Alias points at an unregistered adapter name (config typo). Fall
+		// through to built-in matching, but surface the dead mapping.
+		debug.Log("agentadapter", "alias %q resolves to unknown adapter %q; falling through", baseNameOf(command), name)
+	}
 	for _, a := range r.adapters {
 		if a.Matches(command) {
 			if ov, ok := r.overrides[a.Name()]; ok {
