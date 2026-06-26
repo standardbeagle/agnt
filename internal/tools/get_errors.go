@@ -3,13 +3,10 @@ package tools
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"sort"
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/protocol"
-	"github.com/standardbeagle/agnt/internal/proxy"
-	"github.com/standardbeagle/agnt/internal/scope"
 
 	"github.com/standardbeagle/go-sdk/mcp"
 )
@@ -53,19 +50,18 @@ func (e *unifiedError) dedupKey() string {
 	return e.Source + "|" + e.Category + "|" + e.Message + "|" + e.Location + "|" + e.FrameID
 }
 
-// getErrorsBackend holds either a daemon client or a direct proxy manager,
-// enabling a single registration path for both daemon and legacy modes.
+// getErrorsBackend collects errors via the daemon IPC path.
 type getErrorsBackend struct {
-	DualBackend[DaemonTools, proxy.ProxyManager]
+	daemon *DaemonTools
 }
 
 // makeGetErrorsHandler creates a handler for the get_errors tool on DaemonTools.
 func (dt *DaemonTools) makeGetErrorsHandler() func(context.Context, *mcp.CallToolRequest, GetErrorsInput) (*mcp.CallToolResult, GetErrorsOutput, error) {
-	backend := &getErrorsBackend{DualBackend[DaemonTools, proxy.ProxyManager]{Daemon: dt}}
+	backend := &getErrorsBackend{daemon: dt}
 	return backend.makeHandler()
 }
 
-// makeHandler creates a handler that dispatches to daemon or legacy path.
+// makeHandler creates a handler that collects errors via the daemon.
 func (b *getErrorsBackend) makeHandler() func(context.Context, *mcp.CallToolRequest, GetErrorsInput) (*mcp.CallToolResult, GetErrorsOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input GetErrorsInput) (*mcp.CallToolResult, GetErrorsOutput, error) {
 		if err := validateGetErrorsInput(input); err != nil {
@@ -82,27 +78,10 @@ func (b *getErrorsBackend) makeHandler() func(context.Context, *mcp.CallToolRequ
 			limit = 25
 		}
 
-		type collectResult struct {
-			errors  []unifiedError
-			toolErr *mcp.CallToolResult
+		if err := b.daemon.ensureConnected(); err != nil {
+			return errorResult(err.Error()), GetErrorsOutput{}, nil
 		}
-		var collected collectResult
-		_ = b.Dispatch(
-			func(dt *DaemonTools) error {
-				if err := dt.ensureConnected(); err != nil {
-					collected.toolErr = errorResult(err.Error())
-					return nil
-				}
-				collected.errors, collected.toolErr = b.collectDaemonErrors(input)
-				return nil
-			},
-			func(_ *proxy.ProxyManager) error {
-				collected.errors, collected.toolErr = b.collectLegacyErrors(input)
-				return nil
-			},
-		)
-		allErrors, toolErr := collected.errors, collected.toolErr
-
+		allErrors, toolErr := b.collectDaemonErrors(input)
 		if toolErr != nil {
 			return toolErr, GetErrorsOutput{}, nil
 		}
@@ -114,7 +93,7 @@ func (b *getErrorsBackend) makeHandler() func(context.Context, *mcp.CallToolRequ
 
 // collectDaemonErrors collects errors via the daemon IPC path.
 func (b *getErrorsBackend) collectDaemonErrors(input GetErrorsInput) ([]unifiedError, *mcp.CallToolResult) {
-	dt := b.Daemon
+	dt := b.daemon
 	allErrors := make([]unifiedError, 0)
 
 	// 1. Collect process alerts
@@ -141,51 +120,8 @@ func (b *getErrorsBackend) collectDaemonErrors(input GetErrorsInput) ([]unifiedE
 	return allErrors, nil
 }
 
-// collectLegacyErrors collects errors via direct proxy access (no daemon).
-func (b *getErrorsBackend) collectLegacyErrors(input GetErrorsInput) ([]unifiedError, *mcp.CallToolResult) {
-	// Build time filter
-	var sinceTime *time.Time
-	if input.Since != "" {
-		sinceTime = parseSince(input.Since)
-	}
-
-	// Collect proxies to query
-	pm := b.Legacy
-	var proxies []*proxy.ProxyServer
-	if input.ProxyID != "" {
-		ps, err := pm.Get(input.ProxyID)
-		if err != nil {
-			return nil, errorResult(fmt.Sprintf("proxy %q not found: %v", input.ProxyID, err))
-		}
-		proxies = []*proxy.ProxyServer{ps}
-	} else {
-		proxies = pm.ListScoped(scope.Unscoped("legacy non-daemon error scan"))
-	}
-
-	// Collect errors from all proxies
-	var allErrors []unifiedError
-	for _, ps := range proxies {
-		filter := proxy.LogFilter{
-			Types: []proxy.LogEntryType{
-				proxy.LogTypeError,
-				proxy.LogTypeHTTP,
-				proxy.LogTypeDiagnostic,
-				proxy.LogTypeCustom,
-			},
-			Since: sinceTime,
-		}
-		entries := ps.Logger().Query(filter)
-		for _, entry := range entries {
-			errs := convertProxyEntryDirect(ps.ID, entry)
-			allErrors = append(allErrors, errs...)
-		}
-	}
-
-	return allErrors, nil
-}
-
 // formatErrorsOutput applies deduplication, filtering, sorting, limiting, and formatting
-// to a collected set of unified errors. Shared between daemon and legacy paths.
+// to a collected set of unified errors.
 func formatErrorsOutput(allErrors []unifiedError, includeWarnings bool, limit int, raw bool) (*mcp.CallToolResult, GetErrorsOutput) {
 	// Deduplicate
 	allErrors = deduplicateErrors(allErrors)

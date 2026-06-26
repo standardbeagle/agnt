@@ -4,9 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"time"
-
-	"github.com/standardbeagle/agnt/internal/proxy"
 
 	"github.com/standardbeagle/go-sdk/mcp"
 )
@@ -34,7 +31,7 @@ type ResponsiveAuditOutput struct {
 	Raw     any    `json:"raw,omitempty"`
 }
 
-// responsiveAuditToolDescription is shared between legacy and daemon mode registrations.
+// responsiveAuditToolDescription describes the responsive_audit tool.
 const responsiveAuditToolDescription = `Run responsive design audits across multiple viewport sizes.
 
 Detects layout issues, content overflows, and viewport-specific accessibility problems
@@ -67,23 +64,21 @@ var validCheckTypes = map[string]bool{
 	"a11y":     true,
 }
 
-// responsiveAuditBackend holds either a daemon client or a direct proxy manager,
-// enabling a single registration path for both daemon and legacy modes.
+// responsiveAuditBackend holds the daemon client for the responsive_audit tool.
 type responsiveAuditBackend struct {
-	DualBackend[DaemonTools, proxy.ProxyManager]
+	daemon *DaemonTools
 }
 
 // RegisterResponsiveAuditTool registers the responsive_audit tool.
-// Exactly one of dt or pm must be non-nil.
-func RegisterResponsiveAuditTool(server *mcp.Server, dt *DaemonTools, pm *proxy.ProxyManager) {
-	backend := &responsiveAuditBackend{DualBackend[DaemonTools, proxy.ProxyManager]{Daemon: dt, Legacy: pm}}
+func RegisterResponsiveAuditTool(server *mcp.Server, dt *DaemonTools) {
+	backend := &responsiveAuditBackend{daemon: dt}
 	addLenientTool(server, &mcp.Tool{
 		Name:        "responsive_audit",
 		Description: responsiveAuditToolDescription,
 	}, backend.makeHandler())
 }
 
-// makeHandler creates a handler that dispatches to daemon or legacy path.
+// makeHandler creates a handler that runs the audit via the daemon.
 func (b *responsiveAuditBackend) makeHandler() func(context.Context, *mcp.CallToolRequest, ResponsiveAuditInput) (*mcp.CallToolResult, ResponsiveAuditOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input ResponsiveAuditInput) (*mcp.CallToolResult, ResponsiveAuditOutput, error) {
 		input.ProxyID = pickProxyID(input.ID, input.ProxyID)
@@ -95,29 +90,10 @@ func (b *responsiveAuditBackend) makeHandler() func(context.Context, *mcp.CallTo
 			return errorResult("proxy_id required (or `id` alias)"), ResponsiveAuditOutput{}, nil
 		}
 
-		type auditResult struct {
-			toolResult *mcp.CallToolResult
-			output     ResponsiveAuditOutput
-			err        error
+		if err := b.daemon.ensureConnected(); err != nil {
+			return errorResult(err.Error()), ResponsiveAuditOutput{}, nil
 		}
-		res, _ := DispatchResult(b.DualBackend,
-			func(dt *DaemonTools) (auditResult, error) {
-				if err := dt.ensureConnected(); err != nil {
-					return auditResult{toolResult: errorResult(err.Error())}, nil
-				}
-				r, o, e := dt.executeResponsiveAuditDaemon(input)
-				return auditResult{toolResult: r, output: o, err: e}, nil
-			},
-			func(pm *proxy.ProxyManager) (auditResult, error) {
-				proxyServer, err := pm.Get(input.ProxyID)
-				if err != nil {
-					return auditResult{toolResult: errorResult(fmt.Sprintf("proxy not found: %s", input.ProxyID))}, nil
-				}
-				r, o, e := executeResponsiveAuditLegacy(proxyServer, input)
-				return auditResult{toolResult: r, output: o, err: e}, nil
-			},
-		)
-		return res.toolResult, res.output, res.err
+		return b.daemon.executeResponsiveAuditDaemon(input)
 	}
 }
 
@@ -183,76 +159,6 @@ func (dt *DaemonTools) executeResponsiveAuditDaemon(input ResponsiveAuditInput) 
 	}
 
 	return nil, output, nil
-}
-
-// executeResponsiveAuditLegacy runs the responsive audit in legacy mode.
-func executeResponsiveAuditLegacy(proxyServer *proxy.ProxyServer, input ResponsiveAuditInput) (*mcp.CallToolResult, ResponsiveAuditOutput, error) {
-	// Build the audit options for the browser
-	auditOpts := buildAuditOptions(input)
-
-	// Build JavaScript code to execute
-	optsJSON, err := json.Marshal(auditOpts)
-	if err != nil {
-		return errorResult(fmt.Sprintf("failed to marshal options: %v", err)), ResponsiveAuditOutput{}, nil
-	}
-
-	code := fmt.Sprintf(`(function() {
-		var responsive = window.__devtool_responsive;
-		if (!responsive || !responsive.audit) {
-			return { error: 'Responsive audit module not loaded' };
-		}
-		return responsive.audit(%s);
-	})()`, string(optsJSON))
-
-	// Execute in browser
-	execID, resultChan, err := proxyServer.ExecuteJavaScript(code)
-	if err != nil {
-		return errorResult(fmt.Sprintf("failed to execute audit: %v", err)), ResponsiveAuditOutput{}, nil
-	}
-
-	// Wait for result with timeout (responsive audit can take 3-6 seconds)
-	timeout := time.Duration(30) * time.Second
-	select {
-	case result := <-resultChan:
-		if result == nil {
-			return errorResult("execution channel closed without result"), ResponsiveAuditOutput{}, nil
-		}
-
-		if result.Error != "" {
-			return errorResult(fmt.Sprintf("audit failed: %s", result.Error)), ResponsiveAuditOutput{}, nil
-		}
-
-		// Parse result
-		output := ResponsiveAuditOutput{}
-
-		if input.Raw {
-			// Return raw JSON
-			var rawResult any
-			if err := json.Unmarshal([]byte(result.Result), &rawResult); err != nil {
-				output.Summary = result.Result
-			} else {
-				output.Summary = result.Result
-				output.Raw = rawResult
-			}
-		} else {
-			// Result is already formatted as compact text
-			output.Summary = result.Result
-		}
-
-		// Log the execution
-		proxyServer.Logger().LogExecution(proxy.ExecutionResult{
-			ID:        execID,
-			Code:      "responsive_audit",
-			Result:    result.Result,
-			Duration:  result.Duration,
-			Timestamp: result.Timestamp,
-		})
-
-		return nil, output, nil
-
-	case <-time.After(timeout):
-		return errorResult(fmt.Sprintf("audit timed out after %v", timeout)), ResponsiveAuditOutput{}, nil
-	}
 }
 
 // buildAuditOptions constructs the audit options map from input.

@@ -6,9 +6,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"time"
-
-	"github.com/standardbeagle/agnt/internal/proxy"
 
 	"github.com/standardbeagle/go-sdk/mcp"
 )
@@ -26,7 +23,7 @@ type LoadingAuditOutput struct {
 	Raw     any    `json:"raw,omitempty"`
 }
 
-// loadingAuditToolDescription is shared between legacy and daemon mode registrations.
+// loadingAuditToolDescription describes the loading_audit tool.
 const loadingAuditToolDescription = `Run a loading-UX audit over the recorded spinner/loader timeline.
 
 Analyzes the in-page spinner timeline (window.__devtool_spinners) and flags:
@@ -49,23 +46,21 @@ Output:
   - Default: Compact text summary optimized for AI consumption
   - With raw: true: Full JSON with every finding and selector`
 
-// loadingAuditBackend holds either a daemon client or a direct proxy manager,
-// enabling a single registration path for both daemon and legacy modes.
+// loadingAuditBackend holds the daemon client for the loading_audit tool.
 type loadingAuditBackend struct {
-	DualBackend[DaemonTools, proxy.ProxyManager]
+	daemon *DaemonTools
 }
 
 // RegisterLoadingAuditTool registers the loading_audit tool.
-// Exactly one of dt or pm must be non-nil.
-func RegisterLoadingAuditTool(server *mcp.Server, dt *DaemonTools, pm *proxy.ProxyManager) {
-	backend := &loadingAuditBackend{DualBackend[DaemonTools, proxy.ProxyManager]{Daemon: dt, Legacy: pm}}
+func RegisterLoadingAuditTool(server *mcp.Server, dt *DaemonTools) {
+	backend := &loadingAuditBackend{daemon: dt}
 	addLenientTool(server, &mcp.Tool{
 		Name:        "loading_audit",
 		Description: loadingAuditToolDescription,
 	}, backend.makeHandler())
 }
 
-// makeHandler creates a handler that dispatches to daemon or legacy path.
+// makeHandler creates a handler that runs the audit via the daemon.
 func (b *loadingAuditBackend) makeHandler() func(context.Context, *mcp.CallToolRequest, LoadingAuditInput) (*mcp.CallToolResult, LoadingAuditOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input LoadingAuditInput) (*mcp.CallToolResult, LoadingAuditOutput, error) {
 		input.ProxyID = pickProxyID(input.ID, input.ProxyID)
@@ -73,29 +68,10 @@ func (b *loadingAuditBackend) makeHandler() func(context.Context, *mcp.CallToolR
 			return errorResult("proxy_id required (or `id` alias)"), LoadingAuditOutput{}, nil
 		}
 
-		type auditResult struct {
-			toolResult *mcp.CallToolResult
-			output     LoadingAuditOutput
-			err        error
+		if err := b.daemon.ensureConnected(); err != nil {
+			return errorResult(err.Error()), LoadingAuditOutput{}, nil
 		}
-		res, _ := DispatchResult(b.DualBackend,
-			func(dt *DaemonTools) (auditResult, error) {
-				if err := dt.ensureConnected(); err != nil {
-					return auditResult{toolResult: errorResult(err.Error())}, nil
-				}
-				r, o, e := dt.executeLoadingAuditDaemon(input)
-				return auditResult{toolResult: r, output: o, err: e}, nil
-			},
-			func(pm *proxy.ProxyManager) (auditResult, error) {
-				proxyServer, err := pm.Get(input.ProxyID)
-				if err != nil {
-					return auditResult{toolResult: errorResult(fmt.Sprintf("proxy not found: %s", input.ProxyID))}, nil
-				}
-				r, o, e := executeLoadingAuditLegacy(proxyServer, input)
-				return auditResult{toolResult: r, output: o, err: e}, nil
-			},
-		)
-		return res.toolResult, res.output, res.err
+		return b.daemon.executeLoadingAuditDaemon(input)
 	}
 }
 
@@ -129,40 +105,6 @@ func (dt *DaemonTools) executeLoadingAuditDaemon(input LoadingAuditInput) (*mcp.
 	}
 
 	return parseLoadingAuditResult(resultStr, input.Raw)
-}
-
-// executeLoadingAuditLegacy runs the loading audit in legacy (no-daemon) mode.
-func executeLoadingAuditLegacy(proxyServer *proxy.ProxyServer, input LoadingAuditInput) (*mcp.CallToolResult, LoadingAuditOutput, error) {
-	code := buildLoadingAuditCode(input.Raw)
-
-	execID, resultChan, err := proxyServer.ExecuteJavaScript(code)
-	if err != nil {
-		return errorResult(fmt.Sprintf("failed to execute audit: %v", err)), LoadingAuditOutput{}, nil
-	}
-
-	timeout := time.Duration(30) * time.Second
-	select {
-	case result := <-resultChan:
-		if result == nil {
-			return errorResult("execution channel closed without result"), LoadingAuditOutput{}, nil
-		}
-		if result.Error != "" {
-			return errorResult(fmt.Sprintf("audit failed: %s", result.Error)), LoadingAuditOutput{}, nil
-		}
-
-		proxyServer.Logger().LogExecution(proxy.ExecutionResult{
-			ID:        execID,
-			Code:      "loading_audit",
-			Result:    result.Result,
-			Duration:  result.Duration,
-			Timestamp: result.Timestamp,
-		})
-
-		return parseLoadingAuditResult(result.Result, input.Raw)
-
-	case <-time.After(timeout):
-		return errorResult(fmt.Sprintf("audit timed out after %v", timeout)), LoadingAuditOutput{}, nil
-	}
 }
 
 // parseLoadingAuditResult decodes the JSON returned by auditLoading and formats
