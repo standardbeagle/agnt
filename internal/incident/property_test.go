@@ -117,9 +117,18 @@ func TestProperty_CriticalPingLatency(t *testing.T) {
 		}, maxLatency, time.Millisecond,
 			"iteration %d: critical ping must emit within %v of ingest", i, maxLatency)
 
+		// The require.Eventually above already enforces that the ping emits
+		// within maxLatency of when the wait loop started. This secondary check
+		// measures from ingestTime (before the wait loop) so it also captures
+		// the harness gap — Eventually's first poll tick, goroutine scheduling,
+		// the 1ms poll granularity. Under `go test ./...` CPU saturation that
+		// gap alone can be ~10ms, so a tight maxLatency+5ms bound flakes
+		// (observed 57ms vs a 55ms bound). Budget it at 3×maxLatency: still
+		// catches a gross emit-path regression (>150ms, or never — which
+		// Eventually already fails on) while tolerating scheduler jitter.
 		latency := time.Since(ingestTime)
-		require.Less(t, latency.Milliseconds(), maxLatency.Milliseconds()+5,
-			"iteration %d: measured latency %v exceeds %v budget", i, latency, maxLatency)
+		require.Less(t, latency.Milliseconds(), 3*maxLatency.Milliseconds(),
+			"iteration %d: measured latency %v far exceeds the %v budget", i, latency, 3*maxLatency)
 
 		pe.Stop()
 	}
