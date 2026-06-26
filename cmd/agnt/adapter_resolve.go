@@ -48,6 +48,7 @@ func adapterOverridesFromConfig(in map[string]*config.AIAdapterConfig) map[strin
 		ov := agentadapter.Override{
 			Disabled: cfg.Disabled,
 			FlagName: cfg.FlagName,
+			Aliases:  cfg.Aliases,
 		}
 		if cfg.StdinDelayMs > 0 {
 			ov.StdinDelay = time.Duration(cfg.StdinDelayMs) * time.Millisecond

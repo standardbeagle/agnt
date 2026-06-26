@@ -122,6 +122,92 @@ func TestUniversal_EmptyCommandStillUsable(t *testing.T) {
 	}
 }
 
+func TestRegistry_ConfigAliasResolvesToAdapter(t *testing.T) {
+	// A wrapper/alias command agnt cannot otherwise recognize ("cdsp") is
+	// mapped to claude via config aliases, so it gets flag-based injection
+	// instead of the universal stdin fallback.
+	r := DefaultRegistry()
+	if a := r.Lookup("cdsp"); a != nil {
+		t.Fatalf("precondition: cdsp should not match before aliasing, got %v", a)
+	}
+	r.SetOverrides(map[string]Override{"claude": {Aliases: []string{"cdsp"}}})
+
+	a := r.Lookup("cdsp")
+	if a == nil || a.Name() != "claude" {
+		t.Fatalf("Lookup(cdsp) = %v, want claude adapter", a)
+	}
+	// Flag-based injection, not stdin.
+	got := a.BuildArgs([]string{"--x"}, "PROMPT")
+	if !equalStrings(got, []string{"--x", "--append-system-prompt", "PROMPT"}) {
+		t.Errorf("aliased claude must inject via flag, got %v", got)
+	}
+	if a.InitialStdin("PROMPT") != nil {
+		t.Error("aliased claude must not inject via stdin")
+	}
+
+	// Alias matching is base-name based: a path to the wrapper resolves too.
+	if a := r.Lookup("/usr/local/bin/cdsp"); a == nil || a.Name() != "claude" {
+		t.Errorf("path to aliased command should resolve to claude, got %v", a)
+	}
+
+	// Clearing overrides drops the alias.
+	r.SetOverrides(nil)
+	if a := r.Lookup("cdsp"); a != nil {
+		t.Errorf("alias should be gone after SetOverrides(nil), got %v", a)
+	}
+}
+
+func TestRegistry_AliasWinsOverBuiltinMatch(t *testing.T) {
+	// "gemini" is a real adapter command. Aliasing it onto claude must take
+	// precedence over gemini's own built-in Matches, since an explicit
+	// project mapping is the more specific intent.
+	r := DefaultRegistry()
+	if a := r.Lookup("gemini"); a == nil || a.Name() != "gemini" {
+		t.Fatalf("precondition: gemini should match its own adapter, got %v", a)
+	}
+	r.SetOverrides(map[string]Override{"claude": {Aliases: []string{"gemini"}}})
+
+	a := r.Lookup("gemini")
+	if a == nil || a.Name() != "claude" {
+		t.Fatalf("Lookup(gemini) = %v, want claude (alias wins over builtin)", a)
+	}
+}
+
+func TestRegistry_AliasToUnknownAdapterFallsThrough(t *testing.T) {
+	// An alias pointing at a non-existent adapter name must not break
+	// resolution: it falls through to built-in matching.
+	r := DefaultRegistry()
+	r.SetOverrides(map[string]Override{"nope": {Aliases: []string{"claude"}}})
+
+	// "claude" still resolves to the real claude adapter via Matches,
+	// despite the dead alias mapping claude → nope.
+	if a := r.Lookup("claude"); a == nil || a.Name() != "claude" {
+		t.Fatalf("Lookup(claude) = %v, want claude despite dead alias", a)
+	}
+}
+
+func TestRegistry_DuplicateAliasLastWins(t *testing.T) {
+	// When two adapters declare the same alias base name, the last one
+	// applied wins. (debug.Log warns; behavior we pin here is the resolve.)
+	r := DefaultRegistry()
+	r.SetOverrides(map[string]Override{
+		"claude": {Aliases: []string{"dup"}},
+		"gemini": {Aliases: []string{"dup"}},
+	})
+	a := r.Lookup("dup")
+	if a == nil {
+		t.Fatal("Lookup(dup) = nil, want an adapter")
+	}
+	// Map iteration order is non-deterministic, so assert the invariant
+	// that actually matters: exactly one adapter owns the alias, and it is
+	// a known adapter — never a half-resolved or nil result.
+	switch a.Name() {
+	case "claude", "gemini":
+	default:
+		t.Errorf("Lookup(dup) = %q, want claude or gemini", a.Name())
+	}
+}
+
 func TestClaudeAdapter_BuildArgsAppendsFlag(t *testing.T) {
 	r := DefaultRegistry()
 	a := r.Lookup("claude")

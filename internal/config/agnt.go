@@ -837,6 +837,11 @@ type AIAdapterConfig struct {
 	// StdinDelayMs overrides the delay (in milliseconds) before
 	// injecting initial stdin. Ignored by flag-based adapters.
 	StdinDelayMs int `kdl:"stdin-delay-ms"`
+	// Aliases are extra command base names that should resolve to this
+	// adapter. Use it to map a wrapper or shell-alias target that agnt
+	// cannot otherwise recognize — e.g. `claude { aliases "cdsp" }` makes
+	// `agnt run cdsp` use Claude's flag-based prompt injection.
+	Aliases []string `kdl:"aliases"`
 }
 
 // DefaultAgntConfig returns a config with sensible defaults.
