@@ -61,6 +61,7 @@ func init() {
 	rootCmd.AddCommand(daemonCmd)
 	rootCmd.AddCommand(sessionCmd)
 	rootCmd.AddCommand(aiCmd)
+	rootCmd.AddCommand(acpCmd)
 	rootCmd.AddCommand(monitorCmd)
 	rootCmd.AddCommand(errorsCmd)
 	rootCmd.AddCommand(ciCmd)

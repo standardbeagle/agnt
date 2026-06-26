@@ -129,3 +129,26 @@ func handleSIGCHLD(ctx context.Context, done <-chan struct{}, c *exec.Cmd, ptmx 
 		}
 	}
 }
+
+// jiggleRepaint forces a child TUI to repaint by momentarily shrinking the
+// PTY one row, then restoring it. Each TIOCSWINSZ raises SIGWINCH with a
+// genuine size delta, so even renderers that ignore a same-size SIGWINCH
+// (Claude Code, opencode) repaint — unlike a bare SIGWINCH, which they dedupe
+// against the unchanged winsize and skip. Used on overlay menu close while the
+// child is in the alternate screen buffer (the overlay drew panels into that
+// buffer, so the child must redraw). The original size is always restored;
+// when the current size can't be read, it falls back to the supplied signal.
+func jiggleRepaint(ptmx *os.File, fallback func()) {
+	ws, err := pty.GetsizeFull(ptmx)
+	if err != nil || ws == nil || ws.Rows <= 1 {
+		if fallback != nil {
+			fallback()
+		}
+		return
+	}
+	shrunk := *ws
+	shrunk.Rows = ws.Rows - 1
+	_ = pty.Setsize(ptmx, &shrunk)
+	time.Sleep(15 * time.Millisecond)
+	_ = pty.Setsize(ptmx, ws)
+}

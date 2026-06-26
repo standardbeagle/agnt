@@ -11,6 +11,7 @@ require (
 	github.com/charmbracelet/glamour v0.10.0
 	github.com/chromedp/cdproto v0.0.0-20250724212937-08a3db8b4327
 	github.com/chromedp/chromedp v0.14.2
+	github.com/coder/acp-go-sdk v0.13.5
 	github.com/creack/pty v1.1.24
 	github.com/google/jsonschema-go v0.4.2
 	github.com/google/uuid v1.6.0
@@ -28,6 +29,7 @@ require (
 	golang.org/x/sync v0.20.0
 	golang.org/x/sys v0.45.0
 	golang.org/x/term v0.43.0
+	lukechampine.com/blake3 v1.4.1
 )
 
 require (
@@ -108,5 +110,4 @@ require (
 	google.golang.org/protobuf v1.36.10 // indirect
 	gopkg.in/dnaeon/go-vcr.v3 v3.2.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
-	lukechampine.com/blake3 v1.4.1 // indirect
 )
