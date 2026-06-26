@@ -3,8 +3,6 @@ package tools
 import (
 	"strings"
 	"testing"
-
-	"github.com/standardbeagle/agnt/internal/proxy"
 )
 
 // TestSearchAPIFunctions_CaseInsensitive verifies the query matches
@@ -154,17 +152,15 @@ func TestSearchAPIFunctions_ConflictingParams_DocContract(t *testing.T) {
 	}
 }
 
-// TestHandleProxyExec_SearchRoutesWithoutProxyID verifies that passing
+// TestHandleExecSearch_SearchRoutesWithoutProxyID verifies that passing
 // `search` routes to the search handler — no proxy_id needed, same as
 // existing help/describe actions.
-func TestHandleProxyExec_SearchRoutesWithoutProxyID(t *testing.T) {
-	pm := proxy.NewProxyManager()
-	_, out, err := handleProxyExec(pm, ProxyInput{
-		Action: "exec",
+func TestHandleExecSearch_SearchRoutesWithoutProxyID(t *testing.T) {
+	_, out, handled := handleExecSearch(ProxyInput{
 		Search: "click",
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if !handled {
+		t.Fatal("expected search request to be handled")
 	}
 	if !out.Success {
 		t.Fatalf("expected success, got %+v", out)
@@ -177,16 +173,14 @@ func TestHandleProxyExec_SearchRoutesWithoutProxyID(t *testing.T) {
 	}
 }
 
-// TestHandleProxyExec_SearchCategoryOnly allows discovery by category
+// TestHandleExecSearch_SearchCategoryOnly allows discovery by category
 // without a substring.
-func TestHandleProxyExec_SearchCategoryOnly(t *testing.T) {
-	pm := proxy.NewProxyManager()
-	_, out, err := handleProxyExec(pm, ProxyInput{
-		Action:   "exec",
+func TestHandleExecSearch_SearchCategoryOnly(t *testing.T) {
+	_, out, handled := handleExecSearch(ProxyInput{
 		Category: "accessibility",
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if !handled {
+		t.Fatal("expected category search to be handled")
 	}
 	if !out.Success || out.SearchResult == nil || out.SearchResult.Count == 0 {
 		t.Fatalf("expected accessibility matches, got %+v", out)
@@ -198,18 +192,16 @@ func TestHandleProxyExec_SearchCategoryOnly(t *testing.T) {
 	}
 }
 
-// TestHandleProxyExec_SearchPlusCodeIsConflict surfaces the
+// TestHandleExecSearch_SearchPlusCodeIsConflict surfaces the
 // mutual-exclusion rule: if the caller passes both, it's ambiguous
 // intent and we reject rather than silently dropping one.
-func TestHandleProxyExec_SearchPlusCodeIsConflict(t *testing.T) {
-	pm := proxy.NewProxyManager()
-	res, _, err := handleProxyExec(pm, ProxyInput{
-		Action: "exec",
+func TestHandleExecSearch_SearchPlusCodeIsConflict(t *testing.T) {
+	res, _, handled := handleExecSearch(ProxyInput{
 		Search: "click",
 		Code:   "document.title",
 	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if !handled {
+		t.Fatal("expected search+code to be handled (as a conflict)")
 	}
 	if res == nil || !res.IsError {
 		t.Fatalf("expected error result for search+code conflict, got %+v", res)

@@ -12,7 +12,6 @@ import (
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/daemon"
 	"github.com/standardbeagle/agnt/internal/debug"
-	"github.com/standardbeagle/agnt/internal/project"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/proxy"
 
@@ -715,37 +714,11 @@ func (dt *DaemonTools) makeDetectHandler() func(context.Context, *mcp.CallToolRe
 			return formatDaemonError(err, "detect"), emptyOutput, nil
 		}
 
-		// Re-detect locally to get the full CommandDef list for enrichment.
+		// Re-detect locally to enrich with the full CommandDef list.
 		// `project.Detect` is a pure filesystem read — same call the daemon
-		// just made — so this stays consistent without a protocol bump.
-		proj, err := project.Detect(absPath)
-		if err != nil {
-			return errorResult(fmt.Sprintf("failed to detect: %v", err)), emptyOutput, nil
-		}
-
-		scripts := buildDetectScripts(proj.Commands)
-		scriptNames := make([]string, len(proj.Commands))
-		for i, cmd := range proj.Commands {
-			scriptNames[i] = cmd.Name
-		}
-
-		output := DetectOutput{
-			Type:           string(proj.Type),
-			Name:           proj.Name,
-			Framework:      proj.Metadata["framework"],
-			Scripts:        scripts,
-			ScriptNames:    scriptNames,
-			PackageManager: proj.PackageManager,
-			Metadata:       proj.Metadata,
-		}
-
-		if input.Raw {
-			return nil, output, nil
-		}
-
-		summary := formatDetectCompact(output)
-		output.Summary = summary
-		return mcpText(summary), output, nil
+		// just made — so this stays consistent without a protocol bump. The
+		// enrichment/formatting is shared with the detect unit tests.
+		return detectAndFormat(absPath, input.Raw)
 	}
 }
 

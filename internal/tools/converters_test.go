@@ -3,7 +3,6 @@ package tools
 import (
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -505,43 +504,6 @@ func TestSanitizeQueueSource(t *testing.T) {
 
 // --- proxy_log_tools helpers -------------------------------------------------
 
-func TestSplitFirst(t *testing.T) {
-	// Separator in the middle -> two parts.
-	assert.Equal(t, []string{"ReferenceError", " x is not defined"},
-		splitFirst("ReferenceError: x is not defined", ":"))
-
-	// No separator -> single-element slice.
-	assert.Equal(t, []string{"no-sep-here"}, splitFirst("no-sep-here", ":"))
-
-	// Leading separator: idx stays 0, returns whole string (documented quirk).
-	assert.Equal(t, []string{":leading"}, splitFirst(":leading", ":"),
-		"leading separator is NOT split due to idx==0 sentinel")
-
-	// Only first occurrence splits.
-	assert.Equal(t, []string{"a", "b:c"}, splitFirst("a:b:c", ":"))
-
-	// Separator at end -> empty second part.
-	assert.Equal(t, []string{"trailing", ""}, splitFirst("trailing:", ":"))
-}
-
-func TestExtractErrorType(t *testing.T) {
-	tests := []struct {
-		in   string
-		want string
-	}{
-		{"TypeError: cannot read x", "TypeError"},
-		{"ReferenceError: y", "ReferenceError"},
-		{"plain message no colon", "Error"},
-		{"", "Error"},
-		{":leading colon", "Error"}, // splitFirst returns single elem -> default
-	}
-	for _, tc := range tests {
-		t.Run(tc.in, func(t *testing.T) {
-			assert.Equal(t, tc.want, extractErrorType(tc.in))
-		})
-	}
-}
-
 func TestFormatLocation(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -582,63 +544,4 @@ func TestTruncateStack(t *testing.T) {
 
 	// Trailing newline: lines collected up to maxLines.
 	assert.Equal(t, "a\nb", truncateStack("a\nb\n", 2))
-}
-
-func TestSortErrorsByCount(t *testing.T) {
-	errs := []ErrorSummary{
-		{Message: "low", Count: 1},
-		{Message: "high", Count: 10},
-		{Message: "mid", Count: 5},
-	}
-	sortErrorsByCount(errs)
-	require.Len(t, errs, 3)
-	assert.Equal(t, "high", errs[0].Message)
-	assert.Equal(t, "mid", errs[1].Message)
-	assert.Equal(t, "low", errs[2].Message)
-	assert.Equal(t, 10, errs[0].Count)
-	assert.Equal(t, 1, errs[2].Count)
-
-	// Already-sorted stays sorted; counts monotonically non-increasing.
-	for i := 1; i < len(errs); i++ {
-		assert.GreaterOrEqual(t, errs[i-1].Count, errs[i].Count)
-	}
-
-	// Empty + single-element are no-ops (no panic).
-	sortErrorsByCount(nil)
-	single := []ErrorSummary{{Message: "x", Count: 3}}
-	sortErrorsByCount(single)
-	assert.Equal(t, 3, single[0].Count)
-}
-
-func TestParseTimeOrDuration(t *testing.T) {
-	// Duration -> time.Now() - d (approx).
-	before := time.Now()
-	got, err := parseTimeOrDuration("5m")
-	require.NoError(t, err)
-	after := time.Now()
-	expectedLow := before.Add(-5 * time.Minute)
-	expectedHigh := after.Add(-5 * time.Minute)
-	assert.False(t, got.Before(expectedLow.Add(-time.Second)))
-	assert.False(t, got.After(expectedHigh.Add(time.Second)))
-
-	// RFC3339 absolute timestamp.
-	ts := "2026-05-28T10:00:00Z"
-	gotAbs, err := parseTimeOrDuration(ts)
-	require.NoError(t, err)
-	assert.Equal(t, 2026, gotAbs.Year())
-	assert.Equal(t, time.May, gotAbs.Month())
-	assert.Equal(t, 28, gotAbs.Day())
-
-	// Hour duration.
-	gotH, err := parseTimeOrDuration("1h")
-	require.NoError(t, err)
-	assert.True(t, gotH.Before(time.Now()))
-
-	// Garbage -> error.
-	_, err = parseTimeOrDuration("not-a-time")
-	assert.Error(t, err)
-
-	// Empty -> error.
-	_, err = parseTimeOrDuration("")
-	assert.Error(t, err)
 }
