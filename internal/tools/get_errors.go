@@ -50,19 +50,9 @@ func (e *unifiedError) dedupKey() string {
 	return e.Source + "|" + e.Category + "|" + e.Message + "|" + e.Location + "|" + e.FrameID
 }
 
-// getErrorsBackend collects errors via the daemon IPC path.
-type getErrorsBackend struct {
-	daemon *DaemonTools
-}
-
-// makeGetErrorsHandler creates a handler for the get_errors tool on DaemonTools.
+// makeGetErrorsHandler creates the get_errors handler, which collects errors
+// via the daemon IPC path.
 func (dt *DaemonTools) makeGetErrorsHandler() func(context.Context, *mcp.CallToolRequest, GetErrorsInput) (*mcp.CallToolResult, GetErrorsOutput, error) {
-	backend := &getErrorsBackend{daemon: dt}
-	return backend.makeHandler()
-}
-
-// makeHandler creates a handler that collects errors via the daemon.
-func (b *getErrorsBackend) makeHandler() func(context.Context, *mcp.CallToolRequest, GetErrorsInput) (*mcp.CallToolResult, GetErrorsOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input GetErrorsInput) (*mcp.CallToolResult, GetErrorsOutput, error) {
 		if err := validateGetErrorsInput(input); err != nil {
 			return errorResult(validationError("get_errors", err)), GetErrorsOutput{}, nil
@@ -78,10 +68,10 @@ func (b *getErrorsBackend) makeHandler() func(context.Context, *mcp.CallToolRequ
 			limit = 25
 		}
 
-		if err := b.daemon.ensureConnected(); err != nil {
+		if err := dt.ensureConnected(); err != nil {
 			return errorResult(err.Error()), GetErrorsOutput{}, nil
 		}
-		allErrors, toolErr := b.collectDaemonErrors(input)
+		allErrors, toolErr := dt.collectDaemonErrors(input)
 		if toolErr != nil {
 			return toolErr, GetErrorsOutput{}, nil
 		}
@@ -92,8 +82,7 @@ func (b *getErrorsBackend) makeHandler() func(context.Context, *mcp.CallToolRequ
 }
 
 // collectDaemonErrors collects errors via the daemon IPC path.
-func (b *getErrorsBackend) collectDaemonErrors(input GetErrorsInput) ([]unifiedError, *mcp.CallToolResult) {
-	dt := b.daemon
+func (dt *DaemonTools) collectDaemonErrors(input GetErrorsInput) ([]unifiedError, *mcp.CallToolResult) {
 	allErrors := make([]unifiedError, 0)
 
 	// 1. Collect process alerts
