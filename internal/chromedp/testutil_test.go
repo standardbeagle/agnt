@@ -100,21 +100,6 @@ func startIframeTestServer() *httptest.Server {
 	return httptest.NewServer(mux)
 }
 
-// helperStartSession creates and starts a chromedp session for testing.
-// Kept for back-compat with session-lifecycle tests that still boot per-case.
-func helperStartSession(t *testing.T, ctx context.Context, manager *SessionManager, id, url string) *AutomationSession {
-	t.Helper()
-	config := SessionConfig{
-		ID:       id,
-		URL:      url,
-		Headless: true,
-	}
-	session, err := manager.Start(ctx, id, config)
-	require.NoError(t, err, "Failed to start session")
-	require.Equal(t, StateRunning, session.State())
-	return session
-}
-
 // setupBrowserOnce boots a single headless chromedp session and registers
 // teardown via t.Cleanup. The returned session is reused across subtests
 // via cdp.Navigate — the one-shot browser boot is the dominant cost, so

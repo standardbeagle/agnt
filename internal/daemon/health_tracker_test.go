@@ -57,14 +57,6 @@ func (s *trackerSpy) emit(entry proxy.LogEntry, proxyID string) {
 	})
 }
 
-func (s *trackerSpy) snapshot() []spyEntry {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make([]spyEntry, len(s.entries))
-	copy(out, s.entries)
-	return out
-}
-
 func (s *trackerSpy) eventCount(event string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()

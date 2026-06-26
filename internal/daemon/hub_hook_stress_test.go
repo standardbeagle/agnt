@@ -87,9 +87,8 @@ func (s *stubBlockingHookSink) EmitHookEvent(_ HookEvent) {
 // stressStreamSink stop channel lets tests tear down the reader cleanly
 // before the test returns (so goleak stays clean).
 type stressStreamSink struct {
-	got    atomic.Int64
-	drain  chan struct{}
-	closed atomic.Bool
+	got   atomic.Int64
+	drain chan struct{}
 }
 
 func newStressStreamSink() *stressStreamSink {
