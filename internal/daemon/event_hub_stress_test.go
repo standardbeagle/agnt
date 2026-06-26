@@ -119,15 +119,6 @@ func httpErrorEntry() proxy.LogEntry {
 	}
 }
 
-// httpWarnEntry returns a synthetic HTTP 404 LogEntry that matches the
-// "warning" severity filter.
-func httpWarnEntry() proxy.LogEntry {
-	return proxy.LogEntry{
-		Type: proxy.LogTypeHTTP,
-		HTTP: &proxy.HTTPLogEntry{StatusCode: 404},
-	}
-}
-
 // customEntry returns a LogTypeCustom entry with the given level.
 func customEntry(level, message string) proxy.LogEntry {
 	return proxy.LogEntry{

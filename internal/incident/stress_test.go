@@ -417,7 +417,6 @@ func TestStress_BusDropConservation(t *testing.T) {
 
 	const producers = 20
 	const eventsEach = 500
-	const total = producers * eventsEach
 
 	var fired atomic.Int64
 	var wg sync.WaitGroup

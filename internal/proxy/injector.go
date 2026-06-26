@@ -92,13 +92,6 @@ func handleInstrumentationAsset(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(body)
 }
 
-// instrumentationScript returns JavaScript code for error and performance monitoring.
-// The script is cached after first call for performance.
-func instrumentationScript() string {
-	loadCachedScript()
-	return cachedScript
-}
-
 // instrumentationScriptBytes returns the cached instrumentation script as a
 // read-only []byte. Callers MUST NOT mutate the returned slice — it is shared
 // across all requests to avoid re-copying the ~1.3MB bundle per response.
