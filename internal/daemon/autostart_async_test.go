@@ -51,18 +51,18 @@ scripts {
 // t.Cleanup that stops it gracefully (2 s budget).
 func newDaemon(t *testing.T, dir string) *Daemon {
 	t.Helper()
-	d := New(DaemonConfig{
+	// Route through NewForTest, NOT New()+Start(): Start() runs the host-global
+	// startup ops (cleanupOrphans, startupPortCleanup, startupOrphanPGIDScan,
+	// restoreProxies) that walk /proc and issue kill(2) on scan-discovered PIDs.
+	// Under parallel load those reap other daemons' `sleep 60` children, which
+	// surfaced here as "process exited with code -1 during startup". This test
+	// exercises autostart, not the startup ops, so it must skip them. NewForTest
+	// registers its own t.Cleanup(Stop).
+	return NewForTest(t, DaemonConfig{
 		SocketPath:   filepath.Join(dir, "test.sock"),
 		MaxClients:   10,
 		WriteTimeout: 5 * time.Second,
 	})
-	require.NoError(t, d.Start())
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		d.Stop(ctx)
-	})
-	return d
 }
 
 // writeConfig writes content to <dir>/.agnt.kdl.
