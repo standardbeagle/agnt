@@ -255,6 +255,48 @@ func TestPageTracker_TrackHTTPRequest_DocumentCreatesSession(t *testing.T) {
 	}
 }
 
+func TestPageTracker_TrackPerformance_PromotesTitleAndDimensions(t *testing.T) {
+	pt := NewPageTracker(100, 5*time.Minute)
+
+	// A session is created by the document request; perf samples then mutate it.
+	pt.TrackHTTPRequest(HTTPLogEntry{
+		ID:              "req-1",
+		Timestamp:       time.Now(),
+		Method:          "GET",
+		URL:             "http://localhost:8080/",
+		ResponseHeaders: map[string]string{"Content-Type": "text/html"},
+		StatusCode:      200,
+	})
+
+	perf := PerformanceMetric{
+		ID:             "perf-1",
+		URL:            "http://localhost:8080/",
+		PageTitle:      "Dashboard",
+		PageWidth:      1280,
+		PageHeight:     3000,
+		ViewportWidth:  1024,
+		ViewportHeight: 768,
+	}
+	pt.TrackPerformance(perf, "")
+
+	sessions := pt.GetActiveSessions()
+	if len(sessions) != 1 {
+		t.Fatalf("Expected 1 session, got %d", len(sessions))
+	}
+	if sessions[0].PageTitle != "Dashboard" {
+		t.Errorf("PageTitle not promoted to session: got %q", sessions[0].PageTitle)
+	}
+	if sessions[0].Performance == nil {
+		t.Fatal("Performance not stored on session")
+	}
+	if sessions[0].Performance.PageWidth != 1280 || sessions[0].Performance.PageHeight != 3000 {
+		t.Errorf("page dimensions wrong: %dx%d", sessions[0].Performance.PageWidth, sessions[0].Performance.PageHeight)
+	}
+	if sessions[0].Performance.ViewportWidth != 1024 || sessions[0].Performance.ViewportHeight != 768 {
+		t.Errorf("viewport dimensions wrong: %dx%d", sessions[0].Performance.ViewportWidth, sessions[0].Performance.ViewportHeight)
+	}
+}
+
 func TestPageTracker_TrackHTTPRequest_ResourceAddedToSession(t *testing.T) {
 	pt := NewPageTracker(100, 5*time.Minute)
 

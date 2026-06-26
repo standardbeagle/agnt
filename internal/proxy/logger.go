@@ -129,6 +129,15 @@ type PerformanceMetric struct {
 	FirstContentfulPaint int64                  `json:"first_contentful_paint,omitempty"`
 	Resources            []ResourceTiming       `json:"resources,omitempty"`
 	Custom               map[string]interface{} `json:"custom,omitempty"`
+
+	// Page context captured alongside the performance sample. PageTitle is the
+	// document title (also copied onto the owning PageSession); the dimensions
+	// are surfaced by the currentpage summary.
+	PageTitle      string `json:"page_title,omitempty"`
+	PageWidth      int    `json:"page_width,omitempty"`
+	PageHeight     int    `json:"page_height,omitempty"`
+	ViewportWidth  int    `json:"viewport_width,omitempty"`
+	ViewportHeight int    `json:"viewport_height,omitempty"`
 }
 
 // ResourceTiming represents timing for a single resource.
@@ -237,6 +246,19 @@ type MutationEvent struct {
 	Removed      []MutationNode   `json:"removed,omitempty"`
 	Attribute    *AttributeChange `json:"attribute,omitempty"`
 	URL          string           `json:"url"`
+	// TriggeredBy correlates this mutation to the user interaction that likely
+	// caused it (the browser walks recent interaction history within a 500ms
+	// window). Nil when no interaction preceded the mutation.
+	TriggeredBy *MutationTrigger `json:"triggered_by,omitempty"`
+}
+
+// MutationTrigger describes the user interaction the browser correlated to a
+// DOM mutation (cause → effect), captured from the interaction history.
+type MutationTrigger struct {
+	Type      string `json:"type,omitempty"`      // interaction event type (click, keydown, ...)
+	Timestamp int64  `json:"timestamp,omitempty"` // interaction time (ms epoch, browser clock)
+	Latency   int64  `json:"latency,omitempty"`   // ms between interaction and mutation
+	Target    string `json:"target,omitempty"`    // selector of the interaction target
 }
 
 // MutationTarget describes the parent element where a mutation occurred.
