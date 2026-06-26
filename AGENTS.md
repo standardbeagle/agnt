@@ -14,7 +14,7 @@ Claude Code 治此 repo 之綱：唯導向與不變式；詳見 `docs/`、`.clau
 - `agnt-daemon`: daemon auto-start 副本（避 sandbox 禁 fork）
 - `devtool-mcp`: 舊名 alias（backwards compat）
 
-**CLI Subcommands**: `mcp` (MCP server), `run` (PTY wrapper), `init` (setup-only, no relaunch), `skills` (install agnt skills via `npx skills` + register MCP), `monitor` (event stream), `ai` (interactive AI), `hook` (telemetry forwarder), `setup-project`, `activate`/`license` (Pro license activation + management — offline lk validation, see `internal/license/`)
+**CLI Subcommands**: `mcp` (MCP server), `run` (PTY wrapper), `init` (setup-only, no relaunch), `skills` (install agnt skills via `npx skills` + register MCP), `monitor` (event stream), `ai` (interactive AI — Claude-only, stream-json), `acp` (any ACP agent via `coder/acp-go-sdk`: gemini/opencode/claude-code-acp; one-shot + overlay/cooked REPL; fs+terminal caps; deterministic alert gate), `hook` (telemetry forwarder), `setup-project`, `activate`/`license` (Pro license activation + management — offline lk validation, see `internal/license/`)
 
 **Core Architecture Decisions**:
 

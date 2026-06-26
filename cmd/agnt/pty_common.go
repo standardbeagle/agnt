@@ -1146,6 +1146,15 @@ type ptyHandle struct {
 	// itself handles scroll-region re-enforcement). Optional.
 	PreRedraw func()
 
+	// ForceRepaint forces a child repaint after a menu close when the
+	// child is in the alternate screen buffer. A bare same-size SIGWINCH
+	// (PreRedraw) is ignored by newer TUI renderers (Claude Code,
+	// opencode) which diff the winsize and skip the repaint — leaving the
+	// screen blank after the overlay drew panels into their alt buffer. A
+	// transient winsize change ("jiggle") forces the repaint. Optional;
+	// when nil the gate-unfreeze path falls back to PreRedraw.
+	ForceRepaint func()
+
 	// WrapOutput optionally wraps the activity-monitor output writer.
 	// Used by Windows to inject the BrowserHelper that auto-opens
 	// OAuth URLs ConPTY can't surface. Returns dest unchanged when
@@ -1478,7 +1487,14 @@ func setupTerminalOverlay(ctx context.Context, handle *ptyHandle, rt *pipelineRu
 	// any artifacts the menu left behind. Windows skips the SIGWINCH —
 	// see run_windows.go for the rationale.
 	rt.outputGate.SetCallbacks(nil, func() {
-		if handle.PreRedraw != nil {
+		// When the child is in the alternate screen buffer, the overlay drew
+		// panels directly into that buffer, so the child must repaint. Newer
+		// renderers ignore a same-size SIGWINCH (PreRedraw), so force the
+		// repaint with a winsize jiggle. On the main screen, ExitAltScreen
+		// already restored the child's content, so a plain SIGWINCH suffices.
+		if rt.outputFilter != nil && rt.outputFilter.InAltScreen() && handle.ForceRepaint != nil {
+			handle.ForceRepaint()
+		} else if handle.PreRedraw != nil {
 			handle.PreRedraw()
 		}
 		if rt.outputFilter != nil {

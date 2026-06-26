@@ -156,6 +156,13 @@ func runPTYChild(ctx context.Context, args []string, socketPath string, sessionC
 				_ = c.Process.Signal(syscall.SIGWINCH)
 			}
 		},
+		ForceRepaint: func() {
+			jiggleRepaint(ptmx, func() {
+				if c.Process != nil {
+					_ = c.Process.Signal(syscall.SIGWINCH)
+				}
+			})
+		},
 	}
 
 	rt := runOverlayPipeline(ctx, handle, command, cmdArgs, adapter, adapterPrompt, projectPath, sessionCode)
