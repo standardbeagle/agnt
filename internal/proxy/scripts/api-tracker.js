@@ -20,6 +20,20 @@
     if (callBuffer.length > MAX_ENTRIES) {
       callBuffer.shift();
     }
+    // The proxy renders a top-level navigation as a chrome shell wrapping the
+    // real page in a content <iframe>. The indicator UI runs in the shell, but
+    // fetch/XHR happen in the content frame — so the shell's own buffer is
+    // empty. Forward each captured call up to the shell (same-origin direct
+    // reach; the proxy serves both frames) so its Network tab + badge update.
+    // Best-effort; never let a forwarding failure break capture.
+    if (window.__devtool_frame_role === 'content') {
+      try {
+        var shell = window.parent;
+        if (shell && shell !== window && typeof shell.__devtool_api_ingest === 'function') {
+          shell.__devtool_api_ingest(call);
+        }
+      } catch (e) { /* cross-origin / shell gone */ }
+    }
   }
 
   /**
@@ -79,7 +93,7 @@
             } catch (e) {}
           }).catch(function() {});
         }
-        addCall(call);
+        if (window.__devtool_frame_role !== 'chrome') { addCall(call); }
         return response;
       })
       .catch(function(error) {
@@ -87,7 +101,7 @@
         call.ok = false;
         call.duration = Date.now() - startTime;
         call.error = error.message || 'Network error';
-        addCall(call);
+        if (window.__devtool_frame_role !== 'chrome') { addCall(call); }
         throw error;
       });
   };
@@ -135,7 +149,7 @@
           } catch (e) {}
         } catch (e) {}
       }
-      addCall(call);
+      if (window.__devtool_frame_role !== 'chrome') { addCall(call); }
     };
 
     xhr.addEventListener('loadend', onLoadEnd);
@@ -341,6 +355,19 @@
     }
     return { buckets: buckets, window: windowSec, maxBucket: maxBucket };
   }
+
+  // Shell-side ingest: content frames forward their captured calls here (see
+  // addCall) because the indicator runs in the chrome shell — a separate window
+  // from the content frame where fetch/XHR actually happen. Terminal sink: does
+  // not re-forward (the shell has no parent shell), so no loop. Defined in every
+  // frame for simplicity; only ever invoked on the shell by its content child.
+  window.__devtool_api_ingest = function(call) {
+    if (!call) { return; }
+    callBuffer.push(call);
+    if (callBuffer.length > MAX_ENTRIES) {
+      callBuffer.shift();
+    }
+  };
 
   // Export API
   window.__devtool_api = {
