@@ -100,6 +100,7 @@
     findOverflows: layout.findOverflows,
     findStackingContexts: layout.findStackingContexts,
     findOffscreen: layout.findOffscreen,
+    diagnoseLayoutIssues: layout.diagnose,
 
     // ========================================================================
     // VISUAL OVERLAYS
