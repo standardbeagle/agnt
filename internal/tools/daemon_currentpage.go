@@ -6,7 +6,9 @@ import (
 	"fmt"
 
 	"strings"
+	"time"
 
+	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/go-sdk/mcp"
 )
@@ -43,10 +45,12 @@ func (dt *DaemonTools) makeCurrentPageHandler() func(context.Context, *mcp.CallT
 
 		action := input.Action
 		if action == "" {
-			action = "list"
+			action = "triage"
 		}
 
 		switch action {
+		case "triage":
+			return dt.handleCurrentPageTriage(input)
 		case "list":
 			return dt.handleCurrentPageList(input)
 		case "get":
@@ -56,7 +60,7 @@ func (dt *DaemonTools) makeCurrentPageHandler() func(context.Context, *mcp.CallT
 		case "clear":
 			return dt.handleCurrentPageClear(input)
 		default:
-			return errorResult(fmt.Sprintf("unknown action %q. Use: list, get, summary, clear", action)), CurrentPageOutput{}, nil
+			return errorResult(fmt.Sprintf("unknown action %q. Use: triage, list, get, summary, clear", action)), CurrentPageOutput{}, nil
 		}
 	}
 }
@@ -151,6 +155,78 @@ func (dt *DaemonTools) handleCurrentPageSummary(input CurrentPageInput) (*mcp.Ca
 	return nil, CurrentPageOutput{
 		Summary: &summary,
 	}, nil
+}
+
+// handleCurrentPageTriage returns the at-a-glance triage view for the page the
+// developer currently has open. With no session_id it auto-selects the
+// most-recently-active session ("the screen on screen"); deeper detail is one
+// hop away via the next_tools it returns.
+func (dt *DaemonTools) handleCurrentPageTriage(input CurrentPageInput) (*mcp.CallToolResult, CurrentPageOutput, error) {
+	sessionID := input.SessionID
+	if sessionID == "" {
+		list, err := dt.client.CurrentPageList(input.ProxyID)
+		if err != nil {
+			return formatDaemonError(err, "currentpage"), CurrentPageOutput{}, nil
+		}
+		sessionID = pickActiveSessionID(list)
+		if sessionID == "" {
+			return nil, CurrentPageOutput{
+				Hint: fmt.Sprintf("No page sessions for proxy %q yet. Open the app through the proxy in a browser, then re-run triage.", input.ProxyID),
+			}, nil
+		}
+	}
+
+	result, err := dt.client.CurrentPageGet(input.ProxyID, sessionID)
+	if err != nil {
+		return formatDaemonError(err, "currentpage"), CurrentPageOutput{}, nil
+	}
+
+	triage := convertToPageTriage(result)
+	return nil, CurrentPageOutput{Triage: &triage}, nil
+}
+
+// pickActiveSessionID chooses the most-recently-active session from a LIST
+// result, preferring active sessions, then latest last_activity.
+func pickActiveSessionID(list map[string]interface{}) string {
+	sessions, ok := list["sessions"].([]interface{})
+	if !ok {
+		return ""
+	}
+	var bestID string
+	var bestActive bool
+	var bestTime time.Time
+	for _, s := range sessions {
+		sm, ok := s.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		id := getString(sm, "id")
+		if id == "" {
+			continue
+		}
+		active := getBool(sm, "active")
+		var t time.Time
+		if ts := getString(sm, "last_activity"); ts != "" {
+			parsed, err := time.Parse(time.RFC3339Nano, ts)
+			if err != nil {
+				// Best-effort tiebreak: a malformed timestamp leaves t at the
+				// zero value (treated as oldest), so this session simply won't
+				// be preferred as "newest". Log so a serialization regression
+				// upstream is diagnosable.
+				debug.Log("currentpage", "best session: unparseable last_activity %q: %v", ts, err)
+			} else {
+				t = parsed
+			}
+		}
+		// Prefer active over inactive; within the same active-ness, prefer newer.
+		better := bestID == "" ||
+			(active && !bestActive) ||
+			(active == bestActive && t.After(bestTime))
+		if better {
+			bestID, bestActive, bestTime = id, active, t
+		}
+	}
+	return bestID
 }
 
 func (dt *DaemonTools) handleCurrentPageClear(input CurrentPageInput) (*mcp.CallToolResult, CurrentPageOutput, error) {

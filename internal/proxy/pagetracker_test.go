@@ -216,6 +216,50 @@ func TestIsDocumentRequest(t *testing.T) {
 			},
 			expected: false, // REST API path
 		},
+		{
+			name: "HTML body served for favicon (SPA fallback) is a resource",
+			entry: HTTPLogEntry{
+				Method: "GET",
+				URL:    "/favicon.ico",
+				ResponseHeaders: map[string]string{
+					"Content-Type": "text/html; charset=utf-8",
+				},
+			},
+			expected: false, // index.html fallback for a .ico path is not a navigation
+		},
+		{
+			name: "HTML body served for a .png asset is a resource",
+			entry: HTTPLogEntry{
+				Method: "GET",
+				URL:    "/assets/logo.png?v=2",
+				ResponseHeaders: map[string]string{
+					"Content-Type": "text/html",
+				},
+			},
+			expected: false, // resource-extension path wins over text/html
+		},
+		{
+			name: "HTML body on an extensionless SPA route is a document",
+			entry: HTTPLogEntry{
+				Method: "GET",
+				URL:    "/users/123",
+				ResponseHeaders: map[string]string{
+					"Content-Type": "text/html",
+				},
+			},
+			expected: true, // genuine client-side route navigation
+		},
+		{
+			name: "HTML page with a resource-looking query param is a document",
+			entry: HTTPLogEntry{
+				Method: "GET",
+				URL:    "/dashboard?ref=style.css",
+				ResponseHeaders: map[string]string{
+					"Content-Type": "text/html",
+				},
+			},
+			expected: true, // path-suffix check ignores the query string
+		},
 	}
 
 	for _, tt := range tests {

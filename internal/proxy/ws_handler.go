@@ -150,7 +150,11 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			"message":  "This proxy is bypassing TLS certificate verification. The backend is using a self-signed or invalid certificate.",
 			"duration": 8000,
 		}); err == nil {
-			_ = asyncConn.WriteSync(warn)
+			// Best-effort browser toast; if the control-lane write fails the
+			// conn is already going away, so degrade quietly to the debug log.
+			if werr := asyncConn.WriteSync(warn); werr != nil {
+				debug.Log("proxy", "failed to send TLS-skip warning toast to browser: %v", werr)
+			}
 		}
 	}
 
@@ -219,6 +223,10 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if err := json.Unmarshal(rawMessage, &msg); err != nil {
+			// Best-effort: malformed browser telemetry frame, skip it. The data
+			// is untrusted browser input so a parse failure is not actionable
+			// beyond a diagnostic trace.
+			debug.Log("proxy", "failed to parse browser WS message for proxy %s: %v", ps.ID, err)
 			continue
 		}
 
@@ -247,9 +255,13 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			ps.logger.LogError(errEntry, msg.FrameID)
 			ps.pageTracker.TrackError(errEntry, msg.SessionID, msg.FrameID)
 
-			// Auto-forward browser errors to overlay for PTY injection
+			// Auto-forward browser errors to overlay for PTY injection. The
+			// error is already in the traffic log (LogError above), so overlay
+			// forwarding is supplementary — surface a failure to the debug log.
 			if ps.overlayNotifier.IsEnabled() {
-				_ = ps.overlayNotifier.NotifyBrowserError(ps.ID, errEntry)
+				if err := ps.overlayNotifier.NotifyBrowserError(ps.ID, errEntry); err != nil {
+					debug.Log("proxy", "failed to forward browser error to overlay: %v", err)
+				}
 			}
 
 		case "performance":
@@ -478,8 +490,11 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				debug.Log("proxy", "panel_message received but overlay notifier NOT enabled for proxy %s — message will not reach agent", ps.ID)
 			}
 
-			// Update audit folder summary after saving new files
-			_ = UpdateAuditSummary()
+			// Update audit folder summary after saving new files. Best-effort
+			// housekeeping: a stale SUMMARY.md index does not lose any data.
+			if err := UpdateAuditSummary(); err != nil {
+				debug.Log("proxy", "failed to update audit summary: %v", err)
+			}
 
 		case "walkthrough_event":
 			// Handle a walkthrough (live-demo) lifecycle event from the
@@ -517,11 +532,16 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 			// Forward to overlay if configured
 			if ps.overlayNotifier.IsEnabled() {
-				_ = ps.overlayNotifier.NotifySketch(ps.ID, &sketchEntry)
+				if err := ps.overlayNotifier.NotifySketch(ps.ID, &sketchEntry); err != nil {
+					debug.Log("proxy", "failed to forward sketch to overlay: %v", err)
+				}
 			}
 
-			// Update audit folder summary
-			_ = UpdateAuditSummary()
+			// Update audit folder summary. Best-effort housekeeping: a stale
+			// SUMMARY.md index does not lose any data.
+			if err := UpdateAuditSummary(); err != nil {
+				debug.Log("proxy", "failed to update audit summary: %v", err)
+			}
 
 		case "element_capture":
 			// Handle element capture from panel with reference ID
@@ -551,7 +571,9 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 			// Forward to overlay if configured
 			if ps.overlayNotifier.IsEnabled() {
-				_ = ps.overlayNotifier.NotifyDesignState(ps.ID, &designState)
+				if err := ps.overlayNotifier.NotifyDesignState(ps.ID, &designState); err != nil {
+					debug.Log("proxy", "failed to forward design state to overlay: %v", err)
+				}
 			}
 
 		case "design_request":
@@ -568,7 +590,9 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 			// Forward to overlay if configured
 			if ps.overlayNotifier.IsEnabled() {
-				_ = ps.overlayNotifier.NotifyDesignRequest(ps.ID, &designRequest)
+				if err := ps.overlayNotifier.NotifyDesignRequest(ps.ID, &designRequest); err != nil {
+					debug.Log("proxy", "failed to forward design request to overlay: %v", err)
+				}
 			}
 
 		case "design_chat":
@@ -583,7 +607,9 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 			// Forward to overlay if configured
 			if ps.overlayNotifier.IsEnabled() {
-				_ = ps.overlayNotifier.NotifyDesignChat(ps.ID, &designChat)
+				if err := ps.overlayNotifier.NotifyDesignChat(ps.ID, &designChat); err != nil {
+					debug.Log("proxy", "failed to forward design chat to overlay: %v", err)
+				}
 			}
 
 		case "design_edit":
@@ -593,7 +619,9 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 			// Forward to overlay if configured
 			if ps.overlayNotifier.IsEnabled() {
-				_ = ps.overlayNotifier.NotifyDesignEdit(ps.ID, &designEdit)
+				if err := ps.overlayNotifier.NotifyDesignEdit(ps.ID, &designEdit); err != nil {
+					debug.Log("proxy", "failed to forward design edit to overlay: %v", err)
+				}
 			}
 
 		case "responsive_request":
@@ -603,7 +631,9 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 			// Forward to overlay if configured
 			if ps.overlayNotifier.IsEnabled() {
-				_ = ps.overlayNotifier.NotifyResponsiveRequest(ps.ID, &responsiveRequest)
+				if err := ps.overlayNotifier.NotifyResponsiveRequest(ps.ID, &responsiveRequest); err != nil {
+					debug.Log("proxy", "failed to forward responsive request to overlay: %v", err)
+				}
 			}
 
 		case "responsive_state":
@@ -613,7 +643,9 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 			// Forward to overlay if configured
 			if ps.overlayNotifier.IsEnabled() {
-				_ = ps.overlayNotifier.NotifyResponsiveState(ps.ID, &responsiveState)
+				if err := ps.overlayNotifier.NotifyResponsiveState(ps.ID, &responsiveState); err != nil {
+					debug.Log("proxy", "failed to forward responsive state to overlay: %v", err)
+				}
 			}
 
 		case "session_request":
