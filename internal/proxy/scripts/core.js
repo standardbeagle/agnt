@@ -591,8 +591,11 @@
     }
 
     // Shell-side sink for errors forwarded by content frames. Terminal: pushes
-    // into the shell's own buffers (does not re-forward), so getDeduplicatedErr-
-    // ors / getStats / the Errors tab all see content-frame errors unchanged.
+    // into the shell's own per-kind buffers (does not re-forward), so getDedup-
+    // licatedErrors / getStats / the Errors tab all see content-frame errors
+    // unchanged. Deliberately does NOT feed the consolidated stream
+    // (addConsolidatedError) — no shell-side consumer reads getConsolidated*
+    // today. If one is added, forwarded errors must also land there.
     function ingestForwardedError(kind, entry) {
       if (!entry) { return; }
       if (kind === 'js') { addToBuffer(jsErrorBuffer, entry); }
