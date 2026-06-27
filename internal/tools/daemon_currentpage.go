@@ -59,8 +59,10 @@ func (dt *DaemonTools) makeCurrentPageHandler() func(context.Context, *mcp.CallT
 			return dt.handleCurrentPageSummary(input)
 		case "clear":
 			return dt.handleCurrentPageClear(input)
+		case "layout":
+			return dt.handleCurrentPageLayout(input)
 		default:
-			return errorResult(fmt.Sprintf("unknown action %q. Use: triage, list, get, summary, clear", action)), CurrentPageOutput{}, nil
+			return errorResult(fmt.Sprintf("unknown action %q. Use: triage, list, get, summary, clear, layout", action)), CurrentPageOutput{}, nil
 		}
 	}
 }
@@ -227,6 +229,34 @@ func pickActiveSessionID(list map[string]interface{}) string {
 		}
 	}
 	return bestID
+}
+
+// handleCurrentPageLayout runs the live CSS/layout diagnostic in the open page
+// (containing-block traps, ineffective z-index, click interception, clipped
+// descendants) via a single browser exec. This is the active-DOM companion to
+// the passive triage view — the agent's window into visual/layout state it
+// otherwise cannot see.
+func (dt *DaemonTools) handleCurrentPageLayout(input CurrentPageInput) (*mcp.CallToolResult, CurrentPageOutput, error) {
+	const code = `(function(){
+		if(!window.__devtool||!window.__devtool.diagnoseLayoutIssues){
+			return JSON.stringify({error:'layout diagnostic not loaded (is this an instrumented page served through the proxy?)'});
+		}
+		return JSON.stringify(window.__devtool.diagnoseLayoutIssues());
+	})()`
+
+	result, err := dt.client.ProxyExec(input.ProxyID, code)
+	if err != nil {
+		return formatDaemonError(err, "currentpage"), CurrentPageOutput{}, nil
+	}
+	if errMsg, ok := result["error"].(string); ok && errMsg != "" {
+		return errorResult(fmt.Sprintf("layout diagnose failed: %s", errMsg)), CurrentPageOutput{}, nil
+	}
+
+	layout, perr := parseLayoutDiagnostics(getString(result, "result"))
+	if perr != nil {
+		return errorResult(perr.Error()), CurrentPageOutput{}, nil
+	}
+	return nil, CurrentPageOutput{Layout: &layout}, nil
 }
 
 func (dt *DaemonTools) handleCurrentPageClear(input CurrentPageInput) (*mcp.CallToolResult, CurrentPageOutput, error) {

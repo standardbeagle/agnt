@@ -160,7 +160,7 @@ var DevToolAPIDocs = devToolAPIDocs{
 		{Name: "inspection", Description: "Get detailed information about DOM elements"},
 		{Name: "tree", Description: "Walk and navigate the DOM tree"},
 		{Name: "visual", Description: "Check visibility and viewport state"},
-		{Name: "layout", Description: "Diagnose layout issues (overflow, stacking, offscreen)"},
+		{Name: "layout", Description: "Diagnose layout issues (overflow, stacking, offscreen; diagnoseLayoutIssues = cause→symptom traps)"},
 		{Name: "overlay", Description: "Highlight elements visually on the page"},
 		{Name: "interactive", Description: "Interactive element selection and measurement"},
 		{Name: "capture", Description: "Capture page state, styles, and network info"},
