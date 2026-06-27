@@ -183,6 +183,9 @@ func (vs *VoiceSession) readDeepgramResponses() {
 
 		var dgMsg DeepgramMessage
 		if err := json.Unmarshal(message, &dgMsg); err != nil {
+			// Best-effort: Deepgram emits message types we do not model; skip
+			// frames we cannot decode rather than tearing down the session.
+			debug.Log("proxy", "failed to parse Deepgram message: %v", err)
 			continue
 		}
 

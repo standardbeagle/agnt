@@ -148,7 +148,11 @@ Available tools:
 	// Register the replaytest tool (Pro: advanced_testing). The license manager
 	// validates the installed license once at load.
 	licMgr := license.NewManager()
-	_ = licMgr.Load()
+	// Best-effort: a missing/invalid license is the normal free-tier state, so
+	// the tool still registers (gated at call time). Record why for diagnosis.
+	if err := licMgr.Load(); err != nil {
+		debug.Log("license", "license load failed, continuing on free tier: %v", err)
+	}
 	tools.RegisterReplaytestTool(server, licMgr)
 
 	// Register channel_reply tool when channel mode is enabled and reply-tool is on.

@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	"github.com/standardbeagle/agnt/internal/debug"
 )
 
 // Source identifies where the incident originated.
@@ -114,6 +116,11 @@ func NewIncidentEvent(src Source, sev Severity, category, msg string, ctx Contex
 		ref, err := store.Write([]byte(msg), "text/plain")
 		if err == nil {
 			ev.PayloadRef = &ref
+		} else {
+			// Contract #6: blob store is best-effort. On a write failure the
+			// envelope simply carries no PayloadRef (callers handle nil refs);
+			// log so a failing store is diagnosable.
+			debug.Log("incident-blob", "payload write failed, event carries no blob ref: %v", err)
 		}
 	}
 

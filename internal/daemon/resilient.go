@@ -123,8 +123,13 @@ func NewResilientClient(config ResilientClientConfig) *ResilientClient {
 					return config.OnVersionMismatch(config.ClientVersion, info.Version)
 				}
 
-				// No callback - stop the daemon so next connection uses new version
-				_ = conn.Request("SHUTDOWN").OK() // Best effort
+				// No callback - stop the daemon so next connection uses new version.
+				// Best-effort: if the old daemon is already gone or unresponsive
+				// the SHUTDOWN fails harmlessly (the version-mismatch error below
+				// still triggers a restart), but log it so a wedged daemon shows up.
+				if err := conn.Request("SHUTDOWN").OK(); err != nil {
+					debug.Log("client", "best-effort SHUTDOWN of version-mismatched daemon failed: %v", err)
+				}
 
 				return errors.New("version mismatch: client=" + config.ClientVersion +
 					" daemon=" + info.Version + " (daemon stopped, will restart with new version)")

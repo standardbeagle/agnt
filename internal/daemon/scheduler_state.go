@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/standardbeagle/agnt/internal/debug"
 )
 
 // SchedulerStateFile is the name of the per-project task state file.
@@ -363,10 +365,11 @@ func (m *SchedulerStateManager) writeLoop() {
 	defer close(m.stopped)
 	defer func() {
 		if r := recover(); r != nil {
-			// Swallow — we cannot propagate, and we cannot let the defer chain
-			// fail to close(m.stopped). debug.Log would be ideal here but we
-			// intentionally keep the dependency surface of this package small.
-			_ = r
+			// We cannot propagate the panic without skipping close(m.stopped)
+			// (which Close()/Flush() block on as a liveness signal), so recover
+			// it here. Surface to the debug log so a swallowed write-loop panic
+			// is diagnosable instead of vanishing.
+			debug.Log("scheduler-state", "writeLoop recovered from panic: %v", r)
 		}
 	}()
 

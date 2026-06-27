@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+
+	"github.com/standardbeagle/agnt/internal/debug"
+	"github.com/standardbeagle/agnt/internal/selflog"
 )
 
 const (
@@ -230,14 +233,26 @@ func (pe *PingEmitter) buildPayload(stats Stats, entries []InboxEntry) PingPaylo
 func (pe *PingEmitter) fanOut(payload PingPayload) {
 	level := highestLevel(payload.Summary)
 
+	// Pinger contract #7: delivery never blocks and one slow/broken sink must
+	// not delay the others. Sink errors are best-effort by design — logged for
+	// diagnosis, never propagated or retried here.
 	if pe.config.MCPNotifications && pe.mcpNotify != nil {
-		_ = pe.mcpNotify(level, payload)
+		if err := pe.mcpNotify(level, payload); err != nil {
+			debug.Log("incident-pinger", "mcp ping failed: %v", err)
+			selflog.Record("pinger", "mcp ping delivery failed: %v", err)
+		}
 	}
 	if pe.config.ChannelEnabled && pe.channelNotify != nil {
-		_ = pe.channelNotify(compactText(payload), payload)
+		if err := pe.channelNotify(compactText(payload), payload); err != nil {
+			debug.Log("incident-pinger", "channel ping failed: %v", err)
+			selflog.Record("pinger", "channel ping delivery failed: %v", err)
+		}
 	}
 	if pe.config.PTYInjection && pe.ptyInject != nil {
-		_ = pe.ptyInject(ptyLine(payload))
+		if err := pe.ptyInject(ptyLine(payload)); err != nil {
+			debug.Log("incident-pinger", "pty ping failed: %v", err)
+			selflog.Record("pinger", "pty ping delivery failed: %v", err)
+		}
 	}
 }
 

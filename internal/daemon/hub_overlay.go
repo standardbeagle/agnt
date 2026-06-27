@@ -134,6 +134,10 @@ func (d *Daemon) hubHandleOverlayOutputPreview(conn *hubpkg.Connection, cmd *hub
 		for _, proxyID := range payload.ProxyIDs {
 			p, err := d.proxym.Get(proxyID)
 			if err != nil {
+				// Best-effort UI broadcast: a requested proxy may have been torn
+				// down between the caller's list and this send. Skip it, but log
+				// so a consistently missing target is diagnosable.
+				debug.Log("overlay", "broadcast skipped unknown proxy %s: %v", proxyID, err)
 				continue
 			}
 			proxiesToBroadcast = append(proxiesToBroadcast, p)

@@ -8,6 +8,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/standardbeagle/agnt/internal/debug"
 )
 
 const (
@@ -323,7 +325,7 @@ func (inbox *Inbox) Stats() Stats {
 }
 
 // Subscribe returns a buffered channel delivering InboxDelta on each Ingest.
-// Slow consumers receive dropped silently. Call cancel when done.
+// Slow consumers have deltas dropped (logged via debug, not silent). Call cancel when done.
 func (inbox *Inbox) Subscribe() (<-chan InboxDelta, func()) {
 	ch := make(chan InboxDelta, subChanBuf)
 	inbox.subsMu.Lock()
@@ -350,7 +352,11 @@ func (inbox *Inbox) broadcast(delta InboxDelta) {
 	for _, ch := range inbox.subs {
 		select {
 		case ch <- delta:
-		default: // slow consumer: drop
+		default:
+			// Contract #7: delivery never blocks. A slow consumer drops this
+			// delta by design — the Pinger re-reads inbox state on its own
+			// cadence, so a dropped delta only delays a ping. Log for diagnosis.
+			debug.Log("incident-inbox", "subscriber slow; dropped inbox delta")
 		}
 	}
 }

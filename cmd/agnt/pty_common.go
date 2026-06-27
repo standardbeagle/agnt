@@ -44,6 +44,11 @@ type daemonSessionHandle struct {
 
 	// Completion signaling for async registration
 	registrationDone chan struct{}
+	// registrationErr records why the session failed to connect or register,
+	// if it did. Written by the registration goroutine before closing
+	// registrationDone (happens-before the WaitRegistered reader), read by
+	// status printers. Surfaced to the user instead of being swallowed.
+	registrationErr  error
 	autostartScripts []string // scripts successfully started
 	autostartProxies []string // proxies successfully started
 	autostartErrors  []string // errors encountered during autostart
@@ -159,12 +164,18 @@ func startDaemonSession(ctx context.Context, cfg daemonSessionConfig) *daemonSes
 
 		handle.client = daemon.NewResilientClient(config)
 		if err := handle.client.Connect(); err != nil {
-			return // Daemon connection is best-effort, non-critical
+			// Connection is best-effort, but record why so the status
+			// printer can tell the user rather than a bare "not available".
+			handle.registrationErr = fmt.Errorf("connect: %w", err)
+			debug.Log("daemon", "session connect failed: %v", err)
+			return
 		}
 
 		// Register session with daemon (autostart and overlay scoping happen server-side)
 		result, err := handle.client.SessionRegisterWithContainment(cfg.SessionCode, cfg.OverlayEndpoint, cfg.ProjectPath, cfg.Command, cfg.CmdArgs, cfg.SessionPGID, cfg.SessionJobHandle)
 		if err != nil {
+			handle.registrationErr = fmt.Errorf("register: %w", err)
+			debug.Log("daemon", "session register failed: %v", err)
 			return
 		}
 
@@ -966,7 +977,11 @@ func firstRunOrCoding(projectPath string, args []string,
 	if !hasResolvedConfig(projectPath) && configOverride == "" {
 		if tryAutoConfig(projectPath) {
 			autoConfigured = true
-			_ = writeFirstRunMarker(firstRunStatePath(projectPath), setupOutcomeMarker(true, time.Now()))
+			// Best-effort: a failed marker write only re-shows the setup nudge
+			// next run. debug.Log is the only safe channel on the PTY path.
+			if err := writeFirstRunMarker(firstRunStatePath(projectPath), setupOutcomeMarker(true, time.Now())); err != nil {
+				debug.Log("firstrun", "marker write failed (will re-nudge): %v", err)
+			}
 		}
 	}
 
@@ -983,7 +998,11 @@ func firstRunOrCoding(projectPath string, args []string,
 			return err
 		}
 		if hasResolvedConfig(projectPath) {
-			_ = writeFirstRunMarker(firstRunStatePath(projectPath), setupOutcomeMarker(true, time.Now()))
+			// Best-effort: a failed marker write only re-shows the setup nudge
+			// next run. debug.Log is the only safe channel on the PTY path.
+			if err := writeFirstRunMarker(firstRunStatePath(projectPath), setupOutcomeMarker(true, time.Now())); err != nil {
+				debug.Log("firstrun", "marker write failed (will re-nudge): %v", err)
+			}
 		}
 		return nil
 	}

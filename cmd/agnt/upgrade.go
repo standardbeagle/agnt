@@ -162,7 +162,11 @@ func detectInstallMethod() (installMethod, string) {
 	if err != nil {
 		return installUnknown, ""
 	}
-	execPath, _ = filepath.EvalSymlinks(execPath)
+	// Resolve symlinks when possible, but keep the original path on failure —
+	// blanking execPath would silently misclassify the install method.
+	if resolved, err := filepath.EvalSymlinks(execPath); err == nil {
+		execPath = resolved
+	}
 
 	// Check path patterns to determine install method
 	pathLower := strings.ToLower(execPath)

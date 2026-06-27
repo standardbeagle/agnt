@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/proxy/scripts"
 )
 
@@ -89,7 +90,12 @@ func handleInstrumentationAsset(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodHead {
 		return
 	}
-	_, _ = w.Write(body)
+	// The frontend needs this instrumentation bundle to drive every __devtool
+	// debug feature; a write failure means the browser dropped the connection
+	// mid-transfer, so surface it to the debug log.
+	if _, err := w.Write(body); err != nil {
+		debug.Log("proxy", "failed to write instrumentation asset: %v", err)
+	}
 }
 
 // instrumentationScriptBytes returns the cached instrumentation script as a

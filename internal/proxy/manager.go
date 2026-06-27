@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/scope"
 	"golang.org/x/sync/semaphore"
 )
@@ -70,7 +71,11 @@ func (pm *ProxyManager) Create(ctx context.Context, config ProxyConfig) (*ProxyS
 	// store happened before the sweep and Shutdown will stop it normally.
 	if pm.shuttingDown.Load() {
 		pm.proxies.Delete(config.ID)
-		_ = proxy.Stop(ctx)
+		// Best-effort teardown of the just-started proxy lost to a shutdown
+		// race; we are returning an error to the caller regardless.
+		if err := proxy.Stop(ctx); err != nil {
+			debug.Log("proxy", "error stopping proxy %s lost to shutdown race: %v", config.ID, err)
+		}
 		return nil, errors.New("proxy manager is shutting down")
 	}
 

@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/standardbeagle/agnt/internal/aichannel"
 	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/overlay"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	claude "github.com/standardbeagle/claude-go"
@@ -280,7 +281,11 @@ func aiSetupSystemPrompt(projectPath string) string {
 	if decideSetupGate(false, marker, time.Now(), renudgeTTLForProject(projectPath)) != enterSetup {
 		return ""
 	}
-	_ = writeFirstRunMarker(firstRunStatePath(projectPath), setupOutcomeMarker(false, time.Now()))
+	// Best-effort: a failed marker write only re-shows the setup nudge next
+	// run (benign). debug.Log is the only safe channel on this stdio path.
+	if err := writeFirstRunMarker(firstRunStatePath(projectPath), setupOutcomeMarker(false, time.Now())); err != nil {
+		debug.Log("firstrun", "marker write failed (will re-nudge): %v", err)
+	}
 	return buildSetupSystemPrompt("claude")
 }
 
@@ -801,7 +806,11 @@ func printDaemonStatusTo(h *daemonSessionHandle, w io.Writer) {
 		return
 	}
 	if !h.sessionRegistered {
-		fmt.Fprintln(w, "[daemon: not available]")
+		if h.registrationErr != nil {
+			fmt.Fprintf(w, "[daemon: not available: %v]\n", h.registrationErr)
+		} else {
+			fmt.Fprintln(w, "[daemon: not available]")
+		}
 		return
 	}
 	fmt.Fprintln(w, "[daemon session active]")
@@ -1121,7 +1130,11 @@ func printDaemonStatus(h *daemonSessionHandle) {
 		return
 	}
 	if !h.sessionRegistered {
-		fmt.Fprintln(os.Stderr, "[daemon: not available]")
+		if h.registrationErr != nil {
+			fmt.Fprintf(os.Stderr, "[daemon: not available: %v]\n", h.registrationErr)
+		} else {
+			fmt.Fprintln(os.Stderr, "[daemon: not available]")
+		}
 		return
 	}
 	fmt.Fprintln(os.Stderr, "[daemon session active]")

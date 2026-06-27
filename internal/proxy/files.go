@@ -36,7 +36,9 @@ func (ps *ProxyServer) saveScreenshot(name string, dataURL string) (string, erro
 	// Get audit directory (.agnt/audit)
 	auditDir, err := GetAuditDir()
 	if err != nil {
-		// Fallback to temp dir if audit directory unavailable
+		// Fallback to temp dir if audit directory unavailable. The saved path
+		// is returned to the caller, so the file is still locatable.
+		debug.Log("proxy", "audit dir unavailable, saving screenshot to temp dir: %v", err)
 		auditDir = os.TempDir()
 	}
 
@@ -83,6 +85,8 @@ func (ps *ProxyServer) LookupCapture(name string) string {
 func (ps *ProxyServer) savePNGBytes(name string, data []byte) (string, error) {
 	auditDir, err := GetAuditDir()
 	if err != nil {
+		// Fallback to temp dir; the saved path is returned to the caller.
+		debug.Log("proxy", "audit dir unavailable, saving PNG to temp dir: %v", err)
 		auditDir = os.TempDir()
 	}
 

@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/selflog"
 )
 
 // hookCmd is the Claude Code hook dispatcher subcommand. It is designed to
@@ -124,9 +125,10 @@ type hookInvocation struct {
 
 	// dropLogPath is the absolute path to append drop-log entries to on
 	// the "wedged daemon" failure path. When empty, runHookInternal
-	// defaults to `${XDG_CACHE_HOME:-$HOME/.cache}/agnt/hook-drop.log`.
-	// Tests override this via t.Setenv("XDG_CACHE_HOME", ...) or by
-	// passing an explicit path.
+	// defaults to the unified self-error log at selflog.DefaultPath()
+	// (`${XDG_CACHE_HOME:-$HOME/.cache}/agnt/errors.log`), viewable via
+	// `agnt hook log`. Tests override this via AGNT_ERROR_LOG /
+	// XDG_CACHE_HOME or by passing an explicit path.
 	dropLogPath string
 
 	// now is an optional time source for deterministic drop-log
@@ -287,12 +289,27 @@ func buildHookTags(sessionID, projectPath, agent string, rawTags []string) (map[
 func writeHookDropLog(opts hookInvocation, event string, cause error) {
 	path := opts.dropLogPath
 	if path == "" {
-		var err error
-		path, err = defaultHookDropLogPath()
-		if err != nil {
+		path = selflog.DefaultPath()
+		if path == "" {
 			return
 		}
 	}
+	// The drop line records under the hook event as its component
+	// (e.g. "post-tool-use"), so the unified errors.log preserves the
+	// historical hook-drop line shape exactly while sharing the file
+	// with other fire-and-forget self-failures (the pinger, etc.).
+	msg := strings.ReplaceAll(cause.Error(), "\n", " ")
+	if opts.now != nil {
+		// Deterministic timestamp path for tests.
+		writeHookDropLogAt(path, opts.now(), event, msg)
+		return
+	}
+	selflog.RecordTo(path, event, msg)
+}
+
+// writeHookDropLogAt is the injected-clock variant used only by tests; it
+// mirrors selflog.RecordTo's format with a caller-supplied timestamp.
+func writeHookDropLogAt(path string, ts time.Time, event, msg string) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return
 	}
@@ -301,15 +318,7 @@ func writeHookDropLog(opts hookInvocation, event string, cause error) {
 		return
 	}
 	defer f.Close()
-
-	nowFn := opts.now
-	if nowFn == nil {
-		nowFn = time.Now
-	}
-	// Normalize newlines in the error message so a multi-line error
-	// cannot inject extra log lines (and confuse line-counting tests).
-	msg := strings.ReplaceAll(cause.Error(), "\n", " ")
-	_, _ = fmt.Fprintf(f, "%s %s %s\n", nowFn().UTC().Format(time.RFC3339), event, msg)
+	_, _ = fmt.Fprintf(f, "%s %s %s\n", ts.UTC().Format(time.RFC3339), event, msg)
 }
 
 // maybeChainCheckBash runs the inline Bash interceptor against a
@@ -355,18 +364,4 @@ func (r *byteSliceReader) Read(p []byte) (int, error) {
 	n := copy(p, r.b[r.pos:])
 	r.pos += n
 	return n, nil
-}
-
-// defaultHookDropLogPath resolves the drop-log location. XDG_CACHE_HOME
-// wins over $HOME/.cache so tests can redirect the log with a single
-// t.Setenv call without needing to inject a full path.
-func defaultHookDropLogPath() (string, error) {
-	if cacheDir, err := os.UserCacheDir(); err == nil && cacheDir != "" {
-		return filepath.Join(cacheDir, "agnt", "hook-drop.log"), nil
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(home, ".cache", "agnt", "hook-drop.log"), nil
 }
