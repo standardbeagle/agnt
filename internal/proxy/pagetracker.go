@@ -597,9 +597,14 @@ func isDocumentRequest(entry HTTPLogEntry) bool {
 		contentType = entry.ResponseHeaders["content-type"]
 	}
 
-	// Explicit HTML response - definitely a document
+	// Explicit HTML response - a document, UNLESS the request path ends in a
+	// non-document resource extension. SPA dev servers with an index.html
+	// fallback answer unknown paths (favicon.ico, deep-linked assets) with the
+	// HTML shell; that mis-served HTML is a resource fetch, not a navigation, so
+	// it must not spawn its own page session. A path-suffix check (not the
+	// Contains-based hasResourceExtension) avoids query-string false positives.
 	if strings.Contains(contentType, "text/html") {
-		return true
+		return !pathHasResourceExtension(entry.URL)
 	}
 
 	// Explicit .html file extension
@@ -673,16 +678,42 @@ func isAPIPath(urlStr string) bool {
 	return false
 }
 
-// hasResourceExtension checks if URL has a resource file extension.
-func hasResourceExtension(urlStr string) bool {
-	resourceExts := []string{
-		".js", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico",
-		".woff", ".woff2", ".ttf", ".eot", ".json", ".xml", ".txt",
-		".webp", ".mp4", ".webm", ".mp3", ".wav",
-	}
+// resourceExtensions are file suffixes that mark a request as a static
+// resource rather than an HTML document navigation. Note: ".html" is
+// deliberately absent — an .html path IS a document.
+var resourceExtensions = []string{
+	".js", ".css", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico",
+	".woff", ".woff2", ".ttf", ".eot", ".json", ".xml", ".txt",
+	".webp", ".mp4", ".webm", ".mp3", ".wav",
+}
 
+// pathHasResourceExtension reports whether the URL's PATH (query/fragment
+// ignored) ends in a known non-document resource extension. Unlike
+// hasResourceExtension (a substring scan over the whole URL, kept for the
+// fallback heuristic and its existing tests), this is an exact path-suffix
+// match, so "/page?ref=style.css" is not misread as a resource.
+func pathHasResourceExtension(urlStr string) bool {
+	parsed, err := url.Parse(urlStr)
+	path := urlStr
+	if err == nil && parsed.Path != "" {
+		path = parsed.Path
+	}
+	path = strings.ToLower(path)
+	for _, ext := range resourceExtensions {
+		if strings.HasSuffix(path, ext) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasResourceExtension checks if a URL contains a resource file extension
+// anywhere (substring scan). Kept as the lenient fallback heuristic for the
+// GET-without-extension document check; pathHasResourceExtension is the strict
+// path-suffix variant used by the text/html gate.
+func hasResourceExtension(urlStr string) bool {
 	urlLower := strings.ToLower(urlStr)
-	for _, ext := range resourceExts {
+	for _, ext := range resourceExtensions {
 		if strings.Contains(urlLower, ext) {
 			return true
 		}

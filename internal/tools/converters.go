@@ -100,6 +100,9 @@ func convertToPageSummary(m map[string]interface{}, detailSet map[string]bool, l
 	var detailSections []string
 
 	if resources, ok := m["resources"].([]interface{}); ok {
+		if summary.ResourceCount == 0 {
+			summary.ResourceCount = len(resources)
+		}
 		summary.ResourcesByType = make(map[string]int)
 		for _, r := range resources {
 			if url, ok := r.(string); ok {
@@ -123,6 +126,9 @@ func convertToPageSummary(m map[string]interface{}, detailSet map[string]bool, l
 	}
 
 	if errors, ok := m["errors"].([]interface{}); ok {
+		if summary.ErrorCount == 0 {
+			summary.ErrorCount = len(errors)
+		}
 		summary.ErrorsByType = make(map[string]int)
 		errorCounts := make(map[string]*ErrorSummary)
 
@@ -177,7 +183,10 @@ func convertToPageSummary(m map[string]interface{}, detailSet map[string]bool, l
 		summary.InteractionsByType = make(map[string]int)
 		for _, i := range interactions {
 			if im, ok := i.(map[string]interface{}); ok {
-				iType := getString(im, "type")
+				iType := getString(im, "event_type")
+				if iType == "" {
+					iType = getString(im, "type")
+				}
 				if iType == "" {
 					iType = "unknown"
 				}
@@ -223,7 +232,10 @@ func convertToPageSummary(m map[string]interface{}, detailSet map[string]bool, l
 		summary.MutationsByType = make(map[string]int)
 		for _, mut := range mutations {
 			if mm, ok := mut.(map[string]interface{}); ok {
-				mType := getString(mm, "type")
+				mType := getString(mm, "mutation_type")
+				if mType == "" {
+					mType = getString(mm, "type")
+				}
 				if mType == "" {
 					mType = "unknown"
 				}
@@ -266,12 +278,16 @@ func convertToPageSummary(m map[string]interface{}, detailSet map[string]bool, l
 	}
 
 	if perf, ok := m["performance"].(map[string]interface{}); ok {
-		summary.FirstPaintMs = getInt64(perf, "first_paint_ms")
-		summary.DOMContentLoaded = getInt64(perf, "dom_content_loaded_ms")
+		// Read the domain JSON tags emitted by compactPageSession.
+		summary.FirstPaintMs = getInt64(perf, "first_paint")
+		summary.DOMContentLoaded = getInt64(perf, "dom_content_loaded")
 		summary.PageHeight = getInt(perf, "page_height")
 		summary.PageWidth = getInt(perf, "page_width")
 		summary.ViewportHeight = getInt(perf, "viewport_height")
 		summary.ViewportWidth = getInt(perf, "viewport_width")
+		if summary.LoadTimeMs == 0 {
+			summary.LoadTimeMs = getInt64(perf, "load_event_end")
+		}
 	}
 
 	if len(detailSections) > 0 {

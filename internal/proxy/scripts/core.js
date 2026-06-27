@@ -647,6 +647,12 @@
       return result;
     }
 
+    // Signatures of framework console.warn messages worth forwarding to the
+    // server. Vue/Svelte/Solid reactivity + hydration warnings only — not the
+    // entire warning stream. Kept in sync with the Go diagnostic classifier
+    // (internal/tools/currentpage_diagnostics.go).
+    var FRAMEWORK_WARN_RE = /\[vue warn\]|avoid mutating a prop|target is readonly|hydrat|\[svelte\]|unknown prop|createroot|non-reactive|reactiv/i;
+
     // Override console.error to capture console errors
     function setupConsoleOverride() {
       try {
@@ -741,6 +747,24 @@
               message: message,
               url: safeGetUrl()
             });
+
+            // Forward framework reactivity/hydration warnings to the server so
+            // the currentpage diagnostic classifier can see them. Vue, Svelte,
+            // and Solid emit their highest-value runtime diagnostics via
+            // console.warn (not console.error), so without this they are blind
+            // to the agent. Gated by a signature allowlist to keep generic
+            // deprecation/dev noise out of the error buffer.
+            if (FRAMEWORK_WARN_RE.test(message)) {
+              send('error', {
+                message: 'Console Warning: ' + message,
+                source: 'console',
+                lineno: 0,
+                colno: 0,
+                error: message,
+                stack: '',
+                timestamp: Date.now()
+              });
+            }
           } catch (e) {
             reportInternalError('console_warn_override_failed', e);
           }

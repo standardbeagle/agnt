@@ -64,7 +64,10 @@ func (d *Daemon) hubHandleCurrentPageGet(conn *hubpkg.Connection, cmd *hubproto.
 		return conn.WriteErr(hubproto.ErrNotFound, "session not found")
 	}
 
-	data, _ := json.Marshal(session)
+	// Project onto the lean wire schema: URL-only resources, per-kind counts,
+	// no HTTP bodies/headers. The tool side honours `raw` to expose the
+	// (body-free) detail arrays. See compactPageSession.
+	data, _ := json.Marshal(compactPageSession(session))
 	return conn.WriteJSON(data)
 }
 
@@ -88,8 +91,8 @@ func (d *Daemon) hubHandleCurrentPageSummary(conn *hubpkg.Connection, cmd *hubpr
 		return conn.WriteErr(hubproto.ErrNotFound, "session not found")
 	}
 
-	// Return a summary of the session
-	data, _ := json.Marshal(session)
+	// Same lean projection as GET; the tool side computes the rollups.
+	data, _ := json.Marshal(compactPageSession(session))
 	return conn.WriteJSON(data)
 }
 
