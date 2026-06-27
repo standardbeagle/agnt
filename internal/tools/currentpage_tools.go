@@ -6,7 +6,7 @@ import "time"
 type CurrentPageInput struct {
 	ProxyID   string   `json:"proxy_id,omitempty" jsonschema:"Proxy ID to query pages from (preferred)"`
 	ID        string   `json:"id,omitempty" jsonschema:"Alias for proxy_id"`
-	Action    string   `json:"action,omitempty" jsonschema:"Action: triage, list, get, summary, clear (default: triage — top signals for the active page; auto-selects the open page when session_id omitted)"`
+	Action    string   `json:"action,omitempty" jsonschema:"Action: triage, list, get, summary, clear, layout (default: triage — top signals for the active page; auto-selects the open page when session_id omitted). layout runs a live CSS/layout diagnosis (containing-block traps, ineffective z-index, click interception, clipped content) on the open page"`
 	SessionID string   `json:"session_id,omitempty" jsonschema:"Specific session ID (required for get/summary action)"`
 	Detail    []string `json:"detail,omitempty" jsonschema:"For summary: sections to include full detail for (interactions, mutations, errors, resources)"`
 	Limit     int      `json:"limit,omitempty" jsonschema:"For summary: max items per detailed section (default: 5, max: 100)"`
@@ -28,6 +28,9 @@ type CurrentPageOutput struct {
 
 	// For triage
 	Triage *PageTriageOutput `json:"triage,omitempty"`
+
+	// For layout
+	Layout *PageLayoutOutput `json:"layout,omitempty"`
 
 	// For clear
 	Success bool   `json:"success,omitempty"`

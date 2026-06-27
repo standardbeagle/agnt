@@ -126,6 +126,7 @@ func convertToPageTriage(m map[string]interface{}) PageTriageOutput {
 		"get_incidents — full, deduped, prioritized errors with remediation hints",
 		"proxylog — network requests/responses for this page",
 		"currentpage {action:\"summary\"} — by-type rollups; {action:\"get\", raw:true} — full detail",
+		"currentpage {action:\"layout\"} — live CSS/layout diagnosis (stacking, containing-block, clip, click-interception)",
 	}
 	if len(out.FrameworkDiagnostics) > 0 {
 		out.Hint = "Recognized framework runtime diagnostics — see framework_diagnostics for the bug class, the correct fix, and the common wrong fix to avoid before editing source."
