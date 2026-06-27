@@ -573,6 +573,33 @@
     var consoleErrorBuffer = [];
     var consoleWarningBuffer = [];
 
+    // The proxy wraps a top-level navigation in a chrome shell whose body is a
+    // content <iframe> with the real page. Error capture (setupErrorTrackingWith
+    // Buffer) runs only in the content frame, but the indicator's Errors tab
+    // reads window.__devtool_errors in the SHELL — a separate window. Forward
+    // each buffered error up to the shell (same-origin direct reach; the proxy
+    // serves both frames) so the shell's buffers, and thus the Errors tab +
+    // badge, reflect the page. kind is 'js' | 'console' | 'warning'.
+    function forwardErrorToShell(kind, entry) {
+      if (window.__devtool_frame_role !== 'content') { return; }
+      try {
+        var shell = window.parent;
+        if (shell && shell !== window && typeof shell.__devtool_errors_ingest === 'function') {
+          shell.__devtool_errors_ingest(kind, entry);
+        }
+      } catch (e) { /* cross-origin / shell gone — best-effort */ }
+    }
+
+    // Shell-side sink for errors forwarded by content frames. Terminal: pushes
+    // into the shell's own buffers (does not re-forward), so getDeduplicatedErr-
+    // ors / getStats / the Errors tab all see content-frame errors unchanged.
+    function ingestForwardedError(kind, entry) {
+      if (!entry) { return; }
+      if (kind === 'js') { addToBuffer(jsErrorBuffer, entry); }
+      else if (kind === 'console') { addToBuffer(consoleErrorBuffer, entry); }
+      else if (kind === 'warning') { addToBuffer(consoleWarningBuffer, entry); }
+    }
+
     // Consolidated error stream - combines errors from all sources
     // Sources: proxy (server-side errors), js (JavaScript errors), console (console.error),
     //          http (HTTP errors like 4xx/5xx), process (stdout/stderr from processes)
@@ -701,6 +728,7 @@
             };
 
             addToBuffer(consoleErrorBuffer, entry);
+            forwardErrorToShell('console', entry);
 
             // Add to consolidated error stream
             addConsolidatedError({
@@ -753,6 +781,7 @@
             };
 
             addToBuffer(consoleWarningBuffer, entry);
+            forwardErrorToShell('warning', entry);
 
             // Add to consolidated error stream
             addConsolidatedError({
@@ -813,6 +842,7 @@
             };
 
             addToBuffer(jsErrorBuffer, entry);
+            forwardErrorToShell('js', entry);
 
             // Add to consolidated error stream
             addConsolidatedError({
@@ -1361,6 +1391,11 @@
 
     // Export error tracking API for diagnostics panel
     try {
+      // Shell-side ingest sink for errors forwarded by content frames. Exported
+      // unconditionally (every frame) — only the shell is ever called, by its
+      // content child via window.parent.__devtool_errors_ingest. See
+      // forwardErrorToShell / ingestForwardedError above.
+      window.__devtool_errors_ingest = ingestForwardedError;
       if (!window.__devtool_errors) {
         window.__devtool_errors = {
           getJSErrors: function() {
