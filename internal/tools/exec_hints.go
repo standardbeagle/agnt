@@ -61,6 +61,15 @@ func getHints() []hintRule {
 				pattern: `performance\.getEntries`,
 				message: "use __devtool.captureNetwork — replaces performance.getEntries()",
 			},
+			{
+				// Catches agents about to "fix" layering by writing a z-index.
+				pattern: `(?i)z-?index`,
+				message: "use __devtool.getStacking — find the real stackingRoot + rootTrigger before changing z-index (bumping it rarely fixes cross-stacking-context bugs)",
+			},
+			{
+				pattern: `(?i)position\s*[:=]\s*['"]?fixed`,
+				message: "use __devtool.getContainer — check trappedBy before debugging fixed positioning (an ancestor transform/filter can trap a fixed element)",
+			},
 		}
 
 		compiled := make([]hintRule, 0, len(rules))

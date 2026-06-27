@@ -165,26 +165,35 @@
   var __jsdoc_getLayout = null;
 
   /**
-   * Get containing block and scroll container
+   * Resolve the containing block for a positioned element and surface the
+   * ancestor property that traps a position:fixed element (transform,
+   * filter, will-change, contain) — the distant cause behind "my fixed
+   * element scrolls away / is mispositioned" that is invisible in source.
    *
    * @devtool getContainer
    * @category inspection
    * @signature getContainer(selector)
    * @param {string|Element} selector - CSS selector or DOM element
-   * @returns {containingBlock, scrollContainer, offsetParent}
+   * @returns {type, name, contain, position, expectedContainingBlock, actualContainingBlock, trappedBy:{selector,property,value}|null, escaped}
    * @example
-   * __devtool.getContainer(".absolute-element")
+   * __devtool.getContainer(".fixed-header")
    */
   var __jsdoc_getContainer = null;
 
   /**
-   * Get stacking context information (z-index, creates context)
+   * Get stacking context information for an element: whether it creates its
+   * own context (and via which CSS property), the nearest ancestor stacking
+   * root that its z-index actually resolves against, the property that made
+   * that root a context (rootTrigger), and the full ancestor chain. Use this
+   * before changing z-index — the "z-index does nothing" bug is almost always
+   * a cross-stacking-context comparison, fixed by removing/moving rootTrigger,
+   * not by a bigger number.
    *
    * @devtool getStacking
    * @category inspection
    * @signature getStacking(selector)
    * @param {string|Element} selector - CSS selector or DOM element
-   * @returns {zIndex, createsContext, reason?, parentContext}
+   * @returns {zIndex, position, createsContext, selfTriggers:[{property,value}], stackingRoot, rootTrigger:{property,value}|null, chain:[{selector,triggers}], opacity, transform, filter}
    * @example
    * __devtool.getStacking(".modal-overlay")
    */
@@ -311,12 +320,18 @@
   var __jsdoc_findOverflows = null;
 
   /**
-   * Find all stacking contexts in the document
+   * Find every stacking context in the document, each with the exact CSS
+   * trigger(s) that created it. Detects the full spec trigger set —
+   * positioned+z-index, opacity, transform, filter, backdrop-filter,
+   * perspective, clip-path, mask, mix-blend-mode, isolation:isolate,
+   * will-change, contain, and flex/grid children with z-index — not just the
+   * obvious four. Each trigger is {property, value} so the agent sees the
+   * removable cause.
    *
    * @devtool findStackingContexts
    * @category layout
    * @signature findStackingContexts()
-   * @returns [{element, zIndex, reason}, ...]
+   * @returns {contexts:[{selector, zIndex, triggers:[{property,value}], reason:[string]}], count}
    * @example
    * __devtool.findStackingContexts()
    */

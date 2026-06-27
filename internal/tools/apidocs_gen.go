@@ -288,13 +288,13 @@ var DevToolAPIFunctions = []APIFunction{
 	{
 		Name:        "getContainer",
 		Category:    "inspection",
-		Description: "Get containing block and scroll container",
+		Description: "Resolve the containing block for a positioned element and surface the ancestor property that traps a position:fixed element (transform, filter, will-change, contain) — the distant cause behind \"my fixed element scrolls away / is mispositioned\" that is invisible in source.",
 		Signature:   "getContainer(selector)",
 		Parameters: []string{
 			"selector: string|Element - CSS selector or DOM element",
 		},
-		Returns: "{containingBlock, scrollContainer, offsetParent}",
-		Example: "__devtool.getContainer(\".absolute-element\")",
+		Returns: "{type, name, contain, position, expectedContainingBlock, actualContainingBlock, trappedBy:{selector,property,value}|null, escaped}",
+		Example: "__devtool.getContainer(\".fixed-header\")",
 	},
 	{
 		Name:        "getElementInfo",
@@ -343,12 +343,12 @@ var DevToolAPIFunctions = []APIFunction{
 	{
 		Name:        "getStacking",
 		Category:    "inspection",
-		Description: "Get stacking context information (z-index, creates context)",
+		Description: "Get stacking context information for an element: whether it creates its own context (and via which CSS property), the nearest ancestor stacking root that its z-index actually resolves against, the property that made that root a context (rootTrigger), and the full ancestor chain. Use this before changing z-index — the \"z-index does nothing\" bug is almost always a cross-stacking-context comparison, fixed by removing/moving rootTrigger, not by a bigger number.",
 		Signature:   "getStacking(selector)",
 		Parameters: []string{
 			"selector: string|Element - CSS selector or DOM element",
 		},
-		Returns: "{zIndex, createsContext, reason?, parentContext}",
+		Returns: "{zIndex, position, createsContext, selfTriggers:[{property,value}], stackingRoot, rootTrigger:{property,value}|null, chain:[{selector,triggers}], opacity, transform, filter}",
 		Example: "__devtool.getStacking(\".modal-overlay\")",
 	},
 	{
@@ -513,10 +513,10 @@ var DevToolAPIFunctions = []APIFunction{
 	{
 		Name:        "findStackingContexts",
 		Category:    "layout",
-		Description: "Find all stacking contexts in the document",
+		Description: "Find every stacking context in the document, each with the exact CSS trigger(s) that created it. Detects the full spec trigger set — positioned+z-index, opacity, transform, filter, backdrop-filter, perspective, clip-path, mask, mix-blend-mode, isolation:isolate, will-change, contain, and flex/grid children with z-index — not just the obvious four. Each trigger is {property, value} so the agent sees the removable cause.",
 		Signature:   "findStackingContexts()",
 		Parameters:  []string{},
-		Returns:     "[{element, zIndex, reason}, ...]",
+		Returns:     "{contexts:[{selector, zIndex, triggers:[{property,value}], reason:[string]}], count}",
 		Example:     "__devtool.findStackingContexts()",
 	},
 	{

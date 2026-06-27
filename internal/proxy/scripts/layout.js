@@ -37,35 +37,23 @@
 
     for (var i = 0; i < elements.length; i++) {
       var el = elements[i];
+      if (utils.isDevtoolElement && utils.isDevtoolElement(el)) continue;
+
       var computed = window.getComputedStyle(el);
+      // Canonical, complete trigger set (will-change, isolation, contain,
+      // mix-blend-mode, clip-path, mask, backdrop-filter, flex/grid children
+      // — all of which the old check silently missed) shared with getStacking
+      // via utils so the two never disagree. Each trigger is {property, value}
+      // so the agent gets the removable cause, not a bare label.
+      var triggers = utils.stackingContextTriggers(computed, utils.isFlexOrGridItem(el));
 
-      var isContext = (
-        (computed.position !== 'static' && computed.zIndex !== 'auto') ||
-        parseFloat(computed.opacity) < 1 ||
-        computed.transform !== 'none' ||
-        computed.filter !== 'none' ||
-        computed.perspective !== 'none'
-      );
-
-      if (isContext) {
-        var reasons = [];
-        if (computed.position !== 'static' && computed.zIndex !== 'auto') {
-          reasons.push('positioned');
-        }
-        if (parseFloat(computed.opacity) < 1) {
-          reasons.push('opacity');
-        }
-        if (computed.transform !== 'none') {
-          reasons.push('transform');
-        }
-        if (computed.filter !== 'none') {
-          reasons.push('filter');
-        }
-
+      if (triggers.length > 0) {
         contexts.push({
           selector: utils.generateSelector(el),
           zIndex: computed.zIndex,
-          reason: reasons
+          triggers: triggers,
+          // Back-compat: flat reason[] of property names.
+          reason: triggers.map(function(t) { return t.property; })
         });
       }
     }

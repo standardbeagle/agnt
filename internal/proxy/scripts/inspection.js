@@ -177,12 +177,60 @@
 
     try {
       var computed = window.getComputedStyle(el);
+      var pos = computed.position;
 
-      return {
+      var result = {
         type: computed.containerType || 'normal',
         name: computed.containerName || null,
-        contain: computed.contain || 'none'
+        contain: computed.contain || 'none',
+        position: pos
       };
+
+      // For positioned elements, resolve the ACTUAL containing block and
+      // surface the distant-ancestor property that established it. This is
+      // the invisible-in-source cause behind "my position:fixed element
+      // scrolls away / is mispositioned" — an ancestor transform/filter/
+      // will-change/contain traps a fixed element so it positions relative
+      // to that ancestor instead of the viewport.
+      if (pos === 'fixed' || pos === 'absolute') {
+        result.expectedContainingBlock = pos === 'fixed'
+          ? 'viewport'
+          : 'nearest positioned ancestor';
+
+        var trap = null;
+        var actual = null;
+        var parent = el.parentElement;
+        var depth = 0;
+        while (parent && parent !== document.documentElement && depth < 50) {
+          var pc = window.getComputedStyle(parent);
+          // A transform/filter/etc. ancestor establishes the containing block
+          // for BOTH fixed and absolute descendants.
+          var t = utils.containingBlockTrap(pc);
+          if (t) {
+            trap = { selector: utils.generateSelector(parent), property: t.property, value: t.value };
+            actual = trap.selector;
+            break;
+          }
+          // For absolute, a positioned ancestor is the normal containing block
+          // (not a "trap" — expected behavior), so stop there.
+          if (pos === 'absolute' && pc.position !== 'static') {
+            actual = utils.generateSelector(parent);
+            break;
+          }
+          parent = parent.parentElement;
+          depth++;
+        }
+
+        result.actualContainingBlock = actual ||
+          (pos === 'fixed' ? 'viewport' : 'initial containing block');
+        // trappedBy set ONLY when a fixed element is unexpectedly captured —
+        // the actionable finding. null means the fixed element is correctly
+        // viewport-relative.
+        result.trappedBy = (pos === 'fixed') ? trap : null;
+        result.escaped = (pos === 'fixed') ? (trap === null) : undefined;
+      }
+
+      return result;
     } catch (e) {
       return { error: e.message };
     }
@@ -194,12 +242,25 @@
 
     try {
       var computed = window.getComputedStyle(el);
-      var context = utils.getStackingContext(el);
+      var selfTriggers = utils.stackingContextTriggers(computed, utils.isFlexOrGridItem(el));
+      var chain = utils.getStackingChain(el);
+      var root = chain.length > 0 ? chain[0] : null;
 
       return {
         zIndex: computed.zIndex,
         position: computed.position,
-        context: context ? utils.generateSelector(context) : null,
+        // Does THIS element create its own stacking context, and via what?
+        createsContext: selfTriggers.length > 0,
+        selfTriggers: selfTriggers,
+        // The nearest ancestor stacking context. z-index is only resolved
+        // against siblings inside this same root — comparing z-index across
+        // different roots is meaningless (the classic "z-index does nothing"
+        // bug).
+        stackingRoot: root ? root.selector : null,
+        // WHY that root is a stacking context — the property to remove/move
+        // to actually fix layering, instead of bumping z-index forever.
+        rootTrigger: root ? (root.triggers[0] || null) : null,
+        chain: chain,
         opacity: parseFloat(computed.opacity),
         transform: computed.transform,
         filter: computed.filter
