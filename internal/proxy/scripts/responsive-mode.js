@@ -73,7 +73,17 @@
     savedFrameCss: null,
     loadHandler: null,
     host: null,
-    handleEl: null
+    handleEl: null,
+    // Overlay visibility toggle + scroll-tracking bookkeeping. overlaysVisible
+    // gates the shift boxes (toggleable from the header button / agent API).
+    // scrollWin/scrollHandler track the iframe contentWindow the scroll listener
+    // is bound to so re-renders follow the page as it scrolls; scrollRaf throttles
+    // those re-renders to one per frame.
+    overlaysVisible: true,
+    overlayToggleBtn: null,
+    scrollWin: null,
+    scrollHandler: null,
+    scrollRaf: 0
   };
 
   // Deliberately BELOW the shared ui-tokens.js z scale (lowest layer is
@@ -392,6 +402,20 @@
     widthLabel.textContent = state.width + 'px';
     widthLabel.style.cssText = 'margin-left: auto; color: #9aa0aa; font-variant-numeric: tabular-nums;';
 
+    var overlayBtn = document.createElement('button');
+    overlayBtn.style.cssText = [
+      'background: transparent',
+      'border: 1px solid #3a3f47',
+      'color: #cfd3da',
+      'border-radius: 4px',
+      'padding: 4px 10px',
+      'font-size: 12px',
+      'cursor: pointer'
+    ].join('; ');
+    overlayBtn.onclick = function() { toggleOverlays(); };
+    state.overlayToggleBtn = overlayBtn;
+    syncOverlayToggleBtn();
+
     var sendBtn = document.createElement('button');
     sendBtn.textContent = 'Send to agent';
     sendBtn.title = 'Hand off current width + layout shifts to the agent';
@@ -422,6 +446,7 @@
 
     header.appendChild(title);
     header.appendChild(widthLabel);
+    header.appendChild(overlayBtn);
     header.appendChild(sendBtn);
     header.appendChild(closeBtn);
 
@@ -582,6 +607,7 @@
     state.prevShiftIds = nextIds;
     state.shifts = findings;
     renderOverlays();
+    bindScrollTracking();
     emitState();
     return findings;
   }
@@ -600,6 +626,8 @@
   function renderOverlays() {
     if (!state.overlayLayer) { return; }
     state.overlayLayer.innerHTML = '';
+    // Hidden by the overlay toggle: leave the layer cleared.
+    if (!state.overlaysVisible) { return; }
     var doc;
     try {
       doc = state.iframe && state.iframe.contentDocument;
@@ -647,6 +675,64 @@
       box.appendChild(tag);
       state.overlayLayer.appendChild(box);
     }
+  }
+
+  // onContentScroll re-renders the shift boxes from fresh element rects so the
+  // overlays track the page as it scrolls (rects are viewport-relative and the
+  // overlay layer is mapped over the frame's viewport box). rAF-throttled to one
+  // re-render per frame.
+  function onContentScroll() {
+    if (state.scrollRaf) { return; }
+    state.scrollRaf = requestAnimationFrame(function() {
+      state.scrollRaf = 0;
+      renderOverlays();
+    });
+  }
+
+  // bindScrollTracking (re)binds the scroll listener to the iframe's current
+  // contentWindow. The window changes across in-frame navigations, so this is
+  // called from captureShifts (which runs on open, width change, and load).
+  // Capture phase catches scrolls on nested scroll containers too. Same-origin
+  // only — cross-origin access throws and degrades to no tracking.
+  function bindScrollTracking() {
+    var w;
+    try {
+      w = state.iframe && state.iframe.contentWindow;
+    } catch (e) { return; }
+    if (!w || w === state.scrollWin) { return; }
+    unbindScrollTracking();
+    try {
+      w.addEventListener('scroll', onContentScroll, true);
+      state.scrollWin = w;
+      state.scrollHandler = onContentScroll;
+    } catch (e) { /* cross-origin / window gone */ }
+  }
+
+  function unbindScrollTracking() {
+    if (state.scrollWin && state.scrollHandler) {
+      try { state.scrollWin.removeEventListener('scroll', state.scrollHandler, true); } catch (e) { /* gone */ }
+    }
+    state.scrollWin = null;
+    state.scrollHandler = null;
+    if (state.scrollRaf) { cancelAnimationFrame(state.scrollRaf); state.scrollRaf = 0; }
+  }
+
+  // syncOverlayToggleBtn reflects the current visibility on the header button.
+  function syncOverlayToggleBtn() {
+    var btn = state.overlayToggleBtn;
+    if (!btn) { return; }
+    btn.textContent = state.overlaysVisible ? 'Overlays: On' : 'Overlays: Off';
+    btn.title = state.overlaysVisible ? 'Hide layout-shift overlays' : 'Show layout-shift overlays';
+    btn.style.opacity = state.overlaysVisible ? '1' : '0.6';
+  }
+
+  // toggleOverlays flips (or, with an explicit arg, sets) shift-overlay
+  // visibility. Exposed on the responsive namespace for the agent/WS too.
+  function toggleOverlays(show) {
+    state.overlaysVisible = (show === undefined) ? !state.overlaysVisible : !!show;
+    syncOverlayToggleBtn();
+    renderOverlays();
+    return state.overlaysVisible;
   }
 
   // runAutoSweep runs the existing headless multi-viewport audit (responsive.js
@@ -785,6 +871,7 @@
 
   function close() {
     onDragEnd();
+    unbindScrollTracking();
     if (state.shiftTimer) { clearTimeout(state.shiftTimer); state.shiftTimer = null; }
     if (state.adopted && state.contentFrame) {
       // Restore the live content frame to the shell's full-bleed layout. The
@@ -811,6 +898,7 @@
     state.loadHandler = null;
     state.host = null;
     state.handleEl = null;
+    state.overlayToggleBtn = null;
     state.iframe = null;
     state.widthLabel = null;
     state.slider = null;
@@ -848,6 +936,7 @@
     return {
       open: state.open,
       width: state.width,
+      overlaysVisible: state.overlaysVisible,
       shifts: state.shifts,
       selectors: selectors
     };
@@ -861,4 +950,5 @@
   ns.setWidth = setWidth;
   ns.getState = getState;
   ns.captureShifts = captureShifts;
+  ns.toggleOverlays = toggleOverlays;
 })();
