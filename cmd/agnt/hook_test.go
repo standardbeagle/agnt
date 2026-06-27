@@ -32,7 +32,11 @@ func redirectDropLog(t *testing.T) string {
 	t.Helper()
 	tmp := t.TempDir()
 	t.Setenv("XDG_CACHE_HOME", tmp)
-	return filepath.Join(tmp, "agnt", "hook-drop.log")
+	// The hook dispatcher now writes drops to the unified self-error log
+	// (selflog.DefaultPath() → <cache>/agnt/errors.log), viewable via
+	// `agnt hook log`. AGNT_ERROR_LOG is unset so XDG_CACHE_HOME drives it.
+	t.Setenv("AGNT_ERROR_LOG", "")
+	return filepath.Join(tmp, "agnt", "errors.log")
 }
 
 // readDropLogLines returns the non-empty lines of the drop-log at path, or

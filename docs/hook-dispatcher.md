@@ -35,6 +35,21 @@ Any other event name enqueued and fanned out same way; table above = canonical C
 
 Drain goroutine never blocks on slow consumer: `BroadcastLogEntry` uses channel-send-with-default, `BroadcastToast` errors swallowed per-proxy, any malformed payload short-circuits at decode step. If consumer stalls hard enough to wedge fan-out, ring buffer overflow kicks in and `hookRing.OverflowCount()` surfaces pressure.
 
+## Persistent self-error log (`agnt hook log`)
+
+The dispatcher exits 0 even when the daemon is wedged, so a dropped event would otherwise vanish. On the wedged-daemon path (reachable but enqueue deadline exceeded) it appends one line to the always-on **self-error log** at `${XDG_CACHE_HOME:-$HOME/.cache}/agnt/errors.log` (`internal/selflog`, overridable via `AGNT_ERROR_LOG`). This is the unified sink for agnt's fire-and-forget failures — the incident pinger's delivery failures land here too. Line format: `<RFC3339> <component> <message>` (component = the hook event for drops, e.g. `post-tool-use`).
+
+Unlike `internal/debug` (only writes when debug mode is on), selflog is always-on and file-based with no daemon dependency, so it survives the outage that produced the drop. View it:
+
+```bash
+agnt hook log                 # last 50 entries
+agnt hook log --tail 200      # last N (0 = all)
+agnt hook log --follow        # stream new entries
+agnt hook log --clear         # wipe the log
+```
+
+The `agnt run`/overlay status bar also raises a `⚠` notice (`selflog:agnt`) when entries are logged during the session, pointing at `agnt hook log`. The daemon-not-running path (socket absent) still exits 0 with **no** drop line — only a wedged daemon is logged, matching the historical behavior.
+
 ## Sample `~/.claude/settings.json`
 
 ```json

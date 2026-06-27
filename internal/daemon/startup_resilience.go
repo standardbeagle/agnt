@@ -447,8 +447,12 @@ func (d *Daemon) startScriptWithRetry(
 		scriptEntry.AddRestartMarker()
 	}
 
-	// Stop the failed process
-	_ = d.hub.ProcessManager().StopProcess(ctx, proc)
+	// Stop the failed process. Best-effort: the process already failed to bind
+	// (EADDRINUSE) and is being torn down anyway, so a StopProcess error (e.g.
+	// already exited) is non-fatal — but log it so a stuck teardown is visible.
+	if err := d.hub.ProcessManager().StopProcess(ctx, proc); err != nil {
+		debug.Log("startup-resilience", "stop of EADDRINUSE process %s failed during recovery: %v", processID, err)
+	}
 	d.hub.ProcessManager().RemoveByPath(processID, projectPath)
 
 	// Clean up the port

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/config"
+	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/proxy"
 )
 
@@ -113,7 +114,11 @@ func (s *ChannelSink) HandleEntry(ctx context.Context, entry proxy.LogEntry) {
 		Content: content,
 		Meta:    sanitized,
 	}
-	_ = s.notify(ctx, ChannelNotificationMethod, params)
+	// Best-effort push: delivery is fire-and-forget (the notify fan-out already
+	// isolates per-session failures); log so a broken transport is diagnosable.
+	if err := s.notify(ctx, ChannelNotificationMethod, params); err != nil {
+		debug.Log("channel-sink", "channel notification delivery failed: %v", err)
+	}
 }
 
 // isDuplicate checks if an identical event was emitted within the dedupe window.

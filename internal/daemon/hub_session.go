@@ -40,6 +40,7 @@ func (d *Daemon) hubHandleSession(ctx context.Context, conn *hubpkg.Connection, 
 // return both the unnormalized original project path (which
 // RunAutostartAsync needs) and the fully-built Session struct.
 type sessionRegisterMetadata struct {
+	OverlayPath      string   `json:"overlay_path"`
 	ProjectPath      string   `json:"project_path"`
 	Command          string   `json:"command"`
 	Args             []string `json:"args"`
@@ -53,13 +54,21 @@ type sessionRegisterMetadata struct {
 // project path for downstream calls use the metadata.ProjectPath field.
 func parseSessionRegisterArgs(cmd *hubproto.Command) (*Session, sessionRegisterMetadata, error) {
 	var metadata sessionRegisterMetadata
-	if len(cmd.Args) < 2 {
-		return nil, metadata, fmt.Errorf("SESSION REGISTER requires: <code> <overlay_path>")
+	if len(cmd.Args) < 1 {
+		return nil, metadata, fmt.Errorf("SESSION REGISTER requires: <code>")
 	}
 	code := cmd.Args[0]
-	overlayPath := cmd.Args[1]
 
 	metadata, _ = unmarshalCommand[sessionRegisterMetadata](cmd)
+
+	// Overlay path is optional: sessions without an overlay (e.g. acp
+	// one-shot, cooked-mode REPL) register with an empty path. The hub
+	// protocol drops a trailing empty positional arg, so the canonical
+	// source is the JSON metadata; the positional arg is a legacy fallback.
+	overlayPath := metadata.OverlayPath
+	if len(cmd.Args) >= 2 && cmd.Args[1] != "" {
+		overlayPath = cmd.Args[1]
+	}
 
 	now := time.Now()
 	session := &Session{

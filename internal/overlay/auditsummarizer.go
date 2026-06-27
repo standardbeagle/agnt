@@ -91,8 +91,10 @@ func (s *AuditSummarizer) SummarizeAudit(ctx context.Context, audit AuditData, u
 	if filePath, err := proxy.SaveAuditData(audit.AuditType, audit.Label, audit.Result); err == nil {
 		auditFilePath = filePath
 		log.Printf("Audit data saved to: %s", filePath)
-		// Update summary after saving
-		_ = proxy.UpdateAuditSummary()
+		// Best-effort summary index refresh; a stale SUMMARY.md loses no data.
+		if err := proxy.UpdateAuditSummary(); err != nil {
+			log.Printf("Failed to update audit summary: %v", err)
+		}
 	} else {
 		log.Printf("Failed to save audit data: %v", err)
 	}

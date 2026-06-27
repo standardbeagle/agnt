@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/proxy"
 	hubpkg "github.com/standardbeagle/go-cli-server/hub"
@@ -57,7 +58,13 @@ func convertLogQueryFilter(data []byte) proxy.LogFilter {
 	}
 
 	var pf protocol.LogQueryFilter
-	_ = json.Unmarshal(data, &pf)
+	if err := json.Unmarshal(data, &pf); err != nil {
+		// The filter is produced by marshaling a valid protocol.LogQueryFilter
+		// on the client, so a failure here means wire corruption. Surface it to
+		// the debug log rather than silently returning an empty (unfiltered)
+		// filter, which would mislead the agent into reading the wrong result.
+		debug.Log("proxylog", "PROXYLOG QUERY filter decode failed, returning unfiltered: %v", err)
+	}
 
 	filter := proxy.LogFilter{
 		Methods:          pf.Methods,

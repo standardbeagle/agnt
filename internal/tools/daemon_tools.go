@@ -89,13 +89,17 @@ func (dt *DaemonTools) tryAutoAttach() {
 	// Get current working directory
 	cwd, err := os.Getwd()
 	if err != nil {
-		return // Silently fail - auto-attach is best-effort
+		// Best-effort: without a cwd we cannot resolve a session; log and skip.
+		debug.Log("daemon-tools", "auto-attach skipped: getwd failed: %v", err)
+		return
 	}
 
 	// Try to attach via the daemon
 	result, err := dt.client.SessionAttach(cwd)
 	if err != nil {
-		// No session found for this directory - that's OK
+		// No session registered for this directory is the common case, not an
+		// error; surface to the debug log for diagnosis but do not fail the tool.
+		debug.Log("daemon-tools", "auto-attach: no session for %s: %v", cwd, err)
 		return
 	}
 
@@ -197,7 +201,11 @@ func (dt *DaemonTools) StartChannelSink(server *mcp.Server, cfg *config.ChannelC
 
 	notify := func(ctx context.Context, method string, params any) error {
 		for session := range server.Sessions() {
-			_ = session.Notify(ctx, method, params)
+			// Best-effort fan-out: one slow/broken session must not block the
+			// others, so a failed Notify is logged, not propagated.
+			if err := session.Notify(ctx, method, params); err != nil {
+				debug.Log("channel-sink", "notify failed: %v", err)
+			}
 		}
 		return nil
 	}
@@ -270,11 +278,15 @@ func (dt *DaemonTools) StartIncidentDigestSink(server *mcp.Server) context.Cance
 					level = "info"
 				}
 				for session := range server.Sessions() {
-					_ = session.Log(ctx, &mcp.LoggingMessageParams{
+					// Best-effort fan-out: a failed Log to one session must not
+					// block the digest reaching the others.
+					if err := session.Log(ctx, &mcp.LoggingMessageParams{
 						Level:  mcp.LoggingLevel(level),
 						Logger: "agnt-incidents",
 						Data:   entry.Custom.Message,
-					})
+					}); err != nil {
+						debug.Log("incident-digest-sink", "log notify failed: %v", err)
+					}
 				}
 				return nil
 			})
@@ -362,7 +374,11 @@ func (dt *DaemonTools) RegisterChannelSession(ctx context.Context, cfg *config.C
 			select {
 			case <-ticker.C:
 				if dt.client != nil && dt.client.IsConnected() {
-					_ = dt.client.SessionHeartbeat(sessionCode)
+					// Best-effort: a missed heartbeat is recovered by the next
+					// tick; log so a persistent failure is diagnosable.
+					if err := dt.client.SessionHeartbeat(sessionCode); err != nil {
+						debug.Log("channel-session", "heartbeat failed: %v", err)
+					}
 				}
 			case <-hbCtx.Done():
 				return
@@ -389,7 +405,11 @@ func (dt *DaemonTools) closeChannelSession() {
 
 	// Unregister from daemon so CleanupSessionResources fires.
 	if dt.client != nil && dt.client.IsConnected() {
-		_ = dt.client.SessionUnregister(code)
+		// Best-effort cleanup on shutdown: the daemon also reaps the session on
+		// connection drop, so a failed unregister is logged, not fatal.
+		if err := dt.client.SessionUnregister(code); err != nil {
+			debug.Log("channel-session", "unregister failed: %v", err)
+		}
 	}
 }
 

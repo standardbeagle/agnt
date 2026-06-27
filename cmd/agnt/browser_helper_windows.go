@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+
+	"github.com/standardbeagle/agnt/internal/debug"
 )
 
 // BrowserHelper wraps an io.Writer and detects URLs in the output,
@@ -91,5 +93,9 @@ func openBrowser(url string) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{
 		HideWindow: true,
 	}
-	_ = cmd.Run()
+	// Best-effort: this is a convenience fallback for OAuth flows under ConPTY;
+	// the user can still open the URL manually. Record why if it fails.
+	if err := cmd.Run(); err != nil {
+		debug.Log("browser", "failed to open URL %q: %v", url, err)
+	}
 }

@@ -45,7 +45,11 @@ func (ps *ProxyServer) Stop(ctx context.Context) error {
 	// dead conn, or a slow drain goroutine outliving the server).
 	ps.wsConns.Range(func(key, value any) bool {
 		if c, ok := connFromMap(value).(interface{ Close() error }); ok {
-			_ = c.Close()
+			// Best-effort: closing a conn we are tearing down anyway; an error
+			// here only means the peer already went away.
+			if err := c.Close(); err != nil {
+				debug.Log("proxy", "error closing WS conn during shutdown of proxy %s: %v", ps.ID, err)
+			}
 		}
 		ps.wsConns.Delete(key)
 		return true
@@ -521,9 +525,13 @@ func (ps *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 	// Track page session
 	ps.pageTracker.TrackHTTPRequest(httpEntry)
 
-	// Auto-forward HTTP errors (5xx, 4xx) to overlay for PTY injection
+	// Auto-forward HTTP errors (5xx, 4xx) to overlay for PTY injection. The
+	// transaction is already in the traffic log (LogHTTP above), so overlay
+	// forwarding is supplementary — surface a failure to the debug log.
 	if ps.overlayNotifier.IsEnabled() && httpEntry.StatusCode >= 400 {
-		_ = ps.overlayNotifier.NotifyHTTPError(ps.ID, httpEntry)
+		if err := ps.overlayNotifier.NotifyHTTPError(ps.ID, httpEntry); err != nil {
+			debug.Log("proxy", "failed to forward HTTP error to overlay: %v", err)
+		}
 	}
 }
 

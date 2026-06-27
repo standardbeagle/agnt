@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/standardbeagle/agnt/internal/debug"
 )
 
 // DaemonClient provides a shared, reusable client connection to the daemon.
@@ -502,7 +504,9 @@ func (r *InputRouter) overviewStopScript() {
 	}
 	name := script.Name
 	r.overlay.mu.Unlock()
-	_ = r.scriptController.StopScript(name)
+	if err := r.scriptController.StopScript(name); err != nil {
+		debug.Log("overlay", "StopScript %q failed: %v", name, err)
+	}
 	r.overlay.mu.Lock()
 	r.overlay.draw()
 }
@@ -519,7 +523,9 @@ func (r *InputRouter) overviewRestartScript() {
 	}
 	name := script.Name
 	r.overlay.mu.Unlock()
-	_ = r.scriptController.RestartScript(name)
+	if err := r.scriptController.RestartScript(name); err != nil {
+		debug.Log("overlay", "RestartScript %q failed: %v", name, err)
+	}
 	r.overlay.mu.Lock()
 	r.overlay.draw()
 }
@@ -535,7 +541,9 @@ func (r *InputRouter) overviewStartScript() {
 	}
 	name := script.Name
 	r.overlay.mu.Unlock()
-	_ = r.scriptController.StartScript(name)
+	if err := r.scriptController.StartScript(name); err != nil {
+		debug.Log("overlay", "StartScript %q failed: %v", name, err)
+	}
 	r.overlay.mu.Lock()
 	r.overlay.draw()
 }
@@ -759,40 +767,60 @@ func (r *InputRouter) dispatchPaletteCommand(c PaletteCommand, args string) {
 	}
 
 	r.overlay.mu.Unlock()
+	// These are explicit user-invoked palette commands; a daemon-side failure
+	// must not vanish. Surface it to the debug log (the only PTY-safe sink).
 	switch c.Name {
 	case "start":
 		if args != "" {
-			_ = r.scriptController.StartScript(args)
+			if err := r.scriptController.StartScript(args); err != nil {
+				debug.Log("overlay", "palette start %q failed: %v", args, err)
+			}
 		}
 	case "stop":
 		if args != "" {
-			_ = r.scriptController.StopScript(args)
+			if err := r.scriptController.StopScript(args); err != nil {
+				debug.Log("overlay", "palette stop %q failed: %v", args, err)
+			}
 		}
 	case "restart":
 		if args != "" {
-			_ = r.scriptController.RestartScript(args)
+			if err := r.scriptController.RestartScript(args); err != nil {
+				debug.Log("overlay", "palette restart %q failed: %v", args, err)
+			}
 		}
 	case "kill-port":
 		if p, err := strconv.Atoi(strings.TrimSpace(args)); err == nil && p > 0 {
-			_ = r.scriptController.KillPort(p)
+			if err := r.scriptController.KillPort(p); err != nil {
+				debug.Log("overlay", "palette kill-port %d failed: %v", p, err)
+			}
 		}
 	case "kill-orphans":
-		_ = r.scriptController.CleanOrphans()
+		if err := r.scriptController.CleanOrphans(); err != nil {
+			debug.Log("overlay", "palette kill-orphans failed: %v", err)
+		}
 	case "restart-proxy":
 		if args != "" {
-			_ = r.scriptController.RestartProxy(args)
+			if err := r.scriptController.RestartProxy(args); err != nil {
+				debug.Log("overlay", "palette restart-proxy %q failed: %v", args, err)
+			}
 		}
 	case "stop-proxy":
 		if args != "" {
-			_ = r.scriptController.StopProxy(args)
+			if err := r.scriptController.StopProxy(args); err != nil {
+				debug.Log("overlay", "palette stop-proxy %q failed: %v", args, err)
+			}
 		}
 	case "stop-tunnel":
 		if args != "" {
-			_ = r.scriptController.StopTunnel(args)
+			if err := r.scriptController.StopTunnel(args); err != nil {
+				debug.Log("overlay", "palette stop-tunnel %q failed: %v", args, err)
+			}
 		}
 	case "run":
 		if args != "" {
-			_ = r.scriptController.RunCommand(args)
+			if err := r.scriptController.RunCommand(args); err != nil {
+				debug.Log("overlay", "palette run %q failed: %v", args, err)
+			}
 		}
 	}
 	if r.statusFetcher != nil {
@@ -814,7 +842,12 @@ func (r *InputRouter) fetchScriptOutput(panel *PanelItem) {
 	output, err := r.outputFetcher.GetScriptOutput(panel.ID, maxPanelLines)
 	r.overlay.mu.Lock()
 
-	if err != nil || output == "" {
+	if err != nil {
+		// Best-effort panel fill; keep whatever content the panel already has.
+		debug.Log("overlay", "fetchScriptOutput %q failed: %v", panel.ID, err)
+		return
+	}
+	if output == "" {
 		return
 	}
 	output = strings.TrimRight(output, "\n")
@@ -865,6 +898,9 @@ func (r *InputRouter) runPanelRefresh(stop <-chan struct{}, panelID string) {
 func (r *InputRouter) refreshPanelContent(panelID string) {
 	output, err := r.outputFetcher.GetScriptOutput(panelID, maxPanelLines)
 	if err != nil {
+		// Best-effort: this runs on a refresh ticker; keep the prior content on
+		// a transient fetch failure. No log here to avoid per-tick spam when the
+		// daemon is briefly unreachable.
 		return
 	}
 	output = strings.TrimRight(output, "\n")
@@ -935,6 +971,8 @@ func (r *InputRouter) refreshPanelContent(panelID string) {
 func (r *InputRouter) eagerRefreshPanel(panelID string) {
 	output, err := r.outputFetcher.GetScriptOutput(panelID, maxPanelLines)
 	if err != nil {
+		// Best-effort eager fill during the hide transition; keep prior content.
+		debug.Log("overlay", "eagerRefreshPanel %q failed: %v", panelID, err)
 		return
 	}
 	output = strings.TrimRight(output, "\n")

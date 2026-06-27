@@ -62,6 +62,7 @@ func (ps *ProxyServer) BroadcastActivityState(active bool) int {
 
 	messageBytes, err := json.Marshal(message)
 	if err != nil {
+		debug.Error("proxy", "BroadcastActivityState: failed to marshal: %v", err)
 		return 0
 	}
 
@@ -122,6 +123,7 @@ func (ps *ProxyServer) BroadcastOutputPreview(lines []string) int {
 
 	messageBytes, err := json.Marshal(message)
 	if err != nil {
+		debug.Error("proxy", "BroadcastOutputPreview: failed to marshal: %v", err)
 		return 0
 	}
 

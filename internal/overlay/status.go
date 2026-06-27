@@ -11,8 +11,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/platform"
 	"github.com/standardbeagle/agnt/internal/protocol"
+	"github.com/standardbeagle/agnt/internal/selflog"
 )
 
 // tailscaleDNS holds the cached Tailscale DNS name using lock-free atomics.
@@ -78,6 +80,14 @@ type StatusFetcher struct {
 	interval    time.Duration
 	projectPath string // Current project directory for filtering
 
+	// startedAt bounds the self-error notice to failures logged during
+	// this session — older errors.log entries don't nag a fresh session.
+	startedAt time.Time
+	// selfLogPath is the persistent self-error log read for the status
+	// notice; cached so the notice survives a daemon outage (the very
+	// case that produces hook drops).
+	selfLogPath string
+
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 }
@@ -96,6 +106,8 @@ func NewStatusFetcher(conn DaemonClient, overlay *Overlay, interval time.Duratio
 		overlay:     overlay,
 		interval:    interval,
 		projectPath: projectPath,
+		startedAt:   time.Now(),
+		selfLogPath: selflog.DefaultPath(),
 	}
 }
 
@@ -149,6 +161,11 @@ func (f *StatusFetcher) fetchStatus() {
 	err := f.conn.EnsureConnected()
 	if err != nil {
 		status.DaemonConnected = ConnectionDisconnected
+		// A wedged/down daemon is the prime cause of hook drops, so the
+		// self-error notice matters most on exactly this path.
+		if n := f.selfErrorNotice(); n != nil {
+			status.Notices = append(status.Notices, *n)
+		}
 		f.overlay.UpdateStatus(status)
 		return
 	}
@@ -204,6 +221,13 @@ func (f *StatusFetcher) fetchStatus() {
 	if err == nil {
 		status.StartupLog = startupLog
 		status.Notices = notices
+	}
+
+	// Surface agnt's own fire-and-forget failures (hook drops, pinger
+	// delivery) from the persistent self-error log. File-based so it shows
+	// even when the daemon is unreachable — the case that produces them.
+	if n := f.selfErrorNotice(); n != nil {
+		status.Notices = append(status.Notices, *n)
 	}
 
 	f.overlay.UpdateStatus(status)
@@ -333,6 +357,9 @@ func (f *StatusFetcher) fetchRecentErrors(proxies []ProxyInfo) ([]ErrorInfo, err
 
 		result, err := f.conn.RequestJSON(protocol.VerbProxyLog, filter, protocol.SubVerbQuery, proxy.ID)
 		if err != nil {
+			// Best-effort aggregation: one proxy's failed log query must not
+			// abort the whole status tick; skip it and continue with the rest.
+			debug.Log("overlay", "fetchRecentErrors: log query for proxy %s failed: %v", proxy.ID, err)
 			continue
 		}
 
@@ -386,6 +413,37 @@ func (f *StatusFetcher) fetchStartupLog() ([]StartupLogEntry, []NoticeInfo, erro
 	return entries, notices, nil
 }
 
+// selfErrorNotice synthesizes a status-bar notice when agnt has logged its
+// own fire-and-forget failures during this session. Returns nil when the
+// log is empty/absent, so a healthy session shows nothing. The notice ID is
+// stable so the dismissal machinery can hide it; it reappears (new ID slot
+// via count) only after the user has seen the current count — re-raising is
+// acceptable because the count is part of the summary, not the ID.
+func (f *StatusFetcher) selfErrorNotice() *NoticeInfo {
+	if f.selfLogPath == "" {
+		return nil
+	}
+	n, err := selflog.CountSince(f.selfLogPath, f.startedAt)
+	if err != nil || n == 0 {
+		debug.Log("overlay", "selfErrorNotice: count=%d err=%v", n, err)
+		return nil
+	}
+	noun := "self-error"
+	if n != 1 {
+		noun = "self-errors"
+	}
+	return &NoticeInfo{
+		ID:          "selflog:agnt",
+		Domain:      "selflog",
+		Severity:    "warning",
+		Resource:    "agnt",
+		Summary:     fmt.Sprintf("%d %s this session", n, noun),
+		Detail:      "agnt logged its own fire-and-forget failures (hook drops, pinger delivery). Run `agnt hook log` to view.",
+		Remediation: "agnt hook log",
+		EventType:   "self_error",
+	}
+}
+
 func (f *StatusFetcher) fetchBrowserSessions(proxies []ProxyInfo) ([]BrowserSession, error) {
 	var sessions []BrowserSession
 
@@ -393,6 +451,9 @@ func (f *StatusFetcher) fetchBrowserSessions(proxies []ProxyInfo) ([]BrowserSess
 		// Use request builder for current page list
 		result, err := f.conn.RequestJSON(protocol.VerbCurrentPage, nil, protocol.SubVerbList, proxy.ID)
 		if err != nil {
+			// Best-effort aggregation: skip this proxy's sessions on a failed
+			// query rather than dropping every proxy's sessions.
+			debug.Log("overlay", "fetchBrowserSessions: page list for proxy %s failed: %v", proxy.ID, err)
 			continue
 		}
 
@@ -424,6 +485,9 @@ func (f *StatusFetcher) linkProcessesAndProxies(processes []ProcessInfo, proxies
 		}
 		parsed, err := url.Parse(targetURL)
 		if err != nil {
+			// Best-effort linking: an unparseable target URL just means this
+			// proxy is not linked to a process; skip it.
+			debug.Log("overlay", "linkProcessesAndProxies: bad target URL %q: %v", targetURL, err)
 			continue
 		}
 		port := parsed.Port()
@@ -485,7 +549,7 @@ type DaemonOutputFetcher struct {
 func NewDaemonOutputFetcher(conn DaemonClient) *DaemonOutputFetcher {
 	projectPath, err := os.Getwd()
 	if err != nil {
-		projectPath = ""
+		projectPath = "" // Fall back to global scope if cwd is unavailable
 	}
 	return &DaemonOutputFetcher{
 		conn:        conn,
@@ -539,7 +603,7 @@ type DaemonScriptController struct {
 func NewDaemonScriptController(conn DaemonClient) *DaemonScriptController {
 	projectPath, err := os.Getwd()
 	if err != nil {
-		projectPath = ""
+		projectPath = "" // Fall back to global scope if cwd is unavailable
 	}
 	return &DaemonScriptController{
 		conn:        conn,

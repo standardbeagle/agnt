@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/standardbeagle/agnt/internal/debug"
 )
 
 // PersistentProxyConfig stores the configuration needed to recreate a proxy.
@@ -109,8 +111,13 @@ func NewStateManager(config StateManagerConfig) *StateManager {
 	}
 
 	if config.AutoLoad {
-		// Best-effort load - ignore errors, will start with empty state
-		_ = sm.Load()
+		// Best-effort cache warm: the persisted state is a cache, so a load
+		// failure (missing/corrupt file) is safe to ignore — we start with an
+		// empty state and rebuild. Log it so a persistently unreadable state
+		// file is diagnosable rather than silently invisible.
+		if err := sm.Load(); err != nil {
+			debug.Log("state", "auto-load of persisted state failed, starting empty: %v", err)
+		}
 	}
 
 	go sm.writeLoop()

@@ -31,6 +31,8 @@ import (
 	"sort"
 	"sync"
 	"sync/atomic"
+
+	"github.com/standardbeagle/agnt/internal/debug"
 )
 
 // ReadinessSentinel is the stable error code in the 503 JSON body
@@ -213,7 +215,11 @@ func writeReadinessNotReady(w http.ResponseWriter, pending []string) {
 	w.Header().Set("Retry-After", "1")
 	w.Header().Set("X-Agnt-Readiness", "waiting-for-dependencies")
 	w.WriteHeader(http.StatusServiceUnavailable)
-	_, _ = w.Write(payload)
+	// Best-effort: a write failure here means the client disconnected mid-503;
+	// the status line is already on the wire and there is nothing to retry.
+	if _, err := w.Write(payload); err != nil {
+		debug.Log("proxy", "failed to write readiness 503 body: %v", err)
+	}
 }
 
 // formatReadinessMessage composes the human-readable message embedded

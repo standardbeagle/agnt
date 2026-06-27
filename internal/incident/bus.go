@@ -4,6 +4,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/standardbeagle/agnt/internal/debug"
 )
 
 // Bus is the central sink for all incident events.
@@ -372,7 +374,9 @@ func (b *MPSCBus) emitMetaOverflow(dropCount int64) {
 	select {
 	case b.meta <- &ev:
 	default:
-		// Meta queue also full; accept the loss.
-		_ = dropCount
+		// Contract #2 (drop-newest): the meta queue is also full, so even the
+		// overflow notice is dropped. The cumulative counter (Dropped()) still
+		// surfaces the pressure to the agent; log the dropped total for diagnosis.
+		debug.Log("incident-bus", "meta overflow dropped; cumulative dropped=%d", dropCount)
 	}
 }

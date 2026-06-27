@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/standardbeagle/agnt/internal/config"
+	"github.com/standardbeagle/agnt/internal/debug"
 )
 
 // LoadForProject returns the merged rule set for the given project path.
@@ -60,9 +61,10 @@ func MergeOverrides(base *RuleSet, override *config.HookRulesConfig) *RuleSet {
 		}
 		rule, err := compileBashSpec(spec)
 		if err != nil {
-			// Silently skip — invalid regex in user config must not
-			// poison the hot path. `rules` subcommand surfaces these.
-			_ = name
+			// Best-effort skip — invalid regex in user config must not
+			// poison the fail-open hot path. `rules` subcommand surfaces
+			// these to the operator; debug.Log leaves a trace meanwhile.
+			debug.Log("hookrules", "skipping invalid bash-pattern %q: %v", name, err)
 			continue
 		}
 		rs.BashRules = append(rs.BashRules, rule)
@@ -77,7 +79,8 @@ func MergeOverrides(base *RuleSet, override *config.HookRulesConfig) *RuleSet {
 		}
 		rule, err := compilePromptSpec(spec)
 		if err != nil {
-			_ = name
+			// Best-effort skip — see bash-pattern note above.
+			debug.Log("hookrules", "skipping invalid prompt-pattern %q: %v", name, err)
 			continue
 		}
 		rs.PromptRules = append(rs.PromptRules, rule)

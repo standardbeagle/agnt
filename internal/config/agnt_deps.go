@@ -56,9 +56,14 @@ func (d *DependsOnList) UnmarshalKDL(node *document.Node) error {
 		var timeout time.Duration
 		if node.Properties.Exist() {
 			if tv, ok := node.Properties.Get("timeout"); ok {
-				if tval, ok := toSeconds(tv.Value); ok {
-					timeout = tval
+				tval, ok := toSeconds(tv.Value)
+				if !ok {
+					// The user declared timeout=N in .agnt.kdl; a non-numeric
+					// value must fail loudly rather than silently fall back to
+					// "wait indefinitely" (Silent Failure Prohibition).
+					return fmt.Errorf("depends-on timeout must be a number of seconds, got %T (%v)", tv.Value, tv.Value)
 				}
+				timeout = tval
 			}
 		}
 		for _, arg := range node.Arguments {
@@ -83,9 +88,13 @@ func (d *DependsOnList) UnmarshalKDL(node *document.Node) error {
 		dep := ScriptDependency{Name: name, Timeout: 0}
 		if child.Properties.Exist() {
 			if tv, ok := child.Properties.Get("timeout"); ok {
-				if tval, ok := toSeconds(tv.Value); ok {
-					dep.Timeout = tval
+				tval, ok := toSeconds(tv.Value)
+				if !ok {
+					// Same as the args branch: a malformed per-dependency
+					// timeout the user declared must surface, not be dropped.
+					return fmt.Errorf("depends-on %q timeout must be a number of seconds, got %T (%v)", name, tv.Value, tv.Value)
 				}
+				dep.Timeout = tval
 			}
 		}
 		*d = append(*d, dep)
