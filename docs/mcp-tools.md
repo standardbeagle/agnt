@@ -237,6 +237,48 @@ Returns shell command string for streaming daemon events via `agnt monitor` CLI.
 
 **Scored audits (8)**: `auditAll` aggregates eight scored audits into a weighted overall grade — DOM, CSS, performance, security, SEO, accessibility, **API efficiency** (`__devtool_audit_api.auditAPIEfficiency`), and **loading/spinner** (`__devtool_audit_loading.auditLoading`). Weights: security 1.5, accessibility 1.3, performance 1.2, api 1.1, loading 1.1, seo 1.0, dom 0.8, css 0.7. Both new audits are guarded — `auditAll` degrades cleanly when a module is absent. The API + loading audits are temporal: they read the fetch/XHR buffer and spinner timeline, so they need a fresh page load to populate.
 
+### CSS layering & positioning introspection (agent-targeted)
+
+The hardest CSS bugs are non-textual: the decisive evidence is *computed*
+stacking/containing-block state, not the source. These bugs are the
+sweet spot where source-only LLM reasoning reliably suggests the wrong fix
+(bump z-index, suppress, `!important`). Three helpers surface the runtime
+cause directly. The CSS-trigger detection is centralized in
+`utils.stackingContextTriggers` / `utils.containingBlockTrap`
+(`internal/proxy/scripts/utils.js`) so `getStacking`, `getStackingChain`,
+and `findStackingContexts` can never disagree on what creates a context.
+
+- **`getStacking(selector)`** → `{zIndex, position, createsContext,
+  selfTriggers:[{property,value}], stackingRoot, rootTrigger:{property,value},
+  chain:[{selector,triggers}], opacity, transform, filter}`. `stackingRoot`
+  is the nearest ancestor stacking context — z-index is only resolved against
+  siblings inside that same root, so a child's `z-index:9999` is meaningless
+  when its root is a sibling of the thing it wants to cover. `rootTrigger` is
+  the exact CSS property (e.g. `transform: translateZ(0)`) that created the
+  offending root — the thing to remove/relocate, instead of bumping z-index.
+- **`getContainer(selector)`** → for `position:fixed`/`absolute` adds
+  `{expectedContainingBlock, actualContainingBlock, trappedBy:{selector,
+  property,value}|null, escaped}`. `trappedBy` is the distant-ancestor
+  property (`transform`/`filter`/`will-change`/`contain`) that captures a
+  `fixed` element so it scrolls/positions relative to the ancestor instead of
+  the viewport — the invisible-in-source cause of "my fixed header scrolls
+  away." `null` ⇒ correctly viewport-relative.
+- **`findStackingContexts()`** → `{contexts:[{selector, zIndex,
+  triggers:[{property,value}], reason:[string]}], count}`. Detects the **full
+  spec trigger set** — positioned+z-index, opacity, transform, filter,
+  backdrop-filter, perspective, clip-path, mask, mix-blend-mode,
+  `isolation:isolate`, will-change, contain, and flex/grid children with
+  z-index — not just the four the old implementation caught. `reason[]` is a
+  flat property-name list kept for back-compat; `triggers[]` carries the
+  removable cause with values.
+
+**Promotion** (findability): `getStacking`/`getContainer` are in the injected
+cheat sheet (`internal/agntprompt/cheatsheet.go`) under a symptom→helper map,
+and `internal/tools/exec_hints.go` redirects raw `z-index` writes →
+`getStacking` and `position:fixed` debugging → `getContainer` when an agent
+writes such JS through `proxy exec`. So the agent is steered to the runtime
+evidence at the moment it is about to apply the wrong source-only fix.
+
 ### Always-Wrap & Content Frames
 
 The proxy wraps every top-level HTML navigation in an outer **chrome shell** whose

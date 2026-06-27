@@ -42,6 +42,10 @@ var PromotedFunctions = []string{
 	"inspect",
 	"getElementInfo",
 	"getComputed",
+	// CSS layering/positioning — the runtime-only causes (stacking root,
+	// fixed-element traps) that source-only reasoning gets wrong.
+	"getStacking",
+	"getContainer",
 	// layout — overflow/stacking/offscreen diagnosis in one call.
 	"findOverflows",
 	"findStackingContexts",
@@ -65,6 +69,10 @@ const cheatSheetHeader = `## Browser debugging helpers
 Prefer __devtool.* helpers over raw document.*/window.*/getBoundingClientRect.
 Call ` + "`proxy exec search: X`" + ` before writing raw JS.
 Use ` + "`proxy exec describe: name`" + ` for full signature + example.
+Symptom→helper (the decisive evidence is runtime state, not the source):
+- z-index/layering wrong → __devtool.getStacking (stackingRoot + rootTrigger), not a bigger z-index.
+- position:fixed scrolls/mispositions → __devtool.getContainer (trappedBy ancestor).
+- element clipped/hidden → __devtool.findOverflows / isVisible.
 `
 
 // BuildCheatSheet renders the compact helper cheat sheet. Callers pass

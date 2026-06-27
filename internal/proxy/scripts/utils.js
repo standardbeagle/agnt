@@ -279,6 +279,118 @@
     }
 
     // Find stacking context parent
+    // isFlexOrGridItem reports whether the element's parent is a flex/grid
+    // container — those children honor z-index without position:relative, a
+    // case the naive "position !== static" check silently misses.
+    function isFlexOrGridItem(el) {
+      try {
+        var p = el && el.parentElement;
+        if (!p) return false;
+        var d = window.getComputedStyle(p).display || '';
+        return d.indexOf('flex') !== -1 || d.indexOf('grid') !== -1;
+      } catch (e) {
+        return false;
+      }
+    }
+
+    // stackingContextTriggers returns every CSS condition on `computed` that
+    // creates a NEW stacking context, each as {property, value}. Empty array
+    // means the element creates no context. This is the canonical, complete
+    // list (the spec's set) — reused by getStacking, findStackingContexts,
+    // and getStackingChain so all three agree. The decisive datum for the
+    // "z-index does nothing" bug is WHICH property created the offending
+    // context, so we return the property+value, never a bare boolean.
+    function stackingContextTriggers(computed, flexOrGridChild) {
+      var t = [];
+      if (!computed) return t;
+      try {
+        var pos = computed.position;
+        var z = computed.zIndex;
+        if ((pos === 'absolute' || pos === 'relative') && z !== 'auto') {
+          t.push({ property: 'z-index', value: z + ' (position:' + pos + ')' });
+        }
+        if (pos === 'fixed' || pos === 'sticky') {
+          t.push({ property: 'position', value: pos });
+        }
+        if (flexOrGridChild && z !== 'auto') {
+          t.push({ property: 'z-index', value: z + ' (flex/grid child)' });
+        }
+        if (parseFloat(computed.opacity || '1') < 1) {
+          t.push({ property: 'opacity', value: computed.opacity });
+        }
+        if (computed.transform && computed.transform !== 'none') {
+          t.push({ property: 'transform', value: computed.transform });
+        }
+        if (computed.filter && computed.filter !== 'none') {
+          t.push({ property: 'filter', value: computed.filter });
+        }
+        if (computed.backdropFilter && computed.backdropFilter !== 'none') {
+          t.push({ property: 'backdrop-filter', value: computed.backdropFilter });
+        }
+        if (computed.perspective && computed.perspective !== 'none') {
+          t.push({ property: 'perspective', value: computed.perspective });
+        }
+        if (computed.clipPath && computed.clipPath !== 'none') {
+          t.push({ property: 'clip-path', value: computed.clipPath });
+        }
+        if (computed.mask && computed.mask !== 'none' && computed.mask !== '') {
+          t.push({ property: 'mask', value: computed.mask });
+        }
+        if (computed.mixBlendMode && computed.mixBlendMode !== 'normal') {
+          t.push({ property: 'mix-blend-mode', value: computed.mixBlendMode });
+        }
+        if (computed.isolation === 'isolate') {
+          t.push({ property: 'isolation', value: 'isolate' });
+        }
+        var wc = computed.willChange;
+        if (wc && wc !== 'auto' &&
+            /transform|opacity|filter|perspective|clip-path|mask|isolation|mix-blend-mode|z-index/.test(wc)) {
+          t.push({ property: 'will-change', value: wc });
+        }
+        var contain = computed.contain;
+        if (contain && /(^|\s)(layout|paint|strict|content)(\s|$)/.test(contain)) {
+          t.push({ property: 'contain', value: contain });
+        }
+      } catch (e) {
+        // defensive — partial trigger list better than none
+      }
+      return t;
+    }
+
+    // containingBlockTrap returns the CSS property on `computed` that makes an
+    // ancestor the containing block for position:fixed descendants (so the
+    // "fixed" element scrolls/positions relative to that ancestor instead of
+    // the viewport), or null. This is the invisible-in-source cause behind
+    // "my fixed header scrolls away" — a distant ancestor's transform.
+    function containingBlockTrap(computed) {
+      if (!computed) return null;
+      try {
+        if (computed.transform && computed.transform !== 'none') {
+          return { property: 'transform', value: computed.transform };
+        }
+        if (computed.perspective && computed.perspective !== 'none') {
+          return { property: 'perspective', value: computed.perspective };
+        }
+        if (computed.filter && computed.filter !== 'none') {
+          return { property: 'filter', value: computed.filter };
+        }
+        if (computed.backdropFilter && computed.backdropFilter !== 'none') {
+          return { property: 'backdrop-filter', value: computed.backdropFilter };
+        }
+        var wc = computed.willChange;
+        if (wc && /transform|perspective|filter/.test(wc)) {
+          return { property: 'will-change', value: wc };
+        }
+        var contain = computed.contain;
+        if (contain && /(^|\s)(layout|paint|strict|content)(\s|$)/.test(contain)) {
+          return { property: 'contain', value: contain };
+        }
+      } catch (e) {
+        // defensive
+      }
+      return null;
+    }
+
     function getStackingContext(element) {
       if (!element || element === document.documentElement) return null;
       if (!hasGetComputedStyle) return null;
@@ -293,24 +405,7 @@
             var computed = window.getComputedStyle(parent);
             if (!computed) break;
 
-            // Check conditions that create stacking context
-            var createsContext = false;
-
-            try {
-              createsContext = (
-                (computed.position !== 'static' && computed.zIndex !== 'auto') ||
-                parseFloat(computed.opacity || '1') < 1 ||
-                (computed.transform && computed.transform !== 'none') ||
-                (computed.filter && computed.filter !== 'none') ||
-                (computed.perspective && computed.perspective !== 'none') ||
-                computed.willChange === 'transform' ||
-                computed.willChange === 'opacity'
-              );
-            } catch (e) {
-              // Condition check failed
-            }
-
-            if (createsContext) {
+            if (stackingContextTriggers(computed, isFlexOrGridItem(parent)).length > 0) {
               return parent;
             }
 
@@ -329,6 +424,39 @@
         logError('getStackingContext_failed', e);
         return null;
       }
+    }
+
+    // getStackingChain walks ancestors and returns the full ladder of stacking
+    // contexts above `element`, each {selector, triggers:[{property,value}]}.
+    // The first entry is the nearest stacking root (the one z-index is
+    // resolved against); the last is the viewport root. This is what lets an
+    // agent see that a child's z-index:9999 is meaningless because its root is
+    // a sibling-of-the-thing-it-wants-to-cover.
+    function getStackingChain(element) {
+      var chain = [];
+      if (!element) return chain;
+      try {
+        var parent = element.parentElement;
+        var depth = 0;
+        var MAX_DEPTH = 50;
+        while (parent && parent !== document.documentElement && depth < MAX_DEPTH) {
+          try {
+            var computed = window.getComputedStyle(parent);
+            var triggers = stackingContextTriggers(computed, isFlexOrGridItem(parent));
+            if (triggers.length > 0) {
+              chain.push({ selector: generateSelector(parent), triggers: triggers });
+            }
+          } catch (e) {
+            // skip this ancestor
+          }
+          parent = parent.parentElement;
+          depth++;
+        }
+        chain.push({ selector: ':root', triggers: [{ property: 'root', value: 'initial containing block' }] });
+      } catch (e) {
+        logError('getStackingChain_failed', e);
+      }
+      return chain;
     }
 
     // Check if element is part of agnt/devtool UI (should be excluded from audits/tracking)
@@ -385,6 +513,10 @@
           getRect: getRect,
           isElementInViewport: isElementInViewport,
           getStackingContext: getStackingContext,
+          getStackingChain: getStackingChain,
+          stackingContextTriggers: stackingContextTriggers,
+          containingBlockTrap: containingBlockTrap,
+          isFlexOrGridItem: isFlexOrGridItem,
           isDevtoolElement: isDevtoolElement
         };
       }
