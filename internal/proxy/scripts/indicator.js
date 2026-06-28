@@ -224,11 +224,47 @@
   // Data Refresh Functions
   // These update the reactive store, UI follows automatically
   // ============================================
+
+  // Capture (errors, fetch/XHR, DOM mutations, interactions) and framework
+  // detection all run in the CONTENT frame, but this indicator runs in the chrome
+  // shell — a separate window whose own __devtool_* globals are empty. Read them
+  // from the content frame via targetWindow() (defined below; returns the active
+  // content frame's window when we are the shell, else self). Without this the
+  // Overview / Errors / Network / Performance / Interactions tabs all read empty
+  // shell-local globals. targetWindow() is hoisted, so these are safe to call.
+  function dvErrors() { var w = targetWindow(); return w ? w.__devtool_errors : null; }
+  function dvApi() { var w = targetWindow(); return w ? w.__devtool_api : null; }
+  function dvMutations() { var w = targetWindow(); return w ? w.__devtool_mutations : null; }
+  function dvFramework() { var w = targetWindow(); return w ? w.__devtool_framework : null; }
+  function dvInteractions() { var w = targetWindow(); return w ? w.__devtool_interactions : null; }
+
+  // mutationRateStats adapts mutation.js getRateStats() output to the shape this
+  // panel consumes. getRateStats returns { windows: { '5s': <rate number> }, ... }
+  // (label-keyed, value is the rate), but the Overview/Performance reads and the
+  // perf badge expect a numeric-ms key whose value is an object with .rate
+  // (e.g. stats[5000].rate). Without this adapter every mutation rate reads 0 and
+  // the Performance "Mutations (Ns window)" cards never render. Returns {} when
+  // unavailable.
+  function mutationRateStats(windows) {
+    var m = dvMutations();
+    if (!m || typeof m.getRateStats !== 'function') { return {}; }
+    var raw;
+    try { raw = m.getRateStats(windows); } catch (e) { return {}; }
+    if (!raw || !raw.windows) { return {}; }
+    var out = {};
+    for (var i = 0; i < windows.length; i++) {
+      var ms = windows[i];
+      var label = ms < 1000 ? (ms + 'ms') : ((ms / 1000) + 's');
+      if (raw.windows[label] != null) { out[ms] = { rate: raw.windows[label] }; }
+    }
+    return out;
+  }
+
   function refreshOverviewData() {
-    var framework = window.__devtool_framework ? window.__devtool_framework.detect() : null;
-    var errorStats = window.__devtool_errors ? window.__devtool_errors.getStats() : null;
-    var apiStats = window.__devtool_api ? window.__devtool_api.getStats() : null;
-    var mutationStats = window.__devtool_mutations ? window.__devtool_mutations.getRateStats([5000]) : null;
+    var framework = dvFramework() ? dvFramework().detect() : null;
+    var errorStats = dvErrors() ? dvErrors().getStats() : null;
+    var apiStats = dvApi() ? dvApi().getStats() : null;
+    var mutationStats = mutationRateStats([5000]);
     var isReact = framework && framework.name === 'React';
 
     var data = {
@@ -244,9 +280,9 @@
     };
 
     // React-specific metrics
-    if (isReact && window.__devtool_mutations) {
+    if (isReact && dvMutations()) {
       try {
-        var untriggered = window.__devtool_mutations.getUntriggered ? window.__devtool_mutations.getUntriggered() : [];
+        var untriggered = dvMutations().getUntriggered ? dvMutations().getUntriggered() : [];
         var recentUntriggered = untriggered.filter(function(m) {
           return m.timestamp && (Date.now() - m.timestamp) < 30000;
         });
@@ -254,7 +290,7 @@
       } catch (e) { /* ignore */ }
 
       try {
-        var correlationStats = window.__devtool_mutations.getCorrelationStats ? window.__devtool_mutations.getCorrelationStats() : null;
+        var correlationStats = dvMutations().getCorrelationStats ? dvMutations().getCorrelationStats() : null;
         if (correlationStats && correlationStats.avg_latency) {
           data.inputLag = correlationStats.avg_latency.input || 0;
         }
@@ -265,32 +301,32 @@
   }
 
   function refreshErrorsData() {
-    if (!window.__devtool_errors) {
+    if (!dvErrors()) {
       store.errors.val = [];
       return;
     }
-    var deduplicated = window.__devtool_errors.getDeduplicatedErrors();
+    var deduplicated = dvErrors().getDeduplicatedErrors();
     var allErrors = [].concat(deduplicated.jsErrors || [], deduplicated.consoleErrors || [], deduplicated.consoleWarnings || []);
     store.errors.val = allErrors;
   }
 
   function refreshNetworkData() {
-    if (!window.__devtool_api) {
+    if (!dvApi()) {
       store.network.val = [];
       return;
     }
-    var calls = window.__devtool_api.getCalls();
+    var calls = dvApi().getCalls();
     store.network.val = calls.slice(-20).reverse();
   }
 
   function refreshPerformanceData() {
-    if (!window.__devtool_mutations) {
+    if (!dvMutations()) {
       store.performance.val = { rateStats: {}, isReact: false, rerenderRate: 0, rerenderCount: 0, inputLag: 0, maxInputLag: 0, inputCount: 0, hotspots: [] };
       return;
     }
 
-    var rateStats = window.__devtool_mutations.getRateStats([1000, 5000, 30000]) || {};
-    var framework = window.__devtool_framework ? window.__devtool_framework.detect() : null;
+    var rateStats = mutationRateStats([1000, 5000, 30000]);
+    var framework = dvFramework() ? dvFramework().detect() : null;
     var isReact = framework && framework.name === 'React';
 
     var data = {
@@ -306,7 +342,7 @@
 
     if (isReact) {
       try {
-        var untriggered = window.__devtool_mutations.getUntriggered ? window.__devtool_mutations.getUntriggered() : [];
+        var untriggered = dvMutations().getUntriggered ? dvMutations().getUntriggered() : [];
         var recentUntriggered = untriggered.filter(function(m) {
           return m.timestamp && (Date.now() - m.timestamp) < 30000;
         });
@@ -315,7 +351,7 @@
       } catch (e) { /* ignore */ }
 
       try {
-        var correlationStats = window.__devtool_mutations.getCorrelationStats ? window.__devtool_mutations.getCorrelationStats() : null;
+        var correlationStats = dvMutations().getCorrelationStats ? dvMutations().getCorrelationStats() : null;
         if (correlationStats && correlationStats.avg_latency) {
           data.inputLag = correlationStats.avg_latency.input || 0;
           data.maxInputLag = correlationStats.max_latency.input || 0;
@@ -324,7 +360,7 @@
       } catch (e) { /* ignore */ }
 
       try {
-        var untriggeredMutations = window.__devtool_mutations.getUntriggered ? window.__devtool_mutations.getUntriggered() : [];
+        var untriggeredMutations = dvMutations().getUntriggered ? dvMutations().getUntriggered() : [];
         var elementCounts = {};
         untriggeredMutations.forEach(function(m) {
           if (m.target_selector) {
@@ -344,11 +380,11 @@
   }
 
   function refreshInteractionsData() {
-    if (!window.__devtool_interactions) {
+    if (!dvInteractions()) {
       store.interactions.val = [];
       return;
     }
-    var history = window.__devtool_interactions.getHistory ? window.__devtool_interactions.getHistory() : [];
+    var history = dvInteractions().getHistory ? dvInteractions().getHistory() : [];
     store.interactions.val = history.slice(-10).reverse();
   }
 
@@ -595,7 +631,7 @@
     return function() {
       var errors = store.errors.val;
 
-      if (!window.__devtool_errors) {
+      if (!dvErrors()) {
         return tags.div({style: STYLES.emptyState}, 'Error tracking not available');
       }
 
@@ -678,7 +714,7 @@
     return function() {
       var calls = store.network.val;
 
-      if (!window.__devtool_api) {
+      if (!dvApi()) {
         return tags.div({style: STYLES.emptyState}, 'Network tracking not available');
       }
 
@@ -771,7 +807,7 @@
     return function() {
       var data = store.performance.val;
 
-      if (!window.__devtool_mutations) {
+      if (!dvMutations()) {
         return tags.div({style: STYLES.emptyState}, 'Performance tracking not available');
       }
 
@@ -868,7 +904,7 @@
     return function() {
       var history = store.interactions.val;
 
-      if (!window.__devtool_interactions) {
+      if (!dvInteractions()) {
         return tags.div({style: STYLES.emptyState}, 'Interaction tracking not available');
       }
 
@@ -2230,9 +2266,9 @@
   // Update sparkline SVG from API tracker data
   function updateSparkline() {
     if (!state.sparkline) return;
-    if (!window.__devtool_api || !window.__devtool_api.getSparklineData) return;
+    if (!dvApi() || !dvApi().getSparklineData) return;
 
-    var data = window.__devtool_api.getSparklineData(60);
+    var data = dvApi().getSparklineData(60);
     var buckets = data.buckets;
     var maxBucket = data.maxBucket || 1;
     var svg = state.sparkline.querySelector('svg');
@@ -2946,16 +2982,16 @@
   function updateTabBadges() {
     // Update error tab badge
     var errorTab = getInMount('__devtool-tab-errors');
-    if (errorTab && window.__devtool_errors) {
-      var stats = window.__devtool_errors.getStats();
+    if (errorTab && dvErrors()) {
+      var stats = dvErrors().getStats();
       var totalErrors = stats.totalCount;
       updateTabBadge(errorTab, totalErrors, totalErrors > 0 ? 'red' : null);
     }
 
     // Update network tab badge
     var networkTab = getInMount('__devtool-tab-network');
-    if (networkTab && window.__devtool_api) {
-      var failedCalls = window.__devtool_api.getFailedCalls().length;
+    if (networkTab && dvApi()) {
+      var failedCalls = dvApi().getFailedCalls().length;
       updateTabBadge(networkTab, failedCalls, failedCalls > 0 ? 'red' : null);
     }
 
@@ -2977,9 +3013,9 @@
 
     // Update performance tab badge
     var perfTab = getInMount('__devtool-tab-performance');
-    if (perfTab && window.__devtool_mutations) {
-      var rateStats = window.__devtool_mutations.getRateStats([5000]);
-      if (rateStats && rateStats[5000]) {
+    if (perfTab && dvMutations()) {
+      var rateStats = mutationRateStats([5000]);
+      if (rateStats[5000]) {
         var rate = rateStats[5000].rate;
         var color = rate > 50 ? 'red' : (rate > 20 ? 'yellow' : 'green');
         updateTabBadge(perfTab, '●', color);
