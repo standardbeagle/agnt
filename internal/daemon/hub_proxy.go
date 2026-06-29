@@ -318,7 +318,6 @@ func (d *Daemon) hubHandleProxyExec(conn *hubpkg.Connection, cmd *hubproto.Comma
 	}
 
 	// Wait for result with timeout
-	timeout := 30 * time.Second
 	select {
 	case result := <-resultChan:
 		if result == nil {
@@ -341,10 +340,22 @@ func (d *Daemon) hubHandleProxyExec(conn *hubpkg.Connection, cmd *hubproto.Comma
 		data, _ := json.Marshal(resp)
 		return conn.WriteJSON(data)
 
-	case <-time.After(timeout):
-		return conn.WriteErr(hubproto.ErrTimeout, "execution timed out")
+	case <-time.After(proxyExecTimeout):
+		// Browser is connected (ExecuteJavaScript already fails fast on zero
+		// clients) but never posted a result. Reclaim the pending entry so it
+		// does not leak, and return a remediable error instead of a bare timeout.
+		p.CancelExecution(execID)
+		return conn.WriteErr(hubproto.ErrTimeout, fmt.Sprintf(
+			"execution timed out after %s: browser connected but no reply for exec=%s frame=%q — the page is likely navigating/reloading or the script is hung. Wait for the page to settle (check currentpage/proxylog) and retry.",
+			proxyExecTimeout, execID, frameID))
 	}
 }
+
+// proxyExecTimeout bounds how long the hub waits for a browser to post back a
+// PROXY EXEC result. The page must reply within this window; slow first paints
+// (heavy SPA loads) can approach it, but a genuine reply is near-instant once
+// the exec harness runs.
+const proxyExecTimeout = 30 * time.Second
 
 // hubHandleProxyToast handles PROXY TOAST command.
 

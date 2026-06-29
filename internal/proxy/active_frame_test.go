@@ -7,6 +7,27 @@ import (
 	"github.com/standardbeagle/agnt/internal/proxy/scripts"
 )
 
+// TestCancelExecution: a hub-side timeout must reclaim the pending exec so the
+// map/channel do not leak when the browser never replies (the chronic
+// page-reload-mid-exec case). Asserts removal, channel close, and idempotence.
+func TestCancelExecution(t *testing.T) {
+	ps := &ProxyServer{ID: "px1"}
+	ch := make(chan *ExecutionResult, 1)
+	ps.pendingExecs.Store("exec-1", ch)
+
+	ps.CancelExecution("exec-1")
+
+	if _, ok := ps.pendingExecs.Load("exec-1"); ok {
+		t.Fatal("pending entry must be removed after cancel")
+	}
+	if _, open := <-ch; open {
+		t.Fatal("result channel must be closed after cancel")
+	}
+	// Idempotent + safe on an unknown id (the deliver-already-won race).
+	ps.CancelExecution("exec-1")
+	ps.CancelExecution("never-existed")
+}
+
 // TestActiveFrame_RoundTrip: SetActiveFrame records the reported active content
 // frame; ActiveFrame reads it back; empty reports are ignored.
 func TestActiveFrame_RoundTrip(t *testing.T) {

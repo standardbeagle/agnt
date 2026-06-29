@@ -54,11 +54,24 @@ const bundleTemplate = `(function(){
     }
   };
 
+  function sigOf(body){
+    var c = (window.crypto || self.crypto);
+    if(!body || !c || !c.subtle) return Promise.resolve('');
+    var bytes = new TextEncoder().encode(body);
+    return c.subtle.digest('SHA-256', bytes).then(function(buf){
+      var a = new Uint8Array(buf), s = '';
+      for(var i=0;i<8;i++){ var h = a[i].toString(16); if(h.length < 2){ h = '0'+h; } s += h; }
+      return s;
+    });
+  }
+
   function ask(method, url, body){
-    return new Promise(function(resolve){
-      var id = ++seq;
-      pending[id] = resolve;
-      worker.postMessage({type:'match', id:id, method:method, url:url, body:body||''});
+    return sigOf(typeof body === 'string' ? body : '').then(function(sig){
+      return new Promise(function(resolve){
+        var id = ++seq;
+        pending[id] = resolve;
+        worker.postMessage({type:'match', id:id, method:method, url:url, bodySig:sig});
+      });
     });
   }
 
@@ -168,7 +181,7 @@ self.onmessage=function(e){
     return;
   }
   if(m.type==='match'){
-    var k=buildKey(m.method, m.url, '');
+    var k=buildKey(m.method, m.url, m.bodySig||'');
     var q=QUEUES[k];
     if(!q||!q.length){ self.postMessage({type:'reply', id:m.id, miss:true}); return; }
     var r=q.shift();

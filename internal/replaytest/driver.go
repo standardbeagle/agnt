@@ -140,13 +140,19 @@ func (d *Driver) runStep(sess *cdp.AutomationSession, sc *Scenario, step Step) (
 		return "", nil, fmt.Errorf("settle: %w", err)
 	}
 
-	// Recompute DOMSignature so cosmetic noise does not register as regression.
-	var html string
-	if err = sess.Run(chromedp.OuterHTML("body", &html, chromedp.ByQuery)); err == nil {
-		_ = DOMSignature(html, defaultVolatileAttrs)
-	}
-
 	failures = d.evalAssertions(sess, step)
+
+	// DOM signature regression check (volatile attrs stripped so cosmetic noise
+	// does not register). Only fires when the scenario carries a recorded
+	// baseline for this step.
+	if step.DOMSignature != "" {
+		var html string
+		if e := sess.Run(chromedp.OuterHTML("body", &html, chromedp.ByQuery)); e == nil {
+			if got := DOMSignature(html, defaultVolatileAttrs); got != step.DOMSignature {
+				failures = append(failures, fmt.Sprintf("dom signature changed: want %s got %s", step.DOMSignature, got))
+			}
+		}
+	}
 	return route, failures, nil
 }
 

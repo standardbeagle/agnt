@@ -322,16 +322,17 @@ func extractJSONArray(s string) string {
 	return s[start : end+1]
 }
 
-// handleRecord and handleStop are scoped out: full wiring needs full-fidelity
-// proxy.LogEntry data (response bodies + headers) from the daemon's
-// TrafficLogger. The proxy lives in the daemon process; this MCP tool is a
-// separate process and the existing PROXYLOG QUERY protocol verb returns
-// compacted entries (string summaries) that drop the response bodies
-// AssembleScenario requires. Pulling them would need a new daemon protocol verb
-// returning []proxy.LogEntry, which is out of scope for this task.
+// handleRecord and handleStop are alpha: not yet wired on this build. The
+// full-fidelity transport they need — ProxyLogQueryFull, which returns typed
+// []proxy.LogEntry (response bodies + headers) across the daemon boundary —
+// now exists (internal/daemon/client.go), so the original blocker is resolved.
+// The end-to-end record/stop wiring lives on branch feat/replaytest-record-stop
+// and has not been merged here. Until it lands, assemble scenarios from a
+// process with direct ProxyManager access (replaytest.AssembleScenario +
+// Store.SaveScenario).
 func (h *replaytestHandler) handleRecord(in ReplaytestInput) (*mcp.CallToolResult, ReplaytestOutput, error) {
 	out := ReplaytestOutput{
-		Message: "record is scoped out: it needs full-fidelity proxy traffic (response bodies + headers) from the daemon's TrafficLogger, but the PROXYLOG QUERY protocol verb returns compacted entries that drop response bodies. Wiring requires a new daemon protocol verb returning []proxy.LogEntry over the wire. Until then, assemble scenarios from a process with direct ProxyManager access (replaytest.AssembleScenario + Store.SaveScenario).",
+		Message: "record is alpha and not wired on this build. The transport it needs (ProxyLogQueryFull → typed []proxy.LogEntry with response bodies + headers) exists; the end-to-end record/stop wiring lives on branch feat/replaytest-record-stop and is not merged here. Until then, assemble scenarios from a process with direct ProxyManager access (replaytest.AssembleScenario + Store.SaveScenario).",
 		Success: false,
 	}
 	return replaytestOK(out.Message), out, nil
@@ -339,7 +340,7 @@ func (h *replaytestHandler) handleRecord(in ReplaytestInput) (*mcp.CallToolResul
 
 func (h *replaytestHandler) handleStop(in ReplaytestInput) (*mcp.CallToolResult, ReplaytestOutput, error) {
 	out := ReplaytestOutput{
-		Message: "stop is scoped out for the same reason as record: assembling a scenario from the captured window needs full-fidelity proxy.LogEntry data (response bodies + headers) that the cross-process PROXYLOG QUERY verb does not carry. A new daemon protocol verb returning []proxy.LogEntry is required to wire record/stop end-to-end.",
+		Message: "stop is alpha and not wired on this build, for the same reason as record: the end-to-end capture→AssembleScenario wiring lives on branch feat/replaytest-record-stop and is not merged here. The transport (ProxyLogQueryFull → typed []proxy.LogEntry) it depends on already exists.",
 		Success: false,
 	}
 	return replaytestOK(out.Message), out, nil
@@ -370,8 +371,9 @@ Actions:
            browser-debugger subagents.
   refine:  Use an LLM to mask volatile auto-captured assertions. Requires
            ANTHROPIC_API_KEY or CLAUDE_KEY in the daemon environment.
-  record/stop: Capture a scenario from proxy traffic (currently scoped out — see
-           the action's response for the daemon plumbing it needs).
+  record/stop: (alpha — not wired on this build) Capture a scenario from proxy
+           traffic. Returns an explanatory message; full wiring lives on branch
+           feat/replaytest-record-stop.
 
 Examples:
   replaytest {action: "list"}

@@ -201,3 +201,15 @@ func (ps *ProxyServer) ExecuteJavaScript(code string, frameID ...string) (string
 
 	return execID, resultChan, nil
 }
+
+// CancelExecution drops a pending execution whose caller has given up waiting
+// (e.g. a hub-side timeout). Without it the pendingExecs entry and its result
+// channel leak forever when the browser never replies — common when the target
+// page navigates or reloads mid-exec. Safe against the ws_handler delivery race:
+// LoadAndDelete is atomic, so exactly one of cancel/deliver wins.
+func (ps *ProxyServer) CancelExecution(execID string) {
+	if ch, ok := ps.pendingExecs.LoadAndDelete(execID); ok {
+		resultChan := ch.(chan *ExecutionResult)
+		close(resultChan)
+	}
+}
