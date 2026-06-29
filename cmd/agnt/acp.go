@@ -551,6 +551,8 @@ func runACPOverlay(ctx context.Context, conn *acp.ClientSideConnection, client *
 
 	sizeCh := make(chan os.Signal, 1)
 	signal.Notify(sizeCh, syscall.SIGWINCH)
+	// LIFO: Stop (no more sends) runs before close, which ends the range loop.
+	defer close(sizeCh)
 	defer signal.Stop(sizeCh)
 	go func() {
 		for range sizeCh {

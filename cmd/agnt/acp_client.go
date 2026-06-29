@@ -151,11 +151,18 @@ func (c *acpClient) RequestPermission(_ context.Context, params acp.RequestPermi
 	reader := bufio.NewReader(os.Stdin)
 	for {
 		fmt.Fprint(w, "Choose: ")
-		line, _ := reader.ReadString('\n')
+		line, err := reader.ReadString('\n')
 		idx := -1
 		_, _ = fmt.Sscanf(strings.TrimSpace(line), "%d", &idx)
 		if idx >= 1 && idx <= len(params.Options) {
 			return selectOption(params.Options[idx-1].OptionId), nil
+		}
+		if err != nil {
+			// stdin closed/redirected (EOF): cannot prompt, so cancel the
+			// request instead of spinning forever on "Invalid option.".
+			return acp.RequestPermissionResponse{
+				Outcome: acp.RequestPermissionOutcome{Cancelled: &acp.RequestPermissionOutcomeCancelled{}},
+			}, nil
 		}
 		fmt.Fprintln(w, "Invalid option.")
 	}
