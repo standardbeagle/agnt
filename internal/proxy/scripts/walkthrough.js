@@ -222,7 +222,7 @@
           run.armed = { el: el, handler: handler };
         } else {
           // Target missing: fall back to manual so the demo never wedges.
-          emit('warning', { stepIndex: run.index, message: 'click-target selector not found: ' + step.target });
+          emit('warning', { scriptId: run.script.id, stepIndex: run.index, message: 'click-target selector not found: ' + step.target });
         }
         return;
       }
@@ -280,7 +280,7 @@
         scriptId: run.script.id,
         stepIndex: index,
         total: total,
-        title: step.title || '',
+        stepTitle: step.title || '',
         advance: (step.advance && step.advance.type) || 'auto',
         how: how || 'goto',
         mode: run.mode
@@ -303,8 +303,8 @@
 
     // ---- Public host API ----------------------------------------------------
     function normalizeScript(script) {
-      if (!script || typeof script !== 'object') { throw new Error('script must be an object'); }
       if (typeof script === 'string') { script = JSON.parse(script); }
+      if (!script || typeof script !== 'object') { throw new Error('script must be an object'); }
       if (!script.id) { throw new Error('script.id is required'); }
       if (!Array.isArray(script.steps) || !script.steps.length) { throw new Error('script.steps must be a non-empty array'); }
       script.steps.forEach(function(s, i) {
