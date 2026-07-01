@@ -3,6 +3,9 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -648,4 +651,36 @@ func TestChannelSession_ConcurrentCloseAndHeartbeat(t *testing.T) {
 	// Let any stale heartbeat goroutines exit before test teardown so the
 	// race detector has a quiescent point to inspect.
 	time.Sleep(50 * time.Millisecond)
+}
+
+// TestIsClientDisconnect asserts that benign stdio-pipe close conditions are
+// classified as client disconnects (non-fatal) while real errors are not.
+// Regression guard for the "MCP server logs 'Server error' and exits non-zero
+// when Claude Code closes stdin" bug.
+func TestIsClientDisconnect(t *testing.T) {
+	benign := []error{
+		io.EOF,
+		mcp.ErrConnectionClosed,
+		fmt.Errorf("server is closing: %w", io.EOF),
+		errors.New("server is closing: EOF"),
+		errors.New("read unix @->/tmp/x.sock: connection closed"),
+		errors.New("write: file already closed"),
+	}
+	for _, err := range benign {
+		if !isClientDisconnect(err) {
+			t.Errorf("expected client-disconnect for %q", err)
+		}
+	}
+
+	real := []error{
+		nil,
+		errors.New("invalid params"),
+		errors.New("daemon enqueue deadline exceeded: i/o timeout"),
+		context.Canceled,
+	}
+	for _, err := range real {
+		if isClientDisconnect(err) {
+			t.Errorf("expected NOT client-disconnect for %v", err)
+		}
+	}
 }
