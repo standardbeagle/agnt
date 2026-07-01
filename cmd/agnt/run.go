@@ -173,8 +173,8 @@ func runPTYChild(ctx context.Context, args []string, socketPath string, sessionC
 
 	<-rt.Done()
 	rt.Stop()
-	_ = c.Wait()
-	cleanupTerminal(height)
+	waitErr := c.Wait()
+	finishSession(height, waitErr, ctx.Err() != nil, rt)
 	return sessionPGID, nil
 }
 
