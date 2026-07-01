@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -211,12 +214,37 @@ Available tools:
 	debug.Log("mcp", "Starting %s v%s (daemon mode)", appName, appVersion)
 
 	if err := server.Run(ctx, &mcp.StdioTransport{}); err != nil {
-		if ctx.Err() == nil {
+		// A closed stdio pipe surfaces as io.EOF / ErrConnectionClosed
+		// ("server is closing: EOF"). This is the normal teardown path:
+		// MCP clients such as Claude Code close stdin instead of sending
+		// SIGINT/SIGTERM, so ctx is never cancelled. Treating that as a
+		// fatal error made the client log "Server error" and exit non-zero,
+		// which looks like a crash. Only a genuinely unexpected error is fatal.
+		if ctx.Err() == nil && !isClientDisconnect(err) {
 			log.Fatalf("Server error: %v", err)
 		}
+		debug.Log("mcp", "MCP server stopped: %v", err)
 	}
 
 	debug.Log("mcp", "MCP client shutdown complete")
+}
+
+// isClientDisconnect reports whether err is the benign "the MCP client closed
+// the stdio pipe" condition rather than a real server fault. Clients tear the
+// server down by closing stdin (EOF) instead of signalling, so this must not be
+// treated as fatal.
+func isClientDisconnect(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, mcp.ErrConnectionClosed) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "EOF") ||
+		strings.Contains(msg, "connection closed") ||
+		strings.Contains(msg, "server is closing") ||
+		strings.Contains(msg, "file already closed")
 }
 
 // runAutostartFunc is the signature for triggering a non-interactive autostart.
