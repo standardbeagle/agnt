@@ -161,10 +161,11 @@ func runConPTYChild(ctx context.Context, args []string, socketPath string, sessi
 
 	rt := runOverlayPipeline(ctx, handle, command, cmdArgs, adapter, adapterPrompt, projectPath, sessionCode)
 
-	// Monitor process exit separately — close PTY when process exits so
-	// io.Copy in the shared pipeline returns even if PTY stays open.
+	// Monitor process exit separately — close PTY when the process exits so
+	// io.Copy in the shared pipeline returns even if the PTY stays open.
+	var waitErr error
 	go func() {
-		_ = cmd.Wait()
+		waitErr = cmd.Wait()
 		close(processExited)
 		ptmx.Close()
 	}()
@@ -176,16 +177,21 @@ func runConPTYChild(ctx context.Context, args []string, socketPath string, sessi
 	}
 	rt.Stop()
 
-	// Give process a moment to fully exit, force kill if needed.
+	// Give the process a moment to exit; force kill if needed.
+	exited := false
 	select {
 	case <-processExited:
+		exited = true
 	case <-time.After(2 * time.Second):
 		if cmd.Process != nil {
 			_ = cmd.Process.Kill()
 		}
 	}
-
-	cleanupTerminal(height)
+	if exited { // waitErr is safe to read only after processExited closed
+		finishSession(height, waitErr, ctx.Err() != nil, rt)
+	} else {
+		finishSession(height, nil, ctx.Err() != nil, rt)
+	}
 	return 0, nil
 }
 

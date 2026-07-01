@@ -903,6 +903,19 @@ func generateSessionCode(command string) string {
 // This ensures the scroll region is reset and the cursor is visible. The
 // `?9001l` (disable win32-input-mode) escape is harmless on Unix terminals
 // — they ignore unknown sequences — so we emit it unconditionally.
+// finishSession is the shared teardown tail for both platform entrypoints:
+// restore the terminal, then surface an abrupt agent exit persistently so the
+// user sees why when they return to the tab. Kept here (not in run*.go) to hold
+// those files under their line budget (TestRunFilesUnderBudget).
+func finishSession(height int, waitErr error, userInterrupted bool, rt *pipelineRuntime) {
+	cleanupTerminal(height)
+	var res []string
+	if rt != nil {
+		res = rt.resourceTap.Recent()
+	}
+	reportUnexpectedShutdown(waitErr, userInterrupted, res)
+}
+
 func cleanupTerminal(height int) {
 	// Disable extended keyboard/input modes that the child process may have enabled
 	// These cause garbage output (semicolons, escape sequences) if left enabled
@@ -1214,6 +1227,7 @@ type pipelineRuntime struct {
 	activityMonitor *overlay.ActivityMonitor
 	alertScanner    *overlay.AlertScanner
 	daemonConn      *daemon.Conn
+	resourceTap     *resourceErrorTap
 }
 
 // Done returns the channel that closes when the PTY output goroutine
@@ -1393,6 +1407,10 @@ func runOverlayPipeline(
 		}
 
 		activityCfg := overlay.DefaultActivityMonitorConfig()
+		// Tap every output line for host-resource-limit errors so an abrupt
+		// agent exit can be explained (see reportUnexpectedShutdown).
+		rt.resourceTap = newResourceErrorTap(5)
+		activityCfg.OnOutputLine = rt.resourceTap.Observe
 		activityCfg.OnStateChange = func(state overlay.ActivityState) {
 			rt.daemonHandle.BroadcastActivity(state == overlay.ActivityActive)
 			if state == overlay.ActivityActive && rt.netOverlay != nil {

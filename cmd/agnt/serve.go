@@ -17,6 +17,7 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/daemon"
 	"github.com/standardbeagle/agnt/internal/license"
+	"github.com/standardbeagle/agnt/internal/selflog"
 	"github.com/standardbeagle/agnt/internal/snapshot"
 	"github.com/standardbeagle/agnt/internal/tools"
 
@@ -221,6 +222,9 @@ Available tools:
 		// fatal error made the client log "Server error" and exit non-zero,
 		// which looks like a crash. Only a genuinely unexpected error is fatal.
 		if ctx.Err() == nil && !isClientDisconnect(err) {
+			// Persist the reason so it survives the process exit and surfaces
+			// via `agnt hook log` and the overlay ⚠ notice on the next run.
+			selflog.Record("mcp", "MCP server exited with error: %v", err)
 			log.Fatalf("Server error: %v", err)
 		}
 		debug.Log("mcp", "MCP server stopped: %v", err)
