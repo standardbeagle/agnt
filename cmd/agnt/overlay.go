@@ -43,6 +43,11 @@ type Overlay struct {
 	autoForward        *config.AutoForwardConfig
 	autoForwardEnabled atomic.Bool // Runtime toggle (config + indicator override)
 
+	// forwardPaused, when set, suppresses PTY injection of errors/notifications
+	// into the agent (the in-process delivery path). Pull surfaces are untouched:
+	// alert matches still report to the daemon store. Toggled from the overlay.
+	forwardPaused atomic.Bool
+
 	// alertScanner is the canonical PTY-injection queue (dedup, batch,
 	// activity-defer). Browser-JS and HTTP errors flow through Inject so
 	// they share the queue with regex-matched process alerts. See
@@ -510,6 +515,16 @@ func (o *Overlay) SetAutoForwardEnabled(enabled bool) {
 // IsAutoForwardEnabled returns the current auto-forward state.
 func (o *Overlay) IsAutoForwardEnabled() bool {
 	return o.autoForwardEnabled.Load()
+}
+
+// SetForwardingPaused pauses/resumes PTY injection of agent-inbound alerts.
+func (o *Overlay) SetForwardingPaused(paused bool) {
+	o.forwardPaused.Store(paused)
+}
+
+// IsForwardingPaused reports whether PTY injection is currently paused.
+func (o *Overlay) IsForwardingPaused() bool {
+	return o.forwardPaused.Load()
 }
 
 // styleChange represents a single CSS property change in a style-edit attachment.

@@ -418,6 +418,12 @@ func (r *Renderer) DrawIndicator(status Status) {
 		parts = append(parts, fmt.Sprintf("🔗 %s%s%s", FgBrightBlack, IconDisconnected, Reset))
 	}
 
+	// Muted marker: agent-inbound push is paused. Errors still accumulate and
+	// are pullable via get_errors/get_incidents — this only silences the push.
+	if status.ForwardPaused {
+		parts = append(parts, fmt.Sprintf("%s🔇 MUTED%s", FgYellow, Reset))
+	}
+
 	// Per-script state icons with contextual emoji (persistent across restarts)
 	for _, s := range status.Scripts {
 		icon, color := processStateIcon(s.State, s.HasAlerts, frame)

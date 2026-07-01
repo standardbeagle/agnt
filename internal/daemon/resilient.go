@@ -766,6 +766,13 @@ func (rc *ResilientClient) BroadcastActivity(active bool, proxyIDs ...string) er
 	})
 }
 
+// SetForwarding pauses/resumes agent-inbound push for this session.
+func (rc *ResilientClient) SetForwarding(paused bool) error {
+	return rc.WithClient(func(c *Client) error {
+		return c.SetForwarding(paused)
+	})
+}
+
 // BroadcastOutputPreview sends output preview lines to connected browsers via proxies.
 func (rc *ResilientClient) BroadcastOutputPreview(lines []string, proxyIDs ...string) error {
 	return rc.WithClient(func(c *Client) error {

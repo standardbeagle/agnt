@@ -39,6 +39,12 @@ func (d *Daemon) addIncidentSession(sessionCode string) {
 		return
 	}
 	mcpNotify := func(level string, payload incident.PingPayload) error {
+		// Pause = drop the push, not the record. The incident already landed in
+		// this session's inbox upstream of the pinger, so get_incidents/get_errors
+		// stay pullable; we only suppress the interrupt into the agent.
+		if d.IsForwardingPaused(sessionCode) {
+			return nil
+		}
 		d.broadcastIncidentDigest(level, payload)
 		return nil
 	}

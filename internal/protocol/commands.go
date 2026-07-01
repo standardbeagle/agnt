@@ -34,6 +34,7 @@ const (
 	SubVerbStats         = "STATS"
 	SubVerbActivity      = "ACTIVITY"
 	SubVerbOutputPreview = "OUTPUT-PREVIEW"
+	SubVerbForwarding    = "FORWARDING" // Pause/resume agent-inbound push for a session
 	SubVerbEnable        = "ENABLE"
 	SubVerbDisable       = "DISABLE"
 	SubVerbAddRule       = "ADD-RULE"
