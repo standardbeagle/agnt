@@ -108,6 +108,13 @@ type InputRouter struct {
 
 	// Panel refresh ticker for live-tailing process output
 	panelRefreshStop chan struct{} // closed to stop the refresh goroutine
+
+	// Forwarding pause: stop pushing errors/notifications to the agent when the
+	// flood overwhelms it. forwardingToggle applies the state across both
+	// delivery paths (in-process PTY + daemon push); forwardPaused is the local
+	// display state. Set via SetForwardingToggle.
+	forwardingToggle func(paused bool)
+	forwardPaused    bool
 }
 
 // NewInputRouter creates a new InputRouter.
@@ -146,6 +153,29 @@ func (r *InputRouter) SetDaemonConnector(connector DaemonConnector) {
 // SetStatusFetcher sets the status fetcher for refreshing after connection.
 func (r *InputRouter) SetStatusFetcher(fetcher *StatusFetcher) {
 	r.statusFetcher = fetcher
+}
+
+// SetForwardingToggle wires the callback that pauses/resumes agent-inbound push
+// (errors + notifications) across the in-process and daemon delivery paths.
+func (r *InputRouter) SetForwardingToggle(fn func(paused bool)) {
+	r.forwardingToggle = fn
+}
+
+// setForwarding applies a forwarding pause state: invokes the toggle, updates
+// the persistent indicator, and shows a transient confirmation. Caller need not
+// hold overlay.mu — this acquires nothing that conflicts (the toggle does its
+// own IPC; the overlay setters lock internally).
+func (r *InputRouter) setForwarding(paused bool) {
+	r.forwardPaused = paused
+	if r.forwardingToggle != nil {
+		r.forwardingToggle(paused)
+	}
+	r.overlay.SetForwardPaused(paused)
+	if paused {
+		r.overlay.DrawStatusBarMessage("🔇 agent forwarding paused — errors still pullable via get_errors")
+	} else {
+		r.overlay.DrawStatusBarMessage("🔊 agent forwarding resumed")
+	}
 }
 
 // SetSummarizer sets the summarizer for generating AI summaries and enables the
@@ -247,6 +277,13 @@ func (r *InputRouter) Run() error {
 					}
 				}
 				if len(buf) > 0 {
+					// Intercept Ctrl+Up/Down to pause/resume agent forwarding,
+					// even mid-passthrough, so an overwhelmed agent can be muted
+					// instantly without opening the overlay.
+					if paused, ok := forwardingHotkey(buf); ok {
+						r.setForwarding(paused)
+						continue
+					}
 					// Intercept Ctrl+Arrow for direct panel browsing
 					if delta := panelShortcutDelta(buf); delta != 0 {
 						r.enterPanelBrowse(delta)
@@ -752,6 +789,12 @@ func (r *InputRouter) dispatchPaletteCommand(c PaletteCommand, args string) {
 	case "toggle-ports":
 		r.overlay.showAllPorts = !r.overlay.showAllPorts
 		return
+	case "mute":
+		r.setForwarding(true)
+		return
+	case "unmute":
+		r.setForwarding(false)
+		return
 	case "dismiss":
 		if n, err := strconv.Atoi(strings.TrimSpace(args)); err == nil {
 			r.overlay.DismissNoticeByIndex(n)
@@ -1073,6 +1116,20 @@ func panelShortcutDelta(buf []byte) int {
 		return -1
 	}
 	return 0
+}
+
+// forwardingHotkey maps Ctrl+Up → pause and Ctrl+Down → resume agent forwarding.
+// Returns (paused, true) on a match, (false, false) otherwise. These sit in the
+// same Ctrl+Arrow family the overlay already owns (panelShortcutDelta), so they
+// don't collide with the wrapped AI tool, which sees plain Up/Down for history.
+func forwardingHotkey(buf []byte) (paused bool, ok bool) {
+	switch string(buf) {
+	case "\x1b[1;5A": // Ctrl+Up
+		return true, true
+	case "\x1b[1;5B": // Ctrl+Down
+		return false, true
+	}
+	return false, false
 }
 
 // enterPanelBrowse opens the overlay directly into panel mode, bypassing the

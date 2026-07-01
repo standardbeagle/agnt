@@ -209,6 +209,12 @@ type Daemon struct {
 	incidentBus       *incident.MPSCBus     // Incident pipeline event bus (L8+)
 	hookRing          *hookRingBuffer       // Claude Code hook event ring buffer (phase 1 scope)
 
+	// forwardingPaused records per-session "stop pushing to the agent" toggles
+	// set from the overlay (OVERLAY FORWARDING verb). When a session is paused,
+	// the incident-digest MCP sink drops pings — but the inbox still accumulates
+	// them, so get_incidents/get_errors stay pullable. Keyed by session code.
+	forwardingPaused sync.Map // map[string]bool
+
 	// swallowDetector runs the chaos "swallowed error" heuristic. It is always
 	// allocated (cheap) but only fed when a fault entry is stamped
 	// ChaosSwallowWatch — i.e. the proxy's runtime swallow-detect panel toggle

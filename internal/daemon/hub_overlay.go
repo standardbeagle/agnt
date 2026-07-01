@@ -20,7 +20,29 @@ func (d *Daemon) hubHandleOverlay(ctx context.Context, conn *hubpkg.Connection, 
 		"CLEAR":          connOnly(d.hubHandleOverlayClear),
 		"ACTIVITY":       noCtx(d.hubHandleOverlayActivity),
 		"OUTPUT-PREVIEW": noCtx(d.hubHandleOverlayOutputPreview),
+		"FORWARDING":     noCtx(d.hubHandleOverlayForwarding),
 	})
+}
+
+// hubHandleOverlayForwarding handles OVERLAY FORWARDING command.
+// Args: <paused:true/false>. Pauses or resumes agent-inbound push (incident
+// digest pings) for the connection's session. Pull surfaces are unaffected.
+func (d *Daemon) hubHandleOverlayForwarding(conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	if len(cmd.Args) < 1 {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, "OVERLAY FORWARDING requires: <paused:true/false>")
+	}
+	sessionCode := conn.SessionCode()
+	if sessionCode == "" {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, "no session attached: OVERLAY FORWARDING is session-scoped")
+	}
+	paused := cmd.Args[0] == "true"
+	d.SetForwardingPaused(sessionCode, paused)
+
+	data, _ := json.Marshal(map[string]interface{}{
+		"status": "ok",
+		"paused": paused,
+	})
+	return conn.WriteJSON(data)
 }
 
 // hubHandleOverlaySet handles OVERLAY SET command.

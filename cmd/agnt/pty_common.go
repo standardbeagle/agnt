@@ -103,6 +103,15 @@ func (h *daemonSessionHandle) BroadcastActivity(active bool) {
 	}
 }
 
+// SetForwarding tells the daemon to pause/resume agent-inbound push (incident
+// digest pings) for this session. Best-effort; the in-process PTY gate is the
+// primary path and does not depend on this succeeding.
+func (h *daemonSessionHandle) SetForwarding(paused bool) {
+	if h.IsConnected() {
+		_ = h.client.SetForwarding(paused)
+	}
+}
+
 // BroadcastOutputPreview sends output preview lines to the daemon.
 func (h *daemonSessionHandle) BroadcastOutputPreview(lines []string) {
 	if h.IsConnected() {
@@ -428,7 +437,10 @@ func setupAlertScanner(projectPath, sessionCode string, netOverlay *Overlay, dae
 			if formatted == "" {
 				return
 			}
-			if netOverlay != nil {
+			// Forwarding pause gates only the PUSH (PTY injection). The
+			// AlertReport below still runs, so errors stay pullable via
+			// get_errors/get_incidents while the agent is muted.
+			if netOverlay != nil && !netOverlay.IsForwardingPaused() {
 				netOverlay.typeText(TypeMessage{
 					Text:    formatted,
 					Enter:   true,
@@ -1612,6 +1624,18 @@ func setupTerminalOverlay(ctx context.Context, handle *ptyHandle, rt *pipelineRu
 	rt.statusFetcher = overlay.NewStatusFetcher(daemonClient, rt.termOverlay, 2*time.Second)
 	rt.statusFetcher.Start(ctx)
 	rt.inputRouter.SetStatusFetcher(rt.statusFetcher)
+
+	// Forwarding pause/resume: gate the in-process PTY injection and tell the
+	// daemon to drop incident-digest pings for this session. rt.netOverlay and
+	// rt.daemonHandle are captured lazily (set earlier in the run flow).
+	rt.inputRouter.SetForwardingToggle(func(paused bool) {
+		if rt.netOverlay != nil {
+			rt.netOverlay.SetForwardingPaused(paused)
+		}
+		if rt.daemonHandle != nil {
+			rt.daemonHandle.SetForwarding(paused)
+		}
+	})
 }
 
 // projectPathFromHandle returns a project-path string. We don't carry it

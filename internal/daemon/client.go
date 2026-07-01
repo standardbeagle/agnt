@@ -416,6 +416,17 @@ func (c *Client) BroadcastActivity(active bool, proxyIDs ...string) error {
 	return err
 }
 
+// SetForwarding pauses or resumes agent-inbound push delivery for this
+// session. Paused only gates the push; incidents stay pullable.
+func (c *Client) SetForwarding(paused bool) error {
+	pausedStr := "false"
+	if paused {
+		pausedStr = "true"
+	}
+	_, err := c.conn.Request(protocol.VerbOverlay, protocol.SubVerbForwarding, pausedStr).JSON()
+	return err
+}
+
 // BroadcastOutputPreview broadcasts output preview lines to connected browsers via proxies.
 func (c *Client) BroadcastOutputPreview(lines []string, proxyIDs ...string) error {
 	payload := map[string]interface{}{

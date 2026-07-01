@@ -430,6 +430,7 @@ func (d *Daemon) doCleanup(sessionCode string) {
 	if d.incidentBus != nil {
 		d.incidentBus.RemoveSession(sessionCode)
 	}
+	d.forwardingPaused.Delete(sessionCode)
 
 	debug.Log("daemon", "session %s cleanup complete", sessionCode)
 }

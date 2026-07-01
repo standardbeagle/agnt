@@ -166,6 +166,7 @@ type Status struct {
 	StartupLog      []StartupLogEntry
 	Notices         []NoticeInfo
 	LastUpdate      time.Time
+	ForwardPaused   bool // agent-inbound push is paused (errors still pullable)
 }
 
 // PanelItem represents a navigable panel in the horizontal panel view.
@@ -238,6 +239,11 @@ type Overlay struct {
 	// Status data
 	status   Status
 	statusMu sync.RWMutex
+
+	// forwardPaused mirrors the "stop pushing errors/notifications to the agent"
+	// toggle so the indicator can show a persistent muted marker. Injected into
+	// Status at draw time (not stored in o.status, which the daemon overwrites).
+	forwardPaused atomic.Bool
 
 	// Panel navigation (niri-style horizontal panels)
 	panelIndex int         // Current panel index (0 = overview)
@@ -732,6 +738,7 @@ func (o *Overlay) draw() {
 	o.statusMu.RLock()
 	status := o.status
 	o.statusMu.RUnlock()
+	status.ForwardPaused = o.forwardPaused.Load()
 
 	// Apply session dismissals (and prune resolved ones) before rendering the
 	// overview notice banner.
@@ -806,5 +813,14 @@ func (o *Overlay) RedrawIndicator() {
 	o.statusMu.RLock()
 	status := o.status
 	o.statusMu.RUnlock()
+	status.ForwardPaused = o.forwardPaused.Load()
 	o.renderer.DrawIndicator(status)
+}
+
+// SetForwardPaused updates the persistent muted marker shown in the indicator
+// bar and repaints it. Pure UI state; the actual gating lives in the delivery
+// path (in-process OnAlert) and the daemon (incident digest sink).
+func (o *Overlay) SetForwardPaused(paused bool) {
+	o.forwardPaused.Store(paused)
+	o.RedrawIndicator()
 }
