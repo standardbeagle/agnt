@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/debug"
@@ -36,7 +37,10 @@ func (d *Daemon) hubHandleProxyLogQuery(conn *hubpkg.Connection, cmd *hubproto.C
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
 
-	filter := convertLogQueryFilter(cmd.Data)
+	filter, err := convertLogQueryFilter(cmd.Data)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
+	}
 
 	entries := p.Logger().Query(filter)
 	stats := p.Logger().Stats()
@@ -52,18 +56,19 @@ func (d *Daemon) hubHandleProxyLogQuery(conn *hubpkg.Connection, cmd *hubproto.C
 // convertLogQueryFilter unmarshals protocol LogQueryFilter data into a proxy.LogFilter,
 // parsing string Since/Until values into *time.Time.
 
-func convertLogQueryFilter(data []byte) proxy.LogFilter {
+func convertLogQueryFilter(data []byte) (proxy.LogFilter, error) {
 	if len(data) == 0 {
-		return proxy.LogFilter{}
+		return proxy.LogFilter{}, nil
 	}
 
 	var pf protocol.LogQueryFilter
 	if err := json.Unmarshal(data, &pf); err != nil {
 		// The filter is produced by marshaling a valid protocol.LogQueryFilter
-		// on the client, so a failure here means wire corruption. Surface it to
-		// the debug log rather than silently returning an empty (unfiltered)
-		// filter, which would mislead the agent into reading the wrong result.
-		debug.Log("proxylog", "PROXYLOG QUERY filter decode failed, returning unfiltered: %v", err)
+		// on the client, so a failure here means wire corruption. Returning an
+		// empty (unfiltered) filter would silently widen the query and mislead
+		// the agent into reading the wrong result, so fail loud instead.
+		debug.Log("proxylog", "PROXYLOG QUERY filter decode failed: %v", err)
+		return proxy.LogFilter{}, fmt.Errorf("PROXYLOG QUERY filter decode failed: %w", err)
 	}
 
 	filter := proxy.LogFilter{
@@ -81,7 +86,7 @@ func convertLogQueryFilter(data []byte) proxy.LogFilter {
 		filter.Types = append(filter.Types, proxy.LogEntryType(t))
 	}
 
-	return filter
+	return filter, nil
 }
 
 // parseTimeString parses a time string as either RFC3339 or a Go duration.
