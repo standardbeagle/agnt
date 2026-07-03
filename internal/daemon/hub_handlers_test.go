@@ -53,7 +53,8 @@ func TestParseTimeString_Invalid(t *testing.T) {
 
 func TestConvertLogQueryFilter_Empty(t *testing.T) {
 	t.Parallel()
-	filter := convertLogQueryFilter(nil)
+	filter, err := convertLogQueryFilter(nil)
+	require.NoError(t, err)
 	assert.Nil(t, filter.Since)
 	assert.Nil(t, filter.Until)
 	assert.Nil(t, filter.Types)
@@ -71,7 +72,8 @@ func TestConvertLogQueryFilter_CarriesErrorsOnlyAndDiagnosticLevels(t *testing.T
 		DiagnosticLevels: []string{"error", "warning"},
 	}
 	data, _ := json.Marshal(pf)
-	filter := convertLogQueryFilter(data)
+	filter, err := convertLogQueryFilter(data)
+	require.NoError(t, err)
 
 	assert.True(t, filter.ErrorsOnly)
 	assert.Equal(t, []string{"error", "warning"}, filter.DiagnosticLevels)
@@ -85,7 +87,8 @@ func TestConvertLogQueryFilter_WithDurationSince(t *testing.T) {
 	}
 	data, _ := json.Marshal(pf)
 	before := time.Now()
-	filter := convertLogQueryFilter(data)
+	filter, err := convertLogQueryFilter(data)
+	require.NoError(t, err)
 
 	require.NotNil(t, filter.Since)
 	assert.True(t, filter.Since.After(before.Add(-5*time.Minute-time.Second)))
@@ -98,7 +101,8 @@ func TestConvertLogQueryFilter_WithRFC3339Since(t *testing.T) {
 		Since: "2025-06-01T12:00:00Z",
 	}
 	data, _ := json.Marshal(pf)
-	filter := convertLogQueryFilter(data)
+	filter, err := convertLogQueryFilter(data)
+	require.NoError(t, err)
 
 	require.NotNil(t, filter.Since)
 	assert.Equal(t, 2025, filter.Since.Year())
@@ -112,7 +116,8 @@ func TestConvertLogQueryFilter_WithUntil(t *testing.T) {
 	}
 	data, _ := json.Marshal(pf)
 	before := time.Now()
-	filter := convertLogQueryFilter(data)
+	filter, err := convertLogQueryFilter(data)
+	require.NoError(t, err)
 
 	require.NotNil(t, filter.Until)
 	assert.True(t, filter.Until.After(before.Add(-30*time.Second-time.Second)))
@@ -125,7 +130,8 @@ func TestConvertLogQueryFilter_WithBothSinceAndUntil(t *testing.T) {
 		Until: "5m",
 	}
 	data, _ := json.Marshal(pf)
-	filter := convertLogQueryFilter(data)
+	filter, err := convertLogQueryFilter(data)
+	require.NoError(t, err)
 
 	require.NotNil(t, filter.Since)
 	require.NotNil(t, filter.Until)
@@ -138,7 +144,8 @@ func TestConvertLogQueryFilter_WithTypes(t *testing.T) {
 		Types: []string{"http", "error"},
 	}
 	data, _ := json.Marshal(pf)
-	filter := convertLogQueryFilter(data)
+	filter, err := convertLogQueryFilter(data)
+	require.NoError(t, err)
 
 	require.Len(t, filter.Types, 2)
 	assert.Equal(t, "http", string(filter.Types[0]))
@@ -157,7 +164,8 @@ func TestConvertLogQueryFilter_AllFields(t *testing.T) {
 		Limit:       50,
 	}
 	data, _ := json.Marshal(pf)
-	filter := convertLogQueryFilter(data)
+	filter, err := convertLogQueryFilter(data)
+	require.NoError(t, err)
 
 	assert.Len(t, filter.Types, 1)
 	assert.Equal(t, []string{"GET", "POST"}, filter.Methods)

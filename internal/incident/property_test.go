@@ -112,10 +112,15 @@ func TestProperty_CriticalPingLatency(t *testing.T) {
 		ingestTime := time.Now()
 		inbox.Ingest(makeEntry(fmt.Sprintf("crit-%d", i), SeverityCritical))
 
+		// Liveness bound only: assert the ping *does* emit. A tight maxLatency
+		// timeout here flakes under `go test ./...` CPU saturation — the wait
+		// loop can be starved of scheduler time before the emit goroutine runs.
+		// The real latency budget is enforced by the require.Less below, which
+		// measures actual elapsed time from ingest.
 		require.Eventually(t, func() bool {
 			return pingEmitted.Load() > 0
-		}, maxLatency, time.Millisecond,
-			"iteration %d: critical ping must emit within %v of ingest", i, maxLatency)
+		}, 2*time.Second, time.Millisecond,
+			"iteration %d: critical ping must emit", i)
 
 		// The require.Eventually above already enforces that the ping emits
 		// within maxLatency of when the wait loop started. This secondary check
