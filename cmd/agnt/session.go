@@ -72,16 +72,136 @@ var sessionCancelCmd = &cobra.Command{
 	Run:   runSessionCancel,
 }
 
+// sessionHostsCmd lists SESSION-HOST sessions (daemon-owned detachable PTY
+// sessions — see `agnt attach`), distinct from classic `agnt run` sessions
+// listed by sessionListCmd above.
+var sessionHostsCmd = &cobra.Command{
+	Use:   "hosts",
+	Short: "List detachable sessions (agnt attach targets)",
+	Long: `List daemon-owned detachable sessions created via SESSION-HOST CREATE.
+
+These survive their attaching client disconnecting — attach to one with
+'agnt attach <name>'. Session-scoped by default; use --global for all
+projects.`,
+	Run: runSessionHosts,
+}
+
+var sessionKillCmd = &cobra.Command{
+	Use:   "kill <name|id>",
+	Short: "Kill a detachable session (explicit termination)",
+	Long: `Explicitly terminate a session-host session: reaps its PTY child's
+process group and ends the session. Any attached client is notified via an
+"exit" frame. This is the only way a session-host session ends besides its
+own command exiting — detaching (agnt attach's Ctrl-\ Ctrl-\) never kills
+it.`,
+	Args: cobra.ExactArgs(1),
+	Run:  runSessionKill,
+}
+
 func init() {
 	sessionCmd.AddCommand(sessionListCmd)
 	sessionCmd.AddCommand(sessionSendCmd)
 	sessionCmd.AddCommand(sessionScheduleCmd)
 	sessionCmd.AddCommand(sessionTasksCmd)
 	sessionCmd.AddCommand(sessionCancelCmd)
+	sessionCmd.AddCommand(sessionHostsCmd)
+	sessionCmd.AddCommand(sessionKillCmd)
 
 	// Add --global flag to list and tasks commands
 	sessionListCmd.Flags().Bool("global", false, "Include sessions from all directories")
 	sessionTasksCmd.Flags().Bool("global", false, "Include tasks from all directories")
+	sessionHostsCmd.Flags().Bool("global", false, "Include detachable sessions from all directories")
+}
+
+func runSessionHosts(cmd *cobra.Command, args []string) {
+	client, err := getSessionClient(cmd)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
+	defer client.Close()
+
+	global, _ := cmd.Flags().GetBool("global")
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to get working directory: %v\n", err)
+		os.Exit(1)
+	}
+
+	result, err := client.SessionHostList(protocol.DirectoryFilter{Directory: cwd, Global: global})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to list detachable sessions: %v\n", err)
+		os.Exit(1)
+	}
+
+	sessions, ok := result["sessions"].([]interface{})
+	if !ok || len(sessions) == 0 {
+		if global {
+			fmt.Println("No detachable sessions")
+		} else {
+			fmt.Printf("No detachable sessions in %s\n", cwd)
+			fmt.Println("Use --global to see all")
+		}
+		return
+	}
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "NAME\tSTATE\tPGID\tATTACHED\tAGE\tPROJECT")
+	for _, s := range sessions {
+		sm, ok := s.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		name := getString(sm, "name")
+		if name == "" {
+			name = getString(sm, "session_id")
+		}
+		state := getString(sm, "status")
+		pgid := 0
+		if p, ok := sm["session_pgid"].(float64); ok {
+			pgid = int(p)
+		}
+		attached := 0
+		if a, ok := sm["attached_count"].(float64); ok {
+			attached = int(a)
+		}
+		age := ""
+		if ts, ok := sm["started_at"].(string); ok {
+			if t, err := time.Parse(time.RFC3339, ts); err == nil {
+				age = time.Since(t).Round(time.Second).String()
+			}
+		}
+		project := getString(sm, "project_path")
+		fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%s\t%s\n", name, state, pgid, attached, age, project)
+	}
+	w.Flush()
+}
+
+func runSessionKill(cmd *cobra.Command, args []string) {
+	client, err := getSessionClient(cmd)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
+	defer client.Close()
+
+	target := args[0]
+	cwd, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to get working directory: %v\n", err)
+		os.Exit(1)
+	}
+
+	id, err := resolveSessionHostID(client, cwd, target)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
+	if err := client.SessionHostKill(id); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to kill session %s: %v\n", target, err)
+		os.Exit(1)
+	}
+	fmt.Printf("Session %s killed\n", target)
 }
 
 func getSessionClient(cmd *cobra.Command) (*daemon.Client, error) {

@@ -345,6 +345,14 @@ func (s *Session) IsPrimary(attachID string) bool {
 	return s.primaryID.Load().(string) == attachID
 }
 
+// AttachedCount returns the number of currently attached clients, for
+// `agnt session list` / `SESSION-HOST LIST` display.
+func (s *Session) AttachedCount() int {
+	s.subsMu.RLock()
+	defer s.subsMu.RUnlock()
+	return len(s.subs)
+}
+
 // WriteStdin writes raw bytes to the PTY child's stdin. Callers must check
 // IsPrimary first — non-primary stdin is rejected at the protocol layer
 // (spec §1.3 invariant 3), not here.

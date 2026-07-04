@@ -120,15 +120,16 @@ func (d *Daemon) hubHandleSessionHostList(conn *hubpkg.Connection, cmd *hubproto
 	list := make([]map[string]interface{}, 0, len(sessions))
 	for _, s := range sessions {
 		list = append(list, map[string]interface{}{
-			"session_id":    s.ID,
-			"name":          s.Name,
-			"project_path":  s.ProjectPath,
-			"command":       s.Command,
-			"args":          s.Args,
-			"started_at":    s.StartedAt.Format(time.RFC3339),
-			"status":        string(s.Status()),
-			"session_pgid":  s.SessionPGID,
-			"last_attached": s.LastAttached().Format(time.RFC3339),
+			"session_id":     s.ID,
+			"name":           s.Name,
+			"project_path":   s.ProjectPath,
+			"command":        s.Command,
+			"args":           s.Args,
+			"started_at":     s.StartedAt.Format(time.RFC3339),
+			"status":         string(s.Status()),
+			"session_pgid":   s.SessionPGID,
+			"last_attached":  s.LastAttached().Format(time.RFC3339),
+			"attached_count": s.AttachedCount(),
 		})
 	}
 
