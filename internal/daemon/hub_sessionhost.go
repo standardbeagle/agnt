@@ -158,7 +158,16 @@ func (d *Daemon) hubHandleSessionHostKill(conn *hubpkg.Connection, cmd *hubproto
 		return conn.WriteErr(hubproto.ErrNotFound, fmt.Sprintf("session-host session %q not found", id))
 	}
 
-	if s.SessionPGID > 1 {
+	// Only reap the pgid while the child is still alive. Once waitLoop has
+	// observed the child exit (StatusExited), cmd.Wait has already reaped the
+	// leader and the whole process tree is gone — the spec's numbered
+	// invariant (§ Session Containment) states an exited child needs no pgid
+	// action. Critically, killing a stale pgid here is not merely redundant:
+	// the kernel is free to REUSE the dead child's pid (== pgid, via setsid)
+	// for an unrelated, same-uid process group, and syscall.Kill(-pgid,
+	// SIGKILL) would then nuke that innocent group (e.g. the user's editor or
+	// coding agent). Gate on liveness so a reused pgid is never signalled.
+	if s.Status() == sessionhost.StatusRunning && s.SessionPGID > 1 {
 		debug.Log("daemon", "SESSION-HOST KILL: reaping pgid %d for session %s", s.SessionPGID, id)
 		if err := platform.KillSessionPGID(s.SessionPGID, os.Getpid(), sessionPGIDGracePeriod, false); err != nil {
 			debug.Warn("daemon", "SESSION-HOST KILL: killpg(%d) failed: %v", s.SessionPGID, err)
