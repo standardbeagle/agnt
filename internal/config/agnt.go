@@ -156,6 +156,16 @@ type SessionConfig struct {
 	// long-running session leaders on the system (e.g. a tmux session
 	// daemon that shares a pgid layout the scan cannot distinguish).
 	OrphanPGIDScan *bool `kdl:"orphan-pgid-scan"`
+
+	// DetachKey configures the `agnt attach` detach chord: two
+	// space-separated "ctrl-<char>" tokens, detected client-side before
+	// bytes are forwarded to the remote session's stdin. Empty uses the
+	// default "ctrl-\ ctrl-\" (two consecutive Ctrl-\ presses). Must not
+	// collide with the overlay command palette (":"/"/") or the
+	// forwarding-pause hotkey (Ctrl+Up/Down) — both are remote-side and
+	// operate on different byte sequences, so any ctrl-<char> chord not
+	// itself Ctrl+Up/Down/Left/Right is safe.
+	DetachKey string `kdl:"detach-key"`
 }
 
 // OrphanPGIDScanEnabled returns whether orphaned-pgid scanning is enabled

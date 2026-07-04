@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/proxy"
+	"github.com/standardbeagle/agnt/internal/sessionhost"
 	"github.com/standardbeagle/go-cli-server/client"
 	"github.com/standardbeagle/go-cli-server/socket"
 )
@@ -715,6 +717,145 @@ func (c *Client) StoreClear(req protocol.StoreClearRequest) error {
 // StoreGetAll retrieves all key-value pairs in a scope.
 func (c *Client) StoreGetAll(req protocol.StoreGetAllRequest) (map[string]interface{}, error) {
 	return c.conn.Request(protocol.VerbStore, protocol.SubVerbGetAll).WithJSON(req).JSON()
+}
+
+// ===========================================================================
+// SESSION-HOST: daemon-owned detachable PTY sessions. See
+// docs/superpowers/specs/2026-07-03-remote-ssh-design.md §1-2 and
+// internal/sessionhost. CREATE/LIST/KILL/RESIZE/STDIN/DETACH are ordinary
+// request/response calls; ATTACH is a long-lived, server-to-client-only
+// stream (client pushes stdin/resize/detach over separate connections via
+// the other methods here — see hubHandleSessionHostAttach's transport note).
+// ===========================================================================
+
+// SessionHostCreate spawns a new daemon-owned PTY session and returns its
+// id and pgid.
+func (c *Client) SessionHostCreate(cfg protocol.SessionHostCreateConfig) (protocol.SessionHostCreateResult, error) {
+	var res protocol.SessionHostCreateResult
+	err := c.conn.Request(protocol.VerbSessionHost, protocol.SubVerbCreate).WithJSON(cfg).JSONInto(&res)
+	return res, err
+}
+
+// SessionHostList lists session-host sessions, project-scoped by default
+// (per tool session-scoping doctrine); set dirFilter.Global for all projects.
+func (c *Client) SessionHostList(dirFilter protocol.DirectoryFilter) (map[string]interface{}, error) {
+	return c.conn.Request(protocol.VerbSessionHost, protocol.SubVerbList).WithJSON(dirFilter).JSON()
+}
+
+// SessionHostKill explicitly terminates a session-host session: reaps the
+// PTY child's pgid (if still alive) and tears down both registries.
+func (c *Client) SessionHostKill(id string) error {
+	return c.conn.Request(protocol.VerbSessionHost, protocol.SubVerbKill, id).OK()
+}
+
+// SessionHostResize changes a session-host session's PTY window size for
+// every current attach (spec §1.3 invariant 8 — no partial re-render).
+func (c *Client) SessionHostResize(id string, cols, rows int) error {
+	return c.conn.Request(protocol.VerbSessionHost, protocol.SubVerbResize, id).
+		WithJSON(protocol.SessionHostResizeConfig{SessionID: id, Cols: cols, Rows: rows}).OK()
+}
+
+// SessionHostStdin writes raw bytes to a session-host session's PTY child
+// stdin, on behalf of attachID. The daemon rejects this with a structured
+// error if attachID is not the current primary attach (spec §1.3 invariant 3
+// — silent-failure prohibition, not a silent drop).
+func (c *Client) SessionHostStdin(id, attachID string, data []byte) error {
+	payload := struct {
+		AttachID string `json:"attach_id"`
+		Data     string `json:"data"`
+	}{AttachID: attachID, Data: base64.StdEncoding.EncodeToString(data)}
+	return c.conn.Request(protocol.VerbSessionHost, "STDIN", id).WithJSON(payload).OK()
+}
+
+// SessionHostDetach ends attachID's subscription without touching the PTY
+// child (spec §1.3 invariant 4 — detach is not kill; the session keeps
+// running for future re-attach).
+func (c *Client) SessionHostDetach(id, attachID string) error {
+	payload := struct {
+		AttachID string `json:"attach_id"`
+	}{AttachID: attachID}
+	return c.conn.Request(protocol.VerbSessionHost, protocol.SubVerbDetach, id).WithJSON(payload).OK()
+}
+
+// SessionHostAttach opens a long-lived stream to a session-host session on
+// its own connection (spec §1.3, modeled on StreamEvents). It blocks: the
+// first frame is always type="attached" and is delivered via onAttached
+// (attach_id + primary status, needed for subsequent Stdin/Resize/Detach
+// calls); every later frame goes to onFrame, in order, until ctx is
+// canceled, the session exits, or the connection drops. A "keepalive" frame
+// is swallowed here rather than forwarded — callers never see it. This
+// method is a dumb, read-only relay: it never itself writes stdin/resize/
+// detach, matching the daemon-side transport split (stdin/resize/detach are
+// separate short-lived connections via the sibling methods above).
+func (c *Client) SessionHostAttach(ctx context.Context, id string, onAttached func(attachID string, isPrimary bool), onFrame func(sessionhost.Frame) error) error {
+	conn, err := net.Dial("unix", c.conn.SocketPath())
+	if err != nil {
+		return fmt.Errorf("attach connect failed: %w", err)
+	}
+	defer conn.Close()
+
+	stopWatch := make(chan struct{})
+	defer close(stopWatch)
+	go func() {
+		select {
+		case <-ctx.Done():
+			conn.Close()
+		case <-stopWatch:
+		}
+	}()
+
+	w := protocol.NewWriter(conn)
+	if err := w.WriteCommandWithSubVerb(protocol.VerbSessionHost, "ATTACH", []string{id}, nil); err != nil {
+		return fmt.Errorf("attach send failed: %w", err)
+	}
+
+	p := protocol.NewParser(conn)
+	sawAttached := false
+	for {
+		resp, err := p.ParseResponse()
+		if err != nil {
+			if ctx.Err() != nil || err == io.EOF {
+				return nil
+			}
+			return fmt.Errorf("attach read failed: %w", err)
+		}
+
+		switch resp.Type {
+		case protocol.ResponseOK:
+			continue
+		case protocol.ResponseErr:
+			return fmt.Errorf("server error: [%s] %s", resp.Code, resp.Message)
+		case protocol.ResponseEnd:
+			return nil
+		case protocol.ResponseChunk:
+			if len(resp.Data) == 0 {
+				continue
+			}
+			var f sessionhost.Frame
+			if err := json.Unmarshal(resp.Data, &f); err != nil {
+				debug.Log("client", "SessionHostAttach: failed to unmarshal frame: %v", err)
+				continue
+			}
+			if !sawAttached {
+				sawAttached = true
+				var attached struct {
+					AttachID  string `json:"attach_id"`
+					IsPrimary bool   `json:"is_primary"`
+				}
+				_ = json.Unmarshal(f.Data, &attached)
+				if onAttached != nil {
+					onAttached(attached.AttachID, attached.IsPrimary)
+				}
+				continue
+			}
+			if f.Type == "keepalive" {
+				continue
+			}
+			if err := onFrame(f); err != nil {
+				return err
+			}
+		}
+	}
 }
 
 // StopAll stops all running processes, proxies, and tunnels.
