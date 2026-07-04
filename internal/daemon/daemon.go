@@ -56,6 +56,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/incident"
 	"github.com/standardbeagle/agnt/internal/overlay"
 	"github.com/standardbeagle/agnt/internal/proxy"
+	"github.com/standardbeagle/agnt/internal/sessionhost"
 	"github.com/standardbeagle/agnt/internal/store"
 	"github.com/standardbeagle/agnt/internal/tunnel"
 	"github.com/standardbeagle/agnt/internal/updater"
@@ -230,6 +231,14 @@ type Daemon struct {
 	scheduler         *Scheduler
 	schedulerStateMgr *SchedulerStateManager
 
+	// sessionHosts holds daemon-owned detachable PTY sessions (SESSION-HOST
+	// verb). See internal/sessionhost and .claude/rules/daemon-architecture.md
+	// § Session Containment. Distinct from sessionRegistry: sessionRegistry
+	// tracks connection/heartbeat bookkeeping for classic `agnt run`
+	// sessions, sessionHosts owns the actual PTY child + scrollback + attach
+	// fan-out for the daemon-owned flavor.
+	sessionHosts *sessionhost.Registry
+
 	// State persistence
 	stateMgr   *StateManager
 	pidTracker *process.FilePIDTracker
@@ -397,6 +406,7 @@ func New(config DaemonConfig) *Daemon {
 		hookRing:           newHookRingBuffer(hookRingCapacity),
 		scriptRegistry:     script.NewRegistry(),
 		sessionRegistry:    sessionRegistry,
+		sessionHosts:       sessionhost.NewRegistry(),
 		scheduler:          scheduler,
 		schedulerStateMgr:  schedulerStateMgr,
 		pidTracker:         pidTracker,

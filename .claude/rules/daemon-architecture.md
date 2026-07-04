@@ -268,18 +268,35 @@ These **intentionally** escape session pgid. Represent conscious "I want to surv
 
 Each leaves port or resource held after session shutdown, but that's operator's explicit choice. Repro test `TestSessionContainment_SetsidEscapes` asserts `setsid` escapes containment — regression would accidentally reap detached processes, worse than leaking them.
 
+### Session-host: a second, explicit-kill-only flavor
+
+`SESSION-HOST CREATE` (see `docs/superpowers/specs/2026-07-03-remote-ssh-design.md` §1-2 and `internal/sessionhost/`) inverts PTY ownership: the daemon spawns and owns the PTY child directly, instead of a client (`agnt run`) reporting a pgid it captured itself. This is a **second `SessionKind`** (`internal/daemon/session.go`), sharing the same `Session` struct and `SessionRegistry` as classic sessions (so `hasOtherSessions`, `FindByDirectory`, and project-scoping consumers need no changes — see the struct-level decision in the spec §2.3), but with a materially different containment lifecycle:
+
+| Concern | Classic (`Kind == "classic"`) | Session-host (`Kind == "session-host"`) |
+|---|---|---|
+| Who reads `SessionPGID` | Daemon trusts a value reported over the wire by the client | Daemon reads it directly from its own `pty.Start()` call — no wire hop, no possibility of a malicious/buggy client reporting a wrong PID |
+| What triggers `killSessionPGID` | Client disconnect (socket drop) → `CleanupSessionResourcesDeferred` → `doCleanup`, after a grace period | **Only** `SESSION-HOST KILL` (`internal/daemon/hub_sessionhost.go`) — an attach-stream disconnect, or an explicit `SESSION-HOST DETACH`, never calls `doCleanup` |
+| `doCleanup` behavior | Runs the full teardown (pgid kill, script/proxy cleanup, registry unregister) | **Guarded no-op**: `doCleanup` checks `session.Kind == SessionKindSessionHost` first and returns immediately, logging that the session is explicit-kill-only. This is belt-and-braces — nothing should route a session-host session's code into `doCleanup` in the first place, because... |
+| Why the guard is (normally) never hit | N/A | `SESSION-HOST ATTACH` never calls `conn.SetSessionCode()` on the attaching connection, so a dropped attach connection never triggers the hub's session-cleanup callback at all. The guard exists as a second line of defense, not the primary mechanism. |
+| Daemon restart | N/A (client-owned PTY, unaffected by daemon restart) | No re-attach path to a PTY fd the daemon no longer holds a handle to — the orphaned child becomes exactly the "dead-leader pgid" shape `startupOrphanPGIDScan` already exists to catch. Swept the same way as a crashed classic session, not specially. |
+
+**Numbered invariant**: a session-host session's PTY child pgid is reaped in exactly three cases — (1) explicit `SESSION-HOST KILL`, (2) the PTY child exiting on its own (observed via `sessionhost.Session.waitLoop`, which flips `Status` to `StatusExited`; no pgid action needed since the process tree is already gone), (3) daemon shutdown/restart via the existing startup orphan-pgid scan. Attach-stream disconnect or explicit `SESSION-HOST DETACH` is **never** one of these cases — that is the entire value proposition of session-host (survive client disconnect). No idle-timeout auto-kill exists in v1.
+
 ### File Ownership
 
 | Primitive | File |
 |-----------|------|
 | `KillSessionPGID`, `MembersOfPGID`, `readPGID` | `internal/platform/sessionpgid_unix.go` |
 | `ScanOrphanPGIDs` (dead-leader scan) | `internal/platform/orphanpgid_unix.go` |
-| `killSessionPGID` wiring + `doCleanup` ordering | `internal/daemon/daemon_session_cleanup.go` |
+| `killSessionPGID` wiring + `doCleanup` ordering (incl. the `SessionKindSessionHost` guard) | `internal/daemon/daemon_session_cleanup.go` |
 | `startupOrphanPGIDScan` + config gate | `internal/daemon/daemon_orphan_pgid.go` |
-| PTY child PID capture + wire-through | `cmd/agnt/pty_common.go`, `internal/daemon/client.go` (`SessionRegisterWithPGID`) |
-| Session struct field | `internal/daemon/session.go` (`SessionPGID`) |
+| PTY child PID capture + wire-through (classic) | `cmd/agnt/pty_common.go`, `internal/daemon/client.go` (`SessionRegisterWithPGID`) |
+| Session struct field (`SessionPGID`, `Kind`) | `internal/daemon/session.go` |
 | Primitive-level regression tests | `internal/daemon/daemon_session_pgid_test.go`, `internal/daemon/daemon_orphan_pgid_test.go` |
 | End-to-end port-reuse repro | `internal/daemon/daemon_session_containment_test.go` |
+| Daemon-owned PTY child, scrollback ring, attach fan-out (session-host) | `internal/sessionhost/sessionhost.go` |
+| `SESSION-HOST` verb handlers (CREATE/LIST/KILL/ATTACH/DETACH/RESIZE/STDIN) | `internal/daemon/hub_sessionhost.go` |
+| Session-host containment + attach/detach race tests | `internal/sessionhost/sessionhost_test.go`, `internal/daemon/hub_sessionhost_test.go` |
 
 ### Cross-Platform Note
 

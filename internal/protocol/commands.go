@@ -24,6 +24,7 @@ const (
 	VerbHook         = "HOOK"          // Claude Code hook dispatcher enqueue
 	VerbIncidents    = "INCIDENTS"     // Incident inbox query + mark-read
 	VerbPorts        = "PORTS"         // Listening-port inventory + orphan pgid management
+	VerbSessionHost  = "SESSION-HOST"  // Daemon-owned detachable PTY sessions (see docs/superpowers/specs/2026-07-03-remote-ssh-design.md §1)
 )
 
 // Agnt-specific sub-verbs (beyond those in go-cli-server).
@@ -65,6 +66,10 @@ const (
 	SubVerbAutostartRun  = "RUN"           // Run autostart from MCP InitializedHandler (non-interactive)
 	SubVerbReconcile     = "RECONCILE"     // Live-apply .agnt.kdl changes to running scripts/proxies
 	SubVerbCleanOrphans  = "CLEAN-ORPHANS" // Reap orphaned process groups (PORTS verb)
+	SubVerbCreate        = "CREATE"        // Create a session-host session (SESSION-HOST verb)
+	SubVerbKill          = "KILL"          // Explicit termination of a session-host session
+	SubVerbDetach        = "DETACH"        // Client-initiated clean detach (SESSION-HOST ATTACH stream)
+	SubVerbResize        = "RESIZE"        // Out-of-band window-size renegotiation (SESSION-HOST)
 )
 
 // ProxyStartConfig represents configuration for a PROXY START command.
@@ -429,6 +434,32 @@ type IncidentRemediation struct {
 	PrimaryArgs  map[string]any `json:"primary_args,omitempty"`
 	FallbackTool string         `json:"fallback_tool,omitempty"`
 	SkillHint    string         `json:"skill_hint,omitempty"`
+}
+
+// SessionHostCreateConfig is the payload for SESSION-HOST CREATE. See
+// docs/superpowers/specs/2026-07-03-remote-ssh-design.md §1.2.
+type SessionHostCreateConfig struct {
+	Name        string            `json:"name,omitempty"`
+	ProjectPath string            `json:"project_path"`
+	Command     string            `json:"command"`
+	Args        []string          `json:"args,omitempty"`
+	Cols        int               `json:"cols"`
+	Rows        int               `json:"rows"`
+	Env         map[string]string `json:"env,omitempty"`
+}
+
+// SessionHostCreateResult is the response to SESSION-HOST CREATE.
+type SessionHostCreateResult struct {
+	SessionID   string `json:"session_id"`
+	SessionPGID int    `json:"session_pgid"`
+}
+
+// SessionHostResizeConfig is the payload for a "resize" frame on SESSION-HOST
+// ATTACH, and for the SESSION-HOST RESIZE convenience command.
+type SessionHostResizeConfig struct {
+	SessionID string `json:"session_id"`
+	Cols      int    `json:"cols"`
+	Rows      int    `json:"rows"`
 }
 
 // InboxStatsRecord is the wire shape for inbox health summary.

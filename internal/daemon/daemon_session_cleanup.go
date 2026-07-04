@@ -195,6 +195,18 @@ func (d *Daemon) doCleanup(sessionCode string) {
 		return
 	}
 
+	// Session-host sessions are explicit-kill-only (spec §2.2 invariant 11,
+	// .claude/rules/daemon-architecture.md § Session Containment). Nothing
+	// should route a session-host session's code into doCleanup in the
+	// first place (SESSION-HOST ATTACH never calls conn.SetSessionCode), but
+	// this guard is belt-and-braces: if it ever does, doCleanup must not
+	// reap the PTY pgid or tear down project resources — only
+	// SESSION-HOST KILL (hub_sessionhost.go) may do that.
+	if session.Kind == SessionKindSessionHost {
+		debug.Log("daemon", "session %s is session-host: skipping doCleanup teardown (explicit-kill-only)", sessionCode)
+		return
+	}
+
 	projectPath := session.ProjectPath
 	if projectPath == "" {
 		debug.Log("daemon", "session %s has no project path, skipping resource cleanup", sessionCode)
