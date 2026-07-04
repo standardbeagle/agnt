@@ -68,6 +68,22 @@ func watchResize(ctx context.Context, done <-chan struct{}, handle *ptyHandle, r
 	}
 }
 
+// terminalSaneReset disables DEC private modes the child may have left
+// enabled when it was stopped without running its own cleanup (a stopped
+// process cannot emit its restore sequences). Claude Code and similar TUIs
+// enable mouse reporting, bracketed paste, and the alternate screen; if we
+// hand the tty back to the shell with those still on, mouse movement echoes
+// as raw escape bytes and the terminal appears corrupted until `reset`.
+// Complements term.Restore, which only fixes termios, not DEC modes.
+// Mirrors the constants in internal/overlay/render.go (CursorShow,
+// ExitAltScreen); the mouse/paste modes are child-owned so they live here.
+const terminalSaneReset = "\x1b[?1003l\x1b[?1002l\x1b[?1000l" + // mouse tracking (any-motion, button-motion, click)
+	"\x1b[?1006l\x1b[?1015l" + // mouse encodings (SGR, urxvt)
+	"\x1b[?1004l" + // focus reporting
+	"\x1b[?2004l" + // bracketed paste
+	"\x1b[?1049l" + // return to main screen buffer
+	"\x1b[?25h" // show cursor
+
 // handleSIGCHLD implements Ctrl+Z support: when the child stops itself
 // we must restore the terminal to cooked mode, stop ourselves so the
 // shell can take over, and on resume restore raw mode + continue the
@@ -96,7 +112,10 @@ func handleSIGCHLD(ctx context.Context, done <-chan struct{}, c *exec.Cmd, ptmx 
 				continue
 			}
 
-			// Restore terminal to cooked mode so shell can use it.
+			// Leave the tty sane for the shell: clear any DEC private
+			// modes the stopped child left enabled (it cannot clean up
+			// itself while stopped), then restore cooked termios.
+			_, _ = os.Stdout.WriteString(terminalSaneReset)
 			_ = term.Restore(int(os.Stdin.Fd()), oldState)
 
 			// Stop ourselves — the shell will resume us on `fg`.
@@ -120,6 +139,15 @@ func handleSIGCHLD(ctx context.Context, done <-chan struct{}, c *exec.Cmd, ptmx 
 				}
 			}
 			_ = syscall.Kill(c.Process.Pid, syscall.SIGCONT)
+			// Force a repaint after the continue: a size-jiggle raises
+			// SIGWINCH with a genuine delta, so the child redraws and
+			// re-establishes its own DEC modes (mouse, bracketed paste,
+			// alt screen) that terminalSaneReset cleared on suspend.
+			// Without this, ENTER lands as a bare newline because the
+			// child's input modes were never re-armed.
+			jiggleRepaint(ptmx, func() {
+				_ = c.Process.Signal(syscall.SIGWINCH)
+			})
 			if rt.termOverlay != nil && showIndicator {
 				if rt.outputFilter != nil {
 					rt.outputFilter.EnforceScrollRegion()
