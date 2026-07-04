@@ -69,7 +69,8 @@ func newSessionHostTestDaemon(t *testing.T) (*Daemon, string) {
 }
 
 func TestSessionHostCreate_ReturnsSessionIDAndPGID(t *testing.T) {
-	t.Parallel()
+	// No t.Parallel(): spawns real `sh` PTY children reaped via killpg — see
+	// AGENTS.md prohibition on parallel tests that start real OS processes.
 	_, sockPath := newSessionHostTestDaemon(t)
 
 	c := NewConn(sockPath)
@@ -92,7 +93,8 @@ func TestSessionHostCreate_ReturnsSessionIDAndPGID(t *testing.T) {
 }
 
 func TestSessionHostList_ProjectScoped(t *testing.T) {
-	t.Parallel()
+	// No t.Parallel(): spawns real `sh` PTY children reaped via killpg — see
+	// AGENTS.md prohibition on parallel tests that start real OS processes.
 	_, sockPath := newSessionHostTestDaemon(t)
 
 	c := NewConn(sockPath)
@@ -117,7 +119,10 @@ func TestSessionHostList_ProjectScoped(t *testing.T) {
 }
 
 func TestSessionHostKill_ReapsAndRemovesFromBothRegistries(t *testing.T) {
-	t.Parallel()
+	// No t.Parallel(): these tests spawn real `sh` PTY children and reap them
+	// via SESSION-HOST KILL (killpg). Per AGENTS.md, tests starting real OS
+	// processes must not run in parallel — concurrent pid/pgid churn plus the
+	// exec PID-reuse race can signal an unrelated same-uid process group.
 	d, sockPath := newSessionHostTestDaemon(t)
 
 	c := NewConn(sockPath)
@@ -139,7 +144,10 @@ func TestSessionHostKill_ReapsAndRemovesFromBothRegistries(t *testing.T) {
 }
 
 func TestSessionHostAttach_ReplaysThenLive_DetachDoesNotKillPTY(t *testing.T) {
-	t.Parallel()
+	// No t.Parallel(): these tests spawn real `sh` PTY children and reap them
+	// via SESSION-HOST KILL (killpg). Per AGENTS.md, tests starting real OS
+	// processes must not run in parallel — concurrent pid/pgid churn plus the
+	// exec PID-reuse race can signal an unrelated same-uid process group.
 	d, sockPath := newSessionHostTestDaemon(t)
 
 	c := NewConn(sockPath)
@@ -230,7 +238,8 @@ func TestSessionHostAttach_ReplaysThenLive_DetachDoesNotKillPTY(t *testing.T) {
 }
 
 func TestSessionHostStdin_RejectedForNonPrimaryAttach(t *testing.T) {
-	t.Parallel()
+	// No t.Parallel(): spawns real `sh` PTY children reaped via killpg — see
+	// AGENTS.md prohibition on parallel tests that start real OS processes.
 	_, sockPath := newSessionHostTestDaemon(t)
 
 	c := NewConn(sockPath)
@@ -264,7 +273,8 @@ func TestSessionHostStdin_RejectedForNonPrimaryAttach(t *testing.T) {
 // a real leak to a process-wide goroutine snapshot, making the assertion
 // flaky for reasons having nothing to do with session-host correctness.
 func TestSessionHostAttachDetachChurn_Race(t *testing.T) {
-	t.Parallel()
+	// No t.Parallel(): spawns real `sh` PTY children reaped via killpg — see
+	// AGENTS.md prohibition on parallel tests that start real OS processes.
 	_, sockPath := newSessionHostTestDaemon(t)
 
 	c := NewConn(sockPath)
