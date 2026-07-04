@@ -7,12 +7,28 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// isolateFromTTY detaches a test-spawned process from the controlling
+// terminal by giving it its own session (Setsid). Tests here execute
+// interactive shells (`bash -ic` via wrapInShell) and the real `agnt run`
+// binary — both are terminal-handling code. Run from `go test` inside a
+// live terminal session (e.g. an AI agent under `agnt run`), a descendant
+// that inherits the controlling tty can job-control it: tcsetpgrp/tcsetattr
+// from these children can steal the foreground group or half-apply raw
+// mode, suspending the developer's foreground TUI and corrupting the tty.
+// A fresh session has no controlling terminal, so that is impossible;
+// tty-requiring paths then fail deterministically ("inappropriate ioctl")
+// and the tests skip.
+func isolateFromTTY(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+}
 
 // createTestScript creates an executable script in binDir that prints a marker.
 func createTestScript(t *testing.T, binDir, name, marker string) {
@@ -123,6 +139,7 @@ func TestShellResolve_BashrcPATH(t *testing.T) {
 	require.Error(t, err)
 
 	cmd := wrapInShell("test-bashrc-cmd")
+	isolateFromTTY(cmd)
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, "shell-wrapped command should succeed; output: %s", string(out))
 	assert.Contains(t, string(out), marker)
@@ -144,6 +161,7 @@ func TestShellResolve_BashrcAlias(t *testing.T) {
 	setEnv(t, "SHELL", bash)
 
 	cmd := wrapInShell("test-alias-cmd")
+	isolateFromTTY(cmd)
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, "alias command should succeed; output: %s", string(out))
 	assert.Contains(t, string(out), marker)
@@ -173,6 +191,7 @@ func TestShellResolve_ZshrcPATH(t *testing.T) {
 	require.Error(t, err)
 
 	cmd := wrapInShell("test-zshrc-cmd")
+	isolateFromTTY(cmd)
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, "zsh shell-wrapped command should succeed; output: %s", string(out))
 	assert.Contains(t, string(out), marker)
@@ -229,6 +248,7 @@ func TestShellResolve_E2E_Binary(t *testing.T) {
 	}
 
 	cmd := exec.Command(agntPath, "run", "--no-overlay", "test-e2e-cmd")
+	isolateFromTTY(cmd)
 	cmd.Env = append(os.Environ(),
 		"HOME="+homeDir,
 		"SHELL="+bash,
@@ -301,6 +321,7 @@ func TestShellResolve_ArgumentPreservation_ShellWrap(t *testing.T) {
 
 	// Shell-wrapped command with special arguments
 	cmd := wrapInShell("test-args-wrap", "hello world", "it's", "--flag=value")
+	isolateFromTTY(cmd)
 	out, err := cmd.CombinedOutput()
 	require.NoError(t, err, "output: %s", string(out))
 	outStr := string(out)

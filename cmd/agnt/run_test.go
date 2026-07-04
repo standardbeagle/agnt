@@ -136,6 +136,7 @@ exit 0
 
 	// Run agnt run with the test script from the test directory
 	cmd := exec.Command(agntPath, "run", "--no-overlay", scriptPath)
+	isolateFromTTY(cmd)
 	cmd.Dir = testDir
 
 	// Capture output with timeout
@@ -199,6 +200,7 @@ exit 0
 	}
 
 	cmd := exec.Command(agntPath, "run", "--no-overlay", scriptPath)
+	isolateFromTTY(cmd)
 	cmd.Dir = testDir
 
 	done := make(chan struct{})
