@@ -119,6 +119,14 @@ func (d *Daemon) registerAgntCommands() {
 		Handler:     d.hubHandleSession,
 	})
 
+	// SESSION-HOST command - daemon-owned detachable PTY sessions
+	d.hub.RegisterCommand(hubpkg.CommandDefinition{
+		Verb:        protocol.VerbSessionHost,
+		SubVerbs:    []string{"CREATE", "LIST", "KILL", "ATTACH", "DETACH", "RESIZE", "STDIN"},
+		Description: "Manage daemon-owned detachable PTY sessions",
+		Handler:     d.hubHandleSessionHost,
+	})
+
 	// STATUS command - returns full daemon info (Hub's INFO is minimal)
 	d.hub.RegisterCommand(hubpkg.CommandDefinition{
 		Verb:        "STATUS",

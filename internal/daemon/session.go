@@ -22,6 +22,27 @@ const (
 	SessionStatusDisconnected SessionStatus = "disconnected"
 )
 
+// SessionKind distinguishes who owns the PTY child behind a Session entry.
+// See docs/superpowers/specs/2026-07-03-remote-ssh-design.md §2.3: both
+// flavors share this same struct and SessionRegistry so project-scoping
+// consumers (hasOtherSessions, FindByDirectory, List/ListActive) keep working
+// unmodified — only cleanup dispatch and attach handling branch on Kind.
+type SessionKind string
+
+const (
+	// SessionKindClassic is the existing agnt-run-owns-the-PTY flavor.
+	// doCleanup's killSessionPGID/killSessionJobObject calls apply to it
+	// on client disconnect, same as always.
+	SessionKindClassic SessionKind = "classic"
+	// SessionKindSessionHost is a daemon-owned detachable PTY session
+	// (SESSION-HOST CREATE). Per spec §2.2 invariant 11, it must NOT be
+	// torn down by doCleanup on attach-stream disconnect — only an
+	// explicit SESSION-HOST KILL (or the PTY child exiting on its own, or
+	// daemon shutdown's orphan-pgid sweep) ends it. See
+	// .claude/rules/daemon-architecture.md § Session Containment.
+	SessionKindSessionHost SessionKind = "session-host"
+)
+
 // Session represents an active agnt run instance.
 type Session struct {
 	Code        string        `json:"code"`         // Unique session identifier (e.g., "claude-1", "dev")
@@ -58,8 +79,24 @@ type Session struct {
 	// teardown.
 	SessionJobHandle uint64 `json:"session_job_handle,omitempty"`
 
+	// Kind distinguishes classic (agnt-run-owned PTY) from session-host
+	// (daemon-owned PTY) sessions. Zero value normalizes to
+	// SessionKindClassic in ToJSON/MarshalJSON so existing callers that
+	// never set it see unchanged wire output.
+	Kind SessionKind `json:"kind,omitempty"`
+
 	// Internal fields (not serialized)
 	mu sync.RWMutex
+}
+
+// kindOrClassic normalizes an empty Kind to SessionKindClassic for wire
+// output, so pre-existing REGISTER callers that never set Kind are
+// unaffected.
+func (s *Session) kindOrClassic() SessionKind {
+	if s.Kind == "" {
+		return SessionKindClassic
+	}
+	return s.Kind
 }
 
 // UpdateLastSeen updates the last seen timestamp and sets status to active.
@@ -119,6 +156,7 @@ func (s *Session) ToJSON() map[string]interface{} {
 		"last_seen":          s.LastSeen.Format(time.RFC3339),
 		"session_pgid":       s.SessionPGID,
 		"session_job_handle": s.SessionJobHandle,
+		"kind":               string(s.kindOrClassic()),
 	}
 }
 
@@ -406,6 +444,7 @@ func (s *Session) MarshalJSON() ([]byte, error) {
 		LastSeen         string   `json:"last_seen"`
 		SessionPGID      int      `json:"session_pgid,omitempty"`
 		SessionJobHandle uint64   `json:"session_job_handle,omitempty"`
+		Kind             string   `json:"kind,omitempty"`
 	}
 
 	return json.Marshal(sessionJSON{
@@ -419,5 +458,6 @@ func (s *Session) MarshalJSON() ([]byte, error) {
 		LastSeen:         s.LastSeen.Format(time.RFC3339),
 		SessionPGID:      s.SessionPGID,
 		SessionJobHandle: s.SessionJobHandle,
+		Kind:             string(s.kindOrClassic()),
 	})
 }
