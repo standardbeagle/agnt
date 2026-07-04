@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"go.uber.org/goleak"
 )
 
 func mustCreate(t *testing.T, cfg CreateConfig) *Session {
@@ -222,6 +224,13 @@ func TestRegistry_AddGetListRemove(t *testing.T) {
 // criterion for this task.
 func TestAttachDetachChurn_Race(t *testing.T) {
 	s := mustCreate(t, CreateConfig{Command: "sh", Args: []string{"-c", "while true; do echo tick; sleep 0.01; done"}})
+
+	// Enforce the acceptance criterion: no goroutine leaks from the
+	// attach/detach fan-out. IgnoreCurrent baselines the session's own
+	// long-lived readLoop/waitLoop (alive here because mustCreate ran first);
+	// the deferred VerifyNone then fails only if an Attach/Detach cycle leaks
+	// a goroutine. Runs before mustCreate's t.Cleanup tears the session down.
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
 
 	var wg sync.WaitGroup
 	for i := 0; i < 20; i++ {
