@@ -76,6 +76,9 @@
     handleEl: null
   };
 
+  // Deliberately BELOW the shared ui-tokens.js z scale (lowest layer is
+  // highlight=2147483640): the responsive workbench must sit under every
+  // other devtool surface (indicator, toasts, palettes).
   var Z_FRAME = 2147483601;
   var Z_OVERLAY = 2147483602;
   var Z_HANDLE = 2147483603;

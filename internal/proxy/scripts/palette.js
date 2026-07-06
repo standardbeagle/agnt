@@ -24,6 +24,18 @@
   var PALETTE_HEIGHT_GUESS = 44; // single row; refined after mount via offsetHeight
   var GAP = 8;
 
+  // Shared theme (light/dark) from ui-tokens.js; fallback literals only for
+  // the defensive "ui-tokens failed to load" case.
+  var paletteTheme = window.__devtoolTokens ? window.__devtoolTokens.theme() : {
+    primary: '#6366f1',
+    surface: '#ffffff',
+    border: '#e2e8f0',
+    text: '#1e293b',
+    textMuted: '#64748b',
+    textInverse: '#ffffff',
+    error: '#ef4444'
+  };
+
   // State
   var state = {
     paletteEl: null,
@@ -302,14 +314,14 @@
       'border-radius: 4px',
       'font-size: 11px',
       'font-family: ui-monospace, monospace',
-      'color: #1e293b',
+      'color: ' + paletteTheme.text + '',
       'cursor: default',
       'user-select: none'
     ].join(';');
 
     var label = document.createElement('span');
     label.textContent = descriptor.label;
-    label.style.cssText = 'color:#64748b;font-size:10px';
+    label.style.cssText = 'color:' + paletteTheme.textMuted + ';font-size:10px';
     wrap.appendChild(label);
 
     var input;
@@ -325,7 +337,7 @@
         // Strip unit when prepopulating from inline style ('16px' -> '16').
         var stripped = parseFloat(current);
         input.value = isNaN(stripped) ? '' : String(stripped);
-        input.style.cssText = 'width:42px;border:1px solid #e2e8f0;border-radius:3px;padding:1px 3px;font-size:11px;font-family:inherit';
+        input.style.cssText = 'width:42px;border:1px solid ' + paletteTheme.border + ';border-radius:3px;padding:1px 3px;font-size:11px;font-family:inherit;background:' + paletteTheme.surface + ';color:' + paletteTheme.text + '';
         input.addEventListener('input', function() {
           var v = input.value;
           if (v === '') {
@@ -346,22 +358,22 @@
         wrap.removeChild(label);
         var isOn = current === descriptor.onValue;
         input.style.cssText = [
-          'border:1px solid #e2e8f0',
+          'border:1px solid ' + paletteTheme.border,
           'border-radius:3px',
           'padding:1px 6px',
           'font-size:11px',
           'font-weight:600',
           'font-family:inherit',
           'cursor:pointer',
-          'background:' + (isOn ? '#6366f1' : '#ffffff'),
-          'color:' + (isOn ? '#ffffff' : '#1e293b')
+          'background:' + (isOn ? paletteTheme.primary : paletteTheme.surface),
+          'color:' + (isOn ? paletteTheme.textInverse : paletteTheme.text)
         ].join(';');
         input.addEventListener('click', function() {
           var nowOn = state.selectedElement.style[descriptor.prop] === descriptor.onValue;
           var next = nowOn ? descriptor.offValue : descriptor.onValue;
           applyStyle(descriptor.prop, next);
-          input.style.background = next === descriptor.onValue ? '#6366f1' : '#ffffff';
-          input.style.color = next === descriptor.onValue ? '#ffffff' : '#1e293b';
+          input.style.background = next === descriptor.onValue ? paletteTheme.primary : paletteTheme.surface;
+          input.style.color = next === descriptor.onValue ? paletteTheme.textInverse : paletteTheme.text;
         });
         wrap.appendChild(input);
         break;
@@ -375,7 +387,7 @@
         if (current && /^#[0-9a-fA-F]{3,8}$/.test(current)) {
           input.value = current;
         }
-        input.style.cssText = 'width:24px;height:18px;border:1px solid #e2e8f0;border-radius:3px;padding:0;cursor:pointer;background:transparent';
+        input.style.cssText = 'width:24px;height:18px;border:1px solid ' + paletteTheme.border + ';border-radius:3px;padding:0;cursor:pointer;background:transparent';
         input.addEventListener('input', function() {
           applyStyle(descriptor.prop, input.value);
         });
@@ -384,7 +396,7 @@
 
       case 'select':
         input = document.createElement('select');
-        input.style.cssText = 'border:1px solid #e2e8f0;border-radius:3px;padding:1px 2px;font-size:11px;font-family:inherit;background:#ffffff;color:#1e293b';
+        input.style.cssText = 'border:1px solid ' + paletteTheme.border + ';border-radius:3px;padding:1px 2px;font-size:11px;font-family:inherit;background:' + paletteTheme.surface + ';color:' + paletteTheme.text + '';
         descriptor.options.forEach(function(opt) {
           var option = document.createElement('option');
           option.value = opt;
@@ -402,8 +414,9 @@
         input = document.createElement('button');
         input.type = 'button';
         input.textContent = descriptor.label;
+        input.setAttribute('aria-label', descriptor.action === 'delete' ? 'Delete element' : descriptor.action);
         wrap.removeChild(label);
-        input.style.cssText = 'border:1px solid #ef4444;color:#ef4444;background:#ffffff;border-radius:3px;padding:1px 6px;font-size:11px;font-weight:600;font-family:inherit;cursor:pointer';
+        input.style.cssText = 'border:1px solid ' + paletteTheme.error + ';color:' + paletteTheme.error + ';background:' + paletteTheme.surface + ';border-radius:3px;padding:1px 6px;font-size:11px;font-weight:600;font-family:inherit;cursor:pointer';
         input.addEventListener('click', function() {
           applyAction(descriptor.action);
         });
@@ -433,18 +446,20 @@
     palette.id = '__devtool-palette';
     palette.dataset.devtoolPalette = 'true';
     palette.dataset.elementType = state.elementType;
+    palette.setAttribute('role', 'toolbar');
+    palette.setAttribute('aria-label', 'Quick style palette');
     palette.style.cssText = [
       'position: fixed',
       'top: 0px',
       'left: 0px',
       'width: ' + PALETTE_WIDTH + 'px',
       'max-width: ' + PALETTE_WIDTH + 'px',
-      'background: #ffffff',
-      'border: 1px solid #e2e8f0',
+      'background: ' + paletteTheme.surface,
+      'border: 1px solid ' + paletteTheme.border,
       'border-radius: 8px',
       'padding: 4px 6px',
       'box-shadow: 0 4px 16px rgba(0,0,0,0.12)',
-      'z-index: 2147483645',
+      'z-index: ' + (window.__devtoolTokens ? window.__devtoolTokens.z.panel : 2147483644),
       'display: flex',
       'flex-direction: row',
       'align-items: center',
@@ -460,9 +475,10 @@
     handle.className = '__devtool-palette-handle';
     handle.textContent = '⋮⋮';
     handle.title = 'Drag to move • ' + state.elementType;
+    handle.setAttribute('aria-hidden', 'true');
     handle.style.cssText = [
       'cursor: grab',
-      'color: #94a3b8',
+      'color: ' + paletteTheme.textMuted,
       'font-size: 10px',
       'padding: 0 2px',
       'user-select: none',
@@ -476,7 +492,10 @@
       palette.appendChild(buildControl(desc, element));
     });
 
-    document.body.appendChild(palette);
+    // Mount into the devtool shadow root (style isolation from host page);
+    // falls back to document.body when shadow-root.js is unavailable.
+    var mount = window.__devtoolGetMountRoot ? window.__devtoolGetMountRoot() : document.body;
+    mount.appendChild(palette);
     state.paletteEl = palette;
 
     // Position. We measure offsetHeight after mount so the height-guess
@@ -548,15 +567,30 @@
   // Handlers are stored on state so detachHandlers() can remove them
   // symmetrically without leaking listeners across show/hide cycles.
   function attachHandlers(handle) {
-    state.escapeHandler = function(e) {
-      if (e.key === 'Escape') hide();
-    };
-    document.addEventListener('keydown', state.escapeHandler);
+    // Escape dismissal goes through the shared overlay stack (ui-tokens.js)
+    // so only the top-most devtool surface closes per keypress. The local
+    // keydown listener is the fallback when ui-tokens failed to load.
+    if (window.__devtoolOverlayStack) {
+      window.__devtoolOverlayStack.push('palette', hide);
+    } else {
+      state.escapeHandler = function(e) {
+        if (e.key === 'Escape') hide();
+      };
+      document.addEventListener('keydown', state.escapeHandler);
+    }
+
+    // Ctrl+Z / Cmd+Z undo interception is scoped to the palette being shown;
+    // detachHandlers removes it so the page gets its own undo back.
+    attachUndoListener();
 
     state.outsideClickHandler = function(e) {
       if (!state.paletteEl) return;
-      // Click on palette itself: keep open.
-      if (state.paletteEl.contains(e.target)) return;
+      // Click on palette itself: keep open. composedPath() sees through the
+      // shadow-root mount (e.target retargets to the shadow host at
+      // document level, so contains() alone is insufficient).
+      var path = typeof e.composedPath === 'function' ? e.composedPath() : null;
+      if (path && path.indexOf(state.paletteEl) !== -1) return;
+      if (!path && state.paletteEl.contains(e.target)) return;
       // Click on the selected element: also keep open. Re-selection of
       // a different element is handled by design.js dispatching another
       // palette-show event, which calls show() and tears the palette down.
@@ -631,10 +665,14 @@
   }
 
   function detachHandlers() {
+    if (window.__devtoolOverlayStack) {
+      window.__devtoolOverlayStack.pop('palette');
+    }
     if (state.escapeHandler) {
       document.removeEventListener('keydown', state.escapeHandler);
       state.escapeHandler = null;
     }
+    detachUndoListener();
     if (state.outsideClickHandler) {
       document.removeEventListener('mousedown', state.outsideClickHandler);
       state.outsideClickHandler = null;
@@ -705,8 +743,8 @@
         input.value = value;
       } else if (input.tagName === 'BUTTON' && descriptor.kind === 'toggle') {
         var on = value === descriptor.onValue;
-        input.style.background = on ? '#6366f1' : '#ffffff';
-        input.style.color = on ? '#ffffff' : '#1e293b';
+        input.style.background = on ? paletteTheme.primary : paletteTheme.surface;
+        input.style.color = on ? paletteTheme.textInverse : paletteTheme.text;
       }
     }
   }
@@ -767,9 +805,9 @@
   // recent {property, prevValue, element} entry, restore it on the element,
   // and dispatch a normal edit event so the panel reflects the rollback.
   //
-  // Scope: the listener attaches on document and only acts when an element
-  // is selected (state.selectedElement set). When no element is selected
-  // we let the browser/page handle Ctrl+Z normally.
+  // Scope: the listener attaches on document only while the palette is
+  // shown (attachHandlers) and is removed on hide (detachHandlers), so the
+  // page keeps native Ctrl+Z behavior whenever no palette is on screen.
   // ---------------------------------------------------------------------------
   var undoListener = null;
   function attachUndoListener() {
@@ -812,12 +850,17 @@
     document.addEventListener('keydown', undoListener);
   }
 
+  function detachUndoListener() {
+    if (!undoListener) return;
+    document.removeEventListener('keydown', undoListener);
+    undoListener = null;
+  }
+
   // ---------------------------------------------------------------------------
   // Initialise
   // ---------------------------------------------------------------------------
   attachSelectionListener();
   attachDesignStateListener();
-  attachUndoListener();
 
   // Public API
   window.__devtool_palette = {

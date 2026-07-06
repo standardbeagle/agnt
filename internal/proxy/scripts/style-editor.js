@@ -12,14 +12,20 @@
   // localStorage key for panel position persistence
   var STORAGE_KEY = '__devtool_style_editor_pos';
 
+  // Shared z-index layer scale (see ui-tokens.js) with load-failure fallbacks.
+  var SE_Z = window.__devtoolTokens ? window.__devtoolTokens.z : { panel: 2147483644, critical: 2147483647 };
+
   // Cache for browser default computed styles per tag name.
   // Keys are uppercase tag names (e.g. 'DIV'), values are plain objects
   // mapping CSS property name to its default computed value string.
   var defaultStyleCache = {};
 
-  // Design tokens matching indicator.js visual language
+  // Design tokens matching indicator.js visual language. Colors come from the
+  // shared ui-tokens module (light/dark picked at load via
+  // prefers-color-scheme); fallback literals only cover the defensive
+  // "ui-tokens failed to load" case.
   var TOKENS = {
-    colors: {
+    colors: (window.__devtoolTokens && window.__devtoolTokens.theme()) || {
       primary: '#6366f1',
       primaryDark: '#4f46e5',
       surface: '#ffffff',
@@ -73,8 +79,22 @@
     originalValues: {},
     sections: [],
     panelPosition: null,
-    boxModelContainer: null
+    boxModelContainer: null,
+    prevFocus: null
   };
+
+  // Notify the indicator (shell frame under always-wrap, else this window)
+  // that inspect-mode open/close state changed, so its inspect button can
+  // re-render without polling isOpen() every second.
+  function notifyInspectState() {
+    try {
+      var fn = window.__devtool_indicator_syncInspect;
+      if (!fn && window.parent && window.parent !== window) {
+        fn = window.parent.__devtool_indicator_syncInspect;
+      }
+      if (typeof fn === 'function') fn();
+    } catch (e) { /* cross-origin parent — nothing to notify */ }
+  }
 
   // Load persisted panel position from localStorage
   function loadPosition() {
@@ -214,7 +234,7 @@
       'left: 0',
       'right: 0',
       'bottom: 0',
-      'z-index: 2147483647',
+      'z-index: ' + SE_Z.critical,
       'cursor: crosshair',
       'background: rgba(99, 102, 241, 0.05)'
     ].join(';');
@@ -260,7 +280,9 @@
       'font-size: 13px',
       'font-weight: 500',
       'box-shadow: 0 10px 40px rgba(0,0,0,0.15)',
-      'z-index: 2147483648'
+      // critical, not 2147483648: that literal overflows int32 and browsers
+      // clamp it anyway; the bar renders above overlay siblings by DOM order.
+      'z-index: ' + SE_Z.critical
     ].join(';');
     instructions.textContent = 'Click an element to inspect styles \u2022 ESC to cancel';
     overlay.appendChild(instructions);
@@ -357,15 +379,31 @@
       if (overlay.parentNode) {
         overlay.parentNode.removeChild(overlay);
       }
+      if (window.__devtoolOverlayStack) {
+        window.__devtoolOverlayStack.pop('style-editor-select');
+      }
       document.removeEventListener('keydown', handleEscape);
       state.overlay = null;
       state.escapeHandler = null;
     }
 
-    document.addEventListener('keydown', handleEscape);
+    // Escape via the shared overlay stack (top-most surface only); the
+    // document listener is the fallback when ui-tokens failed to load.
+    if (window.__devtoolOverlayStack) {
+      window.__devtoolOverlayStack.push('style-editor-select', function() {
+        removeOverlay();
+        if (state.isOpen && !state.panel) {
+          state.isOpen = false;
+        }
+      });
+    } else {
+      document.addEventListener('keydown', handleEscape);
+      state.escapeHandler = handleEscape;
+    }
     state.overlay = overlay;
-    state.escapeHandler = handleEscape;
-    document.body.appendChild(overlay);
+    // Mount into the devtool shadow root when available; elementFromPoint
+    // hit-testing still resolves page elements (pointer-events toggling).
+    (window.__devtoolGetMountRoot ? window.__devtoolGetMountRoot() : document.body).appendChild(overlay);
   }
 
   // Create the floating panel DOM structure
@@ -381,7 +419,7 @@
       'background: ' + TOKENS.colors.surface,
       'border-radius: ' + TOKENS.radius.lg,
       'box-shadow: ' + TOKENS.shadow.lg,
-      'z-index: 2147483645',
+      'z-index: ' + SE_Z.panel,
       'font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
       'font-size: 13px',
       'color: ' + TOKENS.colors.text,
@@ -437,8 +475,8 @@
         state.beforeScreenshotId = screenshotId;
         selectorDisplay.textContent = sel;
         selectorDisplay.title = sel;
-        // Refresh content sections
-        var contentEl = document.getElementById('__devtool-style-content');
+        // Refresh content sections (panel-scoped — see showPanel note)
+        var contentEl = state.panel ? state.panel.querySelector('#__devtool-style-content') : null;
         if (contentEl) {
           contentEl.innerHTML = '';
           state.sections = [];
@@ -577,6 +615,7 @@
     ].join(';');
     btn.innerHTML = icon;
     btn.title = title;
+    btn.setAttribute('aria-label', title);
     btn.onclick = onClick;
     btn.onmouseenter = function() {
       btn.style.background = TOKENS.colors.border;
@@ -635,7 +674,8 @@
   // Scroll to and focus the first input for the given box model region.
   // region is one of 'margin', 'border', 'padding'.
   function scrollToBoxModelInput(region) {
-    var content = document.getElementById('__devtool-style-content');
+    // Panel-scoped lookup — getElementById cannot see into the shadow-root mount.
+    var content = state.panel ? state.panel.querySelector('#__devtool-style-content') : null;
     if (!content) return;
 
     // Map region to the first CSS property name to find the matching input
@@ -692,11 +732,25 @@
     panel.style.top = pos.y + 'px';
     state.panelPosition = pos;
 
-    document.body.appendChild(panel);
+    // Dialog semantics + programmatic focus target for open/close focus
+    // management (non-modal: the page stays interactive).
+    panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-modal', 'false');
+    panel.setAttribute('aria-label', 'Style editor');
+    panel.tabIndex = -1;
+
+    // Mount into the devtool shadow root when available (style isolation).
+    (window.__devtoolGetMountRoot ? window.__devtoolGetMountRoot() : document.body).appendChild(panel);
     state.panel = panel;
 
-    // Populate content sections
-    var content = document.getElementById('__devtool-style-content');
+    // Move focus into the panel; restore to the previously focused element
+    // on hidePanel().
+    state.prevFocus = document.activeElement;
+    try { panel.focus({ preventScroll: true }); } catch (e) { try { panel.focus(); } catch (e2) {} }
+
+    // Populate content sections (panel-scoped lookup — getElementById cannot
+    // see into the shadow-root mount)
+    var content = panel.querySelector('#__devtool-style-content');
     if (content && element) {
       // Box model diagram at the top
       state.boxModelContainer = renderBoxModel(element, scrollToBoxModelInput);
@@ -740,23 +794,39 @@
       document.addEventListener('mousedown', state.outsideClickHandler, true);
     }, 0);
 
-    // Set up Escape to close panel
-    state.panelEscapeHandler = function(e) {
-      if (e.key === 'Escape' && !state.selecting) {
-        close();
-      }
-    };
-    document.addEventListener('keydown', state.panelEscapeHandler);
+    // Set up Escape to close panel — via the shared overlay stack when
+    // available (top-most surface only), else a document-level fallback.
+    if (window.__devtoolOverlayStack) {
+      window.__devtoolOverlayStack.push('style-editor-panel', function() {
+        if (!state.selecting) close();
+      });
+    } else {
+      state.panelEscapeHandler = function(e) {
+        if (e.key === 'Escape' && !state.selecting) {
+          close();
+        }
+      };
+      document.addEventListener('keydown', state.panelEscapeHandler);
+    }
   }
 
   // Remove the panel from the DOM and clean up listeners
   function hidePanel() {
+    if (window.__devtoolOverlayStack) {
+      window.__devtoolOverlayStack.pop('style-editor-panel');
+    }
     if (state.panel && state.panel.parentNode) {
       state.panel.parentNode.removeChild(state.panel);
     }
     state.panel = null;
     state.sections = [];
     state.boxModelContainer = null;
+
+    // Restore focus to wherever the user was before the panel opened.
+    if (state.prevFocus && typeof state.prevFocus.focus === 'function' && state.prevFocus.isConnected) {
+      try { state.prevFocus.focus({ preventScroll: true }); } catch (e) { try { state.prevFocus.focus(); } catch (e2) {} }
+    }
+    state.prevFocus = null;
 
     if (state.outsideClickHandler) {
       document.removeEventListener('mousedown', state.outsideClickHandler, true);
@@ -3822,7 +3892,7 @@
     var toast = document.createElement('div');
     toast.style.cssText = [
       'position: fixed',
-      'z-index: 2147483647',
+      'z-index: ' + SE_Z.critical,
       'background: ' + TOKENS.colors.text,
       'color: ' + TOKENS.colors.textInverse,
       'font-size: 11px',
@@ -3833,7 +3903,7 @@
       'transition: opacity 0.3s ease'
     ].join(';');
     toast.textContent = 'Copied!';
-    document.body.appendChild(toast);
+    (window.__devtoolGetMountRoot ? window.__devtoolGetMountRoot() : document.body).appendChild(toast);
 
     var rect = anchorEl.getBoundingClientRect();
     toast.style.left = rect.left + 'px';
@@ -4167,7 +4237,7 @@
 
   // Update the attach button label to reflect current change count
   function updateAttachButton() {
-    var btn = document.getElementById('__devtool-style-attach-btn');
+    var btn = state.panel ? state.panel.querySelector('#__devtool-style-attach-btn') : null;
     if (btn) {
       btn.textContent = 'Attach Changes (' + state.changes.length + ')';
     }
@@ -4177,6 +4247,7 @@
   function open(element) {
     if (state.isOpen) return;
     state.isOpen = true;
+    notifyInspectState();
 
     if (element) {
       state.selectedElement = element;
@@ -4217,6 +4288,7 @@
     if (!state.isOpen) return;
     var hadSelection = !!state.selectedElement;
     state.isOpen = false;
+    notifyInspectState();
     state.selectedElement = null;
     state.selector = null;
     state.xpath = null;
@@ -4244,6 +4316,9 @@
       }
       if (state.escapeHandler) {
         document.removeEventListener('keydown', state.escapeHandler);
+      }
+      if (window.__devtoolOverlayStack) {
+        window.__devtoolOverlayStack.pop('style-editor-select');
       }
       state.overlay = null;
       state.escapeHandler = null;

@@ -95,7 +95,8 @@
     microToast: null, // Micro toast element (compact pill near bug)
     microToastTimeout: null, // Auto-hide timer for micro toast
     expandedErrorKeys: {},   // Stable keys of expanded error items
-    expandedNetworkKeys: {}  // Stable keys of expanded network items
+    expandedNetworkKeys: {}, // Stable keys of expanded network items
+    prevFocus: null          // Element to restore focus to on panel close
   };
 
   // ============================================
@@ -386,15 +387,6 @@
     }
     var history = dvInteractions().getHistory ? dvInteractions().getHistory() : [];
     store.interactions.val = history.slice(-10).reverse();
-  }
-
-  // Refresh all tab data
-  function refreshAllTabData() {
-    refreshOverviewData();
-    refreshErrorsData();
-    refreshNetworkData();
-    refreshPerformanceData();
-    refreshInteractionsData();
   }
 
   // Reactive actions - update store, DOM follows automatically
@@ -1019,14 +1011,14 @@
       var toggleTrack = tags.div({
         style: [
           'width: 44px', 'height: 24px', 'border-radius: 12px', 'position: relative',
-          'cursor: pointer', 'transition: background 0.25s ease', 'flex-shrink: 0',
+          'cursor: pointer', 'transition: ' + IND_MOTION.transition('background 0.25s ease'), 'flex-shrink: 0',
           'background: ' + (chaos.enabled ? TOKENS.colors.chaos : TOKENS.colors.border)
         ].join(';'),
         onclick: function() { chaosRequest(chaos.enabled ? 'disable' : 'enable', {}); }
       }, tags.div({
         style: [
           'position: absolute', 'top: 2px', 'width: 20px', 'height: 20px',
-          'border-radius: 50%', 'background: #fff', 'transition: left 0.25s ease',
+          'border-radius: 50%', 'background: #fff', 'transition: ' + IND_MOTION.transition('left 0.25s ease'),
           'box-shadow: 0 1px 3px rgba(0,0,0,0.3)',
           'left: ' + (chaos.enabled ? '22px' : '2px')
         ].join(';')
@@ -1059,7 +1051,7 @@
                 'padding: 4px 10px', 'border-radius: ' + TOKENS.radius.full,
                 'border: 1px solid ' + TOKENS.colors.border, 'background: ' + TOKENS.colors.surfaceAlt,
                 'color: ' + TOKENS.colors.text, 'font-size: 11px', 'cursor: pointer',
-                'transition: all 0.15s ease'
+                'transition: ' + IND_MOTION.transition('all 0.15s ease')
               ].join(';'),
               title: 'Apply preset: ' + (preset.rules || []).join(', '),
               onclick: function() {
@@ -1186,9 +1178,12 @@
     };
   }
 
-  // Design tokens - consistent visual language
+  // Design tokens - consistent visual language. Colors come from the shared
+  // ui-tokens module (light/dark picked at load via prefers-color-scheme);
+  // the literal block is the fallback for the defensive "ui-tokens failed to
+  // load" case.
   var TOKENS = {
-    colors: {
+    colors: (window.__devtoolTokens && window.__devtoolTokens.theme()) || {
       primary: '#6366f1',      // Indigo
       primaryDark: '#4f46e5',
       secondary: '#64748b',    // Slate
@@ -1225,6 +1220,14 @@
     }
   };
 
+  // Shared z-index layer scale + reduced-motion preference (ui-tokens.js),
+  // with load-failure fallbacks. Layer mapping: floating panels/previews sit
+  // on `panel`, the bug + micro toast on `toast`, capture/selection overlays
+  // and the audit mega menu on `critical` (the old 2147483648 literal
+  // overflowed int32 and was clamped by browsers anyway).
+  var IND_Z = window.__devtoolTokens ? window.__devtoolTokens.z : { panel: 2147483644, toast: 2147483646, critical: 2147483647 };
+  var IND_MOTION = window.__devtoolTokens ? window.__devtoolTokens.motion() : { reduce: false, transition: function(spec) { return spec; } };
+
   // Styles
   var STYLES = {
     // The floating bug - entry point
@@ -1236,11 +1239,11 @@
       'background: ' + TOKENS.colors.primary,
       'box-shadow: ' + TOKENS.shadow.lg + ', ' + TOKENS.shadow.glow,
       'cursor: pointer',
-      'z-index: 2147483646',
+      'z-index: ' + IND_Z.toast,
       'display: flex',
       'align-items: center',
       'justify-content: center',
-      'transition: transform 0.2s ease, box-shadow 0.2s ease',
+      'transition: ' + IND_MOTION.transition('transform 0.2s ease, box-shadow 0.2s ease'),
       'user-select: none',
       // Size is fixed (52x52), so layout/style invalidation here cannot affect
       // the rest of the document. paint is intentionally omitted because the
@@ -1257,7 +1260,7 @@
       'height: 14px',
       'border-radius: ' + TOKENS.radius.full,
       'border: 2.5px solid ' + TOKENS.colors.surface,
-      'transition: background-color 0.3s ease'
+      'transition: ' + IND_MOTION.transition('background-color 0.3s ease')
     ].join(';'),
 
     // Activity ring - pulses when AI is working
@@ -1301,7 +1304,7 @@
       'border: 2px dashed ' + TOKENS.colors.chaos,
       'opacity: 0',
       'pointer-events: none',
-      'transition: opacity 0.3s ease'
+      'transition: ' + IND_MOTION.transition('opacity 0.3s ease')
     ].join(';'),
 
     // Chaos badge - small storm marker pinned bottom-right of the bug
@@ -1336,11 +1339,11 @@
       'font-size: 12px',
       'line-height: 1.5',
       'box-shadow: ' + TOKENS.shadow.lg,
-      'z-index: 2147483645',
+      'z-index: ' + IND_Z.panel,
       'pointer-events: none',
       'opacity: 0',
       'transform: translateX(10px)',
-      'transition: opacity 0.2s ease, transform 0.2s ease',
+      'transition: ' + IND_MOTION.transition('opacity 0.2s ease, transform 0.2s ease'),
       'overflow: hidden',
       'white-space: pre-wrap',
       'word-break: break-word',
@@ -1364,8 +1367,8 @@
       'background: rgba(99,102,241,0.15)',
       'overflow: hidden',
       'pointer-events: none',
-      'z-index: 2147483645',
-      'transition: opacity 0.3s ease',
+      'z-index: ' + IND_Z.panel,
+      'transition: ' + IND_MOTION.transition('opacity 0.3s ease'),
       // Fixed 52x12 size with overflow:hidden; safe to use the strict `content`
       // shorthand (layout + style + paint) because the SVG bars stay inside.
       'contain: content'
@@ -1378,12 +1381,12 @@
       'background: ' + TOKENS.colors.surface,
       'border-radius: ' + TOKENS.radius.lg,
       'box-shadow: ' + TOKENS.shadow.lg,
-      'z-index: 2147483645',
+      'z-index: ' + IND_Z.panel,
       'overflow: visible',
       'font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
       'font-size: 14px',
       'color: ' + TOKENS.colors.text,
-      'transition: opacity 0.2s ease, transform 0.2s ease',
+      'transition: ' + IND_MOTION.transition('opacity 0.2s ease, transform 0.2s ease'),
       // Scope layout/style invalidation to the panel. paint is omitted because
       // the audit dropdown megaMenu inside the panel uses position:absolute
       // with bottom:calc(100% + 4px) to open upward and its box-shadow extends
@@ -1417,7 +1420,7 @@
       'padding: 4px',
       'border-radius: ' + TOKENS.radius.sm,
       'display: flex',
-      'transition: background 0.15s ease'
+      'transition: ' + IND_MOTION.transition('background 0.15s ease')
     ].join(';'),
 
     // Compose area - the main content
@@ -1431,7 +1434,7 @@
       'border-radius: ' + TOKENS.radius.md,
       'background: ' + TOKENS.colors.surface,
       'overflow: hidden',
-      'transition: border-color 0.2s ease, box-shadow 0.2s ease'
+      'transition: ' + IND_MOTION.transition('border-color 0.2s ease, box-shadow 0.2s ease')
     ].join(';'),
 
     messageCardFocused: [
@@ -1498,13 +1501,13 @@
       'cursor: pointer',
       'color: ' + TOKENS.colors.textMuted,
       'display: flex',
-      'transition: color 0.15s ease'
+      'transition: ' + IND_MOTION.transition('color 0.15s ease')
     ].join(';'),
 
     // Attachment preview popup (shown on chip hover)
     attachmentPreview: [
       'position: fixed',
-      'z-index: 2147483647',
+      'z-index: ' + IND_Z.critical,
       'background: ' + TOKENS.colors.surface,
       'border: 1px solid ' + TOKENS.colors.border,
       'border-radius: ' + TOKENS.radius.lg,
@@ -1515,7 +1518,7 @@
       'overflow: hidden',
       'pointer-events: none',
       'opacity: 0',
-      'transition: opacity 0.15s ease'
+      'transition: ' + IND_MOTION.transition('opacity 0.15s ease')
     ].join(';'),
 
     attachmentPreviewImage: [
@@ -1537,12 +1540,12 @@
     // Element highlight overlay for element preview
     elementPreviewHighlight: [
       'position: fixed',
-      'z-index: 2147483645',
+      'z-index: ' + IND_Z.panel,
       'background: rgba(99, 102, 241, 0.2)',
       'border: 2px solid ' + TOKENS.colors.primary,
       'border-radius: 2px',
       'pointer-events: none',
-      'transition: all 0.15s ease'
+      'transition: ' + IND_MOTION.transition('all 0.15s ease')
     ].join(';'),
 
     // Toolbar - secondary actions (Gestalt: Similarity)
@@ -1580,7 +1583,7 @@
       'font-weight: 500',
       'color: ' + TOKENS.colors.textMuted,
       'cursor: pointer',
-      'transition: all 0.15s ease',
+      'transition: ' + IND_MOTION.transition('all 0.15s ease'),
       'white-space: nowrap'
     ].join(';'),
 
@@ -1598,7 +1601,7 @@
       'font-weight: 600',
       'color: ' + TOKENS.colors.textInverse,
       'cursor: pointer',
-      'transition: background 0.15s ease, transform 0.1s ease',
+      'transition: ' + IND_MOTION.transition('background 0.15s ease, transform 0.1s ease'),
       'white-space: nowrap',
       'margin-left: auto'
     ].join(';'),
@@ -1610,7 +1613,7 @@
       'left: 0',
       'right: 0',
       'bottom: 0',
-      'z-index: 2147483647',
+      'z-index: ' + IND_Z.critical,
       'background: transparent',
       'pointer-events: auto',
       'user-select: none',
@@ -1636,7 +1639,7 @@
       'background: rgba(99, 102, 241, 0.1)',
       'pointer-events: none',
       'border-radius: 4px',
-      'z-index: 2147483647'
+      'z-index: ' + IND_Z.critical
     ].join(';'),
 
     tooltip: [
@@ -1663,7 +1666,7 @@
       'border-radius: ' + TOKENS.radius.full,
       'font-size: 13px',
       'font-weight: 500',
-      'z-index: 2147483647',
+      'z-index: ' + IND_Z.critical,
       'box-shadow: ' + TOKENS.shadow.lg
     ].join(';'),
 
@@ -1687,7 +1690,7 @@
       'font-weight: 500',
       'color: ' + TOKENS.colors.textMuted,
       'cursor: pointer',
-      'transition: all 0.15s ease',
+      'transition: ' + IND_MOTION.transition('all 0.15s ease'),
       'white-space: nowrap'
     ].join(';'),
 
@@ -1718,11 +1721,11 @@
       'border: 1px solid ' + TOKENS.colors.border,
       'border-radius: ' + TOKENS.radius.md,
       'box-shadow: ' + TOKENS.shadow.lg,
-      'z-index: 2147483648',
+      'z-index: ' + IND_Z.critical,
       'opacity: 0',
       'transform: translateY(4px)',
       'pointer-events: none',
-      'transition: opacity 0.15s ease, transform 0.15s ease'
+      'transition: ' + IND_MOTION.transition('opacity 0.15s ease, transform 0.15s ease')
     ].join(';'),
 
     megaMenuVisible: [
@@ -1771,7 +1774,7 @@
       'font-size: 12px',
       'color: ' + TOKENS.colors.text,
       'cursor: pointer',
-      'transition: background 0.1s ease',
+      'transition: ' + IND_MOTION.transition('background 0.1s ease'),
       'border: none',
       'background: none',
       'width: 100%',
@@ -1835,7 +1838,7 @@
       'color: ' + TOKENS.colors.textMuted,
       'cursor: pointer',
       'border-bottom: 2px solid transparent',
-      'transition: color 0.15s ease, border-color 0.15s ease',
+      'transition: ' + IND_MOTION.transition('color 0.15s ease, border-color 0.15s ease'),
       'white-space: nowrap',
       'position: relative',
       'display: flex',
@@ -1934,7 +1937,7 @@
       'border-bottom: 1px solid ' + TOKENS.colors.border,
       'font-size: 12px',
       'cursor: pointer',
-      'transition: background 0.15s ease'
+      'transition: ' + IND_MOTION.transition('background 0.15s ease')
     ].join(';'),
 
     errorMessage: [
@@ -1968,10 +1971,10 @@
       'white-space: nowrap',
       'backdrop-filter: blur(12px)',
       'pointer-events: none',
-      'z-index: 2147483646',
+      'z-index: ' + IND_Z.toast,
       'opacity: 0',
       'transform: translateY(6px) scale(0.92)',
-      'transition: opacity 0.25s cubic-bezier(0.16,1,0.3,1), transform 0.25s cubic-bezier(0.16,1,0.3,1)',
+      'transition: ' + IND_MOTION.transition('opacity 0.25s cubic-bezier(0.16,1,0.3,1), transform 0.25s cubic-bezier(0.16,1,0.3,1)'),
       'box-shadow: 0 4px 20px rgba(0,0,0,0.25), inset 0 0.5px 0 rgba(255,255,255,0.06)',
       'letter-spacing: 0.3px',
       'max-width: 260px',
@@ -1998,7 +2001,7 @@
       'border-bottom: 1px solid ' + TOKENS.colors.border,
       'font-size: 12px',
       'line-height: 1.4',
-      'transition: background 0.12s ease'
+      'transition: ' + IND_MOTION.transition('background 0.12s ease')
     ].join(';'),
 
     historyDot: [
@@ -2112,18 +2115,47 @@
     state.container.id = '__devtool-indicator';
     if (!state.isVisible) state.container.style.display = 'none';
 
-    // Isolate indicator clicks from page handlers (e.g., dropdown "click outside" detectors)
-    // Use bubbling phase (not capture) so events still reach child elements inside the container
-    // Only stop click/mousedown/pointerdown — NOT mouseup/pointerup, which must reach
-    // document for drag release detection in handleDragStart
-    state.container.addEventListener('click', function(e) { e.stopPropagation(); });
-    state.container.addEventListener('mousedown', function(e) { e.stopPropagation(); });
-    state.container.addEventListener('pointerdown', function(e) { e.stopPropagation(); });
-
     createBug();
     createPanel();
     createOutputPreview();
     createMicroToast();
+
+    // Isolate clicks on the interactive surfaces (panel + bug) from page
+    // handlers (e.g., dropdown "click outside" detectors). Scoped to those
+    // elements — NOT the whole container — so passive elements (micro toast,
+    // sparkline, output preview) never swallow page events. Bubbling phase so
+    // events still reach children first; click/mousedown/pointerdown only —
+    // NOT mouseup/pointerup, which must reach document for drag release
+    // detection in handleDragStart.
+    [state.panel, state.bug].forEach(function(el) {
+      if (!el) return;
+      el.addEventListener('click', function(e) { e.stopPropagation(); });
+      el.addEventListener('mousedown', function(e) { e.stopPropagation(); });
+      el.addEventListener('pointerdown', function(e) { e.stopPropagation(); });
+    });
+
+    // Minimal ARIA surface: the panel is a non-modal dialog, the bug is its
+    // toggle button, decorative strips are hidden from assistive tech.
+    if (state.panel) {
+      state.panel.setAttribute('role', 'dialog');
+      state.panel.setAttribute('aria-modal', 'false');
+      state.panel.setAttribute('aria-label', 'agnt developer panel');
+      state.panel.tabIndex = -1;
+    }
+    if (state.bug) {
+      state.bug.setAttribute('role', 'button');
+      state.bug.setAttribute('aria-label', 'Toggle agnt developer panel');
+      state.bug.setAttribute('aria-haspopup', 'dialog');
+      state.bug.tabIndex = 0;
+      state.bug.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          togglePanel();
+        }
+      });
+    }
+    if (state.microToast) state.microToast.setAttribute('aria-hidden', 'true');
+    if (state.outputPreview) state.outputPreview.setAttribute('aria-hidden', 'true');
 
     // Mount the indicator container into the devtool shadow root (or
     // document.body in the fallback path). See mountRoot() helper at top.
@@ -2245,6 +2277,7 @@
   function createSparkline() {
     var el = document.createElement('div');
     el.id = '__devtool-sparkline';
+    el.setAttribute('aria-hidden', 'true');
     el.style.cssText = STYLES.sparkline;
     el.innerHTML = '<svg width="52" height="12" viewBox="0 0 52 12" xmlns="http://www.w3.org/2000/svg"></svg>';
     state.sparkline = el;
@@ -2266,6 +2299,7 @@
   // Update sparkline SVG from API tracker data
   function updateSparkline() {
     if (!state.sparkline) return;
+    if (!state.isVisible) return; // container hidden — skip the SVG rebuild
     if (!dvApi() || !dvApi().getSparklineData) return;
 
     var data = dvApi().getSparklineData(60);
@@ -4867,6 +4901,7 @@
     instructions.addEventListener('mousedown', function(e) { e.stopPropagation(); }, true);
 
     function cleanup() {
+      if (window.__devtoolOverlayStack) window.__devtoolOverlayStack.pop('indicator-screenshot');
       document.removeEventListener('keydown', onKey);
       if (overlay.parentNode) overlay.parentNode.removeChild(overlay);
     }
@@ -4877,7 +4912,16 @@
         togglePanel(true);
       }
     }
-    document.addEventListener('keydown', onKey);
+    // Escape via the shared overlay stack (top-most surface only); document
+    // listener is the fallback when ui-tokens failed to load.
+    if (window.__devtoolOverlayStack) {
+      window.__devtoolOverlayStack.push('indicator-screenshot', function() {
+        cleanup();
+        togglePanel(true);
+      });
+    } else {
+      document.addEventListener('keydown', onKey);
+    }
 
     // Mount into shadow root (or body in fallback). position:fixed + full
     // viewport overlay works identically inside open shadow roots.
@@ -5023,6 +5067,7 @@
     };
 
     function cleanup() {
+      if (window.__devtoolOverlayStack) window.__devtoolOverlayStack.pop('indicator-element');
       document.removeEventListener('keydown', onKey);
       if (rafId) {
         cancelAnimationFrame(rafId);
@@ -5038,7 +5083,16 @@
         togglePanel(true);
       }
     }
-    document.addEventListener('keydown', onKey);
+    // Escape via the shared overlay stack (top-most surface only); document
+    // listener is the fallback when ui-tokens failed to load.
+    if (window.__devtoolOverlayStack) {
+      window.__devtoolOverlayStack.push('indicator-element', function() {
+        cleanup();
+        togglePanel(true);
+      });
+    } else {
+      document.addEventListener('keydown', onKey);
+    }
 
     // Mount overlay into shadow root. Hit-testing via document.elementFromPoint
     // still sees elements in the host page because open shadow roots are
@@ -5118,6 +5172,16 @@
     state.isExpanded = shouldShow;
 
     if (shouldShow) {
+      // Register on the shared Escape stack so Esc closes the panel when it
+      // is the top-most devtool surface.
+      if (window.__devtoolOverlayStack) {
+        window.__devtoolOverlayStack.push('indicator-panel', function() {
+          togglePanel(false);
+        });
+      }
+      // Focus management: remember where the user was, move focus into the
+      // panel; restored on close below.
+      state.prevFocus = document.activeElement;
       updatePanelPosition();
       state.panel.style.display = 'flex'; // Changed to flex for column layout
       // Promote the panel to a compositor layer just for the duration of the
@@ -5138,7 +5202,16 @@
           state.panel.style.willChange = 'auto';
         }
       }, 300);
+      try { state.panel.focus({ preventScroll: true }); } catch (e) { try { state.panel.focus(); } catch (e2) {} }
     } else {
+      if (window.__devtoolOverlayStack) {
+        window.__devtoolOverlayStack.pop('indicator-panel');
+      }
+      // Restore focus to wherever the user was before the panel opened.
+      if (state.prevFocus && typeof state.prevFocus.focus === 'function' && state.prevFocus.isConnected) {
+        try { state.prevFocus.focus({ preventScroll: true }); } catch (e) { /* focus restore is best-effort */ }
+      }
+      state.prevFocus = null;
       state.panel.style.willChange = 'transform, opacity';
       state.panel.style.opacity = '0';
       state.panel.style.transform = 'translateY(8px)';
@@ -5292,34 +5365,45 @@
         lastConnected = connected;
       }
     };
-    var lastConnected = null; // null = unknown until first poll
+    var lastConnected = null; // null = unknown until first update
+    // Connection dot is purely event-driven via core.onConnected — the old
+    // 200ms setInterval(updateDot) poll was redundant and leaked.
     core.onConnected(updateDot);
     core.onConnected(function() {
       // Sync chaos state on (re)connect so the bug indicator is correct
       // even if the panel was never opened.
       refreshChaosData();
     });
-    setInterval(updateDot, 200);
-    // Update inspect button active state
-    setInterval(function() {
-      if (state.inspectBtn) {
-        var sw = targetWindow();
-        var active = sw.__devtool_style_editor && sw.__devtool_style_editor.isOpen();
-        if (active) {
-          state.inspectBtn.style.background = TOKENS.colors.surface;
-          state.inspectBtn.style.borderColor = TOKENS.colors.primary;
-          state.inspectBtn.style.color = TOKENS.colors.primary;
-        } else {
-          state.inspectBtn.style.background = 'transparent';
-          state.inspectBtn.style.borderColor = TOKENS.colors.border;
-          state.inspectBtn.style.color = TOKENS.colors.textMuted;
-        }
-      }
-    }, 1000);
+    // Inspect button active state is event-driven: style-editor.js calls
+    // __devtool_indicator_syncInspect (directly, or via window.parent from
+    // the content frame) on every open()/close() — replaces the old 1s
+    // cross-frame isOpen() poll.
+    window.__devtool_indicator_syncInspect = updateInspectBtnState;
+    updateInspectBtnState();
 
     // Register message handler for activity state
     if (core && core.onMessage) {
       core.onMessage(handleMessage);
+    }
+  }
+
+  // Re-render the inspect toolbar button from the style editor's current
+  // open state. Exposed as window.__devtool_indicator_syncInspect.
+  function updateInspectBtnState() {
+    if (!state.inspectBtn) return;
+    var sw = targetWindow();
+    var active = false;
+    try {
+      active = !!(sw.__devtool_style_editor && sw.__devtool_style_editor.isOpen());
+    } catch (e) { /* cross-origin content frame — treat as closed */ }
+    if (active) {
+      state.inspectBtn.style.background = TOKENS.colors.surface;
+      state.inspectBtn.style.borderColor = TOKENS.colors.primary;
+      state.inspectBtn.style.color = TOKENS.colors.primary;
+    } else {
+      state.inspectBtn.style.background = 'transparent';
+      state.inspectBtn.style.borderColor = TOKENS.colors.border;
+      state.inspectBtn.style.color = TOKENS.colors.textMuted;
     }
   }
 
@@ -5427,12 +5511,21 @@
   }
 
   function destroy() {
+    if (state.sparklineInterval) {
+      clearInterval(state.sparklineInterval);
+      state.sparklineInterval = null;
+    }
+    if (state.tabUpdateInterval) {
+      clearInterval(state.tabUpdateInterval);
+      state.tabUpdateInterval = null;
+    }
     if (state.container && state.container.parentNode) {
       state.container.parentNode.removeChild(state.container);
     }
     state.container = null;
     state.bug = null;
     state.panel = null;
+    state.sparkline = null;
   }
 
   // Register the global hotkey handler immediately at script-eval time, on
