@@ -255,12 +255,7 @@ await shot('color-palette', async (pg) => {
   await pg.waitForTimeout(1600);
 });
 
-// NOTE: __devtool.responsiveAudit() (the headless-iframe path behind the
-// responsive_audit MCP tool) is not driven here: waitForIframeLoad's
-// synchronous `readyState === 'complete'` check matches the iframe's initial
-// about:blank document, so all checks run against an empty document and the
-// audit returns 0 issues in ~50ms (bug in internal/proxy/scripts/responsive.js).
-// This scene shows the same checks through responsive mode's width sweep,
+// This scene shows the responsive checks through responsive mode's width sweep,
 // where the invoices table visibly breaks at phone widths.
 await shot('responsive-audit', async (pg) => {
   await pg.evaluate(() => window.__devtool.responsive.open());
