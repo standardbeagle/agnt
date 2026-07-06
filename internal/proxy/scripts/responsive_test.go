@@ -7,7 +7,7 @@ import (
 
 func TestResponsiveScriptEmbedded(t *testing.T) {
 	// Build the script fresh
-	combined := buildCombinedScript()
+	combined := buildCombinedScript(RoleFull)
 
 	// Check for responsive module presence
 	if !strings.Contains(combined, "__devtool_responsive") {
@@ -40,7 +40,7 @@ func TestResponsiveInScriptNames(t *testing.T) {
 }
 
 func TestResponsiveModuleOrder(t *testing.T) {
-	combined := buildCombinedScript()
+	combined := buildCombinedScript(RoleFull)
 
 	// Responsive module should come after wireframe and before api
 	responsiveIdx := strings.Index(combined, "// responsive module")

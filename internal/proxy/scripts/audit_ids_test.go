@@ -116,7 +116,7 @@ func TestAuditHighlightSharedRegistry(t *testing.T) {
 // TestAuditIDsInCombinedScript verifies the combined script contains the
 // computeFindingID function from all four audit modules.
 func TestAuditIDsInCombinedScript(t *testing.T) {
-	combined := buildCombinedScript()
+	combined := buildCombinedScript(RoleFull)
 
 	// There should be multiple occurrences (one per audit module).
 	count := strings.Count(combined, "computeFindingID")
