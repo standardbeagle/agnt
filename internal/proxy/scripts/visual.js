@@ -6,6 +6,22 @@
 
   var utils = window.__devtool_utils;
 
+  // DOMRect serializes to {} through JSON.stringify (its properties live on
+  // the prototype), so every returned rect must be hand-copied to a plain
+  // object (same pattern as inspection.js getPosition).
+  function rectToPlain(rect) {
+    return {
+      x: rect.x !== undefined ? rect.x : rect.left,
+      y: rect.y !== undefined ? rect.y : rect.top,
+      width: rect.width,
+      height: rect.height,
+      top: rect.top,
+      right: rect.right,
+      bottom: rect.bottom,
+      left: rect.left
+    };
+  }
+
   function isVisible(selector) {
     var el = utils.resolveElement(selector);
     if (!el) return { error: 'Element not found' };
@@ -40,9 +56,15 @@
     }
   }
 
-  function isInViewport(selector) {
+  // isInViewport(selector, threshold?)
+  // threshold is the minimum visible-area ratio (0..1) required for the
+  // element to count as "in viewport". With no/zero threshold, any
+  // intersection counts.
+  function isInViewport(selector, threshold) {
     var el = utils.resolveElement(selector);
     if (!el) return { error: 'Element not found' };
+
+    threshold = typeof threshold === 'number' ? threshold : 0;
 
     try {
       var rect = utils.getRect(el);
@@ -65,9 +87,11 @@
       var ratio = totalArea > 0 ? visibleArea / totalArea : 0;
 
       return {
+        inViewport: threshold > 0 ? ratio >= threshold : intersecting,
         intersecting: intersecting,
         ratio: ratio,
-        rect: rect,
+        percentVisible: Math.round(ratio * 100),
+        rect: rectToPlain(rect),
         fullyVisible: ratio === 1
       };
     } catch (e) {

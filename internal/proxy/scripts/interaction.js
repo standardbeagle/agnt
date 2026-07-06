@@ -556,6 +556,18 @@
       reportError('initialization_failed', e);
     }
 
+    // The interaction store is a circular buffer: once full, new entries
+    // overwrite slot (interactionIndex % maxHistorySize), so raw array order
+    // is NOT chronological after wrap. orderedInteractions() rebuilds
+    // oldest→newest order from interactionIndex; every read goes through it.
+    function orderedInteractions() {
+      if (interactions.length < config.maxHistorySize) {
+        return interactions.slice();
+      }
+      var head = interactionIndex % config.maxHistorySize;
+      return interactions.slice(head).concat(interactions.slice(0, head));
+    }
+
     // Export interactions API with input validation
     try {
       if (!window.__devtool_interactions) {
@@ -565,8 +577,9 @@
               count = typeof count === 'number' ? count : 50;
               if (count < 0) count = 50;
 
-              var start = Math.max(0, interactions.length - count);
-              return interactions.slice(start);
+              var ordered = orderedInteractions();
+              var start = Math.max(0, ordered.length - count);
+              return ordered.slice(start);
             } catch (e) {
               reportError('getHistory_failed', e);
               return [];
@@ -575,9 +588,10 @@
 
           getLastClick: function() {
             try {
-              for (var i = interactions.length - 1; i >= 0; i--) {
-                if (interactions[i] && interactions[i].event_type === 'click') {
-                  return interactions[i];
+              var ordered = orderedInteractions();
+              for (var i = ordered.length - 1; i >= 0; i--) {
+                if (ordered[i] && ordered[i].event_type === 'click') {
+                  return ordered[i];
                 }
               }
               return null;
@@ -591,7 +605,7 @@
             try {
               if (typeof selector !== 'string') return [];
 
-              return interactions.filter(function(i) {
+              return orderedInteractions().filter(function(i) {
                 try {
                   return i &&
                          i.event_type === 'click' &&

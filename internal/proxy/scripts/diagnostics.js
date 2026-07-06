@@ -15,6 +15,15 @@
     nextPanelId: 1
   };
 
+  // Return-value caps: the on-page panels already truncate what they render;
+  // the JSON returned through proxy exec must be equally bounded or a big
+  // page burns thousands of tokens. Full totals are always reported alongside.
+  var RETURN_LIST_CAP = 30;
+
+  function capList(arr, cap) {
+    return arr.length > cap ? arr.slice(0, cap) : arr;
+  }
+
   // Color palette for visual distinction
   var COLORS = {
     red: '#ff0000',
@@ -98,7 +107,7 @@
       'border: 2px solid #333',
       'border-radius: 8px',
       'box-shadow: 0 4px 16px rgba(0,0,0,0.3)',
-      'z-index: 2147483646',
+      'z-index: ' + (window.__devtoolTokens ? window.__devtoolTokens.z.panel : 2147483644),
       'font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
       'font-size: 14px',
       'overflow: auto'
@@ -416,7 +425,8 @@
       mode: 'typography-panel',
       panelId: panelId,
       uniqueStyles: styleArray.length,
-      styles: styleArray
+      styles: capList(styleArray, RETURN_LIST_CAP),
+      capped: styleArray.length > RETURN_LIST_CAP
     };
   }
 
@@ -477,8 +487,9 @@
     for (var i = 0; i < elements.length; i++) {
       var zIndex = window.getComputedStyle(elements[i]).zIndex;
       if (zIndex !== 'auto' && zIndex !== '0') {
+        // Selector only — no live node in the return value (a DOM element
+        // JSON.stringifies to {} and bloats the exec result).
         zIndexElements.push({
-          element: elements[i],
           zIndex: parseInt(zIndex, 10),
           selector: utils.generateSelector(elements[i])
         });
@@ -499,7 +510,9 @@
     return {
       success: true,
       mode: 'stacking',
-      zIndexElements: zIndexElements
+      total: zIndexElements.length,
+      zIndexElements: capList(zIndexElements, RETURN_LIST_CAP),
+      capped: zIndexElements.length > RETURN_LIST_CAP
     };
   }
 
@@ -706,7 +719,8 @@
       mode: 'color-palette',
       panelId: panelId,
       uniqueColors: colorArray.length,
-      colors: colorArray
+      colors: capList(colorArray, RETURN_LIST_CAP),
+      capped: colorArray.length > RETURN_LIST_CAP
     };
   }
 
@@ -767,7 +781,8 @@
       mode: 'spacing-scale',
       panelId: panelId,
       uniqueValues: spacingArray.length,
-      values: spacingArray
+      values: capList(spacingArray, 40), // panel renders 40; return matches
+      capped: spacingArray.length > 40
     };
   }
 
@@ -832,7 +847,16 @@
   // DOM SNAPSHOT & DIFF
   // ============================================================================
 
-  function serializeElement(el, includeStyles, captureAllStyles) {
+  // Size guards: snapshots and diffs are agent-facing JSON — they must be
+  // bounded even on huge pages. When the node budget runs out, subtrees are
+  // dropped and the snapshot carries capped:true.
+  var SNAPSHOT_MAX_NODES = 1500;
+  var DIFF_MAX_ENTRIES = 100;      // per bucket (added/removed/modified)
+  var DIFF_MAX_STYLE_CHANGES = 10; // per modified node
+
+  function serializeElement(el, includeStyles, captureAllStyles, budget) {
+    budget.remaining--;
+
     var obj = {
       tag: el.tagName.toLowerCase(),
       attrs: {},
@@ -894,9 +918,14 @@
     }
     obj.text = obj.text.trim();
 
-    // Recursively capture children
+    // Recursively capture children while the node budget lasts. Dropping a
+    // subtree is recorded on the budget so the snapshot reports capped:true.
     for (var k = 0; k < el.children.length; k++) {
-      obj.children.push(serializeElement(el.children[k], includeStyles, captureAllStyles));
+      if (budget.remaining <= 0) {
+        budget.capped = true;
+        break;
+      }
+      obj.children.push(serializeElement(el.children[k], includeStyles, captureAllStyles, budget));
     }
 
     return obj;
@@ -907,6 +936,8 @@
     var root = options.root || document.body;
     var includeStyles = options.includeStyles !== false; // Default true
     var captureAllStyles = options.captureAllStyles || false; // Default false (captures key styles only)
+    var maxNodes = typeof options.maxNodes === 'number' ? options.maxNodes : SNAPSHOT_MAX_NODES;
+    var budget = { remaining: maxNodes, capped: false };
 
     var snapshot = {
       timestamp: Date.now(),
@@ -915,7 +946,8 @@
         width: window.innerWidth,
         height: window.innerHeight
       },
-      root: serializeElement(root, includeStyles, captureAllStyles),
+      root: serializeElement(root, includeStyles, captureAllStyles, budget),
+      capped: false,
       stats: {
         totalElements: 0,
         totalTextNodes: 0,
@@ -923,9 +955,11 @@
       },
       options: {
         includeStyles: includeStyles,
-        captureAllStyles: captureAllStyles
+        captureAllStyles: captureAllStyles,
+        maxNodes: maxNodes
       }
     };
+    snapshot.capped = budget.capped;
 
     // Calculate stats
     function countElements(node, depth) {
@@ -961,28 +995,48 @@
     return path;
   }
 
+  // Compact one-node summary for diff entries. Full serialized subtrees
+  // (node/before/after) made diff output unbounded on big changes — the
+  // path + summary is what an agent actually navigates with.
+  function summarizeNode(node) {
+    if (!node) return null;
+    return {
+      tag: node.tag,
+      id: node.attrs && node.attrs.id ? node.attrs.id : null,
+      class: node.attrs && node.attrs.class ? node.attrs.class : null,
+      text: node.text ? String(node.text).substring(0, 120) : '',
+      childCount: node.children ? node.children.length : 0
+    };
+  }
+
   function compareDOMSnapshots(baseline, current) {
     var added = [];
     var removed = [];
     var modified = [];
+    var counts = { added: 0, removed: 0, modified: 0 };
+
+    function pushDiff(bucket, key, entry) {
+      counts[key]++;
+      if (bucket.length < DIFF_MAX_ENTRIES) bucket.push(entry);
+    }
 
     function compareNodes(baseNode, currNode, path) {
       path = path || [];
 
       if (!baseNode && currNode) {
         // Node was added
-        added.push({
+        pushDiff(added, 'added', {
           path: generateNodePath(currNode, path.slice()),
-          node: currNode
+          node: summarizeNode(currNode)
         });
         return;
       }
 
       if (baseNode && !currNode) {
         // Node was removed
-        removed.push({
+        pushDiff(removed, 'removed', {
           path: generateNodePath(baseNode, path.slice()),
-          node: baseNode
+          node: summarizeNode(baseNode)
         });
         return;
       }
@@ -1018,12 +1072,36 @@
         }
       }
 
+      // Compare captured computed styles (snapshots record them precisely so
+      // diffs can name the changed properties, not just "styles present").
+      var styleChanges = [];
+      if (baseNode.styles && currNode.styles) {
+        var styleCapped = false;
+        for (var sp in currNode.styles) {
+          if (baseNode.styles[sp] !== undefined && baseNode.styles[sp] !== currNode.styles[sp]) {
+            if (styleChanges.length >= DIFF_MAX_STYLE_CHANGES) {
+              styleCapped = true;
+              break;
+            }
+            styleChanges.push({
+              property: sp,
+              before: baseNode.styles[sp],
+              after: currNode.styles[sp]
+            });
+          }
+        }
+        if (styleChanges.length > 0) {
+          changes.push('styles changed (' + styleChanges.length + (styleCapped ? '+' : '') + ' properties)');
+        }
+      }
+
       if (changes.length > 0) {
-        modified.push({
+        pushDiff(modified, 'modified', {
           path: generateNodePath(currNode, path.slice()),
           changes: changes,
-          before: baseNode,
-          after: currNode
+          styleChanges: styleChanges,
+          before: summarizeNode(baseNode),
+          after: summarizeNode(currNode)
         });
       }
 
@@ -1050,11 +1128,14 @@
       added: added,
       removed: removed,
       modified: modified,
+      capped: counts.added > added.length ||
+              counts.removed > removed.length ||
+              counts.modified > modified.length,
       summary: {
-        totalChanges: added.length + removed.length + modified.length,
-        added: added.length,
-        removed: removed.length,
-        modified: modified.length
+        totalChanges: counts.added + counts.removed + counts.modified,
+        added: counts.added,
+        removed: counts.removed,
+        modified: counts.modified
       },
       baseline: {
         timestamp: baseline.timestamp,

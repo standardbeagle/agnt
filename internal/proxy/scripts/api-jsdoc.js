@@ -22,7 +22,7 @@
    * @param {string} message - The log message
    * @param {string} [level=info] - Log level: debug, info, warn, error
    * @param {object} [data] - Optional additional data
-   * @returns {void}
+   * @returns {sent: boolean} - sent:false means the message was dropped (socket not connected)
    * @example
    * __devtool.log("User clicked button", "info", {buttonId: "submit"})
    */
@@ -36,7 +36,7 @@
    * @signature debug(message, data?)
    * @param {string} message - The log message
    * @param {object} [data] - Optional additional data
-   * @returns {void}
+   * @returns {sent: boolean}
    * @example
    * __devtool.debug("Component rendered", {props: {id: 1}})
    */
@@ -50,7 +50,7 @@
    * @signature info(message, data?)
    * @param {string} message - The log message
    * @param {object} [data] - Optional additional data
-   * @returns {void}
+   * @returns {sent: boolean}
    * @example
    * __devtool.info("Page loaded successfully")
    */
@@ -64,7 +64,7 @@
    * @signature warn(message, data?)
    * @param {string} message - The log message
    * @param {object} [data] - Optional additional data
-   * @returns {void}
+   * @returns {sent: boolean}
    * @example
    * __devtool.warn("Deprecated API used", {api: "oldMethod"})
    */
@@ -78,7 +78,7 @@
    * @signature error(message, data?)
    * @param {string} message - The log message
    * @param {object} [data] - Optional additional data
-   * @returns {void}
+   * @returns {sent: boolean}
    * @example
    * __devtool.error("Failed to load data", {status: 500})
    */
@@ -89,12 +89,22 @@
    *
    * @devtool screenshot
    * @category screenshot
-   * @signature screenshot(name?, selector?)
-   * @param {string} [name=screenshot_<timestamp>] - Screenshot name
+   * @signature screenshot(nameOrOptions?, selector?)
+   * @param {string|object} [nameOrOptions] - Screenshot name, a CSS selector (".x"/"#x"/"[x]"), or an options object
    * @param {string} [selector=body] - CSS selector for element to capture
-   * @returns Promise<{name, width, height, selector}>
+   * @param {string} [nameOrOptions.name=screenshot_<timestamp>] - Screenshot name
+   * @param {string} [nameOrOptions.selector] - CSS selector for element to capture
+   * @param {object} [nameOrOptions.region] - Pixel region {x, y, width, height}
+   * @param {boolean} [nameOrOptions.fullPage=false] - Capture full page height
+   * @param {boolean} [nameOrOptions.overview=true] - For long pages, capture scaled overview + detail sections
+   * @param {number} [nameOrOptions.maxHeight=2000] - Page height (px) that triggers overview mode
+   * @param {number} [nameOrOptions.overviewScale=0.25] - Scale factor for the overview image
+   * @param {number} [nameOrOptions.detailHeight=600] - Height of top/bottom detail sections
+   * @param {string} [nameOrOptions.format=png] - "png" or "jpeg"
+   * @param {number} [nameOrOptions.quality=0.92] - JPEG quality 0-1
+   * @returns Promise<{name, width, height, selector, fullPage?, mode?, pageHeight?, overview?, top?, viewport?, bottom?, message?}>
    * @example
-   * await __devtool.screenshot("homepage")\nawait __devtool.screenshot("header", "#main-header")
+   * await __devtool.screenshot("homepage")\nawait __devtool.screenshot({selector: ".card", name: "card"})\nawait __devtool.screenshot({region: {x: 0, y: 0, width: 800, height: 600}})
    */
   var __jsdoc_screenshot = null;
 
@@ -105,7 +115,7 @@
    * @category inspection
    * @signature getElementInfo(selector)
    * @param {string|Element} selector - CSS selector or DOM element
-   * @returns {tag, id, classes, attributes, text, html, dimensions, position}
+   * @returns {selector, tag, id, classes[], attributes{}} - JSON-safe; no live DOM node, the selector is the element handle
    * @example
    * __devtool.getElementInfo("#submit-btn")
    */
@@ -118,7 +128,7 @@
    * @category inspection
    * @signature getPosition(selector)
    * @param {string|Element} selector - CSS selector or DOM element
-   * @returns {top, right, bottom, left, width, height, x, y}
+   * @returns {rect:{x,y,width,height,top,right,bottom,left}, viewport:{x,y}, document:{x,y}, scroll:{x,y}}
    * @example
    * __devtool.getPosition(".modal")
    */
@@ -206,7 +216,7 @@
    * @category inspection
    * @signature getTransform(selector)
    * @param {string|Element} selector - CSS selector or DOM element
-   * @returns {transform, transformOrigin, matrix}
+   * @returns {matrix, transform, transformOrigin, translate:{x,y,z?}, rotate, scale:{x,y}, is2D?} - translate/rotate/scale decomposed via DOMMatrix (null if unparseable); identity values when transform is none
    * @example
    * __devtool.getTransform(".rotated-element")
    */
@@ -219,7 +229,7 @@
    * @category inspection
    * @signature getOverflow(selector)
    * @param {string|Element} selector - CSS selector or DOM element
-   * @returns {overflow, overflowX, overflowY, scrollWidth, scrollHeight, isScrollable}
+   * @returns {x, y, scrollWidth, scrollHeight, clientWidth, clientHeight, scrollTop, scrollLeft, hasOverflow} - x/y are the computed overflow-x/overflow-y values
    * @example
    * __devtool.getOverflow(".scrollable-panel")
    */
@@ -230,12 +240,13 @@
    *
    * @devtool walkChildren
    * @category tree
-   * @signature walkChildren(selector, options?)
+   * @signature walkChildren(selector, depthOrOptions?, filter?)
    * @param {string|Element} selector - CSS selector or DOM element
-   * @param {{maxDepth?, filter?}} options - Walk options
-   * @returns [{element, depth, path}, ...]
+   * @param {number|{maxDepth?, filter?}} [depthOrOptions=1] - Max depth as a number (positional form) or an options object {maxDepth, filter}
+   * @param {function} [filter] - Predicate (positional form): include child when filter(el) is truthy
+   * @returns {elements:[{selector, tag, depth}], count} - JSON-safe; no live DOM nodes
    * @example
-   * __devtool.walkChildren("#container", {maxDepth: 2})
+   * __devtool.walkChildren("#container", {maxDepth: 2})\n__devtool.walkChildren("#container", 2, function(el) { return el.tagName === "LI"; })
    */
   var __jsdoc_walkChildren = null;
 
@@ -246,7 +257,7 @@
    * @category tree
    * @signature walkParents(selector)
    * @param {string|Element} selector - CSS selector or DOM element
-   * @returns [{element, depth}, ...]
+   * @returns {parents:[{selector, tag}], count} - ordered nearest-first up to <html>; JSON-safe, no live DOM nodes
    * @example
    * __devtool.walkParents(".nested-element")
    */
@@ -259,8 +270,8 @@
    * @category tree
    * @signature findAncestor(selector, condition)
    * @param {string|Element} selector - Starting element
-   * @param {string|function} condition - CSS selector or predicate function
-   * @returns {Element|null}
+   * @param {string|function} condition - CSS selector (matched via el.matches) or predicate function
+   * @returns {found: boolean, selector?, tag?} - found:false when no ancestor matches
    * @example
    * __devtool.findAncestor(".button", "[data-modal]")
    */
@@ -273,7 +284,7 @@
    * @category visual
    * @signature isVisible(selector)
    * @param {string|Element} selector - CSS selector or DOM element
-   * @returns {visible: boolean, reasons?: string[]}
+   * @returns {visible: boolean, reason?: string, area?: number} - reason (singular) names the first hiding cause: display none, visibility hidden, opacity 0, zero size, no bounding rect
    * @example
    * __devtool.isVisible(".dropdown-menu")
    */
@@ -286,8 +297,8 @@
    * @category visual
    * @signature isInViewport(selector, threshold?)
    * @param {string|Element} selector - CSS selector or DOM element
-   * @param {number} [threshold=0] - Percentage visible required
-   * @returns {inViewport: boolean, percentVisible: number, position}
+   * @param {number} [threshold=0] - Minimum visible-area ratio (0..1) required; 0 means any intersection counts
+   * @returns {inViewport: boolean, intersecting: boolean, ratio: number, percentVisible: number, rect:{x,y,width,height,top,right,bottom,left}, fullyVisible: boolean}
    * @example
    * __devtool.isInViewport("#footer", 0.5)
    */
@@ -301,7 +312,7 @@
    * @signature checkOverlap(selector1, selector2)
    * @param {string|Element} selector1 - First element
    * @param {string|Element} selector2 - Second element
-   * @returns {overlaps: boolean, intersection?: {x, y, width, height}}
+   * @returns {overlaps: boolean, area?: number, rect?: {left, right, top, bottom}} - area/rect describe the intersection when overlaps is true
    * @example
    * __devtool.checkOverlap(".modal", ".tooltip")
    */
@@ -313,7 +324,7 @@
    * @devtool findOverflows
    * @category layout
    * @signature findOverflows()
-   * @returns [{element, overflow, width, parentWidth}, ...]
+   * @returns {overflows:[{selector, type, scrollWidth, scrollHeight, clientWidth, clientHeight}], count, total, scanned, capped} - bounded scan (4000 elements, 100 results); capped:true when truncated, total is all matches seen
    * @example
    * __devtool.findOverflows()
    */
@@ -331,7 +342,7 @@
    * @devtool findStackingContexts
    * @category layout
    * @signature findStackingContexts()
-   * @returns {contexts:[{selector, zIndex, triggers:[{property,value}], reason:[string]}], count}
+   * @returns {contexts:[{selector, zIndex, triggers:[{property,value}], reason:[string]}], count, total, scanned, capped} - bounded scan (4000 elements, 100 results); capped:true when truncated
    * @example
    * __devtool.findStackingContexts()
    */
@@ -343,7 +354,7 @@
    * @devtool findOffscreen
    * @category layout
    * @signature findOffscreen()
-   * @returns [{element, position, distance}, ...]
+   * @returns {offscreen:[{selector, direction:[above|below|left|right], rect}], count, total, scanned, capped} - bounded scan (4000 elements, 100 results); capped:true when truncated
    * @example
    * __devtool.findOffscreen()
    */
@@ -394,9 +405,9 @@
    * @devtool selectElement
    * @category interactive
    * @signature selectElement()
-   * @returns Promise<Element> - The selected element
+   * @returns Promise<string> - CSS selector of the clicked element; rejects on Escape
    * @example
-   * const el = await __devtool.selectElement()
+   * const selector = await __devtool.selectElement()
    */
   var __jsdoc_selectElement = null;
 
@@ -408,7 +419,7 @@
    * @signature waitForElement(selector, timeout?)
    * @param {string} selector - CSS selector
    * @param {number} [timeout=5000] - Max wait time in ms
-   * @returns {Promise<Element>}
+   * @returns Promise<{found, selector, tag, id, classes[]}> - JSON-safe element info; rejects on timeout
    * @example
    * const modal = await __devtool.waitForElement(".modal-open")
    */
@@ -436,7 +447,7 @@
    * @signature measureBetween(selector1, selector2)
    * @param {string|Element} selector1 - First element
    * @param {string|Element} selector2 - Second element
-   * @returns {horizontal, vertical, diagonal}
+   * @returns {distance:{x, y, diagonal}, direction:{horizontal, vertical}} - center-to-center distances in px
    * @example
    * __devtool.measureBetween(".header", ".footer")
    */
@@ -984,7 +995,8 @@
    * @param {boolean} options.external - Only external links
    * @param {boolean} options.includeAnchors - Include anchor-only links
    * @param {string} options.selector - Limit to links within selector
-   * @returns {url, internal[], external[], anchors[], mailto[], tel[], other[], stats}
+   * @param {number} [options.maxLinks=200] - Max link entries returned across all categories; stats still count everything
+   * @returns {url, internal[], external[], anchors[], mailto[], tel[], other[], truncated, stats}
    * @example
    * __devtool.content.extractLinks({internal: true})
    */
@@ -1105,5 +1117,470 @@
    * __devtool.diagnoseLayout()
    */
   var __jsdoc_diagnoseLayout = null;
+
+  /**
+   * Cause-to-symptom layout diagnostics: one bounded synchronous pass
+   * (~30-80ms) over four high-diagnostic-distance CSS bug classes, naming the
+   * OFFENDING ANCESTOR and the correct fix plus the common wrong fix to avoid.
+   * Checks: containing-block-trap (fixed/absolute captured by an ancestor
+   * transform/filter/will-change/contain), ineffective-zindex (z-index on
+   * position:static, silently ignored), click-interception (an overlay eats a
+   * visible control's clicks), clipped-descendant (content cut off by an
+   * ancestor overflow:hidden/clip).
+   *
+   * @devtool diagnoseLayoutIssues
+   * @category layout
+   * @signature diagnoseLayoutIssues()
+   * @returns {findings:[{check, severity, selector, cause, cause_property, detail, fix, avoid}], count, scanned, capped, by_check} - max 15 findings per check, 4000-element scan budget; capped:true when the budget was exceeded
+   * @example
+   * __devtool.diagnoseLayoutIssues()
+   */
+  var __jsdoc_diagnoseLayoutIssues = null;
+
+  /**
+   * Fill a form control React-safely: sets the value through the native
+   * prototype value setter (so controlled components observe the change) and
+   * dispatches input + change events. Handles input, textarea, select,
+   * checkbox/radio (pass true/false), and contenteditable.
+   *
+   * @devtool fill
+   * @category interactive
+   * @signature fill(selector, value)
+   * @param {string|Element} selector - CSS selector or DOM element
+   * @param {string|boolean} value - Value to set (boolean for checkbox/radio)
+   * @returns {found, selector, tag, id, classes[], filled, value?, checked?} - or {error}
+   * @example
+   * __devtool.fill("#email", "user@example.com")
+   */
+  var __jsdoc_fill = null;
+
+  /**
+   * Click an element with a realistic event sequence (pointerdown, mousedown,
+   * pointerup, mouseup, click) dispatched at the element center, then focus.
+   * Frameworks gating on pointer/mouse events see the full sequence, unlike
+   * el.click().
+   *
+   * @devtool clickElement
+   * @category interactive
+   * @signature clickElement(selector)
+   * @param {string|Element} selector - CSS selector or DOM element
+   * @returns {found, selector, tag, id, classes[], clicked, x, y} - or {error}
+   * @example
+   * __devtool.clickElement("#submit-btn")
+   */
+  var __jsdoc_clickElement = null;
+
+  /**
+   * Wait for an element to be removed from the DOM
+   *
+   * @devtool waitForRemoved
+   * @category interactive
+   * @signature waitForRemoved(selector, timeout?)
+   * @param {string} selector - CSS selector
+   * @param {number} [timeout=5000] - Max wait time in ms
+   * @returns Promise<{removed: true, selector}> - rejects on timeout
+   * @example
+   * await __devtool.waitForRemoved(".loading-spinner")
+   */
+  var __jsdoc_waitForRemoved = null;
+
+  /**
+   * Wait for an element to exist AND be visible (rendered, non-zero size, not
+   * display:none / visibility:hidden / opacity:0)
+   *
+   * @devtool waitForVisible
+   * @category interactive
+   * @signature waitForVisible(selector, timeout?)
+   * @param {string} selector - CSS selector
+   * @param {number} [timeout=5000] - Max wait time in ms
+   * @returns Promise<{found, selector, tag, id, classes[], visible: true}> - rejects on timeout
+   * @example
+   * await __devtool.waitForVisible(".modal-dialog")
+   */
+  var __jsdoc_waitForVisible = null;
+
+  /**
+   * Scroll an element into view (centered) and report its resulting rect
+   *
+   * @devtool scrollIntoView
+   * @category interactive
+   * @signature scrollIntoView(selector)
+   * @param {string|Element} selector - CSS selector or DOM element
+   * @returns {found, selector, tag, id, classes[], scrolled, rect} - or {error}
+   * @example
+   * __devtool.scrollIntoView("#pricing-section")
+   */
+  var __jsdoc_scrollIntoView = null;
+
+  /**
+   * Check text elements for fragility: overflow risk from long words, layout
+   * shift potential, and problematic breakpoints
+   *
+   * @devtool checkTextFragility
+   * @category layout
+   * @signature checkTextFragility()
+   * @returns {issues:[{selector, issues[], longestWord, minWidth}], summary:{total, errors, warnings, elementsAnalyzed}}
+   * @example
+   * __devtool.checkTextFragility()
+   */
+  var __jsdoc_checkTextFragility = null;
+
+  /**
+   * Check elements for responsive design risks: fixed dimensions, small touch
+   * targets, horizontal scroll, fragile positioning, text sizing, table layout
+   *
+   * @devtool checkResponsiveRisk
+   * @category layout
+   * @signature checkResponsiveRisk()
+   * @returns {issues:[{selector, tagName, issues:[{severity, ...}]}], summary:{total, errors, warnings, elementsAnalyzed}} - sorted errors first
+   * @example
+   * __devtool.checkResponsiveRisk()
+   */
+  var __jsdoc_checkResponsiveRisk = null;
+
+  /**
+   * Run a responsive design audit across multiple viewport sizes: loads the
+   * page in hidden iframes at each size and runs layout/overflow/a11y checks
+   *
+   * @devtool responsiveAudit
+   * @category layout
+   * @signature responsiveAudit(options?)
+   * @param {array} [options.viewports] - Custom viewports [{name, width, height}]
+   * @param {array} [options.checks] - Checks to run: layout, overflow, a11y
+   * @param {number} [options.timeout=10000] - Load timeout per viewport in ms
+   * @param {boolean} [options.raw=false] - Return raw JSON instead of compact text
+   * @returns Promise<object|string> - audit results; rejects if the module is not loaded
+   * @example
+   * await __devtool.responsiveAudit({checks: ["layout", "overflow"]})
+   */
+  var __jsdoc_responsiveAudit = null;
+
+  /**
+   * Show a toast notification in the browser (developer-facing UI; toasts are
+   * NOT forwarded to the agent event queue)
+   *
+   * @devtool toast.show
+   * @category toast
+   * @signature toast.show(message, options?)
+   * @param {string} message - Toast text
+   * @param {{type?, duration?, title?}} options - type: success|error|warning|info
+   * @returns string - toast id usable with toast.dismiss(id)
+   * @example
+   * __devtool.toast.show("Saved", {type: "success"})
+   */
+  var __jsdoc_toast_show = null;
+
+  /**
+   * Toast helpers for each level; toast.dismiss(id) / toast.dismissAll()
+   * remove toasts, toast.configure(opts) sets corner/duration defaults
+   *
+   * @devtool toast.success
+   * @category toast
+   * @signature toast.success(message, options?)
+   * @param {string} message - Toast text (same for toast.error / toast.warning / toast.info)
+   * @returns string - toast id
+   * @example
+   * __devtool.toast.error("Request failed")
+   */
+  var __jsdoc_toast_success = null;
+
+  /**
+   * Get a value from the persistent key-value store (daemon-backed; survives
+   * reloads). Scopes: global (all projects), folder (URL folder), page (exact
+   * URL). Convenience namespaces store.global/store.folder/store.page pre-bind
+   * the scope.
+   *
+   * @devtool store.get
+   * @category store
+   * @signature store.get(key, options?)
+   * @param {string} key - Key to read
+   * @param {{scope?, scopeKey?}} options - scope: global|folder|page
+   * @returns Promise<any> - rejects fast when the DevTool socket is disconnected
+   * @example
+   * await __devtool.store.get("theme", {scope: "global"})
+   */
+  var __jsdoc_store_get = null;
+
+  /**
+   * Set a value in the persistent key-value store
+   *
+   * @devtool store.set
+   * @category store
+   * @signature store.set(key, value, options?)
+   * @param {string} key - Key to write
+   * @param {any} value - JSON-serializable value
+   * @param {{scope?, scopeKey?, metadata?}} options - scope: global|folder|page
+   * @returns Promise<object>
+   * @example
+   * await __devtool.store.set("draft", {text: "hello"}, {scope: "page"})
+   */
+  var __jsdoc_store_set = null;
+
+  /**
+   * Delete a key from the persistent store
+   *
+   * @devtool store.delete
+   * @category store
+   * @signature store.delete(key, options?)
+   * @param {string} key - Key to delete
+   * @param {{scope?, scopeKey?}} options - scope: global|folder|page
+   * @returns Promise<object>
+   * @example
+   * await __devtool.store.delete("draft", {scope: "page"})
+   */
+  var __jsdoc_store_delete = null;
+
+  /**
+   * List keys in the persistent store for a scope
+   *
+   * @devtool store.list
+   * @category store
+   * @signature store.list(options?)
+   * @param {{scope?, scopeKey?}} options - scope: global|folder|page
+   * @returns Promise<object> - key listing
+   * @example
+   * await __devtool.store.list({scope: "global"})
+   */
+  var __jsdoc_store_list = null;
+
+  /**
+   * Get all key-value pairs in a scope
+   *
+   * @devtool store.getAll
+   * @category store
+   * @signature store.getAll(options?)
+   * @param {{scope?, scopeKey?}} options - scope: global|folder|page
+   * @returns Promise<object>
+   * @example
+   * await __devtool.store.getAll({scope: "folder"})
+   */
+  var __jsdoc_store_getAll = null;
+
+  /**
+   * Clear all keys in a scope of the persistent store
+   *
+   * @devtool store.clear
+   * @category store
+   * @signature store.clear(options?)
+   * @param {{scope?, scopeKey?}} options - scope: global|folder|page
+   * @returns Promise<object>
+   * @example
+   * await __devtool.store.clear({scope: "page"})
+   */
+  var __jsdoc_store_clear = null;
+
+  /**
+   * List active agnt run sessions (daemon query over the DevTool socket)
+   *
+   * @devtool session.list
+   * @category session
+   * @signature session.list(global?)
+   * @param {boolean} [global=false] - List sessions from all directories
+   * @returns Promise<object> - sessions list with count
+   * @example
+   * await __devtool.session.list()
+   */
+  var __jsdoc_session_list = null;
+
+  /**
+   * Get details for a specific session
+   *
+   * @devtool session.get
+   * @category session
+   * @signature session.get(code)
+   * @param {string} code - Session code
+   * @returns Promise<object>
+   * @example
+   * await __devtool.session.get("abc123")
+   */
+  var __jsdoc_session_get = null;
+
+  /**
+   * Send a message to a session immediately (injected into the AI tool's PTY)
+   *
+   * @devtool session.send
+   * @category session
+   * @signature session.send(code, message)
+   * @param {string} code - Session code
+   * @param {string} message - Message to deliver
+   * @returns Promise<object> - success status
+   * @example
+   * await __devtool.session.send("abc123", "please rerun the tests")
+   */
+  var __jsdoc_session_send = null;
+
+  /**
+   * Schedule a message for future delivery to a session
+   *
+   * @devtool session.schedule
+   * @category session
+   * @signature session.schedule(code, duration, message)
+   * @param {string} code - Session code
+   * @param {string} duration - Delay, e.g. "5m" or "1h30m"
+   * @param {string} message - Message to deliver
+   * @returns Promise<object> - {task_id, deliver_at}
+   * @example
+   * await __devtool.session.schedule("abc123", "10m", "check the deploy")
+   */
+  var __jsdoc_session_schedule = null;
+
+  /**
+   * List scheduled session tasks
+   *
+   * @devtool session.tasks
+   * @category session
+   * @signature session.tasks(global?)
+   * @param {boolean} [global=false] - List tasks from all directories
+   * @returns Promise<object> - tasks list with count
+   * @example
+   * await __devtool.session.tasks()
+   */
+  var __jsdoc_session_tasks = null;
+
+  /**
+   * Cancel a scheduled session task
+   *
+   * @devtool session.cancel
+   * @category session
+   * @signature session.cancel(taskId)
+   * @param {string} taskId - Task ID from session.schedule / session.tasks
+   * @returns Promise<object> - success status
+   * @example
+   * await __devtool.session.cancel("task-42")
+   */
+  var __jsdoc_session_cancel = null;
+
+  /**
+   * Outline every element with nesting-depth colors (CSS injection overlay)
+   *
+   * @devtool diagnostics.outlineAll
+   * @category diagnostics
+   * @signature diagnostics.outlineAll()
+   * @returns {success, mode}
+   * @example
+   * __devtool.diagnostics.outlineAll()
+   */
+  var __jsdoc_diagnostics_outlineAll = null;
+
+  /**
+   * Highlight all elements with a non-auto z-index and list them sorted by
+   * z-index descending
+   *
+   * @devtool diagnostics.showStacking
+   * @category diagnostics
+   * @signature diagnostics.showStacking()
+   * @returns {success, mode, total, zIndexElements:[{selector, zIndex}], capped} - list capped at 30, total is the full count
+   * @example
+   * __devtool.diagnostics.showStacking()
+   */
+  var __jsdoc_diagnostics_showStacking = null;
+
+  /**
+   * Panel + summary of every unique color in use (text and background)
+   *
+   * @devtool diagnostics.showColorPalette
+   * @category diagnostics
+   * @signature diagnostics.showColorPalette()
+   * @returns {success, mode, panelId, uniqueColors, colors:[{color, count}], capped} - list capped at 30
+   * @example
+   * __devtool.diagnostics.showColorPalette()
+   */
+  var __jsdoc_diagnostics_showColorPalette = null;
+
+  /**
+   * Panel + summary of the spacing scale (margin/padding values in use)
+   *
+   * @devtool diagnostics.showSpacingScale
+   * @category diagnostics
+   * @signature diagnostics.showSpacingScale()
+   * @returns {success, mode, panelId, uniqueValues, values:[{value, count}], capped} - list capped at 40
+   * @example
+   * __devtool.diagnostics.showSpacingScale()
+   */
+  var __jsdoc_diagnostics_showSpacingScale = null;
+
+  /**
+   * Panel + summary of unique typography styles (size/family/weight/
+   * line-height/color combinations, with usage counts)
+   *
+   * @devtool diagnostics.showTypographyPanel
+   * @category diagnostics
+   * @signature diagnostics.showTypographyPanel()
+   * @returns {success, mode, panelId, uniqueStyles, styles:[...], capped} - list capped at 30
+   * @example
+   * __devtool.diagnostics.showTypographyPanel()
+   */
+  var __jsdoc_diagnostics_showTypographyPanel = null;
+
+  /**
+   * Capture a serialized DOM snapshot (tags, attributes, text, key computed
+   * styles) for later diffing with compareDOMSnapshots
+   *
+   * @devtool diagnostics.captureDOMSnapshot
+   * @category diagnostics
+   * @signature diagnostics.captureDOMSnapshot(options?)
+   * @param {Element} [options.root=document.body] - Snapshot root
+   * @param {boolean} [options.includeStyles=true] - Capture key computed styles per node
+   * @param {boolean} [options.captureAllStyles=false] - Capture every computed property (large)
+   * @param {number} [options.maxNodes=1500] - Node budget; subtrees beyond it are dropped and capped:true is set
+   * @returns {timestamp, url, viewport, root, capped, stats:{totalElements, totalTextNodes, maxDepth}, options}
+   * @example
+   * const before = __devtool.diagnostics.captureDOMSnapshot()
+   */
+  var __jsdoc_diagnostics_captureDOMSnapshot = null;
+
+  /**
+   * Diff two DOM snapshots: added/removed/modified nodes with changed
+   * attributes and changed computed-style properties (before/after values)
+   *
+   * @devtool diagnostics.compareDOMSnapshots
+   * @category diagnostics
+   * @signature diagnostics.compareDOMSnapshots(baseline, current)
+   * @param {object} baseline - Snapshot from captureDOMSnapshot
+   * @param {object} current - Later snapshot
+   * @returns {added[], removed[], modified:[{path, changes[], styleChanges:[{property,before,after}], before, after}], capped, summary, baseline, current} - 100 entries per bucket, 10 style changes per node; node fields are compact summaries, not full subtrees
+   * @example
+   * __devtool.diagnostics.compareDOMSnapshots(before, __devtool.diagnostics.captureDOMSnapshot())
+   */
+  var __jsdoc_diagnostics_compareDOMSnapshots = null;
+
+  /**
+   * Render a DOM diff as an on-page panel (calls compareDOMSnapshots)
+   *
+   * @devtool diagnostics.showDOMDiff
+   * @category diagnostics
+   * @signature diagnostics.showDOMDiff(baseline, current)
+   * @param {object} baseline - Snapshot from captureDOMSnapshot
+   * @param {object} current - Later snapshot
+   * @returns {success, mode, panelId, diff}
+   * @example
+   * __devtool.diagnostics.showDOMDiff(before, after)
+   */
+  var __jsdoc_diagnostics_showDOMDiff = null;
+
+  /**
+   * Clear one diagnostic mode (CSS + panel), or everything when no mode given
+   *
+   * @devtool diagnostics.clear
+   * @category diagnostics
+   * @signature diagnostics.clear(mode?)
+   * @param {string} [mode] - Mode name from diagnostics.list(); omit to clear all
+   * @returns {success, cleared?}
+   * @example
+   * __devtool.diagnostics.clear("outline-all")
+   */
+  var __jsdoc_diagnostics_clear = null;
+
+  /**
+   * List active diagnostic modes
+   *
+   * @devtool diagnostics.list
+   * @category diagnostics
+   * @signature diagnostics.list()
+   * @returns {activeModes: [string], count}
+   * @example
+   * __devtool.diagnostics.list()
+   */
+  var __jsdoc_diagnostics_list = null;
 
 })();

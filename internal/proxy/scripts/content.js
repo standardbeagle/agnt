@@ -13,12 +13,19 @@
    * @param {boolean} options.external - Only external links (default: false)
    * @param {boolean} options.includeAnchors - Include anchor-only links (default: false)
    * @param {string} options.selector - Limit to links within selector
+   * @param {number} options.maxLinks - Max link entries returned across all
+   *   categories (default 200); stats still count everything, truncated flag
+   *   set when the cap was hit (same pattern as extractContent maxLength)
    * @returns {object} Links organized by type and context
    */
+  var DEFAULT_MAX_LINKS = 200;
+
   function extractLinks(options) {
     options = options || {};
     var baseUrl = window.location.origin;
     var currentPath = window.location.pathname;
+    var maxLinks = typeof options.maxLinks === 'number' ? options.maxLinks : DEFAULT_MAX_LINKS;
+    var returned = 0;
 
     var results = {
       url: window.location.href,
@@ -28,6 +35,7 @@
       mailto: [],
       tel: [],
       other: [],
+      truncated: false,
       stats: {
         total: 0,
         internal: 0,
@@ -36,6 +44,16 @@
         broken: 0
       }
     };
+
+    // push honoring the global cap; stats keep counting past it.
+    function pushCapped(arr, item) {
+      if (returned >= maxLinks) {
+        results.truncated = true;
+        return;
+      }
+      arr.push(item);
+      returned++;
+    }
 
     var scope = options.selector ? document.querySelector(options.selector) : document;
     if (!scope) {
@@ -71,26 +89,26 @@
 
       // Categorize link
       if (href.startsWith('mailto:')) {
-        results.mailto.push(linkData);
+        pushCapped(results.mailto, linkData);
       } else if (href.startsWith('tel:')) {
-        results.tel.push(linkData);
+        pushCapped(results.tel, linkData);
       } else if (href.startsWith('#')) {
         if (options.includeAnchors) {
-          results.anchors.push(linkData);
+          pushCapped(results.anchors, linkData);
         }
         results.stats.anchors++;
       } else if (fullUrl.startsWith(baseUrl)) {
         if (!options.external) {
-          results.internal.push(linkData);
+          pushCapped(results.internal, linkData);
         }
         results.stats.internal++;
       } else if (fullUrl.startsWith('http')) {
         if (!options.internal) {
-          results.external.push(linkData);
+          pushCapped(results.external, linkData);
         }
         results.stats.external++;
       } else {
-        results.other.push(linkData);
+        pushCapped(results.other, linkData);
       }
     }
 

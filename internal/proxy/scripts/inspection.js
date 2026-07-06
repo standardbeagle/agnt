@@ -17,8 +17,10 @@
         attrs[attr.name] = attr.value;
       }
 
+      // No live DOM node in the return value: exec results go through
+      // JSON.stringify and an element serializes to {} (and can leak huge
+      // subtrees via custom props). The selector is the element handle.
       return {
-        element: el,
         selector: utils.generateSelector(el),
         tag: el.tagName.toLowerCase(),
         id: el.id || null,
@@ -287,11 +289,37 @@
         };
       }
 
-      return {
+      var result = {
         matrix: transform,
         transform: transform,
-        transformOrigin: computed.transformOrigin
+        transformOrigin: computed.transformOrigin,
+        translate: null,
+        rotate: null,
+        scale: null
       };
+
+      // Decompose the matrix so agents get actionable numbers, not a raw
+      // matrix() string. DOMMatrix handles both matrix() and matrix3d().
+      try {
+        if (typeof DOMMatrix === 'function') {
+          var m = new DOMMatrix(transform);
+          result.translate = { x: m.e, y: m.f };
+          // 2D decomposition from the linear part [a b; c d].
+          result.rotate = Math.atan2(m.b, m.a) * (180 / Math.PI);
+          result.scale = {
+            x: Math.sqrt(m.a * m.a + m.b * m.b),
+            y: Math.sqrt(m.c * m.c + m.d * m.d)
+          };
+          result.is2D = m.is2D;
+          if (!m.is2D) {
+            result.translate.z = m.m43;
+          }
+        }
+      } catch (e) {
+        // Leave decomposed fields null when DOMMatrix can't parse the value.
+      }
+
+      return result;
     } catch (e) {
       return { error: e.message };
     }
