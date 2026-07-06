@@ -14,6 +14,8 @@ import (
 type LoadingAuditInput struct {
 	ProxyID string `json:"proxy_id,omitempty" jsonschema:"Proxy ID to run audit on (preferred)"`
 	ID      string `json:"id,omitempty" jsonschema:"Alias for proxy_id"`
+	Target  string `json:"target,omitempty" jsonschema:"Frame in the always-wrap model: 'inner' (default) = active page content frame; 'outer' = chrome shell. Audits normally want inner."`
+	FrameID string `json:"frame_id,omitempty" jsonschema:"Audit a specific content frame by id (default: the active content frame). Rarely needed."`
 	Raw     bool   `json:"raw,omitempty" jsonschema:"Return full JSON instead of compact text"`
 }
 
@@ -83,7 +85,7 @@ func buildLoadingAuditCode(raw bool) string {
 func (dt *DaemonTools) executeLoadingAuditDaemon(input LoadingAuditInput) (*mcp.CallToolResult, LoadingAuditOutput, error) {
 	code := buildLoadingAuditCode(input.Raw)
 
-	result, err := dt.client.ProxyExec(input.ProxyID, code)
+	result, err := dt.client.ProxyExec(input.ProxyID, code, resolveExecTarget(input.Target, input.FrameID))
 	if err != nil {
 		return errorResult(fmt.Sprintf("failed to execute audit: %v", err)), LoadingAuditOutput{}, nil
 	}

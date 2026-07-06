@@ -38,30 +38,39 @@ Cursor-based incident inbox pull. When incident pipeline enabled (`alerts.incide
 **Parameters**:
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `cursor` | string | beginning | Opaque cursor from previous response for incremental pull |
-| `limit` | int | 25 | Max incidents returned |
-| `severity` | string | `warning` | Minimum severity: `info`, `warning`, `error`, `critical` |
-| `source` | string | all | Filter by signal source (e.g. `browser_js`, `http_5xx`) |
+| `severity` | string[] | all | Filter: `critical`, `error`, `warning`, `info` |
+| `since` | string | beginning | Cursor from a prior pull (RFC3339) or duration like `5m` |
+| `fingerprints` | string[] | — | Retrieve specific incident fingerprints |
+| `sources` | string[] | all | Filter by source (e.g. `browser_js`, `http_5xx`) |
+| `proxy_id` / `process_id` | string | — | Filter to a specific proxy/process |
+| `detail` | string | `summary` | `full` hydrates the payload from the blob store |
+| `mark_read` | bool | false | Advance cursor and mark returned incidents read |
+| `limit` | int | 20 (max 100) | Max incidents returned |
 | `raw` | bool | false | Return full JSON instead of compact text |
 
-**Compact Output Format**:
+**Compact Output Format** (`detail:"full"` payloads and the aggregate `=== Next ===` block render in compact mode too, not only under `raw:true`):
 ```
-=== Incidents (3) ===
+=== Incidents (2) === [inbox: crit=1 err=1 warn=0 info=0 new=2]
 
-[critical] process_crash — agnt-dev (2x, latest 3s ago)
-  panic: runtime error: index out of range
-  → internal/proxy/server.go:142
-  remediation: proc {action:"output", process_id:"agnt-dev"} → get_incidents
-  next_tools: proc, get_incidents
+[critical:process_crash] panic (2x, 3s ago)
+  runtime error: index out of range
+  payload: goroutine 1 [running]: main.serve(...)   // only when detail:"full"
+  next: proc action=output process_id=agnt-dev
+  skill: agnt-process-proxy
 
-[error] browser_js — TypeError (1x, 8s ago)
+[error:browser_js] TypeError (1x, 8s ago)
   Cannot read property 'map' of undefined
-  → src/components/List.tsx:42:15
+  → http://localhost:3000/list
+  next: proxy action=exec code=window.__devtool.getElementInfo(selector)
+  skill: agnt:browser-debug
 
-[warning] http_4xx — GET /api/old-endpoint (1x, 30s ago)
+=== Next ===
+tool: proc action=output process_id=agnt-dev
+skill: agnt-process-proxy
+replay_cursor: 2026-07-06T01:20:00Z
 ```
 
-**Key Files**: `internal/incident/get_incidents.go`, `internal/incident/routing.go`
+**Key Files**: `internal/tools/get_incidents.go`, `internal/incident/remediation.go`
 
 ## get_errors Tool (Legacy)
 

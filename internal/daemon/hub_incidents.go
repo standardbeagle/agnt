@@ -40,6 +40,10 @@ func (d *Daemon) hubHandleIncidentsQuery(conn *hubpkg.Connection, cmd *hubproto.
 	entries, stats := d.incidentBus.QuerySession(sessionCode, qf)
 
 	result := buildIncidentQueryResult(entries, stats, filter)
+	// HasSession is true only when this session actually has a pipeline
+	// (alerts.incident-pipeline enabled), so callers can tell "pipeline on but
+	// inbox empty" from "pipeline off for this session".
+	result.PipelineEnabled = d.incidentBus.HasSession(sessionCode)
 
 	// Mark read only the records actually returned (after secondary filtering),
 	// so entries filtered out of the response are not silently marked read and

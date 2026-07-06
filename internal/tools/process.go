@@ -74,6 +74,38 @@ type RunOutput struct {
 	// Foreground-raw mode fields
 	Stdout string `json:"stdout,omitempty"`
 	Stderr string `json:"stderr,omitempty"`
+	// Hint surfaces a follow-up suggestion (e.g. start a proxy for browser
+	// debugging when a web/dev server was launched). Empty when not applicable.
+	Hint string `json:"hint,omitempty"`
+}
+
+// webServerRunHint returns a proxy/browser-debug nudge when a background run
+// looks like it started a web/dev server, so the browser-debug flow is
+// discoverable from `run` alone. Empty for non-server or non-background runs.
+func webServerRunHint(input RunInput, command string) string {
+	mode := input.Mode
+	if mode == "" {
+		mode = RunModeBackground
+	}
+	if mode != RunModeBackground {
+		return ""
+	}
+	hay := strings.ToLower(input.ScriptName + " " + command)
+	// Dev-server script names and common server runtimes/commands.
+	needles := []string{
+		"dev", "serve", "server", "preview", "start",
+		"vite", "next", "nuxt", "webpack", "http-server", "live-server",
+		"rails s", "manage.py runserver", "flask run", "uvicorn", "gunicorn",
+		"dotnet watch", "dotnet run", "astro", "remix", "ng serve",
+	}
+	for _, n := range needles {
+		if strings.Contains(hay, n) {
+			return "Looks like a web server. Start a proxy for browser debugging: " +
+				"proxy {action:\"start\", id:\"dev\", target_url:\"http://localhost:<port>\"} " +
+				"(or /agnt:setup-project to auto-start). See the agnt-process-proxy skill."
+		}
+	}
+	return ""
 }
 
 // ProcInput defines input for the proc tool.

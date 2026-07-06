@@ -17,11 +17,11 @@ type ProxyLogInput struct {
 	ProxyID          string   `json:"proxy_id,omitempty" jsonschema:"Proxy ID to query logs from (preferred)"`
 	ID               string   `json:"id,omitempty" jsonschema:"Alias for proxy_id"`
 	Action           string   `json:"action,omitempty" jsonschema:"Action: query (default), summary, clear, stats"`
-	Types            []string `json:"types,omitempty" jsonschema:"Log types to filter: http, error, performance, custom, screenshot, execution, response, interaction, mutation, diagnostic"`
+	Types            []string `json:"types,omitempty" jsonschema:"Log types to filter: http, error, performance, custom, screenshot, execution, response, interaction, mutation, diagnostic, panel_message, sketch"`
 	Methods          []string `json:"methods,omitempty" jsonschema:"HTTP methods to filter (e.g., GET, POST)"`
 	URLPattern       string   `json:"url_pattern,omitempty" jsonschema:"URL pattern to match (substring)"`
 	StatusCodes      []int    `json:"status_codes,omitempty" jsonschema:"HTTP status codes to filter"`
-	Limit            int      `json:"limit,omitempty" jsonschema:"Maximum number of entries (default: 100)"`
+	Limit            int      `json:"limit,omitempty" jsonschema:"query action: max entries returned. summary action: max items per detailed section. Default: 100"`
 	Since            string   `json:"since,omitempty" jsonschema:"Start time filter (RFC3339 or duration like '5m')"`
 	Until            string   `json:"until,omitempty" jsonschema:"End time filter (RFC3339)"`
 	Raw              bool     `json:"raw,omitempty" jsonschema:"Return full JSON dumps instead of compact format"`

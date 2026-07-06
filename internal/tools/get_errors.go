@@ -71,6 +71,20 @@ func (dt *DaemonTools) makeGetErrorsHandler() func(context.Context, *mcp.CallToo
 		if err := dt.ensureConnected(); err != nil {
 			return errorResult(err.Error()), GetErrorsOutput{}, nil
 		}
+
+		// Shim over the incident pipeline when it is enabled for this session:
+		// project the same inbox get_incidents reads (fingerprint IDs) instead
+		// of the legacy alert/proxy stores, so the two tools present one
+		// coherent, non-duplicated view. Cross-project (global) requests and
+		// pipeline-off sessions fall through to the legacy collectors, which is
+		// the only path that can serve them.
+		if !input.Global {
+			if incidentErrors, ok := dt.collectIncidentErrors(input, includeWarnings); ok {
+				result, output := formatErrorsOutput(incidentErrors, includeWarnings, limit, input.Raw)
+				return result, output, nil
+			}
+		}
+
 		allErrors, toolErr := dt.collectDaemonErrors(input)
 		if toolErr != nil {
 			return toolErr, GetErrorsOutput{}, nil
@@ -78,6 +92,62 @@ func (dt *DaemonTools) makeGetErrorsHandler() func(context.Context, *mcp.CallToo
 
 		result, output := formatErrorsOutput(allErrors, includeWarnings, limit, input.Raw)
 		return result, output, nil
+	}
+}
+
+// collectIncidentErrors projects the session incident inbox into unified errors
+// when the incident pipeline is active for the caller's session. The second
+// return is false when the pipeline is off (or the session is unattached), in
+// which case the caller must use the legacy collectors. Incident fingerprints
+// become the unified-error ID so get_errors and get_incidents share IDs.
+func (dt *DaemonTools) collectIncidentErrors(input GetErrorsInput, includeWarnings bool) ([]unifiedError, bool) {
+	filter := protocol.IncidentQueryFilter{
+		ProcessID: input.ProcessID,
+		ProxyID:   input.ProxyID,
+		Since:     input.Since,
+		// Pull a wide page; formatErrorsOutput applies the display limit after
+		// dedup/sort so the count reflects the whole inbox, not a truncated page.
+		Limit: 100,
+	}
+	if !includeWarnings {
+		filter.Severities = []string{"critical", "error"}
+	}
+
+	res, err := dt.client.IncidentQuery(filter)
+	if err != nil || res == nil || !res.PipelineEnabled {
+		return nil, false
+	}
+
+	out := make([]unifiedError, 0, len(res.Incidents))
+	for _, rec := range res.Incidents {
+		out = append(out, incidentRecordToUnifiedError(rec))
+	}
+	return out, true
+}
+
+// incidentRecordToUnifiedError maps an incident inbox record onto the unified
+// error shape. Severity is folded to the two-level error/warning scale
+// get_errors sorts and counts on (critical→error, info→warning).
+func incidentRecordToUnifiedError(rec protocol.IncidentRecord) unifiedError {
+	severity := "error"
+	switch rec.Severity {
+	case "warning", "info":
+		severity = "warning"
+	}
+	count := rec.Count
+	if count <= 0 {
+		count = 1
+	}
+	lastSeen, _ := time.Parse(time.RFC3339, rec.LastSeen)
+	return unifiedError{
+		ID:       rec.Fingerprint, // correlatable with get_incidents
+		Source:   rec.Source,
+		Severity: severity,
+		Category: rec.Category,
+		Message:  rec.Summary,
+		Page:     rec.Context.URL,
+		Count:    count,
+		LastSeen: lastSeen,
 	}
 }
 

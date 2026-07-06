@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/proxy"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1021,4 +1022,45 @@ func TestAlertMapToUnifiedError_BackwardCompat_ProcessError(t *testing.T) {
 	assert.Equal(t, "process:web:dev", ue.Source)
 	assert.Equal(t, "COMPILE ERROR", ue.Category)
 	assert.Contains(t, ue.Message, "TS2304")
+}
+
+// TestIncidentRecordToUnifiedError pins the incident→unified projection used by
+// the pipeline shim: fingerprint becomes the ID (correlatable with
+// get_incidents), and severity folds to the error/warning scale get_errors
+// sorts and counts on.
+func TestIncidentRecordToUnifiedError(t *testing.T) {
+	cases := []struct {
+		name     string
+		severity string
+		wantSev  string
+	}{
+		{"critical folds to error", "critical", "error"},
+		{"error stays error", "error", "error"},
+		{"warning stays warning", "warning", "warning"},
+		{"info folds to warning", "info", "warning"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := protocol.IncidentRecord{
+				Fingerprint: "fp-abc123",
+				ID:          "sha-should-be-ignored",
+				Source:      "browser_js",
+				Severity:    tc.severity,
+				Category:    "TypeError",
+				Summary:     "boom",
+				Count:       0, // must be normalized to >= 1
+				LastSeen:    time.Now().UTC().Format(time.RFC3339),
+				Context:     protocol.IncidentContext{URL: "http://localhost:3000/x"},
+			}
+			ue := incidentRecordToUnifiedError(rec)
+			assert.Equal(t, "fp-abc123", ue.ID, "ID must be the fingerprint, not the sample sha")
+			assert.Equal(t, tc.wantSev, ue.Severity)
+			assert.Equal(t, "browser_js", ue.Source)
+			assert.Equal(t, "TypeError", ue.Category)
+			assert.Equal(t, "boom", ue.Message)
+			assert.Equal(t, "http://localhost:3000/x", ue.Page)
+			assert.Equal(t, 1, ue.Count, "zero count normalized to 1")
+			assert.False(t, ue.LastSeen.IsZero(), "LastSeen parsed from RFC3339")
+		})
+	}
 }

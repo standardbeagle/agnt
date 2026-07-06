@@ -220,12 +220,12 @@ Incident pipeline (`internal/incident/`) is opt-in alert path (Phase A, gated by
 | Component | File |
 |-----------|------|
 | `IncidentEvent`, `BlobRef`, `BlobStore` | `internal/incident/envelope.go` |
-| Signal source adapters (11 sources) | `internal/incident/adapters.go` |
+| Signal source adapters (11 sources) | `internal/incident/adapter_*.go` |
 | `Deduplicator`, `Coalescer`, `FlowController` | `internal/incident/dedup.go` |
 | `Inbox` (4 bands, cursor pull, subscribe) | `internal/incident/inbox.go` |
-| `Pinger` (subscribe → fan-out pings) | `internal/incident/pinger.go` |
-| `get_incidents` MCP tool | `internal/incident/get_incidents.go` |
-| Remediation routing table | `internal/incident/routing.go` |
+| `Pinger` (subscribe → fan-out pings) | `internal/incident/ping.go` |
+| `get_incidents` MCP tool | `internal/tools/get_incidents.go` |
+| Remediation routing table | `internal/incident/remediation.go` |
 | MPSC bus + `sessionPipeline` | `internal/incident/bus.go` |
 | `INCIDENTS QUERY` hub handler, session lifecycle wiring | `internal/daemon/hub_incidents.go` |
 

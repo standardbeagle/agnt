@@ -55,31 +55,40 @@
     return 'F';
   }
 
-  // Does this record's ancestorPath share any token with the other's path, or
-  // does either record's selector appear as a token in the other's ancestorPath?
-  // This is the cheap "same DOM region" proxy. ancestorPath tokens look like
-  // "div#main" / "section.card"; selectors are full CSS selectors, so we test
-  // token containment in both directions.
+  // A token is "specific" when qualified by an id or class (e.g. "div#main",
+  // "section.card"). A bare tag ("div", "section") is generic and is shared by
+  // most of the page, so it must not anchor a same-region judgement.
+  function isSpecificToken(t) {
+    return !!t && (t.indexOf('#') >= 0 || t.indexOf('.') >= 0);
+  }
+
+  // Does this record share a DOM region with the other? True when they share a
+  // *specific* common ancestor token, or when one record's selector is exactly
+  // an ancestor token of the other (one contains the other). All comparisons
+  // are exact-token equality — an earlier substring test linked unrelated
+  // regions ("div#main" matched "div#main-nav") and a bare-tag match linked
+  // every element under a common <div>.
   function shareRegion(a, b) {
     var ap = a.ancestorPath || [];
     var bp = b.ancestorPath || [];
     var i, j;
-    // Common ancestor token.
+    // Common specific ancestor token.
     for (i = 0; i < ap.length; i++) {
+      if (!isSpecificToken(ap[i])) continue;
       for (j = 0; j < bp.length; j++) {
-        if (ap[i] && ap[i] === bp[j]) return true;
+        if (ap[i] === bp[j]) return true;
       }
     }
-    // B revealed by A: A's selector appears in B's ancestor chain (B is a
-    // descendant of A's container), or vice versa.
+    // B is a descendant of A's container (A's selector is an ancestor token of
+    // B), or vice versa. Exact match only.
     if (a.selector) {
       for (j = 0; j < bp.length; j++) {
-        if (bp[j] && (bp[j] === a.selector || a.selector.indexOf(bp[j]) >= 0)) return true;
+        if (bp[j] === a.selector) return true;
       }
     }
     if (b.selector) {
       for (i = 0; i < ap.length; i++) {
-        if (ap[i] && (ap[i] === b.selector || b.selector.indexOf(ap[i]) >= 0)) return true;
+        if (ap[i] === b.selector) return true;
       }
     }
     return false;
@@ -225,6 +234,10 @@
         if (chain.length >= 2) {
           var first = chain[0];
           var last = chain[chain.length - 1];
+          // If the tail spinner is still active its "end" is now, so serial is a
+          // lower bound that grows with wall-clock — report it as "≥N" and flag
+          // ongoing rather than presenting an inflated settled figure.
+          var tailActive = typeof last.disappearedAt !== 'number';
           var serial = endOf(last) - (first.appearedAt || 0);
           var maxSingle = 0;
           for (var c = 0; c < chain.length; c++) {
@@ -238,9 +251,10 @@
           });
           var preview = chainLabel.slice(0, 5).join('→');
           if (chainLabel.length > 5) preview += '→…';
-          var msg = depth + ' loaders fire serially (' + preview + '), ~' +
-                    Math.round(serial) + 'ms serial vs ~' + Math.round(maxSingle) +
-                    'ms if parallel';
+          var serialLabel = (tailActive ? '≥' : '~') + Math.round(serial);
+          var msg = depth + ' loaders fire serially (' + preview + '), ' +
+                    serialLabel + 'ms serial vs ~' + Math.round(maxSingle) +
+                    'ms if parallel' + (tailActive ? ' (tail still loading)' : '');
           var sev = serial > CASCADE_CRITICAL_MS ? 'critical' : 'warning';
           var id = computeFindingID('spinner-cascade', sel, msg);
           // Register every chain member's selector so the whole chain highlights.
@@ -256,6 +270,7 @@
             message: msg,
             depth: depth,
             serialMs: Math.round(serial),
+            serialMsIsLowerBound: tailActive,
             parallelMs: Math.round(maxSingle),
             chain: chainLabel
           });

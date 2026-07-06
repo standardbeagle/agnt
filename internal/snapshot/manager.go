@@ -5,11 +5,27 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 )
+
+// decodePageImage resolves the raw PNG bytes for a capture. It accepts either
+// inline base64 (ScreenshotData) or a filesystem path (ScreenshotPath) — the
+// latter is the bridge from the `screenshot` action, which writes a PNG to
+// audit storage and returns its path via proxylog. ScreenshotData wins when
+// both are set.
+func decodePageImage(page PageCapture) ([]byte, error) {
+	if page.ScreenshotData != "" {
+		return base64.StdEncoding.DecodeString(page.ScreenshotData)
+	}
+	if page.ScreenshotPath != "" {
+		return os.ReadFile(page.ScreenshotPath)
+	}
+	return nil, fmt.Errorf("no screenshot_data or screenshot_path for %s", page.URL)
+}
 
 // Manager orchestrates snapshot operations
 type Manager struct {
@@ -50,8 +66,8 @@ func (m *Manager) CreateBaseline(name string, pages []PageCapture) (*Baseline, e
 
 	// Process each page
 	for i, page := range pages {
-		// Decode base64 screenshot data
-		data, err := base64.StdEncoding.DecodeString(page.ScreenshotData)
+		// Resolve screenshot bytes (inline base64 or file path)
+		data, err := decodePageImage(page)
 		if err != nil {
 			return nil, fmt.Errorf("decode screenshot for %s: %w", page.URL, err)
 		}
@@ -81,8 +97,14 @@ func (m *Manager) CreateBaseline(name string, pages []PageCapture) (*Baseline, e
 	return baseline, nil
 }
 
-// CompareToBaseline compares current screenshots to a baseline
-func (m *Manager) CompareToBaseline(baselineName string, currentPages []PageCapture) (*CompareResult, error) {
+// CompareToBaseline compares current screenshots to a baseline. threshold is the
+// per-call diff sensitivity (0.0-1.0); a value <= 0 falls back to the manager's
+// configured default, so the tool's diff_threshold parameter is honored.
+func (m *Manager) CompareToBaseline(baselineName string, currentPages []PageCapture, threshold float64) (*CompareResult, error) {
+	if threshold <= 0 {
+		threshold = m.differ.threshold
+	}
+
 	// Load baseline
 	baseline, err := m.storage.LoadBaseline(baselineName)
 	if err != nil {
@@ -122,7 +144,7 @@ func (m *Manager) CompareToBaseline(baselineName string, currentPages []PageCapt
 
 		// Save current screenshot temporarily
 		currentFilename := "current_" + baselinePage.Screenshot
-		currentData, err := base64.StdEncoding.DecodeString(currentPage.ScreenshotData)
+		currentData, err := decodePageImage(currentPage)
 		if err != nil {
 			return nil, fmt.Errorf("decode current screenshot: %w", err)
 		}
@@ -163,7 +185,7 @@ func (m *Manager) CompareToBaseline(baselineName string, currentPages []PageCapt
 			return nil, fmt.Errorf("save diff image: %w", err)
 		}
 
-		hasChanges := m.differ.HasSignificantChanges(diffPercentage)
+		hasChanges := diffPercentage > threshold
 		if hasChanges {
 			result.Summary.PagesChanged++
 		} else {
@@ -272,5 +294,6 @@ func (m *Manager) getGitInfo() (commit, branch string) {
 type PageCapture struct {
 	URL            string   `json:"url"`
 	Viewport       Viewport `json:"viewport"`
-	ScreenshotData string   `json:"screenshot_data"` // Base64 encoded PNG
+	ScreenshotData string   `json:"screenshot_data,omitempty"` // Base64 encoded PNG
+	ScreenshotPath string   `json:"screenshot_path,omitempty"` // Filesystem path (bridge from screenshot action)
 }

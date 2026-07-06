@@ -24,6 +24,7 @@ func (dt *DaemonTools) makeCurrentPageHandler() func(context.Context, *mcp.CallT
 			return errorResult(err.Error()), CurrentPageOutput{}, nil
 		}
 
+		input.ProxyID = pickProxyID(input.ID, input.ProxyID)
 		if input.ProxyID == "" {
 
 			proxies, listErr := dt.client.ProxyList(protocol.DirectoryFilter{Global: true})

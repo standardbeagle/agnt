@@ -50,7 +50,7 @@ var routes = map[Source]route{
 		fallback: toolCall{"proxylog", map[string]any{
 			"types": []string{"error", "custom"},
 		}},
-		skill:   "agnt-browser-debug",
+		skill:   "agnt:browser-debug",
 		context: []string{"url", "page", "proxy_id"},
 	},
 	SourceHTTP5xx: {
@@ -62,7 +62,7 @@ var routes = map[Source]route{
 			"action": "output",
 			"tail":   200,
 		}},
-		skill:   "systematic-debugging",
+		skill:   "daemon-debug",
 		context: []string{"proxy_id", "process_id"},
 	},
 	SourceHTTP4xx: {
@@ -70,7 +70,7 @@ var routes = map[Source]route{
 			"types":        []string{"http"},
 			"status_codes": []int{400, 401, 403, 404},
 		}},
-		skill:   "systematic-debugging",
+		skill:   "daemon-debug",
 		context: []string{"proxy_id"},
 	},
 	SourceTransportErr: {
@@ -86,18 +86,18 @@ var routes = map[Source]route{
 	SourceProcessAlert: {
 		primary:  toolCall{"proc", map[string]any{"action": "output", "tail": 500}},
 		fallback: toolCall{"proc", map[string]any{"action": "script_output"}},
-		skill:    "agnt-process-manager",
+		skill:    "agnt-process-proxy",
 		context:  []string{"process_id"},
 	},
 	SourceProcessOutput: {
 		primary: toolCall{"proc", map[string]any{"action": "output", "tail": 200}},
-		skill:   "agnt-process-manager",
+		skill:   "agnt-process-proxy",
 		context: []string{"process_id"},
 	},
 	SourceProcessCrash: {
 		primary:  toolCall{"proc", map[string]any{"action": "output", "tail": 200}},
 		fallback: toolCall{"daemon", map[string]any{"action": "doctor"}},
-		skill:    "agnt-process-manager",
+		skill:    "agnt-process-proxy",
 		context:  []string{"process_id"},
 	},
 	SourceBuildFail: {
@@ -122,16 +122,34 @@ var routes = map[Source]route{
 			"severity": []string{"error", "critical"},
 			"since":    "5m",
 		}},
-		skill: "systematic-debugging",
+		skill: "daemon-debug",
 	},
 }
+
+// ValidSkillHints is the closed set of skill names Resolve (and genericFallback)
+// may emit. Every route.skill must be a member — TestSkillHints_AreShipped pins
+// this so a typo like "systematic-debugging" or "agnt-process-manager" (both of
+// which pointed at skills that do not exist) fails CI. In-repo skills (daemon-*)
+// are verified on disk by that test; the rest ship via the standalone agnt
+// marketplace repo (agnt:*, agnt-*, kill-dev-processes).
+var ValidSkillHints = map[string]bool{
+	"agnt:browser-debug":  true,
+	"agnt-process-proxy":  true,
+	"kill-dev-processes":  true,
+	"daemon-debug":        true, // .claude/skills/daemon-debug
+	"daemon-health-check": true, // .claude/skills/daemon-health-check
+}
+
+// inRepoSkillHints are the ValidSkillHints that ship inside this repo under
+// .claude/skills/<name>; the contract test asserts each exists on disk.
+var inRepoSkillHints = []string{"daemon-debug", "daemon-health-check"}
 
 // genericFallback is used when no route is registered for a Source.
 var genericFallback = route{
 	primary: toolCall{"get_incidents", map[string]any{
 		"severity": []string{"error", "critical"},
 	}},
-	skill: "systematic-debugging",
+	skill: "daemon-debug",
 }
 
 // Resolve returns remediation guidance for ev. Never returns a zero Remediation.
