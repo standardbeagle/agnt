@@ -31,36 +31,45 @@
   var responsive = window.__devtool_responsive;
   var styleEditor = window.__devtool_style_editor;
 
+  // Error-shape convention for the __devtool API:
+  //   * synchronous helpers return {error: "..."} objects;
+  //   * asynchronous helpers (anything returning a Promise) reject the
+  //     Promise — including the not-loaded fallbacks below, so callers can
+  //     rely on one shape per call style.
+  //
   // Main DevTool API
   window.__devtool = {
     // ========================================================================
     // LOGGING API
     // ========================================================================
 
+    // Returns {sent: boolean} — false means the message was dropped (socket
+    // not connected), so callers can detect silent loss.
     log: function(message, level, data) {
       level = level || 'info';
-      core.send('custom_log', {
+      var sent = core.send('custom_log', {
         level: level,
         message: String(message),
         data: data || {},
         timestamp: Date.now()
       });
+      return { sent: sent === true };
     },
 
     debug: function(message, data) {
-      this.log(message, 'debug', data);
+      return this.log(message, 'debug', data);
     },
 
     info: function(message, data) {
-      this.log(message, 'info', data);
+      return this.log(message, 'info', data);
     },
 
     warn: function(message, data) {
-      this.log(message, 'warn', data);
+      return this.log(message, 'warn', data);
     },
 
     error: function(message, data) {
-      this.log(message, 'error', data);
+      return this.log(message, 'error', data);
     },
 
     // ========================================================================
@@ -116,6 +125,11 @@
 
     selectElement: interactive.selectElement,
     waitForElement: interactive.waitForElement,
+    waitForRemoved: interactive.waitForRemoved,
+    waitForVisible: interactive.waitForVisible,
+    fill: interactive.fill,
+    clickElement: interactive.clickElement,
+    scrollIntoView: interactive.scrollIntoView,
     ask: interactive.ask,
     measureBetween: interactive.measureBetween,
 

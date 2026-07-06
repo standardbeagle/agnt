@@ -1,16 +1,34 @@
 // Tree walking primitives for DevTool
 // Navigate DOM tree relationships
+//
+// Return values never include live DOM nodes — exec results are
+// JSON.stringify'd and an element serializes to {}. Selectors are the
+// element handles.
 
 (function() {
   'use strict';
 
   var utils = window.__devtool_utils;
 
-  function walkChildren(selector, depth, filter) {
+  // walkChildren(selector, depth?, filter?)
+  // walkChildren(selector, {maxDepth?, filter?})
+  // Both call forms are supported; the options-object form matches the
+  // documented API, the positional form is kept for back-compat.
+  function walkChildren(selector, depthOrOptions, filter) {
     var el = utils.resolveElement(selector);
     if (!el) return { error: 'Element not found' };
 
-    depth = depth || 1;
+    var depth = 1;
+    if (depthOrOptions && typeof depthOrOptions === 'object') {
+      depth = depthOrOptions.maxDepth || depthOrOptions.depth || 1;
+      filter = depthOrOptions.filter || filter;
+    } else if (typeof depthOrOptions === 'number') {
+      depth = depthOrOptions;
+    }
+    if (filter && typeof filter !== 'function') {
+      return { error: 'filter must be a function' };
+    }
+
     var results = [];
 
     function walk(element, currentDepth) {
@@ -22,8 +40,8 @@
 
         if (!filter || filter(child)) {
           results.push({
-            element: child,
             selector: utils.generateSelector(child),
+            tag: child.tagName.toLowerCase(),
             depth: currentDepth
           });
         }
@@ -51,7 +69,6 @@
 
     while (current) {
       parents.push({
-        element: current,
         selector: utils.generateSelector(current),
         tag: current.tagName.toLowerCase()
       });
@@ -61,20 +78,35 @@
     return { parents: parents, count: parents.length };
   }
 
+  // findAncestor(selector, condition)
+  // condition may be a predicate function OR a CSS selector string
+  // (matched via el.matches), per the documented API.
   function findAncestor(selector, condition) {
     var el = utils.resolveElement(selector);
     if (!el) return { error: 'Element not found' };
 
-    if (typeof condition !== 'function') {
-      return { error: 'Condition must be a function' };
+    var predicate;
+    if (typeof condition === 'function') {
+      predicate = condition;
+    } else if (typeof condition === 'string') {
+      predicate = function(node) {
+        try {
+          return node.matches(condition);
+        } catch (e) {
+          return false;
+        }
+      };
+    } else {
+      return { error: 'Condition must be a function or CSS selector string' };
     }
 
     var current = el.parentElement;
     while (current) {
-      if (condition(current)) {
+      if (predicate(current)) {
         return {
-          element: current,
-          selector: utils.generateSelector(current)
+          found: true,
+          selector: utils.generateSelector(current),
+          tag: current.tagName.toLowerCase()
         };
       }
       current = current.parentElement;

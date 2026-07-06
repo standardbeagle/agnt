@@ -8,15 +8,24 @@
   var inspection = window.__devtool_inspection;
   var visual = window.__devtool_visual;
 
+  // Whole-document enumerators are bounded like diagnose(): scan at most
+  // DIAG_MAX_ELEMENTS elements and return at most LIST_MAX_RESULTS findings,
+  // with `total` (matches seen) + `capped` so truncation is never silent.
+  var LIST_MAX_RESULTS = 100;
+
   function findOverflows() {
     var elements = document.querySelectorAll('*');
+    var scanned = Math.min(elements.length, DIAG_MAX_ELEMENTS);
     var results = [];
+    var total = 0;
 
-    for (var i = 0; i < elements.length; i++) {
+    for (var i = 0; i < scanned; i++) {
       var el = elements[i];
       var overflow = inspection.getOverflow(el);
 
       if (overflow && overflow.hasOverflow) {
+        total++;
+        if (results.length >= LIST_MAX_RESULTS) continue;
         results.push({
           selector: utils.generateSelector(el),
           type: overflow.x === 'hidden' || overflow.y === 'hidden' ? 'hidden' : 'scrollable',
@@ -28,14 +37,22 @@
       }
     }
 
-    return { overflows: results, count: results.length };
+    return {
+      overflows: results,
+      count: results.length,
+      total: total,
+      scanned: scanned,
+      capped: total > results.length || elements.length > scanned
+    };
   }
 
   function findStackingContexts() {
     var elements = document.querySelectorAll('*');
+    var scanned = Math.min(elements.length, DIAG_MAX_ELEMENTS);
     var contexts = [];
+    var total = 0;
 
-    for (var i = 0; i < elements.length; i++) {
+    for (var i = 0; i < scanned; i++) {
       var el = elements[i];
       if (utils.isDevtoolElement && utils.isDevtoolElement(el)) continue;
 
@@ -48,6 +65,8 @@
       var triggers = utils.stackingContextTriggers(computed, utils.isFlexOrGridItem(el));
 
       if (triggers.length > 0) {
+        total++;
+        if (contexts.length >= LIST_MAX_RESULTS) continue;
         contexts.push({
           selector: utils.generateSelector(el),
           zIndex: computed.zIndex,
@@ -58,14 +77,22 @@
       }
     }
 
-    return { contexts: contexts, count: contexts.length };
+    return {
+      contexts: contexts,
+      count: contexts.length,
+      total: total,
+      scanned: scanned,
+      capped: total > contexts.length || elements.length > scanned
+    };
   }
 
   function findOffscreen() {
     var elements = document.querySelectorAll('*');
+    var scanned = Math.min(elements.length, DIAG_MAX_ELEMENTS);
     var results = [];
+    var total = 0;
 
-    for (var i = 0; i < elements.length; i++) {
+    for (var i = 0; i < scanned; i++) {
       var el = elements[i];
       var viewport = visual.isInViewport(el);
 
@@ -75,6 +102,8 @@
       }
 
       if (!viewport.intersecting) {
+        // viewport.rect is already a plain serializable object (visual.js
+        // hand-copies the DOMRect fields).
         var rect = viewport.rect;
         var direction = [];
 
@@ -83,6 +112,8 @@
         if (rect.right < 0) direction.push('left');
         if (rect.left > window.innerWidth) direction.push('right');
 
+        total++;
+        if (results.length >= LIST_MAX_RESULTS) continue;
         results.push({
           selector: utils.generateSelector(el),
           direction: direction,
@@ -91,7 +122,13 @@
       }
     }
 
-    return { offscreen: results, count: results.length };
+    return {
+      offscreen: results,
+      count: results.length,
+      total: total,
+      scanned: scanned,
+      capped: total > results.length || elements.length > scanned
+    };
   }
 
   // ==========================================================================

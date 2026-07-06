@@ -53,6 +53,13 @@
   // Send store request and return promise
   function sendStoreRequest(action, params) {
     return new Promise(function(resolve, reject) {
+      // Fail fast when the transport is down: without this check the caller
+      // waits out the full 10s timeout on a request that was never sent.
+      if (!core || typeof core.isConnected !== 'function' || !core.isConnected()) {
+        reject(new Error('Store request failed: DevTool socket not connected'));
+        return;
+      }
+
       var requestId = generateRequestId();
       var timeoutMs = 10000; // 10 second timeout
 
@@ -103,7 +110,12 @@
     }
   }
 
-  // Register message handler for responses
+  // Register message handler for responses.
+  // Load order is enforced by embed.go moduleOrder: store declares a hard
+  // dependency on core, so window.__devtool_core is always present here
+  // (TestModuleDependencyOrder pins it). The guard below is defensive only —
+  // if core were somehow absent, sendStoreRequest's isConnected fail-fast
+  // already rejects every request, so no handler is needed.
   if (core && core.onMessage) {
     core.onMessage(handleStoreResponse);
   }

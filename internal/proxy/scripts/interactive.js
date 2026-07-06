@@ -15,7 +15,7 @@
         'left: 0',
         'right: 0',
         'bottom: 0',
-        'z-index: 2147483646',
+        'z-index: ' + (window.__devtoolTokens ? window.__devtoolTokens.z.overlay : 2147483642),
         'cursor: crosshair',
         'background: rgba(0, 0, 0, 0.1)'
       ].join(';');
@@ -101,38 +101,221 @@
     });
   }
 
-  function waitForElement(selector, timeout) {
-    timeout = timeout || 5000;
-    var startTime = Date.now();
+  // JSON-safe description of an element (never the live node — exec results
+  // are JSON.stringify'd and a DOM node serializes to {}).
+  function elementResult(el, extra) {
+    var result = {
+      found: true,
+      selector: utils.generateSelector(el),
+      tag: el.tagName ? el.tagName.toLowerCase() : '',
+      id: el.id || null,
+      classes: Array.prototype.slice.call(el.classList || [])
+    };
+    if (extra) {
+      for (var k in extra) {
+        if (extra.hasOwnProperty(k)) result[k] = extra[k];
+      }
+    }
+    return result;
+  }
 
+  function isElementVisible(el) {
+    try {
+      var computed = window.getComputedStyle(el);
+      if (computed.display === 'none' || computed.visibility === 'hidden' ||
+          parseFloat(computed.opacity) === 0) {
+        return false;
+      }
+      var rect = el.getBoundingClientRect();
+      return rect.width > 0 && rect.height > 0;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  // Shared wait loop: polls `check` on every mutation until it returns a
+  // truthy result or the timeout fires. Single timeout path — the timer and
+  // the observer are both always cleaned up on settle (no leaked timers).
+  function waitFor(check, timeoutMs, timeoutMessage) {
     return new Promise(function(resolve, reject) {
-      var el = utils.resolveElement(selector);
-      if (el) {
-        resolve(el);
+      var settled = false;
+      var observer = null;
+      var timer = null;
+
+      function settle(fn, value) {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        if (observer) observer.disconnect();
+        fn(value);
+      }
+
+      var initial = check();
+      if (initial) {
+        resolve(initial);
         return;
       }
 
-      var observer = new MutationObserver(function() {
-        var el = utils.resolveElement(selector);
-        if (el) {
-          observer.disconnect();
-          resolve(el);
-        } else if (Date.now() - startTime > timeout) {
-          observer.disconnect();
-          reject(new Error('Timeout waiting for element: ' + selector));
+      observer = new MutationObserver(function() {
+        var result = check();
+        if (result) settle(resolve, result);
+      });
+      observer.observe(document.documentElement || document.body, {
+        childList: true,
+        subtree: true,
+        attributes: true
+      });
+
+      timer = setTimeout(function() {
+        settle(reject, new Error(timeoutMessage));
+      }, timeoutMs);
+    });
+  }
+
+  function waitForElement(selector, timeout) {
+    timeout = timeout || 5000;
+    return waitFor(function() {
+      var el = utils.resolveElement(selector);
+      return el ? elementResult(el) : null;
+    }, timeout, 'Timeout waiting for element: ' + selector);
+  }
+
+  function waitForRemoved(selector, timeout) {
+    timeout = timeout || 5000;
+    return waitFor(function() {
+      return utils.resolveElement(selector) ? null : { removed: true, selector: selector };
+    }, timeout, 'Timeout waiting for element to be removed: ' + selector);
+  }
+
+  function waitForVisible(selector, timeout) {
+    timeout = timeout || 5000;
+    return waitFor(function() {
+      var el = utils.resolveElement(selector);
+      return (el && isElementVisible(el)) ? elementResult(el, { visible: true }) : null;
+    }, timeout, 'Timeout waiting for element to be visible: ' + selector);
+  }
+
+  // React-safe form fill: set the value through the native value setter so
+  // controlled components see the change, then dispatch input + change.
+  function fill(selector, value) {
+    var el = utils.resolveElement(selector);
+    if (!el) return { error: 'Element not found' };
+
+    try {
+      var tag = el.tagName ? el.tagName.toLowerCase() : '';
+      if (tag !== 'input' && tag !== 'textarea' && tag !== 'select' && !el.isContentEditable) {
+        return { error: 'Element is not fillable: ' + tag };
+      }
+
+      if (el.isContentEditable && tag !== 'input' && tag !== 'textarea' && tag !== 'select') {
+        el.textContent = String(value);
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        return elementResult(el, { filled: true, value: String(value) });
+      }
+
+      if (tag === 'select') {
+        el.value = String(value);
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        return elementResult(el, { filled: true, value: el.value });
+      }
+
+      if (el.type === 'checkbox' || el.type === 'radio') {
+        var checked = value === true || value === 'true' || value === 'checked';
+        var proto = Object.getPrototypeOf(el);
+        var checkedDesc = Object.getOwnPropertyDescriptor(proto, 'checked') ||
+          Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'checked');
+        if (checkedDesc && checkedDesc.set) {
+          checkedDesc.set.call(el, checked);
+        } else {
+          el.checked = checked;
+        }
+        el.dispatchEvent(new Event('click', { bubbles: true }));
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+        return elementResult(el, { filled: true, checked: checked });
+      }
+
+      // Text-like input / textarea: use the native prototype setter so React's
+      // value tracker (which patches the instance setter) observes the change.
+      var protoForValue = tag === 'textarea' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      var desc = Object.getOwnPropertyDescriptor(protoForValue, 'value');
+      if (desc && desc.set) {
+        desc.set.call(el, String(value));
+      } else {
+        el.value = String(value);
+      }
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+
+      return elementResult(el, { filled: true, value: el.value });
+    } catch (e) {
+      return { error: e.message };
+    }
+  }
+
+  // Dispatch a realistic pointer/mouse event sequence at the element center.
+  // Frameworks that gate on pointerdown/mousedown (menus, drag handles,
+  // synthetic event systems) see the full sequence, unlike el.click().
+  function clickElement(selector) {
+    var el = utils.resolveElement(selector);
+    if (!el) return { error: 'Element not found' };
+
+    try {
+      var rect = el.getBoundingClientRect();
+      var cx = rect.left + rect.width / 2;
+      var cy = rect.top + rect.height / 2;
+      var eventInit = {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        view: window,
+        clientX: cx,
+        clientY: cy,
+        button: 0
+      };
+
+      var sequence = ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
+      for (var i = 0; i < sequence.length; i++) {
+        var type = sequence[i];
+        var ev;
+        if (type.indexOf('pointer') === 0 && typeof PointerEvent === 'function') {
+          ev = new PointerEvent(type, Object.assign({ pointerId: 1, isPrimary: true, pointerType: 'mouse' }, eventInit));
+        } else if (type.indexOf('pointer') === 0) {
+          continue; // no PointerEvent support — mouse events suffice
+        } else {
+          ev = new MouseEvent(type, eventInit);
+        }
+        el.dispatchEvent(ev);
+      }
+
+      if (typeof el.focus === 'function') {
+        try { el.focus(); } catch (e) { /* non-focusable */ }
+      }
+
+      return elementResult(el, { clicked: true, x: cx, y: cy });
+    } catch (e) {
+      return { error: e.message };
+    }
+  }
+
+  function scrollIntoView(selector) {
+    var el = utils.resolveElement(selector);
+    if (!el) return { error: 'Element not found' };
+
+    try {
+      el.scrollIntoView({ block: 'center', inline: 'nearest' });
+      var rect = el.getBoundingClientRect();
+      return elementResult(el, {
+        scrolled: true,
+        rect: {
+          x: rect.x, y: rect.y, width: rect.width, height: rect.height,
+          top: rect.top, right: rect.right, bottom: rect.bottom, left: rect.left
         }
       });
-
-      observer.observe(document.body, {
-        childList: true,
-        subtree: true
-      });
-
-      setTimeout(function() {
-        observer.disconnect();
-        reject(new Error('Timeout waiting for element: ' + selector));
-      }, timeout);
-    });
+    } catch (e) {
+      return { error: e.message };
+    }
   }
 
   function ask(question, options) {
@@ -147,7 +330,7 @@
         'padding: 20px',
         'border-radius: 8px',
         'box-shadow: 0 4px 20px rgba(0,0,0,0.3)',
-        'z-index: 2147483647',
+        'z-index: ' + (window.__devtoolTokens ? window.__devtoolTokens.z.panel : 2147483644),
         'min-width: 300px',
         'max-width: 500px'
       ].join(';');
@@ -160,7 +343,7 @@
         'right: 0',
         'bottom: 0',
         'background: rgba(0,0,0,0.5)',
-        'z-index: 2147483646'
+        'z-index: ' + (window.__devtoolTokens ? window.__devtoolTokens.z.overlay : 2147483642)
       ].join(';');
 
       var title = document.createElement('h3');
@@ -266,6 +449,11 @@
   window.__devtool_interactive = {
     selectElement: selectElement,
     waitForElement: waitForElement,
+    waitForRemoved: waitForRemoved,
+    waitForVisible: waitForVisible,
+    fill: fill,
+    clickElement: clickElement,
+    scrollIntoView: scrollIntoView,
     ask: ask,
     measureBetween: measureBetween
   };

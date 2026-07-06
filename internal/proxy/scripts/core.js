@@ -146,10 +146,20 @@
       console.error('[DevTool] Session initialization failed:', e);
     }
 
-    // Error reporting to server
+    // Native console refs captured BEFORE setupConsoleOverride replaces them.
+    // Internal DevTool errors must log through these: routing them through the
+    // overridden console.error would re-enter the override, land in the page
+    // error buffers, and be re-sent to the server — noise amplification of our
+    // own diagnostics.
+    var nativeConsoleError = console.error.bind(console);
+
+    // Error reporting to server. Deliberately does NOT go through the console
+    // override or the consolidated error buffer — internal instrumentation
+    // failures are sent once to the server, tagged, and kept out of the
+    // page-error surfaces the agent reads.
     function reportInternalError(context, error) {
       try {
-        console.error('[DevTool][INTERNAL]', context, error);
+        nativeConsoleError('[DevTool][INTERNAL]', context, error);
 
         // Try to send to server if connection is available
         if (ws && ws.readyState === WebSocket.OPEN) {
@@ -168,8 +178,8 @@
           }));
         }
       } catch (e) {
-        // Last resort - just console
-        console.error('[DevTool] Error reporting failed:', e);
+        // Last resort - just console (native ref; never re-enter the override)
+        nativeConsoleError('[DevTool] Error reporting failed:', e);
       }
     }
 
@@ -183,7 +193,9 @@
         socket.send(data);
         return true;
       } catch (e) {
-        console.error('[DevTool] WebSocket send failed:', e);
+        // Native ref: a send failure logged through the overridden
+        // console.error would itself be captured and re-sent — feedback loop.
+        nativeConsoleError('[DevTool] WebSocket send failed:', e);
         return false;
       }
     }
@@ -416,9 +428,12 @@
             return val.toString();
           } else if (typeof val === 'object') {
             try {
-              // Check for explicit pretty-print request
+              // Check for explicit pretty-print request. Shallow-copy before
+              // dropping the marker — the caller's object must not be mutated
+              // (it may be live page state).
               var pretty = val && val.__pretty === true;
               if (pretty) {
+                val = Object.assign({}, val);
                 delete val.__pretty;
               }
               // Default to compact JSON (no indentation) for token efficiency
@@ -932,6 +947,77 @@
     }
 
     // ============================================
+    // Web Vitals accumulator
+    // Buffered PerformanceObservers registered at injection time so audit
+    // agents can read window.__devtool_vitals at any point later:
+    //   { lcp, cls, inp, longTasks: [...], longTasksCapped }
+    // Each observer type is feature-detected independently; unsupported
+    // metrics stay null (LCP/INP) or empty (longTasks).
+    // ============================================
+    var VITALS_LONGTASK_CAP = 50;
+
+    function setupVitalsObservers() {
+      var vitals = {
+        lcp: null,           // ms — largest-contentful-paint startTime (last candidate)
+        cls: null,           // unitless cumulative layout shift
+        inp: null,           // ms — worst event-timing duration (INP approximation)
+        longTasks: [],       // [{start, duration}] capped at VITALS_LONGTASK_CAP
+        longTasksCapped: false
+      };
+      window.__devtool_vitals = vitals;
+
+      if (typeof PerformanceObserver !== 'function') return;
+
+      try {
+        new PerformanceObserver(function(list) {
+          var entries = list.getEntries();
+          if (entries.length) {
+            vitals.lcp = Math.round(entries[entries.length - 1].startTime);
+          }
+        }).observe({ type: 'largest-contentful-paint', buffered: true });
+      } catch (e) { /* unsupported — vitals.lcp stays null */ }
+
+      try {
+        var clsObserver = new PerformanceObserver(function(list) {
+          var entries = list.getEntries();
+          for (var i = 0; i < entries.length; i++) {
+            if (!entries[i].hadRecentInput) {
+              vitals.cls = (vitals.cls || 0) + entries[i].value;
+            }
+          }
+        });
+        clsObserver.observe({ type: 'layout-shift', buffered: true });
+        vitals.cls = 0;
+      } catch (e) { /* unsupported — vitals.cls stays null */ }
+
+      try {
+        new PerformanceObserver(function(list) {
+          var entries = list.getEntries();
+          for (var i = 0; i < entries.length; i++) {
+            var d = Math.round(entries[i].duration);
+            if (vitals.inp === null || d > vitals.inp) vitals.inp = d;
+          }
+        }).observe({ type: 'event', buffered: true, durationThreshold: 40 });
+      } catch (e) { /* unsupported — vitals.inp stays null */ }
+
+      try {
+        new PerformanceObserver(function(list) {
+          var entries = list.getEntries();
+          for (var i = 0; i < entries.length; i++) {
+            if (vitals.longTasks.length >= VITALS_LONGTASK_CAP) {
+              vitals.longTasksCapped = true;
+              break;
+            }
+            vitals.longTasks.push({
+              start: Math.round(entries[i].startTime),
+              duration: Math.round(entries[i].duration)
+            });
+          }
+        }).observe({ type: 'longtask', buffered: true });
+      } catch (e) { /* unsupported — vitals.longTasks stays empty */ }
+    }
+
+    // ============================================
     // Diagnostics Stream
     // Track proxy connection events for debugging
     // ============================================
@@ -1112,6 +1198,13 @@
       var __wantsTransport = __isContent || __frameRole === 'chrome';
       if (__isContent) {
         setupErrorTrackingWithBuffer();
+        // Vitals are page telemetry — content frame only, same as error
+        // instrumentation (the chrome shell reports no page metrics).
+        try {
+          setupVitalsObservers();
+        } catch (e) {
+          reportInternalError('vitals_setup_failed', e);
+        }
       }
       if (__wantsTransport) {
         addDiagnostic('core', 'initializing', { version: window.__devtool_version || 'unknown', role: __frameRole || 'standalone' });

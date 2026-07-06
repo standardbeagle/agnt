@@ -228,9 +228,20 @@ Returns shell command string for streaming daemon events via `agnt monitor` CLI.
 **`window.__devtool`** (~50 diagnostic primitives):
 
 **Core**:
-- `log(message, level, data)`, `screenshot(name)`, `isConnected()`
+- `log(message, level, data)` (returns `{sent: boolean}`), `screenshot(name)`, `isConnected()`
 - `interactions.getHistory/getLastClick/getLastClickContext()`
 - `mutations.getHistory/highlightRecent()`
+- `window.__devtool_vitals` — buffered PerformanceObserver accumulator registered at
+  injection time (content frame only): `{lcp, cls, inp, longTasks:[{start,duration}]
+  (capped 50), longTasksCapped}`. Unsupported metrics stay `null`.
+
+**Interaction helpers** (JSON-safe returns, no live DOM nodes):
+- `fill(selector, value)` — React-safe form fill (native value setter + input/change events;
+  handles input/textarea/select/checkbox/contenteditable)
+- `clickElement(selector)` — realistic pointerdown→mousedown→pointerup→mouseup→click sequence
+- `waitForElement/waitForVisible/waitForRemoved(selector, timeout?)` — Promise-based waits
+  (single timeout path, observers always cleaned up)
+- `scrollIntoView(selector)`
 
 **Indicator & Modes**:
 - `indicator.show/hide/toggle/togglePanel()`
@@ -240,7 +251,8 @@ Returns shell command string for streaming daemon events via `agnt monitor` CLI.
 
 **Diagnostics** (categories):
 - Element Inspection (9): getElementInfo, getPosition, getComputed, etc.
-- Layout Diagnostics (3): findOverflows, findStackingContexts, findOffscreen
+- Layout Diagnostics (4): findOverflows, findStackingContexts, findOffscreen (all bounded:
+  4000-element scan, 100 results, `total`/`capped` reported), diagnoseLayoutIssues
 - Accessibility (5): getA11yInfo, auditAccessibility (3 modes), getContrast, etc.
 - Quality Auditing (10+): auditDOMComplexity, auditPageQuality, auditCSS, etc.
 
@@ -280,6 +292,25 @@ and `findStackingContexts` can never disagree on what creates a context.
   z-index — not just the four the old implementation caught. `reason[]` is a
   flat property-name list kept for back-compat; `triggers[]` carries the
   removable cause with values.
+
+- **`diagnoseLayoutIssues()`** (= `window.__devtool_layout.diagnose()`) → one
+  bounded synchronous pass (~30-80ms; 4000-element budget, 15 findings per
+  check, `capped` flag) over four cause→symptom layout-bug classes, each
+  finding naming the offending ancestor (`cause`/`cause_property`), the correct
+  `fix`, and the common wrong fix to `avoid`:
+  - **containing-block-trap** — `position:fixed`/`absolute` captured by an
+    ancestor `transform`/`perspective`/`filter`/`will-change`/`contain`, so the
+    element resolves against that ancestor instead of the viewport/positioned
+    parent the author expects.
+  - **ineffective-zindex** — `z-index` on a `position:static`, non-flex/grid
+    element: silently discarded, not losing a comparison.
+  - **click-interception** — a visible interactive element whose center point
+    resolves to a different element (a transparent overlay eats clicks/taps).
+  - **clipped-descendant** — content cut off by the nearest ancestor with
+    `overflow:hidden/clip`; only the boundary element is reported, not every
+    descendant.
+  Returns `{findings:[{check, severity, selector, cause, cause_property,
+  detail, fix, avoid}], count, scanned, capped, by_check}`.
 
 **Promotion** (findability): `getStacking`/`getContainer` are in the injected
 cheat sheet (`internal/agntprompt/cheatsheet.go`) under a symptom→helper map,
