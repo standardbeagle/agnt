@@ -190,6 +190,9 @@
     };
   }
 
+  // Shared z-index layer scale (ui-tokens.js) with load-failure fallbacks.
+  var SK_Z = window.__devtoolTokens ? window.__devtoolTokens.z : { panel: 2147483644, critical: 2147483647 };
+
   // CSS Styles
   var STYLES = {
     container: [
@@ -198,7 +201,7 @@
       'left: 0',
       'right: 0',
       'bottom: 0',
-      'z-index: 2147483645',
+      'z-index: ' + SK_Z.panel + '',
       'background: transparent',
       'font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif'
     ].join(';'),
@@ -408,14 +411,18 @@
     var closeBtn = document.createElement('button');
     closeBtn.style.cssText = STYLES.closeButton;
     closeBtn.innerHTML = '&times;';
+    closeBtn.setAttribute('aria-label', 'Close sketch mode');
     closeBtn.onclick = close;
     container.appendChild(closeBtn);
 
     // Setup event listeners
     setupEventListeners();
 
-    // Add to document
-    document.body.appendChild(container);
+    // Mount into the devtool shadow root when available (style isolation);
+    // fullscreen canvas + pointer events work identically in an open shadow
+    // root because events are composed and coordinates are viewport-based.
+    var mount = window.__devtoolGetMountRoot ? window.__devtoolGetMountRoot() : document.body;
+    mount.appendChild(container);
     sketchState.isActive = true;
 
     // Initial render
@@ -427,6 +434,8 @@
   function createToolbar(container) {
     var toolbar = document.createElement('div');
     toolbar.id = '__devtool-sketch-toolbar';
+    toolbar.setAttribute('role', 'toolbar');
+    toolbar.setAttribute('aria-label', 'Sketch tools');
     toolbar.style.cssText = STYLES.toolbar;
 
     var toolGroups = [
@@ -982,7 +991,9 @@
 
     // Update toolbar UI
     Object.keys(TOOLS).forEach(function(id) {
-      var btn = document.getElementById('__devtool-tool-' + id);
+      // Container-scoped lookup — getElementById cannot see into the
+      // shadow-root mount.
+      var btn = sketchState.container ? sketchState.container.querySelector('#__devtool-tool-' + id) : null;
       if (btn) {
         btn.style.cssText = STYLES.toolButton;
         if (id === toolId) {
@@ -1313,7 +1324,7 @@
   }
 
   function showVoiceIndicator(text) {
-    var existing = document.getElementById('__devtool-voice-indicator');
+    var existing = sketchState.container ? sketchState.container.querySelector('#__devtool-voice-indicator') : null;
     if (existing) {
       if (text) existing.textContent = text;
       return;
@@ -1331,17 +1342,19 @@
       'padding: 12px 24px',
       'border-radius: 24px',
       'font-size: 14px',
-      'z-index: 2147483647',
+      'z-index: ' + SK_Z.critical + '',
       'display: flex',
       'align-items: center',
       'gap: 10px',
       'animation: devtool-voice-pulse 1.5s infinite'
     ].join(';');
 
-    // Add pulse animation
+    // Add pulse animation. Appended to the sketch container (not
+    // document.head) so the keyframes are visible inside the shadow-root
+    // mount — outer-document keyframes do not apply to shadow content.
     var style = document.createElement('style');
     style.textContent = '@keyframes devtool-voice-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }';
-    document.head.appendChild(style);
+    sketchState.container.appendChild(style);
 
     // Microphone icon
     var icon = document.createElement('span');
@@ -1356,7 +1369,7 @@
   }
 
   function updateVoiceIndicator(text) {
-    var indicator = document.getElementById('__devtool-voice-indicator');
+    var indicator = sketchState.container ? sketchState.container.querySelector('#__devtool-voice-indicator') : null;
     if (indicator) {
       var label = indicator.querySelector('span:last-child');
       if (label) label.textContent = text || 'Listening...';
@@ -1364,7 +1377,7 @@
   }
 
   function hideVoiceIndicator() {
-    var indicator = document.getElementById('__devtool-voice-indicator');
+    var indicator = sketchState.container ? sketchState.container.querySelector('#__devtool-voice-indicator') : null;
     if (indicator && indicator.parentNode) {
       indicator.parentNode.removeChild(indicator);
     }

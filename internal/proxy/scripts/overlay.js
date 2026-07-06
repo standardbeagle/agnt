@@ -27,7 +27,9 @@
       'right: 0',
       'bottom: 0',
       'pointer-events: none',
-      'z-index: 2147483647',
+      // Shared layer scale (ui-tokens.js): element highlights sit on the
+      // lowest devtool layer so they never cover panels or toasts.
+      'z-index: ' + (window.__devtoolTokens ? window.__devtoolTokens.z.highlight : 2147483640),
       'overflow: hidden',
       // Scope layout/style invalidation to the overlay subtree. The container is
       // already viewport-sized via fixed top/left/right/bottom, and children use

@@ -15,6 +15,9 @@ var (
 	//go:embed frames.js
 	framesJS string
 
+	//go:embed ui-tokens.js
+	uiTokensJS string
+
 	//go:embed shadow-root.js
 	shadowRootJS string
 
@@ -184,6 +187,12 @@ var moduleOrder = []moduleEntry{
 	// window.__devtool namespace defensively).
 	{"frames", nil},
 	{"core", nil},
+	// ui-tokens.js publishes window.__devtoolTokens (z-index scale, light/dark
+	// color palettes, motion prefs) and the __devtoolOverlayStack Escape
+	// coordinator. It MUST load before every UI module (toast, indicator,
+	// palette, design, style-editor, sketch, overlay) because those build
+	// their style strings from the tokens at module-eval time.
+	{"ui-tokens", nil},
 	// shadow-root.js MUST be loaded before any module that mounts UI so that
 	// window.__devtoolGetMountRoot() is available when indicator/overlay init.
 	// It has no dependencies of its own — pure DOM bootstrap.
@@ -260,6 +269,7 @@ var moduleOrder = []moduleEntry{
 var moduleScript = map[string]string{
 	"core":               coreJS,
 	"frames":             framesJS,
+	"ui-tokens":          uiTokensJS,
 	"shadow-root":        shadowRootJS,
 	"framework-detector": frameworkDetectorJS,
 	"api-tracker":        apiTrackerJS,

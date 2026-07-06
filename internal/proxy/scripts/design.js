@@ -36,6 +36,20 @@
     controls: null         // Navigation controls UI
   };
 
+  // Shared theme (light/dark) from ui-tokens.js; fallback literals only for
+  // the defensive "ui-tokens failed to load" case.
+  var designTheme = window.__devtoolTokens ? window.__devtoolTokens.theme() : {
+    primary: '#6366f1',
+    primaryDark: '#4f46e5',
+    surface: '#ffffff',
+    surfaceAlt: '#f8fafc',
+    border: '#e2e8f0',
+    text: '#1e293b',
+    textMuted: '#64748b',
+    textInverse: '#ffffff'
+  };
+  var designZ = window.__devtoolTokens ? window.__devtoolTokens.z : { overlay: 2147483642, panel: 2147483644, critical: 2147483647 };
+
   // Start design mode - enable element selection
   function start() {
     if (state.isActive) return;
@@ -63,7 +77,7 @@
       'left: 0',
       'right: 0',
       'bottom: 0',
-      'z-index: 2147483647',
+      'z-index: ' + designZ.critical,
       'cursor: crosshair',
       'background: rgba(99, 102, 241, 0.05)'
     ].join(';');
@@ -109,7 +123,9 @@
       'font-size: 13px',
       'font-weight: 500',
       'box-shadow: 0 10px 40px rgba(0,0,0,0.15)',
-      'z-index: 2147483648'
+      // critical, not 2147483648: that literal overflows int32 and browsers
+      // clamp it anyway; the bar renders above overlay siblings by DOM order.
+      'z-index: ' + designZ.critical
     ].join(';');
     instructions.textContent = 'Click an element to start design iteration • ESC to cancel';
     overlay.appendChild(instructions);
@@ -181,23 +197,42 @@
       }
     });
 
-    function handleEscape(e) {
-      if (e.key === 'Escape') {
-        stop();
-        document.removeEventListener('keydown', handleEscape);
-      }
+    // Escape dismissal via the shared overlay stack (ui-tokens.js) so only
+    // the top-most devtool surface closes per keypress; local listener is
+    // the fallback when ui-tokens failed to load.
+    if (window.__devtoolOverlayStack) {
+      window.__devtoolOverlayStack.push('design-select', stop);
+    } else {
+      var handleEscape = function(e) {
+        if (e.key === 'Escape') {
+          stop();
+          document.removeEventListener('keydown', handleEscape);
+        }
+      };
+      document.addEventListener('keydown', handleEscape);
+      overlay.__devtoolEscapeFallback = handleEscape;
     }
-    document.addEventListener('keydown', handleEscape);
 
     state.overlay = overlay;
-    document.body.appendChild(overlay);
+    // Mount into the devtool shadow root when available (style isolation);
+    // document.elementFromPoint hit-testing still resolves page elements
+    // because the overlay toggles its own pointer-events during reads.
+    var mount = window.__devtoolGetMountRoot ? window.__devtoolGetMountRoot() : document.body;
+    mount.appendChild(overlay);
   }
 
   // Hide selection overlay
   function hideSelectionOverlay() {
+    if (window.__devtoolOverlayStack) {
+      window.__devtoolOverlayStack.pop('design-select');
+    }
     if (state.overlay) {
       if (typeof state.overlay.__devtoolCancelRaf === 'function') {
         state.overlay.__devtoolCancelRaf();
+      }
+      if (state.overlay.__devtoolEscapeFallback) {
+        document.removeEventListener('keydown', state.overlay.__devtoolEscapeFallback);
+        state.overlay.__devtoolEscapeFallback = null;
       }
       if (state.overlay.parentNode) {
         state.overlay.parentNode.removeChild(state.overlay);
@@ -447,34 +482,40 @@
     host.id = '__devtool-design-panel';
     host.style.cssText = 'all:initial';
     var root = host.attachShadow ? host.attachShadow({ mode: 'open' }) : host;
-    document.body.appendChild(host);
+    // Mount into the devtool shadow root when available; the host carries its
+    // own nested shadow root for the dock styles either way.
+    var hostMount = window.__devtoolGetMountRoot ? window.__devtoolGetMountRoot() : document.body;
+    hostMount.appendChild(host);
 
     var style = document.createElement('style');
     style.textContent = [
       ':host{all:initial}',
-      '.dock{position:fixed;right:16px;bottom:16px;width:min(720px,46vw);max-height:78vh;background:#fff;border:1px solid #e2e8f0;border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,.18);display:flex;flex-direction:column;overflow:hidden;container-type:inline-size;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}',
-      '.bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid #eef2f7}',
-      '.idx{font-size:12px;color:#64748b;flex:0 1 auto;min-width:48px;max-width:150px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+      '.dock{position:fixed;right:16px;bottom:16px;width:min(720px,46vw);max-height:78vh;background:' + designTheme.surface + ';border:1px solid ' + designTheme.border + ';border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,.18);display:flex;flex-direction:column;overflow:hidden;container-type:inline-size;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}',
+      '.bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid ' + designTheme.border + '}',
+      '.idx{font-size:12px;color:' + designTheme.textMuted + ';flex:0 1 auto;min-width:48px;max-width:150px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
       '.spacer{flex:1}',
       // Container-responsive: when the dock is narrow the chat input drops to
       // its own full-width row so the nav buttons + close (✕) always stay
       // visible instead of overflowing and being clipped by dock overflow.
       '@container (max-width:520px){.in{flex:1 1 100%;order:10}.spacer{display:none}}',
-      '.btn{padding:6px 10px;background:#6366f1;color:#fff;border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer}',
-      '.btn:hover{background:#4f46e5}',
-      '.btn.ghost{background:#f1f5f9;color:#334155}',
-      '.btn.ghost.on{background:#6366f1;color:#fff}',
-      '.in{flex:1;min-width:120px;border:1px solid #e2e8f0;border-radius:8px;padding:7px 10px;font-size:13px;color:#1e293b;outline:none}',
+      '.btn{padding:6px 10px;background:' + designTheme.primary + ';color:' + designTheme.textInverse + ';border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer}',
+      '.btn:hover{background:' + designTheme.primaryDark + '}',
+      '.btn.ghost{background:' + designTheme.surfaceAlt + ';color:' + designTheme.text + '}',
+      '.btn.ghost.on{background:' + designTheme.primary + ';color:' + designTheme.textInverse + '}',
+      '.in{flex:1;min-width:120px;border:1px solid ' + designTheme.border + ';border-radius:8px;padding:7px 10px;font-size:13px;color:' + designTheme.text + ';background:' + designTheme.surface + ';outline:none}',
       '.body{display:flex;overflow:auto}',
       '.col{flex:1;min-width:0;padding:12px;overflow:auto}',
-      '.col+.col{border-left:1px solid #eef2f7}',
+      '.col+.col{border-left:1px solid ' + designTheme.border + '}',
       '.cap{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#94a3b8;margin:0 0 8px}',
-      '.render{font-size:14px;color:#0f172a}',
-      '.frender{width:100%;border:0;display:block;background:#fff;border-radius:0 0 12px 12px}'
+      '.render{font-size:14px;color:' + designTheme.text + '}',
+      '.frender{width:100%;border:0;display:block;background:' + designTheme.surface + ';border-radius:0 0 12px 12px}'
     ].join('');
     root.appendChild(style);
 
     var dock = document.createElement('div'); dock.className = 'dock';
+    dock.setAttribute('role', 'dialog');
+    dock.setAttribute('aria-modal', 'false');
+    dock.setAttribute('aria-label', 'Design iteration panel');
     var bar = document.createElement('div'); bar.className = 'bar';
     var idx = document.createElement('div'); idx.className = 'idx';
     var sideBtn = mkBtn('Side-by-side', function () { setMode('side'); }); sideBtn.className = 'btn ghost';
@@ -485,14 +526,19 @@
     chatIn.addEventListener('keydown', function (e) {
       if (e.key === 'Enter' && chatIn.value.trim()) { chat(chatIn.value.trim()); chatIn.value = ''; }
     });
-    bar.appendChild(mkBtn('◀', function () { previous(); }));
+    var prevB = mkBtn('◀', function () { previous(); });
+    prevB.setAttribute('aria-label', 'Previous alternative');
+    bar.appendChild(prevB);
     bar.appendChild(idx);
-    bar.appendChild(mkBtn('▶', function () { next(); }));
+    var nextB = mkBtn('▶', function () { next(); });
+    nextB.setAttribute('aria-label', 'Next alternative');
+    bar.appendChild(nextB);
     bar.appendChild(sideBtn);
     bar.appendChild(overBtn);
     bar.appendChild(spacer);
     bar.appendChild(chatIn);
     var closeB = mkBtn('✕', function () { stop(); }); closeB.className = 'btn ghost';
+    closeB.setAttribute('aria-label', 'Close design panel');
     bar.appendChild(closeB);
 
     var body = document.createElement('div'); body.className = 'body';
@@ -504,11 +550,11 @@
     olHost.style.cssText = 'all:initial';
     var olRoot = olHost.attachShadow ? olHost.attachShadow({ mode: 'open' }) : olHost;
     var olStyle = document.createElement('style');
-    olStyle.textContent = ':host{all:initial}.ol{position:fixed;z-index:2147483645;overflow:auto;background:#fff;border:2px solid #6366f1;border-radius:8px;box-shadow:0 8px 30px rgba(0,0,0,.25)}.render{padding:8px;font-family:-apple-system,sans-serif}';
+    olStyle.textContent = ':host{all:initial}.ol{position:fixed;z-index:' + designZ.panel + ';overflow:auto;background:' + designTheme.surface + ';border:2px solid ' + designTheme.primary + ';border-radius:8px;box-shadow:0 8px 30px rgba(0,0,0,.25)}.render{padding:8px;font-family:-apple-system,sans-serif}';
     olRoot.appendChild(olStyle);
     var olBox = document.createElement('div'); olBox.className = 'ol'; olBox.style.display = 'none';
     olRoot.appendChild(olBox);
-    document.body.appendChild(olHost);
+    hostMount.appendChild(olHost);
 
     state.panel = { host: host, root: root, dock: dock, idx: idx, body: body, sideBtn: sideBtn, overBtn: overBtn, olHost: olHost, olBox: olBox };
 

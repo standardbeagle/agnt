@@ -21,7 +21,9 @@
   var SNAP_THRESHOLD = 4;   // px; nearest candidate within this wins
   var MIN_SIZE = 8;         // px; floor for resized width/height
   var HANDLE_SIZE = 10;     // px; visual handle square
-  var Z_INDEX = 2147483644; // just under the palette (…645)
+  // One below tokens.z.panel so geometry handles never cover the palette or
+  // style-editor panels (which sit at z.panel).
+  var Z_INDEX = window.__devtoolTokens ? window.__devtoolTokens.z.panel - 1 : 2147483643;
 
   // Handle anchor table. ax/ay are fractional anchor points on the element
   // rect (0 = left/top, 0.5 = center, 1 = right/bottom). ex/ey name which edge

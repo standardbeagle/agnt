@@ -23,6 +23,9 @@
 
 (function() {
   'use strict';
+  // z-index note: walkthrough surfaces use 2147483600 — deliberately BELOW
+  // the shared ui-tokens.js scale (lowest layer highlight=2147483640) so the
+  // demo panel/hilites never cover the indicator, palettes, or toasts.
 
   try {
     var role = window.__devtool_frame_role || '';

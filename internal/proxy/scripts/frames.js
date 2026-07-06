@@ -13,6 +13,9 @@
   // error+fetch+xhr+mutation hooks) lands in Slice 3 — this slice only
   // establishes the primitive. See docs/responsive-canonical-target.md §5.
 
+  // Wire-format contract: must stay byte-identical to frameMarkerParam in
+  // internal/proxy/injector.go — the Go side stamps this query parameter on
+  // content-frame requests; this side detects it. Change both together.
   var FRAME_PARAM = '__devtool_frame';
 
   // resolveRole returns 'chrome' | 'content' | 'passive' for this frame.

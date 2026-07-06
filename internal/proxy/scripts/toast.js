@@ -19,9 +19,13 @@
     nextId: 1
   };
 
-  // Design tokens (shared with indicator)
+  // Design tokens — sourced from the shared ui-tokens module (light or dark
+  // palette picked at load time via prefers-color-scheme). Fallback literals
+  // cover the defensive "ui-tokens failed to load" case only.
+  var toastTheme = window.__devtoolTokens ? window.__devtoolTokens.theme() : null;
+  var toastMotion = window.__devtoolTokens ? window.__devtoolTokens.motion() : { reduce: false, transition: function(s) { return s; } };
   var TOKENS = {
-    colors: {
+    colors: toastTheme || {
       surface: '#ffffff',
       text: '#1e293b',
       textMuted: '#64748b',
@@ -43,7 +47,7 @@
   var STYLES = {
     container: [
       'position: fixed',
-      'z-index: 2147483647',
+      'z-index: ' + (window.__devtoolTokens ? window.__devtoolTokens.z.toast : 2147483646),
       'display: flex',
       'flex-direction: column',
       'gap: 10px',
@@ -72,7 +76,7 @@
       'pointer-events: auto',
       'opacity: 0',
       'transform: translateX(100%)',
-      'transition: opacity 0.3s ease, transform 0.3s ease',
+      'transition: ' + toastMotion.transition('opacity 0.3s ease, transform 0.3s ease'),
       // Each toast is a short-lived element (default 4s). contain: layout style
       // keeps per-toast relayouts scoped; will-change promotes the element to
       // its own compositor layer for the enter/leave transform+opacity
@@ -85,11 +89,6 @@
     toastVisible: [
       'opacity: 1',
       'transform: translateX(0)'
-    ].join(';'),
-
-    toastExiting: [
-      'opacity: 0',
-      'transform: translateX(100%)'
     ].join(';'),
 
     icon: [
@@ -123,7 +122,7 @@
       'cursor: pointer',
       'color: ' + TOKENS.colors.textMuted,
       'opacity: 0.6',
-      'transition: opacity 0.15s ease'
+      'transition: ' + toastMotion.transition('opacity 0.15s ease')
     ].join(';'),
 
     progress: [
@@ -153,9 +152,20 @@
     state.container = document.createElement('div');
     state.container.id = '__devtool-toast-container';
     state.container.style.cssText = STYLES.container;
+    // Announce toast arrivals to assistive tech without stealing focus.
+    state.container.setAttribute('aria-live', 'polite');
     updatePosition();
 
-    document.documentElement.appendChild(state.container);
+    // Mount into the devtool shadow root for style isolation; falls back to
+    // document.documentElement when shadow-root.js is unavailable.
+    var mount = window.__devtoolGetMountRoot ? window.__devtoolGetMountRoot() : document.documentElement;
+    mount.appendChild(state.container);
+  }
+
+  // slideOffset returns the off-screen translateX for the configured corner.
+  // Computed per toast at show/dismiss time so STYLES stays immutable.
+  function slideOffset() {
+    return config.position.indexOf('left') !== -1 ? '-100%' : '100%';
   }
 
   function updatePosition() {
@@ -185,11 +195,6 @@
     } else {
       state.container.style.right = '0';
     }
-
-    // Update slide direction for toasts
-    var slideDir = horizontal === 'left' ? '-100%' : '100%';
-    STYLES.toast = STYLES.toast.replace(/translateX\([^)]+\)/g, 'translateX(' + slideDir + ')');
-    STYLES.toastExiting = 'opacity: 0; transform: translateX(' + slideDir + ')';
   }
 
   // Create a toast element
@@ -197,6 +202,14 @@
     var toast = document.createElement('div');
     toast.style.cssText = STYLES.toast;
     toast.style.position = 'relative';
+    // Per-toast slide direction from the configured corner (STYLES.toast is
+    // immutable and always encodes the right-side default).
+    toast.style.transform = 'translateX(' + slideOffset() + ')';
+    // Errors interrupt via role=alert; everything else is announced politely
+    // by the container's aria-live region.
+    if (options.type === 'error') {
+      toast.setAttribute('role', 'alert');
+    }
 
     // Set border color based on type
     var borderColor = TOKENS.colors[options.type] || TOKENS.colors.info;
@@ -234,6 +247,7 @@
     var closeBtn = document.createElement('button');
     closeBtn.style.cssText = STYLES.closeBtn;
     closeBtn.innerHTML = ICONS.close;
+    closeBtn.setAttribute('aria-label', 'Dismiss notification');
     closeBtn.onmouseenter = function() { closeBtn.style.opacity = '1'; };
     closeBtn.onmouseleave = function() { closeBtn.style.opacity = '0.6'; };
     toast.appendChild(closeBtn);
@@ -293,6 +307,7 @@
     // Animate in
     requestAnimationFrame(function() {
       toastData.element.style.cssText = STYLES.toast + ';' + STYLES.toastVisible;
+      toastData.element.style.position = 'relative';
       toastData.element.style.borderLeftColor = TOKENS.colors[options.type] || TOKENS.colors.info;
     });
 
@@ -342,9 +357,8 @@
     }
 
     // Animate out
-    var slideDir = config.position.includes('left') ? '-100%' : '100%';
     toastObj.element.style.opacity = '0';
-    toastObj.element.style.transform = 'translateX(' + slideDir + ')';
+    toastObj.element.style.transform = 'translateX(' + slideOffset() + ')';
 
     // Remove after animation
     setTimeout(function() {
