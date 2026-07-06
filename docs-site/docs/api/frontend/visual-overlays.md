@@ -2,9 +2,13 @@
 sidebar_position: 6
 ---
 
+import ModeVideo from '@site/src/components/ModeVideo';
+
 # Visual Overlays
 
 Functions for visually highlighting elements during debugging.
+
+<ModeVideo src="/img/color-palette.webm" poster="/img/color-palette-poster.webp" label="Design-token overlays on a live page — showColorPalette lists every color in use with usage counts, then showTypographyPanel breaks down the font sizes, weights, and families found on the page." />
 
 ## highlight
 

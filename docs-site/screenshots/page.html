@@ -28,7 +28,9 @@
   .up { color:var(--acc2); }
   .panel { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:20px; margin-bottom:22px; }
   .panel h2 { margin:0 0 14px; font-size:16px; }
-  table { width:100%; border-collapse:collapse; }
+  /* min-width is a deliberate responsive hazard: at phone widths the table
+     overflows its panel, which the responsive-audit scene detects. */
+  table { width:100%; min-width:640px; border-collapse:collapse; }
   th, td { text-align:left; padding:10px 8px; border-bottom:1px solid var(--line); font-size:14px; }
   th { color:var(--mut); font-weight:600; }
   .badge { padding:2px 9px; border-radius:99px; font-size:12px; }
@@ -40,6 +42,25 @@
   .actions { grid-column:1/3; display:flex; gap:10px; }
   button.primary { background:var(--acc); color:#fff; border:0; padding:10px 18px; border-radius:8px; font-weight:600; cursor:pointer; }
   button.ghost { background:transparent; color:var(--mut); border:1px solid var(--line); padding:10px 18px; border-radius:8px; cursor:pointer; }
+
+  /* --- demo sections below the fold (loading / layout / a11y scenes) --- */
+  .report-grid { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin-bottom:14px; }
+  .report-card { background:#10131b; border:1px solid var(--line); border-radius:10px; padding:14px; min-height:84px; position:relative; }
+  .report-card .label { color:var(--mut); font-size:13px; }
+  .report-card .val { font-size:22px; font-weight:700; margin-top:8px; }
+  .spinner { display:inline-block; width:20px; height:20px; border:3px solid #2a3040; border-top-color:var(--acc); border-radius:50%; animation:dspin .8s linear infinite; }
+  .report-card .spinner { position:absolute; top:14px; right:14px; }
+  @keyframes dspin { to { transform:rotate(360deg); } }
+  #report-status { display:flex; align-items:center; gap:10px; min-height:30px; color:var(--mut); font-size:13px; }
+  #report-status .step { display:inline-flex; align-items:center; gap:8px; }
+  .activity-wrap { position:relative; transform:translateZ(0); background:#10131b; border:1px solid var(--line); border-radius:10px; padding:14px; margin-bottom:14px; min-height:96px; }
+  .pinned-note { position:fixed; right:16px; bottom:16px; background:#1d2432; border:1px solid #33415c; border-radius:8px; padding:8px 12px; font-size:13px; color:var(--txt); }
+  .activity-card { position:relative; overflow:hidden; background:#10131b; border:1px solid var(--line); border-radius:10px; padding:14px; height:88px; }
+  .activity-card .dropdown { position:absolute; top:44px; left:14px; width:200px; background:#1d2432; border:1px solid #33415c; border-radius:8px; padding:6px 0; }
+  .activity-card .dropdown a { display:block; padding:7px 14px; color:var(--txt); text-decoration:none; font-size:13px; }
+  .filters { z-index:30; display:inline-block; margin-top:10px; color:var(--mut); font-size:13px; }
+  .lowc-btn { background:#3a3f4a; color:#565b66; border:0; padding:9px 16px; border-radius:8px; cursor:pointer; }
+  .ann-row { display:flex; align-items:center; gap:14px; }
 </style>
 </head>
 <body>
@@ -95,6 +116,84 @@
         </div>
       </form>
     </div>
+
+    <div class="panel" id="reports-panel">
+      <h2>Weekly reports</h2>
+      <div class="report-grid" id="report-grid">
+        <div class="report-card" id="rc-a"><div class="label">Revenue report</div><div class="val" id="rg-a">—</div></div>
+        <div class="report-card" id="rc-b"><div class="label">Orders report</div><div class="val" id="rg-b">—</div></div>
+        <div class="report-card" id="rc-c"><div class="label">Traffic report</div><div class="val" id="rg-c">—</div></div>
+      </div>
+      <div id="report-status"></div>
+    </div>
+
+    <div class="panel" id="layout-demo">
+      <h2>Team activity</h2>
+      <div class="activity-wrap">
+        <div>Riley closed 4 tickets · Sam shipped v2.3 · Ana invited 2 teammates</div>
+        <span class="filters">Filters: last 7 days</span>
+        <div class="pinned-note" id="pinned-note">📌 Standup at 9:30</div>
+      </div>
+      <div class="activity-card" id="activity-card">
+        <strong>Export activity</strong>
+        <div class="dropdown" id="export-menu">
+          <a href="#">Export as CSV</a>
+          <a href="#">Export as JSON</a>
+          <a href="#">Export as PDF</a>
+          <a href="#">Schedule weekly export</a>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel" id="announcements">
+      <h2>Announcements</h2>
+      <div class="ann-row">
+        <img id="ann-img" width="44" height="44" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==">
+        <div>
+          <div>Q3 planning kicks off next week.</div>
+          <input id="ann-search" placeholder="Search announcements">
+        </div>
+        <button class="lowc-btn" id="ann-btn">Dismiss</button>
+      </div>
+    </div>
+
+    <script>
+    // Demo driver for the loading-audit scene: a sequential spinner cascade in
+    // one region (#report-status) plus three concurrent spinners under
+    // #report-grid, each correlated with a mock API call.
+    // Spinner elements are created/removed dynamically so the spinner
+    // observer sees appear/disappear (it watches childList + class, not style).
+    (function() {
+      function sleep(ms) { return new Promise(function(r) { setTimeout(r, ms); }); }
+      function addSpinner(parentId, label) {
+        var wrap = document.createElement('span');
+        wrap.className = 'step';
+        var s = document.createElement('span');
+        s.className = 'spinner';
+        wrap.appendChild(s);
+        if (label) wrap.appendChild(document.createTextNode(' ' + label));
+        document.getElementById(parentId).appendChild(wrap);
+        return wrap;
+      }
+      window.__demoLoadingCascade = async function() {
+        // fragmentation: 3 concurrent card spinners under #report-grid
+        var frag = ['rc-a', 'rc-b', 'rc-c'].map(function(id) { return addSpinner(id, ''); });
+        fetch('/api/report?kind=revenue'); fetch('/api/report?kind=orders'); fetch('/api/report?kind=traffic');
+        // cascade: three sequential steps in the same region (#report-status)
+        var steps = [['Loading revenue…', 'rg-a', '$48,250'], ['Loading orders…', 'rg-b', '1,204'], ['Loading traffic…', 'rg-c', '88,410']];
+        for (var i = 0; i < steps.length; i++) {
+          var el = addSpinner('report-status', steps[i][0]);
+          fetch('/api/report?step=' + i);
+          await sleep(620);
+          el.remove();
+          document.getElementById(steps[i][1]).textContent = steps[i][2];
+          await sleep(120);
+        }
+        frag.forEach(function(el) { el.remove(); });
+        return 'done';
+      };
+    })();
+    </script>
   </main>
 </div>
 <!--AGNT_BUNDLE-->

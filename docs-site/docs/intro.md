@@ -24,37 +24,67 @@ AI:  *takes screenshot*
 
 No more alt-tabbing to describe what you see. No more pasting error messages. No more explaining layouts in words.
 
-## The Three Superpowers
+## Everything agnt Does
 
-### 1. AI Sees What You See
+One MCP server, one reverse proxy, one daemon. Behind them sits a full development toolkit:
 
-Your AI agent gets automatic access to:
-- **Screenshots** on demand
-- **JavaScript errors** with full stack traces as they happen
-- **DOM state** - computed styles, positions, accessibility info
-- **Network traffic** - every request and response
-- **Performance metrics** - load times, paint events, CLS
+### See
 
-### 2. You Can Show, Not Tell
+- **[Browser debugging](/features/frontend-diagnostics)** - screenshots, JavaScript errors with stack traces, DOM inspection, network traffic, and console output, all queryable by your AI.
+- **[Interaction & mutation tracking](/api/proxylog)** - every click, input, and DOM change is logged so the AI knows what you did and what the page did in response.
+- **[Incident inbox](/api/get_incidents)** - errors from every source (browser, HTTP, processes) deduplicated into one priority-ordered queue with remediation hints.
+- **[Floating indicator messaging](/api/frontend/indicator)** - click the in-page indicator to send messages, select elements, and capture context straight to your AI.
+- **Voice input** - speak annotations and commands instead of typing them; transcription streams through the proxy (Deepgram) with a Web Speech API fallback.
 
-Click the floating indicator in your browser to:
-- **Send messages** directly to your AI without typing
-- **Draw wireframes** on your live UI with sketch mode
-- **Select elements** to log their details
-- **Capture interactions** - what you clicked, what changed
+### Diagnose
 
-### 3. Test the Unhappy Paths
+- **[Layout diagnostics](/api/frontend/layout-diagnostics)** - `diagnoseLayoutIssues()` maps cause to symptom: containing-block traps, ineffective z-index, click interception, clipped descendants - and names the offending ancestor.
+- **[Responsive audit](/api/responsive_audit)** + **[responsive mode](/api/frontend/responsive-mode)** - automated layout/overflow/a11y checks across viewport sizes, plus a live resizable preview with severity overlays.
+- **[Accessibility audit](/api/frontend/accessibility)** - full axe-core audits plus contrast, tab order, and screen-reader-text primitives.
+- **[API efficiency audit](/api/api_audit)** - detects N+1 patterns, request waterfalls, duplicate calls, and chatty page loads from the fetch/XHR buffer.
+- **[Loading UX audit](/api/loading_audit)** - spinner cascades and fragmented concurrent loading, scored from the actual spinner timeline.
+- **[Quality audit suite](/api/frontend/quality-auditing)** - `auditAll()` aggregates 8 scored audits: DOM, CSS, performance (Core Web Vitals: LCP/CLS/INP), security, SEO, accessibility, API efficiency, and loading UX.
 
-Built-in chaos engineering lets you simulate:
-- **Slow networks** - 3G, flaky WiFi, bandwidth throttling
-- **API failures** - 500 errors, timeouts, rate limits
-- **Race conditions** - responses arriving out of order
-- **Connection drops** - mid-response disconnects
+### Test
 
-```bash
-proxy {action: "chaos", id: "app", chaos_operation: "preset", chaos_preset: "flaky-api"}
-# Your app now experiences random failures - watch what breaks
-```
+- **[Visual regression](/api/snapshot)** - baseline and compare screenshots with the `snapshot` tool.
+- **Replay testing** - record real API traffic, then replay the frontend against a worker-served mock of it - including fuzzed variants to probe error handling (`replaytest`, Pro).
+- **[Chaos engineering](/features/chaos-engineering)** - simulate slow networks, 500s, timeouts, rate limits, and out-of-order responses at the proxy, no code changes.
+
+### Show
+
+- **[Sketch mode](/api/frontend/sketch-mode)** - draw wireframes and annotations directly on your live UI; the AI receives the drawing with element context.
+- **[Design mode](/api/frontend/design-mode)** - the AI proposes design alternatives you preview live, with a style editor for iterating on CSS in place.
+- **Walkthrough mode** - the AI runs a live guided demo of what it just built: step cards, element highlighting, auto or click-to-advance.
+
+### Run
+
+- **[Process management](/features/process-management)** - start, monitor, and stop dev servers with bounded output capture and graceful shutdown; state survives client disconnects.
+- **[Reverse proxy](/features/reverse-proxy)** - transparent HTTP interception, traffic logging, and JS instrumentation in front of any dev server.
+- **[Tunnels](/api/tunnel)** - expose your dev server to real phones via Cloudflare, ngrok, or Tailscale, with full instrumentation intact.
+- **[Project detection](/features/project-detection)** - Go/Node/Python projects and their scripts detected with zero configuration.
+
+## Replaces 12+ Tools in Your Dev Loop
+
+agnt doesn't replace your production monitoring stack. It replaces the pile of separate tools you juggle *while developing* - and makes each one queryable by your AI instead of only by your eyeballs.
+
+| You're using | agnt equivalent | Docs |
+|--------------|-----------------|------|
+| Chrome DevTools (manual inspection) | DOM/layout/console inspection via MCP - the AI inspects instead of you | [Frontend Diagnostics](/features/frontend-diagnostics) |
+| Lighthouse | Scored quality audits with Core Web Vitals (LCP/CLS/INP) | [Quality Auditing](/api/frontend/quality-auditing) |
+| axe DevTools | Full axe-core accessibility audits, on demand | [Accessibility](/api/frontend/accessibility) |
+| Percy / Chromatic (local runs) | Baseline/compare screenshot regression | [snapshot](/api/snapshot) |
+| Responsively App | Live responsive preview + automated viewport audits | [Responsive Mode](/api/frontend/responsive-mode) |
+| Toxiproxy / DevTools throttling | Chaos presets: latency, errors, timeouts, reordering | [Chaos Engineering](/features/chaos-engineering) |
+| Manual tunnel setup | Managed Cloudflare/ngrok/Tailscale tunnels for device testing | [tunnel](/api/tunnel) |
+| LogRocket-style session replay (dev-time) | Interaction + mutation tracking per page session | [proxylog](/api/proxylog) / [currentpage](/api/currentpage) |
+| Sentry (dev-time error tracking) | Automatic error capture + deduplicated incident inbox | [get_incidents](/api/get_incidents) |
+| Excalidraw + screenshot annotation | Sketch mode - draw on the live UI itself | [Sketch Mode](/api/frontend/sketch-mode) |
+| PM2 / nodemon / foreman (dev servers) | Daemon-backed process management with output capture | [Process Management](/features/process-management) |
+| Postman (inspecting your own app's API) | Traffic log queries + API efficiency audits | [proxylog](/api/proxylog) / [api_audit](/api/api_audit) |
+| MSW / hand-written API mocks | Record real traffic → replay against a worker mock (Pro) | `replaytest` |
+
+Each row is scoped to the development workflow: agnt won't monitor production for you, but during a coding session, your AI can do everything above without you switching apps.
 
 ## What This Looks Like
 
@@ -77,20 +107,6 @@ window.__devtool.interactions.getLastClickContext()
 ```
 
 Structured data. Fewer tokens. Faster fixes.
-
-## Key Features
-
-| Feature | What It Does |
-|---------|-------------|
-| **Error Capture** | JavaScript errors automatically logged with stack traces |
-| **Screenshots** | Capture visual state on demand |
-| **DOM Inspection** | Full element analysis - styles, position, accessibility |
-| **Sketch Mode** | Draw wireframes directly on your UI |
-| **Design Mode** | AI generates design alternatives you can preview live |
-| **Chaos Testing** | Simulate slow networks, API failures, race conditions |
-| **Mobile Testing** | Tunnel to real phones via Cloudflare/ngrok/Tailscale |
-| **Traffic Logging** | All HTTP requests and responses captured |
-| **Process Management** | Run and monitor dev servers |
 
 ## Quick Start
 
@@ -231,7 +247,8 @@ The proxy injects 50+ diagnostic functions into every page, accessible via `wind
 | `api_audit` | API-efficiency audit (waterfall, N+1, duplicate, chatty-load) |
 | `loading_audit` | Loading-UX audit (spinner cascade + fragmentation) |
 | `snapshot` | Visual regression: baseline/compare screenshots |
-| `tunnel` | Mobile testing via Cloudflare/ngrok |
+| `replaytest` | Record → worker-mock → replay frontend testing (Pro) |
+| `tunnel` | Mobile testing via Cloudflare/ngrok/Tailscale |
 | `daemon` | Daemon management |
 | `watch` | Stream daemon events via `agnt monitor` |
 | `channel_reply` | Reply to the browser overlay (channel mode) |

@@ -2,9 +2,13 @@
 sidebar_position: 5
 ---
 
+import ModeVideo from '@site/src/components/ModeVideo';
+
 # Layout Diagnostics
 
 Functions for finding layout issues across the page.
+
+<ModeVideo src="/img/layout-diagnostics.webm" poster="/img/layout-diagnostics-poster.webp" label="diagnoseLayoutIssues on a live page — a toast reports a containing-block trap, an ineffective z-index, and a clipped dropdown, then each symptom is outlined in red with its offending ancestor outlined in dashed amber." />
 
 ## findOverflows
 

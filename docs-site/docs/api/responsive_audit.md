@@ -2,11 +2,15 @@
 sidebar_position: 9
 ---
 
+import ModeVideo from '@site/src/components/ModeVideo';
+
 # responsive_audit
 
 Headless responsive-design audit across multiple viewport sizes. Loads the page in hidden iframes at each target size and reports layout issues, content overflows, and viewport-specific accessibility problems — in one shot, no manual resizing.
 
 For an interactive loop where you dial into a specific break and hand it to the agent, see [Responsive Mode](/api/frontend/responsive-mode); Auto-sweep there runs this same audit.
+
+<ModeVideo src="/img/responsive-audit.webm" poster="/img/responsive-audit-poster.webp" label="The same responsive checks driven interactively — the page is stepped through desktop, tablet, and phone widths, and at 375px the fixed-minimum-width invoices table visibly overflows its panel, the kind of break the audit reports per viewport." />
 
 ## Synopsis
 
