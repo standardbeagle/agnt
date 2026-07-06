@@ -51,8 +51,17 @@
         }
       }
 
+      // The overlay itself is what elementFromPoint would hit — drop its
+      // pointer-events for the lookup so we see the page element underneath.
+      function targetAt(x, y) {
+        overlay.style.pointerEvents = 'none';
+        var target = document.elementFromPoint(x, y);
+        overlay.style.pointerEvents = 'auto';
+        return target;
+      }
+
       overlay.addEventListener('mousemove', function(e) {
-        var target = document.elementFromPoint(e.clientX, e.clientY);
+        var target = targetAt(e.clientX, e.clientY);
         if (!target || target === overlay || target === highlightBox || target === labelBox) {
           highlightBox.style.display = 'none';
           labelBox.style.display = 'none';
@@ -81,7 +90,7 @@
         e.preventDefault();
         e.stopPropagation();
 
-        var target = document.elementFromPoint(e.clientX, e.clientY);
+        var target = targetAt(e.clientX, e.clientY);
         if (target && target !== overlay && target !== highlightBox && target !== labelBox) {
           var selector = utils.generateSelector(target);
           cleanup();
@@ -96,6 +105,8 @@
         }
       });
 
+      // tabindex makes the overlay focusable so the Escape keydown fires
+      overlay.setAttribute('tabindex', '-1');
       document.body.appendChild(overlay);
       overlay.focus();
     });
