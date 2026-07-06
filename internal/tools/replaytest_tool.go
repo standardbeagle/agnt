@@ -15,7 +15,7 @@ import (
 // ReplaytestInput drives the replaytest MCP tool. Action selects the operation;
 // the remaining fields supply per-action parameters.
 type ReplaytestInput struct {
-	Action        string `json:"action" jsonschema:"Operation to perform: record, stop, refine, replay, explore, list, or show."`
+	Action        string `json:"action" jsonschema:"Operation to perform: refine, replay, explore, list, or show. (record and stop are alpha — not wired on this build; they return a not-available message.)"`
 	Name          string `json:"name,omitempty" jsonschema:"Scenario name to record, show, refine, or replay."`
 	ProxyID       string `json:"proxy_id,omitempty" jsonschema:"Proxy id the scenario records or replays against."`
 	Preset        string `json:"preset,omitempty" jsonschema:"Optional fuzz preset to run alongside the baseline on replay (e.g. latency, error5xx). When empty, replay runs the baseline only."`

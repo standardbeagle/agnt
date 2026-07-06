@@ -267,8 +267,11 @@
       var style = win.getComputedStyle(el);
       var selector = generateSelectorInContext(el, win);
 
-      // Collapsed content
-      if (rect.height < 1 && el.textContent && el.textContent.trim().length > 0) {
+      // Collapsed content. Skip the screen-reader-only pattern (1px + clipped):
+      // it is intentionally hidden-for-sighted but present for assistive tech,
+      // not a layout regression.
+      if (rect.height < 1 && el.textContent && el.textContent.trim().length > 0 &&
+          !isScreenReaderOnly(el, style, rect)) {
         var collapsedMsg = 'collapsed content, element has text but zero height';
         var collapsedID = computeFindingID('layout', selector, collapsedMsg);
         findingSelectors[collapsedID] = selector;
@@ -551,7 +554,11 @@
       var selector = generateSelectorInContext(el, win);
       var tagName = el.tagName.toLowerCase();
 
-      // Touch target size (mobile only)
+      // Touch target size (mobile only). tabindex="-1" is programmatic-focus
+      // only (not keyboard-reachable, not a tap target), so only a non-negative
+      // tabindex counts as interactive.
+      var tabindexAttr = el.getAttribute('tabindex');
+      var keyboardFocusable = tabindexAttr !== null && parseInt(tabindexAttr, 10) >= 0;
       var isInteractive = (
         tagName === 'a' ||
         tagName === 'button' ||
@@ -560,7 +567,7 @@
         tagName === 'textarea' ||
         el.onclick ||
         el.getAttribute('role') === 'button' ||
-        el.getAttribute('tabindex') !== null
+        keyboardFocusable
       );
 
       if (isInteractive && rect.width > 0 && rect.height > 0) {
@@ -609,8 +616,11 @@
         }
       }
 
-      // Readability (font-size < 12px)
-      if (rect.width > 0 && rect.height > 0) {
+      // Readability (font-size < 12px). Only elements that actually render text
+      // — a small font-size on an empty spacer/icon container is not a
+      // readability problem.
+      var hasText = el.textContent && el.textContent.trim().length > 0;
+      if (rect.width > 0 && rect.height > 0 && hasText) {
         var textFontSize = parseFloat(style.fontSize);
         if (textFontSize < 12) {
           var readMsg = 'font-size ' + textFontSize + 'px may be hard to read on mobile';
@@ -687,6 +697,21 @@
     }
 
     return true;
+  }
+
+  /**
+   * Detect the screen-reader-only ("sr-only" / "visually-hidden") pattern: an
+   * element clipped to ~1px with hidden overflow or a zeroing clip/clip-path.
+   * These are intentionally hidden for sighted users while remaining available
+   * to assistive tech, so they must not be flagged as collapsed content.
+   */
+  function isScreenReaderOnly(el, style, rect) {
+    if (rect.width > 1 || rect.height > 1) return false;
+    var overflowHidden = style.overflow === 'hidden' ||
+      style.overflowX === 'hidden' || style.overflowY === 'hidden';
+    var clipZero = (style.clip && style.clip !== 'auto') ||
+      (style.clipPath && style.clipPath !== 'none' && style.clipPath !== 'auto');
+    return overflowHidden || clipZero;
   }
 
   /**

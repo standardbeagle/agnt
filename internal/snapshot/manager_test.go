@@ -6,6 +6,8 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -26,6 +28,33 @@ func encodePNGBase64(t *testing.T, w, h int, c color.RGBA) string {
 	var buf bytes.Buffer
 	require.NoError(t, png.Encode(&buf, img))
 	return base64.StdEncoding.EncodeToString(buf.Bytes())
+}
+
+// oneWhitePixelPNGBase64 builds a w×h all-black PNG with a single white pixel at
+// (0,0), giving a deterministic 1/(w*h) diff against an all-black baseline.
+func oneWhitePixelPNGBase64(t *testing.T, w, h int) string {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			img.Set(x, y, color.RGBA{A: 255})
+		}
+	}
+	img.Set(0, 0, color.RGBA{R: 255, G: 255, B: 255, A: 255})
+	var buf bytes.Buffer
+	require.NoError(t, png.Encode(&buf, img))
+	return base64.StdEncoding.EncodeToString(buf.Bytes())
+}
+
+// writePNGFile decodes base64 PNG data and writes it to dir/name, returning the
+// absolute path — used to exercise the screenshot_path bridge.
+func writePNGFile(t *testing.T, dir, name, b64 string) string {
+	t.Helper()
+	data, err := base64.StdEncoding.DecodeString(b64)
+	require.NoError(t, err)
+	p := filepath.Join(dir, name)
+	require.NoError(t, os.WriteFile(p, data, 0o644))
+	return p
 }
 
 func TestGenerateFilename(t *testing.T) {
@@ -207,7 +236,7 @@ func TestCompareToBaseline_MissingBaseline(t *testing.T) {
 	m, err := NewManager(t.TempDir(), 0.01)
 	require.NoError(t, err)
 
-	res, err := m.CompareToBaseline("does-not-exist", nil)
+	res, err := m.CompareToBaseline("does-not-exist", nil, 0)
 	require.Error(t, err)
 	assert.Nil(t, res)
 	assert.Contains(t, err.Error(), "load baseline")
@@ -228,7 +257,7 @@ func TestCompareToBaseline_PageAbsentInCurrent(t *testing.T) {
 	// Current capture omits http://b/ entirely.
 	res, err := m.CompareToBaseline("b", []PageCapture{
 		{URL: "http://a/", ScreenshotData: img},
-	})
+	}, 0)
 	require.NoError(t, err)
 	require.NotNil(t, res)
 
@@ -261,7 +290,7 @@ func TestCompareToBaseline_CurrentDecodeError(t *testing.T) {
 
 	res, err := m.CompareToBaseline("c", []PageCapture{
 		{URL: "http://a/", ScreenshotData: "@@bad-base64@@"},
-	})
+	}, 0)
 	require.Error(t, err)
 	assert.Nil(t, res)
 	assert.Contains(t, err.Error(), "decode current screenshot")
@@ -282,7 +311,7 @@ func TestCompareToBaseline_DimensionMismatchRecorded(t *testing.T) {
 	currImg := encodePNGBase64(t, 8, 8, color.RGBA{R: 7, G: 7, B: 7, A: 255})
 	res, err := m.CompareToBaseline("d", []PageCapture{
 		{URL: "http://a/", ScreenshotData: currImg},
-	})
+	}, 0)
 	require.NoError(t, err)
 	require.NotNil(t, res)
 
@@ -309,7 +338,7 @@ func TestCompareToBaseline_SummaryMath(t *testing.T) {
 	res, err := m.CompareToBaseline("e", []PageCapture{
 		{URL: "http://a/", ScreenshotData: identical},
 		{URL: "http://b/", ScreenshotData: identical},
-	})
+	}, 0)
 	require.NoError(t, err)
 
 	assert.Equal(t, 2, res.Summary.TotalPages)
@@ -323,6 +352,58 @@ func TestCompareToBaseline_SummaryMath(t *testing.T) {
 		assert.InDelta(t, 0.0, p.DiffPercentage, 1e-9)
 		assert.Equal(t, "No visual changes detected", p.Description)
 	}
+}
+
+// TestCompareToBaseline_PerCallThreshold verifies the per-call diff_threshold
+// overrides the manager default: the same small diff is a regression under a
+// tight threshold and clean under a loose one.
+func TestCompareToBaseline_PerCallThreshold(t *testing.T) {
+	m, err := NewManager(t.TempDir(), 0.5) // loose default
+	require.NoError(t, err)
+
+	// 4x4 baseline all-black; current flips exactly one of 16 px => 6.25% diff.
+	base := encodePNGBase64(t, 4, 4, color.RGBA{A: 255})
+	_, err = m.CreateBaseline("t", []PageCapture{
+		{URL: "http://a/", Viewport: Viewport{Width: 4, Height: 4}, ScreenshotData: base},
+	})
+	require.NoError(t, err)
+
+	cur := oneWhitePixelPNGBase64(t, 4, 4)
+
+	// Tight threshold (1%): 6.25% diff is a regression.
+	res, err := m.CompareToBaseline("t", []PageCapture{{URL: "http://a/", ScreenshotData: cur}}, 0.01)
+	require.NoError(t, err)
+	assert.True(t, res.Summary.HasRegressions, "6.25%% diff exceeds 1%% threshold")
+
+	// Loose threshold (20%): same diff is clean. Proves the param is read, not
+	// the manager's 0.5 default (which would also pass) — pair with the tight case.
+	res, err = m.CompareToBaseline("t", []PageCapture{{URL: "http://a/", ScreenshotData: cur}}, 0.2)
+	require.NoError(t, err)
+	assert.False(t, res.Summary.HasRegressions, "6.25%% diff under 20%% threshold is clean")
+}
+
+// TestCompareToBaseline_ScreenshotPathBridge verifies pages can be sourced from
+// a filesystem path (the bridge from the screenshot action) instead of inline
+// base64.
+func TestCompareToBaseline_ScreenshotPathBridge(t *testing.T) {
+	dir := t.TempDir()
+	m, err := NewManager(dir, 0.01)
+	require.NoError(t, err)
+
+	img := encodePNGBase64(t, 4, 4, color.RGBA{R: 3, G: 3, B: 3, A: 255})
+	pngPath := writePNGFile(t, dir, "shot.png", img)
+
+	_, err = m.CreateBaseline("b", []PageCapture{
+		{URL: "http://a/", Viewport: Viewport{Width: 4, Height: 4}, ScreenshotPath: pngPath},
+	})
+	require.NoError(t, err)
+
+	res, err := m.CompareToBaseline("b", []PageCapture{
+		{URL: "http://a/", ScreenshotPath: pngPath},
+	}, 0)
+	require.NoError(t, err)
+	require.Len(t, res.Pages, 1)
+	assert.False(t, res.Pages[0].HasChanges, "same file compared to itself is unchanged")
 }
 
 func TestGetGitInfo_NonGitDir(t *testing.T) {

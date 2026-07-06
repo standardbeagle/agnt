@@ -235,6 +235,13 @@ func formatIncidentsCompact(out GetIncidentsOutput) string {
 			if iv.Summary != "" {
 				sb.WriteString("  " + iv.Summary + "\n")
 			}
+			// Hydrated payload (detail:"full"). Render in compact mode too — it was
+			// previously visible only under raw:true, making detail:"full" a no-op
+			// for the default view. Truncated to keep the compact output compact.
+			if iv.Payload != nil && *iv.Payload != "" {
+				oneLine := strings.ReplaceAll(strings.TrimSpace(*iv.Payload), "\n", " ")
+				sb.WriteString("  payload: " + truncate(oneLine, 500) + "\n")
+			}
 			if iv.Ctx.URL != "" {
 				sb.WriteString("  → " + iv.Ctx.URL + "\n")
 			}
@@ -253,9 +260,21 @@ func formatIncidentsCompact(out GetIncidentsOutput) string {
 		sb.WriteString("(results truncated)\n")
 	}
 
-	if out.Cursor != "" {
+	// Aggregate remediation across the returned incidents — the dominant skill
+	// and the deduped set of primary tools, weighted by occurrence. Rendered
+	// here so the compact (default) mode surfaces it; previously it was only
+	// visible under raw:true.
+	if len(out.NextTools) > 0 || len(out.NextSkills) > 0 || out.Cursor != "" {
 		sb.WriteString("=== Next ===\n")
-		sb.WriteString("replay_cursor: " + out.Cursor + "\n")
+		for _, t := range out.NextTools {
+			sb.WriteString(fmt.Sprintf("tool: %s%s\n", t.Tool, formatArgs(t.Args)))
+		}
+		for _, s := range out.NextSkills {
+			sb.WriteString("skill: " + s + "\n")
+		}
+		if out.Cursor != "" {
+			sb.WriteString("replay_cursor: " + out.Cursor + "\n")
+		}
 	}
 
 	return sb.String()

@@ -398,6 +398,11 @@ type IncidentQueryResult struct {
 	InboxStats InboxStatsRecord `json:"inbox_stats"`
 	Cursor     string           `json:"cursor,omitempty"` // RFC3339 of last-seen for resumable pulls
 	Truncated  bool             `json:"truncated"`
+	// PipelineEnabled reports whether the caller's session actually has an
+	// incident pipeline (alerts.incident-pipeline). True only when a session
+	// pipeline exists — distinguishes "pipeline on, inbox empty" from "pipeline
+	// off". get_errors uses this to decide whether to shim over the inbox.
+	PipelineEnabled bool `json:"pipeline_enabled"`
 }
 
 // IncidentRecord is the wire shape for a single incident in a query result.

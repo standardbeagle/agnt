@@ -12,6 +12,8 @@ import (
 type ResponsiveAuditInput struct {
 	ProxyID   string          `json:"proxy_id,omitempty" jsonschema:"Proxy ID to run audit on (preferred)"`
 	ID        string          `json:"id,omitempty" jsonschema:"Alias for proxy_id"`
+	Target    string          `json:"target,omitempty" jsonschema:"Frame in the always-wrap model: 'inner' (default) = active page content frame; 'outer' = chrome shell. Audits normally want inner."`
+	FrameID   string          `json:"frame_id,omitempty" jsonschema:"Audit a specific content frame by id (default: the active content frame). Rarely needed."`
 	Viewports []ViewportInput `json:"viewports,omitempty" jsonschema:"Custom viewports to test (default: mobile/tablet/desktop)"`
 	Checks    []string        `json:"checks,omitempty" jsonschema:"Checks to run: layout, overflow, a11y (default: all)"`
 	Timeout   int             `json:"timeout,omitempty" jsonschema:"Load timeout per viewport in ms (default: 10000)"`
@@ -117,7 +119,7 @@ func (dt *DaemonTools) executeResponsiveAuditDaemon(input ResponsiveAuditInput) 
 	})()`, string(optsJSON))
 
 	// Execute via daemon
-	result, err := dt.client.ProxyExec(input.ProxyID, code)
+	result, err := dt.client.ProxyExec(input.ProxyID, code, resolveExecTarget(input.Target, input.FrameID))
 	if err != nil {
 		return errorResult(fmt.Sprintf("failed to execute audit: %v", err)), ResponsiveAuditOutput{}, nil
 	}

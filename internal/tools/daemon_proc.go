@@ -127,6 +127,9 @@ func (dt *DaemonTools) makeRunHandler() func(context.Context, *mcp.CallToolReque
 			Stdout:    getString(result, "stdout"),
 			Stderr:    getString(result, "stderr"),
 		}
+		if output.State != "failed" {
+			output.Hint = webServerRunHint(input, output.Command)
+		}
 
 		return nil, output, nil
 	}

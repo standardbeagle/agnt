@@ -61,6 +61,9 @@ var watchTargets = map[string]watchTargetConfig{
 		types:        "process",
 		needsProcess: true,
 		description: func(input WatchInput) string {
+			if len(input.ProcessIDs) > 0 {
+				return "Process output for " + strings.Join(input.ProcessIDs, ", ")
+			}
 			return fmt.Sprintf("Process output for %s", input.ProcessID)
 		},
 	},
@@ -131,7 +134,7 @@ func buildWatchCommand(dt *DaemonTools, input WatchInput) (string, string, error
 	}
 
 	command := strings.Join(quotedArgs, " ")
-	description := config.description(input)
+	description := config.description(input) + " — feed this command to the Monitor tool to stream events."
 
 	return command, description, nil
 }

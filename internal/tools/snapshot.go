@@ -15,11 +15,13 @@ type SnapshotInput struct {
 	Action        string                 `json:"action" jsonschema:"Action: baseline, compare, list, delete, get, screenshot"`
 	Name          string                 `json:"name,omitempty" jsonschema:"Baseline or screenshot name (required for baseline/compare/delete/get; optional for screenshot)"`
 	Baseline      string                 `json:"baseline,omitempty" jsonschema:"Baseline name to compare against (for compare action)"`
-	Pages         []snapshot.PageCapture `json:"pages,omitempty" jsonschema:"Pages to capture (array of {url viewport screenshot_data})"`
+	Pages         []snapshot.PageCapture `json:"pages,omitempty" jsonschema:"Pages to capture (array of {url viewport screenshot_path|screenshot_data}); screenshot_path bridges from the screenshot action"`
 	DiffThreshold float64                `json:"diff_threshold,omitempty" jsonschema:"Diff sensitivity threshold 0.0-1.0 (default: 0.01)"`
 	// screenshot action — captures the current page of a running proxy
 	ProxyID  string `json:"proxy_id,omitempty" jsonschema:"For screenshot: proxy ID whose current page to capture (preferred)"`
 	ID       string `json:"id,omitempty" jsonschema:"Alias for proxy_id (for screenshot action)"`
+	Target   string `json:"target,omitempty" jsonschema:"For screenshot: frame in the always-wrap model: 'inner' (default) = active page content frame; 'outer' = chrome shell."`
+	FrameID  string `json:"frame_id,omitempty" jsonschema:"For screenshot: capture a specific content frame by id (default: the active content frame)."`
 	Selector string `json:"selector,omitempty" jsonschema:"For screenshot: CSS selector to capture (default: full viewport)"`
 	FullPage bool   `json:"full_page,omitempty" jsonschema:"For screenshot: capture full scrollable page (default: viewport only)"`
 }
@@ -44,12 +46,18 @@ func RegisterSnapshotTools(server *mcp.Server, manager *snapshot.Manager, dt *Da
 		Description: `Capture and compare visual snapshots for regression testing.
 
 Actions:
-- screenshot: Capture the current page of a running proxy (writes PNG; returns path)
+- screenshot: Capture the current page of a running proxy (writes PNG to audit storage; path retrieved via proxylog)
 - baseline: Create a new baseline from screenshots
 - compare: Compare current screenshots to a baseline
 - list: List all available baselines
 - delete: Delete a baseline
 - get: Get details of a specific baseline
+
+End-to-end flow (screenshot → baseline/compare):
+  1. snapshot {action: "screenshot", proxy_id: "dev", name: "home"}
+  2. proxylog {proxy_id: "dev", types: ["screenshot"], limit: 1}   // read file_path
+  3. snapshot {action: "baseline", name: "v1", pages: [{url: "/", screenshot_path: "<file_path>"}]}
+Each page accepts either screenshot_path (the file from step 2) or inline screenshot_data (base64).
 
 Example screenshot:
   snapshot {action: "screenshot", proxy_id: "dev"}
@@ -57,10 +65,10 @@ Example screenshot:
   snapshot {action: "screenshot", proxy_id: "dev", selector: ".header"}
 
 Example baseline:
-  snapshot {action: "baseline", name: "before-refactor", pages: [{url: "/", viewport: {width: 1920, height: 1080}, screenshot_data: "base64..."}]}
+  snapshot {action: "baseline", name: "before-refactor", pages: [{url: "/", viewport: {width: 1920, height: 1080}, screenshot_path: "/…/screenshot-home.png"}]}
 
-Example compare:
-  snapshot {action: "compare", baseline: "before-refactor", pages: [{url: "/", viewport: {width: 1920, height: 1080}, screenshot_data: "base64..."}]}`,
+Example compare (diff_threshold overrides sensitivity, default 0.01):
+  snapshot {action: "compare", baseline: "before-refactor", diff_threshold: 0.02, pages: [{url: "/", screenshot_path: "/…/screenshot-home.png"}]}`,
 	}, handler)
 }
 
@@ -132,8 +140,8 @@ func handleSnapshotCompare(manager *snapshot.Manager, input SnapshotInput) (*mcp
 		return errorResult("Missing or empty required parameter: pages"), SnapshotOutput{}, nil
 	}
 
-	// Compare to baseline
-	result, err := manager.CompareToBaseline(baselineName, input.Pages)
+	// Compare to baseline (input.DiffThreshold <= 0 falls back to the default)
+	result, err := manager.CompareToBaseline(baselineName, input.Pages, input.DiffThreshold)
 	if err != nil {
 		return errorResult(fmt.Sprintf("Failed to compare: %v", err)), SnapshotOutput{}, nil
 	}
@@ -264,7 +272,7 @@ func handleSnapshotScreenshot(dt *DaemonTools, input SnapshotInput) (*mcp.CallTo
 	optsJSON, _ := json.Marshal(opts)
 	code := fmt.Sprintf("await __devtool.screenshot(%s)", optsJSON)
 
-	if _, err := dt.client.ProxyExec(input.ProxyID, code); err != nil {
+	if _, err := dt.client.ProxyExec(input.ProxyID, code, resolveExecTarget(input.Target, input.FrameID)); err != nil {
 		return errorResult(fmt.Sprintf("proxy exec failed: %v", err)), SnapshotOutput{}, nil
 	}
 

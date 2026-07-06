@@ -572,8 +572,9 @@ func (dt *DaemonTools) makeProxyLogHandler() func(context.Context, *mcp.CallTool
 			return errorResult(err.Error()), ProxyLogOutput{}, nil
 		}
 
+		input.ProxyID = pickProxyID(input.ID, input.ProxyID)
 		if input.ProxyID == "" {
-			return errorResult("proxy_id required"), ProxyLogOutput{}, nil
+			return errorResult("proxy_id required (or `id` alias)"), ProxyLogOutput{}, nil
 		}
 
 		action := input.Action

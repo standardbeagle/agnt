@@ -13,7 +13,7 @@ type ChannelReplyInput struct {
 	Content  string `json:"content" jsonschema:"required,Message body to send to the developer (markdown OK)"`
 	ProxyID  string `json:"proxy_id,omitempty" jsonschema:"Target a specific proxy (preferred); omit to fan out to all active proxies"`
 	ID       string `json:"id,omitempty" jsonschema:"Alias for proxy_id"`
-	Severity string `json:"severity,omitempty" jsonschema:"Toast styling: one of info, warning, error (default: info)"`
+	Severity string `json:"severity,omitempty" jsonschema:"Toast styling: one of info, success, warning, error (default: info)"`
 	Title    string `json:"title,omitempty" jsonschema:"Toast title"`
 }
 
@@ -50,8 +50,8 @@ func (dt *DaemonTools) makeChannelReplyHandler() func(context.Context, *mcp.Call
 		if severity == "" {
 			severity = "info"
 		}
-		if severity != "info" && severity != "warning" && severity != "error" {
-			return errorResult(fmt.Sprintf("invalid severity %q: must be info, warning, or error", severity)), ChannelReplyOutput{}, nil
+		if severity != "info" && severity != "success" && severity != "warning" && severity != "error" {
+			return errorResult(fmt.Sprintf("invalid severity %q: must be info, success, warning, or error", severity)), ChannelReplyOutput{}, nil
 		}
 
 		if err := dt.ensureConnected(); err != nil {

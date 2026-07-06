@@ -551,6 +551,7 @@ Log Types:
   response: JavaScript execution responses
   interaction: User interactions (clicks, keyboard, scroll)
   mutation: DOM mutations (added, removed, modified elements)
+  diagnostic: Framework/runtime diagnostics (severity: error, warning, info)
   panel_message: Messages sent from the floating indicator panel
   sketch: Sketches/wireframes from sketch mode (includes JSON data and PNG image path)
 
@@ -597,12 +598,16 @@ Each proxy maintains its own separate log storage.`,
 
 	addLenientTool(server, &mcp.Tool{
 		Name: "currentpage",
-		Description: `Get current page sessions with grouped resources and metrics.
+		Description: `Inspect the current page: framework diagnostics, layout issues, and session resources/metrics.
 
 Actions:
-  list: List all active page sessions (default)
+  triage: (default) Classify React/Next/Vue/Svelte/Solid runtime problems (hydration, key,
+          infinite-loop, reactivity) into category + fix + anti-pattern. Start here.
+  layout: Diagnose containing-block traps, ineffective z-index, click interception, and
+          clipped descendants — names the offending ancestor and the fix.
+  list: List all active page sessions
   get: Get detailed information for a specific session (may be large)
-  summary: Get a compact summary optimized for long/complex pages (recommended)
+  summary: Get a compact summary optimized for long/complex pages
   clear: Clear all page sessions
 
 A page session groups together:
@@ -614,7 +619,8 @@ A page session groups together:
   - DOM mutations (added, removed, modified elements)
 
 Examples:
-  currentpage {proxy_id: "dev"}
+  currentpage {proxy_id: "dev"}                       // triage (default)
+  currentpage {proxy_id: "dev", action: "layout"}     // layout diagnosis
   currentpage {proxy_id: "dev", action: "summary", session_id: "page-1"}
   currentpage {proxy_id: "dev", action: "summary", session_id: "page-1", detail: ["interactions"], limit: 20}
   currentpage {proxy_id: "dev", action: "summary", session_id: "page-1", detail: ["interactions", "mutations"]}
@@ -645,6 +651,13 @@ This provides a high-level view of active pages and their resources.`,
 	addLenientTool(server, &mcp.Tool{
 		Name: "get_errors",
 		Description: `Get all current errors across processes and proxies.
+
+Note: when the incident pipeline is enabled (alerts.incident-pipeline), this
+tool is a shim — it reads the same session incident inbox as get_incidents
+(shared fingerprint IDs, no double-reporting) and returns the compact error
+view. Prefer get_incidents there for cursor-based pulls, remediation hints, and
+next-tool suggestions. With the pipeline off (or global:true for cross-project),
+it falls back to the legacy alert/proxy/startup stores.
 
 Collects errors from: process output (compile errors, panics, exceptions),
 autostart failures (script start failures, port conflicts, proxy errors),

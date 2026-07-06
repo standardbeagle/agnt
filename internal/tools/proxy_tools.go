@@ -88,7 +88,7 @@ func buildResizeJS(width, height int) string {
 
 // ProxyInput defines input for the proxy tool.
 type ProxyInput struct {
-	Action        string `json:"action" jsonschema:"Action: start, stop, status, list, exec, navigate, resize, toast, chaos"`
+	Action        string `json:"action" jsonschema:"Action: start, stop, restart, status, list, exec, navigate, resize, toast, chaos"`
 	ID            string `json:"id,omitempty" jsonschema:"Proxy ID (required for start/stop/status/exec/toast/chaos)"`
 	TargetURL     string `json:"target_url,omitempty" jsonschema:"Target URL to proxy (required for start)"`
 	Port          int    `json:"port,omitempty" jsonschema:"Listen port (default: stable hash of target URL). Only specify if you need a specific port."`
