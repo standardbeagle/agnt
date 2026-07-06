@@ -6,6 +6,104 @@
   var utils = window.__devtool_utils;
   var auditUtils = window.__devtool_audit_utils;
 
+  // Helper to check if script is a devtool script (filter from all audits)
+  function isDevtoolScript(script) {
+    // Check src attribute for devtool paths
+    var src = script.getAttribute('src') || '';
+    if (src.indexOf('__devtool') !== -1 || src.indexOf('devtool-mcp') !== -1) return true;
+
+    // Check content for devtool markers
+    var content = script.textContent || '';
+    if (content.indexOf('__devtool') !== -1 &&
+        (content.indexOf('window.__devtool') !== -1 ||
+         content.indexOf('__devtool_core') !== -1 ||
+         content.indexOf('__devtool_utils') !== -1)) return true;
+
+    return false;
+  }
+
+  // === EXTERNAL SAME-ORIGIN SCRIPT PREFETCH ===
+  // auditSecurity() is synchronous (the exec bridge and auditAll() consume its
+  // return value directly), so external script bodies are fetched into a
+  // module-level cache in the background. The first audit call kicks the
+  // prefetch off and reports honestly that external coverage is pending;
+  // subsequent calls scan the cached contents. Same-origin only — cross-origin
+  // script bodies are unreadable from the page and are reported as a note.
+  var EXT_MAX_FILES = 20;          // cap number of external files fetched
+  var EXT_MAX_BYTES = 500 * 1024;  // cap bytes scanned per file
+
+  var externalScan = {
+    state: 'idle',   // idle | loading | done
+    fetched: [],     // { source, selector, content }
+    total: 0,        // same-origin candidates found
+    skipped: 0,      // candidates beyond EXT_MAX_FILES
+    truncated: 0,    // files cut at EXT_MAX_BYTES
+    errors: 0,       // fetch failures
+    crossOrigin: 0   // cross-origin scripts (never fetched)
+  };
+
+  function startExternalScriptPrefetch() {
+    if (externalScan.state !== 'idle') return;
+    externalScan.state = 'loading';
+
+    var candidates = [];
+    try {
+      var origin = window.location.origin;
+      var scriptEls = document.querySelectorAll('script[src]');
+      for (var i = 0; i < scriptEls.length; i++) {
+        var s = scriptEls[i];
+        if (isDevtoolScript(s)) continue;
+        try {
+          var u = new URL(s.src, origin);
+          if (u.origin === origin) {
+            candidates.push({ url: s.src, selector: auditUtils.getSelector(s) });
+          } else {
+            externalScan.crossOrigin++;
+          }
+        } catch (e) {
+          // Invalid URL — skip
+        }
+      }
+    } catch (e) {
+      externalScan.state = 'done';
+      return;
+    }
+
+    externalScan.total = candidates.length;
+    if (candidates.length > EXT_MAX_FILES) {
+      externalScan.skipped = candidates.length - EXT_MAX_FILES;
+      candidates = candidates.slice(0, EXT_MAX_FILES);
+    }
+
+    if (candidates.length === 0 || typeof window.fetch !== 'function') {
+      externalScan.state = 'done';
+      return;
+    }
+
+    var remaining = candidates.length;
+    candidates.forEach(function(c) {
+      window.fetch(c.url, { credentials: 'same-origin' })
+        .then(function(resp) {
+          if (!resp.ok) throw new Error('http ' + resp.status);
+          return resp.text();
+        })
+        .then(function(text) {
+          if (text.length > EXT_MAX_BYTES) {
+            text = text.substring(0, EXT_MAX_BYTES);
+            externalScan.truncated++;
+          }
+          externalScan.fetched.push({ source: c.url, selector: c.selector, content: text });
+        })
+        .catch(function() {
+          externalScan.errors++;
+        })
+        .then(function() {
+          remaining--;
+          if (remaining === 0) externalScan.state = 'done';
+        });
+    });
+  }
+
   // Options:
   //   detailLevel: 'summary' | 'compact' (default) | 'full'
   //   maxIssues: number (default: 20)
@@ -24,25 +122,16 @@
     var informational = [];
     var checksRun = [];
 
-    // Helper to generate unique IDs
+    // Kick off (or reuse) the external same-origin script cache.
+    startExternalScriptPrefetch();
+
+    // Helper to generate unique IDs — shared FNV-1a hash (audit-utils.js).
     function generateId(type, index) {
-      var hash = (type + index).split('').reduce(function(a, b) {
-        a = ((a << 5) - a) + b.charCodeAt(0);
-        return a & a;
-      }, 0);
-      return type + '-' + Math.abs(hash).toString(36);
+      return type + '-' + auditUtils.computeFindingID(type, '', String(index));
     }
 
-    // Helper to get CSS selector for element
-    function getSelector(el) {
-      if (!el || !el.tagName) return '';
-      if (el.id) return '#' + el.id;
-      if (el.className && typeof el.className === 'string') {
-        var classes = el.className.trim().split(/\s+/).slice(0, 2).join('.');
-        if (classes) return el.tagName.toLowerCase() + '.' + classes;
-      }
-      return el.tagName.toLowerCase();
-    }
+    // Compact readable selector — shared implementation.
+    var getSelector = auditUtils.getSelector;
 
     // Helper to mask secrets
     function maskSecret(secret) {
@@ -50,56 +139,85 @@
       return secret.substring(0, 6) + '*****';
     }
 
-    // Helper to check if script is a devtool script (filter from all audits)
-    function isDevtoolScript(script) {
-      // Check src attribute for devtool paths
-      var src = script.getAttribute('src') || '';
-      if (src.indexOf('__devtool') !== -1 || src.indexOf('devtool-mcp') !== -1) return true;
+    // === SCAN UNITS: inline user scripts + cached same-origin externals ===
+    var userScripts = Array.prototype.slice.call(document.querySelectorAll('script')).filter(function(s) {
+      return !isDevtoolScript(s);
+    });
 
-      // Check content for devtool markers
-      var content = script.textContent || '';
-      if (content.indexOf('__devtool') !== -1 &&
-          (content.indexOf('window.__devtool') !== -1 ||
-           content.indexOf('__devtool_core') !== -1 ||
-           content.indexOf('__devtool_utils') !== -1)) return true;
-
-      return false;
+    var scanUnits = [];
+    for (var su = 0; su < userScripts.length; su++) {
+      var suEl = userScripts[su];
+      var suContent = suEl.textContent || '';
+      if (!suContent) continue; // src-only scripts covered by the prefetch cache
+      scanUnits.push({
+        content: suContent,
+        source: suEl.getAttribute('src') || 'inline script',
+        selector: getSelector(suEl)
+      });
     }
+    for (var xf = 0; xf < externalScan.fetched.length; xf++) {
+      scanUnits.push(externalScan.fetched[xf]);
+    }
+
+    // Coverage note for external scripts (honest about what was NOT scanned).
+    var coverageParts = [];
+    if (externalScan.state === 'loading') {
+      coverageParts.push('same-origin external script fetch in progress (' +
+        externalScan.fetched.length + '/' + Math.min(externalScan.total, EXT_MAX_FILES) +
+        ' cached) — re-run audit for full coverage');
+    }
+    if (externalScan.crossOrigin > 0) {
+      coverageParts.push(externalScan.crossOrigin + ' cross-origin script' +
+        (externalScan.crossOrigin > 1 ? 's' : '') + ' not scanned (content unreadable from the page)');
+    }
+    if (externalScan.skipped > 0) {
+      coverageParts.push(externalScan.skipped + ' same-origin scripts skipped (cap ' + EXT_MAX_FILES + ' files)');
+    }
+    if (externalScan.truncated > 0) {
+      coverageParts.push(externalScan.truncated + ' files truncated at ' + (EXT_MAX_BYTES / 1024) + 'KB');
+    }
+    if (externalScan.errors > 0) {
+      coverageParts.push(externalScan.errors + ' script fetches failed');
+    }
+    // Reported via the top-level `note` field on every response shape (NOT as
+    // an informational finding — audit-side coverage limits must not deduct
+    // from the page's score).
+    var externalScanNote = coverageParts.join('; ');
 
     // 1. Check for exposed API keys and secrets
     checksRun.push('exposed-secrets');
+    // nameBased patterns match on a variable NAME ("token", "password"), which
+    // is a much weaker signal than a structural key format — those downgrade
+    // to warning instead of critical.
     var secretPatterns = [
       { pattern: /sk_live_[a-zA-Z0-9]{24,}|pk_live_[a-zA-Z0-9]{24,}/g, type: 'stripe-key' },
       { pattern: /api[_-]?key["\s:=]+["']?[a-zA-Z0-9_\-]{16,}["']?/gi, type: 'api-key' },
       { pattern: /bearer\s+[a-zA-Z0-9_\-\.]{20,}/gi, type: 'bearer-token' },
-      { pattern: /token["\s:=]+["']?[a-zA-Z0-9_\-]{16,}["']?/gi, type: 'token' },
+      { pattern: /token["\s:=]+["']?[a-zA-Z0-9_\-]{16,}["']?/gi, type: 'token', nameBased: true },
       { pattern: /secret["\s:=]+["']?[a-zA-Z0-9_\-]{16,}["']?/gi, type: 'secret' },
-      { pattern: /password["\s:=]+["']?[a-zA-Z0-9_\-]{8,}["']?/gi, type: 'password' },
+      { pattern: /password["\s:=]+["']?[a-zA-Z0-9_\-]{8,}["']?/gi, type: 'password', nameBased: true },
       { pattern: /AKIA[0-9A-Z]{16}/g, type: 'aws-key' },
       { pattern: /AIza[0-9A-Za-z\-_]{35}/g, type: 'google-api-key' }
     ];
 
-    var allScripts = document.querySelectorAll('script');
-    for (var i = 0; i < allScripts.length; i++) {
-      var script = allScripts[i];
-      // Skip devtool scripts
-      if (isDevtoolScript(script)) continue;
-      var scriptContent = script.textContent || '';
-      var scriptSrc = script.getAttribute('src') || '';
+    for (var i = 0; i < scanUnits.length; i++) {
+      var unit = scanUnits[i];
       for (var p = 0; p < secretPatterns.length; p++) {
-        var matches = scriptContent.match(secretPatterns[p].pattern);
+        var matches = unit.content.match(secretPatterns[p].pattern);
         if (matches) {
           for (var m = 0; m < matches.length; m++) {
-            critical.push({
-              id: generateId('exposed-secret', critical.length),
+            var nameBased = secretPatterns[p].nameBased === true;
+            var bucket = nameBased ? warnings : critical;
+            bucket.push({
+              id: generateId('exposed-secret', critical.length + warnings.length),
               type: 'exposed-secret',
-              severity: 'critical',
+              severity: nameBased ? 'warning' : 'critical',
               secretType: secretPatterns[p].type,
               pattern: maskSecret(matches[m]),
-              selector: getSelector(script),
-              source: scriptSrc || 'inline script',
-              impact: 10,
-              message: 'Exposed ' + secretPatterns[p].type + ' in client-side code',
+              selector: unit.selector,
+              source: unit.source,
+              impact: nameBased ? 6 : 10,
+              message: (nameBased ? 'Possible ' : 'Exposed ') + secretPatterns[p].type + ' in client-side code',
               fix: 'Move secret to server-side environment variable'
             });
           }
@@ -132,38 +250,21 @@
     // 2. Check for XSS vectors
     checksRun.push('xss-vectors');
 
-    // Collect non-devtool scripts with source info for better reporting
-    var userScripts = Array.prototype.slice.call(document.querySelectorAll('script')).filter(function(s) {
-      return !isDevtoolScript(s);
-    });
-
-    var scriptTexts = userScripts.map(function(s) {
-      return s.textContent || '';
+    var scriptTexts = scanUnits.map(function(u) {
+      return u.content;
     }).join('\n');
 
-    // Build source map for inline scripts (for better issue attribution)
-    var inlineScriptSources = userScripts.filter(function(s) {
-      return !s.src && (s.textContent || '').trim().length > 0;
-    }).map(function(s, idx) {
-      return {
-        index: idx,
-        content: s.textContent || '',
-        selector: getSelector(s)
-      };
-    });
-
-    // Helper to find pattern matches with source file info
-    function findPatternInScripts(pattern, scripts) {
+    // Helper to find pattern matches with source file info across all scan
+    // units (inline + cached same-origin externals).
+    function findPatternInScripts(pattern, units) {
       var results = [];
-      for (var i = 0; i < scripts.length; i++) {
-        var script = scripts[i];
-        var content = script.textContent || '';
-        var src = script.getAttribute('src') || '';
-        var matches = content.match(pattern);
+      for (var i = 0; i < units.length; i++) {
+        var unit = units[i];
+        var matches = unit.content.match(pattern);
         if (matches && matches.length > 0) {
           results.push({
-            source: src || 'inline script',
-            selector: getSelector(script),
+            source: unit.source,
+            selector: unit.selector,
             count: matches.length
           });
         }
@@ -171,23 +272,25 @@
       return results;
     }
 
-    var innerHTMLResults = findPatternInScripts(/\.innerHTML\s*=/g, userScripts);
+    var innerHTMLResults = findPatternInScripts(/\.innerHTML\s*=/g, scanUnits);
     var innerHTMLUsage = innerHTMLResults.reduce(function(sum, r) { return sum + r.count; }, 0);
     if (innerHTMLUsage > 0) {
-      errors.push({
+      // innerHTML assignment is only exploitable with unsanitized input, which
+      // a static pattern match cannot confirm — warning, not error.
+      warnings.push({
         id: generateId('innerHTML-usage', 0),
         type: 'xss-vector',
-        severity: 'error',
+        severity: 'warning',
         vector: 'innerHTML',
         count: innerHTMLUsage,
         sources: innerHTMLResults.slice(0, 5),
-        impact: 8,
-        message: 'Found ' + innerHTMLUsage + ' innerHTML assignments (XSS risk)',
+        impact: 6,
+        message: 'Found ' + innerHTMLUsage + ' innerHTML assignments (XSS risk if input is unsanitized)',
         fix: 'Use textContent or sanitize HTML before assignment'
       });
     }
 
-    var outerHTMLResults = findPatternInScripts(/\.outerHTML\s*=/g, userScripts);
+    var outerHTMLResults = findPatternInScripts(/\.outerHTML\s*=/g, scanUnits);
     var outerHTMLUsage = outerHTMLResults.reduce(function(sum, r) { return sum + r.count; }, 0);
     if (outerHTMLUsage > 0) {
       errors.push({
@@ -203,7 +306,7 @@
       });
     }
 
-    var documentWriteResults = findPatternInScripts(/document\.write\(/g, userScripts);
+    var documentWriteResults = findPatternInScripts(/document\.write\(/g, scanUnits);
     var documentWriteUsage = documentWriteResults.reduce(function(sum, r) { return sum + r.count; }, 0);
     if (documentWriteUsage > 0) {
       errors.push({
@@ -221,7 +324,7 @@
 
     // 3. Check for eval usage
     checksRun.push('eval-usage');
-    var evalResults = findPatternInScripts(/\beval\s*\(/g, userScripts);
+    var evalResults = findPatternInScripts(/\beval\s*\(/g, scanUnits);
     var evalUsage = evalResults.reduce(function(sum, r) { return sum + r.count; }, 0);
     if (evalUsage > 0) {
       critical.push({
@@ -236,7 +339,7 @@
       });
     }
 
-    var funcConstructorResults = findPatternInScripts(/new\s+Function\s*\(/g, userScripts);
+    var funcConstructorResults = findPatternInScripts(/new\s+Function\s*\(/g, scanUnits);
     var functionConstructor = funcConstructorResults.reduce(function(sum, r) { return sum + r.count; }, 0);
     if (functionConstructor > 0) {
       errors.push({
@@ -620,13 +723,8 @@
     // Calculate score: 100 - (critical*20 + errors*10 + warnings*5 + info*1), min 0
     var score = Math.max(0, 100 - (stats.critical * 20 + stats.errors * 10 + stats.warnings * 5 + stats.info * 1));
 
-    // Calculate grade
-    var grade;
-    if (score >= 90) grade = 'A';
-    else if (score >= 80) grade = 'B';
-    else if (score >= 70) grade = 'C';
-    else if (score >= 60) grade = 'D';
-    else grade = 'F';
+    // Grade (canonical shared A-F scale)
+    var grade = auditUtils.calculateGrade(score);
 
     // Generate summary
     var summaryParts = [];
@@ -710,7 +808,7 @@
         }
       }
 
-      return {
+      var aiResponse = {
         audit: 'security',
         summary: summary,
         score: score,
@@ -754,6 +852,8 @@
           ].filter(Boolean)
         }
       };
+      if (externalScanNote) aiResponse.note = externalScanNote;
+      return aiResponse;
     }
 
     // === RAW RESPONSE (raw: true) ===
@@ -766,6 +866,7 @@
       checksRun: checksRun,
       stats: stats
     };
+    if (externalScanNote) response.note = externalScanNote;
 
     if (detailLevel === 'summary') {
       // Summary: just overview

@@ -66,10 +66,24 @@
 
     var mutations = [];
     var pendingBatch = [];
+    var MAX_PENDING_BATCH = 300; // hard cap; oldest entries dropped on overflow
+    var batchDropped = 0;        // total records dropped from pendingBatch
     var highlightElements = hasMap ? new Map() : null;
     var highlightFallback = []; // Fallback if Map not available
     var observer = null;
     var batchTimer = null;
+    var disposed = false;
+
+    // Bounded enqueue for the send batch: drop-oldest at MAX_PENDING_BATCH so
+    // a mutation storm (or a dead transport) cannot grow the queue unbounded.
+    function queueBatchRecord(record) {
+      pendingBatch.push(record);
+      if (pendingBatch.length > MAX_PENDING_BATCH) {
+        var overflow = pendingBatch.length - MAX_PENDING_BATCH;
+        pendingBatch.splice(0, overflow);
+        batchDropped += overflow;
+      }
+    }
 
     // Max mutation rate tracking (starts after page load settles)
     var maxRateTracking = false;
@@ -230,6 +244,14 @@
 
     // Find triggering interaction for a mutation
     // Returns the most recent interaction within the correlation window (500ms)
+    //
+    // This runs on EVERY tracked mutation, so it is gated: the interaction
+    // history fetch is cached for a short window, and the whole correlation is
+    // skipped (one cached array index check) unless there was an interaction
+    // within the last 5 seconds.
+    var INTERACTION_RECENT_MS = 5000;
+    var interactionCache = { at: 0, list: null };
+
     function findTriggeringInteraction(timestamp) {
       try {
         // Check if interactions module is available
@@ -237,12 +259,23 @@
           return null;
         }
 
+        // Throttled history fetch (100ms cache) — mutation bursts reuse it.
+        if (!interactionCache.list || timestamp - interactionCache.at >= 100) {
+          interactionCache.list = window.__devtool_interactions.getHistory(20) || [];
+          interactionCache.at = timestamp;
+        }
+        var interactions = interactionCache.list;
+        if (!interactions || interactions.length === 0) return null;
+
+        // Cheap gate: no interaction in the last 5s -> nothing to correlate.
+        var newest = interactions[interactions.length - 1];
+        if (!newest || typeof newest.timestamp !== 'number' ||
+            timestamp - newest.timestamp > INTERACTION_RECENT_MS) {
+          return null;
+        }
+
         var correlationWindow = 500; // 500ms window
         var windowStart = timestamp - correlationWindow;
-
-        // Get recent interactions
-        var interactions = window.__devtool_interactions.getHistory(20);
-        if (!interactions || interactions.length === 0) return null;
 
         // Find most recent interaction before this mutation
         for (var i = interactions.length - 1; i >= 0; i--) {
@@ -305,7 +338,7 @@
                     };
 
                     mutations.push(record);
-                    pendingBatch.push(record);
+                    queueBatchRecord(record);
 
                     if (node instanceof HTMLElement) {
                       highlightMutation(node, config.highlightAddedColor);
@@ -342,7 +375,7 @@
                     };
 
                     mutations.push(rrecord);
-                    pendingBatch.push(rrecord);
+                    queueBatchRecord(rrecord);
                   } catch (e) {
                     reportError('removed_node_processing_failed', e);
                   }
@@ -387,7 +420,7 @@
                 };
 
                 mutations.push(arecord);
-                pendingBatch.push(arecord);
+                queueBatchRecord(arecord);
                 highlightMutation(target, config.highlightModifiedColor);
               } catch (e) {
                 reportError('attribute_mutation_failed', e);
@@ -430,7 +463,7 @@
     // Safe observer start
     function startObserver() {
       try {
-        if (observer) return;
+        if (observer || disposed) return;
 
         if (!hasMutationObserver) {
           console.warn('[DevTool][Mutation] MutationObserver not available');
@@ -507,6 +540,7 @@
     // Start max rate tracking (checks current rate and updates max)
     function startMaxRateTracking() {
       try {
+        if (disposed || rateCheckInterval) return;
         maxRateTracking = true;
 
         rateCheckInterval = setInterval(function() {
@@ -596,7 +630,7 @@
     var spinnerConfig = {
       maxTimeline: 500,          // cap recorded events (drop oldest)
       maxPendingAPI: 10,         // cap correlated api calls per record
-      maxScanNodes: 300,         // cap querySelectorAll fan-out per added node
+      maxScanNodes: 100,         // cap querySelectorAll fan-out per added node
       nameRegex: /(spin|load|skeleton|shimmer|pending|placeholder)/,
       animRegex: /(spin|rotate|load|shimmer|pulse)/i
     };
@@ -608,7 +642,10 @@
     var spinnerCounter = 0;                                    // monotonic id disambiguator
 
     // Heuristic: is this element a loading indicator?
-    function isSpinner(el) {
+    // cheapOnly skips the getComputedStyle animation-name probe — used on the
+    // bulk subtree-scan paths where a per-node computed-style read is the hot
+    // cost. Attribute-toggle and single-node paths run the full check.
+    function isSpinner(el, cheapOnly) {
       try {
         if (!el || el.nodeType !== 1) return false;
 
@@ -637,7 +674,10 @@
           if (hay && spinnerConfig.nameRegex.test(hay)) return true;
         } catch (e) { /* ignore */ }
 
-        // CSS animation name (best-effort, names only — no keyframe parsing)
+        // CSS animation name (best-effort, names only — no keyframe parsing).
+        // Skipped on bulk scan paths (cheapOnly) — class/aria/name heuristics
+        // above cover the common cases without a computed-style read.
+        if (cheapOnly) return false;
         try {
           if (typeof getComputedStyle === 'function') {
             var animName = getComputedStyle(el).animationName;
@@ -786,7 +826,8 @@
             try {
               var kid = kids[i];
               if (shouldIgnore(kid)) continue;
-              if (isSpinner(kid)) spinnerAppear(kid);
+              // cheapOnly: no computed-style probe per descendant
+              if (isSpinner(kid, true)) spinnerAppear(kid);
             } catch (e) { /* skip one kid */ }
           }
         }
@@ -859,7 +900,7 @@
 
     function startSpinnerObserver() {
       try {
-        if (spinnerObserver) return;
+        if (spinnerObserver || disposed) return;
         if (!hasMutationObserver || !document.body) return;
         if (!hasWeakMap) {
           // Without WeakMap we cannot reliably pair appear/disappear; bail loudly.
@@ -903,6 +944,41 @@
         spinnerObserver = null;
       } catch (e) {
         reportError('stopSpinnerObserver_failed', e);
+      }
+    }
+
+    // Full teardown: disconnect BOTH observers and clear BOTH intervals.
+    // Without this the batch timer and rate-check interval ran forever and the
+    // observers could never be released. Idempotent; restart is blocked after
+    // dispose (start/resume become no-ops via the disposed flag).
+    function dispose() {
+      disposed = true;
+      try {
+        stopObserver();
+      } catch (e) {
+        reportError('dispose_stop_observer_failed', e);
+      }
+      try {
+        stopSpinnerObserver();
+      } catch (e) {
+        reportError('dispose_stop_spinner_failed', e);
+      }
+      try {
+        if (batchTimer !== null) {
+          clearInterval(batchTimer);
+          batchTimer = null;
+        }
+      } catch (e) {
+        reportError('dispose_clear_batch_timer_failed', e);
+      }
+      try {
+        if (rateCheckInterval !== null) {
+          clearInterval(rateCheckInterval);
+          rateCheckInterval = null;
+        }
+        maxRateTracking = false;
+      } catch (e) {
+        reportError('dispose_clear_rate_interval_failed', e);
       }
     }
 
@@ -1101,6 +1177,16 @@
             }
           },
 
+          // Tear down both observers and both intervals (batch sender +
+          // rate check). Irreversible for this page load.
+          dispose: function() {
+            try {
+              dispose();
+            } catch (e) {
+              reportError('dispose_failed', e);
+            }
+          },
+
           enableHighlighting: function() {
             try {
               config.enableHighlighting = true;
@@ -1170,6 +1256,10 @@
                 acceleration: acceleration,
                 status: status,
                 health: health,
+                batch: {
+                  pending: pendingBatch.length,
+                  dropped: batchDropped
+                },
                 max: {
                   rate: Math.round(maxRate * 100) / 100,
                   timestamp: maxRateTimestamp,

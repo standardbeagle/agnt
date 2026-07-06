@@ -199,6 +199,12 @@
 
     state.isRecording = false;
 
+    // Cancel any pending debounced scroll event so it cannot fire after stop
+    if (state.scrollTimeout) {
+      clearTimeout(state.scrollTimeout);
+      state.scrollTimeout = null;
+    }
+
     // Remove listeners
     document.removeEventListener('click', onClick, true);
     document.removeEventListener('input', onInput, true);
@@ -430,7 +436,7 @@
       'border: 2px solid ' + color,
       'border-radius: 4px',
       'pointer-events: none',
-      'z-index: 2147483646',
+      'z-index: ' + (window.__devtoolTokens ? window.__devtoolTokens.z.highlight : 2147483640),
       'transition: opacity 0.3s'
     ].join(';');
     document.body.appendChild(overlay);
@@ -456,7 +462,7 @@
       'padding: 6px 14px',
       'border-radius: 20px',
       'font: 13px -apple-system, sans-serif',
-      'z-index: 2147483647',
+      'z-index: ' + (window.__devtoolTokens ? window.__devtoolTokens.z.toast : 2147483646),
       'display: flex',
       'align-items: center',
       'gap: 8px',
@@ -492,7 +498,7 @@
       'padding: 10px 20px',
       'border-radius: 10px',
       'font: 13px -apple-system, sans-serif',
-      'z-index: 2147483647',
+      'z-index: ' + (window.__devtoolTokens ? window.__devtoolTokens.z.toast : 2147483646),
       'display: flex',
       'align-items: center',
       'gap: 12px',

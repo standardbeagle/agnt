@@ -5,63 +5,48 @@
 
   var utils = window.__devtool_utils;
 
-  /**
-   * Generate a stable 8-char hex finding ID from type, selector, and message.
-   * FNV-1a 32-bit hash — same inputs always produce same output across runs.
-   */
+  // Shared audit helpers (audit-utils.js): stable FNV-1a finding ids + the
+  // shared window.__devtool.audit.findingSelectors highlight registry + the
+  // canonical A-F grade scale.
   function computeFindingID(type, selector, message) {
-    var input = type + '\x00' + (selector || '') + '\x00' + (message || '');
-    var h = 0x811c9dc5;
-    for (var i = 0; i < input.length; i++) {
-      h = h ^ input.charCodeAt(i);
-      h = (h + (h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24)) >>> 0;
-    }
-    return ('00000000' + h.toString(16)).slice(-8);
+    return window.__devtool_audit_utils.computeFindingID(type, selector, message);
   }
 
   function registerFinding(id, selector) {
-    if (!window.__devtool) { window.__devtool = {}; }
-    if (!window.__devtool.audit) { window.__devtool.audit = {}; }
-    if (!window.__devtool.audit.findingSelectors) { window.__devtool.audit.findingSelectors = {}; }
-    window.__devtool.audit.findingSelectors[id] = selector || '';
+    window.__devtool_audit_utils.registerFinding(id, selector);
   }
+
+  // Default detection thresholds; override per-call via options.thresholds.
+  var DEFAULT_THRESHOLDS = {
+    children: 10,        // direct children above this -> excessive-children
+    depth: 15,           // nesting depth above this -> excessive-depth
+    attributes: 10,      // attributes above this -> excessive-attributes
+    listItems: 50,       // list items above this -> large-list
+    tableRows: 100,      // table rows above this -> large-table
+    totalElements: 1500  // total elements above this -> element-count info
+  };
+
+  // Hard cap on the number of elements scanned in one pass. The exec bridge is
+  // synchronous, so instead of chunk+yield we cap and flag.
+  var MAX_SCAN_ELEMENTS = 5000;
 
   // Options:
   //   detailLevel: 'summary' | 'compact' (default) | 'full'
   //   raw: boolean - if true, returns verbose detailed format (default: false, returns AI-optimized format)
+  //   thresholds: object - shallow-merged over DEFAULT_THRESHOLDS
   function auditDOMComplexity(options) {
     options = options || {};
+    var auditUtils = window.__devtool_audit_utils;
     var detailLevel = options.detailLevel || 'compact';
     var raw = options.raw === true; // Default: false (AI-optimized format)
-    var elements = document.querySelectorAll('*');
+    var TH = auditUtils.mergeThresholds(DEFAULT_THRESHOLDS, options.thresholds);
+    var allElements = document.querySelectorAll('*');
+    var totalElementCount = allElements.length;
+    var capped = totalElementCount > MAX_SCAN_ELEMENTS;
+    var scanCount = capped ? MAX_SCAN_ELEMENTS : totalElementCount;
 
-    // Helper: Generate readable selector for an element
-    function getSelector(el) {
-      if (!el || !el.tagName) return '';
-      var parts = [el.tagName.toLowerCase()];
-      if (el.id) {
-        parts.push('#' + el.id);
-      } else if (el.className && typeof el.className === 'string') {
-        var classes = el.className.trim().split(/\s+/).slice(0, 2);
-        if (classes.length > 0 && classes[0]) {
-          parts.push('.' + classes.join('.'));
-        }
-      }
-      return parts.join('');
-    }
-
-    // Helper: Get full selector path (up to 5 levels)
-    function getSelectorPath(el) {
-      var path = [];
-      var current = el;
-      var depth = 0;
-      while (current && current.tagName && depth < 5) {
-        path.unshift(getSelector(current));
-        current = current.parentElement;
-        depth++;
-      }
-      return path.join(' > ');
-    }
+    var getSelector = auditUtils.getSelector;
+    var getSelectorPath = auditUtils.getSelectorPath;
 
     // Helper: Truncate HTML for context
     function truncateHtml(el, maxLen) {
@@ -100,9 +85,23 @@
       return d;
     }
 
-    // Helper: Count descendants
+    // === DESCENDANT COUNTS: single post-order pass ===
+    // querySelectorAll returns document (pre-)order, so iterating in reverse
+    // guarantees every child is processed before its parent. Each element's
+    // subtree size is 1 + sum of its children's subtree sizes — O(n) total
+    // instead of the old per-element querySelectorAll('*') O(n^2).
+    var descendantCounts = new Map();
+    for (var dc = scanCount - 1; dc >= 0; dc--) {
+      var dcEl = allElements[dc];
+      var dcCount = 0;
+      for (var dcChild = dcEl.firstElementChild; dcChild; dcChild = dcChild.nextElementSibling) {
+        dcCount += 1 + (descendantCounts.get(dcChild) || 0);
+      }
+      descendantCounts.set(dcEl, dcCount);
+    }
+
     function countDescendants(el) {
-      return el.querySelectorAll('*').length;
+      return descendantCounts.get(el) || 0;
     }
 
     // === METRICS COLLECTION ===
@@ -111,8 +110,8 @@
     var totalChildren = 0;
     var elementData = [];
 
-    for (var i = 0; i < elements.length; i++) {
-      var el = elements[i];
+    for (var i = 0; i < scanCount; i++) {
+      var el = allElements[i];
       // Skip agnt/devtool UI elements
       if (utils.isDevtoolElement && utils.isDevtoolElement(el)) continue;
       var depth = calculateDepth(el);
@@ -131,7 +130,7 @@
       });
     }
 
-    var averageChildren = elements.length > 0 ? totalChildren / elements.length : 0;
+    var averageChildren = scanCount > 0 ? totalChildren / scanCount : 0;
 
     // === ISSUE DETECTION ===
     var fixable = [];
@@ -179,12 +178,12 @@
       }
     }
 
-    // 2. Excessive children (>10 direct children)
+    // 2. Excessive children
     for (var k = 0; k < elementData.length; k++) {
       var data = elementData[k];
-      if (data.childCount > 10) {
+      if (data.childCount > TH.children) {
         var childSel = getSelectorPath(data.element);
-        var childFix = data.childCount > 50
+        var childFix = data.childCount > TH.children * 5
           ? 'Consider pagination or virtualization'
           : 'Consider componentization or grouping';
         var childMsg = data.childCount + ' direct children';
@@ -193,19 +192,19 @@
         fixable.push({
           id: childID,
           type: 'excessive-children',
-          severity: data.childCount > 50 ? 'error' : 'warning',
+          severity: data.childCount > TH.children * 5 ? 'error' : 'warning',
           selector: childSel,
           childCount: data.childCount,
-          impact: Math.min(10, Math.floor(data.childCount / 10)),
+          impact: Math.min(10, Math.floor(data.childCount / TH.children)),
           fix: childFix
         });
       }
     }
 
-    // 3. Deep nesting (>15 levels)
+    // 3. Deep nesting
     for (var m = 0; m < elementData.length; m++) {
       var deepData = elementData[m];
-      if (deepData.depth > 15) {
+      if (deepData.depth > TH.depth) {
         var deepSel = getSelectorPath(deepData.element);
         var deepMsg = deepData.depth + ' levels deep';
         var deepID = computeFindingID('excessive-depth', deepSel, deepMsg);
@@ -213,7 +212,7 @@
         fixable.push({
           id: deepID,
           type: 'excessive-depth',
-          severity: deepData.depth > 20 ? 'error' : 'warning',
+          severity: deepData.depth > TH.depth + 5 ? 'error' : 'warning',
           selector: deepSel,
           depth: deepData.depth,
           impact: Math.min(10, Math.floor(deepData.depth / 3)),
@@ -222,10 +221,10 @@
       }
     }
 
-    // 4. Excessive attributes (>10)
+    // 4. Excessive attributes
     for (var n = 0; n < elementData.length; n++) {
       var attrData = elementData[n];
-      if (attrData.attributeCount > 10) {
+      if (attrData.attributeCount > TH.attributes) {
         var attrSel = getSelectorPath(attrData.element);
         var attrMsg = attrData.attributeCount + ' attributes';
         var attrID = computeFindingID('excessive-attributes', attrSel, attrMsg);
@@ -242,14 +241,14 @@
       }
     }
 
-    // 5. Large lists without virtualization hints (>50 items)
+    // 5. Large lists without virtualization hints
     var lists = document.querySelectorAll('ul, ol');
     for (var p = 0; p < lists.length; p++) {
       var list = lists[p];
       // Skip agnt/devtool UI elements
       if (utils.isDevtoolElement && utils.isDevtoolElement(list)) continue;
       var itemCount = list.querySelectorAll(':scope > li').length;
-      if (itemCount > 50) {
+      if (itemCount > TH.listItems) {
         var listSel = getSelectorPath(list);
         var listMsg = itemCount + ' list items';
         var listID = computeFindingID('large-list', listSel, listMsg);
@@ -257,7 +256,7 @@
         fixable.push({
           id: listID,
           type: 'large-list',
-          severity: itemCount > 200 ? 'error' : 'warning',
+          severity: itemCount > TH.listItems * 4 ? 'error' : 'warning',
           selector: listSel,
           itemCount: itemCount,
           impact: Math.min(9, Math.floor(itemCount / 25)),
@@ -266,7 +265,7 @@
       }
     }
 
-    // 6. Large tables (>100 rows)
+    // 6. Large tables
     var tables = document.querySelectorAll('table');
     for (var q = 0; q < tables.length; q++) {
       var table = tables[q];
@@ -274,7 +273,7 @@
       if (utils.isDevtoolElement && utils.isDevtoolElement(table)) continue;
       var rows = table.querySelectorAll('tr');
       var cells = table.querySelectorAll('td, th');
-      if (rows.length > 100) {
+      if (rows.length > TH.tableRows) {
         var tableSel = getSelectorPath(table);
         var tableMsg = rows.length + ' table rows';
         var tableID = computeFindingID('large-table', tableSel, tableMsg);
@@ -282,7 +281,7 @@
         fixable.push({
           id: tableID,
           type: 'large-table',
-          severity: rows.length > 500 ? 'error' : 'warning',
+          severity: rows.length > TH.tableRows * 5 ? 'error' : 'warning',
           selector: tableSel,
           rows: rows.length,
           cells: cells.length,
@@ -363,6 +362,9 @@
     }
     subtreeData.sort(function(a, b) { return b.descendants - a.descendants; });
 
+    // hotspotElements is a parallel array of live element refs; kept out of
+    // the returned hotspot objects so responses stay JSON-serializable.
+    var hotspotElements = [];
     for (var u = 0; u < Math.min(5, subtreeData.length); u++) {
       var subtree = subtreeData[u];
       var recommendation = 'Consider lazy loading or code splitting';
@@ -371,6 +373,7 @@
       } else if (subtree.descendants > 200) {
         recommendation = 'Consider virtualization or lazy loading';
       }
+      hotspotElements.push(subtree.element);
       hotspots.push({
         selector: getSelectorPath(subtree.element),
         descendants: subtree.descendants,
@@ -380,28 +383,28 @@
     }
 
     // 10. Informational: Total element count
-    if (elements.length > 1500) {
-      var elemMsg = elements.length + ' elements exceeds recommended 1500 for optimal performance';
+    if (totalElementCount > TH.totalElements) {
+      var elemMsg = totalElementCount + ' elements exceeds recommended ' + TH.totalElements + ' for optimal performance';
       informational.push({
         id: computeFindingID('element-count', 'document', elemMsg),
         type: 'element-count',
-        severity: elements.length > 3000 ? 'warning' : 'info',
+        severity: totalElementCount > TH.totalElements * 2 ? 'warning' : 'info',
         message: elemMsg,
-        current: elements.length,
-        recommended: 1500
+        current: totalElementCount,
+        recommended: TH.totalElements
       });
     }
 
     // 11. Informational: Max depth
-    if (maxDepth > 15) {
-      var depthMsg = 'Maximum nesting depth of ' + maxDepth + ' exceeds recommended 15';
+    if (maxDepth > TH.depth) {
+      var depthMsg = 'Maximum nesting depth of ' + maxDepth + ' exceeds recommended ' + TH.depth;
       informational.push({
         id: computeFindingID('max-depth', 'document', depthMsg),
         type: 'max-depth',
-        severity: maxDepth > 20 ? 'warning' : 'info',
+        severity: maxDepth > TH.depth + 5 ? 'warning' : 'info',
         message: depthMsg,
         current: maxDepth,
-        recommended: 15
+        recommended: TH.depth
       });
     }
 
@@ -409,19 +412,15 @@
     var score = 100;
 
     // Penalties
-    score -= Math.min(20, Math.floor((elements.length - 1500) / 100)); // Element count penalty
-    score -= Math.min(15, Math.floor((maxDepth - 15) / 2)); // Depth penalty
+    score -= Math.min(20, Math.floor((totalElementCount - TH.totalElements) / 100)); // Element count penalty
+    score -= Math.min(15, Math.floor((maxDepth - TH.depth) / 2)); // Depth penalty
     score -= Math.min(10, Object.keys(duplicateIdMap).length * 5); // Duplicate ID penalty
     score -= Math.min(20, fixable.filter(function(f) { return f.severity === 'error'; }).length * 4); // Error penalty
     score -= Math.min(15, fixable.filter(function(f) { return f.severity === 'warning'; }).length * 2); // Warning penalty
     score = Math.max(0, Math.min(100, score));
 
-    // Grade
-    var grade = 'F';
-    if (score >= 90) grade = 'A';
-    else if (score >= 80) grade = 'B';
-    else if (score >= 70) grade = 'C';
-    else if (score >= 60) grade = 'D';
+    // Grade (canonical shared A-F scale)
+    var grade = auditUtils.calculateGrade(score);
 
     // === ACTIONS ===
     var actions = [];
@@ -471,7 +470,11 @@
     } else {
       summaryParts.push('DOM complexity is high');
     }
-    summaryParts.push('(' + elements.length + ' elements)');
+    summaryParts.push('(' + totalElementCount + ' elements)');
+
+    if (capped) {
+      summaryParts.push('scan capped at ' + MAX_SCAN_ELEMENTS + ' elements');
+    }
 
     if (fixable.length > 0) {
       summaryParts.push(fixable.length + ' area' + (fixable.length === 1 ? '' : 's') + ' need' + (fixable.length === 1 ? 's' : '') + ' attention');
@@ -504,9 +507,18 @@
         });
       }
 
-      // Build raw hotspot data with more context
-      var rawHotspots = hotspots.map(function(h) {
-        var el = document.querySelector(h.selector.split(' > ').pop()) || document.body;
+      // Build raw hotspot data with more context using the element refs
+      // captured at collection time (re-querying by the tail of the selector
+      // path mis-targeted unrelated elements).
+      var rawHotspots = hotspots.map(function(h, hi) {
+        var el = hotspotElements[hi];
+        if (!el || !el.isConnected) {
+          try {
+            el = document.querySelector(h.selector) || document.body;
+          } catch (e) {
+            el = document.body;
+          }
+        }
         var childTags = {};
         var children = el.children;
         for (var ci = 0; ci < Math.min(children.length, 20); ci++) {
@@ -549,6 +561,7 @@
         score: score,
         grade: grade,
         checkedAt: new Date().toISOString(),
+        capped: capped,
         stats: {
           errors: errorCount,
           warnings: warningCount,
@@ -558,7 +571,8 @@
         // Raw data for AI interpretation - no pre-generated actions
         raw: {
           metrics: {
-            totalElements: elements.length,
+            totalElements: totalElementCount,
+            scannedElements: scanCount,
             maxDepth: maxDepth,
             averageChildren: Math.round(averageChildren * 10) / 10,
             forms: document.forms.length,
@@ -594,6 +608,7 @@
       score: score,
       grade: grade,
       checkedAt: new Date().toISOString(),
+      capped: capped,
       checksRun: [
         'duplicate-ids',
         'excessive-children',
@@ -608,7 +623,8 @@
       ],
 
       metrics: {
-        totalElements: elements.length,
+        totalElements: totalElementCount,
+        scannedElements: scanCount,
         maxDepth: maxDepth,
         averageChildren: Math.round(averageChildren * 10) / 10,
         elementsWithId: elementsWithId.length,

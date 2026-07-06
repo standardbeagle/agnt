@@ -44,21 +44,15 @@
 
   /**
    * Generate a stable 8-char hex finding ID from type, selector, and message.
-   * Uses a simple two-pass hash (FNV-1a 32-bit) producing 8 lowercase hex chars.
-   * The same inputs always produce the same output across runs.
+   * Delegates to the shared FNV-1a implementation in audit-utils.js so ids are
+   * identical across every audit module.
    * @param {string} type - Issue type (layout/overflow/a11y)
    * @param {string} selector - CSS selector for the element
    * @param {string} message - Issue message
    * @returns {string} 8-char lowercase hex string
    */
   function computeFindingID(type, selector, message) {
-    var input = type + '\x00' + selector + '\x00' + message;
-    var h = 0x811c9dc5;
-    for (var i = 0; i < input.length; i++) {
-      h = h ^ input.charCodeAt(i);
-      h = (h + (h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24)) >>> 0;
-    }
-    return ('00000000' + h.toString(16)).slice(-8);
+    return window.__devtool_audit_utils.computeFindingID(type, selector, message);
   }
 
   /**

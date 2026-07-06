@@ -6,8 +6,10 @@
 
   var utils = window.__devtool_utils;
 
-  // Standard breakpoints to test
-  var BREAKPOINTS = [320, 375, 414, 768, 1024, 1280, 1440, 1920];
+  // Default detection thresholds; override per-call via options.thresholds.
+  var DEFAULT_THRESHOLDS = {
+    longWordChars: 15   // longest word above this length without word-break -> risk
+  };
 
   /**
    * Get all text-containing elements on the page
@@ -63,28 +65,63 @@
   }
 
   /**
-   * Measure the pixel width of text using a hidden span
+   * Measure the pixel width of text using a shared offscreen canvas.
+   * canvas measureText avoids the old hidden-span DOM probe (append/measure/
+   * remove per call forced style+layout work); results are memoized per
+   * font-string + text.
    */
+  var measureCtx = null;
+  var measureCache = {};
+  var measureCacheSize = 0;
+  var MEASURE_CACHE_MAX = 2000;
+
+  function getMeasureCtx() {
+    if (!measureCtx) {
+      var canvas = document.createElement('canvas');
+      measureCtx = canvas.getContext('2d');
+    }
+    return measureCtx;
+  }
+
+  function applyTextTransform(text, transform) {
+    if (transform === 'uppercase') return text.toUpperCase();
+    if (transform === 'lowercase') return text.toLowerCase();
+    if (transform === 'capitalize') {
+      return text.replace(/\b\w/g, function(c) { return c.toUpperCase(); });
+    }
+    return text;
+  }
+
   function measureTextWidth(text, element) {
-    var span = document.createElement('span');
     var computed = window.getComputedStyle(element);
+    var font = [
+      computed.fontStyle,
+      computed.fontWeight,
+      computed.fontSize,
+      computed.fontFamily
+    ].join(' ');
 
-    span.style.cssText = [
-      'position: absolute',
-      'visibility: hidden',
-      'white-space: nowrap',
-      'font-family: ' + computed.fontFamily,
-      'font-size: ' + computed.fontSize,
-      'font-weight: ' + computed.fontWeight,
-      'font-style: ' + computed.fontStyle,
-      'letter-spacing: ' + computed.letterSpacing,
-      'text-transform: ' + computed.textTransform
-    ].join(';');
+    var rendered = applyTextTransform(text, computed.textTransform);
+    var letterSpacing = parseFloat(computed.letterSpacing) || 0;
+    var cacheKey = font + '\x00' + letterSpacing + '\x00' + rendered;
 
-    span.textContent = text;
-    document.body.appendChild(span);
-    var width = span.offsetWidth;
-    document.body.removeChild(span);
+    var cached = measureCache[cacheKey];
+    if (cached !== undefined) return cached;
+
+    var ctx = getMeasureCtx();
+    if (!ctx) return 0;
+    ctx.font = font;
+    var width = ctx.measureText(rendered).width;
+    // canvas measureText does not apply letter-spacing; add it per gap.
+    if (letterSpacing && rendered.length > 1) {
+      width += letterSpacing * (rendered.length - 1);
+    }
+    width = Math.ceil(width);
+
+    if (measureCacheSize < MEASURE_CACHE_MAX) {
+      measureCache[cacheKey] = width;
+      measureCacheSize++;
+    }
     return width;
   }
 
@@ -183,59 +220,51 @@
   }
 
   /**
-   * Calculate minimum width needed for longest word
+   * Calculate minimum width needed for longest word.
+   * Memoized per element (WeakMap) — the main pass and the layout-shift check
+   * both need it for the same element within one run.
    */
+  var minWidthCache = typeof WeakMap !== 'undefined' ? new WeakMap() : null;
+
   function getMinWidthForLongestWord(element) {
+    if (minWidthCache) {
+      var hit = minWidthCache.get(element);
+      if (hit) return hit;
+    }
+
     var longestWord = getLongestWord(element);
-    if (longestWord.length === 0) return { width: 0, word: '' };
+    var result;
+    if (longestWord.length === 0) {
+      result = { width: 0, word: '' };
+    } else {
+      var width = measureTextWidth(longestWord.word, element);
+      var computed = window.getComputedStyle(element);
 
-    var width = measureTextWidth(longestWord.word, element);
-    var computed = window.getComputedStyle(element);
+      // Add padding
+      var paddingLeft = parseFloat(computed.paddingLeft) || 0;
+      var paddingRight = parseFloat(computed.paddingRight) || 0;
 
-    // Add padding
-    var paddingLeft = parseFloat(computed.paddingLeft) || 0;
-    var paddingRight = parseFloat(computed.paddingRight) || 0;
+      result = {
+        width: Math.ceil(width + paddingLeft + paddingRight),
+        word: longestWord.word,
+        wordLength: longestWord.length
+      };
+    }
 
-    return {
-      width: Math.ceil(width + paddingLeft + paddingRight),
-      word: longestWord.word,
-      wordLength: longestWord.length
-    };
+    if (minWidthCache) minWidthCache.set(element, result);
+    return result;
   }
 
-  /**
-   * Find breakpoints where text would cause issues
-   */
-  function findProblematicBreakpoints(element) {
-    var minWidth = getMinWidthForLongestWord(element);
-    if (minWidth.width === 0) return [];
-
-    var problematic = [];
-    var elementWidth = element.clientWidth;
-
-    BREAKPOINTS.forEach(function(bp) {
-      // Estimate element width at this breakpoint
-      // This is a simplification - actual width depends on layout
-      var ratio = bp / window.innerWidth;
-      var estimatedWidth = elementWidth * ratio;
-
-      if (estimatedWidth < minWidth.width) {
-        problematic.push({
-          breakpoint: bp,
-          estimatedWidth: Math.round(estimatedWidth),
-          requiredWidth: minWidth.width,
-          deficit: Math.round(minWidth.width - estimatedWidth)
-        });
-      }
-    });
-
-    return problematic;
-  }
+  // NOTE: the old findProblematicBreakpoints() heuristic was removed. It
+  // estimated element width at each breakpoint by linearly scaling the current
+  // width with viewport ratio — real layouts (fixed sidebars, breakpoint media
+  // queries, wrapping flex/grid) do not scale linearly, so its output was
+  // fabricated data. Use the responsive audit for real per-viewport rendering.
 
   /**
    * Check for layout shift risk factors
    */
-  function checkLayoutShiftRisk(element) {
+  function checkLayoutShiftRisk(element, th) {
     var computed = window.getComputedStyle(element);
     var risks = [];
 
@@ -267,8 +296,9 @@
     var hasOverflowWrap = computed.overflowWrap === 'break-word' || computed.overflowWrap === 'anywhere';
 
     if (!hasWordBreak && !hasOverflowWrap) {
+      var longWordLimit = (th && th.longWordChars) || DEFAULT_THRESHOLDS.longWordChars;
       var minWidth = getMinWidthForLongestWord(element);
-      if (minWidth.wordLength > 15) {
+      if (minWidth.wordLength > longWordLimit) {
         risks.push({
           type: 'long-word-no-break',
           severity: 'warning',
@@ -286,9 +316,21 @@
 
   /**
    * Main text fragility check function
+   * Options:
+   *   thresholds: object - shallow-merged over DEFAULT_THRESHOLDS
    */
-  function checkTextFragility() {
+  function checkTextFragility(options) {
     try {
+      options = options || {};
+      var auditUtils = window.__devtool_audit_utils;
+      var th = auditUtils && auditUtils.mergeThresholds
+        ? auditUtils.mergeThresholds(DEFAULT_THRESHOLDS, options.thresholds)
+        : DEFAULT_THRESHOLDS;
+
+      // Reset the per-element min-width memo each run — text content may have
+      // changed since the last audit.
+      if (typeof WeakMap !== 'undefined') minWidthCache = new WeakMap();
+
       var elements = getTextElements();
       var issues = [];
       var summary = {
@@ -307,13 +349,10 @@
         elementIssues = elementIssues.concat(overflowIssues);
 
         // Check for layout shift risks
-        var shiftRisks = checkLayoutShiftRisk(element);
+        var shiftRisks = checkLayoutShiftRisk(element, th);
         elementIssues = elementIssues.concat(shiftRisks);
 
-        // Find problematic breakpoints
-        var breakpointIssues = findProblematicBreakpoints(element);
-
-        if (elementIssues.length > 0 || breakpointIssues.length > 0) {
+        if (elementIssues.length > 0) {
           var longestWord = getLongestWord(element);
           var minWidth = getMinWidthForLongestWord(element);
 
@@ -327,8 +366,7 @@
               length: longestWord.length,
               minWidthPx: minWidth.width
             },
-            issues: elementIssues,
-            problematicBreakpoints: breakpointIssues
+            issues: elementIssues
           });
 
           elementIssues.forEach(function(issue) {
@@ -339,12 +377,6 @@
               summary.warnings++;
             }
           });
-
-          // Count breakpoint issues
-          if (breakpointIssues.length > 0) {
-            summary.total++;
-            summary.warnings++;
-          }
         }
       });
 
@@ -360,7 +392,7 @@
       return {
         issues: issues,
         summary: summary,
-        breakpointsTested: BREAKPOINTS
+        note: 'per-breakpoint width estimation removed (linear viewport scaling was unsound) — use the responsive audit for real per-viewport checks'
       };
     } catch (e) {
       return { error: e.message };
