@@ -24,33 +24,19 @@
   var CHATTY_THRESHOLD = 20;         // calls in the window above this → chatty load
   var CHATTY_SEVERE = 40;            // chatty count above this → warning instead of info
 
-  /**
-   * Generate a stable 8-char hex finding ID from type, selector, and message.
-   * FNV-1a 32-bit hash — same inputs always produce same output across runs.
-   */
+  // Shared audit helpers (audit-utils.js): stable FNV-1a finding ids, the
+  // shared window.__devtool.audit.findingSelectors highlight registry, and the
+  // canonical A-F grade scale.
   function computeFindingID(type, selector, message) {
-    var input = type + '\x00' + (selector || '') + '\x00' + (message || '');
-    var h = 0x811c9dc5;
-    for (var i = 0; i < input.length; i++) {
-      h = h ^ input.charCodeAt(i);
-      h = (h + (h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24)) >>> 0;
-    }
-    return ('00000000' + h.toString(16)).slice(-8);
+    return window.__devtool_audit_utils.computeFindingID(type, selector, message);
   }
 
   function registerFinding(id, selector) {
-    if (!window.__devtool) { window.__devtool = {}; }
-    if (!window.__devtool.audit) { window.__devtool.audit = {}; }
-    if (!window.__devtool.audit.findingSelectors) { window.__devtool.audit.findingSelectors = {}; }
-    window.__devtool.audit.findingSelectors[id] = selector || '';
+    window.__devtool_audit_utils.registerFinding(id, selector);
   }
 
   function calculateGrade(score) {
-    if (score >= 90) return 'A';
-    if (score >= 80) return 'B';
-    if (score >= 70) return 'C';
-    if (score >= 60) return 'D';
-    return 'F';
+    return window.__devtool_audit_utils.calculateGrade(score);
   }
 
   // Extract just the path (drop origin + query) for compact messages and

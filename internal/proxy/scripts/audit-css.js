@@ -5,38 +5,36 @@
 
   var utils = window.__devtool_utils;
 
-  /**
-   * Generate a stable 8-char hex finding ID from type, selector, and message.
-   * FNV-1a 32-bit hash — same inputs always produce same output across runs.
-   */
+  // Shared audit helpers (audit-utils.js): stable FNV-1a finding ids + the
+  // shared window.__devtool.audit.findingSelectors highlight registry + the
+  // canonical A-F grade scale.
   function computeFindingID(type, selector, message) {
-    var input = type + '\x00' + (selector || '') + '\x00' + (message || '');
-    var h = 0x811c9dc5;
-    for (var i = 0; i < input.length; i++) {
-      h = h ^ input.charCodeAt(i);
-      h = (h + (h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24)) >>> 0;
-    }
-    return ('00000000' + h.toString(16)).slice(-8);
+    return window.__devtool_audit_utils.computeFindingID(type, selector, message);
   }
 
   function registerFinding(id, selector) {
-    if (!window.__devtool) { window.__devtool = {}; }
-    if (!window.__devtool.audit) { window.__devtool.audit = {}; }
-    if (!window.__devtool.audit.findingSelectors) { window.__devtool.audit.findingSelectors = {}; }
-    window.__devtool.audit.findingSelectors[id] = selector || '';
+    window.__devtool_audit_utils.registerFinding(id, selector);
   }
+
+  // Default detection thresholds; override per-call via options.thresholds.
+  var DEFAULT_THRESHOLDS = {
+    zIndex: 100,      // computed z-index above this -> z-index-inflation
+    patternMin: 3     // identical inline-style occurrences at/above this -> extract-to-class
+  };
 
   // Options:
   //   detailLevel: 'summary' | 'compact' (default) | 'full'
   //   maxIssues: number (default: 20)
   //   raw: boolean - if true, returns verbose detailed format (default: false, returns AI-optimized format)
+  //   thresholds: object - shallow-merged over DEFAULT_THRESHOLDS
   function auditCSS(options) {
     options = options || {};
+    var auditUtils = window.__devtool_audit_utils;
     var detailLevel = options.detailLevel || 'compact';
     var maxIssues = options.maxIssues || 20;
     var raw = options.raw === true; // Default: false (AI-optimized format)
+    var TH = auditUtils.mergeThresholds(DEFAULT_THRESHOLDS, options.thresholds);
 
-    var inlineStyles = document.querySelectorAll('[style]');
     var checksRun = [
       'inline-style-patterns',
       'important-declarations',
@@ -50,9 +48,10 @@
 
     // Metrics tracking
     var metrics = {
-      inlineStyleCount: inlineStyles.length,
+      inlineStyleCount: 0,
       importantCount: 0,
       stylesheetCount: document.styleSheets.length,
+      inaccessibleStylesheets: 0,
       cssVariableUsage: 0,
       hardcodedColors: 0,
       hardcodedSizes: 0
@@ -158,69 +157,138 @@
       return 'utility-' + keys.length + 'props';
     }
 
-    // --- Analysis: Inline style patterns ---
+    // Compact selector for a flagged element (first class or tag name).
+    function shortSelector(elem) {
+      var selector = elem.tagName.toLowerCase();
+      if (elem.className && typeof elem.className === 'string') {
+        var classes = elem.className.split(' ').filter(function(c) { return c; });
+        if (classes.length > 0) {
+          selector = '.' + classes[0];
+        }
+      }
+      return selector;
+    }
+
+    // --- SINGLE ELEMENT PASS ---
+    // One walk over the DOM covers what used to be four separate full scans:
+    // inline-style pattern extraction, hardcoded color collection, fixed
+    // dimension (layout) checks, and the computed z-index inflation scan.
 
     var stylePatterns = {};
     var elementsByPattern = {};
+    var colorPatterns = {};
+    var zIndexCount = 0;
+    var layoutIssueCount = 0;
 
-    for (var i = 0; i < inlineStyles.length; i++) {
-      var elem = inlineStyles[i];
+    var allElements = document.querySelectorAll('*');
+    for (var i = 0; i < allElements.length; i++) {
+      var elem = allElements[i];
       // Skip agnt/devtool UI elements
       if (utils.isDevtoolElement && utils.isDevtoolElement(elem)) continue;
+
+      // -- Inline style analysis (pattern / colors / sizes / layout) --
       var styleAttr = elem.getAttribute('style');
-      if (!styleAttr) continue;
+      if (styleAttr) {
+        metrics.inlineStyleCount++;
 
-      var normalized = normalizeStyle(styleAttr);
-      if (!normalized) continue;
+        var normalized = normalizeStyle(styleAttr);
+        if (normalized) {
+          // Track pattern occurrences
+          if (!stylePatterns[normalized]) {
+            stylePatterns[normalized] = 0;
+            elementsByPattern[normalized] = [];
+          }
+          stylePatterns[normalized]++;
+          elementsByPattern[normalized].push(elem);
 
-      // Track pattern occurrences
-      if (!stylePatterns[normalized]) {
-        stylePatterns[normalized] = 0;
-        elementsByPattern[normalized] = [];
+          // Categorize properties + collect color/size/variable metrics
+          var props = parseInlineStyle(styleAttr);
+          for (var prop in props) {
+            if (!props.hasOwnProperty(prop)) continue;
+            var value = props[prop];
+            var category = categorizeProperty(prop);
+            if (category !== 'other') {
+              categoryBreakdown[category]++;
+            }
+
+            if (isHardcodedColor(value) && !usesCSSVariable(value)) {
+              metrics.hardcodedColors++;
+              var normColor = value.toLowerCase();
+              colorPatterns[normColor] = (colorPatterns[normColor] || 0) + 1;
+            }
+
+            if (isHardcodedPxSize(value)) {
+              metrics.hardcodedSizes++;
+            }
+
+            if (usesCSSVariable(value)) {
+              metrics.cssVariableUsage++;
+            }
+          }
+
+          // Fixed width/height layout issue (capped at 5 findings)
+          if (layoutIssueCount < 5 &&
+              ((props.width && /^\d+px$/.test(props.width)) ||
+               (props.height && /^\d+px$/.test(props.height)))) {
+            var fixedSelector = shortSelector(elem);
+            var fixedMsg = 'fixed dimensions width:' + (props.width || 'auto') + ' height:' + (props.height || 'auto');
+            var fixedID = computeFindingID('fixed-dimensions', fixedSelector, fixedMsg);
+            registerFinding(fixedID, fixedSelector);
+            fixable.push({
+              id: fixedID,
+              type: 'fixed-dimensions',
+              severity: 'info',
+              selector: fixedSelector,
+              width: props.width,
+              height: props.height,
+              impact: 3,
+              fix: 'Use relative units (%, rem, em) or max-width/max-height for responsiveness'
+            });
+            layoutIssueCount++;
+          }
+        }
       }
-      stylePatterns[normalized]++;
-      elementsByPattern[normalized].push(elem);
 
-      // Categorize properties
-      var props = parseInlineStyle(styleAttr);
-      for (var prop in props) {
-        if (!props.hasOwnProperty(prop)) continue;
-        var category = categorizeProperty(prop);
-        if (category !== 'other') {
-          categoryBreakdown[category]++;
-        }
-
-        // Check for hardcoded colors
-        if (isHardcodedColor(props[prop]) && !usesCSSVariable(props[prop])) {
-          metrics.hardcodedColors++;
-        }
-
-        // Check for hardcoded px sizes
-        if (isHardcodedPxSize(props[prop])) {
-          metrics.hardcodedSizes++;
-        }
-
-        // Check for CSS variable usage
-        if (usesCSSVariable(props[prop])) {
-          metrics.cssVariableUsage++;
+      // -- Z-index inflation (computed style; skipped once the finding cap is
+      // reached so we stop paying for getComputedStyle) --
+      if (zIndexCount < 10) {
+        var zIndex = window.getComputedStyle(elem).zIndex;
+        if (zIndex && zIndex !== 'auto') {
+          var zValue = parseInt(zIndex, 10);
+          if (zValue > TH.zIndex) {
+            var zSelector = shortSelector(elem);
+            var zMsg = 'z-index ' + zValue + ' exceeds ' + TH.zIndex;
+            var zID = computeFindingID('z-index-inflation', zSelector, zMsg);
+            registerFinding(zID, zSelector);
+            fixable.push({
+              id: zID,
+              type: 'z-index-inflation',
+              severity: zValue > TH.zIndex * 10 ? 'warning' : 'info',
+              selector: zSelector,
+              value: zValue,
+              impact: Math.min(10, Math.floor(zValue / 100)),
+              fix: 'Use layered z-index system (e.g., --z-modal: 100, --z-dropdown: 50)'
+            });
+            zIndexCount++;
+          }
         }
       }
     }
 
-    // Identify patterns that should be extracted to classes (3+ occurrences)
+    // Identify patterns that should be extracted to classes
     for (var pattern in stylePatterns) {
       if (!stylePatterns.hasOwnProperty(pattern)) continue;
       var count = stylePatterns[pattern];
 
-      if (count >= 3) {
+      if (count >= TH.patternMin) {
         var elems = elementsByPattern[pattern];
         var selectors = [];
         for (var j = 0; j < Math.min(5, elems.length); j++) {
-          var selector = elems[j].tagName.toLowerCase();
-          if (elems[j].className) {
-            selector += '.' + elems[j].className.split(' ')[0];
+          var patternElemSel = elems[j].tagName.toLowerCase();
+          if (elems[j].className && typeof elems[j].className === 'string' && elems[j].className.split(' ')[0]) {
+            patternElemSel += '.' + elems[j].className.split(' ')[0];
           }
-          selectors.push(selector);
+          selectors.push(patternElemSel);
         }
         if (elems.length > 5) {
           selectors.push('...');
@@ -252,19 +320,47 @@
       }
     }
 
+    // Hardcoded color findings (from the single-pass collection)
+    for (var color in colorPatterns) {
+      if (!colorPatterns.hasOwnProperty(color)) continue;
+      var colorCount = colorPatterns[color];
+
+      if (colorCount >= 3) {
+        var colorFix = 'Replace with CSS variable --color-' + (color.charAt(0) === '#' ? 'hex-' + color.substring(1, 4) : 'named');
+        var colorID = computeFindingID('hardcoded-color', color, colorFix);
+        fixable.push({
+          id: colorID,
+          type: 'hardcoded-color',
+          severity: 'info',
+          pattern: color,
+          count: colorCount,
+          impact: Math.min(5, Math.floor(colorCount / 3)),
+          fix: colorFix
+        });
+      }
+    }
+
     // --- Analysis: !important declarations ---
 
-    for (var i = 0; i < document.styleSheets.length; i++) {
+    for (var si = 0; si < document.styleSheets.length; si++) {
       try {
-        var rules = document.styleSheets[i].cssRules || [];
-        for (var j = 0; j < rules.length; j++) {
-          if (rules[j].cssText && rules[j].cssText.indexOf('!important') !== -1) {
+        var rules = document.styleSheets[si].cssRules || [];
+        for (var ri = 0; ri < rules.length; ri++) {
+          if (rules[ri].cssText && rules[ri].cssText.indexOf('!important') !== -1) {
             metrics.importantCount++;
           }
         }
       } catch (e) {
-        // Cross-origin stylesheets can't be accessed
+        // Cross-origin stylesheets can't be accessed — count instead of
+        // silently swallowing so the report is honest about coverage.
+        metrics.inaccessibleStylesheets++;
       }
+    }
+
+    var coverageNote = null;
+    if (metrics.inaccessibleStylesheets > 0) {
+      coverageNote = metrics.inaccessibleStylesheets + ' of ' + metrics.stylesheetCount +
+        ' stylesheets are cross-origin and could not be inspected — !important and rule-level checks cover accessible sheets only';
     }
 
     if (metrics.importantCount > 0) {
@@ -276,132 +372,6 @@
         count: metrics.importantCount,
         message: importantMsg
       });
-    }
-
-    // --- Analysis: Hardcoded colors ---
-
-    var colorPatterns = {};
-    for (var i = 0; i < inlineStyles.length; i++) {
-      var styleAttr = inlineStyles[i].getAttribute('style');
-      if (!styleAttr) continue;
-
-      var props = parseInlineStyle(styleAttr);
-      for (var prop in props) {
-        if (!props.hasOwnProperty(prop)) continue;
-        var value = props[prop];
-
-        if (isHardcodedColor(value) && !usesCSSVariable(value)) {
-          // Normalize hex colors to lowercase
-          var normalized = value.toLowerCase();
-          if (!colorPatterns[normalized]) {
-            colorPatterns[normalized] = 0;
-          }
-          colorPatterns[normalized]++;
-        }
-      }
-    }
-
-    for (var color in colorPatterns) {
-      if (!colorPatterns.hasOwnProperty(color)) continue;
-      var count = colorPatterns[color];
-
-      if (count >= 3) {
-        var colorFix = 'Replace with CSS variable --color-' + (color.charAt(0) === '#' ? 'hex-' + color.substring(1, 4) : 'named');
-        var colorID = computeFindingID('hardcoded-color', color, colorFix);
-        fixable.push({
-          id: colorID,
-          type: 'hardcoded-color',
-          severity: 'info',
-          pattern: color,
-          count: count,
-          impact: Math.min(5, Math.floor(count / 3)),
-          fix: colorFix
-        });
-      }
-    }
-
-    // --- Analysis: Z-index inflation ---
-
-    var allElements = document.querySelectorAll('*');
-    var zIndexCount = 0;
-    for (var i = 0; i < allElements.length; i++) {
-      var elem = allElements[i];
-      // Skip agnt/devtool UI elements
-      if (utils.isDevtoolElement && utils.isDevtoolElement(elem)) continue;
-      var computed = window.getComputedStyle(elem);
-      var zIndex = computed.zIndex;
-
-      if (zIndex && zIndex !== 'auto') {
-        var zValue = parseInt(zIndex, 10);
-        if (zValue > 100) {
-          var selector = elem.tagName.toLowerCase();
-          if (elem.className && typeof elem.className === 'string') {
-            var classes = elem.className.split(' ').filter(function(c) { return c; });
-            if (classes.length > 0) {
-              selector = '.' + classes[0];
-            }
-          }
-
-          var zMsg = 'z-index ' + zValue + ' exceeds 100';
-          var zID = computeFindingID('z-index-inflation', selector, zMsg);
-          registerFinding(zID, selector);
-          fixable.push({
-            id: zID,
-            type: 'z-index-inflation',
-            severity: zValue > 1000 ? 'warning' : 'info',
-            selector: selector,
-            value: zValue,
-            impact: Math.min(10, Math.floor(zValue / 100)),
-            fix: 'Use layered z-index system (e.g., --z-modal: 100, --z-dropdown: 50)'
-          });
-
-          // Limit to prevent overflow
-          zIndexCount++;
-          if (zIndexCount >= 10) break;
-        }
-      }
-    }
-
-    // --- Analysis: Layout issues ---
-
-    var layoutIssueCount = 0;
-    for (var i = 0; i < inlineStyles.length; i++) {
-      var elem = inlineStyles[i];
-      // Skip agnt/devtool UI elements
-      if (utils.isDevtoolElement && utils.isDevtoolElement(elem)) continue;
-      var styleAttr = elem.getAttribute('style');
-      if (!styleAttr) continue;
-
-      var props = parseInlineStyle(styleAttr);
-
-      // Check for fixed width/height
-      if ((props.width && /^\d+px$/.test(props.width)) ||
-          (props.height && /^\d+px$/.test(props.height))) {
-        var selector = elem.tagName.toLowerCase();
-        if (elem.className && typeof elem.className === 'string') {
-          var classes = elem.className.split(' ').filter(function(c) { return c; });
-          if (classes.length > 0) {
-            selector = '.' + classes[0];
-          }
-        }
-
-        var fixedMsg = 'fixed dimensions width:' + (props.width || 'auto') + ' height:' + (props.height || 'auto');
-        var fixedID = computeFindingID('fixed-dimensions', selector, fixedMsg);
-        registerFinding(fixedID, selector);
-        fixable.push({
-          id: fixedID,
-          type: 'fixed-dimensions',
-          severity: 'info',
-          selector: selector,
-          width: props.width,
-          height: props.height,
-          impact: 3,
-          fix: 'Use relative units (%, rem, em) or max-width/max-height for responsiveness'
-        });
-
-        layoutIssueCount++;
-        if (layoutIssueCount >= 5) break;
-      }
     }
 
     // --- Calculate score and grade ---
@@ -428,12 +398,8 @@
     // Ensure score doesn't go below 0
     score = Math.max(0, score);
 
-    // Calculate grade
-    var grade = 'F';
-    if (score >= 90) grade = 'A';
-    else if (score >= 80) grade = 'B';
-    else if (score >= 70) grade = 'C';
-    else if (score >= 60) grade = 'D';
+    // Grade (canonical shared A-F scale)
+    var grade = auditUtils.calculateGrade(score);
 
     // --- Generate actions ---
 
@@ -441,9 +407,9 @@
 
     // Top 3 patterns to extract
     var topPatterns = patterns.slice(0, 3);
-    for (var i = 0; i < topPatterns.length; i++) {
-      actions.push('Create .' + topPatterns[i].suggestedClass + ' utility class (used ' +
-                  topPatterns[i].count + ' times inline)');
+    for (var ai = 0; ai < topPatterns.length; ai++) {
+      actions.push('Create .' + topPatterns[ai].suggestedClass + ' utility class (used ' +
+                  topPatterns[ai].count + ' times inline)');
     }
 
     // !important review
@@ -462,7 +428,7 @@
 
     // Z-index issues
     if (zIndexCount > 0) {
-      actions.push('Address z-index inflation issues (' + zIndexCount + ' elements with z-index >100)');
+      actions.push('Address z-index inflation issues (' + zIndexCount + ' elements with z-index >' + TH.zIndex + ')');
     }
 
     // --- Stats ---
@@ -477,7 +443,7 @@
 
     // --- Build response ---
 
-    var patternsToExtract = patterns.filter(function(p) { return p.count >= 3; }).length;
+    var patternsToExtract = patterns.length;
     var summary = metrics.inlineStyleCount + ' inline styles found';
     if (patternsToExtract > 0) {
       summary += ', ' + patternsToExtract + ' should be extracted to classes';
@@ -488,14 +454,14 @@
     if (!raw) {
       // Collect all unique colors with usage context
       var colorData = [];
-      for (var color in colorPatterns) {
-        if (colorPatterns.hasOwnProperty(color)) {
+      for (var c in colorPatterns) {
+        if (colorPatterns.hasOwnProperty(c)) {
           colorData.push({
-            color: color,
-            count: colorPatterns[color],
+            color: c,
+            count: colorPatterns[c],
             // Help AI understand usage context
-            isNeutral: /^#([0-9a-f])\1{2,5}$/i.test(color) || /^(gray|grey|white|black)$/i.test(color),
-            isTransparent: color.indexOf('rgba') !== -1 && /,\s*0(\.\d+)?\)/.test(color)
+            isNeutral: /^#([0-9a-f])\1{2,5}$/i.test(c) || /^(gray|grey|white|black)$/i.test(c),
+            isTransparent: c.indexOf('rgba') !== -1 && /,\s*0(\.\d+)?\)/.test(c)
           });
         }
       }
@@ -526,7 +492,7 @@
         };
       });
 
-      return {
+      var aiResponse = {
         audit: 'css',
         summary: summary,
         score: score,
@@ -565,6 +531,8 @@
           ].filter(Boolean)
         }
       };
+      if (coverageNote) aiResponse.note = coverageNote;
+      return aiResponse;
     }
 
     // === RAW RESPONSE (raw: true) ===
@@ -583,17 +551,20 @@
       actions: actions,
       stats: stats
     };
+    if (coverageNote) response.note = coverageNote;
 
     // Respect detailLevel for backward compatibility
     if (detailLevel === 'summary') {
       // Return compact summary
-      return {
+      var summaryResponse = {
         summary: summary,
         score: score,
         grade: grade,
         metrics: metrics,
         stats: stats
       };
+      if (coverageNote) summaryResponse.note = coverageNote;
+      return summaryResponse;
     }
 
     return response;

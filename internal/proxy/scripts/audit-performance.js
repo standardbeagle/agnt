@@ -50,22 +50,13 @@
       return (bytes / 1024 / 1024).toFixed(1) + 'MB';
     }
 
-    // Generate CSS selector for element
+    // Generate CSS selector for element — shared implementation (audit-utils.js)
     function getSelector(el) {
-      if (!el) return 'unknown';
-      if (el.id) return '#' + el.id;
-      if (el.className && typeof el.className === 'string') {
-        var classes = el.className.trim().split(/\s+/);
-        if (classes.length > 0 && classes[0]) {
-          return el.tagName.toLowerCase() + '.' + classes[0];
-        }
-      }
-      return el.tagName.toLowerCase();
+      var sel = auditUtils.getSelector(el);
+      return sel || 'unknown';
     }
 
     // === COLLECT METRICS ===
-
-    var timing = perf.timing || {};
 
     // Get paint timing
     var paintEntries = perf.getEntriesByType ? perf.getEntriesByType('paint') : [];
@@ -76,36 +67,74 @@
       if (paintEntries[i].name === 'first-paint') fp = Math.round(paintEntries[i].startTime);
     }
 
-    // Get LCP if available
+    // === LCP / CLS / INP ===
+    // Preferred source: window.__devtool_vitals, the buffered accumulator that
+    // observes largest-contentful-paint / layout-shift / event (INP) / longtask
+    // entries from page start. The synchronous getEntriesByType reads below are
+    // fallback only — they see an empty buffer for entry types that require a
+    // PerformanceObserver, so a missing accumulator is reported honestly.
+    function vitalNumber(v) {
+      if (typeof v === 'number' && isFinite(v)) return v;
+      if (v && typeof v.value === 'number' && isFinite(v.value)) return v.value;
+      return null;
+    }
+
+    var vitalsData = null;
+    var vitalsNote = null;
+    try {
+      var vitalsAcc = window.__devtool_vitals;
+      if (vitalsAcc) {
+        if (typeof vitalsAcc.getVitals === 'function') vitalsData = vitalsAcc.getVitals();
+        else if (typeof vitalsAcc.get === 'function') vitalsData = vitalsAcc.get();
+        else vitalsData = vitalsAcc;
+      }
+    } catch (e) {
+      vitalsData = null;
+    }
+
     var lcp = null;
-    try {
-      var lcpEntries = perf.getEntriesByType ? perf.getEntriesByType('largest-contentful-paint') : [];
-      if (lcpEntries.length > 0) {
-        lcp = Math.round(lcpEntries[lcpEntries.length - 1].startTime);
-      }
-    } catch (e) {
-      // LCP may not be available
-    }
-
-    // Try to get CLS via layout-shift entries
     var cls = null;
-    try {
-      var layoutShifts = perf.getEntriesByType('layout-shift') || [];
-      if (layoutShifts.length > 0) {
-        cls = layoutShifts.reduce(function(sum, entry) {
-          if (!entry.hadRecentInput) {
-            return sum + entry.value;
-          }
-          return sum;
-        }, 0);
-        cls = Math.round(cls * 1000) / 1000; // Round to 3 decimals
-      }
-    } catch (e) {
-      // CLS may not be available
+    var inp = null;
+
+    if (vitalsData) {
+      var lcpV = vitalNumber(vitalsData.lcp);
+      var clsV = vitalNumber(vitalsData.cls);
+      var inpV = vitalNumber(vitalsData.inp);
+      if (lcpV !== null) lcp = Math.round(lcpV);
+      if (clsV !== null) cls = Math.round(clsV * 1000) / 1000;
+      if (inpV !== null) inp = Math.round(inpV);
+    } else {
+      vitalsNote = 'vitals accumulator unavailable — LCP/CLS/INP read from the synchronous performance buffer, which is usually empty for these entry types';
     }
 
-    // INP is not widely available yet
-    var inp = null;
+    // Fallback: synchronous entry reads (only fill values still missing)
+    if (lcp === null) {
+      try {
+        var lcpEntries = perf.getEntriesByType ? perf.getEntriesByType('largest-contentful-paint') : [];
+        if (lcpEntries.length > 0) {
+          lcp = Math.round(lcpEntries[lcpEntries.length - 1].startTime);
+        }
+      } catch (e) {
+        // LCP may not be available
+      }
+    }
+
+    if (cls === null) {
+      try {
+        var layoutShifts = perf.getEntriesByType('layout-shift') || [];
+        if (layoutShifts.length > 0) {
+          cls = layoutShifts.reduce(function(sum, entry) {
+            if (!entry.hadRecentInput) {
+              return sum + entry.value;
+            }
+            return sum;
+          }, 0);
+          cls = Math.round(cls * 1000) / 1000; // Round to 3 decimals
+        }
+      } catch (e) {
+        // CLS may not be available
+      }
+    }
 
     // === CORE WEB VITALS WITH RATINGS ===
     var coreWebVitals = {
@@ -126,10 +155,11 @@
       },
       inp: {
         value: inp,
-        rating: 'unknown',
+        rating: inp === null ? 'unknown' : rateMetric(inp, 200, 500),
         target: 200
       }
     };
+    if (vitalsNote) coreWebVitals.note = vitalsNote;
 
     // === RESOURCE ANALYSIS ===
 
@@ -289,6 +319,7 @@
     }
 
     var hasSwap = false;
+    var inaccessibleSheets = 0;
     for (var p = 0; p < document.styleSheets.length; p++) {
       try {
         var rules = document.styleSheets[p].cssRules || [];
@@ -300,16 +331,31 @@
           }
         }
       } catch (e) {
-        // Cross-origin stylesheets can't be accessed
+        // Cross-origin stylesheets can't be accessed — count instead of
+        // silently swallowing so the report is honest about coverage.
+        inaccessibleSheets++;
       }
     }
 
     if (fontFaces.length > 0 && !hasSwap) {
+      var fontDisplayMsg = 'Consider adding font-display: swap to @font-face rules for better perceived performance';
+      if (inaccessibleSheets > 0) {
+        fontDisplayMsg += ' (' + inaccessibleSheets + ' cross-origin stylesheets could not be inspected)';
+      }
       informational.push({
         id: 'font-display',
         type: 'font-loading',
         severity: 'info',
-        message: 'Consider adding font-display: swap to @font-face rules for better perceived performance'
+        message: fontDisplayMsg
+      });
+    }
+    if (inaccessibleSheets > 0) {
+      informational.push({
+        id: 'stylesheet-coverage',
+        type: 'stylesheet-coverage',
+        severity: 'info',
+        message: inaccessibleSheets + ' of ' + document.styleSheets.length +
+          ' stylesheets are cross-origin and could not be inspected for @font-face rules'
       });
     }
 
@@ -410,13 +456,8 @@
     score -= warningCount * 2;
     score = Math.max(0, Math.min(100, score));
 
-    // Grade
-    var grade = 'F';
-    if (score >= 90) grade = 'A';
-    else if (score >= 80) grade = 'B';
-    else if (score >= 70) grade = 'C';
-    else if (score >= 60) grade = 'D';
-    else if (score >= 50) grade = 'E';
+    // Grade (canonical shared A-F scale — the old E band is gone)
+    var grade = auditUtils.calculateGrade(score);
 
     // === GENERATE SUMMARY ===
 
@@ -497,7 +538,8 @@
           slowestResources: slowestResources.slice(0, 5),
           resourceSummary: resourceSummary,
           fontCount: fontFaces.length,
-          hasFontDisplaySwap: hasSwap
+          hasFontDisplaySwap: hasSwap,
+          inaccessibleStylesheets: inaccessibleSheets
         },
         automationHints: {
           lookFor: [

@@ -5,25 +5,15 @@
 
   var utils = window.__devtool_utils;
 
-  /**
-   * Generate a stable 8-char hex finding ID from type, selector, and message.
-   * FNV-1a 32-bit hash — same inputs always produce same output across runs.
-   */
+  // Shared audit helpers (audit-utils.js): stable FNV-1a finding ids, the
+  // shared window.__devtool.audit.findingSelectors highlight registry, and the
+  // canonical A-F grade scale.
   function computeFindingID(type, selector, message) {
-    var input = type + '\x00' + (selector || '') + '\x00' + (message || '');
-    var h = 0x811c9dc5;
-    for (var i = 0; i < input.length; i++) {
-      h = h ^ input.charCodeAt(i);
-      h = (h + (h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24)) >>> 0;
-    }
-    return ('00000000' + h.toString(16)).slice(-8);
+    return window.__devtool_audit_utils.computeFindingID(type, selector, message);
   }
 
   function registerFinding(id, selector) {
-    if (!window.__devtool) { window.__devtool = {}; }
-    if (!window.__devtool.audit) { window.__devtool.audit = {}; }
-    if (!window.__devtool.audit.findingSelectors) { window.__devtool.audit.findingSelectors = {}; }
-    window.__devtool.audit.findingSelectors[id] = selector || '';
+    window.__devtool_audit_utils.registerFinding(id, selector);
   }
 
   // Options:
@@ -50,21 +40,10 @@
       return meta ? meta.getAttribute('content') : null;
     }
 
-    // Helper to calculate grade from score
+    // Helper to calculate grade from score — canonical shared A-F scale
+    // (the old A+/A- band scale diverged from every other audit).
     function calculateGrade(s) {
-      if (s >= 97) return 'A+';
-      if (s >= 93) return 'A';
-      if (s >= 90) return 'A-';
-      if (s >= 87) return 'B+';
-      if (s >= 83) return 'B';
-      if (s >= 80) return 'B-';
-      if (s >= 77) return 'C+';
-      if (s >= 73) return 'C';
-      if (s >= 70) return 'C-';
-      if (s >= 67) return 'D+';
-      if (s >= 63) return 'D';
-      if (s >= 60) return 'D-';
-      return 'F';
+      return window.__devtool_audit_utils.calculateGrade(s);
     }
 
     // === META TAG ANALYSIS ===

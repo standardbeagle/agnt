@@ -9,13 +9,39 @@
   // Standard breakpoints to test
   var BREAKPOINTS = [320, 375, 414, 768, 1024, 1280, 1440, 1920];
 
+  // Default detection thresholds; override per-call via options.thresholds.
+  var DEFAULT_THRESHOLDS = {
+    touchTargetPx: 44,     // interactive targets below this (Apple HIG) -> warning
+    fixedWidthWarnPx: 320, // fixed width / min-width above this -> warning
+    fixedWidthErrorPx: 768,// fixed width / min-width above this -> error
+    minFontPx: 12          // font-size below this -> small-font warning
+  };
+
+  // Build the per-element read context used by the checks. Standalone callers
+  // of the exported check functions get one computed lazily.
+  function buildContext(element, th) {
+    return {
+      computed: window.getComputedStyle(element),
+      rect: element.getBoundingClientRect(),
+      scrollWidth: element.scrollWidth,
+      clientWidth: element.clientWidth,
+      th: th || DEFAULT_THRESHOLDS
+    };
+  }
+
+  function ensureContext(element, ctx) {
+    return ctx || buildContext(element, DEFAULT_THRESHOLDS);
+  }
+
   /**
    * Check if an element has fixed dimensions that may cause issues
    */
-  function checkFixedDimensions(element) {
-    var computed = window.getComputedStyle(element);
+  function checkFixedDimensions(element, ctx) {
+    ctx = ensureContext(element, ctx);
+    var computed = ctx.computed;
+    var th = ctx.th;
     var issues = [];
-    var rect = element.getBoundingClientRect();
+    var rect = ctx.rect;
 
     // Check for fixed width in pixels
     var width = computed.width;
@@ -26,10 +52,10 @@
     var minWidth = parseFloat(computed.minWidth) || 0;
 
     // Check for elements wider than common mobile viewports
-    if (hasFixedWidth && widthValue > 320) {
+    if (hasFixedWidth && widthValue > th.fixedWidthWarnPx) {
       issues.push({
         type: 'fixed-width',
-        severity: widthValue > 768 ? 'error' : 'warning',
+        severity: widthValue > th.fixedWidthErrorPx ? 'error' : 'warning',
         message: 'Fixed width (' + Math.round(widthValue) + 'px) may cause horizontal scroll on mobile',
         details: {
           width: Math.round(widthValue) + 'px',
@@ -38,10 +64,10 @@
       });
     }
 
-    if (minWidth > 320) {
+    if (minWidth > th.fixedWidthWarnPx) {
       issues.push({
         type: 'min-width-too-large',
-        severity: minWidth > 768 ? 'error' : 'warning',
+        severity: minWidth > th.fixedWidthErrorPx ? 'error' : 'warning',
         message: 'min-width (' + Math.round(minWidth) + 'px) may cause horizontal scroll',
         details: {
           minWidth: Math.round(minWidth) + 'px',
@@ -70,7 +96,7 @@
   /**
    * Check for small touch targets
    */
-  function checkTouchTargets(element) {
+  function checkTouchTargets(element, ctx) {
     var issues = [];
     var tagName = element.tagName.toLowerCase();
 
@@ -88,19 +114,20 @@
 
     if (!isInteractive) return issues;
 
-    var rect = element.getBoundingClientRect();
-    var minSize = 44; // Apple HIG minimum touch target
+    ctx = ensureContext(element, ctx);
+    var rect = ctx.rect;
+    var minSize = ctx.th.touchTargetPx;
 
     if (rect.width > 0 && rect.height > 0) {
       if (rect.width < minSize || rect.height < minSize) {
         issues.push({
           type: 'small-touch-target',
           severity: 'warning',
-          message: 'Touch target smaller than 44x44px minimum',
+          message: 'Touch target smaller than ' + minSize + 'x' + minSize + 'px minimum',
           details: {
             width: Math.round(rect.width) + 'px',
             height: Math.round(rect.height) + 'px',
-            recommended: '44x44px minimum'
+            recommended: minSize + 'x' + minSize + 'px minimum'
           }
         });
       }
@@ -112,11 +139,12 @@
   /**
    * Check for horizontal scroll containers
    */
-  function checkHorizontalScroll(element) {
+  function checkHorizontalScroll(element, ctx) {
+    ctx = ensureContext(element, ctx);
     var issues = [];
-    var computed = window.getComputedStyle(element);
+    var computed = ctx.computed;
 
-    var hasHorizontalScroll = element.scrollWidth > element.clientWidth;
+    var hasHorizontalScroll = ctx.scrollWidth > ctx.clientWidth;
     var overflowX = computed.overflowX;
 
     // Intentional horizontal scroll (carousel, etc.) is ok
@@ -128,9 +156,9 @@
         severity: 'error',
         message: 'Element causes horizontal scroll without overflow-x setting',
         details: {
-          scrollWidth: element.scrollWidth + 'px',
-          clientWidth: element.clientWidth + 'px',
-          overflow: (element.scrollWidth - element.clientWidth) + 'px'
+          scrollWidth: ctx.scrollWidth + 'px',
+          clientWidth: ctx.clientWidth + 'px',
+          overflow: (ctx.scrollWidth - ctx.clientWidth) + 'px'
         }
       });
     }
@@ -141,15 +169,15 @@
   /**
    * Check for absolute/fixed positioning issues
    */
-  function checkPositioning(element) {
+  function checkPositioning(element, ctx) {
+    ctx = ensureContext(element, ctx);
     var issues = [];
-    var computed = window.getComputedStyle(element);
+    var computed = ctx.computed;
     var position = computed.position;
 
     if (position === 'absolute' || position === 'fixed') {
       var left = parseFloat(computed.left);
-      var right = parseFloat(computed.right);
-      var rect = element.getBoundingClientRect();
+      var rect = ctx.rect;
 
       // Check if positioned element could go offscreen
       if (!isNaN(left) && left > 0 && rect.right > window.innerWidth) {
@@ -190,13 +218,14 @@
   /**
    * Check for text sizing issues
    */
-  function checkTextSizing(element) {
+  function checkTextSizing(element, ctx) {
+    ctx = ensureContext(element, ctx);
     var issues = [];
-    var computed = window.getComputedStyle(element);
+    var computed = ctx.computed;
     var fontSize = parseFloat(computed.fontSize);
 
     // Check for very small font size
-    if (fontSize < 12) {
+    if (fontSize < ctx.th.minFontPx) {
       issues.push({
         type: 'small-font',
         severity: 'warning',
@@ -231,12 +260,12 @@
   /**
    * Check for table layout issues
    */
-  function checkTableLayout(element) {
+  function checkTableLayout(element, ctx) {
     var issues = [];
 
     if (element.tagName.toLowerCase() === 'table') {
-      var rect = element.getBoundingClientRect();
-      var computed = window.getComputedStyle(element);
+      ctx = ensureContext(element, ctx);
+      var rect = ctx.rect;
 
       // Table wider than viewport
       if (rect.width > window.innerWidth) {
@@ -272,10 +301,23 @@
   }
 
   /**
-   * Main responsive risk check function
+   * Main responsive risk check function.
+   * Options:
+   *   thresholds: object - shallow-merged over DEFAULT_THRESHOLDS
+   *
+   * The scan runs in two read phases to avoid interleaving different kinds of
+   * per-element reads: first a geometry pass (getBoundingClientRect +
+   * scroll/client widths + visibility), then a computed-style pass. All six
+   * checks then consume the pre-read data.
    */
-  function checkResponsiveRisk() {
+  function checkResponsiveRisk(options) {
     try {
+      options = options || {};
+      var auditUtils = window.__devtool_audit_utils;
+      var th = auditUtils && auditUtils.mergeThresholds
+        ? auditUtils.mergeThresholds(DEFAULT_THRESHOLDS, options.thresholds)
+        : DEFAULT_THRESHOLDS;
+
       var elements = document.body.querySelectorAll('*');
       var issues = [];
       var summary = {
@@ -285,29 +327,51 @@
         elementsAnalyzed: elements.length
       };
 
+      // --- Phase 1: batched geometry reads ---
+      var entries = [];
       for (var i = 0; i < elements.length; i++) {
         var element = elements[i];
+        entries.push({
+          el: element,
+          hiddenCandidate: element.offsetParent === null,
+          rect: element.getBoundingClientRect(),
+          scrollWidth: element.scrollWidth,
+          clientWidth: element.clientWidth,
+          computed: null,
+          th: th
+        });
+      }
 
-        // Skip hidden elements
-        if (element.offsetParent === null && element.tagName.toLowerCase() !== 'fixed') {
+      // --- Phase 2: batched computed-style reads ---
+      for (var j = 0; j < entries.length; j++) {
+        entries[j].computed = window.getComputedStyle(entries[j].el);
+      }
+
+      // --- Checks consume the pre-read data ---
+      for (var k = 0; k < entries.length; k++) {
+        var entry = entries[k];
+        // Skip hidden elements. offsetParent is null for display:none AND for
+        // position:fixed elements — only skip when the element is genuinely
+        // not fixed-positioned.
+        if (entry.hiddenCandidate && entry.computed.position !== 'fixed') {
           continue;
         }
 
-        var selector = utils.generateSelector(element);
+        var el = entry.el;
         var elementIssues = [];
 
-        // Run all checks
-        elementIssues = elementIssues.concat(checkFixedDimensions(element));
-        elementIssues = elementIssues.concat(checkTouchTargets(element));
-        elementIssues = elementIssues.concat(checkHorizontalScroll(element));
-        elementIssues = elementIssues.concat(checkPositioning(element));
-        elementIssues = elementIssues.concat(checkTextSizing(element));
-        elementIssues = elementIssues.concat(checkTableLayout(element));
+        // Run all checks against the shared read context
+        elementIssues = elementIssues.concat(checkFixedDimensions(el, entry));
+        elementIssues = elementIssues.concat(checkTouchTargets(el, entry));
+        elementIssues = elementIssues.concat(checkHorizontalScroll(el, entry));
+        elementIssues = elementIssues.concat(checkPositioning(el, entry));
+        elementIssues = elementIssues.concat(checkTextSizing(el, entry));
+        elementIssues = elementIssues.concat(checkTableLayout(el, entry));
 
         if (elementIssues.length > 0) {
           issues.push({
-            selector: selector,
-            tagName: element.tagName.toLowerCase(),
+            selector: utils.generateSelector(el),
+            tagName: el.tagName.toLowerCase(),
             issues: elementIssues
           });
 
