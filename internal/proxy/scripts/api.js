@@ -459,10 +459,14 @@
 
       if (selector) {
         var el = utils.resolveElement(selector);
-        result.element = {
-          selector: utils.generateSelector(el),
-          stacking: inspection.getStacking(selector)
-        };
+        if (el) {
+          result.element = {
+            selector: utils.generateSelector(el),
+            stacking: inspection.getStacking(selector)
+          };
+        } else {
+          result.element = { error: 'element not found: ' + selector };
+        }
       }
 
       return result;

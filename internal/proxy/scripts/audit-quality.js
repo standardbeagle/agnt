@@ -517,8 +517,7 @@
     }
 
     // Crawlable links
-    var uncrawlableLinks = document.querySelectorAll('a[href^="javascript:"], a[href="#"]:not([href="#"])');
-    var jsVoidLinks = document.querySelectorAll('a[href="javascript:void(0)"]');
+    var uncrawlableLinks = document.querySelectorAll('a[href^="javascript:"], a[href="#"]');
     var totalUncrawlable = uncrawlableLinks.length;
 
     if (totalUncrawlable > 0) {
@@ -748,11 +747,11 @@
           performance: performanceResult.score
         };
 
-        if (apiResult) {
+        if (apiResult && !apiResult.notApplicable) {
           scores.api = apiResult.score;
         }
 
-        if (loadingResult) {
+        if (loadingResult && !loadingResult.notApplicable) {
           scores.loading = loadingResult.score;
         }
 
@@ -871,7 +870,7 @@
         }
       };
 
-      if (apiResult) {
+      if (apiResult && !apiResult.notApplicable) {
         audits.api = {
           score: apiResult.score,
           grade: apiResult.grade,
@@ -879,7 +878,7 @@
         };
       }
 
-      if (loadingResult) {
+      if (loadingResult && !loadingResult.notApplicable) {
         audits.loading = {
           score: loadingResult.score,
           grade: loadingResult.grade,

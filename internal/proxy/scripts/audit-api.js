@@ -88,14 +88,17 @@
       findings.push(f);
     }
 
-    // === EMPTY / SHORT BUFFER: honest empty report ===
+    // === EMPTY / SHORT BUFFER: honest not-applicable report ===
+    // notApplicable tells aggregators (audit-quality full-page score) to
+    // exclude this audit — an empty buffer is "nothing measured", not "A".
     if (!calls || calls.length === 0) {
       var emptySummary = 'No API calls recorded — reload page then re-run.';
       if (!raw) {
         return {
           audit: 'api',
-          score: 100,
-          grade: 'A',
+          notApplicable: true,
+          score: null,
+          grade: null,
           summary: emptySummary,
           checkedAt: new Date().toISOString(),
           stats: { total: 0, errors: 0, warnings: 0, info: 0, totalIssues: 0 },
@@ -104,8 +107,9 @@
       }
       return {
         audit: 'api',
-        score: 100,
-        grade: 'A',
+        notApplicable: true,
+        score: null,
+        grade: null,
         summary: emptySummary,
         checkedAt: new Date().toISOString(),
         findings: [],
@@ -296,19 +300,14 @@
         });
       }
 
-      // Honest note: payload-size over-fetch is not measurable from this buffer.
-      var noteMsg = 'Payload-size over-fetch detection unavailable: the API call ' +
-                    'buffer has no response-size/content-length field. Add a ' +
-                    'content-length capture to api-tracker to enable it.';
-      var noteId = computeFindingID('over-fetch-unavailable', '', noteMsg);
-      addFinding({
-        id: noteId,
-        type: 'over-fetch-unavailable',
-        severity: 'info',
-        selector: '',
-        message: noteMsg
-      });
     }
+
+    // Honest note: payload-size over-fetch is not measurable from this buffer.
+    // Reported as a limitation of the audit, not as a page finding — it must
+    // not appear in issue counts or findings.
+    var limitations = ['Payload-size over-fetch detection unavailable: the API call ' +
+                       'buffer has no response-size/content-length field. Add a ' +
+                       'content-length capture to api-tracker to enable it.'];
 
     detectWaterfall();
     detectNPlusOne();
@@ -334,7 +333,7 @@
         case 'chatty-load':
           weight = f.severity === 'warning' ? 6 : 3;
           break;
-        default: // over-fetch-unavailable note and other info
+        default: // unrecognized info findings
           weight = 0;
           break;
       }
@@ -373,7 +372,8 @@
         summary: summary,
         checkedAt: new Date().toISOString(),
         findings: findings,
-        findingSelectors: findingSelectors
+        findingSelectors: findingSelectors,
+        limitations: limitations
       };
     }
 
@@ -405,7 +405,8 @@
         info: infoCount,
         totalIssues: findings.length
       },
-      findingsByType: byType
+      findingsByType: byType,
+      limitations: limitations
     };
   }
 

@@ -193,8 +193,10 @@
             throw new Error('Cannot access iframe content');
           }
 
-          // Run enabled checks
+          // Run enabled checks. A check that throws is recorded in
+          // checkErrors so a broken checker cannot pass as a clean page.
           var checks = options.checks || ['layout', 'overflow', 'a11y'];
+          var checkErrors = [];
 
           if (checks.indexOf('layout') !== -1) {
             try {
@@ -202,6 +204,7 @@
               issues = issues.concat(layoutIssues);
             } catch (e) {
               console.warn('[DevTool] Layout check failed:', e.message);
+              checkErrors.push({ check: 'layout', error: e.message });
             }
           }
 
@@ -211,6 +214,7 @@
               issues = issues.concat(overflowIssues);
             } catch (e) {
               console.warn('[DevTool] Overflow check failed:', e.message);
+              checkErrors.push({ check: 'overflow', error: e.message });
             }
           }
 
@@ -220,6 +224,7 @@
             a11yPromise = runResponsiveA11yCheck(iframeWindow, viewport.width, options)
               .catch(function(e) {
                 console.warn('[DevTool] A11y check failed:', e.message);
+                checkErrors.push({ check: 'a11y', error: e.message });
                 return [];
               });
           } else {
@@ -238,6 +243,8 @@
               height: viewport.height,
               issues: issues,
               issueCount: issues.length,
+              checkErrors: checkErrors,
+              checksComplete: checkErrors.length === 0,
               timestamp: Date.now()
             });
           });
@@ -868,7 +875,9 @@
               width: viewport.width,
               height: viewport.height,
               issues: viewportResult.issues,
-              issueCount: viewportResult.issueCount
+              issueCount: viewportResult.issueCount,
+              checkErrors: viewportResult.checkErrors || [],
+              checksComplete: viewportResult.checksComplete !== false
             };
 
             // Update summary counts
@@ -894,7 +903,9 @@
               height: viewport.height,
               error: err.message,
               issues: [],
-              issueCount: 0
+              issueCount: 0,
+              checkErrors: [{ check: 'viewport', error: err.message }],
+              checksComplete: false
             };
 
             processNextViewport();
@@ -983,7 +994,12 @@
 
       if (viewport.error) {
         lines.push('  ERROR: ' + viewport.error);
-      } else if (viewport.issues && viewport.issues.length > 0) {
+      } else if (viewport.checkErrors && viewport.checkErrors.length > 0) {
+        viewport.checkErrors.forEach(function(ce) {
+          lines.push('  CHECK FAILED [' + ce.check + ']: ' + ce.error + ' (results incomplete)');
+        });
+      }
+      if (!viewport.error && viewport.issues && viewport.issues.length > 0) {
         viewport.issues.slice(0, 10).forEach(function(issue) {
           // Icons: ! = warning/critical, o = info
           // Design spec uses ⚠ and ○, but ASCII ensures terminal compatibility
@@ -1005,6 +1021,17 @@
     var minorCount = results.summary.warning + results.summary.info;
     lines.push('SUMMARY: ' + results.summary.total + ' issues (' + results.summary.critical + ' critical, ' + minorCount + ' minor)');
 
+    // Failed checks mean the issue counts above are a lower bound, not a
+    // clean bill of health — say so explicitly.
+    var failedChecks = 0;
+    viewportNames.forEach(function(name) {
+      var v = results.viewports[name];
+      if (v.checkErrors) failedChecks += v.checkErrors.length;
+    });
+    if (failedChecks > 0) {
+      lines.push('WARNING: ' + failedChecks + ' check(s) failed — results are incomplete');
+    }
+
     // Patterns line
     lines.push('PATTERNS: ' +
                results.patterns.mobileOnly + ' mobile-only, ' +
@@ -1023,12 +1050,20 @@
 
     // Build viewports object with only width and issues
     var viewportsObj = {};
+    var anyCheckErrors = false;
     viewportNames.forEach(function(name) {
       var viewport = results.viewports[name];
       viewportsObj[name] = {
         width: viewport.width,
         issues: viewport.issues || []
       };
+      if (viewport.error) {
+        viewportsObj[name].error = viewport.error;
+      }
+      if (viewport.checkErrors && viewport.checkErrors.length > 0) {
+        viewportsObj[name].checkErrors = viewport.checkErrors;
+        anyCheckErrors = true;
+      }
     });
 
     return {
@@ -1036,7 +1071,8 @@
       summary: {
         total: results.summary.total,
         critical: results.summary.critical,
-        minor: results.summary.warning + results.summary.info
+        minor: results.summary.warning + results.summary.info,
+        complete: !anyCheckErrors
       },
       patterns: {
         mobileOnly: results.patterns.mobileOnly,

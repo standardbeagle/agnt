@@ -49,7 +49,8 @@
    */
   window.fetch = function(resource, options) {
     var url = typeof resource === 'string' ? resource : resource.url;
-    var method = (options && options.method) || 'GET';
+    // Request objects carry their own method; explicit options still win.
+    var method = (options && options.method) || (resource && resource.method) || 'GET';
     var startTime = Date.now();
 
     var call = {
