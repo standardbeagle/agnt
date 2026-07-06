@@ -9,7 +9,7 @@ import (
 // are reachable from the combined bundle and expose the API surface the
 // design-mode geometry-handle feature depends on.
 func TestTransformScriptEmbedded(t *testing.T) {
-	combined := buildCombinedScript()
+	combined := buildCombinedScript(RoleFull)
 
 	for _, marker := range []string{"// transform module", "// override-store module"} {
 		if !strings.Contains(combined, marker) {
@@ -58,7 +58,7 @@ func TestTransformScriptEmbedded(t *testing.T) {
 // TestTransformModuleOrder verifies transform loads after its declared deps
 // (override-store, design, overlay, core, utils) and before api.
 func TestTransformModuleOrder(t *testing.T) {
-	combined := buildCombinedScript()
+	combined := buildCombinedScript(RoleFull)
 
 	idx := func(marker string) int { return strings.Index(combined, marker) }
 	transformIdx := idx("// transform module")

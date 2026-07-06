@@ -20,31 +20,44 @@ import (
 // binary upgrade ships new instrumentation JS).
 const instrumentationAssetPrefix = "/__devtool/inject."
 
+// instrumentationAsset is one cached, content-addressed bundle flavour.
+// bytes is read-only (the asset handler and spliceInto only read it), so
+// sharing it across requests is safe.
+type instrumentationAsset struct {
+	bytes []byte
+	path  string // "/__devtool/inject.<hash>.js"
+}
+
 var (
-	// Cache the instrumentation script since it never changes for the life of
-	// the process. Historically the ~1.3MB bundle was inlined into every HTML
-	// response, which (a) copied it per request and (b) sent it over the wire
-	// on every page load. It is now served as an external, content-addressed,
-	// immutably-cacheable asset and only a tiny <script src> tag is injected.
-	// cachedScriptBytes is read-only (the asset handler and spliceInto only
-	// read it), so sharing it is safe.
-	cachedScript      string
-	cachedScriptBytes []byte
-	cachedScriptPath  string // "/__devtool/inject.<hash>.js"
-	cachedScriptOnce  sync.Once
+	// Cache the instrumentation bundles since they never change for the life
+	// of the process. Historically the ~1.3MB full bundle was inlined into
+	// every HTML response, which (a) copied it per request and (b) sent it
+	// over the wire on every page load. Bundles are now served as external,
+	// content-addressed, immutably-cacheable assets and only a tiny
+	// <script src> tag is injected. There is one asset per frame role
+	// (full/passive, chrome shell, content frame); the content hash in each
+	// path keys the browser cache per role for free.
+	cachedAssets     map[scripts.Role]*instrumentationAsset
+	cachedScriptOnce sync.Once
 )
 
 func loadCachedScript() {
 	cachedScriptOnce.Do(func() {
-		// GetCombinedScript wraps the bundle in <script>…</script> for the
-		// legacy inline-injection form. The bundle is now served as an external
-		// <script src> asset, where those HTML tags are invalid JavaScript and
-		// abort parsing of the whole bundle. Strip the wrapper for the served
-		// asset bytes.
-		cachedScript = stripScriptWrapper(scripts.GetCombinedScript())
-		cachedScriptBytes = []byte(cachedScript)
-		sum := sha256.Sum256(cachedScriptBytes)
-		cachedScriptPath = instrumentationAssetPrefix + hex.EncodeToString(sum[:8]) + ".js"
+		assets := make(map[scripts.Role]*instrumentationAsset, 3)
+		for _, role := range []scripts.Role{scripts.RoleFull, scripts.RoleChrome, scripts.RoleContent} {
+			// GetCombinedScriptForRole wraps the bundle in <script>…</script>
+			// for the legacy inline-injection form. The bundle is now served
+			// as an external <script src> asset, where those HTML tags are
+			// invalid JavaScript and abort parsing of the whole bundle. Strip
+			// the wrapper for the served asset bytes.
+			body := []byte(stripScriptWrapper(scripts.GetCombinedScriptForRole(role)))
+			sum := sha256.Sum256(body)
+			assets[role] = &instrumentationAsset{
+				bytes: body,
+				path:  instrumentationAssetPrefix + hex.EncodeToString(sum[:8]) + ".js",
+			}
+		}
+		cachedAssets = assets
 	})
 }
 
@@ -58,11 +71,18 @@ func stripScriptWrapper(s string) string {
 	return strings.TrimSpace(s)
 }
 
-// instrumentationAssetPath returns the content-addressed URL path the bundle is
-// served from, e.g. "/__devtool/inject.<hash>.js".
+// instrumentationAssetPath returns the content-addressed URL path the full
+// bundle is served from, e.g. "/__devtool/inject.<hash>.js".
 func instrumentationAssetPath() string {
+	return instrumentationAssetPathForRole(scripts.RoleFull)
+}
+
+// instrumentationAssetPathForRole returns the content-addressed URL path of
+// the bundle flavour for the given frame role. Distinct flavours hash to
+// distinct paths, so browser caching is per-role automatically.
+func instrumentationAssetPathForRole(role scripts.Role) string {
 	loadCachedScript()
-	return cachedScriptPath
+	return cachedAssets[role].path
 }
 
 // handleInstrumentationAsset serves the instrumentation bundle for the reserved
@@ -74,7 +94,18 @@ func handleInstrumentationAsset(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	body := instrumentationScriptBytes()
+	loadCachedScript()
+	// Resolve which bundle flavour this content-addressed path names. An
+	// unknown hash (e.g. a page cached across a binary upgrade requesting the
+	// old path) falls back to the full bundle — a superset of every flavour —
+	// rather than 404ing the page's whole instrumentation.
+	body := cachedAssets[scripts.RoleFull].bytes
+	for _, a := range cachedAssets {
+		if r.URL.Path == a.path {
+			body = a.bytes
+			break
+		}
+	}
 	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
 	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 	// Set an explicit Content-Length so the response is delimited rather than
@@ -98,12 +129,13 @@ func handleInstrumentationAsset(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// instrumentationScriptBytes returns the cached instrumentation script as a
-// read-only []byte. Callers MUST NOT mutate the returned slice — it is shared
-// across all requests to avoid re-copying the ~1.3MB bundle per response.
+// instrumentationScriptBytes returns the cached full-bundle instrumentation
+// script as a read-only []byte. Callers MUST NOT mutate the returned slice —
+// it is shared across all requests to avoid re-copying the ~1.3MB bundle per
+// response.
 func instrumentationScriptBytes() []byte {
 	loadCachedScript()
-	return cachedScriptBytes
+	return cachedAssets[scripts.RoleFull].bytes
 }
 
 // instrumentationInsertOffset returns the byte offset where the instrumentation
@@ -294,7 +326,7 @@ func BuildShellDocument(proxyID, frameID, contentSrc string) []byte {
 	var b strings.Builder
 	b.WriteString("<!DOCTYPE html><html><head><meta charset=\"utf-8\">")
 	b.WriteString(fmt.Sprintf("<script>window.__devtool_proxy_id=%q;window.__devtool_role=\"chrome\";window.__devtool_frame_id=%q;</script>", proxyID, frameID))
-	b.WriteString(fmt.Sprintf("<script src=%q></script>", instrumentationAssetPath()))
+	b.WriteString(fmt.Sprintf("<script src=%q></script>", instrumentationAssetPathForRole(scripts.RoleChrome)))
 	b.WriteString("<style>html,body{margin:0;padding:0;height:100%;width:100%;overflow:hidden}#" + contentFrameID + "{position:fixed;inset:0;border:0;width:100%;height:100%;display:block}</style>")
 	b.WriteString("</head><body>")
 	b.WriteString(fmt.Sprintf("<iframe id=%q src=%q></iframe>", contentFrameID, contentSrc))
@@ -309,7 +341,7 @@ func BuildShellDocument(proxyID, frameID, contentSrc string) []byte {
 // the frame's role without re-deriving it from the URL.
 func InjectContentRuntime(body []byte, proxyID, frameID string) []byte {
 	tag := []byte(fmt.Sprintf(`<script>window.__devtool_proxy_id=%q;window.__devtool_role="content";window.__devtool_frame_id=%q;</script><script src=%q></script>`,
-		proxyID, frameID, instrumentationAssetPath()))
+		proxyID, frameID, instrumentationAssetPathForRole(scripts.RoleContent)))
 	if at, ok := instrumentationInsertOffset(body); ok {
 		return spliceInto(body, at, tag)
 	}

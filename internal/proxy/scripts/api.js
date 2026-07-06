@@ -37,6 +37,14 @@
   //     Promise — including the not-loaded fallbacks below, so callers can
   //     rely on one shape per call style.
   //
+  // Not-loaded fallback for the indicator block (same convention as the
+  // walkthrough not-loaded errors): in a bundle/frame without the indicator
+  // module, every method returns a sync {error} object instead of the whole
+  // API dying with a TypeError at bundle eval.
+  function indicatorNotLoaded() {
+    return { error: 'indicator not loaded in this frame' };
+  }
+
   // Main DevTool API
   window.__devtool = {
     // ========================================================================
@@ -181,12 +189,18 @@
     // FLOATING INDICATOR
     // ========================================================================
 
-    indicator: {
+    indicator: indicator ? {
       show: indicator.show,
       hide: indicator.hide,
       toggle: indicator.toggle,
       togglePanel: indicator.togglePanel,
       destroy: indicator.destroy
+    } : {
+      show: indicatorNotLoaded,
+      hide: indicatorNotLoaded,
+      toggle: indicatorNotLoaded,
+      togglePanel: indicatorNotLoaded,
+      destroy: indicatorNotLoaded
     },
 
     // ========================================================================

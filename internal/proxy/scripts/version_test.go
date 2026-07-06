@@ -10,7 +10,7 @@ func TestVersionInjection(t *testing.T) {
 	Version = "0.11.2"
 
 	// Build the script fresh (not using GetCombinedScript which caches)
-	combined := buildCombinedScript()
+	combined := buildCombinedScript(RoleFull)
 
 	// Check for the version declaration line
 	expectedLine := "window.__devtool_version = '" + Version + "';"

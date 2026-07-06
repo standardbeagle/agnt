@@ -8,7 +8,7 @@ import (
 // TestStyleEditorScriptEmbedded verifies the style-editor module is reachable
 // from the combined script bundle and exposes its public API surface.
 func TestStyleEditorScriptEmbedded(t *testing.T) {
-	combined := buildCombinedScript()
+	combined := buildCombinedScript(RoleFull)
 
 	if !strings.Contains(combined, "// style-editor module") {
 		t.Error("style-editor module marker not found in combined script — embed.go moduleOrder entry missing")

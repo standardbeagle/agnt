@@ -3508,7 +3508,15 @@
   // (window-capture + stopImmediatePropagation, the original failure mode)
   // registers later, so ours fires first and cannot be suppressed. Deferring
   // this to init()/DOMContentLoaded would lose the registration-order race.
-  window.addEventListener('keydown', handleGlobalHotkey, true);
+  //
+  // When indicator-bridge.js (shared role set) is present it already
+  // registered the equivalent handler at its own eval — that handler
+  // dispatches to window.__devtool_indicator.togglePanel(), i.e. to this
+  // module once the export below runs — so registering again here would
+  // double-toggle on every Ctrl/Cmd+Y.
+  if (!window.__devtool_indicator_bridge) {
+    window.addEventListener('keydown', handleGlobalHotkey, true);
+  }
 
   // Init on ready
   if (document.readyState === 'loading') {

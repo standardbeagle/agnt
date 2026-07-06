@@ -9,7 +9,7 @@ import (
 // combined script bundle and exposes the public API surface that callers
 // (design.js dispatch + manual show()) depend on.
 func TestPaletteScriptEmbedded(t *testing.T) {
-	combined := buildCombinedScript()
+	combined := buildCombinedScript(RoleFull)
 
 	// Module load marker — confirms embed.go wiring + moduleOrder entry.
 	if !strings.Contains(combined, "// palette module") {
@@ -52,7 +52,7 @@ func TestPaletteInScriptNames(t *testing.T) {
 // surfaces the specific palette-related ordering invariant explicitly so
 // future module re-ordering can't silently break the palette wiring.
 func TestPaletteModuleOrder(t *testing.T) {
-	combined := buildCombinedScript()
+	combined := buildCombinedScript(RoleFull)
 
 	paletteIdx := strings.Index(combined, "// palette module")
 	coreIdx := strings.Index(combined, "// core module")

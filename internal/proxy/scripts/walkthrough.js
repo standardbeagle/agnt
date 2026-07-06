@@ -17,9 +17,12 @@
 // docs/superpowers/specs/2026-06-20-walkthrough-design.md.
 //
 // Transport: the agent drives this via `proxy exec`, which lands in the active
-// content frame. On a non-host frame this module installs a thin forwarding
-// proxy to the parent host (window.parent.__devtool_walkthrough_host), so an
-// exec'd `window.__devtool_walkthrough.start(...)` reaches the host impl.
+// content frame. On a non-host frame the companion walkthrough-proxy.js module
+// (shared role set) installs a thin forwarding proxy to the parent host
+// (window.parent.__devtool_walkthrough_host), so an exec'd
+// `window.__devtool_walkthrough.start(...)` reaches the host impl. This module
+// installs the host implementation only, and ships only in the bundles that
+// can host (chrome/passive).
 
 (function() {
   'use strict';
@@ -36,7 +39,9 @@
     var isHost = (role === 'chrome') || (role !== 'passive' && isTop && role !== 'chrome' && role === 'content') || (!role && isTop);
 
     if (!isHost) {
-      installForwardingProxy();
+      // The forwarding proxy for non-host frames is installed by
+      // walkthrough-proxy.js (shared role set), which loads before this module
+      // and uses the same isHost predicate.
       return;
     }
 
@@ -45,40 +50,8 @@
     try { console.error('[DevTool] Walkthrough init failed:', e); } catch (e2) {}
   }
 
-  // ---- Non-host: forward calls to the parent host (same-origin) -------------
-  function installForwardingProxy() {
-    function host() {
-      try {
-        if (window.parent && window.parent !== window && window.parent.__devtool_walkthrough_host) {
-          return window.parent.__devtool_walkthrough_host;
-        }
-      } catch (e) { /* cross-origin parent */ }
-      return null;
-    }
-    function fwd(method) {
-      return function() {
-        var h = host();
-        if (!h || typeof h[method] !== 'function') {
-          return { error: 'walkthrough host frame unavailable' };
-        }
-        try { return h[method].apply(h, arguments); }
-        catch (e) { return { error: String(e) }; }
-      };
-    }
-    window.__devtool_walkthrough = {
-      load: fwd('load'),
-      start: fwd('start'),
-      stop: fwd('stop'),
-      next: fwd('next'),
-      prev: fwd('prev'),
-      play: fwd('play'),
-      pause: fwd('pause'),
-      status: fwd('status'),
-      list: fwd('list')
-    };
-  }
-
   // ---- Host: full implementation -------------------------------------------
+  // (The non-host forwarding proxy lives in walkthrough-proxy.js.)
   function installHost() {
     var STYLE_ID = '__wt_styles';
     var PANEL_ID = '__wt_panel';

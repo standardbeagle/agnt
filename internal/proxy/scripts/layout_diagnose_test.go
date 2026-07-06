@@ -10,7 +10,7 @@ import (
 // __devtool API. Behavior is verified by the real-browser e2e in internal/proxy;
 // this is the fast presence/wiring check.
 func TestLayoutDiagnoseEmbedded(t *testing.T) {
-	combined := buildCombinedScript()
+	combined := buildCombinedScript(RoleFull)
 
 	for _, needle := range []string{
 		"function diagnose(",
