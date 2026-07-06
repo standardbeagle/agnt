@@ -48,7 +48,7 @@ One MCP server, one reverse proxy, one daemon. Behind them sits a full developme
 ### Test
 
 - **[Visual regression](/api/snapshot)** - baseline and compare screenshots with the `snapshot` tool.
-- **Replay testing** - record real API traffic, then replay the frontend against a worker-served mock of it - including fuzzed variants to probe error handling (`replaytest`, Pro).
+- **Replay testing** - replay saved frontend scenarios against worker-served API mocks, with optional fuzz presets to probe error handling (`replaytest`, Pro; recording is alpha).
 - **[Chaos engineering](/features/chaos-engineering)** - simulate slow networks, 500s, timeouts, rate limits, and out-of-order responses at the proxy, no code changes.
 
 ### Show
@@ -82,7 +82,7 @@ agnt doesn't replace your production monitoring stack. It replaces the pile of s
 | Excalidraw + screenshot annotation | Sketch mode - draw on the live UI itself | [Sketch Mode](/api/frontend/sketch-mode) |
 | PM2 / nodemon / foreman (dev servers) | Daemon-backed process management with output capture | [Process Management](/features/process-management) |
 | Postman (inspecting your own app's API) | Traffic log queries + API efficiency audits | [proxylog](/api/proxylog) / [api_audit](/api/api_audit) |
-| MSW / hand-written API mocks | Record real traffic → replay against a worker mock (Pro) | `replaytest` |
+| MSW / hand-written API mocks | Replay saved scenarios against a worker mock (Pro; recording is alpha) | `replaytest` |
 
 Each row is scoped to the development workflow: agnt won't monitor production for you, but during a coding session, your AI can do everything above without you switching apps.
 
@@ -247,7 +247,7 @@ The proxy injects 50+ diagnostic functions into every page, accessible via `wind
 | `api_audit` | API-efficiency audit (waterfall, N+1, duplicate, chatty-load) |
 | `loading_audit` | Loading-UX audit (spinner cascade + fragmentation) |
 | `snapshot` | Visual regression: baseline/compare screenshots |
-| `replaytest` | Record → worker-mock → replay frontend testing (Pro) |
+| `replaytest` | Saved-scenario → worker-mock → replay frontend testing (Pro; recording is alpha) |
 | `tunnel` | Mobile testing via Cloudflare/ngrok/Tailscale |
 | `daemon` | Daemon management |
 | `watch` | Stream daemon events via `agnt monitor` |
