@@ -142,10 +142,19 @@
         reject(new Error('Iframe load error: ' + err));
       };
 
-      // Check if already loaded
-      if (iframe.contentDocument && iframe.contentDocument.readyState === 'complete') {
-        clearTimeout(timeoutId);
-        resolve(iframe);
+      // Check if already loaded. Guard against the iframe's *initial*
+      // about:blank document, which is readyState === 'complete' immediately
+      // after the iframe is inserted — resolving on it would run every check
+      // against an empty document and report zero issues.
+      try {
+        var doc = iframe.contentDocument;
+        if (doc && doc.readyState === 'complete' &&
+            iframe.contentWindow.location.href !== 'about:blank') {
+          clearTimeout(timeoutId);
+          resolve(iframe);
+        }
+      } catch (e) {
+        // cross-origin — rely on onload
       }
     });
   }
