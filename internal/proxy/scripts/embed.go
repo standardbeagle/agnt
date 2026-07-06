@@ -90,6 +90,15 @@ var (
 	//go:embed toast.js
 	toastJS string
 
+	//go:embed indicator-styles.js
+	indicatorStylesJS string
+
+	//go:embed indicator-data.js
+	indicatorDataJS string
+
+	//go:embed indicator-tabs.js
+	indicatorTabsJS string
+
 	//go:embed indicator.js
 	indicatorJS string
 
@@ -241,7 +250,18 @@ var moduleOrder = []moduleEntry{
 	// loads after design so the selection signal source is present.
 	{"override-store", nil},
 	{"transform", []string{"core", "utils", "override-store", "overlay", "design"}},
-	{"indicator", []string{"core", "utils", "sketch", "design", "style-editor", "toast", "framework-detector", "api-tracker", "shadow-root"}},
+	// The floating indicator is split into four modules sharing symbols via
+	// the window.__devtool_indicator_internal namespace, in load order:
+	// indicator-styles (design tokens/STYLES/ICONS) → indicator-data
+	// (reactive store, data refresh, chaos client) → indicator-tabs (VanJS
+	// tab components) → indicator (chrome shell: bug, panel, hotkeys,
+	// capture modes). Later modules alias earlier ones at eval time; the
+	// chrome shell assigns its runtime-invoked functions back onto the
+	// namespace, so all four must load contiguously in this order.
+	{"indicator-styles", []string{"ui-tokens"}},
+	{"indicator-data", []string{"core", "utils", "indicator-styles"}},
+	{"indicator-tabs", []string{"indicator-data", "indicator-styles"}},
+	{"indicator", []string{"core", "utils", "sketch", "design", "style-editor", "toast", "framework-detector", "api-tracker", "shadow-root", "indicator-styles", "indicator-data", "indicator-tabs"}},
 	{"snapshot-helper", []string{"core"}},
 	{"diagnostics", []string{"utils", "core"}},
 	{"session", []string{"core"}},
@@ -302,6 +322,9 @@ var moduleScript = map[string]string{
 	"style-editor":       styleEditorJS,
 	"override-store":     overrideStoreJS,
 	"transform":          transformJS,
+	"indicator-styles":   indicatorStylesJS,
+	"indicator-data":     indicatorDataJS,
+	"indicator-tabs":     indicatorTabsJS,
 	"indicator":          indicatorJS,
 	"snapshot-helper":    snapshotHelperJS,
 	"diagnostics":        diagnosticsJS,

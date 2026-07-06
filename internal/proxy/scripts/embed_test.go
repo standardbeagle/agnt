@@ -51,6 +51,8 @@ func TestModuleDependencyOrder(t *testing.T) {
 		"sketch": sketchJS, "design": designJS,
 		"palette":      paletteJS,
 		"style-editor": styleEditorJS, "indicator": indicatorJS,
+		"indicator-styles": indicatorStylesJS, "indicator-data": indicatorDataJS,
+		"indicator-tabs":  indicatorTabsJS,
 		"snapshot-helper": snapshotHelperJS, "diagnostics": diagnosticsJS,
 		"session": sessionJS, "store": storeJS,
 		"content": contentJS, "text-fragility": textFragilityJS,
