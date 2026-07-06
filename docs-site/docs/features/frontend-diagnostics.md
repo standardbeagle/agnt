@@ -38,7 +38,7 @@ proxy {action: "exec", id: "app", code: "window.__devtool.inspect('#header')"}
 | [Element Inspection](#element-inspection) | `getElementInfo`, `getPosition`, `getComputed`, `getBox`, `getLayout`, `getContainer`, `getStacking`, `getTransform`, `getOverflow` |
 | [Tree Walking](#tree-walking) | `walkChildren`, `walkParents`, `findAncestor` |
 | [Visual State](#visual-state) | `isVisible`, `isInViewport`, `checkOverlap` |
-| [Layout Diagnostics](#layout-diagnostics) | `findOverflows`, `findStackingContexts`, `findOffscreen` |
+| [Layout Diagnostics](#layout-diagnostics) | `findOverflows`, `findStackingContexts`, `findOffscreen`, [`diagnoseLayoutIssues`](/api/frontend/layout-diagnostics) (cause→symptom analysis) |
 | [Visual Overlays](#visual-overlays) | `highlight`, `removeHighlight`, `clearAllOverlays` |
 | [Interactive](#interactive) | `selectElement`, `measureBetween`, `waitForElement`, `ask` |
 | [State Capture](#state-capture) | `captureDOM`, `captureStyles`, `captureState`, `captureNetwork` |

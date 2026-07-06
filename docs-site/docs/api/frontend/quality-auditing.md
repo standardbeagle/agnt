@@ -2,7 +2,11 @@
 sidebar_position: 12
 ---
 
+import ModeVideo from '@site/src/components/ModeVideo';
+
 # Quality & Performance Auditing
+
+<ModeVideo src="/img/quality-audit.webm" poster="/img/quality-audit-poster.webp" label="Running a Full Page Audit from the floating indicator — the Audit menu opens over the panel, the audit runs, and the graded result attaches to the message composer ready to send to the agent." />
 
 Consolidated audits surface runtime quality problems — DOM bloat, blocking time, memory pressure, and Core Web Vitals — in a single call each. No manual `PerformanceObserver` wiring: `auditPerformance()` and `auditPageQuality()` collect the signals, score them, and return prioritized recommendations.
 

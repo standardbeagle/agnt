@@ -1,9 +1,20 @@
 # Mode screenshot harness
 
-Generates the screenshots/GIFs of the browser-overlay modes (indicator, sketch,
-design, responsive) used in `docs/api/frontend/*`. It embeds the **exact**
-proxy-injected `__devtool` bundle into a static demo page and drives each mode
-with Playwright's bundled Chromium — no separately-installed browser required.
+Generates the screenshots/videos of the browser-overlay modes (indicator,
+sketch, design, responsive) and the audit/feature demos (element inspection,
+layout diagnostics, accessibility, quality/API/loading audits, color palette,
+responsive audit) used in `docs/api/frontend/*` and `docs/api/*`. It embeds the
+**exact** proxy-injected `__devtool` bundle into a static demo page and drives
+each mode with Playwright's bundled Chromium — no separately-installed browser
+required. The static server also mirrors the proxy's `/__devtool_axe` endpoint
+and mocks `/api/*` JSON endpoints (with latency) so the accessibility, API, and
+loading audits run against real traffic.
+
+Poster stills for `<ModeVideo>` come from each scene's final-frame PNG:
+
+```bash
+ffmpeg -y -i ../static/img/<scene>.png -vf scale=960:-1 ../static/img/<scene>-poster.webp
+```
 
 ## Regenerate
 

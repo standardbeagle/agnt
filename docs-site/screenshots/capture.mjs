@@ -32,8 +32,36 @@ const bundle = fs.readFileSync(path.join(here, 'bundle.html'), 'utf8');
 // String.prototype.replace would interpret as replacement patterns.
 fs.writeFileSync(path.join(serveDir, 'index.html'), page.split('<!--AGNT_BUNDLE-->').join(bundle));
 
+// axe-core is served by the real proxy at /__devtool_axe; mirror that here so
+// __devtool.auditAccessibility() works against the static harness.
+const axePath = path.join(here, '..', '..', 'internal', 'proxy', 'scripts', 'axe-core.min.js');
+
+// Mock API endpoints (delayed JSON) so the api-audit / loading-audit scenes
+// have real fetch traffic for the in-page call buffer.
+function mockAPI(req, res) {
+  const u = new URL(req.url, 'http://x');
+  const respond = (delay, body) => setTimeout(() => {
+    res.writeHead(200, {'Content-Type': 'application/json'});
+    res.end(JSON.stringify(body));
+  }, delay);
+  if (u.pathname === '/api/users') return respond(260, {users: [1, 2, 3, 4, 5].map(i => ({id: i}))});
+  if (u.pathname.startsWith('/api/user/')) return respond(140, {id: u.pathname.split('/').pop(), name: 'user'});
+  if (u.pathname === '/api/config') return respond(90, {theme: 'dark', flags: {beta: true}});
+  if (u.pathname === '/api/report') return respond(420, {ok: true});
+  res.writeHead(404); res.end('{}');
+}
+
 // Minimal static server.
 const server = http.createServer((req, res) => {
+  if (req.url.startsWith('/api/')) return mockAPI(req, res);
+  if (req.url.split('?')[0] === '/__devtool_axe') {
+    fs.readFile(axePath, (err, buf) => {
+      if (err) { res.writeHead(404); res.end('not found'); return; }
+      res.writeHead(200, {'Content-Type': 'application/javascript'});
+      res.end(buf);
+    });
+    return;
+  }
   const file = path.join(serveDir, req.url === '/' ? 'index.html' : req.url.split('?')[0]);
   fs.readFile(file, (err, buf) => {
     if (err) { res.writeHead(404); res.end('not found'); return; }
@@ -47,7 +75,11 @@ console.log('serving', url);
 
 const browser = await chromium.launch();
 
+// ONLY=<scene> node capture.mjs re-captures a single scene.
+const only = process.env.ONLY;
+
 async function shot(name, drive) {
+  if (only && name !== only) return;
   const ctx = await browser.newContext({viewport: VIEW, recordVideo: {dir: vidDir, size: VIEW}});
   const pg = await ctx.newPage();
   pg.on('pageerror', e => console.log(`  [${name}] pageerror:`, e.message));
@@ -100,6 +132,144 @@ await shot('responsive-mode', async (pg) => {
   await pg.waitForTimeout(700);
   await pg.evaluate(() => window.__devtool.responsive.setWidth(414));
   await pg.waitForTimeout(600);
+});
+
+// ---------------------------------------------------------------------------
+// Audit & feature demo scenes
+// ---------------------------------------------------------------------------
+
+// NOTE: __devtool.selectElement() is not used here — its full-viewport overlay
+// intercepts document.elementFromPoint, so the hover highlight never appears
+// and the click never resolves (bug; also present in a real browser).
+await shot('element-inspection', async (pg) => {
+  const stops = ['header nav', '.cards .card:nth-child(1)', '.panel table', 'button.primary'];
+  for (const sel of stops) {
+    await pg.evaluate((s) => {
+      const info = window.__devtool.getElementInfo(s);
+      window.__devtool.highlight(s, {duration: 1300});
+      window.__devtool.toast.info('<' + info.tag + '> ' + (info.classes.length ? '.' + info.classes.join('.') : info.selector));
+    }, sel);
+    await pg.waitForTimeout(1500);
+  }
+  // hold a final highlight so the last frame (the poster) shows the overlay
+  await pg.evaluate(() => window.__devtool.highlight('.cards .card:nth-child(1)', {duration: 6000}));
+  await pg.waitForTimeout(600);
+});
+
+await shot('layout-diagnostics', async (pg) => {
+  await pg.evaluate(() => document.getElementById('layout-demo').scrollIntoView({behavior: 'smooth', block: 'center'}));
+  await pg.waitForTimeout(1000);
+  await pg.evaluate(() => {
+    const r = window.__devtool.diagnoseLayoutIssues();
+    window.__diag = r;
+    const parts = Object.entries(r.by_check).filter(([, n]) => n > 0).map(([k, n]) => k + ' ×' + n);
+    window.__devtool.toast.show({message: 'Layout diagnostics: ' + r.count + ' issues — ' + parts.join(', '), type: 'warning', duration: 9000});
+  });
+  await pg.waitForTimeout(900);
+  // outline each finding: symptom in red, offending ancestor dashed amber
+  await pg.evaluate(() => {
+    for (const f of window.__diag.findings) {
+      const el = document.querySelector(f.selector);
+      if (el) { el.style.outline = '3px solid #ef4444'; el.style.outlineOffset = '2px'; }
+      if (f.cause) {
+        const c = document.querySelector(f.cause);
+        if (c) { c.style.outline = '3px dashed #f59e0b'; c.style.outlineOffset = '4px'; }
+      }
+    }
+  });
+  await pg.waitForTimeout(1100);
+});
+
+await shot('accessibility-audit', async (pg) => {
+  await pg.evaluate(() => document.getElementById('announcements').scrollIntoView({behavior: 'smooth', block: 'center'}));
+  await pg.waitForTimeout(900);
+  const res = await pg.evaluate(() => window.__devtool.auditAccessibility());
+  await pg.evaluate((r) => {
+    const s = r.stats || {};
+    window.__devtool.toast.show({
+      message: 'Accessibility [' + (r.grade || '?') + '] ' + (s.totalIssues ?? '?') + ' issues — ' +
+        (s.critical || 0) + ' critical, ' + (s.serious || 0) + ' serious (WCAG ' + String(r.level || 'aa').toUpperCase() + ')',
+      type: 'error', duration: 9000,
+    });
+    // outline every flagged element (raw.issuesByType[*].examples[*].selector)
+    const types = (r.raw && r.raw.issuesByType) || {};
+    for (const t of Object.values(types)) {
+      for (const ex of t.examples || []) {
+        const el = document.querySelector(ex.selector);
+        if (el) { el.style.outline = '3px solid #ef4444'; el.style.outlineOffset = '2px'; }
+      }
+    }
+  }, res);
+  await pg.waitForTimeout(1400);
+});
+
+await shot('quality-audit', async (pg) => {
+  await pg.evaluate(() => window.__devtool.indicator.show());
+  await pg.waitForTimeout(400);
+  await pg.evaluate(() => window.__devtool.indicator.togglePanel());
+  await pg.waitForTimeout(700);
+  await pg.locator('#__devtool-audit-btn').click();
+  await pg.waitForTimeout(900);
+  await pg.getByText('Full Page Audit', {exact: true}).first().click();
+  await pg.waitForTimeout(3000); // audit runs; result lands in the panel as a graded attachment
+});
+
+await shot('api-audit', async (pg) => {
+  // watch the calls land in the indicator's Network tab while they fire
+  await pg.evaluate(() => window.__devtool.indicator.show());
+  await pg.waitForTimeout(300);
+  await pg.evaluate(() => window.__devtool.indicator.togglePanel());
+  await pg.waitForTimeout(500);
+  try { await pg.locator('[title="Network requests"]').click({timeout: 2000}); } catch {}
+  // serial waterfall + N+1 fan-out + duplicate calls against the mock API
+  await pg.evaluate(async () => {
+    await fetch('/api/users').then((r) => r.json());
+    for (let i = 1; i <= 5; i++) await fetch('/api/user/' + i).then((r) => r.json());
+    await fetch('/api/config');
+    await fetch('/api/config');
+  });
+  await pg.waitForTimeout(500);
+  await pg.evaluate(() => {
+    const r = window.__devtool_audit_api.auditAPIEfficiency();
+    window.__devtool.toast.show({message: 'API audit [' + r.grade + '] ' + r.summary, type: 'warning', duration: 9000});
+  });
+  await pg.waitForTimeout(1400);
+});
+
+await shot('loading-audit', async (pg) => {
+  await pg.evaluate(() => document.getElementById('reports-panel').scrollIntoView({behavior: 'smooth', block: 'center'}));
+  await pg.waitForTimeout(800);
+  await pg.evaluate(() => window.__demoLoadingCascade()); // ~2.3s animated spinner cascade
+  await pg.waitForTimeout(400);
+  await pg.evaluate(() => {
+    const r = window.__devtool_audit_loading.auditLoading();
+    window.__devtool.toast.show({message: 'Loading-UX audit [' + r.grade + '] ' + r.summary, type: 'warning', duration: 9000});
+  });
+  await pg.waitForTimeout(1400);
+});
+
+await shot('color-palette', async (pg) => {
+  await pg.evaluate(() => window.__devtool.diagnostics.showColorPalette());
+  await pg.waitForTimeout(1800);
+  await pg.evaluate(() => { window.__devtool.diagnostics.clearAll(); window.__devtool.diagnostics.showTypographyPanel(); });
+  await pg.waitForTimeout(1600);
+});
+
+// NOTE: __devtool.responsiveAudit() (the headless-iframe path behind the
+// responsive_audit MCP tool) is not driven here: waitForIframeLoad's
+// synchronous `readyState === 'complete'` check matches the iframe's initial
+// about:blank document, so all checks run against an empty document and the
+// audit returns 0 issues in ~50ms (bug in internal/proxy/scripts/responsive.js).
+// This scene shows the same checks through responsive mode's width sweep,
+// where the invoices table visibly breaks at phone widths.
+await shot('responsive-audit', async (pg) => {
+  await pg.evaluate(() => window.__devtool.responsive.open());
+  await pg.waitForTimeout(800);
+  for (const w of [1024, 768, 375]) {
+    await pg.evaluate((width) => window.__devtool.responsive.setWidth(width), w);
+    await pg.waitForTimeout(1300);
+  }
+  await pg.waitForTimeout(500);
 });
 
 await browser.close();

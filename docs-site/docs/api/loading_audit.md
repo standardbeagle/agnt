@@ -2,7 +2,11 @@
 sidebar_position: 11
 ---
 
+import ModeVideo from '@site/src/components/ModeVideo';
+
 # loading_audit
+
+<ModeVideo src="/img/loading-audit.webm" poster="/img/loading-audit-poster.webp" label="Loading-UX audit on a live page — three report cards flicker concurrent spinners while a status row runs loaders one after another; the audit reads the recorded spinner timeline and a toast reports the cascade and fragmentation findings with a grade." />
 
 Loading-UX audit over a spinner timeline. Detects two failure modes that make a page feel slow even when the network isn't: **spinner cascades** (loaders that fire one after another instead of together) and **spinner fragmentation** (many small loaders flickering at once where one master loader would do).
 

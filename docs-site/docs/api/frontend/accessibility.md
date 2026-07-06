@@ -2,9 +2,13 @@
 sidebar_position: 9
 ---
 
+import ModeVideo from '@site/src/components/ModeVideo';
+
 # Accessibility
 
 Functions for accessibility inspection and auditing.
+
+<ModeVideo src="/img/accessibility-audit.webm" poster="/img/accessibility-audit-poster.webp" label="auditAccessibility running axe-core over a live page — a toast reports the WCAG AA grade with critical and serious issue counts, and every flagged element (image without alt text, low-contrast buttons, unlabeled input) is outlined in red." />
 
 ## getA11yInfo
 

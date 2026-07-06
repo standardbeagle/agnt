@@ -13,6 +13,7 @@ const sidebars: SidebarsConfig = {
         'features/process-management',
         'features/reverse-proxy',
         'features/frontend-diagnostics',
+        'features/chaos-engineering',
       ],
     },
     {

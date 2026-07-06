@@ -2,9 +2,13 @@
 sidebar_position: 2
 ---
 
+import ModeVideo from '@site/src/components/ModeVideo';
+
 # Element Inspection
 
 Functions for getting element properties, positions, styles, and layout information.
+
+<ModeVideo src="/img/element-inspection.webm" poster="/img/element-inspection-poster.webp" label="Element inspection on a live dashboard — getElementInfo and highlight walk the header nav, a stat card, the invoices table, and the primary button in turn; each element gets a blue highlight overlay and a toast naming its tag and classes." />
 
 ## getElementInfo
 

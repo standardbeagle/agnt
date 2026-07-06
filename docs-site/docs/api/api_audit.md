@@ -2,7 +2,11 @@
 sidebar_position: 10
 ---
 
+import ModeVideo from '@site/src/components/ModeVideo';
+
 # api_audit
+
+<ModeVideo src="/img/api-audit.webm" poster="/img/api-audit-poster.webp" label="API-efficiency audit on a live page — fetch calls (a serial waterfall, an N+1 fan-out over /api/user/1..5, and duplicate /api/config requests) land in the indicator's Network tab as they fire, then the audit grades the traffic and a toast reports the issues found." />
 
 API-efficiency audit over the recorded fetch/XHR call buffer. Detects request patterns that waste time or bandwidth — serial waterfalls, N+1 fan-out, duplicate requests, and chatty page loads — and returns a scored report with concrete fix targets.
 
