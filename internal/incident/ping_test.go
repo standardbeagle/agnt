@@ -91,15 +91,25 @@ func TestPing_MCP_UsesLogNotification(t *testing.T) {
 	_, inbox, pings, mu := newTestEmitter(t)
 
 	inbox.Ingest(makeEntry("fp-mcp", SeverityError))
-	time.Sleep(50 * time.Millisecond) // wait for coalescer
+	deadline := time.After(250 * time.Millisecond)
+	tick := time.NewTicker(5 * time.Millisecond)
+	defer tick.Stop()
 
-	mu.Lock()
-	n := len(*pings)
-	mu.Unlock()
+	for {
+		mu.Lock()
+		n := len(*pings)
+		mu.Unlock()
+		if n > 0 {
+			break
+		}
 
-	if n == 0 {
-		t.Fatal("MCP notify not called")
+		select {
+		case <-deadline:
+			t.Fatal("MCP notify not called")
+		case <-tick.C:
+		}
 	}
+
 	mu.Lock()
 	first := (*pings)[0]
 	mu.Unlock()
