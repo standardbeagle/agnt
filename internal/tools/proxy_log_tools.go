@@ -200,11 +200,11 @@ func handleProxyLogQueryRaw(entries []proxy.LogEntry, pag *Pagination) (*mcp.Cal
 				if entry.HTTP.Error != "" {
 					data["error"] = entry.HTTP.Error
 				}
-			}
-			output[i] = LogEntryOutput{
-				Type:      string(entry.Type),
-				Timestamp: entry.HTTP.Timestamp,
-				Data:      marshalData(data),
+				output[i] = LogEntryOutput{
+					Type:      string(entry.Type),
+					Timestamp: entry.HTTP.Timestamp,
+					Data:      marshalData(data),
+				}
 			}
 
 		case proxy.LogTypeError:
@@ -218,11 +218,11 @@ func handleProxyLogQueryRaw(entries []proxy.LogEntry, pag *Pagination) (*mcp.Cal
 				if entry.Error.Stack != "" {
 					data["stack"] = entry.Error.Stack
 				}
-			}
-			output[i] = LogEntryOutput{
-				Type:      string(entry.Type),
-				Timestamp: entry.Error.Timestamp,
-				Data:      marshalData(data),
+				output[i] = LogEntryOutput{
+					Type:      string(entry.Type),
+					Timestamp: entry.Error.Timestamp,
+					Data:      marshalData(data),
+				}
 			}
 
 		case proxy.LogTypePerformance:
@@ -240,11 +240,11 @@ func handleProxyLogQueryRaw(entries []proxy.LogEntry, pag *Pagination) (*mcp.Cal
 				if len(entry.Performance.Resources) > 0 {
 					data["resource_count"] = len(entry.Performance.Resources)
 				}
-			}
-			output[i] = LogEntryOutput{
-				Type:      string(entry.Type),
-				Timestamp: entry.Performance.Timestamp,
-				Data:      marshalData(data),
+				output[i] = LogEntryOutput{
+					Type:      string(entry.Type),
+					Timestamp: entry.Performance.Timestamp,
+					Data:      marshalData(data),
+				}
 			}
 
 		case proxy.LogTypeCustom:
@@ -256,11 +256,11 @@ func handleProxyLogQueryRaw(entries []proxy.LogEntry, pag *Pagination) (*mcp.Cal
 				for k, v := range entry.Custom.Data {
 					data[k] = v
 				}
-			}
-			output[i] = LogEntryOutput{
-				Type:      string(entry.Type),
-				Timestamp: entry.Custom.Timestamp,
-				Data:      marshalData(data),
+				output[i] = LogEntryOutput{
+					Type:      string(entry.Type),
+					Timestamp: entry.Custom.Timestamp,
+					Data:      marshalData(data),
+				}
 			}
 
 		case proxy.LogTypeScreenshot:
@@ -276,11 +276,11 @@ func handleProxyLogQueryRaw(entries []proxy.LogEntry, pag *Pagination) (*mcp.Cal
 				if entry.Screenshot.Error != "" {
 					data["error"] = entry.Screenshot.Error
 				}
-			}
-			output[i] = LogEntryOutput{
-				Type:      string(entry.Type),
-				Timestamp: entry.Screenshot.Timestamp,
-				Data:      marshalData(data),
+				output[i] = LogEntryOutput{
+					Type:      string(entry.Type),
+					Timestamp: entry.Screenshot.Timestamp,
+					Data:      marshalData(data),
+				}
 			}
 
 		case proxy.LogTypeExecution:
@@ -291,11 +291,11 @@ func handleProxyLogQueryRaw(entries []proxy.LogEntry, pag *Pagination) (*mcp.Cal
 				data["error"] = entry.Execution.Error
 				data["duration_ms"] = entry.Execution.Duration.Milliseconds()
 				data["url"] = entry.Execution.URL
-			}
-			output[i] = LogEntryOutput{
-				Type:      string(entry.Type),
-				Timestamp: entry.Execution.Timestamp,
-				Data:      marshalData(data),
+				output[i] = LogEntryOutput{
+					Type:      string(entry.Type),
+					Timestamp: entry.Execution.Timestamp,
+					Data:      marshalData(data),
+				}
 			}
 
 		case proxy.LogTypeResponse:
@@ -306,11 +306,11 @@ func handleProxyLogQueryRaw(entries []proxy.LogEntry, pag *Pagination) (*mcp.Cal
 				data["result"] = entry.Response.Result
 				data["error"] = entry.Response.Error
 				data["duration_ms"] = entry.Response.Duration.Milliseconds()
-			}
-			output[i] = LogEntryOutput{
-				Type:      string(entry.Type),
-				Timestamp: entry.Response.Timestamp,
-				Data:      marshalData(data),
+				output[i] = LogEntryOutput{
+					Type:      string(entry.Type),
+					Timestamp: entry.Response.Timestamp,
+					Data:      marshalData(data),
+				}
 			}
 
 		case proxy.LogTypeDiagnostic:
@@ -395,24 +395,13 @@ func handleProxyLogQueryRaw(entries []proxy.LogEntry, pag *Pagination) (*mcp.Cal
 					Data:      marshalData(data),
 				}
 			}
-		default:
-			// Fallback: serialize entire entry to JSON
-			if b, err := json.Marshal(entry); err == nil {
-				output[i] = LogEntryOutput{
-					Type: string(entry.Type),
-					Data: string(b),
-				}
-				if em := make(map[string]interface{}); json.Unmarshal(b, &em) == nil {
-					if ts, ok := em["timestamp"].(string); ok {
-						if t, err := time.Parse(time.RFC3339, ts); err == nil {
-							output[i].Timestamp = t
-						}
-					}
-					if output[i].Timestamp.IsZero() {
-						output[i].Timestamp = time.Now()
-					}
-				}
-			}
+		}
+
+		// Fallback for unrecognized types and for known types whose payload
+		// pointer is nil (would otherwise be a zero-value output): serialize
+		// the whole entry and recover a timestamp from the payload envelope.
+		if output[i].Type == "" {
+			output[i] = rawFallbackOutput(entry)
 		}
 	}
 
@@ -674,12 +663,15 @@ func handleProxyLogQueryCompact(entries []proxy.LogEntry, pag *Pagination) (*mcp
 					}
 				}
 			}
-			if timestamp.IsZero() {
-				timestamp = time.Now()
-			}
-			if data == "" {
-				data = fmt.Sprintf("%s event", entry.Type)
-			}
+		}
+
+		// Known types with a nil payload leave timestamp/data unset — fall
+		// back rather than emitting a zero time and empty summary.
+		if timestamp.IsZero() {
+			timestamp = time.Now()
+		}
+		if data == "" {
+			data = fmt.Sprintf("%s event", entry.Type)
 		}
 
 		output[i] = LogEntryOutput{
@@ -693,6 +685,29 @@ func handleProxyLogQueryCompact(entries []proxy.LogEntry, pag *Pagination) (*mcp
 		Entries:    output,
 		Pagination: pag,
 	}, nil
+}
+
+// rawFallbackOutput serializes an entry whose typed payload is missing or
+// unrecognized, recovering the timestamp from the nested payload JSON when
+// present and defaulting to now otherwise.
+func rawFallbackOutput(entry proxy.LogEntry) LogEntryOutput {
+	out := LogEntryOutput{Type: string(entry.Type), Data: "{}"}
+	if b, err := json.Marshal(entry); err == nil {
+		out.Data = string(b)
+		if em := make(map[string]interface{}); json.Unmarshal(b, &em) == nil {
+			if sub, ok := em[string(entry.Type)].(map[string]interface{}); ok {
+				if ts, ok := sub["timestamp"].(string); ok {
+					if t, err := time.Parse(time.RFC3339, ts); err == nil {
+						out.Timestamp = t
+					}
+				}
+			}
+		}
+	}
+	if out.Timestamp.IsZero() {
+		out.Timestamp = time.Now()
+	}
+	return out
 }
 
 // formatDeltaPairs renders a property→value delta map as a compact, stably

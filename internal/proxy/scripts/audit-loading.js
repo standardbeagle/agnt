@@ -132,14 +132,17 @@
       findings.push(f);
     }
 
-    // === EMPTY TIMELINE: honest empty report ===
+    // === EMPTY TIMELINE: honest not-applicable report ===
+    // notApplicable tells aggregators (audit-quality full-page score) to
+    // exclude this audit — an empty timeline is "nothing measured", not "A".
     if (!timeline || timeline.length === 0) {
       var emptySummary = 'No loading indicators recorded — reload page then re-run.';
       if (!raw) {
         return {
           audit: 'loading',
-          score: 100,
-          grade: 'A',
+          notApplicable: true,
+          score: null,
+          grade: null,
           summary: emptySummary,
           checkedAt: new Date().toISOString(),
           stats: { total: 0, errors: 0, warnings: 0, info: 0, totalIssues: 0 },
@@ -148,8 +151,9 @@
       }
       return {
         audit: 'loading',
-        score: 100,
-        grade: 'A',
+        notApplicable: true,
+        score: null,
+        grade: null,
         summary: emptySummary,
         checkedAt: new Date().toISOString(),
         findings: [],

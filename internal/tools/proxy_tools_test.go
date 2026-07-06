@@ -260,3 +260,72 @@ func TestProxyLogQueryCompact_DefaultFallback(t *testing.T) {
 	assert.NotEmpty(t, output.Entries[0].Data, "default fallback should produce data")
 	assert.False(t, output.Entries[0].Timestamp.IsZero(), "default fallback should set timestamp")
 }
+
+// TestProxyLogQueryRaw_NilTypedPayload guards the nil-payload panic: an entry
+// whose Type names a typed payload but whose payload pointer is nil must fall
+// back to envelope serialization instead of dereferencing nil (e.g.
+// entry.HTTP.Timestamp). Sweeps every typed case in the raw formatter.
+func TestProxyLogQueryRaw_NilTypedPayload(t *testing.T) {
+	types := []proxy.LogEntryType{
+		proxy.LogTypeHTTP,
+		proxy.LogTypeError,
+		proxy.LogTypePerformance,
+		proxy.LogTypeCustom,
+		proxy.LogTypeScreenshot,
+		proxy.LogTypeExecution,
+		proxy.LogTypeResponse,
+		proxy.LogTypeDiagnostic,
+		proxy.LogTypePanelMessage,
+	}
+	entries := make([]proxy.LogEntry, len(types))
+	for i, ty := range types {
+		entries[i] = proxy.LogEntry{Type: ty} // payload pointer deliberately nil
+	}
+
+	result, output, err := handleProxyLogQueryRaw(entries, nil)
+	require.NoError(t, err)
+	require.Nil(t, result)
+	require.Len(t, output.Entries, len(types))
+
+	for i, ty := range types {
+		assert.Equal(t, string(ty), output.Entries[i].Type, "type %s", ty)
+		assert.NotEmpty(t, output.Entries[i].Data, "nil-payload %s should fall back to envelope data", ty)
+		assert.False(t, output.Entries[i].Timestamp.IsZero(), "nil-payload %s should get a fallback timestamp", ty)
+	}
+}
+
+// TestProxyLogQueryCompact_NilTypedPayload mirrors the raw sweep for the
+// compact formatter: nil payloads yield a placeholder line and a non-zero
+// timestamp instead of an empty entry.
+func TestProxyLogQueryCompact_NilTypedPayload(t *testing.T) {
+	types := []proxy.LogEntryType{
+		proxy.LogTypeHTTP,
+		proxy.LogTypeError,
+		proxy.LogTypePerformance,
+		proxy.LogTypeCustom,
+		proxy.LogTypeInteraction,
+		proxy.LogTypeMutation,
+		proxy.LogTypeScreenshot,
+		proxy.LogTypeExecution,
+		proxy.LogTypeResponse,
+		proxy.LogTypePanelMessage,
+		proxy.LogTypeSketch,
+		proxy.LogTypeWalkthrough,
+		proxy.LogTypeDiagnostic,
+	}
+	entries := make([]proxy.LogEntry, len(types))
+	for i, ty := range types {
+		entries[i] = proxy.LogEntry{Type: ty}
+	}
+
+	result, output, err := handleProxyLogQueryCompact(entries, nil)
+	require.NoError(t, err)
+	require.Nil(t, result)
+	require.Len(t, output.Entries, len(types))
+
+	for i, ty := range types {
+		assert.Equal(t, string(ty), output.Entries[i].Type, "type %s", ty)
+		assert.NotEmpty(t, output.Entries[i].Data, "nil-payload %s should get placeholder data", ty)
+		assert.False(t, output.Entries[i].Timestamp.IsZero(), "nil-payload %s should get a fallback timestamp", ty)
+	}
+}

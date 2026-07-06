@@ -46,11 +46,19 @@ func TestAuditAPI_FindingTypes(t *testing.T) {
 }
 
 // TestAuditAPI_FailHonestNoFabricatedSize guards the project's no-fake-data
-// rule: the call buffer has no response-size field, so the audit must emit an
-// explicit "unavailable" note rather than inventing a payload size.
+// rule: the call buffer has no response-size field, so the audit must surface
+// an explicit limitation rather than inventing a payload size. The limitation
+// lives in the result's `limitations` metadata, not in findings, so it never
+// inflates issue counts.
 func TestAuditAPI_FailHonestNoFabricatedSize(t *testing.T) {
-	if !strings.Contains(auditApiJS, "over-fetch-unavailable") {
-		t.Error("audit-api.js must emit an 'over-fetch-unavailable' note (payload size is not in the buffer; do not fabricate)")
+	if !strings.Contains(auditApiJS, "over-fetch detection unavailable") {
+		t.Error("audit-api.js must state that payload-size over-fetch detection is unavailable (payload size is not in the buffer; do not fabricate)")
+	}
+	if !strings.Contains(auditApiJS, "limitations") {
+		t.Error("audit-api.js must expose the over-fetch limitation via a 'limitations' field")
+	}
+	if strings.Contains(auditApiJS, "over-fetch-unavailable") {
+		t.Error("over-fetch-unavailable must not be a finding type — it inflated issue totals; keep it in limitations metadata")
 	}
 }
 
