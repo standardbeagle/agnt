@@ -123,21 +123,34 @@ func cleanupProcessGroup(pgid int) {
 	}
 }
 
-// signalProcessGroup sends a termination signal to the process group.
+// signalProcessGroup sends a termination signal to the process group, honoring
+// the requested signal so Windows gets the same graceful-then-forceful contract
+// as Unix. Previously it ignored sig and always called TerminateJobObject, so a
+// SIGTERM (the graceful phase of StopProcess) was an instant hard kill and
+// GracefulTimeout meant nothing.
 func (pm *ProcessManager) signalProcessGroup(pid int, sig syscall.Signal) error {
-	if val, ok := jobRegistry.Load(pid); ok {
-		job := val.(windows.Handle)
-		err := windows.TerminateJobObject(job, 1)
-		if err == nil {
-			return nil
+	if sig == syscall.SIGKILL {
+		// Force: terminate the whole job-object tree (children cascade), else kill
+		// the bare process.
+		if val, ok := jobRegistry.Load(pid); ok {
+			job := val.(windows.Handle)
+			if err := windows.TerminateJobObject(job, 1); err == nil {
+				return nil
+			}
 		}
+		proc, err := os.FindProcess(pid)
+		if err != nil {
+			return err
+		}
+		return proc.Kill()
 	}
 
-	proc, err := os.FindProcess(pid)
-	if err != nil {
-		return err
-	}
-	return proc.Kill()
+	// Graceful (SIGTERM): deliver CTRL_BREAK to the child's process group so it can
+	// run its shutdown handler. Children are started with CREATE_NEW_PROCESS_GROUP,
+	// so their group id equals the PID. If no console is attached (a detached
+	// daemon) this fails — return the error WITHOUT hard-killing, so the caller's
+	// GracefulTimeout elapses and forceKill (SIGKILL) does the escalation.
+	return signalTerm(pid)
 }
 
 // signalTerm attempts graceful termination on Windows.

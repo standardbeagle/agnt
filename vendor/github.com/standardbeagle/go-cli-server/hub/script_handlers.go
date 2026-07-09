@@ -3,11 +3,13 @@ package hub
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/standardbeagle/go-cli-server/process"
 	"github.com/standardbeagle/go-cli-server/protocol"
 	"github.com/standardbeagle/go-cli-server/script"
 )
@@ -246,9 +248,10 @@ func (h *Hub) handleScriptRestart(ctx context.Context, conn *Connection, cmd *pr
 		return conn.WriteNotFound("script", fmt.Sprintf("%s in %s", name, projectPath))
 	}
 
-	// Stop existing process if running
-	if proc, err := h.pm.Get(entry.ProcessID); err == nil && proc.IsRunning() {
-		if stopErr := h.pm.Stop(ctx, entry.ProcessID); stopErr != nil {
+	// Stop existing process if running. Resolve by project path as well as ID so
+	// identical script names in different projects cannot stop each other.
+	if proc, err := h.pm.GetByPath(entry.ProcessID, entry.ProjectPath); err == nil && proc.IsRunning() {
+		if stopErr := h.pm.StopProcess(ctx, proc); stopErr != nil {
 			return conn.WriteInternalErr(fmt.Sprintf("failed to stop process: %v", stopErr))
 		}
 	}
@@ -256,15 +259,60 @@ func (h *Hub) handleScriptRestart(ctx context.Context, conn *Connection, cmd *pr
 	entry.AddRestartMarker()
 	entry.SetState(script.StateRestarting)
 
+	// Actually start a fresh process so RESTART restarts rather than just stopping.
+	// The command comes from the entry's resolved command (set when it was first
+	// started) or, failing that, an explicit Config.Command. A script whose only
+	// definition is a Run string cannot be resolved here — resolution is the
+	// upstream caller's job — so for that case we retain the prior mark-only
+	// behavior rather than start an empty process.
+	scmd, sargs := entry.ResolvedCommand()
+	if scmd == "" && entry.Config != nil && entry.Config.Command != "" {
+		scmd, sargs = entry.Config.Command, entry.Config.Args
+	}
+	msg := fmt.Sprintf("script %q restarted", name)
+	if scmd != "" {
+		var env []string
+		if entry.Config != nil {
+			env = mapToEnv(entry.Config.Env)
+		}
+		if _, err := h.pm.StartOrReuse(ctx, process.ProcessConfig{
+			ID:          entry.ProcessID,
+			ProjectPath: entry.ProjectPath,
+			WorkingDir:  entry.ProjectPath,
+			Command:     scmd,
+			Args:        sargs,
+			Env:         env,
+		}); err != nil {
+			entry.SetState(script.StateFailed)
+			entry.SetLastError(err.Error())
+			return conn.WriteInternalErr(fmt.Sprintf("failed to restart script %q: %v", name, err))
+		}
+	} else {
+		msg = fmt.Sprintf("script %q marked for restart (no resolved command to launch)", name)
+	}
+
 	resp := map[string]any{
 		"name":       name,
 		"process_id": entry.ProcessID,
 		"state":      entry.State().String(),
 		"success":    true,
-		"message":    fmt.Sprintf("script %q stopped for restart", name),
+		"message":    msg,
 	}
 	data, _ := json.Marshal(resp)
 	return conn.WriteJSON(data)
+}
+
+// mapToEnv converts a map of environment variables to the "KEY=VALUE" slice form
+// used by ProcessConfig. Returns nil for an empty map.
+func mapToEnv(m map[string]string) []string {
+	if len(m) == 0 {
+		return nil
+	}
+	env := make([]string, 0, len(m))
+	for k, v := range m {
+		env = append(env, k+"="+v)
+	}
+	return env
 }
 
 // handleScriptStop handles SCRIPT STOP <name>.
@@ -290,8 +338,11 @@ func (h *Hub) handleScriptStop(ctx context.Context, conn *Connection, cmd *proto
 		return conn.WriteNotFound("script", fmt.Sprintf("%s in %s", name, projectPath))
 	}
 
-	proc, err := h.pm.Get(entry.ProcessID)
-	if err != nil || !proc.IsRunning() {
+	proc, err := h.pm.GetByPath(entry.ProcessID, entry.ProjectPath)
+	if err != nil && !errors.Is(err, process.ErrProcessNotFound) {
+		return conn.WriteInternalErr(fmt.Sprintf("failed to look up process: %v", err))
+	}
+	if errors.Is(err, process.ErrProcessNotFound) || !proc.IsRunning() {
 		entry.SetState(script.StateStopped)
 		resp := map[string]any{
 			"name":       name,
@@ -304,7 +355,7 @@ func (h *Hub) handleScriptStop(ctx context.Context, conn *Connection, cmd *proto
 		return conn.WriteJSON(data)
 	}
 
-	if stopErr := h.pm.Stop(ctx, entry.ProcessID); stopErr != nil {
+	if stopErr := h.pm.StopProcess(ctx, proc); stopErr != nil {
 		return conn.WriteInternalErr(fmt.Sprintf("failed to stop: %v", stopErr))
 	}
 

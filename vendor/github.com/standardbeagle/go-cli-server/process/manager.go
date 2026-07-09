@@ -16,6 +16,8 @@ var (
 	ErrProcessExists = errors.New("process already exists")
 	// ErrProcessNotFound is returned when a process ID is not found.
 	ErrProcessNotFound = errors.New("process not found")
+	// ErrProcessAmbiguous is returned when a bare process ID matches multiple project paths.
+	ErrProcessAmbiguous = errors.New("process ID is ambiguous across project paths")
 	// ErrInvalidState is returned when an operation is invalid for the current state.
 	ErrInvalidState = errors.New("invalid process state for operation")
 	// ErrShuttingDown is returned when the manager is shutting down.
@@ -43,6 +45,10 @@ type DescendantTracker interface {
 	StartDescendantScanner(ctx context.Context, interval time.Duration)
 	GetDescendants(pid int) []int
 	UpdateDescendants(pid int, descendants []int) error
+}
+
+type VerifiedDescendantTracker interface {
+	GetVerifiedDescendants(pid int) []int
 }
 
 // ManagerConfig holds configuration for the ProcessManager.
@@ -137,14 +143,18 @@ func (pm *ProcessManager) Register(proc *ManagedProcess) error {
 // Get retrieves a process by ID (searches all paths).
 func (pm *ProcessManager) Get(id string) (*ManagedProcess, error) {
 	var found *ManagedProcess
+	count := 0
 	pm.processes.Range(func(key, value any) bool {
 		proc := value.(*ManagedProcess)
 		if proc.ID == id {
 			found = proc
-			return false
+			count++
 		}
-		return true
+		return count < 2
 	})
+	if count > 1 {
+		return nil, ErrProcessAmbiguous
+	}
 	if found != nil {
 		return found, nil
 	}
@@ -164,14 +174,18 @@ func (pm *ProcessManager) GetByPath(id, projectPath string) (*ManagedProcess, er
 // Remove deletes a process from the registry by ID.
 func (pm *ProcessManager) Remove(id string) bool {
 	var keyToDelete string
+	count := 0
 	pm.processes.Range(func(key, value any) bool {
 		proc := value.(*ManagedProcess)
 		if proc.ID == id {
 			keyToDelete = key.(string)
-			return false
+			count++
 		}
-		return true
+		return count < 2
 	})
+	if count > 1 {
+		return false
+	}
 	if keyToDelete != "" {
 		if _, loaded := pm.processes.LoadAndDelete(keyToDelete); loaded {
 			pm.activeCount.Add(-1)
@@ -329,7 +343,11 @@ func (pm *ProcessManager) Shutdown(ctx context.Context) error {
 							errMu.Unlock()
 						}
 					} else {
-						if err := pm.Stop(ctx, p.ID); err != nil {
+						// Stop the exact process we hold, not pm.Stop(p.ID) which
+						// re-resolves by ID — ambiguous when two projects share a
+						// script name and could stop the wrong one (or double-stop
+						// one while its same-ID sibling escapes graceful shutdown).
+						if err := pm.StopProcess(ctx, p); err != nil {
 							errMu.Lock()
 							errs = append(errs, err)
 							errMu.Unlock()
@@ -350,12 +368,23 @@ func (pm *ProcessManager) Shutdown(ctx context.Context) error {
 		case <-done:
 		case <-ctx.Done():
 			shutdownErr = ctx.Err()
+			pm.processes.Range(func(key, value any) bool {
+				proc := value.(*ManagedProcess)
+				if proc.IsRunning() {
+					_ = pm.forceKill(proc)
+				}
+				return true
+			})
+			<-done
 		}
 
 		pm.wg.Wait()
 
-		if len(errs) > 0 {
-			shutdownErr = errors.Join(errs...)
+		errMu.Lock()
+		joinedErr := errors.Join(errs...)
+		errMu.Unlock()
+		if joinedErr != nil {
+			shutdownErr = joinedErr
 		}
 	})
 
@@ -407,14 +436,18 @@ func (pm *ProcessManager) StopByProjectPath(ctx context.Context, projectPath str
 				_ = pm.forceKill(proc)
 			}
 		}
+		<-done
 	}
 
 	for _, proc := range toStop {
 		pm.RemoveByPath(proc.ID, proc.ProjectPath)
 	}
 
-	if len(errs) > 0 {
-		return stoppedIDs, errors.Join(errs...)
+	errMu.Lock()
+	joinedErr := errors.Join(errs...)
+	errMu.Unlock()
+	if joinedErr != nil {
+		return stoppedIDs, joinedErr
 	}
 	return stoppedIDs, nil
 }
@@ -460,14 +493,18 @@ func (pm *ProcessManager) StopAll(ctx context.Context) error {
 				_ = pm.forceKill(proc)
 			}
 		}
+		<-done
 	}
 
 	for _, proc := range toStop {
 		pm.RemoveByPath(proc.ID, proc.ProjectPath)
 	}
 
-	if len(errs) > 0 {
-		return errors.Join(errs...)
+	errMu.Lock()
+	joinedErr := errors.Join(errs...)
+	errMu.Unlock()
+	if joinedErr != nil {
+		return joinedErr
 	}
 	return nil
 }
@@ -519,9 +556,10 @@ func (pm *ProcessManager) performHealthCheck() {
 func (pm *ProcessManager) checkRunningProcess(proc *ManagedProcess) {
 	select {
 	case <-proc.done:
-		if proc.State() == StateRunning {
-			proc.SetState(StateFailed)
-		}
+		// CAS, not check-then-set: waitForProcess may transition this process
+		// concurrently, and a plain SetState would clobber the real terminal
+		// state (Stopped/Failed decided there) with a spurious Failed.
+		proc.CompareAndSwapState(StateRunning, StateFailed)
 	default:
 	}
 }
@@ -529,17 +567,19 @@ func (pm *ProcessManager) checkRunningProcess(proc *ManagedProcess) {
 func (pm *ProcessManager) checkStartingProcess(proc *ManagedProcess) {
 	start := proc.StartTime()
 	if start != nil && time.Since(*start) > 30*time.Second {
-		proc.SetState(StateFailed)
-		pm.IncrementFailed()
+		// CAS so a Starting→Running transition that lands between the read and
+		// the write is not overwritten — otherwise a healthy just-started
+		// process is wrongly marked Failed (with a spurious failure count).
+		if proc.CompareAndSwapState(StateStarting, StateFailed) {
+			pm.IncrementFailed()
+		}
 	}
 }
 
 func (pm *ProcessManager) checkStoppingProcess(proc *ManagedProcess) {
 	select {
 	case <-proc.done:
-		if proc.State() == StateStopping {
-			proc.SetState(StateStopped)
-		}
+		proc.CompareAndSwapState(StateStopping, StateStopped)
 	default:
 	}
 }
@@ -550,26 +590,46 @@ func (pm *ProcessManager) KillProcessByPort(ctx context.Context, port int) ([]in
 	if len(pids) == 0 {
 		return nil, nil
 	}
-	return pm.killProcesses(pids), nil
+	return pm.killProcesses(ctx, pids), nil
 }
 
-func (pm *ProcessManager) killProcesses(pids []int) []int {
+func (pm *ProcessManager) killProcesses(ctx context.Context, pids []int) []int {
 	var killedPids []int
 
-	// Phase 1: SIGTERM to process group + descendants for each PID
+	// Capture each PID's identity before signalling so the SIGKILL escalation
+	// can tell the original process from one the kernel recycled the PID into
+	// during the grace window.
+	identities := make(map[int]string, len(pids))
 	for _, pid := range pids {
-		pm.signalProcessGroup(pid, syscall.SIGTERM)
-		killedPids = append(killedPids, pid)
+		identities[pid] = processIdentity(pid)
 	}
 
-	// Phase 2: Wait for graceful exit
-	time.Sleep(3 * time.Second)
-
-	// Phase 3: SIGKILL escalation for survivors
+	// Phase 1: SIGTERM to process group + descendants. Only report a PID as
+	// killed if the signal was actually delivered (process still present).
 	for _, pid := range pids {
-		if isProcessAlive(pid) {
-			cleanupProcessTree(pid)
+		if err := pm.signalProcessGroup(pid, syscall.SIGTERM); err == nil {
+			killedPids = append(killedPids, pid)
 		}
+	}
+
+	// Phase 2: Wait for graceful exit, but honor cancellation instead of a hard
+	// 3s stall on the caller's goroutine (port preflight / shutdown hot paths).
+	select {
+	case <-ctx.Done():
+		return killedPids
+	case <-time.After(3 * time.Second):
+	}
+
+	// Phase 3: SIGKILL escalation for survivors — skip any PID whose identity no
+	// longer matches, i.e. the original exited and the PID was recycled.
+	for _, pid := range pids {
+		if !isProcessAlive(pid) {
+			continue
+		}
+		if id := identities[pid]; id != "" && processIdentity(pid) != id {
+			continue // recycled PID — not our target
+		}
+		cleanupProcessTree(pid)
 	}
 
 	return killedPids

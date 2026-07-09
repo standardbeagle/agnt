@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode"
 )
 
 // Protocol constants for resilient parsing
@@ -19,29 +20,65 @@ const (
 
 	// DataMarker separates arguments from data length
 	DataMarker = "--"
+
+	// MaxFrameSize caps how many bytes a single command/response frame may occupy
+	// before the terminator is seen. It bounds memory against a peer that opens a
+	// connection and never sends ";;".
+	MaxFrameSize = 16 << 20 // 16 MiB
 )
+
+// PartialFrameError indicates a read error occurred after some bytes of a frame
+// were already consumed from the stream. The stream is now desynchronized and
+// the connection must be closed — the buffered bytes cannot be recovered, so
+// resyncing or a timeout-continue would parse the remainder as garbage.
+type PartialFrameError struct {
+	Err error // underlying read error (may be a timeout)
+}
+
+func (e *PartialFrameError) Error() string {
+	return "partial frame, connection desynchronized: " + e.Err.Error()
+}
+
+func (e *PartialFrameError) Unwrap() error { return e.Err }
+
+// IsPartialFrame reports whether err is a PartialFrameError.
+func IsPartialFrame(err error) bool {
+	var pfe *PartialFrameError
+	return errors.As(err, &pfe)
+}
+
+// ErrFrameTooLarge indicates a frame exceeded MaxFrameSize without a terminator.
+var ErrFrameTooLarge = errors.New("frame exceeds maximum size without terminator")
 
 // VerbRegistry tracks registered command verbs for validation.
 type VerbRegistry struct {
-	mu       sync.RWMutex
-	verbs    map[string]bool
-	subVerbs map[string]bool
+	mu             sync.RWMutex
+	verbs          map[string]bool
+	subVerbs       map[string]bool
+	subVerbsByVerb map[string]map[string]bool
 }
 
 // NewVerbRegistry creates a new verb registry with built-in verbs.
 func NewVerbRegistry() *VerbRegistry {
 	vr := &VerbRegistry{
-		verbs:    make(map[string]bool),
-		subVerbs: make(map[string]bool),
+		verbs:          make(map[string]bool),
+		subVerbs:       make(map[string]bool),
+		subVerbsByVerb: make(map[string]map[string]bool),
 	}
-	// Register built-in verbs
-	vr.RegisterVerb(VerbRun, VerbRunJSON, VerbProc, VerbRelay, VerbAttach, VerbDetach,
-		VerbSession, VerbSubprocess, VerbPing, VerbInfo, VerbShutdown)
-	// Register built-in sub-verbs
-	vr.RegisterSubVerb(SubVerbStatus, SubVerbOutput, SubVerbStop, SubVerbList,
-		SubVerbCleanupPort, SubVerbStdin, SubVerbStream, SubVerbSend, SubVerbBroadcast,
-		SubVerbRequest, SubVerbRegister, SubVerbUnregister, SubVerbHeartbeat,
-		SubVerbGet, SubVerbStart, SubVerbClear, SubVerbSet)
+	// Register built-in verbs. VerbScript was omitted, so every SCRIPT command was
+	// rejected at parse validation despite the hub registering a handler for it.
+	vr.RegisterVerb(VerbRun, VerbRunJSON, VerbProc,
+		VerbSession, VerbSubprocess, VerbScript, VerbPing, VerbInfo, VerbShutdown)
+	// Register built-in sub-verbs scoped to their verbs. A global sub-verb set
+	// makes commands like "RUN start build.sh" eat "start" as a sub-verb.
+	vr.RegisterSubVerbForVerb(VerbProc, SubVerbStatus, SubVerbOutput, SubVerbStop,
+		SubVerbList, SubVerbCleanupPort, SubVerbStdin, SubVerbStream)
+	vr.RegisterSubVerbForVerb(VerbSubprocess, SubVerbRegister, SubVerbUnregister,
+		SubVerbHeartbeat, SubVerbList, SubVerbStatus)
+	vr.RegisterSubVerbForVerb(VerbSession, SubVerbRegister, SubVerbUnregister,
+		SubVerbHeartbeat, SubVerbGet, SubVerbList)
+	vr.RegisterSubVerbForVerb(VerbScript, SubVerbList, SubVerbGet, SubVerbSet,
+		SubVerbClear, SubVerbRestart)
 	return vr
 }
 
@@ -63,6 +100,21 @@ func (vr *VerbRegistry) RegisterSubVerb(subVerbs ...string) {
 	}
 }
 
+// RegisterSubVerbForVerb adds sub-verbs that are valid only for the given verb.
+func (vr *VerbRegistry) RegisterSubVerbForVerb(verb string, subVerbs ...string) {
+	vr.mu.Lock()
+	defer vr.mu.Unlock()
+	verb = strings.ToUpper(verb)
+	if vr.subVerbsByVerb[verb] == nil {
+		vr.subVerbsByVerb[verb] = make(map[string]bool)
+	}
+	for _, sv := range subVerbs {
+		sv = strings.ToUpper(sv)
+		vr.subVerbsByVerb[verb][sv] = true
+		vr.subVerbs[sv] = true
+	}
+}
+
 // IsValidVerb checks if a verb is registered.
 func (vr *VerbRegistry) IsValidVerb(verb string) bool {
 	vr.mu.RLock()
@@ -75,6 +127,17 @@ func (vr *VerbRegistry) IsSubVerb(s string) bool {
 	vr.mu.RLock()
 	defer vr.mu.RUnlock()
 	return vr.subVerbs[strings.ToUpper(s)]
+}
+
+// IsSubVerbForVerb checks whether subVerb is registered for verb.
+func (vr *VerbRegistry) IsSubVerbForVerb(verb, subVerb string) bool {
+	vr.mu.RLock()
+	defer vr.mu.RUnlock()
+	subs := vr.subVerbsByVerb[strings.ToUpper(verb)]
+	if subs == nil {
+		return false
+	}
+	return subs[strings.ToUpper(subVerb)]
 }
 
 // ValidVerbs returns a list of all registered verbs.
@@ -180,7 +243,7 @@ func (p *Parser) ParseCommand() (*Command, error) {
 	// Parse subverb and args
 	if len(parts) > 1 {
 		subVerb := strings.ToUpper(parts[1])
-		if p.registry.IsSubVerb(subVerb) {
+		if p.registry.IsSubVerbForVerb(verb, subVerb) {
 			cmd.SubVerb = subVerb
 			cmd.Args = parts[2:]
 		} else {
@@ -256,13 +319,24 @@ func (p *Parser) readUntilTerminator(terminator string) (string, error) {
 	for {
 		b, err := p.reader.ReadByte()
 		if err != nil {
-			if err == io.EOF && buf.Len() > 0 {
-				return "", fmt.Errorf("unexpected EOF, missing terminator %q", terminator)
+			// A read error after partial data means the stream is desynchronized:
+			// the consumed bytes are gone from the reader and cannot be replayed.
+			// Signal a fatal, non-recoverable condition so the caller closes rather
+			// than continuing (which would parse the remainder as a new frame).
+			if buf.Len() > 0 {
+				if err == io.EOF {
+					err = fmt.Errorf("unexpected EOF, missing terminator %q: %w", terminator, err)
+				}
+				return "", &PartialFrameError{Err: err}
 			}
 			return "", err
 		}
 
 		buf.WriteByte(b)
+
+		if buf.Len() > MaxFrameSize {
+			return "", &PartialFrameError{Err: ErrFrameTooLarge}
+		}
 
 		if buf.Len() >= termLen {
 			tail := buf.Bytes()[buf.Len()-termLen:]
@@ -339,6 +413,71 @@ func (p *Parser) ParseResponse() (*Response, error) {
 	return resp, nil
 }
 
+// ValidateCommand rejects commands that would corrupt the wire format. The
+// protocol is whitespace-delimited and terminated by ";;", so a token containing
+// the terminator injects a second command, a newline breaks the frame, and a lone
+// "--" is misread as the data marker. Those are rejected in every token. An arg
+// carries a user-supplied value, so it must additionally be free of whitespace
+// that would silently split it into extra args; the verb/sub-verb are developer
+// constants (and may be a pre-joined command line the receiver re-splits), so
+// interior spaces there are allowed. Data payloads are exempt — base64-encoded.
+func ValidateCommand(cmd *Command) error {
+	if err := validateToken("verb", cmd.Verb, true); err != nil {
+		return err
+	}
+	if cmd.SubVerb != "" {
+		if err := validateToken("sub-verb", cmd.SubVerb, true); err != nil {
+			return err
+		}
+	}
+	for _, arg := range cmd.Args {
+		if err := validateToken("arg", arg, false); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateToken ensures a single wire token is safe to emit unescaped.
+func validateToken(kind, tok string, allowSpace bool) error {
+	if tok == "" {
+		return fmt.Errorf("%s cannot be empty", kind)
+	}
+	if strings.Contains(tok, CommandTerminator) {
+		return fmt.Errorf("%s %q contains terminator %q", kind, tok, CommandTerminator)
+	}
+	if strings.ContainsAny(tok, "\r\n") {
+		return fmt.Errorf("%s %q contains a newline", kind, tok)
+	}
+	for _, field := range strings.Fields(tok) {
+		if field == DataMarker {
+			return fmt.Errorf("%s cannot contain the data marker %q", kind, DataMarker)
+		}
+	}
+	if !allowSpace {
+		for _, r := range tok {
+			if unicode.IsSpace(r) {
+				return fmt.Errorf("%s %q contains whitespace", kind, tok)
+			}
+		}
+	}
+	return nil
+}
+
+func validateFrameSize(frame []byte) error {
+	if len(frame) > MaxFrameSize {
+		return ErrFrameTooLarge
+	}
+	return nil
+}
+
+// ValidateFrameSize reports whether a raw protocol frame is small enough to
+// send. It is intended for callers that deliberately bypass Writer formatting
+// (for example a raw CLI command) but still need the same sender-side guard.
+func ValidateFrameSize(frame []byte) error {
+	return validateFrameSize(frame)
+}
+
 // FormatCommand formats a command for transmission.
 // Format: VERB [SUBVERB] [ARGS...] [-- LENGTH\nBASE64DATA];;
 func FormatCommand(cmd *Command) []byte {
@@ -380,43 +519,71 @@ func NewWriter(w io.Writer) *Writer {
 
 // WriteOK writes an OK response.
 func (w *Writer) WriteOK(message string) error {
-	_, err := w.w.Write(FormatOK(message))
+	frame := FormatOK(message)
+	if err := validateFrameSize(frame); err != nil {
+		return err
+	}
+	_, err := w.w.Write(frame)
 	return err
 }
 
 // WriteErr writes an error response.
 func (w *Writer) WriteErr(code ErrorCode, message string) error {
-	_, err := w.w.Write(FormatErr(code, message))
+	frame := FormatErr(code, message)
+	if err := validateFrameSize(frame); err != nil {
+		return err
+	}
+	_, err := w.w.Write(frame)
 	return err
 }
 
 // WritePong writes a PONG response.
 func (w *Writer) WritePong() error {
-	_, err := w.w.Write(FormatPong())
+	frame := FormatPong()
+	if err := validateFrameSize(frame); err != nil {
+		return err
+	}
+	_, err := w.w.Write(frame)
 	return err
 }
 
 // WriteJSON writes a JSON response.
 func (w *Writer) WriteJSON(data []byte) error {
-	_, err := w.w.Write(FormatJSON(data))
+	frame := FormatJSON(data)
+	if err := validateFrameSize(frame); err != nil {
+		return err
+	}
+	_, err := w.w.Write(frame)
 	return err
 }
 
 // WriteData writes a binary data response.
 func (w *Writer) WriteData(data []byte) error {
-	_, err := w.w.Write(FormatData(data))
+	frame := FormatData(data)
+	if err := validateFrameSize(frame); err != nil {
+		return err
+	}
+	_, err := w.w.Write(frame)
 	return err
 }
 
 // WriteChunk writes a chunk in a streaming response.
 func (w *Writer) WriteChunk(data []byte) error {
-	_, err := w.w.Write(FormatChunk(data))
+	frame := FormatChunk(data)
+	if err := validateFrameSize(frame); err != nil {
+		return err
+	}
+	_, err := w.w.Write(frame)
 	return err
 }
 
 // WriteEnd writes the END marker for chunked responses.
 func (w *Writer) WriteEnd() error {
-	_, err := w.w.Write(FormatEnd())
+	frame := FormatEnd()
+	if err := validateFrameSize(frame); err != nil {
+		return err
+	}
+	_, err := w.w.Write(frame)
 	return err
 }
 
@@ -427,7 +594,14 @@ func (w *Writer) WriteCommand(verb string, args []string, data []byte) error {
 		Args: args,
 		Data: data,
 	}
-	_, err := w.w.Write(FormatCommand(cmd))
+	if err := ValidateCommand(cmd); err != nil {
+		return err
+	}
+	frame := FormatCommand(cmd)
+	if err := validateFrameSize(frame); err != nil {
+		return err
+	}
+	_, err := w.w.Write(frame)
 	return err
 }
 
@@ -439,21 +613,13 @@ func (w *Writer) WriteCommandWithSubVerb(verb, subVerb string, args []string, da
 		Args:    args,
 		Data:    data,
 	}
-	_, err := w.w.Write(FormatCommand(cmd))
-	return err
-}
-
-// WriteCommandWithData writes a command with optional data payload.
-// The subVerb parameter is optional (pass nil if not needed).
-func (w *Writer) WriteCommandWithData(verb string, args []string, subVerb *string, data []byte) error {
-	cmd := &Command{
-		Verb: verb,
-		Args: args,
-		Data: data,
+	if err := ValidateCommand(cmd); err != nil {
+		return err
 	}
-	if subVerb != nil {
-		cmd.SubVerb = *subVerb
+	frame := FormatCommand(cmd)
+	if err := validateFrameSize(frame); err != nil {
+		return err
 	}
-	_, err := w.w.Write(FormatCommand(cmd))
+	_, err := w.w.Write(frame)
 	return err
 }

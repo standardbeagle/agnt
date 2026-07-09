@@ -13,6 +13,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/windows"
 )
 
 var (
@@ -35,9 +37,9 @@ type Config struct {
 // DefaultConfig returns the default socket configuration.
 func DefaultConfig() Config {
 	return Config{
-		Path: DefaultSocketPath("mcp-hub"),
+		Path: DefaultSocketPath(DefaultSocketName),
 		Mode: 0600,
-		Name: "mcp-hub",
+		Name: DefaultSocketName,
 	}
 }
 
@@ -53,6 +55,10 @@ type Manager struct {
 	listener       net.Listener
 	pidFile        string
 	processMatcher func(pid int) bool
+	// owned is true only after this manager successfully bound the socket. Close
+	// removes files only when owned, so a manager that lost the race does not
+	// delete the live daemon's socket/pid files.
+	owned bool
 }
 
 // NewManager creates a new socket manager.
@@ -60,7 +66,7 @@ func NewManager(config Config) *Manager {
 	if config.Path == "" {
 		name := config.Name
 		if name == "" {
-			name = "mcp-hub"
+			name = DefaultSocketName
 		}
 		config.Path = DefaultSocketPath(name)
 	}
@@ -68,7 +74,10 @@ func NewManager(config Config) *Manager {
 		config.Mode = 0600
 	}
 
-	pidFile := filepath.Join(os.TempDir(), config.Name+".pid")
+	// Key the PID file on the resolved socket path, not Name. Two hubs with the
+	// same Name but different Paths would otherwise share one PID file and each
+	// could terminate the other as a "zombie".
+	pidFile := config.Path + ".pid"
 
 	return &Manager{
 		config:         config,
@@ -87,6 +96,12 @@ func (sm *Manager) Listen() (net.Listener, error) {
 		return nil, fmt.Errorf("failed to cleanup stale socket: %w", err)
 	}
 
+	// NOTE: config.Mode (default 0600) cannot be meaningfully applied here. The
+	// transport is an AF_UNIX socket file under %TEMP%, and Windows does not honor
+	// Unix permission bits on it (os.Chmod only toggles the read-only attribute).
+	// Access control instead relies on %TEMP% being a per-user directory. True
+	// per-user enforcement would require named pipes with a security descriptor,
+	// which needs a non-x/sys dependency (go-winio) this module deliberately avoids.
 	listener, err := net.Listen("unix", sm.config.Path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create socket: %w", err)
@@ -99,7 +114,14 @@ func (sm *Manager) Listen() (net.Listener, error) {
 	}
 
 	sm.listener = listener
+	sm.owned = true
 	return listener, nil
+}
+
+// Listen creates a listener. Windows does not need the restricted-runtime
+// syscall path used on Unix.
+func Listen(network, address string) (net.Listener, error) {
+	return net.Listen(network, address)
 }
 
 // Close closes the socket and removes files.
@@ -112,6 +134,15 @@ func (sm *Manager) Close() error {
 		}
 		sm.listener = nil
 	}
+
+	// Only unlink files we own (see Manager.owned).
+	if !sm.owned {
+		if len(errs) > 0 {
+			return errors.Join(errs...)
+		}
+		return nil
+	}
+	sm.owned = false
 
 	if err := os.Remove(sm.config.Path); err != nil && !os.IsNotExist(err) {
 		errs = append(errs, fmt.Errorf("remove socket file: %w", err))
@@ -154,6 +185,18 @@ func (sm *Manager) checkExisting() error {
 	}
 
 	if !sm.isOurDaemonProcess(pid) {
+		// Without a ProcessMatcher we cannot prove this PID belongs to us, so we
+		// must not delete the PID file before checking the socket. A duplicate hub
+		// start against a live daemon would otherwise remove the live daemon's PID
+		// file every time, disabling future stale-process detection.
+		conn, err := net.DialTimeout("unix", sm.config.Path, 500*time.Millisecond)
+		if err == nil {
+			conn.Close()
+			return ErrDaemonRunning
+		}
+		// The PID is live but not identifiable as ours, and the socket is not
+		// accepting connections. Do not terminate the PID; only drop our stale
+		// metadata so cleanupStale can remove the dead socket file.
 		os.Remove(sm.pidFile)
 		return nil
 	}
@@ -176,8 +219,10 @@ func (sm *Manager) isOurDaemonProcess(pid int) bool {
 	if sm.processMatcher != nil {
 		return sm.processMatcher(pid)
 	}
-	// On Windows without a matcher, assume any running process with our PID file is ours
-	return true
+	// Without a matcher we cannot prove the PID is our daemon — the kernel may have
+	// recycled it into an unrelated process. Do NOT claim it; terminating it would
+	// kill whatever now holds that PID.
+	return false
 }
 
 // cleanupStale removes a stale socket file that no daemon is listening on.
@@ -218,7 +263,7 @@ func terminateProcess(pid int) {
 // Connect attempts to connect to an existing socket.
 func Connect(path string) (net.Conn, error) {
 	if path == "" {
-		path = DefaultSocketPath("mcp-hub")
+		path = DefaultSocketPath(DefaultSocketName)
 	}
 
 	conn, err := net.Dial("unix", path)
@@ -235,7 +280,7 @@ func Connect(path string) (net.Conn, error) {
 // IsRunning checks if a daemon is running at the given path.
 func IsRunning(path string) bool {
 	if path == "" {
-		path = DefaultSocketPath("mcp-hub")
+		path = DefaultSocketPath(DefaultSocketName)
 	}
 
 	conn, err := net.DialTimeout("unix", path, 100*time.Millisecond)
@@ -256,7 +301,10 @@ func isProcessRunning(pid int) bool {
 	return true
 }
 
-// isPipeNotFound checks for socket not found errors.
+// isPipeNotFound checks for socket not found errors. It matches on Windows error
+// codes first: the previous English-only substring matching broke
+// ErrSocketNotFound — and therefore client auto-start — on localized Windows,
+// where the system returns the same codes with translated message text.
 func isPipeNotFound(err error) bool {
 	if err == nil {
 		return false
@@ -264,6 +312,17 @@ func isPipeNotFound(err error) bool {
 	if os.IsNotExist(err) {
 		return true
 	}
+	for _, target := range []error{
+		windows.ERROR_FILE_NOT_FOUND,
+		windows.ERROR_PATH_NOT_FOUND,
+		windows.WSAECONNREFUSED,
+		windows.ERROR_PIPE_BUSY,
+	} {
+		if errors.Is(err, target) {
+			return true
+		}
+	}
+	// Best-effort English fallback for wrappers that lose the code.
 	errLower := strings.ToLower(err.Error())
 	return strings.Contains(errLower, "cannot find the file") ||
 		strings.Contains(errLower, "cannot find the path") ||

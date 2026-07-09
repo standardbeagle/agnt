@@ -25,3 +25,8 @@ func scanDescendantPIDs(pid int) []int {
 // killStoredDescendants is a no-op on Windows.
 // Windows Job Objects handle descendant cleanup automatically.
 func killStoredDescendants(pids []int) {}
+
+// processIdentity cannot be captured cheaply on Windows here; return "" so
+// callers fall back to a liveness-only check. Job Objects already bound
+// descendant lifetime, so the recycled-PID window this guards is narrower.
+func processIdentity(pid int) string { return "" }

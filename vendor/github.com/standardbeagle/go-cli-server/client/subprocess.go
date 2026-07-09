@@ -3,7 +3,9 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -12,6 +14,7 @@ import (
 	"time"
 
 	"github.com/standardbeagle/go-cli-server/protocol"
+	hubsocket "github.com/standardbeagle/go-cli-server/socket"
 )
 
 // SubprocessServer allows an application to act as a hub subprocess.
@@ -32,9 +35,32 @@ type SubprocessServer struct {
 	connections sync.Map // conn -> *subprocessConn
 
 	// State
-	running  atomic.Bool
+	running atomic.Bool
+	// lifeMu serializes Start() and Stop() so their epoch swaps (running CAS,
+	// shutdown channel, listener, and WaitGroup) can never interleave — which
+	// otherwise caused a double-close panic and a wrong-listener close.
+	lifeMu sync.Mutex
+	// shutMu guards shutdown and wg. Both are per-epoch: recreated on each Start.
+	// Giving each epoch its OWN WaitGroup means a prior epoch's in-flight
+	// wg.Wait() (a Stop whose ctx expired mid-drain) can never collide with the
+	// next epoch's wg.Add() — the reuse panic that a single shared WaitGroup risks.
+	shutMu   sync.Mutex
 	shutdown chan struct{}
-	wg       sync.WaitGroup
+	wg       *sync.WaitGroup
+}
+
+// currentShutdown returns the active shutdown channel under lock.
+func (s *SubprocessServer) currentShutdown() chan struct{} {
+	s.shutMu.Lock()
+	defer s.shutMu.Unlock()
+	return s.shutdown
+}
+
+// currentWG returns the active epoch WaitGroup under lock.
+func (s *SubprocessServer) currentWG() *sync.WaitGroup {
+	s.shutMu.Lock()
+	defer s.shutMu.Unlock()
+	return s.wg
 }
 
 // SubprocessServerConfig configures a subprocess server.
@@ -66,11 +92,14 @@ type CommandHandler func(ctx context.Context, cmd *protocol.Command) *protocol.R
 
 // NewSubprocessServer creates a new subprocess server.
 func NewSubprocessServer(config SubprocessServerConfig) *SubprocessServer {
+	shutdown := make(chan struct{})
+	close(shutdown)
 	return &SubprocessServer{
 		config:       config,
 		handlers:     make(map[string]CommandHandler),
 		verbRegistry: protocol.NewVerbRegistry(),
-		shutdown:     make(chan struct{}),
+		shutdown:     shutdown,
+		wg:           &sync.WaitGroup{},
 	}
 }
 
@@ -94,41 +123,87 @@ func (s *SubprocessServer) RegisterHandlers(handlers map[string]CommandHandler) 
 
 // Start starts the subprocess server.
 func (s *SubprocessServer) Start() error {
-	if s.running.Load() {
+	// Serialize the whole epoch setup against Stop() so a concurrent Start||Stop
+	// cannot swap listener/shutdown/wg out from under each other.
+	s.lifeMu.Lock()
+	defer s.lifeMu.Unlock()
+
+	// CAS instead of load-then-store so two concurrent Starts cannot both proceed.
+	if !s.running.CompareAndSwap(false, true) {
 		return fmt.Errorf("subprocess server already running")
 	}
 
+	// Reinstate a fresh shutdown channel AND a fresh WaitGroup for this epoch.
+	// Stop() closed the previous channel; a restarted server's handlers would
+	// otherwise see the closed channel and exit immediately. The fresh WaitGroup
+	// isolates this epoch's Add()s from any prior epoch's still-draining Wait().
+	epochWG := &sync.WaitGroup{}
+	s.shutMu.Lock()
+	s.shutdown = make(chan struct{})
+	s.wg = epochWG
+	s.shutMu.Unlock()
+
+	var listener net.Listener
 	var err error
 	switch s.config.Transport.Type {
 	case "unix":
-		// Remove stale socket file
-		os.Remove(s.config.Transport.Address)
-		s.listener, err = net.Listen("unix", s.config.Transport.Address)
+		if err := removeStaleUnixSocket(s.config.Transport.Address); err != nil {
+			s.running.Store(false)
+			return err
+		}
+		listener, err = hubsocket.Listen("unix", s.config.Transport.Address)
 	case "tcp":
-		s.listener, err = net.Listen("tcp", s.config.Transport.Address)
+		listener, err = hubsocket.Listen("tcp", s.config.Transport.Address)
 	default:
+		s.running.Store(false) // roll back the CAS so a retry can start
 		return fmt.Errorf("unsupported transport type: %s", s.config.Transport.Type)
 	}
 
 	if err != nil {
+		s.running.Store(false)
 		return fmt.Errorf("failed to start listener: %w", err)
 	}
 
-	s.running.Store(true)
-	s.wg.Add(1)
-	go s.acceptLoop()
+	s.listener = listener
+	epochWG.Add(1)
+	// Pass the listener AND this epoch's WaitGroup to the accept loop so it operates
+	// on THIS epoch's resources rather than re-reading shared fields a later Start
+	// could reassign.
+	go s.acceptLoop(listener, epochWG)
 
 	return nil
 }
 
-// Stop stops the subprocess server gracefully.
-func (s *SubprocessServer) Stop(ctx context.Context) error {
-	if !s.running.Load() {
+func removeStaleUnixSocket(path string) error {
+	info, err := os.Lstat(path)
+	if os.IsNotExist(err) {
 		return nil
 	}
+	if err != nil {
+		return fmt.Errorf("failed to stat unix socket path: %w", err)
+	}
+	if info.Mode()&os.ModeSocket == 0 {
+		return fmt.Errorf("unix socket path exists and is not a socket: %s", path)
+	}
+	if err := os.Remove(path); err != nil {
+		return fmt.Errorf("failed to remove stale unix socket: %w", err)
+	}
+	return nil
+}
 
-	s.running.Store(false)
-	close(s.shutdown)
+// Stop stops the subprocess server gracefully. It holds lifeMu for the whole
+// teardown (including the drain wait) so a concurrent Start cannot begin a new
+// epoch — and in particular cannot wg.Add while this wg.Wait is draining.
+func (s *SubprocessServer) Stop(ctx context.Context) error {
+	s.lifeMu.Lock()
+	defer s.lifeMu.Unlock()
+
+	// CAS so two concurrent Stops cannot both reach close(shutdown), which
+	// panics on the second close.
+	if !s.running.CompareAndSwap(true, false) {
+		return nil
+	}
+	close(s.currentShutdown())
 
 	// Close listener
 	if s.listener != nil {
@@ -143,10 +218,13 @@ func (s *SubprocessServer) Stop(ctx context.Context) error {
 		return true
 	})
 
-	// Wait for goroutines with timeout
+	// Wait for goroutines with timeout, on THIS epoch's WaitGroup. If ctx expires
+	// mid-drain we drop lifeMu and return, but the next Start installs a brand-new
+	// WaitGroup, so this straggler wait cannot collide with the next epoch's Add.
+	epochWG := s.currentWG()
 	done := make(chan struct{})
 	go func() {
-		s.wg.Wait()
+		epochWG.Wait()
 		close(done)
 	}()
 
@@ -160,8 +238,12 @@ func (s *SubprocessServer) Stop(ctx context.Context) error {
 
 // Wait blocks until the server is stopped.
 func (s *SubprocessServer) Wait() {
-	<-s.shutdown
-	s.wg.Wait()
+	s.shutMu.Lock()
+	shutdown := s.shutdown
+	wg := s.wg
+	s.shutMu.Unlock()
+	<-shutdown
+	wg.Wait()
 }
 
 // Address returns the actual address the server is listening on.
@@ -172,19 +254,31 @@ func (s *SubprocessServer) Address() string {
 	return s.listener.Addr().String()
 }
 
-// acceptLoop accepts incoming connections.
-func (s *SubprocessServer) acceptLoop() {
-	defer s.wg.Done()
+// acceptLoop accepts incoming connections on the listener and WaitGroup it was
+// started with (its epoch's resources).
+func (s *SubprocessServer) acceptLoop(listener net.Listener, wg *sync.WaitGroup) {
+	defer wg.Done()
+	backoff := 10 * time.Millisecond
 
 	for {
-		conn, err := s.listener.Accept()
+		conn, err := listener.Accept()
 		if err != nil {
-			if s.running.Load() {
-				// Unexpected error
+			// A closed listener (this epoch's Stop) terminates the loop. Checking
+			// net.ErrClosed rather than the shared running flag prevents a busy-spin
+			// when a later epoch has set running=true again.
+			if errors.Is(err, net.ErrClosed) || !s.running.Load() {
+				return
+			}
+			if ne, ok := err.(net.Error); ok && ne.Temporary() {
+				time.Sleep(backoff)
+				if backoff < time.Second {
+					backoff *= 2
+				}
 				continue
 			}
 			return
 		}
+		backoff = 10 * time.Millisecond
 
 		// Handle connection
 		sc := &subprocessConn{
@@ -192,6 +286,7 @@ func (s *SubprocessServer) acceptLoop() {
 			conn:   conn,
 			parser: protocol.NewParserWithRegistry(conn, s.verbRegistry),
 			writer: protocol.NewWriter(conn),
+			wg:     wg,
 		}
 
 		s.connections.Store(conn, sc)
@@ -200,7 +295,7 @@ func (s *SubprocessServer) acceptLoop() {
 			s.config.OnConnect()
 		}
 
-		s.wg.Add(1)
+		wg.Add(1)
 		go sc.handleConnection()
 	}
 }
@@ -212,15 +307,23 @@ type subprocessConn struct {
 	parser *protocol.Parser
 	writer *protocol.Writer
 	closed atomic.Bool
+	// wg is the epoch WaitGroup this connection belongs to (its Done pairs the
+	// Add in acceptLoop). Held directly so a Stop+Start swapping s.wg cannot make
+	// this Done() target the wrong epoch's group.
+	wg *sync.WaitGroup
 }
 
 func (c *subprocessConn) handleConnection() {
-	defer c.server.wg.Done()
+	defer c.wg.Done()
 	defer c.close()
+
+	// Capture the shutdown channel for this server epoch once, under lock, rather
+	// than reading the field each iteration (a restart could reassign it).
+	shutdown := c.server.currentShutdown()
 
 	for {
 		select {
-		case <-c.server.shutdown:
+		case <-shutdown:
 			return
 		default:
 		}
@@ -239,11 +342,16 @@ func (c *subprocessConn) handleConnection() {
 			}
 			// Check for unknown command - respond with error but keep connection
 			if unknownErr, ok := err.(*protocol.ErrUnknownCommand); ok {
-				_ = c.writeResponse(&protocol.Response{
+				if err := c.writeResponse(&protocol.Response{
 					Type:    protocol.ResponseErr,
 					Code:    string(protocol.ErrInvalidCommand),
 					Message: fmt.Sprintf("unknown command: %s", unknownErr.Verb),
-				})
+				}); err != nil {
+					if c.server.config.OnDisconnect != nil {
+						c.server.config.OnDisconnect(err)
+					}
+					return
+				}
 				continue
 			}
 			// Connection error
@@ -256,7 +364,12 @@ func (c *subprocessConn) handleConnection() {
 		// Handle the command
 		resp := c.handleCommand(cmd)
 		if resp != nil {
-			_ = c.writeResponse(resp)
+			if err := c.writeResponse(resp); err != nil {
+				if c.server.config.OnDisconnect != nil {
+					c.server.config.OnDisconnect(err)
+				}
+				return
+			}
 		}
 	}
 }
@@ -300,6 +413,10 @@ func (c *subprocessConn) writeResponse(resp *protocol.Response) error {
 		err = c.writer.WriteJSON(resp.Data)
 	case protocol.ResponseData:
 		err = c.writer.WriteData(resp.Data)
+	case protocol.ResponseChunk:
+		err = c.writer.WriteChunk(resp.Data)
+	case protocol.ResponseEnd:
+		err = c.writer.WriteEnd()
 	}
 	return err
 }
@@ -358,6 +475,9 @@ type SubprocessStdioServer struct {
 	handlersMu   sync.RWMutex
 	verbRegistry *protocol.VerbRegistry
 	running      atomic.Bool
+	input        io.ReadCloser
+	output       io.Writer
+	closeInput   bool
 }
 
 // NewSubprocessStdioServer creates a subprocess server that uses stdin/stdout.
@@ -365,7 +485,24 @@ func NewSubprocessStdioServer() *SubprocessStdioServer {
 	return &SubprocessStdioServer{
 		handlers:     make(map[string]CommandHandler),
 		verbRegistry: protocol.NewVerbRegistry(),
+		input:        os.Stdin,
+		output:       os.Stdout,
+		closeInput:   true,
 	}
+}
+
+// NewSubprocessStdioServerWithIO creates a subprocess stdio server using the
+// provided streams. Stop closes input to unblock Run when it is waiting for the
+// next command.
+func NewSubprocessStdioServerWithIO(input io.ReadCloser, output io.Writer) *SubprocessStdioServer {
+	s := NewSubprocessStdioServer()
+	if input != nil {
+		s.input = input
+	}
+	if output != nil {
+		s.output = output
+	}
+	return s
 }
 
 // RegisterHandler registers a command handler.
@@ -381,8 +518,8 @@ func (s *SubprocessStdioServer) RegisterHandler(verb string, handler CommandHand
 func (s *SubprocessStdioServer) Run() error {
 	s.running.Store(true)
 
-	parser := protocol.NewParserWithRegistry(os.Stdin, s.verbRegistry)
-	writer := protocol.NewWriter(os.Stdout)
+	parser := protocol.NewParserWithRegistry(s.input, s.verbRegistry)
+	writer := protocol.NewWriter(s.output)
 
 	for s.running.Load() {
 		cmd, err := parser.ParseCommand()
@@ -390,8 +527,8 @@ func (s *SubprocessStdioServer) Run() error {
 			if !s.running.Load() {
 				return nil
 			}
-			// Check for EOF
-			if err.Error() == "EOF" {
+			// Check for EOF (compare the sentinel, not its string form)
+			if errors.Is(err, io.EOF) {
 				return nil
 			}
 			continue
@@ -399,7 +536,9 @@ func (s *SubprocessStdioServer) Run() error {
 
 		resp := s.handleCommand(cmd)
 		if resp != nil {
-			writeStdioResponse(writer, resp)
+			if err := writeStdioResponse(writer, resp); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -409,6 +548,9 @@ func (s *SubprocessStdioServer) Run() error {
 // Stop stops the stdio server.
 func (s *SubprocessStdioServer) Stop() {
 	s.running.Store(false)
+	if s.closeInput && s.input != nil {
+		_ = s.input.Close()
+	}
 }
 
 func (s *SubprocessStdioServer) handleCommand(cmd *protocol.Command) *protocol.Response {
@@ -428,30 +570,40 @@ func (s *SubprocessStdioServer) handleCommand(cmd *protocol.Command) *protocol.R
 	return handler(ctx, cmd)
 }
 
-func writeStdioResponse(writer *protocol.Writer, resp *protocol.Response) {
+func writeStdioResponse(writer *protocol.Writer, resp *protocol.Response) error {
 	switch resp.Type {
 	case protocol.ResponseOK:
-		_ = writer.WriteOK(resp.Message)
+		return writer.WriteOK(resp.Message)
 	case protocol.ResponseErr:
-		_ = writer.WriteErr(protocol.ErrorCode(resp.Code), resp.Message)
+		return writer.WriteErr(protocol.ErrorCode(resp.Code), resp.Message)
 	case protocol.ResponsePong:
-		_ = writer.WritePong()
+		return writer.WritePong()
 	case protocol.ResponseJSON:
-		_ = writer.WriteJSON(resp.Data)
+		return writer.WriteJSON(resp.Data)
 	case protocol.ResponseData:
-		_ = writer.WriteData(resp.Data)
+		return writer.WriteData(resp.Data)
+	case protocol.ResponseChunk:
+		return writer.WriteChunk(resp.Data)
+	case protocol.ResponseEnd:
+		return writer.WriteEnd()
 	}
+	return fmt.Errorf("unsupported response type: %s", resp.Type)
 }
 
 // RegisterWithHub connects to a hub and registers this process as a subprocess.
 // This is a convenience function for the registration flow.
 func RegisterWithHub(socketPath string, config protocol.SubprocessRegisterConfig) error {
-	// Connect to hub
-	conn, err := net.Dial("unix", socketPath)
+	// Connect to hub with a bounded dial + exchange. Without a timeout a hung or
+	// half-open hub would block registration (and any caller waiting on it)
+	// forever.
+	conn, err := net.DialTimeout("unix", socketPath, 10*time.Second)
 	if err != nil {
 		return fmt.Errorf("failed to connect to hub: %w", err)
 	}
 	defer conn.Close()
+
+	// Bound the register/response round-trip too.
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
 
 	parser := protocol.NewParser(conn)
 	writer := protocol.NewWriter(conn)
@@ -551,11 +703,43 @@ type pipeConn struct {
 	cmd    *exec.Cmd
 }
 
-func (p *pipeConn) Read(b []byte) (int, error)         { return p.reader.Read(b) }
-func (p *pipeConn) Write(b []byte) (int, error)        { return p.writer.Write(b) }
-func (p *pipeConn) Close() error                       { return p.cmd.Process.Kill() }
-func (p *pipeConn) LocalAddr() net.Addr                { return nil }
-func (p *pipeConn) RemoteAddr() net.Addr               { return nil }
-func (p *pipeConn) SetDeadline(t time.Time) error      { return nil }
-func (p *pipeConn) SetReadDeadline(t time.Time) error  { return nil }
-func (p *pipeConn) SetWriteDeadline(t time.Time) error { return nil }
+func (p *pipeConn) Read(b []byte) (int, error)  { return p.reader.Read(b) }
+func (p *pipeConn) Write(b []byte) (int, error) { return p.writer.Write(b) }
+func (p *pipeConn) Close() error                { return p.cmd.Process.Kill() }
+func (p *pipeConn) LocalAddr() net.Addr         { return nil }
+func (p *pipeConn) RemoteAddr() net.Addr        { return nil }
+
+// deadliner is the subset of net.Conn deadline behavior. exec's stdin/stdout
+// pipes are *os.File, which supports read/write deadlines, so we delegate rather
+// than silently no-op — a no-op meant a hung stdio subprocess blocked the hub
+// read forever.
+type deadliner interface{ SetDeadline(time.Time) error }
+type readDeadliner interface{ SetReadDeadline(time.Time) error }
+type writeDeadliner interface{ SetWriteDeadline(time.Time) error }
+
+func (p *pipeConn) SetDeadline(t time.Time) error {
+	// A pipe half only supports the deadline for its own direction; set each on
+	// the corresponding end.
+	_ = p.SetReadDeadline(t)
+	return p.SetWriteDeadline(t)
+}
+
+func (p *pipeConn) SetReadDeadline(t time.Time) error {
+	if d, ok := p.reader.(readDeadliner); ok {
+		return d.SetReadDeadline(t)
+	}
+	if d, ok := p.reader.(deadliner); ok {
+		return d.SetDeadline(t)
+	}
+	return nil
+}
+
+func (p *pipeConn) SetWriteDeadline(t time.Time) error {
+	if d, ok := p.writer.(writeDeadliner); ok {
+		return d.SetWriteDeadline(t)
+	}
+	if d, ok := p.writer.(deadliner); ok {
+		return d.SetDeadline(t)
+	}
+	return nil
+}
