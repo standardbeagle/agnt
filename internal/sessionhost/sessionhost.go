@@ -222,7 +222,6 @@ func (s *Session) readLoop() {
 		if n > 0 {
 			chunk := make([]byte, n)
 			copy(chunk, buf[:n])
-			s.scrollback.Write(chunk)
 			s.broadcast(chunk)
 		}
 		if err != nil {
@@ -262,7 +261,20 @@ func (s *Session) waitLoop() {
 // mid-escape-sequence — spec §1.3).
 func (s *Session) broadcast(chunk []byte) {
 	data, _ := json.Marshal(base64.StdEncoding.EncodeToString(chunk))
-	s.broadcastFrame(Frame{Type: "stdout", Data: data})
+	payload, err := json.Marshal(Frame{Type: "stdout", Data: data})
+	if err != nil {
+		return
+	}
+
+	// The scrollback write and the fan-out happen under the same lock that
+	// Attach takes exclusively. Writing outside it let a chunk land in the
+	// snapshot a concurrent Attach was taking AND be delivered live to that
+	// same subscriber (duplicated), or be delivered before its replay-marker
+	// (which the client honors by clearing, so the chunk is lost).
+	s.subsMu.RLock()
+	defer s.subsMu.RUnlock()
+	s.scrollback.Write(chunk)
+	s.fanOutLocked(payload, "stdout")
 }
 
 func (s *Session) broadcastFrame(f Frame) {
@@ -272,6 +284,11 @@ func (s *Session) broadcastFrame(f Frame) {
 	}
 	s.subsMu.RLock()
 	defer s.subsMu.RUnlock()
+	s.fanOutLocked(payload, f.Type)
+}
+
+// fanOutLocked delivers payload to every subscriber. Caller holds subsMu.
+func (s *Session) fanOutLocked(payload []byte, frameType string) {
 	for _, sub := range s.subs {
 		// A previously-desynced subscriber must be re-synced with a fresh
 		// scrollback snapshot before it can accept live frames again;
@@ -287,7 +304,7 @@ func (s *Session) broadcastFrame(f Frame) {
 			// frame — delivering it live too would render it twice. Skip the
 			// live copy for stdout; non-scrollback frames (e.g. "exit") are
 			// not in the snapshot and must still be delivered.
-			if f.Type == "stdout" {
+			if frameType == "stdout" {
 				continue
 			}
 		}
@@ -370,10 +387,33 @@ func (s *Session) Attach(bufferedFrames int) (ch <-chan []byte, attachID string,
 	if bufferedFrames <= 0 {
 		bufferedFrames = 64
 	}
+	if bufferedFrames < 2 {
+		bufferedFrames = 2 // room for the replay-marker and the snapshot frame
+	}
 	id := fmt.Sprintf("attach-%d", s.nextAttachID.Add(1))
 	sub := &subscriber{id: id, ch: make(chan []byte, bufferedFrames)}
 
+	// Snapshot, enqueue the replay frames, and only then publish the subscriber
+	// — all under the exclusive lock the producer takes to write scrollback and
+	// fan out.
+	//
+	// Registering first, as this did, opened a window before the marker was
+	// enqueued: a live frame could reach the subscriber ahead of its
+	// replay-marker (the client clears on the marker, so that output is lost),
+	// and on a chatty child the 64-slot buffer could fill in that window — the
+	// producer only drops, so the blocking `sub.ch <- marker` below would then
+	// wedge the ATTACH handler forever, since nothing drains sub.ch until Attach
+	// returns it. Here the channel is empty and unseen, so neither can happen.
 	s.subsMu.Lock()
+	snapshot, truncated := s.scrollback.Snapshot()
+	markerData, _ := json.Marshal(ReplayMarkerData{Truncated: truncated})
+	marker, _ := json.Marshal(Frame{Type: "replay-marker", Data: markerData})
+	sub.ch <- marker
+	if len(snapshot) > 0 {
+		data, _ := json.Marshal(base64.StdEncoding.EncodeToString(snapshot))
+		replay, _ := json.Marshal(Frame{Type: "stdout", Data: data})
+		sub.ch <- replay
+	}
 	s.subs[id] = sub
 	s.subsMu.Unlock()
 
@@ -384,19 +424,6 @@ func (s *Session) Attach(bufferedFrames int) (ch <-chan []byte, attachID string,
 	// (removed itself from primaryID), the next attach may claim it. We
 	// implement "first to attach after primary slot is empty wins".
 	isPrimary = s.primaryID.CompareAndSwap("", id)
-
-	// Send replay-marker + snapshot up front, synchronously, before any
-	// live frame can interleave: caller drains sub.ch in order, and we push
-	// these two frames first.
-	snapshot, truncated := s.scrollback.Snapshot()
-	markerData, _ := json.Marshal(ReplayMarkerData{Truncated: truncated})
-	marker, _ := json.Marshal(Frame{Type: "replay-marker", Data: markerData})
-	sub.ch <- marker
-	if len(snapshot) > 0 {
-		data, _ := json.Marshal(base64.StdEncoding.EncodeToString(snapshot))
-		replay, _ := json.Marshal(Frame{Type: "stdout", Data: data})
-		sub.ch <- replay
-	}
 
 	return sub.ch, id, isPrimary
 }
