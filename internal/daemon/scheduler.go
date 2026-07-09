@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -301,10 +303,21 @@ func (s *Scheduler) Start(ctx context.Context) error {
 	s.ctx, s.cancel = context.WithCancel(ctx)
 	s.started = true
 
+	var maxTaskNum int64
 	for _, task := range loaded {
 		if task.Status() == TaskStatusPending {
 			s.tasks.Store(task.ID, task)
 		}
+		// Seed the ID counter past the highest restored suffix so a fresh
+		// task-1 after restart cannot collide with (and overwrite) a
+		// recovered task-N. Applies to every loaded task, not just pending
+		// ones, so a delivered/failed task's ID is never reused either.
+		if n, ok := parseTaskIDNum(task.ID); ok && n > maxTaskNum {
+			maxTaskNum = n
+		}
+	}
+	if maxTaskNum > s.nextTaskID.Load() {
+		s.nextTaskID.Store(maxTaskNum)
 	}
 
 	s.wg.Add(1)
@@ -455,6 +468,30 @@ func (s *Scheduler) deliverTask(task *ScheduledTask) {
 	s.removeTaskFromStorage(task)
 }
 
+// maxRetryBackoff caps the exponential retry delay. Without a cap the shift
+// overflows time.Duration (int64) once the exponent nears 63, wrapping to a
+// negative delay that puts DeliverAt in the past — checkDueTasks then re-claims
+// the task instantly, turning backoff into a hot loop.
+const maxRetryBackoff = 5 * time.Minute
+
+// retryBackoff returns base * 2^(attempts-1), clamped to [base, maxRetryBackoff].
+// attempts is the post-increment attempt count and is normally >= 1, but it is
+// restored unvalidated from the persisted task file, where a corrupt or
+// hand-edited value could be <= 0 and panic the shift with a negative count.
+func retryBackoff(base time.Duration, attempts int) time.Duration {
+	if attempts < 1 {
+		attempts = 1
+	}
+	backoff := base
+	for i := 1; i < attempts; i++ {
+		backoff *= 2
+		if backoff >= maxRetryBackoff {
+			return maxRetryBackoff
+		}
+	}
+	return backoff
+}
+
 // handleDeliveryFailure processes a failed delivery attempt.
 // If max retries reached, marks as failed; otherwise reverts to pending for retry.
 func (s *Scheduler) handleDeliveryFailure(task *ScheduledTask, errMsg string) {
@@ -467,7 +504,14 @@ func (s *Scheduler) handleDeliveryFailure(task *ScheduledTask, errMsg string) {
 		s.totalFailed.Add(1)
 		s.removeTaskFromStorage(task)
 	} else {
-		// Delivering -> Pending (retry on next tick)
+		// Delivering -> Pending (retry on next tick). Apply exponential
+		// backoff by pushing DeliverAt into the future — checkDueTasks only
+		// re-claims a task once DeliverAt is in the past, so RetryDelay is now
+		// actually honored (previously the task became immediately due again
+		// and RetryDelay was dead config). Delay grows RetryDelay*2^(attempts-1).
+		if s.config.RetryDelay > 0 {
+			task.DeliverAt = time.Now().Add(retryBackoff(s.config.RetryDelay, attempts))
+		}
 		task.status.Store(uint32(taskStatusPending))
 	}
 	s.persistTask(task)
@@ -503,6 +547,20 @@ func (s *Scheduler) removeTaskFromStorage(task *ScheduledTask) {
 			debug.Warn("scheduler", "failed to remove task %q from storage: %v", task.ID, err)
 		}
 	}
+}
+
+// parseTaskIDNum extracts the numeric suffix N from a "task-N" ID. Returns
+// false for any ID not matching that shape.
+func parseTaskIDNum(id string) (int64, bool) {
+	const prefix = "task-"
+	if !strings.HasPrefix(id, prefix) {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(id[len(prefix):], 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 // Schedule adds a new task to the scheduler.
