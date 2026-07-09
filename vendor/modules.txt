@@ -372,7 +372,7 @@ github.com/spf13/pflag
 # github.com/standardbeagle/claude-go v1.3.0
 ## explicit; go 1.24.0
 github.com/standardbeagle/claude-go
-# github.com/standardbeagle/go-cli-server v0.3.13
+# github.com/standardbeagle/go-cli-server v0.5.0
 ## explicit; go 1.24.2
 github.com/standardbeagle/go-cli-server/client
 github.com/standardbeagle/go-cli-server/hub
