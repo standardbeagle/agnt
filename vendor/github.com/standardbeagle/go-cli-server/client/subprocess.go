@@ -166,10 +166,10 @@ func (s *SubprocessServer) Start() error {
 
 	s.listener = listener
 	epochWG.Add(1)
-	// Pass the listener AND this epoch's WaitGroup to the accept loop so it operates
-	// on THIS epoch's resources rather than re-reading shared fields a later Start
-	// could reassign.
-	go s.acceptLoop(listener, epochWG)
+	// Pass the listener, this epoch's WaitGroup, AND its shutdown channel to the
+	// accept loop so it operates on THIS epoch's resources rather than re-reading
+	// shared fields a later Start could reassign.
+	go s.acceptLoop(listener, epochWG, s.currentShutdown())
 
 	return nil
 }
@@ -256,7 +256,7 @@ func (s *SubprocessServer) Address() string {
 
 // acceptLoop accepts incoming connections on the listener and WaitGroup it was
 // started with (its epoch's resources).
-func (s *SubprocessServer) acceptLoop(listener net.Listener, wg *sync.WaitGroup) {
+func (s *SubprocessServer) acceptLoop(listener net.Listener, wg *sync.WaitGroup, shutdown <-chan struct{}) {
 	defer wg.Done()
 	backoff := 10 * time.Millisecond
 
@@ -270,7 +270,16 @@ func (s *SubprocessServer) acceptLoop(listener net.Listener, wg *sync.WaitGroup)
 				return
 			}
 			if ne, ok := err.(net.Error); ok && ne.Temporary() {
-				time.Sleep(backoff)
+				// Back off, but abandon the wait when this epoch stops. Sleeping
+				// outright makes Stop block for up to the backoff (1s) waiting on
+				// the WaitGroup, for no reason other than that we were napping.
+				timer := time.NewTimer(backoff)
+				select {
+				case <-timer.C:
+				case <-shutdown:
+					timer.Stop()
+					return
+				}
 				if backoff < time.Second {
 					backoff *= 2
 				}
