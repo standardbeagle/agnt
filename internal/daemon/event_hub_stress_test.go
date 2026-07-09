@@ -49,6 +49,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -150,6 +151,34 @@ func processOutputEntry(processID, stream, line string) proxy.LogEntry {
 // could cause misses), filter evaluation short-circuits, per-sink state
 // bleed through a shared pointer.
 // =====================================================================
+// halfBuffer keeps the producer at most this many events ahead of the slowest
+// drainer, comfortably inside StreamSink's 64-entry channel buffer.
+const halfBuffer = 32
+
+// awaitDrainBacklogBelow blocks until every drainer is within `slack` events of
+// what has been produced for it so far. The timeout is a deadlock guard, not a
+// pacing device: the loop makes progress as the drainers do.
+func awaitDrainBacklogBelow(t *testing.T, drainers []*stubStreamDrainer, produced int64, slack int64) {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		lagging := false
+		for _, d := range drainers {
+			if produced-d.got.Load() > slack {
+				lagging = true
+				break
+			}
+		}
+		if !lagging {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("drainers never caught up: produced=%d slack=%d", produced, slack)
+		}
+		runtime.Gosched()
+	}
+}
+
 func TestEventHub_FanOutToManySinks(t *testing.T) {
 	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
 
@@ -178,6 +207,19 @@ func TestEventHub_FanOutToManySinks(t *testing.T) {
 
 	stop := make(chan struct{})
 	var drainerDones []<-chan struct{}
+	// A failed assertion aborts before the teardown below, leaving the drainers
+	// parked on their channels — goleak then reports them instead of the failure.
+	var stopOnce sync.Once
+	stopAll := func() { stopOnce.Do(func() { close(stop) }) }
+	t.Cleanup(func() {
+		stopAll()
+		for _, done := range drainerDones {
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+			}
+		}
+	})
 
 	for i := 0; i < typeSinks; i++ {
 		sink := hub.AddStreamSink(streamFilter{
@@ -220,14 +262,23 @@ func TestEventHub_FanOutToManySinks(t *testing.T) {
 			wantErrOverall++
 		}
 		hub.BroadcastLogEntry(entry, pid)
-		// Pace so the 64-entry per-sink buffer doesn't overflow under
-		// the 100-sink fan-out load. A 100us yield every 32 events is
-		// enough to let drainers catch up without meaningfully slowing
-		// the test wall clock (1500/32 * 100us == ~5ms of sleeps total).
+
+		// Pace so the 64-entry per-sink buffer never overflows: StreamSink
+		// delivery is channel-send-with-default, so an overflowing sink drops
+		// silently and the test can no longer assert what was delivered.
+		//
+		// Sleeping a fixed 100us every 32 events used to be the pacing, and it
+		// is not pacing at all — it assumes the drainers get scheduled within
+		// that window, which on a loaded machine they do not. Waiting on the
+		// drainers' own progress bounds the backlog no matter how the scheduler
+		// behaves, and makes the delivered counts exact rather than lossy.
 		if i%32 == 31 {
-			time.Sleep(100 * time.Microsecond)
+			awaitDrainBacklogBelow(t, typeDrainers, wantErrOverall, halfBuffer)
+			awaitDrainBacklogBelow(t, proxyDrainers, wantAnyOnTarget, halfBuffer)
 		}
 	}
+	awaitDrainBacklogBelow(t, typeDrainers, wantErrOverall, 0)
+	awaitDrainBacklogBelow(t, proxyDrainers, wantAnyOnTarget, 0)
 
 	// Wait for drainers to converge to a stable state. The backpressure
 	// contract explicitly allows drops under burst (channel-send-with-
@@ -241,37 +292,18 @@ func TestEventHub_FanOutToManySinks(t *testing.T) {
 	// Quantity is a weak proxy for that; the strong proof is the
 	// per-type leak check below, which fails loudly if ANY wrong-type
 	// event reaches a type-filtered sink.
-	floor := func(x int64) int64 { return x * 3 / 4 }
-	require.Eventually(t, func() bool {
-		for _, d := range typeDrainers {
-			if d.got.Load() < floor(wantErrOverall) {
-				return false
-			}
-		}
-		for _, d := range proxyDrainers {
-			if d.got.Load() < floor(wantAnyOnTarget) {
-				return false
-			}
-		}
-		return true
-	}, 6*time.Second, 5*time.Millisecond, "drainers did not reach 75%% acceptance floor")
-
-	// Quantity: each sink must be within the [floor, expected] window.
-	// Exceeding expected would indicate duplication; dropping below the
-	// floor would indicate a systemic filter or broadcast regression.
+	// Because the producer never let a sink's buffer fill, delivery was
+	// lossless: every matching event reached every matching sink, exactly once.
+	// Asserting equality catches a dropped broadcast, a skipped sink, and a
+	// duplicated one — where a "75% of expected" floor let half the broadcasts
+	// vanish unnoticed while still flaking under load.
 	for i, d := range typeDrainers {
-		got := d.got.Load()
-		assert.LessOrEqual(t, got, wantErrOverall,
-			"type-filter sink %d delivered %d > %d expected (duplication?)", i, got, wantErrOverall)
-		assert.GreaterOrEqual(t, got, floor(wantErrOverall),
-			"type-filter sink %d delivered %d, below floor %d", i, got, floor(wantErrOverall))
+		assert.Equal(t, wantErrOverall, d.got.Load(),
+			"type-filter sink %d delivered %d, want exactly %d", i, d.got.Load(), wantErrOverall)
 	}
 	for i, d := range proxyDrainers {
-		got := d.got.Load()
-		assert.LessOrEqual(t, got, wantAnyOnTarget,
-			"proxy-filter sink %d delivered %d > %d expected (duplication?)", i, got, wantAnyOnTarget)
-		assert.GreaterOrEqual(t, got, floor(wantAnyOnTarget),
-			"proxy-filter sink %d delivered %d, below floor %d", i, got, floor(wantAnyOnTarget))
+		assert.Equal(t, wantAnyOnTarget, d.got.Load(),
+			"proxy-filter sink %d delivered %d, want exactly %d", i, d.got.Load(), wantAnyOnTarget)
 	}
 
 	// Filter correctness (the strong invariant): type-filter sinks must
@@ -293,7 +325,7 @@ func TestEventHub_FanOutToManySinks(t *testing.T) {
 	}
 
 	// Wait for all drainers to exit (channels closed by RemoveStreamSink).
-	close(stop) // belt-and-braces in case any remaining channel never closed
+	stopAll() // belt-and-braces in case any remaining channel never closed
 	for i, done := range drainerDones {
 		select {
 		case <-done:
