@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -17,7 +18,7 @@ func TestDisplayAutostartResults_RegistrationErrorIsVisible(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	displayAutostartResults(handle, nil, nil, &out, time.Second)
+	displayAutostartResults(context.Background(), handle, nil, nil, &out, time.Second)
 
 	got := out.String()
 	if !strings.Contains(got, "daemon session unavailable") {
@@ -32,7 +33,7 @@ func TestDisplayAutostartResults_RegistrationTimeoutIsVisible(t *testing.T) {
 	handle := &daemonSessionHandle{registrationDone: make(chan struct{})}
 
 	var out bytes.Buffer
-	displayAutostartResults(handle, nil, nil, &out, time.Nanosecond)
+	displayAutostartResults(context.Background(), handle, nil, nil, &out, time.Nanosecond)
 
 	got := out.String()
 	if !strings.Contains(got, "daemon session registration timed out") {
@@ -53,7 +54,7 @@ func TestDisplayAutostartResults_InProgressStatusIsVisible(t *testing.T) {
 	}
 
 	var out bytes.Buffer
-	displayAutostartResults(handle, nil, nil, &out, time.Second)
+	displayAutostartResults(context.Background(), handle, nil, nil, &out, time.Second)
 
 	got := out.String()
 	if !strings.Contains(got, "autostart starting") {

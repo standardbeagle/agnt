@@ -392,7 +392,7 @@ func mergeAutostartResult(handle *daemonSessionHandle, result map[string]interfa
 // autostart results in the overlay status bar. Success messages appear as a
 // transient status bar message that fades back to the normal indicator after 3s.
 // Errors are written to the fallback writer since they need more space.
-func displayAutostartResults(handle *daemonSessionHandle, ov *overlay.Overlay, router *overlay.InputRouter, w io.Writer, timeout time.Duration) {
+func displayAutostartResults(ctx context.Context, handle *daemonSessionHandle, ov *overlay.Overlay, router *overlay.InputRouter, w io.Writer, timeout time.Duration) {
 	if handle == nil {
 		return
 	}
@@ -498,10 +498,17 @@ func displayAutostartResults(handle *daemonSessionHandle, ov *overlay.Overlay, r
 		}
 		ov.DrawStatusBarMessage(msg)
 
-		// Restore normal indicator after 3 seconds
+		// Restore the normal indicator after 3 seconds, unless the session ends
+		// first — a bare sleep here redraws against an overlay that teardown has
+		// already restored, and outlives the process's own shutdown.
 		go func() {
-			time.Sleep(3 * time.Second)
-			ov.RedrawIndicator()
+			timer := time.NewTimer(3 * time.Second)
+			defer timer.Stop()
+			select {
+			case <-timer.C:
+				ov.RedrawIndicator()
+			case <-ctx.Done():
+			}
 		}()
 	}
 
@@ -1486,7 +1493,7 @@ func runOverlayPipeline(
 		if rt.outputGate != nil {
 			autostartOut = rt.outputGate
 		}
-		displayAutostartResults(rt.daemonHandle, rt.termOverlay, rt.inputRouter, autostartOut, 10*time.Second)
+		displayAutostartResults(ctx, rt.daemonHandle, rt.termOverlay, rt.inputRouter, autostartOut, 10*time.Second)
 	}()
 
 	// Resize watcher — platform-specific dispatcher (SIGWINCH on Unix,
