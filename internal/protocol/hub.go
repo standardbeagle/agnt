@@ -126,7 +126,6 @@ var (
 	FormatData            = hubprotocol.FormatData
 	FormatChunk           = hubprotocol.FormatChunk
 	FormatEnd             = hubprotocol.FormatEnd
-	ParseLengthPrefixed   = hubprotocol.ParseLengthPrefixed
 
 	// ErrJSONInsteadOfCommand indicates JSON was sent instead of a protocol command.
 	ErrJSONInsteadOfCommand = hubprotocol.ErrJSONInsteadOfCommand
@@ -136,7 +135,16 @@ var (
 )
 
 func init() {
-	// Register agnt-specific verbs with the default registry.
+	// Register agnt-specific verbs with the default registry so a parser built
+	// over it (protocol.NewParser) does not reject them as unknown commands.
+	//
+	// Sub-verbs are deliberately NOT registered here. The daemon's hub owns its
+	// own VerbRegistry (hub.New → protocol.NewVerbRegistry), populated from each
+	// CommandDefinition's SubVerbs at RegisterCommand time — DefaultRegistry
+	// never parses a daemon command. A second sub-verb list maintained here
+	// could only drift from the handlers that actually run; agnt's only
+	// DefaultRegistry-backed parsers (internal/daemon/client.go) call
+	// ParseResponse, which consults neither table.
 	hubprotocol.DefaultRegistry.RegisterVerb(
 		VerbProxy,
 		VerbProxyLog,
@@ -148,36 +156,5 @@ func init() {
 		VerbStatus,
 		VerbStore,
 		VerbSessionHost,
-	)
-
-	// Register agnt-specific sub-verbs.
-	hubprotocol.DefaultRegistry.RegisterSubVerb(
-		SubVerbExec,
-		SubVerbToast,
-		SubVerbQuery,
-		SubVerbStats,
-		SubVerbActivity,
-		SubVerbOutputPreview,
-		SubVerbEnable,
-		SubVerbDisable,
-		SubVerbAddRule,
-		SubVerbRemoveRule,
-		SubVerbListRules,
-		SubVerbPreset,
-		SubVerbReset,
-		SubVerbSend,
-		SubVerbSchedule,
-		SubVerbCancel,
-		SubVerbTasks,
-		SubVerbFind,
-		SubVerbAttach,
-		SubVerbURL,
-		SubVerbGetAll,
-		SubVerbDelete,
-		SubVerbRunGroup,
-		SubVerbCreate,
-		SubVerbKill,
-		SubVerbDetach,
-		SubVerbResize,
 	)
 }

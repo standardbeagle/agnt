@@ -11,8 +11,8 @@ import (
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
 )
 
-func (d *Daemon) hubHandleChaos(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	return newCommandRouter("CHAOS").dispatch(ctx, conn, cmd, map[string]handlerFn{
+func (d *Daemon) chaosActions() map[string]handlerFn {
+	return map[string]handlerFn{
 		"ENABLE":       noCtx(d.hubHandleChaosEnable),
 		"DISABLE":      noCtx(d.hubHandleChaosDisable),
 		"STATUS":       noCtx(d.hubHandleChaosStatus),
@@ -24,7 +24,11 @@ func (d *Daemon) hubHandleChaos(ctx context.Context, conn *hubpkg.Connection, cm
 		"STATS":        noCtx(d.hubHandleChaosStats),
 		"CLEAR":        noCtx(d.hubHandleChaosClear),
 		"LIST-PRESETS": connOnly(d.hubHandleChaosListPresets),
-	})
+	}
+}
+
+func (d *Daemon) hubHandleChaos(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	return newCommandRouter("CHAOS").dispatch(ctx, conn, cmd, d.chaosActions())
 }
 
 // hubHandleChaosEnable handles CHAOS ENABLE command.

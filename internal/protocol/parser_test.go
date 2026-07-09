@@ -57,6 +57,25 @@ func TestParseCommand_Simple(t *testing.T) {
 	}
 }
 
+// agntTestRegistry returns a registry with agnt's verbs plus the sub-verbs these
+// parser tests exercise.
+//
+// DefaultRegistry deliberately registers no sub-verbs: the registry that parses
+// real commands is the hub's own, seeded from each CommandDefinition at
+// RegisterCommand time (internal/daemon/hub_run.go), and a second sub-verb list
+// in this package could only drift from the handlers that actually run. Tests
+// that assert sub-verb parsing therefore declare the vocabulary they test.
+func agntTestRegistry() *VerbRegistry {
+	r := NewVerbRegistry()
+	r.RegisterVerb(VerbProxy, VerbProxyLog, VerbCurrentPage, VerbTunnel,
+		VerbChaos, VerbDetect, VerbOverlay, VerbStatus, VerbStore, VerbSessionHost)
+	r.RegisterSubVerbForVerb(VerbProxy, SubVerbStart, SubVerbStop, SubVerbRestart,
+		SubVerbStatus, SubVerbList, SubVerbExec, SubVerbToast)
+	r.RegisterSubVerbForVerb(VerbProxyLog, SubVerbQuery, "SUMMARY", SubVerbClear, SubVerbStats)
+	r.RegisterSubVerbForVerb(VerbCurrentPage, SubVerbList, SubVerbGet, "SUMMARY", SubVerbClear)
+	return r
+}
+
 func TestParseCommand_WithSubVerb(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -129,7 +148,7 @@ func TestParseCommand_WithSubVerb(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			parser := NewParser(strings.NewReader(tt.input))
+			parser := NewParserWithRegistry(strings.NewReader(tt.input), agntTestRegistry())
 			got, err := parser.ParseCommand()
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ParseCommand() error = %v, wantErr %v", err, tt.wantErr)
@@ -202,7 +221,7 @@ func TestParseCommand_WithData(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			parser := NewParser(strings.NewReader(tt.input))
+			parser := NewParserWithRegistry(strings.NewReader(tt.input), agntTestRegistry())
 			got, err := parser.ParseCommand()
 			if (err != nil) != tt.wantErr {
 				t.Errorf("ParseCommand() error = %v, wantErr %v", err, tt.wantErr)
@@ -681,9 +700,19 @@ func TestResync(t *testing.T) {
 }
 
 func TestMultipleCommands(t *testing.T) {
-	// Test parsing multiple commands in sequence
+	// Test parsing multiple commands in sequence.
+	//
+	// Sub-verbs are scoped per-verb (IsSubVerbForVerb), and the registry that
+	// parses real commands is the hub's own — seeded from each CommandDefinition
+	// at RegisterCommand time. DefaultRegistry knows agnt's verbs but registers
+	// no sub-verbs (a second list could only drift from the handlers that run),
+	// so this test seeds the sub-verbs it exercises.
+	registry := NewVerbRegistry()
+	registry.RegisterVerb("PROXY")
+	registry.RegisterSubVerbForVerb("PROXY", "LIST")
+
 	input := "PING;;PROC STATUS test;;PROXY LIST;;"
-	parser := NewParser(strings.NewReader(input))
+	parser := NewParserWithRegistry(strings.NewReader(input), registry)
 
 	// Parse first command
 	cmd1, err := parser.ParseCommand()

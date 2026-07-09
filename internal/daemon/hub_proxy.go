@@ -17,7 +17,11 @@ import (
 )
 
 func (d *Daemon) hubHandleProxy(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	return newCommandRouter("PROXY").dispatch(ctx, conn, cmd, map[string]handlerFn{
+	return newCommandRouter("PROXY").dispatch(ctx, conn, cmd, d.proxyActions())
+}
+
+func (d *Daemon) proxyActions() map[string]handlerFn {
+	return map[string]handlerFn{
 		"START":   d.hubHandleProxyStart,
 		"STOP":    d.hubHandleProxyStop,
 		"RESTART": d.hubHandleProxyRestart,
@@ -25,7 +29,7 @@ func (d *Daemon) hubHandleProxy(ctx context.Context, conn *hubpkg.Connection, cm
 		"LIST":    noCtx(d.hubHandleProxyList),
 		"EXEC":    noCtx(d.hubHandleProxyExec),
 		"TOAST":   noCtx(d.hubHandleProxyToast),
-	})
+	}
 }
 
 // hubHandleProxyStart handles PROXY START command.
@@ -449,13 +453,8 @@ func (d *Daemon) hubHandleProxyRestart(ctx context.Context, conn *hubpkg.Connect
 	// Stop the proxy
 	if err := d.proxym.Stop(ctx, proxyID); err != nil {
 		debug.Warn("daemon", "error stopping proxy %s: %v", proxyID, err)
-		d.startupErrorStore.Add(&StartupLogEntry{
-			ProcessID: proxyID,
-			Level:     "warning",
-			EventType: "proxy_stop_failed",
-			Message:   fmt.Sprintf("PROXY RESTART: failed to stop proxy: %v", err),
-			Timestamp: time.Now(),
-		})
+		d.recordStartupEntry(proxyID, "", "warning", "proxy_stop_failed",
+			fmt.Sprintf("PROXY RESTART: failed to stop proxy: %v", err), 0)
 	}
 
 	// Remove from persisted state

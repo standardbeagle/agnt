@@ -28,6 +28,27 @@ func connOnly(fn func(*hubpkg.Connection) error) handlerFn {
 	}
 }
 
+// routerSubVerbs returns the action names a router dispatches on, sorted, minus
+// the "" default-action alias.
+//
+// Command registration reads its sub-verb set from the same map the router
+// dispatches on. The parser only lifts a token into cmd.SubVerb when it was
+// registered for that verb (IsSubVerbForVerb), so an action that is routable but
+// unregistered never reaches its handler: the token stays in Args and the router
+// dispatches on an empty SubVerb — landing on the "" alias (silently wrong
+// action) or on "unknown action". Deriving one from the other makes that class
+// of drift unrepresentable.
+func routerSubVerbs(handlers map[string]handlerFn) []string {
+	subVerbs := make([]string, 0, len(handlers))
+	for action := range handlers {
+		if action != "" {
+			subVerbs = append(subVerbs, action)
+		}
+	}
+	sort.Strings(subVerbs)
+	return subVerbs
+}
+
 // commandRouter dispatches hub commands to sub-handlers based on cmd.SubVerb.
 type commandRouter struct {
 	command        string

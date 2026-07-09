@@ -14,8 +14,8 @@ import (
 
 // hubHandleAutomation handles the AUTOMATION command for chromedp sessions.
 
-func (d *Daemon) hubHandleAutomation(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	return newCommandRouter("AUTOMATION").dispatch(ctx, conn, cmd, map[string]handlerFn{
+func (d *Daemon) automationActions() map[string]handlerFn {
+	return map[string]handlerFn{
 		"START":      d.hubHandleAutomationStart,
 		"STOP":       d.hubHandleAutomationStop,
 		"STATUS":     noCtx(d.hubHandleAutomationStatus),
@@ -23,7 +23,11 @@ func (d *Daemon) hubHandleAutomation(ctx context.Context, conn *hubpkg.Connectio
 		"SCREENSHOT": d.hubHandleAutomationScreenshot,
 		"NAVIGATE":   d.hubHandleAutomationNavigate,
 		"EVALUATE":   d.hubHandleAutomationEvaluate,
-	})
+	}
+}
+
+func (d *Daemon) hubHandleAutomation(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	return newCommandRouter("AUTOMATION").dispatch(ctx, conn, cmd, d.automationActions())
 }
 
 // hubHandleAutomationStart handles AUTOMATION START command.

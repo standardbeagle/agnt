@@ -8,14 +8,18 @@ import (
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
 )
 
-func (d *Daemon) hubHandleCurrentPage(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	return newCommandRouter("CURRENTPAGE").dispatch(ctx, conn, cmd, map[string]handlerFn{
+func (d *Daemon) currentPageActions() map[string]handlerFn {
+	return map[string]handlerFn{
 		"LIST":    noCtx(d.hubHandleCurrentPageList),
 		"":        noCtx(d.hubHandleCurrentPageList),
 		"GET":     noCtx(d.hubHandleCurrentPageGet),
 		"SUMMARY": noCtx(d.hubHandleCurrentPageSummary),
 		"CLEAR":   noCtx(d.hubHandleCurrentPageClear),
-	})
+	}
+}
+
+func (d *Daemon) hubHandleCurrentPage(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	return newCommandRouter("CURRENTPAGE").dispatch(ctx, conn, cmd, d.currentPageActions())
 }
 
 // hubHandleCurrentPageList handles CURRENTPAGE LIST command.

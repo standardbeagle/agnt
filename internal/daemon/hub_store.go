@@ -8,25 +8,29 @@ import (
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
 )
 
+func (d *Daemon) storeActions() map[string]handlerFn {
+	return map[string]handlerFn{
+		"GET":     noCtx(d.hubHandleStoreGet),
+		"SET":     noCtx(d.hubHandleStoreSet),
+		"DELETE":  noCtx(d.hubHandleStoreDelete),
+		"LIST":    noCtx(d.hubHandleStoreList),
+		"CLEAR":   noCtx(d.hubHandleStoreClear),
+		"GET-ALL": noCtx(d.hubHandleStoreGetAll),
+	}
+}
+
 func (d *Daemon) hubHandleStore(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	valid := []string{"GET", "SET", "DELETE", "LIST", "CLEAR", "GET-ALL"}
+	actions := d.storeActions()
 	return newCommandRouter("STORE").
 		withDefault(func(_ context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
 			return writeStructuredErr(conn, "daemon", &hubproto.StructuredError{
 				Code:         hubproto.ErrInvalidAction,
 				Message:      "unknown STORE sub-command",
 				Command:      "STORE",
-				ValidActions: valid,
+				ValidActions: routerSubVerbs(actions),
 			})
 		}).
-		dispatch(ctx, conn, cmd, map[string]handlerFn{
-			"GET":     noCtx(d.hubHandleStoreGet),
-			"SET":     noCtx(d.hubHandleStoreSet),
-			"DELETE":  noCtx(d.hubHandleStoreDelete),
-			"LIST":    noCtx(d.hubHandleStoreList),
-			"CLEAR":   noCtx(d.hubHandleStoreClear),
-			"GET-ALL": noCtx(d.hubHandleStoreGetAll),
-		})
+		dispatch(ctx, conn, cmd, actions)
 }
 
 // hubHandleStoreGet handles STORE GET command.

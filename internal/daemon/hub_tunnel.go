@@ -12,12 +12,16 @@ import (
 )
 
 func (d *Daemon) hubHandleTunnel(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	return newCommandRouter("TUNNEL").dispatch(ctx, conn, cmd, map[string]handlerFn{
+	return newCommandRouter("TUNNEL").dispatch(ctx, conn, cmd, d.tunnelActions())
+}
+
+func (d *Daemon) tunnelActions() map[string]handlerFn {
+	return map[string]handlerFn{
 		"START":  d.hubHandleTunnelStart,
 		"STOP":   d.hubHandleTunnelStop,
 		"STATUS": noCtx(d.hubHandleTunnelStatus),
 		"LIST":   noCtx(d.hubHandleTunnelList),
-	})
+	}
 }
 
 // hubHandleTunnelStart handles TUNNEL START command.
