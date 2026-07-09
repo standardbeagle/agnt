@@ -1,6 +1,9 @@
 # Binaries (root level only)
 /agnt
+/agnt-daemon
 /devtool-mcp
+# Interrupted daemon-copy temp files (provisioner killed mid-copy)
+.agnt-daemon-*
 *.exe
 *.dll
 *.so

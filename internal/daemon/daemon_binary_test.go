@@ -118,6 +118,44 @@ func TestCopyExecutable(t *testing.T) {
 	}
 }
 
+func TestRemoveStaleTemps(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "agnt")
+	dst := filepath.Join(dir, "agnt-daemon")
+	writeBinFile(t, src, []byte("PAYLOAD"))
+
+	// A temp file orphaned by a SIGKILLed provisioner (old mtime) must be
+	// reaped; a fresh temp (a concurrent provisioner's in-flight copy) and
+	// unrelated files must survive.
+	stale := filepath.Join(dir, ".agnt-daemon-1111")
+	fresh := filepath.Join(dir, ".agnt-daemon-2222")
+	other := filepath.Join(dir, "unrelated.txt")
+	writeBinFile(t, stale, []byte("partial"))
+	writeBinFile(t, fresh, []byte("partial"))
+	writeBinFile(t, other, []byte("keep"))
+	old := time.Now().Add(-staleTempAge - time.Minute)
+	if err := os.Chtimes(stale, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := copyExecutable(src, dst); err != nil {
+		t.Fatalf("copyExecutable: %v", err)
+	}
+
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Fatalf("stale temp should be reaped, stat err = %v", err)
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Fatalf("fresh temp must survive (in-flight concurrent copy): %v", err)
+	}
+	if _, err := os.Stat(other); err != nil {
+		t.Fatalf("unrelated file must survive: %v", err)
+	}
+	if got, _ := os.ReadFile(dst); string(got) != "PAYLOAD" {
+		t.Fatalf("dst content mismatch: %q", got)
+	}
+}
+
 func writeBinFile(t *testing.T, path string, data []byte) {
 	t.Helper()
 	if err := os.WriteFile(path, data, 0o755); err != nil {

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/standardbeagle/agnt/internal/debug"
 )
@@ -110,6 +111,7 @@ func daemonBinaryFresh(self, daemonPath string) bool {
 // binary, and two processes racing to provision simply write byte-identical
 // copies where the last rename wins.
 func copyExecutable(src, dst string) error {
+	removeStaleTemps(filepath.Dir(dst))
 	in, err := os.Open(src)
 	if err != nil {
 		return err
@@ -137,4 +139,24 @@ func copyExecutable(src, dst string) error {
 		return err
 	}
 	return os.Rename(tmpName, dst)
+}
+
+// removeStaleTemps reaps `.agnt-daemon-*` temp files left behind when a
+// provisioning process was killed between CreateTemp and Rename (the deferred
+// Remove never runs on SIGKILL). Only files older than staleTempAge are
+// removed so a concurrent provisioner's in-flight temp file is never yanked
+// out from under its rename.
+const staleTempAge = 15 * time.Minute
+
+func removeStaleTemps(dir string) {
+	matches, err := filepath.Glob(filepath.Join(dir, ".agnt-daemon-*"))
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-staleTempAge)
+	for _, m := range matches {
+		if fi, err := os.Stat(m); err == nil && fi.Mode().IsRegular() && fi.ModTime().Before(cutoff) {
+			os.Remove(m)
+		}
+	}
 }
