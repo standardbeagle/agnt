@@ -18,6 +18,11 @@ type Config struct {
 	Languages map[string]LanguageConfig `json:"languages"`
 
 	// AI holds user-level defaults for agnt run / ai behavior.
+	//
+	// AIConfig's own fields carry only kdl tags, so marshalling this struct to
+	// JSON would emit them under their Go names. Nothing does today — this config
+	// is read from KDL — but the json tag here implies a round trip that does not
+	// hold. Keep the two in sync if a JSON surface ever appears.
 	AI *AIConfig `json:"ai,omitempty"`
 }
 
