@@ -125,34 +125,18 @@ func scriptConfigToEntry(cfg *config.ScriptConfig) *script.Config {
 }
 
 // registerScriptEntry registers a script, replacing an existing entry whose
-// config differs. script.Registry.Register rejects a re-register under a changed
-// config, so editing a script's `run` in .agnt.kdl would otherwise leave the
-// stale entry in place and fail every subsequent start of that script.
-//
-// Session observers and ownership are carried onto the replacement; runtime
-// state (output, counters) is not, which is correct — it described a process
-// launched from a config that no longer exists.
+// config differs. Register rejects a re-register under a changed config, so
+// editing a script's `run` in .agnt.kdl would otherwise leave the stale entry
+// in place and fail every subsequent start of that script — `.agnt.kdl` is
+// reloaded on every session connect and live reconcile, so a changed config is
+// expected, not a conflict.
 func (d *Daemon) registerScriptEntry(name, projectPath string, cfg *script.Config) (*script.Entry, error) {
-	entry, err := d.scriptRegistry.Register(name, projectPath, cfg)
-	if err == nil {
-		return entry, nil
-	}
-
-	old, existed := d.scriptRegistry.Get(name, projectPath)
-	if !existed {
-		return nil, err
-	}
-	d.scriptRegistry.Remove(name, projectPath)
-
-	entry, err = d.scriptRegistry.Register(name, projectPath, cfg)
+	entry, replaced, err := d.scriptRegistry.Upsert(name, projectPath, cfg)
 	if err != nil {
 		return nil, err
 	}
-	for _, code := range old.ListSessions() {
-		entry.AddSession(code)
-	}
-	if owner := old.Owner(); owner != "" {
-		entry.SetOwner(owner)
+	if replaced {
+		debug.Log("daemon", "script %s: config changed, registry entry replaced", name)
 	}
 	return entry, nil
 }
