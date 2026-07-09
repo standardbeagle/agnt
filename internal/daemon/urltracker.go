@@ -222,6 +222,20 @@ func (t *URLTracker) scanProcess(p *process.ManagedProcess) {
 		return
 	}
 
+	// newURLs is collected under the lock and notified after it: onURLDetected
+	// reaches the readiness signaler, the process manager, and the proxy-event
+	// channel, and nothing about that work belongs inside the tracker's lock.
+	var newURLs []string
+	processID := p.ID
+	defer func() {
+		if t.onURLDetected == nil {
+			return
+		}
+		for _, url := range newURLs {
+			t.onURLDetected(processID, url)
+		}
+	}()
+
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -243,9 +257,6 @@ func (t *URLTracker) scanProcess(p *process.ManagedProcess) {
 
 	// Add new URLs and track which ones are new for callback notification.
 	// seenURLs dedup naturally collapses a URL printed to both streams.
-	var newURLs []string
-	processID := p.ID // Save processID for callback after unlock
-
 	for _, url := range append(stdoutURLs, stderrURLs...) {
 		if t.seenURLs[p.ID][url] {
 			continue // Already seen
@@ -262,16 +273,11 @@ func (t *URLTracker) scanProcess(p *process.ManagedProcess) {
 		newURLs = append(newURLs, url)
 	}
 
-	// Lock will be released by defer, then we notify about new URLs
-	// We defer the callback to avoid holding the lock during notification
-	if len(newURLs) > 0 && t.onURLDetected != nil {
-		// Note: defer executes in LIFO order, so this runs AFTER the mutex unlock
-		defer func() {
-			for _, url := range newURLs {
-				t.onURLDetected(processID, url)
-			}
-		}()
-	}
+	// The notify defer registered at the top of this function runs after the
+	// unlock defer below it — defers are LIFO, so the earlier registration runs
+	// last. Registering the callback here instead ran it *before* the unlock,
+	// with the tracker's lock held: the opposite of what its comment claimed,
+	// and a deadlock the first time a callback touches the URLTracker.
 }
 
 // cleanupRemovedProcesses removes tracking for processes that no longer exist.
