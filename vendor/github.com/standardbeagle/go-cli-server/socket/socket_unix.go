@@ -242,11 +242,19 @@ func fileListener(fd int, name string) (net.Listener, error) {
 		_ = syscall.Close(fd)
 		return nil, fmt.Errorf("failed to wrap listener fd")
 	}
+	// os.NewFile takes ownership of fd: file.Close() closes it, exactly once.
+	// net.FileListener duplicates it, so the returned listener owns a separate
+	// descriptor and is unaffected by the deferred close.
+	//
+	// The error path below used to ALSO call syscall.Close(fd), closing the same
+	// descriptor twice. A double close is not a harmless no-op in a program with
+	// other goroutines: between the two closes the kernel can hand that number to
+	// a socket someone else just opened, and the second close silently shuts
+	// *their* socket down. Nothing about the resulting failure points back here.
 	defer file.Close()
 
 	listener, err := net.FileListener(file)
 	if err != nil {
-		_ = syscall.Close(fd)
 		return nil, err
 	}
 	return listener, nil

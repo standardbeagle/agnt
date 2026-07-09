@@ -632,5 +632,43 @@ func (pm *ProcessManager) killProcesses(ctx context.Context, pids []int) []int {
 		cleanupProcessTree(pid)
 	}
 
+	// Phase 4: wait for the survivors to actually die. SIGKILL is delivered
+	// asynchronously: the kernel releases the process's resources — including
+	// the listening socket that made a caller want it dead — only once it exits.
+	// Returning at SIGKILL left the port still bound, so a port-preflight caller
+	// would immediately fail to bind the port it had just "freed".
+	waitForProcessesToExit(ctx, pids, identities, 2*time.Second)
+
 	return killedPids
+}
+
+// waitForProcessesToExit polls until every pid has released its resources or the
+// budget expires. A zombie counts as gone (it holds no descriptors), as does a
+// recycled PID — the process we killed is dead either way.
+func waitForProcessesToExit(ctx context.Context, pids []int, identities map[int]string, budget time.Duration) {
+	deadline := time.Now().Add(budget)
+	for {
+		remaining := false
+		for _, pid := range pids {
+			if hasReleasedResources(pid) {
+				continue
+			}
+			if id := identities[pid]; id != "" && processIdentity(pid) != id {
+				continue // recycled: our target is dead
+			}
+			remaining = true
+			break
+		}
+		if !remaining {
+			return
+		}
+		if time.Now().After(deadline) {
+			return // caller escalated as far as it can; do not block forever
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(2 * time.Millisecond):
+		}
+	}
 }

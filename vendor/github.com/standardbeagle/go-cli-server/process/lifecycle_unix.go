@@ -3,6 +3,7 @@
 package process
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -260,4 +261,34 @@ func SetupJobObject(cmd *exec.Cmd) error {
 
 // CleanupJobObject is a no-op on Unix.
 func CleanupJobObject(pid int) {
+}
+
+// hasReleasedResources reports whether pid has stopped holding kernel resources
+// — its file descriptors, and so any port it was listening on.
+//
+// isProcessAlive answers kill(pid, 0), which succeeds for a zombie: a process
+// that has exited but whose parent has not yet reaped it. A zombie holds no
+// descriptors, so for "is the port free" purposes it is gone. Waiting for the
+// entry to disappear entirely would mean waiting on someone else's wait(2).
+func hasReleasedResources(pid int) bool {
+	if !isProcessAlive(pid) {
+		return true
+	}
+	return isZombie(pid)
+}
+
+// isZombie reports whether /proc says the process is in state Z. On a system
+// without procfs it conservatively reports false, so callers fall back to their
+// timeout rather than assuming an exit that may not have happened.
+func isZombie(pid int) bool {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return false
+	}
+	// The comm field is parenthesized and may contain spaces; state follows it.
+	close := bytes.LastIndexByte(data, ')')
+	if close < 0 || close+2 >= len(data) {
+		return false
+	}
+	return data[close+2] == 'Z'
 }
