@@ -130,6 +130,13 @@ func NewVoiceSession(id string, browserConn wsJSONWriter, config DeepgramConfig)
 	return vs, nil
 }
 
+// deepgramWriteTimeout bounds a write to Deepgram. vs.mu serializes writes to
+// the socket (gorilla forbids concurrent writers), so a write that blocks
+// forever — a half-open connection, or a peer whose receive window never opens —
+// holds the lock forever. Close() takes the same lock, so the voice session
+// could never be torn down and its browser connection slot never released.
+const deepgramWriteTimeout = 10 * time.Second
+
 // SendAudio forwards audio data to Deepgram.
 func (vs *VoiceSession) SendAudio(data []byte) error {
 	vs.mu.Lock()
@@ -139,6 +146,9 @@ func (vs *VoiceSession) SendAudio(data []byte) error {
 		return fmt.Errorf("session closed")
 	}
 
+	if err := vs.deepgramConn.SetWriteDeadline(time.Now().Add(deepgramWriteTimeout)); err != nil {
+		return err
+	}
 	return vs.deepgramConn.WriteMessage(websocket.BinaryMessage, data)
 }
 
@@ -260,7 +270,9 @@ func (vs *VoiceSession) keepAlive() {
 			if !vs.closed {
 				msg := map[string]string{"type": "KeepAlive"}
 				if data, err := json.Marshal(msg); err == nil {
-					if wErr := vs.deepgramConn.WriteMessage(websocket.TextMessage, data); wErr != nil {
+					if dErr := vs.deepgramConn.SetWriteDeadline(time.Now().Add(deepgramWriteTimeout)); dErr != nil {
+						debug.Error("voice", "failed to set keepalive write deadline: %v", dErr)
+					} else if wErr := vs.deepgramConn.WriteMessage(websocket.TextMessage, data); wErr != nil {
 						debug.Error("voice", "failed to send keepalive to Deepgram: %v", wErr)
 					}
 				}
