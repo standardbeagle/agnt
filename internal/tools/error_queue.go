@@ -13,7 +13,7 @@ import (
 )
 
 type ErrorQueueInput struct {
-	Message     string `json:"message" jsonschema:"required,Error or failure text to add to the queue"`
+	Message     string `json:"message" jsonschema:"Error or failure text to add to the queue"`
 	Source      string `json:"source,omitempty" jsonschema:"Source identifier, e.g. github-actions, buildkite, deploy, ci"`
 	Severity    string `json:"severity,omitempty" jsonschema:"Severity: one of error, warning, info (default: error)"`
 	Category    string `json:"category,omitempty" jsonschema:"Category for grouping (default: external)"`

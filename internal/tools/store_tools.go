@@ -80,6 +80,10 @@ func (dt *DaemonTools) makeStoreHandler() func(context.Context, *mcp.CallToolReq
 	return func(ctx context.Context, req *mcp.CallToolRequest, input StoreInput) (*mcp.CallToolResult, StoreOutput, error) {
 		emptyOutput := StoreOutput{}
 
+		if err := validateStoreInput(input); err != nil {
+			return errorResult(validationError("store", err)), emptyOutput, nil
+		}
+
 		if err := dt.ensureConnected(); err != nil {
 			return errorResult(err.Error()), emptyOutput, nil
 		}

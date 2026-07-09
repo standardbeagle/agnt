@@ -21,10 +21,10 @@ type agentSupport struct {
 	InstallText string
 	// ContextFile is the project-root file this agent loads on every turn
 	// (AGENTS.md, GEMINI.md, …). agnt writes the persistent steering block here
-	// so non-Claude agents — which only get a one-shot stdin nudge — keep the
-	// agnt tool guidance in context across the whole session. Empty means the
-	// agent gets steering another way (Claude uses --append-system-prompt) and
-	// no file is written.
+	// so non-Claude agents keep the agnt tool guidance in context across the
+	// whole session without a startup stdin message. Empty means the agent gets
+	// steering another way (Claude uses --append-system-prompt) and no file is
+	// written.
 	ContextFile string
 }
 

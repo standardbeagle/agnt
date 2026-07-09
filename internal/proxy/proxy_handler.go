@@ -503,8 +503,8 @@ func (ps *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	respBody := recorder.body.String()
-	if len(respBody) > 10*1024 { // Truncate large responses
-		respBody = respBody[:10*1024] + "... [truncated]"
+	if recorder.truncated {
+		respBody += "... [truncated]"
 	}
 
 	// Log the HTTP transaction
@@ -535,12 +535,20 @@ func (ps *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// maxRecordedBody caps how many response bytes the recorder buffers for the
+// traffic log. The full body is still streamed to the client; only this prefix
+// is retained, so a large download or an unbounded SSE stream cannot grow the
+// per-request buffer without bound (previously the whole body was buffered and
+// truncated only afterwards — an OOM vector).
+const maxRecordedBody = 10 * 1024
+
 // responseRecorder captures response data for logging.
 type responseRecorder struct {
 	http.ResponseWriter
 	statusCode  int
 	body        *bytes.Buffer
 	wroteHeader bool
+	truncated   bool
 }
 
 func (rr *responseRecorder) WriteHeader(statusCode int) {
@@ -555,7 +563,18 @@ func (rr *responseRecorder) Write(b []byte) (int, error) {
 	if !rr.wroteHeader {
 		rr.WriteHeader(http.StatusOK)
 	}
-	rr.body.Write(b) // Capture for logging
+	// Capture only the first maxRecordedBody bytes for logging; never buffer the
+	// whole body. The full payload is streamed to the client unchanged below.
+	if remaining := maxRecordedBody - rr.body.Len(); remaining > 0 {
+		if len(b) <= remaining {
+			rr.body.Write(b)
+		} else {
+			rr.body.Write(b[:remaining])
+			rr.truncated = true
+		}
+	} else if len(b) > 0 {
+		rr.truncated = true
+	}
 	return rr.ResponseWriter.Write(b)
 }
 

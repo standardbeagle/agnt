@@ -338,12 +338,7 @@ func (s *DuplicateScanner) notify(result *CleanupResult) {
 
 	// Log to startup error store
 	if s.daemon != nil && s.daemon.startupErrorStore != nil {
-		s.daemon.startupErrorStore.Add(&StartupLogEntry{
-			Level:     "info",
-			EventType: "duplicate_cleanup",
-			Message:   msg,
-			Timestamp: time.Now(),
-		})
+		s.daemon.daemonStartupLog("info", "duplicate_cleanup", msg)
 	}
 
 	// Send to PTY overlay if callback is registered

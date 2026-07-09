@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
 	"github.com/standardbeagle/agnt/internal/agentadapter"
 	"github.com/standardbeagle/agnt/internal/agntprompt"
@@ -52,6 +53,8 @@ type daemonSessionHandle struct {
 	autostartScripts []string // scripts successfully started
 	autostartProxies []string // proxies successfully started
 	autostartErrors  []string // errors encountered during autostart
+	autostartStatus  string
+	autostartHandle  string
 	portConflicts    []portConflictInfo
 	portsCleared     []portConflictInfo
 	projectPath      string
@@ -190,6 +193,14 @@ func startDaemonSession(ctx context.Context, cfg daemonSessionConfig) *daemonSes
 
 		handle.sessionRegistered = true
 		handle.projectPath = cfg.ProjectPath
+		if result != nil {
+			if status, ok := result["status"].(string); ok {
+				handle.autostartStatus = status
+			}
+			if autostartHandle, ok := result["autostart_handle"].(string); ok {
+				handle.autostartHandle = autostartHandle
+			}
+		}
 
 		// Capture autostart results
 		if result != nil && !cfg.SkipAutostart {
@@ -318,11 +329,18 @@ func mergeAutostartResult(handle *daemonSessionHandle, result map[string]interfa
 // autostart results in the overlay status bar. Success messages appear as a
 // transient status bar message that fades back to the normal indicator after 3s.
 // Errors are written to the fallback writer since they need more space.
-func displayAutostartResults(handle *daemonSessionHandle, ov *overlay.Overlay, w io.Writer, timeout time.Duration) {
+func displayAutostartResults(handle *daemonSessionHandle, ov *overlay.Overlay, router *overlay.InputRouter, w io.Writer, timeout time.Duration) {
 	if handle == nil {
 		return
 	}
 	if !handle.WaitRegistered(timeout) {
+		fmt.Fprintf(w, "\x1b[31m[agnt] daemon session registration timed out after %s\x1b[0m\r\n", timeout)
+		fmt.Fprintf(w, "\x1b[2m  autostart and project-scoped startup logs may not run until the daemon session registers\x1b[0m\r\n")
+		return
+	}
+	if handle.registrationErr != nil {
+		fmt.Fprintf(w, "\x1b[31m[agnt] daemon session unavailable: %v\x1b[0m\r\n", handle.registrationErr)
+		fmt.Fprintf(w, "\x1b[2m  autostart and project-scoped startup logs will not run until the daemon session registers\x1b[0m\r\n")
 		return
 	}
 
@@ -337,14 +355,42 @@ func displayAutostartResults(handle *daemonSessionHandle, ov *overlay.Overlay, w
 		for _, c := range handle.portConflicts {
 			fmt.Fprintf(w, "\x1b[33m  %d (%s) <- %s (PID %v)\x1b[0m\r\n", c.Port, c.ScriptName, c.ProcessName, c.PIDs)
 		}
+		// Take ownership of input for the answer keystroke BEFORE showing the
+		// prompt. When the input router is running it is the sole reader of
+		// os.Stdin; routing the prompt through its modal channel avoids a
+		// second os.Stdin.Read racing the router's producer for the byte.
+		var modalCh <-chan byte
+		useModal := router != nil && router.IsRunning()
+		if useModal {
+			modalCh = router.BeginModalCapture()
+		}
+
 		fmt.Fprintf(w, "\x1b[33m  Kill all blocking processes? [Y/n] \x1b[0m")
 
-		// Read single character from stdin (PTY is in raw mode)
-		buf := make([]byte, 1)
-		n, err := os.Stdin.Read(buf)
 		answer := byte('Y')
-		if err == nil && n > 0 && buf[0] != '\n' && buf[0] != '\r' {
-			answer = buf[0]
+		if useModal {
+			select {
+			case b := <-modalCh:
+				if b != '\n' && b != '\r' {
+					answer = b
+				}
+			case <-time.After(timeout):
+				// No keypress within the window. Killing another process
+				// is destructive and must never happen unattended, so a
+				// timeout means "decline" (proceed without killing), not
+				// the [Y] default. An awake developer who wants the kill
+				// still presses Enter/Y.
+				answer = 'n'
+			}
+			router.EndModalCapture()
+		} else {
+			// Fallback: no router (raw passthrough). Read stdin directly; in
+			// this mode nothing else consumes stdin so there is no race.
+			buf := make([]byte, 1)
+			n, err := os.Stdin.Read(buf)
+			if err == nil && n > 0 && buf[0] != '\n' && buf[0] != '\r' {
+				answer = buf[0]
+			}
 		}
 
 		if answer == 'n' || answer == 'N' {
@@ -374,6 +420,13 @@ func displayAutostartResults(handle *daemonSessionHandle, ov *overlay.Overlay, w
 
 	started := append(handle.autostartScripts, handle.autostartProxies...)
 	hasErrors := len(handle.autostartErrors) > 0
+	if len(started) == 0 && !hasErrors && len(handle.portConflicts) == 0 && handle.autostartStatus != "" && handle.autostartStatus != "done" {
+		msg := "[agnt] autostart " + handle.autostartStatus
+		if handle.autostartHandle != "" {
+			msg += " for " + handle.autostartHandle
+		}
+		fmt.Fprintf(w, "\x1b[2m%s; check `daemon startup_log` or `proc list` for progress/errors\x1b[0m\r\n", msg)
+	}
 
 	if len(started) > 0 && ov != nil {
 		msg := "auto-started: " + strings.Join(started, ", ")
@@ -410,7 +463,7 @@ func displayAutostartResults(handle *daemonSessionHandle, ov *overlay.Overlay, w
 // If daemonHandle is non-nil, alerts are also pushed to the daemon's alert store
 // so they can be queried by the get_errors MCP tool.
 func setupAlertScanner(projectPath, sessionCode string, netOverlay *Overlay, daemonHandle *daemonSessionHandle, actState func() overlay.ActivityState) *overlay.AlertScanner {
-	agntCfg, err := config.LoadAgntConfig(projectPath)
+	agntCfg, err := loadResolvedConfig(projectPath)
 	if err != nil {
 		debug.Log("alerts", "failed to load config for alert scanner: %v", err)
 		agntCfg = config.DefaultAgntConfig()
@@ -479,7 +532,7 @@ func setupAlertScanner(projectPath, sessionCode string, netOverlay *Overlay, dae
 		for id, pcfg := range agntCfg.Alerts.Patterns {
 			compiled, err := regexp.Compile(pcfg.Pattern)
 			if err != nil {
-				log.Printf("[alerts] invalid pattern %q: %v", id, err)
+				debug.Log("alerts", "invalid pattern %q: %v", id, err)
 				continue
 			}
 			sev := overlay.AlertSeverityError
@@ -917,6 +970,14 @@ func finishSession(height int, waitErr error, userInterrupted bool, rt *pipeline
 }
 
 func cleanupTerminal(height int) {
+	// Re-query the current terminal height: the terminal may have been resized
+	// since startup, and clearing/positioning against the stale startup height
+	// would wipe the wrong row and leave the cursor misplaced. Fall back to the
+	// passed-in height if the query fails (e.g. stdout is not a TTY).
+	if _, h, err := term.GetSize(int(os.Stdout.Fd())); err == nil && h > 0 {
+		height = h
+	}
+
 	// Disable extended keyboard/input modes that the child process may have enabled
 	// These cause garbage output (semicolons, escape sequences) if left enabled
 	fmt.Fprint(os.Stdout, "\x1b[?9001l") // Disable win32-input-mode (extended key reporting)
@@ -944,11 +1005,11 @@ func cleanupTerminal(height int) {
 // .agnt.kdl to include configured scripts/proxies and any custom system
 // prompt overrides.
 // phaseCmdArgsAndPrompt selects the system prompt for a run phase and returns
-// the adapter-built cmdArgs alongside the prompt (the prompt is also handed to
-// runOverlayPipeline for stdin-delivery adapters). The setup phase uses the
-// setup-mode prompt; the coding phase uses the normal agnt prompt. With a nil
-// adapter both are passthrough/empty. Shared by both platform children to keep
-// run.go / run_windows.go under their line budget (TestRunFilesUnderBudget).
+// the adapter-built cmdArgs alongside the prompt. The setup phase may hand the
+// prompt to runOverlayPipeline for stdin delivery; the coding phase persists
+// non-Claude guidance to context files instead. With a nil adapter both are
+// passthrough/empty. Shared by both platform children to keep run.go /
+// run_windows.go under their line budget (TestRunFilesUnderBudget).
 func phaseCmdArgsAndPrompt(adapter agentadapter.Adapter, cmdArgs []string, setupPhase bool, socketPath string) ([]string, string) {
 	if adapter == nil {
 		return cmdArgs, ""
@@ -960,7 +1021,8 @@ func phaseCmdArgsAndPrompt(adapter agentadapter.Adapter, cmdArgs []string, setup
 		prompt = buildAgntSystemPrompt(socketPath)
 		// Persist the steering block into the agent's always-loaded context
 		// file (AGENTS.md, GEMINI.md, …) so non-Claude agents keep the agnt
-		// tool guidance every turn rather than from the one-shot stdin nudge.
+		// tool guidance every turn without injecting a visible first user
+		// message.
 		// No-op for Claude and when disabled in config. cwd is the project dir
 		// under `agnt run`. Best-effort: never blocks launch.
 		if cwd, err := os.Getwd(); err == nil {
@@ -1055,7 +1117,7 @@ func buildAgntSystemPrompt(socketPath string) string {
 	// Load agnt config from current directory.
 	// Config was already validated at startup; errors here are unexpected.
 	cwd, _ := os.Getwd()
-	agntConfig, err := config.LoadAgntConfig(cwd)
+	agntConfig, err := loadResolvedConfig(cwd)
 	if err != nil {
 		debug.Log("run", "unexpected config load error in buildAgntSystemPrompt: %v", err)
 		agntConfig = config.DefaultAgntConfig()
@@ -1288,6 +1350,7 @@ func runOverlayPipeline(
 	cmdArgs []string,
 	adapter agentadapter.Adapter,
 	adapterPrompt string,
+	injectInitialPrompt bool,
 	projectPath string,
 	sessionCodeArg string,
 ) *pipelineRuntime {
@@ -1360,7 +1423,7 @@ func runOverlayPipeline(
 		if rt.outputGate != nil {
 			autostartOut = rt.outputGate
 		}
-		displayAutostartResults(rt.daemonHandle, rt.termOverlay, autostartOut, 10*time.Second)
+		displayAutostartResults(rt.daemonHandle, rt.termOverlay, rt.inputRouter, autostartOut, 10*time.Second)
 	}()
 
 	// Resize watcher — platform-specific dispatcher (SIGWINCH on Unix,
@@ -1439,7 +1502,7 @@ func runOverlayPipeline(
 			// with process alerts from the daemon scanner.
 			if rt.netOverlay != nil {
 				cascade := config.DefaultJSCascadePatterns
-				if agntCfg, err := config.LoadAgntConfig(projectPath); err == nil &&
+				if agntCfg, err := loadResolvedConfig(projectPath); err == nil &&
 					agntCfg != nil && agntCfg.Alerts != nil && agntCfg.Alerts.OutageHold != nil {
 					cascade = agntCfg.Alerts.OutageHold.GetJSCascadePatterns()
 				}
@@ -1452,13 +1515,10 @@ func runOverlayPipeline(
 		close(rt.done)
 	}()
 
-	// For stdin-based adapters (everything except Claude by default),
-	// inject the initial context message as if the user typed it — but only
-	// once the agent is actually reading stdin. Injecting on a fixed delay
-	// races slow agent startup: the PTY is still in cooked mode, so the line
-	// discipline echoes the bytes to stdout and the agent's stdin gets flushed
-	// on init — the message lands on the terminal, never in the agent.
-	if adapter != nil {
+	// Setup mode may need to deliver an inline prompt to stdin-based adapters.
+	// Normal coding sessions keep agnt guidance in the persistent context file
+	// instead, so they do not start with a visible injected user message.
+	if injectInitialPrompt && adapter != nil {
 		if stdin := adapter.InitialStdin(adapterPrompt); len(stdin) > 0 {
 			go injectInitialStdin(ctx, handle.Backend, stdin, outputPulse, adapter.StdinDelay())
 		}

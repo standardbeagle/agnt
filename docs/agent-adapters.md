@@ -1,6 +1,6 @@
 # Agent Adapters
 
-`agnt run` injects an agnt-aware system prompt into whatever AI coding CLI it wraps (Claude Code, Gemini, Copilot, Aider, Cursor, etc.). Each agent expects the prompt to arrive in a different way — Claude takes a `--append-system-prompt` flag, every other known agent gets the prompt as its first user message on stdin. The abstraction that captures that per-agent strategy is an **Adapter**.
+`agnt run` injects or persists agnt-aware guidance for whatever AI coding CLI it wraps (Claude Code, Gemini, Copilot, Aider, Cursor, etc.). Claude takes a `--append-system-prompt` flag. Other known agents use project context files during normal coding sessions, and stdin prompt delivery only for one-shot setup mode. The abstraction that captures that per-agent strategy is an **Adapter**.
 
 This doc explains the adapter model, lists the built-in adapters, and walks through adding a new one.
 
@@ -29,22 +29,22 @@ type Adapter interface {
 Two injection strategies are supported:
 
 - **Flag-based.** `BuildArgs` appends an injection flag and the prompt to the argv; `InitialStdin` returns nil. Example: Claude Code (`--append-system-prompt`).
-- **Stdin-based.** `BuildArgs` returns `baseArgs` unchanged; `InitialStdin` returns the bytes to write to the child's stdin after `StdinDelay()` has elapsed. Example: Gemini, Aider, Cursor, etc.
+- **Stdin-capable.** `BuildArgs` returns `baseArgs` unchanged; `InitialStdin` returns the bytes to write to the child's stdin after `StdinDelay()` has elapsed. Normal coding sessions do not call it; setup mode uses it for one-shot inline setup prompts. Example: Gemini, Aider, Cursor, etc.
 
 ## Built-in adapters
 
 | Adapter name | Strategy | Notes |
 |--------------|----------|-------|
 | `claude` | flag | `--append-system-prompt <prompt>` |
-| `gemini` | stdin | 500ms delay |
-| `copilot` | stdin | 500ms delay |
-| `aider` | stdin | 500ms delay |
-| `cursor` | stdin | 500ms delay |
-| `cursor-agent` | stdin | 500ms delay (checked before `cursor` for specificity) |
-| `opencode` | stdin | 500ms delay |
-| `kimi` | stdin | 500ms delay |
-| `kimi-cli` | stdin | 500ms delay |
-| `auggie` | stdin | 500ms delay |
+| `gemini` | context file + setup stdin | 500ms setup delay |
+| `copilot` | context file + setup stdin | 500ms setup delay |
+| `aider` | context file + setup stdin | 500ms setup delay |
+| `cursor` | context file + setup stdin | 500ms setup delay |
+| `cursor-agent` | context file + setup stdin | 500ms setup delay (checked before `cursor` for specificity) |
+| `opencode` | context file + setup stdin | 500ms setup delay |
+| `kimi` | file flag | `--agent-file <tmp>` |
+| `kimi-cli` | file flag | `--agent-file <tmp>` |
+| `auggie` | context file + setup stdin | 500ms setup delay |
 
 All adapters match by **base name** of the command, case-insensitive, with `.exe` stripped on Windows. That covers bare invocations (`claude`), absolute paths (`/usr/bin/claude`, `C:\bin\claude.exe`), and relative paths (`./aider`). When the command is a shell alias or wrapper, the adapter also tries `exec.LookPath` and matches on the resolved path's base name.
 
@@ -59,11 +59,15 @@ The payload is assembled, in order:
 3. **Runtime state** from the daemon (when reachable) — currently running processes and proxies.
 4. **`ai.append-system-prompt`** (if set) — user-authored trailer appended last.
 
-Every adapter receives **byte-identical** content for 1–4; the only adapter-visible difference is the wrapping (Claude's `--append-system-prompt <payload>` vs. the stdin adapter's `"Note: Running under agnt... " + payload + "\n"` prefix/suffix). Regression tests in `cmd/agnt/cheatsheet_prompt_test.go` pin this invariant.
+Every adapter receives **byte-identical** content for 1–4. Claude receives it through `--append-system-prompt <payload>`. Stdin-capable adapters persist it to their context file during normal coding sessions; setup mode can send its setup prompt through stdin. Regression tests in `cmd/agnt/cheatsheet_prompt_test.go` pin this invariant.
 
-## Per-agent overrides via `.agnt.kdl`
+## Per-agent overrides via config
 
-Project-level overrides live in the `ai.adapters` block:
+User-level defaults live in `~/.config/agnt/config.kdl`; project-level
+overrides live in `<project>/.agnt.kdl`. Both use the same `ai.adapters`
+block. User-level aliases are useful for personal shell aliases/wrappers such
+as `cdsp`, while project config should only carry team/project-specific
+behavior.
 
 ```kdl
 ai {
@@ -71,6 +75,8 @@ ai {
         claude {
             // Override the injection flag (e.g. if Claude renames it)
             flag-name "--system-prompt"
+            // Map a user wrapper/alias onto Claude's flag-based adapter
+            aliases "cdsp"
         }
         aider {
             // Wait a little longer before sending the initial prompt
@@ -90,7 +96,7 @@ Fields:
 |---------|------|-----------|---------|
 | `disabled` | bool | all | Skip prompt injection for this agent. `BuildArgs` returns `baseArgs` unchanged and `InitialStdin` returns nil. |
 | `flag-name` | string | flag-based | Replace the injection flag. Ignored by stdin adapters. |
-| `stdin-delay-ms` | int | stdin-based | Delay in milliseconds before writing the initial stdin. Ignored by flag adapters. A value of 0 inherits the adapter default (500ms). |
+| `stdin-delay-ms` | int | stdin-capable | Delay in milliseconds before writing setup-mode stdin. Ignored by flag adapters and normal coding sessions. A value of 0 inherits the adapter default (500ms). |
 
 Unknown adapter names in the config are silently ignored — they do not error out autostart.
 
@@ -108,7 +114,7 @@ Say we want to add support for `newbot`, a stdin-based CLI that behaves like Aid
 
 2. **Write a test.** Extend `internal/agentadapter/adapter_test.go` with a case confirming `DefaultRegistry().Lookup("newbot")` and `DefaultRegistry().Lookup("/usr/local/bin/newbot")` both resolve. The existing `TestDefaultRegistry_MatchesAllKnownAgents` table is the natural home — add `"newbot"` to the loop.
 
-3. **If the agent needs a non-default strategy,** write a new adapter type in its own file (follow the pattern in `claude.go` or `stdin.go`). Flag-based adapters need to implement `BuildArgs`; stdin-based adapters need `InitialStdin` and `StdinDelay`.
+3. **If the agent needs a non-default strategy,** write a new adapter type in its own file (follow the pattern in `claude.go`, `kimi.go`, or `stdin.go`). Flag-based adapters need to implement `BuildArgs`; stdin-capable adapters need `InitialStdin` and `StdinDelay`.
 
 4. **Done.** `run.go` and `run_windows.go` pick up the new agent automatically via `resolveAgentAdapter`, and users can override its behavior via `ai.adapters.newbot { … }` in `.agnt.kdl`.
 
@@ -119,7 +125,7 @@ The adapter package is pure Go with no PTY or filesystem dependencies, so tests 
 - Match by bare name, absolute path, relative path, `.exe` suffix, and case-insensitive base name.
 - `cursor` and `cursor-agent` resolve to distinct adapters (regression test for the old `strings.HasPrefix` trap).
 - Flag-based `BuildArgs` appends `<flag> <prompt>` without mutating the caller's argv.
-- Stdin-based `InitialStdin` contains both the agnt note and the prompt body, ends in a newline, and returns nil for an empty prompt.
+- Stdin-capable `InitialStdin` returns the prompt body with exactly one trailing newline and returns nil for an empty prompt. Normal coding sessions should rely on the persistent context file instead of calling it.
 - `Override.Disabled` blanks both channels; `Override.FlagName` retargets Claude's flag; `Override.StdinDelay` overrides the default 500ms.
 
 Run them with:

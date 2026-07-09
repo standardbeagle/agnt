@@ -92,6 +92,10 @@ func (dt *DaemonTools) makeTunnelHandler() func(context.Context, *mcp.CallToolRe
 	return func(ctx context.Context, req *mcp.CallToolRequest, input TunnelInput) (*mcp.CallToolResult, TunnelOutput, error) {
 		emptyOutput := TunnelOutput{Tunnels: []TunnelEntry{}}
 
+		if err := validateTunnelInput(input); err != nil {
+			return errorResult(validationError("tunnel", err)), emptyOutput, nil
+		}
+
 		if err := dt.ensureConnected(); err != nil {
 			return errorResult(err.Error()), emptyOutput, nil
 		}

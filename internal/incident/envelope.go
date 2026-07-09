@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -95,10 +96,7 @@ func NewIncidentEvent(src Source, sev Severity, category, msg string, ctx Contex
 	canonical := Canonicalize(msg)
 	fp := computeFingerprint(string(src), category, canonical, ctx.URL)
 
-	summary := msg
-	if len(summary) > maxSummaryBytes {
-		summary = summary[:maxSummaryBytes]
-	}
+	summary := truncateToBytes(msg, maxSummaryBytes)
 
 	ev := IncidentEvent{
 		ID:          newID(),
@@ -125,6 +123,20 @@ func NewIncidentEvent(src Source, sev Severity, category, msg string, ctx Contex
 	}
 
 	return ev
+}
+
+// truncateToBytes returns s clipped to at most maxBytes bytes without splitting
+// a multi-byte UTF-8 rune. If the byte at the cap falls mid-rune, it walks back
+// to the preceding rune boundary so the result stays valid UTF-8.
+func truncateToBytes(s string, maxBytes int) string {
+	if maxBytes <= 0 || len(s) <= maxBytes {
+		return s
+	}
+	b := s[:maxBytes]
+	for len(b) > 0 && !utf8.ValidString(b) {
+		b = b[:len(b)-1]
+	}
+	return b
 }
 
 func newID() string {

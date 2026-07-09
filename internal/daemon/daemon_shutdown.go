@@ -73,25 +73,15 @@ func (d *Daemon) cleanupOrphans() {
 	killedCount, err := d.pidTracker.CleanupOrphans(os.Getpid())
 	if err != nil {
 		debug.Log("daemon", "failed to cleanup orphans: %v", err)
-		d.startupErrorStore.Add(&StartupLogEntry{
-			ProcessID: "",
-			Level:     "warning",
-			EventType: "orphan_cleanup_failed",
-			Message:   fmt.Sprintf("failed to cleanup orphans: %v", err),
-			Timestamp: time.Now(),
-		})
+		d.daemonStartupLog("warning", "orphan_cleanup_failed",
+			fmt.Sprintf("failed to cleanup orphans: %v", err))
 		return
 	}
 
 	if killedCount > 0 {
 		debug.Log("daemon", "cleaned up %d orphaned process(es) from previous crash", killedCount)
-		d.startupErrorStore.Add(&StartupLogEntry{
-			ProcessID: "",
-			Level:     "info",
-			EventType: "orphan_cleanup",
-			Message:   fmt.Sprintf("cleaned up %d orphaned process(es) from previous crash", killedCount),
-			Timestamp: time.Now(),
-		})
+		d.daemonStartupLog("info", "orphan_cleanup",
+			fmt.Sprintf("cleaned up %d orphaned process(es) from previous crash", killedCount))
 	}
 
 	// Set current daemon PID for future crash detection
@@ -134,14 +124,8 @@ func (d *Daemon) startupPortCleanup(ctx context.Context) int {
 		all := append(append([]int{}, unmanagedLinux...), windowsPIDs...)
 		procName := config.ProcessNameByPID(all[0])
 		debug.Info("daemon", "startup port cleanup: port %d held by %s (PIDs: %v), killing", port, procName, all)
-		d.startupErrorStore.Add(&StartupLogEntry{
-			ProcessID: "",
-			Level:     "info",
-			EventType: "startup_port_cleanup",
-			Message:   fmt.Sprintf("port %d held by %s (PIDs: %v), killing", port, procName, all),
-			Port:      port,
-			Timestamp: time.Now(),
-		})
+		d.daemonStartupLogPort("info", "startup_port_cleanup",
+			fmt.Sprintf("port %d held by %s (PIDs: %v), killing", port, procName, all), port)
 
 		var killErrs []string
 
@@ -172,14 +156,8 @@ func (d *Daemon) startupPortCleanup(ctx context.Context) int {
 		}
 
 		if len(killErrs) > 0 {
-			d.startupErrorStore.Add(&StartupLogEntry{
-				ProcessID: "",
-				Level:     "warning",
-				EventType: "startup_port_cleanup_failed",
-				Message:   fmt.Sprintf("failed to kill process on port %d: %s", port, joinErrs(killErrs)),
-				Port:      port,
-				Timestamp: time.Now(),
-			})
+			d.daemonStartupLogPort("warning", "startup_port_cleanup_failed",
+				fmt.Sprintf("failed to kill process on port %d: %s", port, joinErrs(killErrs)), port)
 		}
 
 		if waitPortFree(port, 2*time.Second) {
@@ -221,9 +199,11 @@ func (d *Daemon) Stop(ctx context.Context) error {
 	d.shutdownMu.Unlock()
 
 	debug.Log("daemon", "Daemon stopping")
+	d.daemonStartupLog("info", "daemon_stopping", "daemon shutdown starting")
 
 	// Signal all goroutines to stop
 	d.cancel()
+	d.daemonStartupLog("info", "daemon_context_cancelled", "daemon context cancelled")
 
 	// Stop all deferred session-cleanup timers BEFORE tearing down the hub,
 	// ProcessManager, and proxy manager that their doCleanup callbacks touch.
@@ -241,11 +221,16 @@ func (d *Daemon) Stop(ctx context.Context) error {
 	// iteration of the runLayer wait loop, so they will exit shortly after.
 	if d.autostartManager != nil {
 		d.autostartManager.CancelAll()
+		d.daemonStartupLog("info", "autostart_runs_cancelled", "in-flight autostart runs cancelled")
 	}
 
 	// Stop Hub (handles listener, clients, connections, and ProcessManager)
+	d.daemonStartupLog("info", "hub_stopping", "stopping daemon hub")
 	if err := d.hub.Stop(ctx); err != nil {
 		debug.Log("daemon", "error stopping hub: %v", err)
+		d.daemonStartupLog("warning", "hub_stop_failed", fmt.Sprintf("error stopping hub: %v", err))
+	} else {
+		d.daemonStartupLog("info", "hub_stopped", "daemon hub stopped")
 	}
 
 	// Shutdown agnt-specific managers
@@ -253,30 +238,36 @@ func (d *Daemon) Stop(ctx context.Context) error {
 
 	// Stop scheduler
 	d.scheduler.Stop(ctx)
+	d.daemonStartupLog("info", "scheduler_stopped", "scheduler stopped")
 
 	// Stop update checker
 	if d.updateChecker != nil {
 		d.updateChecker.Stop(ctx)
+		d.daemonStartupLog("info", "update_checker_stopped", "update checker stopped")
 	}
 
 	// Stop duplicate process scanner
 	if d.dupScanner != nil {
 		d.dupScanner.Stop()
+		d.daemonStartupLog("info", "duplicate_scanner_stopped", "duplicate scanner stopped")
 	}
 
 	// Stop process auto-restarter first (before processes are stopped)
 	if d.autoRestarter != nil {
 		d.autoRestarter.Shutdown(ctx)
+		d.daemonStartupLog("info", "auto_restarter_stopped", "process auto-restarter stopped")
 	}
 
 	// Close incident bus — signals dispatch goroutine to drain and exit.
 	if d.incidentBus != nil {
 		d.incidentBus.Close()
+		d.daemonStartupLog("info", "incident_bus_closed", "incident bus closed")
 	}
 
 	// Stop the alert scanner (cancels any pending time.AfterFunc batch flush).
 	if d.alertScanner != nil {
 		d.alertScanner.Stop()
+		d.daemonStartupLog("info", "alert_scanner_stopped", "alert scanner stopped")
 	}
 
 	// Stop the hold buffer goroutine. Pending entries are dropped. Swap to nil
@@ -286,39 +277,58 @@ func (d *Daemon) Stop(ctx context.Context) error {
 	// closes the shutdown race that otherwise leaked the buffer's goroutine.
 	if hb := d.holdBuffer.Swap(nil); hb != nil {
 		hb.Stop()
+		d.daemonStartupLog("info", "hold_buffer_stopped", "hold buffer stopped")
 	}
 
 	if err := d.tunnelm.Shutdown(ctx); err != nil {
 		debug.Error("daemon", "tunnel manager shutdown error: %v", err)
+		d.daemonStartupLog("warning", "tunnel_manager_shutdown_failed", fmt.Sprintf("tunnel manager shutdown error: %v", err))
 		errs = append(errs, fmt.Errorf("tunnel manager: %w", err))
+	} else {
+		d.daemonStartupLog("info", "tunnel_manager_stopped", "tunnel manager stopped")
 	}
 
 	if err := d.browserm.Shutdown(ctx); err != nil {
 		debug.Error("daemon", "browser manager shutdown error: %v", err)
+		d.daemonStartupLog("warning", "browser_manager_shutdown_failed", fmt.Sprintf("browser manager shutdown error: %v", err))
 		errs = append(errs, fmt.Errorf("browser manager: %w", err))
+	} else {
+		d.daemonStartupLog("info", "browser_manager_stopped", "browser manager stopped")
 	}
 
 	if err := d.sessionm.Shutdown(ctx); err != nil {
 		debug.Error("daemon", "session manager shutdown error: %v", err)
+		d.daemonStartupLog("warning", "session_manager_shutdown_failed", fmt.Sprintf("session manager shutdown error: %v", err))
 		errs = append(errs, fmt.Errorf("session manager: %w", err))
+	} else {
+		d.daemonStartupLog("info", "session_manager_stopped", "session manager stopped")
 	}
 
 	if err := d.proxym.Shutdown(ctx); err != nil {
 		debug.Error("daemon", "proxy manager shutdown error: %v", err)
+		d.daemonStartupLog("warning", "proxy_manager_shutdown_failed", fmt.Sprintf("proxy manager shutdown error: %v", err))
 		errs = append(errs, fmt.Errorf("proxy manager: %w", err))
+	} else {
+		d.daemonStartupLog("info", "proxy_manager_stopped", "proxy manager stopped")
 	}
 
 	// Flush and close state managers so pending writes reach disk
 	if d.stateMgr != nil {
 		if err := d.stateMgr.Close(); err != nil {
 			debug.Error("daemon", "state manager close error: %v", err)
+			d.daemonStartupLog("warning", "state_manager_close_failed", fmt.Sprintf("state manager close error: %v", err))
 			errs = append(errs, fmt.Errorf("state manager: %w", err))
+		} else {
+			d.daemonStartupLog("info", "state_manager_closed", "state manager closed")
 		}
 	}
 	if d.schedulerStateMgr != nil {
 		if err := d.schedulerStateMgr.Close(); err != nil {
 			debug.Error("daemon", "scheduler state manager close error: %v", err)
+			d.daemonStartupLog("warning", "scheduler_state_manager_close_failed", fmt.Sprintf("scheduler state manager close error: %v", err))
 			errs = append(errs, fmt.Errorf("scheduler state manager: %w", err))
+		} else {
+			d.daemonStartupLog("info", "scheduler_state_manager_closed", "scheduler state manager closed")
 		}
 	}
 
@@ -340,13 +350,16 @@ func (d *Daemon) Stop(ctx context.Context) error {
 	select {
 	case <-done:
 		// Clean exit
+		d.daemonStartupLog("info", "daemon_goroutines_stopped", "daemon goroutines stopped")
 	case <-ctx.Done():
+		d.daemonStartupLog("warning", "daemon_goroutines_stop_timeout", fmt.Sprintf("daemon goroutine shutdown timed out: %v", ctx.Err()))
 		errs = append(errs, ctx.Err())
 	}
 
 	// Socket cleanup is handled by Hub.Stop()
 
 	debug.Log("daemon", "Daemon stopped")
+	d.daemonStartupLog("info", "daemon_stopped", "daemon stopped")
 
 	if len(errs) > 0 {
 		return errors.Join(errs...)
@@ -380,13 +393,8 @@ func (d *Daemon) StopAllResources(ctx context.Context) {
 		defer wg.Done()
 		if err := d.tunnelm.StopAll(cleanupCtx); err != nil {
 			debug.Log("daemon", "error stopping tunnels: %v", err)
-			d.startupErrorStore.Add(&StartupLogEntry{
-				ProcessID: "",
-				Level:     "warning",
-				EventType: "stop_failed",
-				Message:   fmt.Sprintf("error stopping tunnels: %v", err),
-				Timestamp: time.Now(),
-			})
+			d.daemonStartupLog("warning", "stop_failed",
+				fmt.Sprintf("error stopping tunnels: %v", err))
 		}
 	}()
 
@@ -396,13 +404,8 @@ func (d *Daemon) StopAllResources(ctx context.Context) {
 		defer wg.Done()
 		if _, err := d.browserm.StopAll(cleanupCtx); err != nil {
 			debug.Log("daemon", "error stopping browsers: %v", err)
-			d.startupErrorStore.Add(&StartupLogEntry{
-				ProcessID: "",
-				Level:     "warning",
-				EventType: "stop_failed",
-				Message:   fmt.Sprintf("error stopping browsers: %v", err),
-				Timestamp: time.Now(),
-			})
+			d.daemonStartupLog("warning", "stop_failed",
+				fmt.Sprintf("error stopping browsers: %v", err))
 		}
 	}()
 
@@ -413,13 +416,8 @@ func (d *Daemon) StopAllResources(ctx context.Context) {
 		stoppedIDs, err := d.proxym.StopAll(cleanupCtx)
 		if err != nil {
 			debug.Log("daemon", "error stopping proxies: %v", err)
-			d.startupErrorStore.Add(&StartupLogEntry{
-				ProcessID: "",
-				Level:     "warning",
-				EventType: "proxy_stop_failed",
-				Message:   fmt.Sprintf("error stopping proxies: %v", err),
-				Timestamp: time.Now(),
-			})
+			d.daemonStartupLog("warning", "proxy_stop_failed",
+				fmt.Sprintf("error stopping proxies: %v", err))
 		}
 		// Remove stopped proxies from persisted state
 		if d.stateMgr != nil {
@@ -435,13 +433,8 @@ func (d *Daemon) StopAllResources(ctx context.Context) {
 		defer wg.Done()
 		if err := d.hub.ProcessManager().StopAll(cleanupCtx); err != nil {
 			debug.Log("daemon", "error stopping processes: %v", err)
-			d.startupErrorStore.Add(&StartupLogEntry{
-				ProcessID: "",
-				Level:     "warning",
-				EventType: "stop_failed",
-				Message:   fmt.Sprintf("error stopping processes: %v", err),
-				Timestamp: time.Now(),
-			})
+			d.daemonStartupLog("warning", "stop_failed",
+				fmt.Sprintf("error stopping processes: %v", err))
 		}
 	}()
 

@@ -27,6 +27,11 @@ type GetErrorsOutput struct {
 	ErrorCount   int    `json:"error_count"`
 	WarningCount int    `json:"warning_count"`
 	Summary      string `json:"summary,omitempty"`
+	// CollectionWarnings surfaces per-source query failures so a partial
+	// collection is not silently reported as a clean "0 errors". Each entry
+	// names the source that failed (alert store, startup log, proxy list, or a
+	// specific proxy's log). Empty when every source answered.
+	CollectionWarnings []string `json:"collection_warnings,omitempty" jsonschema:"Per-source query failures encountered while collecting; a non-empty list means the error view is partial"`
 }
 
 // unifiedError is the internal representation for deduplication and sorting.
@@ -85,12 +90,10 @@ func (dt *DaemonTools) makeGetErrorsHandler() func(context.Context, *mcp.CallToo
 			}
 		}
 
-		allErrors, toolErr := dt.collectDaemonErrors(input)
-		if toolErr != nil {
-			return toolErr, GetErrorsOutput{}, nil
-		}
+		allErrors, collectionWarnings := dt.collectDaemonErrors(input)
 
 		result, output := formatErrorsOutput(allErrors, includeWarnings, limit, input.Raw)
+		output.CollectionWarnings = collectionWarnings
 		return result, output, nil
 	}
 }
@@ -151,32 +154,33 @@ func incidentRecordToUnifiedError(rec protocol.IncidentRecord) unifiedError {
 	}
 }
 
-// collectDaemonErrors collects errors via the daemon IPC path.
-func (dt *DaemonTools) collectDaemonErrors(input GetErrorsInput) ([]unifiedError, *mcp.CallToolResult) {
+// collectDaemonErrors collects errors via the daemon IPC path. Per-source query
+// failures are non-fatal but returned as collection warnings so a partial
+// collection is never silently presented as a clean "0 errors" view.
+func (dt *DaemonTools) collectDaemonErrors(input GetErrorsInput) ([]unifiedError, []string) {
 	allErrors := make([]unifiedError, 0)
+	var warnings []string
 
 	// 1. Collect process alerts
-	processErrors, procErr := dt.collectProcessAlerts(input.ProcessID, input.Since, input.Global)
-	if procErr != nil {
-		return nil, procErr
+	processErrors, procWarn := dt.collectProcessAlerts(input.ProcessID, input.Since, input.Global)
+	if procWarn != "" {
+		warnings = append(warnings, procWarn)
 	}
 	allErrors = append(allErrors, processErrors...)
 
 	// 2. Collect startup errors
-	startupErrors, startupErr := dt.collectStartupErrors(input.ProcessID, input.Since, input.Global)
-	if startupErr != nil {
-		return nil, startupErr
+	startupErrors, startupWarn := dt.collectStartupErrors(input.ProcessID, input.Since, input.Global)
+	if startupWarn != "" {
+		warnings = append(warnings, startupWarn)
 	}
 	allErrors = append(allErrors, startupErrors...)
 
 	// 3. Collect proxy errors
-	proxyErrors, proxyErr := dt.collectProxyErrors(input.ProxyID, input.Since, input.Global)
-	if proxyErr != nil {
-		return nil, proxyErr
-	}
+	proxyErrors, proxyWarns := dt.collectProxyErrors(input.ProxyID, input.Since, input.Global)
+	warnings = append(warnings, proxyWarns...)
 	allErrors = append(allErrors, proxyErrors...)
 
-	return allErrors, nil
+	return allErrors, warnings
 }
 
 // formatErrorsOutput applies deduplication, filtering, sorting, limiting, and formatting
@@ -246,7 +250,7 @@ func formatErrorsOutput(allErrors []unifiedError, includeWarnings bool, limit in
 // the query is scoped to the caller's session/project so other projects' alerts
 // don't leak in. The MCP daemon connection is not session-bound, so the project
 // is named explicitly via SessionCode/Directory (mirrors collectProxyErrors).
-func (dt *DaemonTools) collectProcessAlerts(processID, since string, global bool) ([]unifiedError, *mcp.CallToolResult) {
+func (dt *DaemonTools) collectProcessAlerts(processID, since string, global bool) ([]unifiedError, string) {
 	filter := protocol.AlertQueryFilter{
 		ProcessID: processID,
 		Since:     since,
@@ -262,13 +266,14 @@ func (dt *DaemonTools) collectProcessAlerts(processID, since string, global bool
 
 	result, err := dt.client.AlertQuery(filter)
 	if err != nil {
-		// Non-fatal: daemon might not have alert store yet
-		return nil, nil
+		// Non-fatal, but must be visible: a failed alert-store query would
+		// otherwise be indistinguishable from "no process errors".
+		return nil, "alert store query failed: " + err.Error()
 	}
 
 	alerts, ok := result["alerts"].([]interface{})
 	if !ok {
-		return nil, nil
+		return nil, ""
 	}
 
 	var errors []unifiedError
@@ -282,14 +287,14 @@ func (dt *DaemonTools) collectProcessAlerts(processID, since string, global bool
 		}
 	}
 
-	return errors, nil
+	return errors, ""
 }
 
 // collectStartupErrors queries the daemon startup log for error-level entries.
 // Scope mirrors collectProcessAlerts: global bypasses the session-scope
 // chokepoint (cross-project); otherwise the query is scoped to the caller's
 // session/project so other projects' startup events don't leak in.
-func (dt *DaemonTools) collectStartupErrors(processID, since string, global bool) ([]unifiedError, *mcp.CallToolResult) {
+func (dt *DaemonTools) collectStartupErrors(processID, since string, global bool) ([]unifiedError, string) {
 	dirFilter := protocol.DirectoryFilter{Global: global}
 	if !global {
 		if sessionCode := dt.SessionCode(); sessionCode != "" {
@@ -300,13 +305,13 @@ func (dt *DaemonTools) collectStartupErrors(processID, since string, global bool
 	}
 	result, err := dt.client.StartupLog(50, dirFilter)
 	if err != nil {
-		// Non-fatal: daemon might not support startup log
-		return nil, nil
+		// Non-fatal, but must be visible rather than reported as no errors.
+		return nil, "startup log query failed: " + err.Error()
 	}
 
 	entries, ok := result["entries"].([]interface{})
 	if !ok {
-		return nil, nil
+		return nil, ""
 	}
 
 	sinceTime := parseSince(since)
@@ -337,7 +342,7 @@ func (dt *DaemonTools) collectStartupErrors(processID, since string, global bool
 		}
 	}
 
-	return errors, nil
+	return errors, ""
 }
 
 // collectProxyErrors lists proxies and queries their logs for errors.
@@ -345,7 +350,7 @@ func (dt *DaemonTools) collectStartupErrors(processID, since string, global bool
 // proxy list is scoped to the caller's session/project so other projects'
 // proxy errors don't leak in — consistent with collectProcessAlerts /
 // collectStartupErrors so a single get_errors {global:true} is uniform.
-func (dt *DaemonTools) collectProxyErrors(proxyID, since string, global bool) ([]unifiedError, *mcp.CallToolResult) {
+func (dt *DaemonTools) collectProxyErrors(proxyID, since string, global bool) ([]unifiedError, []string) {
 	// Build directory filter for proxy list
 	dirFilter := protocol.DirectoryFilter{Global: global}
 	if !global {
@@ -356,6 +361,7 @@ func (dt *DaemonTools) collectProxyErrors(proxyID, since string, global bool) ([
 		}
 	}
 
+	var warnings []string
 	var proxyIDs []string
 
 	if proxyID != "" {
@@ -364,7 +370,9 @@ func (dt *DaemonTools) collectProxyErrors(proxyID, since string, global bool) ([
 		// List all active proxies
 		result, err := dt.client.ProxyList(dirFilter)
 		if err != nil {
-			return nil, nil // Non-fatal
+			// Non-fatal, but visible: without the proxy list we cannot tell
+			// "no proxy errors" from "could not enumerate proxies".
+			return nil, []string{"proxy list query failed: " + err.Error()}
 		}
 
 		if proxies, ok := result["proxies"].([]interface{}); ok {
@@ -379,7 +387,7 @@ func (dt *DaemonTools) collectProxyErrors(proxyID, since string, global bool) ([
 	}
 
 	if len(proxyIDs) == 0 {
-		return nil, nil
+		return nil, warnings
 	}
 
 	var allErrors []unifiedError
@@ -392,7 +400,10 @@ func (dt *DaemonTools) collectProxyErrors(proxyID, since string, global bool) ([
 
 		result, err := dt.client.ProxyLogQuery(pid, filter)
 		if err != nil {
-			continue // Skip this proxy on error
+			// Tolerate a single bad proxy, but count it so the caller knows
+			// this proxy's errors are missing from the view.
+			warnings = append(warnings, "proxy log query failed for "+pid+": "+err.Error())
+			continue
 		}
 
 		logs, ok := result["entries"].([]interface{})
@@ -412,5 +423,5 @@ func (dt *DaemonTools) collectProxyErrors(proxyID, since string, global bool) ([
 		}
 	}
 
-	return allErrors, nil
+	return allErrors, warnings
 }

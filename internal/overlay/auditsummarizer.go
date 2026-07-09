@@ -4,10 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/aichannel"
+	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/proxy"
 )
 
@@ -90,13 +90,13 @@ func (s *AuditSummarizer) SummarizeAudit(ctx context.Context, audit AuditData, u
 	auditFilePath := ""
 	if filePath, err := proxy.SaveAuditData(audit.AuditType, audit.Label, audit.Result); err == nil {
 		auditFilePath = filePath
-		log.Printf("Audit data saved to: %s", filePath)
+		debug.Log("overlay", "audit data saved to: %s", filePath)
 		// Best-effort summary index refresh; a stale SUMMARY.md loses no data.
 		if err := proxy.UpdateAuditSummary(); err != nil {
-			log.Printf("Failed to update audit summary: %v", err)
+			debug.Log("overlay", "failed to update audit summary: %v", err)
 		}
 	} else {
-		log.Printf("Failed to save audit data: %v", err)
+		debug.Log("overlay", "failed to save audit data: %v", err)
 	}
 
 	if !s.IsAvailable() {

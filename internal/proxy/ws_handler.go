@@ -14,6 +14,15 @@ import (
 	"github.com/standardbeagle/agnt/internal/debug"
 )
 
+// WebSocket keepalive timings. A ping is sent every wsPingPeriod; the peer's
+// pong (or any inbound frame) extends the read deadline by wsPongWait. A peer
+// that goes silent for wsPongWait is treated as dead and the read loop exits.
+const (
+	wsPongWait   = 60 * time.Second
+	wsPingPeriod = (wsPongWait * 9) / 10
+	wsWriteWait  = 10 * time.Second
+)
+
 // errorHandler handles proxy errors.
 func (ps *ProxyServer) errorHandler(w http.ResponseWriter, r *http.Request, err error) {
 	seq := ps.requestSeq.Add(1)
@@ -175,12 +184,41 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// Single-goroutine access — no locking needed.
 	sessionCaptures := make(map[string]string)
 
+	// Keepalive: a half-open connection (client vanished without a close frame)
+	// would otherwise block ReadMessage forever, leaking this goroutine and the
+	// wsConns entry. A read deadline plus a pong handler that extends it, driven
+	// by a periodic ping, detects the dead peer. WriteControl is safe to call
+	// concurrently with the asyncConn drain goroutine (gorilla guarantees this).
+	rawConn.SetReadDeadline(time.Now().Add(wsPongWait))
+	rawConn.SetPongHandler(func(string) error {
+		return rawConn.SetReadDeadline(time.Now().Add(wsPongWait))
+	})
+	pingStop := make(chan struct{})
+	defer close(pingStop)
+	go func() {
+		ticker := time.NewTicker(wsPingPeriod)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				if err := rawConn.WriteControl(websocket.PingMessage, nil, time.Now().Add(wsWriteWait)); err != nil {
+					return
+				}
+			case <-pingStop:
+				return
+			}
+		}
+	}()
+
 	// Read messages from frontend
 	for {
 		messageType, rawMessage, err := rawConn.ReadMessage()
 		if err != nil {
 			break
 		}
+		// Active client → extend the read deadline so a steady telemetry stream is
+		// not disconnected between pings.
+		rawConn.SetReadDeadline(time.Now().Add(wsPongWait))
 
 		// Binary messages: voice audio or screenshot PNG bytes
 		if messageType == websocket.BinaryMessage {

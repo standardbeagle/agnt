@@ -41,10 +41,11 @@ func runUp(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	// Try the dedicated daemon binary first (avoids fork restrictions in sandboxes)
-	daemonPath := execPath + "-daemon"
-	if _, err := os.Stat(daemonPath); err != nil {
-		// Fall back to self
+	// Provision/refresh the dedicated daemon binary (avoids fork restrictions
+	// in sandboxes and keeps the copy in lockstep with this CLI). Falls back to
+	// self when provisioning is unavailable.
+	daemonPath := daemon.ResolveDaemonBinary()
+	if daemonPath == "" {
 		daemonPath = execPath
 	}
 

@@ -92,6 +92,14 @@ type Inbox struct {
 	bands   [numBands]*band
 	dropped atomic.Int64
 
+	// ingestMu serializes the whole find-then-insert sequence of Ingest. Each
+	// band has its own lock, but a fingerprint's presence is checked band by
+	// band with the lock released between bands, so two concurrent Ingests
+	// (dispatch goroutine + LoadCritical) could both miss an existing entry and
+	// double-insert, or race an escalation move. This inbox-level lock makes the
+	// scan+insert atomic without widening any band lock's scope.
+	ingestMu sync.Mutex
+
 	cursorMu sync.Mutex
 	cursor   time.Time
 
@@ -150,6 +158,9 @@ func addSampleURL(entry *InboxEntry, url string) {
 // LastSeenAt updated; severity escalation moves the entry to a higher band.
 // Returns the resulting InboxDelta.
 func (inbox *Inbox) Ingest(entry *InboxEntry) InboxDelta {
+	inbox.ingestMu.Lock()
+	defer inbox.ingestMu.Unlock()
+
 	newIdx := bandIndex(entry.Severity)
 
 	for i := 0; i < numBands; i++ {

@@ -66,31 +66,57 @@ func (dt *DaemonTools) makeAPIAuditHandler() func(context.Context, *mcp.CallTool
 		if err := dt.ensureConnected(); err != nil {
 			return errorResult(err.Error()), APIAuditOutput{}, nil
 		}
-		return dt.executeAPIAuditDaemon(input)
+
+		res, summary, raw := dt.runBufferAudit(apiAuditSpec, input.ProxyID, input.Target, input.FrameID, input.Raw)
+		if res != nil {
+			return res, APIAuditOutput{}, nil
+		}
+		return nil, APIAuditOutput{Summary: summary, Raw: raw}, nil
 	}
 }
 
-// buildAPIAuditCode constructs the JavaScript that invokes the audit module.
-func buildAPIAuditCode(raw bool) string {
-	return fmt.Sprintf(`(function() {
-		if (!window.__devtool_audit_api || !window.__devtool_audit_api.auditAPIEfficiency) {
-			return JSON.stringify({ error: 'audit-api module not loaded' });
-		}
-		return JSON.stringify(window.__devtool_audit_api.auditAPIEfficiency({ raw: %t }));
-	})()`, raw)
+// apiAuditSpec parameterizes runBufferAudit for the fetch/XHR call buffer.
+var apiAuditSpec = bufferAuditSpec{
+	globalVar: "__devtool_audit_api",
+	fn:        "auditAPIEfficiency",
+	module:    "audit-api",
+	headline:  "API Efficiency Audit",
 }
 
-// executeAPIAuditDaemon runs the API audit using the daemon client.
-func (dt *DaemonTools) executeAPIAuditDaemon(input APIAuditInput) (*mcp.CallToolResult, APIAuditOutput, error) {
-	code := buildAPIAuditCode(input.Raw)
+// bufferAuditSpec parameterizes a buffer-backed audit (api_audit /
+// loading_audit): the in-page global + method to invoke, the module name used
+// in the not-loaded error, and the compact-summary headline. The two audits
+// differ only in these four values; everything else is shared below.
+type bufferAuditSpec struct {
+	globalVar string
+	fn        string
+	module    string
+	headline  string
+}
 
-	result, err := dt.client.ProxyExec(input.ProxyID, code, resolveExecTarget(input.Target, input.FrameID))
+// buildBufferAuditCode constructs the JavaScript that invokes the audit module.
+func buildBufferAuditCode(spec bufferAuditSpec, raw bool) string {
+	return fmt.Sprintf(`(function() {
+		if (!window.%[1]s || !window.%[1]s.%[2]s) {
+			return JSON.stringify({ error: '%[3]s module not loaded' });
+		}
+		return JSON.stringify(window.%[1]s.%[2]s({ raw: %[4]t }));
+	})()`, spec.globalVar, spec.fn, spec.module, raw)
+}
+
+// runBufferAudit executes a buffer-backed audit via the daemon and returns
+// either an error result (non-nil first return) or a summary string plus an
+// optional raw payload. proxyID must already be resolved.
+func (dt *DaemonTools) runBufferAudit(spec bufferAuditSpec, proxyID, target, frameID string, raw bool) (*mcp.CallToolResult, string, any) {
+	code := buildBufferAuditCode(spec, raw)
+
+	result, err := dt.client.ProxyExec(proxyID, code, resolveExecTarget(target, frameID))
 	if err != nil {
-		return errorResult(fmt.Sprintf("failed to execute audit: %v", err)), APIAuditOutput{}, nil
+		return errorResult(fmt.Sprintf("failed to execute audit: %v", err)), "", nil
 	}
 
 	if errMsg, ok := result["error"].(string); ok && errMsg != "" {
-		return errorResult(fmt.Sprintf("audit failed: %s", errMsg)), APIAuditOutput{}, nil
+		return errorResult(fmt.Sprintf("audit failed: %s", errMsg)), "", nil
 	}
 
 	resultStr := getString(result, "result")
@@ -99,40 +125,32 @@ func (dt *DaemonTools) executeAPIAuditDaemon(input APIAuditInput) (*mcp.CallTool
 		resultStr = string(b)
 	}
 
-	return parseAPIAuditResult(resultStr, input.Raw)
-}
-
-// parseAPIAuditResult decodes the JSON returned by auditAPIEfficiency and
-// formats it for the requested output mode. The audit returns a JSON object in
-// both modes; the non-raw object is condensed into a compact text summary.
-func parseAPIAuditResult(resultStr string, raw bool) (*mcp.CallToolResult, APIAuditOutput, error) {
 	var parsed map[string]any
 	if err := json.Unmarshal([]byte(resultStr), &parsed); err != nil {
 		// Not JSON — surface the raw payload as the summary.
-		return nil, APIAuditOutput{Summary: resultStr}, nil
+		return nil, resultStr, nil
 	}
 
-	// Module-level error (e.g. audit-api module not loaded).
+	// Module-level error (e.g. audit module not loaded).
 	if errMsg, ok := parsed["error"].(string); ok && errMsg != "" {
-		return errorResult(errMsg), APIAuditOutput{}, nil
+		return errorResult(errMsg), "", nil
 	}
 
 	if raw {
-		return nil, APIAuditOutput{Summary: getString(parsed, "summary"), Raw: parsed}, nil
+		return nil, getString(parsed, "summary"), parsed
 	}
-
-	return nil, APIAuditOutput{Summary: formatAPIAuditCompact(parsed)}, nil
+	return nil, formatBufferAuditCompact(spec.headline, parsed), nil
 }
 
-// formatAPIAuditCompact builds a short text summary from the AI-optimized
+// formatBufferAuditCompact builds a short text summary from the AI-optimized
 // (non-raw) audit object: score/grade headline, summary line, and a grouped
 // list of findings by type.
-func formatAPIAuditCompact(parsed map[string]any) string {
+func formatBufferAuditCompact(headline string, parsed map[string]any) string {
 	var b strings.Builder
 
 	score := getFloat(parsed, "score")
 	grade := getString(parsed, "grade")
-	fmt.Fprintf(&b, "=== API Efficiency Audit: %s (%d) ===\n", grade, int(score))
+	fmt.Fprintf(&b, "=== %s: %s (%d) ===\n", headline, grade, int(score))
 
 	if summary := getString(parsed, "summary"); summary != "" {
 		b.WriteString(summary)

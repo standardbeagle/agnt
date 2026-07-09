@@ -36,13 +36,12 @@ func newTestEmitter(t *testing.T) (*PingEmitter, *Inbox, *[]capturedPing, *sync.
 	t.Helper()
 	inbox := NewInbox("test-sess")
 	flow := NewFlowController(DefaultBucketConfigs)
-	activity := NewActivityDetector(20*time.Millisecond, 50*time.Millisecond, nil)
 
 	var mu sync.Mutex
 	pings := []capturedPing{}
 
 	cfg := testPingConfig()
-	pe := NewPingEmitter(inbox, cfg, flow, activity,
+	pe := NewPingEmitter(inbox, cfg, flow,
 		func(level string, p PingPayload) error {
 			mu.Lock()
 			pings = append(pings, capturedPing{level, p})
@@ -161,7 +160,7 @@ func TestPing_ConfigGates_PerChannel(t *testing.T) {
 	cfg.ChannelEnabled = false
 	cfg.PTYInjection = false
 
-	pe := NewPingEmitter(inbox, cfg, flow, nil,
+	pe := NewPingEmitter(inbox, cfg, flow,
 		func(string, PingPayload) error { mcpCalled.Store(true); return nil },
 		func(string, PingPayload) error { channelCalled.Store(true); return nil },
 		func(string) error { ptyCalled.Store(true); return nil },
@@ -179,37 +178,6 @@ func TestPing_ConfigGates_PerChannel(t *testing.T) {
 	}
 	if ptyCalled.Load() {
 		t.Error("PTYInjection=false: PTY should not be called")
-	}
-}
-
-// ── critical bypasses activity deferral ──────────────────────────────────────
-
-func TestPing_CriticalSkipsActivityDeferral(t *testing.T) {
-	t.Parallel()
-	inbox := NewInbox("sess")
-	flow := NewFlowController(DefaultBucketConfigs)
-	activity := NewActivityDetector(500*time.Millisecond, 2*time.Second, nil) // long active window
-
-	var count atomic.Int32
-	cfg := testPingConfig()
-	pe := NewPingEmitter(inbox, cfg, flow, activity,
-		func(string, PingPayload) error { count.Add(1); return nil },
-		nil, nil,
-	)
-	defer pe.Stop()
-
-	// Simulate agent being active.
-	activity.RecordHook()
-	if !activity.IsActive() {
-		t.Fatal("activity should be active")
-	}
-
-	// Ingest a critical event — must bypass deferral and emit immediately.
-	inbox.Ingest(makeEntry("fp-crit", SeverityCritical))
-	time.Sleep(30 * time.Millisecond) // much less than active window
-
-	if count.Load() == 0 {
-		t.Error("critical event should emit ping even when agent is active")
 	}
 }
 
@@ -268,7 +236,7 @@ func TestPing_EndToEnd_BurstIngestOnePing(t *testing.T) {
 		ResetAfter: 200 * time.Millisecond,
 	}
 
-	pe := NewPingEmitter(inbox, cfg, flow, nil,
+	pe := NewPingEmitter(inbox, cfg, flow,
 		func(_ string, p PingPayload) error {
 			mu.Lock()
 			pings = append(pings, p)

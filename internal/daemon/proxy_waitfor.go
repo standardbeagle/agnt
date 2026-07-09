@@ -123,13 +123,7 @@ func (d *Daemon) watchProxyReadiness(proxyID string) {
 		proxyID, grace, strings.Join(pending, ", "))
 
 	if d.startupErrorStore != nil {
-		d.startupErrorStore.Add(&StartupLogEntry{
-			ProcessID: proxyID,
-			Level:     "warning",
-			EventType: "proxy_readiness_stalled",
-			Message:   msg,
-			Timestamp: time.Now(),
-		})
+		d.recordStartupEntry(proxyID, "", "warning", "proxy_readiness_stalled", msg, 0)
 	}
 
 	if d.eventHub != nil {

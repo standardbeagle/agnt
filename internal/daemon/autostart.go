@@ -31,16 +31,55 @@ func DefaultAutoStartConfig() AutoStartConfig {
 	}
 }
 
+// withDefaults fills zero-value fields so callers can safely pass a partial
+// AutoStartConfig. In particular, the underlying hub client rejects an empty
+// socket path and will not attempt auto-start.
+func (c AutoStartConfig) withDefaults() AutoStartConfig {
+	defaults := DefaultAutoStartConfig()
+	if c.SocketPath == "" {
+		c.SocketPath = defaults.SocketPath
+	}
+	if c.StartTimeout == 0 {
+		c.StartTimeout = defaults.StartTimeout
+	}
+	if c.RetryInterval == 0 {
+		c.RetryInterval = defaults.RetryInterval
+	}
+	if c.MaxRetries == 0 {
+		c.MaxRetries = defaults.MaxRetries
+	}
+	return c
+}
+
 // toLibraryConfig converts agnt AutoStartConfig to go-cli-server config.
 func (c AutoStartConfig) toLibraryConfig() goclient.AutoStartConfig {
+	c = c.withDefaults()
+	// An explicit DaemonPath always wins (callers that know exactly which
+	// binary to spawn — upgrade, tests). Otherwise self-provision a fresh
+	// `agnt-daemon` copy so autostart works from a bare `go install` and never
+	// spawns a stale daemon. ensureDaemonBinary returns "" under test / on
+	// failure, leaving the library's own copy-lookup + self-exec fallback.
+	hubPath := c.DaemonPath
+	if hubPath == "" {
+		hubPath = ensureDaemonBinary()
+	}
 	return goclient.AutoStartConfig{
 		SocketPath:     c.SocketPath,
-		HubPath:        c.DaemonPath,
+		HubPath:        hubPath,
+		HubArgs:        agntHubArgs(c.SocketPath),
 		StartTimeout:   c.StartTimeout,
 		RetryInterval:  c.RetryInterval,
 		MaxRetries:     c.MaxRetries,
 		ProcessMatcher: isAgntDaemonProcess,
 	}
+}
+
+// agntHubArgs is the argv the auto-starter uses to spawn the daemon. agnt's
+// hub is a subcommand (`agnt daemon start`), not the bare executable, so the
+// library's generic default ("--socket <path>" alone) would launch the CLI with
+// no subcommand and never bring up the hub. HubArgs fully replaces that default.
+func agntHubArgs(socketPath string) []string {
+	return []string{"daemon", "start", "--socket", socketPath}
 }
 
 // AutoStartClient creates a client that auto-starts the daemon if needed.
@@ -51,6 +90,7 @@ type AutoStartClient struct {
 
 // NewAutoStartClient creates a new auto-start client.
 func NewAutoStartClient(config AutoStartConfig) *AutoStartClient {
+	config = config.withDefaults()
 	return &AutoStartClient{
 		Client: NewClient(
 			WithSocketPath(config.SocketPath),

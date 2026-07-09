@@ -40,6 +40,37 @@ func longRunningCmd() string {
 	return "sleep 60"
 }
 
+func TestAgntProcExtendsSharedHubProcessCommands(t *testing.T) {
+	daemon, _, _ := newHubProcTestDaemon(t)
+
+	subverbs := daemon.hub.ValidSubVerbs("PROC")
+	for _, want := range []string{
+		"STDIN", // built-in shared hub action must survive agnt extension
+		"RUN",
+		"RUN-GROUP",
+		"STATUS",
+		"OUTPUT",
+		"STOP",
+		"RESTART",
+		"LIST",
+		"CLEANUP-PORT",
+		"AUTORESTART",
+	} {
+		if !containsProcSubVerb(subverbs, want) {
+			t.Fatalf("PROC subverbs = %v, missing %s", subverbs, want)
+		}
+	}
+}
+
+func containsProcSubVerb(values []string, needle string) bool {
+	for _, value := range values {
+		if value == needle {
+			return true
+		}
+	}
+	return false
+}
+
 // TestStartScriptExplicit_RegistersAndStarts is the unit-level acceptance
 // test for the extracted daemon-layer entrypoint. Drives a direct call (no
 // hub / client round-trip) and verifies the three invariants that

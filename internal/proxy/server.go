@@ -73,6 +73,14 @@ type ProxyServer struct {
 	// content frame reports on load so this is set in the common case.
 	activeFrameID atomic.Pointer[string]
 
+	// boundAddr holds the *live* listen address, updated atomically by the
+	// runServer goroutine when an auto-restart rebinds to a different port
+	// (the rare stolen-port fallback). The exported ListenAddr field is
+	// written once before serving begins and never mutated afterward, so it
+	// is race-free for the many cross-package readers; request-path code that
+	// needs the current address after a restart calls liveAddr() instead.
+	boundAddr atomic.Pointer[string]
+
 	// Base transport for connection pool management (CloseIdleConnections on backend restart)
 	baseTransport *http.Transport
 
@@ -250,13 +258,13 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 		healthCheckInterval: healthInterval,
 		healthFailThreshold: healthThreshold,
 		healthProbeTimeout:  5 * time.Second,
-		wsUpgrader: websocket.Upgrader{
-			CheckOrigin: func(r *http.Request) bool {
-				return true // Allow all origins for development
-			},
-		},
-		readiness: newReadinessGate(),
+		readiness:           newReadinessGate(),
 	}
+
+	// Gate WebSocket upgrades to same-origin browser connections. The telemetry
+	// channel carries control frames (frame_active retargets exec, etc.), so a
+	// foreign page must not be able to open it and hijack the exec target.
+	ps.wsUpgrader = websocket.Upgrader{CheckOrigin: ps.checkWSOrigin}
 
 	// Push chaos state to connected browser clients whenever any control
 	// surface (MCP, hub, browser panel) mutates the engine.
@@ -463,8 +471,8 @@ func (ps *ProxyServer) Start(ctx context.Context) error {
 		// hostname→port mapping).
 		if isAddressInUse(err) && !ps.StrictListenPort {
 			debug.Log("proxy", "address %s in use, trying auto-assign", ps.ListenAddr)
-			// Try port 0 to get an auto-assigned port
-			listener, err = net.Listen("tcp", ":0")
+			// Auto-assign a port on the same host (preserves loopback scope).
+			listener, err = net.Listen("tcp", ps.autoAssignAddr())
 			if err != nil {
 				debug.Error("proxy", "failed to find available port: %v", err)
 				cancel()
@@ -480,8 +488,10 @@ func (ps *ProxyServer) Start(ctx context.Context) error {
 		}
 	}
 
-	// Update ListenAddr with actual bound address
+	// Update ListenAddr with actual bound address. This is the last write to
+	// ListenAddr; the runServer goroutine never touches it again (see boundAddr).
 	ps.ListenAddr = listener.Addr().String()
+	ps.setBoundAddr(ps.ListenAddr)
 
 	ps.httpServer = &http.Server{
 		Addr:    ps.ListenAddr,
@@ -515,13 +525,42 @@ func (ps *ProxyServer) Start(ctx context.Context) error {
 	return nil
 }
 
+// setBoundAddr publishes the current live listen address atomically.
+func (ps *ProxyServer) setBoundAddr(addr string) {
+	ps.boundAddr.Store(&addr)
+}
+
+// liveAddr returns the current listen address, preferring the atomically
+// published value (which tracks auto-restart rebinds) and falling back to the
+// write-once ListenAddr field before the first bind completes.
+func (ps *ProxyServer) liveAddr() string {
+	if p := ps.boundAddr.Load(); p != nil {
+		return *p
+	}
+	return ps.ListenAddr
+}
+
+// autoAssignAddr returns the address to hand net.Listen for the port-in-use
+// fallback: the *original host* with port 0, so the OS picks a free port while
+// the interface scope is preserved. A bare ":0" would bind 0.0.0.0/[::] and
+// silently promote a loopback-only dev proxy to a LAN-reachable one — an
+// unintended network exposure. Falls back to 127.0.0.1 when the host cannot be
+// parsed (never empty, so we never widen the scope by accident).
+func (ps *ProxyServer) autoAssignAddr() string {
+	host, _, err := net.SplitHostPort(ps.ListenAddr)
+	if err != nil || host == "" {
+		host = "127.0.0.1"
+	}
+	return net.JoinHostPort(host, "0")
+}
+
 // BoundPort returns the TCP port the proxy is actually listening on, parsed
 // from ListenAddr (which Start updates to the real bound address, including
 // the OS-assigned port when ListenPort was 0). Returns 0 if the address has no
 // parseable port. Callers restarting a proxy use this to rebind the same port
 // rather than letting it drift to a fresh auto-assignment.
 func (ps *ProxyServer) BoundPort() int {
-	_, portStr, err := net.SplitHostPort(ps.ListenAddr)
+	_, portStr, err := net.SplitHostPort(ps.liveAddr())
 	if err != nil {
 		return 0
 	}
@@ -595,17 +634,33 @@ func (ps *ProxyServer) runServer(ctx context.Context, listener net.Listener) {
 			// Record restart
 			ps.recordRestart()
 
-			// Try to create new listener on same address
+			// Try to create new listener on same address. If that port has
+			// since been taken (another process grabbed it during the crash
+			// window), fall back to an auto-assigned port — unless the caller
+			// pinned an explicit StrictListenPort, in which case drifting would
+			// defeat the declared port and we abort. Mirrors the initial-bind
+			// policy above.
 			newListener, restartErr := net.Listen("tcp", ps.ListenAddr)
 			if restartErr != nil {
-				ps.lastError.Store(fmt.Sprintf("restart failed: %v (original: %v)", restartErr.Error(), err.Error()))
-				return
+				if isAddressInUse(restartErr) && !ps.StrictListenPort {
+					debug.Log("proxy", "proxy %s restart: address %s in use, auto-assigning port", ps.ID, ps.ListenAddr)
+					newListener, restartErr = net.Listen("tcp", ps.autoAssignAddr())
+				}
+				if restartErr != nil {
+					ps.lastError.Store(fmt.Sprintf("restart failed: %v (original: %v)", restartErr.Error(), err.Error()))
+					return
+				}
 			}
 
-			// Update listener and server state
+			// Update listener and server state. The bound address may differ from
+			// the requested one after an auto-assign fallback. Publish it through
+			// the atomic boundAddr rather than mutating the exported ListenAddr
+			// field, which is read unsynchronized across packages.
 			listener = newListener
+			newAddr := newListener.Addr().String()
+			ps.setBoundAddr(newAddr)
 			ps.httpServer = &http.Server{
-				Addr:    ps.ListenAddr,
+				Addr:    newAddr,
 				Handler: ps.httpServer.Handler,
 				BaseContext: func(l net.Listener) context.Context {
 					return ctx
@@ -620,6 +675,32 @@ func (ps *ProxyServer) runServer(ctx context.Context, listener net.Listener) {
 		// Normal exit
 		return
 	}
+}
+
+// checkWSOrigin decides whether to accept a WebSocket upgrade. A missing Origin
+// header (non-browser client, server-side probe, or test) is allowed. A present
+// Origin must match the request Host, or the configured public URL host when the
+// proxy is fronted by a tunnel (where the browser's Origin is the public host
+// but the arriving request Host may be rewritten). Any other origin is refused,
+// so a foreign page cannot open the control channel.
+func (ps *ProxyServer) checkWSOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	if strings.EqualFold(u.Host, r.Host) {
+		return true
+	}
+	if ps.PublicURL != "" {
+		if pu, perr := url.Parse(ps.PublicURL); perr == nil && pu.Host != "" && strings.EqualFold(pu.Host, u.Host) {
+			return true
+		}
+	}
+	return false
 }
 
 // shouldRestart checks if we should attempt another restart based on rate limits

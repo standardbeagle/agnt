@@ -138,6 +138,28 @@ func TestAutoStartConfig_toLibraryConfig(t *testing.T) {
 	}
 }
 
+func TestAutoStartConfigToLibraryConfigDefaultsZeroValue(t *testing.T) {
+	t.Parallel()
+
+	libConfig := (AutoStartConfig{}).toLibraryConfig()
+
+	if libConfig.SocketPath == "" {
+		t.Fatal("expected zero-value config to default socket path")
+	}
+	if libConfig.StartTimeout == 0 {
+		t.Error("expected zero-value config to default start timeout")
+	}
+	if libConfig.RetryInterval == 0 {
+		t.Error("expected zero-value config to default retry interval")
+	}
+	if libConfig.MaxRetries == 0 {
+		t.Error("expected zero-value config to default max retries")
+	}
+	if len(libConfig.HubArgs) != 4 || libConfig.HubArgs[0] != "daemon" || libConfig.HubArgs[1] != "start" || libConfig.HubArgs[2] != "--socket" || libConfig.HubArgs[3] != libConfig.SocketPath {
+		t.Fatalf("unexpected hub args: %#v", libConfig.HubArgs)
+	}
+}
+
 func TestNewAutoStartClient(t *testing.T) {
 	t.Parallel()
 	config := AutoStartConfig{

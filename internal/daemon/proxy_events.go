@@ -6,7 +6,6 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
-	"time"
 
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
@@ -103,13 +102,8 @@ func (d *Daemon) handleURLDetected(event ProxyEvent) {
 	projectPath := event.Path
 	if projectPath == "" {
 		debug.Warn("daemon", "No project path in URL detection event for script %s", event.ScriptID)
-		d.startupErrorStore.Add(&StartupLogEntry{
-			ProcessID: event.ScriptID,
-			Level:     "warning",
-			EventType: "proxy_creation_failed",
-			Message:   "no project path in URL detection event, proxy not created",
-			Timestamp: time.Now(),
-		})
+		d.recordStartupEntry(event.ScriptID, "", "warning", "proxy_creation_failed",
+			"no project path in URL detection event, proxy not created", 0)
 		return
 	}
 
@@ -126,13 +120,8 @@ func (d *Daemon) handleURLDetected(event ProxyEvent) {
 	agntConfig, err := config.LoadAgntConfig(projectPath)
 	if err != nil {
 		debug.Warn("daemon", "Failed to load agnt config for %s: %v", projectPath, err)
-		d.startupErrorStore.Add(&StartupLogEntry{
-			ProcessID: event.ScriptID,
-			Level:     "warning",
-			EventType: "proxy_creation_failed",
-			Message:   fmt.Sprintf("failed to load agnt config for %s: %v", projectPath, err),
-			Timestamp: time.Now(),
-		})
+		d.recordStartupEntry(event.ScriptID, "", "warning", "proxy_creation_failed",
+			fmt.Sprintf("failed to load agnt config for %s: %v", projectPath, err), 0)
 		return
 	}
 	debug.Log("daemon", "Loaded %d proxies from config", len(agntConfig.Proxies))
@@ -151,14 +140,8 @@ func (d *Daemon) handleURLDetected(event ProxyEvent) {
 			matched, err := regexp.MatchString(proxyConfig.URLPattern, event.URL)
 			if err != nil {
 				debug.Warn("daemon", "Invalid url-pattern regex for proxy %s: %v", proxyName, err)
-				d.startupErrorStore.Add(&StartupLogEntry{
-					ProcessID:  makeProcessID(projectPath, proxyName),
-					ScriptName: proxyName,
-					Level:      "warning",
-					EventType:  "proxy_url_pattern_invalid",
-					Message:    fmt.Sprintf("invalid url-pattern %q for proxy %s: %v — proxy not created", proxyConfig.URLPattern, proxyName, err),
-					Timestamp:  time.Now(),
-				})
+				d.startupLog(projectPath).Warn(proxyName, "proxy_url_pattern_invalid",
+					fmt.Sprintf("invalid url-pattern %q for proxy %s: %v — proxy not created", proxyConfig.URLPattern, proxyName, err))
 				continue
 			}
 			if !matched {
@@ -183,13 +166,8 @@ func (d *Daemon) handleURLDetected(event ProxyEvent) {
 
 		if currentCount >= 5 {
 			debug.Warn("daemon", "Proxy limit (5) reached for script %s, skipping %s", event.ScriptID, event.URL)
-			d.startupErrorStore.Add(&StartupLogEntry{
-				ProcessID: event.ScriptID,
-				Level:     "warning",
-				EventType: "proxy_limit_reached",
-				Message:   fmt.Sprintf("proxy limit (5) reached, skipping URL %s", event.URL),
-				Timestamp: time.Now(),
-			})
+			d.recordStartupEntry(event.ScriptID, "", "warning", "proxy_limit_reached",
+				fmt.Sprintf("proxy limit (5) reached, skipping URL %s", event.URL), 0)
 			continue
 		}
 
@@ -199,13 +177,8 @@ func (d *Daemon) handleURLDetected(event ProxyEvent) {
 		server, err := d.proxym.Create(d.ctx, proxyServerConfig)
 		if err != nil {
 			debug.Error("daemon", "Failed to create proxy %s: %v", proxyID, err)
-			d.startupErrorStore.Add(&StartupLogEntry{
-				ProcessID: event.ScriptID,
-				Level:     "error",
-				EventType: "proxy_creation_failed",
-				Message:   fmt.Sprintf("failed to create proxy %s: %v", proxyID, err),
-				Timestamp: time.Now(),
-			})
+			d.recordStartupEntry(event.ScriptID, "", "error", "proxy_creation_failed",
+				fmt.Sprintf("failed to create proxy %s: %v", proxyID, err), 0)
 			continue
 		}
 
@@ -270,13 +243,8 @@ func (d *Daemon) handleExplicitStart(event ProxyEvent) {
 	server, err := d.proxym.Create(d.ctx, proxyServerConfig)
 	if err != nil {
 		debug.Error("daemon", "Failed to create proxy %s: %v", event.ProxyID, err)
-		d.startupErrorStore.Add(&StartupLogEntry{
-			ProcessID: event.ProxyID,
-			Level:     "error",
-			EventType: "proxy_creation_failed",
-			Message:   fmt.Sprintf("failed to create explicit proxy %s: %v", event.ProxyID, err),
-			Timestamp: time.Now(),
-		})
+		d.recordStartupEntry(event.ProxyID, "", "error", "proxy_creation_failed",
+			fmt.Sprintf("failed to create explicit proxy %s: %v", event.ProxyID, err), 0)
 		return
 	}
 
@@ -327,14 +295,8 @@ func (d *Daemon) handleExplicitStart(event ProxyEvent) {
 	// T3 so every ExplicitStart path (MCP tool, autostart, future fallback)
 	// emits the same warning.
 	if !server.HasOverlayEndpoint() {
-		d.startupErrorStore.Add(&StartupLogEntry{
-			ProcessID:  event.ProxyID,
-			ScriptName: event.ProxyID,
-			Level:      "warning",
-			EventType:  "proxy_no_overlay",
-			Message:    fmt.Sprintf("proxy %s has no overlay endpoint — browser messages will not reach agent", event.ProxyID),
-			Timestamp:  time.Now(),
-		})
+		d.recordStartupEntry(event.ProxyID, event.ProxyID, "warning", "proxy_no_overlay",
+			fmt.Sprintf("proxy %s has no overlay endpoint — browser messages will not reach agent", event.ProxyID), 0)
 	}
 
 	// Register wait-for dependencies for explicit proxies too.
@@ -382,27 +344,15 @@ func (d *Daemon) handleExplicitStart(event ProxyEvent) {
 func (d *Daemon) handleFallbackPortCheck(event ProxyEvent) {
 	if event.Config == nil || event.ProxyName == "" || event.Path == "" {
 		debug.Warn("daemon", "Invalid FallbackPortCheck event: missing config, proxyName, or path")
-		d.startupErrorStore.Add(&StartupLogEntry{
-			ProcessID:  event.ScriptID,
-			ScriptName: event.ProxyName,
-			Level:      "warning",
-			EventType:  "startup_proxy_fallback_failed",
-			Message:    "invalid FallbackPortCheck event: missing config, proxy name, or project path",
-			Timestamp:  time.Now(),
-		})
+		d.recordStartupEntry(event.ScriptID, event.ProxyName, "warning", "startup_proxy_fallback_failed",
+			"invalid FallbackPortCheck event: missing config, proxy name, or project path", 0)
 		return
 	}
 
 	if event.Config.FallbackPort <= 0 {
 		debug.Warn("daemon", "FallbackPortCheck for proxy %s has no fallback-port configured", event.ProxyName)
-		d.startupErrorStore.Add(&StartupLogEntry{
-			ProcessID:  event.ScriptID,
-			ScriptName: event.ProxyName,
-			Level:      "warning",
-			EventType:  "startup_proxy_fallback_failed",
-			Message:    fmt.Sprintf("fallback-port check for proxy %s has no fallback-port configured", event.ProxyName),
-			Timestamp:  time.Now(),
-		})
+		d.recordStartupEntry(event.ScriptID, event.ProxyName, "warning", "startup_proxy_fallback_failed",
+			fmt.Sprintf("fallback-port check for proxy %s has no fallback-port configured", event.ProxyName), 0)
 		return
 	}
 
@@ -417,14 +367,8 @@ func (d *Daemon) handleFallbackPortCheck(event ProxyEvent) {
 	// already created one).
 	if _, err := d.proxym.Get(fallbackProxyID); err == nil {
 		debug.Log("daemon", "Fallback proxy %s already exists, skipping", fallbackProxyID)
-		d.startupErrorStore.Add(&StartupLogEntry{
-			ProcessID:  event.ScriptID,
-			ScriptName: event.ProxyName,
-			Level:      "info",
-			EventType:  "startup_proxy_fallback_skipped_already_running",
-			Message:    fmt.Sprintf("fallback-port check for proxy %s: proxy already running (id=%s)", event.ProxyName, fallbackProxyID),
-			Timestamp:  time.Now(),
-		})
+		d.recordStartupEntry(event.ScriptID, event.ProxyName, "info", "startup_proxy_fallback_skipped_already_running",
+			fmt.Sprintf("fallback-port check for proxy %s: proxy already running (id=%s)", event.ProxyName, fallbackProxyID), 0)
 		return
 	}
 
@@ -448,14 +392,8 @@ func (d *Daemon) handleFallbackPortCheck(event ProxyEvent) {
 		d.scriptProxyMu.RUnlock()
 		if raceWinner != "" {
 			debug.Log("daemon", "Fallback proxy %s: URL detection already created %s, skipping", event.ProxyName, raceWinner)
-			d.startupErrorStore.Add(&StartupLogEntry{
-				ProcessID:  event.ScriptID,
-				ScriptName: event.ProxyName,
-				Level:      "info",
-				EventType:  "startup_proxy_fallback_skipped_already_running",
-				Message:    fmt.Sprintf("fallback-port check for proxy %s: URL detection already created proxy %s for script %s", event.ProxyName, raceWinner, event.Config.Script),
-				Timestamp:  time.Now(),
-			})
+			d.recordStartupEntry(event.ScriptID, event.ProxyName, "info", "startup_proxy_fallback_skipped_already_running",
+				fmt.Sprintf("fallback-port check for proxy %s: URL detection already created proxy %s for script %s", event.ProxyName, raceWinner, event.Config.Script), 0)
 			return
 		}
 	}
@@ -472,15 +410,8 @@ func (d *Daemon) handleFallbackPortCheck(event ProxyEvent) {
 	server, err := d.proxym.Create(d.ctx, proxyServerConfig)
 	if err != nil {
 		debug.Error("daemon", "Failed to create fallback proxy %s: %v", fallbackProxyID, err)
-		d.startupErrorStore.Add(&StartupLogEntry{
-			ProcessID:  event.ScriptID,
-			ScriptName: event.ProxyName,
-			Level:      "warning",
-			EventType:  "startup_proxy_fallback_failed",
-			Message:    fmt.Sprintf("failed to create fallback proxy %s targeting %s: %v", event.ProxyName, targetURL, err),
-			Port:       event.Config.FallbackPort,
-			Timestamp:  time.Now(),
-		})
+		d.recordStartupEntry(event.ScriptID, event.ProxyName, "warning", "startup_proxy_fallback_failed",
+			fmt.Sprintf("failed to create fallback proxy %s targeting %s: %v", event.ProxyName, targetURL, err), event.Config.FallbackPort)
 		return
 	}
 
@@ -504,15 +435,8 @@ func (d *Daemon) handleFallbackPortCheck(event ProxyEvent) {
 	// Register wait-for dependencies (script names in event.Config.WaitFor).
 	d.registerProxyDependencies(server, fallbackProxyID, event.Config, event.Path)
 
-	d.startupErrorStore.Add(&StartupLogEntry{
-		ProcessID:  event.ScriptID,
-		ScriptName: event.ProxyName,
-		Level:      "info",
-		EventType:  "startup_proxy_fallback_used",
-		Message:    fmt.Sprintf("created fallback proxy %s for script %s targeting %s", event.ProxyName, event.Config.Script, targetURL),
-		Port:       event.Config.FallbackPort,
-		Timestamp:  time.Now(),
-	})
+	d.recordStartupEntry(event.ScriptID, event.ProxyName, "info", "startup_proxy_fallback_used",
+		fmt.Sprintf("created fallback proxy %s for script %s targeting %s", event.ProxyName, event.Config.Script, targetURL), event.Config.FallbackPort)
 	debug.Log("daemon", "Created fallback proxy %s targeting %s (script %s)", fallbackProxyID, targetURL, event.Config.Script)
 }
 
@@ -559,13 +483,8 @@ func (d *Daemon) handleScriptStopped(event ProxyEvent) {
 			continue
 		}
 		debug.Warn("daemon", "Failed to stop proxy %s: %v", proxyID, err)
-		d.startupErrorStore.Add(&StartupLogEntry{
-			ProcessID: event.ScriptID,
-			Level:     "warning",
-			EventType: "proxy_stop_failed",
-			Message:   fmt.Sprintf("failed to stop proxy %s on script stop: %v", proxyID, err),
-			Timestamp: time.Now(),
-		})
+		d.recordStartupEntry(event.ScriptID, "", "warning", "proxy_stop_failed",
+			fmt.Sprintf("failed to stop proxy %s on script stop: %v", proxyID, err), 0)
 	}
 
 	// Clear tracking

@@ -4,13 +4,22 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/aichannel"
+	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/protocol"
 )
+
+// debugLogWriter forwards writes to debug.Log so summarizer diagnostics never
+// reach os.Stderr, which would corrupt the PTY output stream.
+type debugLogWriter struct{}
+
+func (debugLogWriter) Write(p []byte) (int, error) {
+	debug.Log("overlay", "%s", strings.TrimRight(string(p), "\r\n"))
+	return len(p), nil
+}
 
 // Summarizer aggregates system status and uses an AI channel to generate summaries.
 // It uses a shared DaemonClient for all requests.
@@ -31,7 +40,8 @@ type SummarizerConfig struct {
 	Args []string
 	// Timeout for AI response (default 2 minutes)
 	Timeout time.Duration
-	// DebugOutput is where debug messages are written (defaults to os.Stderr)
+	// DebugOutput is where debug messages are written (defaults to the
+	// debug-log sink; never os.Stderr, which would corrupt the PTY).
 	DebugOutput io.Writer
 	// ProjectPath is the current project directory for filtering processes/proxies
 	ProjectPath string
@@ -90,12 +100,14 @@ func NewSummarizer(conn DaemonClient, config SummarizerConfig) *Summarizer {
 	}
 }
 
-// debugWriter returns the debug output writer, defaulting to os.Stderr.
+// debugWriter returns the debug output writer, defaulting to the debug-log
+// sink. It must never default to os.Stderr: this code runs in a PTY context
+// where stderr writes corrupt the terminal output stream.
 func (s *Summarizer) debugWriter() io.Writer {
 	if s.debugOutput != nil {
 		return s.debugOutput
 	}
-	return os.Stderr
+	return debugLogWriter{}
 }
 
 // IsAvailable returns true if the AI channel is available.

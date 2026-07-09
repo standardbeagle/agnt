@@ -113,7 +113,6 @@ func TestBurst_MixedSeverityCascade_CritFirst(t *testing.T) {
 	t.Parallel()
 	inbox := NewInbox("mix-sess")
 	flow := NewFlowController(DefaultBucketConfigs)
-	activity := NewActivityDetector(50*time.Millisecond, 100*time.Millisecond, nil)
 
 	var mu sync.Mutex
 	var pings []PingPayload
@@ -126,7 +125,7 @@ func TestBurst_MixedSeverityCascade_CritFirst(t *testing.T) {
 			ResetAfter: 200 * time.Millisecond,
 		},
 	}
-	pe := NewPingEmitter(inbox, cfg, flow, activity,
+	pe := NewPingEmitter(inbox, cfg, flow,
 		func(_ string, p PingPayload) error {
 			mu.Lock()
 			pings = append(pings, p)
@@ -467,7 +466,7 @@ func TestBurst_Coalescer_BoundedPings(t *testing.T) {
 			ResetAfter: 500 * time.Millisecond,
 		},
 	}
-	pe := NewPingEmitter(inbox, cfg, flow, nil,
+	pe := NewPingEmitter(inbox, cfg, flow,
 		func(_ string, p PingPayload) error {
 			mu.Lock()
 			pings = append(pings, p)

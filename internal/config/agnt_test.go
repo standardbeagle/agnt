@@ -905,6 +905,20 @@ func TestParseAIConfig_AdapterAliases(t *testing.T) {
 	assert.Equal(t, []string{"cdsp", "cc"}, cfg.AI.Adapters["claude"].Aliases)
 }
 
+func TestParseGlobalConfig_AIAdapterAliases(t *testing.T) {
+	cfg, err := ParseKDLConfig(`ai {
+    adapters {
+        claude {
+            aliases "cdsp" "cc"
+        }
+    }
+}`)
+	require.NoError(t, err)
+	require.NotNil(t, cfg.AI)
+	require.Contains(t, cfg.AI.Adapters, "claude")
+	assert.Equal(t, []string{"cdsp", "cc"}, cfg.AI.Adapters["claude"].Aliases)
+}
+
 func TestParseAIConfig(t *testing.T) {
 	tests := []struct {
 		name     string

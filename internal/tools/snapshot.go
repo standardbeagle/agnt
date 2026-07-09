@@ -272,8 +272,15 @@ func handleSnapshotScreenshot(dt *DaemonTools, input SnapshotInput) (*mcp.CallTo
 	optsJSON, _ := json.Marshal(opts)
 	code := fmt.Sprintf("await __devtool.screenshot(%s)", optsJSON)
 
-	if _, err := dt.client.ProxyExec(input.ProxyID, code, resolveExecTarget(input.Target, input.FrameID)); err != nil {
+	result, err := dt.client.ProxyExec(input.ProxyID, code, resolveExecTarget(input.Target, input.FrameID))
+	if err != nil {
 		return errorResult(fmt.Sprintf("proxy exec failed: %v", err)), SnapshotOutput{}, nil
+	}
+	// ProxyExec reports browser-side JS failures via result["success"]=false +
+	// result["error"] (transport err is nil in that case), so a transport-only
+	// check would report a phantom success. Surface the JS error explicitly.
+	if !getBool(result, "success") {
+		return errorResult(fmt.Sprintf("screenshot failed: %s", getString(result, "error"))), SnapshotOutput{}, nil
 	}
 
 	message := fmt.Sprintf("✓ Screenshot triggered on proxy %q (name=%q). "+

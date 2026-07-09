@@ -57,12 +57,10 @@ func TestBuildAgntSystemPrompt_OmitsCheatSheetWhenDisabled(t *testing.T) {
 }
 
 // TestPromptDelivery_CheatSheetViaFlagAndContextFile verifies prompt assembly
-// stays single-source (buildAgntSystemPrompt) while delivery does NOT dump the
-// full cheat sheet into the conversation: Claude gets it via the
-// --append-system-prompt flag (invisible), and a stdin agent gets a SHORT
-// nudge plus the full cheat sheet persisted to its context file (GEMINI.md).
-// This is the cleanup of the old behavior where the whole cheat sheet was
-// injected as the agent's first user message.
+// stays single-source (buildAgntSystemPrompt) while normal coding sessions do
+// NOT dump guidance into the conversation: Claude gets it via the
+// --append-system-prompt flag (invisible), and stdin agents get it through
+// their persistent context file (GEMINI.md).
 func TestPromptDelivery_CheatSheetViaFlagAndContextFile(t *testing.T) {
 	dir := t.TempDir()
 	chdir(t, dir)
@@ -94,21 +92,8 @@ func TestPromptDelivery_CheatSheetViaFlagAndContextFile(t *testing.T) {
 		t.Errorf("claude flag payload missing cheat sheet; got:\n%s", claudePayload)
 	}
 
-	// Stdin agent: the nudge is a SHORT pointer and must NOT dump the cheat
-	// sheet as a user message.
-	geminiStdin := string(gemini.InitialStdin(prompt))
-	if geminiStdin == "" {
-		t.Fatal("gemini adapter emitted no stdin nudge")
-	}
-	if strings.Contains(geminiStdin, needle) {
-		t.Errorf("stdin nudge must not dump the cheat sheet:\n%s", geminiStdin)
-	}
-	if !strings.Contains(geminiStdin, "agnt") {
-		t.Errorf("stdin nudge should still mention agnt:\n%s", geminiStdin)
-	}
-
 	// The full cheat sheet reaches the stdin agent via its always-loaded
-	// context file, not stdin.
+	// context file, not a normal-session stdin message.
 	writePersistentContext(gemini.Name(), dir, prompt)
 	ctxFile, err := os.ReadFile(filepath.Join(dir, "GEMINI.md"))
 	if err != nil {

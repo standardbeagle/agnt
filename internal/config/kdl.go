@@ -21,6 +21,7 @@ type KDLConfig struct {
 	Version   string       `kdl:"version"`
 	Settings  KDLSettings  `kdl:"settings"`
 	Languages KDLLanguages `kdl:"languages"`
+	AI        *AIConfig    `kdl:"ai"`
 }
 
 // KDLSettings holds global settings from KDL.
@@ -109,6 +110,9 @@ func kdlConfigToConfig(kdlCfg *KDLConfig) *Config {
 
 	if kdlCfg.Version != "" {
 		cfg.Version = kdlCfg.Version
+	}
+	if kdlCfg.AI != nil {
+		cfg.AI = kdlCfg.AI
 	}
 
 	// Settings

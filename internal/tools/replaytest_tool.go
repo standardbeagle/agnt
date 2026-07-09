@@ -21,7 +21,6 @@ type ReplaytestInput struct {
 	Preset        string `json:"preset,omitempty" jsonschema:"Optional fuzz preset to run alongside the baseline on replay (e.g. latency, error5xx). When empty, replay runs the baseline only."`
 	ExploreAgents int    `json:"explore_agents,omitempty" jsonschema:"Number of exploration seeds to partition the scenario into for the explore action."`
 	Directory     string `json:"directory,omitempty" jsonschema:"Project directory whose scenario store to use. Defaults to the caller's session project."`
-	Global        bool   `json:"global,omitempty" jsonschema:"Return cross-project results instead of scoping to the caller's session project."`
 }
 
 // ReplaytestSeed is one exploration seed in the computed breadth partition. The
@@ -69,6 +68,13 @@ func (h *replaytestHandler) handle(ctx context.Context, in ReplaytestInput) (*mc
 		return errorResult("unknown action: " + in.Action), ReplaytestOutput{}, nil
 	}
 
+	// Scope the scenario store to the caller's session project when no
+	// explicit directory is supplied, mirroring the other session-scoped
+	// tools instead of handing NewStore an empty path.
+	if in.Directory == "" {
+		in.Directory = getProjectPath()
+	}
+
 	if replaytestGatedActions[in.Action] {
 		if _, err := h.lic.Check(license.CapAdvancedTesting); err != nil {
 			return errorResult("advanced_testing requires a Pro license — run `agnt activate <key>` to enable replaytest"), ReplaytestOutput{}, nil
@@ -97,8 +103,7 @@ func (h *replaytestHandler) handle(ctx context.Context, in ReplaytestInput) (*mc
 		return replaytestOK("listed scenarios"), out, nil
 	case "show":
 		if in.Name == "" {
-			out := ReplaytestOutput{Message: "provide a scenario name to show", Success: false}
-			return replaytestOK(out.Message), out, nil
+			return errorResult("provide a scenario name to show"), ReplaytestOutput{}, nil
 		}
 		sc, err := replaytest.NewStore(in.Directory).LoadScenario(in.Name)
 		if err != nil {
@@ -121,8 +126,7 @@ func (h *replaytestHandler) handle(ctx context.Context, in ReplaytestInput) (*mc
 // live dev server is required — but it does drive a real headless browser.
 func (h *replaytestHandler) handleReplay(ctx context.Context, in ReplaytestInput) (*mcp.CallToolResult, ReplaytestOutput, error) {
 	if in.Name == "" {
-		out := ReplaytestOutput{Message: "provide a scenario name to replay", Success: false}
-		return replaytestOK(out.Message), out, nil
+		return errorResult("provide a scenario name to replay"), ReplaytestOutput{}, nil
 	}
 	store := replaytest.NewStore(in.Directory)
 	sc, err := store.LoadScenario(in.Name)
@@ -170,8 +174,7 @@ func (h *replaytestHandler) handleReplay(ctx context.Context, in ReplaytestInput
 // subagent per returned seed.
 func (h *replaytestHandler) handleExplore(in ReplaytestInput) (*mcp.CallToolResult, ReplaytestOutput, error) {
 	if in.Name == "" {
-		out := ReplaytestOutput{Message: "provide a scenario name to explore", Success: false}
-		return replaytestOK(out.Message), out, nil
+		return errorResult("provide a scenario name to explore"), ReplaytestOutput{}, nil
 	}
 	sc, err := replaytest.NewStore(in.Directory).LoadScenario(in.Name)
 	if err != nil {
@@ -239,8 +242,7 @@ type refinerProvider interface {
 // than failing.
 func (h *replaytestHandler) handleRefine(ctx context.Context, in ReplaytestInput) (*mcp.CallToolResult, ReplaytestOutput, error) {
 	if in.Name == "" {
-		out := ReplaytestOutput{Message: "provide a scenario name to refine", Success: false}
-		return replaytestOK(out.Message), out, nil
+		return errorResult("provide a scenario name to refine"), ReplaytestOutput{}, nil
 	}
 	provider := aichannel.NewAnthropicProvider(aichannel.ProviderConfig{})
 	return h.refineWith(ctx, in, &anthropicRefiner{p: provider})

@@ -480,6 +480,7 @@ Actions:
   script_output: Get script output history across restarts
   script_history: Get script state transition history
   snapshot: Unified dev-environment status (processes + proxies + recent errors + URLs + suggested next actions) in a single call. Use raw:true for structured JSON.
+  find: Extract build warnings, compile errors, and test failures from a process's output buffer (framework-aware classification).
   run: Start a single admin-aware process; visible in proc list and SCRIPT LIST. Optionally gate on depends_on:[...] (default 30s timeout). Process state is "pending" while waiting; "starting" once deps clear; "failed" on dependency_timeout.
   run_group: Start a multi-process stack in one call. Cycle detection runs before any process launches; on cycle the call returns an error and no process is started. Each process may declare depends_on referencing other processes in the group; topo order is enforced via the readiness signaler.
   wait: Block until a named signal appears in a process's output. Polls (default 200ms, override with poll_ms) until match or timeout (default 30000ms). Returns {signal, matched_line, elapsed_ms} on hit, {timeout: true} on timeout — never errors. Pass signals:[...] to wait for whichever comes first.

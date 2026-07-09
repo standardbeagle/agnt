@@ -80,10 +80,12 @@ func (ps *ProxyServer) modifyResponse(resp *http.Response) error {
 	}
 	resp.Body.Close()
 
-	// Extract port from ListenAddr (handles both :port and [::]:port formats)
+	// Extract port from the live listen address (handles both :port and
+	// [::]:port formats); liveAddr() tracks auto-restart rebinds race-free.
+	addr := ps.liveAddr()
 	port := 8080
-	if lastColon := strings.LastIndex(ps.ListenAddr, ":"); lastColon != -1 {
-		if p, err := strconv.Atoi(ps.ListenAddr[lastColon+1:]); err == nil {
+	if lastColon := strings.LastIndex(addr, ":"); lastColon != -1 {
+		if p, err := strconv.Atoi(addr[lastColon+1:]); err == nil {
 			port = p
 		}
 	}
@@ -119,7 +121,11 @@ func (ps *ProxyServer) modifyResponse(resp *http.Response) error {
 		// (unwrapped fallback), a nested frame is passive.
 		markerID := ""
 		if resp.Request != nil && resp.Request.URL != nil {
-			markerID = resp.Request.URL.Query().Get(frameMarkerParam)
+			// The marker is attacker-controllable (arbitrary query value) yet is
+			// echoed into an inline <script> via %q, which does NOT HTML/JS-escape.
+			// Accept only a well-formed server-minted id; anything else is treated
+			// as markerless (role resolved in-browser).
+			markerID = sanitizeFrameID(resp.Request.URL.Query().Get(frameMarkerParam))
 		}
 		if markerID != "" {
 			modifiedBody = InjectContentRuntime(modifiedBody, ps.ID, markerID)
@@ -138,6 +144,14 @@ func (ps *ProxyServer) modifyResponse(resp *http.Response) error {
 
 	// Remove encoding headers since we're returning uncompressed content
 	resp.Header.Del("Content-Encoding")
+
+	// The body was rewritten/injected, so the origin's validators no longer
+	// describe what we return. Leaving them lets a cache honour a later
+	// conditional request (If-None-Match / If-Modified-Since) and serve the
+	// original, un-injected body — stale from our perspective.
+	resp.Header.Del("ETag")
+	resp.Header.Del("Last-Modified")
+	resp.Header.Del("Content-MD5")
 
 	return nil
 }
@@ -183,13 +197,21 @@ func stripFrameAncestors(csp string) string {
 	parts := strings.Split(csp, ";")
 	kept := make([]string, 0, len(parts))
 	for _, p := range parts {
-		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(p)), "frame-ancestors") {
+		trimmed := strings.TrimSpace(p)
+		if trimmed == "" {
 			continue
 		}
-		if strings.TrimSpace(p) == "" {
+		// Match on the directive name (first whitespace-delimited token) exactly,
+		// so "frame-ancestors" is stripped but "frame-ancestors-foo" (a different
+		// directive) is not mistaken for it by a bare prefix test.
+		name := trimmed
+		if i := strings.IndexAny(trimmed, " \t"); i != -1 {
+			name = trimmed[:i]
+		}
+		if strings.EqualFold(name, "frame-ancestors") {
 			continue
 		}
-		kept = append(kept, strings.TrimSpace(p))
+		kept = append(kept, trimmed)
 	}
 	return strings.Join(kept, "; ")
 }
@@ -244,8 +266,14 @@ func (ps *ProxyServer) rewriteCookieDomain(cookie string, targetHost string) str
 			domainValue := strings.TrimPrefix(lower, "domain=")
 			domainValue = strings.TrimPrefix(domainValue, ".") // Remove leading dot
 
-			// If domain matches target, remove it entirely (allows cookie on any domain)
-			if strings.Contains(targetHost, domainValue) || strings.Contains(domainValue, targetHost) {
+			// Strip the Domain attribute (so the cookie applies to the proxy host)
+			// only when it genuinely covers the target: an exact host match, or the
+			// target host is a subdomain of the cookie domain (cookie-domain scoping
+			// rules). A naive bidirectional substring test wrongly matched unrelated
+			// hosts (e.g. "evil-example.com" vs "example.com") and stripped valid
+			// domains.
+			th := strings.ToLower(targetHost)
+			if th == domainValue || strings.HasSuffix(th, "."+domainValue) {
 				continue
 			}
 		}
@@ -298,11 +326,12 @@ func (ps *ProxyServer) getProxyHost() string {
 		}
 	}
 
-	// ListenAddr is in format "addr:port" or "[::]:port"
+	// liveAddr() is in format "addr:port" or "[::]:port"
 	// We need to return "localhost:port" for redirect purposes
+	addr := ps.liveAddr()
 	port := "8080"
-	if lastColon := strings.LastIndex(ps.ListenAddr, ":"); lastColon != -1 {
-		port = ps.ListenAddr[lastColon+1:]
+	if lastColon := strings.LastIndex(addr, ":"); lastColon != -1 {
+		port = addr[lastColon+1:]
 	}
 	return "localhost:" + port
 }

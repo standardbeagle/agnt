@@ -5,10 +5,74 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/standardbeagle/go-sdk/mcp"
 )
+
+// watchIDPattern constrains proxy/process identifiers to a safe charset.
+// IDs flow into a shell command string emitted for `agnt monitor`; rejecting
+// anything outside this set (in addition to POSIX-quoting every arg) keeps
+// junk and shell metacharacters out of the emitted command. Comma is
+// disallowed because it is the multi-target join separator.
+var watchIDPattern = regexp.MustCompile(`^[A-Za-z0-9._:-]+$`)
+
+// validateWatchInput bounds and charset-checks the identifier fields.
+func validateWatchInput(input WatchInput) error {
+	if err := validateArrayLen("proxy_ids", input.ProxyIDs, maxArrayElements); err != nil {
+		return err
+	}
+	if err := validateArrayLen("process_ids", input.ProcessIDs, maxArrayElements); err != nil {
+		return err
+	}
+
+	ids := []struct{ field, val string }{
+		{"proxy_id", input.ProxyID},
+		{"process_id", input.ProcessID},
+	}
+	for i, v := range input.ProxyIDs {
+		ids = append(ids, struct{ field, val string }{fmt.Sprintf("proxy_ids[%d]", i), v})
+	}
+	for i, v := range input.ProcessIDs {
+		ids = append(ids, struct{ field, val string }{fmt.Sprintf("process_ids[%d]", i), v})
+	}
+	for _, id := range ids {
+		if id.val == "" {
+			continue
+		}
+		if err := validateStringLen(id.field, id.val, maxIDLength); err != nil {
+			return err
+		}
+		if !watchIDPattern.MatchString(id.val) {
+			return fmt.Errorf("%s contains invalid characters (allowed: letters, digits, . _ : -)", id.field)
+		}
+	}
+	return nil
+}
+
+// shellQuoteArg renders a single argument safe for a POSIX shell. Args made
+// only of safe characters are returned bare; anything else is wrapped in
+// single quotes with embedded single quotes escaped as '\” so the emitted
+// command is copy-pasteable without injection.
+func shellQuoteArg(s string) string {
+	if s == "" {
+		return "''"
+	}
+	safe := true
+	for _, r := range s {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') ||
+			strings.ContainsRune("_/.:=,@%+-", r) {
+			continue
+		}
+		safe = false
+		break
+	}
+	if safe {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
 
 // WatchInput is the input for the watch tool.
 type WatchInput struct {
@@ -123,14 +187,11 @@ func buildWatchCommand(dt *DaemonTools, input WatchInput) (string, string, error
 
 	args = append(args, "--format", "compact")
 
-	// Shell-escape any args containing spaces
+	// POSIX-quote every arg so paths with spaces (or any shell-special
+	// characters) survive copy-paste into a shell without injection.
 	quotedArgs := make([]string, len(args))
 	for i, a := range args {
-		if strings.Contains(a, " ") {
-			quotedArgs[i] = fmt.Sprintf("'%s'", a)
-		} else {
-			quotedArgs[i] = a
-		}
+		quotedArgs[i] = shellQuoteArg(a)
 	}
 
 	command := strings.Join(quotedArgs, " ")
@@ -157,6 +218,10 @@ func resolveAgntBinary() (string, error) {
 func (dt *DaemonTools) makeWatchHandler() func(context.Context, *mcp.CallToolRequest, WatchInput) (*mcp.CallToolResult, WatchOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input WatchInput) (*mcp.CallToolResult, WatchOutput, error) {
 		emptyOutput := WatchOutput{}
+
+		if err := validateWatchInput(input); err != nil {
+			return errorResult(validationError("watch", err)), emptyOutput, nil
+		}
 
 		command, description, err := buildWatchCommand(dt, input)
 		if err != nil {
