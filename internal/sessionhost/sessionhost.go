@@ -127,6 +127,11 @@ type Session struct {
 
 	doneCh    chan struct{}
 	closeOnce sync.Once
+	// ptmxOnce guards the PTY fd: waitLoop closes it when the child exits on its
+	// own, and Close() closes it on the explicit KILL path. A KILL racing a
+	// self-exit reached both, double-closing the fd — and once the fd number is
+	// recycled, the second Close lands on whatever now owns it.
+	ptmxOnce sync.Once
 
 	nextAttachID atomic.Int64
 }
@@ -247,7 +252,7 @@ func (s *Session) waitLoop() {
 	// Close the PTY fd now that the child is gone. On self-exit nothing else
 	// calls Close (only the explicit KILL path does), so without this the fd
 	// leaks and the readLoop blocks on Read forever. Close unblocks readLoop.
-	_ = s.ptmx.Close()
+	_ = s.closePTY()
 
 	s.closeOnce.Do(func() { close(s.doneCh) })
 }
@@ -448,8 +453,18 @@ func (s *Session) Done() <-chan struct{} {
 // Close closes the PTY fd (does not itself kill the child — callers that
 // want the containment guarantee use platform.KillSessionPGID with
 // s.SessionPGID, mirroring killSessionPGID for classic sessions).
+//
+// Safe to call alongside a concurrent self-exit: the fd is closed once.
 func (s *Session) Close() error {
-	return s.ptmx.Close()
+	return s.closePTY()
+}
+
+// closePTY closes the PTY fd exactly once, whichever of waitLoop or Close gets
+// there first. Later callers report the first close's result.
+func (s *Session) closePTY() error {
+	var err error
+	s.ptmxOnce.Do(func() { err = s.ptmx.Close() })
+	return err
 }
 
 // Registry is a lock-free (sync.Map-backed) collection of session-host
