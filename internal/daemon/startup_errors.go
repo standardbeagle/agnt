@@ -4,6 +4,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/standardbeagle/agnt/internal/debug"
 )
 
 // StartupLogEntry records a startup event (success or failure) with diagnostic context.
@@ -94,6 +96,15 @@ func (d *Daemon) daemonStartupLog(level, eventType, message string) {
 // entries, so no caller hand-rolls a &StartupLogEntry{...Timestamp: time.Now()}.
 func (d *Daemon) daemonStartupLogPort(level, eventType, message string, port int) {
 	if d == nil || d.startupErrorStore == nil {
+		return
+	}
+	// The store is a 100-entry ring shared by every project, and it does not
+	// outlive the process. Shutdown emits ~36 daemon-wide info breadcrumbs, which
+	// would evict a project's real startup errors on their way out — for a reader
+	// that no longer exists, since a stopping daemon serves no queries. Warnings
+	// and errors still go in: those explain a shutdown that went wrong.
+	if level == "info" && d.isShuttingDown() {
+		debug.Log("daemon", "shutdown breadcrumb %s: %s", eventType, message)
 		return
 	}
 	d.startupErrorStore.Add(&StartupLogEntry{
