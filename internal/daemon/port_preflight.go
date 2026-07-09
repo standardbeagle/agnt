@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
 	"sort"
 	"time"
 
@@ -107,6 +108,31 @@ func filterUnmanaged(pids []int, managedPIDs map[int]bool) []int {
 	return out
 }
 
+// killPortHoldersGuarded kills whatever holds port via pm.KillProcessByPort —
+// unless the port is held by this process itself or by a PID the
+// ProcessManager owns. KillProcessByPort re-discovers holders at kill time and
+// kills them all (it has no exclusion list), so any self/managed filtering a
+// caller did on an earlier scan is void by the time the kill fires. This guard
+// re-scans immediately before the kill and refuses to fire when a protected
+// PID holds the port, returning the protected PIDs so the caller can surface
+// the skip loudly (Silent Failure Prohibition). Without it, a proxy listener
+// living inside the daemon process — or a managed dev server sharing the port —
+// gets SIGTERM'd by our own cleanup.
+func killPortHoldersGuarded(ctx context.Context, pm *goprocess.ProcessManager, port int) (killed, protected []int, err error) {
+	linuxPIDs, _ := config.FindPIDsByPortTagged(ctx, port)
+	self := os.Getpid()
+	for _, pid := range linuxPIDs {
+		if pid == self || pm.IsManagedPID(pid) {
+			protected = append(protected, pid)
+		}
+	}
+	if len(protected) > 0 {
+		return nil, protected, nil
+	}
+	killed, err = pm.KillProcessByPort(ctx, port)
+	return killed, nil, err
+}
+
 // KillResult reports what happened for each conflict.
 type KillResult struct {
 	PortConflict
@@ -145,13 +171,22 @@ func killPortBlockers(ctx context.Context, pm *goprocess.ProcessManager, eventHu
 		linuxPresent := len(c.LinuxPIDs) > 0 || (len(c.LinuxPIDs) == 0 && len(c.WindowsPIDs) == 0 && len(c.PIDs) > 0)
 
 		// Linux PIDs: ProcessManager handles them via syscall.Kill +
-		// process-group escalation. KillProcessByPort re-discovers PIDs
-		// via the vendored Linux-only FindPIDsByPort, so this is a no-op
-		// for Windows-only conflicts. Skip when there are no Linux PIDs
-		// to avoid the redundant scan.
+		// process-group escalation, guarded against self/managed holders
+		// (the kill re-discovers PIDs at fire time, so the detect-phase
+		// managed filter alone is not enough). No-op for Windows-only
+		// conflicts. Skip when there are no Linux PIDs to avoid the
+		// redundant scan.
 		if linuxPresent {
-			if _, err := pm.KillProcessByPort(ctx, c.Port); err != nil {
+			_, protected, err := killPortHoldersGuarded(ctx, pm, c.Port)
+			if err != nil {
 				errs = append(errs, fmt.Sprintf("linux kill failed: %v", err))
+			}
+			if len(protected) > 0 {
+				msg := fmt.Sprintf("port %d held by daemon or managed process (PIDs %v), kill skipped", c.Port, protected)
+				errs = append(errs, msg)
+				if eventHub != nil {
+					eventHub.Deliver("warning", msg)
+				}
 			}
 		}
 
