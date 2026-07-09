@@ -2,6 +2,74 @@
 
 ## [Unreleased]
 
+### Fixed
+- **Background `run` no longer opens a dedicated daemon connection.** Only the
+  foreground modes, which block until the process exits, need to stay off the
+  shared connection's per-request mutex. Background runs reuse the resilient
+  client and keep its reconnect/retry behavior.
+- **Sessions with no project path get the reconnect grace period.** A dropped
+  connection used to reap an acp one-shot / cooked-REPL session's process group
+  inline, so a client that reconnected within the grace window had its process
+  tree killed out from under it — and the hub's disconnect callback blocked for
+  the SIGTERM→SIGKILL escalation. Session-host sessions are never reaped on
+  disconnect, which surviving client disconnect is the whole point of.
+- **Session-host PTY fd is closed exactly once.** A `SESSION-HOST KILL` racing
+  the child's own exit reached both close sites; once the fd number was
+  recycled, the second close landed on whatever then owned it.
+- **Shutdown breadcrumbs no longer evict startup errors.** The startup-log ring
+  is shared across projects and does not outlive the process, so ~36 daemon-wide
+  info entries emitted during `Stop` were displacing real project errors for a
+  reader that no longer exists. Warnings and errors during shutdown still land.
+- **Subprocess accept backoff no longer delays `Stop`** (go-cli-server v0.5.2).
+
+## [0.13.32] - 2026-07-09
+
+### Changed
+- **Daemon socket moved to a per-uid subdirectory**: `/tmp/agnt-<uid>/agnt.sock`,
+  replacing `/tmp/agnt-<uid>.sock`. The hardened socket bind requires the
+  socket's parent directory to be uid-owned and `0700`, and `/tmp` is root-owned.
+
+  **Upgrade note:** a daemon started by a pre-0.13.32 binary keeps listening on
+  the old path, where the new client cannot see it — it would linger holding its
+  managed processes and their ports. On startup the daemon now finds that legacy
+  socket, asks the old daemon to shut down gracefully (stopping the processes it
+  owns rather than orphaning them), and removes the stale file. If the old daemon
+  cannot be stopped, the reason is recorded in the startup log rather than
+  swallowed. Only applies to the default socket path; an explicit `AGNT_SOCKET`
+  or `--socket` is left alone.
+
+### Fixed
+- **`get_incidents` no longer drops the oldest incident.** The inbox returns the
+  oldest unseen page; the hub truncated it to the newest entries and then
+  published a cursor above the record it had just discarded, so with a
+  forward-only `since` cursor that incident could never be returned again.
+- **`AUTOSTART RECONCILE` and `OVERLAY FORWARDING` now dispatch.** Both were
+  routable but unregistered as sub-verbs, so the parser left the token in the
+  argument list. Reconcile answered "unknown action" — live `.agnt.kdl` reconcile
+  never ran — and forwarding silently fell through to `OVERLAY GET`, reporting
+  success while pausing nothing. Sub-verbs are now derived from the router that
+  dispatches them, so the two lists cannot drift.
+- **Editing a script's `run` in `.agnt.kdl` no longer stops it restarting.** The
+  script registry rejects a re-register under a changed config; live reconcile
+  relies on exactly that re-register, so the script never came back.
+- **Scheduler retry backoff** no longer panics on a negative attempt count read
+  from a persisted task file, nor overflows into a past deadline (hot retry loop).
+- **`DETECT` and `DOCTOR`** reject a malformed payload instead of silently
+  falling back to the daemon's own working directory.
+- **`snapshot {raw: true}`** reports partial-collection failures. They were only
+  appended to the text rendering, so a raw consumer read an incomplete snapshot
+  as a clean one.
+- **`get_incidents`** rejects an unparseable `since` instead of ignoring it and
+  returning the whole inbox.
+- **Daemon client leak**: `agnt run` could create a resilient client that nothing
+  ever closed, leaving its reconnect loop retrying for the life of the process.
+
+### Internal
+- go-cli-server upgraded to v0.5.1 and the vendored tree un-patched. It carried
+  local modifications to the hub command registry that were never upstream, so
+  `go install github.com/standardbeagle/agnt/cmd/agnt@latest` — which ignores
+  `vendor/` — could not build. That API is now released upstream.
+
 ### Added
 - **`agnt skills` command** — one-shot install of the agnt agent skills +
   agnt MCP registration. Uses Vercel's open skills CLI
