@@ -110,47 +110,59 @@ func (dt *DaemonTools) makeRunHandler() func(context.Context, *mcp.CallToolReque
 			NoAutoRestart: input.NoAutoRestart,
 		}
 
-		// Foreground modes block until the process exits (DefaultTimeout:0 =
-		// wait forever). This single long blocking IPC must NOT run on the
-		// shared ResilientClient connection: its per-request mutex is held for
-		// the whole request/response, so a cancelled/timed-out MCP call would
-		// strand the read and head-of-line block every other daemon-backed
-		// tool for up to the connection's read deadline. Use a DEDICATED
-		// connection instead, and close it on ctx cancel to interrupt the
-		// blocked read immediately. The buffered channel lets the goroutine
-		// finish its send after we've returned.
-		socketPath := dt.config.SocketPath
-		if socketPath == "" {
-			socketPath = daemon.DefaultSocketPath()
-		}
-		runClient := daemon.NewClientWithPath(socketPath)
-		if err := runClient.Connect(); err != nil {
-			return formatDaemonError(err, "run"), RunOutput{}, nil
-		}
-
-		type runResult struct {
-			result map[string]interface{}
-			err    error
-		}
-		ch := make(chan runResult, 1)
-		go func() {
-			r, e := runClient.Run(config)
-			ch <- runResult{result: r, err: e}
-		}()
-
 		var result map[string]interface{}
-		select {
-		case <-ctx.Done():
-			// Interrupt the blocked read on the dedicated connection so the
-			// goroutine unwinds; nothing else shares this conn.
-			runClient.Close()
-			return errorResult(fmt.Sprintf("run cancelled: %v", ctx.Err())), RunOutput{}, nil
-		case rr := <-ch:
-			runClient.Close()
-			if rr.err != nil {
-				return formatDaemonError(rr.err, "run"), RunOutput{}, nil
+		if mode == string(RunModeBackground) {
+			// A background run returns as soon as the process is registered, so it
+			// holds the shared connection's per-request mutex only briefly. Using
+			// that connection keeps its reconnect/retry behavior and avoids a
+			// connect/close round trip on the hot path.
+			r, err := dt.client.Run(config)
+			if err != nil {
+				return formatDaemonError(err, "run"), RunOutput{}, nil
 			}
-			result = rr.result
+			result = r
+		} else {
+			// Foreground modes block until the process exits (DefaultTimeout:0 =
+			// wait forever). This single long blocking IPC must NOT run on the
+			// shared ResilientClient connection: its per-request mutex is held for
+			// the whole request/response, so a cancelled/timed-out MCP call would
+			// strand the read and head-of-line block every other daemon-backed
+			// tool for up to the connection's read deadline. Use a DEDICATED
+			// connection instead, and close it on ctx cancel to interrupt the
+			// blocked read immediately. The buffered channel lets the goroutine
+			// finish its send after we've returned.
+			socketPath := dt.config.SocketPath
+			if socketPath == "" {
+				socketPath = daemon.DefaultSocketPath()
+			}
+			runClient := daemon.NewClientWithPath(socketPath)
+			if err := runClient.Connect(); err != nil {
+				return formatDaemonError(err, "run"), RunOutput{}, nil
+			}
+
+			type runResult struct {
+				result map[string]interface{}
+				err    error
+			}
+			ch := make(chan runResult, 1)
+			go func() {
+				r, e := runClient.Run(config)
+				ch <- runResult{result: r, err: e}
+			}()
+
+			select {
+			case <-ctx.Done():
+				// Interrupt the blocked read on the dedicated connection so the
+				// goroutine unwinds; nothing else shares this conn.
+				runClient.Close()
+				return errorResult(fmt.Sprintf("run cancelled: %v", ctx.Err())), RunOutput{}, nil
+			case rr := <-ch:
+				runClient.Close()
+				if rr.err != nil {
+					return formatDaemonError(rr.err, "run"), RunOutput{}, nil
+				}
+				result = rr.result
+			}
 		}
 
 		processID := getString(result, "process_id")
