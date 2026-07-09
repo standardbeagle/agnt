@@ -344,6 +344,26 @@ type Daemon struct {
 	shutdown   bool
 }
 
+// pidTrackerPathFor returns the PID-tracking file this daemon owns.
+//
+// The tracker records every managed process and its descendants, keyed by
+// process ID. Every daemon used to share one file (AppName "devtool-mcp"), so
+// two daemons on different sockets — two test daemons, or a user running a
+// second daemon under AGNT_SOCKET — shared one keyspace. Process IDs are not
+// globally unique ("client", "server", "dev"), so one daemon's cleanup reads the
+// other's entry and kills a live process it does not own. That is what "process
+// exited with code -1 during startup" was.
+//
+// A daemon on the default socket keeps the historical path, so an upgrade still
+// finds the orphans a previous run left behind. Any other socket gets its own
+// file beside it.
+func pidTrackerPathFor(socketPath string) string {
+	if socketPath == "" || socketPath == DefaultSocketPath() {
+		return "" // library default: XDG state dir, AppName-derived
+	}
+	return socketPath + ".pids.json"
+}
+
 // isShuttingDown reports whether Stop has begun. Used by ApplyAlertsConfig to
 // avoid leaking a hold-buffer goroutine when it races daemon shutdown.
 func (d *Daemon) isShuttingDown() bool {
@@ -393,6 +413,7 @@ func New(config DaemonConfig) *Daemon {
 	// Create PID tracker for orphan cleanup
 	pidTracker := process.NewFilePIDTracker(process.FilePIDTrackerConfig{
 		AppName: "devtool-mcp",
+		Path:    pidTrackerPathFor(config.SocketPath),
 	})
 
 	// Configure Hub with ProcessManager enabled
