@@ -65,6 +65,13 @@ func NewAutoStartConn(config AutoStartConfig) *AutoStartConn {
 
 // Connect connects to the hub, starting it if necessary.
 func (c *AutoStartConn) Connect() error {
+	return c.ConnectContext(context.Background())
+}
+
+// ConnectContext is Connect, abandoning the wait for a starting hub when ctx is
+// cancelled. A caller that can be shut down (a reconnect loop, say) must not be
+// pinned here for the full StartTimeout after it is told to stop.
+func (c *AutoStartConn) ConnectContext(ctx context.Context) error {
 	// Reject an empty socket path outright: it would derive a relative
 	// ".startup.lock" in the working directory and connect nowhere useful.
 	if c.config.SocketPath == "" {
@@ -88,7 +95,7 @@ func (c *AutoStartConn) Connect() error {
 	}
 
 	// Wait for hub to be ready
-	return c.waitForHub()
+	return c.waitForHub(ctx)
 }
 
 // startHub starts the hub process in the background.
@@ -240,12 +247,12 @@ func releaseStartupLock(f *os.File, lockPath string) {
 }
 
 // waitForHub waits for the hub to be ready to accept connections.
-func (c *AutoStartConn) waitForHub() error {
+func (c *AutoStartConn) waitForHub(parent context.Context) error {
 	startTimeout := c.config.StartTimeout
 	if startTimeout <= 0 {
 		startTimeout = 10 * time.Second
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), startTimeout)
+	ctx, cancel := context.WithTimeout(parent, startTimeout)
 	defer cancel()
 
 	retryInterval := c.config.RetryInterval
@@ -259,6 +266,9 @@ func (c *AutoStartConn) waitForHub() error {
 	for {
 		select {
 		case <-ctx.Done():
+			if parent.Err() != nil {
+				return parent.Err()
+			}
 			return fmt.Errorf("timeout waiting for hub to start")
 		case <-ticker.C:
 			err := c.Conn.EnsureConnected()
@@ -280,8 +290,14 @@ func (c *AutoStartConn) waitForHub() error {
 // EnsureHubRunning ensures the hub is running, starting it if needed.
 // Returns a connected Conn.
 func EnsureHubRunning(config AutoStartConfig) (*Conn, error) {
+	return EnsureHubRunningContext(context.Background(), config)
+}
+
+// EnsureHubRunningContext is EnsureHubRunning, abandoning the wait for a
+// starting hub when ctx is cancelled.
+func EnsureHubRunningContext(ctx context.Context, config AutoStartConfig) (*Conn, error) {
 	client := NewAutoStartConn(config)
-	if err := client.Connect(); err != nil {
+	if err := client.ConnectContext(ctx); err != nil {
 		return nil, err
 	}
 	return client.Conn, nil
