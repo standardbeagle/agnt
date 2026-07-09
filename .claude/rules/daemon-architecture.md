@@ -85,6 +85,10 @@ Intentional behaviors. Look like WSL bugs but aren't:
 | Browser launcher doesn't have WSL branch | `BROWSER` env var is WSL-friendly contract; we don't bridge `open` ↔ `cmd.exe /c start` |
 | `chromedp` session URL picker is darwin-only | Chrome process discovery only meaningful when we launch chrome ourselves; WSL users typically point at chrome on host |
 
+## Port-Kill Guard
+
+`ProcessManager.KillProcessByPort` (go-cli-server) re-discovers holders at fire time and kills them ALL — no exclusion list. Any self/managed filtering done on an earlier scan is void by kill time. **Every port-kill in daemon must route through `killPortHoldersGuarded`** (`internal/daemon/port_preflight.go`): re-scans immediately before kill, refuses to fire when the daemon itself or a managed PID holds the port, returns protected PIDs for loud surfacing. Call sites: startup port cleanup (`daemon_shutdown.go`), preflight cleanup (`startup_resilience.go`), `PROC CLEANUP-PORT` (`hub_proc.go`), `killPortBlockers` (`port_preflight.go`). Regression test: `TestKillPortHoldersGuarded_ProtectsSelf`.
+
 ## Silent Failure Prohibition
 
 No subsystem may silently skip expected action. If config declares proxy, process, or dependency, system must either:
