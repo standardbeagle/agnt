@@ -97,8 +97,8 @@ func (dt *DaemonTools) handleProcSnapshot(input ProcInput) (*mcp.CallToolResult,
 		err     error
 	}
 	type errorsResult struct {
-		errors  []unifiedError
-		toolErr *mcp.CallToolResult
+		errors   []unifiedError
+		warnings []string
 	}
 
 	var (
@@ -152,25 +152,20 @@ func (dt *DaemonTools) handleProcSnapshot(input ProcInput) (*mcp.CallToolResult,
 		// store returns nil, nil and we move on. Only a structured
 		// CallToolResult signals "this should reach the user".
 		all := make([]unifiedError, 0)
-		es, te := dt.collectProcessAlerts("", "", input.Global)
-		if te != nil {
-			errs.toolErr = te
-			return
+		es, w := dt.collectProcessAlerts("", "", input.Global)
+		if w != "" {
+			errs.warnings = append(errs.warnings, w)
 		}
 		all = append(all, es...)
 
-		es, te = dt.collectStartupErrors("", "", input.Global)
-		if te != nil {
-			errs.toolErr = te
-			return
+		es, w = dt.collectStartupErrors("", "", input.Global)
+		if w != "" {
+			errs.warnings = append(errs.warnings, w)
 		}
 		all = append(all, es...)
 
-		es, te = dt.collectProxyErrors("", "", input.Global)
-		if te != nil {
-			errs.toolErr = te
-			return
-		}
+		es, ws := dt.collectProxyErrors("", "", input.Global)
+		errs.warnings = append(errs.warnings, ws...)
 		all = append(all, es...)
 
 		errs.errors = all
@@ -185,29 +180,36 @@ func (dt *DaemonTools) handleProcSnapshot(input ProcInput) (*mcp.CallToolResult,
 	if procs.err != nil {
 		return formatDaemonError(procs.err, "proc"), ProcOutput{}, nil
 	}
-	if errs.toolErr != nil {
-		// errors collection signalled a structured failure (e.g. daemon
-		// version mismatch). Surface it instead of silently dropping.
-		return errs.toolErr, ProcOutput{}, nil
-	}
-
 	// Deduplicate errors using the same logic as get_errors so counts
 	// match the user-visible numbers.
 	deduped := deduplicateErrors(errs.errors)
 
 	snapshot := buildSnapshot(procs.entries, proxies.entries, deduped)
 
+	out := snapshotOutput(&snapshot, procs.projectPath, dirFilter, errs.warnings, input.Raw)
+	return nil, out, nil
+}
+
+// snapshotOutput shapes the snapshot response. Partial error-collection failures
+// travel on Warnings in every mode: a raw consumer reads only the structured
+// Snapshot, so appending them to the text rendering alone would present an
+// incomplete snapshot as a clean one.
+func snapshotOutput(snapshot *SnapshotData, projectPath string, dirFilter protocol.DirectoryFilter, warnings []string, raw bool) ProcOutput {
 	out := ProcOutput{
-		Snapshot:    &snapshot,
+		Snapshot:    snapshot,
 		Count:       len(snapshot.Processes),
-		ProjectPath: procs.projectPath,
+		ProjectPath: projectPath,
 		SessionCode: dirFilter.SessionCode,
 		Global:      dirFilter.Global,
+		Warnings:    warnings,
 	}
-	if !input.Raw {
-		out.Output = formatSnapshot(&snapshot)
+	if !raw {
+		out.Output = formatSnapshot(snapshot)
+		for _, w := range warnings {
+			out.Output += "\n⚠ " + w
+		}
 	}
-	return nil, out, nil
+	return out
 }
 
 // buildSnapshot assembles the unified snapshot from raw daemon-IPC maps.

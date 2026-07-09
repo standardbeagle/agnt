@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -419,5 +420,37 @@ func BenchmarkBuildSnapshot_5Processes(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_ = buildSnapshot(procEntries, proxyEntries, errors)
+	}
+}
+
+// A snapshot assembled while one of its error sources failed is incomplete. The
+// raw path returns only the structured Snapshot, so warnings must ride a
+// structured field — appending them to the text rendering alone let a raw
+// consumer read the gap as "nothing wrong".
+func TestSnapshotOutput_WarningsSurfaceInBothModes(t *testing.T) {
+	snap := buildSnapshot(nil, nil, nil)
+	warnings := []string{"alert store query failed: timeout", "proxy list unavailable"}
+	filter := protocol.DirectoryFilter{SessionCode: "abc", Global: true}
+
+	raw := snapshotOutput(&snap, "/proj", filter, warnings, true)
+	assert.Equal(t, warnings, raw.Warnings, "raw consumers must see collection failures")
+	assert.Empty(t, raw.Output, "raw mode renders no text")
+	assert.Equal(t, "/proj", raw.ProjectPath)
+	assert.Equal(t, "abc", raw.SessionCode)
+	assert.True(t, raw.Global)
+
+	text := snapshotOutput(&snap, "/proj", filter, warnings, false)
+	assert.Equal(t, warnings, text.Warnings)
+	for _, w := range warnings {
+		assert.Contains(t, text.Output, w, "text mode still renders every warning")
+	}
+}
+
+func TestSnapshotOutput_CleanCollectionHasNoWarnings(t *testing.T) {
+	snap := buildSnapshot(nil, nil, nil)
+	for _, raw := range []bool{true, false} {
+		out := snapshotOutput(&snap, "/proj", protocol.DirectoryFilter{}, nil, raw)
+		assert.Empty(t, out.Warnings)
+		assert.NotContains(t, out.Output, "⚠")
 	}
 }
