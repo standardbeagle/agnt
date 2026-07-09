@@ -65,7 +65,7 @@ func TestStartupPortCleanup_PortFree(t *testing.T) {
 }
 
 func TestStartupPortCleanup_KillsOrphan(t *testing.T) {
-	t.Parallel()
+	// No t.Parallel(): uses production Start() (walks /proc, kills PIDs by port) and a real port blocker.
 	if os.Getuid() == 0 {
 		t.Skip("don't run as root")
 	}
@@ -109,7 +109,7 @@ func TestStartupPortCleanup_KillsOrphan(t *testing.T) {
 }
 
 func TestStartupPortCleanup_SkipsManagedPIDs(t *testing.T) {
-	t.Parallel()
+	// No t.Parallel(): uses production Start() (walks /proc, kills PIDs by port).
 	tmpDir := t.TempDir()
 	sockPath := tmpDir + "/test.sock"
 	statePath := tmpDir + "/state.json"
@@ -148,7 +148,7 @@ func TestStartupPortCleanup_SkipsManagedPIDs(t *testing.T) {
 }
 
 func TestStartupPortCleanup_MultipleProxies(t *testing.T) {
-	t.Parallel()
+	// No t.Parallel(): uses production Start() (walks /proc, kills PIDs by port) and real port blockers.
 	if os.Getuid() == 0 {
 		t.Skip("don't run as root")
 	}

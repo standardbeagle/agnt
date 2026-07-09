@@ -60,7 +60,7 @@ func restartProcessWithRetry(t *testing.T, client *Client, processID string) map
 
 // TestRestartIntegration_ProcRestart tests single process restart.
 func TestRestartIntegration_ProcRestart(t *testing.T) {
-	t.Parallel()
+	// No t.Parallel(): starts real sleep process; PID-reuse kills it under high concurrency.
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
@@ -263,7 +263,7 @@ func TestRestartIntegration_ProxyRestart_NonExistent(t *testing.T) {
 
 // TestRestartIntegration_StopAll tests stopping all processes and proxies.
 func TestRestartIntegration_StopAll(t *testing.T) {
-	t.Parallel()
+	// No t.Parallel(): starts real sleep processes; PID-reuse kills them under high concurrency.
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
