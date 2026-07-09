@@ -65,6 +65,36 @@ type Overlay struct {
 	// enterRetryDelays are the three retry delays in sendEntersUntilActivity.
 	// Zero elements mean use production defaults (1500ms, 2000ms, 3000ms).
 	enterRetryDelays [3]time.Duration
+	// sleepFn and afterFn are the clock typeText and sendEntersUntilActivity
+	// run on. Nil in production, where they mean time.Sleep and time.After.
+	//
+	// The Enter retry loop only makes sense against activity that arrives inside
+	// a window it owns — after the echo drain, before the next retry fires. A
+	// test that reaches for that window with its own sleeps is racing this
+	// goroutine, and loses whenever the machine is loaded: output published
+	// before the drain is swallowed by it, output after the deadline arrives to
+	// an Enter already sent. Injecting the clock lets a test observe the window
+	// instead of guessing at it — afterFn is called precisely once the loop is
+	// waiting, and fires only when the test says so.
+	sleepFn func(time.Duration)
+	afterFn func(time.Duration) <-chan time.Time
+}
+
+// sleep blocks for d on the overlay's clock.
+func (o *Overlay) sleep(d time.Duration) {
+	if o.sleepFn != nil {
+		o.sleepFn(d)
+		return
+	}
+	time.Sleep(d)
+}
+
+// after returns a channel that receives after d on the overlay's clock.
+func (o *Overlay) after(d time.Duration) <-chan time.Time {
+	if o.afterFn != nil {
+		return o.afterFn(d)
+	}
+	return time.After(d)
 }
 
 // OverlayMessage represents a message from devtool-mcp.
@@ -660,12 +690,12 @@ func (o *Overlay) typeText(msg TypeMessage) {
 
 		for _, ch := range msg.Text {
 			o.writeTopty(string(ch))
-			time.Sleep(delay)
+			o.sleep(delay)
 		}
 
 		if msg.Enter {
 			// Wait for Ink to process all characters before sending submit sequence
-			time.Sleep(100 * time.Millisecond)
+			o.sleep(100 * time.Millisecond)
 
 			// Progressive enter key timing to ensure agent accepts the message.
 			o.sendEntersUntilActivity()
@@ -688,7 +718,7 @@ func (o *Overlay) sendEntersUntilActivity() {
 	if settle == 0 {
 		settle = 1100 * time.Millisecond
 	}
-	time.Sleep(settle)
+	o.sleep(settle)
 
 	// Drain all echo-triggered activity signals
 	for {
@@ -715,7 +745,7 @@ drained:
 		select {
 		case <-o.activityCh:
 			return // Agent is responding — message was accepted
-		case <-time.After(delay):
+		case <-o.after(delay):
 			o.writeTopty("\r")
 		}
 	}

@@ -59,14 +59,107 @@ func (w *recordingWriter) countEnters() int {
 	return strings.Count(w.allData.String(), "\r")
 }
 
-// makeTestOverlay creates an Overlay with a recording writer for testing.
-// Fast delays are injected so tests complete in <0.5s instead of ~7.6s.
-func makeTestOverlay(w *recordingWriter) *Overlay {
-	return &Overlay{
+// testSettle and testRetryDelays are the durations the overlay under test is
+// configured with. No test waits for them; they are only ever asserted on, as
+// the values the overlay asks its clock for.
+const testSettle = 50 * time.Millisecond
+
+var testRetryDelays = [3]time.Duration{50 * time.Millisecond, 75 * time.Millisecond, 100 * time.Millisecond}
+
+// afterCall is one o.after(d) request parked in the retry loop's select.
+type afterCall struct {
+	d  time.Duration
+	ch chan time.Time
+}
+
+// fire releases the retry, as the wall clock would have at d.
+func (c afterCall) fire() { c.ch <- time.Time{} }
+
+// testClock is the overlay's clock, driven by the test rather than by time.
+//
+// Sleeps return immediately and are recorded. Every after() request is
+// published on afters, and — because that send blocks until the test receives
+// it — taking one from the channel is proof that the retry loop has drained the
+// echo signals and parked in its select. That is the window agent output must
+// land in, so the test observes it instead of sleeping toward it.
+type testClock struct {
+	sleeps chan time.Duration
+	afters chan afterCall
+	// onSleep runs inside sleep(d), before it returns. Lets a test act at a
+	// point the overlay only reaches mid-sleep, e.g. echo during the settle.
+	onSleep func(time.Duration)
+}
+
+func newTestClock() *testClock {
+	return &testClock{
+		sleeps: make(chan time.Duration, 16),
+		afters: make(chan afterCall),
+	}
+}
+
+func (c *testClock) sleep(d time.Duration) {
+	select {
+	case c.sleeps <- d:
+	default:
+	}
+	if c.onSleep != nil {
+		c.onSleep(d)
+	}
+}
+
+func (c *testClock) after(d time.Duration) <-chan time.Time {
+	call := afterCall{d: d, ch: make(chan time.Time, 1)}
+	c.afters <- call
+	return call.ch
+}
+
+// awaitRetry blocks until the overlay parks in its retry select, and returns
+// the delay it asked for. The timeout is a deadlock guard, not synchronization.
+func (c *testClock) awaitRetry(t *testing.T) afterCall {
+	t.Helper()
+	select {
+	case call := <-c.afters:
+		return call
+	case <-time.After(10 * time.Second):
+		t.Fatal("overlay never reached its Enter retry wait")
+		return afterCall{}
+	}
+}
+
+// sleptFor drains the recorded sleep durations.
+func (c *testClock) sleptFor() []time.Duration {
+	var out []time.Duration
+	for {
+		select {
+		case d := <-c.sleeps:
+			out = append(out, d)
+		default:
+			return out
+		}
+	}
+}
+
+// makeTestOverlay creates an Overlay whose clock the test drives.
+func makeTestOverlay(w *recordingWriter) (*Overlay, *testClock) {
+	clk := newTestClock()
+	o := &Overlay{
 		ptmx:             w,
 		activityCh:       make(chan struct{}, 1),
-		enterSettle:      50 * time.Millisecond,
-		enterRetryDelays: [3]time.Duration{50 * time.Millisecond, 75 * time.Millisecond, 100 * time.Millisecond},
+		enterSettle:      testSettle,
+		enterRetryDelays: testRetryDelays,
+		sleepFn:          clk.sleep,
+		afterFn:          clk.after,
+	}
+	return o, clk
+}
+
+// awaitDone blocks until typeText returns. The timeout is a deadlock guard.
+func awaitDone(t *testing.T, done <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("typeText never returned")
 	}
 }
 
@@ -80,7 +173,7 @@ func TestEnterBehavior_ByteSequence(t *testing.T) {
 	// arrives as the 2-byte string "\r\n" which does NOT match "\r".
 	// This was the root cause of Enter not triggering in Claude Code.
 	w := &recordingWriter{}
-	o := makeTestOverlay(w)
+	o, clk := makeTestOverlay(w)
 
 	done := make(chan struct{})
 	go func() {
@@ -88,10 +181,10 @@ func TestEnterBehavior_ByteSequence(t *testing.T) {
 		close(done)
 	}()
 
-	// Signal after echo-settle drain (50ms settle + 25ms into retry1 window)
-	time.Sleep(75 * time.Millisecond)
+	// The overlay has drained the echo signals and is waiting on retry1.
+	clk.awaitRetry(t)
 	o.NotifyActivity()
-	<-done
+	awaitDone(t, done)
 
 	// Every non-empty write should be exactly \r (bare CR)
 	writes := w.getWrites()
@@ -108,7 +201,7 @@ func TestEnterBehavior_BuildKeySequence(t *testing.T) {
 	t.Parallel()
 	// The key API must also use bare \r for Enter.
 	w := &recordingWriter{}
-	o := makeTestOverlay(w)
+	o, _ := makeTestOverlay(w)
 
 	seq := o.buildKeySequence(KeyMessage{Key: "Enter"})
 	assert.Equal(t, "\r", seq, "KeyMessage Enter should produce \\r")
@@ -124,7 +217,7 @@ func TestEnterBehavior_ImmediateActivity_SingleEnter(t *testing.T) {
 	// If the agent responds quickly (activity detected after echo-settle),
 	// only 1 Enter is sent.
 	w := &recordingWriter{}
-	o := makeTestOverlay(w)
+	o, clk := makeTestOverlay(w)
 
 	done := make(chan struct{})
 	go func() {
@@ -132,15 +225,10 @@ func TestEnterBehavior_ImmediateActivity_SingleEnter(t *testing.T) {
 		close(done)
 	}()
 
-	// Signal activity after the echo-settle + drain window (50ms settle + 25ms into retry1)
-	time.Sleep(75 * time.Millisecond)
+	// Activity lands in the window between the drain and retry1.
+	clk.awaitRetry(t)
 	o.NotifyActivity()
-
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("typeText did not return — stuck in retry loop")
-	}
+	awaitDone(t, done)
 
 	enters := w.countEnters()
 	assert.Equal(t, 1, enters, "with quick activity signal, should send exactly 1 Enter")
@@ -155,40 +243,45 @@ func TestEnterBehavior_ImmediateActivity_SingleEnter(t *testing.T) {
 
 func TestEnterBehavior_NoActivity_MaxRetries(t *testing.T) {
 	t.Parallel()
-	// If the agent never responds, 4 Enters are sent (1 initial + 3 retries).
-	// Total wall time with fast delays: ~50ms settle + 50ms + 75ms + 100ms = ~275ms
+	// If the agent never responds, 4 Enters are sent (1 initial + 3 retries),
+	// each after its configured delay.
 	w := &recordingWriter{}
-	o := makeTestOverlay(w)
+	o, clk := makeTestOverlay(w)
 
-	start := time.Now()
 	done := make(chan struct{})
 	go func() {
 		o.typeText(TypeMessage{Text: "", Enter: true, Instant: true})
 		close(done)
 	}()
 
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("typeText did not return after max retries")
+	// Let every retry expire, checking the delay the overlay waited on. Asserting
+	// the requested delays rather than elapsed wall time keeps this exact under
+	// any load.
+	var waited []time.Duration
+	for i := 0; i < len(testRetryDelays); i++ {
+		call := clk.awaitRetry(t)
+		waited = append(waited, call.d)
+		assert.Equal(t, i+1, w.countEnters(),
+			"retry %d should not have fired before its delay elapsed", i+1)
+		call.fire()
 	}
-	elapsed := time.Since(start)
+	awaitDone(t, done)
 
-	enters := w.countEnters()
-	assert.Equal(t, 4, enters,
+	assert.Equal(t, 4, w.countEnters(),
 		"with no activity, should send exactly 4 Enters (1 + 3 retries)")
-
-	// Total time should be approximately 0.275s (50ms settle + 50ms + 75ms + 100ms)
-	assert.InDelta(t, 0.275, elapsed.Seconds(), 0.1,
-		"total elapsed should be ~0.275s, got %v", elapsed)
+	assert.Equal(t, testRetryDelays[:], waited,
+		"retries should back off through the configured delays")
+	assert.Equal(t, []time.Duration{testSettle}, clk.sleptFor(),
+		"instant mode should sleep only for the echo-settle window")
 }
 
 func TestEnterBehavior_RetryTiming(t *testing.T) {
 	t.Parallel()
-	// Exact delays between Enter retries (fast test delays):
-	// [immediate] → 50ms settle → [retry1] → 50ms → [retry2] → 75ms → [retry3] → 100ms
+	// The first Enter goes out immediately; each later one waits on the next
+	// backoff delay. Asserted as the sequence of waits the overlay performs:
+	// [enter] → settle → [enter] → 50ms → [enter] → 75ms → [enter] → 100ms.
 	w := &recordingWriter{}
-	o := makeTestOverlay(w)
+	o, clk := makeTestOverlay(w)
 
 	done := make(chan struct{})
 	go func() {
@@ -196,37 +289,28 @@ func TestEnterBehavior_RetryTiming(t *testing.T) {
 		close(done)
 	}()
 
-	<-done
+	// The first Enter precedes any wait at all.
+	call := clk.awaitRetry(t)
+	assert.Equal(t, 1, w.countEnters(), "first Enter is sent before any delay")
+	assert.Equal(t, testRetryDelays[0], call.d)
+	call.fire()
 
-	writes := w.getWrites()
-	// Filter to just the \r writes (Enter keypresses)
-	var enterTimes []time.Time
-	for _, wr := range writes {
-		if string(wr.data) == "\r" {
-			enterTimes = append(enterTimes, wr.at)
-		}
+	for i := 1; i < len(testRetryDelays); i++ {
+		call = clk.awaitRetry(t)
+		assert.Equal(t, i+1, w.countEnters(), "one Enter per expired delay")
+		assert.Equal(t, testRetryDelays[i], call.d, "retry %d delay", i+1)
+		call.fire()
 	}
+	awaitDone(t, done)
 
-	require.Equal(t, 4, len(enterTimes), "expected 4 Enter writes")
-
-	// Gaps between consecutive enters
-	gap1 := enterTimes[1].Sub(enterTimes[0]) // settle(50ms) + retry1(50ms) = ~100ms
-	gap2 := enterTimes[2].Sub(enterTimes[1]) // retry2 delay: ~75ms
-	gap3 := enterTimes[3].Sub(enterTimes[2]) // retry3 delay: ~100ms
-
-	assert.InDelta(t, 0.1, gap1.Seconds(), 0.07,
-		"gap between enter 1→2 should be ~100ms (50ms settle + 50ms retry)")
-	assert.InDelta(t, 0.075, gap2.Seconds(), 0.06,
-		"gap between enter 2→3 should be ~75ms")
-	assert.InDelta(t, 0.1, gap3.Seconds(), 0.08,
-		"gap between enter 3→4 should be ~100ms")
+	require.Equal(t, 4, w.countEnters(), "expected 4 Enter writes")
 }
 
 func TestEnterBehavior_ActivityStopsRetries(t *testing.T) {
 	t.Parallel()
 	// Activity arriving after the 2nd Enter stops further retries.
 	w := &recordingWriter{}
-	o := makeTestOverlay(w)
+	o, clk := makeTestOverlay(w)
 
 	done := make(chan struct{})
 	go func() {
@@ -234,16 +318,11 @@ func TestEnterBehavior_ActivityStopsRetries(t *testing.T) {
 		close(done)
 	}()
 
-	// Wait past echo settle (50ms) + first retry delay (50ms) + some margin,
-	// then signal. At ~130ms: retry1 has fired (2nd Enter), retry2 hasn't yet.
-	time.Sleep(130 * time.Millisecond)
+	// Let retry1 expire (2nd Enter), then signal while retry2 is still waiting.
+	clk.awaitRetry(t).fire()
+	clk.awaitRetry(t)
 	o.NotifyActivity()
-
-	select {
-	case <-done:
-	case <-time.After(3 * time.Second):
-		t.Fatal("typeText should have returned after activity signal")
-	}
+	awaitDone(t, done)
 
 	enters := w.countEnters()
 	assert.Equal(t, 2, enters,
@@ -254,10 +333,19 @@ func TestEnterBehavior_ActivityStopsRetries(t *testing.T) {
 
 func TestEnterBehavior_EchoDrain(t *testing.T) {
 	t.Parallel()
-	// Activity signals during the 1.1s echo-settle window are drained.
-	// This prevents text echo from being mistaken for agent output.
+	// Activity signals raised during the echo-settle window are the terminal
+	// echoing our own text back. They must be discarded, or the overlay mistakes
+	// its own echo for the agent answering and never retries a dropped Enter.
+	//
+	// Proof that the drain happened: with the echo discarded, the retry select
+	// has nothing ready and parks until we expire it, producing a 2nd Enter. An
+	// undrained echo would satisfy that select instead, and typeText would return
+	// after a single Enter — leaving the retry we await below to never arrive.
 	w := &recordingWriter{}
-	o := makeTestOverlay(w)
+	o, clk := makeTestOverlay(w)
+
+	// The echo lands during the settle sleep, i.e. before the drain runs.
+	clk.onSleep = func(time.Duration) { o.NotifyActivity() }
 
 	done := make(chan struct{})
 	go func() {
@@ -265,25 +353,19 @@ func TestEnterBehavior_EchoDrain(t *testing.T) {
 		close(done)
 	}()
 
-	// Simulate echo activity during the 50ms settle window
-	time.Sleep(20 * time.Millisecond)
-	o.NotifyActivity() // This should be drained
+	// Expire retry1, then wait for the loop to ask for retry2 — that request is
+	// proof the 2nd Enter has been written, without timing the goroutine.
+	clk.awaitRetry(t).fire()
+	clk.awaitRetry(t)
+	assert.Equal(t, 2, w.countEnters(),
+		"echo signal must be drained, so retry1 fires a 2nd Enter")
 
-	// Now signal real activity after the settle window, clearly within the first
-	// retry window (settle=50ms, retry1=50ms → window is 50ms–100ms from start).
-	// Sleep an additional 60ms (total ~80ms from start = ~30ms into retry1).
-	time.Sleep(60 * time.Millisecond)
+	// Now the agent really answers, while retry2 waits.
 	o.NotifyActivity()
+	awaitDone(t, done)
 
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("typeText did not return")
-	}
-
-	enters := w.countEnters()
-	assert.Equal(t, 1, enters,
-		"echo signal should be drained; real signal stops retries at 1 Enter")
+	assert.Equal(t, 2, w.countEnters(),
+		"real activity stops the retries; echo did not count as activity")
 }
 
 // --- Tests investigating instant vs typed mode ---
@@ -292,16 +374,16 @@ func TestEnterBehavior_InstantMode_WritesFullText(t *testing.T) {
 	t.Parallel()
 	// In instant mode, text arrives as a single write.
 	w := &recordingWriter{}
-	o := makeTestOverlay(w)
+	o, clk := makeTestOverlay(w)
 
 	done := make(chan struct{})
 	go func() {
 		o.typeText(TypeMessage{Text: "hello world", Enter: true, Instant: true})
 		close(done)
 	}()
-	time.Sleep(75 * time.Millisecond)
+	clk.awaitRetry(t)
 	o.NotifyActivity()
-	<-done
+	awaitDone(t, done)
 
 	writes := w.getWrites()
 	require.GreaterOrEqual(t, len(writes), 2, "need at least text + enter writes")
@@ -315,18 +397,16 @@ func TestEnterBehavior_TypedMode_CharByChar(t *testing.T) {
 	t.Parallel()
 	// In typed mode, each character arrives separately with ~10ms delays.
 	w := &recordingWriter{}
-	o := makeTestOverlay(w)
+	o, clk := makeTestOverlay(w)
 
 	done := make(chan struct{})
-	start := time.Now()
 	go func() {
 		o.typeText(TypeMessage{Text: "abc", Enter: true, Instant: false})
 		close(done)
 	}()
-	time.Sleep(250 * time.Millisecond) // 10ms*3 chars + 100ms settle + 50ms drain
+	clk.awaitRetry(t)
 	o.NotifyActivity()
-	<-done
-	elapsed := time.Since(start)
+	awaitDone(t, done)
 
 	writes := w.getWrites()
 
@@ -341,9 +421,12 @@ func TestEnterBehavior_TypedMode_CharByChar(t *testing.T) {
 	assert.Equal(t, []string{"a", "b", "c"}, textWrites,
 		"typed mode should write one character at a time")
 
-	// Should have per-char delay (~10ms each) + 100ms pre-Enter settle
-	assert.GreaterOrEqual(t, elapsed.Milliseconds(), int64(100),
-		"typed mode should include delays between characters")
+	// One 10ms pause per character, then the 100ms pre-Enter settle, then the
+	// echo settle. Asserting the waits themselves beats timing the goroutine.
+	assert.Equal(t, []time.Duration{
+		10 * time.Millisecond, 10 * time.Millisecond, 10 * time.Millisecond,
+		100 * time.Millisecond, testSettle,
+	}, clk.sleptFor(), "typed mode should pause between characters and before Enter")
 }
 
 func TestEnterBehavior_TypedMode_PreEnterSettle(t *testing.T) {
@@ -351,50 +434,49 @@ func TestEnterBehavior_TypedMode_PreEnterSettle(t *testing.T) {
 	// In typed mode, there's a 100ms settle delay before the first Enter.
 	// This is for Ink terminals to process all chars.
 	w := &recordingWriter{}
-	o := makeTestOverlay(w)
+	o, clk := makeTestOverlay(w)
+
+	// Capture the waits the overlay performs before it writes the first Enter.
+	var beforeEnter []time.Duration
+	clk.onSleep = func(d time.Duration) {
+		if w.countEnters() == 0 {
+			beforeEnter = append(beforeEnter, d)
+		}
+	}
 
 	done := make(chan struct{})
 	go func() {
 		o.typeText(TypeMessage{Text: "x", Enter: true, Instant: false})
 		close(done)
 	}()
-	time.Sleep(250 * time.Millisecond) // 10ms char + 100ms settle + 50ms drain
+	clk.awaitRetry(t)
 	o.NotifyActivity()
-	<-done
+	awaitDone(t, done)
 
 	writes := w.getWrites()
-	var charTime, enterTime time.Time
-	for _, wr := range writes {
-		if string(wr.data) == "x" {
-			charTime = wr.at
-		}
-		if string(wr.data) == "\r" {
-			enterTime = wr.at
-			break
-		}
-	}
+	require.GreaterOrEqual(t, len(writes), 2, "should have char and enter writes")
+	assert.Equal(t, "x", string(writes[0].data))
+	assert.Equal(t, "\r", string(writes[1].data))
 
-	require.False(t, charTime.IsZero(), "should have char write")
-	require.False(t, enterTime.IsZero(), "should have enter write")
-
-	gap := enterTime.Sub(charTime)
-	assert.GreaterOrEqual(t, gap.Milliseconds(), int64(90),
-		"typed mode should have ~100ms settle before Enter, got %v", gap)
+	require.Len(t, beforeEnter, 2, "one per-char pause, then the pre-Enter settle")
+	assert.Equal(t, 100*time.Millisecond, beforeEnter[1],
+		"typed mode should settle 100ms after the last character, before Enter")
 }
 
 // --- Tests investigating the ActivityMonitor → activityCh feedback loop ---
 
 func TestEnterBehavior_ActivityMonitorFeedback(t *testing.T) {
-	// No t.Parallel(): this is the only Enter test that drives the real async
-	// ActivityMonitor chain (am.Write → OnStateChange → NotifyActivity →
-	// activityCh). That chain must beat retry1 (fires at settle+retryDelays[0]
-	// = 100ms). Running concurrently with sibling parallel tests under -race
-	// starves the chain past 100ms, firing a spurious 2nd Enter.
-	// The ActivityMonitor correctly signals the Overlay's activityCh when
-	// output bytes arrive. Full chain:
+	t.Parallel()
+	// The ActivityMonitor signals the Overlay's activityCh when output bytes
+	// arrive, and that signal must suppress the Enter retries. Full chain:
 	//   PTY output → ActivityMonitor.Write() → OnStateChange → NotifyActivity()
+	//
+	// Agent output has to land in a window the overlay owns: after it drains the
+	// echo-triggered signals, before the next retry fires. Awaiting the retry
+	// request puts us exactly there — no sleep can, because a sleep races the
+	// overlay's own goroutine and loses under load.
 	w := &recordingWriter{}
-	o := makeTestOverlay(w)
+	o, clk := makeTestOverlay(w)
 
 	var activitySignaled atomic.Bool
 
@@ -418,17 +500,11 @@ func TestEnterBehavior_ActivityMonitorFeedback(t *testing.T) {
 		close(done)
 	}()
 
-	// Simulate agent output arriving after the echo-settle window. Write at
-	// 60ms (10ms into retry1's 50ms window) so the async ActivityMonitor chain
-	// has a ~40ms margin to reach activityCh before retry1 fires at 100ms.
-	time.Sleep(60 * time.Millisecond)
+	// The retry is parked and waiting; the agent answers. The retry never fires,
+	// because nothing ever fires it.
+	clk.awaitRetry(t)
 	am.Write([]byte("Claude is thinking and producing output here...\n"))
-
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("typeText should have returned after ActivityMonitor signaled")
-	}
+	awaitDone(t, done)
 
 	assert.True(t, activitySignaled.Load(),
 		"ActivityMonitor should have fired OnStateChange(Active)")
@@ -455,17 +531,20 @@ func TestEnterBehavior_MinActiveBytes_Threshold(t *testing.T) {
 	am := overlay.NewActivityMonitor(&outputBuf, cfg)
 	defer am.Stop()
 
+	// ActivityMonitor.Write invokes OnStateChange inline, so the transition (or
+	// its absence) is settled the moment Write returns — nothing to wait for.
+
 	// Write less than threshold (simulating Enter echo: just "\r" = 1 byte)
-	am.Write([]byte("\r"))
-	time.Sleep(50 * time.Millisecond)
+	_, err := am.Write([]byte("\r"))
+	require.NoError(t, err)
 
 	assert.False(t, triggered.Load(),
 		"1 byte (Enter echo) should NOT trigger active state (threshold=10)")
 	assert.Equal(t, overlay.ActivityIdle, am.State())
 
 	// Write more to cross the threshold (simulating real agent output)
-	am.Write([]byte("Agent response text"))
-	time.Sleep(50 * time.Millisecond)
+	_, err = am.Write([]byte("Agent response text"))
+	require.NoError(t, err)
 
 	assert.True(t, triggered.Load(),
 		"agent output exceeding threshold SHOULD trigger active state")
@@ -479,16 +558,16 @@ func TestEnterBehavior_TextBeforeEnter(t *testing.T) {
 	// Text is always written BEFORE Enter — if Enter arrived first,
 	// the agent would process an empty message.
 	w := &recordingWriter{}
-	o := makeTestOverlay(w)
+	o, clk := makeTestOverlay(w)
 
 	done := make(chan struct{})
 	go func() {
 		o.typeText(TypeMessage{Text: "my prompt text", Enter: true, Instant: true})
 		close(done)
 	}()
-	time.Sleep(75 * time.Millisecond)
+	clk.awaitRetry(t)
 	o.NotifyActivity()
-	<-done
+	awaitDone(t, done)
 
 	allData := string(w.allBytes())
 	textIdx := strings.Index(allData, "my prompt text")
@@ -504,7 +583,7 @@ func TestEnterBehavior_NoEnter_NoNewline(t *testing.T) {
 	t.Parallel()
 	// When Enter=false, no \r should be sent at all.
 	w := &recordingWriter{}
-	o := makeTestOverlay(w)
+	o, _ := makeTestOverlay(w)
 
 	o.typeText(TypeMessage{Text: "just text", Enter: false, Instant: true})
 
@@ -518,16 +597,16 @@ func TestEnterBehavior_EmptyText_WithEnter(t *testing.T) {
 	t.Parallel()
 	// Empty text + Enter sends just the Enter byte(s).
 	w := &recordingWriter{}
-	o := makeTestOverlay(w)
+	o, clk := makeTestOverlay(w)
 
 	done := make(chan struct{})
 	go func() {
 		o.typeText(TypeMessage{Text: "", Enter: true, Instant: true})
 		close(done)
 	}()
-	time.Sleep(75 * time.Millisecond)
+	clk.awaitRetry(t)
 	o.NotifyActivity()
-	<-done
+	awaitDone(t, done)
 
 	assert.Equal(t, 1, w.countEnters(),
 		"empty text + Enter + quick activity should send 1 \\r")
@@ -547,7 +626,7 @@ func TestEnterBehavior_ActivityChBuffered(t *testing.T) {
 	// activityCh is buffered (cap 1). Multiple signals before consumption
 	// don't block. Only one signal is retained.
 	w := &recordingWriter{}
-	o := makeTestOverlay(w)
+	o, _ := makeTestOverlay(w)
 
 	// Signal multiple times — should not block
 	o.NotifyActivity()
@@ -579,16 +658,16 @@ func TestEnterBehavior_NotCRLF(t *testing.T) {
 	// "\r\n" because it's a different string. This was the root cause of
 	// Enter not triggering submission in Claude Code.
 	w := &recordingWriter{}
-	o := makeTestOverlay(w)
+	o, clk := makeTestOverlay(w)
 
 	done := make(chan struct{})
 	go func() {
 		o.typeText(TypeMessage{Text: "test", Enter: true, Instant: true})
 		close(done)
 	}()
-	time.Sleep(75 * time.Millisecond)
+	clk.awaitRetry(t)
 	o.NotifyActivity()
-	<-done
+	awaitDone(t, done)
 
 	allData := w.allBytes()
 	// Should contain \r but NOT \r\n
