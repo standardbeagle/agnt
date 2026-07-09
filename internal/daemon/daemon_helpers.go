@@ -117,15 +117,44 @@ func envMapToSlice(env map[string]string) []string {
 // scriptConfigToEntry converts agnt's ScriptConfig to go-cli-server's script.Config.
 func scriptConfigToEntry(cfg *config.ScriptConfig) *script.Config {
 	return &script.Config{
-		Run:       cfg.Run,
-		Command:   cfg.Command,
-		Args:      cfg.Args,
-		Shell:     cfg.Shell,
-		ShellArgs: cfg.ShellArgs,
-		Autostart: cfg.Autostart,
-		Env:       cfg.Env,
-		Cwd:       cfg.Cwd,
+		Run:     cfg.Run,
+		Command: cfg.Command,
+		Args:    cfg.Args,
+		Env:     cfg.Env,
 	}
+}
+
+// registerScriptEntry registers a script, replacing an existing entry whose
+// config differs. script.Registry.Register rejects a re-register under a changed
+// config, so editing a script's `run` in .agnt.kdl would otherwise leave the
+// stale entry in place and fail every subsequent start of that script.
+//
+// Session observers and ownership are carried onto the replacement; runtime
+// state (output, counters) is not, which is correct — it described a process
+// launched from a config that no longer exists.
+func (d *Daemon) registerScriptEntry(name, projectPath string, cfg *script.Config) (*script.Entry, error) {
+	entry, err := d.scriptRegistry.Register(name, projectPath, cfg)
+	if err == nil {
+		return entry, nil
+	}
+
+	old, existed := d.scriptRegistry.Get(name, projectPath)
+	if !existed {
+		return nil, err
+	}
+	d.scriptRegistry.Remove(name, projectPath)
+
+	entry, err = d.scriptRegistry.Register(name, projectPath, cfg)
+	if err != nil {
+		return nil, err
+	}
+	for _, code := range old.ListSessions() {
+		entry.AddSession(code)
+	}
+	if owner := old.Owner(); owner != "" {
+		entry.SetOwner(owner)
+	}
+	return entry, nil
 }
 
 func GetLogPath() string {

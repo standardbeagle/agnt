@@ -144,6 +144,10 @@ func (d *Daemon) RunAutostartAsync(
 		return result
 	}
 	log.Info("", "config_loaded", fmt.Sprintf("%d scripts, %d proxies from %s", len(agntConfig.Scripts), len(agntConfig.Proxies), projectPath))
+	// Surface non-fatal parse warnings (e.g. depends-on a non-autostart script,
+	// which would hang the dependent forever) so they reach the agent, not just
+	// the debug file.
+	d.surfaceConfigWarnings(projectPath, agntConfig.Warnings)
 
 	// Apply alerts subsystem config (hold buffer, transport thresholds).
 	// Safe to run on every autostart; latest values win.
@@ -266,7 +270,7 @@ func (d *Daemon) registerAndStartScripts(ctx context.Context, cfg *config.AgntCo
 	for name, scriptCfg := range cfg.Scripts {
 		processID := makeProcessID(projectPath, name)
 		d.scriptConfigs.Store(processID, scriptCfg)
-		if _, err := d.scriptRegistry.Register(name, projectPath, scriptConfigToEntry(scriptCfg)); err != nil {
+		if _, err := d.registerScriptEntry(name, projectPath, scriptConfigToEntry(scriptCfg)); err != nil {
 			log.Error(name, "register_failed", fmt.Sprintf("failed to register script: %v", err))
 		}
 	}
@@ -683,8 +687,9 @@ func (d *Daemon) StartScriptExplicit(ctx context.Context, name string, scriptCfg
 	// Store agnt-specific config for later use (e.g., restart with URLMatchers)
 	d.scriptConfigs.Store(processID, scriptCfg)
 
-	// Register in ScriptRegistry before starting (idempotent)
-	entry, regErr := d.scriptRegistry.Register(name, projectPath, scriptConfigToEntry(scriptCfg))
+	// Register in ScriptRegistry before starting (idempotent; a changed config
+	// replaces the stale entry rather than erroring)
+	entry, regErr := d.registerScriptEntry(name, projectPath, scriptConfigToEntry(scriptCfg))
 	if regErr != nil {
 		return fmt.Errorf("script registry: %w", regErr)
 	}

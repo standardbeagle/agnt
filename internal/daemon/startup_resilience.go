@@ -75,11 +75,21 @@ func (d *Daemon) StartScript(ctx context.Context, cfg StartScriptConfig) (*Start
 
 	// Ensure a ScriptEntry exists (idempotent). For standalone processes not
 	// from .agnt.kdl, this creates the entry so the code path is uniform.
+	//
+	// The registry keys on (projectPath, name); with either empty the entry is
+	// unreachable from SCRIPT LIST and the project-scoped cleanup paths, so a
+	// registration would be write-only. Skip it rather than store an orphan.
 	scriptName := stripProcessPrefix(cfg.ProcessID)
-	d.scriptRegistry.Register(scriptName, projectPath, &script.Config{
-		Command: cfg.Command,
-		Args:    cfg.Args,
-	})
+	if scriptName != "" && projectPath != "" {
+		if _, err := d.registerScriptEntry(scriptName, projectPath, &script.Config{
+			Command: cfg.Command,
+			Args:    cfg.Args,
+		}); err != nil {
+			return nil, fmt.Errorf("script registry: %w", err)
+		}
+	} else {
+		debug.Warn("daemon", "StartScript: no script entry for %q (name=%q project=%q)", cfg.ProcessID, scriptName, projectPath)
+	}
 
 	// Set URL matchers BEFORE starting the process to ensure they're available
 	// when the URL tracker first scans the process output
@@ -309,14 +319,8 @@ func (d *Daemon) waitForPortFree(port int, timeout time.Duration) {
 		time.Sleep(200 * time.Millisecond)
 	}
 	debug.Warn("daemon", "Port %d still in use after %v", port, timeout)
-	d.startupErrorStore.Add(&StartupLogEntry{
-		ProcessID: "",
-		Level:     "warning",
-		EventType: "port_cleanup_timeout",
-		Message:   fmt.Sprintf("port %d still in use after %v", port, timeout),
-		Port:      port,
-		Timestamp: time.Now(),
-	})
+	d.daemonStartupLogPort("warning", "port_cleanup_timeout",
+		fmt.Sprintf("port %d still in use after %v", port, timeout), port)
 }
 
 // startScriptWithRetry starts a script with automatic EADDRINUSE recovery.
@@ -339,22 +343,12 @@ func (d *Daemon) startScriptWithRetry(
 	for _, port := range expectedPorts {
 		if killedPIDs, err := d.preflightPortCleanup(ctx, port); err != nil {
 			debug.Warn("daemon", "Pre-flight cleanup failed for port %d: %v", port, err)
-			d.startupErrorStore.Add(&StartupLogEntry{
-				ProcessID: processID,
-				Level:     "warning",
-				EventType: "port_cleanup_failed",
-				Message:   fmt.Sprintf("pre-flight cleanup failed for port %d: %v", port, err),
-				Port:      port,
-				Timestamp: time.Now(),
-			})
+			d.recordStartupEntry(processID, "", "warning", "port_cleanup_failed",
+				fmt.Sprintf("pre-flight cleanup failed for port %d: %v", port, err), port)
 		} else if len(killedPIDs) > 0 {
 			debug.Info("daemon", "Cleaned up port %d before starting %s", port, processID)
-			d.startupErrorStore.Add(&StartupLogEntry{
-				ProcessID: processID, ScriptName: stripProcessPrefix(processID),
-				Level: "info", EventType: "port_cleanup",
-				Message: fmt.Sprintf("killed %d process(es) on port %d", len(killedPIDs), port),
-				Port:    port, Timestamp: time.Now(),
-			})
+			d.recordStartupEntry(processID, stripProcessPrefix(processID), "info", "port_cleanup",
+				fmt.Sprintf("killed %d process(es) on port %d", len(killedPIDs), port), port)
 		}
 	}
 
@@ -433,14 +427,8 @@ func (d *Daemon) startScriptWithRetry(
 	}
 
 	debug.Info("daemon", "Detected EADDRINUSE on port %d for %s, attempting recovery", startupErr.Port, processID)
-	d.startupErrorStore.Add(&StartupLogEntry{
-		ProcessID: processID,
-		Level:     "warning",
-		EventType: "eaddrinuse_detected",
-		Message:   fmt.Sprintf("EADDRINUSE on port %d, attempting recovery", startupErr.Port),
-		Port:      startupErr.Port,
-		Timestamp: time.Now(),
-	})
+	d.recordStartupEntry(processID, "", "warning", "eaddrinuse_detected",
+		fmt.Sprintf("EADDRINUSE on port %d, attempting recovery", startupErr.Port), startupErr.Port)
 
 	// Record EADDRINUSE retry in ScriptEntry
 	if scriptEntry, ok := d.scriptRegistry.GetByProcessID(processID); ok {
@@ -479,14 +467,8 @@ func (d *Daemon) startScriptWithRetry(
 			d.waitForPortFree(portToClean, 10*time.Second)
 		}
 		debug.Info("daemon", "Killed %d process(es) on port %d, retrying startup", len(killedPIDs), portToClean)
-		d.startupErrorStore.Add(&StartupLogEntry{
-			ProcessID: processID,
-			Level:     "info",
-			EventType: "eaddrinuse_killed",
-			Message:   fmt.Sprintf("killed %d process(es) on port %d for EADDRINUSE recovery", len(killedPIDs), portToClean),
-			Port:      portToClean,
-			Timestamp: time.Now(),
-		})
+		d.recordStartupEntry(processID, "", "info", "eaddrinuse_killed",
+			fmt.Sprintf("killed %d process(es) on port %d for EADDRINUSE recovery", len(killedPIDs), portToClean), portToClean)
 	}
 
 	// Retry: Start the process again
@@ -518,13 +500,8 @@ func (d *Daemon) startScriptWithRetry(
 	}
 
 	debug.Info("daemon", "Successfully recovered from EADDRINUSE for %s", processID)
-	d.startupErrorStore.Add(&StartupLogEntry{
-		ProcessID: processID,
-		Level:     "info",
-		EventType: "eaddrinuse_recovered",
-		Message:   "successfully recovered from EADDRINUSE",
-		Timestamp: time.Now(),
-	})
+	d.recordStartupEntry(processID, "", "info", "eaddrinuse_recovered",
+		"successfully recovered from EADDRINUSE", 0)
 	d.watchProcessExit(proc)
 	return proc, nil
 }
