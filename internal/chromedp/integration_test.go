@@ -16,7 +16,9 @@ func TestSessionManagerIntegration(t *testing.T) {
 		t.Skip("SKIP_BROWSER_TESTS is set")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// Browser lifetime ctx (parents the allocator), not a boot deadline —
+	// expiry kills Chrome mid-test. Generous ceiling = hang protection only.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
 	manager := NewSessionManager()
@@ -78,7 +80,9 @@ func TestSessionNavigationIntegration(t *testing.T) {
 		t.Skip("SKIP_BROWSER_TESTS is set")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// Browser lifetime ctx (parents the allocator), not a boot deadline —
+	// expiry kills Chrome mid-test. Generous ceiling = hang protection only.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
 	manager := NewSessionManager()

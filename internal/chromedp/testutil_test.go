@@ -108,7 +108,14 @@ func setupBrowserOnce(tb testing.TB, startURL string) (*SessionManager, *Automat
 	tb.Helper()
 	skipIfBrowserDisabled(tb)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	// This context is the browser's LIFETIME, not a boot deadline — it parents
+	// the chromedp allocator, so when it expires Chrome is killed and the
+	// session flips to Stopped mid-test. 60s looked generous but the full
+	// suite under -race load pushed the shared-session variants past it
+	// (observed: AllViewportsIframe failing at ~69s with "session not
+	// running"). Keep a ceiling only as hang protection, far above any
+	// legitimate run time.
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	tb.Cleanup(cancel)
 
 	manager := NewSessionManager()
