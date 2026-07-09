@@ -333,6 +333,12 @@ func normalizeProjectPath(projectPath string) string {
 
 // Register adds or returns an existing Entry for the given script.
 // If the entry already exists, it is returned as-is (shared across sessions).
+//
+// A re-register under a different config is an error: two callers disagreeing
+// about how a script launches is a bug, and silently keeping either config
+// would make the winner depend on registration order. Callers whose config is
+// expected to change over the registry's lifetime — because it is reloaded
+// from a file the user edits — want [Registry.Upsert].
 func (r *Registry) Register(name, projectPath string, cfg *Config) (*Entry, error) {
 	if name == "" {
 		return nil, fmt.Errorf("script name is required")
@@ -353,6 +359,61 @@ func (r *Registry) Register(name, projectPath string, cfg *Config) (*Entry, erro
 		return existingEntry, nil
 	}
 	return entry, nil
+}
+
+// Upsert registers a script, replacing an existing entry whose config differs.
+// It reports whether a replacement happened.
+//
+// This is the counterpart to [Registry.Register] for configs that are reloaded
+// from disk. A caller that re-registers a script after the user edited its
+// launch command gets an error from Register — correctly, since the registered
+// entry describes a different script — but has no way to say "this edit is the
+// point." Upsert is that statement.
+//
+// An equal config reuses the existing entry untouched, so runtime state
+// (output history, counters, state machine) survives an idempotent reload.
+// A differing config yields a fresh entry: its runtime state described a
+// process launched from a config that no longer exists. Session observers and
+// ownership do carry over, because they describe who is watching the script,
+// not how it runs — dropping them would make the next session disconnect tear
+// down a script another session still owns.
+func (r *Registry) Upsert(name, projectPath string, cfg *Config) (*Entry, bool, error) {
+	if name == "" {
+		return nil, false, fmt.Errorf("script name is required")
+	}
+	if projectPath == "" {
+		return nil, false, fmt.Errorf("project path is required")
+	}
+
+	projectPath = normalizeProjectPath(projectPath)
+	key := entryKey(projectPath, name)
+
+	for {
+		entry := newEntry(name, projectPath, cfg)
+
+		existing, loaded := r.entries.LoadOrStore(key, entry)
+		if !loaded {
+			return entry, false, nil
+		}
+
+		existingEntry := existing.(*Entry)
+		if reflect.DeepEqual(existingEntry.Config, cfg) {
+			return existingEntry, false, nil
+		}
+
+		for _, sessionCode := range existingEntry.ListSessions() {
+			entry.AddSession(sessionCode)
+		}
+		if owner := existingEntry.Owner(); owner != "" {
+			entry.SetOwner(owner)
+		}
+
+		// Swap only if nobody replaced the entry we just inspected; otherwise
+		// retry against the winner so a concurrent Upsert cannot be lost.
+		if r.entries.CompareAndSwap(key, existing, entry) {
+			return entry, true, nil
+		}
+	}
 }
 
 // Get retrieves an Entry by name and project path.
