@@ -14,6 +14,20 @@ var testDelays = PingDelays{
 	ResetAfter: 200 * time.Millisecond,
 }
 
+// awaitCount blocks until the counter reaches want, or fails. The deadline is a
+// deadlock guard: a fixed sleep sized to the coalescer's delay is racing the
+// very AfterFunc it waits for, and loses whenever the machine is loaded.
+func awaitCount(t *testing.T, count *atomic.Int32, want int32, msg string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for count.Load() < want {
+		if time.Now().After(deadline) {
+			t.Fatalf("%s: got %d, want %d", msg, count.Load(), want)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func TestNextPingDelay_Sequence(t *testing.T) {
 	t.Parallel()
 	delays := PingDelays{Initial: 500 * time.Millisecond, Max: 10 * time.Second}
@@ -45,9 +59,13 @@ func TestCoalesce_FirstOccurrencePings(t *testing.T) {
 	defer c.Stop()
 
 	c.Schedule(makeEv("fp1"))
-	time.Sleep(50 * time.Millisecond) // 2.5× Initial (20ms)
-	if count.Load() != 1 {
-		t.Errorf("ping count: got %d, want 1", count.Load())
+	awaitCount(t, &count, 1, "first occurrence should ping")
+
+	// And exactly one: nothing else is scheduled, so give a spurious second ping
+	// a chance to appear before declaring success.
+	time.Sleep(3 * testDelays.Initial)
+	if got := count.Load(); got != 1 {
+		t.Errorf("ping count: got %d, want exactly 1", got)
 	}
 }
 
