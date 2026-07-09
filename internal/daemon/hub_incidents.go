@@ -12,11 +12,15 @@ import (
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
 )
 
-func (d *Daemon) hubHandleIncidents(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	return newCommandRouter("INCIDENTS").dispatch(ctx, conn, cmd, map[string]handlerFn{
+func (d *Daemon) incidentsActions() map[string]handlerFn {
+	return map[string]handlerFn{
 		"QUERY": noCtx(d.hubHandleIncidentsQuery),
 		"":      noCtx(d.hubHandleIncidentsQuery),
-	})
+	}
+}
+
+func (d *Daemon) hubHandleIncidents(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	return newCommandRouter("INCIDENTS").dispatch(ctx, conn, cmd, d.incidentsActions())
 }
 
 func (d *Daemon) hubHandleIncidentsQuery(conn *hubpkg.Connection, cmd *hubproto.Command) error {
@@ -36,7 +40,10 @@ func (d *Daemon) hubHandleIncidentsQuery(conn *hubpkg.Connection, cmd *hubproto.
 		}
 	}
 
-	qf := incidentQueryFilterToInternal(filter)
+	qf, err := incidentQueryFilterToInternal(filter)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
+	}
 	entries, stats := d.incidentBus.QuerySession(sessionCode, qf)
 
 	result := buildIncidentQueryResult(entries, stats, filter)
@@ -61,39 +68,67 @@ func (d *Daemon) hubHandleIncidentsQuery(conn *hubpkg.Connection, cmd *hubproto.
 }
 
 // incidentQueryFilterToInternal converts the wire filter to the internal query filter.
-func incidentQueryFilterToInternal(f protocol.IncidentQueryFilter) incident.QueryFilter {
-	qf := incident.QueryFilter{Limit: f.Limit}
+// When the caller bounds the page (Limit > 0) we over-fetch by one so the hub can
+// detect truncation itself and then truncate + compute the cursor + mark-read over
+// exactly the page the caller will see. Doing the over-fetch here (rather than the
+// tool inflating Limit and truncating client-side) is what keeps the dropped record
+// from being marked read and swept past the cursor unseen.
+func incidentQueryFilterToInternal(f protocol.IncidentQueryFilter) (incident.QueryFilter, error) {
+	limit := f.Limit
+	if limit > 0 {
+		limit++
+	}
+	qf := incident.QueryFilter{Limit: limit}
 	for _, s := range f.Severities {
 		qf.Severities = append(qf.Severities, incident.Severity(s))
 	}
 	if f.Since != "" {
+		// A `since` we cannot parse must not be dropped: silently ignoring it
+		// returns the whole inbox to a caller who asked for a slice of it.
 		t, err := time.Parse(time.RFC3339, f.Since)
-		if err == nil {
-			qf.Since = t
+		if err != nil {
+			return incident.QueryFilter{}, fmt.Errorf("invalid since %q: want RFC3339", f.Since)
 		}
+		qf.Since = t
 	}
-	if f.MarkRead {
-		qf.UnreadOnly = false
-	}
-	return qf
+	return qf, nil
 }
 
 // buildIncidentQueryResult maps inbox entries to the wire result type.
 func buildIncidentQueryResult(entries []incident.InboxEntry, stats incident.Stats, filter protocol.IncidentQueryFilter) protocol.IncidentQueryResult {
-	// Apply secondary filters not supported by the inbox query.
-	filtered := applySecondaryFilters(entries, filter)
+	// The query over-fetched by one (see incidentQueryFilterToInternal) so the
+	// hub can detect truncation itself, then truncate + compute the cursor +
+	// mark-read over exactly the page the caller will see.
+	//
+	// Entries are the OLDEST matching page, newest-first, so the surplus is
+	// entries[0] and the page to keep is the tail. Keeping the head instead
+	// would strand the oldest incident below the cursor published here, and a
+	// `since=cursor` pull would never return it again.
+	//
+	// Truncate before the secondary filters run: they can drop the surplus and
+	// hide the fact that the inbox had more matching entries.
+	examined := entries
+	truncated := false
+	if filter.Limit > 0 && len(examined) > filter.Limit {
+		truncated = true
+		examined = examined[len(examined)-filter.Limit:]
+	}
+
+	filtered := applySecondaryFilters(examined, filter)
 
 	records := make([]protocol.IncidentRecord, 0, len(filtered))
 	for _, e := range filtered {
 		records = append(records, incidentEntryToRecord(e, filter.Detail))
 	}
 
-	// Records are newest-first; cursor = newest entry in the returned page. The
-	// inbox returns the oldest unseen page when truncating, so advancing the
-	// caller's `since` to this page's newest entry sweeps forward gap-free.
+	// Cursor = newest entry examined, not newest returned. Everything older was
+	// either returned or rejected by a secondary filter, and everything newer is
+	// still ahead of the cursor — so successive `since=cursor` pulls sweep the
+	// inbox gap-free. Deriving it from `records` instead would stall a filtered
+	// query forever on a page where nothing matched.
 	var cursor string
-	if len(records) > 0 {
-		cursor = records[0].LastSeen
+	if len(examined) > 0 {
+		cursor = examined[0].LastSeenAt.Format(time.RFC3339)
 	}
 
 	return protocol.IncidentQueryResult{
@@ -105,7 +140,8 @@ func buildIncidentQueryResult(entries []incident.InboxEntry, stats incident.Stat
 			Info:     stats.Info,
 			Dropped:  stats.Dropped,
 		},
-		Cursor: cursor,
+		Cursor:    cursor,
+		Truncated: truncated,
 	}
 }
 
