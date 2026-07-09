@@ -502,6 +502,35 @@ func TestHook_DropLog_NormalizesNewlines(t *testing.T) {
 	assert.Contains(t, lines[0], "first second third")
 }
 
+// waitForHooksSettled blocks until every hook has reached the sink, or until a
+// drop has been recorded — a dropped hook never arrives, so there is nothing
+// left to wait for. It returns how many were delivered.
+//
+// A drop records one line per failed attempt, not one per lost hook, so the
+// lines cannot be counted as events; their presence only proves that the losses
+// were reported rather than silent.
+func waitForHooksSettled(t *testing.T, sink *captureHookSinkCLI, dropLog string, want int) int {
+	t.Helper()
+	deadline := time.After(30 * time.Second)
+	for {
+		if delivered := len(sink.snapshot()); delivered >= want {
+			return delivered
+		}
+		if len(readDropLogLines(t, dropLog)) > 0 {
+			// Let any in-flight hooks land before reporting the shortfall.
+			time.Sleep(500 * time.Millisecond)
+			return len(sink.snapshot())
+		}
+		select {
+		case <-sink.notify:
+		case <-time.After(20 * time.Millisecond): // the drop log has no signal to wake on
+		case <-deadline:
+			t.Fatalf("timed out: %d of %d hooks delivered, none recorded as dropped",
+				len(sink.snapshot()), want)
+		}
+	}
+}
+
 // TestHook_LatencyAgainstWarmDaemon measures the wall clock of the
 // runHookInternal hot path (minus process fork) against a warm test
 // daemon. The budget is loose (50ms p99) because we run hundreds of
@@ -515,7 +544,7 @@ func TestHook_LatencyAgainstWarmDaemon(t *testing.T) {
 		t.Skip("short mode")
 	}
 	sock, sink := startTestHookDaemon(t)
-	_ = redirectDropLog(t)
+	dropLog := redirectDropLog(t)
 
 	const iterations = 50
 	var maxDur time.Duration
@@ -539,8 +568,20 @@ func TestHook_LatencyAgainstWarmDaemon(t *testing.T) {
 	// slips past 2s for the last 1-2 events). The actual latency budget
 	// is asserted below via maxDur — this wait is just for sink
 	// reconciliation, not a perf gate.
-	sink.waitFor(t, iterations, 5*time.Second)
-	require.Len(t, sink.snapshot(), iterations)
+	// Every hook must be accounted for: delivered to the sink, or recorded as a
+	// drop. The dispatcher is fire-and-forget — when the daemon enqueue deadline
+	// expires it exits 0 and logs the drop (docs/hook-dispatcher.md) — so
+	// requiring all `iterations` to arrive asserts a delivery guarantee the code
+	// deliberately does not make. Under a loaded machine that deadline does
+	// expire, which is what made this test flaky.
+	delivered := waitForHooksSettled(t, sink, dropLog, iterations)
+	if delivered < iterations {
+		// A hook may be lost, but never silently: the dispatcher must have said so.
+		require.NotEmpty(t, readDropLogLines(t, dropLog),
+			"%d of %d hooks never arrived and no drop was recorded", iterations-delivered, iterations)
+		t.Logf("%d of %d hooks dropped under load, as recorded: %q",
+			iterations-delivered, iterations, readDropLogLines(t, dropLog))
+	}
 
 	// 100ms is well above the 5ms p99 target in the task spec. This test
 	// catches order-of-magnitude regressions, not the final latency budget
