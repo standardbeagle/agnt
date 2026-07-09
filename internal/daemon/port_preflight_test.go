@@ -5,6 +5,7 @@ package daemon
 import (
 	"bufio"
 	"context"
+	"net"
 	"os"
 	"os/exec"
 	"strconv"
@@ -125,8 +126,36 @@ func TestDetectPortConflicts_MultiplePortsMultipleScripts(t *testing.T) {
 	assert.Len(t, conflicts, 2)
 }
 
+func TestKillPortHoldersGuarded_ProtectsSelf(t *testing.T) {
+	// No t.Parallel(): exercises the real port scan + kill path.
+	// The guard's whole job: a port held by THIS process (stand-in for the
+	// daemon's own proxy listeners) must never be killed, because
+	// KillProcessByPort re-discovers holders at fire time with no exclusion
+	// list. Without the guard this test would SIGTERM the test binary.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer ln.Close()
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	pm := goprocess.NewProcessManager(goprocess.DefaultManagerConfig())
+	defer pm.Shutdown(context.Background())
+
+	killed, protected, err := killPortHoldersGuarded(context.Background(), pm, port)
+	require.NoError(t, err)
+	assert.Empty(t, killed, "must not kill anything when self holds the port")
+	assert.Contains(t, protected, os.Getpid(), "self PID must be reported as protected")
+
+	// Listener must still be alive — a successful dial proves the socket survived.
+	conn, dialErr := net.DialTimeout("tcp", ln.Addr().String(), time.Second)
+	assert.NoError(t, dialErr, "self-held listener must survive the guarded kill")
+	if conn != nil {
+		conn.Close()
+	}
+}
+
 func TestKillPortBlockers_FreesPort(t *testing.T) {
-	t.Parallel()
+	// No t.Parallel(): starts a real process and kills by port; PID-reuse
+	// under high concurrency kills unrelated processes.
 	if os.Getuid() == 0 {
 		t.Skip("don't run as root")
 	}

@@ -279,10 +279,15 @@ func (d *Daemon) preflightPortCleanup(ctx context.Context, port int) ([]int, err
 
 	debug.Log("daemon", "Pre-flight cleanup: checking port %d", port)
 
-	// Use the process manager's KillProcessByPort which handles managed process detection
-	killedPIDs, err := d.hub.ProcessManager().KillProcessByPort(ctx, port)
+	// Guarded kill: KillProcessByPort itself has no managed/self exclusion —
+	// it kills every holder it re-discovers at fire time — so the guard
+	// re-scans and refuses when the daemon or a managed process holds the port.
+	killedPIDs, protected, err := killPortHoldersGuarded(ctx, d.hub.ProcessManager(), port)
 	if err != nil {
 		return nil, fmt.Errorf("failed to cleanup port %d: %w", port, err)
+	}
+	if len(protected) > 0 {
+		return nil, fmt.Errorf("port %d held by daemon or managed process (PIDs %v), kill skipped", port, protected)
 	}
 
 	if len(killedPIDs) > 0 {

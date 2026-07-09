@@ -423,9 +423,13 @@ func (d *Daemon) hubHandleProcCleanupPort(ctx context.Context, conn *hubpkg.Conn
 		return conn.WriteErr(hubproto.ErrInvalidArgs, "invalid port number")
 	}
 
-	pids, err := d.hub.ProcessManager().KillProcessByPort(ctx, port)
+	pids, protected, err := killPortHoldersGuarded(ctx, d.hub.ProcessManager(), port)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrInternal, err.Error())
+	}
+	if len(protected) > 0 {
+		return conn.WriteErr(hubproto.ErrInvalidArgs,
+			fmt.Sprintf("port %d is held by the daemon or a managed process (PIDs %v); use proc stop for managed processes", port, protected))
 	}
 
 	resp := map[string]interface{}{

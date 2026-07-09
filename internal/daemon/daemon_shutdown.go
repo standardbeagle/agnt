@@ -130,14 +130,20 @@ func (d *Daemon) startupPortCleanup(ctx context.Context) int {
 		var killErrs []string
 
 		// Linux PIDs: ProcessManager re-discovers them via the vendored
-		// Linux-only port lookup, so this is a no-op for Windows-only
-		// holders. Skip when there's nothing on the Linux side to avoid
-		// the redundant scan.
+		// Linux-only port lookup at kill time (the filter above is void by
+		// then), so route through the guard that refuses to fire when the
+		// port is held by the daemon itself or a managed process. No-op for
+		// Windows-only holders; skip when there's nothing on the Linux side
+		// to avoid the redundant scan.
 		if len(unmanagedLinux) > 0 {
-			if killed, err := d.hub.ProcessManager().KillProcessByPort(ctx, port); err != nil {
+			killed, protected, err := killPortHoldersGuarded(ctx, d.hub.ProcessManager(), port)
+			if err != nil {
 				killErrs = append(killErrs, fmt.Sprintf("linux kill: %v", err))
 			} else {
 				debug.Log("daemon", "startup port cleanup: killed %d process(es) on port %d", len(killed), port)
+			}
+			if len(protected) > 0 {
+				killErrs = append(killErrs, fmt.Sprintf("port %d held by daemon or managed process (PIDs %v), kill skipped", port, protected))
 			}
 		}
 
