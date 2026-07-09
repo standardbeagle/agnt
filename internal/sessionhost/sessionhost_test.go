@@ -177,9 +177,13 @@ func TestClose_MarksExitedAndClosesDone(t *testing.T) {
 		t.Fatalf("Close: %v", err)
 	}
 
+	// Closing the PTY unblocks readLoop, the child sees EOF and exits, and
+	// waitLoop reaps it. The deadline is a deadlock guard, not a budget: three
+	// seconds is well inside the time a loaded machine needs to schedule that
+	// chain, which is what made this flake.
 	select {
 	case <-s.Done():
-	case <-time.After(3 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatalf("expected Done() to close after PTY close")
 	}
 	if s.Status() != StatusExited {

@@ -252,8 +252,24 @@ func TestPing_EndToEnd_BurstIngestOnePing(t *testing.T) {
 		inbox.Ingest(makeEntry("fp-burst", SeverityError))
 	}
 
-	// Wait well past Max delay.
-	time.Sleep(200 * time.Millisecond)
+	// Wait for the first ping to actually land, then let the burst settle. Sizing
+	// a sleep to the coalescer's Max delay races the AfterFunc it waits for: on a
+	// loaded machine the timer goroutine has not run yet and no ping exists.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		mu.Lock()
+		emitted := len(pings)
+		mu.Unlock()
+		if emitted > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no pings emitted from burst")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	// Give any further coalesced pings their chance before counting.
+	time.Sleep(4 * cfg.Delays.Max)
 
 	mu.Lock()
 	n := len(pings)
@@ -263,9 +279,6 @@ func TestPing_EndToEnd_BurstIngestOnePing(t *testing.T) {
 	}
 	mu.Unlock()
 
-	if n == 0 {
-		t.Fatal("no pings emitted from burst")
-	}
 	if n > 5 {
 		t.Errorf("burst of 100 same-fp should produce ≤5 pings, got %d", n)
 	}

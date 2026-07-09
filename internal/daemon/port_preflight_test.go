@@ -5,8 +5,6 @@ package daemon
 import (
 	"bufio"
 	"context"
-	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"strconv"
@@ -14,6 +12,7 @@ import (
 	"sync"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/platform"
@@ -149,12 +148,21 @@ func TestKillPortBlockers_FreesPort(t *testing.T) {
 	assert.True(t, results[0].Killed)
 	assert.Empty(t, results[0].Error)
 
-	// Verify port is free
-	ln2, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
-	assert.NoError(t, err, "port should be free after kill")
-	if ln2 != nil {
-		ln2.Close()
-	}
+	// Verify the blocker released the port.
+	//
+	// Do NOT assert this by binding the port: it is an ephemeral port, so the
+	// instant the blocker frees it any other parallel test calling net.Listen on
+	// :0 may be handed it, and our bind fails with EADDRINUSE through no fault of
+	// the kill. That is what made this test flaky under load. Ask the question we
+	// actually mean — is the blocker still holding it? — instead.
+	assert.Eventually(t, func() bool {
+		for _, pid := range config.FindPIDsByPort(context.Background(), port) {
+			if pid == blockerPID {
+				return false
+			}
+		}
+		return true
+	}, 30*time.Second, 10*time.Millisecond, "blocker still holds the port after kill")
 }
 
 func TestKillPortBlockers_NonExistentPID(t *testing.T) {

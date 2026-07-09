@@ -647,22 +647,44 @@ func TestTrafficLogger_ClearMidStream(t *testing.T) {
 		}()
 	}
 
-	time.Sleep(duration)
+	// Run until every role has made forward progress, rather than for a fixed
+	// slice of wall clock. Sleeping `duration` and then asserting a throughput
+	// floor asserts the scheduler's generosity, not the logger's liveness: under
+	// heavy Clear contention on a loaded machine the clearers fired exactly 3
+	// times in the window and the test failed on "3 is not greater than 3".
+	//
+	// The deadline below is a deadlock guard. Only a real stall trips it.
+	const (
+		wantWrites  = int64(10)
+		wantClears  = int64(3)
+		wantQueries = int64(10)
+	)
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		progressed := writeCount.Load() > wantWrites &&
+			clearCount.Load() > wantClears &&
+			queryCount.Load() > wantQueries
+		if progressed {
+			break
+		}
+		if time.Now().After(deadline) {
+			close(done)
+			wg.Wait()
+			t.Fatalf("no forward progress: writes=%d clears=%d queries=%d",
+				writeCount.Load(), clearCount.Load(), queryCount.Load())
+		}
+		time.Sleep(time.Millisecond)
+	}
 	close(done)
 	wg.Wait()
 
 	// (1) -race catches anything. (goleak in defer catches goroutines.)
 
-	// Progress check: all three roles made forward progress. Thresholds
-	// are loose because under heavy Clear contention the mutex becomes
-	// the hot spot and total throughput varies widely by scheduler. The
-	// shape we care about is "nonzero across the board, not a deadlock."
-	assert.Greater(t, writeCount.Load(), int64(10),
-		"producers made forward progress")
-	assert.Greater(t, clearCount.Load(), int64(3),
-		"clearers fired several times")
-	assert.Greater(t, queryCount.Load(), int64(10),
-		"queriers made many observations")
+	// Every role made forward progress; the shape we care about is "nonzero
+	// across the board, not a deadlock".
+	assert.Greater(t, writeCount.Load(), wantWrites, "producers made forward progress")
+	assert.Greater(t, clearCount.Load(), wantClears, "clearers fired several times")
+	assert.Greater(t, queryCount.Load(), wantQueries, "queriers made many observations")
 
 	// No torn slots permitted under the shared-mutex consistency
 	// contract; tornCount is asserted zero here (any error above already
