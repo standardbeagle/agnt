@@ -198,7 +198,14 @@ func TestSessionBasedCleanup(t *testing.T) {
 	// timer (CleanupGracePeriod=1ns), so we must not assert before the
 	// goroutine has observed the disconnect — but we also must not pin the
 	// test to a fixed wall-clock wait.
-	deadline := time.Now().Add(5 * time.Second)
+	//
+	// The deadline is a deadlock guard, not a budget. doCleanup stops the
+	// process with a SIGTERM→SIGKILL escalation whose graceful window defaults
+	// to 5s, so a 5s deadline was racing the very thing it waited for: on a
+	// loaded machine the kill had not escalated yet and the process was still
+	// listed. (go-cli-server v0.5.1 made StopProcess honor that window instead
+	// of cancelling the exec context immediately, which widened the race.)
+	deadline := time.Now().Add(30 * time.Second)
 	for {
 		procs, err = client2.ProcList(protocol.DirectoryFilter{Global: true})
 		if err != nil {
@@ -212,7 +219,7 @@ func TestSessionBasedCleanup(t *testing.T) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("Expected 1 process after cleanup within 5s, still have %d", len(procsList))
+			t.Fatalf("Expected 1 process after cleanup within 30s, still have %d", len(procsList))
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
