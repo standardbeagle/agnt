@@ -196,14 +196,8 @@ func (d *Daemon) runProcessAfterDeps(
 
 	// All deps ready — kick off the actual start.
 	if err := d.StartScriptExplicit(ctx, name, scriptCfg, projectPath, nil); err != nil {
-		d.startupErrorStore.Add(&StartupLogEntry{
-			ProcessID:  processID,
-			ScriptName: name,
-			Level:      "error",
-			EventType:  "proc_run_failed",
-			Message:    fmt.Sprintf("PROC RUN failed after deps: %v", err),
-			Timestamp:  time.Now(),
-		})
+		d.recordStartupEntry(processID, name, "error", "proc_run_failed",
+			fmt.Sprintf("PROC RUN failed after deps: %v", err), 0)
 		// Mark the pending entry failed so PROC STATUS reflects the
 		// final state. Use a synthetic reason — the real error lives
 		// in startupErrorStore.
@@ -239,14 +233,8 @@ func (d *Daemon) failPendingProcess(processID, name, projectPath, dep string, pa
 		entry.IncrementFailCount()
 	}
 
-	d.startupErrorStore.Add(&StartupLogEntry{
-		ProcessID:  processID,
-		ScriptName: name,
-		Level:      "error",
-		EventType:  "dependency_timeout",
-		Message:    fmt.Sprintf("dependency_timeout:%s — %v", dep, waitErr),
-		Timestamp:  time.Now(),
-	})
+	d.recordStartupEntry(processID, name, "error", "dependency_timeout",
+		fmt.Sprintf("dependency_timeout:%s — %v", dep, waitErr), 0)
 }
 
 // resolveCommandString returns a best-effort human-readable command

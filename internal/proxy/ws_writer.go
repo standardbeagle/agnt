@@ -181,13 +181,17 @@ func (w *asyncWSWriter) WriteMessage(_ int, data []byte) error {
 	if w.closed.Load() {
 		return errConnClosed
 	}
-	// Non-blocking send: drop on full buffer to isolate slow subscribers.
+	// Non-blocking send: drop on full buffer to isolate slow subscribers. A drop
+	// is reported to the caller as errBroadcastDropped so a dropped frame is not
+	// counted as a delivery (broadcastRaw counts only nil returns). Silently
+	// returning nil on a drop made "0 clients" detection unreliable.
 	select {
 	case w.ch <- data:
+		return nil
 	default:
 		w.dropped.Add(1)
+		return errBroadcastDropped
 	}
-	return nil
 }
 
 // Close stops the drain goroutine, fails any in-flight control writes, and
@@ -204,6 +208,12 @@ func (w *asyncWSWriter) Close() error {
 // errConnClosed is returned by the write methods when the underlying
 // connection has already been closed or a previous write failed.
 var errConnClosed = connClosedError("connection closed")
+
+// errBroadcastDropped is returned by WriteMessage when a broadcast frame is
+// dropped because the subscriber's buffer is full. The connection is still
+// open; the frame was simply shed to isolate a slow consumer. Callers must not
+// count a dropped frame as delivered.
+var errBroadcastDropped = connClosedError("broadcast frame dropped: buffer full")
 
 type connClosedError string
 

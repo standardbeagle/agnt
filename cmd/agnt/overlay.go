@@ -34,7 +34,7 @@ type Overlay struct {
 	server          *http.Server
 	listener        net.Listener
 	upgrader        websocket.Upgrader
-	clients         sync.Map // map[*websocket.Conn]bool
+	clients         sync.Map // map[*websocket.Conn]*sync.Mutex (per-conn write lock)
 	mu              sync.RWMutex
 	auditSummarizer *overlay.AuditSummarizer
 	activityCh      chan struct{} // Signaled when output activity is detected
@@ -235,7 +235,7 @@ func (o *Overlay) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	o.clients.Store(conn, true)
+	o.clients.Store(conn, &sync.Mutex{})
 	defer o.clients.Delete(conn)
 
 	for {
@@ -828,7 +828,18 @@ func (o *Overlay) Broadcast(msgType string, payload interface{}) {
 	}
 
 	o.clients.Range(func(key, value interface{}) bool {
-		if conn, ok := key.(*websocket.Conn); ok {
+		conn, ok := key.(*websocket.Conn)
+		if !ok {
+			return true
+		}
+		// gorilla/websocket forbids concurrent writes to a single conn.
+		// Broadcast is reachable from /event, /toast, and the read loop, so
+		// serialize writes per connection with its dedicated mutex.
+		if wmu, ok := value.(*sync.Mutex); ok {
+			wmu.Lock()
+			_ = conn.WriteMessage(websocket.TextMessage, msg)
+			wmu.Unlock()
+		} else {
 			_ = conn.WriteMessage(websocket.TextMessage, msg)
 		}
 		return true

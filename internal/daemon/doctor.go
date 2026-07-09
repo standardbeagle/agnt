@@ -382,15 +382,20 @@ func checkSessionHealth(ctx context.Context, registry *SessionRegistry) CheckRes
 		return CheckResult{Name: name, Status: StatusOK, Message: "no sessions"}
 	}
 
-	threshold := 60 * time.Second
+	// Derive the staleness threshold from the registry's heartbeat timeout
+	// rather than a parallel hardcoded constant, so the two can't drift.
+	threshold := registry.HeartbeatTimeout()
 	now := time.Now()
 	var stale []map[string]interface{}
 
 	for _, s := range sessions {
-		if s.GetStatus() == SessionStatusActive && now.Sub(s.LastSeen) > threshold {
+		// GetLastSeen reads under the session lock; a bare s.LastSeen races the
+		// heartbeat writer and can observe a torn time.Time.
+		lastSeen := s.GetLastSeen()
+		if s.GetStatus() == SessionStatusActive && now.Sub(lastSeen) > threshold {
 			stale = append(stale, map[string]interface{}{
 				"code":          s.Code,
-				"last_seen_ago": now.Sub(s.LastSeen).Truncate(time.Second).String(),
+				"last_seen_ago": now.Sub(lastSeen).Truncate(time.Second).String(),
 			})
 		}
 	}

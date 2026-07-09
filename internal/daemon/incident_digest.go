@@ -10,8 +10,15 @@ import (
 // transport for the unified agent-inbound queue: consumer processes (agnt mcp,
 // agnt run) that subscribe to the daemon event stream render the digest to the
 // agent. The compact digest text rides in Custom.Message; level is the severity.
-func (d *Daemon) broadcastIncidentDigest(level string, payload incident.PingPayload) {
+func (d *Daemon) broadcastIncidentDigest(level, projectPath string, payload incident.PingPayload) {
 	if d.eventHub == nil {
+		return
+	}
+	// Never broadcast a digest unscoped: an empty project path disables the
+	// project filter in BroadcastLogEntryForProject and would leak this
+	// session's pings to every other project. Callers must resolve the owning
+	// project first; drop defensively if they didn't.
+	if projectPath == "" {
 		return
 	}
 	entry := proxy.LogEntry{
@@ -21,7 +28,10 @@ func (d *Daemon) broadcastIncidentDigest(level string, payload incident.PingPayl
 			Message: incident.CompactDigestText(payload),
 		},
 	}
-	d.eventHub.BroadcastLogEntry(entry, "")
+	// Stamp the digest with the owning session's project so project-scoped
+	// STREAM-EVENTS subscribers in other projects don't receive this session's
+	// pings. projectPath is guaranteed non-empty by the guard above.
+	d.eventHub.BroadcastLogEntryForProject(entry, projectPath)
 }
 
 // addIncidentSession registers a session pipeline on the incident bus, wired so
@@ -45,7 +55,22 @@ func (d *Daemon) addIncidentSession(sessionCode string) {
 		if d.IsForwardingPaused(sessionCode) {
 			return nil
 		}
-		d.broadcastIncidentDigest(level, payload)
+		// Resolve the project fresh each ping — a session's project path is
+		// stable for its lifetime, but looking it up here avoids capturing a
+		// stale value if the session re-registers.
+		//
+		// Fail closed on a registry miss: during the teardown window the
+		// session is unregistered before the incident bus removes it, so a
+		// ping can fire with the session already gone. Broadcasting with an
+		// empty project path would degrade to an UNSCOPED broadcast, leaking
+		// this session's digest into every other project's STREAM-EVENTS
+		// stream. Drop the push instead — the incident already landed in the
+		// inbox upstream, so it stays pullable via get_incidents/get_errors.
+		s, ok := d.sessionRegistry.Get(sessionCode)
+		if !ok || s.ProjectPath == "" {
+			return nil
+		}
+		d.broadcastIncidentDigest(level, s.ProjectPath, payload)
 		return nil
 	}
 	d.incidentBus.AddSession(sessionCode, mcpNotify, nil, nil)

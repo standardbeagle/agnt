@@ -81,6 +81,52 @@ func (s *StartupLogStore) Error(processID, scriptName, eventType, message string
 	})
 }
 
+// daemonStartupLog records a daemon-wide startup event. These entries are
+// intentionally global-only: they describe the daemon/socket lifecycle before
+// any project session exists.
+func (d *Daemon) daemonStartupLog(level, eventType, message string) {
+	d.daemonStartupLogPort(level, eventType, message, 0)
+}
+
+// daemonStartupLogPort is daemonStartupLog for events that carry an offending
+// port (startup port cleanup, port-cleanup timeouts). It is the single
+// construction point for daemon-wide (unscoped, empty-ProcessID) startup
+// entries, so no caller hand-rolls a &StartupLogEntry{...Timestamp: time.Now()}.
+func (d *Daemon) daemonStartupLogPort(level, eventType, message string, port int) {
+	if d == nil || d.startupErrorStore == nil {
+		return
+	}
+	d.startupErrorStore.Add(&StartupLogEntry{
+		Level:     level,
+		EventType: eventType,
+		Message:   message,
+		Port:      port,
+		Timestamp: time.Now(),
+	})
+}
+
+// recordStartupEntry is the single construction point for startup-log entries
+// keyed by an already-formed ProcessID that the caller holds (a script/proxy
+// process ID, event.ScriptID, event.ProxyID, etc.). It removes the hand-rolled
+// &StartupLogEntry{...Timestamp: time.Now()} boilerplate that was duplicated
+// across the daemon. Prefer startupLog(projectPath) when you only have a
+// script/proxy name (it stamps the project prefix for you); use
+// daemonStartupLog for genuinely daemon-wide events with no ProcessID.
+func (d *Daemon) recordStartupEntry(processID, scriptName, level, eventType, message string, port int) {
+	if d == nil || d.startupErrorStore == nil {
+		return
+	}
+	d.startupErrorStore.Add(&StartupLogEntry{
+		ProcessID:  processID,
+		ScriptName: scriptName,
+		Level:      level,
+		EventType:  eventType,
+		Message:    message,
+		Port:       port,
+		Timestamp:  time.Now(),
+	})
+}
+
 // startupLogger binds a StartupLogStore to a single project path so every
 // entry it records is automatically stamped with that project's ProcessID
 // prefix (makeProcessID(projectPath, scriptName)).
@@ -107,6 +153,21 @@ type startupLogger struct {
 // startupLog returns a project-bound logger over the daemon's startup log store.
 func (d *Daemon) startupLog(projectPath string) *startupLogger {
 	return &startupLogger{store: d.startupErrorStore, projectPath: projectPath}
+}
+
+// surfaceConfigWarnings pushes each non-fatal config-parse warning (e.g. a
+// depends-on target that isn't autostart, which would otherwise hang the
+// dependent script forever with a 0 = wait-indefinitely timeout) into the
+// project-scoped startup log so the agent can see it. Parse-time debug.Log
+// alone is not sufficient under the Silent Failure Prohibition.
+func (d *Daemon) surfaceConfigWarnings(projectPath string, warnings []string) {
+	if len(warnings) == 0 {
+		return
+	}
+	log := d.startupLog(projectPath)
+	for _, w := range warnings {
+		log.Warn("", "config_warning", w)
+	}
 }
 
 func (l *startupLogger) record(level, name, eventType, message string, port int) {
@@ -217,6 +278,42 @@ func (s *StartupLogStore) Clear() {
 	defer s.mu.Unlock()
 	s.head = 0
 	s.len = 0
+}
+
+// ClearByPrefix removes only entries whose ProcessID carries the given
+// project prefix (makeProcessID(projectPath, "")), preserving entries for
+// other projects and daemon-wide (bare-ProcessID) events. The ring buffer is
+// shared across every project, so the last-session cleanup path must scope its
+// wipe: an unscoped Clear() tearing down project A's session would otherwise
+// destroy project B's startup log. Survivors are re-packed oldest→newest.
+func (s *StartupLogStore) ClearByPrefix(prefix string) {
+	if prefix == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	survivors := make([]*StartupLogEntry, 0, s.len)
+	for i := 0; i < s.len; i++ {
+		entry := s.entries[(s.head+i)%s.maxSize]
+		if entry == nil {
+			continue
+		}
+		if strings.HasPrefix(entry.ProcessID, prefix) {
+			continue
+		}
+		survivors = append(survivors, entry)
+	}
+
+	for i := range s.entries {
+		s.entries[i] = nil
+	}
+	s.head = 0
+	s.len = 0
+	for _, entry := range survivors {
+		s.entries[s.len] = entry
+		s.len++
+	}
 }
 
 // Len returns the current number of entries.

@@ -165,9 +165,10 @@ func (c *Client) Shutdown() error {
 
 // Detect detects the project type at the given path.
 func (c *Client) Detect(path string) (map[string]interface{}, error) {
+	// path is a filesystem path — carry it in the JSON data frame, not an arg.
 	req := c.conn.Request(protocol.VerbDetect)
 	if path != "" && path != "." {
-		req = c.conn.Request(protocol.VerbDetect, path)
+		req = req.WithJSON(map[string]interface{}{"directory": path})
 	}
 	return req.JSON()
 }
@@ -230,28 +231,14 @@ func (c *Client) ProcStatus(processID string) (map[string]interface{}, error) {
 	return c.conn.Request(protocol.VerbProc, protocol.SubVerbStatus, processID).JSON()
 }
 
-// ProcOutput gets the output of a process.
+// ProcOutput gets the output of a process. The filter (which includes a
+// free-form grep pattern) travels in the JSON data frame, not as command args:
+// an arbitrary pattern cannot ride the space-delimited arg slot — the server
+// already reads the filter via unmarshalCommand, and the hardened wire protocol
+// rejects args containing whitespace / newlines / the "--" data marker.
 func (c *Client) ProcOutput(processID string, filter protocol.OutputFilter) (string, error) {
-	args := []string{protocol.SubVerbOutput, processID}
-
-	// Add filter args
-	if filter.Stream != "" && filter.Stream != "combined" {
-		args = append(args, fmt.Sprintf("stream=%s", filter.Stream))
-	}
-	if filter.Tail > 0 {
-		args = append(args, fmt.Sprintf("tail=%d", filter.Tail))
-	}
-	if filter.Head > 0 {
-		args = append(args, fmt.Sprintf("head=%d", filter.Head))
-	}
-	if filter.Grep != "" {
-		args = append(args, fmt.Sprintf("grep=%s", filter.Grep))
-	}
-	if filter.GrepV {
-		args = append(args, "grep_v")
-	}
-
-	return c.conn.Request(protocol.VerbProc, args...).String()
+	return c.conn.Request(protocol.VerbProc, protocol.SubVerbOutput, processID).
+		WithJSON(filter).String()
 }
 
 // ProcStop stops a process.
@@ -394,7 +381,10 @@ func (c *Client) CurrentPageClear(proxyID string) error {
 
 // OverlaySet sets the overlay endpoint URL.
 func (c *Client) OverlaySet(endpoint string) (map[string]interface{}, error) {
-	return c.conn.Request(protocol.VerbOverlay, protocol.SubVerbSet, endpoint).JSON()
+	// endpoint is a socket path — send it in the JSON data frame (the server
+	// already reads it via unmarshalCommand), not as a command arg.
+	return c.conn.Request(protocol.VerbOverlay, protocol.SubVerbSet).
+		WithJSON(map[string]interface{}{"endpoint": endpoint}).JSON()
 }
 
 // OverlayGet gets the current overlay endpoint configuration.
@@ -613,7 +603,10 @@ func (c *Client) SessionRegisterWithContainment(code string, overlayPath string,
 		SessionPGID:      sessionPGID,
 		SessionJobHandle: sessionJobHandle,
 	}
-	return c.conn.Request(protocol.VerbSession, protocol.SubVerbRegister, code, overlayPath).WithJSON(metadata).JSON()
+	// overlayPath is a socket path and rides the JSON metadata only — not a
+	// positional arg. (Server reads metadata.OverlayPath; the old Args[1] copy
+	// was redundant and a filesystem path can't safely ride the arg slot.)
+	return c.conn.Request(protocol.VerbSession, protocol.SubVerbRegister, code).WithJSON(metadata).JSON()
 }
 
 // SessionUnregister unregisters a session from the daemon.
@@ -946,13 +939,15 @@ func (c *Client) StartupLog(limit int, dirFilter protocol.DirectoryFilter) (map[
 		WithJSON(payload).JSON()
 }
 
-// Doctor runs health checks and returns a diagnostic report.
+// Doctor runs health checks and returns a diagnostic report. The project path
+// is a filesystem path (can contain spaces) so it rides the JSON data frame,
+// not a command arg.
 func (c *Client) Doctor(projectPath string) (map[string]interface{}, error) {
-	args := []string{}
+	req := c.conn.Request(protocol.VerbDoctor)
 	if projectPath != "" {
-		args = append(args, projectPath)
+		req = req.WithJSON(map[string]interface{}{"directory": projectPath})
 	}
-	return c.conn.Request(protocol.VerbDoctor, args...).JSON()
+	return req.JSON()
 }
 
 // ScriptList lists all scripts for a project directory.

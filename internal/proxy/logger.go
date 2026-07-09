@@ -835,6 +835,12 @@ func (tl *TrafficLogger) Query(filter LogFilter) []LogEntry {
 		}
 	}
 
+	// Honour Limit by keeping the most recent N matches (results are in
+	// chronological order, so the newest are at the tail). Limit <= 0 = no cap.
+	if filter.Limit > 0 && len(results) > filter.Limit {
+		results = results[len(results)-filter.Limit:]
+	}
+
 	return results
 }
 

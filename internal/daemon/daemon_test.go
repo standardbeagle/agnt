@@ -642,8 +642,7 @@ func TestReconcileScriptStates_DeadPIDTransitioned(t *testing.T) {
 
 	// Register a script and set it to Running
 	entry, err := d.scriptRegistry.Register("dev", projectPath, &script.Config{
-		Run:       "sleep 999",
-		Autostart: true,
+		Run: "sleep 999",
 	})
 	if err != nil {
 		t.Fatalf("Register failed: %v", err)
@@ -772,8 +771,7 @@ func TestCleanupSessionResources_ClearsScriptRegistry(t *testing.T) {
 
 	for _, name := range []string{"dev", "test", "lint"} {
 		entry, err := d.scriptRegistry.Register(name, projectPath, &script.Config{
-			Run:       "echo " + name,
-			Autostart: true,
+			Run: "echo " + name,
 		})
 		if err != nil {
 			t.Fatalf("Register %s failed: %v", name, err)

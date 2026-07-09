@@ -9,6 +9,39 @@ import (
 	"testing"
 )
 
+// A caller/config-supplied proxy id carrying HTML that would break out of the
+// inline <script> must be neutralised, not echoed verbatim. proxyID reaches the
+// same %q-style interpolation as frameID but cannot be alphabet-constrained, so
+// it is JS/HTML-encoded via jsStringLiteral.
+func TestInjectProxyID_ScriptBreakoutNeutralised(t *testing.T) {
+	const evil = `</script><script>alert(1)</script>`
+	// Include an existing <script> so InjectProxyMeta (which splices after the
+	// last </script>) actually injects rather than returning the body unchanged.
+	body := []byte("<html><head><script>var a=1;</script></head><body></body></html>")
+
+	cases := map[string][]byte{
+		"InjectInstrumentationAndMeta": InjectInstrumentationAndMeta(body, evil),
+		"InjectProxyMeta":              InjectProxyMeta(body, evil),
+		"InjectContentRuntime":         InjectContentRuntime(body, evil, "f00d"),
+		"BuildShellDocument":           BuildShellDocument(evil, "chrome-f00d", "/"),
+	}
+	for name, out := range cases {
+		s := string(out)
+		// The evil payload's own <script> tags must never survive un-encoded
+		// (that is the break-out). Legit injected tags produce real </script>,
+		// so we look for the attacker's opening sequence specifically.
+		if strings.Contains(s, "<script>alert(1)") {
+			t.Errorf("%s: proxy id broke out of the inline script: %q", name, s)
+		}
+		// json.Marshal encodes "<" as the six bytes <, so the payload's
+		// tags survive only in inert escaped form (match the unambiguous
+		// "u003cscript" tail to sidestep backslash-escaping confusion).
+		if !strings.Contains(s, "u003cscript") {
+			t.Errorf("%s: expected escaped proxy id, got: %q", name, s)
+		}
+	}
+}
+
 func TestShouldInject(t *testing.T) {
 	tests := []struct {
 		contentType string

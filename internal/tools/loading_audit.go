@@ -2,10 +2,6 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"sort"
-	"strings"
 
 	"github.com/standardbeagle/go-sdk/mcp"
 )
@@ -67,114 +63,19 @@ func (dt *DaemonTools) makeLoadingAuditHandler() func(context.Context, *mcp.Call
 		if err := dt.ensureConnected(); err != nil {
 			return errorResult(err.Error()), LoadingAuditOutput{}, nil
 		}
-		return dt.executeLoadingAuditDaemon(input)
-	}
-}
 
-// buildLoadingAuditCode constructs the JavaScript that invokes the audit module.
-func buildLoadingAuditCode(raw bool) string {
-	return fmt.Sprintf(`(function() {
-		if (!window.__devtool_audit_loading || !window.__devtool_audit_loading.auditLoading) {
-			return JSON.stringify({ error: 'audit-loading module not loaded' });
+		res, summary, raw := dt.runBufferAudit(loadingAuditSpec, input.ProxyID, input.Target, input.FrameID, input.Raw)
+		if res != nil {
+			return res, LoadingAuditOutput{}, nil
 		}
-		return JSON.stringify(window.__devtool_audit_loading.auditLoading({ raw: %t }));
-	})()`, raw)
+		return nil, LoadingAuditOutput{Summary: summary, Raw: raw}, nil
+	}
 }
 
-// executeLoadingAuditDaemon runs the loading audit using the daemon client.
-func (dt *DaemonTools) executeLoadingAuditDaemon(input LoadingAuditInput) (*mcp.CallToolResult, LoadingAuditOutput, error) {
-	code := buildLoadingAuditCode(input.Raw)
-
-	result, err := dt.client.ProxyExec(input.ProxyID, code, resolveExecTarget(input.Target, input.FrameID))
-	if err != nil {
-		return errorResult(fmt.Sprintf("failed to execute audit: %v", err)), LoadingAuditOutput{}, nil
-	}
-
-	if errMsg, ok := result["error"].(string); ok && errMsg != "" {
-		return errorResult(fmt.Sprintf("audit failed: %s", errMsg)), LoadingAuditOutput{}, nil
-	}
-
-	resultStr := getString(result, "result")
-	if resultStr == "" {
-		b, _ := json.Marshal(result)
-		resultStr = string(b)
-	}
-
-	return parseLoadingAuditResult(resultStr, input.Raw)
-}
-
-// parseLoadingAuditResult decodes the JSON returned by auditLoading and formats
-// it for the requested output mode. The audit returns a JSON object in both
-// modes; the non-raw object is condensed into a compact text summary.
-func parseLoadingAuditResult(resultStr string, raw bool) (*mcp.CallToolResult, LoadingAuditOutput, error) {
-	var parsed map[string]any
-	if err := json.Unmarshal([]byte(resultStr), &parsed); err != nil {
-		// Not JSON — surface the raw payload as the summary.
-		return nil, LoadingAuditOutput{Summary: resultStr}, nil
-	}
-
-	// Module-level error (e.g. audit-loading module not loaded).
-	if errMsg, ok := parsed["error"].(string); ok && errMsg != "" {
-		return errorResult(errMsg), LoadingAuditOutput{}, nil
-	}
-
-	if raw {
-		return nil, LoadingAuditOutput{Summary: getString(parsed, "summary"), Raw: parsed}, nil
-	}
-
-	return nil, LoadingAuditOutput{Summary: formatLoadingAuditCompact(parsed)}, nil
-}
-
-// formatLoadingAuditCompact builds a short text summary from the AI-optimized
-// (non-raw) audit object: score/grade headline, summary line, and a grouped
-// list of findings by type.
-func formatLoadingAuditCompact(parsed map[string]any) string {
-	var b strings.Builder
-
-	score := getFloat(parsed, "score")
-	grade := getString(parsed, "grade")
-	fmt.Fprintf(&b, "=== Loading UX Audit: %s (%d) ===\n", grade, int(score))
-
-	if summary := getString(parsed, "summary"); summary != "" {
-		b.WriteString(summary)
-		b.WriteString("\n")
-	}
-
-	// Empty-timeline case: stats.total == 0, no findings — the summary line above
-	// already carries the "reload page then re-run" guidance.
-	byType, _ := parsed["findingsByType"].(map[string]any)
-	if len(byType) == 0 {
-		return strings.TrimRight(b.String(), "\n")
-	}
-
-	// Deterministic ordering of finding types.
-	types := make([]string, 0, len(byType))
-	for t := range byType {
-		types = append(types, t)
-	}
-	sort.Strings(types)
-
-	for _, t := range types {
-		findings, ok := byType[t].([]any)
-		if !ok || len(findings) == 0 {
-			continue
-		}
-		fmt.Fprintf(&b, "\n%s (%d)\n", t, len(findings))
-		for _, fAny := range findings {
-			f, ok := fAny.(map[string]any)
-			if !ok {
-				continue
-			}
-			sev := getString(f, "severity")
-			msg := getString(f, "message")
-			sel := getString(f, "selector")
-			if sel != "" {
-				fmt.Fprintf(&b, "  [%s] %s — %s\n", sev, sel, msg)
-			} else {
-				fmt.Fprintf(&b, "  [%s] %s\n", sev, msg)
-			}
-		}
-	}
-
-	return strings.TrimRight(b.String(), "\n")
+// loadingAuditSpec parameterizes runBufferAudit for the spinner/loader timeline.
+var loadingAuditSpec = bufferAuditSpec{
+	globalVar: "__devtool_audit_loading",
+	fn:        "auditLoading",
+	module:    "audit-loading",
+	headline:  "Loading UX Audit",
 }

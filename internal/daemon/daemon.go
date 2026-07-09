@@ -375,14 +375,15 @@ func New(config DaemonConfig) *Daemon {
 	procConfig.PIDTracker = pidTracker
 
 	hubConfig := hub.Config{
-		SocketPath:        config.SocketPath,
-		SocketName:        "devtool-mcp", // Keep existing socket name
-		MaxClients:        config.MaxClients,
-		ReadTimeout:       config.ReadTimeout,
-		WriteTimeout:      config.WriteTimeout,
-		EnableProcessMgmt: true,
-		ProcessConfig:     procConfig,
-		Version:           Version,
+		SocketPath:            config.SocketPath,
+		SocketName:            "devtool-mcp", // Keep existing socket name
+		MaxClients:            config.MaxClients,
+		ReadTimeout:           config.ReadTimeout,
+		WriteTimeout:          config.WriteTimeout,
+		EnableProcessMgmt:     true,
+		EnableProcessCommands: true,
+		ProcessConfig:         procConfig,
+		Version:               Version,
 	}
 
 	h := hub.New(hubConfig)
@@ -542,12 +543,8 @@ func New(config DaemonConfig) *Daemon {
 		default:
 			debug.Warn("daemon", "Proxy event channel full, dropping URL detection event for %s: %s", processID, url)
 			if d.startupErrorStore != nil {
-				d.startupErrorStore.Add(&StartupLogEntry{
-					ProcessID: processID, ScriptName: stripProcessPrefix(processID),
-					Level: "warning", EventType: "proxy_event_dropped",
-					Message:   fmt.Sprintf("proxy event channel full: URL %s detected but event dropped — proxy may not be created", url),
-					Timestamp: time.Now(),
-				})
+				d.recordStartupEntry(processID, stripProcessPrefix(processID), "warning", "proxy_event_dropped",
+					fmt.Sprintf("proxy event channel full: URL %s detected but event dropped — proxy may not be created", url), 0)
 			}
 		}
 	}
@@ -561,12 +558,8 @@ func New(config DaemonConfig) *Daemon {
 		default:
 			debug.Warn("daemon", "Proxy event channel full, dropping process stopped event for %s", processID)
 			if d.startupErrorStore != nil {
-				d.startupErrorStore.Add(&StartupLogEntry{
-					ProcessID: processID, ScriptName: stripProcessPrefix(processID),
-					Level: "warning", EventType: "proxy_event_dropped",
-					Message:   fmt.Sprintf("proxy event channel full: script stopped event dropped for %s — proxies may not be cleaned up", processID),
-					Timestamp: time.Now(),
-				})
+				d.recordStartupEntry(processID, stripProcessPrefix(processID), "warning", "proxy_event_dropped",
+					fmt.Sprintf("proxy event channel full: script stopped event dropped for %s — proxies may not be cleaned up", processID), 0)
 			}
 		}
 	}
@@ -611,9 +604,9 @@ func New(config DaemonConfig) *Daemon {
 }
 
 // registerCommands registers agnt-specific commands with the Hub.
-// This delegates to registerAgntCommands() in hub_handlers.go.
-func (d *Daemon) registerCommands() {
-	d.registerAgntCommands()
+// This delegates to registerAgntCommands() in hub_run.go.
+func (d *Daemon) registerCommands() error {
+	return d.registerAgntCommands()
 }
 
 // bootstrap performs the minimum wiring shared by Start() and NewForTest():
@@ -629,33 +622,52 @@ func (d *Daemon) registerCommands() {
 // called from both paths to keep them in sync. See the "Test startup
 // contract" section of .claude/rules/daemon-architecture.md.
 func (d *Daemon) bootstrap() error {
-	// Register agnt-specific commands with Hub before starting
-	d.registerCommands()
+	d.daemonStartupLog("info", "daemon_starting", "daemon bootstrap starting")
+
+	// Register agnt-specific commands with Hub before starting.
+	if err := d.registerCommands(); err != nil {
+		d.daemonStartupLog("error", "daemon_register_commands_failed", fmt.Sprintf("register commands: %v", err))
+		return fmt.Errorf("register commands: %w", err)
+	}
+	d.daemonStartupLog("info", "daemon_commands_registered", "daemon hub commands registered")
 
 	// Register session cleanup callback with Hub
 	// Uses deferred cleanup so ResilientClient reconnects don't kill processes.
 	d.hub.SetSessionCleanup(func(sessionCode string) {
 		d.CleanupSessionResourcesDeferred(sessionCode)
 	})
+	d.daemonStartupLog("info", "daemon_session_cleanup_registered", "daemon session cleanup callback registered")
 
 	// Start the Hub (handles socket creation, accept loop, client management)
+	d.daemonStartupLog("info", "hub_starting", fmt.Sprintf("starting daemon hub on %s", d.config.SocketPath))
 	if err := d.hub.Start(); err != nil {
 		debug.Error("daemon", "failed to start hub: %v", err)
+		d.daemonStartupLog("error", "hub_start_failed", fmt.Sprintf("failed to start hub: %v", err))
 		return fmt.Errorf("failed to start hub: %w", err)
 	}
 	d.started = time.Now()
+	d.daemonStartupLog("info", "hub_started", fmt.Sprintf("daemon hub listening on %s", d.config.SocketPath))
 
-	// Start the scheduler for scheduled message delivery
+	// Start the scheduler for scheduled message delivery. A start failure
+	// leaves scheduled-message delivery silently disabled, so surface it
+	// through the startup error store (debug.Log alone only reaches the
+	// debug file — see Silent Failure Prohibition in daemon-architecture.md).
 	if err := d.scheduler.Start(d.ctx); err != nil {
 		debug.Log("daemon", "failed to start scheduler: %v", err)
+		d.daemonStartupLog("error", "scheduler_start_failed",
+			fmt.Sprintf("failed to start scheduler: %v", err))
+	} else {
+		d.daemonStartupLog("info", "scheduler_started", "scheduler started")
 	}
 
 	// Start URL tracker for process URL detection
 	d.urlTracker.Start(d.ctx)
+	d.daemonStartupLog("info", "url_tracker_started", "URL tracker started")
 
 	// Start proxy event handler for event-driven proxy creation
 	d.wg.Add(1)
 	go d.handleProxyEvents()
+	d.daemonStartupLog("info", "proxy_event_loop_started", "proxy event loop started")
 
 	// Start the hook event drain goroutine. It pops events from the
 	// hookRing (pushed by the HOOK verb handler on each `agnt hook`
@@ -666,6 +678,7 @@ func (d *Daemon) bootstrap() error {
 		defer d.wg.Done()
 		d.drainHooks(d.ctx)
 	}()
+	d.daemonStartupLog("info", "hook_drain_started", "hook event drain started")
 
 	return nil
 }

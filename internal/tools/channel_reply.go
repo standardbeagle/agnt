@@ -10,7 +10,7 @@ import (
 
 // ChannelReplyInput is the input for the channel_reply tool.
 type ChannelReplyInput struct {
-	Content  string `json:"content" jsonschema:"required,Message body to send to the developer (markdown OK)"`
+	Content  string `json:"content" jsonschema:"Message body to send to the developer (markdown OK)"`
 	ProxyID  string `json:"proxy_id,omitempty" jsonschema:"Target a specific proxy (preferred); omit to fan out to all active proxies"`
 	ID       string `json:"id,omitempty" jsonschema:"Alias for proxy_id"`
 	Severity string `json:"severity,omitempty" jsonschema:"Toast styling: one of info, success, warning, error (default: info)"`

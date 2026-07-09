@@ -48,7 +48,7 @@ func upsertManagedBlock(existing, body string) string {
 
 // writePersistentContext writes the agnt steering block into adapterName's
 // always-loaded context file under projectDir, so non-Claude agents keep the
-// guidance in context every turn rather than from a one-shot stdin nudge.
+// guidance in context every turn without a visible startup stdin message.
 //
 // It is a no-op (nil error) when the agent has no context file (e.g. Claude,
 // which uses --append-system-prompt) or when persistence is disabled in config.

@@ -3,6 +3,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"runtime"
@@ -11,6 +12,12 @@ import (
 	"sync/atomic"
 	"time"
 )
+
+// ErrSessionExists is returned by SessionRegistry.Register when a session with
+// the same code is already registered. Callers distinguish this (a reconnect)
+// from other Register failures (e.g. empty code) via errors.Is so a malformed
+// registration is not silently treated as a reconnect.
+var ErrSessionExists = errors.New("session already exists")
 
 // SessionStatus represents the current state of a session.
 type SessionStatus string
@@ -121,6 +128,15 @@ func (s *Session) GetStatus() SessionStatus {
 	return s.Status
 }
 
+// GetLastSeen returns the last-seen timestamp under the read lock. Direct reads
+// of s.LastSeen race with UpdateLastSeen / markDisconnectedIfStale, which write
+// it under s.mu — callers outside the session must use this accessor.
+func (s *Session) GetLastSeen() time.Time {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.LastSeen
+}
+
 // markDisconnectedIfStale transitions an active session to disconnected when
 // its last heartbeat predates cutoff, and reports whether it made that
 // transition. The check and the write happen under one lock so the session
@@ -178,6 +194,13 @@ type SessionRegistry struct {
 	heartbeatTimeout time.Duration
 }
 
+// HeartbeatTimeout returns the configured stale-session cutoff duration. The
+// doctor's session-health check reads it instead of hardcoding a parallel
+// constant, so the two never drift.
+func (r *SessionRegistry) HeartbeatTimeout() time.Duration {
+	return r.heartbeatTimeout
+}
+
 // NewSessionRegistry creates a new session registry.
 func NewSessionRegistry(heartbeatTimeout time.Duration) *SessionRegistry {
 	if heartbeatTimeout == 0 {
@@ -196,7 +219,7 @@ func (r *SessionRegistry) Register(session *Session) error {
 
 	// Check if session already exists
 	if _, loaded := r.sessions.LoadOrStore(session.Code, session); loaded {
-		return fmt.Errorf("session %q already exists", session.Code)
+		return fmt.Errorf("%w: %q", ErrSessionExists, session.Code)
 	}
 
 	r.totalRegistered.Add(1)

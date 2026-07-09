@@ -256,6 +256,32 @@ func (h *EventHub) BroadcastLogEntry(entry proxy.LogEntry, proxyID string) {
 	}
 }
 
+// BroadcastLogEntryForProject fans an entry out but stamps it with an explicit
+// project path instead of deriving one from a proxy. It exists for proxy-less,
+// session-scoped events (e.g. incident digests): passing the owning session's
+// project path as the effective proxyPath lets project-scoped stream filters
+// exclude other projects' sinks, which the empty-proxyID BroadcastLogEntry path
+// cannot do (an empty proxyPath disables the project filter and leaks the event
+// to every project's subscribers). An empty projectPath falls back to the
+// unscoped broadcast.
+func (h *EventHub) BroadcastLogEntryForProject(entry proxy.LogEntry, projectPath string) {
+	if projectPath == "" {
+		h.BroadcastLogEntry(entry, "")
+		return
+	}
+
+	h.mu.RLock()
+	sinks := make([]*StreamSink, len(h.streamSinks))
+	copy(sinks, h.streamSinks)
+	h.mu.RUnlock()
+
+	for _, sink := range sinks {
+		if sink.filter.matches(entry, "", projectPath) {
+			sendToStreamSinkSafe(sink, entry, "")
+		}
+	}
+}
+
 // sendToStreamSinkSafe performs the non-blocking channel-send-with-default
 // on a StreamSink's Ch, serialized against concurrent close via the
 // closed/refs atomics on StreamSink (no RWMutex on the hot path).

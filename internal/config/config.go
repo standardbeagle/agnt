@@ -16,6 +16,9 @@ type Config struct {
 
 	// Languages holds language-specific configurations.
 	Languages map[string]LanguageConfig `json:"languages"`
+
+	// AI holds user-level defaults for agnt run / ai behavior.
+	AI *AIConfig `json:"ai,omitempty"`
 }
 
 // Settings holds global configuration settings.

@@ -12,6 +12,11 @@ import (
 	"github.com/standardbeagle/agnt/internal/debug"
 )
 
+// execResultTimeout bounds how long a pending JavaScript execution waits for a
+// browser reply before its pendingExecs entry is reaped, preventing a leak when
+// the page navigates/reloads mid-exec and no reply ever arrives.
+const execResultTimeout = 60 * time.Second
+
 // saveScreenshot saves a base64 data URL to the .agnt/audit directory.
 // The file is stored in the project's .agnt/audit folder for easy access by AI agents.
 func (ps *ProxyServer) saveScreenshot(name string, dataURL string) (string, error) {
@@ -198,6 +203,13 @@ func (ps *ProxyServer) ExecuteJavaScript(code string, frameID ...string) (string
 		close(resultChan)
 		return execID, nil, fmt.Errorf("no connected clients")
 	}
+
+	// Self-expire the pending entry: if the browser never replies (page navigated
+	// or reloaded mid-exec, or the caller dropped the channel without cancelling),
+	// the pendingExecs entry and its result channel would leak forever. Reap them
+	// after a bounded timeout. CancelExecution is a no-op when the result already
+	// arrived (LoadAndDelete is atomic — exactly one of deliver/cancel wins).
+	time.AfterFunc(execResultTimeout, func() { ps.CancelExecution(execID) })
 
 	return execID, resultChan, nil
 }

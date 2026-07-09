@@ -77,7 +77,6 @@ func TestProperty_CriticalPingLatency(t *testing.T) {
 	for i := 0; i < iterations; i++ {
 		inbox := NewInbox(fmt.Sprintf("crit-prop-%d", i))
 		flow := NewFlowController(DefaultBucketConfigs)
-		activity := NewActivityDetector(20*time.Millisecond, 50*time.Millisecond, nil)
 
 		var pingEmitted atomic.Int64
 		cfg := PingConfig{
@@ -90,7 +89,7 @@ func TestProperty_CriticalPingLatency(t *testing.T) {
 			},
 		}
 
-		pe := NewPingEmitter(inbox, cfg, flow, activity,
+		pe := NewPingEmitter(inbox, cfg, flow,
 			func(_ string, _ PingPayload) error {
 				pingEmitted.Add(1)
 				return nil
@@ -104,11 +103,6 @@ func TestProperty_CriticalPingLatency(t *testing.T) {
 				inbox.Ingest(makeEntry(fmt.Sprintf("bg-fp-%d", j), SeverityError))
 			}
 		}
-		// Simulate agent activity on some iterations.
-		if i%5 == 0 {
-			activity.RecordHook()
-		}
-
 		ingestTime := time.Now()
 		inbox.Ingest(makeEntry(fmt.Sprintf("crit-%d", i), SeverityCritical))
 

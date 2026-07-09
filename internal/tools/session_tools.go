@@ -3,13 +3,30 @@ package tools
 import (
 	"context"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/protocol"
 
 	"github.com/standardbeagle/go-sdk/mcp"
 )
+
+// sessionScopeFilter builds a DirectoryFilter for the session list/tasks verbs.
+// When global is true it leaves Directory unset (cross-project); otherwise it
+// scopes to the caller's session/project via the SessionCode-first chain so the
+// MCP daemon connection — which is not session-bound — names the project on the
+// wire instead of leaking the daemon's own cwd.
+func sessionScopeFilter(dt *DaemonTools, global bool) protocol.DirectoryFilter {
+	filter := protocol.DirectoryFilter{Global: global}
+	if global {
+		return filter
+	}
+	if sessionCode := dt.SessionCode(); sessionCode != "" {
+		filter.SessionCode = sessionCode
+	} else if p := getProjectPath(); p != "" {
+		filter.Directory = p
+	}
+	return filter
+}
 
 // SessionInput defines input for the session tool.
 type SessionInput struct {
@@ -111,6 +128,10 @@ allowing you to remind the agent to check on tasks or verify completions.`,
 // makeSessionHandler creates a handler for the session tool.
 func (dt *DaemonTools) makeSessionHandler() func(context.Context, *mcp.CallToolRequest, SessionInput) (*mcp.CallToolResult, SessionOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input SessionInput) (*mcp.CallToolResult, SessionOutput, error) {
+		if err := validateSessionInput(input); err != nil {
+			return errorResult(validationError("session", err)), SessionOutput{}, nil
+		}
+
 		if err := dt.ensureConnected(); err != nil {
 			return errorResult(err.Error()), SessionOutput{}, nil
 		}
@@ -135,17 +156,10 @@ func (dt *DaemonTools) makeSessionHandler() func(context.Context, *mcp.CallToolR
 }
 
 func (dt *DaemonTools) handleSessionList(input SessionInput) (*mcp.CallToolResult, SessionOutput, error) {
-	// Get current working directory
-	cwd, err := os.Getwd()
-	if err != nil {
-		return errorResult(fmt.Sprintf("failed to get working directory: %v", err)), SessionOutput{}, nil
-	}
-
-	// Create directory filter
-	dirFilter := protocol.DirectoryFilter{
-		Directory: cwd,
-		Global:    input.Global,
-	}
+	// Scope through the SessionCode-first chain (mirrors buildDirFilter /
+	// collectStartupErrors) instead of a bare os.Getwd(): the MCP daemon
+	// connection is not session-bound, so cwd is not the caller's project.
+	dirFilter := sessionScopeFilter(dt, input.Global)
 
 	result, err := dt.client.SessionList(dirFilter)
 	if err != nil {
@@ -282,17 +296,8 @@ func (dt *DaemonTools) handleSessionSchedule(input SessionInput) (*mcp.CallToolR
 }
 
 func (dt *DaemonTools) handleSessionTasks(input SessionInput) (*mcp.CallToolResult, SessionOutput, error) {
-	// Get current working directory
-	cwd, err := os.Getwd()
-	if err != nil {
-		return errorResult(fmt.Sprintf("failed to get working directory: %v", err)), SessionOutput{}, nil
-	}
-
-	// Create directory filter
-	dirFilter := protocol.DirectoryFilter{
-		Directory: cwd,
-		Global:    input.Global,
-	}
+	// Same SessionCode-first scoping as handleSessionList.
+	dirFilter := sessionScopeFilter(dt, input.Global)
 
 	result, err := dt.client.SessionTasks(dirFilter)
 	if err != nil {

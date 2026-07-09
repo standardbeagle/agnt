@@ -21,10 +21,8 @@ package agentadapter
 
 import "time"
 
-// DefaultStdinDelay is the historical delay between agent launch and
-// injecting the initial stdin message. 500ms matches the old behavior
-// in run.go / run_windows.go and is preserved as the default for all
-// stdin-based adapters.
+// DefaultStdinDelay is the delay between agent launch and setup-mode stdin
+// prompt delivery for stdin-capable adapters.
 const DefaultStdinDelay = 500 * time.Millisecond
 
 // Adapter describes how to recognize a specific AI coding agent and how
@@ -35,9 +33,10 @@ const DefaultStdinDelay = 500 * time.Millisecond
 //
 //   - Flag-based: BuildArgs returns a modified argv; InitialStdin
 //     returns nil. Example: Claude Code (--append-system-prompt).
-//   - Stdin-based: BuildArgs returns baseArgs unchanged; InitialStdin
+//   - Stdin-capable: BuildArgs returns baseArgs unchanged; InitialStdin
 //     returns the bytes to write to the child's stdin after StdinDelay
-//     has elapsed. Example: gemini, aider, cursor, etc.
+//     has elapsed when the caller chooses stdin delivery (setup mode).
+//     Example: gemini, aider, cursor, etc.
 //
 // An adapter may return an empty argv change and nil stdin if the
 // prompt is empty — callers must tolerate nil/empty returns without

@@ -78,6 +78,9 @@ func RegisterResponsiveAuditTool(server *mcp.Server, dt *DaemonTools) {
 func (dt *DaemonTools) makeResponsiveAuditHandler() func(context.Context, *mcp.CallToolRequest, ResponsiveAuditInput) (*mcp.CallToolResult, ResponsiveAuditOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input ResponsiveAuditInput) (*mcp.CallToolResult, ResponsiveAuditOutput, error) {
 		input.ProxyID = pickProxyID(input.ID, input.ProxyID)
+		if err := validateResponsiveAuditInputSize(input); err != nil {
+			return errorResult(validationError("responsive_audit", err)), ResponsiveAuditOutput{}, nil
+		}
 		if err := validateResponsiveAuditInput(input); err != nil {
 			return errorResult(err.Error()), ResponsiveAuditOutput{}, nil
 		}

@@ -22,10 +22,15 @@ func (NopBus) Publish(IncidentEvent) {}
 // ── constants ─────────────────────────────────────────────────────────────────
 
 const (
-	busInboundCap      = 4096
-	metaOverflowEvery  = 100
-	metaBusOverflowFP  = "meta:bus_overflow"
-	sessionDrainWindow = 2 * time.Second
+	busInboundCap     = 4096
+	metaOverflowEvery = 100
+	metaBusOverflowFP = "meta:bus_overflow"
+	// dedupTrimEvery bounds Deduplicator growth: every Nth ingest into a session
+	// prunes that session's expired fingerprints. Trim has no other production
+	// caller, so without this a long-lived session accumulates one DedupEntry per
+	// distinct fingerprint (each holding two IncidentEvent copies) for the life of
+	// the session.
+	dedupTrimEvery = 256
 )
 
 // ── sessionPipeline ───────────────────────────────────────────────────────────
@@ -37,8 +42,8 @@ type sessionPipeline struct {
 	flow   *FlowController
 	pinger *PingEmitter
 
-	stopCh chan struct{}
-	doneCh chan struct{}
+	stopCh      chan struct{}
+	ingestCount atomic.Int64 // drives opportunistic dedup Trim
 }
 
 // ── MPSCBus ───────────────────────────────────────────────────────────────────
@@ -50,8 +55,9 @@ type sessionPipeline struct {
 // meta:bus_overflow warning incident so the AI agent sees bus pressure.
 //
 // Session lifecycles:
-//   - AddSession: creates sessionPipeline and starts its dispatch goroutine.
-//   - RemoveSession: signals the goroutine to stop and waits up to 2s.
+//   - AddSession: creates the sessionPipeline.
+//   - RemoveSession: removes the pipeline; delivery is gated on stopCh under the
+//     bus lock, so no drain wait is needed.
 //   - Close: removes all sessions and stops the bus.
 type MPSCBus struct {
 	inbound chan *IncidentEvent
@@ -129,7 +135,6 @@ func (b *MPSCBus) AddSession(sessionID string, mcpNotify MCPNotifyFn, channelNot
 	inbox := NewInbox(sessionID)
 	dedup := NewDeduplicator(30 * time.Second)
 	flow := NewFlowController(DefaultBucketConfigs)
-	activity := NewActivityDetector(500*time.Millisecond, 3*time.Second, nil)
 
 	cfg := PingConfig{
 		MCPNotifications: mcpNotify != nil,
@@ -138,9 +143,7 @@ func (b *MPSCBus) AddSession(sessionID string, mcpNotify MCPNotifyFn, channelNot
 	}
 	var pinger *PingEmitter
 	if mcpNotify != nil || channelNotify != nil || ptyInject != nil {
-		pinger = NewPingEmitter(inbox, cfg, flow, activity, mcpNotify, channelNotify, ptyInject)
-		// Wire activity idle → force-flush coalescer.
-		activity.onIdle = pinger.ForceFlushCoalesce
+		pinger = NewPingEmitter(inbox, cfg, flow, mcpNotify, channelNotify, ptyInject)
 	}
 
 	pl := &sessionPipeline{
@@ -149,19 +152,17 @@ func (b *MPSCBus) AddSession(sessionID string, mcpNotify MCPNotifyFn, channelNot
 		flow:   flow,
 		pinger: pinger,
 		stopCh: make(chan struct{}),
-		doneCh: make(chan struct{}),
 	}
 
 	b.mu.Lock()
 	b.perSession[sessionID] = pl
 	b.mu.Unlock()
-
-	// One lifecycle goroutine per session: signals doneCh when stopCh is closed.
-	go b.sessionLifecycle(pl)
 }
 
-// RemoveSession tears down the session pipeline for sessionID and waits up to
-// sessionDrainWindow for in-flight events to finish.
+// RemoveSession tears down the session pipeline for sessionID. Delivery runs
+// synchronously on the central dispatch goroutine and consults stopCh under the
+// same lock that removes the pipeline, so once RemoveSession returns no new
+// event can be ingested into this pipeline — there is nothing to drain.
 func (b *MPSCBus) RemoveSession(sessionID string) {
 	b.mu.Lock()
 	pl, ok := b.perSession[sessionID]
@@ -175,12 +176,6 @@ func (b *MPSCBus) RemoveSession(sessionID string) {
 	}
 
 	close(pl.stopCh)
-
-	// Wait up to drain window.
-	select {
-	case <-pl.doneCh:
-	case <-time.After(sessionDrainWindow):
-	}
 
 	if pl.pinger != nil {
 		pl.pinger.Stop()
@@ -346,14 +341,13 @@ func (b *MPSCBus) ingestToSession(pl *sessionPipeline, ev *IncidentEvent) {
 		entry.FirstSeenAt = de.First.ReceivedAt
 	}
 	pl.inbox.Ingest(entry)
-}
 
-// sessionLifecycle is the per-session goroutine. It waits for stopCh to be
-// closed (by RemoveSession) and then closes doneCh. Actual event delivery is
-// done synchronously on the central dispatch goroutine.
-func (b *MPSCBus) sessionLifecycle(pl *sessionPipeline) {
-	defer close(pl.doneCh)
-	<-pl.stopCh
+	// Opportunistically reclaim expired dedup fingerprints. Runs on the single
+	// dispatch goroutine, so no extra synchronization is needed here; Trim takes
+	// the dedup's own lock.
+	if pl.ingestCount.Add(1)%dedupTrimEvery == 0 {
+		pl.dedup.Trim()
+	}
 }
 
 // emitMetaOverflow synthesises a meta:bus_overflow warning incident and

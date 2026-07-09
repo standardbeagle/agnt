@@ -110,9 +110,47 @@ func (dt *DaemonTools) makeRunHandler() func(context.Context, *mcp.CallToolReque
 			NoAutoRestart: input.NoAutoRestart,
 		}
 
-		result, err := dt.client.Run(config)
-		if err != nil {
+		// Foreground modes block until the process exits (DefaultTimeout:0 =
+		// wait forever). This single long blocking IPC must NOT run on the
+		// shared ResilientClient connection: its per-request mutex is held for
+		// the whole request/response, so a cancelled/timed-out MCP call would
+		// strand the read and head-of-line block every other daemon-backed
+		// tool for up to the connection's read deadline. Use a DEDICATED
+		// connection instead, and close it on ctx cancel to interrupt the
+		// blocked read immediately. The buffered channel lets the goroutine
+		// finish its send after we've returned.
+		socketPath := dt.config.SocketPath
+		if socketPath == "" {
+			socketPath = daemon.DefaultSocketPath()
+		}
+		runClient := daemon.NewClientWithPath(socketPath)
+		if err := runClient.Connect(); err != nil {
 			return formatDaemonError(err, "run"), RunOutput{}, nil
+		}
+
+		type runResult struct {
+			result map[string]interface{}
+			err    error
+		}
+		ch := make(chan runResult, 1)
+		go func() {
+			r, e := runClient.Run(config)
+			ch <- runResult{result: r, err: e}
+		}()
+
+		var result map[string]interface{}
+		select {
+		case <-ctx.Done():
+			// Interrupt the blocked read on the dedicated connection so the
+			// goroutine unwinds; nothing else shares this conn.
+			runClient.Close()
+			return errorResult(fmt.Sprintf("run cancelled: %v", ctx.Err())), RunOutput{}, nil
+		case rr := <-ch:
+			runClient.Close()
+			if rr.err != nil {
+				return formatDaemonError(rr.err, "run"), RunOutput{}, nil
+			}
+			result = rr.result
 		}
 
 		processID := getString(result, "process_id")
@@ -177,7 +215,7 @@ func (dt *DaemonTools) makeProcHandler() func(context.Context, *mcp.CallToolRequ
 		case "run_group":
 			return dt.handleProcRunGroup(input)
 		case "wait":
-			return dt.handleProcWait(input)
+			return dt.handleProcWait(ctx, input)
 		default:
 			return errorResult(fmt.Sprintf("unknown action %q. Use: status, output, find, stop, restart, list, cleanup_port, autorestart, scripts, script_output, script_history, snapshot, run, run_group, wait", input.Action)), ProcOutput{}, nil
 		}
@@ -260,10 +298,19 @@ func (dt *DaemonTools) handleProcOutput(input ProcInput) (*mcp.CallToolResult, P
 			scriptResult, scriptErr := dt.client.ScriptOutput(input.ProcessID, projectPath, input.Tail)
 			if scriptErr == nil {
 				lines := getStringSlice(scriptResult, "lines")
+				// ScriptOutput only honors Tail (applied daemon-side). Apply
+				// the remaining Grep/GrepV/Head filters client-side here so
+				// they aren't silently dropped on the fallback path; note any
+				// filter (Stream) that the script-history buffer can't honor.
+				lines, note, ferr := filterScriptFallbackLines(lines, filter)
+				if ferr != nil {
+					return errorResult(ferr.Error()), ProcOutput{}, nil
+				}
 				out := ProcOutput{
 					ProcessID: input.ProcessID,
 					Output:    strings.Join(lines, "\n"),
 					Lines:     len(lines),
+					Message:   note,
 				}
 				// Single-stream extract: scan the fetched lines and surface
 				// signals at the top level (no MultiStream populated).
@@ -349,7 +396,7 @@ func (dt *DaemonTools) handleProcOutputMulti(input ProcInput) (*mcp.CallToolResu
 // result with timeout=true and decides what to do. Tool-level errors
 // only fire on validation (missing process_id, no signal requested) or
 // catastrophic IPC failure that prevents even the first poll.
-func (dt *DaemonTools) handleProcWait(input ProcInput) (*mcp.CallToolResult, ProcOutput, error) {
+func (dt *DaemonTools) handleProcWait(ctx context.Context, input ProcInput) (*mcp.CallToolResult, ProcOutput, error) {
 	if input.ProcessID == "" {
 		return errorResult("process_id required for wait"), ProcOutput{}, nil
 	}
@@ -377,11 +424,25 @@ func (dt *DaemonTools) handleProcWait(input ProcInput) (*mcp.CallToolResult, Pro
 		return strings.Split(out, "\n"), nil
 	}
 
-	res := waitForSignal(fetch, wanted, input.TimeoutMs, input.PollMs)
-	return nil, ProcOutput{
-		ProcessID: input.ProcessID,
-		Wait:      &res,
-	}, nil
+	// waitForSignal blocks (polling the daemon) until a signal appears or
+	// the timeout elapses. Run it in a goroutine and honor the handler ctx
+	// so a cancelled MCP call returns promptly. The buffered channel lets
+	// the poll goroutine finish its send after we've returned; it
+	// self-terminates at the wait timeout.
+	ch := make(chan WaitResult, 1)
+	go func() {
+		ch <- waitForSignal(fetch, wanted, input.TimeoutMs, input.PollMs)
+	}()
+
+	select {
+	case <-ctx.Done():
+		return errorResult(fmt.Sprintf("wait cancelled: %v", ctx.Err())), ProcOutput{}, nil
+	case res := <-ch:
+		return nil, ProcOutput{
+			ProcessID: input.ProcessID,
+			Wait:      &res,
+		}, nil
+	}
 }
 
 func (dt *DaemonTools) handleProcFind(input ProcInput) (*mcp.CallToolResult, ProcOutput, error) {
@@ -860,6 +921,38 @@ func (dt *DaemonTools) handleScriptHistory(input ProcInput) (*mcp.CallToolResult
 	return nil, ProcOutput{
 		Output: sb.String(),
 	}, nil
+}
+
+// filterScriptFallbackLines applies the Grep/GrepV/Head portions of an
+// OutputFilter to lines pulled from the script-history fallback (ScriptOutput
+// only honors Tail daemon-side). It returns the filtered lines, a human-
+// readable note for any filter it cannot honor (Stream — the script-history
+// buffer is combined-only), and an error if a grep pattern is invalid.
+func filterScriptFallbackLines(lines []string, filter protocol.OutputFilter) ([]string, string, error) {
+	out := lines
+	// Grep is the pattern; GrepV inverts the match (grep -v semantics).
+	if filter.Grep != "" {
+		re, err := regexp.Compile(filter.Grep)
+		if err != nil {
+			return nil, "", fmt.Errorf("invalid grep pattern %q: %w", filter.Grep, err)
+		}
+		kept := make([]string, 0, len(out))
+		for _, l := range out {
+			if re.MatchString(l) != filter.GrepV {
+				kept = append(kept, l)
+			}
+		}
+		out = kept
+	}
+	if filter.Head > 0 && len(out) > filter.Head {
+		out = out[:filter.Head]
+	}
+
+	var note string
+	if filter.Stream != "" && filter.Stream != "combined" {
+		note = fmt.Sprintf("stream=%q not applied (script-history fallback is combined-only)", filter.Stream)
+	}
+	return out, note, nil
 }
 
 func resolveKDLScript(projectPath, scriptName string, extraArgs []string) (string, []string, error) {

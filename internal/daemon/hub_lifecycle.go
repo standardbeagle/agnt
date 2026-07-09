@@ -138,13 +138,8 @@ func (d *Daemon) hubHandleRestartAll(ctx context.Context, conn *hubpkg.Connectio
 		})
 		if err != nil {
 			debug.Error("daemon", "Failed to restart proxy %s: %v", pm.ID, err)
-			d.startupErrorStore.Add(&StartupLogEntry{
-				ProcessID: pm.ID,
-				Level:     "error",
-				EventType: "proxy_restart_failed",
-				Message:   fmt.Sprintf("RESTART-ALL: failed to restart proxy: %v", err),
-				Timestamp: time.Now(),
-			})
+			d.recordStartupEntry(pm.ID, "", "error", "proxy_restart_failed",
+				fmt.Sprintf("RESTART-ALL: failed to restart proxy: %v", err), 0)
 			proxyFailed++
 		} else {
 			d.wireProxyLogger(proxyServer)

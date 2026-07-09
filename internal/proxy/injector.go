@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -203,8 +205,8 @@ func InjectInstrumentation(body []byte, wsPort int) []byte {
 // immutably-cached asset shrinks the injected payload from ~1.3MB to ~150 bytes
 // and lets the browser cache the bundle across page loads.
 func InjectInstrumentationAndMeta(body []byte, proxyID string) []byte {
-	tag := []byte(fmt.Sprintf(`<script>window.__devtool_proxy_id=%q;</script><script src=%q></script>`,
-		proxyID, instrumentationAssetPath()))
+	tag := []byte(fmt.Sprintf(`<script>window.__devtool_proxy_id=%s;</script><script src=%q></script>`,
+		jsStringLiteral(proxyID), instrumentationAssetPath()))
 	if at, ok := instrumentationInsertOffset(body); ok {
 		return spliceInto(body, at, tag)
 	}
@@ -216,7 +218,7 @@ func InjectInstrumentationAndMeta(body []byte, proxyID string) []byte {
 // proxy response path uses InjectInstrumentationAndMeta to avoid a second
 // full-body copy.
 func InjectProxyMeta(body []byte, proxyID string) []byte {
-	meta := []byte(fmt.Sprintf("<script>window.__devtool_proxy_id=%q;</script>", proxyID))
+	meta := []byte(fmt.Sprintf("<script>window.__devtool_proxy_id=%s;</script>", jsStringLiteral(proxyID)))
 	marker := []byte("</script>")
 	if idx := bytes.LastIndex(body, marker); idx != -1 {
 		return spliceInto(body, idx+len(marker), meta)
@@ -284,6 +286,40 @@ func isFullHTMLDocument(body []byte) bool {
 		bytes.Contains(lower, []byte("<head"))
 }
 
+// frameIDPattern matches a server-minted frame id: a lowercase-hex path hash
+// (a content frame) optionally carrying the "chrome-" shell prefix. Frame ids
+// are echoed verbatim into inline <script> via %q, which is Go-string escaping,
+// NOT HTML/JS escaping — an attacker-supplied marker such as
+// `</script><script>…` would break out of the script element. Constraining the
+// value to this alphabet makes it inert in an HTML/JS context regardless of the
+// surrounding quoting.
+var frameIDPattern = regexp.MustCompile(`^(chrome-)?[0-9a-f]+$`)
+
+// jsStringLiteral encodes s as a script-safe JS string literal. Unlike %q
+// (Go-string escaping, which leaves `<` and `/` intact and so permits a
+// `</script>` break-out), json.Marshal escapes `<`, `>`, and `&` to \uXXXX by
+// default, making the result inert inside an inline <script> element and its
+// string context. Used for values that legitimately vary — proxy ids are
+// caller/config-supplied (`makeProcessID` → `basename-hash:name`, or a raw MCP
+// `proxy start` id) and so cannot be alphabet-constrained the way frame ids are.
+func jsStringLiteral(s string) string {
+	b, err := json.Marshal(s)
+	if err != nil {
+		return `""`
+	}
+	return string(b)
+}
+
+// sanitizeFrameID returns id unchanged when it is a well-formed server-minted
+// frame id, or "" when it is malformed or attacker-supplied. Callers treat ""
+// as "no marker" and fall back to a role-less injection.
+func sanitizeFrameID(id string) string {
+	if frameIDPattern.MatchString(id) {
+		return id
+	}
+	return ""
+}
+
 // frameIDForPath derives a stable, opaque frame id from the request path. The id
 // only needs to be unique among the live content frames of one shell; the path
 // is stable for a given page, so a short hash avoids minting random ids
@@ -323,9 +359,12 @@ func contentFrameSrc(reqURI, frameID string) string {
 // from page content. Role gating of the runtime lands in Slice 3; this slice
 // only establishes the wrap + the browser-side role/registry primitive.
 func BuildShellDocument(proxyID, frameID, contentSrc string) []byte {
+	// frameID is server-minted (shellFrameID of a path hash); validate defensively
+	// so a malformed value can never break out of the inline <script> below.
+	frameID = sanitizeFrameID(frameID)
 	var b strings.Builder
 	b.WriteString("<!DOCTYPE html><html><head><meta charset=\"utf-8\">")
-	b.WriteString(fmt.Sprintf("<script>window.__devtool_proxy_id=%q;window.__devtool_role=\"chrome\";window.__devtool_frame_id=%q;</script>", proxyID, frameID))
+	b.WriteString(fmt.Sprintf("<script>window.__devtool_proxy_id=%s;window.__devtool_role=\"chrome\";window.__devtool_frame_id=%q;</script>", jsStringLiteral(proxyID), frameID))
 	b.WriteString(fmt.Sprintf("<script src=%q></script>", instrumentationAssetPathForRole(scripts.RoleChrome)))
 	b.WriteString("<style>html,body{margin:0;padding:0;height:100%;width:100%;overflow:hidden}#" + contentFrameID + "{position:fixed;inset:0;border:0;width:100%;height:100%;display:block}</style>")
 	b.WriteString("</head><body>")
@@ -340,8 +379,12 @@ func BuildShellDocument(proxyID, frameID, contentSrc string) []byte {
 // window.__devtool_role="content" + the frame id so scripts/frames.js resolves
 // the frame's role without re-deriving it from the URL.
 func InjectContentRuntime(body []byte, proxyID, frameID string) []byte {
-	tag := []byte(fmt.Sprintf(`<script>window.__devtool_proxy_id=%q;window.__devtool_role="content";window.__devtool_frame_id=%q;</script><script src=%q></script>`,
-		proxyID, frameID, instrumentationAssetPathForRole(scripts.RoleContent)))
+	// Defence in depth: frameID originates from an attacker-controllable query
+	// marker; only a well-formed server-minted id is echoed into the inline
+	// <script>. A malformed one collapses to "" (no forced frame id).
+	frameID = sanitizeFrameID(frameID)
+	tag := []byte(fmt.Sprintf(`<script>window.__devtool_proxy_id=%s;window.__devtool_role="content";window.__devtool_frame_id=%q;</script><script src=%q></script>`,
+		jsStringLiteral(proxyID), frameID, instrumentationAssetPathForRole(scripts.RoleContent)))
 	if at, ok := instrumentationInsertOffset(body); ok {
 		return spliceInto(body, at, tag)
 	}

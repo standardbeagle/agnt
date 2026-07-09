@@ -23,7 +23,10 @@ func TestBroadcastIncidentDigest_ReachesStreamSink(t *testing.T) {
 		Version: 1,
 		Summary: incident.PingStats{Error: 3, Warning: 1, New: 4},
 	}
-	d.broadcastIncidentDigest("error", payload)
+	// A digest must carry the owning project's path — broadcastIncidentDigest
+	// drops empty-path digests to avoid an unscoped cross-project leak. The
+	// unscoped sink above still receives a path-stamped digest.
+	d.broadcastIncidentDigest("error", "/proj", payload)
 
 	select {
 	case entry := <-sink.Ch:
@@ -37,6 +40,37 @@ func TestBroadcastIncidentDigest_ReachesStreamSink(t *testing.T) {
 	}
 }
 
+// A project-scoped digest must not leak into another project's stream sink.
+// The empty-proxyID broadcast path could not exclude project-scoped sinks
+// (empty proxyPath disables the project filter), so session A's pings reached
+// every project's `agnt monitor`. BroadcastLogEntryForProject stamps the path.
+func TestBroadcastIncidentDigest_ProjectScopedIsolation(t *testing.T) {
+	d := NewForTest(t, DaemonConfig{})
+
+	own := d.eventHub.AddStreamSink(streamFilter{projectPath: "/proj/a"})
+	defer d.eventHub.RemoveStreamSink(own)
+	other := d.eventHub.AddStreamSink(streamFilter{projectPath: "/proj/b"})
+	defer d.eventHub.RemoveStreamSink(other)
+
+	payload := incident.PingPayload{Type: "agnt.incident_ping", Version: 1,
+		Summary: incident.PingStats{Error: 1, New: 1}}
+	d.broadcastIncidentDigest("error", "/proj/a", payload)
+
+	select {
+	case <-own.Ch:
+		// expected: owning project receives it
+	case <-time.After(time.Second):
+		t.Fatal("owning project's sink never received the digest")
+	}
+
+	select {
+	case <-other.Ch:
+		t.Fatal("digest leaked into another project's stream sink")
+	case <-time.After(100 * time.Millisecond):
+		// expected: other project excluded
+	}
+}
+
 // Full chain: a registered session's pinger must turn an HTTP 5xx storm on the
 // incident bus into a digest LogEntry delivered over the stream — exercising the
 // real production goroutines (bus dispatch, inbox, pinger coalescer, broadcast).
@@ -47,6 +81,10 @@ func TestIncidentDigest_EndToEnd_StormToStream(t *testing.T) {
 	sink := d.eventHub.AddStreamSink(streamFilter{})
 	defer d.eventHub.RemoveStreamSink(sink)
 
+	// The pinger resolves the session's project fresh on each ping and drops
+	// the push (fail closed) if the session isn't registered, so register it
+	// before wiring the pipeline — mirroring the production connect ordering.
+	registerSession(t, d, "sess-e2e", "/proj-e2e")
 	d.addIncidentSession("sess-e2e")
 
 	// Two distinct-URL 5xx collapse into one storm entry (count 2). A small

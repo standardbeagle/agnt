@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
+	"github.com/standardbeagle/agnt/internal/scope"
 	goprocess "github.com/standardbeagle/go-cli-server/process"
 )
 
@@ -83,6 +84,13 @@ type CreateConfig struct {
 type subscriber struct {
 	id string
 	ch chan []byte
+
+	// desynced is set when a broadcast was dropped because ch was full. A
+	// dropped stdout chunk permanently corrupts this subscriber's terminal
+	// byte stream, so instead of silently continuing we re-sync it with a
+	// fresh scrollback snapshot (replay-marker + full snapshot) as soon as ch
+	// has room again — see broadcastFrame / trySendResync.
+	desynced atomic.Bool
 }
 
 // Session is a single daemon-owned PTY child plus its scrollback ring and
@@ -236,6 +244,11 @@ func (s *Session) waitLoop() {
 	exitData, _ := json.Marshal(ExitData{Code: code})
 	s.broadcastFrame(Frame{Type: "exit", Data: exitData})
 
+	// Close the PTY fd now that the child is gone. On self-exit nothing else
+	// calls Close (only the explicit KILL path does), so without this the fd
+	// leaks and the readLoop blocks on Read forever. Close unblocks readLoop.
+	_ = s.ptmx.Close()
+
 	s.closeOnce.Do(func() { close(s.doneCh) })
 }
 
@@ -255,13 +268,71 @@ func (s *Session) broadcastFrame(f Frame) {
 	s.subsMu.RLock()
 	defer s.subsMu.RUnlock()
 	for _, sub := range s.subs {
+		// A previously-desynced subscriber must be re-synced with a fresh
+		// scrollback snapshot before it can accept live frames again;
+		// otherwise the gap left by the earlier drop stays in its stream.
+		if sub.desynced.Load() {
+			if !s.trySendResync(sub) {
+				// Still no room — stay desynced and skip this frame too.
+				continue
+			}
+			sub.desynced.Store(false)
+			// readLoop writes each chunk to scrollback *before* broadcasting
+			// it, so the snapshot just replayed already contains this stdout
+			// frame — delivering it live too would render it twice. Skip the
+			// live copy for stdout; non-scrollback frames (e.g. "exit") are
+			// not in the snapshot and must still be delivered.
+			if f.Type == "stdout" {
+				continue
+			}
+		}
 		select {
 		case sub.ch <- payload:
 		default:
 			// Slow subscriber: drop rather than block the single PTY
-			// reader (matches "Pinger never blocks delivery").
+			// reader (matches "Pinger never blocks delivery"), but mark it
+			// desynced so we resync (not silently corrupt) once it drains.
+			sub.desynced.Store(true)
 		}
 	}
+}
+
+// trySendResync attempts to re-sync a desynced subscriber by enqueuing a
+// replay-marker followed by the full current scrollback snapshot. It only
+// succeeds if both frames fit without blocking; a partial send leaves the
+// subscriber desynced to retry on the next broadcast (a duplicate marker just
+// clears the client screen again, which is harmless). Caller holds subsMu.
+func (s *Session) trySendResync(sub *subscriber) bool {
+	// Cheap pre-check: if the channel has no room, the marker send below would
+	// fail anyway. Bail before taking the scrollback Snapshot (a full ring copy
+	// + marshal + base64), so a persistently-full subscriber doesn't force that
+	// allocation on every single stdout frame — it would otherwise throttle the
+	// single PTY reader and every other subscriber while the slow one stays full.
+	if len(sub.ch) >= cap(sub.ch) {
+		return false
+	}
+	snapshot, truncated := s.scrollback.Snapshot()
+	markerData, _ := json.Marshal(ReplayMarkerData{Truncated: truncated})
+	marker, _ := json.Marshal(Frame{Type: "replay-marker", Data: markerData})
+
+	select {
+	case sub.ch <- marker:
+	default:
+		return false
+	}
+
+	if len(snapshot) > 0 {
+		data, _ := json.Marshal(base64.StdEncoding.EncodeToString(snapshot))
+		replay, _ := json.Marshal(Frame{Type: "stdout", Data: data})
+		select {
+		case sub.ch <- replay:
+		default:
+			// Marker sent but snapshot didn't fit; remain desynced so the
+			// next broadcast retries the full resync.
+			return false
+		}
+	}
+	return true
 }
 
 // Status returns the current lifecycle status.
@@ -421,10 +492,11 @@ func (r *Registry) Remove(id string) {
 // List returns all sessions, optionally filtered by project path (empty
 // projectPath or global=true returns everything).
 func (r *Registry) List(projectPath string, global bool) []*Session {
+	want := scope.NormalizePath(projectPath)
 	var out []*Session
 	r.sessions.Range(func(_, v any) bool {
 		s := v.(*Session)
-		if global || projectPath == "" || s.ProjectPath == projectPath {
+		if global || projectPath == "" || scope.NormalizePath(s.ProjectPath) == want {
 			out = append(out, s)
 		}
 		return true

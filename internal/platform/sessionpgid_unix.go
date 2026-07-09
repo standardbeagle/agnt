@@ -28,9 +28,9 @@ import (
 // daemon does not signal itself when it happens to share the pgid (it
 // shouldn't, but defensive). Pass 0 to disable self-exclusion.
 //
-// Returns an error only for the final verification step; best-effort EPERM
-// and ESRCH during signal delivery are not reported since they are normal
-// (the group may drain mid-loop).
+// Signal delivery is best-effort: EPERM and ESRCH during delivery are normal
+// (the group may drain mid-loop) and are not reported. The returned error is
+// currently always nil — no verification step is performed after signalling.
 func KillSessionPGID(sessionPGID int, killSelfPID int, gracefulTimeout time.Duration, aggressive bool) error {
 	if sessionPGID <= 1 {
 		return fmt.Errorf("invalid session pgid %d", sessionPGID)
@@ -61,7 +61,24 @@ func KillSessionPGID(sessionPGID int, killSelfPID int, gracefulTimeout time.Dura
 // skipping killSelfPID. Uses syscall.Kill(-pgid, sig) first to reach every
 // member atomically; if that fails with ESRCH (empty group) we return
 // success because there is nothing to do.
+//
+// The atomic -pgid broadcast cannot skip a single member, so it would signal
+// killSelfPID too if the caller shares the group. When that is the case
+// (killSelfPID's own pgid == pgid) we must take the per-PID path so self is
+// excluded — otherwise the daemon would SIGKILL itself.
 func killgOnce(pgid int, killSelfPID int, sig syscall.Signal) error {
+	// If the caller is a member of the target group, the atomic broadcast
+	// would hit it. Fall back to per-PID delivery that skips killSelfPID.
+	if killSelfPID > 0 && selfPGID(killSelfPID) == pgid {
+		for _, pid := range membersOfPGID(pgid) {
+			if pid == killSelfPID || pid <= 1 {
+				continue
+			}
+			_ = syscall.Kill(pid, sig)
+		}
+		return nil
+	}
+
 	err := syscall.Kill(-pgid, sig)
 	if err == nil {
 		return nil
@@ -78,6 +95,19 @@ func killgOnce(pgid int, killSelfPID int, sig syscall.Signal) error {
 		_ = syscall.Kill(pid, sig)
 	}
 	return nil
+}
+
+// selfPGID returns the process group id of pid, preferring /proc (Linux/WSL)
+// and falling back to the Getpgid syscall on other Unix. Returns 0 when
+// neither source can resolve it.
+func selfPGID(pid int) int {
+	if gp := readPGID(pid); gp != 0 {
+		return gp
+	}
+	if gp, err := syscall.Getpgid(pid); err == nil {
+		return gp
+	}
+	return 0
 }
 
 // pgidHasMembers returns true if any process other than killSelfPID is

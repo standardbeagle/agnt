@@ -115,6 +115,31 @@ type InputRouter struct {
 	// display state. Set via SetForwardingToggle.
 	forwardingToggle func(paused bool)
 	forwardPaused    bool
+
+	// modalInput, when set, diverts raw input bytes to the referenced channel
+	// instead of the normal PTY/overlay handling. It exists so a one-off
+	// startup prompt (e.g. the port-conflict Y/n question) can read a
+	// keystroke without spawning a second os.Stdin reader that would race the
+	// router's producer goroutine for the answer byte. Only one modal capture
+	// is active at a time.
+	modalInput atomic.Pointer[chan byte]
+}
+
+// IsRunning reports whether the router's Run loop is active.
+func (r *InputRouter) IsRunning() bool { return r.running.Load() }
+
+// BeginModalCapture diverts subsequent input bytes to the returned channel
+// until EndModalCapture is called. This lets a startup prompt own stdin input
+// while the router remains the single reader of os.Stdin.
+func (r *InputRouter) BeginModalCapture() <-chan byte {
+	ch := make(chan byte, 16)
+	r.modalInput.Store(&ch)
+	return ch
+}
+
+// EndModalCapture restores normal input handling after a modal capture.
+func (r *InputRouter) EndModalCapture() {
+	r.modalInput.Store(nil)
 }
 
 // NewInputRouter creates a new InputRouter.
@@ -239,6 +264,17 @@ func (r *InputRouter) Run() error {
 			if escTimer != nil {
 				escTimer.Stop()
 				escTimer = nil
+			}
+
+			// Modal capture: a startup prompt owns input. Divert the byte to
+			// it and skip normal handling so the prompt and the router never
+			// both consume from os.Stdin.
+			if mc := r.modalInput.Load(); mc != nil {
+				select {
+				case *mc <- b:
+				default:
+				}
+				continue
 			}
 
 			// If process viewer is active, any key closes it

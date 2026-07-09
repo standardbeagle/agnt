@@ -200,6 +200,24 @@ func TestStartupLogger_StampsProjectScope(t *testing.T) {
 	assert.Len(t, store.Query(StartupLogFilter{}), 4, "global query sees all four entries")
 }
 
+func TestLogSessionTargetStarting_IsProjectScoped(t *testing.T) {
+	projectPath := "/home/u/proj"
+	store := NewStartupLogStore(100)
+	d := &Daemon{startupErrorStore: store}
+
+	d.logSessionTargetStarting(&Session{
+		ProjectPath: projectPath,
+		Command:     "cdsp",
+		Args:        []string{"--model", "sonnet"},
+	})
+
+	scoped := store.Query(StartupLogFilter{ProjectPath: projectPath})
+	require.Len(t, scoped, 1)
+	assert.Equal(t, "target_starting", scoped[0].EventType)
+	assert.Equal(t, "starting cdsp --model sonnet", scoped[0].Message)
+	assert.True(t, strings.HasPrefix(scoped[0].ProcessID, makeProcessID(projectPath, "")))
+}
+
 // TestStartupLogger_NilSafe verifies the logger tolerates a nil receiver / nil
 // store (the scheduleFallbackPortChecks path used to guard the store for nil).
 func TestStartupLogger_NilSafe(t *testing.T) {
@@ -208,6 +226,27 @@ func TestStartupLogger_NilSafe(t *testing.T) {
 
 	emptyLogger := &startupLogger{store: nil, projectPath: "/p"}
 	assert.NotPanics(t, func() { emptyLogger.Info("x", "e", "m") })
+}
+
+func TestDaemonStartupLogIsGlobalOnly(t *testing.T) {
+	projectPath := "/home/u/proj"
+	store := NewStartupLogStore(100)
+	d := &Daemon{startupErrorStore: store}
+
+	d.daemonStartupLog("info", "daemon_starting", "daemon bootstrap starting")
+	d.daemonStartupLog("info", "daemon_commands_registered", "daemon hub commands registered")
+	d.daemonStartupLog("info", "hub_starting", "starting daemon hub")
+	d.daemonStartupLog("info", "hub_started", "daemon hub listening")
+
+	global := store.Query(StartupLogFilter{})
+	require.Len(t, global, 4)
+	assert.Equal(t, "daemon_starting", global[0].EventType)
+	assert.Equal(t, "daemon_commands_registered", global[1].EventType)
+	assert.Equal(t, "hub_starting", global[2].EventType)
+	assert.Equal(t, "hub_started", global[3].EventType)
+
+	scoped := store.Query(StartupLogFilter{ProjectPath: projectPath})
+	assert.Empty(t, scoped, "daemon lifecycle entries are not project-scoped")
 }
 
 func TestStartupLogStore_Concurrent(t *testing.T) {

@@ -35,6 +35,10 @@ type GetIncidentsOutput struct {
 	NextTools  []toolHint     `json:"next_tools,omitempty"`
 	NextSkills []string       `json:"next_skills,omitempty"`
 	Truncated  bool           `json:"truncated"`
+	// PipelineEnabled reports whether the caller's session actually has the
+	// incident pipeline wired. False + zero incidents means "pipeline off",
+	// not "clean inbox" — distinct states the agent must not conflate.
+	PipelineEnabled bool `json:"pipeline_enabled"`
 }
 
 type incidentView struct {
@@ -100,37 +104,48 @@ func makeGetIncidentsHandler(dt *DaemonTools) func(context.Context, *mcp.CallToo
 			limit = 100
 		}
 
+		// The hub parses Since strictly as RFC3339, so a duration form like "5m"
+		// (which the schema advertises) would be silently ignored there. Resolve
+		// it to an absolute RFC3339 timestamp here where duration parsing lives.
+		since := input.Since
+		if t := parseSince(input.Since); t != nil && !t.IsZero() {
+			since = t.Format(time.RFC3339)
+		}
+
 		filter := protocol.IncidentQueryFilter{
 			Severities:   input.Severity,
-			Since:        input.Since,
+			Since:        since,
 			Fingerprints: input.Fingerprints,
 			Sources:      input.Sources,
 			ProxyID:      input.ProxyID,
 			ProcessID:    input.ProcessID,
 			Detail:       input.Detail,
 			MarkRead:     input.MarkRead,
-			Limit:        limit + 1, // over-fetch by 1 to detect truncation
+			Limit:        limit,
 		}
 
-		var result *protocol.IncidentQueryResult
-		if dt != nil {
-			if err := dt.ensureConnected(); err == nil {
-				r, err := dt.client.IncidentQuery(filter)
-				if err == nil {
-					result = r
-				}
-				// Non-fatal: inbox may not be wired yet
-			}
+		if dt == nil {
+			return errorResult("incident query unavailable: no daemon client"), GetIncidentsOutput{}, nil
 		}
-
+		// A failed connect or query must be surfaced, not swallowed: rendering an
+		// empty inbox for a down daemon reports a false-healthy state and the
+		// agent stops investigating. Reserve the empty-result path for a genuinely
+		// empty inbox (PipelineEnabled distinguishes "pipeline off" from "no data").
+		if err := dt.ensureConnected(); err != nil {
+			return errorResult("incident query failed: cannot reach daemon: " + err.Error()), GetIncidentsOutput{}, nil
+		}
+		result, err := dt.client.IncidentQuery(filter)
+		if err != nil {
+			return errorResult("incident query failed: " + err.Error()), GetIncidentsOutput{}, nil
+		}
 		if result == nil {
 			result = &protocol.IncidentQueryResult{}
 		}
 
-		truncated := len(result.Incidents) > limit
-		if truncated {
-			result.Incidents = result.Incidents[:limit]
-		}
+		// The hub over-fetches and truncates server-side so the cursor and the
+		// mark-read set cover exactly this page; trust its truncation signal
+		// rather than re-truncating (which would drop an already-marked record).
+		truncated := result.Truncated
 
 		views := make([]incidentView, 0, len(result.Incidents))
 		for _, rec := range result.Incidents {
@@ -176,10 +191,11 @@ func makeGetIncidentsHandler(dt *DaemonTools) func(context.Context, *mcp.CallToo
 				Dropped:  stats.Dropped,
 				New:      stats.New,
 			},
-			Cursor:     result.Cursor,
-			NextTools:  nextTools,
-			NextSkills: nextSkills,
-			Truncated:  truncated,
+			Cursor:          result.Cursor,
+			NextTools:       nextTools,
+			NextSkills:      nextSkills,
+			Truncated:       truncated,
+			PipelineEnabled: result.PipelineEnabled,
 		}
 
 		if input.Raw {
@@ -222,7 +238,11 @@ func formatIncidentsCompact(out GetIncidentsOutput) string {
 		len(out.Incidents), s.Critical, s.Error, s.Warning, s.Info, s.New))
 
 	if len(out.Incidents) == 0 {
-		sb.WriteString("\n(no incidents)\n")
+		if !out.PipelineEnabled {
+			sb.WriteString("\n(incident pipeline not enabled for this session — no inbox to report)\n")
+		} else {
+			sb.WriteString("\n(no incidents)\n")
+		}
 	} else {
 		sb.WriteString("\n")
 		for _, iv := range out.Incidents {

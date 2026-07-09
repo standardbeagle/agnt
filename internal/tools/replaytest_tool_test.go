@@ -51,7 +51,11 @@ func TestReplaytestGate(t *testing.T) {
 	for _, a := range free {
 		res, _, err := missing.handle(context.Background(), ReplaytestInput{Action: a})
 		require.NoError(t, err)
-		assert.False(t, res.IsError, "action %s should be free", a)
+		require.NotNil(t, res)
+		// Free actions are not license-gated: they never emit the activate
+		// prompt (a missing-name validation error is fine — it is not the
+		// license block being asserted here).
+		assert.NotContains(t, resultText(res), "activate", "action %s should not be license-blocked", a)
 	}
 
 	res, _, err := missing.handle(context.Background(), ReplaytestInput{Action: "bogus"})

@@ -103,8 +103,16 @@ func handleSIGCHLD(ctx context.Context, done <-chan struct{}, c *exec.Cmd, ptmx 
 			if c.Process == nil {
 				continue
 			}
+			// WNOWAIT makes this a non-destructive peek: it leaves the child
+			// in a waitable state so the exit path's c.Wait() (run.go) can
+			// still reap it. Without WNOWAIT, a normal child exit would be
+			// reaped here (WUNTRACED|WNOHANG reaps terminated children), then
+			// c.Wait() returns "no child processes" and classifyChildExit
+			// misreports a clean exit as an unexpected crash. We only need to
+			// observe the *stopped* state here (Ctrl+Z); the exited state is
+			// left for the main path.
 			var ws syscall.WaitStatus
-			pid, err := syscall.Wait4(c.Process.Pid, &ws, syscall.WUNTRACED|syscall.WNOHANG, nil)
+			pid, err := syscall.Wait4(c.Process.Pid, &ws, syscall.WUNTRACED|syscall.WNOHANG|syscall.WNOWAIT, nil)
 			if err != nil || pid <= 0 {
 				continue
 			}

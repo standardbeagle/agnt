@@ -55,6 +55,14 @@ type AgntConfig struct {
 
 	// Setup configures the first-run auto-setup flow for `agnt run`.
 	Setup *SetupConfig `kdl:"setup"`
+
+	// Warnings holds non-fatal configuration warnings collected at parse
+	// time (e.g. a script that depends-on a non-autostart script, which with
+	// the default dep timeout of 0 would hang autostart forever with no
+	// signal). Populated by ParseAgntConfig; not a KDL field. The daemon is
+	// expected to surface these through the event system / session log so the
+	// misconfiguration is visible rather than silently hanging.
+	Warnings []string `kdl:"-"`
 }
 
 // SetupConfig controls the first-run setup nudge for `agnt run`.
@@ -810,10 +818,10 @@ type AIConfig struct {
 	HelpersCheatSheet *bool `kdl:"helpers-cheat-sheet"`
 	// PersistContext controls whether `agnt run` writes the agnt steering
 	// block into the agent's always-loaded context file (AGENTS.md, GEMINI.md,
-	// …) for non-Claude agents. Those agents only get a one-shot stdin nudge,
-	// so the file makes the guidance persist every turn. nil (the default)
-	// means "enabled"; set to an explicit false to opt out (e.g. you manage
-	// AGENTS.md yourself).
+	// …) for non-Claude agents. The file makes the guidance persist every turn
+	// without a visible startup stdin message. nil (the default) means
+	// "enabled"; set to an explicit false to opt out (e.g. you manage AGENTS.md
+	// yourself).
 	PersistContext *bool `kdl:"persist-context"`
 }
 
@@ -883,7 +891,9 @@ func DefaultAgntConfig() *AgntConfig {
 }
 
 // LoadAgntConfig loads configuration from the specified directory.
-// It looks for .agnt.kdl in the directory and its parents.
+// It looks for .agnt.kdl in that directory only — it does NOT walk up the
+// parent chain (see FindAgntConfigFile for why). Returns DefaultAgntConfig()
+// when no config file is present in dir.
 func LoadAgntConfig(dir string) (*AgntConfig, error) {
 	configPath := FindAgntConfigFile(dir)
 	if configPath == "" {
@@ -962,6 +972,11 @@ func ParseAgntConfig(data string) (*AgntConfig, error) {
 		for _, w := range warnings {
 			debug.Log("config", "WARNING: %s", w)
 		}
+		// Retain warnings on the config so an upper layer (daemon) can surface
+		// them through the event system / session log. debug.Log alone only
+		// reaches the debug file, which the Silent Failure Prohibition forbids
+		// as the sole channel for a misconfiguration that hangs autostart.
+		cfg.Warnings = append(cfg.Warnings, warnings...)
 	}
 
 	// Validate proxy `wait-for` references — every listed script must

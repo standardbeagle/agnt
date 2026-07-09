@@ -62,6 +62,7 @@ type BlobStore struct {
 	writeCh   chan writeReq
 	asyncCh   chan asyncWriteReq // for WriteAsync; separate so sync writes can't starve
 	done      chan struct{}
+	closeOnce sync.Once
 	wg        sync.WaitGroup
 
 	// drainGate is used by tests only (via pauseDrain/resumeDrain). When non-nil
@@ -100,8 +101,9 @@ func newBlobStoreInternal(maxBytes int64, asyncCap int) *BlobStore {
 
 // Write stores content and returns a BlobRef. Identical content (same sha256)
 // is stored only once. If the store is over budget the oldest entry is evicted.
-// Write never blocks the caller: it is enqueued to a background goroutine.
-// The returned channel receives the result when the write completes.
+// The write is enqueued to a background goroutine so the caller never contends
+// on the store lock; Write then blocks on the result channel until the
+// background goroutine reports completion (or the store is closed).
 func (bs *BlobStore) Write(content []byte, mime string) (BlobRef, error) {
 	req := writeReq{
 		content: content,
@@ -165,9 +167,12 @@ func (bs *BlobStore) Read(hash string) ([]byte, string, error) {
 }
 
 // Close stops the background goroutine after draining pending writes.
+// Idempotent: a second Close is a no-op (a bare close(bs.done) would panic).
 func (bs *BlobStore) Close() {
-	close(bs.done)
-	bs.wg.Wait()
+	bs.closeOnce.Do(func() {
+		close(bs.done)
+		bs.wg.Wait()
+	})
 }
 
 // Stats returns current usage for observability.

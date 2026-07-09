@@ -225,6 +225,19 @@ type AlertScanner struct {
 	maxRetries    int
 	retryInterval time.Duration
 
+	// deliverCh serializes alert delivery. flush() enqueues batches here and a
+	// single deliveryLoop goroutine calls onAlert one batch at a time. onAlert
+	// injects Enter keystrokes into the PTY and can block for seconds
+	// (sendEntersUntilActivity); without this single-consumer serialization two
+	// overlapping flush() calls (a rescheduled retry timer racing a fresh batch
+	// timer) could call onAlert concurrently and interleave PTY injection.
+	deliverCh   chan *AlertBatch
+	deliverDone chan struct{}
+	// deliveryStarted guards lazy creation of the deliveryLoop goroutine so a
+	// scanner that never emits an alert (the common case for short-lived daemon
+	// instances in tests) never spins up a goroutine to leak. Guarded by mu.
+	deliveryStarted bool
+
 	// clockNow returns the current time. Defaults to time.Now.
 	// Tests may substitute a stub to control dedup window checks.
 	clockNow func() time.Time
@@ -283,10 +296,70 @@ func NewAlertScanner(cfg AlertScannerConfig) *AlertScanner {
 		retryInterval: retryInterval,
 		clockNow:      time.Now,
 		afterFunc:     time.AfterFunc,
+		deliverCh:     make(chan *AlertBatch, 128),
+		deliverDone:   make(chan struct{}),
 	}
 	s.enabled.Store(true)
 
+	// deliveryLoop starts lazily on the first enqueue — see ensureDeliveryLoop.
+
 	return s
+}
+
+// ensureDeliveryLoop starts the single delivery goroutine on demand, exactly
+// once, and never after Stop. Returns whether the loop is running so callers
+// know a send to deliverCh will be consumed.
+func (s *AlertScanner) ensureDeliveryLoop() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.deliveryStarted {
+		return true
+	}
+	if s.stopped.Load() {
+		return false
+	}
+	s.deliveryStarted = true
+	go s.deliveryLoop()
+	return true
+}
+
+// deliveryLoop is the single consumer of deliverCh. It calls onAlert one batch
+// at a time so PTY injection is never concurrent. On Stop it drains any queued
+// batches and exits, signaling deliverDone.
+func (s *AlertScanner) deliveryLoop() {
+	deliver := func(b *AlertBatch) {
+		if s.onAlert != nil {
+			s.onAlert(b)
+		}
+	}
+	for {
+		select {
+		case b := <-s.deliverCh:
+			deliver(b)
+		case <-s.stopCh:
+			for {
+				select {
+				case b := <-s.deliverCh:
+					deliver(b)
+				default:
+					close(s.deliverDone)
+					return
+				}
+			}
+		}
+	}
+}
+
+// enqueue hands a batch to the delivery goroutine, starting it on first use.
+// It blocks (providing backpressure) if the buffer is full, but never after Stop.
+func (s *AlertScanner) enqueue(b *AlertBatch) {
+	if !s.ensureDeliveryLoop() {
+		return // stopped before any delivery; nothing will consume the batch
+	}
+	select {
+	case s.deliverCh <- b:
+	case <-s.stopCh:
+	}
 }
 
 // ProcessLine checks a single line of output against all enabled patterns.
@@ -517,7 +590,8 @@ func (s *AlertScanner) flush() {
 	s.flushRetries = 0
 	s.mu.Unlock()
 
-	// Deliver batches
+	// Deliver batches via the single delivery goroutine so PTY injection is
+	// serialized even if this flush overlaps another.
 	if s.onAlert != nil {
 		// Sort script IDs for deterministic ordering
 		scriptIDs := make([]string, 0, len(byScript))
@@ -527,7 +601,7 @@ func (s *AlertScanner) flush() {
 		sort.Strings(scriptIDs)
 
 		for _, sid := range scriptIDs {
-			s.onAlert(&AlertBatch{
+			s.enqueue(&AlertBatch{
 				Matches:  byScript[sid],
 				ScriptID: sid,
 			})
@@ -582,11 +656,40 @@ func (s *AlertScanner) Stop() {
 		s.batchTimer.Stop()
 		s.batchTimer = nil
 	}
+	started := s.deliveryStarted
 	s.mu.Unlock()
 
-	// Final flush
+	// Wait for the delivery goroutine to drain queued batches and exit, so the
+	// final flush below cannot call onAlert concurrently with it. Skip the wait
+	// when the loop was never started (no alert ever enqueued) — deliverDone
+	// would never be closed.
+	//
+	// The wait is bounded: onAlert injects into the PTY and can block for
+	// several seconds per batch (it waits on child activity that never comes
+	// when the child has already exited). Blocking teardown on that would stall
+	// session/daemon shutdown. If the goroutine doesn't drain within the grace
+	// window, return without the final flush — skipping deliverPending() is
+	// also required for correctness, since the goroutine is still live and a
+	// concurrent deliverPending() would invoke onAlert twice over.
+	if started {
+		select {
+		case <-s.deliverDone:
+			// Drained and exited — safe to flush synchronously.
+			s.deliverPending()
+		case <-time.After(alertStopGrace):
+			// A batch is stuck in a blocking onAlert; don't stall teardown.
+		}
+		return
+	}
+
+	// Never started: no delivery goroutine, so the flush is race-free.
 	s.deliverPending()
 }
+
+// alertStopGrace bounds how long Stop() waits for the delivery goroutine to
+// drain before abandoning the final flush and returning, so a blocked PTY
+// injection cannot stall session/daemon teardown.
+const alertStopGrace = 2 * time.Second
 
 // deliverPending delivers any remaining pending alerts without deferral.
 func (s *AlertScanner) deliverPending() {

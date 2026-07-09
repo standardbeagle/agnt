@@ -91,6 +91,9 @@ Use stop_all/restart_all to manage running resources without stopping the daemon
 
 func makeDaemonHandler(dt *DaemonTools) func(context.Context, *mcp.CallToolRequest, DaemonInput) (*mcp.CallToolResult, DaemonOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input DaemonInput) (*mcp.CallToolResult, DaemonOutput, error) {
+		if err := validateDaemonInput(input); err != nil {
+			return errorResult(validationError("daemon", err)), DaemonOutput{}, nil
+		}
 		switch input.Action {
 		case "status":
 			return handleDaemonStatus(dt)

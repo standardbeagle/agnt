@@ -43,12 +43,26 @@ func makeRecord(fp, src, sev, cat, summary string, count int) protocol.IncidentR
 
 func TestGetIncidents_EmptyInbox_ReturnsEmpty(t *testing.T) {
 	t.Parallel()
-	out := formatIncidentsCompact(GetIncidentsOutput{})
+	// Pipeline enabled + empty inbox → genuine "no incidents".
+	out := formatIncidentsCompact(GetIncidentsOutput{PipelineEnabled: true})
 	if !strings.Contains(out, "Incidents (0)") {
 		t.Errorf("expected empty header, got: %q", out)
 	}
 	if !strings.Contains(out, "no incidents") {
 		t.Errorf("expected no-incidents note, got: %q", out)
+	}
+}
+
+func TestGetIncidents_PipelineDisabled_DistinctFromEmpty(t *testing.T) {
+	t.Parallel()
+	// Pipeline off must not read as a clean empty inbox — the agent needs to
+	// know the inbox isn't wired rather than concluding "no problems".
+	out := formatIncidentsCompact(GetIncidentsOutput{PipelineEnabled: false})
+	if strings.Contains(out, "no incidents") {
+		t.Errorf("pipeline-off must not render as 'no incidents', got: %q", out)
+	}
+	if !strings.Contains(out, "not enabled") {
+		t.Errorf("expected pipeline-not-enabled note, got: %q", out)
 	}
 }
 

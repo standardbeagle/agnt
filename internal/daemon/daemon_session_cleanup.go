@@ -42,12 +42,8 @@ func (d *Daemon) killSessionPGID(session *Session) {
 
 	if err := platform.KillSessionPGID(pgid, os.Getpid(), sessionPGIDGracePeriod, false); err != nil {
 		debug.Warn("daemon", "session %s: killpg(%d) failed: %v", code, pgid, err)
-		d.startupErrorStore.Add(&StartupLogEntry{
-			Level:     "warning",
-			EventType: "session_pgid_kill_failed",
-			Message:   fmt.Sprintf("session %s: failed to reap pgid %d: %v", code, pgid, err),
-			Timestamp: time.Now(),
-		})
+		d.daemonStartupLog("warning", "session_pgid_kill_failed",
+			fmt.Sprintf("session %s: failed to reap pgid %d: %v", code, pgid, err))
 	}
 }
 
@@ -85,12 +81,8 @@ func (d *Daemon) killSessionJobObject(session *Session) {
 
 	if err := platform.KillSessionJobObject(uintptr(handle)); err != nil {
 		debug.Warn("daemon", "session %s: TerminateJobObject(0x%x) failed: %v", code, handle, err)
-		d.startupErrorStore.Add(&StartupLogEntry{
-			Level:     "warning",
-			EventType: "session_job_kill_failed",
-			Message:   fmt.Sprintf("session %s: failed to terminate job 0x%x: %v", code, handle, err),
-			Timestamp: time.Now(),
-		})
+		d.daemonStartupLog("warning", "session_job_kill_failed",
+			fmt.Sprintf("session %s: failed to terminate job 0x%x: %v", code, handle, err))
 	}
 }
 
@@ -150,6 +142,13 @@ func (d *Daemon) CleanupSessionResourcesDeferred(sessionCode string) {
 	projectPath := session.ProjectPath
 	if projectPath == "" {
 		debug.Log("daemon", "session %s has no project path, skipping deferred cleanup", sessionCode)
+		// Still reap the PTY child's session pgid / Job Object before
+		// unregistering — a session with no project path can still own
+		// backgrounded jobs (e.g. `npm run dev &`), and skipping the kill
+		// would leak them. Both calls no-op on the wrong platform. Mirrors
+		// the empty-projectPath branch in doCleanup.
+		d.killSessionPGID(session)
+		d.killSessionJobObject(session)
 		d.sessionRegistry.Unregister(sessionCode)
 		return
 	}
@@ -168,15 +167,24 @@ func (d *Daemon) CleanupSessionResourcesDeferred(sessionCode string) {
 	timer := time.AfterFunc(grace, func() {
 		d.pendingCleanups.Delete(sessionCode)
 
-		// If the daemon began shutting down between this timer firing and now,
-		// the managers doCleanup touches may already be torn down. Skip — Stop()
-		// reaps resources itself.
-		if d.isShuttingDown() {
+		// Register with the shutdown waitgroup so Stop() blocks on an
+		// in-flight cleanup rather than tearing down the hub / proxy manager
+		// underneath a running doCleanup. The wg.Add must be atomic with the
+		// shutdown check: Stop() sets d.shutdown under shutdownMu before it
+		// calls d.wg.Wait(), so taking the same lock guarantees we either
+		// bail (shutting down — Stop reaps resources itself) or Add(1)
+		// strictly before Wait, never Add-after-Wait.
+		d.shutdownMu.Lock()
+		if d.shutdown {
+			d.shutdownMu.Unlock()
 			return
 		}
+		d.wg.Add(1)
+		d.shutdownMu.Unlock()
+		defer d.wg.Done()
 
 		if s, ok := d.sessionRegistry.Get(sessionCode); ok {
-			if time.Since(s.LastSeen) < grace {
+			if time.Since(s.GetLastSeen()) < grace {
 				debug.Log("daemon", "skipping deferred cleanup for session %s — re-registered during grace period", sessionCode)
 				return
 			}
@@ -281,13 +289,8 @@ func (d *Daemon) doCleanup(sessionCode string) {
 			stoppedIDs, err := d.proxym.StopByProjectPath(ctx, projectPath)
 			if err != nil {
 				debug.Log("daemon", "error stopping proxies for project %s: %v", projectPath, err)
-				d.startupErrorStore.Add(&StartupLogEntry{
-					ProcessID: "",
-					Level:     "warning",
-					EventType: "proxy_stop_failed",
-					Message:   fmt.Sprintf("error stopping proxies for project %s: %v", projectPath, err),
-					Timestamp: time.Now(),
-				})
+				d.daemonStartupLog("warning", "proxy_stop_failed",
+					fmt.Sprintf("error stopping proxies for project %s: %v", projectPath, err))
 			}
 			if len(stoppedIDs) > 0 {
 				debug.Log("daemon", "stopped proxies: %v", stoppedIDs)
@@ -305,13 +308,8 @@ func (d *Daemon) doCleanup(sessionCode string) {
 			stoppedIDs, err := d.browserm.StopByProjectPath(ctx, projectPath)
 			if err != nil {
 				debug.Log("daemon", "error stopping browsers for project %s: %v", projectPath, err)
-				d.startupErrorStore.Add(&StartupLogEntry{
-					ProcessID: "",
-					Level:     "warning",
-					EventType: "stop_failed",
-					Message:   fmt.Sprintf("error stopping browsers for project %s: %v", projectPath, err),
-					Timestamp: time.Now(),
-				})
+				d.daemonStartupLog("warning", "stop_failed",
+					fmt.Sprintf("error stopping browsers for project %s: %v", projectPath, err))
 			}
 			if len(stoppedIDs) > 0 {
 				debug.Log("daemon", "stopped browsers: %v", stoppedIDs)
@@ -328,13 +326,8 @@ func (d *Daemon) doCleanup(sessionCode string) {
 			for _, pid := range orphanedProcessIDs {
 				if err := pm.Stop(ctx, pid); err != nil {
 					debug.Log("daemon", "error stopping orphaned process %s: %v", pid, err)
-					d.startupErrorStore.Add(&StartupLogEntry{
-						ProcessID: pid,
-						Level:     "warning",
-						EventType: "stop_failed",
-						Message:   fmt.Sprintf("error stopping orphaned process: %v", err),
-						Timestamp: time.Now(),
-					})
+					d.recordStartupEntry(pid, "", "warning", "stop_failed",
+						fmt.Sprintf("error stopping orphaned process: %v", err), 0)
 				} else {
 					debug.Log("daemon", "stopped orphaned process %s", pid)
 					if d.autoRestarter != nil {
@@ -351,13 +344,8 @@ func (d *Daemon) doCleanup(sessionCode string) {
 			stoppedIDs, err := d.hub.ProcessManager().StopByProjectPath(ctx, projectPath)
 			if err != nil {
 				debug.Log("daemon", "error stopping processes for project %s: %v", projectPath, err)
-				d.startupErrorStore.Add(&StartupLogEntry{
-					ProcessID: "",
-					Level:     "warning",
-					EventType: "stop_failed",
-					Message:   fmt.Sprintf("error stopping processes for project %s: %v", projectPath, err),
-					Timestamp: time.Now(),
-				})
+				d.daemonStartupLog("warning", "stop_failed",
+					fmt.Sprintf("error stopping processes for project %s: %v", projectPath, err))
 			}
 			if len(stoppedIDs) > 0 {
 				debug.Log("daemon", "stopped processes: %v", stoppedIDs)
@@ -412,8 +400,11 @@ func (d *Daemon) doCleanup(sessionCode string) {
 
 		debug.Log("daemon", "cleared script registry for project %s (last session)", projectPath)
 
-		// Clear session log — next session starts fresh
-		d.startupErrorStore.Clear()
+		// Clear this project's startup log — next session starts fresh.
+		// Scoped by the project's ProcessID prefix so tearing down this
+		// project's last session does not wipe other projects' startup logs
+		// from the shared ring buffer.
+		d.startupErrorStore.ClearByPrefix(makeProcessID(projectPath, ""))
 
 		// Cancel any in-flight autostart run for this project, then drop the
 		// handle so the next session triggers a fresh autostart. Matching the

@@ -84,14 +84,10 @@ type ResilientClient struct {
 // NewResilientClient creates a new resilient client.
 func NewResilientClient(config ResilientClientConfig) *ResilientClient {
 	// Map our config to go-cli-server config
-	autoStartCfg := goclient.AutoStartConfig{
-		SocketPath:     config.AutoStartConfig.SocketPath,
-		HubPath:        config.AutoStartConfig.DaemonPath,
-		StartTimeout:   config.AutoStartConfig.StartTimeout,
-		RetryInterval:  config.AutoStartConfig.RetryInterval,
-		MaxRetries:     config.AutoStartConfig.MaxRetries,
-		ProcessMatcher: isAgntDaemonProcess,
-	}
+	// Route through toLibraryConfig so the spawn argv (HubArgs =
+	// "daemon start --socket <path>") stays in one place; the library's generic
+	// default would launch agnt with no subcommand and the hub would never bind.
+	autoStartCfg := config.AutoStartConfig.toLibraryConfig()
 
 	resilientCfg := goclient.ResilientConfig{
 		AutoStartConfig:      autoStartCfg,

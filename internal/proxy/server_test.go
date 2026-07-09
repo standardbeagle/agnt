@@ -11,6 +11,25 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// The port-in-use auto-assign fallback must keep the original interface scope.
+// A bare ":0" binds 0.0.0.0/[::], silently promoting a loopback-only dev proxy
+// to LAN-reachable — an unintended network exposure.
+func TestAutoAssignAddr_PreservesHostScope(t *testing.T) {
+	cases := map[string]string{
+		"127.0.0.1:8080": "127.0.0.1:0",
+		"[::1]:8080":     "[::1]:0",
+		"0.0.0.0:8080":   "0.0.0.0:0",
+		":8080":          "127.0.0.1:0", // empty host must NOT widen to all-interfaces
+		"garbage":        "127.0.0.1:0", // unparseable falls back to loopback, never wider
+	}
+	for in, want := range cases {
+		ps := &ProxyServer{ListenAddr: in}
+		if got := ps.autoAssignAddr(); got != want {
+			t.Errorf("autoAssignAddr(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestNewProxyServer_DefaultVerifiesTLS(t *testing.T) {
 	config := ProxyConfig{
 		ID:         "tls-default",

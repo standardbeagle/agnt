@@ -61,16 +61,15 @@ type ChannelNotifyFn func(content string, payload PingPayload) error
 // PTYInjectFn injects a single-line status string into PTY stdin.
 type PTYInjectFn func(line string) error
 
-// PingEmitter subscribes to an Inbox, applies flow + activity gating, and fans
-// pings out to up to 3 channels (MCP log, claude/channel, PTY stdin).
+// PingEmitter subscribes to an Inbox, applies flow gating, and fans pings out to
+// up to 3 channels (MCP log, claude/channel, PTY stdin).
 //
-// Critical events bypass the activity deferral and coalesce timer.
+// Critical events bypass the coalesce timer and emit immediately.
 // Non-critical events are debounced via a session-level Coalescer slot.
 type PingEmitter struct {
 	inbox    *Inbox
 	config   PingConfig
 	flow     *FlowController
-	activity *ActivityDetector
 	coalesce *Coalescer
 
 	mcpNotify     MCPNotifyFn
@@ -83,15 +82,10 @@ type PingEmitter struct {
 // NewPingEmitter creates and starts a PingEmitter. Stop() must be called to
 // release the subscription goroutine. Any of mcpNotify, channelNotify, or
 // ptyInject may be nil (that channel is skipped).
-//
-// activity.onIdle is not set by NewPingEmitter — the caller should wire it
-// with: `ForceFlush(sessionPingFP)` on the returned emitter's coalescer if
-// activity-triggered flushing is desired (typically in L8 wiring).
 func NewPingEmitter(
 	inbox *Inbox,
 	config PingConfig,
 	flow *FlowController,
-	activity *ActivityDetector,
 	mcpNotify MCPNotifyFn,
 	channelNotify ChannelNotifyFn,
 	ptyInject PTYInjectFn,
@@ -107,7 +101,6 @@ func NewPingEmitter(
 		inbox:         inbox,
 		config:        config,
 		flow:          flow,
-		activity:      activity,
 		mcpNotify:     mcpNotify,
 		channelNotify: channelNotify,
 		ptyInject:     ptyInject,
@@ -218,11 +211,7 @@ func (pe *PingEmitter) buildPayload(stats Stats, entries []InboxEntry) PingPaylo
 		if e.Sample != nil {
 			te.Category = e.Sample.Category
 			if pe.config.IncludeSummary {
-				s := e.Sample.Summary
-				if len(s) > maxSummaryInPing {
-					s = s[:maxSummaryInPing]
-				}
-				te.Summary = s
+				te.Summary = truncateToBytes(e.Sample.Summary, maxSummaryInPing)
 			}
 		}
 		p.Top = append(p.Top, te)

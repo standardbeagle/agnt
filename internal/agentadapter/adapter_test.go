@@ -87,10 +87,11 @@ func TestDefaultRegistry_UnknownCommandReturnsNil(t *testing.T) {
 	}
 }
 
-func TestUniversal_UnknownCommandGetsStdinInjection(t *testing.T) {
+func TestUniversal_UnknownCommandUsesStdinPromptStrategy(t *testing.T) {
 	// Verb-driven behavior: any command launched under `agnt run` still gets
-	// the agnt prompt, even one the registry does not recognize. The fallback
-	// is stdin-based (BuildArgs unchanged, InitialStdin carries the prompt).
+	// an adapter. The fallback is stdin-based (BuildArgs unchanged,
+	// InitialStdin carries the prompt) for setup-mode delivery; normal coding
+	// sessions decide at the PTY pipeline whether to inject it.
 	a := Universal("/usr/local/bin/myagent")
 	if a == nil {
 		t.Fatal("Universal must never return nil")
@@ -105,10 +106,10 @@ func TestUniversal_UnknownCommandGetsStdinInjection(t *testing.T) {
 		t.Errorf("BuildArgs = %v, want unchanged (stdin-based)", got)
 	}
 
-	// A non-empty prompt triggers a short stdin nudge (the full guidance goes
-	// to the context file, not stdin); an empty prompt injects nothing.
-	if stdin := a.InitialStdin("PROMPT"); len(stdin) == 0 {
-		t.Error("InitialStdin must emit an agnt nudge for an unknown command")
+	// A non-empty prompt is carried as stdin when the caller elects to inject
+	// it (setup mode); an empty prompt injects nothing.
+	if stdin := string(a.InitialStdin("PROMPT\n\n")); stdin != "PROMPT\n" {
+		t.Errorf("InitialStdin = %q, want normalized prompt", stdin)
 	}
 	if stdin := a.InitialStdin(""); stdin != nil {
 		t.Errorf("InitialStdin(\"\") = %v, want nil", stdin)
@@ -253,30 +254,21 @@ func TestStdinAdapter_BuildArgsUnchanged(t *testing.T) {
 	}
 }
 
-func TestStdinAdapter_InitialStdinIsShortNudge(t *testing.T) {
+func TestStdinAdapter_InitialStdinCarriesPrompt(t *testing.T) {
 	r := DefaultRegistry()
 	a := r.Lookup("gemini")
-	got := a.InitialStdin("THE_FULL_PROMPT_BODY")
+	got := a.InitialStdin("THE_FULL_PROMPT_BODY\n\n")
 	if len(got) == 0 {
 		t.Fatal("expected non-empty stdin")
 	}
-	// The nudge must NOT dump the full prompt into the conversation — that body
-	// is delivered via the context file. It carries the agnt directive instead.
-	if bytes.Contains(got, []byte("THE_FULL_PROMPT_BODY")) {
-		t.Errorf("stdin must not embed the full prompt body: %s", got)
+	// The adapter strategy is literal stdin delivery. The PTY pipeline decides
+	// whether to call this (setup mode) or rely on the context file (coding
+	// mode).
+	if string(got) != "THE_FULL_PROMPT_BODY\n" {
+		t.Errorf("stdin = %q, want prompt plus single trailing newline", got)
 	}
-	if !bytes.Contains(got, []byte("agnt")) {
-		t.Errorf("stdin missing agnt note: %s", got)
-	}
-	if !bytes.Contains(got, []byte("proc")) {
-		t.Errorf("stdin should carry the key directive (proc for dev servers): %s", got)
-	}
-	// One line: a single trailing newline, none in the middle.
 	if !bytes.HasSuffix(got, []byte("\n")) {
 		t.Errorf("stdin should end with newline: %q", got)
-	}
-	if bytes.Count(got, []byte("\n")) != 1 {
-		t.Errorf("stdin nudge must be a single line, got %d newlines: %s", bytes.Count(got, []byte("\n")), got)
 	}
 }
 
@@ -625,15 +617,13 @@ func equalStrings(a, b []string) bool {
 	return true
 }
 
-// Sanity check: ensure the adapter note text survives round-tripping
-// through a bytes buffer (guards against accidentally stripping the
-// trailing newline in a future refactor).
-func TestStdinAdapter_NoteIsSelfContainedLine(t *testing.T) {
+// Sanity check: ensure adapter stdin normalizes trailing newlines without
+// stripping internal prompt structure.
+func TestStdinAdapter_NormalizesTrailingNewlines(t *testing.T) {
 	r := DefaultRegistry()
 	a := r.Lookup("cursor")
-	out := a.InitialStdin("X")
-	lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
-	if len(lines) != 1 {
-		t.Errorf("expected single line, got %d: %q", len(lines), out)
+	out := a.InitialStdin("A\nB\n\n")
+	if string(out) != "A\nB\n" {
+		t.Errorf("stdin = %q, want internal newline preserved and trailing newlines normalized", out)
 	}
 }

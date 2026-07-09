@@ -1,15 +1,14 @@
 package agentadapter
 
 import (
+	"strings"
 	"time"
 )
 
-// stdinAdapter covers every non-Claude AI coding agent. It injects a brief
-// one-line note as the agent's first user message, written to the child's
-// stdin after StdinDelay. The FULL agnt guidance is NOT injected here — it is
-// persisted to the agent's always-loaded context file (AGENTS.md, GEMINI.md, …)
-// by writePersistentContext, so the stdin nudge stays a short pointer instead
-// of dumping the whole cheat-sheet into the conversation.
+// stdinAdapter covers agents that need prompt delivery through stdin. Normal
+// coding sessions do not call InitialStdin; their guidance is persisted to the
+// agent's always-loaded context file (AGENTS.md, GEMINI.md, ...). Setup mode
+// uses InitialStdin to send the one-shot setup prompt.
 type stdinAdapter struct {
 	name    string
 	aliases []string
@@ -47,12 +46,9 @@ func (s *stdinAdapter) InitialStdin(prompt string) []byte {
 	if prompt == "" {
 		return nil
 	}
-	// Keep this to ONE short line: it lands as the agent's first user message,
-	// so dumping the full prompt here is noise. The prompt argument only gates
-	// whether to inject at all (empty = injection disabled); its body is
-	// delivered via the persistent context file, not stdin. The trailing
-	// newline submits the line as input.
-	return []byte("Running under agnt: use the `agnt` MCP server tools instead of shell — run dev servers and long builds with `proc` (not Bash), and use proxy/get_errors/currentpage for browser debugging. Full guidance is in your project context file (AGENTS.md).\n")
+	// The trailing newline submits the prompt as input. Trim first so callers
+	// can pass prompt strings that already end in one or more newlines.
+	return []byte(strings.TrimRight(prompt, "\n") + "\n")
 }
 
 func (s *stdinAdapter) StdinDelay() time.Duration { return s.delay }
