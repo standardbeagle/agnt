@@ -11,15 +11,19 @@ import (
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
 )
 
-func (d *Daemon) hubHandleAlerts(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	return newCommandRouter("ALERTS").dispatch(ctx, conn, cmd, map[string]handlerFn{
+func (d *Daemon) alertsActions() map[string]handlerFn {
+	return map[string]handlerFn{
 		"REPORT":         noCtx(d.hubHandleAlertsReport),
 		"QUERY":          noCtx(d.hubHandleAlertsQuery),
 		"":               noCtx(d.hubHandleAlertsQuery),
 		"CLEAR":          connOnly(d.hubHandleAlertsClear),
 		"STARTUP-LOG":    noCtx(d.hubHandleStartupLog),
-		"STARTUP-ERRORS": noCtx(d.hubHandleStartupLog),
-	})
+		"STARTUP-ERRORS": noCtx(d.hubHandleStartupLog), // legacy alias
+	}
+}
+
+func (d *Daemon) hubHandleAlerts(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	return newCommandRouter("ALERTS").dispatch(ctx, conn, cmd, d.alertsActions())
 }
 
 // hubHandleAlertsReport handles ALERTS REPORT command.

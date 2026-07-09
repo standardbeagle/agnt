@@ -32,7 +32,11 @@ import (
 // primary-only stdin, detach-is-not-kill, full-ring-then-live replay) while
 // fitting the existing transport rather than inventing a new one.
 func (d *Daemon) hubHandleSessionHost(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	return newCommandRouter("SESSION-HOST").dispatch(ctx, conn, cmd, map[string]handlerFn{
+	return newCommandRouter("SESSION-HOST").dispatch(ctx, conn, cmd, d.sessionHostActions())
+}
+
+func (d *Daemon) sessionHostActions() map[string]handlerFn {
+	return map[string]handlerFn{
 		"CREATE": noCtx(d.hubHandleSessionHostCreate),
 		"LIST":   noCtx(d.hubHandleSessionHostList),
 		"KILL":   noCtx(d.hubHandleSessionHostKill),
@@ -42,7 +46,7 @@ func (d *Daemon) hubHandleSessionHost(ctx context.Context, conn *hubpkg.Connecti
 		"ATTACH": func(c context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
 			return d.hubHandleSessionHostAttach(c, conn, cmd)
 		},
-	})
+	}
 }
 
 // hubHandleSessionHostCreate handles SESSION-HOST CREATE.

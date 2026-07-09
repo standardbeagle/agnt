@@ -14,13 +14,17 @@ import (
 )
 
 func (d *Daemon) hubHandleProxyLog(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	return newCommandRouter("PROXYLOG").dispatch(ctx, conn, cmd, map[string]handlerFn{
+	return newCommandRouter("PROXYLOG").dispatch(ctx, conn, cmd, d.proxyLogActions())
+}
+
+func (d *Daemon) proxyLogActions() map[string]handlerFn {
+	return map[string]handlerFn{
 		"QUERY":   noCtx(d.hubHandleProxyLogQuery),
 		"":        noCtx(d.hubHandleProxyLogQuery),
 		"SUMMARY": noCtx(d.hubHandleProxyLogSummary),
 		"CLEAR":   noCtx(d.hubHandleProxyLogClear),
 		"STATS":   noCtx(d.hubHandleProxyLogStats),
-	})
+	}
 }
 
 // hubHandleProxyLogQuery handles PROXYLOG QUERY command.

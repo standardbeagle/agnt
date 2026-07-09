@@ -3,6 +3,8 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strconv"
 
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/protocol"
@@ -12,8 +14,8 @@ import (
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
 )
 
-func (d *Daemon) hubHandleOverlay(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	return newCommandRouter("OVERLAY").dispatch(ctx, conn, cmd, map[string]handlerFn{
+func (d *Daemon) overlayActions() map[string]handlerFn {
+	return map[string]handlerFn{
 		"SET":            noCtx(d.hubHandleOverlaySet),
 		"GET":            connOnly(d.hubHandleOverlayGet),
 		"":               connOnly(d.hubHandleOverlayGet),
@@ -21,7 +23,11 @@ func (d *Daemon) hubHandleOverlay(ctx context.Context, conn *hubpkg.Connection, 
 		"ACTIVITY":       noCtx(d.hubHandleOverlayActivity),
 		"OUTPUT-PREVIEW": noCtx(d.hubHandleOverlayOutputPreview),
 		"FORWARDING":     noCtx(d.hubHandleOverlayForwarding),
-	})
+	}
+}
+
+func (d *Daemon) hubHandleOverlay(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	return newCommandRouter("OVERLAY").dispatch(ctx, conn, cmd, d.overlayActions())
 }
 
 // hubHandleOverlayForwarding handles OVERLAY FORWARDING command.
@@ -35,7 +41,12 @@ func (d *Daemon) hubHandleOverlayForwarding(conn *hubpkg.Connection, cmd *hubpro
 	if sessionCode == "" {
 		return conn.WriteErr(hubproto.ErrInvalidArgs, "no session attached: OVERLAY FORWARDING is session-scoped")
 	}
-	paused := cmd.Args[0] == "true"
+	// Anything that isn't exactly "true" used to mean "resume": a typo, or a
+	// caller sending "1", silently un-paused agent-inbound push.
+	paused, err := strconv.ParseBool(cmd.Args[0])
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("OVERLAY FORWARDING requires <paused:true/false>, got %q", cmd.Args[0]))
+	}
 	d.SetForwardingPaused(sessionCode, paused)
 
 	data, _ := json.Marshal(map[string]interface{}{

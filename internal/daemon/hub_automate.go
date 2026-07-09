@@ -12,21 +12,25 @@ import (
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
 )
 
+func (d *Daemon) automateActions() map[string]handlerFn {
+	return map[string]handlerFn{
+		"PROCESS": d.hubHandleAutomateProcess,
+		"BATCH":   d.hubHandleAutomateBatch,
+	}
+}
+
 func (d *Daemon) hubHandleAutomate(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	valid := []string{"PROCESS", "BATCH"}
+	actions := d.automateActions()
 	return newCommandRouter("AUTOMATE").
 		withDefault(func(_ context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
 			return writeStructuredErr(conn, "daemon", &hubproto.StructuredError{
 				Code:         hubproto.ErrInvalidAction,
 				Message:      "unknown AUTOMATE sub-command",
 				Command:      "AUTOMATE",
-				ValidActions: valid,
+				ValidActions: routerSubVerbs(actions),
 			})
 		}).
-		dispatch(ctx, conn, cmd, map[string]handlerFn{
-			"PROCESS": d.hubHandleAutomateProcess,
-			"BATCH":   d.hubHandleAutomateBatch,
-		})
+		dispatch(ctx, conn, cmd, actions)
 }
 
 // getOrCreateAutomator returns the automation processor, creating it on first use.

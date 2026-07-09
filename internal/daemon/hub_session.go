@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -19,7 +20,11 @@ import (
 )
 
 func (d *Daemon) hubHandleSession(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	return newCommandRouter("SESSION").dispatch(ctx, conn, cmd, map[string]handlerFn{
+	return newCommandRouter("SESSION").dispatch(ctx, conn, cmd, d.sessionActions())
+}
+
+func (d *Daemon) sessionActions() map[string]handlerFn {
+	return map[string]handlerFn{
 		"REGISTER":   noCtx(d.hubHandleSessionRegister),
 		"UNREGISTER": noCtx(d.hubHandleSessionUnregister),
 		"HEARTBEAT":  noCtx(d.hubHandleSessionHeartbeat),
@@ -32,7 +37,7 @@ func (d *Daemon) hubHandleSession(ctx context.Context, conn *hubpkg.Connection, 
 		"FIND":       noCtx(d.hubHandleSessionFind),
 		"ATTACH":     noCtx(d.hubHandleSessionAttach),
 		"URL":        noCtx(d.hubHandleSessionURL),
-	})
+	}
 }
 
 // sessionRegisterMetadata mirrors the JSON metadata payload clients send on
@@ -59,16 +64,19 @@ func parseSessionRegisterArgs(cmd *hubproto.Command) (*Session, sessionRegisterM
 	}
 	code := cmd.Args[0]
 
-	metadata, _ = unmarshalCommand[sessionRegisterMetadata](cmd)
+	metadata, err := unmarshalCommand[sessionRegisterMetadata](cmd)
+	if err != nil {
+		// Malformed metadata JSON: reject rather than registering a session
+		// with an empty ProjectPath/OverlayPath, which would silently break
+		// project scoping and overlay delivery.
+		return nil, metadata, fmt.Errorf("invalid session metadata: %w", err)
+	}
 
 	// Overlay path is optional: sessions without an overlay (e.g. acp
-	// one-shot, cooked-mode REPL) register with an empty path. The hub
-	// protocol drops a trailing empty positional arg, so the canonical
-	// source is the JSON metadata; the positional arg is a legacy fallback.
+	// one-shot, cooked-mode REPL) register with an empty path. overlayPath is a
+	// socket path — it rides the JSON metadata only, never a positional arg (a
+	// filesystem path can't safely traverse the space-delimited arg slot).
 	overlayPath := metadata.OverlayPath
-	if len(cmd.Args) >= 2 && cmd.Args[1] != "" {
-		overlayPath = cmd.Args[1]
-	}
 
 	now := time.Now()
 	session := &Session{
@@ -94,36 +102,36 @@ func parseSessionRegisterArgs(cmd *hubproto.Command) (*Session, sessionRegisterM
 // rawProjectPath is the pre-normalization metadata path that
 // RunAutostartAsync still normalizes on its own for legacy-caller parity.
 func (d *Daemon) joinOrStartAutostart(session *Session, rawProjectPath string) (*AutostartHandle, string) {
-	existingSessions := d.sessionRegistry.ListActive(session.ProjectPath, false)
-	hasExistingOwner := false
-	for _, existing := range existingSessions {
-		if existing.Code != session.Code {
-			hasExistingOwner = true
-			break
-		}
+	if d.autostartManager == nil {
+		return nil, "joined"
 	}
 
-	if hasExistingOwner {
-		// Another session already started scripts for this project. Skip
-		// GetOrCreate entirely. If an autostart handle is still tracked for
-		// this project we join as an observer on it; otherwise this is a
-		// pure observer of already-running state.
-		var handle *AutostartHandle
-		if d.autostartManager != nil {
-			handle = d.autostartManager.Get(session.ProjectPath)
-		}
+	// GetOrCreate is exactly-once per project path (LoadOrStore installs a
+	// single handle; the loser of the race gets the winner's handle without
+	// re-running startFn). Route ALL registrations through it unconditionally.
+	//
+	// The previous pre-check inspected the active-session set and skipped
+	// GetOrCreate when any other session existed for the project. Two sessions
+	// registering the same project concurrently both landed in the registry
+	// before either ran this check, so each saw the other as an existing owner,
+	// each took the "joined" branch, and neither ever called GetOrCreate —
+	// autostart silently never ran. Since a handle persists in the manager for
+	// the whole project lifetime (removed only at last-session cleanup),
+	// GetOrCreate correctly loads the already-running/-completed handle for a
+	// genuine late joiner and never re-runs autostart for it.
+	//
+	// The join-status string is cosmetic; deriving it from a best-effort Get
+	// (a concurrent first registrant may still report "starting") is fine.
+	joinStatus := "starting"
+	if d.autostartManager.Get(session.ProjectPath) != nil {
+		joinStatus = "joined"
 		debug.Log("daemon", "session %s joining existing project %s (observer)",
 			session.Code, session.ProjectPath)
-		return handle, "joined"
 	}
 
-	// First session for this project — start (or join) a project-scoped
-	// autostart run. GetOrCreate guarantees at-most-one startFn invocation
-	// per project path, so two concurrent registrations for the same
-	// project cannot both run autostart.
 	startFn := d.makeAutostartStartFn(session.ProjectPath, rawProjectPath)
 	handle := d.autostartManager.GetOrCreate(session.ProjectPath, startFn)
-	return handle, "starting"
+	return handle, joinStatus
 }
 
 // buildSessionRegisterResponse assembles the SESSION REGISTER response map.
@@ -184,23 +192,38 @@ func (d *Daemon) hubHandleSessionRegister(conn *hubpkg.Connection, cmd *hubproto
 	}
 
 	if err := d.sessionRegistry.Register(session); err != nil {
+		// Only an already-exists collision is a legitimate re-registration
+		// (reconnect). Any other Register failure (e.g. empty code) is a real
+		// error and must not be silently swallowed as a reconnect.
+		if !errors.Is(err, ErrSessionExists) {
+			return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
+		}
 		// Session already exists — this is a re-registration (reconnect).
-		// Cancel any pending cleanup from the old connection and update LastSeen.
-		// Refresh SessionPGID and SessionJobHandle in case the client
-		// restarted with a new leader / rebuilt its job object.
+		// Cancel any pending cleanup from the old connection and refresh the
+		// session's mutable metadata under a single lock. The overlay path in
+		// particular MUST be refreshed: a reconnecting client rebuilds its
+		// overlay on a new socket, and a stale OverlayPath would send SESSION
+		// SEND / scheduled deliveries to a dead socket.
 		d.cancelPendingCleanup(session.Code)
 		if existing, ok := d.sessionRegistry.Get(session.Code); ok {
-			existing.UpdateLastSeen()
-			if session.SessionPGID > 0 || session.SessionJobHandle != 0 {
-				existing.mu.Lock()
-				if session.SessionPGID > 0 {
-					existing.SessionPGID = session.SessionPGID
-				}
-				if session.SessionJobHandle != 0 {
-					existing.SessionJobHandle = session.SessionJobHandle
-				}
-				existing.mu.Unlock()
+			existing.mu.Lock()
+			existing.OverlayPath = session.OverlayPath
+			if session.ProjectPath != "" && session.ProjectPath != "." {
+				existing.ProjectPath = session.ProjectPath
 			}
+			if session.Command != "" {
+				existing.Command = session.Command
+				existing.Args = session.Args
+			}
+			if session.SessionPGID > 0 {
+				existing.SessionPGID = session.SessionPGID
+			}
+			if session.SessionJobHandle != 0 {
+				existing.SessionJobHandle = session.SessionJobHandle
+			}
+			existing.LastSeen = time.Now()
+			existing.Status = SessionStatusActive
+			existing.mu.Unlock()
 		}
 	}
 
@@ -243,12 +266,7 @@ func (d *Daemon) logSessionTargetStarting(session *Session) {
 	if len(session.Args) > 0 {
 		cmdLabel += " " + strings.Join(session.Args, " ")
 	}
-	d.startupErrorStore.Add(&StartupLogEntry{
-		Level:     "info",
-		EventType: "target_starting",
-		Message:   fmt.Sprintf("starting %s", cmdLabel),
-		Timestamp: time.Now(),
-	})
+	d.startupLog(session.ProjectPath).Info("", "target_starting", fmt.Sprintf("starting %s", cmdLabel))
 }
 
 // claimProjectScripts adds the session as an observer of all scripts for its

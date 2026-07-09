@@ -17,8 +17,33 @@ import (
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
 )
 
+func (d *Daemon) procActions() map[string]handlerFn {
+	actions := map[string]handlerFn{
+		"RUN":          d.hubHandleProcRun,
+		"RUN-GROUP":    d.hubHandleProcRunGroup,
+		"STATUS":       d.hubHandleProcStatus,
+		"OUTPUT":       d.hubHandleProcOutput,
+		"STOP":         d.hubHandleProcStop,
+		"RESTART":      d.hubHandleProcRestart,
+		"LIST":         d.hubHandleProcList,
+		"CLEANUP-PORT": d.hubHandleProcCleanupPort,
+		"AUTORESTART":  d.hubHandleProcAutoRestart,
+	}
+	valid := routerSubVerbs(actions)
+	actions[""] = func(_ context.Context, conn *hubpkg.Connection, _ *hubproto.Command) error {
+		return writeStructuredErr(conn, "daemon", &hubproto.StructuredError{
+			Code:         hubproto.ErrMissingParam,
+			Message:      "action required",
+			Command:      "PROC",
+			Param:        "action",
+			ValidActions: valid,
+		})
+	}
+	return actions
+}
+
 func (d *Daemon) hubHandleProc(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	valid := []string{"RUN", "RUN-GROUP", "STATUS", "OUTPUT", "STOP", "RESTART", "LIST", "CLEANUP-PORT", "AUTORESTART"}
+	actions := d.procActions()
 	return newCommandRouter("PROC").
 		withDefault(func(_ context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
 			return writeStructuredErr(conn, "daemon", &hubproto.StructuredError{
@@ -26,29 +51,10 @@ func (d *Daemon) hubHandleProc(ctx context.Context, conn *hubpkg.Connection, cmd
 				Message:      "unknown action",
 				Command:      "PROC",
 				Action:       cmd.SubVerb,
-				ValidActions: valid,
+				ValidActions: routerSubVerbs(actions),
 			})
 		}).
-		dispatch(ctx, conn, cmd, map[string]handlerFn{
-			"RUN":          d.hubHandleProcRun,
-			"RUN-GROUP":    d.hubHandleProcRunGroup,
-			"STATUS":       d.hubHandleProcStatus,
-			"OUTPUT":       d.hubHandleProcOutput,
-			"STOP":         d.hubHandleProcStop,
-			"RESTART":      d.hubHandleProcRestart,
-			"LIST":         d.hubHandleProcList,
-			"CLEANUP-PORT": d.hubHandleProcCleanupPort,
-			"AUTORESTART":  d.hubHandleProcAutoRestart,
-			"": func(_ context.Context, conn *hubpkg.Connection, _ *hubproto.Command) error {
-				return writeStructuredErr(conn, "daemon", &hubproto.StructuredError{
-					Code:         hubproto.ErrMissingParam,
-					Message:      "action required",
-					Command:      "PROC",
-					Param:        "action",
-					ValidActions: valid,
-				})
-			},
-		})
+		dispatch(ctx, conn, cmd, actions)
 }
 
 // hubHandleProcStatus handles PROC STATUS <id>.
@@ -450,6 +456,7 @@ func (d *Daemon) hubHandleProcRestart(ctx context.Context, conn *hubpkg.Connecti
 	// Capture config before stopping
 	command := proc.Command
 	args := proc.Args
+	env := proc.Env
 	projectPath := proc.ProjectPath
 	workingDir := proc.WorkingDir
 
@@ -477,13 +484,8 @@ func (d *Daemon) hubHandleProcRestart(ctx context.Context, conn *hubpkg.Connecti
 		defer cancel()
 		if err := d.hub.ProcessManager().Stop(stopCtx, processID); err != nil {
 			debug.Warn("daemon", "error stopping process %s: %v", processID, err)
-			d.startupErrorStore.Add(&StartupLogEntry{
-				ProcessID: processID,
-				Level:     "warning",
-				EventType: "stop_failed",
-				Message:   fmt.Sprintf("PROC RESTART: failed to stop process: %v", err),
-				Timestamp: time.Now(),
-			})
+			d.recordStartupEntry(processID, "", "warning", "stop_failed",
+				fmt.Sprintf("PROC RESTART: failed to stop process: %v", err), 0)
 		}
 		// Wait for process to fully stop
 		time.Sleep(100 * time.Millisecond)
@@ -499,7 +501,7 @@ func (d *Daemon) hubHandleProcRestart(ctx context.Context, conn *hubpkg.Connecti
 	d.hub.ProcessManager().RemoveByPath(processID, projectPath)
 
 	// Start with EADDRINUSE recovery (pre-flight cleanup + startup monitoring)
-	newProc, startupErr := d.startScriptWithRetry(ctx, processID, projectPath, workingDir, command, args, nil, []int{expectedPort}, false)
+	newProc, startupErr := d.startScriptWithRetry(ctx, processID, projectPath, workingDir, command, args, env, []int{expectedPort}, false)
 	if startupErr != nil {
 		return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("failed to restart: %v", startupErr))
 	}

@@ -13,8 +13,29 @@ import (
 	"github.com/standardbeagle/go-cli-server/script"
 )
 
+func (d *Daemon) scriptActions() map[string]handlerFn {
+	actions := map[string]handlerFn{
+		"LIST":    noCtx(d.hubHandleScriptList),
+		"GET":     noCtx(d.hubHandleScriptGet),
+		"OUTPUT":  noCtx(d.hubHandleScriptOutput),
+		"RESTART": d.hubHandleScriptRestart,
+		"STOP":    d.hubHandleScriptStop,
+	}
+	valid := routerSubVerbs(actions)
+	actions[""] = func(_ context.Context, conn *hubpkg.Connection, _ *hubproto.Command) error {
+		return writeStructuredErr(conn, "daemon", &hubproto.StructuredError{
+			Code:         hubproto.ErrMissingParam,
+			Message:      "action required",
+			Command:      "SCRIPT",
+			Param:        "action",
+			ValidActions: valid,
+		})
+	}
+	return actions
+}
+
 func (d *Daemon) hubHandleScript(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	valid := []string{"LIST", "GET", "OUTPUT", "RESTART", "STOP"}
+	actions := d.scriptActions()
 	return newCommandRouter("SCRIPT").
 		withDefault(func(_ context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
 			return writeStructuredErr(conn, "daemon", &hubproto.StructuredError{
@@ -22,25 +43,10 @@ func (d *Daemon) hubHandleScript(ctx context.Context, conn *hubpkg.Connection, c
 				Message:      "unknown action",
 				Command:      "SCRIPT",
 				Action:       cmd.SubVerb,
-				ValidActions: valid,
+				ValidActions: routerSubVerbs(actions),
 			})
 		}).
-		dispatch(ctx, conn, cmd, map[string]handlerFn{
-			"LIST":    noCtx(d.hubHandleScriptList),
-			"GET":     noCtx(d.hubHandleScriptGet),
-			"OUTPUT":  noCtx(d.hubHandleScriptOutput),
-			"RESTART": d.hubHandleScriptRestart,
-			"STOP":    d.hubHandleScriptStop,
-			"": func(_ context.Context, conn *hubpkg.Connection, _ *hubproto.Command) error {
-				return writeStructuredErr(conn, "daemon", &hubproto.StructuredError{
-					Code:         hubproto.ErrMissingParam,
-					Message:      "action required",
-					Command:      "SCRIPT",
-					Param:        "action",
-					ValidActions: valid,
-				})
-			},
-		})
+		dispatch(ctx, conn, cmd, actions)
 }
 
 // resolveScriptProjectPath extracts the project path from the command's JSON data

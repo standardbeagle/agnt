@@ -13,13 +13,17 @@ import (
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
 )
 
-func (d *Daemon) hubHandleBrowser(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	return newCommandRouter("BROWSER").dispatch(ctx, conn, cmd, map[string]handlerFn{
+func (d *Daemon) browserActions() map[string]handlerFn {
+	return map[string]handlerFn{
 		"START":  d.hubHandleBrowserStart,
 		"STOP":   d.hubHandleBrowserStop,
 		"STATUS": noCtx(d.hubHandleBrowserStatus),
 		"LIST":   noCtx(d.hubHandleBrowserList),
-	})
+	}
+}
+
+func (d *Daemon) hubHandleBrowser(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	return newCommandRouter("BROWSER").dispatch(ctx, conn, cmd, d.browserActions())
 }
 
 // hubHandleBrowserStart handles BROWSER START command.

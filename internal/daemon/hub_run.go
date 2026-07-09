@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/standardbeagle/agnt/internal/debug"
 
@@ -12,222 +13,327 @@ import (
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
 )
 
-func (d *Daemon) registerAgntCommands() {
-	// RUN/RUN-JSON commands - override Hub's to add atomic auto-restart registration.
-	// Hub's handler returns "id" but tools expect "process_id", and auto-restart
-	// must be registered before the response so there's no race with fast-crashing processes.
-	d.hub.RegisterCommand(hubpkg.CommandDefinition{
-		Verb:        "RUN",
-		Description: "Start a process with auto-restart",
-		Handler:     d.hubHandleRun,
-	})
-	d.hub.RegisterCommand(hubpkg.CommandDefinition{
-		Verb:        "RUN-JSON",
-		Description: "Start a process with auto-restart (JSON config)",
-		Handler:     d.hubHandleRun,
-	})
+func (d *Daemon) registerAgntCommands() error {
+	registered := 0
 
-	// PROC command - override Hub's to add URL tracking and project filtering.
-	// PROC RUN is the MCP-facing admin-aware process start; unlike the
-	// top-level RUN verb (which creates ad-hoc ProcessManager entries
-	// invisible to SCRIPT LIST), PROC RUN routes through
-	// StartScriptExplicit so the new process becomes a process-kind
-	// admin registry entry alongside autostart scripts.
-	d.hub.RegisterCommand(hubpkg.CommandDefinition{
-		Verb:        "PROC",
-		SubVerbs:    []string{"RUN", "RUN-GROUP", "STATUS", "OUTPUT", "STOP", "RESTART", "LIST", "CLEANUP-PORT", "AUTORESTART"},
-		Description: "Manage running processes",
-		Handler:     d.hubHandleProc,
-	})
+	register := func(def hubpkg.CommandDefinition) error {
+		if err := d.hub.RegisterCommand(def); err != nil {
+			return fmt.Errorf("register %s: %w", def.Verb, err)
+		}
+		registered++
+		return nil
+	}
+	replaceDefault := func(verb, description string, handler hubpkg.CommandHandler) error {
+		if d.hub.HasCommand(verb) {
+			if err := d.hub.ReplaceCommandHandler(verb, handler); err != nil {
+				return fmt.Errorf("replace %s: %w", verb, err)
+			}
+			return nil
+		}
+		return register(hubpkg.CommandDefinition{
+			Verb:        verb,
+			Description: description,
+			Handler:     handler,
+		})
+	}
+	extendOrReplaceProc := func(subVerb string, handler hubpkg.CommandHandler) error {
+		if d.hub.HasCommand("PROC") {
+			if containsHubSubVerb(d.hub.ValidSubVerbs("PROC"), subVerb) {
+				if err := d.hub.ReplaceSubHandler("PROC", subVerb, handler); err != nil {
+					return fmt.Errorf("replace PROC %s: %w", subVerb, err)
+				}
+				return nil
+			}
+			if err := d.hub.ExtendCommand(hubpkg.CommandDefinition{
+				Verb:     "PROC",
+				SubVerbs: []string{subVerb},
+				Handler:  handler,
+			}); err != nil {
+				return fmt.Errorf("extend PROC %s: %w", subVerb, err)
+			}
+			return nil
+		}
+		return fmt.Errorf("PROC command is not registered")
+	}
+
+	// RUN/RUN-JSON commands customize the shared hub's default handlers to add
+	// atomic auto-restart registration. Hub's handler returns "id" but tools
+	// expect "process_id", and auto-restart must be registered before the
+	// response so there's no race with fast-crashing processes.
+	if err := replaceDefault("RUN", "Start a process with auto-restart", d.hubHandleRun); err != nil {
+		return err
+	}
+	if err := replaceDefault("RUN-JSON", "Start a process with auto-restart (JSON config)", d.hubHandleRun); err != nil {
+		return err
+	}
+
+	// PROC command: keep the shared hub verb and STDIN action, then replace the
+	// subcommands where agnt adds URL tracking/project filtering and extend it
+	// with agnt-specific actions.
+	procSubVerbs := routerSubVerbs(d.procActions())
+	if !d.hub.HasCommand("PROC") {
+		if err := register(hubpkg.CommandDefinition{
+			Verb:        "PROC",
+			SubVerbs:    procSubVerbs,
+			Description: "Manage running processes",
+			Handler:     d.hubHandleProc,
+		}); err != nil {
+			return err
+		}
+	} else {
+		for _, subVerb := range procSubVerbs {
+			if err := extendOrReplaceProc(subVerb, d.hubHandleProc); err != nil {
+				return err
+			}
+		}
+	}
 
 	// DETECT command
-	d.hub.RegisterCommand(hubpkg.CommandDefinition{
+	if err := register(hubpkg.CommandDefinition{
 		Verb:        "DETECT",
 		Description: "Detect project type and available scripts",
 		Handler:     d.hubHandleDetect,
-	})
+	}); err != nil {
+		return err
+	}
 
 	// PROXY command
-	d.hub.RegisterCommand(hubpkg.CommandDefinition{
+	if err := register(hubpkg.CommandDefinition{
 		Verb:        "PROXY",
-		SubVerbs:    []string{"START", "STOP", "RESTART", "STATUS", "LIST", "EXEC", "TOAST"},
+		SubVerbs:    routerSubVerbs(d.proxyActions()),
 		Description: "Manage reverse proxies",
 		Handler:     d.hubHandleProxy,
-	})
+	}); err != nil {
+		return err
+	}
 
 	// PROXYLOG command
-	d.hub.RegisterCommand(hubpkg.CommandDefinition{
+	if err := register(hubpkg.CommandDefinition{
 		Verb:        "PROXYLOG",
-		SubVerbs:    []string{"QUERY", "SUMMARY", "CLEAR", "STATS"},
+		SubVerbs:    routerSubVerbs(d.proxyLogActions()),
 		Description: "Query proxy traffic logs",
 		Handler:     d.hubHandleProxyLog,
-	})
+	}); err != nil {
+		return err
+	}
 
 	// CURRENTPAGE command
-	d.hub.RegisterCommand(hubpkg.CommandDefinition{
+	if err := register(hubpkg.CommandDefinition{
 		Verb:        "CURRENTPAGE",
-		SubVerbs:    []string{"LIST", "GET", "SUMMARY", "CLEAR"},
+		SubVerbs:    routerSubVerbs(d.currentPageActions()),
 		Description: "View active page sessions",
 		Handler:     d.hubHandleCurrentPage,
-	})
+	}); err != nil {
+		return err
+	}
 
 	// OVERLAY command
-	d.hub.RegisterCommand(hubpkg.CommandDefinition{
+	if err := register(hubpkg.CommandDefinition{
 		Verb:        "OVERLAY",
-		SubVerbs:    []string{"SET", "GET", "CLEAR", "ACTIVITY", "OUTPUT-PREVIEW"},
+		SubVerbs:    routerSubVerbs(d.overlayActions()),
 		Description: "Configure overlay endpoint",
 		Handler:     d.hubHandleOverlay,
-	})
+	}); err != nil {
+		return err
+	}
 
 	// TUNNEL command
-	d.hub.RegisterCommand(hubpkg.CommandDefinition{
+	if err := register(hubpkg.CommandDefinition{
 		Verb:        "TUNNEL",
-		SubVerbs:    []string{"START", "STOP", "STATUS", "LIST"},
+		SubVerbs:    routerSubVerbs(d.tunnelActions()),
 		Description: "Manage tunnel connections",
 		Handler:     d.hubHandleTunnel,
-	})
+	}); err != nil {
+		return err
+	}
 
 	// BROWSER command
-	d.hub.RegisterCommand(hubpkg.CommandDefinition{
+	if err := register(hubpkg.CommandDefinition{
 		Verb:        "BROWSER",
-		SubVerbs:    []string{"START", "STOP", "STATUS", "LIST"},
+		SubVerbs:    routerSubVerbs(d.browserActions()),
 		Description: "Manage browser instances",
 		Handler:     d.hubHandleBrowser,
-	})
+	}); err != nil {
+		return err
+	}
 
 	// AUTOMATION command (chromedp sessions for programmatic browser control)
-	d.hub.RegisterCommand(hubpkg.CommandDefinition{
+	if err := register(hubpkg.CommandDefinition{
 		Verb:        "AUTOMATION",
-		SubVerbs:    []string{"START", "STOP", "STATUS", "LIST", "SCREENSHOT", "NAVIGATE", "EVALUATE"},
+		SubVerbs:    routerSubVerbs(d.automationActions()),
 		Description: "Control browser automation sessions (chromedp)",
 		Handler:     d.hubHandleAutomation,
-	})
+	}); err != nil {
+		return err
+	}
 
 	// CHAOS command
-	d.hub.RegisterCommand(hubpkg.CommandDefinition{
+	if err := register(hubpkg.CommandDefinition{
 		Verb:        "CHAOS",
-		SubVerbs:    []string{"ENABLE", "DISABLE", "STATUS", "PRESET", "SET", "ADD-RULE", "REMOVE-RULE", "LIST-RULES", "STATS", "CLEAR", "LIST-PRESETS"},
+		SubVerbs:    routerSubVerbs(d.chaosActions()),
 		Description: "Configure chaos engineering rules",
 		Handler:     d.hubHandleChaos,
-	})
+	}); err != nil {
+		return err
+	}
 
 	// SESSION command
-	d.hub.RegisterCommand(hubpkg.CommandDefinition{
+	if err := register(hubpkg.CommandDefinition{
 		Verb:        "SESSION",
-		SubVerbs:    []string{"REGISTER", "UNREGISTER", "HEARTBEAT", "LIST", "GET", "SEND", "SCHEDULE", "CANCEL", "TASKS", "FIND", "ATTACH", "URL"},
+		SubVerbs:    routerSubVerbs(d.sessionActions()),
 		Description: "Manage client sessions",
 		Handler:     d.hubHandleSession,
-	})
+	}); err != nil {
+		return err
+	}
 
 	// SESSION-HOST command - daemon-owned detachable PTY sessions
-	d.hub.RegisterCommand(hubpkg.CommandDefinition{
+	if err := register(hubpkg.CommandDefinition{
 		Verb:        protocol.VerbSessionHost,
-		SubVerbs:    []string{"CREATE", "LIST", "KILL", "ATTACH", "DETACH", "RESIZE", "STDIN"},
+		SubVerbs:    routerSubVerbs(d.sessionHostActions()),
 		Description: "Manage daemon-owned detachable PTY sessions",
 		Handler:     d.hubHandleSessionHost,
-	})
+	}); err != nil {
+		return err
+	}
 
 	// STATUS command - returns full daemon info (Hub's INFO is minimal)
-	d.hub.RegisterCommand(hubpkg.CommandDefinition{
+	if err := register(hubpkg.CommandDefinition{
 		Verb:        "STATUS",
 		Description: "Get full daemon status and statistics",
 		Handler:     d.hubHandleStatus,
-	})
+	}); err != nil {
+		return err
+	}
 
 	// STORE command
-	d.hub.RegisterCommand(hubpkg.CommandDefinition{
+	if err := register(hubpkg.CommandDefinition{
 		Verb:        "STORE",
-		SubVerbs:    []string{"GET", "SET", "DELETE", "LIST", "CLEAR", "GET-ALL"},
+		SubVerbs:    routerSubVerbs(d.storeActions()),
 		Description: "Manage persistent key-value storage",
 		Handler:     d.hubHandleStore,
-	})
+	}); err != nil {
+		return err
+	}
 
 	// AUTOMATE command
-	d.hub.RegisterCommand(hubpkg.CommandDefinition{
+	if err := register(hubpkg.CommandDefinition{
 		Verb:        "AUTOMATE",
-		SubVerbs:    []string{"PROCESS", "BATCH"},
+		SubVerbs:    routerSubVerbs(d.automateActions()),
 		Description: "Process automation tasks using AI",
 		Handler:     d.hubHandleAutomate,
-	})
+	}); err != nil {
+		return err
+	}
 
 	// ALERTS command
-	d.hub.RegisterCommand(hubpkg.CommandDefinition{
+	if err := register(hubpkg.CommandDefinition{
 		Verb:        "ALERTS",
-		SubVerbs:    []string{"REPORT", "QUERY", "CLEAR", "STARTUP-LOG"},
+		SubVerbs:    routerSubVerbs(d.alertsActions()),
 		Description: "Process output alert queries",
 		Handler:     d.hubHandleAlerts,
-	})
+	}); err != nil {
+		return err
+	}
 
 	// INCIDENTS command
-	d.hub.RegisterCommand(hubpkg.CommandDefinition{
+	if err := register(hubpkg.CommandDefinition{
 		Verb:        protocol.VerbIncidents,
-		SubVerbs:    []string{protocol.SubVerbQuery},
+		SubVerbs:    routerSubVerbs(d.incidentsActions()),
 		Description: "Query the per-session incident inbox",
 		Handler:     d.hubHandleIncidents,
-	})
+	}); err != nil {
+		return err
+	}
 
 	// PORTS command - listening-port inventory + orphan pgid management
-	d.hub.RegisterCommand(hubpkg.CommandDefinition{
+	if err := register(hubpkg.CommandDefinition{
 		Verb:        protocol.VerbPorts,
-		SubVerbs:    []string{protocol.SubVerbQuery, protocol.SubVerbCleanOrphans},
+		SubVerbs:    routerSubVerbs(d.portsActions()),
 		Description: "List listening ports and manage orphaned process groups",
 		Handler:     d.hubHandlePorts,
-	})
+	}); err != nil {
+		return err
+	}
 
 	// SCRIPT command
-	d.hub.RegisterCommand(hubpkg.CommandDefinition{
+	if err := register(hubpkg.CommandDefinition{
 		Verb:        "SCRIPT",
-		SubVerbs:    []string{"LIST", "GET", "OUTPUT", "RESTART", "STOP"},
+		SubVerbs:    routerSubVerbs(d.scriptActions()),
 		Description: "Query and control managed scripts",
 		Handler:     d.hubHandleScript,
-	})
+	}); err != nil {
+		return err
+	}
 
 	// DOCTOR command
-	d.hub.RegisterCommand(hubpkg.CommandDefinition{
+	if err := register(hubpkg.CommandDefinition{
 		Verb:        protocol.VerbDoctor,
 		Description: "Run health checks and return diagnostic report",
 		Handler:     d.hubHandleDoctor,
-	})
+	}); err != nil {
+		return err
+	}
 
 	// AUTOSTART command
-	d.hub.RegisterCommand(hubpkg.CommandDefinition{
+	if err := register(hubpkg.CommandDefinition{
 		Verb:        protocol.VerbAutostart,
-		SubVerbs:    []string{protocol.SubVerbClearPorts, protocol.SubVerbContinue, protocol.SubVerbAutostartRun},
+		SubVerbs:    routerSubVerbs(d.autostartActions()),
 		Description: "Resolve port conflicts and resume autostart",
 		Handler:     d.hubHandleAutostart,
-	})
+	}); err != nil {
+		return err
+	}
 
 	// STOP-ALL command
-	d.hub.RegisterCommand(hubpkg.CommandDefinition{
+	if err := register(hubpkg.CommandDefinition{
 		Verb:        "STOP-ALL",
 		Description: "Stop all running processes, proxies, and tunnels",
 		Handler:     d.hubHandleStopAll,
-	})
+	}); err != nil {
+		return err
+	}
 
 	// RESTART-ALL command
-	d.hub.RegisterCommand(hubpkg.CommandDefinition{
+	if err := register(hubpkg.CommandDefinition{
 		Verb:        "RESTART-ALL",
 		Description: "Restart all processes and proxies using .agnt.kdl config",
 		Handler:     d.hubHandleRestartAll,
-	})
+	}); err != nil {
+		return err
+	}
 
 	// STREAM-EVENTS command
-	d.hub.RegisterCommand(hubpkg.CommandDefinition{
+	if err := register(hubpkg.CommandDefinition{
 		Verb:        protocol.VerbStreamEvents,
 		Description: "Stream proxy events in real-time with optional filters",
 		Handler:     d.hubHandleStreamEvents,
-	})
+	}); err != nil {
+		return err
+	}
 
 	// HOOK command - Claude Code hook dispatcher enqueue (phase 1 scope).
 	// Hot path: push into ring buffer and ack OK. All fan-out happens off
 	// the socket goroutine via drainHooks.
-	d.hub.RegisterCommand(hubpkg.CommandDefinition{
+	if err := register(hubpkg.CommandDefinition{
 		Verb:        protocol.VerbHook,
 		Description: "Enqueue a Claude Code hook event for async fan-out",
 		Handler:     d.hubHandleHook,
-	})
+	}); err != nil {
+		return err
+	}
 
-	debug.Log("daemon", "Registered %d agnt-specific commands with Hub", 24)
+	debug.Log("daemon", "Registered %d agnt-specific commands with Hub", registered)
+	return nil
+}
+
+func containsHubSubVerb(values []string, needle string) bool {
+	for _, value := range values {
+		if value == needle {
+			return true
+		}
+	}
+	return false
 }
 
 // agntRunConfig extends the hub's RunConfig with agnt-specific fields.

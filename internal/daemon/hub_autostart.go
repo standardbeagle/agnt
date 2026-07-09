@@ -4,15 +4,23 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"time"
 
 	"github.com/standardbeagle/agnt/internal/protocol"
 	hubpkg "github.com/standardbeagle/go-cli-server/hub"
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
 )
 
+func (d *Daemon) autostartActions() map[string]handlerFn {
+	return map[string]handlerFn{
+		protocol.SubVerbClearPorts:   d.hubHandleAutostartClearPorts,
+		protocol.SubVerbContinue:     d.hubHandleAutostartContinue,
+		protocol.SubVerbAutostartRun: d.hubHandleAutostartRun,
+		protocol.SubVerbReconcile:    d.hubHandleAutostartReconcile,
+	}
+}
+
 func (d *Daemon) hubHandleAutostart(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	valid := []string{protocol.SubVerbClearPorts, protocol.SubVerbContinue, protocol.SubVerbAutostartRun, protocol.SubVerbReconcile}
+	actions := d.autostartActions()
 	return newCommandRouter("AUTOSTART").
 		withDefault(func(_ context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
 			return writeStructuredErr(conn, "daemon", &hubproto.StructuredError{
@@ -20,15 +28,10 @@ func (d *Daemon) hubHandleAutostart(ctx context.Context, conn *hubpkg.Connection
 				Message:      "unknown action",
 				Command:      "AUTOSTART",
 				Action:       cmd.SubVerb,
-				ValidActions: valid,
+				ValidActions: routerSubVerbs(actions),
 			})
 		}).
-		dispatch(ctx, conn, cmd, map[string]handlerFn{
-			protocol.SubVerbClearPorts:   d.hubHandleAutostartClearPorts,
-			protocol.SubVerbContinue:     d.hubHandleAutostartContinue,
-			protocol.SubVerbAutostartRun: d.hubHandleAutostartRun,
-			protocol.SubVerbReconcile:    d.hubHandleAutostartReconcile,
-		})
+		dispatch(ctx, conn, cmd, actions)
 }
 
 // hubHandleAutostartReconcile handles AUTOSTART RECONCILE <projectPath>. It
@@ -106,15 +109,8 @@ func (d *Daemon) hubHandleAutostartContinue(ctx context.Context, conn *hubpkg.Co
 	if val, ok := d.pendingAutostarts.Load(projectPath); ok {
 		pending := val.(*pendingAutostart)
 		for _, c := range pending.conflicts {
-			d.startupErrorStore.Add(&StartupLogEntry{
-				ProcessID:  makeProcessID(projectPath, c.ScriptName),
-				ScriptName: c.ScriptName,
-				Level:      "warning",
-				EventType:  "port_conflict_skipped",
-				Message:    fmt.Sprintf("user declined to kill port %d blocker", c.Port),
-				Port:       c.Port,
-				Timestamp:  time.Now(),
-			})
+			d.startupLog(projectPath).WarnPort(c.ScriptName, "port_conflict_skipped",
+				fmt.Sprintf("user declined to kill port %d blocker", c.Port), c.Port)
 		}
 	}
 

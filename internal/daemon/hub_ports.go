@@ -88,8 +88,15 @@ func portIsSystem(o config.PortOwner, status string) bool {
 
 // hubHandlePorts routes the PORTS verb: QUERY (listening-port inventory +
 // orphan process groups) and CLEAN-ORPHANS (reap orphaned pgids).
+func (d *Daemon) portsActions() map[string]handlerFn {
+	return map[string]handlerFn{
+		protocol.SubVerbQuery:        d.hubHandlePortsQuery,
+		protocol.SubVerbCleanOrphans: d.hubHandlePortsCleanOrphans,
+	}
+}
+
 func (d *Daemon) hubHandlePorts(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	valid := []string{protocol.SubVerbQuery, protocol.SubVerbCleanOrphans}
+	actions := d.portsActions()
 	return newCommandRouter("PORTS").
 		withDefault(func(_ context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
 			return writeStructuredErr(conn, "daemon", &hubproto.StructuredError{
@@ -97,13 +104,10 @@ func (d *Daemon) hubHandlePorts(ctx context.Context, conn *hubpkg.Connection, cm
 				Message:      "unknown action",
 				Command:      "PORTS",
 				Action:       cmd.SubVerb,
-				ValidActions: valid,
+				ValidActions: routerSubVerbs(actions),
 			})
 		}).
-		dispatch(ctx, conn, cmd, map[string]handlerFn{
-			protocol.SubVerbQuery:        d.hubHandlePortsQuery,
-			protocol.SubVerbCleanOrphans: d.hubHandlePortsCleanOrphans,
-		})
+		dispatch(ctx, conn, cmd, actions)
 }
 
 // hubHandlePortsQuery returns every listening TCP port with its owner and a
