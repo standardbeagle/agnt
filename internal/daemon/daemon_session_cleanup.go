@@ -139,21 +139,63 @@ func (d *Daemon) CleanupSessionResourcesDeferred(sessionCode string) {
 		return
 	}
 
-	projectPath := session.ProjectPath
-	if projectPath == "" {
-		debug.Log("daemon", "session %s has no project path, skipping deferred cleanup", sessionCode)
-		// Still reap the PTY child's session pgid / Job Object before
-		// unregistering — a session with no project path can still own
-		// backgrounded jobs (e.g. `npm run dev &`), and skipping the kill
-		// would leak them. Both calls no-op on the wrong platform. Mirrors
-		// the empty-projectPath branch in doCleanup.
-		d.killSessionPGID(session)
-		d.killSessionJobObject(session)
-		d.sessionRegistry.Unregister(sessionCode)
+	// A session-host session's PTY child is reaped only by SESSION-HOST KILL, by
+	// the child exiting, or by the startup orphan scan. A dropped connection is
+	// explicitly not one of those cases — surviving client disconnect is the
+	// entire point of session-host. doCleanup guards this too, but the
+	// no-project branch below reaps the pgid without going through it.
+	if session.Kind == SessionKindSessionHost {
+		debug.Log("daemon", "session %s is session-host: skipping deferred cleanup (explicit-kill-only)", sessionCode)
 		return
 	}
 
+	projectPath := session.ProjectPath
 	grace := d.cleanupGracePeriod()
+
+	if projectPath == "" {
+		// A session with no project path still owns its PTY child's pgid and any
+		// backgrounded jobs under it, so the kill cannot be skipped. But it must
+		// not be immediate either: this path is a dropped connection, not an
+		// unregister, and an acp one-shot or cooked REPL that reconnects within
+		// the grace window would have had its process tree reaped out from under
+		// it — while every project-scoped session gets that window.
+		//
+		// Reaping inline also blocked the hub's disconnect callback for the full
+		// SIGTERM→SIGKILL escalation (up to 2s).
+		debug.Log("daemon", "deferring pgid-only cleanup for session %s (no project, grace: %s)", sessionCode, grace)
+		d.cancelPendingCleanup(sessionCode)
+		timer := time.AfterFunc(grace, func() {
+			d.pendingCleanups.Delete(sessionCode)
+
+			d.shutdownMu.Lock()
+			if d.shutdown {
+				d.shutdownMu.Unlock()
+				return
+			}
+			d.wg.Add(1)
+			d.shutdownMu.Unlock()
+			defer d.wg.Done()
+
+			s, ok := d.sessionRegistry.Get(sessionCode)
+			if !ok {
+				return
+			}
+			if s.Kind == SessionKindSessionHost {
+				return // re-registered as a session-host session; explicit-kill-only
+			}
+			if time.Since(s.GetLastSeen()) < grace {
+				debug.Log("daemon", "skipping deferred cleanup for session %s — re-registered during grace period", sessionCode)
+				return
+			}
+			// Both calls no-op on the wrong platform. Mirrors the
+			// empty-projectPath branch in doCleanup.
+			d.killSessionPGID(s)
+			d.killSessionJobObject(s)
+			d.sessionRegistry.Unregister(sessionCode)
+		})
+		d.pendingCleanups.Store(sessionCode, timer)
+		return
+	}
 
 	debug.Log("daemon", "deferring cleanup for session %s (project: %s, grace: %s)", sessionCode, projectPath, grace)
 
@@ -167,13 +209,17 @@ func (d *Daemon) CleanupSessionResourcesDeferred(sessionCode string) {
 	timer := time.AfterFunc(grace, func() {
 		d.pendingCleanups.Delete(sessionCode)
 
-		// Register with the shutdown waitgroup so Stop() blocks on an
-		// in-flight cleanup rather than tearing down the hub / proxy manager
-		// underneath a running doCleanup. The wg.Add must be atomic with the
-		// shutdown check: Stop() sets d.shutdown under shutdownMu before it
-		// calls d.wg.Wait(), so taking the same lock guarantees we either
-		// bail (shutting down — Stop reaps resources itself) or Add(1)
-		// strictly before Wait, never Add-after-Wait.
+		// Register with the shutdown waitgroup so the process cannot exit while a
+		// cleanup is in flight. This does NOT order the cleanup before the
+		// managers it touches: Stop()'s d.wg.Wait() runs after hub.Stop() and
+		// proxym.Shutdown(), so a cleanup that started just before Stop runs
+		// concurrently with that teardown. It is safe because each manager is
+		// individually shutdown-safe, not because the waitgroup sequences them.
+		//
+		// The wg.Add must be atomic with the shutdown check: Stop() sets
+		// d.shutdown under shutdownMu before it calls d.wg.Wait(), so taking the
+		// same lock guarantees we either bail (shutting down — Stop reaps
+		// resources itself) or Add(1) strictly before Wait, never Add-after-Wait.
 		d.shutdownMu.Lock()
 		if d.shutdown {
 			d.shutdownMu.Unlock()
