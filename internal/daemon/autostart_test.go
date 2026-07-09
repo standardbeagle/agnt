@@ -12,7 +12,7 @@ import (
 )
 
 func TestAutoStartDaemon(t *testing.T) {
-	t.Parallel()
+	// No t.Parallel(): spawns the real agnt daemon binary and force-kills by pgrep pattern.
 	// Use a unique socket for this test (platform-appropriate path)
 	tmpDir := t.TempDir()
 	socketPath := filepath.Join(tmpDir, "test-autostart.sock")

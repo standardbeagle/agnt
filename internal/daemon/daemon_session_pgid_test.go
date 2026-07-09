@@ -23,7 +23,7 @@ import (
 // child), registers it on a fresh daemon as a session, triggers
 // CleanupSessionResources, and asserts the pgid has zero surviving members.
 func TestCleanupSessionResources_KillsSessionPGID(t *testing.T) {
-	t.Parallel()
+	// No t.Parallel(): spawns a real setsid sh + sleep group and pgid-kills it; PID/pgid reuse under high concurrency reaps unrelated processes.
 	d := newCleanupTestDaemon(t, 10*time.Millisecond)
 	tmpDir := t.TempDir()
 
