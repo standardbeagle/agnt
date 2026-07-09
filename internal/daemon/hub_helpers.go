@@ -215,19 +215,19 @@ func (d *Daemon) getExpectedPortForProcess(proc *goprocess.ManagedProcess) int {
 	return extractPortFromCommand(proc.Command, proc.Args)
 }
 
+// localhostPortREs match localhost-style URLs with an explicit port. Compiled
+// once at package init rather than per extractPortFromURL call.
+var localhostPortREs = []*regexp.Regexp{
+	regexp.MustCompile(`localhost:(\d+)`),
+	regexp.MustCompile(`127\.0\.0\.1:(\d+)`),
+	regexp.MustCompile(`0\.0\.0\.0:(\d+)`),
+	regexp.MustCompile(`\[::1\]:(\d+)`),
+}
+
 // extractPortFromURL extracts a port number from a URL string.
 
 func extractPortFromURL(urlStr string) int {
-	// Simple pattern match for localhost URLs with ports
-	patterns := []string{
-		`localhost:(\d+)`,
-		`127\.0\.0\.1:(\d+)`,
-		`0\.0\.0\.0:(\d+)`,
-		`\[::1\]:(\d+)`,
-	}
-
-	for _, pattern := range patterns {
-		re := regexp.MustCompile(pattern)
+	for _, re := range localhostPortREs {
 		if matches := re.FindStringSubmatch(urlStr); len(matches) > 1 {
 			if port, err := strconv.Atoi(matches[1]); err == nil && port > 0 && port < 65536 {
 				return port
@@ -260,10 +260,18 @@ func formatDuration(d time.Duration) string {
 
 // hubHandleDetect handles the DETECT command.
 func (d *Daemon) hubHandleDetect(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	debug.Log("daemon", "DETECT: args=%v", cmd.Args)
-	path := "."
-	if len(cmd.Args) > 0 {
-		path = cmd.Args[0]
+	// The directory is a filesystem path, carried in the JSON data frame. A
+	// malformed frame must not fall through to "." — that silently detects
+	// whatever project the daemon's own cwd happens to sit in.
+	meta, err := unmarshalCommand[struct {
+		Directory string `json:"directory"`
+	}](cmd)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("invalid DETECT payload: %v", err))
+	}
+	path := meta.Directory
+	if path == "" {
+		path = "."
 	}
 
 	proj, err := project.Detect(path)

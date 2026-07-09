@@ -3,21 +3,24 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
-
-	"github.com/standardbeagle/agnt/internal/debug"
 
 	hubpkg "github.com/standardbeagle/go-cli-server/hub"
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
 )
 
 func (d *Daemon) hubHandleDoctor(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	debug.Log("daemon", "DOCTOR: args=%v", cmd.Args)
-
-	projectPath := ""
-	if len(cmd.Args) > 0 {
-		projectPath = cmd.Args[0]
+	// projectPath is a filesystem path, carried in the JSON data frame. A
+	// malformed frame must not silently degrade to the session's project — the
+	// caller asked to diagnose a specific directory.
+	meta, err := unmarshalCommand[struct {
+		Directory string `json:"directory"`
+	}](cmd)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("invalid DOCTOR payload: %v", err))
 	}
+	projectPath := meta.Directory
 	if projectPath == "" {
 		projectPath = d.getSessionProjectPath(conn)
 	}
