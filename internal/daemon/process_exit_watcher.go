@@ -242,10 +242,10 @@ func (d *Daemon) watchProcessExit(proc *goprocess.ManagedProcess) {
 	// previous death.
 	d.processExitInfo.Clear(proc.ID)
 
-	d.wg.Add(1)
-	go func() {
-		defer d.wg.Done()
-
+	// goTracked declines to start once Stop has begun; a watcher spawned after
+	// Stop's wg.Wait would run against torn-down managers (and its unguarded
+	// wg.Add racing that Wait is a WaitGroup misuse panic).
+	d.goTracked(func() {
 		select {
 		case <-proc.Done():
 			// Process exited normally — capture its metadata.
@@ -309,7 +309,7 @@ func (d *Daemon) watchProcessExit(proc *goprocess.ManagedProcess) {
 
 		debug.Log("daemon", "process %s exited: code=%d reason=%s uptime=%s",
 			proc.ID, info.ExitCode, info.Reason, info.Uptime)
-	}()
+	})
 }
 
 // exitInfoToResponse merges a ProcessExitInfo into a response map used by

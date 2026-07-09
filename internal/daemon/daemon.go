@@ -352,6 +352,31 @@ func (d *Daemon) isShuttingDown() bool {
 	return d.shutdown
 }
 
+// goTracked runs fn in a goroutine tracked by d.wg, unless shutdown has begun.
+// It reports whether the goroutine was started.
+//
+// The Add must be atomic with the shutdown check. Stop sets d.shutdown under
+// shutdownMu before it calls d.wg.Wait(), so taking the same lock means we
+// either bail — Stop reaps the resources itself — or Add(1) strictly before
+// Wait. An unguarded Add racing Wait is a WaitGroup misuse panic, and a
+// goroutine that starts after Wait returns runs against managers Stop has
+// already torn down.
+func (d *Daemon) goTracked(fn func()) bool {
+	d.shutdownMu.Lock()
+	if d.shutdown {
+		d.shutdownMu.Unlock()
+		return false
+	}
+	d.wg.Add(1)
+	d.shutdownMu.Unlock()
+
+	go func() {
+		defer d.wg.Done()
+		fn()
+	}()
+	return true
+}
+
 // New creates a new daemon instance.
 func New(config DaemonConfig) *Daemon {
 	ctx, cancel := context.WithCancel(context.Background())
@@ -920,9 +945,7 @@ func (d *Daemon) startSwallowSweeperOnce() {
 	if !d.swallowSweeperStarted.CompareAndSwap(false, true) {
 		return
 	}
-	d.wg.Add(1)
-	go func() {
-		defer d.wg.Done()
+	d.goTracked(func() {
 		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()
 		for {
@@ -938,7 +961,7 @@ func (d *Daemon) startSwallowSweeperOnce() {
 				}
 			}
 		}
-	}()
+	})
 }
 
 // StartupLogStore returns the startup log store.
