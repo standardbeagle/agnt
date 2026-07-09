@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"errors"
 	"io"
 	"net"
@@ -111,6 +112,17 @@ type ResilientConn struct {
 	// down the fresh healthy connection.
 	generation atomic.Int64
 
+	// onBackoff, when set, is called with the pending delay just before
+	// reconnectLoop waits it out. Nil in production; a test uses it to observe
+	// that the loop has actually reached its backoff rather than racing it.
+	onBackoff func(time.Duration)
+
+	// closed is closed by Close. reconnectLoop waits on it alongside its backoff
+	// timer: a bare sleep would keep the goroutine alive for up to
+	// ReconnectBackoffMax after shutdown, outliving the caller that closed us.
+	closedOnce sync.Once
+	closedCh   chan struct{}
+
 	// Heartbeat management
 	hbMu            sync.Mutex
 	heartbeatCancel func()
@@ -126,6 +138,19 @@ func NewResilientConn(config ResilientConfig) *ResilientConn {
 	return &ResilientConn{
 		config: normalizeResilientConfig(config),
 	}
+}
+
+// closed returns the channel closed on shutdown. Created lazily so a zero-value
+// ResilientConn still works.
+func (rc *ResilientConn) closed() <-chan struct{} {
+	rc.closedOnce.Do(func() { rc.closedCh = make(chan struct{}) })
+	return rc.closedCh
+}
+
+// signalClosed unblocks anything waiting on closed(). Called once, from Close.
+func (rc *ResilientConn) signalClosed() {
+	rc.closedOnce.Do(func() { rc.closedCh = make(chan struct{}) })
+	close(rc.closedCh)
 }
 
 // Connect establishes the initial connection to the hub.
@@ -173,6 +198,9 @@ func (rc *ResilientConn) Close() error {
 	if rc.shutdown.Swap(true) {
 		return nil // Already shut down
 	}
+
+	// Wake a reconnect backoff that would otherwise sleep out its full delay.
+	rc.signalClosed()
 
 	// Stop heartbeat
 	rc.hbMu.Lock()
@@ -399,6 +427,17 @@ func (rc *ResilientConn) reconnectLoop() {
 	maxBackoff := rc.config.ReconnectBackoffMax
 	attempts := 0
 
+	// Cancelled when Close signals, so an in-flight connect attempt unwinds.
+	connectCtx, cancelConnect := context.WithCancel(context.Background())
+	defer cancelConnect()
+	go func() {
+		select {
+		case <-rc.closed():
+			cancelConnect()
+		case <-connectCtx.Done():
+		}
+	}()
+
 	for {
 		if rc.shutdown.Load() {
 			return
@@ -414,8 +453,11 @@ func (rc *ResilientConn) reconnectLoop() {
 		}
 		rc.connMu.Unlock()
 
-		// Attempt to connect
-		conn, err := EnsureHubRunning(rc.config.AutoStartConfig)
+		// Attempt to connect. The attempt itself is abandoned on Close: waiting
+		// for a hub that is starting can block for StartTimeout, which would keep
+		// this goroutine alive that long past shutdown even though its backoff is
+		// interruptible.
+		conn, err := EnsureHubRunningContext(connectCtx, rc.config.AutoStartConfig)
 		if err == nil {
 			// A concurrent Close() may have set shutdown after our loop-top check.
 			// Publish the new conn only if still live; otherwise close it and stop,
@@ -462,8 +504,18 @@ func (rc *ResilientConn) reconnectLoop() {
 			return
 		}
 
-		// Exponential backoff
-		time.Sleep(backoff)
+		// Exponential backoff, abandoned immediately on Close. Sleeping outright
+		// leaks this goroutine for up to maxBackoff past shutdown.
+		if rc.onBackoff != nil {
+			rc.onBackoff(backoff)
+		}
+		timer := time.NewTimer(backoff)
+		select {
+		case <-timer.C:
+		case <-rc.closed():
+			timer.Stop()
+			return
+		}
 		backoff = minDuration(backoff*2, maxBackoff)
 	}
 }
