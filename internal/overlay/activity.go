@@ -193,8 +193,10 @@ func (am *ActivityMonitor) Write(p []byte) (n int, err error) {
 			}
 		}
 
-		// Capture output for preview broadcasting
-		if am.onOutputPreview != nil {
+		// Split output into complete lines. This feeds both the preview broadcast
+		// and the per-line tap; gating it on onOutputPreview alone made a
+		// monitor configured with only OnOutputLine silently deliver nothing.
+		if am.onOutputPreview != nil || am.onOutputLine != nil {
 			am.captureForPreview(p[:n])
 		}
 	}
@@ -208,6 +210,12 @@ func (am *ActivityMonitor) captureForPreview(p []byte) {
 	var hasNewLine bool
 	var hasAnimationUpdate bool
 	var shouldScheduleAnimationFlush bool
+	// Complete lines are collected under the lock and delivered after it, in
+	// order. Each line used to be handed to its own `go onOutputLine(line)`,
+	// spawning an unbounded number of goroutines under bursty output and racing
+	// them against each other — the consumer correlates a signal line with the
+	// line that preceded it, so a reordered stream mis-attributes causes.
+	var completedLines []string
 
 	am.previewMu.Lock()
 
@@ -232,9 +240,9 @@ func (am *ActivityMonitor) captureForPreview(p []byte) {
 					if len(am.previewLines) > am.previewMaxLines {
 						am.previewLines = am.previewLines[len(am.previewLines)-am.previewMaxLines:]
 					}
-					// Notify alert scanner of each complete line
+					// Deliver after the lock is released, in order.
 					if am.onOutputLine != nil {
-						go am.onOutputLine(cleanLine)
+						completedLines = append(completedLines, cleanLine)
 					}
 				}
 			}
@@ -261,6 +269,12 @@ func (am *ActivityMonitor) captureForPreview(p []byte) {
 	shouldScheduleAnimationFlush = hasAnimationUpdate && am.isAnimating
 
 	am.previewMu.Unlock()
+
+	// Deliver complete lines in order, outside the lock. onOutputLine must be
+	// fast and must not block: it runs on the PTY write path, like onStateChange.
+	for _, line := range completedLines {
+		am.onOutputLine(line)
+	}
 
 	// Schedule broadcasts (outside lock to avoid deadlock)
 	if hasNewLine {
@@ -310,6 +324,11 @@ func (am *ActivityMonitor) cleanLine(line string) string {
 
 // scheduleBroadcast schedules a debounced broadcast of preview lines.
 func (am *ActivityMonitor) scheduleBroadcast() {
+	// A monitor may capture lines purely for the per-line tap, with no preview
+	// consumer to broadcast to.
+	if am.onOutputPreview == nil {
+		return
+	}
 	// If already pending, don't schedule another
 	if am.previewPending.Load() {
 		return
