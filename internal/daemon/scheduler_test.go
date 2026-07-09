@@ -59,7 +59,7 @@ func TestScheduler_Schedule(t *testing.T) {
 	if task.Status() != TaskStatusPending {
 		t.Errorf("Schedule() Status = %v, want pending", task.Status())
 	}
-	if task.DeliverAt.Before(time.Now()) {
+	if task.GetDeliverAt().Before(time.Now()) {
 		t.Error("Schedule() DeliverAt should be in the future")
 	}
 }

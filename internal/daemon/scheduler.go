@@ -87,14 +87,34 @@ type ScheduledTask struct {
 	ID          string    `json:"id"`           // Unique task ID (e.g., "task-abc123")
 	SessionCode string    `json:"session_code"` // Target session
 	Message     string    `json:"message"`      // Message to deliver
-	DeliverAt   time.Time `json:"deliver_at"`   // Scheduled delivery time
 	CreatedAt   time.Time `json:"created_at"`   // When task was created
 	ProjectPath string    `json:"project_path"` // For project-scoped filtering
 
 	// Atomic mutable state (not directly serialized, use accessors)
+	//
+	// deliverAt is rescheduled by the retry path on every failed attempt, while
+	// SESSION TASKS (ToJSON) and the persister (MarshalJSON) read it from other
+	// goroutines. It was a bare time.Time — a multi-word value with one writer
+	// and three readers, i.e. a torn read the race detector flags. Only the
+	// scheduler's own read was serialized (by the Pending→Delivering CAS); the
+	// hub and persister readers bypass that CAS entirely.
+	deliverAt atomic.Pointer[time.Time]
 	status    atomic.Uint32
 	attempts  atomic.Int32
 	lastError atomic.Pointer[string]
+}
+
+// GetDeliverAt returns the scheduled delivery time.
+func (t *ScheduledTask) GetDeliverAt() time.Time {
+	if p := t.deliverAt.Load(); p != nil {
+		return *p
+	}
+	return time.Time{}
+}
+
+// SetDeliverAt reschedules the task.
+func (t *ScheduledTask) SetDeliverAt(v time.Time) {
+	t.deliverAt.Store(&v)
 }
 
 // Status returns the current task status as a string.
@@ -155,7 +175,7 @@ func (t *ScheduledTask) MarshalJSON() ([]byte, error) {
 		ID:          t.ID,
 		SessionCode: t.SessionCode,
 		Message:     t.Message,
-		DeliverAt:   t.DeliverAt,
+		DeliverAt:   t.GetDeliverAt(),
 		CreatedAt:   t.CreatedAt,
 		ProjectPath: t.ProjectPath,
 		Status:      t.Status(),
@@ -173,7 +193,7 @@ func (t *ScheduledTask) UnmarshalJSON(data []byte) error {
 	t.ID = raw.ID
 	t.SessionCode = raw.SessionCode
 	t.Message = raw.Message
-	t.DeliverAt = raw.DeliverAt
+	t.SetDeliverAt(raw.DeliverAt)
 	t.CreatedAt = raw.CreatedAt
 	t.ProjectPath = raw.ProjectPath
 	t.SetStatus(raw.Status)
@@ -190,7 +210,7 @@ func (t *ScheduledTask) ToJSON() map[string]interface{} {
 		"id":           t.ID,
 		"session_code": t.SessionCode,
 		"message":      t.Message,
-		"deliver_at":   t.DeliverAt.Format(time.RFC3339),
+		"deliver_at":   t.GetDeliverAt().Format(time.RFC3339),
 		"created_at":   t.CreatedAt.Format(time.RFC3339),
 		"project_path": t.ProjectPath,
 		"status":       string(t.Status()),
@@ -205,10 +225,10 @@ func NewScheduledTask(id, sessionCode, message, projectPath string, deliverAt, c
 		ID:          id,
 		SessionCode: sessionCode,
 		Message:     message,
-		DeliverAt:   deliverAt,
 		CreatedAt:   createdAt,
 		ProjectPath: projectPath,
 	}
+	t.SetDeliverAt(deliverAt)
 	t.SetStatus(status)
 	return t
 }
@@ -387,7 +407,7 @@ func (s *Scheduler) checkDueTasks() {
 			return true
 		}
 
-		if !task.DeliverAt.Before(now) {
+		if !task.GetDeliverAt().Before(now) {
 			// Not due yet, revert to pending
 			task.status.Store(uint32(taskStatusPending))
 			return true
@@ -510,7 +530,7 @@ func (s *Scheduler) handleDeliveryFailure(task *ScheduledTask, errMsg string) {
 		// actually honored (previously the task became immediately due again
 		// and RetryDelay was dead config). Delay grows RetryDelay*2^(attempts-1).
 		if s.config.RetryDelay > 0 {
-			task.DeliverAt = time.Now().Add(retryBackoff(s.config.RetryDelay, attempts))
+			task.SetDeliverAt(time.Now().Add(retryBackoff(s.config.RetryDelay, attempts)))
 		}
 		task.status.Store(uint32(taskStatusPending))
 	}
