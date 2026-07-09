@@ -701,6 +701,9 @@ func (d *Daemon) Start() error {
 		return err
 	}
 
+	// Hand off from a pre-0.13.32 daemon still listening on the old socket path.
+	d.migrateLegacySocket()
+
 	// Clean up orphaned processes from previous crash.
 	// Note: port-based cleanup happens lazily in preflightPortCleanup when
 	// scripts are started via StartScript/RunAutostart, not at daemon startup.
