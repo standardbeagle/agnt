@@ -38,7 +38,14 @@ type portConflictInfo struct {
 // daemonSessionHandle manages the daemon connection and session registration.
 // It encapsulates the resilient client, heartbeat goroutine, and session state.
 type daemonSessionHandle struct {
+	// mu guards client and closed. Registration runs in a goroutine, so the
+	// client is published after the handle is handed to the caller — and Close
+	// can arrive before that.
+	mu     sync.Mutex
+	closed bool
+
 	client            *daemon.ResilientClient
+	heartbeatOnce     sync.Once
 	heartbeatStop     chan struct{}
 	sessionCode       string
 	sessionRegistered bool
@@ -60,24 +67,65 @@ type daemonSessionHandle struct {
 	projectPath      string
 }
 
+// adoptClient hands the registration goroutine's client to the handle. It
+// reports false when the handle is already closed, in which case the caller owns
+// the client and must close it: Close ran before the client existed, so it saw
+// nothing to close, and nothing else ever will.
+func (h *daemonSessionHandle) adoptClient(c *daemon.ResilientClient) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.closed {
+		return false
+	}
+	h.client = c
+	return true
+}
+
+// takeClient claims the client for shutdown, marking the handle closed so a
+// registration goroutine still in flight closes its own client instead.
+func (h *daemonSessionHandle) takeClient() *daemon.ResilientClient {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.closed = true
+	c := h.client
+	h.client = nil
+	return c
+}
+
 // Close cleans up daemon session resources.
 // Stops heartbeat, unregisters session, and closes the client connection.
+//
+// Registration runs in a goroutine, so Close can land before the client exists.
+// It used to read h.client directly and find nil, leaving the client — and its
+// reconnect loop, which retries for the life of the process — running forever.
+// Marking the handle closed makes the registration goroutine dispose of its own
+// client instead. Close is idempotent.
 func (h *daemonSessionHandle) Close() {
 	if h == nil {
 		return
 	}
 	// Stop heartbeat
-	if h.heartbeatStop != nil {
-		close(h.heartbeatStop)
+	h.heartbeatOnce.Do(func() {
+		if h.heartbeatStop != nil {
+			close(h.heartbeatStop)
+		}
+	})
+
+	client := h.takeClient()
+	if client == nil {
+		return
 	}
-	// Unregister session
-	if h.client != nil && h.sessionRegistered {
-		_ = h.client.SessionUnregister(h.sessionCode)
+	if h.sessionRegistered {
+		_ = client.SessionUnregister(h.sessionCode)
 	}
-	// Close client
-	if h.client != nil {
-		h.client.Close()
-	}
+	client.Close()
+}
+
+// currentClient returns the live client, or nil once Close has taken it.
+func (h *daemonSessionHandle) currentClient() *daemon.ResilientClient {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.client
 }
 
 // WaitRegistered blocks until the registration goroutine completes or the timeout expires.
@@ -96,13 +144,19 @@ func (h *daemonSessionHandle) WaitRegistered(timeout time.Duration) bool {
 
 // IsConnected returns true if the daemon client is connected.
 func (h *daemonSessionHandle) IsConnected() bool {
-	return h != nil && h.client != nil && h.client.IsConnected()
+	if h == nil {
+		return false
+	}
+	c := h.currentClient()
+	return c != nil && c.IsConnected()
 }
 
 // BroadcastActivity sends activity state to the daemon.
 func (h *daemonSessionHandle) BroadcastActivity(active bool) {
 	if h.IsConnected() {
-		_ = h.client.BroadcastActivity(active)
+		if c := h.currentClient(); c != nil {
+			_ = c.BroadcastActivity(active)
+		}
 	}
 }
 
@@ -111,14 +165,18 @@ func (h *daemonSessionHandle) BroadcastActivity(active bool) {
 // primary path and does not depend on this succeeding.
 func (h *daemonSessionHandle) SetForwarding(paused bool) {
 	if h.IsConnected() {
-		_ = h.client.SetForwarding(paused)
+		if c := h.currentClient(); c != nil {
+			_ = c.SetForwarding(paused)
+		}
 	}
 }
 
 // BroadcastOutputPreview sends output preview lines to the daemon.
 func (h *daemonSessionHandle) BroadcastOutputPreview(lines []string) {
 	if h.IsConnected() {
-		_ = h.client.BroadcastOutputPreview(lines)
+		if c := h.currentClient(); c != nil {
+			_ = c.BroadcastOutputPreview(lines)
+		}
 	}
 }
 
@@ -174,8 +232,13 @@ func startDaemonSession(ctx context.Context, cfg daemonSessionConfig) *daemonSes
 			return nil
 		}
 
-		handle.client = daemon.NewResilientClient(config)
-		if err := handle.client.Connect(); err != nil {
+		client := daemon.NewResilientClient(config)
+		if !handle.adoptClient(client) {
+			// Close beat us here; nobody else will ever close this client.
+			client.Close()
+			return
+		}
+		if err := client.Connect(); err != nil {
 			// Connection is best-effort, but record why so the status
 			// printer can tell the user rather than a bare "not available".
 			handle.registrationErr = fmt.Errorf("connect: %w", err)
@@ -184,7 +247,7 @@ func startDaemonSession(ctx context.Context, cfg daemonSessionConfig) *daemonSes
 		}
 
 		// Register session with daemon (autostart and overlay scoping happen server-side)
-		result, err := handle.client.SessionRegisterWithContainment(cfg.SessionCode, cfg.OverlayEndpoint, cfg.ProjectPath, cfg.Command, cfg.CmdArgs, cfg.SessionPGID, cfg.SessionJobHandle)
+		result, err := client.SessionRegisterWithContainment(cfg.SessionCode, cfg.OverlayEndpoint, cfg.ProjectPath, cfg.Command, cfg.CmdArgs, cfg.SessionPGID, cfg.SessionJobHandle)
 		if err != nil {
 			handle.registrationErr = fmt.Errorf("register: %w", err)
 			debug.Log("daemon", "session register failed: %v", err)
@@ -287,7 +350,7 @@ func startDaemonSession(ctx context.Context, cfg daemonSessionConfig) *daemonSes
 					return
 				case <-ticker.C:
 					if handle.IsConnected() {
-						_ = handle.client.SessionHeartbeat(cfg.SessionCode)
+						_ = client.SessionHeartbeat(cfg.SessionCode)
 					}
 				}
 			}
@@ -395,9 +458,9 @@ func displayAutostartResults(handle *daemonSessionHandle, ov *overlay.Overlay, r
 
 		if answer == 'n' || answer == 'N' {
 			fmt.Fprintf(w, "\r\n\x1b[2m[agnt] proceeding without killing -- scripts may fail to bind\x1b[0m\r\n")
-			if handle.IsConnected() {
+			if hc := handle.currentClient(); hc != nil && handle.IsConnected() {
 				var result map[string]interface{}
-				_ = handle.client.WithClient(func(c *daemon.Client) error {
+				_ = hc.WithClient(func(c *daemon.Client) error {
 					var err error
 					result, err = c.AutostartContinue(handle.projectPath)
 					return err
@@ -406,9 +469,9 @@ func displayAutostartResults(handle *daemonSessionHandle, ov *overlay.Overlay, r
 			}
 		} else {
 			fmt.Fprintf(w, "\r\n")
-			if handle.IsConnected() {
+			if hc := handle.currentClient(); hc != nil && handle.IsConnected() {
 				var result map[string]interface{}
-				_ = handle.client.WithClient(func(c *daemon.Client) error {
+				_ = hc.WithClient(func(c *daemon.Client) error {
 					var err error
 					result, err = c.AutostartClearPorts(handle.projectPath)
 					return err
