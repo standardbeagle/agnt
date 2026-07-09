@@ -1,5 +1,11 @@
 package process
 
+// maxPartialLine bounds the in-progress (newline-less) line buffer. Output that
+// never emits '\n' — progress bars and spinners that redraw with '\r' — would
+// otherwise grow partial without limit inside the daemon. At the cap we flush
+// what we have as a synthetic line and reset, so memory stays bounded.
+const maxPartialLine = 64 * 1024
+
 // lineWriter wraps a RingBuffer and calls a callback for each complete line.
 // Incomplete lines are buffered until a newline arrives or flush is called.
 type lineWriter struct {
@@ -34,6 +40,12 @@ func (lw *lineWriter) Write(p []byte) (int, error) {
 	}
 	if start < len(p) {
 		lw.partial = append(lw.partial, p[start:]...)
+		// Bound the partial-line buffer: a stream with no newline (CR-rewriting
+		// progress output) must not grow it without limit.
+		if len(lw.partial) >= maxPartialLine {
+			lw.callback(lw.processID, string(lw.partial))
+			lw.partial = lw.partial[:0]
+		}
 	}
 
 	return n, err

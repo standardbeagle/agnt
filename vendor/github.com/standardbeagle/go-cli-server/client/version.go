@@ -137,10 +137,10 @@ func MakeVersionCheck(clientVersion string, onMismatch func(clientVer, hubVer st
 				return onMismatch(clientVersion, hubVersion)
 			}
 
-			// No callback - try to stop the hub so next connection uses new version
-			_ = conn.Request("SHUTDOWN").OK() // Best effort
-
-			return fmt.Errorf("version mismatch: client=%s hub=%s (hub stopped, will restart with new version)",
+			// Do NOT auto-SHUTDOWN: the hub is shared, and killing it would tear
+			// down every other client's session. Surface the mismatch and let the
+			// caller decide (via onMismatch) whether restarting is safe.
+			return fmt.Errorf("version mismatch: client=%s hub=%s",
 				clientVersion, hubVersion)
 		}
 

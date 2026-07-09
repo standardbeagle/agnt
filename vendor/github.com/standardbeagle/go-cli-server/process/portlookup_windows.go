@@ -5,13 +5,17 @@ package process
 import (
 	"fmt"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 )
 
+var portTokenPattern = regexp.MustCompile(`:\d+(?:[/?\s]|$)`)
+
 // findPIDsByPort uses "netstat -ano" to find PIDs listening on the given port.
 // On Windows, PID 4 (System/HTTP.sys) may appear for .NET HttpListener ports.
-// In that case, we resolve the actual application process via netsh or tasklist.
+// In that case, we resolve the actual application process via netsh. If netsh
+// cannot identify an exact owner, fail closed instead of killing by guess.
 func findPIDsByPort(port int) []int {
 	cmd := exec.Command("netstat", "-ano")
 	output, err := cmd.Output()
@@ -64,7 +68,7 @@ func findPIDsByPort(port int) []int {
 
 // findHTTPSysOwners finds application processes that registered with HTTP.sys
 // for the given port. Uses "netsh http show servicestate" to find the request
-// queue PID, falling back to searching for dotnet processes.
+// queue PID and returns nil if the owner cannot be identified exactly.
 func findHTTPSysOwners(port int) []int {
 	// Try netsh to find the registered controller process
 	portStr := fmt.Sprintf(":%d", port)
@@ -75,7 +79,7 @@ func findHTTPSysOwners(port int) []int {
 		// then extract the controller process ID
 		lines := strings.Split(string(output), "\n")
 		for i, line := range lines {
-			if !strings.Contains(line, portStr) {
+			if !lineContainsExactPort(line, portStr) {
 				continue
 			}
 			// Look backwards for "Controller process ID:" line
@@ -92,24 +96,14 @@ func findHTTPSysOwners(port int) []int {
 		}
 	}
 
-	// Fallback: find all dotnet processes (they're the most likely HTTP.sys users)
-	cmd = exec.Command("tasklist", "/FI", "IMAGENAME eq dotnet.exe", "/FO", "CSV", "/NH")
-	output, err = cmd.Output()
-	if err != nil {
-		return nil
-	}
+	return nil
+}
 
-	var pids []int
-	for _, line := range strings.Split(string(output), "\n") {
-		// CSV format: "dotnet.exe","1234","Console","1","50,000 K"
-		fields := strings.Split(strings.TrimSpace(line), ",")
-		if len(fields) < 2 {
-			continue
-		}
-		pidStr := strings.Trim(fields[1], "\" ")
-		if pid, err := strconv.Atoi(pidStr); err == nil && pid > 0 {
-			pids = append(pids, pid)
+func lineContainsExactPort(line, portStr string) bool {
+	for _, token := range portTokenPattern.FindAllString(line, -1) {
+		if strings.TrimRight(token, "/? \t\r\n") == portStr {
+			return true
 		}
 	}
-	return pids
+	return false
 }

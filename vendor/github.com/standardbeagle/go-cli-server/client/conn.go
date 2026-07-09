@@ -42,6 +42,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/standardbeagle/go-cli-server/protocol"
@@ -69,6 +70,34 @@ type Conn struct {
 	parser *protocol.Parser
 	writer *protocol.Writer
 	closed bool
+
+	// active holds the current net.Conn for out-of-band interruption.
+	// Close/Disconnect use it to abort a blocked read without waiting on mu,
+	// which prevents a hung hub from freezing every caller behind mu.
+	active atomic.Pointer[activeConn]
+
+	// inFlight counts real requests (execute/executeChunked) currently holding or
+	// waiting on mu. The resilient heartbeat consults it: a PING that queues
+	// behind an active request measures lock contention, not liveness, so a busy
+	// connection must not be torn down as "dead".
+	inFlight atomic.Int32
+}
+
+// Busy reports whether a real request is currently in flight. Used by the
+// resilient heartbeat to avoid mistaking lock contention for a dead connection.
+func (c *Conn) Busy() bool {
+	return c.inFlight.Load() > 0
+}
+
+// activeConn wraps a net.Conn so it can be stored in an atomic.Pointer.
+type activeConn struct{ c net.Conn }
+
+// setDeadlineLocked applies the configured timeout as an I/O deadline.
+// Caller must hold mu and have a live conn.
+func (c *Conn) setDeadlineLocked() {
+	if c.timeout > 0 && c.conn != nil {
+		_ = c.conn.SetDeadline(time.Now().Add(c.timeout))
+	}
 }
 
 // Option configures a Conn.
@@ -92,7 +121,7 @@ func WithTimeout(d time.Duration) Option {
 // The connection is not established until the first request or EnsureConnected().
 func NewConn(opts ...Option) *Conn {
 	c := &Conn{
-		socketPath: socket.DefaultSocketPath("mcp-hub"),
+		socketPath: socket.DefaultSocketPath(socket.DefaultSocketName),
 		timeout:    30 * time.Second,
 	}
 	for _, opt := range opts {
@@ -140,6 +169,7 @@ func (c *Conn) ensureConnectedLocked() error {
 	c.conn = conn
 	c.parser = protocol.NewParser(conn)
 	c.writer = protocol.NewWriter(conn)
+	c.active.Store(&activeConn{c: conn})
 	return nil
 }
 
@@ -153,6 +183,9 @@ func (c *Conn) IsConnected() bool {
 // Close closes the connection permanently.
 // After Close, the Conn cannot be reused.
 func (c *Conn) Close() error {
+	// Abort any blocked read first so a caller stuck on a hung hub releases mu.
+	c.interruptActive()
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -161,6 +194,7 @@ func (c *Conn) Close() error {
 	}
 
 	c.closed = true
+	c.active.Store(nil)
 	if c.conn != nil {
 		err := c.conn.Close()
 		c.conn = nil
@@ -174,6 +208,8 @@ func (c *Conn) Close() error {
 // Disconnect closes the current connection but allows reconnection.
 // Use this to release resources temporarily while keeping the Conn usable.
 func (c *Conn) Disconnect() error {
+	c.interruptActive()
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -181,6 +217,7 @@ func (c *Conn) Disconnect() error {
 		return nil
 	}
 
+	c.active.Store(nil)
 	err := c.conn.Close()
 	c.conn = nil
 	c.parser = nil
@@ -188,15 +225,24 @@ func (c *Conn) Disconnect() error {
 	return err
 }
 
+// interruptActive aborts an in-flight blocked read on the current connection
+// without acquiring mu, so Close/Disconnect can break a caller stuck reading
+// from a hung hub instead of deadlocking behind mu.
+func (c *Conn) interruptActive() {
+	if a := c.active.Load(); a != nil {
+		_ = a.c.SetDeadline(time.Now())
+	}
+}
+
 // Request creates a new request builder for the given verb and arguments.
-// The verb is the protocol command (e.g., "PROC", "RELAY", "SESSION").
+// The verb is the protocol command (e.g., "PROC", "SESSION", "SUBPROCESS").
 // Additional arguments are appended (e.g., "LIST", "STATUS", process ID).
 //
 // Example:
 //
 //	conn.Request("PROC", "LIST")
 //	conn.Request("PROC", "STATUS", processID)
-//	conn.Request("RELAY", "SEND", targetID)
+//	conn.Request("SESSION", "GET", sessionCode)
 func (c *Conn) Request(verb string, args ...string) *RequestBuilder {
 	return &RequestBuilder{
 		conn: c,
@@ -214,6 +260,7 @@ func (c *Conn) Ping() error {
 		return err
 	}
 
+	c.setDeadlineLocked()
 	if err := c.writer.WriteCommand(protocol.VerbPing, nil, nil); err != nil {
 		c.handleErrorLocked()
 		return fmt.Errorf("failed to send ping: %w", err)
@@ -236,6 +283,7 @@ func (c *Conn) Ping() error {
 // Caller must hold mu.
 func (c *Conn) handleErrorLocked() {
 	if c.conn != nil {
+		c.active.Store(nil)
 		c.conn.Close()
 		c.conn = nil
 		c.parser = nil
@@ -245,6 +293,9 @@ func (c *Conn) handleErrorLocked() {
 
 // execute runs the request and returns the raw response.
 func (c *Conn) execute(verb string, args []string, data []byte) (*protocol.Response, error) {
+	c.inFlight.Add(1)
+	defer c.inFlight.Add(-1)
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -252,6 +303,7 @@ func (c *Conn) execute(verb string, args []string, data []byte) (*protocol.Respo
 		return nil, err
 	}
 
+	c.setDeadlineLocked()
 	if err := c.writer.WriteCommandWithSubVerb(verb, "", args, data); err != nil {
 		c.handleErrorLocked()
 		return nil, fmt.Errorf("failed to send command: %w", err)
@@ -268,6 +320,9 @@ func (c *Conn) execute(verb string, args []string, data []byte) (*protocol.Respo
 
 // executeChunked runs the request and collects chunked response data.
 func (c *Conn) executeChunked(verb string, args []string, data []byte) ([]byte, error) {
+	c.inFlight.Add(1)
+	defer c.inFlight.Add(-1)
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -275,6 +330,7 @@ func (c *Conn) executeChunked(verb string, args []string, data []byte) ([]byte, 
 		return nil, err
 	}
 
+	c.setDeadlineLocked()
 	if err := c.writer.WriteCommandWithSubVerb(verb, "", args, data); err != nil {
 		c.handleErrorLocked()
 		return nil, fmt.Errorf("failed to send command: %w", err)
@@ -282,10 +338,17 @@ func (c *Conn) executeChunked(verb string, args []string, data []byte) ([]byte, 
 
 	var result []byte
 	for {
+		// Refresh the deadline per chunk so a large streamed response is bounded
+		// by idle time between chunks rather than total transfer time.
+		c.setDeadlineLocked()
 		resp, err := c.parser.ParseResponse()
 		if err != nil {
 			if err == io.EOF {
-				break
+				// EOF before an END marker means the hub died mid-stream: the
+				// buffer is incomplete. Returning it as success would silently
+				// hand back truncated data.
+				c.handleErrorLocked()
+				return nil, fmt.Errorf("connection closed mid-stream before END: %w", io.ErrUnexpectedEOF)
 			}
 			c.handleErrorLocked()
 			return nil, fmt.Errorf("failed to read response: %w", err)
@@ -302,8 +365,6 @@ func (c *Conn) executeChunked(verb string, args []string, data []byte) ([]byte, 
 			return nil, fmt.Errorf("unexpected response type: %s", resp.Type)
 		}
 	}
-
-	return result, nil
 }
 
 // RequestBuilder builds and executes requests to the hub.
@@ -313,6 +374,9 @@ type RequestBuilder struct {
 	verb string
 	args []string
 	data []byte
+	// buildErr defers a construction error (e.g. a failed WithJSON marshal) to
+	// execution, so the request is never silently sent without its payload.
+	buildErr error
 }
 
 // WithArgs appends additional string arguments to the request.
@@ -336,8 +400,10 @@ func (r *RequestBuilder) WithData(data []byte) *RequestBuilder {
 func (r *RequestBuilder) WithJSON(v interface{}) *RequestBuilder {
 	data, err := json.Marshal(v)
 	if err != nil {
-		// Store nil to signal error - execute will fail
-		r.data = nil
+		// Defer the error to execution instead of silently sending an empty
+		// payload (which would turn "PROC LIST with filter" into an unfiltered
+		// list).
+		r.buildErr = fmt.Errorf("failed to marshal request JSON: %w", err)
 		return r
 	}
 	r.data = data
@@ -349,6 +415,9 @@ func (r *RequestBuilder) WithJSON(v interface{}) *RequestBuilder {
 //
 //	err := conn.Request("PROC", "STOP", processID).OK()
 func (r *RequestBuilder) OK() error {
+	if r.buildErr != nil {
+		return r.buildErr
+	}
 	resp, err := r.conn.execute(r.verb, r.args, r.data)
 	if err != nil {
 		return err
@@ -356,6 +425,9 @@ func (r *RequestBuilder) OK() error {
 
 	if resp.Type == protocol.ResponseErr {
 		return fmt.Errorf("%w: [%s] %s", ErrServerError, resp.Code, resp.Message)
+	}
+	if resp.Type != protocol.ResponseOK {
+		return fmt.Errorf("expected OK response, got %s", resp.Type)
 	}
 
 	return nil
@@ -367,6 +439,9 @@ func (r *RequestBuilder) OK() error {
 //	result, err := conn.Request("PROC", "LIST").JSON()
 //	processes := result["processes"].([]interface{})
 func (r *RequestBuilder) JSON() (map[string]interface{}, error) {
+	if r.buildErr != nil {
+		return nil, r.buildErr
+	}
 	resp, err := r.conn.execute(r.verb, r.args, r.data)
 	if err != nil {
 		return nil, err
@@ -393,6 +468,9 @@ func (r *RequestBuilder) JSON() (map[string]interface{}, error) {
 //	var info HubInfo
 //	err := conn.Request("INFO").JSONInto(&info)
 func (r *RequestBuilder) JSONInto(v interface{}) error {
+	if r.buildErr != nil {
+		return r.buildErr
+	}
 	resp, err := r.conn.execute(r.verb, r.args, r.data)
 	if err != nil {
 		return err
@@ -416,6 +494,9 @@ func (r *RequestBuilder) JSONInto(v interface{}) error {
 // Bytes executes the request and returns the raw JSON response bytes.
 // Use this when you need to handle JSON parsing yourself.
 func (r *RequestBuilder) Bytes() ([]byte, error) {
+	if r.buildErr != nil {
+		return nil, r.buildErr
+	}
 	resp, err := r.conn.execute(r.verb, r.args, r.data)
 	if err != nil {
 		return nil, err
@@ -423,6 +504,9 @@ func (r *RequestBuilder) Bytes() ([]byte, error) {
 
 	if resp.Type == protocol.ResponseErr {
 		return nil, fmt.Errorf("%w: [%s] %s", ErrServerError, resp.Code, resp.Message)
+	}
+	if resp.Type != protocol.ResponseJSON && resp.Type != protocol.ResponseData {
+		return nil, fmt.Errorf("expected data response, got %s", resp.Type)
 	}
 
 	return resp.Data, nil
@@ -433,6 +517,9 @@ func (r *RequestBuilder) Bytes() ([]byte, error) {
 //
 //	data, err := conn.Request("PROC", "OUTPUT", id).WithArgs("tail=100").Chunked()
 func (r *RequestBuilder) Chunked() ([]byte, error) {
+	if r.buildErr != nil {
+		return nil, r.buildErr
+	}
 	return r.conn.executeChunked(r.verb, r.args, r.data)
 }
 

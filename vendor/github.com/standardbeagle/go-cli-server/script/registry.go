@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -50,15 +51,10 @@ type StateTransition struct {
 
 // Config holds the configuration for a script.
 type Config struct {
-	Run       string            // Shell command string
-	Command   string            // Executable name (used with Args)
-	Args      []string          // Command arguments (used with Command)
-	Shell     string            // Shell override
-	ShellArgs []string          // Shell arguments override
-	Autostart bool              // Start script when session opens
-	Env       map[string]string // Environment variables
-	Cwd       string            // Working directory
-	DependsOn []string          // Scripts that must be ready before this starts
+	Run     string            // Shell command string
+	Command string            // Executable name (used with Args)
+	Args    []string          // Command arguments (used with Command)
+	Env     map[string]string // Environment variables
 }
 
 const (
@@ -325,7 +321,14 @@ func NewRegistry() *Registry {
 
 // entryKey builds the registry key from project path and script name.
 func entryKey(projectPath, name string) string {
-	return projectPath + "\x00" + name
+	return normalizeProjectPath(projectPath) + "\x00" + name
+}
+
+func normalizeProjectPath(projectPath string) string {
+	if projectPath == "" {
+		return ""
+	}
+	return filepath.Clean(projectPath)
 }
 
 // Register adds or returns an existing Entry for the given script.
@@ -338,11 +341,16 @@ func (r *Registry) Register(name, projectPath string, cfg *Config) (*Entry, erro
 		return nil, fmt.Errorf("project path is required")
 	}
 
+	projectPath = normalizeProjectPath(projectPath)
 	key := entryKey(projectPath, name)
 	entry := newEntry(name, projectPath, cfg)
 
 	if existing, loaded := r.entries.LoadOrStore(key, entry); loaded {
-		return existing.(*Entry), nil
+		existingEntry := existing.(*Entry)
+		if !reflect.DeepEqual(existingEntry.Config, cfg) {
+			return nil, fmt.Errorf("script %q already registered for project %q with different config", name, projectPath)
+		}
+		return existingEntry, nil
 	}
 	return entry, nil
 }
@@ -359,7 +367,7 @@ func (r *Registry) Get(name, projectPath string) (*Entry, bool) {
 
 // List returns all Entry instances for a given project path.
 func (r *Registry) List(projectPath string) []*Entry {
-	prefix := projectPath + "\x00"
+	prefix := normalizeProjectPath(projectPath) + "\x00"
 	var result []*Entry
 	r.entries.Range(func(key, value interface{}) bool {
 		k := key.(string)
@@ -414,14 +422,15 @@ func MakeProcessID(projectPath, name string) string {
 	if projectPath == "" {
 		return name
 	}
+	projectPath = normalizeProjectPath(projectPath)
 	basename := filepath.Base(projectPath)
 	hash := shortPathHash(projectPath)
 	return fmt.Sprintf("%s-%s:%s", basename, hash, name)
 }
 
-// shortPathHash returns a short (4 char) hex hash of a path for ID uniqueness.
+// shortPathHash returns an 8-char hex hash of a path for ID uniqueness.
 func shortPathHash(path string) string {
 	h := fnv.New32a()
 	h.Write([]byte(path))
-	return fmt.Sprintf("%04x", h.Sum32()&0xFFFF)
+	return fmt.Sprintf("%08x", h.Sum32())
 }

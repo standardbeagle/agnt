@@ -28,17 +28,23 @@ type CommandDefinition struct {
 type verbHandler struct {
 	handler     CommandHandler // Default handler for the verb
 	subHandlers sync.Map       // subVerb -> CommandHandler
-	validSubs   []string       // List of valid sub-verbs
+	mu          sync.RWMutex
+	validSubs   []string // List of valid sub-verbs
 }
 
 // CommandRegistry manages command handlers with lock-free access.
 type CommandRegistry struct {
 	handlers sync.Map // verb -> *verbHandler
+	protocol *protocol.VerbRegistry
 }
 
 // NewCommandRegistry creates a new command registry.
-func NewCommandRegistry() *CommandRegistry {
-	return &CommandRegistry{}
+func NewCommandRegistry(registry ...*protocol.VerbRegistry) *CommandRegistry {
+	reg := protocol.NewVerbRegistry()
+	if len(registry) > 0 && registry[0] != nil {
+		reg = registry[0]
+	}
+	return &CommandRegistry{protocol: reg}
 }
 
 // Register adds a command handler to the registry.
@@ -62,12 +68,14 @@ func (r *CommandRegistry) Register(def CommandDefinition) error {
 		vh.subHandlers.Store(strings.ToUpper(sv), def.Handler)
 	}
 
-	r.handlers.Store(verb, vh)
+	if _, loaded := r.handlers.LoadOrStore(verb, vh); loaded {
+		return fmt.Errorf("command verb %s already registered", verb)
+	}
 
-	// Register verb with the protocol parser
-	protocol.DefaultRegistry.RegisterVerb(verb)
+	// Register verb with this hub's protocol parser.
+	r.protocol.RegisterVerb(verb)
 	for _, sv := range def.SubVerbs {
-		protocol.DefaultRegistry.RegisterSubVerb(sv)
+		r.protocol.RegisterSubVerbForVerb(verb, sv)
 	}
 
 	return nil
@@ -84,11 +92,91 @@ func (r *CommandRegistry) RegisterSubHandler(verb, subVerb string, handler Comma
 	}
 
 	vh := val.(*verbHandler)
+	if _, exists := vh.subHandlers.Load(subVerb); exists {
+		return fmt.Errorf("sub-verb %s already registered for verb %s", subVerb, verb)
+	}
 	vh.subHandlers.Store(subVerb, handler)
-	vh.validSubs = append(vh.validSubs, subVerb)
+	vh.mu.Lock()
+	vh.validSubs = append(append([]string(nil), vh.validSubs...), subVerb)
+	vh.mu.Unlock()
 
-	protocol.DefaultRegistry.RegisterSubVerb(subVerb)
+	r.protocol.RegisterSubVerbForVerb(verb, subVerb)
 
+	return nil
+}
+
+// Extend adds one or more sub-verb handlers to an existing verb without
+// replacing the verb's default handler. It is intended for library consumers
+// that use a shared built-in command surface and need to add product-specific
+// actions. Existing sub-verbs are rejected; use ReplaceSubHandler when an
+// intentional override is required.
+func (r *CommandRegistry) Extend(def CommandDefinition) error {
+	if def.Verb == "" {
+		return fmt.Errorf("command verb cannot be empty")
+	}
+	if def.Handler == nil {
+		return fmt.Errorf("command handler cannot be nil")
+	}
+	if len(def.SubVerbs) == 0 {
+		return fmt.Errorf("command extension for %s must include at least one sub-verb", strings.ToUpper(def.Verb))
+	}
+	for _, subVerb := range def.SubVerbs {
+		if err := r.RegisterSubHandler(def.Verb, subVerb, def.Handler); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ReplaceSubHandler intentionally replaces the handler for an existing
+// sub-verb. It does not add new actions; callers must use Extend first for new
+// sub-verbs. Keeping replacement explicit prevents extension code from
+// accidentally shadowing shared hub behavior.
+func (r *CommandRegistry) ReplaceSubHandler(verb, subVerb string, handler CommandHandler) error {
+	if handler == nil {
+		return fmt.Errorf("command handler cannot be nil")
+	}
+	verb = strings.ToUpper(verb)
+	subVerb = strings.ToUpper(subVerb)
+	if verb == "" || subVerb == "" {
+		return fmt.Errorf("verb and sub-verb are required")
+	}
+
+	val, ok := r.handlers.Load(verb)
+	if !ok {
+		return fmt.Errorf("verb %s not registered", verb)
+	}
+
+	vh := val.(*verbHandler)
+	if _, exists := vh.subHandlers.Load(subVerb); !exists {
+		return fmt.Errorf("sub-verb %s is not registered for verb %s", subVerb, verb)
+	}
+	vh.subHandlers.Store(subVerb, handler)
+	return nil
+}
+
+// ReplaceCommandHandler intentionally replaces the default handler for an
+// existing verb on this registry instance. Prefer Extend/ReplaceSubHandler
+// when a sub-verb boundary exists; this is for verbs such as RUN/RUN-JSON that
+// are single-action commands.
+func (r *CommandRegistry) ReplaceCommandHandler(verb string, handler CommandHandler) error {
+	if handler == nil {
+		return fmt.Errorf("command handler cannot be nil")
+	}
+	verb = strings.ToUpper(verb)
+	if verb == "" {
+		return fmt.Errorf("command verb cannot be empty")
+	}
+
+	val, ok := r.handlers.Load(verb)
+	if !ok {
+		return fmt.Errorf("verb %s not registered", verb)
+	}
+
+	vh := val.(*verbHandler)
+	vh.mu.Lock()
+	vh.handler = handler
+	vh.mu.Unlock()
 	return nil
 }
 
@@ -98,6 +186,10 @@ func (r *CommandRegistry) Dispatch(ctx context.Context, conn *Connection, cmd *p
 
 	val, ok := r.handlers.Load(verb)
 	if !ok {
+		// Fall back to the catch-all handler (e.g. subprocess router) if registered.
+		if catchAll, hasCatchAll := r.handlers.Load("*"); hasCatchAll {
+			return catchAll.(*verbHandler).handler(ctx, conn, cmd)
+		}
 		return conn.WriteInvalidAction("", cmd.Verb, r.validVerbs())
 	}
 
@@ -110,13 +202,20 @@ func (r *CommandRegistry) Dispatch(ctx context.Context, conn *Connection, cmd *p
 			return subHandler.(CommandHandler)(ctx, conn, cmd)
 		}
 		// Reject unknown sub-verbs when the command declares valid ones
-		if len(vh.validSubs) > 0 {
-			return conn.WriteInvalidAction(cmd.Verb, cmd.SubVerb, vh.validSubs)
+		vh.mu.RLock()
+		validSubs := append([]string(nil), vh.validSubs...)
+		vh.mu.RUnlock()
+		if len(validSubs) > 0 {
+			return conn.WriteInvalidAction(cmd.Verb, cmd.SubVerb, validSubs)
 		}
 	}
 
-	// Fall back to the default handler for the verb
-	return vh.handler(ctx, conn, cmd)
+	vh.mu.RLock()
+	handler := vh.handler
+	vh.mu.RUnlock()
+
+	// Fall back to the default handler for the verb.
+	return handler(ctx, conn, cmd)
 }
 
 // HasVerb checks if a verb is registered.
@@ -129,7 +228,9 @@ func (r *CommandRegistry) HasVerb(verb string) bool {
 func (r *CommandRegistry) validVerbs() []string {
 	var verbs []string
 	r.handlers.Range(func(key, _ any) bool {
-		verbs = append(verbs, key.(string))
+		if key.(string) != "*" {
+			verbs = append(verbs, key.(string))
+		}
 		return true
 	})
 	return verbs
@@ -141,5 +242,8 @@ func (r *CommandRegistry) ValidSubVerbs(verb string) []string {
 	if !ok {
 		return nil
 	}
-	return val.(*verbHandler).validSubs
+	vh := val.(*verbHandler)
+	vh.mu.RLock()
+	defer vh.mu.RUnlock()
+	return append([]string(nil), vh.validSubs...)
 }

@@ -57,10 +57,16 @@ func (rb *RingBuffer) Write(p []byte) (n int, err error) {
 		rb.overflowed.Store(true)
 	}
 
-	pos := int(rb.writePos.Load()) % rb.capacity
+	// Take the modulo in int64 before narrowing: writePos grows unbounded, so
+	// int(writePos) can overflow to a negative value on 32-bit builds and panic
+	// the slice index.
+	pos := int(rb.writePos.Load() % int64(rb.capacity))
 
-	// Check if this write will cause overflow
-	if rb.totalWritten.Load() > 0 && int(rb.totalWritten.Load()) >= rb.capacity {
+	// Check if this write will cause overflow. Include len(p): the write that
+	// first crosses capacity (totalWritten < cap, totalWritten+len > cap)
+	// overwrites the oldest bytes, so the flag must be set for that write too —
+	// not one write late. Compare in int64 to avoid 32-bit overflow.
+	if rb.totalWritten.Load()+int64(len(p)) > int64(rb.capacity) {
 		rb.overflowed.Store(true)
 	}
 
@@ -106,7 +112,7 @@ func (rb *RingBuffer) Snapshot() (data []byte, truncated bool) {
 
 	// Buffer has wrapped - reconstruct in chronological order
 	result := make([]byte, rb.capacity)
-	pos := int(rb.writePos.Load()) % rb.capacity
+	pos := int(rb.writePos.Load() % int64(rb.capacity))
 
 	// Data from pos to end is oldest, 0 to pos is newest
 	oldestLen := rb.capacity - pos

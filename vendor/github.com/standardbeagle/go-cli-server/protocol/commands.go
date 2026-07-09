@@ -7,7 +7,6 @@ type Command struct {
 	SubVerb     string   // Optional sub-verb (STATUS, OUTPUT, START, etc.)
 	Args        []string // Positional arguments
 	Data        []byte   // Optional binary/JSON data payload
-	SessionCode string   // Session code for scoping (optional)
 }
 
 // Built-in command verbs (core hub functionality)
@@ -15,9 +14,6 @@ const (
 	VerbRun        = "RUN"
 	VerbRunJSON    = "RUN-JSON"
 	VerbProc       = "PROC"
-	VerbRelay      = "RELAY"      // Message relay between processes
-	VerbAttach     = "ATTACH"     // Attach external process
-	VerbDetach     = "DETACH"     // Detach external process
 	VerbSession    = "SESSION"    // Session management
 	VerbSubprocess = "SUBPROCESS" // Subprocess management
 	VerbScript     = "SCRIPT"     // Script registry management
@@ -35,13 +31,6 @@ const (
 	SubVerbCleanupPort = "CLEANUP-PORT"
 	SubVerbStdin       = "STDIN"  // Write to process stdin
 	SubVerbStream      = "STREAM" // Stream stdout/stderr
-)
-
-// Relay sub-verbs
-const (
-	SubVerbSend      = "SEND"      // Send to specific process
-	SubVerbBroadcast = "BROADCAST" // Send to all processes
-	SubVerbRequest   = "REQUEST"   // Request-response pattern
 )
 
 // Session sub-verbs
@@ -91,23 +80,6 @@ type SessionRegisterConfig struct {
 	ProjectPath string   `json:"project_path"`
 	Command     string   `json:"command"`
 	Args        []string `json:"args,omitempty"`
-}
-
-// AttachConfig represents configuration for ATTACH command.
-type AttachConfig struct {
-	ID            string            `json:"id"`
-	ProjectPath   string            `json:"project_path,omitempty"`
-	Labels        map[string]string `json:"labels,omitempty"`
-	Subscriptions []string          `json:"subscriptions,omitempty"` // Message types to receive
-}
-
-// RelayMessage represents a message for hub relay.
-type RelayMessage struct {
-	ID   string `json:"id,omitempty"`
-	From string `json:"from,omitempty"`
-	To   string `json:"to"`             // Target process ID or "*" for broadcast
-	Type string `json:"type"`           // Message type for routing
-	Data []byte `json:"data,omitempty"` // Raw payload
 }
 
 // SubprocessRegisterConfig represents configuration for SUBPROCESS REGISTER command.

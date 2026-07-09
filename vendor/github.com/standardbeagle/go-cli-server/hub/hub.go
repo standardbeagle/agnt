@@ -4,13 +4,13 @@ package hub
 
 import (
 	"context"
-	"errors"
 	"net"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/standardbeagle/go-cli-server/process"
+	"github.com/standardbeagle/go-cli-server/protocol"
 	"github.com/standardbeagle/go-cli-server/socket"
 )
 
@@ -28,6 +28,14 @@ type Config struct {
 	WriteTimeout time.Duration
 	// EnableProcessMgmt enables the built-in ProcessManager.
 	EnableProcessMgmt bool
+	// EnableProcessCommands registers built-in PROC/RUN/RUN-JSON handlers.
+	// Library consumers that provide their own command surface should leave this
+	// false and register handlers explicitly.
+	EnableProcessCommands bool
+	// EnableScriptCommands registers built-in SCRIPT handlers.
+	EnableScriptCommands bool
+	// EnableSessionCommands registers built-in SESSION handlers.
+	EnableSessionCommands bool
 	// ProcessConfig is configuration for the ProcessManager (if enabled).
 	ProcessConfig process.ManagerConfig
 	// Version is the hub version string for INFO responses.
@@ -37,7 +45,7 @@ type Config struct {
 // DefaultConfig returns a Config with sensible defaults.
 func DefaultConfig() Config {
 	return Config{
-		SocketName:        "mcp-hub",
+		SocketName:        socket.DefaultSocketName,
 		MaxClients:        0,
 		ReadTimeout:       0,
 		WriteTimeout:      5 * time.Second,
@@ -62,15 +70,13 @@ type Hub struct {
 	subRouter *SubprocessRouter
 
 	// Command registry
-	commands *CommandRegistry
+	commands         *CommandRegistry
+	protocolRegistry *protocol.VerbRegistry
 
 	// Client tracking (lock-free)
 	clients     sync.Map // clientID -> *Connection
 	clientCount atomic.Int64
 	nextID      atomic.Int64
-
-	// External process registry for message relay
-	externalProcs sync.Map // processID -> *ExternalProcess
 
 	// Session registry
 	sessions sync.Map // sessionCode -> *Session
@@ -92,7 +98,7 @@ type Hub struct {
 // New creates a new Hub with the given configuration.
 func New(config Config) *Hub {
 	if config.SocketName == "" {
-		config.SocketName = "mcp-hub"
+		config.SocketName = socket.DefaultSocketName
 	}
 
 	sockConfig := socket.Config{
@@ -102,13 +108,15 @@ func New(config Config) *Hub {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
+	protocolRegistry := protocol.NewVerbRegistry()
 	h := &Hub{
-		config:    config,
-		sockMgr:   socket.NewManager(sockConfig),
-		commands:  NewCommandRegistry(),
-		ctx:       ctx,
-		cancel:    cancel,
-		startTime: time.Now(),
+		config:           config,
+		sockMgr:          socket.NewManager(sockConfig),
+		protocolRegistry: protocolRegistry,
+		commands:         NewCommandRegistry(protocolRegistry),
+		ctx:              ctx,
+		cancel:           cancel,
+		startTime:        time.Now(),
 	}
 
 	// Create ProcessManager if enabled
@@ -127,11 +135,12 @@ func New(config Config) *Hub {
 
 // registerBuiltinCommands registers the core hub commands.
 func (h *Hub) registerBuiltinCommands() {
-	// PROC command (if ProcessManager enabled)
-	if h.pm != nil {
+	// PROC/RUN commands are opt-in. Consumers often provide richer handlers under
+	// these verbs; registering thin defaults here would shadow them.
+	if h.pm != nil && h.config.EnableProcessCommands {
 		_ = h.commands.Register(CommandDefinition{
 			Verb:     "PROC",
-			SubVerbs: []string{"STATUS", "OUTPUT", "STOP", "LIST", "CLEANUP-PORT", "STDIN", "STREAM"},
+			SubVerbs: []string{"STATUS", "OUTPUT", "STOP", "LIST", "CLEANUP-PORT", "STDIN"},
 			Handler:  h.handleProc,
 		})
 
@@ -146,8 +155,8 @@ func (h *Hub) registerBuiltinCommands() {
 		})
 	}
 
-	// SCRIPT command (if ProcessManager enabled; registry checked at call time)
-	if h.pm != nil {
+	// SCRIPT command is opt-in for the same reason as PROC/RUN.
+	if h.pm != nil && h.config.EnableScriptCommands {
 		_ = h.commands.Register(CommandDefinition{
 			Verb:     "SCRIPT",
 			SubVerbs: []string{"LIST", "GET", "OUTPUT", "RESTART", "STOP"},
@@ -155,30 +164,13 @@ func (h *Hub) registerBuiltinCommands() {
 		})
 	}
 
-	// RELAY command for message relay
-	_ = h.commands.Register(CommandDefinition{
-		Verb:     "RELAY",
-		SubVerbs: []string{"SEND", "BROADCAST", "REQUEST"},
-		Handler:  h.handleRelay,
-	})
-
-	// ATTACH/DETACH for external processes
-	_ = h.commands.Register(CommandDefinition{
-		Verb:    "ATTACH",
-		Handler: h.handleAttach,
-	})
-
-	_ = h.commands.Register(CommandDefinition{
-		Verb:    "DETACH",
-		Handler: h.handleDetach,
-	})
-
-	// SESSION command
-	_ = h.commands.Register(CommandDefinition{
-		Verb:     "SESSION",
-		SubVerbs: []string{"REGISTER", "UNREGISTER", "HEARTBEAT", "LIST", "GET"},
-		Handler:  h.handleSession,
-	})
+	if h.config.EnableSessionCommands {
+		_ = h.commands.Register(CommandDefinition{
+			Verb:     "SESSION",
+			SubVerbs: []string{"REGISTER", "UNREGISTER", "HEARTBEAT", "LIST", "GET"},
+			Handler:  h.handleSession,
+		})
+	}
 
 	// SUBPROCESS commands (via SubprocessRouter)
 	h.subRouter.RegisterSubprocessCommands()
@@ -187,6 +179,36 @@ func (h *Hub) registerBuiltinCommands() {
 // RegisterCommand adds a custom command handler.
 func (h *Hub) RegisterCommand(def CommandDefinition) error {
 	return h.commands.Register(def)
+}
+
+// ExtendCommand adds product-specific sub-verbs to an already registered
+// command without replacing the command's default handler or existing
+// sub-handlers. Extensions are scoped to this Hub instance.
+func (h *Hub) ExtendCommand(def CommandDefinition) error {
+	return h.commands.Extend(def)
+}
+
+// ReplaceSubHandler intentionally replaces one existing sub-verb handler on
+// this Hub instance. It does not add new sub-verbs; use ExtendCommand for that.
+func (h *Hub) ReplaceSubHandler(verb, subVerb string, handler CommandHandler) error {
+	return h.commands.ReplaceSubHandler(verb, subVerb, handler)
+}
+
+// ReplaceCommandHandler intentionally replaces the default handler for an
+// existing command on this Hub instance. Prefer ExtendCommand or
+// ReplaceSubHandler when a sub-verb boundary exists.
+func (h *Hub) ReplaceCommandHandler(verb string, handler CommandHandler) error {
+	return h.commands.ReplaceCommandHandler(verb, handler)
+}
+
+// HasCommand reports whether this Hub instance has a handler for verb.
+func (h *Hub) HasCommand(verb string) bool {
+	return h.commands.HasVerb(verb)
+}
+
+// ValidSubVerbs returns this Hub instance's registered sub-verbs for verb.
+func (h *Hub) ValidSubVerbs(verb string) []string {
+	return h.commands.ValidSubVerbs(verb)
 }
 
 // ProcessManager returns the ProcessManager, or nil if not enabled.
@@ -228,6 +250,13 @@ func (h *Hub) Stop(ctx context.Context) error {
 		return true
 	})
 
+	// Stop all subprocesses (stdio children + health-check goroutines) before the
+	// process manager. Nothing else calls StopAll, so without this hub shutdown
+	// orphans every stdio child and leaks its health loop.
+	if h.subRouter != nil {
+		_ = h.subRouter.StopAll(ctx)
+	}
+
 	// Shutdown ProcessManager if enabled
 	if h.pm != nil {
 		_ = h.pm.Shutdown(ctx)
@@ -268,7 +297,15 @@ func (h *Hub) acceptLoop() {
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 				continue
 			}
-			// Fatal error or listener closed
+			// Fatal error (e.g. fd exhaustion) with no shutdown in progress: the
+			// accept loop can no longer serve, and simply returning would leave a
+			// zombie hub still holding the socket path (blocking restarts, and
+			// squattable). Drive a full shutdown so the socket/pid files are
+			// released. Stop is idempotent and waits on this goroutine's wg slot,
+			// which we release by returning immediately.
+			if !h.shutdown.Load() {
+				go h.Stop(context.Background())
+			}
 			return
 		}
 
@@ -335,8 +372,8 @@ func (h *Hub) RegisterSession(code, projectPath string) {
 		Code:        code,
 		ProjectPath: projectPath,
 		StartedAt:   time.Now(),
-		LastSeen:    time.Now(),
 	}
+	session.SetLastSeen(time.Now())
 	h.sessions.Store(code, session)
 }
 
@@ -362,65 +399,15 @@ type Session struct {
 	Command     string
 	Args        []string
 	StartedAt   time.Time
-	LastSeen    time.Time
+
+	// lastSeen holds the heartbeat time as UnixNano. It is written by heartbeats
+	// and read concurrently by SESSION LIST/GET, so it must be accessed atomically
+	// rather than as a plain time.Time field.
+	lastSeen atomic.Int64
 }
 
-// ExternalProcess represents an external process connected for message relay.
-type ExternalProcess struct {
-	ID          string
-	ProjectPath string
-	Connection  net.Conn
-	Labels      map[string]string
-	Inbox       chan *Message
-}
+// SetLastSeen atomically records the session's last-seen time.
+func (s *Session) SetLastSeen(t time.Time) { s.lastSeen.Store(t.UnixNano()) }
 
-// Message represents a message for relay between processes.
-type Message struct {
-	ID        string    `json:"id,omitempty"`
-	From      string    `json:"from"`
-	To        string    `json:"to"`
-	Type      string    `json:"type"`
-	Data      []byte    `json:"data,omitempty"`
-	Timestamp time.Time `json:"timestamp"`
-}
-
-// RegisterExternalProcess registers an external process for message relay.
-func (h *Hub) RegisterExternalProcess(proc *ExternalProcess) error {
-	if proc.ID == "" {
-		return errors.New("process ID is required")
-	}
-
-	_, loaded := h.externalProcs.LoadOrStore(proc.ID, proc)
-	if loaded {
-		return errors.New("process already registered")
-	}
-
-	return nil
-}
-
-// UnregisterExternalProcess removes an external process.
-func (h *Hub) UnregisterExternalProcess(id string) {
-	h.externalProcs.Delete(id)
-}
-
-// GetExternalProcess retrieves an external process by ID.
-func (h *Hub) GetExternalProcess(id string) (*ExternalProcess, bool) {
-	val, ok := h.externalProcs.Load(id)
-	if !ok {
-		return nil, false
-	}
-	return val.(*ExternalProcess), true
-}
-
-// BroadcastToExternal sends a message to all external processes.
-func (h *Hub) BroadcastToExternal(msg *Message) {
-	h.externalProcs.Range(func(key, value any) bool {
-		proc := value.(*ExternalProcess)
-		select {
-		case proc.Inbox <- msg:
-		default:
-			// Inbox full, skip
-		}
-		return true
-	})
-}
+// LastSeen atomically returns the session's last-seen time.
+func (s *Session) LastSeen() time.Time { return time.Unix(0, s.lastSeen.Load()) }

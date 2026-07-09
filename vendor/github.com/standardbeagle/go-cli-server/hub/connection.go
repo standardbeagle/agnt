@@ -32,7 +32,7 @@ func newConnection(id int64, conn net.Conn, hub *Hub) *Connection {
 		id:     id,
 		conn:   conn,
 		hub:    hub,
-		parser: protocol.NewParser(conn),
+		parser: protocol.NewParserWithRegistry(conn, hub.protocolRegistry),
 		writer: protocol.NewWriter(conn),
 	}
 }
@@ -65,23 +65,28 @@ func (c *Connection) Handle(ctx context.Context) {
 			if err == io.EOF || socket.IsClosedError(err) {
 				return
 			}
-			if isTimeoutError(err) {
-				continue // Timeout is OK, keep waiting
-			}
-			if socket.IsClosedError(err) {
+			// A partial frame (including a mid-frame deadline timeout) desyncs the
+			// stream irrecoverably — close instead of continuing or resyncing.
+			if protocol.IsPartialFrame(err) || err == protocol.ErrFrameTooLarge {
 				return
 			}
-			// Try to send error response
-			_ = c.WriteErr(protocol.ErrInvalidCommand, err.Error())
-			// Try to resync
-			if syncErr := c.parser.Resync(); syncErr != nil {
+			if isTimeoutError(err) {
+				continue // Clean timeout between frames is OK, keep waiting
+			}
+			// Non-fatal parse error (e.g. unknown verb): readUntilTerminator
+			// already consumed the whole offending frame up to its ";;", so the
+			// stream is still aligned. Report and keep reading — do NOT Resync,
+			// which would swallow the client's next legitimate command.
+			if err := c.WriteErr(protocol.ErrInvalidCommand, err.Error()); err != nil {
 				return
 			}
 			continue
 		}
 
 		// Dispatch command
-		_ = c.handleCommand(ctx, cmd) // Error was already sent to client
+		if err := c.handleCommand(ctx, cmd); err != nil {
+			return
+		}
 	}
 }
 
@@ -122,6 +127,14 @@ func (c *Connection) handleInfo() error {
 }
 
 // handleShutdown initiates hub shutdown.
+//
+// SHUTDOWN is intentionally unauthenticated. The hub runs in a single-user trust
+// domain: the socket lives in a per-user private directory (0700, uid-owned — see
+// socket.secureSocketDir) or XDG_RUNTIME_DIR, so only the owning user can connect.
+// Any client that can reach the socket is already the user who owns the hub and
+// its managed processes, so there is no privilege boundary to cross. If the hub is
+// ever exposed beyond a single user (e.g. a shared TCP transport), SHUTDOWN — and
+// every other command — would need an authentication layer added at the transport.
 func (c *Connection) handleShutdown() error {
 	_ = c.WriteOK("shutting down")
 	go func() {

@@ -16,3 +16,14 @@ func setSysProcAttr(cmd *exec.Cmd) {
 		// The daemon still works without being a session leader
 	}
 }
+
+// lockOwnerAlive reports whether the startup-lock owner PID is still a live
+// process. Signal 0 probes existence without delivering anything. EPERM means the
+// PID exists but is owned by another user — still alive, so the lock is held.
+func lockOwnerAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	err := syscall.Kill(pid, 0)
+	return err == nil || err == syscall.EPERM
+}

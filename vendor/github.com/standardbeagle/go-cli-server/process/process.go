@@ -120,6 +120,11 @@ type ManagedProcess struct {
 	// the process tree was still intact. Written before stop/force-kill so
 	// setsid-escaped grandchildren survive the parent's death for cleanup.
 	descendants atomic.Pointer[[]int]
+
+	// timeout is the configured run timeout (0 = none). Retained from the
+	// originating ProcessConfig so Restart can rebuild the process with the
+	// same timeout instead of silently dropping it.
+	timeout time.Duration
 }
 
 // OutputCallback is called for each line of process output.
@@ -167,6 +172,7 @@ func NewManagedProcess(cfg ProcessConfig) *ManagedProcess {
 		Args:           cfg.Args,
 		Env:            cfg.Env,
 		Labels:         cfg.Labels,
+		timeout:        cfg.Timeout,
 		stdout:         NewRingBuffer(bufSize),
 		stderr:         NewRingBuffer(bufSize),
 		stdinEnabled:   cfg.EnableStdin,
