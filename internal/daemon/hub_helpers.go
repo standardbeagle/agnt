@@ -315,6 +315,10 @@ func (d *Daemon) hubHandleDetect(ctx context.Context, conn *hubpkg.Connection, c
 // drains the buffer — cascade entries are dropped, real errors emitted.
 // See internal/daemon/hold_buffer.go and the OutageHold config block.
 func (d *Daemon) wireProxyLogger(server *proxy.ProxyServer) {
+	// Every daemon proxy-creation path funnels through here, so this is the
+	// single chokepoint applying project-level .agnt.kdl settings that live
+	// outside the per-proxy block (currently: auth-breakout).
+	d.applyAuthBreakout(server)
 	if d.eventHub == nil {
 		return
 	}
@@ -342,6 +346,29 @@ func (d *Daemon) wireProxyLogger(server *proxy.ProxyServer) {
 			// markers we never want to re-emit.
 		}
 	})
+}
+
+// applyAuthBreakout installs the project's auth-breakout rules (top-level
+// .agnt.kdl block) on a freshly created proxy. A load/parse failure is
+// non-fatal here — the autostart path already surfaces config parse errors
+// loudly — so the proxy just runs without breakout.
+func (d *Daemon) applyAuthBreakout(server *proxy.ProxyServer) {
+	if server == nil || server.Path == "" {
+		return
+	}
+	cfg, err := config.LoadAgntConfig(server.Path)
+	if err != nil || cfg == nil {
+		return
+	}
+	ab := cfg.AuthBreakout
+	if !ab.IsEnabled() {
+		return
+	}
+	server.SetAuthBreakout(&proxy.AuthBreakout{
+		Mode:     ab.GetMode(),
+		Patterns: ab.GetPatterns(),
+	})
+	debug.Log("daemon", "auth breakout enabled for proxy %s (mode=%s, %d patterns)", server.ID, ab.GetMode(), len(ab.GetPatterns()))
 }
 
 // feedTransportSignals inspects the entry for transport-error or
