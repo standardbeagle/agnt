@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
@@ -633,7 +634,27 @@ func TestActivityMonitorDoneMessageDisabled(t *testing.T) {
 	}
 }
 
-// TestActivityMonitorRapidAnimationDebounce tests that rapid animations are properly debounced.
+// TestActivityMonitorRapidAnimationDebounce asserts the invariant "a burst of
+// same-line (\r) updates collapses into a single preview callback carrying
+// the final frame, not one callback per frame."
+//
+// The original version paced frames with time.Sleep(10*time.Millisecond)
+// between writes (a ~80ms burst) against a 100ms AnimationDebounce — under
+// CPU saturation the scheduler can stretch any one of those sleeps past the
+// debounce window, so scheduleAnimationFlush's goroutine (correctly, by its
+// own logic: "quiet for >= animationDebounce means flush") fires mid-burst
+// and hands back an intermediate frame, then a second flush starts for the
+// remainder. That is not a bug in scheduleAnimationFlush; time.Since()
+// measures real elapsed time accurately regardless of goroutine scheduling
+// delay, so a stretched sleep really did leave the line quiet that long. The
+// bug was in the test's assumption that a Sleep-paced burst reliably stays
+// under the debounce window on a loaded host.
+//
+// Fix: remove the inter-frame sleep so all frames are written back-to-back
+// (a burst lasting microseconds, not tens of milliseconds), giving a wide
+// safety margin under AnimationDebounce even under heavy scheduling jitter.
+// Wait for the callback via require.Eventually (polls for the actual
+// invariant) instead of a fixed sleep after the burst.
 func TestActivityMonitorRapidAnimationDebounce(t *testing.T) {
 	var buf bytes.Buffer
 	var callCount atomic.Int32
@@ -659,32 +680,31 @@ func TestActivityMonitorRapidAnimationDebounce(t *testing.T) {
 	am := NewActivityMonitor(&buf, cfg)
 	defer am.Stop()
 
-	// Simulate spinner - many rapid updates
+	// Simulate spinner - many rapid updates, written back-to-back so the
+	// whole burst finishes in microseconds, far under AnimationDebounce
+	// regardless of host scheduling pressure.
 	frames := []string{"|", "/", "-", "\\", "|", "/", "-", "\\"}
 	for _, frame := range frames {
 		am.Write([]byte("\r" + frame + " Loading"))
-		time.Sleep(10 * time.Millisecond)
 	}
 
-	// Wait for animation debounce
-	time.Sleep(150 * time.Millisecond)
+	// Wait for the debounced flush to actually fire, rather than sleeping a
+	// fixed duration and hoping it landed.
+	require.Eventually(t, func() bool { return callCount.Load() >= 1 }, 5*time.Second, 5*time.Millisecond,
+		"debounced preview callback should fire once the animation goes quiet")
 
-	// Should not have called callback for every frame
+	// Give any (unexpected) second flush a chance to land before asserting
+	// the count is stable, so a real double-flush isn't masked by reading
+	// too early.
+	time.Sleep(2 * cfg.AnimationDebounce)
+
 	calls := callCount.Load()
-	if calls >= int32(len(frames)) {
-		t.Errorf("callback called %d times for %d frames, expected debouncing", calls, len(frames))
-	}
+	assert.Equal(t, int32(1), calls, "a back-to-back burst should collapse into exactly one preview callback")
 
-	// Should have the final state
 	mu.Lock()
 	defer mu.Unlock()
-	if len(lastLines) != 1 {
-		t.Errorf("expected 1 line, got %d: %v", len(lastLines), lastLines)
-		return
-	}
-	if lastLines[0] != "\\ Loading" {
-		t.Errorf("expected final frame %q, got %q", "\\ Loading", lastLines[0])
-	}
+	require.Len(t, lastLines, 1)
+	assert.Equal(t, "\\ Loading", lastLines[0], "callback should carry the final frame")
 }
 
 // TestActivityMonitorOnOutputLine verifies that the OnOutputLine callback is

@@ -154,31 +154,51 @@ func TestAlertScannerDeduplication(t *testing.T) {
 	mu.Unlock()
 }
 
+// TestAlertScannerDedupeExpiry asserts the invariant "once DedupeWindow has
+// elapsed since the last sighting of a fingerprint, the next occurrence is
+// treated as new, not a duplicate." Wall-clock sleeps racing a short
+// DedupeWindow against host scheduling jitter under load previously made
+// this flaky (batch flush can be delayed arbitrarily under CPU saturation,
+// so a fixed sleep is not a reliable proxy for "the dedupe window elapsed").
+// A fake clock makes the dedupe-window boundary deterministic; polling via
+// require.Eventually (instead of a fixed sleep) makes waiting for batch
+// delivery robust to scheduler delay.
 func TestAlertScannerDedupeExpiry(t *testing.T) {
 	var received []*AlertBatch
 	var mu sync.Mutex
 
+	fake := newFakeClock(time.Now())
+
 	scanner := NewAlertScanner(AlertScannerConfig{
-		BatchWindow:  50 * time.Millisecond,
-		DedupeWindow: 100 * time.Millisecond, // Very short for testing
+		BatchWindow:  10 * time.Millisecond,
+		DedupeWindow: 100 * time.Millisecond,
 		OnAlert: func(batch *AlertBatch) {
 			mu.Lock()
 			received = append(received, batch)
 			mu.Unlock()
 		},
 	})
+	scanner.clockNow = fake.Now
 	defer scanner.Stop()
 
-	scanner.ProcessLine("panic: runtime error", "dev")
-	time.Sleep(200 * time.Millisecond)
+	batchCount := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(received)
+	}
 
-	// After dedupe window expires, same line should match again
 	scanner.ProcessLine("panic: runtime error", "dev")
-	time.Sleep(200 * time.Millisecond)
+	require.Eventually(t, func() bool { return batchCount() == 1 }, 5*time.Second, 5*time.Millisecond,
+		"first batch should be delivered")
 
-	mu.Lock()
-	defer mu.Unlock()
-	assert.Len(t, received, 2, "should receive two batches after dedupe expiry")
+	// Advance the fake clock past DedupeWindow so the dedupe check
+	// (clockNow().Sub(lastSeen) < dedupeWindow) deterministically sees
+	// expiry, independent of real elapsed wall time.
+	fake.Advance(101 * time.Millisecond)
+
+	scanner.ProcessLine("panic: runtime error", "dev")
+	require.Eventually(t, func() bool { return batchCount() == 2 }, 5*time.Second, 5*time.Millisecond,
+		"second batch should be delivered after dedupe window expiry")
 }
 
 func TestAlertScannerDisabledPattern(t *testing.T) {
@@ -1052,4 +1072,28 @@ func TestG1_RED_UnclassifiedStderrSurfacedAsUnparsed(t *testing.T) {
 	}
 	require.Greater(t, total, 0,
 		"RED: an unclassified error-looking stderr line produced no alert — there is no unparsed catch-all, so real errors are silently dropped")
+}
+
+// fakeClock is a manually-advanced clock for deterministically exercising
+// time-window boundaries (e.g. AlertScanner.dedupeWindow) without depending
+// on real elapsed wall time, which is unreliable under host scheduling load.
+type fakeClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func newFakeClock(start time.Time) *fakeClock {
+	return &fakeClock{now: start}
+}
+
+func (c *fakeClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *fakeClock) Advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
 }
