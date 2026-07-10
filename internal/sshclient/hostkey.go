@@ -1,7 +1,6 @@
 package sshclient
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -36,10 +35,33 @@ func StdioPrompter() Prompter {
 // insensitive). Any other input, including EOF, is treated as "no".
 func (p Prompter) confirmYesNo(prompt string) bool {
 	fmt.Fprint(p.Out, prompt)
-	reader := bufio.NewReader(p.In)
-	line, _ := reader.ReadString('\n')
+	line := readLine(p.In)
 	line = strings.ToLower(strings.TrimSpace(line))
 	return line == "y" || line == "yes"
+}
+
+// readLine reads a single '\n'-terminated line from r one byte at a time,
+// so it never over-consumes past the newline. Callers (host-key prompt,
+// passphrase/keyboard-interactive prompts in auth.go) may be invoked more
+// than once against the same underlying io.Reader within one process
+// (e.g. one prompt per ProxyJump hop), so a buffered reader that reads
+// ahead past the newline would silently swallow the next prompt's answer.
+func readLine(r io.Reader) string {
+	var b strings.Builder
+	buf := make([]byte, 1)
+	for {
+		n, err := r.Read(buf)
+		if n > 0 {
+			if buf[0] == '\n' {
+				break
+			}
+			b.WriteByte(buf[0])
+		}
+		if err != nil {
+			break
+		}
+	}
+	return b.String()
 }
 
 // HostKeyCallback builds an ssh.HostKeyCallback that verifies against the
