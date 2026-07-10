@@ -125,6 +125,11 @@ type ProxyServer struct {
 	// self-signed or otherwise invalid cert and retries without verification.
 	// New WebSocket clients receive a warning toast when this flag is set.
 	tlsCertSkipped atomic.Bool
+
+	// authBreakout holds the OAuth-breakout rules for this proxy (nil = off).
+	// Atomic pointer: the daemon sets it post-create from the project's
+	// .agnt.kdl (wireProxyLogger path) while requests are already flowing.
+	authBreakout atomic.Pointer[AuthBreakout]
 }
 
 // ProxyConfig holds configuration for creating a proxy server.
@@ -154,6 +159,22 @@ type ProxyConfig struct {
 	// marking the backend unhealthy and emitting a diagnostic event.
 	// Default: 3.
 	HealthFailThreshold int
+
+	// AuthBreakout enables OAuth-flow breakout from the content iframe
+	// (nil = off). Populated from the project's .agnt.kdl auth-breakout
+	// block; may also be set post-create via SetAuthBreakout.
+	AuthBreakout *AuthBreakout
+}
+
+// SetAuthBreakout installs (or clears, with nil) the OAuth-breakout rules.
+// Safe to call while the proxy is serving.
+func (ps *ProxyServer) SetAuthBreakout(ab *AuthBreakout) {
+	ps.authBreakout.Store(ab)
+}
+
+// AuthBreakoutRules returns the active OAuth-breakout rules, or nil.
+func (ps *ProxyServer) AuthBreakoutRules() *AuthBreakout {
+	return ps.authBreakout.Load()
 }
 
 // isExternalBindAddress returns true if the address would expose the proxy
@@ -265,6 +286,8 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 	// channel carries control frames (frame_active retargets exec, etc.), so a
 	// foreign page must not be able to open it and hijack the exec target.
 	ps.wsUpgrader = websocket.Upgrader{CheckOrigin: ps.checkWSOrigin}
+
+	ps.authBreakout.Store(config.AuthBreakout)
 
 	// Push chaos state to connected browser clients whenever any control
 	// surface (MCP, hub, browser panel) mutates the engine.

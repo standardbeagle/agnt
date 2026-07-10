@@ -358,13 +358,16 @@ func contentFrameSrc(reqURI, frameID string) string {
 // proxy UI runtime (indicator/panels) therefore lives in the shell, isolated
 // from page content. Role gating of the runtime lands in Slice 3; this slice
 // only establishes the wrap + the browser-side role/registry primitive.
-func BuildShellDocument(proxyID, frameID, contentSrc string) []byte {
+// authCfgJS is the (possibly empty) inline JS publishing the auth-breakout
+// config (AuthBreakout.clientConfigJS); it precedes the bundle so
+// scripts/authbreakout.js reads it at eval time.
+func BuildShellDocument(proxyID, frameID, contentSrc, authCfgJS string) []byte {
 	// frameID is server-minted (shellFrameID of a path hash); validate defensively
 	// so a malformed value can never break out of the inline <script> below.
 	frameID = sanitizeFrameID(frameID)
 	var b strings.Builder
 	b.WriteString("<!DOCTYPE html><html><head><meta charset=\"utf-8\">")
-	b.WriteString(fmt.Sprintf("<script>window.__devtool_proxy_id=%s;window.__devtool_role=\"chrome\";window.__devtool_frame_id=%q;</script>", jsStringLiteral(proxyID), frameID))
+	b.WriteString(fmt.Sprintf("<script>window.__devtool_proxy_id=%s;window.__devtool_role=\"chrome\";window.__devtool_frame_id=%q;%s</script>", jsStringLiteral(proxyID), frameID, authCfgJS))
 	b.WriteString(fmt.Sprintf("<script src=%q></script>", instrumentationAssetPathForRole(scripts.RoleChrome)))
 	b.WriteString("<style>html,body{margin:0;padding:0;height:100%;width:100%;overflow:hidden}#" + contentFrameID + "{position:fixed;inset:0;border:0;width:100%;height:100%;display:block}</style>")
 	b.WriteString("</head><body>")
@@ -378,13 +381,15 @@ func BuildShellDocument(proxyID, frameID, contentSrc string) []byte {
 // response. Mirrors InjectInstrumentationAndMeta but additionally declares
 // window.__devtool_role="content" + the frame id so scripts/frames.js resolves
 // the frame's role without re-deriving it from the URL.
-func InjectContentRuntime(body []byte, proxyID, frameID string) []byte {
+// authCfgJS mirrors BuildShellDocument: the content frame needs the config
+// too, for client-side navigation interception (Navigation API / anchors).
+func InjectContentRuntime(body []byte, proxyID, frameID, authCfgJS string) []byte {
 	// Defence in depth: frameID originates from an attacker-controllable query
 	// marker; only a well-formed server-minted id is echoed into the inline
 	// <script>. A malformed one collapses to "" (no forced frame id).
 	frameID = sanitizeFrameID(frameID)
-	tag := []byte(fmt.Sprintf(`<script>window.__devtool_proxy_id=%s;window.__devtool_role="content";window.__devtool_frame_id=%q;</script><script src=%q></script>`,
-		jsStringLiteral(proxyID), frameID, instrumentationAssetPathForRole(scripts.RoleContent)))
+	tag := []byte(fmt.Sprintf(`<script>window.__devtool_proxy_id=%s;window.__devtool_role="content";window.__devtool_frame_id=%q;%s</script><script src=%q></script>`,
+		jsStringLiteral(proxyID), frameID, authCfgJS, instrumentationAssetPathForRole(scripts.RoleContent)))
 	if at, ok := instrumentationInsertOffset(body); ok {
 		return spliceInto(body, at, tag)
 	}

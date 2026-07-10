@@ -15,6 +15,9 @@ var (
 	//go:embed frames.js
 	framesJS string
 
+	//go:embed authbreakout.js
+	authBreakoutJS string
+
 	//go:embed ui-tokens.js
 	uiTokensJS string
 
@@ -219,6 +222,12 @@ var moduleOrder = []moduleEntry{
 	// window.__devtool_frame_role. It has no dependencies (creates its own
 	// window.__devtool namespace defensively).
 	{"frames", nil},
+	// authbreakout reads window.__devtool_frame_role (set by frames) at eval
+	// time and, in a popup return, must run before anything else touches the
+	// window (it relays the callback URL to the opener and closes). Shared
+	// role: shell exposes __devtool_auth, content intercepts navigations,
+	// passive frames no-op.
+	{"authbreakout", []string{"frames"}},
 	{"core", nil},
 	// ui-tokens.js publishes window.__devtoolTokens (z-index scale, light/dark
 	// color palettes, motion prefs) and the __devtoolOverlayStack Escape
@@ -387,6 +396,7 @@ func includeInRole(name string, role Role) bool {
 var moduleScript = map[string]string{
 	"core":               coreJS,
 	"frames":             framesJS,
+	"authbreakout":       authBreakoutJS,
 	"ui-tokens":          uiTokensJS,
 	"shadow-root":        shadowRootJS,
 	"framework-detector": frameworkDetectorJS,
