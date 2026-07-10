@@ -23,21 +23,46 @@
   var cfg = window.__devtool_auth_config || null;
   var role = window.__devtool_frame_role;
   var POPUP_NAME = '__devtool_auth';
+  var POPUP_KEY = '__devtool_auth_popup';
   var FRAME_PARAM = '__devtool_frame';
+
+  // Marks the current window as an auth popup. Two independent signals,
+  // because neither is universally durable across the proxy→IdP→proxy round
+  // trip the popup makes:
+  //   window.name — survives in Chrome (verified by the e2e round-trip test),
+  //     but engines with anti-tracking name-clearing (Safari/ITP) drop it on a
+  //     cross-origin navigation.
+  //   sessionStorage — window.open clones the opener's sessionStorage into the
+  //     new browsing context for the opener's origin, so the marker is there
+  //     when the popup returns to that origin. Blocked when storage is denied.
+  // Either one identifies the window; both are cleared once the relay fires.
+  function markAuthPopup(w) {
+    try { w.sessionStorage.setItem(POPUP_KEY, '1'); } catch (e) { /* storage blocked */ }
+  }
+  function clearAuthPopupMark() {
+    try { window.sessionStorage.removeItem(POPUP_KEY); } catch (e) { /* storage blocked */ }
+  }
+  function hasAuthPopupMark() {
+    try { return window.sessionStorage.getItem(POPUP_KEY) === '1'; } catch (e) { return false; }
+  }
 
   // ---- Popup return relay ----
   // Runs in the popup's top-level document after the IdP redirected back to
   // the app origin (which the proxy wrapped again — this code executes in
-  // that shell, or in the raw page when unwrapped). window.name survives the
-  // cross-origin round trip, marking the window as ours.
+  // that shell, or in the raw page when unwrapped). The opener check is what
+  // keeps the shell that *opened* the popup from matching its own marker: a
+  // shell has no opener.
   function isAuthPopupReturn() {
     try {
-      return window.top === window.self &&
-        window.name === POPUP_NAME &&
-        !!window.opener && !!window.opener.__devtool_auth;
+      if (window.top !== window.self || !window.opener || window.opener === window) { return false; }
+      if (!window.opener.__devtool_auth) { return false; }
+      return hasAuthPopupMark() || window.name === POPUP_NAME;
     } catch (e) { return false; } // opener cross-origin/gone
   }
   if (isAuthPopupReturn()) {
+    // Clear first: if complete() throws we still must not leave a live marker
+    // behind, or this window would relay again on its next same-origin load.
+    clearAuthPopupMark();
     try {
       window.opener.__devtool_auth.complete(window.location.href);
       document.title = 'Authentication complete';
@@ -72,9 +97,14 @@
         var mode = (cfg && cfg.mode) || 'popup';
         if (mode === 'popup') {
           try {
+            // The popup inherits a copy of this window's sessionStorage at
+            // open time, so the marker must be written before window.open and
+            // removed after — the shell itself must not stay marked.
+            markAuthPopup(window);
             var w = window.open(url, POPUP_NAME, 'popup,width=600,height=760');
+            clearAuthPopupMark();
             if (w) { try { w.focus(); } catch (e) { /* focus best-effort */ } return { ok: true, mode: 'popup' }; }
-          } catch (e) { /* window.open threw — fall through to top */ }
+          } catch (e) { clearAuthPopupMark(); /* window.open threw — fall through to top */ }
         }
         window.location.href = url;
         return { ok: true, mode: 'top' };
