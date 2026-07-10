@@ -58,7 +58,16 @@ func TestCreate_SpawnsAndCapturesOutput(t *testing.T) {
 		t.Fatalf("expected positive SessionPGID, got %d", s.SessionPGID)
 	}
 
-	deadline := time.After(3 * time.Second)
+	// This is a liveness bound only ("the process eventually produces
+	// output"), not a latency assertion, but 3s was still tight enough to
+	// flake under `go test ./...` full-suite CPU saturation: spawning a
+	// real PTY child and having its output reach the scrollback both
+	// involve OS scheduling that a saturated host can stretch well past a
+	// few seconds even though nothing is actually stuck. Widen to a
+	// generous 15s (matches the liveness-poll deadlines used elsewhere in
+	// this codebase, e.g. the chromedp e2e waits in internal/proxy) so the
+	// test still fails fast on a genuine hang, without racing the scheduler.
+	deadline := time.After(15 * time.Second)
 	for {
 		snap, _ := s.scrollback.Snapshot()
 		if strings.Contains(string(snap), "hello-sessionhost") {
