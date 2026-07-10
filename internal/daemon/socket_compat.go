@@ -40,9 +40,17 @@ func DefaultSocketConfig() SocketConfig {
 
 // DefaultSocketPath returns the default socket path for agnt.
 //
-// AGNT_SOCKET, when set, overrides everything — it lets a caller pin the daemon
-// to an isolated socket (tests use this to avoid touching the host's real
-// daemon, and it's a useful escape hatch for running a second daemon).
+// Override precedence (first match wins):
+//  1. AGNT_SOCKET — the original override. Pins the daemon to an isolated
+//     socket (tests use this to avoid touching the host's real daemon, and
+//     it's a useful escape hatch for running a second daemon).
+//  2. AGNT_DAEMON_SOCKET — a second, equally-valid override recognized by
+//     every CLI socket-resolution path (agnt monitor, agnt doctor, the MCP
+//     daemon client). It exists so `agnt ssh` can point local tooling at a
+//     forwarded remote daemon socket (see internal/sshclient/forward.go)
+//     without disturbing AGNT_SOCKET, which some scripts already set for
+//     other reasons. If both are set, AGNT_SOCKET wins, since it is the
+//     older and more specific name.
 //
 // Otherwise: deliberately ignores XDG_RUNTIME_DIR: agnt daemon is a long-running
 // background service that outlives login sessions. XDG_RUNTIME_DIR is
@@ -60,6 +68,9 @@ func DefaultSocketConfig() SocketConfig {
 // matches go-cli-server's own non-XDG default form.
 func DefaultSocketPath() string {
 	if p := os.Getenv("AGNT_SOCKET"); p != "" {
+		return p
+	}
+	if p := os.Getenv("AGNT_DAEMON_SOCKET"); p != "" {
 		return p
 	}
 	return fmt.Sprintf("/tmp/%s-%d/%s.sock", SocketName, os.Getuid(), SocketName)

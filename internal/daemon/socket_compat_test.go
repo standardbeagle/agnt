@@ -27,6 +27,22 @@ func TestDefaultSocketPath_SocketCompat(t *testing.T) {
 	t.Logf("Default socket path: %s", path)
 }
 
+func TestDefaultSocketPath_AGNTDaemonSocketOverride(t *testing.T) {
+	t.Setenv("AGNT_SOCKET", "")
+	t.Setenv("AGNT_DAEMON_SOCKET", "/tmp/agnt-daemon-socket-override-test.sock")
+	if got := DefaultSocketPath(); got != "/tmp/agnt-daemon-socket-override-test.sock" {
+		t.Errorf("DefaultSocketPath() = %q, want AGNT_DAEMON_SOCKET value", got)
+	}
+}
+
+func TestDefaultSocketPath_AGNTSocketWinsOverAGNTDaemonSocket(t *testing.T) {
+	t.Setenv("AGNT_SOCKET", "/tmp/agnt-socket-wins-test.sock")
+	t.Setenv("AGNT_DAEMON_SOCKET", "/tmp/agnt-daemon-socket-loses-test.sock")
+	if got := DefaultSocketPath(); got != "/tmp/agnt-socket-wins-test.sock" {
+		t.Errorf("DefaultSocketPath() = %q, want AGNT_SOCKET to win when both are set", got)
+	}
+}
+
 func TestNewSocketManager(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
