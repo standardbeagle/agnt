@@ -229,6 +229,19 @@ func TestE2E_AuthBreakout_PopupRoundTrip(t *testing.T) {
 	// so the URL cannot distinguish the two — only the realm can.
 	require.NoError(t, cdp.Run(ctx, cdp.Evaluate(`window.__shell_sentinel=1`, nil)))
 
+	// Wait for the content iframe's own document to have loaded the login
+	// link before clicking it. WaitVisible above only proves the *iframe
+	// element* exists in the shell's DOM, not that the iframe's nested
+	// document has finished loading — under CPU saturation that nested
+	// load can lag, and clicking too early throws
+	// "Cannot read properties of null (reading 'click')" (observed in the
+	// documented full-suite flake), aborting the whole Evaluate call rather
+	// than just failing the click.
+	waitContentCondition(ctx, t,
+		`(function(){var f=document.getElementById('__devtool_content_frame');`+
+			`try{return !!(f&&f.contentWindow.document.getElementById('login'));}catch(e){return false;}})()`,
+		"content frame #login link present", func(v string) bool { return v == "true" })
+
 	// Click the cross-origin login link *inside* the iframe. The content-frame
 	// interceptor should cancel the in-frame navigation and hand it to the shell.
 	require.NoError(t, cdp.Run(ctx, cdp.Evaluate(
