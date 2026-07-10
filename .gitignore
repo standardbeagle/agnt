@@ -12,6 +12,11 @@
 # Test binary, built with `go test -c`
 *.test
 
+# Release build outputs (produced by scripts/release.sh)
+/release/agnt-*
+# Stray test binary
+/bin/inputtest
+
 # Output of the go coverage tool
 *.out
 coverage.html
