@@ -87,3 +87,50 @@ alerts {
 | `ping.mcp-notifications` | bool | `true` | Pinger → MCP notifications |
 | `ping.pty-injection` | bool | `false` | Pinger → PTY stdin |
 | `ping.channel` | bool | `true` | Pinger → channel push |
+
+## Auth Breakout (internal/config/agnt.go, auth-breakout in .agnt.kdl; runtime: internal/proxy/authbreakout.go)
+
+The proxy's always-wrap model renders every page inside a content `<iframe>`.
+Identity providers (Microsoft Entra/MSAL, Figma OAuth, Google, GitHub, Okta,
+Auth0) refuse to render framed, so OAuth flows dead-end. The top-level
+`auth-breakout` block hijacks those flows: a content-frame navigation (or
+server 3xx) to a matching URL is carried out in a top-level window, and after
+the IdP redirects back to the app origin the callback URL — hash fragment and
+query intact — is replayed into the content iframe. Same tab, so
+sessionStorage auth state (MSAL request nonce etc.) survives and
+`handleRedirectPromise`-style callback handling works unchanged.
+
+```kdl
+auth-breakout {
+    enabled true          // optional; declaring the block is the opt-in
+    mode "popup"          // "popup" (default) or "top"
+    patterns "login.microsoftonline.com" "figma.com/oauth"
+}
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `enabled` | bool | `true` when block present | `enabled false` keeps the block but turns it off |
+| `mode` | string | `"popup"` | `popup`: auth runs in a named popup, app iframe stays alive (falls back to `top` when the popup is blocked). `top`: whole shell navigates to the IdP; the return redirect re-enters the proxy and is wrapped again |
+| `patterns` | strings | common IdP set (`DefaultAuthBreakoutPatterns`) | Case-insensitive wildcard fragments matched against the full navigation URL. `*` matches any run; plain text matches as substring. Only navigations leaving the proxy origin are candidates |
+
+Scope: project-wide — applies to every proxy of the project, on every daemon
+creation path (autostart, URL detection, fallback port, explicit `proxy
+start`, restart, restore). Interception is two-sided:
+
+- **Server**: a content-frame request answered with a 3xx whose `Location`
+  matches a pattern is replaced with a stub page that hands the URL to the
+  chrome shell (`internal/proxy/rewrite.go` `interceptAuthRedirect`).
+- **Browser**: `scripts/authbreakout.js` intercepts client-side navigations
+  (Navigation API on Chromium, anchor-click capture elsewhere) in the content
+  frame and routes them through `parent.__devtool_auth.breakout(url)`.
+  `window.__devtool_auth_breakout(url)` is exposed in the content frame as a
+  manual escape hatch.
+
+MSAL note: `msal-browser` throws `redirect_in_iframe` before any navigation
+happens, so the breakout never sees it. Dev configs must set
+`system: { allowRedirectInIframe: true }` (or use popup flows); the breakout
+then carries the resulting navigation out of the frame. Known limitation: a
+client-side `location.href = <idp>` assignment on a browser without the
+Navigation API (Firefox/Safari) is not interceptable in JS; the server-side
+3xx path and anchor capture cover the other routes.
