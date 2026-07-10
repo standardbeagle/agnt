@@ -17,6 +17,16 @@ import (
 
 // modifyResponse rewrites URLs and injects JavaScript into HTML responses.
 func (ps *ProxyServer) modifyResponse(resp *http.Response) error {
+	// Auth breakout: a content-frame request answered with a redirect to a
+	// matching identity provider must NOT be followed inside the iframe —
+	// the IdP (a foreign origin the proxy never touches) refuses framing.
+	// Replace the redirect with a stub that runs the flow in a top-level
+	// window via the chrome shell. Checked before Location rewriting: a
+	// breakout target is by definition external, never the proxied backend.
+	if ps.interceptAuthRedirect(resp) {
+		return nil
+	}
+
 	// Rewrite Location header for redirects
 	ps.rewriteLocationHeader(resp)
 
@@ -105,13 +115,14 @@ func (ps *ProxyServer) modifyResponse(resp *http.Response) error {
 		!isContentFrameRequest(resp.Request) &&
 		isTopLevelNavigation(resp.Request) &&
 		isFullHTMLDocument(modifiedBody)
+	authCfgJS := ps.AuthBreakoutRules().clientConfigJS()
 	if topLevel {
 		reqURI := resp.Request.URL.RequestURI()
 		fid := frameIDForPath(resp.Request.URL.Path)
 		// Shell id is distinct from the content frame id (shellFrameID) so the two
 		// frames — which share a WS and both run the exec handler — are separately
 		// addressable as "outer" (chrome) vs "inner" (content).
-		modifiedBody = BuildShellDocument(ps.ID, shellFrameID(fid), contentFrameSrc(reqURI, fid))
+		modifiedBody = BuildShellDocument(ps.ID, shellFrameID(fid), contentFrameSrc(reqURI, fid), authCfgJS)
 	} else {
 		// Stamp the content role only when this is genuinely our content frame
 		// (the request carries the frame marker minted in the shell). A
@@ -128,7 +139,7 @@ func (ps *ProxyServer) modifyResponse(resp *http.Response) error {
 			markerID = sanitizeFrameID(resp.Request.URL.Query().Get(frameMarkerParam))
 		}
 		if markerID != "" {
-			modifiedBody = InjectContentRuntime(modifiedBody, ps.ID, markerID)
+			modifiedBody = InjectContentRuntime(modifiedBody, ps.ID, markerID, authCfgJS)
 		} else {
 			modifiedBody = InjectInstrumentationAndMeta(modifiedBody, ps.ID)
 		}
@@ -154,6 +165,45 @@ func (ps *ProxyServer) modifyResponse(resp *http.Response) error {
 	resp.Header.Del("Content-MD5")
 
 	return nil
+}
+
+// interceptAuthRedirect replaces a content-frame 3xx response whose Location
+// matches an auth-breakout pattern with a 200 HTML stub that hands the URL to
+// the chrome shell for a top-level auth flow. Returns true when the response
+// was replaced (caller must skip all further rewriting/injection). Only
+// content-frame requests are intercepted: a genuine top-level navigation to
+// the IdP is not framed and needs no breakout.
+func (ps *ProxyServer) interceptAuthRedirect(resp *http.Response) bool {
+	ab := ps.AuthBreakoutRules()
+	if ab == nil || resp.StatusCode < 300 || resp.StatusCode > 399 {
+		return false
+	}
+	if !isContentFrameRequest(resp.Request) {
+		return false
+	}
+	location := resp.Header.Get("Location")
+	if location == "" || !ab.MatchesURL(location) {
+		return false
+	}
+
+	debug.Log("proxy", "auth breakout: intercepted %d redirect to %s (content frame)", resp.StatusCode, location)
+	stub := buildAuthBreakoutStub(location)
+	if resp.Body != nil {
+		resp.Body.Close()
+	}
+	resp.Body = io.NopCloser(bytes.NewReader(stub))
+	resp.StatusCode = http.StatusOK
+	resp.Status = http.StatusText(http.StatusOK)
+	resp.ContentLength = int64(len(stub))
+	resp.Header.Del("Location")
+	resp.Header.Del("Content-Encoding")
+	resp.Header.Del("ETag")
+	resp.Header.Del("Last-Modified")
+	resp.Header.Del("Content-MD5")
+	resp.Header.Set("Content-Type", "text/html; charset=utf-8")
+	resp.Header.Set("Content-Length", strconv.Itoa(len(stub)))
+	resp.Header.Set("Cache-Control", "no-store")
+	return true
 }
 
 // readAllSized reads all of r into a single buffer. When sizeHint > 0 it

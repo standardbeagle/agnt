@@ -22,8 +22,8 @@ func TestInjectProxyID_ScriptBreakoutNeutralised(t *testing.T) {
 	cases := map[string][]byte{
 		"InjectInstrumentationAndMeta": InjectInstrumentationAndMeta(body, evil),
 		"InjectProxyMeta":              InjectProxyMeta(body, evil),
-		"InjectContentRuntime":         InjectContentRuntime(body, evil, "f00d"),
-		"BuildShellDocument":           BuildShellDocument(evil, "chrome-f00d", "/"),
+		"InjectContentRuntime":         InjectContentRuntime(body, evil, "f00d", ""),
+		"BuildShellDocument":           BuildShellDocument(evil, "chrome-f00d", "/", ""),
 	}
 	for name, out := range cases {
 		s := string(out)
