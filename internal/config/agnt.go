@@ -56,6 +56,13 @@ type AgntConfig struct {
 	// Setup configures the first-run auto-setup flow for `agnt run`.
 	Setup *SetupConfig `kdl:"setup"`
 
+	// AuthBreakout hijacks OAuth flows out of the proxy's content iframe.
+	// IdP pages (MSAL / login.microsoftonline.com, Figma OAuth, ...) refuse
+	// to render inside a frame, so a matching navigation is carried out in a
+	// top-level window and the callback URL is handed back to the iframe.
+	// Project-wide: applies to every proxy of the project.
+	AuthBreakout *AuthBreakoutConfig `kdl:"auth-breakout"`
+
 	// Warnings holds non-fatal configuration warnings collected at parse
 	// time (e.g. a script that depends-on a non-autostart script, which with
 	// the default dep timeout of 0 would hang autostart forever with no
@@ -459,6 +466,98 @@ type ProxyConfig struct {
 	// `scripts {}` block; unknown names fail config parsing. Proxy →
 	// proxy dependencies are not supported.
 	WaitFor []string `kdl:"wait-for"`
+}
+
+// AuthBreakoutConfig configures OAuth-flow breakout for the always-wrap
+// frame model. The proxy renders every page inside a content <iframe>;
+// identity providers refuse framing (X-Frame-Options / frame-ancestors) and
+// libraries like msal-browser hard-refuse redirect flows when framed. When a
+// content-frame navigation (or server 3xx) targets a matching URL, the flow
+// is broken out to a top-level window; after the IdP redirects back to the
+// app origin the callback URL — hash fragment intact — is replayed into the
+// content iframe, so redirect-handling code (e.g. MSAL handleRedirectPromise)
+// runs in the same tab with its sessionStorage state.
+//
+// Note for MSAL apps: msal-browser throws redirect_in_iframe before any
+// navigation happens, so the breakout never sees it. Dev configs must set
+// system.allowRedirectInIframe: true (or use popup flows); the breakout then
+// carries the resulting navigation out of the frame.
+type AuthBreakoutConfig struct {
+	// Enabled turns the breakout on. Tri-state: an absent key inside a
+	// declared auth-breakout block means enabled (declaring the block is
+	// the opt-in); `enabled false` keeps the block but disables it.
+	Enabled *bool `kdl:"enabled"`
+
+	// Mode selects how the flow leaves the iframe:
+	//   "popup" (default) — auth runs in a named popup window; the app
+	//     iframe stays alive. Falls back to "top" when the popup is blocked.
+	//   "top" — the whole shell navigates to the IdP; the return redirect
+	//     re-enters the proxy and is wrapped again.
+	Mode string `kdl:"mode"`
+
+	// Patterns are case-insensitive wildcard fragments matched against the
+	// full navigation URL (`*` matches any run of characters, plain text
+	// matches as substring). A navigation leaving the proxy origin whose URL
+	// matches any pattern is broken out. Empty = DefaultAuthBreakoutPatterns.
+	Patterns []string `kdl:"patterns"`
+}
+
+// DefaultAuthBreakoutPatterns covers the common identity providers that
+// refuse to run inside an iframe. Used when an enabled auth-breakout block
+// declares no patterns of its own.
+var DefaultAuthBreakoutPatterns = []string{
+	"login.microsoftonline.com",
+	"login.live.com",
+	"login.windows.net",
+	"accounts.google.com",
+	"figma.com/oauth",
+	"github.com/login/oauth",
+	"okta.com/oauth2",
+	"auth0.com/authorize",
+}
+
+// IsEnabled reports whether the breakout is active. Nil receiver (no block
+// declared) is off; a declared block defaults to on.
+func (a *AuthBreakoutConfig) IsEnabled() bool {
+	if a == nil {
+		return false
+	}
+	return a.Enabled == nil || *a.Enabled
+}
+
+// GetMode returns the breakout mode, defaulting to "popup".
+func (a *AuthBreakoutConfig) GetMode() string {
+	if a == nil || a.Mode == "" {
+		return "popup"
+	}
+	return a.Mode
+}
+
+// GetPatterns returns the configured URL patterns, defaulting to
+// DefaultAuthBreakoutPatterns when none are declared.
+func (a *AuthBreakoutConfig) GetPatterns() []string {
+	if a == nil || len(a.Patterns) == 0 {
+		return DefaultAuthBreakoutPatterns
+	}
+	return a.Patterns
+}
+
+// validateAuthBreakout rejects malformed auth-breakout blocks at parse time.
+func validateAuthBreakout(a *AuthBreakoutConfig) error {
+	if a == nil {
+		return nil
+	}
+	switch a.Mode {
+	case "", "popup", "top":
+	default:
+		return fmt.Errorf("auth-breakout: invalid mode %q (want \"popup\" or \"top\")", a.Mode)
+	}
+	for _, p := range a.Patterns {
+		if strings.TrimSpace(p) == "" {
+			return fmt.Errorf("auth-breakout: empty pattern")
+		}
+	}
+	return nil
 }
 
 // HooksConfig defines hook behavior.
@@ -988,6 +1087,11 @@ func ParseAgntConfig(data string) (*AgntConfig, error) {
 
 	// Validate channel config fields if present.
 	if err := validateChannelConfig(cfg.Channel); err != nil {
+		return nil, err
+	}
+
+	// Validate auth-breakout block if present.
+	if err := validateAuthBreakout(cfg.AuthBreakout); err != nil {
 		return nil, err
 	}
 

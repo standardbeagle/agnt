@@ -2064,3 +2064,46 @@ func TestOutageHoldConfig_Defaults(t *testing.T) {
 	assert.Equal(t, 1234*time.Millisecond, cfg3.GetWindow())
 	assert.Equal(t, []string{"only-this"}, cfg3.GetJSCascadePatterns())
 }
+
+func TestParseAgntConfig_AuthBreakout(t *testing.T) {
+	// Absent block: disabled, but getters still return sane defaults.
+	cfg, err := ParseAgntConfig("project {\n name \"x\"\n}")
+	require.NoError(t, err)
+	assert.Nil(t, cfg.AuthBreakout)
+	assert.False(t, cfg.AuthBreakout.IsEnabled())
+	assert.Equal(t, "popup", cfg.AuthBreakout.GetMode())
+	assert.Equal(t, DefaultAuthBreakoutPatterns, cfg.AuthBreakout.GetPatterns())
+
+	// Declared block: enabled by default, custom mode + patterns parsed.
+	cfg, err = ParseAgntConfig(`
+auth-breakout {
+    mode "top"
+    patterns "login.microsoftonline.com" "figma.com/oauth"
+}`)
+	require.NoError(t, err)
+	require.NotNil(t, cfg.AuthBreakout)
+	assert.True(t, cfg.AuthBreakout.IsEnabled())
+	assert.Equal(t, "top", cfg.AuthBreakout.GetMode())
+	assert.Equal(t, []string{"login.microsoftonline.com", "figma.com/oauth"}, cfg.AuthBreakout.GetPatterns())
+
+	// enabled false disables while keeping the block.
+	cfg, err = ParseAgntConfig("auth-breakout {\n enabled false\n}")
+	require.NoError(t, err)
+	assert.False(t, cfg.AuthBreakout.IsEnabled())
+
+	// Bare enabled block: default mode popup + default IdP patterns.
+	cfg, err = ParseAgntConfig("auth-breakout {\n enabled true\n}")
+	require.NoError(t, err)
+	assert.True(t, cfg.AuthBreakout.IsEnabled())
+	assert.Equal(t, "popup", cfg.AuthBreakout.GetMode())
+	assert.Equal(t, DefaultAuthBreakoutPatterns, cfg.AuthBreakout.GetPatterns())
+
+	// Invalid mode fails loudly at parse time.
+	_, err = ParseAgntConfig("auth-breakout {\n mode \"iframe\"\n}")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "auth-breakout")
+
+	// Empty pattern fails loudly.
+	_, err = ParseAgntConfig("auth-breakout {\n patterns \"\"\n}")
+	require.Error(t, err)
+}
