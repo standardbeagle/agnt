@@ -51,6 +51,24 @@ type fixtureServer struct {
 	// channel-open requests by dialing jumpTarget and relaying — this is
 	// what turns a fixture into a "jump host" for ProxyJump tests.
 	jumpTarget string
+
+	// streamLocalDial, if set, makes the fixture handle
+	// "direct-streamlocal@openssh.com" channel-open requests by calling it
+	// with the requested socket path and relaying to whatever net.Conn it
+	// returns — this is what stands in for "the remote unix daemon socket"
+	// in forwarder tests, without needing a real daemon.
+	streamLocalDial func(socketPath string) (net.Conn, error)
+}
+
+// streamLocalChannelOpenDirectMsg mirrors the wire format of an SSH
+// "direct-streamlocal@openssh.com" channel-open request (OpenSSH PROTOCOL
+// §2.4). golang.org/x/crypto/ssh's own type of the same name is unexported,
+// so the fixture (acting as the SSH server) defines an identical shape to
+// unmarshal newChannel.ExtraData().
+type streamLocalChannelOpenDirectMsg struct {
+	SocketPath string
+	Reserved0  string
+	Reserved1  uint32
 }
 
 func newFixtureServer(t *testing.T) *fixtureServer {
@@ -186,6 +204,22 @@ func (f *fixtureServer) handleConn(t *testing.T, conn net.Conn) {
 			}
 			go ssh.DiscardRequests(requests)
 			go f.relayToJumpTarget(channel)
+		case "direct-streamlocal@openssh.com":
+			if f.streamLocalDial == nil {
+				newChan.Reject(ssh.Prohibited, "no streamlocal target configured")
+				continue
+			}
+			var msg streamLocalChannelOpenDirectMsg
+			if err := ssh.Unmarshal(newChan.ExtraData(), &msg); err != nil {
+				newChan.Reject(ssh.ConnectionFailed, "malformed direct-streamlocal payload")
+				continue
+			}
+			channel, requests, err := newChan.Accept()
+			if err != nil {
+				continue
+			}
+			go ssh.DiscardRequests(requests)
+			go f.relayToStreamLocal(channel, msg.SocketPath)
 		default:
 			newChan.Reject(ssh.UnknownChannelType, "unsupported channel type")
 		}
@@ -195,6 +229,26 @@ func (f *fixtureServer) handleConn(t *testing.T, conn net.Conn) {
 func (f *fixtureServer) relayToJumpTarget(channel ssh.Channel) {
 	defer channel.Close()
 	target, err := net.Dial("tcp", f.jumpTarget)
+	if err != nil {
+		return
+	}
+	defer target.Close()
+
+	done := make(chan struct{}, 2)
+	go func() {
+		io.Copy(target, channel)
+		done <- struct{}{}
+	}()
+	go func() {
+		io.Copy(channel, target)
+		done <- struct{}{}
+	}()
+	<-done
+}
+
+func (f *fixtureServer) relayToStreamLocal(channel ssh.Channel, socketPath string) {
+	defer channel.Close()
+	target, err := f.streamLocalDial(socketPath)
 	if err != nil {
 		return
 	}
