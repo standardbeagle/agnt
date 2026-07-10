@@ -513,7 +513,35 @@ agnt ssh user@host[:path]
 29. **Forward teardown is event-driven, not polled.** A `proxy stopped`
     STREAM-EVENTS entry closes the corresponding local listener and any
     open `direct-tcpip` channels for that port immediately — no polling
-    loop, consistent with STREAM-EVENTS being push-based by design.
+    loop, consistent with STREAM-EVENTS being push-based by design. A 30s
+    periodic `PROXY LIST` reconcile (`internal/sshclient.PortForwardManager`,
+    `reconcilePeriod`) exists purely as a backstop for a missed/dropped event
+    (the bus's own drop-newest-on-overflow policy means delivery is
+    best-effort) — it is never the primary teardown path.
+30. **`proxy_started`/`proxy_stopped` diagnostics added to make #29
+    possible.** Before task 07, no `LogTypeDiagnostic` entry existed for
+    proxy create/stop at all — `ProxyManager.Create`/`Stop` had zero
+    lifecycle log emission (see task 07's implementation notes). Two
+    `ProxyDiagnostic` entries were added: one in `ProxyServer.Start`
+    (`internal/proxy/server.go`, event `proxy_started`, fired after the
+    listener successfully binds) and one in `ProxyServer.Stop`
+    (`internal/proxy/proxy_handler.go`, event `proxy_stopped`). Both carry
+    `proxy_id` and `listen_addr` in `Data` (no dedicated struct fields exist
+    for these on `ProxyDiagnostic`, matching the existing `cert_bypass`
+    diagnostic's convention). Diagnostics always pass the daemon's
+    process-state/transport-outage suppression gate
+    (`proxyBroadcastDecision` in `internal/daemon/hub_helpers.go`) — this
+    was already true before task 07, so `agnt ssh` did not need any new gate
+    exemption.
+31. **19191 (overlay HTTP port) is NOT forwarded — verified, not assumed.**
+    The overlay's `19191` port serves the PTY-side indicator/command-palette
+    UI on the machine actually running `agnt run`/`agnt overlay`; a browser
+    hitting a forwarded reverse-proxy port never talks to it — the proxy
+    injects JS that calls back to the *proxy's own* origin
+    (`/__devtool_metrics` etc.), not to a separate overlay origin, and the
+    remote daemon's own overlay (if any) is local to the remote machine, not
+    something a local browser needs to reach. `PortForwardManager` therefore
+    forwards exactly the ports `PROXY LIST` reports and nothing else.
 
 ### Provenance (§4)
 
