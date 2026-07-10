@@ -114,7 +114,19 @@ func waitContentCondition(ctx context.Context, t *testing.T, jsExpr, desc string
 	t.Helper()
 	js := fmt.Sprintf(`(function(){var v=(%s);return v===null||v===undefined?'':String(v);})()`, jsExpr)
 	var last string
-	deadline := time.Now().Add(15 * time.Second)
+	// The poll budget is the browser context's own deadline — the single real
+	// budget for the whole test. An intermediate hardcoded cliff (15s in
+	// earlier versions) guillotined stages that were still making progress
+	// under CPU load while the ctx had ample headroom — exactly the
+	// load-sensitive wall-clock failure mode this file keeps removing. The 2s
+	// margin makes the loop fail with the informative "last observed value"
+	// message below instead of dying inside cdp.Run when the ctx expires
+	// mid-poll.
+	deadline, hasDeadline := ctx.Deadline()
+	if !hasDeadline {
+		deadline = time.Now().Add(90 * time.Second)
+	}
+	deadline = deadline.Add(-2 * time.Second)
 	for time.Now().Before(deadline) {
 		var val string
 		if err := cdp.Run(ctx, cdp.Evaluate(js, &val)); err == nil {
