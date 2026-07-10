@@ -16,6 +16,7 @@ import (
 	"syscall"
 
 	"github.com/spf13/cobra"
+	"github.com/standardbeagle/agnt/internal/daemon"
 	"github.com/standardbeagle/agnt/internal/sshclient"
 	"golang.org/x/term"
 )
@@ -97,6 +98,9 @@ func runSSH(cmd *cobra.Command, args []string) error {
 
 	stopForwarding := startDaemonSocketForwarding(host, client)
 	defer stopForwarding()
+
+	stopPortForwarding := startPortForwarding(host, client)
+	defer stopPortForwarding()
 
 	cols, rows := 80, 24
 	if c, r, err := term.GetSize(int(os.Stdin.Fd())); err == nil {
@@ -181,6 +185,33 @@ func startDaemonSocketForwarding(host string, client *sshclient.Client) func() {
 		if err := forwarder.Close(); err != nil {
 			fmt.Fprintf(os.Stderr, "agnt ssh: closing daemon socket forwarder: %v\n", err)
 		}
+	}
+}
+
+// startPortForwarding dials the just-forwarded remote daemon socket (see
+// startDaemonSocketForwarding) as a *daemon.Client and hands it, plus the
+// SSH transport, to a sshclient.PortForwardManager so every remote proxy the
+// developer starts/stops for the rest of this session gets a same-port-
+// preferred local listener automatically — no manual `ssh -L` required (task
+// 07 of the remote-ssh epic). Like daemon socket forwarding, failure here is
+// non-fatal to the interactive PTY session: it is surfaced loudly on stderr
+// and the returned stop func is a no-op.
+func startPortForwarding(host string, client *sshclient.Client) func() {
+	localSocketPath := sshclient.LocalForwardSocketPath(host)
+	dclient := daemon.NewClientWithPath(localSocketPath)
+	if err := dclient.Connect(); err != nil {
+		fmt.Fprintf(os.Stderr, "agnt ssh: could not connect to forwarded daemon socket for port forwarding (%v) — remote proxies will not be auto-forwarded\n", err)
+		return func() {}
+	}
+
+	mgr := sshclient.NewPortForwardManager(client, dclient, func(msg string) {
+		fmt.Fprintf(os.Stderr, "%s\n", msg)
+	})
+	mgr.Start(context.Background())
+
+	return func() {
+		mgr.Stop()
+		dclient.Close()
 	}
 }
 
