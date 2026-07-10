@@ -116,21 +116,10 @@ auth-breakout {
 
 Scope: project-wide — applies to every proxy of the project, on every daemon
 creation path (autostart, URL detection, fallback port, explicit `proxy
-start`, restart, restore). Interception is two-sided:
+start`, restart, restore).
 
-- **Server**: a content-frame request answered with a 3xx whose `Location`
-  matches a pattern is replaced with a stub page that hands the URL to the
-  chrome shell (`internal/proxy/rewrite.go` `interceptAuthRedirect`).
-- **Browser**: `scripts/authbreakout.js` intercepts client-side navigations
-  (Navigation API on Chromium, anchor-click capture elsewhere) in the content
-  frame and routes them through `parent.__devtool_auth.breakout(url)`.
-  `window.__devtool_auth_breakout(url)` is exposed in the content frame as a
-  manual escape hatch.
+MSAL apps additionally need `system: { allowRedirectInIframe: true }` in their
+dev config, or the breakout never sees the navigation.
 
-MSAL note: `msal-browser` throws `redirect_in_iframe` before any navigation
-happens, so the breakout never sees it. Dev configs must set
-`system: { allowRedirectInIframe: true }` (or use popup flows); the breakout
-then carries the resulting navigation out of the frame. Known limitation: a
-client-side `location.href = <idp>` assignment on a browser without the
-Navigation API (Firefox/Safari) is not interceptable in JS; the server-side
-3xx path and anchor capture cover the other routes.
+Interception routes, browser coverage, the MSAL caveat, and security notes:
+**[auth-breakout.md](auth-breakout.md)**.

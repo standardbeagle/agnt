@@ -210,6 +210,7 @@ Test startup contract (`Start()` vs `NewForTest`)：`.claude/rules/daemon-archit
 |-------|----------|
 | Per-tool params, output formats, `__devtool` API, `agnt monitor` | `docs/mcp-tools.md` |
 | `.agnt.kdl` config (port-conflict, alert push, incident keys, URL tracking) | `docs/configuration.md` |
+| Auth breakout (OAuth flows out of the content iframe) | `docs/auth-breakout.md` |
 | Hook dispatcher (telemetry forward) | `docs/hook-dispatcher.md` |
 | Hook Bash-interceptor (`check-bash`/`check-prompt`) | `docs/hook-rules.md` |
 | Channel Mode beta | `docs/channel-mode.md` |
