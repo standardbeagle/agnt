@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/standardbeagle/agnt/internal/proxy/scripts"
 )
 
 // A caller/config-supplied proxy id carrying HTML that would break out of the
@@ -432,5 +434,46 @@ func TestInjectProxyMeta_NoScript(t *testing.T) {
 	result := InjectProxyMeta(body, "test")
 	if string(result) != string(body) {
 		t.Error("Should return body unchanged when no </script> marker exists")
+	}
+}
+
+// The shell document must carry the inline auth-popup relay synchronously in
+// its first <head> script — before the async instrumentation bundle tag — so
+// an OAuth popup returning from the IdP relays its callback to the opener at
+// parse time instead of waiting on the whole bundle to fetch and execute
+// (the load-sensitive latency behind the popup round-trip e2e flake). The
+// relay must be present regardless of auth config: the popup return check
+// keys off window.opener/window.name/sessionStorage, not the config.
+func TestBuildShellDocument_InlineAuthPopupRelay(t *testing.T) {
+	for name, authCfgJS := range map[string]string{"noConfig": "", "withConfig": "window.__devtool_auth_config={};"} {
+		t.Run(name, func(t *testing.T) {
+			s := string(BuildShellDocument("pid", "chrome-f00d", "/", authCfgJS))
+
+			for _, marker := range []string{
+				"__devtool_auth_relayed",                 // double-relay guard flag shared with authbreakout.js
+				"__devtool_auth_popup",                   // sessionStorage marker key (mirror of POPUP_KEY)
+				"window.opener.__devtool_auth.complete(", // the relay call itself
+				"window.name!=='__devtool_auth'",         // window.name half of the marker (mirror of POPUP_NAME)
+			} {
+				if !strings.Contains(s, marker) {
+					t.Errorf("shell document missing inline relay marker %q", marker)
+				}
+			}
+
+			// Parse-time ordering: the inline relay must precede the async bundle tag.
+			relayAt := strings.Index(s, "__devtool_auth_relayed")
+			bundleAt := strings.Index(s, "<script src=")
+			if bundleAt == -1 {
+				t.Fatal("shell document missing bundle script tag")
+			}
+			if relayAt == -1 || relayAt > bundleAt {
+				t.Errorf("inline relay (at %d) must precede the bundle tag (at %d)", relayAt, bundleAt)
+			}
+
+			// The bundle's copy must key off the same guard flag so it never relays twice.
+			if !strings.Contains(scripts.GetCombinedScriptForRole(scripts.RoleChrome), "__devtool_auth_relayed") {
+				t.Error("authbreakout.js missing __devtool_auth_relayed double-relay guard")
+			}
+		})
 	}
 }

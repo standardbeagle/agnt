@@ -350,6 +350,30 @@ func contentFrameSrc(reqURI, frameID string) string {
 	return reqURI + sep + frameMarkerParam + "=" + frameID
 }
 
+// authPopupRelayJS is a minimal inline copy of the auth-popup return relay in
+// scripts/authbreakout.js (isAuthPopupReturn + complete + close). It runs
+// synchronously at shell-document parse time, BEFORE the async instrumentation
+// bundle is fetched/parsed/executed. That ordering is the point: the OAuth
+// popup's only job after the IdP redirects back is to hand the callback URL to
+// its opener and close, and making that wait on the whole bundle (tens of
+// modules) turns CPU/network pressure into seconds of extra popup latency —
+// the load-sensitive tail that flaked TestE2E_AuthBreakout_PopupRoundTrip
+// under full-suite parallelism. The constants (popup name, sessionStorage key)
+// and the opener checks mirror authbreakout.js exactly; the
+// __devtool_auth_relayed flag tells the bundle's copy the relay already fired
+// so it does not run twice when window.close() is delayed or blocked.
+const authPopupRelayJS = `(function(){try{` +
+	`if(window.top!==window.self||!window.opener||window.opener===window)return;` +
+	`if(!window.opener.__devtool_auth)return;` +
+	`var K='__devtool_auth_popup',m=false;` +
+	`try{m=sessionStorage.getItem(K)==='1';}catch(e){}` +
+	`if(!m&&window.name!=='__devtool_auth')return;` +
+	`window.__devtool_auth_relayed=true;` +
+	`try{sessionStorage.removeItem(K);}catch(e){}` +
+	`window.opener.__devtool_auth.complete(window.location.href);` +
+	`document.title='Authentication complete';window.close();` +
+	`}catch(e){}})();`
+
 // BuildShellDocument returns the outer chrome-shell HTML for a top-level
 // navigation. The shell carries the proxy-id, the chrome role marker, and the
 // instrumentation bundle, and embeds a single full-viewport content <iframe>
@@ -367,7 +391,7 @@ func BuildShellDocument(proxyID, frameID, contentSrc, authCfgJS string) []byte {
 	frameID = sanitizeFrameID(frameID)
 	var b strings.Builder
 	b.WriteString("<!DOCTYPE html><html><head><meta charset=\"utf-8\">")
-	b.WriteString(fmt.Sprintf("<script>window.__devtool_proxy_id=%s;window.__devtool_role=\"chrome\";window.__devtool_frame_id=%q;%s</script>", jsStringLiteral(proxyID), frameID, authCfgJS))
+	b.WriteString(fmt.Sprintf("<script>window.__devtool_proxy_id=%s;window.__devtool_role=\"chrome\";window.__devtool_frame_id=%q;%s%s</script>", jsStringLiteral(proxyID), frameID, authCfgJS, authPopupRelayJS))
 	b.WriteString(fmt.Sprintf("<script src=%q></script>", instrumentationAssetPathForRole(scripts.RoleChrome)))
 	b.WriteString("<style>html,body{margin:0;padding:0;height:100%;width:100%;overflow:hidden}#" + contentFrameID + "{position:fixed;inset:0;border:0;width:100%;height:100%;display:block}</style>")
 	b.WriteString("</head><body>")

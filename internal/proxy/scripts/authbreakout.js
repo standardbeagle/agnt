@@ -54,6 +54,11 @@
   // shell has no opener.
   function isAuthPopupReturn() {
     try {
+      // The shell document carries an inline copy of this relay
+      // (injector.go authPopupRelayJS) that runs at document parse time,
+      // before this async bundle loads. If it already fired, the marker is
+      // cleared and the callback already relayed — never relay twice.
+      if (window.__devtool_auth_relayed) { return false; }
       if (window.top !== window.self || !window.opener || window.opener === window) { return false; }
       if (!window.opener.__devtool_auth) { return false; }
       return hasAuthPopupMark() || window.name === POPUP_NAME;
