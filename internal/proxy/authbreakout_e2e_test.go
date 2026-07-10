@@ -99,7 +99,12 @@ func newBrowser(t *testing.T, timeout time.Duration) context.Context {
 const contentHrefJS = `(function(){var f=document.getElementById('__devtool_content_frame');` +
 	`try{return f?f.contentWindow.location.href:'';}catch(e){return 'CROSS_ORIGIN';}})()`
 
-// waitContentHref polls the content frame URL until it contains want.
+// waitContentHref polls the content frame URL until it contains want. The
+// iframe's location.href updates as soon as navigation commits, which is
+// before the new document has finished loading — callers that need to read
+// DOM content out of the frame after this returns must additionally wait for
+// that content (see waitContentElementText) instead of assuming the document
+// is ready the instant the href matches.
 func waitContentHref(ctx context.Context, t *testing.T, want string) string {
 	t.Helper()
 	var href string
@@ -113,6 +118,41 @@ func waitContentHref(ctx context.Context, t *testing.T, want string) string {
 		}
 	}
 	t.Fatalf("content frame never reached %q (last: %q)", want, href)
+	return ""
+}
+
+// contentElementTextJS reads the textContent of an element by id inside the
+// content iframe, returning null (not throwing) when the frame's document
+// hasn't loaded that element yet — so the poll below can distinguish "not
+// ready yet" from a real error.
+const contentElementTextJS = `(function(id){
+	var f=document.getElementById('__devtool_content_frame');
+	if(!f)return null;
+	try{
+		var d=f.contentWindow.document.getElementById(id);
+		return d?d.textContent:null;
+	}catch(e){return null;}
+})(%q)`
+
+// waitContentElementText polls the content frame for an element by id and
+// returns its textContent once populated. This is distinct from
+// waitContentHref: the iframe's location.href updates as soon as navigation
+// commits, before the new document (and its elements) exist, so reading DOM
+// content immediately after waitContentHref races the frame's document-load.
+func waitContentElementText(ctx context.Context, t *testing.T, id string) string {
+	t.Helper()
+	var text *string
+	deadline := time.Now().Add(15 * time.Second)
+	js := fmt.Sprintf(contentElementTextJS, id)
+	for time.Now().Before(deadline) {
+		if err := cdp.Run(ctx, cdp.Evaluate(js, &text)); err == nil && text != nil && *text != "" {
+			return *text
+		}
+		if err := cdp.Run(ctx, cdp.Sleep(150*time.Millisecond)); err != nil {
+			t.Fatalf("browser died while polling content frame element #%s: %v", id, err)
+		}
+	}
+	t.Fatalf("content frame element #%s never populated", id)
 	return ""
 }
 
@@ -158,9 +198,9 @@ func TestE2E_AuthBreakout_PopupRoundTrip(t *testing.T) {
 
 	// The iframe really rendered the app's callback page, not an error or the
 	// IdP: the breakout replayed the URL through the proxy in content role.
-	var signedIn string
-	require.NoError(t, cdp.Run(ctx, cdp.Evaluate(
-		`document.getElementById('__devtool_content_frame').contentWindow.document.getElementById('signed-in').textContent`, &signedIn)))
+	// waitContentHref only proves the frame's location updated, which happens
+	// before the new document finishes loading, so wait for the element itself.
+	signedIn := waitContentElementText(ctx, t, "signed-in")
 	require.Equal(t, "code=abc123", signedIn)
 
 	// The shell realm survived — the flow ran in the popup, not by navigating
