@@ -65,6 +65,17 @@ or crashed sessions. Skips the current active daemon.`,
 	Run: runDaemonCleanup,
 }
 
+var daemonSocketPathCmd = &cobra.Command{
+	Use:   "socket-path",
+	Short: "Print the daemon's default unix socket path",
+	Long: `Print daemon.DefaultSocketPath() to stdout, one line, nothing else.
+
+Used by 'agnt ssh' to discover the remote daemon's socket path over an
+existing SSH connection (exec'd on the remote side) before opening a
+direct-streamlocal forwarding channel to it.`,
+	Run: runDaemonSocketPath,
+}
+
 func init() {
 	daemonCmd.AddCommand(daemonStartCmd)
 	daemonCmd.AddCommand(daemonStopCmd)
@@ -72,6 +83,11 @@ func init() {
 	daemonCmd.AddCommand(daemonStatusCmd)
 	daemonCmd.AddCommand(daemonInfoCmd)
 	daemonCmd.AddCommand(daemonCleanupCmd)
+	daemonCmd.AddCommand(daemonSocketPathCmd)
+}
+
+func runDaemonSocketPath(cmd *cobra.Command, args []string) {
+	fmt.Println(daemon.DefaultSocketPath())
 }
 
 func getSocketPath(cmd *cobra.Command) string {
