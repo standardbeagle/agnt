@@ -30,12 +30,27 @@ func isolateFromTTY(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 }
 
+// writeExecutable writes an executable script via a short-lived /bin/sh
+// subprocess instead of os.WriteFile. Writing in-process opens the file
+// for write in THIS process, and any concurrent fork (leaked daemon
+// goroutines, sibling tests' exec machinery — see the goleak ignore list
+// in testmain_test.go) briefly inherits that fd between fork and exec;
+// exec'ing the script inside that window fails instantly with ETXTBSY
+// ("text file busy") — the TestCommandWithArgs_DirectPATH flake. With the
+// write fd owned by an already-exited child process, no fork of the test
+// process can ever hold it, so the race is structurally impossible.
+func writeExecutable(t *testing.T, path, content string) {
+	t.Helper()
+	cmd := exec.Command("/bin/sh", "-c", `cat > "$0" && chmod 755 "$0"`, path)
+	cmd.Stdin = strings.NewReader(content)
+	out, err := cmd.CombinedOutput()
+	require.NoError(t, err, "write executable script %s: %s", path, out)
+}
+
 // createTestScript creates an executable script in binDir that prints a marker.
 func createTestScript(t *testing.T, binDir, name, marker string) {
 	t.Helper()
-	script := "#!/bin/sh\necho " + marker + "\n"
-	path := filepath.Join(binDir, name)
-	require.NoError(t, os.WriteFile(path, []byte(script), 0755))
+	writeExecutable(t, filepath.Join(binDir, name), "#!/bin/sh\necho "+marker+"\n")
 }
 
 // setEnv sets an environment variable and restores it on cleanup.
@@ -288,7 +303,7 @@ func TestShellResolve_ArgumentPreservation(t *testing.T) {
 	binDir := t.TempDir()
 	// Script that prints all arguments, one per line
 	script := "#!/bin/sh\nfor arg in \"$@\"; do echo \"ARG:$arg\"; done\n"
-	require.NoError(t, os.WriteFile(filepath.Join(binDir, "test-args-cmd"), []byte(script), 0755))
+	writeExecutable(t, filepath.Join(binDir, "test-args-cmd"), script)
 
 	setEnv(t, "PATH", binDir+":"+os.Getenv("PATH"))
 
@@ -310,7 +325,7 @@ func TestShellResolve_ArgumentPreservation_ShellWrap(t *testing.T) {
 
 	binDir := t.TempDir()
 	script := "#!/bin/sh\nfor arg in \"$@\"; do echo \"ARG:$arg\"; done\n"
-	require.NoError(t, os.WriteFile(filepath.Join(binDir, "test-args-wrap"), []byte(script), 0755))
+	writeExecutable(t, filepath.Join(binDir, "test-args-wrap"), script)
 
 	homeDir := t.TempDir()
 	bashrc := "export PATH=" + binDir + ":$PATH\n"

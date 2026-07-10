@@ -165,9 +165,7 @@ func TestRunCommand_SetsProjectPathEnv(t *testing.T) {
 echo "AGNT_PROJECT_PATH=$AGNT_PROJECT_PATH"
 exit 0
 `
-	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
-		t.Fatalf("Failed to create test script: %v", err)
-	}
+	writeExecutable(t, scriptPath, script) // subprocess write: avoids ETXTBSY fork race
 
 	// Run agnt run with the test script from the test directory
 	cmd := exec.Command(agntPath, "run", "--no-overlay", scriptPath)
@@ -230,9 +228,7 @@ case "$AGNT_PROJECT_PATH" in
 esac
 exit 0
 `
-	if err := os.WriteFile(scriptPath, []byte(script), 0755); err != nil {
-		t.Fatalf("Failed to create test script: %v", err)
-	}
+	writeExecutable(t, scriptPath, script) // subprocess write: avoids ETXTBSY fork race
 
 	cmd := exec.Command(agntPath, "run", "--no-overlay", scriptPath)
 	isolateFromTTY(cmd)
