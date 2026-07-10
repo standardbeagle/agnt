@@ -545,6 +545,24 @@ func (ps *ProxyServer) Start(ctx context.Context) error {
 		}
 	}
 
+	// Emit a lifecycle diagnostic so STREAM-EVENTS consumers (e.g. agnt ssh's
+	// port-forward manager, task 07 of the remote-ssh epic) can react to a
+	// proxy coming up without polling PROXY LIST on every event. proxy_id and
+	// listen_addr live in Data since ProxyDiagnostic has no dedicated fields
+	// for them (see cert_bypass diagnostic above for the same pattern).
+	ps.logger.LogDiagnostic(ProxyDiagnostic{
+		Timestamp: time.Now(),
+		Level:     DiagnosticInfo,
+		Category:  "proxy",
+		Event:     "proxy_started",
+		Message:   fmt.Sprintf("proxy %s listening on %s", ps.ID, ps.ListenAddr),
+		Target:    ps.ListenAddr,
+		Data: map[string]any{
+			"proxy_id":    ps.ID,
+			"listen_addr": ps.ListenAddr,
+		},
+	})
+
 	return nil
 }
 

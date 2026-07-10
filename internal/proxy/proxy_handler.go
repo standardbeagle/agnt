@@ -64,6 +64,23 @@ func (ps *ProxyServer) Stop(ctx context.Context) error {
 	// Stop the page-tracker actor goroutine after the HTTP server has drained
 	// (no more TrackHTTPRequest senders).
 	ps.pageTracker.Stop()
+
+	// Mirror the proxy_started diagnostic (server.go Start) so STREAM-EVENTS
+	// consumers can tear down a forward event-driven rather than only on the
+	// next periodic PROXY LIST poll.
+	ps.logger.LogDiagnostic(ProxyDiagnostic{
+		Timestamp: time.Now(),
+		Level:     DiagnosticInfo,
+		Category:  "proxy",
+		Event:     "proxy_stopped",
+		Message:   fmt.Sprintf("proxy %s stopped", ps.ID),
+		Target:    ps.ListenAddr,
+		Data: map[string]any{
+			"proxy_id":    ps.ID,
+			"listen_addr": ps.ListenAddr,
+		},
+	})
+
 	return err
 }
 
