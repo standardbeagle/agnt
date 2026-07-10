@@ -124,7 +124,14 @@ func TestE2E_CurrentPage_RealBrowserHappyPath(t *testing.T) {
 	t.Cleanup(allocCancel)
 	ctx, cancel := cdp.NewContext(allocCtx)
 	t.Cleanup(cancel)
-	ctx, tcancel := context.WithTimeout(ctx, 60*time.Second)
+	// This is a liveness bound on the whole real-Chrome DOM interaction
+	// sequence, not a latency budget — it exists only to fail a genuinely
+	// hung browser session fast. Observed a real "context deadline
+	// exceeded" at 61.45s against a 60s budget when `go test ./...` runs
+	// every package's browser e2e test concurrently, each spinning up its
+	// own Chrome and competing for the host's CPU. Widened to 180s (3x)
+	// rather than tightened, since nothing here is actually stuck.
+	ctx, tcancel := context.WithTimeout(ctx, 180*time.Second)
 	t.Cleanup(tcancel)
 
 	// Happy path: load, mutate the DOM 3×, type, submit, scroll, throw an error.
@@ -218,7 +225,14 @@ func TestE2E_CurrentPage_FrameworkWarningsForwarded(t *testing.T) {
 	t.Cleanup(allocCancel)
 	ctx, cancel := cdp.NewContext(allocCtx)
 	t.Cleanup(cancel)
-	ctx, tcancel := context.WithTimeout(ctx, 60*time.Second)
+	// This is a liveness bound on the whole real-Chrome DOM interaction
+	// sequence, not a latency budget — it exists only to fail a genuinely
+	// hung browser session fast. Observed a real "context deadline
+	// exceeded" at 61.45s against a 60s budget when `go test ./...` runs
+	// every package's browser e2e test concurrently, each spinning up its
+	// own Chrome and competing for the host's CPU. Widened to 180s (3x)
+	// rather than tightened, since nothing here is actually stuck.
+	ctx, tcancel := context.WithTimeout(ctx, 180*time.Second)
 	t.Cleanup(tcancel)
 
 	require.NoError(t, cdp.Run(ctx,
