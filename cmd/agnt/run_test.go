@@ -8,8 +8,15 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+)
+
+var (
+	builtAgntBinaryOnce sync.Once
+	builtAgntBinaryPath string
+	builtAgntBinaryErr  error
 )
 
 func TestShellQuote(t *testing.T) {
@@ -95,18 +102,46 @@ func TestShellQuote(t *testing.T) {
 	}
 }
 
-// findAgntBinary finds the agnt binary for testing.
+// findAgntBinary returns a freshly built agnt binary for E2E subprocess
+// tests. It builds from current source exactly once per test-binary process
+// (cached via sync.Once, shared across all callers in this package) rather
+// than trusting a pre-built `agnt` binary that may sit stale at the repo
+// root — a stale binary's baked-in appVersion diverges from the daemon it
+// autostarts (built from current source too), tripping the client/daemon
+// version-mismatch auto-upgrade path and eating the E2E test's deadline.
+// Building fresh guarantees the subprocess and its self-spawned daemon
+// always agree on version.
 func findAgntBinary(t *testing.T) string {
-	wd, _ := os.Getwd()
-	// Navigate from cmd/agnt to project root
-	projectRoot := filepath.Join(wd, "..", "..")
-	agntPath := filepath.Join(projectRoot, "agnt")
+	builtAgntBinaryOnce.Do(func() {
+		wd, err := os.Getwd()
+		if err != nil {
+			builtAgntBinaryErr = err
+			return
+		}
+		projectRoot := filepath.Join(wd, "..", "..")
 
-	if _, err := os.Stat(agntPath); os.IsNotExist(err) {
-		t.Skipf("agnt binary not found at %s - run 'make build' first", agntPath)
+		dir, err := os.MkdirTemp("", "agnt-e2e-bin-")
+		if err != nil {
+			builtAgntBinaryErr = err
+			return
+		}
+		binPath := filepath.Join(dir, "agnt")
+
+		cmd := exec.Command("go", "build", "-o", binPath, "./cmd/agnt/")
+		cmd.Dir = projectRoot
+		if out, err := cmd.CombinedOutput(); err != nil {
+			builtAgntBinaryErr = err
+			t.Logf("go build ./cmd/agnt failed: %v\n%s", err, out)
+			return
+		}
+		builtAgntBinaryPath = binPath
+	})
+
+	if builtAgntBinaryErr != nil {
+		t.Fatalf("failed to build agnt binary for E2E test: %v", builtAgntBinaryErr)
 	}
 
-	return agntPath
+	return builtAgntBinaryPath
 }
 
 // TestRunCommand_SetsProjectPathEnv verifies that `agnt run` sets AGNT_PROJECT_PATH
