@@ -1031,25 +1031,38 @@ func (r *Renderer) drawOverviewContent(startRow, col, width, maxRows int, status
 	// Silent-failure notice banner (dismissable) — most prominent, at the top.
 	row = r.drawNoticeBanner(row, col, width, startRow+maxRows, status.Notices)
 
-	// Connection status (with contextual reconnect affordance / state)
+	bottom := startRow + maxRows
+
+	// Connection status + at-a-glance summary strip, drawn as one aligned
+	// header line: state on the left, resource tallies on the right.
 	r.moveTo(row, col)
 	switch {
 	case status.DaemonConnected == ConnectionConnected:
 		pingStr := ""
 		if status.DaemonPingMs > 0 {
-			pingStr = fmt.Sprintf(" %s(%dms)%s", FgBrightBlack, status.DaemonPingMs, Reset)
+			pingStr = fmt.Sprintf(" %s%dms%s", FgBrightBlack, status.DaemonPingMs, Reset)
 		}
-		r.write(fmt.Sprintf("%s%s%s connected%s", FgGreen, IconConnected, Reset, pingStr))
+		left := fmt.Sprintf("%s%s%s %sconnected%s%s", FgGreen, IconConnected, Reset, Bold, Reset, pingStr)
+		leftLen := 2 + len("connected") + len(pingStr) // rough visible width
+		summary := overviewSummaryStrip(status)
+		gap := width - leftLen - r.estimateVisibleLength(summary)
+		if gap < 2 || summary == "" {
+			gap = 2
+		}
+		r.write(left)
+		if summary != "" {
+			r.write(strings.Repeat(" ", gap) + summary)
+		}
 		row++
 	case actions.Connecting:
-		r.write(fmt.Sprintf("%s%s%s connecting…", FgYellow, spinner, Reset))
+		r.write(fmt.Sprintf("%s%s%s %sconnecting…%s", FgYellow, spinner, Reset, Bold, Reset))
 		row++
 	default:
-		r.write(fmt.Sprintf("%s%s%s disconnected %s· press %sc%s%s to reconnect%s",
-			FgYellow, IconDisconnected, Reset,
+		r.write(fmt.Sprintf("%s%s%s %sdisconnected%s %s· press %sc%s%s to reconnect%s",
+			FgYellow, IconDisconnected, Reset, Bold, Reset,
 			FgBrightBlack, FgCyan+Bold, Reset, FgBrightBlack, Reset))
 		row++
-		if actions.ConnectErr != "" && row < startRow+maxRows {
+		if actions.ConnectErr != "" && row < bottom {
 			r.moveTo(row, col)
 			msg := actions.ConnectErr
 			if len(msg) > width-3 {
@@ -1061,93 +1074,8 @@ func (r *Renderer) drawOverviewContent(startRow, col, width, maxRows int, status
 	}
 	row++ // blank separator
 
-	// Scripts summary (persistent state from ScriptRegistry)
-	if len(status.Scripts) > 0 && row < startRow+maxRows {
-		r.moveTo(row, col)
-		r.write(Bold + "scripts" + Reset)
-		row++
-
-		for i, script := range status.Scripts {
-			if row >= startRow+maxRows || i >= 8 {
-				break
-			}
-			r.moveTo(row, col+1)
-
-			selected := i == selectedIdx
-			if selected {
-				r.write(Reverse)
-			}
-
-			icon, iconColor := processStateIcon(script.State, script.HasAlerts, 0)
-
-			nameStr := script.Name
-			if len(nameStr) > width-20 {
-				nameStr = nameStr[:width-23] + "…"
-			}
-
-			r.write(fmt.Sprintf("%s%s%s %s", iconColor, icon, Reset, nameStr))
-			if selected {
-				// Re-apply reverse after Reset from icon color
-				r.write(Reverse)
-			}
-
-			if script.FailCount > 0 {
-				r.write(fmt.Sprintf(" %sfails:%d%s", FgRed, script.FailCount, Reset))
-				if selected {
-					r.write(Reverse)
-				}
-			}
-
-			if script.LastError != "" && script.State == "failed" {
-				errMsg := script.LastError
-				maxErr := width - len(nameStr) - 20
-				if maxErr > 0 && len(errMsg) > maxErr {
-					errMsg = errMsg[:maxErr-1] + "…"
-				}
-				if maxErr > 0 {
-					r.write(fmt.Sprintf(" %s%s%s", FgBrightBlack, errMsg, Reset))
-					if selected {
-						r.write(Reverse)
-					}
-				}
-			}
-
-			// Pad to fill the row for a clean highlight bar
-			if selected {
-				r.write(Reset)
-			}
-			row++
-		}
-		row++
-	}
-
-	// Proxies summary
-	if len(status.Proxies) > 0 && row < startRow+maxRows {
-		r.moveTo(row, col)
-		r.write(Bold + "proxies" + Reset)
-		row++
-
-		for _, proxy := range status.Proxies {
-			if row >= startRow+maxRows {
-				break
-			}
-			r.moveTo(row, col+1)
-			proxyURL := "http://" + NormalizeListenAddr(proxy.ListenAddr)
-			errStr := ""
-			if proxy.HasErrors {
-				errStr = fmt.Sprintf(" %s%s%d%s", FgRed, IconWarning, proxy.ErrorCount, Reset)
-			}
-			r.write(fmt.Sprintf("%s%s%s %s→%s %s%s%s%s",
-				FgWhite+Bold, stripProjectPrefix(proxy.ID), Reset,
-				FgBrightBlack, Reset,
-				FgBrightCyan+Underline, proxyURL, Reset,
-				errStr))
-			row++
-		}
-		row++
-	}
-
-	// Ports inventory (port-whisperer style: dev ports shown, system hidden).
+	// Partition ports up front so both the summary strip and the ports section
+	// agree on what's visible vs. hidden.
 	visiblePorts := make([]PortInfo, 0, len(status.Ports))
 	hiddenPorts := 0
 	for _, p := range status.Ports {
@@ -1157,108 +1085,41 @@ func (r *Renderer) drawOverviewContent(startRow, col, width, maxRows int, status
 		}
 		visiblePorts = append(visiblePorts, p)
 	}
-	if (len(visiblePorts) > 0 || hiddenPorts > 0) && row < startRow+maxRows {
-		r.moveTo(row, col)
-		hdr := Bold + "ports" + Reset
-		if hiddenPorts > 0 {
-			hdr += fmt.Sprintf("  %s%d system hidden · :toggle-ports%s", FgBrightBlack, hiddenPorts, Reset)
-		}
-		r.write(hdr)
-		row++
-		for i, p := range visiblePorts {
-			if row >= startRow+maxRows || i >= 8 {
-				break
-			}
-			r.moveTo(row, col+1)
 
-			var icon, iconColor, tag, tagColor string
-			switch p.Status {
-			case "managed":
-				icon, iconColor = "●", FgGreen
-				tag, tagColor = "managed", FgGreen
-			case "conflict":
-				icon, iconColor = "!", FgRed
-				tag, tagColor = "CONFLICT", FgRed+Bold
-			default:
-				icon, iconColor = "●", FgYellow
-				tag, tagColor = "unmanaged", FgBrightBlack
-			}
+	recentErrs := recentErrorsWithin(status.RecentErrors, 5*time.Minute)
 
-			owner := p.Name
-			if owner == "" {
-				if p.PID > 0 {
-					owner = fmt.Sprintf("pid %d", p.PID)
-				} else {
-					owner = "unknown"
-				}
+	// Empty-state: nothing to show. Render an intentional quick-start block
+	// instead of a blank void.
+	hasBody := len(status.Scripts) > 0 || len(status.Proxies) > 0 ||
+		len(visiblePorts) > 0 || hiddenPorts > 0 || len(status.Orphans) > 0 || len(recentErrs) > 0
+	if !hasBody {
+		row = r.drawOverviewEmptyState(row, col, width, bottom, status.DaemonConnected == ConnectionConnected)
+	} else {
+		// Two-column layout on wide terminals keeps scannable sections side by
+		// side; single column below ~100 cols so 80-col terminals stay clean.
+		leftHas := len(status.Scripts) > 0 || len(status.Proxies) > 0
+		rightHas := len(visiblePorts) > 0 || hiddenPorts > 0 || len(status.Orphans) > 0 || len(recentErrs) > 0
+		if width >= 100 && leftHas && rightHas {
+			const gutter = 3
+			colW := (width - gutter) / 2
+			rCol := col + colW + gutter
+			lRow, rRow := row, row
+			lRow = r.drawScriptsSection(lRow, col, colW, bottom, status.Scripts, selectedIdx, actions.SpinnerFrame)
+			lRow = r.drawProxiesSection(lRow, col, colW, bottom, status.Proxies)
+			rRow = r.drawPortsSection(rRow, rCol, colW, bottom, visiblePorts, hiddenPorts)
+			rRow = r.drawOrphansSection(rRow, rCol, colW, bottom, status.Orphans)
+			rRow = r.drawErrorsSection(rRow, rCol, colW, bottom, recentErrs)
+			if rRow > lRow {
+				row = rRow
+			} else {
+				row = lRow
 			}
-			if p.Windows {
-				owner += " (win)"
-			}
-			if len(owner) > 18 {
-				owner = owner[:17] + "…"
-			}
-
-			r.write(fmt.Sprintf("%s%s%s %s%-6d%s %s%-18s%s %s%s%s",
-				iconColor, icon, Reset,
-				FgWhite+Bold, p.Port, Reset,
-				FgWhite, owner, Reset,
-				tagColor, tag, Reset))
-			row++
-		}
-		if len(visiblePorts) > 8 && row < startRow+maxRows {
-			r.moveTo(row, col+1)
-			r.write(fmt.Sprintf("%s… %d more%s", FgBrightBlack, len(visiblePorts)-8, Reset))
-			row++
-		}
-		row++
-	}
-
-	// Orphaned process groups (leader dead, members alive)
-	if len(status.Orphans) > 0 && row < startRow+maxRows {
-		r.moveTo(row, col)
-		r.write(fmt.Sprintf("%sorphans%s  %spress %s:%s%s kill-orphans%s",
-			Bold, Reset, FgBrightBlack, FgCyan+Bold, Reset, FgBrightBlack, Reset))
-		row++
-		for i, o := range status.Orphans {
-			if row >= startRow+maxRows || i >= 5 {
-				break
-			}
-			r.moveTo(row, col+1)
-			r.write(fmt.Sprintf("%s⚠%s pgid %s%d%s  %s%d procs (leader dead)%s",
-				FgYellow, Reset,
-				FgWhite+Bold, o.PGID, Reset,
-				FgBrightBlack, o.Count, Reset))
-			row++
-		}
-		row++
-	}
-
-	// Recent errors
-	recentErrors := 0
-	cutoff := time.Now().Add(-5 * time.Minute)
-	for _, e := range status.RecentErrors {
-		if e.Timestamp.After(cutoff) {
-			recentErrors++
-		}
-	}
-	if recentErrors > 0 && row < startRow+maxRows {
-		r.moveTo(row, col)
-		r.write(fmt.Sprintf("%s%s %d recent errors%s", FgRed+Bold, IconWarning, recentErrors, Reset))
-		row++
-		for _, e := range status.RecentErrors {
-			if !e.Timestamp.After(cutoff) || row >= startRow+maxRows {
-				break
-			}
-			r.moveTo(row, col+1)
-			msg := e.Message
-			if len(msg) > width-10 {
-				msg = msg[:width-13] + "…"
-			}
-			r.write(fmt.Sprintf("%s%s%s %s %s%s%s",
-				FgRed, IconError, Reset, msg,
-				FgBrightBlack, formatShortTimeAgo(e.Timestamp), Reset))
-			row++
+		} else {
+			row = r.drawScriptsSection(row, col, width, bottom, status.Scripts, selectedIdx, actions.SpinnerFrame)
+			row = r.drawProxiesSection(row, col, width, bottom, status.Proxies)
+			row = r.drawPortsSection(row, col, width, bottom, visiblePorts, hiddenPorts)
+			row = r.drawOrphansSection(row, col, width, bottom, status.Orphans)
+			row = r.drawErrorsSection(row, col, width, bottom, recentErrs)
 		}
 	}
 
@@ -1331,6 +1192,409 @@ func (r *Renderer) drawOverviewContent(startRow, col, width, maxRows int, status
 		r.moveTo(row, col)
 		r.write(FgBrightBlack + "Press " + Reset + FgCyan + Bold + ":" + Reset + FgBrightBlack + " to run a command" + Reset)
 	}
+}
+
+// --- Overview section helpers -------------------------------------------------
+//
+// Each section shares a common visual grammar: a bold uppercase title preceded
+// by a colored accent bar and followed by a count badge and a dim rule that
+// fills the column width. Rows are indented one cell and use aligned columns so
+// the eye can scan straight down. Every helper returns the next free row and is
+// a no-op (consuming zero rows) when its slice is empty, which lets the caller
+// stack them in either one or two columns.
+
+// Accent colors give each section a consistent, distinct identity.
+const (
+	accentScripts = FgCyan
+	accentProxies = FgGreen
+	accentPorts   = FgBlue
+	accentOrphans = FgYellow
+	accentErrors  = FgRed
+)
+
+// padCell truncates or right-pads s to exactly w display cells (rune-counted,
+// ellipsis on overflow). Suitable for ASCII-ish identifiers used in columns.
+func padCell(s string, w int) string {
+	if w < 1 {
+		return ""
+	}
+	rs := []rune(s)
+	if len(rs) > w {
+		if w == 1 {
+			return "…"
+		}
+		return string(rs[:w-1]) + "…"
+	}
+	return s + strings.Repeat(" ", w-len(rs))
+}
+
+// overviewSectionHeader draws "▎ TITLE  badge ───────" spanning width and
+// returns the next row.
+func (r *Renderer) overviewSectionHeader(row, col, width int, accent, title, badge, badgeColor string) int {
+	r.moveTo(row, col)
+	var b strings.Builder
+	b.WriteString(accent + "▎" + Reset + Bold + FgWhite + title + Reset)
+	used := 1 + len([]rune(title))
+	if badge != "" {
+		b.WriteString(" " + badgeColor + badge + Reset)
+		used += 1 + len([]rune(badge))
+	}
+	if rule := width - used - 1; rule > 0 {
+		b.WriteString(" " + FgBrightBlack + strings.Repeat("─", rule) + Reset)
+	}
+	r.write(b.String())
+	return row + 1
+}
+
+// overviewSummaryStrip builds the right-aligned tally shown on the connection
+// line: scripts running/total, proxy count, visible ports, recent errors.
+func overviewSummaryStrip(status Status) string {
+	if status.DaemonConnected != ConnectionConnected {
+		return ""
+	}
+	running := 0
+	for _, s := range status.Scripts {
+		if s.State == "running" {
+			running++
+		}
+	}
+	var segs []string
+	if len(status.Scripts) > 0 {
+		segs = append(segs, fmt.Sprintf("%s%d/%d%s scripts", FgGreen, running, len(status.Scripts), Reset))
+	}
+	if len(status.Proxies) > 0 {
+		segs = append(segs, fmt.Sprintf("%s%d%s proxies", FgGreen, len(status.Proxies), Reset))
+	}
+	nErr := len(recentErrorsWithin(status.RecentErrors, 5*time.Minute))
+	if nErr > 0 {
+		segs = append(segs, fmt.Sprintf("%s%d errors%s", FgRed, nErr, Reset))
+	}
+	if len(segs) == 0 {
+		return ""
+	}
+	return strings.Join(segs, fmt.Sprintf(" %s·%s ", FgBrightBlack, Reset))
+}
+
+// recentErrorsWithin returns the errors newer than window, most-recent order
+// preserved from the source slice.
+func recentErrorsWithin(errs []ErrorInfo, window time.Duration) []ErrorInfo {
+	cutoff := time.Now().Add(-window)
+	out := make([]ErrorInfo, 0, len(errs))
+	for _, e := range errs {
+		if e.Timestamp.After(cutoff) {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// drawScriptsSection renders the managed-script list with aligned name / state
+// / meta columns. selectedIdx highlights one row (reverse video).
+func (r *Renderer) drawScriptsSection(row, col, width, bottom int, scripts []ScriptInfo, selectedIdx, frame int) int {
+	if len(scripts) == 0 || row >= bottom {
+		return row
+	}
+	running := 0
+	for _, s := range scripts {
+		if s.State == "running" {
+			running++
+		}
+	}
+	badge := fmt.Sprintf("%d/%d up", running, len(scripts))
+	badgeColor := FgGreen
+	if running < len(scripts) {
+		badgeColor = FgYellow
+	}
+	row = r.overviewSectionHeader(row, col, width, accentScripts, "SCRIPTS", badge, badgeColor)
+
+	nameW := 14
+	if width < 60 {
+		nameW = 10
+	}
+	for i, s := range scripts {
+		if row >= bottom || i >= 8 {
+			break
+		}
+		icon, iconColor := processStateIcon(s.State, s.HasAlerts, frame)
+		stateColor := StateColorCode(s.State)
+		selected := i == selectedIdx
+
+		// meta: restart count, fail count, then a failed-state error tail.
+		var meta []string
+		if s.StartCount > 1 {
+			meta = append(meta, fmt.Sprintf("×%d", s.StartCount))
+		}
+		if s.FailCount > 0 {
+			meta = append(meta, fmt.Sprintf("fails %d", s.FailCount))
+		}
+
+		r.moveTo(row, col+1)
+		if selected {
+			// Plain, color-free line under reverse video for a clean bar.
+			plain := fmt.Sprintf("%s %s %-9s", icon, padCell(s.Name, nameW), s.State)
+			if len(meta) > 0 {
+				plain += " " + strings.Join(meta, " ")
+			}
+			if s.LastError != "" && s.State == "failed" {
+				plain += " " + s.LastError
+			}
+			r.write(Reverse + padCell(plain, width-1) + Reset)
+			row++
+			continue
+		}
+		var b strings.Builder
+		b.WriteString(fmt.Sprintf("%s%s%s %s%s%s %s%-9s%s",
+			iconColor, icon, Reset,
+			FgWhite, padCell(s.Name, nameW), Reset,
+			stateColor, s.State, Reset))
+		if len(meta) > 0 {
+			metaColor := FgBrightBlack
+			if s.FailCount > 0 {
+				metaColor = FgRed
+			}
+			b.WriteString(" " + metaColor + strings.Join(meta, " ") + Reset)
+		}
+		if s.LastError != "" && s.State == "failed" {
+			used := 1 + nameW + 1 + 9 + 1
+			for _, m := range meta {
+				used += len([]rune(m)) + 1
+			}
+			if rem := width - used - 2; rem > 4 {
+				b.WriteString(" " + FgBrightBlack + padCellTrim(s.LastError, rem) + Reset)
+			}
+		}
+		r.write(b.String())
+		row++
+	}
+	if row < bottom {
+		row++ // trailing blank
+	}
+	return row
+}
+
+// padCellTrim truncates s to at most w display cells with an ellipsis, without
+// padding (used for trailing free-form text).
+func padCellTrim(s string, w int) string {
+	rs := []rune(s)
+	if len(rs) <= w {
+		return s
+	}
+	if w < 1 {
+		return ""
+	}
+	return string(rs[:w-1]) + "…"
+}
+
+// drawProxiesSection renders proxies with their listen URL, uptime, request
+// count, and error badge.
+func (r *Renderer) drawProxiesSection(row, col, width, bottom int, proxies []ProxyInfo) int {
+	if len(proxies) == 0 || row >= bottom {
+		return row
+	}
+	nErr := 0
+	for _, p := range proxies {
+		if p.HasErrors {
+			nErr++
+		}
+	}
+	badge := fmt.Sprintf("%d", len(proxies))
+	badgeColor := FgBrightBlack
+	if nErr > 0 {
+		badge = fmt.Sprintf("%d · %d err", len(proxies), nErr)
+		badgeColor = FgRed
+	}
+	row = r.overviewSectionHeader(row, col, width, accentProxies, "PROXIES", badge, badgeColor)
+
+	nameW := 10
+	for _, p := range proxies {
+		if row >= bottom {
+			break
+		}
+		r.moveTo(row, col+1)
+		url := NormalizeListenAddr(p.ListenAddr)
+		var meta []string
+		if p.Uptime != "" {
+			meta = append(meta, "up "+p.Uptime)
+		}
+		if p.TotalRequests > 0 {
+			meta = append(meta, fmt.Sprintf("%d req", p.TotalRequests))
+		}
+		var b strings.Builder
+		b.WriteString(fmt.Sprintf("%s%s%s %s%s%s",
+			FgWhite+Bold, padCell(stripProjectPrefix(p.ID), nameW), Reset,
+			FgBrightCyan+Underline, url, Reset))
+		if len(meta) > 0 {
+			b.WriteString(fmt.Sprintf("  %s%s%s", FgBrightBlack, strings.Join(meta, " · "), Reset))
+		}
+		if p.HasErrors {
+			b.WriteString(fmt.Sprintf("  %s%s%d%s", FgRed, IconWarning, p.ErrorCount, Reset))
+		}
+		r.write(b.String())
+		row++
+	}
+	if row < bottom {
+		row++
+	}
+	return row
+}
+
+// drawPortsSection renders the visible ports as an aligned table with a dim
+// column header. hiddenPorts drives the ":toggle-ports" affordance in the badge.
+func (r *Renderer) drawPortsSection(row, col, width, bottom int, ports []PortInfo, hiddenPorts int) int {
+	if (len(ports) == 0 && hiddenPorts == 0) || row >= bottom {
+		return row
+	}
+	badge := ""
+	badgeColor := FgBrightBlack
+	if hiddenPorts > 0 {
+		badge = fmt.Sprintf("%d hidden · :toggle-ports", hiddenPorts)
+	}
+	row = r.overviewSectionHeader(row, col, width, accentPorts, "PORTS", badge, badgeColor)
+
+	ownerW := 18
+	if width < 60 {
+		ownerW = 12
+	}
+	// Column header row.
+	if row < bottom && len(ports) > 0 {
+		r.moveTo(row, col+1)
+		r.write(fmt.Sprintf("%s  %-6s %-*s %s%s", FgBrightBlack, "port", ownerW, "owner", "state", Reset))
+		row++
+	}
+	for i, p := range ports {
+		if row >= bottom || i >= 8 {
+			break
+		}
+		r.moveTo(row, col+1)
+		var icon, iconColor, tag, tagColor string
+		switch p.Status {
+		case "managed":
+			icon, iconColor = "●", FgGreen
+			tag, tagColor = "managed", FgGreen
+		case "conflict":
+			icon, iconColor = "!", FgRed
+			tag, tagColor = "CONFLICT", FgRed+Bold
+		default:
+			icon, iconColor = "●", FgYellow
+			tag, tagColor = "unmanaged", FgBrightBlack
+		}
+		owner := p.Name
+		if owner == "" {
+			if p.PID > 0 {
+				owner = fmt.Sprintf("pid %d", p.PID)
+			} else {
+				owner = "unknown"
+			}
+		}
+		if p.Windows {
+			owner += " (win)"
+		}
+		r.write(fmt.Sprintf("%s%s%s %s%-6d%s %s%s%s %s%s%s",
+			iconColor, icon, Reset,
+			FgWhite+Bold, p.Port, Reset,
+			FgWhite, padCell(owner, ownerW), Reset,
+			tagColor, tag, Reset))
+		row++
+	}
+	if len(ports) > 8 && row < bottom {
+		r.moveTo(row, col+1)
+		r.write(fmt.Sprintf("%s… %d more%s", FgBrightBlack, len(ports)-8, Reset))
+		row++
+	}
+	if row < bottom {
+		row++
+	}
+	return row
+}
+
+// drawOrphansSection renders orphaned process groups (leader dead, members
+// alive) with a kill affordance.
+func (r *Renderer) drawOrphansSection(row, col, width, bottom int, orphans []OrphanInfo) int {
+	if len(orphans) == 0 || row >= bottom {
+		return row
+	}
+	row = r.overviewSectionHeader(row, col, width, accentOrphans, "ORPHANS", ":kill-orphans", FgBrightBlack)
+	for i, o := range orphans {
+		if row >= bottom || i >= 5 {
+			break
+		}
+		r.moveTo(row, col+1)
+		r.write(fmt.Sprintf("%s⚠%s pgid %s%-7d%s %s%d procs · leader dead%s",
+			FgYellow, Reset,
+			FgWhite+Bold, o.PGID, Reset,
+			FgBrightBlack, o.Count, Reset))
+		row++
+	}
+	if row < bottom {
+		row++
+	}
+	return row
+}
+
+// drawErrorsSection renders the recent-error list with per-row age.
+func (r *Renderer) drawErrorsSection(row, col, width, bottom int, errs []ErrorInfo) int {
+	if len(errs) == 0 || row >= bottom {
+		return row
+	}
+	row = r.overviewSectionHeader(row, col, width, accentErrors, "RECENT ERRORS",
+		fmt.Sprintf("%d", len(errs)), FgRed)
+	for i, e := range errs {
+		if row >= bottom || i >= 5 {
+			break
+		}
+		r.moveTo(row, col+1)
+		age := formatShortTimeAgo(e.Timestamp)
+		msgW := width - 4 - len([]rune(age)) - 2
+		if msgW < 8 {
+			msgW = 8
+		}
+		r.write(fmt.Sprintf("%s%s%s %s %s%s%s",
+			FgRed, IconError, Reset,
+			padCellTrim(e.Message, msgW),
+			FgBrightBlack, age, Reset))
+		row++
+	}
+	if row < bottom {
+		row++
+	}
+	return row
+}
+
+// drawOverviewEmptyState renders an intentional quick-start block when there is
+// nothing running, rather than leaving the panel blank.
+func (r *Renderer) drawOverviewEmptyState(row, col, width, bottom int, connected bool) int {
+	if row >= bottom {
+		return row
+	}
+	title := "QUICK START"
+	row = r.overviewSectionHeader(row, col, width, accentScripts, title, "", FgBrightBlack)
+	var lines []string
+	if connected {
+		lines = []string{
+			FgWhite + "No scripts running yet." + Reset,
+			FgBrightBlack + "•" + Reset + " declare dev scripts in " + FgCyan + ".agnt.kdl" + Reset,
+			FgBrightBlack + "•" + Reset + " press " + FgCyan + Bold + ":" + Reset + " to run a command",
+			FgBrightBlack + "•" + Reset + " wrap a tool with " + FgCyan + "agnt run <cmd>" + Reset,
+		}
+	} else {
+		lines = []string{
+			FgWhite + "Waiting for the agnt daemon." + Reset,
+			FgBrightBlack + "•" + Reset + " press " + FgCyan + Bold + "c" + Reset + " to reconnect",
+			FgBrightBlack + "•" + Reset + " the daemon auto-starts with " + FgCyan + "agnt run" + Reset,
+		}
+	}
+	for _, ln := range lines {
+		if row >= bottom {
+			break
+		}
+		r.moveTo(row, col+1)
+		r.write(ln)
+		row++
+	}
+	if row < bottom {
+		row++
+	}
+	return row
 }
 
 // drawProcessPanelContent draws the content for a process panel.
