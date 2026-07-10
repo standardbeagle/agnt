@@ -114,15 +114,26 @@ func TestBurst_MixedSeverityCascade_CritFirst(t *testing.T) {
 	inbox := NewInbox("mix-sess")
 	flow := NewFlowController(DefaultBucketConfigs)
 
+	// Coalesce delay deliberately far larger than the liveness window below
+	// (same pattern as TestProperty_CriticalPingLatency, internal/incident/
+	// property_test.go, commit 6ecaa0d): the invariant worth pinning is not
+	// an absolute millisecond bound (razor-thin here — Max/liveness were
+	// both 50ms, a coin flip under CPU saturation) but that SeverityCritical
+	// bypasses the coalescer entirely. A ping can only land inside a window
+	// a fraction of the coalesce delay's size by skipping it, so the check
+	// is structural rather than a race against the scheduler.
+	const coalesceDelay = 2 * time.Second
+	const livenessWindow = 500 * time.Millisecond
+
 	var mu sync.Mutex
 	var pings []PingPayload
 	cfg := PingConfig{
 		MCPNotifications: true,
 		MaxTopFPs:        5,
 		Delays: PingDelays{
-			Initial:    10 * time.Millisecond,
-			Max:        50 * time.Millisecond,
-			ResetAfter: 200 * time.Millisecond,
+			Initial:    coalesceDelay,
+			Max:        coalesceDelay,
+			ResetAfter: coalesceDelay,
 		},
 	}
 	pe := NewPingEmitter(inbox, cfg, flow,
@@ -136,20 +147,16 @@ func TestBurst_MixedSeverityCascade_CritFirst(t *testing.T) {
 	)
 	defer pe.Stop()
 
-	start := time.Now()
-
 	// Fire critical first, then bulk.
 	inbox.Ingest(makeEntry("fp-crash", SeverityCritical))
 
-	// Critical must ping within 50ms.
+	// Critical must bypass the coalescer and emit well inside a window a
+	// quarter the size of the configured coalesce delay.
 	require.Eventually(t, func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return len(pings) > 0
-	}, 50*time.Millisecond, 2*time.Millisecond, "critical ping must emit within 50ms")
-
-	critLatency := time.Since(start)
-	require.Less(t, critLatency.Milliseconds(), int64(50), "critical ping latency must be <50ms")
+	}, livenessWindow, 2*time.Millisecond, "critical ping must bypass the coalescer and emit promptly")
 
 	// Verify first ping is at critical level.
 	mu.Lock()

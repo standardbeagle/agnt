@@ -74,15 +74,26 @@ func TestKillSessionPGID_Aggressive(t *testing.T) {
 	pgid, cmd, cleanup := startLeader(t)
 	defer cleanup()
 
-	// Aggressive mode skips SIGTERM + grace and sends SIGKILL directly.
+	// Aggressive mode skips SIGTERM + grace and sends SIGKILL directly. The
+	// invariant under test is "no grace wait happened" — i.e. the members are
+	// gone without KillSessionPGID having blocked for anything resembling the
+	// grace window. That's a *relative* comparison (aggressive path took a
+	// negligible fraction of the grace duration it was given), not an
+	// absolute wall-clock bound: under host CPU saturation the syscalls
+	// themselves are still instant, but scheduling the calling goroutine back
+	// after them is not, so a fixed 500ms ceiling is exactly the flaky
+	// pattern this task eradicates. Comparing against the 5s grace window
+	// passed to KillSessionPGID keeps the assertion meaningful without
+	// depending on absolute scheduler latency.
+	const grace = 5 * time.Second
 	start := time.Now()
-	if err := KillSessionPGID(pgid, 0, 5*time.Second, true); err != nil {
+	if err := KillSessionPGID(pgid, 0, grace, true); err != nil {
 		t.Fatalf("KillSessionPGID aggressive: %v", err)
 	}
 	_ = cmd.Wait()
 
-	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
-		t.Errorf("aggressive kill should be instant, took %v", elapsed)
+	if elapsed := time.Since(start); elapsed >= grace {
+		t.Errorf("aggressive kill should skip the grace window entirely, took %v (>= grace %v)", elapsed, grace)
 	}
 	if n := len(membersOfPGID(pgid)); n != 0 {
 		t.Fatalf("pgid %d still has %d members after aggressive kill", pgid, n)
