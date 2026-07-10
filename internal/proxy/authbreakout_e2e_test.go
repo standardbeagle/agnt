@@ -174,6 +174,29 @@ func waitContentElementText(ctx context.Context, t *testing.T, id string) string
 		func(v string) bool { return v != "" })
 }
 
+// waitShellAuthReady polls the top-level (shell) window until the
+// instrumentation bundle has loaded and registered window.__devtool_auth.
+//
+// The shell HTML is served with a `<script src=".../inject....js">` tag
+// (see injector.go); that script is fetched and executed asynchronously
+// after WaitVisible's DOM check already succeeded, so "the content iframe
+// element exists" does not imply "the breakout relay is registered." Every
+// caller in this file used to paper over that gap with a fixed
+// cdp.Sleep(400ms) "instrumentation eval" wait. That is exactly a
+// load-sensitive wall-clock assertion: under CPU saturation, script fetch +
+// execution can take longer than 400ms, so a caller that fires window.open
+// (PopupMarkerSurvivesNameLoss does this directly, with no intervening
+// readiness check) before the relay listener attaches loses the popup
+// callback and hangs until the outer 15s poll deadline — this is the
+// documented "never reproduced in isolation, only under load" flake.
+// Polling for the real readiness signal removes the dependency on wall time
+// entirely.
+func waitShellAuthReady(ctx context.Context, t *testing.T) {
+	t.Helper()
+	waitContentCondition(ctx, t, `!!(window.__devtool_auth && window.__devtool_auth.breakout)`,
+		"shell window.__devtool_auth ready", func(v string) bool { return v == "true" })
+}
+
 // TestE2E_AuthBreakout_PopupRoundTrip drives the full flow: a click on a
 // cross-origin auth link inside the content iframe is intercepted, run in a
 // popup, and the IdP's callback lands back in the *same* iframe — proving the
@@ -192,8 +215,8 @@ func TestE2E_AuthBreakout_PopupRoundTrip(t *testing.T) {
 	require.NoError(t, cdp.Run(ctx,
 		cdp.Navigate("http://"+ps.ListenAddr+"/"),
 		cdp.WaitVisible(`#__devtool_content_frame`, cdp.ByID),
-		cdp.Sleep(400*time.Millisecond), // instrumentation eval
 	))
+	waitShellAuthReady(ctx, t)
 
 	// The shell must expose the breakout API before anything can use it.
 	var hasAPI bool
@@ -260,8 +283,8 @@ func TestE2E_AuthBreakout_PopupMarkerSurvivesNameLoss(t *testing.T) {
 	require.NoError(t, cdp.Run(ctx,
 		cdp.Navigate("http://"+ps.ListenAddr+"/"),
 		cdp.WaitVisible(`#__devtool_content_frame`, cdp.ByID),
-		cdp.Sleep(400*time.Millisecond),
 	))
+	waitShellAuthReady(ctx, t)
 
 	// Reproduce breakout()'s popup step by hand, but with a foreign window name.
 	// The marker is written to the opener's sessionStorage before window.open so
@@ -292,8 +315,8 @@ func TestE2E_AuthBreakout_ServerRedirectStub(t *testing.T) {
 	require.NoError(t, cdp.Run(ctx,
 		cdp.Navigate("http://"+ps.ListenAddr+"/"),
 		cdp.WaitVisible(`#__devtool_content_frame`, cdp.ByID),
-		cdp.Sleep(400*time.Millisecond),
 	))
+	waitShellAuthReady(ctx, t)
 
 	// Navigate the iframe to a path the backend 302s to the IdP. The redirect
 	// never reaches the browser — the proxy replaces it with the stub.
