@@ -95,9 +95,47 @@ func newBrowser(t *testing.T, timeout time.Duration) context.Context {
 	return ctx
 }
 
-// contentHref reads the live URL of the shell's content iframe (same origin).
-const contentHrefJS = `(function(){var f=document.getElementById('__devtool_content_frame');` +
-	`try{return f?f.contentWindow.location.href:'';}catch(e){return 'CROSS_ORIGIN';}})()`
+// waitContentCondition is the single shared poll primitive for reading state
+// out of the content iframe across a navigation. jsExpr is a JS expression
+// (not a function body — it is wrapped) that must:
+//   - return null/false/"" ("not ready") rather than throw when the frame is
+//     mid-navigation, detached, or the frame's document hasn't loaded far
+//     enough yet — a thrown exception here would abort the whole Evaluate
+//     call, not just this poll iteration, which is exactly the observability
+//     hole that let a transient wrong read through uncaught in earlier
+//     versions of these waits;
+//   - return the value to check once ready.
+//
+// ready reports whether a returned string value satisfies the wait. Polling
+// continues until ready returns true or the deadline elapses, at which point
+// the failure message includes the last observed value so a real hang is
+// distinguishable from "poll never even fired."
+func waitContentCondition(ctx context.Context, t *testing.T, jsExpr, desc string, ready func(string) bool) string {
+	t.Helper()
+	js := fmt.Sprintf(`(function(){var v=(%s);return v===null||v===undefined?'':String(v);})()`, jsExpr)
+	var last string
+	deadline := time.Now().Add(15 * time.Second)
+	for time.Now().Before(deadline) {
+		var val string
+		if err := cdp.Run(ctx, cdp.Evaluate(js, &val)); err == nil {
+			last = val
+			if ready(val) {
+				return val
+			}
+		}
+		if err := cdp.Run(ctx, cdp.Sleep(150*time.Millisecond)); err != nil {
+			t.Fatalf("browser died while polling %s: %v", desc, err)
+		}
+	}
+	t.Fatalf("%s never satisfied (last: %q)", desc, last)
+	return ""
+}
+
+// contentHrefExpr reads the live URL of the shell's content iframe (same
+// origin), returning empty string rather than throwing on cross-origin/detached reads
+// so waitContentCondition's poll loop keeps going instead of aborting.
+const contentHrefExpr = `(function(){var f=document.getElementById('__devtool_content_frame');` +
+	`try{return f?f.contentWindow.location.href:'';}catch(e){return '';}})()`
 
 // waitContentHref polls the content frame URL until it contains want. The
 // iframe's location.href updates as soon as navigation commits, which is
@@ -107,31 +145,21 @@ const contentHrefJS = `(function(){var f=document.getElementById('__devtool_cont
 // is ready the instant the href matches.
 func waitContentHref(ctx context.Context, t *testing.T, want string) string {
 	t.Helper()
-	var href string
-	deadline := time.Now().Add(15 * time.Second)
-	for time.Now().Before(deadline) {
-		if err := cdp.Run(ctx, cdp.Evaluate(contentHrefJS, &href)); err == nil && strings.Contains(href, want) {
-			return href
-		}
-		if err := cdp.Run(ctx, cdp.Sleep(150*time.Millisecond)); err != nil {
-			t.Fatalf("browser died while polling content frame: %v", err)
-		}
-	}
-	t.Fatalf("content frame never reached %q (last: %q)", want, href)
-	return ""
+	return waitContentCondition(ctx, t, contentHrefExpr, fmt.Sprintf("content frame href containing %q", want),
+		func(v string) bool { return strings.Contains(v, want) })
 }
 
-// contentElementTextJS reads the textContent of an element by id inside the
-// content iframe, returning null (not throwing) when the frame's document
-// hasn't loaded that element yet — so the poll below can distinguish "not
-// ready yet" from a real error.
-const contentElementTextJS = `(function(id){
+// contentElementTextExpr reads the textContent of an element by id inside the
+// content iframe, returning empty string (not throwing) when the frame's document
+// hasn't loaded that element yet — so the poll can distinguish "not ready
+// yet" from a real error.
+const contentElementTextExpr = `(function(id){
 	var f=document.getElementById('__devtool_content_frame');
-	if(!f)return null;
+	if(!f)return '';
 	try{
 		var d=f.contentWindow.document.getElementById(id);
-		return d?d.textContent:null;
-	}catch(e){return null;}
+		return d?d.textContent:'';
+	}catch(e){return '';}
 })(%q)`
 
 // waitContentElementText polls the content frame for an element by id and
@@ -141,19 +169,9 @@ const contentElementTextJS = `(function(id){
 // content immediately after waitContentHref races the frame's document-load.
 func waitContentElementText(ctx context.Context, t *testing.T, id string) string {
 	t.Helper()
-	var text *string
-	deadline := time.Now().Add(15 * time.Second)
-	js := fmt.Sprintf(contentElementTextJS, id)
-	for time.Now().Before(deadline) {
-		if err := cdp.Run(ctx, cdp.Evaluate(js, &text)); err == nil && text != nil && *text != "" {
-			return *text
-		}
-		if err := cdp.Run(ctx, cdp.Sleep(150*time.Millisecond)); err != nil {
-			t.Fatalf("browser died while polling content frame element #%s: %v", id, err)
-		}
-	}
-	t.Fatalf("content frame element #%s never populated", id)
-	return ""
+	js := fmt.Sprintf(contentElementTextExpr, id)
+	return waitContentCondition(ctx, t, js, fmt.Sprintf("content frame element #%s populated", id),
+		func(v string) bool { return v != "" })
 }
 
 // TestE2E_AuthBreakout_PopupRoundTrip drives the full flow: a click on a
