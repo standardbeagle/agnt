@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -570,9 +571,14 @@ func setupAlertScanner(projectPath, sessionCode string, netOverlay *Overlay, dae
 					Instant: true,
 				})
 			}
-			// Push alert matches to daemon store for get_errors queries
+			// Push alert matches to daemon store for get_errors queries.
+			// Protected (explicit user action) matches are not errors — skip
+			// them so panel messages / sketches don't pollute get_errors.
 			if daemonHandle != nil && daemonHandle.IsConnected() {
 				for _, m := range batch.Matches {
+					if m.Protected {
+						continue
+					}
 					_ = daemonHandle.client.AlertReport(protocol.AlertReportPayload{
 						PatternID:   m.Pattern.ID,
 						Severity:    string(m.Pattern.Severity),
@@ -1357,9 +1363,12 @@ type pipelineRuntime struct {
 	outputGate      *overlay.OutputGate
 	startupSplash   *overlay.StartupSplash
 	activityMonitor *overlay.ActivityMonitor
-	alertScanner    *overlay.AlertScanner
-	daemonConn      *daemon.Conn
-	resourceTap     *resourceErrorTap
+	// alertScanner is assigned from the PTY-output goroutine and read from the
+	// StatusFetcher goroutine (queue-depth provider) and Stop(); an atomic
+	// pointer keeps those cross-goroutine accesses race-free.
+	alertScanner atomic.Pointer[overlay.AlertScanner]
+	daemonConn   *daemon.Conn
+	resourceTap  *resourceErrorTap
 }
 
 // Done returns the channel that closes when the PTY output goroutine
@@ -1386,8 +1395,8 @@ func (r *pipelineRuntime) Stop() {
 	if r.activityMonitor != nil {
 		r.activityMonitor.Stop()
 	}
-	if r.alertScanner != nil {
-		r.alertScanner.Stop()
+	if s := r.alertScanner.Load(); s != nil {
+		s.Stop()
 	}
 	if r.statusFetcher != nil {
 		r.statusFetcher.Stop()
@@ -1560,13 +1569,14 @@ func runOverlayPipeline(
 		// alertScanner routes browser/HTTP proxy events through the
 		// canonical dedup/batch/activity-defer queue. Stored on the
 		// runtime so Stop() can call alertScanner.Stop() deterministically.
-		rt.alertScanner = setupAlertScanner(projectPath, sessionCode, rt.netOverlay, rt.daemonHandle, func() overlay.ActivityState {
+		scanner := setupAlertScanner(projectPath, sessionCode, rt.netOverlay, rt.daemonHandle, func() overlay.ActivityState {
 			if rt.activityMonitor != nil {
 				return rt.activityMonitor.State()
 			}
 			return overlay.ActivityIdle
 		})
-		if rt.alertScanner != nil {
+		rt.alertScanner.Store(scanner)
+		if scanner != nil {
 			// Wire the canonical queue into the auto-forward path so
 			// browser/HTTP errors share dedup, batch, and activity-defer
 			// with process alerts from the daemon scanner.
@@ -1576,7 +1586,7 @@ func runOverlayPipeline(
 					agntCfg != nil && agntCfg.Alerts != nil && agntCfg.Alerts.OutageHold != nil {
 					cascade = agntCfg.Alerts.OutageHold.GetJSCascadePatterns()
 				}
-				rt.netOverlay.SetAlertScanner(rt.alertScanner, cascade)
+				rt.netOverlay.SetAlertScanner(scanner, cascade)
 			}
 		}
 
@@ -1770,6 +1780,15 @@ func setupTerminalOverlay(ctx context.Context, handle *ptyHandle, rt *pipelineRu
 	})
 
 	rt.statusFetcher = overlay.NewStatusFetcher(daemonClient, rt.termOverlay, 2*time.Second)
+	// Surface the in-process alert-queue depth in the status bar / overview.
+	// Read lazily through the atomic pointer because the scanner is created
+	// by the PTY-output goroutine, which may not have run yet.
+	rt.statusFetcher.SetQueueDepthProvider(func() overlay.QueueDepth {
+		if s := rt.alertScanner.Load(); s != nil {
+			return s.DepthSnapshot()
+		}
+		return overlay.QueueDepth{}
+	})
 	rt.statusFetcher.Start(ctx)
 	rt.inputRouter.SetStatusFetcher(rt.statusFetcher)
 

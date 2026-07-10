@@ -43,6 +43,10 @@ const (
 	AlertSourceBrowser AlertSource = "browser"
 	// AlertSourceHTTP is an HTTP 4xx/5xx response injected from a proxy.
 	AlertSourceHTTP AlertSource = "http"
+	// AlertSourceUser is content originating from an explicit user action
+	// (browser panel message, sketch, design-mode interaction). Such matches
+	// set Protected so the overload throttle and dedup never drop them.
+	AlertSourceUser AlertSource = "user"
 )
 
 // AlertMatch represents a single matched alert from process output.
@@ -59,12 +63,23 @@ type AlertMatch struct {
 	// wrapper. AlertBatch.Format honors RenderedText when every match in
 	// a batch carries it, otherwise falls back to the default wrapper.
 	RenderedText string
+	// Protected marks content from an explicit user action (panel message,
+	// sketch, design interaction). Protected matches MUST NEVER be dropped:
+	// they bypass dedup (a repeated user action is intentional) and are never
+	// evicted by the overload throttle. They still honor activity-deferral so
+	// they are not injected mid-response. See the messaging-queue skill.
+	Protected bool
 }
 
 // AlertBatch is a collection of alert matches to be delivered together.
 type AlertBatch struct {
 	Matches  []*AlertMatch
 	ScriptID string
+	// Suppressed is the number of alerts dropped by the overload throttle
+	// since the last flush (queue exceeded MaxPending while the agent was
+	// busy). When > 0, Format appends a one-line summary so the agent knows
+	// the stream was throttled rather than silently lossy.
+	Suppressed int
 }
 
 // MaxSeverity returns the highest severity in the batch.
@@ -108,6 +123,7 @@ func (b *AlertBatch) Format() string {
 				sb.WriteByte('\n')
 			}
 		}
+		b.appendSuppressedNote(&sb)
 		return sb.String()
 	}
 
@@ -141,7 +157,18 @@ func (b *AlertBatch) Format() string {
 		sb.WriteString("\nConsider restarting the dev server.\n")
 	}
 
+	b.appendSuppressedNote(&sb)
 	return sb.String()
+}
+
+// appendSuppressedNote appends the overload-throttle summary line when the
+// batch carries dropped alerts. Kept to a single line so a throttled burst
+// stays token-cheap while still telling the agent the stream was capped.
+func (b *AlertBatch) appendSuppressedNote(sb *strings.Builder) {
+	if b.Suppressed <= 0 {
+		return
+	}
+	fmt.Fprintf(sb, "[agnt] %d more alert(s) suppressed (queue full while agent busy)\n", b.Suppressed)
 }
 
 // AlertScannerConfig configures the AlertScanner.
@@ -170,7 +197,22 @@ type AlertScannerConfig struct {
 	// RetryInterval is how often the scanner retries delivering deferred alerts.
 	// Zero means use the default (2s).
 	RetryInterval time.Duration
+
+	// MaxPending caps the depth of the pending batch — the overload throttle.
+	// While the agent is busy, flush is deferred and distinct (non-duplicate)
+	// alerts accumulate; without a cap a burst would flood the agent's input
+	// the moment it goes idle. When pending exceeds MaxPending the scanner
+	// evicts the oldest lowest-severity entry (errors are preserved longest)
+	// and counts it as suppressed. Zero means use the default (50).
+	MaxPending int
 }
+
+// protectedBatchWindow is the coalesce window used when the pending batch is
+// started by a protected (explicit user action) entry. Kept short so an
+// interactive panel message / sketch is delivered promptly when the agent is
+// idle, rather than waiting the full error-oriented batch window. Protected
+// entries still honor activity-deferral, so they never land mid-response.
+const protectedBatchWindow = 150 * time.Millisecond
 
 // matchBufSize is the fixed capacity of the ring buffer for recent matches.
 const matchBufSize = 200
@@ -224,6 +266,8 @@ type AlertScanner struct {
 	flushRetries  int
 	maxRetries    int
 	retryInterval time.Duration
+	maxPending    int // overload-throttle high-water mark for pending
+	overflow      int // alerts dropped by the throttle since last flush
 
 	// deliverCh serializes alert delivery. flush() enqueues batches here and a
 	// single deliveryLoop goroutine calls onAlert one batch at a time. onAlert
@@ -283,6 +327,11 @@ func NewAlertScanner(cfg AlertScannerConfig) *AlertScanner {
 		retryInterval = 2 * time.Second
 	}
 
+	maxPending := cfg.MaxPending
+	if maxPending == 0 {
+		maxPending = 50
+	}
+
 	s := &AlertScanner{
 		patterns:      append(DefaultAlertPatterns(), cfg.Patterns...),
 		disabledIDs:   disabledIDs,
@@ -294,6 +343,7 @@ func NewAlertScanner(cfg AlertScannerConfig) *AlertScanner {
 		stopCh:        make(chan struct{}),
 		maxRetries:    5,
 		retryInterval: retryInterval,
+		maxPending:    maxPending,
 		clockNow:      time.Now,
 		afterFunc:     time.AfterFunc,
 		deliverCh:     make(chan *AlertBatch, 128),
@@ -536,21 +586,85 @@ func (s *AlertScanner) addMatch(m *AlertMatch) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	// Deduplicate
-	if lastSeen, ok := s.dedupe[fp]; ok {
-		if s.clockNow().Sub(lastSeen) < s.dedupeWindow {
-			return
+	// Deduplicate — but never for protected (explicit user action) content: a
+	// user repeating an action means it intentionally, so each one is delivered.
+	if !m.Protected {
+		if lastSeen, ok := s.dedupe[fp]; ok {
+			if s.clockNow().Sub(lastSeen) < s.dedupeWindow {
+				return
+			}
 		}
+		s.dedupe[fp] = s.clockNow()
 	}
-	s.dedupe[fp] = s.clockNow()
 
 	s.pending = append(s.pending, m)
 
-	// Start batch timer if not already running
+	// Overload throttle: keep the pending batch bounded. When the agent is
+	// busy, flush is deferred and distinct alerts pile up here; without this
+	// cap a burst would dump everything into the agent's input at once. Evict
+	// the oldest lowest-severity droppable entry so genuine errors survive
+	// longest, and count the drop so flush can append a "N suppressed" summary.
+	// Protected entries are never evicted — if the queue is entirely protected
+	// it is allowed to exceed the cap rather than drop user content.
+	if s.maxPending > 0 && len(s.pending) > s.maxPending {
+		if s.evictOneLocked() {
+			s.overflow++
+		}
+	}
+
+	// Start batch timer if not already running. Protected user actions use a
+	// short coalesce window so interactive messages are not delayed by the
+	// full batch window when the agent is idle; they still defer while active.
 	if s.batchTimer == nil {
-		s.batchTimer = s.afterFunc(s.batchWindow, func() {
+		window := s.batchWindow
+		if m.Protected && protectedBatchWindow < window {
+			window = protectedBatchWindow
+		}
+		s.batchTimer = s.afterFunc(window, func() {
 			s.flush()
 		})
+	}
+}
+
+// evictOneLocked removes a single droppable entry from pending to honor the
+// overload cap. It drops the oldest entry of the lowest severity present (info
+// before warning before error), so error-level alerts are retained the longest
+// under sustained pressure. Protected (explicit user action) entries are never
+// dropped. Returns true if an entry was evicted. Caller must hold s.mu.
+func (s *AlertScanner) evictOneLocked() bool {
+	for _, sev := range []AlertSeverity{AlertSeverityInfo, AlertSeverityWarning, AlertSeverityError} {
+		for i, m := range s.pending {
+			if m.Protected {
+				continue
+			}
+			if m.Pattern.Severity == sev {
+				s.pending = append(s.pending[:i], s.pending[i+1:]...)
+				return true
+			}
+		}
+	}
+	// Everything pending is protected (or has no recognized severity): drop
+	// nothing — user content is never sacrificed to the cap.
+	return false
+}
+
+// QueueDepth is a point-in-time snapshot of the alert queue, surfaced to the
+// overlay status bar and overview panel so the developer can see throttling.
+type QueueDepth struct {
+	Pending    int  // entries waiting in the current batch
+	Suppressed int  // alerts dropped by the throttle since the last flush
+	Deferred   bool // flush is currently held off because the agent is busy
+}
+
+// DepthSnapshot returns the current queue depth for display. Safe for
+// concurrent use.
+func (s *AlertScanner) DepthSnapshot() QueueDepth {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return QueueDepth{
+		Pending:    len(s.pending),
+		Suppressed: s.overflow,
+		Deferred:   s.flushRetries > 0,
 	}
 }
 
@@ -588,28 +702,37 @@ func (s *AlertScanner) flush() {
 	s.pending = nil
 	s.batchTimer = nil
 	s.flushRetries = 0
+	suppressed := s.overflow
+	s.overflow = 0
 	s.mu.Unlock()
 
 	// Deliver batches via the single delivery goroutine so PTY injection is
 	// serialized even if this flush overlaps another.
 	if s.onAlert != nil {
-		// Sort script IDs for deterministic ordering
-		scriptIDs := make([]string, 0, len(byScript))
-		for id := range byScript {
-			scriptIDs = append(scriptIDs, id)
-		}
-		sort.Strings(scriptIDs)
-
-		for _, sid := range scriptIDs {
-			s.enqueue(&AlertBatch{
-				Matches:  byScript[sid],
-				ScriptID: sid,
-			})
-		}
+		deliverByScript(byScript, suppressed, s.onAlert)
 	}
 
 	// Prune old dedup entries periodically
 	s.pruneDedup()
+}
+
+// deliverByScript dispatches grouped matches in deterministic script order,
+// attaching the suppressed count to the first batch so the overload-throttle
+// summary is delivered exactly once.
+func deliverByScript(byScript map[string][]*AlertMatch, suppressed int, onAlert func(*AlertBatch)) {
+	scriptIDs := make([]string, 0, len(byScript))
+	for id := range byScript {
+		scriptIDs = append(scriptIDs, id)
+	}
+	sort.Strings(scriptIDs)
+
+	for i, sid := range scriptIDs {
+		batch := &AlertBatch{Matches: byScript[sid], ScriptID: sid}
+		if i == 0 {
+			batch.Suppressed = suppressed
+		}
+		onAlert(batch)
+	}
 }
 
 // pruneDedup removes expired dedup entries.
@@ -704,21 +827,12 @@ func (s *AlertScanner) deliverPending() {
 		byScript[m.ScriptID] = append(byScript[m.ScriptID], m)
 	}
 	s.pending = nil
+	suppressed := s.overflow
+	s.overflow = 0
 	s.mu.Unlock()
 
 	if s.onAlert != nil {
-		scriptIDs := make([]string, 0, len(byScript))
-		for id := range byScript {
-			scriptIDs = append(scriptIDs, id)
-		}
-		sort.Strings(scriptIDs)
-
-		for _, sid := range scriptIDs {
-			s.onAlert(&AlertBatch{
-				Matches:  byScript[sid],
-				ScriptID: sid,
-			})
-		}
+		deliverByScript(byScript, suppressed, s.onAlert)
 	}
 }
 

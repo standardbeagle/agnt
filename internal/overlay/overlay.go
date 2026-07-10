@@ -165,8 +165,12 @@ type Status struct {
 	RecentErrors    []ErrorInfo
 	StartupLog      []StartupLogEntry
 	Notices         []NoticeInfo
-	LastUpdate      time.Time
-	ForwardPaused   bool // agent-inbound push is paused (errors still pullable)
+	// Queue is the in-process alert-delivery queue depth (pending/suppressed/
+	// deferred). Populated from the AlertScanner, not the daemon, so it is
+	// available even when the daemon is unreachable.
+	Queue         QueueDepth
+	LastUpdate    time.Time
+	ForwardPaused bool // agent-inbound push is paused (errors still pullable)
 }
 
 // PanelItem represents a navigable panel in the horizontal panel view.

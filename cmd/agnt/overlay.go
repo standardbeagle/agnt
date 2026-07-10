@@ -385,8 +385,29 @@ func (o *Overlay) processProxyEvent(event ProxyEvent) {
 
 	text := formatProxyEventText(event, o.auditSummarizer)
 	if text != "" {
-		debug.Log("overlay", "injecting %d chars into PTY for event type=%s", len(text), event.Type)
-		o.typeText(TypeMessage{Text: text, Enter: true, Instant: true})
+		// These are explicit user actions (panel message, sketch, design
+		// interaction). Route them through the canonical queue as Protected so
+		// they share activity-deferral (never injected mid-response) but are
+		// NEVER dropped by the overload throttle or dedup. Fall back to direct
+		// injection only when the queue is not wired.
+		if o.alertScanner != nil {
+			debug.Log("overlay", "queueing %d chars (protected user action) type=%s", len(text), event.Type)
+			o.alertScanner.Inject(&overlay.AlertMatch{
+				Pattern: &overlay.AlertPattern{
+					ID:       "user:" + event.Type,
+					Severity: overlay.AlertSeverityInfo,
+					Category: "user",
+				},
+				Line:         text,
+				ScriptID:     "proxy:" + event.ProxyID,
+				Source:       overlay.AlertSourceUser,
+				RenderedText: text,
+				Protected:    true,
+			})
+		} else {
+			debug.Log("overlay", "injecting %d chars into PTY for event type=%s", len(text), event.Type)
+			o.typeText(TypeMessage{Text: text, Enter: true, Instant: true})
+		}
 	} else {
 		debug.Log("overlay", "formatProxyEventText returned empty for type=%s", event.Type)
 	}
