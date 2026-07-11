@@ -41,6 +41,18 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
+// RemoteReattachCommand builds the bare `agnt attach <name>` command used by
+// the reconnect state machine (task 09c): NO --create-if-missing and no
+// --cwd. This is deliberate, not an oversight — spec invariant 24 requires
+// reconnect to never re-create the named session; the caller (reconnect.go's
+// AttachFunc, wired in cmd/agnt/ssh.go) is responsible for confirming the
+// session still exists (and creating one only on explicit --create-if-missing
+// / --new opt-in, via the daemon protocol directly) before ever reaching
+// this exec, so this command can safely assume attach-only semantics.
+func RemoteReattachCommand(name string) string {
+	return "agnt attach " + shellQuote(name)
+}
+
 // PTYSession is an open "session" channel with a PTY attached, running the
 // remote agnt attach command as a dumb byte relay (spec invariant 16 — all
 // session-host framing happens remote-side; this layer only carries raw
@@ -55,6 +67,16 @@ type PTYSession struct {
 // name/cwd. The returned *PTYSession's channel is not yet relayed — call
 // Relay to pump bytes.
 func OpenPTYSession(client *ssh.Client, name, cwd string, size TermSize) (*PTYSession, error) {
+	return OpenPTYSessionWithCommand(client, RemoteAttachCommand(name, cwd), size)
+}
+
+// OpenPTYSessionWithCommand is the lower-level form of OpenPTYSession that
+// takes an already-built remote command line rather than assembling one via
+// RemoteAttachCommand. The reconnect state machine (task 09c) uses this
+// directly with RemoteReattachCommand so a reconnect attempt never sends
+// --create-if-missing over the wire, regardless of what the initial-connect
+// path does.
+func OpenPTYSessionWithCommand(client *ssh.Client, cmd string, size TermSize) (*PTYSession, error) {
 	channel, reqs, err := client.OpenChannel("session", nil)
 	if err != nil {
 		return nil, fmt.Errorf("sshclient: opening session channel: %w", err)
@@ -65,7 +87,6 @@ func OpenPTYSession(client *ssh.Client, name, cwd string, size TermSize) (*PTYSe
 		return nil, err
 	}
 
-	cmd := RemoteAttachCommand(name, cwd)
 	payload := ssh.Marshal(struct{ Command string }{cmd})
 	ok, err := channel.SendRequest("exec", true, payload)
 	if err != nil {
