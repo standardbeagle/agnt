@@ -134,6 +134,14 @@ func (g *GitHubRelease) IsNewer(currentVersion string) (bool, error) {
 	return false, nil
 }
 
+// ParseVersion parses a semantic version string into its major/minor/patch
+// components. Exported so other packages needing version comparisons (e.g.
+// internal/sshclient's compatibility-window check) reuse this parser rather
+// than duplicating semver parsing.
+func ParseVersion(version string) (major, minor, patch int, err error) {
+	return parseVersion(version)
+}
+
 // parseVersion parses a semantic version string
 func parseVersion(version string) (major, minor, patch int, err error) {
 	version = strings.TrimPrefix(version, "v")
