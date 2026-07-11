@@ -780,7 +780,8 @@ func TestEventHub_KeepaliveHeartbeat(t *testing.T) {
 	defer cancel()
 
 	events := make(chan struct{}, 4)
-	var keepalives atomic.Int64
+	var mu sync.Mutex
+	var keepaliveTimes []time.Time
 	var realEvents atomic.Int64
 
 	ready := make(chan struct{})
@@ -800,31 +801,71 @@ func TestEventHub_KeepaliveHeartbeat(t *testing.T) {
 				}
 				realEvents.Add(1)
 				keepalive.Reset(synthInterval) // reset on real event
-			case <-keepalive.C:
-				keepalives.Add(1)
+			case tick := <-keepalive.C:
+				mu.Lock()
+				keepaliveTimes = append(keepaliveTimes, tick)
+				mu.Unlock()
 			}
 		}
 	}()
 	<-ready
 
-	// Idle for ~3 intervals. Keepalive count should be at least 2.
-	time.Sleep(synthInterval * 3)
-	idleKeepalives := keepalives.Load()
-	assert.GreaterOrEqual(t, idleKeepalives, int64(2),
-		"keepalive must fire at least twice in 3 intervals (got %d)", idleKeepalives)
+	keepaliveCount := func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(keepaliveTimes)
+	}
 
-	// Fire 3 real events in tight succession — the reset on each event
-	// must prevent a keepalive from firing between them.
-	baseline := keepalives.Load()
+	// Idle phase: poll for at least 2 keepalives rather than sleeping a
+	// fixed multiple of the interval and taking a single reading — a fixed
+	// sleep is a wall-clock assertion that a starved goroutine can simply
+	// outrun (see .claude/rules/lessons flake class: replace fixed
+	// sleep+check with poll-until-condition). The timeout here is generous
+	// headroom, not the assertion itself; the assertion is the condition.
+	require.Eventually(t, func() bool { return keepaliveCount() >= 2 },
+		20*synthInterval, 2*time.Millisecond,
+		"keepalive must fire at least twice while idle (got %d)", keepaliveCount())
+
+	// Burst phase: fire 3 real events, recording the ACTUAL wall-clock time
+	// each was sent (not the nominal/assumed time). The invariant under
+	// test is "Reset() suppresses a keepalive that would otherwise fire
+	// between two consecutive resets" — that is only violated when a
+	// keepalive lands strictly between two sends whose OWN observed gap
+	// was shorter than the interval. Asserting against nominal gaps (a
+	// fixed synthInterval/4 sleep) flakes under scheduler pressure: if the
+	// sending goroutine itself is starved and the real gap balloons past
+	// synthInterval, a keepalive firing in that (now-longer) gap is
+	// CORRECT behavior, not a bug. Checking against recorded actual
+	// timestamps makes the assertion immune to scheduling jitter because
+	// it judges the code by what really happened, not by what the test
+	// assumed would happen.
+	mu.Lock()
+	baseline := len(keepaliveTimes)
+	mu.Unlock()
+
+	sendTimes := make([]time.Time, 0, 3)
 	for i := 0; i < 3; i++ {
+		sendTimes = append(sendTimes, time.Now())
 		events <- struct{}{}
 		time.Sleep(synthInterval / 4)
 	}
-	// Very short window after the last event — no keepalive should have
-	// fired because we reset the ticker well inside the interval.
-	postBurst := keepalives.Load()
-	assert.LessOrEqual(t, postBurst, baseline+1,
-		"keepalive fired too eagerly after real events (baseline=%d, post=%d)", baseline, postBurst)
+	// One more observed gap after the final send, closed by "now".
+	sendTimes = append(sendTimes, time.Now())
+
+	mu.Lock()
+	newTicks := append([]time.Time(nil), keepaliveTimes[baseline:]...)
+	mu.Unlock()
+
+	for _, tick := range newTicks {
+		for i := 0; i < len(sendTimes)-1; i++ {
+			if tick.After(sendTimes[i]) && tick.Before(sendTimes[i+1]) {
+				actualGap := sendTimes[i+1].Sub(sendTimes[i])
+				assert.GreaterOrEqual(t, actualGap, synthInterval,
+					"keepalive fired at %v between sends at %v and %v (observed gap %v < interval %v) — Reset did not suppress it",
+					tick, sendTimes[i], sendTimes[i+1], actualGap, synthInterval)
+			}
+		}
+	}
 	assert.Equal(t, int64(3), realEvents.Load(),
 		"all real events should have been consumed")
 
