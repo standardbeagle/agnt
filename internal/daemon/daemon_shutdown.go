@@ -106,7 +106,7 @@ func (d *Daemon) startupPortCleanup(ctx context.Context) int {
 	cleaned := 0
 
 	for _, port := range ports {
-		linuxPIDs, windowsPIDs := config.FindPIDsByPortTagged(ctx, port)
+		linuxPIDs, windowsPIDs := findPortHoldersWithRetry(ctx, port)
 		// Linux PIDs go through the managed-PID filter and self-exclusion
 		// gate; Windows PIDs (sourced from netstat.exe on WSL) are never
 		// in our managed set or our process tree, so they bypass both.
@@ -177,6 +177,36 @@ func (d *Daemon) startupPortCleanup(ctx context.Context) int {
 		debug.Info("daemon", "startup port cleanup: freed %d port(s)", cleaned)
 	}
 	return cleaned
+}
+
+// findPortHoldersWithRetry scans a port for holders, retrying a handful of
+// times with a short backoff before concluding no holder exists. A single
+// /proc snapshot (config.FindPIDsByPortTagged walks /proc/net/tcp then
+// /proc/*/fd) can transiently miss a socket that is genuinely bound at scan
+// time when the host is under heavy scheduling pressure — the walk across a
+// crowded /proc can simply not land on the right fd in one pass. Gating the
+// entire cleanup decision for a port on a single such scan means a transient
+// miss silently skips killing an orphan we already know (from persisted
+// proxy state) was expected to be there. Retrying turns that one-shot gate
+// into a poll-until-settled read; a genuinely-free port pays only the small,
+// bounded cost of exhausting the attempts.
+func findPortHoldersWithRetry(ctx context.Context, port int) (linuxPIDs, windowsPIDs []int) {
+	const attempts = 4
+	const backoff = 50 * time.Millisecond
+	for i := 0; i < attempts; i++ {
+		linuxPIDs, windowsPIDs = config.FindPIDsByPortTagged(ctx, port)
+		if len(linuxPIDs) > 0 || len(windowsPIDs) > 0 {
+			return linuxPIDs, windowsPIDs
+		}
+		if i < attempts-1 {
+			select {
+			case <-ctx.Done():
+				return linuxPIDs, windowsPIDs
+			case <-time.After(backoff):
+			}
+		}
+	}
+	return linuxPIDs, windowsPIDs
 }
 
 // collectPersistedPorts returns deduplicated ports from persisted proxy state.
