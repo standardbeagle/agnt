@@ -711,17 +711,9 @@ func (s *AlertScanner) flush() {
 		return
 	}
 
-	// Group by scriptID
-	byScript := map[string][]*AlertMatch{}
-	for _, m := range s.pending {
-		byScript[m.ScriptID] = append(byScript[m.ScriptID], m)
-	}
-
-	s.pending = nil
 	s.batchTimer = nil
 	s.flushRetries = 0
-	suppressed := s.suppressed
-	s.suppressed = 0
+	byScript, suppressed := s.drainPendingLocked()
 	s.mu.Unlock()
 
 	// Deliver batches via the single delivery goroutine so PTY injection is
@@ -733,6 +725,20 @@ func (s *AlertScanner) flush() {
 
 	// Prune old dedup entries periodically
 	s.pruneDedup()
+}
+
+// drainPendingLocked takes the pending batch and the suppressed count,
+// resetting both, and returns the matches grouped by script for delivery.
+// Caller must hold s.mu.
+func (s *AlertScanner) drainPendingLocked() (map[string][]*AlertMatch, int) {
+	byScript := map[string][]*AlertMatch{}
+	for _, m := range s.pending {
+		byScript[m.ScriptID] = append(byScript[m.ScriptID], m)
+	}
+	s.pending = nil
+	suppressed := s.suppressed
+	s.suppressed = 0
+	return byScript, suppressed
 }
 
 // deliverByScript dispatches grouped matches in deterministic script order,
@@ -841,13 +847,7 @@ func (s *AlertScanner) deliverPending() {
 		return
 	}
 
-	byScript := map[string][]*AlertMatch{}
-	for _, m := range s.pending {
-		byScript[m.ScriptID] = append(byScript[m.ScriptID], m)
-	}
-	s.pending = nil
-	suppressed := s.suppressed
-	s.suppressed = 0
+	byScript, suppressed := s.drainPendingLocked()
 	s.mu.Unlock()
 
 	if s.onAlert != nil {
