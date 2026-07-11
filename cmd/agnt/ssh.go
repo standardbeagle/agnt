@@ -21,10 +21,7 @@ import (
 	"golang.org/x/term"
 )
 
-var (
-	sshAttachName string
-	sshTool       string
-)
+var sshAttachName string
 
 var sshCmd = &cobra.Command{
 	Use:   "ssh <host>[:path]",
@@ -53,7 +50,6 @@ implemented by other tasks in the remote-ssh epic.`,
 
 func init() {
 	sshCmd.Flags().StringVar(&sshAttachName, "attach", "", "remote session-host session name (default: derived from local cwd basename)")
-	sshCmd.Flags().StringVar(&sshTool, "tool", "", "AI tool to select on the remote side (placeholder — see OPEN GAPS in task report; not yet wired to any remote flag)")
 	rootCmd.AddCommand(sshCmd)
 }
 
@@ -81,10 +77,6 @@ func runSSH(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("agnt ssh: resolving default --attach name: %w", err)
 		}
 		attachName = filepath.Base(cwd)
-	}
-
-	if sshTool != "" {
-		fmt.Fprintf(os.Stderr, "agnt ssh: --tool %q is not yet wired to the remote agnt attach command (remote tool selection is a different task's scope) — proceeding without it\n", sshTool)
 	}
 
 	defaultUser := os.Getenv("USER")
