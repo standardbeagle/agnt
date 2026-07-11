@@ -32,12 +32,6 @@ import (
 // unwraps with errors.Is/errors.As through any %w wrapping the caller adds.
 var ErrSessionMissing = errors.New("sshclient: remote session-host session not found; reconnect will not create a new one (pass --create-if-missing or --new)")
 
-// ErrUserInterrupted is returned by Reconnector.Run when the supplied
-// context was cancelled via the Ctrl-C path (InputPump.interrupt) rather
-// than any other cause. Callers use this to distinguish "user asked to stop
-// reconnecting" (clean exit) from a genuine reconnect failure.
-var ErrUserInterrupted = errors.New("sshclient: reconnect cancelled by user (Ctrl-C)")
-
 // BackoffConfig parameterizes the exponential-with-jitter backoff schedule
 // (spec invariant 23: 1s, 2s, 4s, ... capped at 30s, ±20% jitter). BaseDelay
 // and Jitter are both injectable specifically so tests can assert
@@ -123,10 +117,12 @@ type Reconnector struct {
 
 // Run attempts to reconnect, blocking (subject to ctx and MaxAttempts)
 // across the full backoff schedule. Returns the new Client and PTYSession
-// on success. Returns ctx.Err() (or ErrUserInterrupted, if ctx was derived
-// via WatchInterrupt and cancelled through that path) on cancellation, or
-// an error wrapping ErrSessionMissing if the named session is confirmed
-// gone and Attach did not opt into creating one.
+// on success. Returns ctx.Err() on cancellation (callers that derive ctx
+// specifically to represent a local Ctrl-C, e.g. via InputPump's interrupt
+// callback, can treat that as a clean user-requested stop rather than a
+// failure — Run itself has no opinion on why ctx was cancelled), or an
+// error wrapping ErrSessionMissing if the named session is confirmed gone
+// and Attach did not opt into creating one.
 func (r *Reconnector) Run(ctx context.Context) (*Client, *PTYSession, error) {
 	attempt := 0
 	for {
@@ -140,7 +136,7 @@ func (r *Reconnector) Run(ctx context.Context) (*Client, *PTYSession, error) {
 
 		select {
 		case <-ctx.Done():
-			return nil, nil, ctxErr(ctx)
+			return nil, nil, ctx.Err()
 		case <-time.After(delay):
 		}
 
@@ -171,50 +167,6 @@ func (r *Reconnector) status(msg string) {
 	}
 }
 
-// ctxErr returns ErrUserInterrupted if ctx was cancelled through a
-// WatchInterrupt-derived cause, else the plain ctx.Err().
-func ctxErr(ctx context.Context) error {
-	if ic, ok := ctx.Value(interruptCtxKey{}).(*bool); ok && *ic {
-		return ErrUserInterrupted
-	}
-	return ctx.Err()
-}
-
-type interruptCtxKey struct{}
-
-// WatchInterrupt derives a child context from parent that is also cancelled
-// the moment in delivers a literal Ctrl-C byte (0x03). This exists because a
-// raw-mode terminal (term.MakeRaw disables ISIG) never delivers a real
-// SIGINT for Ctrl-C — the byte arrives as ordinary stdin data — and during
-// the RECONNECTING window there is no live Relay() loop forwarding stdin to
-// a remote that doesn't exist yet, so the reconnect loop must watch for it
-// directly. The returned cancel func must still be called by the caller to
-// release resources in the non-interrupt case.
-func WatchInterrupt(parent context.Context, in io.Reader) (context.Context, context.CancelFunc) {
-	interrupted := new(bool)
-	ctx, cancel := context.WithCancel(context.WithValue(parent, interruptCtxKey{}, interrupted))
-	go func() {
-		buf := make([]byte, 256)
-		for {
-			n, err := in.Read(buf)
-			if n > 0 && bytes.IndexByte(buf[:n], 0x03) >= 0 {
-				*interrupted = true
-				cancel()
-				return
-			}
-			if err != nil {
-				return
-			}
-			select {
-			case <-ctx.Done():
-				return
-			default:
-			}
-		}
-	}()
-	return ctx, cancel
-}
-
 // InputPump owns a single real input source (os.Stdin in production) for
 // the entire process lifetime, so that repeated reconnects never leave more
 // than one goroutine blocked reading it (the generalized lesson in
@@ -223,9 +175,12 @@ func WatchInterrupt(parent context.Context, in io.Reader) (context.Context, cont
 // re-created every reconnect must have exactly one owner, or concurrent
 // stale readers race for the same bytes). It forwards bytes to whatever
 // target is currently set; while no target is set (the RECONNECTING
-// window), it instead watches for a literal Ctrl-C byte and invokes the
-// configured interrupt callback — see WatchInterrupt's doc comment for why
-// that byte cannot arrive as a real SIGINT here.
+// window), it instead watches for a literal Ctrl-C byte (0x03) and invokes
+// the configured interrupt callback: a raw-mode terminal (term.MakeRaw
+// disables ISIG) never delivers a real SIGINT for Ctrl-C — the byte arrives
+// as ordinary stdin data — and during RECONNECTING there is no live Relay()
+// loop forwarding stdin to a remote that doesn't exist yet, so this is the
+// only way Ctrl-C during backoff/reattach is observable.
 type InputPump struct {
 	mu        sync.Mutex
 	target    io.Writer

@@ -190,41 +190,33 @@ func TestInputPump_CtrlCFiresInterruptOnlyWithNoTarget(t *testing.T) {
 	srcWrite.Close() // unblock the pump's Read so the goroutine exits (goleak)
 }
 
-func TestWatchInterrupt_CancelsOnCtrlCByte(t *testing.T) {
+// TestInputPump_InterruptCancelsReconnectContext exercises the exact wiring
+// cmd/agnt/ssh.go uses: InputPump owns stdin exclusively (so it, not a
+// second reader, is what notices Ctrl-C during RECONNECTING), and its
+// interrupt callback cancels the context guarding Reconnector.Run — proving
+// the two pieces compose without a second stdin owner and without leaking
+// the pump goroutine (goleak).
+func TestInputPump_InterruptCancelsReconnectContext(t *testing.T) {
 	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
 
+	ctx, cancel := context.WithCancel(context.Background())
+	pump := NewInputPump(cancel)
+
 	src, srcWrite := io.Pipe()
-	ctx, cancel := WatchInterrupt(context.Background(), src)
-	defer cancel()
+	pump.Start(src)
+	pump.SetTarget(nil) // RECONNECTING: no live session to forward to
 
 	srcWrite.Write([]byte{0x03})
 
 	select {
 	case <-ctx.Done():
-		if !errors.Is(ctxErr(ctx), ErrUserInterrupted) {
-			t.Fatalf("ctxErr = %v, want ErrUserInterrupted", ctxErr(ctx))
-		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("context was never cancelled by Ctrl-C byte")
+		t.Fatal("Ctrl-C byte never cancelled the reconnect context")
+	}
+	if !errors.Is(ctx.Err(), context.Canceled) {
+		t.Fatalf("ctx.Err() = %v, want context.Canceled", ctx.Err())
 	}
 	srcWrite.Close()
-}
-
-func TestWatchInterrupt_ParentCancelIsPlainCtxErr(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
-
-	src, srcWrite := io.Pipe()
-	defer srcWrite.Close()
-	parent, parentCancel := context.WithCancel(context.Background())
-	ctx, cancel := WatchInterrupt(parent, src)
-	defer cancel()
-
-	parentCancel()
-
-	<-ctx.Done()
-	if errors.Is(ctxErr(ctx), ErrUserInterrupted) {
-		t.Fatal("plain parent cancellation must not be reported as ErrUserInterrupted")
-	}
 }
 
 // --- Reconnector.Run: dial/attach orchestration ---
