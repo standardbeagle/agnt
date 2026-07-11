@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"regexp"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -69,124 +68,6 @@ type AlertMatch struct {
 	// evicted by the overload throttle. They still honor activity-deferral so
 	// they are not injected mid-response. See the messaging-queue skill.
 	Protected bool
-}
-
-// AlertBatch is a collection of alert matches to be delivered together.
-type AlertBatch struct {
-	Matches  []*AlertMatch
-	ScriptID string
-	// Suppressed is the number of alerts dropped by the overload throttle
-	// since the last flush (queue exceeded MaxPending while the agent was
-	// busy). When > 0, Format appends a one-line summary so the agent knows
-	// the stream was throttled rather than silently lossy.
-	Suppressed int
-}
-
-// ProtectedOnly returns a batch holding only the protected (explicit user
-// action) matches, or nil when there are none. Used by delivery callbacks
-// that gate auto-generated alerts (forwarding pause) but must never drop
-// user content. Suppressed is not carried over — the throttle note belongs
-// to the auto-alert stream the caller is gating.
-func (b *AlertBatch) ProtectedOnly() *AlertBatch {
-	var matches []*AlertMatch
-	for _, m := range b.Matches {
-		if m.Protected {
-			matches = append(matches, m)
-		}
-	}
-	if len(matches) == 0 {
-		return nil
-	}
-	return &AlertBatch{Matches: matches, ScriptID: b.ScriptID}
-}
-
-// MaxSeverity returns the highest severity in the batch.
-func (b *AlertBatch) MaxSeverity() AlertSeverity {
-	hasSeverity := map[AlertSeverity]bool{}
-	for _, m := range b.Matches {
-		hasSeverity[m.Pattern.Severity] = true
-	}
-	if hasSeverity[AlertSeverityError] {
-		return AlertSeverityError
-	}
-	if hasSeverity[AlertSeverityWarning] {
-		return AlertSeverityWarning
-	}
-	return AlertSeverityInfo
-}
-
-// Format renders the batch as a human-readable message for the AI agent.
-func (b *AlertBatch) Format() string {
-	if len(b.Matches) == 0 {
-		return ""
-	}
-
-	// Pre-rendered fast path: when every match in the batch carries
-	// RenderedText, emit those joined directly. Used by non-process
-	// sources (browser-JS errors, HTTP errors) whose framing is
-	// determined upstream and would be wrong under the
-	// "Script %q detected issues" wrapper.
-	allRendered := true
-	for _, m := range b.Matches {
-		if m.RenderedText == "" {
-			allRendered = false
-			break
-		}
-	}
-	if allRendered {
-		var sb strings.Builder
-		for _, m := range b.Matches {
-			sb.WriteString(m.RenderedText)
-			if !strings.HasSuffix(m.RenderedText, "\n") {
-				sb.WriteByte('\n')
-			}
-		}
-		b.appendSuppressedNote(&sb)
-		return sb.String()
-	}
-
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("[agnt process alert] Script %q detected issues:\n", b.ScriptID))
-
-	// Group by severity
-	bySeverity := map[AlertSeverity][]*AlertMatch{}
-	for _, m := range b.Matches {
-		bySeverity[m.Pattern.Severity] = append(bySeverity[m.Pattern.Severity], m)
-	}
-
-	// Output in severity order: error, warning, info
-	for _, sev := range []AlertSeverity{AlertSeverityError, AlertSeverityWarning, AlertSeverityInfo} {
-		matches := bySeverity[sev]
-		if len(matches) == 0 {
-			continue
-		}
-
-		sb.WriteString(fmt.Sprintf("\n%ss (%d):\n", capitalize(string(sev)), len(matches)))
-		for _, m := range matches {
-			line := m.Line
-			if len(line) > 120 {
-				line = line[:117] + "..."
-			}
-			sb.WriteString(fmt.Sprintf("  - %s\n", line))
-		}
-	}
-
-	if bySeverity[AlertSeverityError] != nil {
-		sb.WriteString("\nConsider restarting the dev server.\n")
-	}
-
-	b.appendSuppressedNote(&sb)
-	return sb.String()
-}
-
-// appendSuppressedNote appends the overload-throttle summary line when the
-// batch carries dropped alerts. Kept to a single line so a throttled burst
-// stays token-cheap while still telling the agent the stream was capped.
-func (b *AlertBatch) appendSuppressedNote(sb *strings.Builder) {
-	if b.Suppressed <= 0 {
-		return
-	}
-	fmt.Fprintf(sb, "[agnt] %d more alert(s) suppressed (queue full while agent busy)\n", b.Suppressed)
 }
 
 // AlertScannerConfig configures the AlertScanner.
@@ -372,62 +253,6 @@ func NewAlertScanner(cfg AlertScannerConfig) *AlertScanner {
 	// deliveryLoop starts lazily on the first enqueue — see ensureDeliveryLoop.
 
 	return s
-}
-
-// ensureDeliveryLoop starts the single delivery goroutine on demand, exactly
-// once, and never after Stop. Returns whether the loop is running so callers
-// know a send to deliverCh will be consumed.
-func (s *AlertScanner) ensureDeliveryLoop() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.deliveryStarted {
-		return true
-	}
-	if s.stopped.Load() {
-		return false
-	}
-	s.deliveryStarted = true
-	go s.deliveryLoop()
-	return true
-}
-
-// deliveryLoop is the single consumer of deliverCh. It calls onAlert one batch
-// at a time so PTY injection is never concurrent. On Stop it drains any queued
-// batches and exits, signaling deliverDone.
-func (s *AlertScanner) deliveryLoop() {
-	deliver := func(b *AlertBatch) {
-		if s.onAlert != nil {
-			s.onAlert(b)
-		}
-	}
-	for {
-		select {
-		case b := <-s.deliverCh:
-			deliver(b)
-		case <-s.stopCh:
-			for {
-				select {
-				case b := <-s.deliverCh:
-					deliver(b)
-				default:
-					close(s.deliverDone)
-					return
-				}
-			}
-		}
-	}
-}
-
-// enqueue hands a batch to the delivery goroutine, starting it on first use.
-// It blocks (providing backpressure) if the buffer is full, but never after Stop.
-func (s *AlertScanner) enqueue(b *AlertBatch) {
-	if !s.ensureDeliveryLoop() {
-		return // stopped before any delivery; nothing will consume the batch
-	}
-	select {
-	case s.deliverCh <- b:
-	case <-s.stopCh:
-	}
 }
 
 // ProcessLine checks a single line of output against all enabled patterns.
@@ -686,80 +511,6 @@ func (s *AlertScanner) DepthSnapshot() QueueDepth {
 	}
 }
 
-// flush delivers the current batch of alerts.
-func (s *AlertScanner) flush() {
-	if s.stopped.Load() {
-		return
-	}
-
-	s.mu.Lock()
-
-	// If AI is active, defer the flush (up to maxRetries)
-	if s.actState != nil && s.actState() == ActivityActive && s.flushRetries < s.maxRetries {
-		s.flushRetries++
-		s.batchTimer = s.afterFunc(s.retryInterval, func() {
-			s.flush()
-		})
-		s.mu.Unlock()
-		return
-	}
-
-	if len(s.pending) == 0 {
-		s.batchTimer = nil
-		s.flushRetries = 0
-		s.mu.Unlock()
-		return
-	}
-
-	s.batchTimer = nil
-	s.flushRetries = 0
-	byScript, suppressed := s.drainPendingLocked()
-	s.mu.Unlock()
-
-	// Deliver batches via the single delivery goroutine so PTY injection is
-	// serialized even if this flush overlaps another. Only the post-drain
-	// deliverPending path may call onAlert directly.
-	if s.onAlert != nil {
-		deliverByScript(byScript, suppressed, s.enqueue)
-	}
-
-	// Prune old dedup entries periodically
-	s.pruneDedup()
-}
-
-// drainPendingLocked takes the pending batch and the suppressed count,
-// resetting both, and returns the matches grouped by script for delivery.
-// Caller must hold s.mu.
-func (s *AlertScanner) drainPendingLocked() (map[string][]*AlertMatch, int) {
-	byScript := map[string][]*AlertMatch{}
-	for _, m := range s.pending {
-		byScript[m.ScriptID] = append(byScript[m.ScriptID], m)
-	}
-	s.pending = nil
-	suppressed := s.suppressed
-	s.suppressed = 0
-	return byScript, suppressed
-}
-
-// deliverByScript dispatches grouped matches in deterministic script order,
-// attaching the suppressed count to the first batch so the overload-throttle
-// summary is delivered exactly once.
-func deliverByScript(byScript map[string][]*AlertMatch, suppressed int, onAlert func(*AlertBatch)) {
-	scriptIDs := make([]string, 0, len(byScript))
-	for id := range byScript {
-		scriptIDs = append(scriptIDs, id)
-	}
-	sort.Strings(scriptIDs)
-
-	for i, sid := range scriptIDs {
-		batch := &AlertBatch{Matches: byScript[sid], ScriptID: sid}
-		if i == 0 {
-			batch.Suppressed = suppressed
-		}
-		onAlert(batch)
-	}
-}
-
 // pruneDedup removes expired dedup entries.
 func (s *AlertScanner) pruneDedup() {
 	s.mu.Lock()
@@ -790,69 +541,6 @@ func (s *AlertScanner) DisablePattern(id string) {
 // SetEnabled enables or disables the scanner.
 func (s *AlertScanner) SetEnabled(enabled bool) {
 	s.enabled.Store(enabled)
-}
-
-// Stop stops the scanner and flushes any pending alerts.
-func (s *AlertScanner) Stop() {
-	if !s.stopped.CompareAndSwap(false, true) {
-		return
-	}
-	close(s.stopCh)
-
-	s.mu.Lock()
-	if s.batchTimer != nil {
-		s.batchTimer.Stop()
-		s.batchTimer = nil
-	}
-	started := s.deliveryStarted
-	s.mu.Unlock()
-
-	// Wait for the delivery goroutine to drain queued batches and exit, so the
-	// final flush below cannot call onAlert concurrently with it. Skip the wait
-	// when the loop was never started (no alert ever enqueued) — deliverDone
-	// would never be closed.
-	//
-	// The wait is bounded: onAlert injects into the PTY and can block for
-	// several seconds per batch (it waits on child activity that never comes
-	// when the child has already exited). Blocking teardown on that would stall
-	// session/daemon shutdown. If the goroutine doesn't drain within the grace
-	// window, return without the final flush — skipping deliverPending() is
-	// also required for correctness, since the goroutine is still live and a
-	// concurrent deliverPending() would invoke onAlert twice over.
-	if started {
-		select {
-		case <-s.deliverDone:
-			// Drained and exited — safe to flush synchronously.
-			s.deliverPending()
-		case <-time.After(alertStopGrace):
-			// A batch is stuck in a blocking onAlert; don't stall teardown.
-		}
-		return
-	}
-
-	// Never started: no delivery goroutine, so the flush is race-free.
-	s.deliverPending()
-}
-
-// alertStopGrace bounds how long Stop() waits for the delivery goroutine to
-// drain before abandoning the final flush and returning, so a blocked PTY
-// injection cannot stall session/daemon teardown.
-const alertStopGrace = 2 * time.Second
-
-// deliverPending delivers any remaining pending alerts without deferral.
-func (s *AlertScanner) deliverPending() {
-	s.mu.Lock()
-	if len(s.pending) == 0 {
-		s.mu.Unlock()
-		return
-	}
-
-	byScript, suppressed := s.drainPendingLocked()
-	s.mu.Unlock()
-
-	if s.onAlert != nil {
-		deliverByScript(byScript, suppressed, s.onAlert)
-	}
 }
 
 // recordMatch stores a match in the ring buffer. Called from ProcessLine
@@ -891,14 +579,6 @@ func (s *AlertScanner) RecentMatches(since time.Time) []*AlertMatch {
 		}
 	}
 	return result
-}
-
-// capitalize uppercases the first letter of a string.
-func capitalize(s string) string {
-	if s == "" {
-		return s
-	}
-	return strings.ToUpper(s[:1]) + s[1:]
 }
 
 // fingerprint creates a dedup key from pattern ID and the matched line.
