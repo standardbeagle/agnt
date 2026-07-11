@@ -230,9 +230,18 @@ func TestE2E_CurrentPage_FrameworkWarningsForwarded(t *testing.T) {
 	// hung browser session fast. Observed a real "context deadline
 	// exceeded" at 61.45s against a 60s budget when `go test ./...` runs
 	// every package's browser e2e test concurrently, each spinning up its
-	// own Chrome and competing for the host's CPU. Widened to 180s (3x)
-	// rather than tightened, since nothing here is actually stuck.
-	ctx, tcancel := context.WithTimeout(ctx, 180*time.Second)
+	// own Chrome and competing for the host's CPU; widened to 180s (3x).
+	// Still failed once at 186s under `stress -c 6` (task 01KX8R68VM9AY8CXSE2AKQKQHX).
+	// CDP target-attached tracing of the sibling auth-breakout popup test
+	// (same task) root-caused this class: under sufficiently extreme induced
+	// CPU + memory pressure, a Chrome renderer's script execution/DOM
+	// readiness can stall for 90+ seconds regardless of which step is
+	// "next" — genuine host-level scheduling/paging starvation, not a
+	// lifecycle bug in this test. No finite budget is provably sufficient
+	// under unbounded host starvation; widened further (180s->300s) to
+	// reduce the practical flake rate without pretending it's now
+	// deterministic — nothing here is actually stuck.
+	ctx, tcancel := context.WithTimeout(ctx, 300*time.Second)
 	t.Cleanup(tcancel)
 
 	require.NoError(t, cdp.Run(ctx,

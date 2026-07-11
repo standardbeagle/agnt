@@ -221,7 +221,42 @@ func TestE2E_AuthBreakout_PopupRoundTrip(t *testing.T) {
 	ps := startBreakoutProxy(t, backend, mustHost(t, idpURL), "popup")
 	*callback = "http://" + ps.ListenAddr + "/callback"
 
-	ctx := newBrowser(t, 90*time.Second)
+	// This is a liveness bound on the whole flow, not a correctness budget:
+	// every real assertion below polls via waitContentCondition, which derives
+	// its own deadline from this ctx (minus a 2s margin) rather than a fixed
+	// value.
+	//
+	// Investigated under task 01KX8R68VM9AY8CXSE2AKQKQHX with a temporary CDP
+	// target-attached trace harness (window.open() return-value interception +
+	// Target.{Created,InfoChanged,Destroyed} event logging). Verdict: NOT a
+	// lifecycle/injection-ordering race in authPopupRelayJS. The trace showed
+	// window.open() returning a real target (never null/blocked-popup
+	// fallback), and CDP's own Target.TargetInfoChanged — a browser-process
+	// event independent of the popup's renderer — reported the popup's
+	// navigation committing to the /callback URL in under a second after
+	// click. The popup's own renderer then never visibly executed its inline
+	// relay script (which runs at document-parse time, before the async
+	// instrumentation bundle, specifically to minimize exposure to this class
+	// of stall) for 80+ more seconds. A second trace under the same load
+	// stalled at an even earlier stage instead — the content iframe's own
+	// initial page load, no popup or relay involved at all — confirming the
+	// stall is generic host-level renderer-scheduling/paging starvation under
+	// adversarial CPU+memory contention, not something specific to the popup
+	// handoff.
+	//
+	// This is genuinely non-determinizable by a test-side budget: repeated
+	// verification under freshly-reset 3x-oversubscribed load (`stress -c
+	// $(nproc)` on a 6-core host, host allowed to settle to idle between
+	// trials) reproduced the stall at roughly the same ~20-25% rate at both
+	// the original 90s budget and this widened 180s one (2 failures in 9
+	// clean-host attempts at 180s) — doubling the budget did not
+	// proportionally reduce the failure rate, which is the signature of
+	// unbounded starvation rather than a merely-too-tight deadline. Widened
+	// 90s->180s anyway (matching the currentpage e2e's established 3x-widen
+	// precedent, commit f63ea663) as a practical, non-guaranteeing
+	// improvement — nothing here is a code defect to fix, and no larger
+	// finite budget would be provably sufficient either.
+	ctx := newBrowser(t, 180*time.Second)
 
 	// Top-level nav: the proxy answers with the chrome shell + content iframe.
 	require.NoError(t, cdp.Run(ctx,
@@ -304,7 +339,10 @@ func TestE2E_AuthBreakout_PopupMarkerSurvivesNameLoss(t *testing.T) {
 	ps := startBreakoutProxy(t, backend, mustHost(t, idpURL), "popup")
 	*callback = "http://" + ps.ListenAddr + "/callback"
 
-	ctx := newBrowser(t, 90*time.Second)
+	// Liveness bound only; see the widening rationale on
+	// TestE2E_AuthBreakout_PopupRoundTrip (same renderer-starvation class,
+	// CDP-evidenced under task 01KX8R68VM9AY8CXSE2AKQKQHX).
+	ctx := newBrowser(t, 180*time.Second)
 	require.NoError(t, cdp.Run(ctx,
 		cdp.Navigate("http://"+ps.ListenAddr+"/"),
 		cdp.WaitVisible(`#__devtool_content_frame`, cdp.ByID),
@@ -336,7 +374,10 @@ func TestE2E_AuthBreakout_ServerRedirectStub(t *testing.T) {
 	ps := startBreakoutProxy(t, backend, mustHost(t, idpURL), "popup")
 	*callback = "http://" + ps.ListenAddr + "/callback"
 
-	ctx := newBrowser(t, 90*time.Second)
+	// Liveness bound only; see the widening rationale on
+	// TestE2E_AuthBreakout_PopupRoundTrip (same renderer-starvation class,
+	// CDP-evidenced under task 01KX8R68VM9AY8CXSE2AKQKQHX).
+	ctx := newBrowser(t, 180*time.Second)
 	require.NoError(t, cdp.Run(ctx,
 		cdp.Navigate("http://"+ps.ListenAddr+"/"),
 		cdp.WaitVisible(`#__devtool_content_frame`, cdp.ByID),
