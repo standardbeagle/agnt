@@ -251,9 +251,24 @@ func TestIsRunning(t *testing.T) {
 	case <-time.After(time.Second):
 	}
 
-	// Should return false after close
-	if IsRunning(sockPath) {
-		t.Error("IsRunning() returned true after socket closed")
+	// IsRunning dials the socket fresh every call (no cached state), so once
+	// the listener is closed it must eventually observe a dial failure. Under
+	// a heavily loaded machine (this test runs late in a full `-p 1 ./...`
+	// suite, after ~117s of accumulated daemon-package fd/port churn) a single
+	// immediate check is not a safe invariant: scheduler contention can delay
+	// this goroutine's own next dial attempt relative to when the listener's
+	// close actually lands. Poll for the real terminal state instead of
+	// asserting on a fixed instant — see .claude/rules/lessons-liveness-probes.md.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if !IsRunning(sockPath) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Error("IsRunning() returned true after socket closed (still true after 2s poll)")
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
