@@ -7,6 +7,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"os"
@@ -22,6 +23,8 @@ import (
 )
 
 var sshAttachName string
+var sshNoBootstrap bool
+var sshBootstrapConsent string
 
 var sshCmd = &cobra.Command{
 	Use:   "ssh <host>[:path]",
@@ -50,6 +53,8 @@ implemented by other tasks in the remote-ssh epic.`,
 
 func init() {
 	sshCmd.Flags().StringVar(&sshAttachName, "attach", "", "remote session-host session name (default: derived from local cwd basename)")
+	sshCmd.Flags().BoolVar(&sshNoBootstrap, "no-bootstrap", false, "skip the remote agnt binary version check and install entirely")
+	sshCmd.Flags().StringVar(&sshBootstrapConsent, "bootstrap", "", `consent for installing/upgrading the remote agnt binary: must be "yes" when stdin is not a terminal and an install is needed`)
 	rootCmd.AddCommand(sshCmd)
 }
 
@@ -87,6 +92,10 @@ func runSSH(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("agnt ssh: %w", err)
 	}
 	defer client.Close()
+
+	if err := ensureRemoteBootstrap(client, host); err != nil {
+		return err
+	}
 
 	stopForwarding := startDaemonSocketForwarding(host, client)
 	defer stopForwarding()
@@ -134,6 +143,60 @@ func runSSH(cmd *cobra.Command, args []string) error {
 	if relayErr != nil && relayErr != context.Canceled {
 		return fmt.Errorf("agnt ssh: session relay: %w", relayErr)
 	}
+	return nil
+}
+
+// ensureRemoteBootstrap implements the task's connect-time contract: check
+// the remote agnt binary (missing, version-mismatched, or fine) and, if an
+// install is needed, gate on explicit consent before doing anything —
+// --no-bootstrap skips the whole check, --bootstrap=yes is the required
+// non-interactive consent (scripted/CI usage must never silently install a
+// binary on a remote host), and an interactive terminal falls back to a
+// y/N prompt. Failure to resolve consent, or the install itself failing,
+// aborts before the PTY session opens — an incompatible or missing remote
+// binary means 'agnt attach' on the far side would fail anyway.
+func ensureRemoteBootstrap(client *sshclient.Client, host string) error {
+	if sshNoBootstrap {
+		return nil
+	}
+
+	execPath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("agnt ssh: resolving local binary path for bootstrap: %w", err)
+	}
+	opts := sshclient.BootstrapOptions{
+		LocalVersion:    appVersion,
+		LocalBinaryPath: execPath,
+	}
+
+	decision, err := sshclient.CheckRemoteBinary(client.SSH, opts)
+	if err != nil {
+		return fmt.Errorf("agnt ssh: bootstrap check on %s: %w", host, err)
+	}
+	if !decision.NeedsInstall {
+		return nil
+	}
+
+	fmt.Fprintf(os.Stderr, "agnt ssh: %s — will install via %s\n", decision.Reason, decision.Source)
+
+	if !isTerminal(os.Stdin) {
+		if sshBootstrapConsent != "yes" {
+			return fmt.Errorf("agnt ssh: remote agnt binary needs install on %s (%s) but stdin is not a terminal — pass --bootstrap=yes to consent, or --no-bootstrap to skip", host, decision.Reason)
+		}
+	} else if sshBootstrapConsent != "yes" {
+		fmt.Fprintf(os.Stderr, "Install agnt on %s now? [y/N] ", host)
+		reader := bufio.NewReader(os.Stdin)
+		line, _ := reader.ReadString('\n')
+		answer := strings.ToLower(strings.TrimSpace(line))
+		if answer != "y" && answer != "yes" {
+			return fmt.Errorf("agnt ssh: remote agnt binary bootstrap declined for %s", host)
+		}
+	}
+
+	if err := sshclient.InstallRemoteBinary(client.SSH, opts, decision); err != nil {
+		return fmt.Errorf("agnt ssh: installing agnt on %s: %w", host, err)
+	}
+	fmt.Fprintf(os.Stderr, "agnt ssh: installed agnt to %s on %s\n", decision.FinalPath, host)
 	return nil
 }
 
