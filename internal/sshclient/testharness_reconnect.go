@@ -16,6 +16,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -267,6 +268,7 @@ func (h *SSHDFreezeHarness) Addr() string { return h.addr }
 func (h *SSHDFreezeHarness) Freeze() error {
 	stopped := make(map[int]bool)
 	var lastSeen map[int]bool
+	stableRuns := 0
 	deadline := time.Now().Add(freezeSettleWindow)
 	for {
 		pids, err := descendantPIDs(h.cmd.Process.Pid)
@@ -283,19 +285,32 @@ func (h *SSHDFreezeHarness) Freeze() error {
 				stopped[pid] = true
 			}
 		}
-		if mapsEqual(seen, lastSeen) || time.Now().After(deadline) {
-			return nil
+		if mapsEqual(seen, lastSeen) {
+			stableRuns++
+		} else {
+			stableRuns = 0
 		}
 		lastSeen = seen
+		// Require several consecutive agreeing scans, not just one: a
+		// single match can still land in the gap right before a
+		// still-in-flight fork completes. Multiple agreeing scans across
+		// the poll interval make that gap require an implausibly precise
+		// hit to slip through undetected.
+		if stableRuns >= freezeStableScansRequired || time.Now().After(deadline) {
+			return nil
+		}
 		time.Sleep(freezeSettlePoll)
 	}
 }
 
 // freezeSettleWindow bounds how long Freeze will keep re-scanning for
-// late-forked descendants; freezeSettlePoll is the interval between scans.
+// late-forked descendants; freezeSettlePoll is the interval between scans;
+// freezeStableScansRequired is how many consecutive scans must agree before
+// Freeze treats the descendant set as settled.
 const (
-	freezeSettleWindow = 300 * time.Millisecond
-	freezeSettlePoll   = 20 * time.Millisecond
+	freezeSettleWindow        = 500 * time.Millisecond
+	freezeSettlePoll          = 25 * time.Millisecond
+	freezeStableScansRequired = 3
 )
 
 func mapsEqual(a, b map[int]bool) bool {
@@ -415,30 +430,59 @@ func readStatPPID(pid int) (int, bool) {
 	return ppid, true
 }
 
-// signalAll sends sig to every pid, collecting the first error but
-// continuing to signal the rest — a stale pid that exited between
-// enumeration and signaling should not stop the others from being reached.
+// signalAll sends sig to every pid, collecting the first non-ESRCH error but
+// continuing to signal the rest. ESRCH ("no such process") is expected, not
+// exceptional: a short-lived per-connection child can legitimately exit
+// between enumeration and signaling (e.g. the privileged monitor after its
+// unprivileged worker takes over), and that race is not a harness failure.
 func signalAll(pids []int, sig syscall.Signal) error {
 	var firstErr error
 	for _, pid := range pids {
-		if err := syscall.Kill(pid, sig); err != nil && firstErr == nil {
+		if err := syscall.Kill(pid, sig); err != nil && !errors.Is(err, syscall.ESRCH) && firstErr == nil {
 			firstErr = err
 		}
 	}
 	return firstErr
 }
 
+// waitForListen blocks until sshd is not just accepting TCP connections but
+// genuinely servicing them: it reads the "SSH-2.0-..." version banner off a
+// probe connection rather than merely connecting and closing. A bare
+// connect-then-close only proves the listen backlog exists; sshd forks a
+// handler per accepted connection, and there is a real (if brief) window
+// between the listener accepting and that handler being scheduled to write
+// its banner. A caller that dials before the banner would actually flow
+// intermittently sees a reset/refused connection despite this check having
+// "passed" moments earlier — reading the banner closes that window.
 func (h *SSHDFreezeHarness) waitForListen(timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
+	var lastErr error
 	for time.Now().Before(deadline) {
-		conn, err := net.DialTimeout("tcp", h.addr, 100*time.Millisecond)
-		if err == nil {
-			conn.Close()
-			return nil
+		if err := probeBanner(h.addr); err != nil {
+			lastErr = err
+			time.Sleep(20 * time.Millisecond)
+			continue
 		}
-		time.Sleep(20 * time.Millisecond)
+		return nil
 	}
-	return fmt.Errorf("sshclient: sshd did not start listening on %s within %s", h.addr, timeout)
+	return fmt.Errorf("sshclient: sshd did not start servicing connections on %s within %s: %w", h.addr, timeout, lastErr)
+}
+
+func probeBanner(addr string) error {
+	conn, err := net.DialTimeout("tcp", addr, 200*time.Millisecond)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	buf := make([]byte, 4)
+	if _, err := io.ReadFull(conn, buf); err != nil {
+		return err
+	}
+	if string(buf) != "SSH-" {
+		return fmt.Errorf("sshclient: unexpected banner prefix %q", buf)
+	}
+	return nil
 }
 
 func newEphemeralHostKey() (ssh.Signer, error) {

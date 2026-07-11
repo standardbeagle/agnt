@@ -1,8 +1,10 @@
 package sshclient
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -210,5 +212,136 @@ func TestKeepalive_DoesNotFireWhileTransportHealthy(t *testing.T) {
 		t.Fatal("Dead() fired while transport was healthy")
 	case <-time.After(200 * time.Millisecond):
 		// expected: still alive
+	}
+}
+
+// TestReconnectHarness_HardCloseDropsConnection exercises drop mode (a) from
+// task 09a's harness: an explicit, non-sleep-based Drop() call hard-closes
+// the underlying TCP connection, which a client blocked in a channel
+// request must observe as a transport error (not a hang).
+func TestReconnectHarness_HardCloseDropsConnection(t *testing.T) {
+	harness := NewHardCloseHarness(t)
+
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "id_test")
+	privPEM, _ := generateClientKey(t)
+	os.WriteFile(keyPath, privPEM, 0o600)
+	prompter := Prompter{In: strings.NewReader("yes\n"), Out: &discardWriter{}}
+	hkCallback, err := HostKeyCallback(filepath.Join(dir, "known_hosts"), prompter)
+	if err != nil {
+		t.Fatalf("HostKeyCallback: %v", err)
+	}
+	clientCfg := &ssh.ClientConfig{
+		User:            "tester",
+		Auth:            BuildAuthMethods([]string{keyPath}, prompter),
+		HostKeyCallback: hkCallback,
+	}
+	sshClient, err := ssh.Dial("tcp", harness.Addr(), clientCfg)
+	if err != nil {
+		t.Fatalf("dialing harness: %v", err)
+	}
+	defer sshClient.Close()
+
+	// Deterministic trigger, not a sleep: the drop happens exactly when we
+	// call it.
+	harness.Drop()
+
+	// A hard TCP close must surface as an error on the next use of the
+	// connection, within a bound well short of the test timeout — proving
+	// this isn't a hang.
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := sshClient.SendRequest("keepalive@openssh.com", true, nil)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected SendRequest to fail after harness.Drop(), got nil error")
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("SendRequest did not fail after harness.Drop(); hard TCP close was not observed")
+	}
+}
+
+// TestReconnectHarness_SSHDFreezeBlocksResponses exercises drop mode (b): a
+// real sshd subprocess frozen with SIGSTOP answers nothing while the TCP
+// connection stays established — the black-hole case a hard TCP close can't
+// reproduce. Per acceptance criterion 1, this is SKIPPED (not failed) when
+// no sshd/ssh-keygen is on PATH. Per acceptance criterion 3, this test is
+// NOT t.Parallel(): it drives a real OS subprocess, and this repo's
+// convention (AGENTS.md, pre-commit hook notes) is that real-process tests
+// race under concurrency via PID reuse.
+func TestReconnectHarness_SSHDFreezeBlocksResponses(t *testing.T) {
+	privPEM, clientPub := generateClientKey(t)
+	harness, err := NewSSHDFreezeHarness(t, clientPub)
+	if errors.Is(err, ErrSSHDNotFound) {
+		t.Skip("sshd/ssh-keygen not found on PATH; skipping real-sshd freeze harness test")
+	}
+	if err != nil {
+		t.Fatalf("NewSSHDFreezeHarness: %v", err)
+	}
+
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "id_test")
+	os.WriteFile(keyPath, privPEM, 0o600)
+	prompter := Prompter{In: strings.NewReader("yes\n"), Out: &discardWriter{}}
+	hkCallback, err := HostKeyCallback(filepath.Join(dir, "known_hosts"), prompter)
+	if err != nil {
+		t.Fatalf("HostKeyCallback: %v", err)
+	}
+	currentUser, err := user.Current()
+	if err != nil {
+		t.Fatalf("looking up current OS user: %v", err)
+	}
+	clientCfg := &ssh.ClientConfig{
+		// sshd runs unprivileged (as this test process's own user) and can
+		// only authenticate connections for that same OS account — it has
+		// no setuid path to an arbitrary "tester" user.
+		User:            currentUser.Username,
+		Auth:            BuildAuthMethods([]string{keyPath}, prompter),
+		HostKeyCallback: hkCallback,
+		Timeout:         5 * time.Second,
+	}
+	sshClient, err := ssh.Dial("tcp", harness.Addr(), clientCfg)
+	if err != nil {
+		t.Fatalf("dialing real sshd harness: %v", err)
+	}
+	defer sshClient.Close()
+
+	// Deterministic trigger: freeze the real sshd process.
+	if err := harness.Freeze(); err != nil {
+		t.Fatalf("Freeze: %v", err)
+	}
+	defer harness.Resume()
+
+	// A frozen-but-connected peer must NOT reply within a short bound — the
+	// request is expected to time out, not error immediately (that would be
+	// indistinguishable from a hard close, defeating the point of this
+	// drop mode).
+	resultCh := make(chan error, 1)
+	go func() {
+		_, _, err := sshClient.SendRequest("keepalive@openssh.com", true, nil)
+		resultCh <- err
+	}()
+	select {
+	case err := <-resultCh:
+		t.Fatalf("expected SendRequest to hang against a frozen sshd, got reply/error: %v", err)
+	case <-time.After(500 * time.Millisecond):
+		// expected: still silent while frozen
+	}
+
+	// Resume and confirm the connection is genuinely alive again, not just
+	// left in some permanently wedged state.
+	if err := harness.Resume(); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	select {
+	case err := <-resultCh:
+		if err != nil {
+			t.Fatalf("expected SendRequest to succeed after Resume, got error: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("SendRequest did not complete after Resume(); sshd did not come back")
 	}
 }
