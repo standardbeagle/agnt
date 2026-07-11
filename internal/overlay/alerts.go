@@ -285,7 +285,7 @@ type AlertScanner struct {
 	maxRetries    int
 	retryInterval time.Duration
 	maxPending    int // overload-throttle high-water mark for pending
-	overflow      int // alerts dropped by the throttle since last flush
+	suppressed    int // alerts dropped by the throttle since last flush
 
 	// deliverCh serializes alert delivery. flush() enqueues batches here and a
 	// single deliveryLoop goroutine calls onAlert one batch at a time. onAlert
@@ -626,7 +626,7 @@ func (s *AlertScanner) addMatch(m *AlertMatch) {
 	// it is allowed to exceed the cap rather than drop user content.
 	if s.maxPending > 0 && len(s.pending) > s.maxPending {
 		if s.evictOneLocked() {
-			s.overflow++
+			s.suppressed++
 		}
 	}
 
@@ -681,7 +681,7 @@ func (s *AlertScanner) DepthSnapshot() QueueDepth {
 	defer s.mu.Unlock()
 	return QueueDepth{
 		Pending:    len(s.pending),
-		Suppressed: s.overflow,
+		Suppressed: s.suppressed,
 		Deferred:   s.flushRetries > 0,
 	}
 }
@@ -720,8 +720,8 @@ func (s *AlertScanner) flush() {
 	s.pending = nil
 	s.batchTimer = nil
 	s.flushRetries = 0
-	suppressed := s.overflow
-	s.overflow = 0
+	suppressed := s.suppressed
+	s.suppressed = 0
 	s.mu.Unlock()
 
 	// Deliver batches via the single delivery goroutine so PTY injection is
@@ -846,8 +846,8 @@ func (s *AlertScanner) deliverPending() {
 		byScript[m.ScriptID] = append(byScript[m.ScriptID], m)
 	}
 	s.pending = nil
-	suppressed := s.overflow
-	s.overflow = 0
+	suppressed := s.suppressed
+	s.suppressed = 0
 	s.mu.Unlock()
 
 	if s.onAlert != nil {
