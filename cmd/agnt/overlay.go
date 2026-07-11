@@ -386,26 +386,19 @@ func (o *Overlay) processProxyEvent(event ProxyEvent) {
 		// These are explicit user actions (panel message, sketch, design
 		// interaction). Route them through the canonical queue as Protected so
 		// they share activity-deferral (never injected mid-response) but are
-		// NEVER dropped by the overload throttle or dedup. Fall back to direct
-		// injection only when the queue is not wired.
-		if w := o.alertQueue.Load(); w != nil && w.scanner != nil {
-			debug.Log("overlay", "queueing %d chars (protected user action) type=%s", len(text), event.Type)
-			w.scanner.Inject(&overlay.AlertMatch{
-				Pattern: &overlay.AlertPattern{
-					ID:       "user:" + event.Type,
-					Severity: overlay.AlertSeverityInfo,
-					Category: "user",
-				},
-				Line:         text,
-				ScriptID:     "proxy:" + event.ProxyID,
-				Source:       overlay.AlertSourceUser,
-				RenderedText: text,
-				Protected:    true,
-			})
-		} else {
-			debug.Log("overlay", "injecting %d chars into PTY for event type=%s", len(text), event.Type)
-			o.typeText(TypeMessage{Text: text, Enter: true, Instant: true})
-		}
+		// NEVER dropped by the overload throttle or dedup.
+		o.injectOrFallback(&overlay.AlertMatch{
+			Pattern: &overlay.AlertPattern{
+				ID:       "user:" + event.Type,
+				Severity: overlay.AlertSeverityInfo,
+				Category: "user",
+			},
+			Line:         text,
+			ScriptID:     "proxy:" + event.ProxyID,
+			Source:       overlay.AlertSourceUser,
+			RenderedText: text,
+			Protected:    true,
+		})
 	} else {
 		debug.Log("overlay", "formatProxyEventText returned empty for type=%s", event.Type)
 	}
@@ -461,18 +454,6 @@ func (o *Overlay) processAutoForwardEvent(event ProxyEvent) {
 		return
 	}
 
-	// Fall back to direct injection only if the scanner isn't wired —
-	// reachable when alerts are disabled in config (setupAlertScanner
-	// returns nil) or before the pipeline goroutine calls SetAlertScanner.
-	// Without the scanner there is no queue, so direct injection is the
-	// lesser evil over silent loss.
-	w := o.alertQueue.Load()
-	if w == nil || w.scanner == nil {
-		debug.Log("overlay", "auto-forward fallback (no scanner): type=%s", event.Type)
-		o.typeText(TypeMessage{Text: rendered, Enter: true, Instant: true})
-		return
-	}
-
 	matchSource := overlay.AlertSourceBrowser
 	patternID := "browser-js-error"
 	if event.Type == "http_error" {
@@ -480,7 +461,7 @@ func (o *Overlay) processAutoForwardEvent(event ProxyEvent) {
 		patternID = "http-error"
 	}
 
-	w.scanner.Inject(&overlay.AlertMatch{
+	o.injectOrFallback(&overlay.AlertMatch{
 		Pattern: &overlay.AlertPattern{
 			ID:       patternID,
 			Severity: overlay.AlertSeverityError,
@@ -535,6 +516,23 @@ func (o *Overlay) matchesJSCascade(canonical string) bool {
 		}
 	}
 	return false
+}
+
+// injectOrFallback routes a match through the canonical alert queue (dedup,
+// batch, activity-defer). When no scanner is wired — alerts disabled in
+// config (setupAlertScanner returns nil) or the pipeline goroutine has not
+// called SetAlertScanner yet — it falls back to direct PTY injection of the
+// match's RenderedText: without the scanner there is no queue, so direct
+// injection is the lesser evil over silent loss. The fallback bypasses every
+// queue gate; keeping that policy in exactly one place is the point.
+func (o *Overlay) injectOrFallback(m *overlay.AlertMatch) {
+	if w := o.alertQueue.Load(); w != nil && w.scanner != nil {
+		debug.Log("overlay", "queueing alert id=%s source=%s protected=%v", m.Pattern.ID, m.Source, m.Protected)
+		w.scanner.Inject(m)
+		return
+	}
+	debug.Log("overlay", "alert fallback (no scanner): id=%s", m.Pattern.ID)
+	o.typeText(TypeMessage{Text: m.RenderedText, Enter: true, Instant: true})
 }
 
 // alertWiring pairs the alert scanner with the lowercased substring set
