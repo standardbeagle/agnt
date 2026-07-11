@@ -707,9 +707,10 @@ func (s *AlertScanner) flush() {
 	s.mu.Unlock()
 
 	// Deliver batches via the single delivery goroutine so PTY injection is
-	// serialized even if this flush overlaps another.
+	// serialized even if this flush overlaps another. Only the post-drain
+	// deliverPending path may call onAlert directly.
 	if s.onAlert != nil {
-		deliverByScript(byScript, suppressed, s.onAlert)
+		deliverByScript(byScript, suppressed, s.enqueue)
 	}
 
 	// Prune old dedup entries periodically
