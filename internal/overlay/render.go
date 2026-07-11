@@ -504,8 +504,9 @@ func (r *Renderer) DrawIndicator(status Status) {
 
 	// Alert-queue depth: pending alerts in the delivery queue, whether flush
 	// is deferred (agent busy ⏸), and how many were dropped by the overload
-	// throttle (+N). Only shown when there is something queued or suppressed.
-	if q := status.Queue; q.Pending > 0 || q.Suppressed > 0 {
+	// throttle (+N). Same visibility gate as the overview panel (queueActive)
+	// so the two surfaces never disagree about whether the queue matters.
+	if q := status.Queue; queueActive(q) {
 		seg := fmt.Sprintf("📮 %d", q.Pending)
 		if q.Deferred {
 			seg += " ⏸"
