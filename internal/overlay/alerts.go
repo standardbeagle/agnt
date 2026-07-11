@@ -82,6 +82,24 @@ type AlertBatch struct {
 	Suppressed int
 }
 
+// ProtectedOnly returns a batch holding only the protected (explicit user
+// action) matches, or nil when there are none. Used by delivery callbacks
+// that gate auto-generated alerts (forwarding pause) but must never drop
+// user content. Suppressed is not carried over — the throttle note belongs
+// to the auto-alert stream the caller is gating.
+func (b *AlertBatch) ProtectedOnly() *AlertBatch {
+	var matches []*AlertMatch
+	for _, m := range b.Matches {
+		if m.Protected {
+			matches = append(matches, m)
+		}
+	}
+	if len(matches) == 0 {
+		return nil
+	}
+	return &AlertBatch{Matches: matches, ScriptID: b.ScriptID}
+}
+
 // MaxSeverity returns the highest severity in the batch.
 func (b *AlertBatch) MaxSeverity() AlertSeverity {
 	hasSeverity := map[AlertSeverity]bool{}

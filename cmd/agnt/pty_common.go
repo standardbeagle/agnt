@@ -561,15 +561,27 @@ func setupAlertScanner(projectPath, sessionCode string, netOverlay *Overlay, dae
 			if formatted == "" {
 				return
 			}
-			// Forwarding pause gates only the PUSH (PTY injection). The
-			// AlertReport below still runs, so errors stay pullable via
-			// get_errors/get_incidents while the agent is muted.
-			if netOverlay != nil && !netOverlay.IsForwardingPaused() {
-				netOverlay.typeText(TypeMessage{
-					Text:    formatted,
-					Enter:   true,
-					Instant: true,
-				})
+			// Forwarding pause gates only the PUSH (PTY injection) of
+			// auto-generated alerts. The AlertReport below still runs, so
+			// errors stay pullable via get_errors/get_incidents while the
+			// agent is muted. Protected (explicit user action) matches are
+			// never dropped: a paused session still receives the protected
+			// subset of the batch.
+			if netOverlay != nil {
+				text := formatted
+				if netOverlay.IsForwardingPaused() {
+					text = ""
+					if p := batch.ProtectedOnly(); p != nil {
+						text = p.Format()
+					}
+				}
+				if text != "" {
+					netOverlay.typeText(TypeMessage{
+						Text:    text,
+						Enter:   true,
+						Instant: true,
+					})
+				}
 			}
 			// Push alert matches to daemon store for get_errors queries.
 			// Protected (explicit user action) matches are not errors — skip
