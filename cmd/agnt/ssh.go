@@ -111,6 +111,7 @@ func runSSH(cmd *cobra.Command, args []string) error {
 
 	stopForwarding := startDaemonSocketForwarding(host, client)
 	stopPortForwarding := startPortForwarding(host, client)
+	stopControlSocket := startControlSocket(host, client, remotePath)
 
 	cols, rows := 80, 24
 	if c, r, err := term.GetSize(int(os.Stdin.Fd())); err == nil {
@@ -120,6 +121,7 @@ func runSSH(cmd *cobra.Command, args []string) error {
 
 	session, err := sshclient.OpenPTYSession(client.SSH, attachName, remotePath, size)
 	if err != nil {
+		stopControlSocket()
 		stopPortForwarding()
 		stopForwarding()
 		client.Close()
@@ -145,7 +147,7 @@ func runSSH(cmd *cobra.Command, args []string) error {
 		},
 	}
 
-	return runSSHRelayLoop(host, client, session, stopForwarding, stopPortForwarding, reconnector)
+	return runSSHRelayLoop(host, remotePath, client, session, stopForwarding, stopPortForwarding, stopControlSocket, reconnector)
 }
 
 // runSSHRelayLoop owns the CONNECTED<->RECONNECTING cycle (task 09c). Each
@@ -160,7 +162,7 @@ func runSSH(cmd *cobra.Command, args []string) error {
 // it (see reconnect.go's doc comment) and doubles as the Ctrl-C detector
 // during RECONNECTING, since raw mode never delivers a real SIGINT for
 // that byte.
-func runSSHRelayLoop(host string, client *sshclient.Client, session *sshclient.PTYSession, stopForwarding, stopPortForwarding func(), reconnector *sshclient.Reconnector) error {
+func runSSHRelayLoop(host, remotePath string, client *sshclient.Client, session *sshclient.PTYSession, stopForwarding, stopPortForwarding, stopControlSocket func(), reconnector *sshclient.Reconnector) error {
 	var reconnectCancelMu sync.Mutex
 	var reconnectCancel context.CancelFunc
 	pump := sshclient.NewInputPump(func() {
@@ -199,6 +201,7 @@ func runSSHRelayLoop(host string, client *sshclient.Client, session *sshclient.P
 
 		transportDead := isClosedChan(client.Dead())
 		if !transportDead {
+			stopControlSocket()
 			stopPortForwarding()
 			stopForwarding()
 			client.Close()
@@ -209,6 +212,7 @@ func runSSHRelayLoop(host string, client *sshclient.Client, session *sshclient.P
 		}
 
 		fmt.Fprintln(os.Stderr, "\nagnt ssh: connection lost (keepalive timeout)")
+		stopControlSocket()
 		stopPortForwarding()
 		stopForwarding()
 		client.Close()
@@ -239,6 +243,7 @@ func runSSHRelayLoop(host string, client *sshclient.Client, session *sshclient.P
 		session = newSession
 		stopForwarding = startDaemonSocketForwarding(host, client)
 		stopPortForwarding = startPortForwarding(host, client)
+		stopControlSocket = startControlSocket(host, client, remotePath)
 	}
 }
 
@@ -444,6 +449,43 @@ func startPortForwarding(host string, client *sshclient.Client) func() {
 	return func() {
 		mgr.Stop()
 		dclient.Close()
+	}
+}
+
+// startControlSocket registers the local control socket (task 08a) that
+// 'agnt push' discovers to find this active session: it resolves the
+// remote project root, opens an SFTP subsystem over client, and serves
+// ping/push requests until the returned stop func is called. Like daemon
+// socket forwarding and port forwarding, failure here is non-fatal to the
+// interactive PTY session — it is surfaced loudly on stderr and the
+// returned stop func is a no-op, so a remote host without SFTP support (or
+// a local ~/.agnt/ssh directory that can't be created) doesn't prevent the
+// session from proceeding; it only means 'agnt push' won't find it.
+func startControlSocket(host string, client *sshclient.Client, remotePath string) func() {
+	projectRoot, err := sshclient.ResolveRemoteProjectRoot(client.SSH, remotePath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "agnt ssh: could not resolve remote project root (%v) — 'agnt push' will not find this session\n", err)
+		return func() {}
+	}
+
+	ln, err := sshclient.ListenControl(host)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "agnt ssh: could not register control socket (%v) — 'agnt push' will not find this session\n", err)
+		return func() {}
+	}
+
+	sc, err := sshclient.NewSFTPClient(client.SSH)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "agnt ssh: could not open SFTP subsystem (%v) — 'agnt push' will not find this session\n", err)
+		ln.Close()
+		return func() {}
+	}
+
+	go sshclient.ServeControl(ln, projectRoot, sc)
+
+	return func() {
+		ln.Close()
+		sc.Close()
 	}
 }
 
