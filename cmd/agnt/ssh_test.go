@@ -52,3 +52,30 @@ func TestSSHToolFlagRejected(t *testing.T) {
 		t.Fatalf("expected error to mention the rejected flag %q, got: %v", "--tool", err)
 	}
 }
+
+// TestSSHReconnectFlags_ParseAndBindVars pins that the reconnect-related
+// flags (task 09c, spec §3.6/§6 CLI surface) are real, registered flags —
+// not parsed-and-ignored (see .claude/rules/lessons-ssh-transport.md item 4
+// on Config Authority: parsed-but-unacted flags are bugs) — by parsing them
+// directly against sshCmd's own flag set (bypassing Execute/RunE, so this
+// never dials anything).
+func TestSSHReconnectFlags_ParseAndBindVars(t *testing.T) {
+	defer func() {
+		sshCreateIfMissing = false
+		sshNewSession = false
+		sshReconnectMax = 0
+	}()
+
+	if err := sshCmd.ParseFlags([]string{"--create-if-missing", "--new", "--reconnect-max", "5"}); err != nil {
+		t.Fatalf("ParseFlags: %v", err)
+	}
+	if !sshCreateIfMissing {
+		t.Error("--create-if-missing did not set sshCreateIfMissing")
+	}
+	if !sshNewSession {
+		t.Error("--new did not set sshNewSession")
+	}
+	if sshReconnectMax != 5 {
+		t.Errorf("--reconnect-max = %d, want 5", sshReconnectMax)
+	}
+}

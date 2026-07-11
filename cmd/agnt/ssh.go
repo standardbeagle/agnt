@@ -9,15 +9,21 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"math/rand"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/sshclient"
 	"golang.org/x/term"
 )
@@ -25,6 +31,9 @@ import (
 var sshAttachName string
 var sshNoBootstrap bool
 var sshBootstrapConsent string
+var sshCreateIfMissing bool
+var sshNewSession bool
+var sshReconnectMax int
 
 var sshCmd = &cobra.Command{
 	Use:   "ssh <host>[:path]",
@@ -55,6 +64,9 @@ func init() {
 	sshCmd.Flags().StringVar(&sshAttachName, "attach", "", "remote session-host session name (default: derived from local cwd basename)")
 	sshCmd.Flags().BoolVar(&sshNoBootstrap, "no-bootstrap", false, "skip the remote agnt binary version check and install entirely")
 	sshCmd.Flags().StringVar(&sshBootstrapConsent, "bootstrap", "", `consent for installing/upgrading the remote agnt binary: must be "yes" when stdin is not a terminal and an install is needed`)
+	sshCmd.Flags().BoolVar(&sshCreateIfMissing, "create-if-missing", false, "if the named session-host session is gone on reconnect, create a fresh one instead of failing loud (spec invariant 24; default is hard-fail)")
+	sshCmd.Flags().BoolVar(&sshNewSession, "new", false, "same effect as --create-if-missing for reconnect purposes: never hard-fail when the named session is gone")
+	sshCmd.Flags().IntVar(&sshReconnectMax, "reconnect-max", 0, "maximum reconnect attempts before giving up (0 = unlimited, the interactive default)")
 	rootCmd.AddCommand(sshCmd)
 }
 
@@ -91,17 +103,14 @@ func runSSH(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("agnt ssh: %w", err)
 	}
-	defer client.Close()
 
 	if err := ensureRemoteBootstrap(client, host); err != nil {
+		client.Close()
 		return err
 	}
 
 	stopForwarding := startDaemonSocketForwarding(host, client)
-	defer stopForwarding()
-
 	stopPortForwarding := startPortForwarding(host, client)
-	defer stopPortForwarding()
 
 	cols, rows := 80, 24
 	if c, r, err := term.GetSize(int(os.Stdin.Fd())); err == nil {
@@ -111,9 +120,11 @@ func runSSH(cmd *cobra.Command, args []string) error {
 
 	session, err := sshclient.OpenPTYSession(client.SSH, attachName, remotePath, size)
 	if err != nil {
+		stopPortForwarding()
+		stopForwarding()
+		client.Close()
 		return fmt.Errorf("agnt ssh: %w", err)
 	}
-	defer session.Close()
 
 	fd := int(os.Stdin.Fd())
 	restore, rawErr := sshRawTerminal(fd)
@@ -121,27 +132,193 @@ func runSSH(cmd *cobra.Command, args []string) error {
 		defer restore()
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	stopResize := sshWatchResize(ctx, session)
-	defer stopResize()
-
-	go func() {
-		select {
-		case <-client.Dead():
-			fmt.Fprintln(os.Stderr, "\nagnt ssh: SSH transport appears dead (keepalive timeout) — reconnect is not yet implemented in this command; exiting")
-			cancel()
-		case <-ctx.Done():
-		}
-	}()
-
-	relayErr := session.Relay(ctx, os.Stdin, os.Stdout, os.Stderr)
-	if restore != nil {
-		restore()
+	allowCreate := sshCreateIfMissing || sshNewSession
+	reconnector := &sshclient.Reconnector{
+		Backoff:     sshclient.BackoffConfig{BaseDelay: time.Second, MaxDelay: 30 * time.Second, Jitter: rand.Float64},
+		MaxAttempts: sshReconnectMax,
+		OnStatus:    func(msg string) { fmt.Fprintln(os.Stderr, msg) },
+		Dial: func(ctx context.Context) (*sshclient.Client, error) {
+			return sshclient.Dial(host, "", "", defaultUser, prompter)
+		},
+		Attach: func(ctx context.Context, c *sshclient.Client) (*sshclient.PTYSession, error) {
+			return reattachRemoteSession(host, c, attachName, remotePath, size, allowCreate)
+		},
 	}
-	if relayErr != nil && relayErr != context.Canceled {
-		return fmt.Errorf("agnt ssh: session relay: %w", relayErr)
+
+	return runSSHRelayLoop(host, client, session, stopForwarding, stopPortForwarding, reconnector)
+}
+
+// runSSHRelayLoop owns the CONNECTED<->RECONNECTING cycle (task 09c). Each
+// iteration: relay bytes until either the local ctx is cancelled (clean
+// end) or client.Dead() fires (transport confirmed dead, task 04b's bounded
+// keepalive probe — this function never re-implements that detection, only
+// consumes the channel). On a confirmed-dead transport it tears down the
+// old client/forwards and drives sshclient.Reconnector.Run to get a fresh
+// client+session attached to the SAME named remote session, then resumes
+// relaying. A single InputPump owns the real stdin for the whole loop so
+// repeated reconnects never leave more than one goroutine blocked reading
+// it (see reconnect.go's doc comment) and doubles as the Ctrl-C detector
+// during RECONNECTING, since raw mode never delivers a real SIGINT for
+// that byte.
+func runSSHRelayLoop(host string, client *sshclient.Client, session *sshclient.PTYSession, stopForwarding, stopPortForwarding func(), reconnector *sshclient.Reconnector) error {
+	var reconnectCancelMu sync.Mutex
+	var reconnectCancel context.CancelFunc
+	pump := sshclient.NewInputPump(func() {
+		reconnectCancelMu.Lock()
+		cancel := reconnectCancel
+		reconnectCancelMu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+	})
+	pump.Start(os.Stdin)
+
+	for {
+		pr, pw := io.Pipe()
+		pump.SetTarget(pw)
+
+		relayCtx, relayCancel := context.WithCancel(context.Background())
+		watchDone := make(chan struct{})
+		go func() {
+			defer close(watchDone)
+			select {
+			case <-client.Dead():
+				relayCancel()
+			case <-relayCtx.Done():
+			}
+		}()
+
+		stopResize := sshWatchResize(relayCtx, session)
+		relayErr := session.Relay(relayCtx, pr, os.Stdout, os.Stderr)
+		stopResize()
+		relayCancel()
+		<-watchDone
+		pump.SetTarget(nil)
+		pw.Close()
+		session.Close()
+
+		transportDead := isClosedChan(client.Dead())
+		if !transportDead {
+			stopPortForwarding()
+			stopForwarding()
+			client.Close()
+			if relayErr != nil && relayErr != context.Canceled {
+				return fmt.Errorf("agnt ssh: session relay: %w", relayErr)
+			}
+			return nil
+		}
+
+		fmt.Fprintln(os.Stderr, "\nagnt ssh: connection lost (keepalive timeout)")
+		stopPortForwarding()
+		stopForwarding()
+		client.Close()
+
+		reconnectCtx, cancel := context.WithCancel(context.Background())
+		reconnectCancelMu.Lock()
+		reconnectCancel = cancel
+		reconnectCancelMu.Unlock()
+
+		newClient, newSession, err := reconnector.Run(reconnectCtx)
+
+		reconnectCancelMu.Lock()
+		reconnectCancel = nil
+		reconnectCancelMu.Unlock()
+		cancel()
+
+		if err != nil {
+			if errors.Is(err, context.Canceled) {
+				// The only thing that ever cancels reconnectCtx is the
+				// pump's Ctrl-C interrupt callback above — a clean,
+				// user-requested stop, not a failure (criterion 4).
+				return nil
+			}
+			return fmt.Errorf("agnt ssh: reconnect failed: %w", err)
+		}
+
+		client = newClient
+		session = newSession
+		stopForwarding = startDaemonSocketForwarding(host, client)
+		stopPortForwarding = startPortForwarding(host, client)
+	}
+}
+
+// isClosedChan reports whether ch is already closed, without blocking.
+func isClosedChan(ch <-chan struct{}) bool {
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
+	}
+}
+
+// reattachRemoteSession implements the reconnect-only AttachFunc: it never
+// sends --create-if-missing/--cwd over the wire (spec invariant 24 — never
+// re-create the named session on reconnect). It confirms the session still
+// exists via the daemon protocol directly (through an ephemeral daemon
+// socket forward over the freshly-dialed client), and only if allowCreate is
+// set does it create a replacement — also via the daemon protocol
+// (SESSION-HOST CREATE), not by relying on 'agnt attach' flags — before
+// exec'ing the bare reattach command.
+func reattachRemoteSession(host string, client *sshclient.Client, name, remotePath string, size sshclient.TermSize, allowCreate bool) (*sshclient.PTYSession, error) {
+	if err := ensureRemoteSessionAttachable(host, client, name, remotePath, size, allowCreate); err != nil {
+		return nil, err
+	}
+	return sshclient.OpenPTYSessionWithCommand(client.SSH, sshclient.RemoteReattachCommand(name), size)
+}
+
+// ensureRemoteSessionAttachable confirms the named session-host session
+// still exists on the remote daemon, or (only when allowCreate is set)
+// creates a fresh one — see reattachRemoteSession's doc comment for why this
+// goes through the daemon protocol rather than 'agnt attach' CLI flags.
+// Returns an error wrapping sshclient.ErrSessionMissing when the session is
+// gone and allowCreate is false.
+func ensureRemoteSessionAttachable(host string, client *sshclient.Client, name, remotePath string, size sshclient.TermSize, allowCreate bool) error {
+	remoteSocketPath, err := sshclient.RemoteDaemonSocketPath(client.SSH)
+	if err != nil {
+		return fmt.Errorf("agnt ssh: discovering remote daemon socket for reconnect check: %w", err)
+	}
+
+	localPath := sshclient.LocalForwardSocketPath(host) + fmt.Sprintf(".reconnect-probe-%d", time.Now().UnixNano())
+	fw, err := sshclient.NewForwarder(client, remoteSocketPath, localPath)
+	if err != nil {
+		return fmt.Errorf("agnt ssh: opening reconnect probe forward: %w", err)
+	}
+	defer fw.Close()
+	go fw.Serve()
+
+	dclient := daemon.NewClientWithPath(localPath)
+	var connectErr error
+	for i := 0; i < 20; i++ {
+		if connectErr = dclient.Connect(); connectErr == nil {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if connectErr != nil {
+		return fmt.Errorf("agnt ssh: connecting to reconnect probe forward: %w", connectErr)
+	}
+	defer dclient.Close()
+
+	result, err := dclient.SessionHostList(protocol.DirectoryFilter{Global: true})
+	if err != nil {
+		return fmt.Errorf("agnt ssh: listing remote session-host sessions for reconnect: %w", err)
+	}
+	if _, ok := matchSessionHostID(result, name); ok {
+		return nil
+	}
+	if !allowCreate {
+		return fmt.Errorf("%w: %q", sshclient.ErrSessionMissing, name)
+	}
+
+	if _, err := dclient.SessionHostCreate(protocol.SessionHostCreateConfig{
+		Name:        name,
+		ProjectPath: remotePath,
+		Command:     "sh",
+		Cols:        int(size.Cols),
+		Rows:        int(size.Rows),
+	}); err != nil {
+		return fmt.Errorf("agnt ssh: creating remote session-host session %q: %w", name, err)
 	}
 	return nil
 }
