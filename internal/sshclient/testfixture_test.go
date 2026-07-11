@@ -58,6 +58,14 @@ type fixtureServer struct {
 	// returns — this is what stands in for "the remote unix daemon socket"
 	// in forwarder tests, without needing a real daemon.
 	streamLocalDial func(socketPath string) (net.Conn, error)
+
+	// blackholeGlobalRequests, if true, makes the fixture accept the SSH
+	// handshake and then silently swallow every global request without
+	// ever replying — simulating a network black-hole (packet loss, no
+	// RST) rather than a clean disconnect. A client blocked on
+	// SendRequest(wantReply: true) against this fixture hangs forever
+	// unless it enforces its own per-call timeout.
+	blackholeGlobalRequests bool
 }
 
 // streamLocalChannelOpenDirectMsg mirrors the wire format of an SSH
@@ -173,7 +181,17 @@ func (f *fixtureServer) handleConn(t *testing.T, conn net.Conn) {
 		return
 	}
 	defer sshConn.Close()
-	go ssh.DiscardRequests(reqs)
+	if f.blackholeGlobalRequests {
+		// Drain the requests channel (required so the underlying mux
+		// doesn't stall) but never call req.Reply — any wantReply
+		// request from the client is left hanging indefinitely.
+		go func() {
+			for range reqs {
+			}
+		}()
+	} else {
+		go ssh.DiscardRequests(reqs)
+	}
 
 	for newChan := range chans {
 		switch newChan.ChannelType() {

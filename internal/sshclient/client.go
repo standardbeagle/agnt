@@ -51,7 +51,7 @@ func Dial(alias, configPath, knownHostsPath, defaultUser string, prompter Prompt
 	}
 
 	c := &Client{SSH: sshClient, stopKeepalive: make(chan struct{}), dead: make(chan struct{})}
-	c.startKeepalive(15*time.Second, 3)
+	c.startKeepalive(15*time.Second, 5*time.Second, 3)
 	return c, nil
 }
 
@@ -189,8 +189,11 @@ func (c *Client) Dead() <-chan struct{} {
 // startKeepalive spawns the background goroutine described in spec
 // invariant 19: send a global "keepalive@openssh.com" request every
 // interval; after maxFailures consecutive failures/timeouts, close c.dead
-// exactly once.
-func (c *Client) startKeepalive(interval time.Duration, maxFailures int) {
+// exactly once. sendTimeout bounds each individual SendRequest call — it
+// must be shorter than interval, since a black-holed transport (packet
+// loss, no RST) would otherwise leave SendRequest blocked indefinitely and
+// the failure counter would never advance.
+func (c *Client) startKeepalive(interval, sendTimeout time.Duration, maxFailures int) {
 	go func() {
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
@@ -200,17 +203,21 @@ func (c *Client) startKeepalive(interval time.Duration, maxFailures int) {
 			case <-c.stopKeepalive:
 				return
 			case <-ticker.C:
-				ok, _, err := c.SSH.SendRequest("keepalive@openssh.com", true, nil)
+				err := c.sendKeepaliveRequest(sendTimeout)
 				// The server has no handler for this request name, so a
 				// well-formed reply (ok == false, err == nil) is the
 				// EXPECTED liveness signal, per OpenSSH's own keepalive
-				// convention. Only a transport-level error (err != nil)
-				// counts as a failure.
-				_ = ok
+				// convention. A transport-level error or a timed-out
+				// reply both count as a failure.
 				if err != nil {
 					failures++
 					if failures >= maxFailures {
 						closeDeadOnce(c)
+						// Close the transport so any SendRequest call
+						// still blocked on a black-holed reply (from
+						// this or a prior tick) unblocks instead of
+						// leaking for the lifetime of the process.
+						c.SSH.Close()
 						return
 					}
 					continue
@@ -220,6 +227,28 @@ func (c *Client) startKeepalive(interval time.Duration, maxFailures int) {
 		}
 	}()
 }
+
+// sendKeepaliveRequest issues the keepalive global request in a goroutine
+// and waits for either its result or timeout to elapse. A timeout is
+// reported as an error, same as a transport-level SendRequest failure, so
+// callers don't need to distinguish "the server is gone" from "the server
+// stopped answering."
+func (c *Client) sendKeepaliveRequest(timeout time.Duration) error {
+	resultCh := make(chan error, 1)
+	go func() {
+		_, _, err := c.SSH.SendRequest("keepalive@openssh.com", true, nil)
+		resultCh <- err
+	}()
+
+	select {
+	case err := <-resultCh:
+		return err
+	case <-time.After(timeout):
+		return errKeepaliveTimeout
+	}
+}
+
+var errKeepaliveTimeout = fmt.Errorf("sshclient: keepalive request timed out")
 
 func closeDeadOnce(c *Client) {
 	select {

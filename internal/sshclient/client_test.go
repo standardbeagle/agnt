@@ -121,7 +121,7 @@ func TestKeepalive_DetectsDeadTransportAfterConsecutiveFailures(t *testing.T) {
 	}
 
 	c := &Client{SSH: sshClient, stopKeepalive: make(chan struct{}), dead: make(chan struct{})}
-	c.startKeepalive(20*time.Millisecond, 3)
+	c.startKeepalive(20*time.Millisecond, 100*time.Millisecond, 3)
 
 	// Kill the underlying transport so subsequent keepalive sends fail.
 	stop()
@@ -132,6 +132,47 @@ func TestKeepalive_DetectsDeadTransportAfterConsecutiveFailures(t *testing.T) {
 		// expected
 	case <-time.After(3 * time.Second):
 		t.Fatal("expected Dead() to close after consecutive keepalive failures, timed out")
+	}
+}
+
+func TestKeepalive_DetectsBlackHoledTransportViaPerCallTimeout(t *testing.T) {
+	fixture := newFixtureServer(t)
+	fixture.blackholeGlobalRequests = true
+	stop := fixture.serve(t)
+	defer stop()
+
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "id_test")
+	privPEM, _ := generateClientKey(t)
+	os.WriteFile(keyPath, privPEM, 0o600)
+	prompter := Prompter{In: strings.NewReader("yes\n"), Out: &discardWriter{}}
+	hkCallback, err := HostKeyCallback(filepath.Join(dir, "known_hosts"), prompter)
+	if err != nil {
+		t.Fatalf("HostKeyCallback: %v", err)
+	}
+	clientCfg := &ssh.ClientConfig{
+		User:            "tester",
+		Auth:            BuildAuthMethods([]string{keyPath}, prompter),
+		HostKeyCallback: hkCallback,
+	}
+	sshClient, err := ssh.Dial("tcp", fixture.addr, clientCfg)
+	if err != nil {
+		t.Fatalf("dialing fixture: %v", err)
+	}
+
+	c := &Client{SSH: sshClient, stopKeepalive: make(chan struct{}), dead: make(chan struct{})}
+	// interval > sendTimeout, per acceptance criterion 1: each SendRequest
+	// call must be bounded by a timeout shorter than the keepalive
+	// interval, so a black-holed reply still lets the miss counter
+	// advance every tick instead of stalling forever on the first call.
+	c.startKeepalive(30*time.Millisecond, 10*time.Millisecond, 3)
+
+	select {
+	case <-c.Dead():
+		// expected: three black-holed ticks (~90ms) trip the miss
+		// counter and close Dead(), well within 3s.
+	case <-time.After(3 * time.Second):
+		t.Fatal("expected Dead() to close after black-holed keepalive timeouts, timed out")
 	}
 }
 
@@ -161,7 +202,7 @@ func TestKeepalive_DoesNotFireWhileTransportHealthy(t *testing.T) {
 	defer sshClient.Close()
 
 	c := &Client{SSH: sshClient, stopKeepalive: make(chan struct{}), dead: make(chan struct{})}
-	c.startKeepalive(20*time.Millisecond, 3)
+	c.startKeepalive(20*time.Millisecond, 100*time.Millisecond, 3)
 	defer close(c.stopKeepalive)
 
 	select {
