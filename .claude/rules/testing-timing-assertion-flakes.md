@@ -82,3 +82,59 @@ task `01KX9EFFWG...`.)
 - `.claude/rules/daemon-architecture.md` § Port-Kill Guard — the
   fail-open re-scan pattern `findPortHoldersWithRetry` mirrors
 - per-user memory `feedback_flaky_test_hunt`, `project_flake_class_2026_07`
+
+## CDP browser-process signal distinguishes a fixable injection bug from unfixable host renderer-starvation (task F-proxy)
+
+Discovered while determinizing worktrack task `F-proxy`
+(`01KX8R68VM9AY8CXSE2AKQKQHX`, real-Chrome AuthBreakout popup-relay e2e),
+fixed/documented in commit `1f0c152c`, reviewer verdict `pass_with_changes`.
+
+### The diagnostic technique
+
+For a real-Chrome (chromedp) e2e flake where a page-JS relay appears not to
+run in time, don't trust page-level signals alone — attach to the popup
+target and log **browser-process-level** CDP events (`Target.TargetInfoChanged`
+/ target lifecycle), which are independent of the page's own JS execution.
+This separates two look-alike failure modes:
+
+- **Hypothesis A (fixable)**: an injection/lifecycle-ordering bug — the
+  relay script is attached too late, or the poll misses the window.
+- **Hypothesis B (unfixable environment artifact)**: the browser-level
+  navigation *commits* promptly (<1s, seen via the Target event) but the
+  target's own renderer never gets scheduled to execute its inline script
+  for many seconds — real CPU-scheduling starvation, not a bug in this
+  repo's code.
+
+Corroborate with a second trace under the same load hitting a *different*
+stall stage (cross-scenario) — if both stall in different places under the
+same CPU pressure, that's starvation, not a reproducible ordering defect.
+The tell-tale signature of unbounded starvation: **doubling the timeout
+budget does not proportionally reduce the failure rate** — a real ordering
+bug converges to ~0% failures well before 2x headroom; starvation does not.
+
+### Fix / accepted resolution
+
+When the CDP evidence points to hypothesis B, the honest outcome is to
+**document it as non-determinizable-with-CDP-evidence** and widen the
+budget as a practical (non-guaranteeing) mitigation — never weaken the
+actual assertions, never cherry-pick a clean run to call it "fixed." This is
+an **accepted outcome**, not a failure to root-cause, once corroborated by
+the browser-process-level signal and the doubling-budget non-response
+above.
+
+### Generalize
+
+1. A fixed wall-clock timeout guarding an **eventually/liveness** property
+   (does the round-trip eventually happen at all) is a generous ceiling and
+   is acceptable; this is distinct from a **latency SLO** (is it fast),
+   which must be baseline-calibrated instead of hand-picked (see task
+   `F-hook`, `01KX8R68YZECQ7HP1YKG5VXR4Z`).
+2. Real-Chrome e2e tests that starve under CPU oversubscription should be
+   build-tag/load-tier gated out of the default `go test -p 1 ./...` suite
+   so the suite stays reliably green, and run separately on an unloaded
+   box. (Feeds task `F-gate`, `01KX8R68ZMEJPQYY4BX4B2A38C`.)
+3. Ties to `.claude/rules/lessons-ssh-transport.md` #2 (poll the actual DOM
+   signal you're asserting on, not a proxy signal like `location.href` that
+   fires earlier in the lifecycle) — same family: know exactly which layer
+   (browser process vs. page JS vs. URL) a signal actually reflects before
+   trusting it as evidence.
