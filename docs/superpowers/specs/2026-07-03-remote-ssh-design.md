@@ -672,14 +672,25 @@ agnt ssh <host>[:path]
   hosts, or attaching to multiple remote daemons simultaneously from one
   `agnt ssh` invocation, is out of scope. Run multiple `agnt ssh` invocations
   for multiple hosts.
-- **No Windows sshd server-side support in v1.** `agnt ssh <host>` (the
-  client, connecting *out*) works from a Windows client to any POSIX or
-  Windows remote running `agnt`'s own daemon+session-host. But being the
-  **server** side of an inbound SSH connection on Windows (i.e., someone
-  SSHing *into* a Windows box specifically to reach `agnt`) is out of scope
-  — that's Windows OpenSSH Server's job, not `agnt`'s, and session-host's
+- **No Windows sshd server-side support in v1.** Being the **server** side
+  of an inbound SSH connection on Windows (i.e., someone SSHing *into* a
+  Windows box specifically to reach `agnt`) is out of scope — that's
+  Windows OpenSSH Server's job, not `agnt`'s, and session-host's
   PTY-ownership model on Windows (ConPTY + Job Objects) has not been
   validated against an SSH-server-mediated PTY request in this design pass.
+- **No Windows `agnt ssh` client in v1 either (loud, documented gap — task
+  06a).** `cmd/agnt/ssh.go` (the client command described in this section)
+  is built `//go:build !windows`; on a native Windows build it does not
+  exist at all as source, and `internal/sshclient`'s local forwarders
+  (daemon-socket forwarding in §3, port forwarding in §4) rely on
+  unix-domain-socket-style local endpoints with no Windows named-pipe
+  equivalent implemented. `cmd/agnt/ssh_windows.go` registers the same
+  `ssh` command name on Windows builds so it is discoverable (never
+  "unknown command"), but its `RunE` returns an explicit "not yet
+  supported on Windows... use WSL as a workaround" error rather than
+  attempting a partial connection. Full named-pipe local forwarding is
+  deferred until Windows-remote is prioritized; see
+  `.claude/rules/daemon-architecture.md`'s cross-platform table.
 - **No idle-timeout auto-kill for session-host sessions in v1** (§2.2
   invariant 11) — explicit `agnt session kill` or process exit only.
 - **No attach-from-cursor / partial-scrollback-replay mode** (§1.4 invariant

@@ -51,6 +51,7 @@ Three reconciliation triggers:
 | Process group kill | `SIGTERM` → `SIGKILL` to pgid | `CTRL_BREAK_EVENT` → `TerminateJobObject` | Depends on `platform.ShouldUseWindowsShell(path)` |
 | Proxy health probe | TCP connect / HTTP GET | Same | Same |
 | Rogue process identification | `ss -tlnp` gives PID | `netstat -ano` + `tasklist` | Both paths depending on which OS owns the port |
+| `agnt ssh` (remote session-host client) | Full support (`cmd/agnt/ssh.go`) | **Unsupported in v1 — loud, documented gap.** `cmd/agnt/ssh_windows.go` registers the same command so it is discoverable, but `RunE` returns an explicit error ("not yet supported on Windows... use WSL as a workaround") instead of silently missing or half-connecting. Blocked on native named-pipe local forwarding (daemon socket + port forwards); see task 06a / epic `01KWMARXTVWKC33EPHZZJ43JT9`, `docs/superpowers/specs/2026-07-03-remote-ssh-design.md` §7. | Works via the Linux client path (WSL is the documented workaround for Windows users) |
 
 Existing `platform.IsWSL()` helper in `internal/platform/process_unix.go` (memoized `/proc/version` check for `microsoft`/`wsl`) is canonical WSL detection. New OS-level operations must consult it before using `runtime.GOOS == "linux"` to gate Linux-only behavior — WSL is GOOS=linux but routinely needs Windows-side processes via `tasklist.exe` / `netstat.exe` / `taskkill.exe` interop.
 
