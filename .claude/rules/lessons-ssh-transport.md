@@ -146,6 +146,97 @@ explicit non-interactive consent flag distinct from the interactive
 default — "runs in CI" and "silently mutates infrastructure" must never be
 the same code path.
 
+## 12. SFTP remote-path traversal guard: containment must survive four adversarial angles at once
+Task 08a (`01KX8R68J0RNYGMTWQ38G85F94`, commits `29d30691`/`b49b3c09`/`c6e58c81`)
+added `PushToInbox` (`internal/sshclient/sftp.go`) for arbitrary-file push over
+`github.com/pkg/sftp`, guarded by `correctness-review` (verdict
+`pass_with_changes`, 0 blockers). The traversal guard that survived
+adversarial review has four parts, all required together — any one alone is
+bypassable:
+
+1. Reject absolute paths and any `path.Clean` result that is or starts with
+   `..`.
+2. Segment-safe containment via `root+"/"` prefix — **not** raw
+   `strings.HasPrefix(candidate, root)`, which a sibling directory
+   (`/proj` vs `/proj-evil`) defeats. Normalize `root` first.
+3. Resolve symlinks on **every intermediate path segment**, not just the
+   leaf, via `Lstat`/`ReadLink`, with a depth cap that fails closed (errors
+   out) on overflow rather than silently truncating the walk. Re-check
+   containment against each resolved target as you go.
+4. Re-run the same symlink-chain check immediately before the activating
+   `PosixRename` — the check at validation time and the check at rename
+   time are not the same instant.
+
+Residual: this narrows but does not eliminate TOCTOU — there is a sub-ms
+window between the final re-check and the rename syscall, and SFTP has no
+`openat`-relative-to-verified-fd equivalent to close it completely.
+Judged acceptable-advisory (not a blocker) only because the threat model
+already requires the attacker to have pre-existing write access to the
+project root to exploit it — and the acceptance is conditional on disclosing
+it honestly in a doc comment on the check function, not silently. Generalize:
+this four-part shape (clean/absolute reject, segment-safe prefix, walk-every-
+segment symlink resolution with fail-closed depth cap, re-check-before-
+activate) is this project's canonical pattern for validating an untrusted
+remote path before any privileged remote file operation — reuse it rather
+than re-deriving a subset next time.
+
+One non-blocking gap the same review surfaced: the filename check
+(`fileName != path.Base(fileName)`) does not explicitly reject
+`fileName == "."` or `".."` — `path.Base("..")` returns `".."` unchanged, so
+`finalPath` can resolve to `destDir` or its parent. No actual bypass results
+(destDir is always pre-created via `MkdirAll`, so `PosixRename(tmpFile,
+existingDirectory)` fails at the syscall level on the file-vs-directory type
+mismatch), but relying on that incidental failure instead of an explicit
+`.`/`..` reject is inelegant follow-up debt for whoever next touches
+`validateDestRelPath`.
+
+## 13. Two sanctioned remote-file-write paths — same atomic shape, different transport, do not collapse
+This project now has two intentionally distinct ways to write a file onto a
+remote host over `agnt ssh`:
+
+- **Task 05's `UploadFile`** (bare exec channel, no SFTP dependency):
+  single-binary bootstrap install, `mkdir -p && cat >` → verify → chmod →
+  rename. Use when the payload is one known binary and you want zero new
+  dependencies.
+- **Task 08a's `PushToInbox`** (`github.com/pkg/sftp` client): arbitrary
+  user-supplied files at arbitrary caller-chosen destinations, needing the
+  traversal guard in lesson 9 above (a single fixed bootstrap path never
+  needed one).
+
+Both use the identical temp-write → verify(hash readback) → rename
+atomicity shape (lessons #5/#6) — that convergence is intentional and should
+stay convergent — but the transport choice is deliberate per use case.
+Do not merge them into one code path: the no-dependency exec-channel
+installer is load-bearing for bootstrapping a host that has nothing yet,
+which is exactly the case where you can't assume an SFTP subsystem is
+wanted/available server-side either.
+
+## 14. Second-terminal control-socket discovery: fail loud, reclaim stale, never hijack live
+Task 08a's control socket (`~/.agnt/ssh/<host>.ctl`, `internal/sshclient/control.go`)
+lets a second terminal (`agnt push`) find the connection an already-running
+`agnt ssh <host>` owns. Two rules the adversarial review confirmed held:
+
+1. **Fail loud, not silent, when no session is active.** `DialControl`
+   wraps a sentinel `ErrNoActiveSession` with the host name and an actionable
+   hint ("start `agnt ssh <host>`") rather than returning a bare connection
+   error or timing out unexplained — same Silent Failure Prohibition this
+   project applies to daemon operations.
+2. **Reclaim a stale socket left by a crashed owner, but never steal a live
+   one.** Both `ListenControl` (the owning side, on startup) and
+   `DiscoverActiveHosts` (the discovering side) must independently detect
+   "socket file exists but nothing answers" and clean it up, while a socket
+   that does answer is never treated as reclaimable — corrupting that
+   distinction would let a second `agnt ssh` to the same host hijack the
+   first one's live connection instead of erroring "already connected."
+
+The liveness ping backing this (`pingControl`) is bounded-timeout per
+`.claude/rules/lessons-liveness-probes.md` — an indefinite-blocking probe
+here would reproduce that same "probe that never fires" failure mode for
+stale-socket detection specifically.
+
+Provenance: written_at 2026-07-11T19:22:00Z; source_event task-08a
+(`01KX8R68J0RNYGMTWQ38G85F94`, commits `29d30691`, `b49b3c09`, `c6e58c81`).
+
 ## Follow-up filed: task 05a (writeSession leak)
 `correctness-review` (pass_with_changes, step `01KX7MY77RE43EX1CMQ3YZ5PJD`)
 flagged that `UploadFile`'s `writeSession` (opened for the `mkdir -p && cat >`
