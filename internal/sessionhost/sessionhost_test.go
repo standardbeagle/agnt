@@ -141,6 +141,13 @@ func TestDetachReattach_ReplaysBoundaryThenDeliversLiveAndExit(t *testing.T) {
 	if s.IsPrimary(firstID) {
 		t.Fatal("detached client must not retain the primary write slot")
 	}
+	if got := s.AttachedCount(); got != 0 {
+		t.Fatalf("attached count after detach = %d, want zero", got)
+	}
+	if err := s.WriteStdin([]byte("detached-period\n")); err != nil {
+		t.Fatalf("WriteStdin(detached period): %v", err)
+	}
+	waitForScrollbackContains(t, s, "while-detached:detached-period", 15*time.Second)
 
 	second, secondID, primary := s.Attach(16)
 	if !primary {
@@ -148,42 +155,95 @@ func TestDetachReattach_ReplaysBoundaryThenDeliversLiveAndExit(t *testing.T) {
 	}
 	defer s.Detach(secondID)
 
-	// Input after reattachment produces one output chunk which must appear
-	// exactly once after the replay snapshot: neither lost at the boundary nor
-	// duplicated by simultaneous replay and live fan-out.
-	if err := s.WriteStdin([]byte("detached-period\n")); err != nil {
-		t.Fatalf("WriteStdin(first): %v", err)
-	}
-	waitForStdoutContains(t, second, "while-detached:detached-period", 15*time.Second)
+	// The first frame and snapshot prove output produced with no subscribers is
+	// replayed before any output generated after reattachment.
+	replayed := readReplayThrough(t, second, "while-detached:detached-period", 15*time.Second)
 	if err := s.WriteStdin([]byte("live-period\n")); err != nil {
 		t.Fatalf("WriteStdin(second): %v", err)
 	}
 
-	var stdout strings.Builder
+	var live strings.Builder
 	exitSeen := false
 	deadline := time.After(15 * time.Second)
 	for !exitSeen {
 		select {
 		case raw, ok := <-second:
 			if !ok {
-				t.Fatalf("attach stream closed without exit frame; stdout=%q", stdout.String())
+				t.Fatalf("attach stream closed without exit frame; stdout=%q", live.String())
 			}
 			var f Frame
 			if err := json.Unmarshal(raw, &f); err != nil {
 				t.Fatalf("unmarshal frame: %v", err)
 			}
 			if f.Type == "stdout" {
-				stdout.WriteString(decodeStdout(t, raw))
+				live.WriteString(decodeStdout(t, raw))
 			}
 			if f.Type == "exit" {
 				exitSeen = true
 			}
 		case <-deadline:
-			t.Fatalf("timed out waiting for live output and exit; stdout=%q", stdout.String())
+			t.Fatalf("timed out waiting for live output and exit; stdout=%q", live.String())
 		}
 	}
-	if got := stdout.String(); !strings.Contains(got, "after-attach:live-period") {
+	if got := live.String(); !strings.Contains(got, "after-attach:live-period") {
 		t.Fatalf("missing live output before exit: %q", got)
+	}
+	all := replayed + live.String()
+	if got := strings.Count(all, "while-detached:detached-period"); got != 1 {
+		t.Fatalf("detached-period output count = %d, want exactly once; stream=%q", got, all)
+	}
+	if got := strings.Count(all, "after-attach:live-period"); got != 1 {
+		t.Fatalf("live-period output count = %d, want exactly once; stream=%q", got, all)
+	}
+	if strings.Index(all, "while-detached:detached-period") > strings.Index(all, "after-attach:live-period") {
+		t.Fatalf("detached replay followed live output; stream=%q", all)
+	}
+}
+
+func waitForScrollbackContains(t *testing.T, s *Session, want string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.After(timeout)
+	for {
+		snapshot, _ := s.scrollback.Snapshot()
+		if strings.Contains(string(snapshot), want) {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for detached output %q; scrollback=%q", want, snapshot)
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+}
+
+func readReplayThrough(t *testing.T, ch <-chan []byte, want string, timeout time.Duration) string {
+	t.Helper()
+	deadline := time.After(timeout)
+	var stdout strings.Builder
+	first := true
+	for {
+		select {
+		case raw, ok := <-ch:
+			if !ok {
+				t.Fatalf("attach stream closed during replay; stdout=%q", stdout.String())
+			}
+			var f Frame
+			if err := json.Unmarshal(raw, &f); err != nil {
+				t.Fatalf("unmarshal replay frame: %v", err)
+			}
+			if first && f.Type != "replay-marker" {
+				t.Fatalf("first reattach frame = %q, want replay-marker", f.Type)
+			}
+			first = false
+			if f.Type == "stdout" {
+				stdout.WriteString(decodeStdout(t, raw))
+			}
+			if strings.Contains(stdout.String(), want) {
+				return stdout.String()
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for replay %q; stdout=%q", want, stdout.String())
+		}
 	}
 }
 
