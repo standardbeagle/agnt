@@ -1,4 +1,4 @@
-.PHONY: build release test test-unit test-integration test-browser test-e2e test-isolated test-flake clean clean-zombies install install-local install-windows run lint test-webapp mockagent generate generate-check vendor cross-compile cross-compile-check
+.PHONY: build release test test-unit test-integration test-browser test-e2e test-isolated test-ssh test-flake clean clean-zombies install install-local install-windows run lint test-webapp mockagent generate generate-check vendor cross-compile cross-compile-check
 
 # Binary names
 BINARY := devtool-mcp
@@ -90,6 +90,13 @@ test-isolated:
 		env -u AGNT_DISABLE_ORPHAN_SCAN \
 		go test -tags procisolation -count=1 -v \
 		./internal/daemon/... ./internal/platform/...
+
+# Run the remote-SSH end-to-end tier. The in-process harness always runs; the
+# tagged container smoke test runs when Docker or Podman is available and
+# otherwise skips loudly. SSH_E2E_IMAGE can pin an alternate compatible image;
+# set SSH_E2E_USER as well for a conventional image exposing sshd on port 22.
+test-ssh:
+	go test -count=1 -v -tags=sshe2e ./internal/sshclient/...
 
 # Hunt flakes via parallel stress run (50-count, 4-way parallel, shuffled)
 test-flake: ## Hunt flakes via parallel stress run

@@ -158,7 +158,7 @@ Port-conflict policy、autostart cleanup ordering、alert push channels、incide
 
 ## Testing
 
-**Two-tier suite**：`make test`（除 `procisolation`-tagged，host-safe）與 `make test-isolated`（`procisolation` tests in `unshare --user --pid --mount --fork --mount-proc`，Linux only）。isolated 因 subset 走真 `/proc` + 真 `kill(2)` 對 dead-leader pgids；native 恐 reap unrelated same-uid processes。
+**Three-tier suite**：`make test`（除 `procisolation` / `sshe2e` tagged，host-safe）、`make test-isolated`（`procisolation` tests in `unshare --user --pid --mount --fork --mount-proc`，Linux only）、`make test-ssh`（reusable in-process SSH harness + `sshe2e` containerized sshd smoke；Docker/Podman unavailable 時 loud skip）。isolated 因 subset 走真 `/proc` + 真 `kill(2)` 對 dead-leader pgids；native 恐 reap unrelated same-uid processes。`SSH_E2E_IMAGE` 可 pin compatible linuxserver.io sshd fixture image；conventional port-22 image 另設 `SSH_E2E_USER`（generated authorized_keys 會 read-only mount 到該 user）。
 
 `procisolation`-tagged: `internal/daemon/daemon_orphan_pgid_test.go`, `internal/platform/orphanpgid_unix_test.go`.
 
