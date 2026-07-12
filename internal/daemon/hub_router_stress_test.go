@@ -89,12 +89,20 @@ type stubRouterHandler struct {
 	panicked   atomic.Int64
 	errored    atomic.Int64
 	sleep      time.Duration
+	entered    chan struct{}
+	release    chan struct{}
 	panicEvery int // 0 = never, N = every Nth call panics
 	errEvery   int // 0 = never, N = every Nth call returns a sentinel error
 	tag        string
 }
 
 func (h *stubRouterHandler) handle(_ context.Context, _ *hubpkg.Connection, _ *hubproto.Command) error {
+	if h.entered != nil {
+		close(h.entered)
+	}
+	if h.release != nil {
+		<-h.release
+	}
 	if h.sleep > 0 {
 		time.Sleep(h.sleep)
 	}
@@ -305,7 +313,12 @@ func TestRouter_SlowHandlerDoesntBlockOthers(t *testing.T) {
 
 	pool := newRouterStressPool(t, 8)
 
-	slow := &stubRouterHandler{tag: "SLOW", sleep: 100 * time.Millisecond}
+	slowEntered := make(chan struct{})
+	slowRelease := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseSlow := func() { releaseOnce.Do(func() { close(slowRelease) }) }
+	t.Cleanup(releaseSlow)
+	slow := &stubRouterHandler{tag: "SLOW", entered: slowEntered, release: slowRelease}
 	fast := &stubRouterHandler{tag: "FAST"}
 	dispatchMap := map[string]handlerFn{
 		"SLOW": slow.handle,
@@ -314,8 +327,8 @@ func TestRouter_SlowHandlerDoesntBlockOthers(t *testing.T) {
 	router := newCommandRouter("STRESS")
 
 	var wg sync.WaitGroup
-	// Fire 1 slow dispatch on conn[0] in parallel with 100 fast dispatches
-	// spread across conns 1..7. Measure wallclock for the 100 fasts.
+	// Fire 1 slow dispatch on conn[0] and hold it inside the handler while 100
+	// fast dispatches run across conns 1..7.
 	wg.Add(1)
 	slowDone := make(chan struct{})
 	go func() {
@@ -325,9 +338,7 @@ func TestRouter_SlowHandlerDoesntBlockOthers(t *testing.T) {
 		_ = router.dispatch(context.Background(), pool.conn(0), cmd, dispatchMap)
 	}()
 
-	// Let the slow handler enter its Sleep first so its goroutine is
-	// parked on the timer, not competing for CPU.
-	time.Sleep(5 * time.Millisecond)
+	<-slowEntered
 
 	var fastWg sync.WaitGroup
 	for i := 0; i < 100; i++ {
@@ -346,6 +357,7 @@ func TestRouter_SlowHandlerDoesntBlockOthers(t *testing.T) {
 	default:
 	}
 
+	releaseSlow()
 	wg.Wait()
 	// Counts must match.
 	assert.Equal(t, int64(1), slow.called.Load())
