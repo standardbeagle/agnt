@@ -113,27 +113,20 @@ injected-delay mechanism's own correctness (chaos-injection tests, retry
 backoff). Those are fine per the F-proxy lesson: a fixed timeout guarding
 *whether something eventually happens* is a ceiling, not a latency SLO.
 
-Seven sites assert absolute wall-clock latency as a **primary** invariant —
-a perf/throughput/non-blocking claim measured directly, with no
-baseline-calibration or relative judgment — and are flagged as flake risk
-under load. Filed as a single follow-up
-(`01KX9RQJ2D76QE0GCRK1Q9VZ5F`, not fixed inline — out of this docs-only
-task's scope):
+The 2026-07-12 resweep found **zero remaining primary absolute wall-clock
+assertions**. Follow-up `01KX9RQJ2D76QE0GCRK1Q9VZ5F` completed the seven
+previously identified conversions in commits `e558f807` and `11f4224c`:
 
-1. `internal/daemon/hub_hook_stress_test.go:226,228` (`TestHookRing_EnqueueP99Latency`) — p99<5ms, p50<1ms on an in-process ring push under contention (same class as the already-fixed cold-exit contract, different test).
-2. `internal/hookrules/rules_test.go:159` — `perOp < 1ms` sub-millisecond hot-path assertion.
-3. `internal/incident/bus_test.go:166-170` — `WriteAsync` must take `<1ms`.
-4. `internal/daemon/hub_router_stress_test.go:343-354` — `fastElapsed < 50ms` for 100 concurrent dispatches.
-5. `internal/overlay/tailscale_dns_test.go:114-121` — each caller must be `<50ms` blocked.
-6. `internal/daemon/hub_session_async_test.go:60-68` — `SESSION REGISTER` must return `<500ms`.
-7. `internal/proxy/ws_fanout_stress_test.go:227-232` — async-isolation claim asserted via `<500ms`.
+- hot-path performance checks now compare against same-run baselines;
+- router, DNS, session registration, and WebSocket isolation checks use
+  observed state or ordering rather than elapsed-time budgets; and
+- the router fixture synchronizes explicitly on its slow handler entering a
+  test-controlled blocked state.
 
-**Disposition:** all seven are fixable test-design debt, not
-non-determinizable exceptions. They remain outside F-gate's `AGENTS.md` and
-`docs/` edit scope and are tracked by follow-up
-`01KX9RQJ2D76QE0GCRK1Q9VZ5F`. Consequently, the repository sweep has seven
-primary wall-clock violations remaining and this gate must not claim the
-zero-violation criterion until that follow-up lands and the sweep is rerun.
+The resweep repeated the command above and manually classified its remaining
+hits. They are relative same-run comparisons, observed-order assertions,
+generous deadlock/liveness ceilings, or tests of deliberately injected
+delays. None uses absolute wall-clock latency as its primary invariant.
 
 ## Acceptance evidence
 
