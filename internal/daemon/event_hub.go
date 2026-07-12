@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"errors"
 	"runtime"
 	"strings"
 	"sync"
@@ -37,6 +38,22 @@ func (r *proxyPathRegistry) get(proxyID string) string {
 // and drop on overflow.
 type HookEventSink interface {
 	EmitHookEvent(ev HookEvent)
+}
+
+// AgentNotice is an informational message intended for an attached agent's
+// input surface. It is deliberately distinct from browser toasts: file arrival
+// is actionable agent context, not a visual notification for the developer.
+type AgentNotice struct {
+	SessionName string
+	ProjectPath string
+	Message     string
+}
+
+// AgentNoticeSink is the terminal delivery edge for agent-bound notices.
+// Implementations may write to a PTY, but producers must always enter through
+// EventHub so dispatch and explicit drops remain observable.
+type AgentNoticeSink interface {
+	DeliverAgentNotice(AgentNotice) error
 }
 
 // StreamSink receives filtered proxy log events via a channel.
@@ -153,9 +170,48 @@ type ProxyBroadcaster interface {
 type EventHub struct {
 	streamSinks      []*StreamSink
 	hookSinks        []HookEventSink
+	agentNoticeSinks []AgentNoticeSink
 	proxyBroadcaster ProxyBroadcaster
 	mu               sync.RWMutex
 	proxyPaths       proxyPathRegistry // proxyID → project path for stream routing
+}
+
+// AddAgentNoticeSink registers an agent-bound delivery sink.
+func (h *EventHub) AddAgentNoticeSink(sink AgentNoticeSink) {
+	if sink == nil {
+		return
+	}
+	h.mu.Lock()
+	h.agentNoticeSinks = append(h.agentNoticeSinks, sink)
+	h.mu.Unlock()
+}
+
+// BroadcastAgentNotice dispatches through the agent surface, never the toast
+// surface. A zero-sink or zero-success result is returned as an explicit error
+// so callers cannot silently lose a completed upload notification.
+func (h *EventHub) BroadcastAgentNotice(notice AgentNotice) (int, []error) {
+	h.mu.RLock()
+	sinks := append([]AgentNoticeSink(nil), h.agentNoticeSinks...)
+	h.mu.RUnlock()
+	if len(sinks) == 0 {
+		err := errors.New("event-hub: agent notice dropped: no delivery sinks registered")
+		debug.Warn("event-hub", "%v", err)
+		return 0, []error{err}
+	}
+
+	delivered := 0
+	var errs []error
+	for _, sink := range sinks {
+		if err := sink.DeliverAgentNotice(notice); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		delivered++
+	}
+	if delivered == 0 && len(errs) == 0 {
+		errs = append(errs, errors.New("event-hub: agent notice dropped: no sink accepted it"))
+	}
+	return delivered, errs
 }
 
 // NewEventHub creates a new EventHub.

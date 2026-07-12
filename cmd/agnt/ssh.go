@@ -112,7 +112,7 @@ func runSSH(cmd *cobra.Command, args []string) error {
 	}
 
 	forwarding := startReconnectForwarding(host, client, remotePath)
-	stopControlSocket := startControlSocket(host, client, remotePath)
+	stopControlSocket := startControlSocket(host, client, remotePath, attachName)
 
 	cols, rows := 80, 24
 	if c, r, err := term.GetSize(int(os.Stdin.Fd())); err == nil {
@@ -147,7 +147,7 @@ func runSSH(cmd *cobra.Command, args []string) error {
 		},
 	}
 
-	return runSSHRelayLoop(host, remotePath, client, session, forwarding, stopControlSocket, reconnector)
+	return runSSHRelayLoop(host, remotePath, attachName, client, session, forwarding, stopControlSocket, reconnector)
 }
 
 // runSSHRelayLoop owns the CONNECTED<->RECONNECTING cycle (task 09c). Each
@@ -162,7 +162,7 @@ func runSSH(cmd *cobra.Command, args []string) error {
 // it (see reconnect.go's doc comment) and doubles as the Ctrl-C detector
 // during RECONNECTING, since raw mode never delivers a real SIGINT for
 // that byte.
-func runSSHRelayLoop(host, remotePath string, client *sshclient.Client, session *sshclient.PTYSession, forwarding *reconnectForwarding, stopControlSocket func(), reconnector *sshclient.Reconnector) error {
+func runSSHRelayLoop(host, remotePath, attachName string, client *sshclient.Client, session *sshclient.PTYSession, forwarding *reconnectForwarding, stopControlSocket func(), reconnector *sshclient.Reconnector) error {
 	var reconnectCancelMu sync.Mutex
 	var reconnectCancel context.CancelFunc
 	pump := sshclient.NewInputPump(func() {
@@ -240,7 +240,7 @@ func runSSHRelayLoop(host, remotePath string, client *sshclient.Client, session 
 		client = newClient
 		session = newSession
 		forwarding.Resume(client)
-		stopControlSocket = startControlSocket(host, client, remotePath)
+		stopControlSocket = startControlSocket(host, client, remotePath, attachName)
 	}
 }
 
@@ -666,7 +666,7 @@ func startPortForwarding(host string, client *sshclient.Client) func() {
 // returned stop func is a no-op, so a remote host without SFTP support (or
 // a local ~/.agnt/ssh directory that can't be created) doesn't prevent the
 // session from proceeding; it only means 'agnt push' won't find it.
-func startControlSocket(host string, client *sshclient.Client, remotePath string) func() {
+func startControlSocket(host string, client *sshclient.Client, remotePath string, sessionName ...string) func() {
 	projectRoot, err := sshclient.ResolveRemoteProjectRoot(client.SSH, remotePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "agnt ssh: could not resolve remote project root (%v) — 'agnt push' will not find this session\n", err)
@@ -686,7 +686,17 @@ func startControlSocket(host string, client *sshclient.Client, remotePath string
 		return func() {}
 	}
 
-	go sshclient.ServeControl(ln, projectRoot, sc)
+	name := ""
+	if len(sessionName) > 0 {
+		name = sessionName[0]
+	}
+	notify := func(remotePath string, size int64) error {
+		if name == "" {
+			return fmt.Errorf("attached session name unavailable")
+		}
+		return sshclient.NotifyFileArrived(sshclient.LocalForwardSocketPath(host), name, projectRoot, remotePath, size)
+	}
+	go sshclient.ServeControl(ln, projectRoot, sc, notify)
 
 	return func() {
 		ln.Close()

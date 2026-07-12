@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -9,6 +10,37 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type recordingAgentNoticeSink struct {
+	notices []AgentNotice
+	err     error
+}
+
+func (s *recordingAgentNoticeSink) DeliverAgentNotice(notice AgentNotice) error {
+	s.notices = append(s.notices, notice)
+	return s.err
+}
+
+func TestEventHub_BroadcastAgentNotice_DispatchesThroughRegisteredSink(t *testing.T) {
+	hub := NewEventHub()
+	good := &recordingAgentNoticeSink{}
+	bad := &recordingAgentNoticeSink{err: errors.New("closed PTY")}
+	hub.AddAgentNoticeSink(good)
+	hub.AddAgentNoticeSink(bad)
+
+	notice := AgentNotice{SessionName: "agent", ProjectPath: "/work", Message: "[agnt] file arrived: .agnt-inbox/mock.png (24KB)"}
+	delivered, errs := hub.BroadcastAgentNotice(notice)
+
+	require.Equal(t, 1, delivered)
+	require.Len(t, errs, 1)
+	require.Equal(t, []AgentNotice{notice}, good.notices)
+}
+
+func TestEventHub_BroadcastAgentNotice_NoSinksIsExplicitDrop(t *testing.T) {
+	delivered, errs := NewEventHub().BroadcastAgentNotice(AgentNotice{Message: "notice"})
+	require.Zero(t, delivered)
+	require.Error(t, errors.Join(errs...))
+}
 
 func TestStreamFilter_MatchesTypeFilter(t *testing.T) {
 	t.Parallel()

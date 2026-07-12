@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -258,6 +259,56 @@ func TestSessionHostStdin_RejectedForNonPrimaryAttach(t *testing.T) {
 		"data":      base64.StdEncoding.EncodeToString([]byte("hello\n")),
 	}).OK()
 	require.Error(t, err, "stdin from an unknown/non-primary attach id must be rejected")
+}
+
+func TestSessionHostNotice_RoutesThroughEventHubAndBuffersWithoutAttach(t *testing.T) {
+	// No t.Parallel(): spawns a real PTY child.
+	d, sockPath := newSessionHostTestDaemon(t)
+	project := t.TempDir()
+	file := filepath.Join(project, ".agnt-inbox", "fixture.txt")
+	require.NoError(t, os.MkdirAll(filepath.Dir(file), 0o755))
+	require.NoError(t, os.WriteFile(file, []byte("fixture-readable\n"), 0o644))
+
+	c := NewConn(sockPath)
+	defer c.Close()
+	var created protocol.SessionHostCreateResult
+	require.NoError(t, c.Request("SESSION-HOST", "CREATE").WithJSON(protocol.SessionHostCreateConfig{
+		Name: "fixture-agent", ProjectPath: project, Command: "sh",
+		Args: []string{"-c", `IFS= read -r line; cat .agnt-inbox/fixture.txt`},
+	}).JSONInto(&created))
+	defer c.Request("SESSION-HOST", "KILL", created.SessionID).OK()
+
+	// There are deliberately zero attaches when the notice is delivered.
+	s, ok := d.sessionHosts.Get(created.SessionID)
+	require.True(t, ok)
+	require.Zero(t, s.AttachedCount())
+	require.NoError(t, c.Request("SESSION-HOST", "NOTICE").WithJSON(map[string]string{
+		"session_name": "fixture-agent", "project_path": project,
+		"message": "[agnt] file arrived: .agnt-inbox/fixture.txt (17B)",
+	}).OK())
+
+	frames, attachID, _ := s.Attach(16)
+	defer s.Detach(attachID)
+	deadline := time.After(3 * time.Second)
+	for {
+		select {
+		case raw := <-frames:
+			var frame sessionhost.Frame
+			require.NoError(t, json.Unmarshal(raw, &frame))
+			if frame.Type != "stdout" {
+				continue
+			}
+			var encoded string
+			require.NoError(t, json.Unmarshal(frame.Data, &encoded))
+			decoded, err := base64.StdEncoding.DecodeString(encoded)
+			require.NoError(t, err)
+			if strings.Contains(string(decoded), "fixture-readable") {
+				return
+			}
+		case <-deadline:
+			t.Fatal("attached session did not replay scripted fixture reading the uploaded file")
+		}
+	}
 }
 
 // TestSessionHostAttachDetachChurn_Race exercises concurrent attach/detach

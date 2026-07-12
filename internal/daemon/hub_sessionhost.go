@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"time"
@@ -39,6 +40,7 @@ func (d *Daemon) sessionHostActions() map[string]handlerFn {
 	return map[string]handlerFn{
 		"CREATE": noCtx(d.hubHandleSessionHostCreate),
 		"LIST":   noCtx(d.hubHandleSessionHostList),
+		"NOTICE": noCtx(d.hubHandleSessionHostNotice),
 		"KILL":   noCtx(d.hubHandleSessionHostKill),
 		"RESIZE": noCtx(d.hubHandleSessionHostResize),
 		"STDIN":  noCtx(d.hubHandleSessionHostStdin),
@@ -47,6 +49,41 @@ func (d *Daemon) sessionHostActions() map[string]handlerFn {
 			return d.hubHandleSessionHostAttach(c, conn, cmd)
 		},
 	}
+}
+
+type sessionHostNoticePayload struct {
+	SessionName string `json:"session_name"`
+	ProjectPath string `json:"project_path"`
+	Message     string `json:"message"`
+}
+
+func (d *Daemon) hubHandleSessionHostNotice(conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	payload, err := unmarshalCommand[sessionHostNoticePayload](cmd)
+	if err != nil || payload.SessionName == "" || payload.Message == "" {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, "SESSION-HOST NOTICE requires session_name and message")
+	}
+	delivered, dispatchErrs := d.eventHub.BroadcastAgentNotice(AgentNotice(payload))
+	if delivered == 0 {
+		return conn.WriteErr(hubproto.ErrInvalidState, fmt.Sprintf("agent notice not delivered: %v", errors.Join(dispatchErrs...)))
+	}
+	return conn.WriteOK("agent notice delivered")
+}
+
+type sessionHostAgentNoticeSink struct {
+	registry *sessionhost.Registry
+}
+
+func (s sessionHostAgentNoticeSink) DeliverAgentNotice(notice AgentNotice) error {
+	for _, candidate := range s.registry.List(notice.ProjectPath, false) {
+		if candidate.Name != notice.SessionName {
+			continue
+		}
+		if err := candidate.WriteStdin([]byte(notice.Message + "\n")); err != nil {
+			return fmt.Errorf("session-host notice PTY delivery: %w", err)
+		}
+		return nil
+	}
+	return fmt.Errorf("session-host notice dropped: session %q not found for project %q", notice.SessionName, notice.ProjectPath)
 }
 
 // hubHandleSessionHostCreate handles SESSION-HOST CREATE.

@@ -172,6 +172,63 @@ func TestPushOneFile_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestPushOneFile_NotifiesOnlyAfterReadableUpload(t *testing.T) {
+	withSandboxedHome(t)
+	root, sc := newSFTPFixture(t)
+	ln, err := ListenControl("push-notify")
+	if err != nil {
+		t.Fatalf("ListenControl: %v", err)
+	}
+	defer ln.Close()
+
+	noticed := make(chan string, 1)
+	go ServeControl(ln, root, sc, func(remotePath string, size int64) error {
+		content, readErr := os.ReadFile(remotePath)
+		if readErr != nil {
+			return readErr
+		}
+		if size != int64(len(content)) {
+			return errors.New("notice size did not match readable upload")
+		}
+		noticed <- string(content)
+		return nil
+	})
+
+	content := []byte("scripted fixture can read me")
+	_, err = PushOneFile("push-notify", "fixture.txt", "", int64(len(content)), bytes.NewReader(content))
+	if err != nil {
+		t.Fatalf("PushOneFile: %v", err)
+	}
+	select {
+	case got := <-noticed:
+		if got != string(content) {
+			t.Fatalf("notifier read %q, want %q", got, content)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("file-arrival notifier was not called")
+	}
+}
+
+func TestPushOneFile_NoticeFailureIsLoud(t *testing.T) {
+	withSandboxedHome(t)
+	root, sc := newSFTPFixture(t)
+	ln, err := ListenControl("push-notice-fail")
+	if err != nil {
+		t.Fatalf("ListenControl: %v", err)
+	}
+	defer ln.Close()
+	go ServeControl(ln, root, sc, func(string, int64) error { return errors.New("no attached session") })
+
+	content := []byte("uploaded despite notice failure")
+	_, err = PushOneFile("push-notice-fail", "fixture.txt", "", int64(len(content)), bytes.NewReader(content))
+	if err == nil || !strings.Contains(err.Error(), "notice failed") {
+		t.Fatalf("error = %v, want loud notice failure", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, DefaultInboxDir, "fixture.txt")); statErr != nil {
+		t.Fatalf("upload should remain committed: %v", statErr)
+	}
+}
+
 func TestPushOneFile_TraversalRejectedOverTheWire(t *testing.T) {
 	withSandboxedHome(t)
 	root, stop := startTestControlServer(t, "push-guard")

@@ -104,17 +104,21 @@ func ListenControl(host string) (net.Listener, error) {
 // resulting remote path or a loud error. sc is the SFTP subsystem opened
 // over the same live SSH connection the owning 'agnt ssh' process is
 // relaying its PTY through.
-func ServeControl(ln net.Listener, projectRoot string, sc *sftp.Client) {
+func ServeControl(ln net.Listener, projectRoot string, sc *sftp.Client, notifier ...FileArrivalNotifier) {
+	var notify FileArrivalNotifier
+	if len(notifier) > 0 {
+		notify = notifier[0]
+	}
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
 			return
 		}
-		go serveControlConn(conn, projectRoot, sc)
+		go serveControlConn(conn, projectRoot, sc, notify)
 	}
 }
 
-func serveControlConn(conn net.Conn, projectRoot string, sc *sftp.Client) {
+func serveControlConn(conn net.Conn, projectRoot string, sc *sftp.Client, notify FileArrivalNotifier) {
 	defer conn.Close()
 	reader := bufio.NewReader(conn)
 	line, err := reader.ReadString('\n')
@@ -136,6 +140,12 @@ func serveControlConn(conn net.Conn, projectRoot string, sc *sftp.Client) {
 		if err != nil {
 			writeControlResponse(conn, controlResponse{Error: err.Error()})
 			return
+		}
+		if notify != nil {
+			if err := notify(remotePath, header.Size); err != nil {
+				writeControlResponse(conn, controlResponse{Error: fmt.Sprintf("upload completed at %s but agent notice failed: %v", remotePath, err), RemotePath: remotePath})
+				return
+			}
 		}
 		writeControlResponse(conn, controlResponse{OK: true, RemotePath: remotePath})
 	default:

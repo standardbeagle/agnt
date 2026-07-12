@@ -469,6 +469,7 @@ func New(config DaemonConfig) *Daemon {
 	// Wire proxy manager into EventHub so crash alerts are broadcast to
 	// connected browser overlays as toast notifications.
 	d.eventHub.SetProxyBroadcaster(newProxyManagerBroadcaster(d.proxym))
+	d.eventHub.AddAgentNoticeSink(sessionHostAgentNoticeSink{registry: d.sessionHosts})
 
 	// HealthTracker is initialised after the struct so it can capture `d`
 	// in its lookup closures. Its emitDiagnostic routes back through the
