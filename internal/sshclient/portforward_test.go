@@ -2,18 +2,23 @@ package sshclient
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/goleak"
 )
@@ -58,7 +63,8 @@ func newTestDaemonClient(t *testing.T) (*daemon.Daemon, *daemon.Client) {
 func backendStub(t *testing.T) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, "hello from backend %s", r.URL.Path)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprintf(w, "<!doctype html><html><body>hello from backend %s</body></html>", r.URL.Path)
 	}))
 	t.Cleanup(srv.Close)
 	return srv
@@ -118,7 +124,8 @@ func TestPortForwardManager_EndToEnd(t *testing.T) {
 		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
 		body, err := io.ReadAll(conn)
 		require.NoError(t, err)
-		require.Contains(t, string(body), "hello from backend /foo")
+		require.Contains(t, string(body), "window.__devtool_proxy_id", "HTML fetched through the forwarded local port must contain proxy instrumentation")
+		require.Contains(t, string(body), "/__devtool/inject.", "HTML fetched through the forwarded local port must load the injected runtime")
 	})
 
 	t.Run("WSMetricsRoundTripThroughForward", func(t *testing.T) {
@@ -163,6 +170,67 @@ func TestPortForwardManager_EndToEnd(t *testing.T) {
 		n, err := conn.Read(buf)
 		require.NoError(t, err)
 		require.Contains(t, string(buf[:n]), "101", "expected an HTTP 101 Switching Protocols response relayed through the forward")
+	})
+
+	t.Run("ScreenshotRoundTripThroughForward", func(t *testing.T) {
+		backend := backendStub(t)
+		result, err := dc.ProxyStart("p-screenshot", backend.URL, 0, 0, "")
+		require.NoError(t, err)
+		listenAddr, _ := result["listen_addr"].(string)
+		require.NotEmpty(t, listenAddr)
+
+		sshClient := forwardFixture(t, listenAddr)
+		mgr := NewPortForwardManager(sshClient, dc, func(string) {})
+		mgr.Start(context.Background())
+		defer mgr.Stop()
+
+		var localPort int
+		require.Eventually(t, func() bool {
+			for _, m := range mgr.Status() {
+				if m.ProxyID == "p-screenshot" {
+					localPort = m.LocalPort
+					return true
+				}
+			}
+			return false
+		}, 3*time.Second, 20*time.Millisecond)
+
+		wsURL := url.URL{Scheme: "ws", Host: fmt.Sprintf("127.0.0.1:%d", localPort), Path: "/__devtool_metrics"}
+		ws, _, err := websocket.DefaultDialer.Dial(wsURL.String(), nil)
+		require.NoError(t, err, "screenshot client must connect through the forwarded local port")
+		defer ws.Close()
+
+		png := []byte("forwarded-screenshot-payload")
+		require.NoError(t, ws.WriteJSON(map[string]interface{}{
+			"type": "screenshot",
+			"url":  "/capture",
+			"data": map[string]interface{}{
+				"name":   "forwarded-round-trip",
+				"data":   "data:image/png;base64," + base64.StdEncoding.EncodeToString(png),
+				"format": "png",
+				"width":  1,
+				"height": 1,
+			},
+		}))
+
+		var screenshotPath string
+		require.Eventually(t, func() bool {
+			entries, _, queryErr := dc.ProxyLogQueryFull("p-screenshot", protocol.LogQueryFilter{Types: []string{"screenshot"}, Limit: 10})
+			if queryErr != nil {
+				return false
+			}
+			for _, entry := range entries {
+				if entry.Screenshot != nil && entry.Screenshot.Name == "forwarded-round-trip" && entry.Screenshot.Error == "" {
+					screenshotPath = entry.Screenshot.FilePath
+					return screenshotPath != ""
+				}
+			}
+			return false
+		}, 3*time.Second, 20*time.Millisecond, "screenshot sent through the forward must be persisted and visible through the remote daemon")
+
+		got, err := os.ReadFile(screenshotPath)
+		require.NoError(t, err)
+		require.Equal(t, png, got, "persisted screenshot must match the bytes sent through the forwarded port")
 	})
 
 	t.Run("LocalPortCollision_RemapsAndNotifies", func(t *testing.T) {
