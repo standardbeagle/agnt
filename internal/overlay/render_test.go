@@ -387,3 +387,31 @@ func TestDrawOverview_NoticeBanner(t *testing.T) {
 	clean := render(Status{DaemonConnected: ConnectionConnected})
 	assert.NotContains(t, clean, "dismiss", "no banner when there are no notices")
 }
+
+// TestDrawIndicator_QueueSegment pins the status-bar queue segment and its
+// visibility gate. The gate is queueActive — shared with the overview panel
+// (drawAlertQueueSection) so the two surfaces never disagree about whether
+// the alert queue is worth showing.
+func TestDrawIndicator_QueueSegment(t *testing.T) {
+	draw := func(q QueueDepth) string {
+		var buf bytes.Buffer
+		r := NewRenderer(&buf, 200, 24)
+		r.DrawIndicator(Status{DaemonConnected: ConnectionConnected, Queue: q})
+		return buf.String()
+	}
+
+	assert.NotContains(t, draw(QueueDepth{}), "📮", "zero-value queue renders nothing")
+	assert.Contains(t, draw(QueueDepth{Pending: 3}), "📮 3", "pending count shown")
+	assert.Contains(t, draw(QueueDepth{Pending: 1, Deferred: true}), "⏸", "deferred marker shown")
+	assert.Contains(t, draw(QueueDepth{Pending: 1, Suppressed: 4}), "+4", "suppressed count shown")
+	assert.Contains(t, draw(QueueDepth{Deferred: true}), "📮", "deferred alone shows the segment (queueActive gate)")
+}
+
+// TestQueueActive_GateSharedWithOverview pins the single definition of
+// "queue worth showing" used by both display surfaces.
+func TestQueueActive_GateSharedWithOverview(t *testing.T) {
+	assert.False(t, queueActive(QueueDepth{}))
+	assert.True(t, queueActive(QueueDepth{Pending: 1}))
+	assert.True(t, queueActive(QueueDepth{Suppressed: 1}))
+	assert.True(t, queueActive(QueueDepth{Deferred: true}))
+}

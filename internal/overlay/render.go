@@ -502,6 +502,21 @@ func (r *Renderer) DrawIndicator(status Status) {
 		parts = append(parts, fmt.Sprintf("%s%s %d errors%s", FgRed, IconWarning, recentErrors, Reset))
 	}
 
+	// Alert-queue depth: pending alerts in the delivery queue, whether flush
+	// is deferred (agent busy ⏸), and how many were dropped by the overload
+	// throttle (+N). Same visibility gate as the overview panel (queueActive)
+	// so the two surfaces never disagree about whether the queue matters.
+	if q := status.Queue; queueActive(q) {
+		seg := fmt.Sprintf("📮 %d", q.Pending)
+		if q.Deferred {
+			seg += " ⏸"
+		}
+		if q.Suppressed > 0 {
+			seg += fmt.Sprintf(" %s+%d%s", FgRed, q.Suppressed, Reset)
+		}
+		parts = append(parts, seg)
+	}
+
 	// Join parts with separator
 	statusText := strings.Join(parts, fmt.Sprintf(" %s│%s ", FgBrightBlack, Reset))
 
@@ -1090,15 +1105,16 @@ func (r *Renderer) drawOverviewContent(startRow, col, width, maxRows int, status
 
 	// Empty-state: nothing to show. Render an intentional quick-start block
 	// instead of a blank void.
+	queueUp := queueActive(status.Queue)
 	hasBody := len(status.Scripts) > 0 || len(status.Proxies) > 0 ||
-		len(visiblePorts) > 0 || hiddenPorts > 0 || len(status.Orphans) > 0 || len(recentErrs) > 0
+		len(visiblePorts) > 0 || hiddenPorts > 0 || len(status.Orphans) > 0 || len(recentErrs) > 0 || queueUp
 	if !hasBody {
 		row = r.drawOverviewEmptyState(row, col, width, bottom, status.DaemonConnected == ConnectionConnected)
 	} else {
 		// Two-column layout on wide terminals keeps scannable sections side by
 		// side; single column below ~100 cols so 80-col terminals stay clean.
 		leftHas := len(status.Scripts) > 0 || len(status.Proxies) > 0
-		rightHas := len(visiblePorts) > 0 || hiddenPorts > 0 || len(status.Orphans) > 0 || len(recentErrs) > 0
+		rightHas := len(visiblePorts) > 0 || hiddenPorts > 0 || len(status.Orphans) > 0 || len(recentErrs) > 0 || queueUp
 		if width >= 100 && leftHas && rightHas {
 			const gutter = 3
 			colW := (width - gutter) / 2
@@ -1109,6 +1125,7 @@ func (r *Renderer) drawOverviewContent(startRow, col, width, maxRows int, status
 			rRow = r.drawPortsSection(rRow, rCol, colW, bottom, visiblePorts, hiddenPorts)
 			rRow = r.drawOrphansSection(rRow, rCol, colW, bottom, status.Orphans)
 			rRow = r.drawErrorsSection(rRow, rCol, colW, bottom, recentErrs)
+			rRow = r.drawAlertQueueSection(rRow, rCol, colW, bottom, status.Queue)
 			if rRow > lRow {
 				row = rRow
 			} else {
@@ -1120,6 +1137,7 @@ func (r *Renderer) drawOverviewContent(startRow, col, width, maxRows int, status
 			row = r.drawPortsSection(row, col, width, bottom, visiblePorts, hiddenPorts)
 			row = r.drawOrphansSection(row, col, width, bottom, status.Orphans)
 			row = r.drawErrorsSection(row, col, width, bottom, recentErrs)
+			row = r.drawAlertQueueSection(row, col, width, bottom, status.Queue)
 		}
 	}
 
@@ -1210,6 +1228,7 @@ const (
 	accentPorts   = FgBlue
 	accentOrphans = FgYellow
 	accentErrors  = FgRed
+	accentQueue   = FgMagenta
 )
 
 // padCell truncates or right-pads s to exactly w display cells (rune-counted,
@@ -1552,6 +1571,42 @@ func (r *Renderer) drawErrorsSection(row, col, width, bottom int, errs []ErrorIn
 			FgRed, IconError, Reset,
 			padCellTrim(e.Message, msgW),
 			FgBrightBlack, age, Reset))
+		row++
+	}
+	if row < bottom {
+		row++
+	}
+	return row
+}
+
+// queueActive reports whether the alert-delivery queue has anything worth
+// surfacing: entries pending, a deferred flush, or drops since the last flush.
+func queueActive(q QueueDepth) bool {
+	return q.Pending > 0 || q.Suppressed > 0 || q.Deferred
+}
+
+// drawAlertQueueSection renders the in-process alert-delivery queue depth
+// (overload throttle). Populated from the AlertScanner, not the daemon, so it
+// stays visible during a daemon outage — exactly when a deep queue matters.
+func (r *Renderer) drawAlertQueueSection(row, col, width, bottom int, q QueueDepth) int {
+	if !queueActive(q) || row >= bottom {
+		return row
+	}
+	badge, badgeColor := "ready", FgGreen
+	if q.Deferred {
+		badge, badgeColor = "deferred", FgYellow
+	}
+	row = r.overviewSectionHeader(row, col, width, accentQueue, "ALERT QUEUE", badge, badgeColor)
+
+	if row < bottom {
+		r.moveTo(row, col+1)
+		r.write(fmt.Sprintf("%s📮%s %s%d queued%s", accentQueue, Reset, FgWhite+Bold, q.Pending, Reset))
+		row++
+	}
+	if q.Suppressed > 0 && row < bottom {
+		r.moveTo(row, col+1)
+		r.write(fmt.Sprintf("%s%s%d suppressed%s %s(queue full while agent busy)%s",
+			FgRed, IconWarning, q.Suppressed, Reset, FgBrightBlack, Reset))
 		row++
 	}
 	if row < bottom {

@@ -48,16 +48,14 @@ type Overlay struct {
 	// alert matches still report to the daemon store. Toggled from the overlay.
 	forwardPaused atomic.Bool
 
-	// alertScanner is the canonical PTY-injection queue (dedup, batch,
-	// activity-defer). Browser-JS and HTTP errors flow through Inject so
-	// they share the queue with regex-matched process alerts. See
-	// .claude/skills/messaging-queue for the single-queue invariant.
-	alertScanner *overlay.AlertScanner
-
-	// jsCascadePatterns is the lowercased substring set used to drop
-	// transport-layer noise (vite/webpack HMR reconnect spam) from the
-	// auto-forward path. Loaded from .agnt.kdl alerts.outage-hold.
-	jsCascadePatterns []string
+	// alertQueue bundles the canonical PTY-injection queue (dedup, batch,
+	// activity-defer) with the cascade filter it was configured with.
+	// Browser-JS and HTTP errors flow through Inject so they share the
+	// queue with regex-matched process alerts (see the messaging-queue
+	// skill for the single-queue invariant). atomic.Pointer because
+	// SetAlertScanner runs on the pipeline goroutine after Start() already
+	// has the HTTP event server reading it.
+	alertQueue atomic.Pointer[alertWiring]
 
 	// enterSettle is the echo-settle window duration in sendEntersUntilActivity.
 	// Zero means use the production default (1100ms).
@@ -385,8 +383,22 @@ func (o *Overlay) processProxyEvent(event ProxyEvent) {
 
 	text := formatProxyEventText(event, o.auditSummarizer)
 	if text != "" {
-		debug.Log("overlay", "injecting %d chars into PTY for event type=%s", len(text), event.Type)
-		o.typeText(TypeMessage{Text: text, Enter: true, Instant: true})
+		// These are explicit user actions (panel message, sketch, design
+		// interaction). Route them through the canonical queue as Protected so
+		// they share activity-deferral (never injected mid-response) but are
+		// NEVER dropped by the overload throttle or dedup.
+		o.injectOrFallback(&overlay.AlertMatch{
+			Pattern: &overlay.AlertPattern{
+				ID:       "user:" + event.Type,
+				Severity: overlay.AlertSeverityInfo,
+				Category: "user",
+			},
+			Line:         text,
+			ScriptID:     "proxy:" + event.ProxyID,
+			Source:       overlay.AlertSourceUser,
+			RenderedText: text,
+			Protected:    true,
+		})
 	} else {
 		debug.Log("overlay", "formatProxyEventText returned empty for type=%s", event.Type)
 	}
@@ -442,16 +454,6 @@ func (o *Overlay) processAutoForwardEvent(event ProxyEvent) {
 		return
 	}
 
-	// Fall back to direct injection only if the scanner isn't wired
-	// (defensive — production wires it in pty_common.go after
-	// setupAlertScanner). Without the scanner there is no queue, so
-	// direct injection is the lesser evil over silent loss.
-	if o.alertScanner == nil {
-		debug.Log("overlay", "auto-forward fallback (no scanner): type=%s", event.Type)
-		o.typeText(TypeMessage{Text: rendered, Enter: true, Instant: true})
-		return
-	}
-
 	matchSource := overlay.AlertSourceBrowser
 	patternID := "browser-js-error"
 	if event.Type == "http_error" {
@@ -459,7 +461,7 @@ func (o *Overlay) processAutoForwardEvent(event ProxyEvent) {
 		patternID = "http-error"
 	}
 
-	o.alertScanner.Inject(&overlay.AlertMatch{
+	o.injectOrFallback(&overlay.AlertMatch{
 		Pattern: &overlay.AlertPattern{
 			ID:       patternID,
 			Severity: overlay.AlertSeverityError,
@@ -503,11 +505,12 @@ func canonicalAutoForwardMessage(event ProxyEvent) string {
 // cascade pattern. Patterns are pre-lowercased; matching is case-
 // insensitive substring.
 func (o *Overlay) matchesJSCascade(canonical string) bool {
-	if len(o.jsCascadePatterns) == 0 {
+	w := o.alertQueue.Load()
+	if w == nil || len(w.jsCascadePatterns) == 0 {
 		return false
 	}
 	lower := strings.ToLower(canonical)
-	for _, p := range o.jsCascadePatterns {
+	for _, p := range w.jsCascadePatterns {
 		if p != "" && strings.Contains(lower, p) {
 			return true
 		}
@@ -515,12 +518,37 @@ func (o *Overlay) matchesJSCascade(canonical string) bool {
 	return false
 }
 
+// injectOrFallback routes a match through the canonical alert queue (dedup,
+// batch, activity-defer). When no scanner is wired — alerts disabled in
+// config (setupAlertScanner returns nil) or the pipeline goroutine has not
+// called SetAlertScanner yet — it falls back to direct PTY injection of the
+// match's RenderedText: without the scanner there is no queue, so direct
+// injection is the lesser evil over silent loss. The fallback bypasses every
+// queue gate; keeping that policy in exactly one place is the point.
+func (o *Overlay) injectOrFallback(m *overlay.AlertMatch) {
+	if w := o.alertQueue.Load(); w != nil && w.scanner != nil {
+		debug.Log("overlay", "queueing alert id=%s source=%s protected=%v", m.Pattern.ID, m.Source, m.Protected)
+		w.scanner.Inject(m)
+		return
+	}
+	debug.Log("overlay", "alert fallback (no scanner): id=%s", m.Pattern.ID)
+	o.typeText(TypeMessage{Text: m.RenderedText, Enter: true, Instant: true})
+}
+
+// alertWiring pairs the alert scanner with the lowercased substring set
+// used to drop transport-layer noise (vite/webpack HMR reconnect spam)
+// from the auto-forward path. Patterns loaded from .agnt.kdl
+// alerts.outage-hold. Set and read as one unit via Overlay.alertQueue.
+type alertWiring struct {
+	scanner           *overlay.AlertScanner
+	jsCascadePatterns []string
+}
+
 // SetAlertScanner wires the canonical queue. Must be called once after
 // setupAlertScanner returns. Cascade patterns are lifted from the same
 // config so the auto-forward gate uses the same definition as the
 // daemon-side hold buffer.
 func (o *Overlay) SetAlertScanner(scanner *overlay.AlertScanner, cascadePatterns []string) {
-	o.alertScanner = scanner
 	if len(cascadePatterns) == 0 {
 		cascadePatterns = config.DefaultJSCascadePatterns
 	}
@@ -528,7 +556,7 @@ func (o *Overlay) SetAlertScanner(scanner *overlay.AlertScanner, cascadePatterns
 	for i, p := range cascadePatterns {
 		lowered[i] = strings.ToLower(p)
 	}
-	o.jsCascadePatterns = lowered
+	o.alertQueue.Store(&alertWiring{scanner: scanner, jsCascadePatterns: lowered})
 }
 
 // SetAutoForwardConfig configures the auto-forward filter from .agnt.kdl alerts config.

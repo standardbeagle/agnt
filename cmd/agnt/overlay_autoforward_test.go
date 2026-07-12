@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -152,4 +153,27 @@ func TestCanonicalAutoForwardMessage_HTTP(t *testing.T) {
 		"status_code": 500,
 	}))
 	assert.Equal(t, "GET /api/users -> 500", canon)
+}
+
+// TestSetAlertScanner_ConcurrentWithEventProcessing pins the atomic alert
+// wiring: SetAlertScanner runs on the pipeline goroutine after Start() has
+// the HTTP event server already reading the scanner and cascade patterns.
+// Fails under -race if Overlay.alertQueue reverts to plain fields.
+func TestSetAlertScanner_ConcurrentWithEventProcessing(t *testing.T) {
+	scanner, _ := newSpyScanner(t, 30*time.Millisecond)
+	o, _ := newAutoForwardOverlay(t, scanner, nil)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 200; i++ {
+			o.processAutoForwardEvent(makeEvent("browser_error", "dev", map[string]interface{}{
+				"message": fmt.Sprintf("TypeError: boom %d", i),
+			}))
+		}
+	}()
+	for i := 0; i < 50; i++ {
+		o.SetAlertScanner(scanner, []string{"[vite] server connection lost"})
+	}
+	<-done
 }

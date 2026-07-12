@@ -88,8 +88,29 @@ type StatusFetcher struct {
 	// case that produces hook drops).
 	selfLogPath string
 
+	// queueDepthFn, when set, returns the current alert-queue depth for
+	// display in the status bar and overview panel. It reads the in-process
+	// AlertScanner, so it is independent of daemon connectivity.
+	queueDepthFn func() QueueDepth
+
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+}
+
+// SetQueueDepthProvider registers a callback that returns the current alert
+// queue depth. Wired to the AlertScanner's DepthSnapshot so the overlay can
+// show how many alerts are queued / deferred / suppressed.
+func (f *StatusFetcher) SetQueueDepthProvider(fn func() QueueDepth) {
+	f.queueDepthFn = fn
+}
+
+// queueDepth returns the current queue depth from the registered provider, or
+// a zero snapshot when none is set.
+func (f *StatusFetcher) queueDepth() QueueDepth {
+	if f.queueDepthFn == nil {
+		return QueueDepth{}
+	}
+	return f.queueDepthFn()
 }
 
 // NewStatusFetcher creates a new StatusFetcher using a shared connection.
@@ -154,6 +175,10 @@ func (f *StatusFetcher) run(ctx context.Context) {
 func (f *StatusFetcher) fetchStatus() {
 	status := Status{
 		LastUpdate: time.Now(),
+		// Queue depth is in-process (AlertScanner), so populate it regardless
+		// of daemon reachability — a deep queue during a daemon outage is
+		// exactly when the developer needs to see it.
+		Queue: f.queueDepth(),
 	}
 
 	// Check daemon connection with ping
