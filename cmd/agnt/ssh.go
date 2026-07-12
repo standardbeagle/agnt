@@ -111,7 +111,7 @@ func runSSH(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	forwarding := startReconnectForwarding(host, client)
+	forwarding := startReconnectForwarding(host, client, remotePath)
 	stopControlSocket := startControlSocket(host, client, remotePath)
 
 	cols, rows := 80, 24
@@ -251,14 +251,21 @@ func runSSHRelayLoop(host, remotePath string, client *sshclient.Client, session 
 type reconnectForwarding struct {
 	mu        sync.RWMutex
 	host      string
+	project   string
 	daemonFwd *sshclient.Forwarder
 	ports     *sshclient.PortForwardManager
 	dclient   *daemon.Client
+	drops     *sshclient.DropWatcher
+	dropSFTP  io.Closer
 	toast     func(*daemon.Client, string, protocol.ToastConfig)
 }
 
-func startReconnectForwarding(host string, client *sshclient.Client) *reconnectForwarding {
-	r := &reconnectForwarding{host: host, toast: sendReconnectToast}
+func startReconnectForwarding(host string, client *sshclient.Client, projectRoot ...string) *reconnectForwarding {
+	root := ""
+	if len(projectRoot) > 0 {
+		root = projectRoot[0]
+	}
+	r := &reconnectForwarding{host: host, project: root, toast: sendReconnectToast}
 	r.start(client)
 	return r
 }
@@ -268,6 +275,7 @@ func startReconnectForwarding(host string, client *sshclient.Client) *reconnectF
 // reconnectForwarding and copying its fields would leave those callbacks
 // permanently bound to the temporary's first daemon client.
 func (r *reconnectForwarding) start(client *sshclient.Client) {
+	r.connectDrops(client)
 	remotePath, err := sshclient.RemoteDaemonSocketPath(client.SSH)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "agnt ssh: could not discover remote daemon socket path (%v) — forwarding disabled\n", err)
@@ -283,6 +291,36 @@ func (r *reconnectForwarding) start(client *sshclient.Client) {
 	fmt.Fprintf(os.Stderr, "agnt ssh: forwarding remote daemon socket to %s\n", sshclient.LocalForwardSocketPath(r.host))
 	fmt.Fprintf(os.Stderr, "  export AGNT_DAEMON_SOCKET=%s\n", sshclient.LocalForwardSocketPath(r.host))
 	r.connectPorts(client)
+}
+
+func (r *reconnectForwarding) connectDrops(client *sshclient.Client) {
+	sftpClient, err := sshclient.NewSFTPClient(client.SSH)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "agnt ssh: could not start drop-folder sync (%v)\n", err)
+		return
+	}
+	upload := sshclient.NewDropUpload(sftpClient, r.project)
+	if r.drops == nil {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			sftpClient.Close()
+			fmt.Fprintf(os.Stderr, "agnt ssh: could not resolve drop folder (%v)\n", err)
+			return
+		}
+		hostDir := strings.NewReplacer("/", "_", "\\", "_").Replace(r.host)
+		r.drops, err = sshclient.NewDropWatcher(filepath.Join(home, ".agnt", "drop", hostDir), upload, func(msg string) {
+			fmt.Fprintln(os.Stderr, msg)
+		})
+		if err != nil {
+			sftpClient.Close()
+			fmt.Fprintf(os.Stderr, "agnt ssh: could not start drop-folder sync (%v)\n", err)
+			return
+		}
+		fmt.Fprintf(os.Stderr, "agnt ssh: watching %s for files to sync\n", filepath.Join(home, ".agnt", "drop", hostDir))
+	} else {
+		r.drops.SetUpload(upload)
+	}
+	r.dropSFTP = sftpClient
 }
 
 func (r *reconnectForwarding) connectPorts(client *sshclient.Client) {
@@ -337,6 +375,13 @@ func (r *reconnectForwarding) daemonClient() *daemon.Client {
 }
 
 func (r *reconnectForwarding) Pause() {
+	if r.drops != nil {
+		r.drops.SetUpload(nil)
+	}
+	if r.dropSFTP != nil {
+		_ = r.dropSFTP.Close()
+		r.dropSFTP = nil
+	}
 	if r.ports != nil {
 		r.ports.Pause()
 	}
@@ -364,9 +409,18 @@ func (r *reconnectForwarding) Resume(client *sshclient.Client) {
 	}
 	r.daemonFwd.Resume(client, remotePath)
 	r.connectPorts(client)
+	r.connectDrops(client)
 }
 
 func (r *reconnectForwarding) Stop() {
+	if r.dropSFTP != nil {
+		_ = r.dropSFTP.Close()
+		r.dropSFTP = nil
+	}
+	if r.drops != nil {
+		_ = r.drops.Close()
+		r.drops = nil
+	}
 	if r.ports != nil {
 		r.ports.Stop()
 	}

@@ -13,11 +13,13 @@ require (
 	github.com/chromedp/chromedp v0.14.2
 	github.com/coder/acp-go-sdk v0.13.5
 	github.com/creack/pty v1.1.24
+	github.com/fsnotify/fsnotify v1.9.0
 	github.com/google/jsonschema-go v0.4.2
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/hyperboloide/lk v0.0.0-20251220053519-b291812e3216
 	github.com/klauspost/compress v1.18.3
+	github.com/pkg/sftp v1.13.10
 	github.com/sblinch/kdl-go v0.0.0-20250930225324-bf4099d4614a
 	github.com/spf13/cobra v1.10.2
 	github.com/standardbeagle/claude-go v1.3.0
@@ -78,7 +80,6 @@ require (
 	github.com/microcosm-cc/bluemonday v1.0.27 // indirect
 	github.com/muesli/reflow v0.3.0 // indirect
 	github.com/muesli/termenv v0.16.0 // indirect
-	github.com/pkg/sftp v1.13.10 // indirect
 	github.com/pkoukk/tiktoken-go v0.1.6 // indirect
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
