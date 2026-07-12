@@ -1,0 +1,88 @@
+name: SSH Reconnect
+
+# Guards the remote-ssh reconnect stack (epic 01KWMARXTVWKC33EPHZZJ43JT9):
+# the reconnect state machine (internal/sshclient/reconnect.go), its drop /
+# freeze chaos harnesses (testharness_reconnect.go), and the daemon-owned PTY
+# session host (internal/sessionhost). Runs the untagged in-process test tier
+# (which includes the reconnect chaos suite, reconnect_chaos_test.go) plus a
+# line-coverage floor on both packages.
+#
+# --- Platform scope (task 10d acceptance criterion 2) ---
+# Linux ONLY, by design. This is not an omission:
+#   * `agnt ssh` / the reconnect client is unsupported on Windows in v1 (a
+#     loud, documented gap — cmd/agnt/ssh_windows.go returns an explicit
+#     error; see .claude/rules/daemon-architecture.md § Cross-Platform
+#     Mandate). WSL is the documented Windows workaround, and WSL is GOOS=linux
+#     so it is already covered by this Linux job.
+#   * The freeze harness (SSHDFreezeHarness) drives a real sshd via POSIX
+#     SIGSTOP/SIGCONT and a /proc descendant walk — inherently Unix-shaped.
+#     macOS would exercise a different orphan-scan/proc source (sysctl, see
+#     orphanpgid_darwin.go) but adds no reconnect-logic coverage this job
+#     lacks; it is intentionally not run here to keep the matrix lean.
+#   * The procisolation tier (make test-isolated) and the container sshe2e
+#     tier (make test-ssh) are separate jobs/runbooks, not part of this gate.
+#
+# --- Known flake note ---
+# internal/sessionhost carries real-process (PTY-spawning) tests
+# (TestClose_MarksExitedAndClosesDone, TestCreate_SpawnsAndCapturesOutput)
+# whose deadlines are load-sensitive: they pass reliably on an unloaded serial
+# runner but can stall under heavy CPU oversubscription. They are tracked under
+# the flake epic (01KX5M99X1A1B6Z5KMRKGEAF9G, F-gate) as non-determinizable
+# under oversubscription, per .claude/rules/testing-timing-assertion-flakes.md.
+# This job runs serially (-p 1, one job, dedicated runner) precisely to keep
+# them green in principle; it does not attempt to fix them.
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'internal/sshclient/**'
+      - 'internal/sessionhost/**'
+      - '.github/workflows/ssh-reconnect.yml'
+      - 'Makefile'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'internal/sshclient/**'
+      - 'internal/sessionhost/**'
+      - '.github/workflows/ssh-reconnect.yml'
+      - 'Makefile'
+  workflow_dispatch:
+
+jobs:
+  reconnect:
+    name: Reconnect chaos + coverage (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+
+      # sshd + ssh-keygen let the real-sshd freeze chaos test actually run
+      # instead of self-skipping (NewSSHDFreezeHarness returns ErrSSHDNotFound
+      # → t.Skip when absent). ubuntu-latest already ships openssh-server, but
+      # assert it so a base-image change surfaces loudly rather than silently
+      # skipping the black-hole path.
+      - name: Verify sshd is available (real-sshd freeze tier)
+        run: command -v sshd && command -v ssh-keygen
+
+      - name: Build
+        run: go build ./...
+
+      # Full package under -race: the reconnect chaos suite lives here and is
+      # the code this gate primarily protects. Serial (-p 1) matches the repo's
+      # pre-commit contract and avoids cross-package port contention
+      # (.claude/rules/testing-parallel-package-flakes.md).
+      - name: Race test — sshclient (incl. reconnect chaos suite)
+        run: go test -p 1 -race -count=1 ./internal/sshclient/...
+
+      # Coverage floor: internal/sshclient AND internal/sessionhost must each
+      # hold >= 70% line coverage (acceptance criterion 3). Measured per-package
+      # (no ./..., so the internal/sshclient/testenv harness package is excluded)
+      # via the reusable Makefile target.
+      - name: Coverage gate (>= 70% sshclient + sessionhost)
+        run: make test-ssh-coverage
