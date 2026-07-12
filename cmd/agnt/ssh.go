@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -113,7 +114,7 @@ func runSSH(cmd *cobra.Command, args []string) error {
 	}
 
 	forwarding := startReconnectForwarding(host, client, remotePath)
-	stopControlSocket := startControlSocket(host, client, remotePath, attachName)
+	control := startControlSocket(host, client, remotePath, attachName)
 
 	cols, rows := 80, 24
 	if c, r, err := term.GetSize(int(os.Stdin.Fd())); err == nil {
@@ -123,7 +124,7 @@ func runSSH(cmd *cobra.Command, args []string) error {
 
 	session, err := sshclient.OpenPTYSession(client.SSH, attachName, remotePath, size)
 	if err != nil {
-		stopControlSocket()
+		control.Stop()
 		forwarding.Stop()
 		client.Close()
 		return fmt.Errorf("agnt ssh: %w", err)
@@ -148,7 +149,7 @@ func runSSH(cmd *cobra.Command, args []string) error {
 		},
 	}
 
-	return runSSHRelayLoop(host, remotePath, attachName, client, session, forwarding, stopControlSocket, reconnector)
+	return runSSHRelayLoop(host, remotePath, attachName, client, session, forwarding, control, reconnector)
 }
 
 // runSSHRelayLoop owns the CONNECTED<->RECONNECTING cycle (task 09c). Each
@@ -163,7 +164,7 @@ func runSSH(cmd *cobra.Command, args []string) error {
 // it (see reconnect.go's doc comment) and doubles as the Ctrl-C detector
 // during RECONNECTING, since raw mode never delivers a real SIGINT for
 // that byte.
-func runSSHRelayLoop(host, remotePath, attachName string, client *sshclient.Client, session *sshclient.PTYSession, forwarding *reconnectForwarding, stopControlSocket func(), reconnector *sshclient.Reconnector) error {
+func runSSHRelayLoop(host, remotePath, attachName string, client *sshclient.Client, session *sshclient.PTYSession, forwarding *reconnectForwarding, control *reconnectControl, reconnector *sshclient.Reconnector) error {
 	var reconnectCancelMu sync.Mutex
 	var reconnectCancel context.CancelFunc
 	pump := sshclient.NewInputPump(func() {
@@ -202,7 +203,7 @@ func runSSHRelayLoop(host, remotePath, attachName string, client *sshclient.Clie
 
 		transportDead := isClosedChan(client.Dead())
 		if !transportDead {
-			stopControlSocket()
+			control.Stop()
 			forwarding.Stop()
 			client.Close()
 			if relayErr != nil && relayErr != context.Canceled {
@@ -212,7 +213,7 @@ func runSSHRelayLoop(host, remotePath, attachName string, client *sshclient.Clie
 		}
 
 		fmt.Fprintln(os.Stderr, "\nagnt ssh: connection lost (keepalive timeout)")
-		stopControlSocket()
+		control.Pause()
 		forwarding.Pause()
 		client.Close()
 
@@ -241,7 +242,7 @@ func runSSHRelayLoop(host, remotePath, attachName string, client *sshclient.Clie
 		client = newClient
 		session = newSession
 		forwarding.Resume(client)
-		stopControlSocket = startControlSocket(host, client, remotePath, attachName)
+		control.Resume(client)
 	}
 }
 
@@ -699,24 +700,31 @@ func startPortForwarding(host string, client *sshclient.Client) func() {
 // returned stop func is a no-op, so a remote host without SFTP support (or
 // a local ~/.agnt/ssh directory that can't be created) doesn't prevent the
 // session from proceeding; it only means 'agnt push' won't find it.
-func startControlSocket(host string, client *sshclient.Client, remotePath string, sessionName ...string) func() {
+const reconnectPushQueueCapacity = 32
+
+type reconnectControl struct {
+	listener net.Listener
+	queue    *sshclient.PushQueue
+}
+
+func startControlSocket(host string, client *sshclient.Client, remotePath string, sessionName ...string) *reconnectControl {
 	projectRoot, err := sshclient.ResolveRemoteProjectRoot(client.SSH, remotePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "agnt ssh: could not resolve remote project root (%v) — 'agnt push' will not find this session\n", err)
-		return func() {}
+		return &reconnectControl{}
 	}
 
 	ln, err := sshclient.ListenControl(host)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "agnt ssh: could not register control socket (%v) — 'agnt push' will not find this session\n", err)
-		return func() {}
+		return &reconnectControl{}
 	}
 
 	sc, err := sshclient.NewSFTPClient(client.SSH)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "agnt ssh: could not open SFTP subsystem (%v) — 'agnt push' will not find this session\n", err)
 		ln.Close()
-		return func() {}
+		return &reconnectControl{}
 	}
 
 	name := ""
@@ -729,11 +737,35 @@ func startControlSocket(host string, client *sshclient.Client, remotePath string
 		}
 		return sshclient.NotifyFileArrived(sshclient.LocalForwardSocketPath(host), name, projectRoot, remotePath, size)
 	}
-	go sshclient.ServeControl(ln, projectRoot, sc, notify)
+	queue := sshclient.NewPushQueue(projectRoot, reconnectPushQueueCapacity, notify, func(msg string) {
+		fmt.Fprintln(os.Stderr, msg)
+	})
+	queue.SetSFTP(sc)
+	go sshclient.ServePushQueue(ln, queue)
+	return &reconnectControl{listener: ln, queue: queue}
+}
 
-	return func() {
-		ln.Close()
-		sc.Close()
+func (c *reconnectControl) Pause() {
+	if c != nil && c.queue != nil {
+		c.queue.Reconnecting()
+	}
+}
+
+func (c *reconnectControl) Resume(client *sshclient.Client) {
+	if c != nil && c.queue != nil {
+		c.queue.Connected(func() (*sftp.Client, error) { return sshclient.NewSFTPClient(client.SSH) })
+	}
+}
+
+func (c *reconnectControl) Stop() {
+	if c == nil {
+		return
+	}
+	if c.listener != nil {
+		_ = c.listener.Close()
+	}
+	if c.queue != nil {
+		c.queue.Close()
 	}
 }
 

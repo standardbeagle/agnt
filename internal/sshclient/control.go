@@ -2,6 +2,7 @@ package sshclient
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -115,6 +116,56 @@ func ServeControl(ln net.Listener, projectRoot string, sc *sftp.Client, notifier
 			return
 		}
 		go serveControlConn(conn, projectRoot, sc, notify)
+	}
+}
+
+// ServePushQueue is the reconnect-aware control server. Unlike ServeControl,
+// its listener stays registered while the SSH transport is down; PushQueue
+// decides whether each push executes immediately or waits in its bounded FIFO.
+func ServePushQueue(ln net.Listener, queue *PushQueue) {
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		go servePushQueueConn(conn, queue)
+	}
+}
+
+func servePushQueueConn(conn net.Conn, queue *PushQueue) {
+	defer conn.Close()
+	reader := bufio.NewReader(conn)
+	line, err := reader.ReadString('\n')
+	if err != nil {
+		return
+	}
+	var header controlRequestHeader
+	if err := json.Unmarshal([]byte(line), &header); err != nil {
+		writeControlResponse(conn, controlResponse{Error: fmt.Sprintf("sshclient: malformed control request: %v", err)})
+		return
+	}
+
+	switch header.Kind {
+	case "ping":
+		writeControlResponse(conn, controlResponse{OK: true, ProjectRoot: queue.ProjectRoot()})
+	case "push":
+		if header.Size < 0 {
+			writeControlResponse(conn, controlResponse{Error: "sshclient: push size must not be negative"})
+			return
+		}
+		body := make([]byte, header.Size)
+		if _, err := io.ReadFull(reader, body); err != nil {
+			writeControlResponse(conn, controlResponse{Error: fmt.Sprintf("sshclient: reading push body: %v", err)})
+			return
+		}
+		remotePath, err := queue.Push(header.FileName, header.DestRelPath, bytes.NewReader(body))
+		if err != nil {
+			writeControlResponse(conn, controlResponse{Error: err.Error()})
+			return
+		}
+		writeControlResponse(conn, controlResponse{OK: true, RemotePath: remotePath})
+	default:
+		writeControlResponse(conn, controlResponse{Error: fmt.Sprintf("sshclient: unknown control request kind %q", header.Kind)})
 	}
 }
 

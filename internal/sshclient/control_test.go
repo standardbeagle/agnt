@@ -3,12 +3,15 @@ package sshclient
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/pkg/sftp"
 )
 
 // withSandboxedHome points os.UserHomeDir (via $HOME) at a fresh t.TempDir
@@ -242,6 +245,108 @@ func TestPushOneFile_TraversalRejectedOverTheWire(t *testing.T) {
 	if _, statErr := os.Stat(filepath.Join(filepath.Dir(root), "etc", "passwd")); statErr == nil {
 		t.Fatal("traversal write escaped project root")
 	}
+}
+
+func TestServePushQueue_KeepsControlSocketLiveAcrossThreeReconnects(t *testing.T) {
+	withShortSandboxedHome(t)
+	root, initial := newSFTPFixture(t)
+	ln, err := ListenControl("reconnect-push")
+	if err != nil {
+		t.Fatalf("ListenControl: %v", err)
+	}
+	q := NewPushQueue(root, 4, nil, nil)
+	q.SetSFTP(initial)
+	go ServePushQueue(ln, q)
+	t.Cleanup(func() {
+		ln.Close()
+		q.Close()
+	})
+
+	for drop := 1; drop <= 3; drop++ {
+		q.Reconnecting()
+		name := fmt.Sprintf("drop-%d.txt", drop)
+		content := []byte(fmt.Sprintf("survived drop %d", drop))
+		result := make(chan error, 1)
+		go func() {
+			_, pushErr := PushOneFile("reconnect-push", name, "", int64(len(content)), bytes.NewReader(content))
+			result <- pushErr
+		}()
+		waitForPushQueueDepth(t, q, 1)
+
+		_, replacement := newSFTPFixture(t)
+		opened := 0
+		q.Connected(func() (*sftp.Client, error) {
+			opened++
+			return replacement, nil
+		})
+		select {
+		case pushErr := <-result:
+			if pushErr != nil {
+				t.Fatalf("drop %d queued push: %v", drop, pushErr)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("drop %d queued push did not flush", drop)
+		}
+		if opened != 1 {
+			t.Fatalf("drop %d SFTP open count = %d, want 1", drop, opened)
+		}
+		got, readErr := os.ReadFile(filepath.Join(root, DefaultInboxDir, name))
+		if readErr != nil || !bytes.Equal(got, content) {
+			t.Fatalf("drop %d file = %q, err %v; want %q", drop, got, readErr, content)
+		}
+	}
+}
+
+func TestServePushQueue_OverflowIsReturnedToPushCaller(t *testing.T) {
+	withShortSandboxedHome(t)
+	root, initial := newSFTPFixture(t)
+	ln, err := ListenControl("reconnect-overflow")
+	if err != nil {
+		t.Fatalf("ListenControl: %v", err)
+	}
+	events := make(chan string, 1)
+	q := NewPushQueue(root, 1, nil, func(msg string) { events <- msg })
+	q.SetSFTP(initial)
+	q.Reconnecting()
+	go ServePushQueue(ln, q)
+	t.Cleanup(func() {
+		ln.Close()
+		q.Close()
+	})
+
+	first := make(chan error, 1)
+	go func() {
+		_, pushErr := PushOneFile("reconnect-overflow", "first.txt", "", 1, strings.NewReader("1"))
+		first <- pushErr
+	}()
+	waitForPushQueueDepth(t, q, 1)
+
+	_, err = PushOneFile("reconnect-overflow", "overflow.txt", "", 1, strings.NewReader("2"))
+	if err == nil || !strings.Contains(err.Error(), "queue full") || !strings.Contains(err.Error(), "overflow.txt") {
+		t.Fatalf("overflow response = %v, want loud queue-full response naming file", err)
+	}
+	select {
+	case msg := <-events:
+		if !strings.Contains(msg, "overflow.txt") {
+			t.Fatalf("overflow event = %q, want file name", msg)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("overflow produced no session event")
+	}
+	q.Close()
+	if err := <-first; err == nil || !strings.Contains(err.Error(), "queue closed") {
+		t.Fatalf("first queued push after close = %v", err)
+	}
+}
+
+func withShortSandboxedHome(t *testing.T) {
+	t.Helper()
+	home, err := os.MkdirTemp("/tmp", "pq-")
+	if err != nil {
+		t.Fatalf("short temp HOME: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(home) })
+	t.Setenv("HOME", home)
 }
 
 func TestPingControl_TimesOutAgainstUnresponsivePeer(t *testing.T) {
