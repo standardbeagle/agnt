@@ -254,26 +254,35 @@ type reconnectForwarding struct {
 	daemonFwd *sshclient.Forwarder
 	ports     *sshclient.PortForwardManager
 	dclient   *daemon.Client
+	toast     func(*daemon.Client, string, protocol.ToastConfig)
 }
 
 func startReconnectForwarding(host string, client *sshclient.Client) *reconnectForwarding {
-	r := &reconnectForwarding{host: host}
+	r := &reconnectForwarding{host: host, toast: sendReconnectToast}
+	r.start(client)
+	return r
+}
+
+// start initializes forwarding directly on the durable owner. In particular,
+// callbacks installed by connectPorts capture r; constructing a temporary
+// reconnectForwarding and copying its fields would leave those callbacks
+// permanently bound to the temporary's first daemon client.
+func (r *reconnectForwarding) start(client *sshclient.Client) {
 	remotePath, err := sshclient.RemoteDaemonSocketPath(client.SSH)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "agnt ssh: could not discover remote daemon socket path (%v) — forwarding disabled\n", err)
-		return r
+		return
 	}
-	fwd, err := sshclient.NewForwarder(client, remotePath, sshclient.LocalForwardSocketPath(host))
+	fwd, err := sshclient.NewForwarder(client, remotePath, sshclient.LocalForwardSocketPath(r.host))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "agnt ssh: could not start local daemon socket forwarding (%v) — forwarding disabled\n", err)
-		return r
+		return
 	}
 	r.daemonFwd = fwd
 	go fwd.Serve()
-	fmt.Fprintf(os.Stderr, "agnt ssh: forwarding remote daemon socket to %s\n", sshclient.LocalForwardSocketPath(host))
-	fmt.Fprintf(os.Stderr, "  export AGNT_DAEMON_SOCKET=%s\n", sshclient.LocalForwardSocketPath(host))
+	fmt.Fprintf(os.Stderr, "agnt ssh: forwarding remote daemon socket to %s\n", sshclient.LocalForwardSocketPath(r.host))
+	fmt.Fprintf(os.Stderr, "  export AGNT_DAEMON_SOCKET=%s\n", sshclient.LocalForwardSocketPath(r.host))
 	r.connectPorts(client)
-	return r
 }
 
 func (r *reconnectForwarding) connectPorts(client *sshclient.Client) {
@@ -287,27 +296,37 @@ func (r *reconnectForwarding) connectPorts(client *sshclient.Client) {
 	r.mu.Unlock()
 	if r.ports == nil {
 		var mgr *sshclient.PortForwardManager
-		mgr = sshclient.NewPortForwardManager(client, dclient, func(msg string) {
-			fmt.Fprintln(os.Stderr, msg)
-			mappings := mgr.Status()
-			if sshShowForwardStatus && len(mappings) > 0 {
-				fmt.Fprintln(os.Stderr, "agnt ssh: active proxy forwards:")
-				for _, mapping := range mappings {
-					fmt.Fprintf(os.Stderr, "  %-24s remote :%-5d -> http://127.0.0.1:%d\n", mapping.ProxyID, mapping.RemotePort, mapping.LocalPort)
-				}
-			}
-			if strings.Contains(msg, "in use locally") {
-				for _, mapping := range mappings {
-					if toastClient := r.daemonClient(); mapping.Remapped && toastClient != nil {
-						_, _ = toastClient.ProxyToast(mapping.ProxyID, protocol.ToastConfig{Type: "warning", Title: "SSH port remapped", Message: fmt.Sprintf("remote :%d is available locally at http://127.0.0.1:%d", mapping.RemotePort, mapping.LocalPort)})
-					}
-				}
-			}
-		})
+		mgr = sshclient.NewPortForwardManager(client, dclient, func(msg string) { r.reportPortForward(msg, mgr.Status()) })
 		r.ports = mgr
 		r.ports.Start(context.Background())
 	} else {
 		r.ports.Resume(context.Background(), client, dclient)
+	}
+}
+
+func sendReconnectToast(client *daemon.Client, proxyID string, config protocol.ToastConfig) {
+	_, _ = client.ProxyToast(proxyID, config)
+}
+
+func (r *reconnectForwarding) reportPortForward(msg string, mappings []sshclient.Mapping) {
+	fmt.Fprintln(os.Stderr, msg)
+	if sshShowForwardStatus && len(mappings) > 0 {
+		fmt.Fprintln(os.Stderr, "agnt ssh: active proxy forwards:")
+		for _, mapping := range mappings {
+			fmt.Fprintf(os.Stderr, "  %-24s remote :%-5d -> http://127.0.0.1:%d\n", mapping.ProxyID, mapping.RemotePort, mapping.LocalPort)
+		}
+	}
+	if !strings.Contains(msg, "in use locally") {
+		return
+	}
+	toastClient := r.daemonClient()
+	if toastClient == nil || r.toast == nil {
+		return
+	}
+	for _, mapping := range mappings {
+		if mapping.Remapped {
+			r.toast(toastClient, mapping.ProxyID, protocol.ToastConfig{Type: "warning", Title: "SSH port remapped", Message: fmt.Sprintf("remote :%d is available locally at http://127.0.0.1:%d", mapping.RemotePort, mapping.LocalPort)})
+		}
 	}
 }
 
@@ -335,12 +354,7 @@ func (r *reconnectForwarding) Pause() {
 
 func (r *reconnectForwarding) Resume(client *sshclient.Client) {
 	if r.daemonFwd == nil {
-		fresh := startReconnectForwarding(r.host, client)
-		r.daemonFwd = fresh.daemonFwd
-		r.ports = fresh.ports
-		r.mu.Lock()
-		r.dclient = fresh.daemonClient()
-		r.mu.Unlock()
+		r.start(client)
 		return
 	}
 	remotePath, err := sshclient.RemoteDaemonSocketPath(client.SSH)

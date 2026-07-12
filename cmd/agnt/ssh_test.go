@@ -5,6 +5,10 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/protocol"
+	"github.com/standardbeagle/agnt/internal/sshclient"
 )
 
 func TestParseHostPath(t *testing.T) {
@@ -26,6 +30,35 @@ func TestParseHostPath(t *testing.T) {
 		if host != c.wantHost || path != c.wantPath {
 			t.Errorf("parseHostPath(%q) = (%q, %q), want (%q, %q)", c.arg, host, path, c.wantHost, c.wantPath)
 		}
+	}
+}
+
+func TestReconnectForwarding_RecoveryCallbacksUseNewestDurableDaemonClient(t *testing.T) {
+	owner := &reconnectForwarding{host: "fixture"} // initial forwarding failed
+	first := &daemon.Client{}
+	newest := &daemon.Client{}
+	owner.mu.Lock()
+	owner.dclient = first // first recovery
+	owner.mu.Unlock()
+	owner.mu.Lock()
+	owner.dclient = newest // subsequent reconnect
+	owner.mu.Unlock()
+
+	var gotClient *daemon.Client
+	var gotProxyID string
+	var gotConfig protocol.ToastConfig
+	owner.toast = func(client *daemon.Client, proxyID string, config protocol.ToastConfig) {
+		gotClient, gotProxyID, gotConfig = client, proxyID, config
+	}
+	owner.reportPortForward("port 5173 in use locally", []sshclient.Mapping{{
+		ProxyID: "recovered-proxy", RemotePort: 5173, LocalPort: 5174, Remapped: true,
+	}})
+
+	if gotClient != newest {
+		t.Fatalf("recovered callback used stale daemon client %p, want newest %p", gotClient, newest)
+	}
+	if gotProxyID != "recovered-proxy" || !strings.Contains(gotConfig.Message, "5174") {
+		t.Fatalf("recovered callback lost current mapping telemetry: id=%q config=%+v", gotProxyID, gotConfig)
 	}
 }
 
