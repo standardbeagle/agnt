@@ -20,21 +20,29 @@ import (
 )
 
 func TestProxyJumpReachesTargetWithIndependentAuthentication(t *testing.T) {
-	auth, err := testenv.NewAuth("jump-user")
+	jumpAuth, err := testenv.NewAuth("jump-user")
 	if err != nil {
 		t.Fatal(err)
 	}
-	target, err := testenv.Start(auth)
+	targetAuth, err := testenv.NewAuth("target-user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target, err := testenv.Start(targetAuth)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer target.Close()
-	jumpAddr, stopJump := startJumpServer(t, auth)
+	jumpAddr, stopJump := startJumpServer(t, jumpAuth)
 	defer stopJump()
 
 	dir := t.TempDir()
-	identity := filepath.Join(dir, "id_jump_matrix")
-	if err := os.WriteFile(identity, auth.PrivateKey, 0o600); err != nil {
+	jumpIdentity := filepath.Join(dir, "id_jump_matrix")
+	if err := os.WriteFile(jumpIdentity, jumpAuth.PrivateKey, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	targetIdentity := filepath.Join(dir, "id_target_matrix")
+	if err := os.WriteFile(targetIdentity, targetAuth.PrivateKey, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	targetHost, targetPort, err := net.SplitHostPort(target.Addr())
@@ -46,13 +54,13 @@ func TestProxyJumpReachesTargetWithIndependentAuthentication(t *testing.T) {
 		t.Fatal(err)
 	}
 	config := fmt.Sprintf("Host jump\n HostName %s\n Port %s\n User %s\n IdentityFile %s\nHost target\n HostName %s\n Port %s\n User %s\n IdentityFile %s\n ProxyJump jump\n",
-		jumpHost, jumpPort, auth.User, identity, targetHost, targetPort, auth.User, identity)
+		jumpHost, jumpPort, jumpAuth.User, jumpIdentity, targetHost, targetPort, targetAuth.User, targetIdentity)
 	configPath := filepath.Join(dir, "ssh_config")
 	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var prompts bytes.Buffer
-	client, err := sshclient.Dial("target", configPath, filepath.Join(dir, "known_hosts"), auth.User,
+	client, err := sshclient.Dial("target", configPath, filepath.Join(dir, "known_hosts"), targetAuth.User,
 		sshclient.Prompter{In: strings.NewReader("yes\nyes\n"), Out: &prompts})
 	if err != nil {
 		t.Fatal(err)
