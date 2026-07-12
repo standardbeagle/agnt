@@ -62,8 +62,29 @@ type contentHarness struct {
 	hostKey  ssh.Signer
 	sim      *sessionSim
 
-	mu    sync.Mutex
-	conns []net.Conn
+	mu     sync.Mutex
+	conns  []net.Conn
+	frozen bool
+}
+
+// Freeze/Resume give the durable-content sibling the same black-hole control
+// shape as SSHDFreezeHarness while retaining its replay-capable session.
+func (h *contentHarness) Freeze() {
+	h.mu.Lock()
+	h.frozen = true
+	h.mu.Unlock()
+}
+
+func (h *contentHarness) Resume() {
+	h.mu.Lock()
+	h.frozen = false
+	h.mu.Unlock()
+}
+
+func (h *contentHarness) isFrozen() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.frozen
 }
 
 func newContentHarness(t *testing.T, sim *sessionSim) *contentHarness {
@@ -168,6 +189,9 @@ func (h *contentHarness) serveChannel(channel ssh.Channel, requests <-chan *ssh.
 		case <-done:
 			return
 		case <-ticker.C:
+			if h.isFrozen() {
+				continue
+			}
 			snap := h.sim.snapshot()
 			if len(snap) > sent {
 				if _, err := channel.Write(snap[sent:]); err != nil {
