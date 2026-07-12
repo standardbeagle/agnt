@@ -390,6 +390,57 @@ func TestPortForwardManager_EndToEnd(t *testing.T) {
 		_, _, err = ws.ReadMessage()
 		require.Error(t, err, "open WebSocket relay must be closed before forward removal completes")
 	})
+
+	t.Run("ReconnectKeepsListenersBoundAndReconcilesFreshProxyList", func(t *testing.T) {
+		backend := backendStub(t)
+		oldResult, err := dc.ProxyStart("p-before-reconnect", backend.URL, 0, 0, "")
+		require.NoError(t, err)
+		oldAddr, _ := oldResult["listen_addr"].(string)
+		sshClient := forwardFixture(t, oldAddr)
+		mgr := NewPortForwardManager(sshClient, dc, func(string) {})
+		mgr.Start(context.Background())
+		defer mgr.Stop()
+
+		var retainedPort int
+		require.Eventually(t, func() bool {
+			for _, m := range mgr.Status() {
+				if m.ProxyID == "p-before-reconnect" {
+					retainedPort = m.LocalPort
+					return true
+				}
+			}
+			return false
+		}, 3*time.Second, 20*time.Millisecond)
+
+		paused := mgr.Paused()
+		mgr.Pause()
+		<-paused
+		conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", retainedPort))
+		require.NoError(t, err, "reconnecting must retain the listener")
+		require.NoError(t, conn.SetReadDeadline(time.Now().Add(time.Second)))
+		_, err = conn.Read(make([]byte, 1))
+		require.Error(t, err, "reconnecting must reject a new connection promptly")
+		conn.Close()
+
+		require.NoError(t, dc.ProxyStop("p-before-reconnect"))
+		newResult, err := dc.ProxyStart("p-after-reconnect", backend.URL, 0, 0, "")
+		require.NoError(t, err)
+		defer dc.ProxyStop("p-after-reconnect")
+		newAddr, _ := newResult["listen_addr"].(string)
+		newSSHClient := forwardFixture(t, newAddr)
+		mgr.Resume(context.Background(), newSSHClient, dc)
+
+		mappings := mgr.Status()
+		require.NotContains(t, mappings, Mapping{ProxyID: "p-before-reconnect", RemotePort: 0, LocalPort: retainedPort})
+		require.Eventually(t, func() bool {
+			foundOld, foundNew := false, false
+			for _, m := range mgr.Status() {
+				foundOld = foundOld || m.ProxyID == "p-before-reconnect"
+				foundNew = foundNew || m.ProxyID == "p-after-reconnect"
+			}
+			return !foundOld && foundNew
+		}, 3*time.Second, 20*time.Millisecond, "resume must rebuild mappings from fresh PROXY LIST")
+	})
 }
 
 // TestPortForwardManager_NoGoroutineOrListenerLeak_20Cycles drives 20

@@ -43,9 +43,10 @@ const nearestPortSearchLimit = 1000
 //     its own direct-tcpip channel (client.SSH.Dial("tcp", ...)) — same
 //     one-channel-per-conn model as Forwarder in forward.go.
 type PortForwardManager struct {
-	sshClient *Client
-	dclient   *daemon.Client
-	notify    func(string)
+	lifecycleMu sync.Mutex
+	sshClient   *Client
+	dclient     *daemon.Client
+	notify      func(string)
 
 	mu          sync.Mutex
 	reconcileMu sync.Mutex
@@ -53,6 +54,7 @@ type PortForwardManager struct {
 
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
+	paused chan struct{}
 }
 
 // portForward is one remote-proxy-ID's local listener.
@@ -64,6 +66,7 @@ type portForward struct {
 	connMu     sync.Mutex
 	conns      map[net.Conn]struct{}
 	stopping   bool
+	paused     bool
 	connWG     sync.WaitGroup
 }
 
@@ -79,6 +82,7 @@ func NewPortForwardManager(sshClient *Client, dclient *daemon.Client, notify fun
 		dclient:   dclient,
 		notify:    notify,
 		forwards:  make(map[string]*portForward),
+		paused:    make(chan struct{}),
 	}
 }
 
@@ -87,6 +91,12 @@ func NewPortForwardManager(sshClient *Client, dclient *daemon.Client, notify fun
 // then runs the event-driven + periodic reconcile loop in the background
 // until ctx is cancelled or Stop is called.
 func (m *PortForwardManager) Start(ctx context.Context) {
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+	m.startLoops(ctx)
+}
+
+func (m *PortForwardManager) startLoops(ctx context.Context) {
 	ctx, cancel := context.WithCancel(ctx)
 	m.cancel = cancel
 
@@ -100,6 +110,51 @@ func (m *PortForwardManager) Start(ctx context.Context) {
 	// the normal 30s ticker remains strictly a missed-event backstop.
 	m.wg.Add(1)
 	go m.startupReconcile(ctx)
+}
+
+// Pause retains every local listener but rejects new connections and drains
+// relays before the dead SSH transport is closed.
+func (m *PortForwardManager) Pause() {
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+	if m.cancel != nil {
+		m.cancel()
+		m.wg.Wait()
+	}
+	m.mu.Lock()
+	select {
+	case <-m.paused:
+	default:
+		close(m.paused)
+	}
+	for _, f := range m.forwards {
+		f.pause()
+	}
+	m.mu.Unlock()
+}
+
+// Resume supplies fresh transport clients, enables the retained listeners,
+// then performs an authoritative PROXY LIST reconciliation before returning.
+func (m *PortForwardManager) Resume(ctx context.Context, sshClient *Client, dclient *daemon.Client) {
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+	m.mu.Lock()
+	m.sshClient = sshClient
+	m.dclient = dclient
+	m.paused = make(chan struct{})
+	m.mu.Unlock()
+	m.startLoops(ctx)
+	m.mu.Lock()
+	for _, f := range m.forwards {
+		f.resume()
+	}
+	m.mu.Unlock()
+}
+
+func (m *PortForwardManager) Paused() <-chan struct{} {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.paused
 }
 
 func (m *PortForwardManager) startupReconcile(ctx context.Context) {
@@ -123,6 +178,8 @@ func (m *PortForwardManager) startupReconcile(ctx context.Context) {
 // Stop halts the reconcile loop and tears down every active local listener
 // (and drains in-flight connections through each) before returning.
 func (m *PortForwardManager) Stop() {
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
 	if m.cancel != nil {
 		m.cancel()
 	}
@@ -355,7 +412,11 @@ func (m *PortForwardManager) startForward(proxyID string, remotePort int) {
 		}
 	}
 
-	go f.serve(m.sshClient)
+	go f.serve(func() *Client {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		return m.sshClient
+	})
 }
 
 // listenNearestFreePort binds candidates by increasing distance from
@@ -385,17 +446,21 @@ func listenNearestFreePort(remotePort, limit int) (net.Listener, error) {
 
 // serve accepts local connections until the listener is closed by stop(),
 // opening one new direct-tcpip channel per connection.
-func (f *portForward) serve(sshClient *Client) {
+func (f *portForward) serve(sshClient func() *Client) {
 	for {
 		conn, err := f.listener.Accept()
 		if err != nil {
 			return
 		}
 		f.connMu.Lock()
-		if f.stopping {
+		if f.stopping || f.paused {
+			stopping := f.stopping
 			f.connMu.Unlock()
 			conn.Close()
-			return
+			if stopping {
+				return
+			}
+			continue
 		}
 		f.conns[conn] = struct{}{}
 		f.connWG.Add(1)
@@ -407,9 +472,25 @@ func (f *portForward) serve(sshClient *Client) {
 				f.connMu.Unlock()
 				f.connWG.Done()
 			}()
-			f.relay(sshClient, conn)
+			f.relay(sshClient(), conn)
 		}()
 	}
+}
+
+func (f *portForward) pause() {
+	f.connMu.Lock()
+	f.paused = true
+	for conn := range f.conns {
+		conn.Close()
+	}
+	f.connMu.Unlock()
+	f.connWG.Wait()
+}
+
+func (f *portForward) resume() {
+	f.connMu.Lock()
+	f.paused = false
+	f.connMu.Unlock()
 }
 
 func (f *portForward) relay(sshClient *Client, conn net.Conn) {

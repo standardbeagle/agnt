@@ -239,6 +239,43 @@ func TestForwarder_DisconnectRemovesSocketFile_ReconnectRecreates(t *testing.T) 
 	conn.Close()
 }
 
+func TestForwarder_PauseKeepsSocketBoundAndRejectsNewConnections(t *testing.T) {
+	fixture := newFixtureServer(t)
+	fixture.streamLocalDial = func(string) (net.Conn, error) {
+		return nil, fmt.Errorf("must not dial while paused")
+	}
+	stopFixture := fixture.serve(t)
+	defer stopFixture()
+
+	client := dialFixtureClient(t, fixture)
+	localSocketPath := filepath.Join(t.TempDir(), "local.sock")
+	fwd, err := NewForwarder(client, "/remote.sock", localSocketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fwd.Close()
+	go fwd.Serve()
+
+	paused := fwd.Paused()
+	fwd.Pause()
+	<-paused
+	if _, err := os.Stat(localSocketPath); err != nil {
+		t.Fatalf("Pause unbound local socket: %v", err)
+	}
+	conn, err := net.Dial("unix", localSocketPath)
+	if err != nil {
+		t.Fatalf("paused listener must remain bound: %v", err)
+	}
+	defer conn.Close()
+	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 1)
+	if _, err := conn.Read(buf); err == nil {
+		t.Fatal("paused forward accepted a connection into the dead transport")
+	}
+}
+
 func TestForwarder_StaleSocketFileFromCrashedRun_IsRebound(t *testing.T) {
 	remoteSocketDir := t.TempDir()
 	remoteSocketPath := filepath.Join(remoteSocketDir, "daemon.sock")

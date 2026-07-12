@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/standardbeagle/go-cli-server/socket"
 	"golang.org/x/crypto/ssh"
@@ -62,12 +63,15 @@ func LocalForwardSocketPath(host string) string {
 // shared/multiplexed channel — so concurrent local clients (e.g. `agnt
 // monitor` and `agnt doctor` running at once) get independent byte streams.
 type Forwarder struct {
+	mu               sync.RWMutex
 	client           *Client
 	remoteSocketPath string
 	sockMgr          *socket.Manager
 	listener         net.Listener
 
-	done chan struct{}
+	done   chan struct{}
+	paused chan struct{}
+	conns  map[net.Conn]struct{}
 }
 
 // NewForwarder binds localSocketPath (via socket.Manager, which detects and
@@ -100,6 +104,8 @@ func NewForwarder(client *Client, remoteSocketPath, localSocketPath string) (*Fo
 		sockMgr:          mgr,
 		listener:         listener,
 		done:             make(chan struct{}),
+		paused:           make(chan struct{}),
+		conns:            make(map[net.Conn]struct{}),
 	}, nil
 }
 
@@ -131,11 +137,27 @@ func (f *Forwarder) Serve() error {
 func (f *Forwarder) handleConn(conn net.Conn) {
 	defer conn.Close()
 
-	remote, err := f.client.SSH.Dial("unix", f.remoteSocketPath)
+	f.mu.RLock()
+	client := f.client
+	remoteSocketPath := f.remoteSocketPath
+	paused := f.paused
+	f.mu.RUnlock()
+	select {
+	case <-paused:
+		return
+	default:
+	}
+
+	remote, err := client.SSH.Dial("unix", remoteSocketPath)
 	if err != nil {
 		return
 	}
 	defer remote.Close()
+	if !f.track(conn) || !f.track(remote) {
+		return
+	}
+	defer f.untrack(conn)
+	defer f.untrack(remote)
 
 	relayDone := make(chan struct{}, 2)
 	go func() {
@@ -149,10 +171,67 @@ func (f *Forwarder) handleConn(conn net.Conn) {
 	<-relayDone
 }
 
+func (f *Forwarder) track(conn net.Conn) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	select {
+	case <-f.paused:
+		conn.Close()
+		return false
+	default:
+		f.conns[conn] = struct{}{}
+		return true
+	}
+}
+
+func (f *Forwarder) untrack(conn net.Conn) {
+	f.mu.Lock()
+	delete(f.conns, conn)
+	f.mu.Unlock()
+}
+
+// Pause keeps the local socket bound, rejects newly accepted connections,
+// and closes every transport-dependent relay.
+func (f *Forwarder) Pause() {
+	f.mu.Lock()
+	select {
+	case <-f.paused:
+	default:
+		close(f.paused)
+	}
+	for conn := range f.conns {
+		conn.Close()
+	}
+	f.mu.Unlock()
+}
+
+// Resume swaps in the freshly connected transport without rebinding the
+// local socket. remoteSocketPath is rediscovered after reconnect.
+func (f *Forwarder) Resume(client *Client, remoteSocketPath string) {
+	f.mu.Lock()
+	f.client = client
+	f.remoteSocketPath = remoteSocketPath
+	f.paused = make(chan struct{})
+	f.mu.Unlock()
+}
+
+// Paused returns a signal closed exactly when Pause has taken effect. Tests
+// and callers can observe this transition without sleep-based races.
+func (f *Forwarder) Paused() <-chan struct{} {
+	f.mu.RLock()
+	defer f.mu.RUnlock()
+	return f.paused
+}
+
 // Close stops accepting new connections and removes the local socket file
 // (and its PID file), so a subsequent connect to the same host does not see
 // a stale "address already in use" error.
 func (f *Forwarder) Close() error {
-	close(f.done)
+	select {
+	case <-f.done:
+	default:
+		close(f.done)
+	}
+	f.Pause()
 	return f.sockMgr.Close()
 }

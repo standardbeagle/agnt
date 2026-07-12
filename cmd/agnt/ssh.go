@@ -111,8 +111,7 @@ func runSSH(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	stopForwarding := startDaemonSocketForwarding(host, client)
-	stopPortForwarding := startPortForwarding(host, client)
+	forwarding := startReconnectForwarding(host, client)
 	stopControlSocket := startControlSocket(host, client, remotePath)
 
 	cols, rows := 80, 24
@@ -124,8 +123,7 @@ func runSSH(cmd *cobra.Command, args []string) error {
 	session, err := sshclient.OpenPTYSession(client.SSH, attachName, remotePath, size)
 	if err != nil {
 		stopControlSocket()
-		stopPortForwarding()
-		stopForwarding()
+		forwarding.Stop()
 		client.Close()
 		return fmt.Errorf("agnt ssh: %w", err)
 	}
@@ -149,7 +147,7 @@ func runSSH(cmd *cobra.Command, args []string) error {
 		},
 	}
 
-	return runSSHRelayLoop(host, remotePath, client, session, stopForwarding, stopPortForwarding, stopControlSocket, reconnector)
+	return runSSHRelayLoop(host, remotePath, client, session, forwarding, stopControlSocket, reconnector)
 }
 
 // runSSHRelayLoop owns the CONNECTED<->RECONNECTING cycle (task 09c). Each
@@ -164,7 +162,7 @@ func runSSH(cmd *cobra.Command, args []string) error {
 // it (see reconnect.go's doc comment) and doubles as the Ctrl-C detector
 // during RECONNECTING, since raw mode never delivers a real SIGINT for
 // that byte.
-func runSSHRelayLoop(host, remotePath string, client *sshclient.Client, session *sshclient.PTYSession, stopForwarding, stopPortForwarding, stopControlSocket func(), reconnector *sshclient.Reconnector) error {
+func runSSHRelayLoop(host, remotePath string, client *sshclient.Client, session *sshclient.PTYSession, forwarding *reconnectForwarding, stopControlSocket func(), reconnector *sshclient.Reconnector) error {
 	var reconnectCancelMu sync.Mutex
 	var reconnectCancel context.CancelFunc
 	pump := sshclient.NewInputPump(func() {
@@ -204,8 +202,7 @@ func runSSHRelayLoop(host, remotePath string, client *sshclient.Client, session 
 		transportDead := isClosedChan(client.Dead())
 		if !transportDead {
 			stopControlSocket()
-			stopPortForwarding()
-			stopForwarding()
+			forwarding.Stop()
 			client.Close()
 			if relayErr != nil && relayErr != context.Canceled {
 				return fmt.Errorf("agnt ssh: session relay: %w", relayErr)
@@ -215,8 +212,7 @@ func runSSHRelayLoop(host, remotePath string, client *sshclient.Client, session 
 
 		fmt.Fprintln(os.Stderr, "\nagnt ssh: connection lost (keepalive timeout)")
 		stopControlSocket()
-		stopPortForwarding()
-		stopForwarding()
+		forwarding.Pause()
 		client.Close()
 
 		reconnectCtx, cancel := context.WithCancel(context.Background())
@@ -243,9 +239,128 @@ func runSSHRelayLoop(host, remotePath string, client *sshclient.Client, session 
 
 		client = newClient
 		session = newSession
-		stopForwarding = startDaemonSocketForwarding(host, client)
-		stopPortForwarding = startPortForwarding(host, client)
+		forwarding.Resume(client)
 		stopControlSocket = startControlSocket(host, client, remotePath)
+	}
+}
+
+// reconnectForwarding owns the local listener identity across SSH transport
+// transitions. Pause only removes transport-dependent relays; Resume swaps in
+// a fresh SSH transport and daemon protocol connection, then PortForwardManager
+// performs a fresh PROXY LIST reconciliation (invariant 25).
+type reconnectForwarding struct {
+	mu        sync.RWMutex
+	host      string
+	daemonFwd *sshclient.Forwarder
+	ports     *sshclient.PortForwardManager
+	dclient   *daemon.Client
+}
+
+func startReconnectForwarding(host string, client *sshclient.Client) *reconnectForwarding {
+	r := &reconnectForwarding{host: host}
+	remotePath, err := sshclient.RemoteDaemonSocketPath(client.SSH)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "agnt ssh: could not discover remote daemon socket path (%v) — forwarding disabled\n", err)
+		return r
+	}
+	fwd, err := sshclient.NewForwarder(client, remotePath, sshclient.LocalForwardSocketPath(host))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "agnt ssh: could not start local daemon socket forwarding (%v) — forwarding disabled\n", err)
+		return r
+	}
+	r.daemonFwd = fwd
+	go fwd.Serve()
+	fmt.Fprintf(os.Stderr, "agnt ssh: forwarding remote daemon socket to %s\n", sshclient.LocalForwardSocketPath(host))
+	fmt.Fprintf(os.Stderr, "  export AGNT_DAEMON_SOCKET=%s\n", sshclient.LocalForwardSocketPath(host))
+	r.connectPorts(client)
+	return r
+}
+
+func (r *reconnectForwarding) connectPorts(client *sshclient.Client) {
+	dclient := daemon.NewClientWithPath(sshclient.LocalForwardSocketPath(r.host))
+	if err := dclient.Connect(); err != nil {
+		fmt.Fprintf(os.Stderr, "agnt ssh: could not connect to forwarded daemon socket for port forwarding (%v)\n", err)
+		return
+	}
+	r.mu.Lock()
+	r.dclient = dclient
+	r.mu.Unlock()
+	if r.ports == nil {
+		var mgr *sshclient.PortForwardManager
+		mgr = sshclient.NewPortForwardManager(client, dclient, func(msg string) {
+			fmt.Fprintln(os.Stderr, msg)
+			mappings := mgr.Status()
+			if sshShowForwardStatus && len(mappings) > 0 {
+				fmt.Fprintln(os.Stderr, "agnt ssh: active proxy forwards:")
+				for _, mapping := range mappings {
+					fmt.Fprintf(os.Stderr, "  %-24s remote :%-5d -> http://127.0.0.1:%d\n", mapping.ProxyID, mapping.RemotePort, mapping.LocalPort)
+				}
+			}
+			if strings.Contains(msg, "in use locally") {
+				for _, mapping := range mappings {
+					if toastClient := r.daemonClient(); mapping.Remapped && toastClient != nil {
+						_, _ = toastClient.ProxyToast(mapping.ProxyID, protocol.ToastConfig{Type: "warning", Title: "SSH port remapped", Message: fmt.Sprintf("remote :%d is available locally at http://127.0.0.1:%d", mapping.RemotePort, mapping.LocalPort)})
+					}
+				}
+			}
+		})
+		r.ports = mgr
+		r.ports.Start(context.Background())
+	} else {
+		r.ports.Resume(context.Background(), client, dclient)
+	}
+}
+
+func (r *reconnectForwarding) daemonClient() *daemon.Client {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.dclient
+}
+
+func (r *reconnectForwarding) Pause() {
+	if r.ports != nil {
+		r.ports.Pause()
+	}
+	r.mu.Lock()
+	dclient := r.dclient
+	r.dclient = nil
+	r.mu.Unlock()
+	if dclient != nil {
+		dclient.Close()
+	}
+	if r.daemonFwd != nil {
+		r.daemonFwd.Pause()
+	}
+}
+
+func (r *reconnectForwarding) Resume(client *sshclient.Client) {
+	if r.daemonFwd == nil {
+		fresh := startReconnectForwarding(r.host, client)
+		r.daemonFwd = fresh.daemonFwd
+		r.ports = fresh.ports
+		r.mu.Lock()
+		r.dclient = fresh.daemonClient()
+		r.mu.Unlock()
+		return
+	}
+	remotePath, err := sshclient.RemoteDaemonSocketPath(client.SSH)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "agnt ssh: could not rediscover remote daemon socket after reconnect: %v\n", err)
+		return
+	}
+	r.daemonFwd.Resume(client, remotePath)
+	r.connectPorts(client)
+}
+
+func (r *reconnectForwarding) Stop() {
+	if r.ports != nil {
+		r.ports.Stop()
+	}
+	if dclient := r.daemonClient(); dclient != nil {
+		dclient.Close()
+	}
+	if r.daemonFwd != nil {
+		_ = r.daemonFwd.Close()
 	}
 }
 
