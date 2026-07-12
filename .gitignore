@@ -87,5 +87,8 @@ __pycache__/
 # worktrack loop state (per-clone; carries lease_holder email)
 .worktrack/
 
+# risk-pipeline plugin runtime state (per-clone: hook log, queue, telemetry, hashes)
+.risk-pipeline/
+
 # caveman:compress local backups
 *.original.md
