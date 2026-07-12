@@ -165,6 +165,11 @@ func runSSH(cmd *cobra.Command, args []string) error {
 // during RECONNECTING, since raw mode never delivers a real SIGINT for
 // that byte.
 func runSSHRelayLoop(host, remotePath, attachName string, client *sshclient.Client, session *sshclient.PTYSession, forwarding *reconnectForwarding, control *reconnectControl, reconnector *sshclient.Reconnector) error {
+	// The control owner intentionally survives individual transport drops, but
+	// it must not survive this relay loop itself: exhausted retries and Ctrl-C
+	// during RECONNECTING both return from here and must release queued callers.
+	defer control.Stop()
+
 	var reconnectCancelMu sync.Mutex
 	var reconnectCancel context.CancelFunc
 	pump := sshclient.NewInputPump(func() {
