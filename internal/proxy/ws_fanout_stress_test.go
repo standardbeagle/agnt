@@ -207,7 +207,7 @@ func TestProxyWS_SlowSubscriberDoesntStallOthers(t *testing.T) {
 	// were inline. Async isolation makes the broadcasts take <<200ms while the
 	// drain goroutine completes its writes independently.
 	slow := &slowWSConn{}
-	slow.delay.Store(int64(5 * time.Millisecond))
+	slow.gate = make(chan struct{})
 	asyncSlow := newAsyncWSWriter(slow, websocket.TextMessage)
 	registerStub(ps, "slow", asyncSlow)
 
@@ -220,16 +220,12 @@ func TestProxyWS_SlowSubscriberDoesntStallOthers(t *testing.T) {
 
 	payload := []byte(`{"type":"stress"}`)
 
-	start := time.Now()
 	for m := 0; m < messages; m++ {
 		ps.broadcastRaw(payload)
 	}
-	elapsed := time.Since(start)
 
-	// Without async isolation, elapsed ≥ 200×5ms = 1s.
-	// With async isolation the broadcasts are non-blocking: elapsed << 200ms.
-	assert.Less(t, elapsed, 500*time.Millisecond,
-		"200 broadcasts with 1 slow subscriber must complete in <500ms (got %v)", elapsed)
+	// Reaching here while the subscriber's writer is observably blocked pins
+	// async isolation without a scheduler-sensitive wall-clock budget.
 
 	// Every fast stub received all messages.
 	for i, s := range fastStubs {
@@ -237,8 +233,9 @@ func TestProxyWS_SlowSubscriberDoesntStallOthers(t *testing.T) {
 			"fast stub %d: expected %d messages", i, messages)
 	}
 
-	// Close asyncSlow explicitly — drains the channel and waits for the drain
-	// goroutine to exit (at most 64 queued × 5ms = 320ms), then slow.count() is stable.
+	// Release the writer, then close asyncSlow explicitly so its drain exits
+	// and slow.count() is stable.
+	close(slow.gate)
 	unregisterStub(ps, "slow")
 	asyncSlow.Close()
 	assert.Greater(t, slow.count(), 0,

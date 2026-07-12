@@ -317,9 +317,10 @@ func TestRouter_SlowHandlerDoesntBlockOthers(t *testing.T) {
 	// Fire 1 slow dispatch on conn[0] in parallel with 100 fast dispatches
 	// spread across conns 1..7. Measure wallclock for the 100 fasts.
 	wg.Add(1)
-	slowStart := time.Now()
+	slowDone := make(chan struct{})
 	go func() {
 		defer wg.Done()
+		defer close(slowDone)
 		cmd := &hubproto.Command{Verb: "STRESS", SubVerb: "SLOW"}
 		_ = router.dispatch(context.Background(), pool.conn(0), cmd, dispatchMap)
 	}()
@@ -328,7 +329,6 @@ func TestRouter_SlowHandlerDoesntBlockOthers(t *testing.T) {
 	// parked on the timer, not competing for CPU.
 	time.Sleep(5 * time.Millisecond)
 
-	fastStart := time.Now()
 	var fastWg sync.WaitGroup
 	for i := 0; i < 100; i++ {
 		i := i
@@ -340,22 +340,13 @@ func TestRouter_SlowHandlerDoesntBlockOthers(t *testing.T) {
 		}()
 	}
 	fastWg.Wait()
-	fastElapsed := time.Since(fastStart)
+	select {
+	case <-slowDone:
+		t.Fatal("slow handler completed before fast batch; dispatches are not isolated")
+	default:
+	}
 
 	wg.Wait()
-	slowElapsed := time.Since(slowStart)
-
-	t.Logf("100 fast dispatches elapsed in %s; slow dispatch elapsed in %s",
-		fastElapsed, slowElapsed)
-
-	// Fast batch must complete well before the slow handler's 100ms nap
-	// finishes. 50ms gives generous CI slack but still pins the parallelism
-	// invariant — a serialized dispatch would take >100ms just for the slow.
-	assert.Less(t, fastElapsed, 50*time.Millisecond,
-		"fast dispatches blocked behind slow handler — parallelism broken")
-	// Sanity: slow must have actually taken its sleep.
-	assert.GreaterOrEqual(t, slowElapsed, 100*time.Millisecond,
-		"slow handler did not wait its full sleep — test fixture bug")
 	// Counts must match.
 	assert.Equal(t, int64(1), slow.called.Load())
 	assert.Equal(t, int64(100), fast.called.Load())

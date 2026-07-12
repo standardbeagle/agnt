@@ -153,6 +153,13 @@ func TestBlob_WriteAsync_ReturnsImmediately(t *testing.T) {
 	store := newBlobStoreWithQueueCap(2)
 	defer store.Close()
 
+	// Establish a same-run baseline while the drain is healthy. The paused
+	// call below must remain within a generous factor of this identical hot
+	// path; an accidental synchronous write would diverge dramatically.
+	baselineStart := time.Now()
+	_ = store.WriteAsync([]byte("baseline"), "application/octet-stream")
+	baseline := time.Since(baselineStart)
+
 	// Block the drain goroutine so writes pile up in the channel.
 	store.pauseDrain()
 
@@ -165,9 +172,8 @@ func TestBlob_WriteAsync_ReturnsImmediately(t *testing.T) {
 	ref := store.WriteAsync(data, "application/octet-stream")
 	elapsed := time.Since(start)
 
-	// Must return in well under 1ms (hash only, no I/O).
-	if elapsed > time.Millisecond {
-		t.Errorf("WriteAsync took %v, want <1ms", elapsed)
+	if limit := baseline*100 + 100*time.Microsecond; elapsed > limit {
+		t.Errorf("WriteAsync took %v with paused drain, baseline %v (limit %v)", elapsed, baseline, limit)
 	}
 
 	// Ref must have correct hash and size.

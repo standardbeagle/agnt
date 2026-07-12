@@ -103,22 +103,26 @@ func TestGetTailscaleDNS_ConcurrentCallersNeverBlock(t *testing.T) {
 	const numCallers = 50
 	var wg sync.WaitGroup
 	results := make([]string, numCallers)
-	durations := make([]time.Duration, numCallers)
+	callersDone := make(chan struct{})
 
 	wg.Add(numCallers)
 	for i := 0; i < numCallers; i++ {
 		go func(idx int) {
 			defer wg.Done()
-			start := time.Now()
 			results[idx] = getTailscaleDNS()
-			durations[idx] = time.Since(start)
 		}(i)
 	}
-	wg.Wait()
+	go func() {
+		wg.Wait()
+		close(callersDone)
+	}()
 
-	// All callers should have returned nearly instantly (not blocked on slow detect)
-	for i, d := range durations {
-		assert.Less(t, d, 50*time.Millisecond, "caller %d blocked for %v", i, d)
+	// Judge isolation by observed ordering: callers must finish while the
+	// detector is still blocked, independent of scheduler speed.
+	select {
+	case <-callersDone:
+	case <-time.After(time.Second):
+		t.Fatal("callers did not return while detect remained blocked")
 	}
 
 	// All should have returned empty (first call, cache not yet populated)

@@ -55,19 +55,13 @@ scripts {
 	require.NoError(t, client.Connect())
 	defer client.Close()
 
-	start := time.Now()
 	result, err := client.SessionRegister("fast-session", "/tmp/overlay.sock", tmpDir, "test", nil)
-	elapsed := time.Since(start)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
-	// The whole point of the refactor: registration does not wait on
-	// autostart. 100ms is generous for an IPC round trip on a loopback
-	// socket with no autostart blocking it.
-	assert.Less(t, elapsed, 500*time.Millisecond,
-		"SESSION REGISTER should return quickly (got %v)", elapsed)
-
-	// Response should include the async handle fields.
+	// The observed "starting" state while the 60-second autostart remains in
+	// flight proves registration returned asynchronously; no scheduler-sensitive
+	// IPC wall-clock budget is needed.
 	assert.Equal(t, "starting", result["status"], "first caller should see status=starting")
 	assert.NotEmpty(t, result["autostart_handle"], "response should include an autostart_handle")
 

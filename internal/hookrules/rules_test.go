@@ -146,17 +146,23 @@ func BenchmarkCheckBash(b *testing.B) {
 // ceiling that will fail loudly on obvious regressions.
 func TestMatchBashLatency(t *testing.T) {
 	rs := BuiltinRuleSet()
-	// Run a few thousand matches and confirm we're well under the 1s
-	// per-invocation budget. Real p99 target is microseconds; 100ms
-	// here is intentionally loose to avoid flakiness on CI runners.
-	start := time.Now()
 	iters := 10_000
+	baselineStart := time.Now()
+	for i := 0; i < iters; i++ {
+		_ = rs.MatchBash("echo ok")
+	}
+	baseline := time.Since(baselineStart)
+
+	// Compare the representative matched command to the same matcher in the
+	// same run. This catches pathological rule cost without treating scheduler
+	// delay as matcher latency.
+	start := time.Now()
 	for i := 0; i < iters; i++ {
 		_ = rs.MatchBash("npm run dev")
 	}
 	elapsed := time.Since(start)
-	perOp := elapsed / time.Duration(iters)
-	assert.Less(t, perOp, time.Millisecond, "match should be <1ms per op, got %v", perOp)
+	assert.Less(t, elapsed, baseline*10+time.Millisecond,
+		"matched command took %v, unmatched same-run baseline %v", elapsed, baseline)
 }
 
 func TestInAgntRunSession(t *testing.T) {

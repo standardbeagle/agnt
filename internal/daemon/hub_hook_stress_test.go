@@ -179,6 +179,21 @@ func TestHookRing_EnqueueP99Latency(t *testing.T) {
 
 	cancel, done := startStressDrain(t, d)
 
+	// Same-run control for scheduler/timer overhead plus the mutex-shaped hot
+	// path. Relative limits below preserve the contention regression signal
+	// without assuming a fixed machine-speed budget.
+	baseline := make([]time.Duration, 10_000)
+	var baselineMu sync.Mutex
+	for i := range baseline {
+		t0 := time.Now()
+		baselineMu.Lock()
+		baselineMu.Unlock()
+		baseline[i] = time.Since(t0)
+	}
+	sort.Slice(baseline, func(i, j int) bool { return baseline[i] < baseline[j] })
+	baselineP50 := baseline[len(baseline)/2]
+	baselineP99 := baseline[(len(baseline)*99)/100]
+
 	// Each producer records its per-push latencies into its own local slice
 	// so there is zero false sharing between producers. We merge after.
 	var wg sync.WaitGroup
@@ -220,12 +235,10 @@ func TestHookRing_EnqueueP99Latency(t *testing.T) {
 	t.Logf("push latency over %d ops (drain=1ms/event, %d sinks stalled): p50=%s p99=%s max=%s overflow=%d",
 		len(all), 1, p50, p99, pMax, d.hookRing.OverflowCount())
 
-	// Contract: p99 Push latency stays under 5ms even when drain is wedged.
-	// A regression would indicate producer contention on a sink lock or an
-	// allocation-heavy hot path.
-	assert.Less(t, p99, 5*time.Millisecond, "p99 enqueue latency exceeded 5ms budget")
-	// And p50 should be well under 1ms — the mutex hot path.
-	assert.Less(t, p50, 1*time.Millisecond, "p50 enqueue latency exceeded 1ms sanity threshold")
+	assert.Less(t, p99, baselineP99*100+time.Millisecond,
+		"p99 enqueue latency %v diverged from same-run mutex baseline %v", p99, baselineP99)
+	assert.Less(t, p50, baselineP50*100+50*time.Microsecond,
+		"p50 enqueue latency %v diverged from same-run mutex baseline %v", p50, baselineP50)
 }
 
 // =====================================================================
