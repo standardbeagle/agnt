@@ -43,8 +43,9 @@ type PortForwardManager struct {
 	dclient   *daemon.Client
 	notify    func(string)
 
-	mu       sync.Mutex
-	forwards map[string]*portForward // keyed by remote proxy ID
+	mu          sync.Mutex
+	reconcileMu sync.Mutex
+	forwards    map[string]*portForward // keyed by remote proxy ID
 
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -56,6 +57,9 @@ type portForward struct {
 	remotePort int
 	localPort  int
 	listener   net.Listener
+	connMu     sync.Mutex
+	conns      map[net.Conn]struct{}
+	stopping   bool
 	connWG     sync.WaitGroup
 }
 
@@ -86,6 +90,30 @@ func (m *PortForwardManager) Start(ctx context.Context) {
 
 	m.wg.Add(1)
 	go m.reconcileLoop(ctx)
+
+	// STREAM-EVENTS registration and a proxy start can cross during session
+	// startup. Brief authoritative probes close that subscription race while
+	// the normal 30s ticker remains strictly a missed-event backstop.
+	m.wg.Add(1)
+	go m.startupReconcile(ctx)
+}
+
+func (m *PortForwardManager) startupReconcile(ctx context.Context) {
+	defer m.wg.Done()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	timer := time.NewTimer(time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+			return
+		case <-ticker.C:
+			m.reconcileOnce()
+		}
+	}
 }
 
 // Stop halts the reconcile loop and tears down every active local listener
@@ -194,6 +222,8 @@ func (m *PortForwardManager) watchEvents(ctx context.Context, signal chan<- stru
 // reconcileOnce fetches the authoritative proxy list from the remote daemon
 // and starts/stops local listeners to match it exactly.
 func (m *PortForwardManager) reconcileOnce() {
+	m.reconcileMu.Lock()
+	defer m.reconcileMu.Unlock()
 	desired, err := m.fetchDesired()
 	if err != nil {
 		if m.notify != nil {
@@ -306,6 +336,7 @@ func (m *PortForwardManager) startForward(proxyID string, remotePort int) {
 		remotePort: remotePort,
 		localPort:  localPort,
 		listener:   listener,
+		conns:      make(map[net.Conn]struct{}),
 	}
 
 	m.mu.Lock()
@@ -331,9 +362,22 @@ func (f *portForward) serve(sshClient *Client) {
 		if err != nil {
 			return
 		}
+		f.connMu.Lock()
+		if f.stopping {
+			f.connMu.Unlock()
+			conn.Close()
+			return
+		}
+		f.conns[conn] = struct{}{}
 		f.connWG.Add(1)
+		f.connMu.Unlock()
 		go func() {
-			defer f.connWG.Done()
+			defer func() {
+				f.connMu.Lock()
+				delete(f.conns, conn)
+				f.connMu.Unlock()
+				f.connWG.Done()
+			}()
 			f.relay(sshClient, conn)
 		}()
 	}
@@ -347,6 +391,10 @@ func (f *portForward) relay(sshClient *Client, conn net.Conn) {
 		return
 	}
 	defer remote.Close()
+	if !f.trackConn(remote) {
+		return
+	}
+	defer f.untrackConn(remote)
 
 	done := make(chan struct{}, 2)
 	go func() {
@@ -358,12 +406,44 @@ func (f *portForward) relay(sshClient *Client, conn net.Conn) {
 		done <- struct{}{}
 	}()
 	<-done
+	// A half-closed HTTP or WebSocket peer can leave the opposite copy
+	// blocked forever. Close both directions, then join the second copier.
+	conn.Close()
+	remote.Close()
+	<-done
+}
+
+func (f *portForward) trackConn(conn net.Conn) bool {
+	f.connMu.Lock()
+	defer f.connMu.Unlock()
+	if f.stopping {
+		conn.Close()
+		return false
+	}
+	f.conns[conn] = struct{}{}
+	return true
+}
+
+func (f *portForward) untrackConn(conn net.Conn) {
+	f.connMu.Lock()
+	delete(f.conns, conn)
+	f.connMu.Unlock()
 }
 
 // stop closes the listener (unblocking Accept in serve) and waits for every
 // in-flight relay goroutine to drain before returning, so Manager.Stop can
 // guarantee zero leaked goroutines/listeners (see the goleak test).
 func (f *portForward) stop() {
+	f.connMu.Lock()
+	if f.stopping {
+		f.connMu.Unlock()
+		return
+	}
+	f.stopping = true
 	f.listener.Close()
+	for conn := range f.conns {
+		conn.Close()
+	}
+	f.connMu.Unlock()
 	f.connWG.Wait()
 }

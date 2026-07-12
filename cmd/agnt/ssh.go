@@ -34,6 +34,7 @@ var sshBootstrapConsent string
 var sshCreateIfMissing bool
 var sshNewSession bool
 var sshReconnectMax int
+var sshShowForwardStatus bool
 
 var sshCmd = &cobra.Command{
 	Use:   "ssh <host>[:path]",
@@ -67,6 +68,7 @@ func init() {
 	sshCmd.Flags().BoolVar(&sshCreateIfMissing, "create-if-missing", false, "if the named session-host session is gone on reconnect, create a fresh one instead of failing loud (spec invariant 24; default is hard-fail)")
 	sshCmd.Flags().BoolVar(&sshNewSession, "new", false, "same effect as --create-if-missing for reconnect purposes: never hard-fail when the named session is gone")
 	sshCmd.Flags().IntVar(&sshReconnectMax, "reconnect-max", 0, "maximum reconnect attempts before giving up (0 = unlimited, the interactive default)")
+	sshCmd.Flags().BoolVar(&sshShowForwardStatus, "status", false, "show the active remote-to-local proxy mapping table as forwards change")
 	rootCmd.AddCommand(sshCmd)
 }
 
@@ -441,8 +443,28 @@ func startPortForwarding(host string, client *sshclient.Client) func() {
 		return func() {}
 	}
 
-	mgr := sshclient.NewPortForwardManager(client, dclient, func(msg string) {
+	var mgr *sshclient.PortForwardManager
+	mgr = sshclient.NewPortForwardManager(client, dclient, func(msg string) {
 		fmt.Fprintf(os.Stderr, "%s\n", msg)
+		mappings := mgr.Status()
+		if sshShowForwardStatus && len(mappings) > 0 {
+			fmt.Fprintln(os.Stderr, "agnt ssh: active proxy forwards:")
+			for _, mapping := range mappings {
+				fmt.Fprintf(os.Stderr, "  %-24s remote :%-5d -> http://127.0.0.1:%d\n", mapping.ProxyID, mapping.RemotePort, mapping.LocalPort)
+			}
+		}
+		if strings.Contains(msg, "in use locally") {
+			for _, mapping := range mappings {
+				if !mapping.Remapped {
+					continue
+				}
+				_, _ = dclient.ProxyToast(mapping.ProxyID, protocol.ToastConfig{
+					Type:    "warning",
+					Title:   "SSH port remapped",
+					Message: fmt.Sprintf("remote :%d is available locally at http://127.0.0.1:%d", mapping.RemotePort, mapping.LocalPort),
+				})
+			}
+		}
 	})
 	mgr.Start(context.Background())
 

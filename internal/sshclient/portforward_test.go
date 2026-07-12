@@ -88,6 +88,39 @@ func forwardFixture(t *testing.T, listenAddr string) *Client {
 func TestPortForwardManager_EndToEnd(t *testing.T) {
 	_, dc := newTestDaemonClient(t)
 
+	t.Run("LiveProxyStart_ForwardsWithinOneSecond", func(t *testing.T) {
+		backend := backendStub(t)
+		reserved, err := net.Listen("tcp", "127.0.0.1:0")
+		require.NoError(t, err)
+		remotePort := reserved.Addr().(*net.TCPAddr).Port
+		require.NoError(t, reserved.Close())
+
+		sshClient := forwardFixture(t, fmt.Sprintf("127.0.0.1:%d", remotePort))
+		mgr := NewPortForwardManager(sshClient, dc, func(string) {})
+		mgr.Start(context.Background())
+		defer mgr.Stop()
+
+		started := time.Now()
+		_, err = dc.ProxyStart("p-live", backend.URL, remotePort, 0, "")
+		require.NoError(t, err)
+		defer dc.ProxyStop("p-live")
+		var localPort int
+		require.Eventually(t, func() bool {
+			for _, mapping := range mgr.Status() {
+				if mapping.ProxyID == "p-live" {
+					localPort = mapping.LocalPort
+					return true
+				}
+			}
+			return false
+		}, time.Second, 10*time.Millisecond, "a proxy started after the manager must be usable without waiting for the 30s backstop")
+		require.Less(t, time.Since(started), time.Second)
+
+		conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", localPort), 250*time.Millisecond)
+		require.NoError(t, err)
+		conn.Close()
+	})
+
 	t.Run("ReconcileOnConnect_ForwardsExistingProxy_And_HTTPRoundTrips", func(t *testing.T) {
 		backend := backendStub(t)
 		result, err := dc.ProxyStart("p-reconcile", backend.URL, 0, 0, "")
@@ -287,17 +320,6 @@ func TestPortForwardManager_EndToEnd(t *testing.T) {
 	})
 
 	t.Run("ProxyStop_ClosesLocalListener", func(t *testing.T) {
-		// The proxy_stopped diagnostic (event-driven path) is exercised
-		// either way, but the periodic reconcile is the documented
-		// backstop for a missed/delayed event (bus.go's own drop-newest
-		// policy means delivery is best-effort). Shrinking the period
-		// here bounds this test's worst case without weakening what it
-		// proves: teardown happens without waiting for the *production*
-		// 30s cadence, which is what the acceptance criterion is about.
-		prevPeriod := reconcilePeriod
-		reconcilePeriod = 200 * time.Millisecond
-		t.Cleanup(func() { reconcilePeriod = prevPeriod })
-
 		backend := backendStub(t)
 		result, err := dc.ProxyStart("p-stop", backend.URL, 0, 0, "")
 		require.NoError(t, err)
@@ -319,6 +341,22 @@ func TestPortForwardManager_EndToEnd(t *testing.T) {
 			return false
 		}, 3*time.Second, 20*time.Millisecond)
 
+		httpConn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", localPort))
+		require.NoError(t, err)
+		defer httpConn.Close()
+		require.NoError(t, httpConn.SetDeadline(time.Now().Add(3*time.Second)))
+		_, err = httpConn.Write([]byte("GET /open HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: keep-alive\r\n\r\n"))
+		require.NoError(t, err)
+		buf := make([]byte, 2048)
+		_, err = httpConn.Read(buf)
+		require.NoError(t, err)
+		require.NoError(t, httpConn.SetDeadline(time.Time{}))
+
+		wsURL := url.URL{Scheme: "ws", Host: fmt.Sprintf("127.0.0.1:%d", localPort), Path: "/__devtool_metrics"}
+		ws, _, err := websocket.DefaultDialer.Dial(wsURL.String(), nil)
+		require.NoError(t, err)
+		defer ws.Close()
+
 		require.NoError(t, dc.ProxyStop("p-stop"))
 
 		require.Eventually(t, func() bool {
@@ -332,6 +370,13 @@ func TestPortForwardManager_EndToEnd(t *testing.T) {
 
 		_, dialErr := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", localPort), 500*time.Millisecond)
 		require.Error(t, dialErr, "local listener must actually be closed, not just removed from Status()")
+
+		require.NoError(t, httpConn.SetReadDeadline(time.Now().Add(time.Second)))
+		_, err = httpConn.Read(buf)
+		require.Error(t, err, "open HTTP relay must be closed before forward removal completes")
+		require.NoError(t, ws.SetReadDeadline(time.Now().Add(time.Second)))
+		_, _, err = ws.ReadMessage()
+		require.Error(t, err, "open WebSocket relay must be closed before forward removal completes")
 	})
 }
 
