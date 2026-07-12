@@ -3,6 +3,7 @@ package testenv
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -30,6 +31,11 @@ type ContainerSSHD struct {
 // StartContainerSSHD launches a containerized sshd and waits until it accepts
 // the generated public key. SSH_E2E_IMAGE overrides the fixture image.
 func StartContainerSSHD(ctx context.Context) (*ContainerSSHD, error) {
+	configuredImage := os.Getenv("SSH_E2E_IMAGE")
+	configuredUser := os.Getenv("SSH_E2E_USER")
+	if err := validateContainerOverrides(configuredImage, configuredUser); err != nil {
+		return nil, err
+	}
 	runtime := ""
 	for _, candidate := range []string{"docker", "podman"} {
 		path, err := exec.LookPath(candidate)
@@ -41,7 +47,7 @@ func StartContainerSSHD(ctx context.Context) (*ContainerSSHD, error) {
 	if runtime == "" {
 		return nil, ErrContainerRuntimeUnavailable
 	}
-	user := os.Getenv("SSH_E2E_USER")
+	user := configuredUser
 	if user == "" {
 		user = "tester"
 	}
@@ -49,7 +55,7 @@ func StartContainerSSHD(ctx context.Context) (*ContainerSSHD, error) {
 	if err != nil {
 		return nil, err
 	}
-	image := os.Getenv("SSH_E2E_IMAGE")
+	image := configuredImage
 	if image == "" {
 		image = "lscr.io/linuxserver/openssh-server:latest"
 	}
@@ -60,7 +66,7 @@ func StartContainerSSHD(ctx context.Context) (*ContainerSSHD, error) {
 	// SSH_E2E_USER opts into a conventional sshd image rather than the
 	// linuxserver.io environment contract. Mounting generated authorized_keys
 	// makes locally built fixtures usable offline and keeps credentials unique.
-	if os.Getenv("SSH_E2E_USER") != "" {
+	if configuredUser != "" {
 		containerPort = "22"
 		tempDir, err = os.MkdirTemp("", "agnt-sshe2e-")
 		if err != nil {
@@ -85,11 +91,10 @@ func StartContainerSSHD(ctx context.Context) (*ContainerSSHD, error) {
 			_ = fixture.Close(context.Background())
 		}
 	}()
-	portOut, err := exec.CommandContext(ctx, runtime, "port", fixture.id, containerPort+"/tcp").CombinedOutput()
+	fixture.addr, err = discoverMappedPort(ctx, runtime, fixture.id, containerPort+"/tcp")
 	if err != nil {
-		return nil, fmt.Errorf("resolve sshd port: %w: %s", err, strings.TrimSpace(string(portOut)))
+		return nil, err
 	}
-	fixture.addr = normalizeContainerPort(strings.TrimSpace(strings.Split(string(portOut), "\n")[0]))
 	deadline := time.Now().Add(45 * time.Second)
 	var lastErr error
 	for time.Now().Before(deadline) {
@@ -108,6 +113,53 @@ func StartContainerSSHD(ctx context.Context) (*ContainerSSHD, error) {
 	}
 	logs, _ := exec.CommandContext(ctx, runtime, "logs", fixture.id).CombinedOutput()
 	return nil, fmt.Errorf("sshd container not ready: %w; logs(base64)=%s", lastErr, base64.StdEncoding.EncodeToString(logs))
+}
+
+func validateContainerOverrides(image, user string) error {
+	if user != "" && image == "" {
+		return fmt.Errorf("SSH_E2E_USER requires SSH_E2E_IMAGE to select a conventional port-22 sshd image")
+	}
+	return nil
+}
+
+type portBinding struct {
+	HostIP   string `json:"HostIp"`
+	HostPort string `json:"HostPort"`
+}
+
+func discoverMappedPort(ctx context.Context, runtime, containerID, containerPort string) (string, error) {
+	portOut, portErr := exec.CommandContext(ctx, runtime, "port", containerID, containerPort).CombinedOutput()
+	if portErr == nil {
+		for _, line := range strings.Split(strings.TrimSpace(string(portOut)), "\n") {
+			if addr := normalizeContainerPort(strings.TrimSpace(line)); validMappedAddress(addr) {
+				return addr, nil
+			}
+		}
+	}
+
+	// Some Docker-compatible daemons implement inspect but return an HTTP 404
+	// for the /containers/{id}/json-backed `docker port` command. Inspect the
+	// published-port map directly so that those runtimes remain supported.
+	inspectOut, inspectErr := exec.CommandContext(ctx, runtime, "inspect", "--format", "{{json .NetworkSettings.Ports}}", containerID).CombinedOutput()
+	if inspectErr != nil {
+		return "", fmt.Errorf("resolve sshd port: port command: %v: %s; inspect fallback: %w: %s", portErr, strings.TrimSpace(string(portOut)), inspectErr, strings.TrimSpace(string(inspectOut)))
+	}
+	var ports map[string][]portBinding
+	if err := json.Unmarshal([]byte(strings.TrimSpace(string(inspectOut))), &ports); err != nil {
+		return "", fmt.Errorf("resolve sshd port: decode inspect output: %w: %s", err, strings.TrimSpace(string(inspectOut)))
+	}
+	for _, binding := range ports[containerPort] {
+		addr := normalizeContainerPort(net.JoinHostPort(binding.HostIP, binding.HostPort))
+		if validMappedAddress(addr) {
+			return addr, nil
+		}
+	}
+	return "", fmt.Errorf("resolve sshd port: %s has no published host binding (port command: %v: %s)", containerPort, portErr, strings.TrimSpace(string(portOut)))
+}
+
+func validMappedAddress(addr string) bool {
+	host, port, err := net.SplitHostPort(addr)
+	return err == nil && host != "" && port != "" && port != "0"
 }
 
 func normalizeContainerPort(value string) string {

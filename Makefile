@@ -94,7 +94,8 @@ test-isolated:
 # Run the remote-SSH end-to-end tier. The in-process harness always runs; the
 # tagged container smoke test runs when Docker or Podman is available and
 # otherwise skips loudly. SSH_E2E_IMAGE can pin an alternate compatible image;
-# set SSH_E2E_USER as well for a conventional image exposing sshd on port 22.
+# set SSH_E2E_IMAGE and SSH_E2E_USER together for a conventional image exposing
+# sshd on port 22 (SSH_E2E_USER without SSH_E2E_IMAGE is rejected).
 test-ssh:
 	go test -count=1 -v -tags=sshe2e ./internal/sshclient/...
 

@@ -1,6 +1,9 @@
 package testenv
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -32,6 +35,43 @@ func TestServerConnectAndExec(t *testing.T) {
 	}
 	if string(output) != "in-process-ok" {
 		t.Fatalf("output = %q", output)
+	}
+}
+
+func TestDiscoverMappedPortFallsBackToInspect(t *testing.T) {
+	runtime := filepath.Join(t.TempDir(), "runtime")
+	script := `#!/bin/sh
+if [ "$1" = "port" ]; then
+  echo 'Error response from daemon: page not found' >&2
+  exit 1
+fi
+if [ "$1" = "inspect" ]; then
+  echo '{"2222/tcp":[{"HostIp":"0.0.0.0","HostPort":"49152"}]}'
+  exit 0
+fi
+exit 2
+`
+	if err := os.WriteFile(runtime, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	addr, err := discoverMappedPort(context.Background(), runtime, "fixture", "2222/tcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if addr != "127.0.0.1:49152" {
+		t.Fatalf("address = %q", addr)
+	}
+}
+
+func TestValidateContainerOverrides(t *testing.T) {
+	if err := validateContainerOverrides("", "tester"); err == nil {
+		t.Fatal("SSH_E2E_USER without SSH_E2E_IMAGE must fail")
+	}
+	if err := validateContainerOverrides("fixture", "tester"); err != nil {
+		t.Fatalf("paired conventional overrides rejected: %v", err)
+	}
+	if err := validateContainerOverrides("linuxserver-compatible", ""); err != nil {
+		t.Fatalf("compatible image override rejected: %v", err)
 	}
 }
 
