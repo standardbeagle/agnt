@@ -27,6 +27,10 @@ import (
 // path deterministically instead of depending on STREAM-EVENTS latency.
 var reconcilePeriod = 30 * time.Second
 
+// nearestPortSearchLimit bounds collision recovery so a machine with a broad
+// occupied range fails promptly instead of scanning the entire TCP space.
+const nearestPortSearchLimit = 1000
+
 // PortForwardManager keeps a set of local TCP listeners in sync with the
 // reverse proxies running on a remote agnt daemon reached over an existing
 // SSH connection, so a local browser can hit http://127.0.0.1:<port>
@@ -320,7 +324,7 @@ func (m *PortForwardManager) startForward(proxyID string, remotePort int) {
 	listener, err := net.Listen("tcp", localAddr)
 	remapped := false
 	if err != nil {
-		listener, err = net.Listen("tcp", "127.0.0.1:0")
+		listener, err = listenNearestFreePort(remotePort, nearestPortSearchLimit)
 		if err != nil {
 			if m.notify != nil {
 				m.notify(fmt.Sprintf("agnt ssh: proxy %s (:%d) could not be forwarded locally: %v", proxyID, remotePort, err))
@@ -352,6 +356,31 @@ func (m *PortForwardManager) startForward(proxyID string, remotePort int) {
 	}
 
 	go f.serve(m.sshClient)
+}
+
+// listenNearestFreePort binds candidates by increasing distance from
+// remotePort. The bind itself reserves the winning port, avoiding the
+// check-then-bind race of probing availability separately. Equal-distance
+// ties prefer the higher port, making the mapping deterministic.
+func listenNearestFreePort(remotePort, limit int) (net.Listener, error) {
+	var lastErr error
+	for distance := 1; distance <= limit; distance++ {
+		candidates := [2]int{remotePort + distance, remotePort - distance}
+		for _, port := range candidates {
+			if port < 1 || port > 65535 {
+				continue
+			}
+			listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+			if err == nil {
+				return listener, nil
+			}
+			lastErr = err
+		}
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("no valid candidate ports")
+	}
+	return nil, fmt.Errorf("no free local port within %d of :%d: %w", limit, remotePort, lastErr)
 }
 
 // serve accepts local connections until the listener is closed by stop(),

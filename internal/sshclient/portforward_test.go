@@ -306,6 +306,18 @@ func TestPortForwardManager_EndToEnd(t *testing.T) {
 
 		require.True(t, mapping.Remapped, "collision must produce a remapped mapping")
 		require.NotEqual(t, remotePort, mapping.LocalPort)
+		require.Equal(t, remotePort+1, mapping.LocalPort, "the nearest free port must be chosen deterministically")
+
+		conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", mapping.LocalPort))
+		require.NoError(t, err, "remapped local URL must be reachable")
+		defer conn.Close()
+		_, err = conn.Write([]byte("GET /collision HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"))
+		require.NoError(t, err)
+		require.NoError(t, conn.SetReadDeadline(time.Now().Add(5*time.Second)))
+		response, err := io.ReadAll(conn)
+		require.NoError(t, err)
+		require.Contains(t, string(response), "window.__devtool_proxy_id", "remapped URL must serve proxy-injected HTML")
+		require.Contains(t, string(response), "/__devtool/inject.", "remapped URL must load the injected runtime")
 
 		mu.Lock()
 		joined := append([]string(nil), notices...)
