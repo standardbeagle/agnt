@@ -74,19 +74,26 @@ func TestReconnector_ThreeDropSoak_DurableWorkAndNoResourceGrowth(t *testing.T) 
 		t.Fatalf("remote work did not start: %q", got)
 	}
 
-	markers := []string{"CONNECTED"}
+	var markers []string
 	for cycle := 1; cycle <= 3; cycle++ {
 		before := len(sim.snapshot())
 		if cycle == 2 {
 			harness.Freeze()
 			sim.append([]byte("FROZEN-WORK-CONTINUES;"))
 		}
-		markers = append(markers, "RECONNECTING")
-		harness.Drop()
+		if cycle != 2 {
+			harness.Drop()
+		}
 		session.Close()
 		client.Close()
 		if cycle == 2 {
-			harness.Resume()
+			// Sustain the black hole while Run is already reconnecting. The
+			// accepted TCP connection receives no SSH banner until Resume;
+			// unlike the hard-close cycles, no RST/FIN triggers this one.
+			go func() {
+				time.Sleep(50 * time.Millisecond)
+				harness.Resume()
+			}()
 		}
 
 		r := &Reconnector{
@@ -98,7 +105,6 @@ func TestReconnector_ThreeDropSoak_DurableWorkAndNoResourceGrowth(t *testing.T) 
 		if err != nil {
 			t.Fatalf("cycle %d reconnect: %v", cycle, err)
 		}
-		markers = append(markers, "CONNECTED")
 		reader = startChannelReader(session.channel)
 		want := len(sim.snapshot())
 		got := collectAtLeast(reader, want, 3*time.Second)
@@ -123,7 +129,7 @@ func assertReconnectMarkerOrder(t *testing.T, markers []string, cycles int) {
 	joined := strings.Join(markers, "\n")
 	pos := 0
 	for cycle := 1; cycle <= cycles; cycle++ {
-		for _, want := range []string{"RECONNECTING", "agnt ssh: reconnecting", "agnt ssh: reconnected", "CONNECTED"} {
+		for _, want := range []string{"agnt ssh: reconnecting", "agnt ssh: reconnected"} {
 			n := bytes.Index([]byte(joined[pos:]), []byte(want))
 			if n < 0 {
 				t.Fatalf("cycle %d missing ordered marker %q in %q", cycle, want, joined)

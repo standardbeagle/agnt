@@ -134,6 +134,12 @@ func (h *contentHarness) acceptLoop() {
 }
 
 func (h *contentHarness) handshakeAndServe(conn net.Conn) {
+	// A frozen peer accepts no SSH protocol work. Keeping the TCP socket
+	// open while withholding the banner/auth exchange models SSHDFreezeHarness'
+	// SIGSTOP black hole without sacrificing this sibling's durable replay.
+	for h.isFrozen() {
+		time.Sleep(2 * time.Millisecond)
+	}
 	cfg := &ssh.ServerConfig{
 		PublicKeyCallback: func(ssh.ConnMetadata, ssh.PublicKey) (*ssh.Permissions, error) {
 			return &ssh.Permissions{}, nil
