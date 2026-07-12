@@ -2,6 +2,7 @@ package sshclient
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -25,24 +26,43 @@ type DropUpload func(localPath, remoteName string) error
 // NewDropUpload adapts task 08a's verified SFTP upload for a drop watcher.
 // Existing inbox names receive a timestamp suffix instead of being replaced.
 func NewDropUpload(sc *sftp.Client, projectRoot string) DropUpload {
+	return newDropUpload(sc, projectRoot, time.Now, nil)
+}
+
+func newDropUpload(sc *sftp.Client, projectRoot string, now func() time.Time, beforePush func(string)) DropUpload {
 	return func(localPath, remoteName string) error {
-		remoteName, err := collisionName(remoteName, time.Now(), func(candidate string) (bool, error) {
-			_, err := sc.Stat(filepath.ToSlash(filepath.Join(projectRoot, DefaultInboxDir, candidate)))
-			if os.IsNotExist(err) {
-				return false, nil
+		for attempts := 0; attempts < 100; attempts++ {
+			candidate, err := collisionName(remoteName, now(), func(candidate string) (bool, error) {
+				_, err := sc.Lstat(filepath.ToSlash(filepath.Join(projectRoot, DefaultInboxDir, candidate)))
+				if os.IsNotExist(err) {
+					return false, nil
+				}
+				return err == nil, err
+			})
+			if err != nil {
+				return fmt.Errorf("checking remote collision: %w", err)
 			}
-			return err == nil, err
-		})
-		if err != nil {
-			return fmt.Errorf("checking remote collision: %w", err)
+			if beforePush != nil {
+				beforePush(candidate)
+			}
+			file, err := os.Open(localPath)
+			if err != nil {
+				return err
+			}
+			_, pushErr := PushToInboxNoClobber(sc, projectRoot, "", candidate, file)
+			closeErr := file.Close()
+			if errors.Is(pushErr, ErrDestinationExists) {
+				continue
+			}
+			if pushErr != nil {
+				return pushErr
+			}
+			if closeErr != nil {
+				return closeErr
+			}
+			return nil
 		}
-		file, err := os.Open(localPath)
-		if err != nil {
-			return err
-		}
-		defer file.Close()
-		_, err = PushToInbox(sc, projectRoot, "", remoteName, file)
-		return err
+		return fmt.Errorf("sshclient: syncing %s: too many remote name collisions", remoteName)
 	}
 }
 

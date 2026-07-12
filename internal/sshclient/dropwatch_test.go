@@ -3,6 +3,7 @@ package sshclient
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -102,6 +103,43 @@ func TestCollisionName_AddsTimestampAndNeverChoosesExistingName(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "report-20260712T143045.000000123Z-2.txt", got)
 	require.False(t, existing[got])
+}
+
+func TestDropUpload_CollisionAtActivationRetriesWithoutOverwriting(t *testing.T) {
+	root, sc := newSFTPFixture(t)
+	localPath := filepath.Join(t.TempDir(), "report.txt")
+	require.NoError(t, os.WriteFile(localPath, []byte("new bytes"), 0o600))
+
+	inbox := filepath.Join(root, DefaultInboxDir)
+	var once sync.Once
+	upload := newDropUpload(sc, root, func() time.Time {
+		return time.Date(2026, time.July, 12, 14, 30, 45, 123, time.UTC)
+	}, func(candidate string) {
+		once.Do(func() {
+			require.Equal(t, "report.txt", candidate)
+			require.NoError(t, os.MkdirAll(inbox, 0o755))
+			require.NoError(t, os.WriteFile(filepath.Join(inbox, candidate), []byte("existing bytes"), 0o600))
+		})
+	})
+
+	require.NoError(t, upload(localPath, "report.txt"))
+	existing, err := os.ReadFile(filepath.Join(inbox, "report.txt"))
+	require.NoError(t, err)
+	require.Equal(t, "existing bytes", string(existing))
+
+	entries, err := os.ReadDir(inbox)
+	require.NoError(t, err)
+	require.Len(t, entries, 2)
+	var suffixed string
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "report-20260712T143045.000000123Z") {
+			suffixed = entry.Name()
+		}
+	}
+	require.NotEmpty(t, suffixed)
+	got, err := os.ReadFile(filepath.Join(inbox, suffixed))
+	require.NoError(t, err)
+	require.Equal(t, "new bytes", string(got))
 }
 
 func TestDropWatcher_CloseWithoutFilesLeaksNoGoroutines(t *testing.T) {

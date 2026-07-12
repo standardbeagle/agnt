@@ -3,6 +3,7 @@ package sshclient
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -17,6 +18,10 @@ import (
 // DefaultInboxDir is the project-relative directory a push lands in when
 // the caller does not specify a destination: <project-root>/.agnt-inbox.
 const DefaultInboxDir = ".agnt-inbox"
+
+// ErrDestinationExists reports that a no-clobber upload lost the atomic
+// final-name claim. Callers may select another name and retry.
+var ErrDestinationExists = errors.New("sshclient: push: destination exists")
 
 // maxSymlinkDepth bounds symlink resolution while walking a candidate
 // destination's ancestor directories (see checkNoEscapingSymlink), so a
@@ -51,6 +56,20 @@ func NewSFTPClient(client *ssh.Client) (*sftp.Client, error) {
 // destRelPath == "" defaults to DefaultInboxDir. On success returns the
 // absolute remote path the file was written to.
 func PushToInbox(sc *sftp.Client, projectRoot, destRelPath, fileName string, src io.Reader) (string, error) {
+	return pushToInbox(sc, projectRoot, destRelPath, fileName, src, false)
+}
+
+// PushToInboxNoClobber is PushToInbox with an atomic no-overwrite activation.
+// It uses the SFTP hardlink extension to claim finalPath: unlike PosixRename,
+// hardlink fails when finalPath already exists. The temp and final paths share
+// a directory, so successful linking exposes the already-verified inode in one
+// operation. Servers without hardlink support return an error rather than
+// silently weakening the no-clobber guarantee.
+func PushToInboxNoClobber(sc *sftp.Client, projectRoot, destRelPath, fileName string, src io.Reader) (string, error) {
+	return pushToInbox(sc, projectRoot, destRelPath, fileName, src, true)
+}
+
+func pushToInbox(sc *sftp.Client, projectRoot, destRelPath, fileName string, src io.Reader, noClobber bool) (string, error) {
 	if fileName == "" || fileName != path.Base(fileName) {
 		return "", fmt.Errorf("sshclient: push: invalid file name %q", fileName)
 	}
@@ -100,6 +119,21 @@ func PushToInbox(sc *sftp.Client, projectRoot, destRelPath, fileName string, src
 	if err := checkNoEscapingSymlink(sc, projectRoot, destDir); err != nil {
 		sc.Remove(tmpPath)
 		return "", err
+	}
+
+	if noClobber {
+		if err := sc.Link(tmpPath, finalPath); err != nil {
+			sc.Remove(tmpPath)
+			// Some SFTP servers collapse EEXIST to SSH_FX_FAILURE. Stat the
+			// final path after the failed atomic claim so callers can still
+			// distinguish a collision from an unsupported/failed hardlink.
+			if _, statErr := sc.Lstat(finalPath); statErr == nil {
+				return "", fmt.Errorf("%w: %s", ErrDestinationExists, finalPath)
+			}
+			return "", fmt.Errorf("sshclient: push: claiming %s: %w", finalPath, err)
+		}
+		sc.Remove(tmpPath)
+		return finalPath, nil
 	}
 
 	if err := sc.PosixRename(tmpPath, finalPath); err != nil {
