@@ -168,6 +168,8 @@ Port-conflict policy、autostart cleanup ordering、alert push channels、incide
 
 Test startup contract (`Start()` vs `NewForTest`)：`.claude/rules/daemon-architecture.md` § Test startup contract。
 
+**Full-suite gate = `go test -p 1 ./...`**（serial packages，非 Go 默認 parallel `./...`）；parallel 版本本身 flaky（cross-package port contention）。Flake registry + non-determinizable tests（real-chrome e2e under CPU oversubscription 等）：`docs/testing-flake-registry.md`；根因細節見 `.claude/rules/testing-parallel-package-flakes.md`、`.claude/rules/testing-timing-assertion-flakes.md`。
+
 ## Important Constraints
 
 ### MCP Protocol
