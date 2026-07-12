@@ -1,4 +1,4 @@
-.PHONY: build release test test-unit test-integration test-browser test-e2e test-isolated test-ssh test-flake clean clean-zombies install install-local install-windows run lint test-webapp mockagent generate generate-check vendor cross-compile cross-compile-check
+.PHONY: build release test test-unit test-integration test-browser test-e2e test-isolated test-ssh test-ssh-coverage test-flake clean clean-zombies install install-local install-windows run lint test-webapp mockagent generate generate-check vendor cross-compile cross-compile-check
 
 # Binary names
 BINARY := devtool-mcp
@@ -98,6 +98,36 @@ test-isolated:
 # sshd on port 22 (SSH_E2E_USER without SSH_E2E_IMAGE is rejected).
 test-ssh:
 	go test -count=1 -v -tags=sshe2e ./internal/sshclient/...
+
+# Enforce a line-coverage floor on the remote-ssh reconnect packages.
+#
+# task 10d acceptance criterion 3: internal/sshclient AND internal/sessionhost
+# must each hold >= SSH_COVERAGE_MIN% line coverage. Measures each package
+# ALONE (not ./...): internal/sshclient/testenv is a separate in-process
+# harness package with its own, intentionally lower, coverage and is not part
+# of this gate. The reconnect chaos suite (reconnect_chaos_test.go) is one of
+# the untagged in-process tests that keeps internal/sshclient above the floor.
+#
+# Reusable by CI (.github/workflows/ssh-reconnect.yml) so the workflow step
+# stays a one-liner. Writes throwaway profiles under $TMPDIR, never the tree.
+SSH_COVERAGE_MIN ?= 70
+test-ssh-coverage:
+	@fail=0; \
+	for pkg in internal/sshclient internal/sessionhost; do \
+		prof="$$(mktemp)"; \
+		if ! go test -count=1 -coverprofile="$$prof" ./$$pkg; then \
+			echo "FAIL: tests failed in $$pkg"; rm -f "$$prof"; exit 1; \
+		fi; \
+		pct="$$(go tool cover -func="$$prof" | awk '/^total:/ {sub(/%/,"",$$3); print $$3}')"; \
+		rm -f "$$prof"; \
+		if awk "BEGIN{exit !($$pct+0 >= $(SSH_COVERAGE_MIN))}"; then \
+			echo "PASS: $$pkg coverage $$pct% (min $(SSH_COVERAGE_MIN)%)"; \
+		else \
+			echo "FAIL: $$pkg coverage $$pct% below $(SSH_COVERAGE_MIN)%"; fail=1; \
+		fi; \
+	done; \
+	if [ "$$fail" != 0 ]; then exit 1; fi; \
+	echo "test-ssh-coverage gate passed (both packages >= $(SSH_COVERAGE_MIN)%)"
 
 # Hunt flakes via parallel stress run (50-count, 4-way parallel, shuffled)
 test-flake: ## Hunt flakes via parallel stress run
@@ -257,6 +287,7 @@ help:
 	@echo "  release          - Build production release with optimizations and version info"
 	@echo "  test             - Run all tests (excludes procisolation tag)"
 	@echo "  test-isolated    - Run procisolation tests inside unshare PID namespace (Linux)"
+	@echo "  test-ssh-coverage - Enforce >=70% line coverage on sshclient + sessionhost"
 	@echo "  test-flake       - Hunt flakes via parallel stress run (50-count, shuffled)"
 	@echo "  test-unit        - Run unit tests only"
 	@echo "  test-integration - Run integration tests (requires dependencies)"
