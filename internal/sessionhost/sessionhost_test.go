@@ -125,6 +125,88 @@ func TestAttach_ReplaysScrollbackThenLive(t *testing.T) {
 	s.Detach(attachID)
 }
 
+func TestDetachReattach_ReplaysBoundaryThenDeliversLiveAndExit(t *testing.T) {
+	s := mustCreate(t, CreateConfig{
+		Command: "sh",
+		Args:    []string{"-c", `printf 'before-detach\n'; read first; printf 'while-detached:%s\n' "$first"; read second; printf 'after-attach:%s\n' "$second"`},
+	})
+
+	first, firstID, primary := s.Attach(16)
+	if !primary {
+		t.Fatal("first attach should be primary")
+	}
+	waitForStdoutContains(t, first, "before-detach", 15*time.Second)
+	s.Detach(firstID)
+
+	if s.IsPrimary(firstID) {
+		t.Fatal("detached client must not retain the primary write slot")
+	}
+
+	second, secondID, primary := s.Attach(16)
+	if !primary {
+		t.Fatal("reattach should reclaim the primary slot")
+	}
+	defer s.Detach(secondID)
+
+	// Input after reattachment produces one output chunk which must appear
+	// exactly once after the replay snapshot: neither lost at the boundary nor
+	// duplicated by simultaneous replay and live fan-out.
+	if err := s.WriteStdin([]byte("detached-period\n")); err != nil {
+		t.Fatalf("WriteStdin(first): %v", err)
+	}
+	waitForStdoutContains(t, second, "while-detached:detached-period", 15*time.Second)
+	if err := s.WriteStdin([]byte("live-period\n")); err != nil {
+		t.Fatalf("WriteStdin(second): %v", err)
+	}
+
+	var stdout strings.Builder
+	exitSeen := false
+	deadline := time.After(15 * time.Second)
+	for !exitSeen {
+		select {
+		case raw, ok := <-second:
+			if !ok {
+				t.Fatalf("attach stream closed without exit frame; stdout=%q", stdout.String())
+			}
+			var f Frame
+			if err := json.Unmarshal(raw, &f); err != nil {
+				t.Fatalf("unmarshal frame: %v", err)
+			}
+			if f.Type == "stdout" {
+				stdout.WriteString(decodeStdout(t, raw))
+			}
+			if f.Type == "exit" {
+				exitSeen = true
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for live output and exit; stdout=%q", stdout.String())
+		}
+	}
+	if got := stdout.String(); !strings.Contains(got, "after-attach:live-period") {
+		t.Fatalf("missing live output before exit: %q", got)
+	}
+}
+
+func waitForStdoutContains(t *testing.T, ch <-chan []byte, want string, timeout time.Duration) {
+	t.Helper()
+	var got strings.Builder
+	deadline := time.After(timeout)
+	for {
+		select {
+		case raw, ok := <-ch:
+			if !ok {
+				t.Fatalf("attach stream closed waiting for %q; stdout=%q", want, got.String())
+			}
+			got.WriteString(decodeStdout(t, raw))
+			if strings.Contains(got.String(), want) {
+				return
+			}
+		case <-deadline:
+			t.Fatalf("timed out waiting for %q; stdout=%q", want, got.String())
+		}
+	}
+}
+
 func TestAttach_SecondAttachIsNotPrimary(t *testing.T) {
 	s := mustCreate(t, CreateConfig{})
 
