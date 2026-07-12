@@ -80,7 +80,7 @@ test-chrome-e2e` target — so the general suite can be reliably 5x-green
 under moderate load, while the chrome-e2e tier runs separately on an
 unloaded box.
 
-### Residual observed during F-gate's acceptance runs
+### Fixable residual (not in the non-determinizable registry)
 
 - `TestCreate_SpawnsAndCapturesOutput` (`internal/sessionhost/sessionhost_test.go:78`)
   — a fixed 15s PTY-first-output deadline. Observed once during a loaded
@@ -90,8 +90,12 @@ unloaded box.
   ''"; passes 5/5 isolated at 0.02s. Same load-accumulation /
   fixed-deadline-on-a-real-process-signal class as `TestIsRunning` and
   `TestEventHub_KeepaliveHeartbeat` above, not yet given the same
-  poll-to-terminal treatment. Filed as follow-up
-  `01KX9RQHCK0T2CB88P31B2EW18` (do not fix inline in a docs-only task).
+  poll-to-terminal treatment. This is fixable and therefore is explicitly
+  **excluded** from the non-determinizable registry. Filed as follow-up
+  `01KX9RQHCK0T2CB88P31B2EW18`; F-gate is documentation-only and must not
+  change `internal/sessionhost/`. It passed in all five loaded acceptance
+  runs below, which is evidence against an immediate suite blocker, not a
+  claim that the fixed-deadline design has been determinized.
 
 ## Wall-clock-invariant sweep
 
@@ -124,10 +128,32 @@ task's scope):
 6. `internal/daemon/hub_session_async_test.go:60-68` — `SESSION REGISTER` must return `<500ms`.
 7. `internal/proxy/ws_fanout_stress_test.go:227-232` — async-isolation claim asserted via `<500ms`.
 
+**Disposition:** all seven are fixable test-design debt, not
+non-determinizable exceptions. They remain outside F-gate's `AGENTS.md` and
+`docs/` edit scope and are tracked by follow-up
+`01KX9RQJ2D76QE0GCRK1Q9VZ5F`. Consequently, the repository sweep has seven
+primary wall-clock violations remaining and this gate must not claim the
+zero-violation criterion until that follow-up lands and the sweep is rerun.
+
 ## Acceptance evidence
 
-See task comment on `F-gate` (`01KX8R68ZMEJPQYY4BX4B2A38C`) for the 5x
-loaded-run pass/fail log and durations.
+On 2026-07-12, six CPU stress workers (`stress -c 6`, where `nproc` returned
+6) ran continuously while five consecutive uncached serial suites executed.
+Each run invoked `go clean -testcache` immediately before
+`go test -count=1 -p 1 ./...`. Full logs are attached to the F-gate task
+(`01KX8R68ZMEJPQYY4BX4B2A38C`); this compact table is the durable audit.
+
+| Run | Start (America/Chicago) | Exit | Duration | Load before | Load after |
+|---:|---|---:|---:|---|---|
+| 1 | 2026-07-12 00:44:23 -05:00 | 0 | 261s | 0.95 1.42 1.19 | 11.35 7.69 3.90 |
+| 2 | 2026-07-12 00:48:44 -05:00 | 0 | 247s | 11.35 7.69 3.90 | 9.08 8.45 5.10 |
+| 3 | 2026-07-12 00:52:51 -05:00 | 0 | 247s | 9.08 8.45 5.10 | 11.09 9.16 6.14 |
+| 4 | 2026-07-12 00:56:58 -05:00 | 0 | 249s | 11.09 9.16 6.14 | 9.20 9.44 7.01 |
+| 5 | 2026-07-12 01:01:07 -05:00 | 0 | 247s | 9.20 9.44 7.01 | 10.05 10.04 7.85 |
+
+The same stress PID remained live across all five runs (elapsed 00:00 at run
+1 start and 16:44 at run 5 start). No cached package result appears in the
+logs, and all five runs include `internal/sessionhost` green.
 
 ## See also
 
