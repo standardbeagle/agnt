@@ -21,6 +21,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/pkg/sftp"
 	"github.com/spf13/cobra"
 	"github.com/standardbeagle/agnt/internal/daemon"
 	"github.com/standardbeagle/agnt/internal/protocol"
@@ -256,8 +257,19 @@ type reconnectForwarding struct {
 	ports     *sshclient.PortForwardManager
 	dclient   *daemon.Client
 	drops     *sshclient.DropWatcher
-	dropSFTP  io.Closer
+	dropSFTP  *sftp.Client
+	pull      reversePullLifecycle
 	toast     func(*daemon.Client, string, protocol.ToastConfig)
+}
+
+type reversePullLifecycle interface {
+	Start(context.Context)
+	Resume(context.Context, *daemon.Client, *sftp.Client)
+	Stop()
+}
+
+var newReversePullManager = func(dclient *daemon.Client, sc *sftp.Client, host string, notify func(string)) reversePullLifecycle {
+	return sshclient.NewRemotePullManager(dclient, sc, host, "", notify)
 }
 
 func startReconnectForwarding(host string, client *sshclient.Client, projectRoot ...string) *reconnectForwarding {
@@ -326,7 +338,7 @@ func (r *reconnectForwarding) connectDrops(client *sshclient.Client) {
 func (r *reconnectForwarding) connectPorts(client *sshclient.Client) {
 	dclient := daemon.NewClientWithPath(sshclient.LocalForwardSocketPath(r.host))
 	if err := dclient.Connect(); err != nil {
-		fmt.Fprintf(os.Stderr, "agnt ssh: could not connect to forwarded daemon socket for port forwarding (%v)\n", err)
+		fmt.Fprintf(os.Stderr, "agnt ssh: could not connect to forwarded daemon socket for port forwarding/reverse capture pull (%v)\n", err)
 		return
 	}
 	r.mu.Lock()
@@ -340,6 +352,20 @@ func (r *reconnectForwarding) connectPorts(client *sshclient.Client) {
 	} else {
 		r.ports.Resume(context.Background(), client, dclient)
 	}
+	r.connectPull(dclient)
+}
+
+func (r *reconnectForwarding) connectPull(dclient *daemon.Client) {
+	if r.dropSFTP == nil {
+		fmt.Fprintln(os.Stderr, "agnt ssh: could not start reverse capture pull (SFTP unavailable)")
+		return
+	}
+	if r.pull == nil {
+		r.pull = newReversePullManager(dclient, r.dropSFTP, r.host, func(msg string) { fmt.Fprintln(os.Stderr, msg) })
+		r.pull.Start(context.Background())
+		return
+	}
+	r.pull.Resume(context.Background(), dclient, r.dropSFTP)
 }
 
 func sendReconnectToast(client *daemon.Client, proxyID string, config protocol.ToastConfig) {
@@ -375,6 +401,9 @@ func (r *reconnectForwarding) daemonClient() *daemon.Client {
 }
 
 func (r *reconnectForwarding) Pause() {
+	if r.pull != nil {
+		r.pull.Stop()
+	}
 	if r.drops != nil {
 		r.drops.SetUpload(nil)
 	}
@@ -408,11 +437,15 @@ func (r *reconnectForwarding) Resume(client *sshclient.Client) {
 		return
 	}
 	r.daemonFwd.Resume(client, remotePath)
-	r.connectPorts(client)
 	r.connectDrops(client)
+	r.connectPorts(client)
 }
 
 func (r *reconnectForwarding) Stop() {
+	if r.pull != nil {
+		r.pull.Stop()
+		r.pull = nil
+	}
 	if r.dropSFTP != nil {
 		_ = r.dropSFTP.Close()
 		r.dropSFTP = nil

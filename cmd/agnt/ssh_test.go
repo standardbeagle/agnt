@@ -3,13 +3,75 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
 
+	"github.com/pkg/sftp"
 	"github.com/standardbeagle/agnt/internal/daemon"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/sshclient"
 )
+
+type fakeReversePull struct {
+	starts  int
+	resumes int
+	stops   int
+	client  *daemon.Client
+	sftp    *sftp.Client
+}
+
+func (f *fakeReversePull) Start(context.Context) { f.starts++ }
+func (f *fakeReversePull) Resume(_ context.Context, client *daemon.Client, sc *sftp.Client) {
+	f.resumes++
+	f.client = client
+	f.sftp = sc
+}
+func (f *fakeReversePull) Stop() { f.stops++ }
+
+func TestReconnectForwarding_ReversePullFollowsProductionLifecycle(t *testing.T) {
+	originalFactory := newReversePullManager
+	defer func() { newReversePullManager = originalFactory }()
+
+	firstDaemon := &daemon.Client{}
+	secondDaemon := &daemon.Client{}
+	firstSFTP := &sftp.Client{}
+	secondSFTP := &sftp.Client{}
+	fake := &fakeReversePull{}
+	var constructedHost string
+	newReversePullManager = func(client *daemon.Client, sc *sftp.Client, host string, _ func(string)) reversePullLifecycle {
+		fake.client, fake.sftp, constructedHost = client, sc, host
+		return fake
+	}
+
+	owner := &reconnectForwarding{host: "remote-alias", dropSFTP: firstSFTP}
+	owner.connectPull(firstDaemon)
+	if fake.starts != 1 || fake.client != firstDaemon || fake.sftp != firstSFTP || constructedHost != "remote-alias" {
+		t.Fatalf("initial live wiring = starts:%d daemon:%p sftp:%p host:%q", fake.starts, fake.client, fake.sftp, constructedHost)
+	}
+
+	// Pause is the production disconnect path: the stream must drain before
+	// the old SFTP/daemon transports are closed by the owner.
+	owner.dropSFTP = nil // zero-value test client cannot be closed
+	owner.Pause()
+	if fake.stops != 1 {
+		t.Fatalf("disconnect stops = %d, want 1", fake.stops)
+	}
+
+	owner.dropSFTP = secondSFTP
+	owner.connectPull(secondDaemon)
+	if fake.resumes != 1 || fake.client != secondDaemon || fake.sftp != secondSFTP {
+		t.Fatalf("reconnect wiring = resumes:%d daemon:%p sftp:%p", fake.resumes, fake.client, fake.sftp)
+	}
+
+	// Avoid asking Stop to close the zero-value fixture SFTP clients; this
+	// assertion isolates ownership of the reverse-pull lifecycle itself.
+	owner.dropSFTP = nil
+	owner.Stop()
+	if fake.stops != 2 {
+		t.Fatalf("teardown stops = %d, want 2", fake.stops)
+	}
+}
 
 func TestParseHostPath(t *testing.T) {
 	cases := []struct {

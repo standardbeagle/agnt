@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/pkg/sftp"
+	"github.com/standardbeagle/agnt/internal/daemon"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/proxy"
 )
@@ -64,7 +65,11 @@ func (m *RemotePullManager) Start(ctx context.Context) {
 
 // Resume swaps in the event and SFTP connections established after an SSH
 // reconnect, then starts a fresh subscription.
-func (m *RemotePullManager) Resume(ctx context.Context, events pullEventStream, sc *sftp.Client) {
+func (m *RemotePullManager) Resume(ctx context.Context, events *daemon.Client, sc *sftp.Client) {
+	m.resume(ctx, events, sc)
+}
+
+func (m *RemotePullManager) resume(ctx context.Context, events pullEventStream, sc *sftp.Client) {
 	m.Stop()
 	m.mu.Lock()
 	m.events = events

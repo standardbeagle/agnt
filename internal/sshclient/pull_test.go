@@ -116,7 +116,7 @@ func TestRemotePullManagerReconnectCyclesDoNotLeak(t *testing.T) {
 	mgr := NewRemotePullManager(nil, nil, "host", t.TempDir(), func(string) {})
 	for i := 0; i < 5; i++ {
 		events := &pullEventFixture{entries: make(chan proxy.LogEntry)}
-		mgr.Resume(context.Background(), events, nil)
+		mgr.resume(context.Background(), events, nil)
 		mgr.Stop()
 	}
 }
