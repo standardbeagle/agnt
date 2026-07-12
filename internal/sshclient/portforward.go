@@ -59,15 +59,16 @@ type PortForwardManager struct {
 
 // portForward is one remote-proxy-ID's local listener.
 type portForward struct {
-	proxyID    string
-	remotePort int
-	localPort  int
-	listener   net.Listener
-	connMu     sync.Mutex
-	conns      map[net.Conn]struct{}
-	stopping   bool
-	paused     bool
-	connWG     sync.WaitGroup
+	proxyID           string
+	remotePort        int
+	localPort         int
+	listener          net.Listener
+	connMu            sync.Mutex
+	conns             map[net.Conn]struct{}
+	stopping          bool
+	paused            bool
+	connWG            sync.WaitGroup
+	beforeRemoteTrack func()
 }
 
 // NewPortForwardManager builds a manager for the proxies visible on dclient
@@ -501,6 +502,12 @@ func (f *portForward) relay(sshClient *Client, conn net.Conn) {
 		return
 	}
 	defer remote.Close()
+	f.connMu.Lock()
+	beforeRemoteTrack := f.beforeRemoteTrack
+	f.connMu.Unlock()
+	if beforeRemoteTrack != nil {
+		beforeRemoteTrack()
+	}
 	if !f.trackConn(remote) {
 		return
 	}
@@ -526,7 +533,7 @@ func (f *portForward) relay(sshClient *Client, conn net.Conn) {
 func (f *portForward) trackConn(conn net.Conn) bool {
 	f.connMu.Lock()
 	defer f.connMu.Unlock()
-	if f.stopping {
+	if f.stopping || f.paused {
 		conn.Close()
 		return false
 	}

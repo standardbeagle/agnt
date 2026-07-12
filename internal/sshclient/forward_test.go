@@ -273,6 +273,60 @@ func TestForwarder_PauseKeepsSocketBoundAndRejectsNewConnections(t *testing.T) {
 	buf := make([]byte, 1)
 	if _, err := conn.Read(buf); err == nil {
 		t.Fatal("paused forward accepted a connection into the dead transport")
+	} else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		t.Fatalf("paused forward timed out instead of failing immediately: %v", err)
+	}
+}
+
+func TestForwarder_PauseBetweenLocalAndRemoteTrackDrainsRegistry(t *testing.T) {
+	remoteSocketPath := filepath.Join(t.TempDir(), "daemon.sock")
+	stopEcho := startEchoUnixServer(t, remoteSocketPath)
+	defer stopEcho()
+	fixture := newFixtureServer(t)
+	fixture.streamLocalDial = func(path string) (net.Conn, error) { return net.Dial("unix", path) }
+	stopFixture := fixture.serve(t)
+	defer stopFixture()
+
+	localPath := filepath.Join(t.TempDir(), "local.sock")
+	fwd, err := NewForwarder(dialFixtureClient(t, fixture), remoteSocketPath, localPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer fwd.Close()
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	fwd.beforeRemoteTrack = func() { close(entered); <-release }
+	go fwd.Serve()
+	conn, err := net.Dial("unix", localPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	<-entered
+	fwd.Pause()
+	close(release)
+	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	_, readErr := conn.Read(make([]byte, 1))
+	if readErr == nil {
+		t.Fatal("connection survived Pause")
+	}
+	if netErr, ok := readErr.(net.Error); ok && netErr.Timeout() {
+		t.Fatalf("connection timed out instead of being closed: %v", readErr)
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		fwd.mu.RLock()
+		remaining := len(fwd.conns)
+		fwd.mu.RUnlock()
+		if remaining == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("tracked connections did not drain: %d", remaining)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 

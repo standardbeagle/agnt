@@ -413,14 +413,38 @@ func TestPortForwardManager_EndToEnd(t *testing.T) {
 		}, 3*time.Second, 20*time.Millisecond)
 
 		paused := mgr.Paused()
-		mgr.Pause()
-		<-paused
+		mgr.mu.Lock()
+		forward := mgr.forwards["p-before-reconnect"]
+		mgr.mu.Unlock()
+		reachedRemoteTrack := make(chan struct{})
+		releaseRemoteTrack := make(chan struct{})
+		forward.connMu.Lock()
+		forward.beforeRemoteTrack = func() { close(reachedRemoteTrack); <-releaseRemoteTrack }
+		forward.connMu.Unlock()
 		conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", retainedPort))
 		require.NoError(t, err, "reconnecting must retain the listener")
+		<-reachedRemoteTrack
+		pauseDone := make(chan struct{})
+		go func() { mgr.Pause(); close(pauseDone) }()
+		<-paused
+		close(releaseRemoteTrack)
+		<-pauseDone
 		require.NoError(t, conn.SetReadDeadline(time.Now().Add(time.Second)))
 		_, err = conn.Read(make([]byte, 1))
 		require.Error(t, err, "reconnecting must reject a new connection promptly")
+		if netErr, ok := err.(net.Error); ok {
+			require.False(t, netErr.Timeout(), "reconnecting must close/reset immediately, not expire the safety deadline")
+		}
 		conn.Close()
+		pausedConn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", retainedPort))
+		require.NoError(t, err, "paused listener must remain bound")
+		require.NoError(t, pausedConn.SetReadDeadline(time.Now().Add(time.Second)))
+		_, err = pausedConn.Read(make([]byte, 1))
+		require.Error(t, err, "connection opened during reconnect must fail immediately")
+		if netErr, ok := err.(net.Error); ok {
+			require.False(t, netErr.Timeout(), "connection opened during reconnect must not wait for its deadline")
+		}
+		pausedConn.Close()
 
 		require.NoError(t, dc.ProxyStop("p-before-reconnect"))
 		newResult, err := dc.ProxyStart("p-after-reconnect", backend.URL, 0, 0, "")
@@ -430,8 +454,6 @@ func TestPortForwardManager_EndToEnd(t *testing.T) {
 		newSSHClient := forwardFixture(t, newAddr)
 		mgr.Resume(context.Background(), newSSHClient, dc)
 
-		mappings := mgr.Status()
-		require.NotContains(t, mappings, Mapping{ProxyID: "p-before-reconnect", RemotePort: 0, LocalPort: retainedPort})
 		require.Eventually(t, func() bool {
 			foundOld, foundNew := false, false
 			for _, m := range mgr.Status() {

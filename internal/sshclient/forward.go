@@ -69,9 +69,10 @@ type Forwarder struct {
 	sockMgr          *socket.Manager
 	listener         net.Listener
 
-	done   chan struct{}
-	paused chan struct{}
-	conns  map[net.Conn]struct{}
+	done              chan struct{}
+	paused            chan struct{}
+	conns             map[net.Conn]struct{}
+	beforeRemoteTrack func()
 }
 
 // NewForwarder binds localSocketPath (via socket.Manager, which detects and
@@ -153,10 +154,16 @@ func (f *Forwarder) handleConn(conn net.Conn) {
 		return
 	}
 	defer remote.Close()
-	if !f.track(conn) || !f.track(remote) {
+	if !f.track(conn) {
 		return
 	}
 	defer f.untrack(conn)
+	if f.beforeRemoteTrack != nil {
+		f.beforeRemoteTrack()
+	}
+	if !f.track(remote) {
+		return
+	}
 	defer f.untrack(remote)
 
 	relayDone := make(chan struct{}, 2)
