@@ -580,8 +580,9 @@ func TestConfigure_APIMode(t *testing.T) {
 
 func TestIsAvailable_APIMode_Configured(t *testing.T) {
 	ch := NewWithConfig(Config{
-		UseAPI: true,
-		APIKey: "test-key",
+		UseAPI:      true,
+		LLMProvider: ProviderOpenAI,
+		APIKey:      "test-key",
 	})
 
 	if !ch.IsAvailable() {
