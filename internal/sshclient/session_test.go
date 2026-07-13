@@ -184,7 +184,11 @@ func TestOpenPTYSession_SendsPTYReqAndExecWithCorrectPayloads(t *testing.T) {
 
 func TestOpenPTYSession_MissingSessionListsCreatesThenBareAttaches(t *testing.T) {
 	fixture := newFixtureServer(t)
-	events := make(chan string, 4)
+	// OpenPTYSession is synchronous through the final exec reply, so the
+	// fixture must capture the complete five-event sequence without waiting
+	// for the assertions below to start receiving. Capacity four deadlocked on
+	// the final "exec agnt attach" send before the fixture could reply.
+	events := make(chan string, 5)
 	fixture.streamLocalDial = func(socketPath string) (net.Conn, error) {
 		events <- "forward " + socketPath
 		client, server := net.Pipe()
