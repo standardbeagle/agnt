@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"text/tabwriter"
 	"time"
 
@@ -146,7 +148,8 @@ func runSessionHosts(cmd *cobra.Command, args []string) {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "NAME\tSTATE\tPGID\tATTACHED\tAGE\tPROJECT")
+	origin := sessionSocketOrigin(getSocketPath(cmd))
+	fmt.Fprintln(w, "NAME\tSTATE\tPGID\tATTACHED\tAGE\tPROJECT\tORIGIN")
 	for _, s := range sessions {
 		sm, ok := s.(map[string]interface{})
 		if !ok {
@@ -172,9 +175,20 @@ func runSessionHosts(cmd *cobra.Command, args []string) {
 			}
 		}
 		project := getString(sm, "project_path")
-		fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%s\t%s\n", name, state, pgid, attached, age, project)
+		fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%s\t%s\t%s\n", name, state, pgid, attached, age, project, origin)
 	}
 	w.Flush()
+}
+
+func sessionSocketOrigin(socketPath string) string {
+	base := filepath.Base(socketPath)
+	if strings.HasPrefix(base, "ssh-") && strings.HasSuffix(base, ".sock") {
+		host := strings.TrimSuffix(strings.TrimPrefix(base, "ssh-"), ".sock")
+		if host != "" {
+			return "remote:" + host
+		}
+	}
+	return "local"
 }
 
 func runSessionKill(cmd *cobra.Command, args []string) {
@@ -253,7 +267,8 @@ func runSessionList(cmd *cobra.Command, args []string) {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "CODE\tCOMMAND\tSTATUS\tPROJECT\tSTARTED")
+	origin := sessionSocketOrigin(getSocketPath(cmd))
+	fmt.Fprintln(w, "CODE\tCOMMAND\tSTATUS\tPROJECT\tSTARTED\tORIGIN")
 
 	for _, s := range sessions {
 		if sm, ok := s.(map[string]interface{}); ok {
@@ -269,7 +284,7 @@ func runSessionList(cmd *cobra.Command, args []string) {
 				}
 			}
 
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", code, command, status, projectPath, started)
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n", code, command, status, projectPath, started, origin)
 		}
 	}
 	w.Flush()

@@ -123,7 +123,12 @@ func runAttach(cmd *cobra.Command, args []string) error {
 	}
 
 	chord := resolveDetachChord(cwd)
+	fmt.Fprint(os.Stdout, attachTerminalTitle(target))
 	return runAttachTerminal(client, id, chord)
+}
+
+func attachTerminalTitle(session string) string {
+	return fmt.Sprintf("\x1b]0;agnt attach · %s\x07", session)
 }
 
 // resolveSessionHostID resolves a user-supplied name or id to a concrete

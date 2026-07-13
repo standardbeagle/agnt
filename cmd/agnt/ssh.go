@@ -70,7 +70,7 @@ func init() {
 	sshCmd.Flags().BoolVar(&sshCreateIfMissing, "create-if-missing", false, "if the named session-host session is gone on reconnect, create a fresh one instead of failing loud (spec invariant 24; default is hard-fail)")
 	sshCmd.Flags().BoolVar(&sshNewSession, "new", false, "same effect as --create-if-missing for reconnect purposes: never hard-fail when the named session is gone")
 	sshCmd.Flags().IntVar(&sshReconnectMax, "reconnect-max", 0, "maximum reconnect attempts before giving up (0 = unlimited, the interactive default)")
-	sshCmd.Flags().BoolVar(&sshShowForwardStatus, "status", false, "show the active remote-to-local proxy mapping table as forwards change")
+	sshCmd.Flags().BoolVar(&sshShowForwardStatus, "status", false, "show connection, reconnect, forward, push queue, and session status")
 	rootCmd.AddCommand(sshCmd)
 }
 
@@ -108,13 +108,17 @@ func runSSH(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("agnt ssh: %w", err)
 	}
 
-	if err := ensureRemoteBootstrap(client, host); err != nil {
+	remoteVersion, err := ensureRemoteBootstrap(client, host)
+	if err != nil {
 		client.Close()
 		return err
 	}
 
 	forwarding := startReconnectForwarding(host, client, remotePath)
 	control := startControlSocket(host, client, remotePath, attachName)
+	status := sshclient.NewStatusTracker(attachName)
+	forwarding.status = status
+	forwarding.control = control
 
 	cols, rows := 80, 24
 	if c, r, err := term.GetSize(int(os.Stdin.Fd())); err == nil {
@@ -129,6 +133,16 @@ func runSSH(cmd *cobra.Command, args []string) error {
 		client.Close()
 		return fmt.Errorf("agnt ssh: %w", err)
 	}
+	project := remotePath
+	if project == "" {
+		project = "(remote default)"
+	}
+	fmt.Fprint(os.Stderr, sshclient.TerminalTitle(host, attachName))
+	fmt.Fprint(os.Stderr, sshclient.FormatSplash(sshclient.Splash{
+		Host: host, LocalVersion: appVersion, RemoteVersion: remoteVersion,
+		Project: project, Session: attachName, DetachHint: "Ctrl-\\ Ctrl-\\",
+	}))
+	forwarding.renderStatus()
 
 	fd := int(os.Stdin.Fd())
 	restore, rawErr := sshRawTerminal(fd)
@@ -140,7 +154,11 @@ func runSSH(cmd *cobra.Command, args []string) error {
 	reconnector := &sshclient.Reconnector{
 		Backoff:     sshclient.BackoffConfig{BaseDelay: time.Second, MaxDelay: 30 * time.Second, Jitter: rand.Float64},
 		MaxAttempts: sshReconnectMax,
-		OnStatus:    func(msg string) { fmt.Fprintln(os.Stderr, msg) },
+		OnStatus: func(msg string) {
+			fmt.Fprintln(os.Stderr, msg)
+			status.Observe(msg)
+			forwarding.renderStatus()
+		},
 		Dial: func(ctx context.Context) (*sshclient.Client, error) {
 			return sshclient.Dial(host, "", "", defaultUser, prompter)
 		},
@@ -218,6 +236,10 @@ func runSSHRelayLoop(host, remotePath, attachName string, client *sshclient.Clie
 		}
 
 		fmt.Fprintln(os.Stderr, "\nagnt ssh: connection lost (keepalive timeout)")
+		if forwarding.status != nil {
+			forwarding.status.Disconnected()
+			forwarding.renderStatus()
+		}
 		control.Pause()
 		forwarding.Pause()
 		client.Close()
@@ -266,6 +288,8 @@ type reconnectForwarding struct {
 	dropSFTP  *sftp.Client
 	pull      reversePullLifecycle
 	toast     func(*daemon.Client, string, protocol.ToastConfig)
+	status    *sshclient.StatusTracker
+	control   *reconnectControl
 }
 
 type reversePullLifecycle interface {
@@ -380,12 +404,7 @@ func sendReconnectToast(client *daemon.Client, proxyID string, config protocol.T
 
 func (r *reconnectForwarding) reportPortForward(msg string, mappings []sshclient.Mapping) {
 	fmt.Fprintln(os.Stderr, msg)
-	if sshShowForwardStatus && len(mappings) > 0 {
-		fmt.Fprintln(os.Stderr, "agnt ssh: active proxy forwards:")
-		for _, mapping := range mappings {
-			fmt.Fprintf(os.Stderr, "  %-24s remote :%-5d -> http://127.0.0.1:%d\n", mapping.ProxyID, mapping.RemotePort, mapping.LocalPort)
-		}
-	}
+	r.renderStatus()
 	if !strings.Contains(msg, "in use locally") {
 		return
 	}
@@ -398,6 +417,21 @@ func (r *reconnectForwarding) reportPortForward(msg string, mappings []sshclient
 			r.toast(toastClient, mapping.ProxyID, protocol.ToastConfig{Type: "warning", Title: "SSH port remapped", Message: fmt.Sprintf("remote :%d is available locally at http://127.0.0.1:%d", mapping.RemotePort, mapping.LocalPort)})
 		}
 	}
+}
+
+func (r *reconnectForwarding) renderStatus() {
+	if !sshShowForwardStatus || r.status == nil {
+		return
+	}
+	var mappings []sshclient.Mapping
+	if r.ports != nil {
+		mappings = r.ports.Status()
+	}
+	queued := 0
+	if r.control != nil {
+		queued = r.control.Depth()
+	}
+	fmt.Fprint(os.Stderr, sshclient.FormatClientStatus(r.status.Snapshot(mappings, queued)))
 }
 
 func (r *reconnectForwarding) daemonClient() *daemon.Client {
@@ -561,14 +595,14 @@ func ensureRemoteSessionAttachable(host string, client *sshclient.Client, name, 
 // y/N prompt. Failure to resolve consent, or the install itself failing,
 // aborts before the PTY session opens — an incompatible or missing remote
 // binary means 'agnt attach' on the far side would fail anyway.
-func ensureRemoteBootstrap(client *sshclient.Client, host string) error {
+func ensureRemoteBootstrap(client *sshclient.Client, host string) (string, error) {
 	if sshNoBootstrap {
-		return nil
+		return "unknown (--no-bootstrap)", nil
 	}
 
 	execPath, err := os.Executable()
 	if err != nil {
-		return fmt.Errorf("agnt ssh: resolving local binary path for bootstrap: %w", err)
+		return "", fmt.Errorf("agnt ssh: resolving local binary path for bootstrap: %w", err)
 	}
 	opts := sshclient.BootstrapOptions{
 		LocalVersion:    appVersion,
@@ -577,17 +611,17 @@ func ensureRemoteBootstrap(client *sshclient.Client, host string) error {
 
 	decision, err := sshclient.CheckRemoteBinary(client.SSH, opts)
 	if err != nil {
-		return fmt.Errorf("agnt ssh: bootstrap check on %s: %w", host, err)
+		return "", fmt.Errorf("agnt ssh: bootstrap check on %s: %w", host, err)
 	}
 	if !decision.NeedsInstall {
-		return nil
+		return decision.RemoteVersion, nil
 	}
 
 	fmt.Fprintf(os.Stderr, "agnt ssh: %s — will install via %s\n", decision.Reason, decision.Source)
 
 	if !isTerminal(os.Stdin) {
 		if sshBootstrapConsent != "yes" {
-			return fmt.Errorf("agnt ssh: remote agnt binary needs install on %s (%s) but stdin is not a terminal — pass --bootstrap=yes to consent, or --no-bootstrap to skip", host, decision.Reason)
+			return "", fmt.Errorf("agnt ssh: remote agnt binary needs install on %s (%s) but stdin is not a terminal — pass --bootstrap=yes to consent, or --no-bootstrap to skip", host, decision.Reason)
 		}
 	} else if sshBootstrapConsent != "yes" {
 		fmt.Fprintf(os.Stderr, "Install agnt on %s now? [y/N] ", host)
@@ -595,15 +629,15 @@ func ensureRemoteBootstrap(client *sshclient.Client, host string) error {
 		line, _ := reader.ReadString('\n')
 		answer := strings.ToLower(strings.TrimSpace(line))
 		if answer != "y" && answer != "yes" {
-			return fmt.Errorf("agnt ssh: remote agnt binary bootstrap declined for %s", host)
+			return "", fmt.Errorf("agnt ssh: remote agnt binary bootstrap declined for %s", host)
 		}
 	}
 
 	if err := sshclient.InstallRemoteBinary(client.SSH, opts, decision); err != nil {
-		return fmt.Errorf("agnt ssh: installing agnt on %s: %w", host, err)
+		return "", fmt.Errorf("agnt ssh: installing agnt on %s: %w", host, err)
 	}
 	fmt.Fprintf(os.Stderr, "agnt ssh: installed agnt to %s on %s\n", decision.FinalPath, host)
-	return nil
+	return opts.LocalVersion, nil
 }
 
 // startDaemonSocketForwarding discovers the remote daemon's socket path over
@@ -710,6 +744,13 @@ const reconnectPushQueueCapacity = 32
 type reconnectControl struct {
 	listener net.Listener
 	queue    *sshclient.PushQueue
+}
+
+func (c *reconnectControl) Depth() int {
+	if c == nil || c.queue == nil {
+		return 0
+	}
+	return c.queue.Depth()
 }
 
 func startControlSocket(host string, client *sshclient.Client, remotePath string, sessionName ...string) *reconnectControl {
