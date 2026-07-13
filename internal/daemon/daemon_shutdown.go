@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"sync"
 	"time"
@@ -180,7 +181,7 @@ func (d *Daemon) startupPortCleanup(ctx context.Context) int {
 }
 
 // findPortHoldersWithRetry scans a port for holders, retrying a handful of
-// times with a short backoff before concluding no holder exists. A single
+// times with a short backoff while the port is still occupied. A single
 // /proc snapshot (config.FindPIDsByPortTagged walks /proc/net/tcp then
 // /proc/*/fd) can transiently miss a socket that is genuinely bound at scan
 // time when the host is under heavy scheduling pressure — the walk across a
@@ -188,25 +189,51 @@ func (d *Daemon) startupPortCleanup(ctx context.Context) int {
 // entire cleanup decision for a port on a single such scan means a transient
 // miss silently skips killing an orphan we already know (from persisted
 // proxy state) was expected to be there. Retrying turns that one-shot gate
-// into a poll-until-settled read; a genuinely-free port pays only the small,
-// bounded cost of exhausting the attempts.
+// into a poll-until-settled read. The independent bind probe lets a genuinely
+// free port return after the first scan instead of paying every backoff.
 func findPortHoldersWithRetry(ctx context.Context, port int) (linuxPIDs, windowsPIDs []int) {
+	return findPortHoldersWithRetryUsing(ctx, port, config.FindPIDsByPortTagged, portInUse, sleepWithContext)
+}
+
+func findPortHoldersWithRetryUsing(
+	ctx context.Context,
+	port int,
+	scan func(context.Context, int) ([]int, []int),
+	inUse func(int) bool,
+	sleep func(context.Context, time.Duration) bool,
+) (linuxPIDs, windowsPIDs []int) {
 	const attempts = 4
 	const backoff = 50 * time.Millisecond
 	for i := 0; i < attempts; i++ {
-		linuxPIDs, windowsPIDs = config.FindPIDsByPortTagged(ctx, port)
+		linuxPIDs, windowsPIDs = scan(ctx, port)
 		if len(linuxPIDs) > 0 || len(windowsPIDs) > 0 {
 			return linuxPIDs, windowsPIDs
 		}
-		if i < attempts-1 {
-			select {
-			case <-ctx.Done():
-				return linuxPIDs, windowsPIDs
-			case <-time.After(backoff):
-			}
+		if !inUse(port) || i == attempts-1 || !sleep(ctx, backoff) {
+			return linuxPIDs, windowsPIDs
 		}
 	}
 	return linuxPIDs, windowsPIDs
+}
+
+func portInUse(port int) bool {
+	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		return true
+	}
+	_ = ln.Close()
+	return false
+}
+
+func sleepWithContext(ctx context.Context, duration time.Duration) bool {
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 // collectPersistedPorts returns deduplicated ports from persisted proxy state.
