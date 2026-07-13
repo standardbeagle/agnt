@@ -19,7 +19,6 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/standardbeagle/agnt/internal/aichannel"
 	"github.com/standardbeagle/agnt/internal/daemon"
-	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/overlay"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	claude "github.com/standardbeagle/claude-go"
@@ -261,32 +260,6 @@ func buildClaudeOptions() *claude.AgentOptions {
 	}
 
 	return opts
-}
-
-// aiSetupSystemPrompt returns the first-run setup system prompt when the gate
-// fires for projectPath, and records a nudge marker so it is not re-injected
-// within the re-nudge TTL. It returns "" when a config already applies or the
-// nudge is still suppressed — in which case the normal coding prompt is used.
-//
-// This is the `ai`-verb analogue of the PTY setup phase: same gate, but no
-// relaunch. The interactive session simply opens in setup mode; once the agent
-// writes `.agnt.kdl`, a live reconcile (piece D) applies it without a restart.
-// Writing the marker here is an intentional side effect that mirrors the PTY
-// flow's negative-outcome (timestamped) marker.
-func aiSetupSystemPrompt(projectPath string) string {
-	if hasResolvedConfig(projectPath) {
-		return ""
-	}
-	marker, _ := readFirstRunMarker(firstRunStatePath(projectPath))
-	if decideSetupGate(false, marker, time.Now(), renudgeTTLForProject(projectPath)) != enterSetup {
-		return ""
-	}
-	// Best-effort: a failed marker write only re-shows the setup nudge next
-	// run (benign). debug.Log is the only safe channel on this stdio path.
-	if err := writeFirstRunMarker(firstRunStatePath(projectPath), setupOutcomeMarker(false, time.Now())); err != nil {
-		debug.Log("firstrun", "marker write failed (will re-nudge): %v", err)
-	}
-	return buildSetupSystemPrompt("claude")
 }
 
 // applyAgntSystemPrompt builds and sets the system prompt on the given options.
