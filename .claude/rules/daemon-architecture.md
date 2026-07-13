@@ -309,6 +309,8 @@ Each leaves port or resource held after session shutdown, but that's operator's 
 
 ### Cross-Platform Note
 
+The 2026-07-13 remote-SSH sweep is recorded in `.claude/rules/wsl-audit.md`: WSL intentionally selects the Unix SSH, raw-terminal, Unix-socket, and session-host paths. `/mnt/c` drop watching has a polling fallback; SSH config and `known_hosts` come from WSL `$HOME`. Native-Windows `agnt ssh` (named-pipe forwarding) and `agnt attach` (ConPTY relay) are loud deferred gaps, not partial implementations.
+
 Session pgid primitives Unix-only (`//go:build !windows`). On Windows, Job Objects already provide equivalent cascade-kill semantics for PTY child tree, and `SessionPGID` is always 0 — `killSessionPGID` is no-op guarded by `pgid <= 1`. Startup orphan scan has three implementations selected by build tag:
 
 | Platform | File | Mechanism |

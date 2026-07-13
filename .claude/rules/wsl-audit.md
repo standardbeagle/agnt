@@ -127,3 +127,21 @@ question asked. `runtime.GOOS == "linux"` branches usually don't (WSL
 identifies as linux), but `runtime.GOOS != "linux"` shape (e.g.
 `portdetect_unix.go:21`) often does — it's "I'm doing macOS
 fallback" which on WSL might want Windows fallback instead.
+
+## Remote SSH/session-host audit — 2026-07-13
+
+Scope: `cmd/agnt/{ssh,attach}*`, `internal/sessionhost/`, and the new `internal/sshclient/` session/forward/bootstrap/push/drop paths. The prescribed `runtime.GOOS` and `//go:build` sweeps found **zero unclassified OS decisions in this scope**.
+
+| Site | Decision | WSL verdict |
+|---|---|---|
+| `ssh.go` (`!windows`) / `ssh_windows.go` | Unix SSH client versus loud native-Windows stub | WSL selects Unix, as intended. Native Windows still lacks named-pipe forwarding. |
+| `attach_unix.go` / `attach_windows.go` | Unix raw-terminal relay versus loud native-Windows stub | WSL `term.MakeRaw` uses its Linux tty and is supported. Native Windows still needs ConPTY relay. |
+| reconnect tests/harness (`!windows`) | Unix-only fixtures | Correct for WSL; production reconnect adds no raw OS branch. |
+| `bootstrap.go` `runtime.GOOS/GOARCH` defaults | Classify the local executable | Correct: the WSL binary is Linux. Remote OS/arch is probed separately; Windows sshd targets fail loudly. |
+| daemon/control forward sockets | Unix sockets under `os.UserHomeDir()` | Correct: WSL uses its Linux home/filesystem. No Windows named-pipe interoperability is claimed. |
+| SSH config and `known_hosts` | WSL `~/.ssh` via `os.UserHomeDir()` | Accepted OpenSSH behavior: use WSL's Linux files, not the Windows profile's files. |
+| `DropWatcher` | `fsnotify` plus 100 ms metadata poll | WSL-aware: polling covers unreliable `/mnt/c` 9P/DrvFS notifications and retains quiescence checks. |
+| SFTP push paths | Local `filepath`; POSIX remote paths | Correct: `/mnt/c/...` works as a local source; remote destinations remain POSIX and project-relative. |
+| `internal/sessionhost/` | No runtime OS branch or build tag | Correct: existing platform PTY/process primitives own OS differences. |
+
+Deferred work is explicit, not a silent WSL defect: native-Windows `agnt ssh` (named-pipe forwarding) and native-Windows `agnt attach` (ConPTY relay). WSL is the supported Windows-host workaround.
