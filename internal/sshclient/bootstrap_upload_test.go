@@ -2,6 +2,7 @@ package sshclient
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -80,6 +81,22 @@ func TestUploadFile_SuccessfulUploadIsAtomicAndVerified(t *testing.T) {
 			names[i] = e.Name()
 		}
 		t.Errorf("expected exactly one file 'agnt' in target dir, got %v", names)
+	}
+}
+
+func TestUploadFile_RepeatedSuccessReleasesWriteSessions(t *testing.T) {
+	remoteHome := t.TempDir()
+	fixture := newFixtureServer(t)
+	fixture.onSession = execFixtureHandler(t, remoteHome)
+	stop := fixture.serve(t)
+	defer stop()
+
+	client := dialFixtureClient(t, fixture).SSH
+	for i := 0; i < 25; i++ {
+		finalPath := filepath.Join(remoteHome, "uploads", fmt.Sprintf("artifact-%02d", i))
+		if err := UploadFile(client, strings.NewReader("content"), finalPath, 0o644); err != nil {
+			t.Fatalf("UploadFile iteration %d: %v", i, err)
+		}
 	}
 }
 

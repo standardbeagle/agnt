@@ -39,9 +39,9 @@ func UploadFile(client *ssh.Client, src io.Reader, remotePath string, mode os.Fi
 	if err != nil {
 		return fmt.Errorf("sshclient: opening upload session: %w", err)
 	}
+	defer writeSession.Close()
 	stdin, err := writeSession.StdinPipe()
 	if err != nil {
-		writeSession.Close()
 		return fmt.Errorf("sshclient: opening upload stdin pipe: %w", err)
 	}
 	var writeStderr bytes.Buffer
@@ -49,7 +49,6 @@ func UploadFile(client *ssh.Client, src io.Reader, remotePath string, mode os.Fi
 
 	writeCmd := fmt.Sprintf("mkdir -p %s && cat > %s", shellQuote(remoteDir), shellQuote(tmpPath))
 	if err := writeSession.Start(writeCmd); err != nil {
-		writeSession.Close()
 		return fmt.Errorf("sshclient: starting remote write: %w", err)
 	}
 
@@ -58,12 +57,10 @@ func UploadFile(client *ssh.Client, src io.Reader, remotePath string, mode os.Fi
 	closeErr := stdin.Close()
 
 	if copyErr != nil {
-		writeSession.Close()
 		cleanupRemotePath(client, tmpPath)
 		return fmt.Errorf("sshclient: reading upload source: %w", copyErr)
 	}
 	if closeErr != nil {
-		writeSession.Close()
 		cleanupRemotePath(client, tmpPath)
 		return fmt.Errorf("sshclient: closing upload stdin: %w", closeErr)
 	}
