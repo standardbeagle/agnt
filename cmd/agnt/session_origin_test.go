@@ -6,10 +6,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/creack/pty"
 	"github.com/spf13/cobra"
 	"github.com/standardbeagle/agnt/internal/daemon"
 	"github.com/standardbeagle/agnt/internal/protocol"
+	"golang.org/x/sys/unix"
 )
 
 func TestSessionSocketOrigin(t *testing.T) {
@@ -78,29 +81,49 @@ func TestAttachAndSessionHostsCommandsExposeRemoteSurface(t *testing.T) {
 	hosts := &cobra.Command{Use: "hosts"}
 	root.AddCommand(attach, hosts)
 
-	oldAttach := runAttachTerminal
-	attached := make(chan string, 1)
-	runAttachTerminal = func(_ *daemon.Client, sessionID string, _ []byte) error {
-		attached <- sessionID
-		return nil
+	master, tty, err := pty.Open()
+	if err != nil {
+		t.Fatal(err)
 	}
-	t.Cleanup(func() { runAttachTerminal = oldAttach })
-
-	attachOutput := captureStdout(t, func() {
-		if err := runAttach(attach, []string{"surface-session"}); err != nil {
-			t.Fatal(err)
+	t.Cleanup(func() { _ = master.Close(); _ = tty.Close() })
+	oldStdin, oldStdout := os.Stdin, os.Stdout
+	os.Stdin, os.Stdout = tty, tty
+	t.Cleanup(func() { os.Stdin, os.Stdout = oldStdin, oldStdout })
+	attachDone := make(chan error, 1)
+	go func() { attachDone <- runAttach(attach, []string{"surface-session"}) }()
+	// The title is emitted before the relay enters raw mode. Observe the real
+	// slave termios transition so the chord cannot land in canonical buffering.
+	rawDeadline := time.Now().Add(5 * time.Second)
+	for {
+		state, stateErr := unix.IoctlGetTermios(int(tty.Fd()), unix.TCGETS)
+		if stateErr != nil {
+			t.Fatal(stateErr)
 		}
-	})
-	if !strings.Contains(attachOutput, "\x1b]0;agnt attach · surface-session\x07") {
-		t.Fatalf("actual attach output missing title: %q", attachOutput)
+		if state.Lflag&unix.ICANON == 0 {
+			break
+		}
+		if time.Now().After(rawDeadline) {
+			t.Fatal("actual attach never entered raw mode")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if _, err := master.Write(defaultDetachChord); err != nil {
+		t.Fatal(err)
 	}
 	select {
-	case got := <-attached:
-		if got != created.SessionID {
-			t.Fatalf("attach resolved %q, want %q", got, created.SessionID)
+	case err := <-attachDone:
+		if err != nil {
+			t.Fatal(err)
 		}
-	default:
-		t.Fatal("actual attach command did not invoke terminal relay")
+	case <-time.After(5 * time.Second):
+		t.Fatal("actual PTY attach did not detach")
+	}
+	os.Stdin, os.Stdout = oldStdin, oldStdout
+	_ = tty.Close()
+	attachBytes, _ := io.ReadAll(master)
+	attachOutput := string(attachBytes)
+	if !strings.Contains(attachOutput, "\x1b]0;agnt attach · surface-session\x07") {
+		t.Fatalf("actual attach output missing title: %q", attachOutput)
 	}
 
 	hostsOutput := captureStdout(t, func() { runSessionHosts(hosts, nil) })

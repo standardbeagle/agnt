@@ -122,6 +122,18 @@ func TestPushQueueLifecycleSignalsQueueAndDrainWithoutPolling(t *testing.T) {
 	if err := <-result; err == nil || !strings.Contains(err.Error(), "fixture flush") {
 		t.Fatalf("queued result = %v", err)
 	}
+	firstDrained := drained
+	q.Reconnecting()
+	secondDrained := q.Drained()
+	if firstDrained == secondDrained {
+		t.Fatal("reconnect generation reused stale drained signal")
+	}
+	q.Connected(func() (*sftp.Client, error) { return nil, errors.New("unused") })
+	select {
+	case <-secondDrained:
+	case <-time.After(time.Second):
+		t.Fatal("empty second generation did not drain")
+	}
 }
 
 func TestPushQueueOverflowFailsLoudAndEmitsEvent(t *testing.T) {

@@ -243,12 +243,11 @@ func runSSHRelayLoop(host, remotePath, attachName string, client *sshclient.Clie
 
 		newClient, newSession, err := reconnector.Run(reconnectCtx)
 
-		reconnectCancelMu.Lock()
-		reconnectCancel = nil
-		reconnectCancelMu.Unlock()
-		cancel()
-
 		if err != nil {
+			reconnectCancelMu.Lock()
+			reconnectCancel = nil
+			reconnectCancelMu.Unlock()
+			cancel()
 			if errors.Is(err, context.Canceled) {
 				// The only thing that ever cancels reconnectCtx is the
 				// pump's Ctrl-C interrupt callback above — a clean,
@@ -262,9 +261,11 @@ func runSSHRelayLoop(host, remotePath, attachName string, client *sshclient.Clie
 		session = newSession
 		forwardReady := forwarding.Resume(client)
 		queueDrained := control.Resume(client)
-		resumeCtx, resumeCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		resumeErr := waitForLifecycle(resumeCtx, forwardReady, queueDrained)
-		resumeCancel()
+		resumeErr := waitForLifecycle(reconnectCtx, forwardReady, queueDrained)
+		reconnectCancelMu.Lock()
+		reconnectCancel = nil
+		reconnectCancelMu.Unlock()
+		cancel()
 		if resumeErr != nil {
 			fmt.Fprintf(os.Stderr, "agnt ssh: status refresh incomplete after reconnect: %v\n", resumeErr)
 		} else {

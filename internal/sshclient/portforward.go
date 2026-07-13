@@ -251,7 +251,15 @@ func (m *PortForwardManager) reconcileLoop(ctx context.Context) {
 	defer m.wg.Done()
 
 	events := make(chan struct{}, 1)
-	go m.watchEvents(ctx, events)
+	m.mu.Lock()
+	dclient := m.dclient
+	m.mu.Unlock()
+	eventsDone := make(chan struct{})
+	go func() {
+		defer close(eventsDone)
+		m.watchEvents(ctx, dclient, events)
+	}()
+	defer func() { <-eventsDone }()
 
 	ticker := time.NewTicker(reconcilePeriod)
 	defer ticker.Stop()
@@ -276,12 +284,12 @@ func (m *PortForwardManager) reconcileLoop(ctx context.Context) {
 // Ownership). StreamEvents returning (daemon restart, socket drop) is
 // non-fatal here — the periodic ticker in reconcileLoop keeps reconciling
 // even with events unavailable; it retries via a short backoff loop.
-func (m *PortForwardManager) watchEvents(ctx context.Context, signal chan<- struct{}) {
+func (m *PortForwardManager) watchEvents(ctx context.Context, dclient *daemon.Client, signal chan<- struct{}) {
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		_ = m.dclient.StreamEvents(ctx, protocol.StreamEventFilter{}, func(_ proxy.LogEntry) error {
+		_ = dclient.StreamEvents(ctx, protocol.StreamEventFilter{}, func(_ proxy.LogEntry) error {
 			select {
 			case signal <- struct{}{}:
 			default:

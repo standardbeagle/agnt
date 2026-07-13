@@ -147,16 +147,78 @@ func (s *Server) handle(conn net.Conn) {
 		}
 	}()
 	for newChannel := range channels {
-		if newChannel.ChannelType() != "session" {
-			_ = newChannel.Reject(ssh.UnknownChannelType, "only session channels are supported")
-			continue
+		switch newChannel.ChannelType() {
+		case "session":
+			channel, channelRequests, err := newChannel.Accept()
+			if err == nil {
+				go s.handleSession(channel, channelRequests)
+			}
+		case "direct-tcpip":
+			go s.handleDirectTCPIP(newChannel)
+		case "direct-streamlocal@openssh.com":
+			go s.handleDirectStreamlocal(newChannel)
+		default:
+			_ = newChannel.Reject(ssh.UnknownChannelType, "unsupported channel type")
 		}
-		channel, channelRequests, err := newChannel.Accept()
-		if err != nil {
-			continue
-		}
-		go s.handleSession(channel, channelRequests)
 	}
+}
+
+type directTCPIPRequest struct {
+	Host       string
+	Port       uint32
+	OriginHost string
+	OriginPort uint32
+}
+
+type directStreamlocalRequest struct {
+	SocketPath string
+	Reserved0  string
+	Reserved1  uint32
+}
+
+func (s *Server) handleDirectTCPIP(newChannel ssh.NewChannel) {
+	var request directTCPIPRequest
+	if ssh.Unmarshal(newChannel.ExtraData(), &request) != nil {
+		_ = newChannel.Reject(ssh.ConnectionFailed, "invalid direct-tcpip request")
+		return
+	}
+	target, err := net.Dial("tcp", net.JoinHostPort(request.Host, fmt.Sprint(request.Port)))
+	if err != nil {
+		_ = newChannel.Reject(ssh.ConnectionFailed, err.Error())
+		return
+	}
+	s.acceptRelay(newChannel, target)
+}
+
+func (s *Server) handleDirectStreamlocal(newChannel ssh.NewChannel) {
+	var request directStreamlocalRequest
+	if ssh.Unmarshal(newChannel.ExtraData(), &request) != nil {
+		_ = newChannel.Reject(ssh.ConnectionFailed, "invalid streamlocal request")
+		return
+	}
+	target, err := net.Dial("unix", request.SocketPath)
+	if err != nil {
+		_ = newChannel.Reject(ssh.ConnectionFailed, err.Error())
+		return
+	}
+	s.acceptRelay(newChannel, target)
+}
+
+func (s *Server) acceptRelay(newChannel ssh.NewChannel, target net.Conn) {
+	channel, requests, err := newChannel.Accept()
+	if err != nil {
+		_ = target.Close()
+		return
+	}
+	go ssh.DiscardRequests(requests)
+	go func() {
+		defer channel.Close()
+		defer target.Close()
+		done := make(chan struct{}, 2)
+		go func() { _, _ = io.Copy(target, channel); done <- struct{}{} }()
+		go func() { _, _ = io.Copy(channel, target); done <- struct{}{} }()
+		<-done
+	}()
 }
 
 type execRequest struct{ Command string }

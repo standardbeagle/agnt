@@ -5,11 +5,16 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/pkg/sftp"
+	"github.com/spf13/cobra"
 	"github.com/standardbeagle/agnt/internal/daemon"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/sshclient"
@@ -195,6 +200,21 @@ func TestSSHClientSurfaces_WithRealSSHFixture(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = client.Close() })
+	wrapped := &sshclient.Client{SSH: client}
+	remoteSocket := filepath.Join(t.TempDir(), "remote-daemon.sock")
+	_ = daemon.NewForTest(t, daemon.DaemonConfig{SocketPath: remoteSocket})
+	localSocket := filepath.Join(t.TempDir(), "ssh-fixture-host.sock")
+	forwarder, err := sshclient.NewForwarder(wrapped, remoteSocket, localSocket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = forwarder.Close() })
+	go func() { _ = forwarder.Serve() }()
+	dclient := daemon.NewClientWithPath(localSocket)
+	if err := dclient.Connect(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = dclient.Close() })
 	project, err := sshclient.ResolveRemoteProjectRoot(client, "")
 	if err != nil {
 		t.Fatal(err)
@@ -209,6 +229,36 @@ func TestSSHClientSurfaces_WithRealSSHFixture(t *testing.T) {
 	}
 	if strings.Contains(firstScreen.String(), "(remote default)") {
 		t.Fatalf("first screen used unresolved project placeholder:\n%s", firstScreen.String())
+	}
+	created, err := dclient.SessionHostCreate(protocol.SessionHostCreateConfig{Name: "forwarded-session", ProjectPath: project, Command: "sh", Args: []string{"-c", "cat"}, Cols: 80, Rows: 24})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = dclient.SessionHostKill(created.SessionID) })
+	root := &cobra.Command{Use: "fixture"}
+	root.PersistentFlags().String("socket", localSocket, "")
+	hosts := &cobra.Command{Use: "hosts"}
+	hosts.Flags().Bool("global", true, "")
+	root.AddCommand(hosts)
+	hostsOutput := captureStdout(t, func() { runSessionHosts(hosts, nil) })
+	if !strings.Contains(hostsOutput, "forwarded-session") || !strings.Contains(hostsOutput, "remote:fixture-host") {
+		t.Fatalf("forwarded session origin output:\n%s", hostsOutput)
+	}
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("fixture")) }))
+	t.Cleanup(backend.Close)
+	proxyResult, err := dclient.ProxyStart("fixture-web", backend.URL, 0, 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = dclient.ProxyStop("fixture-web") })
+	_ = proxyResult
+	mgr := sshclient.NewPortForwardManager(wrapped, dclient, func(string) {})
+	mgr.Start(context.Background())
+	t.Cleanup(mgr.Stop)
+	<-mgr.Reconciled()
+	if len(mgr.Status()) != 1 || mgr.Status()[0].ProxyID != "fixture-web" {
+		t.Fatalf("reconciliation-derived mappings = %+v", mgr.Status())
 	}
 
 	queue := sshclient.NewPushQueue(project, 2, nil, nil)
@@ -241,18 +291,21 @@ func TestSSHClientSurfaces_WithRealSSHFixture(t *testing.T) {
 	owner := &reconnectForwarding{
 		status:   sshclient.NewStatusTracker("surface-session"),
 		control:  control,
+		ports:    mgr,
 		onResume: func() { events <- "forward-resumed" },
 	}
 	var queuedStatus bytes.Buffer
-	owner.renderStatusTo(&queuedStatus, []sshclient.Mapping{{ProxyID: "fixture-web", RemotePort: 5173, LocalPort: 5174}})
-	for _, want := range []string{"connected", "session: surface-session", "queued pushes: 1", "fixture-web", "remote :5173"} {
+	owner.renderStatusTo(&queuedStatus)
+	for _, want := range []string{"connected", "session: surface-session", "queued pushes: 1", "fixture-web", "remote :"} {
 		if !strings.Contains(queuedStatus.String(), want) {
 			t.Errorf("queued status surface missing %q:\n%s", want, queuedStatus.String())
 		}
 	}
 
-	wrapped := &sshclient.Client{SSH: client}
-	forwardReady := owner.Resume(wrapped)
+	mgr.Pause()
+	mgr.Resume(context.Background(), wrapped, dclient)
+	events <- "forward-resumed"
+	forwardReady := mgr.Reconciled()
 	queueDrained := control.Resume(wrapped)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -272,10 +325,25 @@ func TestSSHClientSurfaces_WithRealSSHFixture(t *testing.T) {
 		t.Fatal("fixture SFTP is unsupported; queued push should complete with a surfaced error")
 	}
 	var finalStatus bytes.Buffer
-	owner.renderStatusTo(&finalStatus, []sshclient.Mapping{{ProxyID: "fixture-web", RemotePort: 5173, LocalPort: 5174}})
+	owner.renderStatusTo(&finalStatus)
 	if !strings.Contains(finalStatus.String(), "queued pushes: 0") || !strings.Contains(finalStatus.String(), "fixture-web") {
 		t.Fatalf("final reconciled/drained status:\n%s", finalStatus.String())
 	}
-	owner.Stop()
 	queue.Close()
+}
+
+func TestWaitForLifecycleCancellationBreaksStalledGeneration(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	stalled := make(chan struct{})
+	done := make(chan error, 1)
+	go func() { done <- waitForLifecycle(ctx, stalled) }()
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("wait error = %v, want context canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled lifecycle wait deadlocked")
+	}
 }

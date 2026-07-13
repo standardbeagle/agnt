@@ -413,6 +413,7 @@ func TestPortForwardManager_EndToEnd(t *testing.T) {
 		}, 3*time.Second, 20*time.Millisecond)
 
 		paused := mgr.Paused()
+		firstReconciled := mgr.Reconciled()
 		mgr.mu.Lock()
 		forward := mgr.forwards["p-before-reconnect"]
 		mgr.mu.Unlock()
@@ -453,8 +454,12 @@ func TestPortForwardManager_EndToEnd(t *testing.T) {
 		newAddr, _ := newResult["listen_addr"].(string)
 		newSSHClient := forwardFixture(t, newAddr)
 		mgr.Resume(context.Background(), newSSHClient, dc)
+		secondReconciled := mgr.Reconciled()
+		if firstReconciled == secondReconciled {
+			t.Fatal("resume generation reused stale reconciliation signal")
+		}
 		select {
-		case <-mgr.Reconciled():
+		case <-secondReconciled:
 		case <-time.After(3 * time.Second):
 			t.Fatal("resume reconciliation event did not fire")
 		}
