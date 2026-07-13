@@ -1,13 +1,17 @@
 package sshclient
 
 import (
+	"bytes"
 	"context"
+	"io"
+	"net"
 	"os"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	hubproto "github.com/standardbeagle/go-cli-server/protocol"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -176,6 +180,122 @@ func TestOpenPTYSession_SendsPTYReqAndExecWithCorrectPayloads(t *testing.T) {
 	if capture.execCommand != wantCmd {
 		t.Errorf("exec command = %q, want %q", capture.execCommand, wantCmd)
 	}
+}
+
+func TestOpenPTYSession_MissingSessionListsCreatesThenBareAttaches(t *testing.T) {
+	fixture := newFixtureServer(t)
+	events := make(chan string, 4)
+	fixture.streamLocalDial = func(socketPath string) (net.Conn, error) {
+		events <- "forward " + socketPath
+		client, server := net.Pipe()
+		go serveMissingSessionHost(server, events)
+		return client, nil
+	}
+	fixture.onSession = func(channel ssh.Channel, requests <-chan *ssh.Request) {
+		defer channel.Close()
+		for req := range requests {
+			if req.Type != "exec" {
+				if req.WantReply {
+					req.Reply(true, nil)
+				}
+				continue
+			}
+			var payload struct{ Command string }
+			ssh.Unmarshal(req.Payload, &payload)
+			events <- "exec " + payload.Command
+			if req.WantReply {
+				req.Reply(true, nil)
+			}
+			if payload.Command == "agnt daemon socket-path" {
+				_, _ = io.WriteString(channel, "/remote/agnt.sock\n")
+				_, _ = channel.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{0}))
+				return
+			}
+			return
+		}
+	}
+	stop := fixture.serve(t)
+	defer stop()
+
+	sshClient := dialFixtureWithGeneratedKey(t, fixture)
+	defer sshClient.Close()
+
+	session, err := OpenPTYSession(sshClient, "missing", "/work/project", TermSize{Cols: 100, Rows: 30})
+	if err != nil {
+		t.Fatalf("OpenPTYSession: %v", err)
+	}
+	defer session.Close()
+
+	want := []string{
+		"exec agnt daemon socket-path",
+		"forward /remote/agnt.sock",
+		"SESSION-HOST LIST",
+		"SESSION-HOST CREATE",
+		"exec agnt attach 'missing'",
+	}
+	for i, expected := range want {
+		select {
+		case got := <-events:
+			if got != expected {
+				t.Fatalf("event %d = %q, want %q", i, got, expected)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for event %d (%q)", i, expected)
+		}
+	}
+}
+
+func serveMissingSessionHost(conn net.Conn, events chan<- string) {
+	defer conn.Close()
+	for _, response := range [][]byte{
+		[]byte(`{"sessions":[]}`),
+		[]byte(`{"session_id":"created-1","pgid":123}`),
+	} {
+		frame, err := readProtocolFrame(conn)
+		if err != nil {
+			return
+		}
+		fields := strings.Fields(string(frame))
+		if len(fields) >= 2 {
+			events <- fields[0] + " " + fields[1]
+		}
+		_, _ = conn.Write(hubproto.FormatJSON(response))
+	}
+}
+
+func readProtocolFrame(r io.Reader) ([]byte, error) {
+	var frame bytes.Buffer
+	one := make([]byte, 1)
+	for {
+		if _, err := io.ReadFull(r, one); err != nil {
+			return nil, err
+		}
+		frame.WriteByte(one[0])
+		b := frame.Bytes()
+		if len(b) >= 2 && bytes.Equal(b[len(b)-2:], []byte(";;")) {
+			return b[:len(b)-2], nil
+		}
+	}
+}
+
+func dialFixtureWithGeneratedKey(t *testing.T, fixture *fixtureServer) *ssh.Client {
+	t.Helper()
+	dir := t.TempDir()
+	prompter := Prompter{In: strings.NewReader("yes\n"), Out: &discardWriter{}}
+	privPEM, _ := generateClientKey(t)
+	keyPath := dir + "/id_test"
+	writeFile(t, keyPath, privPEM)
+	hkCallback, err := HostKeyCallback(dir+"/known_hosts", prompter)
+	if err != nil {
+		t.Fatalf("HostKeyCallback: %v", err)
+	}
+	client, err := ssh.Dial("tcp", fixture.addr, &ssh.ClientConfig{
+		User: "tester", Auth: BuildAuthMethods([]string{keyPath}, prompter), HostKeyCallback: hkCallback,
+	})
+	if err != nil {
+		t.Fatalf("dialing fixture: %v", err)
+	}
+	return client
 }
 
 func TestPTYSession_ResizeSendsWindowChangeWithCorrectPayload(t *testing.T) {
