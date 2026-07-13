@@ -14,7 +14,7 @@ Claude Code 治此 repo 之綱：唯導向與不變式；詳見 `docs/`、`.clau
 - `agnt-daemon`: daemon auto-start 副本（避 sandbox 禁 fork）
 - `devtool-mcp`: 舊名 alias（backwards compat）
 
-**CLI Subcommands**: `mcp` (MCP server), `run` (PTY wrapper), `init` (setup-only, no relaunch), `skills` (install agnt skills via `npx skills` + register MCP), `monitor` (event stream), `ai` (interactive AI — Claude-only, stream-json), `acp` (any ACP agent via `coder/acp-go-sdk`: gemini/opencode/claude-code-acp; one-shot + overlay/cooked REPL; fs+terminal caps; deterministic alert gate), `hook` (telemetry forwarder), `setup-project`, `activate`/`license` (Pro license activation + management — offline lk validation, see `internal/license/`)
+**CLI Subcommands**: `mcp` (MCP server), `run` (PTY wrapper), `ssh` (remote session-host client with reconnect and forwarding), `push` (SFTP delivery to an active remote session), `init` (setup-only, no relaunch), `skills` (install agnt skills via `npx skills` + register MCP), `monitor` (event stream), `ai` (interactive AI — Claude-only, stream-json), `acp` (any ACP agent via `coder/acp-go-sdk`: gemini/opencode/claude-code-acp; one-shot + overlay/cooked REPL; fs+terminal caps; deterministic alert gate), `hook` (telemetry forwarder), `setup-project`, `activate`/`license` (Pro license activation + management — offline lk validation, see `internal/license/`)
 
 **Core Architecture Decisions**:
 
@@ -212,6 +212,7 @@ Test startup contract (`Start()` vs `NewForTest`)：`.claude/rules/daemon-archit
 |-------|----------|
 | Per-tool params, output formats, `__devtool` API, `agnt monitor` | `docs/mcp-tools.md` |
 | `.agnt.kdl` config (port-conflict, alert push, incident keys, URL tracking) | `docs/configuration.md` |
+| Remote SSH (quick start, reconnect, forwarding, bootstrap, push) | `docs/remote-ssh.md` |
 | Auth breakout (OAuth flows out of the content iframe) | `docs/auth-breakout.md` |
 | Hook dispatcher (telemetry forward) | `docs/hook-dispatcher.md` |
 | Hook Bash-interceptor (`check-bash`/`check-prompt`) | `docs/hook-rules.md` |

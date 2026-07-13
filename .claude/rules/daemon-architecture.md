@@ -287,6 +287,8 @@ Each leaves port or resource held after session shutdown, but that's operator's 
 
 **Numbered invariant**: a session-host session's PTY child pgid is reaped in exactly three cases — (1) explicit `SESSION-HOST KILL`, (2) the PTY child exiting on its own (observed via `sessionhost.Session.waitLoop`, which flips `Status` to `StatusExited`; no pgid action needed since the process tree is already gone), (3) daemon shutdown/restart via the existing startup orphan-pgid scan. Attach-stream disconnect or explicit `SESSION-HOST DETACH` is **never** one of these cases — that is the entire value proposition of session-host (survive client disconnect). No idle-timeout auto-kill exists in v1.
 
+**Remote-SSH reconnect invariant**: the SSH transport and local forwards are disposable; the daemon-owned session-host is durable. Reconnect rebuilds daemon-socket and proxy forwards from authoritative remote state, then attaches to the same session. A missing session fails unless `--create-if-missing` or `--new` explicitly permits replacement. Initial creation and reconnect checks use `SESSION-HOST LIST/CREATE`; never bake unsupported lifecycle flags into the remote `agnt attach` command.
+
 ### File Ownership
 
 | Primitive | File |

@@ -4,6 +4,8 @@ Daemon defaults, port-conflict policy, autostart ordering, alert push channels,
 and incident-pipeline keys. CLAUDE.md carries the short constraints list; this is
 the detailed reference.
 
+Remote SSH has no shipped `.agnt.kdl` keys. Use the `agnt ssh` and `agnt push` flags in [remote-ssh.md](remote-ssh.md); SSH KDL shown in archived design specs is not implemented configuration.
+
 ## Hardcoded defaults (`main.go:31-36`)
 
 ```go
