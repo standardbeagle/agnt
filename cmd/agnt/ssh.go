@@ -261,17 +261,27 @@ func runSSHRelayLoop(host, remotePath, attachName string, client *sshclient.Clie
 		session = newSession
 		forwardReady := forwarding.Resume(client)
 		queueDrained := control.Resume(client)
-		resumeErr := waitForLifecycle(reconnectCtx, forwardReady, queueDrained)
+		resumeErr := completeSSHReconnect(reconnectCtx, forwardReady, queueDrained, forwarding.renderStatus)
 		reconnectCancelMu.Lock()
 		reconnectCancel = nil
 		reconnectCancelMu.Unlock()
 		cancel()
 		if resumeErr != nil {
-			fmt.Fprintf(os.Stderr, "agnt ssh: status refresh incomplete after reconnect: %v\n", resumeErr)
-		} else {
-			forwarding.renderStatus()
+			// This is the same Ctrl-C cancellation used while reconnecting.
+			// Do not resume a PTY after cancellation during reconcile/drain.
+			return resumeErr
 		}
 	}
+}
+
+// completeSSHReconnect is the relay loop's final reconnect gate. The PTY may
+// resume only after both forwarding truth and queued control work are current.
+func completeSSHReconnect(ctx context.Context, forwardReady, queueDrained <-chan struct{}, render func()) error {
+	if err := waitForLifecycle(ctx, forwardReady, queueDrained); err != nil {
+		return err
+	}
+	render()
+	return nil
 }
 
 func waitForLifecycle(ctx context.Context, signals ...<-chan struct{}) error {

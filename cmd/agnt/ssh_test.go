@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -345,5 +346,39 @@ func TestWaitForLifecycleCancellationBreaksStalledGeneration(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("canceled lifecycle wait deadlocked")
+	}
+}
+
+func TestSSHRelayLifecycleCtrlCCancelsStalledReconnect(t *testing.T) {
+	inputR, inputW := io.Pipe()
+	defer inputR.Close()
+	defer inputW.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	pump := sshclient.NewInputPump(cancel)
+	pump.Start(inputR)
+
+	stalled := make(chan struct{})
+	rendered := make(chan struct{}, 1)
+	done := make(chan error, 1)
+	go func() {
+		done <- completeSSHReconnect(ctx, stalled, stalled, func() { rendered <- struct{}{} })
+	}()
+	if _, err := inputW.Write([]byte{3}); err != nil {
+		t.Fatal(err)
+	}
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("relay lifecycle error = %v, want context canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Ctrl-C did not terminate stalled reconnect lifecycle")
+	}
+	select {
+	case <-rendered:
+		t.Fatal("relay rendered/resumed after Ctrl-C cancellation")
+	default:
 	}
 }

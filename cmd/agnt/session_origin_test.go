@@ -12,7 +12,6 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/standardbeagle/agnt/internal/daemon"
 	"github.com/standardbeagle/agnt/internal/protocol"
-	"golang.org/x/sys/unix"
 )
 
 func TestSessionSocketOrigin(t *testing.T) {
@@ -89,23 +88,15 @@ func TestAttachAndSessionHostsCommandsExposeRemoteSurface(t *testing.T) {
 	oldStdin, oldStdout := os.Stdin, os.Stdout
 	os.Stdin, os.Stdout = tty, tty
 	t.Cleanup(func() { os.Stdin, os.Stdout = oldStdin, oldStdout })
+	rawEntered := make(chan struct{})
+	attachRawModeEntered = func() { close(rawEntered) }
+	t.Cleanup(func() { attachRawModeEntered = nil })
 	attachDone := make(chan error, 1)
 	go func() { attachDone <- runAttach(attach, []string{"surface-session"}) }()
-	// The title is emitted before the relay enters raw mode. Observe the real
-	// slave termios transition so the chord cannot land in canonical buffering.
-	rawDeadline := time.Now().Add(5 * time.Second)
-	for {
-		state, stateErr := unix.IoctlGetTermios(int(tty.Fd()), unix.TCGETS)
-		if stateErr != nil {
-			t.Fatal(stateErr)
-		}
-		if state.Lflag&unix.ICANON == 0 {
-			break
-		}
-		if time.Now().After(rawDeadline) {
-			t.Fatal("actual attach never entered raw mode")
-		}
-		time.Sleep(time.Millisecond)
+	select {
+	case <-rawEntered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("actual attach never entered raw mode")
 	}
 	if _, err := master.Write(defaultDetachChord); err != nil {
 		t.Fatal(err)

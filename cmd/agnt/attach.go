@@ -22,6 +22,11 @@ type attachTerminal func(client *daemon.Client, sessionID string, detachChord []
 
 var runAttachTerminal attachTerminal
 
+// attachRawModeEntered is a test observation boundary. Production leaves it
+// nil; PTY integration tests install a non-blocking signal so input is sent
+// only after the real terminal transition has completed.
+var attachRawModeEntered func()
+
 var attachCmd = &cobra.Command{
 	Use:   "attach <name|id>",
 	Short: "Attach to a daemon-owned detachable session (see: agnt session hosts)",

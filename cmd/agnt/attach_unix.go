@@ -130,6 +130,9 @@ func runAttachTerminalUnix(client *daemon.Client, sessionID string, detachChord 
 		return fmt.Errorf("agnt attach: failed to enter raw mode: %w", err)
 	}
 	defer restore()
+	if attachRawModeEntered != nil {
+		attachRawModeEntered()
+	}
 
 	attachCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
