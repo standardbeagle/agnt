@@ -93,7 +93,7 @@ func runSSH(cmd *cobra.Command, args []string) error {
 		attachName = filepath.Base(cwd)
 	}
 
-	defaultUser := os.Getenv("USER")
+	defaultUser := localSSHUser(os.Getenv)
 	prompter := sshclient.StdioPrompter()
 
 	client, err := sshclient.Dial(host, "", "", defaultUser, prompter)
@@ -153,6 +153,13 @@ func runSSH(cmd *cobra.Command, args []string) error {
 	}
 
 	return runSSHRelayLoop(host, remotePath, attachName, client, session, forwarding, control, reconnector)
+}
+
+func localSSHUser(getenv func(string) string) string {
+	if user := getenv("USER"); user != "" {
+		return user
+	}
+	return getenv("USERNAME")
 }
 
 // runSSHRelayLoop owns the CONNECTED<->RECONNECTING cycle (task 09c). Each

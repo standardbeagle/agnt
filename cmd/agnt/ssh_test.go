@@ -105,6 +105,30 @@ func TestParseHostPath(t *testing.T) {
 	}
 }
 
+func TestLocalSSHUser_PreservesUnixAndSupportsNativeWindows(t *testing.T) {
+	tests := []struct{ name, user, username, want string }{
+		{name: "Unix and WSL prefer USER", user: "unix-user", username: "windows-user", want: "unix-user"},
+		{name: "native Windows falls back to USERNAME", username: "windows-user", want: "windows-user"},
+		{name: "missing identity remains empty"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := localSSHUser(func(key string) string {
+				if key == "USER" {
+					return tc.user
+				}
+				if key == "USERNAME" {
+					return tc.username
+				}
+				return ""
+			})
+			if got != tc.want {
+				t.Fatalf("localSSHUser = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestReconnectForwarding_RecoveryCallbacksUseNewestDurableDaemonClient(t *testing.T) {
 	owner := &reconnectForwarding{host: "fixture"} // initial forwarding failed
 	first := &daemon.Client{}
