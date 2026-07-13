@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/pkg/sftp"
@@ -161,6 +162,21 @@ func TestPushToInbox_RejectsAbsoluteDestPath(t *testing.T) {
 	_, err := PushToInbox(sc, root, "/etc", "passwd", bytes.NewReader([]byte("x")))
 	if err == nil {
 		t.Fatal("expected absolute-path rejection, got nil error")
+	}
+}
+
+func TestPushToInbox_RejectsReservedFileNamesBeforeRemoteOps(t *testing.T) {
+	cases := []string{"", ".", ".."}
+	for _, fileName := range cases {
+		t.Run(fileName, func(t *testing.T) {
+			_, err := PushToInbox(nil, "/project", "", fileName, bytes.NewReader([]byte("x")))
+			if err == nil {
+				t.Fatalf("PushToInbox fileName %q: expected rejection, got nil error", fileName)
+			}
+			if !strings.Contains(err.Error(), "invalid file name") {
+				t.Errorf("PushToInbox fileName %q: error = %q, want clear invalid-file-name error", fileName, err)
+			}
+		})
 	}
 }
 

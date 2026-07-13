@@ -70,7 +70,7 @@ func PushToInboxNoClobber(sc *sftp.Client, projectRoot, destRelPath, fileName st
 }
 
 func pushToInbox(sc *sftp.Client, projectRoot, destRelPath, fileName string, src io.Reader, noClobber bool) (string, error) {
-	if fileName == "" || fileName != path.Base(fileName) {
+	if fileName == "" || fileName == "." || fileName == ".." || fileName != path.Base(fileName) {
 		return "", fmt.Errorf("sshclient: push: invalid file name %q", fileName)
 	}
 	if destRelPath == "" {
