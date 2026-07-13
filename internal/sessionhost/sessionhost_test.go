@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	"go.uber.org/goleak"
 )
 
@@ -58,27 +59,13 @@ func TestCreate_SpawnsAndCapturesOutput(t *testing.T) {
 		t.Fatalf("expected positive SessionPGID, got %d", s.SessionPGID)
 	}
 
-	// This is a liveness bound only ("the process eventually produces
-	// output"), not a latency assertion, but 3s was still tight enough to
-	// flake under `go test ./...` full-suite CPU saturation: spawning a
-	// real PTY child and having its output reach the scrollback both
-	// involve OS scheduling that a saturated host can stretch well past a
-	// few seconds even though nothing is actually stuck. Widen to a
-	// generous 15s (matches the liveness-poll deadlines used elsewhere in
-	// this codebase, e.g. the chromedp e2e waits in internal/proxy) so the
-	// test still fails fast on a genuine hang, without racing the scheduler.
-	deadline := time.After(15 * time.Second)
-	for {
-		snap, _ := s.scrollback.Snapshot()
-		if strings.Contains(string(snap), "hello-sessionhost") {
-			break
-		}
-		select {
-		case <-deadline:
-			t.Fatalf("timed out waiting for output; got %q", string(snap))
-		case <-time.After(20 * time.Millisecond):
-		}
-	}
+	// Terminal status is published only after readLoop has drained the PTY.
+	// The timeout is a deadlock ceiling, not a latency requirement.
+	require.Eventually(t, func() bool {
+		return s.Status() == StatusExited
+	}, 30*time.Second, 20*time.Millisecond)
+	snap, _ := s.scrollback.Snapshot()
+	require.Contains(t, string(snap), "hello-sessionhost")
 }
 
 func TestAttach_ReplaysScrollbackThenLive(t *testing.T) {

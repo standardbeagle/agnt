@@ -126,6 +126,7 @@ type Session struct {
 	resizeMu sync.Mutex // serializes concurrent Resize calls only
 
 	doneCh    chan struct{}
+	readDone  chan struct{}
 	closeOnce sync.Once
 	// ptmxOnce guards the PTY fd: waitLoop closes it when the child exits on its
 	// own, and Close() closes it on the explicit KILL path. A KILL racing a
@@ -187,6 +188,7 @@ func Create(cfg CreateConfig) (*Session, error) {
 		scrollback:  goprocess.NewRingBuffer(size),
 		subs:        make(map[string]*subscriber),
 		doneCh:      make(chan struct{}),
+		readDone:    make(chan struct{}),
 	}
 	s.status.Store(StatusRunning)
 	s.exitCode.Store(-1)
@@ -216,6 +218,8 @@ func generateID(name string) string {
 // and fans raw bytes out to every current subscriber. Single capture point —
 // no duplicate PTY reads, per spec §1.4.
 func (s *Session) readLoop() {
+	defer close(s.readDone)
+	defer s.closePTY()
 	buf := make([]byte, 32*1024)
 	for {
 		n, err := s.ptmx.Read(buf)
@@ -234,6 +238,11 @@ func (s *Session) readLoop() {
 // KILL/status queries observe OS truth rather than daemon-cached state.
 func (s *Session) waitLoop() {
 	err := s.cmd.Wait()
+	// A child exit makes the PTY master readable until its buffered output is
+	// drained, then Read returns EIO. Do not mark the session terminal (or close
+	// the master) before readLoop reaches that point: under load that used to
+	// discard the child's final output.
+	<-s.readDone
 	code := 0
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
@@ -247,11 +256,6 @@ func (s *Session) waitLoop() {
 
 	exitData, _ := json.Marshal(ExitData{Code: code})
 	s.broadcastFrame(Frame{Type: "exit", Data: exitData})
-
-	// Close the PTY fd now that the child is gone. On self-exit nothing else
-	// calls Close (only the explicit KILL path does), so without this the fd
-	// leaks and the readLoop blocks on Read forever. Close unblocks readLoop.
-	_ = s.closePTY()
 
 	s.closeOnce.Do(func() { close(s.doneCh) })
 }
