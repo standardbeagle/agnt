@@ -129,16 +129,12 @@ type Session struct {
 
 	lastAttached atomic.Value // time.Time
 
-	resizeMu sync.Mutex // serializes concurrent Resize calls only
+	beforeSetSize func() // deterministic test seam inside the fd control callback
 
 	doneCh    chan struct{}
 	readDone  chan struct{}
 	closeOnce sync.Once
-	// ptmxOnce guards the PTY fd: waitLoop closes it when the child exits on its
-	// own, and Close() closes it on the explicit KILL path. A KILL racing a
-	// self-exit reached both, double-closing the fd — and once the fd number is
-	// recycled, the second Close lands on whatever now owns it.
-	ptmxOnce sync.Once
+	ptmxOnce  sync.Once
 
 	nextAttachID atomic.Int64
 }
@@ -481,9 +477,7 @@ func (s *Session) WriteStdin(data []byte) error {
 // Resize changes the PTY window size for all current attaches (spec §1.3
 // invariant 8 — no partial re-render, client owns redraw).
 func (s *Session) Resize(cols, rows int) error {
-	s.resizeMu.Lock()
-	defer s.resizeMu.Unlock()
-	return pty.Setsize(s.ptmx, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
+	return setPTYSize(s.ptmx, cols, rows, s.beforeSetSize)
 }
 
 // Done returns a channel that closes when the PTY child exits.

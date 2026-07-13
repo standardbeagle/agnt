@@ -452,3 +452,57 @@ func TestResize_NoErrorWhileRunning(t *testing.T) {
 		t.Fatalf("Resize: %v", err)
 	}
 }
+
+func TestResizeAndCloseSerializePTYFD(t *testing.T) {
+	s := mustCreate(t, CreateConfig{Command: "sh", Args: []string{"-c", "cat"}})
+	resizeEntered := make(chan struct{})
+	releaseResize := make(chan struct{})
+	s.beforeSetSize = func() {
+		close(resizeEntered)
+		<-releaseResize
+	}
+
+	resizeDone := make(chan error, 1)
+	go func() { resizeDone <- s.Resize(100, 40) }()
+	select {
+	case <-resizeEntered:
+	case <-time.After(time.Second):
+		t.Fatal("Resize never reached the synchronized Setsize boundary")
+	}
+
+	closeStarted := make(chan struct{})
+	closeDone := make(chan error, 1)
+	go func() {
+		close(closeStarted)
+		closeDone <- s.Close()
+	}()
+	<-closeStarted
+	// Close may return before Control does: os.File retains the fd reference
+	// until the callback exits. The safety contract is that this in-flight
+	// ioctl succeeds and later fd use observes the close.
+	close(releaseResize)
+	select {
+	case err := <-resizeDone:
+		if err != nil {
+			t.Fatalf("Resize: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Resize remained blocked after release")
+	}
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Close did not complete after the in-flight Resize")
+	}
+	// Coordinated fd control must not weaken the existing once-only close
+	// contract: a later lifecycle close is a successful no-op, not EBADF.
+	if err := s.Close(); err != nil {
+		t.Fatalf("second Close must preserve once-only semantics: %v", err)
+	}
+	if err := s.Resize(120, 50); err == nil {
+		t.Fatal("Resize after PTY close must report the closed-fd error")
+	}
+}
