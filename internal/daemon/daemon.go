@@ -215,6 +215,7 @@ type Daemon struct {
 	// the incident-digest MCP sink drops pings — but the inbox still accumulates
 	// them, so get_incidents/get_errors stay pullable. Keyed by session code.
 	forwardingPaused sync.Map // map[string]bool
+	forwardMappings  sync.Map // source -> []protocol.ForwardMapping
 
 	// swallowDetector runs the chaos "swallowed error" heuristic. It is always
 	// allocated (cheap) but only fed when a fault entry is stamped

@@ -50,6 +50,16 @@ func TestDrawIndicator_ProducesOutput(t *testing.T) {
 	assert.Contains(t, output, CursorRestore, "should contain cursor restore")
 }
 
+func TestPortsPanelMarksSSHForwardedPortFixture(t *testing.T) {
+	var buf bytes.Buffer
+	r := NewRenderer(&buf, 100, 30)
+	r.drawPortsSection(1, 1, 80, 20, []PortInfo{{Port: 5173, Name: "vite", Status: "managed", Forwarded: true, LocalPort: 5174, ProxyID: "fixture-web"}}, 0)
+	out := buf.String()
+	assert.Contains(t, out, "5173")
+	assert.Contains(t, out, "forwarded :5174")
+	assert.NotContains(t, out, "CONFLICT")
+}
+
 func TestDrawIndicator_WritesOutsideLock(t *testing.T) {
 	// Verify that the lock is NOT held during the write to r.out.
 	// We do this by using a writer that tries to call SetSize (which needs the lock).

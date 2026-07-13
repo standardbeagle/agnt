@@ -18,15 +18,13 @@ type FileArrivalNotifier func(remotePath string, size int64) error
 // NotifyFileArrived sends actionable file context to the remote daemon's agent
 // surface through SESSION-HOST NOTICE. The daemon owns final PTY delivery.
 func NotifyFileArrived(daemonSocket, sessionName, projectRoot, remotePath string, size int64) error {
+	_ = sessionName // retained for API compatibility; typed diagnostics replace PTY notice injection
 	rel, err := filepath.Rel(projectRoot, remotePath)
 	if err != nil || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return fmt.Errorf("sshclient: file-arrival path %q is outside project %q", remotePath, projectRoot)
 	}
-	payload, err := json.Marshal(map[string]string{
-		"session_name": sessionName,
-		"project_path": projectRoot,
-		"message":      fmt.Sprintf("[agnt] file arrived: %s (%s)", filepath.ToSlash(rel), formatNoticeSize(size)),
-	})
+	message := fmt.Sprintf("[agnt] file arrived: %s (%s)", filepath.ToSlash(rel), formatNoticeSize(size))
+	payload, err := json.Marshal(protocol.DeveloperEvent{Kind: "file_arrived", ProjectPath: projectRoot, Title: "File arrived", Message: message, Severity: "info"})
 	if err != nil {
 		return fmt.Errorf("sshclient: encoding file-arrival notice: %w", err)
 	}
@@ -36,7 +34,7 @@ func NotifyFileArrived(daemonSocket, sessionName, projectRoot, remotePath string
 		return fmt.Errorf("sshclient: connecting to daemon for file-arrival notice: %w", err)
 	}
 	defer conn.Close()
-	if err := hubproto.NewWriter(conn).WriteCommandWithSubVerb(protocol.VerbSessionHost, "NOTICE", nil, payload); err != nil {
+	if err := hubproto.NewWriter(conn).WriteCommandWithSubVerb(protocol.VerbPorts, protocol.SubVerbDeveloperEvent, nil, payload); err != nil {
 		return fmt.Errorf("sshclient: sending file-arrival notice: %w", err)
 	}
 	resp, err := hubproto.NewParser(conn).ParseResponse()

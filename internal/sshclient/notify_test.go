@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestNotifyFileArrived_UsesSessionHostNoticeProtocol(t *testing.T) {
+func TestNotifyFileArrived_UsesTypedDeveloperEventProtocol(t *testing.T) {
 	socket := filepath.Join(t.TempDir(), "daemon.sock")
 	ln, err := net.Listen("unix", socket)
 	require.NoError(t, err)
@@ -24,7 +24,10 @@ func TestNotifyFileArrived_UsesSessionHostNoticeProtocol(t *testing.T) {
 			return
 		}
 		defer conn.Close()
-		cmd, parseErr := hubproto.NewParser(conn).ParseCommand()
+		registry := hubproto.NewVerbRegistry()
+		registry.RegisterVerb(protocol.VerbPorts)
+		registry.RegisterSubVerbForVerb(protocol.VerbPorts, protocol.SubVerbDeveloperEvent)
+		cmd, parseErr := hubproto.NewParserWithRegistry(conn, registry).ParseCommand()
 		if parseErr == nil {
 			got <- cmd
 			_ = hubproto.NewWriter(conn).WriteOK("delivered")
@@ -36,16 +39,13 @@ func TestNotifyFileArrived_UsesSessionHostNoticeProtocol(t *testing.T) {
 	require.NoError(t, NotifyFileArrived(socket, "agent-one", root, remote, 24*1024))
 
 	cmd := <-got
-	require.Equal(t, protocol.VerbSessionHost, cmd.Verb)
-	// The generic parser has no custom SESSION-HOST subverb registry, so it
-	// preserves NOTICE as the first positional token. The daemon's registered
-	// parser promotes the same token to SubVerb before dispatch.
-	require.Equal(t, []string{"NOTICE"}, cmd.Args)
-	var payload map[string]string
+	require.Equal(t, protocol.VerbPorts, cmd.Verb)
+	require.Equal(t, protocol.SubVerbDeveloperEvent, cmd.SubVerb)
+	var payload protocol.DeveloperEvent
 	require.NoError(t, json.Unmarshal(cmd.Data, &payload))
-	require.Equal(t, "agent-one", payload["session_name"])
-	require.Equal(t, root, payload["project_path"])
-	require.Equal(t, "[agnt] file arrived: .agnt-inbox/mock.png (24KB)", payload["message"])
+	require.Equal(t, "file_arrived", payload.Kind)
+	require.Equal(t, root, payload.ProjectPath)
+	require.Equal(t, "[agnt] file arrived: .agnt-inbox/mock.png (24KB)", payload.Message)
 }
 
 func TestNotifyFileArrived_RejectsPathOutsideProject(t *testing.T) {

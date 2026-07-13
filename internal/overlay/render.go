@@ -1486,16 +1486,21 @@ func (r *Renderer) drawPortsSection(row, col, width, bottom int, ports []PortInf
 		}
 		r.moveTo(row, col+1)
 		var icon, iconColor, tag, tagColor string
-		switch p.Status {
-		case "managed":
-			icon, iconColor = "●", FgGreen
-			tag, tagColor = "managed", FgGreen
-		case "conflict":
-			icon, iconColor = "!", FgRed
-			tag, tagColor = "CONFLICT", FgRed+Bold
-		default:
-			icon, iconColor = "●", FgYellow
-			tag, tagColor = "unmanaged", FgBrightBlack
+		if p.Forwarded {
+			icon, iconColor = "⇢", FgBlue
+			tag, tagColor = fmt.Sprintf("forwarded :%d", p.LocalPort), FgBlue
+		} else {
+			switch p.Status {
+			case "managed":
+				icon, iconColor = "●", FgGreen
+				tag, tagColor = "managed", FgGreen
+			case "conflict":
+				icon, iconColor = "!", FgRed
+				tag, tagColor = "CONFLICT", FgRed+Bold
+			default:
+				icon, iconColor = "●", FgYellow
+				tag, tagColor = "unmanaged", FgBrightBlack
+			}
 		}
 		owner := p.Name
 		if owner == "" {

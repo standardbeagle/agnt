@@ -29,48 +29,70 @@ const (
 
 // Agnt-specific sub-verbs (beyond those in go-cli-server).
 const (
-	SubVerbExec          = "EXEC"
-	SubVerbToast         = "TOAST"
-	SubVerbQuery         = "QUERY"
-	SubVerbStats         = "STATS"
-	SubVerbActivity      = "ACTIVITY"
-	SubVerbOutputPreview = "OUTPUT-PREVIEW"
-	SubVerbForwarding    = "FORWARDING" // Pause/resume agent-inbound push for a session
-	SubVerbEnable        = "ENABLE"
-	SubVerbDisable       = "DISABLE"
-	SubVerbAddRule       = "ADD-RULE"
-	SubVerbRemoveRule    = "REMOVE-RULE"
-	SubVerbListRules     = "LIST-RULES"
-	SubVerbPreset        = "PRESET"
-	SubVerbReset         = "RESET"
-	SubVerbSend          = "SEND"
-	SubVerbSchedule      = "SCHEDULE"
-	SubVerbCancel        = "CANCEL"
-	SubVerbTasks         = "TASKS"
-	SubVerbFind          = "FIND"
-	SubVerbAttach        = "ATTACH"
-	SubVerbURL           = "URL"           // Report detected URL from agnt run session
-	SubVerbGetAll        = "GET-ALL"       // Get all entries in a scope
-	SubVerbDelete        = "DELETE"        // Delete an entry from a scope
-	SubVerbRunGroup      = "RUN-GROUP"     // Launch a multi-process startup group with depends_on ordering
-	SubVerbProcess       = "PROCESS"       // Process a single automation task
-	SubVerbBatch         = "BATCH"         // Process multiple automation tasks
-	SubVerbRestart       = "RESTART"       // Restart a process or proxy
-	SubVerbScreenshot    = "SCREENSHOT"    // Take screenshot in automation session
-	SubVerbNavigate      = "NAVIGATE"      // Navigate to URL in automation session
-	SubVerbEvaluate      = "EVALUATE"      // Evaluate JavaScript in automation session
-	SubVerbReport        = "REPORT"        // Report alert matches from agnt run
-	SubVerbStartupLog    = "STARTUP-LOG"   // Query startup log (successes and failures)
-	SubVerbClearPorts    = "CLEAR-PORTS"   // Kill port blockers and resume autostart
-	SubVerbContinue      = "CONTINUE"      // Resume autostart without killing blockers
-	SubVerbAutostartRun  = "RUN"           // Run autostart from MCP InitializedHandler (non-interactive)
-	SubVerbReconcile     = "RECONCILE"     // Live-apply .agnt.kdl changes to running scripts/proxies
-	SubVerbCleanOrphans  = "CLEAN-ORPHANS" // Reap orphaned process groups (PORTS verb)
-	SubVerbCreate        = "CREATE"        // Create a session-host session (SESSION-HOST verb)
-	SubVerbKill          = "KILL"          // Explicit termination of a session-host session
-	SubVerbDetach        = "DETACH"        // Client-initiated clean detach (SESSION-HOST ATTACH stream)
-	SubVerbResize        = "RESIZE"        // Out-of-band window-size renegotiation (SESSION-HOST)
+	SubVerbExec           = "EXEC"
+	SubVerbToast          = "TOAST"
+	SubVerbQuery          = "QUERY"
+	SubVerbSetForwards    = "SET-FORWARDS"
+	SubVerbDeveloperEvent = "DEVELOPER-EVENT"
+	SubVerbStats          = "STATS"
+	SubVerbActivity       = "ACTIVITY"
+	SubVerbOutputPreview  = "OUTPUT-PREVIEW"
+	SubVerbForwarding     = "FORWARDING" // Pause/resume agent-inbound push for a session
+	SubVerbEnable         = "ENABLE"
+	SubVerbDisable        = "DISABLE"
+	SubVerbAddRule        = "ADD-RULE"
+	SubVerbRemoveRule     = "REMOVE-RULE"
+	SubVerbListRules      = "LIST-RULES"
+	SubVerbPreset         = "PRESET"
+	SubVerbReset          = "RESET"
+	SubVerbSend           = "SEND"
+	SubVerbSchedule       = "SCHEDULE"
+	SubVerbCancel         = "CANCEL"
+	SubVerbTasks          = "TASKS"
+	SubVerbFind           = "FIND"
+	SubVerbAttach         = "ATTACH"
+	SubVerbURL            = "URL"           // Report detected URL from agnt run session
+	SubVerbGetAll         = "GET-ALL"       // Get all entries in a scope
+	SubVerbDelete         = "DELETE"        // Delete an entry from a scope
+	SubVerbRunGroup       = "RUN-GROUP"     // Launch a multi-process startup group with depends_on ordering
+	SubVerbProcess        = "PROCESS"       // Process a single automation task
+	SubVerbBatch          = "BATCH"         // Process multiple automation tasks
+	SubVerbRestart        = "RESTART"       // Restart a process or proxy
+	SubVerbScreenshot     = "SCREENSHOT"    // Take screenshot in automation session
+	SubVerbNavigate       = "NAVIGATE"      // Navigate to URL in automation session
+	SubVerbEvaluate       = "EVALUATE"      // Evaluate JavaScript in automation session
+	SubVerbReport         = "REPORT"        // Report alert matches from agnt run
+	SubVerbStartupLog     = "STARTUP-LOG"   // Query startup log (successes and failures)
+	SubVerbClearPorts     = "CLEAR-PORTS"   // Kill port blockers and resume autostart
+	SubVerbContinue       = "CONTINUE"      // Resume autostart without killing blockers
+	SubVerbAutostartRun   = "RUN"           // Run autostart from MCP InitializedHandler (non-interactive)
+	SubVerbReconcile      = "RECONCILE"     // Live-apply .agnt.kdl changes to running scripts/proxies
+	SubVerbCleanOrphans   = "CLEAN-ORPHANS" // Reap orphaned process groups (PORTS verb)
+	SubVerbCreate         = "CREATE"        // Create a session-host session (SESSION-HOST verb)
+	SubVerbKill           = "KILL"          // Explicit termination of a session-host session
+	SubVerbDetach         = "DETACH"        // Client-initiated clean detach (SESSION-HOST ATTACH stream)
+	SubVerbResize         = "RESIZE"        // Out-of-band window-size renegotiation (SESSION-HOST)
 )
+
+type ForwardMapping struct {
+	ProxyID    string `json:"proxy_id"`
+	RemotePort int    `json:"remote_port"`
+	LocalPort  int    `json:"local_port"`
+}
+
+type ForwardSet struct {
+	Source   string           `json:"source"`
+	Mappings []ForwardMapping `json:"mappings"`
+}
+
+type DeveloperEvent struct {
+	Kind        string `json:"kind"`
+	ProxyID     string `json:"proxy_id,omitempty"`
+	ProjectPath string `json:"project_path,omitempty"`
+	Title       string `json:"title"`
+	Message     string `json:"message"`
+	Severity    string `json:"severity"`
+}
 
 // ProxyStartConfig represents configuration for a PROXY START command.
 type ProxyStartConfig struct {

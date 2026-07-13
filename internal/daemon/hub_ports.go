@@ -90,9 +90,30 @@ func portIsSystem(o config.PortOwner, status string) bool {
 // orphan process groups) and CLEAN-ORPHANS (reap orphaned pgids).
 func (d *Daemon) portsActions() map[string]handlerFn {
 	return map[string]handlerFn{
-		protocol.SubVerbQuery:        d.hubHandlePortsQuery,
-		protocol.SubVerbCleanOrphans: d.hubHandlePortsCleanOrphans,
+		protocol.SubVerbQuery:          d.hubHandlePortsQuery,
+		protocol.SubVerbSetForwards:    d.hubHandlePortsSetForwards,
+		protocol.SubVerbDeveloperEvent: d.hubHandleDeveloperEvent,
+		protocol.SubVerbCleanOrphans:   d.hubHandlePortsCleanOrphans,
 	}
+}
+
+func (d *Daemon) hubHandlePortsSetForwards(_ context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	set, err := unmarshalCommand[protocol.ForwardSet](cmd)
+	if err != nil || set.Source == "" {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, "PORTS SET-FORWARDS requires source")
+	}
+	d.forwardMappings.Store(set.Source, append([]protocol.ForwardMapping(nil), set.Mappings...))
+	return conn.WriteOK("forward mappings replaced")
+}
+
+func (d *Daemon) hubHandleDeveloperEvent(_ context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	event, err := unmarshalCommand[protocol.DeveloperEvent](cmd)
+	if err != nil || event.Kind == "" || event.Message == "" {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, "PORTS DEVELOPER-EVENT requires kind and message")
+	}
+	d.eventHub.BroadcastDeveloperToast(event.Severity, event.Title, event.Message)
+	d.eventHub.LogDeveloperDiagnostic(event)
+	return conn.WriteOK("developer event delivered")
 }
 
 func (d *Daemon) hubHandlePorts(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
@@ -132,20 +153,25 @@ func (d *Daemon) hubHandlePortsQuery(ctx context.Context, conn *hubpkg.Connectio
 
 	owners, managed, orphanPGIDs := d.cachedPortsData(ctx)
 	declared := d.declaredPortUses(projectPath)
+	forwarded := d.forwardMappingsByRemotePort()
 
 	ports := make([]map[string]interface{}, 0, len(owners))
 	for _, o := range owners {
 		status := classifyPortStatus(o, managed, declared[o.Port], func(scriptName string) bool {
 			return d.scriptAppearsActive(projectPath, scriptName)
 		})
-		ports = append(ports, map[string]interface{}{
+		row := map[string]interface{}{
 			"port":    o.Port,
 			"pid":     o.PID,
 			"name":    o.Name,
 			"windows": o.Windows,
 			"status":  status,
 			"system":  portIsSystem(o, status),
-		})
+		}
+		if mapping, ok := forwarded[o.Port]; ok {
+			row["forwarded"], row["local_port"], row["proxy_id"] = true, mapping.LocalPort, mapping.ProxyID
+		}
+		ports = append(ports, row)
 	}
 
 	orphans := make([]map[string]interface{}, 0)
@@ -162,6 +188,17 @@ func (d *Daemon) hubHandlePortsQuery(ctx context.Context, conn *hubpkg.Connectio
 		"orphans": orphans,
 	})
 	return conn.WriteJSON(data)
+}
+
+func (d *Daemon) forwardMappingsByRemotePort() map[int]protocol.ForwardMapping {
+	forwarded := make(map[int]protocol.ForwardMapping)
+	d.forwardMappings.Range(func(_, value any) bool {
+		for _, mapping := range value.([]protocol.ForwardMapping) {
+			forwarded[mapping.RemotePort] = mapping
+		}
+		return true
+	})
+	return forwarded
 }
 
 // hubHandlePortsCleanOrphans reaps every orphaned process group owned by the

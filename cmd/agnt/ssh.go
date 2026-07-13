@@ -760,6 +760,11 @@ func startPortForwarding(host string, client *sshclient.Client) func() {
 	mgr = sshclient.NewPortForwardManager(client, dclient, func(msg string) {
 		fmt.Fprintf(os.Stderr, "%s\n", msg)
 		mappings := mgr.Status()
+		wireMappings := make([]protocol.ForwardMapping, 0, len(mappings))
+		for _, mapping := range mappings {
+			wireMappings = append(wireMappings, protocol.ForwardMapping{ProxyID: mapping.ProxyID, RemotePort: mapping.RemotePort, LocalPort: mapping.LocalPort})
+		}
+		_ = dclient.SetForwardMappings(protocol.ForwardSet{Source: "ssh:" + host, Mappings: wireMappings})
 		if sshShowForwardStatus && len(mappings) > 0 {
 			fmt.Fprintln(os.Stderr, "agnt ssh: active proxy forwards:")
 			for _, mapping := range mappings {
@@ -771,8 +776,8 @@ func startPortForwarding(host string, client *sshclient.Client) func() {
 				if !mapping.Remapped {
 					continue
 				}
-				_, _ = dclient.ProxyToast(mapping.ProxyID, protocol.ToastConfig{
-					Type:    "warning",
+				_ = dclient.ReportDeveloperEvent(protocol.DeveloperEvent{
+					Kind: "forward_collision", ProxyID: mapping.ProxyID, Severity: "warning",
 					Title:   "SSH port remapped",
 					Message: fmt.Sprintf("remote :%d is available locally at http://127.0.0.1:%d", mapping.RemotePort, mapping.LocalPort),
 				})
@@ -783,6 +788,7 @@ func startPortForwarding(host string, client *sshclient.Client) func() {
 
 	return func() {
 		mgr.Stop()
+		_ = dclient.SetForwardMappings(protocol.ForwardSet{Source: "ssh:" + host})
 		dclient.Close()
 	}
 }

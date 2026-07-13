@@ -4,12 +4,14 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/stretchr/testify/assert"
 )
 
 // stubProxyBroadcaster is a test double for ProxyBroadcaster.
 type stubProxyBroadcaster struct {
-	calls atomic.Int32
+	calls       atomic.Int32
+	diagnostics atomic.Int32
 	// lastArgs records the last call's arguments for assertion.
 	lastType    atomic.Value // string
 	lastTitle   atomic.Value // string
@@ -21,6 +23,22 @@ func (s *stubProxyBroadcaster) BroadcastAlertToast(toastType, title, message str
 	s.lastType.Store(toastType)
 	s.lastTitle.Store(title)
 	s.lastMessage.Store(message)
+}
+func (s *stubProxyBroadcaster) LogDeveloperDiagnostic(protocol.DeveloperEvent) { s.diagnostics.Add(1) }
+
+func TestEventHubDeveloperEventRoutesAreIndependentAndExactOnce(t *testing.T) {
+	hub := NewEventHub()
+	pb := &stubProxyBroadcaster{}
+	hub.SetProxyBroadcaster(pb)
+	event := protocol.DeveloperEvent{Kind: "file_arrived", Severity: "info", Title: "File arrived", Message: "fixture.png"}
+
+	hub.BroadcastDeveloperToast(event.Severity, event.Title, event.Message)
+	hub.LogDeveloperDiagnostic(event)
+
+	assert.Equal(t, int32(1), pb.calls.Load())
+	assert.Equal(t, int32(1), pb.diagnostics.Load())
+	// Neither broadcaster callback re-enters the other route.
+	assert.Equal(t, "fixture.png", pb.lastMessage.Load())
 }
 
 // TestEventHub_Deliver_BroadcastsToProxy verifies that an error-severity

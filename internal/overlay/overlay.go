@@ -138,12 +138,15 @@ type NoticeInfo struct {
 // PortInfo is one listening TCP port and its owner for the overview ports
 // section. Status is "managed", "unmanaged", or "conflict".
 type PortInfo struct {
-	Port    int
-	PID     int
-	Name    string
-	Windows bool
-	Status  string
-	System  bool // OS/infra daemon — hidden from overview unless showAllPorts
+	Port      int
+	PID       int
+	Name      string
+	Windows   bool
+	Status    string
+	System    bool // OS/infra daemon — hidden from overview unless showAllPorts
+	Forwarded bool
+	LocalPort int
+	ProxyID   string
 }
 
 // OrphanInfo is one orphaned process group (leader dead, members alive).

@@ -324,6 +324,14 @@ func (c *Client) ProxyToast(id string, toast protocol.ToastConfig) (map[string]i
 	return c.conn.Request(protocol.VerbProxy, protocol.SubVerbToast, id).WithJSON(toast).JSON()
 }
 
+func (c *Client) SetForwardMappings(set protocol.ForwardSet) error {
+	return c.conn.Request(protocol.VerbPorts, protocol.SubVerbSetForwards).WithJSON(set).OK()
+}
+
+func (c *Client) ReportDeveloperEvent(event protocol.DeveloperEvent) error {
+	return c.conn.Request(protocol.VerbPorts, protocol.SubVerbDeveloperEvent).WithJSON(event).OK()
+}
+
 // ProxyLogQuery queries proxy logs.
 func (c *Client) ProxyLogQuery(proxyID string, filter protocol.LogQueryFilter) (map[string]interface{}, error) {
 	return c.conn.Request(protocol.VerbProxyLog, protocol.SubVerbQuery, proxyID).WithJSON(filter).JSON()

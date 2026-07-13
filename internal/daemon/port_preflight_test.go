@@ -17,6 +17,7 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/platform"
+	"github.com/standardbeagle/agnt/internal/protocol"
 	goprocess "github.com/standardbeagle/go-cli-server/process"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -260,6 +261,7 @@ func (s *capturingBroadcaster) BroadcastAlertToast(toastType, _ string, message 
 	defer s.mu.Unlock()
 	s.calls = append(s.calls, capturedAlert{toastType, message})
 }
+func (s *capturingBroadcaster) LogDeveloperDiagnostic(protocol.DeveloperEvent) {}
 
 func (s *capturingBroadcaster) snapshot() []capturedAlert {
 	s.mu.Lock()

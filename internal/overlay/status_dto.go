@@ -111,16 +111,19 @@ func (d proxyDTO) toInfo() ProxyInfo {
 // --- Ports / orphans ---
 
 type portDTO struct {
-	Port    int    `json:"port"`
-	PID     int    `json:"pid"`
-	Name    string `json:"name"`
-	Windows bool   `json:"windows"`
-	Status  string `json:"status"`
-	System  bool   `json:"system"`
+	Port      int    `json:"port"`
+	PID       int    `json:"pid"`
+	Name      string `json:"name"`
+	Windows   bool   `json:"windows"`
+	Status    string `json:"status"`
+	System    bool   `json:"system"`
+	Forwarded bool   `json:"forwarded"`
+	LocalPort int    `json:"local_port"`
+	ProxyID   string `json:"proxy_id"`
 }
 
 func (d portDTO) toInfo() PortInfo {
-	return PortInfo{Port: d.Port, PID: d.PID, Name: d.Name, Windows: d.Windows, Status: d.Status, System: d.System}
+	return PortInfo{Port: d.Port, PID: d.PID, Name: d.Name, Windows: d.Windows, Status: d.Status, System: d.System, Forwarded: d.Forwarded, LocalPort: d.LocalPort, ProxyID: d.ProxyID}
 }
 
 type orphanDTO struct {

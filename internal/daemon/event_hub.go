@@ -6,8 +6,10 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/standardbeagle/agnt/internal/debug"
+	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/proxy"
 	"github.com/standardbeagle/agnt/internal/scope"
 )
@@ -162,6 +164,7 @@ type ProxyBroadcaster interface {
 	// toastType matches the toast severity ("error", "warning").
 	// Implementations must be non-blocking; errors are swallowed at debug level.
 	BroadcastAlertToast(toastType, title, message string)
+	LogDeveloperDiagnostic(event protocol.DeveloperEvent)
 }
 
 // EventHub fans events to stream sinks (agnt monitor), hook sinks (agnt hook),
@@ -174,6 +177,24 @@ type EventHub struct {
 	proxyBroadcaster ProxyBroadcaster
 	mu               sync.RWMutex
 	proxyPaths       proxyPathRegistry // proxyID → project path for stream routing
+}
+
+func (h *EventHub) BroadcastDeveloperToast(severity, title, message string) {
+	h.mu.RLock()
+	pb := h.proxyBroadcaster
+	h.mu.RUnlock()
+	if pb != nil {
+		pb.BroadcastAlertToast(severity, title, message)
+	}
+}
+
+func (h *EventHub) LogDeveloperDiagnostic(event protocol.DeveloperEvent) {
+	h.mu.RLock()
+	pb := h.proxyBroadcaster
+	h.mu.RUnlock()
+	if pb != nil {
+		pb.LogDeveloperDiagnostic(event)
+	}
 }
 
 // AddAgentNoticeSink registers an agent-bound delivery sink.
@@ -504,5 +525,17 @@ func (b *proxyManagerBroadcaster) BroadcastAlertToast(toastType, title, message 
 		if _, err := p.BroadcastToast(toastType, title, message, 0); err != nil {
 			debug.Log("event-hub", "BroadcastAlertToast failed for proxy %s: %v", p.ID, err)
 		}
+	}
+}
+
+func (b *proxyManagerBroadcaster) LogDeveloperDiagnostic(event protocol.DeveloperEvent) {
+	if b.pm == nil {
+		return
+	}
+	for _, p := range b.pm.ListScoped(scope.Unscoped("developer diagnostic fan-out")) {
+		if p == nil || (event.ProxyID != "" && p.ID != event.ProxyID) {
+			continue
+		}
+		p.Logger().LogDiagnostic(proxy.ProxyDiagnostic{Timestamp: time.Now(), Level: proxy.ProxyDiagnosticLevel(event.Severity), Category: "ssh", Event: event.Kind, Message: event.Message})
 	}
 }
