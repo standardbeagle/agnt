@@ -109,6 +109,11 @@ func CleanupZombieDaemons(socketPath string) int {
 	return socket.CleanupZombieDaemons(socketPath, isAgntDaemonProcess)
 }
 
+// migrateLegacySocket is intentionally a no-op on Windows. The legacy path
+// migrated by the Unix implementation was a flat /tmp Unix-domain socket;
+// Windows daemon endpoints are named pipes and never used that layout.
+func (d *Daemon) migrateLegacySocket() {}
+
 // isAgntDaemonProcess checks if the process with the given PID is an agnt daemon.
 // This is used as the ProcessMatcher callback for socket.Manager.
 func isAgntDaemonProcess(pid int) bool {
