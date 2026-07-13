@@ -3,6 +3,9 @@ package sessionhost
 import (
 	"encoding/base64"
 	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -66,6 +69,43 @@ func TestCreate_SpawnsAndCapturesOutput(t *testing.T) {
 	}, 30*time.Second, 20*time.Millisecond)
 	snap, _ := s.scrollback.Snapshot()
 	require.Contains(t, string(snap), "hello-sessionhost")
+}
+
+func TestCreate_LeaderExitIsTerminalWhenDescendantRetainsPTY(t *testing.T) {
+	s := mustCreate(t, CreateConfig{
+		Command: os.Args[0],
+		Args:    []string{"-test.run=TestSessionhostLeaderHelper"},
+		Env:     map[string]string{"AGNT_SESSIONHOST_LEADER_HELPER": "1"},
+	})
+
+	// The descendant inherits the slave and would keep readLoop blocked long
+	// after the shell exits. The drain grace must preserve the shell's final
+	// bytes, then bound terminal publication rather than waiting for sleep.
+	require.Eventually(t, func() bool {
+		return s.Status() == StatusExited
+	}, 5*time.Second, 20*time.Millisecond)
+	snap, _ := s.scrollback.Snapshot()
+	require.Contains(t, string(snap), "leader-final")
+}
+
+func TestSessionhostLeaderHelper(t *testing.T) {
+	if os.Getenv("AGNT_SESSIONHOST_LEADER_HELPER") != "1" {
+		return
+	}
+	slavePath, err := filepath.EvalSymlinks("/dev/stdout")
+	if err != nil {
+		os.Exit(2)
+	}
+	cmd := exec.Command("setsid", "sh", "-c", `exec 3<>"$1"; trap '' HUP; sleep 3`, "sh", slavePath)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		os.Exit(2)
+	}
+	time.Sleep(50 * time.Millisecond)
+	_, _ = os.Stdout.WriteString("leader-final")
+	os.Exit(0)
 }
 
 func TestAttach_ReplaysScrollbackThenLive(t *testing.T) {

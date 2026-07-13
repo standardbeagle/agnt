@@ -32,6 +32,12 @@ import (
 // tool output), not one process's stdout/stderr.
 const DefaultScrollback = 1024 * 1024
 
+// exitDrainGrace bounds how long waitLoop lets readLoop drain after the direct
+// child exits. A background descendant can retain the PTY slave indefinitely;
+// after this grace we close the master to unblock the reader and publish the
+// leader's terminal state.
+const exitDrainGrace = 2 * time.Second
+
 // Status is the lifecycle state of a session-host session.
 type Status string
 
@@ -242,7 +248,11 @@ func (s *Session) waitLoop() {
 	// drained, then Read returns EIO. Do not mark the session terminal (or close
 	// the master) before readLoop reaches that point: under load that used to
 	// discard the child's final output.
-	<-s.readDone
+	select {
+	case <-s.readDone:
+	case <-time.After(exitDrainGrace):
+		_ = s.closePTY()
+	}
 	code := 0
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
