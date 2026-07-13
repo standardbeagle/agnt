@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -430,16 +429,14 @@ func BenchmarkBuildSnapshot_5Processes(b *testing.B) {
 func TestSnapshotOutput_WarningsSurfaceInBothModes(t *testing.T) {
 	snap := buildSnapshot(nil, nil, nil)
 	warnings := []string{"alert store query failed: timeout", "proxy list unavailable"}
-	filter := protocol.DirectoryFilter{SessionCode: "abc", Global: true}
-
-	raw := snapshotOutput(&snap, "/proj", filter, warnings, true)
+	raw := snapshotOutput(&snap, "/proj", "abc", true, warnings, true)
 	assert.Equal(t, warnings, raw.Warnings, "raw consumers must see collection failures")
 	assert.Empty(t, raw.Output, "raw mode renders no text")
 	assert.Equal(t, "/proj", raw.ProjectPath)
 	assert.Equal(t, "abc", raw.SessionCode)
 	assert.True(t, raw.Global)
 
-	text := snapshotOutput(&snap, "/proj", filter, warnings, false)
+	text := snapshotOutput(&snap, "/proj", "abc", true, warnings, false)
 	assert.Equal(t, warnings, text.Warnings)
 	for _, w := range warnings {
 		assert.Contains(t, text.Output, w, "text mode still renders every warning")
@@ -449,8 +446,27 @@ func TestSnapshotOutput_WarningsSurfaceInBothModes(t *testing.T) {
 func TestSnapshotOutput_CleanCollectionHasNoWarnings(t *testing.T) {
 	snap := buildSnapshot(nil, nil, nil)
 	for _, raw := range []bool{true, false} {
-		out := snapshotOutput(&snap, "/proj", protocol.DirectoryFilter{}, nil, raw)
+		out := snapshotOutput(&snap, "/proj", "", false, nil, raw)
 		assert.Empty(t, out.Warnings)
 		assert.NotContains(t, out.Output, "⚠")
+	}
+}
+
+func TestSnapshotOutput_ReportsResolvedEffectiveGlobal(t *testing.T) {
+	snap := buildSnapshot(nil, nil, nil)
+	tests := []struct {
+		name            string
+		effectiveGlobal bool
+	}{
+		{name: "explicit true", effectiveGlobal: true},
+		{name: "config default true with omitted flag", effectiveGlobal: true},
+		{name: "explicit false overrides config true", effectiveGlobal: false},
+		{name: "omitted flag with default false", effectiveGlobal: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			out := snapshotOutput(&snap, "/proj", "abc", tc.effectiveGlobal, nil, true)
+			assert.Equal(t, tc.effectiveGlobal, out.Global)
+		})
 	}
 }

@@ -90,6 +90,7 @@ func (dt *DaemonTools) handleProcSnapshot(input ProcInput) (*mcp.CallToolResult,
 	type procResult struct {
 		entries     []map[string]interface{}
 		projectPath string
+		global      bool
 		err         error
 	}
 	type proxyResult struct {
@@ -117,6 +118,7 @@ func (dt *DaemonTools) handleProcSnapshot(input ProcInput) (*mcp.CallToolResult,
 			return
 		}
 		procs.projectPath = getString(result, "project_path")
+		procs.global = getBool(result, "global")
 		if raw, ok := result["processes"].([]interface{}); ok {
 			procs.entries = make([]map[string]interface{}, 0, len(raw))
 			for _, p := range raw {
@@ -186,7 +188,7 @@ func (dt *DaemonTools) handleProcSnapshot(input ProcInput) (*mcp.CallToolResult,
 
 	snapshot := buildSnapshot(procs.entries, proxies.entries, deduped)
 
-	out := snapshotOutput(&snapshot, procs.projectPath, dirFilter, errs.warnings, input.Raw)
+	out := snapshotOutput(&snapshot, procs.projectPath, dirFilter.SessionCode, procs.global, errs.warnings, input.Raw)
 	return nil, out, nil
 }
 
@@ -194,13 +196,13 @@ func (dt *DaemonTools) handleProcSnapshot(input ProcInput) (*mcp.CallToolResult,
 // travel on Warnings in every mode: a raw consumer reads only the structured
 // Snapshot, so appending them to the text rendering alone would present an
 // incomplete snapshot as a clean one.
-func snapshotOutput(snapshot *SnapshotData, projectPath string, dirFilter protocol.DirectoryFilter, warnings []string, raw bool) ProcOutput {
+func snapshotOutput(snapshot *SnapshotData, projectPath, sessionCode string, effectiveGlobal bool, warnings []string, raw bool) ProcOutput {
 	out := ProcOutput{
 		Snapshot:    snapshot,
 		Count:       len(snapshot.Processes),
 		ProjectPath: projectPath,
-		SessionCode: dirFilter.SessionCode,
-		Global:      dirFilter.Global,
+		SessionCode: sessionCode,
+		Global:      effectiveGlobal,
 		Warnings:    warnings,
 	}
 	if !raw {
