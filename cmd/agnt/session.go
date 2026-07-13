@@ -148,7 +148,7 @@ func runSessionHosts(cmd *cobra.Command, args []string) {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	origin := sessionSocketOrigin(getSocketPath(cmd))
+	origin := sessionCommandOrigin(cmd)
 	fmt.Fprintln(w, "NAME\tSTATE\tPGID\tATTACHED\tAGE\tPROJECT\tORIGIN")
 	for _, s := range sessions {
 		sm, ok := s.(map[string]interface{})
@@ -189,6 +189,10 @@ func sessionSocketOrigin(socketPath string) string {
 		}
 	}
 	return "local"
+}
+
+func sessionCommandOrigin(cmd *cobra.Command) string {
+	return sessionSocketOrigin(getSocketPath(cmd))
 }
 
 func runSessionKill(cmd *cobra.Command, args []string) {
@@ -267,7 +271,7 @@ func runSessionList(cmd *cobra.Command, args []string) {
 	}
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	origin := sessionSocketOrigin(getSocketPath(cmd))
+	origin := sessionCommandOrigin(cmd)
 	fmt.Fprintln(w, "CODE\tCOMMAND\tSTATUS\tPROJECT\tSTARTED\tORIGIN")
 
 	for _, s := range sessions {

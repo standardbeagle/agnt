@@ -3,14 +3,19 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pkg/sftp"
 	"github.com/standardbeagle/agnt/internal/daemon"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/sshclient"
+	"github.com/standardbeagle/agnt/internal/sshclient/testenv"
+	"golang.org/x/crypto/ssh"
 )
 
 type fakeReversePull struct {
@@ -172,5 +177,74 @@ func TestSSHReconnectFlags_ParseAndBindVars(t *testing.T) {
 	}
 	if sshReconnectMax != 5 {
 		t.Errorf("--reconnect-max = %d, want 5", sshReconnectMax)
+	}
+}
+
+func TestSSHClientSurfaces_WithRealSSHFixture(t *testing.T) {
+	auth, err := testenv.NewAuth("surface-user")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, err := testenv.Start(auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+
+	client, err := ssh.Dial("tcp", server.Addr(), auth.ClientConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	project, err := sshclient.ResolveRemoteProjectRoot(client, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var firstScreen bytes.Buffer
+	writeSSHFirstScreen(&firstScreen, "fixture-host", "1.2.3", "1.2.4", project, "surface-session")
+	for _, want := range []string{"\x1b]0;agnt ssh fixture-host · surface-session\x07", "local 1.2.3", "remote 1.2.4", "project: " + project, "detach: Ctrl-\\ Ctrl-\\"} {
+		if !strings.Contains(firstScreen.String(), want) {
+			t.Errorf("first screen missing %q:\n%s", want, firstScreen.String())
+		}
+	}
+	if strings.Contains(firstScreen.String(), "(remote default)") {
+		t.Fatalf("first screen used unresolved project placeholder:\n%s", firstScreen.String())
+	}
+
+	queue := sshclient.NewPushQueue(project, 2, nil, nil)
+	queue.Reconnecting()
+	pushDone := make(chan error, 1)
+	go func() {
+		_, err := queue.Push("queued.txt", "", strings.NewReader("queued"))
+		pushDone <- err
+	}()
+	deadline := time.After(5 * time.Second)
+	for queue.Depth() != 1 {
+		select {
+		case <-deadline:
+			t.Fatal("push did not enter reconnect queue")
+		default:
+			runtime.Gosched()
+		}
+	}
+	t.Cleanup(func() {
+		queue.Close()
+		<-pushDone
+	})
+
+	oldStatusFlag := sshShowForwardStatus
+	sshShowForwardStatus = true
+	t.Cleanup(func() { sshShowForwardStatus = oldStatusFlag })
+	owner := &reconnectForwarding{
+		status:  sshclient.NewStatusTracker("surface-session"),
+		control: &reconnectControl{queue: queue, projectRoot: project},
+	}
+	var status bytes.Buffer
+	owner.renderStatusTo(&status, []sshclient.Mapping{{ProxyID: "fixture-web", RemotePort: 5173, LocalPort: 5174}})
+	for _, want := range []string{"connected", "session: surface-session", "queued pushes: 1", "fixture-web", "remote :5173"} {
+		if !strings.Contains(status.String(), want) {
+			t.Errorf("status surface missing %q:\n%s", want, status.String())
+		}
 	}
 }

@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/spf13/cobra"
+)
 
 func TestSessionSocketOrigin(t *testing.T) {
 	for _, tc := range []struct {
@@ -14,6 +18,19 @@ func TestSessionSocketOrigin(t *testing.T) {
 		if got := sessionSocketOrigin(tc.path); got != tc.want {
 			t.Errorf("sessionSocketOrigin(%q) = %q, want %q", tc.path, got, tc.want)
 		}
+	}
+}
+
+func TestSessionCommandOriginUsesForwardedSocketFlag(t *testing.T) {
+	root := &cobra.Command{Use: "fixture"}
+	root.PersistentFlags().String("socket", "", "")
+	cmd := &cobra.Command{Use: "hosts"}
+	root.AddCommand(cmd)
+	if err := root.PersistentFlags().Set("socket", "/tmp/agnt/ssh-remote-dev.sock"); err != nil {
+		t.Fatal(err)
+	}
+	if got := sessionCommandOrigin(cmd); got != "remote:remote-dev" {
+		t.Fatalf("command origin = %q, want remote:remote-dev", got)
 	}
 }
 

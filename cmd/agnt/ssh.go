@@ -133,15 +133,7 @@ func runSSH(cmd *cobra.Command, args []string) error {
 		client.Close()
 		return fmt.Errorf("agnt ssh: %w", err)
 	}
-	project := remotePath
-	if project == "" {
-		project = "(remote default)"
-	}
-	fmt.Fprint(os.Stderr, sshclient.TerminalTitle(host, attachName))
-	fmt.Fprint(os.Stderr, sshclient.FormatSplash(sshclient.Splash{
-		Host: host, LocalVersion: appVersion, RemoteVersion: remoteVersion,
-		Project: project, Session: attachName, DetachHint: "Ctrl-\\ Ctrl-\\",
-	}))
+	writeSSHFirstScreen(os.Stderr, host, appVersion, remoteVersion, control.ProjectRoot(), attachName)
 	forwarding.renderStatus()
 
 	fd := int(os.Stdin.Fd())
@@ -270,7 +262,18 @@ func runSSHRelayLoop(host, remotePath, attachName string, client *sshclient.Clie
 		session = newSession
 		forwarding.Resume(client)
 		control.Resume(client)
+		// Resume's queue flush is synchronous. Render only after both forward
+		// reconciliation and queued pushes have observed the new transport.
+		forwarding.renderStatus()
 	}
+}
+
+func writeSSHFirstScreen(w io.Writer, host, localVersion, remoteVersion, project, session string) {
+	fmt.Fprint(w, sshclient.TerminalTitle(host, session))
+	fmt.Fprint(w, sshclient.FormatSplash(sshclient.Splash{
+		Host: host, LocalVersion: localVersion, RemoteVersion: remoteVersion,
+		Project: project, Session: session, DetachHint: "Ctrl-\\ Ctrl-\\",
+	}))
 }
 
 // reconnectForwarding owns the local listener identity across SSH transport
@@ -420,18 +423,24 @@ func (r *reconnectForwarding) reportPortForward(msg string, mappings []sshclient
 }
 
 func (r *reconnectForwarding) renderStatus() {
+	r.renderStatusTo(os.Stderr)
+}
+
+func (r *reconnectForwarding) renderStatusTo(w io.Writer, supplied ...[]sshclient.Mapping) {
 	if !sshShowForwardStatus || r.status == nil {
 		return
 	}
 	var mappings []sshclient.Mapping
-	if r.ports != nil {
+	if len(supplied) > 0 {
+		mappings = supplied[0]
+	} else if r.ports != nil {
 		mappings = r.ports.Status()
 	}
 	queued := 0
 	if r.control != nil {
 		queued = r.control.Depth()
 	}
-	fmt.Fprint(os.Stderr, sshclient.FormatClientStatus(r.status.Snapshot(mappings, queued)))
+	fmt.Fprint(w, sshclient.FormatClientStatus(r.status.Snapshot(mappings, queued)))
 }
 
 func (r *reconnectForwarding) daemonClient() *daemon.Client {
@@ -742,8 +751,9 @@ func startPortForwarding(host string, client *sshclient.Client) func() {
 const reconnectPushQueueCapacity = 32
 
 type reconnectControl struct {
-	listener net.Listener
-	queue    *sshclient.PushQueue
+	listener    net.Listener
+	queue       *sshclient.PushQueue
+	projectRoot string
 }
 
 func (c *reconnectControl) Depth() int {
@@ -751,6 +761,13 @@ func (c *reconnectControl) Depth() int {
 		return 0
 	}
 	return c.queue.Depth()
+}
+
+func (c *reconnectControl) ProjectRoot() string {
+	if c == nil {
+		return ""
+	}
+	return c.projectRoot
 }
 
 func startControlSocket(host string, client *sshclient.Client, remotePath string, sessionName ...string) *reconnectControl {
@@ -788,7 +805,7 @@ func startControlSocket(host string, client *sshclient.Client, remotePath string
 	})
 	queue.SetSFTP(sc)
 	go sshclient.ServePushQueue(ln, queue)
-	return &reconnectControl{listener: ln, queue: queue}
+	return &reconnectControl{listener: ln, queue: queue, projectRoot: projectRoot}
 }
 
 func (c *reconnectControl) Pause() {
