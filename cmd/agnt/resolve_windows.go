@@ -21,10 +21,7 @@ import (
 // the deferred restore path stays declarative. Returned by
 // enterConsoleRawMode and consumed by its Restore() method.
 type consoleRestore struct {
-	stdoutHandle    windows.Handle
-	savedStdoutMode uint32
-	hasStdoutMode   bool
-	oldState        *term.State
+	restoreModes func()
 }
 
 // Restore puts the terminal back the way enterConsoleRawMode found it.
@@ -35,11 +32,8 @@ func (c *consoleRestore) Restore() {
 	// Disable win32-input-mode BEFORE restoring console modes — must
 	// happen while VT processing is still enabled.
 	fmt.Fprint(os.Stdout, "\x1b[?9001l")
-	if c.oldState != nil {
-		_ = term.Restore(int(os.Stdin.Fd()), c.oldState)
-	}
-	if c.hasStdoutMode {
-		_ = windows.SetConsoleMode(c.stdoutHandle, c.savedStdoutMode)
+	if c.restoreModes != nil {
+		c.restoreModes()
 	}
 }
 
@@ -50,37 +44,19 @@ func (c *consoleRestore) Restore() {
 // output fails after stdin entered raw mode, stdin is restored before the
 // error is returned.
 func enterConsoleRawMode() (*consoleRestore, error) {
-	cr := &consoleRestore{}
-
-	// Save stdout console mode BEFORE any changes so we can restore on
-	// exit. Must happen before MakeRaw since ConPTY creation can alter modes.
-	if h, err := windows.GetStdHandle(windows.STD_OUTPUT_HANDLE); err == nil {
-		cr.stdoutHandle = h
-		if err := windows.GetConsoleMode(h, &cr.savedStdoutMode); err == nil {
-			cr.hasStdoutMode = true
-		}
-	}
-
-	// Set stdin in raw mode BEFORE creating ConPTY so ConPTY doesn't
-	// inherit/interfere with the console mode.
-	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
+	stdout, _ := windows.GetStdHandle(windows.STD_OUTPUT_HANDLE)
+	restore, err := setupWindowsConsoleModes(os.Stdin.Fd(), uintptr(stdout), consoleModeCalls{
+		get: func(handle uintptr) (uint32, error) {
+			var mode uint32
+			err := windows.GetConsoleMode(windows.Handle(handle), &mode)
+			return mode, err
+		},
+		set: func(handle uintptr, mode uint32) error { return windows.SetConsoleMode(windows.Handle(handle), mode) },
+	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to set raw mode: %w", err)
+		return nil, err
 	}
-	cr.oldState = oldState
-
-	// Enable Virtual Terminal Processing on stdout.
-	if cr.hasStdoutMode {
-		newMode := cr.savedStdoutMode | 0x0004 // ENABLE_VIRTUAL_TERMINAL_PROCESSING
-		if err := finishConsoleSetup(
-			func() error { return windows.SetConsoleMode(cr.stdoutHandle, newMode) },
-			func() error { return term.Restore(int(os.Stdin.Fd()), oldState) },
-		); err != nil {
-			return nil, fmt.Errorf("failed to enable virtual terminal processing: %w", err)
-		}
-	}
-
-	return cr, nil
+	return &consoleRestore{restoreModes: restore}, nil
 }
 
 // setupSessionJob creates a Windows Job Object and assigns the PTY child

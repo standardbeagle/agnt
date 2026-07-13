@@ -282,17 +282,6 @@ func panicSafeRestore(restore func(), fn func()) {
 	fn()
 }
 
-// finishConsoleSetup makes the partial-initialization rollback independently
-// testable: once input is raw, any output-mode failure must restore the exact
-// input state captured by the caller before returning.
-func finishConsoleSetup(enableOutput, restoreInput func() error) error {
-	if err := enableOutput(); err != nil {
-		_ = restoreInput()
-		return err
-	}
-	return nil
-}
-
 // relayAttachInput is platform-neutral: console preparation is owned by the
 // platform entry point, while byte/chord behavior is identical everywhere.
 func relayAttachInput(in io.Reader, client *daemon.Client, sessionID, attachID string, isPrimary bool, chord []byte) error {

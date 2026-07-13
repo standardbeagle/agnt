@@ -2,27 +2,11 @@ package main
 
 import (
 	"context"
-	"errors"
 	"reflect"
 	"sync"
 	"testing"
 	"time"
 )
-
-func TestFinishConsoleSetup_RestoresInputOnOutputModeFailure(t *testing.T) {
-	want := errors.New("VT mode rejected")
-	restored := 0
-	err := finishConsoleSetup(func() error { return want }, func() error {
-		restored++
-		return nil
-	})
-	if !errors.Is(err, want) {
-		t.Fatalf("error = %v, want %v", err, want)
-	}
-	if restored != 1 {
-		t.Fatalf("restore calls = %d, want 1", restored)
-	}
-}
 
 func TestParseDetachChord(t *testing.T) {
 	cases := []struct {

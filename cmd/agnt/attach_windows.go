@@ -19,20 +19,19 @@ func init() {
 
 func runAttachTerminalWindows(client *daemon.Client, sessionID string, detachChord []byte) error {
 	fd := int(os.Stdin.Fd())
-	if !term.IsTerminal(fd) {
-		return fmt.Errorf("agnt attach: stdin is not a Windows console; redirected input is unsupported")
-	}
-	consoleState, err := enterConsoleRawMode()
-	if err != nil {
-		return fmt.Errorf("agnt attach: failed to enter Windows console raw mode: %w", err)
-	}
-	var restoreOnce sync.Once
-	restore := func() { restoreOnce.Do(consoleState.Restore) }
-	defer restore()
-	if attachRawModeEntered != nil {
-		attachRawModeEntered()
-	}
-	return runAttachedSession(client, sessionID, detachChord, restore, attachWatchResizeWindows)
+	return runPreparedConsole(func() bool { return term.IsTerminal(fd) }, func() (func(), error) {
+		consoleState, err := enterConsoleRawMode()
+		if err != nil {
+			return nil, fmt.Errorf("agnt attach: failed to enter Windows console raw mode: %w", err)
+		}
+		var restoreOnce sync.Once
+		return func() { restoreOnce.Do(consoleState.Restore) }, nil
+	}, func(restore func()) error {
+		if attachRawModeEntered != nil {
+			attachRawModeEntered()
+		}
+		return runAttachedSession(client, sessionID, detachChord, restore, attachWatchResizeWindows)
+	})
 }
 
 // attachWatchResizeWindows polls because Windows has no SIGWINCH. Cancellation
