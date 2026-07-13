@@ -4,14 +4,12 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"sync"
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/daemon"
-	"golang.org/x/sys/windows"
 	"golang.org/x/term"
 )
 
@@ -29,17 +27,15 @@ func runAttachTerminalWindows(client *daemon.Client, sessionID string, detachCho
 		var restoreOnce sync.Once
 		return func() { restoreOnce.Do(consoleState.Restore) }, nil
 	}, func(restore func()) error {
+		input, err := openWindowsAttachInput()
+		if err != nil {
+			return fmt.Errorf("agnt attach: %w", err)
+		}
+		defer input.Close()
 		if attachRawModeEntered != nil {
 			attachRawModeEntered()
 		}
-		interruptInput := func() error {
-			err := windows.CancelIoEx(windows.Handle(os.Stdin.Fd()), nil)
-			if errors.Is(err, windows.ERROR_NOT_FOUND) { // read completed before cancellation won the race
-				return nil
-			}
-			return err
-		}
-		return runAttachedSession(client, sessionID, detachChord, restore, interruptInput, attachWatchResizeWindows)
+		return runAttachedSession(client, sessionID, detachChord, input, restore, input.Interrupt, attachWatchResizeWindows)
 	})
 }
 

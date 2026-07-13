@@ -319,7 +319,7 @@ type attachInfo struct {
 // leaves the daemon-owned session running. A server/frame error wins whenever
 // it is already observable, and context cancellation is normalized to clean
 // exit after local EOF/detach.
-func runAttachedSession(client *daemon.Client, sessionID string, detachChord []byte, restore func(), interruptInput func() error, watchResize func(context.Context, func(int, int)) func()) error {
+func runAttachedSession(client *daemon.Client, sessionID string, detachChord []byte, input io.Reader, restore func(), interruptInput func() error, watchResize func(context.Context, func(int, int)) func()) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	attachedCh := make(chan attachInfo, 1)
@@ -342,7 +342,7 @@ func runAttachedSession(client *daemon.Client, sessionID string, detachChord []b
 		stopResize = watchResize(ctx, func(cols, rows int) { _ = client.SessionHostResize(sessionID, cols, rows) })
 	}
 	stdinDone := make(chan error, 1)
-	go panicSafeRestore(restore, func() { stdinDone <- relayAttachInput(os.Stdin, client, sessionID, info.id, info.primary, detachChord) })
+	go panicSafeRestore(restore, func() { stdinDone <- relayAttachInput(input, client, sessionID, info.id, info.primary, detachChord) })
 	return joinAttachWorkers(cancel, interruptInput, stopResize, frameErrCh, stdinDone)
 }
 

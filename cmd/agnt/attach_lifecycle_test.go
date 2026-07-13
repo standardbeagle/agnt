@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestJoinAttachWorkers_EOFOrDetachJoinsFrameAndResize(t *testing.T) {
@@ -60,12 +61,27 @@ func TestJoinAttachWorkers_FrameErrorMasksInterruptFailure(t *testing.T) {
 	frame := make(chan error, 1)
 	input := make(chan error, 1)
 	frame <- frameErr
-	err := joinAttachWorkers(func() {}, func() error {
+	cancelObserved := make(chan struct{})
+	go func() {
+		<-cancelObserved // fake blocked read completes after a later retry succeeds
 		input <- context.Canceled
-		return interruptErr
-	}, func() {}, frame, input)
-	if !errors.Is(err, frameErr) {
-		t.Fatalf("error = %v, want frame error %v", err, frameErr)
+	}()
+	result := make(chan error, 1)
+	go func() {
+		result <- joinAttachWorkers(func() {}, func() error {
+			// Model one unexpected API failure followed by a successful retry.
+			// The interrupter does not signal inputDone; the reader owns that.
+			close(cancelObserved)
+			return interruptErr
+		}, func() {}, frame, input)
+	}()
+	select {
+	case err := <-result:
+		if !errors.Is(err, frameErr) {
+			t.Fatalf("error = %v, want frame error %v", err, frameErr)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("successful cancellation retry did not release input join")
 	}
 }
 
