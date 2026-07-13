@@ -261,6 +261,9 @@ func (s *capturingBroadcaster) BroadcastAlertToast(toastType, _ string, message 
 	defer s.mu.Unlock()
 	s.calls = append(s.calls, capturedAlert{toastType, message})
 }
+func (s *capturingBroadcaster) BroadcastDeveloperToast(event protocol.DeveloperEvent) {
+	s.BroadcastAlertToast(event.Severity, event.Title, event.Message)
+}
 func (s *capturingBroadcaster) LogDeveloperDiagnostic(protocol.DeveloperEvent) {}
 
 func (s *capturingBroadcaster) snapshot() []capturedAlert {

@@ -99,19 +99,20 @@ func (d *Daemon) portsActions() map[string]handlerFn {
 
 func (d *Daemon) hubHandlePortsSetForwards(_ context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
 	set, err := unmarshalCommand[protocol.ForwardSet](cmd)
-	if err != nil || set.Source == "" {
-		return conn.WriteErr(hubproto.ErrInvalidArgs, "PORTS SET-FORWARDS requires source")
+	source := conn.SessionCode()
+	if err != nil || source == "" {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, "PORTS SET-FORWARDS requires a registered session")
 	}
-	d.forwardMappings.Store(set.Source, append([]protocol.ForwardMapping(nil), set.Mappings...))
+	d.forwardMappings.Store(source, append([]protocol.ForwardMapping(nil), set.Mappings...))
 	return conn.WriteOK("forward mappings replaced")
 }
 
 func (d *Daemon) hubHandleDeveloperEvent(_ context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
 	event, err := unmarshalCommand[protocol.DeveloperEvent](cmd)
-	if err != nil || event.Kind == "" || event.Message == "" {
-		return conn.WriteErr(hubproto.ErrInvalidArgs, "PORTS DEVELOPER-EVENT requires kind and message")
+	if err != nil || event.Kind == "" || event.Message == "" || event.ProjectPath == "" {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, "PORTS DEVELOPER-EVENT requires kind, project_path, and message")
 	}
-	d.eventHub.BroadcastDeveloperToast(event.Severity, event.Title, event.Message)
+	d.eventHub.BroadcastTargetedDeveloperToast(event)
 	d.eventHub.LogDeveloperDiagnostic(event)
 	return conn.WriteOK("developer event delivered")
 }

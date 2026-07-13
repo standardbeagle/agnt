@@ -117,10 +117,11 @@ func TestReconnectForwarding_RecoveryCallbacksUseNewestDurableDaemonClient(t *te
 	owner.mu.Unlock()
 
 	var gotClient *daemon.Client
-	var gotProxyID string
-	var gotConfig protocol.ToastConfig
-	owner.toast = func(client *daemon.Client, proxyID string, config protocol.ToastConfig) {
-		gotClient, gotProxyID, gotConfig = client, proxyID, config
+	var gotEvent protocol.DeveloperEvent
+	owner.project = "/remote/project"
+	owner.reportEvent = func(client *daemon.Client, event protocol.DeveloperEvent) error {
+		gotClient, gotEvent = client, event
+		return nil
 	}
 	owner.reportPortForward("port 5173 in use locally", []sshclient.Mapping{{
 		ProxyID: "recovered-proxy", RemotePort: 5173, LocalPort: 5174, Remapped: true,
@@ -129,8 +130,8 @@ func TestReconnectForwarding_RecoveryCallbacksUseNewestDurableDaemonClient(t *te
 	if gotClient != newest {
 		t.Fatalf("recovered callback used stale daemon client %p, want newest %p", gotClient, newest)
 	}
-	if gotProxyID != "recovered-proxy" || !strings.Contains(gotConfig.Message, "5174") {
-		t.Fatalf("recovered callback lost current mapping telemetry: id=%q config=%+v", gotProxyID, gotConfig)
+	if gotEvent.ProxyID != "recovered-proxy" || gotEvent.ProjectPath != "/remote/project" || !strings.Contains(gotEvent.Message, "5174") {
+		t.Fatalf("recovered callback lost current mapping telemetry: event=%+v", gotEvent)
 	}
 }
 
@@ -216,6 +217,9 @@ func TestSSHClientSurfaces_WithRealSSHFixture(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = dclient.Close() })
+	if _, err := dclient.SessionRegister("ssh-forward-fixture-host", "", "", "agnt ssh", nil); err != nil {
+		t.Fatal(err)
+	}
 	project, err := sshclient.ResolveRemoteProjectRoot(client, "")
 	if err != nil {
 		t.Fatal(err)
@@ -255,11 +259,34 @@ func TestSSHClientSurfaces_WithRealSSHFixture(t *testing.T) {
 	t.Cleanup(func() { _ = dclient.ProxyStop("fixture-web") })
 	_ = proxyResult
 	mgr := sshclient.NewPortForwardManager(wrapped, dclient, func(string) {})
+	ownerForPublish := &reconnectForwarding{host: "fixture-host", project: project, dclient: dclient}
+	mgr.SetOnChange(ownerForPublish.publishForwardMappings)
 	mgr.Start(context.Background())
 	t.Cleanup(mgr.Stop)
 	<-mgr.Reconciled()
 	if len(mgr.Status()) != 1 || mgr.Status()[0].ProxyID != "fixture-web" {
 		t.Fatalf("reconciliation-derived mappings = %+v", mgr.Status())
+	}
+	portsConn := daemon.NewConn(localSocket)
+	defer portsConn.Close()
+	var inventory struct {
+		Ports []struct {
+			ProxyID   string `json:"proxy_id"`
+			Forwarded bool   `json:"forwarded"`
+			LocalPort int    `json:"local_port"`
+		} `json:"ports"`
+	}
+	if err := portsConn.Request(protocol.VerbPorts, protocol.SubVerbQuery).WithJSON(protocol.DirectoryFilter{Global: true}).JSONInto(&inventory); err != nil {
+		t.Fatal(err)
+	}
+	foundForwarded := false
+	for _, port := range inventory.Ports {
+		if port.ProxyID == "fixture-web" && port.Forwarded && port.LocalPort == mgr.Status()[0].LocalPort {
+			foundForwarded = true
+		}
+	}
+	if !foundForwarded {
+		t.Fatalf("active reconnectForwarding snapshot absent from PORTS inventory: %+v", inventory.Ports)
 	}
 
 	queue := sshclient.NewPushQueue(project, 2, nil, nil)

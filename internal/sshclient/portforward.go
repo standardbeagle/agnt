@@ -47,6 +47,7 @@ type PortForwardManager struct {
 	sshClient   *Client
 	dclient     *daemon.Client
 	notify      func(string)
+	onChange    func([]Mapping)
 
 	mu          sync.Mutex
 	reconcileMu sync.Mutex
@@ -56,6 +57,21 @@ type PortForwardManager struct {
 	wg         sync.WaitGroup
 	paused     chan struct{}
 	reconciled chan struct{}
+}
+
+func (m *PortForwardManager) SetOnChange(fn func([]Mapping)) {
+	m.mu.Lock()
+	m.onChange = fn
+	m.mu.Unlock()
+}
+
+func (m *PortForwardManager) emitChange() {
+	m.mu.Lock()
+	fn := m.onChange
+	m.mu.Unlock()
+	if fn != nil {
+		fn(m.Status())
+	}
 }
 
 // portForward is one remote-proxy-ID's local listener.
@@ -215,6 +231,7 @@ func (m *PortForwardManager) Stop() {
 	for _, f := range forwards {
 		f.stop()
 	}
+	m.emitChange()
 }
 
 // Mapping is one active remote->local port forward, returned by Status for
@@ -352,6 +369,7 @@ func (m *PortForwardManager) reconcileOnce() {
 	for _, s := range toStart {
 		m.startForward(s.id, s.port)
 	}
+	m.emitChange()
 }
 
 // fetchDesired calls PROXY LIST (global — this manager forwards every proxy

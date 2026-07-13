@@ -308,19 +308,19 @@ func writeSSHFirstScreen(w io.Writer, host, localVersion, remoteVersion, project
 // a fresh SSH transport and daemon protocol connection, then PortForwardManager
 // performs a fresh PROXY LIST reconciliation (invariant 25).
 type reconnectForwarding struct {
-	mu        sync.RWMutex
-	host      string
-	project   string
-	daemonFwd *sshclient.Forwarder
-	ports     *sshclient.PortForwardManager
-	dclient   *daemon.Client
-	drops     *sshclient.DropWatcher
-	dropSFTP  *sftp.Client
-	pull      reversePullLifecycle
-	toast     func(*daemon.Client, string, protocol.ToastConfig)
-	status    *sshclient.StatusTracker
-	control   *reconnectControl
-	onResume  func()
+	mu          sync.RWMutex
+	host        string
+	project     string
+	daemonFwd   *sshclient.Forwarder
+	ports       *sshclient.PortForwardManager
+	dclient     *daemon.Client
+	drops       *sshclient.DropWatcher
+	dropSFTP    *sftp.Client
+	pull        reversePullLifecycle
+	reportEvent func(*daemon.Client, protocol.DeveloperEvent) error
+	status      *sshclient.StatusTracker
+	control     *reconnectControl
+	onResume    func()
 }
 
 type reversePullLifecycle interface {
@@ -338,7 +338,7 @@ func startReconnectForwarding(host string, client *sshclient.Client, projectRoot
 	if len(projectRoot) > 0 {
 		root = projectRoot[0]
 	}
-	r := &reconnectForwarding{host: host, project: root, toast: sendReconnectToast}
+	r := &reconnectForwarding{host: host, project: root, reportEvent: func(c *daemon.Client, e protocol.DeveloperEvent) error { return c.ReportDeveloperEvent(e) }}
 	r.start(client)
 	return r
 }
@@ -402,18 +402,37 @@ func (r *reconnectForwarding) connectPorts(client *sshclient.Client) {
 		fmt.Fprintf(os.Stderr, "agnt ssh: could not connect to forwarded daemon socket for port forwarding/reverse capture pull (%v)\n", err)
 		return
 	}
+	source := "ssh-forward-" + strings.NewReplacer("@", "-", ":", "-", "/", "-").Replace(r.host)
+	if _, err := dclient.SessionRegister(source, "", "", "agnt ssh", nil); err != nil {
+		dclient.Close()
+		fmt.Fprintf(os.Stderr, "agnt ssh: could not register forwarding ownership (%v)\n", err)
+		return
+	}
 	r.mu.Lock()
 	r.dclient = dclient
 	r.mu.Unlock()
 	if r.ports == nil {
 		var mgr *sshclient.PortForwardManager
 		mgr = sshclient.NewPortForwardManager(client, dclient, func(msg string) { r.reportPortForward(msg, mgr.Status()) })
+		mgr.SetOnChange(func(mappings []sshclient.Mapping) { r.publishForwardMappings(mappings) })
 		r.ports = mgr
 		r.ports.Start(context.Background())
 	} else {
 		r.ports.Resume(context.Background(), client, dclient)
 	}
 	r.connectPull(dclient)
+}
+
+func (r *reconnectForwarding) publishForwardMappings(mappings []sshclient.Mapping) {
+	dclient := r.daemonClient()
+	if dclient == nil {
+		return
+	}
+	wire := make([]protocol.ForwardMapping, 0, len(mappings))
+	for _, mapping := range mappings {
+		wire = append(wire, protocol.ForwardMapping{ProxyID: mapping.ProxyID, RemotePort: mapping.RemotePort, LocalPort: mapping.LocalPort})
+	}
+	_ = dclient.SetForwardMappings(protocol.ForwardSet{Mappings: wire})
 }
 
 func (r *reconnectForwarding) connectPull(dclient *daemon.Client) {
@@ -429,10 +448,6 @@ func (r *reconnectForwarding) connectPull(dclient *daemon.Client) {
 	r.pull.Resume(context.Background(), dclient, r.dropSFTP)
 }
 
-func sendReconnectToast(client *daemon.Client, proxyID string, config protocol.ToastConfig) {
-	_, _ = client.ProxyToast(proxyID, config)
-}
-
 func (r *reconnectForwarding) reportPortForward(msg string, mappings []sshclient.Mapping) {
 	fmt.Fprintln(os.Stderr, msg)
 	r.renderStatus()
@@ -440,12 +455,12 @@ func (r *reconnectForwarding) reportPortForward(msg string, mappings []sshclient
 		return
 	}
 	toastClient := r.daemonClient()
-	if toastClient == nil || r.toast == nil {
+	if toastClient == nil || r.reportEvent == nil {
 		return
 	}
 	for _, mapping := range mappings {
 		if mapping.Remapped {
-			r.toast(toastClient, mapping.ProxyID, protocol.ToastConfig{Type: "warning", Title: "SSH port remapped", Message: fmt.Sprintf("remote :%d is available locally at http://127.0.0.1:%d", mapping.RemotePort, mapping.LocalPort)})
+			_ = r.reportEvent(toastClient, protocol.DeveloperEvent{Kind: "forward_collision", ProxyID: mapping.ProxyID, ProjectPath: r.project, Severity: "warning", Title: "SSH port remapped", Message: fmt.Sprintf("remote :%d is available locally at http://127.0.0.1:%d", mapping.RemotePort, mapping.LocalPort)})
 		}
 	}
 }
@@ -554,6 +569,7 @@ func (r *reconnectForwarding) Stop() {
 	if r.ports != nil {
 		r.ports.Stop()
 	}
+	r.publishForwardMappings(nil)
 	if dclient := r.daemonClient(); dclient != nil {
 		dclient.Close()
 	}
@@ -737,59 +753,6 @@ func startDaemonSocketForwarding(host string, client *sshclient.Client) func() {
 		if err := forwarder.Close(); err != nil {
 			fmt.Fprintf(os.Stderr, "agnt ssh: closing daemon socket forwarder: %v\n", err)
 		}
-	}
-}
-
-// startPortForwarding dials the just-forwarded remote daemon socket (see
-// startDaemonSocketForwarding) as a *daemon.Client and hands it, plus the
-// SSH transport, to a sshclient.PortForwardManager so every remote proxy the
-// developer starts/stops for the rest of this session gets a same-port-
-// preferred local listener automatically — no manual `ssh -L` required (task
-// 07 of the remote-ssh epic). Like daemon socket forwarding, failure here is
-// non-fatal to the interactive PTY session: it is surfaced loudly on stderr
-// and the returned stop func is a no-op.
-func startPortForwarding(host string, client *sshclient.Client) func() {
-	localSocketPath := sshclient.LocalForwardSocketPath(host)
-	dclient := daemon.NewClientWithPath(localSocketPath)
-	if err := dclient.Connect(); err != nil {
-		fmt.Fprintf(os.Stderr, "agnt ssh: could not connect to forwarded daemon socket for port forwarding (%v) — remote proxies will not be auto-forwarded\n", err)
-		return func() {}
-	}
-
-	var mgr *sshclient.PortForwardManager
-	mgr = sshclient.NewPortForwardManager(client, dclient, func(msg string) {
-		fmt.Fprintf(os.Stderr, "%s\n", msg)
-		mappings := mgr.Status()
-		wireMappings := make([]protocol.ForwardMapping, 0, len(mappings))
-		for _, mapping := range mappings {
-			wireMappings = append(wireMappings, protocol.ForwardMapping{ProxyID: mapping.ProxyID, RemotePort: mapping.RemotePort, LocalPort: mapping.LocalPort})
-		}
-		_ = dclient.SetForwardMappings(protocol.ForwardSet{Source: "ssh:" + host, Mappings: wireMappings})
-		if sshShowForwardStatus && len(mappings) > 0 {
-			fmt.Fprintln(os.Stderr, "agnt ssh: active proxy forwards:")
-			for _, mapping := range mappings {
-				fmt.Fprintf(os.Stderr, "  %-24s remote :%-5d -> http://127.0.0.1:%d\n", mapping.ProxyID, mapping.RemotePort, mapping.LocalPort)
-			}
-		}
-		if strings.Contains(msg, "in use locally") {
-			for _, mapping := range mappings {
-				if !mapping.Remapped {
-					continue
-				}
-				_ = dclient.ReportDeveloperEvent(protocol.DeveloperEvent{
-					Kind: "forward_collision", ProxyID: mapping.ProxyID, Severity: "warning",
-					Title:   "SSH port remapped",
-					Message: fmt.Sprintf("remote :%d is available locally at http://127.0.0.1:%d", mapping.RemotePort, mapping.LocalPort),
-				})
-			}
-		}
-	})
-	mgr.Start(context.Background())
-
-	return func() {
-		mgr.Stop()
-		_ = dclient.SetForwardMappings(protocol.ForwardSet{Source: "ssh:" + host})
-		dclient.Close()
 	}
 }
 

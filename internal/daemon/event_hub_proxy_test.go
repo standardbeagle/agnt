@@ -24,15 +24,18 @@ func (s *stubProxyBroadcaster) BroadcastAlertToast(toastType, title, message str
 	s.lastTitle.Store(title)
 	s.lastMessage.Store(message)
 }
+func (s *stubProxyBroadcaster) BroadcastDeveloperToast(event protocol.DeveloperEvent) {
+	s.BroadcastAlertToast(event.Severity, event.Title, event.Message)
+}
 func (s *stubProxyBroadcaster) LogDeveloperDiagnostic(protocol.DeveloperEvent) { s.diagnostics.Add(1) }
 
 func TestEventHubDeveloperEventRoutesAreIndependentAndExactOnce(t *testing.T) {
 	hub := NewEventHub()
 	pb := &stubProxyBroadcaster{}
 	hub.SetProxyBroadcaster(pb)
-	event := protocol.DeveloperEvent{Kind: "file_arrived", Severity: "info", Title: "File arrived", Message: "fixture.png"}
+	event := protocol.DeveloperEvent{Kind: "file_arrived", ProxyID: "web", ProjectPath: "/project", Severity: "info", Title: "File arrived", Message: "fixture.png"}
 
-	hub.BroadcastDeveloperToast(event.Severity, event.Title, event.Message)
+	hub.BroadcastTargetedDeveloperToast(event)
 	hub.LogDeveloperDiagnostic(event)
 
 	assert.Equal(t, int32(1), pb.calls.Load())

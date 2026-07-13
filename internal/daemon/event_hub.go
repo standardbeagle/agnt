@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"errors"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -164,6 +165,7 @@ type ProxyBroadcaster interface {
 	// toastType matches the toast severity ("error", "warning").
 	// Implementations must be non-blocking; errors are swallowed at debug level.
 	BroadcastAlertToast(toastType, title, message string)
+	BroadcastDeveloperToast(event protocol.DeveloperEvent)
 	LogDeveloperDiagnostic(event protocol.DeveloperEvent)
 }
 
@@ -185,6 +187,15 @@ func (h *EventHub) BroadcastDeveloperToast(severity, title, message string) {
 	h.mu.RUnlock()
 	if pb != nil {
 		pb.BroadcastAlertToast(severity, title, message)
+	}
+}
+
+func (h *EventHub) BroadcastTargetedDeveloperToast(event protocol.DeveloperEvent) {
+	h.mu.RLock()
+	pb := h.proxyBroadcaster
+	h.mu.RUnlock()
+	if pb != nil {
+		pb.BroadcastDeveloperToast(event)
 	}
 }
 
@@ -529,13 +540,33 @@ func (b *proxyManagerBroadcaster) BroadcastAlertToast(toastType, title, message 
 }
 
 func (b *proxyManagerBroadcaster) LogDeveloperDiagnostic(event protocol.DeveloperEvent) {
-	if b.pm == nil {
-		return
-	}
-	for _, p := range b.pm.ListScoped(scope.Unscoped("developer diagnostic fan-out")) {
-		if p == nil || (event.ProxyID != "" && p.ID != event.ProxyID) {
-			continue
-		}
+	p := b.developerEventTarget(event)
+	if p != nil {
 		p.Logger().LogDiagnostic(proxy.ProxyDiagnostic{Timestamp: time.Now(), Level: proxy.ProxyDiagnosticLevel(event.Severity), Category: "ssh", Event: event.Kind, Message: event.Message})
 	}
+}
+
+func (b *proxyManagerBroadcaster) BroadcastDeveloperToast(event protocol.DeveloperEvent) {
+	p := b.developerEventTarget(event)
+	if p != nil {
+		_, _ = p.BroadcastToast(event.Severity, event.Title, event.Message, 0)
+	}
+}
+
+func (b *proxyManagerBroadcaster) developerEventTarget(event protocol.DeveloperEvent) *proxy.ProxyServer {
+	if b.pm == nil || event.ProjectPath == "" {
+		return nil
+	}
+	if event.ProxyID == "" {
+		matches := b.pm.ListScoped(scope.Project(event.ProjectPath))
+		if len(matches) == 1 {
+			return matches[0]
+		}
+		return nil
+	}
+	p, err := b.pm.GetWithPathFilter(event.ProxyID, event.ProjectPath)
+	if err != nil || p == nil || p.ID != event.ProxyID || filepath.Clean(p.Path) != filepath.Clean(event.ProjectPath) {
+		return nil
+	}
+	return p
 }

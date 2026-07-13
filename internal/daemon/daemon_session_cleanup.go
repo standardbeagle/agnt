@@ -121,6 +121,7 @@ func (d *Daemon) drainPendingCleanups() {
 // Used for explicit UNREGISTER and direct calls. For connection drops, use
 // CleanupSessionResourcesDeferred instead.
 func (d *Daemon) CleanupSessionResources(sessionCode string) {
+	d.forwardMappings.Delete(sessionCode)
 	// Cancel any pending deferred cleanup first
 	d.cancelPendingCleanup(sessionCode)
 	d.doCleanup(sessionCode)
@@ -243,6 +244,7 @@ func (d *Daemon) CleanupSessionResourcesDeferred(sessionCode string) {
 
 // doCleanup performs the actual session resource cleanup.
 func (d *Daemon) doCleanup(sessionCode string) {
+	d.forwardMappings.Delete(sessionCode)
 	session, ok := d.sessionRegistry.Get(sessionCode)
 	if !ok {
 		debug.Log("daemon", "session %s not found for cleanup", sessionCode)
