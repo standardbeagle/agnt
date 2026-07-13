@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -31,7 +32,13 @@ func runAttachTerminalWindows(client *daemon.Client, sessionID string, detachCho
 		if attachRawModeEntered != nil {
 			attachRawModeEntered()
 		}
-		interruptInput := func() { _ = windows.CancelIoEx(windows.Handle(os.Stdin.Fd()), nil) }
+		interruptInput := func() error {
+			err := windows.CancelIoEx(windows.Handle(os.Stdin.Fd()), nil)
+			if errors.Is(err, windows.ERROR_NOT_FOUND) { // read completed before cancellation won the race
+				return nil
+			}
+			return err
+		}
 		return runAttachedSession(client, sessionID, detachChord, restore, interruptInput, attachWatchResizeWindows)
 	})
 }

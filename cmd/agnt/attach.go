@@ -319,7 +319,7 @@ type attachInfo struct {
 // leaves the daemon-owned session running. A server/frame error wins whenever
 // it is already observable, and context cancellation is normalized to clean
 // exit after local EOF/detach.
-func runAttachedSession(client *daemon.Client, sessionID string, detachChord []byte, restore func(), interruptInput func(), watchResize func(context.Context, func(int, int)) func()) error {
+func runAttachedSession(client *daemon.Client, sessionID string, detachChord []byte, restore func(), interruptInput func() error, watchResize func(context.Context, func(int, int)) func()) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	attachedCh := make(chan attachInfo, 1)
@@ -351,12 +351,13 @@ func runAttachedSession(client *daemon.Client, sessionID string, detachChord []b
 // input read when the frame pump finishes first, and joins frame, input, and
 // resize workers before returning. A non-cancellation frame error always wins,
 // including when local EOF/detach initiated shutdown.
-func joinAttachWorkers(cancel func(), interruptInput, stopResize func(), frameDone, inputDone <-chan error) error {
+func joinAttachWorkers(cancel func(), interruptInput func() error, stopResize func(), frameDone, inputDone <-chan error) error {
 	var frameErr error
+	var interruptErr error
 	select {
 	case frameErr = <-frameDone:
 		cancel()
-		interruptInput()
+		interruptErr = interruptInput()
 		<-inputDone
 	case <-inputDone:
 		cancel()
@@ -365,6 +366,9 @@ func joinAttachWorkers(cancel func(), interruptInput, stopResize func(), frameDo
 	stopResize()
 	if frameErr != nil && !errors.Is(frameErr, context.Canceled) {
 		return frameErr
+	}
+	if interruptErr != nil {
+		return interruptErr
 	}
 	return nil
 }
