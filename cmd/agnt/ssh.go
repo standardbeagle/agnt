@@ -1,9 +1,3 @@
-//go:build !windows
-
-// Windows support for `agnt ssh` (native ConPTY resize signaling) is an
-// explicit open gap — see the task's final report. This command is
-// currently unix-only (matches the existing attach_unix.go / attach_windows.go
-// split precedent in this package).
 package main
 
 import (
@@ -15,11 +9,10 @@ import (
 	"math/rand"
 	"net"
 	"os"
-	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/pkg/sftp"
@@ -366,7 +359,7 @@ func (r *reconnectForwarding) start(client *sshclient.Client) {
 	r.daemonFwd = fwd
 	go fwd.Serve()
 	fmt.Fprintf(os.Stderr, "agnt ssh: forwarding remote daemon socket to %s\n", sshclient.LocalForwardSocketPath(r.host))
-	fmt.Fprintf(os.Stderr, "  export AGNT_DAEMON_SOCKET=%s\n", sshclient.LocalForwardSocketPath(r.host))
+	writeDaemonSocketEnvHint(os.Stderr, sshclient.LocalForwardSocketPath(r.host))
 	r.connectPorts(client)
 }
 
@@ -751,13 +744,21 @@ func startDaemonSocketForwarding(host string, client *sshclient.Client) func() {
 
 	fmt.Fprintf(os.Stderr, "agnt ssh: forwarding remote daemon socket to %s\n", localSocketPath)
 	fmt.Fprintf(os.Stderr, "agnt ssh: run this in another terminal to point agnt monitor/agnt doctor/the MCP daemon tool at the remote daemon:\n")
-	fmt.Fprintf(os.Stderr, "  export AGNT_DAEMON_SOCKET=%s\n", localSocketPath)
+	writeDaemonSocketEnvHint(os.Stderr, localSocketPath)
 
 	return func() {
 		if err := forwarder.Close(); err != nil {
 			fmt.Fprintf(os.Stderr, "agnt ssh: closing daemon socket forwarder: %v\n", err)
 		}
 	}
+}
+
+func writeDaemonSocketEnvHint(w io.Writer, endpoint string) {
+	if runtime.GOOS == "windows" {
+		fmt.Fprintf(w, "  $env:AGNT_DAEMON_SOCKET=%q\n", endpoint)
+		return
+	}
+	fmt.Fprintf(w, "  export AGNT_DAEMON_SOCKET=%s\n", endpoint)
 }
 
 // startControlSocket registers the local control socket (task 08a) that
@@ -868,50 +869,5 @@ func (c *reconnectControl) Stop() {
 	}
 	if c.queue != nil {
 		c.queue.Close()
-	}
-}
-
-// sshRawTerminal puts the local terminal into raw mode for the duration of
-// the PTY relay, returning a restore func safe to call more than once.
-func sshRawTerminal(fd int) (func(), error) {
-	oldState, err := term.MakeRaw(fd)
-	if err != nil {
-		return func() {}, err
-	}
-	restored := false
-	return func() {
-		if restored {
-			return
-		}
-		restored = true
-		_ = term.Restore(fd, oldState)
-	}, nil
-}
-
-// sshWatchResize watches SIGWINCH and forwards new terminal dimensions to
-// the remote session as "window-change" requests until ctx is cancelled.
-// Actual OS signal handling lives here (not in internal/sshclient) so that
-// package stays signal-agnostic and testable.
-func sshWatchResize(ctx context.Context, session *sshclient.PTYSession) func() {
-	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, syscall.SIGWINCH)
-	stopped := make(chan struct{})
-	go func() {
-		defer close(stopped)
-		for {
-			select {
-			case <-ctx.Done():
-				signal.Stop(ch)
-				return
-			case <-ch:
-				if cols, rows, err := term.GetSize(int(os.Stdin.Fd())); err == nil {
-					_ = session.Resize(sshclient.TermSize{Cols: uint32(cols), Rows: uint32(rows)})
-				}
-			}
-		}
-	}()
-	return func() {
-		signal.Stop(ch)
-		<-stopped
 	}
 }

@@ -42,15 +42,10 @@ func controlSocketDir() (string, error) {
 	return dir, nil
 }
 
-// ControlSocketPath returns the local control-socket path 'agnt ssh'
-// registers for host, and the second-terminal 'agnt push' discovers:
-// ~/.agnt/ssh/<host>.ctl.
+// ControlSocketPath returns the platform control endpoint registered by
+// 'agnt ssh': a Unix socket on Unix/WSL or an owner-only pipe on Windows.
 func ControlSocketPath(host string) (string, error) {
-	dir, err := controlSocketDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, host+".ctl"), nil
+	return localControlPath(host)
 }
 
 // controlRequestHeader is the JSON-lines header sent over one control
@@ -71,30 +66,14 @@ type controlResponse struct {
 	ProjectRoot string `json:"project_root,omitempty"`
 }
 
-// ListenControl opens the local unix-socket listener 'agnt ssh' registers
-// for host. A pre-existing socket file is treated as stale (the owning
-// process is gone or unreachable) and removed before listening: this is
-// the normal case after an unclean 'agnt ssh' exit (crash, SIGKILL), and
-// failing to reclaim the path would otherwise make every subsequent
-// 'agnt ssh <host>' unable to register at all.
+// ListenControl opens the platform listener. Unix reclaims stale socket files;
+// Windows pipe instances vanish with their owner and live collisions fail.
 func ListenControl(host string) (net.Listener, error) {
 	path, err := ControlSocketPath(host)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := os.Lstat(path); err == nil {
-		os.Remove(path)
-	}
-	ln, err := net.Listen("unix", path)
-	if err != nil {
-		return nil, fmt.Errorf("sshclient: listening on control socket %s: %w", path, err)
-	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		ln.Close()
-		os.Remove(path)
-		return nil, fmt.Errorf("sshclient: securing control socket %s: %w", path, err)
-	}
-	return ln, nil
+	return listenControlTransport(path)
 }
 
 // ServeControl accepts connections on ln until it is closed, handling each
@@ -225,7 +204,7 @@ func DialControl(host string) (net.Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	conn, err := net.DialTimeout("unix", path, controlSocketDialTimeout)
+	conn, err := dialControlTransport(path, controlSocketDialTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("%w for host %q (socket %s): %w — start 'agnt ssh %s' first", ErrNoActiveSession, host, path, err, host)
 	}
@@ -264,37 +243,7 @@ func pingControl(conn net.Conn) (controlResponse, error) {
 // session does not linger in discovery results indefinitely between one
 // process's exit and another's next 'agnt ssh' to the same host.
 func DiscoverActiveHosts() ([]string, error) {
-	dir, err := controlSocketDir()
-	if err != nil {
-		return nil, err
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil, fmt.Errorf("sshclient: listing control socket directory %s: %w", dir, err)
-	}
-
-	var hosts []string
-	const suffix = ".ctl"
-	for _, entry := range entries {
-		name := entry.Name()
-		if entry.IsDir() || len(name) <= len(suffix) || name[len(name)-len(suffix):] != suffix {
-			continue
-		}
-		host := name[:len(name)-len(suffix)]
-		path := filepath.Join(dir, name)
-		conn, err := net.DialTimeout("unix", path, controlSocketDialTimeout)
-		if err != nil {
-			os.Remove(path)
-			continue
-		}
-		_, pingErr := pingControl(conn)
-		conn.Close()
-		if pingErr != nil {
-			continue
-		}
-		hosts = append(hosts, host)
-	}
-	return hosts, nil
+	return discoverControlHosts(controlSocketDialTimeout, pingControl)
 }
 
 // PushOneFile implements the client half of the push protocol for a single

@@ -5,12 +5,9 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 
-	"github.com/standardbeagle/go-cli-server/socket"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -41,22 +38,10 @@ func RemoteDaemonSocketPath(client *ssh.Client) (string, error) {
 	return path, nil
 }
 
-// LocalForwardSocketPath returns the local unix socket path 'agnt ssh'
-// listens on to forward the given host's remote daemon socket:
-// $XDG_RUNTIME_DIR/agnt/ssh-<host>.sock, falling back to
-// os.TempDir()/agnt/ssh-<host>.sock when XDG_RUNTIME_DIR is unset. The
-// parent directory's uid-owned/0700 security is enforced by
-// socket.Manager.Listen (same primitive internal/daemon/socket_compat.go
-// relies on), not duplicated here.
-func LocalForwardSocketPath(host string) string {
-	base := os.Getenv("XDG_RUNTIME_DIR")
-	if base == "" {
-		base = os.TempDir()
-	}
-	return filepath.Join(base, "agnt", fmt.Sprintf("ssh-%s.sock", host))
-}
-
-// Forwarder listens on a local unix socket and, for every accepted
+// LocalForwardSocketPath is platform-defined: Unix/WSL use a protected Unix
+// socket and native Windows uses an owner-only named pipe.
+//
+// Forwarder listens on that local endpoint and, for every accepted
 // connection, opens a NEW direct-streamlocal@openssh.com channel to
 // remoteSocketPath on client and proxies bytes bidirectionally. Each
 // accepted local connection gets its own remote channel — there is no
@@ -66,8 +51,8 @@ type Forwarder struct {
 	mu               sync.RWMutex
 	client           *Client
 	remoteSocketPath string
-	sockMgr          *socket.Manager
 	listener         net.Listener
+	cleanupListener  func() error
 
 	done              chan struct{}
 	paused            chan struct{}
@@ -75,26 +60,11 @@ type Forwarder struct {
 	beforeRemoteTrack func()
 }
 
-// NewForwarder binds localSocketPath (via socket.Manager, which detects and
-// removes a stale socket file left by a crashed prior run, and refuses to
-// clobber a live listener there) and returns a Forwarder ready for Serve.
+// NewForwarder binds localSocketPath using the platform listener and returns a
+// Forwarder ready for Serve. Unix reclaims stale socket files; Windows pipe
+// instances disappear with their owner and a live name collision fails loud.
 func NewForwarder(client *Client, remoteSocketPath, localSocketPath string) (*Forwarder, error) {
-	mgr := socket.NewManager(socket.Config{
-		Path: localSocketPath,
-		Mode: 0600,
-		Name: "agnt-ssh-forward",
-		// This local socket is owned by this specific *Forwarder instance
-		// (i.e. this "agnt ssh" process), not by any daemon process — the
-		// default cmdline-based isDaemonProcess predicate would never match
-		// us, so checkExisting would spuriously delete a live sibling's PID
-		// file. Matching our own PID keeps a concurrent "agnt ssh" to the
-		// same host correctly detected as ErrDaemonRunning (ID-scoped
-		// coexist-loud policy: see doc comment on Serve) rather than
-		// silently clobbered.
-		ProcessMatcher: func(pid int) bool { return pid == os.Getpid() },
-	})
-
-	listener, err := mgr.Listen()
+	listener, cleanup, err := listenLocalForward(localSocketPath)
 	if err != nil {
 		return nil, fmt.Errorf("sshclient: binding local forward socket %s: %w", localSocketPath, err)
 	}
@@ -102,8 +72,8 @@ func NewForwarder(client *Client, remoteSocketPath, localSocketPath string) (*Fo
 	return &Forwarder{
 		client:           client,
 		remoteSocketPath: remoteSocketPath,
-		sockMgr:          mgr,
 		listener:         listener,
+		cleanupListener:  cleanup,
 		done:             make(chan struct{}),
 		paused:           make(chan struct{}),
 		conns:            make(map[net.Conn]struct{}),
@@ -115,11 +85,8 @@ func NewForwarder(client *Client, remoteSocketPath, localSocketPath string) (*Fo
 // both ways with io.Copy; either side erroring or hitting EOF closes both.
 // Returns nil on a clean shutdown (Close called), otherwise the Accept error.
 //
-// Coexistence policy: a second "agnt ssh" to the same host that hits an
-// already-live local socket gets a loud ErrDaemonRunning from NewForwarder
-// rather than silently sharing or clobbering the first instance's listener —
-// simplest to reason about, and matches the existing daemon socket
-// contract's "never silently clobber a live listener" rule.
+// Coexistence policy: a second "agnt ssh" to the same host fails to bind the
+// already-live endpoint rather than silently sharing or clobbering it.
 func (f *Forwarder) Serve() error {
 	for {
 		conn, err := f.listener.Accept()
@@ -230,9 +197,7 @@ func (f *Forwarder) Paused() <-chan struct{} {
 	return f.paused
 }
 
-// Close stops accepting new connections and removes the local socket file
-// (and its PID file), so a subsequent connect to the same host does not see
-// a stale "address already in use" error.
+// Close stops accepting new connections and performs platform cleanup.
 func (f *Forwarder) Close() error {
 	select {
 	case <-f.done:
@@ -240,5 +205,8 @@ func (f *Forwarder) Close() error {
 		close(f.done)
 	}
 	f.Pause()
-	return f.sockMgr.Close()
+	if f.cleanupListener != nil {
+		return f.cleanupListener()
+	}
+	return f.listener.Close()
 }

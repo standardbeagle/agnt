@@ -805,7 +805,7 @@ func (c *Client) SessionHostDetach(id, attachID string) error {
 // detach, matching the daemon-side transport split (stdin/resize/detach are
 // separate short-lived connections via the sibling methods above).
 func (c *Client) SessionHostAttach(ctx context.Context, id string, onAttached func(attachID string, isPrimary bool), onFrame func(sessionhost.Frame) error) error {
-	conn, err := net.Dial("unix", c.conn.SocketPath())
+	conn, err := socket.Connect(c.conn.SocketPath())
 	if err != nil {
 		return fmt.Errorf("attach connect failed: %w", err)
 	}
@@ -1141,7 +1141,7 @@ func mapHookSendError(err error) error {
 // It creates a dedicated connection and calls handler for each event received.
 // The stream runs until ctx is cancelled or the connection drops.
 func (c *Client) StreamEvents(ctx context.Context, filter protocol.StreamEventFilter, handler func(proxy.LogEntry) error) error {
-	conn, err := net.Dial("unix", c.conn.SocketPath())
+	conn, err := socket.Connect(c.conn.SocketPath())
 	if err != nil {
 		return fmt.Errorf("stream connect failed: %w", err)
 	}

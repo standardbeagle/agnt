@@ -48,6 +48,13 @@ cloud.google.com/go/longrunning/autogen/longrunningpb
 cloud.google.com/go/vertexai/genai
 cloud.google.com/go/vertexai/internal
 cloud.google.com/go/vertexai/internal/support
+# github.com/Microsoft/go-winio v0.6.2
+## explicit; go 1.21
+github.com/Microsoft/go-winio
+github.com/Microsoft/go-winio/internal/fs
+github.com/Microsoft/go-winio/internal/socket
+github.com/Microsoft/go-winio/internal/stringbuffer
+github.com/Microsoft/go-winio/pkg/guid
 # github.com/alecthomas/chroma/v2 v2.14.0
 ## explicit; go 1.19
 github.com/alecthomas/chroma/v2

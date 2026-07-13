@@ -5,6 +5,7 @@ go 1.25.0
 toolchain go1.25.11
 
 require (
+	github.com/Microsoft/go-winio v0.6.2
 	github.com/andybalholm/brotli v1.2.0
 	github.com/anthropics/anthropic-sdk-go v1.19.0
 	github.com/aymanbagabas/go-pty v0.2.2
