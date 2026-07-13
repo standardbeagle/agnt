@@ -13,7 +13,7 @@ import (
 
 func TestRemoteAttachCommand_ShellEscapesMetacharacters(t *testing.T) {
 	cmd := RemoteAttachCommand("my; rm -rf /", "/tmp/some' dir")
-	want := "agnt attach 'my; rm -rf /' --create-if-missing --cwd '/tmp/some'\\'' dir'"
+	want := "agnt attach 'my; rm -rf /'"
 	if cmd != want {
 		t.Errorf("RemoteAttachCommand = %q, want %q", cmd, want)
 	}
@@ -23,10 +23,35 @@ func TestRemoteAttachCommand_ShellEscapesMetacharacters(t *testing.T) {
 	}
 }
 
-func TestRemoteAttachCommand_NoCwdOmitsFlag(t *testing.T) {
-	cmd := RemoteAttachCommand("plain", "")
-	if strings.Contains(cmd, "--cwd") {
-		t.Errorf("expected no --cwd flag when cwd is empty, got %q", cmd)
+func TestRemoteAttachCommand_OmitsUnsupportedLifecycleFlags(t *testing.T) {
+	cmd := RemoteAttachCommand("plain", "/work/project")
+	for _, flag := range []string{"--cwd", "--create-if-missing"} {
+		if strings.Contains(cmd, flag) {
+			t.Errorf("RemoteAttachCommand contains unsupported attach flag %q: %q", flag, cmd)
+		}
+	}
+}
+
+func TestSessionHostNameOrIDExists(t *testing.T) {
+	result := map[string]interface{}{
+		"sessions": []interface{}{
+			map[string]interface{}{"session_id": "claude-1", "name": "claude"},
+			map[string]interface{}{"session_id": "claude-2", "name": "claude"},
+			map[string]interface{}{"session_id": "unique-1", "name": "unique"},
+		},
+	}
+
+	if !sessionHostNameOrIDExists(result, "claude-2") {
+		t.Fatal("exact session id should match")
+	}
+	if !sessionHostNameOrIDExists(result, "unique") {
+		t.Fatal("unique session name should match")
+	}
+	if sessionHostNameOrIDExists(result, "claude") {
+		t.Fatal("ambiguous session name should not match")
+	}
+	if sessionHostNameOrIDExists(result, "missing") {
+		t.Fatal("unknown session should not match")
 	}
 }
 
@@ -121,7 +146,7 @@ func TestOpenPTYSession_SendsPTYReqAndExecWithCorrectPayloads(t *testing.T) {
 	defer sshClient.Close()
 
 	size := TermSize{Cols: 120, Rows: 40}
-	session, err := OpenPTYSession(sshClient, "my-session", "/work/proj", size)
+	session, err := OpenPTYSessionWithCommand(sshClient, RemoteAttachCommand("my-session", "/work/proj"), size)
 	if err != nil {
 		t.Fatalf("OpenPTYSession: %v", err)
 	}
@@ -181,7 +206,7 @@ func TestPTYSession_ResizeSendsWindowChangeWithCorrectPayload(t *testing.T) {
 	}
 	defer sshClient.Close()
 
-	session, err := OpenPTYSession(sshClient, "sess", "", TermSize{Cols: 80, Rows: 24})
+	session, err := OpenPTYSessionWithCommand(sshClient, RemoteAttachCommand("sess", ""), TermSize{Cols: 80, Rows: 24})
 	if err != nil {
 		t.Fatalf("OpenPTYSession: %v", err)
 	}
@@ -240,7 +265,7 @@ func TestPTYSession_RelayCopiesBytesBothDirections(t *testing.T) {
 	}
 	defer sshClient.Close()
 
-	session, err := OpenPTYSession(sshClient, "sess", "", TermSize{Cols: 80, Rows: 24})
+	session, err := OpenPTYSessionWithCommand(sshClient, RemoteAttachCommand("sess", ""), TermSize{Cols: 80, Rows: 24})
 	if err != nil {
 		t.Fatalf("OpenPTYSession: %v", err)
 	}

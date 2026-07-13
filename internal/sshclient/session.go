@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
+	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/protocol"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -19,20 +22,21 @@ type TermSize struct {
 }
 
 // RemoteAttachCommand builds the shell command run on the remote session
-// channel: `agnt attach <name> --create-if-missing --cwd <cwd>`. name and
-// cwd are shell-escaped defensively (single-quoted, with embedded single
-// quotes escaped) so shell metacharacters in either cannot inject
+// channel: bare `agnt attach <name>`, identical in shape to
+// RemoteReattachCommand. It used to bake `--create-if-missing --cwd <cwd>`
+// into the command line, but cmd/agnt/attach.go's attachCmd defines neither
+// flag — cobra rejects them on a real round trip, breaking every initial
+// connect to a not-yet-existing session (see .claude/rules/lessons-ssh-transport.md
+// #10: a remote-exec command line and the remote subcommand's actual flag
+// set can drift independently). Session creation is now driven through the
+// daemon protocol directly (SESSION-HOST LIST/CREATE, see
+// ensureRemoteSessionCreated) by OpenPTYSession before this command is ever
+// sent, mirroring the reconnect state machine's ensureRemoteSessionAttachable
+// (cmd/agnt/ssh.go). name is shell-escaped defensively (single-quoted, with
+// embedded single quotes escaped) so shell metacharacters cannot inject
 // additional commands.
 func RemoteAttachCommand(name, cwd string) string {
-	var b strings.Builder
-	b.WriteString("agnt attach ")
-	b.WriteString(shellQuote(name))
-	b.WriteString(" --create-if-missing")
-	if cwd != "" {
-		b.WriteString(" --cwd ")
-		b.WriteString(shellQuote(cwd))
-	}
-	return b.String()
+	return RemoteReattachCommand(name)
 }
 
 // shellQuote wraps s in single quotes for POSIX sh, escaping any embedded
@@ -62,12 +66,99 @@ type PTYSession struct {
 	reqs    <-chan *ssh.Request
 }
 
-// OpenPTYSession opens a "session" channel on client, requests a PTY sized
-// per size, and execs the remote attach command for the given session
-// name/cwd. The returned *PTYSession's channel is not yet relayed — call
-// Relay to pump bytes.
+// OpenPTYSession ensures the named session-host session exists on the
+// remote daemon — creating it if this is the first connect (unconditional,
+// matching this function's historical always-create-if-missing behavior;
+// reconnect's opt-in --create-if-missing/--new is a separate, stricter
+// policy handled by the caller via OpenPTYSessionWithCommand +
+// RemoteReattachCommand, see cmd/agnt/ssh.go's reattachRemoteSession) — via
+// the daemon protocol (SESSION-HOST LIST/CREATE), then opens a "session"
+// channel on client, requests a PTY sized per size, and execs the remote
+// attach command for the given session name. The returned *PTYSession's
+// channel is not yet relayed — call Relay to pump bytes.
 func OpenPTYSession(client *ssh.Client, name, cwd string, size TermSize) (*PTYSession, error) {
+	if err := ensureRemoteSessionCreated(client, name, cwd, size); err != nil {
+		return nil, err
+	}
 	return OpenPTYSessionWithCommand(client, RemoteAttachCommand(name, cwd), size)
+}
+
+// ensureRemoteSessionCreated confirms the named session-host session exists
+// on the remote daemon, creating one if it does not. This is the
+// initial-connect counterpart of cmd/agnt/ssh.go's
+// ensureRemoteSessionAttachable — same shape (discover remote daemon socket,
+// forward it locally, drive SESSION-HOST LIST/CREATE over that forward), but
+// unconditionally creates rather than gating on an --create-if-missing flag,
+// matching the behavior this package always had for a first connect (see
+// RemoteAttachCommand's doc comment for why that behavior moved here instead
+// of being expressed as remote CLI flags).
+func ensureRemoteSessionCreated(client *ssh.Client, name, cwd string, size TermSize) error {
+	remoteSocketPath, err := RemoteDaemonSocketPath(client)
+	if err != nil {
+		return fmt.Errorf("sshclient: discovering remote daemon socket for session create: %w", err)
+	}
+
+	localPath := fmt.Sprintf("%s.initial-probe-%d", LocalForwardSocketPath("initial-"+name), time.Now().UnixNano())
+	fw, err := NewForwarder(&Client{SSH: client}, remoteSocketPath, localPath)
+	if err != nil {
+		return fmt.Errorf("sshclient: opening initial-connect probe forward: %w", err)
+	}
+	defer fw.Close()
+	go fw.Serve()
+
+	dclient := daemon.NewClientWithPath(localPath)
+	var connectErr error
+	for i := 0; i < 20; i++ {
+		if connectErr = dclient.Connect(); connectErr == nil {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if connectErr != nil {
+		return fmt.Errorf("sshclient: connecting to initial-connect probe forward: %w", connectErr)
+	}
+	defer dclient.Close()
+
+	result, err := dclient.SessionHostList(protocol.DirectoryFilter{Global: true})
+	if err != nil {
+		return fmt.Errorf("sshclient: listing remote session-host sessions: %w", err)
+	}
+	if sessionHostNameOrIDExists(result, name) {
+		return nil
+	}
+
+	if _, err := dclient.SessionHostCreate(protocol.SessionHostCreateConfig{
+		Name:        name,
+		ProjectPath: cwd,
+		Command:     "sh",
+		Cols:        int(size.Cols),
+		Rows:        int(size.Rows),
+	}); err != nil {
+		return fmt.Errorf("sshclient: creating remote session-host session %q: %w", name, err)
+	}
+	return nil
+}
+
+// sessionHostNameOrIDExists scans a SESSION-HOST LIST result for target,
+// matching on exact session_id first, then a unique name match — mirrors
+// cmd/agnt/attach.go's matchSessionHostID (duplicated rather than shared
+// across the package boundary between cmd/agnt and internal/sshclient).
+func sessionHostNameOrIDExists(result map[string]interface{}, target string) bool {
+	sessions, _ := result["sessions"].([]interface{})
+	nameMatches := 0
+	for _, s := range sessions {
+		sm, ok := s.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if id, _ := sm["session_id"].(string); id == target {
+			return true
+		}
+		if n, _ := sm["name"].(string); n == target {
+			nameMatches++
+		}
+	}
+	return nameMatches == 1
 }
 
 // OpenPTYSessionWithCommand is the lower-level form of OpenPTYSession that
