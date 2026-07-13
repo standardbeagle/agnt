@@ -51,6 +51,7 @@ make build          # Build agnt binary
 make all            # Build + create binary copies
 make test           # All tests (except procisolation-tagged)
 make test-isolated  # procisolation tests inside PID namespace
+make test-chrome-e2e # real-Chrome tests on an unloaded machine
 make test-coverage  # Generate coverage.html
 make install-local  # Install to ~/.local/bin
 
@@ -158,9 +159,11 @@ Port-conflict policy、autostart cleanup ordering、alert push channels、incide
 
 ## Testing
 
-**Three-tier suite**：`make test`（除 `procisolation` / `sshe2e` tagged，host-safe）、`make test-isolated`（`procisolation` tests in `unshare --user --pid --mount --fork --mount-proc`，Linux only）、`make test-ssh`（reusable in-process SSH harness + `sshe2e` containerized sshd smoke；Docker/Podman unavailable 時 loud skip）。isolated 因 subset 走真 `/proc` + 真 `kill(2)` 對 dead-leader pgids；native 恐 reap unrelated same-uid processes。`SSH_E2E_IMAGE` 可 pin compatible linuxserver.io sshd fixture image；conventional port-22 image 須同時設 `SSH_E2E_IMAGE` + `SSH_E2E_USER`（generated authorized_keys 會 read-only mount 到該 user；只設 user 會 fail early）。
+**Four-tier suite**：`make test`（除 `procisolation` / `sshe2e` / `chromee2e` tagged，host-safe）、`make test-isolated`（`procisolation` tests in `unshare --user --pid --mount --fork --mount-proc`，Linux only）、`make test-ssh`（reusable in-process SSH harness + `sshe2e` containerized sshd smoke；Docker/Podman unavailable 時 loud skip）、`make test-chrome-e2e`（real-Chrome `chromee2e` tests；須 Chrome/Chromium，且只在 unloaded machine 手動執行，勿與 stress 或 full-suite run 並行）。isolated 因 subset 走真 `/proc` + 真 `kill(2)` 對 dead-leader pgids；native 恐 reap unrelated same-uid processes。`SSH_E2E_IMAGE` 可 pin compatible linuxserver.io sshd fixture image；conventional port-22 image 須同時設 `SSH_E2E_IMAGE` + `SSH_E2E_USER`（generated authorized_keys 會 read-only mount 到該 user；只設 user 會 fail early）。
 
 `procisolation`-tagged: `internal/daemon/daemon_orphan_pgid_test.go`, `internal/platform/orphanpgid_unix_test.go`.
+
+`chromee2e`-tagged real-Chrome tests: `internal/proxy/authbreakout_e2e_test.go`, `internal/proxy/layout_diagnose_e2e_test.go`. These are intentionally absent from `make test`; run `make test-chrome-e2e` manually only on an unloaded machine because renderer starvation under oversubscription is non-deterministic.
 
 餘 daemon tests native；`Start()` orphan scan 由 `DaemonConfig.OrphanScanEnabled` gate（zero value default `false`，literal `DaemonConfig{}` safe）。Production 於 `cmd/agnt/daemon.go` 設 `true`。**此欄唯 internal test-safety knob，勿寫 user-facing docs，勿 expose in `.agnt.kdl`.** 代舊 `AGNT_DISABLE_ORPHAN_SCAN` env var（已刪）。
 

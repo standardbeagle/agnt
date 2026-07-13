@@ -1,4 +1,4 @@
-.PHONY: build release test test-unit test-integration test-browser test-e2e test-isolated test-ssh test-ssh-coverage test-flake clean clean-zombies install install-local install-windows run lint test-webapp mockagent generate generate-check vendor cross-compile cross-compile-check
+.PHONY: build release test test-unit test-integration test-browser test-e2e test-chrome-e2e test-isolated test-ssh test-ssh-coverage test-flake clean clean-zombies install install-local install-windows run lint test-webapp mockagent generate generate-check vendor cross-compile cross-compile-check
 
 # Binary names
 BINARY := devtool-mcp
@@ -144,6 +144,12 @@ test-integration:
 # Run browser automation tests (requires Chrome)
 test-browser:
 	go test -v -tags=integration ./internal/browser/...
+
+# Run real-Chrome end-to-end tests separately from the general suite.
+# These tests require Chrome/Chromium and an otherwise unloaded machine;
+# renderer scheduling starvation under CPU oversubscription is non-deterministic.
+test-chrome-e2e:
+	go test -count=1 -v -tags=chromee2e ./internal/proxy/... ./internal/chromedp/...
 
 # Run Playwright e2e tests (installs/updates Chromium automatically)
 test-e2e:

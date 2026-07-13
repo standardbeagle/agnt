@@ -1,3 +1,5 @@
+//go:build chromee2e
+
 package proxy
 
 // Real-browser coverage for window.__devtool_layout.diagnose() — the

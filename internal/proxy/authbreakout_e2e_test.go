@@ -1,3 +1,5 @@
+//go:build chromee2e
+
 package proxy
 
 // Real-browser coverage for the OAuth popup round trip. The popup marker
