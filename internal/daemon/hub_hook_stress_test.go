@@ -245,6 +245,13 @@ func TestHookRing_EnqueueP99Latency(t *testing.T) {
 	t.Logf("push latency over %d ops (drain=1ms/event, %d sinks stalled): p50=%s p99=%s max=%s baseline_p99=%s target=%s guard=%s target_met=%v overflow=%d",
 		len(all), 1, p50, p99, pMax, baselineP99, p99Target, p99Guard, p99 <= p99Target, d.hookRing.OverflowCount())
 
+	// The production contract is absolute and independent: calibration may
+	// explain scheduler noise, but must never raise or replace the 5ms ceiling.
+	assert.Less(t, p99, p99Target,
+		"p99 enqueue latency %v exceeded the independent production target %v (same-run baseline %v)", p99, p99Target, baselineP99)
+	// Keep the relative assertion as a second signal: on an unusually slow
+	// scheduler it distinguishes general host inflation from ring-specific
+	// divergence, while the absolute assertion above remains authoritative.
 	assert.Less(t, p99, p99Guard,
 		"p99 enqueue latency %v exceeded the %v target plus scheduler guard derived from same-shape baseline %v", p99, p99Target, baselineP99)
 	assert.Less(t, p50, baselineP50*100+50*time.Microsecond,
