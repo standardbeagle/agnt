@@ -3,20 +3,43 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"os"
+	"sync"
+	"time"
 
 	"github.com/standardbeagle/agnt/internal/daemon"
+	"golang.org/x/term"
 )
 
 func init() {
 	runAttachTerminal = runAttachTerminalWindows
 }
 
-// runAttachTerminalWindows is a stub: native Windows local attach (a full
-// ConPTY relay) is deferred to a later task — `agnt ssh` (task 04) covers
-// Windows clients attaching to a Unix remote in the meantime. This returns a
-// clear, loud error rather than silently no-oping, per the daemon
-// architecture's Silent Failure Prohibition.
 func runAttachTerminalWindows(client *daemon.Client, sessionID string, detachChord []byte) error {
-	return fmt.Errorf("agnt attach: native Windows local attach is not yet supported (deferred; use `agnt ssh` to attach to a Unix remote, or attach from WSL)")
+	fd := int(os.Stdin.Fd())
+	if !term.IsTerminal(fd) {
+		return fmt.Errorf("agnt attach: stdin is not a Windows console; redirected input is unsupported")
+	}
+	consoleState, err := enterConsoleRawMode()
+	if err != nil {
+		return fmt.Errorf("agnt attach: failed to enter Windows console raw mode: %w", err)
+	}
+	var restoreOnce sync.Once
+	restore := func() { restoreOnce.Do(consoleState.Restore) }
+	defer restore()
+	if attachRawModeEntered != nil {
+		attachRawModeEntered()
+	}
+	return runAttachedSession(client, sessionID, detachChord, restore, attachWatchResizeWindows)
+}
+
+// attachWatchResizeWindows polls because Windows has no SIGWINCH. Cancellation
+// owns the ticker and the returned stop joins the worker, so EOF/detach cannot
+// leave a resize goroutine behind.
+func attachWatchResizeWindows(ctx context.Context, onResize func(cols, rows int)) func() {
+	stopped := pollAttachResize(ctx, 250*time.Millisecond,
+		func() (int, int, error) { return term.GetSize(int(os.Stdin.Fd())) }, onResize)
+	return func() { <-stopped }
 }

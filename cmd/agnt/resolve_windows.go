@@ -46,7 +46,9 @@ func (c *consoleRestore) Restore() {
 // enterConsoleRawMode saves the current stdout console mode, puts stdin
 // into raw mode, and enables ENABLE_VIRTUAL_TERMINAL_PROCESSING on
 // stdout so ConPTY-emitted escape sequences render correctly. Returns a
-// consoleRestore that the caller MUST defer Restore() on.
+// consoleRestore that the caller MUST defer Restore() on. If enabling VT
+// output fails after stdin entered raw mode, stdin is restored before the
+// error is returned.
 func enterConsoleRawMode() (*consoleRestore, error) {
 	cr := &consoleRestore{}
 
@@ -70,7 +72,12 @@ func enterConsoleRawMode() (*consoleRestore, error) {
 	// Enable Virtual Terminal Processing on stdout.
 	if cr.hasStdoutMode {
 		newMode := cr.savedStdoutMode | 0x0004 // ENABLE_VIRTUAL_TERMINAL_PROCESSING
-		_ = windows.SetConsoleMode(cr.stdoutHandle, newMode)
+		if err := finishConsoleSetup(
+			func() error { return windows.SetConsoleMode(cr.stdoutHandle, newMode) },
+			func() error { return term.Restore(int(os.Stdin.Fd()), oldState) },
+		); err != nil {
+			return nil, fmt.Errorf("failed to enable virtual terminal processing: %w", err)
+		}
 	}
 
 	return cr, nil

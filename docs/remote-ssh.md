@@ -28,6 +28,8 @@ agnt session kill my-session
 
 `session hosts` lists detachable sessions. In `agnt attach`, press `Ctrl-\` then `Ctrl-\` again (the default `session.detach-key`) to detach without killing the session; a later attach replays retained scrollback and resumes live output. `session kill` explicitly terminates it. These manual actions are distinct from `agnt ssh` automatic transport reconnect, which reattaches after network loss.
 
+Native Windows `agnt attach` relays the daemon-owned ConPTY through the local console, restores console modes on every exit, and polls for resize changes. Redirected stdout is supported as a byte stream; redirected stdin is rejected before the remote attach begins because detach chords and interactive console input cannot be preserved safely. WSL uses the Linux raw-terminal and SIGWINCH path.
+
 ## Daemon and proxy forwarding
 
 On connection, `agnt ssh` prints a local endpoint and an `AGNT_DAEMON_SOCKET` value for commands such as `agnt monitor` (PowerShell: `$env:AGNT_DAEMON_SOCKET='\\.\pipe\…'`; POSIX shells: `export AGNT_DAEMON_SOCKET=…`). Remote reverse-proxy ports are forwarded automatically to loopback. The same local port is preferred; if occupied, a replacement is selected and reported. `--status` prints active mappings. Forwards are rebuilt from remote state after reconnect. Overlay port `19191` is not forwarded.

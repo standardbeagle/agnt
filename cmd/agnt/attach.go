@@ -2,11 +2,15 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/standardbeagle/agnt/internal/config"
@@ -264,4 +268,136 @@ func (s *chordCarryScanner) Flush() []byte {
 	out := s.carry
 	s.carry = nil
 	return out
+}
+
+// panicSafeRestore guarantees console restoration before propagating a panic
+// from either relay direction.
+func panicSafeRestore(restore func(), fn func()) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			restore()
+			panic(recovered)
+		}
+	}()
+	fn()
+}
+
+// finishConsoleSetup makes the partial-initialization rollback independently
+// testable: once input is raw, any output-mode failure must restore the exact
+// input state captured by the caller before returning.
+func finishConsoleSetup(enableOutput, restoreInput func() error) error {
+	if err := enableOutput(); err != nil {
+		_ = restoreInput()
+		return err
+	}
+	return nil
+}
+
+// relayAttachInput is platform-neutral: console preparation is owned by the
+// platform entry point, while byte/chord behavior is identical everywhere.
+func relayAttachInput(in io.Reader, client *daemon.Client, sessionID, attachID string, isPrimary bool, chord []byte) error {
+	scanner := newChordCarryScanner(chord)
+	buf := make([]byte, 4096)
+	for {
+		n, readErr := in.Read(buf)
+		if n > 0 {
+			forward, detached := scanner.Feed(buf[:n])
+			if len(forward) > 0 && isPrimary {
+				_ = client.SessionHostStdin(sessionID, attachID, forward)
+			}
+			if detached {
+				_ = client.SessionHostDetach(sessionID, attachID)
+				return nil
+			}
+		}
+		if readErr != nil {
+			if leftover := scanner.Flush(); len(leftover) > 0 && isPrimary {
+				_ = client.SessionHostStdin(sessionID, attachID, leftover)
+			}
+			return readErr
+		}
+	}
+}
+
+type attachInfo struct {
+	id      string
+	primary bool
+}
+
+// runAttachedSession owns the protocol relay after the platform has prepared
+// its console. EOF/detach is a clean half-close: canceling the attach stream
+// leaves the daemon-owned session running. A server/frame error wins whenever
+// it is already observable, and context cancellation is normalized to clean
+// exit after local EOF/detach.
+func runAttachedSession(client *daemon.Client, sessionID string, detachChord []byte, restore func(), watchResize func(context.Context, func(int, int)) func()) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	attachedCh := make(chan attachInfo, 1)
+	var attachedOnce sync.Once
+	frameErrCh := make(chan error, 1)
+	go panicSafeRestore(restore, func() {
+		frameErrCh <- client.SessionHostAttach(ctx, sessionID, func(id string, primary bool) { attachedOnce.Do(func() { attachedCh <- attachInfo{id, primary} }) }, renderAttachFrame)
+	})
+	var info attachInfo
+	select {
+	case info = <-attachedCh:
+	case err := <-frameErrCh:
+		cancel()
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	if info.primary {
+		stopResize := watchResize(ctx, func(cols, rows int) { _ = client.SessionHostResize(sessionID, cols, rows) })
+		defer func() { cancel(); stopResize() }()
+	}
+	stdinDone := make(chan error, 1)
+	go panicSafeRestore(restore, func() { stdinDone <- relayAttachInput(os.Stdin, client, sessionID, info.id, info.primary, detachChord) })
+	select {
+	case <-ctx.Done():
+		return nil
+	case err := <-frameErrCh:
+		cancel()
+		return err
+	case <-stdinDone:
+		cancel()
+		select {
+		case err := <-frameErrCh:
+			if err != nil && err != context.Canceled {
+				return err
+			}
+		default:
+		}
+		return nil
+	}
+}
+
+// pollAttachResize is the host-independent Windows resize lifecycle. It emits
+// only changed, successfully observed sizes and closes joined when cancellation
+// has stopped the ticker and worker.
+func pollAttachResize(ctx context.Context, interval time.Duration, size func() (int, int, error), onResize func(int, int)) <-chan struct{} {
+	joined := make(chan struct{})
+	go func() {
+		defer close(joined)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		lastCols, lastRows := 0, 0
+		if cols, rows, err := size(); err == nil {
+			lastCols, lastRows = cols, rows
+			onResize(cols, rows)
+		}
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				cols, rows, err := size()
+				if err == nil && (cols != lastCols || rows != lastRows) {
+					lastCols, lastRows = cols, rows
+					onResize(cols, rows)
+				}
+			}
+		}
+	}()
+	return joined
 }

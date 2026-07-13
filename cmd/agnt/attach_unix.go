@@ -48,19 +48,6 @@ func signalRestoreWatcher(sigCh <-chan os.Signal, done <-chan struct{}, restore 
 	}
 }
 
-// panicSafeRestore runs fn, guaranteeing restore() has completed before any
-// panic from fn is re-raised — so a crash mid-relay never leaves the local
-// terminal in raw mode.
-func panicSafeRestore(restore func(), fn func()) {
-	defer func() {
-		if r := recover(); r != nil {
-			restore()
-			panic(r)
-		}
-	}()
-	fn()
-}
-
 // attachWatchResize watches SIGWINCH and reports the new terminal size via
 // onResize until ctx is canceled. Returns a stop func.
 func attachWatchResize(ctx context.Context, onResize func(cols, rows int)) func() {
@@ -91,30 +78,6 @@ func attachWatchResize(ctx context.Context, onResize func(cols, rows int)) func(
 // byte is forwarded — the chord itself is never sent to the remote. Returns
 // when the chord is detected (clean detach, nil error) or stdin hits EOF/an
 // error.
-func relayStdin(client *daemon.Client, sessionID, attachID string, isPrimary bool, chord []byte) error {
-	scanner := newChordCarryScanner(chord)
-	buf := make([]byte, 4096)
-	for {
-		n, readErr := os.Stdin.Read(buf)
-		if n > 0 {
-			forward, detached := scanner.Feed(buf[:n])
-			if len(forward) > 0 && isPrimary {
-				_ = client.SessionHostStdin(sessionID, attachID, forward)
-			}
-			if detached {
-				_ = client.SessionHostDetach(sessionID, attachID)
-				return nil
-			}
-		}
-		if readErr != nil {
-			if leftover := scanner.Flush(); len(leftover) > 0 && isPrimary {
-				_ = client.SessionHostStdin(sessionID, attachID, leftover)
-			}
-			return readErr
-		}
-	}
-}
-
 // runAttachTerminalUnix drives the interactive attach relay: raw terminal
 // mode, bidirectional byte relay over SESSION-HOST, SIGWINCH forwarding, and
 // guaranteed termios restore on every exit path (normal return, detach,
@@ -183,7 +146,7 @@ func runAttachTerminalUnix(client *daemon.Client, sessionID string, detachChord 
 
 	stdinDoneCh := make(chan error, 1)
 	go panicSafeRestore(restore, func() {
-		stdinDoneCh <- relayStdin(client, sessionID, info.id, info.primary, detachChord)
+		stdinDoneCh <- relayAttachInput(os.Stdin, client, sessionID, info.id, info.primary, detachChord)
 	})
 
 	select {

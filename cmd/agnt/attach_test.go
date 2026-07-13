@@ -1,9 +1,28 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"reflect"
+	"sync"
 	"testing"
+	"time"
 )
+
+func TestFinishConsoleSetup_RestoresInputOnOutputModeFailure(t *testing.T) {
+	want := errors.New("VT mode rejected")
+	restored := 0
+	err := finishConsoleSetup(func() error { return want }, func() error {
+		restored++
+		return nil
+	})
+	if !errors.Is(err, want) {
+		t.Fatalf("error = %v, want %v", err, want)
+	}
+	if restored != 1 {
+		t.Fatalf("restore calls = %d, want 1", restored)
+	}
+}
 
 func TestParseDetachChord(t *testing.T) {
 	cases := []struct {
@@ -35,6 +54,50 @@ func TestParseDetachChord(t *testing.T) {
 		if !reflect.DeepEqual(got, c.want) {
 			t.Errorf("parseDetachChord(%q) = %v, want %v", c.spec, got, c.want)
 		}
+	}
+}
+
+func TestPollAttachResize_ChangesOnlyAndJoinsOnCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	sizes := make(chan [2]int, 4)
+	current := [2]int{80, 24}
+	var currentMu sync.RWMutex
+	joined := pollAttachResize(ctx, time.Millisecond,
+		func() (int, int, error) {
+			currentMu.RLock()
+			defer currentMu.RUnlock()
+			return current[0], current[1], nil
+		},
+		func(cols, rows int) { sizes <- [2]int{cols, rows} })
+	select {
+	case got := <-sizes:
+		if got != current {
+			t.Fatalf("initial size = %v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("initial resize not delivered")
+	}
+	select {
+	case got := <-sizes:
+		t.Fatalf("duplicate resize %v", got)
+	case <-time.After(5 * time.Millisecond):
+	}
+	currentMu.Lock()
+	current = [2]int{120, 40}
+	currentMu.Unlock()
+	select {
+	case got := <-sizes:
+		if got != current {
+			t.Fatalf("changed size = %v", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("changed resize not delivered")
+	}
+	cancel()
+	select {
+	case <-joined:
+	case <-time.After(time.Second):
+		t.Fatal("resize worker did not join after cancellation")
 	}
 }
 
