@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/daemon"
+	"golang.org/x/sys/windows"
 	"golang.org/x/term"
 )
 
@@ -30,7 +31,8 @@ func runAttachTerminalWindows(client *daemon.Client, sessionID string, detachCho
 		if attachRawModeEntered != nil {
 			attachRawModeEntered()
 		}
-		return runAttachedSession(client, sessionID, detachChord, restore, attachWatchResizeWindows)
+		interruptInput := func() { _ = windows.CancelIoEx(windows.Handle(os.Stdin.Fd()), nil) }
+		return runAttachedSession(client, sessionID, detachChord, restore, interruptInput, attachWatchResizeWindows)
 	})
 }
 

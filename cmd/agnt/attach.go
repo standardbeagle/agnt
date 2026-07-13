@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -318,7 +319,7 @@ type attachInfo struct {
 // leaves the daemon-owned session running. A server/frame error wins whenever
 // it is already observable, and context cancellation is normalized to clean
 // exit after local EOF/detach.
-func runAttachedSession(client *daemon.Client, sessionID string, detachChord []byte, restore func(), watchResize func(context.Context, func(int, int)) func()) error {
+func runAttachedSession(client *daemon.Client, sessionID string, detachChord []byte, restore func(), interruptInput func(), watchResize func(context.Context, func(int, int)) func()) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	attachedCh := make(chan attachInfo, 1)
@@ -336,29 +337,36 @@ func runAttachedSession(client *daemon.Client, sessionID string, detachChord []b
 	case <-ctx.Done():
 		return ctx.Err()
 	}
+	stopResize := func() {}
 	if info.primary {
-		stopResize := watchResize(ctx, func(cols, rows int) { _ = client.SessionHostResize(sessionID, cols, rows) })
-		defer func() { cancel(); stopResize() }()
+		stopResize = watchResize(ctx, func(cols, rows int) { _ = client.SessionHostResize(sessionID, cols, rows) })
 	}
 	stdinDone := make(chan error, 1)
 	go panicSafeRestore(restore, func() { stdinDone <- relayAttachInput(os.Stdin, client, sessionID, info.id, info.primary, detachChord) })
+	return joinAttachWorkers(cancel, interruptInput, stopResize, frameErrCh, stdinDone)
+}
+
+// joinAttachWorkers is the lifecycle barrier between the relay and console
+// restoration. It cancels the peer direction, actively interrupts a blocked
+// input read when the frame pump finishes first, and joins frame, input, and
+// resize workers before returning. A non-cancellation frame error always wins,
+// including when local EOF/detach initiated shutdown.
+func joinAttachWorkers(cancel func(), interruptInput, stopResize func(), frameDone, inputDone <-chan error) error {
+	var frameErr error
 	select {
-	case <-ctx.Done():
-		return nil
-	case err := <-frameErrCh:
+	case frameErr = <-frameDone:
 		cancel()
-		return err
-	case <-stdinDone:
+		interruptInput()
+		<-inputDone
+	case <-inputDone:
 		cancel()
-		select {
-		case err := <-frameErrCh:
-			if err != nil && err != context.Canceled {
-				return err
-			}
-		default:
-		}
-		return nil
+		frameErr = <-frameDone
 	}
+	stopResize()
+	if frameErr != nil && !errors.Is(frameErr, context.Canceled) {
+		return frameErr
+	}
+	return nil
 }
 
 // pollAttachResize is the host-independent Windows resize lifecycle. It emits
