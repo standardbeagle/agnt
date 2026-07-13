@@ -70,15 +70,12 @@ func (d *Daemon) hubHandleAlertsReport(conn *hubpkg.Connection, cmd *hubproto.Co
 
 func (d *Daemon) hubHandleAlertsQuery(conn *hubpkg.Connection, cmd *hubproto.Command) error {
 	protoFilter, _ := unmarshalCommand[protocol.AlertQueryFilter](cmd)
+	scopeFilter, _ := unmarshalCommand[protocol.DirectoryFilter](cmd)
 
 	// Route through the mandatory session-scope chokepoint. A non-global
 	// query that can't resolve a project is rejected fail-loud (mirrors
 	// INCIDENTS QUERY) rather than leaking every project's alerts.
-	projectPath, global, err := d.resolveProjectScope(protocol.DirectoryFilter{
-		Global:      protoFilter.Global,
-		SessionCode: protoFilter.SessionCode,
-		Directory:   protoFilter.Directory,
-	}, conn.SessionCode())
+	projectPath, global, err := d.resolveProjectScope(scopeFilter, conn.SessionCode())
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
 	}
@@ -141,6 +138,7 @@ func (d *Daemon) hubHandleStartupLog(conn *hubpkg.Connection, cmd *hubproto.Comm
 		SessionCode string `json:"session_code,omitempty"`
 		Directory   string `json:"directory,omitempty"`
 	}](cmd)
+	scopeFilter, _ := unmarshalCommand[protocol.DirectoryFilter](cmd)
 	if f.ProcessID != "" {
 		filter.ProcessID = f.ProcessID
 	}
@@ -160,11 +158,7 @@ func (d *Daemon) hubHandleStartupLog(conn *hubpkg.Connection, cmd *hubproto.Comm
 	// Route through the mandatory session-scope chokepoint so STARTUP-LOG
 	// cannot surface another project's startup events. Non-global queries
 	// that can't resolve a project fail loud (mirrors ALERTS QUERY).
-	projectPath, global, err := d.resolveProjectScope(protocol.DirectoryFilter{
-		Global:      f.Global,
-		SessionCode: f.SessionCode,
-		Directory:   f.Directory,
-	}, conn.SessionCode())
+	projectPath, global, err := d.resolveProjectScope(scopeFilter, conn.SessionCode())
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
 	}

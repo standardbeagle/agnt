@@ -293,7 +293,7 @@ func (d *Daemon) hubHandleProcList(ctx context.Context, conn *hubpkg.Connection,
 	procs := d.hub.ProcessManager().List()
 
 	// Parse directory filter from JSON data (optional)
-	dirFilter, err := unmarshalCommand[hubproto.DirectoryFilter](cmd)
+	dirFilter, err := unmarshalCommand[protocol.DirectoryFilter](cmd)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("invalid filter JSON: %v", err))
 	}
@@ -302,11 +302,7 @@ func (d *Daemon) hubHandleProcList(ctx context.Context, conn *hubpkg.Connection,
 	// every non-debug list/query (see resolveProjectScope). A non-global
 	// query with no resolvable project fails loud rather than leaking all
 	// projects' processes.
-	projectPath, global, err := d.resolveProjectScope(protocol.DirectoryFilter{
-		Global:      dirFilter.Global,
-		SessionCode: dirFilter.SessionCode,
-		Directory:   dirFilter.Directory,
-	}, conn.SessionCode())
+	projectPath, global, err := d.resolveProjectScope(dirFilter, conn.SessionCode())
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
 	}

@@ -346,6 +346,17 @@ func (rc *ResilientClient) ProcList(dirFilter protocol.DirectoryFilter) (map[str
 	return result, err
 }
 
+// ResolveQueryScope resolves the effective query scope through the daemon.
+func (rc *ResilientClient) ResolveQueryScope(filter protocol.DirectoryFilter) (bool, error) {
+	var global bool
+	err := rc.WithClient(func(c *Client) error {
+		var err error
+		global, err = c.ResolveQueryScope(filter)
+		return err
+	})
+	return global, err
+}
+
 // ProcCleanupPort kills processes on a specific port.
 func (rc *ResilientClient) ProcCleanupPort(port int) (map[string]interface{}, error) {
 	var result map[string]interface{}

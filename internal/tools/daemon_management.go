@@ -13,7 +13,7 @@ import (
 // DaemonInput defines input for the daemon management tool.
 type DaemonInput struct {
 	Action string `json:"action" jsonschema:"Action: status, info, start, stop, restart, stop_all, restart_all, startup_log, doctor"`
-	Global bool   `json:"global,omitempty" jsonschema:"For startup_log: include startup events from all projects instead of just the current one (default: false)"`
+	Global *bool  `json:"global,omitempty" jsonschema:"For startup_log: override project config; true includes all projects, false forces current project"`
 }
 
 // DaemonOutput defines output for daemon management.
@@ -361,7 +361,7 @@ func handleDaemonDoctor(dt *DaemonTools) (*mcp.CallToolResult, DaemonOutput, err
 	}, DaemonOutput{Success: status != "error", Message: text}, nil
 }
 
-func handleDaemonStartupLog(dt *DaemonTools, global bool) (*mcp.CallToolResult, DaemonOutput, error) {
+func handleDaemonStartupLog(dt *DaemonTools, global *bool) (*mcp.CallToolResult, DaemonOutput, error) {
 	if err := dt.ensureConnected(); err != nil {
 		return errorResult(fmt.Sprintf("daemon not running: %v", err)), DaemonOutput{}, nil
 	}
@@ -371,8 +371,8 @@ func handleDaemonStartupLog(dt *DaemonTools, global bool) (*mcp.CallToolResult, 
 	// (mirrors collectProcessAlerts). global:true bypasses the scope; a
 	// non-global contextless call is rejected daemon-side rather than leaking
 	// every project's startup events.
-	dirFilter := protocol.DirectoryFilter{Global: global}
-	if !global {
+	dirFilter := protocol.DirectoryFilter{GlobalOverride: global}
+	if !globalEnabled(global) {
 		if sessionCode := dt.SessionCode(); sessionCode != "" {
 			dirFilter.SessionCode = sessionCode
 		} else if p := getProjectPath(); p != "" {

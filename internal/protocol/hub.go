@@ -107,9 +107,6 @@ type (
 
 	// OutputFilter represents filters for PROC OUTPUT command.
 	OutputFilter = hubprotocol.OutputFilter
-
-	// DirectoryFilter represents directory scoping for list operations.
-	DirectoryFilter = hubprotocol.DirectoryFilter
 )
 
 // Re-export functions from hub.

@@ -103,7 +103,7 @@ type ProxyInput struct {
 	Direction     string `json:"direction,omitempty" jsonschema:"For navigate: 'back', 'forward', 'reload', or 'goto' (with target_url). Drives the page content frame."`
 	Width         int    `json:"width,omitempty" jsonschema:"For resize: content-frame viewport width in px (0 resets to full width). Resize is observed from the outer shell; the page reflows in place with no reload, then audits can measure the resized viewport."`
 	Height        int    `json:"height,omitempty" jsonschema:"For resize: content-frame viewport height in px (0 = full height)."`
-	Global        bool   `json:"global,omitempty" jsonschema:"For list: include proxies from all directories (default: false)"`
+	Global        *bool  `json:"global,omitempty" jsonschema:"For list: override project config; true includes all projects, false forces current project"`
 	Help          bool   `json:"help,omitempty" jsonschema:"For exec: show __devtool API overview instead of executing code"`
 	Describe      string `json:"describe,omitempty" jsonschema:"For exec: show detailed docs for a specific function (e.g. 'screenshot', 'interactions.getLastClick')"`
 	Search        string `json:"search,omitempty" jsonschema:"For exec: case-insensitive substring search across __devtool function names, descriptions, and signatures. Returns up to 10 compact matches. Combine with category to narrow results."`

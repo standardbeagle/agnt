@@ -80,7 +80,7 @@ type SnapshotURL struct {
 func (dt *DaemonTools) handleProcSnapshot(input ProcInput) (*mcp.CallToolResult, ProcOutput, error) {
 	// Build directory filter once so process list and proxy list see the
 	// same scope (current session or current project).
-	dirFilter := protocol.DirectoryFilter{Global: input.Global}
+	dirFilter := protocol.DirectoryFilter{GlobalOverride: input.Global}
 	if sessionCode := dt.SessionCode(); sessionCode != "" {
 		dirFilter.SessionCode = sessionCode
 	} else if projectPath := getProjectPath(); projectPath != "" {

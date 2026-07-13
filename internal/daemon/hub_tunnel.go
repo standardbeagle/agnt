@@ -148,16 +148,12 @@ func (d *Daemon) hubHandleTunnelStatus(conn *hubpkg.Connection, cmd *hubproto.Co
 
 func (d *Daemon) hubHandleTunnelList(conn *hubpkg.Connection, cmd *hubproto.Command) error {
 	// Parse filter from command data
-	dirFilter, _ := unmarshalCommand[hubproto.DirectoryFilter](cmd)
+	dirFilter, _ := unmarshalCommand[protocol.DirectoryFilter](cmd)
 
 	// Route through the mandatory session-scope chokepoint (see
 	// resolveProjectScope). A non-global query with no resolvable project
 	// fails loud rather than listing every project's tunnels.
-	projectPath, global, err := d.resolveProjectScope(protocol.DirectoryFilter{
-		Global:      dirFilter.Global,
-		SessionCode: dirFilter.SessionCode,
-		Directory:   dirFilter.Directory,
-	}, conn.SessionCode())
+	projectPath, global, err := d.resolveProjectScope(dirFilter, conn.SessionCode())
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
 	}

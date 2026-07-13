@@ -138,11 +138,11 @@ Given per-call `DirectoryFilter{Global, SessionCode, Directory}` and connection'
 4. otherwise connection's bound session's project path.
 5. none of above → `("", false, errNoSessionScope)`: **fail loud**.
 
-Non-global call that cannot resolve a project is rejected with `invalid_args: no session attached …` rather than silently leaking every project's data. Per-call `global` flag always wins. MCP daemon connection not session-bound, so MCP tools name project explicitly via `SessionCode` (preferred) or `Directory` (fallback) — see `collectProcessAlerts` / `handleProcList` for canonical client pattern.
+Call that cannot resolve a project is rejected with `invalid_args: no session attached …` rather than silently leaking every project's data. After resolving the project, omitted `global` uses `scope.default-global` from `.agnt.kdl` (secure default `false`); explicit `global:true` or `global:false` wins in either direction. MCP daemon connection not session-bound, so MCP tools name project explicitly via `SessionCode` (preferred) or `Directory` (fallback) — see `collectProcessAlerts` / `handleProcList` for canonical client pattern.
 
 ### Uniform `global` override on MCP tools (C6)
 
-Every gated MCP tool exposes **same** override: `global bool` input (`json:"global,omitempty"`, default `false`, documented in jsonschema). `global:true` returns cross-project results; default scopes to caller's session/project. MCP daemon connection not session-bound, so each tool, when non-global, names project explicitly on wire (`SessionCode` preferred, `Directory` fallback) — see `handleProcList` / `handleProxyList` / `handleTunnelList` / `collectProcessAlerts` / `collectProxyErrors` / `collectStartupErrors` / `handleDaemonStartupLog`. Reflection contract test (`internal/tools/global_scope_uniform_test.go`, `TestGatedMCPTools_ExposeGlobalFlagUniformly`) pins that `get_errors`, `proc`, `proxy`, `tunnel`, `session`, and `daemon` (startup_log) all carry the field.
+Every gated MCP tool exposes the **same** optional `global *bool` override (`json:"global,omitempty"`, documented in jsonschema). The pointer is required to preserve three states: omitted uses project config, explicit `true` is cross-project, and explicit `false` forces project scope. MCP daemon connection not session-bound, so each tool names the project on wire whenever it is not explicitly global; this lets the daemon load that project's config. Reflection contract test (`internal/tools/global_scope_uniform_test.go`, `TestGatedMCPTools_ExposeGlobalFlagUniformly`) pins the six gated inputs.
 
 Two tools intentionally do **not** take cross-project `global`, excluded from contract test:
 

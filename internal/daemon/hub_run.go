@@ -90,6 +90,16 @@ func (d *Daemon) registerAgntCommands() error {
 
 	// DETECT command
 	if err := register(hubpkg.CommandDefinition{
+		Verb:        protocol.VerbScope,
+		SubVerbs:    []string{protocol.SubVerbResolve},
+		Description: "Resolve effective query scope",
+		Handler:     d.hubHandleScope,
+	}); err != nil {
+		return err
+	}
+
+	// DETECT command
+	if err := register(hubpkg.CommandDefinition{
 		Verb:        "DETECT",
 		Description: "Detect project type and available scripts",
 		Handler:     d.hubHandleDetect,

@@ -24,7 +24,7 @@ only the summary table + handler pattern; this is the detailed reference.
 | `watch` | Get monitor command for streaming events (errors, interactions, process, all) |
 | `channel_reply` | Send messages to developer's browser overlay (channel mode beta) |
 
-**Session scoping & `global` flag**: query/list tools scoped to caller's session project by default (daemon-side session-scope chokepoint — see `.claude/rules/daemon-architecture.md` § Tool session-scoping). Every gated tool (`get_errors`, `proc`, `proxy`, `tunnel`, `session`, `daemon` startup_log) takes same `global: true` input for cross-project results. `get_incidents` (per-session isolated) and `watch` (monitor stream) intentionally omit it.
+**Session scoping & `global` flag**: query/list tools use the project's `scope.default-global` setting (default `false`; daemon-side session-scope chokepoint — see `.claude/rules/daemon-architecture.md` § Tool session-scoping). Every gated tool (`get_errors`, `proc`, `proxy`, `tunnel`, `session`, `daemon` startup_log) accepts an optional `global`; explicit `true` or `false` overrides project config in either direction, while omission uses config. `get_incidents` (per-session isolated) and `watch` (monitor stream) intentionally omit it.
 
 **Handler pattern**:
 - Input/Output structs with JSON schema tags

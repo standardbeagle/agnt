@@ -21,6 +21,8 @@ const AgntConfigFileName = ".agnt.kdl"
 // AgntConfig represents the agnt configuration.
 // All fields use standard KDL format with child nodes.
 type AgntConfig struct {
+	// Scope controls default query/list visibility for this project.
+	Scope *ScopeConfig `kdl:"scope"`
 	// Project metadata (optional, for documentation/info only)
 	Project *AgntProjectMeta `kdl:"project"`
 
@@ -70,6 +72,12 @@ type AgntConfig struct {
 	// expected to surface these through the event system / session log so the
 	// misconfiguration is visible rather than silently hanging.
 	Warnings []string `kdl:"-"`
+}
+
+type ScopeConfig struct {
+	// DefaultGlobal makes omitted per-call global flags cross-project. Explicit
+	// global true/false always overrides this project default.
+	DefaultGlobal bool `kdl:"default-global"`
 }
 
 // SetupConfig controls the first-run setup nudge for `agnt run`.

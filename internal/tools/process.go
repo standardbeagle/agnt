@@ -140,7 +140,7 @@ type ProcInput struct {
 	// Cleanup options
 	Port int `json:"port,omitempty" jsonschema:"Port number (required for cleanup_port)"`
 	// Directory filtering
-	Global bool `json:"global,omitempty" jsonschema:"For list: include processes from all directories (default: false)"`
+	Global *bool `json:"global,omitempty" jsonschema:"For list: override project config; true includes all projects, false forces current project"`
 	// Auto-restart options
 	AutoRestartEnable bool `json:"auto_restart_enable,omitempty" jsonschema:"For autorestart: enable (true) or disable (false)"`
 	MaxRestarts       int  `json:"max_restarts,omitempty" jsonschema:"For autorestart: max restarts per minute (default: 5, 0=unlimited)"`

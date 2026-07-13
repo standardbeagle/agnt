@@ -15,9 +15,11 @@ import (
 // scopes to the caller's session/project via the SessionCode-first chain so the
 // MCP daemon connection — which is not session-bound — names the project on the
 // wire instead of leaking the daemon's own cwd.
-func sessionScopeFilter(dt *DaemonTools, global bool) protocol.DirectoryFilter {
-	filter := protocol.DirectoryFilter{Global: global}
-	if global {
+func globalEnabled(global *bool) bool { return global != nil && *global }
+
+func sessionScopeFilter(dt *DaemonTools, global *bool) protocol.DirectoryFilter {
+	filter := protocol.DirectoryFilter{GlobalOverride: global}
+	if globalEnabled(global) {
 		return filter
 	}
 	if sessionCode := dt.SessionCode(); sessionCode != "" {
@@ -35,7 +37,7 @@ type SessionInput struct {
 	Message  string `json:"message,omitempty" jsonschema:"Message to send or schedule (required for send, schedule)"`
 	Duration string `json:"duration,omitempty" jsonschema:"Duration for scheduling (e.g. '5m', '1h30m') (required for schedule)"`
 	TaskID   string `json:"task_id,omitempty" jsonschema:"Task ID (required for cancel)"`
-	Global   bool   `json:"global,omitempty" jsonschema:"For list/tasks: include sessions/tasks from all directories (default: false)"`
+	Global   *bool  `json:"global,omitempty" jsonschema:"For list/tasks: override project config; true includes all projects, false forces current project"`
 }
 
 // SessionOutput defines output for the session tool.

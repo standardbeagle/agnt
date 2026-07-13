@@ -109,25 +109,38 @@ var errNoSessionScope = errors.New("no session attached — call SESSION ATTACH 
 // Per-call global always wins. Resolution order mirrors the existing
 // proc/proxy LIST handlers so behavior is uniform across the surface.
 func (d *Daemon) resolveProjectScope(filter protocol.DirectoryFilter, connSessionCode string) (projectPath string, global bool, err error) {
-	if filter.Global {
+	globalValue, globalSpecified := filter.GlobalSetting()
+	if globalSpecified && globalValue {
 		return "", true, nil
 	}
+	var path string
 	if filter.SessionCode != "" {
 		session, ok := d.sessionRegistry.Get(filter.SessionCode)
 		if !ok {
 			return "", false, fmt.Errorf("session %q not found", filter.SessionCode)
 		}
-		return normalizePath(session.ProjectPath), false, nil
-	}
-	if filter.Directory != "" {
-		return normalizePath(filter.Directory), false, nil
-	}
-	if connSessionCode != "" {
+		path = normalizePath(session.ProjectPath)
+	} else if filter.Directory != "" {
+		path = normalizePath(filter.Directory)
+	} else if connSessionCode != "" {
 		if session, ok := d.sessionRegistry.Get(connSessionCode); ok {
-			return normalizePath(session.ProjectPath), false, nil
+			path = normalizePath(session.ProjectPath)
 		}
 	}
-	return "", false, errNoSessionScope
+	if path == "" {
+		return "", false, errNoSessionScope
+	}
+	if globalSpecified {
+		return path, false, nil
+	}
+	cfg, loadErr := config.LoadAgntConfig(path)
+	if loadErr != nil {
+		return "", false, fmt.Errorf("load scope config for %s: %w", path, loadErr)
+	}
+	if cfg != nil && cfg.Scope != nil && cfg.Scope.DefaultGlobal {
+		return "", true, nil
+	}
+	return path, false, nil
 }
 
 // resolveScope is the scoped-token form of resolveProjectScope. It is the

@@ -251,9 +251,25 @@ func (c *Client) ProcStop(processID string, force bool) (map[string]interface{},
 }
 
 // ProcList lists all processes.
+func hasDirectoryFilter(filter protocol.DirectoryFilter) bool {
+	_, globalSpecified := filter.GlobalSetting()
+	return filter.SessionCode != "" || filter.Directory != "" || globalSpecified
+}
+
+// ResolveQueryScope asks the daemon's canonical scope chokepoint to apply the
+// per-project default when the call did not provide an explicit override.
+func (c *Client) ResolveQueryScope(filter protocol.DirectoryFilter) (bool, error) {
+	result, err := c.conn.Request(protocol.VerbScope, protocol.SubVerbResolve).WithJSON(filter).JSON()
+	if err != nil {
+		return false, err
+	}
+	global, _ := result["global"].(bool)
+	return global, nil
+}
+
 func (c *Client) ProcList(dirFilter protocol.DirectoryFilter) (map[string]interface{}, error) {
 	req := c.conn.Request(protocol.VerbProc, protocol.SubVerbList)
-	if dirFilter.Directory != "" || dirFilter.Global {
+	if hasDirectoryFilter(dirFilter) {
 		req = req.WithJSON(dirFilter)
 	}
 	return req.JSON()
@@ -301,7 +317,7 @@ func (c *Client) ProxyStatus(id string) (map[string]interface{}, error) {
 // ProxyList lists all proxies.
 func (c *Client) ProxyList(dirFilter protocol.DirectoryFilter) (map[string]interface{}, error) {
 	req := c.conn.Request(protocol.VerbProxy, protocol.SubVerbList)
-	if dirFilter.Directory != "" || dirFilter.Global {
+	if hasDirectoryFilter(dirFilter) {
 		req = req.WithJSON(dirFilter)
 	}
 	return req.JSON()
@@ -455,7 +471,7 @@ func (c *Client) TunnelStatus(id string) (map[string]interface{}, error) {
 // TunnelList lists all active tunnels.
 func (c *Client) TunnelList(dirFilter protocol.DirectoryFilter) (map[string]interface{}, error) {
 	req := c.conn.Request(protocol.VerbTunnel, protocol.SubVerbList)
-	if dirFilter.Directory != "" || dirFilter.Global {
+	if hasDirectoryFilter(dirFilter) {
 		req = req.WithJSON(dirFilter)
 	}
 	return req.JSON()
@@ -479,7 +495,7 @@ func (c *Client) BrowserStatus(id string) (map[string]interface{}, error) {
 // BrowserList lists all active browser instances.
 func (c *Client) BrowserList(dirFilter protocol.DirectoryFilter) (map[string]interface{}, error) {
 	req := c.conn.Request(protocol.VerbBrowser, protocol.SubVerbList)
-	if dirFilter.Directory != "" || dirFilter.Global {
+	if hasDirectoryFilter(dirFilter) {
 		req = req.WithJSON(dirFilter)
 	}
 	return req.JSON()
@@ -503,7 +519,7 @@ func (c *Client) AutomationStatus(id string) (map[string]interface{}, error) {
 // AutomationList lists all active automation sessions.
 func (c *Client) AutomationList(dirFilter protocol.DirectoryFilter) (map[string]interface{}, error) {
 	req := c.conn.Request(protocol.VerbAutomation, protocol.SubVerbList)
-	if dirFilter.Directory != "" || dirFilter.Global {
+	if hasDirectoryFilter(dirFilter) {
 		req = req.WithJSON(dirFilter)
 	}
 	return req.JSON()
@@ -630,7 +646,7 @@ func (c *Client) SessionHeartbeat(code string) error {
 // SessionList lists active sessions.
 func (c *Client) SessionList(dirFilter protocol.DirectoryFilter) (map[string]interface{}, error) {
 	req := c.conn.Request(protocol.VerbSession, protocol.SubVerbList)
-	if dirFilter.Directory != "" || dirFilter.Global {
+	if hasDirectoryFilter(dirFilter) {
 		req = req.WithJSON(dirFilter)
 	}
 	return req.JSON()
@@ -659,7 +675,7 @@ func (c *Client) SessionCancel(taskID string) error {
 // SessionTasks lists scheduled tasks.
 func (c *Client) SessionTasks(dirFilter protocol.DirectoryFilter) (map[string]interface{}, error) {
 	req := c.conn.Request(protocol.VerbSession, protocol.SubVerbTasks)
-	if dirFilter.Directory != "" || dirFilter.Global {
+	if hasDirectoryFilter(dirFilter) {
 		req = req.WithJSON(dirFilter)
 	}
 	return req.JSON()
@@ -934,8 +950,8 @@ func (c *Client) AlertClear() error {
 // with no resolvable project is rejected fail-loud daemon-side.
 func (c *Client) StartupLog(limit int, dirFilter protocol.DirectoryFilter) (map[string]interface{}, error) {
 	payload := map[string]interface{}{"limit": limit}
-	if dirFilter.Global {
-		payload["global"] = true
+	if global, specified := dirFilter.GlobalSetting(); specified {
+		payload["global"] = global
 	}
 	if dirFilter.SessionCode != "" {
 		payload["session_code"] = dirFilter.SessionCode

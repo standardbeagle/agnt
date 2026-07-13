@@ -25,7 +25,61 @@ const (
 	VerbIncidents    = "INCIDENTS"     // Incident inbox query + mark-read
 	VerbPorts        = "PORTS"         // Listening-port inventory + orphan pgid management
 	VerbSessionHost  = "SESSION-HOST"  // Daemon-owned detachable PTY sessions (see docs/superpowers/specs/2026-07-03-remote-ssh-design.md §1)
+	VerbScope        = "SCOPE"         // Resolve effective query scope
 )
+
+// DirectoryFilter preserves JSON presence for global while retaining the
+// legacy Global bool for source-compatible `Global: true` callers.
+type DirectoryFilter struct {
+	SessionCode    string `json:"session_code,omitempty"`
+	Directory      string `json:"directory,omitempty"`
+	Global         bool   `json:"global,omitempty"`
+	GlobalOverride *bool  `json:"-"`
+}
+
+// Bool returns a pointer suitable for optional boolean protocol fields.
+func Bool(value bool) *bool { return &value }
+
+func (f DirectoryFilter) GlobalSetting() (bool, bool) {
+	if f.GlobalOverride != nil {
+		return *f.GlobalOverride, true
+	}
+	if f.Global {
+		return true, true
+	}
+	return false, false
+}
+
+func (f DirectoryFilter) MarshalJSON() ([]byte, error) {
+	type wire struct {
+		SessionCode string `json:"session_code,omitempty"`
+		Directory   string `json:"directory,omitempty"`
+		Global      *bool  `json:"global,omitempty"`
+	}
+	var global *bool
+	if f.GlobalOverride != nil {
+		global = f.GlobalOverride
+	} else if f.Global {
+		v := true
+		global = &v
+	}
+	return json.Marshal(wire{f.SessionCode, f.Directory, global})
+}
+
+func (f *DirectoryFilter) UnmarshalJSON(data []byte) error {
+	type wire struct {
+		SessionCode string `json:"session_code,omitempty"`
+		Directory   string `json:"directory,omitempty"`
+		Global      *bool  `json:"global,omitempty"`
+	}
+	var w wire
+	if err := json.Unmarshal(data, &w); err != nil {
+		return err
+	}
+	f.SessionCode, f.Directory, f.GlobalOverride = w.SessionCode, w.Directory, w.Global
+	f.Global = w.Global != nil && *w.Global
+	return nil
+}
 
 // Agnt-specific sub-verbs (beyond those in go-cli-server).
 const (
@@ -72,6 +126,7 @@ const (
 	SubVerbKill           = "KILL"          // Explicit termination of a session-host session
 	SubVerbDetach         = "DETACH"        // Client-initiated clean detach (SESSION-HOST ATTACH stream)
 	SubVerbResize         = "RESIZE"        // Out-of-band window-size renegotiation (SESSION-HOST)
+	SubVerbResolve        = "RESOLVE"       // Resolve configured query scope (SCOPE verb)
 )
 
 type ForwardMapping struct {
@@ -357,7 +412,7 @@ type AlertQueryFilter struct {
 	Severity  string `json:"severity,omitempty"`   // Filter by severity
 	Limit     int    `json:"limit,omitempty"`      // Max results (0 = all)
 
-	Global      bool   `json:"global,omitempty"`       // Bypass session scope (cross-project)
+	Global      *bool  `json:"global,omitempty"`       // Explicit session-scope override
 	SessionCode string `json:"session_code,omitempty"` // Explicit session to scope to
 	Directory   string `json:"directory,omitempty"`    // Explicit project directory to scope to
 }

@@ -138,15 +138,11 @@ func (d *Daemon) hubHandlePorts(ctx context.Context, conn *hubpkg.Connection, cm
 //   - conflict:   port is declared in .agnt.kdl but its owner is not managed
 //   - unmanaged:  any other listening port
 func (d *Daemon) hubHandlePortsQuery(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	dirFilter, err := unmarshalCommand[hubproto.DirectoryFilter](cmd)
+	dirFilter, err := unmarshalCommand[protocol.DirectoryFilter](cmd)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("invalid filter JSON: %v", err))
 	}
-	projectPath, _, err := d.resolveProjectScope(protocol.DirectoryFilter{
-		Global:      dirFilter.Global,
-		SessionCode: dirFilter.SessionCode,
-		Directory:   dirFilter.Directory,
-	}, conn.SessionCode())
+	projectPath, _, err := d.resolveProjectScope(dirFilter, conn.SessionCode())
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
 	}

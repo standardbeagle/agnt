@@ -19,7 +19,7 @@ type GetErrorsInput struct {
 	IncludeWarnings *bool  `json:"include_warnings,omitempty" jsonschema:"Include warnings (default: true)"`
 	Limit           int    `json:"limit,omitempty" jsonschema:"Max errors to return (default: 25)"`
 	Raw             bool   `json:"raw,omitempty" jsonschema:"Return full JSON with all fields"`
-	Global          bool   `json:"global,omitempty" jsonschema:"Bypass session scoping: include errors from all projects instead of only the current one (default: false)"`
+	Global          *bool  `json:"global,omitempty" jsonschema:"Override project config: true includes all projects, false forces current project"`
 }
 
 // GetErrorsOutput is the output for the get_errors tool.
@@ -83,7 +83,13 @@ func (dt *DaemonTools) makeGetErrorsHandler() func(context.Context, *mcp.CallToo
 		// coherent, non-duplicated view. Cross-project (global) requests and
 		// pipeline-off sessions fall through to the legacy collectors, which is
 		// the only path that can serve them.
-		if !input.Global {
+		effectiveGlobal, err := resolveEffectiveGlobal(input.Global, func() (bool, error) {
+			return dt.client.ResolveQueryScope(sessionScopeFilter(dt, nil))
+		})
+		if err != nil {
+			return errorResult("failed to resolve query scope: " + err.Error()), GetErrorsOutput{}, nil
+		}
+		if !effectiveGlobal {
 			if incidentErrors, ok := dt.collectIncidentErrors(input, includeWarnings); ok {
 				result, output := formatErrorsOutput(incidentErrors, includeWarnings, limit, input.Raw)
 				return result, output, nil
@@ -96,6 +102,13 @@ func (dt *DaemonTools) makeGetErrorsHandler() func(context.Context, *mcp.CallToo
 		output.CollectionWarnings = collectionWarnings
 		return result, output, nil
 	}
+}
+
+func resolveEffectiveGlobal(explicit *bool, resolveDefault func() (bool, error)) (bool, error) {
+	if explicit != nil {
+		return *explicit, nil
+	}
+	return resolveDefault()
 }
 
 // collectIncidentErrors projects the session incident inbox into unified errors
@@ -250,13 +263,13 @@ func formatErrorsOutput(allErrors []unifiedError, includeWarnings bool, limit in
 // the query is scoped to the caller's session/project so other projects' alerts
 // don't leak in. The MCP daemon connection is not session-bound, so the project
 // is named explicitly via SessionCode/Directory (mirrors collectProxyErrors).
-func (dt *DaemonTools) collectProcessAlerts(processID, since string, global bool) ([]unifiedError, string) {
+func (dt *DaemonTools) collectProcessAlerts(processID, since string, global *bool) ([]unifiedError, string) {
 	filter := protocol.AlertQueryFilter{
 		ProcessID: processID,
 		Since:     since,
 		Global:    global,
 	}
-	if !global {
+	if !globalEnabled(global) {
 		if sessionCode := dt.SessionCode(); sessionCode != "" {
 			filter.SessionCode = sessionCode
 		} else if p := getProjectPath(); p != "" {
@@ -294,9 +307,9 @@ func (dt *DaemonTools) collectProcessAlerts(processID, since string, global bool
 // Scope mirrors collectProcessAlerts: global bypasses the session-scope
 // chokepoint (cross-project); otherwise the query is scoped to the caller's
 // session/project so other projects' startup events don't leak in.
-func (dt *DaemonTools) collectStartupErrors(processID, since string, global bool) ([]unifiedError, string) {
-	dirFilter := protocol.DirectoryFilter{Global: global}
-	if !global {
+func (dt *DaemonTools) collectStartupErrors(processID, since string, global *bool) ([]unifiedError, string) {
+	dirFilter := protocol.DirectoryFilter{GlobalOverride: global}
+	if !globalEnabled(global) {
 		if sessionCode := dt.SessionCode(); sessionCode != "" {
 			dirFilter.SessionCode = sessionCode
 		} else if p := getProjectPath(); p != "" {
@@ -350,10 +363,10 @@ func (dt *DaemonTools) collectStartupErrors(processID, since string, global bool
 // proxy list is scoped to the caller's session/project so other projects'
 // proxy errors don't leak in — consistent with collectProcessAlerts /
 // collectStartupErrors so a single get_errors {global:true} is uniform.
-func (dt *DaemonTools) collectProxyErrors(proxyID, since string, global bool) ([]unifiedError, []string) {
+func (dt *DaemonTools) collectProxyErrors(proxyID, since string, global *bool) ([]unifiedError, []string) {
 	// Build directory filter for proxy list
-	dirFilter := protocol.DirectoryFilter{Global: global}
-	if !global {
+	dirFilter := protocol.DirectoryFilter{GlobalOverride: global}
+	if !globalEnabled(global) {
 		if sessionCode := dt.SessionCode(); sessionCode != "" {
 			dirFilter.SessionCode = sessionCode
 		} else if p := getProjectPath(); p != "" {

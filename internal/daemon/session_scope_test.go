@@ -144,7 +144,7 @@ func TestSessionScope_GlobalOverrideAndSessionlessRejected(t *testing.T) {
 	require.Error(t, err, "session-less non-global query must be rejected, not leak all projects")
 
 	// Explicit global override → sees all projects, even session-less.
-	rawGlobal, err := anon.AlertQuery(protocol.AlertQueryFilter{Global: true})
+	rawGlobal, err := anon.AlertQuery(protocol.AlertQueryFilter{Global: protocol.Bool(true)})
 	require.NoError(t, err)
 	require.Len(t, decodeAlerts(t, rawGlobal), 2, "global override must see all projects")
 
@@ -157,7 +157,7 @@ func TestSessionScope_GlobalOverrideAndSessionlessRejected(t *testing.T) {
 	assert.Equal(t, projB, scoped[0].ProjectPath)
 
 	// ...but may opt into the global override on demand.
-	rawBGlobal, err := clientB.AlertQuery(protocol.AlertQueryFilter{Global: true})
+	rawBGlobal, err := clientB.AlertQuery(protocol.AlertQueryFilter{Global: protocol.Bool(true)})
 	require.NoError(t, err)
 	assert.Len(t, decodeAlerts(t, rawBGlobal), 2, "a session may opt into the global override")
 }
@@ -235,7 +235,10 @@ func TestSessionScope_AllGatedVerbsUniformContract(t *testing.T) {
 		name string
 		call func(global bool) error
 	}{
-		{"ALERTS_QUERY", func(g bool) error { _, e := anon.AlertQuery(protocol.AlertQueryFilter{Global: g}); return e }},
+		{"ALERTS_QUERY", func(g bool) error {
+			_, e := anon.AlertQuery(protocol.AlertQueryFilter{Global: protocol.Bool(g)})
+			return e
+		}},
 		{"PROC_LIST", func(g bool) error { _, e := anon.ProcList(protocol.DirectoryFilter{Global: g}); return e }},
 		{"PROXY_LIST", func(g bool) error { _, e := anon.ProxyList(protocol.DirectoryFilter{Global: g}); return e }},
 		{"TUNNEL_LIST", func(g bool) error { _, e := anon.TunnelList(protocol.DirectoryFilter{Global: g}); return e }},

@@ -7,7 +7,7 @@ import (
 )
 
 // TestGatedMCPTools_ExposeGlobalFlagUniformly pins the C6 acceptance: every
-// gated MCP tool input exposes the SAME `global` override — a bool field with
+// gated MCP tool input exposes the SAME `global` override — an optional bool with
 // json tag "global,omitempty" — so an agent toggles cross-project scope the
 // identical way on every tool. Adding a new gated tool without the uniform
 // flag (or renaming it) makes this RED.
@@ -38,15 +38,15 @@ func TestGatedMCPTools_ExposeGlobalFlagUniformly(t *testing.T) {
 			if !ok {
 				t.Fatalf("%s must expose a Global field for the uniform global override", g.name)
 			}
-			if f.Type.Kind() != reflect.Bool {
-				t.Errorf("%s.Global must be bool, got %s", g.name, f.Type.Kind())
+			if f.Type.Kind() != reflect.Pointer || f.Type.Elem().Kind() != reflect.Bool {
+				t.Errorf("%s.Global must be *bool so omission differs from false, got %s", g.name, f.Type)
 			}
 			jsonTag := f.Tag.Get("json")
 			if !strings.HasPrefix(jsonTag, "global") {
 				t.Errorf("%s.Global must use json tag \"global,omitempty\", got %q", g.name, jsonTag)
 			}
 			if !strings.Contains(jsonTag, "omitempty") {
-				t.Errorf("%s.Global json tag should be omitempty (optional, default false), got %q", g.name, jsonTag)
+				t.Errorf("%s.Global json tag should be omitempty (optional project-config default), got %q", g.name, jsonTag)
 			}
 			// Description must document the flag so the UX is self-explanatory.
 			if schema := f.Tag.Get("jsonschema"); strings.TrimSpace(schema) == "" {

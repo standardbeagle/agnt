@@ -6,6 +6,19 @@ the detailed reference.
 
 Remote SSH has no shipped `.agnt.kdl` keys. Use the `agnt ssh` and `agnt push` flags in [remote-ssh.md](remote-ssh.md); SSH KDL shown in archived design specs is not implemented configuration.
 
+## Default query scope
+
+Query/list tools are project-scoped unless a project opts into cross-project results:
+
+```kdl
+scope {
+    default-global true
+}
+```
+
+The default is `false`. A tool call's explicit `global: true` or `global: false`
+always overrides this setting; omitting `global` uses the project setting.
+
 ## Hardcoded defaults (`main.go:31-36`)
 
 ```go

@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/standardbeagle/agnt/internal/protocol"
@@ -19,6 +21,10 @@ func TestResolveProjectScope(t *testing.T) {
 
 	projA := normalizePath(t.TempDir())
 	projB := normalizePath(t.TempDir())
+	projDefaultGlobal := normalizePath(t.TempDir())
+	require.NoError(t, os.WriteFile(filepath.Join(projDefaultGlobal, ".agnt.kdl"), []byte("scope {\n  default-global true\n}\n"), 0o600))
+	projMalformed := normalizePath(t.TempDir())
+	require.NoError(t, os.WriteFile(filepath.Join(projMalformed, ".agnt.kdl"), []byte("scope { invalid"), 0o600))
 	require.NoError(t, d.sessionRegistry.Register(&Session{Code: "sess-a", ProjectPath: projA}))
 	require.NoError(t, d.sessionRegistry.Register(&Session{Code: "sess-b", ProjectPath: projB}))
 
@@ -55,6 +61,31 @@ func TestResolveProjectScope(t *testing.T) {
 			name:     "explicit directory resolves to its normalized path",
 			filter:   protocol.DirectoryFilter{Directory: projA},
 			wantPath: projA,
+		},
+		{
+			name:       "omitted global uses project default global",
+			filter:     protocol.DirectoryFilter{Directory: projDefaultGlobal},
+			wantGlobal: true,
+		},
+		{
+			name:     "explicit false overrides project default global",
+			filter:   protocol.DirectoryFilter{Directory: projDefaultGlobal, GlobalOverride: protocol.Bool(false)},
+			wantPath: projDefaultGlobal,
+		},
+		{
+			name:       "explicit true bypasses malformed project config",
+			filter:     protocol.DirectoryFilter{Directory: projMalformed, GlobalOverride: protocol.Bool(true)},
+			wantGlobal: true,
+		},
+		{
+			name:     "explicit false bypasses malformed project config",
+			filter:   protocol.DirectoryFilter{Directory: projMalformed, GlobalOverride: protocol.Bool(false)},
+			wantPath: projMalformed,
+		},
+		{
+			name:    "omitted global fails loudly on malformed project config",
+			filter:  protocol.DirectoryFilter{Directory: projMalformed},
+			wantErr: true,
 		},
 		{
 			name:        "connection's bound session resolves to its project",

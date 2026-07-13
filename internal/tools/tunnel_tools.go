@@ -18,7 +18,7 @@ type TunnelInput struct {
 	LocalHost  string `json:"local_host,omitempty" jsonschema:"Local host (default: localhost)"`
 	BinaryPath string `json:"binary_path,omitempty" jsonschema:"Optional path to tunnel binary"`
 	ProxyID    string `json:"proxy_id,omitempty" jsonschema:"Optional proxy ID to auto-configure with the tunnel's public URL"`
-	Global     bool   `json:"global,omitempty" jsonschema:"For list: include tunnels from all directories (default: false)"`
+	Global     *bool  `json:"global,omitempty" jsonschema:"For list: override project config; true includes all projects, false forces current project"`
 }
 
 // TunnelOutput represents output from the tunnel tool.
@@ -207,9 +207,9 @@ func (dt *DaemonTools) handleTunnelList(input TunnelInput) (*mcp.CallToolResult,
 	// fallback) or the session-scope chokepoint rejects it. Mirrors
 	// handleProxyList / handleProcList.
 	dirFilter := protocol.DirectoryFilter{
-		Global: input.Global,
+		GlobalOverride: input.Global,
 	}
-	if !input.Global {
+	if !globalEnabled(input.Global) {
 		if sessionCode := dt.SessionCode(); sessionCode != "" {
 			dirFilter.SessionCode = sessionCode
 		} else if projectPath := getProjectPath(); projectPath != "" {

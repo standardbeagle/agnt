@@ -436,20 +436,12 @@ func (d *Daemon) hubHandleSessionHeartbeat(conn *hubpkg.Connection, cmd *hubprot
 // SESSION LIST [-- <directory_filter_json>]
 
 func (d *Daemon) hubHandleSessionList(conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	filter, _ := unmarshalCommand[struct {
-		Directory   string `json:"directory"`
-		Global      bool   `json:"global"`
-		SessionCode string `json:"session_code"`
-	}](cmd)
+	filter, _ := unmarshalCommand[protocol.DirectoryFilter](cmd)
 
 	// Route through the mandatory session-scope chokepoint (see
 	// resolveProjectScope). A non-global query with no resolvable project
 	// fails loud rather than listing every project's sessions.
-	projectPath, global, err := d.resolveProjectScope(protocol.DirectoryFilter{
-		Global:      filter.Global,
-		SessionCode: filter.SessionCode,
-		Directory:   filter.Directory,
-	}, conn.SessionCode())
+	projectPath, global, err := d.resolveProjectScope(filter, conn.SessionCode())
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
 	}
@@ -596,20 +588,12 @@ func (d *Daemon) hubHandleSessionCancel(conn *hubpkg.Connection, cmd *hubproto.C
 // SESSION TASKS [-- <directory_filter_json>]
 
 func (d *Daemon) hubHandleSessionTasks(conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	filter, _ := unmarshalCommand[struct {
-		Directory   string `json:"directory"`
-		Global      bool   `json:"global"`
-		SessionCode string `json:"session_code"`
-	}](cmd)
+	filter, _ := unmarshalCommand[protocol.DirectoryFilter](cmd)
 
 	// Route through the mandatory session-scope chokepoint (see
 	// resolveProjectScope). A non-global query with no resolvable project
 	// fails loud rather than listing every project's scheduled tasks.
-	projectPath, global, err := d.resolveProjectScope(protocol.DirectoryFilter{
-		Global:      filter.Global,
-		SessionCode: filter.SessionCode,
-		Directory:   filter.Directory,
-	}, conn.SessionCode())
+	projectPath, global, err := d.resolveProjectScope(filter, conn.SessionCode())
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
 	}
