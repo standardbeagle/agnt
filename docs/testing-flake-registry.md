@@ -40,6 +40,7 @@ session. They should be green in the general `-p 1` suite going forward.
 | Hook dispatcher p99 ≤5ms contract | `cmd/agnt` (`hook_latency_test.go`) | The contract's only guard (`TestHook_LatencyAgainstWarmDaemon`) had been widened to a 1s smoke test because its wall-clock budget flaked under load; the real 5ms guarantee had no asserting test | `3691ce42` (`TestHook_LatencyWithinBaselineFactor` — calibrates against a same-run baseline of 300 round trips over a trivial echo socket, so load inflates baseline and measurement together and the derived bound stays load-tolerant) |
 | Hook ring p99 ≤5ms target | `internal/daemon` (`TestHookRing_EnqueueP99Latency`) | Sequential idle mutex calibration was not shaped like the subsequent 8-producer measurement; scheduler stalls could make its derived guard tighter than the documented target | Concurrent, interleaved 8-producer mutex calibration diagnoses scheduler inflation, while an independent hard assertion preserves the absolute p99 <5ms production contract; a second relative assertion catches ring-specific divergence |
 | `TestIsRunning` | `internal/daemon` (`socket_test.go:256`) | Fixed-instant assertion (`IsRunning()==false` at one point post-`Close()`) with no tolerance for late goroutine scheduling deep in a loaded serial suite; the OS dial-after-close race provably does not exist (0/20000) | `2f462fcf` (bounded 2s poll-to-terminal-false) |
+| `TestCreate_SpawnsAndCapturesOutput` | `internal/sessionhost` | The test already polled the eventually-true PTY-output invariant, but its 3s liveness ceiling was too tight for real child spawn + scrollback delivery on a saturated host | `ac132f72` (retain the 20ms state poll and widen only the deadlock/liveness ceiling to 15s); the five loaded acceptance runs below all include `internal/sessionhost` green |
 
 Fix pattern shared across all of these (see
 `.claude/rules/testing-timing-assertion-flakes.md`): **judge time-driven
@@ -72,31 +73,17 @@ under 3x-oversubscription. This is an environment property, not a code
 defect — no assertion change in this repo can fix a renderer that never gets
 CPU time.
 
-**Recommendation (follow-up, not yet actioned — filed as
-`01KX9RQHW5SQ8NDMQNB4ERG058`)**: build-tag/load-tier gate these and other
-real-Chrome (chromedp) e2e tests out of the general `go test -p 1 ./...`
-suite, mirroring the existing `procisolation` two-tier precedent (`make
-test` vs `make test-isolated`) — e.g. a `chromee2e` tag + `make
-test-chrome-e2e` target — so the general suite can be reliably 5x-green
-under moderate load, while the chrome-e2e tier runs separately on an
-unloaded box.
+**Tier isolation completed** in `32a351e1` and `2943e6ea` (follow-up
+`01KX9RQHW5SQ8NDMQNB4ERG058`): real-Chrome tests are tagged `chromee2e`, are
+excluded from `make test`, and run through `make test-chrome-e2e`. This
+matches the four-tier contract in `AGENTS.md` and keeps renderer starvation
+outside the host-safe general suite.
 
-### Fixable residual (not in the non-determinizable registry)
-
-- `TestCreate_SpawnsAndCapturesOutput` (`internal/sessionhost/sessionhost_test.go:78`)
-  — a fixed 15s PTY-first-output deadline. Observed once during a loaded
-  serial-suite run (~11 minutes in, after `internal/daemon` 117s +
-  `internal/proxy` 37s + `internal/chromedp` 22s + `internal/overlay` 20s of
-  prior packages had already run) with "timed out waiting for output; got
-  ''"; passes 5/5 isolated at 0.02s. Same load-accumulation /
-  fixed-deadline-on-a-real-process-signal class as `TestIsRunning` and
-  `TestEventHub_KeepaliveHeartbeat` above, not yet given the same
-  poll-to-terminal treatment. This is fixable and therefore is explicitly
-  **excluded** from the non-determinizable registry. Filed as follow-up
-  `01KX9RQHCK0T2CB88P31B2EW18`; F-gate is documentation-only and must not
-  change `internal/sessionhost/`. It passed in all five loaded acceptance
-  runs below, which is evidence against an immediate suite blocker, not a
-  claim that the fixed-deadline design has been determinized.
+The Chrome tier is deliberately a **scheduled/manual unloaded-machine**
+gate. The isolation commits and tag/Makefile checks prove suite composition;
+they do not claim that real Chrome was runtime-validated under CPU
+oversubscription. Running that tier concurrently with `stress` or a full
+suite would contradict the diagnosed renderer-starvation boundary above.
 
 ## Wall-clock-invariant sweep
 
