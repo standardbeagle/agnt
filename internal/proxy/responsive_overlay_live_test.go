@@ -1,3 +1,5 @@
+//go:build chromee2e
+
 package proxy
 
 import (
@@ -16,7 +18,7 @@ import (
 // shift overlays (1) scroll with the page and (2) toggle on/off. Gated on
 // AGNT_LIVE_RESP because it launches a real Chrome.
 //
-//	AGNT_LIVE_RESP=1 go test ./internal/proxy -run TestResponsiveOverlay_Live -v
+//	AGNT_LIVE_RESP=1 go test -tags=chromee2e ./internal/proxy -run TestResponsiveOverlay_Live -v
 func TestResponsiveOverlay_Live(t *testing.T) {
 	if os.Getenv("AGNT_LIVE_RESP") == "" {
 		t.Skip("set AGNT_LIVE_RESP=1 to run the live responsive-overlay check")
@@ -120,7 +122,7 @@ func TestResponsiveOverlay_Live(t *testing.T) {
 		chromedp.Navigate(proxyURL),
 		chromedp.Sleep(2500*time.Millisecond),
 		chromedp.Evaluate(openExpr, &openRaw),
-		chromedp.Sleep(800*time.Millisecond), // let capture debounce settle + overlays render
+		chromedp.Sleep(800*time.Millisecond),            // let capture debounce settle + overlays render
 		chromedp.Evaluate(stateExpr(), &afterScrollRaw), // pre-scroll snapshot (reuse var name below)
 	); err != nil {
 		t.Fatalf("chromedp open run: %v", err)

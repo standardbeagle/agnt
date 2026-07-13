@@ -1,3 +1,5 @@
+//go:build chromee2e
+
 package proxy
 
 import (
@@ -20,7 +22,7 @@ import (
 // window this test reaches through document.getElementById('__devtool_content_frame').
 // Gated on AGNT_LIVE_TABS because it launches a real Chrome.
 //
-//	AGNT_LIVE_TABS=1 go test ./internal/proxy -run TestTabsContentPull_Live -v
+//	AGNT_LIVE_TABS=1 go test -tags=chromee2e ./internal/proxy -run TestTabsContentPull_Live -v
 func TestTabsContentPull_Live(t *testing.T) {
 	if os.Getenv("AGNT_LIVE_TABS") == "" {
 		t.Skip("set AGNT_LIVE_TABS=1 to run the live tabs content-pull check")

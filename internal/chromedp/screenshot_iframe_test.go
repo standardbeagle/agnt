@@ -1,3 +1,5 @@
+//go:build chromee2e
+
 package chromedp
 
 import (

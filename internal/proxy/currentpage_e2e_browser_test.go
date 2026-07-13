@@ -1,14 +1,15 @@
+//go:build chromee2e
+
 package proxy
 
 // Tier 4 — full e2e happy path. Drives a REAL headless Chrome through the
 // entire currentpage pipeline (injected JS → /__devtool_metrics WebSocket →
 // PageTracker) against a live proxy, then asserts the exact session shape that
-// manual validation established as expected. Env-gated like the internal/chromedp
-// suite: runs in the default `go test ./...`, skips when SKIP_BROWSER_TESTS is
-// set or no Chrome binary is present.
+// manual validation established as expected. Runs in the chromee2e tier and
+// skips when SKIP_BROWSER_TESTS is set or no Chrome binary is present.
 //
-//	SKIP_BROWSER_TESTS=1 go test ./internal/proxy   # skip
-//	go test -run TestE2E_CurrentPage ./internal/proxy
+//	SKIP_BROWSER_TESTS=1 go test -tags=chromee2e ./internal/proxy   # skip
+//	go test -tags=chromee2e -run TestE2E_CurrentPage ./internal/proxy
 
 import (
 	"context"

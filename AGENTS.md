@@ -163,7 +163,7 @@ Port-conflict policy、autostart cleanup ordering、alert push channels、incide
 
 `procisolation`-tagged: `internal/daemon/daemon_orphan_pgid_test.go`, `internal/platform/orphanpgid_unix_test.go`.
 
-`chromee2e`-tagged real-Chrome tests: `internal/proxy/authbreakout_e2e_test.go`, `internal/proxy/layout_diagnose_e2e_test.go`. These are intentionally absent from `make test`; run `make test-chrome-e2e` manually only on an unloaded machine because renderer starvation under oversubscription is non-deterministic.
+`chromee2e`-tagged real-Chrome tests: `internal/proxy/{authbreakout_e2e,bridge_live,currentpage_e2e_browser,layout_diagnose_e2e,responsive_overlay_live,tabs_pull_live}_test.go` and `internal/chromedp/{integration,screenshot_iframe,testutil}_test.go` (the last is their shared helper closure). These are intentionally absent from `make test`; run `make test-chrome-e2e` manually only on an unloaded machine because renderer starvation under oversubscription is non-deterministic. HTTP-only `internal/proxy/wrap_e2e_test.go` remains in the general suite.
 
 餘 daemon tests native；`Start()` orphan scan 由 `DaemonConfig.OrphanScanEnabled` gate（zero value default `false`，literal `DaemonConfig{}` safe）。Production 於 `cmd/agnt/daemon.go` 設 `true`。**此欄唯 internal test-safety knob，勿寫 user-facing docs，勿 expose in `.agnt.kdl`.** 代舊 `AGNT_DISABLE_ORPHAN_SCAN` env var（已刪）。
 

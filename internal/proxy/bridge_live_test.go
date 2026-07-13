@@ -1,3 +1,5 @@
+//go:build chromee2e
+
 package proxy
 
 import (
@@ -18,7 +20,7 @@ import (
 // the indicator (which runs in the shell window) sees them. Gated on
 // AGNT_LIVE_BRIDGE because it launches a real Chrome.
 //
-//	AGNT_LIVE_BRIDGE=1 go test ./internal/proxy -run TestContentToShellBridge_Live -v
+//	AGNT_LIVE_BRIDGE=1 go test -tags=chromee2e ./internal/proxy -run TestContentToShellBridge_Live -v
 func TestContentToShellBridge_Live(t *testing.T) {
 	if os.Getenv("AGNT_LIVE_BRIDGE") == "" {
 		t.Skip("set AGNT_LIVE_BRIDGE=1 to run the live browser bridge check")
