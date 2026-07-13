@@ -114,8 +114,8 @@ func runSSH(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	forwarding := startReconnectForwarding(host, client, remotePath)
 	control := startControlSocket(host, client, remotePath, attachName)
+	forwarding := startReconnectForwarding(host, client, control.ProjectRoot())
 	status := sshclient.NewStatusTracker(attachName)
 	forwarding.status = status
 	forwarding.control = control
@@ -338,9 +338,13 @@ func startReconnectForwarding(host string, client *sshclient.Client, projectRoot
 	if len(projectRoot) > 0 {
 		root = projectRoot[0]
 	}
-	r := &reconnectForwarding{host: host, project: root, reportEvent: func(c *daemon.Client, e protocol.DeveloperEvent) error { return c.ReportDeveloperEvent(e) }}
+	r := newReconnectForwardingOwner(host, root)
 	r.start(client)
 	return r
+}
+
+func newReconnectForwardingOwner(host, projectRoot string) *reconnectForwarding {
+	return &reconnectForwarding{host: host, project: projectRoot, reportEvent: func(c *daemon.Client, e protocol.DeveloperEvent) error { return c.ReportDeveloperEvent(e) }}
 }
 
 // start initializes forwarding directly on the durable owner. In particular,

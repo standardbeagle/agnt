@@ -135,6 +135,18 @@ func TestReconnectForwarding_RecoveryCallbacksUseNewestDurableDaemonClient(t *te
 	}
 }
 
+func TestReconnectForwarding_DefaultPathCollisionUsesResolvedProjectRoot(t *testing.T) {
+	resolved := "/home/fixture/project"
+	owner := newReconnectForwardingOwner("fixture", resolved)
+	owner.dclient = &daemon.Client{}
+	var got protocol.DeveloperEvent
+	owner.reportEvent = func(_ *daemon.Client, event protocol.DeveloperEvent) error { got = event; return nil }
+	owner.reportPortForward("port 5173 in use locally", []sshclient.Mapping{{ProxyID: "web", RemotePort: 5173, LocalPort: 5174, Remapped: true}})
+	if got.ProjectPath != resolved || got.ProxyID != "web" {
+		t.Fatalf("default-path collision event = %+v, want resolved project %q", got, resolved)
+	}
+}
+
 // TestSSHToolFlagRejected pins the drop decision for the inert --tool flag
 // (see .claude/rules/lessons-ssh-transport.md item 3, and the tracking epic
 // 01KWMARXTVWKC33EPHZZJ43JT9 where remote tool selection will eventually

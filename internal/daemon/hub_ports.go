@@ -112,8 +112,7 @@ func (d *Daemon) hubHandleDeveloperEvent(_ context.Context, conn *hubpkg.Connect
 	if err != nil || event.Kind == "" || event.Message == "" || event.ProjectPath == "" {
 		return conn.WriteErr(hubproto.ErrInvalidArgs, "PORTS DEVELOPER-EVENT requires kind, project_path, and message")
 	}
-	d.eventHub.BroadcastTargetedDeveloperToast(event)
-	d.eventHub.LogDeveloperDiagnostic(event)
+	d.eventHub.DeliverDeveloperEvent(event)
 	return conn.WriteOK("developer event delivered")
 }
 

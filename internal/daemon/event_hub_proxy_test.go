@@ -24,10 +24,10 @@ func (s *stubProxyBroadcaster) BroadcastAlertToast(toastType, title, message str
 	s.lastTitle.Store(title)
 	s.lastMessage.Store(message)
 }
-func (s *stubProxyBroadcaster) BroadcastDeveloperToast(event protocol.DeveloperEvent) {
+func (s *stubProxyBroadcaster) DeliverDeveloperEvent(event protocol.DeveloperEvent) {
 	s.BroadcastAlertToast(event.Severity, event.Title, event.Message)
+	s.diagnostics.Add(1)
 }
-func (s *stubProxyBroadcaster) LogDeveloperDiagnostic(protocol.DeveloperEvent) { s.diagnostics.Add(1) }
 
 func TestEventHubDeveloperEventRoutesAreIndependentAndExactOnce(t *testing.T) {
 	hub := NewEventHub()
@@ -35,12 +35,11 @@ func TestEventHubDeveloperEventRoutesAreIndependentAndExactOnce(t *testing.T) {
 	hub.SetProxyBroadcaster(pb)
 	event := protocol.DeveloperEvent{Kind: "file_arrived", ProxyID: "web", ProjectPath: "/project", Severity: "info", Title: "File arrived", Message: "fixture.png"}
 
-	hub.BroadcastTargetedDeveloperToast(event)
-	hub.LogDeveloperDiagnostic(event)
+	hub.DeliverDeveloperEvent(event)
 
 	assert.Equal(t, int32(1), pb.calls.Load())
 	assert.Equal(t, int32(1), pb.diagnostics.Load())
-	// Neither broadcaster callback re-enters the other route.
+	// The paired operation emits each surface once without mirroring.
 	assert.Equal(t, "fixture.png", pb.lastMessage.Load())
 }
 

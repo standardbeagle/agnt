@@ -165,8 +165,7 @@ type ProxyBroadcaster interface {
 	// toastType matches the toast severity ("error", "warning").
 	// Implementations must be non-blocking; errors are swallowed at debug level.
 	BroadcastAlertToast(toastType, title, message string)
-	BroadcastDeveloperToast(event protocol.DeveloperEvent)
-	LogDeveloperDiagnostic(event protocol.DeveloperEvent)
+	DeliverDeveloperEvent(event protocol.DeveloperEvent)
 }
 
 // EventHub fans events to stream sinks (agnt monitor), hook sinks (agnt hook),
@@ -190,21 +189,12 @@ func (h *EventHub) BroadcastDeveloperToast(severity, title, message string) {
 	}
 }
 
-func (h *EventHub) BroadcastTargetedDeveloperToast(event protocol.DeveloperEvent) {
+func (h *EventHub) DeliverDeveloperEvent(event protocol.DeveloperEvent) {
 	h.mu.RLock()
 	pb := h.proxyBroadcaster
 	h.mu.RUnlock()
 	if pb != nil {
-		pb.BroadcastDeveloperToast(event)
-	}
-}
-
-func (h *EventHub) LogDeveloperDiagnostic(event protocol.DeveloperEvent) {
-	h.mu.RLock()
-	pb := h.proxyBroadcaster
-	h.mu.RUnlock()
-	if pb != nil {
-		pb.LogDeveloperDiagnostic(event)
+		pb.DeliverDeveloperEvent(event)
 	}
 }
 
@@ -511,7 +501,8 @@ func (h *EventHub) Deliver(severity string, formatted string) {
 // BroadcastAlertToast fans out to all active proxies; per-proxy errors are
 // swallowed at debug level so one stalled WebSocket client cannot block others.
 type proxyManagerBroadcaster struct {
-	pm *proxy.ProxyManager
+	pm                  *proxy.ProxyManager
+	afterDeveloperToast func() // deterministic proxy-churn test seam
 }
 
 // newProxyManagerBroadcaster creates a ProxyBroadcaster backed by pm.
@@ -539,18 +530,16 @@ func (b *proxyManagerBroadcaster) BroadcastAlertToast(toastType, title, message 
 	}
 }
 
-func (b *proxyManagerBroadcaster) LogDeveloperDiagnostic(event protocol.DeveloperEvent) {
+func (b *proxyManagerBroadcaster) DeliverDeveloperEvent(event protocol.DeveloperEvent) {
 	p := b.developerEventTarget(event)
-	if p != nil {
-		p.Logger().LogDiagnostic(proxy.ProxyDiagnostic{Timestamp: time.Now(), Level: proxy.ProxyDiagnosticLevel(event.Severity), Category: "ssh", Event: event.Kind, Message: event.Message})
+	if p == nil {
+		return
 	}
-}
-
-func (b *proxyManagerBroadcaster) BroadcastDeveloperToast(event protocol.DeveloperEvent) {
-	p := b.developerEventTarget(event)
-	if p != nil {
-		_, _ = p.BroadcastToast(event.Severity, event.Title, event.Message, 0)
+	_, _ = p.BroadcastToast(event.Severity, event.Title, event.Message, 0)
+	if b.afterDeveloperToast != nil {
+		b.afterDeveloperToast()
 	}
+	p.Logger().LogDiagnostic(proxy.ProxyDiagnostic{Timestamp: time.Now(), Level: proxy.ProxyDiagnosticLevel(event.Severity), Category: "ssh", Event: event.Kind, Message: event.Message})
 }
 
 func (b *proxyManagerBroadcaster) developerEventTarget(event protocol.DeveloperEvent) *proxy.ProxyServer {
