@@ -179,32 +179,32 @@ func TestHookRing_EnqueueP99Latency(t *testing.T) {
 
 	cancel, done := startStressDrain(t, d)
 
-	// Same-run control for scheduler/timer overhead plus the mutex-shaped hot
-	// path. Relative limits below preserve the contention regression signal
-	// without assuming a fixed machine-speed budget.
-	baseline := make([]time.Duration, 10_000)
+	// Measure a mutex-shaped control in the same goroutines, at the same time,
+	// and under the same producer contention as Push. The old sequential
+	// preflight baseline measured an idle ~1us floor, then compared it with an
+	// 8-producer tail that included scheduler stalls; a single loaded-machine
+	// timeslice could therefore make the derived guard tighter than the 5ms
+	// product target.
 	var baselineMu sync.Mutex
-	for i := range baseline {
-		t0 := time.Now()
-		baselineMu.Lock()
-		baselineMu.Unlock()
-		baseline[i] = time.Since(t0)
-	}
-	sort.Slice(baseline, func(i, j int) bool { return baseline[i] < baseline[j] })
-	baselineP50 := baseline[len(baseline)/2]
-	baselineP99 := baseline[(len(baseline)*99)/100]
 
-	// Each producer records its per-push latencies into its own local slice
+	// Each producer records its control and Push latencies into local slices
 	// so there is zero false sharing between producers. We merge after.
 	var wg sync.WaitGroup
 	latSlices := make([][]time.Duration, producers)
+	baselineSlices := make([][]time.Duration, producers)
 	for p := 0; p < producers; p++ {
 		wg.Add(1)
 		go func(prod int) {
 			defer wg.Done()
 			lats := make([]time.Duration, perProd)
+			baseline := make([]time.Duration, perProd)
 			for i := 0; i < perProd; i++ {
 				t0 := time.Now()
+				baselineMu.Lock()
+				baselineMu.Unlock()
+				baseline[i] = time.Since(t0)
+
+				t0 = time.Now()
 				d.hookRing.Push(HookEvent{
 					Event:     "pre-tool-use",
 					SessionID: fmt.Sprintf("p%d", prod),
@@ -212,6 +212,7 @@ func TestHookRing_EnqueueP99Latency(t *testing.T) {
 				lats[i] = time.Since(t0)
 			}
 			latSlices[prod] = lats
+			baselineSlices[prod] = baseline
 		}(p)
 	}
 	wg.Wait()
@@ -223,20 +224,29 @@ func TestHookRing_EnqueueP99Latency(t *testing.T) {
 
 	// Merge and sort.
 	all := make([]time.Duration, 0, producers*perProd)
+	baseline := make([]time.Duration, 0, producers*perProd)
 	for _, s := range latSlices {
 		all = append(all, s...)
 	}
+	for _, s := range baselineSlices {
+		baseline = append(baseline, s...)
+	}
 	sort.Slice(all, func(i, j int) bool { return all[i] < all[j] })
+	sort.Slice(baseline, func(i, j int) bool { return baseline[i] < baseline[j] })
 
 	p50 := all[len(all)/2]
 	p99 := all[(len(all)*99)/100]
 	pMax := all[len(all)-1]
+	baselineP50 := baseline[len(baseline)/2]
+	baselineP99 := baseline[(len(baseline)*99)/100]
+	const p99Target = 5 * time.Millisecond
+	p99Guard := p99Target + baselineP99*4
 
-	t.Logf("push latency over %d ops (drain=1ms/event, %d sinks stalled): p50=%s p99=%s max=%s overflow=%d",
-		len(all), 1, p50, p99, pMax, d.hookRing.OverflowCount())
+	t.Logf("push latency over %d ops (drain=1ms/event, %d sinks stalled): p50=%s p99=%s max=%s baseline_p99=%s target=%s guard=%s target_met=%v overflow=%d",
+		len(all), 1, p50, p99, pMax, baselineP99, p99Target, p99Guard, p99 <= p99Target, d.hookRing.OverflowCount())
 
-	assert.Less(t, p99, baselineP99*100+time.Millisecond,
-		"p99 enqueue latency %v diverged from same-run mutex baseline %v", p99, baselineP99)
+	assert.Less(t, p99, p99Guard,
+		"p99 enqueue latency %v exceeded the %v target plus scheduler guard derived from same-shape baseline %v", p99, p99Target, baselineP99)
 	assert.Less(t, p50, baselineP50*100+50*time.Microsecond,
 		"p50 enqueue latency %v diverged from same-run mutex baseline %v", p50, baselineP50)
 }
