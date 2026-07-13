@@ -39,38 +39,16 @@ func UploadFile(client *ssh.Client, src io.Reader, remotePath string, mode os.Fi
 	if err != nil {
 		return fmt.Errorf("sshclient: opening upload session: %w", err)
 	}
-	defer writeSession.Close()
-	stdin, err := writeSession.StdinPipe()
+	localSum, writeStderr, err := writeUploadTemp(&sshUploadWriteSession{Session: writeSession}, src,
+		fmt.Sprintf("mkdir -p %s && cat > %s", shellQuote(remoteDir), shellQuote(tmpPath)))
 	if err != nil {
-		return fmt.Errorf("sshclient: opening upload stdin pipe: %w", err)
-	}
-	var writeStderr bytes.Buffer
-	writeSession.Stderr = &writeStderr
-
-	writeCmd := fmt.Sprintf("mkdir -p %s && cat > %s", shellQuote(remoteDir), shellQuote(tmpPath))
-	if err := writeSession.Start(writeCmd); err != nil {
-		return fmt.Errorf("sshclient: starting remote write: %w", err)
-	}
-
-	hasher := sha256.New()
-	_, copyErr := io.Copy(stdin, io.TeeReader(src, hasher))
-	closeErr := stdin.Close()
-
-	if copyErr != nil {
 		cleanupRemotePath(client, tmpPath)
-		return fmt.Errorf("sshclient: reading upload source: %w", copyErr)
-	}
-	if closeErr != nil {
-		cleanupRemotePath(client, tmpPath)
-		return fmt.Errorf("sshclient: closing upload stdin: %w", closeErr)
-	}
-
-	if err := writeSession.Wait(); err != nil {
-		cleanupRemotePath(client, tmpPath)
-		return fmt.Errorf("sshclient: remote write failed: %w (stderr: %s)", err, strings.TrimSpace(writeStderr.String()))
+		if strings.Contains(err.Error(), "remote write failed") {
+			return fmt.Errorf("%w (stderr: %s)", err, strings.TrimSpace(writeStderr))
+		}
+		return err
 	}
 
-	localSum := hex.EncodeToString(hasher.Sum(nil))
 	remoteSum, err := remoteSHA256(client, tmpPath)
 	if err != nil {
 		cleanupRemotePath(client, tmpPath)
@@ -99,6 +77,44 @@ func UploadFile(client *ssh.Client, src io.Reader, remotePath string, mode os.Fi
 		return fmt.Errorf("sshclient: finalizing upload (chmod+rename): %w (stderr: %s)", err, strings.TrimSpace(finalizeStderr.String()))
 	}
 	return nil
+}
+
+type uploadWriteSession interface {
+	StdinPipe() (io.WriteCloser, error)
+	Start(string) error
+	Wait() error
+	Close() error
+	setStderr(io.Writer)
+}
+
+type sshUploadWriteSession struct{ *ssh.Session }
+
+func (s *sshUploadWriteSession) setStderr(w io.Writer) { s.Stderr = w }
+
+func writeUploadTemp(session uploadWriteSession, src io.Reader, writeCmd string) (string, string, error) {
+	var writeStderr bytes.Buffer
+	defer session.Close()
+	stdin, err := session.StdinPipe()
+	if err != nil {
+		return "", "", fmt.Errorf("sshclient: opening upload stdin pipe: %w", err)
+	}
+	session.setStderr(&writeStderr)
+	if err := session.Start(writeCmd); err != nil {
+		return "", "", fmt.Errorf("sshclient: starting remote write: %w", err)
+	}
+	hasher := sha256.New()
+	_, copyErr := io.Copy(stdin, io.TeeReader(src, hasher))
+	closeErr := stdin.Close()
+	if copyErr != nil {
+		return "", "", fmt.Errorf("sshclient: reading upload source: %w", copyErr)
+	}
+	if closeErr != nil {
+		return "", "", fmt.Errorf("sshclient: closing upload stdin: %w", closeErr)
+	}
+	if err := session.Wait(); err != nil {
+		return "", writeStderr.String(), fmt.Errorf("sshclient: remote write failed: %w", err)
+	}
+	return hex.EncodeToString(hasher.Sum(nil)), writeStderr.String(), nil
 }
 
 // remoteSHA256 runs sha256sum on remotePath and returns the hex digest.

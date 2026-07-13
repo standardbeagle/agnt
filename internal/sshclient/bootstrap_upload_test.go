@@ -1,8 +1,8 @@
 package sshclient
 
 import (
+	"bytes"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -84,21 +84,44 @@ func TestUploadFile_SuccessfulUploadIsAtomicAndVerified(t *testing.T) {
 	}
 }
 
-func TestUploadFile_RepeatedSuccessReleasesWriteSessions(t *testing.T) {
-	remoteHome := t.TempDir()
-	fixture := newFixtureServer(t)
-	fixture.onSession = execFixtureHandler(t, remoteHome)
-	stop := fixture.serve(t)
-	defer stop()
-
-	client := dialFixtureClient(t, fixture).SSH
-	for i := 0; i < 25; i++ {
-		finalPath := filepath.Join(remoteHome, "uploads", fmt.Sprintf("artifact-%02d", i))
-		if err := UploadFile(client, strings.NewReader("content"), finalPath, 0o644); err != nil {
-			t.Fatalf("UploadFile iteration %d: %v", i, err)
-		}
+func TestWriteUploadTemp_ClosesSessionExactlyOnce(t *testing.T) {
+	cases := []struct {
+		name    string
+		session *closeSpyUploadSession
+		src     io.Reader
+	}{
+		{"success", &closeSpyUploadSession{}, strings.NewReader("content")},
+		{"start error", &closeSpyUploadSession{startErr: errors.New("start")}, strings.NewReader("content")},
+		{"wait error", &closeSpyUploadSession{waitErr: errors.New("wait")}, strings.NewReader("content")},
+		{"source error", &closeSpyUploadSession{}, &errAfterReader{data: []byte("partial"), n: 3, err: errSimulatedAbort}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, _ = writeUploadTemp(tc.session, tc.src, "write")
+			if tc.session.closeCount != 1 {
+				t.Fatalf("Close calls = %d, want 1", tc.session.closeCount)
+			}
+		})
 	}
 }
+
+type closeSpyUploadSession struct {
+	stdin             bytes.Buffer
+	startErr, waitErr error
+	closeCount        int
+}
+
+func (s *closeSpyUploadSession) StdinPipe() (io.WriteCloser, error) {
+	return nopWriteCloser{&s.stdin}, nil
+}
+func (s *closeSpyUploadSession) Start(string) error  { return s.startErr }
+func (s *closeSpyUploadSession) Wait() error         { return s.waitErr }
+func (s *closeSpyUploadSession) Close() error        { s.closeCount++; return nil }
+func (s *closeSpyUploadSession) setStderr(io.Writer) {}
+
+type nopWriteCloser struct{ io.Writer }
+
+func (nopWriteCloser) Close() error { return nil }
 
 // TestUploadFile_AbortedUploadLeavesNoPartialBinary pins acceptance
 // criterion 3: if the source read fails partway through (simulating a
