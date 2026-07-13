@@ -111,6 +111,11 @@ audit should not "fix" them:
 | `cleanupStaleFiles` PID file path uses Linux layout under WSL | Daemon socket path owned by caller; run daemon under WSL → Linux paths end-to-end |
 | Browser launcher (`internal/browser/browser.go:164`) lacks WSL branch | `BROWSER` env var = WSL-friendly contract; we don't bridge `open` ↔ `cmd.exe /c start` |
 | `chromedp` session URL picker darwin-only | Chrome process discovery only meaningful when we launch it ourselves; WSL users typically point at chrome on host |
+| Remote SSH/control sockets use Unix sockets under WSL `$HOME` | WSL intentionally runs the Linux client end-to-end; Windows named-pipe interoperability belongs to native Windows, not WSL |
+| SSH config and `known_hosts` come from WSL `~/.ssh` | This matches the OpenSSH instance running inside WSL; Windows-profile SSH files are not silently merged |
+| Drop watching on `/mnt/c` combines `fsnotify` with polling | DrvFS/9P notifications are unreliable; the 100 ms metadata poll is the intentional correctness fallback |
+| WSL uses Unix raw terminal relay for `agnt attach` | WSL exposes a Linux tty, so `term.MakeRaw` is the correct implementation; native Windows requires a separate ConPTY relay |
+| Remote SFTP destinations use POSIX paths while local sources may be `/mnt/c/...` | The remote host defines destination semantics; WSL local paths are opened locally before transfer |
 
 ## How to extend this audit
 
@@ -144,4 +149,4 @@ Scope: `cmd/agnt/{ssh,attach}*`, `internal/sessionhost/`, and the new `internal/
 | SFTP push paths | Local `filepath`; POSIX remote paths | Correct: `/mnt/c/...` works as a local source; remote destinations remain POSIX and project-relative. |
 | `internal/sessionhost/` | No runtime OS branch or build tag | Correct: existing platform PTY/process primitives own OS differences. |
 
-Deferred work is explicit, not a silent WSL defect: native-Windows `agnt ssh` (named-pipe forwarding) and native-Windows `agnt attach` (ConPTY relay). WSL is the supported Windows-host workaround.
+Deferred work is explicit, not a silent WSL defect: native-Windows `agnt ssh` named-pipe forwarding is follow-up `01KXDMG7KG02MH91W2KXWHZAYA` (Unix socket forwarding cannot provide a native Windows listener), and native-Windows `agnt attach` ConPTY relay is follow-up `01KXDMGBMJB61WXA5YDHB8CY40` (the Unix raw-tty relay cannot drive a Windows console). WSL is the supported Windows-host workaround.

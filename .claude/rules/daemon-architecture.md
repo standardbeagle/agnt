@@ -311,6 +311,14 @@ Each leaves port or resource held after session shutdown, but that's operator's 
 
 The 2026-07-13 remote-SSH sweep is recorded in `.claude/rules/wsl-audit.md`: WSL intentionally selects the Unix SSH, raw-terminal, Unix-socket, and session-host paths. `/mnt/c` drop watching has a polling fallback; SSH config and `known_hosts` come from WSL `$HOME`. Native-Windows `agnt ssh` (named-pipe forwarding) and `agnt attach` (ConPTY relay) are loud deferred gaps, not partial implementations.
 
+| Accepted WSL behavior | Architectural reason |
+|---|---|
+| Unix daemon/control sockets under WSL `$HOME` | The complete client and daemon path is Linux-side; native named-pipe forwarding is separately tracked by `01KXDMG7KG02MH91W2KXWHZAYA`. |
+| WSL `~/.ssh/config` and `known_hosts` | They belong to the OpenSSH client executing inside WSL; Windows-profile files are not an implicit second source of truth. |
+| `/mnt/c` drop watcher uses `fsnotify` plus polling | Polling is the correctness fallback for unreliable DrvFS/9P notifications, not an optimization or accidental duplicate. |
+| Unix raw-mode attach in WSL | WSL supplies a Linux tty; native Windows ConPTY attach is separately tracked by `01KXDMGBMJB61WXA5YDHB8CY40`. |
+| Local `/mnt/c` source with POSIX remote SFTP destination | Source and destination are interpreted by their respective local and remote operating systems. |
+
 Session pgid primitives Unix-only (`//go:build !windows`). On Windows, Job Objects already provide equivalent cascade-kill semantics for PTY child tree, and `SessionPGID` is always 0 — `killSessionPGID` is no-op guarded by `pgid <= 1`. Startup orphan scan has three implementations selected by build tag:
 
 | Platform | File | Mechanism |
