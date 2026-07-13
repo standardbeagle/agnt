@@ -289,6 +289,8 @@ Each leaves port or resource held after session shutdown, but that's operator's 
 
 **Remote-SSH reconnect invariant**: the SSH transport and local forwards are disposable; the daemon-owned session-host is durable. Reconnect rebuilds daemon-socket and proxy forwards from authoritative remote state, then attaches to the same session. A missing session fails unless `--create-if-missing` or `--new` explicitly permits replacement. Initial creation and reconnect checks use `SESSION-HOST LIST/CREATE`; never bake unsupported lifecycle flags into the remote `agnt attach` command.
 
+**Session-host liveness and scrollback source of truth**: liveness is the in-process `sessionhost.Session` atomic `Status`. `waitLoop` waits for the daemon's PTY child, records its exit metadata, and stores `StatusExited`; LIST reports that state. The current implementation has no separate OS liveness probe. Output history is the session's in-memory `goprocess.RingBuffer` (`DefaultScrollback`, 1 MiB): `readLoop` writes PTY output before fan-out, and attach snapshots/replays the ring before live frames. It is bounded and daemon-memory-only, not persistent storage; daemon restart loses it along with the PTY handle, while startup orphan cleanup handles the remaining process group.
+
 ### File Ownership
 
 | Primitive | File |

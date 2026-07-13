@@ -18,6 +18,16 @@ The client checks the remote `agnt` version before attaching. An interactive ter
 
 Initial connection creates a missing named session and attaches to it. The remote daemon owns the PTY, so SSH loss does not kill the shell. The client reconnects with bounded exponential backoff and reattaches to the same session. If that session disappeared, reconnect fails loudly by default; `--create-if-missing` or `--new` permits a replacement. `--reconnect-max N` limits attempts (`0` is unlimited). Ctrl-C stops reconnecting.
 
+Manual lifecycle commands use the forwarded daemon socket:
+
+```bash
+agnt session hosts
+agnt attach my-session
+agnt session kill my-session
+```
+
+`session hosts` lists detachable sessions. In `agnt attach`, press `Ctrl-\` then `Ctrl-\` again (the default `session.detach-key`) to detach without killing the session; a later attach replays retained scrollback and resumes live output. `session kill` explicitly terminates it. These manual actions are distinct from `agnt ssh` automatic transport reconnect, which reattaches after network loss.
+
 ## Daemon and proxy forwarding
 
 On connection, `agnt ssh` prints a local socket and an `AGNT_DAEMON_SOCKET` export for commands such as `agnt monitor`. Remote reverse-proxy ports are forwarded automatically to loopback. The same local port is preferred; if occupied, a replacement is selected and reported. `--status` prints active mappings. Forwards are rebuilt from remote state after reconnect. Overlay port `19191` is not forwarded.
