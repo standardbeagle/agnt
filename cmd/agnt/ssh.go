@@ -260,12 +260,28 @@ func runSSHRelayLoop(host, remotePath, attachName string, client *sshclient.Clie
 
 		client = newClient
 		session = newSession
-		forwarding.Resume(client)
-		control.Resume(client)
-		// Resume's queue flush is synchronous. Render only after both forward
-		// reconciliation and queued pushes have observed the new transport.
-		forwarding.renderStatus()
+		forwardReady := forwarding.Resume(client)
+		queueDrained := control.Resume(client)
+		resumeCtx, resumeCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		resumeErr := waitForLifecycle(resumeCtx, forwardReady, queueDrained)
+		resumeCancel()
+		if resumeErr != nil {
+			fmt.Fprintf(os.Stderr, "agnt ssh: status refresh incomplete after reconnect: %v\n", resumeErr)
+		} else {
+			forwarding.renderStatus()
+		}
 	}
+}
+
+func waitForLifecycle(ctx context.Context, signals ...<-chan struct{}) error {
+	for _, signal := range signals {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-signal:
+		}
+	}
+	return nil
 }
 
 func writeSSHFirstScreen(w io.Writer, host, localVersion, remoteVersion, project, session string) {
@@ -293,6 +309,7 @@ type reconnectForwarding struct {
 	toast     func(*daemon.Client, string, protocol.ToastConfig)
 	status    *sshclient.StatusTracker
 	control   *reconnectControl
+	onResume  func()
 }
 
 type reversePullLifecycle interface {
@@ -475,19 +492,39 @@ func (r *reconnectForwarding) Pause() {
 	}
 }
 
-func (r *reconnectForwarding) Resume(client *sshclient.Client) {
+func (r *reconnectForwarding) Resume(client *sshclient.Client) <-chan struct{} {
 	if r.daemonFwd == nil {
 		r.start(client)
-		return
+		if r.onResume != nil {
+			r.onResume()
+		}
+		return r.forwardReconciled()
 	}
 	remotePath, err := sshclient.RemoteDaemonSocketPath(client.SSH)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "agnt ssh: could not rediscover remote daemon socket after reconnect: %v\n", err)
-		return
+		return closedLifecycleSignal()
 	}
 	r.daemonFwd.Resume(client, remotePath)
 	r.connectDrops(client)
 	r.connectPorts(client)
+	if r.onResume != nil {
+		r.onResume()
+	}
+	return r.forwardReconciled()
+}
+
+func (r *reconnectForwarding) forwardReconciled() <-chan struct{} {
+	if r.ports == nil {
+		return closedLifecycleSignal()
+	}
+	return r.ports.Reconciled()
+}
+
+func closedLifecycleSignal() <-chan struct{} {
+	done := make(chan struct{})
+	close(done)
+	return done
 }
 
 func (r *reconnectForwarding) Stop() {
@@ -754,6 +791,9 @@ type reconnectControl struct {
 	listener    net.Listener
 	queue       *sshclient.PushQueue
 	projectRoot string
+	onPause     func()
+	onResume    func()
+	onFlushed   func()
 }
 
 func (c *reconnectControl) Depth() int {
@@ -811,13 +851,28 @@ func startControlSocket(host string, client *sshclient.Client, remotePath string
 func (c *reconnectControl) Pause() {
 	if c != nil && c.queue != nil {
 		c.queue.Reconnecting()
+		if c.onPause != nil {
+			c.onPause()
+		}
 	}
 }
 
-func (c *reconnectControl) Resume(client *sshclient.Client) {
+func (c *reconnectControl) Resume(client *sshclient.Client) <-chan struct{} {
 	if c != nil && c.queue != nil {
 		c.queue.Connected(func() (*sftp.Client, error) { return sshclient.NewSFTPClient(client.SSH) })
+		if c.onResume != nil {
+			c.onResume()
+		}
+		drained := c.queue.Drained()
+		if c.onFlushed != nil {
+			go func() {
+				<-drained
+				c.onFlushed()
+			}()
+		}
+		return drained
 	}
+	return closedLifecycleSignal()
 }
 
 func (c *reconnectControl) Stop() {

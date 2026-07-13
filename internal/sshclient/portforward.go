@@ -52,9 +52,10 @@ type PortForwardManager struct {
 	reconcileMu sync.Mutex
 	forwards    map[string]*portForward // keyed by remote proxy ID
 
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
-	paused chan struct{}
+	cancel     context.CancelFunc
+	wg         sync.WaitGroup
+	paused     chan struct{}
+	reconciled chan struct{}
 }
 
 // portForward is one remote-proxy-ID's local listener.
@@ -79,11 +80,12 @@ type portForward struct {
 // print or toast — this package never writes to stdout/stderr directly.
 func NewPortForwardManager(sshClient *Client, dclient *daemon.Client, notify func(string)) *PortForwardManager {
 	return &PortForwardManager{
-		sshClient: sshClient,
-		dclient:   dclient,
-		notify:    notify,
-		forwards:  make(map[string]*portForward),
-		paused:    make(chan struct{}),
+		sshClient:  sshClient,
+		dclient:    dclient,
+		notify:     notify,
+		forwards:   make(map[string]*portForward),
+		paused:     make(chan struct{}),
+		reconciled: make(chan struct{}),
 	}
 }
 
@@ -102,6 +104,13 @@ func (m *PortForwardManager) startLoops(ctx context.Context) {
 	m.cancel = cancel
 
 	m.reconcileOnce()
+	m.mu.Lock()
+	select {
+	case <-m.reconciled:
+	default:
+		close(m.reconciled)
+	}
+	m.mu.Unlock()
 
 	m.wg.Add(1)
 	go m.reconcileLoop(ctx)
@@ -143,6 +152,7 @@ func (m *PortForwardManager) Resume(ctx context.Context, sshClient *Client, dcli
 	m.sshClient = sshClient
 	m.dclient = dclient
 	m.paused = make(chan struct{})
+	m.reconciled = make(chan struct{})
 	m.mu.Unlock()
 	m.startLoops(ctx)
 	m.mu.Lock()
@@ -150,6 +160,14 @@ func (m *PortForwardManager) Resume(ctx context.Context, sshClient *Client, dcli
 		f.resume()
 	}
 	m.mu.Unlock()
+}
+
+// Reconciled closes once the current Start/Resume generation has completed
+// its authoritative PROXY LIST reconciliation.
+func (m *PortForwardManager) Reconciled() <-chan struct{} {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.reconciled
 }
 
 func (m *PortForwardManager) Paused() <-chan struct{} {

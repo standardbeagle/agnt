@@ -5,7 +5,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -213,38 +212,70 @@ func TestSSHClientSurfaces_WithRealSSHFixture(t *testing.T) {
 	}
 
 	queue := sshclient.NewPushQueue(project, 2, nil, nil)
-	queue.Reconnecting()
+	events := make(chan string, 4)
+	control := &reconnectControl{
+		queue: queue, projectRoot: project,
+		onPause:   func() { events <- "control-paused" },
+		onResume:  func() { events <- "control-resumed" },
+		onFlushed: func() { events <- "queue-flushed" },
+	}
+	control.Pause()
+	if got := <-events; got != "control-paused" {
+		t.Fatalf("first lifecycle event = %q", got)
+	}
+	queued := queue.Queued()
 	pushDone := make(chan error, 1)
 	go func() {
 		_, err := queue.Push("queued.txt", "", strings.NewReader("queued"))
 		pushDone <- err
 	}()
-	deadline := time.After(5 * time.Second)
-	for queue.Depth() != 1 {
-		select {
-		case <-deadline:
-			t.Fatal("push did not enter reconnect queue")
-		default:
-			runtime.Gosched()
-		}
+	select {
+	case <-queued:
+	case <-time.After(5 * time.Second):
+		t.Fatal("push did not enter reconnect queue")
 	}
-	t.Cleanup(func() {
-		queue.Close()
-		<-pushDone
-	})
 
 	oldStatusFlag := sshShowForwardStatus
 	sshShowForwardStatus = true
 	t.Cleanup(func() { sshShowForwardStatus = oldStatusFlag })
 	owner := &reconnectForwarding{
-		status:  sshclient.NewStatusTracker("surface-session"),
-		control: &reconnectControl{queue: queue, projectRoot: project},
+		status:   sshclient.NewStatusTracker("surface-session"),
+		control:  control,
+		onResume: func() { events <- "forward-resumed" },
 	}
-	var status bytes.Buffer
-	owner.renderStatusTo(&status, []sshclient.Mapping{{ProxyID: "fixture-web", RemotePort: 5173, LocalPort: 5174}})
+	var queuedStatus bytes.Buffer
+	owner.renderStatusTo(&queuedStatus, []sshclient.Mapping{{ProxyID: "fixture-web", RemotePort: 5173, LocalPort: 5174}})
 	for _, want := range []string{"connected", "session: surface-session", "queued pushes: 1", "fixture-web", "remote :5173"} {
-		if !strings.Contains(status.String(), want) {
-			t.Errorf("status surface missing %q:\n%s", want, status.String())
+		if !strings.Contains(queuedStatus.String(), want) {
+			t.Errorf("queued status surface missing %q:\n%s", want, queuedStatus.String())
 		}
 	}
+
+	wrapped := &sshclient.Client{SSH: client}
+	forwardReady := owner.Resume(wrapped)
+	queueDrained := control.Resume(wrapped)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := waitForLifecycle(ctx, forwardReady, queueDrained); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-events; got != "forward-resumed" {
+		t.Fatalf("resume event = %q, want forward-resumed", got)
+	}
+	if got := <-events; got != "control-resumed" {
+		t.Fatalf("resume event = %q, want control-resumed", got)
+	}
+	if got := <-events; got != "queue-flushed" {
+		t.Fatalf("resume event = %q, want queue-flushed", got)
+	}
+	if err := <-pushDone; err == nil {
+		t.Fatal("fixture SFTP is unsupported; queued push should complete with a surfaced error")
+	}
+	var finalStatus bytes.Buffer
+	owner.renderStatusTo(&finalStatus, []sshclient.Mapping{{ProxyID: "fixture-web", RemotePort: 5173, LocalPort: 5174}})
+	if !strings.Contains(finalStatus.String(), "queued pushes: 0") || !strings.Contains(finalStatus.String(), "fixture-web") {
+		t.Fatalf("final reconciled/drained status:\n%s", finalStatus.String())
+	}
+	owner.Stop()
+	queue.Close()
 }

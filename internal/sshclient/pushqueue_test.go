@@ -92,6 +92,38 @@ func TestPushQueueReconnectDoesNotOpenSFTPUntilPush(t *testing.T) {
 	}
 }
 
+func TestPushQueueLifecycleSignalsQueueAndDrainWithoutPolling(t *testing.T) {
+	q := NewPushQueue("/project", 2, nil, nil)
+	q.Reconnecting()
+	queued := q.Queued()
+	drained := q.Drained()
+	result := make(chan error, 1)
+	go func() {
+		_, err := q.Push("event.txt", "", strings.NewReader("event"))
+		result <- err
+	}()
+	select {
+	case <-queued:
+	case <-time.After(time.Second):
+		t.Fatal("queued event did not fire")
+	}
+	if q.Depth() != 1 {
+		t.Fatalf("depth after queued event = %d, want 1", q.Depth())
+	}
+	q.Connected(func() (*sftp.Client, error) { return nil, errors.New("fixture flush") })
+	select {
+	case <-drained:
+	case <-time.After(time.Second):
+		t.Fatal("drained event did not fire")
+	}
+	if q.Depth() != 0 {
+		t.Fatalf("depth after drained event = %d, want 0", q.Depth())
+	}
+	if err := <-result; err == nil || !strings.Contains(err.Error(), "fixture flush") {
+		t.Fatalf("queued result = %v", err)
+	}
+}
+
 func TestPushQueueOverflowFailsLoudAndEmitsEvent(t *testing.T) {
 	events := make(chan string, 1)
 	q := NewPushQueue("/project", 1, nil, func(msg string) { events <- msg })

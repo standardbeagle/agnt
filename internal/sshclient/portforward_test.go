@@ -453,15 +453,18 @@ func TestPortForwardManager_EndToEnd(t *testing.T) {
 		newAddr, _ := newResult["listen_addr"].(string)
 		newSSHClient := forwardFixture(t, newAddr)
 		mgr.Resume(context.Background(), newSSHClient, dc)
-
-		require.Eventually(t, func() bool {
-			foundOld, foundNew := false, false
-			for _, m := range mgr.Status() {
-				foundOld = foundOld || m.ProxyID == "p-before-reconnect"
-				foundNew = foundNew || m.ProxyID == "p-after-reconnect"
-			}
-			return !foundOld && foundNew
-		}, 3*time.Second, 20*time.Millisecond, "resume must rebuild mappings from fresh PROXY LIST")
+		select {
+		case <-mgr.Reconciled():
+		case <-time.After(3 * time.Second):
+			t.Fatal("resume reconciliation event did not fire")
+		}
+		foundOld, foundNew := false, false
+		for _, m := range mgr.Status() {
+			foundOld = foundOld || m.ProxyID == "p-before-reconnect"
+			foundNew = foundNew || m.ProxyID == "p-after-reconnect"
+		}
+		require.False(t, foundOld, "reconciled status retained stopped proxy")
+		require.True(t, foundNew, "reconciled status omitted replacement proxy")
 	})
 }
 

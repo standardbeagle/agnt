@@ -43,6 +43,8 @@ type PushQueue struct {
 	sftp        *sftp.Client
 	openSFTP    func() (*sftp.Client, error)
 	flushActive bool
+	drained     chan struct{}
+	queued      chan struct{}
 }
 
 type pushQueueState uint8
@@ -58,7 +60,9 @@ func NewPushQueue(projectRoot string, capacity int, notify FileArrivalNotifier, 
 	if capacity < 1 {
 		capacity = 1
 	}
-	return &PushQueue{projectRoot: projectRoot, cap: capacity, notify: notify, report: report, state: pushQueueConnected}
+	drained := make(chan struct{})
+	close(drained)
+	return &PushQueue{projectRoot: projectRoot, cap: capacity, notify: notify, report: report, state: pushQueueConnected, drained: drained, queued: make(chan struct{})}
 }
 
 func (q *PushQueue) SetSFTP(sc *sftp.Client) {
@@ -77,6 +81,8 @@ func (q *PushQueue) Reconnecting() {
 	q.openSFTP = nil
 	if q.state != pushQueueClosed {
 		q.state = pushQueueReconnecting
+		q.resetDrainedLocked()
+		q.queued = make(chan struct{})
 	}
 	q.mu.Unlock()
 	if old != nil {
@@ -97,6 +103,7 @@ func (q *PushQueue) Connected(open func() (*sftp.Client, error)) {
 	q.openSFTP = open
 	if len(q.pending) == 0 {
 		q.state = pushQueueConnected
+		q.closeDrainedLocked()
 		q.mu.Unlock()
 		return
 	}
@@ -133,6 +140,11 @@ func (q *PushQueue) Push(fileName, destRelPath string, src io.Reader) (string, e
 			return "", fmt.Errorf("%w: %s", ErrPushQueueFull, msg)
 		}
 		q.pending = append(q.pending, item)
+		select {
+		case <-q.queued:
+		default:
+			close(q.queued)
+		}
 		q.mu.Unlock()
 		result := <-item.result
 		return result.remotePath, result.err
@@ -156,6 +168,7 @@ func (q *PushQueue) flush() {
 		if len(q.pending) == 0 {
 			q.state = pushQueueConnected
 			q.flushActive = false
+			q.closeDrainedLocked()
 			q.mu.Unlock()
 			return
 		}
@@ -226,6 +239,37 @@ func (q *PushQueue) Depth() int {
 	return len(q.pending)
 }
 
+// Drained closes after every push accepted during the current reconnect has
+// completed. Reconnecting starts a fresh generation before callers enqueue.
+func (q *PushQueue) Drained() <-chan struct{} {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.drained
+}
+
+// Queued closes when the current reconnect generation accepts its first push.
+func (q *PushQueue) Queued() <-chan struct{} {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return q.queued
+}
+
+func (q *PushQueue) resetDrainedLocked() {
+	select {
+	case <-q.drained:
+		q.drained = make(chan struct{})
+	default:
+	}
+}
+
+func (q *PushQueue) closeDrainedLocked() {
+	select {
+	case <-q.drained:
+	default:
+		close(q.drained)
+	}
+}
+
 func (q *PushQueue) ProjectRoot() string { return q.projectRoot }
 
 func (q *PushQueue) Close() {
@@ -237,6 +281,7 @@ func (q *PushQueue) Close() {
 		return
 	}
 	q.state = pushQueueClosed
+	q.closeDrainedLocked()
 	pending := q.pending
 	q.pending = nil
 	sc := q.sftp
