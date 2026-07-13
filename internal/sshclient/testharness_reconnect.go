@@ -2,18 +2,14 @@
 
 // This build constraint is deliberate, not incidental: a real sshd is an
 // inherently Unix-shaped test dependency (host-key perms, fork-per-connection
-// process model, POSIX SIGSTOP/SIGCONT), and `agnt ssh` itself is already
-// unsupported on Windows in v1 (see .claude/rules/daemon-architecture.md
-// § Cross-Platform Mandate and lesson 8 in
-// .claude/rules/lessons-ssh-transport.md). A Windows equivalent of this
-// harness is out of scope until remote-ssh grows Windows support.
+// process model and POSIX SIGSTOP/SIGCONT). The portable hard-close harness
+// lives in testharness_hardclose_test.go; only this real-sshd freeze fixture
+// remains behind the Unix boundary.
 
 package sshclient
 
 import (
 	"bufio"
-	"crypto/ed25519"
-	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -23,7 +19,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -31,9 +26,8 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-// This file backs the reconnect state machine (task 09c) and its soak test
-// (09f) with two independent, deterministically-triggered connection-drop
-// simulations. It is intentionally NOT a _test.go file: a _test.go file is
+// This file backs the Unix real-sshd freeze simulation. It is intentionally
+// NOT a _test.go file: a _test.go file is
 // only visible within this package's own test binary, but 09c/09f may need
 // the harness from a different package's tests (e.g. a soak test living
 // outside internal/sshclient). Production code cannot construct a
@@ -46,108 +40,6 @@ import (
 // error, per acceptance criterion 1 — the freeze-mode drop simulation is
 // skipped, never failed, when the environment lacks a real sshd.
 var ErrSSHDNotFound = errors.New("sshclient: sshd (or ssh-keygen) not found on PATH")
-
-// HardCloseHarness is an in-process SSH server that simulates drop mode (a):
-// a hard TCP close of the underlying connection, as if the peer process
-// died, an interface flapped, or a NAT/firewall reset the stream. Unlike
-// fixtureServer's stop() (which only closes the listener and leaves
-// already-accepted connections alone), Drop() severs every connection
-// currently in flight, so tests trigger the drop explicitly rather than
-// racing a sleep against the accept loop.
-type HardCloseHarness struct {
-	listener net.Listener
-	hostKey  ssh.Signer
-
-	mu    sync.Mutex
-	conns []net.Conn
-}
-
-// NewHardCloseHarness starts the in-process server on an ephemeral localhost
-// port and registers cleanup via t.Cleanup.
-func NewHardCloseHarness(t *testing.T) *HardCloseHarness {
-	t.Helper()
-	signer, err := newEphemeralHostKey()
-	if err != nil {
-		t.Fatalf("sshclient: generating harness host key: %v", err)
-	}
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("sshclient: listening for hard-close harness: %v", err)
-	}
-	h := &HardCloseHarness{listener: l, hostKey: signer}
-	go h.acceptLoop()
-	t.Cleanup(h.Stop)
-	return h
-}
-
-// Addr returns the "host:port" dial target for this harness.
-func (h *HardCloseHarness) Addr() string { return h.listener.Addr().String() }
-
-// Drop hard-closes every connection accepted so far — the deterministic
-// trigger for drop mode (a). It does not stop the listener, so a caller that
-// reconnects after Drop will be accepted again, exactly like a real sshd
-// coming back up on the same address.
-func (h *HardCloseHarness) Drop() {
-	h.mu.Lock()
-	conns := h.conns
-	h.conns = nil
-	h.mu.Unlock()
-	for _, c := range conns {
-		c.Close()
-	}
-}
-
-// Stop shuts down the listener and closes any remaining connections.
-func (h *HardCloseHarness) Stop() {
-	h.listener.Close()
-	h.Drop()
-}
-
-func (h *HardCloseHarness) acceptLoop() {
-	for {
-		conn, err := h.listener.Accept()
-		if err != nil {
-			return
-		}
-		h.mu.Lock()
-		h.conns = append(h.conns, conn)
-		h.mu.Unlock()
-		go h.handshakeAndServe(conn)
-	}
-}
-
-func (h *HardCloseHarness) handshakeAndServe(conn net.Conn) {
-	cfg := &ssh.ServerConfig{
-		PublicKeyCallback: func(ssh.ConnMetadata, ssh.PublicKey) (*ssh.Permissions, error) {
-			return &ssh.Permissions{}, nil
-		},
-	}
-	cfg.AddHostKey(h.hostKey)
-	sshConn, chans, reqs, err := ssh.NewServerConn(conn, cfg)
-	if err != nil {
-		return
-	}
-	defer sshConn.Close()
-	go ssh.DiscardRequests(reqs)
-	for newChan := range chans {
-		if newChan.ChannelType() != "session" {
-			newChan.Reject(ssh.UnknownChannelType, "unsupported channel type")
-			continue
-		}
-		channel, requests, err := newChan.Accept()
-		if err != nil {
-			continue
-		}
-		go func() {
-			for req := range requests {
-				if req.WantReply {
-					req.Reply(true, nil)
-				}
-			}
-		}()
-		_ = channel
-	}
-}
 
 // SSHDFreezeHarness manages a real sshd subprocess to simulate drop mode
 // (b): a soft black-hole where the TCP connection stays ESTABLISHED (no RST,
@@ -483,12 +375,4 @@ func probeBanner(addr string) error {
 		return fmt.Errorf("sshclient: unexpected banner prefix %q", buf)
 	}
 	return nil
-}
-
-func newEphemeralHostKey() (ssh.Signer, error) {
-	_, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return nil, err
-	}
-	return ssh.NewSignerFromKey(priv)
 }
