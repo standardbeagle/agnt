@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -89,6 +90,10 @@ func TestCreate_LeaderExitIsTerminalWhenDescendantRetainsPTY(t *testing.T) {
 }
 
 func TestSessionhostLeaderHelper(t *testing.T) {
+	if os.Getenv("AGNT_SESSIONHOST_SLAVE_HOLDER") == "1" {
+		time.Sleep(3 * time.Second)
+		os.Exit(0)
+	}
 	if os.Getenv("AGNT_SESSIONHOST_LEADER_HELPER") != "1" {
 		return
 	}
@@ -96,13 +101,21 @@ func TestSessionhostLeaderHelper(t *testing.T) {
 	if err != nil {
 		os.Exit(2)
 	}
-	cmd := exec.Command("setsid", "sh", "-c", `exec 3<>"$1"; trap '' HUP; sleep 3`, "sh", slavePath)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Start(); err != nil {
+	slave, err := os.OpenFile(slavePath, os.O_RDWR, 0)
+	if err != nil {
 		os.Exit(2)
 	}
+	cmd := exec.Command(os.Args[0], "-test.run=TestSessionhostLeaderHelper")
+	cmd.Env = append(os.Environ(), "AGNT_SESSIONHOST_SLAVE_HOLDER=1")
+	cmd.Stdin = slave
+	cmd.Stdout = slave
+	cmd.Stderr = slave
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+	if err := cmd.Start(); err != nil {
+		_ = slave.Close()
+		os.Exit(2)
+	}
+	_ = slave.Close()
 	time.Sleep(50 * time.Millisecond)
 	_, _ = os.Stdout.WriteString("leader-final")
 	os.Exit(0)
