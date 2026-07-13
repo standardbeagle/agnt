@@ -153,7 +153,7 @@ Port-conflict policy、autostart cleanup ordering、alert push channels、incide
 
 ## Hooks & Channel Mode
 
-- **Hook dispatcher** (`agnt hook`)：fire-and-forget telemetry forwarder 入 daemon ring buffer（unloaded p99 target ≤5ms；CI 以 same-run baseline-relative bound 追蹤 loaded machine floor；transient failure always exit 0）。Events、drain fan-out、sample `settings.json`：**`docs/hook-dispatcher.md`**。Bash-interceptor side (`check-bash`/`check-prompt`)：`docs/hook-rules.md`。
+- **Hook dispatcher** (`agnt hook`)：fire-and-forget telemetry forwarder 入 daemon ring buffer（unloaded p99 target ≤5ms；CI 以 exact bound `hook_p99 ≤ 4× same-run baseline_p99 + 50ms` 追蹤 loaded machine floor 並捕 gross regressions；transient failure always exit 0）。Events、drain fan-out、sample `settings.json`：**`docs/hook-dispatcher.md`**。Bash-interceptor side (`check-bash`/`check-prompt`)：`docs/hook-rules.md`。
 - **Channel Mode** (beta, Claude Code only)：push-based event forwarding via MCP `claude/channel`；免 `agnt run`。Setup、event shape、`channel_reply`：**`docs/channel-mode.md`**。
 
 ## Testing
