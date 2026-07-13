@@ -412,6 +412,39 @@ func TestWaitForLifecycleCancellationBreaksStalledGeneration(t *testing.T) {
 	}
 }
 
+func TestRelayWithResizeLifecycle_NormalEOFAndErrorCancelBeforeJoin(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		relayErr error
+	}{
+		{name: "normal remote EOF"},
+		{name: "relay error precedence", relayErr: errors.New("relay failed")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			workerJoined := make(chan struct{})
+			go func() { <-ctx.Done(); close(workerJoined) }()
+			done := make(chan error, 1)
+			go func() {
+				done <- relayWithResizeLifecycle(func() error { return tc.relayErr }, cancel, func() { <-workerJoined })
+			}()
+			select {
+			case got := <-done:
+				if !errors.Is(got, tc.relayErr) {
+					t.Fatalf("relay error = %v, want %v", got, tc.relayErr)
+				}
+				select {
+				case <-workerJoined:
+				default:
+					t.Fatal("resize worker was not joined")
+				}
+			case <-time.After(time.Second):
+				t.Fatal("normal relay return deadlocked waiting for resize worker")
+			}
+		})
+	}
+}
+
 func TestSSHRelayLifecycleCtrlCCancelsStalledReconnect(t *testing.T) {
 	inputR, inputW := io.Pipe()
 	defer inputR.Close()

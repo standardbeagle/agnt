@@ -208,9 +208,11 @@ func runSSHRelayLoop(host, remotePath, attachName string, client *sshclient.Clie
 		}()
 
 		stopResize := sshWatchResize(relayCtx, session)
-		relayErr := session.Relay(relayCtx, pr, os.Stdout, os.Stderr)
-		stopResize()
-		relayCancel()
+		relayErr := relayWithResizeLifecycle(
+			func() error { return session.Relay(relayCtx, pr, os.Stdout, os.Stderr) },
+			relayCancel,
+			stopResize,
+		)
 		<-watchDone
 		pump.SetTarget(nil)
 		pw.Close()
@@ -272,6 +274,17 @@ func runSSHRelayLoop(host, remotePath, attachName string, client *sshclient.Clie
 			return resumeErr
 		}
 	}
+}
+
+// relayWithResizeLifecycle makes the ordering invariant explicit: Relay may
+// return on normal remote EOF while the resize worker is still waiting on its
+// context. Cancel first, then join the worker. The relay error is returned
+// unchanged so cleanup never masks transport/error precedence.
+func relayWithResizeLifecycle(relay func() error, cancel context.CancelFunc, joinResize func()) error {
+	err := relay()
+	cancel()
+	joinResize()
+	return err
 }
 
 // completeSSHReconnect is the relay loop's final reconnect gate. The PTY may

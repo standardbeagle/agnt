@@ -6,23 +6,19 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"strings"
 	"time"
 
 	"github.com/Microsoft/go-winio"
 )
 
 func localControlPath(host string) (string, error) {
-	if strings.TrimSpace(host) == "" {
-		return "", fmt.Errorf("sshclient: empty host has no control pipe")
-	}
-	return `\\.\pipe\agnt-ssh-control-` + pipeSafeHost(host), nil
+	return windowsPipeName("control", host)
 }
 func listenControlTransport(path string) (net.Listener, error) {
-	if !strings.HasPrefix(strings.ToLower(path), `\\.\pipe\`) {
-		return nil, fmt.Errorf("sshclient: native Windows control path must be a named pipe, got %q", path)
+	if err := validateWindowsPipePath(path); err != nil {
+		return nil, err
 	}
-	return winio.ListenPipe(path, &winio.PipeConfig{SecurityDescriptor: "D:P(A;;GA;;;OW)", MessageMode: false})
+	return winio.ListenPipe(path, &winio.PipeConfig{SecurityDescriptor: windowsPipeOwnerOnlySDDL, MessageMode: false})
 }
 func dialControlTransport(path string, timeout time.Duration) (net.Conn, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
