@@ -153,6 +153,265 @@ single sum. Title and description are fields, not entries. Geometry points count
 only against the separate 10,000-point ceiling. A record appearing in two source
 collections counts twice; deduplication cannot be used to evade the ceiling.
 
+## Normative `agnt.public-bundle` v1 manifest
+
+This section is the complete public wire contract. “Reject” means both the
+preview producer and every public reader reject the entire manifest; neither may
+drop, coerce, truncate, repair, or ignore the offending value. JSON names are
+case-sensitive. Every listed field is required unless marked optional. Optional
+fields are omitted when absent. JSON `null` is forbidden everywhere.
+
+### Envelope and identities
+
+| JSON path | Type and rule |
+|---|---|
+| `schema` | string; exactly `agnt.public-bundle` |
+| `version` | JSON integer; exactly `1` |
+| `bundle_id` | string; 22 unpadded base64url characters encoding exactly 128 CSPRNG bits; assigned during preview and stable across confirmation/read |
+| `created_at` | string; UTC minute bucket defined below; assigned during preview and immutable |
+| `expires_at` | string; UTC minute bucket strictly after `created_at` and no more than 7 days later |
+| `title` | string; 1–120 Unicode scalar values after text normalization |
+| `description` | optional string; 0–2,000 Unicode scalar values after text normalization |
+| `entries` | array; 1–200 entry objects; aggregate counting below applies |
+
+Every entry has required `kind`, `entry_id`, and `occurred_at`. `kind` is one of
+`incident`, `http`, `interaction`, or `geometry`. `entry_id` uses the same
+128-bit/22-character format as `bundle_id`, is unique within `entries`, and is
+assigned once from the CSPRNG during preview. It remains stable through confirmed
+creation and the bundle's lifetime but must not be reused by another preview,
+even for the same source record. It never encodes an array index, timestamp,
+selector, URL, project, session, or source identifier. `occurred_at` is the source
+timestamp rounded down to its UTC minute and encoded by the timestamp rule below.
+Both identity fields use canonical RFC 4648 base64url without padding: decoders
+must recover exactly 16 bytes and reject nonzero unused trailing bits. Producers
+sort `entries` by `occurred_at` ascending, then kind rank in the order listed
+above, then ASCII `entry_id`. `frames` retain source stack order and `points`
+retain path order; readers reject a manifest whose entries violate this order.
+
+### Entry variants
+
+The field set is exact: common fields plus the fields in the matching row.
+Fields belonging to another variant are unknown and therefore rejected.
+
+| `kind` | Required fields | Optional fields | Additional rules |
+|---|---|---|---|
+| `incident` | `severity`, `message` | `frames` | `severity`: `info`, `warning`, `error`, or `critical`; `message`: normalized text, 1–2,000 scalars; `frames`: 1–50 normalized strings, each 1–200 scalars |
+| `http` | `method`, `url`, `status`, `duration_bucket`, `size_bucket`, `content_type` | none | `method`: `GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS`, `CONNECT`, or `TRACE`; `url`: normalized display URL; `status`: integer 100–599; `content_type`: `html`, `json`, `text`, `form`, `image`, `font`, `script`, `style`, `wasm`, `other`, or `unknown` |
+| `interaction` | `event` | `selector`, `label` | `event`: `click`, `submit`, `navigate`, `focus`, `blur`, `keydown`, `pointer`, or `scroll`; at least one of `selector`/`label` is required; `selector`: safe selector grammar, ≤512 ASCII bytes; `label`: normalized text, 1–500 scalars |
+| `geometry` | `primitive`, `x`, `y`, `width`, `height` | `label`, `points` | `primitive`: `rectangle`, `ellipse`, `line`, `path`, or `text`; coordinates use the integer geometry rule; `label`: normalized text, 1–500 scalars; conditional rules below |
+
+`duration_bucket` is selected from the non-overlapping half-open source-duration
+ranges below. Negative, non-finite, or overflowing source durations reject.
+
+| Enum | Source duration |
+|---|---|
+| `lt_10ms` | 0 ≤ d < 10 ms |
+| `10_49ms` | 10 ≤ d < 50 ms |
+| `50_199ms` | 50 ≤ d < 200 ms |
+| `200_999ms` | 200 ≤ d < 1,000 ms |
+| `1_4s` | 1,000 ≤ d < 5,000 ms |
+| `ge_5s` | d ≥ 5,000 ms |
+
+`size_bucket` is selected from the decoded non-negative body byte count. Missing
+size uses `unknown`; negative or overflowing source sizes reject.
+
+`content_type` is a closed observational label derived from source metadata; it
+never permits content bytes of that type in the bundle.
+
+| Enum | Source bytes |
+|---|---|
+| `zero` | 0 |
+| `1_1023` | 1–1,023 |
+| `1k_9k` | 1,024–10,239 |
+| `10k_99k` | 10,240–102,399 |
+| `100k_1023k` | 102,400–1,048,575 |
+| `ge_1m` | ≥1,048,576 |
+| `unknown` | source did not report a size |
+
+Geometry numbers are JSON integers in `[-1_000_000, 1_000_000]`; negative
+`width` or `height` rejects. Fractions, exponent notation, negative zero, and
+values outside signed 53-bit exact JSON integer range reject before the narrower
+geometry check. `points`, when present, is an array of 2–1,024 two-element
+`[x,y]` integer arrays. It is required only for `path`, forbidden otherwise, and
+all points across the manifest must total ≤10,000. `line` requires `width > 0` or
+`height > 0`. `rectangle`, `ellipse`, and `text` require both dimensions >0.
+`path` requires its bounding `width` and `height` ≥0. `label` is required for
+`text`, optional for other primitives.
+
+### Lexical normalization and decoding limits
+
+- **Text:** Input must be valid shortest-form UTF-8 and is normalized to Unicode
+  NFC. Before NFC, CRLF and CR become LF. TAB/LF are allowed; all other C0/C1
+  controls, DEL, bidi controls U+061C/U+200E/U+200F/U+202A–U+202E/U+2066–U+2069,
+  Unicode noncharacters, and U+0000 reject. Limits count Unicode scalar values
+  after normalization, not bytes or grapheme clusters.
+- **Time:** exactly `YYYY-MM-DDTHH:MM:00Z`, a real Gregorian UTC instant, with
+  uppercase `T`/`Z`, four-digit year 0001–9999, and no offset/fraction/leap
+  second. Bucketing floors the source instant to the minute. Events later than
+  `created_at` by >5 minutes or earlier by >30 days reject.
+- **Selector:** ASCII only and grammar
+  `compound ((" " | " > ") compound)*`, with exactly one ASCII space around
+  `>` and no leading/trailing whitespace. `compound` is an optional lowercase
+  tag `[a-z][a-z0-9-]{0,62}`, optional ID `#[A-Za-z_][A-Za-z0-9_-]{0,63}`, then
+  zero or more classes `.[A-Za-z_][A-Za-z0-9_-]{0,63}`; at least one component
+  is required. Total length is 1–512 bytes. Attributes, `*`, `:`, `,`, escapes,
+  brackets, parentheses, controls, and consecutive combinators reject.
+- **URL:** absolute RFC 3986 `http` or `https`; no userinfo, query, fragment, or
+  empty host. Scheme/host are lowercase; DNS uses validated IDNA2008 A-labels;
+  IPv4 is canonical dotted decimal and IPv6 is RFC 5952 inside brackets. Default
+  ports are removed; other ports are decimal 1–65535. Dot segments are removed;
+  empty path becomes `/`; percent escapes use uppercase hex and unreserved bytes
+  are decoded. Path bytes must be valid UTF-8 NFC after percent decoding, but the
+  serialized URL remains ASCII with non-ASCII UTF-8 bytes percent-encoded. Length
+  is 1–2,048 ASCII bytes after normalization. Redirects and fetching are absent.
+- **JSON decoder:** UTF-8 JSON text only; ≤1,048,576 wire bytes; ≤1,048,576 bytes
+  after transport decompression (transport compression is forbidden in v1);
+  maximum nesting depth 8 including the envelope; ≤32 object members per object;
+  ≤200 `entries`; ≤50 `frames`; ≤1,024 points per geometry; ≤10,000 points total;
+  ≤4,096 UTF-8 bytes per decoded JSON string before its tighter field rule; and
+  ≤256 UTF-8 bytes per object key. A byte-order mark, trailing data, comments,
+  duplicate object keys, invalid UTF-8, invalid escapes or surrogate pairs,
+  numbers outside the grammar/range, and any exceeded limit reject.
+
+The aggregate 200-entry rule above is normative. Per-kind ceilings remain 100
+incidents, 100 HTTP observations, 100 interactions, and 500 geometry primitives,
+but the aggregate 200 ceiling is applied first and therefore bounds geometry to
+at most 200 in v1. This intentionally resolves the conceptual table's broader
+500-primitive ceiling without silently widening the public manifest.
+
+| Conceptual allowlist/limit row | Normative v1 schema rule |
+|---|---|
+| Bundle | envelope table; 1,048,576-byte decoder limit; `entries` aggregate 1–200 |
+| Title/description | `title`/`description` envelope fields plus Text normalization |
+| Incident/error summary | `kind=incident`; 100-kind count; message/frame scalar and array limits |
+| HTTP observation | `kind=http`; 100-kind count; closed method/content/bucket enums; URL grammar |
+| Interaction/mutation | `kind=interaction`; 100-kind count; closed event enum; selector/label rules |
+| Screenshot | no variant exists; source-kind pre-read rejection and unknown-field rejection |
+| Design/sketch geometry | `kind=geometry`; integer/primitive/conditional/point rules; aggregate entry ceiling |
+| Text, selector, URL, time, Unicode | Lexical normalization rules; any nonconformance rejects |
+| Wire/decoded/depth/key/string/array/count | JSON decoder limits; producer/reader matrix requires symmetric rejection |
+
+### Producer/reader rejection matrix
+
+| Condition | Preview producer | Confirm/create | Public reader |
+|---|---|---|---|
+| unknown/forbidden source kind | reject before payload read | revalidate metadata; reject | n/a (no manifest exists) |
+| unknown field, wrong variant field, duplicate key, `null` | reject | reject canonical preview as corrupt | reject |
+| missing required field or conditional field | reject | reject | reject |
+| unsupported/missing schema or version | reject | reject | reject |
+| invalid UTF-8/Unicode/time/selector/URL/enum/identity | reject | reject | reject |
+| fraction, exponent, negative zero, non-finite source, integer overflow/range error | reject | reject | reject |
+| field, per-array, aggregate, nesting, key, string, wire, or decoded limit exceeded | reject before persistence | reject | reject before rendering |
+| canonical bytes differ from confirmed preview | n/a | reject and require new preview | reject stored record as corrupt |
+| manifest digest mismatch | n/a | reject | reject stored record as corrupt |
+
+### Canonical serialization and digest
+
+Canonical bytes are UTF-8 JSON Canonicalization Scheme (JCS), RFC 8785. Agnt
+further restricts JCS: the data model above has no `null`, floating-point value,
+exponent, negative zero, or lone surrogate; strings must already satisfy agnt
+normalization; object keys are exactly the schema keys; arrays retain semantic
+order; and no BOM or trailing LF is present. Producers validate and normalize,
+serialize with RFC 8785, then readers parse with duplicate detection, validate,
+re-serialize, and require byte-for-byte equality with stored canonical bytes.
+
+The lowercase hexadecimal manifest digest is:
+
+```text
+SHA-256(
+  UTF8("agnt-public-bundle-manifest-v1\0") ||
+  uint64_be(len(canonical_bytes)) ||
+  canonical_bytes
+)
+```
+
+The eight-byte unsigned length makes framing unambiguous. The preview
+confirmation digest additionally binds expiry and is:
+
+```text
+SHA-256(
+  UTF8("agnt-public-bundle-confirm-v1\0") ||
+  uint64_be(len(canonical_bytes)) || canonical_bytes ||
+  uint16_be(len(UTF8(expires_at))) || UTF8(expires_at)
+)
+```
+
+`expires_at` in the second frame is the exact canonical envelope value; changing
+it changes both the manifest bytes and the final framed component by design.
+
+### Canonical vectors
+
+The bytes in each code block are one line with no trailing LF.
+
+Vector A canonical bytes:
+
+```json
+{"bundle_id":"AAAAAAAAAAAAAAAAAAAAAA","created_at":"2026-07-14T02:10:00Z","entries":[{"entry_id":"EREREREREREREREREREREQ","kind":"incident","message":"timeout","occurred_at":"2026-07-14T02:09:00Z","severity":"error"}],"expires_at":"2026-07-15T02:10:00Z","schema":"agnt.public-bundle","title":"Build failure","version":1}
+```
+
+Vector A manifest digest:
+`a267e6527efb3ce865f99b13a2bd97ce56f1a3f62a39878b2881ead149ec7a53`
+
+Vector A confirmation digest:
+`0da5db451ae474a4ddb50cb7b6c11d6352a81997fa2d71e2a904950eb0591343`
+
+Vector B canonical bytes (the title contains NFC U+00E9):
+
+```json
+{"bundle_id":"_____________________w","created_at":"2026-07-14T03:00:00Z","description":"line 1\nline 2","entries":[{"entry_id":"MzMzMzMzMzMzMzMzMzMzMw","height":20,"kind":"geometry","label":"Café","occurred_at":"2026-07-14T02:58:00Z","primitive":"text","width":40,"x":-5,"y":10},{"entry_id":"IiIiIiIiIiIiIiIiIiIiIg","event":"click","kind":"interaction","label":"Café","occurred_at":"2026-07-14T02:59:00Z","selector":"button#save.primary"}],"expires_at":"2026-07-14T04:00:00Z","schema":"agnt.public-bundle","title":"Café","version":1}
+```
+
+Vector B manifest digest:
+`f04ce8eb23e92721d2619808b07da3603800a47c3fb350780e7b15e0e487631b`
+
+Vector B confirmation digest:
+`a53a267e25296095461b0e78876d46ed1d6a3959304e6159f4757cb37dd4a5b7`
+
+Independent verification must use two implementations, one of which implements
+RFC 8785 independently of agnt. P1a verified both vectors with the independent
+Python `rfc8785` 0.1.4 implementation and a separate standard-library Go
+framing/SHA-256 program; both produced the stated byte lengths and matching
+digests. The Python implementation also reproduced each code block byte-for-byte.
+
+Malicious fixtures are mandatory: duplicate `version`; unknown top-level
+`debug`; version `2`; `null` description; invalid UTF-8 `ff`; overlong UTF-8
+`c0 80`; lone `\ud800`; decomposed `"Cafe\u0301"`; exponent `1e0`; negative zero
+`-0`; 201 entries; 51 frames; depth 9; 1,048,577 wire bytes; 4,097-byte string;
+513-byte selector; selector `a[href]`; URL with userinfo/query/fragment; invalid
+minute/leap second; duplicate `entry_id`; geometry coordinate 1,000,001; 1,025
+points; 10,001 total points; screenshot/asset field; and valid canonical JSON
+with one byte changed after digesting. The producer and reader outcomes are the
+rejections specified above; P2 owns these fixtures and must not weaken them.
+
+The following exact malicious wire vectors remove ambiguity about the fixture
+construction. `A` means the 320 Vector A bytes above; `replace` requires exactly
+one match, and `insert-before-final-}` operates on the final byte. Structural
+lexical rejection (UTF-8, duplicate keys, number grammar, limits) precedes schema
+required-field reporting.
+
+| Vector bytes | Required rejection |
+|---|---|
+| `A` with final `"version":1}` replaced by `"version":1,"version":1}` | duplicate object key |
+| `A` with final `"version":1}` replaced by `"version":1,"debug":true}` | unknown field `debug` |
+| `A` with final `"version":1}` replaced by `"version":2}` | unsupported version |
+| `A` with ASCII `Build failure` replaced by bytes `42 75 69 6c 64 20 ff 61 69 6c 75 72 65` | invalid UTF-8 |
+| `A` with `"title":"Build failure"` replaced by `"title":"Cafe\u0301"` | non-NFC text (producer normalizes source before serialization; reader rejects noncanonical stored input) |
+| `A` with final `"version":1}` replaced by `"version":1e0}` | forbidden exponent number grammar |
+| valid `A` plus manifest digest with its first hexadecimal digit changed from `a` to `b` | digest mismatch |
+
+P1a independently checked that the byte mutations above are distinct from A,
+that the invalid byte vector fails strict UTF-8 decoding, and that every content
+mutation changes the framed SHA-256 digest. Schema-specific rejection reasons are
+normative fixtures for P2, not delegated to the RFC 8785 implementation.
+
+### P2 ownership
+
+P2 implements DTOs, constants, bounded decoders, validators, RFC 8785 encoding,
+framing, and every positive/malicious fixture in this section. P2 may choose
+internal names and decomposition but must not redefine, extend, or silently
+repair public v1 wire semantics. Any semantic change returns to a versioned spec
+task before implementation.
+
 Screenshot privacy is fail-closed: v1 has no approved screenshot transformation,
 so no raster bytes may enter staging, durable bundle storage, the manifest, or a
 public response. Previewing a screenshot does not approve it for publication.
