@@ -237,9 +237,10 @@ On a suspected token leak or abuse:
    `token_hash_prefix` (`hash[:8]`) — never the token. Match a log line to a share
    by that prefix.
 4. **Trust the fail-loud behavior.** Store corruption surfaces a visible daemon
-   startup error and refuses to serve the affected record; it never silently
-   degrades. A bad per-record checksum tombstones that one record and surfaces the
-   error, leaving healthy records serving.
+   startup error and disables the entire affected store; it never silently
+   degrades or serves a partial set of shares or feedback. Quarantine or repair
+   the corrupt record on disk, then restart the daemon and confirm the store loads
+   before restoring the public listener.
 5. **Kill the public surface entirely** by unsetting `AGNT_PUBLIC_ADDR` and
    restarting the daemon — the public listener is not stood up without it, while
    the control plane and dev proxy stay up.
