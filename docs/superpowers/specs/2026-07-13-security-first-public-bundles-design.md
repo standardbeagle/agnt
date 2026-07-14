@@ -373,14 +373,21 @@ URL normalization runs in this order:
    lowercase text inside brackets.
 5. Parse the port as decimal 1–65535; remove `:80` for HTTP and `:443` for HTTPS;
    emit every other port without leading zeroes.
-6. For the path only, uppercase percent hex, decode percent-encoded RFC 3986
-   unreserved bytes (including `%2E`), then remove RFC 3986 dot segments.
-   Consequently encoded dot segments are treated as dot segments, never as
-   opaque names. Decode remaining percent escapes to bytes, require shortest-form
-   UTF-8, normalize Unicode to NFC, and re-encode every byte outside ASCII
-   unreserved/sub-delims/`:`/`@` using uppercase percent hex. Literal `/` remains
-   the segment separator; encoded separators were already rejected at step 3.
-7. Replace an empty path with `/`, assemble without userinfo/query/fragment, and
+6. For the path only, split on literal `/`; encoded separators were already
+   rejected at step 3. Within each segment, uppercase percent hex and decode
+   percent-encoded RFC 3986 unreserved ASCII bytes, including `%2E`. Apply RFC
+   3986 dot-segment removal to those segment tokens, so encoded dot segments are
+   never opaque names.
+7. For every retained segment, build one byte string left-to-right: append the
+   UTF-8 bytes of each literal source IRI scalar (an ASCII literal contributes its
+   one byte), and append the single octet represented by each remaining `%HH`.
+   This combination happens before character validation—literal and escaped
+   bytes are not decoded as separate strings. Strictly decode the combined bytes
+   as shortest-form UTF-8, reject any error, normalize the resulting scalar
+   sequence to NFC, encode it to UTF-8, and emit ASCII
+   unreserved/sub-delims/`:`/`@` bytes literally while percent-encoding every
+   other byte with uppercase hex. Rejoin segments with literal `/`.
+8. Replace an empty path with `/`, assemble without userinfo/query/fragment, and
    enforce the 2,048-byte ASCII limit. A trusted source emits the canonical value;
    a wire value must already equal it byte-for-byte or rejects without repair.
 
@@ -440,6 +447,7 @@ Source-input fixtures begin as structured trusted-source records:
 | URL `https://example.com/a?q=%2F#%5C` | pass | `pass(url=https://example.com/a, url_query_removed, url_fragment_removed)`; removed separators are not inspected | pass | pass | pass | pass |
 | URL `https://example.com/a/%2e%2E/b` | pass | `pass(url=https://example.com/b, url_dot_segment_removed)` | pass | pass | pass | pass |
 | URL `https://example.com/a%2fb` or `https://example.com/a%5Cb` | pass | `reject(url_rejected)` | NR | NR | NR | NR |
+| URL `https://example.com/cafe%CC%81` (literal UTF-8 `cafe` plus escaped combining-acute octets) | pass | `pass(url=https://example.com/caf%C3%A9)` after combined-byte UTF-8 decode and NFC | pass | pass | pass | pass |
 | URL `https://bücher.example/cafe%CC%81` | pass | `pass(url=https://xn--bcher-kva.example/caf%C3%A9)` | pass | pass | pass | pass |
 | structured frame `{name:"render",path:"/home/alice/app.go",line:7,source:"secret()"}` | pass | `pass(frame=render)`; path/line/source fields are not read or copied | pass | pass | pass | pass |
 | structured frame `{name:"/home/alice/app.go:7"}` | pass | `pass(frame=redacted, frame_name_redacted:1)` | pass | pass | pass | pass |
@@ -461,6 +469,7 @@ digest and confirmation state.
 | H with its single URL replaced by `https://example.com/a?q=%2F#%5C` | NA | NA | `reject(url_query_fragment)` at step 2, before retained-component separator check | NR | NR | `reject(url_query_fragment)` |
 | H with its single URL replaced by `https://example.com/a/%2e%2E/b` | NA | NA | `reject(url_noncanonical)`; canonical source result would be `/b` | NR | NR | `reject(url_noncanonical)` |
 | H with its single URL replaced by `https://example.com/a%2Fb` or `https://example.com/a%5Cb` | NA | NA | `reject(url_encoded_separator)` | NR | NR | `reject(url_encoded_separator)` |
+| H with its single URL replaced by `https://example.com/cafe%CC%81` | NA | NA | `reject(url_noncanonical)`; canonical trusted-source result is `https://example.com/caf%C3%A9` | NR | NR | `reject(url_noncanonical)` |
 | H with its single URL replaced by `https://bücher.example/café` | NA | NA | `reject(url_non_ascii)`; canonical source form is `https://xn--bcher-kva.example/caf%C3%A9` | NR | NR | `reject(url_non_ascii)` |
 | F with its single `"frames":["render"]` replaced by `"frames":["/home/alice/app.go:7"]` | NA | NA | `reject(frame)`; no redaction | NR | NR | `reject(frame)` before render |
 | F with its single frame replaced by `at fn (webpack:///src/app.js:7:2)` | NA | NA | `reject(frame)`; no redaction | NR | NR | `reject(frame)` before render |
@@ -633,8 +642,8 @@ sensitive-region policy, explicit publisher approval of the exact transformed
 bytes, and tests proving that only those approved bytes can cross the persistence
 boundary; generic image re-encoding alone is not a privacy transform.
 
-Selectors are a display-only grammar: tag, `#id`, `.class`, child/descendant
-combinators, and the redacted placeholder. Attribute values, pseudo-functions,
+Selectors are a display-only grammar: tag, `#id`, `.class`, and child/descendant
+combinators. Attribute values, pseudo-functions,
 escapes producing controls, and URL-bearing syntax are rejected. Text rejects
 NUL and bidi-control characters, normalizes newlines, and preserves no terminal
 control sequences. JSON decoding has depth and duplicate-key limits. Binary
