@@ -195,7 +195,7 @@ Fields belonging to another variant are unknown and therefore rejected.
 
 | `kind` | Required fields | Optional fields | Additional rules |
 |---|---|---|---|
-| `incident` | `severity`, `message` | `frames` | `severity`: `info`, `warning`, `error`, or `critical`; `message`: normalized text, 1–2,000 scalars; `frames`: 1–50 normalized strings, each 1–200 scalars |
+| `incident` | `severity`, `message` | `frames` | `severity`: `info`, `warning`, `error`, or `critical`; `message`: normalized text, 1–2,000 scalars; `frames`: 1–50 safe function-name strings defined below |
 | `http` | `method`, `url`, `status`, `duration_bucket`, `size_bucket`, `content_type` | none | `method`: `GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS`, `CONNECT`, or `TRACE`; `url`: normalized display URL; `status`: integer 100–599; `content_type`: `html`, `json`, `text`, `form`, `image`, `font`, `script`, `style`, `wasm`, `other`, or `unknown` |
 | `interaction` | `event` | `selector`, `label` | `event`: `click`, `submit`, `navigate`, `focus`, `blur`, `keydown`, `pointer`, or `scroll`; at least one of `selector`/`label` is required; `selector`: safe selector grammar, ≤512 ASCII bytes; `label`: normalized text, 1–500 scalars |
 | `geometry` | `primitive`, `x`, `y`, `width`, `height` | `label`, `points` | `primitive`: `rectangle`, `ellipse`, `line`, `path`, or `text`; coordinates use the integer geometry rule; `label`: normalized text, 1–500 scalars; conditional rules below |
@@ -216,7 +216,31 @@ ranges below. Negative, non-finite, or overflowing source durations reject.
 size uses `unknown`; negative or overflowing source sizes reject.
 
 `content_type` is a closed observational label derived from source metadata; it
-never permits content bytes of that type in the bundle.
+never permits content bytes of that type in the bundle. The producer trims
+optional HTTP whitespace, parses the whole value using the RFC 9110 media-type
+grammar, lowercases type/subtype, and applies this first-match table. A valid
+parameterized value maps exactly as its bare media type: parameters, including
+quoted values, are validated and then discarded. An invalid parameter makes the
+whole value malformed. This table is exhaustive.
+
+| Source `Content-Type` metadata | `content_type` | Producer diagnostic |
+|---|---|---|
+| absent, empty, or only optional whitespace | `unknown` | none |
+| malformed type/subtype, invalid token/quoted parameter, trailing junk, or multiple comma-joined values | `unknown` | `mime_malformed` |
+| `text/html` | `html` | none |
+| `text/css` | `style` | none |
+| `text/javascript` or `application/javascript` | `script` | none |
+| any valid subtype ending exactly `+json`, or `application/json` | `json` | none |
+| `application/x-www-form-urlencoded` or `multipart/form-data` | `form` | none |
+| `application/wasm` | `wasm` | none |
+| `font/*`, `application/font-woff`, `application/font-sfnt`, or `application/vnd.ms-fontobject` | `font` | none |
+| any other `image/*` | `image` | none |
+| any other `text/*` | `text` | none |
+| every other syntactically valid media type | `other` | none |
+
+The `+json` rule precedes top-level `image/*`/`text/*`; for example,
+`application/problem+json; charset=utf-8` and `image/example+json` both map to
+`json`. Matching is ASCII case-insensitive before lowercase normalization.
 
 | Enum | Source bytes |
 |---|---|
@@ -245,6 +269,19 @@ all points across the manifest must total ≤10,000. `line` requires `width > 0`
   controls, DEL, bidi controls U+061C/U+200E/U+200F/U+202A–U+202E/U+2066–U+2069,
   Unicode noncharacters, and U+0000 reject. Limits count Unicode scalar values
   after normalization, not bytes or grapheme clusters.
+- **Frame/function name:** Wire values are ASCII and either `anonymous`,
+  `redacted`, or `segment ("." segment)*`, where `segment` is
+  `[A-Za-z_$][A-Za-z0-9_$]{0,63}`. Total length is 1–200 bytes. Whitespace,
+  `/`, `\\`, `:`, `@`, parentheses, brackets, URL syntax, drive letters, line or
+  column numbers, and source text are impossible in this grammar. The source
+  transformer accepts only structured frame metadata, reads only its function
+  name field, and never reads/copies path, file, URL, line, column, source-line,
+  or source-map fields. A missing name becomes `anonymous`; a nonconforming name
+  or any unstructured/raw stack-frame string becomes `redacted`. Consecutive
+  `redacted` values collapse to one; if no frames remain, `frames` is omitted.
+  Producer diagnostics report counts only (`frame_name_redacted:<count>`), never
+  rejected content. A wire reader does not redact: any nonconforming frame rejects
+  the manifest.
 - **Time:** exactly `YYYY-MM-DDTHH:MM:00Z`, a real Gregorian UTC instant, with
   uppercase `T`/`Z`, four-digit year 0001–9999, and no offset/fraction/leap
   second. Bucketing floors the source instant to the minute. Events later than
@@ -256,7 +293,7 @@ all points across the manifest must total ≤10,000. `line` requires `width > 0`
   zero or more classes `.[A-Za-z_][A-Za-z0-9_-]{0,63}`; at least one component
   is required. Total length is 1–512 bytes. Attributes, `*`, `:`, `,`, escapes,
   brackets, parentheses, controls, and consecutive combinators reject.
-- **URL:** absolute RFC 3986 `http` or `https`; no userinfo, query, fragment, or
+- **URL:** canonical wire values are absolute RFC 3986 `http` or `https`; no userinfo, query, fragment, or
   empty host. Scheme/host are lowercase; DNS uses validated IDNA2008 A-labels;
   IPv4 is canonical dotted decimal and IPv6 is RFC 5952 inside brackets. Default
   ports are removed; other ports are decimal 1–65535. Dot segments are removed;
@@ -272,6 +309,31 @@ all points across the manifest must total ≤10,000. `line` requires `width > 0`
   ≤256 UTF-8 bytes per object key. A byte-order mark, trailing data, comments,
   duplicate object keys, invalid UTF-8, invalid escapes or surrogate pairs,
   numbers outside the grammar/range, and any exceeded limit reject.
+
+### Source transformation versus manifest validation
+
+Source transformation is a trusted-publisher operation over structured source
+records; canonical-manifest validation is a separate operation over untrusted
+JSON bytes. The producer never applies source cleanup to a supplied manifest.
+
+1. The metadata gate reads only source kind and bounded metadata descriptors. It
+   rejects unknown/forbidden kinds before any payload read.
+2. The source transformer copies only schema-named fields, applies timestamp and
+   bucket derivation, MIME mapping, text NFC/control rules, frame redaction, and
+   URL transformation, and emits diagnostics that contain no source values.
+3. The manifest validator applies the exact wire grammar and limits. It never
+   strips, normalizes, redacts, coerces, or substitutes.
+4. JCS serialization/digesting occurs only after successful validation.
+
+For source URLs, malformed URLs, unsupported schemes, an empty host, or any
+userinfo reject the complete preview with `url_rejected`; userinfo is not stripped
+because doing so could conceal selected credentials. A valid query is removed
+with diagnostic `url_query_removed`; a valid fragment is removed with diagnostic
+`url_fragment_removed`; both diagnostics are emitted when both are present. The
+remaining URL is normalized by the wire URL rule and must fit 2,048 bytes or the
+preview rejects with `url_rejected`. In contrast, canonical manifest input
+containing userinfo, query, fragment, or a noncanonical-but-repairable URL is
+rejected unchanged by producer validation and public readers.
 
 The aggregate 200-entry rule above is normative. Per-kind ceilings remain 100
 incidents, 100 HTTP observations, 100 interactions, and 500 geometry primitives,
@@ -293,7 +355,7 @@ at most 200 in v1. This intentionally resolves the conceptual table's broader
 
 ### Producer/reader rejection matrix
 
-| Condition | Preview producer | Confirm/create | Public reader |
+| Canonical-manifest condition (after any source transformation) | Preview producer validator | Confirm/create | Public reader |
 |---|---|---|---|
 | unknown/forbidden source kind | reject before payload read | revalidate metadata; reject | n/a (no manifest exists) |
 | unknown field, wrong variant field, duplicate key, `null` | reject | reject canonical preview as corrupt | reject |
@@ -304,6 +366,47 @@ at most 200 in v1. This intentionally resolves the conceptual table's broader
 | field, per-array, aggregate, nesting, key, string, wire, or decoded limit exceeded | reject before persistence | reject | reject before rendering |
 | canonical bytes differ from confirmed preview | n/a | reject and require new preview | reject stored record as corrupt |
 | manifest digest mismatch | n/a | reject | reject stored record as corrupt |
+
+### Stage-specific source and wire fixtures
+
+Pipeline stages are `M` metadata gate, `T` source transformation, `V` manifest
+validation, `C` JCS/framing, `K` confirmed-create revalidation, and `R` public
+reader. `pass(x)` gives the exact relevant output; `reject(code)` terminates the
+pipeline; `NR` means not reached; `NA` means the stage does not accept that input
+class. Diagnostics listed at `T` persist as count/code metadata only and are not
+manifest fields.
+
+Source-input fixtures begin as structured trusted-source records:
+
+| Exact source condition | M | T | V | C | K | R |
+|---|---|---|---|---|---|---|
+| known HTTP kind; MIME absent; URL `https://EXAMPLE.com/a` | pass | `pass(content_type=unknown,url=https://example.com/a)` | pass | pass | revalidate metadata/revision, pass | pass |
+| MIME `Application/Problem+Json; Charset="utf-8"` | pass | `pass(content_type=json)` | pass | pass | pass | pass |
+| MIME `text/html; charset="unterminated` | pass | `pass(content_type=unknown, mime_malformed)` | pass | pass | pass | pass |
+| URL `https://user:secret@example.com/a` | pass | `reject(url_rejected)` | NR | NR | NR | NR |
+| URL `https://EXAMPLE.com/a?token=x#private` | pass | `pass(url=https://example.com/a, url_query_removed, url_fragment_removed)` | pass | pass | pass | pass |
+| structured frame `{name:"render",path:"/home/alice/app.go",line:7,source:"secret()"}` | pass | `pass(frame=render)`; path/line/source fields are not read or copied | pass | pass | pass | pass |
+| structured frame `{name:"/home/alice/app.go:7"}` | pass | `pass(frame=redacted, frame_name_redacted:1)` | pass | pass | pass | pass |
+| raw frame string `at fn (/home/alice/app.js:7:2)` | pass | `pass(frame=redacted, frame_name_redacted:1)` | pass | pass | pass | pass |
+| forbidden `screenshot` or unknown source kind | `reject(source_kind)` before payload read | NR | NR | NR | NR | NR |
+
+Wire-input fixtures begin as bytes and therefore never pass through source
+transformation. Except where stated, “A” is canonical Vector A with its matching
+digest and confirmation state.
+
+| Exact wire condition | M | T | V | C | K | R |
+|---|---|---|---|---|---|---|
+| A | NA | NA | pass | reproduce A bytes/digest | pass | pass |
+| A URL field value `https://user@example.com/` in an HTTP variant | NA | NA | `reject(url)` | NR | NR | `reject(url)` before render |
+| A URL field value `https://example.com/a?q=1#f` in an HTTP variant | NA | NA | `reject(url)`; no stripping | NR | NR | `reject(url)` before render |
+| incident frame `/home/alice/app.go:7` | NA | NA | `reject(frame)`; no redaction | NR | NR | `reject(frame)` before render |
+| incident frame `at fn (webpack:///src/app.js:7:2)` | NA | NA | `reject(frame)`; no redaction | NR | NR | `reject(frame)` before render |
+| duplicate `version` mutation defined below | NA | NA | `reject(duplicate_key)` | NR | NR | `reject(duplicate_key)` |
+| A bytes with mismatched digest | NA | NA | pass | recomputed digest differs | `reject(digest)` | `reject(digest)` |
+
+`R` is shown for malicious wire fixtures even when an earlier create-stage test
+would terminate: reader tests inject those bytes directly into the storage
+boundary and must independently produce the stated rejection.
 
 ### Canonical serialization and digest
 
@@ -380,8 +483,14 @@ Malicious fixtures are mandatory: duplicate `version`; unknown top-level
 513-byte selector; selector `a[href]`; URL with userinfo/query/fragment; invalid
 minute/leap second; duplicate `entry_id`; geometry coordinate 1,000,001; 1,025
 points; 10,001 total points; screenshot/asset field; and valid canonical JSON
-with one byte changed after digesting. The producer and reader outcomes are the
-rejections specified above; P2 owns these fixtures and must not weaken them.
+with one byte changed after digesting. Frame fixtures include
+`/home/alice/app.go:7`, `C:\\Users\\alice\\app.go:7`,
+`webpack:///src/app.js:7:2`, `at fn (/srv/app.js:7:2)`, and a structured source
+frame containing `path`, `line`, `column`, and source text. The source transformer
+produces `redacted` for each unsafe/raw name and copies only a safe structured
+name; wire validation rejects every unsafe frame. The producer and reader
+outcomes are the rejections specified above; P2 owns these fixtures and must not
+weaken them.
 
 The following exact malicious wire vectors remove ambiguity about the fixture
 construction. `A` means the 320 Vector A bytes above; `replace` requires exactly
@@ -490,7 +599,7 @@ behavior.
 | Source datum | Publish-time transform | Public result |
 |---|---|---|
 | incidents/errors | explicit selection, secret/PII filtering, text/control normalization, bucketing | bounded inert summary |
-| HTTP observations | drop headers/bodies, strip URL credentials/query/fragment, normalize URL | method/status/timing/size plus URL text |
+| HTTP observations | drop headers/bodies; reject URL userinfo; remove query/fragment with diagnostics; normalize URL; exhaustively map MIME metadata | method/status/timing/size plus URL text |
 | interactions/mutations | selector grammar validation, text redaction, count limiting | display-only event summary |
 | screenshots, derivatives, or references | reject the complete publish request before staging or persistence | no public representation in v1 |
 | design/sketch state | select numeric primitives, validate finite ranges, normalize labels | versioned geometry data |
