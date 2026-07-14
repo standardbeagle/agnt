@@ -171,6 +171,8 @@ github.com/standardbeagle/claude-go v1.3.0 h1:4FMhbP86MfM4oliV0E9LBlbrN8NpgLYU73
 github.com/standardbeagle/claude-go v1.3.0/go.mod h1:9nvuc+5ANtoEFMSfujFRDEEW1EIr3q1kE10xtoMiAIE=
 github.com/standardbeagle/go-cli-server v0.5.4 h1:sujwb5qMQpkRNcjE0gwZU2ZYepYcqSmz3XDI7M7HJg0=
 github.com/standardbeagle/go-cli-server v0.5.4/go.mod h1:mUuszHCMACvUKw+sTKzap4hk63XFHIVJpzT477FdcdU=
+github.com/standardbeagle/go-cli-server v0.5.5 h1:ywqlZd8cdkUQM/KjyE16J1mXhW6Es6KDYAubN3Mw/zI=
+github.com/standardbeagle/go-cli-server v0.5.5/go.mod h1:mUuszHCMACvUKw+sTKzap4hk63XFHIVJpzT477FdcdU=
 github.com/standardbeagle/go-sdk v1.5.0-agnt.2 h1:uXQn6JfbHYks28O0y2J9vHjvgYvHznTrbI87plTt2CI=
 github.com/standardbeagle/go-sdk v1.5.0-agnt.2/go.mod h1:4WdpmSt0FwWBC9y5Zhfvb2pCJQ0BXWYWmPnFZHSPWiM=
 github.com/stretchr/objx v0.5.2 h1:xuMeJ0Sdp5ZMRXx/aWO6RZxdr3beISkG5/G/aIRr3pY=
