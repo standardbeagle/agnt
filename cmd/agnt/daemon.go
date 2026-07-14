@@ -123,6 +123,10 @@ func newDaemonConfig(appCfg *config.Config, socketPath, publicAddr string) daemo
 		// listener is only stood up when an operator sets AGNT_PUBLIC_ADDR — we do
 		// NOT auto-bind a public port.
 		PublicListenAddr: publicAddr,
+		// Thread the operator's feedback{} block through to the live limiter.
+		// buildPublicPlane Normalize()s this, so a zero/unset field falls back to
+		// its spec §5 default while any NON-ZERO operator value survives.
+		FeedbackLimits: appCfg.Feedback,
 	}
 }
 
