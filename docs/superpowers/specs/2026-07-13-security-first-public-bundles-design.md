@@ -121,7 +121,7 @@ resource existence.
 | Plane | Method and route | Authentication | Request | Success | Other methods |
 |---|---|---|---|---|---|
 | Control | `POST /api/public-bundle-previews` | publisher session + scope + CSRF | source selection and requested expiry | `201`; private preview ID, canonical manifest, confirmation digest, warnings, 10-minute expiry | `405` |
-| Control | `POST /api/public-bundles` | publisher session + scope + CSRF | preview ID, confirmation digest, expiry, idempotency key | `201`; metadata plus reveal-once URL | `405` |
+| Control | `POST /api/public-bundles` | publisher session + scope + CSRF | preview ID, confirmation digest, expiry, `Idempotency-Key` header | first committed winner: `201` metadata plus reveal-once URL; matching replay: `200` metadata with null URL and replay header | `405` |
 | Control | `GET /api/public-bundles` | publisher session + scope | bounded pagination | publisher-owned metadata; never token/digest | `405` |
 | Control | `DELETE /api/public-bundles/{bundle_id}` | publisher session + scope + CSRF | no body | `204` only after durable revocation | `405` |
 | Data | `GET|HEAD /p/{capability}` | capability verification | no meaningful query parameters or request body | trusted viewer shell | `404` uniform |
@@ -513,23 +513,49 @@ SHA-256(
 )
 ```
 
-The eight-byte unsigned length makes framing unambiguous. The preview
-confirmation digest additionally binds expiry and is:
+The eight-byte unsigned length makes framing unambiguous. P1b defines confirmation
+over the P1a manifest digest, not over an alternate serialization. Let
+`F(tag,value) = uint8(tag) || uint64_be(len(value)) || value`. Tags are bytes, not
+text. The confirmation digest is:
 
 ```text
 SHA-256(
   UTF8("agnt-public-bundle-confirm-v1\0") ||
-  uint64_be(len(canonical_bytes)) || canonical_bytes ||
-  uint16_be(len(UTF8(expires_at))) || UTF8(expires_at)
+  F(0x01, uint32_be(schema_version)) ||
+  F(0x02, manifest_digest_raw_32_bytes) ||
+  F(0x03, UTF8(requested_expires_at)) ||
+  F(0x04, publisher_scope_opaque_bytes) ||
+  F(0x05, project_scope_opaque_bytes) ||
+  F(0x06, UTF8(preview_expires_at)) ||
+  F(0x07, uint32_be(source_count)) ||
+  for each source in canonical order:
+    F(0x08, source_identity_opaque_bytes) ||
+    F(0x09, verified_revision_opaque_bytes) ||
+    F(0x0a, ASCII(source_kind))
 )
 ```
 
-`expires_at` in the second frame is the exact canonical envelope value; changing
-it changes both the manifest bytes and the final framed component by design.
+Source canonical order is ascending unsigned-byte lexicographic
+`source_identity`; duplicate identities reject. Each opaque scope, identity, and
+revision is 1–256 bytes supplied canonically by its authority; it is never
+Unicode-normalized or exposed publicly. `requested_expires_at` is the exact
+canonical manifest `expires_at`; `preview_expires_at` is the exact server UTC
+timestamp returned by preview. The fixed tag, length, source count, and triplet
+order make concatenation unambiguous. Changing any bound field changes the
+confirmation digest.
 
 ### Canonical vectors
 
 The bytes in each code block are one line with no trailing LF.
+
+Confirmation vectors use canonical scope bytes `publisher:test` and
+`project:test`. A and F use preview expiry `2026-07-14T02:20:00Z` and source
+`(source:incident:1, rev:7, incident)`. H uses that preview expiry and
+`(source:http:1, rev:3, http)`. B uses preview expiry
+`2026-07-14T03:10:00Z` and the already canonical ordered sources
+`(source:geometry:1, rev:2, geometry)`, then
+`(source:interaction:1, rev:5, interaction)`. Schema version is uint32 value 1;
+requested expiry is each manifest's `expires_at`.
 
 Vector A canonical bytes:
 
@@ -541,7 +567,7 @@ Vector A manifest digest:
 `a267e6527efb3ce865f99b13a2bd97ce56f1a3f62a39878b2881ead149ec7a53`
 
 Vector A confirmation digest:
-`0da5db451ae474a4ddb50cb7b6c11d6352a81997fa2d71e2a904950eb0591343`
+`157bee69e402d03493977b345fa4776a2e282d232b88570380b1460d0050bfaf`
 
 Vector B canonical bytes (the title contains NFC U+00E9):
 
@@ -553,7 +579,7 @@ Vector B manifest digest:
 `f04ce8eb23e92721d2619808b07da3603800a47c3fb350780e7b15e0e487631b`
 
 Vector B confirmation digest:
-`a53a267e25296095461b0e78876d46ed1d6a3959304e6159f4757cb37dd4a5b7`
+`0c8046eb701eb9e351149731fa171a5cdde3a518d8c6d9fd325c985676d9a583`
 
 Canonical HTTP base H is defined by exactly one replacement in A: replace
 
@@ -570,7 +596,7 @@ with
 H is 407 bytes. Manifest digest:
 `3a25fbcd89534fdac1253749c12fef5c0b3168919d85ad9039ea2981ce1fef50`.
 Confirmation digest:
-`2a4f0b54a5cbf3f6e376e0ac57e7712cb7c17d2bec43583fc5ea51e3e5a8914d`.
+`3714ef555cced2872b72a53ea5a1af5ac673fb5e186b1df962179e9f2a65f9fb`.
 
 Canonical frame base F is defined by exactly one replacement of the same A
 incident object with:
@@ -582,7 +608,7 @@ incident object with:
 F is 340 bytes. Manifest digest:
 `4d4533b0768d1709b915db4d377ec30bd679405571ffd6d33b5f127dcdc4bbf5`.
 Confirmation digest:
-`aff1c162a657e2982c98f563f2928798e010786ecef4a9b0ab26c290a9276015`.
+`b78d6aa1789182836e1757d010be273d68d3b88d4d38526cc5da274b9a862de5`.
 
 H/F malicious transformations below require exactly one byte-string match. They
 are supplied with their base digest unless a fixture explicitly says “recomputed
@@ -597,7 +623,10 @@ Independent verification must use two implementations, one of which implements
 RFC 8785 independently of agnt. P1a verified A, B, H, and F with the independent
 Python `rfc8785` 0.1.4 implementation and a separate standard-library Go
 framing/SHA-256 program; both produced the stated byte lengths and matching
-digests. The Python implementation also reproduced each code block byte-for-byte.
+manifest digests. P1b independently computed the fully bound confirmation frames
+with Python and a separate standard-library Go implementation; both produced the
+stated confirmation digests. The Python RFC 8785 implementation also reproduced
+each code block byte-for-byte.
 
 Malicious fixtures are mandatory: duplicate `version`; unknown top-level
 `debug`; version `2`; `null` description; invalid UTF-8 `ff`; overlong UTF-8
@@ -710,7 +739,9 @@ behavior.
 | State | Authority | Cache/restart rule |
 |---|---|---|
 | Publisher identity and project/session authorization | existing authenticated control-plane session and scope resolver | re-evaluate at every control mutation; never reconstructed from bundle data |
-| Preview bytes, ownership, source revision, digest, and expiry | private ephemeral preview record | never data-plane readable; confirmation consumes exact bytes; expiry/restart loss requires a new preview |
+| Source identity, revision, and kind | source authority snapshot/descriptor API | opaque byte equality only; preview and confirmation revalidate; unavailable semantics fail closed |
+| Preview bytes, ownership, source revision, digest, and expiry | durable-but-expiring private preview authority plus encrypted staging | never data-plane readable; survives process restart until expiry; confirmation consumes exact bytes; authority loss fails closed and requires a new preview |
+| Idempotency binding and outcome | durable scoped-key uniqueness record in publication authority | pending lease recovers by CAS; success/terminal records survive restart for defined retention |
 | Bundle content and manifest | immutable durable bundle record keyed by internal bundle ID | cache is byte-identical and expiry-bounded; restart reloads or misses closed |
 | Capability validity | durable versioned token digest bound to bundle ID | raw token is never persisted; cache may only shorten validity |
 | Expiry and revocation | durable metadata record using server time | checked on every public read; invalidation precedes revoke success; restart cannot clear it |
@@ -732,27 +763,115 @@ behavior.
 
 Creation is an authenticated two-phase protocol:
 
-1. Preview resolves publisher scope, reads only source-kind metadata, and rejects
-   the whole selection if any kind is forbidden or unknown. No source payload has
-   been copied or staged at this point. It then copies only schema-named bounded
-   fields, normalizes/redacts them, applies every limit, and stores the resulting
-   canonical manifest in private ephemeral storage. The response contains that
-   exact manifest, visible warnings, an opaque preview ID, a confirmation digest
-   over the canonical bytes and requested expiry, and a server expiry no more
-   than 10 minutes away. A preview is not public and mints no capability.
-2. Confirmed create requires the preview ID and exact confirmation digest. It
-   re-authenticates the publisher, re-resolves the same project/session scope,
-   checks preview ownership and expiry, and revalidates source-kind metadata and
-   the source revision recorded by preview. Any change, unknown kind, forbidden
-   kind, digest mismatch, expiry, or scope change rejects the request and requires
-   a new preview. The server publishes only the canonical bytes the publisher
-   saw; it does not recopy source payload during confirmation. It then generates
-   the capability, writes unreachable immutable content, commits metadata and
-   its token digest atomically, and returns the reveal-once URL.
+1. Preview resolves publisher/project scope and obtains, for every selection, an
+   opaque `source_identity`, opaque `revision`, and source kind from the source
+   authority. Identity names one authority record; revision must change whenever
+   any metadata or payload field observable by publication changes. Agnt treats
+   both as uninterpreted byte strings and compares them byte-for-byte. A source
+   authority that cannot guarantee those identity/revision semantics is
+   ineligible for v1 publication and fails closed before payload copy.
+2. The preferred read uses a source-authority snapshot transaction that pins the
+   ordered `(identity,revision,kind)` set while approved fields are copied. If the
+   authority has no snapshot API, preview reads the complete descriptor set
+   before copying, copies only approved bounded fields, then reads the complete
+   descriptor set again. Count, order, identity, revision, and kind must match
+   byte-for-byte before/copy/after. Any missing item or drift rejects the entire
+   preview.
+3. Preview staging is encrypted with a per-preview data key and is private and
+   unreachable from the data plane. On drift, validation failure, or partial
+   copy, agnt deletes the staging record/blob and destroys the data key before
+   returning; key destruction is the authoritative staged-byte destruction even
+   if storage later reclaims ciphertext. No confirmation digest is returned.
+4. A successful preview stores exact P1a canonical bytes, manifest digest,
+   ordered verified descriptor set, canonical authority scope bytes, requested
+   expiry, and server preview expiry (at most 10 minutes). It returns those bytes,
+   visible value-free diagnostics, opaque preview ID, preview expiry, and the
+   fully bound confirmation digest above. It mints no capability.
+5. Confirm re-authenticates, resolves canonical publisher/project scope again,
+   validates preview ownership/expiry/state and confirmation digest, reads all
+   source descriptors without payload, and requires the same ordered
+   identity/revision/kind set. Any scope, count, identity, revision, kind, schema,
+   digest, expiry, or preview-expiry mismatch invalidates the preview, destroys
+   staging, and requires a new preview. Confirmation never recopies source data;
+   only the exact previewed canonical bytes may be published.
 
-An idempotency replay returns the original metadata but cannot reveal a lost
-token; the publisher must revoke and create a new bundle. Expired preview bytes
-are deleted and can never be promoted.
+The preview ID is a new 22-character canonical unpadded base64url encoding of
+128 CSPRNG bits, owned by the publisher/project scope. In protocol framing its
+value is the 22 ASCII bytes. It is an identifier, not authorization.
+
+### Idempotency and atomic publication
+
+Confirmed create requires an `Idempotency-Key` of 16–128 ASCII characters from
+`[A-Za-z0-9._~-]`; whitespace, Unicode, controls, and all other bytes reject.
+The uniqueness scope is the authority tuple `(publisher_scope, project_scope,
+key)`. Raw keys are access-controlled request data and are redacted from logs.
+
+The request binding is
+`SHA-256("agnt-public-bundle-idempotency-v1\0" || F(0x01, preview_id) ||
+F(0x02, confirmation_digest_raw_32_bytes))`. A durable uniqueness constraint on
+the scoped key chooses exactly one concurrency winner. The first transaction
+atomically inserts `pending(binding,preview_id)`; a different binding for the
+same retained key returns `409 idempotency_mismatch` and cannot inspect or alter
+the original operation. A matching contender while pending returns
+`409 idempotency_in_progress` with `Retry-After: 1` and performs no publication.
+`pending` includes a 60-second attempt lease; after a crash, only an atomic
+compare-and-swap by recovery or a matching retry may change an expired lease to
+`retryable_failed` and reacquire it. An unexpired lease is never stolen.
+
+The winner generates the raw capability only after all confirmation checks. It
+writes immutable canonical content under an unreachable temporary object ID,
+then one authority transaction atomically: makes the content pointer reachable,
+writes bundle/expiry/revocation metadata and the capability digest, changes the
+preview `ready → consumed` with a compare-and-swap, destroys the preview staging
+key, and changes idempotency `pending → succeeded` with public-safe bundle
+metadata. No raw capability or URL is stored in the preview, bundle metadata, or
+idempotency record. The preview-state compare-and-swap permits only one success
+even if different idempotency keys race on the same preview.
+
+Only the winner's successfully completed first HTTP response is `201` and
+contains the reveal-once capability URL. A matching replay after durable success
+returns `200`, `Idempotency-Replayed: true`, and public-safe bundle metadata with
+`capability_url: null` plus `capability_recoverable: false`; it never returns or
+reconstructs the token. A lost/partial first response therefore requires the
+publisher to revoke that bundle by authenticated bundle ID and create a new
+preview with a new idempotency key.
+
+Successful idempotency records are retained until 24 hours after bundle expiry;
+while retained, their keys cannot be reused. After verified deletion, reuse is a
+new operation. A retryable infrastructure failure before authority commit keeps
+the matching binding in `retryable_failed` until preview expiry; a matching retry
+may atomically reacquire it and retry, while a mismatched request still returns
+409. Validation/source/scope failure changes the preview to `invalidated` and the
+record to `terminal_failed`; matching retries return the original value-free
+`409 preview_invalidated`. Pending/retryable records expire with their preview.
+Terminal-failed bindings are retained until 24 hours after preview expiry so the
+same scoped key cannot be rebound during delayed retries.
+
+Content written before the authority transaction is unreachable. A failure or
+crash before that commit leaves preview `ready` (unless already invalidated),
+changes no durable success record, and orphan cleanup deletes the temporary
+object; a matching retry is safe. The preview is consumed only inside the success
+transaction. A crash after commit cannot roll back reachability or consumption;
+retry observes `succeeded` and returns the token-free 200 replay response.
+
+### Preview/idempotency transition table
+
+| Event and durable state before | Atomic result | Response / retry semantics |
+|---|---|---|
+| preview copy observes identity/revision/kind/count drift | destroy staged key/blob; no preview created | validation failure; new preview required |
+| confirm on `ready`, matching descriptors/scope/digest, unused scoped key | insert `pending`; caller is winner | continue publication |
+| two confirms race with same key and binding | one inserts `pending`; other observes it | winner continues; loser `409 idempotency_in_progress`, then retries |
+| two confirms race on one preview with different unused keys | both may reserve; one preview-state compare-and-swap commits; loser changes `pending → terminal_failed` and its temporary object stays unreachable | winner receives first-response semantics; loser `409 preview_consumed` |
+| same retained key, different preview or confirmation digest | no state change | `409 idempotency_mismatch` always |
+| confirm after source identity/revision/kind/count or scope drift | `ready → invalidated`; destroy staging; `pending → terminal_failed` if reserved | value-free `409 preview_invalidated`; new preview/key required |
+| confirm after preview expiry | `ready → expired`; destroy staging; pending/retryable key expires | `409 preview_expired`; new preview/key required |
+| infrastructure failure before authority commit | temporary content remains unreachable; `pending → retryable_failed`; preview stays `ready` | `503`; matching key may retry before preview expiry |
+| crash after temporary content write, before authority commit | no reachable bundle; preview remains `ready`; reservation recovered to `retryable_failed`; orphan deleted | matching retry is the only contender allowed |
+| authority transaction commits | content becomes reachable; preview `ready → consumed`; idempotency `pending → succeeded` | first live winner receives reveal-once `201` |
+| crash/connection loss after commit but before/full/partial response | durable state remains consumed+succeeded | matching retry returns token-free `200`; revoke/new-create recovers |
+| matching replay of `succeeded` | no state change | `200`, replay header, metadata, null URL; never token |
+| any confirm of consumed preview with a different/new key | no state change | `409 preview_consumed`; cannot mint a second bundle |
+| transient retry reaches preview expiry before commit | `ready → expired`; `retryable_failed → expired`; destroy staging | `409 preview_expired`; new preview/key required |
 
 A read parses a canonical path, hashes the supplied token using the versioned
 domain, performs bounded lookup plus constant-time digest verification, checks
