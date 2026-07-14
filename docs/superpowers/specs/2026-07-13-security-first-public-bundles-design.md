@@ -62,9 +62,11 @@ application-level separation.
    byte, item-count, text, selector, or URL limit below is exceeded. Truncation is
    allowed only in the authenticated preview when visibly reported; it must not
    create a misleading public artifact.
-9. **URLs are data, not navigation authority.** Stored URLs are parsed and
-   normalized. Credentials and fragments are removed. Only `http` and `https`
-   source URLs are representable. The viewer displays origins/paths as text and
+9. **URLs are data, not navigation authority.** A trusted source URL containing
+   userinfo/credentials rejects the preview; query and fragment are removed only
+   by trusted source transformation. Canonical wire input containing any of the
+   three rejects unchanged. Only normalized `http` and `https` URLs are
+   representable. The viewer displays origins/paths as text and
    does not automatically fetch, preconnect, navigate, or create clickable links.
 10. **Browser policy is restrictive.** Every public response emits the security,
     cache, CORS, and referrer policy defined below. Policy is enforced on errors
@@ -216,7 +218,13 @@ ranges below. Negative, non-finite, or overflowing source durations reject.
 size uses `unknown`; negative or overflowing source sizes reject.
 
 `content_type` is a closed observational label derived from source metadata; it
-never permits content bytes of that type in the bundle. The producer trims
+never permits content bytes of that type in the bundle. Raw MIME metadata is
+trusted-source input only and is never a manifest field. `unknown` and `other`
+are explicitly authorized public labels: producer and reader accept them exactly
+like every other closed enum value. `unknown` means absent or syntactically
+malformed source metadata; `other` means syntactically valid metadata not matched
+by a more specific row. Neither label authorizes copying a body or MIME string.
+The producer trims
 optional HTTP whitespace, parses the whole value using the RFC 9110 media-type
 grammar, lowercases type/subtype, and applies this first-match table. A valid
 parameterized value maps exactly as its bare media type: parameters, including
@@ -293,14 +301,9 @@ all points across the manifest must total ≤10,000. `line` requires `width > 0`
   zero or more classes `.[A-Za-z_][A-Za-z0-9_-]{0,63}`; at least one component
   is required. Total length is 1–512 bytes. Attributes, `*`, `:`, `,`, escapes,
   brackets, parentheses, controls, and consecutive combinators reject.
-- **URL:** canonical wire values are absolute RFC 3986 `http` or `https`; no userinfo, query, fragment, or
-  empty host. Scheme/host are lowercase; DNS uses validated IDNA2008 A-labels;
-  IPv4 is canonical dotted decimal and IPv6 is RFC 5952 inside brackets. Default
-  ports are removed; other ports are decimal 1–65535. Dot segments are removed;
-  empty path becomes `/`; percent escapes use uppercase hex and unreserved bytes
-  are decoded. Path bytes must be valid UTF-8 NFC after percent decoding, but the
-  serialized URL remains ASCII with non-ASCII UTF-8 bytes percent-encoded. Length
-  is 1–2,048 ASCII bytes after normalization. Redirects and fetching are absent.
+- **URL:** canonical wire values are absolute RFC 3986 `http` or `https`, ASCII,
+  and 1–2,048 bytes. The ordered algorithm below is normative; redirects and
+  fetching are absent.
 - **JSON decoder:** UTF-8 JSON text only; ≤1,048,576 wire bytes; ≤1,048,576 bytes
   after transport decompression (transport compression is forbidden in v1);
   maximum nesting depth 8 including the envelope; ≤32 object members per object;
@@ -326,14 +329,42 @@ JSON bytes. The producer never applies source cleanup to a supplied manifest.
 4. JCS serialization/digesting occurs only after successful validation.
 
 For source URLs, malformed URLs, unsupported schemes, an empty host, or any
-userinfo reject the complete preview with `url_rejected`; userinfo is not stripped
-because doing so could conceal selected credentials. A valid query is removed
+userinfo/credentials reject the complete preview with `url_rejected`; userinfo is
+never stripped because doing so could conceal selected credentials. A valid query is removed
 with diagnostic `url_query_removed`; a valid fragment is removed with diagnostic
 `url_fragment_removed`; both diagnostics are emitted when both are present. The
 remaining URL is normalized by the wire URL rule and must fit 2,048 bytes or the
 preview rejects with `url_rejected`. In contrast, canonical manifest input
 containing userinfo, query, fragment, or a noncanonical-but-repairable URL is
 rejected unchanged by producer validation and public readers.
+
+URL normalization runs in this order:
+
+1. Strictly parse one absolute URI; reject controls, whitespace, backslash,
+   malformed percent escapes, an empty host, or a non-`http`/`https` scheme.
+   Reject percent-encoded `/` (`%2F`) or `\\` (`%5C`) case-insensitively before
+   any decoding, including within a would-be host or path.
+2. Reject userinfo. In trusted source transformation only, remove query and
+   fragment with the diagnostics above. In wire validation, either component
+   rejects and no subsequent normalization is attempted.
+3. Lowercase the scheme. A DNS host is processed using Unicode 15.0.0 IDNA2008
+   derived properties plus Unicode UTS #46 revision 15.0.0, nontransitional
+   processing, STD3 ASCII rules, Bidi/Joiner checks, and DNS length verification.
+   Percent escapes in a host reject. Emit lowercase canonical A-labels. IPv4 must
+   parse and emit canonical dotted decimal; IPv6 must parse and emit RFC 5952
+   lowercase text inside brackets.
+4. Parse the port as decimal 1–65535; remove `:80` for HTTP and `:443` for HTTPS;
+   emit every other port without leading zeroes.
+5. For the path only, uppercase percent hex, decode percent-encoded RFC 3986
+   unreserved bytes (including `%2E`), then remove RFC 3986 dot segments.
+   Consequently encoded dot segments are treated as dot segments, never as
+   opaque names. Decode remaining percent escapes to bytes, require shortest-form
+   UTF-8, normalize Unicode to NFC, and re-encode every byte outside ASCII
+   unreserved/sub-delims/`:`/`@` using uppercase percent hex. Literal `/` remains
+   the segment separator; encoded separators were already rejected at step 1.
+6. Replace an empty path with `/`, assemble without userinfo/query/fragment, and
+   enforce the 2,048-byte ASCII limit. A trusted source emits the canonical value;
+   a wire value must already equal it byte-for-byte or rejects without repair.
 
 The aggregate 200-entry rule above is normative. Per-kind ceilings remain 100
 incidents, 100 HTTP observations, 100 interactions, and 500 geometry primitives,
@@ -383,8 +414,13 @@ Source-input fixtures begin as structured trusted-source records:
 | known HTTP kind; MIME absent; URL `https://EXAMPLE.com/a` | pass | `pass(content_type=unknown,url=https://example.com/a)` | pass | pass | revalidate metadata/revision, pass | pass |
 | MIME `Application/Problem+Json; Charset="utf-8"` | pass | `pass(content_type=json)` | pass | pass | pass | pass |
 | MIME `text/html; charset="unterminated` | pass | `pass(content_type=unknown, mime_malformed)` | pass | pass | pass | pass |
+| MIME `application/octet-stream` | pass | `pass(content_type=other)` | pass | pass | pass | pass |
+| title source scalars `Cafe` + U+0301 | pass | `pass(title=Café)` after NFC | pass | pass | pass | pass with NFC U+00E9 |
 | URL `https://user:secret@example.com/a` | pass | `reject(url_rejected)` | NR | NR | NR | NR |
 | URL `https://EXAMPLE.com/a?token=x#private` | pass | `pass(url=https://example.com/a, url_query_removed, url_fragment_removed)` | pass | pass | pass | pass |
+| URL `https://example.com/a/%2e%2E/b` | pass | `pass(url=https://example.com/b, url_dot_segment_removed)` | pass | pass | pass | pass |
+| URL `https://example.com/a%2fb` or `https://example.com/a%5Cb` | pass | `reject(url_rejected)` | NR | NR | NR | NR |
+| URL `https://bücher.example/cafe%CC%81` | pass | `pass(url=https://xn--bcher-kva.example/caf%C3%A9)` | pass | pass | pass | pass |
 | structured frame `{name:"render",path:"/home/alice/app.go",line:7,source:"secret()"}` | pass | `pass(frame=render)`; path/line/source fields are not read or copied | pass | pass | pass | pass |
 | structured frame `{name:"/home/alice/app.go:7"}` | pass | `pass(frame=redacted, frame_name_redacted:1)` | pass | pass | pass | pass |
 | raw frame string `at fn (/home/alice/app.js:7:2)` | pass | `pass(frame=redacted, frame_name_redacted:1)` | pass | pass | pass | pass |
@@ -397,10 +433,15 @@ digest and confirmation state.
 | Exact wire condition | M | T | V | C | K | R |
 |---|---|---|---|---|---|---|
 | A | NA | NA | pass | reproduce A bytes/digest | pass | pass |
-| A URL field value `https://user@example.com/` in an HTTP variant | NA | NA | `reject(url)` | NR | NR | `reject(url)` before render |
-| A URL field value `https://example.com/a?q=1#f` in an HTTP variant | NA | NA | `reject(url)`; no stripping | NR | NR | `reject(url)` before render |
-| incident frame `/home/alice/app.go:7` | NA | NA | `reject(frame)`; no redaction | NR | NR | `reject(frame)` before render |
-| incident frame `at fn (webpack:///src/app.js:7:2)` | NA | NA | `reject(frame)`; no redaction | NR | NR | `reject(frame)` before render |
+| H with its single `"content_type":"json"` replaced by `"content_type":"unknown"` or `"content_type":"other"`, then JCS and digest recomputed | NA | NA | pass; both are authorized labels | pass with new digest | pass | pass |
+| B with each UTF-8 NFC `Café` replaced by JSON text `Cafe\u0301`, supplied with B's digest | NA | NA | `reject(text_non_nfc)` before stale-digest check; no normalization | NR | NR | `reject(text_non_nfc)` before render |
+| H with its single `https://example.com/` replaced by `https://user@example.com/` | NA | NA | `reject(url_userinfo)` | NR | NR | `reject(url_userinfo)` before render |
+| H with its single URL replaced by `https://example.com/a?q=1#f` | NA | NA | `reject(url_query_fragment)`; no stripping | NR | NR | `reject(url_query_fragment)` before render |
+| H with its single URL replaced by `https://example.com/a/%2e%2E/b` | NA | NA | `reject(url_noncanonical)`; canonical source result would be `/b` | NR | NR | `reject(url_noncanonical)` |
+| H with its single URL replaced by `https://example.com/a%2Fb` or `https://example.com/a%5Cb` | NA | NA | `reject(url_encoded_separator)` | NR | NR | `reject(url_encoded_separator)` |
+| H with its single URL replaced by `https://bücher.example/café` | NA | NA | `reject(url_non_ascii)`; canonical source form is `https://xn--bcher-kva.example/caf%C3%A9` | NR | NR | `reject(url_non_ascii)` |
+| F with its single `"frames":["render"]` replaced by `"frames":["/home/alice/app.go:7"]` | NA | NA | `reject(frame)`; no redaction | NR | NR | `reject(frame)` before render |
+| F with its single frame replaced by `at fn (webpack:///src/app.js:7:2)` | NA | NA | `reject(frame)`; no redaction | NR | NR | `reject(frame)` before render |
 | duplicate `version` mutation defined below | NA | NA | `reject(duplicate_key)` | NR | NR | `reject(duplicate_key)` |
 | A bytes with mismatched digest | NA | NA | pass | recomputed digest differs | `reject(digest)` | `reject(digest)` |
 
@@ -470,8 +511,46 @@ Vector B manifest digest:
 Vector B confirmation digest:
 `a53a267e25296095461b0e78876d46ed1d6a3959304e6159f4757cb37dd4a5b7`
 
+Canonical HTTP base H is defined by exactly one replacement in A: replace
+
+```json
+{"entry_id":"EREREREREREREREREREREQ","kind":"incident","message":"timeout","occurred_at":"2026-07-14T02:09:00Z","severity":"error"}
+```
+
+with
+
+```json
+{"content_type":"json","duration_bucket":"50_199ms","entry_id":"EREREREREREREREREREREQ","kind":"http","method":"GET","occurred_at":"2026-07-14T02:09:00Z","size_bucket":"1k_9k","status":200,"url":"https://example.com/"}
+```
+
+H is 407 bytes. Manifest digest:
+`3a25fbcd89534fdac1253749c12fef5c0b3168919d85ad9039ea2981ce1fef50`.
+Confirmation digest:
+`2a4f0b54a5cbf3f6e376e0ac57e7712cb7c17d2bec43583fc5ea51e3e5a8914d`.
+
+Canonical frame base F is defined by exactly one replacement of the same A
+incident object with:
+
+```json
+{"entry_id":"EREREREREREREREREREREQ","frames":["render"],"kind":"incident","message":"timeout","occurred_at":"2026-07-14T02:09:00Z","severity":"error"}
+```
+
+F is 340 bytes. Manifest digest:
+`4d4533b0768d1709b915db4d377ec30bd679405571ffd6d33b5f127dcdc4bbf5`.
+Confirmation digest:
+`aff1c162a657e2982c98f563f2928798e010786ecef4a9b0ab26c290a9276015`.
+
+H/F malicious transformations below require exactly one byte-string match. They
+are supplied with their base digest unless a fixture explicitly says “recomputed
+digest.” Validation precedence is: wire byte/depth/UTF-8 limits; JSON lexical and
+duplicate-key checks; schema/version; exact field sets and JSON types; field
+grammar (including URL/frame/NFC); cross-field/count/order rules; canonical-byte
+equality; then framed digest equality. Therefore a malformed H URL or F frame
+rejects at field grammar before the intentionally stale base digest is examined;
+recomputing its digest does not make the malformed manifest valid.
+
 Independent verification must use two implementations, one of which implements
-RFC 8785 independently of agnt. P1a verified both vectors with the independent
+RFC 8785 independently of agnt. P1a verified A, B, H, and F with the independent
 Python `rfc8785` 0.1.4 implementation and a separate standard-library Go
 framing/SHA-256 program; both produced the stated byte lengths and matching
 digests. The Python implementation also reproduced each code block byte-for-byte.
