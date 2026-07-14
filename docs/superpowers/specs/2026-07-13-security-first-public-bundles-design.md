@@ -739,7 +739,7 @@ behavior.
 | State | Authority | Cache/restart rule |
 |---|---|---|
 | Publisher identity and project/session authorization | existing authenticated control-plane session and scope resolver | re-evaluate at every control mutation; never reconstructed from bundle data |
-| Source identity, revision, and kind | source authority snapshot/descriptor API | opaque byte equality only; preview and confirmation revalidate; unavailable semantics fail closed |
+| Source identity, non-reusable revision, and kind | source authority snapshot/version-conditional descriptor API | opaque byte equality only; every observable mutation advances revision; preview and confirmation revalidate; unavailable semantics fail closed |
 | Preview bytes, ownership, source revision, digest, and expiry | durable-but-expiring private preview authority plus encrypted staging | never data-plane readable; survives process restart until expiry; confirmation consumes exact bytes; authority loss fails closed and requires a new preview |
 | Idempotency binding and outcome | durable scoped-key uniqueness record in publication authority | pending lease recovers by CAS; success/terminal records survive restart for defined retention |
 | Bundle content and manifest | immutable durable bundle record keyed by internal bundle ID | cache is byte-identical and expiry-bounded; restart reloads or misses closed |
@@ -766,15 +766,19 @@ Creation is an authenticated two-phase protocol:
 1. Preview resolves publisher/project scope and obtains, for every selection, an
    opaque `source_identity`, opaque `revision`, and source kind from the source
    authority. Identity names one authority record; revision must change whenever
-   any metadata or payload field observable by publication changes. Agnt treats
-   both as uninterpreted byte strings and compares them byte-for-byte. A source
-   authority that cannot guarantee those identity/revision semantics is
+   any metadata or payload field observable by publication changes and a prior
+   revision value must never be reused for that identity (including change-back,
+   delete/recreate, compaction, or rollback). Agnt treats both as uninterpreted
+   byte strings and compares them byte-for-byte. A source authority that cannot
+   guarantee those non-reusable identity/revision semantics is
    ineligible for v1 publication and fails closed before payload copy.
 2. The preferred read uses a source-authority snapshot transaction that pins the
    ordered `(identity,revision,kind)` set while approved fields are copied. If the
    authority has no snapshot API, preview reads the complete descriptor set
-   before copying, copies only approved bounded fields, then reads the complete
-   descriptor set again. Count, order, identity, revision, and kind must match
+   before copying, copies each record through a version-conditional read such as
+   `readIfRevision(identity, expected_revision)`, then version-conditionally reads
+   the complete descriptor set again. A conditional mismatch rejects without
+   using returned payload. Count, order, identity, revision, and kind must match
    byte-for-byte before/copy/after. Any missing item or drift rejects the entire
    preview.
 3. Preview staging is encrypted with a per-preview data key and is private and
@@ -789,7 +793,8 @@ Creation is an authenticated two-phase protocol:
    fully bound confirmation digest above. It mints no capability.
 5. Confirm re-authenticates, resolves canonical publisher/project scope again,
    validates preview ownership/expiry/state and confirmation digest, reads all
-   source descriptors without payload, and requires the same ordered
+   source descriptors with snapshot-pinned or version-conditional reads and no
+   payload, and requires the same ordered
    identity/revision/kind set. Any scope, count, identity, revision, kind, schema,
    digest, expiry, or preview-expiry mismatch invalidates the preview, destroys
    staging, and requires a new preview. Confirmation never recopies source data;
@@ -814,9 +819,21 @@ atomically inserts `pending(binding,preview_id)`; a different binding for the
 same retained key returns `409 idempotency_mismatch` and cannot inspect or alter
 the original operation. A matching contender while pending returns
 `409 idempotency_in_progress` with `Retry-After: 1` and performs no publication.
-`pending` includes a 60-second attempt lease; after a crash, only an atomic
+`pending` includes a 60-second attempt lease, a 128-bit random `owner`, and a
+uint64 monotonic fencing `generation`. Initial acquisition stores generation 1;
+every later lease acquisition/reacquisition increments the persisted generation
+before issuing a new owner, including recovery after expiry. Generation never
+decrements or repeats for the scoped key. After a crash, only an atomic
 compare-and-swap by recovery or a matching retry may change an expired lease to
 `retryable_failed` and reacquire it. An unexpired lease is never stolen.
+
+Every pending-state or publication-authority transition—including
+`pending → retryable_failed`, reacquisition, terminal failure, expiry, and
+success—uses a compare-and-swap over the exact persisted
+`(binding,generation,owner,status)` observed by the caller. Temporary content is
+tagged with that tuple. A stale owner or generation cannot alter the idempotency
+record, make content reachable, consume/invalidate a preview, or delete a newer
+owner's object; it discards only its own tagged temporary object.
 
 The winner generates the raw capability only after all confirmation checks. It
 writes immutable canonical content under an unreachable temporary object ID,
@@ -827,6 +844,17 @@ key, and changes idempotency `pending → succeeded` with public-safe bundle
 metadata. No raw capability or URL is stored in the preview, bundle metadata, or
 idempotency record. The preview-state compare-and-swap permits only one success
 even if different idempotency keys race on the same preview.
+
+The success transaction uses the authority's transaction clock and commits only
+if `server_now < preview_expires_at`, `server_now < lease_expires_at`, preview is
+exactly `ready`, and idempotency is exactly
+`pending(binding,generation,owner)`. Equality is expired: at
+`server_now == preview_expires_at` or `== lease_expires_at`, success is forbidden.
+Preview expiry uses the same serializable authority row/transaction and may
+change `ready → expired` only when `server_now >= preview_expires_at`; consume
+and expiry are therefore mutually exclusive. Whichever transaction locks/CASes
+the row must re-evaluate server time and state, so an expiry worker cannot expire
+a consumed preview and a late winner cannot consume an expired preview.
 
 Only the winner's successfully completed first HTTP response is `201` and
 contains the reveal-once capability URL. A matching replay after durable success
@@ -859,14 +887,20 @@ retry observes `succeeded` and returns the token-free 200 replay response.
 | Event and durable state before | Atomic result | Response / retry semantics |
 |---|---|---|
 | preview copy observes identity/revision/kind/count drift | destroy staged key/blob; no preview created | validation failure; new preview required |
+| ABA attempt: descriptor starts `(id,A)`, mutates to `B`, then content changes back | authority must expose a new non-reused revision `C`; conditional/after read differs from `A`; destroy all staging | validation failure; a source returning `A` again is ineligible and fails the authority-contract test |
+| torn multi-record copy: one conditional record read succeeds but another revision changes before/after set check | no manifest/digest; destroy the complete staged set | validation failure; partial record mix is never previewable |
 | confirm on `ready`, matching descriptors/scope/digest, unused scoped key | insert `pending`; caller is winner | continue publication |
 | two confirms race with same key and binding | one inserts `pending`; other observes it | winner continues; loser `409 idempotency_in_progress`, then retries |
 | two confirms race on one preview with different unused keys | both may reserve; one preview-state compare-and-swap commits; loser changes `pending → terminal_failed` and its temporary object stays unreachable | winner receives first-response semantics; loser `409 preview_consumed` |
 | same retained key, different preview or confirmation digest | no state change | `409 idempotency_mismatch` always |
 | confirm after source identity/revision/kind/count or scope drift | `ready → invalidated`; destroy staging; `pending → terminal_failed` if reserved | value-free `409 preview_invalidated`; new preview/key required |
 | confirm after preview expiry | `ready → expired`; destroy staging; pending/retryable key expires | `409 preview_expired`; new preview/key required |
+| success and expiry race with server time strictly before preview expiry | serialized success may CAS `ready → consumed`; expiry predicate is false | winner may commit only with unexpired fenced lease |
+| success and expiry race at/after exact preview expiry | success predicate is false; expiry CASes `ready → expired` | `409 preview_expired`; equality never consumes |
 | infrastructure failure before authority commit | temporary content remains unreachable; `pending → retryable_failed`; preview stays `ready` | `503`; matching key may retry before preview expiry |
 | crash after temporary content write, before authority commit | no reachable bundle; preview remains `ready`; reservation recovered to `retryable_failed`; orphan deleted | matching retry is the only contender allowed |
+| expired lease generation `g` is reacquired | exact CAS increments to `g+1`, assigns new owner and lease | new owner may retry; generation `g` is fenced |
+| stale generation/owner attempts success, failure, expiry, preview mutation, or object cleanup | exact tuple CAS fails; no authority/preview/new-owner object changes | stale worker stops and removes only its own tagged temporary object |
 | authority transaction commits | content becomes reachable; preview `ready → consumed`; idempotency `pending → succeeded` | first live winner receives reveal-once `201` |
 | crash/connection loss after commit but before/full/partial response | durable state remains consumed+succeeded | matching retry returns token-free `200`; revoke/new-create recovers |
 | matching replay of `succeeded` | no state change | `200`, replay header, metadata, null URL; never token |
