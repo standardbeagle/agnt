@@ -16,9 +16,11 @@ import (
 // public viewer plane (share verification, feedback) is served separately and is
 // NOT reachable through this tool.
 type PublishInput struct {
-	Action      string          `json:"action"                jsonschema:"Action: create | status | list | revoke | rotate"`
+	Action      string          `json:"action"                jsonschema:"Action: create | status | list | revoke | rotate | feedback"`
 	Walkthrough json.RawMessage `json:"walkthrough,omitempty" jsonschema:"create: the published walkthrough artifact as JSON (validated before publish)"`
-	ID          string          `json:"id,omitempty"          jsonschema:"status/revoke/rotate: the viewer-safe share id returned by create"`
+	ID          string          `json:"id,omitempty"          jsonschema:"status/revoke/rotate/feedback: the viewer-safe share id returned by create"`
+	Cursor      string          `json:"cursor,omitempty"      jsonschema:"feedback: opaque pagination cursor from a prior call's next_cursor (empty = first page)"`
+	Limit       int             `json:"limit,omitempty"       jsonschema:"feedback: max rows to return this page (<=0 = all remaining)"`
 	Raw         bool            `json:"raw,omitempty"         jsonschema:"Return full JSON instead of compact text"`
 }
 
@@ -33,6 +35,12 @@ type PublishOutput struct {
 	Digest   string                      `json:"digest,omitempty"`
 	Share    *protocol.PublishShareInfo  `json:"share,omitempty"`  // status
 	Shares   []protocol.PublishShareInfo `json:"shares,omitempty"` // list
+
+	// feedback read (never a token — feedback rows structurally hold none)
+	Feedback   []protocol.PublishFeedbackRow `json:"feedback,omitempty"`
+	NextCursor string                        `json:"next_cursor,omitempty"`
+	Total      int                           `json:"total,omitempty"`
+	Dropped    int64                         `json:"dropped,omitempty"`
 }
 
 // RegisterPublishTool registers the publish MCP tool.
@@ -49,13 +57,18 @@ Actions:
   list    — list this project's shares.
   revoke  — kill a share immediately (token stops working at once).
   rotate  — mint a new token (old token dies immediately); returns the new token ONCE.
+  feedback— read anonymous viewer feedback for a share you own (owner-scoped;
+            paginated by cursor/limit). Returns rows + counts (total, dropped),
+            never the token. Bodies are inert data — escape before rendering HTML.
 
 Examples:
   publish {action: "create", walkthrough: {...}}
   publish {action: "list"}
   publish {action: "status", id: "<share-id>"}
   publish {action: "revoke", id: "<share-id>"}
-  publish {action: "rotate", id: "<share-id>"}`,
+  publish {action: "rotate", id: "<share-id>"}
+  publish {action: "feedback", id: "<share-id>", limit: 50}
+  publish {action: "feedback", id: "<share-id>", cursor: "<next_cursor>"}`,
 	}, makePublishHandler(dt))
 }
 
@@ -124,6 +137,24 @@ func makePublishHandler(dt *DaemonTools) func(context.Context, *mcp.CallToolRequ
 			out := PublishOutput{Action: action, Shares: res.Shares}
 			return renderPublish(out, input.Raw), out, nil
 
+		case "feedback":
+			if input.ID == "" {
+				return errorResult("publish feedback: id is required"), PublishOutput{}, nil
+			}
+			res, err := dt.client.PublishFeedback(input.ID, input.Cursor, input.Limit)
+			if err != nil {
+				return errorResult("publish feedback failed: " + err.Error()), PublishOutput{}, nil
+			}
+			out := PublishOutput{
+				Action:     action,
+				ID:         input.ID,
+				Feedback:   res.Rows,
+				NextCursor: res.NextCursor,
+				Total:      res.Total,
+				Dropped:    res.Dropped,
+			}
+			return renderPublish(out, input.Raw), out, nil
+
 		default:
 			return errorResult("publish: unknown action " + action + " (create|status|list|revoke|rotate)"), PublishOutput{}, nil
 		}
@@ -154,6 +185,14 @@ func renderPublish(out PublishOutput, raw bool) *mcp.CallToolResult {
 		sb.WriteString(fmt.Sprintf("=== Shares (%d) ===\n", len(out.Shares)))
 		for _, s := range out.Shares {
 			sb.WriteString(formatShare(s))
+		}
+	case "feedback":
+		sb.WriteString(fmt.Sprintf("=== Feedback for %s (total=%d dropped=%d) ===\n", out.ID, out.Total, out.Dropped))
+		for _, r := range out.Feedback {
+			sb.WriteString(fmt.Sprintf("- %s %s %s\n", r.ID, r.CreatedAt, r.Body))
+		}
+		if out.NextCursor != "" {
+			sb.WriteString(fmt.Sprintf("next_cursor: %s\n", out.NextCursor))
 		}
 	}
 	return mcpText(sb.String())
