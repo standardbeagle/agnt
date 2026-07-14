@@ -1,6 +1,11 @@
 package daemon
 
-import "sync"
+import (
+	"sync"
+	"time"
+
+	"github.com/standardbeagle/agnt/internal/proxy"
+)
 
 // feedback_events.go is the project-scoped fan-out for public-plane feedback
 // ARRIVAL events (P9). When an anonymous viewer POSTs feedback on the public
@@ -52,8 +57,9 @@ const feedbackRemediationHint = "run `publish feedback` with this share id to re
 // concurrent use. A subscriber only ever sees events for the exact project path
 // it subscribed with — the map key IS the isolation boundary.
 type FeedbackHub struct {
-	mu   sync.Mutex
-	subs map[string]map[*FeedbackSub]struct{} // projectPath -> set of subscribers
+	mu       sync.Mutex
+	subs     map[string]map[*FeedbackSub]struct{} // projectPath -> set of subscribers
+	eventHub *EventHub
 }
 
 // FeedbackSub is one subscription. C delivers arrival events for the subscribed
@@ -65,8 +71,11 @@ type FeedbackSub struct {
 }
 
 // NewFeedbackHub returns an empty hub.
-func NewFeedbackHub() *FeedbackHub {
-	return &FeedbackHub{subs: make(map[string]map[*FeedbackSub]struct{})}
+func NewFeedbackHub(eventHub *EventHub) *FeedbackHub {
+	return &FeedbackHub{
+		subs:     make(map[string]map[*FeedbackSub]struct{}),
+		eventHub: eventHub,
+	}
 }
 
 // Subscribe registers a subscriber for exactly one project path. An empty
@@ -128,5 +137,27 @@ func (h *FeedbackHub) Emit(projectPath string, ev FeedbackArrival) {
 			// blocking ingest. The counts on the next arrival are cumulative, so
 			// a dropped notice self-heals.
 		}
+	}
+
+	// STREAM-EVENTS is the real agent/developer transport. Stamp the owning
+	// project explicitly so another project's subscriber cannot receive this
+	// proxy-less event. Stream sink removal owns channel cleanup; this synchronous
+	// edge adds no goroutine or subscription lifecycle of its own.
+	if h.eventHub != nil {
+		h.eventHub.BroadcastLogEntryForProject(proxy.LogEntry{
+			Type: proxy.LogTypeCustom,
+			Custom: &proxy.CustomLog{
+				ID:        "feedback_arrival",
+				Timestamp: time.Now(),
+				Level:     "info",
+				Message:   ev.Remediation,
+				Data: map[string]interface{}{
+					"share_id":    ev.ShareID,
+					"revision_id": ev.RevisionID,
+					"total":       ev.Total,
+					"dropped":     ev.Dropped,
+				},
+			},
+		}, projectPath)
 	}
 }

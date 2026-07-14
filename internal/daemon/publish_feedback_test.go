@@ -12,6 +12,7 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/protocol"
+	"github.com/standardbeagle/agnt/internal/proxy"
 	"github.com/stretchr/testify/require"
 )
 
@@ -218,6 +219,51 @@ func TestFeedbackArrivalEventScopedToOwningProject(t *testing.T) {
 		t.Fatal("project B subscriber must NOT receive project A's feedback event")
 	case <-time.After(200 * time.Millisecond):
 		// expected: no delivery to the wrong project.
+	}
+}
+
+// TestFeedbackArrivalReachesProjectScopedEventStream is the production-edge
+// proof for P9: emitting through FeedbackHub must reach the STREAM-EVENTS
+// transport consumed by agent/developer processes, not stop at the private
+// in-memory hub. The explicit project stamp must also exclude other projects.
+func TestFeedbackArrivalReachesProjectScopedEventStream(t *testing.T) {
+	eventHub := NewEventHub()
+	feedbackHub := NewFeedbackHub(eventHub)
+
+	own := eventHub.AddStreamSink(streamFilter{projectPath: "/proj-a"})
+	defer eventHub.RemoveStreamSink(own)
+	other := eventHub.AddStreamSink(streamFilter{projectPath: "/proj-b"})
+	defer eventHub.RemoveStreamSink(other)
+
+	feedbackHub.Emit("/proj-a", FeedbackArrival{
+		ShareID:     "share-1",
+		RevisionID:  "revision-1",
+		Total:       2,
+		Dropped:     3,
+		Remediation: feedbackRemediationHint,
+	})
+
+	select {
+	case entry := <-own.Ch:
+		require.Equal(t, proxy.LogTypeCustom, entry.Type)
+		require.NotNil(t, entry.Custom)
+		require.Equal(t, "feedback_arrival", entry.Custom.ID)
+		require.Equal(t, "share-1", entry.Custom.Data["share_id"])
+		require.Equal(t, "revision-1", entry.Custom.Data["revision_id"])
+		require.Equal(t, 2, entry.Custom.Data["total"])
+		require.Equal(t, int64(3), entry.Custom.Data["dropped"])
+		require.Equal(t, feedbackRemediationHint, entry.Custom.Message)
+		raw := mustJSON(t, entry)
+		require.NotContains(t, raw, "token")
+		require.NotContains(t, raw, "feedback body")
+	case <-time.After(time.Second):
+		t.Fatal("feedback arrival did not reach the owning project's event stream")
+	}
+
+	select {
+	case <-other.Ch:
+		t.Fatal("another project's event stream received the feedback arrival")
+	case <-time.After(50 * time.Millisecond):
 	}
 }
 

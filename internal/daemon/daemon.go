@@ -491,6 +491,7 @@ func New(config DaemonConfig) *Daemon {
 	}
 
 	h := hub.New(hubConfig)
+	eventHub := NewEventHub()
 
 	incBus := incident.NewMPSCBus(nil)
 
@@ -505,12 +506,12 @@ func New(config DaemonConfig) *Daemon {
 		alertStore:         NewProcessAlertStore(500),
 		processExitInfo:    newProcessExitInfoStore(defaultExitInfoRetention),
 		startupErrorStore:  NewStartupLogStore(100),
-		eventHub:           NewEventHub(),
+		eventHub:           eventHub,
 		incidentBus:        incBus,
 		swallowDetector:    incident.NewSwallowDetector(2 * time.Second),
 		hookRing:           newHookRingBuffer(hookRingCapacity),
 		scriptRegistry:     script.NewRegistry(),
-		feedbackHub:        NewFeedbackHub(),
+		feedbackHub:        NewFeedbackHub(eventHub),
 		sessionRegistry:    sessionRegistry,
 		sessionHosts:       sessionhost.NewRegistry(),
 		scheduler:          scheduler,
