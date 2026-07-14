@@ -301,6 +301,60 @@ func TestFeedbackDroppedCountObservable(t *testing.T) {
 	require.GreaterOrEqual(t, fb.Dropped, int64(1), "the dropped post must be observable")
 }
 
+// TestFeedbackDroppedCountShareScoped proves rate-limit shedding is accounted
+// to the addressed share, both on owner reads and on the next arrival event.
+// A drop against project A's share must never inflate project B's observability.
+func TestFeedbackDroppedCountShareScoped(t *testing.T) {
+	sockPath := shortSockPath(t)
+	d := newBootedDaemonWithConfig(t, DaemonConfig{
+		SocketPath:       sockPath,
+		PublicListenAddr: "127.0.0.1:0",
+		FeedbackLimits: config.FeedbackConfig{
+			RatePerMinute: 1, Burst: 1, MaxBodyBytes: 4096, MaxRowsPerShare: 500, RetentionDays: 90,
+		},
+	})
+	addr := d.PublicPlaneAddr()
+
+	ca := NewClient(WithSocketPath(sockPath))
+	require.NoError(t, ca.Connect())
+	t.Cleanup(func() { _ = ca.Close() })
+	_, err := ca.SessionRegister("sess-a", "/tmp/a.sock", "/proj-a", "test", nil)
+	require.NoError(t, err)
+	cb := NewClient(WithSocketPath(sockPath))
+	require.NoError(t, cb.Connect())
+	t.Cleanup(func() { _ = cb.Close() })
+	_, err = cb.SessionRegister("sess-b", "/tmp/b.sock", "/proj-b", "test", nil)
+	require.NoError(t, err)
+
+	resA, err := ca.PublishCreate(protocol.PublishCreateRequest{Walkthrough: publishTestWalkthrough(t)})
+	require.NoError(t, err)
+	resB, err := cb.PublishCreate(protocol.PublishCreateRequest{Walkthrough: publishTestWalkthrough(t)})
+	require.NoError(t, err)
+
+	// Exhaust only A's share bucket and record one shed request there.
+	require.Equal(t, http.StatusAccepted, postFeedback(t, addr, resA.Token, `{"message":"a-first"}`))
+	require.Equal(t, http.StatusTooManyRequests, postFeedback(t, addr, resA.Token, `{"message":"a-dropped"}`))
+
+	fbA, err := ca.PublishFeedback(resA.ID, "", 0)
+	require.NoError(t, err)
+	require.Equal(t, int64(1), fbA.Dropped)
+	fbB, err := cb.PublishFeedback(resB.ID, "", 0)
+	require.NoError(t, err)
+	require.Zero(t, fbB.Dropped, "A's drops must not appear in B's feedback read")
+
+	subB := d.feedbackHub.Subscribe("/proj-b")
+	require.NotNil(t, subB)
+	t.Cleanup(func() { d.feedbackHub.Unsubscribe(subB) })
+	require.Equal(t, http.StatusAccepted, postFeedback(t, addr, resB.Token, `{"message":"b-first"}`))
+	select {
+	case ev := <-subB.C:
+		require.Equal(t, resB.ID, ev.ShareID)
+		require.Zero(t, ev.Dropped, "A's drops must not appear in B's arrival event")
+	case <-time.After(2 * time.Second):
+		t.Fatal("project B subscriber did not receive its feedback arrival")
+	}
+}
+
 // TestFeedbackReadRedactionNoToken pins that create returns the token once and
 // the feedback read never contains it, even as a substring in a row body.
 func TestFeedbackReadRedactionNoToken(t *testing.T) {

@@ -255,7 +255,7 @@ func (d *Daemon) hubHandlePublishFeedback(conn *hubpkg.Connection, cmd *hubproto
 		result.Rows = wire
 		result.NextCursor = next
 		result.Total = d.feedbackStore.Count(req.ID)
-		result.Dropped = d.feedbackStore.Dropped()
+		result.Dropped = d.feedbackStore.DroppedByShare(req.ID)
 	}
 	data, _ := json.Marshal(result)
 	return conn.WriteJSON(data)

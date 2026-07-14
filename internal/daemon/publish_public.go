@@ -53,7 +53,7 @@ func (s *feedbackArrivalSink) Accept(shareID, revisionID, remoteAddr string, bod
 		ShareID:     shareID,
 		RevisionID:  revisionID,
 		Total:       s.store.Count(shareID),
-		Dropped:     s.store.Dropped(),
+		Dropped:     s.store.DroppedByShare(shareID),
 		Remediation: feedbackRemediationHint,
 	})
 	return nil

@@ -111,9 +111,10 @@ type FeedbackStore struct {
 	limits  FeedbackLimits
 	limiter *tokenBucketLimiter
 
-	mu      sync.Mutex
-	byShare map[string][]FeedbackRecord
-	dropped int64 // rate-limit-dropped count (observable via Dropped)
+	mu             sync.Mutex
+	byShare        map[string][]FeedbackRecord
+	dropped        int64            // aggregate compatibility metric
+	droppedByShare map[string]int64 // owner-scoped observability metric
 }
 
 const feedbackFileSuffix = ".feedback.json"
@@ -139,11 +140,12 @@ func NewFeedbackStore(dir string, limits FeedbackLimits, now func() time.Time) (
 		return nil, fmt.Errorf("publish: create feedback dir: %w", err)
 	}
 	s := &FeedbackStore{
-		dir:     dir,
-		now:     now,
-		limits:  limits,
-		limiter: newTokenBucketLimiter(limits.RatePerMinute, limits.Burst, now),
-		byShare: make(map[string][]FeedbackRecord),
+		dir:            dir,
+		now:            now,
+		limits:         limits,
+		limiter:        newTokenBucketLimiter(limits.RatePerMinute, limits.Burst, now),
+		byShare:        make(map[string][]FeedbackRecord),
+		droppedByShare: make(map[string]int64),
 	}
 	if err := s.load(); err != nil {
 		return nil, err
@@ -222,6 +224,7 @@ func (s *FeedbackStore) Accept(shareID, revisionID, remoteAddr string, body []by
 	if !s.limiter.allow(rateKey(shareID, remoteAddr)) {
 		s.mu.Lock()
 		s.dropped++
+		s.droppedByShare[shareID]++
 		s.mu.Unlock()
 		return ErrFeedbackRateLimited
 	}
@@ -367,6 +370,15 @@ func (s *FeedbackStore) Dropped() int64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.dropped
+}
+
+// DroppedByShare returns the rate-limit-dropped count for one share. Control
+// reads and arrival events use this owner-scoped metric so activity against one
+// project's share cannot bleed into another project's observability.
+func (s *FeedbackStore) DroppedByShare(shareID string) int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.droppedByShare[shareID]
 }
 
 // Count returns the number of stored rows for a share (test/observability).
