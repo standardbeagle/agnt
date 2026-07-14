@@ -764,7 +764,7 @@ behavior.
 | Source identity, non-reusable revision, and kind | source authority snapshot/version-conditional descriptor API | opaque byte equality only; every observable mutation advances revision; preview and confirmation revalidate; unavailable semantics fail closed |
 | Preview bytes, ownership, source revision, digest, and expiry | durable-but-expiring private preview authority plus encrypted staging | never data-plane readable; survives process restart until expiry; confirmation consumes exact bytes; authority loss fails closed and requires a new preview |
 | Idempotency binding, epoch fence, and outcome | durable scoped-key uniqueness record plus non-deleting latest-epoch tombstone in publication authority | pending lease recovers by exact fenced CAS; success/terminal records survive restart for defined retention; epoch survives record deletion |
-| Staging decryptability and ciphertext cleanup | wrapped DEK in preview authority plus durable cleanup outbox | invalidation/expiry/success atomically delete wrapped DEK and enqueue cleanup; recovery retries ciphertext deletion |
+| Object reachability, staging decryptability, and ciphertext cleanup | object registry plus wrapped DEK in preview authority and durable cleanup outbox | allocate IDs unreachable before writes; success atomically marks exact attempt reachable; deletion requires committed zero-reachability outbox; invalidation/expiry/success delete wrapped DEK atomically |
 | Bundle content and manifest | immutable durable bundle record keyed by internal bundle ID | cache is byte-identical and expiry-bounded; restart reloads or misses closed |
 | Capability validity | durable versioned token digest bound to bundle ID | raw token is never persisted; cache may only shorten validity |
 | Expiry and revocation | durable metadata record using server time | checked on every public read; invalidation precedes revoke success; restart cannot clear it |
@@ -806,10 +806,14 @@ Creation is an authenticated two-phase protocol:
    preview.
 3. Preview staging is encrypted with a per-preview DEK and is private and
    unreachable from the data plane. Plaintext DEKs exist only in bounded process
-   memory. Before a preview authority record exists, drift/validation/partial-copy
-   failure zeroizes the plaintext DEK and deletes the ciphertext. A successful
-   preview authority record stores only the DEK wrapped by the configured key
-   authority; no plaintext DEK or independently decrypting copy is persisted.
+   memory. Before writing ciphertext, an authority/WAL transaction allocates the
+   random `staging_object_id`, registers it `allocated_unreachable`, and stores
+   only the DEK wrapped by the configured key authority. Drift, validation, or
+   partial-copy failure atomically deletes the wrapped DEK, proves the registry
+   object unreachable, and writes its exact cleanup outbox item; plaintext is
+   zeroized. A successful preview transaction promotes that allocation into the
+   ready preview record. No plaintext DEK or independently decrypting copy is
+   persisted.
 4. A successful preview stores exact P1a canonical bytes, manifest digest,
    ordered verified descriptor set, wrapped DEK, canonical authority scope bytes, requested
    expiry, and server preview expiry (at most 10 minutes). It returns those bytes,
@@ -836,7 +840,7 @@ Creation is an authenticated two-phase protocol:
 
 Invalidation after lease acquisition is one authority transaction conditioned on
 idempotency exactly
-`pending(record_epoch,binding,generation,owner)` and the referenced preview
+`pending(record_epoch,binding,preview_id,generation,owner,attempt_object_id)` and the referenced preview
 exactly `ready`. It atomically changes preview `ready → invalidated`, changes the
 idempotency record `pending → terminal_failed`, deletes the wrapped DEK from
 authority state, and inserts a durable ciphertext-cleanup outbox item tagged with
@@ -859,14 +863,36 @@ key)`. Raw keys are access-controlled request data and are redacted from logs.
 
 The request binding is
 `SHA-256("agnt-public-bundle-idempotency-v1\0" || F(0x01, preview_id) ||
-F(0x02, publication_binding_digest_raw_32_bytes))`. A durable uniqueness constraint on
+F(0x02, publication_binding_digest_raw_32_bytes) ||
+F(0x03, p1a_confirmation_digest_raw_32_bytes))`. Including the P1a digest lets a
+matching succeeded replay be authenticated entirely from request binding without
+dereferencing the preview. A durable uniqueness constraint on
 the scoped key chooses exactly one concurrency winner. Lookup ordering is
 normative: after authentication/scope and syntax/binding computation, check the
 retained scoped key first; return matching `succeeded` replay or value-free
 mismatch without preview validation; only then access preview state for a new or
-retryable matching operation. The first transaction
-atomically allocates a non-reusable uint64 `record_epoch` and inserts
-`pending(record_epoch,binding,preview_id)`; a different binding for the
+retryable matching operation.
+
+Reserve and preliminary preview validation are one serializable authority
+transaction over the scoped idempotency row, preview row, and object registry. It
+requires preview existence and ownership in the authenticated scope, exact stored
+P1a/publication digests, `ready` state, and `server_now < preview_expires_at`.
+Missing/not-owned returns uniform `404 preview_unavailable`; digest mismatch
+returns value-free `409 preview_mismatch`; invalidated, consumed, or expired state
+returns its corresponding value-free 409. A ready preview at/after expiry is
+atomically expired with wrapped-DEK deletion and staging cleanup enqueueing, then
+returns `409 preview_expired`. Failed predicates create/acquire no idempotency
+lease. Thus there is no durable reservation whose response disagrees with the
+preview validation that admitted it.
+
+On success that same transaction allocates a non-reusable uint64 `record_epoch`
+when needed, a generation/owner/lease, and a random non-reused
+`attempt_object_id`; stores
+`pending(record_epoch,binding,preview_id,generation,owner,attempt_object_id)`; and
+registers the attempt object as `allocated_unreachable` before any object-store
+write. A reacquisition atomically increments generation, assigns a new owner and
+attempt ID, and enqueues cleanup for the prior attempt ID only after confirming
+its registry state is unreachable. A different binding for the
 same retained key returns `409 idempotency_mismatch` and cannot inspect or alter
 the original operation. A matching contender while pending returns
 `409 idempotency_in_progress` with `Retry-After: 1` and performs no publication.
@@ -885,28 +911,35 @@ compare-and-swap by recovery or a matching retry may change an expired lease to
 Every pending-state or publication-authority transition—including
 `pending → retryable_failed`, reacquisition, terminal failure, expiry, and
 success—uses a compare-and-swap over the exact persisted
-`(record_epoch,binding,generation,owner,status)` observed by the caller.
+`(record_epoch,binding,preview_id,generation,owner,attempt_object_id,status)` observed by the caller.
 Authority mutation fencing and immutable-object cleanup are distinct:
 
 - Preview staging has a random non-reused `staging_object_id` owned by the
   preview, independent of any attempt epoch. Its cleanup item names exactly that
   immutable object ID and preview ID.
 - Each publication attempt has a random non-reused `attempt_object_id` owned by
-  exact `(record_epoch,binding,generation,owner)`; no prefix/key-wide deletion is
+  exact `(record_epoch,binding,preview_id,generation,owner,attempt_object_id)`; no prefix/key-wide deletion is
   allowed. Its cleanup item contains that exact immutable object ID and tuple.
 
 A stale epoch/owner/generation cannot mutate idempotency or preview authority,
-make content reachable, or delete a newer/current object's ID. It may delete its
-own exact attempt object without an authority CAS. A committed outbox worker may
-delete the exact preview-owned or attempt-owned immutable ciphertext named by an
-old item even after record deletion/epoch change; deletion is idempotent and
-cannot mutate current authority or select another object. Thus epoch fencing does
-not strand old ciphertext, and cleanup authority cannot reach new ciphertext.
+make content reachable, or authorize deletion of a newer/current object's ID.
+Ciphertext deletion is permitted only from a committed outbox item whose same
+authority transaction either proves the exact object registry state
+`allocated_unreachable` or atomically changes its reachability/refcount to zero.
+A worker with an indeterminate authority commit must query/recover that
+transaction; it must not delete directly, even its own attempt object. A committed
+outbox worker may delete the exact preview-owned or attempt-owned immutable
+ciphertext named by an old item after record deletion/epoch change; deletion is
+idempotent and cannot mutate current authority or select another object. Thus
+epoch fencing does not strand old ciphertext, and cleanup authority cannot reach
+new/reachable ciphertext.
 
 The winner generates the raw capability only after all confirmation checks. It
 writes immutable canonical content under an unreachable temporary object ID,
 then one authority transaction atomically: makes the content pointer reachable,
 writes bundle/expiry/revocation metadata and the capability digest, changes the
+exact attempt object's registry state `allocated_unreachable → reachable` with
+one bundle reference,
 preview `ready → consumed` with a compare-and-swap, destroys the preview staging
 key by deleting its wrapped DEK, inserts the tuple-tagged ciphertext-cleanup
 outbox item naming the exact preview-owned `staging_object_id`, and changes idempotency `pending → succeeded` with public-safe
@@ -918,7 +951,7 @@ idempotency keys race on the same preview.
 The success transaction uses the authority's transaction clock and commits only
 if `server_now < preview_expires_at`, `server_now < lease_expires_at`, preview is
 exactly `ready`, and idempotency is exactly
-`pending(record_epoch,binding,generation,owner)`. Equality is expired: at
+`pending(record_epoch,binding,preview_id,generation,owner,attempt_object_id)`. Equality is expired: at
 `server_now == preview_expires_at` or `== lease_expires_at`, success is forbidden.
 Preview expiry uses the same serializable authority row/transaction and may
 change `ready → expired` only when `server_now >= preview_expires_at`; consume
@@ -950,7 +983,8 @@ Content written before the authority transaction is unreachable. A failure or
 crash before that commit leaves preview `ready` (unless already invalidated),
 changes no durable success record, and the exact fenced failure/recovery
 transaction enqueues deletion of that attempt's immutable `attempt_object_id`;
-the stale worker may also delete that same ID directly. A matching retry is safe.
+the transaction first confirms its registry state remains unreachable. No worker
+deletes on an indeterminate commit. A matching retry is safe.
 The preview is consumed only inside the success
 transaction. A crash after commit cannot roll back reachability or consumption;
 retry observes `succeeded` and returns the token-free 200 replay response.
@@ -962,7 +996,8 @@ retry observes `succeeded` and returns the token-free 200 replay response.
 | preview copy observes identity/revision/kind/count drift | destroy staged key/blob; no preview created | validation failure; new preview required |
 | ABA attempt: descriptor starts `(id,A)`, mutates to `B`, then content changes back | authority must expose a new non-reused revision `C`; conditional/after read differs from `A`; destroy all staging | validation failure; a source returning `A` again is ineligible and fails the authority-contract test |
 | torn multi-record copy: one conditional record read succeeds but another revision changes before/after set check | no manifest/digest; destroy the complete staged set | validation failure; partial record mix is never previewable |
-| confirm on `ready`, matching descriptors/scope/digest, unused scoped key | insert `pending`; caller is winner | continue publication |
+| new/retryable key plus valid owned `ready` preview and matching digests | one transaction validates preview, stores fenced pending lease+`attempt_object_id`, and registers object unreachable | caller is winner and may write only that object ID |
+| missing/not-owned preview or digest/state predicate failure during reserve | no pending lease/object allocation; expiry case may atomically expire preview and enqueue staging cleanup | uniform 404 or defined value-free 409; retry cannot observe a contradictory reservation |
 | two confirms race with same key and binding | one inserts `pending`; other observes it | winner continues; loser `409 idempotency_in_progress`, then retries |
 | two confirms race on one preview with different unused keys | both may reserve; one preview-state compare-and-swap commits; loser changes `pending → terminal_failed` and its temporary object stays unreachable | winner receives first-response semantics; loser `409 preview_consumed` |
 | same retained key, different preview or publication-binding digest | no state change | `409 idempotency_mismatch` always |
@@ -973,10 +1008,11 @@ retry observes `succeeded` and returns the token-free 200 replay response.
 | preview expiry with pending/retryable lease | exact fencing-tuple authority transaction: `ready → expired`, delete wrapped DEK, enqueue cleanup for exact preview-owned `staging_object_id`; idempotency expires | `409 preview_expired`; new preview/key required |
 | success and expiry race with server time strictly before preview expiry | serialized success may CAS `ready → consumed`; expiry predicate is false | winner may commit only with unexpired fenced lease |
 | success and expiry race at/after exact preview expiry | success predicate is false; expiry CASes `ready → expired` | `409 preview_expired`; equality never consumes |
-| infrastructure failure before authority commit | temporary content remains unreachable; `pending → retryable_failed`; preview stays `ready` | `503`; matching key may retry before preview expiry |
-| crash after attempt-object write, before authority commit | no reachable bundle; preview remains `ready`; exact fenced recovery sets `retryable_failed` and enqueues that `attempt_object_id` | matching retry is the only contender allowed; old object cleanup cannot select its new object |
-| expired lease generation `g` is reacquired | exact CAS increments to `g+1`, assigns new owner and lease | new owner may retry; generation `g` is fenced |
-| stale epoch/generation/owner attempts success, failure, expiry, or preview mutation | exact tuple CAS fails; no authority/preview/new-owner object changes | stale worker stops; it may remove only its exact immutable attempt object |
+| determinate infrastructure failure before success commit | exact fenced transaction proves attempt registry unreachable, changes `pending → retryable_failed`, and commits exact-ID cleanup; preview stays `ready` | `503`; matching key may retry before preview expiry |
+| success-commit outcome is indeterminate | no ciphertext deletion and no retry publication until authority is queried/recovered by exact attempt tuple | observe `succeeded` and replay, or commit fenced failure+outbox before retry |
+| crash after attempt-object write, before authority commit | no reachable bundle; preview remains `ready`; exact fenced recovery proves registry unreachable, sets `retryable_failed`, and commits outbox for that ID | matching retry is the only contender; no deletion before recovery outcome is known |
+| expired lease generation `g` is reacquired | exact CAS increments to `g+1`, assigns new owner/lease/attempt ID, registers new ID unreachable, and commits cleanup for prior unreachable ID | new owner may write only new ID; generation `g` is fenced |
+| stale epoch/generation/owner attempts success, failure, expiry, or preview mutation | exact tuple CAS fails; no authority/preview/new-owner object changes | stale worker stops; deletion requires a committed unreachable-proof outbox item |
 | retained idempotency record is deleted and key later reused | fence tombstone increments `record_epoch`; generation starts at 1 only inside new epoch | delayed prior-incarnation authority CAS is fenced forever; old outbox may still delete only its exact old immutable object ID |
 | authority transaction commits | content becomes reachable; preview `ready → consumed`; idempotency `pending → succeeded` | first live winner receives reveal-once `201` |
 | crash/connection loss after commit but before/full/partial response | durable state remains consumed+succeeded | matching retry returns token-free `200`; revoke/new-create recovers |
