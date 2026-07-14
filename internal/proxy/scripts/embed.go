@@ -120,6 +120,15 @@ var (
 	//go:embed walkthrough.js
 	walkthroughJS string
 
+	//go:embed variant-engine.js
+	variantEngineJS string
+
+	//go:embed walkthrough-viewer.js
+	walkthroughViewerJS string
+
+	//go:embed feedback-client.js
+	feedbackClientJS string
+
 	//go:embed palette.js
 	paletteJS string
 
@@ -193,6 +202,17 @@ const (
 	// indicator-bridge / walkthrough-proxy forwarding stubs) + content-only
 	// modules, without the chrome-only set.
 	RoleContent Role = "content"
+	// RolePublic is the HARD-ALLOWLISTED public bundle for the walkthrough-publish
+	// plane (P4). Unlike RoleChrome/RoleContent — which are SUBTRACTIVE filters
+	// over the full module set — RolePublic is built from an EXPLICIT ALLOWLIST
+	// (rolePublicModules) and contains ONLY those members: the variant renderer,
+	// the read-only walkthrough viewer, and the feedback client. It carries NONE
+	// of the dev-control surface (no core WS/exec channel, no __devtool control
+	// API, no audits/capture/inspection/design/indicator/authbreakout), ships no
+	// html2canvas, and runs under `script-src 'self'` with no eval/inline. The
+	// dependency-closure + forbidden-symbol tests in role_public_test.go fail the
+	// build if a forbidden module ever enters this bundle.
+	RolePublic Role = "public"
 )
 
 // combinedScripts caches one built bundle per Role.
@@ -281,6 +301,24 @@ var moduleOrder = []moduleEntry{
 	// + frames (role + registry); loads after design, before indicator/api.
 	// Chrome-only: content frames get walkthrough-proxy instead.
 	{"walkthrough", []string{"core", "frames", "walkthrough-proxy"}},
+	// variant-engine is the declarative variant overlay renderer for the public
+	// walkthrough-publish plane (P3). It is dependency-free (pure DOM + its own
+	// isolated IIFE — it keeps a leading space after `function` so wrapModule
+	// leaves its IIFE intact rather than merging it into the shared scope) and
+	// inert until window.__variantEngine.create() is called, so it is safe to
+	// ship in every role bundle. P4 moves it into the hard RolePublic split.
+	{"variant-engine", nil},
+	// walkthrough-viewer is the READ-ONLY player for the public walkthrough-publish
+	// plane (P4). It is a strict subset of walkthrough.js: no authoring UI, no
+	// core WS/exec transport, no cross-frame agent control. Dependency-free (pure
+	// DOM in its own isolated IIFE) and inert until window.__walkthroughViewer.create()
+	// is called, so it is safe to ship in every bundle; the RolePublic allowlist
+	// selects it as one of the three public members.
+	{"walkthrough-viewer", nil},
+	// feedback-client is the third public member (P4) — a thin stub that buffers
+	// visitor feedback. Dependency-free, no dev-control surface, inert until
+	// window.__feedbackClient.init() is called.
+	{"feedback-client", nil},
 	{"palette", []string{"core", "utils"}},
 	{"style-editor", []string{"core", "utils"}},
 	// override-store injects the delta stylesheet; transform renders the
@@ -380,6 +418,20 @@ var moduleRole = map[string]Role{
 	"wireframe":       RoleContent,
 }
 
+// rolePublicModules is the EXPLICIT ALLOWLIST for the public bundle (P4). Unlike
+// moduleRole (a subtractive per-frame classification), this is the complete,
+// closed set of modules permitted in RolePublic: the variant renderer, the
+// read-only walkthrough viewer, and the feedback client — nothing else. Every
+// member is dependency-free, so the public bundle's dependency closure is exactly
+// these three; role_public_test.go pins this set (golden manifest), scans the
+// assembled bundle for forbidden dev-surface tokens, and walks the closure so a
+// forbidden module can never enter without failing the build.
+var rolePublicModules = map[string]bool{
+	"variant-engine":     true,
+	"walkthrough-viewer": true,
+	"feedback-client":    true,
+}
+
 // includeInRole reports whether module name ships in the bundle for role.
 func includeInRole(name string, role Role) bool {
 	switch role {
@@ -387,6 +439,9 @@ func includeInRole(name string, role Role) bool {
 		return moduleRole[name] != RoleContent
 	case RoleContent:
 		return moduleRole[name] != RoleChrome
+	case RolePublic:
+		// Allowlist, not blocklist: only the sanctioned public members ship.
+		return rolePublicModules[name]
 	default: // RoleFull
 		return true
 	}
@@ -426,6 +481,9 @@ var moduleScript = map[string]string{
 	"sketch":             sketchJS,
 	"design":             designJS,
 	"walkthrough":        walkthroughJS,
+	"variant-engine":     variantEngineJS,
+	"walkthrough-viewer": walkthroughViewerJS,
+	"feedback-client":    feedbackClientJS,
 	"palette":            paletteJS,
 	"style-editor":       styleEditorJS,
 	"override-store":     overrideStoreJS,
@@ -476,22 +534,39 @@ func buildCombinedScript(role Role) string {
 	// Main script block
 	sb.WriteString("<script>\n")
 
-	// External dependencies (html2canvas-pro for screenshots)
-	// Using html2canvas-pro instead of html2canvas because it supports modern CSS
-	// color functions (lab, oklch, oklab, lch) that Firefox and modern browsers use.
-	// See: https://github.com/nickt26/html2canvas-pro
-	// Bundled at compile time to avoid CDN dependency (jsdelivr.net can be unreachable)
-	sb.WriteString(html2canvasProJS)
-	sb.WriteString("\n")
+	// The public bundle (RolePublic) is a hard-allowlisted, dev-control-free
+	// artifact: it must ship NEITHER the html2canvas capture library NOR the
+	// window.__devtool_* version marker, both of which are dev-surface tokens the
+	// forbidden-symbol scan rejects. Every other role keeps today's behaviour.
+	isPublic := role == RolePublic
+
+	if !isPublic {
+		// External dependencies (html2canvas-pro for screenshots)
+		// Using html2canvas-pro instead of html2canvas because it supports modern CSS
+		// color functions (lab, oklch, oklab, lch) that Firefox and modern browsers use.
+		// See: https://github.com/nickt26/html2canvas-pro
+		// Bundled at compile time to avoid CDN dependency (jsdelivr.net can be unreachable)
+		sb.WriteString(html2canvasProJS)
+		sb.WriteString("\n")
+	}
 
 	sb.WriteString("(function() {\n")
 	sb.WriteString("  'use strict';\n\n")
 
-	// Inject version as first thing in the script
-	sb.WriteString("  // Version injected at build/runtime\n")
-	sb.WriteString("  window.__devtool_version = '")
-	sb.WriteString(Version)
-	sb.WriteString("';\n\n")
+	if isPublic {
+		// Public-namespaced version marker — deliberately NOT __devtool_* so the
+		// public bundle stays provably free of the dev-control namespace.
+		sb.WriteString("  // Version injected at build/runtime (public plane)\n")
+		sb.WriteString("  window.__agnt_public_version = '")
+		sb.WriteString(Version)
+		sb.WriteString("';\n\n")
+	} else {
+		// Inject version as first thing in the script
+		sb.WriteString("  // Version injected at build/runtime\n")
+		sb.WriteString("  window.__devtool_version = '")
+		sb.WriteString(Version)
+		sb.WriteString("';\n\n")
+	}
 
 	// Load modules in dependency order from moduleOrder
 	for _, m := range moduleOrder {

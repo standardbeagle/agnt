@@ -198,6 +198,16 @@ func isProcessAlive(pid int) bool {
 	return exitCode == 259 // STILL_ACTIVE
 }
 
+// hasReleasedResources reports whether pid has stopped holding kernel resources
+// (its handles, and so any port it was listening on). Windows has no zombie
+// state: once a process exits, GetExitCodeProcess stops returning STILL_ACTIVE
+// and the kernel has already torn down its handles. So "not alive" is exactly
+// "resources released" here — no reap step to wait on, unlike the Unix twin
+// which also counts a zombie as released.
+func hasReleasedResources(pid int) bool {
+	return !isProcessAlive(pid)
+}
+
 // isNoSuchProcess returns true if the error indicates the process doesn't exist.
 func isNoSuchProcess(err error) bool {
 	if err == nil {

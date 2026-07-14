@@ -173,6 +173,8 @@ Test startup contract (`Start()` vs `NewForTest`)：`.claude/rules/daemon-archit
 
 **Full-suite gate = `go test -p 1 ./...`**（serial packages，非 Go 默認 parallel `./...`）；parallel 版本本身 flaky（cross-package port contention）。Flake registry + non-determinizable tests（real-chrome e2e under CPU oversubscription 等）：`docs/testing-flake-registry.md`；根因細節見 `.claude/rules/testing-parallel-package-flakes.md`、`.claude/rules/testing-timing-assertion-flakes.md`。
 
+**Browser E2E loud-skip policy**：the walkthrough-publish real-Chrome tests (`internal/proxy/{publish_browser,walkthrough_player,variant_engine}_e2e_test.go`, incl. the P10 gate Tier B `TestE2E_PublicPlane_RealBrowser`) are `//go:build chromee2e`-tagged — same as every other real-Chrome test in this repo — so they are **absent from `make test`** and only compile under `-tags=chromee2e` (renderer starvation under oversubscription is non-deterministic; see the chromee2e list above). Within that tagged build they are further env-gated by `skipIfNoBrowser`: they RUN when a Chrome/Chromium binary is on PATH and **SKIP LOUDLY** (`t.Skip` with a reason) when it is absent or `SKIP_BROWSER_TESTS` is set — never a silent pass. Run the whole real-Chrome suite via `make test-chrome-e2e`, or just the public-plane Tier B via `make e2e-publish-browser` (both pass `-tags=chromee2e`). The host-safe pure-Go tier (P10 Tier A: the end-to-end security/restart/revoke journey + `-race` concurrency gate) needs no browser and runs under the normal `go test ./internal/proxy/... ./internal/daemon/... ./internal/publish/...`。
+
 ## Important Constraints
 
 ### MCP Protocol

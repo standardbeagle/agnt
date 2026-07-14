@@ -44,6 +44,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -52,10 +53,12 @@ import (
 	"github.com/standardbeagle/agnt/internal/browser"
 	"github.com/standardbeagle/agnt/internal/chromedp"
 	"github.com/standardbeagle/agnt/internal/config"
+	"github.com/standardbeagle/agnt/internal/daemon/publishstore"
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/incident"
 	"github.com/standardbeagle/agnt/internal/overlay"
 	"github.com/standardbeagle/agnt/internal/proxy"
+	"github.com/standardbeagle/agnt/internal/publish"
 	"github.com/standardbeagle/agnt/internal/sessionhost"
 	"github.com/standardbeagle/agnt/internal/store"
 	"github.com/standardbeagle/agnt/internal/tunnel"
@@ -131,6 +134,30 @@ type DaemonConfig struct {
 	// StatePath is the path to the state file.
 	// If empty, uses default location.
 	StatePath string
+
+	// PublishDir is the directory for the durable publish-share store (P6).
+	// If empty, production uses DefaultPublishDir(); tests inject a temp dir via
+	// NewForTest so publish state stays hermetic and never touches real state.
+	PublishDir string
+
+	// FeedbackDir is the directory for the durable public-plane feedback store
+	// (P8/P9). If empty it defaults to DefaultFeedbackDir(); tests inject a temp
+	// dir via NewForTest so feedback state stays hermetic.
+	FeedbackDir string
+
+	// FeedbackLimits are the public-plane feedback ingest/retention bounds
+	// (config.FeedbackConfig, spec §5). Zero-value fields are normalized to the
+	// spec defaults so an unconfigured daemon still enforces every guard.
+	FeedbackLimits config.FeedbackConfig
+
+	// PublicListenAddr is the bind address for the anonymous-viewer PUBLIC plane
+	// (P7 NewPublicHandler / spec §2b). When non-empty the daemon stands up a
+	// dedicated HTTP listener serving ONLY the token-gated public routes; the dev
+	// control surface is structurally absent from that handler (INV-1/INV-2).
+	// Empty (the zero value) leaves the public plane unmounted — the safe default
+	// until an operator opts a project into public serving. Tests pass
+	// "127.0.0.1:0" and read PublicPlaneAddr() for the ephemeral port.
+	PublicListenAddr string
 
 	// EnableUpdateCheck enables periodic update checking.
 	// Default: true
@@ -243,6 +270,36 @@ type Daemon struct {
 	// State persistence
 	stateMgr   *StateManager
 	pidTracker *process.FilePIDTracker
+
+	// publishStore is the durable, authoritative store for public walkthrough
+	// shares + their token lifecycle (P6). Unlike every other daemon-side state
+	// above (caches, rebuilt-from-config or evicted on session end), its on-disk
+	// record IS the source of truth and outlives the session — the documented
+	// daemon-architecture.md exception. Constructed in bootstrap(); nil (verbs
+	// error) if the persisted store failed to load loud on boot.
+	publishStore *publishstore.Store
+
+	// feedbackStore is the durable public-plane feedback sink (P8): anonymous
+	// viewer feedback rows, rate-limited and retention-bounded. Like publishStore
+	// its on-disk record is the source of truth. Constructed in bootstrap(); nil
+	// (public feedback POST accept-and-drops, control read is empty) if it failed
+	// to load loud on boot.
+	feedbackStore *publish.FeedbackStore
+
+	// feedbackHub fans project-scoped, counts-only feedback ARRIVAL events to the
+	// owning project's dev/agent subscribers (P9). Always allocated.
+	feedbackHub *FeedbackHub
+
+	// publicHandler is the anonymous-viewer public plane (P7). Built in
+	// bootstrap() over publishStore (token verifier) + the feedback arrival sink.
+	// nil until bootstrap runs.
+	publicHandler *proxy.PublicHandler
+
+	// publicServer + publicAddr hold the dedicated public-plane HTTP listener
+	// (only when config.PublicListenAddr is set). publicAddr is the bound address
+	// (resolved after Listen, so an ephemeral :0 port is observable).
+	publicServer *http.Server
+	publicAddr   atomic.Pointer[string]
 
 	// URL tracking for processes
 	urlTracker *URLTracker
@@ -453,6 +510,7 @@ func New(config DaemonConfig) *Daemon {
 		swallowDetector:    incident.NewSwallowDetector(2 * time.Second),
 		hookRing:           newHookRingBuffer(hookRingCapacity),
 		scriptRegistry:     script.NewRegistry(),
+		feedbackHub:        NewFeedbackHub(),
 		sessionRegistry:    sessionRegistry,
 		sessionHosts:       sessionhost.NewRegistry(),
 		scheduler:          scheduler,
@@ -671,6 +729,29 @@ func (d *Daemon) registerCommands() error {
 // contract" section of .claude/rules/daemon-architecture.md.
 func (d *Daemon) bootstrap() error {
 	d.daemonStartupLog("info", "daemon_starting", "daemon bootstrap starting")
+
+	// Open the durable publish-share store. A corrupt/unreadable persisted store
+	// fails loud (Silent Failure Prohibition): we surface a visible startup error
+	// and leave publishStore nil so publish verbs error out — we never silently
+	// serve an empty store past a corruption. See publishstore + spec §8 / INV-8.
+	publishDir := d.config.PublishDir
+	if publishDir == "" {
+		publishDir = DefaultPublishDir()
+	}
+	if store, err := publishstore.New(publishDir, nil); err != nil {
+		d.daemonStartupLog("error", "publish_store_load_failed",
+			fmt.Sprintf("publish store failed to load (shares unavailable until resolved): %v", err))
+	} else {
+		d.publishStore = store
+		d.daemonStartupLog("info", "publish_store_loaded", "publish store loaded")
+	}
+
+	// Build the public plane: the durable feedback store, the P7 public handler
+	// over the publish-store token verifier + the arrival-emitting feedback sink,
+	// and (when configured) the dedicated public listener. This is the P9 wiring
+	// that P7/P8 deferred — before it, the public plane was never mounted.
+	d.buildPublicPlane()
+	d.startPublicListener()
 
 	// Register agnt-specific commands with Hub before starting.
 	if err := d.registerCommands(); err != nil {

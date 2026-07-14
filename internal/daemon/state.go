@@ -89,6 +89,32 @@ func DefaultStatePath() string {
 	return filepath.Join(os.TempDir(), "devtool-mcp-state.json")
 }
 
+// DefaultPublishDir returns the default directory for the durable publish-share
+// store (P6). It sits alongside the daemon state file but is a distinct,
+// authoritative on-disk store (not a cache) — see internal/daemon/publishstore.
+func DefaultPublishDir() string {
+	if stateHome := os.Getenv("XDG_STATE_HOME"); stateHome != "" {
+		return filepath.Join(stateHome, "devtool-mcp", "publish")
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, ".local", "state", "devtool-mcp", "publish")
+	}
+	return filepath.Join(os.TempDir(), "devtool-mcp-publish")
+}
+
+// DefaultFeedbackDir returns the default directory for the durable public-plane
+// feedback store (P8/P9). It sits alongside the publish store but is a distinct
+// authoritative on-disk store — see internal/publish.FeedbackStore.
+func DefaultFeedbackDir() string {
+	if stateHome := os.Getenv("XDG_STATE_HOME"); stateHome != "" {
+		return filepath.Join(stateHome, "devtool-mcp", "feedback")
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, ".local", "state", "devtool-mcp", "feedback")
+	}
+	return filepath.Join(os.TempDir(), "devtool-mcp-feedback")
+}
+
 // NewStateManager creates a new state manager with a background writer.
 func NewStateManager(config StateManagerConfig) *StateManager {
 	if config.StatePath == "" {

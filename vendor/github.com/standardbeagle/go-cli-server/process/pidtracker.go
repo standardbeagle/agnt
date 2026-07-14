@@ -317,7 +317,18 @@ func (pt *FilePIDTracker) UpdateDescendants(pid int, descendants []int) error {
 	for i := range tracking.Processes {
 		if tracking.Processes[i].PID == pid {
 			tracking.Processes[i].DescendantPIDs = descendants
-			tracking.Processes[i].DescendantIdentities = descendantIdentities(descendants)
+			// Do NOT record identities here. UpdateDescendants takes an
+			// externally-supplied PID list; capturing processIdentity() for those
+			// PIDs would opportunistically mark any PID that merely happens to be
+			// alive as "verified" — GetVerifiedDescendants re-reads the same live
+			// /proc value moments later and it tautologically matches, so a
+			// recycled or unrelated PID would be treated as a genuine descendant
+			// and become a cascade-kill target. Verified identity must fail
+			// closed: only the internal scanner (scanDescendants), which walks the
+			// actual parent->child /proc tree of a confirmed-alive parent, is
+			// trusted to record identities. Clear any stale identities so removed
+			// PIDs don't linger as verified.
+			tracking.Processes[i].DescendantIdentities = nil
 			tracking.Processes[i].LastScanAt = now
 			return pt.saveLocked(tracking)
 		}

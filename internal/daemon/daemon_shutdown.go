@@ -268,6 +268,14 @@ func (d *Daemon) Stop(ctx context.Context) error {
 	d.cancel()
 	d.daemonStartupLog("info", "daemon_context_cancelled", "daemon context cancelled")
 
+	// Close the dedicated public-plane listener so its Serve goroutine (tracked
+	// by d.wg) returns before the later d.wg.Wait(). Close is idempotent and
+	// nil-safe; a nil server means no public listener was started.
+	if d.publicServer != nil {
+		_ = d.publicServer.Close()
+		d.daemonStartupLog("info", "public_listener_stopped", "public plane listener stopped")
+	}
+
 	// Stop all deferred session-cleanup timers BEFORE tearing down the hub,
 	// ProcessManager, and proxy manager that their doCleanup callbacks touch.
 	// These AfterFunc timers (grace window, default 5s) are not tracked by

@@ -70,11 +70,16 @@ import (
 // router stress tests: ignores the current goroutine set AND os/exec pipe
 // goroutines that may have been created by SessionRegister tests that start
 // real processes (sleep 60). Those goroutines are cross-test leaks from the
-// process-management path — they are not produced by the router under test.
+// process-management path — they are not produced by the router under test,
+// which never starts a process. os/exec spawns two such helper goroutines per
+// child: writerDescriptor.func1 (stdin pump) and, since Go 1.20, watchCtx
+// (context-cancel watcher). Both must be ignored or a sibling test's still-
+// draining `sleep 60` trips this check as a false-positive leak.
 func routerVerifyNone(t *testing.T, base goleak.Option) {
 	t.Helper()
 	goleak.VerifyNone(t, base,
 		goleak.IgnoreAnyFunction("os/exec.(*Cmd).writerDescriptor.func1"),
+		goleak.IgnoreAnyFunction("os/exec.(*Cmd).watchCtx"),
 	)
 }
 

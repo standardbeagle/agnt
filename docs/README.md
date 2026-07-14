@@ -12,8 +12,9 @@ Current, maintained references for specific subsystems:
 | Doc | Topic |
 |-----|-------|
 | [mcp-tools.md](mcp-tools.md) | MCP tool catalog, per-tool params, output formats, `__devtool` API, `agnt monitor` |
-| [configuration.md](configuration.md) | `.agnt.kdl` config: port-conflict, autostart ordering, alert push, incident keys, URL tracking |
+| [configuration.md](configuration.md) | `.agnt.kdl` config: port-conflict, autostart ordering, alert push, incident keys, URL tracking, public feedback + `AGNT_PUBLIC_ADDR` |
 | [remote-ssh.md](remote-ssh.md) | Remote sessions: quick start, reconnect, forwarding, bootstrap, push, troubleshooting |
+| [public-walkthroughs.md](public-walkthroughs.md) | Publishing a walkthrough as a token-gated public webapp: secure defaults, lifecycle (create/rotate/revoke), anonymous feedback, incident response |
 | [auth-breakout.md](auth-breakout.md) | Running OAuth/OIDC sign-in outside the content iframe |
 | [channel-mode.md](channel-mode.md) | Channel Mode beta (push events via MCP `claude/channel`) |
 | [overlay-internals.md](overlay-internals.md) | PTY overlay UI: command palette, ports/orphans panel, splash, output protection |

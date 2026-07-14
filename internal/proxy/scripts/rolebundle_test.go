@@ -121,7 +121,7 @@ var softDeps = map[string]map[string]bool{
 // included. Soft (order-only / guarded) edges are pinned in softDeps — adding
 // a new dangling edge without classifying it there fails this test.
 func TestRoleBundleDependencyClosure(t *testing.T) {
-	for _, role := range []Role{RoleFull, RoleChrome, RoleContent} {
+	for _, role := range []Role{RoleFull, RoleChrome, RoleContent, RolePublic} {
 		included := map[string]bool{}
 		for _, m := range moduleOrder {
 			if includeInRole(m.name, role) {

@@ -138,3 +138,62 @@ dev config, or the breakout never sees the navigation.
 
 Interception routes, browser coverage, the MSAL caveat, and security notes:
 **[auth-breakout.md](auth-breakout.md)**.
+
+## Public Walkthrough Feedback (`internal/config/feedback.go`, `feedback` in `.agnt.kdl`)
+
+The `feedback` block bounds the public-plane anonymous feedback sink used by
+published walkthroughs — the rate limit, per-post size cap, and retention ring.
+The values encode the security spec §5
+(`docs/superpowers/specs/2026-07-13-public-walkthrough-publish-security.md`).
+See the operator guide: **[public-walkthroughs.md](public-walkthroughs.md)**.
+
+```kdl
+feedback {
+    rate-per-minute 10       // sustained feedback POST budget per (share token, IP)
+    burst 5                  // token-bucket burst allowance per (share token, IP)
+    max-body-bytes 4096      // max size of a single feedback POST body
+    max-rows-per-share 500   // retention ring depth per share (oldest evicted)
+    retention-days 90        // evict rows older than this many days
+}
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `rate-per-minute` | int | `10` | Sustained feedback POST budget per (share, IP). Excess ⇒ `429`. |
+| `burst` | int | `5` | Token-bucket burst allowance per (share, IP). |
+| `max-body-bytes` | int | `4096` | Per-POST body cap. Over-cap ⇒ `413` (never truncated). |
+| `max-rows-per-share` | int | `500` | Retention ring depth per share; oldest row evicted. |
+| `retention-days` | int | `90` | Rows older than this are evicted. Retention is **500 rows OR 90 days, whichever first**. |
+
+Every key is optional. An omitted or non-positive value falls back to its spec
+default via `FeedbackConfig.Normalize` — a misconfigured value can never *disable*
+a guard (a `0` rate would mean "never allow"; a `0` cap would mean "reject
+everything"), so it is always replaced with the safe default rather than left
+unbounded.
+
+The `feedback` block is defined in `internal/config` (`KDLFeedback` →
+`config.FeedbackConfig`), parses from `.agnt.kdl`, and is honored by the live
+limiter: `runDaemonStart` (`cmd/agnt/daemon.go`) loads the config and threads
+`Feedback` into `DaemonConfig.FeedbackLimits`, and `buildPublicPlane` normalizes
+only the *unset* fields to the spec §5 defaults above. A non-default value you set
+(rate, burst, body cap, retention) takes effect on the running public feedback
+route; a malformed config fails startup loud rather than falling back silently.
+
+## Public Walkthrough Listener (`AGNT_PUBLIC_ADDR` environment variable)
+
+The anonymous-viewer **public plane** for published walkthroughs is **opt-in**.
+The token-gated public handler (`GET /s/{token}`, `/variants.json`,
+`/walkthrough.json`, `POST /s/{token}/feedback`) is always *built* inside the
+daemon so owner-scoped `publish feedback` reads work, but a dedicated public HTTP
+listener is stood up **only** when `AGNT_PUBLIC_ADDR` is set — the daemon never
+auto-binds a public port.
+
+```sh
+export AGNT_PUBLIC_ADDR=":8899"   # bind the public plane on :8899; unset = no public port
+```
+
+This is an environment variable, **not** a KDL key (`cmd/agnt/daemon.go:128`). A
+bind failure is surfaced loud but is non-fatal: the control plane and dev proxy
+stay up, only the public plane is unavailable. Unsetting it and restarting the
+daemon removes the public surface entirely. See
+**[public-walkthroughs.md](public-walkthroughs.md)**.

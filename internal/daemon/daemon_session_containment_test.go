@@ -62,6 +62,13 @@ func TestMain(m *testing.M) {
 		goleak.IgnoreAnyFunction("github.com/standardbeagle/agnt/internal/daemon.(*DuplicateScanner).scanDuplicates"),
 		// Test infrastructure goroutine: stress-test drain helper in event_hub_stress_test.go.
 		goleak.IgnoreAnyFunction("github.com/standardbeagle/agnt/internal/daemon.(*stubStreamDrainer).run.func1"),
+		// net/http server teardown: a request that aborts mid-body (e.g. the public
+		// feedback 413 path via MaxBytesReader leaves the body unread) makes the
+		// server half-close the conn and sleep a fixed rstAvoidanceDelay (~500ms)
+		// before RST. That goroutine is self-terminating and benign; a genuinely
+		// hung conn sits in a read, never in closeWriteAndWait, so this match is
+		// precise and masks no real leak.
+		goleak.IgnoreAnyFunction("net/http.(*conn).closeWriteAndWait"),
 		// go-cli-server / go-sdk infrastructure.
 		goleak.IgnoreAnyFunction("github.com/standardbeagle/go-cli-server/process.(*FilePIDTracker).descendantScanLoop"),
 		goleak.IgnoreAnyFunction("github.com/standardbeagle/go-cli-server/client.(*ResilientConn).heartbeatLoop"),

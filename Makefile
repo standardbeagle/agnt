@@ -1,4 +1,4 @@
-.PHONY: build release test test-unit test-integration test-browser test-e2e test-chrome-e2e test-isolated test-ssh test-ssh-coverage test-flake clean clean-zombies install install-local install-windows run lint test-webapp mockagent generate generate-check vendor cross-compile cross-compile-check
+.PHONY: build release test test-unit test-integration test-browser test-e2e e2e-publish-browser test-chrome-e2e test-isolated test-ssh test-ssh-coverage test-flake clean clean-zombies install install-local install-windows run lint test-webapp mockagent generate generate-check vendor cross-compile cross-compile-check
 
 # Binary names
 BINARY := devtool-mcp
@@ -154,6 +154,22 @@ test-chrome-e2e:
 # Run Playwright e2e tests (installs/updates Chromium automatically)
 test-e2e:
 	cd e2e && npm install && npx playwright test
+
+# Run the P10 walkthrough-publish E2E security gate — real-browser tier (Tier B).
+#
+# Tier A (the host-safe, pure-Go end-to-end security/restart/revoke journey plus
+# the concurrency gate) needs no special target: it runs under the normal
+# `go test ./internal/proxy/... ./internal/daemon/... ./internal/publish/...`,
+# including under `-race`.
+#
+# This target is Tier B: it drives the REAL served /s/{token} artifact in real
+# Chrome and asserts the RolePublic bundle loads, window.__devtool is ABSENT, the
+# variant applies (SPA reapply), the player advances, and feedback submits end to
+# end. It is env-gated by skipIfNoBrowser, so it SKIPS LOUDLY when no Chrome is
+# present rather than silently passing. -count=1 defeats the test cache so the
+# browser path actually executes.
+e2e-publish-browser:
+	go test -v -count=1 -tags=chromee2e -run 'TestE2E_PublicPlane_RealBrowser' ./internal/proxy/
 
 # Build test webapp server
 test-webapp:

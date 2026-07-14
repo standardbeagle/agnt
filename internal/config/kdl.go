@@ -22,6 +22,7 @@ type KDLConfig struct {
 	Settings  KDLSettings  `kdl:"settings"`
 	Languages KDLLanguages `kdl:"languages"`
 	AI        *AIConfig    `kdl:"ai"`
+	Feedback  *KDLFeedback `kdl:"feedback"`
 }
 
 // KDLSettings holds global settings from KDL.
@@ -114,6 +115,11 @@ func kdlConfigToConfig(kdlCfg *KDLConfig) *Config {
 	if kdlCfg.AI != nil {
 		cfg.AI = kdlCfg.AI
 	}
+
+	// Feedback limits: a present block overrides defaults key-by-key; an absent
+	// block keeps the spec §5 defaults. toFeedbackConfig normalizes so an omitted
+	// or non-positive key never disables a guard.
+	cfg.Feedback = kdlCfg.Feedback.toFeedbackConfig()
 
 	// Settings
 	if kdlCfg.Settings.DefaultTimeout > 0 {
