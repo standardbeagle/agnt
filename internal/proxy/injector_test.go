@@ -429,6 +429,39 @@ func TestHandleInstrumentationAsset(t *testing.T) {
 	}
 }
 
+// TestPublicInstrumentationAssetPath verifies the public bundle is served through
+// the same content-addressed mechanism under its OWN hash — distinct from the dev
+// (full/chrome/content) paths — and that the bytes served at the public path are
+// free of every dev-control-surface token. A public page injecting
+// PublicInstrumentationAssetPath() therefore never references or loads the dev
+// bundle.
+func TestPublicInstrumentationAssetPath(t *testing.T) {
+	pubPath := PublicInstrumentationAssetPath()
+	devPaths := map[string]string{
+		"full":    instrumentationAssetPathForRole(scripts.RoleFull),
+		"chrome":  instrumentationAssetPathForRole(scripts.RoleChrome),
+		"content": instrumentationAssetPathForRole(scripts.RoleContent),
+	}
+	for name, p := range devPaths {
+		if pubPath == p {
+			t.Errorf("public asset path %q collides with %s dev path — the public plane must be a distinct bundle", pubPath, name)
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, pubPath, nil)
+	rec := httptest.NewRecorder()
+	handleInstrumentationAsset(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("public asset status = %d, want 200", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, tok := range []string{"__devtool", "new WebSocket", "eval(", "new Function", "html2canvas"} {
+		if strings.Contains(body, tok) {
+			t.Errorf("served public bundle contains forbidden dev-surface token %q", tok)
+		}
+	}
+}
+
 func TestInjectProxyMeta_NoScript(t *testing.T) {
 	body := []byte(`<html><body>hello</body></html>`)
 	result := InjectProxyMeta(body, "test")
