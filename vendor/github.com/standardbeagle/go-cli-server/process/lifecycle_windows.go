@@ -198,6 +198,24 @@ func isProcessAlive(pid int) bool {
 	return exitCode == 259 // STILL_ACTIVE
 }
 
+// hasReleasedResources reports whether pid has stopped holding kernel resources
+// — its handles, and so any port it was listening on.
+//
+// Windows has no zombie state: once a process exits, GetExitCodeProcess stops
+// returning STILL_ACTIVE and the kernel has already torn down the process's
+// handles (including any listening socket). So "not alive" is exactly "resources
+// released" here — there is no reap step to wait on, unlike Unix where a zombie
+// still occupies a PID slot but holds no descriptors. This mirrors the Unix twin
+// in lifecycle_unix.go, which counts a zombie as released.
+//
+// UPSTREAM: this fix lives only in the vendored copy (no replace directive in
+// the consuming module's go.mod). It MUST be upstreamed to
+// github.com/standardbeagle/go-cli-server; `go mod vendor` would otherwise
+// clobber it and re-break the windows/amd64 cross-build.
+func hasReleasedResources(pid int) bool {
+	return !isProcessAlive(pid)
+}
+
 // isNoSuchProcess returns true if the error indicates the process doesn't exist.
 func isNoSuchProcess(err error) bool {
 	if err == nil {
