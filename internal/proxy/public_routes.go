@@ -21,6 +21,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"html"
 	"io"
 	"net/http"
@@ -36,9 +37,10 @@ const (
 	// path segment (spec §2b — token in path, never query, so it does not leak
 	// via Referer or proxy logs).
 	sharePrefix = "/s/"
-	// maxFeedbackBody caps a feedback POST body (spec §5: 4096 bytes). Excess is
-	// rejected (413), never silently truncated.
-	maxFeedbackBody = 4096
+	// defaultMaxFeedbackBody is the spec §5 default feedback POST cap (4096 bytes)
+	// used when the handler is constructed without a configured MaxBodyBytes.
+	// Excess is rejected (413), never silently truncated.
+	defaultMaxFeedbackBody = 4096
 )
 
 // PublicTokenVerifier is the constant-time token gate the public plane depends
@@ -57,10 +59,21 @@ type PublicTokenVerifier interface {
 // content-type, body cap); P8 fills the durable, rate-limited, retention-bounded
 // sink. A nil sink makes the feedback route a SAFE stub: it still enforces every
 // P7 guard and accepts the body, then drops it (no persistence yet).
+//
+// The signature carries the data the P8 sink needs WITHOUT reaching into the
+// daemon: shareID + revisionID come from the already-verified share the handler
+// holds (revoked/unknown tokens 404 in serveShare before Accept is ever called,
+// so the sink only ever sees writes for a live share — INV-4). remoteAddr is the
+// real connection peer (r.RemoteAddr) the sink keys its per-IP limiter on; the
+// handler deliberately does NOT pass any client X-Forwarded-For value.
+// *publish.FeedbackStore satisfies this interface.
 type FeedbackSink interface {
-	// Accept is handed the share id and the raw (already size-capped) feedback
-	// body. It must treat the body as inert data, never a command (INV-7).
-	Accept(shareID string, body []byte) error
+	// Accept is handed the share id, the immutable revision id, the real remote
+	// address, and the raw (already size-capped) feedback body. It must treat the
+	// body as inert data, never a command (INV-7). A rate-limit rejection returns
+	// publish.ErrFeedbackRateLimited (mapped to 429); an oversize/invalid body
+	// returns the publish feedback error family (mapped to 413/422).
+	Accept(shareID, revisionID, remoteAddr string, body []byte) error
 }
 
 // PublicHandler serves the anonymous-viewer public plane. It is deny-by-default:
@@ -71,18 +84,27 @@ type PublicHandler struct {
 	verifier PublicTokenVerifier
 	feedback FeedbackSink // nil = safe accept-and-drop stub (P8 fills persistence)
 
+	maxFeedbackBody int64 // configured feedback POST cap (config.FeedbackConfig.MaxBodyBytes)
+
 	assetPath string // content-addressed RolePublic bundle path
 	cspHash   string // "sha256-<b64>" of the RolePublic bundle, pinned in CSP
 }
 
 // NewPublicHandler builds the public plane over a token verifier and an optional
 // feedback sink. A nil sink yields the safe stub described on FeedbackSink.
-func NewPublicHandler(verifier PublicTokenVerifier, feedback FeedbackSink) *PublicHandler {
+// maxBodyBytes is the configured feedback POST cap (config.FeedbackConfig
+// .MaxBodyBytes); a non-positive value falls back to the spec §5 default so an
+// unconfigured handler still enforces the guard.
+func NewPublicHandler(verifier PublicTokenVerifier, feedback FeedbackSink, maxBodyBytes int) *PublicHandler {
+	if maxBodyBytes <= 0 {
+		maxBodyBytes = defaultMaxFeedbackBody
+	}
 	return &PublicHandler{
-		verifier:  verifier,
-		feedback:  feedback,
-		assetPath: PublicInstrumentationAssetPath(),
-		cspHash:   PublicInstrumentationAssetCSPHash(),
+		verifier:        verifier,
+		feedback:        feedback,
+		maxFeedbackBody: int64(maxBodyBytes),
+		assetPath:       PublicInstrumentationAssetPath(),
+		cspHash:         PublicInstrumentationAssetCSPHash(),
 	}
 }
 
@@ -171,7 +193,7 @@ func (h *PublicHandler) serveShare(w http.ResponseWriter, r *http.Request, p str
 	case "/walkthrough.json":
 		h.serveWalkthrough(w, r, rev)
 	case "/feedback":
-		h.serveFeedback(w, r, shareID)
+		h.serveFeedback(w, r, rev, shareID)
 	default:
 		// A valid token but an unknown sub-route: still deny-by-default.
 		http.NotFound(w, r)
@@ -248,7 +270,7 @@ func (h *PublicHandler) serveWalkthrough(w http.ResponseWriter, r *http.Request,
 // body is handed to the sink (or dropped by the safe stub). Persistence, rate
 // limiting, and retention are P8. The body is never read back into the public
 // artifact (INV-7 — no reflection).
-func (h *PublicHandler) serveFeedback(w http.ResponseWriter, r *http.Request, shareID string) {
+func (h *PublicHandler) serveFeedback(w http.ResponseWriter, r *http.Request, rev *publish.PublishedWalkthrough, shareID string) {
 	if r.Method != http.MethodPost {
 		methodNotAllowed(w, "POST")
 		return
@@ -262,7 +284,7 @@ func (h *PublicHandler) serveFeedback(w http.ResponseWriter, r *http.Request, sh
 		return
 	}
 	// Body cap: MaxBytesReader rejects an over-cap body instead of buffering it.
-	r.Body = http.MaxBytesReader(w, r.Body, maxFeedbackBody)
+	r.Body = http.MaxBytesReader(w, r.Body, h.maxFeedbackBody)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		h.writeHeaders(w.Header(), kindFeedback, "")
@@ -270,14 +292,60 @@ func (h *PublicHandler) serveFeedback(w http.ResponseWriter, r *http.Request, sh
 		return
 	}
 	if h.feedback != nil {
-		if err := h.feedback.Accept(shareID, body); err != nil {
+		// revisionID is the immutable revision digest threaded from the verified
+		// share (no daemon reach). r.RemoteAddr is the REAL peer the limiter keys
+		// on — never a client X-Forwarded-For header (INV-7 anti-spoof).
+		revisionID := revisionDigest(rev)
+		if err := h.feedback.Accept(shareID, revisionID, r.RemoteAddr, body); err != nil {
 			h.writeHeaders(w.Header(), kindFeedback, "")
-			http.Error(w, "feedback rejected", http.StatusBadRequest)
+			http.Error(w, feedbackErrorMessage(err), feedbackErrorStatus(err))
 			return
 		}
 	}
 	h.writeHeaders(w.Header(), kindFeedback, "")
 	w.WriteHeader(http.StatusAccepted)
+}
+
+// revisionDigest returns the stable identity of the immutable published revision
+// this feedback is keyed to. A digest error (should not happen for an
+// already-validated revision) yields an empty key rather than failing the write.
+func revisionDigest(rev *publish.PublishedWalkthrough) string {
+	if rev == nil {
+		return ""
+	}
+	d, err := publish.Digest(rev)
+	if err != nil {
+		return ""
+	}
+	return d
+}
+
+// feedbackErrorStatus maps a sink error to its HTTP status: rate-limit → 429,
+// oversize → 413, everything else (malformed/invalid) → 422. Deny-by-default:
+// an unrecognized error is treated as a client validation error, never a 5xx
+// that would leak an internal detail.
+func feedbackErrorStatus(err error) int {
+	switch {
+	case errors.Is(err, publish.ErrFeedbackRateLimited):
+		return http.StatusTooManyRequests
+	case errors.Is(err, publish.ErrFeedbackTooLarge):
+		return http.StatusRequestEntityTooLarge
+	default:
+		return http.StatusUnprocessableEntity
+	}
+}
+
+// feedbackErrorMessage returns a terse, non-reflecting status text. It never
+// echoes the request body (INV-7 — no reflection surface).
+func feedbackErrorMessage(err error) string {
+	switch {
+	case errors.Is(err, publish.ErrFeedbackRateLimited):
+		return "rate limited"
+	case errors.Is(err, publish.ErrFeedbackTooLarge):
+		return "feedback too large"
+	default:
+		return "feedback rejected"
+	}
 }
 
 // writeJSON encodes v with the public header policy applied. Artifact-kind

@@ -26,17 +26,21 @@ func (f *fakeVerifier) VerifyToken(token string) (*publish.PublishedWalkthrough,
 	return nil, "", false
 }
 
-// capturingSink records the last feedback body handed off, to prove the P7
-// route-level guards ran before hand-off.
+// capturingSink records the last feedback hand-off, to prove the P7 route-level
+// guards ran and the handler threaded the revision id + real remote address.
 type capturingSink struct {
-	shareID string
-	body    []byte
-	calls   int
+	shareID    string
+	revisionID string
+	remoteAddr string
+	body       []byte
+	calls      int
 }
 
-func (s *capturingSink) Accept(shareID string, body []byte) error {
+func (s *capturingSink) Accept(shareID, revisionID, remoteAddr string, body []byte) error {
 	s.calls++
 	s.shareID = shareID
+	s.revisionID = revisionID
+	s.remoteAddr = remoteAddr
 	s.body = body
 	return nil
 }
@@ -56,7 +60,7 @@ const validToken = "valid-token-abc"
 
 func newTestHandler(sink FeedbackSink) *PublicHandler {
 	v := &fakeVerifier{token: validToken, rev: sampleWalkthrough(), id: "share-1"}
-	return NewPublicHandler(v, sink)
+	return NewPublicHandler(v, sink, 0)
 }
 
 func do(h http.Handler, method, target string, body string, headers map[string]string) *httptest.ResponseRecorder {
@@ -292,7 +296,7 @@ func TestFeedbackRouteLimits(t *testing.T) {
 	}
 
 	// Oversize body → 413.
-	big := strings.Repeat("x", maxFeedbackBody+100)
+	big := strings.Repeat("x", defaultMaxFeedbackBody+100)
 	if w := do(h, http.MethodPost, fbPath, `{"c":"`+big+`"}`, jsonCT); w.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("oversize feedback: got %d, want 413", w.Code)
 	}
