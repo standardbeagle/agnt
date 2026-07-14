@@ -105,7 +105,14 @@ application-level separation.
     rejection, and rate-limit events record bundle ID, publisher identity, scope,
     counts, byte sizes, and outcome. They never record raw tokens or forbidden
     content. Viewer-network collection is off in v1; enabling it requires a new
-    schema/version and privacy review.
+    schema/version and privacy review. P11 owns the audit contract and its
+    release gate: canonical append-only records are hash-chained and signed by a
+    dedicated audit key, retained for active-policy `audit_retention_seconds_max`
+    (at most 30 days), then deletion-acknowledged; chain,
+    signature, retention, and token/forbidden-content scans must pass. Failure to
+    append a required mutation/policy/rate-limit event fails that operation
+    closed without commit or response bytes; audit deletion failure blocks
+    release and pages the security owner.
 18. **Failure is atomic.** A bundle becomes readable only after validation,
     normalization, durable content write, metadata write, and capability-digest
     write succeed. Partial records are unreachable and garbage-collected.
@@ -823,6 +830,32 @@ P6 tests restart and monotonic-reset cases plus publication-clock outages lastin
 deletion through only this constrained path; it also tests bad deletion-clock
 health causes no early deletion.
 
+At bundle commit, the authority also writes an immutable deletion descriptor to
+a deletion-readable replicated ledger:
+`(bundle_id,object_ids,policy_id,policy_version,policy_digest,U,expires_at,
+primary_delete_seconds_max,expiry_delete_trigger_at,expiry_delete_deadline_at)`.
+The deadline is exactly `expires_at + primary_delete_seconds_max`; the trigger is
+exactly `deadline - 2*U`, reserving worst-case slow-clock uncertainty while still
+remaining long after public expiry. Revocation appends an immutable signed trigger
+with authority `revoked_at`, deadline `revoked_at + primary_delete_seconds_max`,
+and trigger `deadline - 2*U`; the earlier pair wins. The deletion identity
+can read these rows even when active-policy/publication authority reads fail, but
+cannot alter them. Digest/field mismatch fails deletion closed and alarms.
+
+The deletion clock has primary and independent secondary trusted UTC sources;
+health sampling is every 10 seconds and failover completes within 60 seconds only
+when the secondary's authenticated uncertainty is at most descriptor `U`.
+Object storage also enforces an independently clocked immutable lifecycle
+`delete_at` equal to the selected trigger and the same conservative
+`clock - U >= trigger` predicate, with uncertainty at most `U`, as the
+backstop. Production enablement requires all three paths and proves at least the
+lifecycle path remains available during deletion-service outage. P6 fault tests
+hold each source, both reader sources, the deletion worker, and publication
+authority unavailable separately and in allowed combinations for 1 hour, 24
+hours, and 31 days; every object is absent by its immutable deadline, none is
+deleted before the conservative `clock-U` predicate, and no failover identity can
+read content or extend a deadline.
+
 ## Creation, read, revocation, and restart semantics
 
 Creation is an authenticated two-phase protocol:
@@ -1292,13 +1325,17 @@ JSON with exactly these top-level fields: `schema` (the literal string
 `agnt.public-bundle-policy/v1`), `deployment_id`, `policy_id`, `security_owner`
 (non-empty ASCII strings of 1–128 bytes matching `[A-Za-z0-9._~-]+`), `version`
 (uint64 1..2^63-1), `issued_at`, `effective_at`, `expires_at` (canonical UTC
-timestamps with `issued_at <= effective_at < expires_at`),
+timestamps with exact grammar `YYYY-MM-DDTHH:MM:SSZ`, real Gregorian fields,
+year 0001–9999, no fraction/offset/leap second, and `issued_at <= effective_at <
+expires_at`),
 `benchmark_harness_sha256` and `benchmark_fixture_generator_sha256` (64 lowercase
-hexadecimal characters), and `limits` (object).
+hexadecimal characters), `benchmark_harness_binary_sha256` and
+`benchmark_fixture_generator_binary_sha256` (same grammar), and `limits` (object).
 Missing, extra, duplicate, null, noncanonical, wrong-type, fractional, negative,
-or out-of-range values reject the whole policy. The durable uniqueness scope is
-`(deployment_id,policy_id,version)`; those values and canonical bytes are
-immutable after insertion.
+or out-of-range values reject the whole policy. Version uniqueness is
+deployment-global: `(deployment_id,version)` is unique, the first accepted policy
+fixes one immutable `policy_id` for that deployment lineage, and later versions
+must use it. Identifiers, version, and canonical bytes are immutable after insertion.
 
 `limits` contains exactly the following unsigned-integer fields and units. Zero
 is permitted only for per-kind content ceilings to disable that kind; every
@@ -1314,9 +1351,12 @@ other minimum is 1. The right column is the normative v1 inclusive maximum.
 | `url_ascii_bytes_max`, `selector_ascii_bytes_max` | bytes | 2,048; 512 |
 | `json_depth_max`, `json_members_per_object_max`, `json_string_bytes_max`, `json_key_bytes_max` | items/bytes | 8; 32; 4,096; 256 |
 | `bundle_lifetime_seconds_max`, `primary_delete_seconds_max`, `backup_age_seconds_max` | seconds | 604,800; 86,400; 2,592,000 |
-| `create_per_publisher_per_minute`, `create_per_project_per_minute`, `read_per_capability_per_minute` | requests | 60; 120; 600 |
+| `audit_retention_seconds_max` | seconds | 2,592,000 |
+| `create_per_publisher_per_minute`, `create_per_project_per_minute`, `read_per_capability_per_minute`, `anonymous_reads_per_minute` | requests | 60; 120; 600; 6,000 |
 | `create_concurrency_max`, `read_concurrency_max` | active requests | 8; 64 |
 | `benchmark_cpu_ns_per_request_max`, `benchmark_rss_bytes_max` | ns/bytes | 50,000,000; 536,870,912 |
+| `preview_p99_ms_max`, `confirm_first_p99_ms_max`, `confirm_replay_p99_ms_max` | milliseconds | 1,000; 1,000; 250 |
+| `get_valid_p99_ms_max`, `uniform_invalid_p99_ms_max`, `validation_reject_p99_ms_max`, `rate_limit_p99_ms_max` | milliseconds | 250; 250; 250; 100 |
 | `clock_uncertainty_ms_max` | milliseconds | 1,000 |
 
 A policy may equal or lower these baselines. Any increase requires a new
@@ -1325,14 +1365,34 @@ is activated only through a new immutable higher-version policy.
 
 `policy_digest = SHA-256("agnt-public-bundle-policy-v1\0" || canonical_policy_bytes)`.
 Security approval is a separate durable record containing the exact
-`(deployment_id,policy_id,version,policy_digest,approved_by,approved_at)`, where
-`security_owner` must equal the deployment's independently configured owner and
+`(deployment_id,policy_id,version,policy_digest,approved_by,approved_at)`. It is
+itself RFC 8785 canonical JSON with exactly `schema` (literal
+`agnt.public-bundle-policy-approval/v1`) and those six fields; identifiers use
+the policy grammar, `policy_digest` is 64 lowercase hex, and `approved_at` uses
+the exact UTC grammar above. Unknown/missing/null/duplicate/noncanonical fields
+reject. `approved_at` is assigned from authority transaction time, never supplied
+by the requester. The approval row is immutable. `security_owner` must equal
+the deployment's independently configured owner and
 the approver is that owner or its configured delegate. Approval of
 an ID/version without the exact digest is invalid. One serializable authority
 transaction verifies canonical bytes, digest, approval, time window, and
 lower-only relation to the active policy, then advances the deployment's single
-`active_policy` pointer only to its highest approved version. Equal/conflicting
+`active_policy` pointer only to its highest approved, currently effective version. Equal/conflicting
 versions fail; rollback is forbidden.
+
+The authority maintains nondecreasing deployment-global
+`policy_version_high_watermark` and `activated_policy_version` values. Candidate
+insertion must reserve a version strictly above the version high-watermark and
+leaves a permanent lineage row even if approval/activation later fails.
+Activation advances `activated_policy_version` and the active pointer atomically
+to that reserved version; superseded, rejected, or expired rows become
+immutable tombstones retaining `(deployment_id,policy_id,version,digest,status)`.
+Policy, approval, lineage, and tombstone rows are never deleted or version-reused.
+Restart accepts only the persisted active pointer if its digest/approval/lineage
+all validate and its version equals `activated_policy_version`; it
+never searches backward to an older still-effective row. A missing/corrupt row
+or expired active version therefore fails closed until a strictly higher version
+is approved and activated.
 
 Every request atomically reads and binds the active `(version,digest)` with its
 limiter/authority decision; all later mutations verify that binding. Restart
@@ -1351,7 +1411,8 @@ and compare the digest before approval lookup.
 
 Aggregate counting is exact: each create attempt counts once against both its
 publisher and project windows before validation; each GET or HEAD counts once
-against its capability window before lookup; rejected and
+against both the deployment-global anonymous window and its capability window
+before lookup; rejected and
 uniform-404 requests count; one active request occupies one concurrency slot
 until its body is closed; response bytes include headers and body. Retries are
 new requests for abuse counting even when idempotency replays the result. v1
@@ -1367,21 +1428,89 @@ This is the authoritative aggregate, so v1 permits neither per-instance counters
 routing as a substitute. CDN design is deferred; the v1 no-CDN routing rule
 remains normative.
 
+Each concurrency lease has a non-reused fence token, 2-second authority expiry,
+and renewal every 500 monotonic milliseconds by full-token CAS. Request
+cancellation must cancel handler work before lease release. The response writer
+is fenced: immediately before headers and every body write it verifies the
+current token; cancellation, renewal failure, authority outage, or fence loss
+atomically closes the output gate and connection, after which that handler can
+emit no byte. A replacement lease is permitted only after authority time reaches
+the old expiry and a CAS installs a new fence. Tests pause before headers and
+between body chunks, force cancel/renewal loss/replacement, and prove no old-owner
+byte occurs after loss or release.
+
+The anonymous global ledger row contains only `(deployment_id,window_start,count)`;
+it retains no IP/prefix, token/path/digest, user agent, connection, or request
+identifier and is deleted after two complete windows. Anonymous audit contains
+only window start and aggregate admitted/rejected counts. The global budget is
+checked first, so rotating capabilities cannot evade it; tests prove identical
+decisions under arbitrary source addresses and zero network-identity persistence.
+
+Audit records are RFC 8785 canonical `agnt.public-bundle-audit/v1` objects with
+exact fields `schema,deployment_id,sequence,authority_at,event,bundle_id,
+publisher_scope,project_scope,counts,byte_sizes,outcome,prev_hash`; fields not
+applicable to aggregate anonymous limiting are empty strings/zero, never null.
+`record_hash = SHA-256("agnt-public-bundle-audit-v1\0" || canonical_record)` and
+the next record's `prev_hash` equals it; sequence is deployment-global uint64 and
+monotonic. Every record hash is signed by the audit Ed25519 key. P11 verifies
+genesis, sequence, chain, signature, exact schema, retention/deletion receipts,
+and byte scans proving capability/token/path, source values, and network identity
+are absent; missing/corrupt links or unavailable signing/appending fail the
+owning operation and release gate.
+
+### Reproducible build provenance
+
+Source identity is `tree_digest = SHA-256(tree_bytes)`. `tree_bytes` begins with
+ASCII `agnt-source-tree-v1\0`, followed by every Git-tracked path sorted by raw
+UTF-8 path bytes. Each entry is `u32be(path_len) || path || u8(kind) ||
+u32be(mode) || u64be(content_len) || content`, where kind is 1 regular, 2
+executable, or 3 symlink; mode is exactly 0644, 0755, or 0120000; symlink content
+is its target bytes. `.git` state, mtimes, uid/gid, build outputs, and untracked
+files are excluded. Submodules are forbidden. This serialization includes
+`go.mod`, `go.sum`, generator/harness sources, and embedded assets; a non-UTF-8,
+absolute, `.`/`..`-containing, or duplicate path rejects the build.
+
+The build-input manifest `agnt-public-bundle-build/v1` is RFC 8785 canonical JSON
+and records tree digest, Go toolchain version and distribution SHA-256, GOOS,
+GOARCH, CGO setting, exact ordered build argv/environment allowlist, dependency
+module path/version/zip SHA-256 list derived from `go.sum`, and output name plus
+SHA-256 for agnt, fixture generator, and benchmark harness binaries. Network and
+undeclared environment access are disabled. The only admitted environment keys
+are `GOROOT,GOENV,GOFLAGS,GOOS,GOARCH,CGO_ENABLED,SOURCE_DATE_EPOCH,TZ,LANG,
+LC_ALL`, each with its exact recorded value; all others are unset, and ordered
+argv is recorded byte-for-byte. Two clean builds in independent
+empty workspaces must produce byte-identical binaries. A canonical provenance
+record containing the build manifest digest, policy digest, builder identity,
+and authority UTC is signed over `"agnt-public-bundle-provenance-v1\0" ||
+canonical_provenance_bytes` by the configured release-owner Ed25519 key; the
+64-byte signature is canonical unpadded base64url. Unsigned,
+unverifiable, nonreproducible, or digest-mismatched binaries cannot benchmark or
+release. P11 verifies signatures and exact source/binary digests; recording a
+mutable branch, tag, or command description is not provenance.
+
 ### Reproducible benchmark and retention evidence
 
 P11 runs `agnt-public-bundle-bench/v1` on an otherwise idle release-class host.
 Fixture generation is pinned to `agnt-public-bundle-fixturegen/v1`, seed
 `8f9d3a3b6c8e2f7140bd29a5c67819eeeb5af7f2d7164b3b61ac9e55d7c20411`,
 and the generator source digest equal to the active policy's
-`benchmark_fixture_generator_sha256`. The generator
+`benchmark_fixture_generator_sha256` and binary digest equal to
+`benchmark_fixture_generator_binary_sha256`. The generator
 emits synthetic canonical manifests at exactly 1 KiB/1 entry, 64 KiB/100 mixed
 entries, and 1 MiB/200 mixed entries; a geometry-heavy 200-entry/10,000-point
-manifest; and one-over-limit fixtures for every byte/count/depth dimension. Its
-artifact manifest records each filename, exact byte length, SHA-256 digest,
+manifest; an `active-max` manifest filled deterministically to the active
+policy's tightest applicable content ceilings; and one-over-limit fixtures for
+every byte/count/depth dimension. Its
+artifact set contains exactly `valid-1k.json`, `valid-64k.json`, `valid-1m.json`,
+`geometry-max.json`, `active-max.json`, one `over-<normative-dimension>.json` for
+each manifest byte/count/depth limit, and `artifact-manifest.json`. The manifest records each filename, exact byte length, SHA-256 digest,
 expected operation/result, generator ID, seed, and source digest. Missing or
-different bytes/digests fail the run; production data is forbidden.
+different bytes/digests fail the run; extra files fail. The set digest is
+`SHA-256("agnt-public-bundle-fixtures-v1\0" || canonical_artifact_manifest)`.
+Production data is forbidden.
 
-Operation mapping is fixed: preview and confirm use all four valid fixtures;
+Operation mapping is fixed: preview, `confirm_first`, and `confirm_replay` use
+all four valid fixtures;
 preview rejection uses every over-limit fixture; valid GET uses all four stored
 valid fixtures; uniform invalid GET uses one canonical 43-character absent,
 expired, and revoked capability plus malformed capability segments of lengths 0,
@@ -1393,8 +1522,38 @@ repetitions. Before warmup, the harness loads every valid fixture once and then
 performs one complete unmeasured operation cycle, defining the cache state as
 warm; no other cache priming is allowed.
 
-The harness source digest must equal active-policy
-`benchmark_harness_sha256`. It emits canonical JSON
+Each worker is closed-loop: synchronize on one start barrier, issue the next
+request immediately after the prior response/timeout, use no pacing or think
+time, and stop admitting at exactly 180 monotonic seconds. Per-request timeout is
+5 monotonic seconds and timeout cancellation must reach the handler. Before each
+confirm cell, setup creates an unmeasured pool of
+`3*create_per_project_per_minute + create_concurrency_max` unique ready previews;
+`confirm_first` pairs each admitted operation with a never-used idempotency key,
+while `confirm_replay` uses a separately precommitted succeeded key. Setup IDs
+are deterministic fixture IDs but never reused across cells.
+
+Every repetition starts a fresh process and empty storage root. Every cell uses
+two new deployment/project/publisher/object namespaces: warmup mutates only the
+warmup namespace; measurement activates a freshly approved identical policy in
+the empty measurement namespace with empty limiter/idempotency/audit state.
+Only immutable parsed fixture/code caches may carry from warmup to measurement.
+After a cell, both namespaces are destroyed and verified empty. Cross-cell state,
+limiter windows, idempotency keys, previews, bundles, and audit rows are forbidden.
+Before destruction, signed synthetic audit records are exported into the release
+artifact and retained under the audit policy; they are never imported into a later cell.
+
+Performance cells run only fixtures valid under the active policy; `active-max`
+is mandatory. A baseline/max fixture above an active lower ceiling moves to an
+expected-policy-rejection correctness cell and contributes no latency/CPU/RSS
+performance pass. Separately, a fresh isolated compatibility deployment whose
+version-1 policy equals every normative v1 maximum runs the four normative valid
+fixtures and every one-over fixture once at concurrency 1. That suite gates
+accept/reject compatibility only and cannot justify or fail active-policy
+performance budgets. Reports label every cell `active_performance`,
+`active_policy_rejection`, or `normative_max_compatibility`; mixing classes fails.
+
+The harness source and binary digests must equal active-policy
+`benchmark_harness_sha256` and `benchmark_harness_binary_sha256`. It emits canonical JSON
 `agnt-public-bundle-bench-result/v1` plus an
 `agnt-public-bundle-bench-env/v1` canonical JSON environment manifest containing
 harness/generator IDs and source digests, agnt
@@ -1419,8 +1578,24 @@ CRLF`, count repeated fields separately, then one final CRLF and exact body
 bytes; status-line/framing bytes are excluded. Raw samples and manifests are
 retained. Safety ceilings in the manifest, token, clock, expiry, deletion, and
 response contracts are never tuned by benchmarks. Only policy rate,
-concurrency, and CPU/RSS budgets are tunable downward. Release fails if any cell
+concurrency, latency, and CPU/RSS budgets are tunable downward. Release fails if any cell
 misses its policy budget, any limiter count is inexact, or evidence is absent.
+
+Gates are path-specific. For each active-performance repetition, unexpected
+errors and timeouts must equal zero; admitted success paths must be 100% success,
+and admitted rejection paths 100% their named rejection. The nearest-rank p99 of
+admitted path responses must not exceed its corresponding policy `_p99_ms_max`;
+rate-limited responses use `rate_limit_p99_ms_max` and are not mixed into another
+path's percentile. Mean CPU is
+`(cpu_end-cpu_start)/completed_all`, allocations use the analogous delta, and
+both must be at most their policy maxima; peak sampled RSS must be at most
+`benchmark_rss_bytes_max`. Expected admitted throughput must satisfy
+`completed_expected/180 >= 0.8 * min(scope_rate_per_minute/60,
+concurrency*1000/path_p99_ms_max)`; create paths use the smaller publisher/project
+rate, reads use the smaller capability/global-anonymous rate. Limiter accuracy requires
+`admitted + rate_limited = offered` and no window admits above its exact policy
+count. Compatibility/rejection cells require exact outcomes but have no
+performance formula. No aggregate average may hide a failed path gate.
 
 P11 also runs five primary deletion drills and one restore drill per configured
 backup class using synthetic bundle IDs. Worst observed primary deletion must be
@@ -1466,7 +1641,7 @@ contract, not sampled output statistics.
 | 1, 11 publisher scope, preview/confirm binding, CSRF/idempotency | P7 | scope-before-selection and revalidation tests; exact canonical-byte confirmation; race/crash/idempotency transition matrix |
 | 15–16, 18 durable authority, clock, atomicity, expiry/revocation/restart | P6 | crash/torn-commit/restart/outage tests; authority-UTC/monotonic-reset and ±1-second boundary cases; prolonged bad-clock plus independent deletion-clock tests; deletion and operation-recovery matrix |
 | 4, 10, 12 least-privilege public routing and uniform response | P10 | exact route/method/path matrix; success/error headers; uniform invalid/expired/revoked response; compile-time `PublicBundleReader` dependency graph cannot reach daemon/proxy/filesystem/MCP/session interfaces |
-| 13–14 abuse, privacy, retention, operational readiness | P11 | canonical policy/digest/approval/activation/restart tests; single-ledger aggregate limiter tests; pinned-fixture versioned-harness benchmark and deletion/restore drills; audit/token non-leak review |
+| 13–14, 17 abuse, privacy, audit, retention, operational readiness | P11 | canonical policy lineage/digest/approval/activation/restart tests; single-ledger aggregate/anonymous limiter and fenced-output tests; signed audit chain/retention/non-leak/failure gates; reproducible-build pinned-fixture harness and deletion/failover drills |
 
 All rows are blocking. P11 records the commit, policy version, evidence artifact
 digests, owner approvals, and pass/fail result in the release record. An absent
