@@ -168,6 +168,8 @@ Port-conflict policy、autostart cleanup ordering、alert push channels、incide
 
 Test startup contract (`Start()` vs `NewForTest`)：`.claude/rules/daemon-architecture.md` § Test startup contract。
 
+**Browser E2E loud-skip policy**：real-Chrome tests (`internal/proxy/*_e2e_test.go`, incl. the P10 walkthrough-publish gate Tier B `TestE2E_PublicPlane_RealBrowser`) are env-gated by `skipIfNoBrowser`. They RUN under the normal `go test` when a Chrome/Chromium binary is on PATH and **SKIP LOUDLY** (`t.Skip` with a reason) when it is absent or `SKIP_BROWSER_TESTS` is set — never a silent pass. Run the public-plane browser tier alone via `make e2e-publish-browser`. The host-safe pure-Go tier (P10 Tier A: the end-to-end security/restart/revoke journey + `-race` concurrency gate) needs no browser and runs under the normal `go test ./internal/proxy/... ./internal/daemon/... ./internal/publish/...`。
+
 ## Important Constraints
 
 ### MCP Protocol
