@@ -9,10 +9,20 @@ import (
 var cssPropNameRe = regexp.MustCompile(`^-?[a-z][a-z-]*$`)
 
 // forbiddenCSSTokens are the classic CSS-injection / CSS-exfil vectors the spec
-// §5 forbids anywhere in a style value (case-insensitive substring match).
+// (§5, §5b/§6) forbids anywhere in a style value (case-insensitive substring
+// match). image-set / cross-fade are URL-bearing function forms that fetch a URL
+// when the renderer assigns el.style[prop]=val, so they must be denied alongside
+// url() — a substring scan for url( alone lets them through (spec §5b/§6).
 var forbiddenCSSTokens = []string{
 	"url(", "expression(", "behavior", "-moz-binding", "@import", "javascript:",
+	"image-set(", "-webkit-image-set(", "cross-fade(", "-webkit-cross-fade(",
 }
+
+// cssStripRe matches CSS whitespace and /* */ comments. We strip both before the
+// forbidden-token scan so that whitespace- or comment-splitting (e.g. `url ( )`,
+// `ur/**/l(`) cannot smuggle a forbidden function past the substring check. The
+// declarative style values accepted here (§5b/§6) never legitimately need either.
+var cssStripRe = regexp.MustCompile(`/\*[^*]*\*+(?:[^/*][^*]*\*+)*/|\s+`)
 
 // allowedCSSExact / allowedCSSPrefix encode the §5b applyStyle property
 // allowlist (layout/paint-safe only). Deny-by-default: any property not covered
@@ -47,7 +57,7 @@ func allowedCSSProperty(prop string) bool {
 // hasForbiddenCSSToken reports whether s contains any §5 forbidden token
 // (case-insensitive).
 func hasForbiddenCSSToken(s string) bool {
-	lower := strings.ToLower(s)
+	lower := strings.ToLower(cssStripRe.ReplaceAllString(s, ""))
 	for _, t := range forbiddenCSSTokens {
 		if strings.Contains(lower, t) {
 			return true
@@ -71,6 +81,13 @@ func ValidateStyleProps(props map[string]string) error {
 		}
 		if !allowedCSSProperty(name) {
 			return errf("applyStyle: property %q not on allowlist", prop)
+		}
+		// Reject CSS backslash escapes outright (§5b/§6): they have no legitimate
+		// use in the declarative style patches this validator accepts, and the
+		// CSSOM unescapes them (e.g. `\75` -> `u`) — reconstituting url(...) after
+		// a raw-byte substring scan has already passed. Deny by default.
+		if strings.ContainsRune(val, '\\') {
+			return errf("applyStyle: property %q value has illegal backslash escape", prop)
 		}
 		if hasForbiddenCSSToken(val) {
 			return errf("applyStyle: property %q has forbidden token in value", prop)

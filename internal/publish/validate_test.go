@@ -47,6 +47,17 @@ func TestMaliciousFixtures(t *testing.T) {
 		{"css-import", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"applyStyle","selector":".x","props":{"color":"@import 'evil'"}}]}]}`},
 		{"css-forbidden-property", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"applyStyle","selector":".x","props":{"position":"fixed"}}]}]}`},
 		{"css-breakout-semicolon", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"applyStyle","selector":".x","props":{"color":"red;position:fixed"}}]}]}`},
+		// §5b/§6 substring-scan bypasses — URL-bearing CSS function forms not named
+		// `url(` that still fetch a URL when the renderer assigns el.style[prop]=val.
+		{"css-image-set-string", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"applyStyle","selector":".x","props":{"background":"image-set(\"https://evil/x\" 1x)"}}]}]}`},
+		{"css-webkit-image-set", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"applyStyle","selector":".x","props":{"background":"-webkit-image-set(url(\"https://evil/x\") 1x)"}}]}]}`},
+		{"css-cross-fade", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"applyStyle","selector":".x","props":{"background":"cross-fade(url(https://evil/x), red)"}}]}]}`},
+		// §5b/§6 CSS backslash escape — `\75` decodes to `u`, reconstituting url(…)
+		// in the CSSOM after a raw-byte substring check has already passed it.
+		{"css-backslash-escape", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"applyStyle","selector":".x","props":{"background":"\\75 rl(https://evil/x)"}}]}]}`},
+		// §5b/§6 case + whitespace tolerance on the existing url() check.
+		{"css-url-uppercase", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"applyStyle","selector":".x","props":{"background":"URL(https://evil/x)"}}]}]}`},
+		{"css-url-inner-whitespace", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"applyStyle","selector":".x","props":{"background":"url (https://evil/x)"}}]}]}`},
 		{"onclick-attribute", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"setAttribute","selector":".x","name":"onclick","value":"alert(1)"}]}]}`},
 		{"href-attribute-excluded", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"setAttribute","selector":"a","name":"href","value":"https://ex.com"}]}]}`},
 		{"src-attribute-excluded", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"setAttribute","selector":"img","name":"src","value":"https://ex.com/a.png"}]}]}`},
@@ -76,6 +87,15 @@ func TestMaliciousFixtures(t *testing.T) {
 				t.Fatalf("expected rejection for %s, got nil error", tc.name)
 			}
 		})
+	}
+}
+
+// TestAcceptsLegitStyle guards against over-rejection: plain declarative values
+// with no forbidden token / escape must still pass §5b.
+func TestAcceptsLegitStyle(t *testing.T) {
+	j := `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"applyStyle","selector":".x","props":{"color":"#fff","margin":"8px"}}]}]}`
+	if _, err := DecodeVariantSet([]byte(j)); err != nil {
+		t.Fatalf("legit style must be accepted, got: %v", err)
 	}
 }
 
