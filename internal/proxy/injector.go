@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -95,6 +96,63 @@ func instrumentationAssetPathForRole(role scripts.Role) string {
 // loads the dev-control surface.
 func PublicInstrumentationAssetPath() string {
 	return instrumentationAssetPathForRole(scripts.RolePublic)
+}
+
+// publicInstrumentationAssetBytes returns the cached RolePublic bundle bytes.
+// Read-only — callers MUST NOT mutate the returned slice (it is shared).
+func publicInstrumentationAssetBytes() []byte {
+	loadCachedScript()
+	return cachedAssets[scripts.RolePublic].bytes
+}
+
+// PublicInstrumentationAssetCSPHash returns the base64 sha256 of the RolePublic
+// bundle bytes, formatted as a CSP source token ("sha256-<b64>"). The public
+// plane pins its script-src to 'self' plus this hash (spec §4) so the served CSP
+// names the exact bundle content, not just its origin.
+func PublicInstrumentationAssetCSPHash() string {
+	sum := sha256.Sum256(publicInstrumentationAssetBytes())
+	return "sha256-" + base64.StdEncoding.EncodeToString(sum[:])
+}
+
+// handlePublicInstrumentationAsset serves the RolePublic bundle for the public
+// walkthrough-publish plane — and ONLY that bundle. It is a DISTINCT handler
+// from handleInstrumentationAsset precisely to close the dev-bundle fallback:
+// handleInstrumentationAsset resolves an unknown content-hash to the FULL DEV
+// bundle (its documented "superset" fallback), which would leak the entire
+// __devtool control surface (proxy exec, WS, audits) onto a public page. This
+// handler instead EXACT-MATCHES the RolePublic content-addressed path and 404s
+// anything else. There is no code path here that can ever emit the dev bundle,
+// so an unknown/forged hash on the public plane yields 404, never dev JS
+// (spec §9 / INV-2; P4 advisory closure).
+//
+// The asset carries no secret (it is content-addressed public JS), so it is not
+// token-gated: Referrer-Policy: no-referrer strips the Referer even for
+// same-origin subresources, making referer-binding both impossible and
+// unnecessary for a non-secret bundle.
+func handlePublicInstrumentationAsset(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		w.Header().Set("Allow", "GET, HEAD")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	loadCachedScript()
+	public := cachedAssets[scripts.RolePublic]
+	if r.URL.Path != public.path {
+		// Unknown or forged hash on the public plane: 404. NEVER the dev bundle.
+		http.NotFound(w, r)
+		return
+	}
+	body := public.bytes
+	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	if r.Method == http.MethodHead {
+		return
+	}
+	if _, err := w.Write(body); err != nil {
+		debug.Log("proxy", "failed to write public instrumentation asset: %v", err)
+	}
 }
 
 // handleInstrumentationAsset serves the instrumentation bundle for the reserved
