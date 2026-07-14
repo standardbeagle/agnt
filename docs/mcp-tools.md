@@ -83,6 +83,7 @@ can only address shares owned by its own project (a foreign share id is reported
 not-found — no cross-project leak).
 
 Security spec: `docs/superpowers/specs/2026-07-13-public-walkthrough-publish-security.md`.
+Operator guide (lifecycle, feedback, incident response): [public-walkthroughs.md](public-walkthroughs.md).
 
 **Actions**:
 | Action | Inputs | Reads / Writes |
@@ -136,6 +137,14 @@ next_cursor: <row-id>
 built in the daemon. A dedicated public HTTP listener is opt-in via the
 `AGNT_PUBLIC_ADDR` env var — the daemon does not auto-bind a public port. The dev
 control surface is structurally absent from the public handler (INV-1/INV-2).
+
+**Self-contained artifact**: the published artifact is a self-contained HTML shell
+— `serveArtifact` emits steps + variant set from the immutable revision and loads
+only the `RolePublic` bundle. The `PublishedWalkthrough` schema has **no
+upstream-URL field**, so the current implementation does **not** live-proxy an
+external upstream and has no SSRF surface. The wholesale CSP replace (INV-11/INV-12)
+is applied as defence in depth. If upstream proxying is added later, the spec's
+CSP/SSRF caveats apply. See [public-walkthroughs.md §6](public-walkthroughs.md).
 
 **Key Files**: `internal/tools/publish_tools.go`, `internal/daemon/hub_publish.go`,
 `internal/daemon/publish_public.go`, `internal/daemon/feedback_events.go`,
