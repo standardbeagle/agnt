@@ -37,9 +37,10 @@ const (
 	// path segment (spec §2b — token in path, never query, so it does not leak
 	// via Referer or proxy logs).
 	sharePrefix = "/s/"
-	// maxFeedbackBody caps a feedback POST body (spec §5: 4096 bytes). Excess is
-	// rejected (413), never silently truncated.
-	maxFeedbackBody = 4096
+	// defaultMaxFeedbackBody is the spec §5 default feedback POST cap (4096 bytes)
+	// used when the handler is constructed without a configured MaxBodyBytes.
+	// Excess is rejected (413), never silently truncated.
+	defaultMaxFeedbackBody = 4096
 )
 
 // PublicTokenVerifier is the constant-time token gate the public plane depends
@@ -83,18 +84,27 @@ type PublicHandler struct {
 	verifier PublicTokenVerifier
 	feedback FeedbackSink // nil = safe accept-and-drop stub (P8 fills persistence)
 
+	maxFeedbackBody int64 // configured feedback POST cap (config.FeedbackConfig.MaxBodyBytes)
+
 	assetPath string // content-addressed RolePublic bundle path
 	cspHash   string // "sha256-<b64>" of the RolePublic bundle, pinned in CSP
 }
 
 // NewPublicHandler builds the public plane over a token verifier and an optional
 // feedback sink. A nil sink yields the safe stub described on FeedbackSink.
-func NewPublicHandler(verifier PublicTokenVerifier, feedback FeedbackSink) *PublicHandler {
+// maxBodyBytes is the configured feedback POST cap (config.FeedbackConfig
+// .MaxBodyBytes); a non-positive value falls back to the spec §5 default so an
+// unconfigured handler still enforces the guard.
+func NewPublicHandler(verifier PublicTokenVerifier, feedback FeedbackSink, maxBodyBytes int) *PublicHandler {
+	if maxBodyBytes <= 0 {
+		maxBodyBytes = defaultMaxFeedbackBody
+	}
 	return &PublicHandler{
-		verifier:  verifier,
-		feedback:  feedback,
-		assetPath: PublicInstrumentationAssetPath(),
-		cspHash:   PublicInstrumentationAssetCSPHash(),
+		verifier:        verifier,
+		feedback:        feedback,
+		maxFeedbackBody: int64(maxBodyBytes),
+		assetPath:       PublicInstrumentationAssetPath(),
+		cspHash:         PublicInstrumentationAssetCSPHash(),
 	}
 }
 
@@ -274,7 +284,7 @@ func (h *PublicHandler) serveFeedback(w http.ResponseWriter, r *http.Request, re
 		return
 	}
 	// Body cap: MaxBytesReader rejects an over-cap body instead of buffering it.
-	r.Body = http.MaxBytesReader(w, r.Body, maxFeedbackBody)
+	r.Body = http.MaxBytesReader(w, r.Body, h.maxFeedbackBody)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
 		h.writeHeaders(w.Header(), kindFeedback, "")

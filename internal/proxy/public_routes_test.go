@@ -60,7 +60,7 @@ const validToken = "valid-token-abc"
 
 func newTestHandler(sink FeedbackSink) *PublicHandler {
 	v := &fakeVerifier{token: validToken, rev: sampleWalkthrough(), id: "share-1"}
-	return NewPublicHandler(v, sink)
+	return NewPublicHandler(v, sink, 0)
 }
 
 func do(h http.Handler, method, target string, body string, headers map[string]string) *httptest.ResponseRecorder {
@@ -296,7 +296,7 @@ func TestFeedbackRouteLimits(t *testing.T) {
 	}
 
 	// Oversize body → 413.
-	big := strings.Repeat("x", maxFeedbackBody+100)
+	big := strings.Repeat("x", defaultMaxFeedbackBody+100)
 	if w := do(h, http.MethodPost, fbPath, `{"c":"`+big+`"}`, jsonCT); w.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("oversize feedback: got %d, want 413", w.Code)
 	}

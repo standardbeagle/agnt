@@ -3,6 +3,7 @@ package proxy
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -41,6 +42,52 @@ func TestFeedbackErrorStatusMapping(t *testing.T) {
 	}
 }
 
+// bodyOfSize returns a valid-JSON feedback body whose total length is exactly n
+// bytes, padding the message field so the MaxBytesReader cap is what decides
+// accept/reject (not JSON validity, which the handler does not check).
+func bodyOfSize(n int) string {
+	const pre = `{"message":"`
+	const post = `"}`
+	pad := n - len(pre) - len(post)
+	if pad < 0 {
+		pad = 0
+	}
+	return pre + strings.Repeat("x", pad) + post
+}
+
+// TestConfiguredMaxBodyHonored proves the handler uses the CONFIGURED body cap,
+// not the hardcoded 4096: a larger cap accepts an over-4096 body, and a smaller
+// cap rejects at the smaller size.
+func TestConfiguredMaxBodyHonored(t *testing.T) {
+	jsonCT := map[string]string{"Content-Type": "application/json"}
+	fbPath := sharePrefix + validToken + "/feedback"
+	v := &fakeVerifier{token: validToken, rev: sampleWalkthrough(), id: "share-1"}
+
+	// Larger-than-default cap: a 6000-byte body (over the old 4096 hardcode) is
+	// accepted when the operator configured 8192.
+	t.Run("larger cap accepts over-default body", func(t *testing.T) {
+		h := NewPublicHandler(v, &capturingSink{}, 8192)
+		w := do(h, http.MethodPost, fbPath, bodyOfSize(6000), jsonCT)
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("6000-byte body under an 8192 cap: got %d, want 202", w.Code)
+		}
+	})
+
+	// Smaller-than-default cap: a 2000-byte body is rejected 413 when the
+	// operator configured 1024 — the small cap, not 4096, governs.
+	t.Run("smaller cap rejects at smaller size", func(t *testing.T) {
+		h := NewPublicHandler(v, &capturingSink{}, 1024)
+		w := do(h, http.MethodPost, fbPath, bodyOfSize(2000), jsonCT)
+		if w.Code != http.StatusRequestEntityTooLarge {
+			t.Fatalf("2000-byte body under a 1024 cap: got %d, want 413", w.Code)
+		}
+		// And a body under the small cap still succeeds.
+		if w := do(h, http.MethodPost, fbPath, bodyOfSize(500), jsonCT); w.Code != http.StatusAccepted {
+			t.Fatalf("500-byte body under a 1024 cap: got %d, want 202", w.Code)
+		}
+	})
+}
+
 // TestFeedbackThreadsRevisionAndRemoteAddr asserts the handler hands the real
 // remote address and a non-empty revision digest to the sink (INV-7 keying),
 // never a client X-Forwarded-For.
@@ -77,7 +124,7 @@ func TestRevokedShareRejectsWriteAgainstRealStore(t *testing.T) {
 		t.Fatalf("store: %v", err)
 	}
 	v := &fakeVerifier{token: validToken, rev: sampleWalkthrough(), id: "share-1"}
-	h := NewPublicHandler(v, store)
+	h := NewPublicHandler(v, store, 0)
 	jsonCT := map[string]string{"Content-Type": "application/json"}
 
 	// A live token persists one row.
@@ -113,7 +160,7 @@ func TestRealStoreRateLimitReturns429(t *testing.T) {
 		t.Fatalf("store: %v", err)
 	}
 	v := &fakeVerifier{token: validToken, rev: sampleWalkthrough(), id: "share-1"}
-	h := NewPublicHandler(v, store)
+	h := NewPublicHandler(v, store, 0)
 	jsonCT := map[string]string{"Content-Type": "application/json"}
 	fbPath := sharePrefix + validToken + "/feedback"
 
