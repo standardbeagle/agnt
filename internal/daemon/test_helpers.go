@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -68,6 +69,12 @@ func NewForTest(t *testing.T, cfg DaemonConfig) *Daemon {
 	// longer crash-watch set StartupMonitorTimeout explicitly in their cfg.
 	if cfg.StartupMonitorTimeout == 0 {
 		cfg.StartupMonitorTimeout = 200 * time.Millisecond
+	}
+	// Keep the durable publish store hermetic: every test daemon gets its own
+	// temp dir so publish state never touches the real ~/.local/state path and
+	// tests can't cross-contaminate each other's shares.
+	if cfg.PublishDir == "" {
+		cfg.PublishDir = filepath.Join(t.TempDir(), "publish")
 	}
 
 	d := New(cfg)

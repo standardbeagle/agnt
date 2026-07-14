@@ -516,12 +516,14 @@ func ScrubSharePath(urlPath string) string {
 	if rest == "" {
 		return urlPath
 	}
-	tok := rest
-	tail := ""
-	if i := strings.IndexByte(rest, '/'); i >= 0 {
-		tok = rest[:i]
-		tail = rest[i:]
+	// The token ends at the first '/' (a sub-route like /feedback) or '?' (a
+	// query string); everything from there on is a non-secret tail.
+	end := len(rest)
+	if i := strings.IndexAny(rest, "/?"); i >= 0 {
+		end = i
 	}
+	tok := rest[:end]
+	tail := rest[end:]
 	if tok == "" {
 		return urlPath
 	}

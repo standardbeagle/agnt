@@ -25,6 +25,7 @@ const (
 	VerbIncidents    = "INCIDENTS"     // Incident inbox query + mark-read
 	VerbPorts        = "PORTS"         // Listening-port inventory + orphan pgid management
 	VerbSessionHost  = "SESSION-HOST"  // Daemon-owned detachable PTY sessions (see docs/superpowers/specs/2026-07-03-remote-ssh-design.md §1)
+	VerbPublish      = "PUBLISH"       // Public walkthrough share-token lifecycle (control plane; see docs/superpowers/specs/2026-07-13-public-walkthrough-publish-security.md)
 )
 
 // Agnt-specific sub-verbs (beyond those in go-cli-server).
@@ -70,6 +71,8 @@ const (
 	SubVerbKill          = "KILL"          // Explicit termination of a session-host session
 	SubVerbDetach        = "DETACH"        // Client-initiated clean detach (SESSION-HOST ATTACH stream)
 	SubVerbResize        = "RESIZE"        // Out-of-band window-size renegotiation (SESSION-HOST)
+	SubVerbRevoke        = "REVOKE"        // Tombstone a share (PUBLISH)
+	SubVerbRotate        = "ROTATE"        // Mint a fresh token, kill the old (PUBLISH)
 )
 
 // ProxyStartConfig represents configuration for a PROXY START command.
@@ -465,6 +468,67 @@ type SessionHostResizeConfig struct {
 	SessionID string `json:"session_id"`
 	Cols      int    `json:"cols"`
 	Rows      int    `json:"rows"`
+}
+
+// PublishCreateRequest is the payload for PUBLISH CREATE. The walkthrough is
+// carried as raw JSON so this low-level protocol package stays decoupled from
+// internal/publish; the daemon handler decodes + validates it through the P2
+// validators before it is ever stored.
+type PublishCreateRequest struct {
+	Walkthrough json.RawMessage `json:"walkthrough"`
+}
+
+// PublishCreateResult is the response to PUBLISH CREATE. Token is the plaintext
+// share token, returned exactly ONCE here (never persisted, never in STATUS) —
+// per the P1 security spec §3. ID is the viewer-safe share id used by the other
+// control-plane verbs; ShareURL is the public path bearing the token.
+type PublishCreateResult struct {
+	ID       string `json:"id"`
+	Token    string `json:"token"`
+	ShareURL string `json:"share_url"`
+	Digest   string `json:"digest"`
+}
+
+// PublishRotateRequest is the payload for PUBLISH ROTATE.
+type PublishRotateRequest struct {
+	ID string `json:"id"`
+}
+
+// PublishRotateResult is the response to PUBLISH ROTATE. Token is the fresh
+// plaintext token, returned once; the prior token is dead immediately.
+type PublishRotateResult struct {
+	ID       string `json:"id"`
+	Token    string `json:"token"`
+	ShareURL string `json:"share_url"`
+}
+
+// PublishRevokeRequest is the payload for PUBLISH REVOKE.
+type PublishRevokeRequest struct {
+	ID string `json:"id"`
+}
+
+// PublishStatusRequest is the payload for PUBLISH STATUS.
+type PublishStatusRequest struct {
+	ID string `json:"id"`
+}
+
+// PublishShareInfo is the redaction-safe wire view of a share. It NEVER carries
+// the plaintext token — only a short hash prefix for correlation (INV-9).
+type PublishShareInfo struct {
+	ID              string `json:"id"`
+	Title           string `json:"title"`
+	Steps           int    `json:"steps"`
+	Digest          string `json:"digest"`
+	TokenHashPrefix string `json:"token_hash_prefix"`
+	Revoked         bool   `json:"revoked"`
+	CreatedAt       string `json:"created_at"`
+	RotatedAt       string `json:"rotated_at,omitempty"`
+	RevokedAt       string `json:"revoked_at,omitempty"`
+}
+
+// PublishListResult is the response to PUBLISH LIST.
+type PublishListResult struct {
+	Shares []PublishShareInfo `json:"shares"`
 }
 
 // InboxStatsRecord is the wire shape for inbox health summary.
