@@ -43,6 +43,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unicode/utf8"
 )
@@ -229,8 +230,14 @@ func (s *FeedbackStore) Accept(shareID, revisionID, remoteAddr string, body []by
 		return err
 	}
 
+	id, err := mintFeedbackID()
+	if err != nil {
+		// CSPRNG failed: fail the write loud rather than storing a zeroed,
+		// collision-prone id (spec §8 / Silent Failure Prohibition).
+		return fmt.Errorf("%w: mint id: %v", ErrFeedbackInvalid, err)
+	}
 	rec := FeedbackRecord{
-		ID:         mintFeedbackID(),
+		ID:         id,
 		ShareID:    shareID,
 		RevisionID: revisionID,
 		Body:       string(body),
@@ -391,7 +398,34 @@ func (s *FeedbackStore) persist(shareID string, records []FeedbackRecord) error 
 		os.Remove(tmp)
 		return fmt.Errorf("publish: rename feedback: %w", err)
 	}
+	// Fsync the parent directory so the rename itself is durable: without it a
+	// power loss after a successful rename() can still lose the new dir entry,
+	// leaving the record absent despite the temp-file fsync above. (P6
+	// publishstore.persist currently omits this — it should mirror this fix.)
+	if err := fsyncDir(s.dir); err != nil {
+		return fmt.Errorf("publish: fsync feedback dir: %w", err)
+	}
 	return nil
+}
+
+// fsyncDir flushes a directory entry to disk (durable rename). A platform that
+// does not support syncing a directory handle reports errors.ErrUnsupported (or
+// EINVAL on some filesystems); those are non-fatal — the rename is still
+// atomic, only the extra durability barrier is unavailable. Any other error is
+// a real I/O fault and is returned.
+func fsyncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	err = d.Sync()
+	if cerr := d.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil && (errors.Is(err, errors.ErrUnsupported) || errors.Is(err, syscall.EINVAL)) {
+		return nil
+	}
+	return err
 }
 
 // feedbackFileName maps a share id to a filesystem-safe record filename. Share
@@ -446,11 +480,13 @@ func rateKey(shareID, remoteAddr string) string {
 	return shareID + "\x00" + ip
 }
 
-// mintFeedbackID returns a server-assigned CSPRNG id. crypto/rand cannot fail in
-// practice; if it did we still return a (zeroed) unique-per-time id rather than
-// panicking the public plane — but the error is astronomically unlikely.
-func mintFeedbackID() string {
+// mintFeedbackID returns a server-assigned CSPRNG id. A crypto/rand failure is
+// astronomically unlikely, but if it happens the error is propagated so the
+// create fails loud rather than persisting a zeroed, colliding id.
+func mintFeedbackID() (string, error) {
 	b := make([]byte, 16)
-	_, _ = rand.Read(b)
-	return base64.RawURLEncoding.EncodeToString(b)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
 }
