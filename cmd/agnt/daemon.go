@@ -120,6 +120,12 @@ func runDaemonStart(cmd *cobra.Command, args []string) {
 		MaxClients:        100,
 		WriteTimeout:      30 * time.Second,
 		OrphanScanEnabled: true, // production: walk /proc on startup. Tests default to false.
+		// Public walkthrough plane (P7/§2b): opt-in. The token-gated public handler
+		// is always BUILT (so `publish feedback` reads work), but a dedicated HTTP
+		// listener is only stood up when an operator sets AGNT_PUBLIC_ADDR — we do
+		// NOT auto-bind a public port. FeedbackLimits left zero → spec §5 defaults
+		// (buildPublicPlane normalizes).
+		PublicListenAddr: os.Getenv("AGNT_PUBLIC_ADDR"),
 	}
 
 	d := daemon.New(config)

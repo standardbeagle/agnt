@@ -946,6 +946,14 @@ func (c *Client) PublishList() (*protocol.PublishListResult, error) {
 	return decodeInto[protocol.PublishListResult](raw)
 }
 
+// PublishFeedback reads the owner-scoped feedback rows for a share (never the
+// token). id is the viewer-safe share id; cursor/limit paginate. Ownership is
+// enforced daemon-side — a share owned by another project is reported not-found.
+func (c *Client) PublishFeedback(id, cursor string, limit int) (*protocol.PublishFeedbackResult, error) {
+	return publishRequest[protocol.PublishFeedbackResult](c, protocol.SubVerbFeedback,
+		protocol.PublishFeedbackRequest{ID: id, Cursor: cursor, Limit: limit})
+}
+
 // publishRequest sends a PUBLISH sub-verb with a JSON payload and decodes the
 // typed response.
 func publishRequest[T any](c *Client, sub string, payload any) (*T, error) {

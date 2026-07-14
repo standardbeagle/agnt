@@ -73,6 +73,7 @@ const (
 	SubVerbResize        = "RESIZE"        // Out-of-band window-size renegotiation (SESSION-HOST)
 	SubVerbRevoke        = "REVOKE"        // Tombstone a share (PUBLISH)
 	SubVerbRotate        = "ROTATE"        // Mint a fresh token, kill the old (PUBLISH)
+	SubVerbFeedback      = "FEEDBACK"      // Read owner-scoped feedback rows for a share (PUBLISH)
 )
 
 // ProxyStartConfig represents configuration for a PROXY START command.
@@ -529,6 +530,38 @@ type PublishShareInfo struct {
 // PublishListResult is the response to PUBLISH LIST.
 type PublishListResult struct {
 	Shares []PublishShareInfo `json:"shares"`
+}
+
+// PublishFeedbackRequest is the payload for PUBLISH FEEDBACK — the owner-scoped
+// control-plane read of anonymous viewer feedback for a share (spec §2a
+// "publish feedback list"). ID is the viewer-safe share id (ownership is
+// enforced daemon-side, exactly like status/revoke/rotate). Cursor + Limit
+// paginate the append-ordered rows.
+type PublishFeedbackRequest struct {
+	ID     string `json:"id"`
+	Cursor string `json:"cursor,omitempty"`
+	Limit  int    `json:"limit,omitempty"`
+}
+
+// PublishFeedbackRow is one redaction-safe feedback row on the wire. It carries
+// NO share token (feedback records never hold one — redaction is structural).
+// Body is the raw, inert viewer payload (spec §7 / INV-7): it is DATA, never a
+// command, and any HTML consumer MUST escape it before rendering.
+type PublishFeedbackRow struct {
+	ID        string `json:"id"`
+	CreatedAt string `json:"created_at"`
+	Body      string `json:"body"`
+}
+
+// PublishFeedbackResult is the response to PUBLISH FEEDBACK. Rows are the page;
+// NextCursor is "" at the end of the ring. Total is the share's stored row count
+// and Dropped is the cumulative rate-limit-shed count — the observability signal
+// (spec §5) that the public limiter is throttling abuse. NO token appears here.
+type PublishFeedbackResult struct {
+	Rows       []PublishFeedbackRow `json:"rows"`
+	NextCursor string               `json:"next_cursor,omitempty"`
+	Total      int                  `json:"total"`
+	Dropped    int64                `json:"dropped"`
 }
 
 // InboxStatsRecord is the wire shape for inbox health summary.

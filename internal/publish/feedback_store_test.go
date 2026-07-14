@@ -57,7 +57,7 @@ func TestAcceptAppendsWithServerIDAndClock(t *testing.T) {
 		t.Fatalf("accept 2: %v", err)
 	}
 
-	rows, _, err := s.ReadByRevision("rev-1", "", 0)
+	rows, _, err := s.ReadByShare("share-1", "", 0)
 	if err != nil {
 		t.Fatalf("read: %v", err)
 	}
@@ -235,7 +235,7 @@ func TestRestartSurvival(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
-	rows, _, _ := reopened.ReadByRevision("rev-x", "", 0)
+	rows, _, _ := reopened.ReadByShare("share-x", "", 0)
 	if len(rows) != 3 {
 		t.Fatalf("after restart want 3 rows, got %d", len(rows))
 	}
@@ -284,7 +284,7 @@ func TestRetentionPrunesOldestByCount(t *testing.T) {
 			t.Fatalf("accept %d: %v", i, err)
 		}
 	}
-	rows, _, _ := s.ReadByRevision("rev-r", "", 0)
+	rows, _, _ := s.ReadByShare("share-r", "", 0)
 	if len(rows) != 3 {
 		t.Fatalf("count ring should keep 3, got %d", len(rows))
 	}
@@ -313,7 +313,7 @@ func TestRetentionPrunesByAge(t *testing.T) {
 	if err := s.Accept("share-a", "rev-a", "8.8.8.8", []byte(`{"message":"new"}`)); err != nil {
 		t.Fatalf("accept new: %v", err)
 	}
-	rows, _, _ := s.ReadByRevision("rev-a", "", 0)
+	rows, _, _ := s.ReadByShare("share-a", "", 0)
 	if len(rows) != 1 || rows[0].Body != `{"message":"new"}` {
 		t.Fatalf("age prune failed: %+v", rows)
 	}
@@ -328,7 +328,7 @@ func TestXSSPayloadStoredInert(t *testing.T) {
 	if err := s.Accept("share-xss", "rev-xss", "8.8.8.8", []byte(xss)); err != nil {
 		t.Fatalf("accept xss: %v", err)
 	}
-	rows, _, _ := s.ReadByRevision("rev-xss", "", 0)
+	rows, _, _ := s.ReadByShare("share-xss", "", 0)
 	if len(rows) != 1 {
 		t.Fatalf("want 1 row, got %d", len(rows))
 	}
@@ -340,8 +340,8 @@ func TestXSSPayloadStoredInert(t *testing.T) {
 	}
 }
 
-// TestReadByRevisionCursor asserts cursor pagination is stable and terminates.
-func TestReadByRevisionCursor(t *testing.T) {
+// TestReadByShareCursor asserts cursor pagination is stable and terminates.
+func TestReadByShareCursor(t *testing.T) {
 	clk := newFakeClock()
 	limits := testLimits()
 	limits.Burst = 100
@@ -356,7 +356,7 @@ func TestReadByRevisionCursor(t *testing.T) {
 	var got []string
 	cursor := ""
 	for {
-		page, next, err := s.ReadByRevision("rev-p", cursor, 2)
+		page, next, err := s.ReadByShare("share-p", cursor, 2)
 		if err != nil {
 			t.Fatalf("page: %v", err)
 		}

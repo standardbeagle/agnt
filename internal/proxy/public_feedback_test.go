@@ -141,7 +141,7 @@ func TestRevokedShareRejectsWriteAgainstRealStore(t *testing.T) {
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("revoked feedback: got %d, want 404", w.Code)
 	}
-	rows, _, _ := store.ReadByRevision("", "", 0)
+	rows, _, _ := store.ReadByShare("share-1", "", 0)
 	for _, r := range rows {
 		if r.Body == `{"message":"nope"}` {
 			t.Fatal("revoked-share feedback was persisted — INV-4 violated")

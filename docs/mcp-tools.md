@@ -23,6 +23,7 @@ only the summary table + handler pattern; this is the detailed reference.
 | `daemon` | Daemon management |
 | `watch` | Get monitor command for streaming events (errors, interactions, process, all) |
 | `channel_reply` | Send messages to developer's browser overlay (channel mode beta) |
+| `publish` | Public walkthrough shares — create/status/list/revoke/rotate + owner-scoped feedback read |
 
 **Session scoping & `global` flag**: query/list tools scoped to caller's session project by default (daemon-side session-scope chokepoint — see `.claude/rules/daemon-architecture.md` § Tool session-scoping). Every gated tool (`get_errors`, `proc`, `proxy`, `tunnel`, `session`, `daemon` startup_log) takes same `global: true` input for cross-project results. `get_incidents` (per-session isolated) and `watch` (monitor stream) intentionally omit it.
 
@@ -71,6 +72,74 @@ replay_cursor: 2026-07-06T01:20:00Z
 ```
 
 **Key Files**: `internal/tools/get_incidents.go`, `internal/incident/remediation.go`
+
+## publish Tool
+
+Trusted, session-scoped control plane for **public walkthrough shares**. A share
+publishes an immutable walkthrough revision behind an unguessable token; the
+token-gated **public plane** (anonymous viewers) is a separate HTTP handler and
+is NOT reachable through this tool. Every action is project-scoped: a session
+can only address shares owned by its own project (a foreign share id is reported
+not-found — no cross-project leak).
+
+Security spec: `docs/superpowers/specs/2026-07-13-public-walkthrough-publish-security.md`.
+
+**Actions**:
+| Action | Inputs | Reads / Writes |
+|--------|--------|----------------|
+| `create` | `walkthrough` (JSON, validated before publish) | Mints a share + token; **returns the plaintext token exactly ONCE** plus a viewer-safe `id` and the `/s/{token}` URL |
+| `status` | `id` | Share state (title, steps, digest, revoked flag, token **hash prefix** only) — never the token |
+| `list` | — | This project's shares (no tokens) |
+| `revoke` | `id` | Kills a share immediately (token stops verifying at once) |
+| `rotate` | `id` | Mints a fresh token (old dies immediately); returns the new token ONCE |
+| `feedback` | `id`, `cursor?`, `limit?` | **Owner-scoped read** of anonymous viewer feedback rows + observability counts (`total`, `dropped`) — never the token |
+
+**Token rule**: the plaintext share token is returned **only** from `create` and
+`rotate`, exactly once, and is never stored, re-derivable, logged, or emitted in
+any event. `status`/`list`/`feedback` and all arrival events carry only a hash
+prefix for correlation. Lost token ⇒ `rotate`.
+
+**Feedback read** (`action: "feedback"`): returns feedback for a share the caller
+**owns** (same ownership gate as `status`/`revoke`/`rotate`). Paginate with
+`cursor` (pass a prior response's `next_cursor`; empty = first page) and `limit`
+(`<=0` = all remaining). Row `body` is the **raw, inert** viewer payload — it is
+data, never a command; any HTML consumer MUST escape it before rendering
+(INV-7). `total` is the share's stored row count; `dropped` is the cumulative
+rate-limit-shed count (spec §5 observability).
+
+**Arrival events**: when feedback lands for a share, the daemon emits a
+**counts-only**, **project-scoped** arrival event to the owning project's
+dev/agent surface — carrying `share_id`, `revision_id`, `total`, `dropped`, and a
+static remediation hint, and **never** the token or the feedback body. A
+subscriber on another project never receives it.
+
+**Examples**:
+```
+publish {action: "create", walkthrough: {...}}   // token shown ONCE
+publish {action: "list"}
+publish {action: "status", id: "<share-id>"}
+publish {action: "revoke", id: "<share-id>"}
+publish {action: "rotate", id: "<share-id>"}      // new token shown ONCE
+publish {action: "feedback", id: "<share-id>", limit: 50}
+publish {action: "feedback", id: "<share-id>", cursor: "<next_cursor>"}
+```
+
+**Compact feedback output**:
+```
+=== Feedback for <share-id> (total=2 dropped=3) ===
+- <row-id> 2026-07-13T00:00:00Z {"message":"nice","rating":5}
+next_cursor: <row-id>
+```
+
+**Public plane serving**: the token-gated public handler (`GET /s/{token}`,
+`/variants.json`, `/walkthrough.json`, `POST /s/{token}/feedback`) is always
+built in the daemon. A dedicated public HTTP listener is opt-in via the
+`AGNT_PUBLIC_ADDR` env var — the daemon does not auto-bind a public port. The dev
+control surface is structurally absent from the public handler (INV-1/INV-2).
+
+**Key Files**: `internal/tools/publish_tools.go`, `internal/daemon/hub_publish.go`,
+`internal/daemon/publish_public.go`, `internal/daemon/feedback_events.go`,
+`internal/proxy/public_routes.go`, `internal/publish/feedback_store.go`
 
 ## get_errors Tool (Legacy)
 
