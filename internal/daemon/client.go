@@ -928,9 +928,8 @@ func (c *Client) PublishRotate(id string) (*protocol.PublishRotateResult, error)
 
 // PublishRevoke tombstones a share; the token stops verifying immediately.
 func (c *Client) PublishRevoke(id string) error {
-	_, err := c.conn.Request(protocol.VerbPublish, protocol.SubVerbRevoke).
-		WithJSON(protocol.PublishRevokeRequest{ID: id}).JSON()
-	return err
+	return c.conn.Request(protocol.VerbPublish, protocol.SubVerbRevoke).
+		WithJSON(protocol.PublishRevokeRequest{ID: id}).OK()
 }
 
 // PublishStatus returns the redaction-safe status of a share (never the token).

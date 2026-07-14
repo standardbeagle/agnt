@@ -105,8 +105,8 @@ func (d *Daemon) hubHandlePublishRotate(conn *hubpkg.Connection, cmd *hubproto.C
 	if req.ID == "" {
 		return conn.WriteErr(hubproto.ErrMissingParam, "id is required")
 	}
-	if err := d.assertShareOwned(conn, store, req.ID); err != nil {
-		return err
+	if !d.shareOwned(conn, store, req.ID) {
+		return nil
 	}
 	token, err := store.Rotate(req.ID)
 	if err != nil {
@@ -132,8 +132,8 @@ func (d *Daemon) hubHandlePublishRevoke(conn *hubpkg.Connection, cmd *hubproto.C
 	if req.ID == "" {
 		return conn.WriteErr(hubproto.ErrMissingParam, "id is required")
 	}
-	if err := d.assertShareOwned(conn, store, req.ID); err != nil {
-		return err
+	if !d.shareOwned(conn, store, req.ID) {
+		return nil
 	}
 	if err := store.Revoke(req.ID); err != nil {
 		return publishErr(conn, err)
@@ -153,8 +153,8 @@ func (d *Daemon) hubHandlePublishStatus(conn *hubpkg.Connection, cmd *hubproto.C
 	if req.ID == "" {
 		return conn.WriteErr(hubproto.ErrMissingParam, "id is required")
 	}
-	if err := d.assertShareOwned(conn, store, req.ID); err != nil {
-		return err
+	if !d.shareOwned(conn, store, req.ID) {
+		return nil
 	}
 	info, err := store.Status(req.ID)
 	if err != nil {
@@ -182,20 +182,24 @@ func (d *Daemon) hubHandlePublishList(conn *hubpkg.Connection, cmd *hubproto.Com
 	return conn.WriteJSON(data)
 }
 
-// assertShareOwned enforces control-plane project scoping: a share may only be
-// addressed by id from the session that owns its project. A share belonging to
-// another project is reported as not-found (no cross-project leak of existence).
-func (d *Daemon) assertShareOwned(conn *hubpkg.Connection, store *publishstore.Store, id string) error {
+// shareOwned enforces control-plane project scoping: a share may only be
+// addressed by id from the session that owns its project. On a scope failure it
+// writes the appropriate error to conn and returns false (a share belonging to
+// another project is reported as not-found — no cross-project leak of existence).
+// It returns false, not an error, because conn.WriteErr itself returns nil.
+func (d *Daemon) shareOwned(conn *hubpkg.Connection, store *publishstore.Store, id string) bool {
 	projectPath := d.getSessionProjectPath(conn)
 	if projectPath == "" {
-		return conn.WriteErr(hubproto.ErrInvalidState, "no active session with project path")
+		_ = conn.WriteErr(hubproto.ErrInvalidState, "no active session with project path")
+		return false
 	}
 	for _, info := range store.List(projectPath) {
 		if info.ID == id {
-			return nil
+			return true
 		}
 	}
-	return conn.WriteErr(hubproto.ErrNotFound, "share not found")
+	_ = conn.WriteErr(hubproto.ErrNotFound, "share not found")
+	return false
 }
 
 func publishErr(conn *hubpkg.Connection, err error) error {
