@@ -841,10 +841,12 @@ old owner is then fenced. Both the live owner and recovery may change
 `writer_open → writer_complete(etag,digest,size)` or `writer_open →
 writer_aborted` only by an authority CAS over that complete tuple and current
 owner, and only while `server_now < prepare_deadline`. Complete requires an object-store response authenticated for the exact
-`(staging_object_id,write_operation_id)`, with immutable ETag, ciphertext digest,
-and size equal to the persisted expected values. Aborted requires the object
+`(staging_object_id,write_operation_id)`, with ciphertext digest and size equal
+to the persisted expected values. Its returned ETag is stored only as
+authenticated immutable seal evidence; there is no expected ETag and ETag is not
+an equality predicate. Aborted requires the object
 store's durable operation tombstone. If the operation is completed-and-sealed
-but any authenticated ETag, digest, or size mismatches, the current owner instead commits
+but digest or size mismatches, the current owner instead commits
 `writer_rejected_complete(etag,digest,size)` in the same full-preparing-tuple
 transaction that proves the staging object unreachable, changes `preparing →
 failed`, deletes the wrapped DEK, and enqueues exact cleanup. A stale owner or
@@ -1032,11 +1034,12 @@ it may not publish anew or allocate new IDs. The current owner changes
 `writer_open` only by CAS over that same full tuple, including its lease expiry
 and row revision, with `server_now < lease_expires_at`.
 `writer_complete(etag,digest,size)` requires an authenticated object-store result
-for exactly `(attempt_object_id,write_operation_id)` whose immutable ETag,
-canonical-content digest, and size equal the pending expectations;
+for exactly `(attempt_object_id,write_operation_id)` whose canonical-content
+digest and size equal the pending expectations. The returned ETag is persisted
+only as authenticated immutable seal evidence; no expected ETag is stored or
+compared.
 `writer_aborted` requires the durable abort tombstone for that exact operation.
-If the exact operation is completed-and-sealed with any mismatching authenticated
-ETag, digest, or size,
+If the exact operation is completed-and-sealed with mismatching digest or size,
 the current owner uses one full-tuple authority transaction to store
 `writer_rejected_complete(etag,digest,size)`, prove the exact object unreachable,
 enqueue its cleanup, and enter `retryable_failed` or terminal failure. An
@@ -1164,7 +1167,7 @@ retry observes `succeeded` and returns the token-free 200 replay response.
 | preview copy observes identity/revision/kind/count drift | resolve preparing writer to complete or abort-tombstoned; one transaction `preparing → failed`, deletes wrapped DEK, proves unreachable, enqueues exact staging cleanup | validation failure; new preview required; no direct delete |
 | ABA attempt: descriptor starts `(id,A)`, mutates to `B`, then content changes back | authority exposes non-reused `C`; conditional/after read differs; resolve writer, then fenced preparing-failure transaction+cleanup | validation failure; a source returning `A` again is ineligible |
 | torn multi-record copy: one conditional record read succeeds but another revision changes before/after set check | no ready manifest/digest; resolve writer, then preparing-failure transaction deletes DEK and enqueues complete staged-object cleanup | validation failure; partial record mix is never previewable |
-| crash in preview `preparing` before/after PUT | deadline recovery claims by full-tuple/revision CAS and queries write operation | complete+valid may promote ready; completed mismatch seals rejected-complete and atomically fails+cleans; otherwise abort/tombstone then fail+clean; unknown waits |
+| crash in preview `preparing` before/after PUT | deadline recovery claims by full-tuple/revision CAS and queries write operation | complete with matching digest/size may promote ready and retains returned ETag only as seal evidence; digest/size mismatch seals rejected-complete and atomically fails+cleans; otherwise abort/tombstone then fail+clean; unknown waits |
 | late preview PUT arrives after recovery chose failure | durable abort tombstone rejects the operation before cleanup was authorized | no stranded ciphertext after cleanup DELETE |
 | new key plus valid owned `ready` preview and matching P1a confirmation/publication-binding digests | one transaction validates preview and stores the full pending tuple, including attempt/object/write/transaction IDs, expected digest/size, writer state, lease expiry, row revision, and the three GC cutoffs, then registers that exact object unreachable | caller is winner and may write only that object ID using that write operation |
 | matching ownerless `retryable_failed` key with resolved old outcome and committed exact cleanup proof | sole new-attempt reacquisition CAS checks null owner/lease, row revision, full retained `fenced_attempt`, and ready/unexpired preview, then allocates the next generation and fresh full pending tuple | caller may write only the new attempt; any missing/unknown evidence returns recovery-pending |
