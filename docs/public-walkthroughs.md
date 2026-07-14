@@ -175,9 +175,19 @@ configurable and honored by the live limiter — see [`configuration.md`](config
   daemon's usual in-memory-is-cache model (spec Deviations #1).
 - Published shares and feedback **survive daemon restart** (INV-8). Restart the
   daemon and an un-revoked share still serves; its feedback is intact.
-- **Corruption fails loud.** A store that fails to load emits a visible daemon
-  startup error event and refuses to serve — it does not silently `404` or serve an
-  empty artifact.
+- **Publish-store corruption fails loud and closed.** If the publish store fails
+  to load, the daemon emits `publish_store_load_failed`, does not build the public
+  handler, and therefore skips the public listener. Publish control operations
+  are unavailable; no share is served as an empty or partial artifact.
+- **Feedback-store corruption fails loud but leaves publishing active.** If the
+  feedback store fails to load, the daemon emits `feedback_store_load_failed`
+  but still builds the public handler and starts the configured listener. Existing
+  shares remain available. Valid feedback POSTs are accepted (`202`) and dropped
+  because no persistence sink is attached, while control-plane feedback reads
+  return an empty result (`rows: []`, empty cursor, zero totals). If silent
+  feedback loss is unacceptable, operators must manually shut down the public
+  listener by unsetting `AGNT_PUBLIC_ADDR` and restarting the daemon until the
+  feedback store is repaired.
 - **Owner-scoped read.** Read feedback only via the control plane:
   `publish {action: "feedback", id: "<share-id>"}`. Ownership is enforced
   daemon-side (a share from another project reports not-found — no cross-project
@@ -236,11 +246,13 @@ On a suspected token leak or abuse:
 3. **Correlate via hash prefix.** Logs and `status` output carry only
    `token_hash_prefix` (`hash[:8]`) — never the token. Match a log line to a share
    by that prefix.
-4. **Trust the fail-loud behavior.** Store corruption surfaces a visible daemon
-   startup error and disables the entire affected store; it never silently
-   degrades or serves a partial set of shares or feedback. Quarantine or repair
-   the corrupt record on disk, then restart the daemon and confirm the store loads
-   before restoring the public listener.
+4. **Distinguish the failed store.** Publish-store corruption emits
+   `publish_store_load_failed` and prevents the public handler/listener from
+   starting. Feedback-store corruption emits `feedback_store_load_failed` but
+   leaves existing shares and the configured listener active: feedback POSTs are
+   accepted and dropped, and control reads are empty. If you must prevent silent
+   feedback loss, manually unset `AGNT_PUBLIC_ADDR` and restart the daemon; repair
+   the feedback store and confirm it loads before restoring the listener.
 5. **Kill the public surface entirely** by unsetting `AGNT_PUBLIC_ADDR` and
    restarting the daemon — the public listener is not stood up without it, while
    the control plane and dev proxy stay up.
