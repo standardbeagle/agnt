@@ -127,8 +127,13 @@ type Session struct {
 
 	doneCh    chan struct{}
 	closeOnce sync.Once
-	// ptmxOnce guards the PTY fd: waitLoop closes it when the child exits on its
-	// own, and Close() closes it on the explicit KILL path. A KILL racing a
+	// readDone closes when readLoop returns, i.e. once it has drained the PTY
+	// master to EOF. waitLoop blocks on it before closing the fd so a
+	// self-exiting child's final buffered bytes are never truncated by the
+	// close (see waitLoop).
+	readDone chan struct{}
+	// ptmxOnce guards the PTY fd: waitLoop closes it after readLoop has drained,
+	// and Close() closes it on the explicit KILL path. A KILL racing a
 	// self-exit reached both, double-closing the fd — and once the fd number is
 	// recycled, the second Close lands on whatever now owns it.
 	ptmxOnce sync.Once
@@ -187,6 +192,7 @@ func Create(cfg CreateConfig) (*Session, error) {
 		scrollback:  goprocess.NewRingBuffer(size),
 		subs:        make(map[string]*subscriber),
 		doneCh:      make(chan struct{}),
+		readDone:    make(chan struct{}),
 	}
 	s.status.Store(StatusRunning)
 	s.exitCode.Store(-1)
@@ -216,6 +222,9 @@ func generateID(name string) string {
 // and fans raw bytes out to every current subscriber. Single capture point —
 // no duplicate PTY reads, per spec §1.4.
 func (s *Session) readLoop() {
+	// Signal drain completion so waitLoop can sequence the fd close *after* the
+	// last buffered byte has been read (see waitLoop's drain barrier).
+	defer close(s.readDone)
 	buf := make([]byte, 32*1024)
 	for {
 		n, err := s.ptmx.Read(buf)
@@ -245,13 +254,35 @@ func (s *Session) waitLoop() {
 	s.exitCode.Store(int32(code))
 	s.status.Store(StatusExited)
 
+	// Drain barrier. A self-exiting child (e.g. `echo x`) leaves its final bytes
+	// buffered in the PTY master; the master hands those bytes to readLoop and
+	// only THEN reports EOF/EIO on its own — closing the master fd is not
+	// required to unblock readLoop after the child is gone. This code used to
+	// closePTY() right here, unconditionally, which raced that drain: when the
+	// close won, readLoop's in-flight (or next) Read returned "file already
+	// closed" with n==0 and the buffered output was lost forever, leaving
+	// scrollback permanently empty for fast-exiting children. So block until
+	// readLoop has reached its natural EOF before touching the fd. The timer is
+	// only a hang-guard for a hypothetical platform whose master never EOFs on
+	// its own — readDone, not the timer, is the drain barrier, and in normal
+	// operation readDone fires effectively instantly.
+	timer := time.NewTimer(5 * time.Second)
+	select {
+	case <-s.readDone:
+		timer.Stop()
+	case <-timer.C:
+	}
+
+	// Emit the exit frame only after every stdout frame has been broadcast, so
+	// attached clients observe the child's output strictly before its exit.
 	exitData, _ := json.Marshal(ExitData{Code: code})
 	s.broadcastFrame(Frame{Type: "exit", Data: exitData})
 
-	// Close the PTY fd now that the child is gone. On self-exit nothing else
-	// calls Close (only the explicit KILL path does), so without this the fd
-	// leaks and the readLoop blocks on Read forever. Close unblocks readLoop.
+	// Close the PTY fd (idempotent). readLoop has already drained on the common
+	// path; on the hang-guard path this close unblocks it, and we then wait for
+	// readLoop to actually return so no goroutine is still reading a closed fd.
 	_ = s.closePTY()
+	<-s.readDone
 
 	s.closeOnce.Do(func() { close(s.doneCh) })
 }
