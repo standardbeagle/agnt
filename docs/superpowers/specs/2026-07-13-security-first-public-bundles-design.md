@@ -365,7 +365,10 @@ URL normalization runs in this order:
 3. In the retained authority and path only, reject percent-encoded `/` (`%2F`)
    or `\\` (`%5C`) case-insensitively before any percent decoding. This check
    never scans a source query or fragment removed at step 2.
-4. Lowercase the scheme. A DNS host is processed using Unicode 15.0.0 IDNA2008
+4. Lowercase the scheme. If a bracketed host begins with `v` or `V` followed by
+   one or more hexadecimal digits and `.`, reject it as unsupported IPvFuture
+   before IPv6 parsing, DNS processing, or any host normalization. A DNS host is
+   processed using Unicode 15.0.0 IDNA2008
    derived properties plus Unicode UTS #46 revision 15.0.0, nontransitional
    processing, STD3 ASCII rules, Bidi/Joiner checks, and DNS length verification.
    Percent escapes in a host reject. Emit lowercase canonical A-labels. IPv4 must
@@ -374,13 +377,19 @@ URL normalization runs in this order:
 5. Parse the port as decimal 1–65535; remove `:80` for HTTP and `:443` for HTTPS;
    emit every other port without leading zeroes.
 6. For the path only, split on literal `/`; encoded separators were already
-   rejected at step 3. Within each segment, uppercase percent hex and decode
-   percent-encoded RFC 3986 unreserved ASCII bytes, including `%2E`. Apply RFC
-   3986 dot-segment removal to those segment tokens, so encoded dot segments are
-   never opaque names.
-7. For every retained segment, build one byte string left-to-right: append the
-   UTF-8 bytes of each literal source IRI scalar (an ASCII literal contributes its
-   one byte), and append the single octet represented by each remaining `%HH`.
+   rejected at step 3. Tokenize each segment left-to-right into exactly three
+   token types: `literal-scalar(s)` for one literal source IRI scalar;
+   `decoded-unreserved(b)` for one `%HH` whose octet is RFC 3986 unreserved ASCII;
+   and `escaped-octet(b)` for every other remaining `%HH`. Uppercase percent hex
+   while tokenizing. Dot removal consumes a segment only when its complete token
+   sequence represents exactly `.` or exactly `..`, where each dot may be either
+   `literal-scalar('.')` or `decoded-unreserved(0x2e)`. A dot token accompanied
+   by any other token is an ordinary segment. Apply RFC 3986 dot-segment removal
+   only to those complete dot segments.
+7. For every retained segment, build one byte string left-to-right:
+   `literal-scalar(s)` appends the UTF-8 encoding of `s` (one byte for an ASCII
+   scalar); `decoded-unreserved(b)` appends exactly its single ASCII octet `b`;
+   and `escaped-octet(b)` appends exactly its single octet `b`.
    This combination happens before character validation—literal and escaped
    bytes are not decoded as separate strings. Strictly decode the combined bytes
    as shortest-form UTF-8, reject any error, normalize the resulting scalar
@@ -443,9 +452,11 @@ Source-input fixtures begin as structured trusted-source records:
 | title source scalars `Cafe` + U+0301 | pass | `pass(title=Café)` after NFC | pass | pass | pass | pass with NFC U+00E9 |
 | description source `line1\r\nline2\rline3` | pass | `pass(description=line1\nline2\nline3)` | pass | pass | pass | pass with LF only |
 | URL `https://user:secret@example.com/a` | pass | `reject(url_rejected)` | NR | NR | NR | NR |
+| URL `https://[v1.fe80]/a` | pass | `reject(url_rejected)` as unsupported IPvFuture before host normalization | NR | NR | NR | NR |
 | URL `https://EXAMPLE.com/a?token=x#private` | pass | `pass(url=https://example.com/a, url_query_removed, url_fragment_removed)` | pass | pass | pass | pass |
 | URL `https://example.com/a?q=%2F#%5C` | pass | `pass(url=https://example.com/a, url_query_removed, url_fragment_removed)`; removed separators are not inspected | pass | pass | pass | pass |
 | URL `https://example.com/a/%2e%2E/b` | pass | `pass(url=https://example.com/b, url_dot_segment_removed)` | pass | pass | pass | pass |
+| URL `https://example.com/a/%2efoo/%2e/b` | pass | `pass(url=https://example.com/a/.foo/b, url_dot_segment_removed)`; `%2efoo` is not a complete dot segment | pass | pass | pass | pass |
 | URL `https://example.com/a%2fb` or `https://example.com/a%5Cb` | pass | `reject(url_rejected)` | NR | NR | NR | NR |
 | URL `https://example.com/cafe%CC%81` (literal UTF-8 `cafe` plus escaped combining-acute octets) | pass | `pass(url=https://example.com/caf%C3%A9)` after combined-byte UTF-8 decode and NFC | pass | pass | pass | pass |
 | URL `https://bücher.example/cafe%CC%81` | pass | `pass(url=https://xn--bcher-kva.example/caf%C3%A9)` | pass | pass | pass | pass |
@@ -465,9 +476,11 @@ digest and confirmation state.
 | B with each UTF-8 NFC `Café` replaced by JSON text `Cafe\u0301`, supplied with B's digest | NA | NA | `reject(text_non_nfc)` before stale-digest check; no normalization | NR | NR | `reject(text_non_nfc)` before render |
 | B with its single JSON `line 1\nline 2` replaced by `line 1\r\nline 2`, supplied with B's digest | NA | NA | `reject(text_noncanonical_newline)`; no newline repair | NR | NR | `reject(text_noncanonical_newline)` |
 | H with its single `https://example.com/` replaced by `https://user@example.com/` | NA | NA | `reject(url_userinfo)` | NR | NR | `reject(url_userinfo)` before render |
+| H with its single URL replaced by `https://[v1.fe80]/a` | NA | NA | `reject(url_ipvfuture)` before host normalization and stale-digest check | NR | NR | `reject(url_ipvfuture)` |
 | H with its single URL replaced by `https://example.com/a?q=1#f` | NA | NA | `reject(url_query_fragment)`; no stripping | NR | NR | `reject(url_query_fragment)` before render |
 | H with its single URL replaced by `https://example.com/a?q=%2F#%5C` | NA | NA | `reject(url_query_fragment)` at step 2, before retained-component separator check | NR | NR | `reject(url_query_fragment)` |
 | H with its single URL replaced by `https://example.com/a/%2e%2E/b` | NA | NA | `reject(url_noncanonical)`; canonical source result would be `/b` | NR | NR | `reject(url_noncanonical)` |
+| H with its single URL replaced by `https://example.com/a/%2efoo/%2e/b` | NA | NA | `reject(url_noncanonical)`; canonical source result would be `/a/.foo/b` | NR | NR | `reject(url_noncanonical)` |
 | H with its single URL replaced by `https://example.com/a%2Fb` or `https://example.com/a%5Cb` | NA | NA | `reject(url_encoded_separator)` | NR | NR | `reject(url_encoded_separator)` |
 | H with its single URL replaced by `https://example.com/cafe%CC%81` | NA | NA | `reject(url_noncanonical)`; canonical trusted-source result is `https://example.com/caf%C3%A9` | NR | NR | `reject(url_noncanonical)` |
 | H with its single URL replaced by `https://bücher.example/café` | NA | NA | `reject(url_non_ascii)`; canonical source form is `https://xn--bcher-kva.example/caf%C3%A9` | NR | NR | `reject(url_non_ascii)` |
