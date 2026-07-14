@@ -227,17 +227,20 @@ func (d *Daemon) hubHandlePublishFeedback(conn *hubpkg.Connection, cmd *hubproto
 	if !d.shareOwned(conn, store, req.ID) {
 		return nil
 	}
-	// Map the share id to its immutable revision digest — the key feedback is
-	// stored under (spec §10). Status is safe: shareOwned already proved the
-	// caller owns this share.
-	info, err := store.Status(req.ID)
-	if err != nil {
+	// Preserve the revoked/not-found gate (STATUS errors on a revoked or missing
+	// share). shareOwned already proved the caller owns this share, so this is a
+	// state check, not an ownership check.
+	if _, err := store.Status(req.ID); err != nil {
 		return publishErr(conn, err)
 	}
 
 	result := protocol.PublishFeedbackResult{Rows: []protocol.PublishFeedbackRow{}}
 	if d.feedbackStore != nil {
-		rows, next, rerr := d.feedbackStore.ReadByRevision(info.Digest, req.Cursor, req.Limit)
+		// Read share-scoped, NOT digest-scoped. Two projects publishing the same
+		// walkthrough content share a digest; a digest-keyed read would union their
+		// feedback and leak project A's rows to project B (INV-1 / spec §2a). The
+		// share's feedback lives only in its own ring, so this cannot cross projects.
+		rows, next, rerr := d.feedbackStore.ReadByShare(req.ID, req.Cursor, req.Limit)
 		if rerr != nil {
 			return conn.WriteErr(hubproto.ErrInternal, rerr.Error())
 		}

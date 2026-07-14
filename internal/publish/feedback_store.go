@@ -306,28 +306,32 @@ func (s *FeedbackStore) prune(records []FeedbackRecord) []FeedbackRecord {
 	return out
 }
 
-// ReadByRevision returns feedback rows for a published revision in append order,
-// paginated by an opaque cursor. This is the storage read API P9's control-plane
-// exposure (`publish feedback list`) calls; P8 provides only the method, not the
-// MCP tool. cursor is the ID of the last row a prior call returned (empty =
-// start); nextCursor is the last returned row's ID, or "" when the page reached
-// the end. limit <= 0 defaults to all remaining rows.
+// ReadByShare returns feedback rows for ONE share in append order, paginated by
+// an opaque cursor. This is the storage read API P9's control-plane exposure
+// (`publish feedback list`) calls.
+//
+// It is deliberately share-scoped, NOT revision/digest-scoped. Digest is a pure
+// content hash, so two different projects that publish the same walkthrough
+// content collide on the same digest; a digest-keyed read would union their
+// feedback and leak project A's rows to project B's owner (breaks INV-1 /
+// spec §2a). A share's feedback lives only in that share's own ring file, so a
+// share-scoped read structurally cannot cross a project boundary — the caller's
+// ownership gate on the share id is sufficient.
+//
+// cursor is the ID of the last row a prior call returned (empty = start);
+// nextCursor is the last returned row's ID, or "" when the page reached the
+// end. limit <= 0 defaults to all remaining rows.
 //
 // The rows are returned RAW/inert (INV-7). The caller (P9) is responsible for
 // escaping them before rendering into any HTML surface — the store never
 // reflects.
-func (s *FeedbackStore) ReadByRevision(revisionID, cursor string, limit int) (rows []FeedbackRecord, nextCursor string, err error) {
+func (s *FeedbackStore) ReadByShare(shareID, cursor string, limit int) (rows []FeedbackRecord, nextCursor string, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	var all []FeedbackRecord
-	for _, recs := range s.byShare {
-		for _, r := range recs {
-			if r.RevisionID == revisionID {
-				all = append(all, r)
-			}
-		}
-	}
+	recs := s.byShare[shareID]
+	all := make([]FeedbackRecord, len(recs))
+	copy(all, recs)
 	sort.Slice(all, func(i, j int) bool {
 		if all[i].CreatedAt.Equal(all[j].CreatedAt) {
 			return all[i].ID < all[j].ID

@@ -124,6 +124,61 @@ func TestFeedbackReadOwnerScoped(t *testing.T) {
 	require.Error(t, err, "project B must not read project A's feedback")
 }
 
+// TestFeedbackReadCollidingDigestNoCrossProjectLeak reproduces the cross-project
+// feedback leak (INV-1 / spec §2a): two projects that publish the SAME walkthrough
+// content collide on the same content digest (Digest is a pure content hash). A
+// digest-scoped feedback read would union both shares' rows and leak project A's
+// feedback to project B's owner. The read must be share-scoped, so B — reading its
+// OWN share — sees ZERO rows even though the digests collide, while A sees its own.
+func TestFeedbackReadCollidingDigestNoCrossProjectLeak(t *testing.T) {
+	sockPath := shortSockPath(t)
+	d := newBootedDaemonWithConfig(t, DaemonConfig{SocketPath: sockPath, PublicListenAddr: "127.0.0.1:0"})
+	addr := d.PublicPlaneAddr()
+
+	ca := NewClient(WithSocketPath(sockPath))
+	require.NoError(t, ca.Connect())
+	t.Cleanup(func() { _ = ca.Close() })
+	_, err := ca.SessionRegister("sess-a", "/tmp/a.sock", "/proj-a", "test", nil)
+	require.NoError(t, err)
+
+	cb := NewClient(WithSocketPath(sockPath))
+	require.NoError(t, cb.Connect())
+	t.Cleanup(func() { _ = cb.Close() })
+	_, err = cb.SessionRegister("sess-b", "/tmp/b.sock", "/proj-b", "test", nil)
+	require.NoError(t, err)
+
+	// Both projects publish the SAME walkthrough content → identical content digest.
+	wt := publishTestWalkthrough(t)
+	resA, err := ca.PublishCreate(protocol.PublishCreateRequest{Walkthrough: wt})
+	require.NoError(t, err)
+	resB, err := cb.PublishCreate(protocol.PublishCreateRequest{Walkthrough: wt})
+	require.NoError(t, err)
+
+	// Prove the collision is real: same content ⇒ same digest, distinct shares.
+	require.Equal(t, resA.Digest, resB.Digest, "same walkthrough content must collide on digest")
+	require.NotEqual(t, resA.ID, resB.ID, "each publish is a distinct share")
+
+	// A viewer leaves feedback ONLY on A's share.
+	require.Equal(t, http.StatusAccepted,
+		postFeedback(t, addr, resA.Token, `{"message":"A-only secret feedback"}`))
+
+	// B reads its OWN share. Despite the digest collision, a share-scoped read must
+	// return ZERO rows and must NOT contain A's feedback body.
+	fbB, err := cb.PublishFeedback(resB.ID, "", 0)
+	require.NoError(t, err)
+	require.Empty(t, fbB.Rows, "project B must not receive project A's feedback rows")
+	require.Equal(t, 0, fbB.Total, "project B's total must be its own share count")
+	require.NotContains(t, mustJSON(t, fbB), "A-only secret feedback",
+		"A's feedback body must never reach project B")
+
+	// A reads its own share and sees its feedback.
+	fbA, err := ca.PublishFeedback(resA.ID, "", 0)
+	require.NoError(t, err)
+	require.Len(t, fbA.Rows, 1)
+	require.Contains(t, fbA.Rows[0].Body, "A-only secret feedback")
+	require.Equal(t, 1, fbA.Total)
+}
+
 // TestFeedbackArrivalEventScopedToOwningProject pins the arrival event's project
 // scoping: a subscriber on project A receives the counts-only arrival event when
 // A's share gets feedback, a subscriber on project B does NOT, and the event
