@@ -45,8 +45,8 @@ var (
 
 func loadCachedScript() {
 	cachedScriptOnce.Do(func() {
-		assets := make(map[scripts.Role]*instrumentationAsset, 3)
-		for _, role := range []scripts.Role{scripts.RoleFull, scripts.RoleChrome, scripts.RoleContent} {
+		assets := make(map[scripts.Role]*instrumentationAsset, 4)
+		for _, role := range []scripts.Role{scripts.RoleFull, scripts.RoleChrome, scripts.RoleContent, scripts.RolePublic} {
 			// GetCombinedScriptForRole wraps the bundle in <script>…</script>
 			// for the legacy inline-injection form. The bundle is now served
 			// as an external <script src> asset, where those HTML tags are
@@ -85,6 +85,16 @@ func instrumentationAssetPath() string {
 func instrumentationAssetPathForRole(role scripts.Role) string {
 	loadCachedScript()
 	return cachedAssets[role].path
+}
+
+// PublicInstrumentationAssetPath returns the content-addressed URL path of the
+// HARD-ALLOWLISTED public bundle (scripts.RolePublic) — the only bundle the
+// walkthrough-publish plane may inject into a public page. It is served by the
+// same handleInstrumentationAsset handler under its own hash, so the public
+// page never references the dev (full/chrome/content) inject paths and never
+// loads the dev-control surface.
+func PublicInstrumentationAssetPath() string {
+	return instrumentationAssetPathForRole(scripts.RolePublic)
 }
 
 // handleInstrumentationAsset serves the instrumentation bundle for the reserved
