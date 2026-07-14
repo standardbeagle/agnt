@@ -80,7 +80,7 @@ application-level separation.
     capabilities return the same status, body shape, headers, and approximately
     bounded work. List and metadata discovery are never anonymous.
 13. **Abuse controls are layered.** Creation is limited per publisher and
-    project; reads are limited per capability and source network with bounded
+    project; reads are limited per capability with bounded
     concurrency and response bytes. Limits fail closed without reflecting token
     or private metadata. Operational override cannot bypass authorization,
     schema validation, expiry, or revocation. Production requires the versioned
@@ -784,23 +784,44 @@ All persisted timestamps, lease predicates, expiry decisions, retention cutoffs,
 and transaction ordering use the publication authority's UTC transaction clock;
 application-host wall clocks never decide them. One transaction observes one
 fixed `server_now`, and committed `server_now` values must be nondecreasing. The
-deployment must continuously establish an absolute clock-uncertainty bound of at
-most 1 second against its configured time sources and persist clock-health
-transitions. Unknown uncertainty, uncertainty greater than 1 second, a backward
+deployment must continuously establish an absolute clock-uncertainty bound at
+or below active-policy `clock_uncertainty_ms_max` (never above 1 second) against
+its configured time sources and persist clock-health
+transitions. Let `U` be the active-policy bound. Unknown uncertainty, measured
+uncertainty greater than `U`, a backward
 authority-clock step, or inability to read transaction time marks clock health
 bad.
 
-While clock health is bad, create/confirm/lease/takeover/retention deletion fail
+Elapsed process durations (request latency, benchmark warmup/measurement, and
+in-process timeout waiting) use a monotonic clock only. They never produce a
+persisted deadline. After restart, monotonic state is discarded; leases and
+cutoffs are re-evaluated from persisted authority UTC under the clock-health
+gate, never reconstructed from elapsed host time.
+
+While publication clock health is bad, create/confirm/lease/takeover fail
 closed with no state advance, and anonymous reads return the uniform public 404.
 At a boundary, access is conservative: a bundle is readable only when
-`server_now + 1 second < expires_at`; a live-owner mutation or success is allowed
-only when `server_now + 1 second < lease_expires_at` and all other expiry
-predicates hold. Expiry/revocation workers may act when `server_now - 1 second >=
+`server_now + U < expires_at`; a live-owner mutation or success is allowed
+only when `server_now + U < lease_expires_at` and all other expiry
+predicates hold. Expiry/revocation workers may act when `server_now - U >=
 expires_at`. The interval between those predicates is fail-closed, never an
 extension of access. P6 owns a fake authority clock and exact boundary,
 uncertainty, backward-step, and restart tests.
 Every later `server_now < deadline` expression is shorthand for this conservative
 uncertainty-adjusted predicate; equality and the uncertainty interval fail closed.
+
+Retention deletion has a separate trusted deletion-clock reader and deletion-only
+service identity. It may only read durable bundle expiry/revocation plus cleanup
+outbox state and acknowledge/delete exact object IDs; it cannot create, publish,
+extend expiry, clear revocation, serve content, or mutate any other row. It deletes
+only when revoked or when its independently measured UTC satisfies
+`deletion_now - U >= expires_at`; unknown uncertainty or uncertainty above `U`
+fails that deletion closed. Thus a prolonged bad publication clock
+keeps all reads closed but does not prevent safe expiry/revocation deletion.
+P6 tests restart and monotonic-reset cases plus publication-clock outages lasting
+1 hour, 24 hours, and 31 days, verifying no access/state advance and timely
+deletion through only this constrained path; it also tests bad deletion-clock
+health causes no early deletion.
 
 ## Creation, read, revocation, and restart semantics
 
@@ -1266,59 +1287,137 @@ specific parameter choices remain subject to the gates below.
 ### Normative deployment policy
 
 Production enablement requires one durable, auditable
-`agnt.public-bundle-policy/v1` record owned and approved by the deployment's
-named security owner. Required fields are `schema`, `policy_id`, monotonically
-increasing `version`, `security_owner`, `approved_at`, `approved_by`, `effective_at`,
-`expires_at`,
-`manifest_bytes_max`, `entries_max`, every per-kind/field ceiling in this spec,
-`bundle_lifetime_max`, `primary_delete_within`, `backup_age_within`,
-`create_per_publisher_per_minute`, `create_per_project_per_minute`,
-`read_per_capability_per_minute`, `read_per_source_prefix_per_minute`,
-`create_concurrency_max`, `read_concurrency_max`, `response_bytes_max`,
-`benchmark_cpu_ns_per_request_max`, `benchmark_rss_bytes_max`, and
-`clock_uncertainty_max`.
+`agnt.public-bundle-policy/v1` record. Policy bytes are UTF-8 RFC 8785 canonical
+JSON with exactly these top-level fields: `schema` (the literal string
+`agnt.public-bundle-policy/v1`), `deployment_id`, `policy_id`, `security_owner`
+(non-empty ASCII strings of 1–128 bytes matching `[A-Za-z0-9._~-]+`), `version`
+(uint64 1..2^63-1), `issued_at`, `effective_at`, `expires_at` (canonical UTC
+timestamps with `issued_at <= effective_at < expires_at`),
+`benchmark_harness_sha256` and `benchmark_fixture_generator_sha256` (64 lowercase
+hexadecimal characters), and `limits` (object).
+Missing, extra, duplicate, null, noncanonical, wrong-type, fractional, negative,
+or out-of-range values reject the whole policy. The durable uniqueness scope is
+`(deployment_id,policy_id,version)`; those values and canonical bytes are
+immutable after insertion.
 
-Every field must be present; identifiers/owners are non-empty, timestamps are
-canonical UTC with `approved_at <= effective_at < expires_at`, and numeric
-budgets are positive. Schema/manifest/field/lifetime, response, deletion, backup,
-and clock values may equal or lower the v1 maxima. The v1 response maximum is
-1,064,960 bytes total (1 MiB body plus at most 16 KiB
-headers), and the clock maximum is 1 second. Rate/concurrency/resource budgets
-must be explicitly approved and may only be
-lowered by an in-version update. Any increase requires a new specification and
-policy schema version. Missing, expired/not-yet-effective, unapproved,
-unreadable, duplicate-version, or out-of-range policy disables create and makes
-public reads fail through the uniform 404. Runtime overrides may only lower a
-value and are audit logged.
+`limits` contains exactly the following unsigned-integer fields and units. Zero
+is permitted only for per-kind content ceilings to disable that kind; every
+other minimum is 1. The right column is the normative v1 inclusive maximum.
+
+| Field | Unit | v1 maximum |
+|---|---:|---:|
+| `manifest_bytes_max`, `response_bytes_max` | bytes | 1,048,576; 1,064,960 |
+| `entries_max`, `incident_items_max`, `http_items_max`, `interaction_items_max` | items | 200; 100; 100; 100 |
+| `geometry_primitives_max`, `geometry_points_total_max`, `geometry_points_per_primitive_max` | items | 500; 10,000; 1,024 |
+| `title_scalars_max`, `description_scalars_max`, `message_scalars_max`, `frame_scalars_max`, `label_scalars_max` | Unicode scalars | 120; 2,000; 2,000; 200; 500 |
+| `frames_per_incident_max` | items | 50 |
+| `url_ascii_bytes_max`, `selector_ascii_bytes_max` | bytes | 2,048; 512 |
+| `json_depth_max`, `json_members_per_object_max`, `json_string_bytes_max`, `json_key_bytes_max` | items/bytes | 8; 32; 4,096; 256 |
+| `bundle_lifetime_seconds_max`, `primary_delete_seconds_max`, `backup_age_seconds_max` | seconds | 604,800; 86,400; 2,592,000 |
+| `create_per_publisher_per_minute`, `create_per_project_per_minute`, `read_per_capability_per_minute` | requests | 60; 120; 600 |
+| `create_concurrency_max`, `read_concurrency_max` | active requests | 8; 64 |
+| `benchmark_cpu_ns_per_request_max`, `benchmark_rss_bytes_max` | ns/bytes | 50,000,000; 536,870,912 |
+| `clock_uncertainty_ms_max` | milliseconds | 1,000 |
+
+A policy may equal or lower these baselines. Any increase requires a new
+specification and policy schema. v1 has no runtime overrides: even a lower value
+is activated only through a new immutable higher-version policy.
+
+`policy_digest = SHA-256("agnt-public-bundle-policy-v1\0" || canonical_policy_bytes)`.
+Security approval is a separate durable record containing the exact
+`(deployment_id,policy_id,version,policy_digest,approved_by,approved_at)`, where
+`security_owner` must equal the deployment's independently configured owner and
+the approver is that owner or its configured delegate. Approval of
+an ID/version without the exact digest is invalid. One serializable authority
+transaction verifies canonical bytes, digest, approval, time window, and
+lower-only relation to the active policy, then advances the deployment's single
+`active_policy` pointer only to its highest approved version. Equal/conflicting
+versions fail; rollback is forbidden.
+
+Every request atomically reads and binds the active `(version,digest)` with its
+limiter/authority decision; all later mutations verify that binding. Restart
+reloads and revalidates canonical bytes, digest, approval, and highest version
+before serving. Authority outage, stale/missing approval, digest mismatch,
+unknown active version, or an activation race disables create and makes public
+reads use the uniform 404. P11 tests insert/approval/activation races, restart,
+rollback, corruption, and outage, including proof that no request mixes policy
+versions.
+
+P11 maintains one checked-in positive policy fixture with exact canonical bytes
+and expected `policy_digest`, plus one fixture for every omitted field, unknown
+field, null, duplicate, wrong JSON type, noncanonical encoding, boundary, and
+one-over-range value. Tests parse, reserialize, require byte-for-byte identity,
+and compare the digest before approval lookup.
 
 Aggregate counting is exact: each create attempt counts once against both its
 publisher and project windows before validation; each GET or HEAD counts once
-against both capability and source-prefix windows before lookup; rejected and
+against its capability window before lookup; rejected and
 uniform-404 requests count; one active request occupies one concurrency slot
 until its body is closed; response bytes include headers and body. Retries are
-new requests for abuse counting even when idempotency replays the result. The v1
-contract specifies observable aggregate behavior, not a shared-limiter
-implementation. Distributed limiter and CDN designs are deferred; the v1
-no-CDN routing rule remains normative.
+new requests for abuse counting even when idempotency replays the result. v1
+collects no source-network identifier. All instances use the publication
+authority's one serializable limiter ledger for fixed authority-clock one-minute
+windows `[floor(unix_seconds/60)*60, +60)` and deployment-wide create/read
+concurrency leases; a lease is acquired before handler work and released on body
+close or its authority deadline, with crash recovery by the same ledger. Failure
+to reach it fails closed. The capability limiter key is the existing domain-separated lookup
+digest computed from a syntactically canonical token; every malformed token/path
+uses one shared `invalid` bucket. The ledger never stores raw token/path bytes.
+This is the authoritative aggregate, so v1 permits neither per-instance counters nor sticky
+routing as a substitute. CDN design is deferred; the v1 no-CDN routing rule
+remains normative.
 
 ### Reproducible benchmark and retention evidence
 
-P11 runs the release benchmark on an otherwise idle release-class host using
-synthetic, non-sensitive fixtures: canonical manifests at 1 KiB/1 entry, 64
-KiB/100 mixed entries, and exactly 1 MiB/200 mixed entries; a geometry-heavy
-200-entry/10,000-point manifest; and one-over-limit rejection fixtures for every
-byte/count/depth dimension. Each fixture is exercised for preview, confirm, valid
-GET, uniform invalid GET, and rejection paths at concurrency 1, 8, 32, and the
-policy maxima (deduplicated). Each cell has 30 seconds warmup, 180 seconds measured
-duration, and five fresh-process repetitions with warm caches after warmup.
+P11 runs `agnt-public-bundle-bench/v1` on an otherwise idle release-class host.
+Fixture generation is pinned to `agnt-public-bundle-fixturegen/v1`, seed
+`8f9d3a3b6c8e2f7140bd29a5c67819eeeb5af7f2d7164b3b61ac9e55d7c20411`,
+and the generator source digest equal to the active policy's
+`benchmark_fixture_generator_sha256`. The generator
+emits synthetic canonical manifests at exactly 1 KiB/1 entry, 64 KiB/100 mixed
+entries, and 1 MiB/200 mixed entries; a geometry-heavy 200-entry/10,000-point
+manifest; and one-over-limit fixtures for every byte/count/depth dimension. Its
+artifact manifest records each filename, exact byte length, SHA-256 digest,
+expected operation/result, generator ID, seed, and source digest. Missing or
+different bytes/digests fail the run; production data is forbidden.
 
-For each cell record request count, success/rejection count, throughput, latency
-p50/p95/p99, CPU nanoseconds/request, allocation bytes/request, peak RSS, response
-bytes, and limiter decisions. Percentiles use nearest-rank over all measured
-requests in a repetition; the reported percentile is the median of five
-repetition percentiles, while CPU/allocation/RSS gates use the worst repetition.
-Raw per-request timings and tool/OS/CPU/commit/policy versions are retained with
-the report. Safety ceilings in the manifest, token, clock, expiry, deletion, and
+Operation mapping is fixed: preview and confirm use all four valid fixtures;
+preview rejection uses every over-limit fixture; valid GET uses all four stored
+valid fixtures; uniform invalid GET uses one canonical 43-character absent,
+expired, and revoked capability plus malformed capability segments of lengths 0,
+42, and 44 and a 43-character alternate-alphabet value. Preview/confirm/rejection
+cells run at concurrency `1,8,create_concurrency_max`; GET cells run at
+`1,8,32,read_concurrency_max`; duplicate values are run once. Each cell has 30
+seconds warmup, 180 seconds measured duration, and five fresh-process
+repetitions. Before warmup, the harness loads every valid fixture once and then
+performs one complete unmeasured operation cycle, defining the cache state as
+warm; no other cache priming is allowed.
+
+The harness source digest must equal active-policy
+`benchmark_harness_sha256`. It emits canonical JSON
+`agnt-public-bundle-bench-result/v1` plus an
+`agnt-public-bundle-bench-env/v1` canonical JSON environment manifest containing
+harness/generator IDs and source digests, agnt
+commit and binary digest, policy version/digest, OS/kernel/architecture, CPU
+model/logical count/governor, physical memory, Go version and settings, storage
+type, start/end UTC, and cache-priming state. Process CPU is sampled from
+user+system CPU counters at measurement boundaries; RSS is sampled every 100 ms
+and the maximum retained; allocations come from Go allocation counters at the
+same boundaries. No host-wide CPU or free-memory sample substitutes for these.
+
+For each cell record offered, admitted, completed, success, expected rejection,
+unexpected error, and timeout counts; throughput denominator is 180 seconds;
+latency includes every completed success/rejection/error and timeouts at their
+deadline; CPU and allocation per request divide by all completed requests,
+including errors; zero completed requests fails. Percentiles use nearest-rank
+over all measured latency samples in one repetition (`rank=ceil(p*N)`); the
+reported p50/p95/p99 is the median (third sorted value) of five repetition
+percentiles, while CPU/allocation/RSS gates use the worst repetition. Response
+byte accounting is protocol-independent canonical serialization: for each
+header sorted by lowercase name then value, count `lowercase-name ":" SP value
+CRLF`, count repeated fields separately, then one final CRLF and exact body
+bytes; status-line/framing bytes are excluded. Raw samples and manifests are
+retained. Safety ceilings in the manifest, token, clock, expiry, deletion, and
 response contracts are never tuned by benchmarks. Only policy rate,
 concurrency, and CPU/RSS budgets are tunable downward. Release fails if any cell
 misses its policy budget, any limiter count is inexact, or evidence is absent.
@@ -1331,9 +1430,18 @@ viewer-network identifier is collected for benchmarking.
 
 ### Deterministic capability-generator tests
 
-P6 injects a byte reader and proves: exactly one 32-byte read is requested; a
-short read, `(n < 32,nil)`, or any reader error returns an error and persists,
-logs, and returns no token-derived value; a fixed 32-byte vector encodes as the
+P6 injects a byte reader and the generator uses `io.ReadFull` semantics plus a
+no-progress guard into one new 32-byte buffer. Success consumes exactly 32 bytes
+and performs no further read;
+the underlying reader may validly deliver chunks (for example 1+7+24), and tests
+prove every chunking partition yields the same token. `(32,io.EOF)` succeeds as
+a full read; EOF with zero bytes returns `io.EOF`; EOF after 1–31 total bytes
+returns `io.ErrUnexpectedEOF`; a non-EOF error before 32 bytes returns that error;
+an error returned with bytes that bring the total to exactly 32 is ignored per
+`io.ReadFull` semantics and succeeds;
+two consecutive `(0,nil)` results are rejected as `io.ErrNoProgress` rather than looping. On
+every failure, the implementation zeroizes the partial buffer and does not
+persist, log, or return any token-derived value. A fixed 32-byte vector encodes as the
 exact 43-character canonical unpadded base64url token and round-trips to exactly
 32 bytes. The all-zero input encodes exactly as
 `AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA`, and its capability lookup digest
@@ -1353,12 +1461,12 @@ contract, not sampled output statistics.
 
 | Invariants / concern | Owner | Required gate |
 |---|---|---|
-| 2–3 capability generation, digest, reveal-once, non-leakage | P6 | deterministic generator tests above; fixed digest/domain vectors; storage/log/error scans; constant-time comparator code review |
+| 2–3 capability generation, digest, reveal-once, non-leakage | P6 | deterministic full-read/chunk/error tests above; fixed encoding/digest/domain vectors; storage/log/error scans; constant-time comparator code review |
 | 5–9 inert snapshot, allowlist, bounds, URL-as-text | P2 | every positive/malicious P1a/P1b fixture; bounded decoder and aggregate-count tests; forbidden-kind zero-payload-read instrumentation; parser fuzzing |
 | 1, 11 publisher scope, preview/confirm binding, CSRF/idempotency | P7 | scope-before-selection and revalidation tests; exact canonical-byte confirmation; race/crash/idempotency transition matrix |
-| 15–16, 18 durable authority, clock, atomicity, expiry/revocation/restart | P6 | crash/torn-commit/restart/outage tests; fake-clock ±1-second boundary/backward-step/uncertainty cases; deletion and operation-recovery matrix |
+| 15–16, 18 durable authority, clock, atomicity, expiry/revocation/restart | P6 | crash/torn-commit/restart/outage tests; authority-UTC/monotonic-reset and ±1-second boundary cases; prolonged bad-clock plus independent deletion-clock tests; deletion and operation-recovery matrix |
 | 4, 10, 12 least-privilege public routing and uniform response | P10 | exact route/method/path matrix; success/error headers; uniform invalid/expired/revoked response; compile-time `PublicBundleReader` dependency graph cannot reach daemon/proxy/filesystem/MCP/session interfaces |
-| 13–14 abuse, privacy, retention, operational readiness | P11 | valid approved policy; exact aggregate limiter tests; reproducible benchmark and deletion/restore drills above; audit/token non-leak review |
+| 13–14 abuse, privacy, retention, operational readiness | P11 | canonical policy/digest/approval/activation/restart tests; single-ledger aggregate limiter tests; pinned-fixture versioned-harness benchmark and deletion/restore drills; audit/token non-leak review |
 
 All rows are blocking. P11 records the commit, policy version, evidence artifact
 digests, owner approvals, and pass/fail result in the release record. An absent
