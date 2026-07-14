@@ -83,31 +83,29 @@ application-level separation.
     project; reads are limited per capability and source network with bounded
     concurrency and response bytes. Limits fail closed without reflecting token
     or private metadata. Operational override cannot bypass authorization,
-    schema validation, expiry, or revocation.
+    schema validation, expiry, or revocation. Production requires the versioned
+    deployment policy below; absent, invalid, or higher-than-spec policy fails closed.
 14. **Privacy is minimized.** Selection is explicit and previewable. Secrets,
     request/response bodies, cookies, authorization headers, storage values,
     environment values, filesystem paths, source code, and user-entered form
     values are forbidden even if present in source logs. Redaction is a backstop,
     not permission to collect.
 15. **Expiry and revocation are authoritative.** Every bundle has a required
-    expiry. The v1 maximum lifetime of 7 days is a provisional safety ceiling,
-    not a usability or privacy finding. Revocation immediately marks the
+    expiry. The v1 maximum lifetime of 7 days is a normative safety ceiling,
+    not a usability or privacy finding, and policy may only lower it. Revocation immediately marks the
     durable record before success is returned. Data-plane checks read or
     coherently invalidate against that authority; stale caches may not extend
     access.
 16. **Restart never resurrects access.** Durable bundle, expiry, and revocation
     records survive service restart. In-memory caches are disposable. If the
     authority is unavailable or record integrity cannot be verified, public reads
-    fail closed. The v1 targets of deletion within 24 hours and backup aging
-    within 30 days are provisional and cannot serve public reads; the validation
-    gates below must confirm or lower them before release.
+    fail closed. Primary deletion must complete within 24 hours and backup aging
+    within 30 days; backup copies can never serve public reads.
 17. **Audit without capability leakage.** Create, revoke, expire, validation
     rejection, and rate-limit events record bundle ID, publisher identity, scope,
     counts, byte sizes, and outcome. They never record raw tokens or forbidden
-    content. If the provisional validation authorizes viewer-network collection,
-    it is minimized (short-lived keyed prefix or aggregate), access-controlled,
-    and retained no longer than the provisional 7-day ceiling; otherwise it is
-    not collected.
+    content. Viewer-network collection is off in v1; enabling it requires a new
+    schema/version and privacy review.
 18. **Failure is atomic.** A bundle becomes readable only after validation,
     normalization, durable content write, metadata write, and capability-digest
     write succeed. Partial records are unreachable and garbage-collected.
@@ -134,10 +132,8 @@ Data-plane routes reject cookies as an authorization source and never set them.
 ## Public-bundle allowlist and limits
 
 Limits apply to normalized UTF-8 output and are enforced both per field and for
-the aggregate bundle. These are provisional P1 safety ceilings, chosen to bound
-memory, storage, and abuse rather than claimed optimal values. Lower deployment
-limits are allowed; raising them changes this security contract and requires
-review plus the operational validation below.
+the aggregate bundle. They are normative v1 safety ceilings. A deployment policy
+may only lower them; raising one requires a new specification/schema version.
 
 | Item | Allowed public representation | Hard limit |
 |---|---|---|
@@ -782,6 +778,30 @@ behavior.
 | design/sketch state | select numeric primitives, validate finite ranges, normalize labels | versioned geometry data |
 | everything else | no transform exists | rejected |
 
+### Authority clock contract
+
+All persisted timestamps, lease predicates, expiry decisions, retention cutoffs,
+and transaction ordering use the publication authority's UTC transaction clock;
+application-host wall clocks never decide them. One transaction observes one
+fixed `server_now`, and committed `server_now` values must be nondecreasing. The
+deployment must continuously establish an absolute clock-uncertainty bound of at
+most 1 second against its configured time sources and persist clock-health
+transitions. Unknown uncertainty, uncertainty greater than 1 second, a backward
+authority-clock step, or inability to read transaction time marks clock health
+bad.
+
+While clock health is bad, create/confirm/lease/takeover/retention deletion fail
+closed with no state advance, and anonymous reads return the uniform public 404.
+At a boundary, access is conservative: a bundle is readable only when
+`server_now + 1 second < expires_at`; a live-owner mutation or success is allowed
+only when `server_now + 1 second < lease_expires_at` and all other expiry
+predicates hold. Expiry/revocation workers may act when `server_now - 1 second >=
+expires_at`. The interval between those predicates is fail-closed, never an
+extension of access. P6 owns a fake authority clock and exact boundary,
+uncertainty, backward-step, and restart tests.
+Every later `server_now < deadline` expression is shorthand for this conservative
+uncertainty-adjusted predicate; equality and the uncertainty interval fail closed.
+
 ## Creation, read, revocation, and restart semantics
 
 Creation is an authenticated two-phase protocol:
@@ -1202,8 +1222,7 @@ view. Authorization failure uses the uniform public failure response.
 
 Revocation is idempotent. Once durable revocation commits, every subsequent read
 must fail through every application cache. Public responses therefore use
-`no-store`; CDN support is explicitly deferred from v1 and adding one reopens the
-revocation and capability-leakage threat model. Restart rebuilds disposable
+`no-store`; v1 forbids CDN routing for `/p/`. Restart rebuilds disposable
 indexes only from durable authority. Missing/corrupt authority, clock uncertainty beyond the
 documented tolerance, or schema incompatibility fails closed.
 
@@ -1235,61 +1254,115 @@ specific parameter choices remain subject to the gates below.
 
 | Decision | Repository evidence | Independent evidence | Status |
 |---|---|---|---|
-| Public state has a durable authority; daemon memory is only cache | `.claude/rules/daemon-architecture.md` defines daemon in-memory state as cache and requires reconciliation to canonical truth | [NIST SP 800-53 Rev. 5, CP-9/SC controls](https://csrc.nist.gov/pubs/sp/800/53/r5/upd1/final); [RFC 6750 bearer-token threat model](https://www.rfc-editor.org/rfc/rfc6750.html#section-5) | architecture-aligned decision |
+| Public state has a durable authority; daemon memory is only cache | `.claude/rules/daemon-architecture.md` defines daemon in-memory state as cache and requires reconciliation to canonical truth | No cited source proves this repository's storage implementation. NIST CP-9 supports recoverability only at the control-class level. | implementation hypothesis; P6 crash/restart, torn-commit, and authority-outage tests are the direct evidence gate |
 | Publisher scope is resolved before selection and again at confirmation | `.claude/rules/daemon-architecture.md` names `resolveScope` as the bridge from session identity to scoped authority | [OWASP Authorization Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Authorization_Cheat_Sheet.html); [NIST SP 800-207 zero-trust access decisions](https://csrc.nist.gov/pubs/sp/800/207/final) | architecture-aligned decision |
-| Public handler cannot inherit proxy/daemon mutation powers | `.claude/rules/proxy-events.md` documents browser-originated proxy events; `.claude/rules/daemon-architecture.md` documents daemon tool/session boundaries, so exposing either interface would cross the viewer boundary | [RFC 6750 §5](https://www.rfc-editor.org/rfc/rfc6750.html#section-5); [OWASP SSRF Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html) | architecture-aligned decision |
-| Token generation uses 256 CSPRNG bits | no existing repository public-token primitive is designated; implementation must use the platform cryptographic RNG | [NIST SP 800-90 series](https://csrc.nist.gov/Projects/random-bit-generation/publications); [RFC 8030 §8.3](https://www.rfc-editor.org/rfc/rfc8030.html#section-8.3) requires capability URLs to carry substantial random entropy | 256 bits is a conservative design choice; validate generator and encoding with deterministic tests plus statistical health/error-path tests, not home-grown randomness tests |
+| Public handler cannot inherit proxy/daemon mutation powers | `.claude/rules/proxy-events.md` documents browser-originated proxy events; `.claude/rules/daemon-architecture.md` documents daemon tool/session boundaries, so exposing either interface would cross the viewer boundary | RFC 6750 and OWASP SSRF guidance motivate least privilege but do not prove the Go dependency graph. | implementation hypothesis; P10 compile-time interface construction plus an independent dependency-graph review/test is the direct evidence gate |
+| Token generation uses 256 CSPRNG bits | no existing repository public-token primitive is designated; implementation must use the platform cryptographic RNG | [NIST SP 800-90 series](https://csrc.nist.gov/Projects/random-bit-generation/publications); [RFC 8030 §8.3](https://www.rfc-editor.org/rfc/rfc8030.html#section-8.3) requires capability URLs to carry substantial random entropy | deterministic contract tests only: exact reads, error propagation, encoding, domain separation, and non-leakage; statistical RNG tests are forbidden because they neither prove CSPRNG quality nor fail deterministically |
 | Raw tokens are not stored; a versioned SHA-256 digest is stored | daemon logs and snapshots are existing leak surfaces, so raw capability persistence would widen compromise impact | [RFC 6819 §5.1.4.1.3](https://www.rfc-editor.org/rfc/rfc6819.html#section-5.1.4.1.3) recommends hashes instead of cleartext credentials; [OWASP Forgot Password guidance](https://cheatsheetseries.owasp.org/cheatsheets/Forgot_Password_Cheat_Sheet.html) requires random URL tokens to be stored securely | digest construction is a high-entropy token lookup design, not password hashing; hypothesis: SHA-256 domain separation is sufficient—security review must confirm no alternate token domain or offline low-entropy input exists |
 | Final digest verification is constant-time | Go provides `crypto/subtle.ConstantTimeCompare`; no custom comparator is needed | [Go `crypto/subtle` documentation](https://pkg.go.dev/crypto/subtle#ConstantTimeCompare); [MITRE CWE-208](https://cwe.mitre.org/data/definitions/208.html) describes observable timing discrepancies as an information leak | required defense-in-depth; benchmark variance is not proof, so code review must verify a single constant-time final comparison after bounded lookup |
 | No-source CSP and referrer suppression | proxy events may contain URLs and browser data; the public view needs no active frontend capability | [W3C Content Security Policy Level 3](https://www.w3.org/TR/CSP3/); [W3C Referrer Policy](https://www.w3.org/TR/referrer-policy/) | standards-backed decision |
-| Data minimization and bounded retention | proxy traffic logs include error, interaction, mutation, screenshot, and design data; publishing all log types would violate the allowlist | [NIST Privacy Framework](https://www.nist.gov/privacy-framework); [OWASP Logging Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Logging_Cheat_Sheet.html) | minimization is required; exact lifetimes are provisional |
+| Data minimization and bounded retention | proxy traffic logs include error, interaction, mutation, screenshot, and design data; publishing all log types would violate the allowlist | [NIST Privacy Framework](https://www.nist.gov/privacy-framework); [OWASP Logging Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Logging_Cheat_Sheet.html) | minimization and v1 maximum lifetimes are normative; deployments may lower them through policy |
 
-### Provisional limit and retention validation
+### Normative deployment policy
 
-The 1 MiB/200-entry/field ceilings, 7-day public lifetime, 24-hour deletion
-target, 30-day backup aging target, 7-day audit-network-data lifetime, and abuse
-thresholds are hypotheses. Neither repository telemetry nor the independent
-guidance above establishes those exact numbers. Before implementation is enabled
-outside a development environment, operators must collect privacy-preserving
-evidence from authenticated local previews only and record:
+Production enablement requires one durable, auditable
+`agnt.public-bundle-policy/v1` record owned and approved by the deployment's
+named security owner. Required fields are `schema`, `policy_id`, monotonically
+increasing `version`, `security_owner`, `approved_at`, `approved_by`, `effective_at`,
+`expires_at`,
+`manifest_bytes_max`, `entries_max`, every per-kind/field ceiling in this spec,
+`bundle_lifetime_max`, `primary_delete_within`, `backup_age_within`,
+`create_per_publisher_per_minute`, `create_per_project_per_minute`,
+`read_per_capability_per_minute`, `read_per_source_prefix_per_minute`,
+`create_concurrency_max`, `read_concurrency_max`, `response_bytes_max`,
+`benchmark_cpu_ns_per_request_max`, `benchmark_rss_bytes_max`, and
+`clock_uncertainty_max`.
 
-- canonical manifest bytes and per-kind/aggregate entry counts at p50, p95, p99,
-  plus rejection frequency; never preview text, tokens, URLs, or selectors;
-- preview-to-confirm delay and requested expiry distribution, to test whether the
-  10-minute preview and 7-day bundle ceilings meet the intended workflow;
-- create/read request rate, bounded concurrency, response bytes, rejection rate,
-  and CPU/memory cost under an authorized load test, to select deployment-local
-  abuse thresholds without assuming a shared-limiter topology;
-- verified deletion latency from expiry/revoke through primary storage and each
-  backup class, using synthetic bundle IDs and restore drills; and
-- a privacy/security sign-off that either accepts the ceilings or lowers them.
+Every field must be present; identifiers/owners are non-empty, timestamps are
+canonical UTC with `approved_at <= effective_at < expires_at`, and numeric
+budgets are positive. Schema/manifest/field/lifetime, response, deletion, backup,
+and clock values may equal or lower the v1 maxima. The v1 response maximum is
+1,064,960 bytes total (1 MiB body plus at most 16 KiB
+headers), and the clock maximum is 1 second. Rate/concurrency/resource budgets
+must be explicitly approved and may only be
+lowered by an in-version update. Any increase requires a new specification and
+policy schema version. Missing, expired/not-yet-effective, unapproved,
+unreadable, duplicate-version, or out-of-range policy disables create and makes
+public reads fail through the uniform 404. Runtime overrides may only lower a
+value and are audit logged.
 
-Release fails closed if evidence is absent, deletion/restore drills exceed the
-targets, p99 resource use exceeds the implementation budget, or any proposed
-increase lacks a new threat review. Evidence may justify lower limits directly;
-higher limits or longer retention require an updated specification. Production
-viewer IP collection is optional and defaults off until a documented abuse case,
-privacy review, and deletion verification justify it.
+Aggregate counting is exact: each create attempt counts once against both its
+publisher and project windows before validation; each GET or HEAD counts once
+against both capability and source-prefix windows before lookup; rejected and
+uniform-404 requests count; one active request occupies one concurrency slot
+until its body is closed; response bytes include headers and body. Retries are
+new requests for abuse counting even when idempotency replays the result. The v1
+contract specifies observable aggregate behavior, not a shared-limiter
+implementation. Distributed limiter and CDN designs are deferred; the v1
+no-CDN routing rule remains normative.
 
-## Release gates
+### Reproducible benchmark and retention evidence
 
-Implementation remains incomplete until tests prove: entropy and reveal-once
-storage; token absence from all logs/errors; constant-time verification path;
-the exact endpoint/method matrix; preview ownership/expiry/digest binding,
-source-revision revalidation, confirmation of the exact displayed canonical
-bytes, and rejection of confirmation after scope/source changes; metadata-only
-source-kind rejection before any payload copy or staging, including instrumented
-proof that forbidden and unknown kinds cause zero payload reads; uniform
-invalid/expired/revoked responses;
-scope and CSRF enforcement; every field/count/byte/decode limit; unknown-field
-rejection; screenshot selection and every original/derived/binary representation
-rejected before staging and persistence; proof that no raster bytes can be
-retrieved; HTML/JS/SVG/polyglot and SSRF payload rejection; required headers on
-success and error; immediate revoke across caches; restart persistence and
-fail-closed authority outage; retention deletion; and fuzzing of token/path/JSON,
-selector and URL parsers.
+P11 runs the release benchmark on an otherwise idle release-class host using
+synthetic, non-sensitive fixtures: canonical manifests at 1 KiB/1 entry, 64
+KiB/100 mixed entries, and exactly 1 MiB/200 mixed entries; a geometry-heavy
+200-entry/10,000-point manifest; and one-over-limit rejection fixtures for every
+byte/count/depth dimension. Each fixture is exercised for preview, confirm, valid
+GET, uniform invalid GET, and rejection paths at concurrency 1, 8, 32, and the
+policy maxima (deduplicated). Each cell has 30 seconds warmup, 180 seconds measured
+duration, and five fresh-process repetitions with warm caches after warmup.
 
-An adversarial reviewer must additionally verify that the public handler's
-dependency graph cannot reach daemon mutation, proxy execution, filesystem, MCP,
-or live-session interfaces. Any future endpoint, field, MIME type, third-party
-origin, cache, or lifetime increase reopens the threat model.
+For each cell record request count, success/rejection count, throughput, latency
+p50/p95/p99, CPU nanoseconds/request, allocation bytes/request, peak RSS, response
+bytes, and limiter decisions. Percentiles use nearest-rank over all measured
+requests in a repetition; the reported percentile is the median of five
+repetition percentiles, while CPU/allocation/RSS gates use the worst repetition.
+Raw per-request timings and tool/OS/CPU/commit/policy versions are retained with
+the report. Safety ceilings in the manifest, token, clock, expiry, deletion, and
+response contracts are never tuned by benchmarks. Only policy rate,
+concurrency, and CPU/RSS budgets are tunable downward. Release fails if any cell
+misses its policy budget, any limiter count is inexact, or evidence is absent.
+
+P11 also runs five primary deletion drills and one restore drill per configured
+backup class using synthetic bundle IDs. Worst observed primary deletion must be
+at most 24 hours and every restored backup must exclude data older than 30 days;
+failure blocks release. No production preview content, URL, selector, token, or
+viewer-network identifier is collected for benchmarking.
+
+### Deterministic capability-generator tests
+
+P6 injects a byte reader and proves: exactly one 32-byte read is requested; a
+short read, `(n < 32,nil)`, or any reader error returns an error and persists,
+logs, and returns no token-derived value; a fixed 32-byte vector encodes as the
+exact 43-character canonical unpadded base64url token and round-trips to exactly
+32 bytes. The all-zero input encodes exactly as
+`AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA`, and its capability lookup digest
+is exactly
+`c60d2aa994906a20369ffc5aeda33cd79c2519075702cf1a0c28801a64830c26`
+for `SHA-256("agnt-public-bundle-v1\0" || token_ascii)`. Padded,
+noncanonical, wrong-length, and alternate-alphabet forms
+reject; capability, preview ID, bundle ID, CSRF, idempotency, and digest domains
+use distinct fixed framing vectors; stored lookup material equals only the
+specified domain-separated digest; raw bytes/token/path are absent from storage,
+logs, errors, audit, telemetry, snapshots, and replay responses. Statistical
+frequency, runs, entropy-estimator, and RNG health tests are forbidden. The OS
+CSPRNG implementation is trusted through the platform API and exact error-path
+contract, not sampled output statistics.
+
+## Invariant ownership and release gates
+
+| Invariants / concern | Owner | Required gate |
+|---|---|---|
+| 2–3 capability generation, digest, reveal-once, non-leakage | P6 | deterministic generator tests above; fixed digest/domain vectors; storage/log/error scans; constant-time comparator code review |
+| 5–9 inert snapshot, allowlist, bounds, URL-as-text | P2 | every positive/malicious P1a/P1b fixture; bounded decoder and aggregate-count tests; forbidden-kind zero-payload-read instrumentation; parser fuzzing |
+| 1, 11 publisher scope, preview/confirm binding, CSRF/idempotency | P7 | scope-before-selection and revalidation tests; exact canonical-byte confirmation; race/crash/idempotency transition matrix |
+| 15–16, 18 durable authority, clock, atomicity, expiry/revocation/restart | P6 | crash/torn-commit/restart/outage tests; fake-clock ±1-second boundary/backward-step/uncertainty cases; deletion and operation-recovery matrix |
+| 4, 10, 12 least-privilege public routing and uniform response | P10 | exact route/method/path matrix; success/error headers; uniform invalid/expired/revoked response; compile-time `PublicBundleReader` dependency graph cannot reach daemon/proxy/filesystem/MCP/session interfaces |
+| 13–14 abuse, privacy, retention, operational readiness | P11 | valid approved policy; exact aggregate limiter tests; reproducible benchmark and deletion/restore drills above; audit/token non-leak review |
+
+All rows are blocking. P11 records the commit, policy version, evidence artifact
+digests, owner approvals, and pass/fail result in the release record. An absent
+owner, artifact, or gate result is failure. P2/P6/P7/P10 provide their artifacts;
+P11 verifies but cannot waive a failed safety gate. New endpoints, fields, MIME
+types, third-party origins, public caches, or larger/longer ceilings require a new
+specification version rather than an operational exception.
