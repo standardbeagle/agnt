@@ -1,189 +1,415 @@
-// Read-only walkthrough VIEWER for the public walkthrough-publish plane (P4).
+// Public walkthrough PLAYER for the walkthrough-publish plane (P5).
 //
-// This is the PLAYER half of the walkthrough surface: it renders a published
-// walkthrough script (steps with narration + an optional target selector + an
-// advance rule) as a floating card, highlights the current target, and lets a
-// visitor step Next/Prev or auto-advance. It is deliberately a strict subset of
-// walkthrough.js: it has NO authoring UI, NO agent-control transport, NO WS/exec
-// channel, and NO `proxy exec` reach into other frames. It never evaluates
-// author-supplied strings as code or markup — narration is written with
-// textContent, targets are resolved with querySelector against a validated
-// simple-selector grammar, and the highlight is a plain positioned box. It runs
-// unchanged under `script-src 'self'` (P1 INV-12): no code-eval sinks, no dynamic
-// function compilation, no inline/dynamic code, no screenshot-capture library,
-// and none of the dev-control namespace. (This header is deliberately free of the
-// literal tokens the public forbidden-symbol scan bans.)
+// This is the player half of the public walkthrough surface. It runs ENTIRELY
+// client-side on the public plane: NO agent, NO WebSocket, NO exec channel, NO
+// dev-control namespace, NO cross-frame reach. It renders a published
+// walkthrough (the P2 PublishedWalkthrough shape) as an accessible floating
+// card, binds + applies the bound variant via the P3 variant engine BEFORE the
+// first step, highlights each step's target, and advances the same three ways
+// the live walkthrough does — auto / click-target / wait — but driven purely
+// in-page (timers + DOM listeners) with zero transport.
+//
+// Shared normalization (NOT a fork): the step model this player consumes is the
+// SAME one P2 defines (internal/publish/schema.go Advance/Step) and the live
+// walkthrough.js normalizes to — advance.type in {auto, click-target, wait},
+// empty type defaults to 'auto', an auto with ms<=0 gets the 5000ms default
+// (internal/publish/normalize.go defaultAutoMS), wait.when in
+// {url-contains, element-present, element-visible}. The ONLY deliberate
+// divergence from walkthrough.js's normalizeScript is error POLICY: the public
+// player degrades an invalid step to a manual (user-driven) step instead of
+// throwing, because the public plane must never crash a visitor's page.
+//
+// Security (P1 spec §4/§6, INV-6/INV-12): it never evaluates author-supplied
+// strings as code or markup. Narration/title are written with textContent only,
+// targets are resolved with querySelector ONLY after passing the P2/P3
+// restricted selector grammar (a target that fails the grammar or resolves to
+// nothing is treated as "no target" — never handed to querySelector, never
+// followed as a link, never navigated to, never executed), and the highlight is
+// a plain positioned pointer-events:none box. It runs unchanged under
+// `script-src 'self'`: no code-eval sinks, no dynamic function compilation, no
+// screenshot-capture library, none of the dev-control namespace. (This header is
+// deliberately free of the literal tokens the public forbidden-symbol scan bans.)
 //
 // Public surface (what the public injector / publish plane calls):
-//   window.__walkthroughViewer.create(script, opts) -> viewer
-// viewer:
-//   start()            render the panel at step 0
+//   window.__walkthroughViewer.create(walkthrough, opts) -> player
+// opts: { variantEngine?, variantId?, routeBinding?, root?, reducedMotion? }
+// player:
+//   start()            bind+apply the variant, then render at step 0
 //   next() / prev()    step manually
 //   goTo(index)        jump to a step
 //   activeIndex()      current step index, or -1 before start
 //   stepCount()        number of steps
+//   activeVariant()    variant id applied by the bound engine, or null
 //   missingTarget()    true if the current step's target matched nothing
-//   destroy()          remove the panel + highlight + timers
+//   destroy()          revert variant + remove card/highlight + all timers/listeners
+//   trackedTimerCount()    live timers/intervals (0 after destroy) — teardown gate
+//   trackedListenerCount() live DOM listeners (0 after destroy) — teardown gate
 //
 // It is INERT until create() is called, so it is safe to ship in every bundle
-// (the public allowlist selects it; the dev bundles never invoke it).
+// (the public allowlist selects it; the dev bundles never invoke it). The IIFE
+// keeps a leading space after `function` so wrapModule leaves it isolated.
 
 (function () {
   'use strict';
 
   try {
-    var VIEWER_ID = '__wt_viewer_panel';
-    var HILITE_ID = '__wt_viewer_highlight';
-    // Simple-selector grammar the viewer will resolve. Anchored, no combinators
-    // beyond descendant/child, no attribute/script sinks. A target that does not
-    // match this grammar is treated as "no target" rather than passed to
-    // querySelector, so an author cannot smuggle an exotic selector.
-    var SAFE_SELECTOR_RE = /^[#.]?[A-Za-z_][A-Za-z0-9_-]*(?:[ >][#.]?[A-Za-z_][A-Za-z0-9_-]*)*$/;
+    var CARD_ID = '__wt_player_card';
+    var HILITE_ID = '__wt_player_highlight';
+    var LIVE_ID = '__wt_player_live';
+    // Default auto dwell — mirrors internal/publish/normalize.go defaultAutoMS
+    // and walkthrough.js's auto fallback (both 5000), replacing the P4 stub's
+    // forked default so the player consumes the shared P2 normalization.
+    var DEFAULT_AUTO_MS = 5000;
+    var MAX_AUTO_MS = 600000;
+    var POLL_MS = 300; // mirrors walkthrough.js wait-condition poll cadence
     var MAX_STEPS = 64;
     var MAX_TEXT = 2048;
 
+    // Local restricted selector grammar. It is a SUBSET-equivalent fallback for
+    // the P2/P3 grammar: when window.__variantEngine.validateSelector is present
+    // we defer to it (single source of truth); otherwise we use this anchored
+    // regex. Either way a target that fails is treated as "no target" and is
+    // NEVER passed to querySelector — an author cannot smuggle an exotic selector,
+    // a javascript:/href sink, or a code string through the target field.
+    var SAFE_SELECTOR_RE = /^[#.]?[A-Za-z_][A-Za-z0-9_-]*(?:[ >][#.]?[A-Za-z_][A-Za-z0-9_-]*)*$/;
+
     function isSafeSelector(sel) {
-      return typeof sel === 'string' && sel.length > 0 && sel.length <= 256 &&
-        SAFE_SELECTOR_RE.test(sel);
+      if (typeof sel !== 'string' || sel.length === 0 || sel.length > 256) { return false; }
+      try {
+        if (window.__variantEngine && typeof window.__variantEngine.validateSelector === 'function') {
+          return !!window.__variantEngine.validateSelector(sel).ok;
+        }
+      } catch (e) { /* fall through to local grammar */ }
+      return SAFE_SELECTOR_RE.test(sel);
     }
 
     function clampText(s) {
-      if (typeof s !== 'string') return '';
+      if (typeof s !== 'string') { return ''; }
       return s.length > MAX_TEXT ? s.slice(0, MAX_TEXT) : s;
     }
 
-    function normalizeScript(script) {
-      var steps = (script && Array.isArray(script.steps)) ? script.steps : [];
+    // normalizeStep mirrors walkthrough.js normalizeScript + internal/publish
+    // NormalizeStep, degrading (never throwing) an invalid step to 'manual'.
+    function normalizeStep(s) {
+      s = s || {};
+      var target = isSafeSelector(s.target) ? s.target : '';
+      var adv = s.advance || {};
+      var type = adv.type;
+      if (type === undefined || type === null || type === '') {
+        type = 'auto'; // P2 NormalizeStep: empty advance type defaults to auto
+      }
+      if (type !== 'auto' && type !== 'click-target' && type !== 'wait') {
+        type = 'manual'; // unknown type: user-driven, never crash
+      }
+      if (type === 'click-target' && !target) {
+        type = 'manual'; // click-target with no valid target degrades to manual
+      }
+      var when = adv.when;
+      if (type === 'wait' &&
+          when !== 'url-contains' && when !== 'element-present' && when !== 'element-visible') {
+        type = 'manual'; // wait with an invalid condition degrades to manual
+      }
+      var ms = (typeof adv.ms === 'number' && adv.ms > 0) ? Math.min(adv.ms, MAX_AUTO_MS) : DEFAULT_AUTO_MS;
+      return {
+        title: clampText(s.title || ''),
+        body: clampText(s.body || s.narration || s.text || ''),
+        target: target,
+        advance: { type: type, ms: ms, when: when || '', value: clampText(adv.value || '') }
+      };
+    }
+
+    function normalizeWalkthrough(wt) {
+      var raw = (wt && Array.isArray(wt.steps)) ? wt.steps : [];
       var out = [];
-      for (var i = 0; i < steps.length && out.length < MAX_STEPS; i++) {
-        var s = steps[i] || {};
-        out.push({
-          narration: clampText(s.narration || s.text || ''),
-          target: isSafeSelector(s.target) ? s.target : '',
-          advance: (s.advance === 'auto' || s.advance === 'click') ? s.advance : 'manual',
-          holdMs: (typeof s.holdMs === 'number' && s.holdMs > 0) ? Math.min(s.holdMs, 60000) : 4000
-        });
+      for (var i = 0; i < raw.length && out.length < MAX_STEPS; i++) {
+        out.push(normalizeStep(raw[i]));
       }
       return out;
     }
 
-    function create(script, opts) {
-      opts = opts || {};
-      var steps = normalizeScript(script);
-      var index = -1;
-      var panel = null;
-      var narrationEl = null;
-      var counterEl = null;
-      var highlight = null;
-      var timer = null;
-      var lastTargetMissing = false;
+    function prefersReducedMotion() {
+      try {
+        return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+      } catch (e) { return false; }
+    }
 
-      function clearTimer() {
-        if (timer) { clearTimeout(timer); timer = null; }
+    function create(walkthrough, opts) {
+      opts = opts || {};
+      var steps = normalizeWalkthrough(walkthrough);
+      var reducedMotion = (typeof opts.reducedMotion === 'boolean') ? opts.reducedMotion : prefersReducedMotion();
+
+      var index = -1;
+      var card = null;
+      var titleEl = null;
+      var bodyEl = null;
+      var counterEl = null;
+      var liveEl = null;
+      var highlight = null;
+      var lastFocused = null;
+      var lastTargetMissing = false;
+      var destroyed = false;
+
+      // ---- Teardown bookkeeping: every timer + listener is tracked so destroy
+      // and each step transition remove them ALL — no orphaned timers/listeners.
+      var timers = [];    // setTimeout ids
+      var intervals = []; // setInterval ids
+      var listeners = []; // { target, type, handler, opts }
+      var variantEngine = null; // the P3 engine we created (reverted on destroy)
+
+      function setTimer(fn, ms) { var id = setTimeout(fn, ms); timers.push(id); return id; }
+      function setPoll(fn, ms) { var id = setInterval(fn, ms); intervals.push(id); return id; }
+      function addListener(target, type, handler, listenerOpts) {
+        target.addEventListener(type, handler, listenerOpts);
+        listeners.push({ target: target, type: type, handler: handler, opts: listenerOpts });
+      }
+      function clearTimers() {
+        for (var i = 0; i < timers.length; i++) { clearTimeout(timers[i]); }
+        for (var j = 0; j < intervals.length; j++) { clearInterval(intervals[j]); }
+        timers = [];
+        intervals = [];
+      }
+      function removeListeners(pred) {
+        var kept = [];
+        for (var i = 0; i < listeners.length; i++) {
+          var l = listeners[i];
+          if (pred && !pred(l)) { kept.push(l); continue; }
+          try { l.target.removeEventListener(l.type, l.handler, l.opts); } catch (e) { /* ignore */ }
+        }
+        listeners = kept;
       }
 
+      // ---- Highlight (plain positioned box, pointer-events:none) --------------
       function removeHighlight() {
-        if (highlight && highlight.parentNode) {
-          highlight.parentNode.removeChild(highlight);
-        }
+        if (highlight && highlight.parentNode) { highlight.parentNode.removeChild(highlight); }
         highlight = null;
       }
-
       function positionHighlight(el) {
-        removeHighlight();
         if (!el || typeof el.getBoundingClientRect !== 'function') {
+          removeHighlight();
           lastTargetMissing = true;
           return;
         }
         lastTargetMissing = false;
         var r = el.getBoundingClientRect();
-        highlight = document.createElement('div');
-        highlight.id = HILITE_ID;
-        var st = highlight.style;
-        st.position = 'fixed';
-        st.left = r.left + 'px';
-        st.top = r.top + 'px';
-        st.width = r.width + 'px';
-        st.height = r.height + 'px';
-        st.border = '2px solid #4c8bf5';
-        st.borderRadius = '4px';
-        st.boxShadow = '0 0 0 9999px rgba(0,0,0,0.35)';
-        st.pointerEvents = 'none';
-        st.zIndex = '2147483600';
-        (document.body || document.documentElement).appendChild(highlight);
+        if (!highlight) {
+          highlight = document.createElement('div');
+          highlight.id = HILITE_ID;
+          highlight.setAttribute('aria-hidden', 'true');
+          var st = highlight.style;
+          st.position = 'fixed';
+          st.border = '2px solid #4c8bf5';
+          st.borderRadius = '4px';
+          st.boxShadow = '0 0 0 9999px rgba(0,0,0,0.35)';
+          st.pointerEvents = 'none';
+          st.zIndex = '2147483600';
+          if (!reducedMotion) { st.transition = 'left 120ms, top 120ms, width 120ms, height 120ms'; }
+          (document.body || document.documentElement).appendChild(highlight);
+        }
+        highlight.style.left = r.left + 'px';
+        highlight.style.top = r.top + 'px';
+        highlight.style.width = r.width + 'px';
+        highlight.style.height = r.height + 'px';
       }
-
       function resolveTarget(sel) {
-        if (!sel) return null;
+        if (!sel) { return null; }
         try { return document.querySelector(sel); } catch (e) { return null; }
       }
 
-      function render() {
-        if (index < 0 || index >= steps.length) return;
+      // ---- Re-anchor on SPA route change / DOM remount ------------------------
+      // A single observer + scroll/resize listeners keep the current step's
+      // highlight glued to its (possibly re-created) target. If the target
+      // vanished we surface it (missingTarget) but never crash; if it comes back
+      // we re-anchor. This mirrors the variant engine's remount survival.
+      var observer = (typeof MutationObserver !== 'undefined')
+        ? new MutationObserver(function () { reanchor(); })
+        : null;
+      var reanchorScheduled = false;
+      function reanchor() {
+        if (destroyed || index < 0 || index >= steps.length) { return; }
+        if (reanchorScheduled) { return; }
+        reanchorScheduled = true;
+        var run = function () {
+          reanchorScheduled = false;
+          if (destroyed || index < 0) { return; }
+          var step = steps[index];
+          if (!step.target) { return; }
+          positionHighlight(resolveTarget(step.target));
+        };
+        if (typeof requestAnimationFrame === 'function') { requestAnimationFrame(run); }
+        else { setTimer(run, 0); }
+      }
+
+      // ---- Step arming (advancement without any transport) --------------------
+      function disarm() {
+        clearTimers();
+        // Drop per-step target listeners; keep the always-on keydown + observer.
+        removeListeners(function (l) { return l.__step === true; });
+      }
+
+      function conditionHolds(adv) {
+        try {
+          if (adv.when === 'url-contains') {
+            var href = String(window.location.href || '');
+            return adv.value ? href.indexOf(String(adv.value)) !== -1 : false;
+          }
+          if (adv.when === 'element-present') {
+            return isSafeSelector(adv.value) ? !!resolveTarget(adv.value) : false;
+          }
+          if (adv.when === 'element-visible') {
+            if (!isSafeSelector(adv.value)) { return false; }
+            var el = resolveTarget(adv.value);
+            if (!el) { return false; }
+            var r = el.getBoundingClientRect();
+            return r.width > 0 && r.height > 0;
+          }
+        } catch (e) { /* ignore */ }
+        return false;
+      }
+
+      function armStep() {
         var step = steps[index];
-        if (!panel) buildPanel();
-        narrationEl.textContent = step.narration;
+        var adv = step.advance;
+        if (adv.type === 'click-target') {
+          var el = resolveTarget(step.target);
+          if (el) {
+            var handler = function () { next(); };
+            handler.__step = true;
+            // Passive observation only: no preventDefault, no navigation, no
+            // synthetic activation, no href read — the visitor's real click
+            // drives the underlying app; we only advance the narration.
+            var rec = { target: el, type: 'click', handler: handler, opts: true, __step: true };
+            el.addEventListener('click', handler, true);
+            listeners.push(rec);
+          }
+          // Missing target: no listener armed; step stays user-driven (never wedge).
+          return;
+        }
+        if (adv.type === 'wait') {
+          setPoll(function () { if (conditionHolds(adv)) { next(); } }, POLL_MS);
+          return;
+        }
+        if (adv.type === 'auto') {
+          setTimer(function () { next(); }, adv.ms);
+        }
+        // 'manual': nothing armed; user advances.
+      }
+
+      // ---- Render -------------------------------------------------------------
+      function render() {
+        if (index < 0 || index >= steps.length) { return; }
+        var step = steps[index];
+        if (!card) { buildCard(); }
+        titleEl.textContent = step.title;
+        bodyEl.textContent = step.body;
         counterEl.textContent = (index + 1) + ' / ' + steps.length;
 
-        var el = resolveTarget(step.target);
         if (step.target) {
-          positionHighlight(el);
+          positionHighlight(resolveTarget(step.target));
         } else {
           removeHighlight();
           lastTargetMissing = false;
         }
 
-        clearTimer();
-        if (step.advance === 'auto') {
-          timer = setTimeout(function () { next(); }, step.holdMs);
-        } else if (step.advance === 'click' && el) {
-          el.addEventListener('click', onTargetClick, { once: true });
-        }
+        // Announce the step change to assistive tech.
+        liveEl.textContent = 'Step ' + (index + 1) + ' of ' + steps.length +
+          (step.title ? ': ' + step.title : '');
+
+        disarm();
+        armStep();
+        focusCard();
       }
 
-      function onTargetClick() { next(); }
-
-      function buildPanel() {
-        panel = document.createElement('div');
-        panel.id = VIEWER_ID;
-        var ps = panel.style;
-        ps.position = 'fixed';
-        ps.right = '16px';
-        ps.bottom = '16px';
-        ps.maxWidth = '320px';
-        ps.padding = '14px 16px';
-        ps.background = '#1e1e24';
-        ps.color = '#f5f5f7';
-        ps.font = '14px/1.45 system-ui, sans-serif';
-        ps.borderRadius = '10px';
-        ps.boxShadow = '0 8px 28px rgba(0,0,0,0.4)';
-        ps.zIndex = '2147483601';
+      // ---- Accessible card ----------------------------------------------------
+      function buildCard() {
+        card = document.createElement('div');
+        card.id = CARD_ID;
+        card.setAttribute('role', 'dialog');
+        card.setAttribute('aria-modal', 'true');
+        card.setAttribute('aria-label', 'Walkthrough');
+        card.setAttribute('tabindex', '-1');
+        var cs = card.style;
+        cs.position = 'fixed';
+        cs.right = '16px';
+        cs.bottom = '16px';
+        cs.maxWidth = '320px';
+        cs.padding = '14px 16px';
+        cs.background = '#1e1e24';
+        cs.color = '#f5f5f7';
+        cs.font = '14px/1.45 system-ui, sans-serif';
+        cs.borderRadius = '10px';
+        cs.boxShadow = '0 8px 28px rgba(0,0,0,0.4)';
+        cs.zIndex = '2147483601';
 
         counterEl = document.createElement('div');
+        counterEl.setAttribute('aria-label', 'Step position');
         counterEl.style.opacity = '0.6';
         counterEl.style.fontSize = '12px';
         counterEl.style.marginBottom = '6px';
-        panel.appendChild(counterEl);
+        card.appendChild(counterEl);
 
-        narrationEl = document.createElement('div');
-        narrationEl.style.marginBottom = '12px';
-        panel.appendChild(narrationEl);
+        titleEl = document.createElement('h2');
+        titleEl.style.margin = '0 0 6px';
+        titleEl.style.fontSize = '15px';
+        card.appendChild(titleEl);
+
+        bodyEl = document.createElement('div');
+        bodyEl.style.marginBottom = '12px';
+        card.appendChild(bodyEl);
+
+        // Polite live region: announces step transitions to screen readers.
+        liveEl = document.createElement('div');
+        liveEl.id = LIVE_ID;
+        liveEl.setAttribute('role', 'status');
+        liveEl.setAttribute('aria-live', 'polite');
+        liveEl.setAttribute('aria-atomic', 'true');
+        // Visually hidden but readable by assistive tech.
+        var ls = liveEl.style;
+        ls.position = 'absolute';
+        ls.width = '1px';
+        ls.height = '1px';
+        ls.margin = '-1px';
+        ls.padding = '0';
+        ls.overflow = 'hidden';
+        ls.clip = 'rect(0 0 0 0)';
+        ls.whiteSpace = 'nowrap';
+        ls.border = '0';
+        card.appendChild(liveEl);
 
         var nav = document.createElement('div');
         nav.style.display = 'flex';
         nav.style.gap = '8px';
-        nav.appendChild(makeButton('Prev', prev));
-        nav.appendChild(makeButton('Next', next));
-        nav.appendChild(makeButton('Close', destroy));
-        panel.appendChild(nav);
+        nav.appendChild(makeButton('Prev', 'Previous step', prev));
+        nav.appendChild(makeButton('Next', 'Next step', next));
+        nav.appendChild(makeButton('Close', 'Close walkthrough', destroy));
+        card.appendChild(nav);
 
-        (document.body || document.documentElement).appendChild(panel);
+        // Always-on keyboard map on the card (focus is trapped within it):
+        //   Enter / ArrowRight / ArrowDown → next
+        //   ArrowLeft / ArrowUp            → prev
+        //   Escape                          → close
+        //   Tab / Shift+Tab                 → cycle focus within the card (trap)
+        var keydown = function (e) { onKeyDown(e); };
+        keydown.__step = false;
+        card.addEventListener('keydown', keydown);
+        listeners.push({ target: card, type: 'keydown', handler: keydown, opts: undefined });
+
+        (document.body || document.documentElement).appendChild(card);
+
+        // Re-anchor the highlight as the page scrolls/resizes/mutates.
+        var onView = function () { reanchor(); };
+        addListener(window, 'scroll', onView, true);
+        addListener(window, 'resize', onView, true);
+        if (observer) {
+          var root = document.documentElement || document.body;
+          if (root) { observer.observe(root, { childList: true, subtree: true, attributes: true }); }
+        }
       }
 
-      function makeButton(label, handler) {
+      function makeButton(label, ariaLabel, handler) {
         var b = document.createElement('button');
         b.type = 'button';
         b.textContent = label;
+        b.setAttribute('aria-label', ariaLabel);
         var bs = b.style;
         bs.flex = '1';
         bs.padding = '6px 8px';
@@ -193,60 +419,151 @@
         bs.color = '#f5f5f7';
         bs.cursor = 'pointer';
         bs.font = 'inherit';
-        b.addEventListener('click', handler);
+        var click = function () { handler(); };
+        b.addEventListener('click', click);
+        listeners.push({ target: b, type: 'click', handler: click, opts: undefined });
         return b;
       }
 
+      function focusableInCard() {
+        if (!card) { return []; }
+        var nodes = card.querySelectorAll('button, [tabindex]');
+        var out = [];
+        for (var i = 0; i < nodes.length; i++) {
+          if (nodes[i].getAttribute('tabindex') !== '-1' || nodes[i] === card) { /* include */ }
+          out.push(nodes[i]);
+        }
+        return out;
+      }
+
+      function focusCard() {
+        // Move focus to the card on show (so the dialog is where keyboard lands).
+        if (card && typeof card.focus === 'function') {
+          try { card.focus(); } catch (e) { /* ignore */ }
+        }
+      }
+
+      function onKeyDown(e) {
+        var key = e.key;
+        if (key === 'Escape') {
+          e.preventDefault();
+          destroy();
+          return;
+        }
+        if (key === 'Enter' || key === 'ArrowRight' || key === 'ArrowDown') {
+          // Enter on a button lets the button's own handler run; only advance
+          // when focus is on the card itself, not on Prev/Close.
+          var t = e.target;
+          if (key === 'Enter' && t && t.tagName === 'BUTTON') { return; }
+          e.preventDefault();
+          next();
+          return;
+        }
+        if (key === 'ArrowLeft' || key === 'ArrowUp') {
+          e.preventDefault();
+          prev();
+          return;
+        }
+        if (key === 'Tab') {
+          // Focus trap: keep Tab / Shift+Tab cycling within the card.
+          var f = card.querySelectorAll('button');
+          if (!f.length) { e.preventDefault(); return; }
+          var first = f[0];
+          var last = f[f.length - 1];
+          var active = document.activeElement;
+          if (e.shiftKey) {
+            if (active === first || active === card) { e.preventDefault(); last.focus(); }
+          } else {
+            if (active === last) { e.preventDefault(); first.focus(); }
+          }
+        }
+      }
+
+      // ---- Variant binding (applied BEFORE step 0) ----------------------------
+      function applyVariant() {
+        var vs = walkthrough && walkthrough.variantSet;
+        var engineApi = opts.variantEngine ||
+          (typeof window !== 'undefined' ? window.__variantEngine : null);
+        if (!vs || !engineApi || typeof engineApi.create !== 'function') { return; }
+        var binding = opts.routeBinding || vs.routeBinding || { when: 'any' };
+        try {
+          variantEngine = engineApi.create(vs, binding, { root: opts.root });
+          var vid = opts.variantId ||
+            (vs.variants && vs.variants.length ? vs.variants[0].id : null);
+          if (vid) { variantEngine.apply(vid); }
+        } catch (e) {
+          try { console.warn('[WalkthroughPlayer] variant bind failed:', e); } catch (e2) {}
+          variantEngine = null;
+        }
+      }
+
+      // ---- Public player methods ----------------------------------------------
       function start() {
-        if (steps.length === 0) return viewer;
+        if (destroyed || steps.length === 0) { return player; }
+        // Record where focus was so we can restore it on close.
+        try { lastFocused = document.activeElement; } catch (e) { lastFocused = null; }
+        applyVariant();   // variant applied BEFORE the first step renders
         index = 0;
         render();
-        return viewer;
+        return player;
       }
-
       function goTo(i) {
-        if (typeof i !== 'number' || i < 0 || i >= steps.length) return viewer;
+        if (destroyed || typeof i !== 'number' || i < 0 || i >= steps.length) { return player; }
         index = i;
         render();
-        return viewer;
+        return player;
       }
-
       function next() {
+        if (destroyed) { return player; }
         if (index < steps.length - 1) { index++; render(); }
-        return viewer;
+        return player;
       }
-
       function prev() {
+        if (destroyed) { return player; }
         if (index > 0) { index--; render(); }
-        return viewer;
+        return player;
       }
-
       function destroy() {
-        clearTimer();
+        if (destroyed) { return; }
+        destroyed = true;
+        disarm();
+        clearTimers();
+        removeListeners(null); // remove EVERY tracked listener
+        if (observer) { try { observer.disconnect(); } catch (e) {} }
         removeHighlight();
-        if (panel && panel.parentNode) panel.parentNode.removeChild(panel);
-        panel = null;
+        if (card && card.parentNode) { card.parentNode.removeChild(card); }
+        card = null;
+        if (variantEngine) { try { variantEngine.destroy(); } catch (e) {} variantEngine = null; }
+        // Restore focus to where it was before the player opened.
+        if (lastFocused && typeof lastFocused.focus === 'function') {
+          try { lastFocused.focus(); } catch (e) { /* ignore */ }
+        }
       }
 
-      var viewer = {
+      var player = {
         start: start,
         next: next,
         prev: prev,
         goTo: goTo,
         activeIndex: function () { return index; },
         stepCount: function () { return steps.length; },
+        activeVariant: function () { return variantEngine ? variantEngine.activeVariant() : null; },
         missingTarget: function () { return lastTargetMissing; },
-        destroy: destroy
+        reducedMotion: function () { return reducedMotion; },
+        destroy: destroy,
+        trackedTimerCount: function () { return timers.length + intervals.length; },
+        trackedListenerCount: function () { return listeners.length; }
       };
-      return viewer;
+      return player;
     }
 
     window.__walkthroughViewer = {
       create: create,
       isSafeSelector: isSafeSelector,
-      version: 'p4'
+      normalizeStep: normalizeStep,
+      version: 'p5'
     };
   } catch (e) {
-    try { console.error('[WalkthroughViewer] init failed:', e); } catch (e2) {}
+    try { console.error('[WalkthroughPlayer] init failed:', e); } catch (e2) {}
   }
 })();
