@@ -73,6 +73,48 @@ func TestPublishRenderNeverLeaksTokenInReads(t *testing.T) {
 	}
 }
 
+// TestPublishFeedbackActionValidation pins that the feedback read action needs a
+// share id and fails loud without a daemon client.
+func TestPublishFeedbackActionValidation(t *testing.T) {
+	h := makePublishHandler(nil)
+	res, _, err := h(context.Background(), nil, PublishInput{Action: "feedback"})
+	if err != nil {
+		t.Fatalf("handler returned transport error: %v", err)
+	}
+	if res == nil || !res.IsError {
+		t.Fatalf("feedback with no client must be an error result, got %+v", res)
+	}
+}
+
+// TestPublishFeedbackRenderNoToken pins that the feedback render shows the rows +
+// observability counts and never a token (feedback rows structurally carry
+// none; this guards against a future field leaking one into the view).
+func TestPublishFeedbackRenderNoToken(t *testing.T) {
+	out := PublishOutput{
+		Action:  "feedback",
+		ID:      "share-1",
+		Total:   2,
+		Dropped: 3,
+		Feedback: []protocol.PublishFeedbackRow{
+			{ID: "row-1", CreatedAt: "2026-07-13T00:00:00Z", Body: `{"message":"nice"}`},
+		},
+		NextCursor: "row-1",
+	}
+	txt := renderText(t, renderPublish(out, false))
+	if strings.Contains(txt, "token") {
+		t.Fatalf("feedback render mentions a token: %q", txt)
+	}
+	if !strings.Contains(txt, "total=2") || !strings.Contains(txt, "dropped=3") {
+		t.Fatalf("feedback render should show observability counts: %q", txt)
+	}
+	if !strings.Contains(txt, "nice") {
+		t.Fatalf("feedback render should show the row body")
+	}
+	if !strings.Contains(txt, "next_cursor: row-1") {
+		t.Fatalf("feedback render should show the pagination cursor")
+	}
+}
+
 func renderText(t *testing.T, res *mcp.CallToolResult) string {
 	t.Helper()
 	if res == nil || len(res.Content) == 0 {
