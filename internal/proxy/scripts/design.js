@@ -52,7 +52,7 @@
       throw new Error('[Design] Variant engine not available');
     }
     var snapshot = cloneJSON(variantSet);
-    var next = api.create(snapshot, routeBinding || { when: 'any' }, opts || {});
+    var next = api.create(cloneJSON(snapshot), routeBinding || { when: 'any' }, opts || {});
     if (importedVariantEngine) importedVariantEngine.destroy();
     importedVariantSet = snapshot;
     importedVariantEngine = next;
