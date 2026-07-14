@@ -120,8 +120,8 @@ resource existence.
 
 | Plane | Method and route | Authentication | Request | Success | Other methods |
 |---|---|---|---|---|---|
-| Control | `POST /api/public-bundle-previews` | publisher session + scope + CSRF | source selection and requested expiry | `201`; private preview ID, canonical manifest, confirmation digest, warnings, 10-minute expiry | `405` |
-| Control | `POST /api/public-bundles` | publisher session + scope + CSRF | preview ID, confirmation digest, expiry, `Idempotency-Key` header | first committed winner: `201` metadata plus reveal-once URL; matching replay: `200` metadata with null URL and replay header | `405` |
+| Control | `POST /api/public-bundle-previews` | publisher session + scope + CSRF | source selection and requested expiry | `201`; private preview ID, canonical manifest, P1a confirmation digest, P1b publication-binding digest, warnings, 10-minute expiry | `405` |
+| Control | `POST /api/public-bundles` | publisher session + scope + CSRF | preview ID, both digests, expiry, `Idempotency-Key` header | first committed winner: `201` metadata plus reveal-once URL; matching replay: `200` metadata with null URL and replay header | `405` |
 | Control | `GET /api/public-bundles` | publisher session + scope | bounded pagination | publisher-owned metadata; never token/digest | `405` |
 | Control | `DELETE /api/public-bundles/{bundle_id}` | publisher session + scope + CSRF | no body | `204` only after durable revocation | `405` |
 | Data | `GET|HEAD /p/{capability}` | capability verification | no meaningful query parameters or request body | trusted viewer shell | `404` uniform |
@@ -513,14 +513,25 @@ SHA-256(
 )
 ```
 
-The eight-byte unsigned length makes framing unambiguous. P1b defines confirmation
-over the P1a manifest digest, not over an alternate serialization. Let
-`F(tag,value) = uint8(tag) || uint64_be(len(value)) || value`. Tags are bytes, not
-text. The confirmation digest is:
+The eight-byte unsigned length makes framing unambiguous. The P1a confirmation
+digest remains:
 
 ```text
 SHA-256(
   UTF8("agnt-public-bundle-confirm-v1\0") ||
+  uint64_be(len(canonical_bytes)) || canonical_bytes ||
+  uint16_be(len(UTF8(expires_at))) || UTF8(expires_at)
+)
+```
+
+P1b layers a distinctly named publication-binding digest over the P1a manifest
+digest; it does not replace or version-migrate P1a confirmation semantics. Let
+`F(tag,value) = uint8(tag) || uint64_be(len(value)) || value`. Tags are bytes, not
+text. The publication-binding digest is:
+
+```text
+SHA-256(
+  UTF8("agnt-public-bundle-publication-binding-v1\0") ||
   F(0x01, uint32_be(schema_version)) ||
   F(0x02, manifest_digest_raw_32_bytes) ||
   F(0x03, UTF8(requested_expires_at)) ||
@@ -542,13 +553,14 @@ Unicode-normalized or exposed publicly. `requested_expires_at` is the exact
 canonical manifest `expires_at`; `preview_expires_at` is the exact server UTC
 timestamp returned by preview. The fixed tag, length, source count, and triplet
 order make concatenation unambiguous. Changing any bound field changes the
-confirmation digest.
+publication-binding digest. Confirmed create requires both the P1a confirmation
+digest and the P1b publication-binding digest.
 
 ### Canonical vectors
 
 The bytes in each code block are one line with no trailing LF.
 
-Confirmation vectors use canonical scope bytes `publisher:test` and
+Publication-binding vectors use canonical scope bytes `publisher:test` and
 `project:test`. A and F use preview expiry `2026-07-14T02:20:00Z` and source
 `(source:incident:1, rev:7, incident)`. H uses that preview expiry and
 `(source:http:1, rev:3, http)`. B uses preview expiry
@@ -567,7 +579,10 @@ Vector A manifest digest:
 `a267e6527efb3ce865f99b13a2bd97ce56f1a3f62a39878b2881ead149ec7a53`
 
 Vector A confirmation digest:
-`157bee69e402d03493977b345fa4776a2e282d232b88570380b1460d0050bfaf`
+`0da5db451ae474a4ddb50cb7b6c11d6352a81997fa2d71e2a904950eb0591343`
+
+Vector A publication-binding digest:
+`eefb06ccaf33fcd9e6d8bc7c518962bf9ba5fcc9d3b005934a1e89be308dc273`
 
 Vector B canonical bytes (the title contains NFC U+00E9):
 
@@ -579,7 +594,10 @@ Vector B manifest digest:
 `f04ce8eb23e92721d2619808b07da3603800a47c3fb350780e7b15e0e487631b`
 
 Vector B confirmation digest:
-`0c8046eb701eb9e351149731fa171a5cdde3a518d8c6d9fd325c985676d9a583`
+`a53a267e25296095461b0e78876d46ed1d6a3959304e6159f4757cb37dd4a5b7`
+
+Vector B publication-binding digest:
+`68e3f2210e3c9474d4c9e34793cf1becbbd83072bfe4c8bf4408b1b996b6eebb`
 
 Canonical HTTP base H is defined by exactly one replacement in A: replace
 
@@ -596,7 +614,9 @@ with
 H is 407 bytes. Manifest digest:
 `3a25fbcd89534fdac1253749c12fef5c0b3168919d85ad9039ea2981ce1fef50`.
 Confirmation digest:
-`3714ef555cced2872b72a53ea5a1af5ac673fb5e186b1df962179e9f2a65f9fb`.
+`2a4f0b54a5cbf3f6e376e0ac57e7712cb7c17d2bec43583fc5ea51e3e5a8914d`.
+Publication-binding digest:
+`cc60483ae93766749e753e1cc34e4fb9c83b8453608f23c2c7ebbc6615987a50`.
 
 Canonical frame base F is defined by exactly one replacement of the same A
 incident object with:
@@ -608,7 +628,9 @@ incident object with:
 F is 340 bytes. Manifest digest:
 `4d4533b0768d1709b915db4d377ec30bd679405571ffd6d33b5f127dcdc4bbf5`.
 Confirmation digest:
-`b78d6aa1789182836e1757d010be273d68d3b88d4d38526cc5da274b9a862de5`.
+`aff1c162a657e2982c98f563f2928798e010786ecef4a9b0ab26c290a9276015`.
+Publication-binding digest:
+`d9888b0e711b0d94ffae98d2908f6d7b35cec15b1c8d08c8a99c63f5ac1da6ad`.
 
 H/F malicious transformations below require exactly one byte-string match. They
 are supplied with their base digest unless a fixture explicitly says “recomputed
@@ -623,10 +645,10 @@ Independent verification must use two implementations, one of which implements
 RFC 8785 independently of agnt. P1a verified A, B, H, and F with the independent
 Python `rfc8785` 0.1.4 implementation and a separate standard-library Go
 framing/SHA-256 program; both produced the stated byte lengths and matching
-manifest digests. P1b independently computed the fully bound confirmation frames
-with Python and a separate standard-library Go implementation; both produced the
-stated confirmation digests. The Python RFC 8785 implementation also reproduced
-each code block byte-for-byte.
+manifest and P1a confirmation digests. P1b independently computed the fully bound
+publication-binding frames with Python and a separate standard-library Go
+implementation; both produced the stated publication-binding digests. The Python
+RFC 8785 implementation also reproduced each code block byte-for-byte.
 
 Malicious fixtures are mandatory: duplicate `version`; unknown top-level
 `debug`; version `2`; `null` description; invalid UTF-8 `ff`; overlong UTF-8
@@ -741,7 +763,8 @@ behavior.
 | Publisher identity and project/session authorization | existing authenticated control-plane session and scope resolver | re-evaluate at every control mutation; never reconstructed from bundle data |
 | Source identity, non-reusable revision, and kind | source authority snapshot/version-conditional descriptor API | opaque byte equality only; every observable mutation advances revision; preview and confirmation revalidate; unavailable semantics fail closed |
 | Preview bytes, ownership, source revision, digest, and expiry | durable-but-expiring private preview authority plus encrypted staging | never data-plane readable; survives process restart until expiry; confirmation consumes exact bytes; authority loss fails closed and requires a new preview |
-| Idempotency binding and outcome | durable scoped-key uniqueness record in publication authority | pending lease recovers by CAS; success/terminal records survive restart for defined retention |
+| Idempotency binding, epoch fence, and outcome | durable scoped-key uniqueness record plus non-deleting latest-epoch tombstone in publication authority | pending lease recovers by exact fenced CAS; success/terminal records survive restart for defined retention; epoch survives record deletion |
+| Staging decryptability and ciphertext cleanup | wrapped DEK in preview authority plus durable cleanup outbox | invalidation/expiry/success atomically delete wrapped DEK and enqueue cleanup; recovery retries ciphertext deletion |
 | Bundle content and manifest | immutable durable bundle record keyed by internal bundle ID | cache is byte-identical and expiry-bounded; restart reloads or misses closed |
 | Capability validity | durable versioned token digest bound to bundle ID | raw token is never persisted; cache may only shorten validity |
 | Expiry and revocation | durable metadata record using server time | checked on every public read; invalidation precedes revoke success; restart cannot clear it |
@@ -781,24 +804,40 @@ Creation is an authenticated two-phase protocol:
    using returned payload. Count, order, identity, revision, and kind must match
    byte-for-byte before/copy/after. Any missing item or drift rejects the entire
    preview.
-3. Preview staging is encrypted with a per-preview data key and is private and
-   unreachable from the data plane. On drift, validation failure, or partial
-   copy, agnt deletes the staging record/blob and destroys the data key before
-   returning; key destruction is the authoritative staged-byte destruction even
-   if storage later reclaims ciphertext. No confirmation digest is returned.
+3. Preview staging is encrypted with a per-preview DEK and is private and
+   unreachable from the data plane. Plaintext DEKs exist only in bounded process
+   memory. Before a preview authority record exists, drift/validation/partial-copy
+   failure zeroizes the plaintext DEK and deletes the ciphertext. A successful
+   preview authority record stores only the DEK wrapped by the configured key
+   authority; no plaintext DEK or independently decrypting copy is persisted.
 4. A successful preview stores exact P1a canonical bytes, manifest digest,
-   ordered verified descriptor set, canonical authority scope bytes, requested
+   ordered verified descriptor set, wrapped DEK, canonical authority scope bytes, requested
    expiry, and server preview expiry (at most 10 minutes). It returns those bytes,
    visible value-free diagnostics, opaque preview ID, preview expiry, and the
-   fully bound confirmation digest above. It mints no capability.
+   P1a confirmation plus P1b publication-binding digests above. It mints no capability.
 5. Confirm re-authenticates, resolves canonical publisher/project scope again,
-   validates preview ownership/expiry/state and confirmation digest, reads all
-   source descriptors with snapshot-pinned or version-conditional reads and no
-   payload, and requires the same ordered
-   identity/revision/kind set. Any scope, count, identity, revision, kind, schema,
-   digest, expiry, or preview-expiry mismatch invalidates the preview, destroys
-   staging, and requires a new preview. Confirmation never recopies source data;
-   only the exact previewed canonical bytes may be published.
+   performs preliminary preview ownership/expiry/state/digest checks, then
+   acquires the fenced idempotency lease below. Preliminary request/auth/digest
+   failure mutates no preview or idempotency state. The fenced winner re-resolves
+   authority scope and reads all source descriptors with snapshot-pinned or
+   version-conditional reads and no payload, and requires the same ordered
+   identity/revision/kind set. Authoritative scope, count, identity, revision, or
+   kind drift discovered by that winner invalidates through the single fenced
+   transaction below, destroys staging decryptability, and requires a new
+   preview. Confirmation never recopies source data; only the exact previewed
+   canonical bytes may be published.
+
+Invalidation after lease acquisition is one authority transaction conditioned on
+idempotency exactly
+`pending(record_epoch,binding,generation,owner)` and the referenced preview
+exactly `ready`. It atomically changes preview `ready → invalidated`, changes the
+idempotency record `pending → terminal_failed`, deletes the wrapped DEK from
+authority state, and inserts a durable ciphertext-cleanup outbox item tagged with
+the exact fencing tuple. If the condition fails, the stale caller changes
+nothing. If a crash occurs before commit, all state remains retryable under the
+same/new fenced owner; after commit, ciphertext is undecryptable and recovery
+retries outbox deletion until acknowledged. Expiry and successful consumption
+use the same wrapped-DEK deletion plus durable outbox pattern.
 
 The preview ID is a new 22-character canonical unpadded base64url encoding of
 128 CSPRNG bits, owned by the publisher/project scope. In protocol framing its
@@ -813,13 +852,17 @@ key)`. Raw keys are access-controlled request data and are redacted from logs.
 
 The request binding is
 `SHA-256("agnt-public-bundle-idempotency-v1\0" || F(0x01, preview_id) ||
-F(0x02, confirmation_digest_raw_32_bytes))`. A durable uniqueness constraint on
+F(0x02, publication_binding_digest_raw_32_bytes))`. A durable uniqueness constraint on
 the scoped key chooses exactly one concurrency winner. The first transaction
-atomically inserts `pending(binding,preview_id)`; a different binding for the
+atomically allocates a non-reusable uint64 `record_epoch` and inserts
+`pending(record_epoch,binding,preview_id)`; a different binding for the
 same retained key returns `409 idempotency_mismatch` and cannot inspect or alter
 the original operation. A matching contender while pending returns
 `409 idempotency_in_progress` with `Retry-After: 1` and performs no publication.
-`pending` includes a 60-second attempt lease, a 128-bit random `owner`, and a
+The latest `record_epoch` for each scoped key remains as a durable fence tombstone
+after the idempotency record is deleted; it is never reset or reused. Creating a
+new operation after retention increments it atomically; uint64 exhaustion fails
+closed. `pending` includes a 60-second attempt lease, a 128-bit random `owner`, and a
 uint64 monotonic fencing `generation`. Initial acquisition stores generation 1;
 every later lease acquisition/reacquisition increments the persisted generation
 before issuing a new owner, including recovery after expiry. Generation never
@@ -830,8 +873,9 @@ compare-and-swap by recovery or a matching retry may change an expired lease to
 Every pending-state or publication-authority transition—including
 `pending → retryable_failed`, reacquisition, terminal failure, expiry, and
 success—uses a compare-and-swap over the exact persisted
-`(binding,generation,owner,status)` observed by the caller. Temporary content is
-tagged with that tuple. A stale owner or generation cannot alter the idempotency
+`(record_epoch,binding,generation,owner,status)` observed by the caller.
+Temporary content and cleanup-outbox items are tagged with that tuple. A stale
+record epoch, owner, or generation cannot alter the idempotency
 record, make content reachable, consume/invalidate a preview, or delete a newer
 owner's object; it discards only its own tagged temporary object.
 
@@ -840,15 +884,17 @@ writes immutable canonical content under an unreachable temporary object ID,
 then one authority transaction atomically: makes the content pointer reachable,
 writes bundle/expiry/revocation metadata and the capability digest, changes the
 preview `ready → consumed` with a compare-and-swap, destroys the preview staging
-key, and changes idempotency `pending → succeeded` with public-safe bundle
-metadata. No raw capability or URL is stored in the preview, bundle metadata, or
-idempotency record. The preview-state compare-and-swap permits only one success
-even if different idempotency keys race on the same preview.
+key by deleting its wrapped DEK, inserts the tuple-tagged ciphertext-cleanup
+outbox item, and changes idempotency `pending → succeeded` with public-safe
+bundle metadata. No raw capability, URL, or independently decrypting staging key
+is stored in the preview, bundle metadata, or idempotency record. The
+preview-state compare-and-swap permits only one success even if different
+idempotency keys race on the same preview.
 
 The success transaction uses the authority's transaction clock and commits only
 if `server_now < preview_expires_at`, `server_now < lease_expires_at`, preview is
 exactly `ready`, and idempotency is exactly
-`pending(binding,generation,owner)`. Equality is expired: at
+`pending(record_epoch,binding,generation,owner)`. Equality is expired: at
 `server_now == preview_expires_at` or `== lease_expires_at`, success is forbidden.
 Preview expiry uses the same serializable authority row/transaction and may
 change `ready → expired` only when `server_now >= preview_expires_at`; consume
@@ -866,7 +912,8 @@ preview with a new idempotency key.
 
 Successful idempotency records are retained until 24 hours after bundle expiry;
 while retained, their keys cannot be reused. After verified deletion, reuse is a
-new operation. A retryable infrastructure failure before authority commit keeps
+new operation with a newly incremented `record_epoch`; the fence tombstone
+remains. A retryable infrastructure failure before authority commit keeps
 the matching binding in `retryable_failed` until preview expiry; a matching retry
 may atomically reacquire it and retry, while a mismatched request still returns
 409. Validation/source/scope failure changes the preview to `invalidated` and the
@@ -892,15 +939,18 @@ retry observes `succeeded` and returns the token-free 200 replay response.
 | confirm on `ready`, matching descriptors/scope/digest, unused scoped key | insert `pending`; caller is winner | continue publication |
 | two confirms race with same key and binding | one inserts `pending`; other observes it | winner continues; loser `409 idempotency_in_progress`, then retries |
 | two confirms race on one preview with different unused keys | both may reserve; one preview-state compare-and-swap commits; loser changes `pending → terminal_failed` and its temporary object stays unreachable | winner receives first-response semantics; loser `409 preview_consumed` |
-| same retained key, different preview or confirmation digest | no state change | `409 idempotency_mismatch` always |
-| confirm after source identity/revision/kind/count or scope drift | `ready → invalidated`; destroy staging; `pending → terminal_failed` if reserved | value-free `409 preview_invalidated`; new preview/key required |
-| confirm after preview expiry | `ready → expired`; destroy staging; pending/retryable key expires | `409 preview_expired`; new preview/key required |
+| same retained key, different preview or publication-binding digest | no state change | `409 idempotency_mismatch` always |
+| confirm after source identity/revision/kind/count or scope drift | exact epoch/binding/generation/owner + preview-ready transaction: `ready → invalidated`, `pending → terminal_failed`, delete wrapped DEK, enqueue tagged cleanup | value-free `409 preview_invalidated`; new preview/key required |
+| crash before/after invalidation transaction | before: no state/key change; after: terminal state plus no wrapped DEK and durable cleanup item | recovery either retries fenced transaction or only ciphertext deletion; never leaves committed invalidation decryptable |
+| preview expiry with no idempotency lease | authority-time/ready CAS: `ready → expired`, delete wrapped DEK, enqueue preview-tagged cleanup | later confirm gets `409 preview_expired` |
+| preview expiry with pending/retryable lease | exact fencing-tuple authority transaction: `ready → expired`, delete wrapped DEK, enqueue tuple-tagged cleanup; idempotency expires | `409 preview_expired`; new preview/key required |
 | success and expiry race with server time strictly before preview expiry | serialized success may CAS `ready → consumed`; expiry predicate is false | winner may commit only with unexpired fenced lease |
 | success and expiry race at/after exact preview expiry | success predicate is false; expiry CASes `ready → expired` | `409 preview_expired`; equality never consumes |
 | infrastructure failure before authority commit | temporary content remains unreachable; `pending → retryable_failed`; preview stays `ready` | `503`; matching key may retry before preview expiry |
 | crash after temporary content write, before authority commit | no reachable bundle; preview remains `ready`; reservation recovered to `retryable_failed`; orphan deleted | matching retry is the only contender allowed |
 | expired lease generation `g` is reacquired | exact CAS increments to `g+1`, assigns new owner and lease | new owner may retry; generation `g` is fenced |
-| stale generation/owner attempts success, failure, expiry, preview mutation, or object cleanup | exact tuple CAS fails; no authority/preview/new-owner object changes | stale worker stops and removes only its own tagged temporary object |
+| stale epoch/generation/owner attempts success, failure, expiry, preview mutation, or object cleanup | exact tuple CAS fails; no authority/preview/new-owner object changes | stale worker stops and removes only its own tuple-tagged temporary object |
+| retained idempotency record is deleted and key later reused | fence tombstone increments `record_epoch`; generation starts at 1 only inside new epoch | any delayed prior-incarnation CAS/object/outbox action is fenced forever |
 | authority transaction commits | content becomes reachable; preview `ready → consumed`; idempotency `pending → succeeded` | first live winner receives reveal-once `201` |
 | crash/connection loss after commit but before/full/partial response | durable state remains consumed+succeeded | matching retry returns token-free `200`; revoke/new-create recovers |
 | matching replay of `succeeded` | no state change | `200`, replay header, metadata, null URL; never token |
