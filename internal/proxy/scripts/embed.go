@@ -120,6 +120,9 @@ var (
 	//go:embed walkthrough.js
 	walkthroughJS string
 
+	//go:embed variant-engine.js
+	variantEngineJS string
+
 	//go:embed palette.js
 	paletteJS string
 
@@ -281,6 +284,13 @@ var moduleOrder = []moduleEntry{
 	// + frames (role + registry); loads after design, before indicator/api.
 	// Chrome-only: content frames get walkthrough-proxy instead.
 	{"walkthrough", []string{"core", "frames", "walkthrough-proxy"}},
+	// variant-engine is the declarative variant overlay renderer for the public
+	// walkthrough-publish plane (P3). It is dependency-free (pure DOM + its own
+	// isolated IIFE — it keeps a leading space after `function` so wrapModule
+	// leaves its IIFE intact rather than merging it into the shared scope) and
+	// inert until window.__variantEngine.create() is called, so it is safe to
+	// ship in every role bundle. P4 moves it into the hard RolePublic split.
+	{"variant-engine", nil},
 	{"palette", []string{"core", "utils"}},
 	{"style-editor", []string{"core", "utils"}},
 	// override-store injects the delta stylesheet; transform renders the
@@ -426,6 +436,7 @@ var moduleScript = map[string]string{
 	"sketch":             sketchJS,
 	"design":             designJS,
 	"walkthrough":        walkthroughJS,
+	"variant-engine":     variantEngineJS,
 	"palette":            paletteJS,
 	"style-editor":       styleEditorJS,
 	"override-store":     overrideStoreJS,
