@@ -66,3 +66,16 @@ func TestVariantEngineMirrorsP2Allowlists(t *testing.T) {
 		t.Error("variant-engine.js must enforce https-only URLs (mirror url.go)")
 	}
 }
+
+func TestDesignVariantSetBridgeIsExported(t *testing.T) {
+	for _, want := range []string{
+		"importVariantSet: importVariantSet",
+		"exportVariantSet: exportVariantSet",
+		"applyVariant: applyVariant",
+		"revertVariant: revertVariant",
+	} {
+		if !strings.Contains(designJS, want) {
+			t.Errorf("design.js missing variant bridge export %q", want)
+		}
+	}
+}

@@ -36,6 +36,42 @@
     controls: null         // Navigation controls UI
   };
 
+  // Declarative publish variants are kept separate from HTML alternatives.
+  // The variant engine owns validation and DOM mutation; design mode only
+  // provides a small import/export bridge for authoring hand-off.
+  var importedVariantSet = null;
+  var importedVariantEngine = null;
+
+  function cloneJSON(value) {
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  function importVariantSet(variantSet, routeBinding, opts) {
+    var api = window.__variantEngine;
+    if (!api || typeof api.create !== 'function') {
+      throw new Error('[Design] Variant engine not available');
+    }
+    var snapshot = cloneJSON(variantSet);
+    var next = api.create(snapshot, routeBinding || { when: 'any' }, opts || {});
+    if (importedVariantEngine) importedVariantEngine.destroy();
+    importedVariantSet = snapshot;
+    importedVariantEngine = next;
+    return { success: true, variantIds: next.variantIds() };
+  }
+
+  function exportVariantSet() {
+    return importedVariantSet ? cloneJSON(importedVariantSet) : null;
+  }
+
+  function applyVariant(variantId) {
+    if (!importedVariantEngine) throw new Error('[Design] No VariantSet imported');
+    importedVariantEngine.apply(variantId);
+  }
+
+  function revertVariant() {
+    if (importedVariantEngine) importedVariantEngine.revert();
+  }
+
   // Shared theme (light/dark) from ui-tokens.js; fallback literals only for
   // the defensive "ui-tokens failed to load" case.
   var designTheme = window.__devtoolTokens ? window.__devtoolTokens.theme() : {
@@ -1008,6 +1044,10 @@
     applyAlternative: applyAlternative,
     setMode: setMode,
     chat: chat,
-    getState: getState
+    getState: getState,
+    importVariantSet: importVariantSet,
+    exportVariantSet: exportVariantSet,
+    applyVariant: applyVariant,
+    revertVariant: revertVariant
   };
 })();

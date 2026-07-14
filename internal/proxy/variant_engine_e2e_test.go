@@ -71,6 +71,29 @@ func startVEFixture(t *testing.T) *httptest.Server {
 	return srv
 }
 
+func startVECSPFixture(t *testing.T) *httptest.Server {
+	t.Helper()
+	engine, err := os.ReadFile("scripts/variant-engine.js")
+	require.NoError(t, err)
+	design, err := os.ReadFile("scripts/design.js")
+	require.NoError(t, err)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/variant-engine.js", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/javascript")
+		_, _ = w.Write(engine)
+	})
+	mux.HandleFunc("/design.js", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/javascript")
+		_, _ = w.Write(design)
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Security-Policy", "default-src 'none'; script-src 'self'")
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(w, `<!doctype html><html><body><h1 id="title">Original</h1><script src="/variant-engine.js"></script><script src="/design.js"></script></body></html>`)
+	})
+	return httptest.NewServer(mux)
+}
+
 func newVEBrowser(t *testing.T) context.Context {
 	t.Helper()
 	allocCtx, allocCancel := cdp.NewExecAllocator(context.Background(),
@@ -222,4 +245,29 @@ func TestE2E_VariantEngine_RealBrowser(t *testing.T) {
 		assert.False(t, hasOnclick, "onclick handler must never be set")
 		assert.False(t, hasHref, "href must never be set via setAttribute")
 	})
+}
+
+func TestE2E_VariantEngine_SelfCSPAndDesignRoundTrip(t *testing.T) {
+	skipIfNoBrowser(t)
+	srv := startVECSPFixture(t)
+	defer srv.Close()
+	ctx := newVEBrowser(t)
+
+	var ready bool
+	require.NoError(t, cdp.Run(ctx,
+		cdp.Navigate(srv.URL),
+		cdp.WaitVisible(`#title`, cdp.ByID),
+		cdp.Evaluate(`!!(window.__variantEngine && window.__devtool_design && window.__devtool_design.importVariantSet)`, &ready),
+	))
+	require.True(t, ready, "self-hosted scripts must load under script-src 'self'")
+
+	var changed, restored, exported string
+	require.NoError(t, cdp.Run(ctx,
+		cdp.Evaluate(`window.__devtool_design.importVariantSet({version:'v1',id:'design',variants:[{id:'a',ops:[{op:'setText',selector:'#title',value:'Changed'}]}]}, {when:'any'}); window.__devtool_design.applyVariant('a'); document.getElementById('title').textContent`, &changed),
+		cdp.Evaluate(`JSON.stringify(window.__devtool_design.exportVariantSet())`, &exported),
+		cdp.Evaluate(`window.__devtool_design.revertVariant(); document.getElementById('title').textContent`, &restored),
+	))
+	assert.Equal(t, "Changed", changed)
+	assert.JSONEq(t, `{"version":"v1","id":"design","variants":[{"id":"a","ops":[{"op":"setText","selector":"#title","value":"Changed"}]}]}`, exported)
+	assert.Equal(t, "Original", restored)
 }
