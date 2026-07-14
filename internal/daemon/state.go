@@ -102,6 +102,19 @@ func DefaultPublishDir() string {
 	return filepath.Join(os.TempDir(), "devtool-mcp-publish")
 }
 
+// DefaultFeedbackDir returns the default directory for the durable public-plane
+// feedback store (P8/P9). It sits alongside the publish store but is a distinct
+// authoritative on-disk store — see internal/publish.FeedbackStore.
+func DefaultFeedbackDir() string {
+	if stateHome := os.Getenv("XDG_STATE_HOME"); stateHome != "" {
+		return filepath.Join(stateHome, "devtool-mcp", "feedback")
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		return filepath.Join(home, ".local", "state", "devtool-mcp", "feedback")
+	}
+	return filepath.Join(os.TempDir(), "devtool-mcp-feedback")
+}
+
 // NewStateManager creates a new state manager with a background writer.
 func NewStateManager(config StateManagerConfig) *StateManager {
 	if config.StatePath == "" {

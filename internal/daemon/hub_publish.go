@@ -22,8 +22,9 @@ func (d *Daemon) publishActions() map[string]handlerFn {
 		protocol.SubVerbCreate: noCtx(d.hubHandlePublishCreate),
 		protocol.SubVerbStatus: noCtx(d.hubHandlePublishStatus),
 		protocol.SubVerbList:   noCtx(d.hubHandlePublishList),
-		protocol.SubVerbRevoke: noCtx(d.hubHandlePublishRevoke),
-		protocol.SubVerbRotate: noCtx(d.hubHandlePublishRotate),
+		protocol.SubVerbRevoke:   noCtx(d.hubHandlePublishRevoke),
+		protocol.SubVerbRotate:   noCtx(d.hubHandlePublishRotate),
+		protocol.SubVerbFeedback: noCtx(d.hubHandlePublishFeedback),
 	}
 }
 
@@ -200,6 +201,61 @@ func (d *Daemon) shareOwned(conn *hubpkg.Connection, store *publishstore.Store, 
 	}
 	_ = conn.WriteErr(hubproto.ErrNotFound, "share not found")
 	return false
+}
+
+// hubHandlePublishFeedback is the owner-scoped control-plane read of anonymous
+// viewer feedback for a share (spec §2a "publish feedback list"). It enforces
+// the SAME project ownership check as status/revoke/rotate (shareOwned): a
+// session scoped to project B cannot read project A's feedback — a foreign share
+// is reported not-found, no cross-project leak. The response carries feedback
+// rows + observability counts (total, rate-limit-dropped) and NEVER a token
+// (feedback records structurally hold none).
+func (d *Daemon) hubHandlePublishFeedback(conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	req, err := unmarshalCommand[protocol.PublishFeedbackRequest](cmd)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, "invalid request JSON: "+err.Error())
+	}
+	store, ok := d.requirePublishStore(conn)
+	if !ok {
+		return nil
+	}
+	if req.ID == "" {
+		return conn.WriteErr(hubproto.ErrMissingParam, "id is required")
+	}
+	// Ownership gate: identical to status/revoke/rotate. A share the session's
+	// project does not own is not-found here (no existence oracle, no leak).
+	if !d.shareOwned(conn, store, req.ID) {
+		return nil
+	}
+	// Map the share id to its immutable revision digest — the key feedback is
+	// stored under (spec §10). Status is safe: shareOwned already proved the
+	// caller owns this share.
+	info, err := store.Status(req.ID)
+	if err != nil {
+		return publishErr(conn, err)
+	}
+
+	result := protocol.PublishFeedbackResult{Rows: []protocol.PublishFeedbackRow{}}
+	if d.feedbackStore != nil {
+		rows, next, rerr := d.feedbackStore.ReadByRevision(info.Digest, req.Cursor, req.Limit)
+		if rerr != nil {
+			return conn.WriteErr(hubproto.ErrInternal, rerr.Error())
+		}
+		wire := make([]protocol.PublishFeedbackRow, 0, len(rows))
+		for _, r := range rows {
+			wire = append(wire, protocol.PublishFeedbackRow{
+				ID:        r.ID,
+				CreatedAt: r.CreatedAt.Format(time.RFC3339),
+				Body:      r.Body,
+			})
+		}
+		result.Rows = wire
+		result.NextCursor = next
+		result.Total = d.feedbackStore.Count(req.ID)
+		result.Dropped = d.feedbackStore.Dropped()
+	}
+	data, _ := json.Marshal(result)
+	return conn.WriteJSON(data)
 }
 
 func publishErr(conn *hubpkg.Connection, err error) error {

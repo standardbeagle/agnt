@@ -76,6 +76,12 @@ func NewForTest(t *testing.T, cfg DaemonConfig) *Daemon {
 	if cfg.PublishDir == "" {
 		cfg.PublishDir = filepath.Join(t.TempDir(), "publish")
 	}
+	// Same hermetic discipline for the durable feedback store (P8/P9): each test
+	// daemon gets its own temp dir so feedback state never touches the real
+	// ~/.local/state path and tests can't cross-contaminate each other's rows.
+	if cfg.FeedbackDir == "" {
+		cfg.FeedbackDir = filepath.Join(t.TempDir(), "feedback")
+	}
 
 	d := New(cfg)
 
