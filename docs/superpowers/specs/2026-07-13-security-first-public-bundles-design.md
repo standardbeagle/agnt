@@ -763,7 +763,7 @@ behavior.
 | Publisher identity and project/session authorization | existing authenticated control-plane session and scope resolver | re-evaluate at every control mutation; never reconstructed from bundle data |
 | Source identity, non-reusable revision, and kind | source authority snapshot/version-conditional descriptor API | opaque byte equality only; every observable mutation advances revision; preview and confirmation revalidate; unavailable semantics fail closed |
 | Preview bytes, ownership, source revision, digest, and expiry | durable-but-expiring private preview authority plus encrypted staging | durable `preparing` owns the staging object/write operation and deadline; recovery resolves and seals that operation before promotion or atomic DEK deletion plus cleanup; ready bytes remain data-plane unreachable and survive restart until expiry |
-| Idempotency binding, epoch fence, and outcome | durable scoped-key uniqueness record, operation/transaction outcomes, plus non-deleting latest-epoch tombstone in publication authority | pending stores exact attempt object, write-operation, and success-transaction IDs; recovery definitively resolves old outcomes before cleanup or generation advance; success/terminal records survive restart for defined retention; epoch survives record deletion |
+| Idempotency binding, epoch fence, and outcome | durable scoped-key uniqueness record, operation/transaction outcomes, plus non-deleting latest-epoch tombstone in publication authority | pending stores exact attempt object, write-operation, success-transaction, expected-digest, and size fields; recovery definitively resolves old outcomes before cleanup or generation advance; outcome/tombstone GC follows dependent records, cleanup, callers, and delayed writes; epoch and identifier non-reuse survive record deletion |
 | Object reachability, staging decryptability, and ciphertext cleanup | object registry plus wrapped DEK in preview authority and durable cleanup outbox | allocate IDs unreachable before writes; writer-complete or abort-tombstone sealing precedes every terminal cleanup; success atomically marks the exact attempt reachable; deletion requires a committed exact-object unreachable proof and outbox item; invalidation/expiry/success delete wrapped DEK atomically |
 | Bundle content and manifest | immutable durable bundle record keyed by internal bundle ID | cache is byte-identical and expiry-bounded; restart reloads or misses closed |
 | Capability validity | durable versioned token digest bound to bundle ID | raw token is never persisted; cache may only shorten validity |
@@ -808,10 +808,14 @@ Creation is an authenticated two-phase protocol:
    unreachable from the data plane. Plaintext DEKs exist only in bounded process
    memory. Before writing ciphertext, an authority/WAL transaction creates
    `preparing(preview_id,prepare_owner,prepare_deadline,staging_object_id,
-   write_operation_id,writer_open)`, registers the object unreachable, and stores
-   only the DEK wrapped by the configured key authority. Object PUT uses that
-   durable operation ID. After a successful PUT, the writer durably seals the
-   operation `writer_complete(etag,digest,size)` before preview promotion. A
+   write_operation_id,writer_open)` and persists the complete authenticated
+   promotion evidence: exact P1a canonical bytes, manifest and confirmation and
+   publication-binding digests, ordered verified descriptor set, canonical
+   publisher/project scope bytes, requested/server expiry, ciphertext digest and
+   size, and the DEK wrapped by the configured key authority. The same transaction
+   registers the object unreachable. Object PUT uses that durable operation ID.
+   After a successful PUT, the writer durably seals the operation
+   `writer_complete(etag,digest,size)` before preview promotion. A
    failed writer must durably `Abort(write_operation_id)`, creating a tombstone
    that rejects any late/in-flight PUT, before authority may mark
    `writer_aborted`, delete the wrapped DEK, or enqueue cleanup. No plaintext DEK
@@ -823,13 +827,25 @@ Creation is an authenticated two-phase protocol:
    P1a confirmation plus P1b publication-binding digests above. It mints no capability.
 
 `preparing` is durable and recoverable. Before `prepare_deadline`, only its owner
-may advance it. After the deadline, recovery claims it by CAS and queries the
-object store by `write_operation_id`: a committed PUT is sealed writer-complete;
-an aborted/not-committed operation is durably tombstoned writer-aborted; an
-unknown result permits neither cleanup nor promotion. Recovery promotes to
-`ready` only after writer-complete plus canonical validation and snapshot or
-before/copy/after descriptor checks. Otherwise, after writer-aborted (or after a
-complete object is proven unreachable), one authority transaction changes
+may advance it. After the deadline, recovery atomically replaces
+`(prepare_owner,prepare_deadline)` by CAS over the complete preparing tuple; the
+old owner is then fenced. Both the live owner and recovery may change
+`writer_open → writer_complete(etag,digest,size)` or `writer_open →
+writer_aborted` only by an authority CAS over that complete tuple and current
+owner. Complete requires an object-store response authenticated for the exact
+`(staging_object_id,write_operation_id)`, with immutable ETag, ciphertext digest,
+and size equal to the persisted expected values. Aborted requires the object
+store's durable operation tombstone. A stale owner or mismatched object response
+changes nothing.
+
+Recovery queries the object store by `write_operation_id`: a committed PUT may
+be sealed writer-complete by the verified CAS; an aborted/not-committed operation
+may be sealed writer-aborted after its tombstone; an unknown result permits
+neither cleanup nor promotion. Recovery promotes to `ready` using only the full
+authenticated promotion evidence persisted before PUT and only after
+writer-complete. It does not reconstruct evidence from ciphertext or process
+memory. Otherwise, after writer-aborted (or after a complete object is proven
+unreachable), one authority transaction changes
 `preparing → failed`, deletes the wrapped DEK, and enqueues exact staging cleanup.
 This resolves crashes without leaving a decrypting key or allowing DELETE before
 a late PUT. A backend unable to query and durably abort/tombstone operation IDs is
@@ -907,7 +923,8 @@ when needed, a generation/owner/lease, and a random non-reused
 `attempt_object_id`, durable object-store `write_operation_id`, and durable
 authority `success_txn_id`; stores
 `pending(record_epoch,binding,preview_id,generation,owner,attempt_object_id,
-write_operation_id,success_txn_id,writer_open)`; and registers the attempt object
+write_operation_id,success_txn_id,expected_digest,expected_size,writer_open)`;
+and registers the attempt object
 as unreachable before any object-store write. PUT uses only that operation ID and
 must seal writer-complete before success. A reacquisition may proceed only after
 authoritative recovery of the prior success transaction and writer operation as
@@ -932,7 +949,8 @@ Every pending-state or publication-authority transition—including
 `pending → retryable_failed`, reacquisition, terminal failure, expiry, and
 success—uses a compare-and-swap over the exact persisted
 `(record_epoch,binding,preview_id,generation,owner,attempt_object_id,
-write_operation_id,success_txn_id,writer_state,status)` observed by the caller.
+write_operation_id,success_txn_id,expected_digest,expected_size,writer_state,
+status)` observed by the caller.
 Authority mutation fencing and immutable-object cleanup are distinct:
 
 - Preview staging has a random non-reused `staging_object_id` owned by the
@@ -965,6 +983,28 @@ queries `write_operation_id`: writer-complete proves the immutable bytes exist,
 while writer-aborted is a durable tombstone that prevents a late PUT. An open or
 unknown writer is durably aborted/tombstoned before proceeding.
 
+Publication writer sealing is recovery-fenced. After lease expiry, recovery
+first CASes the complete pending tuple to a new recovery owner without changing
+generation; the prior owner cannot seal or submit success afterward. The current
+owner changes `writer_open` only by CAS over the complete tuple.
+`writer_complete(etag,digest,size)` requires an authenticated object-store result
+for exactly `(attempt_object_id,write_operation_id)` whose immutable ETag,
+canonical-content digest, and size equal the pending expectations;
+`writer_aborted` requires the durable abort tombstone for that exact operation.
+Mismatched evidence, an open/unknown result, or a stale owner changes nothing.
+
+Write operation IDs and success transaction IDs are globally non-reused random
+identifiers. Their committed/aborted outcomes and abort tombstones are retained
+past every dependent idempotency record, object-registry entry, outbox item, and
+maximum accepted caller/PUT retry window. Garbage collection is dependency
+ordered: first fence and terminalize every referring attempt; then acknowledge
+exact-object cleanup (or retain the reachable bundle reference); then expire all
+leases and reject delayed callers; only after the maximum delayed-write window
+may it remove the success outcome, and only after that plus the maximum
+object-store PUT retry window may it remove the abort tombstone. A tombstone is
+never removed while an object write could still be accepted. GC uncertainty
+retains records; identifier non-reuse remains permanent even after GC.
+
 Every fenced terminal transition (`terminal_failed`, `expired`, losing
 `preview_consumed`, or abandonment before reacquisition) is one authority
 transaction that checks the full old tuple, requires writer-complete or
@@ -973,6 +1013,19 @@ unreachable, and enqueues cleanup for that exact `attempt_object_id`. Only then
 may it terminalize or allocate generation `g+1`. A cleanup worker acts only on
 that committed item. This rule applies even when no PUT was observed: the abort
 tombstone must first make future/late PUT impossible.
+
+`retryable_failed` is not an unresolved timeout marker. Its row retains the full
+old attempt tuple plus a definitive aborted/not-committed `success_txn_id`
+outcome, sealed writer-complete or writer-aborted state, committed proof that the
+exact attempt object is unreachable, and the committed exact-object cleanup
+outbox ID. A matching retry changes it to a new `pending` only by CAS over all of
+that evidence and the still-`ready`, unexpired preview, allocating generation
+`g+1` and fresh non-reused object/write/transaction IDs. Equivalently, an
+implementation may perform old-outcome resolution, writer sealing, unreachable
+proof, cleanup enqueue, and allocation of `g+1` in one serializable authority
+transaction; it may not expose an intermediate reacquirable state. Unknown
+outcome, missing cleanup proof, or a stale tuple returns recovery-pending and
+cannot advance generation.
 
 The winner generates the raw capability only after all confirmation checks. It
 writes immutable canonical content under the allocated object/write operation,
@@ -1039,11 +1092,12 @@ retry observes `succeeded` and returns the token-free 200 replay response.
 | torn multi-record copy: one conditional record read succeeds but another revision changes before/after set check | no ready manifest/digest; resolve writer, then preparing-failure transaction deletes DEK and enqueues complete staged-object cleanup | validation failure; partial record mix is never previewable |
 | crash in preview `preparing` before/after PUT | deadline recovery claims by CAS and queries write operation | complete+valid may promote ready; otherwise abort/tombstone then atomically fail+delete DEK+enqueue cleanup; unknown waits |
 | late preview PUT arrives after recovery chose failure | durable abort tombstone rejects the operation before cleanup was authorized | no stranded ciphertext after cleanup DELETE |
-| new/retryable key plus valid owned `ready` preview and matching digests | one transaction validates preview, stores fenced pending lease+`attempt_object_id`, and registers object unreachable | caller is winner and may write only that object ID |
+| new key plus valid owned `ready` preview and matching P1a confirmation/publication-binding digests | one transaction validates preview and stores the full `pending(record_epoch,binding,preview_id,generation,owner,attempt_object_id,write_operation_id,success_txn_id,expected_digest,expected_size,writer_open)` tuple, then registers that exact object unreachable | caller is winner and may write only that object ID using that write operation |
+| matching `retryable_failed` key with resolved old outcome and committed exact cleanup proof | full-evidence CAS plus ready/unexpired preview check allocates `g+1` and a fresh full pending tuple; implementations may combine resolution, cleanup enqueue, and allocation serializably | caller may write only the new attempt; any missing/unknown evidence returns recovery-pending |
 | missing/not-owned preview or digest/state predicate failure during reserve | no pending lease/object allocation; expiry case may atomically expire preview and enqueue staging cleanup | uniform 404 or defined value-free 409; retry cannot observe a contradictory reservation |
 | two confirms race with same key and binding | one inserts `pending`; other observes it | winner continues; loser `409 idempotency_in_progress`, then retries |
 | two confirms race on one preview with different unused keys | both may reserve; one commits; loser resolves success/writer IDs, then full-tuple terminal transaction proves its attempt unreachable and enqueues cleanup | winner receives first-response semantics; loser `409 preview_consumed` |
-| same retained key, different preview or publication-binding digest | no state change | `409 idempotency_mismatch` always |
+| same retained key, different preview, P1a confirmation digest, or publication-binding digest | full retained binding/tuple is read but no field changes and preview is not dereferenced | `409 idempotency_mismatch` always |
 | matching retained `succeeded` key while preview is consumed, expired, deleted, or otherwise unreadable | do not dereference preview; no state change | immediate token-free `200` replay metadata |
 | confirm after source identity/revision/kind/count or scope drift | resolve attempt writer; exact full-tuple + preview-ready transaction: invalidate/terminalize, delete wrapped DEK, prove attempt unreachable, enqueue exact staging+attempt cleanup | value-free `409 preview_invalidated`; new preview/key required |
 | crash before/after invalidation transaction | before: no state/key change; after: terminal state plus no wrapped DEK and durable cleanup item | recovery either retries fenced transaction or only ciphertext deletion; never leaves committed invalidation decryptable |
