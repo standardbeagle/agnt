@@ -58,16 +58,15 @@ func TestCreate_SpawnsAndCapturesOutput(t *testing.T) {
 		t.Fatalf("expected positive SessionPGID, got %d", s.SessionPGID)
 	}
 
-	// This is a liveness bound only ("the process eventually produces
-	// output"), not a latency assertion, but 3s was still tight enough to
-	// flake under `go test ./...` full-suite CPU saturation: spawning a
-	// real PTY child and having its output reach the scrollback both
-	// involve OS scheduling that a saturated host can stretch well past a
-	// few seconds even though nothing is actually stuck. Widen to a
-	// generous 15s (matches the liveness-poll deadlines used elsewhere in
-	// this codebase, e.g. the chromedp e2e waits in internal/proxy) so the
-	// test still fails fast on a genuine hang, without racing the scheduler.
-	deadline := time.After(15 * time.Second)
+	// Asserts the drained output, not a wall clock: a fast echo-then-exit child
+	// must have its buffered PTY bytes land in scrollback. This flaked (~1/5 in
+	// isolation, so not CPU load) until the drain-race in waitLoop was fixed —
+	// waitLoop used to close the PTY master fd the instant it reaped the child,
+	// which could truncate readLoop's in-flight drain and lose the output
+	// forever, leaving scrollback empty no matter how long we waited. With the
+	// drain barrier in place readLoop reaches EOF before the fd closes, so the
+	// output is always captured. The deadline is only a deadlock guard.
+	deadline := time.After(5 * time.Second)
 	for {
 		snap, _ := s.scrollback.Snapshot()
 		if strings.Contains(string(snap), "hello-sessionhost") {
