@@ -24,6 +24,9 @@ type Config struct {
 	// is read from KDL — but the json tag here implies a round trip that does not
 	// hold. Keep the two in sync if a JSON surface ever appears.
 	AI *AIConfig `json:"ai,omitempty"`
+
+	// Feedback holds the public-plane anonymous feedback ingestion limits (P8).
+	Feedback FeedbackConfig `json:"feedback"`
 }
 
 // Settings holds global configuration settings.
@@ -73,6 +76,7 @@ func DefaultConfig() *Config {
 			MaxOutputBuffer: 256 * 1024,
 			GracefulTimeout: 5 * time.Second,
 		},
+		Feedback: DefaultFeedbackConfig(),
 		Languages: map[string]LanguageConfig{
 			"go": {
 				Markers:  []string{"go.mod"},
