@@ -844,7 +844,7 @@ owner, and only while `server_now < prepare_deadline`. Complete requires an obje
 `(staging_object_id,write_operation_id)`, with immutable ETag, ciphertext digest,
 and size equal to the persisted expected values. Aborted requires the object
 store's durable operation tombstone. If the operation is completed-and-sealed
-but ETag/digest/size mismatches, the current owner instead commits
+but any authenticated ETag, digest, or size mismatches, the current owner instead commits
 `writer_rejected_complete(etag,digest,size)` in the same full-preparing-tuple
 transaction that proves the staging object unreachable, changes `preparing →
 failed`, deletes the wrapped DEK, and enqueues exact cleanup. A stale owner or
@@ -982,8 +982,11 @@ lease_expires_at,row_revision,write_accept_until,caller_retry_until,
 outcome_gc_not_before,status)` observed by the caller. Every CAS names
 both time and revision; each successful mutation advances `row_revision`.
 Every live-owner mutation additionally requires `server_now <
-lease_expires_at`. The only mutation allowed at or after expiry is the recovery
-takeover CAS defined below.
+lease_expires_at`. For leased `pending` or `recovering`, the only mutation allowed
+at or after lease expiry is the recovery takeover CAS defined below. The
+ownerless `retryable_failed` state has no active
+lease; its two explicitly permitted full-evidence CAS exits are new-attempt
+reacquisition before preview expiry and terminal expiry at/after preview expiry.
 Authority mutation fencing and immutable-object cleanup are distinct:
 
 - Preview staging has a random non-reused `staging_object_id` owned by the
@@ -1032,7 +1035,8 @@ and row revision, with `server_now < lease_expires_at`.
 for exactly `(attempt_object_id,write_operation_id)` whose immutable ETag,
 canonical-content digest, and size equal the pending expectations;
 `writer_aborted` requires the durable abort tombstone for that exact operation.
-If the exact operation is completed-and-sealed with mismatching digest or size,
+If the exact operation is completed-and-sealed with any mismatching authenticated
+ETag, digest, or size,
 the current owner uses one full-tuple authority transaction to store
 `writer_rejected_complete(etag,digest,size)`, prove the exact object unreachable,
 enqueue its cleanup, and enter `retryable_failed` or terminal failure. An
@@ -1062,25 +1066,39 @@ Every fenced terminal transition (`terminal_failed`, `expired`, losing
 `preview_consumed`, or abandonment before reacquisition) is one authority
 transaction that checks the full old tuple, requires writer-complete,
 writer-rejected-complete, or writer-aborted sealing, proves the exact attempt object registry state
-unreachable, and enqueues cleanup for that exact `attempt_object_id`. Only then
+unreachable, and enqueues cleanup for that exact `attempt_object_id`; an
+ownerless-`retryable_failed` terminal-expiry CAS instead verifies and retains the
+already committed exact cleanup proof/outbox ID. Only then
 may it terminalize or allocate a strictly later generation. A cleanup worker acts only on
 that committed item. This rule applies even when no PUT was observed: the abort
 tombstone must first make future/late PUT impossible.
 
-`retryable_failed` is not an unresolved timeout marker. Its row retains the full
-old attempt tuple plus a definitive aborted/not-committed `success_txn_id`
+`retryable_failed` is ownerless and has no active lease: `owner = null` and
+`lease_expires_at = null`. It is not an unresolved timeout marker. Its immutable
+`fenced_attempt` retains the full old attempt tuple (including prior owner, lease
+expiry, generation, and revision) plus a definitive aborted/not-committed `success_txn_id`
 outcome, sealed writer-complete, writer-rejected-complete, or writer-aborted state, committed proof that the
 exact attempt object is unreachable, and the committed exact-object cleanup
-outbox ID. A matching retry changes it to a new `pending` only by CAS over all of
-that evidence and the still-`ready`, unexpired preview, allocating a generation
-strictly greater than the recovery generation and fresh non-reused
-object/write/transaction IDs. This is the only new-attempt reacquisition path:
-`pending(g) → recovering(r,same IDs) → retryable_failed →
-pending(r+1,fresh IDs)`, where `r > g` also covers repeated takeover after a
-recovery-owner crash. Resolution/cleanup and fresh allocation may not be
+outbox ID. A matching retry changes it to a new `pending` only by CAS over status,
+null owner/lease, row revision, all fenced evidence, and the still-`ready`,
+unexpired preview, allocating a generation
+strictly greater than the retained fenced-attempt generation and fresh non-reused
+object/write/transaction IDs. A live owner may enter `retryable_failed` directly
+from `pending(g)` only through the definitive fenced failure+cleanup transaction;
+an expired attempt enters through `pending(g) → recovering(r,same IDs) →
+retryable_failed`, where `r > g` also covers repeated takeover after a
+recovery-owner crash. In both cases, the only new-attempt reacquisition is the
+same ownerless full-evidence CAS `retryable_failed → pending(next,fresh IDs)`.
+Resolution/cleanup and fresh allocation may not be
 combined or skip the durable `retryable_failed` proof state. Unknown
 outcome, missing cleanup proof, or a stale tuple returns recovery-pending and
 cannot advance generation.
+
+If the preview reaches expiry while ownerless `retryable_failed`, a distinct
+full-evidence terminal-expiry CAS checks its null owner/lease, row revision,
+retained `fenced_attempt`, cleanup proof, and `server_now >= preview_expires_at`;
+it expires the idempotency row and preview and deletes the wrapped DEK/enqueues
+staging cleanup as applicable. It allocates no owner, lease, generation, or IDs.
 
 The winner generates the raw capability only after all confirmation checks. It
 writes immutable canonical content under the allocated object/write operation,
@@ -1122,7 +1140,7 @@ while retained, their keys cannot be reused. After verified deletion, reuse is a
 new operation with a newly incremented `record_epoch`; the fence tombstone
 remains. A retryable infrastructure failure before authority commit keeps
 the matching binding in `retryable_failed` until preview expiry; a matching retry
-may atomically reacquire it and retry, while a mismatched request still returns
+may use the ownerless full-evidence reacquisition CAS and retry, while a mismatched request still returns
 409. Validation/source/scope failure changes the preview to `invalidated` and the
 record to `terminal_failed`; matching retries return the original value-free
 `409 preview_invalidated`. Pending/retryable records expire with their preview.
@@ -1149,7 +1167,7 @@ retry observes `succeeded` and returns the token-free 200 replay response.
 | crash in preview `preparing` before/after PUT | deadline recovery claims by full-tuple/revision CAS and queries write operation | complete+valid may promote ready; completed mismatch seals rejected-complete and atomically fails+cleans; otherwise abort/tombstone then fail+clean; unknown waits |
 | late preview PUT arrives after recovery chose failure | durable abort tombstone rejects the operation before cleanup was authorized | no stranded ciphertext after cleanup DELETE |
 | new key plus valid owned `ready` preview and matching P1a confirmation/publication-binding digests | one transaction validates preview and stores the full pending tuple, including attempt/object/write/transaction IDs, expected digest/size, writer state, lease expiry, row revision, and the three GC cutoffs, then registers that exact object unreachable | caller is winner and may write only that object ID using that write operation |
-| matching `retryable_failed` key with resolved old outcome and committed exact cleanup proof | sole new-attempt reacquisition CAS including lease expiry and row revision plus ready/unexpired preview check allocates the next generation and fresh full pending tuple | caller may write only the new attempt; any missing/unknown evidence returns recovery-pending |
+| matching ownerless `retryable_failed` key with resolved old outcome and committed exact cleanup proof | sole new-attempt reacquisition CAS checks null owner/lease, row revision, full retained `fenced_attempt`, and ready/unexpired preview, then allocates the next generation and fresh full pending tuple | caller may write only the new attempt; any missing/unknown evidence returns recovery-pending |
 | missing/not-owned preview or digest/state predicate failure during reserve | no pending lease/object allocation; expiry case may atomically expire preview and enqueue staging cleanup | uniform 404 or defined value-free 409; retry cannot observe a contradictory reservation |
 | two confirms race with same key and binding | one inserts `pending`; other observes it | winner continues; loser `409 idempotency_in_progress`, then retries |
 | two confirms race on one preview with different unused keys | both may reserve; one commits; loser resolves success/writer IDs, then full-tuple terminal transaction proves its attempt unreachable and enqueues cleanup | winner receives first-response semantics; loser `409 preview_consumed` |
@@ -1158,7 +1176,8 @@ retry observes `succeeded` and returns the token-free 200 replay response.
 | confirm after source identity/revision/kind/count or scope drift | resolve attempt writer; exact full-tuple + preview-ready transaction: invalidate/terminalize, delete wrapped DEK, prove attempt unreachable, enqueue exact staging+attempt cleanup | value-free `409 preview_invalidated`; new preview/key required |
 | crash before/after invalidation transaction | before: no state/key change; after: terminal state plus no wrapped DEK and durable cleanup item | recovery either retries fenced transaction or only ciphertext deletion; never leaves committed invalidation decryptable |
 | preview expiry with no idempotency lease | authority-time/ready CAS: `ready → expired`, delete wrapped DEK, enqueue preview-tagged cleanup | later confirm gets `409 preview_expired` |
-| preview expiry with pending/retryable lease | resolve attempt txn/writer; exact full-tuple transaction expires both, deletes wrapped DEK, proves attempt unreachable, enqueues exact staging+attempt cleanup | `409 preview_expired`; new preview/key required |
+| preview expiry with live or expired `pending`/`recovering` attempt | live owner or sole recovery takeover resolves attempt txn/writer; exact full-tuple transaction expires both, deletes wrapped DEK, proves attempt unreachable, enqueues exact staging+attempt cleanup | `409 preview_expired`; new preview/key required |
+| preview expiry with ownerless `retryable_failed` | terminal-expiry CAS checks null owner/lease, revision, retained fenced attempt and cleanup proof; expires row+preview and enqueues staging cleanup without allocating IDs | `409 preview_expired`; new preview/key required |
 | success and expiry race with server time strictly before preview expiry | serialized success may CAS `ready → consumed`; expiry predicate is false | winner may commit only with unexpired fenced lease |
 | success and expiry race at/after exact preview expiry | success predicate is false; expiry CASes `ready → expired` | `409 preview_expired`; equality never consumes |
 | determinate infrastructure failure before success commit while lease is live | seal complete, rejected-complete, or abort-tombstone writer; exact fenced transaction proves attempt unreachable, changes `pending → retryable_failed`, commits exact cleanup; preview stays `ready` | `503`; matching key may use only the new-attempt reacquisition CAS before preview expiry |
@@ -1171,7 +1190,7 @@ retry observes `succeeded` and returns the token-free 200 replay response.
 | crash/connection loss after commit but before/full/partial response | durable state remains consumed+succeeded | matching retry returns token-free `200`; revoke/new-create recovers |
 | matching replay of `succeeded` | idempotency lookup short-circuits before preview validation; no state change | `200`, replay header, metadata, null URL; never token |
 | any confirm of consumed preview with a different/new key | no state change | `409 preview_consumed`; cannot mint a second bundle |
-| transient retry reaches preview expiry before commit | resolve old txn/writer; exact fenced terminal transaction expires both, deletes wrapped DEK, proves attempt unreachable, enqueues exact staging+attempt cleanup | `409 preview_expired`; new preview/key required |
+| ownerless retry reaches preview expiry before reacquisition | full-evidence terminal-expiry CAS follows the `retryable_failed` expiry rule; no owner/lease or fresh attempt is allocated | `409 preview_expired`; new preview/key required |
 
 A read parses a canonical path, hashes the supplied token using the versioned
 domain, performs bounded lookup plus constant-time digest verification, checks
