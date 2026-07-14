@@ -52,11 +52,11 @@ release:
 
 # Run tests (cleans up zombie test daemons first)
 test: clean-zombies
-	go test -v ./...
+	go test -p 1 -v ./...
 
 # Run tests with coverage
 test-coverage:
-	go test -v -coverprofile=coverage.out ./...
+	go test -p 1 -v -coverprofile=coverage.out ./...
 	go tool cover -html=coverage.out -o coverage.html
 
 # Run invasive process-namespace tests inside a PID + mount namespace.
@@ -135,7 +135,7 @@ test-flake: ## Hunt flakes via parallel stress run
 
 # Run unit tests only (excludes integration tests)
 test-unit:
-	go test -v ./...
+	go test -p 1 -v ./...
 
 # Run integration tests (requires external dependencies)
 test-integration:
