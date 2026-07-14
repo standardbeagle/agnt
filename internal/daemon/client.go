@@ -915,6 +915,60 @@ func (c *Client) IncidentQuery(filter protocol.IncidentQueryFilter) (*protocol.I
 	return &result, nil
 }
 
+// PublishCreate validates + publishes a walkthrough and returns the share id and
+// the plaintext token (returned exactly once).
+func (c *Client) PublishCreate(req protocol.PublishCreateRequest) (*protocol.PublishCreateResult, error) {
+	return publishRequest[protocol.PublishCreateResult](c, protocol.SubVerbCreate, req)
+}
+
+// PublishRotate mints a fresh token for a share (old token dies immediately).
+func (c *Client) PublishRotate(id string) (*protocol.PublishRotateResult, error) {
+	return publishRequest[protocol.PublishRotateResult](c, protocol.SubVerbRotate, protocol.PublishRotateRequest{ID: id})
+}
+
+// PublishRevoke tombstones a share; the token stops verifying immediately.
+func (c *Client) PublishRevoke(id string) error {
+	return c.conn.Request(protocol.VerbPublish, protocol.SubVerbRevoke).
+		WithJSON(protocol.PublishRevokeRequest{ID: id}).OK()
+}
+
+// PublishStatus returns the redaction-safe status of a share (never the token).
+func (c *Client) PublishStatus(id string) (*protocol.PublishShareInfo, error) {
+	return publishRequest[protocol.PublishShareInfo](c, protocol.SubVerbStatus, protocol.PublishStatusRequest{ID: id})
+}
+
+// PublishList lists the caller's project-scoped shares (never the token).
+func (c *Client) PublishList() (*protocol.PublishListResult, error) {
+	raw, err := c.conn.Request(protocol.VerbPublish, protocol.SubVerbList).JSON()
+	if err != nil {
+		return nil, err
+	}
+	return decodeInto[protocol.PublishListResult](raw)
+}
+
+// publishRequest sends a PUBLISH sub-verb with a JSON payload and decodes the
+// typed response.
+func publishRequest[T any](c *Client, sub string, payload any) (*T, error) {
+	raw, err := c.conn.Request(protocol.VerbPublish, sub).WithJSON(payload).JSON()
+	if err != nil {
+		return nil, err
+	}
+	return decodeInto[T](raw)
+}
+
+// decodeInto re-marshals a decoded generic JSON value into a typed struct.
+func decodeInto[T any](raw any) (*T, error) {
+	b, err := json.Marshal(raw)
+	if err != nil {
+		return nil, err
+	}
+	var out T
+	if err := json.Unmarshal(b, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // AlertClear clears all alerts from the daemon.
 func (c *Client) AlertClear() error {
 	return c.conn.Request(protocol.VerbAlerts, protocol.SubVerbClear).OK()

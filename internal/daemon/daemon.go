@@ -53,6 +53,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/chromedp"
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
+	"github.com/standardbeagle/agnt/internal/daemon/publishstore"
 	"github.com/standardbeagle/agnt/internal/incident"
 	"github.com/standardbeagle/agnt/internal/overlay"
 	"github.com/standardbeagle/agnt/internal/proxy"
@@ -131,6 +132,11 @@ type DaemonConfig struct {
 	// StatePath is the path to the state file.
 	// If empty, uses default location.
 	StatePath string
+
+	// PublishDir is the directory for the durable publish-share store (P6).
+	// If empty, production uses DefaultPublishDir(); tests inject a temp dir via
+	// NewForTest so publish state stays hermetic and never touches real state.
+	PublishDir string
 
 	// EnableUpdateCheck enables periodic update checking.
 	// Default: true
@@ -242,6 +248,14 @@ type Daemon struct {
 	// State persistence
 	stateMgr   *StateManager
 	pidTracker *process.FilePIDTracker
+
+	// publishStore is the durable, authoritative store for public walkthrough
+	// shares + their token lifecycle (P6). Unlike every other daemon-side state
+	// above (caches, rebuilt-from-config or evicted on session end), its on-disk
+	// record IS the source of truth and outlives the session — the documented
+	// daemon-architecture.md exception. Constructed in bootstrap(); nil (verbs
+	// error) if the persisted store failed to load loud on boot.
+	publishStore *publishstore.Store
 
 	// URL tracking for processes
 	urlTracker *URLTracker
@@ -669,6 +683,22 @@ func (d *Daemon) registerCommands() error {
 // contract" section of .claude/rules/daemon-architecture.md.
 func (d *Daemon) bootstrap() error {
 	d.daemonStartupLog("info", "daemon_starting", "daemon bootstrap starting")
+
+	// Open the durable publish-share store. A corrupt/unreadable persisted store
+	// fails loud (Silent Failure Prohibition): we surface a visible startup error
+	// and leave publishStore nil so publish verbs error out — we never silently
+	// serve an empty store past a corruption. See publishstore + spec §8 / INV-8.
+	publishDir := d.config.PublishDir
+	if publishDir == "" {
+		publishDir = DefaultPublishDir()
+	}
+	if store, err := publishstore.New(publishDir, nil); err != nil {
+		d.daemonStartupLog("error", "publish_store_load_failed",
+			fmt.Sprintf("publish store failed to load (shares unavailable until resolved): %v", err))
+	} else {
+		d.publishStore = store
+		d.daemonStartupLog("info", "publish_store_loaded", "publish store loaded")
+	}
 
 	// Register agnt-specific commands with Hub before starting.
 	if err := d.registerCommands(); err != nil {

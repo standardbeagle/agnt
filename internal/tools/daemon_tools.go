@@ -706,6 +706,9 @@ Examples:
 	// Store tool - register via separate function for organization
 	RegisterStoreTool(server, dt)
 
+	// Publish tool - public walkthrough share-token lifecycle (control plane)
+	RegisterPublishTool(server, dt)
+
 	// External error queue tool
 	RegisterErrorQueueTool(server, dt)
 }

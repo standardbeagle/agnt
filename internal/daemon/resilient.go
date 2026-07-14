@@ -1057,6 +1057,58 @@ func (rc *ResilientClient) IncidentQuery(filter protocol.IncidentQueryFilter) (*
 	return result, err
 }
 
+// PublishCreate validates + publishes a walkthrough, returning the share id and
+// the plaintext token (returned once).
+func (rc *ResilientClient) PublishCreate(req protocol.PublishCreateRequest) (*protocol.PublishCreateResult, error) {
+	var result *protocol.PublishCreateResult
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.PublishCreate(req)
+		return e
+	})
+	return result, err
+}
+
+// PublishRotate mints a fresh token for a share (old token dies immediately).
+func (rc *ResilientClient) PublishRotate(id string) (*protocol.PublishRotateResult, error) {
+	var result *protocol.PublishRotateResult
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.PublishRotate(id)
+		return e
+	})
+	return result, err
+}
+
+// PublishRevoke tombstones a share.
+func (rc *ResilientClient) PublishRevoke(id string) error {
+	return rc.WithClient(func(c *Client) error {
+		return c.PublishRevoke(id)
+	})
+}
+
+// PublishStatus returns the redaction-safe status of a share.
+func (rc *ResilientClient) PublishStatus(id string) (*protocol.PublishShareInfo, error) {
+	var result *protocol.PublishShareInfo
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.PublishStatus(id)
+		return e
+	})
+	return result, err
+}
+
+// PublishList lists the caller's project-scoped shares.
+func (rc *ResilientClient) PublishList() (*protocol.PublishListResult, error) {
+	var result *protocol.PublishListResult
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.PublishList()
+		return e
+	})
+	return result, err
+}
+
 // AlertClear clears all alerts from the daemon.
 func (rc *ResilientClient) AlertClear() error {
 	return rc.WithClient(func(c *Client) error {

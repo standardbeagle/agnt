@@ -216,6 +216,16 @@ func (d *Daemon) registerAgntCommands() error {
 		return err
 	}
 
+	// PUBLISH command — public walkthrough share-token lifecycle (control plane).
+	if err := register(hubpkg.CommandDefinition{
+		Verb:        protocol.VerbPublish,
+		SubVerbs:    routerSubVerbs(d.publishActions()),
+		Description: "Manage public walkthrough shares (create/status/list/revoke/rotate)",
+		Handler:     d.hubHandlePublish,
+	}); err != nil {
+		return err
+	}
+
 	// AUTOMATE command
 	if err := register(hubpkg.CommandDefinition{
 		Verb:        "AUTOMATE",
