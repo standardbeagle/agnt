@@ -272,11 +272,17 @@ all points across the manifest must total ≤10,000. `line` requires `width > 0`
 
 ### Lexical normalization and decoding limits
 
-- **Text:** Input must be valid shortest-form UTF-8 and is normalized to Unicode
-  NFC. Before NFC, CRLF and CR become LF. TAB/LF are allowed; all other C0/C1
-  controls, DEL, bidi controls U+061C/U+200E/U+200F/U+202A–U+202E/U+2066–U+2069,
-  Unicode noncharacters, and U+0000 reject. Limits count Unicode scalar values
-  after normalization, not bytes or grapheme clusters.
+- **Trusted-source text:** Input must be valid shortest-form UTF-8. The source
+  transformer changes CRLF and lone CR to LF, then normalizes to Unicode NFC.
+  TAB/LF are allowed; all other C0/C1 controls, DEL, bidi controls
+  U+061C/U+200E/U+200F/U+202A–U+202E/U+2066–U+2069, Unicode noncharacters, and
+  U+0000 reject rather than being removed.
+- **Canonical wire text:** Decoded JSON strings must already contain LF rather
+  than CR/CRLF and must already be Unicode NFC. A producer manifest validator and
+  public reader reject non-NFC text or any CR unchanged; they never normalize or
+  repair it. The same control/noncharacter prohibitions apply. Limits count
+  Unicode scalar values after trusted-source normalization or, for wire input,
+  after validation, not bytes or grapheme clusters.
 - **Frame/function name:** Wire values are ASCII and either `anonymous`,
   `redacted`, or `segment ("." segment)*`, where `segment` is
   `[A-Za-z_$][A-Za-z0-9_$]{0,63}`. Total length is 1–200 bytes. Whitespace,
@@ -301,9 +307,14 @@ all points across the manifest must total ≤10,000. `line` requires `width > 0`
   zero or more classes `.[A-Za-z_][A-Za-z0-9_-]{0,63}`; at least one component
   is required. Total length is 1–512 bytes. Attributes, `*`, `:`, `,`, escapes,
   brackets, parentheses, controls, and consecutive combinators reject.
-- **URL:** canonical wire values are absolute RFC 3986 `http` or `https`, ASCII,
-  and 1–2,048 bytes. The ordered algorithm below is normative; redirects and
-  fetching are absent.
+- **Trusted-source URL/IRI:** A structured source value is a valid shortest-form
+  UTF-8 RFC 3987 absolute IRI using the `http` or `https` scheme. URI structural
+  delimiters are ASCII; Unicode is allowed only in the reg-name host and path
+  components. The source parser preserves component boundaries before any IDNA,
+  percent decoding, removal, or Unicode normalization.
+- **Canonical wire URL:** A manifest value is an absolute ASCII RFC 3986
+  `http`/`https` URI of 1–2,048 bytes. It must already equal the output of the
+  ordered algorithm below. Redirects and fetching are absent.
 - **JSON decoder:** UTF-8 JSON text only; ≤1,048,576 wire bytes; ≤1,048,576 bytes
   after transport decompression (transport compression is forbidden in v1);
   maximum nesting depth 8 including the envelope; ≤32 object members per object;
@@ -340,29 +351,36 @@ rejected unchanged by producer validation and public readers.
 
 URL normalization runs in this order:
 
-1. Strictly parse one absolute URI; reject controls, whitespace, backslash,
-   malformed percent escapes, an empty host, or a non-`http`/`https` scheme.
-   Reject percent-encoded `/` (`%2F`) or `\\` (`%5C`) case-insensitively before
-   any decoding, including within a would-be host or path.
-2. Reject userinfo. In trusted source transformation only, remove query and
-   fragment with the diagnostics above. In wire validation, either component
-   rejects and no subsequent normalization is attempted.
-3. Lowercase the scheme. A DNS host is processed using Unicode 15.0.0 IDNA2008
+1. Select the input grammar by boundary: parse trusted source as the RFC 3987 IRI
+   profile above and wire input as ASCII RFC 3986. Parse exactly one absolute
+   value into scheme, authority/userinfo/host/port, path, query, and fragment
+   before transformation. Reject controls, whitespace, literal backslash,
+   malformed percent escapes, an empty host, Unicode outside source host/path,
+   or a non-`http`/`https` scheme.
+2. Reject userinfo. In trusted source transformation only, remove the complete
+   query and fragment components with the diagnostics above. Their removed bytes
+   need only satisfy the step-1 IRI/percent syntax; `%2F`/`%5C` inside them does
+   not reject because it can never reach output. In wire validation, either
+   component rejects unchanged and no subsequent normalization is attempted.
+3. In the retained authority and path only, reject percent-encoded `/` (`%2F`)
+   or `\\` (`%5C`) case-insensitively before any percent decoding. This check
+   never scans a source query or fragment removed at step 2.
+4. Lowercase the scheme. A DNS host is processed using Unicode 15.0.0 IDNA2008
    derived properties plus Unicode UTS #46 revision 15.0.0, nontransitional
    processing, STD3 ASCII rules, Bidi/Joiner checks, and DNS length verification.
    Percent escapes in a host reject. Emit lowercase canonical A-labels. IPv4 must
    parse and emit canonical dotted decimal; IPv6 must parse and emit RFC 5952
    lowercase text inside brackets.
-4. Parse the port as decimal 1–65535; remove `:80` for HTTP and `:443` for HTTPS;
+5. Parse the port as decimal 1–65535; remove `:80` for HTTP and `:443` for HTTPS;
    emit every other port without leading zeroes.
-5. For the path only, uppercase percent hex, decode percent-encoded RFC 3986
+6. For the path only, uppercase percent hex, decode percent-encoded RFC 3986
    unreserved bytes (including `%2E`), then remove RFC 3986 dot segments.
    Consequently encoded dot segments are treated as dot segments, never as
    opaque names. Decode remaining percent escapes to bytes, require shortest-form
    UTF-8, normalize Unicode to NFC, and re-encode every byte outside ASCII
    unreserved/sub-delims/`:`/`@` using uppercase percent hex. Literal `/` remains
-   the segment separator; encoded separators were already rejected at step 1.
-6. Replace an empty path with `/`, assemble without userinfo/query/fragment, and
+   the segment separator; encoded separators were already rejected at step 3.
+7. Replace an empty path with `/`, assemble without userinfo/query/fragment, and
    enforce the 2,048-byte ASCII limit. A trusted source emits the canonical value;
    a wire value must already equal it byte-for-byte or rejects without repair.
 
@@ -416,8 +434,10 @@ Source-input fixtures begin as structured trusted-source records:
 | MIME `text/html; charset="unterminated` | pass | `pass(content_type=unknown, mime_malformed)` | pass | pass | pass | pass |
 | MIME `application/octet-stream` | pass | `pass(content_type=other)` | pass | pass | pass | pass |
 | title source scalars `Cafe` + U+0301 | pass | `pass(title=Café)` after NFC | pass | pass | pass | pass with NFC U+00E9 |
+| description source `line1\r\nline2\rline3` | pass | `pass(description=line1\nline2\nline3)` | pass | pass | pass | pass with LF only |
 | URL `https://user:secret@example.com/a` | pass | `reject(url_rejected)` | NR | NR | NR | NR |
 | URL `https://EXAMPLE.com/a?token=x#private` | pass | `pass(url=https://example.com/a, url_query_removed, url_fragment_removed)` | pass | pass | pass | pass |
+| URL `https://example.com/a?q=%2F#%5C` | pass | `pass(url=https://example.com/a, url_query_removed, url_fragment_removed)`; removed separators are not inspected | pass | pass | pass | pass |
 | URL `https://example.com/a/%2e%2E/b` | pass | `pass(url=https://example.com/b, url_dot_segment_removed)` | pass | pass | pass | pass |
 | URL `https://example.com/a%2fb` or `https://example.com/a%5Cb` | pass | `reject(url_rejected)` | NR | NR | NR | NR |
 | URL `https://bücher.example/cafe%CC%81` | pass | `pass(url=https://xn--bcher-kva.example/caf%C3%A9)` | pass | pass | pass | pass |
@@ -435,8 +455,10 @@ digest and confirmation state.
 | A | NA | NA | pass | reproduce A bytes/digest | pass | pass |
 | H with its single `"content_type":"json"` replaced by `"content_type":"unknown"` or `"content_type":"other"`, then JCS and digest recomputed | NA | NA | pass; both are authorized labels | pass with new digest | pass | pass |
 | B with each UTF-8 NFC `Café` replaced by JSON text `Cafe\u0301`, supplied with B's digest | NA | NA | `reject(text_non_nfc)` before stale-digest check; no normalization | NR | NR | `reject(text_non_nfc)` before render |
+| B with its single JSON `line 1\nline 2` replaced by `line 1\r\nline 2`, supplied with B's digest | NA | NA | `reject(text_noncanonical_newline)`; no newline repair | NR | NR | `reject(text_noncanonical_newline)` |
 | H with its single `https://example.com/` replaced by `https://user@example.com/` | NA | NA | `reject(url_userinfo)` | NR | NR | `reject(url_userinfo)` before render |
 | H with its single URL replaced by `https://example.com/a?q=1#f` | NA | NA | `reject(url_query_fragment)`; no stripping | NR | NR | `reject(url_query_fragment)` before render |
+| H with its single URL replaced by `https://example.com/a?q=%2F#%5C` | NA | NA | `reject(url_query_fragment)` at step 2, before retained-component separator check | NR | NR | `reject(url_query_fragment)` |
 | H with its single URL replaced by `https://example.com/a/%2e%2E/b` | NA | NA | `reject(url_noncanonical)`; canonical source result would be `/b` | NR | NR | `reject(url_noncanonical)` |
 | H with its single URL replaced by `https://example.com/a%2Fb` or `https://example.com/a%5Cb` | NA | NA | `reject(url_encoded_separator)` | NR | NR | `reject(url_encoded_separator)` |
 | H with its single URL replaced by `https://bücher.example/café` | NA | NA | `reject(url_non_ascii)`; canonical source form is `https://xn--bcher-kva.example/caf%C3%A9` | NR | NR | `reject(url_non_ascii)` |
