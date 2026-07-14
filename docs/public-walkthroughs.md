@@ -163,8 +163,8 @@ the variant set, or the token, and it cannot read anything back.
 | Retention (rows) | 500 rows per share, oldest evicted | `max-rows-per-share` |
 | Retention (age) | 90 days | `retention-days` |
 
-Retention is **500 rows OR 90 days, whichever comes first.** Config surface and
-current wiring caveat: see [`configuration.md`](configuration.md#public-walkthrough-feedback-internalconfigfeedbackgo-feedback-in-agntkdl).
+Retention is **500 rows OR 90 days, whichever comes first.** These limits are
+configurable and honored by the live limiter — see [`configuration.md`](configuration.md#public-walkthrough-feedback-internalconfigfeedbackgo-feedback-in-agntkdl).
 
 ### Storage & restart
 
@@ -267,5 +267,5 @@ Opt-in the public listener via the environment (there is no KDL key for it):
 export AGNT_PUBLIC_ADDR=":8899"   # bind the anonymous public plane; unset = no public port
 ```
 
-Full config reference incl. the current wiring caveat:
+Full config reference:
 [`configuration.md`](configuration.md#public-walkthrough-feedback-internalconfigfeedbackgo-feedback-in-agntkdl).

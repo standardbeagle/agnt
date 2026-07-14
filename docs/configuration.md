@@ -156,13 +156,13 @@ a guard (a `0` rate would mean "never allow"; a `0` cap would mean "reject
 everything"), so it is always replaced with the safe default rather than left
 unbounded.
 
-**Current wiring caveat.** The `feedback` block is defined in `internal/config`
-(`KDLFeedback` → `config.FeedbackConfig`) and parses from `.agnt.kdl`. The daemon
-start path (`cmd/agnt/daemon.go:runDaemonStart`) currently leaves
-`DaemonConfig.FeedbackLimits` zero, which `buildPublicPlane` normalizes to the
-spec §5 defaults above — so the running feedback limiter uses these defaults today.
-The defaults shown are exactly what the daemon applies; edit the block to document
-intent, but confirm the daemon threads it before relying on non-default values.
+The `feedback` block is defined in `internal/config` (`KDLFeedback` →
+`config.FeedbackConfig`), parses from `.agnt.kdl`, and is honored by the live
+limiter: `runDaemonStart` (`cmd/agnt/daemon.go`) loads the config and threads
+`Feedback` into `DaemonConfig.FeedbackLimits`, and `buildPublicPlane` normalizes
+only the *unset* fields to the spec §5 defaults above. A non-default value you set
+(rate, burst, body cap, retention) takes effect on the running public feedback
+route; a malformed config fails startup loud rather than falling back silently.
 
 ## Public Walkthrough Listener (`AGNT_PUBLIC_ADDR` environment variable)
 
