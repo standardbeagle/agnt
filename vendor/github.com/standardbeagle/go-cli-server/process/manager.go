@@ -90,11 +90,23 @@ type ProcessManager struct {
 	scriptRegistry *script.Registry
 
 	// Shutdown coordination
-	shutdownOnce  sync.Once
-	shutdownChan  chan struct{}
-	shuttingDown  atomic.Bool
+	shutdownOnce sync.Once
+	shutdownChan chan struct{}
+	shuttingDown atomic.Bool
+	// startMu orders Start's wg.Add(1) against Shutdown's shuttingDown.Store(true)
+	// so the WaitGroup can never miss an in-flight start. Without it a Start that
+	// passed the shuttingDown guard but had not yet reached wg.Add could have its
+	// waitForProcess goroutine leak past a Shutdown whose wg.Wait saw a zero
+	// counter. It guards ONLY the add/flag ordering, not the whole Start path.
+	startMu       sync.Mutex
 	wg            sync.WaitGroup
 	scannerCancel context.CancelFunc
+
+	// startGuardHook, when non-nil, is invoked inside Start immediately after the
+	// shutting-down guard is passed and the WaitGroup ticket is taken. It exists
+	// only as a test seam to freeze a Start in that window and race Shutdown; it
+	// is always nil in production and costs a single nil check.
+	startGuardHook func()
 }
 
 // DefaultScanInterval is the default interval for descendant tree scanning.
@@ -310,7 +322,12 @@ func (pm *ProcessManager) Shutdown(ctx context.Context) error {
 	var shutdownErr error
 
 	pm.shutdownOnce.Do(func() {
+		// Order the flag-set against Start's wg.Add under startMu: once this
+		// returns, any Start still holding startMu has already done its wg.Add,
+		// so the wg.Wait below cannot miss its waitForProcess goroutine.
+		pm.startMu.Lock()
 		pm.shuttingDown.Store(true)
+		pm.startMu.Unlock()
 		close(pm.shutdownChan)
 
 		// Stop the descendant scanner

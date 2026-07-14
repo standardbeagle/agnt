@@ -21,7 +21,7 @@ require (
 	github.com/sblinch/kdl-go v0.0.0-20250930225324-bf4099d4614a
 	github.com/spf13/cobra v1.10.2
 	github.com/standardbeagle/claude-go v1.3.0
-	github.com/standardbeagle/go-cli-server v0.5.4
+	github.com/standardbeagle/go-cli-server v0.5.5
 	github.com/standardbeagle/go-sdk v1.5.0-agnt.2
 	github.com/stretchr/testify v1.11.1
 	github.com/tmc/langchaingo v0.1.14

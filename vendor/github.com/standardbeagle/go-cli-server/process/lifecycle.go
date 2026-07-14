@@ -14,9 +14,30 @@ import (
 
 // Start begins execution of a process.
 func (pm *ProcessManager) Start(ctx context.Context, proc *ManagedProcess) error {
+	// Take the WaitGroup ticket under startMu, ordered against Shutdown's
+	// shuttingDown.Store(true). This closes the TOCTOU where a Start that passed
+	// a bare shuttingDown guard but had not yet reached wg.Add(1) could leak its
+	// waitForProcess goroutine past a Shutdown whose wg.Wait() saw a zero counter.
+	// Once we hold the ticket, wg.Wait() must account for the eventual waiter.
+	pm.startMu.Lock()
 	if pm.shuttingDown.Load() {
+		pm.startMu.Unlock()
 		return ErrShuttingDown
 	}
+	pm.wg.Add(1)
+	pm.startMu.Unlock()
+
+	// The ticket is owned by this Start until the process is actually spawned and
+	// its waitForProcess goroutine is launched. Any early-error return below hands
+	// the ticket back here (the process never spawned, so there is no waiter to
+	// call wg.Done). Once started=true, ownership of the single wg.Done passes to
+	// waitForProcess.
+	started := false
+	defer func() {
+		if !started {
+			pm.wg.Done()
+		}
+	}()
 
 	// Atomic state transition: Pending -> Starting
 	if !proc.CompareAndSwapState(StatePending, StateStarting) {
@@ -28,6 +49,15 @@ func (pm *ProcessManager) Start(ctx context.Context, proc *ManagedProcess) error
 	if err := pm.Register(proc); err != nil {
 		proc.SetState(StatePending)
 		return err
+	}
+
+	// Test seam: freeze a Start in the window after it has passed the
+	// shutting-down guard AND Register's own guard but before the process is
+	// spawned, so a race test can drive Shutdown to completion concurrently. Nil
+	// in production. With the fix the WaitGroup ticket is already held here, so a
+	// concurrent Shutdown's wg.Wait() must still account for this Start.
+	if pm.startGuardHook != nil {
+		pm.startGuardHook()
 	}
 
 	// Build the command
@@ -113,8 +143,10 @@ func (pm *ProcessManager) Start(ctx context.Context, proc *ManagedProcess) error
 		}
 	}
 
-	// Start goroutine to wait for completion
-	pm.wg.Add(1)
+	// Start goroutine to wait for completion. The process is spawned; hand the
+	// WaitGroup ticket to waitForProcess (its deferred wg.Done pairs with the
+	// Add above) and disarm this frame's fallback Done.
+	started = true
 	go pm.waitForProcess(proc)
 
 	return nil
