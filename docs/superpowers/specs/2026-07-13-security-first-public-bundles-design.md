@@ -15,7 +15,7 @@ of a public URL authorizes only retrieval of one immutable, allowlisted bundle.
 | Plane | Principal | Permitted operations | Explicitly not permitted |
 |---|---|---|---|
 | Control | authenticated local publisher | preview selection, create, list metadata, revoke | anonymous access; browser execution; daemon/process/proxy mutation |
-| Data | anonymous viewer holding an unexpired capability URL | read the immutable public manifest and allowlisted assets | list/search bundles; upload; invoke MCP/daemon/proxy endpoints; read live state |
+| Data | anonymous viewer holding an unexpired capability URL | read the immutable public manifest | list/search bundles; upload; invoke MCP/daemon/proxy endpoints; read live state |
 | Storage | publisher service identity | write immutable bundle records, hashed capabilities, expiry and revocation metadata | store raw capability tokens; infer publisher authorization from token possession |
 
 The control and data planes use different route groups and middleware stacks.
@@ -47,7 +47,7 @@ application-level separation.
    time. Viewing never queries current page state, logs, incidents, processes,
    sessions, proxy state, or the publisher's filesystem.
 6. **The schema is an allowlist.** Only the public-bundle fields and MIME types
-   listed below may cross the boundary. Unknown fields and asset types are
+   listed below may cross the boundary. Unknown fields and content types are
    rejected at creation, not silently serialized.
 7. **No active content.** Bundles contain no arbitrary JavaScript, HTML, SVG,
    CSS, source maps, executable URLs, event handlers, forms, iframes, imports,
@@ -115,7 +115,6 @@ resource existence.
 | Control | `DELETE /api/public-bundles/{bundle_id}` | publisher session + scope + CSRF | no body | `204` only after durable revocation | `405` |
 | Data | `GET|HEAD /p/{capability}` | capability verification | no meaningful query parameters or request body | trusted viewer shell | `404` uniform |
 | Data | `GET|HEAD /p/{capability}/manifest.json` | capability verification | no meaningful query parameters or request body | public manifest JSON | `404` uniform |
-| Data | `GET|HEAD /p/{capability}/assets/{asset_id}` | capability verification + manifest membership | no ranges in v1 | allowlisted immutable asset | `404` uniform |
 
 Control-plane identifiers are opaque random IDs distinct from capabilities.
 They are safe for audit correlation but do not authorize a data-plane read.
@@ -129,21 +128,31 @@ this security contract and requires review.
 
 | Item | Allowed public representation | Hard limit |
 |---|---|---|
-| Bundle | manifest plus assets | 5 MiB total; 200 entries; 20 assets |
+| Bundle | manifest only | 1 MiB total; 200 entries |
 | Title/description | plain text | 120 / 2,000 Unicode scalar values |
 | Incident/error summary | timestamp bucket, severity enum, redacted plain-text message and bounded stack function names | 100 items; 2,000 chars/message; 50 frames/item; 200 chars/frame |
 | HTTP observation | method enum, normalized source URL text, status, duration/size buckets, allowlisted content-type | 100 items; URL 2,048 chars |
 | Interaction/mutation | event-type enum, bounded safe selector, timestamp bucket, plain-text label | 100 items; selector 512 chars; label 500 chars |
-| Screenshot | re-encoded raster only: PNG, JPEG, or WebP; metadata stripped | 4 MiB each; 4096 px each dimension; 16 megapixels decoded |
+| Screenshot | **forbidden in v1**, including originals, thumbnails, crops, blur/pixelation, OCR, and re-encoded derivatives | reject the complete request if screenshot content or a screenshot reference is selected |
 | Design/sketch geometry | versioned numeric primitives and bounded plain-text labels | 10,000 points; 500 primitives; label 500 chars |
+
+Screenshot privacy is fail-closed: v1 has no approved screenshot transformation,
+so no raster bytes may enter staging, durable bundle storage, the manifest, or a
+public response. Previewing a screenshot does not approve it for publication.
+Creation validates selected source kinds before copying content and rejects the
+entire request if a screenshot, thumbnail, screenshot-derived OCR, crop, blur,
+pixelation, asset reference, or unknown binary is present. A future raster
+transform requires a separately reviewed schema version, a deterministic
+sensitive-region policy, explicit publisher approval of the exact transformed
+bytes, and tests proving that only those approved bytes can cross the persistence
+boundary; generic image re-encoding alone is not a privacy transform.
 
 Selectors are a display-only grammar: tag, `#id`, `.class`, child/descendant
 combinators, and the redacted placeholder. Attribute values, pseudo-functions,
 escapes producing controls, and URL-bearing syntax are rejected. Text rejects
 NUL and bidi-control characters, normalizes newlines, and preserves no terminal
-control sequences. JSON decoding has depth and duplicate-key limits. Raster
-images are decoded under pixel/byte budgets and re-encoded server-side; original
-metadata and polyglot bytes are not retained.
+control sequences. JSON decoding has depth and duplicate-key limits. Binary
+content is rejected.
 
 ### Forbidden capabilities
 
@@ -161,11 +170,12 @@ them so an older policy cannot accidentally publish a newer capability.
 
 ## HTTP policy
 
-The viewer shell uses same-origin static assets with content hashes. Responses
-include, at minimum:
+The v1 viewer is server-rendered semantic HTML with no script, stylesheet, image,
+font, worker, or third-party subresources. It needs no active content to render
+bounded text and geometry summaries. Responses include, at minimum:
 
 ```text
-Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'none'; object-src 'none'; frame-src 'none'; frame-ancestors 'none'; form-action 'none'; base-uri 'none'; manifest-src 'none'; worker-src 'none'; navigate-to 'none'; require-trusted-types-for 'script'
+Content-Security-Policy: default-src 'none'; script-src 'none'; style-src 'none'; img-src 'none'; connect-src 'none'; font-src 'none'; object-src 'none'; frame-src 'none'; frame-ancestors 'none'; form-action 'none'; base-uri 'none'; manifest-src 'none'; worker-src 'none'; navigate-to 'none'; require-trusted-types-for 'script'
 X-Content-Type-Options: nosniff
 Referrer-Policy: no-referrer
 Permissions-Policy: accelerometer=(), camera=(), geolocation=(), gyroscope=(), microphone=(), payment=(), usb=()
@@ -182,10 +192,10 @@ and `Sec-Fetch-Site` on mutations. Capability URLs must not appear in HTML
 subresources; otherwise URL-path leakage can occur in infrastructure logs despite
 `Referrer-Policy`. Edge and application access logs redact the capability path.
 
-`Content-Type` is fixed per endpoint (`text/html; charset=utf-8`,
-`application/json`, or the re-encoded raster type). Content disposition for
-non-shell data is `inline` only for those fixed safe types. Compression and range
-handling are disabled where they would create amplification or oracle behavior.
+`Content-Type` is fixed per endpoint (`text/html; charset=utf-8` or
+`application/json`). No binary or active content type is served. Compression and
+range handling are disabled where they would create amplification or oracle
+behavior.
 
 ## Source-of-truth tables
 
@@ -205,7 +215,7 @@ handling are disabled where they would create amplification or oracle behavior.
 | incidents/errors | explicit selection, secret/PII filtering, text/control normalization, bucketing | bounded inert summary |
 | HTTP observations | drop headers/bodies, strip URL credentials/query/fragment, normalize URL | method/status/timing/size plus URL text |
 | interactions/mutations | selector grammar validation, text redaction, count limiting | display-only event summary |
-| screenshots | decode with limits, redact per publisher preview, metadata strip, re-encode | raster asset with fixed MIME |
+| screenshots, derivatives, or references | reject the complete publish request before staging or persistence | no public representation in v1 |
 | design/sketch state | select numeric primitives, validate finite ranges, normalize labels | versioned geometry data |
 | everything else | no transform exists | rejected |
 
@@ -220,8 +230,8 @@ the publisher must revoke and create a new bundle.
 
 A read parses a canonical path, hashes the supplied token using the versioned
 domain, performs bounded lookup plus constant-time digest verification, checks
-revocation/expiry/schema, then serves only manifest-member bytes. Authorization
-failure and missing asset membership use the uniform public failure response.
+revocation/expiry/schema, then serves only the manifest or its server-rendered
+view. Authorization failure uses the uniform public failure response.
 
 Revocation is idempotent. Once durable revocation commits, every subsequent read
 must fail, including through CDN/application caches. Public responses therefore
@@ -239,11 +249,11 @@ test or review case:
 |---|---|
 | brute-force, timing, or bundle-ID enumeration | 256-bit capability, constant-time final verify, uniform failures, no anonymous list |
 | capability leakage through logs, referrers, analytics, screenshots, or CORS | path redaction, `no-referrer`, no third parties, no CORS, reveal-once token |
-| stored XSS/polyglot image/HTML or SVG smuggling | schema allowlist, text-only rendering, raster decode/re-encode, `nosniff`, strict CSP/Trusted Types |
+| stored XSS/polyglot image/HTML or SVG smuggling | schema allowlist, text-only rendering, all binary/active content rejected, `nosniff`, no-source CSP/Trusted Types |
 | SSRF through published URLs or viewer previews | URLs are normalized text and are never fetched by creation or viewer |
 | CSRF creating/revoking bundles | same-origin authorization, CSRF binding, fetch-metadata checks, non-simple content type |
 | stale cache after revoke or restart | durable authority, invalidate-before-success, `no-store`, fail-closed restart |
-| decompression/JSON/image bomb | wire, decoded-byte, nesting, pixel, count, and concurrency budgets before allocation |
+| decompression/JSON bomb | wire, decoded-byte, nesting, count, and concurrency budgets before allocation |
 | scope confused deputy | source authorization before selection; separate control/data interfaces and identifiers |
 | privacy bypass via “redaction” | forbidden categories are never collected; preview is explicit; audit omits content/token |
 | abuse as free hosting or amplification | MIME/schema allowlist, bundle/read limits, expiry, quotas, no range/compression oracle |
@@ -256,10 +266,12 @@ Implementation remains incomplete until tests prove: entropy and reveal-once
 storage; token absence from all logs/errors; constant-time verification path;
 the exact endpoint/method matrix; uniform invalid/expired/revoked responses;
 scope and CSRF enforcement; every field/count/byte/decode limit; unknown-field
-rejection; HTML/JS/SVG/polyglot and SSRF payload rejection; required headers on
+rejection; screenshot selection and every original/derived/binary representation
+rejected before staging and persistence; proof that no raster bytes can be
+retrieved; HTML/JS/SVG/polyglot and SSRF payload rejection; required headers on
 success and error; immediate revoke across caches; restart persistence and
 fail-closed authority outage; retention deletion; and fuzzing of token/path/JSON,
-selector, URL, and raster parsers.
+selector and URL parsers.
 
 An adversarial reviewer must additionally verify that the public handler's
 dependency graph cannot reach daemon mutation, proxy execution, filesystem, MCP,
