@@ -816,9 +816,16 @@ Creation is an authenticated two-phase protocol:
    visible value-free diagnostics, opaque preview ID, preview expiry, and the
    P1a confirmation plus P1b publication-binding digests above. It mints no capability.
 5. Confirm re-authenticates, resolves canonical publisher/project scope again,
-   performs preliminary preview ownership/expiry/state/digest checks, then
-   acquires the fenced idempotency lease below. Preliminary request/auth/digest
-   failure mutates no preview or idempotency state. The fenced winner re-resolves
+   validates idempotency-key/request syntax, computes the request binding from
+   request bytes, and resolves the retained scoped idempotency record **before**
+   dereferencing or validating preview ownership/state/expiry. A matching
+   `succeeded` record returns the token-free replay immediately. A retained
+   different binding returns value-free `409 idempotency_mismatch`; neither path
+   reveals preview state. Matching pending/terminal states return their defined
+   result. Only a new or reacquirable matching operation then validates preview
+   ownership/expiry/state and both digests and acquires the fenced lease.
+   Preliminary request/auth/digest failure mutates no preview or idempotency
+   state. The fenced winner re-resolves
    authority scope and reads all source descriptors with snapshot-pinned or
    version-conditional reads and no payload, and requires the same ordered
    identity/revision/kind set. Authoritative scope, count, identity, revision, or
@@ -833,7 +840,7 @@ idempotency exactly
 exactly `ready`. It atomically changes preview `ready → invalidated`, changes the
 idempotency record `pending → terminal_failed`, deletes the wrapped DEK from
 authority state, and inserts a durable ciphertext-cleanup outbox item tagged with
-the exact fencing tuple. If the condition fails, the stale caller changes
+the exact fencing tuple and preview-owned `staging_object_id`. If the condition fails, the stale caller changes
 nothing. If a crash occurs before commit, all state remains retryable under the
 same/new fenced owner; after commit, ciphertext is undecryptable and recovery
 retries outbox deletion until acknowledged. Expiry and successful consumption
@@ -853,7 +860,11 @@ key)`. Raw keys are access-controlled request data and are redacted from logs.
 The request binding is
 `SHA-256("agnt-public-bundle-idempotency-v1\0" || F(0x01, preview_id) ||
 F(0x02, publication_binding_digest_raw_32_bytes))`. A durable uniqueness constraint on
-the scoped key chooses exactly one concurrency winner. The first transaction
+the scoped key chooses exactly one concurrency winner. Lookup ordering is
+normative: after authentication/scope and syntax/binding computation, check the
+retained scoped key first; return matching `succeeded` replay or value-free
+mismatch without preview validation; only then access preview state for a new or
+retryable matching operation. The first transaction
 atomically allocates a non-reusable uint64 `record_epoch` and inserts
 `pending(record_epoch,binding,preview_id)`; a different binding for the
 same retained key returns `409 idempotency_mismatch` and cannot inspect or alter
@@ -866,7 +877,8 @@ closed. `pending` includes a 60-second attempt lease, a 128-bit random `owner`, 
 uint64 monotonic fencing `generation`. Initial acquisition stores generation 1;
 every later lease acquisition/reacquisition increments the persisted generation
 before issuing a new owner, including recovery after expiry. Generation never
-decrements or repeats for the scoped key. After a crash, only an atomic
+decrements or repeats **within its `record_epoch`**; a new epoch starts generation
+at 1, and the non-reused epoch is the cross-incarnation fence. After a crash, only an atomic
 compare-and-swap by recovery or a matching retry may change an expired lease to
 `retryable_failed` and reacquire it. An unexpired lease is never stolen.
 
@@ -874,10 +886,22 @@ Every pending-state or publication-authority transition—including
 `pending → retryable_failed`, reacquisition, terminal failure, expiry, and
 success—uses a compare-and-swap over the exact persisted
 `(record_epoch,binding,generation,owner,status)` observed by the caller.
-Temporary content and cleanup-outbox items are tagged with that tuple. A stale
-record epoch, owner, or generation cannot alter the idempotency
-record, make content reachable, consume/invalidate a preview, or delete a newer
-owner's object; it discards only its own tagged temporary object.
+Authority mutation fencing and immutable-object cleanup are distinct:
+
+- Preview staging has a random non-reused `staging_object_id` owned by the
+  preview, independent of any attempt epoch. Its cleanup item names exactly that
+  immutable object ID and preview ID.
+- Each publication attempt has a random non-reused `attempt_object_id` owned by
+  exact `(record_epoch,binding,generation,owner)`; no prefix/key-wide deletion is
+  allowed. Its cleanup item contains that exact immutable object ID and tuple.
+
+A stale epoch/owner/generation cannot mutate idempotency or preview authority,
+make content reachable, or delete a newer/current object's ID. It may delete its
+own exact attempt object without an authority CAS. A committed outbox worker may
+delete the exact preview-owned or attempt-owned immutable ciphertext named by an
+old item even after record deletion/epoch change; deletion is idempotent and
+cannot mutate current authority or select another object. Thus epoch fencing does
+not strand old ciphertext, and cleanup authority cannot reach new ciphertext.
 
 The winner generates the raw capability only after all confirmation checks. It
 writes immutable canonical content under an unreachable temporary object ID,
@@ -885,7 +909,7 @@ then one authority transaction atomically: makes the content pointer reachable,
 writes bundle/expiry/revocation metadata and the capability digest, changes the
 preview `ready → consumed` with a compare-and-swap, destroys the preview staging
 key by deleting its wrapped DEK, inserts the tuple-tagged ciphertext-cleanup
-outbox item, and changes idempotency `pending → succeeded` with public-safe
+outbox item naming the exact preview-owned `staging_object_id`, and changes idempotency `pending → succeeded` with public-safe
 bundle metadata. No raw capability, URL, or independently decrypting staging key
 is stored in the preview, bundle metadata, or idempotency record. The
 preview-state compare-and-swap permits only one success even if different
@@ -924,8 +948,10 @@ same scoped key cannot be rebound during delayed retries.
 
 Content written before the authority transaction is unreachable. A failure or
 crash before that commit leaves preview `ready` (unless already invalidated),
-changes no durable success record, and orphan cleanup deletes the temporary
-object; a matching retry is safe. The preview is consumed only inside the success
+changes no durable success record, and the exact fenced failure/recovery
+transaction enqueues deletion of that attempt's immutable `attempt_object_id`;
+the stale worker may also delete that same ID directly. A matching retry is safe.
+The preview is consumed only inside the success
 transaction. A crash after commit cannot roll back reachability or consumption;
 retry observes `succeeded` and returns the token-free 200 replay response.
 
@@ -940,22 +966,23 @@ retry observes `succeeded` and returns the token-free 200 replay response.
 | two confirms race with same key and binding | one inserts `pending`; other observes it | winner continues; loser `409 idempotency_in_progress`, then retries |
 | two confirms race on one preview with different unused keys | both may reserve; one preview-state compare-and-swap commits; loser changes `pending → terminal_failed` and its temporary object stays unreachable | winner receives first-response semantics; loser `409 preview_consumed` |
 | same retained key, different preview or publication-binding digest | no state change | `409 idempotency_mismatch` always |
+| matching retained `succeeded` key while preview is consumed, expired, deleted, or otherwise unreadable | do not dereference preview; no state change | immediate token-free `200` replay metadata |
 | confirm after source identity/revision/kind/count or scope drift | exact epoch/binding/generation/owner + preview-ready transaction: `ready → invalidated`, `pending → terminal_failed`, delete wrapped DEK, enqueue tagged cleanup | value-free `409 preview_invalidated`; new preview/key required |
 | crash before/after invalidation transaction | before: no state/key change; after: terminal state plus no wrapped DEK and durable cleanup item | recovery either retries fenced transaction or only ciphertext deletion; never leaves committed invalidation decryptable |
 | preview expiry with no idempotency lease | authority-time/ready CAS: `ready → expired`, delete wrapped DEK, enqueue preview-tagged cleanup | later confirm gets `409 preview_expired` |
-| preview expiry with pending/retryable lease | exact fencing-tuple authority transaction: `ready → expired`, delete wrapped DEK, enqueue tuple-tagged cleanup; idempotency expires | `409 preview_expired`; new preview/key required |
+| preview expiry with pending/retryable lease | exact fencing-tuple authority transaction: `ready → expired`, delete wrapped DEK, enqueue cleanup for exact preview-owned `staging_object_id`; idempotency expires | `409 preview_expired`; new preview/key required |
 | success and expiry race with server time strictly before preview expiry | serialized success may CAS `ready → consumed`; expiry predicate is false | winner may commit only with unexpired fenced lease |
 | success and expiry race at/after exact preview expiry | success predicate is false; expiry CASes `ready → expired` | `409 preview_expired`; equality never consumes |
 | infrastructure failure before authority commit | temporary content remains unreachable; `pending → retryable_failed`; preview stays `ready` | `503`; matching key may retry before preview expiry |
-| crash after temporary content write, before authority commit | no reachable bundle; preview remains `ready`; reservation recovered to `retryable_failed`; orphan deleted | matching retry is the only contender allowed |
+| crash after attempt-object write, before authority commit | no reachable bundle; preview remains `ready`; exact fenced recovery sets `retryable_failed` and enqueues that `attempt_object_id` | matching retry is the only contender allowed; old object cleanup cannot select its new object |
 | expired lease generation `g` is reacquired | exact CAS increments to `g+1`, assigns new owner and lease | new owner may retry; generation `g` is fenced |
-| stale epoch/generation/owner attempts success, failure, expiry, preview mutation, or object cleanup | exact tuple CAS fails; no authority/preview/new-owner object changes | stale worker stops and removes only its own tuple-tagged temporary object |
-| retained idempotency record is deleted and key later reused | fence tombstone increments `record_epoch`; generation starts at 1 only inside new epoch | any delayed prior-incarnation CAS/object/outbox action is fenced forever |
+| stale epoch/generation/owner attempts success, failure, expiry, or preview mutation | exact tuple CAS fails; no authority/preview/new-owner object changes | stale worker stops; it may remove only its exact immutable attempt object |
+| retained idempotency record is deleted and key later reused | fence tombstone increments `record_epoch`; generation starts at 1 only inside new epoch | delayed prior-incarnation authority CAS is fenced forever; old outbox may still delete only its exact old immutable object ID |
 | authority transaction commits | content becomes reachable; preview `ready → consumed`; idempotency `pending → succeeded` | first live winner receives reveal-once `201` |
 | crash/connection loss after commit but before/full/partial response | durable state remains consumed+succeeded | matching retry returns token-free `200`; revoke/new-create recovers |
-| matching replay of `succeeded` | no state change | `200`, replay header, metadata, null URL; never token |
+| matching replay of `succeeded` | idempotency lookup short-circuits before preview validation; no state change | `200`, replay header, metadata, null URL; never token |
 | any confirm of consumed preview with a different/new key | no state change | `409 preview_consumed`; cannot mint a second bundle |
-| transient retry reaches preview expiry before commit | `ready → expired`; `retryable_failed → expired`; destroy staging | `409 preview_expired`; new preview/key required |
+| transient retry reaches preview expiry before commit | exact fenced transaction: `ready → expired`, `retryable_failed → expired`, delete wrapped DEK, enqueue exact preview-owned staging cleanup | `409 preview_expired`; new preview/key required |
 
 A read parses a canonical path, hashes the supplied token using the versioned
 domain, performs bounded lookup plus constant-time digest verification, checks
