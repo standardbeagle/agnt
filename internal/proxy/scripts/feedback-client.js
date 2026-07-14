@@ -34,13 +34,30 @@
       return s.length > MAX_MESSAGE ? s.slice(0, MAX_MESSAGE) : s;
     }
 
+    // sameOriginPath accepts ONLY a same-origin absolute path so this client can
+    // never be pointed at a cross-origin sink (connect-src 'self', INV-7). The
+    // prior guard (charAt(0)==='/') accepted a PROTOCOL-RELATIVE "//evil.com/collect",
+    // which the browser resolves cross-origin — a data-exfil hole. Tighten it:
+    //   - must start with exactly one '/',
+    //   - reject "//host" (protocol-relative) and "/\\host" (backslash-smuggled,
+    //     which browsers normalize to "//host"),
+    //   - reject any scheme marker (a same-origin path never carries "://" or a
+    //     "javascript:" / "data:" scheme).
+    function sameOriginPath(s) {
+      if (typeof s !== 'string' || s.length === 0) return false;
+      if (s.charAt(0) !== '/') return false;
+      var c1 = s.charAt(1);
+      if (c1 === '/' || c1 === '\\') return false;
+      if (s.indexOf('://') !== -1) return false;
+      if (s.indexOf(':') !== -1 && s.indexOf(':') < s.indexOf('/', 1)) return false;
+      return true;
+    }
+
     function init(opts) {
       opts = opts || {};
       var onSubmit = typeof opts.onSubmit === 'function' ? opts.onSubmit : null;
-      // endpoint is accepted only as a same-origin, path-relative string so this
-      // stub can never be pointed at a cross-origin sink.
-      var endpoint = (typeof opts.endpoint === 'string' && opts.endpoint.charAt(0) === '/')
-        ? opts.endpoint : null;
+      // endpoint is accepted only as a same-origin absolute path (see sameOriginPath).
+      var endpoint = sameOriginPath(opts.endpoint) ? opts.endpoint : null;
       var buffer = [];
 
       function submit(entry) {
