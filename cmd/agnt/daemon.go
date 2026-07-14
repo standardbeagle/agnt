@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/daemon"
 	"github.com/standardbeagle/go-cli-server/process"
 
@@ -98,18 +99,15 @@ func getSocketPath(cmd *cobra.Command) string {
 	return socketPath
 }
 
-func runDaemonStart(cmd *cobra.Command, args []string) {
-	socketPath := getSocketPath(cmd)
-
-	// Create root context with signal cancellation
-	ctx, cancel := signal.NotifyContext(context.Background(),
-		syscall.SIGINT,
-		syscall.SIGTERM,
-	)
-	defer cancel()
-
-	// Configure and create daemon
-	config := daemon.DaemonConfig{
+// newDaemonConfig assembles the DaemonConfig for `daemon start` from the loaded
+// app config plus the resolved socket + public-plane addresses. It is a seam so
+// the config→daemon threading is unit-testable without driving the blocking
+// daemon lifecycle. Notably it is where the operator's feedback{} block (spec
+// §5 limits) must reach DaemonConfig.FeedbackLimits — dropping it here leaves the
+// live public-plane limiter on defaults regardless of config (no-silent-fallback
+// / Config Authority violation).
+func newDaemonConfig(appCfg *config.Config, socketPath, publicAddr string) daemon.DaemonConfig {
+	return daemon.DaemonConfig{
 		SocketPath: socketPath,
 		ProcessConfig: process.ManagerConfig{
 			DefaultTimeout:    0,
@@ -123,12 +121,36 @@ func runDaemonStart(cmd *cobra.Command, args []string) {
 		// Public walkthrough plane (P7/§2b): opt-in. The token-gated public handler
 		// is always BUILT (so `publish feedback` reads work), but a dedicated HTTP
 		// listener is only stood up when an operator sets AGNT_PUBLIC_ADDR — we do
-		// NOT auto-bind a public port. FeedbackLimits left zero → spec §5 defaults
-		// (buildPublicPlane normalizes).
-		PublicListenAddr: os.Getenv("AGNT_PUBLIC_ADDR"),
+		// NOT auto-bind a public port.
+		PublicListenAddr: publicAddr,
+		// Thread the operator's feedback{} block through to the live limiter.
+		// buildPublicPlane Normalize()s this, so a zero/unset field falls back to
+		// its spec §5 default while any NON-ZERO operator value survives.
+		FeedbackLimits: appCfg.Feedback,
+	}
+}
+
+func runDaemonStart(cmd *cobra.Command, args []string) {
+	socketPath := getSocketPath(cmd)
+
+	// Create root context with signal cancellation
+	ctx, cancel := signal.NotifyContext(context.Background(),
+		syscall.SIGINT,
+		syscall.SIGTERM,
+	)
+	defer cancel()
+
+	// Load the app config so operator-set limits (e.g. the feedback{} block)
+	// reach the daemon. Fail loud on a malformed config rather than silently
+	// falling back to defaults.
+	appCfg, err := config.LoadGlobalConfig()
+	if err != nil {
+		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	d := daemon.New(config)
+	daemonCfg := newDaemonConfig(appCfg, socketPath, os.Getenv("AGNT_PUBLIC_ADDR"))
+
+	d := daemon.New(daemonCfg)
 
 	// When the hub receives a remote SHUTDOWN command, cancel the signal
 	// context so this process exits cleanly.  On Windows, Unix signals are

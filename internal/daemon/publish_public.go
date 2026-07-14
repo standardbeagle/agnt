@@ -97,7 +97,11 @@ func (d *Daemon) buildPublicPlane() {
 			ownerOf: d.projectOfShare,
 		}
 	}
-	d.publicHandler = proxy.NewPublicHandler(d.publishStore, sink, d.config.FeedbackLimits.MaxBodyBytes)
+	// Use the NORMALIZED body cap (same source as the store limiter above) so an
+	// unset field falls back to the spec §5 default rather than 0, and an operator
+	// value flows through unchanged. Keeps the handler cap and the store cap from
+	// diverging.
+	d.publicHandler = proxy.NewPublicHandler(d.publishStore, sink, limits.MaxBodyBytes)
 }
 
 // projectOfShare resolves a viewer-safe share id to its owning project path via
