@@ -1109,6 +1109,18 @@ func (rc *ResilientClient) PublishList() (*protocol.PublishListResult, error) {
 	return result, err
 }
 
+// PublishFeedback reads the owner-scoped feedback rows for a share (never the
+// token). Ownership is enforced daemon-side.
+func (rc *ResilientClient) PublishFeedback(id, cursor string, limit int) (*protocol.PublishFeedbackResult, error) {
+	var result *protocol.PublishFeedbackResult
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.PublishFeedback(id, cursor, limit)
+		return e
+	})
+	return result, err
+}
+
 // AlertClear clears all alerts from the daemon.
 func (rc *ResilientClient) AlertClear() error {
 	return rc.WithClient(func(c *Client) error {
