@@ -399,21 +399,31 @@ func TestPageTracker_SessionTimeout(t *testing.T) {
 	}
 	pt.TrackHTTPRequest(entry)
 
-	// Wait for timeout
-	time.Sleep(5 * time.Millisecond)
-
-	sessions := pt.GetActiveSessions()
-	// Session should still exist but be marked inactive
-	if len(sessions) == 0 {
-		t.Logf("No sessions returned - GetActiveSessions only returns sessions within timeout")
-		return
-	}
-	if len(sessions) != 1 {
-		t.Errorf("Expected 1 session (inactive), got %d", len(sessions))
-		return
-	}
-	if sessions[0].Active {
-		t.Errorf("Expected session to be inactive after timeout")
+	// After the 1ms timeout elapses, the session must no longer count as active:
+	// activeSessions() flips Active=false AND drops timed-out sessions from the
+	// returned slice, so the post-timeout state is "gone, or present-and-inactive".
+	// The flip is recomputed on each GetActiveSessions read against wall-clock now,
+	// so a single fixed sleep can race the actor/scheduler under load (this test
+	// flaked exactly here — the nominal 5ms margin is not a guarantee on an
+	// oversubscribed host). Poll for the invariant with generous headroom instead
+	// of asserting on one nominal instant. See
+	// .claude/rules/testing-timing-assertion-flakes.md.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		sessions := pt.GetActiveSessions()
+		if len(sessions) == 0 {
+			return // timed-out session dropped from the active set — correct
+		}
+		if len(sessions) == 1 && !sessions[0].Active {
+			return // present but marked inactive — also correct
+		}
+		if len(sessions) != 1 {
+			t.Fatalf("Expected 0 or 1 session, got %d", len(sessions))
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("session still active %v after a 1ms timeout", 2*time.Second)
+		}
+		time.Sleep(1 * time.Millisecond)
 	}
 }
 

@@ -346,8 +346,8 @@ func (d *Daemon) hubHandleProxyExec(conn *hubpkg.Connection, cmd *hubproto.Comma
 		// does not leak, and return a remediable error instead of a bare timeout.
 		p.CancelExecution(execID)
 		return conn.WriteErr(hubproto.ErrTimeout, fmt.Sprintf(
-			"execution timed out after %s: browser connected but no reply for exec=%s frame=%q — the page is likely navigating/reloading or the script is hung. Wait for the page to settle (check currentpage/proxylog) and retry.",
-			proxyExecTimeout, execID, frameID))
+			"execution timed out after %s: browser connected but no reply for exec=%s frame=%s — the page is likely navigating/reloading or the script is hung (a heavy full-page screenshot on a large page can approach this window). Wait for the page to settle (check currentpage/proxylog) and retry.",
+			proxyExecTimeout, execID, p.DescribeExecTarget(frameID)))
 	}
 }
 

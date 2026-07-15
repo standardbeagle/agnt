@@ -165,6 +165,22 @@ func (ps *ProxyServer) resolveExecTarget(target string) string {
 	}
 }
 
+// DescribeExecTarget renders the frame an exec will actually run in, for
+// diagnostics. It mirrors resolveExecTarget but returns a human-legible label
+// so a timeout message reports the resolved destination rather than the raw
+// caller arg (which is often "" and reads as "no frame" even though the exec
+// was routed to the active content frame or broadcast to every frame).
+func (ps *ProxyServer) DescribeExecTarget(target string) string {
+	switch resolved := ps.resolveExecTarget(target); resolved {
+	case "@chrome":
+		return "@chrome (outer shell)"
+	case "":
+		return `<all frames> (no active content frame reported yet)`
+	default:
+		return resolved
+	}
+}
+
 // ExecuteJavaScript sends JavaScript code to connected clients for execution.
 // Returns the execution ID and a channel that will receive the result. An
 // optional frameID targets a specific content frame; when empty it defaults to

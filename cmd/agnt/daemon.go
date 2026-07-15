@@ -30,8 +30,16 @@ It is automatically started when needed, but can be managed manually.`,
 
 var daemonStartCmd = &cobra.Command{
 	Use:   "start",
-	Short: "Start the daemon",
-	Run:   runDaemonStart,
+	Short: "Start the daemon in the foreground (blocks until Ctrl+C)",
+	Long: `Start the daemon and run it in the FOREGROUND.
+
+This command blocks: it holds the terminal and streams daemon logs until you
+press Ctrl+C (or send SIGINT/SIGTERM). It does NOT detach.
+
+Normal use does not need this — MCP tools and 'agnt run' auto-start a detached
+daemon on demand. Use 'daemon start' only to run the daemon manually (e.g. to
+watch its logs). To manage a running daemon, use 'daemon status' / 'daemon stop'.`,
+	Run: runDaemonStart,
 }
 
 var daemonStopCmd = &cobra.Command{

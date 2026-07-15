@@ -464,3 +464,90 @@ func TestFormatJSONHookNil(t *testing.T) {
 	entry := proxy.LogEntry{Type: proxy.LogTypeHook}
 	assert.Equal(t, "", formatJSON(entry))
 }
+
+// TestHTTPBodyPreview covers the gzip/binary-guard added so the compact stream
+// never dumps still-encoded response bytes as garbage (feedback #4).
+func TestHTTPBodyPreview(t *testing.T) {
+	tests := []struct {
+		name    string
+		body    string
+		headers map[string]string
+		want    string
+	}{
+		{"empty", "", nil, ""},
+		{"plain text", "hello world", nil, "hello world"},
+		{"gzip encoding header", "\x1f\x8b\x08\x00rawbytes", map[string]string{"Content-Encoding": "gzip"}, "<gzip-encoded, 12 bytes>"},
+		{"br encoding header, mixed case", "x", map[string]string{"Content-Encoding": "BR"}, "<br-encoded, 1 bytes>"},
+		{"identity passes through", "plain", map[string]string{"Content-Encoding": "identity"}, "plain"},
+		{"binary bytes no header", "\x00\x01\x02\x03\xff", nil, "<binary, 5 bytes>"},
+		{"gzip magic no header", "\x1f\x8b\x08\x00\x00\x00", nil, "<binary, 6 bytes>"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			h := &proxy.HTTPLogEntry{ResponseBody: tt.body, ResponseHeaders: tt.headers}
+			assert.Equal(t, tt.want, httpBodyPreview(h, 80))
+		})
+	}
+}
+
+// TestIsPrintableText pins the text/binary discriminator.
+func TestIsPrintableText(t *testing.T) {
+	assert.True(t, isPrintableText("ascii"))
+	assert.True(t, isPrintableText("multi\nline\ttext\r\n"))
+	assert.True(t, isPrintableText("unicode: héllo 世界"))
+	assert.False(t, isPrintableText("\x00null"))
+	assert.False(t, isPrintableText("\x1f\x8bgzip"))
+	assert.False(t, isPrintableText("\xff\xfe invalid utf8"))
+}
+
+// TestMutationCoalescer verifies burst collapse, target/window/cap flush
+// boundaries, and the tail flush (feedback #3).
+func TestMutationCoalescer(t *testing.T) {
+	base := time.Unix(1700000000, 0)
+	mut := func(sel string, added, removed int, at time.Time) *proxy.MutationEvent {
+		return &proxy.MutationEvent{
+			MutationType: "childList",
+			Target:       proxy.MutationTarget{Selector: sel},
+			Added:        make([]proxy.MutationNode, added),
+			Removed:      make([]proxy.MutationNode, removed),
+			Timestamp:    at,
+		}
+	}
+
+	t.Run("same target accumulates, flushes on tail", func(t *testing.T) {
+		c := &mutationCoalescer{}
+		assert.Empty(t, c.add(mut("#list", 2, 0, base)))
+		assert.Empty(t, c.add(mut("#list", 1, 1, base.Add(10*time.Millisecond))))
+		assert.Equal(t, "[mutation] 2 changes (4 nodes) on #list", c.flush())
+		assert.Empty(t, c.flush(), "second flush is empty")
+	})
+
+	t.Run("target change flushes prior bucket", func(t *testing.T) {
+		c := &mutationCoalescer{}
+		c.add(mut("#a", 1, 0, base))
+		flush := c.add(mut("#b", 1, 0, base.Add(5*time.Millisecond)))
+		assert.Equal(t, "[mutation] 1 change (1 node) on #a", flush)
+		assert.Equal(t, "[mutation] 1 change (1 node) on #b", c.flush())
+	})
+
+	t.Run("window elapse flushes even for same target", func(t *testing.T) {
+		c := &mutationCoalescer{}
+		c.add(mut("#a", 1, 0, base))
+		flush := c.add(mut("#a", 1, 0, base.Add(mutationCoalesceWindow+time.Millisecond)))
+		assert.Equal(t, "[mutation] 1 change (1 node) on #a", flush)
+	})
+
+	t.Run("cap forces flush", func(t *testing.T) {
+		c := &mutationCoalescer{}
+		var flushes int
+		for i := 0; i < mutationCoalesceCap; i++ {
+			if c.add(mut("#a", 1, 0, base)) != "" {
+				flushes++
+			}
+		}
+		// The (cap+1)-th add trips the cap and emits the buffered summary.
+		flush := c.add(mut("#a", 1, 0, base))
+		assert.Equal(t, 0, flushes, "no flush before cap")
+		assert.Contains(t, flush, "50 changes")
+	})
+}

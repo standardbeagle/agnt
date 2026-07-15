@@ -9,6 +9,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 	"github.com/standardbeagle/agnt/internal/daemon"
@@ -77,6 +78,57 @@ func runMonitor(cmd *cobra.Command, args []string) error {
 	}
 }
 
+// mutationCoalesceWindow / mutationCoalesceCap bound how many DOM mutations
+// collapse into one compact summary line. A single page load emits per-node
+// mutations by the hundred; streaming them one-per-line swamps the compact
+// output and the downstream consumer's rate limit. Coalescing keeps the signal
+// (something is mutating, how much) without the firehose.
+const (
+	mutationCoalesceWindow = 500 * time.Millisecond
+	mutationCoalesceCap    = 50
+)
+
+// mutationCoalescer accumulates a burst of same-target mutations into a rolling
+// summary. It is driven entirely by incoming events (no timer/goroutine, since
+// the stream callback runs sequentially): a different target, a non-mutation
+// event, the time window elapsing, or the cap forces a flush.
+type mutationCoalescer struct {
+	count   int
+	nodes   int
+	target  string
+	firstAt time.Time
+}
+
+// add folds one mutation into the running total, returning a summary line to
+// print first when the incoming mutation belongs to a new bucket.
+func (c *mutationCoalescer) add(m *proxy.MutationEvent) (flush string) {
+	target := describeSelector(m.Target.Selector)
+	nodes := len(m.Added) + len(m.Removed)
+	if c.count > 0 && (c.target != target ||
+		m.Timestamp.Sub(c.firstAt) > mutationCoalesceWindow ||
+		c.count >= mutationCoalesceCap) {
+		flush = c.flush()
+	}
+	if c.count == 0 {
+		c.target = target
+		c.firstAt = m.Timestamp
+	}
+	c.count++
+	c.nodes += nodes
+	return flush
+}
+
+// flush emits the buffered summary (if any) and resets the accumulator.
+func (c *mutationCoalescer) flush() string {
+	if c.count == 0 {
+		return ""
+	}
+	line := fmt.Sprintf("[mutation] %d change%s (%d node%s) on %s",
+		c.count, plural(c.count), c.nodes, plural(c.nodes), c.target)
+	c.count, c.nodes, c.target = 0, 0, ""
+	return line
+}
+
 // streamOnce connects to the daemon and streams events until an error or cancellation.
 func streamOnce(ctx context.Context, client *daemon.Client, filter protocol.StreamEventFilter) error {
 	if err := client.Connect(); err != nil {
@@ -86,19 +138,38 @@ func streamOnce(ctx context.Context, client *daemon.Client, filter protocol.Stre
 
 	fmt.Fprintf(os.Stderr, "monitor: connected to %s\n", client.SocketPath())
 
-	return client.StreamEvents(ctx, filter, func(entry proxy.LogEntry) error {
-		var line string
+	mc := &mutationCoalescer{}
+	printLine := func(line string) {
+		if line != "" {
+			fmt.Println(line)
+		}
+	}
+
+	err := client.StreamEvents(ctx, filter, func(entry proxy.LogEntry) error {
+		// JSON output stays 1:1 (machine-readable); coalesce only the compact
+		// stream, which is what a human/agent consumer reads.
+		if monitorFormat == "compact" {
+			if entry.Type == proxy.LogTypeMutation && entry.Mutation != nil {
+				printLine(mc.add(entry.Mutation))
+				return nil
+			}
+			// A non-mutation event flushes any pending summary first so the
+			// coalesced line keeps its place in the timeline.
+			printLine(mc.flush())
+		}
+
 		if monitorFormat == "json" {
-			line = formatJSON(entry)
+			printLine(formatJSON(entry))
 		} else {
-			line = formatCompact(entry)
+			printLine(formatCompact(entry))
 		}
-		if line == "" {
-			return nil
-		}
-		fmt.Println(line)
 		return nil
 	})
+
+	// Flush a mutation burst still buffered when the stream ends (page went
+	// quiet or the connection dropped mid-burst).
+	printLine(mc.flush())
+	return err
 }
 
 // parseTypes splits a comma-separated string into a slice, trimming whitespace.
@@ -144,8 +215,8 @@ func formatCompact(entry proxy.LogEntry) string {
 			status = fmt.Sprintf(":%d", h.StatusCode)
 		}
 		msg := h.Error
-		if msg == "" && h.ResponseBody != "" {
-			msg = truncate(h.ResponseBody, 80)
+		if msg == "" {
+			msg = httpBodyPreview(h, 80)
 		}
 		if msg != "" {
 			return fmt.Sprintf("[http%s] %s %s → %s", status, h.Method, h.URL, msg)
@@ -268,11 +339,11 @@ func formatJSON(entry proxy.LogEntry) string {
 		}
 		msg := entry.HTTP.Error
 		if msg == "" {
-			msg = entry.HTTP.ResponseBody
+			msg = httpBodyPreview(entry.HTTP, 120)
 		}
 		out.Message = fmt.Sprintf("%s %s → %d", entry.HTTP.Method, entry.HTTP.URL, entry.HTTP.StatusCode)
 		if msg != "" {
-			out.Message += ": " + truncate(msg, 120)
+			out.Message += ": " + msg
 		}
 		if entry.HTTP.StatusCode >= 500 {
 			out.Severity = "error"
@@ -411,6 +482,49 @@ func truncate(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen-3] + "..."
+}
+
+// httpBodyPreview returns a short, log-safe preview of an HTTP response body.
+// The proxy's traffic recorder captures the on-the-wire bytes, which stay
+// compressed for any response the proxy did not decompress for HTML injection
+// (JSON APIs, JS/CSS assets, …). Dumping those raw prints gzip/br/zstd garbage
+// into the monitor stream, so a compressed or otherwise non-text body is
+// rendered as a byte-count placeholder instead. Returns "" for an empty body.
+func httpBodyPreview(h *proxy.HTTPLogEntry, maxLen int) string {
+	body := h.ResponseBody
+	if body == "" {
+		return ""
+	}
+	if enc := strings.ToLower(strings.TrimSpace(h.ResponseHeaders["Content-Encoding"])); enc != "" && enc != "identity" {
+		return fmt.Sprintf("<%s-encoded, %d bytes>", enc, len(body))
+	}
+	if !isPrintableText(body) {
+		return fmt.Sprintf("<binary, %d bytes>", len(body))
+	}
+	return truncate(body, maxLen)
+}
+
+// isPrintableText reports whether s is valid UTF-8 with no control bytes (other
+// than the usual whitespace) in its leading sample — a cheap "is this safe to
+// print in a log line" check that rejects compressed/binary payloads.
+func isPrintableText(s string) bool {
+	if !utf8.ValidString(s) {
+		return false
+	}
+	n := len(s)
+	if n > 512 {
+		n = 512
+	}
+	for i := 0; i < n; i++ {
+		c := s[i]
+		if c == '\n' || c == '\r' || c == '\t' {
+			continue
+		}
+		if c < 0x20 || c == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 // plural returns "s" if n != 1, else "".
