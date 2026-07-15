@@ -67,8 +67,15 @@
   // Helper to capture current page as PageCapture format
   function captureCurrentPage() {
     return new Promise(function(resolve, reject) {
+      // html2canvas is loaded on demand; ensure it, then re-enter.
       if (typeof html2canvas === 'undefined') {
-        reject(new Error('html2canvas not loaded'));
+        if (typeof window.__devtool_ensureHtml2canvas === 'function') {
+          window.__devtool_ensureHtml2canvas().then(function() {
+            captureCurrentPage().then(resolve, reject);
+          }, reject);
+        } else {
+          reject(new Error('html2canvas not loaded'));
+        }
         return;
       }
 

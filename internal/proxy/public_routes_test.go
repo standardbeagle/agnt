@@ -122,6 +122,7 @@ func TestForbiddenRouteScan(t *testing.T) {
 	forbidden403 := []string{
 		"/__devtool_metrics",            // metrics WebSocket upgrade
 		"/__devtool_axe",                // axe-core audit asset
+		"/__devtool_html2canvas",        // html2canvas capture asset (dev-only)
 		"/__devtool/ws",                 // dev WS channel
 		"/__devtool/exec",               // proxy exec bridge
 		"/__devtool/inject.js",          // dev bundle (non-public path)

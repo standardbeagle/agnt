@@ -352,8 +352,18 @@
   // the Background sidebar when the user picks 'capture' or hits "Recapture".
   function capturePageBackground(onDone) {
     if (typeof html2canvas === 'undefined') {
-      console.warn('[DevTool] html2canvas not available');
-      if (onDone) onDone(false);
+      // Lazy-load html2canvas on first capture, then re-enter.
+      if (typeof window.__devtool_ensureHtml2canvas === 'function') {
+        window.__devtool_ensureHtml2canvas().then(function() {
+          capturePageBackground(onDone);
+        }, function() {
+          console.warn('[DevTool] html2canvas not available');
+          if (onDone) onDone(false);
+        });
+      } else {
+        console.warn('[DevTool] html2canvas not available');
+        if (onDone) onDone(false);
+      }
       return;
     }
     // Hide the sketch overlay during capture so it doesn't snapshot itself.

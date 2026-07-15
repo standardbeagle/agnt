@@ -2670,8 +2670,30 @@
     var pageDoc = (pageWin && pageWin.document) ? pageWin.document : document;
     var h2c = (pageWin && pageWin.html2canvas) || (typeof html2canvas !== 'undefined' ? html2canvas : undefined);
     if (typeof h2c === 'undefined') {
-      console.error('[DevTool] html2canvas not loaded for screenshot capture');
-      callback(null);
+      // html2canvas is loaded on demand. The capture must run in the CONTENT
+      // frame (where the real page lives), so ensure it there via that frame's
+      // own loader, then re-enter. Fall back to this frame's loader if the
+      // content frame has none reachable.
+      var ensure = null;
+      try {
+        if (pageWin && typeof pageWin.__devtool_ensureHtml2canvas === 'function') {
+          ensure = pageWin.__devtool_ensureHtml2canvas;
+        }
+      } catch (e) { /* cross-origin content frame — fall through */ }
+      if (!ensure && typeof window.__devtool_ensureHtml2canvas === 'function') {
+        ensure = window.__devtool_ensureHtml2canvas;
+      }
+      if (ensure) {
+        ensure().then(function() {
+          captureArea(x, y, w, h, callback);
+        }, function() {
+          console.error('[DevTool] html2canvas not loaded for screenshot capture');
+          callback(null);
+        });
+      } else {
+        console.error('[DevTool] html2canvas not loaded for screenshot capture');
+        callback(null);
+      }
       return;
     }
 

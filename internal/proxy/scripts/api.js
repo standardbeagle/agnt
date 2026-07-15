@@ -594,8 +594,16 @@
      */
     screenshot: function(nameOrOptions, selector) {
       return new Promise(function(resolve, reject) {
+        // html2canvas is loaded on demand (not in the always-injected bundle).
+        // Lazy-load it on first capture, then re-enter with the library present.
         if (typeof html2canvas === 'undefined') {
-          reject(new Error('html2canvas not loaded'));
+          if (typeof window.__devtool_ensureHtml2canvas === 'function') {
+            window.__devtool_ensureHtml2canvas().then(function() {
+              window.__devtool.screenshot(nameOrOptions, selector).then(resolve, reject);
+            }, reject);
+          } else {
+            reject(new Error('html2canvas not loaded'));
+          }
           return;
         }
 

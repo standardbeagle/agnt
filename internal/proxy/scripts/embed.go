@@ -177,6 +177,9 @@ var (
 	//go:embed api.js
 	apiJS string
 
+	//go:embed html2canvas-loader.js
+	html2canvasLoaderJS string
+
 	//go:embed html2canvas-pro.min.js
 	html2canvasProJS string
 
@@ -249,6 +252,12 @@ var moduleOrder = []moduleEntry{
 	// passive frames no-op.
 	{"authbreakout", []string{"frames"}},
 	{"core", nil},
+	// html2canvas-loader publishes window.__devtool_ensureHtml2canvas, the
+	// on-demand injector for the html2canvas-pro capture library. Dependency-free
+	// (pure DOM) and inert until a capture site calls it, so it is safe anywhere;
+	// it ships in every non-public bundle so both the chrome shell and content
+	// frames can lazy-load html2canvas into their own window on first capture.
+	{"html2canvas-loader", nil},
 	// ui-tokens.js publishes window.__devtoolTokens (z-index scale, light/dark
 	// color palettes, motion prefs) and the __devtoolOverlayStack Escape
 	// coordinator. It MUST load before every UI module (toast, indicator,
@@ -451,6 +460,7 @@ func includeInRole(name string, role Role) bool {
 var moduleScript = map[string]string{
 	"core":               coreJS,
 	"frames":             framesJS,
+	"html2canvas-loader": html2canvasLoaderJS,
 	"authbreakout":       authBreakoutJS,
 	"ui-tokens":          uiTokensJS,
 	"shadow-root":        shadowRootJS,
@@ -540,15 +550,12 @@ func buildCombinedScript(role Role) string {
 	// forbidden-symbol scan rejects. Every other role keeps today's behaviour.
 	isPublic := role == RolePublic
 
-	if !isPublic {
-		// External dependencies (html2canvas-pro for screenshots)
-		// Using html2canvas-pro instead of html2canvas because it supports modern CSS
-		// color functions (lab, oklch, oklab, lch) that Firefox and modern browsers use.
-		// See: https://github.com/nickt26/html2canvas-pro
-		// Bundled at compile time to avoid CDN dependency (jsdelivr.net can be unreachable)
-		sb.WriteString(html2canvasProJS)
-		sb.WriteString("\n")
-	}
+	// html2canvas-pro (~211KB) is NO LONGER prepended to the always-injected
+	// bundle. It blocked first paint of every proxied page and parsed in every
+	// frame that never captured a screenshot. It is now served on demand from
+	// /__devtool_html2canvas and injected only when a capture actually runs, via
+	// window.__devtool_ensureHtml2canvas (html2canvas-loader.js, shipped in every
+	// non-public bundle). This mirrors how axe-core is already lazy-loaded.
 
 	sb.WriteString("(function() {\n")
 	sb.WriteString("  'use strict';\n\n")
@@ -630,6 +637,12 @@ func wrapModule(js string) string {
 // GetAxeCore returns the bundled axe-core JavaScript library.
 func GetAxeCore() string {
 	return axeCoreJS
+}
+
+// GetHtml2Canvas returns the bundled html2canvas-pro library, served on demand
+// (not inlined into the always-injected bundle) from /__devtool_html2canvas.
+func GetHtml2Canvas() string {
+	return html2canvasProJS
 }
 
 // GetScriptNames returns the list of embedded script names for debugging.

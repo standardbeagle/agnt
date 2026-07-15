@@ -497,7 +497,16 @@
   // exactly what the user is redesigning. Fully guarded; yields null on failure.
   function captureSegment(cb) {
     var t = resolveTarget();
-    if (!t || typeof window.html2canvas !== 'function') { cb(null); return; }
+    if (!t) { cb(null); return; }
+    // html2canvas is loaded on demand; ensure it before rasterising.
+    if (typeof window.html2canvas !== 'function') {
+      if (typeof window.__devtool_ensureHtml2canvas === 'function') {
+        window.__devtool_ensureHtml2canvas().then(function () { captureSegment(cb); }, function () { cb(null); });
+      } else {
+        cb(null);
+      }
+      return;
+    }
     try {
       var r = t.getBoundingClientRect();
       window.html2canvas(t, {

@@ -142,3 +142,14 @@ func handleAxeCore(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "public, max-age=86400")
 	w.Write([]byte(scripts.GetAxeCore()))
 }
+
+// handleHtml2Canvas serves the html2canvas-pro capture library on demand. It is
+// deliberately NOT inlined into the always-injected instrumentation bundle
+// (that ~211KB blocked first paint of every proxied page); the in-page loader
+// window.__devtool_ensureHtml2canvas injects it only when a screenshot is
+// actually taken. Mirrors handleAxeCore.
+func handleHtml2Canvas(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/javascript")
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	w.Write([]byte(scripts.GetHtml2Canvas()))
+}
