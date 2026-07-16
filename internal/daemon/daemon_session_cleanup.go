@@ -29,52 +29,58 @@ const sessionPGIDGracePeriod = 2 * time.Second
 // protects the daemon process in the (defensive) case where they
 // accidentally share a pgid.
 type sessionPGIDIdentity struct {
-	pid     int
-	cmdline string
-	cwd     string
+	pgid    int
+	members map[int]string
 }
 
 func inspectSessionPGIDIdentity(pgid int) (sessionPGIDIdentity, bool) {
 	if pgid <= 1 {
 		return sessionPGIDIdentity{}, false
 	}
-	leaderIsMember := false
-	for _, pid := range platform.MembersOfPGID(pgid) {
-		if pid == pgid {
-			leaderIsMember = true
-			break
-		}
-	}
-	if !leaderIsMember {
+	members := platform.MembersOfPGID(pgid)
+	if len(members) == 0 {
 		return sessionPGIDIdentity{}, false
 	}
-	procs, err := platform.Scan()
-	if err != nil {
-		return sessionPGIDIdentity{}, false
-	}
-	for _, leader := range procs {
-		if leader.PID == pgid {
-			return sessionPGIDIdentity{pid: leader.PID, cmdline: leader.Cmdline, cwd: leader.Cwd}, true
+	identity := sessionPGIDIdentity{pgid: pgid, members: make(map[int]string, len(members))}
+	for _, pid := range members {
+		birthID, ok := platform.ProcessBirthID(pid)
+		if !ok {
+			return sessionPGIDIdentity{}, false
 		}
+		identity.members[pid] = birthID
 	}
-	return sessionPGIDIdentity{}, false
+	return identity, true
 }
 
-func sessionPGIDIdentityMatches(expected, current sessionPGIDIdentity) bool {
-	return expected.pid > 1 && expected == current
+func sessionPGIDIdentityMatches(expected sessionPGIDIdentity, currentMembers []int, birthFn func(int) (string, bool)) bool {
+	if expected.pgid <= 1 || len(expected.members) == 0 || len(currentMembers) == 0 || birthFn == nil {
+		return false
+	}
+	for _, pid := range currentMembers {
+		currentBirth, ok := birthFn(pid)
+		expectedBirth, known := expected.members[pid]
+		if !ok || !known || currentBirth != expectedBirth {
+			return false
+		}
+	}
+	return true
 }
 
 func killSessionPGIDIfIdentityMatches(
 	pgid int,
 	expected sessionPGIDIdentity,
-	inspectFn func(int) (sessionPGIDIdentity, bool),
+	membersFn func(int) []int,
+	birthFn func(int) (string, bool),
 	killFn func(int) error,
 ) (bool, error) {
-	if inspectFn == nil || killFn == nil {
+	if membersFn == nil || killFn == nil {
 		return false, nil
 	}
-	current, ok := inspectFn(pgid)
-	if !ok || !sessionPGIDIdentityMatches(expected, current) {
+	// Keep this identity check directly adjacent to signal delivery to minimize
+	// the unavoidable inspect->kill scheduling window. KillSessionPGID's first
+	// delivery is a single atomic kill(-pgid, SIGTERM) when self-exclusion does
+	// not apply.
+	if !sessionPGIDIdentityMatches(expected, membersFn(pgid), birthFn) {
 		return false, nil
 	}
 	return true, killFn(pgid)
@@ -90,7 +96,7 @@ func (d *Daemon) killSessionPGID(session *Session, expected *sessionPGIDIdentity
 		return
 	}
 	if expected != nil {
-		killed, err := killSessionPGIDIfIdentityMatches(pgid, *expected, inspectSessionPGIDIdentity,
+		killed, err := killSessionPGIDIfIdentityMatches(pgid, *expected, platform.MembersOfPGID, platform.ProcessBirthID,
 			func(pgid int) error {
 				return platform.KillSessionPGID(pgid, os.Getpid(), sessionPGIDGracePeriod, false)
 			})
