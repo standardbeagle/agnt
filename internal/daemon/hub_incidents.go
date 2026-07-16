@@ -2,8 +2,10 @@ package daemon
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/incident"
@@ -90,11 +92,13 @@ func incidentQueryFilterToInternal(f protocol.IncidentQueryFilter) (incident.Que
 	if f.Since != "" {
 		// A `since` we cannot parse must not be dropped: silently ignoring it
 		// returns the whole inbox to a caller who asked for a slice of it.
-		t, err := time.Parse(time.RFC3339Nano, f.Since)
+		t, fingerprint, hasFingerprint, err := decodeIncidentCursor(f.Since)
 		if err != nil {
-			return incident.QueryFilter{}, fmt.Errorf("invalid since %q: want RFC3339/RFC3339Nano", f.Since)
+			return incident.QueryFilter{}, fmt.Errorf("invalid since %q: want incident cursor or RFC3339/RFC3339Nano", f.Since)
 		}
 		qf.Since = t
+		qf.SinceFingerprint = fingerprint
+		qf.HasSinceFingerprint = hasFingerprint
 	}
 	return qf, nil
 }
@@ -133,7 +137,7 @@ func buildIncidentQueryResultWithHydrator(entries []incident.InboxEntry, stats i
 	// query forever on a page where nothing matched.
 	var cursor string
 	if len(examined) > 0 {
-		cursor = examined[0].LastSeenAt.Format(time.RFC3339Nano)
+		cursor = encodeIncidentCursor(examined[0].LastSeenAt, examined[0].Fingerprint)
 	}
 
 	return protocol.IncidentQueryResult{
@@ -148,6 +152,39 @@ func buildIncidentQueryResultWithHydrator(entries []incident.InboxEntry, stats i
 		Cursor:    cursor,
 		Truncated: truncated,
 	}
+}
+
+type incidentCursor struct {
+	Time        string `json:"t"`
+	Fingerprint string `json:"f"`
+}
+
+func encodeIncidentCursor(at time.Time, fingerprint string) string {
+	payload, _ := json.Marshal(incidentCursor{Time: at.Format(time.RFC3339Nano), Fingerprint: fingerprint})
+	return "v1." + base64.RawURLEncoding.EncodeToString(payload)
+}
+
+func decodeIncidentCursor(cursor string) (time.Time, string, bool, error) {
+	if !strings.HasPrefix(cursor, "v1.") {
+		at, err := time.Parse(time.RFC3339Nano, cursor)
+		return at, "", false, err
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(cursor, "v1."))
+	if err != nil {
+		return time.Time{}, "", false, err
+	}
+	var decoded incidentCursor
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		return time.Time{}, "", false, err
+	}
+	if decoded.Fingerprint == "" {
+		return time.Time{}, "", false, fmt.Errorf("cursor fingerprint is empty")
+	}
+	at, err := time.Parse(time.RFC3339Nano, decoded.Time)
+	if err != nil {
+		return time.Time{}, "", false, err
+	}
+	return at, decoded.Fingerprint, true, nil
 }
 
 func examinedIncidentEntries(entries []incident.InboxEntry, filter protocol.IncidentQueryFilter) ([]incident.InboxEntry, bool) {

@@ -58,8 +58,12 @@ type Stats struct {
 type QueryFilter struct {
 	Severities []Severity // empty = all
 	Since      time.Time  // zero = no lower bound
-	UnreadOnly bool
-	Limit      int // 0 = all
+	// SinceFingerprint completes the stable (LastSeenAt, Fingerprint) cursor
+	// tuple. HasSinceFingerprint=false preserves legacy timestamp-only behavior.
+	SinceFingerprint    string
+	HasSinceFingerprint bool
+	UnreadOnly          bool
+	Limit               int // 0 = all
 }
 
 type inboxSlot struct {
@@ -282,14 +286,23 @@ func (inbox *Inbox) queryLocked(filter QueryFilter) ([]InboxEntry, Stats) {
 			if filter.UnreadOnly && e.Read {
 				continue
 			}
-			if !filter.Since.IsZero() && !e.LastSeenAt.After(filter.Since) {
-				continue
+			if !filter.Since.IsZero() {
+				after := e.LastSeenAt.After(filter.Since)
+				if filter.HasSinceFingerprint && e.LastSeenAt.Equal(filter.Since) {
+					after = e.Fingerprint > filter.SinceFingerprint
+				}
+				if !after {
+					continue
+				}
 			}
 			results = append(results, *snapshotInboxEntry(e))
 		}
 		b.mu.RUnlock()
 	}
 	sort.Slice(results, func(i, j int) bool {
+		if results[i].LastSeenAt.Equal(results[j].LastSeenAt) {
+			return results[i].Fingerprint > results[j].Fingerprint
+		}
 		return results[i].LastSeenAt.After(results[j].LastSeenAt)
 	})
 	// When truncating, keep the OLDEST `Limit` matched entries (the tail of the

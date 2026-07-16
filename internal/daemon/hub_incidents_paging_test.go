@@ -35,6 +35,14 @@ func fingerprints(res protocol.IncidentQueryResult) []string {
 	return out
 }
 
+func requireCursor(t *testing.T, cursor string) (time.Time, string) {
+	t.Helper()
+	at, fingerprint, hasFingerprint, err := decodeIncidentCursor(cursor)
+	require.NoError(t, err)
+	require.True(t, hasFingerprint)
+	return at, fingerprint
+}
+
 // TestIncidentPaging_KeepsOldestPage is the regression for a silently lost
 // incident: the hub over-fetches by one and used to keep the newest Limit
 // records, dropping the oldest and then publishing a cursor above it. With a
@@ -49,7 +57,9 @@ func TestIncidentPaging_KeepsOldestPage(t *testing.T) {
 	require.Len(t, res.Incidents, 3)
 	assert.Equal(t, []string{"A3", "A2", "A1"}, fingerprints(res), "oldest page, newest-first")
 	assert.True(t, res.Truncated)
-	assert.Equal(t, base.Add(3*time.Minute).Format(time.RFC3339), res.Cursor, "cursor = newest entry examined")
+	cursorAt, cursorFP := requireCursor(t, res.Cursor)
+	assert.True(t, cursorAt.Equal(base.Add(3*time.Minute)), "cursor = newest entry examined")
+	assert.Equal(t, "A3", cursorFP)
 
 	// The cursor must not skip A4: a `since=cursor` pull still sees it.
 	assert.True(t, entries[0].LastSeenAt.After(base.Add(3*time.Minute)),
@@ -83,9 +93,7 @@ func TestIncidentPaging_CursorSweepsGapFree(t *testing.T) {
 		res := buildIncidentQueryResult(matching, incident.Stats{}, protocol.IncidentQueryFilter{Limit: 3})
 		seen = append(seen, fingerprints(res)...)
 		require.NotEmpty(t, res.Cursor, "a non-empty page must publish a cursor")
-		parsed, err := time.Parse(time.RFC3339, res.Cursor)
-		require.NoError(t, err)
-		since = parsed
+		since, _ = requireCursor(t, res.Cursor)
 	}
 
 	assert.ElementsMatch(t, []string{"A1", "A2", "A3", "A4", "A5", "A6", "A7"}, seen,
@@ -118,12 +126,48 @@ func TestIncidentPaging_SameSecondNanosecondsAdvanceCursor(t *testing.T) {
 		}
 		result := buildIncidentQueryResult(matching, incident.Stats{}, protocol.IncidentQueryFilter{Limit: 3})
 		seen = append(seen, fingerprints(result)...)
-		parsed, err := time.Parse(time.RFC3339Nano, result.Cursor)
-		require.NoError(t, err)
+		parsed, _ := requireCursor(t, result.Cursor)
 		require.True(t, parsed.After(since), "cursor must advance at nanosecond precision")
 		since = parsed
 	}
 	require.Len(t, seen, 7)
+}
+
+func TestIncidentPaging_ExactTimestampTieBreakDrainsWithoutLoss(t *testing.T) {
+	inbox := incident.NewInbox("ties")
+	at := time.Now().UTC().Truncate(time.Second)
+	for _, fingerprint := range []string{"A", "B", "C", "D", "E", "F", "G"} {
+		inbox.Ingest(&incident.InboxEntry{
+			Fingerprint: fingerprint,
+			Severity:    incident.SeverityError,
+			FirstSeenAt: at,
+			LastSeenAt:  at,
+			Count:       1,
+		})
+	}
+
+	filter := protocol.IncidentQueryFilter{Limit: 3}
+	seen := make(map[string]int)
+	for page := 0; page < 4; page++ {
+		query, err := incidentQueryFilterToInternal(filter)
+		require.NoError(t, err)
+		entries, stats := inbox.Query(query)
+		result := buildIncidentQueryResult(entries, stats, filter)
+		if page == 3 {
+			require.Empty(t, result.Incidents, "terminal page must be empty")
+			require.Empty(t, result.Cursor)
+			break
+		}
+		require.NotEmpty(t, result.Incidents)
+		for _, record := range result.Incidents {
+			seen[record.Fingerprint]++
+		}
+		filter.Since = result.Cursor
+	}
+	require.Len(t, seen, 7)
+	for fingerprint, count := range seen {
+		require.Equal(t, 1, count, "fingerprint %s duplicated", fingerprint)
+	}
 }
 
 // TestIncidentPaging_TruncatedSurvivesSecondaryFilter: the secondary filters run
@@ -140,8 +184,8 @@ func TestIncidentPaging_TruncatedSurvivesSecondaryFilter(t *testing.T) {
 
 	assert.Equal(t, []string{"A2"}, fingerprints(res))
 	assert.True(t, res.Truncated, "inbox had more matching entries than the page")
-	assert.Equal(t, base.Add(3*time.Minute).Format(time.RFC3339), res.Cursor,
-		"cursor advances past filtered-out entries so a filtered query cannot stall")
+	cursorAt, _ := requireCursor(t, res.Cursor)
+	assert.True(t, cursorAt.Equal(base.Add(3*time.Minute)), "cursor advances past filtered-out entries")
 }
 
 // TestIncidentPaging_FilteredEmptyPageStillAdvances: when every examined entry
@@ -158,7 +202,8 @@ func TestIncidentPaging_FilteredEmptyPageStillAdvances(t *testing.T) {
 
 	assert.Empty(t, res.Incidents)
 	assert.False(t, res.Truncated)
-	assert.Equal(t, base.Add(2*time.Minute).Format(time.RFC3339), res.Cursor)
+	cursorAt, _ := requireCursor(t, res.Cursor)
+	assert.True(t, cursorAt.Equal(base.Add(2*time.Minute)))
 }
 
 func TestIncidentPaging_UnboundedLimitReturnsAll(t *testing.T) {
