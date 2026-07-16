@@ -60,6 +60,14 @@ func (pm *ProcessManager) Start(ctx context.Context, proc *ManagedProcess) error
 		pm.startGuardHook()
 	}
 
+	// UPSTREAM: Shutdown may begin after Register but before spawn. Re-check the
+	// ordered flag at the last pre-spawn seam so a registered StateStarting
+	// process cannot escape the shutdown snapshot and launch afterward.
+	if pm.shuttingDown.Load() {
+		pm.failStart(proc)
+		return ErrShuttingDown
+	}
+
 	// Build the command
 	proc.cmd = exec.CommandContext(proc.ctx, proc.Command, proc.Args...)
 	proc.cmd.Dir = proc.WorkingDir // Use WorkingDir for actual cwd (may differ from ProjectPath)
