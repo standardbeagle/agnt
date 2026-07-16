@@ -127,8 +127,34 @@ func TestListenControlTransportReplacementSurvivesEveryClaimInterval(t *testing.
 	}
 }
 
+func TestOwnedControlListenerCloseNeverUnlinksNewerGeneration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "generation.ctl")
+	first, err := listenControlTransport(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("close generation A: %v", err)
+	}
+
+	second, err := listenControlTransport(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var third net.Listener
+	installControlUnixHook(t, "after-quarantine", path, func() {
+		third = replaceWithLiveControl(t, path, "/generation-c")
+	})
+	if err := second.Close(); err == nil {
+		t.Fatal("generation B close did not surface quarantine collision")
+	}
+	defer third.Close()
+	assertControlRoute(t, path, "/generation-c")
+}
+
 func TestDiscoverControlHostsPreservesInconclusiveBusySocket(t *testing.T) {
-	home := withSandboxedHome(t)
+	withShortSandboxedHome(t)
+	home := os.Getenv("HOME")
 	dir := filepath.Join(home, ".agnt", "ssh")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
@@ -170,7 +196,8 @@ func TestDiscoverControlHostsPreservesInconclusiveBusySocket(t *testing.T) {
 }
 
 func TestDiscoverControlHostsRemovesConclusiveStaleSocket(t *testing.T) {
-	home := withSandboxedHome(t)
+	withShortSandboxedHome(t)
+	home := os.Getenv("HOME")
 	dir := filepath.Join(home, ".agnt", "ssh")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
@@ -201,12 +228,56 @@ func TestDiscoverControlHostsReplacementSurvivesEveryClaimInterval(t *testing.T)
 			installControlUnixHook(t, stage, path, func() {
 				replacement = replaceWithLiveControl(t, path, "/replacement")
 			})
-			if _, err := discoverControlHosts(20*time.Millisecond, pingControl); err != nil {
-				t.Fatal(err)
-			}
+			_, _ = discoverControlHosts(20*time.Millisecond, pingControl)
 			defer replacement.Close()
 			assertControlRoute(t, path, "/replacement")
 		})
+	}
+}
+
+func TestDiscoverControlHostsSurfacesQuarantineCollisionAndPreservesClaim(t *testing.T) {
+	withShortSandboxedHome(t)
+	home := os.Getenv("HOME")
+	dir := filepath.Join(home, ".agnt", "ssh")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "collision.ctl")
+	makeStaleControlSocket(t, path)
+	var replacement net.Listener
+	installControlUnixHook(t, "after-quarantine", path, func() {
+		replacement = replaceWithLiveControl(t, path, "/replacement")
+	})
+	_, err := discoverControlHosts(20*time.Millisecond, pingControl)
+	if err == nil || !strings.Contains(err.Error(), "quarantined endpoint") {
+		t.Fatalf("quarantine collision error = %v", err)
+	}
+	defer replacement.Close()
+	assertControlRoute(t, path, "/replacement")
+	quarantines, globErr := filepath.Glob(filepath.Join(dir, ".q*", "s"))
+	if globErr != nil || len(quarantines) != 1 {
+		t.Fatalf("preserved quarantine = %v, glob err=%v", quarantines, globErr)
+	}
+}
+
+func TestDiscoverControlHostsSurfacesQuarantineDeleteFailure(t *testing.T) {
+	withShortSandboxedHome(t)
+	home := os.Getenv("HOME")
+	dir := filepath.Join(home, ".agnt", "ssh")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "delete-error.ctl")
+	makeStaleControlSocket(t, path)
+	installControlUnixHook(t, "discover-before-delete", path, func() {
+		quarantines, _ := filepath.Glob(filepath.Join(dir, ".q*", "s"))
+		for _, quarantine := range quarantines {
+			_ = os.Remove(quarantine)
+		}
+	})
+	_, err := discoverControlHosts(20*time.Millisecond, pingControl)
+	if err == nil || !strings.Contains(err.Error(), "removing quarantined stale socket") {
+		t.Fatalf("quarantine delete error = %v", err)
 	}
 }
 
