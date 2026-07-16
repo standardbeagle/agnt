@@ -340,6 +340,9 @@ func (d *Daemon) doCleanup(sessionCode string) {
 				d.daemonStartupLog("warning", "proxy_stop_failed",
 					fmt.Sprintf("error stopping proxies for project %s: %v", projectPath, err))
 			}
+			for _, id := range stoppedIDs {
+				d.retireIncidentProxyOwner(id)
+			}
 			if len(stoppedIDs) > 0 {
 				debug.Log("daemon", "stopped proxies: %v", stoppedIDs)
 				if d.stateMgr != nil {
@@ -377,6 +380,7 @@ func (d *Daemon) doCleanup(sessionCode string) {
 					d.recordStartupEntry(pid, "", "warning", "stop_failed",
 						fmt.Sprintf("error stopping orphaned process: %v", err), 0)
 				} else {
+					d.retireIncidentProcessOwner(pid)
 					debug.Log("daemon", "stopped orphaned process %s", pid)
 					if d.autoRestarter != nil {
 						d.autoRestarter.Unregister(pid)
@@ -394,6 +398,9 @@ func (d *Daemon) doCleanup(sessionCode string) {
 				debug.Log("daemon", "error stopping processes for project %s: %v", projectPath, err)
 				d.daemonStartupLog("warning", "stop_failed",
 					fmt.Sprintf("error stopping processes for project %s: %v", projectPath, err))
+			}
+			for _, id := range stoppedIDs {
+				d.retireIncidentProcessOwner(id)
 			}
 			if len(stoppedIDs) > 0 {
 				debug.Log("daemon", "stopped processes: %v", stoppedIDs)

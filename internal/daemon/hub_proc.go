@@ -257,6 +257,7 @@ func (d *Daemon) hubHandleProcStop(ctx context.Context, conn *hubpkg.Connection,
 	}
 
 	if !proc.IsRunning() {
+		d.retireIncidentProcessOwner(processID)
 		resp := map[string]interface{}{
 			"process_id": processID,
 			"state":      proc.State().String(),
@@ -276,6 +277,7 @@ func (d *Daemon) hubHandleProcStop(ctx context.Context, conn *hubpkg.Connection,
 	if err := d.hub.ProcessManager().Stop(ctx, processID); err != nil {
 		return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("failed to stop: %v", err))
 	}
+	d.retireIncidentProcessOwner(processID)
 
 	resp := map[string]interface{}{
 		"process_id": processID,
@@ -499,12 +501,14 @@ func (d *Daemon) hubHandleProcRestart(ctx context.Context, conn *hubpkg.Connecti
 
 	// Remove the old process registration
 	d.hub.ProcessManager().RemoveByPath(processID, projectPath)
+	d.retireIncidentProcessOwner(processID)
 
 	// Start with EADDRINUSE recovery (pre-flight cleanup + startup monitoring)
 	newProc, startupErr := d.startScriptWithRetry(ctx, processID, projectPath, workingDir, command, args, env, []int{expectedPort}, false)
 	if startupErr != nil {
 		return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("failed to restart: %v", startupErr))
 	}
+	d.registerIncidentProcessOwner(processID, conn.SessionCode())
 
 	// Re-register auto-restart if it was previously explicitly enabled
 	if wasAutoRestart && d.autoRestarter != nil {

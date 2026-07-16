@@ -377,6 +377,16 @@ func (d *Daemon) registerIncidentProcessOwner(processID, sessionCode string) {
 	}
 }
 
+// retireIncidentProxyOwner ends the ownership binding with the proxy lifetime.
+// A later proxy reusing the same ID must be able to establish a fresh owner.
+func (d *Daemon) retireIncidentProxyOwner(proxyID string) {
+	d.incidentProxyOwner.Delete(proxyID)
+}
+
+func (d *Daemon) retireIncidentProcessOwner(processID string) {
+	d.incidentProcessOwner.Delete(processID)
+}
+
 // stampIncidentOwner stamps exact resource ownership and fails closed when it
 // was not captured at creation time.
 func (d *Daemon) stampIncidentOwner(ev *incident.IncidentEvent, owners *sync.Map, resourceID string) bool {

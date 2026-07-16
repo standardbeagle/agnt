@@ -477,6 +477,7 @@ func (d *Daemon) handleScriptStopped(event ProxyEvent) {
 		debug.Log("daemon", "Stopping proxy %s (script: %s)", proxyID, event.ScriptID)
 		err := d.proxym.Stop(d.ctx, proxyID)
 		if err == nil {
+			d.retireIncidentProxyOwner(proxyID)
 			continue
 		}
 		// Already gone is success for a teardown intent, not a failure. The
@@ -486,6 +487,7 @@ func (d *Daemon) handleScriptStopped(event ProxyEvent) {
 		// scriptProxies index. Surfacing "proxy not found" as a warning to the
 		// agent is noise; treat idempotent teardown as done.
 		if errors.Is(err, proxy.ErrProxyNotFound) {
+			d.retireIncidentProxyOwner(proxyID)
 			debug.Log("daemon", "Proxy %s already stopped (script: %s)", proxyID, event.ScriptID)
 			continue
 		}

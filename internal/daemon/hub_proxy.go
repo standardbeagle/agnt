@@ -163,6 +163,7 @@ func (d *Daemon) hubHandleProxyStop(ctx context.Context, conn *hubpkg.Connection
 	if err := d.proxym.Stop(ctx, p.ID); err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
+	d.retireIncidentProxyOwner(p.ID)
 
 	// Remove from persisted state
 	if d.stateMgr != nil {
@@ -452,6 +453,8 @@ func (d *Daemon) hubHandleProxyRestart(ctx context.Context, conn *hubpkg.Connect
 		debug.Warn("daemon", "error stopping proxy %s: %v", proxyID, err)
 		d.recordStartupEntry(proxyID, "", "warning", "proxy_stop_failed",
 			fmt.Sprintf("PROXY RESTART: failed to stop proxy: %v", err), 0)
+	} else {
+		d.retireIncidentProxyOwner(proxyID)
 	}
 
 	// Remove from persisted state

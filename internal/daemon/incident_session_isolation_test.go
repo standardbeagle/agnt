@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/incident"
+	"github.com/standardbeagle/agnt/internal/overlay"
 	"github.com/standardbeagle/agnt/internal/proxy"
 	"github.com/stretchr/testify/require"
 )
@@ -46,7 +47,13 @@ func TestFireToIncidentBus_IsolatesOwningSessionAcrossAndWithinProjects(t *testi
 func TestProxyLoggerCallbackUsesImmutableOwnerAndDropsUnresolved(t *testing.T) {
 	d := &Daemon{incidentBus: incident.NewMPSCBus(nil), sessionRegistry: NewSessionRegistry(time.Minute), eventHub: NewEventHub()}
 	t.Cleanup(d.incidentBus.Close)
-	for _, code := range []string{"owner", "same-project-peer", "other-project"} {
+	for _, session := range []*Session{
+		{Code: "owner", ProjectPath: "/project/a", Status: SessionStatusActive},
+		{Code: "same-project-peer", ProjectPath: "/project/a", Status: SessionStatusActive},
+		{Code: "other-project", ProjectPath: "/project/b", Status: SessionStatusActive},
+	} {
+		require.NoError(t, d.sessionRegistry.Register(session))
+		code := session.Code
 		d.addIncidentSession(code)
 	}
 
@@ -74,4 +81,57 @@ func TestProxyLoggerCallbackUsesImmutableOwnerAndDropsUnresolved(t *testing.T) {
 	time.Sleep(30 * time.Millisecond)
 	entries, _ := d.incidentBus.QuerySession("owner", incident.QueryFilter{})
 	require.Len(t, entries, 1, "unresolved proxy owner must deliver to none")
+}
+
+func TestProcessAlertCallbackUsesImmutableOwnerAndDropsUnresolved(t *testing.T) {
+	d := NewForTest(t, DaemonConfig{})
+	for _, session := range []*Session{
+		{Code: "owner", ProjectPath: "/project/a", Status: SessionStatusActive},
+		{Code: "same-project-peer", ProjectPath: "/project/a", Status: SessionStatusActive},
+		{Code: "other-project", ProjectPath: "/project/b", Status: SessionStatusActive},
+	} {
+		require.NoError(t, d.sessionRegistry.Register(session))
+		d.addIncidentSession(session.Code)
+	}
+
+	match := func(processID string) *overlay.AlertMatch {
+		return &overlay.AlertMatch{
+			Pattern: &overlay.AlertPattern{ID: "panic", Severity: overlay.AlertSeverityError, Category: "go", Description: "panic"},
+			Line:    "panic: callback isolation", ScriptID: processID,
+		}
+	}
+	d.registerIncidentProcessOwner("owned-process", "owner")
+	d.ingestProcessAlert(match("owned-process"), time.Now())
+	require.Eventually(t, func() bool {
+		entries, _ := d.incidentBus.QuerySession("owner", incident.QueryFilter{})
+		return len(entries) == 1
+	}, time.Second, 10*time.Millisecond)
+	for _, code := range []string{"same-project-peer", "other-project"} {
+		entries, _ := d.incidentBus.QuerySession(code, incident.QueryFilter{})
+		require.Empty(t, entries)
+	}
+
+	d.ingestProcessAlert(match("unowned-process"), time.Now())
+	time.Sleep(30 * time.Millisecond)
+	entries, _ := d.incidentBus.QuerySession("owner", incident.QueryFilter{})
+	require.Len(t, entries, 1, "unresolved process owner must deliver to none")
+}
+
+func TestIncidentOwnerCanBeReboundOnlyAfterResourceTeardown(t *testing.T) {
+	d := &Daemon{}
+	d.registerIncidentProxyOwner("reused", "first")
+	d.registerIncidentProxyOwner("reused", "second")
+	owner, _ := d.incidentProxyOwner.Load("reused")
+	require.Equal(t, "first", owner, "owner must stay immutable during one resource lifetime")
+
+	d.retireIncidentProxyOwner("reused")
+	d.registerIncidentProxyOwner("reused", "second")
+	owner, _ = d.incidentProxyOwner.Load("reused")
+	require.Equal(t, "second", owner, "a recreated resource must bind a fresh owner")
+
+	d.registerIncidentProcessOwner("reused", "first")
+	d.retireIncidentProcessOwner("reused")
+	d.registerIncidentProcessOwner("reused", "second")
+	owner, _ = d.incidentProcessOwner.Load("reused")
+	require.Equal(t, "second", owner)
 }

@@ -446,6 +446,7 @@ func (d *Daemon) startScriptWithRetry(
 	if err := d.hub.ProcessManager().StopProcess(ctx, proc); err != nil {
 		debug.Log("startup-resilience", "stop of EADDRINUSE process %s failed during recovery: %v", processID, err)
 	}
+	d.retireIncidentProcessOwner(proc.ID)
 	d.hub.ProcessManager().RemoveByPath(processID, projectPath)
 
 	// Clean up the port

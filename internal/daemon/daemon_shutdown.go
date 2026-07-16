@@ -490,6 +490,9 @@ func (d *Daemon) StopAllResources(ctx context.Context) {
 			d.daemonStartupLog("warning", "proxy_stop_failed",
 				fmt.Sprintf("error stopping proxies: %v", err))
 		}
+		for _, id := range stoppedIDs {
+			d.retireIncidentProxyOwner(id)
+		}
 		// Remove stopped proxies from persisted state
 		if d.stateMgr != nil {
 			for _, id := range stoppedIDs {
@@ -507,6 +510,17 @@ func (d *Daemon) StopAllResources(ctx context.Context) {
 			d.daemonStartupLog("warning", "stop_failed",
 				fmt.Sprintf("error stopping processes: %v", err))
 		}
+		d.incidentProcessOwner.Range(func(key, _ any) bool {
+			id, ok := key.(string)
+			if !ok {
+				return true
+			}
+			proc, getErr := d.hub.ProcessManager().Get(id)
+			if getErr != nil || !proc.IsRunning() {
+				d.retireIncidentProcessOwner(id)
+			}
+			return true
+		})
 	}()
 
 	wg.Wait()

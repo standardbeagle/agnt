@@ -283,6 +283,7 @@ func (d *Daemon) hubHandleScriptRestart(ctx context.Context, conn *hubpkg.Connec
 		if stopErr := d.hub.ProcessManager().Stop(ctx, entry.ProcessID); stopErr != nil {
 			return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("failed to stop process: %v", stopErr))
 		}
+		d.retireIncidentProcessOwner(entry.ProcessID)
 		// Remove the stopped process so StartScript creates a fresh one
 		d.hub.ProcessManager().RemoveByPath(entry.ProcessID, entry.ProjectPath)
 	}
@@ -340,6 +341,7 @@ func (d *Daemon) hubHandleScriptStop(ctx context.Context, conn *hubpkg.Connectio
 
 	proc, err := d.hub.ProcessManager().Get(entry.ProcessID)
 	if err != nil || !proc.IsRunning() {
+		d.retireIncidentProcessOwner(entry.ProcessID)
 		entry.SetState(script.StateStopped)
 		resp := map[string]interface{}{
 			"name":       name,
@@ -360,6 +362,7 @@ func (d *Daemon) hubHandleScriptStop(ctx context.Context, conn *hubpkg.Connectio
 	if stopErr := d.hub.ProcessManager().Stop(ctx, entry.ProcessID); stopErr != nil {
 		return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("failed to stop: %v", stopErr))
 	}
+	d.retireIncidentProcessOwner(entry.ProcessID)
 
 	entry.SetState(script.StateStopped)
 
