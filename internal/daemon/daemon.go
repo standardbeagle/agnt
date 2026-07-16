@@ -554,7 +554,7 @@ func New(config DaemonConfig) *Daemon {
 	// EventHub (legacy stream sinks) and the incident bus (get_incidents).
 	// Construction uses default config until the per-project AgntConfig is
 	// loaded; ApplyAlertsConfig replaces it on session connect.
-	d.holdBuffer.Store(NewHoldBuffer(nil, d.fireHoldEmit))
+	d.holdBuffer.Store(newOwnedHoldBuffer(nil, d.fireHoldEmitForOwner))
 	d.healthTracker.SetTransportConfig(DefaultTransportConfig)
 
 	// Wire transport-recovery callback so HealthTracker exits to the buffer
@@ -1028,7 +1028,7 @@ func (d *Daemon) ApplyAlertsConfig(cfg *config.AlertsConfig) {
 
 	// Swap atomically, then stop the old buffer. Concurrent readers either
 	// see the old buffer (its methods are closed-safe) or the new one.
-	newHB := NewHoldBuffer(holdCfg, d.fireHoldEmit)
+	newHB := newOwnedHoldBuffer(holdCfg, d.fireHoldEmitForOwner)
 	if old := d.holdBuffer.Swap(newHB); old != nil {
 		old.Stop()
 	}

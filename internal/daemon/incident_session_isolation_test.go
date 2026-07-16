@@ -204,3 +204,26 @@ func TestProcessScannerDelayedCallbackRejectsReusedIDLifetime(t *testing.T) {
 		return len(entries) == 1
 	}, time.Second, 10*time.Millisecond)
 }
+
+func TestHeldProxyCallbackRejectsReusedIDLifetime(t *testing.T) {
+	d := &Daemon{incidentBus: incident.NewMPSCBus(nil)}
+	t.Cleanup(d.incidentBus.Close)
+	for _, code := range []string{"owner-a", "owner-b"} {
+		d.addIncidentSession(code)
+	}
+	d.registerIncidentProxyOwner("reused-held-proxy", "owner-a")
+	owner, _ := d.incidentProxyOwner.Load("reused-held-proxy")
+	b := newOwnedHoldBuffer(nil, d.fireHoldEmitForOwner)
+	t.Cleanup(b.Stop)
+	b.nowFn = func() time.Time { return time.Now().Add(-10 * time.Second) }
+	b.HoldForOwner(proxy.LogEntry{Type: proxy.LogTypeDiagnostic, Diagnostic: &proxy.ProxyDiagnostic{
+		Level: proxy.DiagnosticError, Category: "proxy", Event: "config_error", Message: "held old lifetime",
+	}}, "reused-held-proxy", "same-fingerprint", false, ownerAsIncidentResource(owner))
+	d.retireIncidentProxyOwner("reused-held-proxy")
+	d.registerIncidentProxyOwner("reused-held-proxy", "owner-b")
+	time.Sleep(50 * time.Millisecond)
+	for _, code := range []string{"owner-a", "owner-b"} {
+		entries, _ := d.incidentBus.QuerySession(code, incident.QueryFilter{})
+		require.Empty(t, entries, "held stale proxy lifetime delivered to %s", code)
+	}
+}

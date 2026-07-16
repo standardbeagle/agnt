@@ -43,6 +43,7 @@ import (
 // a held entry. The implementation is responsible for fanning the entry
 // to all consumers (EventHub stream sinks, incident bus adapters, etc).
 type HoldEmitFn func(entry proxy.LogEntry, proxyID string, mergedCount int)
+type holdOwnerEmitFn func(entry proxy.LogEntry, proxyID string, mergedCount int, owner *incidentResourceOwner)
 
 // holdEntry is the internal record kept per (proxyID, fingerprint).
 type holdEntry struct {
@@ -53,6 +54,7 @@ type holdEntry struct {
 	emitAt      time.Time
 	count       int
 	cascade     bool
+	owner       *incidentResourceOwner
 
 	// heapIndex is maintained by the heap.Interface methods; -1 when not
 	// in the heap (entry was emitted or dropped).
@@ -92,6 +94,7 @@ type holdMessage struct {
 	proxyID  string
 	fp       string
 	cascade  bool
+	owner    *incidentResourceOwner
 	now      time.Time
 	resultCh chan int // for synchronous size-query in tests; nil otherwise
 }
@@ -110,10 +113,11 @@ const (
 // One instance is shared across all proxies in the daemon; per-proxy
 // state lives in the entries map keyed by (proxyID|fingerprint).
 type HoldBuffer struct {
-	cfg      *config.OutageHoldConfig
-	emit     HoldEmitFn
-	nowFn    func() time.Time
-	patterns []string // lowercased cache of cfg.JSCascadePatterns
+	cfg       *config.OutageHoldConfig
+	emit      HoldEmitFn
+	ownerEmit holdOwnerEmitFn
+	nowFn     func() time.Time
+	patterns  []string // lowercased cache of cfg.JSCascadePatterns
 
 	ch     chan holdMessage
 	stopCh chan struct{}
@@ -146,6 +150,12 @@ func NewHoldBuffer(cfg *config.OutageHoldConfig, emit HoldEmitFn) *HoldBuffer {
 	return b
 }
 
+func newOwnedHoldBuffer(cfg *config.OutageHoldConfig, emit holdOwnerEmitFn) *HoldBuffer {
+	b := NewHoldBuffer(cfg, nil)
+	b.ownerEmit = emit
+	return b
+}
+
 // Hold pushes entry into the buffer for proxyID. classifyCascade is the
 // caller's classification of whether the entry is a transport / JS
 // cascade message (drop on recovery) versus a genuine error (emit on
@@ -158,6 +168,14 @@ func NewHoldBuffer(cfg *config.OutageHoldConfig, emit HoldEmitFn) *HoldBuffer {
 // pathological backpressure drops the held entry rather than stalling
 // the gate.
 func (b *HoldBuffer) Hold(entry proxy.LogEntry, proxyID, fingerprint string, classifyCascade bool) {
+	b.hold(entry, proxyID, fingerprint, classifyCascade, nil)
+}
+
+func (b *HoldBuffer) HoldForOwner(entry proxy.LogEntry, proxyID, fingerprint string, classifyCascade bool, owner *incidentResourceOwner) {
+	b.hold(entry, proxyID, fingerprint, classifyCascade, owner)
+}
+
+func (b *HoldBuffer) hold(entry proxy.LogEntry, proxyID, fingerprint string, classifyCascade bool, owner *incidentResourceOwner) {
 	if b == nil || b.closed.Load() {
 		return
 	}
@@ -167,6 +185,7 @@ func (b *HoldBuffer) Hold(entry proxy.LogEntry, proxyID, fingerprint string, cla
 		proxyID: proxyID,
 		fp:      fingerprint,
 		cascade: classifyCascade,
+		owner:   owner,
 		now:     b.nowFn(),
 	}
 	select {
@@ -177,6 +196,8 @@ func (b *HoldBuffer) Hold(entry proxy.LogEntry, proxyID, fingerprint string, cla
 		// a silent drop.
 		if b.emit != nil {
 			b.emit(entry, proxyID, 1)
+		} else if b.ownerEmit != nil {
+			b.ownerEmit(entry, proxyID, 1, owner)
 		}
 	}
 }
@@ -296,10 +317,14 @@ func (b *HoldBuffer) loop() {
 	}
 
 	emit := func(e *holdEntry) {
-		if b.emit != nil {
+		if b.emit != nil || b.ownerEmit != nil {
 			func() {
 				defer func() { _ = recover() }()
-				b.emit(e.entry, e.proxyID, e.count)
+				if b.ownerEmit != nil {
+					b.ownerEmit(e.entry, e.proxyID, e.count, e.owner)
+				} else {
+					b.emit(e.entry, e.proxyID, e.count)
+				}
 			}()
 		}
 	}
@@ -318,7 +343,7 @@ func (b *HoldBuffer) loop() {
 			now := b.nowFn()
 			for hh.Len() > 0 && !(*hh)[0].emitAt.After(now) {
 				e := heap.Pop(hh).(*holdEntry)
-				delete(entries, holdKey(e.proxyID, e.fingerprint))
+				delete(entries, holdLifetimeKey(e.proxyID, e.fingerprint, e.owner))
 				emit(e)
 			}
 			resetTimer()
@@ -329,7 +354,7 @@ func (b *HoldBuffer) loop() {
 func (b *HoldBuffer) handleMessage(msg *holdMessage, entries map[string]*holdEntry, hh *holdHeap, emit func(*holdEntry)) {
 	switch msg.kind {
 	case holdMsgPush:
-		key := holdKey(msg.proxyID, msg.fp)
+		key := holdLifetimeKey(msg.proxyID, msg.fp, msg.owner)
 		if existing, ok := entries[key]; ok {
 			existing.count++
 			existing.entry = msg.entry
@@ -349,6 +374,7 @@ func (b *HoldBuffer) handleMessage(msg *holdMessage, entries map[string]*holdEnt
 			emitAt:      emitAt,
 			count:       1,
 			cascade:     msg.cascade,
+			owner:       msg.owner,
 			heapIndex:   -1,
 		}
 		entries[key] = e
@@ -389,6 +415,13 @@ func (b *HoldBuffer) handleMessage(msg *holdMessage, entries map[string]*holdEnt
 
 func holdKey(proxyID, fingerprint string) string {
 	return proxyID + "|" + fingerprint
+}
+
+func holdLifetimeKey(proxyID, fingerprint string, owner *incidentResourceOwner) string {
+	if owner == nil {
+		return holdKey(proxyID, fingerprint)
+	}
+	return fmt.Sprintf("%s|%p", holdKey(proxyID, fingerprint), owner)
 }
 
 // FingerprintForEntry computes a stable fingerprint for a proxy log

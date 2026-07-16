@@ -356,7 +356,7 @@ func (d *Daemon) wireProxyLogger(server *proxy.ProxyServer) {
 			}
 			fp := FingerprintForEntry(entry)
 			cascade := d.classifyCascade(entry)
-			hb.Hold(entry, proxyID, fp, cascade)
+			hb.HoldForOwner(entry, proxyID, fp, cascade, lifetimeOwner)
 		case gateDrop:
 			// Drop without emission — used for diagnostic suppression
 			// markers we never want to re-emit.
@@ -511,6 +511,10 @@ func (d *Daemon) fireGatedFanOutForOwner(entry proxy.LogEntry, proxyID string, _
 // gate-accept but with the merged-count signal preserved for telemetry.
 func (d *Daemon) fireHoldEmit(entry proxy.LogEntry, proxyID string, mergedCount int) {
 	d.fireGatedFanOut(entry, proxyID, mergedCount)
+}
+
+func (d *Daemon) fireHoldEmitForOwner(entry proxy.LogEntry, proxyID string, mergedCount int, owner *incidentResourceOwner) {
+	d.fireGatedFanOutForOwner(entry, proxyID, mergedCount, owner)
 }
 
 // fireToIncidentBus runs the right adapter for entry's type and publishes
