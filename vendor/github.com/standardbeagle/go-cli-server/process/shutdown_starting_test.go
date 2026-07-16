@@ -41,8 +41,8 @@ func TestShutdownCancelsRegisteredStartingProcessBeforeSpawn(t *testing.T) {
 	if err := <-shutdownResult; err != nil {
 		t.Fatalf("Shutdown error=%v", err)
 	}
-	if proc.cmd != nil {
-		t.Fatal("process command was constructed/spawned after shutdown")
+	if proc.cmd == nil || proc.cmd.Process != nil {
+		t.Fatal("process was spawned after shutdown")
 	}
 	if proc.State() != StateFailed {
 		t.Fatalf("state=%s, want Failed", proc.State())
@@ -72,5 +72,44 @@ func TestShutdownStartingWaitIsBoundedByContext(t *testing.T) {
 	close(releaseStart)
 	if err := <-startResult; !errors.Is(err, ErrShuttingDown) {
 		t.Fatalf("Start error=%v, want ErrShuttingDown", err)
+	}
+}
+
+func TestShutdownCannotSnapshotBetweenFinalCheckAndSpawn(t *testing.T) {
+	pm := NewProcessManager(ManagerConfig{})
+	proc := NewManagedProcess(ProcessConfig{ID: "spawn-gate", Command: "/definitely/not/a/real/command"})
+
+	atSpawnGate := make(chan struct{})
+	releaseSpawn := make(chan struct{})
+	shutdownAtGate := make(chan struct{})
+	pm.spawnGuardHook = func() {
+		close(atSpawnGate)
+		<-releaseSpawn
+	}
+	pm.shutdownGuardHook = func() { close(shutdownAtGate) }
+
+	startResult := make(chan error, 1)
+	go func() { startResult <- pm.Start(context.Background(), proc) }()
+	<-atSpawnGate
+
+	shutdownResult := make(chan error, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	go func() { shutdownResult <- pm.Shutdown(ctx) }()
+	<-shutdownAtGate
+
+	if pm.IsShuttingDown() {
+		t.Fatal("Shutdown crossed spawn gate while Start held ordering lock")
+	}
+	close(releaseSpawn)
+
+	if err := <-startResult; err == nil {
+		t.Fatal("invalid command unexpectedly started")
+	}
+	if err := <-shutdownResult; err != nil {
+		t.Fatalf("Shutdown error=%v", err)
+	}
+	if proc.cmd == nil || proc.cmd.Process != nil {
+		t.Fatal("regression must reach cmd.Start but never spawn a process")
 	}
 }

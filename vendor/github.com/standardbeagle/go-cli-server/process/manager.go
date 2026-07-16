@@ -118,6 +118,11 @@ type ProcessManager struct {
 	// only as a test seam to freeze a Start in that window and race Shutdown; it
 	// is always nil in production and costs a single nil check.
 	startGuardHook func()
+	// UPSTREAM: test seams for the actual spawn-vs-shutdown ordering gate. Start
+	// invokes spawnGuardHook while holding startMu after its final flag check;
+	// Shutdown invokes shutdownGuardHook immediately before acquiring startMu.
+	spawnGuardHook    func()
+	shutdownGuardHook func()
 }
 
 // DefaultScanInterval is the default interval for descendant tree scanning.
@@ -336,6 +341,9 @@ func (pm *ProcessManager) Shutdown(ctx context.Context) error {
 		// Order the flag-set against Start's wg.Add under startMu: once this
 		// returns, any Start still holding startMu has already done its wg.Add,
 		// so the wg.Wait below cannot miss its waitForProcess goroutine.
+		if pm.shutdownGuardHook != nil {
+			pm.shutdownGuardHook()
+		}
 		pm.startMu.Lock()
 		pm.shuttingDown.Store(true)
 		pm.startMu.Unlock()
@@ -412,7 +420,9 @@ func (pm *ProcessManager) Shutdown(ctx context.Context) error {
 				}
 				return true
 			})
-			<-done
+			// UPSTREAM: StopProcess/forceKill goroutines retain their own
+			// stopWg tickets and honor ctx. Do not defeat the shutdown deadline
+			// by waiting unconditionally after ctx is already done.
 		}
 
 		// UPSTREAM: never let an in-flight Start or waiter make Shutdown exceed

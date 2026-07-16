@@ -60,14 +60,6 @@ func (pm *ProcessManager) Start(ctx context.Context, proc *ManagedProcess) error
 		pm.startGuardHook()
 	}
 
-	// UPSTREAM: Shutdown may begin after Register but before spawn. Re-check the
-	// ordered flag at the last pre-spawn seam so a registered StateStarting
-	// process cannot escape the shutdown snapshot and launch afterward.
-	if pm.shuttingDown.Load() {
-		pm.failStart(proc)
-		return ErrShuttingDown
-	}
-
 	// Build the command
 	proc.cmd = exec.CommandContext(proc.ctx, proc.Command, proc.Args...)
 	proc.cmd.Dir = proc.WorkingDir // Use WorkingDir for actual cwd (may differ from ProjectPath)
@@ -121,8 +113,21 @@ func (pm *ProcessManager) Start(ctx context.Context, proc *ManagedProcess) error
 		proc.stdin = stdinPipe
 	}
 
-	// Start the process
+	// UPSTREAM: make the final shutdown check, OS spawn, and publication of
+	// StateRunning one critical section ordered against Shutdown's flag set and
+	// process snapshot. Shutdown therefore observes either no spawned process or
+	// a fully-published Running process; there is no check->spawn escape window.
+	pm.startMu.Lock()
+	if pm.shuttingDown.Load() {
+		pm.startMu.Unlock()
+		pm.failStart(proc)
+		return ErrShuttingDown
+	}
+	if pm.spawnGuardHook != nil {
+		pm.spawnGuardHook()
+	}
 	if err := proc.cmd.Start(); err != nil {
+		pm.startMu.Unlock()
 		pm.failStart(proc)
 		return fmt.Errorf("failed to start process %s: %w", proc.ID, err)
 	}
@@ -136,6 +141,7 @@ func (pm *ProcessManager) Start(ctx context.Context, proc *ManagedProcess) error
 	pid := proc.cmd.Process.Pid
 	proc.pid.Store(int32(pid))
 	proc.SetState(StateRunning)
+	pm.startMu.Unlock()
 
 	// Track PID for orphan cleanup
 	if pm.pidTracker != nil {
