@@ -128,6 +128,9 @@ func TestResolveStreamFilterScope(t *testing.T) {
 	d := NewForTest(t, defaultTestDaemonConfig(t))
 	project := normalizePath(t.TempDir())
 	require.NoError(t, d.sessionRegistry.Register(&Session{Code: "stream-session", ProjectPath: project}))
+	defaultGlobalProject := normalizePath(t.TempDir())
+	require.NoError(t, os.WriteFile(filepath.Join(defaultGlobalProject, ".agnt.kdl"), []byte("scope {\n  default-global true\n}\n"), 0o600))
+	require.NoError(t, d.sessionRegistry.Register(&Session{Code: "default-global-stream", ProjectPath: defaultGlobalProject}))
 
 	sf, err := d.resolveStreamFilter(protocol.StreamEventFilter{}, "stream-session")
 	require.NoError(t, err)
@@ -139,4 +142,12 @@ func TestResolveStreamFilterScope(t *testing.T) {
 	sf, err = d.resolveStreamFilter(protocol.StreamEventFilter{Global: true, ProjectPath: project}, "")
 	require.NoError(t, err)
 	assert.Empty(t, sf.projectPath)
+
+	sf, err = d.resolveStreamFilter(protocol.StreamEventFilter{}, "default-global-stream")
+	require.NoError(t, err)
+	assert.Empty(t, sf.projectPath, "omitted global must honor the project's default-global setting")
+
+	sf, err = d.resolveStreamFilter(protocol.StreamEventFilter{GlobalOverride: protocol.Bool(false)}, "default-global-stream")
+	require.NoError(t, err)
+	assert.Equal(t, defaultGlobalProject, sf.projectPath, "explicit false must override the project's default-global setting")
 }

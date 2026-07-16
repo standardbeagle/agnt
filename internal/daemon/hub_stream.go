@@ -83,9 +83,10 @@ func (d *Daemon) resolveStreamFilter(f protocol.StreamEventFilter, connSessionCo
 		directory = f.ProjectPath
 	}
 	sc, err := d.resolveScope(protocol.DirectoryFilter{
-		SessionCode: f.SessionCode,
-		Directory:   directory,
-		Global:      f.Global,
+		SessionCode:    f.SessionCode,
+		Directory:      directory,
+		Global:         f.Global,
+		GlobalOverride: f.GlobalOverride,
 	}, connSessionCode)
 	if err != nil {
 		return streamFilter{}, err

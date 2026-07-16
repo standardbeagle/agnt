@@ -423,16 +423,82 @@ type AlertQueryFilter struct {
 
 // StreamEventFilter filters events for STREAM-EVENTS command.
 type StreamEventFilter struct {
-	Types       []string `json:"types,omitempty"`        // Log entry types: error, http, panel_message, process, etc.
-	ProxyID     string   `json:"proxy_id,omitempty"`     // Filter to specific proxy
-	ProjectPath string   `json:"project_path,omitempty"` // Legacy alias for Directory
-	SessionCode string   `json:"session_code,omitempty"` // Explicit session to scope to
-	Directory   string   `json:"directory,omitempty"`    // Explicit project directory to scope to
-	Global      bool     `json:"global,omitempty"`       // Explicit audited cross-project subscription
-	ProcessID   string   `json:"process_id,omitempty"`   // Filter to specific process output
-	Severity    string   `json:"severity,omitempty"`     // Filter by severity: error, warning, info
-	Grep        string   `json:"grep,omitempty"`         // Substring match on process output lines
-	GrepStream  string   `json:"grep_stream,omitempty"`  // Filter process output stream: "stdout" or "stderr"
+	Types          []string `json:"types,omitempty"`        // Log entry types: error, http, panel_message, process, etc.
+	ProxyID        string   `json:"proxy_id,omitempty"`     // Filter to specific proxy
+	ProjectPath    string   `json:"project_path,omitempty"` // Legacy alias for Directory
+	SessionCode    string   `json:"session_code,omitempty"` // Explicit session to scope to
+	Directory      string   `json:"directory,omitempty"`    // Explicit project directory to scope to
+	Global         bool     `json:"global,omitempty"`       // Legacy source-compatible audited cross-project subscription
+	GlobalOverride *bool    `json:"-"`                      // Presence-bearing per-call scope override
+	ProcessID      string   `json:"process_id,omitempty"`   // Filter to specific process output
+	Severity       string   `json:"severity,omitempty"`     // Filter by severity: error, warning, info
+	Grep           string   `json:"grep,omitempty"`         // Substring match on process output lines
+	GrepStream     string   `json:"grep_stream,omitempty"`  // Filter process output stream: "stdout" or "stderr"
+}
+
+// GlobalSetting reports both the requested value and whether the caller
+// explicitly supplied it. The distinction lets project default-global apply
+// only when the STREAM-EVENTS request omitted the field.
+func (f StreamEventFilter) GlobalSetting() (bool, bool) {
+	if f.GlobalOverride != nil {
+		return *f.GlobalOverride, true
+	}
+	if f.Global {
+		return true, true
+	}
+	return false, false
+}
+
+func (f StreamEventFilter) MarshalJSON() ([]byte, error) {
+	type wire struct {
+		Types       []string `json:"types,omitempty"`
+		ProxyID     string   `json:"proxy_id,omitempty"`
+		ProjectPath string   `json:"project_path,omitempty"`
+		SessionCode string   `json:"session_code,omitempty"`
+		Directory   string   `json:"directory,omitempty"`
+		Global      *bool    `json:"global,omitempty"`
+		ProcessID   string   `json:"process_id,omitempty"`
+		Severity    string   `json:"severity,omitempty"`
+		Grep        string   `json:"grep,omitempty"`
+		GrepStream  string   `json:"grep_stream,omitempty"`
+	}
+	var global *bool
+	if f.GlobalOverride != nil {
+		global = f.GlobalOverride
+	} else if f.Global {
+		global = Bool(true)
+	}
+	return json.Marshal(wire{
+		Types: f.Types, ProxyID: f.ProxyID, ProjectPath: f.ProjectPath,
+		SessionCode: f.SessionCode, Directory: f.Directory, Global: global,
+		ProcessID: f.ProcessID, Severity: f.Severity, Grep: f.Grep, GrepStream: f.GrepStream,
+	})
+}
+
+func (f *StreamEventFilter) UnmarshalJSON(data []byte) error {
+	type wire struct {
+		Types       []string `json:"types,omitempty"`
+		ProxyID     string   `json:"proxy_id,omitempty"`
+		ProjectPath string   `json:"project_path,omitempty"`
+		SessionCode string   `json:"session_code,omitempty"`
+		Directory   string   `json:"directory,omitempty"`
+		Global      *bool    `json:"global,omitempty"`
+		ProcessID   string   `json:"process_id,omitempty"`
+		Severity    string   `json:"severity,omitempty"`
+		Grep        string   `json:"grep,omitempty"`
+		GrepStream  string   `json:"grep_stream,omitempty"`
+	}
+	var w wire
+	if err := json.Unmarshal(data, &w); err != nil {
+		return err
+	}
+	*f = StreamEventFilter{
+		Types: w.Types, ProxyID: w.ProxyID, ProjectPath: w.ProjectPath,
+		SessionCode: w.SessionCode, Directory: w.Directory, GlobalOverride: w.Global,
+		ProcessID: w.ProcessID, Severity: w.Severity, Grep: w.Grep, GrepStream: w.GrepStream,
+	}
+	f.Global = w.Global != nil && *w.Global
+	return nil
 }
 
 // HookPayload is sent from the `agnt hook` CLI dispatcher to the daemon when
