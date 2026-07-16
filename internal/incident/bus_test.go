@@ -390,6 +390,47 @@ func TestPipeline_MultipleSessionsIsolated(t *testing.T) {
 	}
 }
 
+func TestPipeline_EventDeliveredOnlyToOriginatingSession(t *testing.T) {
+	t.Parallel()
+	bus := NewMPSCBus(nil)
+	defer bus.Close()
+
+	bus.AddSession("session-a", nil, nil, nil)
+	bus.AddSession("session-b", nil, nil, nil)
+
+	a := bus.getSessionPipeline("session-a")
+	b := bus.getSessionPipeline("session-b")
+	require.NotNil(t, a)
+	require.NotNil(t, b)
+
+	aDeltas, cancelA := a.inbox.Subscribe()
+	defer cancelA()
+	bDeltas, cancelB := b.inbox.Subscribe()
+	defer cancelB()
+
+	ev := NewIncidentEvent(
+		SourceBrowserJS,
+		SeverityError,
+		"TypeError",
+		"session A error",
+		Context{SessionID: "session-a"},
+		nil,
+	)
+	bus.Publish(ev)
+
+	select {
+	case <-aDeltas:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("originating session did not receive its incident")
+	}
+
+	select {
+	case <-bDeltas:
+		t.Fatal("incident leaked into another session inbox")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
 // ── Close stops the bus ───────────────────────────────────────────────────────
 
 func TestBus_Close_Idempotent(t *testing.T) {
