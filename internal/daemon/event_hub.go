@@ -103,7 +103,7 @@ func (f *streamFilter) matches(entry proxy.LogEntry, proxyID, proxyPath string) 
 	if f.proxyID != "" && proxyID != f.proxyID {
 		return false
 	}
-	if f.projectPath != "" && proxyPath != "" && proxyPath != f.projectPath {
+	if f.projectPath != "" && proxyPath != f.projectPath {
 		return false
 	}
 	if f.processID != "" && entry.Type == proxy.LogTypeProcessOutput {
@@ -459,14 +459,14 @@ func (h *EventHub) BroadcastHookEvent(ev HookEvent) {
 //
 // Uses sendToStreamSinkSafe for the same close-during-broadcast protection
 // documented on BroadcastLogEntry.
-func (h *EventHub) BroadcastProcessOutput(entry proxy.LogEntry) {
+func (h *EventHub) BroadcastProcessOutput(entry proxy.LogEntry, projectPath string) {
 	h.mu.RLock()
 	sinks := make([]*StreamSink, len(h.streamSinks))
 	copy(sinks, h.streamSinks)
 	h.mu.RUnlock()
 
 	for _, sink := range sinks {
-		if sink.filter.matches(entry, "", "") {
+		if sink.filter.matches(entry, "", projectPath) {
 			sendToStreamSinkSafe(sink, entry, "")
 		}
 	}

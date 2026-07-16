@@ -290,9 +290,8 @@ func (d *Daemon) fanOutHookEvent(ev HookEvent) {
 		}
 	}
 
-	// 2. StreamSink fan-out via the unified LogEntry channel. The empty
-	//    proxy ID means "global event, not tied to any single proxy" —
-	//    same convention BroadcastProcessOutput uses for process lines.
+	// 2. StreamSink fan-out via the unified LogEntry channel, stamped with
+	//    the hook's owning project so other projects cannot observe it.
 	//    BroadcastLogEntry does a channel-send-with-default per sink, so
 	//    a wedged consumer cannot stall the drain goroutine.
 	logEntry := proxy.LogEntry{
@@ -306,7 +305,7 @@ func (d *Daemon) fanOutHookEvent(ev HookEvent) {
 			ReceivedAt:  ev.ReceivedAt,
 		},
 	}
-	d.eventHub.BroadcastLogEntry(logEntry, "")
+	d.eventHub.BroadcastLogEntryForProject(logEntry, ev.ProjectPath)
 
 	// 3. Toast fan-out for notification, stop, stop-failure, and
 	//    pre-tool-use (Bash redirect) events.

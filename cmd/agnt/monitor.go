@@ -55,6 +55,7 @@ func runMonitor(cmd *cobra.Command, args []string) error {
 		ProxyID:   monitorProxy,
 		ProcessID: monitorProcess,
 		Severity:  monitorSeverity,
+		Global:    true,
 	}
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

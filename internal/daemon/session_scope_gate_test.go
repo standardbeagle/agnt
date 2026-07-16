@@ -123,3 +123,20 @@ func TestResolveProjectScope(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveStreamFilterScope(t *testing.T) {
+	d := NewForTest(t, defaultTestDaemonConfig(t))
+	project := normalizePath(t.TempDir())
+	require.NoError(t, d.sessionRegistry.Register(&Session{Code: "stream-session", ProjectPath: project}))
+
+	sf, err := d.resolveStreamFilter(protocol.StreamEventFilter{}, "stream-session")
+	require.NoError(t, err)
+	assert.Equal(t, project, sf.projectPath)
+
+	_, err = d.resolveStreamFilter(protocol.StreamEventFilter{}, "")
+	assert.ErrorIs(t, err, errNoSessionScope)
+
+	sf, err = d.resolveStreamFilter(protocol.StreamEventFilter{Global: true, ProjectPath: project}, "")
+	require.NoError(t, err)
+	assert.Empty(t, sf.projectPath)
+}

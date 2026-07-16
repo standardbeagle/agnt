@@ -468,6 +468,25 @@ func TestDrainHooks_SyntheticLogEntryReachesStreamSink(t *testing.T) {
 	}
 }
 
+func TestFanOutHookEvent_EnforcesProjectScope(t *testing.T) {
+	d := drainFanoutTestDaemon(t)
+	own := d.eventHub.AddStreamSink(streamFilter{projectPath: "/project/a"})
+	other := d.eventHub.AddStreamSink(streamFilter{projectPath: "/project/b"})
+
+	d.fanOutHookEvent(HookEvent{Event: "stop", ProjectPath: "/project/a", ReceivedAt: time.Now()})
+
+	select {
+	case <-own.Ch:
+	default:
+		t.Fatal("owning project's stream did not receive hook event")
+	}
+	select {
+	case <-other.Ch:
+		t.Fatal("hook event leaked to another project's stream")
+	default:
+	}
+}
+
 // TestDrainHooks_SessionHeartbeatBumpsLastSeen asserts that draining a
 // hook event with a known SessionID bumps that session's LastSeen
 // timestamp. This is the heartbeat plumbing that lets the daemon treat

@@ -22,10 +22,18 @@ func (d *Daemon) hubHandleStreamEvents(ctx context.Context, conn *hubpkg.Connect
 	debug.Log("daemon", "STREAM-EVENTS: starting event stream")
 
 	// Parse filter from request data
-	filter, _ := unmarshalCommand[protocol.StreamEventFilter](cmd)
+	filter, err := unmarshalCommand[protocol.StreamEventFilter](cmd)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, "invalid stream filter: "+err.Error())
+	}
 
-	// Build internal filter
-	sf := buildStreamFilter(filter)
+	// Resolve the subscription through the same fail-loud session-scope gate
+	// as list/query handlers. A raw, sessionless subscriber must explicitly
+	// request global access instead of silently receiving every project.
+	sf, err := d.resolveStreamFilter(filter, conn.SessionCode())
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
+	}
 
 	// Register stream sink
 	sink := d.eventHub.AddStreamSink(sf)
@@ -67,6 +75,28 @@ func (d *Daemon) hubHandleStreamEvents(ctx context.Context, conn *hubpkg.Connect
 			}
 		}
 	}
+}
+
+func (d *Daemon) resolveStreamFilter(f protocol.StreamEventFilter, connSessionCode string) (streamFilter, error) {
+	directory := f.Directory
+	if directory == "" {
+		directory = f.ProjectPath
+	}
+	sc, err := d.resolveScope(protocol.DirectoryFilter{
+		SessionCode: f.SessionCode,
+		Directory:   directory,
+		Global:      f.Global,
+	}, connSessionCode)
+	if err != nil {
+		return streamFilter{}, err
+	}
+	sf := buildStreamFilter(f)
+	if sc.IsUnscoped() {
+		sf.projectPath = ""
+	} else {
+		sf.projectPath = sc.ProjectPath()
+	}
+	return sf, nil
 }
 
 // buildStreamFilter converts a protocol StreamEventFilter into an internal streamFilter.

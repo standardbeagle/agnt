@@ -425,7 +425,10 @@ type AlertQueryFilter struct {
 type StreamEventFilter struct {
 	Types       []string `json:"types,omitempty"`        // Log entry types: error, http, panel_message, process, etc.
 	ProxyID     string   `json:"proxy_id,omitempty"`     // Filter to specific proxy
-	ProjectPath string   `json:"project_path,omitempty"` // Filter to proxies belonging to this project directory
+	ProjectPath string   `json:"project_path,omitempty"` // Legacy alias for Directory
+	SessionCode string   `json:"session_code,omitempty"` // Explicit session to scope to
+	Directory   string   `json:"directory,omitempty"`    // Explicit project directory to scope to
+	Global      bool     `json:"global,omitempty"`       // Explicit audited cross-project subscription
 	ProcessID   string   `json:"process_id,omitempty"`   // Filter to specific process output
 	Severity    string   `json:"severity,omitempty"`     // Filter by severity: error, warning, info
 	Grep        string   `json:"grep,omitempty"`         // Substring match on process output lines

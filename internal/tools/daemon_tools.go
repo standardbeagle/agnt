@@ -260,7 +260,8 @@ func (dt *DaemonTools) StartIncidentDigestSink(server *mcp.Server) context.Cance
 	// stream's severity gate. The digest broadcasts with an empty proxyID, so
 	// project-scope filtering is bypassed daemon-side.
 	filter := protocol.StreamEventFilter{
-		Types: []string{string(proxy.LogTypeIncidentDigest)},
+		Types:  []string{string(proxy.LogTypeIncidentDigest)},
+		Global: true,
 	}
 
 	go func() {
