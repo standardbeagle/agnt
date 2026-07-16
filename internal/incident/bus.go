@@ -305,12 +305,23 @@ func (b *MPSCBus) dispatchLoop() {
 	}
 }
 
-// deliver fans out ev to all active session pipelines synchronously.
-// Called on the single dispatch goroutine — each session pipeline's dedup
-// and inbox are concurrent-safe so this is safe without per-session locking.
+// deliver routes session-scoped events only to their originating pipeline.
+// Events without a session ID are bus-wide (for example, bus overflow meta
+// incidents) and retain the legacy fan-out behavior.
 func (b *MPSCBus) deliver(ev *IncidentEvent) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
+	if ev.Ctx.SessionID != "" {
+		if pl := b.perSession[ev.Ctx.SessionID]; pl != nil {
+			select {
+			case <-pl.stopCh:
+				return
+			default:
+				b.ingestToSession(pl, ev)
+			}
+		}
+		return
+	}
 	for _, pl := range b.perSession {
 		select {
 		case <-pl.stopCh:
