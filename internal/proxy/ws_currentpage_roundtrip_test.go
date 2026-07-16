@@ -9,6 +9,7 @@ package proxy
 // Track* wire. This is the path no test previously exercised end to end.
 
 import (
+	"net/http"
 	"net/url"
 	"testing"
 	"time"
@@ -23,8 +24,9 @@ func dialMetrics(t *testing.T, listenAddr string) *websocket.Conn {
 	u := url.URL{Scheme: "ws", Host: listenAddr, Path: "/__devtool_metrics"}
 	var conn *websocket.Conn
 	var err error
+	header := http.Header{"Origin": {"http://" + listenAddr}}
 	require.Eventually(t, func() bool {
-		conn, _, err = websocket.DefaultDialer.Dial(u.String(), nil)
+		conn, _, err = websocket.DefaultDialer.Dial(u.String(), header)
 		return err == nil
 	}, 3*time.Second, 20*time.Millisecond, "metrics websocket must accept a client")
 	t.Cleanup(func() { _ = conn.Close() })
