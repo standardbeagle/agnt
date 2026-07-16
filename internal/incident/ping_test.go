@@ -139,10 +139,14 @@ func TestPing_DuplicateStormCriticalSnapshotConcurrentQuery(t *testing.T) {
 			return nil
 		}, nil, nil)
 	defer pe.Stop()
+	deltas, cancelDeltas := inbox.Subscribe()
+	defer cancelDeltas()
 
 	const fingerprint = "duplicate-storm"
 	inbox.Ingest(makeEntry(fingerprint, SeverityWarning))
+	<-deltas
 	inbox.Ingest(makeEntry(fingerprint, SeverityCritical))
+	criticalDelta := <-deltas
 
 	const duplicates = 256
 	start := make(chan struct{})
@@ -159,6 +163,14 @@ func TestPing_DuplicateStormCriticalSnapshotConcurrentQuery(t *testing.T) {
 			}
 			inbox.Ingest(makeEntry(fingerprint, severity))
 		}(i)
+	}
+	for i := 0; i < duplicates; i++ {
+		writers.Add(1)
+		go func() {
+			defer writers.Done()
+			<-start
+			inbox.MarkRead([]string{fingerprint}, false)
+		}()
 	}
 	go func() {
 		defer close(queryDone)
@@ -194,6 +206,9 @@ func TestPing_DuplicateStormCriticalSnapshotConcurrentQuery(t *testing.T) {
 	}
 	if stats.Critical != 1 || stats.Error != 0 || stats.Warning != 0 {
 		t.Fatalf("final routing stats: %+v", stats)
+	}
+	if criticalDelta.Entry.Count != 2 || criticalDelta.Entry.Severity != SeverityCritical || criticalDelta.Entry.Read {
+		t.Fatalf("retained delta mutated: %+v", criticalDelta.Entry)
 	}
 
 	deadline := time.After(time.Second)

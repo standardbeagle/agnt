@@ -202,18 +202,21 @@ func (inbox *Inbox) Ingest(entry *InboxEntry) InboxDelta {
 		}
 
 		escalated := newIdx < i
+		var snapshot *InboxEntry
 		if escalated {
+			existing.Severity = entry.Severity
+			snapshot = snapshotInboxEntry(existing)
 			b.lruList.Remove(slot.elem)
 			delete(b.slots, entry.Fingerprint)
 			b.mu.Unlock()
-			existing.Severity = entry.Severity
 			inbox.insertIntoBand(inbox.bands[newIdx], existing)
 		} else {
 			b.lruList.MoveToFront(slot.elem)
+			snapshot = snapshotInboxEntry(existing)
 			b.mu.Unlock()
 		}
 
-		delta := InboxDelta{Entry: snapshotInboxEntry(existing), IsNew: false, Escalated: escalated}
+		delta := InboxDelta{Entry: snapshot, IsNew: false, Escalated: escalated}
 		inbox.broadcast(delta)
 		return delta
 	}
@@ -222,8 +225,9 @@ func (inbox *Inbox) Ingest(entry *InboxEntry) InboxDelta {
 	if entry.Sample != nil {
 		addSampleURL(entry, entry.Sample.Ctx.URL)
 	}
+	snapshot := snapshotInboxEntry(entry)
 	inbox.insertIntoBand(inbox.bands[newIdx], entry)
-	delta := InboxDelta{Entry: snapshotInboxEntry(entry), IsNew: true}
+	delta := InboxDelta{Entry: snapshot, IsNew: true}
 	inbox.broadcast(delta)
 	return delta
 }
