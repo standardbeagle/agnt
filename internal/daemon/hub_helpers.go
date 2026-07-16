@@ -328,6 +328,7 @@ func (d *Daemon) hubHandleDetect(ctx context.Context, conn *hubpkg.Connection, c
 // drains the buffer — cascade entries are dropped, real errors emitted.
 // See internal/daemon/hold_buffer.go and the OutageHold config block.
 func (d *Daemon) wireProxyLogger(server *proxy.ProxyServer) {
+	d.registerIncidentProxyOwner(server)
 	// Every daemon proxy-creation path funnels through here, so this is the
 	// single chokepoint applying project-level .agnt.kdl settings that live
 	// outside the per-proxy block (currently: auth-breakout).
@@ -359,6 +360,44 @@ func (d *Daemon) wireProxyLogger(server *proxy.ProxyServer) {
 			// markers we never want to re-emit.
 		}
 	})
+}
+
+// registerIncidentProxyOwner records the project scope carried by a proxy.
+// Every production proxy creation path passes through wireProxyLogger, making
+// this the single ownership chokepoint for incidents adapted from proxy logs.
+func (d *Daemon) registerIncidentProxyOwner(server *proxy.ProxyServer) {
+	if server == nil || server.ID == "" || server.Path == "" {
+		return
+	}
+	d.incidentProxyPath.Store(server.ID, normalizePath(server.Path))
+}
+
+func (d *Daemon) incidentProjectForProxy(proxyID string) string {
+	if projectPath, ok := d.incidentProxyPath.Load(proxyID); ok {
+		return projectPath.(string)
+	}
+	return ""
+}
+
+// stampIncidentSession resolves one active owning session and fails closed
+// when ownership is unavailable. FindByDirectory is deterministic for multiple
+// active sessions in one project (the most recently started session wins), so
+// an incident is never broadcast to peer sessions in that project.
+func (d *Daemon) stampIncidentSession(ev *incident.IncidentEvent, projectPath string) bool {
+	if ev == nil {
+		return false
+	}
+	if ev.Ctx.SessionID != "" {
+		return true
+	}
+	session, ok := d.sessionRegistry.FindByDirectory(projectPath)
+	if !ok {
+		// Let the bus preserve its safe single-session fallback. With multiple
+		// sessions it drops an unowned event rather than broadcasting it.
+		return true
+	}
+	ev.Ctx.SessionID = session.Code
+	return true
 }
 
 // applyAuthBreakout installs the project's auth-breakout rules (top-level
@@ -488,7 +527,9 @@ func (d *Daemon) fireToIncidentBus(entry proxy.LogEntry, proxyID string) {
 			return
 		}
 		if ev, ok := incident.FromProxyDiagnostic(*entry.Diagnostic, proxyID); ok {
-			d.incidentBus.Publish(ev)
+			if d.stampIncidentSession(&ev, d.incidentProjectForProxy(proxyID)) {
+				d.incidentBus.Publish(ev)
+			}
 		}
 	case proxy.LogTypeHTTP:
 		if entry.HTTP == nil {
@@ -502,14 +543,18 @@ func (d *Daemon) fireToIncidentBus(entry proxy.LogEntry, proxyID string) {
 			return
 		}
 		if ev, ok := incident.FromHTTPEntry(*entry.HTTP, proxyID); ok {
-			d.incidentBus.Publish(ev)
+			if d.stampIncidentSession(&ev, d.incidentProjectForProxy(proxyID)) {
+				d.incidentBus.Publish(ev)
+			}
 		}
 	case proxy.LogTypeError:
 		if entry.Error == nil {
 			return
 		}
 		ev := incident.FromFrontendError(*entry.Error, proxyID)
-		d.incidentBus.Publish(ev)
+		if d.stampIncidentSession(&ev, d.incidentProjectForProxy(proxyID)) {
+			d.incidentBus.Publish(ev)
+		}
 	}
 }
 

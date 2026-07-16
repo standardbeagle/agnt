@@ -235,6 +235,7 @@ type Daemon struct {
 	startupErrorStore *StartupLogStore      // Ring buffer for startup events
 	eventHub          *EventHub             // Routes alerts to overlay/MCP/stream sinks
 	incidentBus       *incident.MPSCBus     // Incident pipeline event bus (L8+)
+	incidentProxyPath sync.Map              // proxy ID -> normalized owning project path
 	hookRing          *hookRingBuffer       // Claude Code hook event ring buffer (phase 1 scope)
 
 	// forwardingPaused records per-session "stop pushing to the agent" toggles
@@ -981,7 +982,9 @@ func (d *Daemon) ingestProcessAlert(m *overlay.AlertMatch, fallbackTS time.Time)
 	// the pipeline enabled, so this is safe to call unconditionally — it matches
 	// the dual-write pattern fireToIncidentBus already uses for proxy signals.
 	if d.incidentBus != nil {
-		d.incidentBus.Publish(incident.FromAlertMatch(m, m.ScriptID))
+		ev := incident.FromAlertMatch(m, m.ScriptID)
+		d.stampIncidentSession(&ev, projectPath)
+		d.incidentBus.Publish(ev)
 	}
 }
 
@@ -1062,6 +1065,7 @@ func (d *Daemon) startSwallowSweeperOnce() {
 					continue
 				}
 				for _, ev := range d.swallowDetector.Sweep(time.Now()) {
+					d.stampIncidentSession(&ev, d.incidentProjectForProxy(ev.Ctx.ProxyID))
 					d.incidentBus.Publish(ev)
 				}
 			}

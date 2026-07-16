@@ -240,9 +240,8 @@ func TestBurst_1000DistinctFPs_BandDrops(t *testing.T) {
 }
 
 // ── Concurrent sessions isolation ─────────────────────────────────────────────
-// 10 sessions, all receiving all events (bus fans out to every session by design).
-// Invariant: each session has an independent inbox with identical state —
-// no session's inbox is contaminated by another session's internal state.
+// 10 sessions receiving explicitly owned events.
+// Invariant: each session has an independent inbox with identical state.
 
 func TestBurst_ConcurrentSessions_IndependentInboxes(t *testing.T) {
 	t.Parallel()
@@ -258,12 +257,12 @@ func TestBurst_ConcurrentSessions_IndependentInboxes(t *testing.T) {
 		bus.AddSession(sessionIDs[i], nil, nil, nil)
 	}
 
-	// Publish shared events; all sessions receive all events (by design).
+	// Distribute explicitly owned events evenly across the sessions.
 	for j := 0; j < totalEvents; j++ {
 		ev := NewIncidentEvent(
 			SourceHTTP5xx, SeverityError, "500",
 			fmt.Sprintf("Error event %d at http://host/e%d", j, j),
-			Context{URL: fmt.Sprintf("http://host/e%d", j)},
+			Context{URL: fmt.Sprintf("http://host/e%d", j), SessionID: sessionIDs[j%numSessions]},
 			nil,
 		)
 		bus.Publish(ev)
@@ -277,8 +276,7 @@ func TestBurst_ConcurrentSessions_IndependentInboxes(t *testing.T) {
 	// Allow a short settle period for all sessions to finish ingesting.
 	time.Sleep(20 * time.Millisecond)
 
-	// Each session must have the same number of entries (independent inboxes,
-	// same events). No session's inbox count must exceed the error band capacity.
+	// Each session must have the same number of independently owned entries.
 	var firstCount int
 	for i, sid := range sessionIDs {
 		pl := bus.getSessionPipeline(sid)

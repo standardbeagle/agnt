@@ -377,15 +377,44 @@ func TestPipeline_MultipleSessionsIsolated(t *testing.T) {
 		}
 	}()
 
-	ev := NewIncidentEvent(SourceBrowserJS, SeverityError, "Test", "isolated", Context{}, nil)
+	ev := NewIncidentEvent(SourceBrowserJS, SeverityError, "Test", "isolated", Context{SessionID: "sess-iso-A"}, nil)
 	bus.Publish(ev)
 
-	// All sessions receive the event.
+	// Only the explicitly owning session receives the event.
 	for i, ch := range deltaChs {
+		if i == 0 {
+			select {
+			case <-ch:
+			case <-time.After(500 * time.Millisecond):
+				t.Errorf("session %d: timed out waiting for delta", i)
+			}
+			continue
+		}
 		select {
 		case <-ch:
-		case <-time.After(500 * time.Millisecond):
-			t.Errorf("session %d: timed out waiting for delta", i)
+			t.Errorf("session %d received another session's incident", i)
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+}
+
+func TestPipeline_SessionlessProductionEventFailsClosed(t *testing.T) {
+	bus := NewMPSCBus(nil)
+	t.Cleanup(bus.Close)
+
+	for _, sessionID := range []string{"session-a", "session-b"} {
+		bus.AddSession(sessionID, nil, nil, nil)
+	}
+
+	bus.Publish(NewIncidentEvent(
+		SourceBrowserJS, SeverityError, "Test", "owner missing", Context{}, nil,
+	))
+	time.Sleep(50 * time.Millisecond)
+
+	for _, sessionID := range []string{"session-a", "session-b"} {
+		entries, _ := bus.QuerySession(sessionID, QueryFilter{})
+		if len(entries) != 0 {
+			t.Fatalf("sessionless production incident leaked into %s", sessionID)
 		}
 	}
 }
