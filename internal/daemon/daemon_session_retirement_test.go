@@ -102,3 +102,67 @@ func TestStaleCleanupCannotRetireReregisteredSession(t *testing.T) {
 		return len(entries) == 1
 	}, time.Second, time.Millisecond)
 }
+
+// TestNoProjectCleanupSkipsFinalizeWhenReregistered covers the gate re-check arm
+// in CleanupSessionResources (daemon_session_cleanup.go): when a session is
+// absent at the first Get, cleanup parks on the per-code lifecycle gate before
+// finalizing state. If a fresh registration wins that gate first, the re-check
+// sees it registered and skips finalizeSessionState — the new lifetime's registry
+// entry, forward mapping, and incident pipeline must all survive.
+func TestNoProjectCleanupSkipsFinalizeWhenReregistered(t *testing.T) {
+	t.Parallel()
+	d := newSessionRetirementTestDaemon(t)
+	const code = "reregistered-during-cleanup"
+
+	// Hold the gate so the cleanup goroutine parks on it after observing the
+	// session is absent, giving the registration below a deterministic window.
+	unlock := d.sessionLifecycle.lock(code)
+
+	entered := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		close(entered)
+		// Session is not registered yet, so this takes the not-registered branch,
+		// then blocks acquiring the gate we hold.
+		d.CleanupSessionResources(code)
+		close(done)
+	}()
+	<-entered
+
+	// Wait until the cleanup goroutine has entered lock() for this code (refs>=2:
+	// our hold plus its blocked acquire). refs is only incremented AFTER cleanup's
+	// first Get returned absent, so registering now cannot be seen by that Get —
+	// the goroutine is committed to the not-registered branch.
+	require.Eventually(t, func() bool {
+		d.sessionLifecycle.mu.Lock()
+		defer d.sessionLifecycle.mu.Unlock()
+		g := d.sessionLifecycle.gates[code]
+		return g != nil && g.refs >= 2
+	}, time.Second, time.Millisecond)
+
+	// A fresh registration wins: install the session plus the session-scoped state
+	// a real SESSION REGISTER would, all keyed to this code.
+	fresh := &Session{Code: code, Status: SessionStatusActive}
+	require.NoError(t, d.sessionRegistry.Register(fresh))
+	d.addIncidentSession(code)
+	d.forwardMappings.Store(code, "fresh-forward")
+
+	unlock()
+	<-done
+
+	// The gate re-check saw the fresh registration, so finalizeSessionState was
+	// skipped: registry entry, forward mapping, and incident pipeline survive.
+	got, ok := d.sessionRegistry.Get(code)
+	require.True(t, ok)
+	require.Same(t, fresh, got)
+	_, ok = d.forwardMappings.Load(code)
+	require.True(t, ok, "stale cleanup cleared a fresh lifetime's forward mapping")
+	d.incidentBus.Publish(incident.NewIncidentEvent(
+		incident.SourceProcessOutput, incident.SeverityError, "test", "fresh survives",
+		incident.Context{SessionID: code}, nil,
+	))
+	require.Eventually(t, func() bool {
+		entries, _ := d.incidentBus.QuerySession(code, incident.QueryFilter{})
+		return len(entries) == 1
+	}, time.Second, time.Millisecond)
+}

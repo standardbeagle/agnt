@@ -741,6 +741,20 @@ func TestSessionRegistry_ExactLifetimeOperations(t *testing.T) {
 
 	require.True(t, registry.ReplaceExact("same-code", old, fresh))
 	require.False(t, registry.UnregisterExact("same-code", old), "stale lifetime removed fresh registration")
+
+	// Guard arms: every ReplaceExact/UnregisterExact rejection must leave the
+	// current registration (fresh) untouched rather than partially mutating it.
+	// A replacement whose Code disagrees with the addressed code is refused, so a
+	// caller cannot install a session under the wrong key.
+	require.False(t, registry.ReplaceExact("same-code", fresh, &Session{Code: "code-B"}),
+		"ReplaceExact accepted a replacement whose Code != addressed code")
+	// nil expected and nil replacement are both refused.
+	require.False(t, registry.ReplaceExact("same-code", nil, fresh), "ReplaceExact accepted a nil expected")
+	require.False(t, registry.ReplaceExact("same-code", fresh, nil), "ReplaceExact accepted a nil replacement")
+	// nil expected is refused by UnregisterExact.
+	require.False(t, registry.UnregisterExact("same-code", nil), "UnregisterExact accepted a nil expected")
+
+	// None of the rejected calls mutated the registry: fresh is still installed.
 	got, ok := registry.Get("same-code")
 	require.True(t, ok)
 	require.Same(t, fresh, got)
