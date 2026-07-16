@@ -85,3 +85,6 @@ func IsWSL() bool {
 func ShouldUseWindowsShell(_ string) bool {
 	return true
 }
+
+// ShouldUseWindowsCommand always selects cmd.exe on native Windows.
+func ShouldUseWindowsCommand(_ string) bool { return true }

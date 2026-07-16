@@ -21,6 +21,10 @@ func TestKillWindowsPID_InvalidPID(t *testing.T) {
 	}
 }
 
+func TestTaskkillArgsKillsWindowsProcessTree(t *testing.T) {
+	assert.Equal(t, []string{"/T", "/F", "/PID", "1234"}, taskkillArgs(1234))
+}
+
 // TestKillWindowsPID_NotWSL asserts that non-WSL hosts get a clear refusal
 // rather than silently calling an absent taskkill.exe. The error must mention
 // WSL so callers can route it to the right diagnostic channel.

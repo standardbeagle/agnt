@@ -373,7 +373,7 @@ func (s *ScriptConfig) ResolveShell() (shell string, shellArgs []string) {
 	// signal: a script rooted in /mnt/c/... is almost certainly Windows
 	// software), then the run command itself (catches `C:\tools\foo.cmd`
 	// style absolute invocations even when Cwd is Linux-side).
-	if platform.ShouldUseWindowsShell(s.Cwd) || platform.ShouldUseWindowsShell(s.Run) {
+	if platform.ShouldUseWindowsShell(s.Cwd) || platform.ShouldUseWindowsCommand(s.Run) {
 		return "cmd.exe", []string{"/c", s.Run}
 	}
 

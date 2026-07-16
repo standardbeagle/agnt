@@ -35,6 +35,12 @@ func TestParseNetstatExePIDs(t *testing.T) {
 			want: []int{5678},
 		},
 		{
+			name: "German localized listening state",
+			out:  "  TCP    0.0.0.0:443    0.0.0.0:0    ABHÖREN    2468",
+			port: 443,
+			want: []int{2468},
+		},
+		{
 			name: "ipv4 and ipv6 rows for same pid dedup to one",
 			out: strings.Join([]string{
 				"  TCP    0.0.0.0:8080    0.0.0.0:0    LISTENING    4321",

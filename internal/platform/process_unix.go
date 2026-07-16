@@ -52,7 +52,11 @@ func IsWSL() bool {
 // pass either Cwd or a run-command path, and an empty Cwd must fall through
 // to the platform default rather than forcing cmd.exe.
 func ShouldUseWindowsShell(path string) bool {
-	if !IsWSL() {
+	return shouldUseWindowsShellPath(path, IsWSL())
+}
+
+func shouldUseWindowsShellPath(path string, isWSL bool) bool {
+	if !isWSL {
 		return false
 	}
 	if path == "" {
@@ -73,6 +77,30 @@ func ShouldUseWindowsShell(path string) bool {
 		}
 	}
 	return false
+}
+
+// ShouldUseWindowsCommand classifies a full shell command by its executable
+// token only. Backslashes in later Linux-shell arguments are escapes, not a
+// signal that the whole command belongs to cmd.exe.
+func ShouldUseWindowsCommand(command string) bool {
+	return shouldUseWindowsCommand(command, IsWSL())
+}
+
+func shouldUseWindowsCommand(command string, isWSL bool) bool {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return false
+	}
+	executable := command
+	if command[0] == '"' || command[0] == '\'' {
+		quote := command[0]
+		if end := strings.IndexByte(command[1:], quote); end >= 0 {
+			executable = command[1 : end+1]
+		}
+	} else if fields := strings.Fields(command); len(fields) > 0 {
+		executable = fields[0]
+	}
+	return shouldUseWindowsShellPath(executable, isWSL)
 }
 
 // Scan returns all running processes by reading /proc on Linux.

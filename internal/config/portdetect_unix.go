@@ -224,12 +224,11 @@ func findPIDsByPortNetstatExe(ctx context.Context, port int) []int {
 //	TCP    [::]:80        [::]:0       LISTENING    1234
 //
 // Rules:
-//   - Only rows whose first field is "TCP" and that contain "LISTENING"
-//     are considered (UDP rows have no state column; ESTABLISHED/TIME_WAIT
-//     rows are not bind owners we care about).
-//   - The local-address field (fields[1]) must end in ":<port>" exactly.
-//     The exact-suffix check guards the :80-vs-:8080 false positive — ":80"
-//     is not a suffix of "0.0.0.0:8080".
+//   - Only the stable five-column TCP shape is considered. Listener rows have
+//     remote endpoint port 0; this avoids depending on the localized state
+//     word (LISTENING, ABHÖREN, etc.).
+//   - The local-address port is parsed numerically after its final colon,
+//     guarding IPv4/IPv6 and :80-vs-:8080 false positives.
 //   - The PID is the last field (fields[4]); rows with <5 fields or a
 //     non-numeric/zero PID are skipped.
 //   - PIDs are de-duplicated (a process may hold both the IPv4 and IPv6
@@ -239,18 +238,9 @@ func findPIDsByPortNetstatExe(ctx context.Context, port int) []int {
 func parseNetstatExePIDs(output []byte, port int) []int {
 	var pids []int
 	seen := make(map[int]struct{})
-	portSuffix := fmt.Sprintf(":%d", port)
 	for _, line := range strings.Split(string(output), "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "TCP") || !strings.Contains(line, "LISTENING") {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) < 5 || !strings.HasSuffix(fields[1], portSuffix) {
-			continue
-		}
-		pid, err := strconv.Atoi(fields[4])
-		if err != nil || pid <= 0 {
+		localPort, pid, ok := parseNetstatExeListenerRow(line)
+		if !ok || localPort != port {
 			continue
 		}
 		if _, dup := seen[pid]; !dup {
@@ -259,6 +249,35 @@ func parseNetstatExePIDs(output []byte, port int) []int {
 		}
 	}
 	return pids
+}
+
+func parseNetstatExeListenerRow(line string) (port, pid int, ok bool) {
+	fields := strings.Fields(strings.TrimSpace(line))
+	if len(fields) != 5 || !strings.EqualFold(fields[0], "TCP") {
+		return 0, 0, false
+	}
+	localPort, ok := netstatEndpointPort(fields[1])
+	if !ok || localPort <= 0 {
+		return 0, 0, false
+	}
+	remotePort, ok := netstatEndpointPort(fields[2])
+	if !ok || remotePort != 0 {
+		return 0, 0, false
+	}
+	ownerPID, err := strconv.Atoi(fields[4])
+	if err != nil || ownerPID <= 0 {
+		return 0, 0, false
+	}
+	return localPort, ownerPID, true
+}
+
+func netstatEndpointPort(endpoint string) (int, bool) {
+	idx := strings.LastIndexByte(endpoint, ':')
+	if idx < 0 || idx == len(endpoint)-1 {
+		return 0, false
+	}
+	port, err := strconv.Atoi(endpoint[idx+1:])
+	return port, err == nil && port >= 0 && port <= 65535
 }
 
 // findPIDsByPortProc parses /proc/net/tcp{,6} for sockets listening on the
@@ -621,24 +640,8 @@ func parseNetstatExeAllListeners(output []byte) []PortOwner {
 	var out []PortOwner
 	seen := make(map[int]bool)
 	for _, line := range strings.Split(string(output), "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "TCP") || !strings.Contains(line, "LISTENING") {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) < 5 {
-			continue
-		}
-		idx := strings.LastIndex(fields[1], ":")
-		if idx < 0 {
-			continue
-		}
-		port, err := strconv.Atoi(fields[1][idx+1:])
-		if err != nil || port <= 0 || port > 65535 {
-			continue
-		}
-		pid, err := strconv.Atoi(fields[4])
-		if err != nil || pid <= 0 {
+		port, pid, ok := parseNetstatExeListenerRow(line)
+		if !ok {
 			continue
 		}
 		if seen[port] {

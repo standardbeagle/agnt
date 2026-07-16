@@ -78,3 +78,22 @@ func TestShouldUseWindowsShell_WSL_PathClassification(t *testing.T) {
 		})
 	}
 }
+
+func TestShouldUseWindowsCommand_ClassifiesExecutableNotArguments(t *testing.T) {
+	tests := []struct {
+		command string
+		want    bool
+	}{
+		{`printf '%s\n' hello`, false},
+		{`sed 's/\s\+/ /g' file`, false},
+		{`bash -c "echo C:\\temp"`, false},
+		{`C:\tools\build.cmd --flag`, true},
+		{`scripts\build.cmd --flag`, true},
+		{`"C:\Program Files\tool.exe" --flag`, true},
+		{`/mnt/c/tools/build.exe --flag`, true},
+		{`/usr/bin/env node script.js`, false},
+	}
+	for _, tc := range tests {
+		assert.Equal(t, tc.want, shouldUseWindowsCommand(tc.command, true), tc.command)
+	}
+}
