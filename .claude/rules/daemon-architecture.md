@@ -264,6 +264,12 @@ Daemon holds this invariant through three primitives:
 | Leaked pgid after daemon crash | yes | startup orphan `/proc` scan |
 | Grandchildren of backgrounded jobs | yes | they inherit pgid transitively |
 
+### Exact-identity retirement & per-code lifecycle gate
+
+Session teardown is not "delete by code" — it is **exact-identity retirement** guarded by a **per-code lifecycle gate** (`sessionLifecycleGates`, refcounted, `daemon_session_cleanup.go`). A reconnect installs a *fresh* `*Session` pointer (`ReplaceExact` CAS, `session.go`) under that same gate; a stale deferred cleanup captured the *old* pointer and, running under the gate, pointer-compares in `doCleanupExact` and no-ops (`UnregisterExact` also CAS-guards the final delete). Net: an old cleanup can never retire a lifetime a reconnect already replaced. The gate **serializes** every register / retire on a given code — classic REGISTER/reconnect and session-host CREATE/KILL registry mutations all pass through it (`hub_session.go`, `hub_sessionhost.go`), so no ungated Register can race a reconnect's CAS into an `ErrInternal`.
+
+**Accepted trade-off (intentional, not a bug):** a same-code reconnect that arrives *during* an active teardown blocks on the gate for the teardown's full duration — pgid SIGTERM→SIGKILL grace plus process/proxy stop, worst-case ~12s. Releasing the gate early would let a fresh autostart for the project race the old teardown (concurrent port-kill / proxy-stop against the newly-started processes), which is the worse failure. Serialization is the design intent: the reconnect waits, then starts clean.
+
 ### Accepted Escape Hatches
 
 These **intentionally** escape session pgid. Represent conscious "I want to survive session shutdown" decision and daemon must not try to track them:
@@ -303,6 +309,8 @@ Each leaves port or resource held after session shutdown, but that's operator's 
 | `KillSessionPGID`, `MembersOfPGID`, `readPGID` | `internal/platform/sessionpgid_unix.go` |
 | `ScanOrphanPGIDs` (dead-leader scan) | `internal/platform/orphanpgid_unix.go` |
 | `killSessionPGID` wiring + `doCleanup` ordering (incl. the `SessionKindSessionHost` guard) | `internal/daemon/daemon_session_cleanup.go` |
+| `sessionLifecycleGates` (per-code refcounted gate) + `doCleanupExact` exact-identity retirement | `internal/daemon/daemon_session_cleanup.go` |
+| `ReplaceExact` / `UnregisterExact` (CAS reconnect swap + exact delete) | `internal/daemon/session.go` |
 | `startupOrphanPGIDScan` + config gate | `internal/daemon/daemon_orphan_pgid.go` |
 | PTY child PID capture + wire-through (classic) | `cmd/agnt/pty_common.go`, `internal/daemon/client.go` (`SessionRegisterWithPGID`) |
 | Session struct field (`SessionPGID`, `Kind`) | `internal/daemon/session.go` |
