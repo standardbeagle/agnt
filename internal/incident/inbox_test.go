@@ -136,6 +136,34 @@ func TestInbox_MarkRead_AdvancesCursor(t *testing.T) {
 	}
 }
 
+func TestInbox_QueryAndMarkDoesNotLoseDuplicateArrivingBetweenPhases(t *testing.T) {
+	inbox := NewInbox("sess")
+	inbox.Ingest(makeEntry("fp", SeverityError))
+
+	attempting := make(chan struct{})
+	duplicateDone := make(chan struct{})
+	var once sync.Once
+	inbox.beforeIngestLock = func() { once.Do(func() { close(attempting) }) }
+
+	entries, _ := inbox.QueryAndMark(QueryFilter{}, func(snapshot []InboxEntry) []string {
+		go func() {
+			inbox.Ingest(makeEntry("fp", SeverityError))
+			close(duplicateDone)
+		}()
+		<-attempting // duplicate reached Ingest before the mark phase
+		return []string{snapshot[0].Fingerprint}
+	}, true)
+	if len(entries) != 1 || entries[0].Count != 1 {
+		t.Fatalf("returned snapshot = %#v", entries)
+	}
+	<-duplicateDone
+
+	unread, _ := inbox.Query(QueryFilter{UnreadOnly: true})
+	if len(unread) != 1 || unread[0].Count != 2 {
+		t.Fatalf("duplicate arriving after returned occurrence was marked got lost: %#v", unread)
+	}
+}
+
 // ── query ─────────────────────────────────────────────────────────────────────
 
 func TestInbox_Query_SinceCursor(t *testing.T) {

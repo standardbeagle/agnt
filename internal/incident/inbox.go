@@ -105,6 +105,8 @@ type Inbox struct {
 
 	subsMu sync.Mutex
 	subs   []chan InboxDelta
+
+	beforeIngestLock func() // test-only synchronization hook
 }
 
 // NewInbox creates a session inbox with default 100-entry band capacities.
@@ -177,6 +179,9 @@ func snapshotInboxEntry(entry *InboxEntry) *InboxEntry {
 // LastSeenAt updated; severity escalation moves the entry to a higher band.
 // Returns the resulting InboxDelta.
 func (inbox *Inbox) Ingest(entry *InboxEntry) InboxDelta {
+	if inbox.beforeIngestLock != nil {
+		inbox.beforeIngestLock()
+	}
 	inbox.ingestMu.Lock()
 	defer inbox.ingestMu.Unlock()
 
@@ -193,6 +198,9 @@ func (inbox *Inbox) Ingest(entry *InboxEntry) InboxDelta {
 
 		existing := slot.entry
 		existing.Count += entry.Count
+		// A duplicate is a new unread occurrence even when earlier occurrences of
+		// this fingerprint were acknowledged.
+		existing.Read = false
 		if entry.Sample != nil {
 			addSampleURL(existing, entry.Sample.Ctx.URL)
 		}
@@ -259,7 +267,10 @@ func (inbox *Inbox) Query(filter QueryFilter) ([]InboxEntry, Stats) {
 	// order to avoid observing the remove/reinsert transition.
 	inbox.ingestMu.Lock()
 	defer inbox.ingestMu.Unlock()
+	return inbox.queryLocked(filter)
+}
 
+func (inbox *Inbox) queryLocked(filter QueryFilter) ([]InboxEntry, Stats) {
 	var results []InboxEntry
 	for _, b := range inbox.bands {
 		if len(filter.Severities) > 0 && !containsSeverity(filter.Severities, b.severity) {
@@ -294,8 +305,25 @@ func (inbox *Inbox) Query(filter QueryFilter) ([]InboxEntry, Stats) {
 	return results, inbox.Stats()
 }
 
+// QueryAndMark atomically snapshots a query, lets the caller select which of
+// those exact snapshots were returned, and marks only that selection read.
+// Ingest cannot merge a duplicate between the query and mark phases.
+func (inbox *Inbox) QueryAndMark(filter QueryFilter, selectFingerprints func([]InboxEntry) []string, advanceCursor bool) ([]InboxEntry, Stats) {
+	inbox.ingestMu.Lock()
+	defer inbox.ingestMu.Unlock()
+	entries, stats := inbox.queryLocked(filter)
+	inbox.markReadLocked(selectFingerprints(entries), advanceCursor)
+	return entries, stats
+}
+
 // MarkRead marks entries as read and optionally advances the cursor.
 func (inbox *Inbox) MarkRead(fingerprints []string, advanceCursor bool) {
+	inbox.ingestMu.Lock()
+	defer inbox.ingestMu.Unlock()
+	inbox.markReadLocked(fingerprints, advanceCursor)
+}
+
+func (inbox *Inbox) markReadLocked(fingerprints []string, advanceCursor bool) {
 	fpSet := make(map[string]bool, len(fingerprints))
 	for _, fp := range fingerprints {
 		fpSet[fp] = true

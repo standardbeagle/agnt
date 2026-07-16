@@ -220,6 +220,17 @@ func (b *MPSCBus) QuerySession(sessionID string, filter QueryFilter) ([]InboxEnt
 	return pl.inbox.Query(filter)
 }
 
+// QueryAndMarkSession atomically queries a session inbox and marks the exact
+// returned selection chosen from that snapshot before duplicate ingestion can
+// mutate it.
+func (b *MPSCBus) QueryAndMarkSession(sessionID string, filter QueryFilter, selectFingerprints func([]InboxEntry) []string, advanceCursor bool) ([]InboxEntry, Stats) {
+	pl := b.getSessionPipeline(sessionID)
+	if pl == nil {
+		return nil, Stats{}
+	}
+	return pl.inbox.QueryAndMark(filter, selectFingerprints, advanceCursor)
+}
+
 // ReadSessionBlob hydrates a payload only from the caller session's bounded
 // store. Hashes are content-addressed but stores are tenancy boundaries: never
 // search another session when a hash is absent locally.

@@ -93,6 +93,39 @@ func TestIncidentPaging_CursorSweepsGapFree(t *testing.T) {
 	assert.Len(t, seen, 7, "no duplicates")
 }
 
+func TestIncidentPaging_SameSecondNanosecondsAdvanceCursor(t *testing.T) {
+	base := time.Now().UTC().Truncate(time.Second)
+	all := make([]incident.InboxEntry, 7)
+	for i := range all {
+		at := base.Add(time.Duration(7-i) * time.Nanosecond)
+		all[i] = incident.InboxEntry{Fingerprint: string(rune('A' + i)), Severity: incident.SeverityError, FirstSeenAt: at, LastSeenAt: at, Count: 1}
+	}
+
+	var seen []string
+	var since time.Time
+	for range 5 {
+		var matching []incident.InboxEntry
+		for _, entry := range all {
+			if since.IsZero() || entry.LastSeenAt.After(since) {
+				matching = append(matching, entry)
+			}
+		}
+		if len(matching) == 0 {
+			break
+		}
+		if len(matching) > 4 {
+			matching = matching[len(matching)-4:]
+		}
+		result := buildIncidentQueryResult(matching, incident.Stats{}, protocol.IncidentQueryFilter{Limit: 3})
+		seen = append(seen, fingerprints(result)...)
+		parsed, err := time.Parse(time.RFC3339Nano, result.Cursor)
+		require.NoError(t, err)
+		require.True(t, parsed.After(since), "cursor must advance at nanosecond precision")
+		since = parsed
+	}
+	require.Len(t, seen, 7)
+}
+
 // TestIncidentPaging_TruncatedSurvivesSecondaryFilter: the secondary filters run
 // after truncation, so a filter that drops the surplus cannot mask the fact that
 // the inbox held more matching entries.
@@ -140,6 +173,18 @@ func TestIncidentPaging_EmptyInboxHasNoCursor(t *testing.T) {
 	assert.Empty(t, res.Incidents)
 	assert.Empty(t, res.Cursor)
 	assert.False(t, res.Truncated)
+}
+
+func TestApplySecondaryFilters_NilSampleDoesNotBypassMetadata(t *testing.T) {
+	entries := []incident.InboxEntry{{Fingerprint: "nil-sample", Severity: incident.SeverityError}}
+	for _, filter := range []protocol.IncidentQueryFilter{
+		{Sources: []string{string(incident.SourceBrowserJS)}},
+		{ProxyID: "proxy"},
+		{ProcessID: "process"},
+	} {
+		assert.Empty(t, applySecondaryFilters(entries, filter))
+	}
+	assert.Len(t, applySecondaryFilters(entries, protocol.IncidentQueryFilter{Fingerprints: []string{"nil-sample"}}), 1)
 }
 
 // TestIncidentQueryFilter_RejectsUnparseableSince: silently dropping `since`

@@ -44,7 +44,20 @@ func (d *Daemon) hubHandleIncidentsQuery(conn *hubpkg.Connection, cmd *hubproto.
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
 	}
-	entries, stats := d.incidentBus.QuerySession(sessionCode, qf)
+	var entries []incident.InboxEntry
+	var stats incident.Stats
+	if filter.MarkRead {
+		entries, stats = d.incidentBus.QueryAndMarkSession(sessionCode, qf, func(snapshot []incident.InboxEntry) []string {
+			returned := returnedIncidentEntries(snapshot, filter)
+			fingerprints := make([]string, len(returned))
+			for i := range returned {
+				fingerprints[i] = returned[i].Fingerprint
+			}
+			return fingerprints
+		}, true)
+	} else {
+		entries, stats = d.incidentBus.QuerySession(sessionCode, qf)
+	}
 
 	result := buildIncidentQueryResultWithHydrator(entries, stats, filter, func(hash string) ([]byte, error) {
 		payload, _, err := d.incidentBus.ReadSessionBlob(sessionCode, hash)
@@ -54,17 +67,6 @@ func (d *Daemon) hubHandleIncidentsQuery(conn *hubpkg.Connection, cmd *hubproto.
 	// session pipeline (for example during teardown). Project config never
 	// disables incident recording; alerts.push controls interrupts only.
 	result.PipelineEnabled = d.incidentBus.HasSession(sessionCode)
-
-	// Mark read only the records actually returned (after secondary filtering),
-	// so entries filtered out of the response are not silently marked read and
-	// the cursor advances to exactly the page the caller saw.
-	if filter.MarkRead && len(result.Incidents) > 0 {
-		fps := make([]string, len(result.Incidents))
-		for i, r := range result.Incidents {
-			fps[i] = r.Fingerprint
-		}
-		d.incidentBus.MarkReadSession(sessionCode, fps, true)
-	}
 
 	data, _ := json.Marshal(result)
 	return conn.WriteJSON(data)
@@ -88,9 +90,9 @@ func incidentQueryFilterToInternal(f protocol.IncidentQueryFilter) (incident.Que
 	if f.Since != "" {
 		// A `since` we cannot parse must not be dropped: silently ignoring it
 		// returns the whole inbox to a caller who asked for a slice of it.
-		t, err := time.Parse(time.RFC3339, f.Since)
+		t, err := time.Parse(time.RFC3339Nano, f.Since)
 		if err != nil {
-			return incident.QueryFilter{}, fmt.Errorf("invalid since %q: want RFC3339", f.Since)
+			return incident.QueryFilter{}, fmt.Errorf("invalid since %q: want RFC3339/RFC3339Nano", f.Since)
 		}
 		qf.Since = t
 	}
@@ -116,14 +118,8 @@ func buildIncidentQueryResultWithHydrator(entries []incident.InboxEntry, stats i
 	//
 	// Truncate before the secondary filters run: they can drop the surplus and
 	// hide the fact that the inbox had more matching entries.
-	examined := entries
-	truncated := false
-	if filter.Limit > 0 && len(examined) > filter.Limit {
-		truncated = true
-		examined = examined[len(examined)-filter.Limit:]
-	}
-
-	filtered := applySecondaryFilters(examined, filter)
+	examined, truncated := examinedIncidentEntries(entries, filter)
+	filtered := returnedIncidentEntries(entries, filter)
 
 	records := make([]protocol.IncidentRecord, 0, len(filtered))
 	for _, e := range filtered {
@@ -137,7 +133,7 @@ func buildIncidentQueryResultWithHydrator(entries []incident.InboxEntry, stats i
 	// query forever on a page where nothing matched.
 	var cursor string
 	if len(examined) > 0 {
-		cursor = examined[0].LastSeenAt.Format(time.RFC3339)
+		cursor = examined[0].LastSeenAt.Format(time.RFC3339Nano)
 	}
 
 	return protocol.IncidentQueryResult{
@@ -152,6 +148,21 @@ func buildIncidentQueryResultWithHydrator(entries []incident.InboxEntry, stats i
 		Cursor:    cursor,
 		Truncated: truncated,
 	}
+}
+
+func examinedIncidentEntries(entries []incident.InboxEntry, filter protocol.IncidentQueryFilter) ([]incident.InboxEntry, bool) {
+	examined := entries
+	truncated := false
+	if filter.Limit > 0 && len(examined) > filter.Limit {
+		truncated = true
+		examined = examined[len(examined)-filter.Limit:]
+	}
+	return examined, truncated
+}
+
+func returnedIncidentEntries(entries []incident.InboxEntry, filter protocol.IncidentQueryFilter) []incident.InboxEntry {
+	examined, _ := examinedIncidentEntries(entries, filter)
+	return applySecondaryFilters(examined, filter)
 }
 
 // applySecondaryFilters narrows entries by Sources, ProxyID, ProcessID, and Fingerprints
@@ -176,7 +187,9 @@ func applySecondaryFilters(entries []incident.InboxEntry, filter protocol.Incide
 			continue
 		}
 		if e.Sample == nil {
-			out = append(out, e)
+			if len(sourceSet) == 0 && filter.ProxyID == "" && filter.ProcessID == "" {
+				out = append(out, e)
+			}
 			continue
 		}
 		if len(sourceSet) > 0 && !sourceSet[string(e.Sample.Source)] {
