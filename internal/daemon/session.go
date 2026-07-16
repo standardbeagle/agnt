@@ -185,7 +185,7 @@ type SessionRegistry struct {
 	// stored here — it is derived on demand by ActiveCount() from each
 	// session's authoritative Status. A standalone active counter drifts:
 	// CheckHeartbeats decrements on Active→Disconnected, but Heartbeat
-	// revives Disconnected→Active and Unregister deletes regardless of
+	// revives Disconnected→Active and UnregisterExact deletes regardless of
 	// status, so the increments and decrements never stayed balanced.
 	totalRegistered   atomic.Int64
 	totalUnregistered atomic.Int64
@@ -223,16 +223,6 @@ func (r *SessionRegistry) Register(session *Session) error {
 	}
 
 	r.totalRegistered.Add(1)
-	return nil
-}
-
-// Unregister removes a session from the registry.
-func (r *SessionRegistry) Unregister(code string) error {
-	if _, loaded := r.sessions.LoadAndDelete(code); !loaded {
-		return fmt.Errorf("session %q not found", code)
-	}
-
-	r.totalUnregistered.Add(1)
 	return nil
 }
 
@@ -315,7 +305,8 @@ func (r *SessionRegistry) CheckHeartbeats() {
 // ActiveCount returns the number of currently active sessions, derived from
 // each session's authoritative Status. Deriving (rather than maintaining a
 // counter) makes the count impossible to drift across the
-// Active↔Disconnected revive cycle and the delete-on-any-status Unregister.
+// Active↔Disconnected revive cycle and the delete-on-any-status
+// UnregisterExact.
 func (r *SessionRegistry) ActiveCount() int64 {
 	var n int64
 	r.sessions.Range(func(_, value interface{}) bool {

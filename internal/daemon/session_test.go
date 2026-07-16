@@ -88,45 +88,6 @@ func TestSessionRegistry_Register_EmptyCode(t *testing.T) {
 	}
 }
 
-func TestSessionRegistry_Unregister(t *testing.T) {
-	t.Parallel()
-	registry := NewSessionRegistry(60 * time.Second)
-
-	session := &Session{
-		Code:      "test-1",
-		Command:   "claude",
-		StartedAt: time.Now(),
-		Status:    SessionStatusActive,
-	}
-
-	err := registry.Register(session)
-	if err != nil {
-		t.Fatalf("Register() error = %v", err)
-	}
-
-	// Unregister
-	err = registry.Unregister("test-1")
-	if err != nil {
-		t.Fatalf("Unregister() error = %v", err)
-	}
-
-	// Verify removal
-	_, found := registry.Get("test-1")
-	if found {
-		t.Error("Get() returned true after Unregister, expected false")
-	}
-}
-
-func TestSessionRegistry_Unregister_NotFound(t *testing.T) {
-	t.Parallel()
-	registry := NewSessionRegistry(60 * time.Second)
-
-	err := registry.Unregister("nonexistent")
-	if err == nil {
-		t.Error("Unregister() should return error for nonexistent code")
-	}
-}
-
 func TestSessionRegistry_Heartbeat(t *testing.T) {
 	t.Parallel()
 	registry := NewSessionRegistry(60 * time.Second)
@@ -261,7 +222,7 @@ func TestSessionRegistry_ActiveCount(t *testing.T) {
 		t.Errorf("ActiveCount() = %d, want 1", registry.ActiveCount())
 	}
 
-	_ = registry.Unregister("test-1")
+	registry.UnregisterExact("test-1", session)
 
 	if registry.ActiveCount() != 0 {
 		t.Errorf("ActiveCount() = %d, want 0", registry.ActiveCount())
@@ -615,7 +576,7 @@ func TestSessionRegistry_TotalUnregistered(t *testing.T) {
 		Status:    SessionStatusActive,
 	}
 	_ = registry.Register(session)
-	_ = registry.Unregister("test-1")
+	registry.UnregisterExact("test-1", session)
 
 	if registry.TotalUnregistered() != 1 {
 		t.Errorf("TotalUnregistered() = %d, want 1", registry.TotalUnregistered())
