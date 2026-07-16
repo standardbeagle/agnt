@@ -109,6 +109,10 @@ func cloneIncidentValue(value any) any {
 		return cloned
 	case []string:
 		return append([]string(nil), typed...)
+	case []int:
+		// Route remediation uses concrete []int for status_codes. An interface
+		// preserves that concrete type, so []any handling does not cover it.
+		return append([]int(nil), typed...)
 	case map[string]string:
 		cloned := make(map[string]string, len(typed))
 		for key, item := range typed {

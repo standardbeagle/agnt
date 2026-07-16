@@ -74,7 +74,10 @@ func TestBusDuplicateStormConcurrentQueryOwnsSampleSnapshot(t *testing.T) {
 func TestDedupSnapshotDeepCopiesMutableEventFields(t *testing.T) {
 	dedup := NewDeduplicator(time.Minute)
 	payload := &BlobRef{Hash: "original"}
-	nested := map[string]any{"slice": []any{"original"}}
+	nested := map[string]any{
+		"slice":        []any{"original"},
+		"status_codes": []int{500, 502},
+	}
 	event := IncidentEvent{
 		Fingerprint: "deep-copy",
 		PayloadRef:  payload,
@@ -84,11 +87,16 @@ func TestDedupSnapshotDeepCopiesMutableEventFields(t *testing.T) {
 
 	payload.Hash = "mutated"
 	nested["slice"].([]any)[0] = "mutated"
+	nested["status_codes"].([]int)[0] = 418
 	if snapshot.Last.PayloadRef.Hash != "original" {
 		t.Fatalf("payload hash=%q, want detached original", snapshot.Last.PayloadRef.Hash)
 	}
 	got := snapshot.Last.Remediation.PrimaryArgs["nested"].(map[string]any)["slice"].([]any)[0]
 	if got != "original" {
 		t.Fatalf("nested value=%v, want detached original", got)
+	}
+	statusCodes := snapshot.Last.Remediation.PrimaryArgs["nested"].(map[string]any)["status_codes"].([]int)
+	if statusCodes[0] != 500 {
+		t.Fatalf("status_codes=%v, want detached original", statusCodes)
 	}
 }
