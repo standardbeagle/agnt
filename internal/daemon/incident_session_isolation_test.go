@@ -95,9 +95,10 @@ func TestProcessAlertCallbackUsesImmutableOwnerAndDropsUnresolved(t *testing.T) 
 	}
 
 	match := func(processID string) *overlay.AlertMatch {
+		owner, _ := d.incidentProcessOwner.Load(processID)
 		return &overlay.AlertMatch{
 			Pattern: &overlay.AlertPattern{ID: "panic", Severity: overlay.AlertSeverityError, Category: "go", Description: "panic"},
-			Line:    "panic: callback isolation", ScriptID: processID,
+			Line:    "panic: callback isolation", ScriptID: processID, LifetimeToken: ownerAsIncidentResource(owner),
 		}
 	}
 	d.registerIncidentProcessOwner("owned-process", "owner")
@@ -122,16 +123,84 @@ func TestIncidentOwnerCanBeReboundOnlyAfterResourceTeardown(t *testing.T) {
 	d.registerIncidentProxyOwner("reused", "first")
 	d.registerIncidentProxyOwner("reused", "second")
 	owner, _ := d.incidentProxyOwner.Load("reused")
-	require.Equal(t, "first", owner, "owner must stay immutable during one resource lifetime")
+	require.Equal(t, "first", ownerAsIncidentResource(owner).sessionCode, "owner must stay immutable during one resource lifetime")
 
 	d.retireIncidentProxyOwner("reused")
 	d.registerIncidentProxyOwner("reused", "second")
 	owner, _ = d.incidentProxyOwner.Load("reused")
-	require.Equal(t, "second", owner, "a recreated resource must bind a fresh owner")
+	require.Equal(t, "second", ownerAsIncidentResource(owner).sessionCode, "a recreated resource must bind a fresh owner")
 
 	d.registerIncidentProcessOwner("reused", "first")
 	d.retireIncidentProcessOwner("reused")
 	d.registerIncidentProcessOwner("reused", "second")
 	owner, _ = d.incidentProcessOwner.Load("reused")
-	require.Equal(t, "second", owner)
+	require.Equal(t, "second", ownerAsIncidentResource(owner).sessionCode)
+}
+
+func TestProxyLoggerDelayedCallbackRejectsReusedIDLifetime(t *testing.T) {
+	d := &Daemon{incidentBus: incident.NewMPSCBus(nil), sessionRegistry: NewSessionRegistry(time.Minute), eventHub: NewEventHub()}
+	t.Cleanup(d.incidentBus.Close)
+	for _, code := range []string{"owner-a", "owner-b"} {
+		d.addIncidentSession(code)
+	}
+
+	d.registerIncidentProxyOwner("reused-proxy", "owner-a")
+	oldServer, err := proxy.NewProxyServer(proxy.ProxyConfig{ID: "reused-proxy", TargetURL: "http://127.0.0.1:1"})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = oldServer.Stop(context.Background()) })
+	d.wireProxyLogger(oldServer)
+	d.retireIncidentProxyOwner("reused-proxy")
+	d.registerIncidentProxyOwner("reused-proxy", "owner-b")
+
+	oldServer.Logger().LogDiagnostic(proxy.ProxyDiagnostic{Level: proxy.DiagnosticError, Category: "proxy", Event: "config_error", Message: "late old lifetime"})
+	time.Sleep(30 * time.Millisecond)
+	for _, code := range []string{"owner-a", "owner-b"} {
+		entries, _ := d.incidentBus.QuerySession(code, incident.QueryFilter{})
+		require.Empty(t, entries, "stale proxy lifetime delivered to %s", code)
+	}
+
+	newServer, err := proxy.NewProxyServer(proxy.ProxyConfig{ID: "reused-proxy", TargetURL: "http://127.0.0.1:1"})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = newServer.Stop(context.Background()) })
+	d.wireProxyLogger(newServer)
+	newServer.Logger().LogDiagnostic(proxy.ProxyDiagnostic{Level: proxy.DiagnosticError, Category: "proxy", Event: "config_error", Message: "current lifetime"})
+	require.Eventually(t, func() bool {
+		entries, _ := d.incidentBus.QuerySession("owner-b", incident.QueryFilter{})
+		return len(entries) == 1
+	}, time.Second, 10*time.Millisecond)
+}
+
+func TestProcessScannerDelayedCallbackRejectsReusedIDLifetime(t *testing.T) {
+	d := &Daemon{incidentBus: incident.NewMPSCBus(nil)}
+	t.Cleanup(d.incidentBus.Close)
+	for _, code := range []string{"owner-a", "owner-b"} {
+		d.addIncidentSession(code)
+	}
+	d.alertScanner = overlay.NewAlertScanner(overlay.AlertScannerConfig{
+		BatchWindow: 10 * time.Millisecond,
+		OnAlert: func(batch *overlay.AlertBatch) {
+			for _, match := range batch.Matches {
+				d.ingestProcessIncident(match)
+			}
+		},
+	})
+	t.Cleanup(d.alertScanner.Stop)
+
+	d.registerIncidentProcessOwner("reused-process", "owner-a")
+	owner, _ := d.incidentProcessOwner.Load("reused-process")
+	d.alertScanner.ProcessLineWithLifetime("panic: old lifetime", "reused-process", ownerAsIncidentResource(owner))
+	d.retireIncidentProcessOwner("reused-process")
+	d.registerIncidentProcessOwner("reused-process", "owner-b")
+	time.Sleep(50 * time.Millisecond)
+	for _, code := range []string{"owner-a", "owner-b"} {
+		entries, _ := d.incidentBus.QuerySession(code, incident.QueryFilter{})
+		require.Empty(t, entries, "stale process lifetime delivered to %s", code)
+	}
+
+	owner, _ = d.incidentProcessOwner.Load("reused-process")
+	d.alertScanner.ProcessLineWithLifetime("fatal: current lifetime", "reused-process", ownerAsIncidentResource(owner))
+	require.Eventually(t, func() bool {
+		entries, _ := d.incidentBus.QuerySession("owner-b", incident.QueryFilter{})
+		return len(entries) == 1
+	}, time.Second, 10*time.Millisecond)
 }

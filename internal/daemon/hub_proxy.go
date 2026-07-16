@@ -488,8 +488,8 @@ func (d *Daemon) hubHandleProxyRestart(ctx context.Context, conn *hubpkg.Connect
 		return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("failed to restart proxy: %v", err))
 	}
 
-	d.wireProxyLogger(newProxy)
 	d.registerIncidentProxyOwner(newProxy.ID, conn.SessionCode())
+	d.wireProxyLogger(newProxy)
 
 	// Persist the new proxy state on its preserved port.
 	if d.stateMgr != nil {

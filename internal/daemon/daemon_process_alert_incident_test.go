@@ -21,6 +21,7 @@ func TestIngestProcessAlert_ReachesIncidentInbox(t *testing.T) {
 	require.NotNil(t, d.incidentBus, "incident bus must exist")
 	d.addIncidentSession("sess-proc")
 	d.registerIncidentProcessOwner("proc-owned", "sess-proc")
+	owner, _ := d.incidentProcessOwner.Load("proc-owned")
 
 	m := &overlay.AlertMatch{
 		Pattern: &overlay.AlertPattern{
@@ -29,8 +30,9 @@ func TestIngestProcessAlert_ReachesIncidentInbox(t *testing.T) {
 			Category:    "go",
 			Description: "runtime panic",
 		},
-		Line:     "panic: runtime error: invalid memory address",
-		ScriptID: "proc-owned",
+		Line:          "panic: runtime error: invalid memory address",
+		ScriptID:      "proc-owned",
+		LifetimeToken: ownerAsIncidentResource(owner),
 	}
 
 	d.ingestProcessAlert(m, time.Now())
@@ -64,6 +66,7 @@ func TestIngestProcessAlert_BuildPatternMapsToBuildFail(t *testing.T) {
 	d := NewForTest(t, DaemonConfig{})
 	d.addIncidentSession("sess-build")
 	d.registerIncidentProcessOwner("build-owned", "sess-build")
+	owner, _ := d.incidentProcessOwner.Load("build-owned")
 
 	m := &overlay.AlertMatch{
 		Pattern: &overlay.AlertPattern{
@@ -72,8 +75,9 @@ func TestIngestProcessAlert_BuildPatternMapsToBuildFail(t *testing.T) {
 			Category:    "vite",
 			Description: "build failed",
 		},
-		Line:     "[vite] Internal server error: Failed to resolve import",
-		ScriptID: "build-owned",
+		Line:          "[vite] Internal server error: Failed to resolve import",
+		ScriptID:      "build-owned",
+		LifetimeToken: ownerAsIncidentResource(owner),
 	}
 
 	d.ingestProcessAlert(m, time.Now())

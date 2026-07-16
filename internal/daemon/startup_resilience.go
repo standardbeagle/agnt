@@ -363,6 +363,8 @@ func (d *Daemon) startScriptWithRetry(
 	if e, ok := d.scriptRegistry.Get(stripProcessPrefix(processID), projectPath); ok {
 		scriptEntry = e
 	}
+	owner, _ := d.incidentProcessOwner.Load(processID)
+	lifetimeOwner := ownerAsIncidentResource(owner)
 	outputCB := func(_ string, line string) {
 		if scriptEntry != nil {
 			scriptEntry.AppendOutput(line)
@@ -376,7 +378,7 @@ func (d *Daemon) startScriptWithRetry(
 				Timestamp: time.Now(),
 			},
 		})
-		d.alertScanner.ProcessLine(line, processID)
+		d.alertScanner.ProcessLineWithLifetime(line, processID, lifetimeOwner)
 	}
 
 	// Start the process

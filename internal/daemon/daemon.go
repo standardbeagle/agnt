@@ -236,8 +236,8 @@ type Daemon struct {
 	startupErrorStore    *StartupLogStore      // Ring buffer for startup events
 	eventHub             *EventHub             // Routes alerts to overlay/MCP/stream sinks
 	incidentBus          *incident.MPSCBus     // Incident pipeline event bus (L8+)
-	incidentProxyOwner   sync.Map              // proxy ID -> immutable owning session code
-	incidentProcessOwner sync.Map              // process ID -> immutable owning session code
+	incidentProxyOwner   sync.Map              // proxy ID -> *incidentResourceOwner for one lifetime
+	incidentProcessOwner sync.Map              // process ID -> *incidentResourceOwner for one lifetime
 	hookRing             *hookRingBuffer       // Claude Code hook event ring buffer (phase 1 scope)
 
 	// forwardingPaused records per-session "stop pushing to the agent" toggles
@@ -984,10 +984,15 @@ func (d *Daemon) ingestProcessAlert(m *overlay.AlertMatch, fallbackTS time.Time)
 	// the pipeline enabled, so this is safe to call unconditionally — it matches
 	// the dual-write pattern fireToIncidentBus already uses for proxy signals.
 	if d.incidentBus != nil {
-		ev := incident.FromAlertMatch(m, m.ScriptID)
-		if d.stampIncidentOwner(&ev, &d.incidentProcessOwner, m.ScriptID) {
-			d.incidentBus.Publish(ev)
-		}
+		d.ingestProcessIncident(m)
+	}
+}
+
+func (d *Daemon) ingestProcessIncident(m *overlay.AlertMatch) {
+	ev := incident.FromAlertMatch(m, m.ScriptID)
+	owner, _ := m.LifetimeToken.(*incidentResourceOwner)
+	if d.stampIncidentOwner(&ev, &d.incidentProcessOwner, m.ScriptID, owner) {
+		d.incidentBus.Publish(ev)
 	}
 }
 
@@ -1068,7 +1073,8 @@ func (d *Daemon) startSwallowSweeperOnce() {
 					continue
 				}
 				for _, ev := range d.swallowDetector.Sweep(time.Now()) {
-					if d.stampIncidentOwner(&ev, &d.incidentProxyOwner, ev.Ctx.ProxyID) {
+					owner, _ := d.incidentProxyOwner.Load(ev.Ctx.ProxyID)
+					if d.stampIncidentOwner(&ev, &d.incidentProxyOwner, ev.Ctx.ProxyID, ownerAsIncidentResource(owner)) {
 						d.incidentBus.Publish(ev)
 					}
 				}

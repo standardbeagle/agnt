@@ -126,6 +126,26 @@ func TestAlertScannerProcessLine(t *testing.T) {
 	assert.Len(t, received[0].Matches, 2)
 }
 
+func TestAlertScannerProcessLineCarriesLifetimeTokenThroughDeferredDelivery(t *testing.T) {
+	token := &struct{ generation int }{generation: 7}
+	delivered := make(chan *AlertMatch, 1)
+	scanner := NewAlertScanner(AlertScannerConfig{
+		BatchWindow: 5 * time.Millisecond,
+		OnAlert: func(batch *AlertBatch) {
+			delivered <- batch.Matches[0]
+		},
+	})
+	t.Cleanup(scanner.Stop)
+
+	scanner.ProcessLineWithLifetime("panic: delayed", "reused-process", token)
+	select {
+	case match := <-delivered:
+		require.Same(t, token, match.LifetimeToken)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for deferred alert delivery")
+	}
+}
+
 func TestAlertScannerDeduplication(t *testing.T) {
 	var received []*AlertBatch
 	var mu sync.Mutex

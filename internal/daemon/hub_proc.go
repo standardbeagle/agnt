@@ -502,13 +502,14 @@ func (d *Daemon) hubHandleProcRestart(ctx context.Context, conn *hubpkg.Connecti
 	// Remove the old process registration
 	d.hub.ProcessManager().RemoveByPath(processID, projectPath)
 	d.retireIncidentProcessOwner(processID)
+	d.registerIncidentProcessOwner(processID, conn.SessionCode())
 
 	// Start with EADDRINUSE recovery (pre-flight cleanup + startup monitoring)
 	newProc, startupErr := d.startScriptWithRetry(ctx, processID, projectPath, workingDir, command, args, env, []int{expectedPort}, false)
 	if startupErr != nil {
+		d.retireIncidentProcessOwner(processID)
 		return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("failed to restart: %v", startupErr))
 	}
-	d.registerIncidentProcessOwner(processID, conn.SessionCode())
 
 	// Re-register auto-restart if it was previously explicitly enabled
 	if wasAutoRestart && d.autoRestarter != nil {
@@ -734,14 +735,16 @@ func (d *Daemon) hubHandleProcRun(ctx context.Context, conn *hubpkg.Connection, 
 	// is implicitly nil — MCP ad-hoc processes have no linked proxy config;
 	// port resolution falls back to command-line / PORT env scanning in
 	// getExpectedPortsForScript.
+	processID := makeProcessID(projectPath, name)
+	d.registerIncidentProcessOwner(processID, conn.SessionCode())
 	result := d.StartProcessWithDeps(ctx, name, scriptCfg, projectPath, payload.DependsOn, depTimeout)
 	if result.Err != nil {
+		d.retireIncidentProcessOwner(processID)
 		debug.Warn("daemon", "PROC RUN %q failed: %v", name, result.Err)
 		return conn.WriteErr(hubproto.ErrInternal, result.Err.Error())
 	}
 
-	processID := result.ProcessID
-	d.registerIncidentProcessOwner(processID, conn.SessionCode())
+	processID = result.ProcessID
 
 	resp := map[string]interface{}{
 		"name":         name,
