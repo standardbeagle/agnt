@@ -38,12 +38,12 @@ type SessionKind string
 
 const (
 	// SessionKindClassic is the existing agnt-run-owns-the-PTY flavor.
-	// doCleanup's killSessionPGID/killSessionJobObject calls apply to it
+	// doCleanupExact's killSessionPGID/killSessionJobObject calls apply to it
 	// on client disconnect, same as always.
 	SessionKindClassic SessionKind = "classic"
 	// SessionKindSessionHost is a daemon-owned detachable PTY session
 	// (SESSION-HOST CREATE). Per spec §2.2 invariant 11, it must NOT be
-	// torn down by doCleanup on attach-stream disconnect — only an
+	// torn down by doCleanupExact on attach-stream disconnect — only an
 	// explicit SESSION-HOST KILL (or the PTY child exiting on its own, or
 	// daemon shutdown's orphan-pgid sweep) ends it. See
 	// .claude/rules/daemon-architecture.md § Session Containment.

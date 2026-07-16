@@ -397,6 +397,9 @@ type Daemon struct {
 	// Pending session cleanups — deferred to allow reconnection to cancel them.
 	// Key: session code, Value: *time.Timer (Stop cancels, fire runs cleanup).
 	pendingCleanups sync.Map
+	// sessionLifecycle serializes registration and retirement for the same
+	// session code. Different session codes use independent gates.
+	sessionLifecycle sessionLifecycleGates
 
 	// autostartManager coordinates at-most-one autostart run per project path.
 	// Session registration delegates autostart to GetOrCreate so multiple

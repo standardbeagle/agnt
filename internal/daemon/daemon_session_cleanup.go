@@ -23,6 +23,41 @@ const defaultCleanupGracePeriod = 5 * time.Second
 // process that might print a shutdown banner.
 const sessionPGIDGracePeriod = 2 * time.Second
 
+type sessionLifecycleGate struct {
+	mu   sync.Mutex
+	refs int
+}
+
+type sessionLifecycleGates struct {
+	mu    sync.Mutex
+	gates map[string]*sessionLifecycleGate
+}
+
+func (g *sessionLifecycleGates) lock(code string) func() {
+	g.mu.Lock()
+	if g.gates == nil {
+		g.gates = make(map[string]*sessionLifecycleGate)
+	}
+	gate := g.gates[code]
+	if gate == nil {
+		gate = &sessionLifecycleGate{}
+		g.gates[code] = gate
+	}
+	gate.refs++
+	g.mu.Unlock()
+
+	gate.mu.Lock()
+	return func() {
+		gate.mu.Unlock()
+		g.mu.Lock()
+		gate.refs--
+		if gate.refs == 0 && g.gates[code] == gate {
+			delete(g.gates, code)
+		}
+		g.mu.Unlock()
+	}
+}
+
 // killSessionPGID reaps every process that inherited the session pgid
 // from the PTY child. No-op on Windows (SessionPGID is always 0) or when
 // the client didn't report a pgid at registration time. Self-exclusion
@@ -131,7 +166,7 @@ func (d *Daemon) killSessionPGID(session *Session, expected *sessionPGIDIdentity
 //
 // This coexists with killSessionPGID at the dispatch level: on Unix
 // only pgid is active, on Windows only the job handle is active. Both
-// are called unconditionally from doCleanup because each no-ops on the
+// are called unconditionally from doCleanupExact because each no-ops on the
 // wrong platform.
 //
 // Handle lifetime caveat: Windows job handles are per-process. The
@@ -197,10 +232,20 @@ func (d *Daemon) drainPendingCleanups() {
 // Used for explicit UNREGISTER and direct calls. For connection drops, use
 // CleanupSessionResourcesDeferred instead.
 func (d *Daemon) CleanupSessionResources(sessionCode string) {
-	d.forwardMappings.Delete(sessionCode)
 	// Cancel any pending deferred cleanup first
 	d.cancelPendingCleanup(sessionCode)
-	d.doCleanup(sessionCode)
+	session, ok := d.sessionRegistry.Get(sessionCode)
+	if !ok {
+		unlock := d.sessionLifecycle.lock(sessionCode)
+		defer unlock()
+		// Re-check after acquiring the gate: a registration may have won the
+		// race. Never clear state installed for that new lifetime.
+		if _, registered := d.sessionRegistry.Get(sessionCode); !registered {
+			d.finalizeSessionState(sessionCode)
+		}
+		return
+	}
+	d.doCleanupExact(sessionCode, session, nil)
 }
 
 // CleanupSessionResourcesDeferred schedules resource cleanup with a grace period.
@@ -219,7 +264,7 @@ func (d *Daemon) CleanupSessionResourcesDeferred(sessionCode string) {
 	// A session-host session's PTY child is reaped only by SESSION-HOST KILL, by
 	// the child exiting, or by the startup orphan scan. A dropped connection is
 	// explicitly not one of those cases — surviving client disconnect is the
-	// entire point of session-host. doCleanup guards this too, but the
+	// entire point of session-host. doCleanupExact guards this too, but the
 	// no-project branch below reaps the pgid without going through it.
 	if session.Kind == SessionKindSessionHost {
 		debug.Log("daemon", "session %s is session-host: skipping deferred cleanup (explicit-kill-only)", sessionCode)
@@ -271,11 +316,7 @@ func (d *Daemon) CleanupSessionResourcesDeferred(sessionCode string) {
 				debug.Log("daemon", "skipping deferred cleanup for session %s — re-registered during grace period", sessionCode)
 				return
 			}
-			// Both calls no-op on the wrong platform. Mirrors the
-			// empty-projectPath branch in doCleanup.
-			d.killSessionPGID(s, expectedPGIDIdentity)
-			d.killSessionJobObject(s)
-			d.sessionRegistry.Unregister(sessionCode)
+			d.doCleanupExact(sessionCode, session, expectedPGIDIdentity)
 		})
 		d.pendingCleanups.Store(sessionCode, timer)
 		return
@@ -320,33 +361,34 @@ func (d *Daemon) CleanupSessionResourcesDeferred(sessionCode string) {
 			}
 		}
 
-		d.doCleanupWithPGIDIdentity(sessionCode, expectedPGIDIdentity)
+		d.doCleanupExact(sessionCode, session, expectedPGIDIdentity)
 	})
 	d.pendingCleanups.Store(sessionCode, timer)
 }
 
-// doCleanup performs the actual session resource cleanup.
-func (d *Daemon) doCleanup(sessionCode string) {
-	d.doCleanupWithPGIDIdentity(sessionCode, nil)
-}
+// doCleanupExact performs the actual session resource cleanup, but only when
+// the registry entry still holds the exact *Session identity captured when the
+// cleanup was scheduled. A reconnect swaps in a fresh identity under the same
+// lifecycle gate, so a stale cleanup finds a mismatch and retires nothing.
+func (d *Daemon) doCleanupExact(sessionCode string, expected *Session, expectedPGIDIdentity *sessionPGIDIdentity) {
+	unlock := d.sessionLifecycle.lock(sessionCode)
+	defer unlock()
 
-func (d *Daemon) doCleanupWithPGIDIdentity(sessionCode string, expectedPGIDIdentity *sessionPGIDIdentity) {
-	d.forwardMappings.Delete(sessionCode)
 	session, ok := d.sessionRegistry.Get(sessionCode)
-	if !ok {
+	if !ok || session != expected {
 		debug.Log("daemon", "session %s not found for cleanup", sessionCode)
 		return
 	}
 
 	// Session-host sessions are explicit-kill-only (spec §2.2 invariant 11,
 	// .claude/rules/daemon-architecture.md § Session Containment). Nothing
-	// should route a session-host session's code into doCleanup in the
+	// should route a session-host session's code into doCleanupExact in the
 	// first place (SESSION-HOST ATTACH never calls conn.SetSessionCode), but
-	// this guard is belt-and-braces: if it ever does, doCleanup must not
+	// this guard is belt-and-braces: if it ever does, doCleanupExact must not
 	// reap the PTY pgid or tear down project resources — only
 	// SESSION-HOST KILL (hub_sessionhost.go) may do that.
 	if session.Kind == SessionKindSessionHost {
-		debug.Log("daemon", "session %s is session-host: skipping doCleanup teardown (explicit-kill-only)", sessionCode)
+		debug.Log("daemon", "session %s is session-host: skipping doCleanupExact teardown (explicit-kill-only)", sessionCode)
 		return
 	}
 
@@ -358,7 +400,7 @@ func (d *Daemon) doCleanupWithPGIDIdentity(sessionCode string, expectedPGIDIdent
 		// invoking both is always safe.
 		d.killSessionPGID(session, expectedPGIDIdentity)
 		d.killSessionJobObject(session)
-		d.sessionRegistry.Unregister(sessionCode)
+		d.finalizeSessionRetirement(sessionCode, session)
 		return
 	}
 
@@ -567,15 +609,25 @@ func (d *Daemon) doCleanupWithPGIDIdentity(sessionCode string, expectedPGIDIdent
 		}
 	}
 
-	// Unregister the session
-	if err := d.sessionRegistry.Unregister(sessionCode); err != nil {
-		debug.Log("daemon", "error unregistering session %s: %v", sessionCode, err)
-	}
+	d.finalizeSessionRetirement(sessionCode, session)
 
+	debug.Log("daemon", "session %s cleanup complete", sessionCode)
+}
+
+// finalizeSessionRetirement clears every session-scoped surface while the
+// session lifecycle gate is held. Keeping this after exact registry retirement
+// prevents an old cleanup from deleting state installed by a reconnect.
+func (d *Daemon) finalizeSessionRetirement(sessionCode string, expected *Session) {
+	if !d.sessionRegistry.UnregisterExact(sessionCode, expected) {
+		return
+	}
+	d.finalizeSessionState(sessionCode)
+}
+
+func (d *Daemon) finalizeSessionState(sessionCode string) {
 	if d.incidentBus != nil {
 		d.incidentBus.RemoveSession(sessionCode)
 	}
+	d.forwardMappings.Delete(sessionCode)
 	d.forwardingPaused.Delete(sessionCode)
-
-	debug.Log("daemon", "session %s cleanup complete", sessionCode)
 }

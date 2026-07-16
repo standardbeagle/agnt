@@ -113,7 +113,7 @@ func (d *Daemon) hubHandleSessionHostCreate(conn *hubpkg.Connection, cmd *hubpro
 
 	// Also register into the shared SessionRegistry (spec §2.3) so project
 	// scoping helpers (hasOtherSessions, FindByDirectory) see it, tagged
-	// Kind=session-host so doCleanup's guard (daemon_session_cleanup.go)
+	// Kind=session-host so doCleanupExact's guard (daemon_session_cleanup.go)
 	// never reaps its pgid on a classic-session disconnect path.
 	_ = d.sessionRegistry.Register(&Session{
 		Code:        s.ID,

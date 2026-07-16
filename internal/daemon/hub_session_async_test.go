@@ -170,6 +170,60 @@ func TestSessionRegister_EmptyConfigReturnsDone(t *testing.T) {
 	assert.NotNil(t, result["autostart"])
 }
 
+// TestSessionRegister_ReconnectPreservesStartedAt verifies that a reconnect
+// (SESSION REGISTER for an already-registered code) inherits the original
+// session's StartedAt rather than stamping a fresh now. The fresh Session is
+// stamped StartedAt=now at parse time; if the reconnect kept that, the session
+// would masquerade as the newest one and sessionMoreRecent (FindByDirectory's
+// last-started-wins tiebreak) could flip overlay ownership within a project on
+// every reconnect.
+func TestSessionRegister_ReconnectPreservesStartedAt(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	sockPath := filepath.Join(tmpDir, "test.sock")
+
+	// No .agnt.kdl — autostart is a no-op so both registrations complete fast.
+	d := New(DaemonConfig{
+		SocketPath:   sockPath,
+		MaxClients:   10,
+		WriteTimeout: 5 * time.Second,
+	})
+	require.NoError(t, d.Start())
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		d.Stop(stopCtx)
+	}()
+
+	client := NewClient(WithSocketPath(sockPath))
+	require.NoError(t, client.Connect())
+	defer client.Close()
+
+	const code = "reconnect-startedat"
+	_, err := client.SessionRegister(code, "/tmp/overlay1.sock", tmpDir, "test", nil)
+	require.NoError(t, err)
+
+	original, ok := d.sessionRegistry.Get(code)
+	require.True(t, ok, "session must be registered after first register")
+	startedAt := original.StartedAt
+
+	// Ensure the fresh reconnect's parse-time now is strictly later, so the
+	// assertion proves inheritance rather than coincidental equality.
+	time.Sleep(5 * time.Millisecond)
+
+	// Reconnect: same code, different overlay path. The overlay change proves
+	// the reconnect merge ran (not merely a cancel-pending short-circuit).
+	_, err = client.SessionRegister(code, "/tmp/overlay2.sock", tmpDir, "test", nil)
+	require.NoError(t, err)
+
+	reconnected, ok := d.sessionRegistry.Get(code)
+	require.True(t, ok, "session must still be registered after reconnect")
+	assert.NotSame(t, original, reconnected, "reconnect must swap in a fresh Session identity")
+	assert.Equal(t, "/tmp/overlay2.sock", reconnected.OverlayPath, "reconnect must refresh the overlay path")
+	assert.True(t, reconnected.StartedAt.Equal(startedAt),
+		"reconnect must inherit the original StartedAt (%s), got %s", startedAt, reconnected.StartedAt)
+}
+
 // TestSessionRegister_ProgressSnapshotIncludesHistory verifies that a late
 // joiner calling SESSION REGISTER receives the progress history accumulated
 // so far.

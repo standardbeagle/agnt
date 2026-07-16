@@ -277,10 +277,10 @@ func (d *Daemon) Stop(ctx context.Context) error {
 	}
 
 	// Stop all deferred session-cleanup timers BEFORE tearing down the hub,
-	// ProcessManager, and proxy manager that their doCleanup callbacks touch.
+	// ProcessManager, and proxy manager that their doCleanupExact callbacks touch.
 	// These AfterFunc timers (grace window, default 5s) are not tracked by
 	// d.wg; a connection that dropped seconds before Stop() would otherwise
-	// fire its timer after the managers are gone, running doCleanup against a
+	// fire its timer after the managers are gone, running doCleanupExact against a
 	// stopped hub. The shutdown flag is already set, so any timer that fired in
 	// the gap between that and here also short-circuits (see AfterFunc guard).
 	d.drainPendingCleanups()

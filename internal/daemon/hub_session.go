@@ -191,6 +191,14 @@ func (d *Daemon) hubHandleSessionRegister(conn *hubpkg.Connection, cmd *hubproto
 		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
 	}
 
+	unlockLifecycle := d.sessionLifecycle.lock(session.Code)
+	lifecycleLocked := true
+	defer func() {
+		if lifecycleLocked {
+			unlockLifecycle()
+		}
+	}()
+
 	if err := d.sessionRegistry.Register(session); err != nil {
 		// Only an already-exists collision is a legitimate re-registration
 		// (reconnect). Any other Register failure (e.g. empty code) is a real
@@ -206,24 +214,41 @@ func (d *Daemon) hubHandleSessionRegister(conn *hubpkg.Connection, cmd *hubproto
 		// SEND / scheduled deliveries to a dead socket.
 		d.cancelPendingCleanup(session.Code)
 		if existing, ok := d.sessionRegistry.Get(session.Code); ok {
-			existing.mu.Lock()
-			existing.OverlayPath = session.OverlayPath
+			existing.mu.RLock()
+			if session.Kind == "" {
+				session.Kind = existing.Kind
+			}
+			if session.OverlayPath == "" {
+				session.OverlayPath = existing.OverlayPath
+			}
 			if session.ProjectPath != "" && session.ProjectPath != "." {
-				existing.ProjectPath = session.ProjectPath
+				// Keep the newly supplied project path.
+			} else {
+				session.ProjectPath = existing.ProjectPath
 			}
-			if session.Command != "" {
-				existing.Command = session.Command
-				existing.Args = session.Args
+			if session.Command == "" {
+				session.Command = existing.Command
+				session.Args = existing.Args
 			}
-			if session.SessionPGID > 0 {
-				existing.SessionPGID = session.SessionPGID
+			if session.SessionPGID <= 0 {
+				session.SessionPGID = existing.SessionPGID
 			}
-			if session.SessionJobHandle != 0 {
-				existing.SessionJobHandle = session.SessionJobHandle
+			if session.SessionJobHandle == 0 {
+				session.SessionJobHandle = existing.SessionJobHandle
 			}
-			existing.LastSeen = time.Now()
-			existing.Status = SessionStatusActive
-			existing.mu.Unlock()
+			// A reconnect is the same logical session, so it inherits the
+			// original lifetime's StartedAt unconditionally. The fresh Session
+			// was stamped StartedAt=now at parse time; leaving that in place
+			// would make a reconnect masquerade as the newest session and let
+			// sessionMoreRecent (FindByDirectory's last-started-wins tiebreak)
+			// flip overlay ownership within a project on every reconnect.
+			session.StartedAt = existing.StartedAt
+			existing.mu.RUnlock()
+			session.LastSeen = time.Now()
+			session.Status = SessionStatusActive
+			if !d.sessionRegistry.ReplaceExact(session.Code, existing, session) {
+				return conn.WriteErr(hubproto.ErrInternal, "session registration changed during reconnect")
+			}
 		}
 	}
 
@@ -234,6 +259,8 @@ func (d *Daemon) hubHandleSessionRegister(conn *hubpkg.Connection, cmd *hubproto
 	// Rebind overlay endpoints for existing proxies that may have been
 	// created before this session registered.
 	d.rebindProxyOverlays(session)
+	unlockLifecycle()
+	lifecycleLocked = false
 
 	// Reconcile script states against OS truth before deciding autostart.
 	// Detects processes that died between sessions and transitions them to
@@ -402,6 +429,10 @@ func (d *Daemon) hubHandleSessionUnregister(conn *hubpkg.Connection, cmd *hubpro
 	}
 
 	code := cmd.Args[0]
+	session, ok := d.sessionRegistry.Get(code)
+	if !ok {
+		return conn.WriteErr(hubproto.ErrNotFound, fmt.Sprintf("session %q not found", code))
+	}
 
 	// Cancel any pending deferred cleanup synchronously (just cancels a timer — safe).
 	d.cancelPendingCleanup(code)
@@ -409,7 +440,7 @@ func (d *Daemon) hubHandleSessionUnregister(conn *hubpkg.Connection, cmd *hubpro
 	// makes shutdown wait for an in-flight cleanup, and declines to start one
 	// once Stop has begun (Stop reaps those resources itself).
 	d.goTracked(func() {
-		d.doCleanup(code)
+		d.doCleanupExact(code, session, nil)
 	})
 
 	return conn.WriteOK(fmt.Sprintf("session %s unregistered", code))
