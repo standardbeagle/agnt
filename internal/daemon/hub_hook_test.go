@@ -997,7 +997,7 @@ func TestToastProjectProxies_EmptyProjectPathDropsToast(t *testing.T) {
 	wsURL := fmt.Sprintf("ws://%s/__devtool_metrics", ps.ListenAddr)
 	var wsConn *websocket.Conn
 	require.Eventually(t, func() bool {
-		conn, _, dialErr := websocket.DefaultDialer.Dial(wsURL, nil)
+		conn, _, dialErr := websocket.DefaultDialer.Dial(wsURL, http.Header{"Origin": {"http://" + ps.ListenAddr}})
 		if dialErr != nil {
 			return false
 		}

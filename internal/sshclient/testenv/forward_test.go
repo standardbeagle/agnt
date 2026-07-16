@@ -275,7 +275,7 @@ func TestDynamicForward_Lifecycle(t *testing.T) {
 	// WebSocket upgrade traffic flows through the same forwarded port
 	// (the reverse proxy's reserved /__devtool_metrics endpoint).
 	wsURL := url.URL{Scheme: "ws", Host: fmt.Sprintf("127.0.0.1:%d", mapping.LocalPort), Path: "/__devtool_metrics"}
-	ws, _, err := websocket.DefaultDialer.Dial(wsURL.String(), nil)
+	ws, _, err := websocket.DefaultDialer.Dial(wsURL.String(), http.Header{"Origin": {"http://" + wsURL.Host}})
 	if err != nil {
 		t.Fatalf("dialing WS through forward: %v", err)
 	}
