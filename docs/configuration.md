@@ -66,25 +66,18 @@ Kill uses `ProcessManager.KillProcessByPort()` with process-group SIGTERM → 3s
 
 ## Alert Push Channels (`internal/config/agnt.go`, `alerts.push` in `.agnt.kdl`)
 
-Controls which delivery channels push alerts to AI client:
+Controls which incident-pinger channels push alerts to the AI client. The
+incident inbox is always populated; disabling a channel suppresses only that
+interrupt path, not `get_incidents`/`get_errors` pull results.
 
 ```kdl
 alerts {
     push {
-        mcp-notifications true   // MCP session.Log() notifications
+        mcp-notifications true   // project-scoped incident digest stream
         pty-injection false      // PTY stdin injection
     }
     // Or use a preset:
     preset "claude-code"   // MCP only, no PTY injection
-
-    // Incident pipeline (opt-in, Phase A):
-    incident-pipeline false  // true = route through internal/incident/ instead of AlertHub
-    blob-budget 16777216     // per-session BlobStore cap in bytes (default 16MB)
-    ping {
-        mcp-notifications true   // Pinger → MCP session.Log() pings
-        pty-injection false      // Pinger → PTY stdin injection
-        channel true             // Pinger → channel push (requires channel.enabled true)
-    }
 }
 ```
 
@@ -94,14 +87,11 @@ alerts {
 | `universal` | enabled | enabled |
 | (none) | enabled | enabled |
 
-**Incident pipeline keys** (only active when `incident-pipeline true`):
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `incident-pipeline` | bool | `false` | Route alerts through incident pipeline |
-| `blob-budget` | int | `16777216` | Per-session BlobStore cap (bytes) |
-| `ping.mcp-notifications` | bool | `true` | Pinger → MCP notifications |
-| `ping.pty-injection` | bool | `false` | Pinger → PTY stdin |
-| `ping.channel` | bool | `true` | Pinger → channel push |
+`claude-code` emits one project-scoped incident digest through STREAM-EVENTS
+(consumed by the MCP/agent adapter) and does not type into PTY stdin.
+`universal` emits that digest once and also injects one compact PTY line. The
+legacy `incident-pipeline` key is accepted for compatibility but ignored because
+the incident pipeline is always active.
 
 ## Auth Breakout (internal/config/agnt.go, auth-breakout in .agnt.kdl; runtime: internal/proxy/authbreakout.go)
 

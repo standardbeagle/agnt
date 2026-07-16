@@ -807,8 +807,8 @@ func (c *AutoForwardConfig) ShouldForwardSource(source string) bool {
 // to the AI client. When no push config is present, all channels are enabled
 // (universal behavior).
 type PushConfig struct {
-	// MCPNotifications controls delivery via MCP session.Log().
-	// Works natively in Claude Desktop; may be dropped by other clients.
+	// MCPNotifications controls the project-scoped incident digest stream
+	// consumed by MCP/agent adapters.
 	// Defaults to true when unset.
 	MCPNotifications *bool `kdl:"mcp-notifications"`
 

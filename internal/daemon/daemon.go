@@ -370,6 +370,13 @@ type Daemon struct {
 	// and correct even against a concurrent Swap+Stop.
 	holdBuffer atomic.Pointer[HoldBuffer]
 
+	// alertPushConfig is the effective alerts.push policy. Pinger callbacks
+	// consult it at delivery time so ApplyAlertsConfig also affects sessions
+	// whose incident pipeline was registered earlier.
+	alertPushConfig atomic.Pointer[config.PushConfig]
+	// incidentPTYInject is a test seam; nil uses sendMessageToOverlay.
+	incidentPTYInject func(socketPath, line string) error
+
 	// Update checker
 	updateChecker *updater.UpdateChecker
 
@@ -1022,8 +1029,16 @@ func (d *Daemon) ApplyAlertsConfig(cfg *config.AlertsConfig) {
 	}
 
 	var holdCfg *config.OutageHoldConfig
+	var pushCfg *config.PushConfig
 	if cfg != nil {
 		holdCfg = cfg.OutageHold
+		pushCfg = cfg.GetPushConfig()
+	}
+	if pushCfg == nil {
+		d.alertPushConfig.Store(nil)
+	} else {
+		mcp, pty := pushCfg.MCPNotificationsEnabled(), pushCfg.PTYInjectionEnabled()
+		d.alertPushConfig.Store(&config.PushConfig{MCPNotifications: &mcp, PTYInjection: &pty})
 	}
 
 	// Swap atomically, then stop the old buffer. Concurrent readers either
