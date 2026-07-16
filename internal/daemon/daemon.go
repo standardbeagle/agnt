@@ -370,10 +370,10 @@ type Daemon struct {
 	// and correct even against a concurrent Swap+Stop.
 	holdBuffer atomic.Pointer[HoldBuffer]
 
-	// alertPushConfig is the effective alerts.push policy. Pinger callbacks
-	// consult it at delivery time so ApplyAlertsConfig also affects sessions
-	// whose incident pipeline was registered earlier.
-	alertPushConfig atomic.Pointer[config.PushConfig]
+	// alertPushConfigs stores effective alerts.push policy by normalized project
+	// path. Pinger callbacks resolve their session's current project at delivery
+	// time, preventing one project's latest config from leaking into another.
+	alertPushConfigs sync.Map // normalized project path -> *config.PushConfig
 	// incidentPTYInject is a test seam; nil uses sendMessageToOverlay.
 	incidentPTYInject func(socketPath, line string) error
 
@@ -1023,7 +1023,7 @@ func (d *Daemon) IncidentBus() *incident.MPSCBus {
 // hold window and cascade patterns, and the HealthTracker's transport
 // outage thresholds. Safe to call multiple times — the latest values win.
 // A nil cfg restores defaults.
-func (d *Daemon) ApplyAlertsConfig(cfg *config.AlertsConfig) {
+func (d *Daemon) ApplyAlertsConfig(projectPath string, cfg *config.AlertsConfig) {
 	if d == nil {
 		return
 	}
@@ -1034,11 +1034,12 @@ func (d *Daemon) ApplyAlertsConfig(cfg *config.AlertsConfig) {
 		holdCfg = cfg.OutageHold
 		pushCfg = cfg.GetPushConfig()
 	}
-	if pushCfg == nil {
-		d.alertPushConfig.Store(nil)
-	} else {
+	projectPath = normalizePath(projectPath)
+	if projectPath != "" && pushCfg == nil {
+		d.alertPushConfigs.Delete(projectPath)
+	} else if projectPath != "" {
 		mcp, pty := pushCfg.MCPNotificationsEnabled(), pushCfg.PTYInjectionEnabled()
-		d.alertPushConfig.Store(&config.PushConfig{MCPNotifications: &mcp, PTYInjection: &pty})
+		d.alertPushConfigs.Store(projectPath, &config.PushConfig{MCPNotifications: &mcp, PTYInjection: &pty})
 	}
 
 	// Swap atomically, then stop the old buffer. Concurrent readers either
@@ -1066,6 +1067,16 @@ func (d *Daemon) ApplyAlertsConfig(cfg *config.AlertsConfig) {
 			RecoveryDebounce: holdCfg.GetRecoveryDebounce(),
 		})
 	}
+}
+
+func (d *Daemon) alertPushConfigForProject(projectPath string) *config.PushConfig {
+	if d == nil {
+		return nil
+	}
+	if push, ok := d.alertPushConfigs.Load(normalizePath(projectPath)); ok {
+		return push.(*config.PushConfig)
+	}
+	return nil // nil is the documented universal default
 }
 
 // startSwallowSweeperOnce launches the single sweeper goroutine that drains the

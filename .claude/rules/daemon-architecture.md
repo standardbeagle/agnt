@@ -196,7 +196,7 @@ Agent supplies explicit `proxy_id` it already holds; these interactive browser-d
 
 ## Incident Pipeline
 
-Incident pipeline (`internal/incident/`) is opt-in alert path (Phase A, gated by `alerts.incident-pipeline true`) replacing direct `AlertHub` sink dispatch with normalised, deduped, priority-ordered inbox.
+Incident pipeline (`internal/incident/`) is the always-active agent alert path, providing a normalised, deduped, priority-ordered inbox. `alerts.push` selects delivery sinks; the deprecated `alerts.incident-pipeline` key is parse-only compatibility.
 
 ### Source of Truth
 
@@ -209,7 +209,7 @@ Incident pipeline (`internal/incident/`) is opt-in alert path (Phase A, gated by
 
 ### Numbered Contracts
 
-1. **Cross-session isolation.** Each session connecting with pipeline enabled gets own `sessionPipeline` instance. Events from session A never appear in session B's inbox, even for same project.
+1. **Cross-session isolation.** Each connected session gets its own `sessionPipeline` instance. Events from session A never appear in session B's inbox, even for same project.
 
 2. **Drop-newest on bus overflow.** MPSC bus drops incoming event (not oldest) when 4096-slot channel full. Keeps latency bounded at cost of losing most recent event under extreme load. Overflow count surfaced via `bus.OverflowCount()`.
 
@@ -223,7 +223,7 @@ Incident pipeline (`internal/incident/`) is opt-in alert path (Phase A, gated by
 
 7. **Pinger never blocks delivery.** Pinger sends compact pings to MCP, channel, and PTY sinks using non-blocking channel sends. Slow consumer does not delay other consumers or block Inbox drain loop.
 
-8. **Migration flag all-or-nothing per session.** If `alerts.incident-pipeline` is `false` when session connects, that session uses legacy `AlertHub` path for entire lifetime, even if config file changed mid-session. Pipeline path and legacy path mutually exclusive for given session.
+8. **Push policy is project-isolated and live.** Effective `alerts.push` policy is keyed by normalized project path and resolved from the session on every ping. Updating one project never changes another project's sinks and never replaces its inbox pipeline.
 
 ### File Ownership
 

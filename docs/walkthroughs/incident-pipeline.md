@@ -2,8 +2,8 @@
 
 ## What it is
 
-An opt-in alert path that replaces direct alert-sink dispatch with a
-normalized, deduped, priority-ordered **incident inbox**. Signal sources
+The always-active agent alert path: a normalized, deduped, priority-ordered
+**incident inbox**. Signal sources
 (browser JS errors, HTTP 4xx/5xx, transport errors, proxy diagnostics, process
 alerts, process crashes, build failures, port conflicts) flow through a bus,
 are deduplicated and coalesced, land in a four-band inbox, and are pulled by the
@@ -14,11 +14,11 @@ remediation hints.
 Signal sources → Bus → Dedup/Coalesce/FlowControl → Inbox → Pinger → MCP/channel/PTY
 ```
 
-Enable it per project in `.agnt.kdl`:
+Optionally select its push behavior per project in `.agnt.kdl`:
 
 ```kdl
 alerts {
-    incident-pipeline true
+    preset "claude-code" // digest only; use "universal" for digest + PTY
 }
 ```
 
@@ -60,21 +60,15 @@ a pointer to the next tool for each.
 
 ## Step by step
 
-### 1. Enable the pipeline
+### 1. Choose push channels (optional)
 
-Add to `.agnt.kdl` (config is reconciled live, but the flag is all-or-nothing
-*per session* — a session that connected with it `false` uses the legacy path
-for its whole lifetime, so start a fresh `agnt run` / session after flipping it):
+The inbox needs no enable flag. Add a preset only when you want to change the
+default universal push behavior; updates are live and isolated by normalized
+project path:
 
 ```kdl
 alerts {
-    incident-pipeline true
-    blob-budget 16777216   // per-session BlobStore cap in bytes (default 16MB)
-    ping {
-        mcp-notifications true
-        pty-injection false
-        channel true
-    }
+    preset "claude-code"
 }
 ```
 
@@ -166,14 +160,12 @@ Returns the `GetIncidentsOutput` JSON: `incidents[]` (with `fingerprint`,
 
 ## Gotchas
 
-- **`pipeline_enabled:false` + zero incidents ≠ clean inbox.** It means the
-  pipeline is off for this session. The tool distinguishes the two states
-  explicitly (compact mode prints "incident pipeline not enabled for this
-  session") — do not read an empty result as "all healthy" without checking the
-  flag.
-- **The flag is all-or-nothing per session.** Flipping `incident-pipeline` mid
-  session does nothing for that session; it uses whichever path it connected
-  with for its entire lifetime. Start a new session to switch.
+- **`pipeline_enabled:false` + zero incidents ≠ clean inbox.** It means no
+  incident session pipeline is registered (for example during teardown), not
+  that a project config disabled it. Do not read that state as "all healthy".
+- **Push policy does not gate recording.** Changing `alerts.push` takes effect
+  live for that normalized project path and changes only interrupts; unread
+  incidents remain available through `get_incidents`.
 - **Bands wrap; the inbox is a cache, not a log.** Each band holds at most 100
   entries and evicts oldest-first. An incident present in the inbox does not mean
   the underlying event is still active — re-fetch from the source subsystem to

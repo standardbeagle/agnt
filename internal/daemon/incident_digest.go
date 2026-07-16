@@ -58,10 +58,6 @@ func (d *Daemon) addIncidentSession(sessionCode string) {
 // pipeline (which would discard unread incidents).
 func (d *Daemon) incidentSinkCallbacks(sessionCode string) (incident.MCPNotifyFn, incident.ChannelNotifyFn, incident.PTYInjectFn) {
 	mcpNotify := func(level string, payload incident.PingPayload) error {
-		push := d.alertPushConfig.Load()
-		if !push.MCPNotificationsEnabled() {
-			return nil
-		}
 		// Pause = drop the push, not the record. The incident already landed in
 		// this session's inbox upstream of the pinger, so get_incidents/get_errors
 		// stay pullable; we only suppress the interrupt into the agent.
@@ -83,16 +79,18 @@ func (d *Daemon) incidentSinkCallbacks(sessionCode string) (incident.MCPNotifyFn
 		if !ok || s.ProjectPath == "" {
 			return nil
 		}
+		if !d.alertPushConfigForProject(s.ProjectPath).MCPNotificationsEnabled() {
+			return nil
+		}
 		d.broadcastIncidentDigest(level, s.ProjectPath, payload)
 		return nil
 	}
 	ptyInject := func(line string) error {
-		push := d.alertPushConfig.Load()
-		if !push.PTYInjectionEnabled() || d.IsForwardingPaused(sessionCode) {
-			return nil
-		}
 		s, ok := d.sessionRegistry.Get(sessionCode)
 		if !ok || s.OverlayPath == "" {
+			return nil
+		}
+		if !d.alertPushConfigForProject(s.ProjectPath).PTYInjectionEnabled() || d.IsForwardingPaused(sessionCode) {
 			return nil
 		}
 		if d.incidentPTYInject != nil {
