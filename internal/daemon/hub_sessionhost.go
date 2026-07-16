@@ -118,11 +118,16 @@ func (d *Daemon) hubHandleSessionHostCreate(conn *hubpkg.Connection, cmd *hubpro
 	//
 	// Route the Register through the per-code session lifecycle gate so registry
 	// mutations on this id are serialized with any classic SESSION REGISTER /
-	// reconnect ReplaceExact — the gate's job is to serialize lifecycle mutations,
-	// which is conservatively correct even though a session-host id (monotonic
-	// counter) can never actually collide with a classic code. Scope the gate to
-	// the registry mutation alone: sessionhost.Create above already spawned the
-	// PTY and touches no gate, so there is no re-entrancy on this code's gate.
+	// reconnect ReplaceExact — the gate's job is to serialize lifecycle mutations.
+	// A collision here IS reachable: session-host ids ("<cfg.Name>-<idCounter>")
+	// and classic codes ("<command-base>-<seq>") come from two independent
+	// counters over a user-supplied name, so `--name claude` can produce
+	// `claude-3` on both sides. The structural defense is on the classic side:
+	// hubHandleSessionRegister's cross-kind guard (hub_session.go) refuses to
+	// re-register against a session-host owned code, so a classic REGISTER can
+	// never ReplaceExact this entry. Scope the gate to the registry mutation
+	// alone: sessionhost.Create above already spawned the PTY and touches no
+	// gate, so there is no re-entrancy on this code's gate.
 	func() {
 		unlock := d.sessionLifecycle.lock(s.ID)
 		defer unlock()
@@ -141,15 +146,23 @@ func (d *Daemon) hubHandleSessionHostCreate(conn *hubpkg.Connection, cmd *hubpro
 			// The session-host PTY is already spawned and tracked in
 			// d.sessionHosts, so CREATE still succeeds — but a failed shared-
 			// registry Register leaves it invisible to project-scoping helpers
-			// (SESSION LIST/FindByDirectory/hasOtherSessions). Session-host IDs
-			// come from a monotonic counter so a collision should be impossible;
-			// if one ever happens it is a real anomaly, not a benign no-op, and
-			// silently swallowing it would violate the Silent Failure Prohibition
-			// (.claude/rules/daemon-architecture.md). Surface it on the agent-
-			// visible startup log (queryable via get_errors), not debug-only.
+			// (SESSION LIST/FindByDirectory/hasOtherSessions). A code collision on
+			// this id is reachable (session-host and classic ids are independent
+			// counters over a user-supplied name), so a Register failure is a real
+			// anomaly, not a benign no-op, and silently swallowing it would violate
+			// the Silent Failure Prohibition (.claude/rules/daemon-architecture.md).
+			// Surface it on the agent-visible startup log (queryable via
+			// get_errors). Scope it to the project so the owning session's default
+			// (project-scoped) query sees it; a daemon-wide (empty-ProcessID) entry
+			// would be visible only to a global query. Fall back to the daemon-wide
+			// log only when there is no project path to scope by.
 			msg := fmt.Sprintf("session-host %s live but not project-scoped: shared-registry Register failed: %v", s.ID, err)
 			debug.Warn("daemon", "%s", msg)
-			d.daemonStartupLog("warning", "session_host_register_failed", msg)
+			if s.ProjectPath != "" {
+				d.startupLog(s.ProjectPath).Warn(s.Name, "session_host_register_failed", msg)
+			} else {
+				d.daemonStartupLog("warning", "session_host_register_failed", msg)
+			}
 		}
 	}()
 
@@ -240,10 +253,13 @@ func (d *Daemon) hubHandleSessionHostKill(conn *hubpkg.Connection, cmd *hubproto
 	// the exact-identity form to match the classic retirement path
 	// (finalizeSessionRetirement). The gate serializes lifecycle mutations on
 	// this code, and the exact form guards the Get-to-delete window so a change
-	// that lands between the Get and the delete cannot be clobbered. What makes a
-	// cross-kind collision impossible here is neither of those: session-host ids
-	// come from a global monotonic counter, so no classic REGISTER can ever hold
-	// this id. The pgid kill above stays deliberately OUTSIDE the gate: it mutates
+	// that lands between the Get and the delete cannot be clobbered. A cross-kind
+	// collision on this id is reachable (the ids come from two independent
+	// counters over a user-supplied name), but a classic REGISTER cannot hold or
+	// replace this entry because hubHandleSessionRegister's cross-kind guard
+	// (hub_session.go) rejects re-registering against a session-host owned code —
+	// so UnregisterExact here only ever removes our own entry. The pgid kill above
+	// stays deliberately OUTSIDE the gate: it mutates
 	// no registry, and holding the gate across a SIGTERM→SIGKILL escalation (up to
 	// the grace period) would needlessly block a same-code reconnect. Only the
 	// registry mutation is gated — the narrowest possible scope, and no gated call
