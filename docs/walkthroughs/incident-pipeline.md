@@ -181,8 +181,8 @@ Returns the `GetIncidentsOutput` JSON: `incidents[]` (with `fingerprint`,
 - **Dedup is per-session, not per-project.** The same fingerprint in two
   sessions produces two incidents. This is deliberate — cross-session dedup
   would violate the isolation contract.
-- **`get_incidents` supersedes `get_errors`.** When the pipeline is enabled,
-  `get_incidents` is authoritative and `get_errors` becomes a shim. Prefer
+- **`get_incidents` supersedes `get_errors`.** The always-active pipeline makes
+  `get_incidents` authoritative and `get_errors` a compatibility shim. Prefer
   `get_incidents`.
 - **The coalesce window is set at construction.** Default 200ms, not
   reconfigurable at runtime — a daemon restart is required to change it.

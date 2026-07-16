@@ -35,9 +35,9 @@ type GetIncidentsOutput struct {
 	NextTools  []toolHint     `json:"next_tools,omitempty"`
 	NextSkills []string       `json:"next_skills,omitempty"`
 	Truncated  bool           `json:"truncated"`
-	// PipelineEnabled reports whether the caller's session actually has the
-	// incident pipeline wired. False + zero incidents means "pipeline off",
-	// not "clean inbox" — distinct states the agent must not conflate.
+	// PipelineEnabled reports whether the caller currently has a registered
+	// session inbox. False means the session pipeline is unavailable (for
+	// example during teardown), never that project config disabled recording.
 	PipelineEnabled bool `json:"pipeline_enabled"`
 }
 
@@ -239,7 +239,7 @@ func formatIncidentsCompact(out GetIncidentsOutput) string {
 
 	if len(out.Incidents) == 0 {
 		if !out.PipelineEnabled {
-			sb.WriteString("\n(incident pipeline not enabled for this session — no inbox to report)\n")
+			sb.WriteString("\n(incident session inbox unavailable — no inbox to report)\n")
 		} else {
 			sb.WriteString("\n(no incidents)\n")
 		}

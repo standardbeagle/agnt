@@ -77,12 +77,13 @@ func (dt *DaemonTools) makeGetErrorsHandler() func(context.Context, *mcp.CallToo
 			return errorResult(err.Error()), GetErrorsOutput{}, nil
 		}
 
-		// Shim over the incident pipeline when it is enabled for this session:
+		// Shim over the always-active incident pipeline when this session inbox
+		// is currently registered:
 		// project the same inbox get_incidents reads (fingerprint IDs) instead
 		// of the legacy alert/proxy stores, so the two tools present one
 		// coherent, non-duplicated view. Cross-project (global) requests and
-		// pipeline-off sessions fall through to the legacy collectors, which is
-		// the only path that can serve them.
+		// sessions without a registered inbox fall through to legacy collectors,
+		// which is the only path that can serve those compatibility cases.
 		effectiveGlobal, err := resolveEffectiveGlobal(input.Global, func() (bool, error) {
 			return dt.client.ResolveQueryScope(sessionScopeFilter(dt, nil))
 		})

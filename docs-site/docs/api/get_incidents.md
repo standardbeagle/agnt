@@ -4,9 +4,9 @@ sidebar_position: 7
 
 # get_incidents
 
-Cursor-based incident inbox pull. When the incident pipeline is enabled (`alerts.incident-pipeline true` in `.agnt.kdl`), this is the authoritative tool for fetching errors and warnings from every signal source — browser JS, HTTP 4xx/5xx, process crashes, proxy diagnostics — normalized, deduplicated, and returned in priority order with remediation hints and suggested next tools.
+Cursor-based pull from the always-active incident inbox. This is the authoritative tool for fetching errors and warnings from every signal source — browser JS, HTTP 4xx/5xx, process crashes, proxy diagnostics — normalized, deduplicated, and returned in priority order with remediation hints and suggested next tools.
 
-When the incident pipeline is **off** (the default), use [get_errors](/api/get_errors) instead.
+`alerts.push` selects live, project-isolated interrupt channels; it does not gate inbox recording. The legacy `alerts.incident-pipeline` key is accepted but ignored.
 
 ## Synopsis
 
@@ -73,15 +73,15 @@ Add `mark_read: true` to advance the cursor server-side and mark the returned in
 
 The incident inbox is **hard-isolated per session** — incidents from one session never appear in another, even for the same project. For this reason `get_incidents` does not take the cross-project `global` flag that the other gated tools expose.
 
-## Enabling the Pipeline
+## Push Delivery (Optional)
 
 ```kdl
 alerts {
-    incident-pipeline true
+    preset "claude-code" // digest only; "universal" adds PTY injection
 }
 ```
 
-See [Configuration](/agnt-kdl) for the full set of incident-pipeline keys (`blob-budget`, ping channels).
+See [Configuration](/agnt-kdl) for `alerts.push` and preset details.
 
 ## See Also
 

@@ -654,12 +654,13 @@ This provides a high-level view of active pages and their resources.`,
 		Name: "get_errors",
 		Description: `Get all current errors across processes and proxies.
 
-Note: when the incident pipeline is enabled (alerts.incident-pipeline), this
+Note: the incident pipeline is always active. For session-scoped queries this
 tool is a shim — it reads the same session incident inbox as get_incidents
 (shared fingerprint IDs, no double-reporting) and returns the compact error
-view. Prefer get_incidents there for cursor-based pulls, remediation hints, and
-next-tool suggestions. With the pipeline off (or global:true for cross-project),
-it falls back to the legacy alert/proxy/startup stores.
+view. Prefer get_incidents for cursor-based pulls, remediation hints, and
+next-tool suggestions. Daemon-less mode and global:true cross-project queries
+retain the legacy alert/proxy/startup aggregate view. alerts.push changes only
+live project-isolated interrupts, never inbox recording.
 
 Collects errors from: process output (compile errors, panics, exceptions),
 autostart failures (script start failures, port conflicts, proxy errors),
