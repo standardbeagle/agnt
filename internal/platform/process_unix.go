@@ -150,21 +150,45 @@ func readProcInfo(pid int) *ProcInfo {
 
 // killPID sends SIGTERM, waits, then SIGKILL.
 func killPID(pid int, gracefulTimeout int) error {
-	// Send SIGTERM to process group
-	_ = syscall.Kill(-pid, syscall.SIGTERM)
-	_ = syscall.Kill(pid, syscall.SIGTERM)
+	return killPIDWith(pid, gracefulTimeout, ProcessBirthID, syscall.Getpgid, syscall.Kill)
+}
+
+func killPIDWith(pid int, gracefulTimeout int, birthFn func(int) (string, bool),
+	getpgidFn func(int) (int, error), killFn func(int, syscall.Signal) error,
+) error {
+	if pid <= 1 {
+		return fmt.Errorf("invalid pid %d", pid)
+	}
+	birth, haveBirth := birthFn(pid)
+	pgid, pgidErr := getpgidFn(pid)
+	groupLeader := pgidErr == nil && pgid == pid
+	if groupLeader {
+		_ = killFn(-pid, syscall.SIGTERM)
+	}
+	_ = killFn(pid, syscall.SIGTERM)
 
 	deadline := time.Now().Add(time.Duration(gracefulTimeout) * time.Second)
 	for time.Now().Before(deadline) {
-		if err := syscall.Kill(pid, 0); err != nil {
+		if err := killFn(pid, 0); err != nil {
 			return nil // process gone
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	// Escalate to SIGKILL
-	_ = syscall.Kill(-pid, syscall.SIGKILL)
-	_ = syscall.Kill(pid, syscall.SIGKILL)
+	// PID reuse can occur during the grace delay. Fail closed unless the same
+	// kernel birth identity is still present immediately before escalation.
+	currentBirth, currentOK := birthFn(pid)
+	if !haveBirth || !currentOK || currentBirth != birth {
+		return fmt.Errorf("pid %d identity changed before SIGKILL escalation", pid)
+	}
+	if groupLeader {
+		// Re-verify leadership too: never turn an arbitrary non-leader PID into
+		// a negative-PID process-group signal target.
+		if currentPGID, err := getpgidFn(pid); err == nil && currentPGID == pid {
+			_ = killFn(-pid, syscall.SIGKILL)
+		}
+	}
+	_ = killFn(pid, syscall.SIGKILL)
 	return nil
 }
 

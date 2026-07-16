@@ -36,10 +36,10 @@ func setProcAttr(cmd *exec.Cmd) {
 // and the persistent tracker are consulted here to catch setsid-escaped
 // grandchildren that have since been reparented to init.
 func (pm *ProcessManager) signalProcessGroup(pid int, sig syscall.Signal) error {
-	// Signal the root process group. pgid == pid for Setpgid=true children.
-	// This reaches every process still in the root's group — including the
-	// root itself, its foreground children, and any same-group grandchildren.
-	_ = syscall.Kill(-pid, sig)
+	// UPSTREAM: never assume an arbitrary pid is a group leader. Verify both
+	// leadership and stable identity immediately before the negative-PID signal.
+	signalVerifiedProcessGroup(pid, sig, processIdentity, syscall.Getpgid, syscall.Kill)
+	_ = syscall.Kill(pid, sig)
 
 	// Build the descendant set from every available source:
 	//   1. live PPID walk (best-effort, may be empty if root is already gone)
@@ -54,10 +54,15 @@ func (pm *ProcessManager) signalProcessGroup(pid int, sig syscall.Signal) error 
 			return
 		}
 		seen[childPID] = struct{}{}
+		identity := processIdentity(childPID)
+		if identity == "" {
+			return
+		}
 		_ = syscall.Kill(childPID, sig)
 		// Setsid-escaped descendants have their own pgid — signal that
 		// group so any grandchildren of the escapee die too.
-		if childPgid, err := syscall.Getpgid(childPID); err == nil && childPgid > 0 && childPgid != pid {
+		if childPgid, err := syscall.Getpgid(childPID); err == nil && childPgid == childPID &&
+			processIdentity(childPID) == identity {
 			_ = syscall.Kill(-childPgid, sig)
 		}
 	}
@@ -81,6 +86,24 @@ func (pm *ProcessManager) signalProcessGroup(pid int, sig syscall.Signal) error 
 	}
 
 	return nil
+}
+
+// signalVerifiedProcessGroup emits a negative-PID signal only for a confirmed
+// stable group leader. UPSTREAM: arbitrary descendant PIDs are not PGIDs, and
+// identity must be rechecked across the Getpgid syscall reuse window.
+// UPSTREAM FOLLOWUP: carry this fix into go-cli-server before the next vendor refresh.
+func signalVerifiedProcessGroup(pid int, sig syscall.Signal, identityFn func(int) string,
+	getpgidFn func(int) (int, error), killFn func(int, syscall.Signal) error,
+) {
+	identity := identityFn(pid)
+	if identity == "" {
+		return
+	}
+	pgid, err := getpgidFn(pid)
+	if err != nil || pgid != pid || identityFn(pid) != identity {
+		return
+	}
+	_ = killFn(-pid, sig)
 }
 
 // cleanupProcessTree kills all descendants of a process, including those that

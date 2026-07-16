@@ -27,10 +27,6 @@ import (
 // killSelfPID is the caller's own PID. It is EXCLUDED from the kill so the
 // daemon does not signal itself when it happens to share the pgid (it
 // shouldn't, but defensive). Pass 0 to disable self-exclusion.
-//
-// Signal delivery is best-effort: EPERM and ESRCH during delivery are normal
-// (the group may drain mid-loop) and are not reported. The returned error is
-// currently always nil — no verification step is performed after signalling.
 func KillSessionPGID(sessionPGID int, killSelfPID int, gracefulTimeout time.Duration, aggressive bool) error {
 	if sessionPGID <= 1 {
 		return fmt.Errorf("invalid session pgid %d", sessionPGID)
@@ -38,23 +34,35 @@ func KillSessionPGID(sessionPGID int, killSelfPID int, gracefulTimeout time.Dura
 
 	// In aggressive mode, skip the SIGTERM + grace window.
 	if aggressive || gracefulTimeout <= 0 {
-		return killgOnce(sessionPGID, killSelfPID, syscall.SIGKILL)
+		if err := killgOnce(sessionPGID, killSelfPID, syscall.SIGKILL); err != nil {
+			return err
+		}
+		return waitForPGIDDrain(sessionPGID, killSelfPID, 250*time.Millisecond)
 	}
 
 	// Graceful: SIGTERM first, grace window, SIGKILL on any survivors.
-	_ = killgOnce(sessionPGID, killSelfPID, syscall.SIGTERM)
+	if err := killgOnce(sessionPGID, killSelfPID, syscall.SIGTERM); err != nil {
+		return err
+	}
 
 	deadline := time.Now().Add(gracefulTimeout)
 	tick := 50 * time.Millisecond
 	for time.Now().Before(deadline) {
-		if !pgidHasMembers(sessionPGID, killSelfPID) {
+		hasMembers, err := pgidHasMembers(sessionPGID, killSelfPID)
+		if err != nil {
+			return err
+		}
+		if !hasMembers {
 			return nil
 		}
 		time.Sleep(tick)
 	}
 
 	// Escalate.
-	return killgOnce(sessionPGID, killSelfPID, syscall.SIGKILL)
+	if err := killgOnce(sessionPGID, killSelfPID, syscall.SIGKILL); err != nil {
+		return err
+	}
+	return waitForPGIDDrain(sessionPGID, killSelfPID, 250*time.Millisecond)
 }
 
 // killgOnce sends a single signal to every process currently in pgid,
@@ -70,7 +78,11 @@ func killgOnce(pgid int, killSelfPID int, sig syscall.Signal) error {
 	// If the caller is a member of the target group, the atomic broadcast
 	// would hit it. Fall back to per-PID delivery that skips killSelfPID.
 	if killSelfPID > 0 && selfPGID(killSelfPID) == pgid {
-		for _, pid := range membersOfPGID(pgid) {
+		members, err := membersOfPGIDChecked(pgid)
+		if err != nil {
+			return err
+		}
+		for _, pid := range members {
 			if pid == killSelfPID || pid <= 1 {
 				continue
 			}
@@ -88,13 +100,17 @@ func killgOnce(pgid int, killSelfPID int, sig syscall.Signal) error {
 	}
 	// EPERM or any other partial failure: fall through to per-PID best
 	// effort so members we CAN signal get reaped.
-	for _, pid := range membersOfPGID(pgid) {
+	members, scanErr := membersOfPGIDChecked(pgid)
+	if scanErr != nil {
+		return fmt.Errorf("scan pgid %d after group signal failure: %w", pgid, scanErr)
+	}
+	for _, pid := range members {
 		if pid == killSelfPID || pid <= 1 {
 			continue
 		}
 		_ = syscall.Kill(pid, sig)
 	}
-	return nil
+	return fmt.Errorf("signal process group %d: %w", pgid, err)
 }
 
 // selfPGID returns the process group id of pid, preferring /proc (Linux/WSL)
@@ -113,14 +129,39 @@ func selfPGID(pid int) int {
 // pgidHasMembers returns true if any process other than killSelfPID is
 // still in pgid. Used to determine whether the SIGTERM grace window
 // succeeded without racing the killer itself.
-func pgidHasMembers(pgid int, killSelfPID int) bool {
-	for _, pid := range membersOfPGID(pgid) {
+func pgidHasMembers(pgid int, killSelfPID int) (bool, error) {
+	members, err := membersOfPGIDChecked(pgid)
+	if err != nil {
+		return false, fmt.Errorf("scan pgid %d members: %w", pgid, err)
+	}
+	for _, pid := range members {
 		if pid == killSelfPID || pid <= 1 {
 			continue
 		}
-		return true
+		return true, nil
 	}
-	return false
+	return false, nil
+}
+
+func waitForPGIDDrain(pgid, killSelfPID int, budget time.Duration) error {
+	deadline := time.Now().Add(budget)
+	for {
+		hasMembers, err := pgidHasMembers(pgid, killSelfPID)
+		if err != nil {
+			return err
+		}
+		if !hasMembers {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			members, scanErr := membersOfPGIDChecked(pgid)
+			if scanErr != nil {
+				return fmt.Errorf("verify pgid %d drain: %w", pgid, scanErr)
+			}
+			return fmt.Errorf("pgid %d still has surviving members %v after SIGKILL", pgid, members)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // MembersOfPGID returns the PIDs of every process currently in the given
@@ -138,16 +179,27 @@ func MembersOfPGID(pgid int) []int {
 // membersOfPGID is the internal, unexported implementation used by the
 // kill helpers in this file. External callers use MembersOfPGID.
 func membersOfPGID(pgid int) []int {
-	procs, err := Scan()
+	members, _ := membersOfPGIDChecked(pgid)
+	return members
+}
+
+func membersOfPGIDChecked(pgid int) ([]int, error) {
+	return membersOfPGIDWith(pgid, Scan, readPGID, syscall.Getpgid)
+}
+
+func membersOfPGIDWith(pgid int, scanFn func() ([]ProcInfo, error), readFn func(int) int,
+	getpgidFn func(int) (int, error),
+) ([]int, error) {
+	procs, err := scanFn()
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	var out []int
 	for _, p := range procs {
-		got := readPGID(p.PID)
+		got := readFn(p.PID)
 		if got == 0 {
 			// Fallback for non-Linux Unix: ask the kernel directly.
-			if gp, err := syscall.Getpgid(p.PID); err == nil {
+			if gp, err := getpgidFn(p.PID); err == nil {
 				got = gp
 			}
 		}
@@ -155,7 +207,7 @@ func membersOfPGID(pgid int) []int {
 			out = append(out, p.PID)
 		}
 	}
-	return out
+	return out, nil
 }
 
 // readPGID extracts the pgid field from /proc/<pid>/stat. Returns 0 on
