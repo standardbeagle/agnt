@@ -46,7 +46,10 @@ func (d *Daemon) hubHandleIncidentsQuery(conn *hubpkg.Connection, cmd *hubproto.
 	}
 	entries, stats := d.incidentBus.QuerySession(sessionCode, qf)
 
-	result := buildIncidentQueryResult(entries, stats, filter)
+	result := buildIncidentQueryResultWithHydrator(entries, stats, filter, func(hash string) ([]byte, error) {
+		payload, _, err := d.incidentBus.ReadSessionBlob(sessionCode, hash)
+		return payload, err
+	})
 	// HasSession distinguishes an empty registered inbox from an unavailable
 	// session pipeline (for example during teardown). Project config never
 	// disables incident recording; alerts.push controls interrupts only.
@@ -96,6 +99,12 @@ func incidentQueryFilterToInternal(f protocol.IncidentQueryFilter) (incident.Que
 
 // buildIncidentQueryResult maps inbox entries to the wire result type.
 func buildIncidentQueryResult(entries []incident.InboxEntry, stats incident.Stats, filter protocol.IncidentQueryFilter) protocol.IncidentQueryResult {
+	return buildIncidentQueryResultWithHydrator(entries, stats, filter, nil)
+}
+
+func buildIncidentQueryResultWithHydrator(entries []incident.InboxEntry, stats incident.Stats, filter protocol.IncidentQueryFilter,
+	hydrate func(string) ([]byte, error),
+) protocol.IncidentQueryResult {
 	// The query over-fetched by one (see incidentQueryFilterToInternal) so the
 	// hub can detect truncation itself, then truncate + compute the cursor +
 	// mark-read over exactly the page the caller will see.
@@ -118,7 +127,7 @@ func buildIncidentQueryResult(entries []incident.InboxEntry, stats incident.Stat
 
 	records := make([]protocol.IncidentRecord, 0, len(filtered))
 	for _, e := range filtered {
-		records = append(records, incidentEntryToRecord(e, filter.Detail))
+		records = append(records, incidentEntryToRecord(e, filter.Detail, hydrate))
 	}
 
 	// Cursor = newest entry examined, not newest returned. Everything older was
@@ -185,7 +194,7 @@ func applySecondaryFilters(entries []incident.InboxEntry, filter protocol.Incide
 }
 
 // incidentEntryToRecord converts an InboxEntry to the wire IncidentRecord.
-func incidentEntryToRecord(e incident.InboxEntry, detail string) protocol.IncidentRecord {
+func incidentEntryToRecord(e incident.InboxEntry, detail string, hydrate func(string) ([]byte, error)) protocol.IncidentRecord {
 	r := protocol.IncidentRecord{
 		Fingerprint: e.Fingerprint,
 		FirstSeen:   e.FirstSeenAt.Format(time.RFC3339),
@@ -216,10 +225,12 @@ func incidentEntryToRecord(e incident.InboxEntry, detail string) protocol.Incide
 			SkillHint:    e.Sample.Remediation.SkillHint,
 		}
 		if detail == "full" && e.Sample.PayloadRef != nil {
-			// Blob payload hydration not yet implemented — PayloadRef carries
-			// only the hash and MIME type; the in-memory BlobStore is held by
-			// the session pipeline, not accessible here without a lookup path.
-			_ = e.Sample.PayloadRef
+			if hydrate != nil {
+				if payload, err := hydrate(e.Sample.PayloadRef.Hash); err == nil {
+					full := string(payload)
+					r.Payload = &full
+				}
+			}
 		}
 	}
 

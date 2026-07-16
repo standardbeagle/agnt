@@ -219,7 +219,7 @@ Incident pipeline (`internal/incident/`) is the always-active agent alert path, 
 
 5. **Inbox capacity hard-capped per band.** Each of four priority bands (critical / error / warning / info) holds at most 100 entries. Oldest entries evicted to make room for new arrivals. AI agent must poll with returned cursor to drain inbox before it wraps.
 
-6. **Blob store best-effort.** `BlobRef` in envelope may resolve to `nil` if blob evicted before agent pulled incident. Callers must handle absent blobs gracefully; not errors.
+6. **Blob store is per-session and best-effort.** Production adapters retain oversized bytes until `MPSCBus` spills them into the destination session's bounded store; `detail:"full"` hydrates only from that same store. `BlobRef` may resolve to `nil` after eviction or session teardown; callers fall back to `Summary`, never another session's store.
 
 7. **Pinger never blocks delivery.** Pinger sends compact pings to MCP, channel, and PTY sinks using non-blocking channel sends. Slow consumer does not delay other consumers or block Inbox drain loop.
 

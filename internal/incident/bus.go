@@ -41,6 +41,7 @@ type sessionPipeline struct {
 	dedup  *Deduplicator
 	flow   *FlowController
 	pinger *PingEmitter
+	blobs  *BlobStore
 
 	stopCh      chan struct{}
 	ingestCount atomic.Int64 // drives opportunistic dedup Trim
@@ -151,6 +152,7 @@ func (b *MPSCBus) AddSession(sessionID string, mcpNotify MCPNotifyFn, channelNot
 		dedup:  dedup,
 		flow:   flow,
 		pinger: pinger,
+		blobs:  NewBlobStore(0),
 		stopCh: make(chan struct{}),
 	}
 
@@ -180,6 +182,7 @@ func (b *MPSCBus) RemoveSession(sessionID string) {
 	if pl.pinger != nil {
 		pl.pinger.Stop()
 	}
+	pl.blobs.Close()
 }
 
 // Close shuts down the bus and all session pipelines.
@@ -215,6 +218,17 @@ func (b *MPSCBus) QuerySession(sessionID string, filter QueryFilter) ([]InboxEnt
 		return nil, Stats{}
 	}
 	return pl.inbox.Query(filter)
+}
+
+// ReadSessionBlob hydrates a payload only from the caller session's bounded
+// store. Hashes are content-addressed but stores are tenancy boundaries: never
+// search another session when a hash is absent locally.
+func (b *MPSCBus) ReadSessionBlob(sessionID, hash string) ([]byte, string, error) {
+	pl := b.getSessionPipeline(sessionID)
+	if pl == nil || pl.blobs == nil {
+		return nil, "", ErrBlobEvicted
+	}
+	return pl.blobs.Read(hash)
 }
 
 // MarkReadSession marks entries as read in the given session's inbox.
@@ -340,7 +354,13 @@ func (b *MPSCBus) deliver(ev *IncidentEvent) {
 // ingestToSession runs dedup → inbox for one session. Called on the dispatch
 // goroutine; must not block.
 func (b *MPSCBus) ingestToSession(pl *sessionPipeline, ev *IncidentEvent) {
-	merged, de := pl.dedup.Ingest(pl.inbox.SessionID, *ev)
+	event := cloneIncidentEvent(*ev)
+	if event.PayloadRef == nil && len(event.payload) > 0 {
+		ref := pl.blobs.WriteAsync(event.payload, "text/plain")
+		event.PayloadRef = &ref
+		event.payload = nil
+	}
+	merged, de := pl.dedup.Ingest(pl.inbox.SessionID, event)
 	// DedupEntry is a detached snapshot, but give Inbox explicit ownership of
 	// its sample (including nested remediation maps/slices and PayloadRef).
 	sample := cloneIncidentEvent(de.Last)

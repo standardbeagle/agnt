@@ -44,7 +44,7 @@ Cursor-based pull from the always-active incident inbox. This is the authoritati
 | `fingerprints` | string[] | — | Retrieve specific incident fingerprints |
 | `sources` | string[] | all | Filter by source (e.g. `browser_js`, `http_5xx`) |
 | `proxy_id` / `process_id` | string | — | Filter to a specific proxy/process |
-| `detail` | string | `summary` | `full` hydrates the payload from the blob store |
+| `detail` | string | `summary` | `full` hydrates from the caller session's bounded blob store; evicted payloads fall back to summary |
 | `mark_read` | bool | false | Advance cursor and mark returned incidents read |
 | `limit` | int | 20 (max 100) | Max incidents returned |
 | `raw` | bool | false | Return full JSON instead of compact text |

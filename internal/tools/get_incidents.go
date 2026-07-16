@@ -256,9 +256,8 @@ func formatIncidentsCompact(out GetIncidentsOutput) string {
 			if iv.Summary != "" {
 				sb.WriteString("  " + iv.Summary + "\n")
 			}
-			// Hydrated payload (detail:"full"). Render in compact mode too — it was
-			// previously visible only under raw:true, making detail:"full" a no-op
-			// for the default view. Truncated to keep the compact output compact.
+			// Hydrated payload (detail:"full") renders in compact mode as well as
+			// raw JSON. Truncate it to keep the compact output compact.
 			if iv.Payload != nil && *iv.Payload != "" {
 				oneLine := strings.ReplaceAll(strings.TrimSpace(*iv.Payload), "\n", " ")
 				sb.WriteString("  payload: " + truncate(oneLine, 500) + "\n")

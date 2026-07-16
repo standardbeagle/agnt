@@ -75,6 +75,7 @@ func cloneDedupEntry(entry *DedupEntry) *DedupEntry {
 
 func cloneIncidentEvent(event IncidentEvent) IncidentEvent {
 	cloned := event
+	cloned.payload = append([]byte(nil), event.payload...)
 	if event.PayloadRef != nil {
 		payload := *event.PayloadRef
 		cloned.PayloadRef = &payload
