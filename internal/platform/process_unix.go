@@ -92,7 +92,7 @@ func shouldUseWindowsCommand(command string, isWSL bool) bool {
 	}
 	words := scanShellCommandWords(command)
 	for _, word := range words {
-		if isPOSIXAssignment(word.cooked) {
+		if isPOSIXAssignment(word.raw) {
 			continue
 		}
 		return windowsCommandExecutable(word)
@@ -160,13 +160,19 @@ func scanShellCommandWords(command string) []shellCommandWord {
 	return words
 }
 
-func isPOSIXAssignment(word string) bool {
-	eq := strings.IndexByte(word, '=')
+func isPOSIXAssignment(raw string) bool {
+	eq := strings.IndexByte(raw, '=')
 	if eq <= 0 {
 		return false
 	}
 	for i := 0; i < eq; i++ {
-		c := word[i]
+		c := raw[i]
+		// Quotes and backslashes before '=' mean the resulting character or
+		// equals sign was quoted/escaped; POSIX does not treat that word as an
+		// assignment prefix.
+		if c == '\\' || c == '\'' || c == '"' {
+			return false
+		}
 		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && c != '_' && !(i > 0 && c >= '0' && c <= '9') {
 			return false
 		}

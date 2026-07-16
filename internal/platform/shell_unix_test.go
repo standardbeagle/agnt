@@ -89,6 +89,10 @@ func TestShouldUseWindowsCommand_ClassifiesExecutableNotArguments(t *testing.T) 
 		{`bash -c "echo C:\\temp"`, false},
 		{`REGEX='foo\\.bar' grep "$REGEX" file`, false},
 		{`A=one B='two\\three' /usr/bin/env`, false},
+		{`A\=x C:\tools\build.cmd`, false},
+		{`'A'=x C:\tools\build.cmd`, false},
+		{`A=x C:\tools\build.cmd`, true},
+		{`A='quoted value' C:\tools\build.cmd`, true},
 		{`./my\ script --flag`, false},
 		{`C:\tools\build.cmd --flag`, true},
 		{`C:\Program Files\tool.exe --flag`, true},
@@ -97,6 +101,9 @@ func TestShouldUseWindowsCommand_ClassifiesExecutableNotArguments(t *testing.T) 
 		{`'C:\Program Files\tool.exe' --flag`, true},
 		{`/mnt/c/tools/build.exe --flag`, true},
 		{`/usr/bin/env node script.js`, false},
+		{`"`, false},
+		{`\`, false},
+		{`A=`, false},
 	}
 	for _, tc := range tests {
 		assert.Equal(t, tc.want, shouldUseWindowsCommand(tc.command, true), tc.command)
