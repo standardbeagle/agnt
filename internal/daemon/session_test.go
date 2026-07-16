@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestSessionRegistry_Register(t *testing.T) {
@@ -728,4 +730,19 @@ func TestDaemon_AutostartManager_SharedPerProject(t *testing.T) {
 	// Drain handles so goroutines exit.
 	<-h1.Done()
 	<-h3.Done()
+}
+
+func TestSessionRegistry_ExactLifetimeOperations(t *testing.T) {
+	t.Parallel()
+	registry := NewSessionRegistry(time.Minute)
+	old := &Session{Code: "same-code"}
+	fresh := &Session{Code: "same-code"}
+	require.NoError(t, registry.Register(old))
+
+	require.True(t, registry.ReplaceExact("same-code", old, fresh))
+	require.False(t, registry.UnregisterExact("same-code", old), "stale lifetime removed fresh registration")
+	got, ok := registry.Get("same-code")
+	require.True(t, ok)
+	require.Same(t, fresh, got)
+	require.True(t, registry.UnregisterExact("same-code", fresh))
 }

@@ -236,6 +236,25 @@ func (r *SessionRegistry) Unregister(code string) error {
 	return nil
 }
 
+// ReplaceExact replaces the current registration only when it is expected.
+// Reconnects use a fresh *Session identity so cleanup captured for an older
+// registration cannot retire the new lifetime.
+func (r *SessionRegistry) ReplaceExact(code string, expected, replacement *Session) bool {
+	if expected == nil || replacement == nil || replacement.Code != code {
+		return false
+	}
+	return r.sessions.CompareAndSwap(code, expected, replacement)
+}
+
+// UnregisterExact removes the current registration only when it is expected.
+func (r *SessionRegistry) UnregisterExact(code string, expected *Session) bool {
+	if expected == nil || !r.sessions.CompareAndDelete(code, expected) {
+		return false
+	}
+	r.totalUnregistered.Add(1)
+	return true
+}
+
 // Get retrieves a session by code.
 func (r *SessionRegistry) Get(code string) (*Session, bool) {
 	val, ok := r.sessions.Load(code)
