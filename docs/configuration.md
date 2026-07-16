@@ -93,6 +93,11 @@ alerts {
 legacy `incident-pipeline` key is accepted for compatibility but ignored because
 the incident pipeline is always active.
 
+The top-level `channel { ... }` block configures MCP event forwarding; it is not
+an incident-pinger sink. `alerts.push` therefore has no `channel` key, and the
+daemon registers no incident `ChannelNotifyFn` callback. This avoids advertising
+a parsed-but-inert channel toggle or delivering the same digest twice.
+
 ## Auth Breakout (internal/config/agnt.go, auth-breakout in .agnt.kdl; runtime: internal/proxy/authbreakout.go)
 
 The proxy's always-wrap model renders every page inside a content `<iframe>`.

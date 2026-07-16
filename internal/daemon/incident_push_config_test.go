@@ -28,7 +28,10 @@ func TestIncidentPushPresetSelectsRuntimeSinks(t *testing.T) {
 		}
 		return nil
 	}
-	mcp, pty := d.incidentSinkCallbacks("session")
+	mcp, channel, pty := d.incidentSinkCallbacks("session")
+	if channel != nil {
+		t.Fatal("incident pinger channel callback must stay nil until a production channel transport exists")
+	}
 	payload := incident.PingPayload{Summary: incident.PingStats{Error: 1}}
 
 	d.ApplyAlertsConfig(&config.AlertsConfig{Preset: "claude-code"})

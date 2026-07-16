@@ -48,15 +48,15 @@ func (d *Daemon) addIncidentSession(sessionCode string) {
 	if d.incidentBus.HasSession(sessionCode) {
 		return
 	}
-	mcpNotify, ptyInject := d.incidentSinkCallbacks(sessionCode)
-	d.incidentBus.AddSession(sessionCode, mcpNotify, nil, ptyInject)
+	mcpNotify, channelNotify, ptyInject := d.incidentSinkCallbacks(sessionCode)
+	d.incidentBus.AddSession(sessionCode, mcpNotify, channelNotify, ptyInject)
 }
 
 // incidentSinkCallbacks wires the effective alerts.push policy to the incident
 // pinger. Callbacks remain registered and gate at delivery time, so applying a
 // project config after session registration takes effect without replacing the
 // pipeline (which would discard unread incidents).
-func (d *Daemon) incidentSinkCallbacks(sessionCode string) (incident.MCPNotifyFn, incident.PTYInjectFn) {
+func (d *Daemon) incidentSinkCallbacks(sessionCode string) (incident.MCPNotifyFn, incident.ChannelNotifyFn, incident.PTYInjectFn) {
 	mcpNotify := func(level string, payload incident.PingPayload) error {
 		push := d.alertPushConfig.Load()
 		if !push.MCPNotificationsEnabled() {
@@ -100,5 +100,8 @@ func (d *Daemon) incidentSinkCallbacks(sessionCode string) (incident.MCPNotifyFn
 		}
 		return d.sendMessageToOverlay(s.OverlayPath, line)
 	}
-	return mcpNotify, ptyInject
+	// Top-level `channel` config drives MCP event forwarding, not incident
+	// pings. There is no production claude/channel callback in the daemon, and
+	// alerts.push deliberately exposes no inert channel bit.
+	return mcpNotify, nil, ptyInject
 }
