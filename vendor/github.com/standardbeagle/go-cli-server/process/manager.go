@@ -85,6 +85,9 @@ type ProcessManager struct {
 
 	// PID tracking for orphan cleanup
 	pidTracker PIDTracker
+	// UPSTREAM: identities captured by a trusted live descendant walk. Post-Wait
+	// cleanup must not derive ownership from a PID that may already be recycled.
+	cleanupIdentities sync.Map // map[*ManagedProcess]map[int]string
 
 	// Script registry for automatic lifecycle integration
 	scriptRegistry *script.Registry

@@ -104,11 +104,23 @@ func cleanupProcessTree(pid int) {
 // killStoredDescendants kills PIDs from the tracker's stored descendant list.
 // This catches processes that were descendants at the last scan but may have
 // been reparented or escaped since then.
-func killStoredDescendants(pids []int) {
+func killStoredDescendants(pids []int, identities map[int]string) {
+	killStoredDescendantsWith(pids, identities, processIdentity, isProcessAlive, func(pid int) {
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+	})
+}
+
+// UPSTREAM: only identity captured during a trusted live-tree walk authorizes
+// a post-Wait kill. Sampling identity after Wait can bless a recycled PID.
+func killStoredDescendantsWith(pids []int, identities map[int]string, identityFn func(int) string,
+	aliveFn func(int) bool, killFn func(int),
+) {
 	for _, pid := range pids {
-		if isProcessAlive(pid) {
-			_ = syscall.Kill(pid, syscall.SIGKILL)
+		expected := identities[pid]
+		if expected == "" || !aliveFn(pid) || identityFn(pid) != expected {
+			continue
 		}
+		killFn(pid)
 	}
 }
 
@@ -233,6 +245,27 @@ func pgrepChildren(pid int) []int {
 // Backward compat alias
 func cleanupProcessGroup(pgid int) {
 	cleanupProcessTree(pgid)
+}
+
+// cleanupReapedProcessGroup handles cleanup after cmd.Wait reaped the leader.
+// Any live occupant of pgid now is recycled and must not authorize a group kill.
+// UPSTREAM: retain the pre-Wait identity and fail closed on a live replacement.
+func cleanupReapedProcessGroup(pgid int, originalIdentity string) {
+	cleanupReapedProcessGroupWith(pgid, originalIdentity, processIdentity, isProcessAlive, func(group int) {
+		_ = syscall.Kill(-group, syscall.SIGKILL)
+	})
+}
+
+func cleanupReapedProcessGroupWith(pgid int, originalIdentity string, identityFn func(int) string,
+	aliveFn func(int) bool, killGroupFn func(int),
+) {
+	if pgid <= 1 || aliveFn(pgid) {
+		return
+	}
+	if current := identityFn(pgid); current != "" && current != originalIdentity {
+		return
+	}
+	killGroupFn(pgid)
 }
 
 // signalKill sends SIGKILL to the process.
