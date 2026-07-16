@@ -517,3 +517,67 @@ func TestSessionRegister_ReconnectInheritsUnsuppliedFields(t *testing.T) {
 		})
 	}
 }
+
+// TestSessionRegister_RejectsSessionHostOwnedCode verifies the cross-kind
+// guard in hubHandleSessionRegister: a classic SESSION REGISTER against a code
+// already owned by a session-host entry is rejected loudly rather than misread
+// as a reconnect. Session-host ids ("<cfg.Name>-<idCounter>") and classic codes
+// ("<command-base>-<seq>") come from two independent counters over a
+// user-supplied name, so a `--name claude` session-host `claude-9` and a
+// classic `claude-9` can collide. Without the guard, the collision would take
+// the ErrSessionExists reconnect branch and ReplaceExact the session-host
+// entry — breaking its explicit-kill-only invariant (a later conn drop would
+// then run deferred cleanup against a daemon-owned PTY).
+func TestSessionRegister_RejectsSessionHostOwnedCode(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	sockPath := filepath.Join(tmpDir, "test.sock")
+
+	// No .agnt.kdl — the register is rejected before autostart runs anyway.
+	d := New(DaemonConfig{
+		SocketPath:   sockPath,
+		MaxClients:   10,
+		WriteTimeout: 5 * time.Second,
+	})
+	require.NoError(t, d.Start())
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		d.Stop(stopCtx)
+	}()
+
+	const code = "claude-9"
+
+	// Seed a session-host owned entry directly — Kind is never carried by the
+	// classic client wire, so it must be planted, mirroring the seeding shape of
+	// TestSessionRegister_ReconnectInheritsUnsuppliedFields.
+	seed := &Session{
+		Code:        code,
+		ProjectPath: normalizePath(tmpDir),
+		Command:     "sh",
+		StartedAt:   time.Now().Add(-time.Hour),
+		Status:      SessionStatusActive,
+		LastSeen:    time.Now().Add(-time.Hour),
+		SessionPGID: 4242,
+		Kind:        SessionKindSessionHost,
+	}
+	require.NoError(t, d.sessionRegistry.Register(seed))
+
+	client := NewClient(WithSocketPath(sockPath))
+	require.NoError(t, client.Connect())
+	defer client.Close()
+
+	// A classic SESSION REGISTER on the same code must be rejected, not merged.
+	_, err := client.SessionRegister(code, "/tmp/overlay.sock", tmpDir, "test", nil)
+	require.Error(t, err, "classic register against a session-host owned code must fail loud")
+	require.Contains(t, err.Error(), "session-host",
+		"rejection must name the session-host ownership, got %v", err)
+
+	// The registry entry must be untouched: same pointer, still session-host,
+	// containment handle intact — proving no ReplaceExact ran.
+	got, ok := d.sessionRegistry.Get(code)
+	require.True(t, ok, "session-host entry must survive the rejected register")
+	require.Same(t, seed, got, "rejected register must not swap the session-host identity")
+	require.Equal(t, SessionKindSessionHost, got.Kind, "Kind must remain session-host")
+	require.Equal(t, 4242, got.SessionPGID, "session-host containment handle must be untouched")
+}

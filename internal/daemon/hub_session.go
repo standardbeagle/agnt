@@ -206,6 +206,27 @@ func (d *Daemon) hubHandleSessionRegister(conn *hubpkg.Connection, cmd *hubproto
 		if !errors.Is(err, ErrSessionExists) {
 			return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
 		}
+		// Cross-kind guard: SESSION REGISTER is classic-only. A session-host
+		// entry never re-registers through this path, so a code collision with
+		// one is a genuine name clash, not a reconnect. The two id spaces are
+		// independent counters over a user-supplied name (classic
+		// "<command-base>-<seq>", session-host "<cfg.Name>-<idCounter>"), so
+		// `--name claude` makes `claude-3` reachable on both sides. Treating that
+		// as a reconnect would ReplaceExact the session-host entry, breaking its
+		// explicit-kill-only invariant (a later conn drop would then run deferred
+		// cleanup against a daemon-owned PTY). Fail loud before any merge. Placed
+		// ahead of cancelPendingCleanup — a session-host has no deferred cleanup
+		// timer to cancel, so nothing to undo on this early return, and the
+		// deferred unlockLifecycle still releases the gate.
+		if existing, ok := d.sessionRegistry.Get(session.Code); ok {
+			existing.mu.RLock()
+			existingKind := existing.Kind
+			existing.mu.RUnlock()
+			if existingKind == SessionKindSessionHost {
+				return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf(
+					"session code %q is owned by a session-host session; choose a different session name", session.Code))
+			}
+		}
 		// Session already exists — this is a re-registration (reconnect).
 		// Cancel any pending cleanup from the old connection and refresh the
 		// session's mutable metadata under a single lock. The overlay path in
