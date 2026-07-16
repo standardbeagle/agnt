@@ -28,13 +28,83 @@ const sessionPGIDGracePeriod = 2 * time.Second
 // the client didn't report a pgid at registration time. Self-exclusion
 // protects the daemon process in the (defensive) case where they
 // accidentally share a pgid.
-func (d *Daemon) killSessionPGID(session *Session) {
+type sessionPGIDIdentity struct {
+	pid     int
+	cmdline string
+	cwd     string
+}
+
+func inspectSessionPGIDIdentity(pgid int) (sessionPGIDIdentity, bool) {
+	if pgid <= 1 {
+		return sessionPGIDIdentity{}, false
+	}
+	leaderIsMember := false
+	for _, pid := range platform.MembersOfPGID(pgid) {
+		if pid == pgid {
+			leaderIsMember = true
+			break
+		}
+	}
+	if !leaderIsMember {
+		return sessionPGIDIdentity{}, false
+	}
+	procs, err := platform.Scan()
+	if err != nil {
+		return sessionPGIDIdentity{}, false
+	}
+	for _, leader := range procs {
+		if leader.PID == pgid {
+			return sessionPGIDIdentity{pid: leader.PID, cmdline: leader.Cmdline, cwd: leader.Cwd}, true
+		}
+	}
+	return sessionPGIDIdentity{}, false
+}
+
+func sessionPGIDIdentityMatches(expected, current sessionPGIDIdentity) bool {
+	return expected.pid > 1 && expected == current
+}
+
+func killSessionPGIDIfIdentityMatches(
+	pgid int,
+	expected sessionPGIDIdentity,
+	inspectFn func(int) (sessionPGIDIdentity, bool),
+	killFn func(int) error,
+) (bool, error) {
+	if inspectFn == nil || killFn == nil {
+		return false, nil
+	}
+	current, ok := inspectFn(pgid)
+	if !ok || !sessionPGIDIdentityMatches(expected, current) {
+		return false, nil
+	}
+	return true, killFn(pgid)
+}
+
+func (d *Daemon) killSessionPGID(session *Session, expected *sessionPGIDIdentity) {
 	session.mu.RLock()
 	pgid := session.SessionPGID
 	code := session.Code
 	session.mu.RUnlock()
 
 	if pgid <= 1 {
+		return
+	}
+	if expected != nil {
+		killed, err := killSessionPGIDIfIdentityMatches(pgid, *expected, inspectSessionPGIDIdentity,
+			func(pgid int) error {
+				return platform.KillSessionPGID(pgid, os.Getpid(), sessionPGIDGracePeriod, false)
+			})
+		if !killed {
+			debug.Warn("daemon", "session %s: skipping stale pgid %d (leader identity changed or unavailable)", code, pgid)
+			d.daemonStartupLog("warning", "session_pgid_kill_skipped_stale",
+				fmt.Sprintf("session %s: skipped stale pgid %d because its leader identity changed or was unavailable", code, pgid))
+			return
+		}
+		if err != nil {
+			debug.Warn("daemon", "session %s: killpg(%d) failed: %v", code, pgid, err)
+			d.daemonStartupLog("warning", "session_pgid_kill_failed",
+				fmt.Sprintf("session %s: failed to reap pgid %d: %v", code, pgid, err))
+		}
 		return
 	}
 
@@ -152,6 +222,13 @@ func (d *Daemon) CleanupSessionResourcesDeferred(sessionCode string) {
 
 	projectPath := session.ProjectPath
 	grace := d.cleanupGracePeriod()
+	// Capture the PTY leader identity before the grace window. PID and PGID
+	// numbers are recyclable; the timer must not signal an unrelated process
+	// that acquired the same numeric identity after this session exited.
+	expectedPGIDIdentity := &sessionPGIDIdentity{}
+	if identity, ok := inspectSessionPGIDIdentity(session.SessionPGID); ok {
+		expectedPGIDIdentity = &identity
+	}
 
 	if projectPath == "" {
 		// A session with no project path still owns its PTY child's pgid and any
@@ -190,7 +267,7 @@ func (d *Daemon) CleanupSessionResourcesDeferred(sessionCode string) {
 			}
 			// Both calls no-op on the wrong platform. Mirrors the
 			// empty-projectPath branch in doCleanup.
-			d.killSessionPGID(s)
+			d.killSessionPGID(s, expectedPGIDIdentity)
 			d.killSessionJobObject(s)
 			d.sessionRegistry.Unregister(sessionCode)
 		})
@@ -237,13 +314,17 @@ func (d *Daemon) CleanupSessionResourcesDeferred(sessionCode string) {
 			}
 		}
 
-		d.doCleanup(sessionCode)
+		d.doCleanupWithPGIDIdentity(sessionCode, expectedPGIDIdentity)
 	})
 	d.pendingCleanups.Store(sessionCode, timer)
 }
 
 // doCleanup performs the actual session resource cleanup.
 func (d *Daemon) doCleanup(sessionCode string) {
+	d.doCleanupWithPGIDIdentity(sessionCode, nil)
+}
+
+func (d *Daemon) doCleanupWithPGIDIdentity(sessionCode string, expectedPGIDIdentity *sessionPGIDIdentity) {
 	d.forwardMappings.Delete(sessionCode)
 	session, ok := d.sessionRegistry.Get(sessionCode)
 	if !ok {
@@ -269,7 +350,7 @@ func (d *Daemon) doCleanup(sessionCode string) {
 		// Still try to reap descendants on both platforms — the pgid
 		// path no-ops on Windows and the job path no-ops on Unix, so
 		// invoking both is always safe.
-		d.killSessionPGID(session)
+		d.killSessionPGID(session, expectedPGIDIdentity)
 		d.killSessionJobObject(session)
 		d.sessionRegistry.Unregister(sessionCode)
 		return
@@ -290,7 +371,7 @@ func (d *Daemon) doCleanup(sessionCode string) {
 	// Windows (SessionPGID is always 0 there) and job-object cleanup
 	// no-ops on Unix (SessionJobHandle is always 0 there). The platform
 	// package's build-tagged stubs guarantee cross-platform safety.
-	d.killSessionPGID(session)
+	d.killSessionPGID(session, expectedPGIDIdentity)
 	d.killSessionJobObject(session)
 
 	// Handle script ownership transfer or cleanup.
