@@ -341,6 +341,9 @@ func (b *MPSCBus) deliver(ev *IncidentEvent) {
 // goroutine; must not block.
 func (b *MPSCBus) ingestToSession(pl *sessionPipeline, ev *IncidentEvent) {
 	merged, de := pl.dedup.Ingest(pl.inbox.SessionID, *ev)
+	// DedupEntry is a detached snapshot, but give Inbox explicit ownership of
+	// its sample (including nested remediation maps/slices and PayloadRef).
+	sample := cloneIncidentEvent(de.Last)
 	entry := &InboxEntry{
 		Fingerprint: ev.Fingerprint,
 		FirstSeenAt: de.First.ReceivedAt,
@@ -349,7 +352,7 @@ func (b *MPSCBus) ingestToSession(pl *sessionPipeline, ev *IncidentEvent) {
 		// (existing.Count += entry.Count), so passing the dedup's cumulative
 		// de.Count here would compound into a triangular sum.
 		Count:    1,
-		Sample:   &de.Last,
+		Sample:   &sample,
 		Severity: ev.Severity,
 	}
 	if merged {

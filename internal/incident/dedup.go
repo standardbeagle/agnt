@@ -39,6 +39,7 @@ func NewDeduplicator(window time.Duration) *Deduplicator {
 func (d *Deduplicator) Ingest(sessionID string, ev IncidentEvent) (merged bool, entry *DedupEntry) {
 	key := sessionID + "|" + ev.Fingerprint
 	now := time.Now()
+	ev = cloneIncidentEvent(ev)
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -47,7 +48,7 @@ func (d *Deduplicator) Ingest(sessionID string, ev IncidentEvent) (merged bool, 
 		e.Count++
 		e.Last = ev
 		e.expiresAt = now.Add(d.window)
-		return true, e
+		return true, cloneDedupEntry(e)
 	}
 
 	e := &DedupEntry{
@@ -57,7 +58,66 @@ func (d *Deduplicator) Ingest(sessionID string, ev IncidentEvent) (merged bool, 
 		expiresAt: now.Add(d.window),
 	}
 	d.entries[key] = e
-	return false, e
+	return false, cloneDedupEntry(e)
+}
+
+// cloneDedupEntry returns an ownership snapshot while the deduplicator lock is
+// held. Callers must never retain pointers into mutable entries in d.entries.
+func cloneDedupEntry(entry *DedupEntry) *DedupEntry {
+	if entry == nil {
+		return nil
+	}
+	cloned := *entry
+	cloned.First = cloneIncidentEvent(entry.First)
+	cloned.Last = cloneIncidentEvent(entry.Last)
+	return &cloned
+}
+
+func cloneIncidentEvent(event IncidentEvent) IncidentEvent {
+	cloned := event
+	if event.PayloadRef != nil {
+		payload := *event.PayloadRef
+		cloned.PayloadRef = &payload
+	}
+	cloned.Remediation.PrimaryArgs = cloneStringAnyMap(event.Remediation.PrimaryArgs)
+	cloned.Remediation.FallbackArgs = cloneStringAnyMap(event.Remediation.FallbackArgs)
+	return cloned
+}
+
+func cloneStringAnyMap(input map[string]any) map[string]any {
+	if input == nil {
+		return nil
+	}
+	cloned := make(map[string]any, len(input))
+	for key, value := range input {
+		cloned[key] = cloneIncidentValue(value)
+	}
+	return cloned
+}
+
+// cloneIncidentValue covers the JSON-shaped values accepted in remediation
+// arguments. Scalar values are immutable; maps and slices are recursively owned.
+func cloneIncidentValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return cloneStringAnyMap(typed)
+	case []any:
+		cloned := make([]any, len(typed))
+		for i := range typed {
+			cloned[i] = cloneIncidentValue(typed[i])
+		}
+		return cloned
+	case []string:
+		return append([]string(nil), typed...)
+	case map[string]string:
+		cloned := make(map[string]string, len(typed))
+		for key, item := range typed {
+			cloned[key] = item
+		}
+		return cloned
+	default:
+		return value
+	}
 }
 
 // Trim removes expired entries, reclaiming memory.
