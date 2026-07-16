@@ -126,6 +126,90 @@ func TestPing_MCP_UsesLogNotification(t *testing.T) {
 	}
 }
 
+func TestPing_DuplicateStormCriticalSnapshotConcurrentQuery(t *testing.T) {
+	inbox := NewInbox("storm-session")
+	flow := NewFlowController(DefaultBucketConfigs)
+	pings := make(chan capturedPing, 32)
+	pe := NewPingEmitter(inbox, testPingConfig(), flow,
+		func(level string, payload PingPayload) error {
+			select {
+			case pings <- capturedPing{level: level, payload: payload}:
+			default:
+			}
+			return nil
+		}, nil, nil)
+	defer pe.Stop()
+
+	const fingerprint = "duplicate-storm"
+	inbox.Ingest(makeEntry(fingerprint, SeverityWarning))
+	inbox.Ingest(makeEntry(fingerprint, SeverityCritical))
+
+	const duplicates = 256
+	start := make(chan struct{})
+	queryDone := make(chan struct{})
+	var writers sync.WaitGroup
+	for i := 0; i < duplicates; i++ {
+		writers.Add(1)
+		go func(i int) {
+			defer writers.Done()
+			<-start
+			severity := SeverityError
+			if i%3 == 0 {
+				severity = SeverityCritical
+			}
+			inbox.Ingest(makeEntry(fingerprint, severity))
+		}(i)
+	}
+	go func() {
+		defer close(queryDone)
+		<-start
+		for {
+			entries, stats := inbox.Query(QueryFilter{})
+			if len(entries) != 1 || entries[0].Severity != SeverityCritical ||
+				stats.Critical != 1 || stats.Error != 0 || stats.Warning != 0 {
+				t.Errorf("non-atomic critical routing: entries=%#v stats=%+v", entries, stats)
+				return
+			}
+			select {
+			case <-queryDone:
+				return
+			default:
+			}
+			if entries[0].Count == duplicates+2 {
+				return
+			}
+		}
+	}()
+
+	close(start)
+	writers.Wait()
+	<-queryDone
+
+	entries, stats := inbox.Query(QueryFilter{})
+	if len(entries) != 1 {
+		t.Fatalf("entries: got %d, want 1", len(entries))
+	}
+	if entries[0].Severity != SeverityCritical || entries[0].Count != duplicates+2 {
+		t.Fatalf("final entry: severity=%s count=%d, want critical/%d", entries[0].Severity, entries[0].Count, duplicates+2)
+	}
+	if stats.Critical != 1 || stats.Error != 0 || stats.Warning != 0 {
+		t.Fatalf("final routing stats: %+v", stats)
+	}
+
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case ping := <-pings:
+			if ping.level == "error" && ping.payload.Summary.Critical == 1 &&
+				len(ping.payload.Top) == 1 && ping.payload.Top[0].Severity == SeverityCritical {
+				return
+			}
+		case <-deadline:
+			t.Fatal("active pinger never emitted critical routing")
+		}
+	}
+}
+
 // ── PTY line format ───────────────────────────────────────────────────────────
 
 func TestPing_PTY_SingleLineFormat(t *testing.T) {

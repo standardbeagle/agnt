@@ -153,6 +153,25 @@ func addSampleURL(entry *InboxEntry, url string) {
 	}
 }
 
+func snapshotInboxEntry(entry *InboxEntry) *InboxEntry {
+	if entry == nil {
+		return nil
+	}
+	snapshot := *entry
+	snapshot.SampleURLs = append([]string(nil), entry.SampleURLs...)
+	if entry.urlSeen != nil {
+		snapshot.urlSeen = make(map[string]struct{}, len(entry.urlSeen))
+		for url := range entry.urlSeen {
+			snapshot.urlSeen[url] = struct{}{}
+		}
+	}
+	if entry.Sample != nil {
+		sample := cloneIncidentEvent(*entry.Sample)
+		snapshot.Sample = &sample
+	}
+	return &snapshot
+}
+
 // Ingest adds or merges an InboxEntry into the appropriate severity band.
 // If the fingerprint already exists in any band, Count is incremented and
 // LastSeenAt updated; severity escalation moves the entry to a higher band.
@@ -194,7 +213,7 @@ func (inbox *Inbox) Ingest(entry *InboxEntry) InboxDelta {
 			b.mu.Unlock()
 		}
 
-		delta := InboxDelta{Entry: existing, IsNew: false, Escalated: escalated}
+		delta := InboxDelta{Entry: snapshotInboxEntry(existing), IsNew: false, Escalated: escalated}
 		inbox.broadcast(delta)
 		return delta
 	}
@@ -204,7 +223,7 @@ func (inbox *Inbox) Ingest(entry *InboxEntry) InboxDelta {
 		addSampleURL(entry, entry.Sample.Ctx.URL)
 	}
 	inbox.insertIntoBand(inbox.bands[newIdx], entry)
-	delta := InboxDelta{Entry: entry, IsNew: true}
+	delta := InboxDelta{Entry: snapshotInboxEntry(entry), IsNew: true}
 	inbox.broadcast(delta)
 	return delta
 }
@@ -231,6 +250,12 @@ func (inbox *Inbox) insertIntoBand(b *band, entry *InboxEntry) {
 
 // Query returns entries matching filter. Results are sorted newest first.
 func (inbox *Inbox) Query(filter QueryFilter) ([]InboxEntry, Stats) {
+	// Keep a fingerprint's band membership and severity atomic with escalation.
+	// Ingest takes this lock before any band lock, so Query follows the same
+	// order to avoid observing the remove/reinsert transition.
+	inbox.ingestMu.Lock()
+	defer inbox.ingestMu.Unlock()
+
 	var results []InboxEntry
 	for _, b := range inbox.bands {
 		if len(filter.Severities) > 0 && !containsSeverity(filter.Severities, b.severity) {
@@ -245,7 +270,7 @@ func (inbox *Inbox) Query(filter QueryFilter) ([]InboxEntry, Stats) {
 			if !filter.Since.IsZero() && !e.LastSeenAt.After(filter.Since) {
 				continue
 			}
-			results = append(results, *e)
+			results = append(results, *snapshotInboxEntry(e))
 		}
 		b.mu.RUnlock()
 	}
