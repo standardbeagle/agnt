@@ -356,8 +356,12 @@ func (b *MPSCBus) deliver(ev *IncidentEvent) {
 func (b *MPSCBus) ingestToSession(pl *sessionPipeline, ev *IncidentEvent) {
 	event := cloneIncidentEvent(*ev)
 	if event.PayloadRef == nil && len(event.payload) > 0 {
-		ref := pl.blobs.WriteAsync(event.payload, "text/plain")
-		event.PayloadRef = &ref
+		// Publish the reference only after bytes are committed. Fire remains
+		// non-blocking (the dispatch goroutine owns this work), and query results
+		// can never race an async spill that has not become readable yet.
+		if ref, err := pl.blobs.Write(event.payload, "text/plain"); err == nil {
+			event.PayloadRef = &ref
+		}
 		event.payload = nil
 	}
 	merged, de := pl.dedup.Ingest(pl.inbox.SessionID, event)

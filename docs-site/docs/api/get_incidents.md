@@ -8,6 +8,13 @@ Cursor-based pull from the always-active incident inbox. This is the authoritati
 
 `alerts.push` selects live, project-isolated interrupt channels; it does not gate inbox recording. The legacy `alerts.incident-pipeline` key is accepted but ignored.
 
+With `detail: "full"`, payload hydration reads only from the caller session's
+bounded in-memory blob store. An inbox `PayloadRef` is published only after its
+bytes are readable, so scheduler timing cannot turn a resident payload into a
+summary-only response. Payloads remain best-effort across real LRU eviction or
+session teardown; those cases safely fall back to `summary` and never search
+another session's store.
+
 ## Synopsis
 
 ```json
