@@ -125,7 +125,7 @@ func (d *Daemon) hubHandleSessionHostCreate(conn *hubpkg.Connection, cmd *hubpro
 	func() {
 		unlock := d.sessionLifecycle.lock(s.ID)
 		defer unlock()
-		_ = d.sessionRegistry.Register(&Session{
+		err := d.sessionRegistry.Register(&Session{
 			Code:        s.ID,
 			ProjectPath: s.ProjectPath,
 			Command:     s.Command,
@@ -136,6 +136,20 @@ func (d *Daemon) hubHandleSessionHostCreate(conn *hubpkg.Connection, cmd *hubpro
 			SessionPGID: s.SessionPGID,
 			Kind:        SessionKindSessionHost,
 		})
+		if err != nil {
+			// The session-host PTY is already spawned and tracked in
+			// d.sessionHosts, so CREATE still succeeds — but a failed shared-
+			// registry Register leaves it invisible to project-scoping helpers
+			// (SESSION LIST/FindByDirectory/hasOtherSessions). Session-host IDs
+			// come from a monotonic counter so a collision should be impossible;
+			// if one ever happens it is a real anomaly, not a benign no-op, and
+			// silently swallowing it would violate the Silent Failure Prohibition
+			// (.claude/rules/daemon-architecture.md). Surface it on the agent-
+			// visible startup log (queryable via get_errors), not debug-only.
+			msg := fmt.Sprintf("session-host %s live but not project-scoped: shared-registry Register failed: %v", s.ID, err)
+			debug.Warn("daemon", "%s", msg)
+			d.daemonStartupLog("warning", "session_host_register_failed", msg)
+		}
 	}()
 
 	debug.Log("daemon", "SESSION-HOST CREATE: %s (pgid=%d, cmd=%s)", s.ID, s.SessionPGID, s.Command)
