@@ -182,6 +182,9 @@ func (d *Daemon) handleURLDetected(event ProxyEvent) {
 			continue
 		}
 
+		if owner, ok := d.incidentProcessOwner.Load(event.ScriptID); ok {
+			d.registerIncidentProxyOwner(server.ID, owner.(string))
+		}
 		d.wireProxyLogger(server)
 
 		// Bind to the overlay of the session that owns this project. Fail
@@ -272,6 +275,7 @@ func (d *Daemon) handleExplicitStart(event ProxyEvent) {
 	// case. T5 owns the cleanup side of this registration.
 	d.registerExplicitProxyEntry(event.Path, event.ProxyID, server.ListenAddr)
 
+	d.registerIncidentProxyOwner(server.ID, event.OwnerSession)
 	d.wireProxyLogger(server)
 
 	// Bind to the owning session's overlay (fail closed; late-bind on connect).
@@ -415,6 +419,9 @@ func (d *Daemon) handleFallbackPortCheck(event ProxyEvent) {
 		return
 	}
 
+	if owner, ok := d.incidentProcessOwner.Load(event.ScriptID); ok {
+		d.registerIncidentProxyOwner(server.ID, owner.(string))
+	}
 	d.wireProxyLogger(server)
 
 	// Overlay endpoint: bind to the owning session, fail closed otherwise.

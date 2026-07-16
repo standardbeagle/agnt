@@ -114,10 +114,11 @@ func (d *Daemon) hubHandleProxyStart(ctx context.Context, conn *hubpkg.Connectio
 	}
 
 	d.handleExplicitStart(ProxyEvent{
-		Type:    ExplicitStart,
-		ProxyID: proxyID,
-		Config:  proxyConfig,
-		Path:    normalizedPath,
+		Type:         ExplicitStart,
+		ProxyID:      proxyID,
+		Config:       proxyConfig,
+		Path:         normalizedPath,
+		OwnerSession: conn.SessionCode(),
 	})
 
 	// If proxym.Get fails, handleExplicitStart's Create() path hit an
@@ -485,6 +486,7 @@ func (d *Daemon) hubHandleProxyRestart(ctx context.Context, conn *hubpkg.Connect
 	}
 
 	d.wireProxyLogger(newProxy)
+	d.registerIncidentProxyOwner(newProxy.ID, conn.SessionCode())
 
 	// Persist the new proxy state on its preserved port.
 	if d.stateMgr != nil {

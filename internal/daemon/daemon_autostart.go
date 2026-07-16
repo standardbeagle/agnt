@@ -693,6 +693,7 @@ func (d *Daemon) StartScriptExplicit(ctx context.Context, name string, scriptCfg
 	if regErr != nil {
 		return fmt.Errorf("script registry: %w", regErr)
 	}
+	d.registerIncidentProcessOwner(processID, entry.Owner())
 
 	// Check ScriptRegistry state: if already running/starting, skip
 	if state := entry.State(); state == script.StateRunning || state == script.StateStarting {

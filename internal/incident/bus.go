@@ -307,7 +307,7 @@ func (b *MPSCBus) dispatchLoop() {
 
 // deliver routes session-scoped events only to their originating pipeline.
 // Only positively identified bus-overflow metadata is bus-wide; ambiguous
-// sessionless events fail closed when more than one session is active.
+// sessionless events always fail closed.
 func (b *MPSCBus) deliver(ev *IncidentEvent) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
@@ -323,14 +323,7 @@ func (b *MPSCBus) deliver(ev *IncidentEvent) {
 		return
 	}
 	if ev.Fingerprint != metaBusOverflowFP {
-		// A sessionless production event has no trustworthy owner. Preserve the
-		// convenient single-session behavior, but fail closed rather than leak
-		// once tenancy is ambiguous.
-		if len(b.perSession) == 1 {
-			for _, pl := range b.perSession {
-				b.ingestToSession(pl, ev)
-			}
-		}
+		// A sessionless production event has no trustworthy owner.
 		return
 	}
 	for _, pl := range b.perSession {

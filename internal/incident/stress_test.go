@@ -26,7 +26,7 @@ func TestBurst_WebpackRebuild_SameFP_NoDrops(t *testing.T) {
 
 	// Fire 50 identical-fingerprint events via the bus.
 	ev := NewIncidentEvent(SourceBrowserJS, SeverityError, "TypeError",
-		"Cannot read property 'exports' of undefined\n    at src/webpack.js:10:5", Context{}, nil)
+		"Cannot read property 'exports' of undefined\n    at src/webpack.js:10:5", Context{SessionID: sessionID}, nil)
 	const burstCount = 50
 	for i := 0; i < burstCount; i++ {
 		bus.Publish(ev)
@@ -74,7 +74,7 @@ func TestBurst_5xxStorm_10URLs_100Events(t *testing.T) {
 		url := fmt.Sprintf("http://localhost:3000/api/endpoint-%d", i%urlCount)
 		ev := NewIncidentEvent(SourceHTTP5xx, SeverityError, "500",
 			fmt.Sprintf("Internal Server Error at %s", url),
-			Context{URL: url}, nil)
+			Context{URL: url, SessionID: sessionID}, nil)
 		bus.Publish(ev)
 	}
 
@@ -354,10 +354,10 @@ func TestAdversarial_RapidSessionCreateDestroy_NoLeak(t *testing.T) {
 	defer bus.Close()
 
 	const rounds = 50
-	ev := NewIncidentEvent(SourceBrowserJS, SeverityError, "T", "m", Context{}, nil)
 
 	for i := 0; i < rounds; i++ {
 		sid := fmt.Sprintf("rapid-%d", i)
+		ev := NewIncidentEvent(SourceBrowserJS, SeverityError, "T", "m", Context{SessionID: sid}, nil)
 		bus.AddSession(sid, nil, nil, nil)
 		// Fire a few events while the session is live.
 		for j := 0; j < 10; j++ {
@@ -368,6 +368,7 @@ func TestAdversarial_RapidSessionCreateDestroy_NoLeak(t *testing.T) {
 
 	// Bus must still function after churn.
 	bus.AddSession("final", nil, nil, nil)
+	ev := NewIncidentEvent(SourceBrowserJS, SeverityError, "T", "m", Context{SessionID: "final"}, nil)
 	pl := bus.getSessionPipeline("final")
 	require.NotNil(t, pl, "bus must accept new sessions after churn")
 

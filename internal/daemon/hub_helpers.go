@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/config"
@@ -328,7 +329,6 @@ func (d *Daemon) hubHandleDetect(ctx context.Context, conn *hubpkg.Connection, c
 // drains the buffer — cascade entries are dropped, real errors emitted.
 // See internal/daemon/hold_buffer.go and the OutageHold config block.
 func (d *Daemon) wireProxyLogger(server *proxy.ProxyServer) {
-	d.registerIncidentProxyOwner(server)
 	// Every daemon proxy-creation path funnels through here, so this is the
 	// single chokepoint applying project-level .agnt.kdl settings that live
 	// outside the per-proxy block (currently: auth-breakout).
@@ -362,41 +362,35 @@ func (d *Daemon) wireProxyLogger(server *proxy.ProxyServer) {
 	})
 }
 
-// registerIncidentProxyOwner records the project scope carried by a proxy.
-// Every production proxy creation path passes through wireProxyLogger, making
-// this the single ownership chokepoint for incidents adapted from proxy logs.
-func (d *Daemon) registerIncidentProxyOwner(server *proxy.ProxyServer) {
-	if server == nil || server.ID == "" || server.Path == "" {
+// registerIncidentProxyOwner records the exact session captured when a proxy
+// is created. LoadOrStore makes ownership immutable for the resource lifetime.
+func (d *Daemon) registerIncidentProxyOwner(proxyID, sessionCode string) {
+	if proxyID == "" || sessionCode == "" {
 		return
 	}
-	d.incidentProxyPath.Store(server.ID, normalizePath(server.Path))
+	d.incidentProxyOwner.LoadOrStore(proxyID, sessionCode)
 }
 
-func (d *Daemon) incidentProjectForProxy(proxyID string) string {
-	if projectPath, ok := d.incidentProxyPath.Load(proxyID); ok {
-		return projectPath.(string)
+func (d *Daemon) registerIncidentProcessOwner(processID, sessionCode string) {
+	if processID != "" && sessionCode != "" {
+		d.incidentProcessOwner.LoadOrStore(processID, sessionCode)
 	}
-	return ""
 }
 
-// stampIncidentSession resolves one active owning session and fails closed
-// when ownership is unavailable. FindByDirectory is deterministic for multiple
-// active sessions in one project (the most recently started session wins), so
-// an incident is never broadcast to peer sessions in that project.
-func (d *Daemon) stampIncidentSession(ev *incident.IncidentEvent, projectPath string) bool {
+// stampIncidentOwner stamps exact resource ownership and fails closed when it
+// was not captured at creation time.
+func (d *Daemon) stampIncidentOwner(ev *incident.IncidentEvent, owners *sync.Map, resourceID string) bool {
 	if ev == nil {
 		return false
 	}
 	if ev.Ctx.SessionID != "" {
 		return true
 	}
-	session, ok := d.sessionRegistry.FindByDirectory(projectPath)
+	owner, ok := owners.Load(resourceID)
 	if !ok {
-		// Let the bus preserve its safe single-session fallback. With multiple
-		// sessions it drops an unowned event rather than broadcasting it.
-		return true
+		return false
 	}
-	ev.Ctx.SessionID = session.Code
+	ev.Ctx.SessionID = owner.(string)
 	return true
 }
 
@@ -527,7 +521,7 @@ func (d *Daemon) fireToIncidentBus(entry proxy.LogEntry, proxyID string) {
 			return
 		}
 		if ev, ok := incident.FromProxyDiagnostic(*entry.Diagnostic, proxyID); ok {
-			if d.stampIncidentSession(&ev, d.incidentProjectForProxy(proxyID)) {
+			if d.stampIncidentOwner(&ev, &d.incidentProxyOwner, proxyID) {
 				d.incidentBus.Publish(ev)
 			}
 		}
@@ -543,7 +537,7 @@ func (d *Daemon) fireToIncidentBus(entry proxy.LogEntry, proxyID string) {
 			return
 		}
 		if ev, ok := incident.FromHTTPEntry(*entry.HTTP, proxyID); ok {
-			if d.stampIncidentSession(&ev, d.incidentProjectForProxy(proxyID)) {
+			if d.stampIncidentOwner(&ev, &d.incidentProxyOwner, proxyID) {
 				d.incidentBus.Publish(ev)
 			}
 		}
@@ -552,7 +546,7 @@ func (d *Daemon) fireToIncidentBus(entry proxy.LogEntry, proxyID string) {
 			return
 		}
 		ev := incident.FromFrontendError(*entry.Error, proxyID)
-		if d.stampIncidentSession(&ev, d.incidentProjectForProxy(proxyID)) {
+		if d.stampIncidentOwner(&ev, &d.incidentProxyOwner, proxyID) {
 			d.incidentBus.Publish(ev)
 		}
 	}

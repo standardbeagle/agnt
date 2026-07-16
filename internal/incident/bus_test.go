@@ -267,7 +267,7 @@ func TestPipeline_EndToEnd_SingleGoroutinePerSession(t *testing.T) {
 	defer cancel()
 
 	// Publish one event via bus.
-	ev := NewIncidentEvent(SourceBrowserJS, SeverityError, "TypeError", "test error", Context{}, nil)
+	ev := NewIncidentEvent(SourceBrowserJS, SeverityError, "TypeError", "test error", Context{SessionID: sessionID}, nil)
 	bus.Publish(ev)
 
 	// Event must flow through dispatch goroutine → dedup → inbox → subscriber.
@@ -298,7 +298,7 @@ func TestPipeline_DuplicateEvent_DedupedInInbox(t *testing.T) {
 	deltaCh, cancel := pl.inbox.Subscribe()
 	defer cancel()
 
-	ev := NewIncidentEvent(SourceBrowserJS, SeverityError, "TypeError", "dup error", Context{}, nil)
+	ev := NewIncidentEvent(SourceBrowserJS, SeverityError, "TypeError", "dup error", Context{SessionID: sessionID}, nil)
 
 	// Publish same event twice.
 	bus.Publish(ev)
@@ -338,7 +338,7 @@ func TestPipeline_SessionTeardown_DrainsWithinTwoSeconds(t *testing.T) {
 
 	// Flood the bus with 500 events.
 	for i := 0; i < 500; i++ {
-		ev := NewIncidentEvent(SourceBrowserJS, SeverityError, "TypeError", "flood", Context{}, nil)
+		ev := NewIncidentEvent(SourceBrowserJS, SeverityError, "TypeError", "flood", Context{SessionID: sessionID}, nil)
 		bus.Fire(&ev)
 	}
 
@@ -416,6 +416,18 @@ func TestPipeline_SessionlessProductionEventFailsClosed(t *testing.T) {
 		if len(entries) != 0 {
 			t.Fatalf("sessionless production incident leaked into %s", sessionID)
 		}
+	}
+}
+
+func TestPipeline_SessionlessProductionEventFailsClosedWithOneSession(t *testing.T) {
+	bus := NewMPSCBus(nil)
+	t.Cleanup(bus.Close)
+	bus.AddSession("only-session", nil, nil, nil)
+	bus.Publish(NewIncidentEvent(SourceBrowserJS, SeverityError, "Test", "owner missing", Context{}, nil))
+	time.Sleep(30 * time.Millisecond)
+	entries, _ := bus.QuerySession("only-session", QueryFilter{})
+	if len(entries) != 0 {
+		t.Fatalf("sessionless production incident delivered with one active session")
 	}
 }
 

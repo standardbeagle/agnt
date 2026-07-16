@@ -737,6 +737,7 @@ func (d *Daemon) hubHandleProcRun(ctx context.Context, conn *hubpkg.Connection, 
 	}
 
 	processID := result.ProcessID
+	d.registerIncidentProcessOwner(processID, conn.SessionCode())
 
 	resp := map[string]interface{}{
 		"name":         name,

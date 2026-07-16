@@ -97,13 +97,14 @@ const (
 
 // ProxyEvent represents an event that triggers proxy creation or cleanup.
 type ProxyEvent struct {
-	Type      ProxyEventType
-	ScriptID  string // Process/script ID that triggered the event
-	URL       string // Detected URL (for URLDetected events)
-	ProxyID   string // Specific proxy ID (for ExplicitStart events)
-	ProxyName string // Config proxy name (for FallbackPortCheck events)
-	Config    *config.ProxyConfig
-	Path      string // Project path
+	Type         ProxyEventType
+	ScriptID     string // Process/script ID that triggered the event
+	URL          string // Detected URL (for URLDetected events)
+	ProxyID      string // Specific proxy ID (for ExplicitStart events)
+	ProxyName    string // Config proxy name (for FallbackPortCheck events)
+	Config       *config.ProxyConfig
+	Path         string // Project path
+	OwnerSession string // immutable session owner captured at creation request
 }
 
 // DaemonConfig holds configuration for the daemon.
@@ -222,21 +223,22 @@ type Daemon struct {
 	hub *hub.Hub
 
 	// agnt-specific managers
-	proxym            *proxy.ProxyManager
-	tunnelm           *tunnel.Manager
-	browserm          *browser.Manager
-	sessionm          *chromedp.SessionManager // chromedp automation sessions
-	storem            *store.StoreManager
-	automator         *automation.Processor
-	autoRestarter     *ProcessAutoRestarter // Process auto-restart manager
-	alertStore        *ProcessAlertStore    // Ring buffer store for process output alerts
-	alertScanner      *overlay.AlertScanner // Scans daemon-managed process output for errors
-	processExitInfo   *processExitInfoStore // In-memory death records (proc status + get_errors)
-	startupErrorStore *StartupLogStore      // Ring buffer for startup events
-	eventHub          *EventHub             // Routes alerts to overlay/MCP/stream sinks
-	incidentBus       *incident.MPSCBus     // Incident pipeline event bus (L8+)
-	incidentProxyPath sync.Map              // proxy ID -> normalized owning project path
-	hookRing          *hookRingBuffer       // Claude Code hook event ring buffer (phase 1 scope)
+	proxym               *proxy.ProxyManager
+	tunnelm              *tunnel.Manager
+	browserm             *browser.Manager
+	sessionm             *chromedp.SessionManager // chromedp automation sessions
+	storem               *store.StoreManager
+	automator            *automation.Processor
+	autoRestarter        *ProcessAutoRestarter // Process auto-restart manager
+	alertStore           *ProcessAlertStore    // Ring buffer store for process output alerts
+	alertScanner         *overlay.AlertScanner // Scans daemon-managed process output for errors
+	processExitInfo      *processExitInfoStore // In-memory death records (proc status + get_errors)
+	startupErrorStore    *StartupLogStore      // Ring buffer for startup events
+	eventHub             *EventHub             // Routes alerts to overlay/MCP/stream sinks
+	incidentBus          *incident.MPSCBus     // Incident pipeline event bus (L8+)
+	incidentProxyOwner   sync.Map              // proxy ID -> immutable owning session code
+	incidentProcessOwner sync.Map              // process ID -> immutable owning session code
+	hookRing             *hookRingBuffer       // Claude Code hook event ring buffer (phase 1 scope)
 
 	// forwardingPaused records per-session "stop pushing to the agent" toggles
 	// set from the overlay (OVERLAY FORWARDING verb). When a session is paused,
@@ -983,8 +985,9 @@ func (d *Daemon) ingestProcessAlert(m *overlay.AlertMatch, fallbackTS time.Time)
 	// the dual-write pattern fireToIncidentBus already uses for proxy signals.
 	if d.incidentBus != nil {
 		ev := incident.FromAlertMatch(m, m.ScriptID)
-		d.stampIncidentSession(&ev, projectPath)
-		d.incidentBus.Publish(ev)
+		if d.stampIncidentOwner(&ev, &d.incidentProcessOwner, m.ScriptID) {
+			d.incidentBus.Publish(ev)
+		}
 	}
 }
 
@@ -1065,8 +1068,9 @@ func (d *Daemon) startSwallowSweeperOnce() {
 					continue
 				}
 				for _, ev := range d.swallowDetector.Sweep(time.Now()) {
-					d.stampIncidentSession(&ev, d.incidentProjectForProxy(ev.Ctx.ProxyID))
-					d.incidentBus.Publish(ev)
+					if d.stampIncidentOwner(&ev, &d.incidentProxyOwner, ev.Ctx.ProxyID) {
+						d.incidentBus.Publish(ev)
+					}
 				}
 			}
 		}

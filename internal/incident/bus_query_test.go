@@ -42,7 +42,7 @@ func TestBus_QuerySession_ReturnsPublishedEvents(t *testing.T) {
 	deltaCh, cancelSub := pl.inbox.Subscribe()
 	defer cancelSub()
 
-	ev := NewIncidentEvent(SourceBrowserJS, SeverityError, "TypeError", "test query", Context{}, nil)
+	ev := NewIncidentEvent(SourceBrowserJS, SeverityError, "TypeError", "test query", Context{SessionID: "s2"}, nil)
 	bus.Publish(ev)
 
 	// Wait for event to land in inbox.
@@ -70,8 +70,8 @@ func TestBus_QuerySession_SeverityFilter(t *testing.T) {
 	deltaCh, cancelSub := pl.inbox.Subscribe()
 	defer cancelSub()
 
-	errEv := NewIncidentEvent(SourceBrowserJS, SeverityError, "Err", "error event", Context{}, nil)
-	warnEv := NewIncidentEvent(SourceHTTP4xx, SeverityWarning, "Warn", "warn event", Context{}, nil)
+	errEv := NewIncidentEvent(SourceBrowserJS, SeverityError, "Err", "error event", Context{SessionID: "s3"}, nil)
+	warnEv := NewIncidentEvent(SourceHTTP4xx, SeverityWarning, "Warn", "warn event", Context{SessionID: "s3"}, nil)
 	bus.Publish(errEv)
 	bus.Publish(warnEv)
 
@@ -108,7 +108,7 @@ func TestBus_QuerySession_LimitApplied(t *testing.T) {
 	// Publish 5 distinct events.
 	categories := []string{"A", "B", "C", "D", "E"}
 	for _, cat := range categories {
-		ev := NewIncidentEvent(SourceBrowserJS, SeverityWarning, cat, cat+" msg", Context{}, nil)
+		ev := NewIncidentEvent(SourceBrowserJS, SeverityWarning, cat, cat+" msg", Context{SessionID: "s4"}, nil)
 		bus.Publish(ev)
 	}
 	for i := range categories {
@@ -144,7 +144,7 @@ func TestBus_MarkReadSession_MarksEntriesRead(t *testing.T) {
 	deltaCh, cancelSub := pl.inbox.Subscribe()
 	defer cancelSub()
 
-	ev := NewIncidentEvent(SourceBrowserJS, SeverityError, "Type", "mark read test", Context{}, nil)
+	ev := NewIncidentEvent(SourceBrowserJS, SeverityError, "Type", "mark read test", Context{SessionID: "s5"}, nil)
 	bus.Publish(ev)
 	select {
 	case <-deltaCh:
