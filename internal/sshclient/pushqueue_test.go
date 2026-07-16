@@ -1,8 +1,13 @@
 package sshclient
 
 import (
+	"bufio"
 	"bytes"
+	"encoding/json"
 	"errors"
+	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -10,6 +15,40 @@ import (
 
 	"github.com/pkg/sftp"
 )
+
+func TestServePushQueueShortBodyTimesOutWithoutQueueOrActivation(t *testing.T) {
+	root, sc := newSFTPFixture(t)
+	q := NewPushQueue(root, 2, nil, nil)
+	q.SetSFTP(sc)
+	defer q.Close()
+	server, client := net.Pipe()
+	done := make(chan struct{})
+	go func() {
+		servePushQueueConnWithLimits(server, q, 20*time.Millisecond, 8)
+		close(done)
+	}()
+	defer client.Close()
+
+	writeRawControlPush(t, client, "queued-short.txt", 8, "tiny")
+	line, err := bufio.NewReader(client).ReadBytes('\n')
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	var response controlResponse
+	if err := json.Unmarshal(line, &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.OK || response.Error == "" {
+		t.Fatalf("short queue response = %+v", response)
+	}
+	<-done
+	if q.Depth() != 0 {
+		t.Fatalf("short body queued partial work: depth=%d", q.Depth())
+	}
+	if _, err := os.Stat(filepath.Join(root, DefaultInboxDir, "queued-short.txt")); !os.IsNotExist(err) {
+		t.Fatalf("short queued file activated: %v", err)
+	}
+}
 
 func TestPushQueueReconnectFlushesFIFOAndOpensSFTPLazily(t *testing.T) {
 	root, initial := newSFTPFixture(t)
