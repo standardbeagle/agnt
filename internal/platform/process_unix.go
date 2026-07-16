@@ -160,8 +160,13 @@ func killPIDWith(pid int, gracefulTimeout int, birthFn func(int) (string, bool),
 		return fmt.Errorf("invalid pid %d", pid)
 	}
 	birth, haveBirth := birthFn(pid)
-	pgid, pgidErr := getpgidFn(pid)
-	groupLeader := pgidErr == nil && pgid == pid
+	if !haveBirth || birth == "" {
+		return fmt.Errorf("cannot verify pid %d identity before signaling", pid)
+	}
+	groupLeader, err := verifiedPIDLeadership(pid, birth, birthFn, getpgidFn)
+	if err != nil {
+		return err
+	}
 	if groupLeader {
 		_ = killFn(-pid, syscall.SIGTERM)
 	}
@@ -177,19 +182,34 @@ func killPIDWith(pid int, gracefulTimeout int, birthFn func(int) (string, bool),
 
 	// PID reuse can occur during the grace delay. Fail closed unless the same
 	// kernel birth identity is still present immediately before escalation.
-	currentBirth, currentOK := birthFn(pid)
-	if !haveBirth || !currentOK || currentBirth != birth {
-		return fmt.Errorf("pid %d identity changed before SIGKILL escalation", pid)
+	groupLeader, err = verifiedPIDLeadership(pid, birth, birthFn, getpgidFn)
+	if err != nil {
+		return fmt.Errorf("pid %d changed before SIGKILL escalation: %w", pid, err)
 	}
 	if groupLeader {
-		// Re-verify leadership too: never turn an arbitrary non-leader PID into
-		// a negative-PID process-group signal target.
-		if currentPGID, err := getpgidFn(pid); err == nil && currentPGID == pid {
-			_ = killFn(-pid, syscall.SIGKILL)
-		}
+		_ = killFn(-pid, syscall.SIGKILL)
 	}
 	_ = killFn(pid, syscall.SIGKILL)
 	return nil
+}
+
+// verifiedPIDLeadership closes the Getpgid PID-reuse window by requiring the
+// same non-empty kernel birth identity both before and after leadership lookup.
+func verifiedPIDLeadership(pid int, expectedBirth string, birthFn func(int) (string, bool),
+	getpgidFn func(int) (int, error),
+) (bool, error) {
+	if expectedBirth == "" {
+		return false, fmt.Errorf("empty process birth identity")
+	}
+	pgid, err := getpgidFn(pid)
+	if err != nil {
+		return false, fmt.Errorf("getpgid(%d): %w", pid, err)
+	}
+	currentBirth, ok := birthFn(pid)
+	if !ok || currentBirth == "" || currentBirth != expectedBirth {
+		return false, fmt.Errorf("process birth identity no longer matches")
+	}
+	return pgid == pid, nil
 }
 
 // ScanWindows returns Windows-side processes when running under WSL.
