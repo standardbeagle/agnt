@@ -115,17 +115,28 @@ func (d *Daemon) hubHandleSessionHostCreate(conn *hubpkg.Connection, cmd *hubpro
 	// scoping helpers (hasOtherSessions, FindByDirectory) see it, tagged
 	// Kind=session-host so doCleanupExact's guard (daemon_session_cleanup.go)
 	// never reaps its pgid on a classic-session disconnect path.
-	_ = d.sessionRegistry.Register(&Session{
-		Code:        s.ID,
-		ProjectPath: s.ProjectPath,
-		Command:     s.Command,
-		Args:        s.Args,
-		StartedAt:   s.StartedAt,
-		Status:      SessionStatusActive,
-		LastSeen:    s.StartedAt,
-		SessionPGID: s.SessionPGID,
-		Kind:        SessionKindSessionHost,
-	})
+	//
+	// Route the Register through the per-code session lifecycle gate so it
+	// serializes against a classic SESSION REGISTER / reconnect ReplaceExact on
+	// a colliding code. An ungated Register could otherwise interleave with a
+	// reconnect's CAS and make it fail with ErrInternal. Scope the gate to the
+	// registry mutation alone: sessionhost.Create above already spawned the PTY
+	// and touches no gate, so there is no re-entrancy on this code's gate.
+	func() {
+		unlock := d.sessionLifecycle.lock(s.ID)
+		defer unlock()
+		_ = d.sessionRegistry.Register(&Session{
+			Code:        s.ID,
+			ProjectPath: s.ProjectPath,
+			Command:     s.Command,
+			Args:        s.Args,
+			StartedAt:   s.StartedAt,
+			Status:      SessionStatusActive,
+			LastSeen:    s.StartedAt,
+			SessionPGID: s.SessionPGID,
+			Kind:        SessionKindSessionHost,
+		})
+	}()
 
 	debug.Log("daemon", "SESSION-HOST CREATE: %s (pgid=%d, cmd=%s)", s.ID, s.SessionPGID, s.Command)
 
@@ -209,7 +220,23 @@ func (d *Daemon) hubHandleSessionHostKill(conn *hubpkg.Connection, cmd *hubproto
 	_ = s.Close()
 
 	d.sessionHosts.Remove(id)
-	_ = d.sessionRegistry.Unregister(id)
+
+	// Remove the shared-registry entry under the per-code lifecycle gate, using
+	// the exact-identity form so it matches the classic retirement path
+	// (finalizeSessionRetirement) and cannot delete an entry a concurrent
+	// classic REGISTER/reconnect installed under the same code. The pgid kill
+	// above stays deliberately OUTSIDE the gate: it mutates no registry, and
+	// holding the gate across a SIGTERM→SIGKILL escalation (up to the grace
+	// period) would needlessly block a same-code reconnect. Only the registry
+	// mutation is gated — the narrowest possible scope, and no gated call here
+	// re-enters this code's gate, so there is no deadlock.
+	func() {
+		unlock := d.sessionLifecycle.lock(id)
+		defer unlock()
+		if entry, ok := d.sessionRegistry.Get(id); ok {
+			d.sessionRegistry.UnregisterExact(id, entry)
+		}
+	}()
 
 	return conn.WriteOK(fmt.Sprintf("session-host session %s killed", id))
 }
