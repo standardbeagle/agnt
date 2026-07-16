@@ -317,11 +317,10 @@ func pingControl(conn net.Conn) (controlResponse, error) {
 
 // DiscoverActiveHosts lists every host with a live control socket: it globs
 // ~/.agnt/ssh/*.ctl and pings each one, keeping only hosts that answer.
-// A socket file that exists but does not answer (the owning 'agnt ssh'
-// process crashed without cleaning up) is treated as stale and removed —
-// mirroring ListenControl's own reclaim-on-register behavior, so a crashed
-// session does not linger in discovery results indefinitely between one
-// process's exit and another's next 'agnt ssh' to the same host.
+// Only a socket whose connect failure conclusively identifies a stale endpoint
+// is atomically quarantined and removed. Busy, timed-out, permission-denied,
+// malformed, or rejected responders are preserved because their ownership is
+// inconclusive; discovery never destroys a possibly-live session endpoint.
 func DiscoverActiveHosts() ([]string, error) {
 	return discoverControlHosts(controlSocketDialTimeout, pingControl)
 }

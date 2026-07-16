@@ -10,11 +10,22 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
 
 const controlSocketProbeTimeout = 250 * time.Millisecond
+
+type controlUnixHook struct{ run func(stage, path string) }
+
+var controlUnixTestHook atomic.Pointer[controlUnixHook]
+
+func runControlUnixHook(stage, path string) {
+	if hook := controlUnixTestHook.Load(); hook != nil {
+		hook.run(stage, path)
+	}
+}
 
 func localControlPath(host string) (string, error) {
 	dir, err := controlSocketDir()
@@ -35,17 +46,15 @@ func listenControlTransport(path string) (net.Listener, error) {
 		if !isConclusiveStaleControlError(probeErr) {
 			return nil, fmt.Errorf("sshclient: refusing to reclaim control socket %s after inconclusive liveness probe: %w", path, probeErr)
 		}
-		current, statErr := os.Lstat(path)
-		if statErr != nil {
-			if !os.IsNotExist(statErr) {
-				return nil, fmt.Errorf("sshclient: restating stale control socket %s: %w", path, statErr)
-			}
-		} else {
-			if !os.SameFile(original, current) {
-				return nil, fmt.Errorf("sshclient: control socket %s changed during stale probe; refusing to unlink", path)
-			}
-			if err := os.Remove(path); err != nil {
-				return nil, fmt.Errorf("sshclient: removing stale control socket %s: %w", path, err)
+		runControlUnixHook("listen-after-probe", path)
+		quarantine, claimErr := claimStaleControlPath(path, original)
+		if claimErr != nil {
+			return nil, claimErr
+		}
+		if quarantine != "" {
+			runControlUnixHook("listen-before-delete", path)
+			if err := os.Remove(quarantine); err != nil {
+				return nil, fmt.Errorf("sshclient: removing quarantined stale control socket %s: %w", quarantine, err)
 			}
 		}
 	} else if !os.IsNotExist(err) {
@@ -61,6 +70,44 @@ func listenControlTransport(path string) (net.Listener, error) {
 		return nil, fmt.Errorf("sshclient: securing control socket %s: %w", path, err)
 	}
 	return ln, nil
+}
+
+func claimStaleControlPath(path string, probed os.FileInfo) (string, error) {
+	quarantine := filepath.Join(filepath.Dir(path), fmt.Sprintf(".%s.quarantine.%d.%d", filepath.Base(path), os.Getpid(), time.Now().UnixNano()))
+	if err := os.Rename(path, quarantine); err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("sshclient: quarantining stale control socket %s: %w", path, err)
+	}
+	runControlUnixHook("after-quarantine", path)
+	claimed, err := os.Lstat(quarantine)
+	if err != nil {
+		return "", fmt.Errorf("sshclient: inspecting quarantined control socket %s: %w", quarantine, err)
+	}
+	if sameControlFile(probed, claimed) {
+		return quarantine, nil
+	}
+	if err := restoreQuarantinedControlPath(quarantine, path); err != nil {
+		return "", fmt.Errorf("sshclient: control socket %s changed during stale claim and could not be restored: %w", path, err)
+	}
+	return "", fmt.Errorf("sshclient: control socket %s changed during stale claim; replacement preserved", path)
+}
+
+func sameControlFile(a, b os.FileInfo) bool {
+	// SameFile alone is vulnerable to immediate inode reuse after an owner
+	// unlinks and replaces the socket. Creation metadata makes that reuse fail
+	// closed while retaining a portable Unix implementation.
+	return os.SameFile(a, b) && a.Mode() == b.Mode() && a.Size() == b.Size() && a.ModTime().Equal(b.ModTime())
+}
+
+func restoreQuarantinedControlPath(quarantine, path string) error {
+	// Link is an atomic no-replace claim: unlike Rename it cannot overwrite a
+	// newer owner that appeared at path while the quarantined inode was checked.
+	if err := os.Link(quarantine, path); err != nil {
+		return err
+	}
+	return os.Remove(quarantine)
 }
 
 func probeControlSocket(path string, timeout time.Duration) (bool, error) {
@@ -118,8 +165,10 @@ func discoverControlHosts(timeout time.Duration, ping func(net.Conn) (controlRes
 		conn, err := dialControlTransport(path, timeout)
 		if err != nil {
 			if original.Mode()&os.ModeSocket != 0 && isConclusiveStaleControlError(err) {
-				if current, currentErr := os.Lstat(path); currentErr == nil && os.SameFile(original, current) {
-					_ = os.Remove(path)
+				runControlUnixHook("discover-after-probe", path)
+				if quarantine, claimErr := claimStaleControlPath(path, original); claimErr == nil && quarantine != "" {
+					runControlUnixHook("discover-before-delete", path)
+					_ = os.Remove(quarantine)
 				}
 			}
 			continue
