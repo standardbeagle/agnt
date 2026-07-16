@@ -87,20 +87,118 @@ func ShouldUseWindowsCommand(command string) bool {
 }
 
 func shouldUseWindowsCommand(command string, isWSL bool) bool {
-	command = strings.TrimSpace(command)
-	if command == "" {
+	if !isWSL {
 		return false
 	}
-	executable := command
-	if command[0] == '"' || command[0] == '\'' {
-		quote := command[0]
-		if end := strings.IndexByte(command[1:], quote); end >= 0 {
-			executable = command[1 : end+1]
+	words := scanShellCommandWords(command)
+	for _, word := range words {
+		if isPOSIXAssignment(word.cooked) {
+			continue
 		}
-	} else if fields := strings.Fields(command); len(fields) > 0 {
-		executable = fields[0]
+		return windowsCommandExecutable(word)
 	}
-	return shouldUseWindowsShellPath(executable, isWSL)
+	return false
+}
+
+type shellCommandWord struct {
+	raw    string
+	cooked string
+	quoted bool
+}
+
+func scanShellCommandWords(command string) []shellCommandWord {
+	var words []shellCommandWord
+	for i := 0; i < len(command); {
+		for i < len(command) && (command[i] == ' ' || command[i] == '\t' || command[i] == '\n') {
+			i++
+		}
+		if i == len(command) {
+			break
+		}
+		start := i
+		var cooked strings.Builder
+		var quote byte
+		quoted := false
+		for i < len(command) {
+			c := command[i]
+			if quote == 0 && (c == ' ' || c == '\t' || c == '\n') {
+				break
+			}
+			if c == '\'' && quote != '"' {
+				quoted = true
+				if quote == '\'' {
+					quote = 0
+				} else {
+					quote = '\''
+				}
+				i++
+				continue
+			}
+			if c == '"' && quote != '\'' {
+				quoted = true
+				if quote == '"' {
+					quote = 0
+				} else {
+					quote = '"'
+				}
+				i++
+				continue
+			}
+			if c == '\\' && quote != '\'' && i+1 < len(command) {
+				next := command[i+1]
+				if quote == 0 || next == '\\' || next == '"' || next == '$' || next == '\n' {
+					cooked.WriteByte(next)
+					i += 2
+					continue
+				}
+			}
+			cooked.WriteByte(c)
+			i++
+		}
+		words = append(words, shellCommandWord{raw: command[start:i], cooked: cooked.String(), quoted: quoted})
+	}
+	return words
+}
+
+func isPOSIXAssignment(word string) bool {
+	eq := strings.IndexByte(word, '=')
+	if eq <= 0 {
+		return false
+	}
+	for i := 0; i < eq; i++ {
+		c := word[i]
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && c != '_' && !(i > 0 && c >= '0' && c <= '9') {
+			return false
+		}
+	}
+	return true
+}
+
+func windowsCommandExecutable(word shellCommandWord) bool {
+	raw := strings.Trim(word.raw, `"'`)
+	if len(raw) >= 3 && ((raw[0] >= 'A' && raw[0] <= 'Z') || (raw[0] >= 'a' && raw[0] <= 'z')) && raw[1] == ':' && raw[2] == '\\' {
+		return true
+	}
+	if strings.HasPrefix(raw, `\\`) {
+		return true
+	}
+	if shouldUseWindowsShellPath(word.cooked, true) && !strings.ContainsRune(raw, '\\') {
+		return true // /mnt/<drive>/... executable
+	}
+	if strings.ContainsRune(raw, '\\') && !strings.HasPrefix(raw, "./") && (word.quoted || hasWindowsExecutableSuffix(raw)) {
+		return true
+	}
+	return false
+}
+
+func hasWindowsExecutableSuffix(raw string) bool {
+	lower := strings.ToLower(raw)
+	for _, suffix := range []string{".exe", ".cmd", ".bat", ".com", ".ps1"} {
+		if strings.HasSuffix(lower, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 // Scan returns all running processes by reading /proc on Linux.
