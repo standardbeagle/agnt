@@ -390,9 +390,11 @@ func (pt *FilePIDTracker) GetDescendants(pid int) []int {
 	return nil
 }
 
-// GetVerifiedDescendants returns stored descendant PIDs whose current process
-// identity still matches the identity captured during the last scan.
-func (pt *FilePIDTracker) GetVerifiedDescendants(pid int) []int {
+// GetVerifiedDescendants returns stored descendants whose current process
+// identity still matches the scanner-captured identity. UPSTREAM: return that
+// captured token atomically with the PID so cleanup never re-captures and
+// accidentally blesses a recycled process.
+func (pt *FilePIDTracker) GetVerifiedDescendants(pid int) []VerifiedDescendant {
 	pt.mu.Lock()
 	defer pt.mu.Unlock()
 
@@ -401,10 +403,13 @@ func (pt *FilePIDTracker) GetVerifiedDescendants(pid int) []int {
 		if proc.PID != pid {
 			continue
 		}
-		var result []int
+		var result []VerifiedDescendant
 		for _, dpid := range proc.DescendantPIDs {
 			if descendantIdentityMatches(proc, dpid) {
-				result = append(result, dpid)
+				result = append(result, VerifiedDescendant{
+					PID:      dpid,
+					Identity: proc.DescendantIdentities[dpid],
+				})
 			}
 		}
 		return result

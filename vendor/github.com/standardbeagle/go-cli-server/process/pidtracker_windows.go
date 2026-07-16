@@ -24,6 +24,8 @@ func scanDescendantPIDs(pid int) []int {
 
 // killStoredDescendants is a no-op on Windows.
 // Windows Job Objects handle descendant cleanup automatically.
+// UPSTREAM: signature parity for the identity-bearing Unix cleanup contract;
+// Windows Job Objects own descendant teardown.
 func killStoredDescendants(pids []int, identities map[int]string) {}
 
 // processIdentity cannot be captured cheaply on Windows here; return "" so

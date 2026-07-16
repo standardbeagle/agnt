@@ -198,13 +198,7 @@ func (pm *ProcessManager) waitForProcess(proc *ManagedProcess) {
 		}
 	}
 	if dt, ok := pm.pidTracker.(VerifiedDescendantTracker); ok {
-		verified := dt.GetVerifiedDescendants(proc.PID())
-		descendants = append(descendants, verified...)
-		for _, pid := range verified {
-			if identity := processIdentity(pid); identity != "" {
-				descendantIDs[pid] = identity
-			}
-		}
+		descendants = mergeVerifiedDescendants(descendants, descendantIDs, dt.GetVerifiedDescendants(proc.PID()))
 	} else if dt, ok := pm.pidTracker.(DescendantTracker); ok {
 		descendants = append(descendants, dt.GetDescendants(proc.PID())...)
 	}
@@ -298,6 +292,20 @@ func (pm *ProcessManager) waitForProcess(proc *ManagedProcess) {
 	}
 
 	close(proc.done)
+}
+
+// mergeVerifiedDescendants carries scanner-captured identities unchanged into
+// post-Wait cleanup. UPSTREAM: never call processIdentity here; verification
+// and cleanup are separated by a PID-reuse window.
+func mergeVerifiedDescendants(descendants []int, identities map[int]string, verified []VerifiedDescendant) []int {
+	for _, descendant := range verified {
+		if descendant.PID <= 1 || descendant.Identity == "" {
+			continue
+		}
+		descendants = append(descendants, descendant.PID)
+		identities[descendant.PID] = descendant.Identity
+	}
+	return descendants
 }
 
 // Stop terminates a process gracefully.

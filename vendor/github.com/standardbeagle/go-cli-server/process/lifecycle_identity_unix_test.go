@@ -38,3 +38,29 @@ func TestKillStoredDescendantsRequiresCapturedMatchingIdentity(t *testing.T) {
 		t.Fatalf("killed=%v, want only identity-matched pid 52", killed)
 	}
 }
+
+func TestVerifiedDescendantRecycleBeforeCleanupUsesScannerIdentity(t *testing.T) {
+	t.Parallel()
+
+	identities := make(map[int]string)
+	descendants := mergeVerifiedDescendants(nil, identities, []VerifiedDescendant{{
+		PID:      61,
+		Identity: "scanner-captured",
+	}})
+
+	// Simulate PID reuse after tracker verification but before cleanup. The
+	// replacement's identity must be compared with scanner evidence, never
+	// installed as the new expected identity.
+	killed := false
+	killStoredDescendantsWith(descendants, identities,
+		func(int) string { return "recycled-after-verification" },
+		func(int) bool { return true },
+		func(int) { killed = true },
+	)
+	if killed {
+		t.Fatal("PID recycled after verification was killed")
+	}
+	if identities[61] != "scanner-captured" {
+		t.Fatalf("cleanup identity=%q, want scanner-captured evidence", identities[61])
+	}
+}

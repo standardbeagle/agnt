@@ -72,7 +72,7 @@ func (pm *ProcessManager) signalProcessGroup(pid int, sig syscall.Signal) error 
 	}
 	if dt, ok := pm.pidTracker.(VerifiedDescendantTracker); ok {
 		for _, d := range dt.GetVerifiedDescendants(pid) {
-			addDescendant(d)
+			addDescendant(d.PID)
 		}
 	} else if dt, ok := pm.pidTracker.(DescendantTracker); ok {
 		for _, d := range dt.GetDescendants(pid) {

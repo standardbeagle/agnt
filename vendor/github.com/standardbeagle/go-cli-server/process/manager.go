@@ -47,8 +47,16 @@ type DescendantTracker interface {
 	UpdateDescendants(pid int, descendants []int) error
 }
 
+// VerifiedDescendant carries the identity captured by the trusted scanner with
+// its PID. UPSTREAM: callers must carry this evidence through cleanup instead
+// of re-sampling identity after verification, when the PID may be recycled.
+type VerifiedDescendant struct {
+	PID      int
+	Identity string
+}
+
 type VerifiedDescendantTracker interface {
-	GetVerifiedDescendants(pid int) []int
+	GetVerifiedDescendants(pid int) []VerifiedDescendant
 }
 
 // ManagerConfig holds configuration for the ProcessManager.
