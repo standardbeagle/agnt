@@ -952,8 +952,8 @@ func (d *Daemon) AutoRestarter() *ProcessAutoRestarter {
 // ingestProcessAlert routes a single AlertScanner match to every agent-facing
 // surface: the legacy alertStore (get_errors) AND the incident bus
 // (get_incidents). Before this, process alerts reached only alertStore + the
-// browser toast (EventHub.Deliver), so a session running with the incident
-// pipeline enabled saw process errors pop as toasts but never in its inbox.
+// browser toast (EventHub.Deliver), so process errors appeared as toasts but
+// never entered registered session inboxes.
 // fallbackTS is used when the match carries no timestamp.
 func (d *Daemon) ingestProcessAlert(m *overlay.AlertMatch, fallbackTS time.Time) {
 	mts := m.Timestamp
@@ -987,9 +987,9 @@ func (d *Daemon) ingestProcessAlert(m *overlay.AlertMatch, fallbackTS time.Time)
 	if m.Pattern.Category == "rebuild" && m.ScriptID != "" {
 		d.healthTracker.RecordRebuildSignal(m.ScriptID)
 	}
-	// Mirror into the incident pipeline. The bus is a no-op when no session has
-	// the pipeline enabled, so this is safe to call unconditionally — it matches
-	// the dual-write pattern fireToIncidentBus already uses for proxy signals.
+	// Mirror into the always-active incident pipeline. The bus is a no-op when no
+	// session inbox is registered, so this is safe to call unconditionally — it
+	// matches the dual-write pattern fireToIncidentBus uses for proxy signals.
 	if d.incidentBus != nil {
 		d.ingestProcessIncident(m)
 	}

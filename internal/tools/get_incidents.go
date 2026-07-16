@@ -130,7 +130,8 @@ func makeGetIncidentsHandler(dt *DaemonTools) func(context.Context, *mcp.CallToo
 		// A failed connect or query must be surfaced, not swallowed: rendering an
 		// empty inbox for a down daemon reports a false-healthy state and the
 		// agent stops investigating. Reserve the empty-result path for a genuinely
-		// empty inbox (PipelineEnabled distinguishes "pipeline off" from "no data").
+		// empty inbox (PipelineEnabled distinguishes an unavailable session inbox
+		// from a registered inbox with no data).
 		if err := dt.ensureConnected(); err != nil {
 			return errorResult("incident query failed: cannot reach daemon: " + err.Error()), GetIncidentsOutput{}, nil
 		}

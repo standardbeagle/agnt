@@ -112,11 +112,11 @@ func resolveEffectiveGlobal(explicit *bool, resolveDefault func() (bool, error))
 	return resolveDefault()
 }
 
-// collectIncidentErrors projects the session incident inbox into unified errors
-// when the incident pipeline is active for the caller's session. The second
-// return is false when the pipeline is off (or the session is unattached), in
-// which case the caller must use the legacy collectors. Incident fingerprints
-// become the unified-error ID so get_errors and get_incidents share IDs.
+// collectIncidentErrors projects a registered session inbox into unified
+// errors. The second return is false when that inbox is unavailable (for
+// example the session is unattached or tearing down), in which case the caller
+// uses compatibility collectors. Incident fingerprints become the unified-error
+// ID so get_errors and get_incidents share IDs.
 func (dt *DaemonTools) collectIncidentErrors(input GetErrorsInput, includeWarnings bool) ([]unifiedError, bool) {
 	filter := protocol.IncidentQueryFilter{
 		ProcessID: input.ProcessID,
