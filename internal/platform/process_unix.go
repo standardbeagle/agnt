@@ -90,6 +90,9 @@ func shouldUseWindowsCommand(command string, isWSL bool) bool {
 	if !isWSL {
 		return false
 	}
+	if hasShellControlBoundary(command) {
+		return false
+	}
 	words := scanShellCommandWords(command)
 	for _, word := range words {
 		if isPOSIXAssignment(word.raw) {
@@ -98,6 +101,40 @@ func shouldUseWindowsCommand(command string, isWSL bool) bool {
 		return windowsCommandExecutable(word)
 	}
 	return false
+}
+
+func hasShellControlBoundary(command string) bool {
+	var quote byte
+	for i := 0; i < len(command); i++ {
+		c := command[i]
+		if c == '\\' && quote != '\'' {
+			if i+1 == len(command) {
+				return true // malformed trailing escape: keep shell diagnostics
+			}
+			i++
+			continue
+		}
+		if c == '\'' && quote != '"' {
+			if quote == '\'' {
+				quote = 0
+			} else {
+				quote = '\''
+			}
+			continue
+		}
+		if c == '"' && quote != '\'' {
+			if quote == '"' {
+				quote = 0
+			} else {
+				quote = '"'
+			}
+			continue
+		}
+		if quote == 0 && (c == ';' || c == '\n' || c == '|' || c == '&') {
+			return true
+		}
+	}
+	return quote != 0
 }
 
 type shellCommandWord struct {
