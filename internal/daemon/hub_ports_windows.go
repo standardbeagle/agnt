@@ -12,6 +12,6 @@ func (d *Daemon) scanOrphans() []platform.OrphanPGID {
 }
 
 // reapOrphans is a no-op on Windows (see scanOrphans).
-func (d *Daemon) reapOrphans() ([]int, []map[string]interface{}) {
+func (d *Daemon) reapOrphans(string) ([]int, []map[string]interface{}) {
 	return nil, nil
 }

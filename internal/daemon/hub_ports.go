@@ -197,11 +197,19 @@ func (d *Daemon) forwardMappingsByRemotePort() map[int]protocol.ForwardMapping {
 	return forwarded
 }
 
-// hubHandlePortsCleanOrphans reaps every orphaned process group owned by the
-// caller's uid (leader dead, members alive). The reap is platform-specific
+// hubHandlePortsCleanOrphans reaps orphaned process groups that carry positive
+// ownership evidence for the resolved project. The reap is platform-specific
 // (Unix pgid kill; no-op on Windows, where Job Objects own cascade-kill).
 func (d *Daemon) hubHandlePortsCleanOrphans(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	reaped, failed := d.reapOrphans()
+	dirFilter, err := unmarshalCommand[protocol.DirectoryFilter](cmd)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("invalid filter JSON: %v", err))
+	}
+	projectPath, _, err := d.resolveProjectScope(dirFilter, conn.SessionCode())
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
+	}
+	reaped, failed := d.reapOrphans(projectPath)
 
 	data, _ := json.Marshal(map[string]interface{}{
 		"reaped_count": len(reaped),
