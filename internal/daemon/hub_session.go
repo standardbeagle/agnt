@@ -429,16 +429,31 @@ func (d *Daemon) hubHandleSessionUnregister(conn *hubpkg.Connection, cmd *hubpro
 	}
 
 	code := cmd.Args[0]
+
+	// Cancel any pending deferred cleanup synchronously (just cancels a timer —
+	// cheap and safe even when the session is already gone: it prevents a stale
+	// timer from firing after we return).
+	d.cancelPendingCleanup(code)
+
 	session, ok := d.sessionRegistry.Get(code)
 	if !ok {
-		return conn.WriteErr(hubproto.ErrNotFound, fmt.Sprintf("session %q not found", code))
+		// Idempotent: UNREGISTER of an absent session has already reached the
+		// desired end state (session gone), so it is success, not error. A
+		// normal shutdown race — the deferred cleanup wins the disconnect, then
+		// the client sends an explicit UNREGISTER — must not surface a spurious
+		// ErrNotFound.
+		return conn.WriteOK(fmt.Sprintf("session %s already unregistered", code))
 	}
 
-	// Cancel any pending deferred cleanup synchronously (just cancels a timer — safe).
-	d.cancelPendingCleanup(code)
 	// Run cleanup in background; client can disconnect immediately. goTracked
 	// makes shutdown wait for an in-flight cleanup, and declines to start one
 	// once Stop has begun (Stop reaps those resources itself).
+	//
+	// reconnect-wins semantics: this goroutine captured the exact *Session
+	// pointer resolved above. If a reconnect swaps a fresh identity in under the
+	// lifecycle gate before this runs, doCleanupExact pointer-compares and
+	// no-ops while this handler has already returned OK — intended, so a stale
+	// UNREGISTER request cannot disturb the new lifetime.
 	d.goTracked(func() {
 		d.doCleanupExact(code, session, nil)
 	})

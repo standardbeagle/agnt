@@ -357,3 +357,18 @@ scripts {
 	assert.Less(t, elapsed, 2*time.Second,
 		"back-to-back registrations for distinct projects should not serialize (got %v)", elapsed)
 }
+
+// TestSessionUnregister_IdempotentForUnknownSession verifies that UNREGISTER of
+// a session the registry never held returns OK, not ErrNotFound. This is the
+// normal shutdown race: deferred cleanup wins the connection drop and retires
+// the session, then the client sends an explicit UNREGISTER — the desired end
+// state (session absent) already holds, so it is success.
+func TestSessionUnregister_IdempotentForUnknownSession(t *testing.T) {
+	t.Parallel()
+	_, sockPath := newSessionHostTestDaemon(t)
+
+	c := NewConn(sockPath)
+	defer c.Close()
+
+	require.NoError(t, c.Request("SESSION", "UNREGISTER", "never-registered").OK())
+}
