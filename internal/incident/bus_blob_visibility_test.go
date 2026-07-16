@@ -11,19 +11,19 @@ func TestBusDoesNotPublishPayloadRefBeforeBlobIsReadable(t *testing.T) {
 	defer bus.Close()
 	bus.AddSession("session", nil, nil, nil)
 	pl := bus.getSessionPipeline("session")
+	deltas, cancel := pl.inbox.Subscribe()
+	defer cancel()
 	pl.blobs.pauseDrain()
 
 	fullText := strings.Repeat("delayed-drain-payload-", 100)
 	bus.Publish(NewIncidentEvent(SourceBrowserJS, SeverityError, "TypeError", fullText,
 		Context{SessionID: "session"}, nil))
 
-	// Wait until dispatch has enqueued the acknowledged write. The paused drain
-	// makes this state deterministic; no scheduler-duration assumption is used.
-	queuedDeadline := time.Now().Add(time.Second)
-	for len(pl.blobs.writeCh) == 0 && time.Now().Before(queuedDeadline) {
-		time.Sleep(time.Millisecond)
-	}
-	if len(pl.blobs.writeCh) == 0 {
+	// Wait until dispatch has enqueued the acknowledged write. The worker has
+	// already confirmed it is parked, so the request cannot be committed yet.
+	select {
+	case <-pl.blobs.pausedWriteQueued():
+	case <-time.After(time.Second):
 		t.Fatal("dispatch never reached delayed blob write")
 	}
 	if entries, _ := bus.QuerySession("session", QueryFilter{}); len(entries) != 0 {
@@ -31,16 +31,21 @@ func TestBusDoesNotPublishPayloadRefBeforeBlobIsReadable(t *testing.T) {
 	}
 
 	pl.blobs.resumeDrain()
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		entries, _ := bus.QuerySession("session", QueryFilter{})
-		if len(entries) == 1 && entries[0].Sample != nil && entries[0].Sample.PayloadRef != nil {
-			payload, _, err := bus.ReadSessionBlob("session", entries[0].Sample.PayloadRef.Hash)
-			if err == nil && string(payload) == fullText {
-				return
-			}
-		}
-		time.Sleep(time.Millisecond)
+	select {
+	case <-deltas:
+	case <-time.After(time.Second):
+		t.Fatal("committed incident did not become visible")
 	}
-	t.Fatal("committed blob and incident did not become visible together")
+
+	entries, _ := bus.QuerySession("session", QueryFilter{})
+	if len(entries) != 1 || entries[0].Sample == nil || entries[0].Sample.PayloadRef == nil {
+		t.Fatalf("expected one incident with payload ref, got %#v", entries)
+	}
+	payload, _, err := bus.ReadSessionBlob("session", entries[0].Sample.PayloadRef.Hash)
+	if err != nil {
+		t.Fatalf("read committed blob: %v", err)
+	}
+	if string(payload) != fullText {
+		t.Fatal("committed blob payload mismatch")
+	}
 }
