@@ -377,6 +377,16 @@ func (d *Daemon) registerIncidentProxyOwner(proxyID, sessionCode string) {
 	d.incidentProxyOwner.LoadOrStore(proxyID, &incidentResourceOwner{sessionCode: sessionCode})
 }
 
+// registerIncidentProxyResourceOwner transfers the process lifetime's exact
+// typed owner to a proxy created on that process's behalf. Keeping the same
+// pointer is required by stampIncidentOwner's lifetime identity check.
+func (d *Daemon) registerIncidentProxyResourceOwner(proxyID string, owner *incidentResourceOwner) {
+	if proxyID == "" || owner == nil || owner.sessionCode == "" {
+		return
+	}
+	d.incidentProxyOwner.LoadOrStore(proxyID, owner)
+}
+
 func (d *Daemon) registerIncidentProcessOwner(processID, sessionCode string) {
 	if processID != "" && sessionCode != "" {
 		d.incidentProcessOwner.LoadOrStore(processID, &incidentResourceOwner{sessionCode: sessionCode})

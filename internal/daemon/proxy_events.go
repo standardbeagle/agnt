@@ -183,7 +183,7 @@ func (d *Daemon) handleURLDetected(event ProxyEvent) {
 		}
 
 		if owner, ok := d.incidentProcessOwner.Load(event.ScriptID); ok {
-			d.registerIncidentProxyOwner(server.ID, owner.(string))
+			d.registerIncidentProxyResourceOwner(server.ID, ownerAsIncidentResource(owner))
 		}
 		d.wireProxyLogger(server)
 
@@ -420,7 +420,7 @@ func (d *Daemon) handleFallbackPortCheck(event ProxyEvent) {
 	}
 
 	if owner, ok := d.incidentProcessOwner.Load(event.ScriptID); ok {
-		d.registerIncidentProxyOwner(server.ID, owner.(string))
+		d.registerIncidentProxyResourceOwner(server.ID, ownerAsIncidentResource(owner))
 	}
 	d.wireProxyLogger(server)
 
