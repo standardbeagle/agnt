@@ -116,12 +116,13 @@ func (d *Daemon) hubHandleSessionHostCreate(conn *hubpkg.Connection, cmd *hubpro
 	// Kind=session-host so doCleanupExact's guard (daemon_session_cleanup.go)
 	// never reaps its pgid on a classic-session disconnect path.
 	//
-	// Route the Register through the per-code session lifecycle gate so it
-	// serializes against a classic SESSION REGISTER / reconnect ReplaceExact on
-	// a colliding code. An ungated Register could otherwise interleave with a
-	// reconnect's CAS and make it fail with ErrInternal. Scope the gate to the
-	// registry mutation alone: sessionhost.Create above already spawned the PTY
-	// and touches no gate, so there is no re-entrancy on this code's gate.
+	// Route the Register through the per-code session lifecycle gate so registry
+	// mutations on this id are serialized with any classic SESSION REGISTER /
+	// reconnect ReplaceExact — the gate's job is to serialize lifecycle mutations,
+	// which is conservatively correct even though a session-host id (monotonic
+	// counter) can never actually collide with a classic code. Scope the gate to
+	// the registry mutation alone: sessionhost.Create above already spawned the
+	// PTY and touches no gate, so there is no re-entrancy on this code's gate.
 	func() {
 		unlock := d.sessionLifecycle.lock(s.ID)
 		defer unlock()
@@ -236,14 +237,17 @@ func (d *Daemon) hubHandleSessionHostKill(conn *hubpkg.Connection, cmd *hubproto
 	d.sessionHosts.Remove(id)
 
 	// Remove the shared-registry entry under the per-code lifecycle gate, using
-	// the exact-identity form so it matches the classic retirement path
-	// (finalizeSessionRetirement) and cannot delete an entry a concurrent
-	// classic REGISTER/reconnect installed under the same code. The pgid kill
-	// above stays deliberately OUTSIDE the gate: it mutates no registry, and
-	// holding the gate across a SIGTERM→SIGKILL escalation (up to the grace
-	// period) would needlessly block a same-code reconnect. Only the registry
-	// mutation is gated — the narrowest possible scope, and no gated call here
-	// re-enters this code's gate, so there is no deadlock.
+	// the exact-identity form to match the classic retirement path
+	// (finalizeSessionRetirement). The gate serializes lifecycle mutations on
+	// this code, and the exact form guards the Get-to-delete window so a change
+	// that lands between the Get and the delete cannot be clobbered. What makes a
+	// cross-kind collision impossible here is neither of those: session-host ids
+	// come from a global monotonic counter, so no classic REGISTER can ever hold
+	// this id. The pgid kill above stays deliberately OUTSIDE the gate: it mutates
+	// no registry, and holding the gate across a SIGTERM→SIGKILL escalation (up to
+	// the grace period) would needlessly block a same-code reconnect. Only the
+	// registry mutation is gated — the narrowest possible scope, and no gated call
+	// here re-enters this code's gate, so there is no deadlock.
 	func() {
 		unlock := d.sessionLifecycle.lock(id)
 		defer unlock()

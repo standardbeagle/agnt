@@ -123,7 +123,7 @@ func TestDeferredCleanup_SessionHostIsNeverReaped(t *testing.T) {
 	require.NoError(t, d.sessionRegistry.Register(&Session{
 		Code:        "hosted",
 		Kind:        SessionKindSessionHost,
-		ProjectPath: "", // exercises the no-project branch, which bypasses doCleanup
+		ProjectPath: "", // exercises the no-project branch, which bypasses doCleanupExact
 		SessionPGID: pgid,
 		StartedAt:   time.Now(),
 		Status:      SessionStatusActive,

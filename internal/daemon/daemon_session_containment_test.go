@@ -239,7 +239,7 @@ func TestSessionContainment_PortReuseAfterCleanup(t *testing.T) {
 		LastSeen:    time.Now(),
 	}))
 
-	// Step 2: session A disconnects. doCleanup must reap the pgid.
+	// Step 2: session A disconnects. doCleanupExact must reap the pgid.
 	d.CleanupSessionResources("session-A")
 
 	// Step 3: the port must be free within the pgid kill grace window

@@ -199,7 +199,7 @@ func TestSessionBasedCleanup(t *testing.T) {
 	// goroutine has observed the disconnect — but we also must not pin the
 	// test to a fixed wall-clock wait.
 	//
-	// The deadline is a deadlock guard, not a budget. doCleanup stops the
+	// The deadline is a deadlock guard, not a budget. doCleanupExact stops the
 	// process with a SIGTERM→SIGKILL escalation whose graceful window defaults
 	// to 5s, so a 5s deadline was racing the very thing it waited for: on a
 	// loaded machine the kill had not escalated yet and the process was still

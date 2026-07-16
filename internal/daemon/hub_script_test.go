@@ -101,7 +101,7 @@ func TestCleanupSessionResources_ClearsExplicitProxyEntry(t *testing.T) {
 	t.Parallel()
 	daemon, tmpDir := newFallbackTestDaemon(t)
 
-	// Register a session owning this project so doCleanup takes the
+	// Register a session owning this project so doCleanupExact takes the
 	// "last session" branch.
 	session := &Session{
 		Code:        "t5-cleanup",
