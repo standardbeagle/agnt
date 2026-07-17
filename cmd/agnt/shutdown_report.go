@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/standardbeagle/agnt/internal/selflog"
 )
@@ -113,22 +114,38 @@ func appendCapped(buf []string, s string, max int) []string {
 	return buf
 }
 
+// exitKind distinguishes deaths the agent chose from deaths done to it. The
+// two need opposite explanations: a non-zero status is the agent's own verdict
+// and its output usually says why, while a signal came from outside the agent
+// entirely — blaming the agent for it sends the user hunting through their own
+// code for a bug that is not there.
+type exitKind int
+
+const (
+	// exitStatus — the agent ran, decided to stop, and set a non-zero code.
+	exitStatus exitKind = iota
+	// exitSignal — something outside the agent killed it.
+	exitSignal
+	// exitAbnormal — Wait() failed in a way that is neither of the above.
+	exitAbnormal
+)
+
 // classifyChildExit inspects the child's Wait() error and reports whether the
-// exit was unexpected (warrants a persistent notice) plus a human reason.
-// userInterrupted is true when agnt itself received SIGINT/SIGTERM (the user
-// asked to quit) — that path is always treated as clean. Uses ProcessState
+// exit was unexpected (warrants a persistent notice), how it died, and a human
+// reason. userInterrupted is true when agnt itself received SIGINT/SIGTERM (the
+// user asked to quit) — that path is always treated as clean. Uses ProcessState
 // text ("signal: killed", "exit status 1") rather than syscall.WaitStatus so
 // it compiles unchanged on Windows.
-func classifyChildExit(waitErr error, userInterrupted bool) (unexpected bool, reason string) {
+func classifyChildExit(waitErr error, userInterrupted bool) (unexpected bool, kind exitKind, reason string) {
 	if waitErr == nil {
-		return false, "" // exit 0
+		return false, exitStatus, "" // exit 0
 	}
 	var ee *exec.ExitError
 	if !errors.As(waitErr, &ee) {
 		if userInterrupted {
-			return false, ""
+			return false, exitAbnormal, ""
 		}
-		return true, fmt.Sprintf("agent process ended abnormally: %v", waitErr)
+		return true, exitAbnormal, fmt.Sprintf("agent process ended abnormally: %v", waitErr)
 	}
 
 	code := ee.ExitCode() // -1 when terminated by a signal (Unix)
@@ -137,22 +154,22 @@ func classifyChildExit(waitErr error, userInterrupted bool) (unexpected bool, re
 
 	if strings.Contains(lower, "signal:") {
 		if userInterrupted && (strings.Contains(lower, "interrupt") || strings.Contains(lower, "terminated") || strings.Contains(lower, "hangup")) {
-			return false, ""
+			return false, exitSignal, ""
 		}
 		if strings.Contains(lower, "killed") {
-			return true, "agent process was killed (SIGKILL) — likely out-of-memory or a host resource limit"
+			return true, exitSignal, "agent process was killed (SIGKILL) — likely out-of-memory or a host resource limit"
 		}
-		return true, fmt.Sprintf("agent process crashed (%s)", desc)
+		return true, exitSignal, fmt.Sprintf("agent process was terminated (%s)", desc)
 	}
 
 	if code == 0 {
-		return false, ""
+		return false, exitStatus, ""
 	}
 	// 130 = SIGINT-via-shell, 143 = SIGTERM-via-shell: clean when the user quit.
 	if userInterrupted && (code == 130 || code == 143) {
-		return false, ""
+		return false, exitStatus, ""
 	}
-	return true, fmt.Sprintf("agent process exited with status %d", code)
+	return true, exitStatus, fmt.Sprintf("agent process exited with status %d", code)
 }
 
 // shutdownWriter is the sink for the persistent notice. Overridable in tests.
@@ -170,7 +187,7 @@ var shutdownWriter io.Writer = os.Stdout
 // agnt appended, which is the one failure agnt itself can cause), and offers
 // concrete next steps.
 func reportUnexpectedShutdown(waitErr error, userInterrupted bool, launch agentLaunch, tail, resourceLines []string) {
-	unexpected, reason := classifyChildExit(waitErr, userInterrupted)
+	unexpected, kind, reason := classifyChildExit(waitErr, userInterrupted)
 	if !unexpected {
 		return
 	}
@@ -178,8 +195,9 @@ func reportUnexpectedShutdown(waitErr error, userInterrupted bool, launch agentL
 		reason = "agent session ended unexpectedly"
 	}
 
+	tail = meaningfulTail(tail)
 	recordShutdown(reason, tail, resourceLines)
-	fmt.Fprint(shutdownWriter, formatShutdownBanner(reason, launch, tail, resourceLines))
+	fmt.Fprint(shutdownWriter, formatShutdownBanner(reason, kind, launch, tail, resourceLines))
 }
 
 // recordShutdown writes the one-line selflog entry. The agent's last output
@@ -196,9 +214,51 @@ func recordShutdown(reason string, tail, resourceLines []string) {
 	selflog.Record("run", "%s", strings.Join(parts, " | "))
 }
 
+// meaningfulTail strips what a full-screen TUI agent leaves in the tap: box
+// borders, and the same status/prompt rows redrawn over and over. Replaying
+// those verbatim buries any real line in frame noise and pads the banner with
+// text that tells the reader nothing.
+//
+// The filter is deliberately dumb — drop rows with nothing but punctuation and
+// box-drawing, collapse repeats — because anything cleverer starts guessing at
+// which lines "look important", which is the pattern-matching mistake the tap
+// exists to avoid. A line with real words always survives.
+func meaningfulTail(tail []string) []string {
+	out := make([]string, 0, len(tail))
+	seen := make(map[string]int, len(tail))
+	for _, l := range tail {
+		if !hasWordContent(l) {
+			continue // box border, rule, bare prompt glyph
+		}
+		// A redrawn frame repeats rows verbatim; keep the latest position only.
+		if i, dup := seen[l]; dup {
+			out = append(out[:i], out[i+1:]...)
+			for k, v := range seen {
+				if v > i {
+					seen[k] = v - 1
+				}
+			}
+		}
+		seen[l] = len(out)
+		out = append(out, l)
+	}
+	return out
+}
+
+// hasWordContent reports whether a line carries at least one letter or digit.
+// Box art, rules, and spinner glyphs do not.
+func hasWordContent(s string) bool {
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			return true
+		}
+	}
+	return false
+}
+
 // formatShutdownBanner renders the persistent terminal notice. Lines are
 // CRLF-terminated because the terminal is still in raw mode when it prints.
-func formatShutdownBanner(reason string, launch agentLaunch, tail, resourceLines []string) string {
+func formatShutdownBanner(reason string, kind exitKind, launch agentLaunch, tail, resourceLines []string) string {
 	agent := launch.Command
 	if agent == "" {
 		agent = "the agent"
@@ -206,10 +266,10 @@ func formatShutdownBanner(reason string, launch agentLaunch, tail, resourceLines
 
 	var b strings.Builder
 	b.WriteString("\r\n\x1b[1;33m⚠ " + agent + " ended unexpectedly — " + reason + "\x1b[0m\r\n")
-	b.WriteString("  The error below is from " + agent + " itself; agnt only launched it.\r\n")
+	b.WriteString("  " + attribution(agent, kind) + "\r\n")
 
 	if len(tail) > 0 {
-		b.WriteString("\r\n  Last output from " + agent + ":\r\n")
+		b.WriteString("\r\n  Last output from " + agent + " (may be a redraw, not an error):\r\n")
 		for _, l := range tail {
 			b.WriteString("    " + l + "\r\n")
 		}
@@ -224,28 +284,53 @@ func formatShutdownBanner(reason string, launch agentLaunch, tail, resourceLines
 		}
 	}
 
-	if len(launch.Injected) > 0 {
+	if kind == exitStatus && len(launch.Injected) > 0 {
 		b.WriteString("\r\n  agnt launched:\r\n")
 		b.WriteString("    " + launch.CommandLine() + "\r\n")
 		b.WriteString("  agnt appended " + strings.Join(launch.Injected, " ") + " to inject its system prompt.\r\n")
 	}
 
 	b.WriteString("\r\n  How to resolve:\r\n")
-	for _, step := range resolutionSteps(launch) {
+	for _, step := range resolutionSteps(kind, launch) {
 		b.WriteString("    • " + step + "\r\n")
 	}
 	return b.String()
 }
 
-// resolutionSteps lists what the user can actually do next, most-likely fix
-// first. When agnt appended flags, that is the first thing to rule out — it is
-// the only part of the launch the user did not write.
-func resolutionSteps(launch agentLaunch) []string {
-	var steps []string
+// attribution says who is responsible for the death, because the honest answer
+// differs by kind and the wrong one wastes the reader's time. A signal means
+// some other process killed the agent; saying "the error below is from the
+// agent" there is simply false — there may be no error at all.
+func attribution(agent string, kind exitKind) string {
+	switch kind {
+	case exitSignal:
+		return "A signal killed " + agent + " from the outside — this is not an error " + agent + " reported."
+	case exitAbnormal:
+		return "agnt could not determine how " + agent + " ended."
+	default:
+		return "The output below is from " + agent + " itself; agnt only launched it."
+	}
+}
+
+// resolutionSteps lists what the user can actually do next, most-likely cause
+// first. The list differs by kind: for a signal the question is who sent it, and
+// nothing in the agent's own output will answer that.
+func resolutionSteps(kind exitKind, launch agentLaunch) []string {
 	agent := launch.Command
 	if agent == "" {
 		agent = "the agent"
 	}
+	logStep := "Full log: `agnt hook log`  (" + selflog.DefaultPath() + ")"
+
+	if kind == exitSignal {
+		return []string{
+			"Check `agnt hook log` for an agnt session-cleanup record at the same time — agnt reaps a session's whole process group when the daemon decides the session ended.",
+			"Rule out the host: an OOM kill shows up in `dmesg`, and closing the terminal signals the whole group.",
+			logStep,
+		}
+	}
+
+	var steps []string
 	if len(launch.Injected) > 0 {
 		steps = append(steps,
 			"Run `"+agent+"` on its own. If it starts fine, an appended flag above is the cause.",
@@ -255,5 +340,5 @@ func resolutionSteps(launch agentLaunch) []string {
 	} else {
 		steps = append(steps, "Run `"+agent+"` on its own to see whether it fails the same way outside agnt.")
 	}
-	return append(steps, "Full log: `agnt hook log`  ("+selflog.DefaultPath()+")")
+	return append(steps, logStep)
 }

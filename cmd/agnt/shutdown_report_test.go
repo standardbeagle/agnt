@@ -6,7 +6,11 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/standardbeagle/agnt/internal/selflog"
 )
@@ -23,13 +27,13 @@ func waitErrExit(t *testing.T, code int) error {
 // without a user interrupt.
 func TestClassifyChildExit(t *testing.T) {
 	// Clean exit 0.
-	if un, _ := classifyChildExit(waitErrExit(t, 0), false); un {
+	if un, _, _ := classifyChildExit(waitErrExit(t, 0), false); un {
 		t.Fatal("exit 0 should be clean")
 	}
 
 	// Non-zero exit → unexpected, reason names the status.
-	un, reason := classifyChildExit(waitErrExit(t, 2), false)
-	if !un || !strings.Contains(reason, "status 2") {
+	un, kind, reason := classifyChildExit(waitErrExit(t, 2), false)
+	if !un || kind != exitStatus || !strings.Contains(reason, "status 2") {
 		t.Fatalf("exit 2: unexpected=%v reason=%q", un, reason)
 	}
 
@@ -40,17 +44,17 @@ func TestClassifyChildExit(t *testing.T) {
 	}
 	_ = c.Process.Kill()
 	killErr := c.Wait()
-	un, reason = classifyChildExit(killErr, false)
-	if !un || !(strings.Contains(reason, "killed") || strings.Contains(reason, "SIGKILL")) {
+	un, kind, reason = classifyChildExit(killErr, false)
+	if !un || kind != exitSignal || !(strings.Contains(reason, "killed") || strings.Contains(reason, "SIGKILL")) {
 		t.Fatalf("SIGKILL: unexpected=%v reason=%q", un, reason)
 	}
 
 	// A shell-level SIGINT exit (130) while the user interrupted → clean.
-	if un, _ := classifyChildExit(waitErrExit(t, 130), true); un {
+	if un, _, _ := classifyChildExit(waitErrExit(t, 130), true); un {
 		t.Fatal("exit 130 with user interrupt should be clean")
 	}
 	// Same code without a user interrupt → unexpected.
-	if un, _ := classifyChildExit(waitErrExit(t, 130), false); !un {
+	if un, _, _ := classifyChildExit(waitErrExit(t, 130), false); !un {
 		t.Fatal("exit 130 without user interrupt should be unexpected")
 	}
 }
@@ -211,7 +215,7 @@ func TestReportUnexpectedShutdown(t *testing.T) {
 // argv/config section (agnt appended nothing, so it cannot be the cause) and
 // no claim that the agent printed something when it printed nothing.
 func TestFormatShutdownBanner_NoInjection(t *testing.T) {
-	out := formatShutdownBanner("agent process exited with status 1",
+	out := formatShutdownBanner("agent process exited with status 1", exitStatus,
 		agentLaunch{Command: "opencode", Adapter: "opencode"}, nil, nil)
 	if strings.Contains(out, "agnt appended") || strings.Contains(out, "disabled true") {
 		t.Fatalf("injection guidance shown when nothing was injected:\n%s", out)
@@ -221,4 +225,69 @@ func TestFormatShutdownBanner_NoInjection(t *testing.T) {
 			t.Fatalf("banner missing %q in:\n%s", want, out)
 		}
 	}
+}
+
+// TestMeaningfulTail feeds the real frame noise a full-screen TUI agent (kimi)
+// left in the tap when it was killed: box borders, a redrawn prompt row, and a
+// status row repeated verbatim. Replaying that verbatim buried the one
+// informative line and padded the banner with nothing.
+func TestMeaningfulTail(t *testing.T) {
+	raw := []string{
+		"│ >",
+		"╰──────────────────────────────────────",
+		"auto  kimi-for-coding  …/ai-storyteller  main [+3 -3]",
+		"● The dev server is warning about fs and path being imported in Edge Middleware.",
+		"Let me check the import chain to understand the",
+		"⠼ working... · Tip: ! to run a shell command",
+		"╭──────────────────────────────────────",
+		"│ >",
+		"auto  kimi-for-coding  …/ai-storyteller  main [+3 -3]",
+	}
+	got := meaningfulTail(raw)
+	want := []string{
+		"● The dev server is warning about fs and path being imported in Edge Middleware.",
+		"Let me check the import chain to understand the",
+		"⠼ working... · Tip: ! to run a shell command",
+		"auto  kimi-for-coding  …/ai-storyteller  main [+3 -3]",
+	}
+	assert.Equal(t, want, got, "box art dropped, repeated rows collapsed to their latest position")
+
+	// A line with real words always survives, however it is decorated.
+	assert.Equal(t, []string{"│ error: boom │"}, meaningfulTail([]string{"│ error: boom │", "╰───╯"}))
+	assert.Empty(t, meaningfulTail([]string{"╭───╮", "│ > │", "⠼"}), "pure chrome leaves nothing")
+}
+
+// TestReportUnexpectedShutdown_SignalDoesNotBlameTheAgent covers the case that
+// exposed the misattribution: kimi was terminated by a signal from outside, and
+// the banner claimed the (redraw) output below was an error kimi reported.
+func TestReportUnexpectedShutdown_SignalDoesNotBlameTheAgent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+
+	var buf bytes.Buffer
+	orig := shutdownWriter
+	shutdownWriter = &buf
+	t.Cleanup(func() { shutdownWriter = orig })
+
+	c := exec.Command("sleep", "30")
+	require.NoError(t, c.Start())
+	require.NoError(t, c.Process.Signal(syscall.SIGTERM))
+	waitErr := c.Wait()
+
+	kimi := agentLaunch{
+		Command:  "kimi",
+		Args:     []string{"--agent-file", "/tmp/x/agent.yaml"},
+		Injected: []string{"--agent-file", "/tmp/x/agent.yaml"},
+		Adapter:  "kimi-cli",
+	}
+	reportUnexpectedShutdown(waitErr, false, kimi, []string{"⠼ working..."}, nil)
+	out := buf.String()
+
+	assert.Contains(t, out, "A signal killed kimi from the outside")
+	assert.NotContains(t, out, "from kimi itself", "a signal death is not the agent's error")
+	assert.Contains(t, out, "session-cleanup record", "the sender is the question worth answering")
+	// Injection guidance belongs to a non-zero exit: a flag agnt appended
+	// cannot cause an external SIGTERM, so offering it here is a false lead.
+	assert.NotContains(t, out, "agnt appended")
+	assert.NotContains(t, out, "disabled true")
 }
