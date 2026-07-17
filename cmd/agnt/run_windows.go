@@ -69,7 +69,7 @@ func runConPTYChild(ctx context.Context, args []string, socketPath string, sessi
 	defer suppressAutostartDuringSetup(setupPhase)()
 
 	adapter := resolveAgentAdapter(command, projectPath)
-	cmdArgs, adapterPrompt := phaseCmdArgsAndPrompt(adapter, cmdArgs, setupPhase, socketPath)
+	launch, adapterPrompt := phaseCmdArgsAndPrompt(adapter, command, cmdArgs, setupPhase, socketPath)
 
 	// Get initial terminal size BEFORE any mode changes — VS Code and
 	// other embedded terminals may not report size correctly on stdin.
@@ -108,9 +108,9 @@ func runConPTYChild(ctx context.Context, args []string, socketPath string, sessi
 
 	var cmd *pty.Cmd
 	if shellWrap {
-		cmd = ptmx.Command(resolvedPath, buildPowerShellWrapArgs(command, cmdArgs)...)
+		cmd = ptmx.Command(resolvedPath, buildPowerShellWrapArgs(command, launch.Args)...)
 	} else {
-		cmd = ptmx.Command(resolvedPath, cmdArgs...)
+		cmd = ptmx.Command(resolvedPath, launch.Args...)
 	}
 	cmd.Env = append(os.Environ(), "AGNT_PROJECT_PATH="+projectPath, hookrules.AgntRunEnv+"=1")
 	if err := cmd.Start(); err != nil {
@@ -159,7 +159,7 @@ func runConPTYChild(ctx context.Context, args []string, socketPath string, sessi
 		WrapOutput: func(dest io.Writer) io.Writer { return NewBrowserHelper(dest) },
 	}
 
-	rt := runOverlayPipeline(ctx, handle, command, cmdArgs, adapter, adapterPrompt, setupPhase, projectPath, sessionCode)
+	rt := runOverlayPipeline(ctx, handle, launch, adapter, adapterPrompt, setupPhase, projectPath, sessionCode)
 
 	// Monitor process exit separately — close PTY when the process exits so
 	// io.Copy in the shared pipeline returns even if the PTY stays open.

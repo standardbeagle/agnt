@@ -1050,11 +1050,14 @@ func generateSessionCode(command string) string {
 // those files under their line budget (TestRunFilesUnderBudget).
 func finishSession(height int, waitErr error, userInterrupted bool, rt *pipelineRuntime) {
 	cleanupTerminal(height)
-	var res []string
+	var launch agentLaunch
+	var tail, res []string
 	if rt != nil {
-		res = rt.resourceTap.Recent()
+		launch = rt.launch
+		tail = rt.outputTap.Tail()
+		res = rt.outputTap.Resource()
 	}
-	reportUnexpectedShutdown(waitErr, userInterrupted, res)
+	reportUnexpectedShutdown(waitErr, userInterrupted, launch, tail, res)
 }
 
 func cleanupTerminal(height int) {
@@ -1098,9 +1101,50 @@ func cleanupTerminal(height int) {
 // non-Claude guidance to context files instead. With a nil adapter both are
 // passthrough/empty. Shared by both platform children to keep run.go /
 // run_windows.go under their line budget (TestRunFilesUnderBudget).
-func phaseCmdArgsAndPrompt(adapter agentadapter.Adapter, cmdArgs []string, setupPhase bool, socketPath string) ([]string, string) {
+// agentLaunch describes how agnt launched the coding agent for one run phase.
+// It is the evidence the shutdown reporter needs to explain a failed launch:
+// what the user asked for (Command), what the child actually received (Args),
+// and which of those args agnt added on the user's behalf (Injected) — the one
+// part of the launch the user did not write and therefore cannot be expected
+// to suspect.
+type agentLaunch struct {
+	// Command is the agent as the user typed it, e.g. "kimi".
+	Command string
+	// Args is the final argv handed to the child, injection included.
+	Args []string
+	// Injected are the args agnt appended for prompt injection. Empty for
+	// stdin-based adapters and when injection is disabled.
+	Injected []string
+	// Adapter is the adapter's canonical name — the `ai.adapters` config key
+	// the user needs to override its behavior. May differ from Command (the
+	// kimi-cli adapter answers to "kimi").
+	Adapter string
+}
+
+// CommandLine renders the launch for display, e.g. `kimi --agent-file /tmp/x`.
+func (l agentLaunch) CommandLine() string {
+	return strings.TrimSpace(l.Command + " " + strings.Join(l.Args, " "))
+}
+
+// injectedArgs returns the args BuildArgs appended to base. Adapters append
+// rather than rewrite; when that does not hold (a future adapter reorders or
+// replaces args) this reports nothing rather than guessing wrong, since the
+// value is only ever used to explain a failure to a human.
+func injectedArgs(base, built []string) []string {
+	if len(built) <= len(base) {
+		return nil
+	}
+	for i, a := range base {
+		if built[i] != a {
+			return nil
+		}
+	}
+	return built[len(base):]
+}
+
+func phaseCmdArgsAndPrompt(adapter agentadapter.Adapter, command string, cmdArgs []string, setupPhase bool, socketPath string) (agentLaunch, string) {
 	if adapter == nil {
-		return cmdArgs, ""
+		return agentLaunch{Command: command, Args: cmdArgs}, ""
 	}
 	var prompt string
 	if setupPhase {
@@ -1117,7 +1161,13 @@ func phaseCmdArgsAndPrompt(adapter agentadapter.Adapter, cmdArgs []string, setup
 			writePersistentContext(adapter.Name(), cwd, prompt)
 		}
 	}
-	return adapter.BuildArgs(cmdArgs, prompt), prompt
+	built := adapter.BuildArgs(cmdArgs, prompt)
+	return agentLaunch{
+		Command:  command,
+		Args:     built,
+		Injected: injectedArgs(cmdArgs, built),
+		Adapter:  adapter.Name(),
+	}, prompt
 }
 
 // suppressAutostartDuringSetup forces skipAutostart on for the setup phase and
@@ -1380,7 +1430,10 @@ type pipelineRuntime struct {
 	// pointer keeps those cross-goroutine accesses race-free.
 	alertScanner atomic.Pointer[overlay.AlertScanner]
 	daemonConn   *daemon.Conn
-	resourceTap  *resourceErrorTap
+	outputTap    *childOutputTap
+	// launch records how the child was started so an abrupt exit can be
+	// explained in terms of what agnt actually ran.
+	launch agentLaunch
 }
 
 // Done returns the channel that closes when the PTY output goroutine
@@ -1437,8 +1490,7 @@ func (r *pipelineRuntime) Stop() {
 func runOverlayPipeline(
 	ctx context.Context,
 	handle *ptyHandle,
-	command string,
-	cmdArgs []string,
+	launch agentLaunch,
 	adapter agentadapter.Adapter,
 	adapterPrompt string,
 	injectInitialPrompt bool,
@@ -1447,8 +1499,9 @@ func runOverlayPipeline(
 ) *pipelineRuntime {
 	sessionCode := sessionCodeArg
 	rt := &pipelineRuntime{
-		done: make(chan struct{}),
-		wg:   &sync.WaitGroup{},
+		done:   make(chan struct{}),
+		wg:     &sync.WaitGroup{},
+		launch: launch,
 	}
 
 	// Per-session overlay socket path so concurrent sessions don't collide.
@@ -1466,8 +1519,8 @@ func runOverlayPipeline(
 		SessionCode:      sessionCode,
 		OverlayEndpoint:  rt.netOverlay.SocketPath(),
 		ProjectPath:      projectPath,
-		Command:          command,
-		CmdArgs:          cmdArgs,
+		Command:          launch.Command,
+		CmdArgs:          launch.Args,
 		SocketPath:       daemonSocketPath,
 		SkipAutostart:    skipAutostart,
 		SessionPGID:      handle.SessionPGID,
@@ -1561,10 +1614,10 @@ func runOverlayPipeline(
 		}
 
 		activityCfg := overlay.DefaultActivityMonitorConfig()
-		// Tap every output line for host-resource-limit errors so an abrupt
-		// agent exit can be explained (see reportUnexpectedShutdown).
-		rt.resourceTap = newResourceErrorTap(5)
-		activityCfg.OnOutputLine = rt.resourceTap.Observe
+		// Tap every output line so an abrupt agent exit can be explained in
+		// the agent's own words (see reportUnexpectedShutdown).
+		rt.outputTap = newChildOutputTap(10, 5)
+		activityCfg.OnOutputLine = rt.outputTap.Observe
 		activityCfg.OnStateChange = func(state overlay.ActivityState) {
 			rt.daemonHandle.BroadcastActivity(state == overlay.ActivityActive)
 			if state == overlay.ActivityActive && rt.netOverlay != nil {
