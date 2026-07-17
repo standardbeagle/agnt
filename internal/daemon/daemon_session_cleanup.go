@@ -9,6 +9,7 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/platform"
+	"github.com/standardbeagle/agnt/internal/selflog"
 	"github.com/standardbeagle/go-cli-server/script"
 )
 
@@ -39,6 +40,15 @@ func (d *Daemon) killSessionPGID(session *Session) {
 	}
 
 	debug.Log("daemon", "session %s: killing pgid %d (grace=%s)", code, pgid, sessionPGIDGracePeriod)
+
+	// Record the kill where the user can find it. This reaps the session's
+	// whole process group — including the coding agent itself — so from the
+	// user's seat the agent is killed by a signal with no explanation, and
+	// `agnt run`'s shutdown banner can only report "terminated by a signal"
+	// without being able to name the sender. debug.Log alone does not surface
+	// it (debug file, off by default), which made agnt's own kill the one
+	// cause a user could never diagnose.
+	selflog.Record("daemon", "reaped session %s process group (pgid %d) on session cleanup — any agent running in it was terminated", code, pgid)
 
 	if err := platform.KillSessionPGID(pgid, os.Getpid(), sessionPGIDGracePeriod, false); err != nil {
 		debug.Warn("daemon", "session %s: killpg(%d) failed: %v", code, pgid, err)
