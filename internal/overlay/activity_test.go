@@ -746,6 +746,82 @@ func TestActivityMonitorOnOutputLine(t *testing.T) {
 	}
 }
 
+// TestActivityMonitorOnOutputLineCRLF pins the line ending every PTY child
+// actually produces. The terminal driver's ONLCR maps \n to \r\n on the way
+// out, so a PTY master read yields CRLF — which means this, not the \n-only
+// case above, is what OnOutputLine sees in production.
+//
+// Regression: \r was treated unconditionally as an in-place animation update
+// and reset the line buffer, so the committed line was empty and every CRLF
+// line was silently dropped. Every consumer of OnOutputLine (alert scanning,
+// the shutdown reporter's output tap) therefore saw nothing from a PTY child
+// — including a dying agent's last error.
+func TestActivityMonitorOnOutputLineCRLF(t *testing.T) {
+	buf := &safeWriter{}
+	var lines []string
+	var linesMu sync.Mutex
+
+	cfg := DefaultActivityMonitorConfig()
+	cfg.OnOutputLine = func(line string) {
+		linesMu.Lock()
+		lines = append(lines, line)
+		linesMu.Unlock()
+	}
+	am := NewActivityMonitor(buf, cfg)
+	defer am.Stop()
+
+	am.Write([]byte("error: unknown option '--agent-file'\r\n"))
+	// A CR that lands at the end of one write and its LF in the next must
+	// still commit one line — the split is an artifact of PTY chunking, not
+	// of what the child printed.
+	am.Write([]byte("second line\r"))
+	am.Write([]byte("\nthird line\r\n"))
+
+	require.Eventually(t, func() bool {
+		linesMu.Lock()
+		defer linesMu.Unlock()
+		return len(lines) == 3
+	}, time.Second, 10*time.Millisecond, "CRLF lines not delivered")
+
+	linesMu.Lock()
+	defer linesMu.Unlock()
+	assert.Equal(t, []string{
+		"error: unknown option '--agent-file'",
+		"second line",
+		"third line",
+	}, lines, "CRLF lines must arrive intact and in order")
+}
+
+// TestActivityMonitorCROverwriteStillAnimates guards the behavior the CRLF fix
+// must not break: a bare \r with more text after it is a spinner redrawing in
+// place, so only the final frame is a real line.
+func TestActivityMonitorCROverwriteStillAnimates(t *testing.T) {
+	buf := &safeWriter{}
+	var lines []string
+	var linesMu sync.Mutex
+
+	cfg := DefaultActivityMonitorConfig()
+	cfg.OnOutputLine = func(line string) {
+		linesMu.Lock()
+		lines = append(lines, line)
+		linesMu.Unlock()
+	}
+	am := NewActivityMonitor(buf, cfg)
+	defer am.Stop()
+
+	am.Write([]byte("| Loading\r/ Loading\r- Loading\r\n"))
+
+	require.Eventually(t, func() bool {
+		linesMu.Lock()
+		defer linesMu.Unlock()
+		return len(lines) == 1
+	}, time.Second, 10*time.Millisecond, "final animation frame not delivered")
+
+	linesMu.Lock()
+	defer linesMu.Unlock()
+	assert.Equal(t, []string{"- Loading"}, lines, "only the last frame is a line")
+}
+
 // TestActivityMonitorOnOutputLineStripsANSI verifies ANSI codes are stripped from callback lines.
 func TestActivityMonitorOnOutputLineStripsANSI(t *testing.T) {
 	buf := &safeWriter{}

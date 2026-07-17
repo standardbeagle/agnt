@@ -45,6 +45,7 @@ type ActivityMonitor struct {
 
 	// Animation-aware line buffering
 	currentLine         bytes.Buffer  // Current line being built
+	pendingCR           bool          // True after a \r whose role (CRLF terminator vs in-place redraw) is not yet known
 	isAnimating         bool          // True if we've seen \r without \n (line is being updated in place)
 	animationLastUpdate time.Time     // Last time the animating line was updated
 	animationDebounce   time.Duration // How long to wait before flushing animating line
@@ -222,14 +223,17 @@ func (am *ActivityMonitor) captureForPreview(p []byte) {
 	for _, b := range p {
 		switch b {
 		case '\r':
-			// Carriage return: line is being updated in place (animation)
-			// Reset line content but mark as animating
-			am.currentLine.Reset()
-			am.isAnimating = true
-			am.animationLastUpdate = time.Now()
-			hasAnimationUpdate = true
+			// A carriage return is ambiguous until the next byte arrives: it
+			// either terminates a CRLF line (every PTY child, courtesy of
+			// ONLCR) or rewinds the cursor for an in-place redraw (a spinner).
+			// Deciding "animation" here and dropping the line content is what
+			// silently swallowed every CRLF line. Defer the decision instead;
+			// the flag survives across Write calls because the PTY splits
+			// chunks wherever it likes, including between the CR and the LF.
+			am.pendingCR = true
 
 		case '\n':
+			am.pendingCR = false
 			// Newline: commit the current line
 			if am.currentLine.Len() > 0 || am.isAnimating {
 				cleanLine := am.cleanLine(am.currentLine.String())
@@ -250,6 +254,15 @@ func (am *ActivityMonitor) captureForPreview(p []byte) {
 			am.isAnimating = false
 
 		default:
+			// Content after a CR and no LF: the CR was a redraw after all, so
+			// the pending line is overwritten rather than committed.
+			if am.pendingCR {
+				am.pendingCR = false
+				am.currentLine.Reset()
+				am.isAnimating = true
+				am.animationLastUpdate = time.Now()
+				hasAnimationUpdate = true
+			}
 			// Regular character: append to current line
 			am.currentLine.WriteByte(b)
 			if am.isAnimating {
@@ -263,6 +276,7 @@ func (am *ActivityMonitor) captureForPreview(p []byte) {
 	if am.currentLine.Len() > 4096 {
 		am.currentLine.Reset()
 		am.isAnimating = false
+		am.pendingCR = false
 	}
 
 	// Capture isAnimating state while holding lock to avoid race
