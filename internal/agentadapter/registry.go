@@ -72,10 +72,6 @@ func DefaultRegistry() *Registry {
 	r.Register(newStdinAdapter("cursor-agent", []string{"cursor-agent"}))
 	r.Register(newStdinAdapter("cursor", []string{"cursor"}))
 	r.Register(newStdinAdapter("opencode", []string{"opencode"}))
-	// kimi-cli is registered once with a dedicated adapter that supports
-	// --agent-file injection and --transport mode selection. The adapter
-	// matches both "kimi-cli" and "kimi" base names.
-	r.Register(newKimiAdapter())
 	r.Register(newStdinAdapter("auggie", []string{"auggie"}))
 	return r
 }

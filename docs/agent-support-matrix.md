@@ -33,17 +33,22 @@ use).
 | cursor-agent | stdin | `skill-file` | `.cursor/commands/*.md` (+ `AGENTS.md`/`.cursor/rules/` for CLI) | medium |
 | qwen | stdin* | `skill-file` | `~/.qwen/commands/` or `.qwen/commands/` `.md`/frontmatter → `/ns:cmd` | high |
 | crush | stdin* | `skill-file` | `.crush/skills/<name>/SKILL.md` or `~/.config/crush/skills/`; `user-invocable` | high |
-| kimi-cli | `--agent-file` | `skill-file` | `.kimi/skills/<name>/SKILL.md` or `~/.kimi/skills/` → `/skill:<name>` | high |
+| kimi-cli | stdin* | `skill-file` | `.kimi/skills/<name>/SKILL.md` or `~/.kimi/skills/` → `/skill:<name>` | high |
 | auggie | stdin | `skill-file` | `.augment/commands/*.md` or `~/.augment/commands/` `.md`/frontmatter | high |
 | aider | stdin | `none` | No invocable command/skill; optional read-only `CONVENTIONS.md` context file | medium |
 
 `*` = agent is not yet registered in `internal/agentadapter` as a dedicated
-adapter (codex, qwen, crush). It would resolve via a generic stdin adapter or
-need a new registry entry; flagged here so Slice C can decide coverage.
+adapter (codex, qwen, crush, kimi-cli). It resolves via the generic stdin
+adapter, which needs no agent-specific flag knowledge.
 
 Registry today (`internal/agentadapter/registry.go`): claude (flag), gemini,
-copilot, aider, cursor-agent, cursor, opencode, auggie (stdin), kimi-cli
-(`--agent-file`). codex / qwen / crush are **not** registered yet.
+copilot, aider, cursor-agent, cursor, opencode, auggie (stdin). codex / qwen /
+crush / kimi-cli are **not** registered and fall back to the stdin adapter.
+
+kimi is deliberately unregistered: two unrelated CLIs install as `kimi`
+(MoonshotAI kimi-cli and kimi-code), so a name match cannot tell them apart,
+and the `--agent-file` flag agnt used to append is rejected by kimi-code —
+`agnt run kimi` failed at launch. See `docs/agent-adapters.md`.
 
 ## Per-agent detail
 

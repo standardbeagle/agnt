@@ -42,8 +42,6 @@ Two injection strategies are supported:
 | `cursor` | context file + setup stdin | 500ms setup delay |
 | `cursor-agent` | context file + setup stdin | 500ms setup delay (checked before `cursor` for specificity) |
 | `opencode` | context file + setup stdin | 500ms setup delay |
-| `kimi` | file flag | `--agent-file <tmp>` |
-| `kimi-cli` | file flag | `--agent-file <tmp>` |
 | `auggie` | context file + setup stdin | 500ms setup delay |
 
 All adapters match by **base name** of the command, case-insensitive, with `.exe` stripped on Windows. That covers bare invocations (`claude`), absolute paths (`/usr/bin/claude`, `C:\bin\claude.exe`), and relative paths (`./aider`). When the command is a shell alias or wrapper, the adapter also tries `exec.LookPath` and matches on the resolved path's base name.
@@ -114,7 +112,9 @@ Say we want to add support for `newbot`, a stdin-based CLI that behaves like Aid
 
 2. **Write a test.** Extend `internal/agentadapter/adapter_test.go` with a case confirming `DefaultRegistry().Lookup("newbot")` and `DefaultRegistry().Lookup("/usr/local/bin/newbot")` both resolve. The existing `TestDefaultRegistry_MatchesAllKnownAgents` table is the natural home — add `"newbot"` to the loop.
 
-3. **If the agent needs a non-default strategy,** write a new adapter type in its own file (follow the pattern in `claude.go`, `kimi.go`, or `stdin.go`). Flag-based adapters need to implement `BuildArgs`; stdin-capable adapters need `InitialStdin` and `StdinDelay`.
+3. **If the agent needs a non-default strategy,** write a new adapter type in its own file (follow the pattern in `claude.go` or `stdin.go`). Flag-based adapters need to implement `BuildArgs`; stdin-capable adapters need `InitialStdin` and `StdinDelay`.
+
+   A flag-based adapter is a claim about another project's CLI surface, and it is only safe to make when that flag is verified against the binary users actually run and the command name unambiguously identifies it. `kimi` was neither: two unrelated CLIs (MoonshotAI kimi-cli and kimi-code) both install as `kimi`, and the adapter's `--agent-file` was rejected by the one on PATH, killing `agnt run kimi` at launch. When a flag cannot be verified, or the name is ambiguous, leave the agent on the stdin fallback — it needs no flag knowledge and works with anything that reads and responds over stdio.
 
 4. **Done.** `run.go` and `run_windows.go` pick up the new agent automatically via `resolveAgentAdapter`, and users can override its behavior via `ai.adapters.newbot { … }` in `.agnt.kdl`.
 

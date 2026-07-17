@@ -30,16 +30,11 @@ func (o *overriddenAdapter) BuildArgs(baseArgs []string, prompt string) []string
 		return cloneArgs(baseArgs)
 	}
 	// For flag-based adapters the FlagName override changes which CLI
-	// flag carries the prompt. Both claudeAdapter and kimiAdapter
-	// support this. stdin-based adapters ignore FlagName entirely.
+	// flag carries the prompt. stdin-based adapters ignore FlagName
+	// entirely.
 	if o.override.FlagName != "" {
 		if c, ok := o.inner.(*claudeAdapter); ok {
 			tmp := *c
-			tmp.flag = o.override.FlagName
-			return tmp.BuildArgs(baseArgs, prompt)
-		}
-		if k, ok := o.inner.(*kimiAdapter); ok {
-			tmp := *k
 			tmp.flag = o.override.FlagName
 			return tmp.BuildArgs(baseArgs, prompt)
 		}

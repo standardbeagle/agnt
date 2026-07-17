@@ -5,7 +5,7 @@
 // hardcoded special-cases: Claude Code received the prompt via the
 // `--append-system-prompt` flag, while every other known agent
 // (gemini, copilot, aider, cursor, cursor-agent, opencode, kimi,
-// kimi-cli, auggie) received it as initial stdin text 500ms after launch.
+// auggie) received it as initial stdin text 500ms after launch.
 // The list and the per-agent strategy were duplicated across the unix
 // and windows entrypoints, and there was no way for a project to
 // override behavior per-agent.
