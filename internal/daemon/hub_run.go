@@ -382,7 +382,8 @@ func (d *Daemon) hubHandleRun(ctx context.Context, conn *hubpkg.Connection, cmd 
 		ProjectPath: cfg.Path,
 		Command:     cfg.Command,
 		Args:        cfg.Args,
-		Env:         cfg.Env,
+		// Store-held secrets are consumed by NAME via env injection at spawn.
+		Env:         d.injectSecretEnv(cfg.Path, cfg.Env),
 		EnableStdin: cfg.EnableStdin,
 	}
 

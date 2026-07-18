@@ -19,6 +19,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/protocol"
+	"github.com/standardbeagle/agnt/internal/store"
 )
 
 // ProxyServer is a reverse proxy that logs traffic and injects instrumentation.
@@ -145,6 +146,23 @@ type ProxyServer struct {
 // secret values. See the secretSink field doc for the zero-leak contract.
 func (ps *ProxyServer) SetSecretSink(fn func(name, value string) error) {
 	ps.secretSink.Store(&fn)
+}
+
+// DeliverSecret validates a submitted secret and routes it to the wired
+// sink. It never logs, stores, or echoes the value itself; the returned
+// error message never contains the value either.
+func (ps *ProxyServer) DeliverSecret(name, value string) error {
+	if !store.ValidSecretName(name) {
+		return fmt.Errorf("invalid secret name %q: must be env-var style ([A-Za-z_][A-Za-z0-9_]*)", name)
+	}
+	if value == "" {
+		return fmt.Errorf("empty secret value")
+	}
+	sink := ps.secretSink.Load()
+	if sink == nil {
+		return fmt.Errorf("no secret sink configured for proxy %s", ps.ID)
+	}
+	return (*sink)(name, value)
 }
 
 // ProxyConfig holds configuration for creating a proxy server.

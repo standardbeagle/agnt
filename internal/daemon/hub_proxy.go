@@ -405,12 +405,11 @@ func (d *Daemon) hubHandleProxyToast(conn *hubpkg.Connection, cmd *hubproto.Comm
 		return conn.WriteErr(hubproto.ErrInvalidArgs, "PROXY TOAST requires toast config")
 	}
 
-	toast, err := unmarshalCommand[struct {
-		Message  string `json:"toast_message"`
-		Type     string `json:"toast_type"`
-		Title    string `json:"toast_title"`
-		Duration int    `json:"toast_duration"`
-	}](cmd)
+	// The wire payload is protocol.ToastConfig (client.ProxyToast sends it
+	// via WithJSON, tags type/title/message/duration/input/name). The old
+	// inline struct here read toast_-prefixed tags that no client ever sent,
+	// so every hub-routed toast failed parse with "toast_message is required".
+	toast, err := unmarshalCommand[protocol.ToastConfig](cmd)
 	if err != nil {
 		debug.Log("daemon", "PROXY TOAST: failed to unmarshal: %v", err)
 		return conn.WriteErr(hubproto.ErrInvalidArgs, "invalid toast config: "+err.Error())
@@ -421,12 +420,19 @@ func (d *Daemon) hubHandleProxyToast(conn *hubpkg.Connection, cmd *hubproto.Comm
 	}
 	if toast.Message == "" {
 		debug.Log("daemon", "PROXY TOAST: empty message")
-		return conn.WriteErr(hubproto.ErrInvalidArgs, "toast_message is required")
+		return conn.WriteErr(hubproto.ErrInvalidArgs, "toast message is required")
 	}
 
-	debug.Log("daemon", "PROXY TOAST: sending type=%s title=%q message=%q", toast.Type, toast.Title, toast.Message)
+	debug.Log("daemon", "PROXY TOAST: sending type=%s title=%q message=%q input=%s", toast.Type, toast.Title, toast.Message, toast.Input)
 
-	sentCount, err := p.BroadcastToast(toast.Type, toast.Title, toast.Message, toast.Duration)
+	sentCount, err := p.BroadcastToastOpts(proxy.ToastOptions{
+		Type:     toast.Type,
+		Title:    toast.Title,
+		Message:  toast.Message,
+		Duration: toast.Duration,
+		Input:    toast.Input,
+		Name:     toast.Name,
+	})
 	if err != nil {
 		debug.Log("daemon", "PROXY TOAST: broadcast error: %v", err)
 		return conn.WriteErr(hubproto.ErrInternal, err.Error())

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/standardbeagle/agnt/internal/store"
 	hubpkg "github.com/standardbeagle/go-cli-server/hub"
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
 )
@@ -63,7 +64,9 @@ func (d *Daemon) hubHandleStoreGet(conn *hubpkg.Connection, cmd *hubproto.Comman
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
 
-	data, _ := json.Marshal(entry)
+	// Secret entries are write-only on this read surface: expose the masked
+	// ref (name + last-4 fingerprint), never the value.
+	data, _ := json.Marshal(store.MaskedForRead(req.Key, entry))
 	return conn.WriteJSON(data)
 }
 
@@ -221,8 +224,14 @@ func (d *Daemon) hubHandleStoreGetAll(conn *hubpkg.Connection, cmd *hubproto.Com
 		return conn.WriteErr(hubproto.ErrInternal, err.Error())
 	}
 
+	// Mask secret entries on the bulk read surface too (never the value).
+	masked := make(map[string]*store.StoreEntry, len(entries))
+	for key, e := range entries {
+		masked[key] = store.MaskedForRead(key, e)
+	}
+
 	resp := map[string]interface{}{
-		"entries": entries,
+		"entries": masked,
 	}
 
 	data, _ := json.Marshal(resp)

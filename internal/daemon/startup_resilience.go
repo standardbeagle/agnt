@@ -344,6 +344,10 @@ func (d *Daemon) startScriptWithRetry(
 	autoRestart bool,
 ) (*process.ManagedProcess, *StartupError) {
 
+	// Consume store-held secrets by NAME: agnt-managed processes get them as
+	// env vars at spawn, so the values never pass through the agent/channel.
+	env = d.injectSecretEnv(projectPath, env)
+
 	// Pre-flight cleanup: kill orphans on all expected ports
 	for _, port := range expectedPorts {
 		if killedPIDs, err := d.preflightPortCleanup(ctx, port); err != nil {

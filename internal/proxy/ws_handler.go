@@ -467,19 +467,7 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			delete(msg.Data, "value")
 			fingerprint := storepkg.Fingerprint(value)
 
-			var sinkErr error
-			switch {
-			case !storepkg.ValidSecretName(name):
-				sinkErr = fmt.Errorf("invalid secret name %q: must be env-var style ([A-Za-z_][A-Za-z0-9_]*)", name)
-			case value == "":
-				sinkErr = fmt.Errorf("empty secret value")
-			default:
-				if sink := ps.secretSink.Load(); sink != nil {
-					sinkErr = (*sink)(name, value)
-				} else {
-					sinkErr = fmt.Errorf("no secret sink configured for proxy %s", ps.ID)
-				}
-			}
+			sinkErr := ps.DeliverSecret(name, value)
 			value = ""
 
 			// Ack the browser so the panel can confirm or retry.
