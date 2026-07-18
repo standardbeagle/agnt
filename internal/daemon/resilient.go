@@ -1016,23 +1016,37 @@ func (rc *ResilientClient) ProxyRestart(id string) (map[string]interface{}, erro
 	return result, err
 }
 
-// StopAll stops all processes and proxies.
+// StopAll stops the processes and proxies owned by the connection's bound
+// session project (empty filter → daemon resolves scope from the session).
 func (rc *ResilientClient) StopAll() (map[string]interface{}, error) {
+	return rc.StopAllScoped(protocol.DirectoryFilter{})
+}
+
+// StopAllScoped stops resources for the project resolved by filter (the MCP
+// daemon connection is not session-bound, so it names the project or passes
+// global explicitly).
+func (rc *ResilientClient) StopAllScoped(filter protocol.DirectoryFilter) (map[string]interface{}, error) {
 	var result map[string]interface{}
 	err := rc.WithClient(func(c *Client) error {
 		var e error
-		result, e = c.StopAll()
+		result, e = c.StopAllScoped(filter)
 		return e
 	})
 	return result, err
 }
 
-// RestartAll restarts all processes and proxies.
+// RestartAll restarts the processes and proxies owned by the connection's
+// bound session project. See StopAll for the scoping contract.
 func (rc *ResilientClient) RestartAll() (map[string]interface{}, error) {
+	return rc.RestartAllScoped(protocol.DirectoryFilter{})
+}
+
+// RestartAllScoped restarts resources for the project resolved by filter.
+func (rc *ResilientClient) RestartAllScoped(filter protocol.DirectoryFilter) (map[string]interface{}, error) {
 	var result map[string]interface{}
 	err := rc.WithClient(func(c *Client) error {
 		var e error
-		result, e = c.RestartAll()
+		result, e = c.RestartAllScoped(filter)
 		return e
 	})
 	return result, err

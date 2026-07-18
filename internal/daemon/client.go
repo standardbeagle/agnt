@@ -879,14 +879,31 @@ func (c *Client) SessionHostAttach(ctx context.Context, id string, onAttached fu
 	}
 }
 
-// StopAll stops all running processes, proxies, and tunnels.
+// StopAll stops the running processes, proxies, and tunnels owned by the
+// connection's bound session project. It carries an empty DirectoryFilter, so
+// the daemon resolves scope from the connection's session (session-bound
+// callers like the overlay/resilient client) and fails loud on an unattached
+// connection. Cross-project callers use StopAllScoped with an explicit global.
 func (c *Client) StopAll() (map[string]interface{}, error) {
-	return c.conn.Request("STOP-ALL").JSON()
+	return c.StopAllScoped(protocol.DirectoryFilter{})
 }
 
-// RestartAll restarts all running processes and proxies with their original configurations.
+// StopAllScoped stops resources for the project resolved by filter. The MCP
+// daemon connection is not session-bound, so it names the project (or global)
+// explicitly via the filter — mirroring the other gated tools.
+func (c *Client) StopAllScoped(filter protocol.DirectoryFilter) (map[string]interface{}, error) {
+	return c.conn.Request("STOP-ALL").WithJSON(filter).JSON()
+}
+
+// RestartAll restarts the processes and proxies owned by the connection's
+// bound session project. See StopAll for the scoping contract.
 func (c *Client) RestartAll() (map[string]interface{}, error) {
-	return c.conn.Request("RESTART-ALL").JSON()
+	return c.RestartAllScoped(protocol.DirectoryFilter{})
+}
+
+// RestartAllScoped restarts resources for the project resolved by filter.
+func (c *Client) RestartAllScoped(filter protocol.DirectoryFilter) (map[string]interface{}, error) {
+	return c.conn.Request("RESTART-ALL").WithJSON(filter).JSON()
 }
 
 // ProcRestart restarts a single process by ID.
