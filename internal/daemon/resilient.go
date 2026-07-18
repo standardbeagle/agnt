@@ -781,9 +781,9 @@ func (rc *ResilientClient) SetForwarding(paused bool) error {
 }
 
 // BroadcastOutputPreview sends output preview lines to connected browsers via proxies.
-func (rc *ResilientClient) BroadcastOutputPreview(lines []string, proxyIDs ...string) error {
+func (rc *ResilientClient) BroadcastOutputPreview(lines []string, throbber string, proxyIDs ...string) error {
 	return rc.WithClient(func(c *Client) error {
-		return c.BroadcastOutputPreview(lines, proxyIDs...)
+		return c.BroadcastOutputPreview(lines, throbber, proxyIDs...)
 	})
 }
 

@@ -385,7 +385,7 @@ func TestProxyWS_BroadcastAfterServerClose(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, 0, toastSent, "BroadcastToast with no subs returns 0")
 
-	prevSent := ps.BroadcastOutputPreview([]string{"line1"})
+	prevSent := ps.BroadcastOutputPreview([]string{"line1"}, "")
 	assert.Equal(t, 0, prevSent, "BroadcastOutputPreview with no subs returns 0")
 
 	diagSent := ps.BroadcastProxyDiagnostic(&ProxyDiagnostic{

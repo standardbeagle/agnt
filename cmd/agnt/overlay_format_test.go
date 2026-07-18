@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // Tests for formatProxyEventText and all sub-formatters.
@@ -802,4 +803,75 @@ func TestFirstAppFrame(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestSanitizeInjectedText verifies the injection-boundary guard: injected
+// browser/summarizer bodies must reach the agent's stdin as clean UTF-8 text,
+// never as raw bytes that corrupt the input parser or drive the terminal.
+func TestSanitizeInjectedText(t *testing.T) {
+	tests := []struct {
+		name   string
+		in     string
+		expect string
+	}{
+		{"clean passthrough", "from agnt browser: fix the header\nproxy: app:dev", "from agnt browser: fix the header\nproxy: app:dev"},
+		{"empty", "", ""},
+		{"keeps newline and tab", "a\n\tb", "a\n\tb"},
+		{"strips ESC", "hi\x1b[31mthere", "hi[31mthere"},
+		{"strips NUL and Ctrl-C", "a\x00b\x03c", "abc"},
+		{"strips carriage return", "line\rother", "lineother"},
+		{"invalid utf8 becomes replacement char, not raw bytes", "ok\xff\xfebye", "ok�bye"},
+		{"emoji and unicode preserved", "⚠️ Grade C — fix .subtitle", "⚠️ Grade C — fix .subtitle"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeInjectedText(tt.in)
+			if got != tt.expect {
+				t.Errorf("sanitizeInjectedText(%q) = %q, want %q", tt.in, got, tt.expect)
+			}
+			// Invariant: output is always valid UTF-8 and control-free (bar \n\t).
+			for _, r := range got {
+				if isStrippableControl(r) {
+					t.Errorf("output %q retained control rune %U", got, r)
+				}
+			}
+		})
+	}
+}
+
+// capturePtmx records everything written to the agent's PTY stdin.
+type capturePtmx struct{ buf []byte }
+
+func (c *capturePtmx) Write(b []byte) (int, error) {
+	c.buf = append(c.buf, b...)
+	return len(b), nil
+}
+
+// TestTypeText_SanitizesAtBoundary proves the guard lives at the write boundary,
+// not in any one formatter: content handed to typeText — from ANY injection
+// path — reaches the PTY as clean, valid UTF-8 with no dangerous control bytes.
+func TestTypeText_SanitizesAtBoundary(t *testing.T) {
+	ptmx := &capturePtmx{}
+	o := newOverlay("", ptmx)
+
+	// A body carrying invalid UTF-8 and embedded control bytes, as a garbled
+	// summarizer subprocess or raw dev-server output would produce.
+	o.typeText(TypeMessage{
+		Text:    "from agnt browser: \x1b]0;evil\x07go\x00\xff\xfehere\nproxy: app:dev",
+		Enter:   false, // avoid the Enter goroutine; we only assert on the body write
+		Instant: true,
+	})
+
+	got := string(ptmx.buf)
+	if !utf8.ValidString(got) {
+		t.Fatalf("typeText wrote invalid UTF-8 to the agent: %q", got)
+	}
+	for _, r := range got {
+		if isStrippableControl(r) {
+			t.Errorf("typeText leaked control rune %U into agent stdin: %q", r, got)
+		}
+	}
+	// Legible structure must survive.
+	assertContains(t, got, "from agnt browser:")
+	assertContains(t, got, "proxy: app:dev")
 }

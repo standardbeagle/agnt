@@ -298,6 +298,9 @@ github.com/gorilla/css/scanner
 # github.com/gorilla/websocket v1.5.3
 ## explicit; go 1.12
 github.com/gorilla/websocket
+# github.com/hinshun/vt10x v0.0.0-20220301184237-5011da428d02
+## explicit; go 1.14
+github.com/hinshun/vt10x
 # github.com/hyperboloide/lk v0.0.0-20251220053519-b291812e3216
 ## explicit; go 1.17
 github.com/hyperboloide/lk

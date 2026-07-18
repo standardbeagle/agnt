@@ -3,10 +3,12 @@ package overlay
 import (
 	"bytes"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -101,7 +103,7 @@ func TestActivityMonitorOutputPreview(t *testing.T) {
 		MinActiveBytes:  1, // Low threshold for testing
 		PreviewMaxLines: 3,
 		PreviewDebounce: 50 * time.Millisecond,
-		OnOutputPreview: func(lines []string) {
+		OnOutputPreview: func(lines []string, throbber string) {
 			mu.Lock()
 			copied := make([]string, len(lines))
 			copy(copied, lines)
@@ -151,7 +153,7 @@ func TestActivityMonitorANSIStripping(t *testing.T) {
 		MinActiveBytes:  1,
 		PreviewMaxLines: 5,
 		PreviewDebounce: 10 * time.Millisecond,
-		OnOutputPreview: func(lines []string) {
+		OnOutputPreview: func(lines []string, throbber string) {
 			mu.Lock()
 			previewLines = make([]string, len(lines))
 			copy(previewLines, lines)
@@ -199,7 +201,7 @@ func TestActivityMonitorDebounce(t *testing.T) {
 		MinActiveBytes:  1,
 		PreviewMaxLines: 5,
 		PreviewDebounce: 100 * time.Millisecond,
-		OnOutputPreview: func(lines []string) {
+		OnOutputPreview: func(lines []string, throbber string) {
 			callCount.Add(1)
 		},
 	}
@@ -235,7 +237,7 @@ func TestActivityMonitorConcurrentWrites(t *testing.T) {
 		OnStateChange: func(state ActivityState) {
 			stateChanges.Add(1)
 		},
-		OnOutputPreview: func(lines []string) {
+		OnOutputPreview: func(lines []string, throbber string) {
 			// Just verify no panic
 		},
 	}
@@ -290,17 +292,24 @@ func TestActivityMonitorWritePassthrough(t *testing.T) {
 }
 
 // TestActivityMonitorLineTruncation tests that long lines are truncated.
-func TestActivityMonitorLineTruncation(t *testing.T) {
+// TestActivityMonitorLineWrapping verifies the preview reflects the terminal's
+// own wrapping: a line longer than the screen width appears as multiple rows,
+// each bounded by the column count, rather than one over-long line. This is the
+// virtual-screen model replacing the old byte-truncated single line.
+func TestActivityMonitorLineWrapping(t *testing.T) {
 	var buf bytes.Buffer
 	var previewLines []string
 	var mu sync.Mutex
 
+	const cols = 80
 	cfg := ActivityMonitorConfig{
 		IdleTimeout:     100 * time.Millisecond,
 		MinActiveBytes:  1,
 		PreviewMaxLines: 5,
 		PreviewDebounce: 10 * time.Millisecond,
-		OnOutputPreview: func(lines []string) {
+		InitialCols:     cols,
+		InitialRows:     24,
+		OnOutputPreview: func(lines []string, throbber string) {
 			mu.Lock()
 			previewLines = make([]string, len(lines))
 			copy(previewLines, lines)
@@ -311,29 +320,27 @@ func TestActivityMonitorLineTruncation(t *testing.T) {
 	am := NewActivityMonitor(&buf, cfg)
 	defer am.Stop()
 
-	// Create a long line (200 chars)
-	longLine := make([]byte, 200)
-	for i := range longLine {
-		longLine[i] = 'x'
-	}
-	am.Write(append(longLine, '\n'))
+	// A 200-char line wraps across an 80-column screen (80 + 80 + 40).
+	am.Write([]byte(strings.Repeat("x", 200) + "\n"))
 
-	// Wait for debounce
 	time.Sleep(50 * time.Millisecond)
 
 	mu.Lock()
 	defer mu.Unlock()
 
-	if len(previewLines) != 1 {
-		t.Fatalf("expected 1 preview line, got %d", len(previewLines))
+	if len(previewLines) == 0 {
+		t.Fatalf("expected wrapped preview lines, got none")
 	}
-
-	// Should be truncated to 120 chars + "..."
-	if len(previewLines[0]) != 120 {
-		t.Errorf("line length = %d, want 120", len(previewLines[0]))
+	total := 0
+	for i, l := range previewLines {
+		if n := utf8.RuneCountInString(l); n > cols {
+			t.Errorf("line %d width = %d, exceeds terminal cols %d: %q", i, n, cols, l)
+		}
+		total += strings.Count(l, "x")
 	}
-	if previewLines[0][117:120] != "..." {
-		t.Errorf("line should end with '...', got %q", previewLines[0][117:120])
+	// All 200 characters survive, spread across the wrapped rows.
+	if total != 200 {
+		t.Errorf("wrapped content preserved %d of 200 x's: %v", total, previewLines)
 	}
 }
 
@@ -390,20 +397,26 @@ func TestActivityMonitorNilCallbacks(t *testing.T) {
 	time.Sleep(100 * time.Millisecond) // Wait for idle timeout
 }
 
-// TestActivityMonitorAnimationDetection tests that carriage returns are detected as animations.
+// TestActivityMonitorAnimationDetection tests that carriage-return redraws of a
+// single line stay in place in the preview: many frames collapse to one screen
+// row, never a growing stack of scrolling lines. This is the multi-line
+// streaming bug the virtual-screen model fixes. Real TUIs emit ESC[K (erase to
+// end of line) on redraw; the test does the same so the final short frame does
+// not leave stale glyphs from a longer prior frame.
 func TestActivityMonitorAnimationDetection(t *testing.T) {
 	var buf bytes.Buffer
 	var previewLines []string
 	var mu sync.Mutex
 
 	cfg := ActivityMonitorConfig{
-		IdleTimeout:       500 * time.Millisecond,
-		MinActiveBytes:    1,
-		PreviewMaxLines:   5,
-		PreviewDebounce:   10 * time.Millisecond,
-		AnimationDebounce: 50 * time.Millisecond,
-		ShowDoneMessage:   false, // Disable for this test
-		OnOutputPreview: func(lines []string) {
+		IdleTimeout:     500 * time.Millisecond,
+		MinActiveBytes:  1,
+		PreviewMaxLines: 5,
+		PreviewDebounce: 10 * time.Millisecond,
+		ShowDoneMessage: false,
+		InitialCols:     80,
+		InitialRows:     24,
+		OnOutputPreview: func(lines []string, throbber string) {
 			mu.Lock()
 			previewLines = make([]string, len(lines))
 			copy(previewLines, lines)
@@ -414,28 +427,19 @@ func TestActivityMonitorAnimationDetection(t *testing.T) {
 	am := NewActivityMonitor(&buf, cfg)
 	defer am.Stop()
 
-	// Simulate Ink-style animation: multiple updates to same line via \r
+	redraw := func(s string) { am.Write([]byte("\r\x1b[K" + s)) }
 	am.Write([]byte("Loading."))
-	am.Write([]byte("\rLoading.."))
-	am.Write([]byte("\rLoading..."))
-	am.Write([]byte("\rLoading...."))
-	am.Write([]byte("\rDone!"))
+	redraw("Loading..")
+	redraw("Loading...")
+	redraw("Loading....")
+	redraw("Done!")
 
-	// Wait for animation debounce to flush
-	time.Sleep(100 * time.Millisecond)
-
-	mu.Lock()
-	defer mu.Unlock()
-
-	// Should only have one line - the final state
-	if len(previewLines) != 1 {
-		t.Errorf("expected 1 preview line (final animation state), got %d: %v", len(previewLines), previewLines)
-		return
-	}
-
-	if previewLines[0] != "Done!" {
-		t.Errorf("expected final line to be %q, got %q", "Done!", previewLines[0])
-	}
+	// The redraws land on one screen row; the preview shows exactly that row.
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(previewLines) == 1 && previewLines[0] == "Done!"
+	}, 5*time.Second, 5*time.Millisecond, "in-place redraw should collapse to a single preview line")
 }
 
 // TestActivityMonitorAnimationWithNewline tests that newline commits animating line.
@@ -445,13 +449,12 @@ func TestActivityMonitorAnimationWithNewline(t *testing.T) {
 	var mu sync.Mutex
 
 	cfg := ActivityMonitorConfig{
-		IdleTimeout:       500 * time.Millisecond,
-		MinActiveBytes:    1,
-		PreviewMaxLines:   5,
-		PreviewDebounce:   10 * time.Millisecond,
-		AnimationDebounce: 100 * time.Millisecond,
-		ShowDoneMessage:   false,
-		OnOutputPreview: func(lines []string) {
+		IdleTimeout:     500 * time.Millisecond,
+		MinActiveBytes:  1,
+		PreviewMaxLines: 5,
+		PreviewDebounce: 10 * time.Millisecond,
+		ShowDoneMessage: false,
+		OnOutputPreview: func(lines []string, throbber string) {
 			mu.Lock()
 			previewLines = make([]string, len(lines))
 			copy(previewLines, lines)
@@ -462,11 +465,14 @@ func TestActivityMonitorAnimationWithNewline(t *testing.T) {
 	am := NewActivityMonitor(&buf, cfg)
 	defer am.Stop()
 
-	// Animation followed by newline - should commit immediately
+	// Animation on one row, then a newline moves the cursor on: the final frame
+	// stays as the single committed row. ESC[K erases the longer prior frame.
+	redraw := func(s string) { am.Write([]byte("\r\x1b[K" + s)) }
 	am.Write([]byte("Processing"))
-	am.Write([]byte("\rProcessing."))
-	am.Write([]byte("\rProcessing.."))
-	am.Write([]byte("\rComplete!\n")) // Newline commits the line
+	redraw("Processing.")
+	redraw("Processing..")
+	redraw("Complete!")
+	am.Write([]byte("\n"))
 
 	// Wait for debounce
 	time.Sleep(50 * time.Millisecond)
@@ -491,13 +497,12 @@ func TestActivityMonitorMixedAnimationAndLines(t *testing.T) {
 	var mu sync.Mutex
 
 	cfg := ActivityMonitorConfig{
-		IdleTimeout:       500 * time.Millisecond,
-		MinActiveBytes:    1,
-		PreviewMaxLines:   10,
-		PreviewDebounce:   10 * time.Millisecond,
-		AnimationDebounce: 30 * time.Millisecond,
-		ShowDoneMessage:   false,
-		OnOutputPreview: func(lines []string) {
+		IdleTimeout:     500 * time.Millisecond,
+		MinActiveBytes:  1,
+		PreviewMaxLines: 10,
+		PreviewDebounce: 10 * time.Millisecond,
+		ShowDoneMessage: false,
+		OnOutputPreview: func(lines []string, throbber string) {
 			mu.Lock()
 			previewLines = make([]string, len(lines))
 			copy(previewLines, lines)
@@ -511,10 +516,11 @@ func TestActivityMonitorMixedAnimationAndLines(t *testing.T) {
 	// Regular line
 	am.Write([]byte("Starting task\n"))
 
-	// Animated progress
+	// Animated progress on its own row (ESC[K erases prior frame), committed
+	// with a newline.
 	am.Write([]byte("Progress: 0%"))
-	am.Write([]byte("\rProgress: 50%"))
-	am.Write([]byte("\rProgress: 100%\n")) // Commit with newline
+	am.Write([]byte("\r\x1b[KProgress: 50%"))
+	am.Write([]byte("\r\x1b[KProgress: 100%\n"))
 
 	// Another regular line
 	am.Write([]byte("Task complete\n"))
@@ -550,10 +556,9 @@ func TestActivityMonitorDoneMessage(t *testing.T) {
 		MinActiveBytes:    1,
 		PreviewMaxLines:   5,
 		PreviewDebounce:   10 * time.Millisecond,
-		AnimationDebounce: 20 * time.Millisecond,
 		ShowDoneMessage:   true,
 		DoneMessage:       "✓ Done",
-		OnOutputPreview: func(lines []string) {
+		OnOutputPreview: func(lines []string, throbber string) {
 			mu.Lock()
 			previewLines = make([]string, len(lines))
 			copy(previewLines, lines)
@@ -602,7 +607,7 @@ func TestActivityMonitorDoneMessageDisabled(t *testing.T) {
 		PreviewMaxLines:   5,
 		PreviewDebounce:   10 * time.Millisecond,
 		ShowDoneMessage:   false, // Disabled
-		OnOutputPreview: func(lines []string) {
+		OnOutputPreview: func(lines []string, throbber string) {
 			mu.Lock()
 			previewLines = make([]string, len(lines))
 			copy(previewLines, lines)
@@ -635,26 +640,10 @@ func TestActivityMonitorDoneMessageDisabled(t *testing.T) {
 }
 
 // TestActivityMonitorRapidAnimationDebounce asserts the invariant "a burst of
-// same-line (\r) updates collapses into a single preview callback carrying
-// the final frame, not one callback per frame."
-//
-// The original version paced frames with time.Sleep(10*time.Millisecond)
-// between writes (a ~80ms burst) against a 100ms AnimationDebounce — under
-// CPU saturation the scheduler can stretch any one of those sleeps past the
-// debounce window, so scheduleAnimationFlush's goroutine (correctly, by its
-// own logic: "quiet for >= animationDebounce means flush") fires mid-burst
-// and hands back an intermediate frame, then a second flush starts for the
-// remainder. That is not a bug in scheduleAnimationFlush; time.Since()
-// measures real elapsed time accurately regardless of goroutine scheduling
-// delay, so a stretched sleep really did leave the line quiet that long. The
-// bug was in the test's assumption that a Sleep-paced burst reliably stays
-// under the debounce window on a loaded host.
-//
-// Fix: remove the inter-frame sleep so all frames are written back-to-back
-// (a burst lasting microseconds, not tens of milliseconds), giving a wide
-// safety margin under AnimationDebounce even under heavy scheduling jitter.
-// Wait for the callback via require.Eventually (polls for the actual
-// invariant) instead of a fixed sleep after the burst.
+// same-line (\r) spinner updates collapses into at most two debounced preview
+// callbacks (the immediate first frame plus one pending send carrying the final
+// frame) — never one callback per frame — and the redraws stay in place on a
+// single screen row rather than stacking into scrolling lines."
 func TestActivityMonitorRapidAnimationDebounce(t *testing.T) {
 	var buf bytes.Buffer
 	var callCount atomic.Int32
@@ -662,13 +651,14 @@ func TestActivityMonitorRapidAnimationDebounce(t *testing.T) {
 	var mu sync.Mutex
 
 	cfg := ActivityMonitorConfig{
-		IdleTimeout:       500 * time.Millisecond,
-		MinActiveBytes:    1,
-		PreviewMaxLines:   5,
-		PreviewDebounce:   50 * time.Millisecond,
-		AnimationDebounce: 100 * time.Millisecond,
-		ShowDoneMessage:   false,
-		OnOutputPreview: func(lines []string) {
+		IdleTimeout:     500 * time.Millisecond,
+		MinActiveBytes:  1,
+		PreviewMaxLines: 5,
+		PreviewDebounce: 50 * time.Millisecond,
+		ShowDoneMessage: false,
+		InitialCols:     80,
+		InitialRows:     24,
+		OnOutputPreview: func(lines []string, throbber string) {
 			callCount.Add(1)
 			mu.Lock()
 			lastLines = make([]string, len(lines))
@@ -680,31 +670,35 @@ func TestActivityMonitorRapidAnimationDebounce(t *testing.T) {
 	am := NewActivityMonitor(&buf, cfg)
 	defer am.Stop()
 
-	// Simulate spinner - many rapid updates, written back-to-back so the
-	// whole burst finishes in microseconds, far under AnimationDebounce
-	// regardless of host scheduling pressure.
+	// Simulate a fixed-width spinner - many rapid same-length updates written
+	// back-to-back so the whole burst finishes in microseconds, far under
+	// PreviewDebounce regardless of host scheduling pressure. Fixed width means
+	// each frame fully overwrites the prior one, no ESC[K needed.
 	frames := []string{"|", "/", "-", "\\", "|", "/", "-", "\\"}
 	for _, frame := range frames {
 		am.Write([]byte("\r" + frame + " Loading"))
 	}
 
-	// Wait for the debounced flush to actually fire, rather than sleeping a
-	// fixed duration and hoping it landed.
-	require.Eventually(t, func() bool { return callCount.Load() >= 1 }, 5*time.Second, 5*time.Millisecond,
-		"debounced preview callback should fire once the animation goes quiet")
+	// Wait for the debounced send to deliver the final frame on its single row.
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(lastLines) == 1 && lastLines[0] == "\\ Loading"
+	}, 5*time.Second, 5*time.Millisecond,
+		"debounced preview callback should carry the final frame on one row")
 
-	// Give any (unexpected) second flush a chance to land before asserting
-	// the count is stable, so a real double-flush isn't masked by reading
+	// Give any (unexpected) extra send a chance to land before asserting the
+	// count is stable, so a real per-frame broadcast isn't masked by reading
 	// too early.
-	time.Sleep(2 * cfg.AnimationDebounce)
+	time.Sleep(2 * cfg.PreviewDebounce)
 
 	calls := callCount.Load()
-	assert.Equal(t, int32(1), calls, "a back-to-back burst should collapse into exactly one preview callback")
+	assert.LessOrEqual(t, calls, int32(2), "a back-to-back burst should collapse into at most two preview callbacks (immediate first frame + debounced final frame)")
 
 	mu.Lock()
 	defer mu.Unlock()
-	require.Len(t, lastLines, 1)
-	assert.Equal(t, "\\ Loading", lastLines[0], "callback should carry the final frame")
+	// In-place redraw stays a single row — never a stack of per-frame lines.
+	assert.Len(t, lastLines, 1, "in-place redraw frames must not stack into multiple preview lines")
 }
 
 // TestActivityMonitorOnOutputLine verifies that the OnOutputLine callback is
@@ -715,7 +709,7 @@ func TestActivityMonitorOnOutputLine(t *testing.T) {
 	var linesMu sync.Mutex
 
 	cfg := DefaultActivityMonitorConfig()
-	cfg.OnOutputPreview = func([]string) {} // Required to enable captureForPreview
+	cfg.OnOutputPreview = func([]string, string) {} // Required to enable captureForPreview
 	cfg.OnOutputLine = func(line string) {
 		linesMu.Lock()
 		lines = append(lines, line)
@@ -829,7 +823,7 @@ func TestActivityMonitorOnOutputLineStripsANSI(t *testing.T) {
 	var linesMu sync.Mutex
 
 	cfg := DefaultActivityMonitorConfig()
-	cfg.OnOutputPreview = func([]string) {}
+	cfg.OnOutputPreview = func([]string, string) {}
 	cfg.OnOutputLine = func(line string) {
 		linesMu.Lock()
 		lines = append(lines, line)

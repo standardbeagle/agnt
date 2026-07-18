@@ -151,14 +151,15 @@ func (d *Daemon) hubHandleOverlayActivity(conn *hubpkg.Connection, cmd *hubproto
 func (d *Daemon) hubHandleOverlayOutputPreview(conn *hubpkg.Connection, cmd *hubproto.Command) error {
 	payload, err := unmarshalCommand[struct {
 		Lines    []string `json:"lines"`
+		Throbber string   `json:"throbber"`
 		ProxyIDs []string `json:"proxy_ids"`
 	}](cmd)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrInvalidArgs, "invalid payload")
 	}
 
-	if len(payload.Lines) == 0 {
-		return conn.WriteErr(hubproto.ErrInvalidArgs, "lines required")
+	if len(payload.Lines) == 0 && payload.Throbber == "" {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, "lines or throbber required")
 	}
 
 	// Get proxies to broadcast to
@@ -186,7 +187,7 @@ func (d *Daemon) hubHandleOverlayOutputPreview(conn *hubpkg.Connection, cmd *hub
 	// Broadcast to each proxy
 	totalSent := 0
 	for _, p := range proxiesToBroadcast {
-		sentCount := p.BroadcastOutputPreview(payload.Lines)
+		sentCount := p.BroadcastOutputPreview(payload.Lines, payload.Throbber)
 		totalSent += sentCount
 	}
 

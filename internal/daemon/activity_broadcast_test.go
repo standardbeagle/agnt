@@ -186,7 +186,11 @@ func TestOutputPreviewBroadcast_EndToEnd(t *testing.T) {
 	defer wsConn.Close()
 
 	// Channel to receive output preview
-	previewReceived := make(chan []string, 10)
+	type previewMsg struct {
+		Lines    []string
+		Throbber string
+	}
+	previewReceived := make(chan previewMsg, 10)
 
 	go func() {
 		for {
@@ -198,7 +202,8 @@ func TestOutputPreviewBroadcast_EndToEnd(t *testing.T) {
 			var msg struct {
 				Type    string `json:"type"`
 				Payload struct {
-					Lines []string `json:"lines"`
+					Lines    []string `json:"lines"`
+					Throbber string   `json:"throbber"`
 				} `json:"payload"`
 			}
 			if err := json.Unmarshal(message, &msg); err != nil {
@@ -206,19 +211,23 @@ func TestOutputPreviewBroadcast_EndToEnd(t *testing.T) {
 			}
 
 			if msg.Type == "output_preview" {
-				previewReceived <- msg.Payload.Lines
+				previewReceived <- previewMsg{Lines: msg.Payload.Lines, Throbber: msg.Payload.Throbber}
 			}
 		}
 	}()
 
 	// Re-broadcast until the preview arrives (closes the WS-registration race).
 	testLines := []string{"Building project...", "Compiling main.go", "Done!"}
-	lines := awaitBroadcast(t, func() error { return client.BroadcastOutputPreview(testLines) },
-		previewReceived, func(l []string) bool { return len(l) == len(testLines) }, "output preview")
-	for i, line := range lines {
+	testThrobber := "⠋ Bundling assets (3s)"
+	got := awaitBroadcast(t, func() error { return client.BroadcastOutputPreview(testLines, testThrobber) },
+		previewReceived, func(m previewMsg) bool { return len(m.Lines) == len(testLines) }, "output preview")
+	for i, line := range got.Lines {
 		if line != testLines[i] {
 			t.Errorf("Line %d: expected %q, got %q", i, testLines[i], line)
 		}
+	}
+	if got.Throbber != testThrobber {
+		t.Errorf("Throbber: expected %q, got %q", testThrobber, got.Throbber)
 	}
 
 	client.ProxyStop("test-proxy")
@@ -235,7 +244,7 @@ func TestActivityBroadcast_NoProxies(t *testing.T) {
 		t.Errorf("BroadcastActivity should not error with no proxies: %v", err)
 	}
 
-	if err := client.BroadcastOutputPreview([]string{"test"}); err != nil {
+	if err := client.BroadcastOutputPreview([]string{"test"}, ""); err != nil {
 		t.Errorf("BroadcastOutputPreview should not error with no proxies: %v", err)
 	}
 }

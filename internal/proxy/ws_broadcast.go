@@ -112,18 +112,45 @@ func (ps *ProxyServer) BroadcastToast(toastType, title, message string, duration
 }
 
 // BroadcastOutputPreview sends output preview lines to all connected browser clients.
+// throbber is the in-flight animated line (spinner text), rendered in place client-side.
 // Returns the number of clients that received the preview.
-func (ps *ProxyServer) BroadcastOutputPreview(lines []string) int {
+func (ps *ProxyServer) BroadcastOutputPreview(lines []string, throbber string) int {
 	message := map[string]interface{}{
 		"type": "output_preview",
 		"payload": map[string]interface{}{
-			"lines": lines,
+			"lines":    lines,
+			"throbber": throbber,
 		},
 	}
 
 	messageBytes, err := json.Marshal(message)
 	if err != nil {
 		debug.Error("proxy", "BroadcastOutputPreview: failed to marshal: %v", err)
+		return 0
+	}
+
+	return ps.broadcastRaw(messageBytes)
+}
+
+// BroadcastToolEvent sends an agent tool-call state event to all connected
+// browser clients. action is "call" (tool starting), "done" (finished OK), or
+// "error" (finished with an error); detail is a compact human-readable summary
+// (command, file path, error text). Rendered by the indicator's tool_event
+// handler as micro-toasts + history entries with per-state icons/colors.
+// Returns the number of clients that received the event.
+func (ps *ProxyServer) BroadcastToolEvent(name, action, detail string) int {
+	message := map[string]interface{}{
+		"type": "tool_event",
+		"payload": map[string]interface{}{
+			"name":   name,
+			"action": action,
+			"detail": detail,
+		},
+	}
+
+	messageBytes, err := json.Marshal(message)
+	if err != nil {
+		debug.Error("proxy", "BroadcastToolEvent: failed to marshal: %v", err)
 		return 0
 	}
 

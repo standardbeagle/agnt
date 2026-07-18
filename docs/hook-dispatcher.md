@@ -15,8 +15,8 @@ Dispatcher = fire-and-forget alias designed to install in `~/.claude/settings.js
 
 | Event | When fired | Drain-side behavior |
 |-------|-----------|---------------------|
-| `pre-tool-use` | Before each tool call | StreamSink + heartbeat |
-| `post-tool-use` | After each tool call | StreamSink + heartbeat |
+| `pre-tool-use` | Before each tool call | StreamSink + heartbeat + per-proxy `BroadcastToolEvent` (`call`) + Bash-redirect `BroadcastToast` on hookrules match |
+| `post-tool-use` | After each tool call | StreamSink + heartbeat + per-proxy `BroadcastToolEvent` (`done`, or `error` on best-effort `is_error`/`success:false`/`error` response signal) |
 | `notification` | On `notify`-style messages | StreamSink + heartbeat + per-proxy `BroadcastToast` (payload type/title/message) |
 | `stop` | When agent finishes responding | StreamSink + heartbeat + per-proxy `BroadcastToast` (`success`/"Claude Finished"/`last_assistant_message`, suppressed when `stop_hook_active=true`) |
 | `stop-failure` | When turn ends due to API error (Claude Code's `StopFailure` event) | StreamSink + heartbeat + per-proxy `BroadcastToast` (`error`/"Claude Error"/`error` + `error_details`) |
@@ -32,8 +32,11 @@ Any other event name enqueued and fanned out same way; table above = canonical C
 
 1. Session heartbeat (in-memory `LastSeen` bump on SessionRegistry — hook traffic counts as proof-of-life for parent `agnt run` session)
 2. StreamSink fan-out as synthetic `LogEntry{Type: hook}` so `agnt monitor --types hook` streams events live
-3. If event = `notification`, decode payload as `{type, title, message, duration}` and call `BroadcastToast` on every active proxy (back-compat for legacy `agnt notify` path)
-4. Typed `HookEventSink` fan-out via `BroadcastHookEvent` for direct subscribers (overlay panel, future MCP push)
+3. Per-event browser fan-out, scoped to the event's `project_path` proxies (fail-closed: an unattributed event is dropped, never fanned to every overlay):
+   - `notification` / `stop` / `stop-failure`: decode payload and call `BroadcastToast` (see table above)
+   - `pre-tool-use`: Bash-redirect `BroadcastToast` on hookrules match, plus `BroadcastToolEvent(name, "call", detail)`
+   - `post-tool-use`: `BroadcastToolEvent(name, "done"|"error", detail)` — the browser indicator renders these as per-tool micro-toasts + history entries (⚙ call / ✓ done / ✘ error); `detail` is the first of `command`/`file_path`/`path`/`url`/`pattern`/`query`/`prompt`/`description` from `tool_input`, or the response error text
+4. Typed `HookEventSink` fan-out via `BroadcastHookEvent` for direct subscribers (future MCP push)
 
 Drain goroutine never blocks on slow consumer: `BroadcastLogEntry` uses channel-send-with-default, `BroadcastToast` errors swallowed per-proxy, any malformed payload short-circuits at decode step. If consumer stalls hard enough to wedge fan-out, ring buffer overflow kicks in and `hookRing.OverflowCount()` surfaces pressure.
 

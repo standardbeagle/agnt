@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/standardbeagle/agnt/internal/debug"
 )
 
 func TestDisplayAutostartResults_RegistrationErrorIsVisible(t *testing.T) {
@@ -44,7 +46,29 @@ func TestDisplayAutostartResults_RegistrationTimeoutIsVisible(t *testing.T) {
 	}
 }
 
-func TestDisplayAutostartResults_InProgressStatusIsVisible(t *testing.T) {
+// The in-progress "autostart starting …" notice is pure progress noise, so a
+// normal session must stay silent and only debug mode may surface it.
+func TestDisplayAutostartResults_InProgressStatusHiddenByDefault(t *testing.T) {
+	done := make(chan struct{})
+	close(done)
+	handle := &daemonSessionHandle{
+		registrationDone: done,
+		autostartStatus:  "starting",
+		autostartHandle:  "/tmp/project",
+	}
+
+	var out bytes.Buffer
+	displayAutostartResults(context.Background(), handle, nil, nil, &out, time.Second)
+
+	if got := out.String(); strings.Contains(got, "autostart starting") {
+		t.Fatalf("in-progress notice should be hidden without debug, got %q", got)
+	}
+}
+
+func TestDisplayAutostartResults_InProgressStatusVisibleUnderDebug(t *testing.T) {
+	debug.Enable()
+	t.Cleanup(debug.Disable)
+
 	done := make(chan struct{})
 	close(done)
 	handle := &daemonSessionHandle{
@@ -58,7 +82,7 @@ func TestDisplayAutostartResults_InProgressStatusIsVisible(t *testing.T) {
 
 	got := out.String()
 	if !strings.Contains(got, "autostart starting") {
-		t.Fatalf("expected in-progress autostart status, got %q", got)
+		t.Fatalf("expected in-progress autostart status under debug, got %q", got)
 	}
 	if !strings.Contains(got, "daemon startup_log") {
 		t.Fatalf("expected next diagnostic command, got %q", got)

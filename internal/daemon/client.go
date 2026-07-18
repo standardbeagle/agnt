@@ -444,9 +444,11 @@ func (c *Client) SetForwarding(paused bool) error {
 }
 
 // BroadcastOutputPreview broadcasts output preview lines to connected browsers via proxies.
-func (c *Client) BroadcastOutputPreview(lines []string, proxyIDs ...string) error {
+// throbber carries the in-flight animated line (spinner text) rendered in place client-side.
+func (c *Client) BroadcastOutputPreview(lines []string, throbber string, proxyIDs ...string) error {
 	payload := map[string]interface{}{
 		"lines":     lines,
+		"throbber":  throbber,
 		"proxy_ids": proxyIDs,
 	}
 	_, err := c.conn.Request(protocol.VerbOverlay, protocol.SubVerbOutputPreview).WithJSON(payload).JSON()

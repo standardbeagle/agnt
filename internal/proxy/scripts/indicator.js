@@ -166,24 +166,88 @@
     var preview = document.createElement('div');
     preview.id = '__devtool-output-preview';
     preview.style.cssText = STYLES.outputPreview;
+
+    var linesEl = document.createElement('div');
+    linesEl.id = '__devtool-output-preview-lines';
+    preview.appendChild(linesEl);
+
+    var throbberEl = document.createElement('div');
+    throbberEl.id = '__devtool-output-throbber';
+    throbberEl.style.cssText = STYLES.outputPreviewThrobber;
+    preview.appendChild(throbberEl);
+
+    state.outputPreviewLines = linesEl;
+    state.outputPreviewThrobber = throbberEl;
     state.outputPreview = preview;
     state.container.appendChild(preview);
   }
 
-  // Show output preview with lines floating next to the bug
-  function showOutputPreview(lines) {
-    if (!state.outputPreview || !state.bug || !lines || lines.length === 0) return;
+  // Classify a preview line by its leading glyph / content so tool calls,
+  // results, errors, and successes each get an icon and color.
+  function classifyPreviewLine(line) {
+    // Tool call markers (Claude Code prints "⏺ Bash(...)")
+    var m = line.match(/^[⏺●]\s*/);
+    if (m) return { icon: '⚙', color: TOKENS.colors.primary, text: line.substring(m[0].length) };
+    // Tool result continuation ("⎿  result", box corners)
+    m = line.match(/^[⎿└╰↳]\s*/);
+    if (m) return { icon: '↳', color: TOKENS.colors.textMuted, text: line.substring(m[0].length) };
+    // Errors: explicit glyph or keyword
+    m = line.match(/^[✗✘✖❌]\s*/);
+    if (m || /\b(error|failed|failure|exception|fatal|panic)\b/i.test(line)) {
+      return { icon: '✘', color: TOKENS.colors.error, text: m ? line.substring(m[0].length) : line };
+    }
+    // Warnings
+    m = line.match(/^⚠️?\s*/);
+    if (m || /\bwarn(ing)?\b/i.test(line)) {
+      return { icon: '⚠', color: TOKENS.colors.active, text: m ? line.substring(m[0].length) : line };
+    }
+    // Success: explicit glyph or keyword
+    m = line.match(/^[✓✔✅]\s*/);
+    if (m || /\b(passed|succeeded|success|completed?|done)\b/i.test(line)) {
+      return { icon: '✓', color: TOKENS.colors.success, text: m ? line.substring(m[0].length) : line };
+    }
+    return { icon: '', color: TOKENS.colors.textInverse, text: line };
+  }
 
-    // Format lines with subtle styling
+  function truncatePreviewLine(line) {
+    return line.length > 96 ? line.substring(0, 93) + '...' : line;
+  }
+
+  // Show output preview with lines floating next to the bug. throbber is the
+  // in-flight animated line (spinner text), rendered as a single pinned line
+  // that updates in place instead of scrolling.
+  function showOutputPreview(lines, throbber) {
+    lines = lines || [];
+    throbber = throbber || '';
+    if (!state.outputPreview || !state.bug) return;
+    if (lines.length === 0 && !throbber) return;
+
     var html = lines.map(function(line) {
-      // Limit each line to prevent overflow
-      if (line.length > 80) {
-        line = line.substring(0, 77) + '...';
-      }
-      return escapeHtml(line);
-    }).join('\n');
+      var cls = classifyPreviewLine(truncatePreviewLine(line));
+      return '<div style="' + STYLES.outputPreviewLine + '">' +
+        '<span style="' + STYLES.outputPreviewIcon + ';color:' + cls.color + '">' + cls.icon + '</span>' +
+        '<span style="' + STYLES.outputPreviewText + ';color:' + (cls.icon ? cls.color : '#e2e8f0') + '">' + escapeHtml(cls.text) + '</span>' +
+        '</div>';
+    }).join('');
 
-    state.outputPreview.innerHTML = html;
+    // Only touch the DOM when the committed lines actually changed, so
+    // throbber-only updates never rebuild (or flicker) the line list.
+    if (html !== state.outputPreviewHTML) {
+      state.outputPreviewHTML = html;
+      state.outputPreviewLines.innerHTML = html;
+    }
+
+    // Throbber: update text in place; pulse while present.
+    if (throbber) {
+      state.outputPreviewThrobber.textContent = truncatePreviewLine(throbber);
+      state.outputPreviewThrobber.style.display = 'block';
+      state.outputPreviewThrobber.style.color = TOKENS.colors.active;
+      state.outputPreviewThrobber.classList.add('__devtool-throbber-live');
+    } else {
+      state.outputPreviewThrobber.textContent = '';
+      state.outputPreviewThrobber.style.display = 'none';
+      state.outputPreviewThrobber.classList.remove('__devtool-throbber-live');
+    }
 
     // Position next to the bug (to the right)
     var bugRect = state.bug.getBoundingClientRect();
@@ -204,17 +268,19 @@
     state.outputPreview.style.left = (bugRect.right + 12) + 'px';
     state.outputPreview.style.bottom = state.position.y + 'px';
 
-    // Auto-hide after 3 seconds of no updates
+    // Auto-hide after 4 seconds of no updates (throbber updates reset this,
+    // so the block stays up while the agent is mid-operation)
     clearTimeout(state.outputPreviewTimeout);
     state.outputPreviewTimeout = setTimeout(function() {
       hideOutputPreview();
-    }, 3000);
+    }, 4000);
   }
 
   // Hide output preview
   function hideOutputPreview() {
     if (!state.outputPreview) return;
     state.outputPreview.style.cssText = STYLES.outputPreview;
+    state.outputPreviewHTML = null;
     clearTimeout(state.outputPreviewTimeout);
   }
 
@@ -347,19 +413,97 @@
   }
 
   // Log an event to the history store
-  function logHistoryEvent(type, text, detail) {
-    var maxHistory = 200;
-    var entry = {
+  var MAX_HISTORY = 200;
+
+  function makeHistoryEntry(type, text, detail) {
+    return {
       id: Date.now() + '_' + Math.random().toString(36).substr(2, 4),
       type: type,       // 'tool', 'message', 'error', 'network', 'screenshot', 'system'
       text: text,
       detail: detail || '',
       timestamp: Date.now()
     };
+  }
+
+  function logHistoryEvent(type, text, detail) {
     var current = store.history.val.slice();
-    current.unshift(entry);
-    if (current.length > maxHistory) current = current.slice(0, maxHistory);
+    current.unshift(makeHistoryEntry(type, text, detail));
+    if (current.length > MAX_HISTORY) current = current.slice(0, MAX_HISTORY);
     store.history.val = current;
+  }
+
+  // Append several history entries in ONE reactive state write, so a burst of
+  // events costs a single array copy + a single history-panel re-render instead
+  // of one per event. entries are in arrival order (oldest first); the store is
+  // newest-first, so reverse the batch onto the front to match
+  // logHistoryEvent's semantics (last-arrived ends up at index 0).
+  function logHistoryBatch(entries) {
+    if (!entries || entries.length === 0) return;
+    var current = entries.slice().reverse().concat(store.history.val);
+    if (current.length > MAX_HISTORY) current = current.slice(0, MAX_HISTORY);
+    store.history.val = current;
+  }
+
+  // Coalescing queue for tool_event frames. Pre/post-tool-use hooks fire on
+  // EVERY tool call, so a parallel read fan-out or a tight tool loop can deliver
+  // dozens of frames in a few milliseconds. Rendering each one directly would
+  // thrash the DOM: showMicroToast reads layout (getBoundingClientRect,
+  // offsetWidth) and rewrites cssText, and each logHistoryEvent triggers a
+  // reactive history re-render. The queue collapses a burst into at most one
+  // micro-toast + one batched history write per flush window.
+  var toolEventQueue = {
+    pending: [],        // history entries awaiting a batched flush
+    toast: null,        // most recent frame to surface as a micro-toast
+    scheduled: false,
+    lastFlush: 0
+  };
+  var TOOL_EVENT_FLUSH_MS = 250;
+
+  function enqueueToolEvent(name, action, detail) {
+    var type = action === 'error' ? 'error' : 'tool';
+    var text = action === 'error' ? ('Tool error: ' + name)
+      : action === 'done' ? (name + ' done')
+        : name;
+    toolEventQueue.pending.push(makeHistoryEntry(type, text, detail));
+    // An error in the window always wins the toast slot (rare + important);
+    // otherwise the newest frame represents current activity.
+    if (action === 'error' || !toolEventQueue.toast || toolEventQueue.toast.action !== 'error') {
+      toolEventQueue.toast = { name: name, action: action };
+    }
+    scheduleToolEventFlush();
+  }
+
+  function scheduleToolEventFlush() {
+    if (toolEventQueue.scheduled) return;
+    toolEventQueue.scheduled = true;
+    var since = Date.now() - toolEventQueue.lastFlush;
+    var delay = since >= TOOL_EVENT_FLUSH_MS ? 0 : (TOOL_EVENT_FLUSH_MS - since);
+    setTimeout(function() {
+      // rAF-align the DOM writes so a flush that lands mid-frame does not force
+      // an extra synchronous layout.
+      requestAnimationFrame(flushToolEvents);
+    }, delay);
+  }
+
+  function flushToolEvents() {
+    toolEventQueue.scheduled = false;
+    toolEventQueue.lastFlush = Date.now();
+
+    var entries = toolEventQueue.pending;
+    toolEventQueue.pending = [];
+    var toast = toolEventQueue.toast;
+    toolEventQueue.toast = null;
+
+    logHistoryBatch(entries);
+
+    if (!toast) return;
+    if (toast.action === 'error') {
+      showMicroToast('✘ ' + toast.name, TOKENS.colors.error);
+    } else if (toast.action === 'done') {
+      showMicroToast('✓ ' + toast.name, TOKENS.colors.success);
+    } else {
+      showMicroToast('⚙ ' + toast.name, TOKENS.colors.primary);
+    }
   }
 
   // Escape HTML to prevent XSS
@@ -576,6 +720,14 @@
       '}',
       '.__devtool-dot-pop {',
       '  animation: __devtool-dot-pop 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) 1;',
+      '}',
+      // Output preview throbber - live spinner line, pulses while updating
+      '@keyframes __devtool-throbber-pulse {',
+      '  0%, 100% { opacity: 1; }',
+      '  50% { opacity: 0.55; }',
+      '}',
+      '.__devtool-throbber-live {',
+      '  animation: __devtool-throbber-pulse 1.2s ease-in-out infinite;',
       '}'
     ].join('\n');
     // Append to the shadow root (if active) so the keyframes/classes apply
@@ -3407,21 +3559,15 @@
       }
     } else if (message.type === 'output_preview') {
       var payload = message.payload || message;
-      if (payload.lines && Array.isArray(payload.lines)) {
-        showOutputPreview(payload.lines);
-      }
+      var previewLines = Array.isArray(payload.lines) ? payload.lines : [];
+      showOutputPreview(previewLines, typeof payload.throbber === 'string' ? payload.throbber : '');
     } else if (message.type === 'tool_event') {
-      // Tool call from the AI agent
+      // Tool call state from the AI agent (hook dispatcher fan-out):
+      // call = tool starting, done = finished OK, error = finished with error.
+      // Routed through the coalescing queue so a burst of tool calls cannot
+      // storm the DOM (see enqueueToolEvent).
       var payload = message.payload || message;
-      var toolName = payload.name || 'unknown';
-      var toolAction = payload.action || 'call';
-      if (toolAction === 'error') {
-        showMicroToast('\u2718 ' + toolName, TOKENS.colors.error);
-        logHistoryEvent('error', 'Tool error: ' + toolName, payload.detail || '');
-      } else {
-        showMicroToast('\u2699 ' + toolName, TOKENS.colors.primary);
-        logHistoryEvent('tool', toolName, payload.detail || '');
-      }
+      enqueueToolEvent(payload.name || 'unknown', payload.action || 'call', payload.detail || '');
     } else if (message.type === 'execute') {
       showMicroToast('\u25b6 exec', TOKENS.colors.secondary);
       logHistoryEvent('tool', 'Proxy exec', (message.code || '').substring(0, 80));

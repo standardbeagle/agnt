@@ -81,6 +81,9 @@
     bug: null,
     panel: null,
     outputPreview: null, // Floating output preview element
+    outputPreviewLines: null, // Committed-lines child of the output preview
+    outputPreviewThrobber: null, // In-place-updating throbber line child
+    outputPreviewHTML: null, // Last rendered lines HTML (skip rebuild when unchanged)
     sparkline: null, // API activity sparkline element
     sparklineInterval: null, // Update interval for sparkline
     isExpanded: false,

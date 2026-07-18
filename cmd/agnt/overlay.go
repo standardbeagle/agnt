@@ -14,6 +14,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/gorilla/websocket"
 	"github.com/standardbeagle/agnt/internal/config"
@@ -661,12 +663,11 @@ func getStr(m map[string]interface{}, key string) string {
 	return v
 }
 
-// truncateText truncates text to maxLen characters, adding "..." if truncated.
+// truncateText truncates text to maxLen runes, adding "..." if truncated. It
+// counts runes (not bytes) so multibyte content is measured by visible length
+// and never sliced mid-rune into invalid UTF-8.
 func truncateText(s string, maxLen int) string {
-	if len(s) <= maxLen {
-		return s
-	}
-	return s[:maxLen] + "..."
+	return overlay.TruncateRunes(s, maxLen, "...")
 }
 
 func (o *Overlay) handleMessage(msg OverlayMessage) {
@@ -700,7 +701,49 @@ func (o *Overlay) handleMessage(msg OverlayMessage) {
 	}
 }
 
+// sanitizeInjectedText is the trust-boundary guard for everything typeText
+// writes into the agent's PTY stdin. Injected message bodies come from many
+// sources that can carry invalid UTF-8 or embedded control bytes — a summarizer
+// subprocess emitting a partial multibyte rune or a spinner, raw dev-server
+// output scanned into an alert line, a browser payload with raw bytes. Injected
+// verbatim, those either corrupt the agent's input parser (the "corrupt binary
+// message" failure) or drive the terminal / its line editor (ESC, NUL, Ctrl-C).
+// We coerce to valid UTF-8 — invalid runs become U+FFFD, kept so corruption
+// stays visible rather than vanishing — and drop every control rune except the
+// newline/tab whitespace an injected message legitimately uses. Keystrokes and
+// control sequences (sendKey, Enter, Ctrl-C, ESC) bypass this by writing to
+// writeTopty directly, so their control bytes are preserved.
+func sanitizeInjectedText(s string) string {
+	if s == "" {
+		return s
+	}
+	if utf8.ValidString(s) && !strings.ContainsFunc(s, isStrippableControl) {
+		return s
+	}
+	s = strings.ToValidUTF8(s, "�")
+	return strings.Map(func(r rune) rune {
+		if isStrippableControl(r) {
+			return -1
+		}
+		return r
+	}, s)
+}
+
+// isStrippableControl reports whether r is a control rune that must not reach
+// the agent's stdin. Newline and tab are the only whitespace controls kept; the
+// U+FFFD replacement rune is not a control rune, so mangled input stays visible.
+func isStrippableControl(r rune) bool {
+	if r == '\n' || r == '\t' {
+		return false
+	}
+	return unicode.IsControl(r)
+}
+
 func (o *Overlay) typeText(msg TypeMessage) {
+	// Single enforced sanitization point for injected content — see
+	// sanitizeInjectedText. Every injection path funnels through here.
+	msg.Text = sanitizeInjectedText(msg.Text)
+
 	if msg.Instant {
 		// Send full text as single write - large buffer triggers paste detection
 		// in terminal input handlers without needing bracketed paste escape sequences.

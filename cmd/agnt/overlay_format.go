@@ -13,7 +13,15 @@ import (
 )
 
 // formatProxyEventText dispatches a proxy event to the appropriate formatter
-// and returns the text to inject. Returns empty string for unknown event types.
+// and returns the text to inject into the agent's PTY stdin. Returns empty
+// string for unknown event types.
+//
+// The returned text is deliberately NOT sanitized here. Every injection path —
+// this one, the scanner alert batches, and the palette/WebSocket "type" verbs —
+// funnels through Overlay.typeText, the single enforced boundary that coerces
+// injected content to clean UTF-8 text (see sanitizeInjectedText there). Keeping
+// the guard at the write boundary rather than in each formatter means a new
+// formatter or injection source cannot forget it.
 func formatProxyEventText(event ProxyEvent, summarizer *overlay.AuditSummarizer) string {
 	switch event.Type {
 	case "panel_message":

@@ -173,10 +173,10 @@ func (h *daemonSessionHandle) SetForwarding(paused bool) {
 }
 
 // BroadcastOutputPreview sends output preview lines to the daemon.
-func (h *daemonSessionHandle) BroadcastOutputPreview(lines []string) {
+func (h *daemonSessionHandle) BroadcastOutputPreview(lines []string, throbber string) {
 	if h.IsConnected() {
 		if c := h.currentClient(); c != nil {
-			_ = c.BroadcastOutputPreview(lines)
+			_ = c.BroadcastOutputPreview(lines, throbber)
 		}
 	}
 }
@@ -389,6 +389,35 @@ func mergeAutostartResult(handle *daemonSessionHandle, result map[string]interfa
 	}
 }
 
+// printAutostartProgressNotice emits the "autostart still in progress, nothing
+// to show yet" line — e.g. "[agnt] autostart starting for ai-storyteller —
+// check `daemon startup_log` or `proc list` for progress".
+//
+// It fires only when the daemon reported a non-terminal status (anything other
+// than "" or "done") AND nothing else was surfaced to the user (no started
+// scripts/proxies, no errors, no port conflicts). In that case the message is
+// pure progress noise, so it is gated behind debug mode (`--debug` /
+// AGNT_DEBUG). A normal session shows nothing here.
+//
+// The visible string is assembled from daemon-supplied `autostartStatus`
+// ("starting", ...) and the project basename, so grepping for the whole line
+// finds nothing — search for this function or "autostart status" instead.
+func printAutostartProgressNotice(w io.Writer, handle *daemonSessionHandle, started []string, hasErrors bool) {
+	if !debug.IsEnabled() {
+		return
+	}
+	inProgress := handle.autostartStatus != "" && handle.autostartStatus != "done"
+	nothingSurfaced := len(started) == 0 && !hasErrors && len(handle.portConflicts) == 0
+	if !inProgress || !nothingSurfaced {
+		return
+	}
+	msg := "[agnt] autostart " + handle.autostartStatus
+	if handle.autostartHandle != "" {
+		msg += " for " + filepath.Base(handle.autostartHandle)
+	}
+	fmt.Fprintf(w, "\x1b[2m%s — check `daemon startup_log` or `proc list` for progress\x1b[0m\r\n", msg)
+}
+
 // displayAutostartResults waits for daemon registration to complete and shows
 // autostart results in the overlay status bar. Success messages appear as a
 // transient status bar message that fades back to the normal indicator after 3s.
@@ -484,13 +513,7 @@ func displayAutostartResults(ctx context.Context, handle *daemonSessionHandle, o
 
 	started := append(handle.autostartScripts, handle.autostartProxies...)
 	hasErrors := len(handle.autostartErrors) > 0
-	if len(started) == 0 && !hasErrors && len(handle.portConflicts) == 0 && handle.autostartStatus != "" && handle.autostartStatus != "done" {
-		msg := "[agnt] autostart " + handle.autostartStatus
-		if handle.autostartHandle != "" {
-			msg += " for " + handle.autostartHandle
-		}
-		fmt.Fprintf(w, "\x1b[2m%s; check `daemon startup_log` or `proc list` for progress/errors\x1b[0m\r\n", msg)
-	}
+	printAutostartProgressNotice(w, handle, started, hasErrors)
 
 	if len(started) > 0 && ov != nil {
 		msg := "auto-started: " + strings.Join(started, ", ")
@@ -1614,6 +1637,11 @@ func runOverlayPipeline(
 		}
 
 		activityCfg := overlay.DefaultActivityMonitorConfig()
+		// Size the preview's virtual screen to the child PTY so the emulated
+		// snapshot wraps and repaints exactly as the child renders. Resize keeps
+		// it current on SIGWINCH (see the resize watcher).
+		activityCfg.InitialCols = handle.Width
+		activityCfg.InitialRows = handle.Height
 		// Tap every output line so an abrupt agent exit can be explained in
 		// the agent's own words (see reportUnexpectedShutdown).
 		rt.outputTap = newChildOutputTap(10, 5)
@@ -1624,8 +1652,8 @@ func runOverlayPipeline(
 				rt.netOverlay.NotifyActivity()
 			}
 		}
-		activityCfg.OnOutputPreview = func(lines []string) {
-			rt.daemonHandle.BroadcastOutputPreview(lines)
+		activityCfg.OnOutputPreview = func(lines []string, throbber string) {
+			rt.daemonHandle.BroadcastOutputPreview(lines, throbber)
 		}
 		if rt.startupSplash != nil {
 			activityCfg.OnFirstActivity = rt.startupSplash.OnFirstActivity()

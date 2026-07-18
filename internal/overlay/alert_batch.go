@@ -101,10 +101,11 @@ func (b *AlertBatch) Format() string {
 
 		sb.WriteString(fmt.Sprintf("\n%ss (%d):\n", capitalize(string(sev)), len(matches)))
 		for _, m := range matches {
-			line := m.Line
-			if len(line) > 120 {
-				line = line[:117] + "..."
-			}
+			// m.Line is raw process output — cap it (117 + "...") on a rune
+			// boundary so a truncated multibyte sequence never reaches the agent
+			// as invalid UTF-8 (the final sanitize at typeText would otherwise
+			// mangle it).
+			line := TruncateRunes(m.Line, 117, "...")
 			sb.WriteString(fmt.Sprintf("  - %s\n", line))
 		}
 	}

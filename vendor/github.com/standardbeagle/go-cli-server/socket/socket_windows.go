@@ -14,7 +14,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Microsoft/go-winio"
 	"golang.org/x/sys/windows"
 )
 
@@ -267,13 +266,7 @@ func Connect(path string) (net.Conn, error) {
 		path = DefaultSocketPath(DefaultSocketName)
 	}
 
-	var conn net.Conn
-	var err error
-	if strings.HasPrefix(strings.ToLower(path), `\\.\pipe\`) {
-		conn, err = winio.DialPipe(path, nil)
-	} else {
-		conn, err = net.Dial("unix", path)
-	}
+	conn, err := net.Dial("unix", path)
 	if err != nil {
 		if isPipeNotFound(err) {
 			return nil, ErrSocketNotFound

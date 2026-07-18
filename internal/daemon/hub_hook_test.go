@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1197,5 +1197,252 @@ func TestMatchBashRedirect_LongLivedPatterns(t *testing.T) {
 			require.NotNil(t, got, "command %q should match a redirect rule", cmd)
 			assert.NotEmpty(t, got.Replacement)
 		})
+	}
+}
+
+// TestBuildToolEvent drives the pure decode path from Claude Code
+// PreToolUse/PostToolUse payloads to browser tool_event fields.
+func TestBuildToolEvent(t *testing.T) {
+	t.Parallel()
+
+	longCmd := strings.Repeat("x", 200)
+	cases := []struct {
+		name       string
+		event      string
+		payload    string
+		wantName   string
+		wantAction string
+		wantDetail string
+		wantOK     bool
+	}{
+		{
+			name:       "pre-tool-use bash carries command detail",
+			event:      "pre-tool-use",
+			payload:    `{"tool_name":"Bash","tool_input":{"command":"npm test"}}`,
+			wantName:   "Bash",
+			wantAction: "call",
+			wantDetail: "npm test",
+			wantOK:     true,
+		},
+		{
+			name:       "post-tool-use success carries file_path detail",
+			event:      "post-tool-use",
+			payload:    `{"tool_name":"Edit","tool_input":{"file_path":"/a/b.go"},"tool_response":{"ok":true}}`,
+			wantName:   "Edit",
+			wantAction: "done",
+			wantDetail: "/a/b.go",
+			wantOK:     true,
+		},
+		{
+			name:       "post-tool-use is_error true with error text",
+			event:      "post-tool-use",
+			payload:    `{"tool_name":"Bash","tool_input":{"command":"make"},"tool_response":{"is_error":true,"error":"exit status 2"}}`,
+			wantName:   "Bash",
+			wantAction: "error",
+			wantDetail: "exit status 2",
+			wantOK:     true,
+		},
+		{
+			name:       "post-tool-use success false is error, falls back to input detail",
+			event:      "post-tool-use",
+			payload:    `{"tool_name":"Write","tool_input":{"file_path":"/x.txt"},"tool_response":{"success":false}}`,
+			wantName:   "Write",
+			wantAction: "error",
+			wantDetail: "/x.txt",
+			wantOK:     true,
+		},
+		{
+			name:       "post-tool-use non-empty error field alone is error",
+			event:      "post-tool-use",
+			payload:    `{"tool_name":"Fetch","tool_response":{"error":"timeout"}}`,
+			wantName:   "Fetch",
+			wantAction: "error",
+			wantDetail: "timeout",
+			wantOK:     true,
+		},
+		{
+			name:       "post-tool-use array response counts as success",
+			event:      "post-tool-use",
+			payload:    `{"tool_name":"Read","tool_input":{"file_path":"/f"},"tool_response":[{"type":"text"}]}`,
+			wantName:   "Read",
+			wantAction: "done",
+			wantDetail: "/f",
+			wantOK:     true,
+		},
+		{
+			name:       "is_error false with error null is success",
+			event:      "post-tool-use",
+			payload:    `{"tool_name":"Grep","tool_input":{"pattern":"foo"},"tool_response":{"is_error":false,"error":null}}`,
+			wantName:   "Grep",
+			wantAction: "done",
+			wantDetail: "foo",
+			wantOK:     true,
+		},
+		{
+			name:       "detail truncated to cap",
+			event:      "pre-tool-use",
+			payload:    `{"tool_name":"Bash","tool_input":{"command":"` + longCmd + `"}}`,
+			wantName:   "Bash",
+			wantAction: "call",
+			wantDetail: longCmd[:toolEventDetailMax-3] + "...",
+			wantOK:     true,
+		},
+		{name: "missing tool_name rejected", event: "pre-tool-use", payload: `{"tool_input":{"command":"ls"}}`},
+		{name: "malformed payload rejected", event: "post-tool-use", payload: `{not json`},
+		{name: "empty payload rejected", event: "pre-tool-use", payload: ``},
+		{name: "non-tool event rejected", event: "stop", payload: `{"tool_name":"Bash"}`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			name, action, detail, ok := buildToolEvent(tc.event, []byte(tc.payload))
+			assert.Equal(t, tc.wantOK, ok)
+			assert.Equal(t, tc.wantName, name)
+			assert.Equal(t, tc.wantAction, action)
+			assert.Equal(t, tc.wantDetail, detail)
+		})
+	}
+}
+
+// TestDrainHooks_ToolEventReachesBrowser asserts the previously-dead link:
+// a post-tool-use hook event fanned out by the drain path arrives at a
+// connected browser WS client as a typed tool_event frame.
+func TestDrainHooks_ToolEventReachesBrowser(t *testing.T) {
+	t.Parallel()
+	d := drainFanoutTestDaemon(t)
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	ps, err := d.proxym.Create(context.Background(), proxy.ProxyConfig{
+		ID: "tool-event-proxy", TargetURL: backend.URL, ListenPort: 0, MaxLogSize: 50,
+		Path: "/proj",
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = d.proxym.Stop(context.Background(), "tool-event-proxy") })
+
+	wsURL := fmt.Sprintf("ws://%s/__devtool_metrics", ps.ListenAddr)
+	var wsConn *websocket.Conn
+	require.Eventually(t, func() bool {
+		conn, _, dialErr := websocket.DefaultDialer.Dial(wsURL, nil)
+		if dialErr != nil {
+			return false
+		}
+		wsConn = conn
+		return true
+	}, 5*time.Second, 10*time.Millisecond, "failed to connect WebSocket to proxy")
+	defer wsConn.Close()
+
+	type toolEventFrame struct {
+		Name   string `json:"name"`
+		Action string `json:"action"`
+		Detail string `json:"detail"`
+	}
+	seen := make(chan toolEventFrame, 4)
+	go func() {
+		for {
+			_, message, readErr := wsConn.ReadMessage()
+			if readErr != nil {
+				return
+			}
+			var msg struct {
+				Type    string         `json:"type"`
+				Payload toolEventFrame `json:"payload"`
+			}
+			if json.Unmarshal(message, &msg) == nil && msg.Type == "tool_event" {
+				seen <- msg.Payload
+			}
+		}
+	}()
+
+	ev := HookEvent{
+		Event:       "post-tool-use",
+		ProjectPath: "/proj",
+		Payload:     json.RawMessage(`{"tool_name":"Bash","tool_input":{"command":"go build ./..."},"tool_response":{"is_error":true,"error":"exit status 1"}}`),
+		ReceivedAt:  time.Now(),
+	}
+
+	// Re-fan until the frame arrives: the WS dial returns on HTTP upgrade,
+	// before the proxy registers the conn, so a one-shot broadcast can race
+	// registration (same pattern as awaitBroadcast).
+	deadline := time.After(10 * time.Second)
+	tick := time.NewTicker(100 * time.Millisecond)
+	defer tick.Stop()
+	d.fanOutHookEvent(ev)
+	for {
+		select {
+		case got := <-seen:
+			assert.Equal(t, "Bash", got.Name)
+			assert.Equal(t, "error", got.Action)
+			assert.Equal(t, "exit status 1", got.Detail)
+			return
+		case <-tick.C:
+			d.fanOutHookEvent(ev)
+		case <-deadline:
+			t.Fatal("tool_event frame never reached the browser WS client")
+		}
+	}
+}
+
+// TestBroadcastToolEvent_EmptyProjectPathDrops asserts the fail-closed
+// contract also holds for tool events: an unattributed pre/post-tool-use
+// hook must not fan a tool_event across every overlay.
+func TestBroadcastToolEvent_EmptyProjectPathDrops(t *testing.T) {
+	t.Parallel()
+	d := drainFanoutTestDaemon(t)
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	ps, err := d.proxym.Create(context.Background(), proxy.ProxyConfig{
+		ID: "tool-event-unrelated", TargetURL: backend.URL, ListenPort: 0, MaxLogSize: 50,
+		Path: "/some/other/project",
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = d.proxym.Stop(context.Background(), "tool-event-unrelated") })
+
+	wsURL := fmt.Sprintf("ws://%s/__devtool_metrics", ps.ListenAddr)
+	var wsConn *websocket.Conn
+	require.Eventually(t, func() bool {
+		conn, _, dialErr := websocket.DefaultDialer.Dial(wsURL, nil)
+		if dialErr != nil {
+			return false
+		}
+		wsConn = conn
+		return true
+	}, 5*time.Second, 10*time.Millisecond, "failed to connect WebSocket to proxy")
+	defer wsConn.Close()
+
+	leaked := make(chan string, 4)
+	go func() {
+		for {
+			_, message, readErr := wsConn.ReadMessage()
+			if readErr != nil {
+				return
+			}
+			var msg struct {
+				Type string `json:"type"`
+			}
+			if json.Unmarshal(message, &msg) == nil && msg.Type == "tool_event" {
+				leaked <- string(message)
+			}
+		}
+	}()
+
+	ev := HookEvent{
+		Event:   "pre-tool-use",
+		Payload: json.RawMessage(`{"tool_name":"Bash","tool_input":{"command":"ls"}}`),
+	}
+	assert.NotPanics(t, func() { d.fanOutHookEvent(ev) })
+
+	select {
+	case frame := <-leaked:
+		t.Fatalf("unattributed hook leaked a tool_event to an unrelated overlay: %s", frame)
+	case <-time.After(300 * time.Millisecond):
+		// No frame — fail-closed contract holds.
 	}
 }

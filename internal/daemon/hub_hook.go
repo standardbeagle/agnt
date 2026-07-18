@@ -322,6 +322,10 @@ func (d *Daemon) fanOutHookEvent(ev HookEvent) {
 	//      the check-bash interceptor blocks the command client-side.
 	//      This gives the developer visibility into what the agent
 	//      *tried* to run and what it should use instead.
+	//    pre-tool-use and post-tool-use additionally broadcast a typed
+	//    tool_event WS frame (call / done / error) so the browser indicator
+	//    can render per-tool state with icons and colors — this is the
+	//    production consumer the HookEventSink phase left unwired.
 	//    All other events skip the toast path.
 	switch ev.Event {
 	case "notification":
@@ -332,6 +336,9 @@ func (d *Daemon) fanOutHookEvent(ev HookEvent) {
 		d.broadcastStopFailureToast(ev)
 	case "pre-tool-use":
 		d.broadcastBashRedirectToast(ev)
+		d.broadcastToolEvent(ev)
+	case "post-tool-use":
+		d.broadcastToolEvent(ev)
 	}
 
 	// 4. Typed HookEventSink fan-out (existing phase 1 path, kept for
@@ -613,6 +620,148 @@ func buildBashRedirectMessage(d *hookrules.Decision) string {
 		out = out[:maxLen-3] + "..."
 	}
 	return out
+}
+
+// toolEventHookPayload mirrors the Claude Code PreToolUse/PostToolUse JSON
+// shape: tool_name always, tool_input on both, tool_response on post only.
+type toolEventHookPayload struct {
+	ToolName     string          `json:"tool_name"`
+	ToolInput    json.RawMessage `json:"tool_input"`
+	ToolResponse json.RawMessage `json:"tool_response"`
+}
+
+// toolDetailKeys is the preference order for summarizing a tool_input into
+// a one-line detail. First present non-empty string field wins.
+var toolDetailKeys = []string{"command", "file_path", "path", "url", "pattern", "query", "prompt", "description"}
+
+const toolEventDetailMax = 120
+
+// buildToolEvent decodes a pre-tool-use / post-tool-use hook payload into the
+// browser tool_event fields (name, action, detail). Pure function so unit
+// tests can drive every branch without a Daemon fixture.
+//
+// action mapping: pre-tool-use → "call"; post-tool-use → "done", or "error"
+// when the tool_response carries an error signal. Claude Code has no uniform
+// error field across tools, so detection is best-effort: is_error:true,
+// success:false, or a non-empty error field. A response that decodes as none
+// of these (arrays, plain strings, tool-specific shapes) counts as success.
+//
+// ok is false for payloads that are not a tool call we can name: other event
+// types, malformed JSON, or a missing tool_name.
+func buildToolEvent(event string, payload []byte) (name, action, detail string, ok bool) {
+	if event != "pre-tool-use" && event != "post-tool-use" {
+		return "", "", "", false
+	}
+	if len(payload) == 0 {
+		return "", "", "", false
+	}
+	var p toolEventHookPayload
+	if err := json.Unmarshal(payload, &p); err != nil || p.ToolName == "" {
+		return "", "", "", false
+	}
+
+	name = p.ToolName
+	action = "call"
+	if event == "post-tool-use" {
+		action = "done"
+		if errText, isErr := toolResponseError(p.ToolResponse); isErr {
+			action = "error"
+			detail = errText
+		}
+	}
+	if detail == "" {
+		detail = toolInputDetail(p.ToolInput)
+	}
+	if len(detail) > toolEventDetailMax {
+		detail = detail[:toolEventDetailMax-3] + "..."
+	}
+	return name, action, detail, true
+}
+
+// toolResponseError inspects a tool_response for a best-effort error signal.
+// Returns the error text (may be empty) and whether the response is an error.
+func toolResponseError(resp json.RawMessage) (string, bool) {
+	if len(resp) == 0 {
+		return "", false
+	}
+	var probe struct {
+		IsError *bool           `json:"is_error"`
+		Success *bool           `json:"success"`
+		Error   json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal(resp, &probe); err != nil {
+		// Arrays, strings, and other non-object responses carry no
+		// recognizable error signal — treat as success.
+		return "", false
+	}
+	errText := ""
+	if len(probe.Error) > 0 && string(probe.Error) != "null" {
+		var s string
+		if json.Unmarshal(probe.Error, &s) == nil {
+			errText = s
+		} else {
+			errText = string(probe.Error)
+		}
+	}
+	if probe.IsError != nil && *probe.IsError {
+		return errText, true
+	}
+	if probe.Success != nil && !*probe.Success {
+		return errText, true
+	}
+	if errText != "" {
+		return errText, true
+	}
+	return "", false
+}
+
+// toolInputDetail summarizes a tool_input object into a one-line detail by
+// picking the first present toolDetailKeys string field.
+func toolInputDetail(input json.RawMessage) string {
+	if len(input) == 0 {
+		return ""
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(input, &fields); err != nil {
+		return ""
+	}
+	for _, key := range toolDetailKeys {
+		raw, present := fields[key]
+		if !present {
+			continue
+		}
+		var s string
+		if json.Unmarshal(raw, &s) == nil && s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+// broadcastToolEvent routes a pre/post-tool-use hook event to the project's
+// proxies as a typed tool_event WS frame. Same fail-closed contract as
+// toastProjectProxies: an event with no project_path is dropped, never fanned
+// across every overlay. Fire-and-forget: undecodable payloads are silent
+// no-ops at debug level.
+func (d *Daemon) broadcastToolEvent(ev HookEvent) {
+	if d.proxym == nil {
+		return
+	}
+	name, action, detail, ok := buildToolEvent(ev.Event, ev.Payload)
+	if !ok {
+		debug.Log("hook-hub", "tool_event skipped: undecodable %s payload", ev.Event)
+		return
+	}
+	if ev.ProjectPath == "" {
+		debug.Log("hook-hub", "tool_event dropped: hook event has no project_path (tool=%q) — refusing to fan across all overlays", name)
+		return
+	}
+	for _, p := range d.proxym.ListScoped(scope.Project(ev.ProjectPath)) {
+		if p == nil {
+			continue
+		}
+		p.BroadcastToolEvent(name, action, detail)
+	}
 }
 
 // toastProjectProxies sends a BroadcastToast to proxies for a specific project.

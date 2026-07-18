@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+	"unicode/utf8"
 
 	"github.com/standardbeagle/agnt/internal/aichannel"
 	"github.com/standardbeagle/agnt/internal/debug"
@@ -190,10 +191,18 @@ func (s *AuditSummarizer) buildAuditContext(audit AuditData) string {
 		}
 	}
 
-	// Limit context size to avoid token overflow
+	// Limit context size to avoid token overflow. Trim back to a rune
+	// boundary so we never split a multibyte UTF-8 sequence — a byte-offset
+	// cut would emit invalid UTF-8 into the prompt (and thence a garbled
+	// summary back to the agent).
 	resultStr := string(prettyResult)
-	if len(resultStr) > 8000 {
-		resultStr = resultStr[:8000] + "\n... (truncated)"
+	const maxContextBytes = 8000
+	if len(resultStr) > maxContextBytes {
+		cut := maxContextBytes
+		for cut > 0 && !utf8.RuneStart(resultStr[cut]) {
+			cut--
+		}
+		resultStr = resultStr[:cut] + "\n... (truncated)"
 	}
 
 	return fmt.Sprintf(`=== AUDIT DATA ===

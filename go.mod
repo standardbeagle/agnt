@@ -18,6 +18,7 @@ require (
 	github.com/google/jsonschema-go v0.4.2
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
+	github.com/hinshun/vt10x v0.0.0-20220301184237-5011da428d02
 	github.com/hyperboloide/lk v0.0.0-20251220053519-b291812e3216
 	github.com/klauspost/compress v1.18.3
 	github.com/pkg/sftp v1.13.10

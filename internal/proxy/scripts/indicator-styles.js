@@ -188,6 +188,42 @@
       'transform: translateX(0)'
     ].join(';'),
 
+    // One rendered line inside the output preview (icon + text)
+    outputPreviewLine: [
+      'display: flex',
+      'align-items: flex-start',
+      'gap: 6px',
+      'min-width: 0'
+    ].join(';'),
+
+    outputPreviewIcon: [
+      'flex: none',
+      'width: 14px',
+      'text-align: center',
+      'font-size: 11px',
+      'line-height: 18px'
+    ].join(';'),
+
+    outputPreviewText: [
+      'flex: 1',
+      'min-width: 0',
+      'line-height: 18px',
+      'white-space: pre-wrap',
+      'word-break: break-word'
+    ].join(';'),
+
+    // Live throbber line pinned under the preview lines, updated in place
+    outputPreviewThrobber: [
+      'display: none',
+      'margin-top: 4px',
+      'padding-top: 4px',
+      'border-top: 1px solid rgba(148, 163, 184, 0.25)',
+      'font-style: italic',
+      'line-height: 18px',
+      'white-space: pre-wrap',
+      'word-break: break-word'
+    ].join(';'),
+
     // API activity sparkline - thin strip below the bug
     sparkline: [
       'position: fixed',

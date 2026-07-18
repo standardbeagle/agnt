@@ -119,6 +119,8 @@ github.com/gorilla/websocket v1.5.3 h1:saDtZ6Pbx/0u+bgYQ3q96pZgCzfhKXGPqt7kZ72aN
 github.com/gorilla/websocket v1.5.3/go.mod h1:YR8l580nyteQvAITg2hZ9XVh4b55+EU/adAjf1fMHhE=
 github.com/hexops/gotextdiff v1.0.3 h1:gitA9+qJrrTCsiCl7+kh75nPqQt1cx4ZkudSTLoUqJM=
 github.com/hexops/gotextdiff v1.0.3/go.mod h1:pSWU5MAI3yDq+fZBTazCSJysOMbxWL1BSow5/V2vxeg=
+github.com/hinshun/vt10x v0.0.0-20220301184237-5011da428d02 h1:AgcIVYPa6XJnU3phs104wLj8l5GEththEw6+F79YsIY=
+github.com/hinshun/vt10x v0.0.0-20220301184237-5011da428d02/go.mod h1:Q48J4R4DvxnHolD5P8pOtXigYlRuPLGl6moFx3ulM68=
 github.com/hyperboloide/lk v0.0.0-20251220053519-b291812e3216 h1:Luh+sE/W2M+V0Y+jlZN7nJefLNHc4/y93xxl+rFD7k0=
 github.com/hyperboloide/lk v0.0.0-20251220053519-b291812e3216/go.mod h1:/OLW9HZj6qtQ7gWTGwuO3JrUZ+MC7I7TLRuNl14TYuo=
 github.com/inconshreveable/mousetrap v1.1.0 h1:wN+x4NVGpMsO7ErUn/mUI3vEoE6Jt13X2s0bqwp9tc8=
@@ -177,8 +179,6 @@ github.com/spf13/pflag v1.0.9 h1:9exaQaMOCwffKiiiYk6/BndUBv+iRViNW+4lEMi0PvY=
 github.com/spf13/pflag v1.0.9/go.mod h1:McXfInJRrz4CZXVZOBLb0bTZqETkiAhM9Iw0y3An2Bg=
 github.com/standardbeagle/claude-go v1.3.0 h1:4FMhbP86MfM4oliV0E9LBlbrN8NpgLYU73v/saVRL7k=
 github.com/standardbeagle/claude-go v1.3.0/go.mod h1:9nvuc+5ANtoEFMSfujFRDEEW1EIr3q1kE10xtoMiAIE=
-github.com/standardbeagle/go-cli-server v0.5.4 h1:sujwb5qMQpkRNcjE0gwZU2ZYepYcqSmz3XDI7M7HJg0=
-github.com/standardbeagle/go-cli-server v0.5.4/go.mod h1:mUuszHCMACvUKw+sTKzap4hk63XFHIVJpzT477FdcdU=
 github.com/standardbeagle/go-cli-server v0.5.5 h1:ywqlZd8cdkUQM/KjyE16J1mXhW6Es6KDYAubN3Mw/zI=
 github.com/standardbeagle/go-cli-server v0.5.5/go.mod h1:mUuszHCMACvUKw+sTKzap4hk63XFHIVJpzT477FdcdU=
 github.com/standardbeagle/go-sdk v1.5.0-agnt.2 h1:uXQn6JfbHYks28O0y2J9vHjvgYvHznTrbI87plTt2CI=
