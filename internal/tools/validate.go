@@ -245,6 +245,9 @@ func validateDetectInput(input DetectInput) error {
 // validateGetErrorsInput validates GetErrorsInput fields.
 func validateGetErrorsInput(input GetErrorsInput) error {
 	checks := []error{
+		validateStringLen("action", input.Action, maxIDLength),
+		validateStringLen("error_id", input.ErrorID, maxIDLength),
+		validateStringLen("tag", input.Tag, maxStringField),
 		validateStringLen("process_id", input.ProcessID, maxIDLength),
 		validateStringLen("proxy_id", input.ProxyID, maxIDLength),
 		validateStringLen("since", input.Since, maxStringField),

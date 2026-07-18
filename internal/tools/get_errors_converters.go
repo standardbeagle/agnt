@@ -81,7 +81,13 @@ func alertMapToUnifiedError(am map[string]interface{}) *unifiedError {
 		LastSeen: ts,
 		Count:    1,
 	}
-	ue.ID = findingID(ue.Source, ue.Category, ue.Message, ue.Location)
+	// The daemon stamps the authoritative id at store-Add time (so retention
+	// actions can address entries by the id the agent saw); recompute only
+	// for entries from a daemon predating the stamp.
+	ue.ID = getString(am, "id")
+	if ue.ID == "" {
+		ue.ID = findingID(ue.Source, ue.Category, ue.Message, ue.Location)
+	}
 	return ue
 }
 
@@ -384,6 +390,13 @@ func deduplicateErrors(errors []unifiedError) []unifiedError {
 			if e.LastSeen.After(result[idx].LastSeen) {
 				result[idx].LastSeen = e.LastSeen
 			}
+			// Pinned status survives a merge regardless of arrival order.
+			if e.Pinned {
+				result[idx].Pinned = true
+				if result[idx].Tag == "" {
+					result[idx].Tag = e.Tag
+				}
+			}
 		} else {
 			seen[key] = len(result)
 			result = append(result, e)
@@ -447,7 +460,14 @@ func formatSingleError(b *strings.Builder, e unifiedError) {
 	if e.ID != "" {
 		idStr = fmt.Sprintf(" #%s", e.ID)
 	}
-	fmt.Fprintf(b, "[%s] %s (%s%s)%s\n", e.Source, e.Category, countStr, ago, idStr)
+	pinStr := ""
+	if e.Pinned {
+		pinStr = " [pinned]"
+		if e.Tag != "" {
+			pinStr = fmt.Sprintf(" [pinned: %s]", e.Tag)
+		}
+	}
+	fmt.Fprintf(b, "[%s] %s (%s%s)%s%s\n", e.Source, e.Category, countStr, ago, idStr, pinStr)
 	fmt.Fprintf(b, "  %s\n", truncate(e.Message, 200))
 
 	if e.Location != "" {

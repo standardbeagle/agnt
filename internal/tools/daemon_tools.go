@@ -670,12 +670,23 @@ Default behavior:
   - Filters out noise (static asset 404s, redirects)
   - Sorts by severity (errors first) then recency
 
+Retention: errors are retired automatically when they go stale — a successful
+rebuild clears a process's earlier errors, an explicit proc stop/restart
+starts a fresh slate, and a project's last session disconnecting clears its
+ring. Use the retention actions to override:
+  - action: "pin" + error_id (+ optional tag) — save an error so it survives
+    every automatic clear and always shows in results until unpinned
+  - action: "unpin" + error_id — release a pinned error
+  - action: "clear" (+ optional process_id) — retire current unpinned errors now
+
 Examples:
   get_errors {}
   get_errors {proxy_id: "dev"}
   get_errors {process_id: "dev-server", since: "5m"}
   get_errors {include_warnings: false}
-  get_errors {raw: true, limit: 50}`,
+  get_errors {raw: true, limit: 50}
+  get_errors {action: "pin", error_id: "a1b2c3d4", tag: "flaky-db-timeout"}
+  get_errors {action: "clear", process_id: "dev-server"}`,
 	}, dt.makeGetErrorsHandler())
 
 	// Watch tool - returns monitor command for Claude's Monitor tool

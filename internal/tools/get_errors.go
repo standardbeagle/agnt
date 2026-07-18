@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sort"
 	"time"
 
@@ -13,6 +14,9 @@ import (
 
 // GetErrorsInput is the input for the get_errors tool.
 type GetErrorsInput struct {
+	Action          string `json:"action,omitempty" jsonschema:"query (default) lists errors; pin saves an error so it survives automatic clears; unpin releases it; clear retires current unpinned errors (project-scoped, process_id to narrow)"`
+	ErrorID         string `json:"error_id,omitempty" jsonschema:"Target for pin/unpin: the #id shown in a prior get_errors result"`
+	Tag             string `json:"tag,omitempty" jsonschema:"Optional note stored with a pin (e.g. 'flaky-db-timeout — investigating')"`
 	ProcessID       string `json:"process_id,omitempty" jsonschema:"Filter to specific process"`
 	ProxyID         string `json:"proxy_id,omitempty" jsonschema:"Filter to specific proxy (default: all active proxies)"`
 	Since           string `json:"since,omitempty" jsonschema:"Override recency filter (RFC3339 or duration like '5m')"`
@@ -36,10 +40,12 @@ type GetErrorsOutput struct {
 
 // unifiedError is the internal representation for deduplication and sorting.
 type unifiedError struct {
-	ID       string    `json:"id"`       // stable 8-char hex: sha256(source+category+message+location)[:4 bytes]
-	Source   string    `json:"source"`   // "process:<id>" or "browser:js" or "proxy:http" or "proxy:diagnostic"
-	Severity string    `json:"severity"` // "error" or "warning"
-	Category string    `json:"category"` // e.g. "TypeError", "COMPILE ERROR", "500 Internal Server Error"
+	Pinned   bool      `json:"pinned,omitempty"` // saved by the agent; exempt from limit and auto-clears
+	Tag      string    `json:"tag,omitempty"`    // agent note stored with the pin
+	ID       string    `json:"id"`               // stable 8-char hex: sha256(source+category+message+location)[:4 bytes]
+	Source   string    `json:"source"`           // "process:<id>" or "browser:js" or "proxy:http" or "proxy:diagnostic"
+	Severity string    `json:"severity"`         // "error" or "warning"
+	Category string    `json:"category"`         // e.g. "TypeError", "COMPILE ERROR", "500 Internal Server Error"
 	Message  string    `json:"message"`
 	Location string    `json:"location,omitempty"` // file:line:col
 	Page     string    `json:"page,omitempty"`     // page URL
@@ -77,6 +83,17 @@ func (dt *DaemonTools) makeGetErrorsHandler() func(context.Context, *mcp.CallToo
 			return errorResult(err.Error()), GetErrorsOutput{}, nil
 		}
 
+		// Retention actions: pin/unpin/clear mutate the daemon's error
+		// stores and return a confirmation instead of an error listing.
+		switch input.Action {
+		case "", "query":
+			// fall through to the query path below
+		case "pin", "unpin", "clear":
+			return dt.handleErrorRetentionAction(input)
+		default:
+			return errorResult(validationError("get_errors", fmt.Errorf("unknown action %q: want query, pin, unpin, or clear", input.Action))), GetErrorsOutput{}, nil
+		}
+
 		// Shim over the incident pipeline when it is enabled for this session:
 		// project the same inbox get_incidents reads (fingerprint IDs) instead
 		// of the legacy alert/proxy stores, so the two tools present one
@@ -89,16 +106,21 @@ func (dt *DaemonTools) makeGetErrorsHandler() func(context.Context, *mcp.CallToo
 		if err != nil {
 			return errorResult("failed to resolve query scope: " + err.Error()), GetErrorsOutput{}, nil
 		}
+		// Pinned errors ride along on every query path — a pin means "keep
+		// showing me this until I unpin", so it is exempt from source, since,
+		// and limit filtering.
+		pinned := dt.collectPinnedErrors(input.Global)
+
 		if !effectiveGlobal {
 			if incidentErrors, ok := dt.collectIncidentErrors(input, includeWarnings); ok {
-				result, output := formatErrorsOutput(incidentErrors, includeWarnings, limit, input.Raw)
+				result, output := formatErrorsOutput(mergePinned(incidentErrors, pinned), includeWarnings, limit, input.Raw)
 				return result, output, nil
 			}
 		}
 
 		allErrors, collectionWarnings := dt.collectDaemonErrors(input)
 
-		result, output := formatErrorsOutput(allErrors, includeWarnings, limit, input.Raw)
+		result, output := formatErrorsOutput(mergePinned(allErrors, pinned), includeWarnings, limit, input.Raw)
 		output.CollectionWarnings = collectionWarnings
 		return result, output, nil
 	}
@@ -202,11 +224,12 @@ func formatErrorsOutput(allErrors []unifiedError, includeWarnings bool, limit in
 	// Deduplicate
 	allErrors = deduplicateErrors(allErrors)
 
-	// Filter warnings if not wanted
+	// Filter warnings if not wanted. Pinned entries are exempt: the agent
+	// explicitly saved them, so no display filter hides them.
 	if !includeWarnings {
 		filtered := allErrors[:0]
 		for _, e := range allErrors {
-			if e.Severity == "error" {
+			if e.Severity == "error" || e.Pinned {
 				filtered = append(filtered, e)
 			}
 		}
@@ -237,9 +260,21 @@ func formatErrorsOutput(allErrors []unifiedError, includeWarnings bool, limit in
 		}
 	}
 
-	// Apply limit
+	// Apply limit to unpinned entries only — pins always stay visible.
 	if len(allErrors) > limit {
-		allErrors = allErrors[:limit]
+		trimmed := make([]unifiedError, 0, limit)
+		unpinnedKept := 0
+		for _, e := range allErrors {
+			if e.Pinned {
+				trimmed = append(trimmed, e)
+				continue
+			}
+			if unpinnedKept < limit {
+				trimmed = append(trimmed, e)
+				unpinnedKept++
+			}
+		}
+		allErrors = trimmed
 	}
 
 	// Format output
