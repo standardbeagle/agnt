@@ -13,7 +13,7 @@ import (
 // DaemonInput defines input for the daemon management tool.
 type DaemonInput struct {
 	Action string `json:"action" jsonschema:"Action: status, info, start, stop, restart, stop_all, restart_all, startup_log, doctor"`
-	Global *bool  `json:"global,omitempty" jsonschema:"For startup_log: override project config; true includes all projects, false forces current project"`
+	Global *bool  `json:"global,omitempty" jsonschema:"For startup_log/stop_all/restart_all: override project scope; true targets every project, false forces the current project (default: current project)"`
 }
 
 // DaemonOutput defines output for daemon management.
@@ -106,9 +106,9 @@ func makeDaemonHandler(dt *DaemonTools) func(context.Context, *mcp.CallToolReque
 		case "restart":
 			return handleDaemonRestart(dt)
 		case "stop_all":
-			return handleDaemonStopAll(dt)
+			return handleDaemonStopAll(dt, input.Global)
 		case "restart_all":
-			return handleDaemonRestartAll(dt)
+			return handleDaemonRestartAll(dt, input.Global)
 		case "startup_log":
 			return handleDaemonStartupLog(dt, input.Global)
 		case "doctor":
@@ -267,12 +267,31 @@ func formatStatusMessage(running bool) string {
 	return "Daemon is not running"
 }
 
-func handleDaemonStopAll(dt *DaemonTools) (*mcp.CallToolResult, DaemonOutput, error) {
+// daemonScopeFilter builds the DirectoryFilter for the daemon-wide lifecycle
+// actions (stop_all/restart_all). The MCP daemon connection is not
+// session-bound, so a non-global call names the project explicitly (SessionCode
+// preferred, Directory fallback) exactly like handleDaemonStartupLog and the
+// other gated tools. global:true is the deliberate cross-project override; a
+// non-global contextless call is rejected daemon-side rather than tearing down
+// every project's resources.
+func daemonScopeFilter(dt *DaemonTools, global *bool) protocol.DirectoryFilter {
+	dirFilter := protocol.DirectoryFilter{GlobalOverride: global}
+	if !globalEnabled(global) {
+		if sessionCode := dt.SessionCode(); sessionCode != "" {
+			dirFilter.SessionCode = sessionCode
+		} else if p := getProjectPath(); p != "" {
+			dirFilter.Directory = p
+		}
+	}
+	return dirFilter
+}
+
+func handleDaemonStopAll(dt *DaemonTools, global *bool) (*mcp.CallToolResult, DaemonOutput, error) {
 	if err := dt.ensureConnected(); err != nil {
 		return errorResult(fmt.Sprintf("daemon not running: %v", err)), DaemonOutput{}, nil
 	}
 
-	result, err := dt.client.StopAll()
+	result, err := dt.client.StopAllScoped(daemonScopeFilter(dt, global))
 	if err != nil {
 		return errorResult(fmt.Sprintf("failed to stop all: %v", err)), DaemonOutput{}, nil
 	}
@@ -289,12 +308,12 @@ func handleDaemonStopAll(dt *DaemonTools) (*mcp.CallToolResult, DaemonOutput, er
 	}, nil
 }
 
-func handleDaemonRestartAll(dt *DaemonTools) (*mcp.CallToolResult, DaemonOutput, error) {
+func handleDaemonRestartAll(dt *DaemonTools, global *bool) (*mcp.CallToolResult, DaemonOutput, error) {
 	if err := dt.ensureConnected(); err != nil {
 		return errorResult(fmt.Sprintf("daemon not running: %v", err)), DaemonOutput{}, nil
 	}
 
-	result, err := dt.client.RestartAll()
+	result, err := dt.client.RestartAllScoped(daemonScopeFilter(dt, global))
 	if err != nil {
 		return errorResult(fmt.Sprintf("failed to restart all: %v", err)), DaemonOutput{}, nil
 	}
