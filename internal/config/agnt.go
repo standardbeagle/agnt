@@ -630,6 +630,11 @@ type AlertsConfig struct {
 	// deprecation notice at load (see ParseAgntConfig).
 	DeprecatedIncidentPipeline bool `kdl:"incident-pipeline"`
 
+	// Retention configures when the daemon retires stale errors from the
+	// agent-facing stores (alert ring + incident inboxes). All triggers
+	// default to enabled; pinned errors always survive every trigger.
+	Retention *RetentionConfig `kdl:"retention"`
+
 	// OutageHold configures the transport-signal-driven outage gate that holds
 	// transport / browser-JS errors during dev-server restarts that the
 	// process-state classifier cannot detect (e.g. dotnet watch keeps the
@@ -876,6 +881,55 @@ func (c *AlertsConfig) GetPushConfig() *PushConfig {
 		return PresetPushConfig(c.Preset)
 	}
 	return nil
+}
+
+// RetentionConfig gates the daemon's error-retention triggers. Nil-safe:
+// every getter treats a nil receiver or unset field as enabled, so retention
+// is on by default and `.agnt.kdl` only needs the block to turn a trigger off.
+type RetentionConfig struct {
+	// OnBuildSuccess clears a process's stale errors when its build/rebuild
+	// completes successfully (rebuild-build-success pattern). Default: true.
+	OnBuildSuccess *bool `kdl:"on-build-success"`
+
+	// OnProcStop clears a process's errors on explicit PROC STOP / RESTART.
+	// Crash restarts never clear — crash evidence must survive. Default: true.
+	OnProcStop *bool `kdl:"on-proc-stop"`
+
+	// OnSessionEnd clears a project's alert-ring entries when its last
+	// session disconnects. Default: true.
+	OnSessionEnd *bool `kdl:"on-session-end"`
+}
+
+// ClearOnBuildSuccess reports whether build-success clearing is enabled.
+func (c *RetentionConfig) ClearOnBuildSuccess() bool {
+	if c == nil || c.OnBuildSuccess == nil {
+		return true
+	}
+	return *c.OnBuildSuccess
+}
+
+// ClearOnProcStop reports whether explicit-stop/restart clearing is enabled.
+func (c *RetentionConfig) ClearOnProcStop() bool {
+	if c == nil || c.OnProcStop == nil {
+		return true
+	}
+	return *c.OnProcStop
+}
+
+// ClearOnSessionEnd reports whether last-session-disconnect clearing is enabled.
+func (c *RetentionConfig) ClearOnSessionEnd() bool {
+	if c == nil || c.OnSessionEnd == nil {
+		return true
+	}
+	return *c.OnSessionEnd
+}
+
+// GetRetention returns the retention config (nil-safe; nil means all-default).
+func (c *AlertsConfig) GetRetention() *RetentionConfig {
+	if c == nil {
+		return nil
+	}
+	return c.Retention
 }
 
 // AlertPatternConfig defines a custom alert pattern in configuration.
