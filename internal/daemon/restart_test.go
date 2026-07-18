@@ -570,3 +570,179 @@ func TestRestartIntegration_RestartAll_Empty(t *testing.T) {
 			processesRestarted, processesFailed, proxiesRestarted, proxiesFailed)
 	}
 }
+
+// startProxyBackendForRestart spins up a mock backend and returns its URL plus
+// a per-test temp dir + socket path. Shared setup for the restart-fidelity
+// regression tests below.
+func startProxyBackendForRestart(t *testing.T) (backendURL, tmpDir, sockPath string) {
+	t.Helper()
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(backend.Close)
+	tmpDir = t.TempDir()
+	sockPath = filepath.Join(tmpDir, "test.sock")
+	return backend.URL, tmpDir, sockPath
+}
+
+// TestRestartIntegration_ProxyRestart_PreservesConfig asserts a restart does not
+// silently drop PublicURL (URL rewriting) or SkipTLSVerify (TLS verification) —
+// the recreated server must carry the same behavior-affecting config as the
+// original start. Regression: the restart handler rebuilt a bare ProxyConfig
+// that omitted both.
+func TestRestartIntegration_ProxyRestart_PreservesConfig(t *testing.T) {
+	// No t.Parallel(): real proxy binding a real port.
+	backendURL, tmpDir, sockPath := startProxyBackendForRestart(t)
+
+	d := NewForTest(t, DaemonConfig{SocketPath: sockPath, MaxClients: 10, WriteTimeout: 5 * time.Second})
+
+	client := NewClient(WithSocketPath(sockPath))
+	require.NoError(t, client.Connect())
+	defer client.Close()
+
+	const publicURL = "https://front.example.test:9000"
+	_, err := client.ProxyStartWithConfig("cfg-proxy", backendURL, 0, 1000, ProxyStartConfig{
+		Path:          tmpDir,
+		PublicURL:     publicURL,
+		SkipTLSVerify: true,
+	})
+	require.NoError(t, err)
+
+	// Sanity: the original server carries the config.
+	before, err := d.proxym.Get("cfg-proxy")
+	require.NoError(t, err)
+	require.Equal(t, publicURL, before.PublicURL)
+	require.True(t, before.SkipTLSVerify)
+
+	_, err = client.ProxyRestart("cfg-proxy")
+	require.NoError(t, err)
+
+	// After restart the recreated server must still carry both.
+	after, err := d.proxym.Get("cfg-proxy")
+	require.NoError(t, err)
+	require.Equal(t, publicURL, after.PublicURL, "restart must preserve PublicURL")
+	require.True(t, after.SkipTLSVerify, "restart must preserve SkipTLSVerify")
+
+	_ = client.ProxyStop("cfg-proxy")
+}
+
+// TestRestartIntegration_ProxyRestart_ReArmsDependencies asserts a proxy that
+// was still gated on readiness dependencies comes back gated on the SAME
+// dependencies after a restart, rather than reopening ungated. Regression: the
+// restart handler never re-registered dependencies the way handleExplicitStart
+// does.
+func TestRestartIntegration_ProxyRestart_ReArmsDependencies(t *testing.T) {
+	// No t.Parallel(): real proxy binding a real port.
+	backendURL, tmpDir, sockPath := startProxyBackendForRestart(t)
+
+	d := NewForTest(t, DaemonConfig{SocketPath: sockPath, MaxClients: 10, WriteTimeout: 5 * time.Second})
+
+	client := NewClient(WithSocketPath(sockPath))
+	require.NoError(t, client.Connect())
+	defer client.Close()
+
+	_, err := client.ProxyStartWithConfig("dep-proxy", backendURL, 0, 1000, ProxyStartConfig{Path: tmpDir})
+	require.NoError(t, err)
+
+	// Simulate a proxy still gated on a dependency that never signals ready.
+	before, err := d.proxym.Get("dep-proxy")
+	require.NoError(t, err)
+	before.SetDependencies([]string{"some-project:backend"})
+	require.False(t, before.IsReadyForForwarding(), "proxy should be gated after SetDependencies")
+
+	_, err = client.ProxyRestart("dep-proxy")
+	require.NoError(t, err)
+
+	after, err := d.proxym.Get("dep-proxy")
+	require.NoError(t, err)
+	require.False(t, after.IsReadyForForwarding(), "restart must re-arm the readiness gate, not reopen ungated")
+	require.Contains(t, after.PendingDependencies(), "some-project:backend",
+		"restart must re-register the still-pending dependency")
+
+	_ = client.ProxyStop("dep-proxy")
+}
+
+// TestRestartIntegration_ProxyRestart_PersistsActualPort asserts the persisted
+// proxy state records the port the restarted proxy is ACTUALLY bound to, not
+// the port that was merely requested. Regression: the handler persisted the
+// requested boundPort, which could diverge from the real bound port if Start
+// drifted to a fresh auto-assignment.
+func TestRestartIntegration_ProxyRestart_PersistsActualPort(t *testing.T) {
+	// No t.Parallel(): real proxy binding a real port.
+	backendURL, tmpDir, sockPath := startProxyBackendForRestart(t)
+
+	d := NewForTest(t, DaemonConfig{
+		SocketPath:             sockPath,
+		MaxClients:             10,
+		WriteTimeout:           5 * time.Second,
+		EnableStatePersistence: true,
+		StatePath:              filepath.Join(tmpDir, "state.json"),
+	})
+	require.NotNil(t, d.stateMgr, "state persistence must be enabled for this test")
+
+	client := NewClient(WithSocketPath(sockPath))
+	require.NoError(t, client.Connect())
+	defer client.Close()
+
+	_, err := client.ProxyStartWithConfig("persist-proxy", backendURL, 0, 1000, ProxyStartConfig{Path: tmpDir})
+	require.NoError(t, err)
+
+	_, err = client.ProxyRestart("persist-proxy")
+	require.NoError(t, err)
+
+	live, err := d.proxym.Get("persist-proxy")
+	require.NoError(t, err)
+	actualPort := live.BoundPort()
+	require.Greater(t, actualPort, 0)
+
+	var persistedPort int
+	for _, pc := range d.stateMgr.GetProxies() {
+		if pc.ID == "persist-proxy" {
+			persistedPort = pc.Port
+		}
+	}
+	require.Equal(t, actualPort, persistedPort,
+		"persisted port must match the proxy's actual bound port after restart")
+
+	_ = client.ProxyStop("persist-proxy")
+}
+
+// TestRestartIntegration_ProxyRestart_RebindsOverlay asserts a restart re-binds
+// the owning session's overlay endpoint onto the freshly-created server, so
+// browser→agent messages keep flowing. Regression: the restart handler skipped
+// the overlay re-bind that handleExplicitStart performs, leaving the restarted
+// proxy overlay-less.
+func TestRestartIntegration_ProxyRestart_RebindsOverlay(t *testing.T) {
+	// No t.Parallel(): real proxy binding a real port.
+	backendURL, tmpDir, sockPath := startProxyBackendForRestart(t)
+
+	d := NewForTest(t, DaemonConfig{SocketPath: sockPath, MaxClients: 10, WriteTimeout: 5 * time.Second})
+
+	// Register a session that owns this project and carries an overlay socket,
+	// so overlayEndpointForProject resolves a non-empty endpoint.
+	require.NoError(t, d.sessionRegistry.Register(&Session{
+		Code:        "overlay-sess",
+		ProjectPath: normalizePath(tmpDir),
+		OverlayPath: filepath.Join(tmpDir, "overlay.sock"),
+		StartedAt:   time.Now(),
+		Status:      SessionStatusActive,
+		LastSeen:    time.Now(),
+	}))
+
+	client := NewClient(WithSocketPath(sockPath))
+	require.NoError(t, client.Connect())
+	defer client.Close()
+
+	_, err := client.ProxyStartWithConfig("overlay-proxy", backendURL, 0, 1000, ProxyStartConfig{Path: tmpDir})
+	require.NoError(t, err)
+
+	_, err = client.ProxyRestart("overlay-proxy")
+	require.NoError(t, err)
+
+	after, err := d.proxym.Get("overlay-proxy")
+	require.NoError(t, err)
+	require.True(t, after.HasOverlayEndpoint(),
+		"restart must re-bind the owning session's overlay endpoint onto the new server")
+
+	_ = client.ProxyStop("overlay-proxy")
+}

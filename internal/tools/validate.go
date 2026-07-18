@@ -141,25 +141,15 @@ func validateProxyInput(input ProxyInput) error {
 		validateStringLen("toast_type", input.ToastType, maxIDLength),
 		validateStringLen("toast_title", input.ToastTitle, maxStringField),
 		validateStringLen("toast_message", input.ToastMessage, maxMessageLength),
-		validateStringLen("tunnel", input.Tunnel, maxIDLength),
-		validateStringLen("tunnel_token", input.TunnelToken, maxStringField),
-		validateStringLen("tunnel_region", input.TunnelRegion, maxIDLength),
-		validateStringLen("tunnel_command", input.TunnelCommand, maxPathLength),
 		validateStringLen("chaos_operation", input.ChaosOperation, maxIDLength),
 		validateStringLen("chaos_preset", input.ChaosPreset, maxIDLength),
 		validateStringLen("chaos_rule_id", input.ChaosRuleID, maxIDLength),
 		validatePort("port", input.Port),
 		validatePositiveLimit("toast_duration", input.ToastDuration, maxTimeoutMs),
-		validateArrayLen("tunnel_args", input.TunnelArgs, maxArrayElements),
 		validateArrayLen("chaos_rules", input.ChaosRules, maxChaosRules),
 	}
 	for _, err := range checks {
 		if err != nil {
-			return err
-		}
-	}
-	for i, arg := range input.TunnelArgs {
-		if err := validateStringLen(fmt.Sprintf("tunnel_args[%d]", i), arg, maxStringField); err != nil {
 			return err
 		}
 	}

@@ -122,7 +122,11 @@ func (dt *DaemonTools) executeResponsiveAuditDaemon(input ResponsiveAuditInput) 
 	})()`, string(optsJSON))
 
 	// Execute via daemon
-	result, err := dt.client.ProxyExec(input.ProxyID, code, resolveExecTarget(input.Target, input.FrameID))
+	execTarget, err := resolveExecTarget(input.Target, input.FrameID)
+	if err != nil {
+		return errorResult(err.Error()), ResponsiveAuditOutput{}, nil
+	}
+	result, err := dt.client.ProxyExec(input.ProxyID, code, execTarget)
 	if err != nil {
 		return errorResult(fmt.Sprintf("failed to execute audit: %v", err)), ResponsiveAuditOutput{}, nil
 	}

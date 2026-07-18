@@ -458,3 +458,28 @@ func findListEntry(t *testing.T, listResp map[string]interface{}, proxyID string
 	t.Fatalf("proxy %q not found in list: %v", proxyID, proxies)
 	return nil
 }
+
+// TestHubHandleProxyStart_FailureInlinesCause asserts that when proxy creation
+// fails, PROXY START does not return a bare "not created" — it inlines the
+// recorded proxy_creation_failed cause and points at the durable surfaces.
+// Regression: the handler surfaced only the terse proxym.Get "not found",
+// hiding the real reason from the MCP caller.
+func TestHubHandleProxyStart_FailureInlinesCause(t *testing.T) {
+	t.Parallel()
+	_, client, backend, tmpDir := newHubProxyTestDaemon(t)
+
+	// Binding to 0.0.0.0 without allow_external makes NewProxyServer (via
+	// handleExplicitStart -> Create) fail with a deterministic error that is
+	// recorded as proxy_creation_failed.
+	_, err := client.ProxyStartWithConfig("fail-proxy", backend.URL, 0, 100, ProxyStartConfig{
+		Path:          tmpDir,
+		BindAddress:   "0.0.0.0",
+		AllowExternal: false,
+	})
+	require.Error(t, err, "external bind without allow_external must fail the start")
+	msg := err.Error()
+	require.Contains(t, msg, "was not created")
+	require.Contains(t, msg, "cause:", "the recorded proxy_creation_failed detail must be inlined")
+	require.Contains(t, msg, "allow_external", "the inlined cause must carry the real reason")
+	require.Contains(t, msg, "startup_log", "the message must point at the durable startup-log surface")
+}

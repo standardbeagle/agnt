@@ -149,16 +149,51 @@ func (ps *ProxyServer) ActiveFrame() string {
 	return ""
 }
 
+// ExecTargetKind classifies a caller-supplied exec target selector. It is the
+// single source of truth for the target-token vocabulary shared by the MCP tool
+// layer (which builds the wire arg and rejects nonsense) and the proxy server
+// (which resolves that arg to a concrete frame).
+type ExecTargetKind int
+
+const (
+	// ExecTargetUnknown is a token that is neither a named selector nor a
+	// server-minted frame id (a typo like "page"). The tool layer rejects it.
+	ExecTargetUnknown ExecTargetKind = iota
+	// ExecTargetChrome addresses the outer chrome shell (wire token "@chrome").
+	ExecTargetChrome
+	// ExecTargetActiveFrame lets the server pick the active content frame.
+	ExecTargetActiveFrame
+	// ExecTargetFrameID is an explicit server-minted frame id, passed through.
+	ExecTargetFrameID
+)
+
+// ClassifyExecTarget maps a caller-supplied exec target selector onto its kind.
+// Named selectors are case-insensitive and trimmed; anything else is a frame id
+// only if it matches the server-minted frame-id shape, otherwise it is unknown.
+func ClassifyExecTarget(target string) ExecTargetKind {
+	switch strings.ToLower(strings.TrimSpace(target)) {
+	case "@chrome", "outer", "shell", "chrome":
+		return ExecTargetChrome
+	case "inner", "active", "content", "":
+		return ExecTargetActiveFrame
+	default:
+		if frameIDPattern.MatchString(target) {
+			return ExecTargetFrameID
+		}
+		return ExecTargetUnknown
+	}
+}
+
 // resolveExecTarget maps a caller-supplied frame selector onto the wire token
 // the browser exec gate understands. The outer chrome shell is addressed by the
 // "@chrome" role token (so the caller need not know the per-page shell id);
 // "inner"/"active"/"" collapse to the active content frame; an explicit frame id
-// passes through unchanged.
+// (or an unknown token the tool layer already lets through) passes unchanged.
 func (ps *ProxyServer) resolveExecTarget(target string) string {
-	switch target {
-	case "@chrome", "outer", "shell", "chrome":
+	switch ClassifyExecTarget(target) {
+	case ExecTargetChrome:
 		return "@chrome"
-	case "inner", "active", "content", "":
+	case ExecTargetActiveFrame:
 		return ps.ActiveFrame()
 	default:
 		return target

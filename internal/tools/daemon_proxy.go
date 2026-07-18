@@ -14,13 +14,12 @@ import (
 
 // proxyAccessURL renders the human-facing "access at" URL for a started proxy.
 // listenAddr is a full host:port (net.Listener.Addr().String(), e.g.
-// "127.0.0.1:47341"); a tunnel or public URL wins when present. Concatenating
-// listenAddr onto a "http://localhost" literal produced the bogus
-// "http://localhost127.0.0.1:47341" — the scheme is all the prefix needs.
-func proxyAccessURL(listenAddr, bindAddress, publicURL, tunnelURL string) string {
+// "127.0.0.1:47341"); a public URL (set explicitly, or by the tunnel tool via
+// SetPublicURL) wins when present. Concatenating listenAddr onto a
+// "http://localhost" literal produced the bogus "http://localhost127.0.0.1:47341"
+// — the scheme is all the prefix needs.
+func proxyAccessURL(listenAddr, bindAddress, publicURL string) string {
 	switch {
-	case tunnelURL != "":
-		return tunnelURL
 	case publicURL != "":
 		return publicURL
 	case bindAddress == "0.0.0.0":
@@ -97,16 +96,6 @@ func (dt *DaemonTools) handleProxyStart(input ProxyInput) (*mcp.CallToolResult, 
 		SkipTLSVerify: input.SkipTLSVerify,
 	}
 
-	if input.Tunnel != "" {
-		config.Tunnel = &protocol.TunnelConfig{
-			Provider:  input.Tunnel,
-			Command:   input.TunnelCommand,
-			Args:      input.TunnelArgs,
-			AuthToken: input.TunnelToken,
-			Region:    input.TunnelRegion,
-		}
-	}
-
 	result, err := dt.client.ProxyStartWithConfig(input.ID, input.TargetURL, port, input.MaxLogSize, config)
 	if err != nil {
 		return formatDaemonError(err, "proxy"), ProxyOutput{}, nil
@@ -115,9 +104,8 @@ func (dt *DaemonTools) handleProxyStart(input ProxyInput) (*mcp.CallToolResult, 
 	listenAddr := getString(result, "listen_addr")
 	bindAddress := getString(result, "bind_address")
 	publicURL := getString(result, "public_url")
-	tunnelURL := getString(result, "tunnel_url")
 
-	accessURL := proxyAccessURL(listenAddr, bindAddress, publicURL, tunnelURL)
+	accessURL := proxyAccessURL(listenAddr, bindAddress, publicURL)
 
 	return nil, ProxyOutput{
 		ID:          getString(result, "id"),
@@ -125,7 +113,6 @@ func (dt *DaemonTools) handleProxyStart(input ProxyInput) (*mcp.CallToolResult, 
 		ListenAddr:  listenAddr,
 		BindAddress: bindAddress,
 		PublicURL:   publicURL,
-		TunnelURL:   tunnelURL,
 		Message:     fmt.Sprintf("Proxy started. Access at %s", accessURL),
 	}, nil
 }
@@ -307,7 +294,12 @@ func (dt *DaemonTools) handleProxyExec(input ProxyInput) (*mcp.CallToolResult, P
 		execHints = ScanForHints(input.Code)
 	}
 
-	result, err := dt.client.ProxyExec(input.ID, input.Code, resolveExecTarget(input.Target, input.FrameID))
+	execTarget, err := resolveExecTarget(input.Target, input.FrameID)
+	if err != nil {
+		return errorResult(err.Error()), ProxyOutput{}, nil
+	}
+
+	result, err := dt.client.ProxyExec(input.ID, input.Code, execTarget)
 	if err != nil {
 		return formatDaemonError(err, "proxy"), ProxyOutput{}, nil
 	}
@@ -359,10 +351,26 @@ func (dt *DaemonTools) handleProxyNavigate(input ProxyInput) (*mcp.CallToolResul
 	if err != nil {
 		return errorResult(err.Error()), ProxyOutput{}, nil
 	}
-	if _, err := dt.client.ProxyExec(input.ID, code, resolveExecTarget(input.Target, "")); err != nil {
+	execTarget, err := resolveExecTarget(input.Target, "")
+	if err != nil {
+		return errorResult(err.Error()), ProxyOutput{}, nil
+	}
+	// Navigation drives the page content frame. Navigating the outer chrome
+	// shell (the proxy UI runtime) is never the intent and would blow away the
+	// shell that hosts the page — fail loud rather than do it.
+	if execTarget == "@chrome" {
+		return errorResult("navigate cannot target the outer chrome shell; it drives the page content frame (omit target, or use target:\"inner\")"), ProxyOutput{}, nil
+	}
+	result, err := dt.client.ProxyExec(input.ID, code, execTarget)
+	if err != nil {
 		return formatDaemonError(err, "proxy"), ProxyOutput{}, nil
 	}
-	return nil, ProxyOutput{Success: true, Message: fmt.Sprintf("navigate %s dispatched", input.Direction)}, nil
+	// buildNavigateJS returns {navigating:true, from:<href>} synchronously
+	// before the deferred navigation runs; surface it instead of discarding it.
+	return nil, ProxyOutput{
+		Success: true,
+		Message: fmt.Sprintf("navigate %s dispatched: %s", input.Direction, getString(result, "result")),
+	}, nil
 }
 
 // handleProxyResize resizes the live content frame from the outer chrome shell.
@@ -374,8 +382,15 @@ func (dt *DaemonTools) handleProxyResize(input ProxyInput) (*mcp.CallToolResult,
 	if err != nil {
 		return formatDaemonError(err, "proxy"), ProxyOutput{}, nil
 	}
+	// Mirror handleProxyExec: a browser-side JS failure is a structured result
+	// carrying success=false + the error, not a tool-level IsError. Only a
+	// transport error (above) is IsError. This keeps resize and exec consistent
+	// so callers branch on the same shape.
 	if !getBool(result, "success") {
-		return errorResult(fmt.Sprintf("resize failed: %s", getString(result, "error"))), ProxyOutput{}, nil
+		return nil, ProxyOutput{
+			Success: false,
+			Message: fmt.Sprintf("resize failed: %s", getString(result, "error")),
+		}, nil
 	}
 	return nil, ProxyOutput{Success: true, Message: getString(result, "result")}, nil
 }

@@ -37,6 +37,13 @@ Port selection:
   - Specify 'port' only when a fixed port is required
   - Assigned port returned in 'listen_addr' response field
 
+Public URLs:
+  - This tool serves a local listener; to expose it publicly use the 'tunnel' tool
+    (cloudflare/ngrok), which mints a public URL and reports it back to the proxy
+    (surfaced as 'public_url' in start/status).
+  - The 'public_url' start field only sets URL-rewriting when you already front the
+    proxy with your own tunnel; it does not create a tunnel.
+
 Toast notifications:
   proxy {action: "toast", id: "dev", toast_message: "Task complete"}
   proxy {action: "toast", id: "dev", toast_type: "error", toast_title: "Build Failed", toast_message: "See console"}

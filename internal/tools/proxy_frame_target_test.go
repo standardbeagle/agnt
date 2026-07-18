@@ -6,7 +6,9 @@ import (
 )
 
 // TestResolveExecTarget: Target wins over frame_id; outer→@chrome; inner→empty
-// (server picks active frame); explicit frame id passes through.
+// (server picks active frame); an explicit frame-id-shaped token passes through;
+// a non-empty unknown token (not a named selector, not frame-id-shaped) is
+// rejected rather than silently forwarded as a bogus frame id.
 func TestResolveExecTarget(t *testing.T) {
 	cases := []struct {
 		target, frameID, want string
@@ -16,15 +18,28 @@ func TestResolveExecTarget(t *testing.T) {
 		{"chrome", "", "@chrome"},
 		{"inner", "", ""},
 		{"active", "", ""},
-		{"OUTER", "", "@chrome"}, // case-insensitive
-		{" inner ", "", ""},      // trimmed
-		{"", "frameX", "frameX"}, // no target → frame_id passthrough
-		{"", "", ""},
-		{"frameZ", "ignored", "frameZ"}, // explicit token wins over frame_id
+		{"OUTER", "", "@chrome"},               // case-insensitive
+		{" inner ", "", ""},                    // trimmed
+		{"", "frameX", "frameX"},               // no target → frame_id passthrough (unvalidated)
+		{"", "", ""},                           // no target, no frame_id → server picks
+		{"a1b2c3", "ignored", "a1b2c3"},        // frame-id-shaped token wins over frame_id
+		{"chrome-a1b2c3", "", "chrome-a1b2c3"}, // shell frame id passes through
 	}
 	for _, c := range cases {
-		if got := resolveExecTarget(c.target, c.frameID); got != c.want {
+		got, err := resolveExecTarget(c.target, c.frameID)
+		if err != nil {
+			t.Errorf("resolveExecTarget(%q,%q) unexpected error: %v", c.target, c.frameID, err)
+			continue
+		}
+		if got != c.want {
 			t.Errorf("resolveExecTarget(%q,%q) = %q, want %q", c.target, c.frameID, got, c.want)
+		}
+	}
+
+	// Unknown, non-frame-id-shaped tokens must be rejected loudly.
+	for _, bad := range []string{"page", "frameZ", "top", "iframe"} {
+		if _, err := resolveExecTarget(bad, ""); err == nil {
+			t.Errorf("resolveExecTarget(%q, \"\") = nil error, want rejection", bad)
 		}
 	}
 }

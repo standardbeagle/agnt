@@ -272,7 +272,11 @@ func handleSnapshotScreenshot(dt *DaemonTools, input SnapshotInput) (*mcp.CallTo
 	optsJSON, _ := json.Marshal(opts)
 	code := fmt.Sprintf("await __devtool.screenshot(%s)", optsJSON)
 
-	result, err := dt.client.ProxyExec(input.ProxyID, code, resolveExecTarget(input.Target, input.FrameID))
+	execTarget, err := resolveExecTarget(input.Target, input.FrameID)
+	if err != nil {
+		return errorResult(err.Error()), SnapshotOutput{}, nil
+	}
+	result, err := dt.client.ProxyExec(input.ProxyID, code, execTarget)
 	if err != nil {
 		return errorResult(fmt.Sprintf("proxy exec failed: %v", err)), SnapshotOutput{}, nil
 	}

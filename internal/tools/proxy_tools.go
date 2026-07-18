@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/standardbeagle/agnt/internal/proxy"
 	"github.com/standardbeagle/go-sdk/mcp"
 )
 
@@ -29,16 +30,26 @@ func handleExecSearch(input ProxyInput) (*mcp.CallToolResult, ProxyOutput, bool)
 // the chrome shell ("@chrome"); "inner" (or empty) lets the server pick the
 // active content frame; an explicit frame_id is passed through. Target wins over
 // frame_id when both are set.
-func resolveExecTarget(target, frameID string) string {
-	switch strings.ToLower(strings.TrimSpace(target)) {
-	case "outer", "shell", "chrome":
-		return "@chrome"
-	case "inner", "active", "content":
-		return ""
-	case "":
-		return frameID
+//
+// An empty target defers to the frame_id param (the dedicated way to name an
+// explicit frame). A non-empty target must be a known selector or a frame-id-
+// shaped token; anything else (a typo like "page") is rejected rather than
+// silently forwarded as a frame id, which previously produced a misleading exec
+// timeout. The token vocabulary is the single source of truth in
+// proxy.ClassifyExecTarget, shared with the server-side resolver.
+func resolveExecTarget(target, frameID string) (string, error) {
+	if strings.TrimSpace(target) == "" {
+		return frameID, nil
+	}
+	switch proxy.ClassifyExecTarget(target) {
+	case proxy.ExecTargetChrome:
+		return "@chrome", nil
+	case proxy.ExecTargetActiveFrame:
+		return "", nil
+	case proxy.ExecTargetFrameID:
+		return target, nil
 	default:
-		return target
+		return "", fmt.Errorf("unknown target %q; use 'inner' (active content frame), 'outer' (chrome shell), or pass an explicit frame_id", target)
 	}
 }
 
@@ -89,7 +100,7 @@ func buildResizeJS(width, height int) string {
 // ProxyInput defines input for the proxy tool.
 type ProxyInput struct {
 	Action        string `json:"action" jsonschema:"Action: start, stop, restart, status, list, exec, navigate, resize, toast, chaos"`
-	ID            string `json:"id,omitempty" jsonschema:"Proxy ID (required for start/stop/status/exec/toast/chaos)"`
+	ID            string `json:"id,omitempty" jsonschema:"Proxy ID. Required for start/stop/status/restart/navigate/resize/toast/chaos and for exec code execution. Not required for exec discovery (search/describe/help), which need no proxy."`
 	TargetURL     string `json:"target_url,omitempty" jsonschema:"Target URL to proxy (required for start)"`
 	Port          int    `json:"port,omitempty" jsonschema:"Listen port (default: stable hash of target URL). Only specify if you need a specific port."`
 	MaxLogSize    int    `json:"max_log_size,omitempty" jsonschema:"Maximum log entries (default: 1000)"`
@@ -113,12 +124,6 @@ type ProxyInput struct {
 	ToastTitle    string `json:"toast_title,omitempty" jsonschema:"For toast: notification title (optional)"`
 	ToastMessage  string `json:"toast_message,omitempty" jsonschema:"For toast: notification message (required for toast)"`
 	ToastDuration int    `json:"toast_duration,omitempty" jsonschema:"For toast: duration in milliseconds (0 for default)"`
-	// Tunnel configuration (for start action)
-	Tunnel        string   `json:"tunnel,omitempty" jsonschema:"Tunnel provider: ngrok, cloudflared, tailscale, or custom. Creates public URL for the proxy."`
-	TunnelArgs    []string `json:"tunnel_args,omitempty" jsonschema:"Additional arguments for tunnel command"`
-	TunnelToken   string   `json:"tunnel_token,omitempty" jsonschema:"Authentication token for tunnel (e.g., ngrok authtoken)"`
-	TunnelRegion  string   `json:"tunnel_region,omitempty" jsonschema:"Tunnel region (optional)"`
-	TunnelCommand string   `json:"tunnel_command,omitempty" jsonschema:"Custom tunnel command (when tunnel is 'custom'). Use {{PORT}} as placeholder."`
 
 	// Chaos-related fields
 	ChaosOperation string            `json:"chaos_operation,omitempty" jsonschema:"For chaos: enable, disable, status, set, preset, add_rule, remove_rule, list_rules, stats, clear"`
@@ -131,49 +136,49 @@ type ProxyInput struct {
 
 // ChaosRuleInput defines input for a single chaos rule.
 type ChaosRuleInput struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name,omitempty"`
-	Type        string   `json:"type"` // latency, out_of_order, slow_drip, disconnect, http_error, truncate, etc.
-	Enabled     bool     `json:"enabled"`
-	URLPattern  string   `json:"url_pattern,omitempty"`
-	Methods     []string `json:"methods,omitempty"`
-	Probability float64  `json:"probability,omitempty"` // 0.0-1.0, default 1.0
+	ID          string   `json:"id" jsonschema:"Stable rule identifier (used to update or remove the rule)"`
+	Name        string   `json:"name,omitempty" jsonschema:"Human-readable rule label (optional)"`
+	Type        string   `json:"type" jsonschema:"Fault type: latency, out_of_order, slow_drip, disconnect, http_error, or truncate"`
+	Enabled     bool     `json:"enabled" jsonschema:"Whether this rule is active"`
+	URLPattern  string   `json:"url_pattern,omitempty" jsonschema:"Substring or glob matched against request URLs; empty matches all"`
+	Methods     []string `json:"methods,omitempty" jsonschema:"HTTP methods this rule applies to (e.g. GET, POST); empty matches all"`
+	Probability float64  `json:"probability,omitempty" jsonschema:"Chance a matching request is affected, 0.0 to 1.0 (default 1.0)"`
 
 	// Latency config
-	MinLatencyMs int `json:"min_latency_ms,omitempty"`
-	MaxLatencyMs int `json:"max_latency_ms,omitempty"`
-	JitterMs     int `json:"jitter_ms,omitempty"`
+	MinLatencyMs int `json:"min_latency_ms,omitempty" jsonschema:"latency: minimum injected delay in milliseconds"`
+	MaxLatencyMs int `json:"max_latency_ms,omitempty" jsonschema:"latency: maximum injected delay in milliseconds"`
+	JitterMs     int `json:"jitter_ms,omitempty" jsonschema:"latency: additional random jitter in milliseconds"`
 
 	// Slow-drip config
-	BytesPerMs int `json:"bytes_per_ms,omitempty"`
-	ChunkSize  int `json:"chunk_size,omitempty"`
+	BytesPerMs int `json:"bytes_per_ms,omitempty" jsonschema:"slow_drip: response bytes released per millisecond"`
+	ChunkSize  int `json:"chunk_size,omitempty" jsonschema:"slow_drip: bytes per released chunk"`
 
 	// Connection drop config
-	DropAfterPercent float64 `json:"drop_after_percent,omitempty"`
-	DropAfterBytes   int64   `json:"drop_after_bytes,omitempty"`
+	DropAfterPercent float64 `json:"drop_after_percent,omitempty" jsonschema:"disconnect: drop the connection after this fraction of the response, 0.0 to 1.0"`
+	DropAfterBytes   int64   `json:"drop_after_bytes,omitempty" jsonschema:"disconnect: drop the connection after this many bytes"`
 
 	// Error injection config
-	ErrorCodes   []int  `json:"error_codes,omitempty"`
-	ErrorMessage string `json:"error_message,omitempty"`
+	ErrorCodes   []int  `json:"error_codes,omitempty" jsonschema:"http_error: HTTP status codes to return (one chosen at random)"`
+	ErrorMessage string `json:"error_message,omitempty" jsonschema:"http_error: response body message"`
 
 	// Truncation config
-	TruncatePercent float64 `json:"truncate_percent,omitempty"`
+	TruncatePercent float64 `json:"truncate_percent,omitempty" jsonschema:"truncate: fraction of the response to keep before cutting off, 0.0 to 1.0"`
 
 	// Out-of-order config
-	ReorderMinRequests int `json:"reorder_min_requests,omitempty"`
-	ReorderMaxWaitMs   int `json:"reorder_max_wait_ms,omitempty"`
+	ReorderMinRequests int `json:"reorder_min_requests,omitempty" jsonschema:"out_of_order: buffer at least this many requests before releasing"`
+	ReorderMaxWaitMs   int `json:"reorder_max_wait_ms,omitempty" jsonschema:"out_of_order: maximum time to hold a buffered request in milliseconds"`
 
 	// Stale config
-	StaleDelayMs int64 `json:"stale_delay_ms,omitempty"`
+	StaleDelayMs int64 `json:"stale_delay_ms,omitempty" jsonschema:"stale: delay before serving a stale response in milliseconds"`
 }
 
 // ChaosConfigInput defines input for full chaos configuration.
 type ChaosConfigInput struct {
-	Enabled     bool             `json:"enabled"`
-	Rules       []ChaosRuleInput `json:"rules,omitempty"`
-	GlobalOdds  float64          `json:"global_odds,omitempty"`  // 0.0-1.0
-	Seed        int64            `json:"seed,omitempty"`         // For reproducible chaos
-	LoggingMode int              `json:"logging_mode,omitempty"` // 0=silent, 1=testing, 2=coordinated
+	Enabled     bool             `json:"enabled" jsonschema:"Master switch for chaos injection on this proxy"`
+	Rules       []ChaosRuleInput `json:"rules,omitempty" jsonschema:"The full set of chaos rules (replaces any existing rules)"`
+	GlobalOdds  float64          `json:"global_odds,omitempty" jsonschema:"Global multiplier applied to every rule's probability, 0.0 to 1.0"`
+	Seed        int64            `json:"seed,omitempty" jsonschema:"RNG seed for reproducible chaos; 0 uses a random seed"`
+	LoggingMode int              `json:"logging_mode,omitempty" jsonschema:"Verbosity of chaos logging: 0 silent, 1 testing, 2 coordinated"`
 }
 
 // ProxyOutput defines output for proxy tool.

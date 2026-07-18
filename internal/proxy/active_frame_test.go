@@ -114,3 +114,32 @@ func TestBundleExecFrameTargeting(t *testing.T) {
 		}
 	}
 }
+
+// TestClassifyExecTarget pins the shared exec-target token vocabulary: named
+// selectors (case-insensitive, trimmed) → chrome/active-frame; frame-id-shaped
+// tokens → frame id; anything else → unknown (which the tool layer rejects).
+func TestClassifyExecTarget(t *testing.T) {
+	cases := map[string]ExecTargetKind{
+		"@chrome":       ExecTargetChrome,
+		"outer":         ExecTargetChrome,
+		"shell":         ExecTargetChrome,
+		"chrome":        ExecTargetChrome,
+		"OUTER":         ExecTargetChrome,
+		" outer ":       ExecTargetChrome,
+		"inner":         ExecTargetActiveFrame,
+		"active":        ExecTargetActiveFrame,
+		"content":       ExecTargetActiveFrame,
+		"":              ExecTargetActiveFrame,
+		"a1b2c3":        ExecTargetFrameID,
+		"chrome-a1b2c3": ExecTargetFrameID,
+		"deadbeef":      ExecTargetFrameID,
+		"page":          ExecTargetUnknown,
+		"frameZ":        ExecTargetUnknown,
+		"top":           ExecTargetUnknown,
+	}
+	for in, want := range cases {
+		if got := ClassifyExecTarget(in); got != want {
+			t.Errorf("ClassifyExecTarget(%q) = %v, want %v", in, got, want)
+		}
+	}
+}
