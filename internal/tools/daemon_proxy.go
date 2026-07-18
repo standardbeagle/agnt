@@ -355,10 +355,22 @@ func (dt *DaemonTools) handleProxyNavigate(input ProxyInput) (*mcp.CallToolResul
 	if err != nil {
 		return errorResult(err.Error()), ProxyOutput{}, nil
 	}
-	if _, err := dt.client.ProxyExec(input.ID, code, execTarget); err != nil {
+	// Navigation drives the page content frame. Navigating the outer chrome
+	// shell (the proxy UI runtime) is never the intent and would blow away the
+	// shell that hosts the page — fail loud rather than do it.
+	if execTarget == "@chrome" {
+		return errorResult("navigate cannot target the outer chrome shell; it drives the page content frame (omit target, or use target:\"inner\")"), ProxyOutput{}, nil
+	}
+	result, err := dt.client.ProxyExec(input.ID, code, execTarget)
+	if err != nil {
 		return formatDaemonError(err, "proxy"), ProxyOutput{}, nil
 	}
-	return nil, ProxyOutput{Success: true, Message: fmt.Sprintf("navigate %s dispatched", input.Direction)}, nil
+	// buildNavigateJS returns {navigating:true, from:<href>} synchronously
+	// before the deferred navigation runs; surface it instead of discarding it.
+	return nil, ProxyOutput{
+		Success: true,
+		Message: fmt.Sprintf("navigate %s dispatched: %s", input.Direction, getString(result, "result")),
+	}, nil
 }
 
 // handleProxyResize resizes the live content frame from the outer chrome shell.
@@ -370,8 +382,15 @@ func (dt *DaemonTools) handleProxyResize(input ProxyInput) (*mcp.CallToolResult,
 	if err != nil {
 		return formatDaemonError(err, "proxy"), ProxyOutput{}, nil
 	}
+	// Mirror handleProxyExec: a browser-side JS failure is a structured result
+	// carrying success=false + the error, not a tool-level IsError. Only a
+	// transport error (above) is IsError. This keeps resize and exec consistent
+	// so callers branch on the same shape.
 	if !getBool(result, "success") {
-		return errorResult(fmt.Sprintf("resize failed: %s", getString(result, "error"))), ProxyOutput{}, nil
+		return nil, ProxyOutput{
+			Success: false,
+			Message: fmt.Sprintf("resize failed: %s", getString(result, "error")),
+		}, nil
 	}
 	return nil, ProxyOutput{Success: true, Message: getString(result, "result")}, nil
 }
