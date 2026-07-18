@@ -248,7 +248,7 @@ func TestPortForwardManager_EndToEnd(t *testing.T) {
 
 		var screenshotPath string
 		require.Eventually(t, func() bool {
-			entries, _, queryErr := dc.ProxyLogQueryFull("p-screenshot", protocol.LogQueryFilter{Types: []string{"screenshot"}, Limit: 10})
+			entries, _, _, queryErr := dc.ProxyLogQueryFull("p-screenshot", protocol.LogQueryFilter{Types: []string{"screenshot"}, Limit: 10})
 			if queryErr != nil {
 				return false
 			}
