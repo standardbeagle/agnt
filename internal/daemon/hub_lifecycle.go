@@ -7,22 +7,57 @@ import (
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/debug"
+	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/scope"
 
 	"github.com/standardbeagle/agnt/internal/proxy"
 	hubpkg "github.com/standardbeagle/go-cli-server/hub"
+	goprocess "github.com/standardbeagle/go-cli-server/process"
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
 )
 
+// procsForProject filters a process list down to the ones owned by projectPath.
+// Path comparison is normalized so it matches the scope chokepoint's output.
+func procsForProject(procs []*goprocess.ManagedProcess, projectPath string) []*goprocess.ManagedProcess {
+	norm := normalizePath(projectPath)
+	out := make([]*goprocess.ManagedProcess, 0, len(procs))
+	for _, p := range procs {
+		if normalizePath(p.ProjectPath) == norm {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 func (d *Daemon) hubHandleStopAll(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
 	debug.Log("daemon", "STOP-ALL: args=%v", cmd.Args)
-	// Count resources before stopping
-	procsBefore := len(d.hub.ProcessManager().List())
-	proxiesBefore := len(d.proxym.ListScoped(scope.Unscoped("STOP-ALL: count every proxy")))
-	tunnelsBefore := d.tunnelm.ActiveCount()
 
-	// Stop all resources
-	d.StopAllResources(ctx)
+	// Route through the mandatory session-scope chokepoint. A non-global caller
+	// with no resolvable session fails loud rather than tearing down every
+	// project's resources (the tenancy leak this split fixes). An explicit
+	// global:true is the deliberate, audited daemon-wide path.
+	filter, err := unmarshalCommand[protocol.DirectoryFilter](cmd)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("invalid STOP-ALL filter JSON: %v", err))
+	}
+	projectPath, global, err := d.resolveProjectScope(filter, conn.SessionCode())
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
+	}
+
+	// Count resources before stopping, scoped to the resolved project.
+	var procsBefore, proxiesBefore, tunnelsBefore int
+	if global {
+		procsBefore = len(d.hub.ProcessManager().List())
+		proxiesBefore = len(d.proxym.ListScoped(scope.Unscoped("STOP-ALL global: count every proxy")))
+		tunnelsBefore = d.tunnelm.ActiveCount()
+		d.StopAllResources(ctx)
+	} else {
+		procsBefore = len(procsForProject(d.hub.ProcessManager().List(), projectPath))
+		proxiesBefore = len(d.proxym.ListScoped(scope.Project(projectPath)))
+		tunnelsBefore = len(d.tunnelm.ListByPath(projectPath))
+		d.StopProjectResources(ctx, projectPath)
+	}
 
 	resp := map[string]interface{}{
 		"success":           true,
@@ -41,9 +76,28 @@ func (d *Daemon) hubHandleStopAll(ctx context.Context, conn *hubpkg.Connection, 
 
 func (d *Daemon) hubHandleRestartAll(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
 	debug.Log("daemon", "RESTART-ALL: args=%v", cmd.Args)
-	// Capture running resources before stop
-	runningProcs := d.hub.ProcessManager().List()
-	runningProxies := d.proxym.ListScoped(scope.Unscoped("RESTART-ALL: restart every proxy"))
+
+	// Same scope chokepoint as STOP-ALL: snapshot/restart only the resolved
+	// project's resources; explicit global:true restarts every project's.
+	filter, err := unmarshalCommand[protocol.DirectoryFilter](cmd)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("invalid RESTART-ALL filter JSON: %v", err))
+	}
+	projectPath, global, err := d.resolveProjectScope(filter, conn.SessionCode())
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
+	}
+
+	// Capture running resources before stop, scoped to the resolved project.
+	var runningProcs []*goprocess.ManagedProcess
+	var runningProxies []*proxy.ProxyServer
+	if global {
+		runningProcs = d.hub.ProcessManager().List()
+		runningProxies = d.proxym.ListScoped(scope.Unscoped("RESTART-ALL global: restart every proxy"))
+	} else {
+		runningProcs = procsForProject(d.hub.ProcessManager().List(), projectPath)
+		runningProxies = d.proxym.ListScoped(scope.Project(projectPath))
+	}
 
 	// Build restart manifests from running resources
 	type procManifest struct {
@@ -95,8 +149,12 @@ func (d *Daemon) hubHandleRestartAll(ctx context.Context, conn *hubpkg.Connectio
 		}
 	}
 
-	// Stop all resources
-	d.StopAllResources(ctx)
+	// Stop the snapshotted resources (global daemon-wide, or project-scoped).
+	if global {
+		d.StopAllResources(ctx)
+	} else {
+		d.StopProjectResources(ctx, projectPath)
+	}
 
 	// Wait a moment for cleanup
 	time.Sleep(100 * time.Millisecond)

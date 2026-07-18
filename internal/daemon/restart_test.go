@@ -335,7 +335,7 @@ func TestRestartIntegration_StopAll(t *testing.T) {
 	}
 
 	// Stop all
-	result, err := client.StopAll()
+	result, err := client.StopAllScoped(protocol.DirectoryFilter{Global: true})
 	if err != nil {
 		t.Fatalf("Failed to stop all: %v", err)
 	}
@@ -429,7 +429,7 @@ func TestRestartIntegration_RestartAll(t *testing.T) {
 	var result map[string]interface{}
 	for attempt := 0; attempt < 3; attempt++ {
 		var err error
-		result, err = client.RestartAll()
+		result, err = client.RestartAllScoped(protocol.DirectoryFilter{Global: true})
 		if err != nil {
 			t.Fatalf("Failed to restart all: %v", err)
 		}
@@ -510,7 +510,7 @@ func TestRestartIntegration_StopAll_Empty(t *testing.T) {
 	}
 
 	// Stop all with no resources - should succeed
-	result, err := client.StopAll()
+	result, err := client.StopAllScoped(protocol.DirectoryFilter{Global: true})
 	if err != nil {
 		t.Fatalf("StopAll with no resources should not fail: %v", err)
 	}
@@ -554,7 +554,7 @@ func TestRestartIntegration_RestartAll_Empty(t *testing.T) {
 	}
 
 	// Restart all with no resources - should succeed
-	result, err := client.RestartAll()
+	result, err := client.RestartAllScoped(protocol.DirectoryFilter{Global: true})
 	if err != nil {
 		t.Fatalf("RestartAll with no resources should not fail: %v", err)
 	}

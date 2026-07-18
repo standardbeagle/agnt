@@ -111,3 +111,42 @@ func TestUnboundProxyFailsClosed(t *testing.T) {
 	assert.Equal(t, "", d.overlayEndpointForProject(dirA),
 		"project with no session must not inherit another project's overlay")
 }
+
+// TestStopProjectResourcesPreservesOverlay pins the overlay half of the
+// global-vs-scoped split at the manager-method level: StopProjectResources
+// (the project-scoped sibling) must leave the daemon-wide overlay endpoint
+// intact, while StopAllResources (the true global path) clears it. Clearing
+// the shared endpoint from a project-scoped stop was the cross-project leak.
+func TestStopProjectResourcesPreservesOverlay(t *testing.T) {
+	// No t.Parallel: mutates the shared daemon overlay endpoint.
+	d := NewForTest(t, defaultTestDaemonConfig(t))
+
+	dirA := normalizePath(shortTempDir(t))
+	dirB := normalizePath(shortTempDir(t))
+
+	proxyA, err := d.proxym.Create(context.Background(), proxy.ProxyConfig{
+		ID: "proxy-a", TargetURL: ephemeralTargetURL(t), ListenPort: -1, Path: dirA,
+	})
+	require.NoError(t, err)
+	_ = proxyA
+	proxyB, err := d.proxym.Create(context.Background(), proxy.ProxyConfig{
+		ID: "proxy-b", TargetURL: ephemeralTargetURL(t), ListenPort: -1, Path: dirB,
+	})
+	require.NoError(t, err)
+
+	d.SetOverlayEndpoint("http://127.0.0.1:19191")
+
+	// Project-scoped stop of A: overlay preserved, B untouched.
+	d.StopProjectResources(context.Background(), dirA)
+	assert.Equal(t, "http://127.0.0.1:19191", d.OverlayEndpoint(),
+		"scoped stop must not clear the daemon-wide overlay endpoint")
+	assert.Empty(t, d.proxym.ListScoped(scope.Project(dirA)), "A proxy stopped")
+	if bProxies := d.proxym.ListScoped(scope.Project(dirB)); assert.Len(t, bProxies, 1) {
+		assert.Same(t, proxyB, bProxies[0], "B proxy untouched by scoped stop of A")
+	}
+
+	// Global stop: overlay cleared, everything gone.
+	d.StopAllResources(context.Background())
+	assert.Equal(t, "", d.OverlayEndpoint(), "global stop clears the daemon-wide overlay endpoint")
+	assert.Empty(t, d.proxym.ListScoped(scope.Unscoped("test: see all")), "global stop removes every proxy")
+}

@@ -517,4 +517,78 @@ func (d *Daemon) StopAllResources(ctx context.Context) {
 	debug.Log("daemon", "all resources stopped (last client disconnected)")
 }
 
+// StopProjectResources is the project-scoped sibling of StopAllResources. Where
+// StopAllResources is the true global daemon-shutdown path (StopAll on every
+// manager plus clearing the daemon-wide overlay endpoint), this stops ONLY the
+// resources owned by projectPath: its processes, proxies, tunnels, and browser
+// sessions, routed through each manager's StopByProjectPath.
+//
+// It deliberately does NOT clear the daemon-wide overlay endpoint. A
+// project-scoped lifecycle command that blasted the shared overlay
+// (SetOverlayEndpoint("")) was the documented cross-project leak — a stop in
+// project A would tear down the overlay binding every other project relies on.
+// Per-proxy overlay bindings are released when their own proxy is stopped; the
+// other projects' proxies keep theirs.
+func (d *Daemon) StopProjectResources(ctx context.Context, projectPath string) {
+	cleanupCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	var wg sync.WaitGroup
+
+	// Stop this project's tunnels
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if _, err := d.tunnelm.StopByProjectPath(cleanupCtx, projectPath); err != nil {
+			debug.Log("daemon", "error stopping tunnels for project %s: %v", projectPath, err)
+			d.daemonStartupLog("warning", "stop_failed",
+				fmt.Sprintf("error stopping tunnels for project %s: %v", projectPath, err))
+		}
+	}()
+
+	// Stop this project's browsers
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if _, err := d.browserm.StopByProjectPath(cleanupCtx, projectPath); err != nil {
+			debug.Log("daemon", "error stopping browsers for project %s: %v", projectPath, err)
+			d.daemonStartupLog("warning", "stop_failed",
+				fmt.Sprintf("error stopping browsers for project %s: %v", projectPath, err))
+		}
+	}()
+
+	// Stop this project's proxies and drop them from persisted state
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		stoppedIDs, err := d.proxym.StopByProjectPath(cleanupCtx, projectPath)
+		if err != nil {
+			debug.Log("daemon", "error stopping proxies for project %s: %v", projectPath, err)
+			d.daemonStartupLog("warning", "proxy_stop_failed",
+				fmt.Sprintf("error stopping proxies for project %s: %v", projectPath, err))
+		}
+		if d.stateMgr != nil {
+			for _, id := range stoppedIDs {
+				d.stateMgr.RemoveProxy(id)
+			}
+		}
+	}()
+
+	// Stop this project's processes
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if _, err := d.hub.ProcessManager().StopByProjectPath(cleanupCtx, projectPath); err != nil {
+			debug.Log("daemon", "error stopping processes for project %s: %v", projectPath, err)
+			d.daemonStartupLog("warning", "stop_failed",
+				fmt.Sprintf("error stopping processes for project %s: %v", projectPath, err))
+		}
+	}()
+
+	wg.Wait()
+
+	// Deliberately NOT calling d.SetOverlayEndpoint("") — see doc comment.
+	debug.Log("daemon", "project resources stopped for %s", projectPath)
+}
+
 // CleanupSessionResources stops all processes and proxies for a specific session.
