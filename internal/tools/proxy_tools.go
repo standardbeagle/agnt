@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/standardbeagle/agnt/internal/proxy"
 	"github.com/standardbeagle/go-sdk/mcp"
 )
 
@@ -29,16 +30,26 @@ func handleExecSearch(input ProxyInput) (*mcp.CallToolResult, ProxyOutput, bool)
 // the chrome shell ("@chrome"); "inner" (or empty) lets the server pick the
 // active content frame; an explicit frame_id is passed through. Target wins over
 // frame_id when both are set.
-func resolveExecTarget(target, frameID string) string {
-	switch strings.ToLower(strings.TrimSpace(target)) {
-	case "outer", "shell", "chrome":
-		return "@chrome"
-	case "inner", "active", "content":
-		return ""
-	case "":
-		return frameID
+//
+// An empty target defers to the frame_id param (the dedicated way to name an
+// explicit frame). A non-empty target must be a known selector or a frame-id-
+// shaped token; anything else (a typo like "page") is rejected rather than
+// silently forwarded as a frame id, which previously produced a misleading exec
+// timeout. The token vocabulary is the single source of truth in
+// proxy.ClassifyExecTarget, shared with the server-side resolver.
+func resolveExecTarget(target, frameID string) (string, error) {
+	if strings.TrimSpace(target) == "" {
+		return frameID, nil
+	}
+	switch proxy.ClassifyExecTarget(target) {
+	case proxy.ExecTargetChrome:
+		return "@chrome", nil
+	case proxy.ExecTargetActiveFrame:
+		return "", nil
+	case proxy.ExecTargetFrameID:
+		return target, nil
 	default:
-		return target
+		return "", fmt.Errorf("unknown target %q; use 'inner' (active content frame), 'outer' (chrome shell), or pass an explicit frame_id", target)
 	}
 }
 

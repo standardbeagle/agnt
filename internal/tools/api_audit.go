@@ -110,7 +110,11 @@ func buildBufferAuditCode(spec bufferAuditSpec, raw bool) string {
 func (dt *DaemonTools) runBufferAudit(spec bufferAuditSpec, proxyID, target, frameID string, raw bool) (*mcp.CallToolResult, string, any) {
 	code := buildBufferAuditCode(spec, raw)
 
-	result, err := dt.client.ProxyExec(proxyID, code, resolveExecTarget(target, frameID))
+	execTarget, err := resolveExecTarget(target, frameID)
+	if err != nil {
+		return errorResult(err.Error()), "", nil
+	}
+	result, err := dt.client.ProxyExec(proxyID, code, execTarget)
 	if err != nil {
 		return errorResult(fmt.Sprintf("failed to execute audit: %v", err)), "", nil
 	}

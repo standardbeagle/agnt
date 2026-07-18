@@ -294,7 +294,12 @@ func (dt *DaemonTools) handleProxyExec(input ProxyInput) (*mcp.CallToolResult, P
 		execHints = ScanForHints(input.Code)
 	}
 
-	result, err := dt.client.ProxyExec(input.ID, input.Code, resolveExecTarget(input.Target, input.FrameID))
+	execTarget, err := resolveExecTarget(input.Target, input.FrameID)
+	if err != nil {
+		return errorResult(err.Error()), ProxyOutput{}, nil
+	}
+
+	result, err := dt.client.ProxyExec(input.ID, input.Code, execTarget)
 	if err != nil {
 		return formatDaemonError(err, "proxy"), ProxyOutput{}, nil
 	}
@@ -346,7 +351,11 @@ func (dt *DaemonTools) handleProxyNavigate(input ProxyInput) (*mcp.CallToolResul
 	if err != nil {
 		return errorResult(err.Error()), ProxyOutput{}, nil
 	}
-	if _, err := dt.client.ProxyExec(input.ID, code, resolveExecTarget(input.Target, "")); err != nil {
+	execTarget, err := resolveExecTarget(input.Target, "")
+	if err != nil {
+		return errorResult(err.Error()), ProxyOutput{}, nil
+	}
+	if _, err := dt.client.ProxyExec(input.ID, code, execTarget); err != nil {
 		return formatDaemonError(err, "proxy"), ProxyOutput{}, nil
 	}
 	return nil, ProxyOutput{Success: true, Message: fmt.Sprintf("navigate %s dispatched", input.Direction)}, nil
