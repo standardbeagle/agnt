@@ -406,9 +406,22 @@ func DefaultLineRules() []LineRule {
 		// (severity is info, batched only with other info entries) but they
 		// stamp lastRebuildSignalAt on the health tracker via the daemon's
 		// alert-scanner output hook.
+		// Build-success signals sit BEFORE the generic rebuild patterns:
+		// first-match-wins in the scanner, and the daemon's error-retention
+		// layer keys on this pattern ID ("rebuild-build-success") to retire a
+		// process's stale errors once a rebuild lands cleanly. Start-of-build
+		// phrasings ("recompiling", "restarting") must NOT match here — a
+		// build that is merely starting may still fail.
+		{
+			ID:          "rebuild-build-success",
+			Pattern:     regexp.MustCompile(`(?i)(build (succeeded|completed|finished|ok)|rebuild finished|compiled successfully|✓ built in|running\.\.\. ok)`),
+			Severity:    SeverityInfo,
+			Category:    "rebuild",
+			Description: "Build success signal",
+		},
 		{
 			ID:          "rebuild-generic",
-			Pattern:     regexp.MustCompile(`(?i)\b(rebuilding|rebuild finished|recompiling|compiling\.\.\.|restarting)\b`),
+			Pattern:     regexp.MustCompile(`(?i)\b(rebuilding|recompiling|compiling\.\.\.|restarting)\b`),
 			Severity:    SeverityInfo,
 			Category:    "rebuild",
 			Description: "Generic rebuild/recompile signal",
@@ -429,17 +442,10 @@ func DefaultLineRules() []LineRule {
 		},
 		{
 			ID:          "rebuild-go-watch",
-			Pattern:     regexp.MustCompile(`(?i)(running\.\.\. ok|build ok|reflex.*starting|air.*restarting)`),
+			Pattern:     regexp.MustCompile(`(?i)(reflex.*starting|air.*restarting)`),
 			Severity:    SeverityInfo,
 			Category:    "rebuild",
 			Description: "Go file-watcher rebuild signal (air, reflex)",
-		},
-		{
-			ID:          "rebuild-build-success",
-			Pattern:     regexp.MustCompile(`(?i)build (succeeded|completed)`),
-			Severity:    SeverityInfo,
-			Category:    "rebuild",
-			Description: "Build success signal",
 		},
 	}
 }
