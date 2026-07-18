@@ -113,12 +113,6 @@ type ProxyInput struct {
 	ToastTitle    string `json:"toast_title,omitempty" jsonschema:"For toast: notification title (optional)"`
 	ToastMessage  string `json:"toast_message,omitempty" jsonschema:"For toast: notification message (required for toast)"`
 	ToastDuration int    `json:"toast_duration,omitempty" jsonschema:"For toast: duration in milliseconds (0 for default)"`
-	// Tunnel configuration (for start action)
-	Tunnel        string   `json:"tunnel,omitempty" jsonschema:"Tunnel provider: ngrok, cloudflared, tailscale, or custom. Creates public URL for the proxy."`
-	TunnelArgs    []string `json:"tunnel_args,omitempty" jsonschema:"Additional arguments for tunnel command"`
-	TunnelToken   string   `json:"tunnel_token,omitempty" jsonschema:"Authentication token for tunnel (e.g., ngrok authtoken)"`
-	TunnelRegion  string   `json:"tunnel_region,omitempty" jsonschema:"Tunnel region (optional)"`
-	TunnelCommand string   `json:"tunnel_command,omitempty" jsonschema:"Custom tunnel command (when tunnel is 'custom'). Use {{PORT}} as placeholder."`
 
 	// Chaos-related fields
 	ChaosOperation string            `json:"chaos_operation,omitempty" jsonschema:"For chaos: enable, disable, status, set, preset, add_rule, remove_rule, list_rules, stats, clear"`

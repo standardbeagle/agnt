@@ -97,16 +97,6 @@ func (dt *DaemonTools) handleProxyStart(input ProxyInput) (*mcp.CallToolResult, 
 		SkipTLSVerify: input.SkipTLSVerify,
 	}
 
-	if input.Tunnel != "" {
-		config.Tunnel = &protocol.TunnelConfig{
-			Provider:  input.Tunnel,
-			Command:   input.TunnelCommand,
-			Args:      input.TunnelArgs,
-			AuthToken: input.TunnelToken,
-			Region:    input.TunnelRegion,
-		}
-	}
-
 	result, err := dt.client.ProxyStartWithConfig(input.ID, input.TargetURL, port, input.MaxLogSize, config)
 	if err != nil {
 		return formatDaemonError(err, "proxy"), ProxyOutput{}, nil
