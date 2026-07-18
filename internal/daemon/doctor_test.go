@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -157,6 +159,77 @@ func TestCheckConfigHealth_NoConfig(t *testing.T) {
 	t.Parallel()
 	result := checkConfigHealth(context.Background(), "/nonexistent/path/that/does/not/exist")
 	assert.Equal(t, StatusOK, result.Status)
+}
+
+// TestCheckConfigHealth_ValidConfig guards the healthy path against
+// regression: a well-formed .agnt.kdl with no missing script cwd dirs
+// must still report StatusOK with an actionable "config valid" message.
+func TestCheckConfigHealth_ValidConfig(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeAgntConfig(t, dir, `scripts {
+    api {
+        run "echo hi"
+    }
+}
+`)
+
+	result := checkConfigHealth(context.Background(), dir)
+	assert.Equal(t, StatusOK, result.Status)
+	assert.Equal(t, "config valid", result.Message)
+}
+
+// TestCheckConfigHealth_MalformedConfig pins the doctor contract that a
+// malformed existing .agnt.kdl is surfaced as an actionable problem, never
+// silently treated as "no config to check" (which is reserved for the
+// genuinely-missing-file case covered by TestCheckConfigHealth_NoConfig).
+// Production already returns StatusError with parse-error context here
+// (internal/daemon/doctor.go:426-434) — this test is coverage-only,
+// guarding that behavior against regression.
+func TestCheckConfigHealth_MalformedConfig(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	// Unterminated block — invalid KDL syntax.
+	writeAgntConfig(t, dir, `scripts {
+    api {
+        run "echo hi"
+`)
+
+	result := checkConfigHealth(context.Background(), dir)
+	require.Equal(t, StatusError, result.Status, "malformed config must never be reported as healthy")
+	assert.NotEqual(t, "no config to check", result.Message)
+	assert.NotEqual(t, "no .agnt.kdl found", result.Message)
+	assert.Contains(t, result.Message, "config parse error")
+	assert.NotEmpty(t, result.Fix, "malformed config must include actionable fix guidance")
+}
+
+// TestRunDoctor_MalformedConfig_PropagatesToOverallStatus pins that a
+// malformed .agnt.kdl surfaces all the way up to a non-OK DoctorReport,
+// not just a non-OK individual check result.
+func TestRunDoctor_MalformedConfig_PropagatesToOverallStatus(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	writeAgntConfig(t, dir, `scripts {
+    api {
+        run "echo hi"
+`)
+
+	checks := []doctorCheck{
+		{name: "config_health", fn: func(ctx context.Context) CheckResult {
+			return checkConfigHealth(ctx, dir)
+		}},
+	}
+	report := runDoctorWithChecks(context.Background(), checks)
+
+	require.Len(t, report.Checks, 1)
+	assert.Equal(t, StatusError, report.Status, "overall report must be non-OK when config is malformed")
+	assert.Contains(t, report.Checks[0].Message, "config parse error")
+}
+
+// writeAgntConfig writes body to <dir>/.agnt.kdl, failing the test on error.
+func writeAgntConfig(t *testing.T, dir, body string) {
+	t.Helper()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".agnt.kdl"), []byte(body), 0o644))
 }
 
 func TestCheckDaemonHealth(t *testing.T) {
