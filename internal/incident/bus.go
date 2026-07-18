@@ -217,6 +217,45 @@ func (b *MPSCBus) QuerySession(sessionID string, filter QueryFilter) ([]InboxEnt
 	return pl.inbox.Query(filter)
 }
 
+// sourceControlClear is the reserved Source for retention control ops. A
+// control event rides the normal inbound channel so it is FIFO-ordered with
+// the incident events published before it: a build-success clear enqueued
+// after a batch of compile errors always executes after those errors landed
+// in the inboxes, never racing ahead of them. Control events are intercepted
+// by deliver() and never ingested into any inbox.
+const sourceControlClear Source = "control_clear_process"
+
+// ClearProcessBefore retires processID's incidents (LastSeenAt <= before)
+// from every session inbox. Ordered FIFO with previously published events;
+// non-blocking like Fire — under a saturated bus the clear is dropped, which
+// only means stale entries linger until the next trigger.
+func (b *MPSCBus) ClearProcessBefore(processID string, before time.Time) {
+	if processID == "" {
+		return
+	}
+	ev := &IncidentEvent{
+		Source:     sourceControlClear,
+		ReceivedAt: before,
+		Ctx:        Context{ProcessID: processID},
+	}
+	b.Fire(ev)
+}
+
+// ClearSessionBefore retires every incident (LastSeenAt <= before) from one
+// session's inbox — the agent's explicit project-wide clear. Same FIFO
+// control-op path as ClearProcessBefore.
+func (b *MPSCBus) ClearSessionBefore(sessionID string, before time.Time) {
+	if sessionID == "" {
+		return
+	}
+	ev := &IncidentEvent{
+		Source:     sourceControlClear,
+		ReceivedAt: before,
+		Ctx:        Context{SessionID: sessionID},
+	}
+	b.Fire(ev)
+}
+
 // MarkReadSession marks entries as read in the given session's inbox.
 // No-op if the session has no pipeline.
 func (b *MPSCBus) MarkReadSession(sessionID string, fingerprints []string, advanceCursor bool) {
@@ -225,6 +264,16 @@ func (b *MPSCBus) MarkReadSession(sessionID string, fingerprints []string, advan
 		return
 	}
 	pl.inbox.MarkRead(fingerprints, advanceCursor)
+}
+
+// FindFingerprintSession returns a copy of the inbox entry with the given
+// fingerprint in sessionID's inbox, or nil when absent (or no pipeline).
+func (b *MPSCBus) FindFingerprintSession(sessionID, fingerprint string) *InboxEntry {
+	pl := b.getSessionPipeline(sessionID)
+	if pl == nil {
+		return nil
+	}
+	return pl.inbox.FindByFingerprint(fingerprint)
 }
 
 // getSessionPipeline returns the pipeline for sessionID, or nil.
@@ -311,6 +360,26 @@ func (b *MPSCBus) dispatchLoop() {
 func (b *MPSCBus) deliver(ev *IncidentEvent) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
+	if ev.Source == sourceControlClear {
+		for _, pl := range b.perSession {
+			select {
+			case <-pl.stopCh:
+				continue
+			default:
+			}
+			var n int
+			switch {
+			case ev.Ctx.ProcessID != "":
+				n = pl.inbox.ClearProcessBefore(ev.Ctx.ProcessID, ev.ReceivedAt)
+			case ev.Ctx.SessionID == pl.inbox.SessionID:
+				n = pl.inbox.ClearAllBefore(ev.ReceivedAt)
+			}
+			if n > 0 {
+				debug.Log("incident-retention", "cleared %d inbox entries (session %s)", n, pl.inbox.SessionID)
+			}
+		}
+		return
+	}
 	for _, pl := range b.perSession {
 		select {
 		case <-pl.stopCh:

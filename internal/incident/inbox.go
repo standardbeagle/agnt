@@ -372,6 +372,70 @@ func (inbox *Inbox) broadcast(delta InboxDelta) {
 	}
 }
 
+// ClearProcessBefore removes entries attributed to processID whose LastSeenAt
+// is at or before the boundary. Entries that recurred after the boundary keep
+// a later LastSeenAt and survive — the error is still happening, so retiring
+// it would be lying to the agent. Returns the number of entries removed.
+func (inbox *Inbox) ClearProcessBefore(processID string, before time.Time) int {
+	if processID == "" {
+		return 0
+	}
+	removed := 0
+	for _, b := range inbox.bands {
+		b.mu.Lock()
+		for fp, slot := range b.slots {
+			e := slot.entry
+			if e.Sample == nil || e.Sample.Ctx.ProcessID != processID {
+				continue
+			}
+			if e.LastSeenAt.After(before) {
+				continue
+			}
+			b.lruList.Remove(slot.elem)
+			delete(b.slots, fp)
+			removed++
+		}
+		b.mu.Unlock()
+	}
+	return removed
+}
+
+// ClearAllBefore removes every entry whose LastSeenAt is at or before the
+// boundary, regardless of source. Backs the agent's explicit project-wide
+// "clear": entries that recur after the boundary re-insert on their next
+// occurrence. Returns the number of entries removed.
+func (inbox *Inbox) ClearAllBefore(before time.Time) int {
+	removed := 0
+	for _, b := range inbox.bands {
+		b.mu.Lock()
+		for fp, slot := range b.slots {
+			if slot.entry.LastSeenAt.After(before) {
+				continue
+			}
+			b.lruList.Remove(slot.elem)
+			delete(b.slots, fp)
+			removed++
+		}
+		b.mu.Unlock()
+	}
+	return removed
+}
+
+// FindByFingerprint returns a copy of the entry with the given fingerprint,
+// or nil when no band holds it.
+func (inbox *Inbox) FindByFingerprint(fp string) *InboxEntry {
+	for _, b := range inbox.bands {
+		b.mu.RLock()
+		if slot, ok := b.slots[fp]; ok {
+			e := *slot.entry
+			b.mu.RUnlock()
+			return &e
+		}
+		b.mu.RUnlock()
+	}
+	return nil
+}
+
 // GC removes Read entries older than staleReadAge from all bands.
 func (inbox *Inbox) GC() {
 	cutoff := time.Now().Add(-staleReadAge)
