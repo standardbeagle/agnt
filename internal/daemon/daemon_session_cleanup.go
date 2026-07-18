@@ -464,6 +464,11 @@ func (d *Daemon) doCleanup(sessionCode string) {
 		// from the shared ring buffer.
 		d.startupErrorStore.ClearByPrefix(makeProcessID(projectPath, ""))
 
+		// Retention trigger 3: clear the project's alert-ring entries too —
+		// the next session must not inherit errors from processes that were
+		// just torn down. Pinned errors survive (they live outside the ring).
+		d.maybeRetireOnSessionEnd(projectPath)
+
 		// Cancel any in-flight autostart run for this project, then drop the
 		// handle so the next session triggers a fresh autostart. Matching the
 		// "script registry is ephemeral" rule: autostart state does not carry

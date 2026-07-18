@@ -1133,10 +1133,32 @@ func (rc *ResilientClient) PublishFeedback(id, cursor string, limit int) (*proto
 	return result, err
 }
 
-// AlertClear clears all alerts from the daemon.
-func (rc *ResilientClient) AlertClear() error {
+// AlertClear clears alerts, scoped by the filter. Pinned errors are kept.
+func (rc *ResilientClient) AlertClear(filter protocol.AlertClearFilter) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.AlertClear(filter)
+		return e
+	})
+	return result, err
+}
+
+// AlertPin pins an error so it survives automatic retention clears.
+func (rc *ResilientClient) AlertPin(payload protocol.AlertPinPayload) (map[string]interface{}, error) {
+	var result map[string]interface{}
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = c.AlertPin(payload)
+		return e
+	})
+	return result, err
+}
+
+// AlertUnpin removes a pin previously created with AlertPin.
+func (rc *ResilientClient) AlertUnpin(payload protocol.AlertPinPayload) error {
 	return rc.WithClient(func(c *Client) error {
-		return c.AlertClear()
+		return c.AlertUnpin(payload)
 	})
 }
 

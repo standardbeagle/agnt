@@ -193,7 +193,8 @@ func TestSessionScope_NonDebugQueryVerbsRejectCrossProject(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			require.NoError(t, reporter.AlertClear())
+			_, err := reporter.AlertClear(protocol.AlertClearFilter{Global: protocol.Bool(true)})
+			require.NoError(t, err)
 			for i := 0; i < tc.ownCount; i++ {
 				reportAlert(t, reporter, projOwn, "own-"+tc.name+"-"+itoa(i), "error")
 			}

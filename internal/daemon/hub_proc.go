@@ -277,11 +277,18 @@ func (d *Daemon) hubHandleProcStop(ctx context.Context, conn *hubpkg.Connection,
 		return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("failed to stop: %v", err))
 	}
 
+	// Retention trigger 2: an explicit stop starts a fresh error slate.
+	retired := d.maybeRetireOnProcStop(processID)
+
+	message := fmt.Sprintf("process %q stopped", processID)
+	if retired > 0 {
+		message = fmt.Sprintf("%s (%d stale error(s) cleared; pinned errors kept)", message, retired)
+	}
 	resp := map[string]interface{}{
 		"process_id": processID,
 		"state":      "stopped",
 		"success":    true,
-		"message":    fmt.Sprintf("process %q stopped", processID),
+		"message":    message,
 	}
 	data, _ := json.Marshal(resp)
 	return conn.WriteJSON(data)
@@ -496,6 +503,11 @@ func (d *Daemon) hubHandleProcRestart(ctx context.Context, conn *hubpkg.Connecti
 
 	// Clear URL tracker state so new process output is scanned fresh
 	d.urlTracker.ClearProcess(processID)
+
+	// Retention trigger 2: an explicit restart starts a fresh error slate.
+	// Fires before the new process starts so its output is never clipped by
+	// the timestamp boundary.
+	d.maybeRetireOnProcStop(processID)
 
 	// Remove the old process registration
 	d.hub.ProcessManager().RemoveByPath(processID, projectPath)

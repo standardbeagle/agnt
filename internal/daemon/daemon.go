@@ -49,6 +49,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/alert"
 	"github.com/standardbeagle/agnt/internal/automation"
 	"github.com/standardbeagle/agnt/internal/browser"
 	"github.com/standardbeagle/agnt/internal/chromedp"
@@ -228,14 +229,16 @@ type Daemon struct {
 	sessionm          *chromedp.SessionManager // chromedp automation sessions
 	storem            *store.StoreManager
 	automator         *automation.Processor
-	autoRestarter     *ProcessAutoRestarter // Process auto-restart manager
-	alertStore        *ProcessAlertStore    // Ring buffer store for process output alerts
-	alertScanner      *overlay.AlertScanner // Scans daemon-managed process output for errors
-	processExitInfo   *processExitInfoStore // In-memory death records (proc status + get_errors)
-	startupErrorStore *StartupLogStore      // Ring buffer for startup events
-	eventHub          *EventHub             // Routes alerts to overlay/MCP/stream sinks
-	incidentBus       *incident.MPSCBus     // Incident pipeline event bus (L8+)
-	hookRing          *hookRingBuffer       // Claude Code hook event ring buffer (phase 1 scope)
+	autoRestarter     *ProcessAutoRestarter                  // Process auto-restart manager
+	alertStore        *ProcessAlertStore                     // Ring buffer store for process output alerts
+	pinnedStore       *alert.PinnedStore                     // Agent-pinned errors; survive every retention clear
+	retentionCfg      atomic.Pointer[config.RetentionConfig] // Error-retention trigger gates
+	alertScanner      *overlay.AlertScanner                  // Scans daemon-managed process output for errors
+	processExitInfo   *processExitInfoStore                  // In-memory death records (proc status + get_errors)
+	startupErrorStore *StartupLogStore                       // Ring buffer for startup events
+	eventHub          *EventHub                              // Routes alerts to overlay/MCP/stream sinks
+	incidentBus       *incident.MPSCBus                      // Incident pipeline event bus (L8+)
+	hookRing          *hookRingBuffer                        // Claude Code hook event ring buffer (phase 1 scope)
 
 	// forwardingPaused records per-session "stop pushing to the agent" toggles
 	// set from the overlay (OVERLAY FORWARDING verb). When a session is paused,
@@ -504,6 +507,7 @@ func New(config DaemonConfig) *Daemon {
 		sessionm:           chromedp.NewSessionManager(),
 		storem:             store.NewStoreManager(),
 		alertStore:         NewProcessAlertStore(500),
+		pinnedStore:        alert.NewPinnedStore(),
 		processExitInfo:    newProcessExitInfoStore(defaultExitInfoRetention),
 		startupErrorStore:  NewStartupLogStore(100),
 		eventHub:           eventHub,
@@ -977,6 +981,9 @@ func (d *Daemon) ingestProcessAlert(m *overlay.AlertMatch, fallbackTS time.Time)
 	if m.Pattern.Category == "rebuild" && m.ScriptID != "" {
 		d.healthTracker.RecordRebuildSignal(m.ScriptID)
 	}
+	// Retention trigger 1: a clean build retires the process's stale errors
+	// (timestamp-bounded at the success line; see retention.go).
+	d.maybeRetireOnBuildSuccess(m.Pattern.ID, m.ScriptID, mts)
 	// Mirror into the incident pipeline. The bus is a no-op when no session has
 	// the pipeline enabled, so this is safe to call unconditionally — it matches
 	// the dual-write pattern fireToIncidentBus already uses for proxy signals.
@@ -1009,6 +1016,10 @@ func (d *Daemon) ApplyAlertsConfig(cfg *config.AlertsConfig) {
 	if d == nil {
 		return
 	}
+
+	// Retention gates follow the same lifecycle as the rest of the alerts
+	// block: applied on session connect, daemon-wide, last writer wins.
+	d.SetRetentionConfig(cfg.GetRetention())
 
 	var holdCfg *config.OutageHoldConfig
 	if cfg != nil {
