@@ -417,10 +417,25 @@ func (ps *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 		reqHeaders[k] = strings.Join(v, ", ")
 	}
 
+	// Capture the request body when it is small and its length is known. A
+	// chunked/unknown-length or oversized body is deliberately NOT read (reading
+	// it would require buffering an unbounded stream — the same OOM vector the
+	// response recorder guards against), but the reason is recorded as a marker
+	// so the agent can tell "no body" apart from "body present but not captured".
 	var reqBody string
-	if !isWebSocket && r.Body != nil && r.ContentLength > 0 && r.ContentLength < 10*1024 { // Limit to 10KB
+	switch {
+	case isWebSocket || r.Body == nil || r.ContentLength == 0:
+		// No body to capture (or a genuinely empty one) — leave reqBody empty.
+	case r.ContentLength < 0:
+		reqBody = "[request body not captured: chunked or unknown length]"
+	case r.ContentLength >= maxRecordedBody:
+		reqBody = fmt.Sprintf("[request body not captured: %d bytes exceeds %dKB cap]",
+			r.ContentLength, maxRecordedBody/1024)
+	default:
 		bodyBytes, err := io.ReadAll(r.Body)
-		if err == nil {
+		if err != nil {
+			reqBody = fmt.Sprintf("[request body not captured: read error: %v]", err)
+		} else {
 			reqBody = string(bodyBytes)
 			// Restore body for proxy
 			r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
