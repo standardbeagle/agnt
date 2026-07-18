@@ -456,6 +456,94 @@ func TestBuildProxyLogSummary_Empty(t *testing.T) {
 	assert.True(t, s.TimeRange.Start.IsZero())
 }
 
+// realErrorEntry builds an error entry as it appears on the wire: FrontendError
+// has NO "type" field — the class must be derived from the message.
+func realErrorEntry(msg string) map[string]interface{} {
+	return map[string]interface{}{
+		"type":  "error",
+		"error": map[string]interface{}{"message": msg},
+	}
+}
+
+// realMutationEntry builds a mutation entry with the true wire field
+// "mutation_type" (not the synthetic "type" older fixtures used).
+func realMutationEntry(mutationType string) map[string]interface{} {
+	return map[string]interface{}{
+		"type":     "mutation",
+		"mutation": map[string]interface{}{"mutation_type": mutationType},
+	}
+}
+
+func TestBuildProxyLogSummary_ErrorsByTypeFromMessage(t *testing.T) {
+	// Real FrontendError entries (no "type" field): the class is derived from
+	// the message prefix rather than defaulting everything to "Error".
+	entries := []interface{}{
+		realErrorEntry("TypeError: undefined is not a function"),
+		realErrorEntry("TypeError: cannot read properties of null"),
+		realErrorEntry("ReferenceError: x is not defined"),
+		realErrorEntry("Uncaught RangeError: invalid array length"),
+		realErrorEntry("plain message with no class"),
+	}
+	s := buildProxyLogSummary(entries, map[string]bool{}, 10)
+
+	assert.Equal(t, 2, s.ErrorsByType["TypeError"])
+	assert.Equal(t, 1, s.ErrorsByType["ReferenceError"])
+	assert.Equal(t, 1, s.ErrorsByType["RangeError"], "leading 'Uncaught ' stripped")
+	assert.Equal(t, 1, s.ErrorsByType["Error"], "message with no class falls back to Error")
+	assert.Zero(t, s.ErrorsByType[""], "no empty-string bucket")
+}
+
+func TestBuildProxyLogSummary_MutationsByTypeWireField(t *testing.T) {
+	entries := []interface{}{
+		realMutationEntry("added"),
+		realMutationEntry("added"),
+		realMutationEntry("removed"),
+	}
+	s := buildProxyLogSummary(entries, map[string]bool{}, 10)
+
+	assert.Equal(t, 2, s.MutationsByType["added"])
+	assert.Equal(t, 1, s.MutationsByType["removed"])
+	assert.Empty(t, s.MutationsByType[""], "mutation_type read, not empty 'type'")
+}
+
+func TestBuildProxyLogSummary_UniqueErrorsRankedByCount(t *testing.T) {
+	var entries []interface{}
+	// "rare" once, "common" five times, "medium" three times.
+	entries = append(entries, realErrorEntry("Error: rare"))
+	for i := 0; i < 5; i++ {
+		entries = append(entries, realErrorEntry("Error: common"))
+	}
+	for i := 0; i < 3; i++ {
+		entries = append(entries, realErrorEntry("Error: medium"))
+	}
+	s := buildProxyLogSummary(entries, map[string]bool{}, 10)
+
+	require.Len(t, s.UniqueErrors, 3)
+	// Ordered by count desc — the frequent error must lead, not appear in an
+	// arbitrary map-iteration slot.
+	assert.Equal(t, "Error: common", s.UniqueErrors[0].Message)
+	assert.Equal(t, 5, s.UniqueErrors[0].Count)
+	assert.Equal(t, "Error: medium", s.UniqueErrors[1].Message)
+	assert.Equal(t, 3, s.UniqueErrors[1].Count)
+	assert.Equal(t, "Error: rare", s.UniqueErrors[2].Message)
+	assert.Equal(t, 1, s.UniqueErrors[2].Count)
+}
+
+func TestClassifyErrorType(t *testing.T) {
+	cases := map[string]string{
+		"TypeError: boom":                        "TypeError",
+		"Uncaught ReferenceError: x":             "ReferenceError",
+		"SyntaxError: unexpected token":          "SyntaxError",
+		"":                                       "Error",
+		"no colon here":                          "Error",
+		"http://example.com/x: failed to load":   "Error", // URL prefix rejected (slash)
+		"a very long sentence: with a colon too": "Error", // spaces rejected
+	}
+	for msg, want := range cases {
+		assert.Equal(t, want, classifyErrorType(msg), "message %q", msg)
+	}
+}
+
 // --- error_queue helpers -----------------------------------------------------
 
 func TestNormalizeQueueSeverity(t *testing.T) {
