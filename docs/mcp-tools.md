@@ -10,10 +10,10 @@ only the summary table + handler pattern; this is the detailed reference.
 | `detect` | Detect project type (Go/Node/Python) + scripts |
 | `run` | Run scripts/commands (background/foreground/foreground-raw) |
 | `proc` | Process management (status, output, stop, list, cleanup_port) |
-| `proxy` | Reverse proxy (start, stop, status, list, exec) |
-| `proxylog` | Query proxy logs (query, clear, stats) |
-| `tunnel` | Tunnel management (cloudflare/ngrok) |
-| `currentpage` | Page session tracking |
+| `proxy` | Reverse proxy (start, stop, restart, status, list, exec, navigate, resize, toast, chaos) |
+| `proxylog` | Query proxy logs (query, summary, clear, stats) |
+| `tunnel` | Tunnel management (cloudflare/ngrok/tailscale) |
+| `currentpage` | Page inspection: framework triage (default) + layout diagnostics + list/get/summary/clear |
 | `get_errors` | Unified error view across processes and proxies (legacy; superseded by `get_incidents`) |
 | `get_incidents` | Incident inbox pull — cursor-based, priority-ordered, with remediation hints |
 | `responsive_audit` | Responsive design audits across viewport sizes |
@@ -476,8 +476,11 @@ Auto-reconnects on daemon restart. Clean exit on SIGINT/SIGTERM.
 
 ## Tunnel Integration
 
-Cloudflare/ngrok support for mobile testing:
+Cloudflare/ngrok/tailscale support for mobile testing (`cloudflared`/`ngrok` =
+public internet; `tailscale` = tailnet-private HTTPS at this node's MagicDNS
+name, reachable only from your tailnet, one service per node at root `/`):
 ```bash
 proxy {action: "start", bind_address: "0.0.0.0", ...}
 tunnel {action: "start", provider: "cloudflare", local_port: 12345, proxy_id: "dev"}
+tunnel {action: "start", provider: "tailscale",  local_port: 12345, proxy_id: "dev"}
 ```
