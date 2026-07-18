@@ -160,6 +160,20 @@ Superseded by `get_incidents` when `alerts.incident-pipeline true`. Kept for bac
 
 **Key Files**: `internal/tools/get_errors.go`, `internal/tools/get_errors_test.go`
 
+**Retention actions** (`action` param; default `query`):
+
+| Action | Params | Effect |
+|--------|--------|--------|
+| `pin` | `error_id` (the `#id` from a prior result), optional `tag` | Copies the error into the daemon's pinned store (`internal/alert/pinned.go`, cap 50/project). Pinned errors survive every automatic clear, ignore `since`/`limit`/`include_warnings` filtering, and render with `[pinned: <tag>]` until unpinned. |
+| `unpin` | `error_id` | Releases the pin; normal retention applies again. |
+| `clear` | optional `process_id`, `global` | Retires current unpinned errors now (project-scoped through the session-scope chokepoint; `process_id` narrows to one process, `global:true` widens). |
+
+Automatic retention (config: `alerts.retention`, see `docs/configuration.md`):
+build success retires a process's earlier errors (timestamp-bounded, FIFO with
+in-flight incident events), explicit `proc stop/restart` starts a fresh slate,
+and a project's last session disconnecting clears its ring. Crash restarts
+never clear.
+
 ## responsive_audit Tool
 
 Run responsive design audits across multiple viewport sizes. Detects layout issues, content overflows, viewport-specific accessibility problems by loading page in hidden iframes at target sizes.

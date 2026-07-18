@@ -127,7 +127,7 @@ PTY overlay components：command palette (`:`/`/` filterable, **not** a shell bo
 | `proxylog` | Query proxy logs (query, clear, stats) |
 | `tunnel` | Tunnel management (cloudflare/ngrok) |
 | `currentpage` | Page session tracking |
-| `get_errors` | Unified error view (legacy; superseded by `get_incidents`) |
+| `get_errors` | Unified error view (legacy; superseded by `get_incidents`) + retention actions (`pin`/`unpin`/`clear`; auto-retire on build success, proc stop, session end — `alerts.retention`) |
 | `get_incidents` | Incident inbox pull — cursor-based, priority-ordered, remediation hints |
 | `responsive_audit` | Responsive design audits across viewport sizes |
 | `api_audit` | API efficiency audit (waterfall, N+1, duplicate, chatty-load) over the fetch/XHR buffer |

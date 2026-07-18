@@ -103,6 +103,30 @@ alerts {
 | `ping.pty-injection` | bool | `false` | Pinger → PTY stdin |
 | `ping.channel` | bool | `true` | Pinger → channel push |
 
+## Error Retention (`alerts.retention` in `.agnt.kdl`)
+
+Controls when the daemon retires stale errors from the agent-facing stores
+(alert ring + incident inboxes) so `get_errors`/`get_incidents` reflect the
+code that is actually running. All triggers default to **enabled**; errors the
+agent pinned (`get_errors {action:"pin"}`) survive every trigger until
+explicitly unpinned.
+
+```kdl
+alerts {
+    retention {
+        on-build-success true   // clean rebuild retires the process's earlier errors
+        on-proc-stop true       // explicit PROC STOP/RESTART starts a fresh slate
+        on-session-end true     // last session disconnect clears the project's ring
+    }
+}
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `on-build-success` | bool | `true` | `rebuild-build-success` classify pattern ("Build succeeded", "compiled successfully", "✓ built in", …) clears the process's errors stamped at or before the success line. Errors emitted after it survive. Build-start signals ("recompiling…") never clear. |
+| `on-proc-stop` | bool | `true` | Explicit stop/restart clears that process's errors. Crash restarts do **not** clear — crash evidence is preserved for diagnosis. |
+| `on-session-end` | bool | `true` | When a project's last session disconnects, its alert-ring entries are cleared alongside the startup log (incident inboxes are per-session and torn down anyway). |
+
 ## Auth Breakout (internal/config/agnt.go, auth-breakout in .agnt.kdl; runtime: internal/proxy/authbreakout.go)
 
 The proxy's always-wrap model renders every page inside a content `<iframe>`.
