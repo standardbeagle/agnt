@@ -12,6 +12,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/standardbeagle/agnt/internal/debug"
+	storepkg "github.com/standardbeagle/agnt/internal/store"
 )
 
 // WebSocket keepalive timings. A ping is sent every wsPingPeriod; the peer's
@@ -447,6 +448,65 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 					mutation := parseMutationEvent(em, id, timestamp, msg.URL)
 					ps.logger.LogMutation(mutation, msg.FrameID)
 					ps.pageTracker.TrackMutation(mutation, msg.SessionID, msg.FrameID)
+				}
+			}
+
+		case "secret_submit":
+			// Secret-entry submission from the browser's masked input field.
+			//
+			// ZERO-LEAK INVARIANT (branch-before-emit): the submitted value is
+			// extracted here, handed to the daemon-wired secret sink, and
+			// dropped. It is deleted from msg.Data immediately so no later
+			// code path can see it, and it is NEVER placed into any event
+			// struct, traffic-log entry, overlay notification, or channel
+			// event — those carry only {name, fingerprint:last-4}. Do not
+			// rely on downstream sanitizers; nothing downstream ever holds
+			// the value.
+			name := getStringField(msg.Data, "name")
+			value := getStringField(msg.Data, "value")
+			delete(msg.Data, "value")
+			fingerprint := storepkg.Fingerprint(value)
+
+			var sinkErr error
+			switch {
+			case !storepkg.ValidSecretName(name):
+				sinkErr = fmt.Errorf("invalid secret name %q: must be env-var style ([A-Za-z_][A-Za-z0-9_]*)", name)
+			case value == "":
+				sinkErr = fmt.Errorf("empty secret value")
+			default:
+				if sink := ps.secretSink.Load(); sink != nil {
+					sinkErr = (*sink)(name, value)
+				} else {
+					sinkErr = fmt.Errorf("no secret sink configured for proxy %s", ps.ID)
+				}
+			}
+			value = ""
+
+			// Ack the browser so the panel can confirm or retry.
+			ack := map[string]interface{}{"type": "secret_ack", "name": name, "ok": sinkErr == nil}
+			if sinkErr != nil {
+				ack["error"] = sinkErr.Error()
+			}
+			if wErr := asyncConn.WriteJSON(ack); wErr != nil {
+				debug.Log("proxy", "failed to send secret_ack for %q: %v", name, wErr)
+			}
+
+			// Emit the fingerprint-only panel message so the agent learns the
+			// secret ARRIVED (by name + last-4), never what it is.
+			status := "stored"
+			if sinkErr != nil {
+				status = "FAILED: " + sinkErr.Error()
+			}
+			pm := PanelMessage{
+				ID:        id,
+				Timestamp: timestamp,
+				URL:       msg.URL,
+				Message:   fmt.Sprintf("[secret-entry] %s (****%s) %s — reference it by name; the value is store-held and never enters the event stream", name, fingerprint, status),
+			}
+			ps.logger.LogPanelMessage(pm)
+			if ps.overlayNotifier.IsEnabled() {
+				if err := ps.overlayNotifier.NotifyPanelMessage(ps.ID, &pm); err != nil {
+					debug.Log("proxy", "failed to notify overlay of secret-entry receipt: %v", err)
 				}
 			}
 

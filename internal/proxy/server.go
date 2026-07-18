@@ -131,6 +131,20 @@ type ProxyServer struct {
 	// Atomic pointer: the daemon sets it post-create from the project's
 	// .agnt.kdl (wireProxyLogger path) while requests are already flowing.
 	authBreakout atomic.Pointer[AuthBreakout]
+
+	// secretSink receives secret values submitted from the browser's
+	// secret-entry field (ws_handler "secret_submit"). The daemon wires it to
+	// the project store at proxy creation. The sink is the ONLY place a
+	// submitted secret value flows — it is branched off before any event
+	// struct, log entry, or overlay notification is built, and none of those
+	// ever carry the value.
+	secretSink atomic.Pointer[func(name, value string) error]
+}
+
+// SetSecretSink installs the callback that receives browser-submitted
+// secret values. See the secretSink field doc for the zero-leak contract.
+func (ps *ProxyServer) SetSecretSink(fn func(name, value string) error) {
+	ps.secretSink.Store(&fn)
 }
 
 // ProxyConfig holds configuration for creating a proxy server.

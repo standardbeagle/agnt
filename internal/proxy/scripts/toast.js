@@ -241,6 +241,52 @@
       content.appendChild(message);
     }
 
+    // Secret-entry mode: masked password field whose value is sent via the
+    // dedicated 'secret_submit' WS message — NEVER via panel_message or any
+    // other telemetry path. The interaction tracker skips devtool elements
+    // and password inputs, so keystrokes/values are not captured either.
+    if (options.input === 'secret' && options.name) {
+      var form = document.createElement('form');
+      form.style.cssText = 'display:flex;gap:6px;margin-top:8px;';
+
+      var secretInput = document.createElement('input');
+      secretInput.type = 'password';
+      secretInput.autocomplete = 'off';
+      secretInput.placeholder = options.name;
+      secretInput.setAttribute('aria-label', 'Secret value for ' + options.name);
+      secretInput.style.cssText = [
+        'flex:1', 'min-width:0', 'padding:6px 8px',
+        'border:1px solid ' + TOKENS.colors.border,
+        'border-radius:6px', 'font-size:13px',
+        'background:' + TOKENS.colors.surface,
+        'color:' + TOKENS.colors.text
+      ].join(';');
+
+      var submitBtn = document.createElement('button');
+      submitBtn.type = 'submit';
+      submitBtn.textContent = 'Save';
+      submitBtn.style.cssText = [
+        'padding:6px 12px', 'border:none', 'border-radius:6px',
+        'background:' + TOKENS.colors.info, 'color:#fff',
+        'font-size:13px', 'cursor:pointer'
+      ].join(';');
+
+      form.appendChild(secretInput);
+      form.appendChild(submitBtn);
+
+      form.onsubmit = function(ev) {
+        ev.preventDefault();
+        var v = secretInput.value;
+        if (!v) return;
+        var sent = window.__devtool_core && window.__devtool_core.send &&
+          window.__devtool_core.send('secret_submit', { name: options.name, value: v });
+        secretInput.value = '';
+        if (options.onSubmitted) options.onSubmitted(!!sent);
+      };
+
+      content.appendChild(form);
+    }
+
     toast.appendChild(content);
 
     // Close button
@@ -281,6 +327,20 @@
 
     var id = state.nextId++;
     var duration = options.duration || config.duration;
+
+    // Secret-entry toasts persist until submitted or dismissed.
+    if (options.input === 'secret' && options.name) {
+      duration = 0;
+      options.showProgress = false;
+      options.onSubmitted = function(sent) {
+        dismiss(id);
+        if (sent) {
+          info(options.name + ' saved to the agnt store (value never shared with the agent)', 'Secret received');
+        } else {
+          error('Could not submit ' + options.name + ' — connection unavailable, try again', 'Secret not saved');
+        }
+      };
+    }
 
     // Remove excess toasts
     while (state.toasts.length >= config.maxVisible) {
@@ -412,7 +472,9 @@
         type: payload.type || 'info',
         title: payload.title,
         message: payload.message,
-        duration: payload.duration
+        duration: payload.duration,
+        input: payload.input,
+        name: payload.name
       });
     }
   }

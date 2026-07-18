@@ -69,10 +69,28 @@ func (ps *ProxyServer) BroadcastActivityState(active bool) int {
 	return ps.broadcastRaw(messageBytes)
 }
 
+// ToastOptions describes a toast broadcast to browser clients. Input/Name
+// request the secret-entry masked field (see ws_handler "secret_submit").
+type ToastOptions struct {
+	Type     string
+	Title    string
+	Message  string
+	Duration int
+	Input    string // "" or "secret"
+	Name     string // secret name when Input == "secret"
+}
+
 // BroadcastToast sends a toast notification to all connected browser clients.
 // Returns the number of clients that received the toast.
 func (ps *ProxyServer) BroadcastToast(toastType, title, message string, duration int) (int, error) {
-	debug.Log("proxy", "BroadcastToast called: proxy=%s type=%s title=%q message=%q", ps.ID, toastType, title, message)
+	return ps.BroadcastToastOpts(ToastOptions{Type: toastType, Title: title, Message: message, Duration: duration})
+}
+
+// BroadcastToastOpts is BroadcastToast with the full option set, including
+// the secret-entry input mode.
+func (ps *ProxyServer) BroadcastToastOpts(o ToastOptions) (int, error) {
+	toastType, title, message, duration := o.Type, o.Title, o.Message, o.Duration
+	debug.Log("proxy", "BroadcastToast called: proxy=%s type=%s title=%q message=%q input=%s", ps.ID, toastType, title, message, o.Input)
 
 	// Count connected clients first for debugging
 	connCount := 0
@@ -95,6 +113,14 @@ func (ps *ProxyServer) BroadcastToast(toastType, title, message string, duration
 	// Only include duration if non-zero
 	if duration > 0 {
 		toast["payload"].(map[string]interface{})["duration"] = duration
+	}
+
+	// Secret-entry input mode: the browser renders a masked field and routes
+	// the submitted value via "secret_submit" (never through panel events).
+	if o.Input != "" {
+		payload := toast["payload"].(map[string]interface{})
+		payload["input"] = o.Input
+		payload["name"] = o.Name
 	}
 
 	messageBytes, err := json.Marshal(toast)

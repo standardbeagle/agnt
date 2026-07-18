@@ -214,6 +214,14 @@ type ToastConfig struct {
 	Title    string `json:"title,omitempty"`    // Toast title (optional)
 	Message  string `json:"message"`            // Toast message
 	Duration int    `json:"duration,omitempty"` // Duration in ms (0 for default)
+	// Input requests an interactive field on the toast. The only supported
+	// mode is "secret": the browser renders a masked password field whose
+	// submitted value is routed straight to the daemon store — it never
+	// enters the channel/panel event stream.
+	Input string `json:"input,omitempty"`
+	// Name is the env-var-style secret name (e.g. FIGMA_KEY). Required when
+	// Input is "secret".
+	Name string `json:"name,omitempty"`
 }
 
 // TunnelStartConfig represents configuration for a TUNNEL START command.
