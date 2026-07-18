@@ -119,3 +119,24 @@ func TestConvertToPageSessionOutput_GetCountsAndResources(t *testing.T) {
 	assert.Equal(t, []string{"/app.js", "/style.css", "/logo.png"}, out.Resources)
 	require.Len(t, out.Errors, 2, "raw GET exposes the error detail array")
 }
+
+func TestConvertToPageSummary_UniqueErrorsRankedByCount(t *testing.T) {
+	// 7 distinct messages with distinct counts: ranging the dedup map and
+	// taking the first 5 (previous behavior) picked an arbitrary subset in
+	// Go's random map order, so a frequent error could be shadowed by a rare
+	// one. The summary must keep the 5 most frequent, ordered count desc.
+	var errs []interface{}
+	for i, msg := range []string{"a", "b", "c", "d", "e", "f", "g"} {
+		for n := 0; n <= i; n++ {
+			errs = append(errs, map[string]interface{}{"message": msg, "type": "Error"})
+		}
+	}
+	s := convertToPageSummary(map[string]interface{}{"errors": errs}, map[string]bool{}, 5)
+
+	require.Len(t, s.UniqueErrors, 5, "top-5 cap")
+	assert.Equal(t, []string{"g", "f", "e", "d", "c"},
+		[]string{s.UniqueErrors[0].Message, s.UniqueErrors[1].Message, s.UniqueErrors[2].Message, s.UniqueErrors[3].Message, s.UniqueErrors[4].Message},
+		"ranked by count desc, least frequent (a, b) dropped")
+	assert.Equal(t, 7, s.UniqueErrors[0].Count)
+	assert.Equal(t, 3, s.UniqueErrors[4].Count)
+}

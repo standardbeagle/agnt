@@ -158,12 +158,7 @@ func convertToPageSummary(m map[string]interface{}, detailSet map[string]bool, l
 			}
 		}
 
-		for _, es := range errorCounts {
-			summary.UniqueErrors = append(summary.UniqueErrors, *es)
-			if len(summary.UniqueErrors) >= 5 {
-				break
-			}
-		}
+		summary.UniqueErrors = topUniqueErrors(errorCounts, 5)
 
 		if detailSet["errors"] {
 			detailSections = append(detailSections, "errors")
@@ -555,25 +550,7 @@ func buildProxyLogSummary(entries []interface{}, detailSet map[string]bool, limi
 		summary.AvgLoadTime = totalLoadTime / int64(perfCount)
 	}
 
-	// Deterministic "Top 10": rank unique errors by occurrence count desc, then
-	// message asc for stable ties. Ranging the map and taking the first 10
-	// (previous behavior) returned an arbitrary set in Go's random map order, so
-	// a rare error could shadow a frequent one and the same input could yield
-	// different "top" errors run to run.
-	uniqueErrors := make([]ErrorSummary, 0, len(errorCounts))
-	for _, es := range errorCounts {
-		uniqueErrors = append(uniqueErrors, *es)
-	}
-	sort.Slice(uniqueErrors, func(i, j int) bool {
-		if uniqueErrors[i].Count != uniqueErrors[j].Count {
-			return uniqueErrors[i].Count > uniqueErrors[j].Count
-		}
-		return uniqueErrors[i].Message < uniqueErrors[j].Message
-	})
-	if len(uniqueErrors) > 10 {
-		uniqueErrors = uniqueErrors[:10]
-	}
-	summary.UniqueErrors = uniqueErrors
+	summary.UniqueErrors = topUniqueErrors(errorCounts, 10)
 
 	if detailSet["errors"] {
 		detailSections = append(detailSections, "errors")
@@ -971,4 +948,26 @@ func convertToPageSessionOutput(m map[string]interface{}) PageSessionOutput {
 	}
 
 	return output
+}
+
+// topUniqueErrors ranks deduplicated errors by occurrence count desc, then
+// message asc for stable ties, and returns at most n. Ranging the map directly
+// and taking the first n returns an arbitrary set in Go's random map order, so
+// a rare error could shadow a frequent one and the same input could yield
+// different "top" errors run to run.
+func topUniqueErrors(errorCounts map[string]*ErrorSummary, n int) []ErrorSummary {
+	ranked := make([]ErrorSummary, 0, len(errorCounts))
+	for _, es := range errorCounts {
+		ranked = append(ranked, *es)
+	}
+	sort.Slice(ranked, func(i, j int) bool {
+		if ranked[i].Count != ranked[j].Count {
+			return ranked[i].Count > ranked[j].Count
+		}
+		return ranked[i].Message < ranked[j].Message
+	})
+	if len(ranked) > n {
+		ranked = ranked[:n]
+	}
+	return ranked
 }
