@@ -238,7 +238,7 @@ func TestProxyLogQueryRaw_DefaultFallback(t *testing.T) {
 
 	assert.Equal(t, "unknown_future_type", output.Entries[0].Type)
 	assert.NotEmpty(t, output.Entries[0].Data, "default fallback should produce data")
-	assert.False(t, output.Entries[0].Timestamp.IsZero(), "default fallback should set timestamp")
+	assert.True(t, output.Entries[0].Timestamp.IsZero(), "no payload timestamp leaves an explicit zero, not a fabricated now")
 
 	// Verify it's valid JSON containing the type
 	var parsed map[string]interface{}
@@ -258,7 +258,7 @@ func TestProxyLogQueryCompact_DefaultFallback(t *testing.T) {
 
 	assert.Equal(t, "unknown_future_type", output.Entries[0].Type)
 	assert.NotEmpty(t, output.Entries[0].Data, "default fallback should produce data")
-	assert.False(t, output.Entries[0].Timestamp.IsZero(), "default fallback should set timestamp")
+	assert.True(t, output.Entries[0].Timestamp.IsZero(), "no payload timestamp leaves an explicit zero, not a fabricated now")
 }
 
 // TestProxyLogQueryRaw_NilTypedPayload guards the nil-payload panic: an entry
@@ -290,13 +290,13 @@ func TestProxyLogQueryRaw_NilTypedPayload(t *testing.T) {
 	for i, ty := range types {
 		assert.Equal(t, string(ty), output.Entries[i].Type, "type %s", ty)
 		assert.NotEmpty(t, output.Entries[i].Data, "nil-payload %s should fall back to envelope data", ty)
-		assert.False(t, output.Entries[i].Timestamp.IsZero(), "nil-payload %s should get a fallback timestamp", ty)
+		assert.True(t, output.Entries[i].Timestamp.IsZero(), "nil-payload %s has no real timestamp; leave an explicit zero, not a fabricated now", ty)
 	}
 }
 
 // TestProxyLogQueryCompact_NilTypedPayload mirrors the raw sweep for the
-// compact formatter: nil payloads yield a placeholder line and a non-zero
-// timestamp instead of an empty entry.
+// compact formatter: nil payloads yield a placeholder line and an explicit
+// zero timestamp (no real time is known) instead of an empty entry.
 func TestProxyLogQueryCompact_NilTypedPayload(t *testing.T) {
 	types := []proxy.LogEntryType{
 		proxy.LogTypeHTTP,
@@ -326,6 +326,6 @@ func TestProxyLogQueryCompact_NilTypedPayload(t *testing.T) {
 	for i, ty := range types {
 		assert.Equal(t, string(ty), output.Entries[i].Type, "type %s", ty)
 		assert.NotEmpty(t, output.Entries[i].Data, "nil-payload %s should get placeholder data", ty)
-		assert.False(t, output.Entries[i].Timestamp.IsZero(), "nil-payload %s should get a fallback timestamp", ty)
+		assert.True(t, output.Entries[i].Timestamp.IsZero(), "nil-payload %s has no real timestamp; leave an explicit zero, not a fabricated now", ty)
 	}
 }

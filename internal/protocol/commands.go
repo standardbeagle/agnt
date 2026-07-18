@@ -192,6 +192,20 @@ type LogQueryFilter struct {
 	ErrorsOnly bool `json:"errors_only,omitempty"`
 	// DiagnosticLevels filters diagnostic entries by level (info, warning, error).
 	DiagnosticLevels []string `json:"diagnostic_levels,omitempty"`
+	// InteractionTypes filters interaction entries by event type (click, keydown, scroll, ...).
+	InteractionTypes []string `json:"interaction_types,omitempty"`
+	// MutationTypes filters mutation entries by mutation type (added, removed, attributes, ...).
+	MutationTypes []string `json:"mutation_types,omitempty"`
+	// Frames restricts to entries emitted by these content-frame ids.
+	Frames []string `json:"frames,omitempty"`
+	// MessagePattern restricts to message-bearing entries (error/custom/diagnostic)
+	// whose message contains this substring.
+	MessagePattern string `json:"message_pattern,omitempty"`
+	// MinDurationMs restricts to HTTP entries at or above this round-trip duration (ms).
+	MinDurationMs int64 `json:"min_duration_ms,omitempty"`
+	// OmitBodies asks the daemon to strip HTTP bodies/headers from the result
+	// before sending it (used by the summary path, which never reads them).
+	OmitBodies bool `json:"omit_bodies,omitempty"`
 }
 
 // ToastConfig represents configuration for a PROXY TOAST command.

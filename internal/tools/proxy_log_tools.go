@@ -17,7 +17,7 @@ type ProxyLogInput struct {
 	ProxyID          string   `json:"proxy_id,omitempty" jsonschema:"Proxy ID to query logs from (preferred)"`
 	ID               string   `json:"id,omitempty" jsonschema:"Alias for proxy_id"`
 	Action           string   `json:"action,omitempty" jsonschema:"Action: query (default), summary, clear, stats"`
-	Types            []string `json:"types,omitempty" jsonschema:"Log types to filter: http, error, performance, custom, screenshot, execution, response, interaction, mutation, diagnostic, panel_message, sketch"`
+	Types            []string `json:"types,omitempty" jsonschema:"Log types to filter (unknown types are rejected): http, error, performance, custom, screenshot, execution, response, interaction, mutation, panel_message, sketch, screenshot_capture, element_capture, sketch_capture, design_state, design_request, design_chat, design_edit, walkthrough, responsive_request, responsive_state, diagnostic, process, hook, incident_digest"`
 	Methods          []string `json:"methods,omitempty" jsonschema:"HTTP methods to filter (e.g., GET, POST)"`
 	URLPattern       string   `json:"url_pattern,omitempty" jsonschema:"URL pattern to match (substring)"`
 	StatusCodes      []int    `json:"status_codes,omitempty" jsonschema:"HTTP status codes to filter"`
@@ -25,15 +25,22 @@ type ProxyLogInput struct {
 	Since            string   `json:"since,omitempty" jsonschema:"Start time filter (RFC3339 or duration like '5m')"`
 	Until            string   `json:"until,omitempty" jsonschema:"End time filter (RFC3339)"`
 	Raw              bool     `json:"raw,omitempty" jsonschema:"Return full JSON dumps instead of compact format"`
-	ErrorsOnly       bool     `json:"errors_only,omitempty" jsonschema:"Filter to errors only (HTTP 4xx/5xx, JS errors, diagnostics)"`
+	ErrorsOnly       bool     `json:"errors_only,omitempty" jsonschema:"Filter to error-class entries only: HTTP 4xx/5xx, JS errors, error-level diagnostics, custom error-level logs. Excludes diagnostic warnings and custom warn-level logs (they are not error-class) — use diagnostic_levels or types for those"`
 	DiagnosticLevels []string `json:"diagnostic_levels,omitempty" jsonschema:"Diagnostic levels to include: error, warning, info"`
+	InteractionTypes []string `json:"interaction_types,omitempty" jsonschema:"Interaction event types to include: click, dblclick, keydown, input, scroll, focus, blur, submit, contextmenu, mousemove"`
+	MutationTypes    []string `json:"mutation_types,omitempty" jsonschema:"DOM mutation types to include: added, removed, attributes, characterData"`
+	Frames           []string `json:"frames,omitempty" jsonschema:"Restrict to entries emitted by these content-frame ids"`
+	MessagePattern   string   `json:"message_pattern,omitempty" jsonschema:"Substring match on the message of error, custom, and diagnostic entries"`
+	MinDurationMs    int64    `json:"min_duration_ms,omitempty" jsonschema:"Restrict to HTTP entries whose round-trip is at least this many milliseconds (find slow requests)"`
 	Detail           []string `json:"detail,omitempty" jsonschema:"For summary: sections to include full detail for (errors, http, performance, interactions, mutations, other)"`
 }
 
 func (input ProxyLogInput) hasFilters() bool {
 	return len(input.Types) > 0 || len(input.Methods) > 0 || input.URLPattern != "" ||
 		len(input.StatusCodes) > 0 || input.Since != "" || input.Until != "" ||
-		input.ErrorsOnly || len(input.DiagnosticLevels) > 0
+		input.ErrorsOnly || len(input.DiagnosticLevels) > 0 ||
+		len(input.InteractionTypes) > 0 || len(input.MutationTypes) > 0 ||
+		len(input.Frames) > 0 || input.MessagePattern != "" || input.MinDurationMs > 0
 }
 
 // ProxyLogOutput defines output for proxylog tool.
@@ -199,6 +206,25 @@ func handleProxyLogQueryRaw(entries []proxy.LogEntry, pag *Pagination) (*mcp.Cal
 				data["duration_ms"] = entry.HTTP.Duration.Milliseconds()
 				if entry.HTTP.Error != "" {
 					data["error"] = entry.HTTP.Error
+				}
+				// Raw mode promises "full JSON dumps": the recorder already
+				// captures request/response headers and bodies (10KB cap, with
+				// an inline "... [truncated]" marker on the response and a
+				// "[request body ...]" marker on the request), so surface them
+				// here instead of dropping them silently — otherwise the schema
+				// claim is a lie and the agent cannot inspect payloads.
+				if len(entry.HTTP.RequestHeaders) > 0 {
+					data["request_headers"] = entry.HTTP.RequestHeaders
+				}
+				if entry.HTTP.RequestBody != "" {
+					data["request_body"] = entry.HTTP.RequestBody
+				}
+				if len(entry.HTTP.ResponseHeaders) > 0 {
+					data["response_headers"] = entry.HTTP.ResponseHeaders
+				}
+				if entry.HTTP.ResponseBody != "" {
+					data["response_body"] = entry.HTTP.ResponseBody
+					data["response_truncated"] = strings.HasSuffix(entry.HTTP.ResponseBody, "... [truncated]")
 				}
 				output[i] = LogEntryOutput{
 					Type:      string(entry.Type),
@@ -650,26 +676,17 @@ func handleProxyLogQueryCompact(entries []proxy.LogEntry, pag *Pagination) (*mcp
 				data = fmt.Sprintf("Design edit: %s %s", entry.DesignEdit.Selector, formatDeltaPairs(entry.DesignEdit.Deltas))
 			}
 		default:
-			// For other types, use JSON serialization
-			if b, err := json.Marshal(entry); err == nil {
-				data = string(b)
-				if em := make(map[string]interface{}); json.Unmarshal(b, &em) == nil {
-					if sub, ok := em[string(entry.Type)].(map[string]interface{}); ok {
-						if ts, ok := sub["timestamp"].(string); ok {
-							if t, err := time.Parse(time.RFC3339, ts); err == nil {
-								timestamp = t
-							}
-						}
-					}
-				}
-			}
+			// For other types, serialize the whole entry — but elide heavy
+			// base64 image blobs (sketch/capture image_data, captured-area
+			// data) so an unhandled type carrying a screenshot cannot dump
+			// megabytes of base64 into the agent's context.
+			data, timestamp = marshalEntryElided(entry), entryPayloadTimestamp(entry)
 		}
 
-		// Known types with a nil payload leave timestamp/data unset — fall
-		// back rather than emitting a zero time and empty summary.
-		if timestamp.IsZero() {
-			timestamp = time.Now()
-		}
+		// A known type with a nil payload leaves timestamp/data unset. Leave the
+		// timestamp as the zero value (an explicit "unknown time" sentinel) rather
+		// than stamping time.Now() — a fabricated now would misdate the entry and
+		// silently corrupt any since/until reasoning the agent does downstream.
 		if data == "" {
 			data = fmt.Sprintf("%s event", entry.Type)
 		}
@@ -689,25 +706,92 @@ func handleProxyLogQueryCompact(entries []proxy.LogEntry, pag *Pagination) (*mcp
 
 // rawFallbackOutput serializes an entry whose typed payload is missing or
 // unrecognized, recovering the timestamp from the nested payload JSON when
-// present and defaulting to now otherwise.
+// present and leaving it zero otherwise. Heavy base64 image blobs are elided
+// (see marshalEntryElided) so a captured screenshot/sketch does not flood the
+// agent with base64.
 func rawFallbackOutput(entry proxy.LogEntry) LogEntryOutput {
-	out := LogEntryOutput{Type: string(entry.Type), Data: "{}"}
-	if b, err := json.Marshal(entry); err == nil {
-		out.Data = string(b)
-		if em := make(map[string]interface{}); json.Unmarshal(b, &em) == nil {
-			if sub, ok := em[string(entry.Type)].(map[string]interface{}); ok {
-				if ts, ok := sub["timestamp"].(string); ok {
-					if t, err := time.Parse(time.RFC3339, ts); err == nil {
-						out.Timestamp = t
-					}
+	// Leave a missing timestamp as the zero value (explicit "unknown time")
+	// rather than stamping time.Now(), which would misdate the entry.
+	return LogEntryOutput{
+		Type:      string(entry.Type),
+		Data:      marshalEntryElided(entry),
+		Timestamp: entryPayloadTimestamp(entry),
+	}
+}
+
+// entryPayloadTimestamp recovers the timestamp from the nested typed payload of
+// a LogEntry via its JSON envelope (the payload object is keyed by the entry
+// type). Returns the zero time when absent — callers decide the fallback.
+func entryPayloadTimestamp(entry proxy.LogEntry) time.Time {
+	b, err := json.Marshal(entry)
+	if err != nil {
+		return time.Time{}
+	}
+	em := make(map[string]interface{})
+	if json.Unmarshal(b, &em) != nil {
+		return time.Time{}
+	}
+	sub, ok := em[string(entry.Type)].(map[string]interface{})
+	if !ok {
+		return time.Time{}
+	}
+	ts, ok := sub["timestamp"].(string)
+	if !ok {
+		return time.Time{}
+	}
+	t, err := time.Parse(time.RFC3339, ts)
+	if err != nil {
+		return time.Time{}
+	}
+	return t
+}
+
+// marshalEntryElided serializes a full LogEntry to JSON with heavy base64 image
+// blobs replaced by a compact "[elided N bytes]" marker (see elideBase64), so
+// the raw and fallback serializers never dump megabytes of screenshot/sketch
+// data into the agent's context. Returns "{}" on marshal failure.
+func marshalEntryElided(entry proxy.LogEntry) string {
+	b, err := json.Marshal(entry)
+	if err != nil {
+		return "{}"
+	}
+	var m interface{}
+	if json.Unmarshal(b, &m) != nil {
+		return string(b)
+	}
+	out, err := json.Marshal(elideBase64(m))
+	if err != nil {
+		return string(b)
+	}
+	return string(out)
+}
+
+// elideBase64 walks a decoded JSON value and replaces heavy base64 image blobs
+// with a "[elided N bytes]" marker. It elides string values under the key
+// "image_data" (always base64 PNG) and under "data" when the value is a long
+// string (a captured area's base64 payload); structured "data" maps
+// (Custom.Data, Execution.Data) are recursed into, never elided.
+func elideBase64(v interface{}) interface{} {
+	switch val := v.(type) {
+	case map[string]interface{}:
+		for k, child := range val {
+			if s, ok := child.(string); ok {
+				if (k == "image_data" && s != "") || (k == "data" && len(s) > 1024) {
+					val[k] = fmt.Sprintf("[elided %d bytes]", len(s))
+					continue
 				}
 			}
+			val[k] = elideBase64(child)
 		}
+		return val
+	case []interface{}:
+		for i, child := range val {
+			val[i] = elideBase64(child)
+		}
+		return val
+	default:
+		return v
 	}
-	if out.Timestamp.IsZero() {
-		out.Timestamp = time.Now()
-	}
-	return out
 }
 
 // formatDeltaPairs renders a property→value delta map as a compact, stably
