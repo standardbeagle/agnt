@@ -36,6 +36,7 @@ type ProxyServer struct {
 	// autostart with .agnt.kdl `listen-port`).
 	StrictListenPort bool
 	PublicURL        string // Optional public URL for tunnel services
+	SkipTLSVerify    bool   // Whether TLS cert verification was disabled for the backend transport
 	logger           *TrafficLogger
 	pageTracker      *PageTracker
 	httpServer       *http.Server
@@ -267,6 +268,7 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 		AllowExternal:       config.AllowExternal,
 		StrictListenPort:    config.StrictListenPort && config.ListenPort > 0,
 		PublicURL:           config.PublicURL,
+		SkipTLSVerify:       config.SkipTLSVerify,
 		logger:              logger,
 		pageTracker:         NewPageTracker(100, 5*time.Minute),
 		ready:               make(chan struct{}),

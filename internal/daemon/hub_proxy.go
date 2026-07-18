@@ -446,12 +446,21 @@ func (d *Daemon) hubHandleProxyRestart(ctx context.Context, conn *hubpkg.Connect
 	// Capture config before stopping. The bound port is preserved across the
 	// restart: clients (browsers, stored URLs, CORS origins) expect the proxy
 	// to come back on the SAME port, not drift to a fresh auto-assignment.
+	// PublicURL and SkipTLSVerify are captured too — a restart that dropped
+	// them would silently change behavior (URL rewriting, TLS verification)
+	// versus the original start.
 	targetURL := p.TargetURL.String()
 	maxLogSize := int(p.Logger().Stats().MaxSize)
 	projectPath := p.Path
 	bindAddress := p.BindAddress
 	allowExternal := p.AllowExternal
+	publicURL := p.PublicURL
+	skipTLSVerify := p.SkipTLSVerify
 	boundPort := p.BoundPort()
+	// Capture any still-pending readiness dependencies so the gate is re-armed
+	// on the new server. A ready proxy has none (empty), and coming back ready
+	// is correct; a still-gated proxy keeps waiting on the same deps.
+	pendingDeps := p.PendingDependencies()
 
 	// Stop the proxy
 	if err := d.proxym.Stop(ctx, proxyID); err != nil {
@@ -486,6 +495,8 @@ func (d *Daemon) hubHandleProxyRestart(ctx context.Context, conn *hubpkg.Connect
 		Path:          projectPath,
 		BindAddress:   bindAddress,
 		AllowExternal: allowExternal,
+		PublicURL:     publicURL,
+		SkipTLSVerify: skipTLSVerify,
 	})
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("failed to restart proxy: %v", err))
@@ -493,12 +504,31 @@ func (d *Daemon) hubHandleProxyRestart(ctx context.Context, conn *hubpkg.Connect
 
 	d.wireProxyLogger(newProxy)
 
-	// Persist the new proxy state on its preserved port.
+	// Re-bind the owning session's overlay endpoint so browser→agent messages
+	// keep flowing after a restart (handleExplicitStart does this on first
+	// start; a restart that skipped it left the proxy overlay-less). Fail
+	// closed with no project path; rebindProxyOverlays late-binds on connect.
+	if projectPath != "" {
+		if ep := d.overlayEndpointForProject(projectPath); ep != "" {
+			newProxy.SetOverlayEndpoint(ep)
+		}
+	}
+
+	// Re-arm the readiness gate on the new server with any dependencies that
+	// were still pending at restart time. Mirrors handleExplicitStart's
+	// registerProxyDependencies, but feeds already-resolved process IDs (not
+	// script names) captured off the old server.
+	d.applyProxyDependencies(newProxy, proxyID, pendingDeps)
+
+	// Persist the new proxy state on its ACTUAL bound port. Start() may have
+	// drifted off boundPort if the OS was slow to release it or something else
+	// grabbed it during the restart window; persisting the requested port would
+	// record a stale value the restore path could not honor.
 	if d.stateMgr != nil {
 		d.stateMgr.AddProxy(PersistentProxyConfig{
 			ID:         proxyID,
 			TargetURL:  targetURL,
-			Port:       boundPort,
+			Port:       newProxy.BoundPort(),
 			MaxLogSize: maxLogSize,
 			Path:       projectPath,
 		})

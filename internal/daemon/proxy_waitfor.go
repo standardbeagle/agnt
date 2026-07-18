@@ -76,6 +76,21 @@ func (d *Daemon) registerProxyDependencies(
 		depIDs = append(depIDs, makeProcessID(projectPath, scriptName))
 	}
 
+	d.applyProxyDependencies(server, proxyID, depIDs)
+}
+
+// applyProxyDependencies primes the proxy's readiness gate with the already-
+// resolved dependency process IDs, spawns one waiter per dependency, and arms
+// the stall watchdog. Split out of registerProxyDependencies so PROXY RESTART
+// can re-arm the gate from the dependency IDs it captured off the old server
+// (which are already process IDs, not script names) without re-running the
+// script-name→process-ID resolution. A nil/empty list is a no-op — the gate
+// stays open.
+func (d *Daemon) applyProxyDependencies(server *proxy.ProxyServer, proxyID string, depIDs []string) {
+	if server == nil || len(depIDs) == 0 {
+		return
+	}
+
 	server.SetDependencies(depIDs)
 	debug.Log("daemon", "proxy %s gated on %d dependencies: %v", proxyID, len(depIDs), depIDs)
 
