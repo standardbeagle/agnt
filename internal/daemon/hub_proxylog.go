@@ -47,12 +47,16 @@ func (d *Daemon) hubHandleProxyLogQuery(conn *hubpkg.Connection, cmd *hubproto.C
 	}
 
 	entries := p.Logger().Query(filter)
+	if filter.OmitBodies {
+		entries = stripHTTPBodies(entries)
+	}
 	stats := p.Logger().Stats()
 
 	data, _ := json.Marshal(map[string]interface{}{
 		"entries":         entries,
 		"count":           len(entries),
 		"total_available": stats.AvailableEntries,
+		"dropped":         stats.Dropped,
 	})
 	return conn.WriteJSON(data)
 }
@@ -75,15 +79,30 @@ func convertLogQueryFilter(data []byte) (proxy.LogFilter, error) {
 		return proxy.LogFilter{}, fmt.Errorf("PROXYLOG QUERY filter decode failed: %w", err)
 	}
 
+	since, err := parseTimeString(pf.Since)
+	if err != nil {
+		return proxy.LogFilter{}, fmt.Errorf("PROXYLOG QUERY invalid 'since': %w", err)
+	}
+	until, err := parseTimeString(pf.Until)
+	if err != nil {
+		return proxy.LogFilter{}, fmt.Errorf("PROXYLOG QUERY invalid 'until': %w", err)
+	}
+
 	filter := proxy.LogFilter{
 		Methods:          pf.Methods,
 		URLPattern:       pf.URLPattern,
 		StatusCodes:      pf.StatusCodes,
 		Limit:            pf.Limit,
-		Since:            parseTimeString(pf.Since),
-		Until:            parseTimeString(pf.Until),
+		Since:            since,
+		Until:            until,
 		ErrorsOnly:       pf.ErrorsOnly,
 		DiagnosticLevels: pf.DiagnosticLevels,
+		InteractionTypes: pf.InteractionTypes,
+		MutationTypes:    pf.MutationTypes,
+		Frames:           pf.Frames,
+		MessagePattern:   pf.MessagePattern,
+		MinDurationMs:    pf.MinDurationMs,
+		OmitBodies:       pf.OmitBodies,
 	}
 
 	for _, t := range pf.Types {
@@ -93,21 +112,47 @@ func convertLogQueryFilter(data []byte) (proxy.LogFilter, error) {
 	return filter, nil
 }
 
-// parseTimeString parses a time string as either RFC3339 or a Go duration.
-// Duration strings like "5m" are interpreted as that duration ago from now.
-
-func parseTimeString(s string) *time.Time {
+// parseTimeString parses a time string as either an RFC3339 timestamp or a Go
+// duration (e.g. "5m", "1h"), the latter interpreted as that long ago from now.
+// An empty string yields (nil, nil) — no time bound.
+//
+// A non-empty value that parses as neither is a loud error rather than a
+// silently-dropped filter: returning nil for unparseable input would widen the
+// query without telling the agent its time bound was ignored, so it would then
+// trust results from outside the window it asked for.
+func parseTimeString(s string) (*time.Time, error) {
 	if s == "" {
-		return nil
+		return nil, nil
 	}
 	if t, err := time.Parse(time.RFC3339, s); err == nil {
-		return &t
+		return &t, nil
 	}
 	if d, err := time.ParseDuration(s); err == nil {
 		t := time.Now().Add(-d)
-		return &t
+		return &t, nil
 	}
-	return nil
+	return nil, fmt.Errorf("%q is neither an RFC3339 timestamp nor a Go duration (e.g. '5m', '1h')", s)
+}
+
+// stripHTTPBodies returns a copy of entries with HTTP request/response bodies
+// and headers cleared, so the summary path does not ship 10KB-per-request
+// payloads over IPC only to discard them. It copies the pointed-to HTTPLogEntry
+// before clearing (the Query result shares the ring buffer's payload pointers),
+// so the stored traffic log is never mutated.
+func stripHTTPBodies(entries []proxy.LogEntry) []proxy.LogEntry {
+	out := make([]proxy.LogEntry, len(entries))
+	for i, e := range entries {
+		if e.Type == proxy.LogTypeHTTP && e.HTTP != nil {
+			h := *e.HTTP
+			h.RequestBody = ""
+			h.ResponseBody = ""
+			h.RequestHeaders = nil
+			h.ResponseHeaders = nil
+			e.HTTP = &h
+		}
+		out[i] = e
+	}
+	return out
 }
 
 // hubHandleProxyLogSummary handles PROXYLOG SUMMARY command.

@@ -152,6 +152,27 @@ func TestValidateProxyLogInput(t *testing.T) {
 	assert.Error(t, validateProxyLogInput(ProxyLogInput{
 		Types: make([]string, maxArrayElements+1),
 	}))
+
+	// Unknown log type is rejected loudly rather than silently matching nothing.
+	err := validateProxyLogInput(ProxyLogInput{ProxyID: "dev", Types: []string{"http", "bogus"}})
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "bogus")
+
+	// Newer internal stream types are accepted.
+	assert.NoError(t, validateProxyLogInput(ProxyLogInput{
+		ProxyID: "dev",
+		Types:   []string{"diagnostic", "walkthrough", "hook", "incident_digest"},
+	}))
+
+	// New filter fields validate their bounds.
+	assert.Error(t, validateProxyLogInput(ProxyLogInput{
+		ProxyID:        "dev",
+		MessagePattern: strings.Repeat("x", maxStringField+1),
+	}))
+	assert.Error(t, validateProxyLogInput(ProxyLogInput{
+		ProxyID:          "dev",
+		InteractionTypes: make([]string, maxArrayElements+1),
+	}))
 }
 
 func TestValidateGetErrorsInput(t *testing.T) {

@@ -12,13 +12,16 @@ import (
 
 func TestParseTimeString_Empty(t *testing.T) {
 	t.Parallel()
-	assert.Nil(t, parseTimeString(""))
+	result, err := parseTimeString("")
+	require.NoError(t, err)
+	assert.Nil(t, result)
 }
 
 func TestParseTimeString_RFC3339(t *testing.T) {
 	t.Parallel()
 	ts := "2025-01-15T10:30:00Z"
-	result := parseTimeString(ts)
+	result, err := parseTimeString(ts)
+	require.NoError(t, err)
 	require.NotNil(t, result)
 	assert.Equal(t, 2025, result.Year())
 	assert.Equal(t, time.January, result.Month())
@@ -28,9 +31,10 @@ func TestParseTimeString_RFC3339(t *testing.T) {
 func TestParseTimeString_Duration(t *testing.T) {
 	t.Parallel()
 	before := time.Now()
-	result := parseTimeString("5m")
+	result, err := parseTimeString("5m")
 	after := time.Now()
 
+	require.NoError(t, err)
 	require.NotNil(t, result)
 	// Result should be ~5 minutes ago
 	assert.True(t, result.After(before.Add(-5*time.Minute-time.Second)))
@@ -40,15 +44,39 @@ func TestParseTimeString_Duration(t *testing.T) {
 func TestParseTimeString_DurationHours(t *testing.T) {
 	t.Parallel()
 	before := time.Now()
-	result := parseTimeString("1h")
+	result, err := parseTimeString("1h")
+	require.NoError(t, err)
 	require.NotNil(t, result)
 	assert.True(t, result.After(before.Add(-1*time.Hour-time.Second)))
 }
 
 func TestParseTimeString_Invalid(t *testing.T) {
 	t.Parallel()
-	assert.Nil(t, parseTimeString("not-a-time"))
-	assert.Nil(t, parseTimeString("yesterday"))
+	// A non-empty value that is neither RFC3339 nor a Go duration must fail
+	// loud, not silently drop the time bound (which would widen the query).
+	for _, bad := range []string{"not-a-time", "yesterday", "5 minutes"} {
+		result, err := parseTimeString(bad)
+		require.Error(t, err, "expected loud error for %q", bad)
+		assert.Nil(t, result)
+	}
+}
+
+func TestConvertLogQueryFilter_InvalidSinceIsLoud(t *testing.T) {
+	t.Parallel()
+	pf := protocol.LogQueryFilter{Since: "yesterday"}
+	data, _ := json.Marshal(pf)
+	_, err := convertLogQueryFilter(data)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "since")
+}
+
+func TestConvertLogQueryFilter_InvalidUntilIsLoud(t *testing.T) {
+	t.Parallel()
+	pf := protocol.LogQueryFilter{Until: "whenever"}
+	data, _ := json.Marshal(pf)
+	_, err := convertLogQueryFilter(data)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "until")
 }
 
 func TestConvertLogQueryFilter_Empty(t *testing.T) {
@@ -136,6 +164,29 @@ func TestConvertLogQueryFilter_WithBothSinceAndUntil(t *testing.T) {
 	require.NotNil(t, filter.Since)
 	require.NotNil(t, filter.Until)
 	assert.True(t, filter.Since.Before(*filter.Until))
+}
+
+func TestConvertLogQueryFilter_CarriesExtendedFilters(t *testing.T) {
+	t.Parallel()
+	// These filters exist on proxy.LogFilter but were previously not carried
+	// across the protocol → proxy.LogFilter conversion, so the tool boundary
+	// could never reach them. They must survive the round trip.
+	pf := protocol.LogQueryFilter{
+		InteractionTypes: []string{"click", "scroll"},
+		MutationTypes:    []string{"added"},
+		Frames:           []string{"frameA"},
+		MessagePattern:   "boom",
+		MinDurationMs:    250,
+	}
+	data, _ := json.Marshal(pf)
+	filter, err := convertLogQueryFilter(data)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"click", "scroll"}, filter.InteractionTypes)
+	assert.Equal(t, []string{"added"}, filter.MutationTypes)
+	assert.Equal(t, []string{"frameA"}, filter.Frames)
+	assert.Equal(t, "boom", filter.MessagePattern)
+	assert.Equal(t, int64(250), filter.MinDurationMs)
 }
 
 func TestConvertLogQueryFilter_WithTypes(t *testing.T) {

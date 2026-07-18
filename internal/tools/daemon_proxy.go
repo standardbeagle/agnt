@@ -626,9 +626,14 @@ func (dt *DaemonTools) handleProxyLogQuery(input ProxyLogInput) (*mcp.CallToolRe
 		Limit:            input.Limit,
 		ErrorsOnly:       input.ErrorsOnly,
 		DiagnosticLevels: input.DiagnosticLevels,
+		InteractionTypes: input.InteractionTypes,
+		MutationTypes:    input.MutationTypes,
+		Frames:           input.Frames,
+		MessagePattern:   input.MessagePattern,
+		MinDurationMs:    input.MinDurationMs,
 	}
 
-	entries, totalAvailable, err := dt.client.ProxyLogQueryFull(input.ProxyID, filter)
+	entries, totalAvailable, dropped, err := dt.client.ProxyLogQueryFull(input.ProxyID, filter)
 	if err != nil {
 		return formatDaemonError(err, "proxylog"), ProxyLogOutput{}, nil
 	}
@@ -638,6 +643,7 @@ func (dt *DaemonTools) handleProxyLogQuery(input ProxyLogInput) (*mcp.CallToolRe
 		limit = 100
 	}
 	pag := NewPagination(len(entries), int(totalAvailable), limit, input.hasFilters())
+	pag.Dropped = int(dropped)
 
 	// Honor `raw`: full JSON dumps when requested, terse one-line compact
 	// rendering by default (the token-efficient view). Both formatters are
@@ -660,6 +666,14 @@ func (dt *DaemonTools) handleProxyLogSummary(input ProxyLogInput) (*mcp.CallTool
 		Limit:            0,
 		ErrorsOnly:       input.ErrorsOnly,
 		DiagnosticLevels: input.DiagnosticLevels,
+		InteractionTypes: input.InteractionTypes,
+		MutationTypes:    input.MutationTypes,
+		Frames:           input.Frames,
+		MessagePattern:   input.MessagePattern,
+		MinDurationMs:    input.MinDurationMs,
+		// The summary aggregates counts and never reads HTTP bodies/headers, so
+		// ask the daemon to drop them before shipping the (Limit:0) full result.
+		OmitBodies: true,
 	}
 
 	result, err := dt.client.ProxyLogQuery(input.ProxyID, filter)
@@ -667,9 +681,21 @@ func (dt *DaemonTools) handleProxyLogSummary(input ProxyLogInput) (*mcp.CallTool
 		return formatDaemonError(err, "proxylog"), ProxyLogOutput{}, nil
 	}
 
-	entries, ok := result["entries"].([]interface{})
-	if !ok {
-		entries = []interface{}{}
+	// Distinguish "no logs" (entries present but null/empty) from a malformed
+	// daemon response (key absent or wrong type). Silently substituting an empty
+	// slice for a decode failure would report a falsely-empty summary and hide a
+	// wire/protocol break from the agent.
+	raw, present := result["entries"]
+	if !present {
+		return errorResult("proxylog summary: daemon response missing 'entries' field"), ProxyLogOutput{}, nil
+	}
+	var entries []interface{}
+	if raw != nil {
+		arr, ok := raw.([]interface{})
+		if !ok {
+			return errorResult(fmt.Sprintf("proxylog summary: 'entries' is %T, expected an array", raw)), ProxyLogOutput{}, nil
+		}
+		entries = arr
 	}
 
 	detailSet := make(map[string]bool)

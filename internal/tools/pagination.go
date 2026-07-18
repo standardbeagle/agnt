@@ -7,6 +7,11 @@ type Pagination struct {
 	TotalAvailable int  `json:"total_available"`
 	Limit          int  `json:"limit"`
 	Filtered       bool `json:"filtered,omitempty"`
+	// Dropped is the number of entries evicted from the bounded ring buffer
+	// (older than what the buffer can still hold). A non-zero value tells the
+	// agent the log wrapped and the oldest events are gone — previously this was
+	// visible only via the separate stats action.
+	Dropped int `json:"dropped,omitempty"`
 }
 
 // NewPagination creates a Pagination with all fields set.

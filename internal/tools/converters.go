@@ -3,6 +3,7 @@ package tools
 import (
 	"fmt"
 
+	"sort"
 	"strings"
 
 	"github.com/standardbeagle/agnt/internal/protocol"
@@ -452,13 +453,18 @@ func buildProxyLogSummary(entries []interface{}, detailSet map[string]bool, limi
 			if data != nil {
 				errors = append(errors, data)
 
+				msg := getString(data, "message")
+				// FrontendError carries no dedicated "type" field on the wire,
+				// so reading data["type"] always missed and bucketed every error
+				// as {"Error": N}. Derive the JS error class from the message
+				// prefix (e.g. "TypeError: ...") instead; keep an explicit "type"
+				// if a future producer ever sends one.
 				errType := getString(data, "type")
 				if errType == "" {
-					errType = "Error"
+					errType = classifyErrorType(msg)
 				}
 				summary.ErrorsByType[errType]++
 
-				msg := getString(data, "message")
 				key := msg
 				if len(key) > 100 {
 					key = key[:100]
@@ -520,7 +526,13 @@ func buildProxyLogSummary(entries []interface{}, detailSet map[string]bool, limi
 			if data != nil {
 				mutations = append(mutations, data)
 
-				mType := getString(data, "type")
+				// MutationEvent's wire field is "mutation_type", not "type";
+				// reading "type" left MutationsByType permanently empty. Keep a
+				// "type" fallback for any synthetic/legacy producers.
+				mType := getString(data, "mutation_type")
+				if mType == "" {
+					mType = getString(data, "type")
+				}
 				if mType != "" {
 					summary.MutationsByType[mType]++
 				}
@@ -543,12 +555,25 @@ func buildProxyLogSummary(entries []interface{}, detailSet map[string]bool, limi
 		summary.AvgLoadTime = totalLoadTime / int64(perfCount)
 	}
 
+	// Deterministic "Top 10": rank unique errors by occurrence count desc, then
+	// message asc for stable ties. Ranging the map and taking the first 10
+	// (previous behavior) returned an arbitrary set in Go's random map order, so
+	// a rare error could shadow a frequent one and the same input could yield
+	// different "top" errors run to run.
+	uniqueErrors := make([]ErrorSummary, 0, len(errorCounts))
 	for _, es := range errorCounts {
-		summary.UniqueErrors = append(summary.UniqueErrors, *es)
-		if len(summary.UniqueErrors) >= 10 {
-			break
-		}
+		uniqueErrors = append(uniqueErrors, *es)
 	}
+	sort.Slice(uniqueErrors, func(i, j int) bool {
+		if uniqueErrors[i].Count != uniqueErrors[j].Count {
+			return uniqueErrors[i].Count > uniqueErrors[j].Count
+		}
+		return uniqueErrors[i].Message < uniqueErrors[j].Message
+	})
+	if len(uniqueErrors) > 10 {
+		uniqueErrors = uniqueErrors[:10]
+	}
+	summary.UniqueErrors = uniqueErrors
 
 	if detailSet["errors"] {
 		detailSections = append(detailSections, "errors")
@@ -789,9 +814,35 @@ func convertToCompactInteraction(data map[string]interface{}) CompactInteraction
 	return compact
 }
 
+// classifyErrorType derives a JS error class name from a frontend error's
+// message. Browser errors conventionally serialize as "TypeError: x is not a
+// function"; the token before the first colon is the constructor name.
+// FrontendError carries no dedicated type field, so the message prefix is the
+// only signal — without this, ErrorsByType degenerates to {"Error": N}.
+func classifyErrorType(message string) string {
+	msg := strings.TrimSpace(message)
+	msg = strings.TrimPrefix(msg, "Uncaught ")
+	if idx := strings.Index(msg, ":"); idx > 0 {
+		name := strings.TrimSpace(msg[:idx])
+		// Accept only a compact single token that looks like a JS error class
+		// (ends in "Error"/"Exception"). This rejects URL schemes ("http:") and
+		// prose prefixes that merely happen to contain a colon.
+		if len(name) <= 40 && !strings.ContainsAny(name, " \t\n/\\") &&
+			(strings.HasSuffix(name, "Error") || strings.HasSuffix(name, "Exception")) {
+			return name
+		}
+	}
+	return "Error"
+}
+
 func convertToCompactMutation(data map[string]interface{}) CompactMutation {
+	// Wire field is "mutation_type"; "type" is a legacy/synthetic fallback.
+	mType := getString(data, "mutation_type")
+	if mType == "" {
+		mType = getString(data, "type")
+	}
 	compact := CompactMutation{
-		Type: getString(data, "type"),
+		Type: mType,
 	}
 
 	if target, ok := data["target"].(map[string]interface{}); ok {

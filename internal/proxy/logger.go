@@ -76,6 +76,42 @@ const (
 	LogTypeIncidentDigest LogEntryType = "incident_digest"
 )
 
+// AllLogTypes lists every LogEntryType the traffic logger can emit. It is the
+// single source of truth for the proxylog `types` filter: the tool enum and the
+// "unknown type" rejection both derive from it, so an unrecognised type filter
+// fails loud instead of silently matching nothing.
+func AllLogTypes() []LogEntryType {
+	return []LogEntryType{
+		LogTypeHTTP, LogTypeError, LogTypePerformance, LogTypeCustom,
+		LogTypeScreenshot, LogTypeExecution, LogTypeResponse, LogTypeInteraction,
+		LogTypeMutation, LogTypePanelMessage, LogTypeSketch, LogTypeScreenshotCapture,
+		LogTypeElementCapture, LogTypeSketchCapture, LogTypeDesignState,
+		LogTypeDesignRequest, LogTypeDesignChat, LogTypeDesignEdit, LogTypeWalkthrough,
+		LogTypeResponsiveRequest, LogTypeResponsiveState, LogTypeDiagnostic,
+		LogTypeProcessOutput, LogTypeHook, LogTypeIncidentDigest,
+	}
+}
+
+// LogTypeNames returns AllLogTypes as strings (for enums and error messages).
+func LogTypeNames() []string {
+	all := AllLogTypes()
+	names := make([]string, len(all))
+	for i, t := range all {
+		names[i] = string(t)
+	}
+	return names
+}
+
+// IsValidLogType reports whether s names a known LogEntryType.
+func IsValidLogType(s string) bool {
+	for _, t := range AllLogTypes() {
+		if string(t) == s {
+			return true
+		}
+	}
+	return false
+}
+
 // HTTPLogEntry represents a logged HTTP request/response pair.
 type HTTPLogEntry struct {
 	ID              string            `json:"id"`
@@ -891,6 +927,20 @@ type LogFilter struct {
 	DiagnosticLevels []string       `json:"diagnostic_levels,omitempty"` // info, warning, error
 	ErrorsOnly       bool           `json:"errors_only,omitempty"`       // Filter to errors from all sources
 	Frames           []string       `json:"frames,omitempty"`            // Filter to entries from these content frame ids
+	// MessagePattern restricts to message-bearing entries (error / custom /
+	// diagnostic) whose message contains this substring. Non-message entry
+	// types never match when it is set.
+	MessagePattern string `json:"message_pattern,omitempty"`
+	// MinDurationMs restricts to HTTP entries whose round-trip duration is at
+	// least this many milliseconds (surfacing slow requests). Non-HTTP entries
+	// never match when it is set (>0).
+	MinDurationMs int64 `json:"min_duration_ms,omitempty"`
+	// OmitBodies is a serialization hint (not a match criterion): when set, the
+	// hub strips HTTP request/response bodies and headers from the result before
+	// marshaling. The summary path enables it because it aggregates counts and
+	// never reads bodies, so shipping the full 10KB-per-request payloads over IPC
+	// only to discard them is pure waste.
+	OmitBodies bool `json:"omit_bodies,omitempty"`
 }
 
 // Matches returns true if the entry matches the filter.
@@ -1018,6 +1068,15 @@ func (f LogFilter) Matches(entry LogEntry) bool {
 		if entry.ProcessOutput != nil {
 			timestamp = entry.ProcessOutput.Timestamp
 		}
+	case LogTypeHook:
+		if entry.Hook != nil {
+			timestamp = entry.Hook.ReceivedAt
+		}
+	case LogTypeIncidentDigest:
+		// incident_digest rides in the Custom payload (message + level).
+		if entry.Custom != nil {
+			timestamp = entry.Custom.Timestamp
+		}
 	}
 
 	if f.Since != nil && timestamp.Before(*f.Since) {
@@ -1103,6 +1162,39 @@ func (f LogFilter) Matches(entry LogEntry) bool {
 			}
 		}
 		if !match {
+			return false
+		}
+	}
+
+	// Message-pattern filter — substring match on the message of the
+	// message-bearing entry types. When set, entries without such a message
+	// (or whose message does not contain the pattern) are excluded.
+	if f.MessagePattern != "" {
+		msg := ""
+		switch entry.Type {
+		case LogTypeError:
+			if entry.Error != nil {
+				msg = entry.Error.Message
+			}
+		case LogTypeCustom:
+			if entry.Custom != nil {
+				msg = entry.Custom.Message
+			}
+		case LogTypeDiagnostic:
+			if entry.Diagnostic != nil {
+				msg = entry.Diagnostic.Message
+			}
+		}
+		if msg == "" || !contains(msg, f.MessagePattern) {
+			return false
+		}
+	}
+
+	// Minimum-duration filter — HTTP round-trip at or above the threshold.
+	// Only HTTP entries carry a duration, so any non-HTTP entry is excluded.
+	if f.MinDurationMs > 0 {
+		if entry.Type != LogTypeHTTP || entry.HTTP == nil ||
+			entry.HTTP.Duration.Milliseconds() < f.MinDurationMs {
 			return false
 		}
 	}

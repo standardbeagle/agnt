@@ -424,16 +424,17 @@ func (rc *ResilientClient) ProxyLogQuery(proxyID string, filter protocol.LogQuer
 }
 
 // ProxyLogQueryFull queries proxy logs and decodes typed entries plus the total
-// available count, for handlers that reuse the shared compact/raw formatters.
-func (rc *ResilientClient) ProxyLogQueryFull(proxyID string, filter protocol.LogQueryFilter) ([]proxy.LogEntry, int64, error) {
+// available and dropped counts, for handlers that reuse the shared compact/raw
+// formatters.
+func (rc *ResilientClient) ProxyLogQueryFull(proxyID string, filter protocol.LogQueryFilter) ([]proxy.LogEntry, int64, int64, error) {
 	var entries []proxy.LogEntry
-	var total int64
+	var total, dropped int64
 	err := rc.WithClient(func(c *Client) error {
 		var e error
-		entries, total, e = c.ProxyLogQueryFull(proxyID, filter)
+		entries, total, dropped, e = c.ProxyLogQueryFull(proxyID, filter)
 		return e
 	})
-	return entries, total, err
+	return entries, total, dropped, err
 }
 
 // ProxyLogClear clears proxy logs.

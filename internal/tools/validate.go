@@ -3,6 +3,8 @@ package tools
 import (
 	"fmt"
 	"strings"
+
+	"github.com/standardbeagle/agnt/internal/proxy"
 )
 
 // Field size limits for MCP tool inputs. Generous enough for normal usage,
@@ -206,11 +208,23 @@ func validateProxyLogInput(input ProxyLogInput) error {
 		validateArrayLen("status_codes", input.StatusCodes, maxArrayElements),
 		validateArrayLen("detail", input.Detail, maxArrayElements),
 		validateArrayLen("diagnostic_levels", input.DiagnosticLevels, maxArrayElements),
+		validateArrayLen("interaction_types", input.InteractionTypes, maxArrayElements),
+		validateArrayLen("mutation_types", input.MutationTypes, maxArrayElements),
+		validateArrayLen("frames", input.Frames, maxArrayElements),
+		validateStringLen("message_pattern", input.MessagePattern, maxStringField),
 		validatePositiveLimit("limit", input.Limit, maxLimit),
 	}
 	for _, err := range checks {
 		if err != nil {
 			return err
+		}
+	}
+	// Reject unknown log types loudly. An unrecognised type would otherwise pass
+	// straight through the filter and match nothing, indistinguishable from "no
+	// entries of this type" — a silent no-op the agent cannot detect.
+	for _, tp := range input.Types {
+		if !proxy.IsValidLogType(tp) {
+			return fmt.Errorf("unknown log type %q (valid: %s)", tp, strings.Join(proxy.LogTypeNames(), ", "))
 		}
 	}
 	return nil
