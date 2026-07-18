@@ -201,24 +201,51 @@ func TestRewriteURLsInBody(t *testing.T) {
 		expected string
 	}{
 		{
-			name:     "http URLs rewritten",
+			name:     "http href rewritten",
 			input:    `<a href="http://localhost:3000/page">Link</a>`,
 			expected: `<a href="http://localhost:8080/page">Link</a>`,
 		},
 		{
-			name:     "https URLs rewritten",
+			// Regression (01KXM3MH9C3CXM12W7VEGSD1V4): an https reference must
+			// stay https — the proxy must never silently downgrade a target
+			// link to plaintext, even though it is locally served over http.
+			name:     "https href rewritten without scheme downgrade",
 			input:    `<a href="https://localhost:3000/page">Link</a>`,
-			expected: `<a href="http://localhost:8080/page">Link</a>`,
+			expected: `<a href="https://localhost:8080/page">Link</a>`,
 		},
 		{
-			name:     "JSON escaped URLs rewritten",
-			input:    `{"url":"http:\/\/localhost:3000\/api"}`,
-			expected: `{"url":"http:\/\/localhost:8080\/api"}`,
+			name:     "src attribute rewritten",
+			input:    `<script src="http://localhost:3000/bundle.js"></script>`,
+			expected: `<script src="http://localhost:8080/bundle.js"></script>`,
 		},
 		{
-			name:     "multiple URLs rewritten",
-			input:    `http://localhost:3000/a and http://localhost:3000/b`,
-			expected: `http://localhost:8080/a and http://localhost:8080/b`,
+			name:     "form action attribute rewritten",
+			input:    `<form action="http://localhost:3000/submit"></form>`,
+			expected: `<form action="http://localhost:8080/submit"></form>`,
+		},
+		{
+			// Regression: a bare JSON body (no HTML attribute context) that
+			// happens to contain the target host as data must pass through
+			// unmodified — it is not a navigational URL, it is app data.
+			name:     "JSON body containing target host is not corrupted",
+			input:    `{"apiUrl":"https://localhost:3000/api","note":"see http:\/\/localhost:3000\/docs"}`,
+			expected: `{"apiUrl":"https://localhost:3000/api","note":"see http:\/\/localhost:3000\/docs"}`,
+		},
+		{
+			// Regression: inline <script> content (JS source, not a src
+			// attribute) mentioning the target host as a string literal must
+			// not be rewritten — it is executable/text content, not a URL
+			// attribute.
+			name:     "inline script body containing target host is not corrupted",
+			input:    `<script>var apiBase = "https://localhost:3000/api"; console.log("http://localhost:3000/x");</script>`,
+			expected: `<script>var apiBase = "https://localhost:3000/api"; console.log("http://localhost:3000/x");</script>`,
+		},
+		{
+			// Regression: plain visible text mentioning the target host (no
+			// surrounding href/src/action attribute) must not be rewritten.
+			name:     "plain text body containing target host is not corrupted",
+			input:    `<p>Docs available at http://localhost:3000/a and https://localhost:3000/b</p>`,
+			expected: `<p>Docs available at http://localhost:3000/a and https://localhost:3000/b</p>`,
 		},
 		{
 			name:     "external URLs unchanged",

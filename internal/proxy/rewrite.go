@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -397,7 +398,28 @@ func (ps *ProxyServer) getProxyScheme() string {
 	return "http"
 }
 
-// rewriteURLsInBody rewrites absolute URLs in HTML/JS content from target to proxy.
+// urlBearingAttrPatterns match HTML attributes whose value is a navigational
+// or resource-fetch URL (href/src/action/etc). Rewriting is scoped to these
+// attribute values only — never to the raw body — so JSON payloads, inline
+// <script> bodies, and plain visible text that merely mention the target
+// host as a string are left untouched. A quoted value is captured verbatim
+// (including any `\/`-escaped slashes, e.g. inside a JSON-in-attribute blob
+// like `data-config`) so the replacement can preserve the same escaping.
+// Go's RE2 engine has no backreferences, so double- and single-quoted forms
+// are two separate patterns rather than one pattern with \2.
+var urlBearingAttrPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?is)(\b(?:href|src|action|formaction|poster|cite|manifest|background)\s*=\s*)(")([^"]*)(")`),
+	regexp.MustCompile(`(?is)(\b(?:href|src|action|formaction|poster|cite|manifest|background)\s*=\s*)(')([^']*)(')`),
+}
+
+// rewriteURLsInBody rewrites absolute URLs in URL-bearing HTML attributes
+// (href, src, action, etc.) from target to proxy. It intentionally does not
+// touch the rest of the body — inline <script> content, JSON payloads, and
+// plain text may legitimately contain the target host as a string, and a
+// blind whole-body replace would corrupt that data (see
+// 01KXM3MH9C3CXM12W7VEGSD1V4). It also never downgrades an https:// target
+// reference to plaintext http:// — only the http:// variant respects the
+// configured proxy scheme (e.g. upgraded to https behind a tunnel).
 func (ps *ProxyServer) rewriteURLsInBody(body []byte) []byte {
 	// Guard against nil TargetURL (can happen in tests with partial setup)
 	if ps.TargetURL == nil {
@@ -409,43 +431,64 @@ func (ps *ProxyServer) rewriteURLsInBody(body []byte) []byte {
 		return body
 	}
 
+	// Fast path: no occurrence of the target host anywhere in the body means
+	// nothing to rewrite, so skip the regex scan entirely.
+	if !bytes.Contains(body, []byte(targetHost)) {
+		return body
+	}
+
 	proxyHost := ps.getProxyHost()
 	proxyScheme := ps.getProxyScheme()
 
-	// Rewrite common URL patterns pointing to target
-	// http://target:port -> scheme://proxyhost
-	// https://target:port -> scheme://proxyhost
-
-	// Build replacement patterns
 	targetHTTP := "http://" + targetHost
 	targetHTTPS := "https://" + targetHost
-	proxyURL := proxyScheme + "://" + proxyHost
+	httpProxyURL := proxyScheme + "://" + proxyHost
+	// The https variant is never downgraded to plaintext, regardless of the
+	// scheme the proxy itself is currently reachable on.
+	httpsProxyURL := "https://" + proxyHost
 
-	// Also handle URLs with escaped slashes (common in JSON)
-	targetHTTPEscaped := strings.ReplaceAll(targetHTTP, "/", "\\/")
-	targetHTTPSEscaped := strings.ReplaceAll(targetHTTPS, "/", "\\/")
-	proxyURLEscaped := strings.ReplaceAll(proxyURL, "/", "\\/")
+	rewriteValue := func(value string) string {
+		unescaped := value
+		escaped := false
+		if strings.Contains(value, `\/`) {
+			unescaped = strings.ReplaceAll(value, `\/`, "/")
+			escaped = true
+		}
 
-	// Replace URLs (simple byte replacement for performance). bytes.ReplaceAll
-	// allocates a full-body copy even when there is no match, so each pattern
-	// is guarded by a cheap Contains scan: a body with no absolute target URLs
-	// (the common case for dev servers serving relative paths) passes through
-	// with zero copies instead of four.
-	result := replaceIfPresent(body, targetHTTPS, proxyURL)
-	result = replaceIfPresent(result, targetHTTP, proxyURL)
-	result = replaceIfPresent(result, targetHTTPSEscaped, proxyURLEscaped)
-	result = replaceIfPresent(result, targetHTTPEscaped, proxyURLEscaped)
+		var rewritten string
+		switch {
+		case strings.HasPrefix(unescaped, targetHTTPS):
+			rewritten = httpsProxyURL + strings.TrimPrefix(unescaped, targetHTTPS)
+		case strings.HasPrefix(unescaped, targetHTTP):
+			rewritten = httpProxyURL + strings.TrimPrefix(unescaped, targetHTTP)
+		default:
+			return value
+		}
 
-	return result
-}
-
-// replaceIfPresent replaces all occurrences of old with new in body, but only
-// allocates a new buffer when old is actually present. When old is absent it
-// returns body unchanged (bytes.ReplaceAll would otherwise copy the whole
-// buffer regardless). old/new are strings to avoid caller-side []byte churn.
-func replaceIfPresent(body []byte, old, new string) []byte {
-	if old == "" || !bytes.Contains(body, []byte(old)) {
-		return body
+		if escaped {
+			return strings.ReplaceAll(rewritten, "/", `\/`)
+		}
+		return rewritten
 	}
-	return bytes.ReplaceAll(body, []byte(old), []byte(new))
+
+	result := body
+	for _, pattern := range urlBearingAttrPatterns {
+		result = pattern.ReplaceAllFunc(result, func(match []byte) []byte {
+			sub := pattern.FindSubmatch(match)
+			prefix, openQuote, value, closeQuote := sub[1], sub[2], string(sub[3]), sub[4]
+
+			newValue := rewriteValue(value)
+			if newValue == value {
+				return match
+			}
+
+			out := make([]byte, 0, len(prefix)+len(openQuote)+len(newValue)+len(closeQuote))
+			out = append(out, prefix...)
+			out = append(out, openQuote...)
+			out = append(out, newValue...)
+			out = append(out, closeQuote...)
+			return out
+		})
+	}
+	return result
 }
