@@ -121,12 +121,27 @@ func (d *Daemon) hubHandleProxyStart(ctx context.Context, conn *hubpkg.Connectio
 	})
 
 	// If proxym.Get fails, handleExplicitStart's Create() path hit an
-	// error — the proxy_creation_failed entry in startupErrorStore
-	// carries the detail; surface a terse message here so the MCP caller
-	// doesn't see a silent failure.
+	// error. The Get error itself is just "not found"; the real cause is the
+	// proxy_creation_failed entry handleExplicitStart recorded in the startup
+	// log. Inline that detail so the MCP caller sees the root cause instead of
+	// a bare "not created", and point at the durable surfaces for the full
+	// record rather than swallowing it.
 	proxyServer, err := d.proxym.Get(proxyID)
 	if err != nil {
-		return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("proxy %s was not created: %v", proxyID, err))
+		detail := ""
+		if d.startupErrorStore != nil {
+			for _, e := range d.startupErrorStore.Query(StartupLogFilter{ProcessID: proxyID, Level: "error", Limit: 5}) {
+				if e.EventType == "proxy_creation_failed" {
+					detail = e.Message // oldest→newest order: keep the most recent match
+				}
+			}
+		}
+		msg := fmt.Sprintf("proxy %s was not created: %v", proxyID, err)
+		if detail != "" {
+			msg += " — cause: " + detail
+		}
+		msg += " (see get_errors or `daemon startup_log` for the full proxy_creation_failed record)"
+		return conn.WriteErr(hubproto.ErrInternal, msg)
 	}
 
 	resp := map[string]interface{}{
