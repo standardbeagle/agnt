@@ -138,6 +138,13 @@ func (d *Daemon) hubHandleProxyStart(ctx context.Context, conn *hubpkg.Connectio
 	if proxyServer.BindAddress != "" {
 		resp["bind_address"] = proxyServer.BindAddress
 	}
+	// Surface the public URL when one was configured (explicit public_url, or a
+	// tunnel tool that later calls SetPublicURL). The MCP tool reads this to
+	// render the "access at" URL — without it, proxyAccessURL fell back to the
+	// bare loopback address even when the proxy was fronted by a public URL.
+	if proxyServer.PublicURL != "" {
+		resp["public_url"] = proxyServer.PublicURL
+	}
 
 	data, _ := json.Marshal(resp)
 	return conn.WriteJSON(data)

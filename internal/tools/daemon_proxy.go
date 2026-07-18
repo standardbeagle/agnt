@@ -14,13 +14,12 @@ import (
 
 // proxyAccessURL renders the human-facing "access at" URL for a started proxy.
 // listenAddr is a full host:port (net.Listener.Addr().String(), e.g.
-// "127.0.0.1:47341"); a tunnel or public URL wins when present. Concatenating
-// listenAddr onto a "http://localhost" literal produced the bogus
-// "http://localhost127.0.0.1:47341" — the scheme is all the prefix needs.
-func proxyAccessURL(listenAddr, bindAddress, publicURL, tunnelURL string) string {
+// "127.0.0.1:47341"); a public URL (set explicitly, or by the tunnel tool via
+// SetPublicURL) wins when present. Concatenating listenAddr onto a
+// "http://localhost" literal produced the bogus "http://localhost127.0.0.1:47341"
+// — the scheme is all the prefix needs.
+func proxyAccessURL(listenAddr, bindAddress, publicURL string) string {
 	switch {
-	case tunnelURL != "":
-		return tunnelURL
 	case publicURL != "":
 		return publicURL
 	case bindAddress == "0.0.0.0":
@@ -105,9 +104,8 @@ func (dt *DaemonTools) handleProxyStart(input ProxyInput) (*mcp.CallToolResult, 
 	listenAddr := getString(result, "listen_addr")
 	bindAddress := getString(result, "bind_address")
 	publicURL := getString(result, "public_url")
-	tunnelURL := getString(result, "tunnel_url")
 
-	accessURL := proxyAccessURL(listenAddr, bindAddress, publicURL, tunnelURL)
+	accessURL := proxyAccessURL(listenAddr, bindAddress, publicURL)
 
 	return nil, ProxyOutput{
 		ID:          getString(result, "id"),
@@ -115,7 +113,6 @@ func (dt *DaemonTools) handleProxyStart(input ProxyInput) (*mcp.CallToolResult, 
 		ListenAddr:  listenAddr,
 		BindAddress: bindAddress,
 		PublicURL:   publicURL,
-		TunnelURL:   tunnelURL,
 		Message:     fmt.Sprintf("Proxy started. Access at %s", accessURL),
 	}, nil
 }
