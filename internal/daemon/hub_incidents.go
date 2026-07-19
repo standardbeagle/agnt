@@ -138,7 +138,10 @@ func buildIncidentQueryResult(entries []incident.InboxEntry, stats incident.Stat
 			Error:    stats.Error,
 			Warning:  stats.Warning,
 			Info:     stats.Info,
-			Dropped:  stats.Dropped,
+			// New = unread entries. Left unset it always reported 0, so an agent
+			// gating further pulls on `new` would stop polling a non-empty inbox.
+			New:     stats.New,
+			Dropped: stats.Dropped,
 		},
 		Cursor:    cursor,
 		Truncated: truncated,

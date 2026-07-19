@@ -132,6 +132,58 @@ func TestHubIncidents_SeverityFilter(t *testing.T) {
 	assert.NotEmpty(t, incs)
 }
 
+// TestHubIncidents_InboxStatsNewReflectsUnread verifies the wire inbox_stats.new
+// is populated with the unread count (previously always 0, so an agent gating
+// further pulls on `new` would stop polling a non-empty inbox) and drops to 0
+// once the inbox is drained via a mark_read pull.
+func TestHubIncidents_InboxStatsNewReflectsUnread(t *testing.T) {
+	t.Parallel()
+	d, client, tmpDir := newBootedDaemonWithClient(t)
+
+	_, err := client.conn.Request("SESSION", "REGISTER", "inc-new", tmpDir).WithJSON(map[string]interface{}{
+		"project_path": tmpDir,
+	}).JSON()
+	require.NoError(t, err)
+
+	var sessionCode string
+	require.Eventually(t, func() bool {
+		s, ok := d.sessionRegistry.FindByDirectory(tmpDir)
+		if !ok {
+			return false
+		}
+		sessionCode = s.Code
+		return d.incidentBus.HasSession(sessionCode)
+	}, 2*time.Second, 10*time.Millisecond)
+
+	d.incidentBus.Publish(incident.NewIncidentEvent(incident.SourceBrowserJS, incident.SeverityError, "Err", "e", incident.Context{}, nil))
+	d.incidentBus.Publish(incident.NewIncidentEvent(incident.SourceHTTP4xx, incident.SeverityWarning, "Warn", "w", incident.Context{}, nil))
+
+	require.Eventually(t, func() bool {
+		entries, _ := d.incidentBus.QuerySession(sessionCode, incident.QueryFilter{})
+		return len(entries) >= 2
+	}, 2*time.Second, 20*time.Millisecond)
+
+	statsNew := func(res map[string]interface{}) float64 {
+		st, ok := res["inbox_stats"].(map[string]interface{})
+		require.True(t, ok, "inbox_stats should be present")
+		n, _ := st["new"].(float64)
+		return n
+	}
+
+	// Unread: new must reflect the 2 unread entries, not 0.
+	res, err := client.conn.Request(protocol.VerbIncidents, protocol.SubVerbQuery).WithJSON(protocol.IncidentQueryFilter{}).JSON()
+	require.NoError(t, err)
+	assert.Equal(t, float64(2), statsNew(res), "inbox_stats.new must equal unread count")
+
+	// Drain via a mark_read pull, then re-query: new must drop to 0.
+	_, err = client.conn.Request(protocol.VerbIncidents, protocol.SubVerbQuery).WithJSON(protocol.IncidentQueryFilter{MarkRead: true}).JSON()
+	require.NoError(t, err)
+
+	res, err = client.conn.Request(protocol.VerbIncidents, protocol.SubVerbQuery).WithJSON(protocol.IncidentQueryFilter{}).JSON()
+	require.NoError(t, err)
+	assert.Equal(t, float64(0), statsNew(res), "inbox_stats.new must be 0 after inbox drained")
+}
+
 // TestHubIncidents_SessionLifecycle_AddOnRegister verifies that SESSION REGISTER
 // wires up the incident bus pipeline for the session.
 func TestHubIncidents_SessionLifecycle_AddOnRegister(t *testing.T) {
