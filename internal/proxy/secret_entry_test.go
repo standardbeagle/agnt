@@ -56,7 +56,11 @@ func startOverlayCapture(t *testing.T) (*overlayCapture, string) {
 }
 
 // submitSecret drives the browser side of the flow and returns the ack.
-func submitSecret(t *testing.T, listenAddr, name, value string) map[string]interface{} {
+// Every frame read off the browser-bound WS connection while waiting for the
+// ack — not just the ack itself — is appended to browserFrames (raw JSON
+// bytes), so callers can assert the secret value never appears on the
+// browser-frame surface either, not only in the traffic log/overlay.
+func submitSecret(t *testing.T, listenAddr, name, value string, browserFrames *[]string) map[string]interface{} {
 	t.Helper()
 	conn := dialMetrics(t, listenAddr)
 	require.NoError(t, conn.WriteJSON(map[string]interface{}{
@@ -71,6 +75,9 @@ func submitSecret(t *testing.T, listenAddr, name, value string) map[string]inter
 		_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 		_, raw, err := conn.ReadMessage()
 		require.NoError(t, err, "waiting for secret_ack")
+		if browserFrames != nil {
+			*browserFrames = append(*browserFrames, string(raw))
+		}
 		var frame map[string]interface{}
 		require.NoError(t, json.Unmarshal(raw, &frame))
 		if frame["type"] == "secret_ack" {
@@ -82,8 +89,9 @@ func submitSecret(t *testing.T, listenAddr, name, value string) map[string]inter
 }
 
 // transcriptDump marshals every agent-visible surface into one string:
-// all traffic-log entries plus all captured overlay notification bodies.
-func transcriptDump(t *testing.T, ps *ProxyServer, oc *overlayCapture) string {
+// all traffic-log entries, all captured overlay notification bodies, and all
+// captured browser-bound WS frames.
+func transcriptDump(t *testing.T, ps *ProxyServer, oc *overlayCapture, browserFrames []string) string {
 	t.Helper()
 	var sb strings.Builder
 	for _, entry := range ps.Logger().Query(LogFilter{Limit: 1000}) {
@@ -94,6 +102,10 @@ func transcriptDump(t *testing.T, ps *ProxyServer, oc *overlayCapture) string {
 	}
 	for _, body := range oc.all() {
 		sb.WriteString(body)
+		sb.WriteByte('\n')
+	}
+	for _, frame := range browserFrames {
+		sb.WriteString(frame)
 		sb.WriteByte('\n')
 	}
 	return sb.String()
@@ -118,7 +130,8 @@ func TestSecretSubmit_E2E_ValueNeverEntersTranscript(t *testing.T) {
 		return nil
 	})
 
-	ack := submitSecret(t, ps.ListenAddr, secretName, secretValue)
+	var browserFrames []string
+	ack := submitSecret(t, ps.ListenAddr, secretName, secretValue, &browserFrames)
 	assert.Equal(t, true, ack["ok"], "submission must be acked ok")
 	assert.Equal(t, secretName, ack["name"])
 
@@ -134,13 +147,13 @@ func TestSecretSubmit_E2E_ValueNeverEntersTranscript(t *testing.T) {
 			len(oc.all()) == 1
 	}, 3*time.Second, 20*time.Millisecond, "secret receipt must reach panel log and overlay")
 
-	transcript := transcriptDump(t, ps, oc)
+	transcript := transcriptDump(t, ps, oc, browserFrames)
 	require.NotEmpty(t, transcript)
 
 	// THE invariant: the secret value appears ZERO times anywhere the agent
-	// (or the channel) can see.
+	// (or the channel) can see — including the raw browser-bound WS frames.
 	assert.Zero(t, strings.Count(transcript, secretValue),
-		"secret value must appear zero times in the MCP/channel transcript")
+		"secret value must appear zero times in the MCP/channel transcript, including browser-bound WS frames")
 
 	// While the name + fingerprint receipt does appear.
 	assert.Contains(t, transcript, secretName)
@@ -154,7 +167,8 @@ func TestSecretSubmit_NoSink_FailsLoudWithoutValue(t *testing.T) {
 	ps.OverlayNotifier().SetEndpoint(socketPath)
 
 	const secretValue = "orphaned-secret-value-9876"
-	ack := submitSecret(t, ps.ListenAddr, "ORPHAN_KEY", secretValue)
+	var browserFrames []string
+	ack := submitSecret(t, ps.ListenAddr, "ORPHAN_KEY", secretValue, &browserFrames)
 	assert.Equal(t, false, ack["ok"], "no sink configured must fail loud, not store silently")
 	assert.Contains(t, ack["error"], "no secret sink")
 
@@ -162,7 +176,7 @@ func TestSecretSubmit_NoSink_FailsLoudWithoutValue(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return len(ps.Logger().Query(LogFilter{Types: []LogEntryType{LogTypePanelMessage}})) == 1
 	}, 3*time.Second, 20*time.Millisecond)
-	transcript := transcriptDump(t, ps, oc)
+	transcript := transcriptDump(t, ps, oc, browserFrames)
 	assert.Zero(t, strings.Count(transcript, secretValue))
 	assert.Contains(t, transcript, "FAILED")
 }
@@ -174,10 +188,10 @@ func TestSecretSubmit_RejectsInvalidNameAndEmptyValue(t *testing.T) {
 	sinkCalled := false
 	ps.SetSecretSink(func(_, _ string) error { sinkCalled = true; return nil })
 
-	badName := submitSecret(t, ps.ListenAddr, "not a valid=name", "some-value-12345678")
+	badName := submitSecret(t, ps.ListenAddr, "not a valid=name", "some-value-12345678", nil)
 	assert.Equal(t, false, badName["ok"], "invalid env-style name must be rejected")
 
-	empty := submitSecret(t, ps.ListenAddr, "GOOD_NAME", "")
+	empty := submitSecret(t, ps.ListenAddr, "GOOD_NAME", "", nil)
 	assert.Equal(t, false, empty["ok"], "empty value must be rejected")
 	assert.Contains(t, empty["error"], "empty secret value")
 

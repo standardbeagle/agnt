@@ -49,6 +49,11 @@ func (d *Daemon) injectSecretEnv(projectPath string, env []string) []string {
 	}
 	sort.Strings(keys)
 	for _, key := range keys {
+		// No dedup against keys already present in env (e.g. from the
+		// parent process's own environment or an earlier append). This is
+		// benign: exec's env is last-wins on duplicate keys, and secret
+		// entries are appended last here, so a secret always overrides any
+		// same-named pre-existing value rather than being shadowed by it.
 		env = append(env, key+"="+entries[key].Value.(string))
 	}
 	return env

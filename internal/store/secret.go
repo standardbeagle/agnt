@@ -9,6 +9,19 @@ import (
 // Secret entries are write-only through every agent-visible read surface:
 // STORE GET / GET-ALL return a masked ref (name + fingerprint), never the
 // value. The only consumption path is env injection at process spawn.
+//
+// At-rest storage note: secret entries are persisted to the global store
+// file on disk in PLAINTEXT, exactly like any other store entry — this
+// package provides no at-rest encryption. That is inherent to the by-name
+// env-injection design (injectSecretEnv, internal/daemon/secret_entry.go,
+// reads the plaintext value back out to build a child process's env), not
+// an oversight. The guarantee this feature actually makes is narrower and
+// different: the secret value is kept out of the LLM/channel event stream
+// (traffic log, overlay notifications, browser-bound WS frames) — see
+// TestSecretSubmit_E2E_ValueNeverEntersTranscript in
+// internal/proxy/secret_entry_test.go. Anyone with filesystem read access to
+// the store file can read secrets in the clear; that is a separate threat
+// model from the zero-leak-to-agent invariant this package enforces.
 const MetaSecret = "secret"
 
 // MetaFingerprint is the metadata key holding the display fingerprint
