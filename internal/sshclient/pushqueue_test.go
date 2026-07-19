@@ -166,6 +166,48 @@ func TestPushQueueOverflowFailsLoudAndEmitsEvent(t *testing.T) {
 	}
 }
 
+func TestPushQueueConnectedRaceWithReconnectEnqueuesInsteadOfDropping(t *testing.T) {
+	root, initial := newSFTPFixture(t)
+	q := NewPushQueue(root, 4, func(string, int64) error { return nil }, nil)
+	q.SetSFTP(initial)
+
+	// Inject a full Reconnecting() into the exact window between Push's
+	// initial CONNECTED read and the execute under opMu — the TOCTOU that
+	// used to null the transport and drop the push with "transport
+	// unavailable".
+	var once sync.Once
+	q.onConnectedRace = func() { once.Do(q.Reconnecting) }
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := q.Push("raced.txt", "", bytes.NewBufferString("raced"))
+		done <- err
+	}()
+
+	// The item must be ENQUEUED, not dropped: depth reaches 1 and Push has
+	// not returned yet.
+	waitForPushQueueDepth(t, q, 1)
+	select {
+	case err := <-done:
+		t.Fatalf("push returned before flush (err=%v); reconnect race dropped the item instead of enqueueing", err)
+	default:
+	}
+
+	// Completing the reconnect flushes the queued item to the replacement
+	// transport.
+	_, replacement := newSFTPFixture(t)
+	q.Connected(func() (*sftp.Client, error) { return replacement, nil })
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("queued push errored after flush: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("queued push never completed after reconnect flush")
+	}
+}
+
 func waitForPushQueueDepth(t *testing.T, q *PushQueue, want int) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)

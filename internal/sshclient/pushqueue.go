@@ -45,6 +45,11 @@ type PushQueue struct {
 	flushActive bool
 	drained     chan struct{}
 	queued      chan struct{}
+	// onConnectedRace, if non-nil, is invoked inside Push after the initial
+	// state read observes CONNECTED but before the item is executed under
+	// opMu. It exists only to let tests deterministically inject a
+	// Reconnecting() into that exact window.
+	onConnectedRace func()
 }
 
 type pushQueueState uint8
@@ -150,10 +155,56 @@ func (q *PushQueue) Push(fileName, destRelPath string, src io.Reader) (string, e
 		return result.remotePath, result.err
 	case pushQueueConnected:
 		q.mu.Unlock()
-		return q.execute(item)
+		if q.onConnectedRace != nil {
+			q.onConnectedRace()
+		}
+		return q.pushConnected(item)
 	default:
 		q.mu.Unlock()
 		return "", ErrPushQueueClosed
+	}
+}
+
+// pushConnected handles a push that observed CONNECTED in Push's initial
+// state read. It re-checks the state under opMu — which serialises against
+// Reconnecting — so a reconnect that nulled the transport in the window
+// between the state read and here enqueues the item for the next flush
+// instead of dropping it with "transport unavailable". That window is the
+// exact case the queue exists to cover.
+func (q *PushQueue) pushConnected(item *queuedPush) (string, error) {
+	q.opMu.Lock()
+	q.mu.Lock()
+	switch q.state {
+	case pushQueueClosed:
+		q.mu.Unlock()
+		q.opMu.Unlock()
+		return "", ErrPushQueueClosed
+	case pushQueueReconnecting, pushQueueFlushing:
+		if len(q.pending) >= q.cap {
+			msg := fmt.Sprintf("agnt ssh: push %q dropped: reconnect queue full (capacity %d)", item.fileName, q.cap)
+			report := q.report
+			q.mu.Unlock()
+			q.opMu.Unlock()
+			if report != nil {
+				report(msg)
+			}
+			return "", fmt.Errorf("%w: %s", ErrPushQueueFull, msg)
+		}
+		q.pending = append(q.pending, item)
+		select {
+		case <-q.queued:
+		default:
+			close(q.queued)
+		}
+		q.mu.Unlock()
+		q.opMu.Unlock()
+		result := <-item.result
+		return result.remotePath, result.err
+	default: // pushQueueConnected
+		q.mu.Unlock()
+		remotePath, err := q.executeLocked(item)
+		q.opMu.Unlock()
+		return remotePath, err
 	}
 }
 
@@ -184,7 +235,11 @@ func (q *PushQueue) flush() {
 func (q *PushQueue) execute(item *queuedPush) (string, error) {
 	q.opMu.Lock()
 	defer q.opMu.Unlock()
+	return q.executeLocked(item)
+}
 
+// executeLocked performs the push assuming the caller already holds opMu.
+func (q *PushQueue) executeLocked(item *queuedPush) (string, error) {
 	q.mu.Lock()
 	sc := q.sftp
 	open := q.openSFTP
