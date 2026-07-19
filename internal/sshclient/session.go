@@ -123,7 +123,11 @@ func ensureRemoteSessionCreated(client *ssh.Client, name, cwd string, size TermS
 	if err != nil {
 		return fmt.Errorf("sshclient: listing remote session-host sessions: %w", err)
 	}
-	if sessionHostNameOrIDExists(result, name) {
+	exists, err := sessionHostNameOrIDExists(result, name)
+	if err != nil {
+		return fmt.Errorf("sshclient: resolving remote session %q before create: %w", name, err)
+	}
+	if exists {
 		return nil
 	}
 
@@ -143,7 +147,11 @@ func ensureRemoteSessionCreated(client *ssh.Client, name, cwd string, size TermS
 // matching on exact session_id first, then a unique name match — mirrors
 // cmd/agnt/attach.go's matchSessionHostID (duplicated rather than shared
 // across the package boundary between cmd/agnt and internal/sshclient).
-func sessionHostNameOrIDExists(result map[string]interface{}, target string) bool {
+//
+// An ambiguous name (matching more than one remote session) returns a loud
+// error rather than false: returning false would make the caller create yet
+// ANOTHER same-name session, and each retry leaks another daemon PTY child.
+func sessionHostNameOrIDExists(result map[string]interface{}, target string) (bool, error) {
 	sessions, _ := result["sessions"].([]interface{})
 	nameMatches := 0
 	for _, s := range sessions {
@@ -152,13 +160,16 @@ func sessionHostNameOrIDExists(result map[string]interface{}, target string) boo
 			continue
 		}
 		if id, _ := sm["session_id"].(string); id == target {
-			return true
+			return true, nil
 		}
 		if n, _ := sm["name"].(string); n == target {
 			nameMatches++
 		}
 	}
-	return nameMatches == 1
+	if nameMatches > 1 {
+		return false, fmt.Errorf("ambiguous session name %q matches %d remote sessions; address it by session id instead", target, nameMatches)
+	}
+	return nameMatches == 1, nil
 }
 
 // OpenPTYSessionWithCommand is the lower-level form of OpenPTYSession that

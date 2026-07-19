@@ -45,17 +45,28 @@ func TestSessionHostNameOrIDExists(t *testing.T) {
 		},
 	}
 
-	if !sessionHostNameOrIDExists(result, "claude-2") {
-		t.Fatal("exact session id should match")
+	if ok, err := sessionHostNameOrIDExists(result, "claude-2"); err != nil || !ok {
+		t.Fatalf("exact session id should match: ok=%v err=%v", ok, err)
 	}
-	if !sessionHostNameOrIDExists(result, "unique") {
-		t.Fatal("unique session name should match")
+	if ok, err := sessionHostNameOrIDExists(result, "unique"); err != nil || !ok {
+		t.Fatalf("unique session name should match: ok=%v err=%v", ok, err)
 	}
-	if sessionHostNameOrIDExists(result, "claude") {
-		t.Fatal("ambiguous session name should not match")
+	if ok, err := sessionHostNameOrIDExists(result, "missing"); err != nil || ok {
+		t.Fatalf("unknown session should not match: ok=%v err=%v", ok, err)
 	}
-	if sessionHostNameOrIDExists(result, "missing") {
-		t.Fatal("unknown session should not match")
+
+	// Ambiguity must fail loud, not silently return false — a false here
+	// would drive ensureRemoteSessionCreated to create another same-name
+	// session, leaking a daemon PTY child on every retry.
+	ok, err := sessionHostNameOrIDExists(result, "claude")
+	if err == nil {
+		t.Fatal("ambiguous session name must return an error, not a bool")
+	}
+	if ok {
+		t.Fatal("ambiguous session name must not report exists=true")
+	}
+	if !strings.Contains(err.Error(), "ambiguous") || !strings.Contains(err.Error(), "claude") {
+		t.Fatalf("ambiguity error = %v, want it to name the ambiguous session", err)
 	}
 }
 
