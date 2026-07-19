@@ -7,29 +7,36 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/spf13/cobra"
 	"github.com/standardbeagle/agnt/internal/sshclient"
 )
 
 func TestSplitPushArgs_SingleFileNeverTreatedAsDest(t *testing.T) {
-	files, dest := splitPushArgs([]string{"logo.png"})
-	if len(files) != 1 || files[0] != "logo.png" || dest != "" {
-		t.Errorf("splitPushArgs single arg = %v, %q; want [logo.png], \"\"", files, dest)
+	files, dest, ambiguous := splitPushArgs([]string{"logo.png"})
+	if len(files) != 1 || files[0] != "logo.png" || dest != "" || ambiguous {
+		t.Errorf("splitPushArgs single arg = %v, %q, ambiguous=%v; want [logo.png], \"\", false", files, dest, ambiguous)
 	}
 }
 
-func TestSplitPushArgs_TrailingNonExistentArgIsDest(t *testing.T) {
+func TestSplitPushArgs_TrailingNonExistentArgIsAmbiguousDest(t *testing.T) {
 	dir := t.TempDir()
 	existing := filepath.Join(dir, "logo.png")
 	if err := os.WriteFile(existing, []byte("x"), 0o644); err != nil {
 		t.Fatalf("writing fixture file: %v", err)
 	}
 
-	files, dest := splitPushArgs([]string{existing, "assets/img"})
+	files, dest, ambiguous := splitPushArgs([]string{existing, "assets/img"})
 	if len(files) != 1 || files[0] != existing {
 		t.Errorf("files = %v, want [%s]", files, existing)
 	}
 	if dest != "assets/img" {
 		t.Errorf("dest = %q, want assets/img", dest)
+	}
+	// A last arg that does not exist on disk must be flagged ambiguous so it
+	// is confirmed rather than silently misrouted (a typo'd filename would
+	// otherwise become a remote directory).
+	if !ambiguous {
+		t.Error("non-existent trailing arg must be flagged ambiguous, not silently used as a dest dir")
 	}
 }
 
@@ -43,16 +50,16 @@ func TestSplitPushArgs_TrailingExistingFileIsNotDest(t *testing.T) {
 		}
 	}
 
-	files, dest := splitPushArgs([]string{a, b})
+	files, dest, ambiguous := splitPushArgs([]string{a, b})
 	if len(files) != 2 || files[0] != a || files[1] != b {
 		t.Errorf("files = %v, want [%s %s]", files, a, b)
 	}
-	if dest != "" {
-		t.Errorf("dest = %q, want empty (both args are existing files)", dest)
+	if dest != "" || ambiguous {
+		t.Errorf("dest = %q, ambiguous=%v; want empty, false (both args are existing files)", dest, ambiguous)
 	}
 }
 
-func TestSplitPushArgs_TrailingDirectoryIsDest(t *testing.T) {
+func TestSplitPushArgs_TrailingDirectoryIsUnambiguousDest(t *testing.T) {
 	dir := t.TempDir()
 	a := filepath.Join(dir, "a.png")
 	if err := os.WriteFile(a, []byte("x"), 0o644); err != nil {
@@ -63,12 +70,36 @@ func TestSplitPushArgs_TrailingDirectoryIsDest(t *testing.T) {
 		t.Fatalf("mkdir: %v", err)
 	}
 
-	files, dest := splitPushArgs([]string{a, subdir})
+	files, dest, ambiguous := splitPushArgs([]string{a, subdir})
 	if len(files) != 1 || files[0] != a {
 		t.Errorf("files = %v, want [%s]", files, a)
 	}
 	if dest != subdir {
 		t.Errorf("dest = %q, want %q", dest, subdir)
+	}
+	// An existing directory is an unambiguous destination — no confirmation.
+	if ambiguous {
+		t.Error("existing directory dest must not be flagged ambiguous")
+	}
+}
+
+func TestConfirmAmbiguousDest_NonInteractiveFailsLoud(t *testing.T) {
+	// os.Stdin in the test process is not a terminal, so confirmAmbiguousDest
+	// must refuse rather than silently proceed to treat the arg as a dest dir.
+	cmd := &cobra.Command{}
+	var stderr strings.Builder
+	cmd.SetErr(&stderr)
+	cmd.SetIn(strings.NewReader(""))
+
+	err := confirmAmbiguousDest(cmd, "assets/img")
+	if err == nil {
+		t.Fatal("expected confirmAmbiguousDest to fail loud in a non-interactive session")
+	}
+	if !strings.Contains(err.Error(), "assets/img") || !strings.Contains(err.Error(), "non-interactive") {
+		t.Errorf("error = %v, want it to name the ambiguous arg and the non-interactive refusal", err)
+	}
+	if !strings.Contains(stderr.String(), "does not name an existing local file") {
+		t.Errorf("stderr = %q, want a warning that the arg is being treated as a destination", stderr.String())
 	}
 }
 

@@ -1,12 +1,14 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/standardbeagle/agnt/internal/sshclient"
+	"golang.org/x/term"
 )
 
 var pushHost string
@@ -39,7 +41,12 @@ func init() {
 }
 
 func runPush(cmd *cobra.Command, args []string) error {
-	files, destRelPath := splitPushArgs(args)
+	files, destRelPath, ambiguousDest := splitPushArgs(args)
+	if ambiguousDest {
+		if err := confirmAmbiguousDest(cmd, destRelPath); err != nil {
+			return err
+		}
+	}
 
 	host := pushHost
 	if host == "" {
@@ -60,20 +67,49 @@ func runPush(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-// splitPushArgs applies the "file... [dest-rel-path]" contract: if there is
-// more than one argument and the last one is NOT an existing local file, it
-// is treated as the destination directory and every remaining argument is a
-// file to push. Otherwise every argument is a file and the destination
-// defaults (empty string, resolved by PushToInbox to DefaultInboxDir).
-func splitPushArgs(args []string) (files []string, destRelPath string) {
+// splitPushArgs applies the "file... [dest-rel-path]" contract. The last of
+// several arguments is treated as the destination directory when it is not an
+// existing local file. Two cases produce a destination:
+//
+//   - it names an existing directory → unambiguous destination (ambiguousDest
+//     is false).
+//   - it does not exist on disk at all → it *might* be an intended new remote
+//     directory, but it is just as likely a typo'd filename that would
+//     otherwise silently become a remote directory. ambiguousDest is true so
+//     the caller can warn/confirm rather than misroute the push.
+//
+// Otherwise every argument is a file and the destination defaults (empty
+// string, resolved by PushToInbox to DefaultInboxDir).
+func splitPushArgs(args []string) (files []string, destRelPath string, ambiguousDest bool) {
 	if len(args) < 2 {
-		return args, ""
+		return args, "", false
 	}
 	last := args[len(args)-1]
-	if info, err := os.Stat(last); err == nil && !info.IsDir() {
-		return args, ""
+	info, err := os.Stat(last)
+	if err == nil && !info.IsDir() {
+		return args, "", false
 	}
-	return args[:len(args)-1], last
+	ambiguous := err != nil // stat failed: last does not name an existing path
+	return args[:len(args)-1], last, ambiguous
+}
+
+// confirmAmbiguousDest warns that an ambiguous trailing argument (one that
+// does not name an existing local file) is about to be treated as a remote
+// destination directory, and requires confirmation before doing so. In a
+// non-interactive session it fails loud rather than silently misrouting the
+// push, matching the Silent Failure Prohibition.
+func confirmAmbiguousDest(cmd *cobra.Command, dest string) error {
+	out := cmd.ErrOrStderr()
+	fmt.Fprintf(out, "agnt push: %q does not name an existing local file; it will be used as a remote destination directory.\n", dest)
+	if !term.IsTerminal(int(os.Stdin.Fd())) {
+		return fmt.Errorf("agnt push: refusing to auto-route ambiguous trailing argument %q as a remote destination directory in a non-interactive session; pass only files to push, or run interactively to confirm", dest)
+	}
+	fmt.Fprint(out, "Proceed treating it as a remote directory? [y/N] ")
+	line, _ := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
+	if strings.ToLower(strings.TrimSpace(line)) != "y" {
+		return fmt.Errorf("agnt push: aborted — trailing argument %q was not confirmed as a destination", dest)
+	}
+	return nil
 }
 
 // resolveActiveHost discovers the single live 'agnt ssh' control socket.
